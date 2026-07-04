@@ -979,6 +979,16 @@ export default function TaskCenterView({
       ban_policy: account.ban_policy ?? 'skip',
       pacing_mode: 'template',
       max_actions_per_hour: pacing.max_actions_per_hour ?? null,
+      max_actions_per_day: pacing.max_actions_per_day ?? 100,
+      per_account_total_action_limit: pacing.per_account_total_action_limit ?? 0,
+      per_account_daily_action_limit: pacing.per_account_daily_action_limit ?? 1,
+      per_account_cooldown_days: pacing.per_account_cooldown_days ?? 0,
+      per_keyword_account_daily_limit: pacing.per_keyword_account_daily_limit ?? 2,
+      hourly_skip_probability: pacing.hourly_skip_probability ?? 0,
+      daily_skip_probability: pacing.daily_skip_probability ?? 0,
+      skip_probability_per_action: pacing.skip_probability_per_action ?? 0.1,
+      hourly_jitter_percent: pacing.hourly_jitter_percent ?? 30,
+      daily_jitter_percent: pacing.daily_jitter_percent ?? 20,
       operation_template_id: operationTemplateId,
       hourly_activity_curve: curveText(operationCurve),
       operation_profile_manual_override: Boolean(operationProfile.manual_override),
@@ -1044,12 +1054,24 @@ export default function TaskCenterView({
     };
   }
 
-  function pacingConfig(values: any) {
+  function pacingConfig(values: any, type: TaskCenterTaskType = taskType) {
     const config: Record<string, any> = {
       mode: values.pacing_mode ?? 'template',
       operation_profile: operationProfileFromValues(values),
       max_actions_per_hour: values.max_actions_per_hour ?? null,
     };
+    if (type === 'search_join_group') {
+      config.max_actions_per_day = values.max_actions_per_day ?? 100;
+      config.per_account_total_action_limit = values.per_account_total_action_limit ?? 0;
+      config.per_account_daily_action_limit = values.per_account_daily_action_limit ?? 1;
+      config.per_account_cooldown_days = values.per_account_cooldown_days ?? 0;
+      config.per_keyword_account_daily_limit = values.per_keyword_account_daily_limit ?? 2;
+      config.hourly_skip_probability = values.hourly_skip_probability ?? 0;
+      config.daily_skip_probability = values.daily_skip_probability ?? 0;
+      config.skip_probability_per_action = values.skip_probability_per_action ?? 0.1;
+      config.hourly_jitter_percent = values.hourly_jitter_percent ?? 30;
+      config.daily_jitter_percent = values.daily_jitter_percent ?? 20;
+    }
     return config;
   }
 
@@ -1087,7 +1109,7 @@ export default function TaskCenterView({
       scheduled_end: fromBeijingDateTimeLocalValue(values.scheduled_end),
       max_duration_hours: null,
       account_config: accountConfig(values),
-      pacing_config: pacingConfig(values),
+      pacing_config: pacingConfig(values, taskType),
       failure_policy: failurePolicy(values),
     };
   }
@@ -1356,7 +1378,7 @@ export default function TaskCenterView({
       scheduled_start: fromBeijingDateTimeLocalValue(values.scheduled_start),
       scheduled_end: fromBeijingDateTimeLocalValue(values.scheduled_end),
       account_config: accountConfig(values),
-      pacing_config: pacingConfig(values),
+      pacing_config: pacingConfig(values, type),
       failure_policy: failurePolicy(values),
     };
     if (type === 'group_ai_chat') {

@@ -98,6 +98,19 @@ LEGACY_PACING_FIELDS = {
     "quiet_hours",
 }
 
+SEARCH_JOIN_PACING_FIELDS = {
+    "per_account_total_action_limit",
+    "per_account_daily_action_limit",
+    "per_account_cooldown_days",
+    "per_keyword_account_daily_limit",
+    "max_actions_per_day",
+    "hourly_skip_probability",
+    "daily_skip_probability",
+    "skip_probability_per_action",
+    "hourly_jitter_percent",
+    "daily_jitter_percent",
+}
+
 TYPE_SETTINGS_FIELDS = {
     "group_ai_chat": {
         "target_group_id",

@@ -988,7 +988,7 @@ def test_refresh_group_verification_rejoins_reads_with_helper_and_submits_mimo(m
         monkeypatch.setattr("app.services.membership_challenges.gateway.fetch_verification_media", fake_media)
         monkeypatch.setattr("app.services.membership_challenges.gateway.submit_verification_response", fake_submit)
         monkeypatch.setattr("app.services.membership_challenges.ai_gateway.solve_image_verification", lambda *_args, **_kwargs: FakeAnswer())
-        monkeypatch.setattr("app.services.membership_challenges._mimo_vision_provider", lambda session: type("Provider", (), {"model_name": "mimo-v2.5", "provider_name": "MiMo", "provider_type": "openai_compatible", "base_url": "mock://mimo", "api_key_ciphertext": "", "api_key_header": "Authorization"})())
+        monkeypatch.setattr("app.services.membership_challenges._image_verification_provider", lambda session: type("Provider", (), {"model_name": "mimo-v2.5", "provider_name": "MiMo", "provider_type": "openai_compatible", "base_url": "mock://mimo", "api_key_ciphertext": "", "api_key_header": "Authorization"})())
         monkeypatch.setattr("app.services.verification.credentials_for_account", lambda session, account: DeveloperAppCredentials(1, 12345, "hash", 1))
         monkeypatch.setattr("app.services.membership_challenges.ai_provider_credentials", lambda provider: provider)
 

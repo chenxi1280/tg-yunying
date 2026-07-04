@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import BotProtocolSample, OperationTarget, Task, TgAccount
+from app.models import Action, BotProtocolSample, OperationTarget, Task, TgAccount
 from app.services.client_metadata import SearchJoinEnvironment, ensure_search_join_environment
 from app.services._common import _now
 
 from ..account_pool import select_task_accounts
 from ..payloads import SearchJoinPayload, create_search_join_action
+from ..search_join_pacing import PacingStats, account_base_allowed, keyword_allowed, pacing_window, planned_action_decision, should_skip_window, task_daily_capacity
 from ..stats import search_join_hourly_execution
 
 
@@ -31,40 +33,138 @@ class PayloadInput:
     environment: SearchJoinEnvironment
 
 
+@dataclass(frozen=True)
+class BehaviorSkipLookup:
+    task: Task
+    account_id: int
+    keyword_hash: str
+    scheduled_at: datetime | None
+
+
 ENVIRONMENT_CANDIDATE_MULTIPLIER = 3
 DEFAULT_MAX_SEARCH_JOIN_PAGES = 70
 
 
 def build_plan(session: Session, task: Task) -> int:
-    config = task.type_config or {}
+    _lock_task_for_planning(session, task)
+    config = _runtime_config(task)
     bot_username = _first_bot_username(config)
     if not _protocol_sample_ready(session, task.tenant_id, bot_username):
         return _block(task, "protocol_sample_missing", f"search_join protocol sample missing: {bot_username}")
     if not _keyword_hashes(config):
         return _block(task, "keyword_hash_missing", "search_join keyword hash missing")
+    now_value = _now()
+    window = pacing_window(task, now_value)
+    pacing_stats = PacingStats(tenant_timezone=task.timezone or "Asia/Shanghai", local_date=window.local_date.isoformat())
+    if _window_skipped(session, task, config, window, pacing_stats):
+        return _record_hourly(task, search_join_hourly_execution(session, task, now_value), 0, {}, pacing_stats)
     hourly = search_join_hourly_execution(session, task, _now())
-    plan_count = _plan_count(config, hourly)
+    plan_count = task_daily_capacity(session, task, window, _plan_count(config, hourly), pacing_stats)
     if plan_count <= 0:
-        return _record_hourly(task, hourly, 0, {})
+        return _record_hourly(task, hourly, 0, {}, pacing_stats)
     accounts = select_task_accounts(session, task.tenant_id, task.account_config or {}, limit=plan_count * ENVIRONMENT_CANDIDATE_MULTIPLIER, enforce_capacity=False)
     if not accounts:
         return _block(task, "account_unavailable", "没有可用账号，等待账号恢复后继续执行")
     plan = SearchJoinPlan(bot_username=bot_username, keyword_hash="", target=_target(session, task), hourly=hourly)
     created = 0
     blockers: dict[str, int] = {}
+    keyword_hashes = _keyword_hashes(config)
     for account in accounts:
+        if not account_base_allowed(session, task, account.id, window, pacing_stats):
+            continue
+        keyword_hash = _candidate_keyword_hash(session, task, account.id, keyword_hashes, created, window, pacing_stats)
+        if not keyword_hash:
+            continue
         environment = _environment(session, account, blockers)
         if environment is None:
             continue
         payload = _payload(PayloadInput(config=config, plan=plan, index=created, account=account, environment=environment))
-        create_search_join_action(session, task, account.id, _now(), payload)
+        payload = payload.model_copy(update={"keyword_hash": keyword_hash})
+        _create_planned_action(session, task, account, payload, keyword_hash, window, config)
         created += 1
         if created >= plan_count:
             break
     if created <= 0:
+        if pacing_stats.blocked_accounts:
+            return _record_hourly(task, hourly, 0, blockers, pacing_stats)
         return _block(task, "needs_client_metadata", "搜索入群缺少可执行授权环境栈或客户端 metadata")
     task.last_error = ""
-    return _record_hourly(task, hourly, created, blockers)
+    return _record_hourly(task, hourly, created, blockers, pacing_stats)
+
+
+def _runtime_config(task: Task) -> dict:
+    return {**(task.type_config or {}), **(task.pacing_config or {})}
+
+
+def _lock_task_for_planning(session: Session, task: Task) -> None:
+    session.execute(select(Task.id).where(Task.id == task.id).with_for_update()).scalar_one_or_none()
+
+
+def _window_skipped(session: Session, task: Task, config: dict, window, pacing_stats: PacingStats) -> bool:
+    if should_skip_window(session, task, "daily", float(config.get("daily_skip_probability") or 0), window):
+        pacing_stats.daily_skipped_by_pacing = 1
+        pacing_stats.last_limit_reason = "daily_skipped_by_pacing"
+        return True
+    if should_skip_window(session, task, "hourly", float(config.get("hourly_skip_probability") or 0), window):
+        pacing_stats.hourly_skipped_by_pacing = 1
+        pacing_stats.last_limit_reason = "hourly_skipped_by_pacing"
+        return True
+    return False
+
+
+def _create_planned_action(session: Session, task: Task, account: TgAccount, payload: SearchJoinPayload, keyword_hash: str, window, config: dict) -> None:
+    candidate_key = f"{window.local_date.isoformat()}:{account.id}:{keyword_hash}:{payload.hourly_execution.get('bucket', '')}"
+    decision = planned_action_decision(
+        session,
+        task,
+        candidate_key,
+        float(config.get("skip_probability_per_action") or 0),
+        int(config.get("hourly_jitter_percent") or 0),
+        int(config.get("daily_jitter_percent") or 0),
+        window,
+        account_id=account.id,
+        keyword_hash=keyword_hash,
+        base_scheduled_at=_now(),
+    )
+    if not decision.decision_value.get("skipped"):
+        create_search_join_action(session, task, account.id, decision.scheduled_at or _now(), payload)
+        return
+    lookup = BehaviorSkipLookup(task, account.id, keyword_hash, decision.scheduled_at)
+    if _existing_behavior_skip_action(session, lookup):
+        return
+    action = create_search_join_action(session, task, account.id, decision.scheduled_at or _now(), payload)
+    action.status = "skipped"
+    action.executed_at = _now()
+    action.result = {"success": False, "skip_reason": "skipped_by_behavior_pacing"}
+
+
+def _existing_behavior_skip_action(session: Session, lookup: BehaviorSkipLookup) -> Action | None:
+    if lookup.scheduled_at is None:
+        return None
+    actions = session.scalars(
+        select(Action).where(
+            Action.task_id == lookup.task.id,
+            Action.action_type == "search_join",
+            Action.account_id == lookup.account_id,
+            Action.status == "skipped",
+            Action.scheduled_at == lookup.scheduled_at,
+        )
+    )
+    return next((action for action in actions if _same_behavior_skip(action, lookup.keyword_hash)), None)
+
+
+def _same_behavior_skip(action: Action, keyword_hash: str) -> bool:
+    payload = action.payload or {}
+    result = action.result or {}
+    return payload.get("keyword_hash") == keyword_hash and result.get("skip_reason") == "skipped_by_behavior_pacing"
+
+
+def _candidate_keyword_hash(session: Session, task: Task, account_id: int, keyword_hashes: list[str], offset: int, window, pacing_stats: PacingStats) -> str:
+    for index in range(len(keyword_hashes)):
+        keyword_hash = keyword_hashes[(offset + index) % len(keyword_hashes)]
+        if keyword_allowed(session, task, account_id, keyword_hash, window, pacing_stats):
+            return keyword_hash
+    return ""
 
 
 def _payload(payload_input: PayloadInput) -> SearchJoinPayload:
@@ -196,17 +296,19 @@ def _plan_count(config: dict, hourly: dict) -> int:
 
 def _block(task: Task, code: str, message: str) -> int:
     task.last_error = message
-    _record_hourly(task, search_join_hourly_execution_stub(code), 0, {code: 1})
+    _record_hourly(task, search_join_hourly_execution_stub(code), 0, {code: 1}, None)
     return 0
 
 
-def _record_hourly(task: Task, hourly: dict, planned_count: int, blockers: dict) -> int:
+def _record_hourly(task: Task, hourly: dict, planned_count: int, blockers: dict, pacing_stats: PacingStats | None) -> int:
     stats = dict(task.stats or {})
     search_join_stats = dict(stats.get("search_join_stats") or {})
     hourly_execution = dict(hourly)
     hourly_execution["last_planned_count"] = planned_count
     hourly_execution["last_blockers"] = dict(blockers)
     search_join_stats["hourly_execution"] = hourly_execution
+    if pacing_stats is not None:
+        search_join_stats["pacing_limits"] = pacing_stats.as_dict()
     stats["search_join_stats"] = search_join_stats
     task.stats = stats
     return planned_count

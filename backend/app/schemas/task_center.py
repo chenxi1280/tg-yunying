@@ -22,6 +22,12 @@ CHANNEL_COUNT_JITTER_DEFAULT = 0.2
 MAX_TOTAL_COMMENT_JITTER = 0.3
 MAX_SEARCH_JOIN_SAFE_NAVIGATION = 3
 MAX_SEARCH_JOIN_PAGES = 70
+DEFAULT_SEARCH_JOIN_MAX_ACTIONS_PER_DAY = 100
+DEFAULT_SEARCH_JOIN_DAILY_ACCOUNT_LIMIT = 1
+DEFAULT_SEARCH_JOIN_KEYWORD_ACCOUNT_DAILY_LIMIT = 2
+DEFAULT_SEARCH_JOIN_ACTION_SKIP_PROBABILITY = 0.1
+DEFAULT_SEARCH_JOIN_HOURLY_JITTER_PERCENT = 30
+DEFAULT_SEARCH_JOIN_DAILY_JITTER_PERCENT = 20
 DEFAULT_SEARCH_JOIN_CURVE = [1, 1, 0, 0, 0, 0, 1, 2, 2, 3, 3, 3, 2, 2, 3, 4, 4, 5, 5, 5, 4, 3, 2, 1]
 KEYWORD_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -113,6 +119,33 @@ class PacingConfig(BaseModel):
         if self.mode == "template" and not self.template:
             self.template = "moderate_6h"
         return self
+
+
+class SearchJoinPacingConfig(PacingConfig):
+    per_account_total_action_limit: int = Field(default=0, ge=0, le=100000)
+    per_account_daily_action_limit: int = Field(default=DEFAULT_SEARCH_JOIN_DAILY_ACCOUNT_LIMIT, ge=0, le=1000)
+    per_account_cooldown_days: int = Field(default=0, ge=0, le=365)
+    per_keyword_account_daily_limit: int = Field(default=DEFAULT_SEARCH_JOIN_KEYWORD_ACCOUNT_DAILY_LIMIT, ge=0, le=1000)
+    max_actions_per_day: int | None = Field(default=DEFAULT_SEARCH_JOIN_MAX_ACTIONS_PER_DAY, ge=0)
+    hourly_skip_probability: float = Field(default=0, ge=0, le=1)
+    daily_skip_probability: float = Field(default=0, ge=0, le=1)
+    skip_probability_per_action: float = Field(default=DEFAULT_SEARCH_JOIN_ACTION_SKIP_PROBABILITY, ge=0, le=1)
+    hourly_jitter_percent: int = Field(default=DEFAULT_SEARCH_JOIN_HOURLY_JITTER_PERCENT, ge=0, le=100)
+    daily_jitter_percent: int = Field(default=DEFAULT_SEARCH_JOIN_DAILY_JITTER_PERCENT, ge=0, le=100)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_jitter(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        next_data = dict(data)
+        legacy = next_data.get("jitter_percent")
+        hourly = next_data.get("hourly_jitter_percent")
+        if legacy is not None and hourly is not None and int(legacy) != int(hourly):
+            raise ValueError("jitter_percent 与 hourly_jitter_percent 冲突")
+        if legacy is not None and hourly is None:
+            next_data["hourly_jitter_percent"] = int(legacy)
+        return next_data
 
 
 class FailurePolicy(BaseModel):
@@ -616,7 +649,7 @@ class GroupMembershipAdmissionTaskCreate(TaskCreateCommon, GroupMembershipAdmiss
 
 
 class SearchJoinGroupTaskCreate(TaskCreateCommon, SearchJoinGroupConfig):
-    pass
+    pacing_config: SearchJoinPacingConfig = Field(default_factory=SearchJoinPacingConfig)
 
 
 class GroupAIChatTaskConfigUpdate(GroupAIChatConfig):
@@ -644,7 +677,7 @@ class GroupMembershipAdmissionTaskConfigUpdate(GroupMembershipAdmissionConfig):
 
 
 class SearchJoinGroupTaskConfigUpdate(SearchJoinGroupConfig):
-    pass
+    pacing_config: SearchJoinPacingConfig | None = None
 
 
 class TaskUpdate(BaseModel):
@@ -657,7 +690,7 @@ class TaskUpdate(BaseModel):
     scheduled_end: datetime | None = None
     max_duration_hours: int | None = Field(default=None, ge=1)
     account_config: AccountConfig | None = None
-    pacing_config: PacingConfig | None = None
+    pacing_config: PacingConfig | SearchJoinPacingConfig | None = None
     failure_policy: FailurePolicy | None = None
 
 

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from datetime import timedelta
+from pathlib import Path
+
 import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
@@ -13,6 +16,7 @@ from app.models import (
     BotProtocolSample,
     FingerprintComboHistory,
     OperationTarget,
+    SearchJoinPacingDecision,
     Task,
     TelegramDeveloperApp,
     Tenant,
@@ -21,7 +25,11 @@ from app.models import (
 )
 from app.security import encrypt_secret
 from app.services._common import _now
+from app.services.task_center.search_join_pacing import pacing_window
 from app.services.task_center.executors import build_task_plan
+from app.services.task_center.executors import search_join_group as search_join_executor
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.fixture
@@ -242,3 +250,299 @@ def test_search_join_planner_fails_closed_without_keyword_hash(session: Session)
     assert build_task_plan(session, task) == 0
     assert session.scalar(select(Action).where(Action.task_id == task.id)) is None
     assert task.last_error == "search_join keyword hash missing"
+
+
+@pytest.mark.no_postgres
+def test_search_join_planner_persists_daily_skip_decision(session: Session) -> None:
+    _bind_search_join_environment(session, [101])
+    task = _task(pacing_config={"daily_skip_probability": 1})
+    session.add(task)
+    session.commit()
+
+    assert build_task_plan(session, task) == 0
+    assert build_task_plan(session, task) == 0
+
+    decisions = session.scalars(select(SearchJoinPacingDecision).where(SearchJoinPacingDecision.task_id == task.id)).all()
+    assert len(decisions) == 1
+    assert decisions[0].decision_scope == "daily"
+    assert decisions[0].decision_value["skipped"] is True
+    assert session.scalar(select(Action).where(Action.task_id == task.id)) is None
+    limits = task.stats["search_join_stats"]["pacing_limits"]
+    assert limits["daily_skipped_by_pacing"] == 1
+
+
+@pytest.mark.no_postgres
+def test_search_join_planner_respects_account_and_keyword_daily_limits(session: Session) -> None:
+    _bind_search_join_environment(session, [101, 102, 103])
+    task = _task(
+        type_config={"actions_per_round": 3, "hourly_min_successful_joins": 3},
+        pacing_config={"per_account_daily_action_limit": 1, "per_keyword_account_daily_limit": 1},
+    )
+    session.add(task)
+    session.flush()
+    session.add(
+        Action(
+            tenant_id=1,
+            task_id=task.id,
+            task_type="search_join_group",
+            action_type="search_join",
+            account_id=101,
+            status="success",
+            executed_at=_now(),
+            payload={"keyword_hash": "a" * 64},
+            result={"membership_observed": True},
+        )
+    )
+    session.commit()
+
+    assert build_task_plan(session, task) == 2
+    actions = session.scalars(select(Action).where(Action.task_id == task.id, Action.status == "pending")).all()
+
+    assert {action.account_id for action in actions} == {102, 103}
+    assert {action.payload["keyword_hash"] for action in actions} == {"a" * 64, "b" * 64}
+    limits = task.stats["search_join_stats"]["pacing_limits"]
+    assert limits["per_account_daily_limit_reached"] == 1
+    assert limits["per_keyword_account_daily_limit_reached"] == 0
+
+
+@pytest.mark.no_postgres
+def test_search_join_planner_tries_next_keyword_when_account_keyword_limit_is_hit(session: Session) -> None:
+    _bind_search_join_environment(session, [101])
+    task = _task(
+        type_config={"actions_per_round": 1, "hourly_min_successful_joins": 2},
+        pacing_config={"per_account_daily_action_limit": 2, "per_keyword_account_daily_limit": 1},
+    )
+    session.add(task)
+    session.flush()
+    session.add(
+        Action(
+            tenant_id=1,
+            task_id=task.id,
+            task_type="search_join_group",
+            action_type="search_join",
+            account_id=101,
+            status="success",
+            executed_at=_now(),
+            payload={"keyword_hash": "a" * 64},
+            result={"membership_observed": True},
+        )
+    )
+    session.commit()
+
+    assert build_task_plan(session, task) == 1
+    action = session.scalar(select(Action).where(Action.task_id == task.id, Action.status == "pending"))
+
+    assert action.account_id == 101
+    assert action.payload["keyword_hash"] == "b" * 64
+    assert task.stats["search_join_stats"]["pacing_limits"]["per_keyword_account_daily_limit_reached"] == 1
+
+
+@pytest.mark.no_postgres
+def test_search_join_planner_respects_account_total_limit_and_cooldown(session: Session) -> None:
+    _bind_search_join_environment(session, [101, 102, 103])
+    task = _task(pacing_config={"per_account_total_action_limit": 1, "per_account_cooldown_days": 2})
+    session.add(task)
+    session.flush()
+    session.add_all(
+        [
+            Action(
+                tenant_id=1,
+                task_id=task.id,
+                task_type="search_join_group",
+                action_type="search_join",
+                account_id=101,
+                status="success",
+                executed_at=_now() - timedelta(days=3),
+                payload={"keyword_hash": "a" * 64},
+                result={"membership_observed": True},
+            ),
+            Action(
+                tenant_id=1,
+                task_id=task.id,
+                task_type="search_join_group",
+                action_type="search_join",
+                account_id=102,
+                status="success",
+                executed_at=_now() - timedelta(hours=12),
+                payload={"keyword_hash": "b" * 64},
+                result={"membership_observed": True},
+            ),
+        ]
+    )
+    session.commit()
+
+    assert build_task_plan(session, task) == 1
+    action = session.scalar(select(Action).where(Action.task_id == task.id, Action.status == "pending"))
+
+    assert action.account_id == 103
+    limits = task.stats["search_join_stats"]["pacing_limits"]
+    assert limits["per_account_total_limit_reached"] == 2
+    assert limits["per_account_cooldown_days_active"] == 1
+
+
+@pytest.mark.no_postgres
+def test_search_join_planner_creates_explicit_skipped_action_for_action_skip(session: Session) -> None:
+    _bind_search_join_environment(session, [101])
+    task = _task(type_config={"actions_per_round": 1, "hourly_min_successful_joins": 1}, pacing_config={"skip_probability_per_action": 1})
+    session.add(task)
+    session.commit()
+
+    assert build_task_plan(session, task) == 1
+    action = session.scalar(select(Action).where(Action.task_id == task.id))
+
+    assert action.status == "skipped"
+    assert action.result["skip_reason"] == "skipped_by_behavior_pacing"
+    decision = session.scalar(select(SearchJoinPacingDecision).where(SearchJoinPacingDecision.task_id == task.id))
+    assert decision.decision_scope == "action"
+    assert decision.decision_value["skipped"] is True
+    assert decision.account_id == 101
+    assert decision.keyword_hash == "a" * 64
+    assert decision.threshold == 1
+    assert decision.reason == "skipped_by_behavior_pacing"
+
+    assert build_task_plan(session, task) == 1
+    actions = session.scalars(select(Action).where(Action.task_id == task.id)).all()
+    assert len(actions) == 1
+
+
+@pytest.mark.no_postgres
+def test_search_join_planner_applies_jitter_from_persisted_decision(session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    fixed_now = _now().replace(year=2026, month=7, day=4, hour=10, minute=0, second=0, microsecond=0)
+    monkeypatch.setattr(search_join_executor, "_now", lambda: fixed_now)
+    _bind_search_join_environment(session, [101])
+    task = _task(
+        type_config={"actions_per_round": 1, "hourly_min_successful_joins": 1},
+        pacing_config={"hourly_jitter_percent": 30, "daily_jitter_percent": 20, "skip_probability_per_action": 0},
+    )
+    session.add(task)
+    session.commit()
+
+    assert build_task_plan(session, task) == 1
+    action = session.scalar(select(Action).where(Action.task_id == task.id))
+    decision = session.scalar(select(SearchJoinPacingDecision).where(SearchJoinPacingDecision.task_id == task.id))
+
+    assert action.scheduled_at == decision.scheduled_at
+    assert action.scheduled_at >= fixed_now
+    assert action.scheduled_at < fixed_now + timedelta(minutes=18, seconds=1)
+    assert decision.reason == "planned"
+    assert decision.decision_value["hourly_jitter_percent"] == 30
+    assert decision.decision_value["daily_jitter_percent"] == 20
+
+
+@pytest.mark.no_postgres
+def test_search_join_jitter_stays_inside_current_hour_bucket(session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    fixed_now = _now().replace(year=2026, month=7, day=4, hour=10, minute=50, second=0, microsecond=0)
+    monkeypatch.setattr(search_join_executor, "_now", lambda: fixed_now)
+    _bind_search_join_environment(session, [101])
+    task = _task(
+        type_config={"actions_per_round": 1, "hourly_min_successful_joins": 1},
+        pacing_config={"hourly_jitter_percent": 100, "daily_jitter_percent": 100, "skip_probability_per_action": 0},
+    )
+    session.add(task)
+    session.commit()
+
+    assert build_task_plan(session, task) == 1
+    action = session.scalar(select(Action).where(Action.task_id == task.id))
+
+    assert action.scheduled_at >= fixed_now
+    assert action.scheduled_at < fixed_now.replace(minute=0) + timedelta(hours=1)
+
+
+@pytest.mark.no_postgres
+def test_search_join_realtime_pacing_does_not_import_llm_hot_path() -> None:
+    executor = (PROJECT_ROOT / "backend/app/services/task_center/executors/search_join_group.py").read_text()
+    pacing = (PROJECT_ROOT / "backend/app/services/task_center/search_join_pacing.py").read_text()
+
+    assert "ai_generator" not in executor
+    assert "create_ai_gateway" not in executor
+    assert "ai_gateway" not in pacing
+    assert "LLM" not in executor
+
+
+@pytest.mark.no_postgres
+def test_search_join_planner_locks_task_before_counting_capacity() -> None:
+    executor = (PROJECT_ROOT / "backend/app/services/task_center/executors/search_join_group.py").read_text()
+
+    assert "def _lock_task_for_planning" in executor
+    assert ".with_for_update()" in executor
+    assert "task_daily_capacity(session, task, window" in executor
+
+
+@pytest.mark.no_postgres
+def test_search_join_pacing_window_uses_task_timezone() -> None:
+    task = _task(timezone="America/Los_Angeles")
+
+    window = pacing_window(task, _now().replace(year=2026, month=7, day=4, hour=1, minute=30, second=0, microsecond=0))
+
+    assert window.local_date.isoformat() == "2026-07-03"
+
+
+@pytest.mark.no_postgres
+def test_search_join_daily_cap_counts_actions_by_task_timezone(session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    fixed_now = _now().replace(year=2026, month=7, day=4, hour=1, minute=30, second=0, microsecond=0)
+    monkeypatch.setattr(search_join_executor, "_now", lambda: fixed_now)
+    _bind_search_join_environment(session, [101])
+    task = _task(timezone="America/Los_Angeles", pacing_config={"max_actions_per_day": 1})
+    session.add(task)
+    session.flush()
+    session.add(
+        Action(
+            tenant_id=1,
+            task_id=task.id,
+            task_type="search_join_group",
+            action_type="search_join",
+            account_id=101,
+            status="success",
+            executed_at=fixed_now,
+            payload={"keyword_hash": "a" * 64},
+            result={"membership_observed": True},
+        )
+    )
+    session.commit()
+
+    assert build_task_plan(session, task) == 0
+    limits = task.stats["search_join_stats"]["pacing_limits"]
+    assert limits["tenant_timezone"] == "America/Los_Angeles"
+    assert limits["local_date"] == "2026-07-03"
+    assert limits["task_daily_action_count"] == 1
+    assert limits["task_daily_remaining"] == 0
+
+
+@pytest.mark.no_postgres
+def test_search_join_daily_limits_count_failed_and_claiming_real_actions(session: Session) -> None:
+    _bind_search_join_environment(session, [101, 102])
+    task = _task(pacing_config={"per_account_daily_action_limit": 1, "max_actions_per_day": 2})
+    session.add(task)
+    session.flush()
+    session.add_all(
+        [
+            Action(
+                tenant_id=1,
+                task_id=task.id,
+                task_type="search_join_group",
+                action_type="search_join",
+                account_id=101,
+                status="failed",
+                executed_at=_now(),
+                payload={"keyword_hash": "a" * 64, "lifecycle_phase": "telegram_search_sent"},
+                result={"success": False},
+            ),
+            Action(
+                tenant_id=1,
+                task_id=task.id,
+                task_type="search_join_group",
+                action_type="search_join",
+                account_id=102,
+                status="claiming",
+                scheduled_at=_now(),
+                payload={"keyword_hash": "b" * 64},
+                result={},
+            ),
+        ]
+    )
+    session.commit()
+
+    assert build_task_plan(session, task) == 0
+    limits = task.stats["search_join_stats"]["pacing_limits"]
+    assert limits["task_daily_action_count"] == 2
+    assert limits["task_daily_remaining"] == 0

@@ -22,6 +22,7 @@ from ._common import _now, ai_gateway, gateway
 from .ai_config import ai_provider_credentials
 
 MIN_IMAGE_VERIFICATION_CONFIDENCE = 0.70
+IMAGE_VERIFICATION_PROVIDER_SOURCES = ("mimo", "minimax")
 CN_NUMBER_CHARS = "零〇一二两三四五六七八九十"
 ARITHMETIC_PATTERN = re.compile(rf"(?P<left>\d{{1,3}}|[{CN_NUMBER_CHARS}]{{1,4}})\s*(?P<op>[+\-＋－]|加|减)\s*(?P<right>\d{{1,3}}|[{CN_NUMBER_CHARS}]{{1,4}})")
 CODE_PATTERN = re.compile(r"(?:验证码|code|captcha|请输入)[^\d]{0,16}(?P<code>\d{3,8})", re.IGNORECASE)
@@ -121,9 +122,12 @@ def auto_resolve_image_verification(
         return _image_verification_failure(session, task, account, detail, context=context)
     if _already_tried_image(session, task, image_message):
         return _image_verification_failure(session, task, account, "同一图片验证码已自动尝试过，需人工确认或等待新验证码", image_message, context)
-    provider = _mimo_vision_provider(session)
+    provider = _image_verification_provider(session)
     if provider is None:
-        return _image_verification_failure(session, task, account, "未配置可用 MiMo 视觉供应商", image_message, context)
+        detail = "未配置可用多模态视觉供应商（MiMo/Mino 或 MiniMax）"
+        return _image_verification_failure(session, task, account, detail, image_message, context)
+    answer_source = _image_verification_provider_source(provider)
+    provider_label = _image_verification_provider_label(provider, answer_source)
     media = gateway.fetch_verification_media(
         read_result.reader_account.id,
         task.target_peer_id,
@@ -141,10 +145,10 @@ def auto_resolve_image_verification(
             media.detail or image_message.get("media_mime_type") or "image/png",
         )
     except Exception as exc:  # noqa: BLE001 - stored as explicit operator-facing attempt.
-        detail = f"MiMo 图片验证码识别失败：{exc}"
+        detail = f"{provider_label} 图片验证码识别失败：{exc}"
         return _image_verification_failure(session, task, account, detail, image_message, context)
     if answer.confidence < MIN_IMAGE_VERIFICATION_CONFIDENCE:
-        detail = f"MiMo 图片验证码识别低置信：{answer.confidence:.2f}"
+        detail = f"{provider_label} 图片验证码识别低置信：{answer.confidence:.2f}"
         return _image_verification_failure(session, task, account, detail, image_message, context)
     result = gateway.submit_verification_response(account.id, task.target_peer_id, answer.answer, account.session_ciphertext, credentials)
     status = "sent" if result.ok else "send_failed"
@@ -155,7 +159,7 @@ def auto_resolve_image_verification(
         context,
         image_message=image_message,
         answer_text=answer.answer,
-        answer_source="mimo",
+        answer_source=answer_source,
         confidence=answer.confidence,
         model_name=provider.model_name,
         status=status,
@@ -164,7 +168,7 @@ def auto_resolve_image_verification(
     session.flush()
     if not result.ok:
         return OperationResult(False, "需人工处理", result.failure_type or "verification_send_failed", result.detail)
-    detail = f"MiMo 已识别并提交验证码，置信度 {answer.confidence:.2f}"
+    detail = f"{provider_label} 已识别并提交验证码，置信度 {answer.confidence:.2f}"
     return ImageVerificationOperationResult(
         True,
         "已处理",
@@ -172,7 +176,7 @@ def auto_resolve_image_verification(
         attempt_context=context,
         image_message=image_message,
         answer_text=answer.answer,
-        answer_source="mimo",
+        answer_source=answer_source,
         confidence=answer.confidence,
         model_name=provider.model_name,
     )
@@ -299,7 +303,7 @@ def record_challenge_attempt(
             media_message_id=str(image_message.get("media_message_id") or ""),
             media_fingerprint=str(image_message.get("media_fingerprint") or ""),
             media_mime_type=str(image_message.get("media_mime_type") or ""),
-            answer_source=answer_source or ("mimo" if answer_text else ""),
+            answer_source=answer_source or ("ai_image" if image_message and answer_text else ""),
             answer_text=answer_text,
             confidence=confidence,
             model_name=model_name,
@@ -397,22 +401,32 @@ def _missing_image_detail(context: dict[str, Any]) -> str:
     return f"{detail}（context_status={status}, messages={len(messages)}, media={media_count}）"
 
 
-def _mimo_vision_provider(session: Session) -> AiProvider | None:
+def _image_verification_provider(session: Session) -> AiProvider | None:
     providers = session.scalars(
         select(AiProvider).where(
             AiProvider.is_active.is_(True),
             AiProvider.health_status == AiProviderHealthStatus.HEALTHY.value,
         )
     )
-    return next((provider for provider in providers if _looks_like_mimo_provider(provider)), None)
+    return next((provider for provider in providers if _image_verification_provider_source(provider)), None)
 
 
-def _looks_like_mimo_provider(provider: AiProvider) -> bool:
+def _image_verification_provider_source(provider: AiProvider) -> str:
     text = " ".join([provider.provider_name or "", provider.model_name or "", provider.base_url or ""]).lower()
     if "xiaomimimo" in text or "xiaomimino" in text:
-        return True
+        return "mimo"
     tokens = {token for token in re.split(r"[^a-z0-9]+", text) if token}
-    return bool(tokens & {"mimo", "mino"})
+    if tokens & {"mimo", "mino"}:
+        return "mimo"
+    return "minimax" if "minimax" in text else ""
+
+
+def _image_verification_provider_label(provider: AiProvider, source: str) -> str:
+    if source == "mimo":
+        return "MiMo"
+    if source == "minimax":
+        return "MiniMax"
+    return provider.provider_name or provider.model_name or "AI"
 
 
 def _latest_context_image(messages: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -429,7 +443,7 @@ def _already_tried_image(session: Session, task: VerificationTask, image_message
             .where(
                 TargetMembershipChallengeAttempt.verification_task_id == task.id,
                 TargetMembershipChallengeAttempt.media_fingerprint == fingerprint,
-                TargetMembershipChallengeAttempt.answer_source == "mimo",
+                TargetMembershipChallengeAttempt.answer_source.in_(IMAGE_VERIFICATION_PROVIDER_SOURCES),
             )
             .limit(1)
         )
@@ -444,7 +458,15 @@ def _image_verification_failure(
     image_message: dict[str, Any] | None = None,
     context: dict[str, Any] | None = None,
 ) -> ImageVerificationOperationResult:
-    record_challenge_attempt(session, task, account, context or {}, image_message=image_message, status="manual_required", result_detail=detail)
+    record_challenge_attempt(
+        session,
+        task,
+        account,
+        context or {},
+        image_message=image_message,
+        status="manual_required",
+        result_detail=detail,
+    )
     session.flush()
     return ImageVerificationOperationResult(
         False,

@@ -88,7 +88,7 @@ def refresh_task_stats(session: Session, task: Task) -> dict[str, Any]:
 
 
 def search_join_hourly_execution(session: Session, task: Task, now_value: datetime) -> dict[str, Any]:
-    config = task.type_config or {}
+    config = {**(task.type_config or {}), **(task.pacing_config or {})}
     bucket_start = now_value.replace(minute=0, second=0, microsecond=0)
     bucket_end = bucket_start + timedelta(hours=1)
     success_count = _search_join_success_count(session, task, bucket_start, bucket_end)

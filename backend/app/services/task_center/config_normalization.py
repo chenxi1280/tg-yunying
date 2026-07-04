@@ -21,6 +21,7 @@ from .config_fields import (
     CHANNEL_JITTER_FIELDS,
     GROUP_AI_LEGACY_RUNTIME_FIELDS,
     LEGACY_PACING_FIELDS,
+    SEARCH_JOIN_PACING_FIELDS,
     TYPE_CONFIG_MODELS,
 )
 from .utils import as_int as _as_int, as_int_list as _as_int_list
@@ -222,6 +223,8 @@ def pacing_config_payload(pacing_config) -> dict[str, Any]:
     for field in list(keep_legacy_fields):
         if data.get(field) is None:
             data.pop(field, None)
+    if SEARCH_JOIN_PACING_FIELDS.intersection(data):
+        data.pop("jitter_percent", None)
     return data
 
 

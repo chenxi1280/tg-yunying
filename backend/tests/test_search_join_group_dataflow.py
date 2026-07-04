@@ -31,6 +31,7 @@ def test_search_join_group_dataflow_tables_exist_in_metadata() -> None:
     assert "bot_protocol_samples" in tables
     assert "account_environment_bindings" in tables
     assert "fingerprint_combo_history" in tables
+    assert "search_join_pacing_decisions" in tables
 
 
 @pytest.mark.no_postgres
@@ -137,3 +138,20 @@ def test_search_join_environment_migration_declares_tables() -> None:
 
     assert "account_environment_bindings" in source
     assert "fingerprint_combo_history" in source
+
+
+@pytest.mark.no_postgres
+def test_search_join_pacing_decision_migration_declares_table() -> None:
+    migration = PROJECT_ROOT / "backend/migrations/versions/0077_search_join_pacing_decisions.py"
+    source = migration.read_text()
+
+    assert "search_join_pacing_decisions" in source
+    assert "uq_search_join_pacing_decision_scope" in source
+    assert "ix_search_join_pacing_decision_task" in source
+    assert "tenant_timezone" in source
+    assert "account_id" in source
+    assert "keyword_hash" in source
+    assert "sampled_value" in source
+    assert "threshold" in source
+    assert "scheduled_at" in source
+    assert "reason" in source

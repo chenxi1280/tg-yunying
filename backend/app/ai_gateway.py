@@ -270,8 +270,8 @@ class AiGateway:
         prompt: str = "请只识别图片里的验证码，输出 JSON：{\"answer\":\"验证码\",\"confidence\":0到1的小数}。",
         timeout: int = DEFAULT_AI_REQUEST_TIMEOUT_SECONDS,
     ) -> AiImageVerificationResult:
-        if not self._is_mimo(credentials):
-            raise RuntimeError("图片验证码只能使用 MiMo 视觉供应商")
+        if not self._is_image_verification_provider(credentials):
+            raise RuntimeError("图片验证码只能使用已支持的多模态视觉供应商（MiMo/Mino 或 MiniMax）")
         if not image_bytes:
             raise RuntimeError("verification image is empty")
         raw, usage = self._post_openai_compatible(
@@ -420,9 +420,17 @@ class AiGateway:
         text = " ".join([credentials.model_name, credentials.provider_name, credentials.base_url]).lower()
         return "minimax" in text and "m3" in re.sub(r"[^a-z0-9]+", "", text)
 
+    def _is_minimax(self, credentials: AiProviderCredentials) -> bool:
+        text = " ".join([credentials.model_name, credentials.provider_name, credentials.base_url]).lower()
+        return "minimax" in text
+
     def _is_mimo(self, credentials: AiProviderCredentials) -> bool:
         text = " ".join([credentials.model_name, credentials.provider_name, credentials.base_url]).lower()
-        return "xiaomimimo" in text or "xiaomimino" in text or bool({token for token in re.split(r"[^a-z0-9]+", text) if token} & {"mimo", "mino"})
+        tokens = {token for token in re.split(r"[^a-z0-9]+", text) if token}
+        return "xiaomimimo" in text or "xiaomimino" in text or bool(tokens & {"mimo", "mino"})
+
+    def _is_image_verification_provider(self, credentials: AiProviderCredentials) -> bool:
+        return self._is_mimo(credentials) or self._is_minimax(credentials)
 
     def _should_disable_thinking(self, credentials: AiProviderCredentials) -> bool:
         return (
@@ -674,10 +682,10 @@ def _parse_image_verification_json(raw: str) -> dict[str, Any]:
     try:
         payload = json.loads(raw.strip())
     except json.JSONDecodeError as exc:
-        raise RuntimeError("MiMo returned malformed verification JSON") from exc
+        raise RuntimeError("AI provider returned malformed verification JSON") from exc
     answer = str(payload.get("answer") or "").strip()
     if not answer:
-        raise RuntimeError("MiMo returned empty verification answer")
+        raise RuntimeError("AI provider returned empty verification answer")
     confidence = float(payload.get("confidence") or 0)
     return {"answer": answer[:80], "confidence": max(0.0, min(1.0, confidence))}
 

@@ -9,8 +9,9 @@ from sqlalchemy.orm import Session
 from app.database import Base
 from app.integrations.telegram import OperationResult
 from app.integrations.telegram.gateway import VERIFICATION_CONTEXT_DEFAULT_LIMIT
-from app.models import AccountStatus, Action, OperationTarget, Task, Tenant, TgAccount, TgGroup, TgGroupAccount, VerificationTask
+from app.models import AccountStatus, Action, AiProvider, AiProviderHealthStatus, OperationTarget, Task, Tenant, TgAccount, TgGroup, TgGroupAccount, VerificationTask
 from app.services._common import _now
+from app.services.membership_challenges import _image_verification_provider
 from app.services.task_center import dispatcher
 from app.services.task_center.channel_membership import (
     _create_membership_actions_for_accounts,
@@ -113,6 +114,43 @@ def test_group_ai_membership_strategy_disables_auto_follow_and_verification_help
 
         assert dispatcher._auto_follow_required_channel_enabled(session, action) is False
         assert dispatcher._auto_verification_enabled(session, action) is False
+
+
+@pytest.mark.no_postgres
+def test_image_verification_provider_accepts_minimax_when_mimo_missing() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(
+            AiProvider(
+                id=1,
+                provider_name="DeepSeek",
+                provider_type="openai_compatible",
+                base_url="https://api.deepseek.com",
+                model_name="deepseek-v4-flash",
+                api_key_ciphertext="cipher",
+                health_status=AiProviderHealthStatus.HEALTHY.value,
+                is_active=True,
+            )
+        )
+        session.add(
+            AiProvider(
+                id=2,
+                provider_name="MiniMax",
+                provider_type="openai_compatible",
+                base_url="https://api.minimax.io/v1",
+                model_name="MiniMax-M3",
+                api_key_ciphertext="cipher",
+                health_status=AiProviderHealthStatus.HEALTHY.value,
+                is_active=True,
+            )
+        )
+        session.commit()
+        provider = _image_verification_provider(session)
+
+        assert provider is not None
+        assert provider.provider_name == "MiniMax"
 
 
 def test_reactivate_memberships_requeues_recoverable_failures_for_group_ai() -> None:

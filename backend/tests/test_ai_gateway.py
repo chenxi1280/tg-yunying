@@ -893,6 +893,7 @@ def test_minimax_m3_generation_disables_thinking_without_json_response_format(mo
     assert result.candidates[0].content == "Minimax 接话正常。"
 
 
+@pytest.mark.no_postgres
 def test_mimo_image_verification_uses_openai_compatible_image_payload(monkeypatch):
     captured: dict[str, Any] = {}
 
@@ -927,6 +928,43 @@ def test_mimo_image_verification_uses_openai_compatible_image_payload(monkeypatc
     assert result.answer == "A7K2"
     assert result.confidence == 0.93
     assert result.usage.total_tokens == 14
+
+
+@pytest.mark.no_postgres
+def test_minimax_image_verification_uses_openai_compatible_image_payload(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    def fake_urlopen(request, timeout):  # noqa: ANN001 - mirrors urllib signature.
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse(
+            {
+                "choices": [
+                    {
+                        "message": {"content": '{"answer":"7391","confidence":0.91}'},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 12, "completion_tokens": 5, "total_tokens": 17},
+            }
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    minimax_credentials = AiProviderCredentials(
+        provider_name="MiniMax",
+        provider_type="openai_compatible",
+        base_url="https://api.minimax.io/v1",
+        model_name="MiniMax-M3",
+        api_key="test-key",
+    )
+
+    result = AiGateway().solve_image_verification(minimax_credentials, b"\x89PNG\r\n", "image/png")
+
+    user_content = captured["payload"]["messages"][1]["content"]
+    assert captured["payload"]["model"] == "MiniMax-M3"
+    assert captured["payload"]["thinking"] == {"type": "disabled"}
+    assert user_content[1]["image_url"]["url"].startswith("data:image/png;base64,")
+    assert result.answer == "7391"
+    assert result.confidence == 0.91
 
 
 @pytest.mark.no_postgres
@@ -968,6 +1006,7 @@ def test_mimo_generation_disables_thinking(monkeypatch):
     assert result.candidates[0].content == "接一句就行"
 
 
+@pytest.mark.no_postgres
 def test_mimo_image_verification_retries_reasoning_only_empty_content(monkeypatch):
     requests: list[dict[str, Any]] = []
     responses = [
@@ -1004,6 +1043,7 @@ def test_mimo_image_verification_retries_reasoning_only_empty_content(monkeypatc
     assert result.confidence == 0.91
 
 
+@pytest.mark.no_postgres
 def test_deepseek_image_verification_is_rejected_before_network(monkeypatch):
     def should_not_call(*_args, **_kwargs):
         raise AssertionError("DeepSeek must not receive image verification requests")
@@ -1017,7 +1057,7 @@ def test_deepseek_image_verification_is_rejected_before_network(monkeypatch):
         api_key="test-key",
     )
 
-    with pytest.raises(RuntimeError, match="MiMo"):
+    with pytest.raises(RuntimeError, match="多模态"):
         AiGateway().solve_image_verification(deepseek_credentials, b"img", "image/png")
 
 

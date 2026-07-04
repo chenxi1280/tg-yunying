@@ -6,10 +6,11 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import OperationTarget, Tenant, TgAccount
+from app.models import OperationTarget, Task, Tenant, TgAccount
 from app.security import decrypt_secret
-from app.schemas.task_center import SearchJoinGroupTaskCreate
-from app.services.task_center.service import create_and_start_search_join_group_task, create_search_join_group_task
+from app.schemas.task_center import SearchJoinGroupTaskConfigUpdate, SearchJoinGroupTaskCreate, TaskSettingsUpdate
+from app.services.task_center import service as task_service
+from app.services.task_center.service import create_and_start_search_join_group_task, create_search_join_group_task, update_task_settings
 
 
 @pytest.fixture
@@ -62,11 +63,36 @@ def _payload(**overrides) -> SearchJoinGroupTaskCreate:
 
 @pytest.mark.no_postgres
 def test_search_join_group_create_persists_fixed_mode_and_keyword_hashes(session: Session) -> None:
-    task = create_search_join_group_task(session, 1, _payload(), actor="tester")
+    payload = _payload(
+        pacing_config={
+            "mode": "curve",
+            "curve_type": "steady",
+            "max_actions_per_hour": 4,
+            "max_actions_per_day": 6,
+            "per_account_total_action_limit": 3,
+            "per_account_daily_action_limit": 1,
+            "per_account_cooldown_days": 2,
+            "per_keyword_account_daily_limit": 1,
+            "hourly_skip_probability": 0.25,
+            "daily_skip_probability": 0.5,
+            "skip_probability_per_action": 0.1,
+            "hourly_jitter_percent": 30,
+            "daily_jitter_percent": 20,
+        }
+    )
+    task = create_search_join_group_task(session, 1, payload, actor="tester")
 
     assert task.type == "search_join_group"
     assert task.type_config["execution_mode"] == "mtproto_userbot"
     assert task.type_config["target_operation_target_id"] == 17
+    assert task.pacing_config["per_account_daily_action_limit"] == 1
+    assert task.pacing_config["per_account_cooldown_days"] == 2
+    assert task.pacing_config["per_keyword_account_daily_limit"] == 1
+    assert task.pacing_config["hourly_skip_probability"] == 0.25
+    assert task.pacing_config["daily_skip_probability"] == 0.5
+    assert task.pacing_config["skip_probability_per_action"] == 0.1
+    assert task.pacing_config["hourly_jitter_percent"] == 30
+    assert task.pacing_config["daily_jitter_percent"] == 20
     keyword_hashes = task.type_config["keyword_hashes"]
     keyword_ciphertexts = task.type_config["keyword_text_ciphertexts"]
     assert len(keyword_hashes) == 2
@@ -98,9 +124,71 @@ def test_search_join_group_rejects_invalid_keyword_hashes() -> None:
 
 
 @pytest.mark.no_postgres
+def test_search_join_group_rejects_conflicting_legacy_jitter() -> None:
+    with pytest.raises(ValidationError, match="jitter_percent 与 hourly_jitter_percent 冲突"):
+        _payload(pacing_config={"mode": "curve", "jitter_percent": 10, "hourly_jitter_percent": 30})
+
+
+@pytest.mark.no_postgres
 def test_search_join_group_create_and_start_runs_precheck_and_starts(session: Session) -> None:
     task = create_and_start_search_join_group_task(session, 1, _payload(), actor="tester")
 
     assert task.status == "running"
     assert task.stats["started_at"]
     assert task.type_config["search_visibility_attribution"]["organic_search_join"] is True
+
+
+@pytest.mark.no_postgres
+def test_search_join_group_settings_update_accepts_pacing_but_other_tasks_reject_it(session: Session) -> None:
+    task = create_search_join_group_task(session, 1, _payload(), actor="tester")
+
+    updated = update_task_settings(
+        session,
+        1,
+        task.id,
+        TaskSettingsUpdate(name=task.name, pacing_config={"mode": "template", "per_account_daily_action_limit": 0}),
+        actor="tester",
+    )
+
+    assert updated.pacing_config["per_account_daily_action_limit"] == 0
+
+    other = Task(tenant_id=1, name="普通任务", type="channel_like", status="running", type_config={}, stats={})
+    session.add(other)
+    session.commit()
+    with pytest.raises(ValueError, match="search_join_group 专属 pacing 字段不能用于其他任务类型"):
+        update_task_settings(
+            session,
+            1,
+            other.id,
+            TaskSettingsUpdate(name=other.name, pacing_config={"mode": "template", "per_account_daily_action_limit": 0}),
+            actor="tester",
+        )
+
+
+@pytest.mark.no_postgres
+def test_search_join_group_config_update_rolls_back_type_config_when_pacing_fails(session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    task = create_search_join_group_task(session, 1, _payload(), actor="tester")
+    original_region = task.type_config["business_region"]
+
+    def fail_pacing(_payload):
+        raise RuntimeError("pacing boom")
+
+    monkeypatch.setattr(task_service, "pacing_config_payload", fail_pacing)
+    with pytest.raises(RuntimeError, match="pacing boom"):
+        task_service.update_search_join_group_config(
+            session,
+            1,
+            task.id,
+            SearchJoinGroupTaskConfigUpdate(
+                target_operation_target_id=17,
+                search_bots=[{"username": "jisou", "display_name": "极搜"}],
+                keyword_hashes=["a" * 64],
+                business_region="CN-ZZ",
+                pacing_config={"mode": "template", "per_account_daily_action_limit": 2},
+            ),
+            actor="tester",
+        )
+
+    session.rollback()
+    session.refresh(task)
+    assert task.type_config["business_region"] == original_region

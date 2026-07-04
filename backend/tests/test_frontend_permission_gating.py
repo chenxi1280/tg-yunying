@@ -195,6 +195,14 @@ def test_login_flow_has_no_unimplemented_self_registration_path():
     assert "AuthRegisterRequest" not in backend_schema
 
 
+def test_login_form_submits_with_enter_key():
+    source = (PROJECT_ROOT / "frontend/src/app/AppShell.tsx").read_text()
+    login_block = source[source.index("if (!token) {"):source.index("\n\n  return (", source.index("if (!token) {"))]
+
+    assert '<Form layout="vertical" onFinish={login}>' in login_block
+    assert '<Button type="primary" htmlType="submit" block' in login_block
+
+
 def test_login_captcha_errors_surface_backend_detail_but_password_stays_generic():
     source = (PROJECT_ROOT / "frontend/src/app/context/authActions.ts").read_text()
     refresh_block = source[source.index("async function refreshCaptchaChallenge"):source.index("\n  async function requestCaptchaToken")]
@@ -1341,6 +1349,34 @@ def test_task_center_edit_ai_limits_can_calculate_and_apply_recommendations():
     assert "一键应用推荐" in source
 
 
+def test_search_join_group_frontend_exposes_pacing_controls_and_details():
+    wizard = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterWizardSections.tsx").read_text()
+    view = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
+    view_model = (PROJECT_ROOT / "frontend/src/app/views/taskCenterViewModel.ts").read_text()
+    detail = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterDetailModal.tsx").read_text()
+
+    for field in [
+        "per_account_total_action_limit",
+        "per_account_daily_action_limit",
+        "per_account_cooldown_days",
+        "per_keyword_account_daily_limit",
+        "max_actions_per_day",
+        "hourly_skip_probability",
+        "daily_skip_probability",
+        "skip_probability_per_action",
+        "hourly_jitter_percent",
+        "daily_jitter_percent",
+    ]:
+        assert f'name="{field}"' in wizard
+        assert field in view
+        assert f"'{field}'" in view_model
+    assert "实时 pacing / random decision 不调用 LLM" in wizard
+    assert "填 0 表示不设上限" in wizard
+    assert "pacing_limits" in detail
+    assert "账号限制命中" in detail
+    assert "Pacing 跳过" in detail
+
+
 def test_task_center_membership_items_support_server_side_filters():
     source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
     modal = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterDetailModal.tsx").read_text()
@@ -1852,7 +1888,7 @@ def test_group_ai_quality_funnel_labels_profile_low_match():
     assert "dataIndex: 'detail'" in source
 
 
-def test_task_center_runtime_form_exposes_hour_limit_without_task_daily_cap():
+def test_task_center_runtime_form_exposes_hour_limit_without_generic_task_daily_cap():
     wizard = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterWizardSections.tsx").read_text()
     view_model = (PROJECT_ROOT / "frontend/src/app/views/taskCenterViewModel.ts").read_text()
 
@@ -1860,7 +1896,8 @@ def test_task_center_runtime_form_exposes_hour_limit_without_task_daily_cap():
     assert 'placeholder="预检后按账号数推荐"' in wizard
     assert 'name="max_actions_per_day" label="每日上限"' not in wizard
     assert "每日上限 ${values.max_actions_per_day" not in wizard
-    assert "'max_actions_per_day'" not in view_model
+    assert "if (taskType === 'search_join_group')" in view_model
+    assert "'max_actions_per_day'" in view_model
 
 
 def test_target_profile_is_top_level_page_not_target_detail_governance():

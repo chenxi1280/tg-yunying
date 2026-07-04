@@ -145,6 +145,7 @@ from .config_fields import (
     COMMON_SETTINGS_FIELDS,
     GROUP_AI_LEGACY_RUNTIME_FIELDS,
     GROUP_RELAY_LEGACY_CREATE_FIELDS,
+    SEARCH_JOIN_PACING_FIELDS,
     TYPE_SETTINGS_FIELDS,
 )
 from .hard_hourly import current_progress as hard_hourly_current_progress, enabled as hard_hourly_enabled, requires_planning as hard_hourly_requires_planning
@@ -446,7 +447,7 @@ def update_task(session: Session, tenant_id: int, task_id: str, payload: TaskUpd
             setattr(task, field, raw_data[field])
     for field in ["account_config", "pacing_config", "failure_policy"]:
         if field in data and data[field] is not None:
-            setattr(task, field, pacing_config_payload(raw_data[field]) if field == "pacing_config" else data[field])
+            setattr(task, field, _pacing_payload_for_task(task, raw_data[field]) if field == "pacing_config" else data[field])
     task.updated_at = _now()
     audit(session, tenant_id=tenant_id, actor=actor, action="更新任务中心任务", target_type="task", target_id=task.id)
     session.commit()
@@ -470,7 +471,7 @@ def update_task_settings(session: Session, tenant_id: int, task_id: str, payload
             setattr(task, field, raw_data[field])
     for field in ["account_config", "pacing_config", "failure_policy"]:
         if field in data and data[field] is not None:
-            setattr(task, field, pacing_config_payload(raw_data[field]) if field == "pacing_config" else data[field])
+            setattr(task, field, _pacing_payload_for_task(task, raw_data[field]) if field == "pacing_config" else data[field])
     if task.type == "group_ai_chat" and "pacing_config" in data and not type_updates:
         next_config = dict(task.type_config or {})
         for field in GROUP_AI_LEGACY_RUNTIME_FIELDS:
@@ -580,7 +581,15 @@ def update_channel_comment_config(session: Session, tenant_id: int, task_id: str
 
 
 def update_search_join_group_config(session: Session, tenant_id: int, task_id: str, payload: SearchJoinGroupTaskConfigUpdate, actor: str) -> Task:
-    return _update_type_config(session, tenant_id, task_id, "search_join_group", payload, actor)
+    update_data = payload.model_dump(mode="json", exclude_unset=True)
+    pacing_data = update_data.pop("pacing_config", None)
+    task = _apply_type_config_data(session, tenant_id, task_id, "search_join_group", update_data, actor)
+    if pacing_data is not None:
+        task.pacing_config = pacing_config_payload(pacing_data)
+        task.updated_at = _now()
+    session.commit()
+    session.refresh(task)
+    return task
 
 
 def start_task(session: Session, tenant_id: int, task_id: str, actor: str) -> Task:
@@ -1701,10 +1710,21 @@ def _mark_task_started(task: Task) -> None:
 
 
 def _update_type_config(session: Session, tenant_id: int, task_id: str, expected_type: str, payload, actor: str) -> Task:
+    update_data = payload.model_dump(mode="json", exclude_unset=True)
+    return _update_type_config_data(session, tenant_id, task_id, expected_type, update_data, actor)
+
+
+def _update_type_config_data(session: Session, tenant_id: int, task_id: str, expected_type: str, update_data: dict[str, Any], actor: str) -> Task:
+    task = _apply_type_config_data(session, tenant_id, task_id, expected_type, update_data, actor)
+    session.commit()
+    session.refresh(task)
+    return task
+
+
+def _apply_type_config_data(session: Session, tenant_id: int, task_id: str, expected_type: str, update_data: dict[str, Any], actor: str) -> Task:
     task = _get_task(session, tenant_id, task_id)
     if task.type != expected_type:
         raise ValueError(f"任务类型不匹配，当前任务是 {task.type}")
-    update_data = payload.model_dump(mode="json", exclude_unset=True)
     next_config = {**(task.type_config or {}), **update_data}
     next_config = normalize_operation_target_references(session, tenant_id, expected_type, next_config)
     next_config = apply_default_rule_binding(session, tenant_id, task_type=expected_type, config=next_config)
@@ -1720,9 +1740,14 @@ def _update_type_config(session: Session, tenant_id: int, task_id: str, expected
     task.last_error = ""
     task.updated_at = _now()
     audit(session, tenant_id=tenant_id, actor=actor, action="更新任务类型配置", target_type="task", target_id=task.id, detail=expected_type)
-    session.commit()
-    session.refresh(task)
     return task
+
+
+def _pacing_payload_for_task(task: Task, pacing_config: Any) -> dict[str, Any]:
+    data = pacing_config_payload(pacing_config)
+    if task.type != "search_join_group" and SEARCH_JOIN_PACING_FIELDS.intersection(data):
+        raise ValueError("search_join_group 专属 pacing 字段不能用于其他任务类型")
+    return data
 
 
 def _get_task(session: Session, tenant_id: int, task_id: str) -> Task:

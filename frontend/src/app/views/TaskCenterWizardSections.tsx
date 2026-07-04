@@ -295,7 +295,7 @@ export function WizardTypeConfig({
         <Alert
           type="warning"
           showIcon
-          message="搜索目标群点击任务首版固定 mtproto_userbot；缺少真实协议样本、代理出口或客户端元数据时 fail closed，不会假成功。已在目标群内的账号仍会执行搜索和目标确认。"
+          message="搜索目标群点击任务首版固定 mtproto_userbot；实时 pacing / random decision 不调用 LLM。缺少真实协议样本、代理出口或客户端元数据时 fail closed，不会假成功。已在目标群内的账号仍会执行搜索和目标确认。"
         />
         <div className="form-grid">
           <Form.Item name="search_bots" label="搜索机器人" rules={[{ required: true }]}>
@@ -317,6 +317,36 @@ export function WizardTypeConfig({
           <Form.Item name="jisou_ecosystem_status" label="极搜生态"><Select options={[{ value: 'bot_joined', label: '已收录/机器人入驻' }, { value: 'flow_alliance', label: '流量联盟' }, { value: 'unknown', label: '未知' }]} /></Form.Item>
           <Form.Item name="paid_keyword_ad_status" label="付费关键词广告"><Select options={[{ value: 'none', label: '无' }, { value: 'active', label: '投放中' }, { value: 'expired', label: '已过期' }, { value: 'unknown', label: '未知' }]} /></Form.Item>
         </div>
+        <Collapse
+          ghost
+          items={[
+            {
+              key: 'search-join-pacing',
+              label: '搜索节奏与账号上限',
+              children: (
+                <Space direction="vertical" style={{ width: '100%' }}>
+                  <Alert
+                    type="info"
+                    showIcon
+                    message="账号每日上限、任务每日总上限填 0 表示不设上限，保存前请确认账号风险。"
+                  />
+                  <div className="form-grid">
+                    <Form.Item name="per_account_total_action_limit" label="单账号总上限"><InputNumber min={0} max={100000} precision={0} /></Form.Item>
+                    <Form.Item name="per_account_daily_action_limit" label="单账号每日上限"><InputNumber min={0} max={1000} precision={0} /></Form.Item>
+                    <Form.Item name="per_account_cooldown_days" label="账号间隔天数"><InputNumber min={0} max={365} precision={0} /></Form.Item>
+                    <Form.Item name="per_keyword_account_daily_limit" label="同关键词每日上限"><InputNumber min={0} max={1000} precision={0} /></Form.Item>
+                    <Form.Item name="max_actions_per_day" label="任务每日总上限"><InputNumber min={0} max={100000} precision={0} /></Form.Item>
+                    <Form.Item name="hourly_skip_probability" label="小时跳过概率"><InputNumber min={0} max={1} step={0.01} /></Form.Item>
+                    <Form.Item name="daily_skip_probability" label="天跳过概率"><InputNumber min={0} max={1} step={0.01} /></Form.Item>
+                    <Form.Item name="skip_probability_per_action" label="单次跳过概率"><InputNumber min={0} max={1} step={0.01} /></Form.Item>
+                    <Form.Item name="hourly_jitter_percent" label="小时抖动百分比"><InputNumber min={0} max={100} precision={0} /></Form.Item>
+                    <Form.Item name="daily_jitter_percent" label="天抖动百分比"><InputNumber min={0} max={100} precision={0} /></Form.Item>
+                  </div>
+                </Space>
+              ),
+            },
+          ]}
+        />
       </Space>
     );
   }

@@ -519,7 +519,7 @@ function AppShell() {
               <span>单运营空间的 TG 账号运营中心</span>
             </div>
           </div>
-          <Form layout="vertical">
+          <Form layout="vertical" onFinish={login}>
             <Form.Item label="管理员账号">
               <Input value={loginEmail} onChange={(event) => setLoginEmail(event.target.value)} />
             </Form.Item>
@@ -527,7 +527,7 @@ function AppShell() {
               <Input.Password value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} />
             </Form.Item>
             {captchaControl}
-            <Button type="primary" block onClick={login} loading={isActionPending('auth:login') || captchaLoading} disabled={!loginReady}>登录运营中心</Button>
+            <Button type="primary" htmlType="submit" block loading={isActionPending('auth:login') || captchaLoading} disabled={!loginReady}>登录运营中心</Button>
           </Form>
         </Card>
       </div>

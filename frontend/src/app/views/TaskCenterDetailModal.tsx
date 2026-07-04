@@ -44,10 +44,15 @@ function searchJoinDetailItems(detail: TaskCenterDetail) {
   const config = detail.task.type_config || {};
   const stats = detail.task.stats?.search_join_stats || {};
   const hourly = stats.hourly_execution || {};
+  const pacingLimits = stats.pacing_limits || {};
   return [
     { key: 'success', label: '累计目标点击', children: detail.task.stats?.success_count ?? 0 },
     { key: 'ranking', label: '排名观察', children: hourly.recent_target_positions?.length ? `${hourly.recent_target_positions.length} 条` : '独立快照，不计入 action success' },
     { key: 'hourly', label: '小时执行', children: `${hourly.status || '-'} / 缺口 ${hourly.deficit ?? 0} / 未来 ${hourly.future_open_count ?? 0}` },
+    { key: 'daily-limit', label: '本日已规划', children: `${pacingLimits.task_daily_action_count ?? 0} / 上限 ${detail.task.pacing_config?.max_actions_per_day ?? '-'}` },
+    { key: 'account-limit', label: '账号限制命中', children: `日 ${pacingLimits.per_account_daily_limit_reached ?? 0} / 总 ${pacingLimits.per_account_total_limit_reached ?? 0} / 冷却 ${pacingLimits.per_account_cooldown_days_active ?? 0}` },
+    { key: 'keyword-limit', label: '关键词限制命中', children: pacingLimits.per_keyword_account_daily_limit_reached ?? 0 },
+    { key: 'pacing-skip', label: 'Pacing 跳过', children: `天 ${pacingLimits.daily_skipped_by_pacing ?? 0} / 小时 ${pacingLimits.hourly_skipped_by_pacing ?? 0} / 最近 ${pacingLimits.last_limit_reason || '-'}` },
     { key: 'link', label: '联动状态', children: stats.linked_task_status || '等待 membership_observed 后进入 ready pool 判定' },
     { key: 'relevance', label: '目标资料相关性', children: config.target_relevance_score ?? '-' },
     { key: 'health', label: '内容健康', children: config.target_content_health || '-' },

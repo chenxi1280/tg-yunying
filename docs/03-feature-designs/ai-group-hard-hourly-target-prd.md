@@ -15,7 +15,7 @@
 - 硬目标不能绕过账号安全、Telegram 明确限制、内容风控、目标权限和执行失败事实。
 - 任务中心和运营数据必须能区分“自然节奏未到”和“硬目标未达成”。
 - 线上指定的 3 个 AI 活跃群必须按同一条端到端链路验收：入群完成、验证完成、`can_send` 判定、MiMo/Mino draft 成功、发送动作被 dispatcher 消化、硬小时目标达成，任一阶段未完成都不能写成已达标。
-- AI 活跃群硬目标场景的文本 draft 和图片验证码识别统一使用小米 MiMo/Mino 健康供应商；供应商不可用、返回空内容、返回非 JSON draft 或图片识别失败时，必须暴露为 AI / 验证阻塞，不允许静默换成 mock、模板或其他供应商伪造成功。
+- AI 活跃群硬目标场景的文本 draft 使用小米 MiMo/Mino 健康供应商；图片验证码识别使用健康的多模态视觉供应商（MiMo/Mino 或 MiniMax）。供应商不可用、返回空内容、返回非 JSON draft 或图片识别失败时，必须暴露为 AI / 验证阻塞，不允许静默换成 mock、模板或不具备对应能力的供应商伪造成功。
 
 ## 3. 非目标
 
@@ -473,7 +473,7 @@ AI 活跃群任务卡片增加硬目标摘要：
 | `backend/app/services/task_center/precheck.py` | 返回硬目标容量预检摘要 |
 | `backend/app/services/task_center/executors/group_ai_chat.py` | 计算当前小时缺口、强推生成、压缩计划时间、写 action 标记 |
 | `backend/app/services/task_center/channel_membership.py` | AI 活跃群目标先完成入群、验证、关联频道关注和 `can_send` 复检 |
-| `backend/app/services/membership_challenges.py` | 图片验证码使用小米 MiMo/Mino，记录读取、识别、提交和复检结果 |
+| `backend/app/services/membership_challenges.py` | 图片验证码使用健康的多模态视觉供应商（MiMo/Mino 或 MiniMax），记录读取、识别、提交和复检结果 |
 | `backend/app/services/task_center/pacing.py` | 支持硬目标剩余窗口内的计划时间分配 |
 | `backend/app/services/task_center/stats.py` | 统一刷新当前小时和最近 24 小时硬目标 stats |
 | `backend/app/services/task_center/service.py` | 列表、详情、stats、reset、resume 使用同一统计口径 |
