@@ -1747,6 +1747,9 @@ def _apply_type_config_data(session: Session, tenant_id: int, task_id: str, expe
 def _pacing_payload_for_task(task: Task, pacing_config: Any) -> dict[str, Any]:
     if task.type != "search_join_group":
         raw_data = pacing_config.model_dump(mode="json", exclude_unset=True) if hasattr(pacing_config, "model_dump") else pacing_config
+        raw_data = dict(raw_data or {})
+        if raw_data.get("hourly_jitter_percent") == raw_data.get("jitter_percent"):
+            raw_data.pop("hourly_jitter_percent", None)
         if (SEARCH_JOIN_PACING_FIELDS - {"max_actions_per_day"}).intersection(raw_data or {}):
             raise ValueError("search_join_group 专属 pacing 字段不能用于其他任务类型")
         return pacing_config_payload(PacingConfig.model_validate(raw_data))

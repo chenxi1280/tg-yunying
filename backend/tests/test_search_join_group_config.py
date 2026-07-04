@@ -160,7 +160,7 @@ def test_search_join_group_settings_update_accepts_pacing_but_other_tasks_reject
         session,
         1,
         other.id,
-        TaskSettingsUpdate(name=other.name, pacing_config={"mode": "template", "max_actions_per_day": 10}),
+        TaskSettingsUpdate(name=other.name, pacing_config={"mode": "template", "jitter_percent": 0, "max_actions_per_day": 10}),
         actor="tester",
     )
 
