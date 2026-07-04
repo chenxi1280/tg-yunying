@@ -1393,7 +1393,13 @@ def test_search_join_group_frontend_exposes_pacing_controls_and_details():
         assert f"'{field}'" in view_model
     assert "实时 pacing / random decision 不调用 LLM" in wizard
     assert "填 0 表示不设上限" in wizard
+    assert "membership_observed" in wizard
+    assert "target_not_in_results" in wizard
+    assert "pages_exhausted=true" in wizard
+    assert "停止整个任务" in wizard
     assert "pacing_limits" in detail
+    assert "membership_observed 表示" in detail
+    assert "最多翻 70 页" in detail
     assert "账号限制命中" in detail
     assert "Pacing 跳过" in detail
 

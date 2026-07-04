@@ -48,6 +48,7 @@ def patch_account_environment_binding(
     if binding is None:
         binding = _new_binding(tenant_id, account_id, payload, authorization)
         session.add(binding)
+    _validate_fingerprint_uniqueness(session, binding=binding, payload=payload)
     _apply_binding(session, binding, payload, authorization, proxy)
     _record_combo(session, binding)
     session.flush()
@@ -285,6 +286,53 @@ def _new_binding(
         developer_app_api_id_snapshot=_api_id_snapshot(authorization, authorization.developer_app),
         authorization_id=payload.authorization_id,
         session_role=payload.session_role,
+    )
+
+
+def _validate_fingerprint_uniqueness(
+    session: Session,
+    *,
+    binding: AccountEnvironmentBinding,
+    payload: AccountEnvironmentBindingPatch,
+) -> None:
+    for active in _active_bindings_for_account_app(session, binding):
+        if _same_authorization_slot(active, binding):
+            continue
+        if active.client_identity_key == payload.client_identity_key:
+            raise ValueError("client_identity_key_reused")
+        if _same_device_combo(active, payload):
+            raise ValueError("client_metadata_combo_reused")
+
+
+def _active_bindings_for_account_app(
+    session: Session,
+    binding: AccountEnvironmentBinding,
+) -> list[AccountEnvironmentBinding]:
+    stmt = select(AccountEnvironmentBinding).where(
+        AccountEnvironmentBinding.tenant_id == binding.tenant_id,
+        AccountEnvironmentBinding.account_id == binding.account_id,
+        AccountEnvironmentBinding.developer_app_id == binding.developer_app_id,
+        AccountEnvironmentBinding.status == "active",
+        AccountEnvironmentBinding.unbound_at.is_(None),
+    )
+    return list(session.scalars(stmt).all())
+
+
+def _same_authorization_slot(left: AccountEnvironmentBinding, right: AccountEnvironmentBinding) -> bool:
+    return left.authorization_id == right.authorization_id and left.session_role == right.session_role
+
+
+def _same_device_combo(active: AccountEnvironmentBinding, payload: AccountEnvironmentBindingPatch) -> bool:
+    return (
+        active.device_model,
+        active.system_version,
+        active.app_version,
+        active.platform,
+    ) == (
+        payload.device_model,
+        payload.system_version,
+        payload.app_version,
+        payload.platform,
     )
 
 

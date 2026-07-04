@@ -44,6 +44,16 @@ function observedFingerprintText(row: AccountEnvironmentBinding) {
   return [observed, missing].filter(Boolean).join('；') || '-';
 }
 
+function accountEnvironmentRowKey(row: AccountEnvironmentBinding) {
+  return [
+    row.account_id,
+    row.developer_app_id || '-',
+    row.developer_app_api_id_snapshot || 0,
+    row.authorization_id || '-',
+    row.session_role,
+  ].join(':');
+}
+
 function draftFromRow(row: AccountEnvironmentBinding): EnvironmentDraft {
   return {
     developer_app_id: row.developer_app_id,
@@ -110,7 +120,7 @@ export default function AccountMasksView({ currentUser }: Props) {
         method: 'PATCH',
         body: JSON.stringify(draft),
       });
-      setRows((current) => current.map((row) => row.authorization_id === updated.authorization_id ? updated : row));
+      setRows((current) => current.map((row) => accountEnvironmentRowKey(row) === accountEnvironmentRowKey(updated) ? updated : row));
       setEditing(null);
       setDraft(null);
     } catch (saveError) {
@@ -148,7 +158,7 @@ export default function AccountMasksView({ currentUser }: Props) {
         <Button disabled={!canManageEnvironment} onClick={() => void refreshObservations()} loading={loading}>刷新远端观测</Button>
       </Space>
       <Table
-        rowKey={(row) => `${row.account_id}:${row.authorization_id}:${row.session_role}`}
+        rowKey={(row) => accountEnvironmentRowKey(row)}
         size="small"
         loading={loading}
         dataSource={rows}
@@ -156,6 +166,7 @@ export default function AccountMasksView({ currentUser }: Props) {
           { title: '账号', key: 'account', render: (_, row) => `${row.account_display_name}${row.account_username ? ` @${row.account_username}` : ''}` },
           { title: '应用', key: 'app', render: (_, row) => row.developer_app_name || `App #${row.developer_app_id || '-'}` },
           { title: 'api_id', dataIndex: 'developer_app_api_id_snapshot' },
+          { title: '授权ID', dataIndex: 'authorization_id' },
           { title: '授权槽位', dataIndex: 'session_role' },
           { title: '代理', key: 'proxy', render: (_, row) => row.proxy_name || (row.proxy_id ? `Proxy #${row.proxy_id}` : '-') },
           { title: '配置指纹', key: 'device', render: (_, row) => [row.device_model, row.system_version, row.app_version].filter(Boolean).join(' / ') || '-' },
@@ -182,9 +193,10 @@ export default function AccountMasksView({ currentUser }: Props) {
           {
             key: 'audit',
             label: '异常与审计',
-            children: <Table rowKey={(row) => `${row.account_id}:${row.authorization_id}`} size="small" dataSource={rows.filter((row) => row.consistency_status !== 'observed_matched')} columns={[
+            children: <Table rowKey={(row) => accountEnvironmentRowKey(row)} size="small" dataSource={rows.filter((row) => row.consistency_status !== 'observed_matched')} columns={[
               { title: '账号', dataIndex: 'account_display_name' },
               { title: '应用', dataIndex: 'developer_app_name' },
+              { title: '授权ID', dataIndex: 'authorization_id' },
               { title: '授权槽位', dataIndex: 'session_role' },
               { title: '配置指纹', key: 'configured', render: (_, row) => [row.device_model, row.system_version, row.app_version].filter(Boolean).join(' / ') || '-' },
               { title: '远端观测', key: 'observed', render: (_, row) => [row.observed_device_model, row.observed_system_version, row.observed_app_version].filter(Boolean).join(' / ') || '-' },
@@ -206,6 +218,7 @@ export default function AccountMasksView({ currentUser }: Props) {
         {editing && <Descriptions size="small" column={1} items={[
           { key: 'account', label: '账号', children: editing.account_display_name },
           { key: 'app', label: '应用', children: editing.developer_app_name || `App #${editing.developer_app_id || '-'}` },
+          { key: 'authorization', label: '授权ID', children: editing.authorization_id || '-' },
           { key: 'role', label: '授权槽位', children: editing.session_role },
           { key: 'effect', label: '生效边界', children: editing.effect_boundary },
         ]} />}

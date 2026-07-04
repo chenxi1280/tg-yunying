@@ -4,6 +4,7 @@ import base64
 import binascii
 import json
 import re
+import socket
 import urllib.parse
 import urllib.request
 from typing import Any, Callable
@@ -20,8 +21,10 @@ from app.security import decrypt_secret, encrypt_secret
 from app.services._common import _now, audit
 
 MAX_SUBSCRIPTION_BYTES = 5 * 1024 * 1024
+NODE_HEALTH_TIMEOUT_SECONDS = 3
 NODE_SKIP_RE = re.compile(r"(剩余|套餐|到期|官网|流量|expire|traffic)", re.IGNORECASE)
 SubscriptionFetcher = Callable[[str], str]
+NodeHealthChecker = Callable[[ProxyAirportNode], tuple[bool, str]]
 
 
 def mask_subscription_url(url: str) -> str:
@@ -73,7 +76,7 @@ def update_proxy_airport_subscription(
 
 
 def mark_proxy_airport_subscription_tested(session: Session, *, tenant_id: int, actor: str) -> ProxyAirportSubscriptionOut:
-    return sync_proxy_airport_subscription(session, tenant_id=tenant_id, actor=actor)
+    return sync_proxy_airport_subscription(session, tenant_id=tenant_id, actor=actor, health_checker=check_proxy_airport_node)
 
 
 def sync_proxy_airport_subscription(
@@ -82,6 +85,7 @@ def sync_proxy_airport_subscription(
     tenant_id: int,
     actor: str,
     fetcher: SubscriptionFetcher | None = None,
+    health_checker: NodeHealthChecker | None = None,
 ) -> ProxyAirportSubscriptionOut:
     row = _active_subscription(session, tenant_id)
     if row is None or not row.subscription_url_ciphertext:
@@ -90,9 +94,13 @@ def sync_proxy_airport_subscription(
         raw = (fetcher or fetch_subscription)(_decrypt_subscription_url(row))
         nodes = parsed_proxy_nodes(raw)
         _replace_subscription_nodes(session, row, nodes)
+        session.flush()
+        node_rows = _subscription_nodes(session, row)
+        if health_checker is not None:
+            _apply_node_health_checks(node_rows, health_checker)
         row.sync_status = "synced"
-        row.node_count = len(nodes)
-        row.healthy_node_count = 0
+        row.node_count = len(node_rows)
+        row.healthy_node_count = _healthy_node_count(node_rows)
         row.last_error = ""
         row.last_sync_at = _now()
         row.updated_at = _now()
@@ -113,6 +121,14 @@ def sync_proxy_airport_subscription(
         detail=f"nodes={row.node_count}; healthy={row.healthy_node_count}",
     )
     return _subscription_out(row)
+
+
+def check_proxy_airport_node(node: ProxyAirportNode) -> tuple[bool, str]:
+    try:
+        with socket.create_connection((node.proxy_host, node.proxy_port), timeout=NODE_HEALTH_TIMEOUT_SECONDS):
+            return True, ""
+    except OSError as exc:
+        return False, exc.__class__.__name__
 
 
 def fetch_subscription(url: str) -> str:
@@ -265,6 +281,26 @@ def _replace_subscription_nodes(session: Session, row: ProxyAirportSubscription,
         )
 
 
+def _subscription_nodes(session: Session, row: ProxyAirportSubscription) -> list[ProxyAirportNode]:
+    stmt = select(ProxyAirportNode).where(
+        ProxyAirportNode.tenant_id == row.tenant_id,
+        ProxyAirportNode.subscription_id == row.id,
+    )
+    return list(session.scalars(stmt.order_by(ProxyAirportNode.node_key)).all())
+
+
+def _apply_node_health_checks(nodes: list[ProxyAirportNode], health_checker: NodeHealthChecker) -> None:
+    for node in nodes:
+        healthy, error = health_checker(node)
+        node.status = "healthy" if healthy else "unhealthy"
+        node.last_error = "" if healthy else str(error or "proxy_airport_node_unhealthy")[:200]
+        node.updated_at = _now()
+
+
+def _healthy_node_count(nodes: list[ProxyAirportNode]) -> int:
+    return sum(1 for node in nodes if node.status == "healthy")
+
+
 def _record_sync_failure(session: Session, row: ProxyAirportSubscription, actor: str, error: str) -> None:
     row.sync_status = "failed"
     row.node_count = 0
@@ -377,6 +413,7 @@ def _sanitize_key(raw: Any) -> str:
 __all__ = [
     "fetch_subscription",
     "get_proxy_airport_subscription",
+    "check_proxy_airport_node",
     "mark_proxy_airport_subscription_tested",
     "mask_subscription_url",
     "parsed_proxy_nodes",

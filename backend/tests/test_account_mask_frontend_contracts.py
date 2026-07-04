@@ -15,6 +15,7 @@ def test_account_login_modals_support_enter_submit():
 
     assert "onPressEnter={submitAccountLoginCode}" in app_modals
     assert "onPressEnter={submitAccountLoginPassword}" in app_modals
+    assert "onPressEnter={submitAccountCreate}" in app_modals
     assert "onPressEnter={verifyStandbyLogin}" in auth_panel
 
 
@@ -27,6 +28,10 @@ def test_clash_config_view_distinguishes_save_sync_and_health_states():
     assert "同步成功但健康节点为 0" in source
     assert "健康节点可用" in source
     assert "订阅节点已解析，健康探测完成前不可作为可用代理池" in source
+    assert "label: '同步节点数'" in source
+    assert "label: '健康节点数'" in source
+    assert "label: '最近同步时间'" in source
+    assert "config?.last_sync_at" in source
 
 
 def test_account_masks_view_shows_unobservable_missing_fields():
@@ -37,3 +42,13 @@ def test_account_masks_view_shows_unobservable_missing_fields():
     assert "function observedFingerprintText" in source
     assert "缺失字段：" in source
     assert "observed_missing_fields" in source
+
+
+def test_account_masks_view_keys_rows_by_full_authorization_slot_and_shows_authorization_id():
+    source = (PROJECT_ROOT / "frontend/src/app/views/AccountMasksView.tsx").read_text()
+
+    assert "rowKey={(row) => accountEnvironmentRowKey(row)}" in source
+    assert "function accountEnvironmentRowKey(row: AccountEnvironmentBinding)" in source
+    for field in ["account_id", "developer_app_id", "developer_app_api_id_snapshot", "authorization_id", "session_role"]:
+        assert f"row.{field}" in source
+    assert "{ title: '授权ID', dataIndex: 'authorization_id' }" in source

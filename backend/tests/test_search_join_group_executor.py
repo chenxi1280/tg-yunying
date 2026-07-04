@@ -94,11 +94,15 @@ def _bind_search_join_environment(session: Session, account_ids: list[int]) -> N
     session.add(TelegramDeveloperApp(id=51, app_name="TG运营", api_id=2040, api_hash_ciphertext="hash"))
     for index, account_id in enumerate(account_ids, start=1):
         proxy_id = 30 + index
+        auth_id = 500 + account_id
+        proxy_binding_id = 700 + account_id
+        identity = f"identity-{account_id}"
         session.add(AccountProxy(id=proxy_id, tenant_id=1, name=f"airport-clash-{index:03d}", port=7800 + index, status="healthy", alert_status="normal"))
         account = session.get(TgAccount, account_id)
         account.proxy_id = proxy_id
         session.add(
             TgAccountAuthorization(
+                id=auth_id,
                 tenant_id=1,
                 account_id=account_id,
                 role="primary",
@@ -111,6 +115,75 @@ def _bind_search_join_environment(session: Session, account_ids: list[int]) -> N
                 is_current=True,
             )
         )
+        session.add(
+            AccountProxyBinding(
+                id=proxy_binding_id,
+                tenant_id=1,
+                account_id=account_id,
+                developer_app_id=51,
+                developer_app_api_id_snapshot=2040,
+                authorization_id=auth_id,
+                session_role="primary",
+                proxy_id=proxy_id,
+            )
+        )
+        session.add(
+            AccountEnvironmentBinding(
+                id=f"env-{account_id}",
+                tenant_id=1,
+                account_id=account_id,
+                developer_app_id=51,
+                developer_app_api_id_snapshot=2040,
+                authorization_id=auth_id,
+                session_role="primary",
+                proxy_binding_id=proxy_binding_id,
+                proxy_id=proxy_id,
+                device_model=f"iPhone {index + 13}",
+                system_version="iOS 17.5",
+                app_version="10.14.1",
+                platform="ios",
+                client_identity_key=identity,
+            )
+        )
+        session.add(
+            FingerprintComboHistory(
+                tenant_id=1,
+                account_id=account_id,
+                developer_app_id=51,
+                developer_app_api_id_snapshot=2040,
+                authorization_id=auth_id,
+                session_role="primary",
+                combo_key=identity,
+                device_model=f"iPhone {index + 13}",
+                system_version="iOS 17.5",
+                app_version="10.14.1",
+                platform="ios",
+                usage_count=1,
+            )
+        )
+
+
+def _bind_search_join_authorization_without_environment(session: Session, account_id: int) -> None:
+    session.add(TelegramDeveloperApp(id=51, app_name="TG运营", api_id=2040, api_hash_ciphertext="hash"))
+    proxy_id = 31
+    session.add(AccountProxy(id=proxy_id, tenant_id=1, name="airport-clash-001", port=7801, status="healthy", alert_status="normal"))
+    account = session.get(TgAccount, account_id)
+    account.proxy_id = proxy_id
+    session.add(
+        TgAccountAuthorization(
+            id=500 + account_id,
+            tenant_id=1,
+            account_id=account_id,
+            role="primary",
+            developer_app_id=51,
+            developer_app_api_id_snapshot=2040,
+            proxy_id=proxy_id,
+            session_ciphertext=f"session-{account_id}",
+            status="active",
+            health_status="healthy",
+            is_current=True,
+        )
+    )
 
 
 @pytest.mark.no_postgres
@@ -201,7 +274,7 @@ def test_search_join_environment_keeps_fingerprint_and_slot_proxy_when_authoriza
 
 @pytest.mark.no_postgres
 def test_search_join_environment_reuses_legacy_binding_after_app_scope_added(session: Session) -> None:
-    _bind_search_join_environment(session, [101])
+    _bind_search_join_authorization_without_environment(session, 101)
     authorization = session.scalar(select(TgAccountAuthorization).where(TgAccountAuthorization.account_id == 101))
     legacy_binding = AccountEnvironmentBinding(
         tenant_id=1,
@@ -238,6 +311,20 @@ def test_search_join_planner_fails_closed_without_authorization_environment(sess
 
     assert build_task_plan(session, task) == 0
     assert session.scalar(select(Action).where(Action.task_id == task.id)) is None
+    assert task.stats["search_join_stats"]["hourly_execution"]["last_blockers"] == {"needs_client_metadata": 1}
+
+
+@pytest.mark.no_postgres
+def test_search_join_planner_does_not_auto_create_missing_environment_binding(session: Session) -> None:
+    _bind_search_join_authorization_without_environment(session, 101)
+    task = _task(type_config={"actions_per_round": 1, "hourly_min_successful_joins": 1})
+    session.add(task)
+    session.commit()
+
+    assert build_task_plan(session, task) == 0
+    assert session.scalar(select(Action).where(Action.task_id == task.id)) is None
+    assert session.query(AccountEnvironmentBinding).count() == 0
+    assert session.query(FingerprintComboHistory).count() == 0
     assert task.stats["search_join_stats"]["hourly_execution"]["last_blockers"] == {"needs_client_metadata": 1}
 
 

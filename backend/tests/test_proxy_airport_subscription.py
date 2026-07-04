@@ -76,6 +76,28 @@ def test_proxy_airport_subscription_sync_parses_nodes() -> None:
     assert decrypt_secret(nodes[0].node_config_ciphertext)
 
 
+def test_proxy_airport_subscription_sync_applies_health_probe_results() -> None:
+    with _session() as session:
+        _save_subscription(session)
+
+        synced = sync_proxy_airport_subscription(
+            session,
+            tenant_id=1,
+            actor="tester",
+            fetcher=lambda _url: "trojan://secret@example.com:443#hk-1\nanytls://pass@edge.example.net:8443#sg-1",
+            health_checker=lambda node: (node.node_name == "hk-1", "" if node.node_name == "hk-1" else "connect_timeout"),
+        )
+        nodes = list(session.scalars(select(ProxyAirportNode).order_by(ProxyAirportNode.node_name)))
+
+    assert synced.sync_status == "synced"
+    assert synced.node_count == 2
+    assert synced.healthy_node_count == 1
+    assert [(node.node_name, node.status, node.last_error) for node in nodes] == [
+        ("hk-1", "healthy", ""),
+        ("sg-1", "unhealthy", "connect_timeout"),
+    ]
+
+
 def test_proxy_airport_subscription_sync_records_visible_failure() -> None:
     with _session() as session:
         _save_subscription(session)

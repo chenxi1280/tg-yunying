@@ -99,15 +99,11 @@ def ensure_search_join_environment(session: Session, account: TgAccount) -> Sear
         return None
     binding = _existing_binding(session, account.id, authorization)
     if binding is None:
-        proxy = _healthy_proxy(session, authorization.proxy_id)
-        if proxy is None:
-            return None
-        binding = _create_binding(session, EnvironmentTarget(account, authorization, proxy))
-    else:
-        _hydrate_binding_app_scope(binding, authorization)
-        proxy = _healthy_proxy(session, binding.proxy_id)
-        if proxy is None:
-            return None
+        return None
+    _hydrate_binding_app_scope(binding, authorization)
+    proxy = _healthy_proxy(session, binding.proxy_id)
+    if proxy is None:
+        return None
     return _environment_from_binding(binding, proxy)
 
 

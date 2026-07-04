@@ -296,6 +296,7 @@ export function WizardTypeConfig({
           type="warning"
           showIcon
           message="搜索目标群点击任务首版固定 mtproto_userbot；实时 pacing / random decision 不调用 LLM。缺少真实协议样本、代理出口或客户端元数据时 fail closed，不会假成功。已在目标群内的账号仍会执行搜索和目标确认。"
+          description="membership_observed 表示完成搜索目标点击后观察到成员关系；最多翻 70 页，仍未命中时写 target_not_in_results / pages_exhausted=true 并停止整个任务。"
         />
         <div className="form-grid">
           <Form.Item name="search_bots" label="搜索机器人" rules={[{ required: true }]}>

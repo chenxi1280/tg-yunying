@@ -93,8 +93,10 @@ export default function ProxyAirportSubscriptionView({ canManageSystem = false }
           { key: 'preview', label: '订阅地址', children: config?.subscription_url_preview || '-' },
           { key: 'readiness', label: '代理池状态', children: proxyAirportReadinessLabel(config) },
           { key: 'sync', label: '同步状态', children: config?.sync_status || '-' },
-          { key: 'nodes', label: '节点', children: `${config?.healthy_node_count ?? 0}/${config?.node_count ?? 0}` },
-          { key: 'updated', label: '更新时间', children: config?.updated_at ? config.updated_at.replace('T', ' ').slice(0, 16) : '-' },
+          { key: 'nodes', label: '同步节点数', children: config?.node_count ?? 0 },
+          { key: 'healthy-nodes', label: '健康节点数', children: config?.healthy_node_count ?? 0 },
+          { key: 'last-sync', label: '最近同步时间', children: config?.last_sync_at ? config.last_sync_at.replace('T', ' ').slice(0, 16) : '-' },
+          { key: 'updated', label: '配置更新时间', children: config?.updated_at ? config.updated_at.replace('T', ' ').slice(0, 16) : '-' },
           { key: 'error', label: '最近错误', children: config?.last_error || '-' },
         ]}
       />

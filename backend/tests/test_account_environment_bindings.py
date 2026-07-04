@@ -77,6 +77,23 @@ def _seed_environment(session: Session) -> None:
     session.commit()
 
 
+def _add_standby_authorization(session: Session) -> None:
+    session.add(
+        TgAccountAuthorization(
+            id=202,
+            tenant_id=1,
+            account_id=101,
+            role="standby_1",
+            developer_app_id=11,
+            developer_app_api_id_snapshot=10011,
+            proxy_id=31,
+            session_ciphertext="enc-session-standby",
+            status="standby",
+        )
+    )
+    session.commit()
+
+
 def test_account_environment_projection_uses_developer_app_and_authorization_slot() -> None:
     with _session() as session:
         _seed_environment(session)
@@ -339,23 +356,110 @@ def test_patch_account_environment_binding_rebinds_proxy_without_active_slot_con
     assert proxy_bindings[1].unbound_at is None
 
 
+def test_patch_account_environment_binding_rejects_reused_client_identity_key() -> None:
+    with _session() as session:
+        _seed_environment(session)
+        _add_standby_authorization(session)
+        patch_account_environment_binding(
+            session,
+            tenant_id=1,
+            account_id=101,
+            payload=AccountEnvironmentBindingPatch(
+                developer_app_id=11,
+                authorization_id=201,
+                session_role="primary",
+                proxy_id=31,
+                device_model="iPhone 15 Pro",
+                system_version="iOS 17.5",
+                app_version="10.14.1",
+                platform="ios",
+                lang_code="zh",
+                system_lang_code="zh-CN",
+                lang_pack="",
+                region_code="CN",
+                client_identity_key="manual-client-1",
+            ),
+            actor="tester",
+        )
+
+        with pytest.raises(ValueError, match="client_identity_key_reused"):
+            patch_account_environment_binding(
+                session,
+                tenant_id=1,
+                account_id=101,
+                payload=AccountEnvironmentBindingPatch(
+                    developer_app_id=11,
+                    authorization_id=202,
+                    session_role="standby_1",
+                    proxy_id=31,
+                    device_model="Pixel 8",
+                    system_version="Android 14",
+                    app_version="10.14.1",
+                    platform="android",
+                    lang_code="zh",
+                    system_lang_code="zh-CN",
+                    lang_pack="",
+                    region_code="CN",
+                    client_identity_key="manual-client-1",
+                ),
+                actor="tester",
+            )
+
+
+def test_patch_account_environment_binding_rejects_reused_device_combo() -> None:
+    with _session() as session:
+        _seed_environment(session)
+        _add_standby_authorization(session)
+        patch_account_environment_binding(
+            session,
+            tenant_id=1,
+            account_id=101,
+            payload=AccountEnvironmentBindingPatch(
+                developer_app_id=11,
+                authorization_id=201,
+                session_role="primary",
+                proxy_id=31,
+                device_model="iPhone 15 Pro",
+                system_version="iOS 17.5",
+                app_version="10.14.1",
+                platform="ios",
+                lang_code="zh",
+                system_lang_code="zh-CN",
+                lang_pack="",
+                region_code="CN",
+                client_identity_key="manual-client-1",
+            ),
+            actor="tester",
+        )
+
+        with pytest.raises(ValueError, match="client_metadata_combo_reused"):
+            patch_account_environment_binding(
+                session,
+                tenant_id=1,
+                account_id=101,
+                payload=AccountEnvironmentBindingPatch(
+                    developer_app_id=11,
+                    authorization_id=202,
+                    session_role="standby_1",
+                    proxy_id=31,
+                    device_model="iPhone 15 Pro",
+                    system_version="iOS 17.5",
+                    app_version="10.14.1",
+                    platform="ios",
+                    lang_code="zh",
+                    system_lang_code="zh-CN",
+                    lang_pack="",
+                    region_code="CN",
+                    client_identity_key="manual-client-2",
+                ),
+                actor="tester",
+            )
+
+
 def test_account_environment_proxy_binding_is_authorization_slot_scoped() -> None:
     with _session() as session:
         _seed_environment(session)
-        session.add(
-            TgAccountAuthorization(
-                id=202,
-                tenant_id=1,
-                account_id=101,
-                role="standby_1",
-                developer_app_id=11,
-                developer_app_api_id_snapshot=10011,
-                proxy_id=31,
-                session_ciphertext="enc-session-standby",
-                status="standby",
-            )
-        )
-        session.commit()
+        _add_standby_authorization(session)
 
         for auth_id, role, identity in [(201, "primary", "manual-client-1"), (202, "standby_1", "manual-client-2")]:
             patch_account_environment_binding(
