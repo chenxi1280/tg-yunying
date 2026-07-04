@@ -1,6 +1,6 @@
 """add search join pacing decisions
 
-Revision ID: 0077_search_join_pacing_decisions
+Revision ID: 0077_search_join_pacing
 Revises: 0076_search_join_environment
 Create Date: 2026-07-04
 """
@@ -11,7 +11,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0077_search_join_pacing_decisions"
+revision = "0077_search_join_pacing"
 down_revision = "0076_search_join_environment"
 branch_labels = None
 depends_on = None
