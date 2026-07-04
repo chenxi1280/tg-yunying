@@ -98,3 +98,14 @@
 - decision: status=local_verified_pending_release；release_gate=pending；production_verification=unproven。
 - next_agent: qa
 - unresolved: 未真实投递 QA 长期线程；未执行 GitHub Actions release / production deploy。
+
+## 2026-07-04 账号面具环境与全局 Clash 配置 Development Complete（本地验证）
+
+- message_id: 2026-07-04-account-mask-environment-devcomplete-001
+- action: 按 PRD 补齐账号面具一级菜单、系统配置全局 Clash 订阅、账号 + TG 开发者应用 + 授权槽位代理/指纹绑定和 search_join 授权槽位运行时使用。
+- input: 2026-07-04-account-mask-environment-prd-001；用户确认“账号面具”一级菜单、系统配置只放一个全局 Clash 订阅、单账号代理/指纹按 TG 开发者应用 api_id/api_hash 和授权槽位绑定，指纹修改只影响下一次连接 / 重登 / 新 session 初始化。
+- output: 新增 `proxy_airport_subscriptions/proxy_airport_nodes` ORM 与迁移；新增账号环境 schema/service/API；系统配置新增 Clash 配置 Tab；账号面具新增账号代理、授权指纹、异常与审计 Tab；权限新增 `account_masks.view`、`account_environment.manage`，运营管理员模板同步；search_join planner payload 写入 developer app / authorization / metadata，dispatcher 按 payload 指定授权槽位 session 和开发者应用 credentials 执行，禁止回退账号主 session；账号环境列表从 `tg_account_authorization_snapshots` 投影远端观测指纹并区分 pending / matched / mismatch。
+- evidence: 先补 red tests 并确认失败：legacy binding 会重复生成、0078 迁移缺回填、Clash GET 无权限、远端观测字段缺失、dispatcher 使用账号主 session；修复后定向套件 189 passed；最终本地 gate `backend/.venv/bin/pytest -q -m no_postgres` -> 718 passed / 789 deselected；`npm --prefix frontend run build` passed；changed backend py_compile passed；`git diff --check` passed。
+- decision: status=local_verified_pending_release；subagent_supervision=done_with_P1_fixed；release_gate=pending；production_verification=unproven。
+- next_agent: qa
+- unresolved: 未执行 GitHub Actions release / production deploy；真实机场订阅拉取/节点同步和真实远端 Telegram 授权快照刷新仍需生产环境验证。

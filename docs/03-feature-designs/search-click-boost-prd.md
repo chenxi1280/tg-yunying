@@ -268,7 +268,7 @@ pending -> claiming -> executing -> success / failed / skipped
 
 ### 6.3 机场 Clash 自动代理池
 
-“机场”能力作为 `ProxyProvider` 的一种实现：`proxy_provider="airport_clash"`。系统保存机场订阅地址（加密字段），定时拉取并自动识别订阅格式，把可用节点标准化为代理节点，再按授权槽位随机分配并固定绑定。订阅输入必须同时支持：
+“机场”能力作为 `ProxyProvider` 的一种实现：`proxy_provider="airport_clash"`。系统设置提供“Clash 配置”Tab，只保存一个全局 Clash 订阅地址 / 接口配置（加密字段），定时拉取并自动识别订阅格式，把可用节点标准化为代理节点。系统设置不负责单账号代理分配；单账号代理绑定在“账号面具”一级菜单的“账号代理”Tab 完成，按 `account_id + developer_app_id/api_id + authorization_role` 选择并固定节点。订阅输入必须同时支持：
 
 - Base64 URI 列表：例如订阅返回体是单行 Base64，解码后每行是 `anytls://`、`trojan://`、`ss://`、`vmess://` 等节点 URI；套餐到期、剩余流量等伪节点必须过滤。
 - Clash YAML：包含 `proxies` / `proxy-groups` 的标准 Clash 配置。
@@ -283,6 +283,12 @@ pending -> claiming -> executing -> success / failed / skipped
 3. 账号授权槽位首次启用搜索入群时，从可用节点中随机选取一个符合 region / ISP / 健康阈值的节点，写入 `tg_account_proxy_bindings`；绑定后长期固定，不随每次 action 轮换。
 4. 同一账号的 `primary / standby_1 / standby_2` 必须分配不同节点；同一节点绑定授权槽位数不得超过配置阈值。系统必须支持全局默认容量 `max_authorizations_per_node_default` 和单节点覆盖 `node_capacity_override`，首版建议默认 `1`。
 5. Clash 节点的 `proxy_host` 只是入口，不等于真实出口 IP；每次健康检查必须通过外部探测记录 `observed_exit_ip`、出口国家、ASN、ISP 和稳定性。
+
+配置入口与权限：
+
+- 系统设置 / Clash 配置：保存全局订阅地址、测试连通性、同步节点、展示最近同步时间、节点总数、健康节点数和失败原因；需要 `system.manage`。
+- 账号面具 / 账号代理：按账号、TG 开发者应用 `api_id/api_hash`、授权槽位绑定代理节点；需要 `account_environment.manage`。
+- 普通日志、任务 stats、前端非敏感字段不得输出订阅完整 URL、节点密码、token 或 URI 原文。
 6. 节点健康分低于阈值、订阅失效、节点消失、真实出口 IP 漂移过大或 IP 类型不符时，必须显式暂停对应授权槽位的搜索入群动作并告警，不做静默 fallback。
 7. 当前绑定节点连接失败、TCP / TLS 不通、代理认证失败或 `proxy_egress_guard` 无法证明出口时，允许自动执行 `switch_to_next_healthy_node`：只在同一订阅、同一容量约束、同账号不复用节点约束下选择下一个健康节点，写入 `proxy_node_failover_events`，并让新 `(account_id, authorization_id, proxy_binding_id)` 重新进入 warmup。
 8. 自动故障切换不是每次 action 轮换。正常情况下授权槽位长期固定节点；只有明确的 `proxy_node_unreachable`、`proxy_reputation_below_threshold`、`exit_ip_changed`、`node_removed_from_subscription` 事件才能触发换节点。
@@ -455,6 +461,31 @@ None bound_at: datetime # 首次绑定时间（永久不变） last_used_at: dat
  ##
 
 #### 7.4.4 镜像绑定的语义价值 - **画像连续性**：TG 服务端 / 目标机器人 / SOSO 看到的是"同一个授权槽位 + 同一组客户端元数据 + 同一个代理节点 + 同一个账号"长期一致的画像，不会突然从 iPhone 13 Pro 跳到 Xiaomi Mi 11。- **主备切换可解释**：切换到备用授权时，系统看到的是同账号的另一个稳定客户端元数据组合，而不是同一组合被多个 session 复用。- **行为可追溯**：审计日志能完整看到"该授权槽位从创建到现在的全部客户端元数据/IP/任务历史"。- **横向防御**：即使目标机器人拿到一份账号列表，客户端元数据维度也是稳定的画像信号，不会因任务变化而被标记。
+
+#### 7.4.5 配置入口、应用粒度和生效边界
+
+授权指纹配置入口位于“账号面具”一级菜单的“授权指纹”Tab，不放在系统设置，也不混入面具编辑表单。系统必须把“账号面具”拆成面具管理、账号代理、授权指纹、异常与审计四个可理解区域，避免运营把“人设表达”和“授权环境”混成一个字段。
+
+授权指纹绑定粒度为：
+
+```text
+account_id + developer_app_id/api_id + authorization_id/session_role
+```
+
+- `developer_app_id/api_id` 指系统里的 TG 开发者应用 `api_id/api_hash`。
+- 同一账号在不同 TG 开发者应用下可以绑定不同代理节点和不同客户端元数据。
+- 同一账号的 `primary / standby_1 / standby_2` 必须拥有不同代理节点、不同 `client_identity_key` 和不同 `device_model + system_version + app_version` 组合。
+- Executor 必须使用授权槽位登录时绑定的同一 TG 开发者应用、代理和客户端元数据；不能用另一个应用下的配置替代。
+
+修改授权指纹配置只影响下一次使用该授权槽位建立连接、重登或新 session 初始化时上报的 MTProto 客户端元数据。保存配置成功只能表示“配置指纹已更新”，不能声明 Telegram 远端授权设备型号已经立即变更。远端实际显示必须通过 `tg_account_authorization_snapshots` 读取后作为“远端观测指纹”展示。
+
+界面必须同时展示：
+
+- 配置指纹：运营在后台设置的目标 `platform/device_model/system_version/app_version/lang_* / region_code / client_identity_key`。
+- 远端观测指纹：从 Telegram 授权设备列表读取到的 `device_model/platform/system_version/app_name/app_version/api_id`。
+- 一致性状态：`not_connected`、`pending_effect`、`observed_matched`、`observed_mismatch`。
+
+`observed_mismatch` 只能提示重登 / 刷新授权 / 人工检查，不能自动改写现有 session，也不能把配置保存包装成远端已变更。
 
 ### 7.5 账号授权槽位执行互斥
 

@@ -222,6 +222,8 @@ def _runtime_environment(environment: SearchJoinEnvironment) -> dict[str, str]:
     return {
         "proxy_egress_guard": "verified",
         "client_metadata_guard": "verified",
+        "developer_app_id": str(environment.developer_app_id),
+        "developer_app_api_id": str(environment.developer_app_api_id),
         "proxy_id": str(environment.proxy_id),
         "proxy_name": environment.proxy_name,
         "proxy_binding_id": str(environment.proxy_binding_id),

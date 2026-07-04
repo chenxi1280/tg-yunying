@@ -7,6 +7,7 @@ export const VIEW_ROUTES: Record<string, string> = {
   targetProfile: '/target-profile',
   messageSending: '/message-sending',
   materials: '/materials',
+  accountMasks: '/account-masks',
   taskManagement: '/task-center',
   listenerCenter: '/listeners',
   ruleCenter: '/rules',

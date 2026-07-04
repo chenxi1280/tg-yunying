@@ -34,7 +34,7 @@ def test_alembic_versions_have_single_head():
             referenced.update(item for item in down_revision if item)
 
     heads = sorted(set(revisions) - referenced)
-    assert heads == ["0077_search_join_pacing"]
+    assert heads == ["0078_account_mask_environment_app_scope"]
 
 
 def test_backend_test_names_are_unique_per_file():

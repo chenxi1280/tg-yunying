@@ -196,14 +196,20 @@ class TelethonClientLifecycle:
         port = getattr(credentials, "proxy_port", None)
         if not host or not port:
             return None
+        protocol = (getattr(credentials, "proxy_protocol", "") or "socks5").lower()
+        TelethonClientLifecycle._validate_proxy_protocol(protocol)
         try:
             import socks
         except ImportError as exc:
             raise RuntimeError("PySocks package is required for Telegram proxy support") from exc
-        protocol = (getattr(credentials, "proxy_protocol", "") or "socks5").lower()
         username = getattr(credentials, "proxy_username", "") or None
         password = getattr(credentials, "proxy_password", "") or None
         return (TelethonClientLifecycle._proxy_type(socks, protocol), host, int(port), True, username, password)
+
+    @staticmethod
+    def _validate_proxy_protocol(protocol: str) -> None:
+        if protocol not in {"socks5", "socks4", "http", "https"}:
+            raise ValueError(f"不支持的代理协议：{protocol}")
 
     @staticmethod
     def _proxy_type(socks_module, protocol: str):

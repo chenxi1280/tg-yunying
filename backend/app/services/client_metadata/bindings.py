@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -59,6 +59,8 @@ class ClientMetadata:
 class SearchJoinEnvironment:
     authorization_id: int
     session_role: str
+    developer_app_id: int
+    developer_app_api_id: int
     proxy_id: int
     proxy_name: str
     proxy_binding_id: int
@@ -69,6 +71,7 @@ class SearchJoinEnvironment:
 @dataclass(frozen=True)
 class GenerationSeed:
     account_id: int
+    developer_app_id: int
     authorization_id: int
     session_role: str
     salt: int
@@ -97,11 +100,11 @@ def ensure_search_join_environment(session: Session, account: TgAccount) -> Sear
     proxy = _healthy_proxy(session, authorization.proxy_id)
     if proxy is None:
         return None
-    binding = _existing_binding(session, authorization.id, authorization.role)
+    binding = _existing_binding(session, account.id, authorization)
     if binding is None:
         binding = _create_binding(session, EnvironmentTarget(account, authorization, proxy))
     else:
-        _sync_binding_proxy(session, binding, account, proxy)
+        _sync_binding_proxy(session, binding, account, authorization, proxy)
     return _environment_from_binding(binding, proxy)
 
 
@@ -127,18 +130,33 @@ def _healthy_proxy(session: Session, proxy_id: int | None) -> AccountProxy | Non
     return None
 
 
-def _existing_binding(session: Session, authorization_id: int, session_role: str) -> AccountEnvironmentBinding | None:
+def _existing_binding(
+    session: Session,
+    account_id: int,
+    authorization: TgAccountAuthorization,
+) -> AccountEnvironmentBinding | None:
     stmt = select(AccountEnvironmentBinding).where(
-        AccountEnvironmentBinding.authorization_id == authorization_id,
-        AccountEnvironmentBinding.session_role == session_role,
+        AccountEnvironmentBinding.account_id == account_id,
+        or_(
+            AccountEnvironmentBinding.developer_app_id == authorization.developer_app_id,
+            AccountEnvironmentBinding.developer_app_id.is_(None),
+        ),
+        AccountEnvironmentBinding.authorization_id == authorization.id,
+        AccountEnvironmentBinding.session_role == authorization.role,
         AccountEnvironmentBinding.status == "active",
         AccountEnvironmentBinding.unbound_at.is_(None),
-    )
+    ).order_by(AccountEnvironmentBinding.developer_app_id.is_(None).asc(), AccountEnvironmentBinding.id.asc())
     return session.scalar(stmt.limit(1))
 
 
 def _create_binding(session: Session, target: EnvironmentTarget) -> AccountEnvironmentBinding:
-    metadata = _available_metadata(session, target.account.id, target.authorization.id, target.authorization.role)
+    metadata = _available_metadata(
+        session,
+        target.account.id,
+        int(target.authorization.developer_app_id or 0),
+        target.authorization.id,
+        target.authorization.role,
+    )
     proxy_binding = _ensure_proxy_binding(session, target.account, target.proxy)
     binding_input = BindingInput(target.account, target.authorization, target.proxy, proxy_binding.id, metadata)
     binding = _new_binding(binding_input)
@@ -148,16 +166,22 @@ def _create_binding(session: Session, target: EnvironmentTarget) -> AccountEnvir
     return binding
 
 
-def _available_metadata(session: Session, account_id: int, authorization_id: int, role: str) -> ClientMetadata:
+def _available_metadata(
+    session: Session,
+    account_id: int,
+    developer_app_id: int,
+    authorization_id: int,
+    role: str,
+) -> ClientMetadata:
     for salt in range(MAX_COMBO_ATTEMPTS):
-        metadata = _generate_metadata(GenerationSeed(account_id, authorization_id, role, salt))
-        if not _combo_used_by_account(session, account_id, metadata.client_identity_key):
+        metadata = _generate_metadata(GenerationSeed(account_id, developer_app_id, authorization_id, role, salt))
+        if not _combo_used_by_account_app(session, account_id, developer_app_id, metadata.client_identity_key):
             return metadata
     raise ValueError("client_metadata_combo_reused")
 
 
 def _generate_metadata(seed: GenerationSeed) -> ClientMetadata:
-    digest = _digest(f"{seed.account_id}:{seed.authorization_id}:{seed.session_role}:{seed.salt}")
+    digest = _digest(f"{seed.account_id}:{seed.developer_app_id}:{seed.authorization_id}:{seed.session_role}:{seed.salt}")
     if int(digest[0:2], 16) % WEIGHT_BUCKETS < IOS_WEIGHT_BUCKETS:
         return _ios_metadata(digest)
     return _android_metadata(digest)
@@ -182,9 +206,10 @@ def _metadata(platform: str, device_model: str, system_version: str, app_version
     return ClientMetadata(device_model, system_version, app_version, platform, "zh", "zh-CN", "", "CN", identity)
 
 
-def _combo_used_by_account(session: Session, account_id: int, identity_key: str) -> bool:
+def _combo_used_by_account_app(session: Session, account_id: int, developer_app_id: int, identity_key: str) -> bool:
     stmt = select(AccountEnvironmentBinding.id).where(
         AccountEnvironmentBinding.account_id == account_id,
+        AccountEnvironmentBinding.developer_app_id == developer_app_id,
         AccountEnvironmentBinding.client_identity_key == identity_key,
         AccountEnvironmentBinding.status == "active",
         AccountEnvironmentBinding.unbound_at.is_(None),
@@ -202,14 +227,33 @@ def _ensure_proxy_binding(session: Session, account: TgAccount, proxy: AccountPr
     return binding
 
 
-def _sync_binding_proxy(session: Session, binding: AccountEnvironmentBinding, account: TgAccount, proxy: AccountProxy) -> None:
+def _sync_binding_proxy(
+    session: Session,
+    binding: AccountEnvironmentBinding,
+    account: TgAccount,
+    authorization: TgAccountAuthorization,
+    proxy: AccountProxy,
+) -> None:
     proxy_binding = _ensure_proxy_binding(session, account, proxy)
+    _hydrate_binding_app_scope(binding, authorization)
     if binding.proxy_id == proxy.id and binding.proxy_binding_id == proxy_binding.id:
+        session.flush()
         return
     binding.proxy_id = proxy.id
     binding.proxy_binding_id = proxy_binding.id
     binding.updated_at = _now()
     session.flush()
+
+
+def _hydrate_binding_app_scope(
+    binding: AccountEnvironmentBinding,
+    authorization: TgAccountAuthorization,
+) -> None:
+    if binding.developer_app_id:
+        return
+    binding.developer_app_id = authorization.developer_app_id
+    binding.developer_app_api_id_snapshot = int(authorization.developer_app_api_id_snapshot or 0)
+    binding.updated_at = _now()
 
 
 def _active_proxy_binding(session: Session, account_id: int, proxy_id: int) -> AccountProxyBinding | None:
@@ -227,6 +271,8 @@ def _new_binding(binding_input: BindingInput) -> AccountEnvironmentBinding:
     return AccountEnvironmentBinding(
         tenant_id=binding_input.account.tenant_id,
         account_id=binding_input.account.id,
+        developer_app_id=binding_input.authorization.developer_app_id,
+        developer_app_api_id_snapshot=int(binding_input.authorization.developer_app_api_id_snapshot or 0),
         authorization_id=binding_input.authorization.id,
         session_role=binding_input.authorization.role,
         proxy_binding_id=binding_input.proxy_binding_id,
@@ -256,6 +302,8 @@ def _new_combo_history(binding: AccountEnvironmentBinding) -> FingerprintComboHi
     return FingerprintComboHistory(
         tenant_id=binding.tenant_id,
         account_id=binding.account_id,
+        developer_app_id=binding.developer_app_id,
+        developer_app_api_id_snapshot=binding.developer_app_api_id_snapshot,
         authorization_id=binding.authorization_id,
         session_role=binding.session_role,
         combo_key=binding.client_identity_key,
@@ -279,6 +327,8 @@ def _environment_from_binding(binding: AccountEnvironmentBinding, proxy: Account
     return SearchJoinEnvironment(
         authorization_id=binding.authorization_id,
         session_role=binding.session_role,
+        developer_app_id=int(binding.developer_app_id or 0),
+        developer_app_api_id=int(binding.developer_app_api_id_snapshot or 0),
         proxy_id=int(binding.proxy_id or proxy.id),
         proxy_name=proxy.name,
         proxy_binding_id=proxy_binding_id,

@@ -5,6 +5,7 @@ from .mixins import *  # noqa: F401,F403
 from .membership import *  # noqa: F401,F403
 from .operations import *  # noqa: F401,F403
 from .operation_plans import *  # noqa: F401,F403
+from .proxy_airport import *  # noqa: F401,F403
 from .ai import *  # noqa: F401,F403
 from .archives import *  # noqa: F401,F403
 from .campaigns import *  # noqa: F401,F403

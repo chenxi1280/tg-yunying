@@ -53,6 +53,7 @@ const TargetProfileView = React.lazy(() => import('./views/TargetProfileView'));
 const TaskCenterView = React.lazy(() => import('./views/TaskCenterView'));
 const MessageSendingView = React.lazy(() => import('./views/MessageSendingView'));
 const MaterialsView = React.lazy(() => import('./views/MaterialsView'));
+const AccountMasksView = React.lazy(() => import('./views/AccountMasksView'));
 const ListenerCenterView = React.lazy(() => import('./views/ListenerCenterView'));
 const RulesCenterView = React.lazy(() => import('./views/RulesCenterView'));
 const RiskControlView = React.lazy(() => import('./views/RiskControlView'));
@@ -76,6 +77,7 @@ const SHELL_NAV_ITEMS: ShellNavItem[] = [
   ['targetProfile', '目标画像', <Users size={18} />],
   ['messageSending', '消息发送', <MessageSquareText size={18} />],
   ['materials', '素材中心', <Database size={18} />],
+  ['accountMasks', '账号面具', <Users size={18} />],
   ['taskManagement', '任务中心', <Activity size={18} />],
   ['listenerCenter', '监听中心', <RefreshCcw size={18} />],
   ['ruleCenter', '规则中心', <ShieldAlert size={18} />],
@@ -750,6 +752,9 @@ function AppShell() {
               onRefresh={refresh}
               isActionPending={isActionPending}
             />
+          )}
+          {activeView === 'accountMasks' && hasPermission(currentUser, 'account_masks.view') && (
+            <AccountMasksView currentUser={currentUser} />
           )}
           {activeView === 'groupManagement' && (
             <GroupManagementView groups={groups} selectedGroup={selectedGroup ?? undefined} selectedGroupId={selectedGroupId} groupDetail={groupDetail} setSelectedGroupId={setSelectedGroupId} archives={archives} archiveDetail={archiveDetail} onCreateTask={openTaskFromGroup} onCreateArchive={createArchive} onAuthorizeGroup={authorizeSelectedGroup} onEditGroupPolicy={() => setModal({ type: 'groupPolicyEdit' })} onOpenGroupDetail={openGroupDetail} onOpenArchiveDetail={openArchiveDetail} onExportArchive={exportArchive} onRerunArchive={rerunArchive} onOpenConfirm={openConfirm} isActionPending={isActionPending} />

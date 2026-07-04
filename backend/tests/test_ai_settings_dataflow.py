@@ -86,16 +86,20 @@ def test_ai_account_voice_profile_routes_exist_and_require_real_service():
     assert "AiAccountVoiceProfileBatchStatusOut" in schemas
 
 
-def test_system_config_exposes_ai_account_voice_profile_management_tab():
+def test_account_masks_view_exposes_ai_account_voice_profile_management_tab():
     system_view = (PROJECT_ROOT / "frontend/src/app/views/SystemConfigView.tsx").read_text()
+    account_masks_view = (PROJECT_ROOT / "frontend/src/app/views/AccountMasksView.tsx").read_text()
     profile_view = (PROJECT_ROOT / "frontend/src/app/views/AIAccountVoiceProfilesView.tsx").read_text()
     system_types = (PROJECT_ROOT / "frontend/src/app/types/system.ts").read_text()
 
-    assert "import AIAccountVoiceProfilesView from './AIAccountVoiceProfilesView';" in system_view
-    assert "key: 'ai-voice-profiles'" in system_view
-    assert "label: '账号面具'" in system_view
-    assert "hasPermission(currentUser, 'ai_voice_profiles.manage')" in system_view
-    assert "<AIAccountVoiceProfilesView" in system_view
+    assert "import AIAccountVoiceProfilesView from './AIAccountVoiceProfilesView';" not in system_view
+    assert "ProxyAirportSubscriptionView" in system_view
+    assert "label: 'Clash 配置'" in system_view
+    assert "import AIAccountVoiceProfilesView from './AIAccountVoiceProfilesView';" in account_masks_view
+    assert "key: 'profiles'" in account_masks_view
+    assert "label: '面具管理'" in account_masks_view
+    assert "hasPermission(currentUser, 'ai_voice_profiles.manage')" in account_masks_view
+    assert "<AIAccountVoiceProfilesView" in account_masks_view
 
     assert "export type AiAccountVoiceProfile" in system_types
     assert "mask_name: string;" in system_types

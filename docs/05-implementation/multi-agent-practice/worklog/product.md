@@ -296,3 +296,17 @@
 - decision: 不退回；不声明 product_accepted、search_join_group 真实灰度成功或 production_fixed
 - next_agent: product
 - unresolved: product 线程 ACK / 接受未返回；真实目标机器人协议样本、真实 proxy egress、机场节点容灾、授权槽位环境栈和 7 天灰度仍为 unproven
+
+## 2026-07-04 账号面具与授权环境配置入口 PRD 梳理
+
+- message_id: 2026-07-04-account-mask-environment-prd-001
+- action: 按用户关于系统配置、Clash 地址、账号面具、单账号代理、TG 开发者应用和授权指纹生效边界的连续澄清，完整梳理并写入主 PRD、搜索目标群点击任务专项设计和数据流转索引
+- input: 用户确认“账号面具”应为一级菜单；系统配置只配置一个全局 Clash 订阅地址；单个账号代理在账号面具里单独配置；不同 TG 开发者应用 `api_id/api_hash` 可使用不同代理和不同授权指纹；授权指纹修改只影响下一次使用该授权槽位建立连接 / 重登 / 新 session 初始化时的客户端元数据，不能谎报远端授权设备已经立即改掉
+- output: 主 PRD 新增账号面具、Clash 和授权环境入口更新，并同步导航、权限、近期变更、数据模型和搜索目标群点击任务前置校验；专项设计补充全局 Clash 配置入口、账号级代理绑定入口、授权指纹配置入口、应用粒度和生效边界；数据流转索引新增 DF-101I / DF-101J，并修正账号面具、全局 Clash、账号 + 应用 + 授权槽位环境绑定和 search_join 执行前置数据流
+- evidence: E1 文档证据；本轮旧口径扫描确认账号面具不再作为系统设置 Tab，远端设备立即变更只保留在“不能声明”的边界说明中；`git diff --check` 通过
+- decision: 本轮仅是 PRD / 专项设计 / 数据流转索引修复，不做代码实现，不声明 QA pass、发布完成或生产可用；后续实现必须以 `account_id + developer_app_id/api_id + authorization_id/session_role` 作为代理和授权指纹绑定粒度
+- next_agent: dev
+- handoff_delivery_status: blocked
+- requires_orchestrator_send: true
+- handoff_message: Dev Handoff：请按 `2026-07-04-account-mask-environment-prd-001` 实现账号面具与授权环境配置入口。设计真相源已更新：`docs/01-product/tg-ops-platform-prd.md`、`docs/03-feature-designs/search-click-boost-prd.md`、`docs/00-index/project-dataflow-index.md`。实现边界：1. 新增“账号面具”一级菜单，至少包含面具管理、账号代理、授权指纹、异常与审计；2. 系统配置只提供一个全局 Clash 订阅 / 接口配置，支持保存、测试、同步、脱敏状态展示，不做单账号代理分配；3. 单账号代理在账号面具里按 `account_id + developer_app_id/api_id + authorization_id/session_role` 绑定，支持不同 TG 开发者应用使用不同代理；4. 授权指纹在账号面具里按同一粒度配置，支持不同应用和授权槽位使用不同客户端元数据；5. 保存授权指纹只能表示配置更新，只影响下一次连接、重登或新 session 初始化，远端实际显示必须来自授权设备快照，不能宣称远端 Telegram 授权设备立即变更；6. search_join_group 等真实执行任务必须使用该粒度的代理和指纹绑定，缺失或冲突时 fail closed；7. 更新权限、审计、前端 gating、项目结构索引和测试。
+- unresolved: 尚未真实投递 dev 线程；未实现前端菜单、后端 API、迁移、worker 读取和生产发布；真实远端授权设备快照展示、单账号代理绑定和 search_join 执行前置校验仍待代码和 QA 证明

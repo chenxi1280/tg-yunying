@@ -7,7 +7,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import AccountStatus, Action, SearchJoinLinkedTaskDispatch, Task, TelegramDeveloperApp, Tenant, TgAccount
+from app.models import AccountProxy, AccountStatus, Action, SearchJoinLinkedTaskDispatch, Task, TelegramDeveloperApp, Tenant, TgAccount, TgAccountAuthorization
 from app.security import encrypt_secret
 from app.services._common import _now
 from app.services.task_center import dispatcher
@@ -22,6 +22,7 @@ def session() -> Session:
     with Session(engine) as db:
         db.add(Tenant(id=1, name="默认运营空间"))
         db.add(TelegramDeveloperApp(id=1, app_name="测试应用", api_id=12345, api_hash_ciphertext=encrypt_secret("hash")))
+        db.add(AccountProxy(id=31, tenant_id=1, name="节点A", protocol="socks5", host="127.0.0.1", port=1080, status="healthy", alert_status="normal"))
         db.add(
             TgAccount(
                 id=101,
@@ -32,6 +33,21 @@ def session() -> Session:
                 session_ciphertext="s1",
                 developer_app_id=1,
                 developer_app_version=1,
+            )
+        )
+        db.add(
+            TgAccountAuthorization(
+                id=201,
+                tenant_id=1,
+                account_id=101,
+                role="primary",
+                developer_app_id=1,
+                developer_app_api_id_snapshot=12345,
+                proxy_id=31,
+                session_ciphertext="slot-session-201",
+                status="active",
+                health_status="healthy",
+                is_current=True,
             )
         )
         db.commit()
@@ -123,7 +139,7 @@ def test_search_join_dispatch_calls_gateway_with_session_credentials_and_keyword
     assert calls[0]["account_id"] == 101
     assert calls[0]["payload"]["keyword_hash"] == "a" * 64
     assert calls[0]["payload"]["bot_username"] == "jisou"
-    assert calls[0]["session_ciphertext"] == "s1"
+    assert calls[0]["session_ciphertext"] == "slot-session-201"
     assert calls[0]["api_id"] == 12345
     assert calls[0]["keyword_text"] == "上海 留学"
 

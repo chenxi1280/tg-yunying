@@ -259,8 +259,27 @@ def test_frontend_operator_template_can_open_and_manage_ai_voice_profiles():
     source = (PROJECT_ROOT / "frontend/src/app/AppModals.tsx").read_text()
     operator_template = source[source.index("'运营管理员'"):source.index("'账号添加专员'")]
 
-    assert "'system.view'" in operator_template
+    assert "'account_masks.view'" in operator_template
     assert "'ai_voice_profiles.manage'" in operator_template
+    assert "'account_environment.manage'" in operator_template
+
+
+def test_account_masks_is_first_level_menu_and_system_config_has_clash_only():
+    routes = (PROJECT_ROOT / "frontend/src/app/routes.ts").read_text()
+    utils = (PROJECT_ROOT / "frontend/src/app/utils.ts").read_text()
+    shell = (PROJECT_ROOT / "frontend/src/app/AppShell.tsx").read_text()
+    system_config = (PROJECT_ROOT / "frontend/src/app/views/SystemConfigView.tsx").read_text()
+    account_masks = (PROJECT_ROOT / "frontend/src/app/views/AccountMasksView.tsx").read_text()
+
+    assert "accountMasks: '/account-masks'" in routes
+    assert "accountMasks: 'account_masks.view'" in utils
+    assert "['accountMasks', '账号面具'" in shell
+    assert "const AccountMasksView = React.lazy(() => import('./views/AccountMasksView'));" in shell
+    assert "activeView === 'accountMasks'" in shell
+    assert "AIAccountVoiceProfilesView" not in system_config
+    assert "label: 'Clash 配置'" in system_config
+    for label in ["面具管理", "账号代理", "授权指纹", "异常与审计"]:
+        assert label in account_masks
 
 
 def test_page_error_formatters_reuse_api_error_message():
@@ -816,11 +835,13 @@ def test_system_config_tab_lazy_loads_bind_tab_and_request_sequence():
 
 
 def test_ai_voice_profile_manage_permission_is_assignable():
-    system_config_source = (PROJECT_ROOT / "frontend/src/app/views/SystemConfigView.tsx").read_text()
+    account_masks_source = (PROJECT_ROOT / "frontend/src/app/views/AccountMasksView.tsx").read_text()
     app_modals_source = (PROJECT_ROOT / "frontend/src/app/AppModals.tsx").read_text()
 
-    assert "hasPermission(currentUser, 'ai_voice_profiles.manage')" in system_config_source
+    assert "hasPermission(currentUser, 'ai_voice_profiles.manage')" in account_masks_source
     assert "['ai_voice_profiles.manage', '账号面具管理']" in app_modals_source
+    assert "['account_masks.view', '账号面具']" in app_modals_source
+    assert "['account_environment.manage', '账号环境管理']" in app_modals_source
 
 
 def test_ai_voice_profile_write_routes_have_explicit_manage_guard():

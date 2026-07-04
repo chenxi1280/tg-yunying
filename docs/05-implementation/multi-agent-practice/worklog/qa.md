@@ -76,3 +76,14 @@
 - decision: 接码账号不会触发登录后资料初始化 / 账号面具初始化；资料/2FA/设备清理批次预检和 worker 执行前会跳过；消息发送公共入口和旧私聊入口阻断；备用 session 补齐 / 自愈未被禁用。
 - next_agent: product
 - unresolved: 这不是独立 QA 线程 ACK；CI / release deploy / 生产验证仍 unproven。
+
+## 2026-07-04 账号面具环境与全局 Clash 配置本地 QA
+
+- message_id: 2026-07-04-account-mask-environment-local-qa-001
+- action: 对账号面具一级菜单、全局 Clash 配置、账号环境绑定、授权槽位 runtime 和迁移权限缺口做本地自动化验收。
+- input: 2026-07-04-account-mask-environment-devcomplete-001；监督子代理指出 migration head / 旧 binding 回填 / Clash GET 权限 / 远端观测展示缺口。
+- output: local_qa_pass_for_account_mask_environment_contracts
+- evidence: 监督缺口 red tests 已先失败后修复；合并定向套件 189 passed；最终本地 gate `backend/.venv/bin/pytest -q -m no_postgres` -> 718 passed / 789 deselected；frontend build passed；changed backend py_compile passed；`git diff --check` passed。覆盖点包括 `0078` 单 head 和回填 SQL、legacy NULL app binding 复用、Clash GET `system.view` 权限、账号环境远端观测 matched/mismatch、dispatcher 使用授权槽位 session、账号面具一级菜单和系统配置 Clash Tab。
+- decision: 本地合同验收通过；不声明生产真实订阅同步或真实 Telegram 远端授权快照已刷新。
+- next_agent: product
+- unresolved: CI / release deploy / 生产健康 / 生产数据迁移和真实配置验证仍 unproven。

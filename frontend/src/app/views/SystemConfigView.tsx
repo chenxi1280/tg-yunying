@@ -16,10 +16,10 @@ import type {
   CurrentUser,
   RuntimeConfig,
 } from '../types';
-import AIAccountVoiceProfilesView from './AIAccountVoiceProfilesView';
 import AISettingsView from './AISettingsView';
 import DeveloperAppsView from './DeveloperAppsView';
 import GroupRescueSettingsView from './GroupRescueSettingsView';
+import ProxyAirportSubscriptionView from './ProxyAirportSubscriptionView';
 import TelegramBotSettingsView from './TelegramBotSettingsView';
 import { hasPermission } from '../utils';
 
@@ -286,13 +286,9 @@ export default function SystemConfigView({
           ),
         },
         {
-          key: 'ai-voice-profiles',
-          label: '账号面具',
-          children: (
-            <AIAccountVoiceProfilesView
-              canManageVoiceProfiles={hasPermission(currentUser, 'ai_voice_profiles.manage')}
-            />
-          ),
+          key: 'clash',
+          label: 'Clash 配置',
+          children: <ProxyAirportSubscriptionView canManageSystem={hasPermission(currentUser, 'system.manage')} />,
         },
         {
           key: 'admin-users',

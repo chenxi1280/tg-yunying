@@ -59,6 +59,7 @@ def test_operation_issue_read_routes_are_view_only_and_status_actions_require_ma
 
 def test_sensitive_read_routes_have_explicit_least_privilege_rules():
     assert required_permission("GET", "/api/config/runtime") == ("system.view",)
+    assert required_permission("GET", "/api/proxy-airport-subscription") == ("system.view",)
     assert required_permission("GET", "/api/account-clone-plans") == ("accounts.clone",)
     assert required_permission("GET", "/api/account-clone-plans/12") == ("accounts.clone",)
     assert required_permission("GET", "/api/verification-tasks") == ("accounts.sync",)

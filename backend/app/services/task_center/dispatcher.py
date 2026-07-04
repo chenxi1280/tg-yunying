@@ -12,16 +12,17 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from pydantic import ValidationError
 
-from app.integrations.telegram import OperationResult, OutboundSegment
+from app.integrations.telegram import DeveloperAppCredentials, OperationResult, OutboundSegment
 from app.config import get_settings
 from app.models import AccountStatus, Action, ChannelMessage, ExecutionAttempt, FailureType, GroupAuthStatus, GroupContextMessage, OperationTarget, ReviewQueue, Task, Tenant, TgAccount, TgGroup, TgGroupAccount, VerificationTask
+from app.models import AccountProxy, TelegramDeveloperApp, TgAccountAuthorization
 from app.security import decrypt_secret
 from app.services._common import _now, audit, gateway
 from app.services.account_online_state import is_account_online_ready
 from app.services.account_authorizations import attempt_primary_proxy_recovery, attempt_standby_authorization_recovery
 from app.services.account_capacity import account_capacity_decision
 from app.services.content_filters import filter_outbound_content, rewrite_rejected_content
-from app.services.developer_apps import credentials_for_account
+from app.services.developer_apps import credentials_for_account, credentials_for_developer_app
 from app.services.ai_config import get_scheduling_setting
 from app.services.membership_challenges import auto_resolve_image_verification, auto_resolve_text_verification, read_challenge_context_with_fallback, record_challenge_attempt
 from app.services.required_channel_prompts import (
@@ -124,6 +125,13 @@ _GROUP_SEND_RETRYABLE_VERIFICATION_MARKERS = (
     "群无权限或账号不可发言",
     "不可发言",
 )
+ACTIVE_SEARCH_JOIN_AUTHORIZATION_STATUSES = {"active", "standby"}
+
+
+@dataclass(frozen=True)
+class SearchJoinRuntimeAuthorization:
+    session_ciphertext: str
+    credentials: DeveloperAppCredentials
 RECENT_REQUIRED_CHANNEL_PROMPT_LIMIT = 25
 RECENT_REQUIRED_CHANNEL_PROMPT_LOOKBACK_HOURS = 6
 REQUIRED_CHANNEL_ADMISSION_RETRY_SECONDS = 300
@@ -3478,8 +3486,12 @@ def _dispatch_search_join(session: Session, action: Action, account: TgAccount, 
     if not keyword_text.strip():
         _fail(action, "keyword_text_missing", "搜索入群缺少可执行关键词密文", validation_stage="search_join_payload")
         return True
-    credentials = credentials_for_account(session, account)
-    result = search_join(account.id, payload.model_dump(mode="json"), account.session_ciphertext, credentials, keyword_text)
+    try:
+        runtime_authorization = _search_join_runtime_authorization(session, account, payload)
+    except ValueError as exc:
+        _fail(action, str(exc), "搜索入群授权槽位不可用，禁止回退账号主授权", validation_stage="search_join_authorization")
+        return True
+    result = search_join(account.id, payload.model_dump(mode="json"), runtime_authorization.session_ciphertext, runtime_authorization.credentials, keyword_text)
     action.status = "success" if result.get("success") else "failed"
     action.result = {**(action.result or {}), **result}
     action.executed_at = _now()
@@ -3498,6 +3510,60 @@ def _search_join_client_metadata_verified(payload: SearchJoinPayload) -> bool:
     metadata = payload.client_metadata if isinstance(payload.client_metadata, dict) else {}
     required = ("device_model", "system_version", "app_version", "platform", "client_identity_key")
     return runtime.get("client_metadata_guard") == "verified" and all(metadata.get(key) for key in required)
+
+
+def _search_join_runtime_authorization(
+    session: Session,
+    account: TgAccount,
+    payload: SearchJoinPayload,
+) -> SearchJoinRuntimeAuthorization:
+    authorization = session.get(TgAccountAuthorization, payload.authorization_id)
+    if authorization is None or authorization.tenant_id != account.tenant_id:
+        raise ValueError("search_join_authorization_not_found")
+    if authorization.account_id != account.id or authorization.role != payload.session_role:
+        raise ValueError("search_join_authorization_scope_mismatch")
+    if authorization.disabled_at is not None or authorization.status not in ACTIVE_SEARCH_JOIN_AUTHORIZATION_STATUSES:
+        raise ValueError("search_join_authorization_unavailable")
+    if not authorization.session_ciphertext:
+        raise ValueError("search_join_authorization_session_missing")
+    app = _search_join_developer_app(session, authorization, payload)
+    proxy = _search_join_proxy(session, authorization, payload)
+    return SearchJoinRuntimeAuthorization(
+        session_ciphertext=authorization.session_ciphertext,
+        credentials=credentials_for_developer_app(app, proxy),
+    )
+
+
+def _search_join_developer_app(
+    session: Session,
+    authorization: TgAccountAuthorization,
+    payload: SearchJoinPayload,
+) -> TelegramDeveloperApp:
+    app = session.get(TelegramDeveloperApp, int(authorization.developer_app_id or 0))
+    if app is None:
+        raise ValueError("search_join_developer_app_missing")
+    runtime = payload.runtime_environment if isinstance(payload.runtime_environment, dict) else {}
+    expected = int(runtime.get("developer_app_id") or 0)
+    if expected and expected != app.id:
+        raise ValueError("search_join_developer_app_scope_mismatch")
+    return app
+
+
+def _search_join_proxy(
+    session: Session,
+    authorization: TgAccountAuthorization,
+    payload: SearchJoinPayload,
+) -> AccountProxy:
+    proxy = session.get(AccountProxy, int(authorization.proxy_id or 0)) if authorization.proxy_id else None
+    if proxy is None:
+        raise ValueError("search_join_authorization_proxy_missing")
+    runtime = payload.runtime_environment if isinstance(payload.runtime_environment, dict) else {}
+    expected = int(runtime.get("proxy_id") or 0)
+    if expected and expected != proxy.id:
+        raise ValueError("search_join_proxy_scope_mismatch")
+    if proxy.status != "healthy" or proxy.alert_status != "normal":
+        raise ValueError("search_join_authorization_proxy_unhealthy")
+    return proxy
 
 
 def _stop_search_join_task_if_target_exhausted(session: Session, action: Action, result: dict) -> None:

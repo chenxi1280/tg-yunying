@@ -17,6 +17,8 @@ from app.common.http import forbidden
 from app.models import Tenant
 from app.schemas import (
     OverviewOut,
+    ProxyAirportSubscriptionOut,
+    ProxyAirportSubscriptionUpdate,
     ReportOut,
     RuntimeConfigOut,
     TenantCreate,
@@ -46,6 +48,11 @@ from app.services.tenant_bot_settings import (
     tenant_bot_settings_payload,
     update_tenant_bot_settings,
 )
+from app.services.proxy_airport_subscription import (
+    get_proxy_airport_subscription,
+    mark_proxy_airport_subscription_tested,
+    update_proxy_airport_subscription,
+)
 from app.services._common import audit
 from app.worker import drain_once
 
@@ -73,6 +80,58 @@ def health() -> dict[str, str]:
 @router.get("/api/config/runtime", response_model=RuntimeConfigOut)
 def runtime_config(session: Session = Depends(get_session)) -> dict:
     return get_runtime_config(session)
+
+
+@router.get("/api/proxy-airport-subscription", response_model=ProxyAirportSubscriptionOut)
+def get_global_proxy_airport_subscription(
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> ProxyAirportSubscriptionOut:
+    if not current_user.has_permission("system.view"):
+        raise forbidden("system.view required")
+    resolved_tenant_id = resolve_tenant_id(current_user, tenant_id)
+    return get_proxy_airport_subscription(session, tenant_id=resolved_tenant_id)
+
+
+@router.patch("/api/proxy-airport-subscription", response_model=ProxyAirportSubscriptionOut)
+def patch_global_proxy_airport_subscription(
+    payload: ProxyAirportSubscriptionUpdate,
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> ProxyAirportSubscriptionOut:
+    if not current_user.has_permission("system.manage"):
+        raise forbidden("system.manage required")
+    resolved_tenant_id = resolve_tenant_id(current_user, tenant_id)
+    saved = update_proxy_airport_subscription(
+        session,
+        tenant_id=resolved_tenant_id,
+        payload=payload,
+        actor=current_user.name,
+    )
+    session.commit()
+    return saved
+
+
+@router.post("/api/proxy-airport-subscription/test", response_model=ProxyAirportSubscriptionOut)
+def test_global_proxy_airport_subscription(
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> ProxyAirportSubscriptionOut:
+    if not current_user.has_permission("system.manage"):
+        raise forbidden("system.manage required")
+    try:
+        tested = mark_proxy_airport_subscription_tested(
+            session,
+            tenant_id=resolve_tenant_id(current_user, tenant_id),
+            actor=current_user.name,
+        )
+        session.commit()
+        return tested
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/api/overview", response_model=OverviewOut)

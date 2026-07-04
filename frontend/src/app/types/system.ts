@@ -179,6 +179,54 @@ export type AiAccountVoiceProfileAudit = {
   created_at: string | null;
 };
 
+export type ProxyAirportSubscription = {
+  id: number | null;
+  tenant_id: number;
+  subscription_url_configured: boolean;
+  subscription_url_preview: string;
+  provider_type: string;
+  sync_status: string;
+  node_count: number;
+  healthy_node_count: number;
+  last_sync_at: string | null;
+  last_error: string;
+  updated_at: string | null;
+};
+
+export type AccountEnvironmentBinding = {
+  id: string | null;
+  account_id: number;
+  account_display_name: string;
+  account_username: string;
+  phone_masked: string;
+  account_status: string;
+  developer_app_id: number | null;
+  developer_app_name: string;
+  developer_app_api_id_snapshot: number;
+  authorization_id: number | null;
+  session_role: string;
+  authorization_status: string;
+  proxy_id: number | null;
+  proxy_name: string;
+  proxy_status: string;
+  device_model: string;
+  system_version: string;
+  app_version: string;
+  platform: string;
+  observed_device_model: string;
+  observed_system_version: string;
+  observed_app_version: string;
+  observed_api_id: number;
+  lang_code: string;
+  system_lang_code: string;
+  lang_pack: string;
+  region_code: string;
+  client_identity_key: string;
+  consistency_status: string;
+  effect_boundary: string;
+  updated_at: string | null;
+};
+
 export type CaptchaChallenge = {
   challenge_id: string;
   image_data_url: string;

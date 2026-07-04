@@ -20,6 +20,7 @@ from app.schemas import (
     SchedulingSettingOut, SchedulingSettingUpdate,
     TenantAiSettingOut, TenantAiSettingUpdate,
 )
+from app.schemas.account_environment import AccountEnvironmentBindingOut, AccountEnvironmentBindingPatch
 from app.schemas.ai_config import (
     AiAccountVoiceProfileAuditOut,
     AiAccountVoiceProfileBatchRebuildOut,
@@ -40,6 +41,7 @@ from app.schemas.ai_config import (
     MaterialReferencesOut,
     MaterialVersionHistoryOut,
 )
+from app.services.account_environment import list_account_environment_bindings, patch_account_environment_binding
 from app.services.task_center.account_voice_profiles import (
     batch_rebuild_voice_profiles,
     generate_voice_profiles_with_ai,
@@ -79,6 +81,8 @@ from app.services.ai_config import (
 router = APIRouter()
 
 AI_VOICE_PROFILE_MANAGE_PERMISSION = "ai_voice_profiles.manage"
+ACCOUNT_MASKS_VIEW_PERMISSION = "account_masks.view"
+ACCOUNT_ENVIRONMENT_MANAGE_PERMISSION = "account_environment.manage"
 
 
 # ── AI Providers ──
@@ -205,6 +209,14 @@ def _require_voice_profile_manage(current_user: CurrentUser) -> None:
     ensure_permission(current_user, AI_VOICE_PROFILE_MANAGE_PERMISSION)
 
 
+def _require_account_masks_view(current_user: CurrentUser) -> None:
+    ensure_permission(current_user, ACCOUNT_MASKS_VIEW_PERMISSION)
+
+
+def _require_account_environment_manage(current_user: CurrentUser) -> None:
+    ensure_permission(current_user, ACCOUNT_ENVIRONMENT_MANAGE_PERMISSION)
+
+
 @router.get("/api/ai-account-voice-profiles", response_model=list[AiAccountVoiceProfileOut])
 def get_ai_account_voice_profiles(
     search: str = "",
@@ -213,12 +225,52 @@ def get_ai_account_voice_profiles(
     session: Session = Depends(get_session),
     current_user: CurrentUser = Depends(get_current_user),
 ):
+    _require_account_masks_view(current_user)
     return list_voice_profiles(
         session,
         tenant_id=resolve_tenant_id(current_user, tenant_id),
         search=search,
         profile_status=profile_status,
     )
+
+
+@router.get("/api/account-environment-bindings", response_model=list[AccountEnvironmentBindingOut])
+def get_account_environment_bindings(
+    search: str = "",
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    _require_account_masks_view(current_user)
+    return list_account_environment_bindings(
+        session,
+        tenant_id=resolve_tenant_id(current_user, tenant_id),
+        search=search,
+    )
+
+
+@router.patch("/api/account-environment-bindings/{account_id}", response_model=AccountEnvironmentBindingOut)
+def patch_account_environment_binding_route(
+    account_id: int,
+    payload: AccountEnvironmentBindingPatch,
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    _require_account_environment_manage(current_user)
+    try:
+        row = patch_account_environment_binding(
+            session,
+            tenant_id=resolve_tenant_id(current_user, tenant_id),
+            account_id=account_id,
+            payload=payload,
+            actor=current_user.name,
+        )
+        session.commit()
+        return row
+    except ValueError as exc:
+        session.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.patch("/api/ai-account-voice-profiles/{account_id}", response_model=AiAccountVoiceProfileOut)

@@ -8,6 +8,7 @@ export const VIEW_PERMISSION: Record<string, string> = {
   targetProfile: 'target_profile.view',
   messageSending: 'message_sending.view',
   taskManagement: 'tasks.view',
+  accountMasks: 'account_masks.view',
   listenerCenter: 'listeners.view',
   ruleCenter: 'rules.view',
   riskControl: 'risk.view',

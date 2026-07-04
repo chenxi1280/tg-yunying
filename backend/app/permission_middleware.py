@@ -57,6 +57,7 @@ PERMISSION_RULES: list[PermissionRule] = [
     _compile("GET", r"^/api/material-groups(?:/.*)?$", "materials.view"),
     _compile("GET", r"^/api/materials(?:/.*)?$", "materials.view"),
     _compile("GET", r"^/api/material-imports(?:/.*)?$", "materials.view"),
+    _compile("GET", r"^/api/proxy-airport-subscription$", "system.view"),
     _compile("GET", r"^/api/audit-logs/export$", "audit.export"),
     _compile("GET", r"^/api/audit-logs(?:/.*)?$", "audits.view"),
     _compile("GET", r"^/api/audits(?:/.*)?$", "audits.view"),

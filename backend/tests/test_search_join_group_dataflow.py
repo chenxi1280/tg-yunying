@@ -32,6 +32,8 @@ def test_search_join_group_dataflow_tables_exist_in_metadata() -> None:
     assert "account_environment_bindings" in tables
     assert "fingerprint_combo_history" in tables
     assert "search_join_pacing_decisions" in tables
+    assert "proxy_airport_subscriptions" in tables
+    assert "proxy_airport_nodes" in tables
 
 
 @pytest.mark.no_postgres
@@ -99,6 +101,8 @@ def test_search_join_environment_binding_roundtrip() -> None:
         binding = AccountEnvironmentBinding(
             tenant_id=1,
             account_id=101,
+            developer_app_id=11,
+            developer_app_api_id_snapshot=10011,
             authorization_id=201,
             session_role="primary",
             proxy_binding_id=301,
@@ -109,7 +113,15 @@ def test_search_join_environment_binding_roundtrip() -> None:
             platform="ios",
             client_identity_key="identity-1",
         )
-        history = FingerprintComboHistory(tenant_id=1, combo_key="combo-1", usage_count=1)
+        history = FingerprintComboHistory(
+            tenant_id=1,
+            account_id=101,
+            developer_app_id=11,
+            developer_app_api_id_snapshot=10011,
+            authorization_id=201,
+            combo_key="combo-1",
+            usage_count=1,
+        )
         session.add_all([binding, history])
         session.commit()
 
@@ -117,7 +129,11 @@ def test_search_join_environment_binding_roundtrip() -> None:
         saved_history = session.query(FingerprintComboHistory).one()
 
     assert saved_binding.device_model == "iPhone 15"
+    assert saved_binding.developer_app_id == 11
+    assert saved_binding.developer_app_api_id_snapshot == 10011
     assert saved_binding.fingerprint_locked is True
+    assert saved_history.developer_app_id == 11
+    assert saved_history.developer_app_api_id_snapshot == 10011
     assert saved_history.combo_key == "combo-1"
 
 
@@ -138,6 +154,21 @@ def test_search_join_environment_migration_declares_tables() -> None:
 
     assert "account_environment_bindings" in source
     assert "fingerprint_combo_history" in source
+
+
+@pytest.mark.no_postgres
+def test_account_environment_migration_declares_developer_app_scope_and_airport_tables() -> None:
+    migration = PROJECT_ROOT / "backend/migrations/versions/0078_account_mask_environment_app_scope.py"
+    source = migration.read_text()
+
+    assert "developer_app_id" in source
+    assert "developer_app_api_id_snapshot" in source
+    assert "uq_account_environment_app_authorization_role" in source
+    assert "proxy_airport_subscriptions" in source
+    assert "proxy_airport_nodes" in source
+    assert "_backfill_environment_app_scope" in source
+    assert "UPDATE account_environment_bindings" in source
+    assert "tg_account_authorizations" in source
 
 
 @pytest.mark.no_postgres

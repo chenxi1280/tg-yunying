@@ -135,6 +135,8 @@ def test_search_join_planner_creates_hash_only_search_join_actions(session: Sess
     assert {action.payload["runtime_environment"]["proxy_egress_guard"] for action in actions} == {"verified"}
     assert all(action.payload["authorization_id"] for action in actions)
     assert all(action.payload["session_role"] == "primary" for action in actions)
+    assert {action.payload["runtime_environment"]["developer_app_id"] for action in actions} == {"51"}
+    assert {action.payload["runtime_environment"]["developer_app_api_id"] for action in actions} == {"2040"}
     assert all(action.payload["target_title"] == "上海群" for action in actions)
     assert all(action.payload["target_peer_id"] == "-10017" for action in actions)
     assert all(action.payload["client_metadata"]["device_model"] for action in actions)
@@ -183,9 +185,42 @@ def test_search_join_environment_keeps_fingerprint_and_syncs_proxy_rebind(sessio
     action = session.scalar(select(Action).where(Action.task_id == next_task.id))
 
     assert binding.client_identity_key == original_identity
+    assert binding.developer_app_id == 51
+    assert binding.developer_app_api_id_snapshot == 2040
     assert binding.proxy_id == 99
     assert action.payload["runtime_environment"]["proxy_id"] == "99"
     assert action.payload["client_metadata"]["client_identity_key"] == original_identity
+
+
+@pytest.mark.no_postgres
+def test_search_join_environment_reuses_legacy_binding_after_app_scope_added(session: Session) -> None:
+    _bind_search_join_environment(session, [101])
+    authorization = session.scalar(select(TgAccountAuthorization).where(TgAccountAuthorization.account_id == 101))
+    legacy_binding = AccountEnvironmentBinding(
+        tenant_id=1,
+        account_id=101,
+        authorization_id=authorization.id,
+        session_role="primary",
+        proxy_binding_id=301,
+        proxy_id=31,
+        device_model="iPhone 15",
+        system_version="iOS 17.5",
+        app_version="10.14.1",
+        platform="ios",
+        client_identity_key="legacy-identity-101",
+    )
+    task = _task(type_config={"actions_per_round": 1, "hourly_min_successful_joins": 1})
+    session.add_all([legacy_binding, task])
+    session.commit()
+
+    assert build_task_plan(session, task) == 1
+    action = session.scalar(select(Action).where(Action.task_id == task.id))
+    session.refresh(legacy_binding)
+
+    assert session.query(AccountEnvironmentBinding).count() == 1
+    assert legacy_binding.developer_app_id == 51
+    assert legacy_binding.developer_app_api_id_snapshot == 2040
+    assert action.payload["client_metadata"]["client_identity_key"] == "legacy-identity-101"
 
 
 @pytest.mark.no_postgres

@@ -63,6 +63,7 @@ const adminPermissionGroups = [
   { menu: ['target_profile.view', '目标画像'], buttons: [['target_profile.manage', '目标画像管理']] },
   { menu: ['message_sending.view', '消息发送'], buttons: [['message_sending.manage', '发送管理']] },
   { menu: ['materials.view', '素材中心'], buttons: [['materials.upload', '素材上传'], ['materials.manage', '素材管理']] },
+  { menu: ['account_masks.view', '账号面具'], buttons: [['ai_voice_profiles.manage', '账号面具管理'], ['account_environment.manage', '账号环境管理']] },
   { menu: ['tasks.view', '任务中心'], buttons: [['tasks.manage', '任务管理'], ['tasks.dispatch_control', '调度控制']] },
   { menu: ['listeners.view', '监听中心'], buttons: [['listeners.manage', '监听管理']] },
   { menu: ['rules.view', '规则中心'], buttons: [['rules.publish', '规则发布']] },
@@ -74,7 +75,6 @@ const adminPermissionGroups = [
     ['system.manage', '系统管理'],
     ['ai.manage', 'AI配置'],
     ['prompt_templates.manage', '提示词管理'],
-    ['ai_voice_profiles.manage', '账号面具管理'],
     ['developer_apps.manage', '开发者应用'],
     ['permissions.view', '账号权限'],
     ['permissions.manage', '权限管理'],
@@ -211,7 +211,7 @@ export function AppModals() {
             <label>账号类型<Select value={adminUserForm.role} onChange={(value) => setAdminUserForm((current) => ({ ...current, role: value }))} options={['后台用户', '系统管理员'].map((value) => ({ value, label: value }))} /></label>
             <label>角色模板<Select value={adminUserForm.role_template} onChange={(value) => {
               const templatePermissions: Record<string, string[]> = {
-                '运营管理员': ['overview.view', 'operation_plans.manage', 'operation_issues.manage', 'accounts.view', 'accounts.sync', 'accounts.codes.read', 'accounts.security.read', 'accounts.security.batch', 'accounts.profile.batch_update', 'targets.view', 'targets.manage', 'target_profile.view', 'target_profile.manage', 'message_sending.view', 'message_sending.manage', 'materials.view', 'materials.upload', 'materials.manage', 'tasks.view', 'tasks.manage', 'listeners.view', 'listeners.manage', 'rules.view', 'rules.publish', 'risk.view', 'risk.manage', 'proxies.manage', 'archives.view', 'archives.manage', 'usage.view', 'usage.export', 'system.view', 'ai_voice_profiles.manage', 'manual.view', 'audits.view', 'audit.export'],
+                '运营管理员': ['overview.view', 'operation_plans.manage', 'operation_issues.manage', 'accounts.view', 'accounts.sync', 'accounts.codes.read', 'accounts.security.read', 'accounts.security.batch', 'accounts.profile.batch_update', 'targets.view', 'targets.manage', 'target_profile.view', 'target_profile.manage', 'message_sending.view', 'message_sending.manage', 'materials.view', 'materials.upload', 'materials.manage', 'account_masks.view', 'ai_voice_profiles.manage', 'account_environment.manage', 'tasks.view', 'tasks.manage', 'listeners.view', 'listeners.manage', 'rules.view', 'rules.publish', 'risk.view', 'risk.manage', 'proxies.manage', 'archives.view', 'archives.manage', 'usage.view', 'usage.export', 'system.view', 'manual.view', 'audits.view', 'audit.export'],
                 '账号添加专员': ['overview.view', 'accounts.view', 'accounts.create', 'accounts.login', 'accounts.sync'],
                 '只读观察员': ['overview.view', 'targets.view', 'target_profile.view', 'listeners.view', 'usage.view', 'manual.view', 'audits.view'],
               };

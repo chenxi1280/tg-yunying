@@ -1,4 +1,6 @@
 import asyncio
+import sys
+import types
 import pytest
 
 from app.config import Settings
@@ -135,6 +137,7 @@ def test_telethon_lifecycle_passes_proxy_to_new_client(monkeypatch):
 
     monkeypatch.setattr("telethon.TelegramClient", FakeTelegramClient)
     monkeypatch.setattr("telethon.sessions.StringSession", lambda value="": f"session:{value}")
+    monkeypatch.setitem(sys.modules, "socks", types.SimpleNamespace(SOCKS5=1, SOCKS4=2, HTTP=3))
 
     lifecycle.new_client(credentials, "raw")
 
