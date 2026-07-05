@@ -421,6 +421,7 @@ def _sanitize_key(raw: Any) -> str:
 __all__ = [
     "create_proxy_airport_subscription",
     "fetch_subscription",
+    "failover_proxy_airport_node_binding",
     "get_proxy_airport_subscription",
     "check_proxy_airport_node",
     "list_proxy_airport_subscriptions",
@@ -442,3 +443,4 @@ from .proxy_airport_pool import (  # noqa: E402
     select_proxy_airport_subscription_for_failover,
     sync_proxy_airport_subscription_by_id,
 )
+from .proxy_airport_failover import failover_proxy_airport_node_binding  # noqa: E402

@@ -11,8 +11,12 @@ from app.models import (
     AccountEnvironmentBinding,
     AccountProxy,
     AccountProxyBinding,
+    AccountProxyWarmupState,
     AccountStatus,
     Action,
+    ProxyAirportNode,
+    ProxyAirportSubscription,
+    ProxyNodeFailoverEvent,
     SearchJoinLinkedTaskDispatch,
     Task,
     TelegramDeveloperApp,
@@ -244,6 +248,150 @@ def test_search_join_dispatch_blocks_gateway_without_proxy_guard(monkeypatch, se
     assert calls == []
     assert action.status == "failed"
     assert action.result["error_code"] == "proxy_egress_guard_missing"
+
+
+@pytest.mark.no_postgres
+def test_search_join_dispatch_blocks_incomplete_environment_proxy_config(monkeypatch, session: Session) -> None:
+    _task, action = _persist_task_and_action(session)
+    action.payload = {**action.payload, "runtime_environment": _verified_runtime()}
+    proxy = session.get(AccountProxy, 31)
+    proxy.host = ""
+    calls: list[dict] = []
+
+    def execute_search_join(*args, **kwargs):
+        calls.append({"args": args, "kwargs": kwargs})
+        return {"success": True}
+
+    monkeypatch.setattr(dispatcher.gateway, "execute_search_join", execute_search_join, raising=False)
+
+    assert dispatch_action(session, action) is True
+    assert calls == []
+    assert action.status == "failed"
+    assert action.result["error_code"] == "search_join_environment_proxy_config_missing"
+
+
+@pytest.mark.no_postgres
+def test_search_join_dispatch_records_proxy_failover_after_gateway_proxy_failure(monkeypatch, session: Session) -> None:
+    task, action = _persist_task_and_action(session)
+    action.payload = {**action.payload, "runtime_environment": _verified_runtime()}
+    pending = _action(task)
+    pending.payload = {**pending.payload, "runtime_environment": _verified_runtime()}
+    session.add(pending)
+    session.flush()
+    primary = ProxyAirportSubscription(
+        tenant_id=1,
+        name="primary",
+        subscription_url_ciphertext="enc",
+        priority=10,
+        enabled=True,
+        sync_status="synced",
+        node_count=2,
+        healthy_node_count=1,
+    )
+    session.add(primary)
+    session.flush()
+    old_node = ProxyAirportNode(
+        tenant_id=1,
+        subscription_id=primary.id,
+        node_key="old-node",
+        node_name="old-node",
+        protocol="trojan",
+        proxy_host="old.example.com",
+        proxy_port=443,
+        status="unhealthy",
+        observed_exit_ip="203.0.113.10",
+    )
+    next_node = ProxyAirportNode(
+        tenant_id=1,
+        subscription_id=primary.id,
+        node_key="next-node",
+        node_name="next-node",
+        protocol="trojan",
+        proxy_host="next.example.com",
+        proxy_port=443,
+        status="healthy",
+        observed_exit_ip="203.0.113.11",
+    )
+    session.add_all([old_node, next_node])
+    session.flush()
+    session.get(AccountProxyBinding, 301).proxy_airport_node_id = old_node.id
+
+    def execute_search_join(*args, **kwargs):
+        return {
+            "success": False,
+            "error_code": "proxy_node_unreachable",
+            "error_message": "connect_timeout",
+        }
+
+    monkeypatch.setattr(dispatcher.gateway, "execute_search_join", execute_search_join, raising=False)
+
+    assert dispatch_action(session, action) is True
+    old_binding = session.get(AccountProxyBinding, 301)
+    new_binding = session.query(AccountProxyBinding).filter(AccountProxyBinding.id != 301).one()
+    environment = session.get(AccountEnvironmentBinding, "env-201")
+    event = session.query(ProxyNodeFailoverEvent).one()
+    warmup = session.query(AccountProxyWarmupState).one()
+
+    assert action.status == "failed"
+    assert action.result["proxy_failover_status"] == "switched"
+    assert action.result["proxy_failover_event_id"] == event.id
+    assert old_binding.status == "inactive"
+    assert new_binding.proxy_airport_node_id == next_node.id
+    assert environment.proxy_binding_id == new_binding.id
+    assert pending.payload["runtime_environment"]["proxy_binding_id"] == str(new_binding.id)
+    assert new_binding.binding_generation == 2
+    assert event.reason == "proxy_node_unreachable"
+    assert event.observed_error == "connect_timeout"
+    assert warmup.proxy_binding_id == new_binding.id
+    assert warmup.stage == "pending_warmup"
+
+
+@pytest.mark.no_postgres
+def test_search_join_dispatch_records_admin_notice_when_runtime_failover_has_no_candidate(monkeypatch, session: Session) -> None:
+    _task, action = _persist_task_and_action(session)
+    action.payload = {**action.payload, "runtime_environment": _verified_runtime()}
+    primary = ProxyAirportSubscription(
+        tenant_id=1,
+        name="primary",
+        subscription_url_ciphertext="enc",
+        priority=10,
+        enabled=True,
+        sync_status="synced",
+        node_count=1,
+        healthy_node_count=0,
+    )
+    session.add(primary)
+    session.flush()
+    old_node = ProxyAirportNode(
+        tenant_id=1,
+        subscription_id=primary.id,
+        node_key="old-node",
+        node_name="old-node",
+        protocol="trojan",
+        proxy_host="old.example.com",
+        proxy_port=443,
+        status="unhealthy",
+        observed_exit_ip="203.0.113.10",
+    )
+    session.add(old_node)
+    session.flush()
+    session.get(AccountProxyBinding, 301).proxy_airport_node_id = old_node.id
+
+    def execute_search_join(*args, **kwargs):
+        return {
+            "success": False,
+            "error_code": "proxy_node_unreachable",
+            "error_message": "connect_timeout",
+        }
+
+    monkeypatch.setattr(dispatcher.gateway, "execute_search_join", execute_search_join, raising=False)
+
+    assert dispatch_action(session, action) is True
+    assert action.status == "failed"
+    assert action.result["proxy_failover_status"] == "failed"
+    assert action.result["proxy_failover_error"] == "airport_all_subscriptions_unavailable"
+    assert action.result["admin_notification_status"] == "admin_notification_failed"
+    assert "Telegram Bot token" in action.result["admin_notification_detail"]
 
 
 @pytest.mark.no_postgres

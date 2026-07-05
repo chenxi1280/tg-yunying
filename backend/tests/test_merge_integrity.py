@@ -35,7 +35,7 @@ def test_alembic_versions_have_single_head():
 
     assert all(len(revision) <= 32 for revision in revisions)
     heads = sorted(set(revisions) - referenced)
-    assert heads == ["0081_proxy_airport_multi_source"]
+    assert heads == ["0082_proxy_airport_failover_bind"]
 
 
 def test_backend_test_names_are_unique_per_file():

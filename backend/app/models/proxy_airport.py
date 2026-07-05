@@ -66,13 +66,38 @@ class ProxyNodeFailoverEvent(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), default=1)
     account_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    developer_app_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     authorization_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    session_role: Mapped[str] = mapped_column(String(24), default="")
     from_subscription_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     to_subscription_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     from_node_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     to_node_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     reason: Mapped[str] = mapped_column(String(80), default="")
+    outcome: Mapped[str] = mapped_column(String(40), default="")
+    observed_error: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
-__all__ = ["ProxyAirportNode", "ProxyAirportSubscription", "ProxyNodeFailoverEvent"]
+class ProxyExitIpObservation(Base):
+    __tablename__ = "proxy_exit_ip_observations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), default=1)
+    proxy_node_id: Mapped[int | None] = mapped_column(ForeignKey("proxy_airport_nodes.id"), nullable=True)
+    proxy_binding_id: Mapped[int | None] = mapped_column(ForeignKey("account_proxy_bindings.id"), nullable=True)
+    observed_exit_ip: Mapped[str] = mapped_column(String(64), default="")
+    observed_exit_country: Mapped[str] = mapped_column(String(16), default="")
+    observed_exit_asn: Mapped[str] = mapped_column(String(80), default="")
+    observed_exit_isp: Mapped[str] = mapped_column(String(120), default="")
+    check_source: Mapped[str] = mapped_column(String(40), default="failover")
+    raw_response: Mapped[str] = mapped_column(Text, default="")
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+__all__ = [
+    "ProxyAirportNode",
+    "ProxyAirportSubscription",
+    "ProxyExitIpObservation",
+    "ProxyNodeFailoverEvent",
+]

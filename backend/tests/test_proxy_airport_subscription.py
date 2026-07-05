@@ -5,7 +5,10 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import ProxyAirportNode, Tenant
+from app.models import (
+    ProxyAirportNode,
+    Tenant,
+)
 from app.schemas.account_environment import (
     ProxyAirportSubscriptionCreate,
     ProxyAirportSubscriptionPatch,

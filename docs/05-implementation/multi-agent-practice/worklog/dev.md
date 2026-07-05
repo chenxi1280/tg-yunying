@@ -142,3 +142,14 @@
 - decision: status=local_verified_pending_release；subagent_supervision=done_with_P0_fixed；release_gate=pending；production_verification=unproven。
 - next_agent: qa
 - unresolved: 真实出口 IP 观测、健康节点自动固定到授权槽位、运行中同订阅/备用订阅自动切换、`proxy_node_failover_events` 写入和 warmup 重置仍需后续实现或生产证据；尚未执行 GitHub Actions release / production deploy。
+
+## 2026-07-05 Clash 运行中 failover 绑定 Development Complete（本地验证）
+
+- message_id: 2026-07-05-clash-failover-runtime-devcomplete-001
+- action: 补齐 Clash 多订阅源池在 search_join 运行中代理失败后的授权槽位绑定切换、事件记录、出口观测和 warmup 重置。
+- input: 用户要求 Clash 支持多个地址，主地址掉了使用备用地址；监督子代理指出 `proxy_exit_ip_observations`、`account_proxy_warmup_states`、当前绑定节点级 failover 和 Dispatcher 代理失败切换仍缺代码证明。
+- output: 新增 `proxy_airport_failover.py`，在当前授权槽位 active airport binding 上优先同订阅切健康节点，同订阅无候选时按订阅 priority 切备用订阅健康节点；旧 `AccountProxyBinding` 置 inactive，新 binding 继承账号 / 开发者应用 / 授权槽位并写 `proxy_airport_node_id`、已有 observed exit IP、`binding_generation` 和 `last_failover_at`；写 `ProxyNodeFailoverEvent`、有出口观测时写 `ProxyExitIpObservation`、始终写 `AccountProxyWarmupState`，并把 active `AccountEnvironmentBinding.proxy_binding_id` 指向新绑定。Dispatcher 在 search_join 代理类失败后调用 failover，action result 写 `proxy_failover_status` / `proxy_failover_event_id`；切换成功后刷新同任务同账号 pending search_join payload 的 `proxy_binding_id`；无候选时写管理员通知状态；代理 protocol / host / port 缺失时在 gateway 前 fail closed。
+- evidence: 先补 red tests 并确认失败：缺 `AccountProxyWarmupState` / 运行中代理失败不会生成新 binding / environment binding 不会重指向 / 代理 host 为空仍会调用 gateway；Copernicus 只读复核指出 3 个 blocker：候选节点错误依赖 observed exit IP、pending action 仍携带旧 binding、运行中全订阅不可用不通知管理员。已补 red tests 并修复，定向 `backend/.venv/bin/python -m pytest backend/tests/test_proxy_airport_subscription.py backend/tests/test_proxy_airport_failover.py backend/tests/test_search_join_group_linked_tasks.py backend/tests/test_merge_integrity.py -q` -> 30 passed。
+- decision: status=local_verified_pending_release；subagent_supervision=done_with_P0_P1_fixed；release_gate=pending；production_verification=unproven。
+- next_agent: qa
+- unresolved: 尚未执行全量 no_postgres、frontend build、GitHub Actions release / production deploy；真实生产 Clash 订阅拉取、真实出口 IP、真实运行中 failover 和郑州 3 账号线上任务复测仍需生产证据。

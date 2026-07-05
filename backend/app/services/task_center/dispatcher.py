@@ -12,6 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from pydantic import ValidationError
 
+from app.admin_chats import send_admin_chat_broadcast
 from app.integrations.telegram import DeveloperAppCredentials, OperationResult, OutboundSegment
 from app.config import get_settings
 from app.models import AccountStatus, Action, ChannelMessage, ExecutionAttempt, FailureType, GroupAuthStatus, GroupContextMessage, OperationTarget, ReviewQueue, Task, Tenant, TgAccount, TgGroup, TgGroupAccount, VerificationTask
@@ -25,6 +26,8 @@ from app.services.content_filters import filter_outbound_content, rewrite_reject
 from app.services.developer_apps import credentials_for_account, credentials_for_developer_app
 from app.services.ai_config import get_scheduling_setting
 from app.services.membership_challenges import auto_resolve_image_verification, auto_resolve_text_verification, read_challenge_context_with_fallback, record_challenge_attempt
+from app.services.notifications import NotificationResult, send_telegram_bot_message
+from app.services.proxy_airport_subscription import failover_proxy_airport_node_binding
 from app.services.required_channel_prompts import (
     REQUIRED_CHANNEL_BLOCKED_LABEL,
     REQUIRED_CHANNEL_PERMISSION_LABEL,
@@ -68,6 +71,13 @@ _COMMENT_MEMBERSHIP_REQUIRED_MARKERS = (
     "不在目标",
     "无法进入关联讨论区",
 )
+_SEARCH_JOIN_PROXY_FAILURE_CODES = {
+    "proxy_auth_failed",
+    "proxy_connect_timeout",
+    "proxy_connection_failed",
+    "proxy_egress_guard_failed",
+    "proxy_node_unreachable",
+}
 _GROUP_SEND_LINKED_CHANNEL_REQUIRED_MARKERS = (
     "未关注",
     "关注",
@@ -3494,10 +3504,147 @@ def _dispatch_search_join(session: Session, action: Action, account: TgAccount, 
     result = search_join(account.id, payload.model_dump(mode="json"), runtime_authorization.session_ciphertext, runtime_authorization.credentials, keyword_text)
     action.status = "success" if result.get("success") else "failed"
     action.result = {**(action.result or {}), **result}
+    _record_search_join_proxy_failover(session, action, payload, result)
     action.executed_at = _now()
     _stop_search_join_task_if_target_exhausted(session, action, result)
     _create_search_join_linked_dispatches(session, action, payload)
     return True
+
+
+def _record_search_join_proxy_failover(
+    session: Session,
+    action: Action,
+    payload: SearchJoinPayload,
+    result: dict,
+) -> None:
+    if result.get("success") or not _is_search_join_proxy_failure(result):
+        return
+    runtime = payload.runtime_environment if isinstance(payload.runtime_environment, dict) else {}
+    proxy_binding_id = int(runtime.get("proxy_binding_id") or 0)
+    if proxy_binding_id <= 0:
+        return
+    reason = str(result.get("error_code") or result.get("failure_type") or "proxy_node_unreachable")
+    observed_error = str(result.get("error_message") or result.get("failure_detail") or "")
+    try:
+        binding = failover_proxy_airport_node_binding(
+            session,
+            tenant_id=action.tenant_id,
+            proxy_binding_id=proxy_binding_id,
+            reason=reason,
+            observed_error=observed_error,
+        )
+    except ValueError as exc:
+        if str(exc) == "airport_all_subscriptions_unavailable":
+            _record_runtime_all_subscriptions_unavailable_notice(session, action)
+        action.result = {
+            **(action.result or {}),
+            "proxy_failover_status": "failed",
+            "proxy_failover_error": str(exc),
+        }
+        return
+    _retarget_pending_search_join_proxy_bindings(session, action, payload, binding)
+    action.result = {
+        **(action.result or {}),
+        "proxy_failover_status": "switched",
+        "proxy_failover_binding_id": binding.id,
+        "proxy_failover_event_id": getattr(binding, "proxy_failover_event_id", None),
+    }
+
+
+def _is_search_join_proxy_failure(result: dict) -> bool:
+    values = {str(result.get("error_code") or ""), str(result.get("failure_type") or "")}
+    return bool(values & _SEARCH_JOIN_PROXY_FAILURE_CODES)
+
+
+def _retarget_pending_search_join_proxy_bindings(
+    session: Session,
+    action: Action,
+    payload: SearchJoinPayload,
+    binding: AccountProxyBinding,
+) -> None:
+    runtime = payload.runtime_environment if isinstance(payload.runtime_environment, dict) else {}
+    old_binding_id = str(runtime.get("proxy_binding_id") or "")
+    environment_binding_id = str(runtime.get("environment_binding_id") or "")
+    if not old_binding_id or not environment_binding_id:
+        return
+    rows = session.scalars(
+        select(Action).where(
+            Action.tenant_id == action.tenant_id,
+            Action.task_id == action.task_id,
+            Action.account_id == action.account_id,
+            Action.action_type == "search_join",
+            Action.status.in_(["pending", "retryable_failed"]),
+            Action.id != action.id,
+        )
+    )
+    for row in rows:
+        _retarget_action_payload_proxy_binding(row, old_binding_id, environment_binding_id, binding.id)
+
+
+def _retarget_action_payload_proxy_binding(
+    action: Action,
+    old_binding_id: str,
+    environment_binding_id: str,
+    new_binding_id: int,
+) -> None:
+    payload = dict(action.payload or {})
+    runtime = dict(payload.get("runtime_environment") or {})
+    if str(runtime.get("environment_binding_id") or "") != environment_binding_id:
+        return
+    if str(runtime.get("proxy_binding_id") or "") != old_binding_id:
+        return
+    runtime["proxy_binding_id"] = str(new_binding_id)
+    payload["runtime_environment"] = runtime
+    action.payload = payload
+
+
+def _record_runtime_all_subscriptions_unavailable_notice(session: Session, action: Action) -> None:
+    task = session.get(Task, action.task_id)
+    result = _notify_runtime_all_subscriptions_unavailable(session, action, task)
+    action.result = {
+        **(action.result or {}),
+        "admin_notification_status": "sent" if result.ok else "admin_notification_failed",
+        "admin_notification_detail": result.detail,
+    }
+
+
+def _notify_runtime_all_subscriptions_unavailable(
+    session: Session,
+    action: Action,
+    task: Task | None,
+) -> NotificationResult:
+    tenant = session.get(Tenant, action.tenant_id)
+    if not tenant or not tenant.admin_chat_id or not tenant.telegram_bot_token_ciphertext:
+        result = NotificationResult(False, "Telegram Bot token or admin chat id not configured")
+        _audit_runtime_subscription_notification(session, action, result)
+        return result
+    bot_token = decrypt_secret(tenant.telegram_bot_token_ciphertext)
+    if not bot_token:
+        result = NotificationResult(False, "Telegram Bot token decrypts to empty")
+        _audit_runtime_subscription_notification(session, action, result)
+        return result
+    task_name = task.name if task else action.task_id
+    summary = send_admin_chat_broadcast(
+        bot_token=bot_token,
+        raw_admin_chat_id=tenant.admin_chat_id,
+        text=f"Clash 订阅源池全部不可用\n任务: {task_name}\n任务ID: {action.task_id}\n处理: 运行中代理切换失败，已阻断搜索目标群点击真实操作",
+        sender=send_telegram_bot_message,
+    )
+    result = NotificationResult(summary.ok, summary.detail)
+    _audit_runtime_subscription_notification(session, action, result)
+    return result
+
+
+def _audit_runtime_subscription_notification(session: Session, action: Action, result: NotificationResult) -> None:
+    audit(
+        session,
+        tenant_id=action.tenant_id,
+        actor="search-join-dispatcher",
+        action="Clash订阅全部不可用通知" if result.ok else "Clash订阅全部不可用通知失败",
+        target_type="action",
+        target_id=str(action.id),
+        detail=result.detail,
+    )
 
 
 def _search_join_proxy_guard_verified(payload: SearchJoinPayload) -> bool:
@@ -3566,7 +3713,13 @@ def _search_join_proxy(
         raise ValueError("search_join_proxy_scope_mismatch")
     if proxy.status != "healthy" or proxy.alert_status != "normal":
         raise ValueError("search_join_environment_proxy_unhealthy")
+    if not _search_join_proxy_config_complete(proxy):
+        raise ValueError("search_join_environment_proxy_config_missing")
     return proxy
+
+
+def _search_join_proxy_config_complete(proxy: AccountProxy) -> bool:
+    return bool(str(proxy.protocol or "").strip()) and bool(str(proxy.host or "").strip()) and int(proxy.port or 0) > 0
 
 
 def _search_join_environment_binding(

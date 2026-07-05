@@ -120,3 +120,14 @@
 - decision: 本地合同验收通过；plural sync 会执行健康探测，全订阅不可用会写 `airport_all_subscriptions_unavailable`、不生成 action 并尝试租户 Bot 管理员通知。
 - next_agent: prod-diagnosis
 - unresolved: CI / release deploy / 生产健康未验证；真实订阅拉取、真实节点健康、真实出口 IP、运行中 failover event、warmup 重置和郑州线上任务复测仍 unproven。
+
+## 2026-07-05 Clash 运行中 failover 绑定本地 QA
+
+- message_id: 2026-07-05-clash-failover-runtime-local-qa-001
+- action: 对 search_join 代理失败触发同订阅 / 备用订阅 failover、绑定切换、事件、已有出口观测转存、warmup 重置、pending payload 重指向、管理员通知状态和代理配置 fail-closed 做本地自动化验收。
+- input: 2026-07-05-clash-failover-runtime-devcomplete-001；监督子代理指出多订阅源池仍缺运行时 failover 数据闭环。
+- output: local_qa_pass_for_runtime_failover_contracts
+- evidence: Red tests 已先失败后修复；Copernicus 只读复核指出候选节点错误依赖 observed exit IP、pending action 仍携带旧 binding、运行中全订阅不可用不通知管理员，均已补红测并修复；定向 `backend/.venv/bin/python -m pytest backend/tests/test_proxy_airport_subscription.py backend/tests/test_proxy_airport_failover.py backend/tests/test_search_join_group_linked_tasks.py backend/tests/test_merge_integrity.py -q` -> 30 passed。覆盖点包括同订阅健康节点优先、备用订阅兜底、健康备用节点未观测出口 IP 也能切换、全部无候选 fail closed、`proxy_node_failover_events` 详情、`proxy_exit_ip_observations` 有则记录、`account_proxy_warmup_states`、`account_environment_bindings.proxy_binding_id` 重指向、pending action payload 重指向、管理员通知状态，以及代理 host 缺失不调用 gateway。
+- decision: 本地合同验收通过；不声明生产真实订阅同步、真实出口 IP 或真实 search_join failover 已发生。
+- next_agent: prod-diagnosis
+- unresolved: 全量 no_postgres、frontend build、CI / release deploy / 生产健康和郑州线上任务复测仍 unproven。

@@ -66,11 +66,36 @@ class AccountProxyBinding(Base):
     authorization_id: Mapped[int | None] = mapped_column(ForeignKey("tg_account_authorizations.id"), nullable=True)
     session_role: Mapped[str] = mapped_column(String(24), default="")
     proxy_id: Mapped[int | None] = mapped_column(ForeignKey("account_proxies.id"), nullable=True)
+    proxy_airport_node_id: Mapped[int | None] = mapped_column(ForeignKey("proxy_airport_nodes.id"), nullable=True)
+    observed_exit_ip: Mapped[str] = mapped_column(String(64), default="")
+    observed_exit_country: Mapped[str] = mapped_column(String(16), default="")
+    observed_exit_asn: Mapped[str] = mapped_column(String(80), default="")
+    observed_exit_isp: Mapped[str] = mapped_column(String(120), default="")
+    last_failover_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    binding_generation: Mapped[int] = mapped_column(Integer, default=1)
     status: Mapped[str] = mapped_column(String(30), default="active")
     change_reason: Mapped[str] = mapped_column(String(255), default="")
     bound_by: Mapped[str] = mapped_column(String(100), default="")
     bound_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     unbound_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class AccountProxyWarmupState(Base):
+    __tablename__ = "account_proxy_warmup_states"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), default=1)
+    account_id: Mapped[int] = mapped_column(ForeignKey("tg_accounts.id"))
+    developer_app_id: Mapped[int | None] = mapped_column(ForeignKey("telegram_developer_apps.id"), nullable=True)
+    authorization_id: Mapped[int | None] = mapped_column(ForeignKey("tg_account_authorizations.id"), nullable=True)
+    session_role: Mapped[str] = mapped_column(String(24), default="")
+    proxy_binding_id: Mapped[int | None] = mapped_column(ForeignKey("account_proxy_bindings.id"), nullable=True)
+    stage: Mapped[str] = mapped_column(String(40), default="pending_warmup")
+    reset_reason: Mapped[str] = mapped_column(String(80), default="")
+    daily_actions_count: Mapped[int] = mapped_column(Integer, default=0)
+    total_actions: Mapped[int] = mapped_column(Integer, default=0)
+    stage_started_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    first_action_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class ProxyAlert(Base):
@@ -113,4 +138,4 @@ class ProxyHealthCheck(Base):
     trace_id: Mapped[str] = mapped_column(String(80), default="")
 
 
-__all__ = ["AccountProxy", "AccountProxyBinding", "ProxyAlert", "ProxyHealthCheck"]
+__all__ = ["AccountProxy", "AccountProxyBinding", "AccountProxyWarmupState", "ProxyAlert", "ProxyHealthCheck"]
