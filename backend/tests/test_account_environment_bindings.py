@@ -22,6 +22,7 @@ from app.services.account_environment import (
     list_account_environment_bindings,
     patch_account_environment_binding,
 )
+from app.services.client_metadata import ensure_or_create_search_join_environment
 
 
 pytestmark = pytest.mark.no_postgres
@@ -121,6 +122,22 @@ def test_account_environment_projection_uses_developer_app_and_authorization_slo
     assert rows[0].developer_app_api_id_snapshot == 10011
     assert rows[0].authorization_id == 201
     assert rows[0].consistency_status == "pending_effect"
+
+
+def test_search_join_environment_can_create_missing_client_metadata_binding() -> None:
+    with _session() as session:
+        _seed_environment(session)
+        account = session.get(TgAccount, 101)
+
+        environment = ensure_or_create_search_join_environment(session, account)
+
+        assert environment is not None
+        assert environment.authorization_id == 201
+        assert environment.proxy_id == 31
+        assert environment.client_metadata["device_model"]
+        assert environment.client_metadata["client_identity_key"]
+        assert session.scalar(select(AccountEnvironmentBinding).where(AccountEnvironmentBinding.account_id == 101)) is not None
+        assert session.scalar(select(AccountProxyBinding).where(AccountProxyBinding.account_id == 101)) is not None
 
 
 def test_account_environment_projection_compares_remote_authorization_snapshot() -> None:

@@ -34,7 +34,7 @@ from app.models import (
 from app.security import encrypt_secret
 from app.schemas.task_center import AccountConfig, SearchJoinBotConfig, SearchJoinGroupTaskCreate
 from app.services._common import _now, audit
-from app.services.client_metadata import ensure_search_join_environment
+from app.services.client_metadata import ensure_or_create_search_join_environment
 from app.services.task_center.executors import build_task_plan
 from app.services.task_center.service import _assert_precheck_allows_start, _mark_task_started, _new_task
 
@@ -434,7 +434,7 @@ def bind_account_environments(session, accounts: list[TgAccount]) -> dict[str, A
     failures: list[dict[str, Any]] = []
     for account in accounts:
         try:
-            environment = ensure_search_join_environment(session, account)
+            environment = ensure_or_create_search_join_environment(session, account)
         except ValueError as exc:
             failures.append({"account_id": account.id, "error": str(exc)})
             continue

@@ -107,6 +107,23 @@ def ensure_search_join_environment(session: Session, account: TgAccount) -> Sear
     return _environment_from_binding(binding, proxy)
 
 
+def ensure_or_create_search_join_environment(session: Session, account: TgAccount) -> SearchJoinEnvironment | None:
+    environment = ensure_search_join_environment(session, account)
+    if environment is not None:
+        return environment
+    authorization = _active_authorization(session, account.id)
+    if authorization is None:
+        return None
+    proxy = _healthy_proxy(session, authorization.proxy_id or account.proxy_id)
+    if proxy is None:
+        return None
+    binding = _existing_binding(session, account.id, authorization)
+    if binding is None:
+        binding = _create_binding(session, EnvironmentTarget(account, authorization, proxy))
+    _hydrate_binding_app_scope(binding, authorization)
+    return _environment_from_binding(binding, proxy)
+
+
 def _active_authorization(session: Session, account_id: int) -> TgAccountAuthorization | None:
     stmt = (
         select(TgAccountAuthorization)

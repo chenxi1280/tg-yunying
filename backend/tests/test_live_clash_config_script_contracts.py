@@ -16,6 +16,7 @@ def test_live_clash_script_writes_airport_subscription_nodes_and_slot_bindings()
 
     assert "ProxyAirportSubscription" in source
     assert "ProxyAirportNode" in source
+    assert "ensure_or_create_search_join_environment" in source
     assert "proxy_airport_node_id=" in source
     assert "subscription_id=" in source
     assert "node_key=" in source

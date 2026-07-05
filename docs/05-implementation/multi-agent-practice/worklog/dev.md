@@ -164,3 +164,14 @@
 - decision: status=local_verified_pending_release；subagent_supervision=done_with_blockers_fixed；release_gate=pending；production_verification=unproven
 - next_agent: qa
 - unresolved: 尚未执行 GitHub Actions release / production deploy；真实生产 Clash 订阅拉取、真实出口 IP、真实运行中 failover 和郑州 3 账号线上任务复测仍需生产证据
+
+## 2026-07-05 Clash live apply client metadata 修复（本地验证）
+
+- message_id: 2026-07-05-clash-live-apply-client-metadata-fix-001
+- action: 修复生产直连配置 Clash 时 `apply_db` 在全账号环境绑定阶段因缺少现成 client metadata 失败的问题。
+- input: 生产 SSH 直连执行 Clash 配置时 16 个候选节点 egress 全部 OK，DB preflight 通过 `account_count=612`、郑州目标命中，但 `apply_db` 报 `account environment binding failed: needs_client_metadata`。
+- output: `client_metadata` 服务新增公开 `ensure_or_create_search_join_environment`，在授权槽位和健康代理存在时生成真实 `AccountEnvironmentBinding` / `AccountProxyBinding` / client identity；live 配置脚本全账号环境绑定阶段改用该入口，仍对缺少授权或健康代理的账号显式失败，不走默认 MTProto 指纹或静默跳过。
+- evidence: 新增服务层回归证明缺少现成环境绑定时会创建完整 client metadata；live 脚本合同测试要求使用 ensure-or-create 入口；定向 `backend/.venv/bin/python -m pytest backend/tests/test_account_environment_bindings.py backend/tests/test_live_clash_config_script_contracts.py backend/tests/test_proxy_airport_subscription.py backend/tests/test_search_join_group_linked_tasks.py -q` -> 38 passed；全量 `backend/.venv/bin/python -m pytest -q -m no_postgres` -> 769 passed / 787 deselected；changed py_compile、`git diff --check` 通过。
+- decision: status=local_verified_pending_release；release_gate=pending；production_verification=partial_failed_then_fixed_locally。
+- next_agent: qa
+- unresolved: 修复提交尚未重新发布；生产 DB apply / 郑州 3 账号任务仍需重新 SSH 直连验证。
