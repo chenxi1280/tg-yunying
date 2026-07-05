@@ -48,9 +48,9 @@ def _add_subscription_columns() -> None:
     _add_column_if_missing("proxy_airport_subscriptions", sa.Column("name", sa.String(length=80), nullable=False, server_default="主订阅"))
     _add_column_if_missing("proxy_airport_subscriptions", sa.Column("priority", sa.Integer(), nullable=False, server_default="10"))
     _add_column_if_missing("proxy_airport_subscriptions", sa.Column("enabled", sa.Boolean(), nullable=False, server_default=sa.text("true")))
-    _add_column_if_missing("proxy_airport_subscriptions", sa.Column("failover_policy", sa.String(length=40), nullable=False, server_default="priority"))
+    _add_column_if_missing("proxy_airport_subscriptions", sa.Column("failover_policy", sa.String(length=40), nullable=False, server_default="same_subscription_first"))
     _add_column_if_missing("proxy_airport_subscriptions", sa.Column("auto_failback_enabled", sa.Boolean(), nullable=False, server_default=sa.text("false")))
-    _add_column_if_missing("proxy_airport_subscriptions", sa.Column("failback_cooldown_minutes", sa.Integer(), nullable=False, server_default="0"))
+    _add_column_if_missing("proxy_airport_subscriptions", sa.Column("failback_cooldown_minutes", sa.Integer(), nullable=False, server_default="1440"))
     _add_column_if_missing("proxy_airport_subscriptions", sa.Column("all_subscriptions_down_policy", sa.String(length=40), nullable=False, server_default="pause_task"))
     _add_column_if_missing("proxy_airport_subscriptions", sa.Column("notify_admin_on_all_subscriptions_down", sa.Boolean(), nullable=False, server_default=sa.text("true")))
 

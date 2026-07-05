@@ -338,7 +338,9 @@ def test_search_join_dispatch_records_proxy_failover_after_gateway_proxy_failure
     assert old_binding.status == "inactive"
     assert new_binding.proxy_airport_node_id == next_node.id
     assert environment.proxy_binding_id == new_binding.id
+    assert environment.proxy_id == new_binding.proxy_id
     assert pending.payload["runtime_environment"]["proxy_binding_id"] == str(new_binding.id)
+    assert pending.payload["runtime_environment"]["proxy_id"] == str(new_binding.proxy_id)
     assert new_binding.binding_generation == 2
     assert event.reason == "proxy_node_unreachable"
     assert event.observed_error == "connect_timeout"

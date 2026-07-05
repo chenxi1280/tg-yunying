@@ -221,6 +221,26 @@ def test_proxy_airport_subscription_pool_lists_enabled_sources_by_priority() -> 
     assert "primary-secret" not in rows[0].model_dump_json()
 
 
+def test_proxy_airport_subscription_defaults_match_same_subscription_first_failover_policy() -> None:
+    payload = ProxyAirportSubscriptionCreate(
+        name="primary",
+        subscription_url="https://primary.example.com/sub",
+    )
+
+    assert payload.failover_policy == "same_subscription_first"
+    assert payload.auto_failback_enabled is False
+    assert payload.failback_cooldown_minutes == 1440
+
+
+def test_proxy_airport_subscription_rejects_auto_failback_until_runtime_exists() -> None:
+    with pytest.raises(ValueError, match="proxy_airport_auto_failback_not_implemented"):
+        ProxyAirportSubscriptionCreate(
+            name="primary",
+            subscription_url="https://primary.example.com/sub",
+            auto_failback_enabled=True,
+        )
+
+
 def test_proxy_airport_subscription_pool_rejects_duplicate_enabled_priority() -> None:
     with _session() as session:
         create_proxy_airport_subscription(

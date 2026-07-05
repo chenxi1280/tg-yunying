@@ -7,6 +7,7 @@ from app.models import (
     AccountProxyBinding,
     AccountProxyWarmupState,
     AccountEnvironmentBinding,
+    AccountProxy,
     ProxyAirportNode,
     ProxyAirportSubscription,
     ProxyExitIpObservation,
@@ -33,7 +34,8 @@ def failover_proxy_airport_node_binding(
     now = _now()
     binding.status = "inactive"
     binding.unbound_at = now
-    new_binding = _new_binding(binding, to_node, reason, now)
+    proxy = _proxy_for_node(session, to_node)
+    new_binding = _new_binding(binding, to_node, proxy, reason, now)
     session.add(new_binding)
     session.flush()
     event = _failover_event(binding, new_binding, from_node, to_node, reason, observed_error)
@@ -114,6 +116,7 @@ def _has_available_capacity(session: Session, node: ProxyAirportNode) -> bool:
 def _new_binding(
     old: AccountProxyBinding,
     node: ProxyAirportNode,
+    proxy: AccountProxy,
     reason: str,
     now,
 ) -> AccountProxyBinding:
@@ -124,7 +127,7 @@ def _new_binding(
         developer_app_api_id_snapshot=old.developer_app_api_id_snapshot,
         authorization_id=old.authorization_id,
         session_role=old.session_role,
-        proxy_id=old.proxy_id,
+        proxy_id=proxy.id,
         proxy_airport_node_id=node.id,
         observed_exit_ip=node.observed_exit_ip,
         observed_exit_country=node.observed_exit_country,
@@ -135,6 +138,28 @@ def _new_binding(
         change_reason=reason,
         bound_by="proxy_airport_failover",
     )
+
+
+def _proxy_for_node(session: Session, node: ProxyAirportNode) -> AccountProxy:
+    name = f"airport-node-{node.id}"
+    proxy = session.scalar(
+        select(AccountProxy).where(
+            AccountProxy.tenant_id == node.tenant_id,
+            AccountProxy.name == name,
+        )
+    )
+    if proxy is None:
+        proxy = AccountProxy(tenant_id=node.tenant_id, name=name, port=int(node.proxy_port or 0))
+        session.add(proxy)
+    proxy.protocol = node.protocol or "socks5"
+    proxy.host = node.proxy_host
+    proxy.port = int(node.proxy_port or 0)
+    proxy.status = "healthy"
+    proxy.alert_status = "normal"
+    proxy.last_error = ""
+    proxy.notes = "airport_clash failover node"
+    session.flush()
+    return proxy
 
 
 def _failover_event(
@@ -193,6 +218,7 @@ def _retarget_environment_binding(
     if binding is None:
         return
     binding.proxy_binding_id = new.id
+    binding.proxy_id = new.proxy_id
     binding.updated_at = _now()
 
 

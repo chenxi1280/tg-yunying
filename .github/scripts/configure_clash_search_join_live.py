@@ -23,12 +23,15 @@ from app.models import (
     Action,
     BotProtocolSample,
     OperationTarget,
+    ProxyAirportNode,
+    ProxyAirportSubscription,
     ProxyHealthCheck,
     Task,
     TelegramDeveloperApp,
     TgAccount,
     TgAccountAuthorization,
 )
+from app.security import encrypt_secret
 from app.schemas.task_center import AccountConfig, SearchJoinBotConfig, SearchJoinGroupTaskCreate
 from app.services._common import _now, audit
 from app.services.client_metadata import ensure_search_join_environment
@@ -66,6 +69,13 @@ def subscription_url() -> str:
     if not url:
         raise RuntimeError("CLASH_SUBSCRIPTION_URL is required")
     return url
+
+def masked_subscription_url(url: str) -> str:
+    parsed = urllib.parse.urlsplit(url)
+    host = parsed.netloc or "subscription"
+    token = urllib.parse.parse_qs(parsed.query).get("token", [""])[0]
+    suffix = token[-4:] if token else ""
+    return f"{parsed.scheme}://{host}/...?token=***{suffix}" if suffix else f"{parsed.scheme}://{host}/..."
 
 def fetch_subscription(url: str) -> str:
     request = urllib.request.Request(url, headers={"User-Agent": "tg-yunying-production-clash-setup/1.0"})
@@ -329,13 +339,27 @@ def upsert_proxy(session, node: ProxyNode, capacity: int) -> AccountProxy:
     proxy.notes = f"airport_clash live egress verified by {actor()}"
     return proxy
 
-def bind_account(session, account: TgAccount, proxy: AccountProxy) -> None:
+def bind_account(session, account: TgAccount, proxy: AccountProxy, node: ProxyAirportNode) -> None:
     previous_proxy_id = int(account.proxy_id or 0)
     account.proxy_id = proxy.id
     for binding in session.scalars(select(AccountProxyBinding).where(AccountProxyBinding.tenant_id == 1, AccountProxyBinding.account_id == account.id, AccountProxyBinding.status == "active")):
         binding.status = "replaced"
         binding.unbound_at = _now()
-    session.add(AccountProxyBinding(tenant_id=1, account_id=account.id, proxy_id=proxy.id, status="active", change_reason="airport_clash_live_binding", bound_by=actor()))
+    session.add(
+        AccountProxyBinding(
+            tenant_id=1,
+            account_id=account.id,
+            proxy_id=proxy.id,
+            proxy_airport_node_id=node.id,
+            observed_exit_ip=node.observed_exit_ip,
+            observed_exit_country=node.observed_exit_country,
+            observed_exit_asn=node.observed_exit_asn,
+            observed_exit_isp=node.observed_exit_isp,
+            status="active",
+            change_reason="airport_clash_live_binding",
+            bound_by=actor(),
+        )
+    )
     session.add(ProxyHealthCheck(tenant_id=1, proxy_id=proxy.id, check_type="egress_curl", status="success", checked_by=actor(), checked_at=_now()))
     for auth in session.scalars(select(TgAccountAuthorization).where(TgAccountAuthorization.tenant_id == 1, TgAccountAuthorization.account_id == account.id, TgAccountAuthorization.disabled_at.is_(None))):
         auth.proxy_id = proxy.id
@@ -421,6 +445,125 @@ def bind_account_environments(session, accounts: list[TgAccount]) -> dict[str, A
     binding_count = session.scalar(select(func.count(AccountEnvironmentBinding.id)).where(AccountEnvironmentBinding.tenant_id == 1))
     return {"environment_binding_count": int(binding_count or 0), "environment_bound_account_count": len(accounts)}
 
+def bind_airport_nodes_to_environment_bindings(
+    session,
+    account_nodes: dict[int, ProxyAirportNode],
+    account_proxies: dict[int, AccountProxy],
+) -> dict[str, Any]:
+    updated = 0
+    for account_id, node in account_nodes.items():
+        proxy = account_proxies[account_id]
+        bindings = session.scalars(
+            select(AccountEnvironmentBinding).where(
+                AccountEnvironmentBinding.tenant_id == 1,
+                AccountEnvironmentBinding.account_id == account_id,
+                AccountEnvironmentBinding.status == "active",
+                AccountEnvironmentBinding.unbound_at.is_(None),
+            )
+        )
+        for environment in bindings:
+            scoped_binding = ensure_scoped_airport_binding(session, environment, proxy, node)
+            environment.proxy_binding_id = scoped_binding.id
+            environment.proxy_id = scoped_binding.proxy_id
+            environment.updated_at = _now()
+            updated += 1
+    return {"airport_node_scoped_binding_count": updated}
+
+def ensure_scoped_airport_binding(
+    session,
+    environment: AccountEnvironmentBinding,
+    proxy: AccountProxy,
+    node: ProxyAirportNode,
+) -> AccountProxyBinding:
+    for binding in session.scalars(
+        select(AccountProxyBinding).where(
+            AccountProxyBinding.tenant_id == environment.tenant_id,
+            AccountProxyBinding.account_id == environment.account_id,
+            AccountProxyBinding.developer_app_id == environment.developer_app_id,
+            AccountProxyBinding.authorization_id == environment.authorization_id,
+            AccountProxyBinding.session_role == environment.session_role,
+            AccountProxyBinding.status == "active",
+            AccountProxyBinding.unbound_at.is_(None),
+        )
+    ):
+        binding.status = "replaced"
+        binding.unbound_at = _now()
+    scoped_binding = AccountProxyBinding(
+        tenant_id=environment.tenant_id,
+        account_id=environment.account_id,
+        developer_app_id=environment.developer_app_id,
+        developer_app_api_id_snapshot=environment.developer_app_api_id_snapshot,
+        authorization_id=environment.authorization_id,
+        session_role=environment.session_role,
+        proxy_id=proxy.id,
+        proxy_airport_node_id=node.id,
+        observed_exit_ip=node.observed_exit_ip,
+        observed_exit_country=node.observed_exit_country,
+        observed_exit_asn=node.observed_exit_asn,
+        observed_exit_isp=node.observed_exit_isp,
+        status="active",
+        change_reason="airport_clash_live_environment_binding",
+        bound_by=actor(),
+    )
+    session.add(scoped_binding)
+    session.flush()
+    return scoped_binding
+
+def upsert_airport_subscription(session, nodes: list[ProxyNode], healthy: set[int]) -> ProxyAirportSubscription:
+    name = os.getenv("CLASH_SUBSCRIPTION_NAME", "线上 Clash 主订阅").strip() or "线上 Clash 主订阅"
+    priority = env_int("CLASH_SUBSCRIPTION_PRIORITY", 1)
+    rows = list(session.scalars(select(ProxyAirportSubscription).where(ProxyAirportSubscription.tenant_id == 1)))
+    row = next((item for item in rows if item.name == name), None)
+    row = row or next((item for item in rows if int(item.priority or 0) == priority), None)
+    if row is None:
+        row = ProxyAirportSubscription(tenant_id=1, name=name, priority=priority)
+        session.add(row)
+    url = subscription_url()
+    row.subscription_url_ciphertext = encrypt_secret(url)
+    row.subscription_url_preview = masked_subscription_url(url)
+    row.provider_type = "clash"
+    row.priority = priority
+    row.enabled = True
+    row.failover_policy = "same_subscription_first"
+    row.auto_failback_enabled = env_bool("CLASH_AUTO_FAILBACK_ENABLED", False)
+    row.failback_cooldown_minutes = env_int("CLASH_FAILBACK_COOLDOWN_MINUTES", 1440)
+    row.all_subscriptions_down_policy = "pause_task"
+    row.notify_admin_on_all_subscriptions_down = True
+    row.sync_status = "synced"
+    row.node_count = len(nodes)
+    row.healthy_node_count = len(healthy)
+    row.last_sync_at = _now()
+    row.last_error = ""
+    row.is_active = True
+    session.flush()
+    return row
+
+def upsert_airport_nodes(session, subscription: ProxyAirportSubscription, nodes: list[ProxyNode], healthy: set[int]) -> dict[int, ProxyAirportNode]:
+    rows: dict[int, ProxyAirportNode] = {}
+    for node in nodes:
+        node_key = f"live-{node.index:03d}-{node.name}"
+        row = session.scalar(
+            select(ProxyAirportNode).where(
+                ProxyAirportNode.tenant_id == 1,
+                ProxyAirportNode.subscription_id == subscription.id,
+                ProxyAirportNode.node_key == node_key,
+            )
+        )
+        if row is None:
+            row = ProxyAirportNode(tenant_id=1, subscription_id=subscription.id, node_key=node_key)
+            session.add(row)
+        row.node_name = node.name
+        row.protocol = "socks5"
+        row.proxy_host = node.container_name
+        row.proxy_port = MIXED_PORT
+        row.node_config_ciphertext = encrypt_secret(json.dumps(node.config, ensure_ascii=False, sort_keys=True))
+        row.status = "healthy" if node.index in healthy else "unhealthy"
+        row.max_bound_accounts = max(1, math.ceil(test_account_count() / max(1, len(healthy))))
+        row.last_error = "" if node.index in healthy else "not_selected_for_live_apply"
+        rows[node.index] = row
+    session.flush()
+    return rows
+
 def apply_database(nodes: list[ProxyNode]) -> dict[str, Any]:
     healthy = set(healthy_indexes())
     selected = [node for node in nodes if node.index in healthy]
@@ -431,14 +574,23 @@ def apply_database(nodes: list[ProxyNode]) -> dict[str, Any]:
         if not accounts:
             raise RuntimeError("no active accounts with sessions")
         capacity = max(1, math.ceil(len(accounts) / len(selected)))
+        subscription = upsert_airport_subscription(session, nodes, healthy)
+        airport_nodes = upsert_airport_nodes(session, subscription, nodes, healthy)
         proxies = [upsert_proxy(session, node, capacity) for node in selected]
+        account_nodes: dict[int, ProxyAirportNode] = {}
+        account_proxies: dict[int, AccountProxy] = {}
         for offset, account in enumerate(accounts):
-            bind_account(session, account, proxies[offset % len(proxies)])
+            node = selected[offset % len(selected)]
+            proxy = proxies[offset % len(proxies)]
+            account_nodes[account.id] = airport_nodes[node.index]
+            account_proxies[account.id] = proxy
+            bind_account(session, account, proxy, airport_nodes[node.index])
         legacy_summary = backfill_legacy_primary_authorizations(session, accounts)
         environment_summary = bind_account_environments(session, accounts)
+        airport_binding_summary = bind_airport_nodes_to_environment_bindings(session, account_nodes, account_proxies)
         task = create_zhengzhou_task(session, accounts)
         session.commit()
-        return summary_payload(accounts, proxies, task, session, {**legacy_summary, **environment_summary})
+        return summary_payload(accounts, proxies, task, session, {**legacy_summary, **environment_summary, **airport_binding_summary})
 
 def preflight_database(nodes: list[ProxyNode]) -> dict[str, Any]:
     healthy = set(healthy_indexes())

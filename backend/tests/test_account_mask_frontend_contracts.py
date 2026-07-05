@@ -37,12 +37,19 @@ def test_clash_config_view_distinguishes_save_sync_and_health_states():
     assert "订阅节点已解析，健康探测完成前不可作为可用代理池" in source
     assert "dataIndex: 'priority'" in source
     assert "dataIndex: 'enabled'" in source
+    assert "dataIndex: 'failover_policy'" in source
+    assert "name=\"failover_policy\"" in source
+    assert "name=\"auto_failback_enabled\"" in source
+    assert "name=\"failback_cooldown_minutes\"" in source
     assert "label: '同步节点数'" in source
     assert "label: '健康节点数'" in source
     assert "label: '最近同步时间'" in source
     assert "row.last_sync_at" in source
     assert "priority: number" in types
     assert "enabled: boolean" in types
+    assert "failover_policy: string" in types
+    assert "auto_failback_enabled: boolean" in types
+    assert "failback_cooldown_minutes: number" in types
 
 
 def test_account_masks_view_shows_unobservable_missing_fields():

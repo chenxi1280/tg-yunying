@@ -1,5 +1,5 @@
 import React from 'react';
-import { Alert, Button, Card, Descriptions, Form, Input, InputNumber, Modal, Space, Switch, Table, Tag } from 'antd';
+import { Alert, Button, Card, Descriptions, Form, Input, InputNumber, Modal, Select, Space, Switch, Table, Tag } from 'antd';
 import { api } from '../../shared/api/client';
 import type { ProxyAirportSubscription } from '../types';
 
@@ -12,6 +12,9 @@ type NewSubscriptionForm = {
   subscription_url: string;
   priority: number;
   enabled: boolean;
+  failover_policy: string;
+  auto_failback_enabled: boolean;
+  failback_cooldown_minutes: number;
 };
 
 type EditSubscriptionForm = {
@@ -19,6 +22,9 @@ type EditSubscriptionForm = {
   subscription_url?: string;
   priority: number;
   enabled: boolean;
+  failover_policy: string;
+  auto_failback_enabled: boolean;
+  failback_cooldown_minutes: number;
 };
 
 function errorText(error: unknown) {
@@ -132,6 +138,9 @@ export default function ProxyAirportSubscriptionView({ canManageSystem = false }
       subscription_url: '',
       priority: row.priority,
       enabled: row.enabled,
+      failover_policy: row.failover_policy,
+      auto_failback_enabled: row.auto_failback_enabled,
+      failback_cooldown_minutes: row.failback_cooldown_minutes,
     });
   }
 
@@ -144,6 +153,9 @@ export default function ProxyAirportSubscriptionView({ canManageSystem = false }
       name: values.name,
       priority: values.priority,
       enabled: values.enabled,
+      failover_policy: values.failover_policy,
+      auto_failback_enabled: values.auto_failback_enabled,
+      failback_cooldown_minutes: values.failback_cooldown_minutes,
       ...(subscriptionUrl ? { subscription_url: subscriptionUrl } : {}),
     };
     try {
@@ -190,6 +202,16 @@ export default function ProxyAirportSubscriptionView({ canManageSystem = false }
           { title: '名称', dataIndex: 'name' },
           { title: '优先级', dataIndex: 'priority', sorter: (a, b) => a.priority - b.priority },
           {
+            title: '切换策略',
+            dataIndex: 'failover_policy',
+            render: (value) => value === 'same_subscription_first' ? '同订阅优先' : value,
+          },
+          {
+            title: '自动切回',
+            dataIndex: 'auto_failback_enabled',
+            render: (value) => (value ? '开启' : '关闭'),
+          },
+          {
             title: '启用',
             dataIndex: 'enabled',
             render: (_value, row) => (
@@ -229,7 +251,14 @@ export default function ProxyAirportSubscriptionView({ canManageSystem = false }
         form={form}
         layout="inline"
         style={{ marginTop: 16 }}
-        initialValues={{ name: '', priority: 10, enabled: true }}
+        initialValues={{
+          name: '',
+          priority: 10,
+          enabled: true,
+          failover_policy: 'same_subscription_first',
+          auto_failback_enabled: false,
+          failback_cooldown_minutes: 1440,
+        }}
         onFinish={saveConfig}
         disabled={!canManageSystem}
       >
@@ -241,6 +270,18 @@ export default function ProxyAirportSubscriptionView({ canManageSystem = false }
         </Form.Item>
         <Form.Item name="priority" rules={[{ required: true, message: '请输入优先级' }]}>
           <InputNumber min={1} max={9999} />
+        </Form.Item>
+        <Form.Item name="failover_policy" rules={[{ required: true, message: '请选择切换策略' }]}>
+          <Select
+            style={{ width: 128 }}
+            options={[{ value: 'same_subscription_first', label: '同订阅优先' }]}
+          />
+        </Form.Item>
+        <Form.Item name="auto_failback_enabled" valuePropName="checked">
+          <Switch disabled checkedChildren="切回" unCheckedChildren="不切回" />
+        </Form.Item>
+        <Form.Item name="failback_cooldown_minutes" rules={[{ required: true, message: '请输入切回冷却' }]}>
+          <InputNumber min={0} max={10080} addonAfter="分钟" />
         </Form.Item>
         <Form.Item name="enabled" valuePropName="checked">
           <Switch />
@@ -271,6 +312,15 @@ export default function ProxyAirportSubscriptionView({ canManageSystem = false }
           </Form.Item>
           <Form.Item name="priority" label="优先级" rules={[{ required: true, message: '请输入优先级' }]}>
             <InputNumber min={1} max={9999} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item name="failover_policy" label="切换策略" rules={[{ required: true, message: '请选择切换策略' }]}>
+            <Select options={[{ value: 'same_subscription_first', label: '同订阅优先' }]} />
+          </Form.Item>
+          <Form.Item name="auto_failback_enabled" label="主订阅恢复后自动切回" valuePropName="checked">
+            <Switch disabled />
+          </Form.Item>
+          <Form.Item name="failback_cooldown_minutes" label="自动切回冷却分钟" rules={[{ required: true, message: '请输入切回冷却' }]}>
+            <InputNumber min={0} max={10080} style={{ width: '100%' }} />
           </Form.Item>
           <Form.Item name="enabled" label="启用" valuePropName="checked">
             <Switch />

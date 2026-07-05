@@ -296,7 +296,7 @@ pending -> claiming -> executing -> success / failed / skipped
 - 账号面具 / 账号代理必须把 `primary / standby_1 / standby_2` 和不同 TG 开发者应用分开展示；运营可以按账号、应用、授权槽位、节点、健康分、warmup、故障切换状态筛选。批量重排代理必须先展示影响授权槽位数、预计重新 warmup 数和不可用节点数，确认后写审计。
 - 普通日志、任务 stats、前端非敏感字段不得输出订阅完整 URL、节点密码、token 或 URI 原文。
 6. 节点健康分低于阈值、订阅失效、节点消失、真实出口 IP 漂移过大或 IP 类型不符时，必须显式暂停对应授权槽位的搜索入群动作并告警，不做静默 fallback。
-7. 当前绑定节点连接失败、TCP / TLS 不通、代理认证失败或 `proxy_egress_guard` 无法证明出口时，允许自动执行 `switch_to_next_healthy_node`：只在同一订阅、节点授权槽位容量未超限、出口 IP 可观测的约束下为当前授权槽位选择下一个健康节点，写入 `proxy_node_failover_events`，并让新 `(account_id, developer_app_id/api_id, authorization_id/session_role, proxy_binding_id)` 重新进入 warmup。
+7. 当前绑定节点连接失败、TCP / TLS 不通、代理认证失败或 `proxy_egress_guard` 无法证明出口时，允许自动执行 `switch_to_next_healthy_node`：只在同一订阅、节点授权槽位容量未超限且节点健康状态通过的约束下为当前授权槽位选择下一个健康节点，写入 `proxy_node_failover_events`，并让新 `(account_id, developer_app_id/api_id, authorization_id/session_role, proxy_binding_id)` 重新进入 warmup。目标节点已有出口观测时同步写入出口事实；目标节点暂缺出口观测时不阻断故障切换，但必须标记为待出口观测，不能宣称真实出口 IP 已证明。
 8. 自动故障切换不是每次 action 轮换。正常情况下授权槽位长期固定节点；只有明确的 `proxy_node_unreachable`、`proxy_reputation_below_threshold`、`exit_ip_changed`、`node_removed_from_subscription` 事件才能触发换节点。
 9. 如果当前订阅下没有任何候选节点通过连通性、容量和出口 IP 校验，Executor 必须先按主备优先级选择下一条启用且健康的备用订阅；只有全部启用订阅都没有健康节点时，才返回 `skipped` + `airport_all_subscriptions_unavailable`，不发送搜索、不点击按钮、不 join，也不回退本机直连。
 10. `airport_all_subscriptions_unavailable` 必须触发租户 Bot 管理员通知：复用 `Tenant.admin_chat_id` 的多管理员 Chat ID 和已配置的 Bot Token，通过 Telegram Bot `sendMessage` 广播到所有管理员；通知内容只包含任务名、受影响订阅脱敏名列表、受影响账号/授权槽位数量、最近失败摘要和处理入口，不包含订阅 URL、token、节点密码或关键词明文。
@@ -1092,6 +1092,11 @@ CREATE TABLE proxy_airport_subscriptions (
   clash_subscription_url_encrypted TEXT NOT NULL,
   provider_label VARCHAR(64),
   subscription_format VARCHAR(32) DEFAULT 'auto',
+  priority INT DEFAULT 100,
+  enabled BOOLEAN DEFAULT TRUE,
+  failover_policy VARCHAR(32) DEFAULT 'same_subscription_first',
+  auto_failback_enabled BOOLEAN DEFAULT FALSE,
+  failback_cooldown_minutes INT DEFAULT 1440,
   max_authorizations_per_node_default INT DEFAULT 1,
   all_subscriptions_down_policy VARCHAR(32) DEFAULT 'pause_task',
   notify_admin_on_all_subscriptions_down BOOLEAN DEFAULT TRUE,
@@ -1099,9 +1104,12 @@ CREATE TABLE proxy_airport_subscriptions (
   last_fetched_at TIMESTAMP WITH TIME ZONE,
   last_fetch_status VARCHAR(32),
   last_fetch_error TEXT,
+  node_count INT DEFAULT 0,
+  healthy_node_count INT DEFAULT 0,
   is_active BOOLEAN DEFAULT TRUE,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  UNIQUE (priority)
 );
 
 -- 机场 Clash 节点
@@ -1145,8 +1153,12 @@ CREATE TABLE proxy_airport_nodes (
 -- 机场节点故障切换审计
 CREATE TABLE proxy_node_failover_events (
   id BIGSERIAL PRIMARY KEY,
-  subscription_id BIGINT NOT NULL,
+  from_subscription_id BIGINT,
+  to_subscription_id BIGINT,
   account_id BIGINT NOT NULL,
+  developer_app_id BIGINT,
+  authorization_id BIGINT,
+  session_role VARCHAR(32),
   from_node_id BIGINT,
   to_node_id BIGINT,
   reason VARCHAR(64) NOT NULL,
@@ -1157,7 +1169,8 @@ CREATE TABLE proxy_node_failover_events (
   admin_notified_at TIMESTAMP WITH TIME ZONE,
   triggered_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   created_by VARCHAR(32) DEFAULT 'system',
-  FOREIGN KEY (subscription_id) REFERENCES proxy_airport_subscriptions(id),
+  FOREIGN KEY (from_subscription_id) REFERENCES proxy_airport_subscriptions(id),
+  FOREIGN KEY (to_subscription_id) REFERENCES proxy_airport_subscriptions(id),
   FOREIGN KEY (from_node_id) REFERENCES proxy_airport_nodes(id),
   FOREIGN KEY (to_node_id) REFERENCES proxy_airport_nodes(id)
 );
@@ -1834,7 +1847,8 @@ AI 活跃群联动 126 个账号待冷却 / 64 个已进入 ready pool
 |2026-07-04|v0.14|Codex（PRD 漏洞审查补齐）|审查并补齐 PRD 内部漏洞：统一用户可见名称为“搜索目标群点击任务”；收敛 `target_groups` 到 `OperationTarget` 持久引用；明确 `pacing_config` 是跳过 / 抖动唯一权威来源；补齐租户时区日界线、并发计数事务、随机采样持久化、运行中编辑生效规则、全局风控与任务内上限优先级，以及 `search_join_pacing_decisions` 数据表。|
 |2026-07-04|v0.15|Codex（账号面具环境粒度复核）|完整复核账号面具、全局 Clash 和授权指纹口径：授权环境配置落到 `account_id + developer_app_id/api_id + authorization_id/session_role`；系统设置 Clash 配置拆分读取 `system.view` 与保存 / 测试 / 同步 `system.manage`；保存指纹仍只代表配置更新，不代表远端授权设备立即变更。|
 |2026-07-04|v0.16|Codex（代理粒度复核）|曾按 `account_id + developer_app_id/api_id + authorization_id/session_role` 讨论代理和授权指纹同粒度绑定；该口径已被 v0.17 覆盖，不能作为当前实现依据。|
-|2026-07-04|v0.17|Codex（授权槽位级代理定稿）|按用户最新口径完整收口：系统设置只保存一个全局 Clash 订阅地址；“账号面具”一级菜单承载授权槽位级代理和授权指纹配置；同一账号不同 TG 开发者应用、session key 和主 / 备用授权槽位可以使用不同代理和不同指纹；修改指纹配置只影响下一次连接 / 重登 / 新 session 初始化，不声明远端授权设备立即变更。|
+|2026-07-04|v0.17|Codex（授权槽位级代理定稿，已被 v0.20+ 修订）|当时曾按“系统设置只保存一个全局 Clash 订阅地址”收口；该单订阅口径已被 v0.20 的多订阅主备方案覆盖。仍保留有效部分：“账号面具”一级菜单承载授权槽位级代理和授权指纹配置；同一账号不同 TG 开发者应用、session key 和主 / 备用授权槽位可以使用不同代理和不同指纹；修改指纹配置只影响下一次连接 / 重登 / 新 session 初始化，不声明远端授权设备立即变更。|
 |2026-07-04|v0.18|Codex（PRD 缺口复核）|补齐系统设置页 Clash 配置入口验收文字；修正示例配置和区域一致性口径，默认由关键词允许矩阵与风险评分决定，不再强制账号区域、设备语言和代理出口国家三者硬相等；强化“配置指纹已保存”不等于“远端已观测一致”。|
 |2026-07-04|v0.19|Codex（PRD 完整梳理）|按主线程和子代理复核补齐缺口：主 PRD 任务类型表新增 `search_join_group`；系统设置 / 账号面具 / 风控中心代理权属拆成全局 Clash 订阅、授权槽位代理绑定、代理健康处置三层；首版代理路径定为 `airport_clash`；补齐远端观测 `unobservable`、观测刷新 API、运行中节奏编辑影响预览、概率 / 抖动字段范围、全节点不可用 action / 小时 / task 三层状态，以及实时 pacing / random 不调用 AI Gateway 的验收。|
 |2026-07-05|v0.20|Codex（Clash 多订阅主备修订）|按用户确认将 Clash 配置从单个全局订阅修订为租户级多订阅源池：系统设置支持多个订阅地址、主备优先级、启用 / 禁用、默认不自动切回；当前绑定节点不通时优先同订阅切节点，同订阅无健康节点时切备用订阅健康节点；全部启用订阅不可用才写 `airport_all_subscriptions_unavailable`、阻断真实操作并通知管理员。|
+|2026-07-05|v0.21|Codex（Clash 多订阅一致性修订）|清理 v0.17 单订阅残留，补齐 `proxy_airport_subscriptions` SQL 示例中的 `priority/enabled/failover_policy/auto_failback_enabled/failback_cooldown_minutes/node_count/healthy_node_count`，并把 `proxy_node_failover_events` 从单 `subscription_id` 修订为 `from_subscription_id/to_subscription_id`，确保 PRD、数据流索引和实现验收都按多订阅主备口径执行。|

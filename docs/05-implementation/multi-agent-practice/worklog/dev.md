@@ -153,3 +153,14 @@
 - decision: status=local_verified_pending_release；subagent_supervision=done_with_P0_P1_fixed；release_gate=pending；production_verification=unproven。
 - next_agent: qa
 - unresolved: 尚未执行全量 no_postgres、frontend build、GitHub Actions release / production deploy；真实生产 Clash 订阅拉取、真实出口 IP、真实运行中 failover 和郑州 3 账号线上任务复测仍需生产证据。
+
+## 2026-07-05 Clash 多订阅主备一致性 Development Complete（本地验证）
+
+- message_id: 2026-07-05-clash-multi-subscription-consistency-devcomplete-001
+- action: 按 PRD v0.21 修复 Clash 多订阅主备一致性缺口，并补齐线上配置脚本的机场订阅 / 节点 / 授权槽位绑定事实源
+- input: 用户确认 Clash 支持多个订阅地址，主地址掉了使用备用；本轮审计发现 schema/model 默认 `failover_policy=priority`、前端不可配置 failover/自动切回字段、运行中 failover 新 binding 复用旧 `proxy_id`、线上配置脚本未写 `ProxyAirportSubscription/ProxyAirportNode/proxy_airport_node_id`
+- output: `ProxyAirportSubscription` schema/model/migration 默认改为 `same_subscription_first`、默认不自动切回且冷却 1440 分钟，新增迁移 `0083_proxy_airport_failover_policy_defaults.py` 归一已部署旧值并关闭旧自动切回；`ProxyAirportSubscriptionView.tsx` 支持创建/编辑切换策略并展示切回冷却，首版自动切回开关禁用，后端拒绝 `auto_failback_enabled=true`；`proxy_airport_failover.py` 基于目标机场节点创建 / 复用 `AccountProxy`，新 `AccountProxyBinding.proxy_id` 指向目标节点代理资源，并同步 `AccountEnvironmentBinding.proxy_binding_id/proxy_id`；dispatcher retarget pending search_join action 时同步 `runtime_environment.proxy_binding_id/proxy_id`；`.github/scripts/configure_clash_search_join_live.py` 在 apply_db 阶段写入订阅源、机场节点池，并为环境绑定创建 active scoped `AccountProxyBinding` 后写入 `proxy_airport_node_id`
+- evidence: 先补 red tests 并确认失败：默认策略仍为 `priority`、前端缺 failover 字段、live 脚本未写机场订阅/节点、failover 新 binding 仍复用旧 proxy；Mendel 监督指出自动切回可开启但无运行时实现、出口观测前置口径矛盾、0083 未跟踪；Chandrasekhar 监督指出 pending payload 未同步 `proxy_id`、live apply_db 未指向 active scoped binding。均已补测试并修复：相关套件 `backend/.venv/bin/python -m pytest backend/tests/test_proxy_airport_subscription.py backend/tests/test_proxy_airport_failover.py backend/tests/test_live_clash_config_script_contracts.py backend/tests/test_account_mask_frontend_contracts.py backend/tests/test_search_join_group_linked_tasks.py backend/tests/test_merge_integrity.py -q` -> 40 passed；全量 `backend/.venv/bin/python -m pytest -q -m no_postgres` -> 768 passed / 787 deselected；`npm --prefix frontend run build`、changed py_compile、`git diff --check` 均通过
+- decision: status=local_verified_pending_release；subagent_supervision=done_with_blockers_fixed；release_gate=pending；production_verification=unproven
+- next_agent: qa
+- unresolved: 尚未执行 GitHub Actions release / production deploy；真实生产 Clash 订阅拉取、真实出口 IP、真实运行中 failover 和郑州 3 账号线上任务复测仍需生产证据

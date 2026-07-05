@@ -338,3 +338,14 @@
 - requires_orchestrator_send: true
 - handoff_message: Dev Handoff：请按 `2026-07-05-clash-multi-subscription-prd-001` 实现 Clash 多订阅源池。设计真相源已更新：`docs/01-product/tg-ops-platform-prd.md`、`docs/03-feature-designs/search-click-boost-prd.md`、`docs/00-index/project-dataflow-index.md`、`docs/00-index/project-structure-index.md`。实现边界：1. 系统设置支持多条 Clash 订阅 URL，字段包含 name、priority、enabled、status、node_count、healthy_node_count、last_error 和 failover policy；2. 当前 `/api/proxy-airport-subscription` 作为主订阅兼容入口，目标态新增 `/api/proxy-airport-subscriptions` 集合接口及订阅级 test/sync；3. 同订阅健康节点优先，当前订阅无健康候选时按 priority 切备用订阅；4. 切节点或切订阅必须写 `proxy_node_failover_events`，包含 from/to subscription 和 node；5. 默认不自动切回主订阅，除非后续显式配置 auto failback 和冷却；6. search_join 只有全部启用订阅不可用时才写 `airport_all_subscriptions_unavailable`、阻断真实 action 并通知管理员；7. 更新前端列表配置、权限、审计、迁移、测试和索引。
 - unresolved: 尚未真实投递 dev 线程；未实现多订阅 API / 迁移 / 前端列表 / failover worker / QA / 发布；生产 Clash 多订阅切换、真实出口观测和 search_join 全订阅不可用通知仍 unproven。
+
+## 2026-07-05 Clash 多订阅主备一致性 PRD 修订
+
+- message_id: 2026-07-05-clash-multi-subscription-consistency-prd-001
+- action: 按用户确认“Clash 支持配置多个地址，主的掉了使用备用”，清理专项 PRD 中单订阅残留并补齐数据模型口径
+- input: 用户指出 Clash 不是一个地址，而是多个地址主备容灾
+- output: `docs/03-feature-designs/search-click-boost-prd.md` 已追加 v0.21；`proxy_airport_subscriptions` SQL 示例补齐 `priority/enabled/failover_policy/auto_failback_enabled/failback_cooldown_minutes/node_count/healthy_node_count`；`proxy_node_failover_events` 从旧单 `subscription_id` 收口为 `from_subscription_id/to_subscription_id`；v0.17 历史记录明确标注单订阅口径已被 v0.20+ 覆盖
+- evidence: E1 文档证据；旧口径扫描仅剩“单订阅是风险/已覆盖”的历史或缺口说明，不再作为当前实现依据
+- decision: 当前产品口径为系统配置维护多条 Clash 订阅源，按 priority 主备容灾；授权槽位代理仍在账号面具中固定绑定；默认不自动切回主订阅，除非显式开启自动切回和冷却
+- next_agent: dev
+- unresolved: 本条自身为 PRD 口径修订；代码实现、QA、发布和生产真实 Clash/Zhengzhou 验证需看 dev/qa/prod-diagnosis 证据

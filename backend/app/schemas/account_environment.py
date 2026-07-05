@@ -22,16 +22,18 @@ class ProxyAirportSubscriptionCreate(ProxyAirportSubscriptionUpdate):
     name: str = Field(default="主订阅", min_length=1, max_length=80)
     priority: int = Field(default=10, ge=1, le=9999)
     enabled: bool = True
-    failover_policy: str = Field(default="priority", max_length=40)
+    failover_policy: str = Field(default="same_subscription_first", max_length=40)
     auto_failback_enabled: bool = False
-    failback_cooldown_minutes: int = Field(default=0, ge=0, le=10080)
+    failback_cooldown_minutes: int = Field(default=1440, ge=0, le=10080)
     all_subscriptions_down_policy: str = Field(default="pause_task", max_length=40)
     notify_admin_on_all_subscriptions_down: bool = True
 
     @model_validator(mode="after")
     def normalize_create_fields(self) -> "ProxyAirportSubscriptionCreate":
         self.name = self.name.strip()
-        self.failover_policy = self.failover_policy.strip() or "priority"
+        self.failover_policy = self.failover_policy.strip() or "same_subscription_first"
+        if self.auto_failback_enabled:
+            raise ValueError("proxy_airport_auto_failback_not_implemented")
         self.all_subscriptions_down_policy = self.all_subscriptions_down_policy.strip() or "pause_task"
         return self
 
@@ -58,7 +60,9 @@ class ProxyAirportSubscriptionPatch(BaseModel):
             if not self.subscription_url.startswith(("http://", "https://")):
                 raise ValueError("Clash 订阅地址必须是 http 或 https")
         if self.failover_policy is not None:
-            self.failover_policy = self.failover_policy.strip() or "priority"
+            self.failover_policy = self.failover_policy.strip() or "same_subscription_first"
+        if self.auto_failback_enabled is True:
+            raise ValueError("proxy_airport_auto_failback_not_implemented")
         if self.all_subscriptions_down_policy is not None:
             self.all_subscriptions_down_policy = self.all_subscriptions_down_policy.strip() or "pause_task"
         return self
@@ -75,9 +79,9 @@ class ProxyAirportSubscriptionOut(BaseModel):
     provider_type: str = "clash"
     priority: int = 10
     enabled: bool = True
-    failover_policy: str = "priority"
+    failover_policy: str = "same_subscription_first"
     auto_failback_enabled: bool = False
-    failback_cooldown_minutes: int = 0
+    failback_cooldown_minutes: int = 1440
     all_subscriptions_down_policy: str = "pause_task"
     notify_admin_on_all_subscriptions_down: bool = True
     sync_status: str

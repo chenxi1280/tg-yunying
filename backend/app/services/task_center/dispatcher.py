@@ -3578,14 +3578,14 @@ def _retarget_pending_search_join_proxy_bindings(
         )
     )
     for row in rows:
-        _retarget_action_payload_proxy_binding(row, old_binding_id, environment_binding_id, binding.id)
+        _retarget_action_payload_proxy_binding(row, old_binding_id, environment_binding_id, binding)
 
 
 def _retarget_action_payload_proxy_binding(
     action: Action,
     old_binding_id: str,
     environment_binding_id: str,
-    new_binding_id: int,
+    new_binding: AccountProxyBinding,
 ) -> None:
     payload = dict(action.payload or {})
     runtime = dict(payload.get("runtime_environment") or {})
@@ -3593,7 +3593,8 @@ def _retarget_action_payload_proxy_binding(
         return
     if str(runtime.get("proxy_binding_id") or "") != old_binding_id:
         return
-    runtime["proxy_binding_id"] = str(new_binding_id)
+    runtime["proxy_binding_id"] = str(new_binding.id)
+    runtime["proxy_id"] = str(new_binding.proxy_id or "")
     payload["runtime_environment"] = runtime
     action.payload = payload
 
