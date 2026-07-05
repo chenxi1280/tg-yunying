@@ -627,13 +627,14 @@ def preflight_database(nodes: list[ProxyNode]) -> dict[str, Any]:
 def create_zhengzhou_task(session, accounts: list[TgAccount]) -> Task:
     count = test_account_count()
     query = target_query()
+    keyword = search_keyword()
     bot = search_bot_username()
     target = target_group(session, query)
     require_protocol_sample(session, bot)
-    selected_ids = prechecked_test_account_ids(session, accounts, target, query, bot, count)
+    selected_ids = prechecked_test_account_ids(session, accounts, target, keyword, bot, count)
     if len(selected_ids) != count:
         raise RuntimeError(f"need exactly {count} test accounts, got {len(selected_ids)}")
-    payload = search_join_task_payload(query, target, bot, selected_ids)
+    payload = search_join_task_payload(query, keyword, target, bot, selected_ids)
     _assert_precheck_allows_start(session, 1, "search_join_group", payload.model_dump(mode="json"))
     task = _new_task(session, 1, "search_join_group", payload)
     audit(session, tenant_id=1, actor=actor(), action="创建任务中心任务", target_type="task", target_id=task.id, detail=task.type)
@@ -644,10 +645,10 @@ def create_zhengzhou_task(session, accounts: list[TgAccount]) -> Task:
         raise RuntimeError(f"search_join action count mismatch: expected={count}, created={created}")
     return task
 
-def prechecked_test_account_ids(session, accounts: list[TgAccount], target: OperationTarget, query: str, bot: str, count: int) -> list[int]:
+def prechecked_test_account_ids(session, accounts: list[TgAccount], target: OperationTarget, keyword: str, bot: str, count: int) -> list[int]:
     selected: list[int] = []
     for account in accounts:
-        payload = search_join_task_payload(query, target, bot, [account.id])
+        payload = search_join_task_payload(target_query(), keyword, target, bot, [account.id])
         try:
             _assert_precheck_allows_start(session, 1, "search_join_group", payload.model_dump(mode="json"))
         except ValueError:
@@ -657,7 +658,7 @@ def prechecked_test_account_ids(session, accounts: list[TgAccount], target: Oper
             return selected
     return selected
 
-def search_join_task_payload(query: str, target: OperationTarget, bot: str, selected_ids: list[int]) -> SearchJoinGroupTaskCreate:
+def search_join_task_payload(query: str, keyword: str, target: OperationTarget, bot: str, selected_ids: list[int]) -> SearchJoinGroupTaskCreate:
     return SearchJoinGroupTaskCreate(
         name=f"{query}搜索入群线上测试-{len(selected_ids)}账号",
         priority=1,
@@ -665,7 +666,7 @@ def search_join_task_payload(query: str, target: OperationTarget, bot: str, sele
         target_operation_target_id=target.id,
         target_title=target.title,
         search_bots=[SearchJoinBotConfig(username=bot, display_name=bot)],
-        keywords=[query],
+        keywords=[keyword],
         business_region=query,
         proxy_country="AUTO",
         actions_per_round=len(selected_ids),
@@ -681,6 +682,9 @@ def test_account_count() -> int:
 
 def target_query() -> str:
     return os.getenv("CLASH_TARGET_QUERY", DEFAULT_TARGET_QUERY).strip() or DEFAULT_TARGET_QUERY
+
+def search_keyword() -> str:
+    return os.getenv("CLASH_SEARCH_KEYWORD", target_query()).strip() or target_query()
 def search_bot_username() -> str:
     return os.getenv("CLASH_SEARCH_BOT_USERNAME", DEFAULT_SEARCH_BOT).strip().lstrip("@") or DEFAULT_SEARCH_BOT
 

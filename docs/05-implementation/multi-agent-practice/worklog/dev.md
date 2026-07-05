@@ -186,3 +186,14 @@
 - decision: status=local_verified_pending_release；release_gate=pending；production_verification=needs_reapply。
 - next_agent: qa
 - unresolved: 修复提交尚未重新发布；生产需要重新 apply_db 以把历史 017-064 等节点标为 unhealthy。
+
+## 2026-07-05 Clash live apply 搜索关键词修复（本地验证）
+
+- message_id: 2026-07-05-clash-live-apply-search-keyword-fix-001
+- action: 修复 live 脚本把目标筛选词和搜索关键词绑死导致郑州线上测试搜索过宽的问题。
+- input: 最新生产 3 账号任务真实执行后，2 个账号 `target_not_in_results`，只返回 2 页 / 53 条结果且目标群 `xiaozisk` 未出现；1 个账号遇到搜索机器人人机验证。生产库显示目标群 title=`郑州平价资源（交流群）`、username=`xiaozisk`，需要支持用更精确关键词验收。
+- output: `.github/scripts/configure_clash_search_join_live.py` 新增 `CLASH_SEARCH_KEYWORD` / `search_keyword()`；目标群仍按 `CLASH_TARGET_QUERY` 选择，任务搜索关键词可单独设置为 username 或精确标题。
+- evidence: live 脚本合同测试新增 `CLASH_SEARCH_KEYWORD` 断言；`backend/.venv/bin/python -m pytest backend/tests/test_live_clash_config_script_contracts.py -q` -> 1 passed；全量 `backend/.venv/bin/python -m pytest -q -m no_postgres` -> 769 passed / 787 deselected；脚本 py_compile、`git diff --check` 通过。
+- decision: status=local_verified_pending_release；release_gate=pending；production_verification=needs_precise_keyword_retest。
+- next_agent: qa
+- unresolved: 修复提交尚未重新发布；需要以 `CLASH_TARGET_QUERY=郑州`、`CLASH_SEARCH_KEYWORD=xiaozisk` 重新创建 3 账号线上任务。
