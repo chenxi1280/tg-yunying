@@ -66,3 +66,15 @@
 - decision: 代码发布与生产健康通过；系统配置已具备多个 Clash 订阅地址、已有订阅编辑、主备优先级、启停、逐条同步和全部启用订阅不可用停手通知的代码路径
 - next_agent: product
 - unresolved: 本次 push deploy 中 `Configure Clash proxies and Zhengzhou smoke task` 是 skipped；真实生产 Clash 订阅拉取、真实节点出口 IP 观测、健康节点自动固定到授权槽位、运行中 failover event、warmup 重置和郑州 3 账号真实搜索点击/加入测试仍需单独生产执行证据
+
+## 2026-07-05 Clash 运行中 failover 绑定发布生产复核
+
+- message_id: 2026-07-05-clash-failover-runtime-release-001
+- action: 对 search_join 运行中代理失败后的 Clash 同订阅 / 备用订阅 failover、授权槽位绑定切换、warmup 重置和通知状态完成生产发布复核
+- input: Nash / Copernicus 子代理监督指出运行中 failover、exit observation、warmup、pending action 重指向和全订阅不可用通知缺口；dev 已按红测修复并完成本地验证
+- output: release_gate_passed_prod_health_ok
+- evidence: 本地定向 `backend/.venv/bin/python -m pytest backend/tests/test_proxy_airport_subscription.py backend/tests/test_proxy_airport_failover.py backend/tests/test_search_join_group_linked_tasks.py backend/tests/test_merge_integrity.py -q` -> 32 passed；全量 no_postgres 60s gate -> `764 passed, 787 deselected, 5 warnings`；`backend/.venv/bin/python -m compileall -q backend/app`、`git diff --check`、迁移 / 服务 `py_compile` 和 `npm --prefix frontend run build` 均通过；commit `47a943ba916d2cdaebb8e0e1cb61c6bca5d8a223` 已推送 `release` 和 `master`；Deploy Production run `28742136991` 通过 checks、build-images、deploy；公网 `https://tgyunying.telema.cn/api/health` 返回 `{"status":"ok"}`，公网 `/task-center` 和 `/` 均返回 HTTP 200 text/html
+- supervisor: Copernicus 复核确认 3 个 blocker 均已修复：健康候选不再依赖 observed exit IP、failover 后 pending / retryable_failed search_join payload 会重指向新 `proxy_binding_id`、运行中全订阅不可用会写 `admin_notification_status/detail` 并走审计
+- decision: 代码发布与生产健康通过；运行中代理失败后的授权槽位 failover 数据闭环已具备代码路径和本地测试证据
+- next_agent: product
+- unresolved: 本次 push deploy 中 `Configure Clash proxies and Zhengzhou smoke task` 仍是 skipped；真实生产 Clash 订阅拉取、真实出口 IP 观测、真实运行中 failover 触发和郑州 3 账号真实搜索点击 / 加入测试仍需单独生产执行证据
