@@ -175,3 +175,14 @@
 - decision: status=local_verified_pending_release；release_gate=pending；production_verification=partial_failed_then_fixed_locally。
 - next_agent: qa
 - unresolved: 修复提交尚未重新发布；生产 DB apply / 郑州 3 账号任务仍需重新 SSH 直连验证。
+
+## 2026-07-05 Clash live apply 旧节点退役修复（本地验证）
+
+- message_id: 2026-07-05-clash-live-apply-retire-absent-nodes-001
+- action: 修复生产 live apply 只保留 16 个 mihomo 容器后，DB 仍残留历史 healthy 机场节点的问题。
+- input: 第二次生产 SSH apply 成功后，任务 action 使用 001/002/003 节点正常，但 dispatcher 日志仍出现历史动作尝试 `tgyunying-mihomo-056:7890`；生产 DB 总 healthy 机场节点数高于本次上线节点数，说明缺少“本次订阅不存在节点退役”步骤。
+- output: `.github/scripts/configure_clash_search_join_live.py` 新增 `retire_absent_airport_nodes`，在每次 apply_db 同步当前订阅节点后，将同订阅下不在本次解析结果里的旧节点置为 `unhealthy`，`last_error=not_present_in_latest_live_apply`，避免 failover 继续选择已下线容器。
+- evidence: live 脚本合同测试新增退役函数与错误码断言；定向 `backend/.venv/bin/python -m pytest backend/tests/test_live_clash_config_script_contracts.py backend/tests/test_proxy_airport_failover.py backend/tests/test_proxy_airport_subscription.py -q` -> 21 passed；全量 `backend/.venv/bin/python -m pytest -q -m no_postgres` -> 769 passed / 787 deselected；脚本 py_compile、`git diff --check` 通过。
+- decision: status=local_verified_pending_release；release_gate=pending；production_verification=needs_reapply。
+- next_agent: qa
+- unresolved: 修复提交尚未重新发布；生产需要重新 apply_db 以把历史 017-064 等节点标为 unhealthy。

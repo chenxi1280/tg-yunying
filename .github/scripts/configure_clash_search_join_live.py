@@ -540,8 +540,10 @@ def upsert_airport_subscription(session, nodes: list[ProxyNode], healthy: set[in
 
 def upsert_airport_nodes(session, subscription: ProxyAirportSubscription, nodes: list[ProxyNode], healthy: set[int]) -> dict[int, ProxyAirportNode]:
     rows: dict[int, ProxyAirportNode] = {}
+    current_node_keys: set[str] = set()
     for node in nodes:
         node_key = f"live-{node.index:03d}-{node.name}"
+        current_node_keys.add(node_key)
         row = session.scalar(
             select(ProxyAirportNode).where(
                 ProxyAirportNode.tenant_id == 1,
@@ -561,8 +563,24 @@ def upsert_airport_nodes(session, subscription: ProxyAirportSubscription, nodes:
         row.max_bound_accounts = max(1, math.ceil(test_account_count() / max(1, len(healthy))))
         row.last_error = "" if node.index in healthy else "not_selected_for_live_apply"
         rows[node.index] = row
+    retire_absent_airport_nodes(session, subscription, current_node_keys)
     session.flush()
     return rows
+
+def retire_absent_airport_nodes(
+    session,
+    subscription: ProxyAirportSubscription,
+    current_node_keys: set[str],
+) -> None:
+    for row in session.scalars(
+        select(ProxyAirportNode).where(
+            ProxyAirportNode.tenant_id == 1,
+            ProxyAirportNode.subscription_id == subscription.id,
+            ProxyAirportNode.node_key.not_in(current_node_keys),
+        )
+    ):
+        row.status = "unhealthy"
+        row.last_error = "not_present_in_latest_live_apply"
 
 def apply_database(nodes: list[ProxyNode]) -> dict[str, Any]:
     healthy = set(healthy_indexes())
