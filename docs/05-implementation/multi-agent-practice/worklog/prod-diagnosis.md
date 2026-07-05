@@ -78,3 +78,14 @@
 - decision: 代码发布与生产健康通过；运行中代理失败后的授权槽位 failover 数据闭环已具备代码路径和本地测试证据
 - next_agent: product
 - unresolved: 本次 push deploy 中 `Configure Clash proxies and Zhengzhou smoke task` 仍是 skipped；真实生产 Clash 订阅拉取、真实出口 IP 观测、真实运行中 failover 触发和郑州 3 账号真实搜索点击 / 加入测试仍需单独生产执行证据
+
+## 2026-07-05 搜索目标群点击任务耗尽停止线上复核
+
+- message_id: 2026-07-05-search-join-exhausted-stop-release-001
+- action: 修复并发布搜索目标群点击任务在搜索机器人提前没有“下一页”时仍不标记耗尽、持续重试的问题。
+- input: 生产郑州 3 账号任务 `1ff45f3a-31b8-468f-af8d-cac4de72fdbf` 使用精确关键词 `xiaozisk`，目标 payload 为 `target_username=xiaozisk`、`target_peer_id=-1002188784621`；真实执行返回 `target_not_in_results`、`total_results=53`、`page=2`、`max_pages=70`、`pages_exhausted=false`，说明搜索机器人结果提前没有下一页时未触发自动停止。
+- output: `backend/app/integrations/telegram/search_join.py` 在 `next_button is None` 或到达 `max_pages` 时统一写 `pages_exhausted=true`；PRD、专项 PRD 和数据流转索引明确“找满 70 页或提前没有下一页仍未命中”都必须自动停止；回归测试覆盖无下一页不加入、不假装点击且返回耗尽。
+- evidence: 本地定向 `backend/.venv/bin/python -m pytest backend/tests/test_search_join_group_gateway.py backend/tests/test_search_join_group_linked_tasks.py -q` -> 24 passed；全量 no_postgres 60s gate -> `769 passed, 787 deselected, 5 warnings`；`py_compile` 和 `git diff --check` 通过。Commit `647df09d2e78b2a8c6fa00580c6ce93777ab249f` 已推送 `release` 和 `master`；Deploy Production run `28745691543` 通过 checks、build-images、deploy；生产 backend / workers 均运行 `ghcr.io/chenxi1280/tg-yunying-backend:647df09d2e78b2a8c6fa00580c6ce93777ab249f`，公网 `/api/health` 返回 `{"status":"ok"}`，`/task-center` 和 `/` 均 HTTP 200。部署后同一任务再次执行，action `de0a0ced-b358-42da-a862-d6117e18e76e` 于 `2026-07-05 23:40:50+08:00` 返回 `target_not_in_results`、`page=2`、`max_pages=70`、`pages_exhausted=true`、`pre_join_decoy_clicks=[]`；任务状态变为 `stopped`，另外两个 action 自动 `skipped`，错误码 `search_join_target_not_found_task_stopped`。
+- decision: 生产已证明搜索目标群找不到时 fail-closed 自动停止，且没有把非目标结果伪造成点击 / 加入成功；本证据不是成功入群证据。
+- next_agent: product
+- unresolved: 目标群 `xiaozisk` 当前未出现在搜索机器人返回结果中，因此郑州线上测试没有产生 `membership_observed`；如目标必须通过搜索链路成功点击 / 入群，需要先让目标群出现在选定搜索机器人结果中或更换可被搜索机器人返回的目标。
