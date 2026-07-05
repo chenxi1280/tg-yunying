@@ -203,6 +203,7 @@ def test_execute_search_join_reports_target_not_in_results_without_joining() -> 
 
     assert result["success"] is False
     assert result["error_code"] == "target_not_in_results"
+    assert result["pages_exhausted"] is True
     assert client.joined == []
 
 

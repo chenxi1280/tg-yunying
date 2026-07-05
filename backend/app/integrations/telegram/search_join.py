@@ -69,6 +69,7 @@ async def _execute_search_pages(client: Any, bot_username: str, keyword_text: st
                 return await _execute_target_join(client, page, payload, target, target_button, decoys, page_no, total_results)
             next_button = _find_next_button(buttons)
             if next_button is None or page_no == max_pages:
+                pages_exhausted = True
                 break
             await _click_button(page, next_button)
             page = await conv.get_response()
