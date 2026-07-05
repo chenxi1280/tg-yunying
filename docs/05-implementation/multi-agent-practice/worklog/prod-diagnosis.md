@@ -55,3 +55,14 @@
 - decision: 代码发布与生产健康通过；PRD、专项设计、数据流转索引和项目结构索引已同步
 - next_agent: product
 - unresolved: 本次 push deploy 中 `Configure Clash proxies and Zhengzhou smoke task` 等 workflow_dispatch-only 生产动作是 skipped；真实生产 Clash egress、全账号远端授权刷新、授权指纹重登生效和郑州 3 账号真实搜索点击/加入测试仍需单独生产执行证据
+
+## 2026-07-05 Clash 多订阅源池发布生产复核
+
+- message_id: 2026-07-05-clash-multi-subscription-release-001
+- action: 对系统配置 Clash 多订阅源池、主备优先级、订阅级同步和 search_join 全订阅不可用 fail-closed 完成生产发布复核
+- input: 用户补充“Clash 支持配置多个地址，主的掉了使用备用的，可以配置多个”；Hegel 只读监督指出 plural sync 未跑健康探测、全订阅不可用未发管理员通知两个 P0，dev 已修复并完成本地验证
+- output: release_gate_passed_prod_health_ok
+- evidence: 本地 `pytest backend/tests -m no_postgres -q` 为 `757 passed, 787 deselected, 5 warnings`；前端 `npm run build` 通过；`git diff --check` 通过；commit `7415de0ab033cc76837b3e1976eac455485b42e9` 已推送 `release` 和 `master`；Deploy Production run `28732700242` 通过 checks、build-images、deploy；公网 `https://tgyunying.telema.cn/api/health` 返回 `{"status":"ok"}`，公网 `/task-center` 和 `/` 均返回 HTTP 200
+- decision: 代码发布与生产健康通过；系统配置已具备多个 Clash 订阅地址、已有订阅编辑、主备优先级、启停、逐条同步和全部启用订阅不可用停手通知的代码路径
+- next_agent: product
+- unresolved: 本次 push deploy 中 `Configure Clash proxies and Zhengzhou smoke task` 是 skipped；真实生产 Clash 订阅拉取、真实节点出口 IP 观测、健康节点自动固定到授权槽位、运行中 failover event、warmup 重置和郑州 3 账号真实搜索点击/加入测试仍需单独生产执行证据
