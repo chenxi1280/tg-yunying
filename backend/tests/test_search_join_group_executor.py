@@ -25,7 +25,9 @@ from app.models import (
     TgAccountAuthorization,
 )
 from app.security import encrypt_secret
+from app.schemas.account_environment import ProxyAirportSubscriptionCreate
 from app.services._common import _now
+from app.services.proxy_airport_subscription import create_proxy_airport_subscription, sync_proxy_airport_subscription_by_id
 from app.services.task_center.search_join_pacing import pacing_window
 from app.services.task_center.executors import build_task_plan
 from app.services.task_center.executors import search_join_group as search_join_executor
@@ -312,6 +314,85 @@ def test_search_join_planner_fails_closed_without_authorization_environment(sess
     assert build_task_plan(session, task) == 0
     assert session.scalar(select(Action).where(Action.task_id == task.id)) is None
     assert task.stats["search_join_stats"]["hourly_execution"]["last_blockers"] == {"needs_client_metadata": 1}
+
+
+@pytest.mark.no_postgres
+def test_search_join_planner_fails_closed_when_all_enabled_clash_subscriptions_unavailable(session: Session) -> None:
+    _bind_search_join_environment(session, [101])
+    subscription = create_proxy_airport_subscription(
+        session,
+        tenant_id=1,
+        payload=ProxyAirportSubscriptionCreate(
+            name="primary",
+            subscription_url="https://primary.example.com/sub",
+            priority=10,
+            enabled=True,
+        ),
+        actor="tester",
+    )
+    sync_proxy_airport_subscription_by_id(
+        session,
+        tenant_id=1,
+        subscription_id=subscription.id or 0,
+        actor="tester",
+        fetcher=lambda _url: "trojan://secret@primary.example.com:443#primary-node",
+        health_checker=lambda _node: (False, "connect_timeout"),
+    )
+    task = _task()
+    session.add(task)
+    session.commit()
+
+    assert build_task_plan(session, task) == 0
+    assert session.scalar(select(Action).where(Action.task_id == task.id)) is None
+    assert task.stats["search_join_stats"]["hourly_execution"]["last_blockers"] == {
+        "airport_all_subscriptions_unavailable": 1
+    }
+
+
+@pytest.mark.no_postgres
+def test_search_join_planner_notifies_admins_when_all_enabled_clash_subscriptions_unavailable(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sent: list[tuple[str, str, str]] = []
+    tenant = session.get(Tenant, 1)
+    tenant.admin_chat_id = "1001,1002"
+    tenant.telegram_bot_token_ciphertext = encrypt_secret("bot-token")
+    monkeypatch.setattr(
+        search_join_executor,
+        "send_telegram_bot_message",
+        lambda bot_token, chat_id, text: sent.append((bot_token, chat_id, text)) or search_join_executor.NotificationResult(True, "sent"),
+    )
+    _bind_search_join_environment(session, [101])
+    subscription = create_proxy_airport_subscription(
+        session,
+        tenant_id=1,
+        payload=ProxyAirportSubscriptionCreate(
+            name="primary",
+            subscription_url="https://primary.example.com/sub?token=secret",
+            priority=10,
+            enabled=True,
+        ),
+        actor="tester",
+    )
+    sync_proxy_airport_subscription_by_id(
+        session,
+        tenant_id=1,
+        subscription_id=subscription.id or 0,
+        actor="tester",
+        fetcher=lambda _url: "trojan://secret@primary.example.com:443#primary-node",
+        health_checker=lambda _node: (False, "connect_timeout"),
+    )
+    task = _task()
+    session.add(task)
+    session.commit()
+
+    assert build_task_plan(session, task) == 0
+
+    hourly = task.stats["search_join_stats"]["hourly_execution"]
+    assert hourly["admin_notification_status"] == "sent"
+    assert [chat_id for _token, chat_id, _text in sent] == ["1001", "1002"]
+    assert all("secret" not in text for _token, _chat_id, text in sent)
 
 
 @pytest.mark.no_postgres

@@ -131,3 +131,14 @@
 - decision: status=local_verified_pending_release；release_gate=pending；production_verification=unproven。
 - next_agent: qa
 - unresolved: 尚未推送 release/master；尚未执行 Deploy Production；生产任务仍需部署后重新触发或等待 planner 验证 actions 生成与真实加入结果。
+
+## 2026-07-05 Clash 多订阅源池 Development Complete（本地验证）
+
+- message_id: 2026-07-05-clash-multi-subscription-devcomplete-001
+- action: 按 PRD v0.20 实现系统配置 Clash 多订阅源池、主备优先级、订阅级同步和 search_join 全部启用订阅不可用 fail-closed。
+- input: 2026-07-05-clash-multi-subscription-prd-001；用户确认 Clash 支持配置多个地址，主地址不可用时使用备用地址。
+- output: `ProxyAirportSubscription` 增加 name / priority / enabled / failover policy 等字段，`ProxyAirportNode` 增加出口观测字段，新增 `ProxyNodeFailoverEvent` 和迁移 `0081_proxy_airport_multi_subscription.py`；新增 `proxy_airport_pool.py` 实现 list/create/patch/sync-by-id/failover 选择，保留旧 `/api/proxy-airport-subscription` 主订阅兼容入口；系统路由新增 `/api/proxy-airport-subscriptions` 集合 API；前端系统配置 Clash 页面改为多订阅列表，支持新增、编辑已有订阅地址 / 名称 / 优先级、启用状态、逐条同步和状态展示；search_join planner 在已有启用订阅但全部无健康源时写 `airport_all_subscriptions_unavailable` 并不生成真实 action；同时修复任务详情 stats 刷新不会重算 search_join 小时容量的问题。
+- evidence: 先补 red tests 并确认失败：多订阅 schema/service 缺失、plural route/permission 缺失、前端仍是单订阅、search_join 全订阅不可用仍生成 action、详情 stats 仍显示 `max_actions_per_hour=0`；修复后定向 `backend/.venv/bin/python -m pytest backend/tests/test_proxy_airport_subscription.py backend/tests/test_search_join_group_executor.py backend/tests/test_search_join_group_runtime_config.py backend/tests/test_account_mask_frontend_contracts.py backend/tests/test_permission_vocabulary.py backend/tests/test_system_actions_dataflow.py backend/tests/test_merge_integrity.py -q` -> 68 passed；Hegel 只读监督发现 plural sync 未跑健康探测、全订阅不可用未发管理员通知两个 P0，已补 `health_checker=check_proxy_airport_node` 和租户 Bot 通知并复测；用户补充“多个地址、主掉备用”后补前端已有订阅编辑入口，合同测试 1 passed、frontend build passed、`git diff --check` passed；最终全量 no_postgres 60s gate -> 757 passed / 787 deselected；changed backend py_compile passed；代码行数检查全部低于 500 行。
+- decision: status=local_verified_pending_release；subagent_supervision=done_with_P0_fixed；release_gate=pending；production_verification=unproven。
+- next_agent: qa
+- unresolved: 真实出口 IP 观测、健康节点自动固定到授权槽位、运行中同订阅/备用订阅自动切换、`proxy_node_failover_events` 写入和 warmup 重置仍需后续实现或生产证据；尚未执行 GitHub Actions release / production deploy。

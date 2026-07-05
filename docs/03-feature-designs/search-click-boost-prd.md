@@ -123,7 +123,8 @@ tg-yunying 当前任务中心已支持 5 类主任务：`group_ai_chat`、`group
 |`api_id_client_metadata_mismatch`|授权槽位登录 API ID / session / 运行时 API ID / 客户端元数据组合不一致|skipped|`api_id_client_metadata_mismatch`|
 |`proxy_egress_guard_failed`|MTProto 连接未证明走绑定代理或出现直连风险，action 跳过|skipped|`proxy_egress_guard_failed`|
 |`proxy_node_unreachable`|当前绑定机场节点不可达，已尝试按策略切换下一个健康节点但本次 action 不继续|skipped|`proxy_node_unreachable`|
-|`airport_all_nodes_unavailable`|订阅下所有候选节点均不可达或未通过出口探测，必须停止真实操作|skipped|`airport_all_nodes_unavailable`|
+|`airport_subscription_nodes_unavailable`|当前订阅下所有候选节点均不可达或未通过出口探测，需要按主备优先级切换备用订阅|skipped|`airport_subscription_nodes_unavailable`|
+|`airport_all_subscriptions_unavailable`|全部启用 Clash 订阅源均无可用健康节点，必须停止真实操作|skipped|`airport_all_subscriptions_unavailable`|
 
 状态机：
 
@@ -261,7 +262,7 @@ pending -> claiming -> executing -> success / failed / skipped
 | 独享静态住宅 IP | 真实家庭宽带、长期绑定 | 很高 | 高 | 核心账号推荐采购路线；若通过 `airport_clash` 节点达到稳定出口、健康分和容量要求，可作为首版灰度节点来源 |
 | 4G / 5G 移动代理 | 真实移动运营商 SIM 卡 | 最高 | 最高 | 第二阶段现金牛账号 |
 
-首版可用代理路径以 `airport_clash` 全局订阅接入为落地实现：系统设置保存一个全局 Clash 订阅，解析节点、观测真实出口 IP 和健康状态，再在“账号面具 > 账号代理”按授权槽位固定绑定。独享静态住宅 IP 是首版灰度推荐的节点质量目标，不要求另做一个住宅代理供应商实现；如果后续直接采购 IPFLY / Bright Data 等供应商，按同一 `ProxyProvider` 抽象扩展。第二阶段再评估 4G / 5G 移动代理。
+首版可用代理路径以 `airport_clash` 多订阅接入为落地实现：系统设置保存多个 Clash 订阅源，配置主备优先级，逐条解析节点、观测真实出口 IP 和健康状态，再在“账号面具 > 账号代理”按授权槽位固定绑定。独享静态住宅 IP 是首版灰度推荐的节点质量目标，不要求另做一个住宅代理供应商实现；如果后续直接采购 IPFLY / Bright Data 等供应商，按同一 `ProxyProvider` 抽象扩展。第二阶段再评估 4G / 5G 移动代理。
 
 ### 6.2 代理供应商抽象
 ```python
@@ -271,7 +272,7 @@ pending -> claiming -> executing -> success / failed / skipped
 
 ### 6.3 机场 Clash 自动代理池
 
-“机场”能力作为 `ProxyProvider` 的一种实现：`proxy_provider="airport_clash"`。系统设置提供“Clash 配置”Tab，只保存一个全局 Clash 订阅地址 / 接口配置（加密字段），定时拉取并自动识别订阅格式，把可用节点标准化为代理节点。系统设置不负责授权槽位代理分配；账号的授权槽位代理绑定在“账号面具”一级菜单的“账号代理”Tab 完成，按 `account_id + developer_app_id/api_id + authorization_id/session_role` 选择并固定节点。订阅输入必须同时支持：
+“机场”能力作为 `ProxyProvider` 的一种实现：`proxy_provider="airport_clash"`。系统设置提供“Clash 配置”Tab，保存多个 Clash 订阅地址 / 接口配置（加密字段），支持设置主备优先级、启用 / 禁用和默认不自动切回策略，定时拉取并自动识别订阅格式，把可用节点标准化为代理节点。系统设置不负责授权槽位代理分配；账号的授权槽位代理绑定在“账号面具”一级菜单的“账号代理”Tab 完成，按 `account_id + developer_app_id/api_id + authorization_id/session_role` 选择并固定节点。每条订阅输入必须同时支持：
 
 - Base64 URI 列表：例如订阅返回体是单行 Base64，解码后每行是 `anytls://`、`trojan://`、`ss://`、`vmess://` 等节点 URI；套餐到期、剩余流量等伪节点必须过滤。
 - Clash YAML：包含 `proxies` / `proxy-groups` 的标准 Clash 配置。
@@ -289,16 +290,16 @@ pending -> claiming -> executing -> success / failed / skipped
 
 配置入口与权限：
 
-- 系统设置 / Clash 配置：读取全局订阅脱敏状态需要 `system.view`；保存全局订阅地址、测试连通性、同步节点、展示最近同步时间、节点总数、健康节点数和失败原因需要 `system.manage`。
-- 系统设置 / Clash 配置必须拆分保存状态、订阅解析状态、节点同步状态和健康探测状态：保存成功只表示加密订阅地址已更新；`test/sync` 成功只表示已拉取订阅并把 Base64 URI 列表 / Clash YAML / JSON 中的真实节点写入 `proxy_airport_nodes`；节点同步成功且健康节点数大于 0 才能作为授权槽位代理候选来源。保存成功但同步失败、同步成功但健康节点为 0、订阅解析失败、节点全不可用都必须显示可读错误和重试入口，不能把订阅保存成功或节点解析成功当作代理池可用。
+- 系统设置 / Clash 配置：读取订阅源池脱敏状态需要 `system.view`；保存订阅地址、调整主备优先级、启用 / 禁用、测试连通性、同步节点、展示最近同步时间、节点总数、健康节点数和失败原因需要 `system.manage`。
+- 系统设置 / Clash 配置必须按订阅源拆分保存状态、订阅解析状态、节点同步状态和健康探测状态：保存成功只表示该加密订阅地址已更新；`test/sync` 成功只表示已拉取该订阅并把 Base64 URI 列表 / Clash YAML / JSON 中的真实节点写入 `proxy_airport_nodes`；节点同步成功且健康节点数大于 0 才能作为授权槽位代理候选来源。保存成功但同步失败、同步成功但健康节点为 0、订阅解析失败、该订阅节点全不可用都必须显示可读错误和重试入口，不能把订阅保存成功或节点解析成功当作代理池可用。
 - 账号面具 / 账号代理：按 `account_id + developer_app_id/api_id + authorization_id/session_role` 绑定代理节点，展示每个授权槽位的绑定节点、真实出口 IP、健康状态、warmup 状态和最近故障切换；需要 `account_environment.manage`。
 - 账号面具 / 账号代理必须把 `primary / standby_1 / standby_2` 和不同 TG 开发者应用分开展示；运营可以按账号、应用、授权槽位、节点、健康分、warmup、故障切换状态筛选。批量重排代理必须先展示影响授权槽位数、预计重新 warmup 数和不可用节点数，确认后写审计。
 - 普通日志、任务 stats、前端非敏感字段不得输出订阅完整 URL、节点密码、token 或 URI 原文。
 6. 节点健康分低于阈值、订阅失效、节点消失、真实出口 IP 漂移过大或 IP 类型不符时，必须显式暂停对应授权槽位的搜索入群动作并告警，不做静默 fallback。
 7. 当前绑定节点连接失败、TCP / TLS 不通、代理认证失败或 `proxy_egress_guard` 无法证明出口时，允许自动执行 `switch_to_next_healthy_node`：只在同一订阅、节点授权槽位容量未超限、出口 IP 可观测的约束下为当前授权槽位选择下一个健康节点，写入 `proxy_node_failover_events`，并让新 `(account_id, developer_app_id/api_id, authorization_id/session_role, proxy_binding_id)` 重新进入 warmup。
 8. 自动故障切换不是每次 action 轮换。正常情况下授权槽位长期固定节点；只有明确的 `proxy_node_unreachable`、`proxy_reputation_below_threshold`、`exit_ip_changed`、`node_removed_from_subscription` 事件才能触发换节点。
-9. 如果订阅下没有任何候选节点通过连通性、容量和出口 IP 校验，Executor 必须返回 `skipped` + `airport_all_nodes_unavailable`，不发送搜索、不点击按钮、不 join，也不回退本机直连。
-10. `airport_all_nodes_unavailable` 必须触发租户 Bot 管理员通知：复用 `Tenant.admin_chat_id` 的多管理员 Chat ID 和已配置的 Bot Token，通过 Telegram Bot `sendMessage` 广播到所有管理员；通知内容只包含任务名、订阅脱敏名、受影响账号/授权槽位数量、最近失败摘要和处理入口，不包含订阅 URL、token、节点密码或关键词明文。
+9. 如果当前订阅下没有任何候选节点通过连通性、容量和出口 IP 校验，Executor 必须先按主备优先级选择下一条启用且健康的备用订阅；只有全部启用订阅都没有健康节点时，才返回 `skipped` + `airport_all_subscriptions_unavailable`，不发送搜索、不点击按钮、不 join，也不回退本机直连。
+10. `airport_all_subscriptions_unavailable` 必须触发租户 Bot 管理员通知：复用 `Tenant.admin_chat_id` 的多管理员 Chat ID 和已配置的 Bot Token，通过 Telegram Bot `sendMessage` 广播到所有管理员；通知内容只包含任务名、受影响订阅脱敏名列表、受影响账号/授权槽位数量、最近失败摘要和处理入口，不包含订阅 URL、token、节点密码或关键词明文。
 
 机场订阅与节点模型：
 
@@ -311,8 +312,13 @@ class ProxyAirportSubscription(Base):
     provider_label: str | None
     subscription_format: Literal["auto", "base64_uri_list", "clash_yaml", "json"] = "auto"
     max_authorizations_per_node_default: int = 1
-    all_nodes_down_policy: Literal["pause_task", "skip_action"] = "pause_task"
-    notify_admin_on_all_nodes_down: bool = True
+    priority: int = 100
+    enabled: bool = True
+    failover_policy: Literal["same_subscription_first", "next_subscription"] = "same_subscription_first"
+    auto_failback_enabled: bool = False
+    failback_cooldown_minutes: int = 1440
+    all_subscriptions_down_policy: Literal["pause_task", "skip_action"] = "pause_task"
+    notify_admin_on_all_subscriptions_down: bool = True
     fetch_interval_minutes: int = 60
     last_fetched_at: datetime | None
     last_fetch_status: Literal["success", "failed", "disabled"]
@@ -363,9 +369,9 @@ None # SOCKS5 鉴权 proxy_password: str|None # 加密存储 proxy_country: str 
 ```
  约束：- active 代理绑定唯一键为 `(account_id, developer_app_id/api_id, authorization_id/session_role)` - 同一账号不同 TG 开发者应用、主授权和备用授权槽位可以拥有不同 active 绑定 - 同一授权槽位不允许同时存在多个 active `proxy_host:proxy_port` 或多个 observed exit IP - `ip_reputation_score < 60` 时自动 `is_active=False` 并暂停该授权槽位相关动作 - `last_health_check_at` 距今 > 24h 时定时任务重测 #
 
-### 6.5 账号-IP 绑定策略 **绑定而非轮换**是本任务的核心原则。真人不会每天换 IP 登录账号。- 账号注册时的 IP、养号 IP、任务 IP 要尽量保持连续，实际以授权槽位 `observed_exit_ip` 为风控事实源 - 代理绑定粒度为 `account_id + developer_app_id/api_id + authorization_id/session_role`，同一账号在不同 TG 开发者应用、不同 session key 和主 / 备用授权槽位下可以绑定不同节点，但每个授权槽位必须固定 - `airport_clash` 必须以 `observed_exit_ip` 作为风控事实源，不以节点入口 host 作为出口事实 - 所有 MTProto 连接必须显式走授权槽位绑定代理，代理不可用时 fail closed，不允许回退本机直连 - 当前机场节点完全不通时只能按 `switch_to_next_healthy_node` 为该授权槽位切换到下一个健康节点，且切换后该 `(account_id, developer_app_id/api_id, authorization_id/session_role, proxy_binding_id)` 重新进入 warmup；全订阅节点都不通时必须 `airport_all_nodes_unavailable` 并停止真实操作 - 同一出口 IP 至少稳定 30 天后才允许跑入群任务 - 同一 `/24` 子网最多绑 3 个账号 - 同一 ASN 最多绑 5 个账号
+### 6.5 账号-IP 绑定策略 **绑定而非轮换**是本任务的核心原则。真人不会每天换 IP 登录账号。- 账号注册时的 IP、养号 IP、任务 IP 要尽量保持连续，实际以授权槽位 `observed_exit_ip` 为风控事实源 - 代理绑定粒度为 `account_id + developer_app_id/api_id + authorization_id/session_role`，同一账号在不同 TG 开发者应用、不同 session key 和主 / 备用授权槽位下可以绑定不同节点，但每个授权槽位必须固定 - `airport_clash` 必须以 `observed_exit_ip` 作为风控事实源，不以节点入口 host 作为出口事实 - 所有 MTProto 连接必须显式走授权槽位绑定代理，代理不可用时 fail closed，不允许回退本机直连 - 当前机场节点完全不通时先按 `switch_to_next_healthy_node` 在同订阅内为该授权槽位切换到下一个健康节点；同订阅无健康节点时按主备优先级切到备用订阅健康节点；切换后该 `(account_id, developer_app_id/api_id, authorization_id/session_role, proxy_binding_id)` 重新进入 warmup；全部启用订阅都不通时必须 `airport_all_subscriptions_unavailable` 并停止真实操作 - 同一出口 IP 至少稳定 30 天后才允许跑入群任务 - 同一 `/24` 子网最多绑 3 个账号 - 同一 ASN 最多绑 5 个账号
 ```python
- class ProxyPolicy(BaseModel): required: bool = True allowed_proxy_types: list[Literal["residential_static", "mobile_4g", "airport_clash"]] = ["residential_static", "airport_clash"] proxy_egress_guard_required: bool = True allow_direct_egress_fallback: bool = False enforce_unique_proxy_per_authorization: bool = True country_match_account_region: bool = False # 由关键词允许矩阵控制，不再强制三者硬相等 min_ip_reputation_score: float = 70.0 min_exit_ip_stability_score: float = 80.0 min_binding_age_days: int = 30 max_authorizations_per_node_default: int = 1 node_capacity_overrides: dict[str, int] = {} node_failover_policy: Literal["switch_to_next_healthy_node", "pause_only"] = "switch_to_next_healthy_node" all_nodes_down_policy: Literal["pause_task", "skip_action"] = "pause_task" max_accounts_per_asn: int = 5 max_accounts_per_ip_cidr_24: int = 3 max_daily_requests_per_ip: int = 50 max_weekly_requests_per_ip: int = 200
+ class ProxyPolicy(BaseModel): required: bool = True allowed_proxy_types: list[Literal["residential_static", "mobile_4g", "airport_clash"]] = ["residential_static", "airport_clash"] proxy_egress_guard_required: bool = True allow_direct_egress_fallback: bool = False enforce_unique_proxy_per_authorization: bool = True country_match_account_region: bool = False # 由关键词允许矩阵控制，不再强制三者硬相等 min_ip_reputation_score: float = 70.0 min_exit_ip_stability_score: float = 80.0 min_binding_age_days: int = 30 max_authorizations_per_node_default: int = 1 node_capacity_overrides: dict[str, int] = {} node_failover_policy: Literal["switch_to_next_healthy_node", "pause_only"] = "switch_to_next_healthy_node" subscription_failover_policy: Literal["same_subscription_first", "next_subscription"] = "same_subscription_first" auto_failback_enabled: bool = False all_subscriptions_down_policy: Literal["pause_task", "skip_action"] = "pause_task" max_accounts_per_asn: int = 5 max_accounts_per_ip_cidr_24: int = 3 max_daily_requests_per_ip: int = 50 max_weekly_requests_per_ip: int = 200
 ```
  #
 
@@ -515,7 +521,7 @@ account_id + developer_app_id/api_id + authorization_id/session_role
 
 ### 8.1 配置 Schema
 ```jsonc
- { "anti_detection": { "warmup_days": 3, "warmup_daily_actions": 3, "behavior_realism": { "decision_delay_seconds": [3, 8], "browse_other_results_before_join": [0, 2], "browse_other_results_after_join": [0, 1], "max_non_target_safe_navigation_per_action": 3, "pre_join_decoy_click_probability": 0.35, "pre_join_decoy_click_count": [0, 2], "pre_join_decoy_dwell_seconds": [10, 30], "post_join_safe_browse_probability": 0.25, "post_join_safe_browse_count": [0, 1], "post_join_safe_browse_dwell_seconds": [8, 20], "decoy_join_enabled": false, "post_join_policy": "stay_joined", "post_join_retention_days": [3, 14], "in_group_dwell_seconds": [30, 180], "post_join_linked_task_policy": { "enabled": true, "activation_delay_minutes": [60, 360], "min_retention_before_ai_minutes": 360, "max_new_joined_accounts_per_hour_ratio": 0.2 }, "exit_dwell_seconds": [5, 15], "occasional_message_probability": 0.0, "decoy_keyword_ratio": 0.5 }, "rhythm": { "action_interval_seconds": [300, 1800], "interval_distribution": "normal", "interval_std_dev_ratio": 0.4, "active_hours": ["08:00-23:00"], "task_start_jitter_seconds": [0, 1800] }, "paging": { "max_pages": 70, "scroll_back_probability": 0.3, "scroll_back_max_times": 2, "non_target_browse_probability": 0.2 }, "anti_clustering": { "max_accounts_per_ip_cidr_24": 3, "max_accounts_per_asn": 5, "max_daily_actions_per_account": 5, "max_daily_searches_per_keyword_per_account": 2, "max_concurrent_accounts_per_keyword": 10 } }, "proxy_airport_policy": { "subscription_format": "auto", "supported_formats": ["base64_uri_list", "clash_yaml", "json"], "max_authorizations_per_node_default": 1, "node_capacity_overrides": {"香港 01": 1, "日本 01": 2}, "enforce_unique_proxy_per_authorization": true, "node_failover_policy": "switch_to_next_healthy_node", "all_nodes_down_policy": "pause_task", "filter_non_node_entries": true, "allow_direct_egress_fallback": false } }
+ { "anti_detection": { "warmup_days": 3, "warmup_daily_actions": 3, "behavior_realism": { "decision_delay_seconds": [3, 8], "browse_other_results_before_join": [0, 2], "browse_other_results_after_join": [0, 1], "max_non_target_safe_navigation_per_action": 3, "pre_join_decoy_click_probability": 0.35, "pre_join_decoy_click_count": [0, 2], "pre_join_decoy_dwell_seconds": [10, 30], "post_join_safe_browse_probability": 0.25, "post_join_safe_browse_count": [0, 1], "post_join_safe_browse_dwell_seconds": [8, 20], "decoy_join_enabled": false, "post_join_policy": "stay_joined", "post_join_retention_days": [3, 14], "in_group_dwell_seconds": [30, 180], "post_join_linked_task_policy": { "enabled": true, "activation_delay_minutes": [60, 360], "min_retention_before_ai_minutes": 360, "max_new_joined_accounts_per_hour_ratio": 0.2 }, "exit_dwell_seconds": [5, 15], "occasional_message_probability": 0.0, "decoy_keyword_ratio": 0.5 }, "rhythm": { "action_interval_seconds": [300, 1800], "interval_distribution": "normal", "interval_std_dev_ratio": 0.4, "active_hours": ["08:00-23:00"], "task_start_jitter_seconds": [0, 1800] }, "paging": { "max_pages": 70, "scroll_back_probability": 0.3, "scroll_back_max_times": 2, "non_target_browse_probability": 0.2 }, "anti_clustering": { "max_accounts_per_ip_cidr_24": 3, "max_accounts_per_asn": 5, "max_daily_actions_per_account": 5, "max_daily_searches_per_keyword_per_account": 2, "max_concurrent_accounts_per_keyword": 10 } }, "proxy_airport_policy": { "subscription_format": "auto", "supported_formats": ["base64_uri_list", "clash_yaml", "json"], "max_authorizations_per_node_default": 1, "node_capacity_overrides": {"香港 01": 1, "日本 01": 2}, "enforce_unique_proxy_per_authorization": true, "node_failover_policy": "switch_to_next_healthy_node", "subscription_failover_policy": "same_subscription_first", "auto_failback_enabled": false, "all_subscriptions_down_policy": "pause_task", "filter_non_node_entries": true, "allow_direct_egress_fallback": false } }
 ```
  #
 
@@ -623,7 +629,7 @@ deficit =
 
 - `skipped`、`failed`、`unknown_after_send` 或执行结果未知。
 - `proxy_node_unreachable` 后已切换但本轮跳过的 action。
-- `airport_all_nodes_unavailable`、`proxy_egress_guard_failed`、`external_url_requires_web_profile`。
+- `airport_all_subscriptions_unavailable`、`proxy_egress_guard_failed`、`external_url_requires_web_profile`。
 - 只浏览 decoy 且未完成目标加入的动作。
 
 Planner 规则：
@@ -633,7 +639,7 @@ Planner 规则：
 3. `hourly_round_curve[current_hour]=0` 时不主动开新轮；下一次运行时间跳到下一个非 0 小时。
 4. `hourly_min_successful_joins > 0` 且 `deficit > 0` 时可以压缩本小时剩余窗口内的规划间隔，但仍不得绕过 warmup、账号锁、代理 egress guard、节点容量、关键词日上限和 Bot 协议样本门槛。
 5. 已过期的 open action 不计入未来覆盖，必须进入 `overdue_open_count` 和 `dispatcher_lag / worker_backlog` 诊断。
-6. 全订阅节点不可用时，action 级结果为 `skipped` + `airport_all_nodes_unavailable`，小时 stats 级状态为 `blocked`，任务主状态按 `all_nodes_down_policy` 进入 `paused` 或保持 running 但不再补量；补量恢复必须等代理节点重新健康后重排未来 action。
+6. 全部启用订阅节点不可用时，action 级结果为 `skipped` + `airport_all_subscriptions_unavailable`，小时 stats 级状态为 `blocked`，任务主状态按 `all_subscriptions_down_policy` 进入 `paused` 或保持 running 但不再补量；补量恢复必须等任一启用订阅重新出现健康节点后重排未来 action。
 
 任务详情展示：
 
@@ -671,7 +677,7 @@ Planner 规则：
 “操作次数”统计口径：
 
 - 计入：已经创建且预计会向目标机器人发起搜索的 `pending / claiming / executing / success / failed` action；以及已经向目标机器人发送关键词后才失败的 action，包括 `target_not_in_results`、`pages_exhausted=true` 和带重试策略的失败。
-- 不计入：`skipped_by_behavior_pacing`、代理 / 环境 / 协议样本 / 权限预检失败、全订阅不可用、缺少客户端元数据、关键词矩阵不允许等尚未向 Telegram / 目标机器人发起真实搜索的 action。
+- 不计入：`skipped_by_behavior_pacing`、代理 / 环境 / 协议样本 / 权限预检失败、全部启用订阅不可用、缺少客户端元数据、关键词矩阵不允许等尚未向 Telegram / 目标机器人发起真实搜索的 action。
 - 规划时必须同时统计未来 open action，防止同一账号、同一关键词或任务日预算被并发规划透支。
 
 时间窗口、并发和随机采样口径：
@@ -802,7 +808,7 @@ search_join success
 
 ### 9.1 完整 Payload
 ```jsonc
- { "task_type": "search_join_group", "execution_mode": "mtproto_userbot", "name": "迪拜房产群搜索目标点击", "search_bots": ["jisou"], "keywords": [ {"text": "迪拜房产", "business_region": "AE", "account_locale": "zh-CN", "proxy_country": "SG", "lang": "zh", "weight": 1.0, "decoy": false}, {"text": "迪拜租房", "business_region": "AE", "account_locale": "zh-CN", "proxy_country": "AE", "lang": "zh", "weight": 0.8, "decoy": false}, {"text": "天气预报", "business_region": "CN", "account_locale": "zh-CN", "proxy_country": "SG", "lang": "zh", "weight": 1.0, "decoy": true} ], "target_groups": [ { "operation_target_id": 123, "target_input": "@yourgroup", "match_strategy": "username_or_peer_id" } ], "anti_detection": { /* 见 §8.1 */ }, "proxy_policy": { /* 见 §6.5 */ }, "account_config": { "selection_mode": "manual", "account_ids": [101, 102, 103, 104, 105], "authorization_roles": ["primary", "standby_1"], "same_account_concurrency": 1, "authorization_switch_policy": "primary_first_failover_only", "max_concurrent": 5, "cooldown_per_account_minutes": 30, "ban_policy": "pause_task" }, "pacing_config": { "mode": "curve", "curve_type": "steady", "hourly_round_curve": [0,0,0,0,0,0,1,1,2,2,2,2,1,1,2,2,3,3,2,2,1,1,0,0], "actions_per_round_mode": "auto", "actions_per_round": 5, "max_actions_per_hour": 20, "hourly_min_successful_joins": 0, "max_actions_per_day": 100, "per_account_total_action_limit": 0, "per_account_daily_action_limit": 1, "per_account_cooldown_days": 0, "per_keyword_account_daily_limit": 2, "hourly_skip_probability": 0, "daily_skip_probability": 0, "skip_probability_per_action": 0.1, "hourly_jitter_percent": 30, "daily_jitter_percent": 20, "active_hours": [{"start": "08:00", "end": "23:00"}] }, "failure_policy": { "max_retries": 2, "retry_delay_seconds": 300, "on_account_banned": "pause_task", "on_api_rate_limit": "wait_and_retry", "on_target_not_found": "skip", "on_airport_all_nodes_unavailable": "pause_task_and_notify_admins" } }
+ { "task_type": "search_join_group", "execution_mode": "mtproto_userbot", "name": "迪拜房产群搜索目标点击", "search_bots": ["jisou"], "keywords": [ {"text": "迪拜房产", "business_region": "AE", "account_locale": "zh-CN", "proxy_country": "SG", "lang": "zh", "weight": 1.0, "decoy": false}, {"text": "迪拜租房", "business_region": "AE", "account_locale": "zh-CN", "proxy_country": "AE", "lang": "zh", "weight": 0.8, "decoy": false}, {"text": "天气预报", "business_region": "CN", "account_locale": "zh-CN", "proxy_country": "SG", "lang": "zh", "weight": 1.0, "decoy": true} ], "target_groups": [ { "operation_target_id": 123, "target_input": "@yourgroup", "match_strategy": "username_or_peer_id" } ], "anti_detection": { /* 见 §8.1 */ }, "proxy_policy": { /* 见 §6.5 */ }, "account_config": { "selection_mode": "manual", "account_ids": [101, 102, 103, 104, 105], "authorization_roles": ["primary", "standby_1"], "same_account_concurrency": 1, "authorization_switch_policy": "primary_first_failover_only", "max_concurrent": 5, "cooldown_per_account_minutes": 30, "ban_policy": "pause_task" }, "pacing_config": { "mode": "curve", "curve_type": "steady", "hourly_round_curve": [0,0,0,0,0,0,1,1,2,2,2,2,1,1,2,2,3,3,2,2,1,1,0,0], "actions_per_round_mode": "auto", "actions_per_round": 5, "max_actions_per_hour": 20, "hourly_min_successful_joins": 0, "max_actions_per_day": 100, "per_account_total_action_limit": 0, "per_account_daily_action_limit": 1, "per_account_cooldown_days": 0, "per_keyword_account_daily_limit": 2, "hourly_skip_probability": 0, "daily_skip_probability": 0, "skip_probability_per_action": 0.1, "hourly_jitter_percent": 30, "daily_jitter_percent": 20, "active_hours": [{"start": "08:00", "end": "23:00"}] }, "failure_policy": { "max_retries": 2, "retry_delay_seconds": 300, "on_account_banned": "pause_task", "on_api_rate_limit": "wait_and_retry", "on_target_not_found": "skip", "on_airport_all_subscriptions_unavailable": "pause_task_and_notify_admins" } }
 ```
  ##
 
@@ -1015,7 +1021,7 @@ class SearchJoinGroupExecutor:
         await assert_authorization_api_id_matches_runtime(env.authorization, env.client_metadata)
         failover = await self.proxy_failover.ensure_healthy_node_or_switch_authorization(env)
         if failover.all_nodes_unavailable:
-            return ActionResult(status="skipped", error_code="airport_all_nodes_unavailable")
+            return ActionResult(status="skipped", error_code="airport_all_subscriptions_unavailable")
         await assert_observed_exit_ip_ready(env.proxy_binding_id)
         egress_guard = await assert_proxy_egress_guard(env.proxy_binding)
         lock = await acquire_account_execution_lock(action.account_id, action.id, action.action_type)
@@ -1087,8 +1093,8 @@ CREATE TABLE proxy_airport_subscriptions (
   provider_label VARCHAR(64),
   subscription_format VARCHAR(32) DEFAULT 'auto',
   max_authorizations_per_node_default INT DEFAULT 1,
-  all_nodes_down_policy VARCHAR(32) DEFAULT 'pause_task',
-  notify_admin_on_all_nodes_down BOOLEAN DEFAULT TRUE,
+  all_subscriptions_down_policy VARCHAR(32) DEFAULT 'pause_task',
+  notify_admin_on_all_subscriptions_down BOOLEAN DEFAULT TRUE,
   fetch_interval_minutes INT DEFAULT 60,
   last_fetched_at TIMESTAMP WITH TIME ZONE,
   last_fetch_status VARCHAR(32),
@@ -1400,7 +1406,7 @@ CREATE INDEX idx_search_join_pacing_task_date ON search_join_pacing_decisions(ta
 
 ### 13.3 Task Stats 扩展 `task.stats` 增加：
 ```json
- { "search_join_stats": { "protocol_sample_status": {"jisou": "ready"}, "by_bot": { "jisou": {"actions_total": 1234, "success": 987, "target_not_in_results": 198, "failed": 49} }, "by_keyword_hash": { "sha256:...": {"display_name": "迪拜房产", "actions_total": 350, "success": 280, "avg_target_position": 3.2, "avg_dwell_seconds": 92, "pre_join_decoy_clicks": 126} }, "by_target": { "yourgroup": {"clicks_total": 987, "by_keyword_hash": {...}} }, "hourly_execution": { "bucket": "2026-07-03T20:00:00+08:00", "status": "catching_up", "goal": 0, "success_count": 7, "future_open_count": 3, "overdue_open_count": 0, "deficit": 0, "current_hour_rounds": 2, "started_rounds": 1, "max_actions_per_hour": 20, "last_planned_count": 5, "last_blockers": {} }, "authorization_environment_summary": { "ready_slots": 18, "missing_proxy_slots": 1, "missing_client_metadata_slots": 2, "api_id_mismatches": 0, "ios_slots": 16, "android_slots": 2, "lock_conflicts": 0 }, "exit_ip_health_summary": { "active_accounts": 50, "degraded_accounts": 2, "exit_ip_changed": 1, "egress_guard_failed": 0, "proxy_node_unreachable": 0, "airport_all_nodes_unavailable": 0 }, "proxy_failover_summary": {"attempted": 0, "succeeded": 0, "failed": 0, "paused_due_all_nodes_down": 0, "admin_notified": 0, "notification_failed": 0}, "button_effect_summary": {"navigate_only": 126, "join_candidate": 987, "external": 0, "unknown": 0}, "post_join_policy_summary": {"stay_joined": 987, "delayed_leave": 0, "leave_after_dwell": 0}, "recent_target_positions": [ {"checked_at": "2026-07-02T20:00:00Z", "keyword_hash": "sha256:...", "display_name": "迪拜房产", "position": 5}, {"checked_at": "2026-07-02T20:30:00Z", "keyword_hash": "sha256:...", "display_name": "迪拜房产", "position": 3} ] } }
+ { "search_join_stats": { "protocol_sample_status": {"jisou": "ready"}, "by_bot": { "jisou": {"actions_total": 1234, "success": 987, "target_not_in_results": 198, "failed": 49} }, "by_keyword_hash": { "sha256:...": {"display_name": "迪拜房产", "actions_total": 350, "success": 280, "avg_target_position": 3.2, "avg_dwell_seconds": 92, "pre_join_decoy_clicks": 126} }, "by_target": { "yourgroup": {"clicks_total": 987, "by_keyword_hash": {...}} }, "hourly_execution": { "bucket": "2026-07-03T20:00:00+08:00", "status": "catching_up", "goal": 0, "success_count": 7, "future_open_count": 3, "overdue_open_count": 0, "deficit": 0, "current_hour_rounds": 2, "started_rounds": 1, "max_actions_per_hour": 20, "last_planned_count": 5, "last_blockers": {} }, "authorization_environment_summary": { "ready_slots": 18, "missing_proxy_slots": 1, "missing_client_metadata_slots": 2, "api_id_mismatches": 0, "ios_slots": 16, "android_slots": 2, "lock_conflicts": 0 }, "exit_ip_health_summary": { "active_accounts": 50, "degraded_accounts": 2, "exit_ip_changed": 1, "egress_guard_failed": 0, "proxy_node_unreachable": 0, "airport_all_subscriptions_unavailable": 0 }, "proxy_failover_summary": {"attempted": 0, "succeeded": 0, "failed": 0, "paused_due_all_subscriptions_down": 0, "admin_notified": 0, "notification_failed": 0}, "button_effect_summary": {"navigate_only": 126, "join_candidate": 987, "external": 0, "unknown": 0}, "post_join_policy_summary": {"stay_joined": 987, "delayed_leave": 0, "leave_after_dwell": 0}, "recent_target_positions": [ {"checked_at": "2026-07-02T20:00:00Z", "keyword_hash": "sha256:...", "display_name": "迪拜房产", "position": 5}, {"checked_at": "2026-07-02T20:30:00Z", "keyword_hash": "sha256:...", "display_name": "迪拜房产", "position": 3} ] } }
 ```
 
 `search_join_stats` 必须额外包含 `pacing_limits` 摘要，至少展示租户时区、本地日期、任务日计数、账号日 / 总上限命中、账号间隔天数命中、同账号同关键词日上限命中、日 / 小时 pacing 跳过次数和最近 pacing decision。详情页读取 `search_join_pacing_decisions` 时必须能解释“本小时没规划”到底是主动跳过、账号限额、关键词限额、任务日限额还是全局风控上限。
@@ -1489,8 +1495,9 @@ AI 活跃群联动 126 个账号待冷却 / 64 个已进入 ready pool
 | `exit_ip_changed` | 绑定节点最近出口 IP 与历史稳定出口不一致 | 暂停该授权槽位并重置授权槽位 warmup |
 | `proxy_airport_subscription_failed` | 订阅拉取失败、格式识别失败、节点为空或只解析出套餐/流量伪节点 | 暂停新绑定，保留既有健康节点 |
 | `proxy_node_unreachable` | 当前绑定机场节点 TCP / TLS / 代理认证 / 出口探测不通 | 自动尝试 `switch_to_next_healthy_node`，写 failover 审计并重置 warmup |
-| `airport_all_nodes_unavailable` | 同一订阅下所有候选节点均不可达、超容量或未通过出口探测 | 暂停任务或跳过 action，不发送搜索、不点击、不 join，并通过租户 Bot 向全部管理员 Chat ID 推送告警 |
-| `admin_notification_failed` | 全节点不可用通知发送失败、Bot Token 缺失或管理员 Chat ID 缺失 | 仍保持任务暂停 / 跳过，并在风控中心展示通知失败原因 |
+| `airport_subscription_nodes_unavailable` | 单条订阅下所有候选节点均不可达、超容量或未通过出口探测 | 先按主备优先级切换备用订阅健康节点；无备用健康节点时升级为全部订阅不可用 |
+| `airport_all_subscriptions_unavailable` | 全部启用订阅源均无健康候选节点 | 暂停任务或跳过 action，不发送搜索、不点击、不 join，并通过租户 Bot 向全部管理员 Chat ID 推送告警 |
+| `admin_notification_failed` | 全部订阅不可用通知发送失败、Bot Token 缺失或管理员 Chat ID 缺失 | 仍保持任务暂停 / 跳过，并在风控中心展示通知失败原因 |
 | `authorization_proxy_conflict` | 同账号主/备用授权复用同一代理节点、同一授权槽位存在多个 active 代理，或 observed exit IP 与绑定不一致 | 阻断任务创建 / 执行并要求收敛为授权槽位唯一代理 |
 | `fingerprint_anomaly` | 设备指纹异常关联 | 人工审核 |
 | `fingerprint_reused_in_same_account` | 同账号主/备用授权复用同一指纹组合 | 阻断任务创建 |
@@ -1532,7 +1539,7 @@ AI 活跃群联动 126 个账号待冷却 / 64 个已进入 ready pool
 | `search_join.proxy_egress_guard_required` | true | 每次真实点击前证明 MTProto 连接走授权槽位绑定代理 |
 | `search_join.allow_direct_egress_fallback` | false | 代理不可用时 fail closed，不允许直连 |
 | `search_join.unique_proxy_per_authorization_required` | true | 每个账号 + TG 开发者应用 + 授权槽位必须绑定唯一代理出口，主 / 备用授权不得复用同一代理节点 |
-| `search_join.notify_admin_on_all_nodes_down` | true | 机场订阅全节点不可用时通过租户 Bot 推送给配置的管理员 Chat ID |
+| `search_join.notify_admin_on_all_subscriptions_down` | true | 全部启用 Clash 订阅源不可用时通过租户 Bot 推送给配置的管理员 Chat ID |
 | `search_join.hourly_execution_model_enabled` | true | 搜索入群按自然小时桶统计成功、future open、overdue open 和缺口 |
 | `search_join.hourly_min_successful_joins_default` | 0 | 默认不强制硬目标；配置大于 0 时按缺口追规划 |
 | `search_join.api_id_session_metadata_match_required` | true | 授权资产 API ID / session / 运行时 API ID / 客户端元数据必须一致 |
@@ -1568,7 +1575,7 @@ AI 活跃群联动 126 个账号待冷却 / 64 个已进入 ready pool
 |
  #
 
-### 16.2 告警渠道 复用现有告警链路：风控中心告警 → webhook / 邮件 / 站内信。新增专属告警类型：- `search_join.proxy_degraded` - `search_join.proxy_airport_subscription_failed` - `search_join.proxy_node_unreachable` - `search_join.airport_all_nodes_unavailable` - `search_join.admin_notification_failed` - `search_join.hourly_execution_blocked` - `search_join.hourly_execution_missed` - `search_join.exit_ip_changed` - `search_join.proxy_egress_guard_failed` - `search_join.api_id_client_metadata_mismatch` - `search_join.button_effect_unknown` - `search_join.proxy_node_reused_in_same_account` - `search_join.fingerprint_reused_in_same_account` - `search_join.protocol_sample_missing` - `search_join.account_authorization_lock_conflict` - `search_join.keyword_plaintext_log_detected` - `search_join.post_join_fast_leave_rate` - `search_join.bot_response_changed`（机器人回复格式变化） - `search_join.target_group_missing`（目标群从目标机器人索引消失） - `search_join.suspicious_block`（账号疑似被风控）
+### 16.2 告警渠道 复用现有告警链路：风控中心告警 → webhook / 邮件 / 站内信。新增专属告警类型：- `search_join.proxy_degraded` - `search_join.proxy_airport_subscription_failed` - `search_join.proxy_node_unreachable` - `search_join.airport_subscription_nodes_unavailable` - `search_join.airport_all_subscriptions_unavailable` - `search_join.admin_notification_failed` - `search_join.hourly_execution_blocked` - `search_join.hourly_execution_missed` - `search_join.exit_ip_changed` - `search_join.proxy_egress_guard_failed` - `search_join.api_id_client_metadata_mismatch` - `search_join.button_effect_unknown` - `search_join.proxy_node_reused_in_same_account` - `search_join.fingerprint_reused_in_same_account` - `search_join.protocol_sample_missing` - `search_join.account_authorization_lock_conflict` - `search_join.keyword_plaintext_log_detected` - `search_join.post_join_fast_leave_rate` - `search_join.bot_response_changed`（机器人回复格式变化） - `search_join.target_group_missing`（目标群从目标机器人索引消失） - `search_join.suspicious_block`（账号疑似被风控）
 
 ## 17. 灰度计划
 
@@ -1650,8 +1657,8 @@ AI 活跃群联动 126 个账号待冷却 / 64 个已进入 ready pool
 - 数据库 migration 新增 `proxy_airport_subscriptions`、`proxy_airport_nodes`、`proxy_node_failover_events`、`fingerprint_combo_history`、`account_proxy_bindings`、`account_environment_bindings`、`account_proxy_warmup_states`、`ip_reputation_history`、`search_join_action_stats` 和 `search_join_pacing_decisions`。
 - 数据库 migration 同步新增 `bot_protocol_samples`、`proxy_exit_ip_observations`、`account_authorization_execution_locks`。
 - 代理供应商抽象 + 一家供应商或 `airport_clash` 实现。
-- 机场订阅加密存储，自动识别 Base64 URI 列表 / Clash YAML / JSON，过滤套餐和流量伪节点，解析 `anytls` / `trojan` 等节点，完成真实出口 IP 观测、节点健康检查、容量分配、随机固定绑定和故障切换审计。
-- 全订阅节点不可用时复用租户 Bot 通知链路，向 `Tenant.admin_chat_id` 的全部管理员 Chat ID 推送脱敏告警；通知失败写 `admin_notification_failed`，但任务仍保持暂停 / 跳过。
+- 机场订阅源池加密存储，支持多个 Clash 订阅地址、主备优先级、启用 / 禁用和默认不自动切回；每条订阅自动识别 Base64 URI 列表 / Clash YAML / JSON，过滤套餐和流量伪节点，解析 `anytls` / `trojan` 等节点，完成真实出口 IP 观测、节点健康检查、容量分配、随机固定绑定和故障切换审计。
+- 全部启用订阅不可用时复用租户 Bot 通知链路，向 `Tenant.admin_chat_id` 的全部管理员 Chat ID 推送脱敏告警；通知失败写 `admin_notification_failed`，但任务仍保持暂停 / 跳过。
 - 搜索入群小时执行量模型：复用 AI 活跃群的自然小时桶、future open、overdue open 和缺口统计思想，新增 `search_join_hourly_*` stats、24 小时曲线、每轮 action 上限、每小时硬上限和可选小时成功硬目标。
 - 入群后任务联动：新增 `post_join_task_links` 配置、linked ready pool 投递、AI 活跃群冷却/可发言复检、新成员占比限制和联动阻塞原因展示。
 - 调研规则投影：新增 `search_join_rank_observations` 和 `search_join_linked_task_dispatches`，把排名观察、极搜生态、付费关键词广告、目标资料相关性、内容健康和后续任务联动与 action 事实分开存储。
@@ -1676,7 +1683,7 @@ AI 活跃群联动 126 个账号待冷却 / 64 个已进入 ready pool
 测试：
 
 - mock 目标机器人 / SOSO 的 fixture 测试。
-- 协议样本缺失、样本解析、button type / button effect 分类、授权槽位环境栈缺失、warmup、decoy 比例、proxy_dead、exit_ip_changed、proxy_egress_guard_failed、authorization_proxy_conflict、proxy_node_unreachable、airport_all_nodes_unavailable、admin_notification_failed、search_join_hourly_execution、api_id_client_metadata_mismatch、fingerprint_invalid、订阅格式识别失败、Clash / Base64 URI / JSON 订阅解析失败、授权槽位多 active 代理 / 多出口 IP 和主备复用元数据的单元测试。
+- 协议样本缺失、样本解析、button type / button effect 分类、授权槽位环境栈缺失、warmup、decoy 比例、proxy_dead、exit_ip_changed、proxy_egress_guard_failed、authorization_proxy_conflict、proxy_node_unreachable、airport_subscription_nodes_unavailable、airport_all_subscriptions_unavailable、admin_notification_failed、search_join_hourly_execution、api_id_client_metadata_mismatch、fingerprint_invalid、订阅格式识别失败、Clash / Base64 URI / JSON 订阅解析失败、多订阅优先级冲突、授权槽位多 active 代理 / 多出口 IP 和主备复用元数据的单元测试。
 - 同账号执行锁、备用 failover、observed exit IP 观测、防直连回退、decoy 只点 `navigate_only` 和关键词明文日志扫描测试。
 - pre-join decoy click 默认只浏览不加入、结果写入 `pre_join_decoy_clicks` 的单元测试。
 - post-join safe navigation 默认只浏览不加入、总非目标安全浏览次数不超过 3、结果写入 `post_join_safe_navigation` 的单元测试。
@@ -1712,8 +1719,8 @@ AI 活跃群联动 126 个账号待冷却 / 64 个已进入 ready pool
 - 新建 `search_join_group` 任务时，账号池里无授权槽位环境绑定的账号必须在预检中可见；创建并启动时无环境槽位不得进入主执行。
 - 主授权和备用授权都必须绑定不同完整客户端元数据和不同代理节点；同账号主 / 备用授权复用代理节点或元数据组合、同一授权槽位出现多个 active 代理 / 多出口 IP 时，任务创建必须被阻断。
 - `airport_clash` provider 必须能加密保存订阅 URL，自动识别 Base64 URI 列表 / Clash YAML / JSON，过滤套餐和流量伪节点，解析节点，按默认容量和单节点覆盖控制“每个节点多少授权槽位”，观测真实出口 IP、健康检查并把随机节点固定到授权槽位；订阅失败、节点为空、出口 IP 漂移不得静默 fallback。
-- 当前绑定节点不通时，必须按 `switch_to_next_healthy_node` 在同订阅内选择下一个健康且未超容量的节点，写 `proxy_node_failover_events`，并让新代理绑定重新 warmup；如果全订阅节点都不可用，必须 `skipped` / 暂停并写 `airport_all_nodes_unavailable`，不得搜索、点击或加入。
-- 全订阅节点不可用时，必须通过租户 Bot 向全部配置的管理员 Chat ID 推送脱敏告警；Bot Token 或管理员 Chat ID 未配置、发送失败时必须写 `admin_notification_failed` 和审计，但不得恢复执行或改走直连。
+- 当前绑定节点不通时，必须按 `switch_to_next_healthy_node` 优先在同订阅内选择下一个健康且未超容量的节点，写 `proxy_node_failover_events`，并让新代理绑定重新 warmup；如果同订阅无健康节点，必须按主备优先级切换备用订阅健康节点；如果全部启用订阅都不可用，必须 `skipped` / 暂停并写 `airport_all_subscriptions_unavailable`，不得搜索、点击或加入。
+- 全部启用订阅不可用时，必须通过租户 Bot 向全部配置的管理员 Chat ID 推送脱敏告警；Bot Token 或管理员 Chat ID 未配置、发送失败时必须写 `admin_notification_failed` 和审计，但不得恢复执行或改走直连。
 - 搜索入群小时执行量必须按租户时区自然小时统计；`success_current_hour` 只统计真实成功 `search_join`，`future_open_current_hour` 只统计未来待执行，过期待执行进入 `overdue_open_count`，不得把 skipped / failed / 代理不可用 / decoy-only 浏览计入成功或覆盖缺口。
 - 每次真实搜索、翻页、callback、Telegram 内部 URL resolve 和 join 前必须通过 `proxy_egress_guard`；代理失败、直连风险或出口 IP 与绑定不一致时必须 `skipped`，不得继续执行。
 - 授权槽位登录 API ID、session 文件、运行时 API ID / API hash 和客户端元数据必须一致；不一致时必须 `skipped` 并写 `api_id_client_metadata_mismatch`。
@@ -1766,13 +1773,13 @@ AI 活跃群联动 126 个账号待冷却 / 64 个已进入 ready pool
 | 检查项 | 结论 |
 | --- | --- |
 | 原始需求覆盖 | 已覆盖“搜索目标群点击任务”和“合并到 PRD” |
-| 用户补充细节覆盖 | 已覆盖主/备用独立客户端元数据、机场订阅自动代理、订阅格式识别、每节点容量配置、随机固定节点、节点不通切换下一个健康节点、全订阅不通停止操作、Bot 管理员通知、小时执行数量类似 AI 活群模型、搜索节奏与账号上限、小时 / 天跳过、小时 / 天抖动、实时 pacing / random 不调用 LLM、入群前非目标浏览、入群后安全浏览、授权指纹配置与远端观测分离和 AI 活跃群等后续任务联动 |
+| 用户补充细节覆盖 | 已覆盖主/备用独立客户端元数据、机场订阅自动代理、多 Clash 订阅主备优先级、订阅格式识别、每节点容量配置、随机固定节点、节点不通优先切换同订阅健康节点、同订阅不可用切备用订阅、全部启用订阅不通停止操作、Bot 管理员通知、小时执行数量类似 AI 活群模型、搜索节奏与账号上限、小时 / 天跳过、小时 / 天抖动、实时 pacing / random 不调用 LLM、入群前非目标浏览、入群后安全浏览、授权指纹配置与远端观测分离和 AI 活跃群等后续任务联动 |
 | 功能设计 | 已定义任务类型、机器人、关键词、目标群、公开排名规则推导、执行模式、环境栈、warmup、小时执行量、搜索节奏与账号上限、执行链路、入群后策略、后续任务联动和灰度 |
 | 前端状态 | 已定义创建向导、预检、运行中编辑影响预览、任务列表、任务详情、小时执行状态、节奏与账号上限状态、协议样本状态、出口 IP 状态、Clash 保存 / 同步状态、授权指纹配置 / 远端观测状态和风控告警 |
 | 后端 / API / worker | 已定义 schema、planner、executor、parser、stats、worker 边界、执行锁和异常处理 |
 | 数据流转 | 已定义新增表、Action payload/result、Task stats、OperationTarget 引用、协议样本、出口 IP 观测、节点容量、故障切换审计、管理员通知状态、小时执行 stats、pacing decision、排名观察快照和 linked task ready pool 投递 |
 | 权限安全 | 已要求任务创建权限、代理管理权限、审计、session 加密、环境栈硬校验和关键词明文禁止落日志 |
-| 边界场景 | 已覆盖 warmup、proxy_dead、proxy_node_unreachable、airport_all_nodes_unavailable、admin_notification_failed、search_join_hourly_blocked、exit_ip_changed、client_metadata_pending_effect、client_metadata_observed_mismatch、client_metadata_unobservable、bot_blocked、FloodWait、目标缺失、join approval / captcha 和机器人结构变化 |
+| 边界场景 | 已覆盖 warmup、proxy_dead、proxy_node_unreachable、airport_subscription_nodes_unavailable、airport_all_subscriptions_unavailable、admin_notification_failed、search_join_hourly_blocked、exit_ip_changed、client_metadata_pending_effect、client_metadata_observed_mismatch、client_metadata_unobservable、bot_blocked、FloodWait、目标缺失、join approval / captcha 和机器人结构变化 |
 | QA 验收 | 已定义后端、前端、灰度三层验收口径 |
 | 仍需用户拍板 | 首版真实目标机器人账号、灰度目标群、关键词样本、真实样本采集账号和灰度账号范围 |
 
@@ -1785,12 +1792,12 @@ AI 活跃群联动 126 个账号待冷却 / 64 个已进入 ready pool
 | 非目标浏览 | “假装点击其他结果”容易被实现成全点或误加入 | 非目标浏览只允许 `button_effect=navigate_only`，不得加入、关注、外跳或点击 `join_candidate/external/unknown`；pre + post 总数默认不超过 3，并写入 action result |
 | 节奏配置 | 每账号总上限、每日上限、间隔天数、小时 / 天跳过和抖动可能被通用任务误用 | `pacing_config` 是 search_join 专属；创建 / 编辑页只在 `search_join_group` 展示这些字段；planner 先执行账号 / 关键词 / 任务日限额，再做小时补量 |
 | 随机决策 | 实时 pacing / random decision 如果调 LLM 会不可复现且增加失败面 | 实时路径禁止调用 AI Gateway、AI Provider 和 `task_center/ai_generator.py`；只允许规则、配置、seeded random 和持久化 `search_join_pacing_decisions` |
-| Clash 配置 | 系统设置保存订阅地址容易被误报为代理池可用 | 系统设置只保存一个全局 Clash 订阅；保存、解析、同步、健康检查和授权槽位绑定分阶段展示；健康节点数为 0 或同步失败不能作为候选代理池 |
+| Clash 配置 | 系统设置保存订阅地址容易被误报为代理池可用，单订阅也会造成主源故障后的单点风险 | 系统设置维护多个 Clash 订阅源和主备优先级；保存、解析、同步、健康检查和授权槽位绑定分阶段展示；单条订阅健康节点数为 0 或同步失败不能作为候选代理池，全部启用订阅不可用才停手 |
 | 账号代理 | 单账号代理配置容易被放回系统设置或只按账号粒度保存 | 账号代理在“账号面具 > 账号代理”配置，粒度为 `account_id + developer_app_id/api_id + authorization_id/session_role`；同一槽位只允许一个 active 代理和一个 observed exit IP |
 | 授权指纹 | “修改指纹配置”容易被误报成远端授权设备已立即改变 | 授权指纹在“账号面具 > 授权指纹”配置；保存只写配置和审计，只影响下一次连接 / 重登 / 新 session 初始化；远端显示必须来自授权设备快照 |
 | 远端观测 | Telegram 快照缺字段时不能判断一致或失败 | 一致性状态增加 `unobservable`；页面必须展示缺失字段，不能显示 `observed_matched` 或“远端已更新” |
 | 首版代理路径 | “独享静态住宅 IP 必选”和用户给的 Clash 订阅配置存在冲突 | 首版落地 provider 为 `airport_clash`；独享静态住宅 IP 是节点质量目标和采购路线，不阻塞当前 Clash 订阅灰度 |
-| 全节点不可用 | 只写“节点不可用”不足以约束 action、小时 stats 和任务状态 | action 写 `skipped + airport_all_nodes_unavailable`；小时 stats 为 `blocked`；任务按 `all_nodes_down_policy` 暂停或保持 running 但不补量，并发送管理员脱敏通知 |
+| 全部启用订阅不可用 | 只写“节点不可用”不足以约束 action、小时 stats 和任务状态，也无法区分单订阅故障和全局不可用 | 单条订阅节点不可用先触发备用订阅 failover；全部启用订阅不可用时 action 写 `skipped + airport_all_subscriptions_unavailable`；小时 stats 为 `blocked`；任务按 `all_subscriptions_down_policy` 暂停或保持 running 但不补量，并发送管理员脱敏通知 |
 | 登录体验 | 登录不支持回车会导致运营误以为提交无响应 | 主 PRD 要求验证码、2FA、登录确认表单支持 Enter 回车提交，并复用点击主按钮逻辑；本专项依赖账号授权资产流程提供同等体验 |
 | 线上验收 | 本地测试、CI 或发布健康不能证明真实业务动作成功 | 真实 Clash 同步、出口观测、远端授权快照刷新和 Zhengzhou 3 账号线上搜索加入测试必须分别产出生产证据；未取证前只能写 `unproven` |
 
@@ -1830,3 +1837,4 @@ AI 活跃群联动 126 个账号待冷却 / 64 个已进入 ready pool
 |2026-07-04|v0.17|Codex（授权槽位级代理定稿）|按用户最新口径完整收口：系统设置只保存一个全局 Clash 订阅地址；“账号面具”一级菜单承载授权槽位级代理和授权指纹配置；同一账号不同 TG 开发者应用、session key 和主 / 备用授权槽位可以使用不同代理和不同指纹；修改指纹配置只影响下一次连接 / 重登 / 新 session 初始化，不声明远端授权设备立即变更。|
 |2026-07-04|v0.18|Codex（PRD 缺口复核）|补齐系统设置页 Clash 配置入口验收文字；修正示例配置和区域一致性口径，默认由关键词允许矩阵与风险评分决定，不再强制账号区域、设备语言和代理出口国家三者硬相等；强化“配置指纹已保存”不等于“远端已观测一致”。|
 |2026-07-04|v0.19|Codex（PRD 完整梳理）|按主线程和子代理复核补齐缺口：主 PRD 任务类型表新增 `search_join_group`；系统设置 / 账号面具 / 风控中心代理权属拆成全局 Clash 订阅、授权槽位代理绑定、代理健康处置三层；首版代理路径定为 `airport_clash`；补齐远端观测 `unobservable`、观测刷新 API、运行中节奏编辑影响预览、概率 / 抖动字段范围、全节点不可用 action / 小时 / task 三层状态，以及实时 pacing / random 不调用 AI Gateway 的验收。|
+|2026-07-05|v0.20|Codex（Clash 多订阅主备修订）|按用户确认将 Clash 配置从单个全局订阅修订为租户级多订阅源池：系统设置支持多个订阅地址、主备优先级、启用 / 禁用、默认不自动切回；当前绑定节点不通时优先同订阅切节点，同订阅无健康节点时切备用订阅健康节点；全部启用订阅不可用才写 `airport_all_subscriptions_unavailable`、阻断真实操作并通知管理员。|

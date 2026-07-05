@@ -18,14 +18,68 @@ class ProxyAirportSubscriptionUpdate(BaseModel):
         return self
 
 
+class ProxyAirportSubscriptionCreate(ProxyAirportSubscriptionUpdate):
+    name: str = Field(default="主订阅", min_length=1, max_length=80)
+    priority: int = Field(default=10, ge=1, le=9999)
+    enabled: bool = True
+    failover_policy: str = Field(default="priority", max_length=40)
+    auto_failback_enabled: bool = False
+    failback_cooldown_minutes: int = Field(default=0, ge=0, le=10080)
+    all_subscriptions_down_policy: str = Field(default="pause_task", max_length=40)
+    notify_admin_on_all_subscriptions_down: bool = True
+
+    @model_validator(mode="after")
+    def normalize_create_fields(self) -> "ProxyAirportSubscriptionCreate":
+        self.name = self.name.strip()
+        self.failover_policy = self.failover_policy.strip() or "priority"
+        self.all_subscriptions_down_policy = self.all_subscriptions_down_policy.strip() or "pause_task"
+        return self
+
+
+class ProxyAirportSubscriptionPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, min_length=1, max_length=80)
+    subscription_url: str | None = Field(default=None, min_length=1, max_length=2000)
+    priority: int | None = Field(default=None, ge=1, le=9999)
+    enabled: bool | None = None
+    failover_policy: str | None = Field(default=None, max_length=40)
+    auto_failback_enabled: bool | None = None
+    failback_cooldown_minutes: int | None = Field(default=None, ge=0, le=10080)
+    all_subscriptions_down_policy: str | None = Field(default=None, max_length=40)
+    notify_admin_on_all_subscriptions_down: bool | None = None
+
+    @model_validator(mode="after")
+    def normalize_patch_fields(self) -> "ProxyAirportSubscriptionPatch":
+        if self.name is not None:
+            self.name = self.name.strip()
+        if self.subscription_url is not None:
+            self.subscription_url = self.subscription_url.strip()
+            if not self.subscription_url.startswith(("http://", "https://")):
+                raise ValueError("Clash 订阅地址必须是 http 或 https")
+        if self.failover_policy is not None:
+            self.failover_policy = self.failover_policy.strip() or "priority"
+        if self.all_subscriptions_down_policy is not None:
+            self.all_subscriptions_down_policy = self.all_subscriptions_down_policy.strip() or "pause_task"
+        return self
+
+
 class ProxyAirportSubscriptionOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int | None = None
     tenant_id: int
+    name: str = "主订阅"
     subscription_url_configured: bool
     subscription_url_preview: str
     provider_type: str = "clash"
+    priority: int = 10
+    enabled: bool = True
+    failover_policy: str = "priority"
+    auto_failback_enabled: bool = False
+    failback_cooldown_minutes: int = 0
+    all_subscriptions_down_policy: str = "pause_task"
+    notify_admin_on_all_subscriptions_down: bool = True
     sync_status: str
     node_count: int
     healthy_node_count: int

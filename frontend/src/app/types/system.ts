@@ -182,9 +182,17 @@ export type AiAccountVoiceProfileAudit = {
 export type ProxyAirportSubscription = {
   id: number | null;
   tenant_id: number;
+  name: string;
   subscription_url_configured: boolean;
   subscription_url_preview: string;
   provider_type: string;
+  priority: number;
+  enabled: boolean;
+  failover_policy: string;
+  auto_failback_enabled: boolean;
+  failback_cooldown_minutes: number;
+  all_subscriptions_down_policy: string;
+  notify_admin_on_all_subscriptions_down: boolean;
   sync_status: string;
   node_count: number;
   healthy_node_count: number;

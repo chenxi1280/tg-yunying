@@ -324,3 +324,17 @@
 - requires_orchestrator_send: true
 - handoff_message: Dev Handoff：请按 `2026-07-04-account-proxy-slot-prd-001` 实现账号面具授权环境配置和 search_join 前置校验。设计真相源已更新：`docs/01-product/tg-ops-platform-prd.md`、`docs/03-feature-designs/search-click-boost-prd.md`、`docs/00-index/project-dataflow-index.md`。实现边界：1. `account_proxy_bindings` active 绑定唯一粒度为 `account_id + developer_app_id/api_id + authorization_id/session_role`；2. 同账号不同 TG 开发者应用、session key、primary / standby 授权槽位可以绑定不同代理和不同客户端元数据，但同一授权槽位只能有一个 active 代理和一个 observed exit IP；3. `account_environment_bindings` 保存槽位级客户端元数据并引用同槽位 active 代理；4. search_join Planner / Executor 在缺槽位代理、多 active 代理、多 observed exit IP、代理未观测出口、直连回退时 fail closed；5. 机场节点容量按授权槽位数计算，failover 只切换当前授权槽位并重置 `(account_id, developer_app_id/api_id, authorization_id/session_role, proxy_binding_id)` warmup；6. 存量迁移必须显式暴露同槽位冲突，不能静默挑一个代理当成功；7. 更新权限文案、审计、前端展示、数据流转索引、项目结构索引和定向测试。
 - unresolved: 尚未真实投递 dev 线程；未实现迁移、后端 API、worker 校验、前端提示、QA、发布或生产验证；生产存量账号的授权槽位代理完整性仍 unproven。
+
+## 2026-07-05 Clash 多订阅主备 PRD 修订
+
+- message_id: 2026-07-05-clash-multi-subscription-prd-001
+- action: 按用户确认，将系统配置中的 Clash 地址从单个全局订阅修订为多订阅源池，并补齐主备优先级、启用 / 禁用和备用订阅 failover 口径
+- input: 用户补充“clash 支持配置多个地址，然后主的掉了使用备用的，可以配置多个”
+- output: 主 PRD、搜索目标群点击任务专项 PRD、数据流转索引和项目结构索引已同步：系统设置维护多条 Clash 订阅源、priority、enabled、订阅级同步 / 健康状态和 failover policy；账号面具仍负责授权槽位级代理和授权指纹绑定；当前绑定节点不通时优先同订阅切节点，同订阅无健康节点时切备用订阅健康节点；全部启用订阅不可用时才写 `airport_all_subscriptions_unavailable`、阻断真实操作并通知管理员；默认不自动切回主订阅，避免账号出口频繁变化
+- evidence: E1 文档证据；已追加专项 PRD v0.20；旧口径扫描确认当前正文不再把停手条件写成单订阅全节点不可用；历史 changelog 保留旧决策并由 v0.20 覆盖
+- decision: 本轮是 PRD / 索引设计修订，不声明代码已实现、QA pass、发布完成或生产可用；后续开发必须把当前单订阅兼容接口演进为多订阅集合接口，并保留兼容边界可见
+- next_agent: dev
+- handoff_delivery_status: blocked
+- requires_orchestrator_send: true
+- handoff_message: Dev Handoff：请按 `2026-07-05-clash-multi-subscription-prd-001` 实现 Clash 多订阅源池。设计真相源已更新：`docs/01-product/tg-ops-platform-prd.md`、`docs/03-feature-designs/search-click-boost-prd.md`、`docs/00-index/project-dataflow-index.md`、`docs/00-index/project-structure-index.md`。实现边界：1. 系统设置支持多条 Clash 订阅 URL，字段包含 name、priority、enabled、status、node_count、healthy_node_count、last_error 和 failover policy；2. 当前 `/api/proxy-airport-subscription` 作为主订阅兼容入口，目标态新增 `/api/proxy-airport-subscriptions` 集合接口及订阅级 test/sync；3. 同订阅健康节点优先，当前订阅无健康候选时按 priority 切备用订阅；4. 切节点或切订阅必须写 `proxy_node_failover_events`，包含 from/to subscription 和 node；5. 默认不自动切回主订阅，除非后续显式配置 auto failback 和冷却；6. search_join 只有全部启用订阅不可用时才写 `airport_all_subscriptions_unavailable`、阻断真实 action 并通知管理员；7. 更新前端列表配置、权限、审计、迁移、测试和索引。
+- unresolved: 尚未真实投递 dev 线程；未实现多订阅 API / 迁移 / 前端列表 / failover worker / QA / 发布；生产 Clash 多订阅切换、真实出口观测和 search_join 全订阅不可用通知仍 unproven。

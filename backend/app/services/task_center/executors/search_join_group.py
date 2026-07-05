@@ -6,9 +6,16 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Action, BotProtocolSample, OperationTarget, Task, TgAccount
+from app.admin_chats import send_admin_chat_broadcast
+from app.models import Action, BotProtocolSample, OperationTarget, Task, Tenant, TgAccount
+from app.security import decrypt_secret
 from app.services.client_metadata import SearchJoinEnvironment, ensure_search_join_environment
-from app.services._common import _now
+from app.services._common import _now, audit
+from app.services.notifications import NotificationResult, send_telegram_bot_message
+from app.services.proxy_airport_subscription import (
+    list_proxy_airport_subscriptions,
+    select_proxy_airport_subscription_for_failover,
+)
 
 from ..account_pool import select_task_accounts
 from ..payloads import SearchJoinPayload, create_search_join_action
@@ -63,6 +70,8 @@ def build_plan(session: Session, task: Task) -> int:
     plan_count = task_daily_capacity(session, task, window, _plan_count(config, hourly), pacing_stats)
     if plan_count <= 0:
         return _record_hourly(task, hourly, 0, {}, pacing_stats)
+    if _clash_subscription_pool_unavailable(session, task.tenant_id):
+        return _record_all_subscriptions_unavailable(session, task, hourly, pacing_stats)
     accounts = select_task_accounts(session, task.tenant_id, task.account_config or {}, limit=plan_count * ENVIRONMENT_CANDIDATE_MULTIPLIER, enforce_capacity=False)
     if not accounts:
         return _block(task, "account_unavailable", "没有可用账号，等待账号恢复后继续执行")
@@ -86,7 +95,7 @@ def build_plan(session: Session, task: Task) -> int:
         if created >= plan_count:
             break
     if created <= 0:
-        if pacing_stats.blocked_accounts:
+        if _should_preserve_search_join_blockers(blockers) or pacing_stats.blocked_accounts:
             return _record_hourly(task, hourly, 0, blockers, pacing_stats)
         return _block(task, "needs_client_metadata", "搜索入群缺少可执行授权环境栈或客户端 metadata")
     task.last_error = ""
@@ -198,6 +207,9 @@ def _payload(payload_input: PayloadInput) -> SearchJoinPayload:
 
 
 def _environment(session: Session, account: TgAccount, blockers: dict[str, int]) -> SearchJoinEnvironment | None:
+    if _clash_subscription_pool_unavailable(session, account.tenant_id):
+        _count_blocker(blockers, "airport_all_subscriptions_unavailable")
+        return None
     try:
         environment = ensure_search_join_environment(session, account)
     except ValueError as exc:
@@ -206,6 +218,71 @@ def _environment(session: Session, account: TgAccount, blockers: dict[str, int])
     if environment is None:
         _count_blocker(blockers, "needs_client_metadata")
     return environment
+
+
+def _clash_subscription_pool_unavailable(session: Session, tenant_id: int) -> bool:
+    rows = list_proxy_airport_subscriptions(session, tenant_id=tenant_id)
+    enabled = [row for row in rows if row.enabled and row.subscription_url_configured]
+    return bool(enabled) and select_proxy_airport_subscription_for_failover(session, tenant_id=tenant_id) is None
+
+
+def _should_preserve_search_join_blockers(blockers: dict[str, int]) -> bool:
+    return bool(blockers) and set(blockers) != {"needs_client_metadata"}
+
+
+def _record_all_subscriptions_unavailable(
+    session: Session,
+    task: Task,
+    hourly: dict,
+    pacing_stats: PacingStats | None,
+) -> int:
+    notification = _notify_all_subscriptions_unavailable(session, task)
+    hourly_with_notice = {
+        **hourly,
+        "admin_notification_status": "sent" if notification.ok else "admin_notification_failed",
+        "admin_notification_detail": notification.detail,
+    }
+    return _record_hourly(
+        task,
+        hourly_with_notice,
+        0,
+        {"airport_all_subscriptions_unavailable": 1},
+        pacing_stats,
+    )
+
+
+def _notify_all_subscriptions_unavailable(session: Session, task: Task) -> NotificationResult:
+    tenant = session.get(Tenant, task.tenant_id)
+    if not tenant or not tenant.admin_chat_id or not tenant.telegram_bot_token_ciphertext:
+        result = NotificationResult(False, "Telegram Bot token or admin chat id not configured")
+        _audit_subscription_notification(session, task, result)
+        return result
+    bot_token = decrypt_secret(tenant.telegram_bot_token_ciphertext)
+    if not bot_token:
+        result = NotificationResult(False, "Telegram Bot token decrypts to empty")
+        _audit_subscription_notification(session, task, result)
+        return result
+    summary = send_admin_chat_broadcast(
+        bot_token=bot_token,
+        raw_admin_chat_id=tenant.admin_chat_id,
+        text=f"Clash 订阅源池全部不可用\n任务: {task.name}\n任务ID: {task.id}\n处理: 已停止生成搜索目标群点击真实操作",
+        sender=send_telegram_bot_message,
+    )
+    result = NotificationResult(summary.ok, summary.detail)
+    _audit_subscription_notification(session, task, result)
+    return result
+
+
+def _audit_subscription_notification(session: Session, task: Task, result: NotificationResult) -> None:
+    audit(
+        session,
+        tenant_id=task.tenant_id,
+        actor="search-join-planner",
+        action="Clash订阅全部不可用通知" if result.ok else "Clash订阅全部不可用通知失败",
+        target_type="task",
+        target_id=str(task.id),
+        detail=result.detail,
+    )
 
 
 def _keyword_ciphertext(config: dict, index: int) -> str:

@@ -320,9 +320,9 @@ def _delete_subscription_nodes(session: Session, row: ProxyAirportSubscription) 
 def _active_subscription(session: Session, tenant_id: int) -> ProxyAirportSubscription | None:
     stmt = select(ProxyAirportSubscription).where(
         ProxyAirportSubscription.tenant_id == tenant_id,
-        ProxyAirportSubscription.is_active.is_(True),
+        ProxyAirportSubscription.enabled.is_(True),
     )
-    return session.scalar(stmt.order_by(ProxyAirportSubscription.id.desc()).limit(1))
+    return session.scalar(stmt.order_by(ProxyAirportSubscription.priority, ProxyAirportSubscription.id).limit(1))
 
 
 def _empty_subscription(tenant_id: int) -> ProxyAirportSubscriptionOut:
@@ -341,9 +341,17 @@ def _subscription_out(row: ProxyAirportSubscription) -> ProxyAirportSubscription
     return ProxyAirportSubscriptionOut(
         id=row.id,
         tenant_id=row.tenant_id,
+        name=row.name,
         subscription_url_configured=bool(row.subscription_url_ciphertext),
         subscription_url_preview=row.subscription_url_preview,
         provider_type=row.provider_type,
+        priority=row.priority,
+        enabled=row.enabled,
+        failover_policy=row.failover_policy,
+        auto_failback_enabled=row.auto_failback_enabled,
+        failback_cooldown_minutes=row.failback_cooldown_minutes,
+        all_subscriptions_down_policy=row.all_subscriptions_down_policy,
+        notify_admin_on_all_subscriptions_down=row.notify_admin_on_all_subscriptions_down,
         sync_status=row.sync_status,
         node_count=row.node_count,
         healthy_node_count=row.healthy_node_count,
@@ -411,12 +419,26 @@ def _sanitize_key(raw: Any) -> str:
 
 
 __all__ = [
+    "create_proxy_airport_subscription",
     "fetch_subscription",
     "get_proxy_airport_subscription",
     "check_proxy_airport_node",
+    "list_proxy_airport_subscriptions",
     "mark_proxy_airport_subscription_tested",
     "mask_subscription_url",
+    "patch_proxy_airport_subscription",
     "parsed_proxy_nodes",
+    "select_proxy_airport_subscription_for_failover",
     "sync_proxy_airport_subscription",
+    "sync_proxy_airport_subscription_by_id",
     "update_proxy_airport_subscription",
 ]
+
+
+from .proxy_airport_pool import (  # noqa: E402
+    create_proxy_airport_subscription,
+    list_proxy_airport_subscriptions,
+    patch_proxy_airport_subscription,
+    select_proxy_airport_subscription_for_failover,
+    sync_proxy_airport_subscription_by_id,
+)

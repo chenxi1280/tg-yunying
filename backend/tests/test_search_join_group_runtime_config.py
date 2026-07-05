@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 from sqlalchemy.orm import Session
 
+from app.services.task_center.service import refresh_task_detail_stats
 from app.services.task_center.executors import build_task_plan
 
 from test_search_join_group_executor import _bind_search_join_environment, _task, session
@@ -36,3 +37,24 @@ def test_search_join_planner_respects_explicit_zero_pacing_hourly_cap(session: S
     assert stats["max_actions_per_hour"] == 0
     assert stats["capacity"] == 0
     assert stats["last_planned_count"] == 0
+
+
+@pytest.mark.no_postgres
+def test_search_join_detail_stats_refresh_recomputes_hourly_cap_from_runtime_config(session: Session) -> None:
+    task = _task(pacing_config={"max_actions_per_hour": None})
+    task.stats = {
+        "search_join_stats": {
+            "hourly_execution": {
+                "max_actions_per_hour": 0,
+                "capacity": 0,
+            }
+        }
+    }
+    session.add(task)
+    session.commit()
+
+    stats = refresh_task_detail_stats(session, 1, task.id)
+    hourly = stats["search_join_stats"]["hourly_execution"]
+
+    assert hourly["max_actions_per_hour"] == 4
+    assert hourly["capacity"] == 4

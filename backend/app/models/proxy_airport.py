@@ -12,13 +12,20 @@ from .enums import now
 
 class ProxyAirportSubscription(Base):
     __tablename__ = "proxy_airport_subscriptions"
-    __table_args__ = (UniqueConstraint("tenant_id", "is_active", name="uq_proxy_airport_active_subscription"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), default=1)
+    name: Mapped[str] = mapped_column(String(80), default="主订阅")
     subscription_url_ciphertext: Mapped[str] = mapped_column(Text, default="")
     subscription_url_preview: Mapped[str] = mapped_column(String(180), default="")
     provider_type: Mapped[str] = mapped_column(String(40), default="clash")
+    priority: Mapped[int] = mapped_column(Integer, default=10)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    failover_policy: Mapped[str] = mapped_column(String(40), default="priority")
+    auto_failback_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    failback_cooldown_minutes: Mapped[int] = mapped_column(Integer, default=0)
+    all_subscriptions_down_policy: Mapped[str] = mapped_column(String(40), default="pause_task")
+    notify_admin_on_all_subscriptions_down: Mapped[bool] = mapped_column(Boolean, default=True)
     sync_status: Mapped[str] = mapped_column(String(30), default="not_synced")
     node_count: Mapped[int] = mapped_column(Integer, default=0)
     healthy_node_count: Mapped[int] = mapped_column(Integer, default=0)
@@ -44,9 +51,28 @@ class ProxyAirportNode(Base):
     node_config_ciphertext: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(30), default="unknown")
     max_bound_accounts: Mapped[int] = mapped_column(Integer, default=5)
+    observed_exit_ip: Mapped[str] = mapped_column(String(64), default="")
+    observed_exit_country: Mapped[str] = mapped_column(String(16), default="")
+    observed_exit_asn: Mapped[str] = mapped_column(String(80), default="")
+    observed_exit_isp: Mapped[str] = mapped_column(String(120), default="")
     last_error: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
 
-__all__ = ["ProxyAirportNode", "ProxyAirportSubscription"]
+class ProxyNodeFailoverEvent(Base):
+    __tablename__ = "proxy_node_failover_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), default=1)
+    account_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    authorization_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    from_subscription_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    to_subscription_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    from_node_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    to_node_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    reason: Mapped[str] = mapped_column(String(80), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+__all__ = ["ProxyAirportNode", "ProxyAirportSubscription", "ProxyNodeFailoverEvent"]

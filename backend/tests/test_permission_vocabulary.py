@@ -60,6 +60,7 @@ def test_operation_issue_read_routes_are_view_only_and_status_actions_require_ma
 def test_sensitive_read_routes_have_explicit_least_privilege_rules():
     assert required_permission("GET", "/api/config/runtime") == ("system.view",)
     assert required_permission("GET", "/api/proxy-airport-subscription") == ("system.view",)
+    assert required_permission("GET", "/api/proxy-airport-subscriptions") == ("system.view",)
     assert required_permission("GET", "/api/account-environment-bindings") == ("account_masks.view",)
     assert required_permission("POST", "/api/account-environment-bindings/refresh-observations") == ("account_environment.manage",)
     assert required_permission("PATCH", "/api/account-environment-bindings/101") == ("account_environment.manage",)
@@ -92,6 +93,10 @@ def test_operation_metrics_prd_reports_and_export_routes_use_usage_permission():
 
 def test_system_and_legacy_task_write_routes_have_backend_permission_rules():
     assert required_permission("PATCH", "/api/tenant-group-rescue-settings") == ("system.manage",)
+    assert required_permission("POST", "/api/proxy-airport-subscriptions") == ("system.manage",)
+    assert required_permission("PATCH", "/api/proxy-airport-subscriptions/12") == ("system.manage",)
+    assert required_permission("POST", "/api/proxy-airport-subscriptions/12/test") == ("system.manage",)
+    assert required_permission("POST", "/api/proxy-airport-subscriptions/12/sync") == ("system.manage",)
     assert required_permission("GET", "/api/tenant-notification-settings") == ("system.view",)
     assert required_permission("GET", "/api/tenant-group-rescue-settings") == ("system.view",)
     assert required_permission("POST", "/api/telegram-bot/tasks/group-ai-chat/settings") == ("system.manage",)

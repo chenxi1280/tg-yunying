@@ -44,6 +44,17 @@ def test_system_actions_distinguish_refresh_failure_from_write_failure():
         assert "params.handleActionError(" not in refresh_block[:refresh_block.index("} catch")]
 
 
+def test_system_router_exposes_proxy_airport_subscription_pool_routes():
+    source = (PROJECT_ROOT / "backend/app/api/routers/system.py").read_text()
+
+    assert '@router.get("/api/proxy-airport-subscriptions"' in source
+    assert '@router.post("/api/proxy-airport-subscriptions"' in source
+    assert '@router.patch("/api/proxy-airport-subscriptions/{subscription_id}"' in source
+    assert '@router.post("/api/proxy-airport-subscriptions/{subscription_id}/test"' in source
+    assert '@router.post("/api/proxy-airport-subscriptions/{subscription_id}/sync"' in source
+    assert "health_checker=check_proxy_airport_node" in source
+
+
 def test_system_token_ledger_reads_ignore_stale_users_and_requests():
     context = (PROJECT_ROOT / "frontend/src/app/context.tsx").read_text()
     source = (PROJECT_ROOT / "frontend/src/app/context/systemActions.ts").read_text()

@@ -1,5 +1,5 @@
 import React from 'react';
-import { Alert, Button, Card, Descriptions, Input, Space } from 'antd';
+import { Alert, Button, Card, Descriptions, Form, Input, InputNumber, Modal, Space, Switch, Table, Tag } from 'antd';
 import { api } from '../../shared/api/client';
 import type { ProxyAirportSubscription } from '../types';
 
@@ -7,26 +7,58 @@ interface Props {
   canManageSystem?: boolean;
 }
 
+type NewSubscriptionForm = {
+  name: string;
+  subscription_url: string;
+  priority: number;
+  enabled: boolean;
+};
+
+type EditSubscriptionForm = {
+  name: string;
+  subscription_url?: string;
+  priority: number;
+  enabled: boolean;
+};
+
 function errorText(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
-function proxyAirportReadinessLabel(config: ProxyAirportSubscription | null) {
-  if (!config?.subscription_url_configured) return '未配置';
-  if (config.last_error) return '节点同步失败';
-  if (config.healthy_node_count > 0) return '健康节点可用';
-  if (config.node_count > 0) return '同步成功但健康节点为 0';
-  if (config.sync_status === 'test_pending') return '节点同步中';
+function proxyAirportReadinessLabel(row: ProxyAirportSubscription | null) {
+  if (!row?.subscription_url_configured) return '未配置';
+  if (!row.enabled) return '已停用';
+  if (row.last_error) return '节点同步失败';
+  if (row.healthy_node_count > 0) return '健康节点可用';
+  if (row.node_count > 0) return '同步成功但健康节点为 0';
+  if (row.sync_status === 'test_pending') return '节点同步中';
   return '配置已保存，等待节点同步';
 }
 
+function statusColor(row: ProxyAirportSubscription) {
+  if (!row.enabled) return 'default';
+  if (row.last_error) return 'red';
+  if (row.healthy_node_count > 0) return 'green';
+  if (row.node_count > 0) return 'orange';
+  return 'blue';
+}
+
+function summarySubscription(rows: ProxyAirportSubscription[]) {
+  return rows.find((row) => row.enabled && row.healthy_node_count > 0)
+    ?? rows.find((row) => row.enabled && !row.last_error)
+    ?? rows.find((row) => row.enabled)
+    ?? null;
+}
+
 export default function ProxyAirportSubscriptionView({ canManageSystem = false }: Props) {
-  const [config, setConfig] = React.useState<ProxyAirportSubscription | null>(null);
-  const [subscriptionUrl, setSubscriptionUrl] = React.useState('');
+  const [rows, setRows] = React.useState<ProxyAirportSubscription[]>([]);
   const [loading, setLoading] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState('');
   const [notice, setNotice] = React.useState('');
+  const [form] = Form.useForm<NewSubscriptionForm>();
+  const [editForm] = Form.useForm<EditSubscriptionForm>();
+  const [editingRow, setEditingRow] = React.useState<ProxyAirportSubscription | null>(null);
 
   React.useEffect(() => {
     void loadConfig();
@@ -36,7 +68,7 @@ export default function ProxyAirportSubscriptionView({ canManageSystem = false }
     setLoading(true);
     setError('');
     try {
-      setConfig(await api<ProxyAirportSubscription>('/proxy-airport-subscription'));
+      setRows(await api<ProxyAirportSubscription[]>('/proxy-airport-subscriptions'));
     } catch (loadError) {
       setError(errorText(loadError));
     } finally {
@@ -44,17 +76,17 @@ export default function ProxyAirportSubscriptionView({ canManageSystem = false }
     }
   }
 
-  async function saveConfig() {
+  async function saveConfig(values: NewSubscriptionForm) {
     setSaving(true);
     setError('');
     try {
-      const saved = await api<ProxyAirportSubscription>('/proxy-airport-subscription', {
-        method: 'PATCH',
-        body: JSON.stringify({ subscription_url: subscriptionUrl }),
+      await api<ProxyAirportSubscription>('/proxy-airport-subscriptions', {
+        method: 'POST',
+        body: JSON.stringify(values),
       });
-      setConfig(saved);
-      setSubscriptionUrl('');
-      setNotice('Clash 订阅配置已保存');
+      form.resetFields();
+      setNotice('Clash 订阅源已保存');
+      await loadConfig();
     } catch (saveError) {
       setError(errorText(saveError));
     } finally {
@@ -62,26 +94,77 @@ export default function ProxyAirportSubscriptionView({ canManageSystem = false }
     }
   }
 
-  async function testConfig() {
+  async function toggleEnabled(row: ProxyAirportSubscription, enabled: boolean) {
     setSaving(true);
     setError('');
     try {
-      const tested = await api<ProxyAirportSubscription>('/proxy-airport-subscription/test', { method: 'POST' });
-      setConfig(tested);
-      setNotice('订阅节点已解析，健康探测完成前不可作为可用代理池');
-    } catch (testError) {
-      setError(errorText(testError));
+      await api<ProxyAirportSubscription>(`/proxy-airport-subscriptions/${row.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ enabled }),
+      });
+      setNotice(enabled ? '订阅源已启用' : '订阅源已停用');
+      await loadConfig();
+    } catch (toggleError) {
+      setError(errorText(toggleError));
     } finally {
       setSaving(false);
     }
   }
 
+  async function syncRow(row: ProxyAirportSubscription) {
+    setSaving(true);
+    setError('');
+    try {
+      await api<ProxyAirportSubscription>(`/proxy-airport-subscriptions/${row.id}/sync`, { method: 'POST' });
+      setNotice('订阅节点已解析，健康探测完成前不可作为可用代理池');
+      await loadConfig();
+    } catch (syncError) {
+      setError(errorText(syncError));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function openEdit(row: ProxyAirportSubscription) {
+    setEditingRow(row);
+    editForm.setFieldsValue({
+      name: row.name,
+      subscription_url: '',
+      priority: row.priority,
+      enabled: row.enabled,
+    });
+  }
+
+  async function saveExisting(values: EditSubscriptionForm) {
+    if (!editingRow?.id) return;
+    setSaving(true);
+    setError('');
+    const subscriptionUrl = values.subscription_url?.trim();
+    const payload = {
+      name: values.name,
+      priority: values.priority,
+      enabled: values.enabled,
+      ...(subscriptionUrl ? { subscription_url: subscriptionUrl } : {}),
+    };
+    try {
+      await api<ProxyAirportSubscription>(`/proxy-airport-subscriptions/${editingRow.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(payload),
+      });
+      setNotice(subscriptionUrl ? '订阅源已更新，需重新同步节点' : '订阅源配置已更新');
+      setEditingRow(null);
+      await loadConfig();
+    } catch (saveError) {
+      setError(errorText(saveError));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const primary = summarySubscription(rows);
+
   return (
-    <Card
-      className="panel"
-      title="全局 Clash 订阅"
-      extra={<Button size="small" onClick={loadConfig} loading={loading}>刷新</Button>}
-    >
+    <Card className="panel" title="Clash 订阅源池" extra={<Button size="small" onClick={loadConfig} loading={loading}>刷新</Button>}>
       {error && <Alert type="error" showIcon message={error} style={{ marginBottom: 12 }} />}
       {notice && <Alert type="success" showIcon message={notice} style={{ marginBottom: 12 }} />}
       <Descriptions
@@ -89,38 +172,111 @@ export default function ProxyAirportSubscriptionView({ canManageSystem = false }
         size="small"
         column={2}
         items={[
-          { key: 'configured', label: '订阅状态', children: config?.subscription_url_configured ? '已配置' : '未配置' },
-          { key: 'preview', label: '订阅地址', children: config?.subscription_url_preview || '-' },
-          { key: 'readiness', label: '代理池状态', children: proxyAirportReadinessLabel(config) },
-          { key: 'sync', label: '同步状态', children: config?.sync_status || '-' },
-          { key: 'nodes', label: '同步节点数', children: config?.node_count ?? 0 },
-          { key: 'healthy-nodes', label: '健康节点数', children: config?.healthy_node_count ?? 0 },
-          { key: 'last-sync', label: '最近同步时间', children: config?.last_sync_at ? config.last_sync_at.replace('T', ' ').slice(0, 16) : '-' },
-          { key: 'updated', label: '配置更新时间', children: config?.updated_at ? config.updated_at.replace('T', ' ').slice(0, 16) : '-' },
-          { key: 'error', label: '最近错误', children: config?.last_error || '-' },
+          { key: 'readiness', label: '代理池状态', children: proxyAirportReadinessLabel(primary) },
+          { key: 'sources', label: '启用订阅数', children: rows.filter((row) => row.enabled).length },
+          { key: 'nodes', label: '同步节点数', children: rows.reduce((sum, row) => sum + row.node_count, 0) },
+          { key: 'healthy-nodes', label: '健康节点数', children: rows.reduce((sum, row) => sum + row.healthy_node_count, 0) },
+          { key: 'last-sync', label: '最近同步时间', children: primary?.last_sync_at ? primary.last_sync_at.replace('T', ' ').slice(0, 16) : '-' },
+          { key: 'error', label: '最近错误', children: primary?.last_error || '-' },
         ]}
       />
-      <Space direction="vertical" style={{ width: '100%', marginTop: 16 }}>
-        <Input.Password
-          value={subscriptionUrl}
-          onChange={(event) => setSubscriptionUrl(event.target.value)}
-          disabled={!canManageSystem}
-          placeholder="https://example.com/clash/subscription"
-        />
-        <Space>
-          <Button
-            type="primary"
-            onClick={saveConfig}
-            loading={saving}
-            disabled={!canManageSystem || !subscriptionUrl.trim()}
-          >
-            保存
-          </Button>
-          <Button onClick={testConfig} loading={saving} disabled={!canManageSystem || !config?.subscription_url_configured}>
-            测试/同步
-          </Button>
-        </Space>
-      </Space>
+      <Table
+        style={{ marginTop: 16 }}
+        rowKey={(row) => row.id ?? row.subscription_url_preview}
+        dataSource={rows}
+        loading={loading}
+        pagination={false}
+        columns={[
+          { title: '名称', dataIndex: 'name' },
+          { title: '优先级', dataIndex: 'priority', sorter: (a, b) => a.priority - b.priority },
+          {
+            title: '启用',
+            dataIndex: 'enabled',
+            render: (_value, row) => (
+              <Switch checked={row.enabled} disabled={!canManageSystem || saving} onChange={(checked) => toggleEnabled(row, checked)} />
+            ),
+          },
+          { title: '订阅地址', dataIndex: 'subscription_url_preview' },
+          { title: '同步状态', dataIndex: 'sync_status' },
+          { title: '同步节点数', dataIndex: 'node_count' },
+          { title: '健康节点数', dataIndex: 'healthy_node_count' },
+          {
+            title: '最近同步时间',
+            dataIndex: 'last_sync_at',
+            render: (_value, row) => (row.last_sync_at ? row.last_sync_at.replace('T', ' ').slice(0, 16) : '-'),
+          },
+          {
+            title: '状态',
+            render: (_value, row) => <Tag color={statusColor(row)}>{proxyAirportReadinessLabel(row)}</Tag>,
+          },
+          { title: '最近错误', dataIndex: 'last_error', render: (value) => value || '-' },
+          {
+            title: '操作',
+            render: (_value, row) => (
+              <Space>
+                <Button size="small" onClick={() => openEdit(row)} disabled={!canManageSystem || saving}>
+                  编辑
+                </Button>
+                <Button size="small" onClick={() => syncRow(row)} loading={saving} disabled={!canManageSystem || !row.subscription_url_configured}>
+                  同步
+                </Button>
+              </Space>
+            ),
+          },
+        ]}
+      />
+      <Form
+        form={form}
+        layout="inline"
+        style={{ marginTop: 16 }}
+        initialValues={{ name: '', priority: 10, enabled: true }}
+        onFinish={saveConfig}
+        disabled={!canManageSystem}
+      >
+        <Form.Item name="name" rules={[{ required: true, message: '请输入名称' }]}>
+          <Input placeholder="主订阅" />
+        </Form.Item>
+        <Form.Item name="subscription_url" rules={[{ required: true, message: '请输入订阅地址' }]}>
+          <Input.Password placeholder="https://example.com/clash/subscription" />
+        </Form.Item>
+        <Form.Item name="priority" rules={[{ required: true, message: '请输入优先级' }]}>
+          <InputNumber min={1} max={9999} />
+        </Form.Item>
+        <Form.Item name="enabled" valuePropName="checked">
+          <Switch />
+        </Form.Item>
+        <Form.Item>
+          <Space>
+            <Button type="primary" htmlType="submit" loading={saving} disabled={!canManageSystem}>
+              新增
+            </Button>
+          </Space>
+        </Form.Item>
+      </Form>
+      <Modal
+        title="编辑 Clash 订阅源"
+        open={Boolean(editingRow)}
+        okText="保存"
+        cancelText="取消"
+        confirmLoading={saving}
+        onCancel={() => setEditingRow(null)}
+        onOk={() => editForm.submit()}
+      >
+        <Form form={editForm} layout="vertical" onFinish={saveExisting} disabled={!canManageSystem}>
+          <Form.Item name="name" label="名称" rules={[{ required: true, message: '请输入名称' }]}>
+            <Input placeholder="主订阅" />
+          </Form.Item>
+          <Form.Item name="subscription_url" label="订阅地址">
+            <Input.Password placeholder="留空则不修改已保存地址" />
+          </Form.Item>
+          <Form.Item name="priority" label="优先级" rules={[{ required: true, message: '请输入优先级' }]}>
+            <InputNumber min={1} max={9999} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item name="enabled" label="启用" valuePropName="checked">
+            <Switch />
+          </Form.Item>
+        </Form>
+      </Modal>
     </Card>
   );
 }

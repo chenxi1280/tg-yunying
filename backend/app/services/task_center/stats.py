@@ -81,11 +81,24 @@ def refresh_task_stats(session: Session, task: Task) -> dict[str, Any]:
         }
     )
     stats = hard_hourly_stats(session, task, _now(), stats)
+    stats = _search_join_stats(session, task, stats)
     task.stats = stats
     from app.services.runtime_summary import refresh_task_summary
 
     refresh_task_summary(session, task)
     return stats
+
+
+def _search_join_stats(session: Session, task: Task, stats: dict[str, Any]) -> dict[str, Any]:
+    if task.type != "search_join_group":
+        return stats
+    updated = dict(stats)
+    search_join_stats = dict(updated.get("search_join_stats") or {})
+    previous_hourly = dict(search_join_stats.get("hourly_execution") or {})
+    current_hourly = search_join_hourly_execution(session, task, _now())
+    search_join_stats["hourly_execution"] = {**previous_hourly, **current_hourly}
+    updated["search_join_stats"] = search_join_stats
+    return updated
 
 
 def search_join_hourly_execution(session: Session, task: Task, now_value: datetime) -> dict[str, Any]:

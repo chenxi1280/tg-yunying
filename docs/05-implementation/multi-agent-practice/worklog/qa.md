@@ -109,3 +109,14 @@
 - decision: 本地合同验收通过；不声明生产任务已生成 actions 或真实加入成功。
 - next_agent: prod-diagnosis
 - unresolved: CI / release deploy / 生产健康 / 郑州 3 账号真实搜索点击 / 加入结果仍 unproven。
+
+## 2026-07-05 Clash 多订阅源池本地 QA
+
+- message_id: 2026-07-05-clash-multi-subscription-local-qa-001
+- action: 对 Clash 多订阅源池、plural API、前端新增 / 编辑列表、search_join 全订阅不可用 fail-closed、管理员通知和小时 stats 刷新做本地自动化验收。
+- input: 2026-07-05-clash-multi-subscription-devcomplete-001；Hegel 只读监督指出 plural sync 未跑健康探测、全订阅不可用未发管理员通知两个 P0。
+- output: local_qa_pass_for_multi_subscription_contracts
+- evidence: P0 red tests 已先失败后修复；定向 `backend/.venv/bin/python -m pytest backend/tests/test_proxy_airport_subscription.py backend/tests/test_search_join_group_executor.py backend/tests/test_search_join_group_runtime_config.py backend/tests/test_account_mask_frontend_contracts.py backend/tests/test_permission_vocabulary.py backend/tests/test_system_actions_dataflow.py backend/tests/test_merge_integrity.py -q` -> 68 passed；补 P0 后相关定向 -> 38 passed；全量 no_postgres 60s gate -> 757 passed / 787 deselected；用户补充“多个地址、主掉备用”后补前端已有订阅编辑入口，合同测试 1 passed、frontend build passed、`git diff --check` passed；changed backend py_compile passed；行数门禁通过。
+- decision: 本地合同验收通过；plural sync 会执行健康探测，全订阅不可用会写 `airport_all_subscriptions_unavailable`、不生成 action 并尝试租户 Bot 管理员通知。
+- next_agent: prod-diagnosis
+- unresolved: CI / release deploy / 生产健康未验证；真实订阅拉取、真实节点健康、真实出口 IP、运行中 failover event、warmup 重置和郑州线上任务复测仍 unproven。

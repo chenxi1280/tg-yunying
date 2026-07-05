@@ -17,7 +17,9 @@ from app.common.http import forbidden
 from app.models import Tenant
 from app.schemas import (
     OverviewOut,
+    ProxyAirportSubscriptionCreate,
     ProxyAirportSubscriptionOut,
+    ProxyAirportSubscriptionPatch,
     ProxyAirportSubscriptionUpdate,
     ReportOut,
     RuntimeConfigOut,
@@ -49,8 +51,13 @@ from app.services.tenant_bot_settings import (
     update_tenant_bot_settings,
 )
 from app.services.proxy_airport_subscription import (
+    check_proxy_airport_node,
+    create_proxy_airport_subscription,
     get_proxy_airport_subscription,
+    list_proxy_airport_subscriptions,
     mark_proxy_airport_subscription_tested,
+    patch_proxy_airport_subscription,
+    sync_proxy_airport_subscription_by_id,
     update_proxy_airport_subscription,
 )
 from app.services._common import audit
@@ -94,6 +101,85 @@ def get_global_proxy_airport_subscription(
     return get_proxy_airport_subscription(session, tenant_id=resolved_tenant_id)
 
 
+@router.get("/api/proxy-airport-subscriptions", response_model=list[ProxyAirportSubscriptionOut])
+def get_proxy_airport_subscriptions(
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> list[ProxyAirportSubscriptionOut]:
+    if not current_user.has_permission("system.view"):
+        raise forbidden("system.view required")
+    return list_proxy_airport_subscriptions(session, tenant_id=resolve_tenant_id(current_user, tenant_id))
+
+
+@router.post("/api/proxy-airport-subscriptions", response_model=ProxyAirportSubscriptionOut)
+def post_proxy_airport_subscription(
+    payload: ProxyAirportSubscriptionCreate,
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> ProxyAirportSubscriptionOut:
+    if not current_user.has_permission("system.manage"):
+        raise forbidden("system.manage required")
+    try:
+        created = create_proxy_airport_subscription(
+            session,
+            tenant_id=resolve_tenant_id(current_user, tenant_id),
+            payload=payload,
+            actor=current_user.name,
+        )
+        session.commit()
+        return created
+    except ValueError as exc:
+        session.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.patch("/api/proxy-airport-subscriptions/{subscription_id}", response_model=ProxyAirportSubscriptionOut)
+def patch_proxy_airport_subscription_route(
+    subscription_id: int,
+    payload: ProxyAirportSubscriptionPatch,
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> ProxyAirportSubscriptionOut:
+    if not current_user.has_permission("system.manage"):
+        raise forbidden("system.manage required")
+    try:
+        updated = patch_proxy_airport_subscription(
+            session,
+            tenant_id=resolve_tenant_id(current_user, tenant_id),
+            subscription_id=subscription_id,
+            payload=payload,
+            actor=current_user.name,
+        )
+        session.commit()
+        return updated
+    except ValueError as exc:
+        session.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/api/proxy-airport-subscriptions/{subscription_id}/test", response_model=ProxyAirportSubscriptionOut)
+def test_proxy_airport_subscription_route(
+    subscription_id: int,
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> ProxyAirportSubscriptionOut:
+    return _sync_proxy_airport_subscription_route(subscription_id, tenant_id, session, current_user)
+
+
+@router.post("/api/proxy-airport-subscriptions/{subscription_id}/sync", response_model=ProxyAirportSubscriptionOut)
+def sync_proxy_airport_subscription_route(
+    subscription_id: int,
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> ProxyAirportSubscriptionOut:
+    return _sync_proxy_airport_subscription_route(subscription_id, tenant_id, session, current_user)
+
+
 @router.patch("/api/proxy-airport-subscription", response_model=ProxyAirportSubscriptionOut)
 def patch_global_proxy_airport_subscription(
     payload: ProxyAirportSubscriptionUpdate,
@@ -130,6 +216,29 @@ def test_global_proxy_airport_subscription(
         )
         session.commit()
         return tested
+    except ValueError as exc:
+        session.commit()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _sync_proxy_airport_subscription_route(
+    subscription_id: int,
+    tenant_id: int | None,
+    session: Session,
+    current_user: CurrentUser,
+) -> ProxyAirportSubscriptionOut:
+    if not current_user.has_permission("system.manage"):
+        raise forbidden("system.manage required")
+    try:
+        synced = sync_proxy_airport_subscription_by_id(
+            session,
+            tenant_id=resolve_tenant_id(current_user, tenant_id),
+            subscription_id=subscription_id,
+            actor=current_user.name,
+            health_checker=check_proxy_airport_node,
+        )
+        session.commit()
+        return synced
     except ValueError as exc:
         session.commit()
         raise HTTPException(status_code=400, detail=str(exc)) from exc
