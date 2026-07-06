@@ -27,8 +27,32 @@ type EditSubscriptionForm = {
   failback_cooldown_minutes: number;
 };
 
+const DEFAULT_SUBSCRIPTION_PRIORITY = 10;
+const SUBSCRIPTION_PRIORITY_STEP = 10;
+const MIN_SUBSCRIPTION_PRIORITY = 1;
+const MAX_SUBSCRIPTION_PRIORITY = 9999;
+
 function errorText(error: unknown) {
-  return error instanceof Error ? error.message : String(error);
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.includes('proxy_airport_subscription_priority_conflict')) {
+    return '启用订阅的优先级不能重复，请改为未使用的优先级后重试。';
+  }
+  return message;
+}
+
+function enabledPrioritySet(rows: ProxyAirportSubscription[]) {
+  return new Set(rows.filter((row) => row.enabled).map((row) => row.priority));
+}
+
+function nextAvailablePriority(rows: ProxyAirportSubscription[]) {
+  const usedPriorities = enabledPrioritySet(rows);
+  for (let priority = DEFAULT_SUBSCRIPTION_PRIORITY; priority <= MAX_SUBSCRIPTION_PRIORITY; priority += SUBSCRIPTION_PRIORITY_STEP) {
+    if (!usedPriorities.has(priority)) return priority;
+  }
+  for (let priority = MIN_SUBSCRIPTION_PRIORITY; priority <= MAX_SUBSCRIPTION_PRIORITY; priority += 1) {
+    if (!usedPriorities.has(priority)) return priority;
+  }
+  return MAX_SUBSCRIPTION_PRIORITY;
 }
 
 function proxyAirportReadinessLabel(row: ProxyAirportSubscription | null) {
@@ -69,6 +93,13 @@ export default function ProxyAirportSubscriptionView({ canManageSystem = false }
   React.useEffect(() => {
     void loadConfig();
   }, []);
+
+  React.useEffect(() => {
+    const currentPriority = form.getFieldValue('priority');
+    if (!currentPriority || enabledPrioritySet(rows).has(currentPriority)) {
+      form.setFieldsValue({ priority: nextAvailablePriority(rows) });
+    }
+  }, [form, rows]);
 
   async function loadConfig() {
     setLoading(true);
@@ -253,7 +284,7 @@ export default function ProxyAirportSubscriptionView({ canManageSystem = false }
         style={{ marginTop: 16 }}
         initialValues={{
           name: '',
-          priority: 10,
+          priority: DEFAULT_SUBSCRIPTION_PRIORITY,
           enabled: true,
           failover_policy: 'same_subscription_first',
           auto_failback_enabled: false,
@@ -269,7 +300,7 @@ export default function ProxyAirportSubscriptionView({ canManageSystem = false }
           <Input.Password placeholder="https://example.com/clash/subscription" />
         </Form.Item>
         <Form.Item name="priority" rules={[{ required: true, message: '请输入优先级' }]}>
-          <InputNumber min={1} max={9999} />
+          <InputNumber min={MIN_SUBSCRIPTION_PRIORITY} max={MAX_SUBSCRIPTION_PRIORITY} />
         </Form.Item>
         <Form.Item name="failover_policy" rules={[{ required: true, message: '请选择切换策略' }]}>
           <Select
@@ -311,7 +342,7 @@ export default function ProxyAirportSubscriptionView({ canManageSystem = false }
             <Input.Password placeholder="留空则不修改已保存地址" />
           </Form.Item>
           <Form.Item name="priority" label="优先级" rules={[{ required: true, message: '请输入优先级' }]}>
-            <InputNumber min={1} max={9999} style={{ width: '100%' }} />
+            <InputNumber min={MIN_SUBSCRIPTION_PRIORITY} max={MAX_SUBSCRIPTION_PRIORITY} style={{ width: '100%' }} />
           </Form.Item>
           <Form.Item name="failover_policy" label="切换策略" rules={[{ required: true, message: '请选择切换策略' }]}>
             <Select options={[{ value: 'same_subscription_first', label: '同订阅优先' }]} />

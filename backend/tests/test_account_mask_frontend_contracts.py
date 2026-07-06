@@ -52,6 +52,15 @@ def test_clash_config_view_distinguishes_save_sync_and_health_states():
     assert "failback_cooldown_minutes: number" in types
 
 
+def test_clash_config_view_guides_new_subscription_priority_conflicts():
+    source = (PROJECT_ROOT / "frontend/src/app/views/ProxyAirportSubscriptionView.tsx").read_text()
+
+    assert "function nextAvailablePriority" in source
+    assert "proxy_airport_subscription_priority_conflict" in source
+    assert "启用订阅的优先级不能重复" in source
+    assert "form.setFieldsValue({ priority: nextAvailablePriority(rows) })" in source
+
+
 def test_account_masks_view_shows_unobservable_missing_fields():
     source = (PROJECT_ROOT / "frontend/src/app/views/AccountMasksView.tsx").read_text()
     types = (PROJECT_ROOT / "frontend/src/app/types/system.ts").read_text()

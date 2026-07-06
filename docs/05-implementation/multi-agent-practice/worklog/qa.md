@@ -55,6 +55,17 @@
 - next_agent: product
 - unresolved: 这不是独立 QA 线程 ACK；CI / release deploy / 生产健康 / 真实代理出口 / 真实目标机器人协议样本 / 7 天灰度仍 unproven。
 
+## 2026-07-06 Clash 新增订阅优先级冲突 UX 本地 QA
+
+- message_id: 2026-07-06-clash-add-priority-ux-local-qa-001
+- action: 对系统设置 Clash 新增订阅默认优先级和错误提示做本地定向验收。
+- input: 2026-07-06-clash-add-priority-ux-devcomplete-001。
+- output: local_qa_pass_for_clash_add_priority_ux_contract。
+- evidence: 前端合同测试覆盖 `nextAvailablePriority`、中文优先级冲突提示和新增表单自动回填优先级；`backend/.venv/bin/pytest backend/tests/test_account_mask_frontend_contracts.py -q` -> 5 passed；后端订阅规则回归 `backend/.venv/bin/pytest backend/tests/test_proxy_airport_subscription.py -q` -> 15 passed；`npm --prefix frontend run build` passed。
+- decision: 本地合同验收通过；不声明线上页面已经刷新。
+- next_agent: prod-diagnosis
+- unresolved: CI / Deploy Production / 线上静态包和真实新增操作仍 unproven。
+
 ## 2026-07-03 搜索自动入群 Release Gate QA Handoff
 
 - message_id: 2026-07-03-search-join-group-release-gate-qa-001

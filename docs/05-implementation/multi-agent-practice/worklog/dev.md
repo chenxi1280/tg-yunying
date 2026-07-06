@@ -121,6 +121,17 @@
 - next_agent: qa
 - unresolved: 未执行 GitHub Actions release / production deploy；真实生产 Clash 订阅同步、节点出口观测、远端 Telegram 授权快照刷新和郑州 3 账号真实加入测试仍需生产验证。
 
+## 2026-07-06 Clash 新增订阅优先级冲突 UX quick_fix（本地验证）
+
+- message_id: 2026-07-06-clash-add-priority-ux-devcomplete-001
+- action: 修复系统设置 Clash 订阅源池新增时默认优先级撞到已有启用订阅后只显示错误码的问题。
+- input: 线上截图显示新增 `admin2` 时页面提示 `proxy_airport_subscription_priority_conflict`；现有启用订阅包含 priority=10，新表单默认 priority 也为 10。
+- output: 前端新增 `nextAvailablePriority`，按已启用订阅自动选择下一个可用优先级；保留后端“启用订阅优先级不能重复”的 PRD 规则；将 `proxy_airport_subscription_priority_conflict` 翻译成中文可操作提示。
+- evidence: 先新增前端合同 red test 并确认失败；修复后 `backend/.venv/bin/pytest backend/tests/test_account_mask_frontend_contracts.py -q` -> 5 passed；`backend/.venv/bin/pytest backend/tests/test_proxy_airport_subscription.py -q` -> 15 passed；`npm --prefix frontend run build` passed。
+- decision: status=local_verified_pending_release；release_gate=pending；production_verification=unproven。
+- next_agent: qa
+- unresolved: 尚未推送 release / Deploy Production；线上页面是否加载新静态包需发布后复核。
+
 ## 2026-07-04 搜索目标群点击任务小时容量热修 Development Complete（本地验证）
 
 - message_id: 2026-07-04-search-join-hourly-cap-null-hotfix-devcomplete-001
