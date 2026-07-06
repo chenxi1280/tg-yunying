@@ -848,15 +848,17 @@ def _record_online_ready_stats(
     offline_ids = [account_id for account_id in selected_account_ids if account_id not in ready_set]
     offline_count = len(offline_ids)
     stats = dict(task.stats or {})
-    stats["account_online_selected_count"] = len(selected_account_ids)
-    stats["account_online_ready_count"] = len(ready_account_ids)
     if offline_count:
+        stats["account_online_selected_count"] = len(selected_account_ids)
+        stats["account_online_ready_count"] = len(ready_account_ids)
         stats["account_offline_count"] = offline_count
         stats["account_offline_sample_account_ids"] = offline_ids[:ACCOUNT_OFFLINE_SAMPLE_LIMIT]
         task.stats = stats
         if progress:
             progress["account_offline_count"] = offline_count
         return
+    stats.pop("account_online_selected_count", None)
+    stats.pop("account_online_ready_count", None)
     stats.pop("account_offline_count", None)
     stats.pop("account_offline_sample_account_ids", None)
     task.stats = stats
