@@ -1,5 +1,17 @@
 # Worklog: prod-diagnosis
 
+## 2026-07-06 账号面具代理修复发布生产复核
+
+- message_id: 2026-07-06-account-mask-proxy-release-prodverify-001
+- action: 对账号面具分组批量绑定代理、账号面具选择 Clash 节点、账号代理 / 授权指纹 Tab 拆分和用户确认的 AI 敏感处理撤销完成 release 发布复核。
+- input: 2026-07-06-account-mask-pool-proxy-batch-bind-local-qa-001；2026-07-06-account-mask-clash-node-batch-bind-local-qa-001；2026-07-06-account-mask-tabs-split-local-qa-001；2026-07-06-account-mask-proxy-review-fixes-local-qa-001；2026-07-06-ai-sensitive-processing-reverted-local-qa-001。
+- output: release_gate_passed_prod_health_ok
+- evidence: Commit `92e36126` 已推送 `master` 和 `release`；Deploy Production push run `28802430977` 在 release head `92e361268e95671d9ba9aaee28e0767441915880` 通过 checks、build-images、deploy；checks 中 Backend checks 和 Frontend build 均 success；公网 `https://tgyunying.telema.cn/api/health` 返回 `{"status":"ok"}`，公网 `/` 返回 HTTP 200。
+- evidence_detail: 上一次 run `28799800009` 因测试仍期待敏感上下文清洗而失败；本次按用户最新口径“模型支持暗示，不要再做处理”更新测试契约，CI 后端套件通过。发布内容不包含敏感上下文改写、MiniMax 旧模型自动降级或 mock success；频道评论 / 引用回复 prompt 原文透传给当前配置模型，模型拒绝或候选不足继续显式失败。
+- decision: 账号面具相关代码和前端静态包已生产发布，生产健康通过；系统设置 Clash 页仍只维护订阅源，不做账号分配；账号面具页负责账号中心分组批量绑定本地代理或健康 Clash 节点。
+- next_agent: product
+- unresolved: 本次 push deploy 中 `Configure Clash proxies and Zhengzhou smoke task` 等 workflow_dispatch-only 生产动作是 skipped；真实线上账号批量绑定操作样本、真实 Clash 节点绑定样本、远端授权设备变化和“阿哥日记”任务真实恢复仍需单独生产执行证据。
+
 ## 2026-07-06 AI 活群 hard-hourly 分布护栏补齐线上复核
 
 - message_id: 2026-07-06-ai-group-hard-hourly-distribution-guard-prodverify-002
