@@ -1,5 +1,16 @@
 # Worklog: dev
 
+## 2026-07-06 AI 活群 hard-hourly 账号轮转修复 Development Complete（本地验证）
+
+- message_id: 2026-07-06-ai-group-hard-hourly-account-rotation-001
+- action: 修复 hard-hourly 追量时历史账号记忆把刚发过的账号重新推到下一轮第一位，导致线上表现为少数账号甚至单账号集中发言的问题。
+- input: 用户反馈“线上 ai 活群好像都是一个账号在发送消息”；生产诊断先卡在 `AI_GROUP_QUALITY_ONLINE_GATE_FAILED`，但代码路径和子代理只读审查均确认 planner 存在账号分布过度集中机制。
+- output: `group_ai_chat._hard_hourly_round_config` 为追量轮次打显式 `hard_hourly_planning` 标记；`_prioritize_accounts_for_plan` 在 hard-hourly 非全账号日覆盖场景保留 `_rotate_accounts` 轮转顺序，不再让 `account_memories` 把刚有历史发言的账号排回第一位；保留 `allow_account_repeat=True`，当本轮 turn 数超过可用账号数或连发配置要求时仍可复用账号。
+- evidence: 新增 red/green 回归 `test_group_ai_chat_hard_hourly_preserves_cycle_rotation_over_account_memory`，旧实现下账号序列为 `[101, 102, 103]`，修复后为 `[102, 103, 101]`；定向新增测试 1 passed，相邻 slot 纯函数测试 2 passed；专项 PRD、数据流索引和结构索引已同步。
+- decision: status=local_verified_pending_broader_tests；release_gate=pending；production_verification=unproven。
+- next_agent: qa
+- unresolved: 尚未完成全量本地验证、release 发布和生产 AI 活群质量诊断；线上账号分布改善需发布后用真实生产 action 分布和诊断确认。
+
 ## 2026-07-02 托管 2FA 密码受控查看 Development Complete
 
 - message_id: 2026-07-02-managed-2fa-reveal-devcomplete-001

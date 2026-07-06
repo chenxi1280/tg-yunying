@@ -1,5 +1,16 @@
 # Worklog: qa
 
+## 2026-07-06 AI 活群 hard-hourly 账号轮转修复 QA
+
+- message_id: 2026-07-06-ai-group-hard-hourly-account-rotation-qa-001
+- action: 对 dev complete 的 hard-hourly 账号轮转修复做定向自动化验收和监督意见复核。
+- input: 2026-07-06-ai-group-hard-hourly-account-rotation-001
+- output: qa_pass
+- evidence: 监督子代理 James 复核代码无阻塞，仅指出状态板应先交 QA，已修正；定向新增回归 `test_group_ai_chat_hard_hourly_preserves_cycle_rotation_over_account_memory` 1 passed；hard-hourly 文件级 no_postgres 14 passed / 36 deselected；相关 AI 活群 hard-hourly + dataflow no_postgres 34 passed / 36 deselected；全量 no_postgres 60s gate 771 passed / 787 deselected；`backend/.venv/bin/python -m compileall -q backend/app` 和 `git diff --check` 通过。
+- decision: 本地 QA 证明 hard-hourly 追量不会再被历史账号记忆压制轮转，且普通非 hard-hourly 记忆优先、全账号日覆盖和需要复用的 hard-hourly 能力未被本地测试覆盖为回归。
+- next_agent: prod-diagnosis
+- unresolved: 尚未发布 release / Deploy Production；线上 AI 活群真实账号分布和质量诊断仍 unproven。
+
 ## 2026-06-27
 
 - message_id: 2026-06-27-docs-practice-qa-001

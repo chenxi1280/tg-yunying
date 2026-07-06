@@ -10,7 +10,20 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import Action, GroupContextMessage, OperationTarget, SchedulingSetting, Task, Tenant, TgAccount, TgAccountOnlineState, TgGroup, TgGroupAccount
+from app.models import (
+    Action,
+    GroupContextMessage,
+    OperationTarget,
+    RuleSet,
+    RuleSetVersion,
+    SchedulingSetting,
+    Task,
+    Tenant,
+    TgAccount,
+    TgAccountOnlineState,
+    TgGroup,
+    TgGroupAccount,
+)
 from app.schemas import GroupAIChatTaskCreate, TaskPrecheckRequest
 from app.services.task_center.executors.group_ai_chat import build_plan as build_group_ai_chat_plan
 from app.services.task_center.hard_hourly import (
@@ -94,6 +107,56 @@ def _add_hard_hourly_profile_refill_fixture(session: Session, *, account_total: 
     for account_id in range(1, account_total + 1):
         session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线", session_ciphertext=f"session-{account_id}"))
         session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=account_id, can_send=True))
+
+
+def _add_ai_group_rule_binding(session: Session) -> None:
+    session.add(
+        RuleSet(
+            id=21,
+            tenant_id=1,
+            name="AI活群默认规则",
+            task_types=["group_ai_chat"],
+            active_version_id=31,
+        )
+    )
+    session.add(RuleSetVersion(id=31, tenant_id=1, rule_set_id=21, version=1, status="published"))
+
+
+def _add_ready_group_accounts(session: Session, *, group_id: int, account_ids: list[int]) -> None:
+    for account_id in account_ids:
+        session.add(
+            TgAccount(
+                id=account_id,
+                tenant_id=1,
+                display_name=f"账号{account_id}",
+                phone_masked=str(account_id),
+                status="在线",
+                session_ciphertext=f"session-{account_id}",
+            )
+        )
+        session.add(TgGroupAccount(tenant_id=1, group_id=group_id, account_id=account_id, can_send=True))
+
+
+def _hard_hourly_memory_rotation_task() -> Task:
+    return Task(
+        id="ai-hard-hourly-memory-rotation",
+        tenant_id=1,
+        name="硬目标记忆不压制轮转",
+        type="group_ai_chat",
+        status="running",
+        account_config={"selection_mode": "all", "max_concurrent": 20, "cooldown_per_account_minutes": 0},
+        type_config={
+            "target_group_id": 7,
+            "participation_rate": 1,
+            "participation_jitter": 0,
+            "fact_anchor_required": False,
+            "low_confidence_silence_enabled": False,
+            "hard_hourly_target_enabled": True,
+            "hourly_min_messages": 2,
+            "hard_hourly_strategy": "force_planning",
+            "rule_set_version_id": 31,
+        },
+    )
 
 
 def _hard_hourly_profile_refill_task(*, max_concurrent: int = PROFILE_REFILL_ACCOUNT_TOTAL) -> Task:
@@ -1038,6 +1101,57 @@ def test_group_ai_chat_hard_hourly_uses_current_slot_when_account_cools_down_lat
     assert max(action.scheduled_at for action in hard_actions) < datetime(2026, 6, 7, 21, 0)
     assert task.last_error == ""
     assert "hard_hourly_last_blockers" not in task.stats
+
+
+@pytest.mark.no_postgres
+def test_group_ai_chat_hard_hourly_preserves_cycle_rotation_over_account_memory(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 7, 20, 10)
+
+    def fake_generate_group_messages(_session, _tenant_id, _config, *, count, target_label, history):
+        samples = ["今晚老师反馈不错", "价格可以再看看", "服务别跑空"]
+        return samples[:count], 0
+
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
+    monkeypatch.setattr("app.services.account_capacity._now", lambda: now_value)
+    monkeypatch.setattr("app.services.task_center.account_pool._now", lambda: now_value)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        _add_ai_group_rule_binding(session)
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="硬目标群", auth_status="已授权运营"))
+        _add_ready_group_accounts(session, group_id=7, account_ids=[101, 102, 103])
+        task = _hard_hourly_memory_rotation_task()
+        session.add(task)
+        session.flush()
+        previous = _send_action(
+            "previous-cycle",
+            task,
+            "success",
+            account_id=101,
+            scheduled_at=now_value - timedelta(minutes=5),
+            executed_at=now_value - timedelta(minutes=5),
+        )
+        previous.payload = {
+            "cycle_id": f"{task.id}:cycle:1",
+            "message_text": "上一轮账号101已经发过",
+        }
+        session.add(previous)
+        session.commit()
+
+        created = build_group_ai_chat_plan(session, task)
+        new_actions = list(session.scalars(
+            select(Action)
+            .where(Action.task_id == task.id, Action.id != previous.id)
+            .order_by(Action.payload["turn_index"].as_integer())
+        ))
+
+    assert created == 3
+    assert [action.account_id for action in new_actions] == [102, 103, 101]
+    assert {action.payload["cycle_id"] for action in new_actions} == {f"{task.id}:cycle:2"}
 
 
 def test_group_ai_chat_hard_hourly_reuses_accounts_in_same_round(monkeypatch):

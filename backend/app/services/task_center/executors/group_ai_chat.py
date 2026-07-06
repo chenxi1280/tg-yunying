@@ -1889,6 +1889,7 @@ def _hard_hourly_round_config(config: dict, progress: dict[str, object]) -> dict
     updated["messages_per_round_mode"] = "manual"
     updated["messages_per_round"] = _hard_hourly_batch_size(config, progress)
     updated["allow_account_repeat"] = True
+    updated["hard_hourly_planning"] = True
     return updated
 
 
@@ -2157,6 +2158,8 @@ def _prioritize_accounts_for_plan(
 ) -> list:
     if len(accounts) <= 1:
         return accounts
+    if _hard_hourly_planning(config) and not _all_accounts_daily_coverage(config):
+        return accounts
     if not _all_accounts_daily_coverage(config):
         return _prioritize_account_memory(accounts, account_memories)
     target = _coverage_target_per_account(config)
@@ -2168,6 +2171,10 @@ def _prioritize_accounts_for_plan(
             0 if account_memories.get(str(account.id)) else 1,
         ),
     )
+
+
+def _hard_hourly_planning(config: dict) -> bool:
+    return bool(config.get("hard_hourly_planning"))
 
 
 def _with_active_conversation_targets(session: Session, task: Task, config: dict, group: TgGroup) -> dict:
