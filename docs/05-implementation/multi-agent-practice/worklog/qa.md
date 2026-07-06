@@ -175,3 +175,47 @@
 - decision: 本地合同验收通过；分组选择只作为账号范围，不会自动创建缺失授权环境，也不会启用系统设置 Clash 订阅源。
 - next_agent: prod-diagnosis
 - unresolved: CI / release deploy / 生产健康 / 线上账号面具静态包和真实分组批量绑定仍 unproven。
+
+## 2026-07-06 账号面具批量绑定 Clash 节点本地 QA
+
+- message_id: 2026-07-06-account-mask-clash-node-batch-bind-local-qa-001
+- action: 对“账号面具 / 账号代理”支持选择 Clash 节点做本地自动化验收。
+- input: 2026-07-06-account-mask-clash-node-batch-bind-devcomplete-001。
+- output: local_qa_pass_for_pool_scoped_clash_node_binding
+- evidence: RED/GREEN 覆盖：批量请求可带 `proxy_airport_node_id`；只允许绑定已启用、已同步且 healthy 的 Clash 节点；绑定后 `AccountProxyBinding.proxy_airport_node_id`、出口观测和 `AccountEnvironmentBinding.proxy_id` 写入正确；异常节点返回 `proxy_airport_node_not_available`；账号面具页读取 `/account-environment-bindings/proxy-airport-nodes` 并可选择“Clash 节点”；权限合同要求该读接口为 `account_masks.view`。定向 `backend/.venv/bin/python -m pytest -q backend/tests/test_account_environment_bulk_proxy_binding.py backend/tests/test_account_environment_bindings.py backend/tests/test_proxy_airport_failover.py backend/tests/test_account_mask_frontend_contracts.py backend/tests/test_permission_vocabulary.py -m no_postgres` -> 34 passed；后端 py_compile passed；`npm --prefix frontend run build` passed（仅 Vite 大 chunk 警告）。
+- decision: 本地合同验收通过；账号面具可从健康 Clash 节点选择代理来源，系统设置 Clash 页仍不做账号分配。
+- next_agent: prod-diagnosis
+- unresolved: CI / release deploy / 生产健康 / 线上账号面具静态包和真实 Clash 节点批量绑定仍 unproven。
+
+## 2026-07-06 频道评论敏感 provider 边界本地 QA
+
+- message_id: 2026-07-06-channel-comment-sensitive-provider-boundary-local-qa-001
+- action: 对频道评论 / 引用回复进入 MiniMax/OpenAI-compatible provider 前的敏感上下文隐晦中性改写，以及 MiniMax-M3 敏感拒绝后降级 M2.7 / M2.5 做本地自动化验收。
+- input: 2026-07-06-channel-comment-sensitive-provider-boundary-devcomplete-001。
+- output: local_qa_pass_for_channel_comment_sensitive_provider_boundary
+- evidence: RED/GREEN 覆盖：频道评论 prompt 不再携带 `情趣内衣`、`小小j`、`双峰`、`含住`、`裸露`、`血脉喷张`，改为 `氛围装扮`、`私密称呼`、`身形细节`、`亲密互动`；引用回复目标 preview 同样净化；系统提示包含“隐晦中性”口径；M3 和 M2.7 连续返回 `HTTP 422 new_sensitive` 时最终请求 M2.5 并成功。定向 `backend/tests/test_ai_sensitive_context_sanitization.py` -> 3 passed；相关 provider 选择回归 3 passed；py_compile 和 `git diff --check` 通过。
+- decision: 本地合同验收通过；不声明线上“阿哥日记”或天津任务已恢复。
+- next_agent: prod-diagnosis
+- unresolved: CI / release deploy / 生产健康 / 线上任务重新规划和 provider 422 消失仍 unproven。
+
+## 2026-07-06 账号代理 / 授权指纹 Tab 重复展示本地 QA
+
+- message_id: 2026-07-06-account-mask-tabs-split-local-qa-001
+- action: 对账号面具“账号代理”和“授权指纹”Tab 内容拆分做本地自动化验收。
+- input: 2026-07-06-account-mask-tabs-split-devcomplete-001。
+- output: local_qa_pass_for_account_mask_tab_split
+- evidence: 合同测试要求存在 `proxyTable` 和 `fingerprintTable`，账号代理 Tab 指向 `proxyTable`，授权指纹 Tab 指向 `fingerprintTable`，不再使用共享 `environmentTable`，且 `BatchProxyBindingPanel` 只出现在代理 Tab。定向 `backend/.venv/bin/python -m pytest -q backend/tests/test_account_mask_frontend_contracts.py -m no_postgres` -> 7 passed；`npm --prefix frontend run build` passed（仅 Vite 大 chunk 警告）。
+- decision: 本地合同验收通过；账号代理和授权指纹 Tab 已拆成不同内容块。
+- next_agent: prod-diagnosis
+- unresolved: CI / release deploy / 生产健康 / 线上账号面具页面真实点击仍 unproven。
+
+## 2026-07-06 Code Review 修复本地 QA
+
+- message_id: 2026-07-06-account-mask-proxy-review-fixes-local-qa-001
+- action: 对账号代理批量绑定、MiniMax 回退边界和前端选项加载隔离做本地自动化验收。
+- input: 2026-07-06-account-mask-proxy-review-fixes-devcomplete-001。
+- output: local_qa_pass_for_review_fixes
+- evidence: RED/GREEN 覆盖：同一账号同一 `session_role` 下多个 active 授权环境全部更新代理，成功账号数按账号去重；MiniMax 只对 `new_sensitive/1026` 触发旧模型降级，generic content policy 直接暴露 `AiGenerationUnavailable`；账号代理批量面板使用 `Promise.allSettled` 独立加载账号中心分组、本地代理和 Clash 节点，并为单项失败展示中文错误。定向 `perl -e 'alarm 60; exec @ARGV' backend/.venv/bin/python -m pytest -q backend/tests/test_account_environment_bulk_proxy_binding.py backend/tests/test_ai_sensitive_context_sanitization.py backend/tests/test_account_mask_frontend_contracts.py -m no_postgres` -> 17 passed。
+- decision: 本地合同验收通过；不声明生产已恢复。
+- next_agent: prod-diagnosis
+- unresolved: CI / release deploy / 生产健康 / 线上账号面具页面真实点击和 provider 实际 422 行为仍 unproven。

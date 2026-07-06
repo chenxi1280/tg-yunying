@@ -112,3 +112,13 @@
 - decision: 本次 bug 的代码发布、线上容器版本、公网健康、新规划分布和真实发送分布均已验证；生产 AI 活群“单账号连续发送”的新代码路径已恢复。郑州大学任务仍因 `account_offline_count=22` 阻断补量，这是账号在线健康问题，不归入本次轮转修复失败。
 - next_agent: product
 - unresolved: 按用户要求取消 workflow_dispatch 长诊断 run `28792149725`，本次不使用 Actions `AI_GROUP_QUALITY_DONE` 作为证据；仍需后续单独处理账号在线健康和历史 hard-hourly backfill debt。
+
+## 2026-07-06 MiniMax 默认模型切换到 M2.5 线上复核
+
+- message_id: 2026-07-06-minimax-default-m25-prod-config-001
+- action: 按用户要求将线上租户默认 MiniMax 文本模型优先改为 `MiniMax-M2.5`。
+- input: “阿哥日记”频道评论任务 `b2fa5cb5-5878-4b29-ba5c-6bc61f92d59e` 此前默认走 `MiniMax-M3`，provider 返回 `HTTP 422 input new_sensitive (1026)`；用户补充“线上的优先模型使用 M2.5”。
+- output: `production_config_updated_task_recovery_unproven`
+- evidence: 生产 SSH 直连 `root@47.251.126.134`，在 `tgyunying-backend` 容器内只读确认租户 1 默认 provider id=4、`provider_name=MiniMax`、`model_name=MiniMax-M3`、`health_status=健康`、`fallback_to_mock=false`。随后使用 provider 已保存的加密密钥解密到进程内存，构造 `MiniMax-M2.5` 凭据调用真实 `AiGateway.check`，返回 `provider ready; chat capability ready` 后提交配置。独立复查确认 provider id=4 已为 `model_name=MiniMax-M2.5`、`health_status=健康`、`last_error=''`、`last_check_at=2026-07-06T22:19:49.540863`，租户 1 仍指向 default_provider_id=4 且 `ai_enabled=true`、`fallback_to_mock=false`。
+- decision: 线上默认模型切换已完成且经过 provider check；未打印或落盘 API key。
+- unresolved: 同一任务当前仍 `running`、`action_count=0`，`last_error=AI 评论候选不足，已跳过本轮`；因此只能证明默认模型配置已切换，不能声明“阿哥日记”评论/回复已经真实恢复。本地敏感上下文净化和 M3->M2.7->M2.5 自动降级代码仍未发布到生产。

@@ -1,7 +1,7 @@
 import React from 'react';
-import { Alert, Button, Descriptions, Form, Input, InputNumber, Modal, Space, Table, Tabs, Tag } from 'antd';
+import { Alert, Button, Descriptions, Form, Input, InputNumber, Modal, Select, Space, Table, Tabs, Tag } from 'antd';
 import { api } from '../../shared/api/client';
-import type { AccountEnvironmentBinding, CurrentUser } from '../types';
+import type { AccountEnvironmentBinding, AccountEnvironmentProxyBatchBindResult, AccountPool, AccountProxy, CurrentUser, ProxyAirportNode } from '../types';
 import { hasPermission } from '../utils';
 import AIAccountVoiceProfilesView from './AIAccountVoiceProfilesView';
 
@@ -25,6 +25,14 @@ type EnvironmentDraft = Pick<
   | 'region_code'
   | 'client_identity_key'
 >;
+
+type BatchProxyBindingDraft = {
+  account_pool_id?: number;
+  proxy_id?: number;
+  proxy_airport_node_id?: number;
+  session_role: string;
+  change_reason: string;
+};
 
 function errorText(error: unknown) {
   return error instanceof Error ? error.message : String(error);
@@ -70,6 +78,137 @@ function draftFromRow(row: AccountEnvironmentBinding): EnvironmentDraft {
     region_code: row.region_code || 'CN',
     client_identity_key: row.client_identity_key || `manual-${row.account_id}-${row.authorization_id}`,
   };
+}
+
+function proxyAirportNodeLabel(node: ProxyAirportNode) {
+  const exit = node.observed_exit_ip ? ` / ${node.observed_exit_ip}` : '';
+  return `${node.node_name} / ${node.protocol}://${node.proxy_host}:${node.proxy_port}${exit}`;
+}
+
+function BatchProxyBindingPanel({ canManageEnvironment, onBound }: { canManageEnvironment: boolean; onBound: () => void }) {
+  const [accountPools, setAccountPools] = React.useState<AccountPool[]>([]);
+  const [proxies, setProxies] = React.useState<AccountProxy[]>([]);
+  const [airportNodes, setAirportNodes] = React.useState<ProxyAirportNode[]>([]);
+  const [proxySource, setProxySource] = React.useState<'account_proxy' | 'airport_node'>('account_proxy');
+  const [draft, setDraft] = React.useState<BatchProxyBindingDraft>({ session_role: 'primary', change_reason: '' });
+  const [saving, setSaving] = React.useState(false);
+  const [notice, setNotice] = React.useState('');
+  const [error, setError] = React.useState('');
+
+  React.useEffect(() => {
+    void loadOptions();
+  }, []);
+
+  async function loadOptions() {
+    const [poolResult, proxyResult, airportResult] = await Promise.allSettled([
+      api<AccountPool[]>('/account-pools'),
+      api<AccountProxy[]>('/account-proxies'),
+      api<ProxyAirportNode[]>('/account-environment-bindings/proxy-airport-nodes'),
+    ]);
+    if (poolResult.status === 'fulfilled') {
+      setAccountPools(poolResult.value.filter((pool) => pool.pool_purpose !== 'code_receiver' && pool.system_key !== 'code_receiver'));
+    }
+    if (proxyResult.status === 'fulfilled') setProxies(proxyResult.value);
+    if (airportResult.status === 'fulfilled') setAirportNodes(airportResult.value);
+    const optionErrors = [
+      poolResult.status === 'rejected' ? `账号中心分组选项加载失败：${errorText(poolResult.reason)}` : '',
+      proxyResult.status === 'rejected' ? `本地代理选项加载失败：${errorText(proxyResult.reason)}` : '',
+      airportResult.status === 'rejected' ? `Clash 节点选项加载失败：${errorText(airportResult.reason)}` : '',
+    ].filter(Boolean);
+    setError(optionErrors.join('；'));
+  }
+
+  async function submitBatchProxyBinding() {
+    setSaving(true);
+    setError('');
+    setNotice('');
+    try {
+      const payload =
+        proxySource === 'airport_node'
+          ? { account_pool_id: draft.account_pool_id, proxy_airport_node_id: draft.proxy_airport_node_id, session_role: draft.session_role, change_reason: draft.change_reason }
+          : { account_pool_id: draft.account_pool_id, proxy_id: draft.proxy_id, session_role: draft.session_role, change_reason: draft.change_reason };
+      const result = await api<AccountEnvironmentProxyBatchBindResult>('/account-environment-bindings/batch-proxy-bind', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      setNotice(`账号分组批量绑定代理完成：成功 ${result.success_count}，跳过 ${result.failed_count}`);
+      onBound();
+    } catch (submitError) {
+      setError(errorText(submitError));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Space direction="vertical" style={{ width: '100%', marginBottom: 12 }}>
+      {error && <Alert type="error" showIcon message={error} />}
+      {notice && <Alert type="success" showIcon message={notice} />}
+      <Space wrap>
+        <Select
+          placeholder="选择账号中心分组"
+          value={draft.account_pool_id}
+          onChange={(value) => setDraft((current) => ({ ...current, account_pool_id: value }))}
+          style={{ width: 180 }}
+          options={accountPools.map((pool) => ({ value: pool.id, label: `${pool.name} (${pool.account_count})` }))}
+        />
+        <Select
+          value={proxySource}
+          onChange={(value) => {
+            setProxySource(value);
+            setDraft((current) => ({ ...current, proxy_id: undefined, proxy_airport_node_id: undefined }));
+          }}
+          style={{ width: 128 }}
+          options={[
+            { value: 'account_proxy', label: '本地代理' },
+            { value: 'airport_node', label: 'Clash 节点' },
+          ]}
+        />
+        {proxySource === 'airport_node' ? (
+          <Select
+            placeholder="选择 Clash 节点"
+            value={draft.proxy_airport_node_id}
+            onChange={(value) => setDraft((current) => ({ ...current, proxy_airport_node_id: value, proxy_id: undefined }))}
+            style={{ width: 260 }}
+            options={airportNodes.map((node) => ({ value: node.id, label: proxyAirportNodeLabel(node) }))}
+          />
+        ) : (
+          <Select
+            placeholder="选择代理"
+            value={draft.proxy_id}
+            onChange={(value) => setDraft((current) => ({ ...current, proxy_id: value, proxy_airport_node_id: undefined }))}
+            style={{ width: 180 }}
+            options={proxies.map((proxy) => ({ value: proxy.id, label: `${proxy.name} / ${proxy.status}` }))}
+          />
+        )}
+        <Select
+          value={draft.session_role}
+          onChange={(value) => setDraft((current) => ({ ...current, session_role: value }))}
+          style={{ width: 128 }}
+          options={[
+            { value: 'primary', label: 'primary' },
+            { value: 'standby_1', label: 'standby_1' },
+            { value: 'standby_2', label: 'standby_2' },
+          ]}
+        />
+        <Input
+          placeholder="变更原因"
+          value={draft.change_reason}
+          onChange={(event) => setDraft((current) => ({ ...current, change_reason: event.target.value }))}
+          style={{ width: 220 }}
+        />
+        <Button
+          type="primary"
+          disabled={!canManageEnvironment || !draft.account_pool_id || !(proxySource === 'airport_node' ? draft.proxy_airport_node_id : draft.proxy_id) || !draft.change_reason.trim()}
+          loading={saving}
+          onClick={() => void submitBatchProxyBinding()}
+        >
+          账号分组批量绑定代理
+        </Button>
+      </Space>
+      <Alert type="info" showIcon message="只更新已有授权环境；系统设置 Clash 配置不启用代理，也不按分组分配账号。" />
+    </Space>
+  );
 }
 
 export default function AccountMasksView({ currentUser }: Props) {
@@ -142,21 +281,28 @@ export default function AccountMasksView({ currentUser }: Props) {
     }
   }
 
-  const environmentTable = (
-    <>
-      {error && <Alert type="error" showIcon message={error} style={{ marginBottom: 12 }} />}
+  function environmentControls(placeholder: string, showObservationRefresh = false) {
+    return (
       <Space style={{ marginBottom: 12 }}>
         <Input.Search
           allowClear
           value={search}
           onChange={(event) => setSearch(event.target.value)}
           onSearch={(value) => void loadEnvironment(value)}
-          placeholder="账号、应用、代理、指纹"
+          placeholder={placeholder}
           style={{ width: 320 }}
         />
         <Button onClick={() => void loadEnvironment()} loading={loading}>刷新</Button>
-        <Button disabled={!canManageEnvironment} onClick={() => void refreshObservations()} loading={loading}>刷新远端观测</Button>
+        {showObservationRefresh && <Button disabled={!canManageEnvironment} onClick={() => void refreshObservations()} loading={loading}>刷新远端观测</Button>}
       </Space>
+    );
+  }
+
+  const proxyTable = (
+    <>
+      {error && <Alert type="error" showIcon message={error} style={{ marginBottom: 12 }} />}
+      {environmentControls('账号、应用、代理')}
+      <BatchProxyBindingPanel canManageEnvironment={canManageEnvironment} onBound={() => void loadEnvironment()} />
       <Table
         rowKey={(row) => accountEnvironmentRowKey(row)}
         size="small"
@@ -169,10 +315,33 @@ export default function AccountMasksView({ currentUser }: Props) {
           { title: '授权ID', dataIndex: 'authorization_id' },
           { title: '授权槽位', dataIndex: 'session_role' },
           { title: '代理', key: 'proxy', render: (_, row) => row.proxy_name || (row.proxy_id ? `Proxy #${row.proxy_id}` : '-') },
+          { title: '代理状态', dataIndex: 'proxy_status' },
+          { title: '生效边界', dataIndex: 'effect_boundary' },
+          { title: '操作', key: 'action', render: (_, row) => <Button size="small" disabled={!canManageEnvironment} onClick={() => openEdit(row)}>编辑代理</Button> },
+        ]}
+      />
+    </>
+  );
+
+  const fingerprintTable = (
+    <>
+      {error && <Alert type="error" showIcon message={error} style={{ marginBottom: 12 }} />}
+      {environmentControls('账号、应用、指纹', true)}
+      <Table
+        rowKey={(row) => accountEnvironmentRowKey(row)}
+        size="small"
+        loading={loading}
+        dataSource={rows}
+        columns={[
+          { title: '账号', key: 'account', render: (_, row) => `${row.account_display_name}${row.account_username ? ` @${row.account_username}` : ''}` },
+          { title: '应用', key: 'app', render: (_, row) => row.developer_app_name || `App #${row.developer_app_id || '-'}` },
+          { title: 'api_id', dataIndex: 'developer_app_api_id_snapshot' },
+          { title: '授权ID', dataIndex: 'authorization_id' },
+          { title: '授权槽位', dataIndex: 'session_role' },
           { title: '配置指纹', key: 'device', render: (_, row) => [row.device_model, row.system_version, row.app_version].filter(Boolean).join(' / ') || '-' },
           { title: '远端观测', key: 'observed', render: (_, row) => observedFingerprintText(row) },
           { title: '状态', key: 'status', render: (_, row) => statusTag(row.consistency_status) },
-          { title: '操作', key: 'action', render: (_, row) => <Button size="small" disabled={!canManageEnvironment} onClick={() => openEdit(row)}>编辑</Button> },
+          { title: '操作', key: 'action', render: (_, row) => <Button size="small" disabled={!canManageEnvironment} onClick={() => openEdit(row)}>编辑指纹</Button> },
         ]}
       />
     </>
@@ -188,8 +357,8 @@ export default function AccountMasksView({ currentUser }: Props) {
             label: '面具管理',
             children: <AIAccountVoiceProfilesView canManageVoiceProfiles={canManageVoiceProfiles} />,
           },
-          { key: 'proxies', label: '账号代理', children: environmentTable },
-          { key: 'fingerprints', label: '授权指纹', children: environmentTable },
+          { key: 'proxies', label: '账号代理', children: proxyTable },
+          { key: 'fingerprints', label: '授权指纹', children: fingerprintTable },
           {
             key: 'audit',
             label: '异常与审计',

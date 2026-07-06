@@ -236,6 +236,30 @@ export type AccountEnvironmentBinding = {
   updated_at: string | null;
 };
 
+export type AccountEnvironmentProxyBatchBindResult = {
+  success_count: number;
+  failed_count: number;
+  skipped_accounts: Array<{ account_id: number; reason: string }>;
+  affected_account_ids: number[];
+  trace_id: string;
+};
+
+export type ProxyAirportNode = {
+  id: number;
+  tenant_id: number;
+  subscription_id: number;
+  node_name: string;
+  protocol: string;
+  proxy_host: string;
+  proxy_port: number;
+  status: string;
+  observed_exit_ip: string;
+  observed_exit_country: string;
+  observed_exit_asn: string;
+  observed_exit_isp: string;
+  updated_at: string | null;
+};
+
 export type CaptchaChallenge = {
   challenge_id: string;
   image_data_url: string;

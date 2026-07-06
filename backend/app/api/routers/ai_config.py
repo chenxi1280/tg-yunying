@@ -20,7 +20,13 @@ from app.schemas import (
     SchedulingSettingOut, SchedulingSettingUpdate,
     TenantAiSettingOut, TenantAiSettingUpdate,
 )
-from app.schemas.account_environment import AccountEnvironmentBindingOut, AccountEnvironmentBindingPatch
+from app.schemas.account_environment import (
+    AccountEnvironmentBindingOut,
+    AccountEnvironmentBindingPatch,
+    AccountEnvironmentProxyBatchBindOut,
+    AccountEnvironmentProxyBatchBindRequest,
+    ProxyAirportNodeOut,
+)
 from app.schemas.ai_config import (
     AiAccountVoiceProfileAuditOut,
     AiAccountVoiceProfileBatchRebuildOut,
@@ -45,7 +51,9 @@ from app.services.account_environment import (
     list_account_environment_bindings,
     patch_account_environment_binding,
 )
+from app.services.account_environment_bulk import bind_account_environment_proxy_batch
 from app.services.account_environment_observations import refresh_account_environment_observations
+from app.services.proxy_airport_accounts import list_available_proxy_airport_nodes
 from app.services.task_center.account_voice_profiles import (
     batch_rebuild_voice_profiles,
     generate_voice_profiles_with_ai,
@@ -253,6 +261,16 @@ def get_account_environment_bindings(
     )
 
 
+@router.get("/api/account-environment-bindings/proxy-airport-nodes", response_model=list[ProxyAirportNodeOut])
+def get_account_environment_proxy_airport_nodes(
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    _require_account_masks_view(current_user)
+    return list_available_proxy_airport_nodes(session, tenant_id=resolve_tenant_id(current_user, tenant_id))
+
+
 @router.patch("/api/account-environment-bindings/{account_id}", response_model=AccountEnvironmentBindingOut)
 def patch_account_environment_binding_route(
     account_id: int,
@@ -291,6 +309,28 @@ def post_account_environment_observation_refresh(
     )
     session.commit()
     return rows
+
+
+@router.post("/api/account-environment-bindings/batch-proxy-bind", response_model=AccountEnvironmentProxyBatchBindOut)
+def post_account_environment_proxy_batch_bind(
+    payload: AccountEnvironmentProxyBatchBindRequest,
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    _require_account_environment_manage(current_user)
+    try:
+        result = bind_account_environment_proxy_batch(
+            session,
+            tenant_id=resolve_tenant_id(current_user, tenant_id),
+            payload=payload,
+            actor=current_user.name,
+        )
+        session.commit()
+        return result
+    except ValueError as exc:
+        session.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.patch("/api/ai-account-voice-profiles/{account_id}", response_model=AiAccountVoiceProfileOut)

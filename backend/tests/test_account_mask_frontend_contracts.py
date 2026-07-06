@@ -79,3 +79,50 @@ def test_account_masks_view_keys_rows_by_full_authorization_slot_and_shows_autho
     for field in ["account_id", "developer_app_id", "developer_app_api_id_snapshot", "authorization_id", "session_role"]:
         assert f"row.{field}" in source
     assert "{ title: '授权ID', dataIndex: 'authorization_id' }" in source
+
+
+def test_account_masks_view_supports_pool_scoped_proxy_batch_binding():
+    source = (PROJECT_ROOT / "frontend/src/app/views/AccountMasksView.tsx").read_text()
+    system_config = (PROJECT_ROOT / "frontend/src/app/views/ProxyAirportSubscriptionView.tsx").read_text()
+    types = (PROJECT_ROOT / "frontend/src/app/types/system.ts").read_text()
+
+    assert "api<AccountPool[]>('/account-pools')" in source
+    assert "api<AccountProxy[]>('/account-proxies')" in source
+    assert "api<ProxyAirportNode[]>('/account-environment-bindings/proxy-airport-nodes')" in source
+    assert "api<AccountEnvironmentProxyBatchBindResult>('/account-environment-bindings/batch-proxy-bind'" in source
+    assert "账号分组批量绑定代理" in source
+    assert "选择账号中心分组" in source
+    assert "选择 Clash 节点" in source
+    assert "只更新已有授权环境" in source
+    assert "account_pool_id" in source
+    assert "proxy_id" in source
+    assert "proxy_airport_node_id" in source
+    assert "session_role" in source
+    assert "type ProxyAirportNode" in types
+    assert "type AccountEnvironmentProxyBatchBindResult" in types
+    assert "batch-proxy-bind" not in system_config
+
+
+def test_account_masks_view_loads_proxy_binding_options_independently():
+    source = (PROJECT_ROOT / "frontend/src/app/views/AccountMasksView.tsx").read_text()
+
+    assert "Promise.allSettled" in source
+    assert "poolResult.status === 'fulfilled'" in source
+    assert "proxyResult.status === 'fulfilled'" in source
+    assert "airportResult.status === 'fulfilled'" in source
+    assert "账号中心分组选项加载失败" in source
+    assert "本地代理选项加载失败" in source
+    assert "Clash 节点选项加载失败" in source
+    assert "await Promise.all([" not in source
+
+
+def test_account_masks_view_separates_proxy_and_fingerprint_tabs():
+    source = (PROJECT_ROOT / "frontend/src/app/views/AccountMasksView.tsx").read_text()
+
+    assert "const proxyTable = (" in source
+    assert "const fingerprintTable = (" in source
+    assert "{ key: 'proxies', label: '账号代理', children: proxyTable }" in source
+    assert "{ key: 'fingerprints', label: '授权指纹', children: fingerprintTable }" in source
+    assert "children: environmentTable" not in source
+    assert "BatchProxyBindingPanel" in source.split("const proxyTable = (", 1)[1].split("const fingerprintTable = (", 1)[0]
+    assert "BatchProxyBindingPanel" not in source.split("const fingerprintTable = (", 1)[1].split("return (", 1)[0]

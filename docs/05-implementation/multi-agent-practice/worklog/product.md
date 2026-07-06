@@ -349,3 +349,25 @@
 - decision: 当前产品口径为系统配置维护多条 Clash 订阅源，按 priority 主备容灾；授权槽位代理仍在账号面具中固定绑定；默认不自动切回主订阅，除非显式开启自动切回和冷却
 - next_agent: dev
 - unresolved: 本条自身为 PRD 口径修订；代码实现、QA、发布和生产真实 Clash/Zhengzhou 验证需看 dev/qa/prod-diagnosis 证据
+
+## 2026-07-06 账号面具按账号分组批量绑定代理设计补充
+
+- message_id: 2026-07-06-account-mask-pool-proxy-batch-bind-product-001
+- action: 按用户确认的 A 方案，补充账号代理批量绑定的产品边界。
+- input: 用户确认“在账号面具/账号代理里按账号中心分组批量绑定代理，系统设置 Clash 页不做账号分配”。
+- output: 主 PRD 明确：系统设置 Clash 配置继续只维护订阅源池、主备优先级和同步健康，不出现账号中心分组选择，也不分配账号或授权槽位；账号面具的账号代理页可以选择账号中心分组作为批量范围，但只更新组内已有 active 授权环境绑定，缺少授权环境的账号必须跳过并展示原因；接码专用分组不得作为运营代理批量绑定范围；配置代理不等于任务已启用代理。
+- evidence: 已同步 `docs/01-product/tg-ops-platform-prd.md`、`docs/00-index/project-dataflow-index.md`、`docs/00-index/project-structure-index.md`；本轮后端/前端实现和本地 QA 见 dev/qa worklog。
+- decision: design_status=complete_for_incremental_dev；不要求系统设置 Clash 页分配账号；不声明线上可用。
+- next_agent: dev
+- unresolved: 真实发布、线上账号面具页面、生产批量绑定行为仍需 release / prod-diagnosis 证据。
+
+## 2026-07-06 账号面具批量绑定 Clash 节点设计修正
+
+- message_id: 2026-07-06-account-mask-clash-node-batch-bind-product-001
+- action: 修正“账号面具 / 账号代理”批量绑定入口只能选择本地代理资源、无法选择 Clash 节点的问题。
+- input: 用户反馈“面具 中的账号代理，没办法去配置 clash的代理有问题”。
+- output: 主 PRD 和数据流转口径补充：账号面具的账号代理批量绑定支持本地代理资源与已同步健康 Clash 节点二选一；选择 Clash 节点时必须复用 / 创建对应 `AccountProxy` 连接资源，并在授权槽位代理绑定中写入 `proxy_airport_node_id` 和可用出口观测字段；系统设置 Clash 页仍只负责订阅源、优先级、启停、同步和健康状态，不负责账号分组或授权槽位分配。
+- evidence: 已同步 `docs/01-product/tg-ops-platform-prd.md`、`docs/00-index/project-dataflow-index.md`、`docs/00-index/project-structure-index.md`；本轮实现和本地 QA 见 dev/qa worklog。
+- decision: design_status=complete_for_incremental_dev；不要求系统设置页做账号分配；不声明生产可用。
+- next_agent: dev
+- unresolved: 真实发布、线上账号面具页面和生产 Clash 节点批量绑定仍需 release / prod-diagnosis 证据。

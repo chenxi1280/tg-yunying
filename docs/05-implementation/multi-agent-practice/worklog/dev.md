@@ -241,3 +241,47 @@
 - decision: status=local_verified_pending_release；release_gate=pending；production_verification=unproven。
 - next_agent: qa
 - unresolved: 尚未推送 release/master；尚未执行 Deploy Production；线上账号面具页面与批量绑定真实数据流仍需发布后复核。
+
+## 2026-07-06 账号面具批量绑定 Clash 节点 Development Complete（本地验证）
+
+- message_id: 2026-07-06-account-mask-clash-node-batch-bind-devcomplete-001
+- action: 修复账号面具“账号代理”批量绑定无法选择 Clash 代理节点的问题。
+- input: 用户反馈“面具 中的账号代理，没办法去配置 clash的代理有问题”。
+- output: 新增 `ProxyAirportNodeOut`、`GET /api/account-environment-bindings/proxy-airport-nodes` 和 `backend/app/services/proxy_airport_accounts.py`；账号面具页加载健康 Clash 节点并在本地代理 / Clash 节点间二选一；`AccountEnvironmentProxyBatchBindRequest` 支持 `proxy_airport_node_id`，批量绑定时校验节点来自已启用且同步健康的订阅，复用 / 创建 `AccountProxy` 后写入 `AccountProxyBinding.proxy_airport_node_id`、出口观测字段和 `AccountEnvironmentBinding.proxy_id`。运行中 failover 改为复用同一 `proxy_for_airport_node` 逻辑。
+- evidence: RED：新增 Clash 节点批量绑定、异常节点拒绝、前端合同和权限合同测试后，定向测试按预期 4 failed / 2 passed；GREEN：`backend/.venv/bin/python -m pytest -q backend/tests/test_account_environment_bulk_proxy_binding.py backend/tests/test_account_environment_bindings.py backend/tests/test_proxy_airport_failover.py backend/tests/test_account_mask_frontend_contracts.py backend/tests/test_permission_vocabulary.py -m no_postgres` -> 34 passed；`backend/.venv/bin/python -m py_compile ...` passed；`npm --prefix frontend run build` passed（仅 Vite 大 chunk 警告）。
+- decision: status=local_verified_pending_release；release_gate=pending；production_verification=unproven。
+- next_agent: qa
+- unresolved: 尚未推送 release/master；尚未执行 Deploy Production；线上账号面具页面和生产 Clash 节点绑定需发布后复核。
+
+## 2026-07-06 频道评论敏感 provider 边界 Development Complete（本地验证）
+
+- message_id: 2026-07-06-channel-comment-sensitive-provider-boundary-devcomplete-001
+- action: 修复“阿哥日记”频道评论 / 引用回复 AI 生成因 MiniMax `input new_sensitive (1026)` 被拒的问题，并按用户要求支持 MiniMax-M3 敏感拒绝后降级到 M2.7 / M2.5 重试。
+- input: 生产 SSH 只读排查确认任务 `b2fa5cb5-5878-4b29-ba5c-6bc61f92d59e` 默认走健康 MiniMax-M3，`ai_model` 为空、无 action，provider 边界 prompt 仍含 `情趣内衣`、`小小j`、`双峰`、`含住` 等直给敏感词。
+- output: 更新 `ai_generator.py` 的敏感上下文表和模型提示词：敏感场景必须先按隐晦中性词理解，再围绕改写后的既有事实做自然短评或追问；新增 `情趣内衣 -> 氛围装扮`、`小小j -> 私密称呼`、`双峰 -> 身形细节`、`含住 -> 亲密互动` 等映射。新增 MiniMax 敏感拒绝显式降级：同一 provider 凭据下，M3 对明确 `new_sensitive` / `1026` 敏感码依次试 M2.7、M2.5；generic content policy、安全策略、quota、unknown model、网络错误仍暴露失败。新增 `backend/tests/test_ai_sensitive_context_sanitization.py` 覆盖频道评论、引用回复 provider prompt、M3 -> M2.7 -> M2.5 降级，以及 generic safety refusal 不降级。
+- evidence: RED：新增测试先失败，证明 provider prompt 仍带原词，且 M3 422 后不会降级；GREEN：`backend/tests/test_ai_sensitive_context_sanitization.py` 3 passed；相关 provider 选择回归 3 passed；`python3 -m py_compile backend/app/services/task_center/ai_generator.py backend/tests/test_ai_sensitive_context_sanitization.py` passed；`git diff --check` passed。
+- decision: status=local_verified_pending_release；release_gate=pending；production_verification=unproven。
+- next_agent: qa
+- unresolved: 尚未推送 release/master；尚未执行 Deploy Production；“阿哥日记”和天津线上 `new_sensitive` 恢复需发布后 SSH / 生产诊断复核。
+
+## 2026-07-06 账号代理 / 授权指纹 Tab 重复展示修复（本地验证）
+
+- message_id: 2026-07-06-account-mask-tabs-split-devcomplete-001
+- action: 修复账号面具中“账号代理”和“授权指纹”Tab 内容相同的问题。
+- input: 用户反馈“现在的 账号代理 授权指纹 tab里面是一样的内容”。
+- output: 根因是 `proxies` 和 `fingerprints` 两个 Tab 共用同一个 `environmentTable`；已拆成 `proxyTable` 和 `fingerprintTable`。账号代理 Tab 只展示搜索、代理批量绑定、代理状态和生效边界；授权指纹 Tab 展示远端观测刷新、配置指纹、远端观测和一致性状态。
+- evidence: 新增 RED/GREEN 前端合同测试 `test_account_masks_view_separates_proxy_and_fingerprint_tabs`；`backend/tests/test_account_mask_frontend_contracts.py -m no_postgres` -> 7 passed；`npm --prefix frontend run build` passed（仅 Vite 大 chunk 警告）。
+- decision: status=local_verified_pending_release；release_gate=pending；production_verification=unproven。
+- next_agent: qa
+- unresolved: 尚未推送 release/master；线上静态包和真实页面点击需发布后复核。
+
+## 2026-07-06 Code Review 修复：账号代理批量绑定与 MiniMax 回退边界（本地验证）
+
+- message_id: 2026-07-06-account-mask-proxy-review-fixes-devcomplete-001
+- action: 修复未提交更改 review 中指出的三个问题。
+- input: review findings：批量绑定只改每账号一条授权槽位；generic safety refusal 不应触发旧 MiniMax 模型回退；前端选项 `Promise.all` 导致本地代理接口失败会阻断 Clash 节点绑定。
+- output: `account_environment_bulk.py` 改为更新账号在目标 `session_role` 下所有 active 授权环境，成功账号数仍按账号去重；MiniMax 敏感降级标记收窄为 `new_sensitive/1026`；账号代理批量面板改用 `Promise.allSettled` 独立加载账号分组、本地代理和 Clash 节点，并显示单项失败。
+- evidence: RED：新增三条回归先失败，分别暴露第二个 active 环境未更新、generic content policy 触发 M2.7/M2.5、前端仍使用 `Promise.all`；GREEN：`perl -e 'alarm 60; exec @ARGV' backend/.venv/bin/python -m pytest -q backend/tests/test_account_environment_bulk_proxy_binding.py backend/tests/test_ai_sensitive_context_sanitization.py backend/tests/test_account_mask_frontend_contracts.py -m no_postgres` -> 17 passed。
+- decision: status=local_verified_pending_release；release_gate=pending；production_verification=unproven。
+- next_agent: qa
+- unresolved: 尚未推送 release/master；尚未执行 Deploy Production；线上账号面具真实 UI 和 provider 行为仍需发布后复核。

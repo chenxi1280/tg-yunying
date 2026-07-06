@@ -7,13 +7,13 @@ from app.models import (
     AccountProxyBinding,
     AccountProxyWarmupState,
     AccountEnvironmentBinding,
-    AccountProxy,
     ProxyAirportNode,
     ProxyAirportSubscription,
     ProxyExitIpObservation,
     ProxyNodeFailoverEvent,
 )
 from app.services._common import _now
+from app.services.proxy_airport_accounts import proxy_for_airport_node
 
 
 def failover_proxy_airport_node_binding(
@@ -34,7 +34,7 @@ def failover_proxy_airport_node_binding(
     now = _now()
     binding.status = "inactive"
     binding.unbound_at = now
-    proxy = _proxy_for_node(session, to_node)
+    proxy = proxy_for_airport_node(session, to_node)
     new_binding = _new_binding(binding, to_node, proxy, reason, now)
     session.add(new_binding)
     session.flush()
@@ -138,28 +138,6 @@ def _new_binding(
         change_reason=reason,
         bound_by="proxy_airport_failover",
     )
-
-
-def _proxy_for_node(session: Session, node: ProxyAirportNode) -> AccountProxy:
-    name = f"airport-node-{node.id}"
-    proxy = session.scalar(
-        select(AccountProxy).where(
-            AccountProxy.tenant_id == node.tenant_id,
-            AccountProxy.name == name,
-        )
-    )
-    if proxy is None:
-        proxy = AccountProxy(tenant_id=node.tenant_id, name=name, port=int(node.proxy_port or 0))
-        session.add(proxy)
-    proxy.protocol = node.protocol or "socks5"
-    proxy.host = node.proxy_host
-    proxy.port = int(node.proxy_port or 0)
-    proxy.status = "healthy"
-    proxy.alert_status = "normal"
-    proxy.last_error = ""
-    proxy.notes = "airport_clash failover node"
-    session.flush()
-    return proxy
 
 
 def _failover_event(

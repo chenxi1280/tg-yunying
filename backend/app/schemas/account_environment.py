@@ -92,6 +92,24 @@ class ProxyAirportSubscriptionOut(BaseModel):
     updated_at: datetime | None = None
 
 
+class ProxyAirportNodeOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    tenant_id: int
+    subscription_id: int
+    node_name: str
+    protocol: str
+    proxy_host: str
+    proxy_port: int
+    status: str
+    observed_exit_ip: str = ""
+    observed_exit_country: str = ""
+    observed_exit_asn: str = ""
+    observed_exit_isp: str = ""
+    updated_at: datetime | None = None
+
+
 class AccountEnvironmentBindingPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -152,3 +170,30 @@ class AccountEnvironmentBindingOut(BaseModel):
     consistency_status: str
     effect_boundary: str
     updated_at: datetime | None = None
+
+
+class AccountEnvironmentProxyBatchBindRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    account_pool_id: int = Field(gt=0)
+    proxy_id: int | None = Field(default=None, gt=0)
+    proxy_airport_node_id: int | None = Field(default=None, gt=0)
+    session_role: str = Field(default="primary", pattern="^(primary|standby_1|standby_2)$")
+    change_reason: str = Field(min_length=1, max_length=200)
+
+    @model_validator(mode="after")
+    def normalize_fields(self) -> "AccountEnvironmentProxyBatchBindRequest":
+        self.change_reason = self.change_reason.strip()
+        if not self.change_reason:
+            raise ValueError("change_reason 不能为空")
+        if bool(self.proxy_id) == bool(self.proxy_airport_node_id):
+            raise ValueError("proxy_id 和 proxy_airport_node_id 必须且只能选择一个")
+        return self
+
+
+class AccountEnvironmentProxyBatchBindOut(BaseModel):
+    success_count: int
+    failed_count: int
+    skipped_accounts: list[dict[str, int | str]] = Field(default_factory=list)
+    affected_account_ids: list[int] = Field(default_factory=list)
+    trace_id: str

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
 
 from sqlalchemy import or_, select
@@ -23,7 +23,7 @@ CHANNEL_COMMENT_REPLY_PURPOSE = "频道引用回复"
 AI_CONTENT_REQUEST_TIMEOUT_SECONDS = 120
 LONG_RUNNING_AI_PURPOSES = frozenset({GROUP_CHAT_PURPOSE, GROUP_CHAT_REPLY_PURPOSE, CHANNEL_COMMENT_PURPOSE, CHANNEL_COMMENT_REPLY_PURPOSE})
 SENSITIVE_CONTEXT_GUIDANCE = (
-    "敏感场景描述只能作为既有上下文理解和引用，但回复只能围绕原文已有事实做自然短评或追问；"
+    "敏感场景描述必须先按隐晦中性词理解和引用，但回复只能围绕改写后的既有事实做自然短评或追问；"
     "不要新增联系线索、成本细节、邀约或促成信息，不要编造亲身经历。"
 )
 SENSITIVE_CONTEXT_REPLACEMENTS = {
@@ -46,6 +46,14 @@ SENSITIVE_CONTEXT_REPLACEMENTS = {
     "价格": "成本",
     "位置": "信息",
     "交易": "互动",
+    "情趣内衣": "氛围装扮",
+    "内衣": "装扮",
+    "小小j": "私密称呼",
+    "小j": "私密称呼",
+    "双峰": "身形细节",
+    "裸露": "穿搭大胆",
+    "血脉喷张": "氛围很强",
+    "含住": "亲密互动",
 }
 SENSITIVE_CONTEXT_PATTERNS = (
     (re.compile(r"\d{1,4}\s*(?:分钟|分|小时|h)\b", re.IGNORECASE), "一段时间"),
@@ -75,6 +83,11 @@ AI_PROVIDER_QUOTA_EXHAUSTED_MARKERS = (
     "配额不足",
     "配额耗尽",
 )
+AI_PROVIDER_SENSITIVE_REJECTION_MARKERS = (
+    "new_sensitive",
+    "1026",
+)
+MINIMAX_SENSITIVE_FALLBACK_MODELS = ("MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.5")
 
 
 class AiGenerationUnavailable(RuntimeError):
@@ -97,6 +110,20 @@ class GeneratedContent(str):
         obj.intent = str(intent or "").strip()
         obj.mood = str(mood or "").strip()
         return obj
+
+
+@dataclass(frozen=True)
+class _ProviderGenerationRequest:
+    prompt: str
+    count: int
+    topic: str
+    tone: str
+    persona_set: list[str]
+    temperature: float
+    max_tokens: int
+    system_prompt: str | None
+    timeout: int
+    model_name: str
 
 
 def _provider(
@@ -269,36 +296,98 @@ def _generate_with_provider_candidates(
     allow_quota_rotation: bool,
     purpose: str,
 ):
-    providers = [provider]
-    if allow_quota_rotation:
-        providers.extend(_quota_rotation_providers(session, provider, required_model_family))
+    request = _ProviderGenerationRequest(
+        prompt=prompt,
+        count=count,
+        topic=topic,
+        tone=tone,
+        persona_set=persona_set,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        system_prompt=system_prompt,
+        timeout=timeout,
+        model_name=model_name,
+    )
     last_exc: Exception | None = None
-    for candidate in providers:
+    for candidate in _provider_candidates(session, provider, required_model_family, allow_quota_rotation):
         try:
-            return ai_gateway.generate_drafts(
-                _ai_credentials(candidate, model_name),
-                prompt,
-                count=count,
-                topic=topic,
-                tone=tone,
-                persona_set=persona_set,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                system_prompt=system_prompt,
-                timeout=timeout,
-            )
+            return _generate_with_provider_candidate(candidate, request)
         except Exception as exc:
             last_exc = exc
             if not _is_ai_provider_quota_exhausted(exc):
                 break
             _mark_provider_quota_exhausted(candidate, exc)
-            if candidate == providers[-1]:
-                break
     if purpose in LONG_RUNNING_AI_PURPOSES:
         raise AiGenerationUnavailable(f"{AI_GENERATION_UNAVAILABLE_MESSAGE}：{last_exc}") from last_exc
     if last_exc:
         raise last_exc
     raise RuntimeError("AI provider generation failed without detail")
+
+
+def _provider_candidates(
+    session: Session,
+    provider: AiProvider,
+    required_family: str,
+    allow_quota_rotation: bool,
+) -> list[AiProvider]:
+    providers = [provider]
+    if allow_quota_rotation:
+        providers.extend(_quota_rotation_providers(session, provider, required_family))
+    return providers
+
+
+def _generate_with_provider_candidate(provider: AiProvider, request: _ProviderGenerationRequest):
+    last_exc: Exception | None = None
+    model_attempts = _minimax_sensitive_model_attempts(provider, request.model_name)
+    for index, model_name in enumerate(model_attempts):
+        try:
+            return ai_gateway.generate_drafts(
+                _ai_credentials(provider, model_name),
+                request.prompt,
+                count=request.count,
+                topic=request.topic,
+                tone=request.tone,
+                persona_set=request.persona_set,
+                temperature=request.temperature,
+                max_tokens=request.max_tokens,
+                system_prompt=request.system_prompt,
+                timeout=request.timeout,
+            )
+        except Exception as exc:
+            last_exc = exc
+            if _should_try_next_minimax_model(provider, model_attempts, index, exc):
+                continue
+            raise
+    raise last_exc or RuntimeError("AI provider generation failed without detail")
+
+
+def _minimax_sensitive_model_attempts(provider: AiProvider, model_name: str) -> tuple[str, ...]:
+    effective_model = _effective_model_name(provider, model_name)
+    if _model_family(effective_model) != "minimax":
+        return (model_name,)
+    try:
+        start_index = MINIMAX_SENSITIVE_FALLBACK_MODELS.index(effective_model)
+    except ValueError:
+        return (model_name,)
+    first_model = model_name if model_name.strip() else ""
+    return (first_model, *MINIMAX_SENSITIVE_FALLBACK_MODELS[start_index + 1 :])
+
+
+def _effective_model_name(provider: AiProvider, model_name: str) -> str:
+    raw_model = model_name if model_name.strip() else provider.model_name
+    return normalize_ai_model_name(raw_model)
+
+
+def _should_try_next_minimax_model(
+    provider: AiProvider,
+    model_attempts: tuple[str, ...],
+    index: int,
+    exc: Exception,
+) -> bool:
+    if index >= len(model_attempts) - 1:
+        return False
+    attempted_model = _effective_model_name(provider, model_attempts[index])
+    return _model_family(attempted_model) == "minimax" and _is_ai_provider_sensitive_rejection(exc)
 
 
 def _quota_rotation_providers(session: Session, provider: AiProvider, required_family: str) -> list[AiProvider]:
@@ -315,6 +404,11 @@ def _quota_rotation_providers(session: Session, provider: AiProvider, required_f
 def _is_ai_provider_quota_exhausted(exc: Exception) -> bool:
     detail = str(exc).lower()
     return any(marker in detail for marker in AI_PROVIDER_QUOTA_EXHAUSTED_MARKERS)
+
+
+def _is_ai_provider_sensitive_rejection(exc: Exception) -> bool:
+    detail = str(exc).lower()
+    return any(marker in detail for marker in AI_PROVIDER_SENSITIVE_REJECTION_MARKERS)
 
 
 def _mark_provider_quota_exhausted(provider: AiProvider, exc: Exception) -> None:
