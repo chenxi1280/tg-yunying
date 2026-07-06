@@ -99,17 +99,16 @@ def test_group_chat_preserves_safe_male_adult_mask_signal(monkeypatch):
     )
 
     requirements = captured["requirements"]
-    assert "男性夜场话题" in requirements
+    assert "男性短句伪装嫖客先问价格位置" in requirements
     assert "真实反馈" in requirements
-    assert "谨慎观望客" not in requirements
-    assert "嫖客" not in requirements
-    assert "色情" not in requirements
-    assert "妹子" not in requirements
-    assert "300块" not in requirements
+    assert "伪装嫖客" in requirements
+    assert "色情" in requirements
+    assert "妹子" in requirements
+    assert "300块" in requirements
 
 
 @pytest.mark.no_postgres
-def test_provider_boundary_sanitizes_topic_label_and_system_prompt(monkeypatch):
+def test_provider_boundary_preserves_topic_label_and_system_prompt(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     captured: dict[str, str] = {}
@@ -152,9 +151,9 @@ def test_provider_boundary_sanitizes_topic_label_and_system_prompt(monkeypatch):
     assert contents == ["先看看大家怎么说"]
     provider_text = "\n".join([captured["prompt"], captured["topic"], captured["system_prompt"]])
     for raw in ["妹子", "价格", "位置", "嫖客", "半小时", "300块", "成人", "性服务", "楼凤"]:
-        assert raw not in provider_text
-    assert "对象" in provider_text
-    assert "成本" in provider_text
+        assert raw in provider_text
+    assert captured["topic"] == "郑州楼凤妹子价格位置"
+    assert captured["system_prompt"] == "性服务描述只能作上下文"
 
 
 @pytest.mark.no_postgres
