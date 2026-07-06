@@ -1,5 +1,17 @@
 # Worklog: prod-diagnosis
 
+## 2026-07-07 Clash egress 安全预检生产复核
+
+- message_id: 2026-07-07-clash-egress-preflight-prodverify-001
+- action: 使用 workflow_dispatch 对生产 Clash 订阅节点做 `apply=false` 安全 egress 预检，不写数据库、不批量改账号绑定、不创建郑州 smoke 任务。
+- input: 2026-07-06-account-mask-clash-node-batch-bind-001；用户要求继续完成。
+- output: clash_egress_verified_db_apply_unproven
+- evidence: Deploy Production workflow_dispatch run `28808100947` 在 release head `e23144537af5477c86ed038097b8145ca09626d1` 通过 checks、build-images、deploy；生产发布后公网 `https://tgyunying.telema.cn/api/health` 返回 `{"status":"ok"}`，公网 `/` 返回 HTTP 200。
+- evidence_detail: `Configure Clash proxies and Zhengzhou smoke task` 步骤 success；`CLASH_LIVE_APPLY=false`；`CLASH_CONFIG_PREPARED` 显示 `node_count=8`；真实 egress 探测结果为节点 1 `CLASH_PROXY_EGRESS_FAILED`，节点 2-8 `CLASH_PROXY_EGRESS_OK`，`CLASH_PROXY_HEALTHY_INDEXES=2,3,4,5,6,7,8`；日志明确 `CLASH_DB_APPLY_SKIPPED apply=false`。
+- decision: 已证明生产订阅中有 7 个 Clash 节点可通过临时 Mihomo 容器真实出网，且本次没有改动账号绑定或创建任务。账号面具选择 Clash 节点的代码路径已发布；节点可用性具备生产预检证据。
+- next_agent: product
+- unresolved: `apply=true` 会对生产账号环境做批量绑定并创建郑州 smoke 任务，当前缺少用户指定的账号中心分组、授权槽位、目标 Clash 节点和确认范围；真实线上账号绑定样本、远端授权设备变化和郑州搜索加入 smoke 仍未执行。
+
 ## 2026-07-06 账号面具代理修复发布生产复核
 
 - message_id: 2026-07-06-account-mask-proxy-release-prodverify-001
