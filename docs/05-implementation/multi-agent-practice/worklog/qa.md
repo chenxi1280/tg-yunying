@@ -187,16 +187,16 @@
 - next_agent: prod-diagnosis
 - unresolved: CI / release deploy / 生产健康 / 线上账号面具静态包和真实 Clash 节点批量绑定仍 unproven。
 
-## 2026-07-06 频道评论敏感 provider 边界本地 QA
+## 2026-07-06 频道评论敏感 provider 边界本地 QA（历史记录，已撤销）
 
 - message_id: 2026-07-06-channel-comment-sensitive-provider-boundary-local-qa-001
-- action: 对频道评论 / 引用回复进入 MiniMax/OpenAI-compatible provider 前的敏感上下文隐晦中性改写，以及 MiniMax-M3 敏感拒绝后降级 M2.7 / M2.5 做本地自动化验收。
+- action: 曾对频道评论 / 引用回复敏感上下文改写和 MiniMax 旧模型重试做本地自动化验收。
 - input: 2026-07-06-channel-comment-sensitive-provider-boundary-devcomplete-001。
 - output: local_qa_pass_for_channel_comment_sensitive_provider_boundary
-- evidence: RED/GREEN 覆盖：频道评论 prompt 不再携带 `情趣内衣`、`小小j`、`双峰`、`含住`、`裸露`、`血脉喷张`，改为 `氛围装扮`、`私密称呼`、`身形细节`、`亲密互动`；引用回复目标 preview 同样净化；系统提示包含“隐晦中性”口径；M3 和 M2.7 连续返回 `HTTP 422 new_sensitive` 时最终请求 M2.5 并成功。定向 `backend/tests/test_ai_sensitive_context_sanitization.py` -> 3 passed；相关 provider 选择回归 3 passed；py_compile 和 `git diff --check` 通过。
-- decision: 本地合同验收通过；不声明线上“阿哥日记”或天津任务已恢复。
+- evidence: 历史本地验证不再作为当前发布证据；当前证据见 2026-07-06-ai-sensitive-processing-reverted-local-qa-001。
+- decision: superseded_by=2026-07-06-ai-sensitive-processing-reverted-local-qa-001；该敏感上下文改写和 MiniMax 旧模型降级不再作为发布内容。
 - next_agent: prod-diagnosis
-- unresolved: CI / release deploy / 生产健康 / 线上任务重新规划和 provider 422 消失仍 unproven。
+- unresolved: 已被后续撤销记录覆盖。
 
 ## 2026-07-06 账号代理 / 授权指纹 Tab 重复展示本地 QA
 
@@ -215,7 +215,18 @@
 - action: 对账号代理批量绑定、MiniMax 回退边界和前端选项加载隔离做本地自动化验收。
 - input: 2026-07-06-account-mask-proxy-review-fixes-devcomplete-001。
 - output: local_qa_pass_for_review_fixes
-- evidence: RED/GREEN 覆盖：同一账号同一 `session_role` 下多个 active 授权环境全部更新代理，成功账号数按账号去重；MiniMax 只对 `new_sensitive/1026` 触发旧模型降级，generic content policy 直接暴露 `AiGenerationUnavailable`；账号代理批量面板使用 `Promise.allSettled` 独立加载账号中心分组、本地代理和 Clash 节点，并为单项失败展示中文错误。定向 `perl -e 'alarm 60; exec @ARGV' backend/.venv/bin/python -m pytest -q backend/tests/test_account_environment_bulk_proxy_binding.py backend/tests/test_ai_sensitive_context_sanitization.py backend/tests/test_account_mask_frontend_contracts.py -m no_postgres` -> 17 passed。
+- evidence: RED/GREEN 覆盖：同一账号同一 `session_role` 下多个 active 授权环境全部更新代理，成功账号数按账号去重；账号代理批量面板使用 `Promise.allSettled` 独立加载账号中心分组、本地代理和 Clash 节点，并为单项失败展示中文错误。AI provider 敏感改写/降级已按用户后续口径撤销，不再作为本次发布内容。
 - decision: 本地合同验收通过；不声明生产已恢复。
 - next_agent: prod-diagnosis
 - unresolved: CI / release deploy / 生产健康 / 线上账号面具页面真实点击和 provider 实际 422 行为仍 unproven。
+
+## 2026-07-06 AI 敏感上下文处理撤销本地 QA
+
+- message_id: 2026-07-06-ai-sensitive-processing-reverted-local-qa-001
+- action: 对用户确认“模型支持暗示，不要再做处理”后的代码撤销做本地自动化验收。
+- input: 2026-07-06-ai-sensitive-processing-reverted-devcomplete-001。
+- output: local_qa_pass_for_sensitive_processing_revert
+- evidence: 本地验证：`perl -e 'alarm 60; exec @ARGV' backend/.venv/bin/python -m pytest -q backend/tests/test_ai_gateway.py::test_sensitive_group_context_is_preserved_before_provider_prompt backend/tests/test_account_environment_bulk_proxy_binding.py backend/tests/test_account_mask_frontend_contracts.py backend/tests/test_permission_vocabulary.py::test_sensitive_read_routes_have_explicit_least_privilege_rules -m no_postgres` -> 15 passed；changed backend py_compile passed；`npm --prefix frontend run build` passed（仅 Vite 大 chunk warning）；`git diff --check` passed。未标记 no_postgres 的两个 `test_ai_gateway.py` 旧断言用例本地被 PostgreSQL conftest 阻断，待 CI PostgreSQL 环境验证。
+- decision: 本地合同验收通过；不声明生产已恢复；release run `28798964065` 已失败且未部署。
+- next_agent: prod-diagnosis
+- unresolved: 需要重新跑 CI / release deploy / 生产健康。

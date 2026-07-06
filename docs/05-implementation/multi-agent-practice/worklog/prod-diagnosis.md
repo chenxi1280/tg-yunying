@@ -121,4 +121,4 @@
 - output: `production_config_updated_task_recovery_unproven`
 - evidence: 生产 SSH 直连 `root@47.251.126.134`，在 `tgyunying-backend` 容器内只读确认租户 1 默认 provider id=4、`provider_name=MiniMax`、`model_name=MiniMax-M3`、`health_status=健康`、`fallback_to_mock=false`。随后使用 provider 已保存的加密密钥解密到进程内存，构造 `MiniMax-M2.5` 凭据调用真实 `AiGateway.check`，返回 `provider ready; chat capability ready` 后提交配置。独立复查确认 provider id=4 已为 `model_name=MiniMax-M2.5`、`health_status=健康`、`last_error=''`、`last_check_at=2026-07-06T22:19:49.540863`，租户 1 仍指向 default_provider_id=4 且 `ai_enabled=true`、`fallback_to_mock=false`。
 - decision: 线上默认模型切换已完成且经过 provider check；未打印或落盘 API key。
-- unresolved: 同一任务当前仍 `running`、`action_count=0`，`last_error=AI 评论候选不足，已跳过本轮`；因此只能证明默认模型配置已切换，不能声明“阿哥日记”评论/回复已经真实恢复。本地敏感上下文净化和 M3->M2.7->M2.5 自动降级代码仍未发布到生产。
+- unresolved: 同一任务当前仍 `running`、`action_count=0`，`last_error=AI 评论候选不足，已跳过本轮`；因此只能证明默认模型配置已切换，不能声明“阿哥日记”评论/回复已经真实恢复。按用户最新口径，本地不再发布敏感上下文净化或 M3->M2.7->M2.5 自动降级代码。

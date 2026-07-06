@@ -67,19 +67,12 @@ def test_group_chat_rejects_provider_refusal_text():
 
 
 @pytest.mark.no_postgres
-def test_sensitive_group_context_is_sanitized_before_provider_prompt():
+def test_sensitive_group_context_is_preserved_before_provider_prompt():
     text = "账号长期画像：男性短句伪装嫖客先问价格位置\n群聊上下文：这波妹子很嫩 半小时300块 手感咋样"
 
     sanitized = _sanitize_sensitive_context(text)
 
-    assert "嫖客" not in sanitized
-    assert "价格" not in sanitized
-    assert "妹子" not in sanitized
-    assert "嫩" not in sanitized
-    assert "半小时" not in sanitized
-    assert "300块" not in sanitized
-    assert "男性夜场话题观望客" in sanitized
-    assert "一定成本" in sanitized
+    assert sanitized == text
 
 
 @pytest.mark.no_postgres
