@@ -471,7 +471,7 @@ AI 活跃群任务卡片增加硬目标摘要：
 | `backend/app/schemas/task_center.py` | `GroupAIChatConfig`、创建、编辑和预览请求增加硬目标字段 |
 | `backend/app/services/task_center/config_fields.py` | 允许新字段通过任务配置白名单 |
 | `backend/app/services/task_center/precheck.py` | 返回硬目标容量预检摘要 |
-| `backend/app/services/task_center/executors/group_ai_chat.py` | 计算当前小时缺口、强推生成、压缩计划时间、写 action 标记 |
+| `backend/app/services/task_center/executors/group_ai_chat.py` | 计算当前小时缺口、强推生成、压缩计划时间、写 action 标记；重规划前清理偏斜旧 hard-hourly open action；写库前阻断账号分布偏斜批次；记录在线账号样本 |
 | `backend/app/services/task_center/channel_membership.py` | AI 活跃群目标先完成入群、验证、关联频道关注和 `can_send` 复检 |
 | `backend/app/services/membership_challenges.py` | 图片验证码使用健康的多模态视觉供应商（MiMo/Mino 或 MiniMax），记录读取、识别、提交和复检结果 |
 | `backend/app/services/task_center/pacing.py` | 支持硬目标剩余窗口内的计划时间分配 |
@@ -503,6 +503,9 @@ AI 活跃群任务卡片增加硬目标摘要：
 - 文本 draft 使用小米 MiMo/Mino 健康供应商；MiMo/Mino 不可用、返回空内容或 malformed JSON 时记录 `ai_generation_unavailable`，不得走 mock 或模板成功。
 - 当前小时无真人新上下文时，硬目标可以触发空闲续聊 / 暖场。
 - 质量过滤、内容规则、账号容量、目标权限和 TG 限制导致无法补足时，stats 记录原因。
+- 账号在线不足时，stats 必须同时记录 `account_online_selected_count`、`account_online_ready_count`、`account_offline_count` 和 `account_offline_sample_account_ids`，方便线上定位具体账号健康问题。
+- Planner 重规划前发现当前 hard-hourly open action 的账号序列偏斜时，必须显式跳过旧 action 并写 `hard_hourly_distribution_skew_replan`，不能继续等待旧集中队列自然发送。
+- 新 hard-hourly 批次写入 Action 前必须校验账号分布；当可用账号数大于 1 且 planned action 连续同账号超过阈值或只集中到单账号时，阻断本轮并写 `account_distribution_skew` blocker，不允许 silent fallback。
 - `max_actions_per_hour` 小于硬目标时，不阻止硬目标规划，但 stats / 详情显示目标超过普通上限。
 - 已存在未来 pending 动作会计入 `open_current_hour`，避免重复规划。
 - 已过期 pending 不计入未来待执行覆盖，必须进入 overdue / dispatcher lag 口径。
@@ -530,6 +533,7 @@ AI 活跃群任务卡片增加硬目标摘要：
 - 暂停任务后，硬目标不再追加规划。
 - 恢复任务后，从恢复后的当前小时继续计算目标。
 - 人为制造已过期 pending 或 dispatcher 停滞时，确认系统标记 `dispatcher_lag`，不把过期 pending 当作已覆盖缺口。
+- 人为制造旧 hard-hourly pending 集中到同一账号时，下一轮 planner 必须先跳过旧集中队列并重新规划；人为制造新批次 slot 全部绑定同一账号时，必须阻断并展示 `account_distribution_skew`。
 
 ## 12. 实施优先级
 

@@ -1,5 +1,16 @@
 # Worklog: qa
 
+## 2026-07-06 AI 活群 hard-hourly 分布护栏补齐 QA
+
+- message_id: 2026-07-06-ai-group-hard-hourly-distribution-guard-qa-002
+- action: 对 hard-hourly 旧偏斜队列清理、在线样本可见性和新批次分布门禁做本地自动化验收。
+- input: 2026-07-06-ai-group-hard-hourly-distribution-guard-002
+- output: qa_pass
+- evidence: 新增三条定向回归 3 passed / 50 deselected；`backend/tests/test_ai_group_hard_hourly_target.py -m no_postgres` 17 passed / 36 deselected；`backend/tests/test_ai_group_quality_diagnostics.py -k "hard_hourly or account_online"` 10 passed / 20 deselected；`backend/.venv/bin/python -m compileall -q app` 和 `git diff --check` 通过。
+- decision: 本地 QA 证明偏斜旧 open action 会被显式跳过重规划，账号在线不足有样本可查，新 hard-hourly 偏斜批次会在写库前被阻断；生产恢复仍需 release 后 SSH 直连验证。
+- next_agent: prod-diagnosis
+- unresolved: 未推送 release / 未生产 SSH 复核。
+
 ## 2026-07-06 AI 活群 hard-hourly 账号轮转修复 QA
 
 - message_id: 2026-07-06-ai-group-hard-hourly-account-rotation-qa-001
@@ -153,3 +164,14 @@
 - decision: 本地合同验收通过；不声明生产真实订阅同步、真实出口 IP 或真实 search_join failover 已发生。
 - next_agent: prod-diagnosis
 - unresolved: 全量 no_postgres、frontend build、CI / release deploy / 生产健康和郑州线上任务复测仍 unproven。
+
+## 2026-07-06 账号面具按账号分组批量绑定代理本地 QA
+
+- message_id: 2026-07-06-account-mask-pool-proxy-batch-bind-local-qa-001
+- action: 对“账号面具 / 账号代理”按账号中心分组批量绑定代理做本地自动化验收。
+- input: 2026-07-06-account-mask-pool-proxy-batch-bind-devcomplete-001。
+- output: local_qa_pass_for_pool_scoped_environment_proxy_binding
+- evidence: 新增后端服务 RED/GREEN 覆盖：分组内 2 个账号只有已有 active 授权环境的账号被更新，缺少授权环境账号 skipped；接码专用分组被拒绝；权限合同要求 `POST /api/account-environment-bindings/batch-proxy-bind` 使用 `account_environment.manage`；前端合同要求账号面具页加载 `/account-pools`、`/account-proxies` 并调用 batch-proxy-bind，系统设置 Clash 页不含该入口。定向 `backend/.venv/bin/python -m pytest -q backend/tests/test_account_environment_bulk_proxy_binding.py backend/tests/test_account_environment_bindings.py backend/tests/test_account_mask_frontend_contracts.py backend/tests/test_permission_vocabulary.py -m no_postgres` -> 27 passed；后端 py_compile、frontend build、`git diff --check` 通过。
+- decision: 本地合同验收通过；分组选择只作为账号范围，不会自动创建缺失授权环境，也不会启用系统设置 Clash 订阅源。
+- next_agent: prod-diagnosis
+- unresolved: CI / release deploy / 生产健康 / 线上账号面具静态包和真实分组批量绑定仍 unproven。

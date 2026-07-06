@@ -1,5 +1,16 @@
 # Worklog: dev
 
+## 2026-07-06 AI 活群 hard-hourly 分布护栏补齐 Development Complete（本地验证）
+
+- message_id: 2026-07-06-ai-group-hard-hourly-distribution-guard-002
+- action: 在已发布账号轮转修复基础上补齐旧偏斜 open action 重规划、账号在线样本可见性和新批次分布门禁。
+- input: 用户追问“核心出现的问题是什么 / 需要重新优化吗 / 你来补齐”，要求线上检查测试直接 SSH、不用 actions。
+- output: `group_ai_chat.prepare_open_actions_for_planning` 会在重规划前跳过 hard-hourly 偏斜旧 open action 并写 `hard_hourly_distribution_skew_replan`；`build_plan` 在写 Action 前阻断偏斜新批次并写 `account_distribution_skew`；在线筛选 stats 增加 selected/ready/offline/sample account ids。
+- evidence: 新增 red/green 回归 `test_group_ai_chat_hard_hourly_skips_skewed_open_actions_for_replan`、`test_group_ai_chat_hard_hourly_records_offline_account_samples`、`test_group_ai_chat_hard_hourly_blocks_skewed_new_plan`；专项 PRD、数据流索引、结构索引已同步。
+- decision: status=local_verified_pending_release；release_gate=pending；production_verification=unproven。
+- next_agent: qa
+- unresolved: 尚未推送 release、未 SSH 直连生产复核新分布护栏。
+
 ## 2026-07-06 AI 活群 hard-hourly 账号轮转修复 Development Complete（本地验证）
 
 - message_id: 2026-07-06-ai-group-hard-hourly-account-rotation-001
@@ -219,3 +230,14 @@
 - decision: status=local_verified_pending_release；release_gate=pending；production_verification=needs_precise_keyword_retest。
 - next_agent: qa
 - unresolved: 修复提交尚未重新发布；需要以 `CLASH_TARGET_QUERY=郑州`、`CLASH_SEARCH_KEYWORD=xiaozisk` 重新创建 3 账号线上任务。
+
+## 2026-07-06 账号面具按账号分组批量绑定代理 Development Complete（本地验证）
+
+- message_id: 2026-07-06-account-mask-pool-proxy-batch-bind-devcomplete-001
+- action: 按用户确认的 A 方案，在“账号面具 / 账号代理”支持选择账号中心分组批量绑定代理，系统设置 Clash 页继续只维护订阅源池。
+- input: 用户确认“在账号面具/账号代理里按账号中心分组批量绑定代理，系统设置 Clash 页不做账号分配”。
+- output: 主 PRD、数据流转索引和项目结构索引已同步边界；新增 `AccountEnvironmentProxyBatchBindRequest/Out` 和 `backend/app/services/account_environment_bulk.py`；新增 `POST /api/account-environment-bindings/batch-proxy-bind`，权限为 `account_environment.manage`；前端账号面具页新增账号中心分组、代理资源、授权槽位和变更原因的批量绑定入口，提示“只更新已有授权环境”，系统设置 Clash 页不出现账号分组选择。
+- evidence: 先补 RED 测试并确认缺 schema/service 时失败；修复后 `backend/.venv/bin/python -m pytest -q backend/tests/test_account_environment_bulk_proxy_binding.py backend/tests/test_account_environment_bindings.py backend/tests/test_account_mask_frontend_contracts.py backend/tests/test_permission_vocabulary.py -m no_postgres` -> 27 passed；`backend/.venv/bin/python -m py_compile backend/app/services/account_environment_bulk.py backend/app/schemas/account_environment.py backend/app/api/routers/ai_config.py backend/app/permission_middleware.py` passed；`npm --prefix frontend run build` passed；`git diff --check` passed。
+- decision: status=local_verified_pending_release；release_gate=pending；production_verification=unproven。
+- next_agent: qa
+- unresolved: 尚未推送 release/master；尚未执行 Deploy Production；线上账号面具页面与批量绑定真实数据流仍需发布后复核。

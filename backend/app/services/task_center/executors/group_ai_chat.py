@@ -50,6 +50,7 @@ ACCOUNT_CAPACITY_BLOCKED_MESSAGE = "账号容量已排满，等待账号额度�
 ACCOUNT_COOLDOWN_BLOCKED_MESSAGE = "账号冷却中，等待冷却后继续执行"
 ACCOUNT_UNAVAILABLE_MESSAGE = "没有可用账号，等待账号恢复后继续执行"
 VOICE_PROFILE_MISSING_MESSAGE = "账号面具缺失，等待账号面具初始化后继续执行"
+ACCOUNT_DISTRIBUTION_SKEW_MESSAGE = "账号分布偏斜，已阻断本轮硬目标规划"
 DEFAULT_IDLE_CONTINUATION_SECONDS = 300
 DEFAULT_CONTEXT_BOUND_SCHEDULE_WINDOW_SECONDS = 3600
 MIN_CONTEXT_BOUND_SCHEDULE_WINDOW_SECONDS = 60
@@ -75,6 +76,10 @@ AI_CHAT_ROUND_INTERVALS_SECONDS = {
 }
 HARD_HOURLY_MIN_BATCH_MESSAGES = 10
 HARD_HOURLY_DEFER_AI_MIN_GOAL = 100
+HARD_HOURLY_MIN_DISTRIBUTION_ACTIONS = 3
+HARD_HOURLY_MAX_CONSECUTIVE_ACCOUNT_RUN = 2
+HARD_HOURLY_MIN_DISTRIBUTED_ACCOUNTS = 2
+ACCOUNT_OFFLINE_SAMPLE_LIMIT = 10
 DEFERRED_AI_HISTORY_MAX_CHARS = 1000
 AI_GENERATION_REQUEST_BATCH_SIZE = 30
 MAX_AI_QUALITY_GENERATION_ROUNDS = 3
@@ -589,6 +594,11 @@ def build_plan(session: Session, task: Task) -> int:
         if not hard_progress:
             task.last_error = "AI 引用回复候选不足，已跳过本轮"
             return 0
+    skew = _hard_hourly_distribution_skew([account_id for account_id, _planned_at, _payload in prepared_actions], len(selected))
+    if hard_progress and skew:
+        _record_hard_hourly_distribution_skew(task, skew)
+        mark_plan_result(task, hard_progress, 0, {"account_distribution_skew": max(1, int(hard_progress.get("deficit") or len(prepared_actions)))})
+        return 0
     for account_id, planned_at, payload in prepared_actions:
         action = create_send_action(session, task, account_id, planned_at, payload)
         if payload.ai_message_memory_id:
@@ -657,7 +667,8 @@ def prepare_open_actions_for_planning(session: Session, task: Task) -> int:
         tenant_id=task.tenant_id,
         account_ids=[account.id for account in accounts],
     )
-    return _expire_open_profileless_actions(session, task, ready_voice_profiles.keys())
+    skipped = _skip_skewed_hard_hourly_open_actions_for_replan(session, task, len(accounts))
+    return skipped + _expire_open_profileless_actions(session, task, ready_voice_profiles.keys())
 
 
 def _canonicalized_task_config(session: Session, task: Task, config: dict) -> dict:
@@ -695,6 +706,38 @@ def _hard_blocked_last_error(created: int, blockers: dict[str, int], progress: d
     if blockers.get("account_capacity"):
         return ACCOUNT_CAPACITY_BLOCKED_MESSAGE
     return ""
+
+
+def _hard_hourly_distribution_skew(account_ids: list[int], selected_account_count: int) -> dict[str, int]:
+    planned_ids = [int(account_id) for account_id in account_ids if int(account_id or 0) > 0]
+    if len(planned_ids) < HARD_HOURLY_MIN_DISTRIBUTION_ACTIONS:
+        return {}
+    if selected_account_count < HARD_HOURLY_MIN_DISTRIBUTED_ACCOUNTS:
+        return {}
+    unique_count = len(set(planned_ids))
+    max_run = _max_consecutive_account_run(planned_ids)
+    min_unique = min(HARD_HOURLY_MIN_DISTRIBUTED_ACCOUNTS, selected_account_count, len(planned_ids))
+    if max_run <= HARD_HOURLY_MAX_CONSECUTIVE_ACCOUNT_RUN and unique_count >= min_unique:
+        return {}
+    return {"max_consecutive_run": max_run, "unique_account_count": unique_count}
+
+
+def _max_consecutive_account_run(account_ids: list[int]) -> int:
+    max_run = 0
+    current_run = 0
+    previous_id = None
+    for account_id in account_ids:
+        current_run = current_run + 1 if account_id == previous_id else 1
+        max_run = max(max_run, current_run)
+        previous_id = account_id
+    return max_run
+
+
+def _record_hard_hourly_distribution_skew(task: Task, skew: dict[str, int]) -> None:
+    stats = dict(task.stats or {})
+    stats["hard_hourly_distribution_skew"] = dict(skew)
+    task.stats = stats
+    task.last_error = ACCOUNT_DISTRIBUTION_SKEW_MESSAGE
 
 
 def _choose_capacity_slot(
@@ -791,17 +834,32 @@ def _online_ready_accounts(session: Session, task: Task, accounts: list, progres
         for account in accounts
         if is_account_online_ready_for_planning(session, tenant_id=task.tenant_id, account_id=account.id)
     ]
-    offline_count = max(0, len(accounts) - len(ready))
+    _record_online_ready_stats(task, [account.id for account in accounts], [account.id for account in ready], progress)
+    return ready
+
+
+def _record_online_ready_stats(
+    task: Task,
+    selected_account_ids: list[int],
+    ready_account_ids: list[int],
+    progress: dict[str, object],
+) -> None:
+    ready_set = set(ready_account_ids)
+    offline_ids = [account_id for account_id in selected_account_ids if account_id not in ready_set]
+    offline_count = len(offline_ids)
     stats = dict(task.stats or {})
+    stats["account_online_selected_count"] = len(selected_account_ids)
+    stats["account_online_ready_count"] = len(ready_account_ids)
     if offline_count:
         stats["account_offline_count"] = offline_count
+        stats["account_offline_sample_account_ids"] = offline_ids[:ACCOUNT_OFFLINE_SAMPLE_LIMIT]
         task.stats = stats
         if progress:
             progress["account_offline_count"] = offline_count
-        return ready
-    if stats.pop("account_offline_count", None) is not None:
-        task.stats = stats
-    return ready
+        return
+    stats.pop("account_offline_count", None)
+    stats.pop("account_offline_sample_account_ids", None)
+    task.stats = stats
 
 
 def _reconcile_online_sources_for_plan(session: Session, task: Task, accounts: list) -> None:
@@ -2635,6 +2693,61 @@ def _expire_open_profileless_actions(session: Session, task: Task, active_profil
         stats["voice_profile_replanned_open_action_count"] = int(stats.get("voice_profile_replanned_open_action_count") or 0) + expired
         task.stats = stats
     return expired
+
+
+def _skip_skewed_hard_hourly_open_actions_for_replan(session: Session, task: Task, selected_account_count: int) -> int:
+    actions = _open_hard_hourly_actions_for_distribution_replan(session, task)
+    skew = _hard_hourly_distribution_skew([int(action.account_id or 0) for action in actions], selected_account_count)
+    if not skew:
+        return 0
+    current_time = _now()
+    for action in actions:
+        _skip_distribution_skew_action_for_replan(session, action, current_time)
+    stats = dict(task.stats or {})
+    stats["hard_hourly_distribution_replanned_open_action_count"] = int(
+        stats.get("hard_hourly_distribution_replanned_open_action_count") or 0
+    ) + len(actions)
+    stats["hard_hourly_distribution_skew"] = skew
+    task.stats = stats
+    return len(actions)
+
+
+def _open_hard_hourly_actions_for_distribution_replan(session: Session, task: Task) -> list[Action]:
+    rows = session.scalars(
+        select(Action)
+        .where(
+            Action.task_id == task.id,
+            Action.task_type == "group_ai_chat",
+            Action.action_type == "send_message",
+            Action.status.in_(VOICE_PROFILE_REPLAN_OPEN_STATUSES),
+        )
+        .order_by(Action.scheduled_at.asc().nullslast(), Action.id.asc())
+    )
+    return [action for action in rows if _action_is_hard_hourly_target(action)]
+
+
+def _action_is_hard_hourly_target(action: Action) -> bool:
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    return bool(payload.get("hard_hourly_target")) and int(action.account_id or 0) > 0
+
+
+def _skip_distribution_skew_action_for_replan(session: Session, action: Action, current_time: datetime) -> None:
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    action.status = "skipped"
+    action.executed_at = current_time
+    action.lease_owner = ""
+    action.lease_expires_at = None
+    action.claim_owner = ""
+    action.claim_token = ""
+    action.claim_expires_at = None
+    action.result = {"error_code": "hard_hourly_distribution_skew_replan", "message": "硬目标账号分布偏斜，旧规划已跳过等待重新生成"}
+    if memory_id := str(payload.get("ai_message_memory_id") or "").strip():
+        mark_group_ai_message_result(
+            session,
+            memory_id,
+            status="expired_before_send",
+            result={"error_code": "hard_hourly_distribution_skew_replan", "action_id": action.id},
+        )
 
 
 def _payload_voice_profile_version(payload: dict) -> int:

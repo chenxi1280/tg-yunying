@@ -25,6 +25,7 @@ from app.models import (
     TgGroupAccount,
 )
 from app.schemas import GroupAIChatTaskCreate, TaskPrecheckRequest
+from app.services.task_center.executors import prepare_open_actions_for_planning
 from app.services.task_center.executors.group_ai_chat import build_plan as build_group_ai_chat_plan
 from app.services.task_center.hard_hourly import (
     current_progress as hard_hourly_current_progress,
@@ -1210,6 +1211,103 @@ def test_group_ai_chat_hard_hourly_reuses_accounts_in_same_round(monkeypatch):
     assert task.last_error == ""
     assert task.stats["hard_hourly_last_planned_count"] == 5
     assert "hard_hourly_last_blockers" not in task.stats
+
+
+@pytest.mark.no_postgres
+def test_group_ai_chat_hard_hourly_skips_skewed_open_actions_for_replan(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 7, 20, 10)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        _add_ai_group_rule_binding(session)
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="硬目标群", auth_status="已授权运营"))
+        _add_ready_group_accounts(session, group_id=7, account_ids=[101, 102, 103])
+        task = _hard_hourly_memory_rotation_task()
+        session.add(task)
+        session.flush()
+        for index in range(3):
+            action = _send_action(
+                f"skew-open-{index}",
+                task,
+                "pending",
+                account_id=101,
+                scheduled_at=now_value + timedelta(minutes=index + 1),
+            )
+            action.payload = {"hard_hourly_target": True, "account_voice_profile_version": 1, "account_mask_version": 1}
+            session.add(action)
+        session.commit()
+
+        skipped = prepare_open_actions_for_planning(session, task)
+        actions = list(session.scalars(select(Action).where(Action.task_id == task.id).order_by(Action.id.asc())))
+
+    assert skipped == 3
+    assert {action.status for action in actions} == {"skipped"}
+    assert {action.result["error_code"] for action in actions} == {"hard_hourly_distribution_skew_replan"}
+
+
+@pytest.mark.no_postgres
+def test_group_ai_chat_hard_hourly_records_offline_account_samples(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 7, 20, 10)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.is_account_online_ready_for_planning", lambda *_args, **_kwargs: False)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        _add_ai_group_rule_binding(session)
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="硬目标群", auth_status="已授权运营"))
+        _add_ready_group_accounts(session, group_id=7, account_ids=[101, 102, 103])
+        task = _hard_hourly_memory_rotation_task()
+        session.add(task)
+        session.commit()
+
+        created = build_group_ai_chat_plan(session, task)
+
+    assert created == 0
+    assert task.stats["account_online_selected_count"] == 3
+    assert task.stats["account_online_ready_count"] == 0
+    assert task.stats["account_offline_count"] == 3
+    assert task.stats["account_offline_sample_account_ids"] == [101, 102, 103]
+    assert task.stats["hard_hourly_last_blockers"] == {"account_offline": 2}
+
+
+@pytest.mark.no_postgres
+def test_group_ai_chat_hard_hourly_blocks_skewed_new_plan(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 7, 20, 10)
+
+    def skewed_quality_items(*_args, **_kwargs):
+        items = [{"content": f"硬目标补量{index}", "slot_account_id": 101} for index in range(3)]
+        return items, 0, {}
+
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._generate_quality_filled_items", skewed_quality_items)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._reserve_planned_message_memory", lambda *_args, **_kwargs: None)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        _add_ai_group_rule_binding(session)
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="硬目标群", auth_status="已授权运营"))
+        _add_ready_group_accounts(session, group_id=7, account_ids=[101, 102, 103])
+        task = _hard_hourly_memory_rotation_task()
+        task.type_config = {**task.type_config, "hourly_min_messages": 3, "messages_per_round": 3}
+        session.add(task)
+        session.commit()
+
+        created = build_group_ai_chat_plan(session, task)
+        actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
+
+    assert created == 0
+    assert actions == []
+    assert task.last_error == "账号分布偏斜，已阻断本轮硬目标规划"
+    assert task.stats["hard_hourly_last_blockers"] == {"account_distribution_skew": 3}
+    assert task.stats["hard_hourly_distribution_skew"] == {"max_consecutive_run": 3, "unique_account_count": 1}
 
 
 def test_group_ai_chat_hard_hourly_records_account_blocker_without_accounts(monkeypatch):
