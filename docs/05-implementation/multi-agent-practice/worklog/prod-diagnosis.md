@@ -1,5 +1,16 @@
 # Worklog: prod-diagnosis
 
+## 2026-07-06 AI 活群 hard-hourly 分布护栏补齐线上复核
+
+- message_id: 2026-07-06-ai-group-hard-hourly-distribution-guard-prodverify-002
+- action: 发布并 SSH 直连复核 hard-hourly 旧队列清理、在线样本和分布门禁补齐。
+- input: 2026-07-06-ai-group-hard-hourly-distribution-guard-qa-002
+- output: production_deployed_ssh_verified_with_online_health_residual
+- evidence: Commit `7f50d75c` 已推送 `release`；Deploy Production push run `28795358424` 的 checks、build-images、deploy 均通过；生产 SSH 直连确认 `/data/tgyunying/current -> /data/tgyunying/releases/20260706133733_7f50d75`，backend / planner / dispatcher / listener / recovery / account-online / ai-memory / metrics 等容器均运行 `ghcr.io/chenxi1280/tg-yunying-backend:7f50d75c08846eefd47adcf2b0a2b24ad7ed1b09` 且 healthy；公网 `/api/health` 返回 `{"status":"ok"}`，`/task-center` 返回 HTTP 200。
+- evidence_detail: 生产容器内直接调用 `_hard_hourly_distribution_skew([101,101,101], 3)` 返回 `{"max_consecutive_run":3,"unique_account_count":1}`，`[101,101,102,102,103]` 返回 `{}`；SSH 直连 `prepare_open_actions_for_planning` + `drain_task_planner(limit=20)` 后无新增规划（processed=0）。当前 hard-hourly open action 共 11 条，其中石家庄未来 4 条序列 `[271,271,668,668]`、`max_run=2` 且 ready_account_count_for_replan=1；青岛师范学院未来 5 条序列 `[271,668,668,668,668]` 但 ready_account_count_for_replan=0，未触发分布偏斜清理，归因于账号在线健康不足而非多账号可用下的规划偏斜。运行中任务已暴露在线样本：青岛 `offline_count=65` sample `[2,19,119,130,236,264,387,405,523,528]`，天津 `offline_count=77`，石家庄 `offline_count=45`，郑州大学 `offline_count=22`，郑州楼凤 `offline_count=24`。
+- decision: 本次补齐代码已生产部署；分布门禁和在线样本已在生产容器验证可用。当前线上仍有 AI 活群账号在线健康缺口，导致部分旧 pending 无法按多账号重规划清理；该问题不再归类为 hard-hourly 分布门禁代码缺失。
+- unresolved: 未使用 workflow_dispatch AI_GROUP_QUALITY_DONE 作为证据；账号在线健康恢复仍需单独处理。
+
 ## 2026-06-27
 
 - message_id: 2026-06-27-docs-practice-incident-001
