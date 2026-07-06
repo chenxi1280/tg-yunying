@@ -89,3 +89,15 @@
 - decision: 生产已证明搜索目标群找不到时 fail-closed 自动停止，且没有把非目标结果伪造成点击 / 加入成功；本证据不是成功入群证据。
 - next_agent: product
 - unresolved: 目标群 `xiaozisk` 当前未出现在搜索机器人返回结果中，因此郑州线上测试没有产生 `membership_observed`；如目标必须通过搜索链路成功点击 / 入群，需要先让目标群出现在选定搜索机器人结果中或更换可被搜索机器人返回的目标。
+
+## 2026-07-06 AI 活群 hard-hourly 账号轮转线上复核
+
+- message_id: 2026-07-06-ai-group-hard-hourly-account-rotation-prodverify-001
+- action: 修复并发布 AI 活群 hard-hourly 补量时账号被历史记忆固定、表现为单账号连续发言的问题。
+- input: 用户反馈线上 AI 活群好像都是一个账号在发送消息；本地修复已完成，用户要求线上检查测试直接使用 SSH，不使用 Actions 长诊断。
+- output: `production_verified_ssh_account_distribution`
+- evidence: Commit `a9b8a2a2` 已推送 `release`，Deploy Production push run `28791708035` 通过 checks、build-images、deploy；生产直连 `root@47.251.126.134`，`/data/tgyunying/current -> /data/tgyunying/releases/20260706124427_a9b8a2a`，`tgyunying-backend` healthy；公网 `https://tgyunying.telema.cn/api/health` 返回 `{"status":"ok"}`，`/task-center` 返回 HTTP 200。发布后按 `created_at >= 2026-07-06T20:44:43+08:00` 查询初始无新 action；发布前生成但排在发布后的集中 pending action 已由 dispatcher 标记为 `skipped`，未继续发送。生产 SSH 直连执行 `drain_task_planner(SessionLocal, limit=20)` 后，新代码生成 74 条 AI 活群 action；截至复核时 11 条真实 `success`，覆盖 10 个账号，发送账号序列 `[269, 282, 301, 285, 310, 286, 211, 280, 324, 265, 310]`，`sent_max_same_account_run=1`，样本均有 `telegram_msg_id`，证明真实发送侧不再由单账号连续刷屏。
+- supervisor: Locke 只读诊断确认 hard-hourly 旧逻辑存在账号记忆压制轮转风险；James 代码复核确认修复方向无阻塞，并指出状态板路由问题，已修正。
+- decision: 本次 bug 的代码发布、线上容器版本、公网健康、新规划分布和真实发送分布均已验证；生产 AI 活群“单账号连续发送”的新代码路径已恢复。郑州大学任务仍因 `account_offline_count=22` 阻断补量，这是账号在线健康问题，不归入本次轮转修复失败。
+- next_agent: product
+- unresolved: 按用户要求取消 workflow_dispatch 长诊断 run `28792149725`，本次不使用 Actions `AI_GROUP_QUALITY_DONE` 作为证据；仍需后续单独处理账号在线健康和历史 hard-hourly backfill debt。
