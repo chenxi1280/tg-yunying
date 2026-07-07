@@ -185,6 +185,7 @@ def test_business_clock_and_day_bounds_use_beijing_time():
     assert day_end == day_start + timedelta(days=1)
 
 
+@pytest.mark.no_postgres
 def test_task_center_list_does_not_load_channel_message_detail():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -217,6 +218,56 @@ def test_task_center_list_does_not_load_channel_message_detail():
     assert rows[0]["target_summary"] == "频道 @chan"
     assert "不应进入列表搜索" not in rows[0]["search_text"]
     assert not any("channel_messages" in statement.lower() for statement in statements)
+
+
+@pytest.mark.no_postgres
+def test_task_center_list_batches_channel_search_context():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    statements: list[str] = []
+
+    @event.listens_for(engine, "before_cursor_execute")
+    def _capture_sql(_conn, _cursor, statement, _parameters, _context, _executemany):  # noqa: ANN001
+        statements.append(statement)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add_all(
+            [
+                OperationTarget(id=101, tenant_id=1, target_type="channel", tg_peer_id="-100101", title="频道A", username="chan_a"),
+                OperationTarget(id=102, tenant_id=1, target_type="channel", tg_peer_id="-100102", title="频道B", username="chan_b"),
+                ChannelMessage(tenant_id=1, channel_target_id=101, message_id=55, content_preview="消息A", message_url="https://t.me/chan_a/55"),
+                ChannelMessage(tenant_id=1, channel_target_id=102, message_id=66, content_preview="消息B", message_url="https://t.me/chan_b/66"),
+                Task(
+                    id="task-channel-a",
+                    tenant_id=1,
+                    name="频道任务A",
+                    type="channel_like",
+                    status="running",
+                    type_config={"target_channel_id": 101, "message_ids": [55]},
+                ),
+                Task(
+                    id="task-channel-b",
+                    tenant_id=1,
+                    name="频道任务B",
+                    type="channel_comment",
+                    status="running",
+                    type_config={"target_channel_id": 102, "message_ids": [66]},
+                ),
+            ]
+        )
+        session.commit()
+        statements.clear()
+
+        rows = list_tasks(session, 1)
+
+    by_id = {row["id"]: row for row in rows}
+    assert by_id["task-channel-a"]["target_summary"] == "频道A @chan_a"
+    assert "消息A" in by_id["task-channel-a"]["search_text"]
+    assert "消息B" in by_id["task-channel-b"]["search_text"]
+    lowered = [statement.lower() for statement in statements]
+    assert sum("from operation_targets" in statement for statement in lowered) == 1
+    assert sum("from channel_messages" in statement for statement in lowered) == 1
 
 
 def test_task_center_list_treats_all_filters_as_unfiltered():

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import re
 from typing import Any
 
@@ -20,6 +21,12 @@ from app.services._common import _now
 from app.services.task_runtime_stage import derive_task_runtime_stage
 
 
+@dataclass(frozen=True)
+class TaskListPayloadContext:
+    target_summary_by_task_id: dict[str, str]
+    config_search_text_by_task_id: dict[str, str]
+
+
 def _task_payload(
     session: Session,
     task: Task,
@@ -27,8 +34,9 @@ def _task_payload(
     *,
     include_detail_search: bool = True,
     include_live_stats: bool = True,
+    list_context: TaskListPayloadContext | None = None,
 ) -> dict[str, Any]:
-    target_summary = _target_summary(session, task)
+    target_summary = _target_summary(session, task, list_context)
     stats = _stats_with_account_coverage(session, task, task.stats or {}) if include_live_stats else dict(task.stats or {})
     search_parts = [
         task.id,
@@ -39,7 +47,7 @@ def _task_payload(
         target_summary,
     ]
     if include_detail_search:
-        search_parts.append(_task_config_search_text(session, task))
+        search_parts.append(_task_config_search_text(session, task, list_context))
     if actions:
         for action in actions:
             payload = action.payload or {}
@@ -89,7 +97,18 @@ def _stats_with_account_coverage(session: Session, task: Task, stats: dict[str, 
     return result
 
 
-def _target_summary(session: Session, task: Task) -> str:
+def build_task_list_payload_context(session: Session, tasks: list[Task]) -> TaskListPayloadContext:
+    targets_by_id = _list_operation_targets_by_id(session, tasks)
+    messages = _list_channel_messages_for_tasks(session, tasks)
+    return TaskListPayloadContext(
+        target_summary_by_task_id={task.id: _target_summary_from_targets(task, targets_by_id) for task in tasks},
+        config_search_text_by_task_id={task.id: _config_search_text_from_context(task, targets_by_id, messages) for task in tasks},
+    )
+
+
+def _target_summary(session: Session, task: Task, list_context: TaskListPayloadContext | None = None) -> str:
+    if list_context:
+        return list_context.target_summary_by_task_id.get(task.id, "")
     config = task.type_config or {}
     if task.type.startswith("channel_"):
         channel = _channel_for_config(session, task)
@@ -124,6 +143,45 @@ def _target_summary(session: Session, task: Task) -> str:
     return ""
 
 
+def _target_summary_from_targets(task: Task, targets_by_id: dict[int, OperationTarget]) -> str:
+    config = task.type_config or {}
+    if task.type.startswith("channel_"):
+        channel = _channel_from_targets(task, targets_by_id)
+        if channel:
+            return f"{channel.title} @{channel.username}" if channel.username else channel.title
+        return str(config.get("target_channel_name") or "")
+    if task.type == "group_ai_chat":
+        return str(
+            _operation_target_title_from_targets(targets_by_id, config.get("target_operation_target_id"))
+            or config.get("target_group_name")
+            or config.get("target_group_id")
+            or ""
+        )
+    if task.type == "group_relay":
+        return _group_relay_target_summary_from_targets(config, targets_by_id)
+    return ""
+
+
+def _group_relay_target_summary_from_targets(config: dict[str, Any], targets_by_id: dict[int, OperationTarget]) -> str:
+    sources = [
+        str(item.get("group_name") or _operation_target_title_from_targets(targets_by_id, item.get("operation_target_id")) or item.get("group_id") or "")
+        for item in config.get("source_groups") or []
+        if isinstance(item, dict)
+    ]
+    targets = [
+        _operation_target_title_from_targets(targets_by_id, item) or f"运营目标#{item}"
+        for item in config.get("target_operation_target_ids") or []
+    ]
+    targets.extend(str(item) for item in config.get("target_group_ids") or [])
+    if config.get("target_operation_target_id"):
+        label = _operation_target_title_from_targets(targets_by_id, config.get("target_operation_target_id")) or f"运营目标#{config.get('target_operation_target_id')}"
+        if label not in targets:
+            targets.insert(0, label)
+    if config.get("target_group_id") and str(config.get("target_group_id")) not in targets:
+        targets.insert(0, str(config.get("target_group_id")))
+    return " ".join([*sources, *targets])
+
+
 def _operation_target_title(session: Session, tenant_id: int, target_id: Any) -> str:
     try:
         parsed_id = int(target_id or 0)
@@ -137,7 +195,17 @@ def _operation_target_title(session: Session, tenant_id: int, target_id: Any) ->
     return target.title
 
 
-def _task_config_search_text(session: Session, task: Task) -> str:
+def _operation_target_title_from_targets(targets_by_id: dict[int, OperationTarget], target_id: Any) -> str:
+    parsed_id = _parse_positive_int(target_id)
+    if not parsed_id:
+        return ""
+    target = targets_by_id.get(parsed_id)
+    return target.title if target else ""
+
+
+def _task_config_search_text(session: Session, task: Task, list_context: TaskListPayloadContext | None = None) -> str:
+    if list_context:
+        return list_context.config_search_text_by_task_id.get(task.id, "")
     config = task.type_config or {}
     parts: list[str] = []
     if task.type.startswith("channel_"):
@@ -153,6 +221,97 @@ def _task_config_search_text(session: Session, task: Task) -> str:
             for message in session.scalars(stmt):
                 parts.extend([str(message.message_id), message.content_preview, message.message_url])
     return " ".join(part for part in parts if part)
+
+
+def _config_search_text_from_context(task: Task, targets_by_id: dict[int, OperationTarget], messages: list[ChannelMessage]) -> str:
+    if not task.type.startswith("channel_"):
+        return ""
+    config = task.type_config or {}
+    parts: list[str] = []
+    channel = _channel_from_targets(task, targets_by_id)
+    if channel:
+        parts.extend([channel.title, channel.username, channel.tg_peer_id])
+    message_ids = _config_message_ids(config)
+    if message_ids:
+        parts.extend(_channel_message_search_parts(messages, message_ids, channel))
+    return " ".join(part for part in parts if part)
+
+
+def _list_operation_targets_by_id(session: Session, tasks: list[Task]) -> dict[int, OperationTarget]:
+    target_ids = sorted(_operation_target_ids_for_tasks(tasks))
+    if not target_ids:
+        return {}
+    targets = session.scalars(
+        select(OperationTarget)
+        .where(OperationTarget.tenant_id == tasks[0].tenant_id)
+        .where(OperationTarget.id.in_(target_ids))
+    )
+    return {target.id: target for target in targets}
+
+
+def _operation_target_ids_for_tasks(tasks: list[Task]) -> set[int]:
+    target_ids: set[int] = set()
+    for task in tasks:
+        config = task.type_config or {}
+        target_ids.update(_config_operation_target_ids(task, config))
+    return target_ids
+
+
+def _config_operation_target_ids(task: Task, config: dict[str, Any]) -> set[int]:
+    target_ids = {_parse_positive_int(config.get("target_operation_target_id"))}
+    if task.type.startswith("channel_"):
+        target_ids.add(_parse_positive_int(config.get("target_channel_id")))
+    for item in config.get("target_operation_target_ids") or []:
+        target_ids.add(_parse_positive_int(item))
+    for item in config.get("source_groups") or []:
+        if isinstance(item, dict):
+            target_ids.add(_parse_positive_int(item.get("operation_target_id")))
+    return {target_id for target_id in target_ids if target_id}
+
+
+def _list_channel_messages_for_tasks(session: Session, tasks: list[Task]) -> list[ChannelMessage]:
+    message_ids = sorted({message_id for task in tasks for message_id in _config_message_ids(task.type_config or {})})
+    if not message_ids:
+        return []
+    return list(
+        session.scalars(
+            select(ChannelMessage)
+            .where(ChannelMessage.tenant_id == tasks[0].tenant_id)
+            .where((ChannelMessage.id.in_(message_ids)) | (ChannelMessage.message_id.in_(message_ids)))
+            .order_by(ChannelMessage.id.asc())
+        )
+    )
+
+
+def _config_message_ids(config: dict[str, Any]) -> set[int]:
+    return {int(item) for item in config.get("message_ids") or [] if str(item).isdigit()}
+
+
+def _channel_message_search_parts(messages: list[ChannelMessage], message_ids: set[int], channel: OperationTarget | None) -> list[str]:
+    parts: list[str] = []
+    for message in messages:
+        if channel and message.channel_target_id != channel.id:
+            continue
+        if message.id not in message_ids and message.message_id not in message_ids:
+            continue
+        parts.extend([str(message.message_id), message.content_preview, message.message_url])
+    return [part for part in parts if part]
+
+
+def _channel_from_targets(task: Task, targets_by_id: dict[int, OperationTarget]) -> OperationTarget | None:
+    target_id = _parse_positive_int((task.type_config or {}).get("target_channel_id"))
+    target = targets_by_id.get(target_id)
+    if not target or target.tenant_id != task.tenant_id or target.target_type != "channel":
+        return None
+    return target
+
+
+def _parse_positive_int(value: Any) -> int:
+    try:
+        parsed = int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+    return parsed if parsed > 0 else 0
 
 
 def _search_actions(session: Session, task: Task) -> list[Action]:

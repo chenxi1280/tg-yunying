@@ -75,6 +75,8 @@ from .details import (
     _stats_with_account_coverage,
     _task_payload,
     _verification_tasks_by_group_account,
+    build_task_list_payload_context,
+    TaskListPayloadContext,
 )
 from .fingerprints import content_fingerprint
 from .heartbeat import record_worker_heartbeat
@@ -263,8 +265,20 @@ def _create_and_start_task(session: Session, tenant_id: int, task_type: str, pay
     return task
 
 
-def _task_payload_with_runtime_summary(session: Session, task: Task, summary: TaskRuntimeSummary | None) -> dict[str, Any]:
-    payload = _task_payload(session, task, include_detail_search=True, include_live_stats=False)
+def _task_payload_with_runtime_summary(
+    session: Session,
+    task: Task,
+    summary: TaskRuntimeSummary | None,
+    *,
+    list_context: TaskListPayloadContext | None = None,
+) -> dict[str, Any]:
+    payload = _task_payload(
+        session,
+        task,
+        include_detail_search=True,
+        include_live_stats=False,
+        list_context=list_context,
+    )
     if not summary:
         return payload
     stats = dict(payload.get("stats") or {})
@@ -294,7 +308,11 @@ def list_tasks(session: Session, tenant_id: int, task_type: str | None = None, s
         stmt = stmt.where(Task.status == status_filter)
     tasks = list(session.scalars(stmt.order_by(Task.priority.asc(), Task.created_at.desc())))
     summaries = _task_runtime_summaries(session, tenant_id)
-    task_rows = [_task_payload_with_runtime_summary(session, task, summaries.get(task.id)) for task in tasks]
+    list_context = build_task_list_payload_context(session, tasks)
+    task_rows = [
+        _task_payload_with_runtime_summary(session, task, summaries.get(task.id), list_context=list_context)
+        for task in tasks
+    ]
     return [*task_rows, *list_profile_batch_tasks(session, tenant_id, type_filter, status_filter)]
 
 
