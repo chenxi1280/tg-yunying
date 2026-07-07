@@ -5920,6 +5920,7 @@ def test_refresh_task_stats_clears_recovered_backlog_marker(monkeypatch):
     assert "planner_backlog_global_pending" not in stats
 
 
+@pytest.mark.no_postgres
 def test_list_tasks_keeps_stored_stats_without_action_recount(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -5951,6 +5952,7 @@ def test_list_tasks_keeps_stored_stats_without_action_recount(monkeypatch):
     assert stats["planner_backlog_global_pending"] == 1887
 
 
+@pytest.mark.no_postgres
 def test_list_tasks_uses_runtime_summary_without_recounting_actions(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -5996,6 +5998,7 @@ def test_list_tasks_uses_runtime_summary_without_recounting_actions(monkeypatch)
     assert listed["stats"]["hard_hourly_deficit"] == 284
 
 
+@pytest.mark.no_postgres
 def test_list_tasks_without_runtime_summary_does_not_recount_actions(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -6025,7 +6028,52 @@ def test_list_tasks_without_runtime_summary_does_not_recount_actions(monkeypatch
 
 
 @pytest.mark.no_postgres
-def test_group_ai_hard_hourly_stats_are_consistent_across_task_read_surfaces(monkeypatch):
+def test_list_tasks_uses_cached_stats_without_live_detail_queries(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    def fail_live_stats(*_args, **_kwargs):
+        raise AssertionError("task list must not run live detail stats")
+
+    def fail_detail_search(*_args, **_kwargs):
+        raise AssertionError("task list must not build detail search text")
+
+    monkeypatch.setattr("app.services.task_center.details.hard_hourly_stats", fail_live_stats)
+    monkeypatch.setattr("app.services.task_center.details.task_account_coverage", fail_live_stats)
+    monkeypatch.setattr("app.services.task_center.details._task_config_search_text", fail_detail_search)
+
+    with Session(engine) as session:
+        task = Task(
+            id="task-list-lightweight",
+            tenant_id=1,
+            name="AI 活跃群",
+            type="group_ai_chat",
+            status="running",
+            type_config={"hard_hourly_target_enabled": True, "hourly_min_messages": 300},
+            stats={"hard_hourly_goal": 300, "hard_hourly_deficit": 292, "success_count": 8},
+        )
+        summary = TaskRuntimeSummary(
+            tenant_id=1,
+            task_id=task.id,
+            task_status="running",
+            planned_count=20,
+            success_count=9,
+            failed_count=2,
+            pending_count=3,
+        )
+        session.add_all([Tenant(id=1, name="默认运营空间"), task, summary])
+        session.commit()
+
+        [listed] = list_tasks(session, 1, "group_ai_chat", "running")
+
+    assert listed["stats"]["total_actions"] == 20
+    assert listed["stats"]["success_count"] == 9
+    assert listed["stats"]["hard_hourly_goal"] == 300
+    assert "account_coverage" not in listed["stats"]
+
+
+@pytest.mark.no_postgres
+def test_group_ai_hard_hourly_stats_are_live_on_detail_and_cached_on_list(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = datetime(2026, 6, 7, 20, 30)
@@ -6092,7 +6140,10 @@ def test_group_ai_hard_hourly_stats_are_consistent_across_task_read_surfaces(mon
         "hard_hourly_planning_deficit": 3,
         "hard_hourly_status": "catching_up",
     }
-    for stats in (listed, detail["stats"], detail["task"]["stats"], refreshed):
+    assert listed["hard_hourly_success_count"] == 0
+    assert listed["hard_hourly_deficit"] == 5
+    assert listed["hard_hourly_status"] == "catching_up"
+    for stats in (detail["stats"], detail["task"]["stats"], refreshed):
         for key, value in expected.items():
             assert stats[key] == value
 

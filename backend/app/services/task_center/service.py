@@ -264,7 +264,7 @@ def _create_and_start_task(session: Session, tenant_id: int, task_type: str, pay
 
 
 def _task_payload_with_runtime_summary(session: Session, task: Task, summary: TaskRuntimeSummary | None) -> dict[str, Any]:
-    payload = _task_payload(session, task, include_detail_search=True)
+    payload = _task_payload(session, task, include_detail_search=False, include_live_stats=False)
     if not summary:
         return payload
     stats = dict(payload.get("stats") or {})

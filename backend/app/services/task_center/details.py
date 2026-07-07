@@ -20,9 +20,16 @@ from app.services._common import _now
 from app.services.task_runtime_stage import derive_task_runtime_stage
 
 
-def _task_payload(session: Session, task: Task, actions: list[Action] | None = None, *, include_detail_search: bool = True) -> dict[str, Any]:
+def _task_payload(
+    session: Session,
+    task: Task,
+    actions: list[Action] | None = None,
+    *,
+    include_detail_search: bool = True,
+    include_live_stats: bool = True,
+) -> dict[str, Any]:
     target_summary = _target_summary(session, task)
-    stats = _stats_with_account_coverage(session, task, task.stats or {})
+    stats = _stats_with_account_coverage(session, task, task.stats or {}) if include_live_stats else dict(task.stats or {})
     search_parts = [
         task.id,
         task.name,
