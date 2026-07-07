@@ -29,6 +29,23 @@ GENERATED_TEMPLATE_MARKERS = (
     "值得讨论",
 )
 
+AI_META_MARKERS = (
+    "<think>",
+    "</think>",
+    "让我分析",
+    "我来分析",
+    "我先分析",
+    "仔细分析这个请求",
+    "分析这个频道内容",
+    "这是一个要求生成",
+    "这是一个生成",
+)
+
+AI_META_PATTERNS = (
+    re.compile(r"^\s*(?:好的|可以|明白)[，,\s]*(?:我会|我来|让我)", re.IGNORECASE),
+    re.compile(r"^\s*(?:as an ai|i need to analyze|let me analyze)\b", re.IGNORECASE),
+)
+
 OPERATOR_UI_MARKERS = (
     "点击底部按钮",
     "点击查看",
@@ -135,6 +152,14 @@ def looks_like_generated_template_noise(text: str) -> bool:
     return any(marker in cleaned for marker in GENERATED_TEMPLATE_MARKERS)
 
 
+def looks_like_ai_meta_content(text: str) -> bool:
+    cleaned = str(text or "").strip()
+    lowered = cleaned.lower()
+    marker_hit = any(marker.lower() in lowered for marker in AI_META_MARKERS)
+    pattern_hit = any(pattern.search(cleaned) for pattern in AI_META_PATTERNS)
+    return marker_hit or pattern_hit
+
+
 def looks_like_operator_ui_content(text: str) -> bool:
     cleaned = str(text or "")
     return any(marker in cleaned for marker in OPERATOR_UI_MARKERS)
@@ -162,6 +187,8 @@ def filter_outbound_content(
         return ContentFilterResult(False, "", "内容为空")
     if _looks_like_internal_prompt(cleaned):
         return ContentFilterResult(False, "", "拦截内部提示词")
+    if looks_like_ai_meta_content(cleaned):
+        return ContentFilterResult(False, "", "拦截 AI 过程性内容")
     if looks_like_generated_template_noise(cleaned):
         return ContentFilterResult(False, "", "拦截模板化生成内容")
     if looks_like_operator_ui_content(cleaned):
@@ -218,6 +245,7 @@ __all__ = [
     "contains_coarse_language",
     "extract_links",
     "filter_outbound_content",
+    "looks_like_ai_meta_content",
     "looks_like_generated_template_noise",
     "looks_like_operator_ui_content",
     "rewrite_rejected_content",

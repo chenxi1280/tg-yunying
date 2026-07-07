@@ -11,7 +11,7 @@ from app.ai_gateway import DEFAULT_AI_REQUEST_TIMEOUT_SECONDS, normalize_ai_mode
 from app.models import AiProvider, AiProviderHealthStatus, PromptTemplate, TenantAiSetting
 from app.services._common import _now, ai_gateway
 from app.services.ai_config import ai_provider_credentials
-from app.services.content_filters import looks_like_generated_template_noise, looks_like_operator_ui_content
+from app.services.content_filters import looks_like_ai_meta_content, looks_like_generated_template_noise, looks_like_operator_ui_content
 from app.services.task_center.ai_act_types import canonical_ai_group_act_type
 
 
@@ -622,6 +622,8 @@ def _channel_comment_cluster(content: str) -> str:
 
 def _looks_like_bad_channel_comment(content: str) -> bool:
     if _looks_like_ai_provider_refusal(content):
+        return True
+    if looks_like_ai_meta_content(content):
         return True
     if _channel_comment_cluster(content):
         return True

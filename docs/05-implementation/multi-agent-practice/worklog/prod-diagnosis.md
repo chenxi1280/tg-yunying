@@ -146,3 +146,13 @@
 - evidence: 生产 SSH 直连 `root@47.251.126.134`，在 `tgyunying-backend` 容器内只读确认租户 1 默认 provider id=4、`provider_name=MiniMax`、`model_name=MiniMax-M3`、`health_status=健康`、`fallback_to_mock=false`。随后使用 provider 已保存的加密密钥解密到进程内存，构造 `MiniMax-M2.5` 凭据调用真实 `AiGateway.check`，返回 `provider ready; chat capability ready` 后提交配置。独立复查确认 provider id=4 已为 `model_name=MiniMax-M2.5`、`health_status=健康`、`last_error=''`、`last_check_at=2026-07-06T22:19:49.540863`，租户 1 仍指向 default_provider_id=4 且 `ai_enabled=true`、`fallback_to_mock=false`。
 - decision: 线上默认模型切换已完成且经过 provider check；未打印或落盘 API key。
 - unresolved: 同一任务当前仍 `running`、`action_count=0`，`last_error=AI 评论候选不足，已跳过本轮`；因此只能证明默认模型配置已切换，不能声明“阿哥日记”评论/回复已经真实恢复。按用户最新口径，本地不再发布敏感上下文净化或 M3->M2.7->M2.5 自动降级代码。
+
+## 2026-07-07 频道 AI 评论过程性内容线上排查（当前环境 blocked）
+
+- message_id: 2026-07-07-channel-comment-ai-meta-filter-prod-diagnosis-001
+- action: 按用户要求尝试 SSH 到生产环境检查 AI 评论异常。
+- input: Telegram 截图显示频道评论发出了 `<think>`、`让我分析这个频道内容`、`让我仔细分析这个请求` 等过程性内容；用户要求“你也线上ssh 链接到线上检查一下问题”。
+- output: `production_ssh_blocked_local_fix_ready`
+- evidence: 本地 SSH alias `silicon-valley-production-server` 解析到 Clash fake-ip `198.18.0.153` 后连接关闭；`ssh codex_usa01_server` / `ssh codex_kl_server` 到 `47.251.126.134:22`、`47.250.167.174:22` 均在 banner exchange 前超时；当前环境 `curl https://tgyunying.telema.cn/api/health` 和 `/task-center` 均 10 秒超时。GitHub Actions 可访问，最近生产 workflow：`28808100947` workflow_dispatch success（2026-07-06T16:48:32Z，head `e2314453`），`28802430977` release push success（2026-07-06T15:19:02Z，head `92e36126`）。这些只能证明最近发布链路记录，不能证明当前任务恢复。
+- decision: 当前线程无法取得新的生产容器 / DB / worker E4 证据，不能写 `production_fixed`；本地根因已按 `2026-07-07-channel-comment-ai-meta-filter-devcomplete-001` 修复并等待 QA / release。
+- unresolved: 需要在可达生产网络或 GitHub Actions SSH 环境中复核最近 `channel_comment` action 的 payload / result / worker 日志，并在发布后确认过程性内容被 `content_policy` 拦截或不再生成。

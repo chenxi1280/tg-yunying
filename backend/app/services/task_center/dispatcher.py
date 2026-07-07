@@ -2920,6 +2920,13 @@ def _dispatch_comment(action: Action, account: TgAccount, credentials, session: 
     channel_peer = payload.channel_id
     message_id = payload.message_id
     content = payload.comment_text
+    policy_group = _comment_content_policy_group(session, action, payload)
+    if not policy_group:
+        return True
+    filtered = filter_outbound_content(session, tenant_id=action.tenant_id, group=policy_group, content=content)
+    if not filtered.ok:
+        _fail(action, FailureType.CONTENT_REJECTED.value, filtered.reason, auto_check="拦截", validation_stage="content_policy")
+        return True
     attempt = _begin_execution_attempt(session, action, account)
     _mark_executing(action)
     session.commit()
@@ -2927,6 +2934,16 @@ def _dispatch_comment(action: Action, account: TgAccount, credentials, session: 
     result = gateway.reply_channel_message(account_id, channel_peer, message_id, content, session_ciphertext, credentials, reply_to_message_id=payload.reply_to_message_id)
     _apply_send_result(action, account, result.ok, result.remote_message_id or "", result.failure_type or "", result.detail or "", attempt=attempt)
     return True
+
+
+def _comment_content_policy_group(session: Session, action: Action, payload: PostCommentPayload) -> TgGroup | None:
+    channel_target_id = int(payload.channel_target_id or 0)
+    channel = session.get(OperationTarget, channel_target_id) if channel_target_id else None
+    group = linked_channel_group(session, channel, create=False) if channel else None
+    if group:
+        return group
+    _fail(action, FailureType.PEER_INVALID.value, "频道评论缺少可校验的讨论组", auto_check="拦截", validation_stage="target")
+    return None
 
 
 def _comment_total_limit_reached(session: Session, action: Action) -> bool:

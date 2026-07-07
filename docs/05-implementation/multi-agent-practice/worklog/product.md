@@ -371,3 +371,17 @@
 - decision: design_status=complete_for_incremental_dev；不要求系统设置页做账号分配；不声明生产可用。
 - next_agent: dev
 - unresolved: 真实发布、线上账号面具页面和生产 Clash 节点批量绑定仍需 release / prod-diagnosis 证据。
+
+## 2026-07-07 频道评论 AI 过程性内容过滤产品验收
+
+- message_id: 2026-07-07-channel-comment-ai-meta-filter-product-acceptance-001
+- action: 对 QA handoff `2026-07-07-channel-comment-ai-meta-filter-qa-to-product-001` 做 Product Acceptance。
+- input: 用户截图证明频道评论发出 `<think>`、`让我分析这个频道内容`、`让我仔细分析这个请求` 等 AI 过程性内容；dev 已修复生成清洗和发送前出站过滤；QA 输出 `qa_pass`，但 release_gate=pending、production_verification=unproven。
+- output: `product_accepted_pending_release_gate_prodverify`
+- evidence: QA 定向回归 `backend/tests/test_ai_gateway.py::test_channel_comment_rejects_thinking_and_analysis_meta_text` + `backend/tests/test_operations_center_runtime.py::test_channel_comment_pre_send_validation_blocks_ai_meta_text` -> `2 passed in 0.97s`；`backend/.venv/bin/python -m compileall -q backend/app` passed；`git diff --check` passed；只读探针证明 group send AI 过程性内容在 gateway 前以 `content_policy` / `拦截 AI 过程性内容` 失败且 gateway 未被调用。数据流转索引 BG-005 已覆盖频道评论发送前必须通过公共出站内容过滤器；项目结构索引已覆盖 `content_filters.py`、`ai_generator.py`、`dispatcher.py` 的新职责。
+- decision: 产品接受 E2 本地修复范围：频道评论生成阶段丢弃 AI 过程性候选；旧 pending 脏 `comment_text` 在 `reply_channel_message` 前被 `content_policy` 拦截；group send 出站过滤不回归；失败可见，不引入 silent fallback / mock success。不接受线上恢复口径，不写 `production_fixed`。
+- next_agent: dev
+- handoff_delivery_status: sent
+- target_thread: 019f07c6-f550-73e3-998b-b130da2c1898
+- handoff_message_id: 2026-07-07-channel-comment-ai-meta-filter-product-acceptance-001
+- unresolved: 5 条组合测试因本地 PostgreSQL reset gate 阻断；Release Gate / GitHub Actions / 部署 / 生产 DB-worker-Telegram E4 证据仍未完成。Release Gate 通过并部署后必须由 prod-diagnosis 做 production verification。

@@ -296,3 +296,14 @@
 - decision: status=local_verified_pending_release；release_gate=pending；production_verification=unproven。
 - next_agent: qa
 - unresolved: 需要重新跑本地相关回归、提交修复并重新推送 `master -> release`。
+
+## 2026-07-07 频道 AI 评论过程性内容泄露修复（本地验证）
+
+- message_id: 2026-07-07-channel-comment-ai-meta-filter-devcomplete-001
+- action: 修复频道评论候选和已创建评论 action 会放过 `<think>` / “让我分析...” / “让我仔细分析这个请求”等 AI 过程性内容的问题。
+- input: 用户提供 Telegram 截图，评论区出现 `<think>`、`让我分析这个频道内容`、`让我仔细分析这个请求`、`这是一个要求生成 Telegram 频道评论的任务` 等明显非真人评论。
+- output: `content_filters.looks_like_ai_meta_content` 新增 AI 过程性内容识别；`ai_generator.clean_channel_comment_contents` 在生成阶段丢弃这类候选；`dispatcher._dispatch_comment` 在 Telegram gateway 前复用公共出站内容过滤器，命中时以 `content_policy` / `拦截 AI 过程性内容` 可见失败，不调用 TG。
+- evidence: RED：新增两条回归先失败，证明频道评论清洗放过 `<think>` / “让我分析”，且发送前不会按 content_policy 失败；GREEN：`backend/tests/test_ai_gateway.py::test_channel_comment_rejects_thinking_and_analysis_meta_text` + `backend/tests/test_operations_center_runtime.py::test_channel_comment_pre_send_validation_blocks_ai_meta_text` -> 2 passed；`backend/.venv/bin/python -m compileall -q backend/app` passed；`git diff --check` passed。
+- decision: status=local_verified_pending_release；release_gate=pending；production_verification=blocked_by_ssh_network。
+- next_agent: qa
+- unresolved: 较宽的 5 条组合测试因本地 PostgreSQL 测试库不可用被 pytest reset gate 阻断，未执行；尚未推送 release / Deploy Production；当前环境到生产 SSH 和公网均超时，不能证明线上已恢复。

@@ -1128,6 +1128,39 @@ def _initialized_comment_account(account_id: int = 101) -> TgAccount:
     )
 
 
+@pytest.mark.no_postgres
+def test_channel_comment_pre_send_validation_blocks_ai_meta_text(monkeypatch):
+    from app.services.task_center import dispatcher
+
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
+    monkeypatch.setattr(
+        dispatcher.gateway,
+        "reply_channel_message",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("AI meta comment must not call TG")),
+    )
+
+    with Session(engine) as session:
+        now_value = _now()
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgAccount(id=11, tenant_id=1, display_name="评论号", phone_masked="11", status=AccountStatus.ACTIVE.value))
+        session.add(OperationTarget(id=31, tenant_id=1, target_type="channel", tg_peer_id="-10031", title="频道目标", can_send=True, auth_status="已授权运营"))
+        session.add(TgGroup(id=31, tenant_id=1, tg_peer_id="-10031", title="频道目标", auth_status="已授权运营", can_send=True))
+        session.add(TgGroupAccount(tenant_id=1, group_id=31, account_id=11, can_send=True))
+        session.add(_channel_comment_action("action-ai-meta-comment", "让我分析这个频道内容", now_value))
+        session.commit()
+
+        action = session.get(Action, "action-ai-meta-comment")
+        assert dispatcher.dispatch_action(session, action) is True
+
+        assert action.status == "failed"
+        assert action.result["auto_check"] == "拦截"
+        assert action.result["validation_stage"] == "content_policy"
+        assert "AI 过程性内容" in action.result["error_message"]
+
+
 def _channel_like_action(action_id: str, account_id: int, scheduled_at: datetime) -> Action:
     return Action(
         id=action_id,

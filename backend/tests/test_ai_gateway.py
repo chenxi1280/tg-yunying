@@ -249,6 +249,21 @@ def test_channel_comment_rejects_provider_refusal_text():
     assert contents == []
 
 
+@pytest.mark.no_postgres
+def test_channel_comment_rejects_thinking_and_analysis_meta_text():
+    contents = clean_channel_comment_contents(
+        [
+            "<think>",
+            "让我分析这个频道内容",
+            "让我仔细分析这个请求",
+            "淡紫色灯光有点像夜拍现场",
+        ],
+        limit=4,
+    )
+
+    assert contents == ["淡紫色灯光有点像夜拍现场"]
+
+
 def test_send_message_private_channel_error_maps_to_group_permission_denied():
     result = TelethonTelegramGateway._map_send_error(RuntimeError("The channel specified is private and you lack permission to access it (caused by SendMessageRequest)"))
 
