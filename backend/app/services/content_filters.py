@@ -44,6 +44,7 @@ AI_META_MARKERS = (
 AI_META_PATTERNS = (
     re.compile(r"^\s*(?:好的|可以|明白)[，,\s]*(?:我会|我来|让我)", re.IGNORECASE),
     re.compile(r"^\s*(?:as an ai|i need to analyze|let me analyze)\b", re.IGNORECASE),
+    re.compile(r"^\s*这是?(?:一个|一段)?明显.*(?:色情|敏感|违规|请求|任务|频道|内容)"),
 )
 
 OPERATOR_UI_MARKERS = (

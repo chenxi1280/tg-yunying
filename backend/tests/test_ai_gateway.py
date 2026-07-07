@@ -256,6 +256,8 @@ def test_channel_comment_rejects_thinking_and_analysis_meta_text():
             "<think>",
             "让我分析这个频道内容",
             "让我仔细分析这个请求",
+            "这是一段明显带有色情性质的内容 描述了性行为的详细过程",
+            "这是一个明显的色情内容频道",
             "淡紫色灯光有点像夜拍现场",
         ],
         limit=4,
