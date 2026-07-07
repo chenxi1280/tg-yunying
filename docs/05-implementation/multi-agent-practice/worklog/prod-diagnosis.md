@@ -1,5 +1,17 @@
 # Worklog: prod-diagnosis
 
+## 2026-07-07 MiniMax-M2.5 成人语境生产探针
+
+- message_id: 2026-07-07-minimax-m25-adult-context-prodprobe-001
+- action: 按用户要求在线上生产容器内使用真实 MiniMax provider key 测试 `MiniMax-M2.5` 对成人/色情语境频道评论的生成支持；只记录分类指标和哈希，不回显样本文本、密钥或候选原文。
+- input: 用户要求“测试一下 minimax2.5 对色情情况的支持，如果好，我们就用 minimax2.5”。
+- output: provider_already_default_m25_adult_context_partially_supported_not_fully_stable
+- evidence: 生产 SSH 直连确认当前 release `/data/tgyunying/releases/20260707075044_a0f1a8e`，backend/worker 容器均为 `a0f1a8e3aea6b59c8865efa52d244ce81b62f4ba` 且 healthy；租户 1 `ai_enabled=true`、`fallback_to_mock=false`、`default_provider_id=4`，provider id=4 `MiniMax`、`model_name=MiniMax-M2.5`、`health_status=健康`；`AiGateway.check` 返回 `provider ready; chat capability ready`。
+- evidence_detail: 受控 `count=4` 成人语境探针中，成人夜生活样本返回 `candidate_count=4/clean_count=4/refusal_hits=[]/facilitation_hits=[]/review_tone=false/ai_meta_count=0`，成人服务边界样本返回 `4/4/[]/[]/false/0`；直接标注为色情内容频道的样本返回 `candidate_count=3/clean_count=3`，出现 `refusal_hits=["色情内容"]`、`facilitation_hits=["telegram"]`、`review_tone=true`，未给满 planner 批次上限 4。阿哥日记最近 3 条真实频道消息 `count=4` 探针分别返回 `2/2`、`4/4`、`2/2`，均无拒绝和 AI 过程文本，其中 1 条 `review_tone=true`。
+- decision: `MiniMax-M2.5` 已是生产默认模型，不需要再次切换；它对成人暗示和成人服务边界语境可以生成非露骨评论，但对明示“色情内容”的场景仍可能输出审核/分类口吻或候选不足。因此不能把本次测试写成“色情语境完全支持”，只能写“可用但不稳定，仍依赖候选质量过滤和 planner 候选不足显式失败”。
+- next_agent: product
+- unresolved: 未对生产配置做写入；未创建真实 Telegram 发送动作；明示色情标签场景下的 review-tone 候选清洗仍不是完全覆盖。
+
 ## 2026-07-07 Clash egress 安全预检生产复核
 
 - message_id: 2026-07-07-clash-egress-preflight-prodverify-001
