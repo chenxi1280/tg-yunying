@@ -24,6 +24,8 @@ from app.models import AiProvider, FailureType, Tenant, TenantAiSetting
 from app.security import encrypt_secret
 from app.services.task_center.ai_generator import (
     AI_CONTENT_REQUEST_TIMEOUT_SECONDS,
+    CHANNEL_COMMENT_EMOJI_FALLBACKS,
+    CHANNEL_COMMENT_MAX_REDESCRIPTION_ATTEMPTS,
     AiGenerationUnavailable,
     GROUP_CHAT_PURPOSE,
     _group_chat_prompt,
@@ -31,6 +33,7 @@ from app.services.task_center.ai_generator import (
     _sanitize_sensitive_context,
     clean_channel_comment_contents,
     clean_group_chat_contents,
+    generate_channel_reply_comments,
     generate_contents,
     generate_channel_comments,
     generate_group_messages,
@@ -1546,6 +1549,112 @@ def test_channel_comment_keeps_adult_service_context_outputs(monkeypatch):
         )
 
     assert contents == ["价格有变吗", "河东区这个位置方便吗", "今天有新服务吗"]
+
+
+@pytest.mark.no_postgres
+def test_channel_comment_retries_review_tone_then_fills_missing_with_emojis(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    prompts: list[str] = []
+
+    def fake_generate_drafts(_credentials, prompt, **_kwargs):
+        prompts.append(prompt)
+        if len(prompts) <= CHANNEL_COMMENT_MAX_REDESCRIPTION_ATTEMPTS:
+            return AiGenerationResult(
+                candidates=[AiDraftCandidate(persona="读者", content="这是一个明显的色情内容频道")],
+                usage=AiUsage(total_tokens=10),
+            )
+        return AiGenerationResult(
+            candidates=[AiDraftCandidate(persona="读者", content="灯光细节挺醒目")],
+            usage=AiUsage(total_tokens=10),
+        )
+
+    monkeypatch.setattr("app.services.task_center.ai_generator.ai_gateway.generate_drafts", fake_generate_drafts)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(
+            AiProvider(
+                id=1,
+                provider_name="MiniMax",
+                provider_type="openai_compatible",
+                base_url="https://api.minimaxi.com/v1",
+                model_name="MiniMax-M2.5",
+                api_key_ciphertext=encrypt_secret("test-key"),
+                health_status="健康",
+            )
+        )
+        session.add(TenantAiSetting(tenant_id=1, default_provider_id=1, ai_enabled=True, max_tokens=1024))
+        session.commit()
+
+        contents, tokens = generate_channel_comments(
+            session,
+            1,
+            {"comment_style": "relevant"},
+            count=3,
+            message_content="频道原文被读者称为色情内容频道，但只需要非露骨短评",
+            target_label="阿哥日记",
+        )
+
+    assert len(prompts) == CHANNEL_COMMENT_MAX_REDESCRIPTION_ATTEMPTS + 1
+    assert all("换一种描述方式" in prompt for prompt in prompts[1:])
+    assert contents[0] == "灯光细节挺醒目"
+    assert set(contents[1:]).issubset(set(CHANNEL_COMMENT_EMOJI_FALLBACKS))
+    assert tokens == 10
+
+
+@pytest.mark.no_postgres
+def test_channel_reply_comment_retries_then_fills_missing_with_emojis(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    prompts: list[str] = []
+
+    def fake_generate_drafts(_credentials, prompt, **_kwargs):
+        prompts.append(prompt)
+        if len(prompts) <= CHANNEL_COMMENT_MAX_REDESCRIPTION_ATTEMPTS:
+            return AiGenerationResult(
+                candidates=[AiDraftCandidate(persona="读者", content="这是一段明显带有色情性质的内容")],
+                usage=AiUsage(total_tokens=7),
+            )
+        return AiGenerationResult(
+            candidates=[AiDraftCandidate(persona="读者", content="这条问得挺细")],
+            usage=AiUsage(total_tokens=7),
+        )
+
+    monkeypatch.setattr("app.services.task_center.ai_generator.ai_gateway.generate_drafts", fake_generate_drafts)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(
+            AiProvider(
+                id=1,
+                provider_name="MiniMax",
+                provider_type="openai_compatible",
+                base_url="https://api.minimaxi.com/v1",
+                model_name="MiniMax-M2.5",
+                api_key_ciphertext=encrypt_secret("test-key"),
+                health_status="健康",
+            )
+        )
+        session.add(TenantAiSetting(tenant_id=1, default_provider_id=1, ai_enabled=True, max_tokens=1024))
+        session.commit()
+
+        contents, tokens = generate_channel_reply_comments(
+            session,
+            1,
+            {"comment_style": "relevant"},
+            reply_targets=[
+                {"author_name": "甲", "content": "这个靠谱吗", "comment_message_id": 101},
+                {"author_name": "乙", "content": "还有细节吗", "comment_message_id": 102},
+            ],
+            message_content="频道原文存在成人语境，只需要安全短回复",
+            target_label="阿哥日记",
+        )
+
+    assert len(prompts) == CHANNEL_COMMENT_MAX_REDESCRIPTION_ATTEMPTS + 1
+    assert contents[0] == "这条问得挺细"
+    assert contents[1] in CHANNEL_COMMENT_EMOJI_FALLBACKS
+    assert tokens == 7
 
 
 def test_group_chat_allows_adult_service_context_in_ai_prompt(monkeypatch):
