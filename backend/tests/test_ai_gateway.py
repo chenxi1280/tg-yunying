@@ -1147,13 +1147,14 @@ def test_channel_comment_generation_uses_long_ai_timeout(monkeypatch):
     assert captured["timeout"] == AI_CONTENT_REQUEST_TIMEOUT_SECONDS
 
 
+@pytest.mark.no_postgres
 def test_channel_comment_generation_scales_token_budget_for_many_candidates(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
-    captured: dict[str, int] = {}
+    captured: dict[str, list[int]] = {"max_tokens": []}
 
     def fake_generate_drafts(_credentials, _prompt, **kwargs):
-        captured["max_tokens"] = kwargs["max_tokens"]
+        captured["max_tokens"].append(kwargs["max_tokens"])
         return mock_generation_result("河东区这个位置方便吗")
 
     monkeypatch.setattr("app.services.task_center.ai_generator.ai_gateway.generate_drafts", fake_generate_drafts)
@@ -1183,7 +1184,7 @@ def test_channel_comment_generation_scales_token_budget_for_many_candidates(monk
             target_label="天津音乐",
         )
 
-    assert captured["max_tokens"] >= 12 * 512
+    assert max(captured["max_tokens"]) >= 12 * 512
 
 
 def test_group_chat_generation_uses_short_message_token_budget(monkeypatch):
