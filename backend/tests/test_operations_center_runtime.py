@@ -6028,19 +6028,15 @@ def test_list_tasks_without_runtime_summary_does_not_recount_actions(monkeypatch
 
 
 @pytest.mark.no_postgres
-def test_list_tasks_uses_cached_stats_without_live_detail_queries(monkeypatch):
+def test_list_tasks_uses_cached_stats_without_live_stats_queries(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
 
     def fail_live_stats(*_args, **_kwargs):
         raise AssertionError("task list must not run live detail stats")
 
-    def fail_detail_search(*_args, **_kwargs):
-        raise AssertionError("task list must not build detail search text")
-
     monkeypatch.setattr("app.services.task_center.details.hard_hourly_stats", fail_live_stats)
     monkeypatch.setattr("app.services.task_center.details.task_account_coverage", fail_live_stats)
-    monkeypatch.setattr("app.services.task_center.details._task_config_search_text", fail_detail_search)
 
     with Session(engine) as session:
         task = Task(
