@@ -385,3 +385,33 @@
 - target_thread: 019f07c6-f550-73e3-998b-b130da2c1898
 - handoff_message_id: 2026-07-07-channel-comment-ai-meta-filter-product-acceptance-001
 - unresolved: 5 条组合测试因本地 PostgreSQL reset gate 阻断；Release Gate / GitHub Actions / 部署 / 生产 DB-worker-Telegram E4 证据仍未完成。Release Gate 通过并部署后必须由 prod-diagnosis 做 production verification。
+
+## 2026-07-07 频道评论 AI 过程性内容 Release Gate 阻断确认
+
+- message_id: 2026-07-07-channel-comment-ai-meta-filter-product-release-gate-blocked-ack-001
+- action: ACK dev Release Gate report `2026-07-07-channel-comment-ai-meta-filter-dev-release-gate-001`，确认发布关口被生产 SSH 阻断。
+- input: dev 已将 commit `71dd41cdd11d1768154b7603e7d0360f0b18eb52` 推送到 `master` / `release`；本地 checks 和 GitHub Actions checks/build-images 通过，但两次 deploy 均在上传前因 SSH banner exchange timeout 失败。
+- output: `product_accepted_release_gate_blocked_deploy_ssh_timeout`
+- evidence: local release checks：compileall passed；定向回归 `2 passed in 1.06s`；较宽 no_postgres `23 passed, 31 deselected`；operations runtime `13 passed, 130 deselected`；`git diff --check` passed；frontend build passed。GitHub Actions run `28836550893` 与 `28836948792` 均为 checks success、build-images success、deploy failed；失败点为 `Deploy via SSH release script`，3 次 SSH connectivity check 均 `Connection timed out during banner exchange`，release script 在上传前退出。
+- rerun: 按用户“拉到线上验证”重跑 `gh run rerun 28836948792 --failed`；attempt 2 仍为 deploy failed，3 次 SSH connectivity check 均 `Connection timed out during banner exchange`，生产诊断步骤 skipped。
+- decision: Release Gate 未通过，发布未完成；不投递 prod-diagnosis E4，不写 released / production_fixed / closed。当前由 dev / release gate owner 继续持有 deploy-gate 阻断。
+- next_agent: dev
+- handoff_delivery_status: sent
+- target_thread: 019f07c6-f550-73e3-998b-b130da2c1898
+- handoff_message_id: 2026-07-07-channel-comment-ai-meta-filter-product-release-gate-blocked-ack-001
+- unresolved: 需要先恢复生产 SSH / 部署通道 / 端口 / 安全组 / sshd load / MaxStartups 等，再对 commit `71dd41cdd11d1768154b7603e7d0360f0b18eb52` 重跑 Deploy Production；成功部署后再由 prod-diagnosis 验证生产 `channel_comment` 不再发送 AI 过程性内容，旧 pending 脏 `comment_text` 在 Telegram gateway 前以 `content_policy` 失败。
+
+## 2026-07-07 频道评论 AI 过程性内容发布恢复确认
+
+- message_id: 2026-07-07-channel-comment-ai-meta-filter-release-prodverify-handoff-001
+- action: 按用户“拉到线上验证”复核 Release Gate 阻断恢复后的发布状态，并投递 prod-diagnosis 补任务级样本。
+- input: commit `71dd41cdd11d1768154b7603e7d0360f0b18eb52` 已在 `master` / `release`；此前 deploy 因 SSH banner exchange timeout 阻断。
+- output: `released_prod_runtime_ok_task_sample_unproven`
+- evidence: Deploy Production run `28836948792` attempt 3 success；checks、build-images、deploy 均成功；deploy job `85548441254` 发布 `/data/tgyunying/releases/20260707061024_71dd41c`，后端和 worker 镜像为 `ghcr.io/chenxi1280/tg-yunying-backend:71dd41cdd11d1768154b7603e7d0360f0b18eb52`；backend、planner、dispatcher-1/2/3/4、listener、recovery、account-security、account-online、ai-memory、metrics 均 healthy；发布脚本确认 local api、host nginx api、public frontend、public api health 均 HTTP 200。本地复查 `https://tgyunying.telema.cn/api/health` 返回 `{"status":"ok"}`，`/task-center` 返回 HTTP 200。
+- limitation: 本机 SSH 到 `47.251.126.134` 当前为 publickey denied，未能直连生产 DB / worker / Telegram 样本；因此只能接受发布和运行时健康，不能接受 `production_fixed` / `closed`。
+- decision: release_gate=passed，生产运行时健康通过；真实 `channel_comment` 发布后样本仍需 prod-diagnosis 取证。
+- next_agent: prod-diagnosis
+- handoff_delivery_status: sent
+- target_thread: 019f07c6-92b5-7c50-b7e2-2f18a107e006
+- handoff_message_id: 2026-07-07-channel-comment-ai-meta-filter-release-prodverify-handoff-001
+- unresolved: 补查发布后 `channel_comment` action / worker / Telegram 真实链路，确认 `<think>` / “让我分析...” 这类过程性内容未再发送，或旧 pending 脏 `comment_text` 被 `content_policy` 拦截。

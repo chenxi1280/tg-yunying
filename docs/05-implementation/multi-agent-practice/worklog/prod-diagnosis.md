@@ -156,3 +156,24 @@
 - evidence: 本地 SSH alias `silicon-valley-production-server` 解析到 Clash fake-ip `198.18.0.153` 后连接关闭；`ssh codex_usa01_server` / `ssh codex_kl_server` 到 `47.251.126.134:22`、`47.250.167.174:22` 均在 banner exchange 前超时；当前环境 `curl https://tgyunying.telema.cn/api/health` 和 `/task-center` 均 10 秒超时。GitHub Actions 可访问，最近生产 workflow：`28808100947` workflow_dispatch success（2026-07-06T16:48:32Z，head `e2314453`），`28802430977` release push success（2026-07-06T15:19:02Z，head `92e36126`）。这些只能证明最近发布链路记录，不能证明当前任务恢复。
 - decision: 当前线程无法取得新的生产容器 / DB / worker E4 证据，不能写 `production_fixed`；本地根因已按 `2026-07-07-channel-comment-ai-meta-filter-devcomplete-001` 修复并等待 QA / release。
 - unresolved: 需要在可达生产网络或 GitHub Actions SSH 环境中复核最近 `channel_comment` action 的 payload / result / worker 日志，并在发布后确认过程性内容被 `content_policy` 拦截或不再生成。
+
+## 2026-07-07 频道 AI 评论过程性内容发布后运行时复核
+
+- message_id: 2026-07-07-channel-comment-ai-meta-filter-release-prodverify-handoff-001
+- action: 接收 product 发布恢复 handoff，记录当前可得生产运行时证据和剩余任务级取证缺口。
+- input: 用户要求“拉到线上验证”；本地修复 commit `71dd41cdd11d1768154b7603e7d0360f0b18eb52` 已推送 `master` / `release`。
+- output: `released_prod_runtime_ok_task_sample_unproven`
+- evidence: Deploy Production run `28836948792` attempt 3 success；deploy job `85548441254` 在 `2026-07-07T06:10:23Z` 到 `2026-07-07T06:13:51Z` 执行 `Deploy via SSH release script` 成功。release `20260707061024_71dd41c` 安装到 `/data/tgyunying/releases/20260707061024_71dd41c`；后端和 worker 镜像均为 `ghcr.io/chenxi1280/tg-yunying-backend:71dd41cdd11d1768154b7603e7d0360f0b18eb52`；backend 与 planner、dispatcher-1/2/3/4、listener、recovery、account-security、account-online、ai-memory、metrics workers 均 healthy。发布脚本确认 local api health、host nginx api health、public frontend、public api health 均 HTTP 200；本地复查公网 `/api/health` 返回 `{"status":"ok"}`，`/task-center` 返回 HTTP 200。
+- limitation: 本机 SSH 到 `47.251.126.134` 当前为 `Permission denied (publickey,gssapi-keyex,gssapi-with-mic,password)`，未取得发布后生产 DB / worker / Telegram action 样本。
+- decision: 发布和生产运行时健康已通过；任务级恢复仍 unproven，不能写 `production_fixed`。
+- unresolved: 需要补发布后 `channel_comment` 真实样本：确认新生成评论不含 `<think>` / “让我分析...” 等 AI 过程性内容，或旧 pending 脏 `comment_text` 在 `reply_channel_message` 前以 `content_policy` / `拦截 AI 过程性内容` 失败且未进入 Telegram gateway。
+
+## 2026-07-07 频道 AI 评论过程性内容二次线上防线复核
+
+- message_id: 2026-07-07-channel-comment-ai-meta-filter-a0f1a8e-prodverify-001
+- action: 按用户再次要求“拉到线上验证”，使用可用生产 SSH key 直连生产并完成只读 DB / 容器 / 过滤器核查。
+- input: 首轮修复 `71dd41c` 已发布；需要确认真实线上 `channel_comment` 是否仍可能发送 AI 过程性内容。
+- output: `production_guard_verified_post_comment_send_absent`
+- evidence: 当前生产曾先运行 `a8c684fa`，且 `71dd41c` 是其祖先；生产 DB 发布后 `channel_comment` 共 24 条，均为 `ensure_target_membership`，最近 50 条 payload/result 的 `<think>`、`让我分析`、`让我仔细分析` 等命中数为 0，发布后 `post_comment` 样本为 0。只读检查旧 pending `post_comment` 发现 `d04d35d3...` 为 `让我分析一下上下文`，`491aca40...` 为 `这是一段明显带有色情性质的内容 描述了性行为的详细过程`；首轮过滤会拦截前者但放行后者。新增红测后修复并发布 commit `a0f1a8e3aea6b59c8865efa52d244ce81b62f4ba`，Deploy Production run `28850140650` 的 checks、build-images、deploy 全部 success；生产 `/data/tgyunying/current -> /data/tgyunying/releases/20260707075044_a0f1a8e`，backend 和所有 worker 镜像均为 `ghcr.io/chenxi1280/tg-yunying-backend:a0f1a8e3aea6b59c8865efa52d244ce81b62f4ba` 且 healthy；公网 `/api/health` 返回 `{"status":"ok"}`，`/task-center` HTTP 200。生产容器内验证 `<think>`、`让我分析这个频道内容`、`这是一段明显带有色情性质的内容...`、`这是一个明显的色情内容频道` 均 `looks_like_ai_meta_content=True`；实际旧 pending `d04d35d3...` 和 `491aca40...` 当前 `filter_outbound_content` 均返回 `False / 拦截 AI 过程性内容`，普通 pending `5781a0f2...` 返回 allowed。
+- decision: 生产防线已验证：当前线上代码会在 `reply_channel_message` 前拦截已知 AI 过程性 / 审查口吻旧 pending 文本，避免进入 Telegram gateway。
+- unresolved: 发布后没有真实 `post_comment` 成功发送样本，因此不能证明“已经发出一条干净评论”；本条不写 closed。
