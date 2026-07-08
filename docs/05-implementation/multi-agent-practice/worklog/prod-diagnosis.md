@@ -1,5 +1,17 @@
 # Worklog: prod-diagnosis
 
+## 2026-07-08 硅谷 recovery CPU 最终生产 E4 通过
+
+- message_id: 2026-07-08-sv-recovery-cpu-backpressure-prodverify-fixed-f4c66fc5-001
+- action: 对多轮返工后的硅谷 recovery CPU 背压修复做最终生产 E4 复核。
+- input: Deploy Production run `28935442307` success；release head `f4c66fc5146ff21421494d88eec833f5337f0d62`。
+- output: `production_fixed_recovery_cpu_backpressure`
+- evidence: 公网 `https://tgyunying.telema.cn/api/health` 返回 `{"status":"ok"}`；硅谷 `47.251.126.134` 上 `tgyunying-backend` 与 `tgyunying-worker-recovery` 均运行镜像 `ghcr.io/chenxi1280/tg-yunying-backend:f4c66fc5146ff21421494d88eec833f5337f0d62` 且 healthy；worker healthcheck 已切换为读取本地 heartbeat 文件，`docker inspect` 显示 `WORKER_LOCAL_HEALTHCHECK_FILE` / `/tmp/tgyunying-worker-heartbeat`，不再使用 `python -m app.worker_health`；生产采样未发现 `app.worker_health` 进程。
+- evidence_detail: 事故初始 load 多次在 8+，曾见 `tgyunying-worker-recovery` 单次 CPU 148.69%；最终 E4 采样 load 降至 `2.85, 4.94, 6.33`，随后 `3.15, 5.18, 6.44`；即时复查 `tgyunying-backend 0.14%`、`tgyunying-worker-planner 7.03%`、`tgyunying-worker-recovery 0.65%`。追加约 5 分钟持续观察中，load 保持在 `2.35-4.14` 一分钟负载区间，recovery CPU 大部分低于 1%，一次短峰 `16.57%`，同窗 `recovery_errors=0`。生产 DB 只读：`stale_membership_executing=0`；recovery 日志近窗关键错误 `worker drain failed=0`、`Task was destroyed but it is pending=0`、`telegram_probe_timeout=0`、`telegram_probe_connection_error=0`。
+- decision: 本次 L3 recovery CPU 背压修复已取得 E4，可写 `production_fixed`。Telegram `Server closed the connection` 仍有残余日志，但当前未形成 recovery CPU tight loop；同机偶发 `python -m tg_v_chat.healthcheck` 高 CPU 属于邻近 `tg-v-chat` 容器，不属于本次 `tg-yunying` 修复范围。
+- next_agent: product
+- unresolved: 无本次阻断项；若要继续降低 Telegram `Server closed` 噪声或治理 `tg-v-chat` healthcheck，应另起独立事件。
+
 ## 2026-07-08 硅谷 recovery CPU 持续升高线上止血
 
 - message_id: 2026-07-08-sv-recovery-cpu-backpressure-prod-diagnosis-001

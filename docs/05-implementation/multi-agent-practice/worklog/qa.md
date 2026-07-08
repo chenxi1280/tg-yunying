@@ -1,5 +1,16 @@
 # Worklog: qa
 
+## 2026-07-08 硅谷 recovery CPU dedupe 与 worker healthcheck QA
+
+- message_id: 2026-07-08-sv-recovery-cpu-backpressure-qa-dedup-healthcheck-001
+- action: 对重复 membership reprobe 结果传播和 worker 本地 heartbeat healthcheck 做本地回归。
+- input: 2026-07-08-sv-recovery-cpu-backpressure-dev-rework-dedup-healthcheck-001。
+- output: local_qa_pass_dedup_and_local_healthcheck
+- evidence: 红测 `test_recovery_marks_duplicate_identity_probe_rows_failed` 先失败，证明同账号同目标的重复 `unknown_after_send` 行不会随一次 failed probe 显式标记；修复后该用例转绿。定向 recovery/lifecycle/gateway `19 passed`；worker healthcheck 测试 `16 passed, 5 warnings`；最终全量 no_postgres `807 passed, 781 deselected, 5 warnings`；`compileall` passed；`git diff --check` passed。
+- decision: 本地 QA 通过；重复 membership 积压不会再放大 recovery probe，worker 容器健康检查不再依赖启动 Python / DB 查询。待 prod-diagnosis 使用生产 E4 确认 CPU/load。
+- next_agent: prod-diagnosis
+- unresolved: 无本地 QA 阻断项。
+
 ## 2026-07-08 硅谷 recovery CPU stale failed result QA
 
 - message_id: 2026-07-08-sv-recovery-cpu-backpressure-qa-stale-failed-result-001

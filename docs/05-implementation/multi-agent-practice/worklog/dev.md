@@ -1,5 +1,16 @@
 # Worklog: dev
 
+## 2026-07-08 硅谷 recovery CPU 重复 membership reprobe 与 healthcheck CPU 返工
+
+- message_id: 2026-07-08-sv-recovery-cpu-backpressure-dev-rework-dedup-healthcheck-001
+- action: 处理 `3a93079d` 发布后 E4 暴露的历史 unknown membership 积压放大 Telegram probe，以及生产 worker healthcheck 自身启动 Python / 查询 DB 造成 CPU 热点的问题。
+- input: `3a93079d` 已部署后，recovery 过期 executing 清零且 CPU 低位，但 3 分钟内仍有大量 `Server closed` 日志，DB 中 running membership `unknown_after_send` 仍有近千条未标记记录；进程榜显示 `python -m app.worker_health --role dispatcher/planner` 和 `python -m tg_v_chat.healthcheck` 曾占据 CPU 第一梯队。
+- output: 同账号 + 同目标的 membership reprobe 结果会传播到重复 unknown 行，避免逐条重复 probe；worker 主循环写本地 heartbeat 文件，生产 Docker healthcheck 改为 shell 读取本地 heartbeat，不再启动 `python -m app.worker_health` / 查询 DB。
+- evidence: RED：`test_recovery_marks_duplicate_identity_probe_rows_failed` 先失败，证明旧逻辑会留下同 identity 重复行；修复后定向 recovery/lifecycle/gateway `19 passed`，全量 no_postgres `805 passed`。healthcheck 修复新增 `test_worker_writes_local_healthcheck_heartbeat` 和 `test_server_compose_worker_healthcheck_uses_local_heartbeat`；修复 CI 路径后 `backend/tests/test_worker_roles.py` `16 passed`，全量 no_postgres `807 passed, 781 deselected, 5 warnings`，`compileall` passed，`git diff --check` passed。
+- decision: dev 返工和 Release Gate 修复完成；`2ce949f4`、`a0f0605a`、`f4c66fc5` 均已推送 `master` / `release`，最终生产 E4 交由 prod-diagnosis 记录。
+- next_agent: prod-diagnosis
+- unresolved: 无 dev 阶段阻断项。
+
 ## 2026-07-08 硅谷 recovery CPU stale failed result 覆盖返工
 
 - message_id: 2026-07-08-sv-recovery-cpu-backpressure-dev-rework-stale-failed-result-001

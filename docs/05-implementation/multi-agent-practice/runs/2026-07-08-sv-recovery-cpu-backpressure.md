@@ -129,3 +129,44 @@ prod-diagnosis 需继续验证：
 - task-center recovery 是否继续处理其他项。
 
 当前结论：Release Gate passed / deployed；production_fixed 仍 unproven，必须等待 prod-diagnosis E4。
+
+## Follow-up Rework And Final Production Verification
+
+- message_id: 2026-07-08-sv-recovery-cpu-backpressure-prodverify-fixed-f4c66fc5-001
+- status: production_fixed
+- evidence_level: E4
+- release_gate: passed
+- production_verification: passed
+- final_release_candidate: `f4c66fc5146ff21421494d88eec833f5337f0d62`
+- deploy_run: `28935442307`
+
+补充返工范围：
+
+- `2ce949f4` 修复同一账号 + 同一目标的重复 `unknown_after_send` membership action 会逐条重复 Telegram probe 的问题；一次 probe 失败 / 冷却结果会同步到同 identity 积压行，避免历史未知队列放大连接错误。
+- `a0f0605a` 将生产 worker Docker healthcheck 从 `python -m app.worker_health --role ...` 改成本地 heartbeat 文件检查；worker 主循环继续写 DB heartbeat，同时写 `/tmp/tgyunying-worker-heartbeat` 给容器健康检查读取，避免每 20 秒为每个 worker 启动 Python 并查询 DB。
+- `f4c66fc5` 修复 CI 中 compose 测试路径，确保 Release Gate 后端套件覆盖本地 heartbeat healthcheck 合同。
+
+本地 / CI 证据：
+
+- 本地最终 `perl -e 'alarm 60; exec @ARGV' backend/.venv/bin/pytest -q -m no_postgres` -> `807 passed, 781 deselected, 5 warnings`。
+- worker healthcheck 定向测试 `backend/tests/test_worker_roles.py` -> `16 passed, 5 warnings`。
+- 相关 recovery / lifecycle / gateway 定向测试在返工过程中覆盖 `19 passed`。
+- `compileall` 和 `git diff --check` passed。
+- Deploy Production run `28935442307` success：checks `4m46s`、build-images `1m2s`、deploy `2m4s`。
+
+生产 E4 证据：
+
+- 公网 `https://tgyunying.telema.cn/api/health` 返回 `{"status":"ok"}`。
+- 硅谷 `47.251.126.134` 上 backend / recovery 均运行镜像 `ghcr.io/chenxi1280/tg-yunying-backend:f4c66fc5146ff21421494d88eec833f5337f0d62` 且 healthy。
+- worker healthcheck 命令已替换为读取本地 heartbeat 文件：`WORKER_LOCAL_HEALTHCHECK_FILE` / `/tmp/tgyunying-worker-heartbeat`，不再使用 `python -m app.worker_health`。
+- 线上采样未发现 `python -m app.worker_health` 常驻；偶发 `python -m tg_v_chat.healthcheck` 属于同机邻近 `tg-v-chat` 容器，不属于 `tg-yunying` stack。
+- 生产 load 从事故期间 9-10 区间下降到 `2.85, 4.94, 6.33`，后续采样为 `3.15, 5.18, 6.44`；即时复查 backend `0.14%`、planner `7.03%`、recovery `0.65%`。
+- 追加约 5 分钟持续观察：load 样本 `4.08, 4.61, 6.02` -> `3.73, 4.49, 5.93` -> `3.96, 4.47, 5.88` -> `2.86, 4.15, 5.72` -> `2.35, 3.91, 5.59` -> `3.09, 3.89, 5.52` -> `2.75, 3.74, 5.42` -> `4.14, 3.96, 5.43` -> `3.71, 3.87, 5.34` -> `4.13, 3.91, 5.31`；recovery CPU 大部分低于 1%，一次短峰 `16.57%`，同窗 `recovery_errors=0`。
+- `stale_membership_executing=0`。
+- recovery 关键错误：`worker drain failed=0`、`Task was destroyed but it is pending=0`、`telegram_probe_timeout=0`、`telegram_probe_connection_error=0`。
+
+结论：
+
+- 本次 L3 的 CPU 持续升高 / recovery 背压目标已完成生产修复，可写 `production_fixed`。
+- Telegram `Server closed the connection` 仍作为连接层残余日志存在，当前没有形成 recovery CPU tight loop；后续如要治理日志噪声或 Telegram 链路稳定性，应作为独立网络 / 代理质量任务处理。
+- 同机 `tg-v-chat` healthcheck 偶发 CPU 峰值不属于本次 `tg-yunying` recovery CPU 修复范围。
