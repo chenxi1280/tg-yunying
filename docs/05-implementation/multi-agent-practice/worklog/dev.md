@@ -1,5 +1,16 @@
 # Worklog: dev
 
+## 2026-07-08 硅谷 recovery CPU failed probe client 返工
+
+- message_id: 2026-07-08-sv-recovery-cpu-backpressure-dev-rework-probe-client-001
+- action: 处理 `f8d8f703` 发布后生产 E4 暴露的 failed probe Telethon client 持续重连。
+- input: 四次发布后 backend/recovery 已使用 `f8d8f703` 且 healthy，公网 `/api/health` 正常，`worker drain failed=0`、stale membership executing=0；但 recovery 10 分钟内仍有 `Server closed=471`，日志约每 0.45 秒一次，DB `unknown_membership_reprobe_status=''` 约 850 且 `failed_reprobe=0`。
+- output: `probe_target_capabilities` 返回失败结果后会 invalidate 对应 Telethon cached client；recovery 对 `OperationResult(False)` 显式写入 `unknown_membership_reprobe_status=failed`、`error_code`、`error_message` 和 `unknown_membership_reprobe_error`，下一轮查询不再重复 probe 同一 action。
+- evidence: RED：`test_probe_failure_invalidates_cached_client` 先失败，证明旧 gateway 不释放失败 client；`test_recovery_marks_failed_probe_result_and_skips_next_round` 先失败，证明旧 failed 落库缺少可见错误详情。修复后定向 recovery/lifecycle/gateway `17 passed`，全量 no_postgres `803 passed, 781 deselected, 5 warnings`，`compileall` passed，`git diff --check` passed。
+- decision: 四次发布 E4 failed；failed probe client 返工本地门禁通过，待重新发布和最终 E4。
+- next_agent: qa
+- unresolved: Deploy Production 和生产 E4 pending。
+
 ## 2026-07-08 硅谷 recovery CPU 背压修复 Release Gate
 
 - message_id: 2026-07-08-sv-recovery-cpu-backpressure-dev-release-gate-001

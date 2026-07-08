@@ -90,6 +90,34 @@ def test_recovery_skips_failed_reprobe_rows_when_selecting_batch(monkeypatch):
     assert calls == ["@target_99"]
 
 
+def test_recovery_marks_failed_probe_result_and_skips_next_round(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    SessionFactory = sessionmaker(bind=engine, future=True)
+    calls: list[str] = []
+
+    with SessionFactory() as session:
+        _seed_unknown_membership_actions(session, count=1)
+
+    def fake_probe(_account_id, target_peer_id, *_args, **_kwargs):
+        calls.append(str(target_peer_id))
+        return OperationResult(False, "失败", "unknown_after_send", "Server closed the connection")
+
+    monkeypatch.setattr(task_service, "credentials_for_account", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(task_service.gateway, "probe_target_capabilities", fake_probe)
+
+    assert drain_task_recovery(SessionFactory, limit=1) >= 0
+    assert drain_task_recovery(SessionFactory, limit=1) >= 0
+
+    with SessionFactory() as session:
+        action = session.get(Action, "action-membership-0")
+        assert action.result["unknown_membership_reprobe_status"] == "failed"
+        assert action.result["error_code"] == "unknown_after_send"
+        assert action.result["unknown_membership_reprobe_error"] == "Server closed the connection"
+
+    assert calls == ["@target_0"]
+
+
 def test_stale_executing_membership_timeout_clears_lease_and_cools_down(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

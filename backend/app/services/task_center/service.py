@@ -8,6 +8,7 @@ from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
+from app.integrations.telegram import OperationResult
 from app.models import Action, ChannelMessage, ExecutionAttempt, FailureType, MessageFingerprint, OperationIssue, OperationPlanTaskLink, OperationTarget, ReviewQueue, RuntimeMetricSnapshot, RuleSet, RuleSetVersion, Task, TaskRuntimeSummary, TgAccount, TgGroup, WorkerHeartbeat
 from app.schemas.task_center import (
     ChannelCapacityCheckRequest,
@@ -1697,6 +1698,7 @@ def _recover_unknown_membership_action(
         _mark_unknown_membership_reprobe_connection_error(action=action, task=task, latest_attempt=latest_attempt, now=now, exc=exc)
         return False
     if not result.ok:
+        _mark_unknown_membership_reprobe_failed(action=action, task=task, latest_attempt=latest_attempt, now=now, result=result)
         return False
     label = "可发言" if payload.get("require_send") else "已关注"
     mark_channel_membership_joined(session, action.tenant_id, channel_target_id, account.id, permission_label=label)
@@ -1727,6 +1729,33 @@ def _mark_unknown_membership_reprobe_timeout(
     if latest_attempt:
         latest_attempt.status = "result_unknown"
         latest_attempt.failure_type = "telegram_probe_timeout"
+        latest_attempt.after_call_at = now
+        latest_attempt.result_snapshot = dict(action.result)
+
+
+def _mark_unknown_membership_reprobe_failed(
+    *,
+    action: Action,
+    task: Task,
+    latest_attempt: ExecutionAttempt | None,
+    now: datetime,
+    result: OperationResult,
+) -> None:
+    error_code = result.failure_type or FailureType.UNKNOWN.value
+    error_message = result.detail or result.status or "Telegram 补偿复检未满足目标准入"
+    action.result = {
+        **dict(action.result or {}),
+        "success": False,
+        "error_code": error_code,
+        "error_message": error_message,
+        "unknown_membership_reprobe_status": "failed",
+        "unknown_membership_reprobe_at": now.isoformat(),
+        "unknown_membership_reprobe_error": error_message,
+    }
+    task.last_error = error_message
+    if latest_attempt:
+        latest_attempt.status = "result_unknown"
+        latest_attempt.failure_type = error_code
         latest_attempt.after_call_at = now
         latest_attempt.result_snapshot = dict(action.result)
 

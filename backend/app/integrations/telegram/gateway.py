@@ -1492,6 +1492,17 @@ class TelethonTelegramGateway(TelegramGateway):
         credentials: DeveloperAppCredentials,
     ) -> OperationResult:
         client = await self._get_or_create_client(credentials, raw_session)
+        result = await self._probe_target_capabilities_with_client(client, target_peer_id, target_type)
+        if not result.ok:
+            await self._lifecycle.invalidate_client(credentials, raw_session)
+        return result
+
+    async def _probe_target_capabilities_with_client(
+        self,
+        client: Any,
+        target_peer_id: str,
+        target_type: str,
+    ) -> OperationResult:
         if not await client.is_user_authorized():
             return OperationResult(False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value, "session 已失效")
         target = None

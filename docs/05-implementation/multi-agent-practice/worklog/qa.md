@@ -1,5 +1,16 @@
 # Worklog: qa
 
+## 2026-07-08 硅谷 recovery CPU failed probe client QA
+
+- message_id: 2026-07-08-sv-recovery-cpu-backpressure-qa-probe-client-001
+- action: 对 failed probe Telethon client 释放和 failed 落库做本地回归。
+- input: 2026-07-08-sv-recovery-cpu-backpressure-dev-rework-probe-client-001。
+- output: local_targeted_qa_pass_probe_client_cleanup
+- evidence: 红测 `test_probe_failure_invalidates_cached_client` 先失败，证明失败 probe 结果不会释放 cached client；红测 `test_recovery_marks_failed_probe_result_and_skips_next_round` 先失败，证明 failed 落库缺少可见错误详情。修复后定向 recovery/lifecycle/gateway `17 passed`，全量 no_postgres `803 passed, 781 deselected, 5 warnings`，`compileall` passed，`git diff --check` passed。
+- decision: 本地 QA 通过；待重新发布和生产 E4。
+- next_agent: dev
+- unresolved: release deploy、生产日志/CPU/DB 验证 pending。
+
 ## 2026-07-08 硅谷 recovery CPU 背压修复本地 QA
 
 - message_id: 2026-07-08-sv-recovery-cpu-backpressure-local-qa-001
