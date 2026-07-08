@@ -760,7 +760,8 @@ def _ensure_send_message_content(session: Session, action: Action, account: TgAc
     )
     if len(contents) < len(batch):
         stats_inc(task, "normal_candidate_shortfall_count")
-        raise AiGenerationUnavailable(AI_DISPATCH_CANDIDATE_SHORTFALL_MESSAGE)
+        if not contents:
+            raise AiGenerationUnavailable(AI_DISPATCH_CANDIDATE_SHORTFALL_MESSAGE)
     _store_generated_send_payloads(session, batch, contents, tokens)
     refreshed = SendMessagePayload.model_validate(action.payload or {})
     if refreshed.quality_skip_reason == "duplicate_message":

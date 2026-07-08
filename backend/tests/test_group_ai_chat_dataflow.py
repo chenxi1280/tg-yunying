@@ -80,6 +80,10 @@ def test_group_ai_deferred_items_preserve_slot_topic_and_teacher_targets():
     assert items[0]["act_type"] == "short_react"
 
 
+def test_group_ai_hard_hourly_goal_10_defers_ai_generation():
+    assert group_ai_chat._defer_ai_generation_for_plan({}, {"goal": 10}) is True
+
+
 def test_group_ai_chat_normal_candidate_shortfall_keeps_partial_candidates(monkeypatch):
     task = SimpleNamespace(tenant_id=1, stats={})
 
