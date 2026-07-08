@@ -1154,20 +1154,30 @@ def _generation_slot(
 ) -> dict:
     quality_item = {"reply_target": reply_target} if reply_target else {}
     content = str((reply_target or {}).get("content") or "")
+    profile = profiles.get(str(account.id), "")
     slot = {
         "slot_id": _slot_id(cycle_id, index),
         "sequence_index": index + 1,
         "account_id": account.id,
         "act_type": _act_type_for_turn(index, quality_item),
-        "account_profile": profiles.get(str(account.id), ""),
+        "account_profile": profile,
         "reply_to_message_id": _reply_target_message_id(quality_item),
         "reply_to_content": content,
     }
+    guidance = _mask_theme_anchor_guidance(profile)
+    if guidance:
+        slot["content_guidance"] = guidance
     if topic_direction:
         slot["topic_direction"] = dict(topic_direction)
     if teacher_target:
         slot["teacher_target"] = dict(teacher_target)
     return slot
+
+
+def _mask_theme_anchor_guidance(profile: str) -> str:
+    if not _profile_requires_mask_theme(_normalize_for_similarity(profile)):
+        return ""
+    return "夜场主题锚点：本 slot 至少落到价格/位置/时间/真假/服务/体验中的一个具体点"
 
 
 def _conversation_target_sequence(

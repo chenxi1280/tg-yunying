@@ -757,6 +757,7 @@ def _generation_slot_line(slot: dict) -> str:
     account_id = str(slot.get("account_id") or "").strip()
     act_type = canonical_ai_group_act_type(str(slot.get("act_type") or "").strip())
     profile = str(slot.get("account_profile") or "").strip()
+    guidance = str(slot.get("content_guidance") or "").strip()
     reply = str(slot.get("reply_to_content") or "").strip()
     topic = _slot_target_text(slot.get("topic_direction"), "title")
     teacher = _slot_target_text(slot.get("teacher_target"), "name")
@@ -773,6 +774,8 @@ def _generation_slot_line(slot: dict) -> str:
         parts.append(f"讨论老师 {teacher}")
     if profile:
         parts.append(f"表达 {profile}")
+    if guidance:
+        parts.append(f"约束 {guidance}")
     if reply:
         parts.append(f"引用 {reply[:120]}")
     return "；".join(parts)
