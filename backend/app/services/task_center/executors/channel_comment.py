@@ -402,12 +402,11 @@ def _comment_ready_accounts(task: Task, accounts: list) -> list:
     if blocked_count:
         stats["comment_profile_blocked_account_count"] = blocked_count
         stats["comment_profile_ready_account_count"] = len(ready)
-        task.last_error = COMMENT_ACCOUNT_PROFILE_ERROR
     else:
         stats.pop("comment_profile_blocked_account_count", None)
         stats.pop("comment_profile_ready_account_count", None)
-        if task.last_error == COMMENT_ACCOUNT_PROFILE_ERROR:
-            task.last_error = ""
+    if ready and task.last_error == COMMENT_ACCOUNT_PROFILE_ERROR:
+        task.last_error = ""
     task.stats = stats
     return ready
 

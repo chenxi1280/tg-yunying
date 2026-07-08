@@ -42,6 +42,19 @@ def test_channel_comment_clean_rejects_provider_meta_content():
     assert ai_generator.clean_channel_comment_contents(contents) == ["飞机号是真的还是假的啊"]
 
 
+def test_channel_comment_partial_profile_block_does_not_set_last_error():
+    task = SimpleNamespace(stats={}, last_error=channel_comment.COMMENT_ACCOUNT_PROFILE_ERROR)
+    ready = SimpleNamespace(tg_first_name="小林", username="ready_user", avatar_object_key="avatar.jpg", profile_sync_status="已同步")
+    blocked = SimpleNamespace(tg_first_name="Pratiksha", username="blocked_user", avatar_object_key="avatar.jpg", profile_sync_status="同步失败")
+
+    accounts = channel_comment._comment_ready_accounts(task, [ready, blocked])
+
+    assert accounts == [ready]
+    assert task.last_error == ""
+    assert task.stats["comment_profile_blocked_account_count"] == 1
+    assert task.stats["comment_profile_ready_account_count"] == 1
+
+
 def test_channel_comment_keeps_target_profile_out_of_comment_style():
     config = channel_comment._config_with_comment_profile(
         {"comment_style": "短评", "topic_hint": "频道消息"},
