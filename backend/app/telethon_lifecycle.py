@@ -113,7 +113,11 @@ class TelethonClientLifecycle:
                     self._cache.pop(cache_key, None)
 
         client = self.new_client(credentials, raw_session, client_metadata)
-        await asyncio.wait_for(client.connect(), timeout=self.settings.telethon_client_connect_timeout_seconds)
+        try:
+            await asyncio.wait_for(client.connect(), timeout=self.settings.telethon_client_connect_timeout_seconds)
+        except Exception:
+            await self._disconnect_quietly(client)
+            raise
         await self.remember_connected_client(credentials, raw_session, client, client_metadata=client_metadata)
         await self.enforce_cache_limit()
         return client

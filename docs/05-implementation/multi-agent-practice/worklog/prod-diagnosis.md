@@ -22,6 +22,17 @@
 - next_agent: dev
 - unresolved: 连接失败补丁尚未重新发布；CPU/load 降载、`worker drain failed` 清零和冷却字段 E4 仍 pending。
 
+## 2026-07-08 硅谷 recovery CPU 二次发布后 E4 失败
+
+- message_id: 2026-07-08-sv-recovery-cpu-backpressure-prodverify-failed-lifecycle-001
+- action: 对 release candidate `f96dfa4eb306030e8509dac85165a39e1f896153` 做生产 E4 复核。
+- input: Deploy Production run `28922993123` success；公网 `/api/health` 返回 `{"status":"ok"}`。
+- output: `production_verification_failed_telethon_lifecycle_pending_tasks`
+- evidence: 新镜像 `f96dfa4e` 已落地且 recovery healthy；第一轮样本 `worker_drain_failed=0`、`pending_task_destroyed=0`，但 3 分钟后 recovery CPU 约 96.91%，5 分钟内 `Task was destroyed but it is pending=796`、`Server closed=784`、`missing_proxy_024=6`。DB 只读确认 stale executing 样本已变为 `unknown_after_send`、lease 已清空，说明状态机返工有效，但 Telethon connect failure 后台任务仍在残留。
+- decision: 二次发布仍不是 production_fixed；根因推进到 `TelethonClientLifecycle.get_or_create_client` connect failure 后未 disconnect 新 client。已停止线上 recovery 容器临时止血，等待 dev 发布 lifecycle cleanup。
+- next_agent: dev
+- unresolved: lifecycle cleanup 尚未发布；三次发布后需复核 recovery CPU、pending task、server closed 和 worker drain failed。
+
 ## 2026-07-07 MiniMax-M2.5 成人语境生产探针
 
 - message_id: 2026-07-07-minimax-m25-adult-context-prodprobe-001

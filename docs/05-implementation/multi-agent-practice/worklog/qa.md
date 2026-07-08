@@ -22,6 +22,17 @@
 - next_agent: dev
 - unresolved: 重新发布和生产 E4 pending。
 
+## 2026-07-08 硅谷 recovery CPU Telethon lifecycle 本地 QA
+
+- message_id: 2026-07-08-sv-recovery-cpu-backpressure-qa-lifecycle-connect-001
+- action: 对 Telethon connect failure 后台任务清理做本地回归。
+- input: 2026-07-08-sv-recovery-cpu-backpressure-dev-rework-lifecycle-connect-001。
+- output: local_targeted_qa_pass_lifecycle_connect_cleanup
+- evidence: 红测 `test_telethon_lifecycle_disconnects_new_client_after_connect_failure` 先失败，证明旧实现 connect failure 后不会 disconnect 新 client；修复后 `backend/tests/test_telethon_lifecycle.py` `10 passed`，`backend/tests/test_task_recovery_backpressure.py` `4 passed`，全量 no_postgres `800 passed, 781 deselected, 5 warnings`，`compileall` passed，`git diff --check` passed。
+- decision: 本地 QA 通过；connect failure 后新 client 会被断开且不进入 cache。
+- next_agent: dev
+- unresolved: 重新发布和生产 E4 pending。
+
 ## 2026-07-06 AI 活群 hard-hourly 分布护栏补齐 QA
 
 - message_id: 2026-07-06-ai-group-hard-hourly-distribution-guard-qa-002

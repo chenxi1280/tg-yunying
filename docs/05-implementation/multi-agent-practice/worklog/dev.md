@@ -24,6 +24,18 @@
 - next_agent: qa
 - unresolved: 重新推送 release、Deploy Production 和二次 E4 均 pending。
 
+## 2026-07-08 硅谷 recovery CPU Telethon connect failure lifecycle 返工
+
+- message_id: 2026-07-08-sv-recovery-cpu-backpressure-dev-rework-lifecycle-connect-001
+- action: 处理 `f96dfa4e` 发布后生产 E4 暴露的 Telethon connect failure 后台任务残留。
+- input: 二次发布后 `worker drain failed=0`，但 `tgyunying-worker-recovery` CPU 约 97%，5 分钟内 `Task was destroyed but it is pending=796`、`Server closed=784`，missing proxy `tgyunying-mihomo-024` 仍出现；DB stale executing 已清成 `unknown_after_send`，说明 recovery 状态机不是剩余 CPU 根因。
+- output: `TelethonClientLifecycle.get_or_create_client` 在新建 client 的 `connect()` 失败时立即 `_disconnect_quietly(client)`，避免失败 client 的 auto-reconnect / send / recv coroutine 留在后台。
+- evidence: RED：`test_telethon_lifecycle_disconnects_new_client_after_connect_failure` 先失败，证明旧实现 `disconnect_count=0`；修复后 `backend/tests/test_telethon_lifecycle.py` `10 passed`，`backend/tests/test_task_recovery_backpressure.py` `4 passed`，全量 no_postgres `800 passed, 781 deselected, 5 warnings`，`compileall` passed，`git diff --check` passed。
+- production_stopgap: 2026-07-08 14:55:58 CST 已停止线上 `tgyunying-worker-recovery` 临时止血，未写数据库；发布新 lifecycle 修复后由 deploy 重新拉起。
+- decision: `f96dfa4e` 二次 E4 failed；需要第三次发布 lifecycle cleanup 修复。
+- next_agent: qa
+- unresolved: 重新发布和三次 E4 pending。
+
 ## 2026-07-08 硅谷 recovery CPU 持续升高修复 Development Complete
 
 - message_id: 2026-07-08-sv-recovery-cpu-backpressure-devcomplete-001

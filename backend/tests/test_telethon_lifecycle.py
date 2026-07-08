@@ -30,6 +30,12 @@ class FakeTelethonClient:
         self.disconnect_count += 1
 
 
+class FailingConnectClient(FakeTelethonClient):
+    async def connect(self) -> None:
+        self.connected = True
+        raise ConnectionError("Connection to Telegram failed 5 time(s)")
+
+
 def reset_lifecycle_state() -> None:
     TelethonClientLifecycle._cache.clear()
     TelethonClientLifecycle._loop = None
@@ -267,6 +273,35 @@ def test_telethon_lifecycle_prunes_idle_clients(monkeypatch):
 
     assert pruned == 1
     assert client.disconnect_count == 1
+    assert TelethonClientLifecycle._cache == {}
+
+
+def test_telethon_lifecycle_disconnects_new_client_after_connect_failure(monkeypatch):
+    reset_lifecycle_state()
+    settings = Settings(
+        telethon_client_cache_size=10,
+        telethon_client_idle_seconds=3600,
+        telethon_client_connect_timeout_seconds=1,
+        telethon_operation_timeout_seconds=1,
+    )
+    lifecycle = TelethonClientLifecycle(settings)
+    credentials = DeveloperAppCredentials(app_id=1, api_id=123, api_hash="hash", credentials_version=1)
+    clients: list[FailingConnectClient] = []
+
+    def fake_new_client(_credentials, raw_session, client_metadata=None):
+        client = FailingConnectClient(raw_session or "")
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr(lifecycle, "new_client", fake_new_client)
+
+    async def scenario():
+        with pytest.raises(ConnectionError, match="Connection to Telegram failed"):
+            await lifecycle.get_or_create_client(credentials, "bad-session")
+
+    asyncio.run(scenario())
+
+    assert clients[0].disconnect_count == 1
     assert TelethonClientLifecycle._cache == {}
 
 
