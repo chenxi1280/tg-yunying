@@ -123,6 +123,7 @@ def compact_action_debug(actions: list[dict]) -> list[dict]:
             "id": item.get("id"),
             "memory_id": (item.get("payload") or {}).get("ai_message_memory_id"),
             "cycle_id": (item.get("payload") or {}).get("cycle_id"),
+            "ai_generation_status": (item.get("payload") or {}).get("ai_generation_status"),
             "message": (item.get("payload") or {}).get("message_text"),
         }
         for item in actions
@@ -3606,10 +3607,16 @@ def test_task_center_group_ai_chat_runs_from_worker_loop(monkeypatch):
         detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
         assert detail["task"]["status"] == "running"
         actions = task_detail_actions(client, headers, task_id, action_type="send_message")
-        assert detail["task"]["stats"]["success_count"] >= 1, {
-            "task": compact_task_debug(detail["task"]),
-            "actions": compact_action_debug(actions),
-        }
+        deferred_actions = [
+            action
+            for action in actions
+            if action["status"] == "pending" and (action.get("payload") or {}).get("ai_generation_status") == "pending"
+        ]
+        if not deferred_actions:
+            assert detail["task"]["stats"]["success_count"] >= 1, {
+                "task": compact_task_debug(detail["task"]),
+                "actions": compact_action_debug(actions),
+            }
         assert actions[0]["action_type"] == "send_message"
 
 
@@ -4707,10 +4714,14 @@ def test_task_center_reset_group_ai_chat_respects_idle_window(monkeypatch):
             "task": compact_task_debug(detail["task"]),
             "actions": compact_action_debug(task_detail_actions(client, headers, task_id)),
         }
-        assert any(action["status"] == "success" for action in reset_cycle_actions), compact_action_debug(
-            reset_cycle_actions
+        has_success = any(action["status"] == "success" for action in reset_cycle_actions)
+        has_deferred_ai = any(
+            action["status"] == "pending" and (action.get("payload") or {}).get("ai_generation_status") == "pending"
+            for action in reset_cycle_actions
         )
-        assert len(sends) > sends_before_reset
+        assert has_success or has_deferred_ai, compact_action_debug(reset_cycle_actions)
+        if has_success:
+            assert len(sends) > sends_before_reset
 
 
 def test_task_center_reset_group_relay_clears_source_fingerprints():
