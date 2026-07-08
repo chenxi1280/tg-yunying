@@ -80,12 +80,35 @@ def test_group_ai_deferred_items_preserve_slot_topic_and_teacher_targets():
     assert items[0]["act_type"] == "short_react"
 
 
-def test_group_ai_chat_normal_candidate_shortfall_is_visible_failure(monkeypatch):
+def test_group_ai_chat_normal_candidate_shortfall_keeps_partial_candidates(monkeypatch):
     task = SimpleNamespace(tenant_id=1, stats={})
 
     def fake_generate_group_messages(_session, _tenant_id, _config, *, count, target_label, history):
         assert count == 3
         return ["只返回一条普通发言"], 0
+
+    monkeypatch.setattr(group_ai_chat, "generate_group_messages", fake_generate_group_messages)
+
+    items, _tokens = group_ai_chat._generate_group_planned_items(
+        None,
+        task,
+        {},
+        reply_targets=[],
+        normal_count=3,
+        target_label="测试群",
+        history="真人用户: 今天群里有什么安排",
+    )
+
+    assert [item["content"] for item in items] == ["只返回一条普通发言"]
+    assert task.stats["normal_candidate_shortfall_count"] == 1
+
+
+def test_group_ai_chat_empty_normal_candidate_shortfall_is_visible_failure(monkeypatch):
+    task = SimpleNamespace(tenant_id=1, stats={})
+
+    def fake_generate_group_messages(_session, _tenant_id, _config, *, count, target_label, history):
+        assert count == 3
+        return [], 0
 
     monkeypatch.setattr(group_ai_chat, "generate_group_messages", fake_generate_group_messages)
 
