@@ -223,7 +223,8 @@ def test_worker_writes_local_healthcheck_heartbeat(monkeypatch, tmp_path):
 
 
 def test_server_compose_worker_healthcheck_uses_local_heartbeat():
-    compose = Path("docker-compose.server.yml").read_text(encoding="utf-8")
+    repo_root = Path(__file__).resolve().parents[2]
+    compose = (repo_root / "docker-compose.server.yml").read_text(encoding="utf-8")
     healthcheck_section = compose.split("x-worker-healthcheck:", 1)[1].split("services:", 1)[0]
 
     assert "WORKER_LOCAL_HEALTHCHECK_FILE" in healthcheck_section
