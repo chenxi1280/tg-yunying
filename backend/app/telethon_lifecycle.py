@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from collections.abc import Mapping
 from typing import Any, Protocol
@@ -55,7 +56,11 @@ class TelethonClientLifecycle:
     def run(self, coro):
         loop = self.get_or_create_loop()
         future = asyncio.run_coroutine_threadsafe(coro, loop)
-        return future.result(timeout=self.settings.telethon_operation_timeout_seconds)
+        try:
+            return future.result(timeout=self.settings.telethon_operation_timeout_seconds)
+        except FutureTimeoutError:
+            future.cancel()
+            raise
 
     def new_client(
         self,

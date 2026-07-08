@@ -1,5 +1,16 @@
 # Worklog: prod-diagnosis
 
+## 2026-07-08 硅谷 recovery CPU 持续升高线上止血
+
+- message_id: 2026-07-08-sv-recovery-cpu-backpressure-prod-diagnosis-001
+- action: 排查并临时止血硅谷生产服务器 CPU 持续升高问题。
+- input: 用户反馈“线上硅谷的服务器，cpu 占用一直增加”。
+- output: `production_incident_reproduced_recovery_stopped_fix_pending_release`
+- evidence: 生产 SSH 直连 `root@47.251.126.134`，主机 4 核，load 多次在 8+；`tgyunying-worker-recovery` 单次 `docker stats` 到 148.69%，累计网络 I/O 150GB/2.54GB；recovery 日志 10 分钟内 `worker drain failed` 18 次，20 分钟内 38 次，栈落在 `_recover_unknown_membership_action -> gateway.probe_target_capabilities -> TelethonClientLifecycle.run`，异常为 `TimeoutError` 并伴随 `Server closed the connection` / `Task was destroyed but it is pending`。生产 DB 统计：`unknown_after_send=1043`，running unknown membership=126，stale executing=27。2026-07-08 14:04:52 CST 已仅停止旧 `tgyunying-worker-recovery` 容器，未写数据库；停止后 load 样本 `7.16, 7.83, 8.24`。
+- decision: 根因定位为 recovery 对历史 unknown membership 高频 Telegram 补偿复检且 timeout 未显式落库/冷却，Telethon 超时后未取消后台 coroutine；旧 recovery 已临时停止以止血。当前只能写 incident reproduced / stopgap applied，不能写 `production_fixed`。
+- next_agent: dev
+- unresolved: 新代码尚未发布；需要 Deploy Production 后确认生产镜像版本、recovery 容器重新 healthy、`worker drain failed` 下降/归零、CPU load 降到 4 核可承受范围，并复查 DB `telegram_probe_timeout` 冷却字段。
+
 ## 2026-07-07 MiniMax-M2.5 成人语境生产探针
 
 - message_id: 2026-07-07-minimax-m25-adult-context-prodprobe-001

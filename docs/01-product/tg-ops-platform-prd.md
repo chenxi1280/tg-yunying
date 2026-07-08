@@ -3321,7 +3321,7 @@ listener_source_state
 | Planner | running tasks、规则、账号池、上下文 | pending actions、next_run_at、stats | 不调用 TG API |
 | Dispatcher | due pending actions | action result、execution_attempts、账号状态、任务 stats | 不生成新业务 action |
 | Listener | listener source、监听账号、源目标 | 上下文、监听水位、源媒体缓存、事件 | 不发送业务消息 |
-| Recovery | 超时 claim、超时 lease、worker 失联、unknown | 恢复 action、任务错误摘要、审计 | 不调用 TG |
+| Recovery | 超时 claim、超时 lease、worker 失联、unknown | 恢复 action、任务错误摘要、审计、unknown membership 有界补偿复检 | 不能无上限调用 TG；不能自动重发业务消息 |
 | Account Security | 账号资料初始化、设置二步密码、清理登录设备、备用 session 补齐 / 自愈批次 | 执行 `tg_account_security_batch_items` pending/waiting 项，回写 profile / username / avatar / 2FA / device / standby session 结果 | 调用 TG，必须独立运行 |
 | Metrics | action、task、worker、账号、代理、Redis | runtime snapshots、daily stats | 不改变业务状态 |
 
@@ -3447,6 +3447,7 @@ DB 短事务确认执行
 - 已进入 Gateway 的超时必须进入 `unknown_after_send`。
 - worker heartbeat 失联时恢复其持有 action。
 - 记录恢复原因并暴露在任务详情和运营数据中。
+- `unknown_after_send` membership 只允许按 drain limit 和账号+目标去重后有界补偿复检；Telegram 探测超时必须写入 `telegram_probe_timeout`、复检时间和下一次冷却时间，不能抛出打断整轮 recovery，也不能高频重试。
 
 ### 5.6 Metrics 要求
 
@@ -3518,7 +3519,7 @@ Action 状态：
 | `success` | Gateway 明确成功 | 执行成功 | 写汇总，计入成功 |
 | `failed` | Gateway 或前置校验明确失败 | 执行失败 | 写 failure_type，上卷运营异常 |
 | `skipped` | 规则、质量、风控或容量决定跳过 | 主动跳过 | 需要记录 skip_reason |
-| `unknown_after_send` | 已进入 Gateway 边界但本地结果未知 | 可能已发送 | 不自动重发，等待人工确认或补偿查询 |
+| `unknown_after_send` | 已进入 Gateway 边界但本地结果未知 | 可能已发送 | 不自动重发，等待人工确认或有界补偿查询 |
 
 ### 5.9 失败上卷规则
 

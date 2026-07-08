@@ -1,5 +1,16 @@
 # Worklog: qa
 
+## 2026-07-08 硅谷 recovery CPU 背压修复本地 QA
+
+- message_id: 2026-07-08-sv-recovery-cpu-backpressure-local-qa-001
+- action: 对 recovery CPU 持续升高修复做本地自动化验收。
+- input: 2026-07-08-sv-recovery-cpu-backpressure-devcomplete-001。
+- output: local_qa_pass_for_recovery_backpressure_and_timeout_cleanup
+- evidence: `backend/tests/test_task_recovery_backpressure.py` 覆盖 unknown membership 单轮复检上限和 Telegram reprobe timeout 显式落库；`backend/tests/test_telethon_lifecycle.py` 覆盖 operation timeout 后 coroutine cancel。验证通过：目标测试 `3 passed`；Telethon lifecycle `9 passed`；worker/recovery 相关 `17 passed, 10 deselected`；全量 no_postgres 60 秒门禁 `797 passed, 781 deselected, 5 warnings`；`compileall` 和 `git diff --check` 通过。
+- decision: 本地 QA 通过；该修复没有引入 silent fallback，TimeoutError 会写入可见 `telegram_probe_timeout` 和下一次冷却时间。
+- next_agent: product
+- unresolved: CI / release deploy / 生产 recovery 容器重启、CPU 降载、`worker drain failed` 清零仍 unproven。
+
 ## 2026-07-06 AI 活群 hard-hourly 分布护栏补齐 QA
 
 - message_id: 2026-07-06-ai-group-hard-hourly-distribution-guard-qa-002

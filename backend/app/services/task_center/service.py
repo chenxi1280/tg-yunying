@@ -140,6 +140,9 @@ RATE_LIMIT_MARKERS = ("floodwait", "too many requests", "slowmode", "慢速模�
 HARD_HOURLY_WAKE_MIN_SCAN = 20
 HARD_HOURLY_RECOVERY_MIN_BATCH = 1000
 HARD_HOURLY_RECOVERY_LIMIT_MULTIPLIER = 20
+DEFAULT_RECOVERY_BATCH_LIMIT = 100
+UNKNOWN_MEMBERSHIP_REPROBE_PER_DRAIN_LIMIT = 10
+UNKNOWN_MEMBERSHIP_REPROBE_COOLDOWN = timedelta(minutes=30)
 
 
 from .config_fields import (
@@ -1170,7 +1173,7 @@ def _drain_task_recovery(session_factory, *, limit: int, process_type: str | Non
         processed += recover_missing_hard_hourly_memberships(session, limit=_hard_hourly_recovery_limit(limit))
         processed += fast_track_pending_hard_hourly_memberships(session, limit=_hard_hourly_recovery_limit(limit))
         processed += _recover_continuous_task_states(session)
-        processed += _recover_stale_executing_actions(session)
+        processed += _recover_stale_executing_actions(session, limit=limit)
         processed += expire_reviews(session)
         settings = get_settings()
         if settings.enable_runtime_retention_cleanup:
@@ -1421,24 +1424,39 @@ def _recover_continuous_task_states(session: Session) -> int:
     return recovered
 
 
-def _recover_stale_executing_actions(session: Session, *, timeout_minutes: int = 30) -> int:
+def _recover_stale_executing_actions(session: Session, *, timeout_minutes: int = 30, limit: int = DEFAULT_RECOVERY_BATCH_LIMIT) -> int:
     now = _now()
+    recovered = 0
+    for action, task, stale_worker_ids in _stale_executing_action_rows(session, now=now, timeout_minutes=timeout_minutes, limit=limit):
+        latest_attempt = _latest_execution_attempt(session, action)
+        gateway_started = _attempt_gateway_started(latest_attempt)
+        if gateway_started and _recover_unknown_membership_action(session, action=action, task=task, latest_attempt=latest_attempt, now=now):
+            recovered += 1
+            continue
+        if gateway_started and _membership_reprobe_deferred(action):
+            continue
+        _mark_stale_executing_action(action=action, task=task, latest_attempt=latest_attempt, stale_worker_ids=stale_worker_ids, now=now)
+        recovered += 1
+    recovered += _recover_existing_unknown_membership_actions(session, now, limit=_membership_reprobe_limit(limit))
+    return recovered
+
+
+def _stale_executing_action_rows(
+    session: Session,
+    *,
+    now: datetime,
+    timeout_minutes: int,
+    limit: int,
+) -> list[tuple[Action, Task, set[str]]]:
     cutoff = now - timedelta(minutes=max(1, int(timeout_minutes or 30)))
     heartbeat_cutoff = now - timedelta(minutes=2)
-    stale_worker_ids = set(
-        session.scalars(
-            select(WorkerHeartbeat.worker_id).where(
-                WorkerHeartbeat.last_seen_at < heartbeat_cutoff,
-            )
-        )
-    )
+    stale_worker_ids = set(session.scalars(select(WorkerHeartbeat.worker_id).where(WorkerHeartbeat.last_seen_at < heartbeat_cutoff)))
     recovery_conditions = [
         and_(Action.lease_expires_at.is_not(None), Action.lease_expires_at <= now),
         and_(Action.lease_expires_at.is_(None), Action.scheduled_at <= cutoff),
     ]
     if stale_worker_ids:
         recovery_conditions.append(Action.lease_owner.in_(stale_worker_ids))
-    recovered = 0
     rows = session.execute(
         select(Action, Task)
         .join(Task, Task.id == Action.task_id)
@@ -1449,64 +1467,116 @@ def _recover_stale_executing_actions(session: Session, *, timeout_minutes: int =
             Task.deleted_at.is_(None),
         )
         .order_by(Action.scheduled_at.asc())
+        .limit(_recovery_batch_limit(limit))
     ).all()
-    for action, task in rows:
-        previous_result = dict(action.result or {})
-        previous_lease_owner = action.lease_owner or ""
-        previous_lease_expires_at = action.lease_expires_at
-        recovery_reason = "stale_worker" if previous_lease_owner in stale_worker_ids else "lease_expired" if previous_lease_expires_at else "execution_timeout"
-        latest_attempt = session.scalar(
-            select(ExecutionAttempt)
-            .where(ExecutionAttempt.action_id == action.id)
-            .order_by(ExecutionAttempt.attempt_no.desc())
-            .limit(1)
-        )
-        gateway_started = bool(latest_attempt and latest_attempt.gateway_call_started_at and latest_attempt.status not in {"success", "failed", "call_not_started"})
-        if gateway_started and _recover_unknown_membership_action(session, action, task, latest_attempt, now):
-            recovered += 1
-            continue
-        action.status = "unknown_after_send" if gateway_started else "failed"
-        action.executed_at = now
-        action.lease_owner = ""
-        action.lease_expires_at = None
-        action.result = {
-            "success": False,
-            "error_code": "unknown_after_send" if gateway_started else "execution_timeout",
-            "error_message": "执行项已进入 TG 调用边界但本地结果未知，需人工或补偿确认" if gateway_started else "执行项长时间处于执行中，已由投递守护标记为超时",
-            "validation_stage": "execution_recovery",
-            "auto_check": "结果未知" if gateway_started else "超时恢复",
-            "recovery_reason": recovery_reason,
-            "recovered_at": now.isoformat(),
-            "previous_lease_owner": previous_lease_owner,
-            "previous_lease_expires_at": previous_lease_expires_at.isoformat() if previous_lease_expires_at else "",
-        }
-        if previous_result:
-            action.result["previous_result"] = previous_result
-        if latest_attempt:
-            latest_attempt.status = "result_unknown" if gateway_started else "call_not_started"
-            latest_attempt.after_call_at = now
-            latest_attempt.result_snapshot = dict(action.result or {})
-        task.last_error = action.result["error_message"]
-        stats = dict(task.stats or {})
-        recovered_action_ids = list(stats.get("stale_executing_recovered_action_ids") or [])
-        recovered_action_ids.append(action.id)
-        stats["last_error"] = task.last_error
-        stats["stale_executing_recovered_at"] = now.isoformat()
-        stats["stale_executing_last_action_id"] = action.id
-        stats["stale_executing_last_lease_owner"] = previous_lease_owner
-        stats["stale_executing_last_recovery_reason"] = recovery_reason
-        stats["stale_executing_recovered_action_ids"] = recovered_action_ids[-20:]
-        stats["recovered_execution_timeout_count"] = int(stats.get("recovered_execution_timeout_count") or 0) + 1
-        if gateway_started:
-            stats["unknown_after_send_count"] = int(stats.get("unknown_after_send_count") or 0) + 1
-        stats["last_recovery_stage"] = "execution_recovery"
-        task.stats = stats
-        recovered += 1
-    recovered += _recover_existing_unknown_membership_actions(session, now)
-    return recovered
+    return [(action, task, stale_worker_ids) for action, task in rows]
 
 
-def _recover_existing_unknown_membership_actions(session: Session, now: datetime) -> int:
+def _mark_stale_executing_action(
+    *,
+    action: Action,
+    task: Task,
+    latest_attempt: ExecutionAttempt | None,
+    stale_worker_ids: set[str],
+    now: datetime,
+) -> None:
+    previous_result = dict(action.result or {})
+    previous_lease_owner = action.lease_owner or ""
+    previous_lease_expires_at = action.lease_expires_at
+    gateway_started = _attempt_gateway_started(latest_attempt)
+    recovery_reason = "stale_worker" if previous_lease_owner in stale_worker_ids else "lease_expired" if previous_lease_expires_at else "execution_timeout"
+    action.status = "unknown_after_send" if gateway_started else "failed"
+    action.executed_at = now
+    action.lease_owner = ""
+    action.lease_expires_at = None
+    action.result = _stale_executing_result(
+        gateway_started=gateway_started,
+        recovery_reason=recovery_reason,
+        previous_lease_owner=previous_lease_owner,
+        previous_lease_expires_at=previous_lease_expires_at,
+        now=now,
+    )
+    if previous_result:
+        action.result["previous_result"] = previous_result
+    if latest_attempt:
+        latest_attempt.status = "result_unknown" if gateway_started else "call_not_started"
+        latest_attempt.after_call_at = now
+        latest_attempt.result_snapshot = dict(action.result or {})
+    _record_stale_recovery_stats(
+        action=action,
+        task=task,
+        previous_lease_owner=previous_lease_owner,
+        recovery_reason=recovery_reason,
+        gateway_started=gateway_started,
+        now=now,
+    )
+
+
+def _stale_executing_result(
+    *,
+    gateway_started: bool,
+    recovery_reason: str,
+    previous_lease_owner: str,
+    previous_lease_expires_at: datetime | None,
+    now: datetime,
+) -> dict[str, Any]:
+    return {
+        "success": False,
+        "error_code": "unknown_after_send" if gateway_started else "execution_timeout",
+        "error_message": "执行项已进入 TG 调用边界但本地结果未知，需人工或补偿确认" if gateway_started else "执行项长时间处于执行中，已由投递守护标记为超时",
+        "validation_stage": "execution_recovery",
+        "auto_check": "结果未知" if gateway_started else "超时恢复",
+        "recovery_reason": recovery_reason,
+        "recovered_at": now.isoformat(),
+        "previous_lease_owner": previous_lease_owner,
+        "previous_lease_expires_at": previous_lease_expires_at.isoformat() if previous_lease_expires_at else "",
+    }
+
+
+def _record_stale_recovery_stats(
+    *,
+    action: Action,
+    task: Task,
+    previous_lease_owner: str,
+    recovery_reason: str,
+    gateway_started: bool,
+    now: datetime,
+) -> None:
+    task.last_error = action.result["error_message"]
+    stats = dict(task.stats or {})
+    recovered_action_ids = list(stats.get("stale_executing_recovered_action_ids") or [])
+    recovered_action_ids.append(action.id)
+    stats["last_error"] = task.last_error
+    stats["stale_executing_recovered_at"] = now.isoformat()
+    stats["stale_executing_last_action_id"] = action.id
+    stats["stale_executing_last_lease_owner"] = previous_lease_owner
+    stats["stale_executing_last_recovery_reason"] = recovery_reason
+    stats["stale_executing_recovered_action_ids"] = recovered_action_ids[-20:]
+    stats["recovered_execution_timeout_count"] = int(stats.get("recovered_execution_timeout_count") or 0) + 1
+    if gateway_started:
+        stats["unknown_after_send_count"] = int(stats.get("unknown_after_send_count") or 0) + 1
+    stats["last_recovery_stage"] = "execution_recovery"
+    task.stats = stats
+
+
+def _latest_execution_attempt(session: Session, action: Action) -> ExecutionAttempt | None:
+    return session.scalar(select(ExecutionAttempt).where(ExecutionAttempt.action_id == action.id).order_by(ExecutionAttempt.attempt_no.desc()).limit(1))
+
+
+def _attempt_gateway_started(latest_attempt: ExecutionAttempt | None) -> bool:
+    return bool(latest_attempt and latest_attempt.gateway_call_started_at and latest_attempt.status not in {"success", "failed", "call_not_started"})
+
+
+def _recovery_batch_limit(limit: int) -> int:
+    return max(1, int(limit or DEFAULT_RECOVERY_BATCH_LIMIT))
+
+
+def _membership_reprobe_limit(limit: int) -> int:
+    configured = _recovery_batch_limit(limit)
+    return max(1, min(configured, UNKNOWN_MEMBERSHIP_REPROBE_PER_DRAIN_LIMIT))
+
+
+def _recover_existing_unknown_membership_actions(session: Session, now: datetime, *, limit: int) -> int:
     recovered = 0
     reprobed_identities: set[tuple[int, int, str]] = set()
     rows = session.execute(
@@ -1519,24 +1589,22 @@ def _recover_existing_unknown_membership_actions(session: Session, now: datetime
             Task.deleted_at.is_(None),
         )
         .order_by(Action.executed_at.asc().nullsfirst(), Action.scheduled_at.asc())
+        .limit(_recovery_batch_limit(limit))
     ).all()
     for action, task in rows:
-        result = dict(action.result or {})
-        if result.get("unknown_membership_reprobe_status") == "failed":
+        if _skip_unknown_membership_reprobe(action, now):
             continue
         identity = _unknown_membership_reprobe_identity(action)
         if identity in reprobed_identities:
             continue
         reprobed_identities.add(identity)
-        latest_attempt = session.scalar(
-            select(ExecutionAttempt)
-            .where(ExecutionAttempt.action_id == action.id)
-            .order_by(ExecutionAttempt.attempt_no.desc())
-            .limit(1)
-        )
-        if _recover_unknown_membership_action(session, action, task, latest_attempt, now):
+        latest_attempt = _latest_execution_attempt(session, action)
+        if _recover_unknown_membership_action(session, action=action, task=task, latest_attempt=latest_attempt, now=now):
             recovered += 1
             continue
+        if _membership_reprobe_deferred(action):
+            continue
+        result = dict(action.result or {})
         action.result = {
             **result,
             "unknown_membership_reprobe_status": "failed",
@@ -1554,8 +1622,34 @@ def _unknown_membership_reprobe_identity(action: Action) -> tuple[int, int, str]
     )
 
 
+def _skip_unknown_membership_reprobe(action: Action, now: datetime) -> bool:
+    result = dict(action.result or {})
+    status = result.get("unknown_membership_reprobe_status")
+    if status == "failed":
+        return True
+    if status != "timeout":
+        return False
+    return _iso_datetime_after(result.get("unknown_membership_reprobe_next_at"), now)
+
+
+def _membership_reprobe_deferred(action: Action) -> bool:
+    result = dict(action.result or {})
+    return result.get("unknown_membership_reprobe_status") == "timeout"
+
+
+def _iso_datetime_after(value: Any, now: datetime) -> bool:
+    if not value:
+        return False
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except ValueError:
+        return False
+    return as_beijing(parsed) > as_beijing(now)
+
+
 def _recover_unknown_membership_action(
     session: Session,
+    *,
     action: Action,
     task: Task,
     latest_attempt: ExecutionAttempt | None,
@@ -1572,19 +1666,50 @@ def _recover_unknown_membership_action(
     if account is None or account.deleted_at is not None:
         return False
     credentials = credentials_for_account(session, account)
-    result = gateway.probe_target_capabilities(
-        account.id,
-        channel_id,
-        str(payload.get("target_type") or "channel"),
-        account.session_ciphertext,
-        credentials,
-    )
+    try:
+        result = gateway.probe_target_capabilities(
+            account.id,
+            channel_id,
+            str(payload.get("target_type") or "channel"),
+            account.session_ciphertext,
+            credentials,
+        )
+    except TimeoutError as exc:
+        _mark_unknown_membership_reprobe_timeout(action=action, task=task, latest_attempt=latest_attempt, now=now, exc=exc)
+        return False
     if not result.ok:
         return False
     label = "可发言" if payload.get("require_send") else "已关注"
     mark_channel_membership_joined(session, action.tenant_id, channel_target_id, account.id, permission_label=label)
     _mark_membership_action_recovered(action, task, latest_attempt, now, result.detail or "补偿复检已满足目标准入")
     return True
+
+
+def _mark_unknown_membership_reprobe_timeout(
+    *,
+    action: Action,
+    task: Task,
+    latest_attempt: ExecutionAttempt | None,
+    now: datetime,
+    exc: TimeoutError,
+) -> None:
+    error_message = "Telegram 补偿复检超时，已进入冷却等待下一轮显式复检"
+    action.result = {
+        **dict(action.result or {}),
+        "success": False,
+        "error_code": "telegram_probe_timeout",
+        "error_message": error_message,
+        "unknown_membership_reprobe_status": "timeout",
+        "unknown_membership_reprobe_at": now.isoformat(),
+        "unknown_membership_reprobe_next_at": (now + UNKNOWN_MEMBERSHIP_REPROBE_COOLDOWN).isoformat(),
+        "unknown_membership_reprobe_error": str(exc),
+    }
+    task.last_error = error_message
+    if latest_attempt:
+        latest_attempt.status = "result_unknown"
+        latest_attempt.failure_type = "telegram_probe_timeout"
+        latest_attempt.after_call_at = now
+        latest_attempt.result_snapshot = dict(action.result)
 
 
 def _mark_membership_action_recovered(

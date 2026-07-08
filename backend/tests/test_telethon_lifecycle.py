@@ -1,6 +1,9 @@
 import asyncio
 import sys
+import threading
 import types
+from concurrent.futures import TimeoutError as FutureTimeoutError
+
 import pytest
 
 from app.config import Settings
@@ -278,3 +281,23 @@ def test_shutdown_telethon_lifecycle_stops_background_loop():
     assert shutdown_telethon_lifecycle(timeout_seconds=1) == 0
     assert TelethonClientLifecycle._loop is None
     assert TelethonClientLifecycle._loop_thread is None
+
+
+def test_telethon_lifecycle_cancels_coroutine_after_operation_timeout():
+    reset_lifecycle_state()
+    settings = Settings(telethon_operation_timeout_seconds=0.01)
+    lifecycle = TelethonClientLifecycle(settings)
+    cancelled = threading.Event()
+
+    async def slow_operation():
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    with pytest.raises(FutureTimeoutError):
+        lifecycle.run(slow_operation())
+
+    assert cancelled.wait(timeout=1)
+    shutdown_telethon_lifecycle(timeout_seconds=1)

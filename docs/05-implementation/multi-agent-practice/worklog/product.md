@@ -1,5 +1,19 @@
 # Worklog: product
 
+## 2026-07-08 硅谷 recovery CPU 背压修复产品验收
+
+- message_id: 2026-07-08-sv-recovery-cpu-backpressure-product-acceptance-001
+- action: 对硅谷生产 CPU 持续升高的 recovery 背压修复做产品验收。
+- input: prod-diagnosis 证据显示硅谷 4 核服务器 load 长期 8+，`tgyunying-worker-recovery` 反复在 `probe_target_capabilities` 超时，历史 `unknown_after_send` 积压触发高频补偿复检；dev 已完成限流、冷却和 timeout 显式落库修复，QA 本地通过。
+- output: `product_accepted_pending_release_gate_prodverify`
+- evidence: 本地 QA：目标背压测试、Telethon lifecycle、worker/recovery 相关测试均通过；全量 no_postgres 60 秒门禁 `797 passed, 781 deselected, 5 warnings`；`compileall` / `git diff --check` 通过。PRD 已补充 Recovery 只允许有界补偿查询、TimeoutError 必须落库并冷却；数据流转索引已说明 task_center recovery 会经 Telegram Gateway 做有界补偿复检。
+- decision: 产品接受 E2 本地修复范围：限制 recovery 单轮复检规模、复检按账号+目标去重、Telegram timeout 不打断整轮 recovery、超时结果可见且有冷却、Telethon 超时 coroutine 会取消。不接受 `production_fixed`，因为新镜像尚未发布且生产降载未复核。
+- next_agent: prod-diagnosis
+- handoff_delivery_status: sent
+- target_thread: 019f07c6-92b5-7c50-b7e2-2f18a107e006
+- handoff_message_id: 2026-07-08-sv-recovery-cpu-backpressure-product-acceptance-001
+- unresolved: Release Gate / Deploy Production / 生产新容器版本 / CPU 降载 / `worker drain failed` 清零仍未完成。
+
 ## 2026-07-02 托管 2FA 密码受控查看产品口径
 
 - message_id: 2026-07-02-managed-2fa-reveal-product-001
