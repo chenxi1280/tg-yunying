@@ -58,6 +58,38 @@ def test_recovery_records_unknown_membership_probe_timeout(monkeypatch):
         assert action.result["unknown_membership_reprobe_next_at"] > now_value.isoformat()
 
 
+def test_recovery_skips_failed_reprobe_rows_when_selecting_batch(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    SessionFactory = sessionmaker(bind=engine, future=True)
+    calls: list[str] = []
+
+    with SessionFactory() as session:
+        _seed_unknown_membership_actions(session, count=3)
+        now_value = _now()
+        for index in range(3):
+            action = session.get(Action, f"action-membership-{index}")
+            action.result = {"error_code": "unknown_after_send", "unknown_membership_reprobe_status": "failed"}
+        session.add(OperationTarget(id=799, tenant_id=1, title="目标 99", target_type="group", tg_peer_id="@target_99"))
+        session.add(TgAccount(id=1199, tenant_id=1, display_name="账号 99", phone_masked="+861***1199", status="在线", session_ciphertext="session"))
+        due_action = _unknown_membership_action(99, now_value)
+        due_action.id = "action-membership-due"
+        due_action.executed_at = now_value
+        session.add(due_action)
+        session.commit()
+
+    def fake_probe(_account_id, target_peer_id, *_args, **_kwargs):
+        calls.append(str(target_peer_id))
+        return OperationResult(False, detail="仍不可访问")
+
+    monkeypatch.setattr(task_service, "credentials_for_account", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(task_service.gateway, "probe_target_capabilities", fake_probe)
+
+    assert drain_task_recovery(SessionFactory, limit=2) >= 0
+
+    assert calls == ["@target_99"]
+
+
 def test_stale_executing_membership_timeout_clears_lease_and_cools_down(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

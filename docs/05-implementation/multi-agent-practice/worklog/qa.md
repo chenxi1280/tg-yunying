@@ -33,6 +33,17 @@
 - next_agent: dev
 - unresolved: 重新发布和生产 E4 pending。
 
+## 2026-07-08 硅谷 recovery CPU unknown membership batch 饥饿 QA
+
+- message_id: 2026-07-08-sv-recovery-cpu-backpressure-qa-reprobe-query-001
+- action: 对 unknown membership 补偿复检 batch 查询饥饿做本地回归。
+- input: 2026-07-08-sv-recovery-cpu-backpressure-dev-rework-reprobe-query-001。
+- output: local_qa_pass_reprobe_query_due_filter
+- evidence: 红测 `test_recovery_skips_failed_reprobe_rows_when_selecting_batch` 先失败，证明旧查询会被已 failed 行占满而不 probe 后面的 due 行；修复后 recovery 背压测试 `5 passed`，Telethon lifecycle `10 passed`，全量 no_postgres `801 passed, 781 deselected, 5 warnings`，`compileall` passed，`git diff --check` passed。
+- decision: 本地 QA 通过；batch 查询会跳过 failed / cooldown 未到期行。
+- next_agent: dev
+- unresolved: 重新发布和生产 E4 pending。
+
 ## 2026-07-06 AI 活群 hard-hourly 分布护栏补齐 QA
 
 - message_id: 2026-07-06-ai-group-hard-hourly-distribution-guard-qa-002

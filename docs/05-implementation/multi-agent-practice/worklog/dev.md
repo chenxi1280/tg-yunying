@@ -36,6 +36,17 @@
 - next_agent: qa
 - unresolved: 重新发布和三次 E4 pending。
 
+## 2026-07-08 硅谷 recovery CPU unknown membership batch 饥饿返工
+
+- message_id: 2026-07-08-sv-recovery-cpu-backpressure-dev-rework-reprobe-query-001
+- action: 修复 unknown membership 补偿复检 batch 被已 failed / cooldown 旧行占满导致待处理行饥饿的问题。
+- input: `3d378414` 发布后 recovery 已无 `worker drain failed`、pending task 和 missing proxy 024，但仍有周期性 CPU 峰值；生产 DB 显示 running `unknown_after_send` membership 中有大量 unset 行，同时已 failed / cooldown 行仍参与 batch 查询，容易占满 `limit=10`。
+- output: `_recover_existing_unknown_membership_actions` 查询 batch 时增加 `_unknown_membership_reprobe_due_clause(now)`，SQL 层排除 `unknown_membership_reprobe_status=failed` 和 cooldown 未到期的 `timeout/connection_error` 行，避免旧行饥饿真正待处理项。
+- evidence: RED：`test_recovery_skips_failed_reprobe_rows_when_selecting_batch` 先失败，证明旧代码 calls 为空；修复后 `backend/tests/test_task_recovery_backpressure.py` `5 passed`，`backend/tests/test_telethon_lifecycle.py` `10 passed`，全量 no_postgres `801 passed, 781 deselected, 5 warnings`，`compileall` passed，`git diff --check` passed。
+- decision: batch 饥饿返工本地通过，待重新发布并做最终 E4。
+- next_agent: qa
+- unresolved: 第四次发布和最终生产 E4 pending。
+
 ## 2026-07-08 硅谷 recovery CPU 持续升高修复 Development Complete
 
 - message_id: 2026-07-08-sv-recovery-cpu-backpressure-devcomplete-001

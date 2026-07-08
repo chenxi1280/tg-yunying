@@ -1589,6 +1589,7 @@ def _recover_existing_unknown_membership_actions(session: Session, now: datetime
             Action.action_type.in_(MEMBERSHIP_ACTION_TYPES),
             Task.status == "running",
             Task.deleted_at.is_(None),
+            _unknown_membership_reprobe_due_clause(now),
         )
         .order_by(Action.executed_at.asc().nullsfirst(), Action.scheduled_at.asc())
         .limit(_recovery_batch_limit(limit))
@@ -1613,6 +1614,19 @@ def _recover_existing_unknown_membership_actions(session: Session, now: datetime
             "unknown_membership_reprobe_at": now.isoformat(),
         }
     return recovered
+
+
+def _unknown_membership_reprobe_due_clause(now: datetime):
+    status = Action.result["unknown_membership_reprobe_status"].as_string()
+    next_at = Action.result["unknown_membership_reprobe_next_at"].as_string()
+    return or_(
+        status.is_(None),
+        status.notin_(("failed", *UNKNOWN_MEMBERSHIP_REPROBE_COOLDOWN_STATUSES)),
+        and_(
+            status.in_(UNKNOWN_MEMBERSHIP_REPROBE_COOLDOWN_STATUSES),
+            or_(next_at.is_(None), next_at <= now.isoformat()),
+        ),
+    )
 
 
 def _unknown_membership_reprobe_identity(action: Action) -> tuple[int, int, str]:

@@ -104,6 +104,7 @@ Release Gate 证据：
 - 连接失败返工本地门禁：`backend/tests/test_task_recovery_backpressure.py backend/tests/test_telethon_lifecycle.py` `13 passed`；全量 no_postgres `799 passed, 781 deselected, 5 warnings`；`compileall` passed；`git diff --check` passed。
 - `f96dfa4e` 二次发布后 E4 仍未通过：`worker drain failed=0`，但 recovery CPU 回到约 97%，5 分钟内 `Task was destroyed but it is pending=796`、`Server closed=784`。进一步定位为 Telethon lifecycle 在 `client.connect()` 失败时没有断开新建 client，导致 auto-reconnect / send / recv coroutine 留在后台；已临时停止线上 `tgyunying-worker-recovery` 止血，未写数据库。
 - Telethon lifecycle cleanup 本地门禁：`backend/tests/test_telethon_lifecycle.py` `10 passed`；`backend/tests/test_task_recovery_backpressure.py` `4 passed`；全量 no_postgres `800 passed, 781 deselected, 5 warnings`；`compileall` passed；`git diff --check` passed。
+- 线上三次发布后 recovery 错误日志归零，但仍有周期性 CPU 峰值；DB 发现 running unknown membership 中 `failed` / cooldown 行仍会进入 SQL batch，`limit=10` 被旧行占满后真实待处理行饥饿。已补 SQL 层 `_unknown_membership_reprobe_due_clause`，查询 batch 时排除已 `failed` 和 cooldown 未到期行；本地门禁：`backend/tests/test_task_recovery_backpressure.py` `5 passed`；`backend/tests/test_telethon_lifecycle.py` `10 passed`；全量 no_postgres `801 passed, 781 deselected, 5 warnings`；`compileall` passed；`git diff --check` passed。
 - 手动 workflow_dispatch run `28921792615` 在旧 commit `85b12f158406826c50dd37ba8725d94e53883913` 上 checks 通过后被取消，不作为发布证据。
 - release push run `28921622212` 也因后续返工取消，不作为发布证据。
 - 发布后只读公网 smoke：`https://tgyunying.telema.cn/api/health` HTTP 200，`https://tgyunying.telema.cn/task-center` HTTP 200。
