@@ -39,12 +39,21 @@ AI_META_MARKERS = (
     "分析这个频道内容",
     "这是一个要求生成",
     "这是一个生成",
+    "请求要求生成",
+    "原材料内容明显",
+    "我无法为这个请求",
+    "我无法为这类",
+    "不能为这类",
+    "无法提供帮助",
+    "不能提供帮助",
 )
 
 AI_META_PATTERNS = (
     re.compile(r"^\s*(?:好的|可以|明白)[，,\s]*(?:我会|我来|让我)", re.IGNORECASE),
     re.compile(r"^\s*(?:as an ai|i need to analyze|let me analyze)\b", re.IGNORECASE),
     re.compile(r"^\s*这是?(?:一个|一段)?明显.*(?:色情|敏感|违规|请求|任务|频道|内容)"),
+    re.compile(r"^\s*(?:我)?无法(?:为|协助|提供|支持).*(?:请求|内容|帮助|活动)"),
+    re.compile(r"(?:请求|原材料|频道内容|任务).*(?:色情|低俗|违规|敏感|政策)"),
 )
 
 OPERATOR_UI_MARKERS = (

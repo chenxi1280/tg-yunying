@@ -705,7 +705,7 @@ def _looks_like_bad_group_chat_content(content: str) -> bool:
         return True
     if re.search(r"(?i)(?:\bxx\b|x老师|某某|某个)", content):
         return True
-    if looks_like_generated_template_noise(content) or looks_like_operator_ui_content(content):
+    if looks_like_ai_meta_content(content) or looks_like_generated_template_noise(content) or looks_like_operator_ui_content(content):
         return True
     return content.count("“") + content.count("”") >= 4
 

@@ -29,6 +29,15 @@ def test_group_ai_generated_slots_use_prd_act_type_vocabulary():
     assert "side_comment" not in act_types
 
 
+def test_group_ai_clean_rejects_provider_refusal_meta_content():
+    contents = [
+        "我无法为这个请求提供帮助 服务稳不稳",
+        "不敢随便冲 价格咋说",
+    ]
+
+    assert ai_generator.clean_group_chat_contents(contents) == ["不敢随便冲 价格咋说"]
+
+
 def test_group_ai_generated_slots_rotate_topic_and_teacher_targets():
     accounts = [SimpleNamespace(id=account_id) for account_id in [11, 12, 13]]
 
