@@ -1609,7 +1609,8 @@ def _recover_existing_unknown_membership_actions(session: Session, now: datetime
         if _recover_unknown_membership_action(session, action=action, task=task, latest_attempt=latest_attempt, now=now):
             recovered += 1
             continue
-        if _membership_reprobe_deferred(action):
+        if _membership_reprobe_deferred(action) or _membership_reprobe_failed(action):
+            _propagate_unknown_membership_reprobe_result(session, source_action=action, now=now)
             continue
         result = dict(action.result or {})
         action.result = {
@@ -1618,6 +1619,54 @@ def _recover_existing_unknown_membership_actions(session: Session, now: datetime
             "unknown_membership_reprobe_at": now.isoformat(),
         }
     return recovered
+
+
+def _propagate_unknown_membership_reprobe_result(session: Session, *, source_action: Action, now: datetime) -> int:
+    update_fields = _unknown_membership_reprobe_result_fields(source_action)
+    if not update_fields:
+        return 0
+    source_identity = _unknown_membership_reprobe_identity(source_action)
+    if not source_identity[0] or not source_identity[1] or not source_identity[2]:
+        return 0
+    rows = session.scalars(
+        select(Action)
+        .join(Task, Task.id == Action.task_id)
+        .where(
+            Action.status == "unknown_after_send",
+            Action.action_type.in_(MEMBERSHIP_ACTION_TYPES),
+            Action.account_id == source_identity[0],
+            Task.status == "running",
+            Task.deleted_at.is_(None),
+        )
+    ).all()
+    updated = 0
+    for action in rows:
+        if action.id == source_action.id:
+            continue
+        if _unknown_membership_reprobe_identity(action) != source_identity:
+            continue
+        if _skip_unknown_membership_reprobe(action, now):
+            continue
+        action.result = {**dict(action.result or {}), **update_fields, "reprobe_deduped_from_action_id": source_action.id}
+        updated += 1
+    return updated
+
+
+def _unknown_membership_reprobe_result_fields(action: Action) -> dict[str, Any]:
+    result = dict(action.result or {})
+    status = result.get("unknown_membership_reprobe_status")
+    if status not in {"failed", *UNKNOWN_MEMBERSHIP_REPROBE_COOLDOWN_STATUSES}:
+        return {}
+    field_names = (
+        "success",
+        "error_code",
+        "error_message",
+        "unknown_membership_reprobe_status",
+        "unknown_membership_reprobe_at",
+        "unknown_membership_reprobe_next_at",
+        "unknown_membership_reprobe_error",
+    )
+    return {name: result[name] for name in field_names if name in result}
 
 
 def _unknown_membership_reprobe_due_clause(now: datetime):

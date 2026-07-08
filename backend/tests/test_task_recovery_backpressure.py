@@ -118,6 +118,45 @@ def test_recovery_marks_failed_probe_result_and_skips_next_round(monkeypatch):
     assert calls == ["@target_0"]
 
 
+def test_recovery_marks_duplicate_identity_probe_rows_failed(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    SessionFactory = sessionmaker(bind=engine, future=True)
+    calls: list[str] = []
+
+    with SessionFactory() as session:
+        now_value = _now()
+        _seed_unknown_membership_actions(session, count=1, now_value=now_value)
+        for index in range(2):
+            duplicate = _unknown_membership_action(0, now_value - timedelta(minutes=index + 1))
+            duplicate.id = f"action-membership-duplicate-{index}"
+            duplicate.executed_at = now_value - timedelta(minutes=20 + index)
+            session.add(duplicate)
+        session.commit()
+
+    def fake_probe(_account_id, target_peer_id, *_args, **_kwargs):
+        calls.append(str(target_peer_id))
+        return OperationResult(False, "失败", "unknown_after_send", "Server closed the connection")
+
+    monkeypatch.setattr(task_service, "credentials_for_account", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(task_service.gateway, "probe_target_capabilities", fake_probe)
+
+    assert drain_task_recovery(SessionFactory, limit=3) >= 0
+    assert drain_task_recovery(SessionFactory, limit=3) >= 0
+
+    with SessionFactory() as session:
+        for action_id in [
+            "action-membership-0",
+            "action-membership-duplicate-0",
+            "action-membership-duplicate-1",
+        ]:
+            action = session.get(Action, action_id)
+            assert action.result["unknown_membership_reprobe_status"] == "failed"
+            assert action.result["unknown_membership_reprobe_error"] == "Server closed the connection"
+
+    assert calls == ["@target_0"]
+
+
 def test_stale_executing_membership_timeout_clears_lease_and_cools_down(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
