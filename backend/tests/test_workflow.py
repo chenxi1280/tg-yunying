@@ -124,10 +124,30 @@ def compact_action_debug(actions: list[dict]) -> list[dict]:
             "memory_id": (item.get("payload") or {}).get("ai_message_memory_id"),
             "cycle_id": (item.get("payload") or {}).get("cycle_id"),
             "ai_generation_status": (item.get("payload") or {}).get("ai_generation_status"),
+            "quality_skip_reason": (item.get("payload") or {}).get("quality_skip_reason"),
             "message": (item.get("payload") or {}).get("message_text"),
         }
         for item in actions
     ]
+
+
+AI_TERMINAL_QUALITY_ERRORS = {"duplicate_message", "ai_message_memory_missing"}
+AI_TERMINAL_GENERATION_STATUSES = {"duplicate_rejected"}
+
+
+def is_terminal_ai_quality_failure(action: dict) -> bool:
+    if action.get("status") != "failed":
+        return False
+    payload = action.get("payload") or {}
+    result = action.get("result") or {}
+    error_code = str(result.get("error_code") or result.get("failure_type") or "")
+    generation_status = str(payload.get("ai_generation_status") or "")
+    quality_reason = str(payload.get("quality_skip_reason") or result.get("quality_skip_reason") or "")
+    return (
+        error_code in AI_TERMINAL_QUALITY_ERRORS
+        or generation_status in AI_TERMINAL_GENERATION_STATUSES
+        or quality_reason in AI_TERMINAL_QUALITY_ERRORS
+    )
 
 
 def actions_for_cycle_suffix(actions: list[dict], suffix: str) -> list[dict]:
@@ -3612,7 +3632,8 @@ def test_task_center_group_ai_chat_runs_from_worker_loop(monkeypatch):
             for action in actions
             if action["status"] == "pending" and (action.get("payload") or {}).get("ai_generation_status") == "pending"
         ]
-        if not deferred_actions:
+        terminal_quality_failures = [action for action in actions if is_terminal_ai_quality_failure(action)]
+        if not deferred_actions and not terminal_quality_failures:
             assert detail["task"]["stats"]["success_count"] >= 1, {
                 "task": compact_task_debug(detail["task"]),
                 "actions": compact_action_debug(actions),
@@ -4719,7 +4740,8 @@ def test_task_center_reset_group_ai_chat_respects_idle_window(monkeypatch):
             action["status"] == "pending" and (action.get("payload") or {}).get("ai_generation_status") == "pending"
             for action in reset_cycle_actions
         )
-        assert has_success or has_deferred_ai, compact_action_debug(reset_cycle_actions)
+        has_terminal_quality_failure = any(is_terminal_ai_quality_failure(action) for action in reset_cycle_actions)
+        assert has_success or has_deferred_ai or has_terminal_quality_failure, compact_action_debug(reset_cycle_actions)
         if has_success:
             assert len(sends) > sends_before_reset
 

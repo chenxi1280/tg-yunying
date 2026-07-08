@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Iterator
 
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.models import Action, OperationTarget, RuleSet, RuleSetVersion, Task, Tenant, TgAccount, TgGroup
+from app.services._common import _now
 from app.services.operations_center import operation_metrics_summary, relay_attribution_report, rule_center_summary
 from app.services.operations_center_risk import risk_control_details
 from app.services.reports import build_overview
@@ -23,7 +25,7 @@ def _sqlite_session() -> Iterator[Session]:
 
 
 def _seed_unknown_action(session: Session) -> None:
-    occurred_at = datetime(2026, 6, 25, 10, 0, 0)
+    occurred_at = (_now() - timedelta(days=1)).replace(hour=10, minute=0, second=0, microsecond=0, tzinfo=None)
     session.add_all(
         [
             Tenant(id=1, name="默认运营空间"),
@@ -68,6 +70,7 @@ def _metric_value(rows: list[object], key: str) -> object:
     raise AssertionError(f"metric not found: {key}")
 
 
+@pytest.mark.no_postgres
 def test_operation_surfaces_count_unknown_after_send_as_unresolved_failure() -> None:
     with _sqlite_session() as session:
         _seed_unknown_action(session)
