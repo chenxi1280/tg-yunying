@@ -148,6 +148,37 @@ def test_stale_executing_membership_timeout_clears_lease_and_cools_down(monkeypa
     assert calls == ["@stale_target"]
 
 
+def test_stale_executing_membership_failed_probe_clears_lease_and_stops_reprobe(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    calls: list[str] = []
+
+    with Session(engine) as session:
+        _seed_stale_executing_membership_action(session, now_value=now_value)
+
+        def fake_probe(_account_id, target_peer_id, *_args, **_kwargs):
+            calls.append(str(target_peer_id))
+            return OperationResult(False, "失败", "unknown_after_send", "Server closed the connection")
+
+        monkeypatch.setattr(task_service, "credentials_for_account", lambda *_args, **_kwargs: object())
+        monkeypatch.setattr(task_service.gateway, "probe_target_capabilities", fake_probe)
+
+        assert _recover_stale_executing_actions(session, timeout_minutes=30, limit=1) >= 0
+
+        action = session.get(Action, "action-executing-membership")
+        assert action.status == "unknown_after_send"
+        assert action.lease_owner == ""
+        assert action.lease_expires_at is None
+        assert action.result["error_code"] == "unknown_after_send"
+        assert action.result["unknown_membership_reprobe_status"] == "failed"
+        assert action.result["unknown_membership_reprobe_error"] == "Server closed the connection"
+
+        assert _recover_stale_executing_actions(session, timeout_minutes=30, limit=1) == 0
+
+    assert calls == ["@stale_target"]
+
+
 def test_stale_executing_membership_connection_error_clears_lease_and_cools_down(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

@@ -1,5 +1,16 @@
 # Worklog: dev
 
+## 2026-07-08 硅谷 recovery CPU stale failed result 覆盖返工
+
+- message_id: 2026-07-08-sv-recovery-cpu-backpressure-dev-rework-stale-failed-result-001
+- action: 处理 `53b83635` 发布后生产 E4 暴露的 stale executing failed result 被覆盖问题。
+- input: 五次发布后 recovery 使用 `53b83635` 且 healthy，公网 `/api/health` 正常，`worker drain failed=0`、`Task was destroyed=0`、stale membership executing=0；但 recovery 5 分钟 `Server closed=649`，DB `unknown_membership_reprobe_status=''` 约 863、`failed_reprobe=0`。
+- output: stale executing + gateway_started membership probe 得到 `OperationResult(False)` 后，保留 `unknown_membership_reprobe_status=failed` 和错误详情，清空 lease 并退出 `executing`，不再被 `_mark_stale_executing_action` 覆盖回普通 `unknown_after_send`。
+- evidence: RED：`test_stale_executing_membership_failed_probe_clears_lease_and_stops_reprobe` 先失败，证明旧逻辑第二轮仍会 probe 同一 stale action；修复后定向 recovery/lifecycle/gateway `18 passed`，全量 no_postgres `804 passed, 781 deselected, 5 warnings`，`compileall` passed，`git diff --check` passed。
+- decision: 五次发布 E4 failed；stale failed result 覆盖返工本地门禁通过，待重新发布和最终 E4。
+- next_agent: qa
+- unresolved: release deploy、生产日志/CPU/DB 验证 pending。
+
 ## 2026-07-08 硅谷 recovery CPU failed probe client 返工
 
 - message_id: 2026-07-08-sv-recovery-cpu-backpressure-dev-rework-probe-client-001

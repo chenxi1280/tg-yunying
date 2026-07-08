@@ -1,5 +1,16 @@
 # Worklog: qa
 
+## 2026-07-08 硅谷 recovery CPU stale failed result QA
+
+- message_id: 2026-07-08-sv-recovery-cpu-backpressure-qa-stale-failed-result-001
+- action: 对 stale executing membership failed probe 保留 failed result 做本地回归。
+- input: 2026-07-08-sv-recovery-cpu-backpressure-dev-rework-stale-failed-result-001。
+- output: local_qa_pass_stale_failed_result_preserved
+- evidence: 红测 `test_stale_executing_membership_failed_probe_clears_lease_and_stops_reprobe` 先失败，证明旧逻辑会把 failed result 覆盖成普通 `unknown_after_send` 并在下一轮重复 probe；修复后定向 recovery/lifecycle/gateway `18 passed`，全量 no_postgres `804 passed, 781 deselected, 5 warnings`，`compileall` passed，`git diff --check` passed。
+- decision: 本地 QA 通过；待重新发布和生产 E4。
+- next_agent: dev
+- unresolved: release deploy、生产日志/CPU/DB 验证 pending。
+
 ## 2026-07-08 硅谷 recovery CPU failed probe client QA
 
 - message_id: 2026-07-08-sv-recovery-cpu-backpressure-qa-probe-client-001

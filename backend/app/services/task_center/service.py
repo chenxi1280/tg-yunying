@@ -1436,7 +1436,10 @@ def _recover_stale_executing_actions(session: Session, *, timeout_minutes: int =
             recovered += 1
             continue
         if gateway_started and _membership_reprobe_deferred(action):
-            _release_unknown_membership_timeout(action=action, task=task, latest_attempt=latest_attempt, now=now)
+            _release_unknown_membership_reprobe_result(action=action, task=task, latest_attempt=latest_attempt, now=now)
+            continue
+        if gateway_started and _membership_reprobe_failed(action):
+            _release_unknown_membership_reprobe_result(action=action, task=task, latest_attempt=latest_attempt, now=now)
             continue
         _mark_stale_executing_action(action=action, task=task, latest_attempt=latest_attempt, stale_worker_ids=stale_worker_ids, now=now)
         recovered += 1
@@ -1654,6 +1657,11 @@ def _membership_reprobe_deferred(action: Action) -> bool:
     return result.get("unknown_membership_reprobe_status") in UNKNOWN_MEMBERSHIP_REPROBE_COOLDOWN_STATUSES
 
 
+def _membership_reprobe_failed(action: Action) -> bool:
+    result = dict(action.result or {})
+    return result.get("unknown_membership_reprobe_status") == "failed"
+
+
 def _iso_datetime_after(value: Any, now: datetime) -> bool:
     if not value:
         return False
@@ -1787,7 +1795,7 @@ def _mark_unknown_membership_reprobe_connection_error(
         latest_attempt.result_snapshot = dict(action.result)
 
 
-def _release_unknown_membership_timeout(
+def _release_unknown_membership_reprobe_result(
     *,
     action: Action,
     task: Task,
