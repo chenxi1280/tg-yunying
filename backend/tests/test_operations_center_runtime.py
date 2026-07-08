@@ -4265,6 +4265,60 @@ def test_group_ai_chat_repairs_mask_theme_candidate_before_voice_gate(monkeypatc
 
 
 @pytest.mark.no_postgres
+def test_group_ai_chat_keeps_partial_normal_candidates(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    def fake_generate_drafts(credentials, prompt, *, count, topic, tone, persona_set, temperature, max_tokens, **_kwargs):  # noqa: ANN001
+        return AiGenerationResult(
+            candidates=[AiDraftCandidate(persona="A", content="这个价格先问清楚", risk_level="低")],
+            usage=AiUsage(total_tokens=44, billable=True),
+        )
+
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr("app.services.task_center.ai_generator.ai_gateway.generate_drafts", fake_generate_drafts)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="部分候选群", auth_status="已授权运营"))
+        for account_id in [101, 102]:
+            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status=AccountStatus.ACTIVE.value, session_ciphertext=f"session-{account_id}"))
+            session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=account_id, can_send=True))
+        session.add(
+            AiProvider(
+                id=1,
+                provider_name="MiMo",
+                provider_type="openai_compatible",
+                base_url="https://api.xiaomimimo.com/v1",
+                model_name="mimo-v2.5",
+                api_key_ciphertext=encrypt_secret("test-key"),
+                is_active=True,
+                health_status="健康",
+            )
+        )
+        session.add(TenantAiSetting(tenant_id=1, default_provider_id=1, ai_enabled=True, temperature=0.6, max_tokens=1024))
+        session.add(
+            Task(
+                id="ai-partial-normal",
+                tenant_id=1,
+                name="AI 部分普通候选",
+                type="group_ai_chat",
+                status="running",
+                account_config={"selection_mode": "manual", "account_ids": [101, 102], "max_concurrent": 2, "cooldown_per_account_minutes": 0},
+                pacing_config={"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
+                type_config={"target_group_id": 7, "messages_per_round_mode": "manual", "messages_per_round": 2, "silent_mode_enabled": False},
+            )
+        )
+        session.commit()
+
+        created = build_group_ai_chat_plan(session, session.get(Task, "ai-partial-normal"))
+        actions = list(session.scalars(select(Action).where(Action.task_id == "ai-partial-normal")))
+
+    assert created == 1
+    assert [action.payload["message_text"] for action in actions] == ["这个价格先问清楚"]
+
+
+@pytest.mark.no_postgres
 def test_group_ai_chat_rotates_mimo_provider_after_quota_exhausted(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

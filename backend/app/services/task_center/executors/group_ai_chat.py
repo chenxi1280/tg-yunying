@@ -1461,7 +1461,8 @@ def _generate_group_planned_items(
             )
             if len(contents) < batch_count:
                 stats_inc(task, "normal_candidate_shortfall_count")
-                raise AiGenerationUnavailable(AI_NORMAL_CANDIDATE_SHORTFALL_MESSAGE)
+                if not contents:
+                    raise AiGenerationUnavailable(AI_NORMAL_CANDIDATE_SHORTFALL_MESSAGE)
             tokens += used_tokens
             items.extend(_planned_item(content, None, _slot_at(batch_slots, index)) for index, content in enumerate(contents))
             normal_offset += batch_count
