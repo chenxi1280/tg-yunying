@@ -152,6 +152,8 @@ MASK_THEME_CONTENT_ANCHORS = (
     "温柔",
     "别跑空",
 )
+MASK_THEME_REWRITE_SUFFIXES = ("价格咋说", "位置方便吗", "时间怎么排", "真假有反馈吗", "服务稳不稳", "体验有人试过吗")
+MASK_THEME_REWRITE_MAX_BASE_CHARS = 12
 
 
 def build_plan(session: Session, task: Task) -> int:
@@ -438,6 +440,11 @@ def build_plan(session: Session, task: Task) -> int:
             action_burst_account = account
         used_account_ids.add(account.id)
         has_native_reply = _reply_target_message_id(quality_item) is not None
+        voice_profile = voice_profiles.get(account.id, {})
+        original_content = content
+        content = _voice_profile_anchor_repaired_content(content, voice_profile, quality_item)
+        if content != original_content:
+            quality_stats["voice_profile_anchor_rewrite_count"] = int(quality_stats.get("voice_profile_anchor_rewrite_count") or 0) + 1
         filtered_content = content
         if content:
             filtered = filter_outbound_content(session, tenant_id=task.tenant_id, group=group, content=content, reject_mentions=True, reject_replies=not has_native_reply)
@@ -462,7 +469,6 @@ def build_plan(session: Session, task: Task) -> int:
         media_segments = [material_result.segment] if material_result.ok and material_result.segment else []
         coverage_payload = _coverage_payload_for_account(round_config, account.id, coverage_counts)
         act_type = _act_type_for_turn(index, quality_item)
-        voice_profile = voice_profiles.get(account.id, {})
         voice_decision = _voice_profile_match_decision_for_item(filtered_content, voice_profile, quality_item)
         if voice_decision["score"] <= VOICE_PROFILE_MISMATCH_SCORE:
             _record_quality_rejection(
@@ -627,6 +633,8 @@ def build_plan(session: Session, task: Task) -> int:
         stats["quality_fill_rounds"] = quality_stats["quality_fill_rounds"]
     if quality_stats.get("quality_fallback_count"):
         stats["quality_fallback_count"] = quality_stats["quality_fallback_count"]
+    if quality_stats.get("voice_profile_anchor_rewrite_count"):
+        stats["voice_profile_anchor_rewrite_count"] = quality_stats["voice_profile_anchor_rewrite_count"]
     if quality_stats.get("ai_generation_candidate_count"):
         stats["ai_generation_candidate_count"] = quality_stats["ai_generation_candidate_count"]
     if quality_stats.get("quality_rejection_counts"):
@@ -3135,6 +3143,25 @@ def _voice_profile_match_decision_for_item(content: str, voice_profile: dict, qu
     if quality_item.get("quality_fallback") == "emoji_react":
         return {"score": VOICE_PROFILE_MATCH_SCORE, "reason": "质量兜底表情"}
     return _voice_profile_match_decision(content, voice_profile)
+
+
+def _voice_profile_anchor_repaired_content(content: str, voice_profile: dict, quality_item: dict) -> str:
+    normalized = _normalize_for_similarity(content)
+    if not normalized or _has_mask_theme_anchor(normalized):
+        return content
+    summary = _normalize_for_similarity(str(voice_profile.get("summary") or ""))
+    if not _profile_requires_mask_theme(summary):
+        return content
+    suffix = _mask_theme_rewrite_suffix(quality_item)
+    base = str(content or "").strip().rstrip("。.!！?？，,、 ")
+    prefix = base[:MASK_THEME_REWRITE_MAX_BASE_CHARS].strip()
+    return f"{prefix} {suffix}".strip() if prefix else suffix
+
+
+def _mask_theme_rewrite_suffix(quality_item: dict) -> str:
+    slot = _quality_slot(quality_item)
+    sequence_index = int(slot.get("sequence_index") or quality_item.get("sequence_index") or 1)
+    return MASK_THEME_REWRITE_SUFFIXES[(sequence_index - 1) % len(MASK_THEME_REWRITE_SUFFIXES)]
 
 
 def _voice_profile_match_decision(content: str, voice_profile: dict) -> dict[str, object]:
