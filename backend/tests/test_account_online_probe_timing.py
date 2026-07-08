@@ -56,7 +56,7 @@ def test_probe_due_online_states_keeps_stale_window_after_next_probe(monkeypatch
         session.add(state)
         session.commit()
 
-        monkeypatch.setattr("app.services.account_online_probe.credentials_for_account", lambda _session, _account: object())
+        monkeypatch.setattr("app.services.account_online_probe.credentials_for_account", lambda *_args, **_kwargs: object())
         monkeypatch.setattr(
             "app.services.account_online_probe.gateway.check_account_health",
             lambda _session_ciphertext, _credentials: AccountHealth(status=AccountStatus.ACTIVE.value, health_score=96, detail="账号 session 可用"),

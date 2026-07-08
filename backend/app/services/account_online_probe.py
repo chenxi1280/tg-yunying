@@ -60,7 +60,7 @@ def _due_probe_states(session: Session, *, limit: int, now: datetime) -> list[Tg
 
 def _probe_account_state(session: Session, account: TgAccount, state: TgAccountOnlineState, now: datetime) -> None:
     try:
-        result = gateway.check_account_health(account.session_ciphertext, credentials_for_account(session, account))
+        result = gateway.check_account_health(account.session_ciphertext, credentials_for_account(session, account, use_proxy=False))
     except ValueError as exc:
         _mark_probe_blocked(state, now, "developer_app_unavailable", str(exc))
         return

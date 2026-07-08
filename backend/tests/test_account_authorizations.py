@@ -27,7 +27,7 @@ from app.services.account_authorizations import (
     verify_standby_authorization_login,
 )
 from app.services.accounts import health_check_account
-from app.services.developer_apps import credentials_for_account
+from app.services.developer_apps import credentials_for_account, credentials_for_task_account
 
 
 def _sqlite_session() -> Session:
@@ -859,6 +859,85 @@ def test_credentials_for_account_includes_current_proxy() -> None:
         assert credentials.proxy_port == 10042
         assert credentials.proxy_username == "proxy-user"
         assert credentials.proxy_password == "proxy-pass"
+
+
+@pytest.mark.no_postgres
+def test_credentials_for_account_can_explicitly_bypass_proxy() -> None:
+    with _sqlite_session() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(
+            TelegramDeveloperApp(
+                id=32,
+                app_name="主应用",
+                api_id=32001,
+                api_hash_ciphertext=encrypt_secret("hash"),
+                is_active=True,
+                health_status="健康",
+            )
+        )
+        session.add(AccountProxy(id=42, tenant_id=1, name="备用代理", protocol="socks5", host="10.0.0.42", port=10042, status="healthy"))
+        account = TgAccount(
+            id=171,
+            tenant_id=1,
+            display_name="带代理账号",
+            phone_masked="171",
+            status=AccountStatus.ACTIVE.value,
+            developer_app_id=32,
+            developer_app_version=1,
+            proxy_id=42,
+            session_ciphertext="primary-session",
+        )
+        session.add(account)
+        session.commit()
+
+        credentials = credentials_for_account(session, account, use_proxy=False)
+
+        assert credentials.api_id == 32001
+        assert credentials.proxy_id is None
+        assert credentials.proxy_host == ""
+
+
+@pytest.mark.no_postgres
+@pytest.mark.parametrize(
+    ("task_type", "expected_proxy_id"),
+    [
+        ("group_ai_chat", None),
+        ("channel_comment", None),
+        ("channel_view", None),
+        ("channel_like", None),
+        ("search_join_group", 42),
+    ],
+)
+def test_credentials_for_task_account_keeps_proxy_only_for_search_join(task_type: str, expected_proxy_id: int | None) -> None:
+    with _sqlite_session() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(
+            TelegramDeveloperApp(
+                id=32,
+                app_name="主应用",
+                api_id=32001,
+                api_hash_ciphertext=encrypt_secret("hash"),
+                is_active=True,
+                health_status="健康",
+            )
+        )
+        session.add(AccountProxy(id=42, tenant_id=1, name="备用代理", protocol="socks5", host="10.0.0.42", port=10042, status="healthy"))
+        account = TgAccount(
+            id=171,
+            tenant_id=1,
+            display_name="带代理账号",
+            phone_masked="171",
+            status=AccountStatus.ACTIVE.value,
+            developer_app_id=32,
+            developer_app_version=1,
+            proxy_id=42,
+        )
+        session.add(account)
+        session.commit()
+
+        credentials = credentials_for_task_account(session, account, task_type)
+
+        assert credentials.proxy_id == expected_proxy_id
 
 
 def test_standby_authorization_login_uses_selected_proxy_credentials(monkeypatch) -> None:

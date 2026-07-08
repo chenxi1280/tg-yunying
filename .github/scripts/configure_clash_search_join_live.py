@@ -46,6 +46,7 @@ DEFAULT_SEARCH_BOT = "jisou"
 DEFAULT_ACTOR = "github-actions"
 MAX_SUBSCRIPTION_BYTES = 5 * 1024 * 1024
 NODE_SKIP_RE = re.compile(r"(剩余|套餐|到期|官网|流量|expire|traffic)", re.IGNORECASE)
+TLS_VERIFY_OPTION_TYPES = frozenset({"trojan", "anytls", "vmess", "vless"})
 
 @dataclass(frozen=True)
 class ProxyNode:
@@ -99,6 +100,7 @@ def subscription_text(raw: str) -> str:
 def parsed_nodes(raw: str, limit: int) -> list[ProxyNode]:
     text = subscription_text(raw)
     configs = yaml_proxy_configs(text) if "proxies:" in text else uri_proxy_configs(text)
+    configs = [apply_global_tls_options(config) for config in configs]
     nodes = [ProxyNode(index=index, name=str(config["name"]), config=config) for index, config in enumerate(configs[:limit], start=1)]
     if not nodes:
         raise RuntimeError("no supported proxy nodes parsed")
@@ -224,6 +226,12 @@ def tls_options(node: dict[str, Any], query: dict[str, list[str]]) -> None:
         node["skip-cert-verify"] = True
     fingerprint = first(query, "fp") or first(query, "fingerprint") or first(query, "client-fingerprint")
     node["client-fingerprint"] = fingerprint or "chrome"
+
+def apply_global_tls_options(config: dict[str, Any]) -> dict[str, Any]:
+    node = dict(config)
+    if env_bool("CLASH_SKIP_CERT_VERIFY", False) and node.get("type") in TLS_VERIFY_OPTION_TYPES:
+        node["skip-cert-verify"] = True
+    return node
 
 def apply_network(node: dict[str, Any], network: str, host: str, path: str) -> None:
     if not network:

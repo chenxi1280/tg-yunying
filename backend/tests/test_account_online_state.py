@@ -216,7 +216,7 @@ def test_probe_due_online_states_marks_healthy_account_online(monkeypatch):
         session.add(state)
         session.commit()
 
-        monkeypatch.setattr("app.services.account_online_probe.credentials_for_account", lambda _session, _account: object())
+        monkeypatch.setattr("app.services.account_online_probe.credentials_for_account", lambda *_args, **_kwargs: object())
         monkeypatch.setattr(
             "app.services.account_online_probe.gateway.check_account_health",
             lambda _session_ciphertext, _credentials: AccountHealth(status=AccountStatus.ACTIVE.value, health_score=96, detail="账号 session 可用"),
@@ -246,7 +246,7 @@ def test_probe_due_online_states_marks_session_failure_login_required(monkeypatc
         session.add(state)
         session.commit()
 
-        monkeypatch.setattr("app.services.account_online_probe.credentials_for_account", lambda _session, _account: object())
+        monkeypatch.setattr("app.services.account_online_probe.credentials_for_account", lambda *_args, **_kwargs: object())
         monkeypatch.setattr(
             "app.services.account_online_probe.gateway.check_account_health",
             lambda _session_ciphertext, _credentials: AccountHealth(status=AccountStatus.SESSION_EXPIRED.value, health_score=40, detail="session 已失效"),
@@ -294,7 +294,7 @@ def test_probe_due_online_states_continues_after_auth_key_duplicate(monkeypatch)
 
         first.session_ciphertext = "session-duplicated"
         second.session_ciphertext = "session-ok"
-        monkeypatch.setattr("app.services.account_online_probe.credentials_for_account", lambda _session, _account: object())
+        monkeypatch.setattr("app.services.account_online_probe.credentials_for_account", lambda *_args, **_kwargs: object())
         monkeypatch.setattr("app.services.account_online_probe.gateway.check_account_health", _check_health)
 
         assert probe_due_online_states(session, limit=10, now=now) == 2
@@ -324,7 +324,7 @@ def test_probe_due_online_states_marks_missing_developer_app_blocked(monkeypatch
         session.add(state)
         session.commit()
 
-        def _raise_missing_app(_session, _account):
+        def _raise_missing_app(*_args, **_kwargs):
             raise ValueError("账号未绑定可用 Telegram Developer App")
 
         monkeypatch.setattr("app.services.account_online_probe.credentials_for_account", _raise_missing_app)
@@ -450,7 +450,7 @@ def test_probe_due_online_states_uses_longer_interval_for_low_frequency_sources(
         session.add(state)
         session.commit()
 
-        monkeypatch.setattr("app.services.account_online_probe.credentials_for_account", lambda _session, _account: object())
+        monkeypatch.setattr("app.services.account_online_probe.credentials_for_account", lambda *_args, **_kwargs: object())
         monkeypatch.setattr(
             "app.services.account_online_probe.gateway.check_account_health",
             lambda _session_ciphertext, _credentials: AccountHealth(status=AccountStatus.ACTIVE.value, health_score=96, detail="账号 session 可用"),

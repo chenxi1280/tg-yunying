@@ -63,6 +63,26 @@ proxies:
 
 
 @pytest.mark.no_postgres
+def test_clash_skip_cert_verify_requires_explicit_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    script = _load_script()
+    raw = """
+proxies:
+  - name: yaml-trojan
+    type: trojan
+    server: example.com
+    port: 443
+    password: secret
+"""
+
+    default_nodes = script.parsed_nodes(raw, 8)
+    monkeypatch.setenv("CLASH_SKIP_CERT_VERIFY", "true")
+    insecure_nodes = script.parsed_nodes(raw, 8)
+
+    assert "skip-cert-verify" not in default_nodes[0].config
+    assert insecure_nodes[0].config["skip-cert-verify"] is True
+
+
+@pytest.mark.no_postgres
 def test_protocol_sample_seed_flushes_for_autoflush_disabled_session(monkeypatch: pytest.MonkeyPatch) -> None:
     script = _load_script()
 

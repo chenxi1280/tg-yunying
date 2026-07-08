@@ -118,6 +118,11 @@ name: Deploy Production
         required: false
         default: '郑州'
         type: string
+      clash_skip_cert_verify:
+        description: Explicitly set skip-cert-verify=true for Clash TLS proxy nodes
+        required: false
+        default: false
+        type: boolean
       force_cancel_in_progress:
         description: Explicitly cancel a stuck in-progress Deploy Production run before this manual run
         required: false
@@ -576,6 +581,7 @@ jobs:
           CLASH_NODE_LIMIT: ${{ inputs.clash_search_join_node_limit }}
           CLASH_TEST_ACCOUNT_COUNT: ${{ inputs.clash_search_join_test_account_count }}
           CLASH_TARGET_QUERY: ${{ inputs.clash_search_join_target_query }}
+          CLASH_SKIP_CERT_VERIFY: ${{ inputs.clash_skip_cert_verify }}
           CLASH_IMAGE: metacubex/mihomo:latest
         run: |
           set -euo pipefail
@@ -587,6 +593,7 @@ jobs:
             printf '%s\n' "$(printf '%s' "${CLASH_NODE_LIMIT}" | base64 | tr -d '\n')"
             printf '%s\n' "$(printf '%s' "${CLASH_TEST_ACCOUNT_COUNT}" | base64 | tr -d '\n')"
             printf '%s\n' "$(printf '%s' "${CLASH_TARGET_QUERY}" | base64 | tr -d '\n')"
+            printf '%s\n' "$(printf '%s' "${CLASH_SKIP_CERT_VERIFY}" | base64 | tr -d '\n')"
             printf '%s\n' "$(printf '%s' "${CLASH_IMAGE}" | base64 | tr -d '\n')"
             base64 < .github/scripts/configure_clash_search_join_live.py | tr -d '\n'
             printf '\n'
@@ -596,6 +603,7 @@ jobs:
             read -r node_limit_b64
             read -r test_count_b64
             read -r target_query_b64
+            read -r skip_cert_b64
             read -r image_b64
             read -r script_b64
 
@@ -604,6 +612,7 @@ jobs:
             export CLASH_NODE_LIMIT="$(printf "%s" "${node_limit_b64}" | base64 -d)"
             export CLASH_TEST_ACCOUNT_COUNT="$(printf "%s" "${test_count_b64}" | base64 -d)"
             export CLASH_TARGET_QUERY="$(printf "%s" "${target_query_b64}" | base64 -d)"
+            export CLASH_SKIP_CERT_VERIFY="$(printf "%s" "${skip_cert_b64}" | base64 -d)"
             export CLASH_SEED_PROTOCOL_SAMPLE=true
             CLASH_IMAGE="$(printf "%s" "${image_b64}" | base64 -d)"
 
@@ -622,6 +631,7 @@ jobs:
             timeout 180 docker exec \
               -e CLASH_SUBSCRIPTION_URL \
               -e CLASH_NODE_LIMIT \
+              -e CLASH_SKIP_CERT_VERIFY \
               -e CLASH_SETUP_PHASE=prepare_configs \
               -i tgyunying-backend python - < "${script}"
 
@@ -668,6 +678,7 @@ jobs:
                 -e CLASH_NODE_LIMIT \
                 -e CLASH_TEST_ACCOUNT_COUNT \
                 -e CLASH_TARGET_QUERY \
+                -e CLASH_SKIP_CERT_VERIFY \
                 -e CLASH_HEALTHY_INDEXES \
                 -e CLASH_SEED_PROTOCOL_SAMPLE \
                 -e CLASH_SETUP_PHASE=preflight_db \
@@ -683,6 +694,7 @@ jobs:
                 -e CLASH_NODE_LIMIT \
                 -e CLASH_TEST_ACCOUNT_COUNT \
                 -e CLASH_TARGET_QUERY \
+                -e CLASH_SKIP_CERT_VERIFY \
                 -e CLASH_HEALTHY_INDEXES \
                 -e CLASH_SEED_PROTOCOL_SAMPLE \
                 -e CLASH_SETUP_PHASE=apply_db \

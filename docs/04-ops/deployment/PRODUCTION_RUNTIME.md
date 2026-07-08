@@ -44,7 +44,10 @@ Repository variables:
   - `AI_GROUP_REALISM_AUDIT_PRE_ONLINE`: 在 online gate 等待前输出运行中 AI 活群近期消息的只读审计，标记模板 AI 腔和缺少账号面具主题锚点的样本；该审计不替代 online / hard-hourly release gate，也不会因旧消息样本直接中断发布。
 - `reconcile_account_profiles`: 检查并补齐账号资料初始化，同时补齐缺失的 AI 活群账号表达卡；表达卡按小批次调用真实 AI 供应商生成，生成协议使用紧凑 JSONL 并保留旧 pipe 行解析兼容，按提交批次独立落库。批量结构化输出格式错误时，系统会拆成单账号继续请求同一个真实 AI 供应商；单账号仍格式错误、或真实 AI 供应商返回 429 / quota exhausted 时，脚本必须输出 `ACCOUNT_PROFILE_RECONCILE_PROGRESS` / `ACCOUNT_PROFILE_RECONCILE` 结构化进度并让 release gate 失败，下次额度恢复或协议修复后从剩余缺失账号继续跑，不能伪造成功或静默生成通用表达卡。
 - `update_account_masks_direction`: 在生产容器内执行 `.github/scripts/update_account_masks_direction.py`，把所有 active 账号写入新的 active 账号面具版本，方向统一为“伪装嫖客 / 男性 / 色情”相关口径；旧 active 面具置为 `superseded`，新版本写 `AuditLog` 并刷新 Redis 面具缓存。脚本输出 `ACCOUNT_MASK_DIRECTION_UPDATE`，其中 `target_account_count` 必须等于 `verified_active_count` 才算成功；找不到 active 账号或写入后校验不一致时直接失败。
+- `configure_clash_search_join_live`: 配置生产 Mihomo / Clash 节点并创建搜索加群 smoke task。`clash_search_join_apply=false` 时只做订阅解析和节点出口预检，不写 DB；`clash_search_join_apply=true` 才会写入代理绑定和搜索加群测试任务。`clash_skip_cert_verify` 默认为 `false`，只有遇到订阅节点证书链异常且确认要放宽 Mihomo TLS 校验时才显式设为 `true`。
 - `run_tianjin_diagnostics` / `run_tianjin_blocked_account_diagnostics`: 天津目标群准入和阻塞账号专项诊断。
+
+生产任务通道约定：`search_join_group` / `search_join` 是唯一强制使用 Clash 代理的任务链路；`group_ai_chat`、`channel_view`、`channel_like`、`channel_comment` 的账号健康探测和实际互动调用走账号直连凭证，不因 Clash 节点不可用而阻塞活群、浏览、点赞或评论任务。搜索加群仍通过授权环境绑定和健康代理节点 fail closed。
 
 ## 首次服务器准备
 

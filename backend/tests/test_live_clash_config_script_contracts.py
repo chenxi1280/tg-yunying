@@ -7,6 +7,7 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = PROJECT_ROOT / ".github/scripts/configure_clash_search_join_live.py"
+WORKFLOW = PROJECT_ROOT / ".github/workflows/deploy-production.yml"
 
 pytestmark = pytest.mark.no_postgres
 
@@ -28,3 +29,11 @@ def test_live_clash_script_writes_airport_subscription_nodes_and_slot_bindings()
     assert "def ensure_scoped_airport_binding" in source
     assert "environment.proxy_binding_id = scoped_binding.id" in source
     assert "environment.proxy_id = scoped_binding.proxy_id" in source
+
+
+def test_live_clash_workflow_passes_explicit_skip_cert_verify_switch() -> None:
+    workflow = WORKFLOW.read_text()
+
+    assert "clash_skip_cert_verify:" in workflow
+    assert "CLASH_SKIP_CERT_VERIFY: ${{ inputs.clash_skip_cert_verify }}" in workflow
+    assert "-e CLASH_SKIP_CERT_VERIFY" in workflow

@@ -23,7 +23,7 @@ from app.services.account_online_state import is_account_online_ready
 from app.services.account_authorizations import attempt_primary_proxy_recovery, attempt_standby_authorization_recovery
 from app.services.account_capacity import account_capacity_decision
 from app.services.content_filters import filter_outbound_content, rewrite_rejected_content
-from app.services.developer_apps import credentials_for_account, credentials_for_developer_app
+from app.services.developer_apps import DIRECT_ONLY_TASK_TYPES, credentials_for_account, credentials_for_developer_app
 from app.services.ai_config import get_scheduling_setting
 from app.services.membership_challenges import auto_resolve_image_verification, auto_resolve_text_verification, read_challenge_context_with_fallback, record_challenge_attempt
 from app.services.notifications import NotificationResult, send_telegram_bot_message
@@ -252,7 +252,7 @@ def dispatch_action(session: Session, action: Action) -> bool:
             return _dispatch_search_join(session, action, account, payload)
         if action.action_type in {"view_message", "like_message", "post_comment"} and not _ensure_channel_action_membership(session, action, account, payload.channel_target_id):
             return True
-        credentials = credentials_for_account(session, account)
+        credentials = credentials_for_account(session, account, use_proxy=action.task_type not in DIRECT_ONLY_TASK_TYPES)
         if action.action_type in {"ensure_channel_membership", "ensure_target_membership"}:
             return _dispatch_channel_membership(session, action, account, credentials, payload)
         if action.action_type == "send_message":

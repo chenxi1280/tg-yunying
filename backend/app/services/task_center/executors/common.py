@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.models import Action, ChannelMessage, OperationTarget, Task, TgAccount
 from app.services._common import _now, gateway
 from app.services.account_capacity import account_capacity_decision
-from app.services.developer_apps import credentials_for_account
+from app.services.developer_apps import credentials_for_task_account
 
 from ..account_pool import select_task_accounts
 from ..listener_runtime import should_collect_listener
@@ -78,7 +78,7 @@ def collect_channel_messages(session: Session, task: Task, channel: OperationTar
             account.id,
             channel.tg_peer_id,
             account.session_ciphertext,
-            credentials_for_account(session, account),
+            credentials_for_task_account(session, account, task.type),
             limit=limit,
         )
     except Exception as exc:  # noqa: BLE001 - keep task observable and let existing rows still run.

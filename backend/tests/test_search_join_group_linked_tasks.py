@@ -25,6 +25,7 @@ from app.models import (
     TgAccountAuthorization,
 )
 from app.security import encrypt_secret
+from app.integrations.telegram import SendResult
 from app.services._common import _now
 from app.services.task_center import dispatcher
 from app.services.task_center.dispatcher import dispatch_action
@@ -211,6 +212,36 @@ def test_search_join_dispatch_uses_environment_proxy_not_authorization_proxy(mon
 
     assert dispatch_action(session, action) is True
     assert calls == [31]
+
+
+@pytest.mark.no_postgres
+def test_group_ai_dispatch_uses_direct_credentials_when_account_has_proxy(monkeypatch, session: Session) -> None:
+    account = session.get(TgAccount, 101)
+    account.proxy_id = 31
+    task = Task(id="task-ai-direct", tenant_id=1, name="活群", type="group_ai_chat", status="running", type_config={}, stats={})
+    action = Action(
+        id="action-ai-direct",
+        tenant_id=1,
+        task_id=task.id,
+        task_type="group_ai_chat",
+        action_type="send_message",
+        account_id=101,
+        status="pending",
+        payload={"chat_id": "-1001", "message_text": "hello"},
+    )
+    session.add_all([task, action])
+    session.commit()
+    calls: list[int | None] = []
+
+    def send_message_to_target(_account_id, _target_peer, _content, _target_type, _target_pk, _session_ciphertext, credentials):
+        calls.append(credentials.proxy_id)
+        return SendResult(ok=True, remote_message_id="123")
+
+    monkeypatch.setattr(dispatcher.gateway, "send_message_to_target", send_message_to_target)
+
+    assert dispatch_action(session, action) is True
+    assert action.status == "success"
+    assert calls == [None]
 
 
 @pytest.mark.no_postgres

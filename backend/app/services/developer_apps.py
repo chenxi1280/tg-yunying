@@ -20,6 +20,8 @@ from app.timezone import BEIJING_TZ
 
 from ._common import _as_utc, _now, audit
 
+DIRECT_ONLY_TASK_TYPES = frozenset({"group_ai_chat", "channel_comment", "channel_view", "channel_like"})
+
 
 def seed_developer_apps(session: Session) -> None:
     if session.scalar(select(func.count(TelegramDeveloperApp.id))) > 0:
@@ -207,7 +209,13 @@ def credentials_for_developer_app(app: TelegramDeveloperApp, proxy: AccountProxy
     )
 
 
-def credentials_for_account(session: Session, account: TgAccount, *, assign_if_missing: bool = False) -> DeveloperAppCredentials:
+def credentials_for_account(
+    session: Session,
+    account: TgAccount,
+    *,
+    assign_if_missing: bool = False,
+    use_proxy: bool = True,
+) -> DeveloperAppCredentials:
     if account.deleted_at is not None:
         raise ValueError("账号已删除")
     app = assign_developer_app_round_robin(session, account) if assign_if_missing or not account.developer_app_id else session.get(TelegramDeveloperApp, account.developer_app_id)
@@ -216,7 +224,11 @@ def credentials_for_account(session: Session, account: TgAccount, *, assign_if_m
     if app.credentials_version > account.developer_app_version:
         account.status = AccountStatus.NEED_RELOGIN.value
         raise ValueError("开发者应用凭证已轮换，账号需要重新登录")
-    return credentials_for_developer_app(app, account.proxy)
+    return credentials_for_developer_app(app, account.proxy if use_proxy else None)
+
+
+def credentials_for_task_account(session: Session, account: TgAccount, task_type: str | None) -> DeveloperAppCredentials:
+    return credentials_for_account(session, account, use_proxy=task_type not in DIRECT_ONLY_TASK_TYPES)
 
 
 def _proxy_credentials(proxy: AccountProxy | None) -> dict:
@@ -239,6 +251,7 @@ __all__ = [
     "create_developer_app",
     "credentials_for_account",
     "credentials_for_developer_app",
+    "credentials_for_task_account",
     "developer_app_snapshot",
     "first_assignable_developer_app",
     "list_developer_apps",
