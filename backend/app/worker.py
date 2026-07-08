@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import threading
 import time
 import traceback
 from datetime import timedelta
+from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
@@ -52,6 +54,7 @@ VALID_WORKER_ROLES = {
     "metrics",
 }
 WORKER_HEALTH_STALE_AFTER = timedelta(minutes=2)
+LOCAL_HEALTHCHECK_FILE = "/tmp/tgyunying-worker-heartbeat"
 
 
 def _task_due(task_id: int) -> bool:
@@ -207,6 +210,14 @@ def _record_loop_heartbeat(role: str, limit: int) -> None:
         session.commit()
 
 
+def _write_local_healthcheck_heartbeat() -> None:
+    heartbeat_path = Path(os.getenv("WORKER_LOCAL_HEALTHCHECK_FILE", LOCAL_HEALTHCHECK_FILE))
+    heartbeat_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = heartbeat_path.with_name(f"{heartbeat_path.name}.tmp")
+    tmp_path.write_text(str(int(time.time())), encoding="ascii")
+    tmp_path.replace(heartbeat_path)
+
+
 def _start_periodic_heartbeat(role: str, limit: int) -> tuple[threading.Event, threading.Thread]:
     stop_event = threading.Event()
     thread = threading.Thread(
@@ -242,6 +253,7 @@ def run_worker(
         while (max_iterations is None or iterations < max_iterations) and not (stop_event and stop_event.is_set()):
             try:
                 _record_loop_heartbeat(selected_role, limit)
+                _write_local_healthcheck_heartbeat()
                 processed = drain_once(limit, role=selected_role)
                 if processed:
                     logger.info("worker drained role=%s processed=%d", selected_role, processed)

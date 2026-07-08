@@ -51,7 +51,7 @@ x-backend-env: &backend-env
   MEDIA_ROOT: /app/media
 
 x-worker-healthcheck: &worker-healthcheck
-  test: ["CMD-SHELL", "python -m app.worker_health --role \"$${WORKER_ROLE:-all}\""]
+  test: ["CMD-SHELL", "heartbeat_file=\"$${WORKER_LOCAL_HEALTHCHECK_FILE:-/tmp/tgyunying-worker-heartbeat}\"; now=$$(date +%s); last=$$(cat \"$${heartbeat_file}\" 2>/dev/null || echo 0); test $$((now - last)) -le 120"]
   interval: 20s
   timeout: 10s
   start_period: 45s

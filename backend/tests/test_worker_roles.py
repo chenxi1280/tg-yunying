@@ -210,6 +210,26 @@ def test_worker_main_healthcheck_fails_for_stale_role(monkeypatch):
     assert worker.main(["--healthcheck", "--role", "listener"]) == 1
 
 
+def test_worker_writes_local_healthcheck_heartbeat(monkeypatch, tmp_path):
+    from app import worker
+
+    heartbeat_file = tmp_path / "worker-heartbeat"
+    monkeypatch.setenv("WORKER_LOCAL_HEALTHCHECK_FILE", str(heartbeat_file))
+    monkeypatch.setattr(worker.time, "time", lambda: 1234567890)
+
+    worker._write_local_healthcheck_heartbeat()
+
+    assert heartbeat_file.read_text(encoding="ascii") == "1234567890"
+
+
+def test_server_compose_worker_healthcheck_uses_local_heartbeat():
+    compose = Path("docker-compose.server.yml").read_text(encoding="utf-8")
+    healthcheck_section = compose.split("x-worker-healthcheck:", 1)[1].split("services:", 1)[0]
+
+    assert "WORKER_LOCAL_HEALTHCHECK_FILE" in healthcheck_section
+    assert "python -m app.worker_health" not in healthcheck_section
+
+
 def test_explicit_worker_id_is_scoped_by_process_type(monkeypatch):
     monkeypatch.setenv("TG_OPS_WORKER_ID", "pytest-worker")
 
