@@ -1434,6 +1434,7 @@ def _recover_stale_executing_actions(session: Session, *, timeout_minutes: int =
             recovered += 1
             continue
         if gateway_started and _membership_reprobe_deferred(action):
+            _release_unknown_membership_timeout(action=action, task=task, latest_attempt=latest_attempt, now=now)
             continue
         _mark_stale_executing_action(action=action, task=task, latest_attempt=latest_attempt, stale_worker_ids=stale_worker_ids, now=now)
         recovered += 1
@@ -1710,6 +1711,24 @@ def _mark_unknown_membership_reprobe_timeout(
         latest_attempt.failure_type = "telegram_probe_timeout"
         latest_attempt.after_call_at = now
         latest_attempt.result_snapshot = dict(action.result)
+
+
+def _release_unknown_membership_timeout(
+    *,
+    action: Action,
+    task: Task,
+    latest_attempt: ExecutionAttempt | None,
+    now: datetime,
+) -> None:
+    action.status = "unknown_after_send"
+    action.executed_at = now
+    action.lease_owner = ""
+    action.lease_expires_at = None
+    if latest_attempt:
+        latest_attempt.status = "result_unknown"
+        latest_attempt.after_call_at = now
+        latest_attempt.result_snapshot = dict(action.result or {})
+    task.last_error = str((action.result or {}).get("error_message") or task.last_error or "")
 
 
 def _mark_membership_action_recovered(

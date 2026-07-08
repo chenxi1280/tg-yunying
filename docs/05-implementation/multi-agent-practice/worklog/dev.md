@@ -6,11 +6,11 @@
 - action: 修复硅谷生产 `tgyunying-worker-recovery` 对历史 `unknown_after_send` membership 无上限补偿复检、Telegram 探测超时打断整轮 drain 并遗留 Telethon 后台协程的问题。
 - input: 生产直连 `47.251.126.134` 发现 4 核服务器 load 长期 8+；`tgyunying-worker-recovery` 单次 CPU 到 148.69%；10 分钟内 `worker drain failed` 18 次；数据库 `unknown_after_send=1043`、running unknown membership=126、stale executing=27。
 - output: `drain_task_recovery(limit=...)` 传递真实 recovery limit；stale executing 查询加批量上限；existing unknown membership 复检按 drain limit 和账号+目标去重，单轮 TG reprobe 上限为 10；Telegram reprobe `TimeoutError` 写入 `telegram_probe_timeout`、`unknown_membership_reprobe_status=timeout`、`unknown_membership_reprobe_next_at`，不再抛出打断整轮 recovery；Telethon lifecycle 在 operation timeout 后 `future.cancel()`，避免超时 coroutine 留在后台继续重连。
-- evidence: RED：`backend/tests/test_task_recovery_backpressure.py` 先失败，证明旧代码单轮复检 4 条且 TimeoutError 会抛出；`backend/tests/test_telethon_lifecycle.py::test_telethon_lifecycle_cancels_coroutine_after_operation_timeout` 先失败，证明旧 lifecycle 不取消超时 coroutine。GREEN：目标测试 `3 passed`；Telethon lifecycle 全文件 `9 passed`；worker/recovery 相关 `17 passed, 10 deselected`；全量 no_postgres 60 秒门禁 `797 passed, 781 deselected, 5 warnings`；`backend/.venv/bin/python -m compileall -q backend/app` passed；`git diff --check` passed。
+- evidence: RED：`backend/tests/test_task_recovery_backpressure.py` 先失败，证明旧代码单轮复检 4 条且 TimeoutError 会抛出；`backend/tests/test_telethon_lifecycle.py::test_telethon_lifecycle_cancels_coroutine_after_operation_timeout` 先失败，证明旧 lifecycle 不取消超时 coroutine。QA 返工红测 `test_stale_executing_membership_timeout_clears_lease_and_cools_down` 先失败，证明 stale executing membership timeout 后仍保留 `executing` 和旧 lease；修复后目标背压测试 `3 passed`，联合 Telethon lifecycle `12 passed`，worker/recovery 相关 `17 passed, 10 deselected`，全量 no_postgres 60 秒门禁 `798 passed, 781 deselected, 5 warnings`；`backend/.venv/bin/python -m compileall -q backend/app` passed；`git diff --check` passed。
 - production_stopgap: 2026-07-08 14:04:52 CST 已通过 SSH 仅停止旧 `tgyunying-worker-recovery` 容器，未改数据库；停止后 load 样本为 `7.16, 7.83, 8.24`，仍需发布新代码并复核。
 - decision: status=local_verified_pending_release；release_gate=pending；production_fixed=unproven。
 - next_agent: qa
-- unresolved: 尚未提交 / 推送 release；尚未执行 Deploy Production；生产新镜像、recovery 重启后 `worker drain failed` 归零和 CPU 降载仍需 E4 复核。
+- unresolved: 首次 push 触发的 Deploy Production run `28921622212` 已因 QA 返工取消；返工提交尚未重新推送 release；生产新镜像、recovery 重启后 `worker drain failed` 归零和 CPU 降载仍需 E4 复核。
 
 ## 2026-07-06 AI 活群 hard-hourly 分布护栏补齐 Development Complete（本地验证）
 
