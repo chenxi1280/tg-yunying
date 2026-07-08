@@ -33,6 +33,8 @@ PLANNER_BACKLOG_STAT_KEYS = (
 HARD_HOURLY_EXPIRED_ERROR_CODE = "hard_hourly_bucket_expired"
 HARD_HOURLY_EXPIRED_ERROR_MESSAGE = "硬目标小时窗口已结束，过期补量已跳过"
 SEARCH_JOIN_OPEN_STATUSES = ("pending", "claiming", "executing")
+AI_GROUP_TERMINAL_QUALITY_ERRORS = frozenset({"duplicate_message", "ai_message_memory_missing"})
+AI_GROUP_TERMINAL_GENERATION_STATUSES = frozenset({"duplicate_rejected"})
 
 
 def next_run_after_task(task: Task):
@@ -264,6 +266,8 @@ def retry_failed_actions(session: Session, task: Task) -> int:
     )
     for action in session.scalars(query):
         previous_result = dict(action.result or {})
+        if _is_terminal_ai_quality_failure(action, previous_result):
+            continue
         now_value = _now()
         if _skip_expired_hard_hourly_retry(action, previous_result, now_value):
             count += 1
@@ -287,6 +291,20 @@ def retry_failed_actions(session: Session, task: Task) -> int:
         }
         count += 1
     return count
+
+
+def _is_terminal_ai_quality_failure(action: Action, previous_result: dict[str, Any]) -> bool:
+    if action.task_type != "group_ai_chat" or action.action_type != "send_message":
+        return False
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    error_code = str(previous_result.get("error_code") or previous_result.get("failure_type") or "")
+    generation_status = str(payload.get("ai_generation_status") or "")
+    quality_reason = str(payload.get("quality_skip_reason") or previous_result.get("quality_skip_reason") or "")
+    return (
+        error_code in AI_GROUP_TERMINAL_QUALITY_ERRORS
+        or generation_status in AI_GROUP_TERMINAL_GENERATION_STATUSES
+        or quality_reason in AI_GROUP_TERMINAL_QUALITY_ERRORS
+    )
 
 
 def _auto_retry_statuses(task: Task) -> tuple[str, ...]:

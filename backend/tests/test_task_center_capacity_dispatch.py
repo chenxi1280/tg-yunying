@@ -3310,6 +3310,76 @@ def test_retry_skips_expired_hard_hourly_bucket_without_rescheduling(monkeypatch
 
 
 @pytest.mark.no_postgres
+def test_retry_failed_actions_keeps_ai_quality_gate_failures_terminal(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 7, 9, 0, 40, 0)
+    monkeypatch.setattr("app.services.task_center.stats._now", lambda: now_value)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        task = Task(
+            id="task-ai-quality-terminal",
+            tenant_id=1,
+            name="AI质量门终态",
+            type="group_ai_chat",
+            status="running",
+            failure_policy={"max_retries": 2, "retry_delay_seconds": 30},
+        )
+        session.add(task)
+        session.add_all(
+            [
+                Action(
+                    id="action-duplicate-terminal",
+                    tenant_id=1,
+                    task_id=task.id,
+                    task_type="group_ai_chat",
+                    action_type="send_message",
+                    status="failed",
+                    retry_count=0,
+                    scheduled_at=now_value - timedelta(seconds=10),
+                    payload={
+                        "ai_generation_status": "duplicate_rejected",
+                        "quality_skip_reason": "duplicate_message",
+                        "message_text": "重复文案",
+                        "ai_message_memory_id": "",
+                    },
+                    result={"error_code": "duplicate_message", "validation_stage": "ai_message_memory"},
+                ),
+                Action(
+                    id="action-memory-missing-terminal",
+                    tenant_id=1,
+                    task_id=task.id,
+                    task_type="group_ai_chat",
+                    action_type="send_message",
+                    status="failed",
+                    retry_count=0,
+                    scheduled_at=now_value - timedelta(seconds=5),
+                    payload={
+                        "ai_generation_status": "duplicate_rejected",
+                        "quality_skip_reason": "duplicate_message",
+                        "message_text": "缺少记忆预占",
+                        "ai_message_memory_id": "",
+                    },
+                    result={"error_code": "ai_message_memory_missing", "validation_stage": "ai_message_memory"},
+                ),
+            ]
+        )
+        session.commit()
+
+        assert retry_failed_actions(session, task) == 0
+
+        duplicate = session.get(Action, "action-duplicate-terminal")
+        memory_missing = session.get(Action, "action-memory-missing-terminal")
+        assert duplicate.status == "failed"
+        assert duplicate.retry_count == 0
+        assert duplicate.result["error_code"] == "duplicate_message"
+        assert memory_missing.status == "failed"
+        assert memory_missing.retry_count == 0
+        assert memory_missing.result["error_code"] == "ai_message_memory_missing"
+
+
+@pytest.mark.no_postgres
 def test_target_admission_retry_does_not_reschedule_unknown_after_send_actions(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
