@@ -82,3 +82,41 @@ QA 通过范围：
 - 不能写 `production_fixed`。
 
 已真实投递 dev 做 Release Gate。Release Gate 通过并部署后，必须交回 prod-diagnosis 做 E4 production verification。
+
+## Release Gate
+
+- message_id: 2026-07-08-sv-recovery-cpu-backpressure-dev-release-gate-001
+- status: release_gate_passed_deployed_pending_e4
+- evidence_level: E3_release_deployed
+- release_gate: passed
+- release_candidate: `889e94635541bf937f4fc259f06435f7397fbc5e`
+- deploy_run: `28921986236`
+- deploy_url: https://github.com/chenxi1280/tg-yunying/actions/runs/28921986236
+
+Release Gate 证据：
+
+- 最新 release candidate `889e94635541bf937f4fc259f06435f7397fbc5e` 已推送 `master` / `release`。
+- 最新 SHA 本地补跑：`compileall` passed；`backend/tests/test_task_recovery_backpressure.py` `3 passed`；`git diff --check` passed。
+- GitHub Actions Deploy Production run `28921986236` success：checks、build-images、deploy 均通过；backend checks 与 frontend build 在 checks job 中通过；backend / frontend static image 均已 build and push；`Deploy via SSH release script` 通过。
+- 手动 workflow_dispatch run `28921792615` 在旧 commit `85b12f158406826c50dd37ba8725d94e53883913` 上 checks 通过后被取消，不作为发布证据。
+- release push run `28921622212` 也因后续返工取消，不作为发布证据。
+- 发布后只读公网 smoke：`https://tgyunying.telema.cn/api/health` HTTP 200，`https://tgyunying.telema.cn/task-center` HTTP 200。
+
+## Production Verification Handoff
+
+- message_id: 2026-07-08-sv-recovery-cpu-backpressure-dev-to-prod-diagnosis-e4-001
+- from_agent: dev
+- to_agent: prod-diagnosis
+- target_thread: 019f07c6-92b5-7c50-b7e2-2f18a107e006
+- handoff_delivery_status: sent
+- production_verification_required: true
+
+prod-diagnosis 需继续验证：
+
+- 硅谷生产 CPU/load 是否下降。
+- `tgyunying-worker-recovery` 是否不再因 historical `unknown_after_send` membership 高频 Telegram probe 拉高 CPU。
+- `TimeoutError` 是否写入 `telegram_probe_timeout`、`unknown_membership_reprobe_status=timeout` 和冷却字段。
+- Telethon 是否无超时后台 coroutine 残留。
+- task-center recovery 是否继续处理其他项。
+
+当前结论：Release Gate passed / deployed；production_fixed 仍 unproven，必须等待 prod-diagnosis E4。

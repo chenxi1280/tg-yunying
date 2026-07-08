@@ -1,5 +1,18 @@
 # Worklog: dev
 
+## 2026-07-08 硅谷 recovery CPU 背压修复 Release Gate
+
+- message_id: 2026-07-08-sv-recovery-cpu-backpressure-dev-release-gate-001
+- action: 作为 dev / release gate owner 推进硅谷 recovery CPU 背压修复发布门禁。
+- input: 2026-07-08-sv-recovery-cpu-backpressure-product-acceptance-001
+- output: `release_gate_passed_deployed_pending_e4`
+- evidence: 最新 release candidate `889e94635541bf937f4fc259f06435f7397fbc5e` 已推送 `master` / `release`。本地最新 SHA 补跑 `backend/.venv/bin/python -m compileall -q backend/app` passed；`backend/tests/test_task_recovery_backpressure.py` 3 passed；`git diff --check` passed。Deploy Production run `28921986236` success：checks、build-images、deploy 均通过，`Deploy via SSH release script` success；公网 `/api/health` 和 `/task-center` 均 HTTP 200。
+- decision: Release Gate passed；已真实投递 prod-diagnosis 做 E4 production verification。不能写 `production_fixed`，等待生产 CPU/load、recovery worker、Telegram reprobe 冷却与 Telethon timeout residue 复核。
+- next_agent: prod-diagnosis
+- handoff_delivery_status: sent
+- handoff_message_id: 2026-07-08-sv-recovery-cpu-backpressure-dev-to-prod-diagnosis-e4-001
+- unresolved: E4 production verification pending；线上 CPU 是否下降、`worker drain failed` 是否归零、`telegram_probe_timeout` 冷却字段和 recovery 继续处理其他项仍待 prod-diagnosis 证明。
+
 ## 2026-07-08 硅谷 recovery CPU 持续升高修复 Development Complete
 
 - message_id: 2026-07-08-sv-recovery-cpu-backpressure-devcomplete-001
