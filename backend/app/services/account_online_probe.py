@@ -49,7 +49,7 @@ def _due_probe_states(session: Session, *, limit: int, now: datetime) -> list[Tg
             select(TgAccountOnlineState)
             .where(
                 TgAccountOnlineState.desired_online.is_(True),
-                TgAccountOnlineState.online_status.in_(["warming", "offline", "recovering", "online"]),
+                TgAccountOnlineState.online_status.in_(["warming", "offline", "recovering", "online", "blocked"]),
                 (TgAccountOnlineState.next_probe_at.is_(None) | (TgAccountOnlineState.next_probe_at <= now)),
             )
             .order_by(TgAccountOnlineState.next_probe_at.asc().nullsfirst(), TgAccountOnlineState.updated_at.asc())

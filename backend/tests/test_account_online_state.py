@@ -337,6 +337,38 @@ def test_probe_due_online_states_marks_missing_developer_app_blocked(monkeypatch
         assert "Developer App" in state.failure_detail
 
 
+def test_probe_due_online_states_retries_due_blocked_state(monkeypatch):
+    now = _now()
+    with _session() as session:
+        _account(session)
+        state = TgAccountOnlineState(
+            tenant_id=1,
+            account_id=101,
+            desired_online=True,
+            desired_sources=[{"source_type": "task", "source_id": "ai-running"}],
+            online_status="blocked",
+            failure_type="account_health_probe_failed",
+            failure_detail="TimeoutError: ",
+            next_probe_at=now - timedelta(seconds=1),
+        )
+        session.add(state)
+        session.commit()
+
+        monkeypatch.setattr("app.services.account_online_probe.credentials_for_account", lambda *_args, **_kwargs: object())
+        monkeypatch.setattr(
+            "app.services.account_online_probe.gateway.check_account_health",
+            lambda _session_ciphertext, _credentials: AccountHealth(status=AccountStatus.ACTIVE.value, health_score=96, detail="账号 session 可用"),
+        )
+
+        assert probe_due_online_states(session, limit=10, now=now) == 1
+        session.commit()
+
+        assert state.online_status == "online"
+        assert state.failure_type == ""
+        assert state.last_seen_at == now
+        assert state.next_probe_at > now
+
+
 def test_runtime_reconcile_backfills_running_ai_relay_and_listener_sources():
     with _session() as session:
         _account(session, 101)
