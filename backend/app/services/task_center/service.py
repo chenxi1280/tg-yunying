@@ -143,6 +143,7 @@ HARD_HOURLY_RECOVERY_LIMIT_MULTIPLIER = 20
 DEFAULT_RECOVERY_BATCH_LIMIT = 100
 UNKNOWN_MEMBERSHIP_REPROBE_PER_DRAIN_LIMIT = 10
 UNKNOWN_MEMBERSHIP_REPROBE_COOLDOWN = timedelta(minutes=30)
+UNKNOWN_MEMBERSHIP_REPROBE_COOLDOWN_STATUSES = {"timeout", "connection_error"}
 
 
 from .config_fields import (
@@ -1628,14 +1629,14 @@ def _skip_unknown_membership_reprobe(action: Action, now: datetime) -> bool:
     status = result.get("unknown_membership_reprobe_status")
     if status == "failed":
         return True
-    if status != "timeout":
+    if status not in UNKNOWN_MEMBERSHIP_REPROBE_COOLDOWN_STATUSES:
         return False
     return _iso_datetime_after(result.get("unknown_membership_reprobe_next_at"), now)
 
 
 def _membership_reprobe_deferred(action: Action) -> bool:
     result = dict(action.result or {})
-    return result.get("unknown_membership_reprobe_status") == "timeout"
+    return result.get("unknown_membership_reprobe_status") in UNKNOWN_MEMBERSHIP_REPROBE_COOLDOWN_STATUSES
 
 
 def _iso_datetime_after(value: Any, now: datetime) -> bool:
@@ -1678,6 +1679,9 @@ def _recover_unknown_membership_action(
     except TimeoutError as exc:
         _mark_unknown_membership_reprobe_timeout(action=action, task=task, latest_attempt=latest_attempt, now=now, exc=exc)
         return False
+    except ConnectionError as exc:
+        _mark_unknown_membership_reprobe_connection_error(action=action, task=task, latest_attempt=latest_attempt, now=now, exc=exc)
+        return False
     if not result.ok:
         return False
     label = "可发言" if payload.get("require_send") else "已关注"
@@ -1709,6 +1713,33 @@ def _mark_unknown_membership_reprobe_timeout(
     if latest_attempt:
         latest_attempt.status = "result_unknown"
         latest_attempt.failure_type = "telegram_probe_timeout"
+        latest_attempt.after_call_at = now
+        latest_attempt.result_snapshot = dict(action.result)
+
+
+def _mark_unknown_membership_reprobe_connection_error(
+    *,
+    action: Action,
+    task: Task,
+    latest_attempt: ExecutionAttempt | None,
+    now: datetime,
+    exc: ConnectionError,
+) -> None:
+    error_message = "Telegram 补偿复检连接失败，已进入冷却等待下一轮显式复检"
+    action.result = {
+        **dict(action.result or {}),
+        "success": False,
+        "error_code": "telegram_probe_connection_error",
+        "error_message": error_message,
+        "unknown_membership_reprobe_status": "connection_error",
+        "unknown_membership_reprobe_at": now.isoformat(),
+        "unknown_membership_reprobe_next_at": (now + UNKNOWN_MEMBERSHIP_REPROBE_COOLDOWN).isoformat(),
+        "unknown_membership_reprobe_error": str(exc),
+    }
+    task.last_error = error_message
+    if latest_attempt:
+        latest_attempt.status = "result_unknown"
+        latest_attempt.failure_type = "telegram_probe_connection_error"
         latest_attempt.after_call_at = now
         latest_attempt.result_snapshot = dict(action.result)
 

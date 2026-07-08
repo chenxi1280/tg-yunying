@@ -11,6 +11,17 @@
 - next_agent: dev
 - unresolved: 新代码尚未发布；需要 Deploy Production 后确认生产镜像版本、recovery 容器重新 healthy、`worker drain failed` 下降/归零、CPU load 降到 4 核可承受范围，并复查 DB `telegram_probe_timeout` 冷却字段。
 
+## 2026-07-08 硅谷 recovery CPU 首次发布后 E4 失败
+
+- message_id: 2026-07-08-sv-recovery-cpu-backpressure-prodverify-failed-001
+- action: 对 release candidate `889e94635541bf937f4fc259f06435f7397fbc5e` 做生产 E4 复核。
+- input: Deploy Production run `28921986236` success；公网 `/api/health` 返回 `{"status":"ok"}`。
+- output: `production_verification_failed_connection_error_branch`
+- evidence: 硅谷 `47.251.126.134` 新镜像已落地，backend 与 recovery 均为 `ghcr.io/chenxi1280/tg-yunying-backend:889e94635541bf937f4fc259f06435f7397fbc5e` 且 healthy；但部署后约 4 分钟内 `tgyunying-worker-recovery` CPU 仍约 83%，15 分钟内 `worker drain failed=5`。失败栈仍在 `_recover_unknown_membership_action -> gateway.probe_target_capabilities`，本次异常为 `ConnectionError: Connection to Telegram failed 5 time(s)`，前置日志为 `Could not connect to proxy tgyunying-mihomo-024:7890`。生产 DB 只读统计：stale membership executing=1、unknown membership total=126、timeout_unknown_membership=0。
+- decision: 首次发布不是 production_fixed；根因同属 recovery Telegram reprobe 未把网关连接失败转为显式冷却状态，需要 dev 返工处理 `telegram_probe_connection_error`。
+- next_agent: dev
+- unresolved: 连接失败补丁尚未重新发布；CPU/load 降载、`worker drain failed` 清零和冷却字段 E4 仍 pending。
+
 ## 2026-07-07 MiniMax-M2.5 成人语境生产探针
 
 - message_id: 2026-07-07-minimax-m25-adult-context-prodprobe-001

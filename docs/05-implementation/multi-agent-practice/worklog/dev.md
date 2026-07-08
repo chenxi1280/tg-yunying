@@ -13,6 +13,17 @@
 - handoff_message_id: 2026-07-08-sv-recovery-cpu-backpressure-dev-to-prod-diagnosis-e4-001
 - unresolved: E4 production verification pending；线上 CPU 是否下降、`worker drain failed` 是否归零、`telegram_probe_timeout` 冷却字段和 recovery 继续处理其他项仍待 prod-diagnosis 证明。
 
+## 2026-07-08 硅谷 recovery CPU 背压修复连接失败返工
+
+- message_id: 2026-07-08-sv-recovery-cpu-backpressure-dev-rework-connection-001
+- action: 处理 `889e9463` 发布后生产 E4 暴露的 `ConnectionError` 分支。
+- input: 生产硅谷新镜像落地后，`tgyunying-worker-recovery` 仍有 `worker drain failed=5`，栈为 `_recover_unknown_membership_action -> gateway.probe_target_capabilities -> TelethonClientLifecycle.run -> client.connect`，异常 `ConnectionError: Connection to Telegram failed 5 time(s)`；日志前缀出现 `Could not connect to proxy tgyunying-mihomo-024:7890`。
+- output: `probe_target_capabilities` 的 `ConnectionError` 现在写入 `telegram_probe_connection_error`、`unknown_membership_reprobe_status=connection_error`、`unknown_membership_reprobe_next_at` 并进入冷却；stale executing membership 同样退出 `executing` 并清空旧 lease。
+- evidence: RED：`test_stale_executing_membership_connection_error_clears_lease_and_cools_down` 先失败，证明旧代码会让 `ConnectionError` 冒泡打断 recovery；修复后 `backend/tests/test_task_recovery_backpressure.py` `4 passed`，联合 Telethon lifecycle `13 passed`，全量 no_postgres `799 passed, 781 deselected, 5 warnings`，`compileall` passed，`git diff --check` passed。
+- decision: `889e9463` 首次生产 E4 failed；连接失败返工本地门禁已通过，待重新发布。
+- next_agent: qa
+- unresolved: 重新推送 release、Deploy Production 和二次 E4 均 pending。
+
 ## 2026-07-08 硅谷 recovery CPU 持续升高修复 Development Complete
 
 - message_id: 2026-07-08-sv-recovery-cpu-backpressure-devcomplete-001

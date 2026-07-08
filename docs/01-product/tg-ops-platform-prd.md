@@ -3447,7 +3447,7 @@ DB 短事务确认执行
 - 已进入 Gateway 的超时必须进入 `unknown_after_send`。
 - worker heartbeat 失联时恢复其持有 action。
 - 记录恢复原因并暴露在任务详情和运营数据中。
-- `unknown_after_send` membership 只允许按 drain limit 和账号+目标去重后有界补偿复检；Telegram 探测超时必须写入 `telegram_probe_timeout`、复检时间和下一次冷却时间，不能抛出打断整轮 recovery，也不能高频重试。
+- `unknown_after_send` membership 只允许按 drain limit 和账号+目标去重后有界补偿复检；Telegram 探测超时必须写入 `telegram_probe_timeout`，连接失败必须写入 `telegram_probe_connection_error`，两者都要记录复检时间和下一次冷却时间，不能抛出打断整轮 recovery，也不能高频重试。
 
 ### 5.6 Metrics 要求
 

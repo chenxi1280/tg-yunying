@@ -12,7 +12,32 @@
 - handoff_delivery_status: sent
 - target_thread: 019f07c6-f550-73e3-998b-b130da2c1898
 - handoff_message_id: 2026-07-08-sv-recovery-cpu-backpressure-product-acceptance-001
-- unresolved: Release Gate / Deploy Production / 生产新容器版本 / CPU 降载 / `worker drain failed` 清零仍未完成。Release Gate 通过并部署后，才投递 prod-diagnosis 做 E4 production verification。
+- unresolved: Release Gate / Deploy Production 已由 `2026-07-08-sv-recovery-cpu-backpressure-dev-release-gate-001` 覆盖为 passed/deployed；仍等待 prod-diagnosis E4 验证 CPU 降载、recovery worker 行为和 `worker drain failed` 清零。
+
+## 2026-07-08 硅谷 recovery CPU 背压 Release Gate 确认
+
+- message_id: 2026-07-08-sv-recovery-cpu-backpressure-product-release-gate-ack-001
+- action: ACK dev Release Gate report `2026-07-08-sv-recovery-cpu-backpressure-dev-release-gate-001`，确认发布关口通过且已投递 prod-diagnosis。
+- input: dev 报告 release candidate `889e94635541bf937f4fc259f06435f7397fbc5e` 已部署；Deploy Production run `28921986236` 的 checks、build-images、deploy 均 success；公网 `/api/health` 和 `/task-center` 均 HTTP 200；prod-diagnosis E4 handoff 已发送。
+- output: `release_gate_passed_deployed_pending_prodverify`
+- evidence: 最新 SHA 本地补跑 `compileall` passed、`backend/tests/test_task_recovery_backpressure.py` `3 passed`、`git diff --check` passed；GitHub Actions run `28921986236` success；post-deploy public smoke `/api/health` HTTP 200、`/task-center` HTTP 200；prod-diagnosis handoff `2026-07-08-sv-recovery-cpu-backpressure-dev-to-prod-diagnosis-e4-001` 已发送到线程 `019f07c6-92b5-7c50-b7e2-2f18a107e006`。
+- decision: Release Gate 通过并已部署；保持 `production_fixed=unproven`，不关闭 L3。产品等待 prod-diagnosis E4 验证硅谷 CPU/load 下降、`tgyunying-worker-recovery` 不再因历史 unknown membership Telegram reprobe 拉高 CPU、timeout/cooldown 字段落库、Telethon 无 timeout 后台 coroutine residue、recovery 继续处理其他项。
+- next_agent: prod-diagnosis
+- handoff_delivery_status: sent_by_dev
+- target_thread: 019f07c6-92b5-7c50-b7e2-2f18a107e006
+- handoff_message_id: 2026-07-08-sv-recovery-cpu-backpressure-dev-to-prod-diagnosis-e4-001
+- unresolved: 生产 E4 复核未返回，不能写 `production_fixed` / `closed`。
+
+## 2026-07-08 硅谷 recovery CPU 连接失败返工产品记录
+
+- message_id: 2026-07-08-sv-recovery-cpu-backpressure-product-connection-rework-001
+- action: 记录首次发布后生产 E4 失败与返工范围。
+- input: prod-diagnosis 发现 `889e9463` 发布后 recovery 仍因 `ConnectionError: Connection to Telegram failed 5 time(s)` 整轮失败。
+- output: product_scope_extended_to_connection_error_cooldown
+- evidence: 生产日志指向缺失代理 `tgyunying-mihomo-024:7890` 导致 Telegram probe connection error；该错误和 timeout 一样会造成 recovery tight loop。dev 已追加红测并实现 `telegram_probe_connection_error` 显式落库、冷却、stale executing lease 清理。
+- decision: 产品范围扩展到 Telegram probe connection error；该分支必须可见失败 / 结果未知并进入冷却，不能 silent fallback，也不能继续让 recovery worker 高频失败。
+- next_agent: dev
+- unresolved: 连接失败补丁全量验证、重新发布和生产 E4 pending。
 
 ## 2026-07-02 托管 2FA 密码受控查看产品口径
 
