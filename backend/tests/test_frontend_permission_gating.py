@@ -1203,7 +1203,7 @@ def test_task_center_ai_chat_account_distribution_controls_are_visible():
     assert 'label="全账号日覆盖模式"' in source
     assert 'name="per_account_daily_min_messages"' in source
     assert 'name="per_account_daily_max_messages"' in source
-    assert "account_coverage_mode: values.account_coverage_mode ?? 'natural'" in view
+    assert "account_coverage_mode: values.account_coverage_mode ?? 'all_accounts_daily'" in view
     assert "'account_coverage_mode'" in view_model
     assert "'per_account_daily_min_messages'" in view_model
     assert "'per_account_daily_max_messages'" in view_model
