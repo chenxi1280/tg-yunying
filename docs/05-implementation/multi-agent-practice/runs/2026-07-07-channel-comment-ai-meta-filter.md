@@ -263,3 +263,45 @@ Product ACK：
 
 - 本机 SSH 到生产 `47.251.126.134` 当前分别返回 `Connection closed by 47.251.126.134 port 22` 和 `Permission denied (publickey,gssapi-keyex,gssapi-with-mic,password)`，未能读取生产 DB / worker / Telegram action 样本。
 - 已确认 2026-07-09 最新成功 Deploy Production run `28995286636` 将 `8a3e914e` 发布到 `/data/tgyunying/releases/20260709050738_8a3e914`，且公开 `/api/health` 返回 `{"status":"ok"}`；但本次补丁尚未发布，不能写 `production_fixed`。
+
+## Request Analysis Phrase Release And Guard Check
+
+- message_id: 2026-07-09-channel-comment-ai-request-analysis-release-001
+- status: released_prod_guard_verified_new_sample_unproven
+- evidence_level: E4_guard
+- release_gate: passed
+- production_fixed: false
+
+发布：
+
+- commit: `786d02ecc555905c30e613f896d8b575fbf3f801`
+- title: `Block AI request analysis comments`
+- push flow: `master -> release`
+- Deploy Production run: `29001330031`
+- checks: success, `4m53s`
+- build-images: success, `45s`
+- deploy: success, `1m55s`
+- release: `/data/tgyunying/releases/20260709072815_786d02e`
+- backend / workers image: `ghcr.io/chenxi1280/tg-yunying-backend:786d02ecc555905c30e613f896d8b575fbf3f801`
+- frontend image: `ghcr.io/chenxi1280/tg-yunying-frontend:786d02ecc555905c30e613f896d8b575fbf3f801`
+
+生产运行时证据：
+
+- `tgyunying-backend` running / healthy。
+- planner、dispatcher-1/2/3/4、listener、recovery、account-security、account-online、ai-memory、metrics workers 均 healthy。
+- release script local api health HTTP 200。
+- host nginx api health HTTP 200。
+- public api health HTTP 200；本地复查 `https://tgyunying.telema.cn/api/health` 返回 `{"status":"ok"}`。
+
+生产 guard 证据：
+
+- 生产容器内 `looks_like_ai_meta_content("这个请求要求我为 Telegram 频道生成评论区短评") -> True`。
+- 生产容器内 `looks_like_ai_meta_content("内容涉及到色情低俗信息的传播和讨论 让我仔细分析一下") -> True`。
+- 生产容器内 `looks_like_ai_meta_content("飞机号是真的还是假的啊") -> False`。
+- 生产 DB 最近 200 条 `send_message` / `post_comment` action：`send_message success=132`、`send_message failed=68`、`post_comment=0`；截图关键词命中 0，当前 guard 判定为 AI 过程性内容的 payload 命中 0。
+- 本次 release 之后 `send_message` / `post_comment` action 为 0，未出现发布后新脏样本。
+
+边界：
+
+- 当前证据证明生产代码和容器 guard 已能拦截图样式拆段元话术；最近样本未见同类 payload。
+- 发布后尚无新的真实 `send_message` / `post_comment` 发送样本，因此不能写 `production_fixed`；需要等下一轮真实评论/讨论区发送后再做 E4 样本闭环。
