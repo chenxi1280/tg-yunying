@@ -23,7 +23,7 @@ from app.services.group_listeners import collect_group_context, recent_context_m
 from app.services.target_learning_audit import audit_learning_profile_use
 from app.services.tenant_target_profile import tenant_learning_profile_preview
 from app.services.rule_engine import apply_output_policy, bound_rule_version, evaluate_input_filter
-from app.services.material_rules import select_material_for_policy
+from app.services.material_rules import MaterialRuleResult, select_material_for_policy
 
 from ..account_pool import DAILY_COVERAGE_SUCCESS_STATUSES, daily_account_coverage_counts, daily_uncovered_account_count, select_task_accounts
 from ..ai_act_types import canonical_ai_group_act_type
@@ -439,70 +439,76 @@ def build_plan(session: Session, task: Task) -> int:
         if burst_plan and index == min(burst_plan):
             action_burst_account = account
         used_account_ids.add(account.id)
-        has_native_reply = _reply_target_message_id(quality_item) is not None
         voice_profile = voice_profiles.get(account.id, {})
-        original_content = content
-        content = _voice_profile_anchor_repaired_content(content, voice_profile, quality_item)
-        if content != original_content:
-            quality_stats["voice_profile_anchor_rewrite_count"] = int(quality_stats.get("voice_profile_anchor_rewrite_count") or 0) + 1
+        material_intent = _material_intent_for_turn(quality_item)
         filtered_content = content
-        if content:
-            filtered = filter_outbound_content(session, tenant_id=task.tenant_id, group=group, content=content, reject_mentions=True, reject_replies=not has_native_reply)
-            if not filtered.ok:
+        material_result = MaterialRuleResult()
+        media_segments = []
+        voice_decision = {"score": VOICE_PROFILE_MATCH_SCORE, "reason": "deferred_ai_generation"}
+        stance_summary = stance_summaries.get(account.id, "")
+        memory = None
+        if not deferred_ai:
+            has_native_reply = _reply_target_message_id(quality_item) is not None
+            original_content = content
+            content = _voice_profile_anchor_repaired_content(content, voice_profile, quality_item)
+            if content != original_content:
+                quality_stats["voice_profile_anchor_rewrite_count"] = int(quality_stats.get("voice_profile_anchor_rewrite_count") or 0) + 1
+            filtered_content = content
+            if content:
+                filtered = filter_outbound_content(session, tenant_id=task.tenant_id, group=group, content=content, reject_mentions=True, reject_replies=not has_native_reply)
+                if not filtered.ok:
+                    _hard_blocker_inc(hard_blockers, "content_policy", hard_progress)
+                    stats_inc(task, "failure_count")
+                    continue
+                filtered_content = filtered.content
+            material_result = select_material_for_policy(
+                session,
+                task.tenant_id,
+                (rule_version.routing or {}).get("material_policy") if rule_version else {},
+                context_key=f"{cycle_id}:{index}:{filtered_content or 'pending-ai'}",
+                default_caption="",
+                material_intent=material_intent,
+            )
+            if material_result.failure_reason and material_result.fallback == "skip":
                 _hard_blocker_inc(hard_blockers, "content_policy", hard_progress)
                 stats_inc(task, "failure_count")
                 continue
-            filtered_content = filtered.content
-        material_intent = _material_intent_for_turn(quality_item)
-        material_result = select_material_for_policy(
-            session,
-            task.tenant_id,
-            (rule_version.routing or {}).get("material_policy") if rule_version else {},
-            context_key=f"{cycle_id}:{index}:{filtered_content or 'pending-ai'}",
-            default_caption="",
-            material_intent=material_intent,
-        )
-        if material_result.failure_reason and material_result.fallback == "skip":
-            _hard_blocker_inc(hard_blockers, "content_policy", hard_progress)
-            stats_inc(task, "failure_count")
-            continue
-        media_segments = [material_result.segment] if material_result.ok and material_result.segment else []
+            media_segments = [material_result.segment] if material_result.ok and material_result.segment else []
+            voice_decision = _voice_profile_match_decision_for_item(filtered_content, voice_profile, quality_item)
+            if voice_decision["score"] <= VOICE_PROFILE_MISMATCH_SCORE:
+                _record_quality_rejection(
+                    quality_stats,
+                    "voice_profile_mismatch",
+                    filtered_content,
+                    detail=voice_decision["reason"],
+                    account_id=account.id,
+                )
+                _hard_blocker_inc(hard_blockers, "voice_profile_mismatch", hard_progress)
+                stats_inc(task, "skipped_count")
+                continue
+            if stance_reason := _stance_conflict_reason(filtered_content, stance_summary):
+                _record_quality_rejection(
+                    quality_stats,
+                    "stance_conflict",
+                    filtered_content,
+                    detail=stance_reason,
+                    account_id=account.id,
+                )
+                _hard_blocker_inc(hard_blockers, "stance_conflict", hard_progress)
+                stats_inc(task, "skipped_count")
+                continue
+            try:
+                memory = _reserve_planned_message_memory(session, task, group, account.id, filtered_content, config, profile_preview, quality_item)
+            except DuplicateMessageReservation as exc:
+                rejection_reason = _duplicate_window_quality_reason(exc.duplicate_window)
+                _record_quality_rejection(quality_stats, rejection_reason, filtered_content, detail=exc.duplicate_window, account_id=account.id)
+                if rejection_reason == "duplicate_message":
+                    quality_stats["duplicate_risk"] = exc.duplicate_window
+                _hard_blocker_inc(hard_blockers, rejection_reason, hard_progress)
+                stats_inc(task, "skipped_count")
+                continue
         coverage_payload = _coverage_payload_for_account(round_config, account.id, coverage_counts)
         act_type = _act_type_for_turn(index, quality_item)
-        voice_decision = _voice_profile_match_decision_for_item(filtered_content, voice_profile, quality_item)
-        if voice_decision["score"] <= VOICE_PROFILE_MISMATCH_SCORE:
-            _record_quality_rejection(
-                quality_stats,
-                "voice_profile_mismatch",
-                filtered_content,
-                detail=voice_decision["reason"],
-                account_id=account.id,
-            )
-            _hard_blocker_inc(hard_blockers, "voice_profile_mismatch", hard_progress)
-            stats_inc(task, "skipped_count")
-            continue
-        stance_summary = stance_summaries.get(account.id, "")
-        if stance_reason := _stance_conflict_reason(filtered_content, stance_summary):
-            _record_quality_rejection(
-                quality_stats,
-                "stance_conflict",
-                filtered_content,
-                detail=stance_reason,
-                account_id=account.id,
-            )
-            _hard_blocker_inc(hard_blockers, "stance_conflict", hard_progress)
-            stats_inc(task, "skipped_count")
-            continue
-        try:
-            memory = _reserve_planned_message_memory(session, task, group, account.id, filtered_content, config, profile_preview, quality_item)
-        except DuplicateMessageReservation as exc:
-            rejection_reason = _duplicate_window_quality_reason(exc.duplicate_window)
-            _record_quality_rejection(quality_stats, rejection_reason, filtered_content, detail=exc.duplicate_window, account_id=account.id)
-            if rejection_reason == "duplicate_message":
-                quality_stats["duplicate_risk"] = exc.duplicate_window
-            _hard_blocker_inc(hard_blockers, rejection_reason, hard_progress)
-            stats_inc(task, "skipped_count")
-            continue
         prepared_actions.append(
             (
                 account.id,

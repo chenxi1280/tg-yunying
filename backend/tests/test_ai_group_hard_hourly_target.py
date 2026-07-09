@@ -1105,6 +1105,62 @@ def test_group_ai_chat_hard_hourly_uses_current_slot_when_account_cools_down_lat
 
 
 @pytest.mark.no_postgres
+def test_group_ai_chat_hard_hourly_deferred_ai_ignores_empty_text_voice_gate(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 7, 20, 10)
+
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
+    monkeypatch.setattr("app.services.account_capacity._now", lambda: now_value)
+    monkeypatch.setattr("app.services.task_center.account_pool._now", lambda: now_value)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        "app.services.task_center.executors.group_ai_chat.voice_profile_prompt_details",
+        lambda _session, *, tenant_id, account_ids: {
+            int(account_id): {"version": 1, "summary": "夜场熟客，要求夜场主题锚点"}
+            for account_id in account_ids
+        },
+    )
+
+    def fail_generate(*_args, **_kwargs):  # noqa: ANN001
+        raise AssertionError("hard-hourly deferred AI should not generate text during planning")
+
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fail_generate)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        _add_ai_group_rule_binding(session)
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="硬目标群", auth_status="已授权运营"))
+        _add_ready_group_accounts(session, group_id=7, account_ids=list(range(101, 111)))
+        task = Task(
+            id="ai-hard-hourly-deferred-voice",
+            tenant_id=1,
+            name="硬目标延迟生成不被空文本面具拦截",
+            type="group_ai_chat",
+            status="running",
+            account_config={"selection_mode": "all", "max_concurrent": 20, "cooldown_per_account_minutes": 0},
+            type_config={
+                "target_group_id": 7,
+                "fact_anchor_required": False,
+                "hard_hourly_target_enabled": True,
+                "hourly_min_messages": 10,
+                "hard_hourly_strategy": "force_planning",
+            },
+        )
+        session.add(task)
+        session.commit()
+
+        created = build_group_ai_chat_plan(session, task)
+        actions = list(session.scalars(select(Action).where(Action.task_id == task.id, Action.action_type == "send_message").order_by(Action.created_at)))
+
+    assert created == 10
+    assert len(actions) == 10
+    assert {action.payload["ai_generation_status"] for action in actions} == {"pending"}
+    assert {action.payload["message_text"] for action in actions} == {""}
+    assert "voice_profile_mismatch" not in (task.stats or {}).get("hard_hourly_last_blockers", {})
+
+
+@pytest.mark.no_postgres
 def test_group_ai_chat_hard_hourly_preserves_cycle_rotation_over_account_memory(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
