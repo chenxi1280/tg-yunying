@@ -20,9 +20,6 @@ from app.timezone import BEIJING_TZ
 
 from ._common import _as_utc, _now, audit
 
-DIRECT_ONLY_TASK_TYPES = frozenset({"group_ai_chat", "channel_comment", "channel_view", "channel_like"})
-
-
 def seed_developer_apps(session: Session) -> None:
     if session.scalar(select(func.count(TelegramDeveloperApp.id))) > 0:
         return
@@ -214,7 +211,7 @@ def credentials_for_account(
     account: TgAccount,
     *,
     assign_if_missing: bool = False,
-    use_proxy: bool = True,
+    use_proxy: bool = False,
 ) -> DeveloperAppCredentials:
     if account.deleted_at is not None:
         raise ValueError("账号已删除")
@@ -227,8 +224,8 @@ def credentials_for_account(
     return credentials_for_developer_app(app, account.proxy if use_proxy else None)
 
 
-def credentials_for_task_account(session: Session, account: TgAccount, task_type: str | None) -> DeveloperAppCredentials:
-    return credentials_for_account(session, account, use_proxy=task_type not in DIRECT_ONLY_TASK_TYPES)
+def credentials_for_task_account(session: Session, account: TgAccount, _task_type: str | None) -> DeveloperAppCredentials:
+    return credentials_for_account(session, account)
 
 
 def _proxy_credentials(proxy: AccountProxy | None) -> dict:

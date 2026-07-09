@@ -810,7 +810,8 @@ def test_standby_authorization_login_creates_flow_without_overwriting_primary_st
         assert account.session_ciphertext == "primary-session"
 
 
-def test_credentials_for_account_includes_current_proxy() -> None:
+@pytest.mark.no_postgres
+def test_credentials_for_account_uses_direct_credentials_by_default() -> None:
     with _sqlite_session() as session:
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(
@@ -818,7 +819,7 @@ def test_credentials_for_account_includes_current_proxy() -> None:
                 id=32,
                 app_name="主应用",
                 api_id=32001,
-                api_hash_ciphertext="encrypted",
+                api_hash_ciphertext=encrypt_secret("hash"),
                 is_active=True,
                 health_status="健康",
             )
@@ -852,6 +853,55 @@ def test_credentials_for_account_includes_current_proxy() -> None:
         session.commit()
 
         credentials = credentials_for_account(session, account)
+
+        assert credentials.api_id == 32001
+        assert credentials.proxy_id is None
+        assert credentials.proxy_host == ""
+
+
+@pytest.mark.no_postgres
+def test_credentials_for_account_can_explicitly_use_proxy() -> None:
+    with _sqlite_session() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(
+            TelegramDeveloperApp(
+                id=32,
+                app_name="主应用",
+                api_id=32001,
+                api_hash_ciphertext=encrypt_secret("hash"),
+                is_active=True,
+                health_status="健康",
+            )
+        )
+        session.add(
+            AccountProxy(
+                id=42,
+                tenant_id=1,
+                name="当前代理",
+                protocol="socks5",
+                host="127.0.0.1",
+                port=10042,
+                username="proxy-user",
+                password_ciphertext=encrypt_secret("proxy-pass"),
+                status="healthy",
+            )
+        )
+        account = TgAccount(
+            id=171,
+            tenant_id=1,
+            display_name="带代理账号",
+            phone_masked="171",
+            status=AccountStatus.ACTIVE.value,
+            developer_app_id=32,
+            developer_app_version=1,
+            proxy_id=42,
+            session_ciphertext="primary-session",
+            health_score=95,
+        )
+        session.add(account)
+        session.commit()
+
+        credentials = credentials_for_account(session, account, use_proxy=True)
 
         assert credentials.proxy_id == 42
         assert credentials.proxy_protocol == "socks5"
@@ -905,10 +955,10 @@ def test_credentials_for_account_can_explicitly_bypass_proxy() -> None:
         ("channel_comment", None),
         ("channel_view", None),
         ("channel_like", None),
-        ("search_join_group", 42),
+        ("search_join_group", None),
     ],
 )
-def test_credentials_for_task_account_keeps_proxy_only_for_search_join(task_type: str, expected_proxy_id: int | None) -> None:
+def test_credentials_for_task_account_uses_direct_account_credentials(task_type: str, expected_proxy_id: int | None) -> None:
     with _sqlite_session() as session:
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(

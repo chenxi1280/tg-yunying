@@ -3229,7 +3229,7 @@ AI 与提示词 Tab 维护 AI 底座，不承载素材日常管理。
 
 | 表 | 关键字段 | 说明 |
 | --- | --- | --- |
-| `tg_accounts` | `tenant_id`、`display_name`、`username`、`phone_number`、`phone_masked`、`account_identity`、`status`、`session_ciphertext`、`developer_app_id`、`proxy_id`、`health_score`、`deleted_at` | TG 账号主表；`account_identity=normal/code_receiver` 是任务候选硬边界；`session_ciphertext`、`developer_app_id`、`proxy_id` 是迁移期主授权兼容字段，目标态由 `tg_account_authorizations` 承载 |
+| `tg_accounts` | `tenant_id`、`display_name`、`username`、`phone_number`、`phone_masked`、`account_identity`、`status`、`session_ciphertext`、`developer_app_id`、`proxy_id`、`health_score`、`deleted_at` | TG 账号主表；`account_identity=normal/code_receiver` 是任务候选硬边界；`session_ciphertext`、`developer_app_id` 是迁移期主授权兼容字段，目标态由 `tg_account_authorizations` 承载；账号级 `proxy_id` 只保留历史绑定展示 / 解绑审计，不作为普通账号凭据默认连接参数 |
 | `tg_account_authorizations` | `tenant_id`、`account_id`、`role`、`developer_app_id`、`developer_app_api_id_snapshot`、`proxy_id`、`session_ciphertext`、`status`、`health_status`、`derived_status`、`is_current`、`last_health_check_at`、`last_success_at`、`last_switched_at`、`failure_reason`、`disabled_at`、`created_by` | 账号授权资产表；承载 primary、standby_1、standby_2 的真实登录成功状态、健康、切换、停用和审计关联；远端授权会话通过 `api_id` 对比 `developer_app_api_id_snapshot` 绑定三槽位；存量账号由 `tg_accounts` 兼容字段映射为 primary；三槽位全部不可用时账号标识为全部掉线，只能进入人工重新登录 / 扫码 / 手动验证码 |
 | `tg_verification_codes` | `tenant_id`、`account_id`、`authorization_id`、`source_peer`、`source_message_id`、`code_ciphertext`、`code_masked`、`received_at`、`expires_at`、`status`、`failure_type`、`failure_detail` | Telegram 官方验证码事实；只记录真实读取到的官方服务 code 或明确失败原因，展示时受 `accounts.codes.read` 权限和审计控制 |
 | `account_pools` | `tenant_id`、`name`、`is_default`、`pool_purpose`、`is_system`、`system_key`、`deleted_at` | 账号分组；`pool_purpose=code_receiver` 且 `system_key=code_receiver` 表示系统接码专用分组，同租户只能有一个有效系统接码池；组内账号硬禁止参与运营任务和一键设备清理，只允许登录 code 读取、授权资产刷新、健康检查和诊断。`pool_purpose=rank_deboost` 表示降权任务专用分组，组内账号硬禁止参与 `search_rank_deboost` 以外的任务、消息发送、资料初始化、账号面具初始化、2FA 设置 / 轮换和一键清理其他登录设备；同租户可存在多个 `rank_deboost` 分组，但同一账号不得同时存在于 `rank_deboost` 分组和普通分组；该类型分组不可删除，只能禁用 |
@@ -3364,7 +3364,7 @@ listener_source_state
 | Dispatcher | due pending actions | action result、execution_attempts、账号状态、任务 stats | 不生成新业务 action |
 | Listener | listener source、监听账号、源目标 | 上下文、监听水位、源媒体缓存、事件 | 不发送业务消息 |
 | Recovery | 超时 claim、超时 lease、worker 失联、unknown | 恢复 action、任务错误摘要、审计、unknown membership 有界补偿复检 | 不能无上限调用 TG；不能自动重发业务消息 |
-| Account Security | 账号资料初始化、设置二步密码、清理登录设备、备用 session 补齐 / 自愈批次 | 执行 `tg_account_security_batch_items` pending/waiting 项，回写 profile / username / avatar / 2FA / device / standby session 结果 | 调用 TG，必须独立运行 |
+| Account Security | 账号资料初始化、设置二步密码、清理登录设备、备用 session 补齐 / 自愈批次 | 执行 `tg_account_security_batch_items` pending/waiting 项，回写 profile / username / avatar / 2FA / device / standby session 结果 | 调用 TG，必须独立运行；普通账号维护凭据默认直连，不读取账号级 `proxy_id` |
 | Metrics | action、task、worker、账号、代理、Redis | runtime snapshots、daily stats | 不改变业务状态 |
 
 ### 5.2 Planner 规划要求
@@ -4483,7 +4483,7 @@ action / attempt 写入完成
 - AI 活跃群 Planner 和 Dispatcher 必须把 `tg_account_online_state` 作为主互动硬前置；只有 `online` 且未超过 `stale_after_at` 的账号才能生成 / 发送文本或表情 slot。`warming`、`recovering` 只表示保活准备或恢复中，离线、需重登、session 失效或代理异常的账号不得生成 / 发送文本或表情 slot，失败原因必须记录为账号在线问题，不能归为 AI 质量不足或用 `emoji_react` 兜底。
 - 在线保活只能做连接、session warm、轻量探测和必要自愈，不得通过目标群可见消息、点赞、关注等动作制造在线证据；探测必须分批、带抖动并落库。
 - `desired_online` 必须按全局保活、任务、监听源等来源引用计数维护；任务暂停、停止、删除、账号范围变更和存量任务迁移都必须触发 reconcile，不能留下孤儿在线需求或 stale 在线状态。
-- 在线状态必须记录 session 和代理维度；超过 `stale_after_at` 未成功探测的账号不得继续参与 Planner / Dispatcher，必须转为 warming / offline 并展示最近失败或未探测原因；周期 reconcile 不得把已 stale 的 `online` 状态重新续期。
+- 在线状态必须记录 session 维度，并在专项代理任务中记录授权环境代理维度；普通账号维护和 2FA 不再因账号级历史 `proxy_id` 异常阻断。超过 `stale_after_at` 未成功探测的账号不得继续参与 Planner / Dispatcher，必须转为 warming / offline 并展示最近失败或未探测原因；周期 reconcile 不得把已 stale 的 `online` 状态重新续期。
 - 发布迁移后必须为运行中 AI 活跃群、转发任务、监听源和全局保活配置回填 `desired_online` 来源；否则上线后不能把所有账号都当作离线，也不能让缺状态账号绕过在线前置。
 - AI 已发送内容默认不得进入正向运营学习画像；实时监听同步、历史拉取和频道评论采集都必须按账号身份排除平台托管账号 / 自身账号 / 机器人发送内容，不能只靠用户名或文案关键词判断。只有人工确认、真实互动效果明确或高质量复用标记的 AI 内容才可低权重进入学习候选。
 - 任务详情必须展示 AI 质量漏斗和代表样例，至少覆盖候选数、通过数、重复拦截、模板壳拦截、画像低分、面具低分、事实锚点不足、同批次多样性降权和最终发送数。

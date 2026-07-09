@@ -53,8 +53,8 @@
 
 | 概念 | 说明 |
 | --- | --- |
-| 平台可信设备 | 当前平台使用 `session_ciphertext + developer_app_id + proxy_id` 连接 Telegram 的授权 Session。产品上叫“平台可信设备”，技术上是当前 MTProto 授权会话。 |
-| 主授权 | 当前任务执行和同步默认使用的账号授权资产，由 `developer_app_id + proxy_id + session_ciphertext` 组成。 |
+| 平台可信设备 | 当前平台使用 `session_ciphertext + developer_app_id` 连接 Telegram 的授权 Session。账号安全、资料初始化、设备清理和 2FA 默认直连，不读取账号级 `proxy_id`；`search_join` 等专项任务的授权槽位代理由 `account_environment_bindings` / `account_proxy_bindings` 单独约束。 |
+| 主授权 | 当前任务执行和同步默认使用的账号授权资产，由 `developer_app_id + session_ciphertext` 组成；迁移期保留的账号级 `proxy_id` 只作为历史展示 / 解绑审计字段，不再作为普通账号凭据的默认连接参数。 |
 | 备用授权 | 已提前真实登录成功、可在主授权异常时切换使用的账号授权资产。只配置开发者应用但没有可用 session，不算备用授权。 |
 | 官方锚点设备 | 保留在 Telegram 官方手机端或桌面端上的已登录设备，用于平台 session 全部失效时扫码恢复。 |
 | 平台设备显示名 | Telegram 授权列表里展示的平台客户端信息，例如 device_model、system_version、app_version。它帮助识别平台 Session，不等同于 TG 账号昵称。 |
@@ -214,7 +214,7 @@
   ↓
 在抽屉中选择账号：账号组 / 筛选 / 搜索 / 跨页勾选 / 区间选择
   ↓
-读取账号 Session、开发者应用和代理
+读取账号 Session 和开发者应用，账号安全默认直连
   ↓
 若 standby_1 / standby_2 session 未就绪，先自动补齐备用 session
   ↓
@@ -304,7 +304,7 @@
   ↓
 未设置：读取系统设置中的固定托管 2FA 密码
   ↓
-调用 updatePasswordSettings
+使用账号安全直连凭据调用 updatePasswordSettings
   ↓
 如需要邮箱确认，进入待确认状态
   ↓
