@@ -62,6 +62,7 @@ _COMMENT_THREAD_SKIP_CODES = {
 }
 _REACTION_UNAVAILABLE_SKIP_CODE = "reaction_unavailable_sibling"
 _COMMENT_MEMBERSHIP_RETRY_DELAY = timedelta(minutes=5)
+DISPATCHER_DB_ERROR_RETRY_DELAY_SECONDS = 10
 _COMMENT_MEMBERSHIP_REQUIRED_MARKERS = (
     "not participant",
     "not a participant",
@@ -279,6 +280,17 @@ def dispatch_action(session: Session, action: Action) -> bool:
         else:
             _fail(action, FailureType.UNKNOWN.value, str(exc))
         return True
+
+
+def mark_dispatcher_db_error(session: Session, action_id: str, detail: str) -> bool:
+    action = session.get(Action, action_id)
+    if not action:
+        return False
+    if _latest_open_gateway_attempt(session, action):
+        _mark_unknown_after_send(session, action, detail)
+        return True
+    _release_dispatcher_db_error(action, detail)
+    return True
 
 
 def _is_reserved_rescue_admin_action(session: Session, action: Action, account: TgAccount) -> bool:
@@ -3931,6 +3943,26 @@ def _defer(action: Action, scheduled_at, code: str, detail: str) -> None:
     action.scheduled_at = scheduled_at
     _clear_action_lease(action)
     action.result = {**(action.result or {}), "success": False, "error_code": code, "error_message": detail, "auto_check": "延后", "validation_stage": "account_policy"}
+    _release_runtime_resources(action)
+
+
+def _release_dispatcher_db_error(action: Action, detail: str) -> None:
+    retry_at = _now() + timedelta(seconds=DISPATCHER_DB_ERROR_RETRY_DELAY_SECONDS)
+    action.status = "pending"
+    action.scheduled_at = retry_at
+    action.executed_at = None
+    action.retry_count = int(action.retry_count or 0) + 1
+    _clear_action_lease(action)
+    action.result = {
+        **(action.result or {}),
+        "success": False,
+        "error_code": "dispatcher_db_error",
+        "error_message": detail,
+        "auto_check": "延后",
+        "validation_stage": "dispatcher_db",
+        "retry_after_seconds": DISPATCHER_DB_ERROR_RETRY_DELAY_SECONDS,
+        "next_retry_at": retry_at.isoformat(),
+    }
     _release_runtime_resources(action)
 
 

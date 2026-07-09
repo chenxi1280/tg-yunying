@@ -6,6 +6,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy import create_engine
 from sqlalchemy import event
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.database import Base
@@ -294,6 +295,62 @@ def test_dispatcher_role_claims_and_dispatches_without_listener(monkeypatch):
     assert action.status == "success"
     assert action.result["remote_message_id"] == "mock-role-drain"
     assert heartbeat is not None
+
+
+@pytest.mark.no_postgres
+def test_dispatcher_db_error_does_not_stop_other_claimed_actions(monkeypatch):
+    SessionFactory = _session_factory()
+    now_value = _now()
+    calls: list[str] = []
+
+    def fake_dispatch(session: Session, action: Action) -> bool:
+        calls.append(action.id)
+        if action.id == "action-db-deadlock":
+            raise SQLAlchemyError("deadlock detected")
+        action.status = "success"
+        action.executed_at = _now()
+        action.result = {"success": True, "remote_message_id": "mock-after-db-error"}
+        return True
+
+    monkeypatch.setattr(service, "dispatch_action", fake_dispatch)
+
+    with SessionFactory() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgAccount(id=11, tenant_id=1, display_name="A", phone_masked="***0011", status=AccountStatus.ACTIVE.value, session_ciphertext="mock"))
+        session.add(TgAccount(id=12, tenant_id=1, display_name="B", phone_masked="***0012", status=AccountStatus.ACTIVE.value, session_ciphertext="mock"))
+        session.add(Task(id="task-dispatcher-db-error", tenant_id=1, name="dispatcher", type="group_relay", status="running"))
+        for action_id, account_id, offset in (("action-db-deadlock", 11, 2), ("action-after-db-error", 12, 1)):
+            session.add(
+                Action(
+                    id=action_id,
+                    tenant_id=1,
+                    task_id="task-dispatcher-db-error",
+                    task_type="group_relay",
+                    action_type="send_message",
+                    account_id=account_id,
+                    status="pending",
+                    scheduled_at=now_value - timedelta(seconds=offset),
+                    payload={"chat_id": "-1001", "message_text": action_id},
+                )
+            )
+        session.commit()
+
+    assert service.drain_task_dispatcher(SessionFactory, 2) == 1
+    assert calls == ["action-db-deadlock", "action-after-db-error"]
+
+    with SessionFactory() as session:
+        deadlocked = session.get(Action, "action-db-deadlock")
+        succeeded = session.get(Action, "action-after-db-error")
+
+    assert deadlocked.status == "pending"
+    assert deadlocked.retry_count == 1
+    assert deadlocked.claim_owner == ""
+    assert deadlocked.lease_owner == ""
+    assert deadlocked.result["error_code"] == "dispatcher_db_error"
+    assert deadlocked.result["validation_stage"] == "dispatcher_db"
+    assert deadlocked.scheduled_at > now_value
+    assert succeeded.status == "success"
+    assert succeeded.result["remote_message_id"] == "mock-after-db-error"
 
 
 def test_planner_does_not_exclude_due_ai_open_actions_with_beijing_clock(monkeypatch):

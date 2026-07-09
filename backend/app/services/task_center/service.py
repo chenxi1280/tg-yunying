@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -53,7 +54,7 @@ from .channel_membership import (
     channel_membership_summary,
     mark_channel_membership_joined,
 )
-from .dispatcher import claim_actions, dispatch_action, due_actions, recover_expired_claims, recover_expired_hard_hourly_actions
+from .dispatcher import claim_actions, dispatch_action, due_actions, mark_dispatcher_db_error, recover_expired_claims, recover_expired_hard_hourly_actions
 from .executors import build_task_plan, prepare_open_actions_for_planning
 from .details import (
     _accounts_by_id,
@@ -1296,6 +1297,13 @@ def _dispatcher_concurrency() -> int:
 
 
 def _dispatch_claimed_action(session_factory, action_id: str) -> int:
+    try:
+        return _dispatch_claimed_action_once(session_factory, action_id)
+    except SQLAlchemyError as exc:
+        return _record_dispatch_db_error(session_factory, action_id, exc)
+
+
+def _dispatch_claimed_action_once(session_factory, action_id: str) -> int:
     with session_factory() as session:
         action = session.get(Action, action_id)
         if not action or action.status != "executing":
@@ -1308,6 +1316,19 @@ def _dispatch_claimed_action(session_factory, action_id: str) -> int:
             refresh_task_stats(session, refresh)
         session.commit()
         return 1
+
+
+def _record_dispatch_db_error(session_factory, action_id: str, exc: SQLAlchemyError) -> int:
+    with session_factory() as session:
+        if not mark_dispatcher_db_error(session, action_id, str(exc)):
+            return 0
+        action = session.get(Action, action_id)
+        if action and action.task_id:
+            task = session.get(Task, action.task_id)
+            if task:
+                refresh_task_stats(session, task)
+        session.commit()
+    return 0
 
 
 def drain_task_metrics(session_factory, limit: int = 100) -> int:
