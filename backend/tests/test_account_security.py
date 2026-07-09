@@ -1636,6 +1636,7 @@ def test_device_cleanup_does_not_require_telegram_client_anchor_authorization(mo
         assert refreshed.items[0].failure_type == ""
 
 
+@pytest.mark.no_postgres
 def test_device_cleanup_scan_failure_is_not_marked_success(monkeypatch):
     with _session() as session:
         account = _seed_account(session)
@@ -1651,13 +1652,14 @@ def test_device_cleanup_scan_failure_is_not_marked_success(monkeypatch):
             "tester",
         )
 
-        assert drain_account_security_batches(lambda: Session(session.bind), limit=10) == 1
+        assert drain_account_security_batches(lambda: Session(session.bind), limit=10) == 0
         refreshed = account_security_batch_detail(session, 1, batch.id)
         item = refreshed.items[0]
 
-        assert refreshed.status == "failed"
-        assert item.cleanup_status == "failed"
-        assert "设备扫描失败" in item.failure_detail
+        assert refreshed.status == "manual_required"
+        assert item.status == "skipped"
+        assert item.cleanup_status == "not_requested"
+        assert "安全状态刷新失败：scan failed" in item.skipped_reason
 
 
 @pytest.mark.no_postgres
