@@ -859,7 +859,7 @@ def precheck_account_security_batch(session: Session, tenant_id: int, payload: A
             suggested.append("等待 Telegram 安全限制解除后重试设备清理")
             status = "waiting"
         if "set_two_fa" in action_types and snapshot.two_fa_status == "enabled":
-            warnings.append("账号已设置二步验证，将跳过 2FA 设置")
+            warnings.append("账号已设置二步验证，将尝试使用托管密码更新为租户固定 2FA")
         if "provision_standby_session" in action_types and account.status == AccountStatus.ACTIVE.value and account.session_ciphertext:
             standby_status = _standby_precheck_status(session, account, payload.standby_slot_strategy)
             blockers.extend(standby_status.blockers)
@@ -1151,7 +1151,7 @@ def _execute_batch_item(session: Session, item_id: int) -> None:
             )
             item.two_fa_status = result.status if result.ok else "failed"
             if not result.ok:
-                failures.append(result.detail or result.failure_type)
+                failures.append(result.detail or result.failure_type or "2FA 设置失败：网关未返回失败详情")
             else:
                 record_managed_two_fa_password(session, account, fixed_password)
         if action_types & STANDBY_SESSION_ACTIONS:
@@ -1207,11 +1207,16 @@ def _execute_batch_item(session: Session, item_id: int) -> None:
     except Exception as exc:  # noqa: BLE001 - operator-facing batch failure.
         item.status = "failed"
         item.failure_type = "执行异常"
-        item.failure_detail = str(exc)
+        item.failure_detail = _exception_detail(exc)
     item.finished_at = _now()
     _refresh_batch_counts(session, batch)
     audit(session, tenant_id=batch.tenant_id, actor="account-security-worker", action="执行账号安全加固项", target_type="account_security_batch_item", target_id=str(item.id), detail=item.status)
     session.commit()
+
+
+def _exception_detail(exc: Exception) -> str:
+    detail = str(exc).strip()
+    return detail or type(exc).__name__
 
 
 def _execute_standby_session_provision(

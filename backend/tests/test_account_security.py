@@ -1422,6 +1422,68 @@ def test_set_two_fa_batch_uses_tenant_fixed_password(monkeypatch):
         assert decrypt_secret(snapshot.two_fa_password_ciphertext) == "tenant-fixed-password"
 
 
+@pytest.mark.no_postgres
+def test_set_two_fa_batch_records_blank_exception_type(monkeypatch):
+    class BlankGatewayError(Exception):
+        def __str__(self) -> str:
+            return ""
+
+    with _session() as session:
+        account = _seed_account(session)
+        set_tenant_fixed_two_fa_password(
+            session,
+            tenant_id=1,
+            password="tenant-fixed-password",
+            reason="首次配置固定 2FA",
+            actor="tester",
+        )
+
+        def set_two_fa(_session_ciphertext, _password, **_kwargs):
+            raise BlankGatewayError()
+
+        monkeypatch.setattr(account_security_service.gateway, "set_two_fa_password", set_two_fa)
+        batch = create_account_security_batch(
+            session,
+            1,
+            AccountSecurityBatchCreate(account_ids=[account.id], action_types=["set_two_fa"], confirm_text="确认"),
+            "tester",
+        )
+
+        assert drain_account_security_batches(lambda: Session(session.bind), limit=10) == 1
+        refreshed = account_security_batch_detail(session, 1, batch.id)
+
+        assert refreshed.status == "failed"
+        assert refreshed.items[0].failure_type == "执行异常"
+        assert refreshed.items[0].failure_detail == "BlankGatewayError"
+
+
+@pytest.mark.no_postgres
+def test_set_two_fa_precheck_enabled_account_warns_rotation(monkeypatch):
+    with _session() as session:
+        account = _seed_account(session)
+
+        def refresh_enabled_two_fa(*_args, **_kwargs):
+            snapshot = account_security_service._snapshot(session, account)
+            snapshot.two_fa_status = "enabled"
+            return snapshot
+
+        monkeypatch.setattr(
+            account_security_service,
+            "refresh_account_security",
+            refresh_enabled_two_fa,
+        )
+
+        preview = precheck_account_security_batch(
+            session,
+            1,
+            AccountSecurityPrecheckRequest(account_ids=[account.id], action_types=["set_two_fa"]),
+        )
+
+        warning_text = ";".join(preview.items[0].warnings)
+        assert "将尝试使用托管密码更新为租户固定 2FA" in warning_text
+        assert "跳过 2FA 设置" not in warning_text
+
+
 def test_device_cleanup_cleans_unprotected_platform_api_duplicates(monkeypatch):
     with _session() as session:
         account = _seed_account(session)

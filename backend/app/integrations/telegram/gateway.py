@@ -49,6 +49,11 @@ TARGET_PERMISSION_DETAIL = "缓存频道不可访问 / 账号无权限"
 VERIFICATION_CONFIRM_BUTTON_MARKERS = ("我已加入", "我已关注", "已关注", "完成验证", "完成关注", "确认")
 
 
+def _exception_detail(exc: Exception) -> str:
+    detail = str(exc).strip()
+    return detail or type(exc).__name__
+
+
 def _button_labels(message: Any) -> list[str]:
     labels: list[str] = []
     for row in getattr(message, "buttons", None) or []:
@@ -608,7 +613,7 @@ class TelethonTelegramGateway(TelegramGateway):
             changed = await client.edit_2fa(current_password=current_password, new_password=password, hint=hint)
         except Exception as exc:  # noqa: BLE001 - keep Telegram restriction visible.
             mapped = self._map_send_error(exc)
-            detail = mapped.detail or str(exc)
+            detail = mapped.detail or _exception_detail(exc)
             status = "email_confirmation_required" if "email" in detail.lower() else "failed"
             return AccountSecurityOperationResult(False, status, mapped.failure_type or FailureType.UNKNOWN.value, detail)
         return AccountSecurityOperationResult(True, "enabled" if changed else "unchanged", detail="二步验证已设置")
