@@ -149,6 +149,25 @@ def test_refresh_account_security_records_trusted_session_and_external_device():
 
 
 @pytest.mark.no_postgres
+def test_refresh_account_security_records_blank_exception_type(monkeypatch):
+    class BlankRefreshError(Exception):
+        def __str__(self) -> str:
+            return ""
+
+    with _session() as session:
+        account = _seed_account(session)
+
+        def list_authorizations(*_args, **_kwargs):
+            raise BlankRefreshError()
+
+        monkeypatch.setattr(account_security_service.gateway, "list_authorizations", list_authorizations)
+        snapshot = refresh_account_security(session, 1, account.id, "tester")
+
+        assert snapshot.trusted_session_status == "unknown"
+        assert snapshot.last_error == "BlankRefreshError"
+
+
+@pytest.mark.no_postgres
 def test_tenant_fixed_two_fa_password_can_only_be_set_once():
     with _session() as session:
         session.add(Tenant(id=1, name="默认运营空间"))
@@ -1482,6 +1501,33 @@ def test_set_two_fa_precheck_enabled_account_warns_rotation(monkeypatch):
         warning_text = ";".join(preview.items[0].warnings)
         assert "将尝试使用托管密码更新为租户固定 2FA" in warning_text
         assert "跳过 2FA 设置" not in warning_text
+
+
+@pytest.mark.no_postgres
+def test_set_two_fa_precheck_blocks_security_refresh_failure(monkeypatch):
+    with _session() as session:
+        account = _seed_account(session)
+
+        def refresh_failed(*_args, **_kwargs):
+            snapshot = account_security_service._snapshot(session, account)
+            snapshot.last_error = "TimeoutError"
+            return snapshot
+
+        monkeypatch.setattr(
+            account_security_service,
+            "refresh_account_security",
+            refresh_failed,
+        )
+
+        preview = precheck_account_security_batch(
+            session,
+            1,
+            AccountSecurityPrecheckRequest(account_ids=[account.id], action_types=["set_two_fa"]),
+        )
+        item = preview.items[0]
+
+        assert item.precheck_status == "skipped"
+        assert "安全状态刷新失败：TimeoutError" in item.blockers
 
 
 def test_device_cleanup_cleans_unprotected_platform_api_duplicates(monkeypatch):

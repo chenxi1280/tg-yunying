@@ -437,7 +437,7 @@ def refresh_account_security(session: Session, tenant_id: int, account_id: int, 
         authorizations = gateway.list_authorizations(account.session_ciphertext, credentials)
     except Exception as exc:  # noqa: BLE001 - operator-facing security status.
         snapshot.trusted_session_status = "unknown"
-        snapshot.last_error = str(exc)
+        snapshot.last_error = _exception_detail(exc)
         session.commit()
         return snapshot
 
@@ -852,6 +852,10 @@ def precheck_account_security_batch(session: Session, tenant_id: int, payload: A
         if (account.status != AccountStatus.ACTIVE.value or not account.session_ciphertext) and not can_self_heal:
             blockers.append("账号未在线或缺少可用 session")
             suggested.append("已自动跳过；处理登录或 session 后可重新发起")
+            status = "skipped"
+        if action_set & SECURITY_ACTIONS and snapshot.last_error:
+            blockers.append(f"安全状态刷新失败：{snapshot.last_error}")
+            suggested.append("已自动跳过；修复账号 session/代理后重新预检")
             status = "skipped"
         wait_until = _fresh_session_wait_until(session, account) if "cleanup_devices" in action_types else None
         if wait_until:

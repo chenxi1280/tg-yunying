@@ -608,7 +608,12 @@ class TelethonTelegramGateway(TelegramGateway):
         hint: str = "platform managed",
         current_password: str | None = None,
     ) -> AccountSecurityOperationResult:
-        client = await self._authorized_client(session_ciphertext, credentials, error_message="账号没有可用 session")
+        try:
+            client = await self._authorized_client(session_ciphertext, credentials, error_message="账号没有可用 session")
+        except Exception as exc:  # noqa: BLE001 - surface connection failures as operation result.
+            mapped = self._map_send_error(exc)
+            detail = mapped.detail or _exception_detail(exc)
+            return AccountSecurityOperationResult(False, "failed", mapped.failure_type or FailureType.ACCOUNT_UNAVAILABLE.value, detail)
         try:
             changed = await client.edit_2fa(current_password=current_password, new_password=password, hint=hint)
         except Exception as exc:  # noqa: BLE001 - keep Telegram restriction visible.
