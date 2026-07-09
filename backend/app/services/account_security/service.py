@@ -72,6 +72,7 @@ ALL_ACTIONS = PROFILE_ACTIONS | SECURITY_ACTIONS | STANDBY_SESSION_ACTIONS
 CODE_RECEIVER_IDENTITY = "code_receiver"
 CODE_RECEIVER_RESERVED_ACTIONS = PROFILE_ACTIONS | SECURITY_ACTIONS
 CODE_RECEIVER_RESERVED_REASON = "接码专用账号只允许接收验证码"
+CODE_RECEIVER_2FA_CHANGE_DENIED_REASON = "接码专用账号禁止修改二步验证密码"
 STANDBY_FAILURE_STATUS = {
     "verification_code_unreadable": "code_waiting",
     "two_fa_not_managed": "two_fa_waiting",
@@ -739,6 +740,7 @@ def save_managed_two_fa_password(
     actor: str,
 ) -> ManagedTwoFaOut:
     account = _require_account(session, tenant_id, account_id)
+    _deny_code_receiver_two_fa_change(account)
     snapshot = record_managed_two_fa_password(session, account, payload.password)
     audit(session, tenant_id=tenant_id, actor=actor, action="保存账号托管二步密码", target_type="tg_account", target_id=str(account.id), detail=payload.reason)
     session.commit()
@@ -753,6 +755,7 @@ def rotate_managed_two_fa_password(
     actor: str,
 ) -> ManagedTwoFaOut:
     account = _require_account(session, tenant_id, account_id)
+    _deny_code_receiver_two_fa_change(account)
     credentials = credentials_for_account(session, account)
     result = gateway.set_two_fa_password(
         account.session_ciphertext,
@@ -784,6 +787,11 @@ def reveal_managed_two_fa_password(
     password = decrypt_secret(snapshot.two_fa_password_ciphertext)
     session.commit()
     return ManagedTwoFaRevealOut(account_id=account.id, password=password, revealed_at=revealed_at)
+
+
+def _deny_code_receiver_two_fa_change(account: TgAccount) -> None:
+    if account.account_identity == CODE_RECEIVER_IDENTITY:
+        raise ValueError(CODE_RECEIVER_2FA_CHANGE_DENIED_REASON)
 
 
 def precheck_account_security_batch(session: Session, tenant_id: int, payload: AccountSecurityPrecheckRequest) -> AccountSecurityPrecheckOut:

@@ -221,6 +221,8 @@ pending -> claiming -> executing -> success / failed / skipped
 | 点击/浏览不帮别人加权 | 非目标结果只做 `navigate_only` 安全浏览，且总量默认 ≤ 3，不加入、不关注、不外跳 | 非目标群被误加权，且系统行为像批量刷点击 |
 | 反作弊结果可见 | 任何 bot 拒绝、FloodWait、结构变化、账号锁、代理问题都进入 stats 和风控，不隐藏为普通跳过 | 运营无法知道是策略问题、账号问题还是第三方规则变化 |
 
+**`search_rank_deboost` 例外条款（对 §4.10 非目标浏览约束的例外）**：对 `search_rank_deboost` 任务，非目标浏览总量不再受 ≤3 限制，但必须满足：(1) 只点击 `button_effect=navigate_only` 的按钮；(2) 竞争群结果项含 `join_candidate` 按钮时只点开导航按钮、不点加入按钮；(3) 每次点击都写 `search_rank_deboost_action_stats`，包含 button hash、位置、effect、停留时长、`joined=false`、`join_button_detected=true/false`；(4) 不得加入、关注、外跳、投票、发言、点击 `external_http_url` 或 `unknown` 按钮；(5) 实时 pacing / random decision 不调用 LLM。`search_join_group` 的「非目标 ≤3 navigate_only」原约束保持不变。
+
 新增效果归因维度：
 
 ```jsonc

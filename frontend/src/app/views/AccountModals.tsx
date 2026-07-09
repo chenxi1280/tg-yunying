@@ -892,7 +892,11 @@ export function AccountDetailModal({
       {accountDetailTab === '托管 2FA' && (
         <Space direction="vertical" size={12} style={{ width: '100%' }}>
           <Typography.Text type="secondary">密码设置 / 轮换不回显旧密码</Typography.Text>
-          <AccountManaged2FaSettingsPanel accountId={accountDetail.account.id} canManageCredentials={canManageCredentials} />
+          <AccountManaged2FaSettingsPanel
+            accountId={accountDetail.account.id}
+            accountIdentity={accountDetail.account.account_identity}
+            canManageCredentials={canManageCredentials}
+          />
         </Space>
       )}
 

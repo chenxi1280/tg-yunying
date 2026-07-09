@@ -56,6 +56,7 @@ class TaskCenterTaskType(StrEnum):
     CHANNEL_LIKE = "channel_like"
     CHANNEL_COMMENT = "channel_comment"
     SEARCH_JOIN_GROUP = "search_join_group"
+    SEARCH_RANK_DEBOOST = "search_rank_deboost"
 
 
 class TaskCenterStatus(StrEnum):
@@ -77,6 +78,7 @@ class TaskCenterActionType(StrEnum):
     ENSURE_TARGET_MEMBERSHIP = "ensure_target_membership"
     ENSURE_CHANNEL_MEMBERSHIP = "ensure_channel_membership"
     SEARCH_JOIN = "search_join"
+    SEARCH_RANK_DEBOOST = "search_rank_deboost"
 
 
 class TaskCenterActionStatus(StrEnum):
@@ -85,6 +87,22 @@ class TaskCenterActionStatus(StrEnum):
     SUCCESS = "success"
     FAILED = "failed"
     SKIPPED = "skipped"
+
+
+class AccountPoolPurpose(StrEnum):
+    NORMAL = "normal"
+    CODE_RECEIVER = "code_receiver"
+    RANK_DEBOOST = "rank_deboost"
+
+
+class BotProtocolSamplePurpose(StrEnum):
+    SEARCH_JOIN = "search_join"
+    RANK_DEBOOST = "rank_deboost"
+
+
+class AccountProxyBindingScope(StrEnum):
+    AUTHORIZATION_SLOT = "authorization_slot"
+    GROUP = "group"
 
 
 class TaskCenterReviewStatus(StrEnum):
@@ -122,8 +140,11 @@ class AiProviderHealthStatus(StrEnum):
 
 __all__ = [
     "now",
+    "AccountPoolPurpose",
+    "AccountProxyBindingScope",
     "AccountStatus",
     "AiProviderHealthStatus",
+    "BotProtocolSamplePurpose",
     "DeveloperAppHealthStatus",
     "FailureType",
     "GroupAuthStatus",

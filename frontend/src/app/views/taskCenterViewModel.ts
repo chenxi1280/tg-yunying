@@ -11,6 +11,7 @@ export const TASK_TYPES: Array<{ value: TaskCenterTaskType; label: string }> = [
   { value: 'channel_like', label: '频道消息点赞' },
   { value: 'channel_comment', label: '频道消息评论/回复' },
   { value: 'search_join_group', label: '搜索目标群点击任务' },
+  { value: 'search_rank_deboost', label: '搜索排名观察任务' },
 ];
 
 export const TYPE_LABEL: Record<string, string> = Object.fromEntries(TASK_TYPES.map((item) => [item.value, item.label]));
@@ -27,6 +28,7 @@ export const CREATE_ENDPOINT: Record<TaskCenterTaskType, string> = {
   channel_like: '/tasks/channel-like',
   channel_comment: '/tasks/channel-comment',
   search_join_group: '/tasks/search-join-group',
+  search_rank_deboost: '/tasks/search_rank_deboost',
 };
 
 export const CREATE_AND_START_ENDPOINT: Record<TaskCenterTaskType, string> = {
@@ -37,6 +39,7 @@ export const CREATE_AND_START_ENDPOINT: Record<TaskCenterTaskType, string> = {
   channel_like: '/tasks/channel-like/create-and-start',
   channel_comment: '/tasks/channel-comment/create-and-start',
   search_join_group: '/tasks/search-join-group/create-and-start',
+  search_rank_deboost: '/tasks/search_rank_deboost/create_and_start',
 };
 
 export const WIZARD_STEPS = ['基础信息', '目标来源', '任务配置', '账号与节奏', '预检确认'];
@@ -539,6 +542,23 @@ export function typeInitialValues(type: TaskCenterTaskType, setting?: Scheduling
       max_likes_per_account_per_hour: 10,
     };
   }
+  if (type === 'search_rank_deboost') {
+    return {
+      search_bots: 'jisou',
+      keywords: '',
+      target_group_ids: [],
+      account_pool_id: null,
+      proxy_airport_node_id: null,
+      notes: '',
+      per_account_daily_click_limit: 5,
+      per_keyword_account_daily_limit: 2,
+      group_ip_daily_click_limit: 50,
+      max_actions_per_hour: 10,
+      per_account_cooldown_hours: 4,
+      dwell_seconds_min: 10,
+      dwell_seconds_max: 30,
+    };
+  }
   return {
     message_scope: 'dynamic_new',
     message_count: 10,
@@ -570,6 +590,7 @@ export function fieldsForStep(step: number, taskType: TaskCenterTaskType, messag
   if (step === 0) return ['name'];
   if (step === 1) {
     if (taskType === 'group_ai_chat' || taskType === 'group_membership_admission' || taskType === 'search_join_group') return ['target_operation_target_id'];
+    if (taskType === 'search_rank_deboost') return ['target_group_ids'];
     if (taskType === 'group_relay') return ['source_operation_target_ids', 'target_operation_target_id'];
     const fields = ['target_channel_id', 'message_scope'];
     if (['latest_n', 'dynamic_new'].includes(messageScope)) fields.push('message_count');
@@ -577,7 +598,11 @@ export function fieldsForStep(step: number, taskType: TaskCenterTaskType, messag
     if (messageScope === 'date_range') fields.push('date_from', 'date_to');
     return fields;
   }
+  if (step === 2 && taskType === 'search_rank_deboost') {
+    return ['keywords', 'account_pool_id', 'proxy_airport_node_id'];
+  }
   if (step === 3 && taskType === 'group_membership_admission') return ['account_group_ids'];
+  if (step === 3 && taskType === 'search_rank_deboost') return [];
   if (step === 3) return accountSelectionFields(accountMode);
   return [];
 }
@@ -712,6 +737,24 @@ export function fieldsForSubmit(taskType: TaskCenterTaskType, messageScope: stri
   if (taskType === 'channel_like') {
     return [...baseFields, ...channelScopeFields(messageScope), 'target_likes_per_message', 'like_count_jitter', 'reaction_type', 'allowed_reactions'];
   }
+  if (taskType === 'search_rank_deboost') {
+    return [
+      'name',
+      'search_bots',
+      'keywords',
+      'target_group_ids',
+      'account_pool_id',
+      'proxy_airport_node_id',
+      'notes',
+      'per_account_daily_click_limit',
+      'per_keyword_account_daily_limit',
+      'group_ip_daily_click_limit',
+      'max_actions_per_hour',
+      'per_account_cooldown_hours',
+      'dwell_seconds_min',
+      'dwell_seconds_max',
+    ];
+  }
   return [...baseFields, ...channelScopeFields(messageScope), 'target_comments_per_message', 'max_total_comments', 'max_total_comments_jitter', 'reply_min_per_message', 'rule_set_id', 'rule_set_version_id', 'comment_style', 'topic_hint'];
 }
 
@@ -801,6 +844,20 @@ export function editFieldsForSubmit(taskType: TaskCenterTaskType, accountMode: s
       'target_content_health',
       'jisou_ecosystem_status',
       'paid_keyword_ad_status',
+    ];
+  }
+  if (taskType === 'search_rank_deboost') {
+    return [
+      'keywords',
+      'target_group_ids',
+      'notes',
+      'per_account_daily_click_limit',
+      'per_keyword_account_daily_limit',
+      'group_ip_daily_click_limit',
+      'max_actions_per_hour',
+      'per_account_cooldown_hours',
+      'dwell_seconds_min',
+      'dwell_seconds_max',
     ];
   }
   return [...baseFields, 'target_comments_per_message', 'max_total_comments', 'max_total_comments_jitter', 'reply_min_per_message', 'rule_set_id', 'rule_set_version_id', 'ai_model', 'comment_style', 'topic_hint', 'system_prompt_override', 'language', 'max_comment_length', 'max_comments_per_account_per_hour'];

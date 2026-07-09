@@ -17,9 +17,11 @@ function managed2FaPath(accountId: number, action: Managed2FaAction) {
 
 export function AccountManaged2FaSettingsPanel({
   accountId,
+  accountIdentity = 'normal',
   canManageCredentials,
 }: {
   accountId: number;
+  accountIdentity?: string;
   canManageCredentials: boolean;
 }) {
   const [password, setPassword] = React.useState('');
@@ -35,6 +37,8 @@ export function AccountManaged2FaSettingsPanel({
     reason: reason.trim(),
   }), [password, reason]);
   const managed2FaPayloadSignature = React.useMemo(() => JSON.stringify(managed2FaPayload), [managed2FaPayload]);
+  const isCodeReceiver = accountIdentity === 'code_receiver';
+  const canChangeManagedPassword = !isCodeReceiver && canManageCredentials;
   latestManaged2FaPayloadSignature.current = managed2FaPayloadSignature;
 
   React.useEffect(() => {
@@ -133,26 +137,30 @@ export function AccountManaged2FaSettingsPanel({
     <Card className="sub-panel compact-panel" title="托管 2FA">
       <Space direction="vertical" size={12} style={{ width: '100%' }}>
         <Alert
-          type="warning"
+          type={isCodeReceiver ? 'info' : 'warning'}
           showIcon
-          message="密码设置 / 轮换不回显旧密码"
-          description="平台托管 2FA 用于备用 session 自动补齐。查看、导出、轮换和自动登录使用都必须写审计；未托管账号会在备用 session 补齐时显示阻塞原因。"
+          message={isCodeReceiver ? '接码专用账号只允许查看托管密码' : '密码设置 / 轮换不回显旧密码'}
+          description={isCodeReceiver ? '接码专用账号禁止修改二步验证密码；查看和复制托管密码仍会写审计。' : '平台托管 2FA 用于备用 session 自动补齐。查看、导出、轮换和自动登录使用都必须写审计；未托管账号会在备用 session 补齐时显示阻塞原因。'}
         />
         {error && <Alert type="error" showIcon message={error} />}
         <Typography.Text type="secondary">权限：accounts.security.credential_manage</Typography.Text>
-        <Input.Password
-          disabled={!canManageCredentials}
-          value={password}
-          placeholder="输入新的平台托管 2FA 密码"
-          onChange={(event) => setPassword(event.target.value)}
-        />
-        <Input.TextArea
-          disabled={!canManageCredentials}
-          rows={2}
-          value={reason}
-          placeholder="保存或轮换的操作原因"
-          onChange={(event) => setReason(event.target.value)}
-        />
+        {!isCodeReceiver && (
+          <>
+            <Input.Password
+              disabled={!canChangeManagedPassword}
+              value={password}
+              placeholder="输入新的平台托管 2FA 密码"
+              onChange={(event) => setPassword(event.target.value)}
+            />
+            <Input.TextArea
+              disabled={!canChangeManagedPassword}
+              rows={2}
+              value={reason}
+              placeholder="保存或轮换的操作原因"
+              onChange={(event) => setReason(event.target.value)}
+            />
+          </>
+        )}
         {revealedPassword && (
           <Input.Password
             readOnly
@@ -161,21 +169,25 @@ export function AccountManaged2FaSettingsPanel({
           />
         )}
         <Space wrap>
-          <Button
-            type="primary"
-            disabled={!canManageCredentials}
-            loading={loading}
-            onClick={() => saveManagedPassword('save')}
-          >
-            保存托管策略
-          </Button>
-          <Button
-            disabled={!canManageCredentials}
-            loading={loading}
-            onClick={() => saveManagedPassword('rotate')}
-          >
-            轮换托管密码
-          </Button>
+          {!isCodeReceiver && (
+            <>
+              <Button
+                type="primary"
+                disabled={!canChangeManagedPassword}
+                loading={loading}
+                onClick={() => saveManagedPassword('save')}
+              >
+                保存托管策略
+              </Button>
+              <Button
+                disabled={!canChangeManagedPassword}
+                loading={loading}
+                onClick={() => saveManagedPassword('rotate')}
+              >
+                轮换托管密码
+              </Button>
+            </>
+          )}
           <Button
             disabled={!canManageCredentials}
             loading={loading}

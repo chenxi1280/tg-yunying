@@ -150,7 +150,7 @@ def test_task_center_precheck_and_recommendation_bind_payload_signature():
 
     assert "const payload = createPayload(values);" in create_task
     assert "const precheckSignature = taskPrecheckPayloadSignature(taskType, payload);" in create_task
-    assert "const requiresFreshPrecheck = taskType !== 'group_membership_admission' && !options.skipCapacityCheck;" in create_task
+    assert "const requiresFreshPrecheck = taskType !== 'group_membership_admission' && taskType !== 'search_rank_deboost' && !options.skipCapacityCheck;" in create_task
     assert "precheck && precheckPayloadSignature === precheckSignature" in create_task
     assert "await runTaskPrecheck(values)" in create_task
     assert "if (!result && requiresFreshPrecheck) return;" in create_task

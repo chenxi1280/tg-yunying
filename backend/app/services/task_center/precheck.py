@@ -358,6 +358,7 @@ def _precheck_candidate_accounts(session: Session, tenant_id: int, account_confi
         TgAccount.tenant_id == tenant_id,
         TgAccount.deleted_at.is_(None),
         TgAccount.account_identity != "code_receiver",
+        TgAccount.account_identity != "rank_deboost",
     ).order_by(TgAccount.health_score.desc(), TgAccount.id.asc())
     mode = account_config.get("selection_mode") or "all"
     if mode == "manual":

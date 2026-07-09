@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import Session
 
@@ -15,6 +16,8 @@ from app.models import (
     SearchJoinRankObservation,
     Tenant,
 )
+from app.schemas.task_center import SearchJoinGroupTaskCreate
+from app.services.task_center.executors.search_join_group import _safe_navigation
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -186,3 +189,65 @@ def test_search_join_pacing_decision_migration_declares_table() -> None:
     assert "threshold" in source
     assert "scheduled_at" in source
     assert "reason" in source
+
+
+# ==================== §4.10 ≤3 navigate_only 约束回归 ====================
+
+
+def _safe_nav_payload(**overrides) -> SearchJoinGroupTaskCreate:
+    """构造合法的 search_join_group 创建 payload，仅覆盖安全浏览相关字段。"""
+    data = {
+        "name": "上海搜索入群",
+        "target_operation_target_id": 17,
+        "search_bots": [{"username": "jisou", "display_name": "极搜"}],
+        "keywords": ["上海 留学"],
+        "pre_join_decoy_click_min": 0,
+        "pre_join_decoy_click_max": 2,
+        "post_join_safe_navigation_min": 0,
+        "post_join_safe_navigation_max": 1,
+        "decoy_join_enabled": False,
+        "hourly_min_successful_joins": 1,
+    }
+    data.update(overrides)
+    return SearchJoinGroupTaskCreate(**data)
+
+
+@pytest.mark.no_postgres
+def test_search_join_group_safe_navigation_executor_config_only_navigate_only() -> None:
+    """executor 的 _safe_navigation 始终返回 allowed_button_effect=navigate_only（§4.10）。"""
+    config = {
+        "pre_join_decoy_click_max": 2,
+        "post_join_safe_navigation_max": 1,
+        "decoy_join_enabled": False,
+    }
+    safe_nav = _safe_navigation(config)
+    assert safe_nav["allowed_button_effect"] == "navigate_only"
+    assert safe_nav["total_max"] == 3  # 2 + 1
+    assert safe_nav["pre_join_decoy_click_max"] == 2
+    assert safe_nav["post_join_safe_navigation_max"] == 1
+    assert safe_nav["decoy_join_enabled"] is False
+
+
+@pytest.mark.no_postgres
+def test_search_join_group_safe_navigation_total_max_capped_at_three_by_schema() -> None:
+    """§4.10 约束回归：pre + post 安全浏览总量 > 3 时 schema 拒绝创建任务。
+
+    覆盖以下组合均被 ValidationError 拦截（每个字段自身 ≤3，但 sum > 3）：
+    - (3, 1) total=4
+    - (2, 2) total=4
+    - (1, 3) total=4
+    """
+    with pytest.raises(ValidationError, match="非目标安全浏览总量不能超过 3"):
+        _safe_nav_payload(pre_join_decoy_click_max=3, post_join_safe_navigation_max=1)
+    with pytest.raises(ValidationError, match="非目标安全浏览总量不能超过 3"):
+        _safe_nav_payload(pre_join_decoy_click_max=2, post_join_safe_navigation_max=2)
+    with pytest.raises(ValidationError, match="非目标安全浏览总量不能超过 3"):
+        _safe_nav_payload(pre_join_decoy_click_max=1, post_join_safe_navigation_max=3)
+
+    # 边界 (3, 0) / (0, 3) / (2, 1) 应被接受
+    boundary_payload = _safe_nav_payload(pre_join_decoy_click_max=3, post_join_safe_navigation_max=0)
+    assert boundary_payload.pre_join_decoy_click_max + boundary_payload.post_join_safe_navigation_max == 3
+    boundary_payload_2 = _safe_nav_payload(pre_join_decoy_click_max=0, post_join_safe_navigation_max=3)
+    assert boundary_payload_2.pre_join_decoy_click_max + boundary_payload_2.post_join_safe_navigation_max == 3
+    boundary_payload_3 = _safe_nav_payload(pre_join_decoy_click_max=2, post_join_safe_navigation_max=1)
+    assert boundary_payload_3.pre_join_decoy_click_max + boundary_payload_3.post_join_safe_navigation_max == 3

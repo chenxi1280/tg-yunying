@@ -3,7 +3,7 @@ import { Alert, Button, Card, Collapse, Form, Input, Modal, Select, Space, Steps
 import type { ColumnsType } from 'antd/es/table';
 import { Activity, CirclePause, CirclePlay, RefreshCcw } from 'lucide-react';
 import { api, apiWithMeta, apiErrorFromResponse, ApiError, API_BASE } from '../../shared/api/client';
-import type { Account, AccountPool, ChannelMessage, ChannelMessageComment, OperationTarget, PromptTemplate, RuleSet, SchedulingSetting, TaskCenterAction, TaskCenterAnyTaskType, TaskCenterDetail, TaskCenterPrefill, TaskCenterTask, TaskCenterTaskType, TaskExecutionAttempt, TaskMembershipItem, TaskPrecheck, TenantBotSettings } from '../types';
+import type { Account, AccountPool, ChannelMessage, ChannelMessageComment, OperationTarget, PromptTemplate, ProxyAirportNode, RuleSet, SchedulingSetting, SearchRankDeboostExemptGroup, TaskCenterAction, TaskCenterAnyTaskType, TaskCenterDetail, TaskCenterPrefill, TaskCenterTask, TaskCenterTaskType, TaskExecutionAttempt, TaskMembershipItem, TaskPrecheck, TenantBotSettings } from '../types';
 import { StatusBadge, StatCard, useAntdTableControls } from '../components/shared';
 import { fromBeijingDateTimeLocalValue } from '../time';
 import {
@@ -273,6 +273,10 @@ export default function TaskCenterView({
   const [editRecommendationLoading, setEditRecommendationLoading] = React.useState(false);
   const [membershipPage, setMembershipPage] = React.useState<MembershipPageState>({ current: 1, pageSize: MEMBERSHIP_PAGE_SIZE, total: 0, loading: false });
   const [membershipFilters, setMembershipFilters] = React.useState<MembershipFilters>(DEFAULT_MEMBERSHIP_FILTERS);
+  const [proxyAirportNodes, setProxyAirportNodes] = React.useState<ProxyAirportNode[]>([]);
+  const [deboostExemptGroup, setDeboostExemptGroup] = React.useState<SearchRankDeboostExemptGroup | null>(null);
+  const [rerollLoading, setRerollLoading] = React.useState(false);
+  const [rankDeboostPoolLoading, setRankDeboostPoolLoading] = React.useState(false);
   const [wizardStep, setWizardStep] = React.useState(0);
   const [taskType, setTaskType] = React.useState<TaskCenterTaskType>('group_ai_chat');
   const [taskTypeFilter, setTaskTypeFilter] = React.useState<TaskTypeFilter>('all');
@@ -531,6 +535,13 @@ export default function TaskCenterView({
     return ruleSetData;
   }
 
+  async function ensureProxyAirportNodes() {
+    if (proxyAirportNodes.length) return proxyAirportNodes;
+    const nodes = await api<ProxyAirportNode[]>('/account-environment-bindings/proxy-airport-nodes');
+    setProxyAirportNodes(nodes);
+    return nodes;
+  }
+
   function taskAccountListPath(page: number): string {
     const params = new URLSearchParams({ page: String(page), page_size: String(TASK_FORM_ACCOUNT_PAGE_SIZE) });
     return `/tg-accounts?${params.toString()}`;
@@ -555,6 +566,21 @@ export default function TaskCenterView({
     setTaskAccountPools(nextPools);
   }
 
+  async function ensureRankDeboostPool() {
+    setRankDeboostPoolLoading(true);
+    setActionError('');
+    try {
+      await api<AccountPool>('/account-pools/rank-deboost', { method: 'POST' });
+      const pools = await api<AccountPool[]>('/account-pools');
+      setTaskAccountPools(pools);
+      setActionWarning('已创建排名观察专用账号分组。');
+    } catch (error) {
+      setActionError(errorMessage(error));
+    } finally {
+      setRankDeboostPoolLoading(false);
+    }
+  }
+
   async function ensurePromptTemplates() {
     if (taskPromptTemplates.length) return;
     setTaskPromptTemplates(await api<PromptTemplate[]>('/prompt-templates'));
@@ -572,6 +598,7 @@ export default function TaskCenterView({
     if (['group_relay', 'group_ai_chat', 'channel_comment'].includes(type)) requests.push(ensureRuleSets());
     if (type.startsWith('channel_')) requests.push(ensureMessages());
     if (type === 'channel_comment') requests.push(ensureComments());
+    if (type === 'search_rank_deboost') requests.push(ensureProxyAirportNodes());
     return requests;
   }
 
@@ -938,6 +965,7 @@ export default function TaskCenterView({
     setActionError('');
     setActionWarning('');
     setPrecheck(null);
+    setDeboostExemptGroup(null);
     setTaskType('group_ai_chat');
     form.resetFields();
     form.setFieldsValue(initialValuesForType('group_ai_chat', schedulingSetting));
@@ -954,6 +982,29 @@ export default function TaskCenterView({
   }
 
   function editValuesFromTask(task: TaskCenterTask): Record<string, any> {
+    if (task.type === 'search_rank_deboost') {
+      const deboostConfig = task.type_config || {};
+      const keywordTexts = Array.isArray(deboostConfig.keywords)
+        ? deboostConfig.keywords.map((item: any) => typeof item === 'string' ? item : item?.text || '').filter(Boolean).join('\n')
+        : '';
+      return {
+        ...initialValuesForType('search_rank_deboost', schedulingSetting),
+        name: task.name,
+        search_bots: Array.isArray(deboostConfig.search_bots) ? deboostConfig.search_bots.join(',') : 'jisou',
+        keywords: keywordTexts,
+        target_group_ids: Array.isArray(deboostConfig.target_group_ids) ? deboostConfig.target_group_ids : [],
+        account_pool_id: deboostConfig.account_pool_id ?? null,
+        proxy_airport_node_id: deboostConfig.proxy_airport_node_id ?? null,
+        notes: deboostConfig.notes ?? '',
+        per_account_daily_click_limit: deboostConfig.per_account_daily_click_limit ?? 5,
+        per_keyword_account_daily_limit: deboostConfig.per_keyword_account_daily_limit ?? 2,
+        group_ip_daily_click_limit: deboostConfig.group_ip_daily_click_limit ?? 50,
+        max_actions_per_hour: deboostConfig.max_actions_per_hour ?? 10,
+        per_account_cooldown_hours: deboostConfig.per_account_cooldown_hours ?? 4,
+        dwell_seconds_min: deboostConfig.dwell_seconds_min ?? 10,
+        dwell_seconds_max: deboostConfig.dwell_seconds_max ?? 30,
+      };
+    }
     const config = task.type_config || {};
     const account = task.account_config || {};
     const pacing = task.pacing_config || {};
@@ -1024,6 +1075,7 @@ export default function TaskCenterView({
     setActionError('');
     setActionWarning('');
     setEditRecommendation(null);
+    setDeboostExemptGroup(null);
     const editableType = task.type as TaskCenterTaskType;
     setTaskType(editableType);
     try {
@@ -1199,6 +1251,27 @@ export default function TaskCenterView({
     };
   }
 
+  function searchRankDeboostPayload(values: any) {
+    return {
+      name: values.name,
+      search_bots: words(values.search_bots || 'jisou'),
+      keywords: words(values.keywords).map((text) => ({ text })),
+      target_group_ids: csvNumbers(values.target_group_ids),
+      account_pool_id: Number(values.account_pool_id),
+      proxy_airport_node_id: Number(values.proxy_airport_node_id),
+      config: {
+        per_account_daily_click_limit: values.per_account_daily_click_limit ?? 5,
+        per_keyword_account_daily_limit: values.per_keyword_account_daily_limit ?? 2,
+        group_ip_daily_click_limit: values.group_ip_daily_click_limit ?? 50,
+        max_actions_per_hour: values.max_actions_per_hour ?? 10,
+        per_account_cooldown_hours: values.per_account_cooldown_hours ?? 4,
+        dwell_seconds_min: values.dwell_seconds_min ?? 10,
+        dwell_seconds_max: values.dwell_seconds_max ?? 30,
+      },
+      notes: values.notes ?? '',
+    };
+  }
+
   function parseExcludedSenderInput(value?: string) {
     const result = { peerIds: [] as string[], usernames: [] as string[], names: [] as string[] };
     String(value ?? '')
@@ -1289,6 +1362,9 @@ export default function TaskCenterView({
     }
     if (taskType === 'search_join_group') {
       return searchJoinPayload(values, base);
+    }
+    if (taskType === 'search_rank_deboost') {
+      return searchRankDeboostPayload(values);
     }
     if (taskType === 'group_ai_chat') {
       const target = groupTargets.find((item) => item.id === values.target_operation_target_id);
@@ -1436,6 +1512,22 @@ export default function TaskCenterView({
     if (type === 'search_join_group') {
       return searchJoinPayload(values, base);
     }
+    if (type === 'search_rank_deboost') {
+      return {
+        keywords: words(values.keywords).map((text) => ({ text })),
+        target_group_ids: csvNumbers(values.target_group_ids),
+        config: {
+          per_account_daily_click_limit: values.per_account_daily_click_limit ?? 5,
+          per_keyword_account_daily_limit: values.per_keyword_account_daily_limit ?? 2,
+          group_ip_daily_click_limit: values.group_ip_daily_click_limit ?? 50,
+          max_actions_per_hour: values.max_actions_per_hour ?? 10,
+          per_account_cooldown_hours: values.per_account_cooldown_hours ?? 4,
+          dwell_seconds_min: values.dwell_seconds_min ?? 10,
+          dwell_seconds_max: values.dwell_seconds_max ?? 30,
+        },
+        notes: values.notes ?? '',
+      };
+    }
     if (type === 'channel_view') {
       return { ...base, ...channelViewProductionPayload(values) };
     }
@@ -1522,7 +1614,7 @@ export default function TaskCenterView({
       const values = form.getFieldsValue(true);
       const payload = createPayload(values);
       const precheckSignature = taskPrecheckPayloadSignature(taskType, payload);
-      const requiresFreshPrecheck = taskType !== 'group_membership_admission' && !options.skipCapacityCheck;
+      const requiresFreshPrecheck = taskType !== 'group_membership_admission' && taskType !== 'search_rank_deboost' && !options.skipCapacityCheck;
       const result = requiresFreshPrecheck
         ? precheck && precheckPayloadSignature === precheckSignature ? precheck : await runTaskPrecheck(values)
         : precheck;
@@ -1532,18 +1624,23 @@ export default function TaskCenterView({
         return;
       }
       const submitValues = form.getFieldsValue(true);
-      await api<TaskCenterTask>((start ? CREATE_AND_START_ENDPOINT : CREATE_ENDPOINT)[taskType], {
+      const shouldStartNow = start && taskType !== 'search_rank_deboost';
+      await api<TaskCenterTask>((shouldStartNow ? CREATE_AND_START_ENDPOINT : CREATE_ENDPOINT)[taskType], {
         method: 'POST',
         body: JSON.stringify(createPayload(submitValues)),
         timeoutMs: TASK_CREATE_TIMEOUT_MS,
       });
+      if (start && taskType === 'search_rank_deboost') {
+        setActionWarning('搜索排名观察任务已创建为草稿；接入真实搜索候选源并重选真实豁免群后再启动。');
+      }
       form.resetFields();
       setPrecheck(null);
+      setDeboostExemptGroup(null);
       setTaskType('group_ai_chat');
       form.setFieldsValue(initialValuesForType('group_ai_chat', schedulingSetting));
       setWizardStep(0);
       setModalOpen(false);
-      await refreshTaskListAfterAction(start ? '任务创建并启动' : '任务创建');
+      await refreshTaskListAfterAction(shouldStartNow ? '任务创建并启动' : '任务创建');
     } catch (error) {
       if (error instanceof ApiError && error.status === 408) {
         await load();
@@ -1568,7 +1665,8 @@ export default function TaskCenterView({
       const payload = settingsPayload(editableType, values);
       payloadSignature = taskSettingsSavePayloadSignature(taskId, editableType, payload);
       requestSeq = beginTaskSettingsSaveRequest(taskId, payloadSignature);
-      const updated = await api<TaskCenterTask>(`/tasks/${taskId}/settings`, { method: 'PATCH', body: JSON.stringify(payload) });
+      const settingsEndpoint = editableType === 'search_rank_deboost' ? `/tasks/${taskId}/search_rank_deboost_config` : `/tasks/${taskId}/settings`;
+      const updated = await api<TaskCenterTask>(settingsEndpoint, { method: 'PATCH', body: JSON.stringify(payload) });
       if (!isActiveTaskSettingsSaveRequest(taskId, requestSeq, payloadSignature)) return;
       setEditOpen(false);
       setActionWarning(updated.status === 'running' ? '已保存，下一轮会按新配置重新规划未执行计划。' : '已保存任务配置。');
@@ -1740,6 +1838,20 @@ export default function TaskCenterView({
       .map((source) => ({ value: source.sender_peer_id, label: relaySourceOptionLabel(source) }));
   }
 
+  async function rerollExemptGroup(taskId: string) {
+    setActionError('');
+    setRerollLoading(true);
+    try {
+      const exemptGroup = await api<SearchRankDeboostExemptGroup>(`/tasks/${taskId}/search_rank_deboost_reroll_exempt_group`, { method: 'POST' });
+      setDeboostExemptGroup(exemptGroup);
+      setActionWarning('已重选随机豁免群。');
+    } catch (error) {
+      setActionError(`重选随机豁免群失败：${errorMessage(error)}`);
+    } finally {
+      setRerollLoading(false);
+    }
+  }
+
   async function addSourceIdentityToBlocklist(source: { peerId?: string; username?: string; name?: string; sourceActionId?: string; sourceAction?: string; reason?: string }) {
     if (!detail) return;
     if (!source.peerId && !source.username && !source.name) return;
@@ -1798,7 +1910,7 @@ export default function TaskCenterView({
         }
       }
       if (wizardStep === 3) {
-        if (taskType !== 'group_membership_admission') await runTaskPrecheck(form.getFieldsValue(true));
+        if (taskType !== 'group_membership_admission' && taskType !== 'search_rank_deboost') await runTaskPrecheck(form.getFieldsValue(true));
       }
       setWizardStep((value) => Math.min(value + 1, WIZARD_STEPS.length - 1));
     } catch (error) {
@@ -1809,6 +1921,7 @@ export default function TaskCenterView({
   function resetTypeFields(nextType: TaskCenterTaskType) {
     setTaskType(nextType);
     setPrecheck(null);
+    setDeboostExemptGroup(null);
     form.resetFields();
     form.setFieldsValue(initialValuesForType(nextType, schedulingSetting));
     if (nextType === 'group_ai_chat' && defaultSlangTemplateId) form.setFieldsValue({ slang_prompt_template_id: defaultSlangTemplateId });
@@ -2193,7 +2306,7 @@ export default function TaskCenterView({
         <Form form={form} layout="vertical" initialValues={initialValuesForType(taskType, schedulingSetting)}>
           {wizardStep === 0 && <WizardBasics taskType={taskType} onTypeChange={resetTypeFields} />}
           {wizardStep === 1 && <WizardTarget taskType={taskType} groupTargets={groupTargets} channelTargets={channelTargets} messages={messages} messageScope={messageScope} targetChannelId={targetChannelId} onTargetChannelChange={() => form.setFieldsValue({ message_ids: [] })} />}
-          {wizardStep === 2 && <WizardTypeConfig taskType={taskType} ruleSets={ruleSets} slangTemplates={slangTemplates} comments={comments} relaySourceOptions={[]} targetChannelId={targetChannelId} messageScope={messageScope} messageIds={messageIds} />}
+          {wizardStep === 2 && <WizardTypeConfig taskType={taskType} ruleSets={ruleSets} slangTemplates={slangTemplates} comments={comments} relaySourceOptions={[]} targetChannelId={targetChannelId} messageScope={messageScope} messageIds={messageIds} accountPools={taskAccountPools} proxyAirportNodes={proxyAirportNodes} exemptGroup={deboostExemptGroup} onEnsureRankDeboostPool={ensureRankDeboostPool} rankDeboostPoolLoading={rankDeboostPoolLoading} rerollLoading={rerollLoading} />}
           {wizardStep === 3 && (
             <Space direction="vertical" size={16} style={{ width: '100%' }}>
               <WizardAccounts accountMode={accountMode} accounts={taskAccounts} accountPools={taskAccountPools} taskType={taskType} />
@@ -2236,14 +2349,14 @@ export default function TaskCenterView({
         {actionError && <Alert className="form-alert" type="error" showIcon message={actionError} />}
         <Form form={editForm} layout="vertical">
           <EditBasics />
-          {detail && !isSystemTask(detail.task) && ['group_ai_chat', 'group_relay'].includes(detail.task.type) && (
+          {detail && !isSystemTask(detail.task) && ['group_ai_chat', 'group_relay', 'search_rank_deboost'].includes(detail.task.type) && (
             <>
               <Typography.Title level={5}>目标来源</Typography.Title>
               <WizardTarget taskType={detail.task.type as TaskCenterTaskType} groupTargets={groupTargets} channelTargets={channelTargets} messages={messages} messageScope={editMessageScope} targetChannelId={editTargetChannelId} onTargetChannelChange={() => editForm.setFieldsValue({ message_ids: [] })} allowInlineTarget={false} />
             </>
           )}
           <Typography.Title level={5}>类型参数</Typography.Title>
-          <WizardTypeConfig taskType={(detail && !isSystemTask(detail.task) ? detail.task.type : taskType) as TaskCenterTaskType} ruleSets={ruleSets} slangTemplates={slangTemplates} comments={comments} relaySourceOptions={relaySourceOptions(detail)} targetChannelId={editTargetChannelId} messageScope={editMessageScope} messageIds={editMessageIds} />
+          <WizardTypeConfig taskType={(detail && !isSystemTask(detail.task) ? detail.task.type : taskType) as TaskCenterTaskType} ruleSets={ruleSets} slangTemplates={slangTemplates} comments={comments} relaySourceOptions={relaySourceOptions(detail)} targetChannelId={editTargetChannelId} messageScope={editMessageScope} messageIds={editMessageIds} accountPools={taskAccountPools} proxyAirportNodes={proxyAirportNodes} exemptGroup={deboostExemptGroup} onEnsureRankDeboostPool={ensureRankDeboostPool} onRerollExemptGroup={detail && detail.task.type === 'search_rank_deboost' ? () => void rerollExemptGroup(detail.task.id) : undefined} rankDeboostPoolLoading={rankDeboostPoolLoading} rerollLoading={rerollLoading} />
           <Typography.Title level={5}>账号选择</Typography.Title>
           <WizardAccounts accountMode={editAccountMode} accounts={taskAccounts} accountPools={taskAccountPools} taskType={editableTaskType} />
           <Typography.Title level={5}>节奏策略</Typography.Title>

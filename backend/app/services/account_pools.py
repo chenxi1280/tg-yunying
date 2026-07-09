@@ -20,9 +20,13 @@ __all__ = [
     "account_pool_contacts",
     "account_pool_detail",
     "account_pool_snapshot",
+    "assert_account_not_in_rank_deboost_conflict",
     "create_account_pool",
+    "create_rank_deboost_account_pool",
+    "delete_account_pool",
     "ensure_code_receiver_account_pool",
     "ensure_default_account_pool",
+    "ensure_rank_deboost_account_pool",
     "list_account_pools",
     "move_account_pool",
     "seed_account_pools",
@@ -31,6 +35,7 @@ __all__ = [
 ]
 
 CODE_RECEIVER_POOL_KEY = "code_receiver"
+RANK_DEBOOST_POOL_KEY = "rank_deboost"
 
 
 def account_pool_snapshot(session: Session, pool: AccountPool) -> dict:
@@ -57,6 +62,8 @@ def ensure_default_account_pool(session: Session, tenant_id: int) -> AccountPool
             AccountPool.is_default.is_(True),
             AccountPool.pool_purpose != CODE_RECEIVER_POOL_KEY,
             AccountPool.system_key != CODE_RECEIVER_POOL_KEY,
+            AccountPool.pool_purpose != RANK_DEBOOST_POOL_KEY,
+            AccountPool.system_key != RANK_DEBOOST_POOL_KEY,
         )
         .order_by(AccountPool.id.asc())
     )
@@ -67,6 +74,8 @@ def ensure_default_account_pool(session: Session, tenant_id: int) -> AccountPool
                 AccountPool.tenant_id == tenant_id,
                 AccountPool.pool_purpose != CODE_RECEIVER_POOL_KEY,
                 AccountPool.system_key != CODE_RECEIVER_POOL_KEY,
+                AccountPool.pool_purpose != RANK_DEBOOST_POOL_KEY,
+                AccountPool.system_key != RANK_DEBOOST_POOL_KEY,
             )
             .order_by(AccountPool.id.asc())
         )
@@ -113,6 +122,152 @@ def _mark_code_receiver_pool(pool: AccountPool) -> None:
 
 def _is_code_receiver_pool(pool: AccountPool) -> bool:
     return pool.pool_purpose == CODE_RECEIVER_POOL_KEY or pool.system_key == CODE_RECEIVER_POOL_KEY
+
+
+def ensure_rank_deboost_account_pool(session: Session, tenant_id: int) -> AccountPool:
+    """确保租户存在系统级降权任务专用分组（与接码专用分组并列）。
+
+    系统级分组 is_system=True、system_key=rank_deboost，不可删除。
+    """
+    pool = session.scalar(
+        select(AccountPool)
+        .where(
+            AccountPool.tenant_id == tenant_id,
+            AccountPool.system_key == RANK_DEBOOST_POOL_KEY,
+        )
+        .order_by(AccountPool.id.asc())
+    )
+    if not pool:
+        pool = AccountPool(
+            tenant_id=tenant_id,
+            name="降权任务专用分组",
+            description="系统固定降权任务专用分组",
+            pool_purpose=RANK_DEBOOST_POOL_KEY,
+            is_system=True,
+            system_key=RANK_DEBOOST_POOL_KEY,
+        )
+        session.add(pool)
+        session.flush()
+    pool.pool_purpose = RANK_DEBOOST_POOL_KEY
+    pool.is_system = True
+    pool.system_key = RANK_DEBOOST_POOL_KEY
+    return pool
+
+
+def _is_rank_deboost_pool(pool: AccountPool | None) -> bool:
+    if pool is None:
+        return False
+    return pool.pool_purpose == RANK_DEBOOST_POOL_KEY or pool.system_key == RANK_DEBOOST_POOL_KEY
+
+
+def _is_normal_pool(pool: AccountPool | None) -> bool:
+    """普通分组：非空、非 code_receiver、非 rank_deboost。
+
+    pool_purpose IS NULL 视为普通（兼容历史数据）。未分组（pool is None）不算普通分组，
+    允许未分组账号移入 rank_deboost 分组。
+    """
+    if pool is None:
+        return False
+    return not _is_code_receiver_pool(pool) and not _is_rank_deboost_pool(pool)
+
+
+def create_rank_deboost_account_pool(
+    session: Session,
+    *,
+    tenant_id: int,
+    name: str,
+    description: str = "",
+    actor: str = "",
+) -> AccountPool:
+    """创建降权任务专用分组（非系统级，可禁用但不可删除）。
+
+    与接码专用分组并列；pool_purpose='rank_deboost' 由代码层校验（模型保持字符串字段）。
+    """
+    require_tenant(session, tenant_id)
+    pool_name = (name or "降权任务专用分组").strip()
+    if not pool_name:
+        raise ValueError("account pool name is required")
+    pool = AccountPool(
+        tenant_id=tenant_id,
+        name=pool_name,
+        description=description.strip(),
+        pool_purpose=RANK_DEBOOST_POOL_KEY,
+        is_system=False,
+        system_key="",
+    )
+    session.add(pool)
+    session.flush()
+    audit(
+        session,
+        tenant_id=pool.tenant_id,
+        actor=actor,
+        action="新增降权任务专用分组",
+        target_type="account_pool",
+        target_id=str(pool.id),
+    )
+    session.commit()
+    session.refresh(pool)
+    return pool
+
+
+def delete_account_pool(session: Session, pool_id: int, actor: str) -> None:
+    """删除账号分组。
+
+    rank_deboost 和 code_receiver 分组不可删除，只能禁用（通过 update_account_pool
+    设置 is_default=False）。系统级分组（is_system=True）同样不可删除。
+    """
+    pool = session.get(AccountPool, pool_id)
+    if not pool:
+        raise ValueError("account pool not found")
+    if _is_rank_deboost_pool(pool):
+        raise ValueError("rank_deboost 分组不可删除，只能禁用")
+    if _is_code_receiver_pool(pool):
+        raise ValueError("code_receiver 分组不可删除，只能禁用")
+    if pool.is_system:
+        raise ValueError("系统级分组不可删除")
+    # 拒绝删除非空分组，避免账号孤儿
+    account_count = session.scalar(
+        select(func.count(TgAccount.id)).where(
+            TgAccount.tenant_id == pool.tenant_id,
+            TgAccount.pool_id == pool.id,
+            TgAccount.deleted_at.is_(None),
+        )
+    ) or 0
+    if account_count > 0:
+        raise ValueError(f"分组非空（{account_count} 个账号），请先迁移账号再删除")
+    audit(
+        session,
+        tenant_id=pool.tenant_id,
+        actor=actor,
+        action="删除账号池",
+        target_type="account_pool",
+        target_id=str(pool.id),
+    )
+    session.delete(pool)
+    session.commit()
+
+
+def assert_account_not_in_rank_deboost_conflict(
+    session: Session,
+    account: TgAccount,
+) -> None:
+    """数据一致性校验：账号的 account_identity 与 pool_purpose 必须一致。
+
+    若账号 account_identity='rank_deboost' 但 pool_id 指向普通分组，或
+    账号在 rank_deboost 分组但 account_identity 不为 'rank_deboost'，视为
+    「同账号同时存在于 rank_deboost 和普通分组」的数据异常，raise ValueError。
+    """
+    pool = session.get(AccountPool, account.pool_id) if account.pool_id else None
+    in_rank_deboost_pool = _is_rank_deboost_pool(pool)
+    identity_is_rank_deboost = account.account_identity == RANK_DEBOOST_POOL_KEY
+    if in_rank_deboost_pool and not identity_is_rank_deboost:
+        raise ValueError(
+            "rank_deboost 分组内账号不得同时存在于普通分组"
+        )
+    if identity_is_rank_deboost and not in_rank_deboost_pool:
+        raise ValueError(
+            "rank_deboost 分组内账号不得同时存在于普通分组"
+        )
 
 
 def seed_account_pools(session: Session) -> None:
@@ -250,8 +405,24 @@ def move_account_pool(session: Session, account_id: int, pool_id: int, actor: st
     pool = session.get(AccountPool, pool_id)
     if not account or account.deleted_at is not None or not pool or account.tenant_id != pool.tenant_id:
         raise ValueError("account or pool not found")
+    # rank_deboost 隔离硬校验：
+    # - 移动到 rank_deboost 分组时，账号当前不得在普通分组（pool_purpose='normal' 或 IS NULL）
+    # - 移动到普通分组时，账号当前不得在 rank_deboost 分组
+    current_pool = session.get(AccountPool, account.pool_id) if account.pool_id else None
+    target_is_rank_deboost = _is_rank_deboost_pool(pool)
+    current_is_rank_deboost = _is_rank_deboost_pool(current_pool)
+    current_is_normal = _is_normal_pool(current_pool)
+    if target_is_rank_deboost and current_is_normal:
+        raise ValueError("rank_deboost 分组内账号不得同时存在于普通分组")
+    if not target_is_rank_deboost and current_is_rank_deboost:
+        raise ValueError("rank_deboost 分组内账号不得同时存在于普通分组")
     account.pool_id = pool.id
-    account.account_identity = CODE_RECEIVER_POOL_KEY if _is_code_receiver_pool(pool) else "normal"
+    if target_is_rank_deboost:
+        account.account_identity = RANK_DEBOOST_POOL_KEY
+    elif _is_code_receiver_pool(pool):
+        account.account_identity = CODE_RECEIVER_POOL_KEY
+    else:
+        account.account_identity = "normal"
     audit(session, tenant_id=account.tenant_id, actor=actor, action="移动账号池", target_type="tg_account", target_id=str(account.id), detail=pool.name)
     session.commit()
     session.refresh(account)

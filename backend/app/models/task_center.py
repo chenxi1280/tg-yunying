@@ -165,6 +165,7 @@ class BotProtocolSample(Base):
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), default=1)
     bot_username: Mapped[str] = mapped_column(String(80), default="")
     sample_type: Mapped[str] = mapped_column(String(60), default="search_results")
+    sample_purpose: Mapped[str] = mapped_column(String(40), default="search_join")
     sample_hash: Mapped[str] = mapped_column(String(120), default="")
     schema_version: Mapped[str] = mapped_column(String(40), default="v1")
     structure_json: Mapped[dict] = mapped_column(JSON, default=dict)

@@ -84,6 +84,7 @@ def refresh_task_stats(session: Session, task: Task) -> dict[str, Any]:
     )
     stats = hard_hourly_stats(session, task, _now(), stats)
     stats = _search_join_stats(session, task, stats)
+    stats = _search_rank_deboost_stats(session, task, stats)
     task.stats = stats
     from app.services.runtime_summary import refresh_task_summary
 
@@ -101,6 +102,106 @@ def _search_join_stats(session: Session, task: Task, stats: dict[str, Any]) -> d
     search_join_stats["hourly_execution"] = {**previous_hourly, **current_hourly}
     updated["search_join_stats"] = search_join_stats
     return updated
+
+
+def _search_rank_deboost_stats(session: Session, task: Task, stats: dict[str, Any]) -> dict[str, Any]:
+    if task.type != "search_rank_deboost":
+        return stats
+    updated = dict(stats)
+    deboost_stats = dict(updated.get("search_rank_deboost_stats") or {})
+    previous_hourly = dict(deboost_stats.get("hourly_execution") or {})
+    current_hourly = search_rank_deboost_hourly_execution(session, task, _now())
+    deboost_stats["hourly_execution"] = {**previous_hourly, **current_hourly}
+    updated["search_rank_deboost_stats"] = deboost_stats
+    return updated
+
+
+def search_rank_deboost_hourly_execution(session: Session, task: Task, now_value: datetime) -> dict[str, Any]:
+    """按账号 × 关键词 × 自然小时桶统计降权任务执行情况。
+
+    参考 search_join_hourly_execution 模式，聚合 search_rank_deboost action 与 click stat。
+    """
+    from .search_rank_deboost_pacing import runtime_search_rank_deboost_config
+
+    config = runtime_search_rank_deboost_config(task)
+    bucket_start = now_value.replace(minute=0, second=0, microsecond=0)
+    bucket_end = bucket_start + timedelta(hours=1)
+    success_count = _search_rank_deboost_success_count(session, task, bucket_start, bucket_end)
+    future_open = _search_rank_deboost_open_count(session, task, now_value, bucket_end, overdue=False)
+    overdue_open = _search_rank_deboost_open_count(session, task, now_value, bucket_end, overdue=True)
+    max_actions = int(config.get("max_actions_per_hour") or 0)
+    click_count = _search_rank_deboost_hourly_click_count(session, task, bucket_start, bucket_end)
+    capacity = max(0, max_actions - success_count - future_open - overdue_open)
+    return {
+        "bucket": bucket_start.isoformat(),
+        "status": _search_rank_deboost_hourly_status(max_actions, success_count, capacity),
+        "goal": max_actions,
+        "success_count": success_count,
+        "future_open_count": future_open,
+        "overdue_open_count": overdue_open,
+        "deficit": max(0, max_actions - success_count - future_open),
+        "capacity": capacity,
+        "max_actions_per_hour": max_actions,
+        "hourly_click_count": click_count,
+    }
+
+
+def _search_rank_deboost_success_count(session: Session, task: Task, start: datetime, end: datetime) -> int:
+    return int(
+        session.scalar(
+            select(func.count(Action.id)).where(
+                Action.task_id == task.id,
+                Action.action_type == "search_rank_deboost",
+                Action.status == "success",
+                Action.executed_at >= start,
+                Action.executed_at < end,
+            )
+        )
+        or 0
+    )
+
+
+def _search_rank_deboost_open_count(session: Session, task: Task, now_value: datetime, bucket_end: datetime, *, overdue: bool) -> int:
+    boundary = Action.scheduled_at < now_value if overdue else Action.scheduled_at >= now_value
+    upper = true() if overdue else Action.scheduled_at < bucket_end
+    return int(
+        session.scalar(
+            select(func.count(Action.id)).where(
+                Action.task_id == task.id,
+                Action.action_type == "search_rank_deboost",
+                Action.status.in_(("pending", "claiming", "executing")),
+                boundary,
+                upper,
+            )
+        )
+        or 0
+    )
+
+
+def _search_rank_deboost_hourly_click_count(session: Session, task: Task, start: datetime, end: datetime) -> int:
+    from app.models.search_rank_deboost import SearchRankDeboostActionStat
+
+    return int(
+        session.scalar(
+            select(func.count(SearchRankDeboostActionStat.id)).where(
+                SearchRankDeboostActionStat.task_id == task.id,
+                SearchRankDeboostActionStat.captured_at >= start,
+                SearchRankDeboostActionStat.captured_at < end,
+                SearchRankDeboostActionStat.skip_reason == "",
+            )
+        )
+        or 0
+    )
+
+
+def _search_rank_deboost_hourly_status(goal: int, success_count: int, capacity: int) -> str:
+    if goal <= 0:
+        return "open"
+    if success_count >= goal:
+        return "met"
+    if capacity <= 0:
+        return "blocked"
+    return "catching_up"
 
 
 def search_join_hourly_execution(session: Session, task: Task, now_value: datetime) -> dict[str, Any]:
@@ -405,4 +506,4 @@ def _naive_datetime(value):
     return value
 
 
-__all__ = ["empty_stats", "next_run_after_task", "refresh_task_stats", "retry_failed_actions", "utc_now_naive"]
+__all__ = ["empty_stats", "next_run_after_task", "refresh_task_stats", "retry_failed_actions", "search_rank_deboost_hourly_execution", "utc_now_naive"]

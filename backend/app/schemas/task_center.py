@@ -681,6 +681,37 @@ class SearchJoinGroupTaskConfigUpdate(SearchJoinGroupConfig):
     pacing_config: SearchJoinPacingConfig | None = None
 
 
+class SearchRankDeboostTaskCreate(BaseModel):
+    """搜索排名降权任务创建 schema。"""
+    name: str
+    search_bots: list[str] = Field(default=["jisou"], description="首版仅支持 jisou")
+    keywords: list[dict] = Field(default_factory=list, description="关键词列表")
+    target_group_ids: list[int] = Field(default_factory=list, description="我方目标群 ID 列表，用于实时排名判定与白名单")
+    account_pool_id: int = Field(description="账号分组 ID，必须为 pool_purpose=rank_deboost 的分组")
+    proxy_airport_node_id: int = Field(description="分组级绑定的 Clash 节点 ID")
+    config: dict = Field(default_factory=dict, description="任务配置，含节奏、停留时长、限流")
+    notes: str = ""
+
+
+class SearchRankDeboostTaskConfigUpdate(BaseModel):
+    """搜索排名降权任务配置更新 schema。"""
+    keywords: list[dict] | None = None
+    target_group_ids: list[int] | None = None
+    config: dict | None = None
+    notes: str | None = None
+
+
+class SearchRankDeboostExemptGroupResponse(BaseModel):
+    """随机豁免群响应 schema。"""
+    task_id: str
+    exempt_group_username: str
+    exempt_group_peer_id: str
+    exempt_group_title: str
+    exempt_group_match_strategy: str
+    selected_at: datetime
+    selected_by: str
+
+
 class TaskUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1335,6 +1366,9 @@ __all__ = [
     "SearchJoinGroupTaskConfigUpdate",
     "SearchJoinGroupTaskCreate",
     "SearchJoinVisibilityAttribution",
+    "SearchRankDeboostExemptGroupResponse",
+    "SearchRankDeboostTaskConfigUpdate",
+    "SearchRankDeboostTaskCreate",
     "TaskCreateCommon",
     "TaskAIAccountProfileOut",
     "TaskAICycleOut",

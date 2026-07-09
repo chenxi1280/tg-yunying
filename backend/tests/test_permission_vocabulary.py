@@ -162,3 +162,40 @@ def test_target_profile_routes_use_top_level_permissions_and_old_routes_are_remo
     assert "learning-versions" not in operations_router
     assert "learning-profile" not in operations_center_router
     assert "learning-samples" not in operations_center_router
+
+
+def test_search_rank_deboost_permission_bits_and_routes_are_defined():
+    permissions = all_permissions()
+    operator_permissions = ROLE_TEMPLATE_PERMISSIONS["运营管理员"]
+
+    assert "tasks.create.search_rank_deboost" in permissions
+    assert "tasks.manage.search_rank_deboost" in permissions
+    assert "tasks.create.search_rank_deboost" in operator_permissions
+    assert "tasks.manage.search_rank_deboost" in operator_permissions
+
+    assert required_permission("POST", "/api/tasks/search_rank_deboost") == (
+        "tasks.manage",
+        "tasks.create.search_rank_deboost",
+    )
+    assert required_permission("POST", "/api/tasks/search_rank_deboost/create_and_start") == (
+        "tasks.manage",
+        "tasks.create.search_rank_deboost",
+    )
+    assert required_permission("PATCH", "/api/tasks/123/search_rank_deboost_config") == (
+        "tasks.manage.search_rank_deboost",
+    )
+    assert required_permission("POST", "/api/tasks/123/search_rank_deboost_reroll_exempt_group") == (
+        "tasks.manage.search_rank_deboost",
+    )
+
+    assert permission_check_result(
+        ("tasks.manage", "tasks.create.search_rank_deboost"),
+        {"tasks.manage"},
+    ) == ["tasks.create.search_rank_deboost"]
+    assert permission_check_result(
+        ("tasks.manage", "tasks.create.search_rank_deboost"),
+        {"tasks.manage", "tasks.create.search_rank_deboost"},
+    ) == []
+    assert permission_check_result(("tasks.manage.search_rank_deboost",), set()) == [
+        "tasks.manage.search_rank_deboost"
+    ]

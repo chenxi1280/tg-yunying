@@ -2,6 +2,8 @@ from pathlib import Path
 
 import pytest
 
+from app.permission_middleware import required_permission
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 pytestmark = pytest.mark.no_postgres
@@ -2227,6 +2229,19 @@ def test_account_detail_has_authorization_assets_tab_with_slot_cards_and_recover
     assert "2FA 未托管" in assets_panel
 
 
+def test_code_receiver_managed_2fa_panel_is_reveal_only_and_code_entry_stays_visible():
+    managed_2fa = (PROJECT_ROOT / "frontend/src/app/views/AccountManaged2FaSettingsPanel.tsx").read_text()
+    modals = (PROJECT_ROOT / "frontend/src/app/views/AccountModals.tsx").read_text()
+    accounts_view = (PROJECT_ROOT / "frontend/src/app/views/AccountsView.tsx").read_text()
+
+    assert "accountIdentity" in managed_2fa
+    assert "const isCodeReceiver = accountIdentity === 'code_receiver';" in managed_2fa
+    assert "{!isCodeReceiver && (" in managed_2fa
+    assert "!isCodeReceiver && canManageCredentials" in managed_2fa
+    assert "accountIdentity={accountDetail.account.account_identity}" in modals
+    assert accounts_view.count("{canViewCodes && <Button size=\"small\" loading={isActionPending(`account:${account.id}:codes`)} onClick={() => onExtractCodes(account)}>提取验证码</Button>}") >= 2
+
+
 def test_security_drawers_show_cleanup_preservation_and_managed_2fa_policy():
     drawer = (PROJECT_ROOT / "frontend/src/app/views/AccountSecurityBatchDrawer.tsx").read_text()
     modals = (PROJECT_ROOT / "frontend/src/app/views/AccountModals.tsx").read_text()
@@ -2397,10 +2412,20 @@ def test_task_center_create_reuses_review_precheck_before_submit():
 
     create_task = source[source.index("async function createTask"):source.index("\n\n  async function saveTaskSettings")]
     assert "const precheckSignature = taskPrecheckPayloadSignature(taskType, payload);" in create_task
-    assert "const requiresFreshPrecheck = taskType !== 'group_membership_admission' && !options.skipCapacityCheck;" in create_task
+    assert "const requiresFreshPrecheck = taskType !== 'group_membership_admission' && taskType !== 'search_rank_deboost' && !options.skipCapacityCheck;" in create_task
     assert "precheck && precheckPayloadSignature === precheckSignature" in create_task
     assert "await runTaskPrecheck(values)" in create_task
     assert "if (!result && requiresFreshPrecheck) return;" in create_task
+
+
+def test_search_rank_deboost_create_submits_draft_until_real_exempt_group_exists():
+    source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
+    create_task = source[source.index("async function createTask"):source.index("\n\n  async function saveTaskSettings")]
+
+    assert "const shouldStartNow = start && taskType !== 'search_rank_deboost';" in create_task
+    assert "(shouldStartNow ? CREATE_AND_START_ENDPOINT : CREATE_ENDPOINT)[taskType]" in create_task
+    assert "搜索排名观察任务已创建为草稿" in create_task
+    assert "refreshTaskListAfterAction(shouldStartNow ? '任务创建并启动' : '任务创建')" in create_task
 
 
 def test_api_error_message_supports_timeout_copy_and_trace_id():
@@ -2412,3 +2437,20 @@ def test_api_error_message_supports_timeout_copy_and_trace_id():
     assert "if (detail && typeof detail === 'object')" in api_client
     assert "record.trace_id" in api_client
     assert "return error.message;" in source
+
+
+def test_search_rank_deboost_routes_are_covered_by_permission_gates():
+    assert required_permission("POST", "/api/tasks/search_rank_deboost") == (
+        "tasks.manage",
+        "tasks.create.search_rank_deboost",
+    )
+    assert required_permission("POST", "/api/tasks/search_rank_deboost/create_and_start") == (
+        "tasks.manage",
+        "tasks.create.search_rank_deboost",
+    )
+    assert required_permission("PATCH", "/api/tasks/123/search_rank_deboost_config") == (
+        "tasks.manage.search_rank_deboost",
+    )
+    assert required_permission("POST", "/api/tasks/123/search_rank_deboost_reroll_exempt_group") == (
+        "tasks.manage.search_rank_deboost",
+    )

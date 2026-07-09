@@ -111,6 +111,16 @@ SEARCH_JOIN_PACING_FIELDS = {
     "daily_jitter_percent",
 }
 
+SEARCH_RANK_DEBOOST_CONFIG_FIELDS = {
+    "per_account_daily_click_limit": {"type": "int", "default": 5, "min": 1, "max": 50, "description": "单账号每日点击竞争群数上限"},
+    "per_keyword_account_daily_limit": {"type": "int", "default": 2, "min": 1, "max": 20, "description": "单账号每关键词每日点击上限"},
+    "group_ip_daily_click_limit": {"type": "int", "default": 50, "min": 1, "max": 500, "description": "单分组共享出口 IP 每日点击上限"},
+    "max_actions_per_hour": {"type": "int", "default": 10, "min": 1, "max": 100, "description": "任务级每小时点击上限"},
+    "per_account_cooldown_hours": {"type": "int", "default": 4, "min": 0, "max": 168, "description": "同账号两次 action 之间至少间隔小时数"},
+    "dwell_seconds_min": {"type": "int", "default": 10, "min": 5, "max": 60, "description": "停留最短秒数"},
+    "dwell_seconds_max": {"type": "int", "default": 30, "min": 10, "max": 120, "description": "停留最长秒数"},
+}
+
 TYPE_SETTINGS_FIELDS = {
     "group_ai_chat": {
         "target_group_id",

@@ -112,3 +112,60 @@ docker compose exec -T worker-planner sh -lc 'now=$(date +%s); last=$(cat "${WOR
 如果 Actions 在 `Checking SSH connectivity` 或 `Uploading release archive` 阶段出现 `Connection timed out during banner exchange`，说明失败发生在 SSH 握手/服务端 banner 返回之前，应用容器还没有进入发布流程。优先检查生产服务器 SSH 端口、安全组/防火墙、`sshd` 负载或 `MaxStartups` 限制，以及 GitHub secret 里的端口是否真的是 SSH 服务。
 
 租户 TG Bot 保存 token 和管理员 Chat ID 后，会用 `PUBLIC_APP_BASE_URL` 生成 `https://<host>/api/telegram-bot/webhook/{tenant_id}/{webhook_secret}` 并注册到 Telegram。生产部署必须把该变量传入 backend/worker 容器；只配置 `TGYUNYING_WEB_HOST` 只能通过健康检查，不能保证 webhook 注册可用。
+
+## search_rank_deboost 任务灰度发布约束
+
+`search_rank_deboost`（搜索排名观察任务）是与 `search_join_group` 平行的新任务类型，用于灰度观察搜索结果曝光、点击行为和风控边界。该任务不得对外承诺“降低对方排名”；排名变化只能作为观察指标。首版上线必须按以下灰度约束执行，未通过约束不得全量推开。
+
+### 真实执行闸门
+
+- 任务创建只进入 `draft` 准备态；`create_and_start` / `start_task` 必须同时满足真实豁免群已从 Telegram Gateway 搜索结果中选出、`execute_search_rank_deboost` gateway 已接入、协议样本和分组级代理绑定预检通过，才能进入 `running`。
+- `search_rank_deboost_exempt_groups.exempt_group_username=pending_real_search` 只表示待接入真实搜索结果；Planner 遇到该占位值必须以 `exempt_group_pending_real_search` 阻断，不得生成 action。
+- Dispatcher 不得用 `account_group_proxy_bindings.observed_exit_ip` 自证出口；真实执行必须由 gateway 本次返回 `observed_exit_ip` / `probe_exit_ip` 后再调用分组级出口校验。缺失、漂移或 binding 非 active 时写 `proxy_egress_guard_failed`，不得回退本机直连。
+
+### 灰度账号范围
+
+- 首版只允许人工选择 5-10 个已养号账号灰度，账号必须归属于 `pool_purpose=rank_deboost` 专用分组。
+- 不允许默认全量扩到 100+ 账号；扩量必须基于灰度期观察结论，由运营显式确认后再分批增量。
+- 代码硬上限：`validate_rank_deboost_preconditions` 与 Executor `build_plan` 均以常量 `RANK_DEBOOST_GRADUATION_ACCOUNT_LIMIT = 10` 兜底，分组账号数 > 10 时任务创建直接拒绝、任务启动时 Planner 以 `graduation_account_limit_exceeded` 阻断。调整上限必须同步本段文档与代码常量。
+
+### 协议样本采集门槛
+
+发布前必须先完成协议样本采集门槛：`bot_protocol_samples` 中 `sample_purpose=rank_deboost`、`bot_code=jisou` 至少采集：
+
+- jisou `/start` 响应样本 ≥ 2 个账号
+- 关键词搜索响应样本 ≥ 5 个关键词，记录原始 button text、button type、callback_data hash、url、button effect 分类
+- 翻页响应样本 ≥ 3 次分页
+- 竞争群结果项按钮结构样本 ≥ 3 种 button effect 类型（navigate_only / join_candidate / external_http_url / unknown 至少覆盖 3 种）
+- 出口防泄漏样本 ≥ 3 次（与 search_join_group 一致）
+
+未完成样本采集时 Executor 只能跑 fixture 和预检，不得进入真实灰度执行；任务创建接口必须以「协议样本不足，请先完成样本采集」拒绝启动。
+
+### 共享 IP 风险观察周期
+
+- 分组内多账号共享 1 个 Clash 出口 IP，分组级共享出口 IP 每日点击上限默认 50（`group_ip_daily_click_limit`），需连续 7 天观察风控数据后再扩量。
+- 观察指标：`group_ip_daily_click_limit` 触顶告警（分组共享 IP 触顶）、IP 漂移告警（`rank_deboost_group_ip_drift`）；触顶时建议切换节点或降低节奏。
+- 观察期内出现目标群排名异常波动或竞争群集体消失等反作弊迹象时，立即暂停灰度并复盘。
+
+### 灰度扩量条件
+
+7 天共享 IP 风险观察期满后，必须同时满足以下条件才允许分批扩量，任一未达标继续观察：
+
+- 连续 3 天无 `join_button_violation`（误点加入按钮自检告警）。
+- 连续 3 天无 `account_isolation_violation`（账号组隔离硬过滤告警）。
+- 连续 3 天 `group_ip` 触顶占比 < 20%（触顶天数 / 观察天数）。
+
+扩量仍按 5-10 账号一档分批增量，单批增量后重置观察窗口；未达扩量条件不得解除灰度约束。
+
+### 与 search_join_group 平行运行
+
+- `search_rank_deboost` 与 `search_join_group` 平行运行，互不影响、互不依赖。
+- `search_join_group` 仍守 PRD §4.10 「非目标结果只做 `navigate_only` 安全浏览，且总量默认 ≤3」原约束，降权任务的开例外不得回灌到 search_join_group 链路。
+
+### 发布前必须验证
+
+发布前必须验证以下硬约束全部生效，任一未通过不得上线：
+
+1. 账号组隔离硬过滤生效：`pool_purpose=rank_deboost` 分组内账号不被其他任务通过「全部可用账号」语义误选；同一账号不得同时存在于 rank_deboost 分组和普通分组。
+2. 分组级代理绑定节点独占校验生效：同一节点不得同时被授权槽位级 `account_proxy_bindings` 和降权分组级 `account_group_proxy_bindings` 复用；分组级绑定节点容量 = 分组账号数，不再守 `max_authorizations_per_node_default=1`。
+3. 误点加入按钮自检告警生效：Executor 误点 `join_candidate` 按钮时立即停止 action、写 `search_rank_deboost_action_stats.join_button_violation=true`、风控中心生成 `rank_deboost_join_button_violation` 告警，并暂停该账号后续 action 直到人工确认。

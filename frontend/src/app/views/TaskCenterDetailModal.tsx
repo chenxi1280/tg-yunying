@@ -1,11 +1,11 @@
 import React from 'react';
 import { Alert, Button, Descriptions, Space, Table, Tabs, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import type { HardHourlyRecentBucket, TaskCenterAction, TaskCenterDetail, TaskCenterTask, TenantBotSettings } from '../types';
+import type { HardHourlyRecentBucket, SearchRankDeboostExemptGroup, TaskCenterAction, TaskCenterDetail, TaskCenterTask, TenantBotSettings } from '../types';
 import { DetailModal, StatusBadge } from '../components/shared';
 import { parseBeijingDate } from '../time';
-import { API_ORIGIN } from '../../shared/api/client';
-import { TYPE_LABEL, accountCoverageLabel, formatDateTime, formatHardHourlyBlockers, formatHardHourlyPipeline, hardHourlyStats, hardHourlyStatusColor, hardHourlyStatusLabel, runtimeStage, statusLabel } from './taskCenterViewModel';
+import { API_ORIGIN, api } from '../../shared/api/client';
+import { TYPE_LABEL, accountCoverageLabel, errorMessage, formatDateTime, formatHardHourlyBlockers, formatHardHourlyPipeline, hardHourlyStats, hardHourlyStatusColor, hardHourlyStatusLabel, runtimeStage, statusLabel } from './taskCenterViewModel';
 import { TaskAccountOnlineSummaryPanel } from './TaskAccountOnlineSummaryPanel';
 import { TaskAIQualityFunnelPanel } from './TaskAIQualityFunnelPanel';
 import { TaskMembershipPanel } from './TaskMembershipPanel';
@@ -219,6 +219,206 @@ function HardHourlyExecutionPanel({ detail }: { detail: TaskCenterDetail }) {
   );
 }
 
+const DEBOOST_SKIP_REASON_LABELS: Record<string, string> = {
+  proxy_egress_guard_failed: '代理出口校验失败',
+  target_not_in_results: '目标未在搜索结果',
+  all_exempt_clicks: '全部被豁免',
+  no_navigable_button: '无可导航按钮',
+  join_button_violation: '误点加入按钮',
+  search_join_gateway_unavailable: 'Gateway 不可用',
+  per_account_daily_limit_reached: '账号日限达成',
+  per_account_total_limit_reached: '账号总限达成',
+  per_account_cooldown_days_active: '账号冷却中',
+  per_keyword_account_daily_limit_reached: '关键词账号日限达成',
+  group_ip_daily_limit_reached: '分组 IP 日限达成',
+  daily_skipped_by_pacing: 'Pacing 日跳过',
+  hourly_skipped_by_pacing: 'Pacing 小时跳过',
+  rank_observation_gateway_unavailable: '排名观察 gateway 未接入',
+};
+
+function deboostSkipReasonLabel(reason: string) {
+  return DEBOOST_SKIP_REASON_LABELS[reason] || reason || '-';
+}
+
+function SearchRankDeboostStatsPanel({ detail, executedActions, canManageTasks }: { detail: TaskCenterDetail; executedActions: TaskCenterAction[]; canManageTasks: boolean }) {
+  const [rerollLoading, setRerollLoading] = React.useState(false);
+  const [exemptGroup, setExemptGroup] = React.useState<SearchRankDeboostExemptGroup | null>(null);
+  const [actionError, setActionError] = React.useState('');
+  const [actionWarning, setActionWarning] = React.useState('');
+
+  const task = detail.task;
+  const deboostStats = (task.stats?.search_rank_deboost_stats || {}) as Record<string, any>;
+  const hourly = (deboostStats.hourly_execution || {}) as Record<string, any>;
+
+  const skipReasonCounts: Record<string, number> = {};
+  let joinButtonViolationCount = 0;
+  let totalClicked = 0;
+  const exitIpCounts: Record<string, number> = {};
+  for (const action of executedActions) {
+    const result = action.result || {};
+    if (result.skip_reason) {
+      skipReasonCounts[result.skip_reason] = (skipReasonCounts[result.skip_reason] || 0) + 1;
+    }
+    if (result.join_button_violation) {
+      joinButtonViolationCount += 1;
+    }
+    if (typeof result.clicked_count === 'number') {
+      totalClicked += result.clicked_count;
+    }
+    const exitIp = action.payload?.runtime_environment?.observed_exit_ip;
+    if (exitIp) {
+      exitIpCounts[exitIp] = (exitIpCounts[exitIp] || 0) + 1;
+    }
+  }
+
+  const recentFailures = executedActions
+    .filter((action) => action.status === 'failed' || action.result?.success === false)
+    .slice(-8)
+    .reverse();
+
+  async function handleReroll() {
+    setActionError('');
+    setActionWarning('');
+    setRerollLoading(true);
+    try {
+      const result = await api<SearchRankDeboostExemptGroup>(`/tasks/${task.id}/search_rank_deboost_reroll_exempt_group`, { method: 'POST' });
+      setExemptGroup(result);
+      setActionWarning('已重选随机豁免群。');
+    } catch (error) {
+      setActionError(`重选随机豁免群失败：${errorMessage(error)}`);
+    } finally {
+      setRerollLoading(false);
+    }
+  }
+
+  const skipReasonEntries = Object.entries(skipReasonCounts).sort((a, b) => b[1] - a[1]);
+  const exitIpEntries = Object.entries(exitIpCounts).sort((a, b) => b[1] - a[1]);
+  const hasHourly = Boolean(hourly.bucket || hourly.goal || hourly.status);
+
+  return (
+    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+      {actionError && <Alert type="error" showIcon message={actionError} closable onClose={() => setActionError('')} />}
+      {actionWarning && <Alert type="success" showIcon message={actionWarning} closable onClose={() => setActionWarning('')} />}
+
+      <Descriptions
+        bordered
+        size="small"
+        column={3}
+        title="随机豁免群"
+        items={[
+          { key: 'username', label: '豁免群 Username', children: exemptGroup?.exempt_group_username || '-' },
+          { key: 'title', label: '豁免群名称', children: exemptGroup?.exempt_group_title || '-' },
+          { key: 'strategy', label: '匹配策略', children: exemptGroup?.exempt_group_match_strategy || '-' },
+          { key: 'peer', label: 'Peer ID', children: exemptGroup?.exempt_group_peer_id || '-' },
+          { key: 'selected-at', label: '选定时间', children: exemptGroup?.selected_at ? formatDateTime(exemptGroup.selected_at) : '-' },
+          { key: 'selected-by', label: '选定人', children: exemptGroup?.selected_by || '-' },
+        ]}
+      />
+      {canManageTasks && (
+        <Space>
+          <Button loading={rerollLoading} onClick={() => void handleReroll()}>重选随机豁免群</Button>
+          {!exemptGroup && <Typography.Text type="secondary">点击「重选随机豁免群」获取当前豁免群信息。</Typography.Text>}
+        </Space>
+      )}
+
+      {hasHourly && (
+        <Descriptions
+          bordered
+          size="small"
+          column={4}
+          title="小时执行"
+          items={[
+            { key: 'bucket', label: '小时桶', children: hourly.bucket ? formatDateTime(hourly.bucket) : '-' },
+            { key: 'status', label: '状态', children: <Tag>{hourly.status || '-'}</Tag> },
+            { key: 'goal', label: '小时目标', children: hourly.goal ?? '-' },
+            { key: 'success', label: '已成功', children: hourly.success_count ?? 0 },
+            { key: 'future', label: '未来待执行', children: hourly.future_open_count ?? 0 },
+            { key: 'overdue', label: '执行滞后', children: hourly.overdue_open_count ?? 0 },
+            { key: 'deficit', label: '缺口', children: hourly.deficit ?? 0 },
+            { key: 'capacity', label: '剩余容量', children: hourly.capacity ?? 0 },
+            { key: 'click', label: '小时点击数', children: hourly.hourly_click_count ?? 0 },
+            ...(hourly.block_code ? [{ key: 'block', label: '阻塞码', children: <Tag color="red">{hourly.block_code}</Tag> }] : []),
+          ]}
+        />
+      )}
+
+      <Descriptions
+        bordered
+        size="small"
+        column={4}
+        title="累计统计"
+        items={[
+          { key: 'success', label: '已成功', children: detail.stats.success_count ?? 0 },
+          { key: 'failure', label: '失败', children: detail.stats.failure_count ?? 0 },
+          { key: 'skipped', label: '跳过', children: Number(detail.stats.skipped_count ?? 0) },
+          { key: 'total', label: '总动作', children: Number(detail.stats.total_actions ?? 0) },
+          { key: 'clicked', label: '累计点击（执行记录）', children: totalClicked },
+          { key: 'violation', label: '误点加入按钮', children: joinButtonViolationCount },
+        ]}
+      />
+
+      <Descriptions
+        bordered
+        size="small"
+        column={1}
+        title="跳过原因分布（执行记录）"
+        items={[
+          {
+            key: 'skip-reasons',
+            label: '原因计数',
+            children: skipReasonEntries.length ? (
+              <Space wrap>
+                {skipReasonEntries.map(([reason, count]) => (
+                  <Tag key={reason}>{deboostSkipReasonLabel(reason)} x{count}</Tag>
+                ))}
+              </Space>
+            ) : '暂无跳过记录',
+          },
+        ]}
+      />
+
+      <Descriptions
+        bordered
+        size="small"
+        column={1}
+        title="出口 IP 共享（执行记录）"
+        items={[
+          {
+            key: 'exit-ips',
+            label: 'IP 计数',
+            children: exitIpEntries.length ? (
+              <Space wrap>
+                {exitIpEntries.map(([ip, count]) => (
+                  <Tag key={ip}>{ip} x{count}</Tag>
+                ))}
+              </Space>
+            ) : '执行记录暂无出口 IP 数据',
+          },
+        ]}
+      />
+
+      {recentFailures.length > 0 && (
+        <Table
+          rowKey="id"
+          size="small"
+          title={() => '最近失败原因（执行记录）'}
+          pagination={false}
+          scroll={{ x: 900 }}
+          dataSource={recentFailures}
+          columns={[
+            { title: '账号', key: 'account', width: 160, render: (_, item) => item.account_display_name || `#${item.account_id}` },
+            { title: 'Bot', key: 'bot', width: 100, render: (_, item) => item.payload?.bot_username || '-' },
+            { title: '状态', dataIndex: 'status', width: 100, render: (value) => <Tag color={value === 'failed' ? 'red' : 'default'}>{value}</Tag> },
+            { title: '跳过原因', key: 'skip', width: 180, render: (_, item) => item.result?.skip_reason ? deboostSkipReasonLabel(item.result.skip_reason) : '-' },
+            { title: '失败原因', key: 'failure', ellipsis: true, render: (_, item) => item.failure_reason || item.result?.error_message || item.failure_type || '-' },
+            { title: '执行时间', dataIndex: 'executed_at', width: 170, render: (value) => formatDateTime(value) },
+          ]}
+        />
+      )}
+    </Space>
+  );
+}
+
 export function TaskCenterDetailModal({
   detail,
   canManageTasks,
@@ -373,6 +573,7 @@ export function TaskCenterDetailModal({
   const admissionTotal = Number(detail?.membership_admission_phase?.snapshot_total ?? admissionItemPagination.total ?? 0);
   const showAiTab = detail?.task.type === 'group_ai_chat';
   const showSearchJoinTab = detail?.task.type === 'search_join_group';
+  const showSearchRankDeboostTab = detail?.task.type === 'search_rank_deboost';
   const botMissingReasons = botAvailabilityReasons(telegramBotSettings);
   const showTargetTab = detail ? ['group_relay', 'channel_view', 'channel_like', 'channel_comment'].includes(detail.task.type) : false;
   const accountCoverage = detail?.task.stats?.account_coverage;
@@ -389,6 +590,17 @@ export function TaskCenterDetailModal({
           />
           <Descriptions bordered size="small" column={3} items={searchJoinDetailItems(detail)} />
         </Space>
+      ),
+    } : null,
+    showSearchRankDeboostTab ? {
+      key: 'search-rank-deboost',
+      label: '排名观察统计',
+      children: (
+        <SearchRankDeboostStatsPanel
+          detail={detail}
+          executedActions={executedActions}
+          canManageTasks={canManageTasks}
+        />
       ),
     } : null,
     showAiTab ? {

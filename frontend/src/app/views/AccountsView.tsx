@@ -382,6 +382,7 @@ export default function AccountsView({
           {LOGIN_REQUIRED_STATUSES.has(account.status) ? (
             <>
               {canLoginAccount && <Button type="primary" size="small" onClick={() => onVerifyAccount(account)}>{account.status === '待登录' ? '完成登录' : '继续登录'}</Button>}
+              {canViewCodes && <Button size="small" loading={isActionPending(`account:${account.id}:codes`)} onClick={() => onExtractCodes(account)}>提取验证码</Button>}
               {canDeleteAccount && <Button danger size="small" loading={isActionPending(`account:${account.id}:delete`)} onClick={() => onDeleteAccount(account)}>移除</Button>}
             </>
           ) : account.status === '在线' ? (

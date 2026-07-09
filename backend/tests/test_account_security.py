@@ -35,14 +35,14 @@ from app.services.task_center.service import delete_task, get_task_detail, list_
 
 
 def _session():
-    engine = create_engine(os.environ["TEST_DATABASE_URL"], future=True)
+    engine = create_engine(os.environ.get("TEST_DATABASE_URL", "sqlite:///:memory:"), future=True)
     Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
     return Session(engine)
 
 
 def _session_factory_no_autoflush():
-    engine = create_engine(os.environ["TEST_DATABASE_URL"], future=True)
+    engine = create_engine(os.environ.get("TEST_DATABASE_URL", "sqlite:///:memory:"), future=True)
     Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
     return sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
@@ -1003,6 +1003,36 @@ def test_primary_login_with_2fa_rotates_and_saves_new_managed_password(monkeypat
         assert decrypt_secret(snapshot.two_fa_password_ciphertext) == rotations[0]["password"]
 
 
+@pytest.mark.no_postgres
+def test_code_receiver_primary_login_with_2fa_keeps_existing_password(monkeypatch):
+    with _session() as session:
+        account = _seed_account(session, status=AccountStatus.WAITING_2FA.value, session_value="")
+        account.account_identity = "code_receiver"
+        session.commit()
+        rotations: list[str] = []
+
+        def finish_login(code, password_2fa, *_args, **_kwargs):
+            assert code is None
+            assert password_2fa == "receiver-2fa-password"
+            return AccountStatus.ACTIVE.value, "code-receiver-primary-session"
+
+        monkeypatch.setattr(accounts_service.gateway, "finish_login", finish_login)
+        monkeypatch.setattr(
+            accounts_service.gateway,
+            "set_two_fa_password",
+            lambda *_args, **_kwargs: rotations.append("called"),
+        )
+
+        verified = verify_login(session, account.id, None, "receiver-2fa-password", actor="tester")
+        snapshot = session.scalar(select(TgAccountSecuritySnapshot).where(TgAccountSecuritySnapshot.account_id == account.id))
+
+        assert verified.status == AccountStatus.ACTIVE.value
+        assert rotations == []
+        assert snapshot is not None
+        assert snapshot.two_fa_status == "enabled"
+        assert decrypt_secret(snapshot.two_fa_password_ciphertext) == "receiver-2fa-password"
+
+
 def test_standby_session_self_heal_activates_existing_standby_when_primary_session_missing():
     with _session() as session:
         account = _seed_account(session, status=AccountStatus.WAITING_CODE.value, session_value="")
@@ -1465,6 +1495,41 @@ def test_managed_two_fa_save_and_rotate_store_encrypted_password(monkeypatch):
         assert calls == [{"password": "new-password", "current_password": "old-password"}]
         assert snapshot.two_fa_password_ciphertext
         assert snapshot.two_fa_password_ciphertext != "new-password"
+
+
+@pytest.mark.no_postgres
+def test_code_receiver_managed_two_fa_save_and_rotate_are_blocked(monkeypatch):
+    with _session() as session:
+        account = _seed_account(session)
+        account.account_identity = "code_receiver"
+        session.commit()
+        calls: list[str] = []
+
+        monkeypatch.setattr(
+            account_security_service.gateway,
+            "set_two_fa_password",
+            lambda *_args, **_kwargs: calls.append("called"),
+        )
+
+        with pytest.raises(ValueError, match="接码专用账号禁止修改二步验证密码"):
+            save_managed_two_fa_password(
+                session,
+                1,
+                account.id,
+                ManagedTwoFaRequest(password="new-password", reason="接码组禁改"),
+                "tester",
+            )
+        with pytest.raises(ValueError, match="接码专用账号禁止修改二步验证密码"):
+            rotate_managed_two_fa_password(
+                session,
+                1,
+                account.id,
+                ManagedTwoFaRequest(password="new-password", reason="接码组禁改"),
+                "tester",
+            )
+
+        assert calls == []
+        assert session.scalar(select(TgAccountSecuritySnapshot).where(TgAccountSecuritySnapshot.account_id == account.id)) is None
 
 
 @pytest.mark.no_postgres

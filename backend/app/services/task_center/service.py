@@ -35,6 +35,9 @@ from app.schemas.task_center import (
     RecommendTaskAccountsRequest,
     SearchJoinGroupTaskCreate,
     SearchJoinGroupTaskConfigUpdate,
+    SearchRankDeboostExemptGroupResponse,
+    SearchRankDeboostTaskConfigUpdate,
+    SearchRankDeboostTaskCreate,
     TaskPrecheckRequest,
     TaskRetryRequest,
     TaskSettingsUpdate,
@@ -156,6 +159,13 @@ from .config_fields import (
     GROUP_RELAY_LEGACY_CREATE_FIELDS,
     SEARCH_JOIN_PACING_FIELDS,
     TYPE_SETTINGS_FIELDS,
+)
+from .search_rank_deboost import (
+    preselect_exempt_group,
+    require_rank_observation_gateway,
+    require_real_exempt_group,
+    to_exempt_group_response,
+    validate_rank_deboost_preconditions,
 )
 from .hard_hourly import current_progress as hard_hourly_current_progress, enabled as hard_hourly_enabled, requires_planning as hard_hourly_requires_planning
 from .config_normalization import (
@@ -617,9 +627,226 @@ def update_search_join_group_config(session: Session, tenant_id: int, task_id: s
     return task
 
 
+def create_search_rank_deboost_task(
+    session: Session,
+    tenant_id: int,
+    payload: SearchRankDeboostTaskCreate,
+    operator: str,
+) -> Task:
+    """创建搜索排名观察任务。
+
+    - 预检：分组级代理绑定、节点健康、节点容量、协议样本、灰度账号数（validate_rank_deboost_preconditions）
+    - 创建 task 记录（task_type='search_rank_deboost'）
+    - 创建 account_group_proxy_bindings 记录
+    - 预选随机豁免群
+    """
+    bot_username = _first_rank_deboost_bot(payload.search_bots)
+    validate_rank_deboost_preconditions(
+        session,
+        tenant_id=tenant_id,
+        account_pool_id=payload.account_pool_id,
+        proxy_airport_node_id=payload.proxy_airport_node_id,
+        target_group_ids=list(payload.target_group_ids),
+        bot_username=bot_username,
+    )
+
+    type_config = _build_rank_deboost_type_config(payload)
+
+    task = Task(
+        tenant_id=tenant_id,
+        name=payload.name,
+        type="search_rank_deboost",
+        status="draft",
+        priority=3,
+        timezone="Asia/Shanghai",
+        account_config={},
+        pacing_config={},
+        failure_policy={},
+        type_config=type_config,
+        stats=empty_stats(),
+    )
+    session.add(task)
+    session.flush()
+
+    from app.services.proxy_group_binding_service import create_group_proxy_binding
+
+    create_group_proxy_binding(
+        session,
+        tenant_id=tenant_id,
+        account_pool_id=payload.account_pool_id,
+        proxy_airport_node_id=payload.proxy_airport_node_id,
+        operator=operator,
+    )
+
+    preselect_exempt_group(
+        session,
+        tenant_id=tenant_id,
+        task_id=task.id,
+        operator=operator,
+        my_target_ids=list(payload.target_group_ids),
+        search_results=None,
+    )
+
+    audit(
+        session,
+        tenant_id=tenant_id,
+        actor=operator,
+        action="创建任务中心任务",
+        target_type="task",
+        target_id=task.id,
+        detail="search_rank_deboost",
+    )
+    session.commit()
+    session.refresh(task)
+    return task
+
+
+def create_and_start_search_rank_deboost_task(
+    session: Session,
+    tenant_id: int,
+    payload: SearchRankDeboostTaskCreate,
+    operator: str,
+) -> Task:
+    """创建并启动搜索排名观察任务；未满足真实执行闸门时保留草稿并抛错。"""
+    task = create_search_rank_deboost_task(session, tenant_id, payload, operator)
+    return start_task(session, tenant_id, task.id, operator)
+
+
+def update_search_rank_deboost_config(
+    session: Session,
+    tenant_id: int,
+    task_id: str,
+    payload: SearchRankDeboostTaskConfigUpdate,
+    operator: str,
+) -> Task:
+    """更新搜索排名观察任务配置（keywords / target_group_ids / config / notes）。"""
+    task = _get_task(session, tenant_id, task_id)
+    if task.type != "search_rank_deboost":
+        raise ValueError(f"任务类型不匹配，当前任务是 {task.type}")
+
+    update_data = payload.model_dump(mode="json", exclude_unset=True)
+    next_config = dict(task.type_config or {})
+
+    if "keywords" in update_data:
+        next_config["keywords"] = update_data["keywords"]
+    if "target_group_ids" in update_data:
+        next_config["target_group_ids"] = update_data["target_group_ids"]
+    if "config" in update_data and update_data["config"] is not None:
+        config_overlay = update_data["config"]
+        if isinstance(config_overlay, dict):
+            next_config.update(config_overlay)
+        else:
+            next_config["config"] = config_overlay
+    if "notes" in update_data:
+        next_config["notes"] = update_data["notes"]
+
+    task.type_config = next_config
+    _clear_unfinished_plan(session, task)
+    task.updated_at = _now()
+    audit(
+        session,
+        tenant_id=tenant_id,
+        actor=operator,
+        action="更新任务类型配置",
+        target_type="task",
+        target_id=task.id,
+        detail="search_rank_deboost",
+    )
+    session.commit()
+    session.refresh(task)
+    return task
+
+
+def reroll_search_rank_deboost_exempt_group(
+    session: Session,
+    tenant_id: int,
+    task_id: str,
+    operator: str,
+) -> SearchRankDeboostExemptGroupResponse:
+    """重选随机豁免群。
+
+    - 触发一次真实候选群搜索
+    - 从结果中随机选取 1 个非我方目标群作为新豁免群
+    - 覆盖当前 search_rank_deboost_exempt_groups 记录（旧值写入 previous_*）
+    - 写审计
+    - 返回新豁免群响应
+    """
+    task = _get_task(session, tenant_id, task_id)
+    if task.type != "search_rank_deboost":
+        raise ValueError(f"任务类型不匹配，当前任务是 {task.type}")
+
+    type_config = task.type_config or {}
+    my_target_ids = list(type_config.get("target_group_ids") or [])
+    search_results = _rank_deboost_exempt_search_results(task, dict(type_config))
+
+    record = preselect_exempt_group(
+        session,
+        tenant_id=tenant_id,
+        task_id=task.id,
+        operator=operator,
+        my_target_ids=my_target_ids,
+        search_results=search_results,
+    )
+
+    audit(
+        session,
+        tenant_id=tenant_id,
+        actor=operator,
+        action="重选搜索排名观察随机豁免群",
+        target_type="task",
+        target_id=task.id,
+        detail=(
+            f"new_username={record.exempt_group_username or '-'}; "
+            f"previous_username={record.previous_exempt_group_username or '-'}"
+        ),
+    )
+    session.commit()
+    session.refresh(record)
+    return SearchRankDeboostExemptGroupResponse(**to_exempt_group_response(record))
+
+
+def _rank_deboost_exempt_search_results(task: Task, type_config: dict[str, Any]) -> list[dict]:
+    searcher = getattr(gateway, "search_rank_deboost_exempt_candidates", None)
+    if not callable(searcher):
+        raise ValueError("搜索排名观察真实搜索候选源未接入，不能重选随机豁免群")
+    results = searcher(
+        tenant_id=task.tenant_id,
+        task_id=task.id,
+        task_config=type_config,
+    )
+    if not isinstance(results, list):
+        raise ValueError("搜索排名观察真实搜索候选源返回格式无效")
+    if not results:
+        raise ValueError("搜索排名观察真实搜索候选源没有返回可用候选群")
+    return results
+
+
+def _first_rank_deboost_bot(search_bots: list[str]) -> str:
+    if not search_bots:
+        return ""
+    return str(search_bots[0]).strip().lstrip("@")
+
+
+def _build_rank_deboost_type_config(payload: SearchRankDeboostTaskCreate) -> dict[str, Any]:
+    config: dict[str, Any] = {
+        "search_bots": list(payload.search_bots),
+        "keywords": list(payload.keywords),
+        "target_group_ids": list(payload.target_group_ids),
+        "account_pool_id": payload.account_pool_id,
+        "proxy_airport_node_id": payload.proxy_airport_node_id,
+        "notes": payload.notes,
+    }
+    if isinstance(payload.config, dict):
+        config.update(payload.config)
+    return config
+
+
 def start_task(session: Session, tenant_id: int, task_id: str, actor: str) -> Task:
     task = _get_task(session, tenant_id, task_id)
-    _assert_precheck_allows_start(session, tenant_id, task.type, _task_create_payload_for_precheck(task))
+    if task.type == "search_rank_deboost":
+        _assert_rank_deboost_allows_start(session, tenant_id, task)
+    else:
+        _assert_precheck_allows_start(session, tenant_id, task.type, _task_create_payload_for_precheck(task))
     _mark_task_started(task)
     audit(session, tenant_id=tenant_id, actor=actor, action="启动任务中心任务", target_type="task", target_id=task.id)
     session.commit()
@@ -1113,6 +1340,28 @@ def _assert_precheck_allows_start(session: Session, tenant_id: int, task_type: s
         if task_type in {"channel_view", "channel_like", "channel_comment"} and set(str(item) for item in reasons) <= {"没有匹配账号", "no_available_account"}:
             return
         raise ValueError("；".join(str(item) for item in reasons if item))
+
+
+def _assert_rank_deboost_allows_start(session: Session, tenant_id: int, task: Task) -> None:
+    config = dict(task.type_config or {})
+    account_pool_id = int(config.get("account_pool_id") or 0)
+    proxy_airport_node_id = int(config.get("proxy_airport_node_id") or 0)
+    bot_username = _first_rank_deboost_bot(list(config.get("search_bots") or ["jisou"]))
+    validate_rank_deboost_preconditions(
+        session,
+        tenant_id=tenant_id,
+        account_pool_id=account_pool_id,
+        proxy_airport_node_id=proxy_airport_node_id,
+        target_group_ids=list(config.get("target_group_ids") or []),
+        bot_username=bot_username,
+    )
+    from app.services.proxy_group_binding_service import get_active_group_binding
+
+    binding = get_active_group_binding(session, tenant_id=tenant_id, account_pool_id=account_pool_id)
+    if binding is None or binding.proxy_airport_node_id != proxy_airport_node_id:
+        raise ValueError("搜索排名观察任务缺少匹配的 active 分组级代理绑定")
+    require_real_exempt_group(session, tenant_id=tenant_id, task_id=task.id)
+    require_rank_observation_gateway()
 
 
 def _task_create_payload_for_precheck(task: Task) -> dict[str, Any]:
@@ -2432,6 +2681,7 @@ __all__ = [
     "create_and_start_group_membership_admission_task",
     "create_and_start_group_relay_task",
     "create_and_start_search_join_group_task",
+    "create_and_start_search_rank_deboost_task",
     "create_channel_comment_task",
     "create_channel_like_task",
     "create_channel_view_task",
@@ -2439,6 +2689,7 @@ __all__ = [
     "create_group_membership_admission_task",
     "create_group_relay_task",
     "create_search_join_group_task",
+    "create_search_rank_deboost_task",
     "add_task_source_filter_override",
     "delete_task",
     "drain_task_center",
@@ -2467,6 +2718,7 @@ __all__ = [
     "precheck_task_creation",
     "recommend_accounts",
     "reject_review",
+    "reroll_search_rank_deboost_exempt_group",
     "ReviewStateError",
     "resume_task",
     "reset_task",
@@ -2482,6 +2734,7 @@ __all__ = [
     "update_group_ai_chat_config",
     "update_group_relay_config",
     "update_search_join_group_config",
+    "update_search_rank_deboost_config",
     "update_task_settings",
     "update_task",
 ]

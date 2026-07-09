@@ -1,4 +1,4 @@
-export type TaskCenterTaskType = 'group_ai_chat' | 'group_relay' | 'group_membership_admission' | 'channel_view' | 'channel_like' | 'channel_comment' | 'search_join_group';
+export type TaskCenterTaskType = 'group_ai_chat' | 'group_relay' | 'group_membership_admission' | 'channel_view' | 'channel_like' | 'channel_comment' | 'search_join_group' | 'search_rank_deboost';
 export type TaskCenterSystemTaskType = 'account_profile_init' | 'account_device_cleanup' | 'account_2fa_setup' | 'account_standby_session_provision';
 export type TaskCenterAnyTaskType = TaskCenterTaskType | TaskCenterSystemTaskType;
 
@@ -514,6 +514,26 @@ export type TaskCenterDetail = {
     }>;
   };
 	};
+
+export type SearchRankDeboostConfig = {
+  per_account_daily_click_limit?: number;
+  per_keyword_account_daily_limit?: number;
+  group_ip_daily_click_limit?: number;
+  max_actions_per_hour?: number;
+  per_account_cooldown_hours?: number;
+  dwell_seconds_min?: number;
+  dwell_seconds_max?: number;
+};
+
+export type SearchRankDeboostExemptGroup = {
+  task_id: string;
+  exempt_group_username: string;
+  exempt_group_peer_id: string;
+  exempt_group_title: string;
+  exempt_group_match_strategy: string;
+  selected_at: string;
+  selected_by: string;
+};
 
 export type TaskPrecheck = {
   task_type: TaskCenterTaskType;

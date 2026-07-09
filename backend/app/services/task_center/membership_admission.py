@@ -484,6 +484,7 @@ def _snapshot_account_ids(session: Session, task: Task) -> list[int]:
             TgAccount.deleted_at.is_(None),
             TgAccount.status == AccountStatus.ACTIVE.value,
             TgAccount.account_identity != "code_receiver",
+            TgAccount.account_identity != "rank_deboost",
             TgAccount.pool_id.in_(group_ids),
         )
         .order_by(TgAccount.id.asc())

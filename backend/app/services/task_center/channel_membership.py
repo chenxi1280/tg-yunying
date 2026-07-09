@@ -238,6 +238,7 @@ def candidate_accounts_for_config(session: Session, tenant_id: int, account_conf
             TgAccount.deleted_at.is_(None),
             TgAccount.status == AccountStatus.ACTIVE.value,
             TgAccount.account_identity != "code_receiver",
+            TgAccount.account_identity != "rank_deboost",
         )
         .order_by(TgAccount.health_score.desc(), TgAccount.id.asc())
     )

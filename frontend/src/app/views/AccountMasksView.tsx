@@ -4,6 +4,7 @@ import { api } from '../../shared/api/client';
 import type { AccountEnvironmentBinding, AccountEnvironmentProxyBatchBindResult, AccountPool, AccountProxy, CurrentUser, ProxyAirportNode } from '../types';
 import { hasPermission } from '../utils';
 import AIAccountVoiceProfilesView from './AIAccountVoiceProfilesView';
+import { GroupProxyBindingInfoPanel } from './ProxyAirportSubscriptionView';
 
 interface Props {
   currentUser: CurrentUser | null;
@@ -320,6 +321,7 @@ export default function AccountMasksView({ currentUser }: Props) {
           { title: '操作', key: 'action', render: (_, row) => <Button size="small" disabled={!canManageEnvironment} onClick={() => openEdit(row)}>编辑代理</Button> },
         ]}
       />
+      <GroupProxyBindingInfoPanel />
     </>
   );
 

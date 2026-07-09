@@ -101,6 +101,7 @@ def _account_query(session: Session, tenant_id: int, account_config: dict, *, en
             TgAccount.deleted_at.is_(None),
             TgAccount.status == AccountStatus.ACTIVE.value,
             TgAccount.account_identity != "code_receiver",
+            TgAccount.account_identity != "rank_deboost",
         )
         .order_by(
             func.coalesce(AccountRuntimeSummary.health_score, TgAccount.health_score).desc(),

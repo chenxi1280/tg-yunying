@@ -40,7 +40,7 @@ from ._common import _is_expired, _now, audit, gateway, get_account_phone, mask_
 from .account_authorizations import attempt_primary_proxy_recovery, attempt_standby_authorization_recovery, is_proxy_recovery_signal
 from .account_profile_auto_init import queue_login_profile_initialization
 from .account_search import filter_accounts_by_search
-from .account_two_fa import rotate_managed_two_fa_after_login
+from .account_two_fa import record_managed_two_fa_password, rotate_managed_two_fa_after_login
 from .developer_apps import credentials_for_account, first_assignable_developer_app
 from .tenants import ensure_account_quota_available
 from .verification import list_verification_tasks, create_verification_task
@@ -812,7 +812,9 @@ def verify_login(session: Session, account_id: int, code: str | None, password_2
             latest_flow.code_preview = None
             latest_flow.status = status
         if status == AccountStatus.ACTIVE.value:
-            if password_2fa:
+            if password_2fa and account.account_identity == "code_receiver":
+                record_managed_two_fa_password(session, account, password_2fa)
+            elif password_2fa:
                 rotate_managed_two_fa_after_login(
                     session,
                     account,

@@ -207,6 +207,7 @@ export default function ProxyAirportSubscriptionView({ canManageSystem = false }
   const primary = summarySubscription(rows);
 
   return (
+    <>
     <Card className="panel" title="Clash 订阅源池" extra={<Button size="small" onClick={loadConfig} loading={loading}>刷新</Button>}>
       {error && <Alert type="error" showIcon message={error} style={{ marginBottom: 12 }} />}
       {notice && <Alert type="success" showIcon message={notice} style={{ marginBottom: 12 }} />}
@@ -358,6 +359,29 @@ export default function ProxyAirportSubscriptionView({ canManageSystem = false }
           </Form.Item>
         </Form>
       </Modal>
+    </Card>
+    <GroupProxyBindingInfoPanel />
+    </>
+  );
+}
+
+export function GroupProxyBindingInfoPanel() {
+  return (
+    <Card className="panel" title="分组级代理绑定（排名观察专用）" size="small" style={{ marginTop: 16 }}>
+      <Space direction="vertical" size={8}>
+        <Alert
+          type="info"
+          showIcon
+          message="分组级代理绑定在创建「搜索排名观察任务」时自动建立"
+          description="排名观察专用账号分组（pool_purpose=rank_deboost）会绑定一个独占的 Clash 健康节点，确保出口 IP 稳定且与其他任务隔离；绑定状态、出口 IP 和故障切换记录可在对应任务的详情页查看。"
+        />
+        <Alert
+          type="warning"
+          showIcon
+          message="独立管理入口待补充"
+          description="当前暂未提供独立的「创建 / 解绑 / 故障切换」管理 API，需后端新增管理路由后才能在此页面直接操作。"
+        />
+      </Space>
     </Card>
   );
 }

@@ -46,7 +46,7 @@ from .channel_membership import account_satisfies_authorized_target, linked_chan
 from .executors.common import quantity_jitter_bounds, stats_inc
 from .executors.channel_comment import _resolved_total_comment_limit, _total_comment_action_count
 from .group_rescue import GROUP_RESCUE_FAILURE_THRESHOLD, infer_rescue_admin_rate_limit, permission_failure_count_for_send_action, refresh_group_rescue_action, trigger_group_rescue
-from .payloads import DeprecatedGroupRescuePayload, DeleteMessagePayload, EnsureChannelMembershipPayload, InviteGroupAccountPayload, LikeMessagePayload, PostCommentPayload, SearchJoinPayload, SendMessagePayload, ViewMessagePayload, create_membership_action, payload_error_message, validate_action_payload
+from .payloads import DeprecatedGroupRescuePayload, DeleteMessagePayload, EnsureChannelMembershipPayload, InviteGroupAccountPayload, LikeMessagePayload, PostCommentPayload, SearchJoinPayload, SearchRankDeboostPayload, SendMessagePayload, ViewMessagePayload, create_membership_action, payload_error_message, validate_action_payload
 from .policies import validate_group_send_policy
 from .review import has_pending_review
 from .search_join_linking import create_linked_dispatch_if_membership_observed
@@ -251,6 +251,8 @@ def dispatch_action(session: Session, action: Action) -> bool:
         payload = validate_action_payload(action.action_type, action.payload or {})
         if action.action_type == "search_join":
             return _dispatch_search_join(session, action, account, payload)
+        if action.action_type == "search_rank_deboost":
+            return _dispatch_search_rank_deboost(session, action, account, payload)
         if action.action_type in {"view_message", "like_message", "post_comment"} and not _ensure_channel_action_membership(session, action, account, payload.channel_target_id):
             return True
         credentials = credentials_for_account(session, account, use_proxy=action.task_type not in DIRECT_ONLY_TASK_TYPES)
@@ -623,6 +625,14 @@ def _apply_claim_account_policy(session: Session, action: Action) -> bool:
     if account.account_identity == "code_receiver":
         _fail_with_policy(action, FailureType.ACCOUNT_UNAVAILABLE.value, "接码专用账号不参与任务执行", auto_check="拦截", validation_stage="account_identity")
         return False
+    if account.account_identity == "rank_deboost" and action.action_type != "search_rank_deboost":
+        _fail_with_policy(action, FailureType.ACCOUNT_UNAVAILABLE.value, "降权专用账号不参与其他任务执行", auto_check="拦截", validation_stage="account_identity")
+        _record_rank_deboost_isolation_alert(session, action, account, "rank_deboost_account_used_by_other")
+        return False
+    if account.account_identity != "rank_deboost" and action.action_type == "search_rank_deboost":
+        _fail_with_policy(action, FailureType.ACCOUNT_UNAVAILABLE.value, "搜索排名观察任务只能使用专用账号", auto_check="拦截", validation_stage="account_identity")
+        _record_rank_deboost_isolation_alert(session, action, account, "deboost_task_used_normal_account")
+        return False
     if not account_matches_current_shard(account.id):
         _release_claim(action, delay_seconds=30, reason="account_shard_mismatch")
         action.result = {
@@ -684,6 +694,20 @@ def _apply_claim_account_policy(session: Session, action: Action) -> bool:
     )
     _maybe_trigger_deferred_membership_rescue(session, action, account, detail)
     return False
+
+
+def _record_rank_deboost_isolation_alert(session: Session, action: Action, account: TgAccount, violation: str) -> None:
+    """账号组隔离校验失败时生成告警（不阻断已有失败流程）。"""
+    from app.services.search_rank_deboost_alerts import record_account_isolation_violation_alert
+
+    record_account_isolation_violation_alert(
+        session,
+        tenant_id=action.tenant_id,
+        task_id=action.task_id,
+        action_id=action.id,
+        account_id=int(account.id),
+        violation=violation,
+    )
 
 
 def _is_membership_action(action: Action) -> bool:
@@ -3538,6 +3562,33 @@ def _dispatch_search_join(session: Session, action: Action, account: TgAccount, 
     action.executed_at = _now()
     _stop_search_join_task_if_target_exhausted(session, action, result)
     _create_search_join_linked_dispatches(session, action, payload)
+    return True
+
+
+def _dispatch_search_rank_deboost(session: Session, action: Action, account: TgAccount, payload: SearchRankDeboostPayload) -> bool:
+    from .executors.search_rank_deboost import execute_search_rank_deboost
+
+    runtime = payload.runtime_environment if isinstance(payload.runtime_environment, dict) else {}
+    binding_id = int(runtime.get("group_proxy_binding_id") or 0)
+    if binding_id <= 0:
+        _skip(action, "proxy_egress_guard_failed", "搜索排名观察任务缺少 group_proxy_binding_id，禁止回退本机直连")
+        action.result = {**(action.result or {}), "validation_stage": "search_rank_deboost_proxy"}
+        return True
+
+    result = execute_search_rank_deboost(session, action, account, payload)
+    skip_reason = result.get("skip_reason") or result.get("error_code")
+    if skip_reason and not result.get("success"):
+        _skip(action, skip_reason, result.get("error_message") or skip_reason)
+        action.result = {
+            **(action.result or {}),
+            **result,
+            "validation_stage": "search_rank_deboost_runtime",
+            "bot_username": payload.bot_username,
+        }
+    else:
+        action.status = "success" if result.get("success") else "failed"
+        action.result = {**(action.result or {}), **result, "validation_stage": "search_rank_deboost_runtime"}
+    action.executed_at = _now()
     return True
 
 

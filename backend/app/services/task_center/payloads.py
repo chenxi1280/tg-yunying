@@ -274,6 +274,21 @@ class SearchJoinPayload(BaseModel):
         return self
 
 
+class SearchRankDeboostPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    bot_username: str = Field(min_length=1, max_length=80)
+    keyword_hash: str = Field(min_length=64, max_length=64)
+    keyword_text_ciphertext: str = Field(default="", max_length=1000)
+    target_group_ids: list[int] = Field(default_factory=list)
+    account_pool_id: int = Field(ge=1)
+    proxy_airport_node_id: int = Field(ge=1)
+    exempt_group_username: str = ""
+    dwell_seconds_min: int = Field(default=10, ge=1, le=600)
+    dwell_seconds_max: int = Field(default=30, ge=1, le=600)
+    runtime_environment: dict[str, Any] = Field(default_factory=dict)
+
+
 def _missing_client_metadata(metadata: dict[str, str]) -> bool:
     required = ("device_model", "system_version", "app_version", "platform", "client_identity_key")
     return any(not str(metadata.get(key) or "").strip() for key in required)
@@ -290,6 +305,7 @@ PAYLOAD_MODELS = {
     "like_message": LikeMessagePayload,
     "post_comment": PostCommentPayload,
     "search_join": SearchJoinPayload,
+    "search_rank_deboost": SearchRankDeboostPayload,
 }
 
 DEDUPE_VOLATILE_PAYLOAD_FIELDS = frozenset(
@@ -425,6 +441,10 @@ def create_search_join_action(session: Session, task: Task, account_id: int | No
     return _create_action(session, task, "search_join", account_id, scheduled_at, payload)
 
 
+def create_search_rank_deboost_action(session: Session, task: Task, account_id: int | None, scheduled_at: datetime, payload: SearchRankDeboostPayload) -> Action:
+    return _create_action(session, task, "search_rank_deboost", account_id, scheduled_at, payload)
+
+
 def payload_error_message(exc: ValidationError | ValueError) -> str:
     if isinstance(exc, ValidationError):
         return "; ".join(".".join(str(part) for part in error["loc"]) + ": " + error["msg"] for error in exc.errors())
@@ -436,13 +456,15 @@ __all__ = [
     "LikeMessagePayload",
     "PostCommentPayload",
     "SearchJoinPayload",
+    "SearchRankDeboostPayload",
     "SendMessagePayload",
     "ViewMessagePayload",
     "create_comment_action",
     "create_like_action",
     "create_membership_action",
-    "create_send_action",
     "create_search_join_action",
+    "create_search_rank_deboost_action",
+    "create_send_action",
     "create_view_action",
     "payload_error_message",
     "validate_action_payload",
