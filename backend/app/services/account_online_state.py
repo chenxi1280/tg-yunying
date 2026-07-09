@@ -439,9 +439,11 @@ def _source_ref(source: dict[str, Any]) -> dict[str, str]:
 
 
 def _copy_probe_meta(meta: dict[str, Any], source: dict[str, Any]) -> None:
-    for key in ("session_kind", "session_id", "proxy_id"):
+    for key in ("session_kind", "session_id"):
         if source.get(key) is not None and not meta.get(key):
             meta[key] = source.get(key)
+    if "proxy_id" in source and "proxy_id" not in meta:
+        meta["proxy_id"] = source.get("proxy_id")
 
 
 def _states_by_account(session: Session, tenant_id: int) -> dict[int, TgAccountOnlineState]:
@@ -456,7 +458,8 @@ def _apply_desired_state(state: TgAccountOnlineState, meta: dict[str, Any], now:
     state.active_task_count = int(meta.get("active_task_count") or 0)
     state.session_kind = str(meta.get("session_kind") or state.session_kind or "primary")
     state.session_id = str(meta.get("session_id") or state.session_id or "")
-    state.proxy_id = meta.get("proxy_id") if meta.get("proxy_id") is not None else state.proxy_id
+    if "proxy_id" in meta:
+        state.proxy_id = meta.get("proxy_id")
     state.online_status = _next_desired_status(state)
     if state.online_status != "online" or state.stale_after_at is None:
         state.stale_after_at = stale_deadline_for_state(state, now)

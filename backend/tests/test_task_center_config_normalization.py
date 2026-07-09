@@ -78,6 +78,26 @@ def test_group_ai_task_creation_binds_default_rule_set() -> None:
 
 
 @pytest.mark.no_postgres
+def test_group_ai_all_account_task_defaults_to_daily_coverage_on_create() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.commit()
+
+        task = create_group_ai_chat_task(
+            session,
+            1,
+            GroupAIChatTaskCreate(name="AI 活群", target_group_id=7, hourly_min_messages=10),
+            actor="tester",
+        )
+
+    assert task.account_config["selection_mode"] == "all"
+    assert task.type_config["account_coverage_mode"] == "all_accounts_daily"
+
+
+@pytest.mark.no_postgres
 def test_default_rule_binding_repairs_draft_active_version() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

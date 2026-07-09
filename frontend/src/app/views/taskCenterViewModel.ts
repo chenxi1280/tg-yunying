@@ -443,7 +443,7 @@ export function typeInitialValues(type: TaskCenterTaskType, setting?: Scheduling
       consecutive_message_min: 2,
       consecutive_message_max: 4,
       consecutive_message_probability: 0.3,
-      account_coverage_mode: 'natural',
+      account_coverage_mode: 'all_accounts_daily',
       per_account_daily_min_messages: 1,
       per_account_daily_max_messages: 2,
       coverage_window_hours: 24,

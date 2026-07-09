@@ -626,7 +626,7 @@ export function TaskCenterDetailModal({
               { key: 'burst_enabled', label: '同账号连发', children: detail.task.type_config?.consecutive_message_enabled ? '开启' : '关闭' },
               { key: 'burst_window', label: '连发窗口', children: `${detail.task.type_config?.consecutive_message_min ?? 2}-${detail.task.type_config?.consecutive_message_max ?? 4}` },
               { key: 'burst_probability', label: '连发概率', children: detail.task.type_config?.consecutive_message_probability ?? 0.3 },
-              { key: 'coverage_mode', label: '全账号日覆盖', children: detail.task.type_config?.account_coverage_mode === 'all_accounts_daily' ? '开启' : '关闭' },
+              { key: 'coverage_mode', label: '全账号日覆盖', children: (accountCoverage?.mode ?? detail.task.type_config?.account_coverage_mode) === 'all_accounts_daily' ? '开启' : '关闭' },
               { key: 'coverage_window', label: '覆盖窗口', children: `${detail.task.type_config?.coverage_window_hours ?? 24} 小时` },
               { key: 'coverage_range', label: '每账号消息数', children: `${detail.task.type_config?.per_account_daily_min_messages ?? 1}-${detail.task.type_config?.per_account_daily_max_messages ?? 2}` },
               { key: 'coverage_progress', label: '今日覆盖', children: accountCoverage ? accountCoverageLabel(detail.task) : '-' },

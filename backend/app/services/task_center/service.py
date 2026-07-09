@@ -171,6 +171,7 @@ from .hard_hourly import current_progress as hard_hourly_current_progress, enabl
 from .config_normalization import (
     apply_default_rule_binding,
     apply_default_slang_config,
+    apply_group_ai_account_coverage_defaults,
     normalize_operation_target_references,
     pacing_config_payload,
     validate_rule_binding,
@@ -239,6 +240,7 @@ def _new_task(session: Session, tenant_id: int, task_type: str, payload) -> Task
     raw_type_config = normalize_operation_target_references(session, tenant_id, task_type, raw_type_config)
     raw_type_config = apply_default_slang_config(session, tenant_id, task_type, raw_type_config)
     raw_type_config = apply_default_rule_binding(session, tenant_id, task_type=task_type, config=raw_type_config)
+    raw_type_config = apply_group_ai_account_coverage_defaults(task_type, raw_type_config, payload.account_config.model_dump(mode="json"))
     type_config = validated_type_config(task_type, raw_type_config)
     validate_rule_binding(session, tenant_id, type_config)
     task = Task(
@@ -507,10 +509,11 @@ def update_task_settings(session: Session, tenant_id: int, task_id: str, payload
     for field in ["account_config", "pacing_config", "failure_policy"]:
         if field in data and data[field] is not None:
             setattr(task, field, _pacing_payload_for_task(task, raw_data[field]) if field == "pacing_config" else data[field])
-    if task.type == "group_ai_chat" and "pacing_config" in data and not type_updates:
+    if task.type == "group_ai_chat" and {"account_config", "pacing_config"} & set(data) and not type_updates:
         next_config = dict(task.type_config or {})
         for field in GROUP_AI_LEGACY_RUNTIME_FIELDS:
             next_config.pop(field, None)
+        next_config = apply_group_ai_account_coverage_defaults(task.type, next_config, task.account_config or {})
         task.type_config = validated_type_config(task.type, next_config)
     if type_updates:
         next_config = dict(task.type_config or {})
@@ -520,6 +523,7 @@ def update_task_settings(session: Session, tenant_id: int, task_id: str, payload
                 if field not in type_updates:
                     next_config.pop(field, None)
         next_config = normalize_operation_target_references(session, tenant_id, task.type, next_config)
+        next_config = apply_group_ai_account_coverage_defaults(task.type, next_config, task.account_config or {})
         task.type_config = validated_type_config(task.type, next_config)
     _clear_unfinished_plan(session, task)
     if task.status not in {"completed", "failed"}:
@@ -2292,6 +2296,7 @@ def _apply_type_config_data(session: Session, tenant_id: int, task_id: str, expe
     next_config = {**(task.type_config or {}), **update_data}
     next_config = normalize_operation_target_references(session, tenant_id, expected_type, next_config)
     next_config = apply_default_rule_binding(session, tenant_id, task_type=expected_type, config=next_config)
+    next_config = apply_group_ai_account_coverage_defaults(expected_type, next_config, task.account_config or {})
     next_config = validated_type_config(expected_type, next_config)
     validate_rule_binding(session, tenant_id, next_config)
     task.type_config = next_config

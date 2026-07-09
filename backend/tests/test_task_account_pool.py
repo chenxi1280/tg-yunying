@@ -413,7 +413,7 @@ def test_task_account_coverage_counts_same_day_unique_task_accounts():
             tenant_id=1,
             name="覆盖统计任务",
             type="group_ai_chat",
-            account_config={"selection_mode": "all", "max_concurrent": 2},
+            account_config={"selection_mode": "manual", "account_ids": [1, 2, 3, 4, 5, 6], "max_concurrent": 2},
         )
         session.add(task)
         now_value = _now()
@@ -469,6 +469,69 @@ def test_task_account_coverage_counts_same_day_unique_task_accounts():
     assert coverage["eligible_count"] == 6
     assert coverage["coverage_percent"] == 33
     assert coverage["action_types"] == ["send_message"]
+
+
+def test_all_account_group_ai_task_uses_daily_success_coverage_when_legacy_config_is_natural():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="覆盖群", auth_status="已授权运营"))
+        for account_id in range(1, 4):
+            session.add(
+                TgAccount(
+                    id=account_id,
+                    tenant_id=1,
+                    display_name=f"账号{account_id}",
+                    phone_masked=str(account_id),
+                    status=AccountStatus.ACTIVE.value,
+                    health_score=95,
+                )
+            )
+            session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=account_id, can_send=True))
+        task = Task(
+            id="task-legacy-natural-all-accounts",
+            tenant_id=1,
+            name="旧配置全账号覆盖统计",
+            type="group_ai_chat",
+            account_config={"selection_mode": "all", "max_concurrent": 3},
+            type_config={"target_group_id": 7, "account_coverage_mode": "natural"},
+        )
+        session.add(task)
+        now_value = _now()
+        session.add_all(
+            [
+                Action(
+                    id="today-pending",
+                    tenant_id=1,
+                    task_id=task.id,
+                    task_type="group_ai_chat",
+                    action_type="send_message",
+                    account_id=1,
+                    status="pending",
+                    scheduled_at=now_value,
+                ),
+                Action(
+                    id="today-success",
+                    tenant_id=1,
+                    task_id=task.id,
+                    task_type="group_ai_chat",
+                    action_type="send_message",
+                    account_id=2,
+                    status="success",
+                    executed_at=now_value,
+                ),
+            ]
+        )
+        session.commit()
+
+        coverage = task_account_coverage(session, task)
+
+    assert coverage["mode"] == "all_accounts_daily"
+    assert coverage["statuses"] == ["success"]
+    assert coverage["covered_count"] == 1
+    assert coverage["remaining_count"] == 2
 
 
 @pytest.mark.no_postgres

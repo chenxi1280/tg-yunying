@@ -13,13 +13,14 @@ from .account_pool import (
     _unique_accounts,
     daily_account_coverage_counts,
 )
+from .config_normalization import apply_group_ai_account_coverage_defaults
 
 
 def task_account_coverage(session: Session, task: Task) -> dict[str, object]:
     action_types = COVERAGE_ACTION_TYPES_BY_TASK_TYPE.get(task.type)
     if not action_types:
         return {}
-    config = task.type_config or {}
+    config = _effective_coverage_config(task)
     target_count = _task_coverage_target_count(task)
     statuses = _task_coverage_statuses(task)
     target_accounts = _task_coverage_all_accounts(session, task)
@@ -56,14 +57,14 @@ def task_account_coverage(session: Session, task: Task) -> dict[str, object]:
 def _task_coverage_target_count(task: Task) -> int:
     if task.type != "group_ai_chat":
         return 1
-    config = task.type_config or {}
+    config = _effective_coverage_config(task)
     if config.get("account_coverage_mode") != "all_accounts_daily":
         return 1
     return max(1, min(2, int(config.get("per_account_daily_min_messages") or 1)))
 
 
 def _task_coverage_statuses(task: Task) -> tuple[str, ...]:
-    if task.type == "group_ai_chat" and (task.type_config or {}).get("account_coverage_mode") == "all_accounts_daily":
+    if _effective_coverage_config(task).get("account_coverage_mode") == "all_accounts_daily":
         return DAILY_COVERAGE_SUCCESS_STATUSES
     return DAILY_COVERAGE_STATUSES
 
@@ -126,10 +127,14 @@ def _coverage_estimated_window(task: Task, remaining_messages: int) -> dict[str,
 
 def _task_coverage_window_hours(task: Task) -> int:
     try:
-        value = int((task.type_config or {}).get("coverage_window_hours") or 24)
+        value = int(_effective_coverage_config(task).get("coverage_window_hours") or 24)
     except (TypeError, ValueError):
         value = 24
     return max(1, value)
+
+
+def _effective_coverage_config(task: Task) -> dict[str, object]:
+    return apply_group_ai_account_coverage_defaults(task.type, task.type_config or {}, task.account_config or {})
 
 
 def _coverage_pending_accounts(

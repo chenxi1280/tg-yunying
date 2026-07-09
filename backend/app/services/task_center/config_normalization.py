@@ -98,6 +98,14 @@ def apply_default_rule_binding(session: Session, tenant_id: int, *, task_type: s
     return {**config, "rule_set_id": rule_set.id}
 
 
+def apply_group_ai_account_coverage_defaults(task_type: str, config: dict[str, Any], account_config: dict[str, Any] | None) -> dict[str, Any]:
+    if task_type != "group_ai_chat" or not _uses_all_account_selection(account_config):
+        return config
+    if config.get("account_coverage_mode") == "all_accounts_daily":
+        return config
+    return {**config, "account_coverage_mode": "all_accounts_daily"}
+
+
 def validated_type_config(task_type: str, data: dict[str, Any]) -> dict[str, Any]:
     model = TYPE_CONFIG_MODELS.get(task_type)
     if not model:
@@ -116,6 +124,10 @@ def validated_type_config(task_type: str, data: dict[str, Any]) -> dict[str, Any
 
 def _has_rule_binding(config: dict[str, Any]) -> bool:
     return bool(_as_int(config.get("rule_set_id")) or _as_int(config.get("rule_set_version_id")))
+
+
+def _uses_all_account_selection(account_config: dict[str, Any] | None) -> bool:
+    return str((account_config or {}).get("selection_mode") or "all") == "all"
 
 
 def _ensure_default_execution_rule_set(session: Session, tenant_id: int) -> RuleSet:

@@ -180,6 +180,46 @@ def test_online_ready_requires_recorded_proxy_to_match_current_account():
         assert is_account_online_ready_for_planning(session, tenant_id=1, account_id=101, now=now) is False
 
 
+def test_reconcile_clears_stale_proxy_when_account_becomes_direct():
+    now = _now()
+    with _session() as session:
+        account = _account(session)
+        state = TgAccountOnlineState(
+            tenant_id=1,
+            account_id=101,
+            desired_online=True,
+            desired_sources=[{"source_type": "task", "source_id": "task-1"}],
+            online_status="online",
+            session_id="101",
+            proxy_id=7,
+            stale_after_at=now + timedelta(minutes=5),
+            last_seen_at=now,
+        )
+        session.add(state)
+        session.commit()
+
+        account.proxy_id = None
+        changed = reconcile_account_online_sources(
+            session,
+            tenant_id=1,
+            sources=[
+                {
+                    "source_type": "task",
+                    "source_id": "task-1",
+                    "account_ids": [101],
+                    "session_id": "101",
+                    "proxy_id": None,
+                }
+            ],
+            now=now + timedelta(seconds=1),
+        )
+        session.commit()
+
+        assert changed == 1
+        assert state.proxy_id is None
+        assert is_account_online_ready_for_planning(session, tenant_id=1, account_id=101, now=now) is True
+
+
 def test_planning_ready_requires_traceable_online_state():
     now = _now()
     with _session() as session:
