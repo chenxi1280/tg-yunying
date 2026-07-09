@@ -35,6 +35,7 @@ from app.models.search_rank_deboost import (
     SearchRankDeboostExemptGroup,
 )
 from app.schemas.task_center import SearchRankDeboostTaskCreate
+from app.security import decrypt_secret
 from app.services._common import _now
 from app.services.task_center.executors.search_rank_deboost import (
     build_plan,
@@ -377,12 +378,17 @@ def test_e2e_build_plan_and_execute_with_mock_gateway_writes_stats() -> None:
         assert action.status == "pending"
         payload_data = action.payload
         assert payload_data["bot_username"] == "jisou"
+        assert payload_data["keyword_text_ciphertext"] != "关键词A"
+        assert decrypt_secret(payload_data["keyword_text_ciphertext"]) == "关键词A"
         assert payload_data["runtime_environment"]["group_proxy_binding_id"] == str(binding.id)
 
         # mock gateway 返回搜索结果（目标群在位置 3，竞争群在 1、2 含 navigate_only 按钮）
         search_results = _make_search_results(count=5, target_position=3, button_effect="navigate_only")
 
+        observed_keyword_texts: list[str] = []
+
         def gateway_execute(account_id, payload_data, keyword_text):
+            observed_keyword_texts.append(keyword_text)
             return {"success": True, "search_results": search_results}
 
         from app.services.task_center.payloads import SearchRankDeboostPayload
@@ -395,6 +401,7 @@ def test_e2e_build_plan_and_execute_with_mock_gateway_writes_stats() -> None:
         )
 
         assert result["success"] is True
+        assert observed_keyword_texts == ["关键词A"]
         assert result["clicked_count"] == 2  # 竞争群 1、2
         # SearchRankDeboostActionStat 已写入
         stats = session.query(SearchRankDeboostActionStat).filter_by(action_id=action.id).all()

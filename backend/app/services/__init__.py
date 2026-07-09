@@ -29,6 +29,7 @@ from .reports import *  # noqa: F401,F403
 from .source_media import *  # noqa: F401,F403
 from .temp_files import *  # noqa: F401,F403
 from .tenants import *  # noqa: F401,F403
+from .tenant_two_fa_settings import *  # noqa: F401,F403
 from .task_center import *  # noqa: F401,F403
 from .task_center.ai_message_memory_maintenance import *  # noqa: F401,F403
 from .verification import *  # noqa: F401,F403

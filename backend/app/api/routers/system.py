@@ -23,6 +23,8 @@ from app.schemas import (
     ProxyAirportSubscriptionUpdate,
     ReportOut,
     RuntimeConfigOut,
+    TenantFixedTwoFaSettingsOut,
+    TenantFixedTwoFaSettingsUpdate,
     TenantCreate,
     TenantBotSettingsOut,
     TenantBotSettingsUpdate,
@@ -49,6 +51,10 @@ from app.services.tenant_bot_settings import (
     send_tenant_bot_test_message,
     tenant_bot_settings_payload,
     update_tenant_bot_settings,
+)
+from app.services.tenant_two_fa_settings import (
+    get_tenant_fixed_two_fa_settings,
+    set_tenant_fixed_two_fa_password,
 )
 from app.services.proxy_airport_subscription import (
     check_proxy_airport_node,
@@ -384,6 +390,41 @@ def delete_tenant_bot_webhook_route(
     resolved_tenant_id = resolve_tenant_id(current_user, tenant_id)
     try:
         return delete_tenant_bot_webhook(session, resolved_tenant_id, current_user.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/api/tenant-fixed-2fa-settings", response_model=TenantFixedTwoFaSettingsOut)
+def get_tenant_fixed_2fa_settings(
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    if not current_user.has_permission("system.view"):
+        raise forbidden("system.view required")
+    try:
+        return get_tenant_fixed_two_fa_settings(session, tenant_id=resolve_tenant_id(current_user, tenant_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/api/tenant-fixed-2fa-settings", response_model=TenantFixedTwoFaSettingsOut)
+def post_tenant_fixed_2fa_settings(
+    payload: TenantFixedTwoFaSettingsUpdate,
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    if not current_user.has_permission("system.manage"):
+        raise forbidden("system.manage required")
+    try:
+        return set_tenant_fixed_two_fa_password(
+            session,
+            tenant_id=resolve_tenant_id(current_user, tenant_id),
+            password=payload.password,
+            reason=payload.reason,
+            actor=current_user.name,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

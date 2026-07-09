@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.models import AccountStatus, SearchRankDeboostExemptGroup, Task, TgAccount
 from app.models.search_rank_deboost import AccountGroupProxyBinding
+from app.security import encrypt_secret
 from app.services._common import _now
 from app.services.search_rank_deboost_alerts import record_exempt_group_missing_alert
 from app.services.task_center.payloads import SearchRankDeboostPayload, create_search_rank_deboost_action
@@ -204,7 +205,7 @@ def _build_payload(context: PlanContext, keyword_hash: str, keyword_text: str) -
     return SearchRankDeboostPayload(
         bot_username=context.bot_username,
         keyword_hash=keyword_hash,
-        keyword_text_ciphertext=keyword_text,
+        keyword_text_ciphertext=encrypt_secret(keyword_text),
         target_group_ids=context.target_group_ids,
         account_pool_id=context.account_pool_id,
         proxy_airport_node_id=context.proxy_airport_node_id,

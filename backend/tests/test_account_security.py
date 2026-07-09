@@ -31,6 +31,7 @@ from app.services.account_security import (
 )
 from app.services.accounts import create_account
 from app.services.accounts import verify_login
+from app.services.tenant_two_fa_settings import set_tenant_fixed_two_fa_password
 from app.services.task_center.service import delete_task, get_task_detail, list_tasks
 
 
@@ -145,6 +146,36 @@ def test_refresh_account_security_records_trusted_session_and_external_device():
         assert snapshot.two_fa_status == "missing"
         assert snapshot.external_authorization_count == 0
         assert snapshot.profile_status == "incomplete"
+
+
+@pytest.mark.no_postgres
+def test_tenant_fixed_two_fa_password_can_only_be_set_once():
+    with _session() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.commit()
+
+        saved = set_tenant_fixed_two_fa_password(
+            session,
+            tenant_id=1,
+            password="tenant-fixed-password",
+            reason="首次配置固定 2FA",
+            actor="tester",
+        )
+        tenant = session.get(Tenant, 1)
+
+        assert saved.fixed_two_fa_password_configured is True
+        assert saved.fixed_two_fa_password_set_at is not None
+        assert tenant.fixed_two_fa_password_ciphertext
+        assert decrypt_secret(tenant.fixed_two_fa_password_ciphertext) == "tenant-fixed-password"
+
+        with pytest.raises(ValueError, match="固定 2FA 密码已经设置，不能修改"):
+            set_tenant_fixed_two_fa_password(
+                session,
+                tenant_id=1,
+                password="changed-password",
+                reason="尝试修改",
+                actor="tester",
+            )
 
 
 def test_precheck_falls_back_to_local_profile_preview_and_skips_missing_avatar_source():
@@ -878,9 +909,17 @@ def test_standby_session_batch_polls_primary_session_code_when_challenge_has_no_
         assert poll_attempts["count"] == 2
 
 
+@pytest.mark.no_postgres
 def test_standby_session_batch_auto_provisions_both_missing_slots_without_manual_codes(monkeypatch):
     with _session() as session:
         account = _seed_account(session)
+        set_tenant_fixed_two_fa_password(
+            session,
+            tenant_id=1,
+            password="tenant-fixed-password",
+            reason="首次配置固定 2FA",
+            actor="tester",
+        )
         session.add(AccountProxy(id=1, tenant_id=1, name="备用代理", port=1080, status="healthy", alert_status="normal"))
         save_managed_two_fa_password(
             session,
@@ -957,20 +996,28 @@ def test_standby_session_batch_auto_provisions_both_missing_slots_without_manual
         assert refreshed.items[0].status == "succeeded"
         assert roles == {"standby_1", "standby_2"}
         assert submitted_codes == ["11111", "22222"]
-        assert submitted_passwords == ["managed-password", rotations[0]["password"]]
-        assert [rotation["current_password"] for rotation in rotations] == ["managed-password", submitted_passwords[1]]
+        assert submitted_passwords == ["managed-password", "managed-password"]
+        assert rotations == []
         assert codes == ["11111", "22222"]
         snapshot = session.scalar(select(TgAccountSecuritySnapshot).where(TgAccountSecuritySnapshot.account_id == account.id))
         assert snapshot is not None
-        assert decrypt_secret(snapshot.two_fa_password_ciphertext) == rotations[-1]["password"]
+        assert decrypt_secret(snapshot.two_fa_password_ciphertext) == "managed-password"
         detail = get_task_detail(session, 1, f"account_security_batch:{batch.id}")
         item = detail["account_security_batch"]["items"][0]
         assert item["target_slot"] == "standby_1 / standby_2"
 
 
-def test_primary_login_with_2fa_rotates_and_saves_new_managed_password(monkeypatch):
+@pytest.mark.no_postgres
+def test_primary_login_with_2fa_records_current_password_without_auto_rotation(monkeypatch):
     with _session() as session:
         account = _seed_account(session, status=AccountStatus.WAITING_2FA.value, session_value="")
+        set_tenant_fixed_two_fa_password(
+            session,
+            tenant_id=1,
+            password="tenant-fixed-password",
+            reason="首次配置固定 2FA",
+            actor="tester",
+        )
         rotations: list[dict[str, str | None]] = []
 
         def finish_login(code, password_2fa, *_args, **_kwargs):
@@ -995,12 +1042,10 @@ def test_primary_login_with_2fa_rotates_and_saves_new_managed_password(monkeypat
         snapshot = session.scalar(select(TgAccountSecuritySnapshot).where(TgAccountSecuritySnapshot.account_id == account.id))
 
         assert verified.status == AccountStatus.ACTIVE.value
-        assert rotations
-        assert rotations[0]["current_password"] == "old-2fa-password"
-        assert rotations[0]["password"] != "old-2fa-password"
+        assert rotations == []
         assert snapshot is not None
         assert snapshot.two_fa_status == "enabled"
-        assert decrypt_secret(snapshot.two_fa_password_ciphertext) == rotations[0]["password"]
+        assert decrypt_secret(snapshot.two_fa_password_ciphertext) == "old-2fa-password"
 
 
 @pytest.mark.no_postgres
@@ -1334,6 +1379,42 @@ def test_confirmed_batch_drains_profile_username_and_device_cleanup_independentl
         assert snapshot.two_fa_password_ciphertext
 
 
+@pytest.mark.no_postgres
+def test_set_two_fa_batch_uses_tenant_fixed_password(monkeypatch):
+    with _session() as session:
+        account = _seed_account(session)
+        set_tenant_fixed_two_fa_password(
+            session,
+            tenant_id=1,
+            password="tenant-fixed-password",
+            reason="首次配置固定 2FA",
+            actor="tester",
+        )
+        calls: list[dict[str, str | None]] = []
+
+        def set_two_fa(_session_ciphertext, password, **kwargs):
+            calls.append({"password": password, "current_password": kwargs.get("current_password")})
+            return SimpleNamespace(ok=True, status="enabled", detail="", failure_type="")
+
+        monkeypatch.setattr(account_security_service.gateway, "set_two_fa_password", set_two_fa)
+        batch = create_account_security_batch(
+            session,
+            1,
+            AccountSecurityBatchCreate(account_ids=[account.id], action_types=["set_two_fa"], confirm_text="确认"),
+            "tester",
+        )
+
+        assert drain_account_security_batches(lambda: Session(session.bind), limit=10) == 1
+        refreshed = account_security_batch_detail(session, 1, batch.id)
+        snapshot = session.scalar(select(TgAccountSecuritySnapshot).where(TgAccountSecuritySnapshot.account_id == account.id))
+
+        assert refreshed.status == "succeeded"
+        assert refreshed.items[0].two_fa_status == "enabled"
+        assert calls == [{"password": "tenant-fixed-password", "current_password": None}]
+        assert snapshot is not None
+        assert decrypt_secret(snapshot.two_fa_password_ciphertext) == "tenant-fixed-password"
+
+
 def test_device_cleanup_cleans_unprotected_platform_api_duplicates(monkeypatch):
     with _session() as session:
         account = _seed_account(session)
@@ -1464,14 +1545,22 @@ def test_device_cleanup_scan_failure_is_not_marked_success(monkeypatch):
         assert "设备扫描失败" in item.failure_detail
 
 
-def test_managed_two_fa_save_and_rotate_store_encrypted_password(monkeypatch):
+@pytest.mark.no_postgres
+def test_managed_two_fa_save_records_current_password_and_rotate_uses_tenant_fixed_password(monkeypatch):
     with _session() as session:
         account = _seed_account(session)
+        set_tenant_fixed_two_fa_password(
+            session,
+            tenant_id=1,
+            password="tenant-fixed-password",
+            reason="首次配置固定 2FA",
+            actor="tester",
+        )
         saved = save_managed_two_fa_password(
             session,
             1,
             account.id,
-            ManagedTwoFaRequest(password="old-password", reason="首次托管"),
+            ManagedTwoFaRequest(password="current-known-password", reason="首次托管"),
             "tester",
         )
         calls: list[dict[str, str | None]] = []
@@ -1485,16 +1574,16 @@ def test_managed_two_fa_save_and_rotate_store_encrypted_password(monkeypatch):
             session,
             1,
             account.id,
-            ManagedTwoFaRequest(password="new-password", reason="轮换"),
+            ManagedTwoFaRequest(password="ignored-rotate-password", reason="轮换"),
             "tester",
         )
         snapshot = session.scalar(select(TgAccountSecuritySnapshot).where(TgAccountSecuritySnapshot.account_id == account.id))
 
         assert saved.two_fa_status == "enabled"
         assert rotated.two_fa_status == "enabled"
-        assert calls == [{"password": "new-password", "current_password": "old-password"}]
+        assert calls == [{"password": "tenant-fixed-password", "current_password": "current-known-password"}]
         assert snapshot.two_fa_password_ciphertext
-        assert snapshot.two_fa_password_ciphertext != "new-password"
+        assert decrypt_secret(snapshot.two_fa_password_ciphertext) == "tenant-fixed-password"
 
 
 @pytest.mark.no_postgres
@@ -1537,6 +1626,13 @@ def test_managed_two_fa_reveal_returns_decrypted_password_and_audits(monkeypatch
     monkeypatch.setenv("TEST_DATABASE_URL", "sqlite:///:memory:")
     with _session() as session:
         account = _seed_account(session)
+        set_tenant_fixed_two_fa_password(
+            session,
+            tenant_id=1,
+            password="stored-password",
+            reason="首次配置固定 2FA",
+            actor="tester",
+        )
         save_managed_two_fa_password(
             session,
             1,

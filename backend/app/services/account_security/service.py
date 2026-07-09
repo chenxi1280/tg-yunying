@@ -51,12 +51,12 @@ from ..account_authorizations import attempt_standby_authorization_recovery, sta
 from .device_classification import classify_account_authorization_snapshots, cleanup_candidate_authorization_snapshots
 from ..account_two_fa import (
     MANAGED_TWO_FA_HINT,
-    generate_managed_two_fa_password,
     managed_two_fa_password,
     record_managed_two_fa_password,
 )
 from ..ai_config import ai_provider_credentials, get_tenant_ai_setting
 from ..developer_apps import credentials_for_account
+from ..tenant_two_fa_settings import FIXED_TWO_FA_NOT_CONFIGURED, tenant_fixed_two_fa_password
 
 
 USERNAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{4,31}$")
@@ -757,16 +757,17 @@ def rotate_managed_two_fa_password(
     account = _require_account(session, tenant_id, account_id)
     _deny_code_receiver_two_fa_change(account)
     credentials = credentials_for_account(session, account)
+    fixed_password = _tenant_fixed_two_fa_password_or_raise(session, account)
     result = gateway.set_two_fa_password(
         account.session_ciphertext,
-        payload.password,
+        fixed_password,
         credentials=credentials,
         hint=MANAGED_TWO_FA_HINT,
         current_password=managed_two_fa_password(session, account),
     )
     if not result.ok:
         raise ValueError(result.detail or result.failure_type or "2FA rotate failed")
-    snapshot = record_managed_two_fa_password(session, account, payload.password)
+    snapshot = record_managed_two_fa_password(session, account, fixed_password)
     audit(session, tenant_id=tenant_id, actor=actor, action="轮换账号托管二步密码", target_type="tg_account", target_id=str(account.id), detail=payload.reason)
     session.commit()
     return _managed_two_fa_out(account.id, snapshot)
@@ -792,6 +793,13 @@ def reveal_managed_two_fa_password(
 def _deny_code_receiver_two_fa_change(account: TgAccount) -> None:
     if account.account_identity == CODE_RECEIVER_IDENTITY:
         raise ValueError(CODE_RECEIVER_2FA_CHANGE_DENIED_REASON)
+
+
+def _tenant_fixed_two_fa_password_or_raise(session: Session, account: TgAccount) -> str:
+    fixed_password = tenant_fixed_two_fa_password(session, tenant_id=account.tenant_id)
+    if not fixed_password:
+        raise ValueError(FIXED_TWO_FA_NOT_CONFIGURED)
+    return fixed_password
 
 
 def precheck_account_security_batch(session: Session, tenant_id: int, payload: AccountSecurityPrecheckRequest) -> AccountSecurityPrecheckOut:
@@ -1131,10 +1139,12 @@ def _execute_batch_item(session: Session, item_id: int) -> None:
         if "cleanup_devices" in action_types:
             failures.extend(_execute_cleanup(session, account, item, credentials))
         if "set_two_fa" in action_types:
-            generated_password = generate_managed_two_fa_password(account, str(item.id))
+            fixed_password = tenant_fixed_two_fa_password(session, tenant_id=account.tenant_id)
+            if not fixed_password:
+                raise ValueError(FIXED_TWO_FA_NOT_CONFIGURED)
             result = gateway.set_two_fa_password(
                 account.session_ciphertext,
-                generated_password,
+                fixed_password,
                 credentials=credentials,
                 hint=MANAGED_TWO_FA_HINT,
                 current_password=managed_two_fa_password(session, account),
@@ -1143,7 +1153,7 @@ def _execute_batch_item(session: Session, item_id: int) -> None:
             if not result.ok:
                 failures.append(result.detail or result.failure_type)
             else:
-                record_managed_two_fa_password(session, account, generated_password)
+                record_managed_two_fa_password(session, account, fixed_password)
         if action_types & STANDBY_SESSION_ACTIONS:
             failures.extend(_execute_standby_session_provision(session, account, item, action_types))
         if "update_profile" in action_types and item.profile_status not in {"succeeded", "skipped"}:

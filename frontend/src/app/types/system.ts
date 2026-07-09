@@ -104,6 +104,12 @@ export type TenantBotSettings = {
   notify_ai_failures_enabled: boolean;
 };
 
+export type TenantFixedTwoFaSettings = {
+  tenant_id: number;
+  fixed_two_fa_password_configured: boolean;
+  fixed_two_fa_password_set_at: string | null;
+};
+
 export type AiAccountVoiceProfile = {
   account_id: number;
   display_name: string;

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import secrets
-
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -30,11 +28,6 @@ def record_managed_two_fa_password(session: Session, account: TgAccount, passwor
     return snapshot
 
 
-def generate_managed_two_fa_password(account: TgAccount, marker: str) -> str:
-    token = secrets.token_urlsafe(18)
-    return f"TgOps-{account.id}-{marker}-{token}"
-
-
 def rotate_managed_two_fa_after_login(
     session: Session,
     account: TgAccount,
@@ -46,19 +39,7 @@ def rotate_managed_two_fa_after_login(
     marker: str,
 ) -> str:
     record_managed_two_fa_password(session, account, current_password)
-    new_password = generate_managed_two_fa_password(account, marker)
-    result = telegram_gateway.set_two_fa_password(
-        session_ciphertext,
-        new_password,
-        credentials=credentials,
-        hint=MANAGED_TWO_FA_HINT,
-        current_password=current_password,
-    )
-    if not result.ok:
-        _mark_rotation_failed(session, account, result)
-        raise ValueError(f"2FA 登录成功，但修改为平台托管新密码失败：{result.detail or result.failure_type}")
-    record_managed_two_fa_password(session, account, new_password)
-    return new_password
+    return current_password
 
 
 def _snapshot(session: Session, account: TgAccount) -> TgAccountSecuritySnapshot:
@@ -69,9 +50,3 @@ def _snapshot(session: Session, account: TgAccount) -> TgAccountSecuritySnapshot
     session.add(snapshot)
     session.flush()
     return snapshot
-
-
-def _mark_rotation_failed(session: Session, account: TgAccount, result: object) -> None:
-    snapshot = _snapshot(session, account)
-    snapshot.two_fa_status = "rotation_failed"
-    snapshot.last_error = str(getattr(result, "detail", "") or getattr(result, "failure_type", ""))

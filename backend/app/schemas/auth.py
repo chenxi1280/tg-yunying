@@ -83,6 +83,17 @@ class TenantGroupRescueSettingsUpdate(BaseModel):
     group_rescue_admin_account_id: int | None = Field(default=None, ge=1)
 
 
+class TenantFixedTwoFaSettingsOut(BaseModel):
+    tenant_id: int
+    fixed_two_fa_password_configured: bool = False
+    fixed_two_fa_password_set_at: datetime | None = None
+
+
+class TenantFixedTwoFaSettingsUpdate(BaseModel):
+    password: str = Field(min_length=1, max_length=255)
+    reason: str = Field(min_length=1, max_length=255)
+
+
 # ── Auth ──
 
 class AuthLoginRequest(BaseModel):
@@ -320,6 +331,7 @@ class RuntimeConfigOut(BaseModel):
 
 __all__ = [
     "TenantCreate", "TenantUpdate", "TenantOut", "TenantNotificationSettingsOut", "TenantNotificationSettingsUpdate", "TenantBotSettingsOut", "TenantBotSettingsUpdate", "TenantGroupRescueSettingsUpdate",
+    "TenantFixedTwoFaSettingsOut", "TenantFixedTwoFaSettingsUpdate",
     "AuthLoginRequest", "AuthChangePasswordRequest", "AuthUserOut", "AuthTokenOut",
     "CaptchaChallengeOut", "CaptchaVerifyRequest", "CaptchaVerifyOut",
     "SubscriptionRedeemRequest", "SubscriptionRedeemOut",

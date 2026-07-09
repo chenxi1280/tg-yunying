@@ -13,6 +13,7 @@ import type {
   Tenant,
   TenantAiSetting,
   TenantBotSettings,
+  TenantFixedTwoFaSettings,
   CurrentUser,
   RuntimeConfig,
 } from '../types';
@@ -21,6 +22,7 @@ import DeveloperAppsView from './DeveloperAppsView';
 import GroupRescueSettingsView from './GroupRescueSettingsView';
 import ProxyAirportSubscriptionView from './ProxyAirportSubscriptionView';
 import TelegramBotSettingsView from './TelegramBotSettingsView';
+import TenantFixedTwoFaSettingsView from './TenantFixedTwoFaSettingsView';
 import { hasPermission } from '../utils';
 
 interface Props {
@@ -31,6 +33,7 @@ interface Props {
   promptTemplates: PromptTemplate[];
   tenantAiSetting: TenantAiSetting | null;
   tenantBotSettings: Record<number, TenantBotSettings>;
+  tenantFixedTwoFaSettings: Record<number, TenantFixedTwoFaSettings>;
   materials: Material[];
   materialCacheHealth: MaterialCacheHealth | null;
   materialCacheConfig: MaterialCacheConfig | null;
@@ -59,6 +62,10 @@ interface Props {
   onTestTenantBotMessage: (tenantId: number) => Promise<void>;
   onRefreshTenantBotWebhook: (tenantId: number) => Promise<void>;
   onDeleteTenantBotWebhook: (tenantId: number) => Promise<void>;
+  onSaveTenantFixedTwoFaSettings: (tenantId: number, payload: {
+    password: string;
+    reason: string;
+  }) => Promise<boolean>;
   onCreateAdminUser: () => void;
   onEditAdminUser: (user: AdminUser) => void;
   onCreateAiProvider: () => void;
@@ -86,6 +93,7 @@ export default function SystemConfigView({
   promptTemplates,
   tenantAiSetting,
   tenantBotSettings,
+  tenantFixedTwoFaSettings,
   materials,
   materialCacheHealth,
   materialCacheConfig,
@@ -106,6 +114,7 @@ export default function SystemConfigView({
   onTestTenantBotMessage,
   onRefreshTenantBotWebhook,
   onDeleteTenantBotWebhook,
+  onSaveTenantFixedTwoFaSettings,
   onCreateAdminUser,
   onEditAdminUser,
   onCreateAiProvider,
@@ -162,6 +171,19 @@ export default function SystemConfigView({
               onRefreshTenantBotWebhook={onRefreshTenantBotWebhook}
               onDeleteTenantBotWebhook={onDeleteTenantBotWebhook}
               canManageBotSettings={hasPermission(currentUser, 'system.manage')}
+              isActionPending={isActionPending}
+            />
+          ),
+        },
+        {
+          key: 'account-security',
+          label: '账号安全配置',
+          children: (
+            <TenantFixedTwoFaSettingsView
+              tenants={tenants}
+              settings={tenantFixedTwoFaSettings}
+              canManage={hasPermission(currentUser, 'system.manage')}
+              onSave={onSaveTenantFixedTwoFaSettings}
               isActionPending={isActionPending}
             />
           ),

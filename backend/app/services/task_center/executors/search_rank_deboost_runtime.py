@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.models import AccountStatus, Action, TgAccount
 from app.models.search_rank_deboost import AccountGroupProxyBinding, SearchRankDeboostActionStat
+from app.security import decrypt_secret
 from app.services._common import _now
 from app.services.search_rank_deboost_alerts import (
     record_all_exempt_clicks_alert,
@@ -289,7 +290,8 @@ def _invoke_gateway(gateway_execute: Any | None, account: TgAccount, payload: Se
         gateway_execute = getattr(gateway, "execute_search_rank_deboost", None)
     if not callable(gateway_execute):
         return None
-    result = gateway_execute(account.id, payload.model_dump(mode="json"), payload.keyword_text_ciphertext)
+    keyword_text = decrypt_secret(payload.keyword_text_ciphertext) or ""
+    result = gateway_execute(account.id, payload.model_dump(mode="json"), keyword_text)
     if not isinstance(result, dict) or not result.get("success"):
         return None
     return result

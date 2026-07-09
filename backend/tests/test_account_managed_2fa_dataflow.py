@@ -46,3 +46,21 @@ def test_managed_2fa_panel_supports_audited_reveal_and_copy():
     assert "复制托管密码" in source
     assert "查看托管密码" in source
     assert "isCurrentManaged2FaRequest(targetAccountId, 'reveal', requestSeq)" in source
+
+
+def test_system_settings_exposes_tenant_fixed_2fa_password_once():
+    shell = (PROJECT_ROOT / "frontend/src/app/AppShell.tsx").read_text()
+    system_view = (PROJECT_ROOT / "frontend/src/app/views/SystemConfigView.tsx").read_text()
+    settings_view = (PROJECT_ROOT / "frontend/src/app/views/TenantFixedTwoFaSettingsView.tsx").read_text()
+
+    assert "api<TenantFixedTwoFaSettings>(`/tenant-fixed-2fa-settings?tenant_id=${tenant.id}`)" in shell
+    assert "api<TenantFixedTwoFaSettings>(`/tenant-fixed-2fa-settings?tenant_id=${tenantId}`" in shell
+    assert "key: 'account-security'" in system_view
+    assert "label: '账号安全配置'" in system_view
+    assert "TenantFixedTwoFaSettingsView" in system_view
+    assert "固定 2FA 密码" in settings_view
+    assert "const configured = Boolean(setting?.fixed_two_fa_password_configured);" in settings_view
+    assert "disabled={configured || !canManage}" in settings_view
+    assert "已配置后不能修改" in settings_view
+    assert "const saved = await onSave(tenantId, { password: payload.password.trim(), reason: payload.reason.trim() });" in settings_view
+    assert "if (!saved) return;" in settings_view

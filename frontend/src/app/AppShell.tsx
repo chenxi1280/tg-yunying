@@ -34,6 +34,7 @@ import type {
   Tenant,
   TenantAiSetting,
   TenantBotSettings,
+  TenantFixedTwoFaSettings,
 } from './types';
 import { api, ApiError } from '../shared/api/client';
 import { canView, hasPermission } from './utils';
@@ -197,6 +198,7 @@ function AppShell() {
     runLogin, verifyAccount, deleteAccount, healthCheck, syncAccountGroups,
     accountName, groupName,
   } = ctx;
+  const [tenantFixedTwoFaSettings, setTenantFixedTwoFaSettings] = React.useState<Record<number, TenantFixedTwoFaSettings>>({});
 
   const nav = currentUser ? SHELL_NAV_ITEMS.filter(([viewId]) => canView(currentUser, viewId)) : SHELL_NAV_ITEMS;
 
@@ -226,6 +228,14 @@ function AppShell() {
     if (!isActiveSystemConfigTabRequest('telegram-bot', requestSeq)) return;
     setTenants(tenantRows);
     setTenantBotSettings(Object.fromEntries(botRows.map((row) => [row.tenant_id, row])));
+  }, [activeView, setTenants, systemConfigTab]);
+
+  const loadAccountSecurityConfig = React.useCallback(async (requestSeq: number) => {
+    const tenantRows = await api<Tenant[]>('/tenants');
+    const settingRows = await Promise.all(tenantRows.map((tenant) => api<TenantFixedTwoFaSettings>(`/tenant-fixed-2fa-settings?tenant_id=${tenant.id}`)));
+    if (!isActiveSystemConfigTabRequest('account-security', requestSeq)) return;
+    setTenants(tenantRows);
+    setTenantFixedTwoFaSettings(Object.fromEntries(settingRows.map((row) => [row.tenant_id, row])));
   }, [activeView, setTenants, systemConfigTab]);
 
   const loadAiProviderConfig = React.useCallback(async (requestSeq: number) => {
@@ -264,6 +274,7 @@ function AppShell() {
     if (!currentUser || activeView !== 'systemConfig') return;
     if (tab === 'developer-apps') return loadDeveloperConfig(requestSeq);
     if (tab === 'telegram-bot') return loadTelegramBotConfig(requestSeq);
+    if (tab === 'account-security') return loadAccountSecurityConfig(requestSeq);
     if (tab === 'admin-users' && hasPermission(currentUser, 'permissions.view')) {
       const adminRows = await api<AdminUser[]>('/admin/users');
       if (!isActiveSystemConfigTabRequest(tab, requestSeq)) return;
@@ -278,7 +289,7 @@ function AppShell() {
       return;
     }
     if (tab === 'resources') return loadResourceConfig(requestSeq);
-  }, [activeView, currentUser, loadAiProviderConfig, loadDeveloperConfig, loadResourceConfig, loadTelegramBotConfig, setAdminUsers, setPromptTemplates]);
+  }, [activeView, currentUser, loadAccountSecurityConfig, loadAiProviderConfig, loadDeveloperConfig, loadResourceConfig, loadTelegramBotConfig, setAdminUsers, setPromptTemplates]);
 
   async function saveTenantBotSettings(tenantId: number, payload: {
     admin_chat_id: string;
@@ -338,6 +349,26 @@ function AppShell() {
       setNotice(saved.telegram_bot_webhook_status === 'deleted' ? 'TG Bot webhook 已删除' : `TG Bot webhook 删除失败：${saved.telegram_bot_last_error || saved.telegram_bot_webhook_status}`);
     } catch (error) {
       setNotice(`删除 TG Bot webhook 失败：${errorText(error)}`);
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function saveTenantFixedTwoFaSettings(tenantId: number, payload: { password: string; reason: string }) {
+    setBusy('设置固定 2FA 密码');
+    try {
+      const saved = await api<TenantFixedTwoFaSettings>(`/tenant-fixed-2fa-settings?tenant_id=${tenantId}`, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      setTenantFixedTwoFaSettings((current) => ({ ...current, [tenantId]: saved }));
+      const requestSeq = beginSystemConfigTabRequest('account-security');
+      await loadAccountSecurityConfig(requestSeq);
+      setNotice('固定 2FA 密码已设置');
+      return true;
+    } catch (error) {
+      setNotice(`设置固定 2FA 密码失败：${errorText(error)}`);
+      return false;
     } finally {
       setBusy('');
     }
@@ -611,6 +642,7 @@ function AppShell() {
               promptTemplates={promptTemplates}
               tenantAiSetting={tenantAiSetting}
               tenantBotSettings={tenantBotSettings}
+              tenantFixedTwoFaSettings={tenantFixedTwoFaSettings}
               materials={materials}
               materialCacheHealth={materialCacheHealth}
               materialCacheConfig={materialCacheConfig}
@@ -631,6 +663,7 @@ function AppShell() {
               onTestTenantBotMessage={testTenantBotMessage}
               onRefreshTenantBotWebhook={refreshTenantBotWebhook}
               onDeleteTenantBotWebhook={deleteTenantBotWebhook}
+              onSaveTenantFixedTwoFaSettings={saveTenantFixedTwoFaSettings}
               onCreateAdminUser={openAdminUserCreate}
               onEditAdminUser={openAdminUserEdit}
               onCreateAiProvider={() => setModal({ type: 'aiProviderCreate' })}
