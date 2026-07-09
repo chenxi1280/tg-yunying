@@ -1549,9 +1549,9 @@ def account_detail(session: Session, account_id: int, actor: str, *, include_ver
     records = account_message_records(session, account_id, 50)
     from .operations import filter_operation_targets, list_manual_operations, list_operation_attempts
 
-    operation_targets = filter_operation_targets(session, account.tenant_id)
+    operation_targets = filter_operation_targets(session, account.tenant_id, account_id=account.id)
     manual_records = list_manual_operations(session, account.tenant_id, account.id)
-    operation_attempts = [attempt for attempt in list_operation_attempts(session, account.tenant_id) if attempt.account_id == account.id][:50]
+    operation_attempts = list_operation_attempts(session, account.tenant_id, account_id=account.id)[:50]
     from .cloning import account_clone_plans
 
     clone_plans = account_clone_plans(session, account.tenant_id, account_id=account.id, limit=8)
