@@ -226,3 +226,40 @@ Product ACK：
 
 - 未触发真实发送，发布后仍没有 `post_comment` 成功样本。
 - 当前结论是生产代码、生产 DB pending 样本、生产容器过滤器共同证明危险文本会在 gateway 前被拦截；不是“已经产生一条干净评论并发送成功”的证据。
+
+## Request Analysis Phrase Regression Fix
+
+- message_id: 2026-07-09-channel-comment-ai-request-analysis-localfix-001
+- status: local_verified_pending_release
+- evidence_level: E2
+- release_gate: pending
+- production_fixed: false
+
+用户 2026-07-09 截图显示线上仍发出 AI 请求分析口吻内容：
+
+- `这个请求要求我为 Telegram 频道生成评论区短评 ... 让我仔细分析一下`
+
+根因：
+
+- 既有过滤能拦截完整的 `请求 + 色情/低俗` 组合，也能拦截 `<think>` / `让我分析` / `原材料内容明显...`。
+- 但模型输出经清洗或截断后可能只保留 `这个请求要求我为 Telegram 频道生成评论区短评`、`内容涉及到色情低俗信息的传播和讨论 让我仔细分析一下` 这类片段；这些片段不同时具备旧规则的两个锚点，因此生成清洗层会放行。
+- 同一公共过滤器也被 `send_message` 和 `post_comment` 发送前校验复用，所以修复应落在 `content_filters.looks_like_ai_meta_content`，避免只补单一路径。
+
+修复：
+
+- `AI_META_MARKERS` 增加 `这个请求要求我`、`请求要求我`、`让我仔细分析`。
+- `AI_META_PATTERNS` 增加“请求要求我生成 Telegram / 频道 / 评论区 / 短评”和“内容涉及/涉及到 + 色情/低俗/违规/敏感 + 传播/讨论”的识别。
+- `backend/tests/test_channel_comment_dataflow.py::test_channel_comment_clean_rejects_provider_meta_content` 增加截图拆段样本。
+- `backend/tests/test_operations_center_runtime.py::test_task_center_pre_send_validation_blocks_ai_request_analysis` 覆盖脏 `send_message` action 在 gateway 前以 `content_policy` / `AI 过程性内容` 失败。
+
+验证：
+
+- RED: 新增频道评论清洗样本先失败，证明 `这个请求要求我为 Telegram 频道生成评论区短评` 和 `内容涉及到色情低俗信息的传播和讨论 让我仔细分析一下` 会被放行。
+- GREEN: `backend/.venv/bin/python -m pytest backend/tests/test_channel_comment_dataflow.py backend/tests/test_operations_center_runtime.py::test_channel_comment_pre_send_validation_blocks_ai_meta_text backend/tests/test_operations_center_runtime.py::test_task_center_pre_send_validation_blocks_ai_request_analysis -q` -> `9 passed in 1.18s`。
+- `backend/.venv/bin/python -m compileall -q backend/app` passed。
+- `git diff --check -- backend/app/services/content_filters.py backend/tests/test_channel_comment_dataflow.py backend/tests/test_operations_center_runtime.py` passed。
+
+未证明 / 边界：
+
+- 本机 SSH 到生产 `47.251.126.134` 当前分别返回 `Connection closed by 47.251.126.134 port 22` 和 `Permission denied (publickey,gssapi-keyex,gssapi-with-mic,password)`，未能读取生产 DB / worker / Telegram action 样本。
+- 已确认 2026-07-09 最新成功 Deploy Production run `28995286636` 将 `8a3e914e` 发布到 `/data/tgyunying/releases/20260709050738_8a3e914`，且公开 `/api/health` 返回 `{"status":"ok"}`；但本次补丁尚未发布，不能写 `production_fixed`。

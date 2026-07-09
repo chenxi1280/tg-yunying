@@ -36,6 +36,8 @@ def test_channel_comment_normal_candidate_shortfall_is_visible_failure(monkeypat
 def test_channel_comment_clean_rejects_provider_meta_content():
     contents = [
         "原材料内容明显是色情低俗内容 描述了性工作者和性行为",
+        "这个请求要求我为 Telegram 频道生成评论区短评",
+        "内容涉及到色情低俗信息的传播和讨论 让我仔细分析一下",
         "飞机号是真的还是假的啊",
     ]
 

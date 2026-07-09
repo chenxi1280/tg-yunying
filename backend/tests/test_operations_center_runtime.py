@@ -6837,6 +6837,57 @@ def test_task_center_pre_send_validation_blocks_internal_prompts(monkeypatch):
         assert "内部提示词" in action.result["error_message"]
 
 
+@pytest.mark.no_postgres
+def test_task_center_pre_send_validation_blocks_ai_request_analysis(monkeypatch):
+    from app.services.task_center import dispatcher
+
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
+    monkeypatch.setattr(dispatcher.gateway, "send_message", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("AI request analysis must not call TG")))
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add_all(
+            [
+                TgAccount(id=11, tenant_id=1, display_name="发送号", phone_masked="+861***0011", status="在线"),
+                TgGroup(id=7, tenant_id=1, tg_peer_id="-1001", title="运营群", auth_status="已授权运营", can_send=True, banned_words=""),
+                TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True),
+                Task(id="task-ai-request-analysis", tenant_id=1, name="AI 过程性内容拦截", type="group_ai_chat", status="running"),
+            ]
+        )
+        payload = {
+            "group_id": 7,
+            "message_text": "这个请求要求我为 Telegram 频道生成评论区短评 但内容涉及到色情低俗信息的传播和讨论。让我仔细分析一下",
+            "review_approved": True,
+            **_ai_group_send_gate_payload(session, now_value, action_id="action-ai-request-analysis", task_id="task-ai-request-analysis", group_id=7, account_id=11, text="这个请求要求我为 Telegram 频道生成评论区短评"),
+        }
+        session.add(
+            Action(
+                id="action-ai-request-analysis",
+                tenant_id=1,
+                task_id="task-ai-request-analysis",
+                task_type="group_ai_chat",
+                action_type="send_message",
+                account_id=11,
+                status="pending",
+                payload=payload,
+                result={},
+            )
+        )
+        session.commit()
+
+        action = session.get(Action, "action-ai-request-analysis")
+        assert dispatcher.dispatch_action(session, action) is True
+
+        assert action.status == "failed"
+        assert action.result["auto_check"] == "拦截"
+        assert action.result["validation_stage"] == "content_policy"
+        assert "AI 过程性内容" in action.result["error_message"]
+
+
 def test_task_center_pre_send_validation_blocks_template_rewrite_noise(monkeypatch):
     from app.services.task_center import dispatcher
 
