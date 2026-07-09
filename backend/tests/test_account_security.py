@@ -1350,6 +1350,13 @@ def test_unknown_account_security_action_is_rejected():
 def test_confirmed_batch_drains_profile_username_and_device_cleanup_independently():
     with _session() as session:
         account = _seed_account(session)
+        set_tenant_fixed_two_fa_password(
+            session,
+            tenant_id=1,
+            password="tenant-fixed-password",
+            reason="首次配置固定 2FA",
+            actor="tester",
+        )
         avatar_object_key, _avatar_path = save_avatar_bytes(tenant_id=account.tenant_id, account_id=account.id, content_type="image/png", data=b"avatar")
         payload = AccountSecurityBatchCreate(
             account_ids=[account.id],
@@ -1376,7 +1383,7 @@ def test_confirmed_batch_drains_profile_username_and_device_cleanup_independentl
         assert session.get(TgAccount, account.id).avatar_object_key == avatar_object_key
         snapshot = session.scalar(select(TgAccountSecuritySnapshot).where(TgAccountSecuritySnapshot.account_id == account.id))
         assert snapshot.external_authorization_count == 0
-        assert snapshot.two_fa_password_ciphertext
+        assert decrypt_secret(snapshot.two_fa_password_ciphertext) == "tenant-fixed-password"
 
 
 @pytest.mark.no_postgres
