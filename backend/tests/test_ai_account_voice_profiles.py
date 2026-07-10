@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.models import AccountPool, AccountStatus, AiAccountGroupStanceMemory, AiAccountVoiceProfile, AuditLog, TgAccount
+from app.schemas.ai_config import AiAccountVoiceProfileBatchStatusOut
 from app.services.task_center import account_stance_memory, account_voice_profile_cache
 from app.services.task_center.account_voice_profiles import (
     VOICE_PROFILE_INITIAL_MAX_TOKENS,
@@ -1298,6 +1299,25 @@ def test_batch_update_voice_profile_status_skips_non_normal_usage():
         assert statuses == {101: "disabled", 102: "active", 103: "active", 104: "active"}
         audits = list(session.scalars(select(AuditLog)))
         assert [audit.target_id for audit in audits] == ["101"]
+
+
+def test_batch_status_schema_preserves_skip_reasons():
+    payload = AiAccountVoiceProfileBatchStatusOut(
+        updated=1,
+        skipped=1,
+        items=[
+            {
+                "account_id": 102,
+                "status": "skipped",
+                "skipped_reason": "account_purpose_mismatch",
+            }
+        ],
+    )
+
+    dumped = payload.model_dump()["items"]
+    assert dumped[0]["account_id"] == 102
+    assert dumped[0]["status"] == "skipped"
+    assert dumped[0]["skipped_reason"] == "account_purpose_mismatch"
 
 
 def test_group_stance_memory_upserts_and_reads_summary():
