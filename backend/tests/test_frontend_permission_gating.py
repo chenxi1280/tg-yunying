@@ -293,8 +293,8 @@ def test_remote_operation_target_hook_uses_bounded_query_identity_and_immutable_
     assert "setPageTargets(response.data);" in hook
     assert "return [...byId.values()];" in hook
 
-    hydration_start = hook.index("const ensureIds = React.useCallback")
-    hydration_end = hook.index("const selectedIdsKey", hydration_start)
+    hydration_start = hook.index("const hydrateIds = React.useCallback")
+    hydration_end = hook.index("const ensureIds = React.useCallback", hydration_start)
     hydration = hook[hydration_start:hydration_end]
     assert "setSelectedTargets([]);" in hydration
     assert hydration.index("setSelectedTargets([]);") < hydration.index("setLoading(true);")
@@ -314,17 +314,32 @@ def test_remote_operation_target_requests_debounce_and_cancel_stale_lifecycles()
     assert "OPERATION_TARGET_SEARCH_DEBOUNCE_MS" in hook
     assert "window.clearTimeout(timerId);" in hook
     assert hook.count("const controller = new AbortController();") >= 2
-    assert hook.count("controller.abort();") >= 2
+    assert "controller.abort();" in hook
     assert "loadSearchPage(controller.signal)" in hook
-    assert "ensureIds(selectedIds, controller.signal)" in hook
+    assert "ensureIds(selectedIds)" in hook
     assert "loadTargetIdBatches(normalized, signal)" in hook
     assert "{ signal }" in hook
     assert hook.count("signal.aborted || !isCurrentRequest") >= 4
     search_request = hook[hook.index("const loadSearchPage = React.useCallback"):hook.index("React.useEffect(() => {", hook.index("const loadSearchPage = React.useCallback"))]
-    hydration_request = hook[hook.index("const ensureIds = React.useCallback"):hook.index("const selectedIdsKey")]
+    hydration_request = hook[hook.index("const hydrateIds = React.useCallback"):hook.index("const ensureIds = React.useCallback")]
     for request in [search_request, hydration_request]:
         assert "if (signal.aborted) return;" in request
         assert request.index("if (signal.aborted) return;") < request.index("setLoading(")
+
+
+def test_remote_operation_target_hook_owns_public_hydration_cancellation():
+    hook = _required_frontend_source("frontend/src/app/hooks/useOperationTargetOptions.ts")
+
+    assert "signal: AbortSignal = new AbortController().signal" not in hook
+    assert "const hydrationControllerRef = React.useRef<AbortController | null>(null);" in hook
+    assert "const hydrateIds = React.useCallback(async (ids: readonly number[], signal: AbortSignal)" in hook
+    assert "const ensureIds = React.useCallback(async (ids: readonly number[])" in hook
+    assert "hydrationControllerRef.current?.abort();" in hook
+    assert "hydrationControllerRef.current = controller;" in hook
+    assert "await hydrateIds(ids, controller.signal);" in hook
+    assert "if (hydrationControllerRef.current === controller)" in hook
+    assert "hydrationControllerRef.current = null;" in hook
+    assert "return () => hydrationControllerRef.current?.abort();" in hook
 
 
 def test_remote_operation_target_api_client_composes_caller_abort_and_timeout():

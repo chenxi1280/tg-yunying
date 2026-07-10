@@ -137,12 +137,12 @@ function useOperationTargetSearch(query: OperationTargetOptionQuery, searchText:
   return { pageTargets, loading, error, total } as const;
 }
 
-function useOperationTargetHydration(query: OperationTargetOptionQuery, selectedIds: readonly number[], reloadVersion: number) {
+function useOperationTargetHydrateIds(query: OperationTargetOptionQuery) {
   const [selectedTargets, setSelectedTargets] = React.useState<OperationTarget[]>([]);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState('');
   const hydrationRequestRef = React.useRef<OperationTargetRequestIdentity>({ sequence: 0, queryKey: '' });
-  const ensureIds = React.useCallback(async (ids: readonly number[], signal: AbortSignal = new AbortController().signal) => {
+  const hydrateIds = React.useCallback(async (ids: readonly number[], signal: AbortSignal) => {
     if (signal.aborted) return;
     const normalizedIds = normalizeIds(ids);
     const normalized = normalizeQuery(query, '', normalizedIds);
@@ -166,11 +166,26 @@ function useOperationTargetHydration(query: OperationTargetOptionQuery, selected
       if (!signal.aborted && isCurrentRequest(hydrationRequestRef, request)) setLoading(false);
     }
   }, [query.accountId, query.capability, query.targetType]);
+  return { selectedTargets, loading, error, hydrateIds } as const;
+}
+
+function useOperationTargetHydration(query: OperationTargetOptionQuery, selectedIds: readonly number[], reloadVersion: number) {
+  const { selectedTargets, loading, error, hydrateIds } = useOperationTargetHydrateIds(query);
+  const hydrationControllerRef = React.useRef<AbortController | null>(null);
+  const ensureIds = React.useCallback(async (ids: readonly number[]) => {
+    hydrationControllerRef.current?.abort();
+    const controller = new AbortController();
+    hydrationControllerRef.current = controller;
+    try {
+      await hydrateIds(ids, controller.signal);
+    } finally {
+      if (hydrationControllerRef.current === controller) hydrationControllerRef.current = null;
+    }
+  }, [hydrateIds]);
   const selectedIdsKey = selectedIds.join(',');
   React.useEffect(() => {
-    const controller = new AbortController();
-    void ensureIds(selectedIds, controller.signal);
-    return () => controller.abort();
+    void ensureIds(selectedIds);
+    return () => hydrationControllerRef.current?.abort();
   }, [ensureIds, reloadVersion, selectedIdsKey]);
   return { selectedTargets, loading, error, ensureIds } as const;
 }
