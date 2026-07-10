@@ -7526,17 +7526,39 @@ def test_task_list_page_stably_orders_mixed_datetimes_sources_and_numeric_batch_
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="稳定排序租户"))
-        session.add(
-            Task(
-                id="task-stable-source",
-                tenant_id=1,
-                name="普通任务",
-                type="channel_view",
-                status="running",
-                priority=3,
-                created_at=aware_created_at,
-                updated_at=aware_created_at,
-            )
+        session.add_all(
+            [
+                Task(
+                    id="task-priority-first",
+                    tenant_id=1,
+                    name="高优先级任务",
+                    type="channel_view",
+                    status="running",
+                    priority=1,
+                    created_at=aware_created_at - timedelta(days=1),
+                    updated_at=aware_created_at - timedelta(days=1),
+                ),
+                Task(
+                    id="task-created-newer",
+                    tenant_id=1,
+                    name="较新普通任务",
+                    type="channel_view",
+                    status="running",
+                    priority=3,
+                    created_at=aware_created_at + timedelta(minutes=1),
+                    updated_at=aware_created_at + timedelta(minutes=1),
+                ),
+                Task(
+                    id="task-stable-source",
+                    tenant_id=1,
+                    name="普通任务",
+                    type="channel_view",
+                    status="running",
+                    priority=3,
+                    created_at=aware_created_at,
+                    updated_at=aware_created_at,
+                ),
+            ]
         )
         session.add_all(
             [
@@ -7556,6 +7578,8 @@ def test_task_list_page_stably_orders_mixed_datetimes_sources_and_numeric_batch_
         result = _list_task_page(session, page_size=10)
 
     assert [item["id"] for item in result.items] == [
+        "task-priority-first",
+        "task-created-newer",
         "task-stable-source",
         "account_security_batch:10",
         "account_security_batch:9",

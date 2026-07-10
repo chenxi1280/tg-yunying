@@ -1037,6 +1037,7 @@ def test_frontend_data_loaders_do_not_silently_fake_empty_success():
     checked_files = [
         "frontend/src/app/context/refresh.ts",
         "frontend/src/app/views/OverviewView.tsx",
+        "frontend/src/app/hooks/useOverviewOperationData.ts",
         "frontend/src/app/views/RulesCenterView.tsx",
         "frontend/src/app/views/ArchivesView.tsx",
         "frontend/src/app/context/accountActions.ts",

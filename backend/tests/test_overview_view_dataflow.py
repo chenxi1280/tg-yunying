@@ -65,6 +65,8 @@ def test_overview_operation_data_refreshes_ignore_stale_responses():
     hook = OVERVIEW_HOOK.read_text()
     base_owner = hook[hook.index("function useOperationBase"):hook.index("\n\nasync function refreshOperationBase")]
     target_owner = hook[hook.index("function useTargetPage"):hook.index("\n\nasync function refreshTargetPage")]
+    base_refresh = hook[hook.index("async function refreshOperationBase"):hook.index("\n\nfunction useTargetPage")]
+    target_refresh = hook[hook.index("async function refreshTargetPage"):hook.index("\n\nexport function useOverviewOperationData")]
 
     assert "function beginBaseRequest(" in hook
     assert "controllerRef.current?.abort();" in hook
@@ -78,6 +80,17 @@ def test_overview_operation_data_refreshes_ignore_stale_responses():
     assert "const request = beginTargetRequest(identityRef, controllerRef, queryRef.current);" in target_owner
     assert "if (!isActiveTargetRequest(identityRef, request)) return;" in target_owner
     assert "if (isActiveTargetRequest(identityRef, request)) setLoading(false);" in target_owner
+
+    guarded_writes = [
+        (base_owner, "if (!isActiveBaseRequest(identityRef, request)) return;", ["setPlans(result.plans);", "setCenter(result.center);", "setIssues(result.issues);"]),
+        (target_owner, "if (!isActiveTargetRequest(identityRef, request)) return;", ["setTargets(result.targets);", "setSummaries(result.summaries);", "setTotal(result.total);"]),
+        (base_refresh, "if (!isActiveBaseRequest(state.identityRef, request)) return;", ["state.setPlans(result.plans);", "state.setCenter(result.center);", "state.setIssues(result.issues);"]),
+        (target_refresh, "if (!isActiveTargetRequest(state.identityRef, request)) return;", ["state.setTargets(result.targets);", "state.setSummaries(result.summaries);", "state.setTotal(result.total);"]),
+    ]
+    for owner, stale_guard, state_writes in guarded_writes:
+        guard_index = owner.index(stale_guard)
+        for state_write in state_writes:
+            assert guard_index < owner.index(state_write)
 
 
 def test_overview_target_workbench_uses_bounded_target_page_then_scoped_runtime_summary():
