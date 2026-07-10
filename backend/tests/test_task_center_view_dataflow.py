@@ -382,7 +382,14 @@ def test_remote_operation_target_select_supports_search_errors_and_stable_select
     assert source.index('role="alert"') > source.index("notFoundContent={notFoundContent}")
     assert "ids: selectedIds" in source
     assert "value={value}" in source
-    assert "onTargetsLoaded?.(targets);" in source
+    assert "const onTargetsLoadedRef = React.useRef(onTargetsLoaded);" in source
+    assert "onTargetsLoadedRef.current = onTargetsLoaded;" in source
+    assert "onTargetsLoadedRef.current?.(targets);" in source
+    notify_start = source.index("React.useEffect(() => {", source.index("onTargetsLoadedRef.current ="))
+    notify_end = source.index("return (", notify_start)
+    notify_effect = source[notify_start:notify_end]
+    assert "[targets]" in notify_effect
+    assert "[onTargetsLoaded, targets]" not in notify_effect
     assert "onChange" not in source[source.index("React.useEffect"):source.index("return (")]
 
 

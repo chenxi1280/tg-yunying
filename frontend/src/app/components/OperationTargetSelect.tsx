@@ -42,6 +42,7 @@ export default function OperationTargetSelect({
     ...query,
     ids: selectedIds,
   });
+  const onTargetsLoadedRef = React.useRef(onTargetsLoaded);
   const options = React.useMemo(
     () => targets.map((target) => ({ value: target.id, label: targetLabel(target) })),
     [targets],
@@ -53,8 +54,12 @@ export default function OperationTargetSelect({
       : '未找到运营目标';
 
   React.useEffect(() => {
-    onTargetsLoaded?.(targets);
-  }, [onTargetsLoaded, targets]);
+    onTargetsLoadedRef.current = onTargetsLoaded;
+  }, [onTargetsLoaded]);
+
+  React.useEffect(() => {
+    onTargetsLoadedRef.current?.(targets);
+  }, [targets]);
 
   return (
     <>

@@ -306,6 +306,45 @@ def test_remote_operation_target_hook_uses_bounded_query_identity_and_immutable_
     assert "timeoutMs:" not in hook
 
 
+def test_remote_operation_target_requests_debounce_and_cancel_stale_lifecycles():
+    hook = _required_frontend_source("frontend/src/app/hooks/useOperationTargetOptions.ts")
+
+    assert "const OPERATION_TARGET_SEARCH_DEBOUNCE_MS = 250;" in hook
+    assert "window.setTimeout(" in hook
+    assert "OPERATION_TARGET_SEARCH_DEBOUNCE_MS" in hook
+    assert "window.clearTimeout(timerId);" in hook
+    assert hook.count("const controller = new AbortController();") >= 2
+    assert hook.count("controller.abort();") >= 2
+    assert "loadSearchPage(controller.signal)" in hook
+    assert "ensureIds(selectedIds, controller.signal)" in hook
+    assert "loadTargetIdBatches(normalized, signal)" in hook
+    assert "{ signal }" in hook
+    assert hook.count("signal.aborted || !isCurrentRequest") >= 4
+    search_request = hook[hook.index("const loadSearchPage = React.useCallback"):hook.index("React.useEffect(() => {", hook.index("const loadSearchPage = React.useCallback"))]
+    hydration_request = hook[hook.index("const ensureIds = React.useCallback"):hook.index("const selectedIdsKey")]
+    for request in [search_request, hydration_request]:
+        assert "if (signal.aborted) return;" in request
+        assert request.index("if (signal.aborted) return;") < request.index("setLoading(")
+
+
+def test_remote_operation_target_api_client_composes_caller_abort_and_timeout():
+    client = _required_frontend_source("frontend/src/shared/api/client.ts")
+    request = client[client.index("export async function apiWithMeta"):]
+
+    assert "type RequestAbortCause = 'none' | 'caller' | 'timeout';" in client
+    assert "function createRequestAbortControls(" in client
+    assert "callerSignal.addEventListener('abort', abortFromCaller, { once: true });" in client
+    assert "callerSignal.removeEventListener('abort', abortFromCaller);" in client
+    assert "cause === 'timeout'" in client
+    assert "const { timeoutMs = 15_000, signal: callerSignal, ...fetchOptions }" in request
+    assert "const abortControls = createRequestAbortControls(callerSignal, timeoutMs);" in request
+    fetch_options = request[request.index("const response = await fetch"):request.index("if (!response.ok)")]
+    assert fetch_options.index("...fetchOptions") < fetch_options.index("signal: abortControls.signal")
+    assert "if (abortControls.didTimeout()) throw new ApiError(408, 'request timeout');" in request
+    assert "error instanceof DOMException && error.name === 'AbortError'" not in request
+    assert "abortControls.cleanup();" in request
+
+
 def test_frontend_operator_template_can_open_and_manage_ai_voice_profiles():
     source = (PROJECT_ROOT / "frontend/src/app/AppModals.tsx").read_text()
     operator_template = source[source.index("'运营管理员'"):source.index("'账号添加专员'")]

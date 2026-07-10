@@ -3,6 +3,7 @@ import { apiWithMeta } from '../../shared/api/client';
 import type { OperationTarget, OperationTargetOptionQuery } from '../types/operations';
 
 const OPERATION_TARGET_PAGE_SIZE = 50;
+const OPERATION_TARGET_SEARCH_DEBOUNCE_MS = 250;
 
 type NormalizedTargetQuery = Readonly<{
   q: string;
@@ -91,10 +92,10 @@ export function mergeOperationTargets(
   return [...byId.values()];
 }
 
-async function loadTargetIdBatches(query: NormalizedTargetQuery) {
+async function loadTargetIdBatches(query: NormalizedTargetQuery, signal: AbortSignal) {
   return Promise.all(targetIdBatches(query.ids).map((ids) => {
     const batchQuery = { ...query, ids };
-    return apiWithMeta<OperationTarget[]>(`/operation-targets?${operationTargetParams(batchQuery).toString()}`);
+    return apiWithMeta<OperationTarget[]>(`/operation-targets?${operationTargetParams(batchQuery).toString()}`, { signal });
   }));
 }
 
@@ -104,25 +105,35 @@ function useOperationTargetSearch(query: OperationTargetOptionQuery, searchText:
   const [error, setError] = React.useState('');
   const [total, setTotal] = React.useState(0);
   const searchRequestRef = React.useRef<OperationTargetRequestIdentity>({ sequence: 0, queryKey: '' });
-  const loadSearchPage = React.useCallback(async () => {
+  const loadSearchPage = React.useCallback(async (signal: AbortSignal) => {
+    if (signal.aborted) return;
     const normalized = normalizeQuery(query, searchText, []);
     const request = beginRequest(searchRequestRef, queryIdentity(normalized));
     setLoading(true);
     setError('');
     setPageTargets([]);
     try {
-      const response = await apiWithMeta<OperationTarget[]>(`/operation-targets?${operationTargetParams(normalized).toString()}`);
-      if (!isCurrentRequest(searchRequestRef, request)) return;
+      const response = await apiWithMeta<OperationTarget[]>(`/operation-targets?${operationTargetParams(normalized).toString()}`, { signal });
+      if (signal.aborted || !isCurrentRequest(searchRequestRef, request)) return;
       setPageTargets(response.data);
       setTotal(responseTotal(response.headers.get('x-total-count')));
     } catch (error) {
-      if (!isCurrentRequest(searchRequestRef, request)) return;
+      if (signal.aborted || !isCurrentRequest(searchRequestRef, request)) return;
       setError(requestErrorMessage(error));
     } finally {
-      if (isCurrentRequest(searchRequestRef, request)) setLoading(false);
+      if (!signal.aborted && isCurrentRequest(searchRequestRef, request)) setLoading(false);
     }
   }, [query.accountId, query.capability, query.targetType, searchText]);
-  React.useEffect(() => { void loadSearchPage(); }, [loadSearchPage, reloadVersion]);
+  React.useEffect(() => {
+    const controller = new AbortController();
+    const timerId = window.setTimeout(() => {
+      void loadSearchPage(controller.signal);
+    }, OPERATION_TARGET_SEARCH_DEBOUNCE_MS);
+    return () => {
+      window.clearTimeout(timerId);
+      controller.abort();
+    };
+  }, [loadSearchPage, reloadVersion]);
   return { pageTargets, loading, error, total } as const;
 }
 
@@ -131,7 +142,8 @@ function useOperationTargetHydration(query: OperationTargetOptionQuery, selected
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState('');
   const hydrationRequestRef = React.useRef<OperationTargetRequestIdentity>({ sequence: 0, queryKey: '' });
-  const ensureIds = React.useCallback(async (ids: readonly number[]) => {
+  const ensureIds = React.useCallback(async (ids: readonly number[], signal: AbortSignal = new AbortController().signal) => {
+    if (signal.aborted) return;
     const normalizedIds = normalizeIds(ids);
     const normalized = normalizeQuery(query, '', normalizedIds);
     const request = beginRequest(hydrationRequestRef, queryIdentity(normalized));
@@ -143,20 +155,22 @@ function useOperationTargetHydration(query: OperationTargetOptionQuery, selected
     }
     setLoading(true);
     try {
-      const responses = await loadTargetIdBatches(normalized);
-      if (!isCurrentRequest(hydrationRequestRef, request)) return;
+      const responses = await loadTargetIdBatches(normalized, signal);
+      if (signal.aborted || !isCurrentRequest(hydrationRequestRef, request)) return;
       const hydrated = mergeOperationTargets([], responses.flatMap((response) => response.data));
       setSelectedTargets(hydrated);
     } catch (error) {
-      if (!isCurrentRequest(hydrationRequestRef, request)) return;
+      if (signal.aborted || !isCurrentRequest(hydrationRequestRef, request)) return;
       setError(requestErrorMessage(error));
     } finally {
-      if (isCurrentRequest(hydrationRequestRef, request)) setLoading(false);
+      if (!signal.aborted && isCurrentRequest(hydrationRequestRef, request)) setLoading(false);
     }
   }, [query.accountId, query.capability, query.targetType]);
   const selectedIdsKey = selectedIds.join(',');
   React.useEffect(() => {
-    void ensureIds(selectedIds);
+    const controller = new AbortController();
+    void ensureIds(selectedIds, controller.signal);
+    return () => controller.abort();
   }, [ensureIds, reloadVersion, selectedIdsKey]);
   return { selectedTargets, loading, error, ensureIds } as const;
 }
