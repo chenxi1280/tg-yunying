@@ -77,6 +77,15 @@ def _usage_pool(session: Session, pool_id: int, purpose: str) -> AccountPool:
     return pool
 
 
+def _assign_usage(session: Session, account_id: int, *, pool_id: int, purpose: str, identity: str) -> None:
+    _usage_pool(session, pool_id, purpose)
+    account = session.get(TgAccount, account_id)
+    assert account is not None
+    account.pool_id = pool_id
+    account.account_identity = identity
+    session.commit()
+
+
 def _profile(
     account_id: int,
     summary: str,
@@ -998,6 +1007,30 @@ def test_rollback_voice_profile_creates_new_active_version_and_audit_log():
         assert audit.detail == "source_version=1,target_version=3"
 
 
+@pytest.mark.parametrize(
+    ("purpose", "identity", "match_text"),
+    [
+        ("rank_deboost", "rank_deboost", "account_action_not_allowed"),
+        ("code_receiver", "code_receiver", "account_action_not_allowed"),
+        ("rank_deboost", "normal", "account_purpose_mismatch"),
+    ],
+)
+def test_rollback_voice_profile_blocks_non_normal_usage(purpose, identity, match_text):
+    with _session() as session:
+        _account(session, 101, "花花号")
+        _assign_usage(session, 101, pool_id=3, purpose=purpose, identity=identity)
+        session.add(_profile(101, "青年短句，爱追问价格，少表情", version=1, status="superseded"))
+        session.add(_profile(101, "青年短句，先观望再追问，偶尔说我看看", version=2, status="active"))
+        session.commit()
+
+        with pytest.raises(ValueError, match=match_text):
+            rollback_voice_profile(session, tenant_id=1, account_id=101, source_version=1, actor="tester")
+
+        profiles = list(session.scalars(select(AiAccountVoiceProfile).order_by(AiAccountVoiceProfile.version)))
+        assert [profile.status for profile in profiles] == ["superseded", "active"]
+        assert session.scalar(select(AuditLog).where(AuditLog.action == "回滚账号面具")) is None
+
+
 def test_rebuild_voice_profile_keeps_existing_profile_when_generator_is_invalid():
     def generator(_account_ids: list[int]) -> list[dict]:
         return [{"account_id": 101, "short_prompt_summary": "自然、随意、真实"}]
@@ -1224,6 +1257,47 @@ def test_batch_update_voice_profile_status_disables_and_restores_profiles():
         }
         audits = list(session.scalars(select(AuditLog).order_by(AuditLog.id)))
         assert [audit.action for audit in audits] == ["批量停用账号面具", "批量停用账号面具", "批量恢复账号面具"]
+
+
+def test_batch_update_voice_profile_status_skips_non_normal_usage():
+    with _session() as session:
+        _account(session, 101, "普通号")
+        _account(session, 102, "降权号")
+        _account(session, 103, "错配号")
+        _account(session, 104, "接码号")
+        _assign_usage(session, 102, pool_id=3, purpose="rank_deboost", identity="rank_deboost")
+        _assign_usage(session, 103, pool_id=3, purpose="rank_deboost", identity="normal")
+        _assign_usage(session, 104, pool_id=2, purpose="code_receiver", identity="code_receiver")
+        for account_id in [101, 102, 103, 104]:
+            session.add(_profile(account_id, f"青年短句，账号{account_id}先问价格"))
+        session.commit()
+
+        result = batch_update_voice_profile_status(
+            session,
+            tenant_id=1,
+            account_ids=[101, 102, 103, 104],
+            status="disabled",
+            actor="tester",
+        )
+        session.commit()
+
+        statuses = {
+            row.account_id: row.status
+            for row in session.scalars(select(AiAccountVoiceProfile).order_by(AiAccountVoiceProfile.account_id))
+        }
+        assert result == {
+            "updated": 1,
+            "skipped": 3,
+            "items": [
+                {"account_id": 101, "status": "updated", "skipped_reason": ""},
+                {"account_id": 102, "status": "skipped", "skipped_reason": "account_action_not_allowed:rank_deboost:account_mask_init"},
+                {"account_id": 103, "status": "skipped", "skipped_reason": "account_purpose_mismatch"},
+                {"account_id": 104, "status": "skipped", "skipped_reason": "account_action_not_allowed:code_receiver:account_mask_init"},
+            ],
+        }
+        assert statuses == {101: "disabled", 102: "active", 103: "active", 104: "active"}
+        audits = list(session.scalars(select(AuditLog)))
+        assert [audit.target_id for audit in audits] == ["101"]
 
 
 def test_group_stance_memory_upserts_and_reads_summary():
