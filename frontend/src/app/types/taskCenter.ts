@@ -87,6 +87,51 @@ export type TaskCenterTask = {
   updated_at: string;
 };
 
+export type TaskCenterListItem = {
+  id: string;
+  tenant_id: number;
+  source_kind: string;
+  name: string;
+  type: TaskCenterAnyTaskType;
+  status: string;
+  priority: number;
+  next_run_at: string | null;
+  last_error: string;
+  stats: TaskCenterStats;
+  runtime_stage: Record<string, any>;
+  target_summary: string;
+  account_scope_summary: string;
+  target_group_label: string;
+  associated_channel_label: string;
+  group_key: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type TaskCenterListSummary = {
+  total: number;
+  running: number;
+  failed: number;
+};
+
+export type TaskCenterListGroup = {
+  key: string;
+  target_group_label: string;
+  associated_channel_label: string;
+  task_count: number;
+  running_count: number;
+  failed_count: number;
+};
+
+export type TaskCenterListPage = {
+  items: TaskCenterListItem[];
+  total: number;
+  page: number;
+  page_size: number;
+  summary: TaskCenterListSummary;
+  groups: TaskCenterListGroup[];
+};
+
 export type TaskCenterAction = {
   id: string;
   tenant_id: number;

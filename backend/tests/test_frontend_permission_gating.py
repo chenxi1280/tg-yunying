@@ -93,16 +93,16 @@ def test_operation_target_detail_actions_ignore_stale_target_responses():
 
 def test_task_center_load_and_focus_task_surface_backend_error_detail():
     source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
-    fetch_block = source[source.index("async function fetchTaskListData"):source.index("\n\n  async function load(")]
-    load_block = source[source.index("async function load("):source.index("\n\n  async function refreshTaskListAfterAction")]
+    hook = (PROJECT_ROOT / "frontend/src/app/hooks/useTaskCenterListPage.ts").read_text()
+    load_block = hook[hook.index("const load = React.useCallback"):hook.index("\n\n  const queryKey")]
     focus_effect = source[source.index("if (!focusTask || appliedFocusNonce.current === focusTask.nonce)"):source.index("\n  async function fetchTaskDetail")]
 
-    assert "api<TaskCenterTask[]>" in fetch_block
-    assert "api<SchedulingSetting>" in fetch_block
-    assert "await fetchTaskListData(requestSeq, nextTaskTypeFilter);" in load_block
-    assert "catch (error)" in load_block
-    assert "if (!isActiveTaskListRequest(requestSeq)) return;" in load_block
-    assert "setActionError(`读取任务列表失败：${errorMessage(error)}`);" in load_block
+    assert "api<TaskCenterListPage>" in hook
+    assert "api<SchedulingSetting>" in hook
+    assert "catch (failure)" in load_block
+    assert "if (!isActiveRequest(requestRef, request)) return '';" in load_block
+    assert "setError(`读取任务列表失败：${detail}`);" in load_block
+    assert "taskList.error" in source
     assert ".catch((error) => {" in focus_effect
     assert "if (!isActiveDetailRequest(focusTask.taskId, requestSeq)) return;" in focus_effect
     assert "setActionError(`读取任务 ${focusTask.taskId} 详情失败：${errorMessage(error)}`);" in focus_effect
@@ -113,7 +113,7 @@ def test_task_center_form_support_load_failures_surface_backend_error_detail():
     prefill_effect = source[source.index("if (!prefill || appliedPrefillNonce.current === prefill.nonce)"):source.index("\n  React.useEffect(() => {\n    if (!focusTask")]
     create_task = source[source.index("async function openCreateTask"):source.index("\n\n  function editValuesFromTask")]
     edit_task = source[source.index("async function openEditTask"):source.index("\n\n  function closeEditTaskModal")]
-    reset_type_fields = source[source.index("function resetTypeFields"):source.index("\n  const table")]
+    reset_type_fields = source[source.index("function resetTypeFields"):source.index("\n  const columns")]
 
     assert "setActionError(`读取任务表单支撑数据失败：${errorMessage(error)}`)" in create_task
     assert "setActionError(`读取任务表单支撑数据失败：${errorMessage(error)}`)" in edit_task
@@ -1443,8 +1443,8 @@ def test_task_center_review_uses_task_specific_curve_units():
 def test_task_center_ai_group_rows_prefer_target_summary_title():
     source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
 
-    assert "function taskListTitle(task: TaskCenterTask): string" in source
-    assert "return task.target_summary || task.type_config?.target_group_name || task.name;" in source
+    assert "function taskListTitle(task: TaskCenterVisibleTask): string" in source
+    assert "return task.target_summary || task.name;" in source
     assert "<Typography.Text strong>{taskListTitle(task)}</Typography.Text>" in source
 
 
@@ -2390,38 +2390,36 @@ def test_task_center_account_security_system_task_detail_switches_by_batch_type(
     assert "当前 session / 已确认 hash 的主备授权 / 1 个官方锚点" in source
     assert "目标槽位" in source
     assert "验证码读取" in source
-    assert "params.set('type', nextTaskTypeFilter)" in view
+    hook = (PROJECT_ROOT / "frontend/src/app/hooks/useTaskCenterListPage.ts").read_text()
+    assert "params.set('type', query.type)" in hook
 
 
 def test_task_center_exposes_task_type_filter_request_parameter():
     source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
+    hook = (PROJECT_ROOT / "frontend/src/app/hooks/useTaskCenterListPage.ts").read_text()
 
     assert "taskTypeFilter" in source
     assert "account_profile_init" in source
-    assert "params.set('type', nextTaskTypeFilter)" in source
-    assert "api<TaskCenterTask[]>(`/tasks${query ? `?${query}` : ''}`)" in source
+    assert "params.set('type', query.type)" in hook
+    assert "api<TaskCenterListPage>(`/tasks/page?${params.toString()}`" in hook
 
 
 def test_task_center_list_groups_by_target_group_and_channel():
     source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
-    grouping = (PROJECT_ROOT / "frontend/src/app/views/taskCenterListGrouping.ts").read_text()
 
-    assert "buildTaskQuickGroups" in grouping
-    assert "filterTasksByQuickGroup" in grouping
-    assert "targetGroupLabel" in grouping
-    assert "associatedChannelLabel" in grouping
-    assert "const [selectedTaskGroupId, setSelectedTaskGroupId] = React.useState('all');" in source
-    assert "const taskQuickGroups = buildTaskQuickGroups(table.filteredRows);" in source
-    assert "const visibleTaskRows = filterTasksByQuickGroup(table.filteredRows, selectedTaskGroupId);" in source
+    assert "const selectedTaskGroupId = taskList.query.groupKey;" in source
+    assert "taskList.groups.map" in source
+    assert "taskList.setGroup" in source
+    assert "buildTaskQuickGroups" not in source
+    assert "filterTasksByQuickGroup" not in source
     assert "全部任务分组" in source
     assert "<Select<string>" in source
     assert 'aria-label="任务分组"' in source
     assert "TASK_GROUP_SELECT_WIDTH" in source
     assert "TASK_GROUP_DROPDOWN_WIDTH" in source
     assert "popupMatchSelectWidth={TASK_GROUP_DROPDOWN_WIDTH}" in source
-    assert "<Segmented" not in source[source.index("const taskQuickGroups"):source.index("dataSource={visibleTaskRows}")]
-    assert "dataSource={visibleTaskRows}" in source
-    assert "Table<TaskCenterTask>" in source
+    assert "dataSource={tasks}" in source
+    assert "Table<TaskCenterListItem>" in source
     assert "目标群聊" in source
     assert "关联频道" in source
 
@@ -2443,7 +2441,7 @@ def test_task_center_shows_account_coverage_for_active_tasks():
 def test_task_center_hides_delete_for_account_security_system_tasks():
     source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
 
-    assert "function canDeleteTask(task: TaskCenterTask)" in source
+    assert "function canDeleteTask(task: TaskCenterVisibleTask)" in source
     assert "canDeleteTask(task)" in source
     assert "openDangerTaskAction(task, 'delete')" in source
     assert "return canManageTasks && Boolean(task.id) && !isSystemTask(task);" in source
@@ -2452,9 +2450,9 @@ def test_task_center_hides_delete_for_account_security_system_tasks():
 def test_task_center_lifecycle_buttons_match_task_status():
     source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
 
-    assert "function canStartTask(task: TaskCenterTask)" in source
+    assert "function canStartTask(task: TaskCenterVisibleTask)" in source
     assert "return !isSystemTask(task) && task.status !== 'running';" in source
-    assert "function canPauseTask(task: TaskCenterTask)" in source
+    assert "function canPauseTask(task: TaskCenterVisibleTask)" in source
     assert "return !isSystemTask(task) && task.status === 'running';" in source
     assert "canManageTasks && canStartTask(task) &&" in source
     assert "canManageTasks && canPauseTask(task) &&" in source
@@ -2512,7 +2510,7 @@ def test_task_center_create_refreshes_after_long_timeout_and_capacity_summary_ty
 
     assert "const TASK_CREATE_TIMEOUT_MS = 120_000" in view
     assert "timeoutMs: TASK_CREATE_TIMEOUT_MS" in view
-    assert "await load();" in view
+    assert "await taskList.reload();" in view
     assert "capacity_summary" in types
     assert "容量口径" in wizard
     assert "最大并发" in wizard

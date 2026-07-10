@@ -9,6 +9,7 @@ pytestmark = pytest.mark.no_postgres
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TASK_CENTER_VIEW = PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx"
 TASK_CENTER_DETAIL_MODAL = PROJECT_ROOT / "frontend/src/app/views/TaskCenterDetailModal.tsx"
+TASK_LIST_HOOK = PROJECT_ROOT / "frontend/src/app/hooks/useTaskCenterListPage.ts"
 
 
 def _source() -> str:
@@ -26,17 +27,43 @@ def _function_body(source: str, function_name: str) -> str:
     return source[start:end]
 
 
+def test_task_center_uses_server_paged_list_query_and_global_facets():
+    assert TASK_LIST_HOOK.exists(), "missing paged task-list owner"
+    hook = TASK_LIST_HOOK.read_text()
+    view = _source()
+    types = (PROJECT_ROOT / "frontend/src/app/types/taskCenter.ts").read_text()
+
+    assert "export type TaskCenterListItem" in types
+    assert "export type TaskCenterListPage" in types
+    assert "api<TaskCenterListPage>(`/tasks/page?${params.toString()}`" in hook
+    for parameter in ["page", "page_size", "type", "status", "q", "group_key"]:
+        assert f"params.set('{parameter}'" in hook
+    assert "const controller = new AbortController();" in hook
+    assert "queryKey" in hook
+    assert "controllerRef.current?.abort();" in hook
+    assert "window.setInterval" in hook
+    assert "60000" in hook
+    assert "page: 1, type, groupKey: 'all'" in hook
+    assert "page: 1, q: q.trim(), groupKey: 'all'" in hook
+    assert "useTaskCenterListPage" in view
+    assert "api<TaskCenterTask[]>(`/tasks" not in view
+    assert "taskList.summary.total" in view
+    assert "taskList.groups" in view
+    assert "total: taskList.total" in view
+    assert "<Table<TaskCenterListItem>" in view
+
+
 def test_task_center_actions_distinguish_refresh_failure_from_write_failure():
     source = _source()
 
-    assert "async function fetchTaskListData(requestSeq: number, nextTaskTypeFilter: TaskTypeFilter = taskTypeFilter): Promise<boolean>" in source
     assert "async function refreshTaskListAfterAction(actionLabel: string)" in source
-    assert "async function refreshVisibleTaskAfterAction(actionLabel: string, task: TaskCenterTask)" in source
+    assert "async function refreshVisibleTaskAfterAction(actionLabel: string, task: TaskCenterVisibleTask)" in source
     assert "任务中心数据刷新失败" in source
     assert "操作已完成" in source
 
     list_helper = source[source.index("async function refreshTaskListAfterAction"):source.index("\n\n  async function refreshVisibleTaskAfterAction")]
-    assert "await fetchTaskListData(requestSeq);" in list_helper
+    assert "const refreshError = await taskList.reload();" in list_helper
+    assert "if (!refreshError) return;" in list_helper
     assert "setActionError(`任务中心数据刷新失败：" in list_helper
 
     detail_helper = source[source.index("async function refreshVisibleTaskAfterAction"):source.index("\n\n  async function ensureMessages")]
@@ -63,30 +90,19 @@ def test_task_center_actions_distinguish_refresh_failure_from_write_failure():
 
 
 def test_task_center_task_list_refreshes_ignore_stale_responses():
-    source = _source()
-    fetch_list = source[source.index("async function fetchTaskListData"):source.index("\n\n  async function load")]
-    load_list = source[source.index("async function load("):source.index("\n\n  async function refreshTaskListAfterAction")]
-    refresh_list = source[source.index("async function refreshTaskListAfterAction"):source.index("\n\n  async function refreshVisibleTaskAfterAction")]
+    hook = TASK_LIST_HOOK.read_text()
+    load_list = hook[hook.index("const load = React.useCallback"):hook.index("\n\n  const queryKey")]
 
-    assert "const activeTaskListRequestSeq = React.useRef(0);" in source
-    assert "function beginTaskListRequest()" in source
-    assert "activeTaskListRequestSeq.current += 1;" in source
-    assert "function isActiveTaskListRequest(requestSeq: number)" in source
-
-    assert "async function fetchTaskListData(requestSeq: number, nextTaskTypeFilter: TaskTypeFilter = taskTypeFilter): Promise<boolean>" in fetch_list
-    assert "const [taskData, schedulingData] = await Promise.all([" in fetch_list
-    assert "if (!isActiveTaskListRequest(requestSeq)) return false;" in fetch_list
-    assert fetch_list.index("if (!isActiveTaskListRequest(requestSeq)) return false;") < fetch_list.index("setTasks(taskData);")
-    assert fetch_list.index("setTasks(taskData);") < fetch_list.index("setSchedulingSetting(schedulingData);")
-
-    assert "const requestSeq = beginTaskListRequest();" in load_list
-    assert "await fetchTaskListData(requestSeq, nextTaskTypeFilter);" in load_list
-    assert "if (!isActiveTaskListRequest(requestSeq)) return;" in load_list
-    assert "if (isActiveTaskListRequest(requestSeq)) setLoading(false);" in load_list
-
-    assert "const requestSeq = beginTaskListRequest();" in refresh_list
-    assert "await fetchTaskListData(requestSeq);" in refresh_list
-    assert "if (!isActiveTaskListRequest(requestSeq)) return;" in refresh_list
+    assert "type TaskListRequest" in hook
+    assert "queryKey: string" in hook
+    assert "controllerRef.current?.abort();" in hook
+    assert "function isActiveRequest(" in hook
+    guard = "if (!isActiveRequest(requestRef, request)) return '';"
+    assert guard in load_list
+    assert load_list.index(guard) < load_list.index("setItems(page.items);")
+    assert load_list.index("setItems(page.items);") < load_list.index("setSchedulingSetting(scheduling);")
+    assert "if (isActiveRequest(requestRef, request)) setLoading(false);" in load_list
+    assert "window.clearInterval(timer);" in hook
 
 
 def test_task_center_row_actions_bind_busy_state_to_action_key():
@@ -236,7 +252,7 @@ def test_task_center_form_support_data_ignores_stale_requests():
     create_task = _function_body(source, "openCreateTask")
     edit_task = _function_body(source, "openEditTask")
     next_step = _function_body(source, "nextStep")
-    reset_type = source[source.index("function resetTypeFields"):source.index("\n\n  const table")]
+    reset_type = source[source.index("function resetTypeFields"):source.index("\n\n  const columns")]
 
     assert "const activeTaskFormSupportRequestSeq = React.useRef(0);" in source
     assert "function beginTaskFormSupportRequest()" in source
