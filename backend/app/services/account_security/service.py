@@ -48,7 +48,7 @@ from app.storage import media_root, object_path, save_avatar_bytes
 
 from .._common import _now, ai_gateway, audit, gateway, require_tenant
 from ..account_authorizations import attempt_standby_authorization_recovery, start_standby_authorization_login, verify_standby_authorization_login
-from .device_classification import classify_account_authorization_snapshots, cleanup_candidate_authorization_snapshots
+from .device_classification import classify_account_authorization_snapshots, cleanup_candidate_authorization_snapshots, cleanup_eligible_authorization_snapshots
 from ..account_two_fa import (
     MANAGED_TWO_FA_HINT,
     managed_two_fa_password,
@@ -473,7 +473,7 @@ def refresh_account_security(session: Session, tenant_id: int, account_id: int, 
     two_fa = gateway.get_two_fa_status(account.session_ciphertext, credentials)
     snapshot.trusted_session_status = "confirmed" if trusted else "missing"
     snapshot.two_fa_status = two_fa.status if two_fa.ok else "unknown"
-    snapshot.external_authorization_count = len(cleanup_candidate_authorization_snapshots(session, account))
+    snapshot.external_authorization_count = len(cleanup_eligible_authorization_snapshots(session, account))
     snapshot.last_device_scan_at = now_value
     snapshot.last_2fa_check_at = now_value
     snapshot.profile_status = _profile_status(account)

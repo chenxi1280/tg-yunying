@@ -2387,3 +2387,17 @@ def test_device_cleanup_candidates_block_non_normal_usage_but_classify_stays_rea
 
             assert classifications
             assert cleanup_candidates == []
+
+
+@pytest.mark.no_postgres
+def test_refresh_security_keeps_external_device_count_for_rank_deboost_readonly(monkeypatch):
+    with _session() as session:
+        _seed_account(session)
+        _seed_usage_pool(session, 3, "rank_deboost")
+        account = _seed_usage_account(session, 31, pool_id=3, account_identity="rank_deboost")
+        monkeypatch.setattr(account_security_service.gateway, "list_authorizations", lambda *_args, **_kwargs: _remote_cleanup_authorizations())
+
+        snapshot = refresh_account_security(session, 1, account.id, "tester")
+
+        assert snapshot.external_authorization_count == 2
+        assert cleanup_candidate_authorization_snapshots(session, account) == []

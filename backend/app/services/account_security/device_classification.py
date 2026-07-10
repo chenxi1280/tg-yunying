@@ -35,6 +35,13 @@ def cleanup_candidate_authorization_snapshots(
 ) -> list[TgAccountAuthorizationSnapshot]:
     if not _device_cleanup_allowed(session, account):
         return []
+    return cleanup_eligible_authorization_snapshots(session, account)
+
+
+def cleanup_eligible_authorization_snapshots(
+    session: Session,
+    account: TgAccount,
+) -> list[TgAccountAuthorizationSnapshot]:
     role_api_ids = _role_api_ids(session, account.id)
     _add_legacy_primary_api_id(account, role_api_ids)
     protected_hashes = _protected_authorization_hashes(session, account)
