@@ -11,6 +11,7 @@ from app.models import AccountPool, TgAccount
 
 AccountUsage = Literal["normal", "code_receiver", "rank_deboost", "mismatch"]
 VALID_ACCOUNT_USAGES = frozenset({"normal", "code_receiver", "rank_deboost"})
+DEDICATED_ACCOUNT_USAGES = frozenset({"code_receiver", "rank_deboost"})
 AUTHORIZATION_ASSET_ACTIONS = frozenset(
     {
         "login",
@@ -52,9 +53,20 @@ def account_usage(account: TgAccount, pool: AccountPool | None) -> AccountUsage:
     if account.tenant_id != pool.tenant_id:
         return "mismatch"
     purpose = str(pool.pool_purpose or "")
-    if purpose not in VALID_ACCOUNT_USAGES or account.account_identity != purpose:
+    if purpose not in VALID_ACCOUNT_USAGES or not _pool_markers_consistent(purpose, pool.system_key):
+        return "mismatch"
+    if account.account_identity != purpose:
         return "mismatch"
     return purpose  # type: ignore[return-value]
+
+
+def _pool_markers_consistent(purpose: str, system_key: str) -> bool:
+    key = str(system_key or "")
+    if key in DEDICATED_ACCOUNT_USAGES:
+        return key == purpose
+    if purpose in DEDICATED_ACCOUNT_USAGES:
+        return not key
+    return True
 
 
 def assert_account_action_allowed(account: TgAccount, pool: AccountPool | None, action_kind: str) -> AccountUsage:

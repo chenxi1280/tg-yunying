@@ -17,6 +17,7 @@ branch_labels = None
 depends_on = None
 
 VALID_ACCOUNT_USAGES = frozenset({"normal", "code_receiver", "rank_deboost"})
+DEDICATED_ACCOUNT_USAGES = frozenset({"code_receiver", "rank_deboost"})
 MISMATCH_USAGE = "account_purpose_mismatch"
 REVALIDATION_ERROR = "migration_requires_gateway_revalidation"
 
@@ -118,7 +119,9 @@ def _backfill_account_usage() -> None:
     metadata = sa.MetaData()
     accounts = sa.Table("tg_accounts", metadata, autoload_with=bind)
     pools = sa.Table("account_pools", metadata, autoload_with=bind)
-    pool_rows = bind.execute(sa.select(pools.c.id, pools.c.tenant_id, pools.c.pool_purpose)).mappings()
+    pool_rows = bind.execute(
+        sa.select(pools.c.id, pools.c.tenant_id, pools.c.pool_purpose, pools.c.system_key)
+    ).mappings()
     pool_by_id = {row["id"]: row for row in pool_rows}
     for account in bind.execute(sa.select(accounts.c.id, accounts.c.tenant_id, accounts.c.pool_id)).mappings():
         purpose = _backfilled_usage(account, pool_by_id.get(account["pool_id"]))
@@ -129,7 +132,18 @@ def _backfilled_usage(account: sa.RowMapping, pool: sa.RowMapping | None) -> str
     if pool is None or pool["tenant_id"] != account["tenant_id"]:
         return MISMATCH_USAGE
     purpose = str(pool["pool_purpose"] or "")
-    return purpose if purpose in VALID_ACCOUNT_USAGES else MISMATCH_USAGE
+    system_key = str(pool["system_key"] or "")
+    if purpose not in VALID_ACCOUNT_USAGES or not _pool_markers_consistent(purpose, system_key):
+        return MISMATCH_USAGE
+    return purpose
+
+
+def _pool_markers_consistent(purpose: str, system_key: str) -> bool:
+    if system_key in DEDICATED_ACCOUNT_USAGES:
+        return system_key == purpose
+    if purpose in DEDICATED_ACCOUNT_USAGES:
+        return not system_key
+    return True
 
 
 def _migrate_rank_task_scope() -> None:

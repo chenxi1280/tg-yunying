@@ -77,6 +77,26 @@ def test_account_usage_marks_missing_cross_tenant_and_projection_conflicts_as_mi
 
 
 @pytest.mark.parametrize(
+    ("purpose", "system_key"),
+    [
+        ("normal", "rank_deboost"),
+        ("rank_deboost", "code_receiver"),
+        ("code_receiver", "legacy_conflict"),
+    ],
+)
+def test_account_usage_and_direct_action_guard_fail_closed_on_pool_marker_conflicts(
+    purpose: str,
+    system_key: str,
+) -> None:
+    pool = AccountPool(id=90, tenant_id=1, name="conflict", pool_purpose=purpose, system_key=system_key)
+    account = _account(290, pool.id, purpose)
+    policy = _policy()
+    assert policy.account_usage(account, pool) == "mismatch"
+    with pytest.raises(ValueError, match="account_purpose_mismatch"):
+        policy.assert_account_action_allowed(account, pool, "message_send")
+
+
+@pytest.mark.parametrize(
     "action_kind",
     [
         "login",

@@ -8,7 +8,8 @@ import pytest
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from pydantic import ValidationError
-from sqlalchemy import JSON, Column, Integer, MetaData, String, Table, create_engine, inspect, select
+from sqlalchemy import JSON, Column, Integer, MetaData, String, Table, create_engine, func, inspect, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.database import Base
@@ -85,10 +86,25 @@ def _legacy_metadata() -> MetaData:
     metadata = MetaData()
     Table("tenants", metadata, Column("id", Integer, primary_key=True))
     Table("account_proxies", metadata, Column("id", Integer, primary_key=True))
-    Table("account_pools", metadata, Column("id", Integer, primary_key=True), Column("tenant_id", Integer), Column("pool_purpose", String(40)))
+    Table(
+        "account_pools",
+        metadata,
+        Column("id", Integer, primary_key=True),
+        Column("tenant_id", Integer),
+        Column("pool_purpose", String(40)),
+        Column("system_key", String(80)),
+    )
     Table("tg_accounts", metadata, Column("id", Integer, primary_key=True), Column("tenant_id", Integer), Column("pool_id", Integer), Column("account_identity", String(40)))
     Table("tasks", metadata, Column("id", String(36), primary_key=True), Column("tenant_id", Integer), Column("type", String(30)), Column("status", String(20)), Column("last_error", String(255)), Column("account_config", JSON), Column("type_config", JSON))
     Table("actions", metadata, Column("id", String(36), primary_key=True))
+    Table(
+        "search_rank_deboost_action_stats",
+        metadata,
+        Column("id", String(36), primary_key=True),
+        Column("tenant_id", Integer),
+        Column("task_id", String(36)),
+        Column("action_id", String(36)),
+    )
     Table("proxy_airport_nodes", metadata, Column("id", Integer, primary_key=True))
     Table("account_group_proxy_bindings", metadata, Column("id", Integer, primary_key=True), Column("status", String(30)))
     return metadata
@@ -97,17 +113,26 @@ def _legacy_metadata() -> MetaData:
 def _seed_legacy_rows(connection, metadata: MetaData) -> None:
     connection.execute(metadata.tables["tenants"].insert(), [{"id": 1}, {"id": 2}])
     connection.execute(metadata.tables["account_pools"].insert(), [
-        {"id": 10, "tenant_id": 1, "pool_purpose": "normal"},
-        {"id": 11, "tenant_id": 1, "pool_purpose": "rank_deboost"},
-        {"id": 20, "tenant_id": 2, "pool_purpose": "code_receiver"},
+        {"id": 10, "tenant_id": 1, "pool_purpose": "normal", "system_key": ""},
+        {"id": 11, "tenant_id": 1, "pool_purpose": "rank_deboost", "system_key": "rank_deboost"},
+        {"id": 20, "tenant_id": 2, "pool_purpose": "code_receiver", "system_key": "code_receiver"},
+        {"id": 21, "tenant_id": 1, "pool_purpose": "normal", "system_key": "rank_deboost"},
+        {"id": 22, "tenant_id": 1, "pool_purpose": "rank_deboost", "system_key": "code_receiver"},
+        {"id": 23, "tenant_id": 1, "pool_purpose": "code_receiver", "system_key": "legacy_conflict"},
     ])
     connection.execute(metadata.tables["tg_accounts"].insert(), [
         {"id": 1, "tenant_id": 1, "pool_id": 10, "account_identity": "rank_deboost"},
         {"id": 2, "tenant_id": 1, "pool_id": 11, "account_identity": "normal"},
         {"id": 3, "tenant_id": 1, "pool_id": 999, "account_identity": "normal"},
         {"id": 4, "tenant_id": 1, "pool_id": 20, "account_identity": "code_receiver"},
+        {"id": 5, "tenant_id": 1, "pool_id": 21, "account_identity": "normal"},
+        {"id": 6, "tenant_id": 1, "pool_id": 22, "account_identity": "rank_deboost"},
+        {"id": 7, "tenant_id": 1, "pool_id": 23, "account_identity": "code_receiver"},
     ])
     connection.execute(metadata.tables["account_group_proxy_bindings"].insert(), [{"id": 1, "status": "active"}])
+    connection.execute(metadata.tables["search_rank_deboost_action_stats"].insert(), [{
+        "id": "historical-stat", "tenant_id": 1, "task_id": "rank-running", "action_id": "historical-action",
+    }])
     connection.execute(metadata.tables["tasks"].insert(), [{
         "id": "rank-running", "tenant_id": 1, "type": "search_rank_deboost", "status": "running",
         "last_error": "", "account_config": {}, "type_config": {"account_pool_id": 11},
@@ -129,13 +154,18 @@ def test_migration_upgrades_sqlite_and_backfills_historical_state() -> None:
         accounts = connection.execute(select(reflected.tables["tg_accounts"])).mappings().all()
         task = connection.execute(select(reflected.tables["tasks"])).mappings().one()
         binding = connection.execute(select(reflected.tables["account_group_proxy_bindings"])).mappings().one()
+        reservation_count = connection.scalar(
+            select(func.count()).select_from(reflected.tables["search_rank_deboost_click_reservations"])
+        )
     assert {row["id"]: row["account_identity"] for row in accounts} == {
         1: "normal", 2: "rank_deboost", 3: "account_purpose_mismatch", 4: "account_purpose_mismatch",
+        5: "account_purpose_mismatch", 6: "account_purpose_mismatch", 7: "account_purpose_mismatch",
     }
     assert task["status"] == "paused"
     assert task["last_error"] == "migration_requires_gateway_revalidation"
     assert task["account_config"] == {"selection_mode": "group", "account_group_id": 11}
     assert binding["status"] == "needs_runtime_proxy"
+    assert reservation_count == 0
     assert inspect(engine).get_table_names().count("search_rank_deboost_click_reservations") == 1
 
 
@@ -154,6 +184,24 @@ def test_migration_downgrades_sqlite_runtime_proxy_foreign_key() -> None:
     assert "search_rank_deboost_click_reservations" not in inspect(engine).get_table_names()
 
 
+def test_migration_does_not_backfill_reservations_from_historical_stats() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    metadata = _legacy_metadata()
+    metadata.create_all(engine)
+    migration = _migration_module()
+    with engine.begin() as connection:
+        _seed_legacy_rows(connection, metadata)
+        migration.op = Operations(MigrationContext.configure(connection))
+        migration.upgrade()
+        reservations = Table(
+            "search_rank_deboost_click_reservations",
+            MetaData(),
+            autoload_with=connection,
+        )
+        reservation_count = connection.scalar(select(func.count()).select_from(reservations))
+    assert reservation_count == 0
+
+
 def test_reservation_defaults_are_persistable_on_sqlite() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -168,3 +216,21 @@ def test_reservation_defaults_are_persistable_on_sqlite() -> None:
         assert (item.reserved_count, item.consumed_count, item.status) == (None, None, None)
         session.flush()
         assert (item.reserved_count, item.consumed_count, item.status) == (1, 0, "reserved")
+
+
+def test_duplicate_reservation_action_id_raises_integrity_error() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    model = _reservation_model()
+    now = datetime.now()
+    values = {
+        "tenant_id": 1, "task_id": "task", "action_id": "duplicate-action", "account_id": 1,
+        "account_pool_id": 2, "keyword_hash": "hash", "local_date": date.today(),
+        "hour_bucket": now, "expires_at": now + timedelta(minutes=10),
+    }
+    with Session(engine) as session:
+        session.add(model(**values))
+        session.commit()
+        session.add(model(**values))
+        with pytest.raises(IntegrityError, match="UNIQUE constraint failed.*action_id"):
+            session.flush()
