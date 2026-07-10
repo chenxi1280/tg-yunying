@@ -94,6 +94,27 @@ def test_update_account_pool_rejects_disabling_current_default_pool() -> None:
         assert pool.is_enabled is True
 
 
+def test_update_account_pool_allows_unset_default_and_disable_in_same_patch() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        pool = AccountPool(id=1, tenant_id=1, name="默认池", is_default=True)
+        session.add(pool)
+        session.commit()
+        result = update_account_pool(
+            session,
+            pool.id,
+            AccountPoolUpdate(is_default=False, is_enabled=False, disable_reason="retired"),
+            "operator",
+        )
+        assert result["is_default"] is False
+        assert result["is_enabled"] is False
+        assert result["disabled_at"] is not None
+        assert result["disabled_by"] == "operator"
+        assert result["disable_reason"] == "retired"
+
+
 def test_update_account_pool_rejects_promoting_disabled_pool_to_default() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

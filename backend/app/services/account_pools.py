@@ -446,8 +446,6 @@ def _apply_pool_enabled_state(pool: AccountPool, is_enabled: bool, actor: str, r
 
 
 def _validate_pool_update_lifecycle(pool: AccountPool, data: dict) -> None:
-    if pool.is_default and data.get("is_enabled") is False:
-        raise ValueError("default account pool must be enabled")
     target_default = bool(data.get("is_default", pool.is_default))
     target_enabled = bool(data.get("is_enabled", pool.is_enabled))
     _assert_default_pool_enabled(target_default, target_enabled)
