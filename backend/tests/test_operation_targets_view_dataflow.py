@@ -104,7 +104,13 @@ def test_operation_targets_list_refreshes_ignore_stale_responses():
     assert "if (!isActiveRequest(identityRef, request)) return;" in load_targets
     assert load_targets.index("if (!isActiveRequest(identityRef, request)) return;") < load_targets.index("setTargets(result.targets);")
     assert "if (isActiveRequest(identityRef, request)) setLoading(false);" in load_targets
-    assert "if (!isActiveRequest(state.identityRef, request)) return;" in refresh_targets
+    refresh_guard = "if (!isActiveRequest(state.identityRef, request)) return;"
+    response_guard_index = refresh_targets.index(refresh_guard)
+    assert response_guard_index < refresh_targets.index("state.setTargets(result.targets);")
+    assert response_guard_index < refresh_targets.index("state.setTotal(result.total);")
+    catch_index = refresh_targets.index("catch (error)")
+    catch_guard_index = refresh_targets.index(refresh_guard, catch_index)
+    assert catch_guard_index < refresh_targets.index("setError(`运营目标数据刷新失败：", catch_index)
     assert "async function syncAllTargets" in source
 
 
