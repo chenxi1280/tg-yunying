@@ -96,9 +96,10 @@ def test_overview_target_workbench_uses_bounded_target_page_then_scoped_runtime_
     assert "const [targetPageQuery, setTargetPageQuery] = React.useState<TargetPageQuery>" in source
     assert "const [targetTotal, setTargetTotal] = React.useState(0);" in source
     assert "apiWithMeta<OperationTarget[]>(operationTargetPagePath(request.query)" in fetch_data
-    assert "const targetResponse = await targetRequest;" in fetch_data
+    assert "const targetRuntimeRequest = targetRequest.then(async (targetResponse) => {" in fetch_data
     assert "const runtimePath = targetRuntimeSummaryPath(targetResponse.data.map((target) => target.id));" in fetch_data
-    assert "api<TargetRuntimeSummary[]>(runtimePath, { signal: request.controller.signal })" in fetch_data
+    assert "const runtimeRequest = api<TargetRuntimeSummary[]>(runtimePath, requestOptions);" in fetch_data
+    assert "const [{ targetResponse, runtimeRows }, planRows, centerSummary, issueRows] = await Promise.all" in fetch_data
     assert "params.append('target_ids', String(targetId));" in source
     assert "params.append('target_ids', '');" in source
     assert "const responseTotal = operationTargetResponseTotal(targetResponse.headers);" in fetch_data
@@ -111,6 +112,24 @@ def test_overview_target_workbench_uses_bounded_target_page_then_scoped_runtime_
     workbench_end = source.index('</Table>', workbench_start) if '</Table>' in source[workbench_start:] else source.index('/>', workbench_start)
     assert "pagination={{ pageSize: 8 }}" not in source[workbench_start:workbench_end]
     assert "api<TargetRuntimeSummary[]>('/operation-targets/runtime-summary')" not in source
+
+
+def test_overview_starts_independent_reads_before_target_runtime_pipeline_waits():
+    source = _source()
+    fetch_data = _function_body(source, "fetchOperationData")
+
+    target_request = fetch_data.index("const targetRequest = apiWithMeta<OperationTarget[]>")
+    plan_request = fetch_data.index("const planRequest = api<OperationPlan[]>")
+    center_request = fetch_data.index("const centerRequest = api<OperationCenterSummary>")
+    issue_request = fetch_data.index("const issueRequest = api<OperationIssue[]>")
+    target_pipeline = fetch_data.index("const targetRuntimeRequest = targetRequest.then(async (targetResponse) => {")
+    final_wait = fetch_data.index("await Promise.all([targetRuntimeRequest, planRequest, centerRequest, issueRequest])")
+
+    assert max(target_request, plan_request, center_request, issue_request) < target_pipeline
+    assert "const runtimePath = targetRuntimeSummaryPath(targetResponse.data.map((target) => target.id));" in fetch_data[target_pipeline:final_wait]
+    assert "const runtimeRequest = api<TargetRuntimeSummary[]>(runtimePath" in fetch_data[target_pipeline:final_wait]
+    assert "const runtimeRows = await runtimeRequest;" in fetch_data[target_pipeline:final_wait]
+    assert target_pipeline < final_wait
 
 
 def test_overview_plan_target_selection_is_remote_and_not_bound_to_workbench_page():

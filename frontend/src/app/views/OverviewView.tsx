@@ -298,14 +298,16 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
   async function fetchOperationData(request: OperationDataRequest) {
     const requestOptions = { signal: request.controller.signal };
     const targetRequest = apiWithMeta<OperationTarget[]>(operationTargetPagePath(request.query), requestOptions);
-    const targetResponse = await targetRequest;
-    const runtimePath = targetRuntimeSummaryPath(targetResponse.data.map((target) => target.id));
-    const [planRows, centerSummary, runtimeRows, issueRows] = await Promise.all([
-      api<OperationPlan[]>('/operation-plans', requestOptions),
-      api<OperationCenterSummary>('/operation-center/overview', requestOptions),
-      api<TargetRuntimeSummary[]>(runtimePath, { signal: request.controller.signal }),
-      api<OperationIssue[]>('/operation-issues', requestOptions),
-    ]);
+    const planRequest = api<OperationPlan[]>('/operation-plans', requestOptions);
+    const centerRequest = api<OperationCenterSummary>('/operation-center/overview', requestOptions);
+    const issueRequest = api<OperationIssue[]>('/operation-issues', requestOptions);
+    const targetRuntimeRequest = targetRequest.then(async (targetResponse) => {
+      const runtimePath = targetRuntimeSummaryPath(targetResponse.data.map((target) => target.id));
+      const runtimeRequest = api<TargetRuntimeSummary[]>(runtimePath, requestOptions);
+      const runtimeRows = await runtimeRequest;
+      return { targetResponse, runtimeRows };
+    });
+    const [{ targetResponse, runtimeRows }, planRows, centerSummary, issueRows] = await Promise.all([targetRuntimeRequest, planRequest, centerRequest, issueRequest]);
     if (!isActiveOperationDataRequest(request)) return false;
     const responseTotal = operationTargetResponseTotal(targetResponse.headers);
     setPlans(planRows);
