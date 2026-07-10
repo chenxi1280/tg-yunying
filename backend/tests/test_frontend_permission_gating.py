@@ -1231,17 +1231,25 @@ def test_risk_control_overview_cards_and_account_actions_are_deep_linked():
     assert open_account_detail.index("goToView('accounts'") < open_account_detail.index("await openAccountDetail")
 
 
-def test_group_create_task_uses_peer_id_when_target_link_is_missing():
+def test_group_create_task_uses_bounded_linked_group_lookup_with_peer_fallback():
     app_shell = (PROJECT_ROOT / "frontend/src/app/AppShell.tsx").read_text()
     open_task = app_shell[
         app_shell.index("async function openTaskFromGroup"):
         app_shell.index("\n  const captchaControl", app_shell.index("async function openTaskFromGroup"))
     ]
 
+    assert "const params = new URLSearchParams" in open_task
+    assert "page: '1'" in open_task
+    assert "page_size: '1'" in open_task
+    assert "target_type: 'group'" in open_task
+    assert "linked_group_id: String(groupId)" in open_task
+    assert "api<OperationTarget[]>(`/operation-targets?${params.toString()}`)" in open_task
+    assert "targets[0]" in open_task
     assert "const group = groups.find((item) => item.id === groupId);" in open_task
-    assert "targets.find((item) => item.linked_group_id === groupId)" in open_task
-    assert "targets.find((item) => group?.tg_peer_id && item.tg_peer_id === group.tg_peer_id)" in open_task
-    assert open_task.index("linked_group_id === groupId") < open_task.index("item.tg_peer_id === group.tg_peer_id")
+    assert "fallbackParams.set('q', group.tg_peer_id);" in open_task
+    assert "fallbackParams.set('page_size', '20');" in open_task
+    assert "fallbackTargets.find((item) => item.tg_peer_id === group.tg_peer_id)" in open_task
+    assert "api<OperationTarget[]>('/operation-targets?target_type=group')" not in open_task
 
 
 def test_account_center_consumes_account_deep_link_query_on_load():

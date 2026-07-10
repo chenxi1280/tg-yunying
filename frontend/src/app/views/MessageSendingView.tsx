@@ -4,9 +4,11 @@ import { Alert, App as AntdApp, Button, Card, Col, DatePicker, Form, Input, Moda
 import type { ColumnsType } from 'antd/es/table';
 import { MessageSquareText, RefreshCcw, Send, ShieldAlert } from 'lucide-react';
 import { StatusBadge } from '../components/shared';
+import OperationTargetSelect from '../components/OperationTargetSelect';
 import type { Account, Contact, Material, MessageSendBatchCreate, MessageSendTarget, MessageSendingPrefill, MessageTask, MessageType, OperationTarget, RiskPreflight } from '../types';
 import { api, ApiError } from '../../shared/api/client';
 import { formatBeijingDateTime, fromBeijingDateTimeLocalValue } from '../time';
+import { mergeOperationTargets } from '../hooks/useOperationTargetOptions';
 
 type TargetType = 'private' | 'group' | 'channel';
 type Props = {
@@ -107,11 +109,9 @@ export default function MessageSendingView({
   const [preflight, setPreflight] = React.useState<RiskPreflight | null>(null);
   const [detailTask, setDetailTask] = React.useState<MessageTask | null>(null);
   const [error, setError] = React.useState('');
-  const [loadingTargets, setLoadingTargets] = React.useState(false);
   const [savingMaterial, setSavingMaterial] = React.useState(false);
   const [preflightLoading, setPreflightLoading] = React.useState(false);
   const messageContactsRequestRef = React.useRef({ accountId: undefined as number | undefined, seq: 0 });
-  const messageTargetsRequestRef = React.useRef({ accountId: undefined as number | undefined, seq: 0 });
   const preflightRequestRef = React.useRef({ seq: 0, payloadSignature: '' });
   const confirmedPreflightPayloadRef = React.useRef<{ payload: MessageSendBatchCreate | null; signature: string }>({ payload: null, signature: '' });
 
@@ -168,16 +168,6 @@ export default function MessageSendingView({
     return messageContactsRequestRef.current.accountId === targetAccountId && messageContactsRequestRef.current.seq === requestSeq;
   }
 
-  function beginMessageTargetsRequest(targetAccountId: number | undefined) {
-    const nextSeq = messageTargetsRequestRef.current.seq + 1;
-    messageTargetsRequestRef.current = { accountId: targetAccountId, seq: nextSeq };
-    return nextSeq;
-  }
-
-  function isActiveMessageTargetsRequest(targetAccountId: number | undefined, requestSeq: number) {
-    return messageTargetsRequestRef.current.accountId === targetAccountId && messageTargetsRequestRef.current.seq === requestSeq;
-  }
-
   React.useEffect(() => setLocalMaterials(materials), [materials]);
 
   React.useEffect(() => {
@@ -199,67 +189,23 @@ export default function MessageSendingView({
   React.useEffect(() => {
     if (!accountId) {
       beginMessageContactsRequest(undefined);
-      beginMessageTargetsRequest(undefined);
       setContacts([]);
-      setOperationTargets([]);
-      setLoadingTargets(false);
       return;
     }
     let active = true;
     const contactRequestSeq = beginMessageContactsRequest(accountId);
-    const targetRequestSeq = beginMessageTargetsRequest(accountId);
-    setLoadingTargets(true);
     setError('');
-    Promise.allSettled([
-      api<Contact[]>(`/tg-accounts/${accountId}/contacts`),
-      api<OperationTarget[]>(`/operation-targets?account_id=${accountId}`),
-    ]).then(([contactResult, targetResult]) => {
-      if (!active) return;
-      const errors: string[] = [];
-      if (isActiveMessageContactsRequest(accountId, contactRequestSeq)) {
-        if (contactResult.status === 'fulfilled') {
-          setContacts(contactResult.value);
-        } else {
-          setContacts([]);
-          errors.push(`读取账号联系人失败：${errorText(contactResult.reason)}`);
-        }
-      }
-      if (isActiveMessageTargetsRequest(accountId, targetRequestSeq)) {
-        if (targetResult.status === 'fulfilled') {
-          setOperationTargets(targetResult.value);
-          const allowedTargetKeys = new Set(targetResult.value.map((target) => `operation-target:${target.id}`));
-          setTargetKeys((current) => current.filter((key) => key.startsWith('manual:') || key.startsWith('private:') || allowedTargetKeys.has(key)));
-        } else {
-          setOperationTargets([]);
-          setTargetKeys((current) => current.filter((key) => key.startsWith('manual:') || key.startsWith('private:')));
-          errors.push(`读取运营目标失败：${errorText(targetResult.reason)}`);
-        }
-      }
-      if (isActiveMessageContactsRequest(accountId, contactRequestSeq) || isActiveMessageTargetsRequest(accountId, targetRequestSeq)) setError(errors.join('；'));
-    }).finally(() => {
-      if (active && (isActiveMessageContactsRequest(accountId, contactRequestSeq) || isActiveMessageTargetsRequest(accountId, targetRequestSeq))) setLoadingTargets(false);
-    });
+    api<Contact[]>(`/tg-accounts/${accountId}/contacts`)
+      .then((items) => {
+        if (!active || !isActiveMessageContactsRequest(accountId, contactRequestSeq)) return;
+        setContacts(items);
+      })
+      .catch((contactError: unknown) => {
+        if (!active || !isActiveMessageContactsRequest(accountId, contactRequestSeq)) return;
+        setContacts([]);
+        setError(`读取账号联系人失败：${errorText(contactError)}`);
+      });
     return () => { active = false; };
-  }, [accountId]);
-
-  React.useEffect(() => {
-    if (!accountId) return undefined;
-    function loadOperationTargets() {
-      const requestSeq = beginMessageTargetsRequest(accountId);
-      api<OperationTarget[]>(`/operation-targets?account_id=${accountId}`)
-        .then((items) => {
-          if (!isActiveMessageTargetsRequest(accountId, requestSeq)) return;
-          setOperationTargets(items);
-          const allowedTargetKeys = new Set(items.map((target) => `operation-target:${target.id}`));
-          setTargetKeys((current) => current.filter((key) => key.startsWith('manual:') || key.startsWith('private:') || allowedTargetKeys.has(key)));
-        })
-        .catch((err: unknown) => {
-          if (isActiveMessageTargetsRequest(accountId, requestSeq)) setError(`刷新运营目标失败：${errorText(err)}`);
-        });
-    }
-
-    const timer = window.setInterval(loadOperationTargets, 60000);
-    return () => window.clearInterval(timer);
   }, [accountId]);
 
   React.useEffect(() => {
@@ -275,6 +221,23 @@ export default function MessageSendingView({
 
   const onlineAccounts = accounts.filter((account) => account.status === '在线' && !account.deleted_at);
   const selectedAccount = onlineAccounts.find((account) => account.id === accountId);
+  const selectedOperationTargetIds = React.useMemo(
+    () => targetKeys
+      .filter((key) => key.startsWith('operation-target:'))
+      .map((key) => Number(key.split(':')[1]))
+      .filter((id) => Number.isSafeInteger(id) && id > 0),
+    [targetKeys],
+  );
+  const mergeLoadedTargets = React.useCallback((loadedTargets: readonly OperationTarget[]) => {
+    setOperationTargets((current) => mergeOperationTargets(current, loadedTargets));
+  }, []);
+  const updateOperationTargetIds = React.useCallback((value: number | number[] | undefined) => {
+    const ids = Array.isArray(value) ? value : value ? [value] : [];
+    setTargetKeys((current) => [
+      ...current.filter((key) => !key.startsWith('operation-target:')),
+      ...ids.map((id) => `operation-target:${id}`),
+    ]);
+  }, []);
   const accountLabel = React.useCallback((id?: number | null) => {
     const account = accounts.find((item) => item.id === id);
     return account ? `${account.display_name}${account.username ? ` / @${account.username}` : ''}` : '-';
@@ -622,8 +585,8 @@ export default function MessageSendingView({
                   value={accountId}
                   onChange={(value) => {
                     setAccountId(value);
-                    setTargetKeys((current) => current.filter((key) => key.startsWith('manual:')));
-                    setManualTargets((current) => current.filter((option) => option.value.startsWith('manual:')));
+                    setTargetKeys((current) => current.filter((key) => key.startsWith('manual:') || key.startsWith('operation-target:')));
+                    setManualTargets((current) => current.filter((option) => option.value.startsWith('manual:') || option.value.startsWith('operation-target:')));
                   }}
                   filterOption={optionFilter}
                   options={onlineAccounts.map((account) => ({
@@ -635,22 +598,34 @@ export default function MessageSendingView({
             </Col>
             <Col xs={24} md={14}>
               <Form.Item label="发送目标">
-                <Space.Compact style={{ width: '100%' }}>
+                <Space direction="vertical" style={{ width: '100%' }}>
                   <Select
                     mode="multiple"
                     showSearch
                     allowClear
                     style={{ width: '100%' }}
-                    loading={loadingTargets}
-                    placeholder={accountId ? '搜索并多选个人、群聊、频道' : '先选择账号'}
-                    value={targetKeys}
-                    onChange={setTargetKeys}
+                    placeholder={accountId ? '搜索并多选联系人或手动个人目标' : '先选择账号'}
+                    value={targetKeys.filter((key) => !key.startsWith('operation-target:'))}
+                    onChange={(keys) => setTargetKeys((current) => [
+                      ...current.filter((key) => key.startsWith('operation-target:')),
+                      ...keys,
+                    ])}
                     filterOption={optionFilter}
                     disabled={!accountId}
-                    options={targetOptions}
+                    options={targetOptions.filter((option) => !option.value.startsWith('operation-target:'))}
                   />
+                  {accountId && <OperationTargetSelect
+                    mode="multiple"
+                    allowClear
+                    style={{ width: '100%' }}
+                    placeholder="远程搜索并多选可发送群聊、频道"
+                    value={selectedOperationTargetIds}
+                    query={{ accountId, capability: 'send' }}
+                    onChange={updateOperationTargetIds}
+                    onTargetsLoaded={mergeLoadedTargets}
+                  />}
                   <Button disabled={!accountId} onClick={() => setManualOpen(true)}>手动</Button>
-                </Space.Compact>
+                </Space>
               </Form.Item>
             </Col>
           </Row>

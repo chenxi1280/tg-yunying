@@ -62,6 +62,8 @@ def test_rules_center_data_refreshes_ignore_stale_responses():
     assert "rulesCenterDataRequestSeq.current += 1;" in source
     assert "function isActiveRulesCenterDataRequest(requestSeq: number)" in source
     assert "async function fetchRulesCenterData(requestSeq: number)" in source
+    assert "api<OperationTarget[]>('/operation-targets?target_type=group')" not in fetch_data
+    assert "const [nextSummary, nextRuleSets, nextRelayReport] = await Promise.all([" in fetch_data
 
     stale_guard = "if (!isActiveRulesCenterDataRequest(requestSeq)) return false;"
     assert stale_guard in fetch_data
@@ -80,6 +82,19 @@ def test_rules_center_data_refreshes_ignore_stale_responses():
     refresh_error_guard = "if (!isActiveRulesCenterDataRequest(requestSeq)) return;"
     assert refresh_error_guard in refresh_data
     assert refresh_data.index(refresh_error_guard) < refresh_data.index("setError(`规则中心数据刷新失败：")
+
+
+def test_rules_center_loads_remote_targets_only_inside_edit_modals():
+    view = _source()
+    config = (PROJECT_ROOT / "frontend/src/app/views/RulesCenterConfig.tsx").read_text()
+
+    assert "import OperationTargetSelect" in config
+    assert "query={{ targetType: 'group', capability: 'send' }}" in config
+    assert "onTargetsLoaded={onTargetsLoaded}" in config
+    assert "createOpen && <RuleSetForm" in view
+    assert "configTarget && <RuleSetForm" in view
+    assert "mergeOperationTargets(current, loadedTargets)" in view
+    assert "visual_default_target_group_ids" in config
 
 
 def test_rules_center_rule_test_ignores_stale_payload_results():

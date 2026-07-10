@@ -4,18 +4,19 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_archives_view_separates_target_load_error_from_archive_refresh_error():
+def test_archives_view_lazily_loads_bounded_archive_targets():
     source = (PROJECT_ROOT / "frontend/src/app/views/ArchivesView.tsx").read_text()
     create_block = source[source.index("async function createArchiveFromTarget"):source.index("\n\n  return (")]
-    target_load_block = source[source.index("React.useEffect(() => {"):source.index("\n\n  async function openDetail")]
 
     assert "const [archiveRefreshError, setArchiveRefreshError] = React.useState('');" in source
     assert 'message="归档列表刷新失败"' in source
-    assert "setTargetError(" in target_load_block
-    assert "setArchiveRefreshError(" not in target_load_block
+    assert "api<OperationTarget[]>('/operation-targets?target_type=group')" not in source
+    assert "import OperationTargetSelect" in source
+    assert "createOpen && <OperationTargetSelect" in source
+    assert "query={{ targetType: 'group', capability: 'archive' }}" in source
+    assert "destroyOnHidden" in source
     assert "setArchiveRefreshError('');" in create_block
     assert "setArchiveRefreshError(error instanceof Error ? error.message : String(error));" in create_block
-    assert "setTargetError(error instanceof Error ? error.message : String(error));" not in create_block
 
 
 def test_archive_detail_failure_closes_local_detail_modal():

@@ -1,7 +1,9 @@
 import React from 'react';
-import { Alert, App as AntdApp, Button, Card, Descriptions, Empty, Input, List, Modal, Select, Space, Typography } from 'antd';
+import { Alert, App as AntdApp, Button, Card, Descriptions, Empty, Input, List, Modal, Space, Typography } from 'antd';
 import type { ArchiveItem, ArchiveDetail, OperationTarget } from '../types';
 import { StatusBadge } from '../components/shared';
+import OperationTargetSelect from '../components/OperationTargetSelect';
+import { mergeOperationTargets } from '../hooks/useOperationTargetOptions';
 import { statusAccent } from '../utils';
 import { api } from '../../shared/api/client';
 
@@ -23,21 +25,14 @@ export default function ArchivesView({ archives, archiveDetail, onOpenArchiveDet
   const [selectedTargetId, setSelectedTargetId] = React.useState<number | undefined>();
   const [archiveTitle, setArchiveTitle] = React.useState('');
   const [creating, setCreating] = React.useState(false);
-  const [targetError, setTargetError] = React.useState('');
   const [archiveRefreshError, setArchiveRefreshError] = React.useState('');
   const [createError, setCreateError] = React.useState('');
   const detailRequestSeq = React.useRef(0);
   const detailArchive = archives.find((archive) => archive.id === detailArchiveId) ?? null;
   const currentDetail = archiveDetail?.archive.id === detailArchiveId ? archiveDetail : null;
   const archiveTargets = targets.filter((target) => target.target_type === 'group' && target.can_archive && target.linked_group_id);
-
-  React.useEffect(() => {
-    api<OperationTarget[]>('/operation-targets?target_type=group')
-      .then(setTargets)
-      .catch((error: unknown) => {
-        setTargets([]);
-        setTargetError(error instanceof Error ? error.message : String(error));
-      });
+  const mergeLoadedTargets = React.useCallback((loadedTargets: readonly OperationTarget[]) => {
+    setTargets((current) => mergeOperationTargets(current, loadedTargets));
   }, []);
 
   async function openDetail(archive: ArchiveItem) {
@@ -95,7 +90,6 @@ export default function ArchivesView({ archives, archiveDetail, onOpenArchiveDet
           </Space>
         )}
       >
-        {targetError && <Alert className="form-alert" type="error" showIcon message="归档目标加载失败" description={targetError} />}
         {archiveRefreshError && <Alert className="form-alert" type="error" showIcon message="归档列表刷新失败" description={archiveRefreshError} />}
         <div className="cards-grid">
           {!archives.length && <Empty description="暂无群聊归档" />}
@@ -169,27 +163,25 @@ export default function ArchivesView({ archives, archiveDetail, onOpenArchiveDet
         onOk={createArchiveFromTarget}
         confirmLoading={creating}
         okText="创建"
+        destroyOnHidden
       >
         <Space direction="vertical" style={{ width: '100%' }}>
           <Typography.Text type="secondary">归档目标来自已确认的运营目标，并会回查关联群资产。</Typography.Text>
           {createError && <Alert type="error" showIcon message="归档创建失败" description={createError} />}
-          <Select
-            showSearch
+          {createOpen && <OperationTargetSelect
             allowClear
             style={{ width: '100%' }}
             placeholder="选择可归档运营目标"
             value={selectedTargetId}
+            query={{ targetType: 'group', capability: 'archive' }}
+            onTargetsLoaded={mergeLoadedTargets}
             onChange={(value) => {
-              setSelectedTargetId(value);
-              const target = targets.find((item) => item.id === value);
+              const targetId = Array.isArray(value) ? value[0] : value;
+              setSelectedTargetId(targetId);
+              const target = archiveTargets.find((item) => item.id === targetId);
               if (target) setArchiveTitle(`${target.title} 内容与成员归档`);
             }}
-            options={archiveTargets.map((target) => ({
-              value: target.id,
-              label: `${target.title} / 可发账号 ${target.available_send_account_count} / 监听账号 ${target.listener_account_count}`,
-            }))}
-            filterOption={(input, option) => String(option?.label ?? '').toLowerCase().includes(input.toLowerCase())}
-          />
+          />}
           <Input value={archiveTitle} onChange={(event) => setArchiveTitle(event.target.value)} placeholder="归档标题" />
         </Space>
       </Modal>
