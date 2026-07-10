@@ -35,6 +35,12 @@ class AccountPoolCreate(BaseModel):
         return self
 
 
+class RankDeboostAccountPoolCreate(BaseModel):
+    tenant_id: int = 1
+    name: str = Field(min_length=1, max_length=120)
+    description: str = Field(default="", max_length=255)
+
+
 class AccountPoolUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
@@ -470,7 +476,7 @@ class AccountPoolDetailOut(BaseModel):
 
 
 __all__ = [
-    "TgAccountCreate", "AccountPoolCreate", "AccountPoolUpdate",
+    "TgAccountCreate", "AccountPoolCreate", "RankDeboostAccountPoolCreate", "AccountPoolUpdate",
     "MoveAccountPoolRequest", "AccountIdentityUpdate", "TgAccountProfileUpdate",
     "LoginStartRequest", "LoginVerifyRequest", "SensitiveActionReasonRequest", "AccountClonePlanCreate",
     "AccountAuthorizationLoginStartRequest", "AccountAuthorizationLoginVerifyRequest",

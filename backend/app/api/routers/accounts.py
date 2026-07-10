@@ -108,7 +108,10 @@ def post_account(
     require_core_feature_access(current_user)
     tenant_id = resolve_tenant_id(current_user, payload.tenant_id)
     try:
-        return account_out_for_user(create_account(session, payload.model_copy(update={"tenant_id": tenant_id})), current_user)
+        return account_out_for_user(
+            create_account(session, payload.model_copy(update={"tenant_id": tenant_id}), current_user.name),
+            current_user,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

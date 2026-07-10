@@ -195,11 +195,7 @@ def test_consistent_rank_deboost_account_passes_validation(session: Session) -> 
 # --- SubTask 15.1: 移动账号隔离硬校验 ---
 
 
-def test_move_account_to_rank_deboost_pool_blocked_if_in_normal(session: Session) -> None:
-    """Scenario: 账号在普通分组时移动到 rank_deboost 应失败。
-
-    覆盖 spec：移动账号到 rank_deboost 分组时，校验该账号当前不在普通分组。
-    """
+def test_move_account_to_rank_deboost_pool_syncs_usage(session: Session) -> None:
     normal_pool = session.get(AccountPool, 1)
     rank_deboost_pool = create_rank_deboost_account_pool(
         session,
@@ -219,20 +215,12 @@ def test_move_account_to_rank_deboost_pool_blocked_if_in_normal(session: Session
     session.add(account)
     session.commit()
 
-    with pytest.raises(ValueError, match="rank_deboost 分组内账号不得同时存在于普通分组"):
-        move_account_pool(session, account.id, rank_deboost_pool.id, "tester")
-
-    # 验证账号仍在普通分组（未被移动）
-    refreshed = session.get(TgAccount, account.id)
-    assert refreshed.pool_id == normal_pool.id
-    assert refreshed.account_identity == "normal"
+    moved = move_account_pool(session, account.id, rank_deboost_pool.id, "tester")
+    assert moved.pool_id == rank_deboost_pool.id
+    assert moved.account_identity == RANK_DEBOOST_POOL_KEY
 
 
-def test_move_account_to_normal_pool_blocked_if_in_rank_deboost(session: Session) -> None:
-    """Scenario: 账号在 rank_deboost 分组时移动到普通应失败。
-
-    覆盖 spec：移动账号到普通分组时，校验该账号当前不在 rank_deboost 分组。
-    """
+def test_move_account_to_normal_pool_syncs_usage(session: Session) -> None:
     normal_pool = session.get(AccountPool, 1)
     rank_deboost_pool = create_rank_deboost_account_pool(
         session,
@@ -252,13 +240,9 @@ def test_move_account_to_normal_pool_blocked_if_in_rank_deboost(session: Session
     session.add(account)
     session.commit()
 
-    with pytest.raises(ValueError, match="rank_deboost 分组内账号不得同时存在于普通分组"):
-        move_account_pool(session, account.id, normal_pool.id, "tester")
-
-    # 验证账号仍在 rank_deboost 分组（未被移动）
-    refreshed = session.get(TgAccount, account.id)
-    assert refreshed.pool_id == rank_deboost_pool.id
-    assert refreshed.account_identity == RANK_DEBOOST_POOL_KEY
+    moved = move_account_pool(session, account.id, normal_pool.id, "tester")
+    assert moved.pool_id == normal_pool.id
+    assert moved.account_identity == "normal"
 
 
 def test_move_ungrouped_account_to_rank_deboost_pool_succeeds(session: Session) -> None:

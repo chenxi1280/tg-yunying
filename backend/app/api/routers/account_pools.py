@@ -14,9 +14,11 @@ from app.repositories.tenant import require_resource_tenant
 from app.schemas import (
     AccountPoolCreate, AccountPoolDetailOut, AccountPoolOut, AccountPoolUpdate,
     ContactOut, DirectMessageTaskCreate, MessageTaskOut,
+    RankDeboostAccountPoolCreate,
 )
 from app.services import (
     account_pool_contacts, account_pool_detail, account_pool_snapshot, create_account_pool,
+    create_rank_deboost_account_pool,
     create_pool_direct_message_task, ensure_code_receiver_account_pool, ensure_rank_deboost_account_pool,
     list_account_pools, update_account_pool,
 )
@@ -62,15 +64,46 @@ def post_code_receiver_account_pool(
 
 @router.post("/api/account-pools/rank-deboost", response_model=AccountPoolOut)
 def post_rank_deboost_account_pool(
+    payload: RankDeboostAccountPoolCreate | None = None,
     tenant_id: int | None = None,
     session: Session = Depends(get_session),
     current_user: CurrentUser = Depends(get_current_user),
 ) -> dict:
     require_core_feature_access(current_user)
-    pool = ensure_rank_deboost_account_pool(session, resolve_tenant_id(current_user, tenant_id))
-    session.commit()
-    session.refresh(pool)
-    return account_pool_snapshot(session, pool)
+    requested_tenant_id = payload.tenant_id if payload else tenant_id
+    resolved_tenant_id = resolve_tenant_id(current_user, requested_tenant_id)
+    try:
+        if payload:
+            pool = create_rank_deboost_account_pool(
+                session,
+                tenant_id=resolved_tenant_id,
+                name=payload.name,
+                description=payload.description,
+                actor=current_user.name,
+            )
+            return account_pool_snapshot(session, pool)
+        pool = ensure_rank_deboost_account_pool(session, resolved_tenant_id)
+        session.commit()
+        session.refresh(pool)
+        return account_pool_snapshot(session, pool)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/api/account-pools/rank-deboost/default", response_model=AccountPoolOut)
+def post_default_rank_deboost_account_pool(
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    require_core_feature_access(current_user)
+    try:
+        pool = ensure_rank_deboost_account_pool(session, resolve_tenant_id(current_user, tenant_id))
+        session.commit()
+        session.refresh(pool)
+        return account_pool_snapshot(session, pool)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.patch("/api/account-pools/{pool_id}", response_model=AccountPoolOut)

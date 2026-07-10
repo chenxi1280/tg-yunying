@@ -42,6 +42,7 @@ from .account_profile_auto_init import queue_login_profile_initialization
 from .account_search import filter_accounts_by_search
 from .account_two_fa import record_managed_two_fa_password, rotate_managed_two_fa_after_login
 from .developer_apps import credentials_for_account, first_assignable_developer_app
+from .dedicated_account_pools import validate_account_pool_admission
 from .tenants import ensure_account_quota_available
 from .verification import list_verification_tasks, create_verification_task
 from .account_pools import account_pool_snapshot, ensure_default_account_pool, seed_account_pools
@@ -133,13 +134,9 @@ def create_account(session: Session, payload: TgAccountCreate, actor: str = "普
     if not first_assignable_developer_app(session):
         raise ValueError("请先在开发者应用中配置可用的 Telegram api_id/api_hash，再新增 TG 账号")
     data = payload.model_dump(exclude={"phone_number"})
-    pool_id = data.get("pool_id")
-    if pool_id:
-        pool = session.get(AccountPool, pool_id)
-        if not pool or pool.tenant_id != payload.tenant_id:
-            raise ValueError("account pool not found")
-    else:
-        data["pool_id"] = ensure_default_account_pool(session, payload.tenant_id).id
+    pool = _account_creation_pool(session, payload.tenant_id, data.get("pool_id"))
+    data["pool_id"] = pool.id
+    data["account_identity"] = pool.pool_purpose
     phone_number = (payload.phone_number or "").strip()
     if phone_number:
         data["phone_ciphertext"] = encrypt_secret(phone_number)
@@ -164,6 +161,16 @@ def create_account(session: Session, payload: TgAccountCreate, actor: str = "普
     session.commit()
     session.refresh(account)
     return account
+
+
+def _account_creation_pool(session: Session, tenant_id: int, pool_id: int | None) -> AccountPool:
+    if pool_id is None:
+        pool_id = ensure_default_account_pool(session, tenant_id).id
+    pool = session.scalar(select(AccountPool).where(AccountPool.id == pool_id).with_for_update())
+    if pool is None or pool.tenant_id != tenant_id:
+        raise ValueError("account pool not found")
+    validate_account_pool_admission(pool)
+    return pool
 
 
 def _sync_account_id_sequence(session: Session) -> None:
