@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.services.account_capacity import account_capacity_decision, available_accounts_by_capacity
 from app.models import (
+    AccountPool,
     AccountStatus,
     Campaign,
     FailureType,
@@ -38,6 +39,7 @@ from app.schemas import DirectMessageTaskCreate, MessageSendBatchCreate, Message
 from app.schemas.risk_control import RiskPreflightRequest
 
 from .accounts import find_account_contact
+from .account_usage_policy import apply_operational_account_filters, assert_account_action_allowed
 from .developer_apps import credentials_for_account
 from .tenants import ensure_task_quota_available
 from .verification import create_verification_task
@@ -193,9 +195,18 @@ def _resolve_send_account(session: Session, account_id: int, tenant_id: int | No
         raise ValueError("发送账号不属于当前租户")
     if account.status != AccountStatus.ACTIVE.value:
         raise ValueError("请选择已在线的发送账号")
-    if account.account_identity == CODE_RECEIVER_IDENTITY:
-        raise ValueError("接码专用账号不参与消息发送")
+    _ensure_message_send_usage(session, account)
     return account
+
+
+def _ensure_message_send_usage(session: Session, account: TgAccount) -> None:
+    pool = session.get(AccountPool, account.pool_id) if account.pool_id else None
+    try:
+        assert_account_action_allowed(account, pool, "message_send")
+    except ValueError as exc:
+        if account.account_identity == CODE_RECEIVER_IDENTITY:
+            raise ValueError("接码专用账号不参与消息发送") from exc
+        raise ValueError(str(exc)) from exc
 
 
 def _resolve_message_target(session: Session, account: TgAccount, target: MessageSendTarget | MessageSendTaskCreate) -> tuple[str, str | None, str, int | None]:
@@ -501,8 +512,7 @@ def create_direct_message_task(session: Session, account_id: int, payload: Direc
     account = session.get(TgAccount, account_id)
     if not account or account.deleted_at is not None:
         raise ValueError("account not found")
-    if account.account_identity == CODE_RECEIVER_IDENTITY:
-        raise ValueError("接码专用账号不参与消息发送")
+    _ensure_message_send_usage(session, account)
     contact = find_account_contact(session, account, payload.target_peer_id)
     if not contact:
         raise ValueError("请先同步联系人或群友，并从列表中选择发送对象")
@@ -660,6 +670,9 @@ def choose_account(session: Session, task: MessageTask) -> tuple[TgAccount | Non
         account = session.get(TgAccount, fixed_account_id) if fixed_account_id else None
         if not account or account.deleted_at is not None or account.tenant_id != task.tenant_id or account.status != AccountStatus.ACTIVE.value:
             return None, FailureType.ACCOUNT_UNAVAILABLE.value, "账号不可用"
+        usage_error = _message_send_usage_error(session, account)
+        if usage_error:
+            return None, FailureType.ACCOUNT_UNAVAILABLE.value, usage_error
         if task.group_id:
             group = session.get(TgGroup, task.group_id)
             if not group:
@@ -705,13 +718,21 @@ def choose_account(session: Session, task: MessageTask) -> tuple[TgAccount | Non
             if preferred
             else None
         )
-        if preferred and link and preferred.deleted_at is None and preferred.tenant_id == task.tenant_id and preferred.status == AccountStatus.ACTIVE.value:
+        preferred_usable = (
+            preferred
+            and link
+            and preferred.deleted_at is None
+            and preferred.tenant_id == task.tenant_id
+            and preferred.status == AccountStatus.ACTIVE.value
+            and not _message_send_usage_error(session, preferred)
+        )
+        if preferred_usable:
             if preferred.developer_app and preferred.developer_app.credentials_version > preferred.developer_app_version:
                 preferred.status = AccountStatus.NEED_RELOGIN.value
             elif not link.last_sent_at or (_as_utc(link.last_sent_at) + timedelta(seconds=group.account_cooldown_seconds)) <= now_value:
                 return preferred, None, None
 
-    stmt = (
+    stmt = apply_operational_account_filters(
         select(TgAccount)
         .join(TgGroupAccount, TgGroupAccount.account_id == TgAccount.id)
         .where(
@@ -739,6 +760,14 @@ def choose_account(session: Session, task: MessageTask) -> tuple[TgAccount | Non
                 continue
         return account, None, None
     return None, FailureType.ACCOUNT_UNAVAILABLE.value, "没有可用于该群的在线账号，或账号仍处于冷却中"
+
+
+def _message_send_usage_error(session: Session, account: TgAccount) -> str:
+    try:
+        _ensure_message_send_usage(session, account)
+    except ValueError as exc:
+        return str(exc)
+    return ""
 
 
 def dispatch_task(session_factory, task_id: int) -> MessageTask:

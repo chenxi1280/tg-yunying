@@ -10,6 +10,7 @@ from app.models import AccountStatus, SearchRankDeboostExemptGroup, Task, TgAcco
 from app.models.search_rank_deboost import AccountGroupProxyBinding
 from app.security import encrypt_secret
 from app.services._common import _now
+from app.services.account_usage_policy import apply_rank_deboost_account_filters
 from app.services.search_rank_deboost_alerts import record_exempt_group_missing_alert
 from app.services.task_center.payloads import SearchRankDeboostPayload, create_search_rank_deboost_action
 
@@ -251,17 +252,15 @@ def _hash_keyword(text: str) -> str:
 
 
 def _rank_deboost_pool_accounts(session: Session, tenant_id: int, account_pool_id: int) -> list[TgAccount]:
-    return list(
-        session.scalars(
-            select(TgAccount).where(
-                TgAccount.tenant_id == tenant_id,
-                TgAccount.pool_id == account_pool_id,
-                TgAccount.deleted_at.is_(None),
-                TgAccount.status == AccountStatus.ACTIVE.value,
-                TgAccount.account_identity == "rank_deboost",
-            ).order_by(TgAccount.id.asc())
+    stmt = apply_rank_deboost_account_filters(
+        select(TgAccount).where(
+            TgAccount.tenant_id == tenant_id,
+            TgAccount.pool_id == account_pool_id,
+            TgAccount.deleted_at.is_(None),
+            TgAccount.status == AccountStatus.ACTIVE.value,
         )
     )
+    return list(session.scalars(stmt.order_by(TgAccount.id.asc())))
 
 
 def _active_group_binding(session: Session, tenant_id: int, account_pool_id: int) -> AccountGroupProxyBinding | None:

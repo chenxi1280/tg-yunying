@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.models import AccountStatus, GroupAuthStatus, ListenerSourceState, Task, TgAccount, TgGroup, TgGroupAccount
 from app.services._common import _now, audit
+from app.services.account_usage_policy import apply_operational_account_filters
 from app.services.group_listeners import collect_group_context
 
 from .account_pool import select_task_accounts
@@ -207,7 +208,7 @@ def _drain_listener_source(session: Session, source: ListenerRuntimeSource, resu
 
 
 def _recover_group_listener_account(session: Session, group: TgGroup, account_id: int) -> bool:
-    active_listener_count = session.scalar(
+    active_listener_stmt = (
         select(TgGroupAccount.id)
         .join(TgAccount, TgAccount.id == TgGroupAccount.account_id)
         .where(
@@ -215,12 +216,11 @@ def _recover_group_listener_account(session: Session, group: TgGroup, account_id
             TgGroupAccount.group_id == group.id,
             TgGroupAccount.is_listener.is_(True),
             TgAccount.status == AccountStatus.ACTIVE.value,
-            TgAccount.account_identity != "code_receiver",
-            TgAccount.account_identity != "rank_deboost",
             TgAccount.deleted_at.is_(None),
         )
         .limit(1)
     )
+    active_listener_count = session.scalar(apply_operational_account_filters(active_listener_stmt))
     if active_listener_count and not group.listener_last_error:
         return False
     link = session.scalar(
@@ -352,23 +352,20 @@ def _naive_datetime(value):
 
 
 def _source_group_account_ids(session: Session, tenant_id: int, group_id: int) -> list[int]:
-    return list(
-        session.scalars(
-            select(TgAccount.id)
-            .join(TgGroupAccount, TgGroupAccount.account_id == TgAccount.id)
-            .where(
-                TgGroupAccount.tenant_id == tenant_id,
-                TgGroupAccount.group_id == group_id,
-                TgGroupAccount.can_send.is_(True),
-                TgAccount.tenant_id == tenant_id,
-                TgAccount.status == AccountStatus.ACTIVE.value,
-                TgAccount.account_identity != "code_receiver",
-                TgAccount.account_identity != "rank_deboost",
-                TgAccount.deleted_at.is_(None),
-            )
-            .order_by(TgGroupAccount.is_listener.desc(), TgAccount.health_score.desc(), TgAccount.id.asc())
+    stmt = apply_operational_account_filters(
+        select(TgAccount.id)
+        .join(TgGroupAccount, TgGroupAccount.account_id == TgAccount.id)
+        .where(
+            TgGroupAccount.tenant_id == tenant_id,
+            TgGroupAccount.group_id == group_id,
+            TgGroupAccount.can_send.is_(True),
+            TgAccount.tenant_id == tenant_id,
+            TgAccount.status == AccountStatus.ACTIVE.value,
+            TgAccount.deleted_at.is_(None),
         )
+        .order_by(TgGroupAccount.is_listener.desc(), TgAccount.health_score.desc(), TgAccount.id.asc())
     )
+    return list(session.scalars(stmt))
 
 
 def _usable_group_account_ids(session: Session, group: TgGroup, account_ids: list[int]) -> list[int]:
@@ -376,17 +373,17 @@ def _usable_group_account_ids(session: Session, group: TgGroup, account_ids: lis
     if not candidate_ids:
         return []
     rows = session.scalars(
-        select(TgAccount.id)
-        .join(TgGroupAccount, TgGroupAccount.account_id == TgAccount.id)
-        .where(
-            TgAccount.tenant_id == group.tenant_id,
-            TgAccount.id.in_(candidate_ids),
-            TgAccount.status == AccountStatus.ACTIVE.value,
-            TgAccount.account_identity != "code_receiver",
-            TgAccount.account_identity != "rank_deboost",
-            TgAccount.deleted_at.is_(None),
-            TgGroupAccount.tenant_id == group.tenant_id,
-            TgGroupAccount.group_id == group.id,
+        apply_operational_account_filters(
+            select(TgAccount.id)
+            .join(TgGroupAccount, TgGroupAccount.account_id == TgAccount.id)
+            .where(
+                TgAccount.tenant_id == group.tenant_id,
+                TgAccount.id.in_(candidate_ids),
+                TgAccount.status == AccountStatus.ACTIVE.value,
+                TgAccount.deleted_at.is_(None),
+                TgGroupAccount.tenant_id == group.tenant_id,
+                TgGroupAccount.group_id == group.id,
+            )
         )
     )
     valid = set(rows)

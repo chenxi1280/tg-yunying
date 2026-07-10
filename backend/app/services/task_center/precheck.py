@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.models import ChannelMessage, ChannelMessageComment, GroupAuthStatus, GroupContextMessage, OperationTarget, RuleSet, RuleSetVersion, SchedulingSetting, TgAccount, TgGroup
 from app.schemas.risk_control import RiskPreflightRequest
 from app.schemas.task_center import TaskPrecheckRequest
+from app.services.account_usage_policy import apply_operational_account_filters
 from app.services.risk_control import risk_preflight
 
 from .ai_limits import recommend_ai_limits
@@ -420,9 +421,8 @@ def _precheck_candidate_accounts(session: Session, tenant_id: int, account_confi
     stmt = select(TgAccount).where(
         TgAccount.tenant_id == tenant_id,
         TgAccount.deleted_at.is_(None),
-        TgAccount.account_identity != "code_receiver",
-        TgAccount.account_identity != "rank_deboost",
     ).order_by(TgAccount.health_score.desc(), TgAccount.id.asc())
+    stmt = apply_operational_account_filters(stmt)
     mode = account_config.get("selection_mode") or "all"
     if mode == "manual":
         account_ids = _as_int_list(account_config.get("account_ids"))

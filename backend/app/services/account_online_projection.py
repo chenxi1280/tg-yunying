@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.models import AccountStatus, Task, TgAccount, TgAccountOnlineState
 from app.services._common import _now
+from app.services.account_usage_policy import apply_operational_account_filters
 from app.timezone import as_beijing
 
 
@@ -71,12 +72,13 @@ def _fallback_configured_account_ids(session: Session, task: Task, existing_ids:
     if existing_ids or account_config.get("selection_mode") not in {"", None, "all"}:
         return set()
     rows = session.scalars(
-        select(TgAccount.id).where(
-            TgAccount.tenant_id == task.tenant_id,
-            TgAccount.deleted_at.is_(None),
-            TgAccount.status == AccountStatus.ACTIVE.value,
-            TgAccount.account_identity != "code_receiver",
-            TgAccount.session_ciphertext != "",
+        apply_operational_account_filters(
+            select(TgAccount.id).where(
+                TgAccount.tenant_id == task.tenant_id,
+                TgAccount.deleted_at.is_(None),
+                TgAccount.status == AccountStatus.ACTIVE.value,
+                TgAccount.session_ciphertext != "",
+            )
         )
     )
     return {int(account_id) for account_id in rows}

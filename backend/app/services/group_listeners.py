@@ -22,6 +22,7 @@ from app.models import (
 from app.schemas import CampaignCreate, GenerateDraftsRequest
 
 from ._common import SUBSCRIPTION_INACTIVE_DETAIL, _now, audit, gateway, require_system_user_core_features
+from .account_usage_policy import assert_account_action_allowed
 from .campaigns import approve_all_drafts, create_campaign, generate_drafts
 from .group_context_messages import try_insert_context_message
 from .developer_apps import credentials_for_account
@@ -45,6 +46,7 @@ def validate_listener_accounts(session: Session, group: TgGroup, account_ids: li
             raise ValueError("listener account not found")
         if account.status != AccountStatus.ACTIVE.value:
             raise ValueError("listener account must be online")
+        assert_account_action_allowed(account, account.pool, "listener")
         if not link:
             raise ValueError("listener account must be in target group")
         links.append(link)

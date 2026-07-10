@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.models import AccountStatus, Action, OperationTarget, Task, TaskMembershipAdmissionItem, Tenant, TgAccount, TgGroup
 from app.services._common import _now
+from app.services.account_usage_policy import apply_operational_account_filters
 from app.services.task_center.group_rescue import GROUP_RESCUE_FAILURE_THRESHOLD, refresh_group_rescue_action, rescue_action_snapshot, trigger_group_rescue
 from app.services.task_center.membership_recovery import AUTO_RETRY_BUCKET, GROUP_ADMIN_BUCKET, classify_membership_recovery
 from app.services.task_center.payloads import DeleteMessagePayload, EnsureChannelMembershipPayload, SendMessagePayload, create_delete_action, create_membership_action, create_send_action
@@ -483,12 +484,11 @@ def _snapshot_account_ids(session: Session, task: Task) -> list[int]:
             TgAccount.tenant_id == task.tenant_id,
             TgAccount.deleted_at.is_(None),
             TgAccount.status == AccountStatus.ACTIVE.value,
-            TgAccount.account_identity != "code_receiver",
-            TgAccount.account_identity != "rank_deboost",
             TgAccount.pool_id.in_(group_ids),
         )
         .order_by(TgAccount.id.asc())
     )
+    stmt = apply_operational_account_filters(stmt)
     if rescue_admin_id:
         stmt = stmt.where(TgAccount.id != rescue_admin_id)
     return list(session.scalars(stmt))
