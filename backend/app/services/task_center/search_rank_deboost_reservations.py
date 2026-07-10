@@ -58,11 +58,41 @@ def consume_reservation(session: Session, action_id: str) -> SearchRankDeboostCl
     return reservation
 
 
+def consume_reserved_reservation(session: Session, action_id: str) -> SearchRankDeboostClickReservation | None:
+    reservation = reservation_for_action(session, action_id)
+    if reservation is None or reservation.status != "reserved":
+        return reservation
+    return consume_reservation(session, action_id)
+
+
 def release_reservation(session: Session, action_id: str) -> SearchRankDeboostClickReservation | None:
     reservation = _require_reservation(session, action_id)
     _require_status(reservation, {"reserved"})
     reservation.status = "released"
     reservation.consumed_count = 0
+    session.flush()
+    return reservation
+
+
+def release_reserved_reservation(session: Session, action_id: str) -> SearchRankDeboostClickReservation | None:
+    reservation = reservation_for_action(session, action_id)
+    if reservation is None or reservation.status != "reserved":
+        return reservation
+    return release_reservation(session, action_id)
+
+
+def reopen_released_reservation(
+    session: Session,
+    action_id: str,
+    *,
+    now_value: datetime | None = None,
+) -> SearchRankDeboostClickReservation:
+    reservation = _require_reservation(session, action_id)
+    _require_status(reservation, {"released"})
+    current = now_value or _now()
+    reservation.status = "reserved"
+    reservation.consumed_count = 0
+    reservation.expires_at = current + timedelta(minutes=RESERVATION_TTL_MINUTES)
     session.flush()
     return reservation
 
@@ -99,7 +129,10 @@ def _require_status(reservation: SearchRankDeboostClickReservation, allowed: set
 __all__ = [
     "ACTIVE_RESERVATION_STATUSES",
     "consume_reservation",
+    "consume_reserved_reservation",
     "mark_reservation_unknown",
+    "reopen_released_reservation",
+    "release_reserved_reservation",
     "release_reservation",
     "reservation_for_action",
     "reserve_click",

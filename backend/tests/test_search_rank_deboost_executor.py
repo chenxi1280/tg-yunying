@@ -38,6 +38,7 @@ from app.models.search_rank_deboost import (
     SearchRankDeboostClickReservation,
     SearchRankDeboostExemptGroup,
 )
+from app.schemas.task_center import TaskRetryRequest
 from app.services._common import _now
 from app.services.task_center.dispatcher import dispatch_action
 from app.services.task_center.executors.search_rank_deboost import (
@@ -55,6 +56,7 @@ from app.services.task_center.search_rank_deboost_pacing import (
     account_click_allowed,
     deboost_pacing_window,
 )
+from app.services.task_center.service import retry_task
 from app.services.task_center.stats import search_rank_deboost_hourly_execution
 
 
@@ -592,6 +594,34 @@ def _make_action(session: Session, task: Task, account: TgAccount, payload: Sear
     return action
 
 
+def _make_reservation(
+    session: Session,
+    task: Task,
+    action: Action,
+    account: TgAccount,
+    *,
+    status: str = "reserved",
+) -> SearchRankDeboostClickReservation:
+    now_value = _now()
+    reservation = SearchRankDeboostClickReservation(
+        tenant_id=task.tenant_id,
+        task_id=task.id,
+        action_id=action.id,
+        account_id=account.id,
+        account_pool_id=10,
+        keyword_hash=KEYWORD_HASH_A,
+        local_date=now_value.date(),
+        hour_bucket=now_value.replace(minute=0, second=0, microsecond=0),
+        reserved_count=1,
+        consumed_count=1 if status in {"consumed", "unknown"} else 0,
+        status=status,
+        expires_at=now_value + timedelta(minutes=15),
+    )
+    session.add(reservation)
+    session.flush()
+    return reservation
+
+
 def test_executor_skips_when_gateway_unavailable() -> None:
     """gateway 不可用时 skip_reason=rank_observation_gateway_unavailable。"""
     engine = _build_engine()
@@ -601,12 +631,63 @@ def test_executor_skips_when_gateway_unavailable() -> None:
         account = accounts[0]
         payload = _make_payload(task, account_id=account.id, binding_id=binding.id)
         action = _make_action(session, task, account, payload)
+        reservation = _make_reservation(session, task, action, account)
         session.commit()
 
         result = execute_search_rank_deboost(session, action, account, payload, gateway_execute=None, probe_exit_ip="1.1.1.1")
 
         assert result["success"] is False
         assert result["skip_reason"] == "rank_observation_gateway_unavailable"
+        session.refresh(reservation)
+        assert reservation.status == "released"
+        assert reservation.consumed_count == 0
+
+
+def test_retry_task_does_not_requeue_consumed_rank_reservation() -> None:
+    """已确认点击的 rank_deboost action 不能被 retry_task 重置成 pending 后二次执行。"""
+    engine = _build_engine()
+    with Session(engine) as session:
+        binding, accounts = _seed_base(session)
+        task = _make_task(session)
+        account = accounts[0]
+        payload = _make_payload(task, account_id=account.id, binding_id=binding.id)
+        action = _make_action(session, task, account, payload)
+        action.status = "success"
+        action.result = {"success": True}
+        reservation = _make_reservation(session, task, action, account, status="consumed")
+        session.commit()
+
+        retry_task(session, 1, task.id, TaskRetryRequest(failed_only=False), "tester")
+
+        session.refresh(action)
+        session.refresh(reservation)
+        assert action.status == "success"
+        assert action.result["retry_skipped_reason"] == "rank_deboost_reservation_consumed"
+        assert reservation.status == "consumed"
+
+
+def test_retry_task_reopens_released_rank_reservation() -> None:
+    """未点击释放的 rank_deboost action 可被 retry_task 显式重新预留。"""
+    engine = _build_engine()
+    with Session(engine) as session:
+        binding, accounts = _seed_base(session)
+        task = _make_task(session)
+        account = accounts[0]
+        payload = _make_payload(task, account_id=account.id, binding_id=binding.id)
+        action = _make_action(session, task, account, payload)
+        action.status = "skipped"
+        action.result = {"success": False, "error_code": "rank_observation_gateway_unavailable"}
+        reservation = _make_reservation(session, task, action, account, status="released")
+        session.commit()
+
+        retry_task(session, 1, task.id, TaskRetryRequest(failed_only=True), "tester")
+
+        session.refresh(action)
+        session.refresh(reservation)
+        assert action.status == "pending"
+        assert action.result == {}
+        assert reservation.status == "reserved"
+        assert reservation.consumed_count == 0
 
 
 def test_executor_skips_when_proxy_egress_guard_failed() -> None:

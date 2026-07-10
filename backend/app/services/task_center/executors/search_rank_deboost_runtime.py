@@ -21,7 +21,9 @@ from app.services.search_rank_deboost_alerts import (
 from app.services.task_center.payloads import SearchRankDeboostPayload
 from app.services.task_center.search_rank_deboost_reservations import (
     consume_reservation,
+    consume_reserved_reservation,
     mark_reservation_unknown,
+    release_reserved_reservation,
     release_reservation,
 )
 
@@ -62,22 +64,22 @@ def execute_search_rank_deboost(
     """执行单条搜索排名观察 action；真实 gateway 不可用时显式 skip。"""
     binding_id = _binding_id(payload)
     if binding_id <= 0:
-        return _skip_result(action, PROXY_EGRESS_GUARD_FAILED, "排名观察任务缺少 group_proxy_binding_id")
+        return _skip_without_click(session, action, PROXY_EGRESS_GUARD_FAILED, "排名观察任务缺少 group_proxy_binding_id")
 
     if probe_exit_ip is not _NO_EXPLICIT_PROBE:
         if not _verify_proxy_egress(session, action, account, binding_id, probe_exit_ip):
-            return _skip_result(action, PROXY_EGRESS_GUARD_FAILED, "分组级代理出口校验失败，禁止回退本机直连")
+            return _skip_without_click(session, action, PROXY_EGRESS_GUARD_FAILED, "分组级代理出口校验失败，禁止回退本机直连")
 
     gateway_result = _invoke_gateway(gateway_execute, account, payload)
     if gateway_result is None:
-        return _skip_result(action, GATEWAY_UNAVAILABLE, "搜索排名观察 gateway 尚未接入真实 MTProto 执行器")
+        return _skip_without_click(session, action, GATEWAY_UNAVAILABLE, "搜索排名观察 gateway 尚未接入真实 MTProto 执行器")
 
     runtime_probe_ip = _runtime_probe_exit_ip(gateway_result)
     if runtime_probe_ip is None and probe_exit_ip is _NO_EXPLICIT_PROBE:
         if not _verify_proxy_egress(session, action, account, binding_id, None):
-            return _skip_result(action, PROXY_EGRESS_GUARD_FAILED, "分组级代理出口校验失败，禁止回退本机直连")
+            return _skip_without_click(session, action, PROXY_EGRESS_GUARD_FAILED, "分组级代理出口校验失败，禁止回退本机直连")
     if runtime_probe_ip is not None and not _verify_proxy_egress(session, action, account, binding_id, runtime_probe_ip):
-        return _skip_result(action, PROXY_EGRESS_GUARD_FAILED, "分组级代理出口校验失败，禁止回退本机直连")
+        return _skip_without_click(session, action, PROXY_EGRESS_GUARD_FAILED, "分组级代理出口校验失败，禁止回退本机直连")
 
     if _is_factual_gateway_result(gateway_result):
         return _handle_factual_gateway_result(session, action, account, payload, gateway_result)
@@ -88,6 +90,10 @@ def execute_search_rank_deboost(
 
     click_targets = decision_or_skip.get("click_targets") or []
     run = _process_click_targets(session, action, account, payload, click_targets)
+    if run.clicked_count > 0:
+        consume_reserved_reservation(session, action.id)
+    else:
+        release_reserved_reservation(session, action.id)
     return _success_result(decision_or_skip, click_targets, run)
 
 
@@ -129,7 +135,7 @@ def _search_decision(
 def _decision_or_skip(session: Session, action: Action, decision: dict) -> dict:
     skipped_reason = decision.get("skipped_reason")
     if skipped_reason == TARGET_NOT_IN_RESULTS:
-        return _skip_result(action, TARGET_NOT_IN_RESULTS, "我方目标群未出现在搜索结果")
+        return _skip_without_click(session, action, TARGET_NOT_IN_RESULTS, "我方目标群未出现在搜索结果")
     if skipped_reason != ALL_EXEMPT_CLICKS:
         return decision
     record_all_exempt_clicks_alert(
@@ -139,7 +145,7 @@ def _decision_or_skip(session: Session, action: Action, decision: dict) -> dict:
         action_id=action.id,
         account_id=int(action.account_id or 0) or None,
     )
-    return _skip_result(action, ALL_EXEMPT_CLICKS, "所有结果都被白名单豁免")
+    return _skip_without_click(session, action, ALL_EXEMPT_CLICKS, "所有结果都被白名单豁免")
 
 
 def _process_click_targets(
@@ -491,6 +497,11 @@ def _skip_result(action: Action, code: str, detail: str) -> dict:
         "skip_reason": code,
         "validation_stage": "search_rank_deboost",
     }
+
+
+def _skip_without_click(session: Session, action: Action, code: str, detail: str) -> dict:
+    release_reserved_reservation(session, action.id)
+    return _skip_result(action, code, detail)
 
 
 __all__ = ["execute_search_rank_deboost"]

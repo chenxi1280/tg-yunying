@@ -60,6 +60,7 @@ from .channel_membership import (
 )
 from .dispatcher import _sync_all_account_membership_state, claim_actions, dispatch_action, due_actions, mark_dispatcher_db_error, recover_expired_claims, recover_expired_hard_hourly_actions
 from .executors import build_task_plan, prepare_open_actions_for_planning
+from .search_rank_deboost_reservations import reopen_released_reservation, reservation_for_action
 from .details import (
     _accounts_by_id,
     _ai_account_profiles,
@@ -942,16 +943,19 @@ def retry_task(session: Session, tenant_id: int, task_id: str, payload: TaskRetr
     stmt = select(Action).where(Action.task_id == task.id)
     if payload.failed_only:
         stmt = stmt.where(Action.status.in_(["failed", "unknown_after_send", "skipped"]))
+    now = _now()
     for action in session.scalars(stmt):
-        if payload.failed_only and not _action_should_retry(task, action):
+        if payload.failed_only and not _action_should_retry(session, task, action):
+            continue
+        if not _prepare_action_retry(session, task, action, now):
             continue
         action.status = "pending"
         action.retry_count = 0
-        action.scheduled_at = _now()
+        action.scheduled_at = now
         action.executed_at = None
         action.result = {}
     task.status = "running"
-    task.next_run_at = _now()
+    task.next_run_at = now
     task.last_error = ""
     audit(session, tenant_id=tenant_id, actor=actor, action="重试任务中心任务", target_type="task", target_id=task.id)
     session.commit()
@@ -959,9 +963,12 @@ def retry_task(session: Session, tenant_id: int, task_id: str, payload: TaskRetr
     return task
 
 
-def _action_should_retry(task: Task, action: Action) -> bool:
+def _action_should_retry(session: Session, task: Task, action: Action) -> bool:
     if action.status in {"failed", "unknown_after_send"}:
         return True
+    if task.type == "search_rank_deboost" and action.status == "skipped":
+        reservation = reservation_for_action(session, action.id)
+        return reservation is None or reservation.status == "released"
     if task.type != "target_admission_retry":
         return False
     result = action.result or {}
@@ -970,6 +977,22 @@ def _action_should_retry(task: Task, action: Action) -> bool:
         and result.get("error_code") == "membership_permission_denied"
         and result.get("membership_status") == "permission_denied"
     )
+
+
+def _prepare_action_retry(session: Session, task: Task, action: Action, now: datetime) -> bool:
+    if task.type != "search_rank_deboost":
+        return True
+    reservation = reservation_for_action(session, action.id)
+    if reservation is None or reservation.status == "reserved":
+        return True
+    if reservation.status == "released":
+        reopen_released_reservation(session, action.id, now_value=now)
+        return True
+    action.result = {
+        **(action.result or {}),
+        "retry_skipped_reason": f"rank_deboost_reservation_{reservation.status}",
+    }
+    return False
 
 
 def reset_task(session: Session, tenant_id: int, task_id: str, actor: str, reason: str = "") -> Task:
