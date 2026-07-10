@@ -248,6 +248,9 @@ class AccountPoolOut(ApiModel):
     disabled_by: str = ""
     disable_reason: str = ""
     account_count: int = 0
+    rank_deboost_binding_status: str = ""
+    rank_deboost_runtime_proxy_id: int | None = None
+    rank_deboost_observed_exit_ip: str = ""
     created_at: datetime
     updated_at: datetime
 

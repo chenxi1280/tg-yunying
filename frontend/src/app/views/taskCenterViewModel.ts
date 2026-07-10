@@ -315,15 +315,62 @@ export function currentOperationProfile(values: Record<string, any>) {
   return { curve, hour, intensity, mode };
 }
 
-export function accountPrecheck(values: Record<string, any>, accounts: Account[], accountPools: AccountPool[]) {
+function accountPoolFor(account: Account, accountPools: AccountPool[]) {
+  return accountPools.find((pool) => pool.id === account.pool_id);
+}
+
+export function isOperationalAccount(account: Account, accountPools: AccountPool[]) {
+  const pool = accountPoolFor(account, accountPools);
+  const poolPurpose = pool?.pool_purpose || 'normal';
+  const systemKey = pool?.system_key || '';
+  return account.account_identity !== 'code_receiver'
+    && account.account_identity !== 'rank_deboost'
+    && poolPurpose !== 'code_receiver'
+    && poolPurpose !== 'rank_deboost'
+    && systemKey !== 'code_receiver'
+    && systemKey !== 'rank_deboost';
+}
+
+export function isEligibleRankAccount(account: Account, accountPools: AccountPool[]) {
+  const pool = accountPoolFor(account, accountPools);
+  return Boolean(
+    pool
+    && pool.pool_purpose === 'rank_deboost'
+    && pool.is_enabled !== false
+    && account.account_identity === 'rank_deboost',
+  );
+}
+
+export function rankPoolSummaries(accountPools: AccountPool[]) {
+  return accountPools
+    .filter((pool) => pool.pool_purpose === 'rank_deboost')
+    .map((pool) => {
+      const bindingStatus = pool.rank_deboost_binding_status || '';
+      const missingBinding = bindingStatus !== 'active' && !pool.rank_deboost_runtime_proxy_id;
+      return {
+        id: pool.id,
+        name: pool.name,
+        account_count: pool.account_count,
+        is_enabled: pool.is_enabled !== false,
+        bindingStatus,
+        missingBinding,
+        observedExitIp: pool.rank_deboost_observed_exit_ip || '',
+      };
+    });
+}
+
+export function accountSelectionPreview(values: Record<string, any>, accounts: Account[], accountPools: AccountPool[], taskType: TaskCenterTaskType) {
   const mode = values.selection_mode ?? values.account_config?.selection_mode ?? 'all';
   const ids = csvNumbers(values.account_ids ?? values.account_config?.account_ids);
   const poolId = values.account_group_id ?? values.account_config?.account_group_id;
+  const eligibleAccounts = taskType === 'search_rank_deboost'
+    ? accounts.filter((account) => isEligibleRankAccount(account, accountPools))
+    : accounts.filter((account) => isOperationalAccount(account, accountPools));
   const candidates = mode === 'manual'
-    ? accounts.filter((account) => ids.includes(account.id))
+    ? eligibleAccounts.filter((account) => ids.includes(account.id))
     : mode === 'group'
-      ? accounts.filter((account) => account.pool_id === poolId)
-      : accounts;
+      ? eligibleAccounts.filter((account) => account.pool_id === poolId)
+      : eligibleAccounts;
   const online = candidates.filter((account) => account.status === '在线');
   const pool = accountPools.find((item) => item.id === poolId);
   return {
@@ -332,6 +379,11 @@ export function accountPrecheck(values: Record<string, any>, accounts: Account[]
     online: online.length,
     limited: Math.max(0, candidates.length - online.length),
   };
+}
+
+export function accountPrecheck(values: Record<string, any>, accounts: Account[], accountPools: AccountPool[], taskType: TaskCenterTaskType = 'group_ai_chat') {
+  if (taskType === 'search_rank_deboost') return accountSelectionPreview(values, accounts, accountPools, 'search_rank_deboost');
+  return accountSelectionPreview(values, accounts, accountPools, taskType);
 }
 
 export function ruleSummary(values: Record<string, any>, ruleSets: RuleSet[]) {
@@ -599,11 +651,9 @@ export function fieldsForStep(step: number, taskType: TaskCenterTaskType, messag
     if (messageScope === 'date_range') fields.push('date_from', 'date_to');
     return fields;
   }
-  if (step === 2 && taskType === 'search_rank_deboost') {
-    return ['keywords', 'account_pool_id', 'proxy_airport_node_id'];
-  }
+  if (step === 2 && taskType === 'search_rank_deboost') return ['keywords'];
   if (step === 3 && taskType === 'group_membership_admission') return ['account_group_ids'];
-  if (step === 3 && taskType === 'search_rank_deboost') return [];
+  if (step === 3 && taskType === 'search_rank_deboost') return accountSelectionFields(accountMode);
   if (step === 3) return accountSelectionFields(accountMode);
   return [];
 }
@@ -744,8 +794,7 @@ export function fieldsForSubmit(taskType: TaskCenterTaskType, messageScope: stri
       'search_bots',
       'keywords',
       'target_group_ids',
-      'account_pool_id',
-      'proxy_airport_node_id',
+      ...accountSelectionFields(accountMode),
       'notes',
       'per_account_daily_click_limit',
       'per_keyword_account_daily_limit',
@@ -849,6 +898,7 @@ export function editFieldsForSubmit(taskType: TaskCenterTaskType, accountMode: s
   }
   if (taskType === 'search_rank_deboost') {
     return [
+      ...accountSelectionFields(accountMode),
       'keywords',
       'target_group_ids',
       'notes',

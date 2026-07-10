@@ -10,7 +10,8 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.integrations.telegram import OperationResult
-from app.models import Action, ChannelMessage, ExecutionAttempt, FailureType, MessageFingerprint, OperationIssue, OperationPlanTaskLink, OperationTarget, ReviewQueue, RuntimeMetricSnapshot, RuleSet, RuleSetVersion, Task, TaskRuntimeSummary, TgAccount, TgGroup, WorkerHeartbeat
+from app.models import AccountPool, Action, ChannelMessage, ExecutionAttempt, FailureType, MessageFingerprint, OperationIssue, OperationPlanTaskLink, OperationTarget, ReviewQueue, RuntimeMetricSnapshot, RuleSet, RuleSetVersion, Task, TaskRuntimeSummary, TgAccount, TgGroup, WorkerHeartbeat
+from app.models.search_rank_deboost import AccountGroupProxyBinding
 from app.schemas.task_center import (
     ChannelCapacityCheckRequest,
     ChannelCommentConfig,
@@ -168,6 +169,7 @@ from .search_rank_deboost import (
     require_real_exempt_group,
     to_exempt_group_response,
     validate_rank_deboost_preconditions,
+    validate_rank_deboost_protocol_samples,
 )
 from .hard_hourly import current_progress as hard_hourly_current_progress, enabled as hard_hourly_enabled, requires_planning as hard_hourly_requires_planning
 from .config_normalization import (
@@ -667,16 +669,25 @@ def create_search_rank_deboost_task(
     - 预选随机豁免群
     """
     bot_username = _first_rank_deboost_bot(payload.search_bots)
-    validate_rank_deboost_preconditions(
-        session,
-        tenant_id=tenant_id,
-        account_pool_id=payload.account_pool_id,
-        proxy_airport_node_id=payload.proxy_airport_node_id,
-        target_group_ids=list(payload.target_group_ids),
-        bot_username=bot_username,
-    )
+    legacy_binding_requested = payload.account_pool_id is not None and payload.proxy_airport_node_id is not None
+    if legacy_binding_requested:
+        validate_rank_deboost_preconditions(
+            session,
+            tenant_id=tenant_id,
+            account_pool_id=int(payload.account_pool_id or 0),
+            proxy_airport_node_id=int(payload.proxy_airport_node_id or 0),
+            target_group_ids=list(payload.target_group_ids),
+            bot_username=bot_username,
+        )
+        account_pool_id = int(payload.account_pool_id or 0)
+        proxy_airport_node_id = int(payload.proxy_airport_node_id or 0)
+    else:
+        validate_rank_deboost_protocol_samples(session, tenant_id, bot_username)
+        bindings = _rank_deboost_ready_bindings(session, tenant_id, payload)
+        account_pool_id = int(bindings[0].account_pool_id)
+        proxy_airport_node_id = int(bindings[0].proxy_airport_node_id)
 
-    type_config = _build_rank_deboost_type_config(payload)
+    type_config = _build_rank_deboost_type_config(payload, account_pool_id, proxy_airport_node_id)
 
     task = Task(
         tenant_id=tenant_id,
@@ -694,15 +705,16 @@ def create_search_rank_deboost_task(
     session.add(task)
     session.flush()
 
-    from app.services.proxy_group_binding_service import create_group_proxy_binding
+    if legacy_binding_requested:
+        from app.services.proxy_group_binding_service import create_group_proxy_binding
 
-    create_group_proxy_binding(
-        session,
-        tenant_id=tenant_id,
-        account_pool_id=payload.account_pool_id,
-        proxy_airport_node_id=payload.proxy_airport_node_id,
-        operator=operator,
-    )
+        create_group_proxy_binding(
+            session,
+            tenant_id=tenant_id,
+            account_pool_id=account_pool_id,
+            proxy_airport_node_id=proxy_airport_node_id,
+            operator=operator,
+        )
 
     preselect_exempt_group(
         session,
@@ -772,6 +784,8 @@ def update_search_rank_deboost_config(
             next_config["config"] = config_overlay
     if "notes" in update_data:
         next_config["notes"] = update_data["notes"]
+    if "account_config" in update_data and update_data["account_config"] is not None:
+        task.account_config = update_data["account_config"]
 
     task.type_config = next_config
     _clear_unfinished_plan(session, task)
@@ -860,13 +874,67 @@ def _first_rank_deboost_bot(search_bots: list[str]) -> str:
     return str(search_bots[0]).strip().lstrip("@")
 
 
-def _build_rank_deboost_type_config(payload: SearchRankDeboostTaskCreate) -> dict[str, Any]:
+def _rank_deboost_ready_bindings(
+    session: Session,
+    tenant_id: int,
+    payload: SearchRankDeboostTaskCreate,
+) -> list[AccountGroupProxyBinding]:
+    pool_ids = _rank_deboost_selected_pool_ids(session, tenant_id, payload.account_config.model_dump(mode="json"))
+    bindings = list(session.scalars(select(AccountGroupProxyBinding).where(
+        AccountGroupProxyBinding.tenant_id == tenant_id,
+        AccountGroupProxyBinding.account_pool_id.in_(pool_ids),
+        AccountGroupProxyBinding.status == "active",
+        AccountGroupProxyBinding.runtime_proxy_id.is_not(None),
+        AccountGroupProxyBinding.unbound_at.is_(None),
+    ).order_by(AccountGroupProxyBinding.account_pool_id.asc())))
+    bound_pool_ids = {int(binding.account_pool_id) for binding in bindings}
+    missing_pool_ids = [pool_id for pool_id in pool_ids if pool_id not in bound_pool_ids]
+    if missing_pool_ids:
+        raise ValueError(f"搜索排名观察专用分组缺少 active runtime 代理绑定：{missing_pool_ids}")
+    return bindings
+
+
+def _rank_deboost_selected_pool_ids(session: Session, tenant_id: int, account_config: dict[str, Any]) -> list[int]:
+    mode = str(account_config.get("selection_mode") or "all")
+    stmt = select(AccountPool.id).where(
+        AccountPool.tenant_id == tenant_id,
+        AccountPool.pool_purpose == "rank_deboost",
+        AccountPool.is_enabled.is_(True),
+    )
+    if mode == "group":
+        pool_id = int(account_config.get("account_group_id") or 0)
+        if pool_id <= 0:
+            raise ValueError("搜索排名观察任务缺少黑账号组")
+        stmt = stmt.where(AccountPool.id == pool_id)
+    elif mode == "manual":
+        account_ids = [int(item) for item in account_config.get("account_ids") or [] if int(item) > 0]
+        if not account_ids:
+            raise ValueError("搜索排名观察任务缺少手动黑账号")
+        stmt = stmt.where(AccountPool.id.in_(
+            select(TgAccount.pool_id).where(
+                TgAccount.tenant_id == tenant_id,
+                TgAccount.id.in_(account_ids),
+                TgAccount.account_identity == "rank_deboost",
+                TgAccount.pool_id.is_not(None),
+            )
+        ))
+    pool_ids = [int(pool_id) for pool_id in session.scalars(stmt.order_by(AccountPool.id.asc()))]
+    if not pool_ids:
+        raise ValueError("搜索排名观察任务没有可用黑账号组")
+    return pool_ids
+
+
+def _build_rank_deboost_type_config(
+    payload: SearchRankDeboostTaskCreate,
+    account_pool_id: int,
+    proxy_airport_node_id: int,
+) -> dict[str, Any]:
     config: dict[str, Any] = {
         "search_bots": list(payload.search_bots),
         "keywords": list(payload.keywords),
         "target_group_ids": list(payload.target_group_ids),
-        "account_pool_id": payload.account_pool_id,
-        "proxy_airport_node_id": payload.proxy_airport_node_id,
+        "account_pool_id": account_pool_id,
+        "proxy_airport_node_id": proxy_airport_node_id,
         "notes": payload.notes,
     }
     if isinstance(payload.config, dict):

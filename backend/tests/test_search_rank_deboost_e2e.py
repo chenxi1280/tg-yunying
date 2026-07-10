@@ -201,6 +201,29 @@ def test_e2e_create_task_precheck_passes() -> None:
         assert exempt.selected_by == "tester"
 
 
+def test_e2e_create_task_uses_account_config_and_existing_group_bindings() -> None:
+    """新前端只提交 account_config；创建阶段按已绑定 rank 分组校验 readiness。"""
+    engine = _build_engine()
+    with Session(engine) as session:
+        _seed_base(session, account_ids=[100], with_binding=True)
+        session.commit()
+
+        payload = SearchRankDeboostTaskCreate(
+            name="全黑账号组降权任务",
+            search_bots=["jisou"],
+            keywords=[{"text": "关键词A"}],
+            target_group_ids=[1001],
+            account_config={"selection_mode": "all", "max_concurrent": 500},
+        )
+        task = create_search_rank_deboost_task(session, 1, payload, operator="tester")
+
+        assert task.status == "draft"
+        assert task.account_config["selection_mode"] == "all"
+        assert task.type_config["account_pool_id"] == 10
+        assert task.type_config["proxy_airport_node_id"] == 20
+        assert session.query(AccountGroupProxyBinding).filter_by(status="active").count() == 1
+
+
 def test_e2e_create_task_rejects_node_used_by_other_group_binding() -> None:
     """创建降权任务必须复用分组代理绑定服务，拒绝复用其他分组 active 节点。"""
     engine = _build_engine()

@@ -135,10 +135,17 @@ export type AccountPool = {
   name: string;
   description: string;
   is_default: boolean;
-  pool_purpose: 'normal' | 'code_receiver' | string;
+  pool_purpose: 'normal' | 'code_receiver' | 'rank_deboost' | string;
   is_system: boolean;
   system_key: string;
+  is_enabled: boolean;
+  disabled_at: string | null;
+  disabled_by: string;
+  disable_reason: string;
   account_count: number;
+  rank_deboost_binding_status?: string;
+  rank_deboost_runtime_proxy_id?: number | null;
+  rank_deboost_observed_exit_ip?: string;
 };
 
 export type AccountExecutionRecord = {
