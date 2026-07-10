@@ -20,6 +20,7 @@ from .material_rules import *  # noqa: F401,F403
 from .material_versions import *  # noqa: F401,F403
 from .messages import *  # noqa: F401,F403
 from .notifications import *  # noqa: F401,F403
+from .operation_target_list import *  # noqa: F401,F403
 from .operations import *  # noqa: F401,F403
 from .operation_plans import *  # noqa: F401,F403
 from .operations_center import *  # noqa: F401,F403
