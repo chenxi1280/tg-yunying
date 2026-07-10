@@ -525,6 +525,16 @@
 
 ## 6. 维护口径
 
+### 2026-07-10 生产核心页面有界加载（设计完成，待实现）
+
+| ID | 入口 | 计划数据流 | 第一方消费者 | 当前状态与验收 |
+| --- | --- | --- | --- | --- |
+| PERF-001 | `GET /api/operation-targets?page=&page_size=&q=&ids=&linked_group_id=&capability=&target_type=&account_id=` | 租户与组合过滤 -> count -> `OperationTarget.id DESC` 分页 -> 仅当前页关联 `TgGroup` -> `TgGroupAccount` SQL 条件聚合 -> `OperationTargetOut[]` + 分页头；`ids` 使用重复参数，capability 为 `send/listen/archive/task` | `OperationTargetsView` 服务端分页；`OverviewView` 当前页；`TaskCenterView`、`RulesCenterView`、`ArchivesView` 远程选择；`MessageSendingView` 按账号查询；`AppShell` 按 `linked_group_id` 定点读取 | Product Design Complete；代码、QA、发布未开始。验收要求当前页 SQL 次数有界、单页 < 100 KB、所有查询租户隔离，不允许失败后回退全量。原 DF-128 在实现前仍描述现状。 |
+| PERF-002 | `GET /api/operation-targets/runtime-summary?target_ids=...` | 当前目标页 ID（重复 `target_ids`）-> 租户过滤 -> 当前页运行摘要；空当前页不触发无参数全量读取 | `OverviewView` | Product Design Complete；旧无参数语义仅兼容，第一方必须显式按页读取。 |
+| PERF-003 | `GET /api/tasks/page?page=&page_size=&type=&status=&q=&group_key=` | 普通 Task + 账号安全 batch 轻量索引 -> `type/status/q` 基础集合 -> 全局 `summary/groups` -> 可选 `group_key` -> 稳定排序与分页 -> 只水合当前页目标、频道和 runtime summary；batch items 使用一次集合聚合 | `TaskCenterView` 列表、筛选、统计、快捷分组和 60 秒当前查询轮询 | Product Design Complete；代码、QA、发布未开始。summary 固定为 `total/running/failed`，顶层 total 为 group 过滤后列表总数；禁止分页前构造完整 `TaskOut` 或逐 batch 查询 items。旧 DF-179 在实现前仍是兼容现状。 |
+
+上述契约不改变 worker、任务执行、详情下钻或数据库迁移；生产 `/api/tasks` 间歇 502 的直接 nginx / 容器 / DB 原因仍未取得日志证明，保持 `unproven`。
+
 - 新增、删除或改名 API 路由时，必须同步更新本文件对应流转记录，并核对前端入口、service、数据落点和测试入口。
 - 改 PRD 中的页面数据加载、错误暴露、任务执行、账号登录、准入、风控或素材逻辑时，先在本索引找到对应 `DF-*` 或 `BG-*`，再进入代码文件。
 - 规则中心必绑任务的运行时门槛不只属于页面表单：`group_relay`、`group_ai_chat`、`channel_comment` 在执行器规划入口必须先通过 `rule_engine.bound_rule_version` 解析已发布规则版本；缺失、草稿、跨租户或无活动版本只写 `Task.last_error`，不进入监听采集、目标解析、AI 生成或 Action 创建。
