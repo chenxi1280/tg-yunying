@@ -21,30 +21,30 @@ def test_operation_target_detail_does_not_auto_sync_for_read_only_users():
 
 
 def test_operation_target_focus_opens_detail_once():
-    source = (PROJECT_ROOT / "frontend/src/app/views/OperationTargetsView.tsx").read_text()
-    focus_effect = source[source.index("if (!focusTarget || appliedFocusNonce.current === focusTarget.nonce)"):source.index("\n  async function saveTarget")]
-    current_target_block = focus_effect[focus_effect.index("const currentTarget = targets.find"):focus_effect.index("focusTargetAbortController.current?.abort()")]
-    hydrated_target_block = focus_effect[focus_effect.index("const target = response.data.find"):]
+    view = (PROJECT_ROOT / "frontend/src/app/views/OperationTargetsView.tsx").read_text()
+    hook = (PROJECT_ROOT / "frontend/src/app/hooks/useOperationTargetManagementPage.ts").read_text()
+    focus_effect = hook[hook.index("function useFocusedTarget"):hook.index("\n\nfunction consumeFocusedTarget")]
+    consume = hook[hook.index("function consumeFocusedTarget"):hook.index("\n\nexport function useOperationTargetManagementPage")]
 
-    assert focus_effect.count("openDetail(currentTarget);") == 1
-    assert focus_effect.count("openDetail(target);") == 1
-    assert current_target_block.index("appliedFocusNonce.current = focusTarget.nonce;") < current_target_block.index("openDetail(currentTarget);")
-    assert current_target_block.index("openDetail(currentTarget);") < current_target_block.index("onFocusTargetConsumed?.();")
-    assert hydrated_target_block.index("appliedFocusNonce.current = focusTarget.nonce;", hydrated_target_block.index("if (!target)")) < hydrated_target_block.index("openDetail(target);")
-    assert hydrated_target_block.index("openDetail(target);") < hydrated_target_block.rindex("onFocusTargetConsumed?.();")
+    assert focus_effect.count("consumeFocusedTarget({ target: current") == 1
+    assert focus_effect.count("consumeFocusedTarget({ target, nonce:") == 1
+    assert consume.index("context.appliedNonce.current = context.nonce;") < consume.index("onOpenFocusedTarget(context.target);")
+    assert consume.index("onOpenFocusedTarget(context.target);") < consume.index("onFocusTargetConsumed?.();")
+    assert "onOpenFocusedTarget: openDetail" in view
 
 
 def test_operation_targets_load_surfaces_backend_error_detail():
-    source = (PROJECT_ROOT / "frontend/src/app/views/OperationTargetsView.tsx").read_text()
-    fetch_targets = source[source.index("async function fetchTargets"):source.index("\n\n  async function fetchTargetDetail")]
-    load_block = source[source.index("async function load()"):source.index("\n\n  async function refreshTargetsListAfterAction")]
+    view = (PROJECT_ROOT / "frontend/src/app/views/OperationTargetsView.tsx").read_text()
+    hook = (PROJECT_ROOT / "frontend/src/app/hooks/useOperationTargetManagementPage.ts").read_text()
+    fetch_targets = hook[hook.index("async function fetchTargetPage"):hook.index("\n\nfunction useTargetPolling")]
+    load_block = hook[hook.index("const load = React.useCallback"):hook.index("\n  useTargetPolling")]
 
-    assert "const [formError, setFormError] = React.useState('');" in source
+    assert "const [formError, setFormError] = React.useState('');" in view
+    assert "setError: setFormError" in view
     assert "apiWithMeta<OperationTarget[]>(operationTargetListPath(request.query)" in fetch_targets
-    assert "await fetchTargets(request);" in load_block
+    assert "const result = await fetchTargetPage(request);" in load_block
     assert "catch (error)" in load_block
-    assert "if (!isActiveTargetsListRequest(request)) return;" in load_block
-    assert "setFormError(errorMessage(error));" in load_block
+    assert "if (isActiveRequest(identityRef, request)) setError(requestError(error));" in load_block
 
 
 def test_operation_target_detail_sync_only_runs_after_detail_load_success():
@@ -69,7 +69,7 @@ def test_operation_target_detail_actions_ignore_stale_target_responses():
     save_policy = source[source.index("async function saveAccountPolicy"):source.index("\n  function openAdmissionRetry")]
     retry_admission = source[source.index("async function retryAdmission"):source.index("\n  function startEdit")]
     open_detail = source[source.index("function openDetail"):source.index("\n  function openCreate")]
-    close_detail = source[source.index("function closeDetail"):source.index("\n\n  function submitTargetSearch")]
+    close_detail = source[source.index("function closeDetail"):source.index("\n\n  const failedAdmissionAccounts")]
 
     assert "const activeDetailTargetId = React.useRef<number | null>(null);" in source
     assert "function isActiveDetailTarget(targetId: number)" in source
@@ -1051,10 +1051,10 @@ def test_frontend_data_loaders_do_not_silently_fake_empty_success():
 
 def test_overview_issue_actions_surface_backend_error_detail():
     source = (PROJECT_ROOT / "frontend/src/app/views/OverviewView.tsx").read_text()
-    submit_issue_action = source[source.index("async function submitIssueAction"):source.index("\n  const targetRows")]
+    submit_issue_action = source[source.index("async function submitIssueAction"):source.index("\n  const failedActionColumns")]
     open_issue_detail = source[source.index("async function openIssueDetail"):source.index("\n  async function submitIssueAction")]
 
-    assert "import { api, apiWithMeta, ApiError }" in source
+    assert "import { api, ApiError }" in source
     assert "function errorText(error: unknown)" in source
     assert "catch (error)" in submit_issue_action
     assert "message.error(`${actionLabel}失败：${errorText(error)}`)" in submit_issue_action
@@ -1066,7 +1066,7 @@ def test_overview_issue_detail_and_actions_ignore_stale_issue_responses():
     source = (PROJECT_ROOT / "frontend/src/app/views/OverviewView.tsx").read_text()
     open_issue_detail = source[source.index("async function openIssueDetail"):source.index("\n  async function submitIssueAction")]
     close_issue_drawer = source[source.index("function closeIssueDrawer"):source.index("\n  function openIssueAction")]
-    submit_issue_action = source[source.index("async function submitIssueAction"):source.index("\n  const targetRows")]
+    submit_issue_action = source[source.index("async function submitIssueAction"):source.index("\n  const failedActionColumns")]
     drawer_start = source.index("title={issueDetail?.issue ? `目标异常 ${issueDetail.issue.id}` : '目标异常'}")
     drawer = source[drawer_start:source.index("\n      </Drawer>", drawer_start)]
 
