@@ -109,9 +109,14 @@ def _matching_enabled_pool_exists(purpose: str):
         AccountPool.pool_purpose == purpose,
         AccountPool.is_enabled.is_(True),
     ]
-    if purpose == "normal":
-        conditions.append(AccountPool.system_key.not_in(("code_receiver", "rank_deboost")))
+    conditions.append(_pool_marker_filter(purpose))
     return exists(select(AccountPool.id).where(*conditions))
+
+
+def _pool_marker_filter(purpose: str):
+    if purpose in DEDICATED_ACCOUNT_USAGES:
+        return AccountPool.system_key.in_(("", purpose))
+    return AccountPool.system_key.not_in(tuple(DEDICATED_ACCOUNT_USAGES))
 
 
 def sync_account_usage(
@@ -160,6 +165,8 @@ def _validate_usage_target(account: TgAccount, pool: AccountPool) -> None:
         raise ValueError("account pool disabled")
     if pool.pool_purpose not in VALID_ACCOUNT_USAGES:
         raise ValueError("invalid account pool purpose")
+    if not _pool_markers_consistent(pool.pool_purpose, pool.system_key):
+        raise ValueError("account_purpose_mismatch")
 
 
 def _current_pool(session: Session, account: TgAccount) -> AccountPool | None:

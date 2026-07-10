@@ -48,6 +48,10 @@ def account_pool_snapshot(session: Session, pool: AccountPool) -> dict:
         "pool_purpose": pool.pool_purpose,
         "is_system": pool.is_system,
         "system_key": pool.system_key,
+        "is_enabled": pool.is_enabled,
+        "disabled_at": pool.disabled_at,
+        "disabled_by": pool.disabled_by,
+        "disable_reason": pool.disable_reason,
         "account_count": session.scalar(select(func.count(TgAccount.id)).where(TgAccount.pool_id == pool.id, TgAccount.deleted_at.is_(None))) or 0,
         "created_at": pool.created_at,
         "updated_at": pool.updated_at,
@@ -367,6 +371,7 @@ def create_account_pool(session: Session, payload: AccountPoolCreate, actor: str
         description=payload.description.strip(),
         is_default=payload.is_default,
     )
+    _apply_pool_enabled_state(pool, payload.is_enabled, actor, "")
     if not pool.name:
         raise ValueError("account pool name is required")
     session.add(pool)
@@ -393,11 +398,30 @@ def update_account_pool(session: Session, pool_id: int, payload: AccountPoolUpda
         if pool.is_default:
             for other in session.scalars(select(AccountPool).where(AccountPool.tenant_id == pool.tenant_id, AccountPool.id != pool.id)):
                 other.is_default = False
+    if data.get("is_enabled") is not None:
+        _apply_pool_enabled_state(
+            pool,
+            bool(data["is_enabled"]),
+            actor,
+            str(data.get("disable_reason") or ""),
+        )
     pool.updated_at = _now()
     audit(session, tenant_id=pool.tenant_id, actor=actor, action="更新账号池", target_type="account_pool", target_id=str(pool.id))
     session.commit()
     session.refresh(pool)
     return account_pool_snapshot(session, pool)
+
+
+def _apply_pool_enabled_state(pool: AccountPool, is_enabled: bool, actor: str, reason: str) -> None:
+    pool.is_enabled = is_enabled
+    if is_enabled:
+        pool.disabled_at = None
+        pool.disabled_by = ""
+        pool.disable_reason = ""
+        return
+    pool.disabled_at = _now()
+    pool.disabled_by = actor
+    pool.disable_reason = reason.strip()
 
 
 def move_account_pool(session: Session, account_id: int, pool_id: int, actor: str) -> TgAccount:

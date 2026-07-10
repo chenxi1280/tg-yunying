@@ -27,6 +27,7 @@ def session() -> Session:
                 AccountPool(id=12, tenant_id=1, name="rank", pool_purpose="rank_deboost"),
                 AccountPool(id=13, tenant_id=1, name="disabled", pool_purpose="normal", is_enabled=False),
                 AccountPool(id=14, tenant_id=1, name="legacy-special", pool_purpose="normal", system_key="rank_deboost"),
+                AccountPool(id=15, tenant_id=1, name="conflicting-rank", pool_purpose="rank_deboost", system_key="code_receiver"),
                 AccountPool(id=20, tenant_id=2, name="other", pool_purpose="normal"),
             ]
         )
@@ -149,6 +150,7 @@ def test_account_filters_require_enabled_same_tenant_pool_and_matching_projectio
             _account(405, 20, "normal"),
             _account(406, None, "normal"),
             _account(407, 14, "normal"),
+            _account(408, 15, "rank_deboost"),
         ]
     )
     session.commit()
@@ -170,6 +172,15 @@ def test_sync_account_usage_updates_projection_atomically_and_returns_frozen_sum
         summary.usage = "normal"
     session.rollback()
     session.refresh(account)
+    assert (account.pool_id, account.account_identity) == (10, "normal")
+
+
+def test_sync_account_usage_rejects_conflicting_pool_markers(session: Session) -> None:
+    account = _account(515, 10, "normal")
+    session.add(account)
+    session.commit()
+    with pytest.raises(ValueError, match="account_purpose_mismatch"):
+        _policy().sync_account_usage(session, account, session.get(AccountPool, 15), "tester")
     assert (account.pool_id, account.account_identity) == (10, "normal")
 
 

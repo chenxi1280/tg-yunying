@@ -34,6 +34,7 @@ class AccountPoolUpdate(BaseModel):
     description: str | None = None
     is_default: bool | None = None
     is_enabled: bool | None = None
+    disable_reason: str | None = None
 
 
 class MoveAccountPoolRequest(BaseModel):
@@ -41,7 +42,7 @@ class MoveAccountPoolRequest(BaseModel):
 
 
 class AccountIdentityUpdate(BaseModel):
-    identity: str = Field(pattern="^(normal|code_receiver|rank_deboost)$")
+    identity: str = Field(pattern="^(normal|code_receiver)$")
 
 
 class TgAccountProfileUpdate(BaseModel):

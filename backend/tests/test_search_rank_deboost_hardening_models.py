@@ -72,12 +72,16 @@ def test_hardening_schema_contract_exposes_new_fields_without_manual_mismatch_as
     from app.schemas.task_center import AccountGroupProxyBindingOut, SearchRankDeboostClickReservationOut
 
     assert {"is_enabled", "disabled_at", "disabled_by", "disable_reason"} <= set(AccountPoolOut.model_fields)
-    assert "is_enabled" in AccountPoolUpdate.model_fields
+    assert {"is_enabled", "disable_reason"} <= set(AccountPoolUpdate.model_fields)
+    assert {"pool_purpose", "system_key"}.isdisjoint(AccountPoolUpdate.model_fields)
     assert {"runtime_proxy_id", "last_probe_at", "last_probe_error"} <= set(AccountGroupProxyBindingOut.model_fields)
     assert {"action_id", "local_date", "hour_bucket", "reserved_count", "consumed_count", "status", "expires_at"} <= set(
         SearchRankDeboostClickReservationOut.model_fields
     )
-    assert AccountIdentityUpdate(identity="rank_deboost").identity == "rank_deboost"
+    assert AccountIdentityUpdate(identity="normal").identity == "normal"
+    assert AccountIdentityUpdate(identity="code_receiver").identity == "code_receiver"
+    with pytest.raises(ValidationError):
+        AccountIdentityUpdate(identity="rank_deboost")
     with pytest.raises(ValidationError):
         AccountIdentityUpdate(identity="account_purpose_mismatch")
 

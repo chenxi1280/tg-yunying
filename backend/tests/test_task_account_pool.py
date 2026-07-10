@@ -8,14 +8,72 @@ import pytest
 
 from app.models import AccountPool, AccountRuntimeSummary, AccountStatus, Action, Task, Tenant, TgAccount, TgAccountSecuritySnapshot, TgGroup, TgGroupAccount
 from app.services._common import _now
-from app.services.account_pools import ensure_code_receiver_account_pool, move_account_pool, set_account_identity
-from app.schemas import DirectMessageTaskCreate, MessageSendTaskCreate
+from app.services.account_pools import (
+    create_account_pool,
+    ensure_code_receiver_account_pool,
+    move_account_pool,
+    set_account_identity,
+    update_account_pool,
+)
+from app.schemas import (
+    AccountPoolCreate,
+    AccountPoolOut,
+    AccountPoolUpdate,
+    DirectMessageTaskCreate,
+    MessageSendTaskCreate,
+)
 from app.services.messages import create_message_send_task, create_pool_direct_message_task
 from app.services.task_center.account_coverage import task_account_coverage
 from app.services.task_center.account_pool import select_task_accounts
 from app.services.task_center.channel_membership import candidate_accounts_for_config
 
 pytestmark = pytest.mark.no_postgres
+
+
+def test_create_account_pool_persists_disabled_state_in_api_snapshot() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.commit()
+        result = create_account_pool(
+            session,
+            AccountPoolCreate(tenant_id=1, name="暂停使用", is_enabled=False),
+            "creator",
+        )
+        output = AccountPoolOut.model_validate(result)
+        saved = session.get(AccountPool, output.id)
+        assert saved is not None
+        assert output.is_enabled is saved.is_enabled is False
+        assert output.disabled_at == saved.disabled_at
+        assert output.disabled_at is not None
+        assert output.disabled_by == saved.disabled_by == "creator"
+        assert output.disable_reason == saved.disable_reason == ""
+
+
+def test_update_account_pool_persists_disable_and_reenable_metadata() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        pool = AccountPool(id=1, tenant_id=1, name="运营池", is_default=True)
+        session.add(pool)
+        session.commit()
+        disabled = update_account_pool(
+            session,
+            pool.id,
+            AccountPoolUpdate(is_enabled=False, disable_reason="maintenance"),
+            "operator",
+        )
+        assert disabled["is_enabled"] is False
+        assert disabled["disabled_at"] is not None
+        assert disabled["disabled_by"] == "operator"
+        assert disabled["disable_reason"] == "maintenance"
+        enabled = update_account_pool(session, pool.id, AccountPoolUpdate(is_enabled=True), "operator-2")
+        assert enabled["is_enabled"] is True
+        assert enabled["disabled_at"] is None
+        assert enabled["disabled_by"] == ""
+        assert enabled["disable_reason"] == ""
 
 
 def test_ensure_code_receiver_account_pool_creates_system_pool_once():
