@@ -217,23 +217,23 @@ git commit -m "feat: persist rank deboost runtime proxy bindings"
 - Test: `backend/tests/test_search_rank_deboost_gateway.py`
 - Test: `backend/tests/test_search_rank_deboost_protocol_sample_gate.py`
 
-- [ ] **Step 1: Write failing production-class tests**
+- [x] **Step 1: Write failing production-class tests**
 
 Instantiate `TelethonTelegramGateway` and assert both `search_rank_deboost_candidates` and `execute_search_rank_deboost` exist without monkeypatching missing methods. With fake Telethon message objects, prove only one `navigate_only` callback is clicked, join/external/unknown buttons are never clicked, candidate parsing tracks pages and positions, `unknown_after_click` is returned after an ambiguous click exception, and no direct client is created when egress probe fails.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run gateway tests. Expected: methods are absent and production class contract fails.
 
-- [ ] **Step 3: Implement pure conversation executor**
+- [x] **Step 3: Implement pure conversation executor**
 
 Expose functions that accept an authorized client and immutable request, send `/start` and keyword, parse controlled pages, classify button effects from protocol samples, select one safe competitor and call `message.click(row, col)` once. The module returns the approved `execution_status` and `click_outcomes`; it performs no business-table writes and invokes no join/import/follow/vote API.
 
-- [ ] **Step 4: Implement Gateway wrappers and egress proof**
+- [x] **Step 4: Implement Gateway wrappers and egress proof**
 
 Add `RANK_DEBOOST_EGRESS_PROBE_URL`. Resolve credentials from the group runtime proxy, probe that HTTPS URL through the exact proxy, compare observed exit, and include proxy fingerprint in the Telethon client cache key. Call the pure executor with session ciphertext, credentials and decrypted keyword. Probe or authorization failure returns explicit status and never falls back to account proxy or direct connection.
 
-- [ ] **Step 5: Verify GREEN and commit**
+- [x] **Step 5: Verify GREEN and commit**
 
 Run gateway and existing Telethon/search-join regression tests, then commit:
 
