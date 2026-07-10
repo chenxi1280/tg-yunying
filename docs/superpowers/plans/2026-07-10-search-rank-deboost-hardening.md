@@ -39,7 +39,7 @@
 - Test: `backend/tests/test_search_rank_deboost_hardening_models.py`
 - Test: `backend/tests/test_account_usage_policy.py`
 
-- [ ] **Step 1: Write failing model and policy tests**
+- [x] **Step 1: Write failing model and policy tests**
 
 ```python
 def test_pool_purpose_is_truth_and_identity_is_projection(session, tenant):
@@ -63,13 +63,13 @@ def test_reservation_action_id_is_unique(session, rank_task, account, rank_pool)
         session.flush()
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run: `cd backend && /Users/xida/PycharmProjects/tg-yunying/backend/.venv/bin/python -m pytest -q tests/test_search_rank_deboost_hardening_models.py tests/test_account_usage_policy.py`
 
 Expected: collection/import failure because the policy module, fields and reservation model do not exist.
 
-- [ ] **Step 3: Add migration and model fields**
+- [x] **Step 3: Add migration and model fields**
 
 Implement exact fields from the approved design:
 
@@ -93,7 +93,7 @@ class SearchRankDeboostClickReservation(Base):
 
 Add pool enablement fields and binding `runtime_proxy_id`, `last_probe_at`, `last_probe_error`. Migration `down_revision` must match the repository head and migration must backfill account identity from pool purpose, pause historical running rank tasks, and mark bindings without runtime proxy as `needs_runtime_proxy` without fabricating a proxy.
 
-- [ ] **Step 4: Implement the central policy**
+- [x] **Step 4: Implement the central policy**
 
 ```python
 def account_usage(account: TgAccount, pool: AccountPool | None) -> str:
@@ -112,11 +112,11 @@ def assert_account_action_allowed(account: TgAccount, pool: AccountPool | None, 
 
 `apply_operational_account_filters` must exclude both dedicated identities and dedicated pool purpose/system key. `apply_rank_deboost_account_filters` must require enabled rank pool and matching identity. `sync_account_usage` locks account and pool, validates tenant/enabled state, updates both fields and returns an immutable change summary.
 
-- [ ] **Step 5: Verify GREEN and migration shape**
+- [x] **Step 5: Verify GREEN and migration shape**
 
 Run focused tests plus `python -m alembic upgrade head --sql` against the project Alembic configuration. Expected: tests pass; generated SQL contains all fields, indexes and no destructive downgrade of historical statistics.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add backend/app/models backend/app/schemas backend/app/services/account_usage_policy.py backend/migrations/versions/0087_search_rank_deboost_hardening.py backend/tests/test_search_rank_deboost_hardening_models.py backend/tests/test_account_usage_policy.py
