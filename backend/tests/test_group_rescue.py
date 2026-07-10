@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.database import Base
 from app.integrations.telegram import ChannelMembershipResult, DeveloperAppCredentials, InviteLinkResult, OperationResult
 from app.integrations.telegram.gateway import TelethonTelegramGateway
-from app.models import AccountStatus, Action, FailureType, OperationTarget, Task, TaskMembershipAdmissionItem, Tenant, TgAccount, TgGroup, TgGroupAccount
+from app.models import AccountPool, AccountStatus, Action, FailureType, OperationTarget, Task, TaskMembershipAdmissionItem, Tenant, TgAccount, TgGroup, TgGroupAccount
 from app.schemas import TenantGroupRescueSettingsUpdate
 from app.services.account_capacity import AccountCapacityDecision
 from app.services.task_center import dispatcher
@@ -55,6 +55,7 @@ def _seed_rescue_target(session: Session, *, configured: bool = True) -> None:
         tenant.group_rescue_enabled = True
         tenant.group_rescue_admin_account_id = 99
     session.add(tenant)
+    session.add(AccountPool(id=5, tenant_id=1, name="普通账号池", pool_purpose="normal"))
     session.add(OperationTarget(id=21, tenant_id=1, target_type="group", tg_peer_id="-10021", title="目标群"))
     session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-10021", title="目标群"))
     session.add(TgAccount(id=11, tenant_id=1, display_name="普通账号", username="normal_user", phone_masked="11", status=AccountStatus.ACTIVE.value, session_ciphertext="session-11"))

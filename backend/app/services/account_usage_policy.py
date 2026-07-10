@@ -48,6 +48,8 @@ class AccountUsageSyncSummary:
 
 
 def account_usage(account: TgAccount, pool: AccountPool | None) -> AccountUsage:
+    if pool is None and account.pool_id is None:
+        return "normal" if account.account_identity == "normal" else "mismatch"
     if pool is None or account.pool_id != pool.id:
         return "mismatch"
     if account.tenant_id != pool.tenant_id:
@@ -91,7 +93,7 @@ def _action_allowed(usage: AccountUsage, action_kind: str) -> bool:
 def apply_operational_account_filters(stmt: Select) -> Select:
     return stmt.where(
         TgAccount.account_identity == "normal",
-        _matching_enabled_pool_exists("normal"),
+        or_(TgAccount.pool_id.is_(None), _matching_enabled_pool_exists("normal")),
     )
 
 
@@ -109,6 +111,11 @@ def apply_consistent_enabled_account_filters(stmt: Select) -> Select:
 
 
 def _consistent_usage_condition(purpose: str):
+    if purpose == "normal":
+        return and_(
+            TgAccount.account_identity == purpose,
+            or_(TgAccount.pool_id.is_(None), _matching_enabled_pool_exists(purpose)),
+        )
     return and_(TgAccount.account_identity == purpose, _matching_enabled_pool_exists(purpose))
 
 

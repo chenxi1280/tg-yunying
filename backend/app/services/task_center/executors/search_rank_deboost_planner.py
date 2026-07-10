@@ -281,6 +281,14 @@ def _rank_deboost_accounts(session: Session, tenant_id: int, account_config: dic
     return list(session.scalars(stmt.order_by(TgAccount.id.asc())))
 
 
+def _rank_deboost_pool_accounts(session: Session, tenant_id: int, account_pool_id: int) -> list[TgAccount]:
+    return _rank_deboost_accounts(
+        session,
+        tenant_id,
+        {"selection_mode": "group", "account_group_id": account_pool_id},
+    )
+
+
 def _apply_rank_account_selection(stmt, account_config: dict):
     mode = str(account_config.get("selection_mode") or "all")
     if mode == "manual":

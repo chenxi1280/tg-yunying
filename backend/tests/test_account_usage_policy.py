@@ -66,7 +66,7 @@ def test_account_usage_uses_pool_purpose_as_truth(
 
 @pytest.mark.parametrize(
     ("pool_id", "identity"),
-    [(None, "normal"), (10, "rank_deboost"), (20, "normal")],
+    [(None, "rank_deboost"), (10, "rank_deboost"), (20, "normal")],
 )
 def test_account_usage_marks_missing_cross_tenant_and_projection_conflicts_as_mismatch(
     session: Session,
@@ -75,6 +75,10 @@ def test_account_usage_marks_missing_cross_tenant_and_projection_conflicts_as_mi
 ) -> None:
     pool = session.get(AccountPool, pool_id) if pool_id else None
     assert _policy().account_usage(_account(200, pool_id, identity), pool) == "mismatch"
+
+
+def test_account_usage_treats_legacy_unpooled_normal_as_normal(session: Session) -> None:
+    assert _policy().account_usage(_account(205, None, "normal"), None) == "normal"
 
 
 @pytest.mark.parametrize(
@@ -157,7 +161,7 @@ def test_account_filters_require_enabled_same_tenant_pool_and_matching_projectio
     policy = _policy()
     operational = session.scalars(policy.apply_operational_account_filters(select(TgAccount))).all()
     rank = session.scalars(policy.apply_rank_deboost_account_filters(select(TgAccount))).all()
-    assert {item.id for item in operational} == {401}
+    assert {item.id for item in operational} == {401, 406}
     assert {item.id for item in rank} == {402}
 
 
@@ -170,13 +174,14 @@ def test_consistent_enabled_filter_requires_identity_and_pool_purpose_pair(sessi
             _account(424, 12, "normal"),
             _account(425, 10, "rank_deboost"),
             _account(426, 13, "normal"),
+            _account(427, None, "normal"),
         ]
     )
     session.commit()
 
     rows = session.scalars(_policy().apply_consistent_enabled_account_filters(select(TgAccount))).all()
 
-    assert {item.id for item in rows} == {421, 422, 423}
+    assert {item.id for item in rows} == {421, 422, 423, 427}
 
 
 def test_sync_account_usage_updates_projection_atomically_and_returns_frozen_summary(session: Session) -> None:

@@ -32,7 +32,7 @@ export type Account = {
   id: number;
   pool_id: number | null;
   pool_name: string;
-  account_identity: 'normal' | 'code_receiver' | string;
+  account_identity: 'normal' | 'code_receiver' | 'rank_deboost' | string;
   display_name: string;
   username: string | null;
   tg_first_name: string;

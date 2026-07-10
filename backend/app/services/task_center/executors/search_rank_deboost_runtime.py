@@ -10,12 +10,11 @@ from uuid import uuid4
 from sqlalchemy.orm import Session
 
 from app.models import AccountStatus, Action, TgAccount
-from app.models.search_rank_deboost import AccountGroupProxyBinding, SearchRankDeboostActionStat
+from app.models.search_rank_deboost import SearchRankDeboostActionStat
 from app.security import decrypt_secret
 from app.services._common import _now
 from app.services.search_rank_deboost_alerts import (
     record_all_exempt_clicks_alert,
-    record_group_proxy_egress_failure_alert,
     record_join_button_violation_alert,
 )
 from app.services.task_center.payloads import SearchRankDeboostPayload
@@ -34,6 +33,7 @@ from ..search_rank_deboost import (
     compute_deboost_click_targets,
 )
 from ..search_rank_deboost_pacing import DEFAULT_DWELL_SECONDS_MAX, DEFAULT_DWELL_SECONDS_MIN
+from .search_rank_deboost_runtime_alerts import record_proxy_egress_alert
 
 
 PROXY_EGRESS_GUARD_FAILED = "proxy_egress_guard_failed"
@@ -113,7 +113,7 @@ def _verify_proxy_egress(
 
     if verify_group_proxy_egress(session, binding_id=binding_id, probe_exit_ip=probe_exit_ip):
         return True
-    _record_proxy_egress_alert(session, action=action, account=account, binding_id=binding_id, probe_exit_ip=probe_exit_ip)
+    record_proxy_egress_alert(session, action=action, account=account, binding_id=binding_id, probe_exit_ip=probe_exit_ip)
     return False
 
 
@@ -463,30 +463,6 @@ def _write_stat(
         join_button_violation=join_button_violation,
     ))
     session.flush()
-
-
-def _record_proxy_egress_alert(
-    session: Session,
-    *,
-    action: Action,
-    account: TgAccount,
-    binding_id: int,
-    probe_exit_ip: str | None,
-) -> None:
-    binding = session.get(AccountGroupProxyBinding, int(binding_id))
-    binding_active = binding is not None and binding.status == "active"
-    observed_exit_ip = (binding.observed_exit_ip or "") if binding else ""
-    record_group_proxy_egress_failure_alert(
-        session,
-        tenant_id=action.tenant_id,
-        task_id=action.task_id,
-        action_id=action.id,
-        account_id=int(account.id),
-        binding_id=int(binding_id),
-        binding_active=binding_active,
-        observed_exit_ip=observed_exit_ip,
-        probe_exit_ip=(probe_exit_ip or "").strip(),
-    )
 
 
 def _skip_result(action: Action, code: str, detail: str) -> dict:

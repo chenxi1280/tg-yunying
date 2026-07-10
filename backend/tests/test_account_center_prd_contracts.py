@@ -481,8 +481,8 @@ def test_frontend_account_types_include_identity_and_pool_purpose() -> None:
     account_type = types[types.index("export type Account = {"):types.index("export type AccountAuthorizationAsset")]
     pool_type = types[types.index("export type AccountPool = {"):types.index("export type DeveloperApp")]
 
-    assert "account_identity: 'normal' | 'code_receiver' | string;" in account_type
-    assert "pool_purpose: 'normal' | 'code_receiver' | string;" in pool_type
+    assert "account_identity: 'normal' | 'code_receiver' | 'rank_deboost' | string;" in account_type
+    assert "pool_purpose: 'normal' | 'code_receiver' | 'rank_deboost' | string;" in pool_type
     assert "is_system: boolean;" in pool_type
     assert "system_key: string;" in pool_type
 
@@ -696,8 +696,8 @@ def test_code_receiver_is_blocked_in_task_precheck_and_dispatcher() -> None:
     precheck_source = (PROJECT_ROOT / "app/services/task_center/precheck.py").read_text()
     dispatcher_source = (PROJECT_ROOT / "app/services/task_center/dispatcher.py").read_text()
 
-    assert 'TgAccount.account_identity != "code_receiver"' in precheck_source
-    assert 'account.account_identity == "code_receiver"' in dispatcher_source
+    assert "apply_operational_account_filters" in precheck_source
+    assert "assert_account_action_allowed" in dispatcher_source
     assert "接码专用账号不参与任务执行" in dispatcher_source
 
 
@@ -711,7 +711,7 @@ def test_code_receiver_is_excluded_from_direct_task_candidate_queries() -> None:
     ]
 
     for path in required_files:
-        assert 'TgAccount.account_identity != "code_receiver"' in path.read_text(), path
+        assert "apply_operational_account_filters" in path.read_text(), path
 
 
 def test_execution_records_aggregate_legacy_messages_and_task_actions() -> None:
