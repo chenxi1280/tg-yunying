@@ -502,7 +502,7 @@ function AppShell() {
       });
       const targets = await api<OperationTarget[]>(`/operation-targets?${params.toString()}`);
       const group = groups.find((item) => item.id === groupId);
-      let target = targets[0];
+      let target: OperationTarget | undefined = targets[0];
       if (!target && group?.tg_peer_id) {
         const fallbackParams = new URLSearchParams({ page: '1', target_type: 'group' });
         fallbackParams.set('q', group.tg_peer_id);

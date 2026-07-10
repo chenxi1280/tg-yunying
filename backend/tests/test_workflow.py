@@ -7134,6 +7134,18 @@ def test_operation_target_page_route_applies_bounded_defaults_and_headers():
         assert [row["id"] for row in second_page.json()] == sorted(target_ids, reverse=True)[5:10]
 
 
+def test_pagination_headers_are_exposed_to_browser_clients():
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/operation-targets?page=1&page_size=1",
+            headers={**auth_headers(client), "Origin": "http://127.0.0.1:5173"},
+        )
+
+    assert response.status_code == 200, response.text
+    exposed = {value.strip().lower() for value in response.headers["Access-Control-Expose-Headers"].split(",")}
+    assert {"x-total-count", "x-page", "x-page-size"} <= exposed
+
+
 def test_operation_target_page_route_supports_ids_linked_group_and_capability_filters():
     with TestClient(app) as client:
         headers = auth_headers(client)
