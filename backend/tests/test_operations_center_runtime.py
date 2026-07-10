@@ -6389,6 +6389,196 @@ def test_group_ai_hard_hourly_stats_are_live_on_detail_and_cached_on_list(monkey
             assert stats[key] == value
 
 
+def _list_operation_target_page(session: Session, **overrides):
+    from app.services.operation_target_list import OperationTargetListQuery, list_operation_targets_page
+
+    query = OperationTargetListQuery(tenant_id=overrides.pop("tenant_id", 1), **overrides)
+    return list_operation_targets_page(session, query)
+
+
+def _seed_operation_target_page_fixture(session: Session, target_count: int) -> None:
+    session.add(Tenant(id=1, name="默认运营空间"))
+    for target_id in range(1, target_count + 1):
+        peer_id = f"-100{target_id}"
+        session.add(
+            OperationTarget(
+                id=target_id,
+                tenant_id=1,
+                target_type="group",
+                tg_peer_id=peer_id,
+                title=f"目标 {target_id}",
+                can_send=True,
+                auth_status="已授权运营",
+            )
+        )
+        session.add(
+            TgGroup(
+                id=target_id,
+                tenant_id=1,
+                tg_peer_id=peer_id,
+                title=f"目标 {target_id}",
+                can_send=True,
+                auth_status="已授权运营",
+            )
+        )
+        send_account_id = 100_000 + target_id
+        listener_account_id = 200_000 + target_id
+        session.add_all(
+            [
+                TgAccount(id=send_account_id, tenant_id=1, display_name=f"发送号 {target_id}", phone_masked=str(send_account_id), status="在线"),
+                TgAccount(id=listener_account_id, tenant_id=1, display_name=f"监听号 {target_id}", phone_masked=str(listener_account_id), status="在线"),
+                TgGroupAccount(tenant_id=1, group_id=target_id, account_id=send_account_id, can_send=True),
+                TgGroupAccount(tenant_id=1, group_id=target_id, account_id=listener_account_id, can_send=False, is_listener=True),
+            ]
+        )
+    session.commit()
+
+
+def test_operation_target_page_is_stable_bounded_and_aggregated():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    statements: list[tuple[str, tuple]] = []
+
+    with Session(engine) as session:
+        _seed_operation_target_page_fixture(session, target_count=125)
+        event.listen(
+            engine,
+            "before_cursor_execute",
+            lambda _conn, _cursor, statement, params, _context, _many: statements.append((statement, params)),
+        )
+        rows, total = _list_operation_target_page(session, page=2, page_size=50)
+
+    assert total == 125
+    assert [row["id"] for row in rows] == list(range(75, 25, -1))
+    assert all(row["available_send_account_count"] == 1 for row in rows)
+    assert all(row["listener_account_count"] == 1 for row in rows)
+    link_queries = [(sql.lower(), params) for sql, params in statements if "tg_group_accounts" in sql.lower()]
+    assert len(link_queries) == 1
+    aggregate_sql, aggregate_params = link_queries[0]
+    assert "count(" in aggregate_sql
+    assert "group by" in aggregate_sql
+    assert "permission_label" not in aggregate_sql
+    assert "last_sent_at" not in aggregate_sql
+    assert set(range(26, 76)).issubset(set(aggregate_params))
+    assert 125 not in aggregate_params
+
+
+def _seed_operation_target_filter_fixture(session: Session) -> None:
+    session.add_all([Tenant(id=1, name="租户一"), Tenant(id=2, name="租户二")])
+    session.add_all(
+        [
+            TgAccount(id=11, tenant_id=1, display_name="运营号", phone_masked="11", status="在线"),
+            TgAccount(id=12, tenant_id=1, display_name="已删除号", phone_masked="12", status="在线", deleted_at=_now()),
+            TgAccount(id=21, tenant_id=2, display_name="其他租户号", phone_masked="21", status="在线"),
+        ]
+    )
+    target_specs = [
+        (101, 201, 1, "group", "peer-alpha", "Alpha 运营群", "alpha_ops", True, "已授权运营", False),
+        (102, 202, 1, "group", "peer-beta", "监听 Beta", "beta_ops", False, "已授权运营", True),
+        (103, 203, 1, "group", "peer-gamma", "Gamma 只读群", "gamma_ops", True, "只读", False),
+        (104, 204, 1, "channel", "peer-delta", "Delta 频道", "delta_ops", False, "未确认", False),
+        (105, 205, 1, "channel", "peer-epsilon", "Epsilon 频道", "epsilon_ops", True, "只读", False),
+        (901, 901, 2, "group", "peer-other-alpha", "Alpha 其他租户", "other_alpha", True, "已授权运营", True),
+    ]
+    for target_id, group_id, tenant_id, target_type, peer_id, title, username, can_send, auth_status, listener_enabled in target_specs:
+        session.add(
+            OperationTarget(
+                id=target_id,
+                tenant_id=tenant_id,
+                target_type=target_type,
+                tg_peer_id=peer_id,
+                title=title,
+                username=username,
+                can_send=can_send,
+                auth_status=auth_status,
+            )
+        )
+        session.add(
+            TgGroup(
+                id=group_id,
+                tenant_id=tenant_id,
+                tg_peer_id=peer_id,
+                title=title,
+                can_send=can_send,
+                auth_status=auth_status,
+                listener_enabled=listener_enabled,
+            )
+        )
+    session.add_all(
+        [
+            TgGroupAccount(tenant_id=1, group_id=201, account_id=11, can_send=True),
+            TgGroupAccount(tenant_id=1, group_id=202, account_id=11, can_send=False),
+            TgGroupAccount(tenant_id=1, group_id=202, account_id=12, can_send=True),
+            TgGroupAccount(tenant_id=1, group_id=203, account_id=11, can_send=False, is_listener=True),
+            TgGroupAccount(tenant_id=2, group_id=901, account_id=21, can_send=True, is_listener=True),
+        ]
+    )
+    session.commit()
+
+
+def test_operation_target_filter_supports_search_and_exact_scopes():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        _seed_operation_target_filter_fixture(session)
+        searched, searched_total = _list_operation_target_page(session, q="  ALPHA  ")
+        numeric, _ = _list_operation_target_page(session, q="101")
+        selected, _ = _list_operation_target_page(session, ids=(901, 101))
+        linked, _ = _list_operation_target_page(session, linked_group_id=202)
+        channels, _ = _list_operation_target_page(session, target_type="channel")
+        account_targets, _ = _list_operation_target_page(session, account_id=11)
+
+    assert searched_total == 1
+    assert [row["id"] for row in searched] == [101]
+    assert [row["id"] for row in numeric] == [101]
+    assert [row["id"] for row in selected] == [101]
+    assert [row["id"] for row in linked] == [102]
+    assert [row["id"] for row in channels] == [105, 104]
+    assert [row["id"] for row in account_targets] == [101]
+
+
+@pytest.mark.parametrize(
+    ("capability", "expected_ids"),
+    [
+        ("send", [105, 103, 101]),
+        ("listen", [103, 102]),
+        ("archive", [102, 101]),
+        ("task", [104, 102, 101]),
+    ],
+)
+def test_operation_target_filter_supports_capability_values(capability: str, expected_ids: list[int]):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        _seed_operation_target_filter_fixture(session)
+        rows, total = _list_operation_target_page(session, capability=capability)
+
+    assert total == len(expected_ids)
+    assert [row["id"] for row in rows] == expected_ids
+
+
+@pytest.mark.parametrize(
+    "query_overrides",
+    [
+        {"account_id": 12},
+        {"account_id": 21},
+        {"capability": "unknown"},
+        {"ids": tuple(range(1, 102))},
+        {"q": "x" * 121},
+    ],
+)
+def test_operation_target_filter_rejects_invalid_or_cross_tenant_scope(query_overrides: dict):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        _seed_operation_target_filter_fixture(session)
+        with pytest.raises(ValueError):
+            _list_operation_target_page(session, **query_overrides)
+
+
 def test_operation_targets_expose_linked_group_capability_summary():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
