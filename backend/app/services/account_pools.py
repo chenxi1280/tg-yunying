@@ -64,6 +64,7 @@ def ensure_default_account_pool(session: Session, tenant_id: int) -> AccountPool
         .where(
             AccountPool.tenant_id == tenant_id,
             AccountPool.is_default.is_(True),
+            AccountPool.is_enabled.is_(True),
             AccountPool.pool_purpose != CODE_RECEIVER_POOL_KEY,
             AccountPool.system_key != CODE_RECEIVER_POOL_KEY,
             AccountPool.pool_purpose != RANK_DEBOOST_POOL_KEY,
@@ -76,6 +77,7 @@ def ensure_default_account_pool(session: Session, tenant_id: int) -> AccountPool
             select(AccountPool)
             .where(
                 AccountPool.tenant_id == tenant_id,
+                AccountPool.is_enabled.is_(True),
                 AccountPool.pool_purpose != CODE_RECEIVER_POOL_KEY,
                 AccountPool.system_key != CODE_RECEIVER_POOL_KEY,
                 AccountPool.pool_purpose != RANK_DEBOOST_POOL_KEY,
@@ -87,7 +89,20 @@ def ensure_default_account_pool(session: Session, tenant_id: int) -> AccountPool
         pool = AccountPool(tenant_id=tenant_id, name="默认账号池", description="系统默认账号分组", is_default=True)
         session.add(pool)
         session.flush()
+    _mark_default_account_pool(session, pool)
     return pool
+
+
+def _mark_default_account_pool(session: Session, pool: AccountPool) -> None:
+    pool.is_default = True
+    for other in session.scalars(
+        select(AccountPool).where(
+            AccountPool.tenant_id == pool.tenant_id,
+            AccountPool.id != pool.id,
+            AccountPool.is_default.is_(True),
+        )
+    ):
+        other.is_default = False
 
 
 def ensure_code_receiver_account_pool(session: Session, tenant_id: int) -> AccountPool:
@@ -362,9 +377,7 @@ def account_pool_detail(session: Session, pool_id: int) -> dict:
 
 def create_account_pool(session: Session, payload: AccountPoolCreate, actor: str) -> dict:
     require_tenant(session, payload.tenant_id)
-    if payload.is_default:
-        for pool in session.scalars(select(AccountPool).where(AccountPool.tenant_id == payload.tenant_id)):
-            pool.is_default = False
+    _assert_default_pool_enabled(payload.is_default, payload.is_enabled)
     pool = AccountPool(
         tenant_id=payload.tenant_id,
         name=payload.name.strip(),
@@ -376,8 +389,16 @@ def create_account_pool(session: Session, payload: AccountPoolCreate, actor: str
         raise ValueError("account pool name is required")
     session.add(pool)
     session.flush()
-    if not session.scalar(select(AccountPool.id).where(AccountPool.tenant_id == payload.tenant_id, AccountPool.is_default.is_(True), AccountPool.id != pool.id)):
-        pool.is_default = True
+    enabled_default_exists = session.scalar(
+        select(AccountPool.id).where(
+            AccountPool.tenant_id == payload.tenant_id,
+            AccountPool.is_default.is_(True),
+            AccountPool.is_enabled.is_(True),
+            AccountPool.id != pool.id,
+        )
+    )
+    if pool.is_default or (pool.is_enabled and not enabled_default_exists):
+        _mark_default_account_pool(session, pool)
     audit(session, tenant_id=pool.tenant_id, actor=actor, action="新增账号池", target_type="account_pool", target_id=str(pool.id))
     session.commit()
     session.refresh(pool)
@@ -389,6 +410,7 @@ def update_account_pool(session: Session, pool_id: int, payload: AccountPoolUpda
     if not pool:
         raise ValueError("account pool not found")
     data = payload.model_dump(exclude_unset=True)
+    _validate_pool_update_lifecycle(pool, data)
     if data.get("name") is not None:
         pool.name = data["name"].strip()
     if data.get("description") is not None:
@@ -396,8 +418,7 @@ def update_account_pool(session: Session, pool_id: int, payload: AccountPoolUpda
     if data.get("is_default") is not None:
         pool.is_default = bool(data["is_default"])
         if pool.is_default:
-            for other in session.scalars(select(AccountPool).where(AccountPool.tenant_id == pool.tenant_id, AccountPool.id != pool.id)):
-                other.is_default = False
+            _mark_default_account_pool(session, pool)
     if data.get("is_enabled") is not None:
         _apply_pool_enabled_state(
             pool,
@@ -422,6 +443,19 @@ def _apply_pool_enabled_state(pool: AccountPool, is_enabled: bool, actor: str, r
     pool.disabled_at = _now()
     pool.disabled_by = actor
     pool.disable_reason = reason.strip()
+
+
+def _validate_pool_update_lifecycle(pool: AccountPool, data: dict) -> None:
+    if pool.is_default and data.get("is_enabled") is False:
+        raise ValueError("default account pool must be enabled")
+    target_default = bool(data.get("is_default", pool.is_default))
+    target_enabled = bool(data.get("is_enabled", pool.is_enabled))
+    _assert_default_pool_enabled(target_default, target_enabled)
+
+
+def _assert_default_pool_enabled(is_default: bool, is_enabled: bool) -> None:
+    if is_default and not is_enabled:
+        raise ValueError("default account pool must be enabled")
 
 
 def move_account_pool(session: Session, account_id: int, pool_id: int, actor: str) -> TgAccount:

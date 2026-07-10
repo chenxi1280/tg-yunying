@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.models import AccountGroupProxyBinding, AccountPool
-from app.schemas.accounts import AccountIdentityUpdate, AccountPoolOut, AccountPoolUpdate
+from app.schemas.accounts import AccountIdentityUpdate, AccountPoolCreate, AccountPoolOut, AccountPoolUpdate
 
 
 pytestmark = pytest.mark.no_postgres
@@ -84,6 +84,15 @@ def test_hardening_schema_contract_exposes_new_fields_without_manual_mismatch_as
         AccountIdentityUpdate(identity="rank_deboost")
     with pytest.raises(ValidationError):
         AccountIdentityUpdate(identity="account_purpose_mismatch")
+
+
+def test_account_pool_schemas_reject_invalid_disable_lifecycle() -> None:
+    with pytest.raises(ValidationError, match="disable_reason"):
+        AccountPoolUpdate(disable_reason="x" * 256)
+    with pytest.raises(ValidationError, match="default account pool must be enabled"):
+        AccountPoolCreate(name="invalid", is_default=True, is_enabled=False)
+    with pytest.raises(ValidationError, match="default account pool must be enabled"):
+        AccountPoolUpdate(is_default=True, is_enabled=False)
 
 
 def _legacy_metadata() -> MetaData:

@@ -11,7 +11,9 @@ from app.services._common import _now
 from app.services.account_pools import (
     create_account_pool,
     ensure_code_receiver_account_pool,
+    ensure_default_account_pool,
     move_account_pool,
+    seed_account_pools,
     set_account_identity,
     update_account_pool,
 )
@@ -45,6 +47,7 @@ def test_create_account_pool_persists_disabled_state_in_api_snapshot() -> None:
         saved = session.get(AccountPool, output.id)
         assert saved is not None
         assert output.is_enabled is saved.is_enabled is False
+        assert output.is_default is saved.is_default is False
         assert output.disabled_at == saved.disabled_at
         assert output.disabled_at is not None
         assert output.disabled_by == saved.disabled_by == "creator"
@@ -56,8 +59,9 @@ def test_update_account_pool_persists_disable_and_reenable_metadata() -> None:
     Base.metadata.create_all(engine)
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
-        pool = AccountPool(id=1, tenant_id=1, name="运营池", is_default=True)
-        session.add(pool)
+        default_pool = AccountPool(id=1, tenant_id=1, name="默认池", is_default=True)
+        pool = AccountPool(id=2, tenant_id=1, name="运营池")
+        session.add_all([default_pool, pool])
         session.commit()
         disabled = update_account_pool(
             session,
@@ -74,6 +78,53 @@ def test_update_account_pool_persists_disable_and_reenable_metadata() -> None:
         assert enabled["disabled_at"] is None
         assert enabled["disabled_by"] == ""
         assert enabled["disable_reason"] == ""
+
+
+def test_update_account_pool_rejects_disabling_current_default_pool() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        pool = AccountPool(id=1, tenant_id=1, name="默认池", is_default=True)
+        session.add(pool)
+        session.commit()
+        with pytest.raises(ValueError, match="default account pool must be enabled"):
+            update_account_pool(session, pool.id, AccountPoolUpdate(is_enabled=False), "operator")
+        assert pool.is_default is True
+        assert pool.is_enabled is True
+
+
+def test_update_account_pool_rejects_promoting_disabled_pool_to_default() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        pool = AccountPool(id=1, tenant_id=1, name="禁用池", is_enabled=False)
+        session.add(pool)
+        session.commit()
+        with pytest.raises(ValueError, match="default account pool must be enabled"):
+            update_account_pool(session, pool.id, AccountPoolUpdate(is_default=True), "operator")
+        assert pool.is_default is False
+        assert pool.is_enabled is False
+
+
+def test_ensure_default_pool_skips_disabled_default_and_seed_uses_enabled_pool() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        disabled = AccountPool(id=1, tenant_id=1, name="历史禁用默认池", is_default=True, is_enabled=False)
+        enabled = AccountPool(id=2, tenant_id=1, name="可用池", is_enabled=True)
+        account = TgAccount(id=1, tenant_id=1, pool_id=None, display_name="待分配", phone_masked="1")
+        session.add_all([disabled, enabled, account])
+        session.commit()
+        selected = ensure_default_account_pool(session, 1)
+        assert selected.id == enabled.id
+        assert selected.is_enabled is True
+        assert selected.is_default is True
+        assert disabled.is_default is False
+        seed_account_pools(session)
+        assert account.pool_id == enabled.id
 
 
 def test_ensure_code_receiver_account_pool_creates_system_pool_once():

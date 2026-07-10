@@ -28,13 +28,25 @@ class AccountPoolCreate(BaseModel):
     is_default: bool = False
     is_enabled: bool = True
 
+    @model_validator(mode="after")
+    def validate_default_pool_enabled(self) -> "AccountPoolCreate":
+        if self.is_default and not self.is_enabled:
+            raise ValueError("default account pool must be enabled")
+        return self
+
 
 class AccountPoolUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
     is_default: bool | None = None
     is_enabled: bool | None = None
-    disable_reason: str | None = None
+    disable_reason: str | None = Field(default=None, max_length=255)
+
+    @model_validator(mode="after")
+    def validate_default_pool_enabled(self) -> "AccountPoolUpdate":
+        if self.is_default is True and self.is_enabled is False:
+            raise ValueError("default account pool must be enabled")
+        return self
 
 
 class MoveAccountPoolRequest(BaseModel):
