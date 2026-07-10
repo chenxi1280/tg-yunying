@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from sqlalchemy import Select, exists, or_, select
+from sqlalchemy import Select, and_, exists, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import AccountPool, TgAccount
@@ -104,9 +104,12 @@ def apply_rank_deboost_account_filters(stmt: Select) -> Select:
 
 def apply_consistent_enabled_account_filters(stmt: Select) -> Select:
     return stmt.where(
-        TgAccount.account_identity.in_(tuple(VALID_ACCOUNT_USAGES)),
-        or_(*(_matching_enabled_pool_exists(purpose) for purpose in sorted(VALID_ACCOUNT_USAGES))),
+        or_(*(_consistent_usage_condition(purpose) for purpose in sorted(VALID_ACCOUNT_USAGES))),
     )
+
+
+def _consistent_usage_condition(purpose: str):
+    return and_(TgAccount.account_identity == purpose, _matching_enabled_pool_exists(purpose))
 
 
 def _matching_enabled_pool_exists(purpose: str):

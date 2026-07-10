@@ -161,6 +161,24 @@ def test_account_filters_require_enabled_same_tenant_pool_and_matching_projectio
     assert {item.id for item in rank} == {402}
 
 
+def test_consistent_enabled_filter_requires_identity_and_pool_purpose_pair(session: Session) -> None:
+    session.add_all(
+        [
+            _account(421, 10, "normal"),
+            _account(422, 11, "code_receiver"),
+            _account(423, 12, "rank_deboost"),
+            _account(424, 12, "normal"),
+            _account(425, 10, "rank_deboost"),
+            _account(426, 13, "normal"),
+        ]
+    )
+    session.commit()
+
+    rows = session.scalars(_policy().apply_consistent_enabled_account_filters(select(TgAccount))).all()
+
+    assert {item.id for item in rows} == {421, 422, 423}
+
+
 def test_sync_account_usage_updates_projection_atomically_and_returns_frozen_summary(session: Session) -> None:
     account = _account(500, 10, "normal")
     session.add(account)
