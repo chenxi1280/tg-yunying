@@ -276,6 +276,7 @@ def failover_group_proxy_binding(
     old_binding = _require_active_group_binding(session, tenant_id, account_pool_id)
     from_node = _require_proxy_airport_node(session, old_binding)
     to_node = _require_failover_node(session, tenant_id, from_node)
+    runtime_proxy = proxy_for_airport_node(session, to_node)
     now = _now()
     old_binding.status = "unbound"
     old_binding.unbound_at = now
@@ -289,11 +290,12 @@ def failover_group_proxy_binding(
         operator,
         generation=int(old_binding.binding_generation or 1) + 1,
         reason=reason,
+        runtime_proxy_id=runtime_proxy.id,
     )
     new_binding.last_failover_at = now
     session.add(new_binding)
     session.flush()
-    detail = f"pool={account_pool_id}, from_node={from_node.id}, to_node={to_node.id}, reason={reason}"
+    detail = f"pool={account_pool_id}, from_node={from_node.id}, to_node={to_node.id}, runtime_proxy={runtime_proxy.id}, reason={reason}"
     _audit_group_binding(session, new_binding, operator, "failover_group_proxy_binding", detail=detail)
     return new_binding
 
@@ -392,18 +394,27 @@ def verify_group_proxy_egress(
     if binding is None or binding.status != "active":
         return False
 
+    now = _now()
     if probe_exit_ip is None or not probe_exit_ip.strip():
+        if binding is not None:
+            binding.last_probe_at = now
+            binding.last_probe_error = "proxy_egress_probe_missing"
+            session.flush()
         return False
 
     probed = probe_exit_ip.strip()
     observed = (binding.observed_exit_ip or "").strip()
     if observed and observed != probed:
+        binding.last_probe_at = now
+        binding.last_probe_error = "proxy_egress_ip_drift"
+        session.flush()
         return False
 
-    now = _now()
     if not observed:
         binding.observed_exit_ip = probed
     binding.last_health_check_at = now
+    binding.last_probe_at = now
+    binding.last_probe_error = ""
     session.flush()
     return True
 

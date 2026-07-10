@@ -237,6 +237,11 @@ def test_failover_creates_new_binding_and_increments_generation() -> None:
         assert new_binding.status == "active"
         assert new_binding.binding_generation == 2
         assert new_binding.proxy_airport_node_id == 21
+        assert new_binding.runtime_proxy_id is not None
+        runtime_proxy = session.get(AccountProxy, new_binding.runtime_proxy_id)
+        assert runtime_proxy is not None
+        assert runtime_proxy.host == "127.0.0.21"
+        assert runtime_proxy.port == 1081
         assert new_binding.account_pool_id == 10
         assert new_binding.last_failover_at is not None
 
@@ -274,4 +279,6 @@ def test_verify_group_proxy_egress_detects_ip_drift() -> None:
         assert verify_group_proxy_egress(session, binding_id=binding.id, probe_exit_ip="1.1.1.1") is True
         session.refresh(binding)
         assert binding.last_health_check_at is not None
+        assert binding.last_probe_at is not None
+        assert binding.last_probe_error == ""
         assert binding.observed_exit_ip == "1.1.1.1"
