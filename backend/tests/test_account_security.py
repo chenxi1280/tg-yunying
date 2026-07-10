@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.database import Base
 from app.integrations.telegram.contracts import AccountAuthorizationSnapshot as RemoteAuthorizationSnapshot
 from app.integrations.telegram.contracts import RemoteProfile
-from app.models import AiProvider, AccountProxy, AccountStatus, AuditLog, Material, TelegramDeveloperApp, Tenant, TenantAiSetting, TgAccount, TgAccountAuthorization, TgAccountAuthorizationSnapshot, TgAccountSecurityBatch, TgAccountSecurityBatchItem, TgAccountSecuritySnapshot, TgVerificationCode
+from app.models import AccountPool, AiProvider, AccountProxy, AccountStatus, AuditLog, Material, TelegramDeveloperApp, Tenant, TenantAiSetting, TgAccount, TgAccountAuthorization, TgAccountAuthorizationSnapshot, TgAccountSecurityBatch, TgAccountSecurityBatchItem, TgAccountSecuritySnapshot, TgVerificationCode
 from app.schemas import TgAccountCreate
 from app.schemas.account_security import AccountSecurityBatchCreate, AccountSecurityPrecheckRequest, AccountSecurityProfileOverride, AvatarStrategy, ManagedTwoFaRequest, ProfileGenerationStrategy
 from app.security import decrypt_secret, encrypt_secret, encrypt_session
@@ -28,6 +28,10 @@ from app.services.account_security import (
     refresh_account_security,
     rotate_managed_two_fa_password,
     save_managed_two_fa_password,
+)
+from app.services.account_security.device_classification import (
+    classify_account_authorization_snapshots,
+    cleanup_candidate_authorization_snapshots,
 )
 from app.services.accounts import create_account
 from app.services.accounts import verify_login
@@ -51,6 +55,7 @@ def _session_factory_no_autoflush():
 
 def _seed_account(session: Session, *, status: str = AccountStatus.ACTIVE.value, session_value: str = "session") -> TgAccount:
     session.add(Tenant(id=1, name="默认运营空间"))
+    session.add(AccountPool(id=1, tenant_id=1, name="普通账号池", pool_purpose="normal", is_default=True))
     app = TelegramDeveloperApp(
         id=1,
         app_name="测试开发者应用",
@@ -61,6 +66,8 @@ def _seed_account(session: Session, *, status: str = AccountStatus.ACTIVE.value,
     account = TgAccount(
         id=11,
         tenant_id=1,
+        pool_id=1,
+        account_identity="normal",
         display_name="旧账号",
         phone_masked="138****0000",
         developer_app_id=1,
@@ -72,6 +79,52 @@ def _seed_account(session: Session, *, status: str = AccountStatus.ACTIVE.value,
     session.add_all([app, account])
     session.commit()
     return account
+
+
+def _seed_usage_pool(session: Session, pool_id: int, purpose: str) -> None:
+    system_key = purpose if purpose in {"code_receiver", "rank_deboost"} else ""
+    if session.get(AccountPool, pool_id) is None:
+        session.add(AccountPool(id=pool_id, tenant_id=1, name=f"{purpose}账号池", pool_purpose=purpose, system_key=system_key))
+        session.flush()
+
+
+def _seed_usage_account(
+    session: Session,
+    account_id: int,
+    *,
+    pool_id: int,
+    account_identity: str,
+) -> TgAccount:
+    account = TgAccount(
+        id=account_id,
+        tenant_id=1,
+        pool_id=pool_id,
+        account_identity=account_identity,
+        display_name=f"账号{account_id}",
+        phone_masked=f"138****{account_id:04d}",
+        developer_app_id=1,
+        developer_app_version=1,
+        status=AccountStatus.ACTIVE.value,
+        session_ciphertext=encrypt_session(f"session-{account_id}"),
+        health_score=90,
+    )
+    session.add(account)
+    session.flush()
+    return account
+
+
+def _move_account_to_usage(
+    session: Session,
+    account: TgAccount,
+    *,
+    pool_id: int,
+    purpose: str,
+    account_identity: str | None = None,
+) -> None:
+    _seed_usage_pool(session, pool_id, purpose)
+    account.pool_id = pool_id
+    account.account_identity = account_identity or purpose
+    session.flush()
 
 
 def _remote_authorization(
@@ -1768,7 +1821,7 @@ def test_managed_two_fa_save_records_current_password_and_rotate_uses_tenant_fix
 def test_code_receiver_managed_two_fa_save_and_rotate_are_blocked(monkeypatch):
     with _session() as session:
         account = _seed_account(session)
-        account.account_identity = "code_receiver"
+        _move_account_to_usage(session, account, pool_id=2, purpose="code_receiver")
         session.commit()
         calls: list[str] = []
 
@@ -1797,6 +1850,71 @@ def test_code_receiver_managed_two_fa_save_and_rotate_are_blocked(monkeypatch):
 
         assert calls == []
         assert session.scalar(select(TgAccountSecuritySnapshot).where(TgAccountSecuritySnapshot.account_id == account.id)) is None
+
+
+@pytest.mark.no_postgres
+def test_managed_two_fa_save_and_rotate_block_non_normal_usage(monkeypatch):
+    with _session() as session:
+        _seed_account(session)
+        _seed_usage_pool(session, 3, "rank_deboost")
+        rank = _seed_usage_account(session, 31, pool_id=3, account_identity="rank_deboost")
+        mismatch = _seed_usage_account(session, 32, pool_id=3, account_identity="normal")
+        set_tenant_fixed_two_fa_password(
+            session,
+            tenant_id=1,
+            password="tenant-fixed-password",
+            reason="首次配置固定 2FA",
+            actor="tester",
+        )
+        calls: list[str] = []
+
+        monkeypatch.setattr(
+            account_security_service.gateway,
+            "set_two_fa_password",
+            lambda *_args, **_kwargs: calls.append("called"),
+        )
+
+        for account in [rank, mismatch]:
+            with pytest.raises(ValueError, match="account_usage_not_allowed|account_purpose_mismatch"):
+                save_managed_two_fa_password(
+                    session,
+                    1,
+                    account.id,
+                    ManagedTwoFaRequest(password="new-password", reason="非普通账号禁改"),
+                    "tester",
+                )
+            with pytest.raises(ValueError, match="account_usage_not_allowed|account_purpose_mismatch"):
+                rotate_managed_two_fa_password(
+                    session,
+                    1,
+                    account.id,
+                    ManagedTwoFaRequest(password="new-password", reason="非普通账号禁改"),
+                    "tester",
+                )
+
+        assert calls == []
+
+
+@pytest.mark.no_postgres
+def test_managed_two_fa_reveal_allows_rank_deboost_readonly_account(monkeypatch):
+    monkeypatch.setenv("TEST_DATABASE_URL", "sqlite:///:memory:")
+    with _session() as session:
+        _seed_account(session)
+        _seed_usage_pool(session, 3, "rank_deboost")
+        account = _seed_usage_account(session, 31, pool_id=3, account_identity="rank_deboost")
+        snapshot = account_security_service._snapshot(session, account)
+        snapshot.two_fa_password_ciphertext = encrypt_secret("stored-password")
+        snapshot.two_fa_status = "enabled"
+        session.commit()
+
+        revealed = account_security_service.reveal_managed_two_fa_password(
+            session,
+            1,
+            account.id,
+            "tester",
+        )
+
+        assert revealed.password == "stored-password"
 
 
 @pytest.mark.no_postgres
@@ -2149,3 +2267,123 @@ def test_create_account_generates_import_time_phone_tail_sequence_name():
         assert first.display_name.endswith("-1234-001")
         assert second.display_name.endswith("-5678-002")
         assert first.display_name.startswith(f"导入{_now():%m%d}-")
+
+
+@pytest.mark.no_postgres
+def test_security_profile_batch_skips_non_normal_usage_and_keeps_normal_pending():
+    with _session() as session:
+        normal = _seed_account(session)
+        _seed_usage_pool(session, 3, "rank_deboost")
+        rank = _seed_usage_account(session, 31, pool_id=3, account_identity="rank_deboost")
+        mismatch = _seed_usage_account(session, 32, pool_id=3, account_identity="normal")
+
+        batch = create_account_security_batch(
+            session,
+            1,
+            AccountSecurityBatchCreate(
+                account_ids=[normal.id, rank.id, mismatch.id],
+                action_types=["update_profile", "update_username"],
+                confirm_text="确认",
+                profile_strategy=ProfileGenerationStrategy(generation_mode="template"),
+                reason="测试用途隔离混合批次",
+            ),
+            "tester",
+        )
+
+        items = {item.account_id: item for item in batch.items}
+        assert batch.status == "running"
+        assert items[normal.id].status == "pending"
+        assert items[rank.id].status == "skipped"
+        assert items[rank.id].failure_type == "account_usage_not_allowed"
+        assert items[mismatch.id].status == "skipped"
+        assert items[mismatch.id].failure_type == "account_purpose_mismatch"
+
+
+@pytest.mark.no_postgres
+def test_security_worker_blocks_non_normal_usage_before_credentials(monkeypatch):
+    with _session() as session:
+        _seed_account(session)
+        _seed_usage_pool(session, 3, "rank_deboost")
+        account = _seed_usage_account(session, 31, pool_id=3, account_identity="rank_deboost")
+        batch = TgAccountSecurityBatch(
+            id=1,
+            tenant_id=1,
+            action_types='["update_profile", "set_two_fa", "cleanup_devices"]',
+            status="running",
+            total_count=1,
+        )
+        item = TgAccountSecurityBatchItem(
+            id=1,
+            batch_id=1,
+            tenant_id=1,
+            account_id=account.id,
+            status="pending",
+            precheck_status="executable",
+            profile_status="pending",
+            two_fa_status="pending",
+            cleanup_status="pending",
+        )
+        session.add_all([batch, item])
+        session.commit()
+
+        def fail_credentials(*_args, **_kwargs):
+            raise AssertionError("non-normal account must be blocked before credentials lookup")
+
+        monkeypatch.setattr(account_security_service, "credentials_for_account", fail_credentials)
+
+        account_security_service._execute_batch_item(session, item.id)
+
+        blocked = session.get(TgAccountSecurityBatchItem, item.id)
+        assert blocked.status == "skipped"
+        assert blocked.failure_type == "account_usage_not_allowed"
+        assert blocked.profile_status == "skipped"
+        assert blocked.two_fa_status == "skipped"
+        assert blocked.cleanup_status == "skipped"
+
+
+@pytest.mark.no_postgres
+def test_direct_device_cleanup_blocks_non_normal_usage_before_scan(monkeypatch):
+    with _session() as session:
+        _seed_account(session)
+        _seed_usage_pool(session, 3, "rank_deboost")
+        rank = _seed_usage_account(session, 31, pool_id=3, account_identity="rank_deboost")
+        mismatch = _seed_usage_account(session, 32, pool_id=3, account_identity="normal")
+
+        def fail_refresh(*_args, **_kwargs):
+            raise AssertionError("non-normal cleanup must not refresh security state")
+
+        monkeypatch.setattr(account_security_service, "refresh_account_security", fail_refresh)
+
+        for account in [rank, mismatch]:
+            with pytest.raises(ValueError, match="account_usage_not_allowed|account_purpose_mismatch"):
+                account_security_service.create_device_cleanup_precheck(session, 1, account.id, "tester")
+
+
+@pytest.mark.no_postgres
+def test_device_cleanup_candidates_block_non_normal_usage_but_classify_stays_readonly():
+    with _session() as session:
+        _seed_account(session)
+        _seed_usage_pool(session, 3, "rank_deboost")
+        rank = _seed_usage_account(session, 31, pool_id=3, account_identity="rank_deboost")
+        mismatch = _seed_usage_account(session, 32, pool_id=3, account_identity="normal")
+        for account in [rank, mismatch]:
+            session.add(
+                TgAccountAuthorizationSnapshot(
+                    tenant_id=1,
+                    account_id=account.id,
+                    authorization_hash_ciphertext=encrypt_secret(f"external-{account.id}"),
+                    is_current_session=False,
+                    api_id=999999,
+                    app_name="Legacy Client",
+                    status="active",
+                    scanned_at=_now(),
+                )
+            )
+        session.commit()
+
+        for account in [rank, mismatch]:
+            classifications = classify_account_authorization_snapshots(session, account.id)
+            cleanup_candidates = cleanup_candidate_authorization_snapshots(session, account)
+
+            assert classifications
+            assert cleanup_candidates == []

@@ -10,7 +10,7 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import AccountStatus, AiAccountGroupStanceMemory, AiAccountVoiceProfile, AuditLog, TgAccount
+from app.models import AccountPool, AccountStatus, AiAccountGroupStanceMemory, AiAccountVoiceProfile, AuditLog, TgAccount
 from app.services.task_center import account_stance_memory, account_voice_profile_cache
 from app.services.task_center.account_voice_profiles import (
     VOICE_PROFILE_INITIAL_MAX_TOKENS,
@@ -49,10 +49,14 @@ def _session() -> Session:
 
 
 def _account(session: Session, account_id: int, name: str, username: str = "") -> None:
+    if session.get(AccountPool, 1) is None:
+        session.add(AccountPool(id=1, tenant_id=1, name="普通账号池", pool_purpose="normal", is_default=True))
     session.add(
         TgAccount(
             id=account_id,
             tenant_id=1,
+            pool_id=1,
+            account_identity="normal",
             display_name=name,
             username=username,
             phone_masked=f"138****{account_id}",
@@ -61,6 +65,16 @@ def _account(session: Session, account_id: int, name: str, username: str = "") -
         )
     )
     session.commit()
+
+
+def _usage_pool(session: Session, pool_id: int, purpose: str) -> AccountPool:
+    system_key = purpose if purpose in {"code_receiver", "rank_deboost"} else ""
+    pool = session.get(AccountPool, pool_id)
+    if pool is None:
+        pool = AccountPool(id=pool_id, tenant_id=1, name=f"{purpose}账号池", pool_purpose=purpose, system_key=system_key)
+        session.add(pool)
+        session.flush()
+    return pool
 
 
 def _profile(
@@ -357,6 +371,66 @@ def test_missing_voice_profile_requires_explicit_ai_generator():
     with _session() as session:
         with pytest.raises(RuntimeError, match="voice profile generator is required"):
             ensure_voice_profiles_for_accounts(session, tenant_id=1, account_ids=[101], generator=None)
+
+
+@pytest.mark.parametrize(
+    ("pool_purpose", "account_identity"),
+    [("rank_deboost", "rank_deboost"), ("rank_deboost", "normal")],
+)
+def test_ensure_voice_profiles_rejects_non_normal_account_usage(pool_purpose, account_identity):
+    with _session() as session:
+        _usage_pool(session, 3, pool_purpose)
+        session.add(
+            TgAccount(
+                id=301,
+                tenant_id=1,
+                pool_id=3,
+                account_identity=account_identity,
+                display_name="观察号",
+                phone_masked="138****0301",
+                status=AccountStatus.ACTIVE.value,
+                session_ciphertext="session",
+            )
+        )
+        session.commit()
+
+        def generator(_account_ids: list[int]) -> list[dict]:
+            raise AssertionError("non-normal account must not enter voice profile generation")
+
+        with pytest.raises(ValueError, match="account_action_not_allowed|account_purpose_mismatch"):
+            ensure_voice_profiles_for_accounts(session, tenant_id=1, account_ids=[301], generator=generator)
+
+
+def test_patch_and_rebuild_voice_profile_reject_non_normal_account_usage():
+    with _session() as session:
+        _usage_pool(session, 3, "rank_deboost")
+        session.add(
+            TgAccount(
+                id=302,
+                tenant_id=1,
+                pool_id=3,
+                account_identity="rank_deboost",
+                display_name="观察号",
+                phone_masked="138****0302",
+                status=AccountStatus.ACTIVE.value,
+                session_ciphertext="session",
+            )
+        )
+        session.commit()
+
+        def generator(_account_ids: list[int]) -> list[dict]:
+            raise AssertionError("non-normal account must not rebuild voice profile")
+
+        with pytest.raises(ValueError, match="account_action_not_allowed:rank_deboost:account_mask_init"):
+            patch_voice_profile(
+                session,
+                tenant_id=1,
+                account_id=302,
+                patch={"short_prompt_summary": "青年短句，先看反馈再追问细节"},
+                actor="tester",
+            )
+        with pytest.raises(ValueError, match="account_action_not_allowed:rank_deboost:account_mask_init"):
+            rebuild_voice_profile(session, tenant_id=1, account_id=302, generator=generator, actor="tester")
 
 
 def test_ensure_voice_profiles_uses_batch_generator_and_rejects_generic_summary():

@@ -57,6 +57,12 @@ from ..account_two_fa import (
 from ..ai_config import ai_provider_credentials, get_tenant_ai_setting
 from ..developer_apps import credentials_for_account
 from ..tenant_two_fa_settings import FIXED_TWO_FA_NOT_CONFIGURED, tenant_fixed_two_fa_password
+from .account_usage_guard import (
+    CODE_RECEIVER_2FA_CHANGE_DENIED_REASON,
+    account_security_mutation_block,
+    apply_usage_block_to_batch_item,
+    assert_account_security_mutation_allowed,
+)
 
 
 USERNAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{4,31}$")
@@ -69,10 +75,6 @@ PROFILE_ACTIONS = {"update_profile", "update_username", "update_avatar"}
 SECURITY_ACTIONS = {"cleanup_devices", "set_two_fa"}
 STANDBY_SESSION_ACTIONS = {"provision_standby_session", "self_heal_session"}
 ALL_ACTIONS = PROFILE_ACTIONS | SECURITY_ACTIONS | STANDBY_SESSION_ACTIONS
-CODE_RECEIVER_IDENTITY = "code_receiver"
-CODE_RECEIVER_RESERVED_ACTIONS = PROFILE_ACTIONS | SECURITY_ACTIONS
-CODE_RECEIVER_RESERVED_REASON = "接码专用账号只允许接收验证码"
-CODE_RECEIVER_2FA_CHANGE_DENIED_REASON = "接码专用账号禁止修改二步验证密码"
 STANDBY_FAILURE_STATUS = {
     "verification_code_unreadable": "code_waiting",
     "two_fa_not_managed": "two_fa_waiting",
@@ -567,8 +569,7 @@ def _cleanup_precheck_account(session: Session, tenant_id: int, account_id: int)
     account = session.get(TgAccount, account_id)
     if not account or account.tenant_id != tenant_id or account.deleted_at is not None:
         raise ValueError("account not found")
-    if account.account_identity == "code_receiver":
-        raise ValueError("接码专用账号禁止执行一键清理登录设备")
+    assert_account_security_mutation_allowed(session, account, "cleanup_devices")
     return account
 
 
@@ -791,8 +792,15 @@ def reveal_managed_two_fa_password(
 
 
 def _deny_code_receiver_two_fa_change(account: TgAccount) -> None:
-    if account.account_identity == CODE_RECEIVER_IDENTITY:
+    session = object_session(account)
+    if session is None:
+        raise ValueError("account session is required")
+    block = account_security_mutation_block(session, account, {"set_two_fa"})
+    if block is None:
+        return
+    if block.failure_type == "code_receiver_reserved":
         raise ValueError(CODE_RECEIVER_2FA_CHANGE_DENIED_REASON)
+    raise ValueError(block.failure_type)
 
 
 def _tenant_fixed_two_fa_password_or_raise(session: Session, account: TgAccount) -> str:
@@ -810,11 +818,15 @@ def precheck_account_security_batch(session: Session, tenant_id: int, payload: A
     items: list[AccountSecurityPreviewItem] = []
     action_set = set(action_types)
     needs_profile_preview = bool(set(action_types) & PROFILE_ACTIONS)
+    usage_blocks = {
+        account.id: account_security_mutation_block(session, account, action_set)
+        for account in accounts
+    }
     overrides = {override.account_id: override for override in payload.preview_overrides}
     if needs_profile_preview:
         accounts_needing_generation = [
             account for account in accounts
-            if account.id not in overrides and not _blocks_code_receiver_actions(account, set(action_types))
+            if account.id not in overrides and usage_blocks.get(account.id) is None
         ]
         generated_by_id = {
             account.id: generated_item
@@ -825,15 +837,15 @@ def precheck_account_security_batch(session: Session, tenant_id: int, payload: A
         }
         generated = [
             _account_profile_preview(account)
-            if account.id in overrides or _blocks_code_receiver_actions(account, action_set)
+            if account.id in overrides or usage_blocks.get(account.id) is not None
             else generated_by_id[account.id]
             for account in accounts
         ]
     else:
         generated = [_account_profile_preview(account) for account in accounts]
     for index, account in enumerate(accounts):
-        code_receiver_blocked = _blocks_code_receiver_actions(account, action_set)
-        if action_set & SECURITY_ACTIONS and not code_receiver_blocked:
+        usage_block = usage_blocks.get(account.id)
+        if action_set & SECURITY_ACTIONS and usage_block is None:
             try:
                 snapshot = refresh_account_security(session, tenant_id, account.id, actor="precheck")
             except ValueError:
@@ -845,9 +857,9 @@ def precheck_account_security_batch(session: Session, tenant_id: int, payload: A
         suggested: list[str] = []
         status = "executable"
         can_self_heal = "self_heal_session" in action_types and _has_switchable_standby(session, account)
-        if code_receiver_blocked:
-            blockers.append(CODE_RECEIVER_RESERVED_REASON)
-            suggested.append("接码专用账号仅保留验证码读取和备用 session 维护能力")
+        if usage_block is not None:
+            blockers.append(usage_block.detail)
+            suggested.append(usage_block.suggested_action)
             status = "skipped"
         if (account.status != AccountStatus.ACTIVE.value or not account.session_ciphertext) and not can_self_heal:
             blockers.append("账号未在线或缺少可用 session")
@@ -973,8 +985,9 @@ def create_account_security_batch(session: Session, tenant_id: int, payload: Acc
     for preview_item in preview.items:
         item_status = "pending" if preview_item.precheck_status == "executable" and batch.status == "running" else preview_item.precheck_status
         cleanup_precheck_id = ""
+        account = _require_account(session, tenant_id, preview_item.account_id)
+        usage_block = account_security_mutation_block(session, account, set(preview.action_types))
         if "cleanup_devices" in preview.action_types and item_status == "pending":
-            account = _require_account(session, tenant_id, preview_item.account_id)
             cleanup_precheck_id = _create_device_cleanup_precheck_record(session, account, actor).precheck_id
         item = TgAccountSecurityBatchItem(
             batch_id=batch.id,
@@ -996,6 +1009,8 @@ def create_account_security_batch(session: Session, tenant_id: int, payload: Acc
             username_candidates=json.dumps(preview_item.username_candidates, ensure_ascii=False),
             avatar_source=preview_item.avatar_source,
             skipped_reason=";".join(preview_item.blockers),
+            failure_type=usage_block.failure_type if usage_block is not None else "",
+            failure_detail=usage_block.detail if usage_block is not None else "",
             trace_id=preview.trace_id,
         )
         session.add(item)
@@ -1127,8 +1142,11 @@ def _execute_batch_item(session: Session, item_id: int) -> None:
         session.commit()
         return
     action_types = set(_json_list(batch.action_types))
-    if _blocks_code_receiver_actions(account, action_types):
-        _skip_code_receiver_batch_item(item, action_types)
+    usage_block = account_security_mutation_block(session, account, action_types)
+    if usage_block is not None:
+        apply_usage_block_to_batch_item(item, usage_block, action_types)
+        item.finished_at = _now()
+        _refresh_batch_counts(session, batch)
         session.commit()
         return
     item.status = "running"
@@ -1378,11 +1396,10 @@ def _poll_standby_login_code_once(session: Session, account: TgAccount, flow) ->
 
 
 def _execute_cleanup(session: Session, account: TgAccount, item: TgAccountSecurityBatchItem, credentials) -> list[str]:
-    if account.account_identity == "code_receiver":
-        item.status = "manual_required"
-        item.cleanup_status = "manual_required"
-        item.failure_type = "code_receiver_reserved"
-        return ["接码专用账号禁止执行一键清理登录设备"]
+    usage_block = account_security_mutation_block(session, account, {"cleanup_devices"})
+    if usage_block is not None:
+        apply_usage_block_to_batch_item(item, usage_block, {"cleanup_devices"})
+        return [usage_block.detail]
     if not item.device_cleanup_precheck_id:
         item.cleanup_status = "failed"
         item.failure_type = "device_cleanup_precheck_missing"
@@ -1860,29 +1877,6 @@ def _accounts_for_payload(session: Session, tenant_id: int, account_ids: list[in
     if not accounts:
         raise ValueError("no accounts selected")
     return accounts
-
-
-def _blocks_code_receiver_actions(account: TgAccount, action_types: set[str]) -> bool:
-    return account.account_identity == CODE_RECEIVER_IDENTITY and bool(action_types & CODE_RECEIVER_RESERVED_ACTIONS)
-
-
-def _skip_code_receiver_batch_item(item: TgAccountSecurityBatchItem, action_types: set[str]) -> None:
-    item.status = "skipped"
-    item.precheck_status = "skipped"
-    item.skipped_reason = CODE_RECEIVER_RESERVED_REASON
-    item.failure_type = "code_receiver_reserved"
-    item.failure_detail = CODE_RECEIVER_RESERVED_REASON
-    item.finished_at = _now()
-    if "cleanup_devices" in action_types:
-        item.cleanup_status = "skipped"
-    if "set_two_fa" in action_types:
-        item.two_fa_status = "skipped"
-    if "update_profile" in action_types:
-        item.profile_status = "skipped"
-    if "update_username" in action_types:
-        item.username_status = "skipped"
-    if "update_avatar" in action_types:
-        item.avatar_status = "skipped"
 
 
 def _generate_profiles(session: Session, tenant_id: int, accounts: list[TgAccount], strategy) -> list[dict[str, object]]:
