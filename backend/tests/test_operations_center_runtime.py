@@ -12,7 +12,7 @@ from app.config import Settings
 from app.database import Base
 from app.integrations.telegram import OperationResult, SendResult, _resolve_telethon_target, _telethon_send_target
 from app.integrations.telegram.gateway import TelethonTelegramGateway
-from app.models import AccountPool, AccountStatus, Action, AiGroupMessageMemory, AiProvider, AiUsageLedger, AuditLog, ChannelMessage, ChannelMessageComment, ContentKeywordRule, FailureType, GroupArchive, GroupContextMessage, ListenerSourceState, MessageFingerprint, MessageTask, MessageTaskAttempt, OperationIssue, OperationIssueAccount, OperationIssueSource, OperationTarget, PromptTemplate, ReviewQueue, RuleSet, RuleSetVersion, SchedulingSetting, TargetRuntimeSummary, Task, TaskRuntimeSummary, TaskStatus, Tenant, TenantAiSetting, TgAccount, TgAccountAuthorization, TgAccountOnlineState, TgAccountSyncRecord, TgGroup, TgGroupAccount, TgLoginFlow, VerificationTask, WorkerHeartbeat
+from app.models import AccountPool, AccountStatus, Action, AiGroupMessageMemory, AiProvider, AiUsageLedger, AuditLog, ChannelMessage, ChannelMessageComment, ContentKeywordRule, FailureType, GroupArchive, GroupContextMessage, ListenerSourceState, MessageFingerprint, MessageTask, MessageTaskAttempt, OperationIssue, OperationIssueAccount, OperationIssueSource, OperationTarget, PromptTemplate, ReviewQueue, RuleSet, RuleSetVersion, SchedulingSetting, TargetRuntimeSummary, Task, TaskRuntimeSummary, TaskStatus, Tenant, TenantAiSetting, TgAccount, TgAccountAuthorization, TgAccountOnlineState, TgAccountSecurityBatch, TgAccountSyncRecord, TgGroup, TgGroupAccount, TgLoginFlow, VerificationTask, WorkerHeartbeat
 from app.schemas import ArchiveCreate, ChannelCommentTaskCreate, ChannelLikeTaskCreate, ChannelViewTaskCreate, GroupAIChatTaskCreate, GroupRelayTaskCreate, MaterialCreate, MaterialUpdate, MessageSendTaskCreate, OperationTargetAccountUpdate, OperationTargetAdmissionRetryRequest, OperationTargetUpdate, PromptTemplateCreate, PromptTemplateUpdate, SchedulingSettingUpdate, TaskPrecheckRequest, TaskSettingsUpdate, TaskSourceFilterOverrideRequest
 from app.schemas.operations_center import RuleSetVersionCreate
 from app.schemas.risk_control import RiskControlGlobalPolicyUpdate
@@ -7370,3 +7370,194 @@ def test_message_send_failure_rolls_up_operation_issue(monkeypatch):
     assert resolved_issue.summary["auto_resolved"] is True
     assert resolved_summary is not None
     assert resolved_summary.open_issue_count == 0
+
+
+def _list_task_page(session: Session, **overrides):
+    import app.services.task_center as task_center_service
+
+    list_task_page = getattr(task_center_service, "list_task_page", None)
+    assert callable(list_task_page), "list_task_page must be exported from app.services.task_center"
+    params = {
+        "tenant_id": 1,
+        "page": 1,
+        "page_size": 20,
+        "task_type": None,
+        "status": None,
+        "q": "",
+        "group_key": None,
+    }
+    params.update(overrides)
+    return list_task_page(session, **params)
+
+
+@pytest.mark.no_postgres
+def test_task_list_page_paginates_unified_collection_without_full_configs():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    created_at = datetime(2026, 7, 10, 8, 0, tzinfo=UTC)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="任务分页租户"))
+        session.add_all(
+            [
+                Task(
+                    id=f"task-page-{index:03d}",
+                    tenant_id=1,
+                    name=f"分页任务 {index}",
+                    type="channel_view",
+                    status="running",
+                    priority=3,
+                    type_config={"target_channel_name": "分页频道"},
+                    created_at=created_at - timedelta(minutes=index),
+                    updated_at=created_at - timedelta(minutes=index),
+                )
+                for index in range(65)
+            ]
+        )
+        session.add_all(
+            [
+                TgAccountSecurityBatch(
+                    id=8001 + index,
+                    tenant_id=1,
+                    action_types='["update_profile"]',
+                    status="running",
+                    total_count=1,
+                    created_at=created_at.replace(tzinfo=None) - timedelta(days=1, minutes=index),
+                )
+                for index in range(2)
+            ]
+        )
+        session.flush()
+
+        result = _list_task_page(session, page=2, page_size=20)
+
+    assert result.total == 67
+    assert result.page == 2
+    assert result.page_size == 20
+    assert len(result.items) == 20
+    assert result.summary == {"total": 67, "running": 67, "failed": 0}
+    assert sum(group["task_count"] for group in result.groups) == 67
+    assert all(item["source_kind"] for item in result.items)
+    assert all("account_scope_summary" in item for item in result.items)
+    assert all(
+        field not in item
+        for item in result.items
+        for field in ("account_config", "pacing_config", "failure_policy", "type_config")
+    )
+
+
+@pytest.mark.no_postgres
+def test_task_list_page_filters_facets_and_group_counts_before_group_or_page():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    created_at = datetime(2026, 7, 10, 9, 0, tzinfo=UTC)
+    tasks = [
+        Task(
+            id="task-alpha-running-1",
+            tenant_id=1,
+            name="Alpha 日常运行",
+            type="group_ai_chat",
+            status="running",
+            type_config={"target_group_name": "Alpha 群", "required_channels": ["Alpha 频道"]},
+            created_at=created_at,
+            updated_at=created_at,
+        ),
+        Task(
+            id="task-alpha-running-2",
+            tenant_id=1,
+            name="Alpha 夜间运行",
+            type="group_ai_chat",
+            status="running",
+            type_config={"target_group_name": "Alpha 群", "required_channels": ["Alpha 频道"]},
+            created_at=created_at - timedelta(minutes=1),
+            updated_at=created_at - timedelta(minutes=1),
+        ),
+        Task(
+            id="task-beta-failed",
+            tenant_id=1,
+            name="Beta 失败任务",
+            type="group_ai_chat",
+            status="failed",
+            type_config={"target_group_name": "Beta 群", "required_channels": ["Beta 频道"]},
+            created_at=created_at - timedelta(minutes=2),
+            updated_at=created_at - timedelta(minutes=2),
+        ),
+        Task(
+            id="task-other-tenant",
+            tenant_id=2,
+            name="Alpha 不可见",
+            type="group_ai_chat",
+            status="running",
+            type_config={"target_group_name": "Alpha 群"},
+            created_at=created_at,
+            updated_at=created_at,
+        ),
+    ]
+
+    with Session(engine) as session:
+        session.add_all([Tenant(id=1, name="分页租户"), Tenant(id=2, name="其他租户"), *tasks])
+        session.flush()
+
+        base = _list_task_page(session, page=1, page_size=1, task_type="group_ai_chat")
+        running = _list_task_page(session, status="running")
+        searched = _list_task_page(session, q="  alpha 群  ")
+        alpha_group = next(group for group in base.groups if group["target_group_label"] == "Alpha 群")
+        grouped = _list_task_page(session, page=1, page_size=1, group_key=alpha_group["key"])
+
+    assert base.total == 3
+    assert base.summary == {"total": 3, "running": 2, "failed": 1}
+    assert len(base.items) == 1
+    assert running.total == 2
+    assert searched.total == 2
+    assert {item["id"] for item in searched.items} == {"task-alpha-running-1", "task-alpha-running-2"}
+    assert grouped.total == 2
+    assert grouped.summary == base.summary
+    assert grouped.groups == base.groups
+    assert len(grouped.items) == 1
+    assert all(item["tenant_id"] == 1 for item in grouped.items)
+
+
+@pytest.mark.no_postgres
+def test_task_list_page_stably_orders_mixed_datetimes_sources_and_numeric_batch_ids():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    aware_created_at = datetime(2026, 7, 10, 10, 0, tzinfo=UTC)
+    naive_created_at = aware_created_at.replace(tzinfo=None)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="稳定排序租户"))
+        session.add(
+            Task(
+                id="task-stable-source",
+                tenant_id=1,
+                name="普通任务",
+                type="channel_view",
+                status="running",
+                priority=3,
+                created_at=aware_created_at,
+                updated_at=aware_created_at,
+            )
+        )
+        session.add_all(
+            [
+                TgAccountSecurityBatch(
+                    id=batch_id,
+                    tenant_id=1,
+                    action_types='["update_profile"]',
+                    status="running",
+                    total_count=1,
+                    created_at=naive_created_at,
+                )
+                for batch_id in (9, 10)
+            ]
+        )
+        session.flush()
+
+        result = _list_task_page(session, page_size=10)
+
+    assert [item["id"] for item in result.items] == [
+        "task-stable-source",
+        "account_security_batch:10",
+        "account_security_batch:9",
+    ]
+    assert result.items[0]["source_kind"] != result.items[1]["source_kind"]

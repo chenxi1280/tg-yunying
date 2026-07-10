@@ -294,6 +294,161 @@ def auth_headers(client: TestClient, email: str = "admin@demo.local", password: 
     return {"Authorization": f"Bearer {token}"}
 
 
+def _seed_task_page_route_rows(token: str) -> list[str]:
+    created_at = datetime(2026, 7, 10, 11, 0, tzinfo=UTC)
+    specs = [
+        ("alpha-running", "running", "Alpha 群", "Alpha 频道"),
+        ("alpha-failed", "failed", "Alpha 群", "Alpha 频道"),
+        ("beta-running", "running", "Beta 群", "Beta 频道"),
+    ]
+    task_ids: list[str] = []
+    with SessionLocal() as session:
+        for index, (suffix, status, group_name, channel_name) in enumerate(specs):
+            task_id = f"{token}-{suffix}"
+            task_ids.append(task_id)
+            session.add(
+                Task(
+                    id=task_id,
+                    tenant_id=1,
+                    name=f"{token} {suffix}",
+                    type="channel_view",
+                    status=status,
+                    priority=3,
+                    account_config={"selection_mode": "manual", "account_ids": [11, 12]},
+                    pacing_config={"mode": "fixed"},
+                    failure_policy={"max_retries": 1},
+                    type_config={"linked_group_name": group_name, "target_channel_name": channel_name},
+                    created_at=created_at - timedelta(minutes=index),
+                    updated_at=created_at - timedelta(minutes=index),
+                )
+            )
+        session.commit()
+    return task_ids
+
+
+def test_task_page_route_returns_compact_schema_and_keeps_legacy_contracts():
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        token = f"page{uuid4().hex[:8]}"
+        task_ids = _seed_task_page_route_rows(token)
+
+        response = client.get(
+            "/api/tasks/page",
+            headers=headers,
+            params={"page": 1, "page_size": 20, "q": token},
+        )
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert set(body) == {"items", "total", "page", "page_size", "summary", "groups"}
+        assert body["total"] == 3
+        assert body["page"] == 1
+        assert body["page_size"] == 20
+        assert body["summary"] == {"total": 3, "running": 2, "failed": 1}
+        assert {item["id"] for item in body["items"]} == set(task_ids)
+        assert all(item["source_kind"] for item in body["items"])
+        assert all("account_scope_summary" in item for item in body["items"])
+        assert all(
+            field not in item
+            for item in body["items"]
+            for field in ("account_config", "pacing_config", "failure_policy", "type_config")
+        )
+
+        detail = client.get(f"/api/tasks/{task_ids[0]}", headers=headers)
+        assert detail.status_code == 200, detail.text
+        assert set((detail.json()["task"])) >= {
+            "account_config",
+            "pacing_config",
+            "failure_policy",
+            "type_config",
+        }
+
+        legacy = client.get("/api/tasks?type=channel_view", headers=headers)
+        assert legacy.status_code == 200, legacy.text
+        legacy_item = next(item for item in legacy.json() if item["id"] == task_ids[0])
+        assert set(legacy_item) >= {"account_config", "pacing_config", "failure_policy", "type_config"}
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"page": 0, "page_size": 20},
+        {"page": 1, "page_size": 0},
+        {"page": 1, "page_size": 101},
+        {"page": 1, "page_size": 20, "q": "x" * 161},
+    ],
+)
+def test_task_page_route_rejects_invalid_query_bounds(params):
+    with TestClient(app) as client:
+        response = client.get("/api/tasks/page", headers=auth_headers(client), params=params)
+
+    assert response.status_code == 422, response.text
+
+
+def test_task_page_route_wires_type_status_search_and_group_filters():
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        token = f"filters{uuid4().hex[:8]}"
+        _seed_task_page_route_rows(token)
+
+        base = client.get(
+            "/api/tasks/page",
+            headers=headers,
+            params={"page": 1, "page_size": 20, "type": "channel_view", "q": token},
+        )
+        assert base.status_code == 200, base.text
+        base_body = base.json()
+        alpha_group = next(group for group in base_body["groups"] if group["target_group_label"] == "Alpha 群")
+
+        running = client.get(
+            "/api/tasks/page",
+            headers=headers,
+            params={"page": 1, "page_size": 20, "type": "channel_view", "status": "running", "q": token},
+        )
+        grouped = client.get(
+            "/api/tasks/page",
+            headers=headers,
+            params={"page": 1, "page_size": 1, "type": "channel_view", "q": token, "group_key": alpha_group["key"]},
+        )
+
+        assert running.status_code == 200, running.text
+        assert running.json()["total"] == 2
+        assert running.json()["summary"] == {"total": 2, "running": 2, "failed": 0}
+        assert grouped.status_code == 200, grouped.text
+        assert grouped.json()["total"] == 2
+        assert len(grouped.json()["items"]) == 1
+        assert grouped.json()["summary"] == base_body["summary"]
+        assert grouped.json()["groups"] == base_body["groups"]
+
+
+def test_task_page_route_requires_tasks_view_permission():
+    with TestClient(app) as client:
+        admin_headers = auth_headers(client)
+        suffix = uuid4().hex[:8]
+        viewer = client.post(
+            "/api/admin/users",
+            headers=admin_headers,
+            json={
+                "name": f"无任务权限用户{suffix}",
+                "email": f"no_tasks_{suffix}@example.local",
+                "password": "viewer123",
+                "role": "后台用户",
+                "role_template": "只读观察员",
+                "permissions": ["overview.view"],
+                "menu_permissions": ["overview.view"],
+            },
+        )
+        assert viewer.status_code == 200, viewer.text
+        viewer_headers = auth_headers(client, viewer.json()["email"], "viewer123")
+
+        denied = client.get("/api/tasks/page?page=1&page_size=20", headers=viewer_headers)
+        unauthenticated = client.get("/api/tasks/page?page=1&page_size=20")
+
+    assert denied.status_code == 403
+    assert denied.json()["permission"] == "tasks.view"
+    assert unauthenticated.status_code == 401
+
+
 def enable_mock_ai_provider(client: TestClient, headers: dict[str, str], name: str = "pytest AI") -> dict:
     provider = client.post(
         "/api/ai-providers",
