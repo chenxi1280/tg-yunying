@@ -312,23 +312,23 @@ git commit -m "feat: make rank deboost planning and execution factual"
 - Test: `backend/tests/test_task_center_view_dataflow.py`
 - Test: `backend/tests/test_frontend_permission_gating.py`
 
-- [ ] **Step 1: Write failing source-contract tests**
+- [x] **Step 1: Write failing source-contract tests**
 
 Assert the account center exposes normal/rank group type, enable toggle and binding action; normal task all/group/manual options use eligible ordinary accounts; rank task exposes all/group/manual dedicated account modes and no longer submits task-level `proxy_airport_node_id`; readiness renders per-pool binding gaps and separate observed/clicked/no-click/unknown counts.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run the three frontend contract files. Expected: current single rank group and hidden rank selector behavior fails.
 
-- [ ] **Step 3: Implement typed view-model helpers**
+- [x] **Step 3: Implement typed view-model helpers**
 
 Add pure helpers `isOperationalAccount`, `isEligibleRankAccount`, `rankPoolSummaries`, and `accountSelectionPreview`. Use backend summary counts as authoritative and keep frontend filtering aligned for ergonomics. Normalize submit payload to `account_config={selection_mode, account_group_id, account_ids, max_concurrent}`.
 
-- [ ] **Step 4: Implement account center and task UI**
+- [x] **Step 4: Implement account center and task UI**
 
 Add group purpose selection, rank badges, enable/disable control, proxy binding configuration and usage-change confirmation. Restore rank account selection segmented control, show all enabled rank pools and missing-binding blockers, disable ordinary dedicated choices, and render execution/readiness states without instructional feature prose.
 
-- [ ] **Step 5: Verify GREEN, build and commit**
+- [x] **Step 5: Verify GREEN, build and commit**
 
 Run contract tests and `cd frontend && npm run build`. Expected: TypeScript and Vite build pass with no new warnings beyond the existing chunk-size warning.
 
