@@ -32,6 +32,13 @@ from app.services.task_center.channel_membership import candidate_accounts_for_c
 pytestmark = pytest.mark.no_postgres
 
 
+def _add_normal_pool(session: Session, pool_id: int = 1000) -> AccountPool:
+    pool = AccountPool(id=pool_id, tenant_id=1, name="普通账号组", pool_purpose="normal", is_default=True)
+    session.add(pool)
+    session.flush()
+    return pool
+
+
 def test_create_account_pool_persists_disabled_state_in_api_snapshot() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -263,14 +270,17 @@ def test_select_task_accounts_reduces_low_health_participation_weight():
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
+        normal_pool = _add_normal_pool(session)
         for index in range(12):
             session.add(
                 TgAccount(
                     id=index + 1,
                     tenant_id=1,
+                    pool_id=normal_pool.id,
                     display_name=f"低分账号{index + 1}",
                     phone_masked=str(index + 1),
                     status=AccountStatus.ACTIVE.value,
+                    account_identity="normal",
                     health_score=42,
                 )
             )
@@ -287,14 +297,17 @@ def test_select_task_accounts_ignores_concurrency_when_capacity_scan_requested()
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
+        normal_pool = _add_normal_pool(session)
         for index in range(30):
             session.add(
                 TgAccount(
                     id=index + 1,
                     tenant_id=1,
+                    pool_id=normal_pool.id,
                     display_name=f"健康账号{index + 1}",
                     phone_masked=str(index + 1),
                     status=AccountStatus.ACTIVE.value,
+                    account_identity="normal",
                     health_score=95,
                 )
             )
@@ -317,14 +330,17 @@ def test_select_task_accounts_prefers_healthy_accounts_before_low_health_account
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
+        normal_pool = _add_normal_pool(session)
         for account_id, score in [(1, 95), (2, 91), (3, 88), (4, 42), (5, 40), (6, 38), (7, 36)]:
             session.add(
                 TgAccount(
                     id=account_id,
                     tenant_id=1,
+                    pool_id=normal_pool.id,
                     display_name=f"账号{account_id}",
                     phone_masked=str(account_id),
                     status=AccountStatus.ACTIVE.value,
+                    account_identity="normal",
                     health_score=score,
                 )
             )
@@ -341,10 +357,11 @@ def test_select_task_accounts_uses_adjusted_health_score_from_security_snapshot(
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
+        normal_pool = _add_normal_pool(session)
         session.add_all(
             [
-                TgAccount(id=1, tenant_id=1, display_name="健康账号", phone_masked="1", status=AccountStatus.ACTIVE.value, health_score=92),
-                TgAccount(id=2, tenant_id=1, display_name="安全阻塞账号", phone_masked="2", status=AccountStatus.ACTIVE.value, health_score=92),
+                TgAccount(id=1, tenant_id=1, pool_id=normal_pool.id, display_name="健康账号", phone_masked="1", status=AccountStatus.ACTIVE.value, account_identity="normal", health_score=92),
+                TgAccount(id=2, tenant_id=1, pool_id=normal_pool.id, display_name="安全阻塞账号", phone_masked="2", status=AccountStatus.ACTIVE.value, account_identity="normal", health_score=92),
             ]
         )
         session.add(
@@ -369,10 +386,11 @@ def test_select_task_accounts_orders_by_runtime_health_score():
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
+        normal_pool = _add_normal_pool(session)
         for account_id in range(1, 6):
-            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"基础高分{account_id}", phone_masked=str(account_id), status=AccountStatus.ACTIVE.value, health_score=95))
+            session.add(TgAccount(id=account_id, tenant_id=1, pool_id=normal_pool.id, display_name=f"基础高分{account_id}", phone_masked=str(account_id), status=AccountStatus.ACTIVE.value, account_identity="normal", health_score=95))
             session.add(AccountRuntimeSummary(tenant_id=1, account_id=account_id, health_score=20, risk_level="E"))
-        session.add(TgAccount(id=6, tenant_id=1, display_name="运行高分", phone_masked="6", status=AccountStatus.ACTIVE.value, health_score=10))
+        session.add(TgAccount(id=6, tenant_id=1, pool_id=normal_pool.id, display_name="运行高分", phone_masked="6", status=AccountStatus.ACTIVE.value, account_identity="normal", health_score=10))
         session.add(AccountRuntimeSummary(tenant_id=1, account_id=6, health_score=92, risk_level="A"))
         session.commit()
 
@@ -387,13 +405,16 @@ def test_select_task_accounts_does_not_double_penalize_runtime_health_score():
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
+        normal_pool = _add_normal_pool(session)
         session.add(
             TgAccount(
                 id=1,
                 tenant_id=1,
+                pool_id=normal_pool.id,
                 display_name="运行层可用账号",
                 phone_masked="1",
                 status=AccountStatus.ACTIVE.value,
+                account_identity="normal",
                 health_score=95,
             )
         )
@@ -430,14 +451,17 @@ def test_select_task_accounts_filters_recent_successes_in_one_cooldown_window():
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
+        normal_pool = _add_normal_pool(session)
         for account_id in range(1, 5):
             session.add(
                 TgAccount(
                     id=account_id,
                     tenant_id=1,
+                    pool_id=normal_pool.id,
                     display_name=f"账号{account_id}",
                     phone_masked=str(account_id),
                     status=AccountStatus.ACTIVE.value,
+                    account_identity="normal",
                     health_score=95,
                 )
             )
@@ -477,14 +501,17 @@ def test_select_task_accounts_prioritizes_uncovered_daily_task_accounts():
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
+        normal_pool = _add_normal_pool(session)
         for account_id in range(1, 7):
             session.add(
                 TgAccount(
                     id=account_id,
                     tenant_id=1,
+                    pool_id=normal_pool.id,
                     display_name=f"账号{account_id}",
                     phone_masked=str(account_id),
                     status=AccountStatus.ACTIVE.value,
+                    account_identity="normal",
                     health_score=95,
                 )
             )
@@ -527,14 +554,17 @@ def test_task_account_coverage_counts_same_day_unique_task_accounts():
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
+        normal_pool = _add_normal_pool(session)
         for account_id in range(1, 7):
             session.add(
                 TgAccount(
                     id=account_id,
                     tenant_id=1,
+                    pool_id=normal_pool.id,
                     display_name=f"账号{account_id}",
                     phone_masked=str(account_id),
                     status=AccountStatus.ACTIVE.value,
+                    account_identity="normal",
                     health_score=95,
                 )
             )
@@ -608,14 +638,17 @@ def test_all_account_group_ai_task_uses_daily_success_coverage_when_legacy_confi
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="覆盖群", auth_status="已授权运营"))
+        normal_pool = _add_normal_pool(session)
         for account_id in range(1, 4):
             session.add(
                 TgAccount(
                     id=account_id,
                     tenant_id=1,
+                    pool_id=normal_pool.id,
                     display_name=f"账号{account_id}",
                     phone_masked=str(account_id),
                     status=AccountStatus.ACTIVE.value,
+                    account_identity="normal",
                     health_score=95,
                 )
             )
@@ -674,14 +707,17 @@ def test_group_ai_all_accounts_coverage_projects_reasons_and_pending_accounts():
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="覆盖群", auth_status="已授权运营"))
+        normal_pool = _add_normal_pool(session)
         for account_id in range(1, 5):
             session.add(
                 TgAccount(
                     id=account_id,
                     tenant_id=1,
+                    pool_id=normal_pool.id,
                     display_name=f"账号{account_id}",
                     phone_masked=str(account_id),
                     status=AccountStatus.ACTIVE.value,
+                    account_identity="normal",
                     health_score=95,
                 )
             )
@@ -786,12 +822,13 @@ def test_membership_candidates_include_all_active_config_accounts():
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
+        normal_pool = _add_normal_pool(session)
         session.add_all(
             [
-                TgAccount(id=1, tenant_id=1, display_name="健康账号", phone_masked="1", status=AccountStatus.ACTIVE.value, health_score=92),
-                TgAccount(id=2, tenant_id=1, display_name="严重低分账号", phone_masked="2", status=AccountStatus.ACTIVE.value, health_score=20),
-                TgAccount(id=3, tenant_id=1, display_name="低分账号", phone_masked="3", status=AccountStatus.ACTIVE.value, health_score=42),
-                TgAccount(id=4, tenant_id=1, display_name="低分账号2", phone_masked="4", status=AccountStatus.ACTIVE.value, health_score=41),
+                TgAccount(id=1, tenant_id=1, pool_id=normal_pool.id, display_name="健康账号", phone_masked="1", status=AccountStatus.ACTIVE.value, account_identity="normal", health_score=92),
+                TgAccount(id=2, tenant_id=1, pool_id=normal_pool.id, display_name="严重低分账号", phone_masked="2", status=AccountStatus.ACTIVE.value, account_identity="normal", health_score=20),
+                TgAccount(id=3, tenant_id=1, pool_id=normal_pool.id, display_name="低分账号", phone_masked="3", status=AccountStatus.ACTIVE.value, account_identity="normal", health_score=42),
+                TgAccount(id=4, tenant_id=1, pool_id=normal_pool.id, display_name="低分账号2", phone_masked="4", status=AccountStatus.ACTIVE.value, account_identity="normal", health_score=41),
             ]
         )
         session.commit()
@@ -814,14 +851,17 @@ def test_membership_candidates_are_not_limited_by_send_concurrency():
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
+        normal_pool = _add_normal_pool(session)
         for account_id in range(1, 31):
             session.add(
                 TgAccount(
                     id=account_id,
                     tenant_id=1,
+                    pool_id=normal_pool.id,
                     display_name=f"准入账号{account_id}",
                     phone_masked=str(account_id),
                     status=AccountStatus.ACTIVE.value,
+                    account_identity="normal",
                     health_score=90,
                 )
             )
@@ -845,14 +885,17 @@ def test_select_task_accounts_compares_capped_and_full_capacity_scan():
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
+        normal_pool = _add_normal_pool(session)
         for account_id in range(1, 31):
             session.add(
                 TgAccount(
                     id=account_id,
                     tenant_id=1,
+                    pool_id=normal_pool.id,
                     display_name=f"频道账号{account_id}",
                     phone_masked=str(account_id),
                     status=AccountStatus.ACTIVE.value,
+                    account_identity="normal",
                     health_score=90,
                 )
             )

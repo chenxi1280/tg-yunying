@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.integrations.telegram import AccountHealth
-from app.models import AccountStatus, Task, TgAccount, TgAccountOnlineState, TgGroup, TgGroupAccount
+from app.models import AccountPool, AccountStatus, Task, TgAccount, TgAccountOnlineState, TgGroup, TgGroupAccount
 from app.services._common import _now
 from app.services.account_online_state import (
     is_account_online_available,
@@ -31,13 +31,25 @@ def _session() -> Session:
     return Session(engine)
 
 
+def _ensure_normal_pool(session: Session) -> AccountPool:
+    pool = session.get(AccountPool, 1)
+    if pool is None:
+        pool = AccountPool(id=1, tenant_id=1, name="普通账号组", pool_purpose="normal", is_default=True)
+        session.add(pool)
+        session.flush()
+    return pool
+
+
 def _account(session: Session, account_id: int = 101) -> TgAccount:
+    pool = _ensure_normal_pool(session)
     account = TgAccount(
         id=account_id,
         tenant_id=1,
+        pool_id=pool.id,
         display_name=f"账号{account_id}",
         phone_masked=f"138****{account_id}",
         status=AccountStatus.ACTIVE.value,
+        account_identity="normal",
         session_ciphertext="session",
         proxy_id=7,
     )
