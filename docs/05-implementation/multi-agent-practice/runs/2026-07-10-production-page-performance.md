@@ -7,7 +7,7 @@
 - 用户原话：线上各个页面打开缓慢，很多打开超时，例如任务编辑页面；要求查明原因并修复。
 - 分级：`L2 / P1 / standard_team`。
 - Release Gate：required。
-- 当前 owner：product -> dev。
+- 当前 owner：product -> prod-diagnosis（本地 QA 与产品验收已通过，待 Release Gate / E4）。
 
 ## 生产只读诊断
 
@@ -47,8 +47,11 @@
 
 - prod diagnosis：代码根因 `confirmed`；tasks 502 直接原因 `unproven`。
 - product design：`complete`。
-- dev：`not_started`。
-- qa：`not_started`。
-- product acceptance：`not_started`。
+- dev：`complete`。运营目标有界查询、当前页摘要、任务轻量分页读模型、七个目标消费者、任务编辑先开壳层和 CORS 分页头均已实现。
+- qa：`pass`。全量 no-postgres `1044 passed, 806 deselected`；PostgreSQL 定向 `20 passed`；frontend build、compileall、diff check 均通过。
+- local browser：`pass`。在本地 PostgreSQL 注入 3,810 个目标与 170 个任务后，运营目标页 585ms 可见，目标 API 16ms / 8.9KB；任务列表 API 66ms / 16KB，第二页 430ms 可见；任务编辑 715ms 可操作、793ms 完成已选目标回显。Rules / Archives / MessageSending 均只在弹窗或选定账号后发起带 `page/page_size` 的目标查询。
+- product acceptance：`accepted_local`。原始慢页、任务编辑、七消费者、显式错误、兼容和无 silent fallback 均已覆盖。
 - release gate：`pending`。
 - production fixed：`unproven`。
+
+本地真实浏览器首次验收发现跨域前端无法读取存在于响应中的 `X-Total-Count`，页面显示“运营目标分页响应缺少 x-total-count”。已增加 CORS `Access-Control-Expose-Headers: X-Total-Count, X-Page, X-Page-Size`，补红绿集成测试并复测通过。浏览器控制台剩余三项均为既有 Ant Design 弃用 / Descriptions span 警告，不是请求失败。

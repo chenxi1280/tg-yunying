@@ -6,7 +6,7 @@
 
 ## Current Phase
 
-Phase 4
+Phase 7
 
 ## Scope
 
@@ -40,25 +40,25 @@ Phase 4
 
 ### Phase 4: Backend TDD
 
-- [ ] 先写运营目标聚合/分页红测并确认按预期失败。
-- [ ] 实现数据库聚合和有界运营目标接口。
-- [ ] 先写任务列表分页/摘要红测并确认按预期失败。
-- [ ] 实现有界任务列表接口并保持详情下钻。
-- **Status:** pending
+- [x] 先写运营目标聚合/分页红测并确认按预期失败。
+- [x] 实现数据库聚合和有界运营目标接口。
+- [x] 先写任务列表分页/摘要红测并确认按预期失败。
+- [x] 实现有界任务列表接口并保持详情下钻。
+- **Status:** complete
 
 ### Phase 5: Frontend TDD and Integration
 
-- [ ] 先写任务编辑、运营目标、运营中心、规则、归档分页/按需加载红测。
-- [ ] 更新前端 API 类型和页面数据流。
-- [ ] 保持请求序号、错误可见性和当前选中值回显。
-- **Status:** pending
+- [x] 先写任务编辑、运营目标、运营中心、规则、归档分页/按需加载红测。
+- [x] 更新前端 API 类型和页面数据流。
+- [x] 保持请求序号、错误可见性和当前选中值回显。
+- **Status:** complete
 
 ### Phase 6: QA and Review
 
-- [ ] 逐任务完成规格审查和代码质量审查。
-- [ ] 运行定向测试、后端测试、前端构建和 diff 检查。
-- [ ] 完成最终跨模块审查和 Release Gate。
-- **Status:** pending
+- [x] 逐任务完成规格审查和代码质量审查。
+- [x] 运行定向测试、后端测试、前端构建和 diff 检查。
+- [x] 完成最终跨模块审查和本地 Release Gate。
+- **Status:** complete
 
 ### Phase 7: Release and Production Verification
 
@@ -98,6 +98,8 @@ Phase 4
 | 首次更新基线错误日志的补丁上下文未匹配 | 1 | 读取准确表格行后拆成小补丁更新 |
 | Docker PostgreSQL 镜像拉取在 registry manifest 阶段返回 EOF | 1 | 不重复 compose 拉取；先检查本地镜像和可用替代测试数据库来源 |
 | zsh 中变量名 `status` 为只读变量 | 1 | 改用 `db_health` 变量后重新检查容器健康 |
+| 本地真实浏览器无法读取响应中已有的 `X-Total-Count` | 1 | 补 CORS expose-headers 红绿测试并显式暴露三个分页头，浏览器复测通过 |
+| AppShell peer 兜底目标被 TypeScript 推断为不可空 | 1 | 显式标注 `OperationTarget | undefined` 后生产构建通过 |
 
 ## Evidence Rules
 

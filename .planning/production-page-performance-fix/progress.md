@@ -31,6 +31,32 @@
 - 隔离 PostgreSQL 测试库可用；相关 PostgreSQL 基线 22 passed，no-postgres 基线 24 passed，前端基线构建通过。
 - 当前进入 Phase 4 Backend TDD。
 
+### Phase 4: Backend TDD
+
+- **Status:** complete
+- 运营目标有界 API、当前页 SQL 聚合、runtime summary `target_ids` 已实现并覆盖规模测试。
+- `/api/tasks/page` 已实现统一轻量投影、服务端分页/过滤/统计/分组、系统批次常量级聚合与当前页 runtime hydration。
+
+### Phase 5: Frontend TDD and Integration
+
+- **Status:** complete
+- 七个运营目标消费者全部迁移到显式有界读取；任务创建/编辑先打开壳层再远程加载并按 ids 回显。
+- 任务中心列表改用 `/tasks/page`，当前查询轮询、请求取消和旧响应保护已完成。
+- 真实浏览器发现并修复分页响应头未通过 CORS 暴露的问题。
+
+### Phase 6: QA and Review
+
+- **Status:** complete
+- 全量 no-postgres：`1044 passed, 806 deselected, 5 warnings in 29.11s`。
+- PostgreSQL 定向：`20 passed, 327 deselected`。
+- frontend production build、backend compileall、diff check 通过。
+- Playwright 本地生产规模：3,810 目标页 585ms；170 任务 API 66ms / 16KB；编辑弹窗 715ms 可操作、793ms 回显目标；Rules / Archives / MessageSending 全部为有界按需请求。
+
+### Phase 7: Release and Production Verification
+
+- **Status:** in_progress
+- 本地产品验收已通过；等待 `master -> release -> Deploy Production` 和生产 E4。
+
 ## Test Results
 
 | Test | Command | Expected | Actual | Status |
@@ -51,13 +77,15 @@
 | 2026-07-10 | 首次错误日志补丁上下文未匹配 | 1 | 读取准确行后拆分更新 |
 | 2026-07-10 | Docker Hub 拉取 postgres manifest 返回 EOF | 1 | 检查本地镜像/替代数据库，不重复原 compose 命令 |
 | 2026-07-10 | zsh `status` 变量只读导致健康检查脚本退出 | 1 | 改名为 `db_health` |
+| 2026-07-11 | 浏览器无法读取响应中已有的 `X-Total-Count` | 1 | 补 CORS expose-headers 红绿测试并显式暴露分页头，浏览器复测通过 |
+| 2026-07-11 | AppShell peer 兜底目标被 TypeScript 推断为不可空 | 1 | 显式标注可空类型后 production build 通过 |
 
 ## 5-Question Reboot Check
 
 | Question | Answer |
 |----------|--------|
-| Where am I? | Phase 4，Backend TDD |
-| Where am I going? | 设计/计划、TDD、前后端集成、QA、Release Gate、生产验证 |
+| Where am I? | Phase 7，Release and Production Verification |
+| Where am I going? | `master -> release -> Deploy Production`，随后真实登录态与日志 E4 验收 |
 | What's the goal? | 消除共享无界读取导致的慢页、超时和 502 |
 | What have I learned? | 见 findings.md 的生产证据与代码根因 |
-| What have I done? | 完成真实环境诊断、Product Design Complete、实施计划、隔离环境和基线验证 |
+| What have I done? | 完成诊断、Product Design、TDD 实现、本地 QA、真实浏览器规模验收和产品接受 |

@@ -84,3 +84,12 @@
 - 任务列表真实页面显示 67 条，客户端当前页只展示 10 条。
 - 任务详情可打开；点击“编辑任务”时必须先完成表单支撑数据加载。
 - 通过临时、已恢复的页面诊断包装记录到 `/operation-targets` 完整响应规模和耗时；未读取或导出浏览器 token、cookie、localStorage。
+
+## Local Production-Scale Verification
+
+- PostgreSQL 注入 3,810 个运营目标、170 个任务；运营目标页 585ms 可见，`page=1&page_size=20` 为 16ms / 8.9KB。
+- `/tasks/page?page=1&page_size=20` 为 66ms / 16KB；切到第二页 430ms 可见。
+- 任务编辑弹窗 715ms 可操作，793ms 完成既有目标回显；详情 100ms / 3.9KB，ids 水合 35ms / 453B。
+- Rules、Archives、MessageSending 目标候选只在弹窗/账号选择后请求，分别携带 `capability=send/archive/send` 和显式 `page=1&page_size=50`。
+- 首轮浏览器复测发现 CORS 未暴露分页头，响应实际含 `X-Total-Count` 但 JavaScript `Headers` 不可读；加入 `Access-Control-Expose-Headers` 后页面复测通过。
+- 没有观察到第一方无界 `/operation-targets` 请求；React StrictMode 的首轮请求会被 AbortController 取消，后续当前请求成功，属于预期旧请求保护。

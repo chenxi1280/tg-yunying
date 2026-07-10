@@ -307,3 +307,14 @@
 - decision: 本地合同验收通过；不声明生产已恢复；release run `28798964065` 已失败且未部署。
 - next_agent: prod-diagnosis
 - unresolved: 需要重新跑 CI / release deploy / 生产健康。
+
+## 2026-07-11 生产核心页面有界加载本地 QA
+
+- message_id: `2026-07-11-production-page-performance-local-qa-001`
+- input: `2026-07-11-production-page-performance-devcomplete-001`。
+- output: `local_qa_pass_for_bounded_core_pages`。
+- evidence: 自动化门禁为 no-postgres `1044 passed, 806 deselected`、PostgreSQL 目标/任务分页与 CORS `20 passed`、frontend build、compileall、diff check。Playwright 真实浏览器在本地 PostgreSQL 注入 3,810 个目标和 170 个任务：目标页 585ms 可见，目标 API 16ms / 8.9KB；任务 API 66ms / 16KB，第二页 430ms；编辑弹窗 715ms 可操作、793ms 回显目标，详情 100ms、目标 ids 水合 35ms。Rules、Archives、MessageSending 的目标请求分别为 `capability=send/archive/send` 且全部显式带 `page=1&page_size=50`。
+- defect_and_retest: 首轮浏览器验收发现 CORS 未暴露 `X-Total-Count`；补红测后增加 `Access-Control-Expose-Headers`，页面与请求头复测通过。无功能性 console error；仅保留既有 Ant Design 弃用/布局警告。
+- decision: `qa_pass=true`；本地性能目标通过；不把本地数据写成生产恢复。
+- next_agent: product
+- unresolved: CI、生产发布、生产真实登录态 30 次串行 + 10 并发、p95/p99、零 408/499/502 和 nginx/backend 同窗口日志仍未验证。

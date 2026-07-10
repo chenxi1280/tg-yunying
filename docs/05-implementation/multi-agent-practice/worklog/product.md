@@ -469,3 +469,13 @@
 - handoff: `dev_handoff_ready=true`，next_agent=`dev`，Release Gate=`pending`。开发必须先写红测，逐段完成 spec review 与 code quality review。
 - acceptance: 本地规模数据证明单页条数/SQL 次数有界、单页 < 100 KB、前两页无重复遗漏；前端构建和七消费者数据流通过。发布后真实登录态两个列表各自 p95 < 2 秒、p99 < 5 秒，30 次串行 + 10 并发零 408/499/502，任务编辑 2 秒内可操作，并同步核对 nginx/backend 日志。
 - status: 文档与实施计划完成；代码、QA、产品验收、发布和生产 E4 修复证据均未完成，`done_status=not_done`、`production_fixed=unproven`。
+
+## 2026-07-11 生产核心页面有界加载 Product Acceptance
+
+- message_id: `2026-07-11-production-page-performance-product-accepted-001`
+- input: `2026-07-11-production-page-performance-local-qa-001`。
+- acceptance: 已逐项覆盖原始“各页面慢、任务编辑超时”范围：共享目标读取改有界、任务列表改轻量服务端分页、七个消费者迁移、任务编辑先可操作、已选目标 ids 回显、错误可见、15 秒 timeout 保持、旧接口不作为失败回退。CORS 分页头缺口由真实浏览器发现并闭环。
+- evidence: no-postgres `1044 passed`、PostgreSQL 定向 `20 passed`、frontend build 与本地 3,810 目标 / 170 任务 Playwright 性能证据通过；任务编辑 715ms 可操作并在 793ms 显示既有目标。
+- decision: `product_accepted_local=true`；允许进入 Release Gate。生产 E4 未完成，`production_fixed=unproven`；`/api/tasks` 历史间歇 502 的唯一 upstream 原因仍保持 `unproven`。
+- next_agent: prod-diagnosis
+- unresolved: 完成 `master -> release -> Deploy Production`，核对实际镜像 commit，并按真实登录态与同窗口日志完成发布后性能/错误率验收。
