@@ -39,7 +39,7 @@ def test_task_center_actions_distinguish_refresh_failure_from_write_failure():
     assert "await fetchTaskListData(requestSeq);" in list_helper
     assert "setActionError(`任务中心数据刷新失败：" in list_helper
 
-    detail_helper = source[source.index("async function refreshVisibleTaskAfterAction"):source.index("\n\n  async function ensureTargets")]
+    detail_helper = source[source.index("async function refreshVisibleTaskAfterAction"):source.index("\n\n  async function ensureMessages")]
     assert "await refreshTaskListAfterAction(actionLabel);" in detail_helper
     assert "const taskDetail = await fetchTaskDetail(task.id);" in detail_helper
     assert "setActionError(`任务中心数据刷新失败：" in detail_helper
@@ -232,7 +232,7 @@ def test_task_center_action_attempts_ignore_stale_action_responses():
 def test_task_center_form_support_data_ignores_stale_requests():
     source = _source()
     ensure_form = source[source.index("async function ensureTaskFormData"):source.index("\n\n  React.useEffect", source.index("async function ensureTaskFormData"))]
-    lazy_effect = source[source.index("if (!modalOpen && !editOpen) return;"):source.index("}, [editOpen, modalOpen, messageScope, taskType]")]
+    prefill_effect = source[source.index("if (!prefill || appliedPrefillNonce.current === prefill.nonce) return;"):source.index("\n  React.useEffect(() => {\n    if (!focusTask")]
     create_task = _function_body(source, "openCreateTask")
     edit_task = _function_body(source, "openEditTask")
     next_step = _function_body(source, "nextStep")
@@ -246,16 +246,14 @@ def test_task_center_form_support_data_ignores_stale_requests():
     assert "if (!isActiveTaskFormSupportRequest(requestSeq)) return false;" in ensure_form
     assert ensure_form.index("if (!isActiveTaskFormSupportRequest(requestSeq)) return false;") > ensure_form.index("await Promise.all(requests);")
     assert "if (isActiveTaskFormSupportRequest(requestSeq)) setSupportLoading(false);" in ensure_form
-    assert "async function loadTaskTypeSupportData(type: TaskCenterTaskType, requestSeq: number): Promise<boolean>" in source
-
-    assert "const requestSeq = beginTaskFormSupportRequest();" in lazy_effect
-    assert "void loadTaskTypeSupportData(taskType, requestSeq).catch((error) => {" in lazy_effect
-    assert "if (!isActiveTaskFormSupportRequest(requestSeq)) return;" in lazy_effect
-    assert lazy_effect.index("if (!isActiveTaskFormSupportRequest(requestSeq)) return;") < lazy_effect.index("setActionError(`读取任务表单支撑数据失败：")
+    assert "loadTaskTypeSupportData" not in source
+    assert "const requestSeq = beginTaskFormSupportRequest();" in prefill_effect
+    assert "void ensureTaskFormData(nextType, requestSeq)" in prefill_effect
+    assert "isActiveTaskFormSupportRequest(requestSeq)" in prefill_effect
 
     for block in [create_task, edit_task, next_step]:
         assert "const requestSeq = beginTaskFormSupportRequest();" in block
-        assert "await ensureTaskFormData(" in block
+        assert "void ensureTaskFormData(" in block
         assert "if (!isActiveTaskFormSupportRequest(requestSeq)) return;" in block
 
     assert "const requestSeq = beginTaskFormSupportRequest();" in reset_type
@@ -287,7 +285,7 @@ def test_task_center_write_refreshes_are_bound_to_active_task():
     source = _source()
     refresh_detail = source[
         source.index("async function refreshVisibleTaskAfterAction"):
-        source.index("\n\n  async function ensureTargets")
+        source.index("\n\n  async function ensureMessages")
     ]
     membership_action = _function_body(source, "membershipAdmissionAction")
 
@@ -307,7 +305,7 @@ def test_task_center_detail_requests_ignore_stale_same_task_responses():
     source = _source()
     refresh_detail = source[
         source.index("async function refreshVisibleTaskAfterAction"):
-        source.index("\n\n  async function ensureTargets")
+        source.index("\n\n  async function ensureMessages")
     ]
     focus_effect = source[
         source.index("if (!focusTask || appliedFocusNonce.current === focusTask.nonce) return;"):
@@ -393,9 +391,37 @@ def test_remote_operation_target_select_supports_search_errors_and_stable_select
     assert "onChange" not in source[source.index("React.useEffect"):source.index("return (")]
 
 
-@pytest.mark.xfail(strict=True, reason="Task 5 migrates TaskCenter to the shared remote target loader")
-def test_target_support_task_center_unbounded_call_is_pending_task_5_migration():
-    assert "api<OperationTarget[]>('/operation-targets')" not in _source()
+def test_task_center_uses_remote_target_loading_without_unbounded_support_request():
+    source = _source()
+    wizard = _required_remote_target_source("frontend/src/app/views/TaskCenterTargetSection.tsx")
+
+    assert "api<OperationTarget[]>('/operation-targets')" not in source
+    assert "async function ensureTargets()" not in source
+    assert "import OperationTargetSelect" in wizard
+    assert "<OperationTargetSelect" in wizard
+    assert "targetType: 'group'" in wizard
+    assert "targetType: 'channel'" in wizard
+    assert "capability: 'task'" in wizard
+    assert 'capability="send"' in wizard
+    assert 'capability="listen"' in wizard
+
+
+def test_task_forms_open_before_support_data_and_merge_remote_targets():
+    source = _source()
+    create_task = _function_body(source, "openCreateTask")
+    edit_task = _function_body(source, "openEditTask")
+    prefill_effect = source[
+        source.index("if (!prefill || appliedPrefillNonce.current === prefill.nonce) return;"):
+        source.index("\n  React.useEffect(() => {\n    if (!focusTask")
+    ]
+
+    assert create_task.index("setModalOpen(true);") < create_task.index("ensureTaskFormData(")
+    assert edit_task.index("setEditOpen(true);") < edit_task.index("ensureTaskFormData(")
+    assert "await ensureTaskFormData(" not in create_task
+    assert "await ensureTaskFormData(" not in edit_task
+    assert "mergeOperationTargets(current, loadedTargets)" in source
+    assert "setTargets((current) => mergeOperationTargets(current, [prefill.target]));" in prefill_effect
+    assert "ensureTargets()" not in prefill_effect
 
 
 def test_task_center_detail_section_pages_ignore_stale_page_requests_for_same_task():

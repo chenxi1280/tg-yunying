@@ -52,8 +52,10 @@ import {
   words,
 } from './taskCenterViewModel';
 import { buildTaskQuickGroups, filterTasksByQuickGroup } from './taskCenterListGrouping';
-import { EditBasics, TaskRuntimeAdvancedFields, WizardAccounts, WizardBasics, WizardOperationProfile, WizardReview, WizardTarget, WizardTypeConfig } from './TaskCenterWizardSections';
+import { EditBasics, TaskRuntimeAdvancedFields, WizardAccounts, WizardBasics, WizardOperationProfile, WizardReview, WizardTypeConfig } from './TaskCenterWizardSections';
+import { WizardTarget } from './TaskCenterTargetSection';
 import { TaskCenterDetailModal } from './TaskCenterDetailModal';
+import { mergeOperationTargets } from '../hooks/useOperationTargetOptions';
 
 function TaskStatusBadge({ task, status }: { task?: TaskCenterTask; status?: string | null }) {
   const stage = task ? runtimeStage(task) : null;
@@ -313,6 +315,9 @@ export default function TaskCenterView({
   const targetChannelId = Form.useWatch('target_channel_id', form);
   const channelTargets = targets.filter((target) => target.target_type === 'channel');
   const groupTargets = targets.filter((target) => target.target_type === 'group');
+  const mergeLoadedTargets = React.useCallback((loadedTargets: readonly OperationTarget[]) => {
+    setTargets((current) => mergeOperationTargets(current, loadedTargets));
+  }, []);
   const slangTemplates = taskPromptTemplates.filter((template) => normalizePromptTemplateType(template.template_type) === 'AI黑话词表' && template.is_active);
   const defaultSlangTemplateId = slangTemplates[0]?.id ?? null;
 
@@ -507,13 +512,6 @@ export default function TaskCenterView({
     }
   }
 
-  async function ensureTargets() {
-    if (targets.length) return targets;
-    const targetData = await api<OperationTarget[]>('/operation-targets');
-    setTargets(targetData);
-    return targetData;
-  }
-
   async function ensureMessages() {
     if (messages.length) return messages;
     const messageData = await api<ChannelMessage[]>('/channel-messages');
@@ -602,18 +600,10 @@ export default function TaskCenterView({
     return requests;
   }
 
-  async function loadTaskTypeSupportData(type: TaskCenterTaskType, requestSeq: number): Promise<boolean> {
-    const requests = taskTypeSupportRequests(type);
-    if (!requests.length) return true;
-    await Promise.all(requests);
-    if (!isActiveTaskFormSupportRequest(requestSeq)) return false;
-    return true;
-  }
-
   async function ensureTaskFormData(type: TaskCenterTaskType, requestSeq: number): Promise<boolean> {
     setSupportLoading(true);
     try {
-      const requests: Array<Promise<unknown>> = [ensureTargets(), ensureAccounts(), ensurePromptTemplates()];
+      const requests: Array<Promise<unknown>> = [ensureAccounts(), ensurePromptTemplates()];
       requests.push(...taskTypeSupportRequests(type));
       await Promise.all(requests);
       if (!isActiveTaskFormSupportRequest(requestSeq)) return false;
@@ -630,22 +620,8 @@ export default function TaskCenterView({
   }, [taskTypeFilter]);
 
   React.useEffect(() => {
-    if (!modalOpen && !editOpen) return;
-    const requestSeq = beginTaskFormSupportRequest();
-    void loadTaskTypeSupportData(taskType, requestSeq).catch((error) => {
-      if (!isActiveTaskFormSupportRequest(requestSeq)) return;
-      setActionError(`读取任务表单支撑数据失败：${errorMessage(error)}`);
-    });
-  }, [editOpen, modalOpen, messageScope, taskType]);
-
-  React.useEffect(() => {
     if (!prefill || appliedPrefillNonce.current === prefill.nonce) return;
-    if (!targets.length) {
-      void ensureTargets().catch((error) => {
-        setActionError(`读取任务预填支撑数据失败：${errorMessage(error)}`);
-      });
-      return;
-    }
+    setTargets((current) => mergeOperationTargets(current, [prefill.target]));
     if (prefill.message) {
       setMessages((current) => current.some((message) => message.id === prefill.message?.id) ? current : [prefill.message!, ...current]);
     }
@@ -684,11 +660,18 @@ export default function TaskCenterView({
     setTaskType(nextType);
     form.resetFields();
     form.setFieldsValue(nextValues);
-    if (['group_relay', 'group_ai_chat', 'channel_comment'].includes(nextType)) {
-      void ensureRuleSets()
-        .then((loaded) => applyDefaultRuleSet(loaded, nextType))
-        .catch((error) => setActionError(`读取任务预填支撑数据失败：${errorMessage(error)}`));
-    }
+    const requestSeq = beginTaskFormSupportRequest();
+    void ensureTaskFormData(nextType, requestSeq)
+      .then(async (loaded) => {
+        if (!loaded || !isActiveTaskFormSupportRequest(requestSeq)) return;
+        if (!['group_relay', 'group_ai_chat', 'channel_comment'].includes(nextType)) return;
+        const loadedRuleSets = await ensureRuleSets();
+        if (isActiveTaskFormSupportRequest(requestSeq)) applyDefaultRuleSet(loadedRuleSets, nextType);
+      })
+      .catch((error) => {
+        if (!isActiveTaskFormSupportRequest(requestSeq)) return;
+        setActionError(`读取任务预填支撑数据失败：${errorMessage(error)}`);
+      });
     setWizardStep(2);
     setModalOpen(true);
     appliedPrefillNonce.current = prefill.nonce;
@@ -971,14 +954,11 @@ export default function TaskCenterView({
     form.setFieldsValue(initialValuesForType('group_ai_chat', schedulingSetting));
     if (defaultSlangTemplateId) form.setFieldsValue({ slang_prompt_template_id: defaultSlangTemplateId });
     setWizardStep(0);
-    try {
-      await ensureTaskFormData('group_ai_chat', requestSeq);
-      if (!isActiveTaskFormSupportRequest(requestSeq)) return;
-      setModalOpen(true);
-    } catch (error) {
+    setModalOpen(true);
+    void ensureTaskFormData('group_ai_chat', requestSeq).catch((error) => {
       if (!isActiveTaskFormSupportRequest(requestSeq)) return;
       setActionError(`读取任务表单支撑数据失败：${errorMessage(error)}`);
-    }
+    });
   }
 
   function editValuesFromTask(task: TaskCenterTask): Record<string, any> {
@@ -1078,16 +1058,13 @@ export default function TaskCenterView({
     setDeboostExemptGroup(null);
     const editableType = task.type as TaskCenterTaskType;
     setTaskType(editableType);
-    try {
-      await ensureTaskFormData(editableType, requestSeq);
-      if (!isActiveTaskFormSupportRequest(requestSeq)) return;
-      editForm.resetFields();
-      editForm.setFieldsValue(editValuesFromTask(task));
-      setEditOpen(true);
-    } catch (error) {
+    editForm.resetFields();
+    editForm.setFieldsValue(editValuesFromTask(task));
+    setEditOpen(true);
+    void ensureTaskFormData(editableType, requestSeq).catch((error) => {
       if (!isActiveTaskFormSupportRequest(requestSeq)) return;
       setActionError(`读取任务表单支撑数据失败：${errorMessage(error)}`);
-    }
+    });
   }
 
   function closeEditTaskModal() {
@@ -1901,13 +1878,17 @@ export default function TaskCenterView({
       await form.validateFields(fieldsForStep(wizardStep, taskType, messageScope, accountMode));
       if (wizardStep === 0) {
         const requestSeq = beginTaskFormSupportRequest();
-        await ensureTaskFormData(taskType, requestSeq);
-        if (!isActiveTaskFormSupportRequest(requestSeq)) return;
-        if (['group_relay', 'group_ai_chat', 'channel_comment'].includes(taskType)) {
-          const loadedRuleSets = await ensureRuleSets();
-          if (!isActiveTaskFormSupportRequest(requestSeq)) return;
-          applyDefaultRuleSet(loadedRuleSets, taskType);
-        }
+        void ensureTaskFormData(taskType, requestSeq)
+          .then(async (loaded) => {
+            if (!loaded || !isActiveTaskFormSupportRequest(requestSeq)) return;
+            if (!['group_relay', 'group_ai_chat', 'channel_comment'].includes(taskType)) return;
+            const loadedRuleSets = await ensureRuleSets();
+            if (isActiveTaskFormSupportRequest(requestSeq)) applyDefaultRuleSet(loadedRuleSets, taskType);
+          })
+          .catch((error) => {
+            if (!isActiveTaskFormSupportRequest(requestSeq)) return;
+            setActionError(`读取任务表单支撑数据失败：${errorMessage(error)}`);
+          });
       }
       if (wizardStep === 3) {
         if (taskType !== 'group_membership_admission' && taskType !== 'search_rank_deboost') await runTaskPrecheck(form.getFieldsValue(true));
@@ -2305,7 +2286,7 @@ export default function TaskCenterView({
         <Steps className="wizard-steps" current={wizardStep} items={WIZARD_STEPS.map((title) => ({ title }))} />
         <Form form={form} layout="vertical" initialValues={initialValuesForType(taskType, schedulingSetting)}>
           {wizardStep === 0 && <WizardBasics taskType={taskType} onTypeChange={resetTypeFields} />}
-          {wizardStep === 1 && <WizardTarget taskType={taskType} groupTargets={groupTargets} channelTargets={channelTargets} messages={messages} messageScope={messageScope} targetChannelId={targetChannelId} onTargetChannelChange={() => form.setFieldsValue({ message_ids: [] })} />}
+          {wizardStep === 1 && <WizardTarget taskType={taskType} messages={messages} messageScope={messageScope} targetChannelId={targetChannelId} onTargetChannelChange={() => form.setFieldsValue({ message_ids: [] })} onTargetsLoaded={mergeLoadedTargets} />}
           {wizardStep === 2 && <WizardTypeConfig taskType={taskType} ruleSets={ruleSets} slangTemplates={slangTemplates} comments={comments} relaySourceOptions={[]} targetChannelId={targetChannelId} messageScope={messageScope} messageIds={messageIds} accountPools={taskAccountPools} proxyAirportNodes={proxyAirportNodes} exemptGroup={deboostExemptGroup} onEnsureRankDeboostPool={ensureRankDeboostPool} rankDeboostPoolLoading={rankDeboostPoolLoading} rerollLoading={rerollLoading} />}
           {wizardStep === 3 && (
             <Space direction="vertical" size={16} style={{ width: '100%' }}>
@@ -2352,7 +2333,7 @@ export default function TaskCenterView({
           {detail && !isSystemTask(detail.task) && ['group_ai_chat', 'group_relay', 'search_rank_deboost'].includes(detail.task.type) && (
             <>
               <Typography.Title level={5}>目标来源</Typography.Title>
-              <WizardTarget taskType={detail.task.type as TaskCenterTaskType} groupTargets={groupTargets} channelTargets={channelTargets} messages={messages} messageScope={editMessageScope} targetChannelId={editTargetChannelId} onTargetChannelChange={() => editForm.setFieldsValue({ message_ids: [] })} allowInlineTarget={false} />
+              <WizardTarget taskType={detail.task.type as TaskCenterTaskType} messages={messages} messageScope={editMessageScope} targetChannelId={editTargetChannelId} onTargetChannelChange={() => editForm.setFieldsValue({ message_ids: [] })} onTargetsLoaded={mergeLoadedTargets} allowInlineTarget={false} />
             </>
           )}
           <Typography.Title level={5}>类型参数</Typography.Title>

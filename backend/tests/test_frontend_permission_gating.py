@@ -110,14 +110,15 @@ def test_task_center_load_and_focus_task_surface_backend_error_detail():
 
 def test_task_center_form_support_load_failures_surface_backend_error_detail():
     source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
-    lazy_effect = source[source.index("if (!modalOpen && !editOpen) return;"):source.index("\n  React.useEffect(() => {\n    if (!prefill")]
     prefill_effect = source[source.index("if (!prefill || appliedPrefillNonce.current === prefill.nonce)"):source.index("\n  React.useEffect(() => {\n    if (!focusTask")]
+    create_task = source[source.index("async function openCreateTask"):source.index("\n\n  function editValuesFromTask")]
+    edit_task = source[source.index("async function openEditTask"):source.index("\n\n  function closeEditTaskModal")]
     reset_type_fields = source[source.index("function resetTypeFields"):source.index("\n  const table")]
 
-    assert "setActionError(`读取任务表单支撑数据失败：${errorMessage(error)}`)" in lazy_effect
+    assert "setActionError(`读取任务表单支撑数据失败：${errorMessage(error)}`)" in create_task
+    assert "setActionError(`读取任务表单支撑数据失败：${errorMessage(error)}`)" in edit_task
     assert "setActionError(`读取任务预填支撑数据失败：${errorMessage(error)}`)" in prefill_effect
     assert "setActionError(`读取任务类型支撑数据失败：${errorMessage(error)}`)" in reset_type_fields
-    assert "void ensureRuleSets();" not in lazy_effect
     assert "void ensureTargets();" not in prefill_effect
     assert "void ensureTaskFormData(nextType).then" not in reset_type_fields
 
@@ -1419,15 +1420,16 @@ def test_group_rescue_account_search_ignores_stale_responses_and_surfaces_errors
 
 
 def test_task_center_target_selects_support_searching():
-    source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterWizardSections.tsx").read_text()
+    source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterTargetSection.tsx").read_text()
     view = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
 
-    assert "targetSelectProps" in source
-    assert "showSearch: true" in source
-    assert 'optionFilterProp: "label"' in source
-    assert "<Select allowClear options={groupTargetOptions} {...targetSelectProps}" in source
-    assert '<Select mode="multiple" allowClear options={groupTargetOptions} {...targetSelectProps}' in source
-    assert "<Select allowClear options={channelTargetOptions} onChange={onTargetChannelChange} {...targetSelectProps}" in source
+    assert "import OperationTargetSelect" in source
+    assert "<OperationTargetSelect" in source
+    assert "query={{ targetType: 'group', capability }}" in source
+    assert "query={{ targetType: 'channel', capability: 'task' }}" in source
+    assert 'mode="multiple"' in source
+    assert "onTargetsLoaded={onTargetsLoaded}" in source
+    assert "mergeLoadedTargets" in view
     assert "const groupTargets = targets.filter((target) => target.target_type === 'group');" in view
 
 
@@ -1777,7 +1779,8 @@ def test_task_center_loads_account_support_data_only_for_forms():
     assert "async function ensureAccounts()" in source
     assert "async function ensurePromptTemplates()" in source
     assert "loadTaskFormAccounts()" in source
-    assert "ensureTargets(), ensureAccounts(), ensurePromptTemplates()" in source
+    assert "[ensureAccounts(), ensurePromptTemplates()]" in source
+    assert "ensureTargets()" not in source
     assert "accounts={taskAccounts}" in source
     assert "accountPools={taskAccountPools}" in source
     assert "const [taskPromptTemplates, setTaskPromptTemplates]" in source
