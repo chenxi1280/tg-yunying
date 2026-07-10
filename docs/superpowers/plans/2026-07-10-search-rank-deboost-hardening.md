@@ -258,31 +258,31 @@ git commit -m "feat: execute rank deboost through real telegram gateway"
 - Test: `backend/tests/test_search_rank_deboost_e2e.py`
 - Test: `backend/tests/test_search_rank_deboost_task_atomicity.py`
 
-- [ ] **Step 1: Write failing account-scope and reservation tests**
+- [x] **Step 1: Write failing account-scope and reservation tests**
 
 Test `all` selects every eligible account across all enabled rank pools, `group` selects one enabled pool, `manual` intersects explicit IDs, and none impose a hidden count-10 cap. Concurrent planners must not exceed account/day, account+keyword/day, pool/day or task/hour limits. One action maps to one reservation and `max_clicks=1`.
 
-- [ ] **Step 2: Write failing runtime and atomicity tests**
+- [x] **Step 2: Write failing runtime and atomicity tests**
 
 Test `confirmed` alone creates one stat and consumes reservation; `observed_no_click` releases/skips without stat; pre-click failures release; `unknown_after_click` remains quota-consuming `unknown` and is never automatically retried. Verify create-and-start rollback leaves no task, exempt row, action, reservation or binding, and stop/delete never unbinds group assets.
 
-- [ ] **Step 3: Verify RED**
+- [x] **Step 3: Verify RED**
 
 Run the four files. Expected: current planner has single-pool/hard-cap behavior, current runtime writes inferred stats, and create-and-start leaves a committed draft on failure.
 
-- [ ] **Step 4: Implement reservation service**
+- [x] **Step 4: Implement reservation service**
 
 Acquire task row lock plus deterministic account/pool locks before counting active `reserved`, `consumed`, `unknown`. Insert reservation and Action in one transaction. Provide `consume`, `release`, `mark_unknown`, `release_expired` functions with guarded source states and audit records. SQLite tests use row-lock-equivalent serialization; PostgreSQL path uses advisory locks keyed by tenant and shared dimension.
 
-- [ ] **Step 5: Rebuild planner and runtime contracts**
+- [x] **Step 5: Rebuild planner and runtime contracts**
 
 Planner resolves normalized `account_config`, reads each account pool binding and snapshots binding generation/runtime proxy ID. It creates exactly one action per account+keyword opportunity and reserves one click. Dispatcher performs final usage, binding generation and credential guards. Runtime accepts Gateway outcomes verbatim; it does not recompute or simulate clicks and only writes `SearchRankDeboostActionStat` from `status=confirmed` outcome fields.
 
-- [ ] **Step 6: Make task readiness atomic**
+- [x] **Step 6: Make task readiness atomic**
 
 Draft create validates enabled groups and executable bindings but may persist `pending_real_search`. `start_task` locks draft, performs real candidate search/readiness and commits running state once. `create_and_start` uses one transaction and rolls back every artifact on any readiness failure. Edits/pause/stop/delete release only this task's unstarted reservations/actions.
 
-- [ ] **Step 7: Verify GREEN and commit**
+- [x] **Step 7: Verify GREEN and commit**
 
 Run the four focused files and all existing rank files, then commit:
 
