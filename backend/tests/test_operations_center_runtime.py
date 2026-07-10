@@ -1,5 +1,6 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -12,7 +13,7 @@ from app.config import Settings
 from app.database import Base
 from app.integrations.telegram import OperationResult, SendResult, _resolve_telethon_target, _telethon_send_target
 from app.integrations.telegram.gateway import TelethonTelegramGateway
-from app.models import AccountPool, AccountStatus, Action, AiGroupMessageMemory, AiProvider, AiUsageLedger, AuditLog, ChannelMessage, ChannelMessageComment, ContentKeywordRule, FailureType, GroupArchive, GroupContextMessage, ListenerSourceState, MessageFingerprint, MessageTask, MessageTaskAttempt, OperationIssue, OperationIssueAccount, OperationIssueSource, OperationTarget, PromptTemplate, ReviewQueue, RuleSet, RuleSetVersion, SchedulingSetting, TargetRuntimeSummary, Task, TaskRuntimeSummary, TaskStatus, Tenant, TenantAiSetting, TgAccount, TgAccountAuthorization, TgAccountOnlineState, TgAccountSecurityBatch, TgAccountSyncRecord, TgGroup, TgGroupAccount, TgLoginFlow, VerificationTask, WorkerHeartbeat
+from app.models import AccountPool, AccountStatus, Action, AiGroupMessageMemory, AiProvider, AiUsageLedger, AuditLog, ChannelMessage, ChannelMessageComment, ContentKeywordRule, FailureType, GroupArchive, GroupContextMessage, ListenerSourceState, MessageFingerprint, MessageTask, MessageTaskAttempt, OperationIssue, OperationIssueAccount, OperationIssueSource, OperationTarget, PromptTemplate, ReviewQueue, RuleSet, RuleSetVersion, SchedulingSetting, TargetRuntimeSummary, Task, TaskRuntimeSummary, TaskStatus, Tenant, TenantAiSetting, TgAccount, TgAccountAuthorization, TgAccountOnlineState, TgAccountSecurityBatch, TgAccountSecurityBatchItem, TgAccountSyncRecord, TgGroup, TgGroupAccount, TgLoginFlow, VerificationTask, WorkerHeartbeat
 from app.schemas import ArchiveCreate, ChannelCommentTaskCreate, ChannelLikeTaskCreate, ChannelViewTaskCreate, GroupAIChatTaskCreate, GroupRelayTaskCreate, MaterialCreate, MaterialUpdate, MessageSendTaskCreate, OperationTargetAccountUpdate, OperationTargetAdmissionRetryRequest, OperationTargetUpdate, PromptTemplateCreate, PromptTemplateUpdate, SchedulingSettingUpdate, TaskPrecheckRequest, TaskSettingsUpdate, TaskSourceFilterOverrideRequest
 from app.schemas.operations_center import RuleSetVersionCreate
 from app.schemas.risk_control import RiskControlGlobalPolicyUpdate
@@ -7585,3 +7586,148 @@ def test_task_list_page_stably_orders_mixed_datetimes_sources_and_numeric_batch_
         "account_security_batch:9",
     ]
     assert result.items[2]["source_kind"] != result.items[3]["source_kind"]
+
+
+@pytest.mark.no_postgres
+def test_task_list_page_large_collection_stays_compact_and_has_stable_pages():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    created_at = datetime(2026, 7, 10, 11, 0, tzinfo=UTC)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="任务列表规模租户"))
+        session.add_all(
+            [
+                Task(
+                    id=f"scale-task-{index:03d}",
+                    tenant_id=1,
+                    name=f"规模任务 {index}",
+                    type="channel_view",
+                    status="running",
+                    priority=3,
+                    type_config={"target_channel_name": f"规模频道 {index % 5}"},
+                    created_at=created_at - timedelta(minutes=index),
+                    updated_at=created_at - timedelta(minutes=index),
+                )
+                for index in range(120)
+            ]
+        )
+        session.add_all(
+            [
+                TgAccountSecurityBatch(
+                    id=9001 + index,
+                    tenant_id=1,
+                    action_types='["update_profile"]',
+                    status="running",
+                    total_count=1,
+                    created_at=created_at.replace(tzinfo=None) - timedelta(days=1, minutes=index),
+                )
+                for index in range(50)
+            ]
+        )
+        session.flush()
+
+        first = _list_task_page(session, page=1, page_size=100)
+        second = _list_task_page(session, page=2, page_size=100)
+
+    first_ids = {item["id"] for item in first.items}
+    second_ids = {item["id"] for item in second.items}
+    encoded = json.dumps(first.__dict__, default=str, ensure_ascii=False, separators=(",", ":")).encode()
+    assert first.total == second.total == 170
+    assert len(first.items) == 100
+    assert len(second.items) == 70
+    assert first_ids.isdisjoint(second_ids)
+    assert len(first_ids | second_ids) == 170
+    assert len(encoded) < 100 * 1024
+
+
+@pytest.mark.no_postgres
+def test_task_list_page_aggregates_all_batch_item_counters_and_latest_failure():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="批任务统计租户"))
+        session.add(TgAccount(id=71, tenant_id=1, display_name="批任务账号", phone_masked="138****0071"))
+        session.add(
+            TgAccountSecurityBatch(
+                id=9101,
+                tenant_id=1,
+                action_types='["update_profile"]',
+                status="running",
+                total_count=7,
+            )
+        )
+        statuses = ["succeeded", "failed", "partial_success", "skipped", "manual_required", "pending", "running"]
+        session.add_all(
+            [
+                TgAccountSecurityBatchItem(
+                    id=9201 + index,
+                    batch_id=9101,
+                    tenant_id=1,
+                    account_id=71,
+                    status=status,
+                    avatar_status="waiting_cache" if index == 5 else "not_requested",
+                    failure_type="old_failure" if index == 1 else "latest_failure" if index == 2 else "",
+                )
+                for index, status in enumerate(statuses)
+            ]
+        )
+        session.flush()
+
+        result = _list_task_page(session, page_size=20, task_type="account_profile_init")
+
+    stats = result.items[0]["stats"]
+    assert stats == {
+        "total_actions": 7,
+        "success_count": 1,
+        "failure_count": 2,
+        "skipped_count": 2,
+        "manual_required_count": 1,
+        "pending_count": 1,
+        "waiting_cache_count": 1,
+        "running_count": 1,
+        "batch_status": "running",
+        "latest_failure_type": "latest_failure",
+    }
+
+
+@pytest.mark.no_postgres
+def test_task_list_page_hydrates_runtime_summaries_for_current_page_only():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    created_at = datetime(2026, 7, 10, 12, 0, tzinfo=UTC)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="运行态分页租户"))
+        for index in range(3):
+            task_id = f"runtime-page-{index}"
+            session.add(
+                Task(
+                    id=task_id,
+                    tenant_id=1,
+                    name=task_id,
+                    type="channel_view",
+                    status="running",
+                    priority=3,
+                    created_at=created_at - timedelta(minutes=index),
+                    updated_at=created_at - timedelta(minutes=index),
+                )
+            )
+            session.add(TaskRuntimeSummary(task_id=task_id, tenant_id=1, planned_count=index + 1))
+        session.flush()
+        runtime_queries: list[tuple[str, object]] = []
+
+        @event.listens_for(engine, "before_cursor_execute")
+        def _capture_runtime_query(_conn, _cursor, statement, parameters, _context, _executemany):  # noqa: ANN001
+            if "task_runtime_summary" in statement.lower():
+                runtime_queries.append((statement, parameters))
+
+        result = _list_task_page(session, page=2, page_size=1)
+
+    assert [item["id"] for item in result.items] == ["runtime-page-1"]
+    assert result.items[0]["stats"]["total_actions"] == 2
+    assert len(runtime_queries) == 1
+    assert "runtime-page-1" in runtime_queries[0][1]
+    assert "runtime-page-0" not in runtime_queries[0][1]
+    assert "runtime-page-2" not in runtime_queries[0][1]
