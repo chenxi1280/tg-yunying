@@ -9,8 +9,9 @@ from app.models import AccountPool, AccountStatus, Action, MessageTask, Task, Te
 from app.schemas.campaigns import CampaignRecommendAccountsRequest
 from app.services.account_online_projection import _fallback_configured_account_ids
 from app.services.campaigns import recommend_campaign_accounts, validate_selected_accounts_by_group
-from app.services.group_listeners import validate_listener_accounts
+from app.services.group_listeners import collect_group_context, validate_listener_accounts
 from app.services.messages import _resolve_send_account, choose_account
+from app.services.operations_center import switch_listener_account
 from app.services.task_center.account_pool import select_task_accounts
 from app.services.task_center.channel_membership import candidate_accounts_for_config
 from app.services.task_center.dispatcher import _apply_claim_account_policy
@@ -219,6 +220,60 @@ def test_online_projection_fallback_excludes_dedicated_and_mismatched_accounts(s
     session.commit()
 
     assert _fallback_configured_account_ids(session, task, set()) == {10}
+
+
+def test_online_projection_manual_fallback_excludes_dedicated_and_mismatched_accounts(session: Session) -> None:
+    _seed_accounts(session)
+    task = Task(
+        id="task-manual-online",
+        tenant_id=1,
+        name="online",
+        type="group_ai_chat",
+        account_config={"selection_mode": "manual", "account_ids": [10, 20, 21, 30]},
+    )
+    session.add(task)
+    session.commit()
+
+    assert _fallback_configured_account_ids(session, task, set()) == {10}
+
+
+def test_collect_group_context_skips_misconfigured_dedicated_listener(session: Session, monkeypatch) -> None:
+    _seed_accounts(session)
+    group = TgGroup(id=103, tenant_id=1, tg_peer_id="-100103", title="listener", auth_status="已授权运营")
+    session.add(group)
+    session.add(TgGroupAccount(tenant_id=1, group_id=103, account_id=21, can_send=True, is_listener=True))
+    session.commit()
+    called_ids: list[int] = []
+
+    def fake_fetch(account_id, *_args, **_kwargs):
+        called_ids.append(account_id)
+        return []
+
+    monkeypatch.setattr("app.services.group_listeners.credentials_for_account", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr("app.services.group_listeners.gateway.fetch_group_messages", fake_fetch)
+
+    assert collect_group_context(session, group) == 0
+    assert called_ids == []
+
+
+def test_switch_group_listener_rejects_dedicated_backup_account(session: Session) -> None:
+    _seed_accounts(session)
+    group = TgGroup(id=104, tenant_id=1, tg_peer_id="-100104", title="listener", auth_status="已授权运营", listener_enabled=True)
+    session.add(group)
+    offline = _account(11, 1, "normal")
+    offline.status = "离线"
+    session.add(offline)
+    session.add_all(
+        [
+            TgGroupAccount(tenant_id=1, group_id=104, account_id=11, can_send=True, is_listener=True),
+            TgGroupAccount(tenant_id=1, group_id=104, account_id=21, can_send=True, is_listener=False),
+            Task(id="relay-listener", tenant_id=1, name="relay", type="group_relay", status="running", type_config={"source_groups": [{"group_id": 104, "is_active": True}]}),
+        ]
+    )
+    session.commit()
+
+    with pytest.raises(ValueError, match="备用监听账号不可用"):
+        switch_listener_account(session, 1, "group", 104, 21, "tester")
 
 
 def test_rank_deboost_planner_requires_enabled_matching_rank_pool(session: Session) -> None:

@@ -291,6 +291,10 @@ def collect_group_context(
         account = session.get(TgAccount, link.account_id)
         if not account or account.deleted_at is not None or account.status != AccountStatus.ACTIVE.value:
             continue
+        try:
+            assert_account_action_allowed(account, account.pool, "listener")
+        except ValueError:
+            continue
         credentials = credentials_for_account(session, account)
         snapshots = gateway.fetch_group_messages(
             account.id,

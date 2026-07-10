@@ -1785,17 +1785,18 @@ def test_listener_summary_uses_task_subscriptions_events_and_backlog():
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(AccountPool(id=1, tenant_id=1, name="普通账号组", pool_purpose="normal", is_default=True))
         session.add_all(
             [
                 OperationTarget(id=21, tenant_id=1, target_type="channel", tg_peer_id="-10021", title="频道", can_send=True, auth_status="已授权运营"),
                 ChannelMessage(id=31, tenant_id=1, channel_target_id=21, message_id=1001, content_preview="频道消息", published_at=datetime(2026, 5, 11, 9, 0, 0)),
                 TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="源群", auth_status="已授权运营", listener_enabled=True),
                 TgGroup(id=8, tenant_id=1, tg_peer_id="-1008", title="活跃群", auth_status="已授权运营", listener_enabled=False),
-                TgAccount(id=11, tenant_id=1, display_name="频道账号A", username="channel_a", phone_masked="11", status="在线", health_score=90),
-                TgAccount(id=12, tenant_id=1, display_name="监听账号A", username="listener_a", phone_masked="12", status="在线", health_score=80),
-                TgAccount(id=13, tenant_id=1, display_name="监听账号B", username="listener_b", phone_masked="13", status="离线", health_score=70),
-                TgAccount(id=14, tenant_id=1, display_name="AI账号", username="ai_user", phone_masked="14", status="在线", health_score=95),
-                TgAccount(id=15, tenant_id=1, display_name="草稿账号", username="draft_user", phone_masked="15", status="在线", health_score=60),
+                TgAccount(id=11, tenant_id=1, pool_id=1, account_identity="normal", display_name="频道账号A", username="channel_a", phone_masked="11", status="在线", health_score=90),
+                TgAccount(id=12, tenant_id=1, pool_id=1, account_identity="normal", display_name="监听账号A", username="listener_a", phone_masked="12", status="在线", health_score=80),
+                TgAccount(id=13, tenant_id=1, pool_id=1, account_identity="normal", display_name="监听账号B", username="listener_b", phone_masked="13", status="离线", health_score=70),
+                TgAccount(id=14, tenant_id=1, pool_id=1, account_identity="normal", display_name="AI账号", username="ai_user", phone_masked="14", status="在线", health_score=95),
+                TgAccount(id=15, tenant_id=1, pool_id=1, account_identity="normal", display_name="草稿账号", username="draft_user", phone_masked="15", status="在线", health_score=60),
                 TgGroupAccount(id=71, tenant_id=1, group_id=7, account_id=12, is_listener=True),
                 TgGroupAccount(id=72, tenant_id=1, group_id=7, account_id=13, is_listener=True),
                 TgGroupAccount(id=73, tenant_id=1, group_id=7, account_id=14, can_send=True),
@@ -1859,10 +1860,11 @@ def test_switch_listener_account_enables_backup_and_disables_offline_listener():
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="源群", auth_status="已授权运营", listener_enabled=True, listener_last_error="poll failed"))
+        session.add(AccountPool(id=1, tenant_id=1, name="普通账号组", pool_purpose="normal", is_default=True))
         session.add_all(
             [
-                TgAccount(id=12, tenant_id=1, display_name="离线监听", username="offline_listener", phone_masked="12", status="离线", health_score=20),
-                TgAccount(id=14, tenant_id=1, display_name="备用监听", username="backup_listener", phone_masked="14", status="在线", health_score=95),
+                TgAccount(id=12, tenant_id=1, pool_id=1, account_identity="normal", display_name="离线监听", username="offline_listener", phone_masked="12", status="离线", health_score=20),
+                TgAccount(id=14, tenant_id=1, pool_id=1, account_identity="normal", display_name="备用监听", username="backup_listener", phone_masked="14", status="在线", health_score=95),
                 TgGroupAccount(id=71, tenant_id=1, group_id=7, account_id=12, can_send=True, is_listener=True),
                 TgGroupAccount(id=72, tenant_id=1, group_id=7, account_id=14, can_send=True, is_listener=False),
                 Task(id="task-relay", tenant_id=1, name="转发任务", type="group_relay", status="running", type_config={"source_groups": [{"group_id": 7, "is_active": True}]}),
@@ -1889,10 +1891,11 @@ def test_switch_channel_listener_account_updates_channel_task_accounts():
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(OperationTarget(id=21, tenant_id=1, target_type="channel", tg_peer_id="-10021", title="频道", can_send=True, auth_status="已授权运营"))
+        session.add(AccountPool(id=1, tenant_id=1, name="普通账号组", pool_purpose="normal", is_default=True))
         session.add_all(
             [
-                TgAccount(id=11, tenant_id=1, display_name="离线频道号", username="offline_channel", phone_masked="11", status="离线", health_score=20),
-                TgAccount(id=14, tenant_id=1, display_name="备用频道号", username="backup_channel", phone_masked="14", status="在线", health_score=95),
+                TgAccount(id=11, tenant_id=1, pool_id=1, account_identity="normal", display_name="离线频道号", username="offline_channel", phone_masked="11", status="离线", health_score=20),
+                TgAccount(id=14, tenant_id=1, pool_id=1, account_identity="normal", display_name="备用频道号", username="backup_channel", phone_masked="14", status="在线", health_score=95),
                 Task(id="task-channel", tenant_id=1, name="频道点赞", type="channel_like", status="running", account_config={"account_ids": [11]}, type_config={"target_channel_id": 21}),
                 Action(id="action-channel", tenant_id=1, task_id="task-channel", task_type="channel_like", action_type="like_message", status="pending"),
             ]
