@@ -7093,4 +7093,21 @@ def test_operation_target_hydration_runtime_summary_target_ids_are_tenant_safe()
             "/api/operation-targets/runtime-summary?target_ids=",
             headers=headers,
         )
-        assert explicit_empty.status_code == 422, explicit_empty.text
+        assert explicit_empty.status_code == 200, explicit_empty.text
+        assert explicit_empty.json() == []
+
+        invalid_queries = [
+            [("target_ids", "0")],
+            [("target_ids", "-1")],
+            [("target_ids", "invalid")],
+            [("target_ids", f"{target_ids[0]},{target_ids[1]}")],
+            [("target_ids", target_ids[0]), ("target_ids", "")],
+            [("target_ids", str(value)) for value in range(1, 102)],
+        ]
+        for params in invalid_queries:
+            response = client.get(
+                "/api/operation-targets/runtime-summary",
+                headers=headers,
+                params=params,
+            )
+            assert response.status_code == 422, (params, response.text)

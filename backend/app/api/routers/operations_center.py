@@ -73,6 +73,25 @@ from app.common.http import not_found
 
 router = APIRouter()
 SYSTEM_SCOPE_ID = 1
+MAX_RUNTIME_TARGET_IDS = 100
+
+
+def _parse_runtime_target_ids(raw_values: list[str] | None) -> tuple[int, ...] | None:
+    if raw_values is None:
+        return None
+    if len(raw_values) > MAX_RUNTIME_TARGET_IDS:
+        raise ValueError(f"target_ids must contain at most {MAX_RUNTIME_TARGET_IDS} values")
+    if raw_values == [""]:
+        return ()
+    if any(not value for value in raw_values):
+        raise ValueError("target_ids cannot mix empty and non-empty values")
+    try:
+        target_ids = tuple(int(value) for value in raw_values)
+    except ValueError as exc:
+        raise ValueError("target_ids must contain repeated positive integers") from exc
+    if any(target_id < 1 for target_id in target_ids):
+        raise ValueError("target_ids must contain repeated positive integers")
+    return target_ids
 
 
 def _operation_report_csv(report: dict) -> str:
@@ -193,12 +212,12 @@ def get_operation_center_overview(session: Session = Depends(get_session), curre
 
 @router.get("/api/operation-targets/runtime-summary", response_model=list[TargetRuntimeSummaryOut])
 def get_operation_target_runtime_summaries(
-    target_ids: list[int] | None = Query(default=None),
+    target_ids: list[str] | None = Query(default=None),
     session: Session = Depends(get_session),
     current_user: CurrentUser = Depends(get_current_user),
 ):
-    selected_ids = None if target_ids is None else tuple(target_ids)
     try:
+        selected_ids = _parse_runtime_target_ids(target_ids)
         return list_target_runtime_summaries(session, current_user.tenant_id or 1, selected_ids)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
