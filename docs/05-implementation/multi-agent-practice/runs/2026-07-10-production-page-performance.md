@@ -7,7 +7,7 @@
 - 用户原话：线上各个页面打开缓慢，很多打开超时，例如任务编辑页面；要求查明原因并修复。
 - 分级：`L2 / P1 / standard_team`。
 - Release Gate：required。
-- 当前 owner：product -> prod-diagnosis（本地 QA 与产品验收已通过，待 Release Gate / E4）。
+- 当前 owner：prod-diagnosis（Release Gate 与生产 E4 已通过，记录日志取证边界后终态交付）。
 
 ## 生产只读诊断
 
@@ -51,7 +51,13 @@
 - qa：`pass`。全量 no-postgres `1044 passed, 806 deselected`；PostgreSQL 定向 `20 passed`；frontend build、compileall、diff check 均通过。
 - local browser：`pass`。在本地 PostgreSQL 注入 3,810 个目标与 170 个任务后，运营目标页 585ms 可见，目标 API 16ms / 8.9KB；任务列表 API 66ms / 16KB，第二页 430ms 可见；任务编辑 715ms 可操作、793ms 完成已选目标回显。Rules / Archives / MessageSending 均只在弹窗或选定账号后发起带 `page/page_size` 的目标查询。
 - product acceptance：`accepted_local`。原始慢页、任务编辑、七消费者、显式错误、兼容和无 silent fallback 均已覆盖。
-- release gate：`pending`。
-- production fixed：`unproven`。
+- release gate：`passed`。Commit `357c844d951f90659c077d91e002e9a1e7430ee2` 已按 `master -> release` 推送；Deploy Production run `29110463190` success，release `20260710172417_357c844`、backend/frontend 镜像与 Git SHA 一致，backend 和全部 worker healthy，公网 health HTTP 200。
+- production E4：`pass`。任务中心首屏 1.224 秒，任务 API 252ms / 6.9KB；运营目标首屏 1.472 秒，目标 API 272ms / 1.85KB；任务详情 1.700 秒，编辑弹窗 427ms，目标 ids 水合 323ms / 719B。
+- serial：`pass`。两个列表各 30 次全部 HTTP 200；任务列表 p95/p99 `446/451ms`、最大 7.1KB，运营目标 p95/p99 `339/346ms`、最大 1.85KB。
+- concurrent：`pass`。10 路并发任务接口最慢 1.699 秒，运营目标最慢 830ms；全部 HTTP 200，零 408/499/502，单页均小于 100KB。
+- related pages：`pass`。消息发送、规则、归档分别 1.328/2.721/0.710 秒可用；归档弹窗 308ms 打开，候选查询为 `page_size=50&capability=archive`、302ms / 3.9KB；生产页面 console error 为 0。
+- production fixed：`confirmed`。用户反馈的慢页、任务编辑超时和连续刷新 502 症状已在真实生产登录态恢复。
+- log correlation：`blocked`。本机发布后 SSH 只读核对被远端关闭连接，未取得同窗口 nginx/backend 请求日志；工作流已提供服务器侧镜像、容器和健康证据。
+- historical `/api/tasks` 502 unique upstream cause：`unproven`。不把当前恢复倒推成旧 502 的唯一直接原因。
 
 本地真实浏览器首次验收发现跨域前端无法读取存在于响应中的 `X-Total-Count`，页面显示“运营目标分页响应缺少 x-total-count”。已增加 CORS `Access-Control-Expose-Headers: X-Total-Count, X-Page, X-Page-Size`，补红绿集成测试并复测通过。浏览器控制台剩余三项均为既有 Ant Design 弃用 / Descriptions span 警告，不是请求失败。

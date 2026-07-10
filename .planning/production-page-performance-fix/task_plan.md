@@ -6,7 +6,7 @@
 
 ## Current Phase
 
-Phase 7
+Complete
 
 ## Scope
 
@@ -62,10 +62,10 @@ Phase 7
 
 ### Phase 7: Release and Production Verification
 
-- [ ] 按 `master -> release -> GitHub Actions Deploy Production` 发布。
-- [ ] 真实登录态验证任务编辑、核心页面、接口耗时和连续刷新。
-- [ ] 按 `pass / blocked / unproven` 汇报生产状态。
-- **Status:** pending
+- [x] 按 `master -> release -> GitHub Actions Deploy Production` 发布。
+- [x] 真实登录态验证任务编辑、核心页面、接口耗时和连续刷新。
+- [x] 按 `pass / blocked / unproven` 汇报生产状态。
+- **Status:** complete
 
 ## Success Criteria
 

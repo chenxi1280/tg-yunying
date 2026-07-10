@@ -54,8 +54,12 @@
 
 ### Phase 7: Release and Production Verification
 
-- **Status:** in_progress
-- 本地产品验收已通过；等待 `master -> release -> Deploy Production` 和生产 E4。
+- **Status:** complete
+- Commit `357c844d951f90659c077d91e002e9a1e7430ee2` 已按 `master -> release` 推送；Deploy Production run `29110463190` 全部通过，release `20260710172417_357c844` 已上线。
+- 真实生产登录态确认任务中心首屏 1.224 秒、运营目标首屏 1.472 秒；任务详情 1.700 秒，编辑弹窗 427ms 可操作，已选目标 ids 水合 323ms / 719B。
+- 两个列表各 30 次串行全部 HTTP 200：任务列表 p95/p99 `446/451ms`，运营目标 p95/p99 `339/346ms`；10 路并发最慢分别 `1.699s/830ms`，零 408/499/502，单页均远小于 100KB。
+- 消息发送、规则中心、归档中心和归档新建目标选择器生产复测通过；页面 console error 为 0。
+- 本机 SSH 只读日志核对仍被远端连接关闭阻断；发布工作流已确认 backend/workers healthy 及公网健康，但历史 `/api/tasks` 间歇 502 的唯一 upstream 原因继续记为 unproven。
 
 ## Test Results
 
@@ -79,13 +83,14 @@
 | 2026-07-10 | zsh `status` 变量只读导致健康检查脚本退出 | 1 | 改名为 `db_health` |
 | 2026-07-11 | 浏览器无法读取响应中已有的 `X-Total-Count` | 1 | 补 CORS expose-headers 红绿测试并显式暴露分页头，浏览器复测通过 |
 | 2026-07-11 | AppShell peer 兜底目标被 TypeScript 推断为不可空 | 1 | 显式标注可空类型后 production build 通过 |
+| 2026-07-11 | 发布后本机 SSH 只读日志核对被远端关闭连接 | 1 | 不循环重试；使用 Deploy Production 的服务器侧容器/健康证据，并把同窗口日志关联保留为 blocked |
 
 ## 5-Question Reboot Check
 
 | Question | Answer |
 |----------|--------|
-| Where am I? | Phase 7，Release and Production Verification |
-| Where am I going? | `master -> release -> Deploy Production`，随后真实登录态与日志 E4 验收 |
+| Where am I? | Phase 7 已完成，生产慢页恢复证据已记录 |
+| Where am I going? | 终态交付；保留 SSH 日志关联和历史 502 唯一 upstream 原因的证据边界 |
 | What's the goal? | 消除共享无界读取导致的慢页、超时和 502 |
 | What have I learned? | 见 findings.md 的生产证据与代码根因 |
-| What have I done? | 完成诊断、Product Design、TDD 实现、本地 QA、真实浏览器规模验收和产品接受 |
+| What have I done? | 完成诊断、Product Design、TDD 实现、本地 QA、发布、真实生产浏览器性能验收和生产恢复确认 |

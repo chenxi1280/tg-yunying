@@ -93,3 +93,14 @@
 - Rules、Archives、MessageSending 目标候选只在弹窗/账号选择后请求，分别携带 `capability=send/archive/send` 和显式 `page=1&page_size=50`。
 - 首轮浏览器复测发现 CORS 未暴露分页头，响应实际含 `X-Total-Count` 但 JavaScript `Headers` 不可读；加入 `Access-Control-Expose-Headers` 后页面复测通过。
 - 没有观察到第一方无界 `/operation-targets` 请求；React StrictMode 的首轮请求会被 AbortController 取消，后续当前请求成功，属于预期旧请求保护。
+
+## Production E4 Verification
+
+- Commit `357c844d951f90659c077d91e002e9a1e7430ee2` 已同步 `master/release`；Deploy Production run `29110463190` success，release `20260710172417_357c844`、backend/frontend 镜像与 Git SHA 一致，backend 与全部 worker healthy，外部 health HTTP 200。
+- 生产任务中心首屏数据 1.224 秒可见；`/api/tasks/page?page=1&page_size=20` 为 HTTP 200、252ms、6.9KB；230 条任务显示 20 条分页，无失败提示。
+- 任务详情 1.700 秒打开；编辑弹窗 427ms 可操作；当前目标 `ids=3828` 水合 323ms / 719B，候选目标 `page_size=50&capability=task` 247ms / 3.9KB。
+- 生产运营目标页 1.472 秒可用；`/api/operation-targets?page=1&page_size=20` 为 HTTP 200、272ms、1.85KB。
+- 串行 30 次：任务列表全部 200，p95/p99 `446/451ms`、最大 7.1KB；运营目标全部 200，p95/p99 `339/346ms`、最大 1.85KB。
+- 10 路并发：任务接口全部 200、最慢 1.699 秒、最大 7.0KB；运营目标全部 200、最慢 830ms、最大 1.85KB；零 408/499/502，页面无失败提示。
+- 消息发送、规则、归档页面分别 1.328/2.721/0.710 秒可用；归档新建弹窗 308ms 可见，目标查询为 `page_size=50&capability=archive`、302ms / 3.9KB；生产控制台功能性 error 为 0。
+- 本机 SSH 只读日志复核返回 connection closed，未取得同窗口 nginx/backend 请求日志；部署工作流仍提供服务器侧镜像、容器和健康证据。该日志关联记为 blocked，不影响已由真实生产浏览器证明的慢页恢复；历史 502 唯一 upstream 原因继续记为 unproven。
