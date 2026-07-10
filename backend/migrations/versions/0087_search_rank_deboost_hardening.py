@@ -25,11 +25,11 @@ REVALIDATION_ERROR = "migration_requires_gateway_revalidation"
 def upgrade() -> None:
     _add_account_pool_columns()
     _add_group_binding_columns()
+    _mark_bindings_needing_runtime_proxy()
     _create_group_binding_runtime_indexes()
     _create_click_reservations()
     _backfill_account_usage()
     _migrate_rank_task_scope()
-    _mark_bindings_needing_runtime_proxy()
 
 
 def downgrade() -> None:

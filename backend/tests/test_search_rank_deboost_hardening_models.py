@@ -215,6 +215,43 @@ def test_migration_does_not_backfill_reservations_from_historical_stats() -> Non
     assert reservation_count == 0
 
 
+def test_migration_marks_duplicate_active_node_bindings_before_unique_index() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    metadata = MetaData()
+    Table("tenants", metadata, Column("id", Integer, primary_key=True))
+    Table("account_proxies", metadata, Column("id", Integer, primary_key=True))
+    Table(
+        "account_group_proxy_bindings",
+        metadata,
+        Column("id", Integer, primary_key=True),
+        Column("tenant_id", Integer),
+        Column("account_pool_id", Integer),
+        Column("proxy_airport_node_id", Integer),
+        Column("status", String(30)),
+        Column("unbound_at", String(30)),
+    )
+    migration = _migration_module()
+    metadata.create_all(engine)
+    with engine.begin() as connection:
+        bindings = metadata.tables["account_group_proxy_bindings"]
+        connection.execute(metadata.tables["tenants"].insert(), [{"id": 1}])
+        connection.execute(
+            bindings.insert(),
+            [
+                {"id": 1, "tenant_id": 1, "account_pool_id": 10, "proxy_airport_node_id": 20, "status": "active"},
+                {"id": 2, "tenant_id": 1, "account_pool_id": 11, "proxy_airport_node_id": 20, "status": "active"},
+            ],
+        )
+        migration.op = Operations(MigrationContext.configure(connection))
+        migration.upgrade()
+        reflected = Table("account_group_proxy_bindings", MetaData(), autoload_with=connection)
+        rows = connection.execute(select(reflected).order_by(reflected.c.id)).mappings().all()
+        indexes = {item["name"] for item in inspect(connection).get_indexes("account_group_proxy_bindings")}
+
+    assert [row["status"] for row in rows] == ["needs_runtime_proxy", "needs_runtime_proxy"]
+    assert "uq_account_group_proxy_binding_active_node" in indexes
+
+
 def test_reservation_defaults_are_persistable_on_sqlite() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

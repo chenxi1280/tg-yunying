@@ -38,6 +38,7 @@ def _seed(session: Session) -> None:
     session.add(ProxyAirportNode(id=20, tenant_id=1, subscription_id=1, node_key="socks", protocol="socks5", proxy_host="10.0.0.20", proxy_port=1080, status="healthy", observed_exit_ip="1.1.1.1"))
     session.add(ProxyAirportNode(id=21, tenant_id=1, subscription_id=1, node_key="http", protocol="http", proxy_host="10.0.0.21", proxy_port=8080, status="healthy", observed_exit_ip="2.2.2.2"))
     session.add(ProxyAirportNode(id=22, tenant_id=1, subscription_id=1, node_key="vmess", protocol="vmess", proxy_host="vmess.example", proxy_port=443, status="healthy"))
+    session.add(ProxyAirportNode(id=23, tenant_id=1, subscription_id=1, node_key="missing-protocol", protocol="", proxy_host="10.0.0.23", proxy_port=1083, status="healthy"))
     session.commit()
 
 
@@ -136,6 +137,48 @@ def test_raw_vmess_node_without_runtime_proxy_rejected(session: Session) -> None
     assert session.scalar(select(AccountGroupProxyBinding)) is None
 
 
+def test_airport_node_with_blank_protocol_is_rejected(session: Session) -> None:
+    with pytest.raises(ValueError, match="executable runtime proxy"):
+        proxy_group_binding_service.create_or_update_rank_deboost_proxy_binding(
+            session,
+            tenant_id=1,
+            account_pool_id=10,
+            proxy_airport_node_id=23,
+            operator="alice",
+            reason="missing_protocol",
+        )
+
+    assert session.scalar(select(AccountProxy).where(AccountProxy.name == "airport-node-23")) is None
+    assert session.scalar(select(AccountGroupProxyBinding)) is None
+
+
+def test_stale_materialized_proxy_is_synced_to_current_node_endpoint(session: Session) -> None:
+    session.add(
+        AccountProxy(
+            tenant_id=1,
+            name="airport-node-20",
+            protocol="socks5",
+            host="old.example",
+            port=9999,
+            status="healthy",
+        )
+    )
+    session.commit()
+
+    binding = proxy_group_binding_service.create_or_update_rank_deboost_proxy_binding(
+        session,
+        tenant_id=1,
+        account_pool_id=10,
+        proxy_airport_node_id=20,
+        operator="alice",
+        reason="sync_stale_proxy",
+    )
+
+    runtime_proxy = session.get(AccountProxy, binding.runtime_proxy_id)
+    assert runtime_proxy is not None
+    assert (runtime_proxy.protocol, runtime_proxy.host, runtime_proxy.port) == ("socks5", "10.0.0.20", 1080)
+
+
 def test_delete_binding_rejects_running_rank_task_reference(session: Session) -> None:
     proxy_group_binding_service.create_or_update_rank_deboost_proxy_binding(
         session,
@@ -206,8 +249,26 @@ def test_rank_binding_api_put_and_delete_smoke() -> None:
             json={"proxy_airport_node_id": 20, "reason": "api"},
         )
         assert put_response.status_code == 200
-        assert put_response.json()["runtime_proxy_id"] is not None
-        assert put_response.json()["reference_count"] == 0
+        put_payload = put_response.json()
+        assert put_payload["runtime_proxy_id"] is not None
+        assert put_payload["reference_count"] == 0
+        assert {"host", "port", "username", "password", "password_ciphertext"}.isdisjoint(put_payload)
+        assert set(put_payload) == {
+            "id",
+            "tenant_id",
+            "account_pool_id",
+            "proxy_airport_node_id",
+            "runtime_proxy_id",
+            "binding_generation",
+            "status",
+            "observed_exit_ip",
+            "observed_exit_country",
+            "observed_exit_asn",
+            "observed_exit_isp",
+            "last_probe_at",
+            "last_probe_error",
+            "reference_count",
+        }
         delete_response = client.request(
             "DELETE",
             "/api/account-pools/10/rank-deboost-proxy-binding",

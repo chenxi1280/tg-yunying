@@ -29,8 +29,6 @@ def require_available_proxy_airport_node(session: Session, *, tenant_id: int, no
 def proxy_for_airport_node(session: Session, node: ProxyAirportNode) -> AccountProxy:
     name = f"{AIRPORT_NODE_PROXY_PREFIX}{node.id}"
     proxy = _existing_named_proxy(session, node, name)
-    if proxy is not None and _is_executable_proxy(proxy):
-        return proxy
     protocol = _node_executable_protocol(node)
     if protocol is None:
         raise ValueError("proxy_airport_node has no executable runtime proxy")
@@ -71,8 +69,6 @@ def _is_executable_proxy(proxy: AccountProxy) -> bool:
 
 def _node_executable_protocol(node: ProxyAirportNode) -> str | None:
     protocol = (node.protocol or "").strip().lower()
-    if not protocol:
-        protocol = "socks5"
     return protocol if protocol in EXECUTABLE_PROXY_PROTOCOLS else None
 
 
