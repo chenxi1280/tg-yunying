@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from app.database import Base
 from app.models import (
     AccountPool,
+    AccountProxy,
     AccountStatus,
     Action,
     BotProtocolSample,
@@ -144,6 +145,7 @@ def _seed_base(
     session.add(ProxyAirportSubscription(id=1, tenant_id=1, name="主订阅", enabled=True, sync_status="synced", healthy_node_count=3))
     session.add(AccountPool(id=account_pool_id, tenant_id=1, name="降权分组", pool_purpose="rank_deboost"))
     session.add(ProxyAirportNode(id=proxy_node_id, tenant_id=1, subscription_id=1, node_key=f"node-{proxy_node_id}", status="healthy", observed_exit_ip=observed_exit_ip))
+    session.add(AccountProxy(id=30, tenant_id=1, name="rank-runtime", protocol="socks5", host="127.0.0.1", port=1080, status="healthy", alert_status="normal"))
     _seed_protocol_samples(session)
 
     binding = AccountGroupProxyBinding(
@@ -153,6 +155,7 @@ def _seed_base(
         proxy_airport_node_id=proxy_node_id,
         binding_scope="group",
         observed_exit_ip=observed_exit_ip,
+        runtime_proxy_id=30,
         status="active",
         bound_by="tester",
     )
@@ -281,9 +284,12 @@ def test_build_plan_creates_actions_for_rank_deboost_accounts() -> None:
         assert len(actions) == 2
         assert all(a.action_type == "search_rank_deboost" for a in actions)
         assert all(a.status == "pending" for a in actions)
-        # payload 含 group_proxy_binding_id
+        # payload 含稳定的 runtime proxy 合同
         for action in actions:
-            assert action.payload["runtime_environment"]["group_proxy_binding_id"] == "1"
+            runtime = action.payload["runtime_environment"]
+            assert runtime["group_proxy_binding_id"] == "1"
+            assert runtime["runtime_proxy_id"] == "30"
+            assert runtime["binding_generation"] == "1"
             assert action.payload["bot_username"] == "jisou"
             assert len(action.payload["keyword_hash"]) == 64
 
@@ -326,6 +332,24 @@ def test_build_plan_blocks_when_no_active_group_binding() -> None:
         # block_code 写入 stats
         block_code = (task.stats or {}).get("search_rank_deboost_stats", {}).get("hourly_execution", {}).get("block_code", "")
         assert block_code == "group_proxy_binding_missing"
+
+
+def test_build_plan_blocks_when_active_binding_has_no_runtime_proxy() -> None:
+    """active 分组绑定缺少可执行 runtime proxy 时 Planner fail-closed。"""
+    engine = _build_engine()
+    with Session(engine) as session:
+        binding, _accounts = _seed_base(session)
+        binding.runtime_proxy_id = None
+        task = _make_task(session)
+        session.query(SearchRankDeboostExemptGroup).update({SearchRankDeboostExemptGroup.task_id: task.id})
+        session.commit()
+
+        created = build_plan(session, task)
+
+        assert created == 0
+        assert "runtime proxy" in (task.last_error or "")
+        block_code = (task.stats or {}).get("search_rank_deboost_stats", {}).get("hourly_execution", {}).get("block_code", "")
+        assert block_code == "group_proxy_runtime_proxy_missing"
 
 
 def test_build_plan_blocks_when_exempt_group_is_pending_real_search() -> None:

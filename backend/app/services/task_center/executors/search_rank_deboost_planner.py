@@ -6,11 +6,12 @@ from dataclasses import dataclass
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import AccountStatus, SearchRankDeboostExemptGroup, Task, TgAccount
+from app.models import AccountProxy, AccountStatus, SearchRankDeboostExemptGroup, Task, TgAccount
 from app.models.search_rank_deboost import AccountGroupProxyBinding
 from app.security import encrypt_secret
 from app.services._common import _now
 from app.services.account_usage_policy import apply_rank_deboost_account_filters
+from app.services.proxy_airport_accounts import AVAILABLE_NODE_STATUS, EXECUTABLE_PROXY_PROTOCOLS
 from app.services.search_rank_deboost_alerts import record_exempt_group_missing_alert
 from app.services.task_center.payloads import SearchRankDeboostPayload, create_search_rank_deboost_action
 
@@ -128,7 +129,20 @@ def _matching_binding(
     binding = _active_group_binding(session, task.tenant_id, account_pool_id)
     if binding is None or binding.proxy_airport_node_id != proxy_airport_node_id:
         raise PlanBlock("group_proxy_binding_missing", "搜索排名观察任务缺少 active 分组级代理绑定")
+    _assert_runtime_proxy_ready(session, task.tenant_id, binding)
     return binding
+
+
+def _assert_runtime_proxy_ready(session: Session, tenant_id: int, binding: AccountGroupProxyBinding) -> None:
+    if binding.runtime_proxy_id is None:
+        raise PlanBlock("group_proxy_runtime_proxy_missing", "搜索排名观察分组绑定缺少 runtime proxy")
+    proxy = session.get(AccountProxy, binding.runtime_proxy_id)
+    if proxy is None or proxy.tenant_id != tenant_id:
+        raise PlanBlock("group_proxy_runtime_proxy_missing", "搜索排名观察分组绑定缺少 runtime proxy")
+    protocol = (proxy.protocol or "").strip().lower()
+    host = (proxy.host or "").strip()
+    if protocol not in EXECUTABLE_PROXY_PROTOCOLS or not host or int(proxy.port or 0) <= 0 or proxy.status != AVAILABLE_NODE_STATUS:
+        raise PlanBlock("group_proxy_runtime_proxy_invalid", "搜索排名观察分组绑定 runtime proxy 不可执行")
 
 
 def _validate_account_limit(session: Session, task: Task, account_pool_id: int) -> None:
@@ -216,6 +230,8 @@ def _build_payload(context: PlanContext, keyword_hash: str, keyword_text: str) -
         runtime_environment={
             "proxy_egress_guard": "verified",
             "group_proxy_binding_id": str(context.binding.id),
+            "runtime_proxy_id": str(context.binding.runtime_proxy_id),
+            "binding_generation": str(context.binding.binding_generation),
             "proxy_airport_node_id": str(context.proxy_airport_node_id),
             "account_pool_id": str(context.account_pool_id),
             "observed_exit_ip": context.binding.observed_exit_ip or "",
