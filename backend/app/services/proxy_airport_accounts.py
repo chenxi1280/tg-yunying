@@ -10,7 +10,6 @@ AIRPORT_NODE_PROXY_PREFIX = "airport-node-"
 AVAILABLE_NODE_STATUS = "healthy"
 SYNCED_SUBSCRIPTION_STATUS = "synced"
 EXECUTABLE_PROXY_PROTOCOLS = frozenset({"socks5", "socks4", "http", "https"})
-EXECUTABLE_PROXY_STATUSES = frozenset({"healthy", "健康", "active"})
 
 
 def list_available_proxy_airport_nodes(session: Session, *, tenant_id: int) -> list[ProxyAirportNode]:
@@ -53,17 +52,6 @@ def _existing_named_proxy(session: Session, node: ProxyAirportNode, name: str) -
             AccountProxy.tenant_id == node.tenant_id,
             AccountProxy.name == name,
         )
-    )
-
-
-def _is_executable_proxy(proxy: AccountProxy) -> bool:
-    protocol = (proxy.protocol or "").strip().lower()
-    status = (proxy.status or "").strip()
-    return (
-        protocol in EXECUTABLE_PROXY_PROTOCOLS
-        and bool((proxy.host or "").strip())
-        and int(proxy.port or 0) > 0
-        and status in EXECUTABLE_PROXY_STATUSES
     )
 
 
