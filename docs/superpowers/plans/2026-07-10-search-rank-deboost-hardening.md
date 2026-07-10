@@ -23,7 +23,7 @@
 - Modify `backend/app/integrations/telegram/gateway.py`, `backend/app/integrations/telegram/contracts.py`: 生产 Gateway 方法与不可变代理凭证。
 - Modify `backend/app/services/task_center/search_rank_deboost.py`, `service.py`, `executors/search_rank_deboost_planner.py`, `executors/search_rank_deboost_runtime.py`, `dispatcher.py`, `payloads.py`: 准备态、规划、执行和统计事实。
 - Modify ordinary-task selectors and worker entrypoints discovered by contract tests: 普通任务、旧 MessageTask/Campaign、Listener、资料、面具、2FA 和设备清理统一用途守卫。
-- Modify `frontend/src/api/types.ts`, `frontend/src/app/views/AccountsView.tsx`, `TaskCenterView.tsx`, `taskCenterViewModel.ts`: 分组资产、账号选择和 readiness UI。
+- Modify `frontend/src/app/types/accounts.ts`, `frontend/src/app/types/system.ts`, `frontend/src/app/types/taskCenter.ts`, account modal/context files, `AccountsView.tsx`, `TaskCenterView.tsx`, wizard/detail components and `taskCenterViewModel.ts`: 分组资产、账号选择和 readiness UI。
 - Test with focused files under `backend/tests/`; production behavior tests must call real class methods and may not inject missing methods with `raising=False`。
 
 ### Task 1: Persistence and account usage policy
@@ -172,6 +172,8 @@ git commit -m "feat: enforce dedicated account usage boundaries"
 
 **Files:**
 - Modify: `backend/app/services/proxy_group_binding_service.py`
+- Modify: `backend/app/services/proxy_airport_accounts.py`
+- Modify: `backend/app/models/proxy_airport.py`
 - Modify: `backend/app/api/routers/account_pools.py`
 - Modify: `backend/app/schemas/accounts.py`
 - Modify: `backend/app/services/account_pools.py`
@@ -189,6 +191,8 @@ Run the two binding files. Expected: current service rejects reuse, lacks runtim
 - [ ] **Step 3: Implement binding asset APIs**
 
 `PUT /api/account-pools/{pool_id}/rank-deboost-proxy-binding` accepts airport node and resolves a tenant-owned executable `AccountProxy`. Same node/runtime pair returns the existing binding. Switching unbinds the old row and creates generation + 1, then skips stale pending actions and pauses referencing rank tasks. `DELETE` checks running/paused references and never runs as a side effect of task stop/delete.
+
+分组出口观测必须使用独立的 `account_group_proxy_binding_id` 关联或显式 polymorphic scope；不得把分组绑定 ID 写入当前指向 `account_proxy_bindings.id` 的 `proxy_exit_ip_observations.proxy_binding_id`。节点独占检查必须由数据库锁/唯一约束串行化，不能只依赖先查后写。
 
 - [ ] **Step 4: Add fail-closed executable proxy guard**
 
@@ -290,9 +294,19 @@ git commit -m "feat: make rank deboost planning and execution factual"
 ### Task 6: Frontend account groups, selectors and readiness
 
 **Files:**
-- Modify: `frontend/src/api/types.ts`
+- Modify: `frontend/src/app/types/accounts.ts`
+- Modify: `frontend/src/app/types/system.ts`
+- Modify: `frontend/src/app/types/taskCenter.ts`
+- Modify: `frontend/src/app/views/AccountModals.tsx`
+- Modify: `frontend/src/app/AppModals.tsx`
+- Modify: `frontend/src/app/context/accountActions.ts`
+- Modify: `frontend/src/app/context/defaults.ts`
+- Modify: `frontend/src/app/context/types.ts`
 - Modify: `frontend/src/app/views/AccountsView.tsx`
+- Modify: `frontend/src/app/views/AccountMasksView.tsx`
 - Modify: `frontend/src/app/views/TaskCenterView.tsx`
+- Modify: `frontend/src/app/views/TaskCenterWizardSections.tsx`
+- Modify: `frontend/src/app/views/TaskCenterDetailModal.tsx`
 - Modify: `frontend/src/app/views/taskCenterViewModel.ts`
 - Test: `backend/tests/test_search_rank_deboost_frontend_contract.py`
 - Test: `backend/tests/test_task_center_view_dataflow.py`
