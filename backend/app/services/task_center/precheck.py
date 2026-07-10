@@ -5,14 +5,16 @@ from typing import Any, Callable
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import ChannelMessage, ChannelMessageComment, GroupAuthStatus, GroupContextMessage, OperationTarget, RuleSet, RuleSetVersion, TgAccount, TgGroup
+from app.models import ChannelMessage, ChannelMessageComment, GroupAuthStatus, GroupContextMessage, OperationTarget, RuleSet, RuleSetVersion, SchedulingSetting, TgAccount, TgGroup
 from app.schemas.risk_control import RiskPreflightRequest
 from app.schemas.task_center import TaskPrecheckRequest
 from app.services.risk_control import risk_preflight
 
 from .ai_limits import recommend_ai_limits
+from .account_scope import eligible_account_ids
 from .channel_membership import channel_membership_summary
 from .config_fields import COMMON_CREATE_FIELDS, TASK_CREATE_MODELS
+from .coverage_capacity import coverage_capacity_proof
 from .pacing import current_hour_rounds
 from .utils import as_int as _as_int, as_int_list as _as_int_list, as_str_list as _as_str_list
 
@@ -100,6 +102,17 @@ def run_precheck_task_creation(
         max_concurrent=int(account_config.get("max_concurrent") or 20),
         shortfall=capacity_shortfall,
     )
+    daily_coverage_capacity = _daily_coverage_capacity_check(
+        session,
+        tenant_id=tenant_id,
+        task_type=task_type,
+        create_payload=create_payload,
+        type_config=type_config,
+    )
+    if daily_coverage_capacity:
+        capacity_summary["daily_coverage"] = daily_coverage_capacity
+        if not daily_coverage_capacity.get("sufficient"):
+            blockers.append(str(daily_coverage_capacity.get("blocker_code") or "daily_coverage_capacity_insufficient"))
     reply_reference_summary = _precheck_reply_reference_summary(session, tenant_id, task_type, type_config)
     if reply_reference_summary:
         capacity_summary["reply_reference_summary"] = reply_reference_summary
@@ -194,6 +207,51 @@ def _precheck_ai_round_summary(task_type: str, create_payload: Any, membership_s
             f"小时硬上限 {max_actions_per_hour or '未设置'} 条"
         ),
     }
+
+
+def _daily_coverage_capacity_check(
+    session: Session,
+    *,
+    tenant_id: int,
+    task_type: str,
+    create_payload: Any,
+    type_config: dict[str, Any],
+) -> dict[str, object]:
+    if not _is_all_account_daily_coverage(task_type, create_payload, type_config):
+        return {}
+    group_id = _as_int(type_config.get("target_group_id"))
+    group = session.get(TgGroup, group_id) if group_id else None
+    if group is None or group.tenant_id != tenant_id:
+        return {}
+    setting = session.scalar(select(SchedulingSetting).where(SchedulingSetting.tenant_id == tenant_id))
+    setting = setting or SchedulingSetting(tenant_id=tenant_id)
+    pacing = create_payload.pacing_config.model_dump(mode="json")
+    eligible_count = len(eligible_account_ids(session, tenant_id))
+    ai_summary = _precheck_ai_round_summary(task_type, create_payload, {}, eligible_count)
+    hourly_capacity = max(
+        int(ai_summary.get("estimated_hourly_capacity") or 0),
+        int(getattr(create_payload, "hourly_min_messages", 0) or 0),
+    )
+    configured_hourly_limit = int(pacing.get("max_actions_per_hour") or 0)
+    if configured_hourly_limit > 0:
+        hourly_capacity = min(hourly_capacity, configured_hourly_limit)
+    return coverage_capacity_proof(
+        group=group,
+        target_account_count=eligible_count,
+        target_per_account=int(getattr(create_payload, "per_account_daily_min_messages", 1) or 1),
+        max_actions_per_hour=hourly_capacity,
+        account_day_limit=int(setting.default_account_day_limit or 0),
+        account_hour_limit=int(setting.default_account_hour_limit or 0),
+        account_cooldown_seconds=int(setting.default_account_cooldown_seconds or 0),
+    )
+
+
+def _is_all_account_daily_coverage(task_type: str, create_payload: Any, type_config: dict[str, Any]) -> bool:
+    if task_type != "group_ai_chat" or create_payload is None:
+        return False
+    selection_mode = str(create_payload.account_config.selection_mode or "all")
+    coverage_mode = str(type_config.get("account_coverage_mode") or "")
+    return selection_mode == "all" and coverage_mode == "all_accounts_daily"
 
 
 def _precheck_hard_hourly_target(task_type: str, create_payload: Any, ai_round_summary: dict[str, Any]) -> dict[str, Any]:

@@ -29,20 +29,54 @@ export type HardHourlyRecentBucket = {
 export type TaskAccountCoverage = {
   mode?: 'natural' | 'all_accounts_daily';
   covered_count: number;
+  confirmed_account_count?: number;
   eligible_count: number;
   target_account_count?: number;
+  target_message_count?: number;
+  confirmed_message_count?: number;
   remaining_count?: number;
+  remaining_account_count?: number;
   remaining_message_count?: number;
   pending_admission_count?: number;
   restricted_count?: number;
+  cannot_send_count?: number;
+  offline_or_session_blocked_count?: number;
+  blocked_count?: number;
+  unknown_count?: number;
+  unknown_after_send_count?: number;
+  ready_count?: number;
+  reserved_count?: number;
   target_per_account?: number;
   blocked_reasons?: Array<{ reason: string; count?: number; message?: string }>;
   estimated_completion_window?: { status: string; estimated_min_hours?: number | null; label: string };
+  capacity_proof?: Record<string, any>;
+  capacity_status?: 'sufficient' | 'blocked';
+  required_daily_messages?: number;
+  required_hourly_rate?: number;
   pending_accounts?: Array<{ account_id: number; display_name?: string; completed_count: number; target_count: number; remaining_count: number; reason: string }>;
   coverage_rate: number;
   coverage_percent: number;
   action_types: string[];
   statuses: string[];
+};
+
+export type TaskAccountCoverageItem = {
+  id: string;
+  account_id: number;
+  display_name: string;
+  username: string;
+  coverage_date: string;
+  target_count: number;
+  confirmed_count: number;
+  state: string;
+  blocker_code: string;
+  blocker_detail: string;
+  reserved_action_id: string | null;
+  last_success_action_id: string | null;
+  last_remote_message_id: string;
+  next_eligible_at: string | null;
+  targeted_at: string;
+  completed_at: string | null;
 };
 
 export type TaskCenterStats = Record<string, any> & {
@@ -268,6 +302,7 @@ export type TaskCenterDetail = {
   membership_accounts: TaskMembershipItem[];
   membership_admission_phase: Record<string, any>;
   membership_admission_items: TaskMembershipAdmissionItem[];
+  account_coverage_items: TaskAccountCoverageItem[];
   learning_profile_preview?: Record<string, any>;
   message_groups: Array<{
     channel_target_id: number | null;

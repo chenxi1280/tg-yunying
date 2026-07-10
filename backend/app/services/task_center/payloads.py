@@ -52,6 +52,7 @@ class SendMessagePayload(BaseModel):
     coverage_account_completed_before_action: int = 0
     coverage_account_remaining_before_action: int = 0
     coverage_reason: str = ""
+    coverage_ledger_id: str = ""
     topic_thread: str = ""
     topic_plan: str = ""
     intent: str = ""

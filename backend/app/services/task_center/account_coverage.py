@@ -1,9 +1,12 @@
 from __future__ import annotations
 
-from sqlalchemy import select
+from datetime import date
+
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import Task, TgAccount, TgGroupAccount
+from app.models import Task, TaskAccountDailyCoverage, TgAccount, TgGroup, TgGroupAccount
+from app.services._common import _now
 
 from .account_pool import (
     COVERAGE_ACTION_TYPES_BY_TASK_TYPE,
@@ -14,6 +17,7 @@ from .account_pool import (
     daily_account_coverage_counts,
 )
 from .config_normalization import apply_group_ai_account_coverage_defaults
+from .coverage_capacity import task_coverage_capacity_proof
 
 
 def task_account_coverage(session: Session, task: Task) -> dict[str, object]:
@@ -21,6 +25,10 @@ def task_account_coverage(session: Session, task: Task) -> dict[str, object]:
     if not action_types:
         return {}
     config = _effective_coverage_config(task)
+    if task.type == "group_ai_chat" and config.get("account_coverage_mode") == "all_accounts_daily":
+        ledger_summary = _ledger_account_coverage(session, task)
+        if ledger_summary:
+            return ledger_summary
     target_count = _task_coverage_target_count(task)
     statuses = _task_coverage_statuses(task)
     target_accounts = _task_coverage_all_accounts(session, task)
@@ -51,6 +59,217 @@ def task_account_coverage(session: Session, task: Task) -> dict[str, object]:
         "blocked_reasons": _coverage_blocked_reasons(task, pending_admission_count, restricted_count, remaining_count),
         "estimated_completion_window": _coverage_estimated_window(task, remaining_messages),
         "pending_accounts": _coverage_pending_accounts(target_accounts, readiness, counts, target_count),
+    }
+
+
+def list_task_account_coverage_page(
+    session: Session,
+    tenant_id: int,
+    task_id: str,
+    *,
+    coverage_date: date,
+    state: str | None = None,
+    blocker_code: str | None = None,
+    page: int = 1,
+    page_size: int = 50,
+) -> tuple[list[dict[str, object]], int]:
+    task = session.get(Task, task_id)
+    if task is None or task.tenant_id != tenant_id or task.deleted_at is not None:
+        raise ValueError("task not found")
+    filters = [
+        TaskAccountDailyCoverage.tenant_id == tenant_id,
+        TaskAccountDailyCoverage.task_id == task_id,
+        TaskAccountDailyCoverage.coverage_date == coverage_date,
+    ]
+    if state:
+        filters.append(TaskAccountDailyCoverage.state == state)
+    if blocker_code:
+        filters.append(TaskAccountDailyCoverage.blocker_code == blocker_code)
+    total = session.scalar(select(func.count()).select_from(TaskAccountDailyCoverage).where(*filters)) or 0
+    rows = session.execute(
+        select(TaskAccountDailyCoverage, TgAccount)
+        .join(TgAccount, TgAccount.id == TaskAccountDailyCoverage.account_id)
+        .where(*filters)
+        .order_by(TaskAccountDailyCoverage.account_id.asc())
+        .offset((max(1, page) - 1) * max(1, page_size))
+        .limit(max(1, page_size))
+    )
+    return [_coverage_item_payload(row, account) for row, account in rows], int(total)
+
+
+def _ledger_account_coverage(session: Session, task: Task) -> dict[str, object]:
+    from .daily_coverage import ensure_task_daily_coverage
+
+    ensure_task_daily_coverage(session, task, now=_now())
+    rows = list(
+        session.scalars(
+            select(TaskAccountDailyCoverage).where(
+                TaskAccountDailyCoverage.task_id == task.id,
+                TaskAccountDailyCoverage.coverage_date == _now().date(),
+            )
+        )
+    )
+    if not rows:
+        return {}
+    return _ledger_summary_payload(session, task, rows)
+
+
+def _ledger_summary_payload(
+    session: Session,
+    task: Task,
+    rows: list[TaskAccountDailyCoverage],
+) -> dict[str, object]:
+    target_messages = sum(row.target_count for row in rows)
+    confirmed_messages = sum(min(row.target_count, row.confirmed_count) for row in rows)
+    covered = sum(1 for row in rows if row.confirmed_count >= row.target_count)
+    reason_counts = _ledger_reason_counts(rows)
+    remaining_messages = max(0, target_messages - confirmed_messages)
+    rate = confirmed_messages / target_messages if target_messages else 0
+    capacity = _ledger_capacity_proof(session, task, rows)
+    active_hours = max(1, int(capacity.get("active_window_hours") or 1))
+    remaining_accounts = len(rows) - covered
+    offline_blockers = {
+        "account_offline", "session_expired", "session_invalid", "session_missing", "need_relogin",
+    }
+    return {
+        "mode": "all_accounts_daily",
+        "covered_count": covered,
+        "confirmed_account_count": covered,
+        "eligible_count": len(rows),
+        "target_account_count": len(rows),
+        "target_message_count": target_messages,
+        "confirmed_message_count": confirmed_messages,
+        "remaining_count": remaining_accounts,
+        "remaining_account_count": remaining_accounts,
+        "remaining_message_count": remaining_messages,
+        "pending_admission_count": _state_count(rows, "pending_admission"),
+        "restricted_count": reason_counts.get("cannot_send", 0),
+        "cannot_send_count": reason_counts.get("cannot_send", 0),
+        "offline_or_session_blocked_count": sum(reason_counts.get(code, 0) for code in offline_blockers),
+        "blocked_count": _state_count(rows, "blocked"),
+        "unknown_count": _state_count(rows, "unknown"),
+        "unknown_after_send_count": _state_count(rows, "unknown"),
+        "ready_count": _state_count(rows, "ready"),
+        "reserved_count": _state_count(rows, "reserved") + _state_count(rows, "sending"),
+        "target_per_account": max(row.target_count for row in rows),
+        "coverage_rate": rate,
+        "coverage_percent": round(rate * 100),
+        "action_types": ["send_message"],
+        "statuses": ["confirmed"],
+        "blocked_reasons": _ledger_blocked_reasons(task, reason_counts, len(rows) - covered, capacity),
+        "capacity_proof": capacity,
+        "capacity_status": "sufficient" if capacity.get("sufficient") else "blocked",
+        "required_daily_messages": target_messages,
+        "required_hourly_rate": (remaining_messages + active_hours - 1) // active_hours,
+        "estimated_completion_window": _coverage_estimated_window(task, remaining_messages),
+        "pending_accounts": _ledger_pending_accounts(session, rows),
+    }
+
+
+def _ledger_reason_counts(rows: list[TaskAccountDailyCoverage]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        if not row.blocker_code:
+            continue
+        counts[row.blocker_code] = counts.get(row.blocker_code, 0) + 1
+    return counts
+
+
+def _state_count(rows: list[TaskAccountDailyCoverage], state: str) -> int:
+    return sum(1 for row in rows if row.state == state)
+
+
+def _ledger_blocked_reasons(
+    task: Task,
+    counts: dict[str, int],
+    remaining_count: int,
+    capacity: dict[str, object],
+) -> list[dict[str, object]]:
+    reasons = [
+        {"reason": reason, "count": count, "message": _blocker_message(reason)}
+        for reason, count in sorted(counts.items())
+    ]
+    if remaining_count and not reasons:
+        reasons.append({"reason": "coverage_remaining", "count": remaining_count, "message": "仍有账号未达今日覆盖目标"})
+    if capacity and not capacity.get("sufficient"):
+        reasons.append({
+            "reason": "daily_coverage_capacity_insufficient",
+            "count": int(capacity.get("capacity_gap") or 0),
+            "message": "任务当前容量无法在活跃窗口内完成全部账号覆盖",
+        })
+    if task.last_error:
+        reasons.append({"reason": "last_error", "count": 1, "message": task.last_error})
+    return reasons
+
+
+def _ledger_capacity_proof(
+    session: Session,
+    task: Task,
+    rows: list[TaskAccountDailyCoverage],
+) -> dict[str, object]:
+    group_id = int((task.type_config or {}).get("target_group_id") or 0)
+    group = session.get(TgGroup, group_id) if group_id else None
+    if group is None:
+        return {}
+    return task_coverage_capacity_proof(
+        session,
+        task,
+        group,
+        target_account_count=len(rows),
+        target_per_account=max(row.target_count for row in rows),
+    )
+
+
+def _blocker_message(reason: str) -> str:
+    labels = {
+        "not_in_group": "账号尚未进入目标群",
+        "cannot_send": "账号在目标群不可发言",
+        "account_limited": "账号当前受限",
+        "session_expired": "账号 Session 已失效",
+        "unknown_after_send": "发送结果未知，等待远端复核",
+        "remote_message_id_missing": "发送缺少 Telegram 远端消息 ID",
+        "duplicate_message": "AI 内容重复，等待自然对话重新规划",
+    }
+    return labels.get(reason, reason)
+
+
+def _ledger_pending_accounts(session: Session, rows: list[TaskAccountDailyCoverage]) -> list[dict[str, object]]:
+    pending = [row for row in rows if row.confirmed_count < row.target_count]
+    accounts = {
+        account.id: account
+        for account in session.scalars(select(TgAccount).where(TgAccount.id.in_([row.account_id for row in pending])))
+    } if pending else {}
+    return [
+        {
+            "account_id": row.account_id,
+            "display_name": accounts.get(row.account_id).display_name if accounts.get(row.account_id) else "",
+            "completed_count": row.confirmed_count,
+            "target_count": row.target_count,
+            "remaining_count": max(0, row.target_count - row.confirmed_count),
+            "reason": row.blocker_code or row.state,
+        }
+        for row in pending[:10]
+    ]
+
+
+def _coverage_item_payload(row: TaskAccountDailyCoverage, account: TgAccount) -> dict[str, object]:
+    return {
+        "id": row.id,
+        "account_id": row.account_id,
+        "display_name": account.display_name,
+        "username": account.username or "",
+        "coverage_date": row.coverage_date,
+        "target_count": row.target_count,
+        "confirmed_count": row.confirmed_count,
+        "state": row.state,
+        "blocker_code": row.blocker_code,
+        "blocker_detail": row.blocker_detail,
+        "reserved_action_id": row.reserved_action_id,
+        "last_success_action_id": row.last_success_action_id,
+        "last_remote_message_id": row.last_remote_message_id,
+        "next_eligible_at": row.next_eligible_at,
+        "targeted_at": row.targeted_at,
+        "completed_at": row.completed_at,
     }
 
 
@@ -176,4 +395,4 @@ def _task_coverage_target_group_id(task: Task) -> int | None:
     return parsed_id or None
 
 
-__all__ = ["task_account_coverage"]
+__all__ = ["list_task_account_coverage_page", "task_account_coverage"]

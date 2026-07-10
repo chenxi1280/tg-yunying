@@ -1179,6 +1179,7 @@ class TaskDetailOut(BaseModel):
     membership_accounts: list[dict[str, Any]] = Field(default_factory=list)
     membership_admission_phase: dict[str, Any] = Field(default_factory=dict)
     membership_admission_items: list[dict[str, Any]] = Field(default_factory=list)
+    account_coverage_items: list[TaskAccountCoverageItemOut] = Field(default_factory=list)
     message_groups: list[TaskMessageGroupOut] = Field(default_factory=list)
     ai_cycles: list[TaskAICycleOut] = Field(default_factory=list)
     ai_generation_records: list[TaskAIGenerationRecordOut] = Field(default_factory=list)
@@ -1220,6 +1221,25 @@ class TaskMembershipItemOut(BaseModel):
     operator_required: bool = False
     auto_retryable: bool = False
     account_replace_required: bool = False
+
+
+class TaskAccountCoverageItemOut(BaseModel):
+    id: str
+    account_id: int
+    display_name: str = ""
+    username: str = ""
+    coverage_date: date
+    target_count: int
+    confirmed_count: int
+    state: str
+    blocker_code: str = ""
+    blocker_detail: str = ""
+    reserved_action_id: str | None = None
+    last_success_action_id: str | None = None
+    last_remote_message_id: str = ""
+    next_eligible_at: datetime | None = None
+    targeted_at: datetime
+    completed_at: datetime | None = None
 
 
 class TaskRetryRequest(BaseModel):
@@ -1403,6 +1423,7 @@ __all__ = [
     "TaskAIAccountProfileOut",
     "TaskAICycleOut",
     "TaskAIGenerationRecordOut",
+    "TaskAccountCoverageItemOut",
     "TaskDetailOut",
     "TaskMembershipItemOut",
     "TaskDetailAccountOut",

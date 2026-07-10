@@ -1964,7 +1964,14 @@ class TelethonTelegramGateway(TelegramGateway):
         credentials: DeveloperAppCredentials | None = None,
         limit: int = 20,
     ) -> list[GroupMessageSnapshot]:
-        return self._run(self._fetch_group_messages_async(peer_id, session_ciphertext, self._usable_credentials(credentials), limit))
+        operation = self._fetch_group_messages_async(
+            peer_id,
+            session_ciphertext,
+            self._usable_credentials(credentials),
+            limit,
+        )
+        timeout = max(1.0, float(self.settings.listener_fetch_timeout_seconds or 30))
+        return self._run(asyncio.wait_for(operation, timeout=timeout))
 
     async def _cache_source_media_async(
         self,

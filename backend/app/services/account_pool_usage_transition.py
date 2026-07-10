@@ -56,6 +56,9 @@ def migrate_account_usage(
         target_id=str(account.id),
         detail=detail,
     )
+    from app.services.task_center.account_scope import emit_account_eligibility_event
+
+    emit_account_eligibility_event(session, account.id, "account_usage_changed")
     session.commit()
     session.refresh(account)
     return account

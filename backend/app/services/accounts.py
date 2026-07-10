@@ -157,6 +157,7 @@ def create_account(session: Session, payload: TgAccountCreate, actor: str = "普
     account = TgAccount(**data)
     session.add(account)
     session.flush()
+    _emit_account_eligibility_event(session, account.id, "account_created")
     audit(session, tenant_id=account.tenant_id, actor=actor, action="添加TG账号", target_type="tg_account", target_id=str(account.id))
     session.commit()
     session.refresh(account)
@@ -261,6 +262,7 @@ def soft_delete_account(session: Session, account_id: int, actor: str = "普通�
     ):
         flow.status = "已取消"
         flow.code_preview = None
+    _emit_account_eligibility_event(session, account.id, "account_deleted")
     session.commit()
     session.refresh(account)
     return account
@@ -834,6 +836,7 @@ def verify_login(session: Session, account_id: int, code: str | None, password_2
             should_sync = True
 
     audit(session, tenant_id=account.tenant_id, actor=actor, action="验证TG登录", target_type="tg_account", target_id=str(account.id), detail=f"status={status}")
+    _emit_account_eligibility_event(session, account.id, "login_status_changed")
     session.commit()
     if should_sync:
         run_account_sync_now(session, account.id, actor, trigger_source="login")
@@ -866,6 +869,7 @@ def check_qr_login(session: Session, account_id: int, actor: str = "普通用户
             should_sync = True
     latest_flow.status = status
     audit(session, tenant_id=account.tenant_id, actor=actor, action="检查QR登录", target_type="tg_account", target_id=str(account.id), detail=f"status={status}")
+    _emit_account_eligibility_event(session, account.id, "login_status_changed")
     session.commit()
     if should_sync:
         run_account_sync_now(session, account.id, actor, trigger_source="login")
@@ -882,6 +886,7 @@ def health_check_account(session: Session, account_id: int) -> TgAccount:
         account.status = AccountStatus.NEED_RELOGIN.value
         account.health_score = min(account.health_score, 45)
         audit(session, tenant_id=account.tenant_id, actor="system", action="账号健康检查", target_type="tg_account", target_id=str(account.id), detail=str(exc))
+        _emit_account_eligibility_event(session, account.id, "health_status_changed")
         session.commit()
         session.refresh(account)
         return account
@@ -895,16 +900,26 @@ def health_check_account(session: Session, account_id: int) -> TgAccount:
             proxy = attempt_primary_proxy_recovery(session, account, actor="system", reason=result.detail)
             if proxy is not None:
                 account.status = AccountStatus.ACTIVE.value
+                _emit_account_eligibility_event(session, account.id, "health_status_changed")
                 session.commit()
                 session.refresh(account)
                 return account
         recovered = attempt_standby_authorization_recovery(session, account, actor="system", reason=result.detail)
         if recovered is not None:
+            _emit_account_eligibility_event(session, account.id, "health_status_changed")
+            session.commit()
             session.refresh(account)
             return account
+    _emit_account_eligibility_event(session, account.id, "health_status_changed")
     session.commit()
     session.refresh(account)
     return account
+
+
+def _emit_account_eligibility_event(session: Session, account_id: int, event_type: str) -> None:
+    from app.services.task_center.account_scope import emit_account_eligibility_event
+
+    emit_account_eligibility_event(session, account_id, event_type)
 
 
 def sync_remote_profile(session: Session, account_id: int, actor: str) -> TgAccount:

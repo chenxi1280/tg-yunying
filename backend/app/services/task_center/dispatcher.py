@@ -15,7 +15,7 @@ from pydantic import ValidationError
 from app.admin_chats import send_admin_chat_broadcast
 from app.integrations.telegram import DeveloperAppCredentials, OperationResult, OutboundSegment
 from app.config import get_settings
-from app.models import AccountStatus, Action, ChannelMessage, ExecutionAttempt, FailureType, GroupAuthStatus, GroupContextMessage, OperationTarget, ReviewQueue, Task, Tenant, TgAccount, TgGroup, TgGroupAccount, VerificationTask
+from app.models import AccountStatus, Action, ChannelMessage, ExecutionAttempt, FailureType, GroupAuthStatus, GroupContextMessage, OperationTarget, ReviewQueue, Task, TaskAccountDailyCoverage, TaskMembershipAdmissionItem, Tenant, TgAccount, TgGroup, TgGroupAccount, VerificationTask
 from app.models import AccountEnvironmentBinding, AccountProxy, AccountProxyBinding, TelegramDeveloperApp, TgAccountAuthorization
 from app.security import decrypt_secret
 from app.services._common import _now, audit, gateway
@@ -39,10 +39,12 @@ from app.services.verification import create_verification_task
 from app.timezone import BEIJING_TZ, as_beijing
 
 from .account_pool import account_matches_current_shard, current_account_shard, select_task_accounts
+from .account_scope import is_all_accounts_task
 from .account_voice_profiles import upsert_group_stance_memory
 from .ai_generator import AI_GENERATION_UNAVAILABLE_MESSAGE, AiGenerationUnavailable, generate_group_messages
 from .ai_message_memory import DuplicateMessageReservation, ensure_group_ai_message_sendable, mark_group_ai_message_result, reserve_group_ai_message
 from .channel_membership import account_satisfies_authorized_target, linked_channel_group, mark_channel_membership_joined
+from .daily_coverage import confirm_coverage_from_attempt, ensure_task_daily_coverage, mark_coverage_unknown, release_coverage_reservation
 from .executors.common import quantity_jitter_bounds, stats_inc
 from .executors.channel_comment import _resolved_total_comment_limit, _total_comment_action_count
 from .group_rescue import GROUP_RESCUE_FAILURE_THRESHOLD, infer_rescue_admin_rate_limit, permission_failure_count_for_send_action, refresh_group_rescue_action, trigger_group_rescue
@@ -228,6 +230,14 @@ def _release_runtime_resources(action: Action) -> None:
 
 
 def dispatch_action(session: Session, action: Action) -> bool:
+    try:
+        return _dispatch_action(session, action)
+    finally:
+        _sync_action_coverage_state(session, action)
+        _sync_all_account_membership_state(session, action)
+
+
+def _dispatch_action(session: Session, action: Action) -> bool:
     if _legacy_review_enabled() and has_pending_review(session, action.id):
         return False
     if _skip_expired_hard_hourly_action(session, action):
@@ -243,7 +253,7 @@ def dispatch_action(session: Session, action: Action) -> bool:
     if _is_reserved_rescue_admin_action(session, action, account):
         _skip(action, "rescue_admin_reserved", "救援管理员账号只允许执行群聊救援动作，不参与普通任务发送、点赞、评论或准入")
         return True
-    can_reassign = action.status != "executing" and not _is_membership_action(action) and action.action_type not in {"invite_group_bot", "invite_group_account"}
+    can_reassign = _action_can_reassign(action)
     account = _account_after_global_policy(session, action, account, allow_reassign=can_reassign)
     if account is None:
         return True
@@ -293,6 +303,16 @@ def mark_dispatcher_db_error(session: Session, action_id: str, detail: str) -> b
         return True
     _release_dispatcher_db_error(action, detail)
     return True
+
+
+def _action_can_reassign(action: Action) -> bool:
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    return (
+        action.status != "executing"
+        and not _is_membership_action(action)
+        and action.action_type not in {"invite_group_bot", "invite_group_account"}
+        and not bool(payload.get("coverage_ledger_id"))
+    )
 
 
 def _is_reserved_rescue_admin_action(session: Session, action: Action, account: TgAccount) -> bool:
@@ -4433,6 +4453,7 @@ def _skip_context_expired_cycle(session: Session, current: Action, payload: Send
         action_payload = action.payload if isinstance(action.payload, dict) else {}
         if _same_context_cycle(action_payload, payload):
             _skip(action, "context_expired", "上下文已过期，跳过本轮剩余发言")
+            _sync_action_coverage_state(session, action)
     task = session.get(Task, current.task_id)
     if task:
         task.next_run_at = _now()
@@ -4444,6 +4465,117 @@ def _same_context_cycle(action_payload: dict, payload: SendMessagePayload) -> bo
         and action_payload.get("group_id") == payload.group_id
         and action_payload.get("context_snapshot_message_id") == payload.context_snapshot_message_id
     )
+
+
+def _sync_action_coverage_state(session: Session, action: Action) -> None:
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    coverage_id = str(payload.get("coverage_ledger_id") or "")
+    if not coverage_id:
+        return
+    if action.status == "success":
+        attempt = _latest_execution_attempt(session, action.id)
+        if confirm_coverage_from_attempt(session, coverage_id, action.id, attempt):
+            return
+        mark_coverage_unknown(
+            session,
+            coverage_id,
+            action.id,
+            blocker_code="remote_message_id_missing",
+            blocker_detail="Action 成功但缺少 Telegram 远端消息 ID",
+        )
+        return
+    if action.status == "unknown_after_send":
+        _mark_action_coverage_unknown(session, action, coverage_id)
+        return
+    if action.status in {"failed", "skipped", "retryable_failed"}:
+        result = action.result if isinstance(action.result, dict) else {}
+        release_coverage_reservation(
+            session,
+            coverage_id,
+            action.id,
+            blocker_code=str(result.get("error_code") or action.status),
+            blocker_detail=str(result.get("error_message") or ""),
+        )
+        if action.status == "retryable_failed":
+            action.status = "failed"
+            action.result = {**result, "coverage_replan_required": True}
+
+
+def _latest_execution_attempt(session: Session, action_id: str) -> ExecutionAttempt | None:
+    return session.scalar(
+        select(ExecutionAttempt)
+        .where(ExecutionAttempt.action_id == action_id)
+        .order_by(ExecutionAttempt.attempt_no.desc())
+        .limit(1)
+    )
+
+
+def _mark_action_coverage_unknown(session: Session, action: Action, coverage_id: str) -> None:
+    result = action.result if isinstance(action.result, dict) else {}
+    mark_coverage_unknown(
+        session,
+        coverage_id,
+        action.id,
+        blocker_code=str(result.get("error_code") or "unknown_after_send"),
+        blocker_detail=str(result.get("error_message") or "发送结果未知，等待远端复核"),
+    )
+
+
+def _sync_all_account_membership_state(session: Session, action: Action) -> None:
+    if action.action_type not in MEMBERSHIP_ACTION_TYPES or not action.account_id:
+        return
+    task = session.get(Task, action.task_id)
+    if task is None or not is_all_accounts_task(task):
+        return
+    item = session.scalar(
+        select(TaskMembershipAdmissionItem).where(
+            TaskMembershipAdmissionItem.task_id == task.id,
+            TaskMembershipAdmissionItem.account_id == action.account_id,
+        )
+    )
+    if item is None:
+        return
+    item.membership_action_id = action.id
+    result = action.result if isinstance(action.result, dict) else {}
+    if action.status == "success" or (action.status == "skipped" and result.get("success")):
+        item.phase = "completed"
+        item.failure_type = ""
+        item.failure_detail = ""
+        ensure_task_daily_coverage(session, task, account_ids=[int(action.account_id)])
+        return
+    if action.status == "unknown_after_send":
+        _set_membership_coverage_blocker(session, item, task, action, "unknown")
+        item.manual_required = True
+        return
+    if action.status in {"failed", "retryable_failed", "skipped"}:
+        _set_membership_coverage_blocker(session, item, task, action, "blocked")
+
+
+def _set_membership_coverage_blocker(
+    session: Session,
+    item: TaskMembershipAdmissionItem,
+    task: Task,
+    action: Action,
+    state: str,
+) -> None:
+    result = action.result if isinstance(action.result, dict) else {}
+    code = str(result.get("error_code") or action.status)
+    detail = str(result.get("error_message") or "")
+    item.phase = "failed"
+    item.failure_type = code
+    item.failure_detail = detail
+    rows = session.scalars(
+        select(TaskAccountDailyCoverage).where(
+            TaskAccountDailyCoverage.task_id == task.id,
+            TaskAccountDailyCoverage.account_id == action.account_id,
+            TaskAccountDailyCoverage.confirmed_count < TaskAccountDailyCoverage.target_count,
+        )
+    )
+    for row in rows:
+        row.state = state
+        row.blocker_code = code
+        row.blocker_detail = detail
+        row.updated_at = _now()
 
 
 __all__ = ["claim_actions", "dispatch_action", "due_actions", "recover_expired_claims", "recover_expired_hard_hourly_actions"]

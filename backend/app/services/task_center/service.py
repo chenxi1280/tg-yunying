@@ -49,6 +49,7 @@ from app.services.developer_apps import credentials_for_account
 from app.timezone import as_beijing
 
 from .account_pool import select_task_accounts
+from .account_scope import initialize_all_account_task_scope, process_account_eligibility_events, reconcile_all_account_scopes_if_due
 from .ai_act_types import canonical_ai_group_act_type
 from .ai_generator import AiGenerationUnavailable, generate_channel_comments, generate_group_messages
 from .channel_membership import (
@@ -57,7 +58,7 @@ from .channel_membership import (
     channel_membership_summary,
     mark_channel_membership_joined,
 )
-from .dispatcher import claim_actions, dispatch_action, due_actions, mark_dispatcher_db_error, recover_expired_claims, recover_expired_hard_hourly_actions
+from .dispatcher import _sync_all_account_membership_state, claim_actions, dispatch_action, due_actions, mark_dispatcher_db_error, recover_expired_claims, recover_expired_hard_hourly_actions
 from .executors import build_task_plan, prepare_open_actions_for_planning
 from .details import (
     _accounts_by_id,
@@ -261,6 +262,7 @@ def _new_task(session: Session, tenant_id: int, task_type: str, payload) -> Task
     )
     session.add(task)
     session.flush()
+    initialize_all_account_task_scope(session, task)
     return task
 
 
@@ -375,6 +377,7 @@ def _task_summary_detail(session: Session, tenant_id: int, task: Task) -> dict[s
         "membership_accounts": [],
         "membership_admission_phase": admission_phase,
         "membership_admission_items": [],
+        "account_coverage_items": [],
         "message_groups": [],
         "ai_cycles": [],
         "ai_generation_records": _ai_generation_records(ai_quality_actions),
@@ -485,6 +488,9 @@ def update_task(session: Session, tenant_id: int, task_id: str, payload: TaskUpd
     for field in ["account_config", "pacing_config", "failure_policy"]:
         if field in data and data[field] is not None:
             setattr(task, field, _pacing_payload_for_task(task, raw_data[field]) if field == "pacing_config" else data[field])
+    if task.type == "group_ai_chat" and "account_config" in data:
+        task.type_config = apply_group_ai_account_coverage_defaults(task.type, task.type_config or {}, task.account_config or {})
+        initialize_all_account_task_scope(session, task)
     task.updated_at = _now()
     audit(session, tenant_id=tenant_id, actor=actor, action="更新任务中心任务", target_type="task", target_id=task.id)
     session.commit()
@@ -525,6 +531,7 @@ def update_task_settings(session: Session, tenant_id: int, task_id: str, payload
         next_config = normalize_operation_target_references(session, tenant_id, task.type, next_config)
         next_config = apply_group_ai_account_coverage_defaults(task.type, next_config, task.account_config or {})
         task.type_config = validated_type_config(task.type, next_config)
+    initialize_all_account_task_scope(session, task)
     _clear_unfinished_plan(session, task)
     if task.status not in {"completed", "failed"}:
         now = _now()
@@ -1463,6 +1470,8 @@ def _drain_task_planner(session_factory, *, limit: int, process_type: str | None
     with session_factory() as session:
         if process_type:
             record_worker_heartbeat(session, process_type=process_type, metadata={"limit": limit})
+        processed += process_account_eligibility_events(session, limit=limit)
+        processed += reconcile_all_account_scopes_if_due(session)
         _activate_pending_tasks(session)
         hard_hourly_task_ids = _wake_hard_hourly_tasks(session, limit=limit)
         task_ids = list(
@@ -2034,6 +2043,7 @@ def _recover_unknown_membership_action(
     label = "可发言" if payload.get("require_send") else "已关注"
     mark_channel_membership_joined(session, action.tenant_id, channel_target_id, account.id, permission_label=label)
     _mark_membership_action_recovered(action, task, latest_attempt, now, result.detail or "补偿复检已满足目标准入")
+    _sync_all_account_membership_state(session, action)
     return True
 
 

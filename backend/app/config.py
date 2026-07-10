@@ -135,6 +135,7 @@ class Settings:
     telethon_client_idle_seconds: int = int(os.getenv("TELETHON_CLIENT_IDLE_SECONDS", "900"))
     telethon_client_connect_timeout_seconds: float = float(os.getenv("TELETHON_CLIENT_CONNECT_TIMEOUT_SECONDS", "15"))
     telethon_operation_timeout_seconds: float = float(os.getenv("TELETHON_OPERATION_TIMEOUT_SECONDS", "300"))
+    listener_fetch_timeout_seconds: float = float(os.getenv("LISTENER_FETCH_TIMEOUT_SECONDS", "30"))
     max_pending_global: int = int(os.getenv("MAX_PENDING_GLOBAL", "10000"))
     max_pending_per_task: int = int(os.getenv("MAX_PENDING_PER_TASK", "1000"))
     oldest_pending_age_seconds: int = int(os.getenv("OLDEST_PENDING_AGE_SECONDS", "3600"))

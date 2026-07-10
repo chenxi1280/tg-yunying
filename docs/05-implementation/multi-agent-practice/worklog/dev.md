@@ -399,3 +399,14 @@
 - decision: status=local_verified_pending_release；release_gate=pending；production_verification=blocked_by_ssh_network。
 - next_agent: qa
 - unresolved: 较宽的 5 条组合测试因本地 PostgreSQL 测试库不可用被 pytest reset gate 阻断，未执行；尚未推送 release / Deploy Production；当前环境到生产 SSH 和公网均超时，不能证明线上已恢复。
+
+## 2026-07-10 AI 活群“全部账号”每日履约账本 Development Complete（本地待 QA）
+
+- message_id: 2026-07-10-ai-all-account-daily-ledger-devcomplete-001
+- action: 按专项 PRD 将“全部账号”任务从动态缩小分母改为持久账号关系、事件增量同步和北京时间每日覆盖账本。
+- input: 所有正常、Session 可用普通账号自动加入每个全部账号任务并推进目标群；只有目标群真实成功发言才完成；入群失败、受限、离线和 Session 失效继续显示阻塞；避免任务多时重复全量扫描；失败回补不得破坏 AI 模拟聊天内容。
+- output: 新增 `TaskAccountDailyCoverage` / `AccountEligibilityEvent` 与 0088 迁移；任务创建初始化持久账号范围，账号录入/登录/健康/用途变化写增量事件，Planner 前消费事件并执行租户级低频核对；准入和 Planner 从持久关系/账本读取；覆盖 Action 原子预约，成功必须对应成功 ExecutionAttempt 和非空 Telegram `remote_message_id`；失败释放后终结旧 Action 并重新规划自然上下文，unknown 不立即重发；全部账号模式禁止模板/表情补量；容量不足显式阻塞；任务详情新增真实分母摘要和分页账号明细；回填脚本支持存量任务幂等修复；群消息拉取增加整体超时。
+- evidence: TDD 新增链路 41 passed；任务中心/Planner/Dispatcher/准入相关回归 142 passed（239 deselected）；账号录入/用途/安全、Gateway 和 recovery 边界 116 passed（92 deselected）；`python -m compileall` passed；Alembic `heads` 为单头 0088，0087->0088 离线 SQL 62 行且迁移 SQLite 升降级测试通过；前端 `tsc + vite build` passed（仅既有大 chunk 警告）；新增模块函数均不超过 50 行；`git diff --check` passed。全历史 `alembic upgrade head --sql` 仍被既有 0002 迁移的离线 inspect 限制阻断，与 0088 无关。
+- decision: status=local_verified_pending_qa；release_gate=required_pending；production_verification=unproven。
+- next_agent: qa
+- unresolved: 尚未发布；未执行生产回填；未经过完整北京时间自然日验证，不能标记 `production_fixed`。
