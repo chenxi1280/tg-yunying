@@ -33,8 +33,10 @@ type TargetWorkbenchRow = {
 };
 
 type TargetPageQuery = Readonly<{ page: number; pageSize: number }>;
-type OperationDataRequestIdentity = Readonly<{ sequence: number; queryKey: string }>;
-type OperationDataRequest = Readonly<{
+type OperationBaseRequestIdentity = Readonly<{ sequence: number }>;
+type OperationBaseRequest = Readonly<{ sequence: number; controller: AbortController }>;
+type TargetPageRequestIdentity = Readonly<{ sequence: number; queryKey: string }>;
+type TargetPageRequest = Readonly<{
   sequence: number;
   queryKey: string;
   query: TargetPageQuery;
@@ -119,8 +121,10 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
   const [operationCenter, setOperationCenter] = React.useState<OperationCenterSummary | null>(overview.operation_center ?? null);
   const [targetSummaries, setTargetSummaries] = React.useState<TargetRuntimeSummary[]>([]);
   const [issues, setIssues] = React.useState<OperationIssue[]>([]);
-  const [operationLoading, setOperationLoading] = React.useState(false);
-  const [operationError, setOperationError] = React.useState('');
+  const [operationBaseLoading, setOperationBaseLoading] = React.useState(false);
+  const [targetPageLoading, setTargetPageLoading] = React.useState(false);
+  const [operationBaseError, setOperationBaseError] = React.useState('');
+  const [targetPageError, setTargetPageError] = React.useState('');
   const [issueDetail, setIssueDetail] = React.useState<OperationIssueDetail | null>(null);
   const [issueDrawerOpen, setIssueDrawerOpen] = React.useState(false);
   const [issueLoading, setIssueLoading] = React.useState(false);
@@ -128,8 +132,10 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
   const [issueAction, setIssueAction] = React.useState<IssueAction | null>(null);
   const [issueActionReason, setIssueActionReason] = React.useState('');
   const activeIssueDetailId = React.useRef<string | null>(null);
-  const operationDataRequestRef = React.useRef<OperationDataRequestIdentity>({ sequence: 0, queryKey: '' });
-  const operationDataAbortController = React.useRef<AbortController | null>(null);
+  const operationBaseRequestRef = React.useRef<OperationBaseRequestIdentity>({ sequence: 0 });
+  const operationBaseAbortController = React.useRef<AbortController | null>(null);
+  const targetPageRequestRef = React.useRef<TargetPageRequestIdentity>({ sequence: 0, queryKey: '' });
+  const targetPageAbortController = React.useRef<AbortController | null>(null);
   const targetPageQueryRef = React.useRef(targetPageQuery);
   const activePlanActionKey = React.useRef('');
   const activePlanEditSaveRequestRef = React.useRef<{ seq: number; planId: number | null; signature: string }>({ seq: 0, planId: null, signature: '' });
@@ -147,6 +153,8 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
   const [impactResult, setImpactResult] = React.useState<OperationPlanApplyResult | null>(null);
   const [impactReason, setImpactReason] = React.useState('');
   targetPageQueryRef.current = targetPageQuery;
+  const operationLoading = operationBaseLoading || targetPageLoading;
+  const operationError = [operationBaseError, targetPageError].filter(Boolean).join('；');
   const activity = React.useMemo(() => normalizedActivity(overview.activity_24h), [overview.activity_24h]);
   const operationSummary = operationCenter ?? overview.operation_center ?? null;
   const totals = activity.reduce(
@@ -168,22 +176,36 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
     return activeIssueDetailId.current === issueId;
   }
 
-  function beginOperationDataRequest(query: TargetPageQuery): OperationDataRequest {
-    operationDataAbortController.current?.abort();
+  function beginOperationBaseRequest(): OperationBaseRequest {
+    operationBaseAbortController.current?.abort();
+    const controller = new AbortController();
+    const identity = { sequence: operationBaseRequestRef.current.sequence + 1 };
+    operationBaseRequestRef.current = identity;
+    operationBaseAbortController.current = controller;
+    return { ...identity, controller };
+  }
+
+  function isActiveOperationBaseRequest(request: OperationBaseRequest) {
+    return !request.controller.signal.aborted
+      && operationBaseRequestRef.current.sequence === request.sequence;
+  }
+
+  function beginTargetPageRequest(query: TargetPageQuery): TargetPageRequest {
+    targetPageAbortController.current?.abort();
     const controller = new AbortController();
     const identity = {
-      sequence: operationDataRequestRef.current.sequence + 1,
+      sequence: targetPageRequestRef.current.sequence + 1,
       queryKey: targetPageQueryKey(query),
     };
-    operationDataRequestRef.current = identity;
-    operationDataAbortController.current = controller;
+    targetPageRequestRef.current = identity;
+    targetPageAbortController.current = controller;
     return { ...identity, query, controller };
   }
 
-  function isActiveOperationDataRequest(request: OperationDataRequest) {
+  function isActiveTargetPageRequest(request: TargetPageRequest) {
     return !request.controller.signal.aborted
-      && operationDataRequestRef.current.sequence === request.sequence
-      && operationDataRequestRef.current.queryKey === request.queryKey;
+      && targetPageRequestRef.current.sequence === request.sequence
+      && targetPageRequestRef.current.queryKey === request.queryKey;
   }
 
   function beginPlanAction(actionKey: string) {
@@ -291,56 +313,104 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
   }
 
   React.useEffect(() => {
-    void loadOperationData();
-    return () => operationDataAbortController.current?.abort();
+    void loadOperationBase();
+    return () => operationBaseAbortController.current?.abort();
+  }, []);
+
+  React.useEffect(() => {
+    void loadTargetPage();
+    return () => targetPageAbortController.current?.abort();
   }, [targetPageQuery]);
 
-  async function fetchOperationData(request: OperationDataRequest) {
+  async function fetchOperationBase(request: OperationBaseRequest) {
     const requestOptions = { signal: request.controller.signal };
-    const targetRequest = apiWithMeta<OperationTarget[]>(operationTargetPagePath(request.query), requestOptions);
-    const planRequest = api<OperationPlan[]>('/operation-plans', requestOptions);
-    const centerRequest = api<OperationCenterSummary>('/operation-center/overview', requestOptions);
-    const issueRequest = api<OperationIssue[]>('/operation-issues', requestOptions);
-    const targetRuntimeRequest = targetRequest.then(async (targetResponse) => {
-      const runtimePath = targetRuntimeSummaryPath(targetResponse.data.map((target) => target.id));
-      const runtimeRequest = api<TargetRuntimeSummary[]>(runtimePath, requestOptions);
-      const runtimeRows = await runtimeRequest;
-      return { targetResponse, runtimeRows };
-    });
-    const [{ targetResponse, runtimeRows }, planRows, centerSummary, issueRows] = await Promise.all([targetRuntimeRequest, planRequest, centerRequest, issueRequest]);
-    if (!isActiveOperationDataRequest(request)) return false;
-    const responseTotal = operationTargetResponseTotal(targetResponse.headers);
+    const [planRows, centerSummary, issueRows] = await Promise.all([
+      api<OperationPlan[]>('/operation-plans', requestOptions),
+      api<OperationCenterSummary>('/operation-center/overview', requestOptions),
+      api<OperationIssue[]>('/operation-issues', requestOptions),
+    ]);
+    if (!isActiveOperationBaseRequest(request)) return false;
     setPlans(planRows);
-    setTargets(targetResponse.data);
-    setTargetTotal(responseTotal);
     setOperationCenter(centerSummary);
-    setTargetSummaries(runtimeRows);
     setIssues(issueRows);
     return true;
   }
 
-  async function loadOperationData() {
-    const request = beginOperationDataRequest(targetPageQueryRef.current);
-    setOperationLoading(true);
-    setOperationError('');
+  async function fetchTargetPage(request: TargetPageRequest) {
+    const requestOptions = { signal: request.controller.signal };
+    const targetResponse = await apiWithMeta<OperationTarget[]>(operationTargetPagePath(request.query), requestOptions);
+    const runtimePath = targetRuntimeSummaryPath(targetResponse.data.map((target) => target.id));
+    const runtimeRows = await api<TargetRuntimeSummary[]>(runtimePath, requestOptions);
+    if (!isActiveTargetPageRequest(request)) return false;
+    const responseTotal = operationTargetResponseTotal(targetResponse.headers);
+    setTargets(targetResponse.data);
+    setTargetTotal(responseTotal);
+    setTargetSummaries(runtimeRows);
+    return true;
+  }
+
+  async function loadOperationBase() {
+    const request = beginOperationBaseRequest();
+    setOperationBaseLoading(true);
+    setOperationBaseError('');
     try {
-      await fetchOperationData(request);
-    } catch (err) {
-      if (!isActiveOperationDataRequest(request)) return;
-      setOperationError(err instanceof Error ? err.message : String(err));
+      await fetchOperationBase(request);
+    } catch (error) {
+      if (!isActiveOperationBaseRequest(request)) return;
+      setOperationBaseError(errorText(error));
     } finally {
-      if (isActiveOperationDataRequest(request)) setOperationLoading(false);
+      if (isActiveOperationBaseRequest(request)) setOperationBaseLoading(false);
+    }
+  }
+
+  async function loadTargetPage() {
+    const request = beginTargetPageRequest(targetPageQueryRef.current);
+    setTargetPageLoading(true);
+    setTargetPageError('');
+    try {
+      await fetchTargetPage(request);
+    } catch (error) {
+      if (!isActiveTargetPageRequest(request)) return;
+      setTargetPageError(errorText(error));
+    } finally {
+      if (isActiveTargetPageRequest(request)) setTargetPageLoading(false);
+    }
+  }
+
+  async function loadOperationData() {
+    await Promise.all([loadOperationBase(), loadTargetPage()]);
+  }
+
+  async function refreshOperationBaseAfterAction(actionLabel: string) {
+    const request = beginOperationBaseRequest();
+    setOperationBaseLoading(true);
+    setOperationBaseError('');
+    try {
+      await fetchOperationBase(request);
+    } catch (error) {
+      if (!isActiveOperationBaseRequest(request)) return;
+      setOperationBaseError(`运营中心数据刷新失败：${actionLabel}操作已完成，但刷新运营中心基础数据失败：${errorText(error)}`);
+    } finally {
+      if (isActiveOperationBaseRequest(request)) setOperationBaseLoading(false);
+    }
+  }
+
+  async function refreshTargetPageAfterAction(actionLabel: string) {
+    const request = beginTargetPageRequest(targetPageQueryRef.current);
+    setTargetPageLoading(true);
+    setTargetPageError('');
+    try {
+      await fetchTargetPage(request);
+    } catch (error) {
+      if (!isActiveTargetPageRequest(request)) return;
+      setTargetPageError(`运营中心数据刷新失败：${actionLabel}操作已完成，但刷新目标工作台数据失败：${errorText(error)}`);
+    } finally {
+      if (isActiveTargetPageRequest(request)) setTargetPageLoading(false);
     }
   }
 
   async function refreshOperationDataAfterAction(actionLabel: string) {
-    const request = beginOperationDataRequest(targetPageQueryRef.current);
-    try {
-      await fetchOperationData(request);
-    } catch (error) {
-      if (!isActiveOperationDataRequest(request)) return;
-      setOperationError(`运营中心数据刷新失败：${actionLabel}操作已完成，但刷新运营中心数据失败：${errorText(error)}`);
-    }
+    await Promise.all([refreshOperationBaseAfterAction(actionLabel), refreshTargetPageAfterAction(actionLabel)]);
   }
 
   async function createDefaultPlan(target?: OperationTarget) {
