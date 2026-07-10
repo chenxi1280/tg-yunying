@@ -24,11 +24,9 @@ from app.schemas import CampaignCreate, GenerateDraftsRequest
 from ._common import SUBSCRIPTION_INACTIVE_DETAIL, _now, audit, gateway, require_system_user_core_features
 from .account_usage_policy import assert_account_action_allowed
 from .campaigns import approve_all_drafts, create_campaign, generate_drafts
-from .group_context_messages import try_insert_context_message
+from .group_listener_context_writer import insert_context_snapshots
 from .developer_apps import credentials_for_account
-from .required_channel_prompts import apply_required_channel_prompt_admission
-from .source_media import ensure_source_media_asset
-from .tenant_learning_samples import GROUP_CHAT_SCENE, record_group_learning_sample as record_tenant_group_learning_sample
+from .tenant_learning_samples import GROUP_CHAT_SCENE
 
 
 def validate_listener_accounts(session: Session, group: TgGroup, account_ids: list[int]) -> list[TgGroupAccount]:
@@ -274,27 +272,22 @@ def collect_group_context(
     create_source_media: bool = False,
     learning_scene: str | None = GROUP_CHAT_SCENE,
 ) -> int:
-    stmt = select(TgGroupAccount).where(
-        TgGroupAccount.tenant_id == group.tenant_id,
-        TgGroupAccount.group_id == group.id,
-    )
-    if account_ids is None:
-        stmt = stmt.where(TgGroupAccount.is_listener.is_(True))
-    else:
-        stmt = stmt.where(TgGroupAccount.account_id.in_(list(dict.fromkeys(account_ids))))
-    listener_links = list(session.scalars(stmt.order_by(TgGroupAccount.id.asc())))
+    listener_links = _listener_context_links(session, group, account_ids)
     if not listener_links:
         return 0
     ignored_sender_identity = _listener_ignored_sender_identity(session, group)
+    invalid_listener_errors: list[str] = []
+    usable_listener_count = 0
     inserted = 0
     for link in listener_links:
         account = session.get(TgAccount, link.account_id)
-        if not account or account.deleted_at is not None or account.status != AccountStatus.ACTIVE.value:
+        policy_error = _listener_context_account_error(account)
+        if policy_error == "account_unavailable":
             continue
-        try:
-            assert_account_action_allowed(account, account.pool, "listener")
-        except ValueError:
+        if policy_error:
+            invalid_listener_errors.append(f"{account.id}:{policy_error}")
             continue
+        usable_listener_count += 1
         credentials = credentials_for_account(session, account)
         snapshots = gateway.fetch_group_messages(
             account.id,
@@ -303,61 +296,41 @@ def collect_group_context(
             credentials,
             limit=group.listener_context_limit,
         )
-        for snapshot in snapshots:
-            content = str(snapshot.content or "").strip()
-            if not content:
-                continue
-            if learning_scene:
-                record_tenant_group_learning_sample(session, group, snapshot)
-            if _is_ignored_sender(snapshot, ignored_sender_identity):
-                continue
-            exists = session.scalar(
-                select(GroupContextMessage.id).where(
-                    GroupContextMessage.group_id == group.id,
-                    GroupContextMessage.remote_message_id == str(snapshot.remote_message_id),
-                )
-            )
-            if exists:
-                continue
-            message = GroupContextMessage(
-                tenant_id=group.tenant_id,
-                group_id=group.id,
-                listener_account_id=account.id,
-                sender_peer_id=str(snapshot.sender_peer_id or ""),
-                sender_name=str(snapshot.sender_name or "真人用户"),
-                sender_username=str(getattr(snapshot, "sender_username", "") or "").lstrip("@"),
-                is_bot=bool(getattr(snapshot, "is_bot", False)),
-                sender_role=str(getattr(snapshot, "sender_role", "") or "member"),
-                content=content[:4000],
-                message_type=snapshot.message_type,
-                remote_message_id=str(snapshot.remote_message_id),
-                sent_at=snapshot.sent_at,
-            )
-            if not try_insert_context_message(session, message):
-                continue
-            apply_required_channel_prompt_admission(
-                session,
-                group,
-                content,
-                remote_message_id=str(snapshot.remote_message_id),
-            )
-            if create_source_media and snapshot.message_type != "text":
-                ensure_source_media_asset(
-                    session,
-                    tenant_id=group.tenant_id,
-                    source_group_id=group.id,
-                    listener_account_id=account.id,
-                    source_peer_id=group.tg_peer_id,
-                    source_message_id=str(snapshot.remote_message_id),
-                    source_media_group_id=str(getattr(snapshot, "media_group_id", "") or ""),
-                    media_group_index=int(getattr(snapshot, "media_group_index", 0) or 0),
-                    media_group_total=int(getattr(snapshot, "media_group_total", 1) or 1),
-                    media_type=str(getattr(snapshot, "media_type", "") or snapshot.message_type or "media"),
-                    caption=str(getattr(snapshot, "caption", "") or content),
-                    media_fingerprint=str(getattr(snapshot, "media_fingerprint", "") or ""),
-                )
-            inserted += 1
+        inserted += insert_context_snapshots(
+            session,
+            group,
+            account,
+            snapshots,
+            ignored_sender=lambda snapshot: _is_ignored_sender(snapshot, ignored_sender_identity),
+            create_source_media=create_source_media,
+            learning_scene=learning_scene,
+        )
+    if invalid_listener_errors and usable_listener_count == 0:
+        group.listener_last_error = "监听账号用途不允许：" + "；".join(invalid_listener_errors[:3])
+        raise ValueError(group.listener_last_error)
     return inserted
+
+
+def _listener_context_links(session: Session, group: TgGroup, account_ids: list[int] | None) -> list[TgGroupAccount]:
+    stmt = select(TgGroupAccount).where(
+        TgGroupAccount.tenant_id == group.tenant_id,
+        TgGroupAccount.group_id == group.id,
+    )
+    if account_ids is None:
+        stmt = stmt.where(TgGroupAccount.is_listener.is_(True))
+    else:
+        stmt = stmt.where(TgGroupAccount.account_id.in_(list(dict.fromkeys(account_ids))))
+    return list(session.scalars(stmt.order_by(TgGroupAccount.id.asc())))
+
+
+def _listener_context_account_error(account: TgAccount | None) -> str:
+    if not account or account.deleted_at is not None or account.status != AccountStatus.ACTIVE.value:
+        return "account_unavailable"
+    try:
+        assert_account_action_allowed(account, account.pool, "listener")
+    except ValueError as exc:
+        return str(exc)
+    return ""
 
 
 def trigger_listener_auto_reply(session: Session, group: TgGroup) -> int:

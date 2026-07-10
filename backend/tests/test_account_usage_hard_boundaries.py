@@ -252,8 +252,10 @@ def test_collect_group_context_skips_misconfigured_dedicated_listener(session: S
     monkeypatch.setattr("app.services.group_listeners.credentials_for_account", lambda *_args, **_kwargs: object())
     monkeypatch.setattr("app.services.group_listeners.gateway.fetch_group_messages", fake_fetch)
 
-    assert collect_group_context(session, group) == 0
+    with pytest.raises(ValueError, match="监听账号用途不允许"):
+        collect_group_context(session, group)
     assert called_ids == []
+    assert "监听账号用途不允许" in group.listener_last_error
 
 
 def test_switch_group_listener_rejects_dedicated_backup_account(session: Session) -> None:

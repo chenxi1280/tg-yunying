@@ -58,6 +58,32 @@ def _online_state(account_id: int, now: datetime) -> TgAccountOnlineState:
     )
 
 
+def _ensure_normal_pool(session: Session) -> None:
+    if session.get(AccountPool, 1) is None:
+        session.add(AccountPool(id=1, tenant_id=1, name="普通账号组", pool_purpose="normal", is_default=True))
+        session.flush()
+
+
+def _normal_account(
+    account_id: int,
+    *,
+    status: str = AccountStatus.ACTIVE.value,
+    session_ciphertext: str | None = None,
+    health_score: int = 90,
+) -> TgAccount:
+    return TgAccount(
+        id=account_id,
+        tenant_id=1,
+        pool_id=1,
+        account_identity="normal",
+        display_name=f"账号{account_id}",
+        phone_masked=str(account_id),
+        status=status,
+        health_score=health_score,
+        session_ciphertext=session_ciphertext,
+    )
+
+
 def _ai_group_send_gate_payload(
     session: Session,
     now: datetime,
@@ -4181,8 +4207,9 @@ def test_group_ai_chat_generation_uses_healthy_provider_and_model_override(monke
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
+        _ensure_normal_pool(session)
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="MiMo 活跃群", auth_status="已授权运营"))
-        session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status=AccountStatus.ACTIVE.value, session_ciphertext="session-101"))
+        session.add(_normal_account(101, session_ciphertext="session-101"))
         session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=101, can_send=True))
         session.add(
             AiProvider(
@@ -4290,8 +4317,9 @@ def test_group_ai_chat_prompt_adds_mask_theme_anchor_guidance(monkeypatch):
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
+        _ensure_normal_pool(session)
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="夜场活跃群", auth_status="已授权运营"))
-        session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status=AccountStatus.ACTIVE.value, session_ciphertext="session-101"))
+        session.add(_normal_account(101, session_ciphertext="session-101"))
         session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=101, can_send=True))
         session.add(
             AiProvider(
@@ -4359,8 +4387,9 @@ def test_group_ai_chat_repairs_mask_theme_candidate_before_voice_gate(monkeypatc
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
+        _ensure_normal_pool(session)
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="夜场活跃群", auth_status="已授权运营"))
-        session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status=AccountStatus.ACTIVE.value, session_ciphertext="session-101"))
+        session.add(_normal_account(101, session_ciphertext="session-101"))
         session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=101, can_send=True))
         session.add(
             AiProvider(
@@ -4415,9 +4444,10 @@ def test_group_ai_chat_keeps_partial_normal_candidates(monkeypatch):
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
+        _ensure_normal_pool(session)
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="部分候选群", auth_status="已授权运营"))
         for account_id in [101, 102]:
-            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status=AccountStatus.ACTIVE.value, session_ciphertext=f"session-{account_id}"))
+            session.add(_normal_account(account_id, session_ciphertext=f"session-{account_id}"))
             session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=account_id, can_send=True))
         session.add(
             AiProvider(
@@ -4489,8 +4519,9 @@ def test_group_ai_chat_rotates_mimo_provider_after_quota_exhausted(monkeypatch):
 
 def _add_mimo_quota_rotation_task(session: Session) -> None:
     session.add(Tenant(id=1, name="默认运营空间"))
+    _ensure_normal_pool(session)
     session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="MiMo 备用群", auth_status="已授权运营"))
-    session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status=AccountStatus.ACTIVE.value, session_ciphertext="session-101"))
+    session.add(_normal_account(101, session_ciphertext="session-101"))
     session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=101, can_send=True))
     provider_rows = [
         (1, "MiMo exhausted", "https://api.xiaomimimo.com/v1", "mimo-v2.5"),
@@ -4616,8 +4647,9 @@ def test_group_ai_chat_model_override_selects_matching_deepseek_provider(monkeyp
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
+        _ensure_normal_pool(session)
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="DeepSeek 活跃群", auth_status="已授权运营"))
-        session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status=AccountStatus.ACTIVE.value, session_ciphertext="session-101"))
+        session.add(_normal_account(101, session_ciphertext="session-101"))
         session.add(_online_state(101, datetime(2026, 5, 11, 10, 0, 0)))
         session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=101, can_send=True))
         session.add(
@@ -4715,8 +4747,9 @@ def test_group_ai_chat_model_override_selects_matching_minimax_provider(monkeypa
 
 def _add_minimax_model_override_task(session: Session) -> None:
     session.add(Tenant(id=1, name="默认运营空间"))
+    _ensure_normal_pool(session)
     session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="Minimax 活跃群", auth_status="已授权运营"))
-    session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status=AccountStatus.ACTIVE.value, session_ciphertext="session-101"))
+    session.add(_normal_account(101, session_ciphertext="session-101"))
     session.add(_online_state(101, datetime(2026, 5, 11, 10, 0, 0)))
     session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=101, can_send=True))
     provider_rows = [
@@ -4889,8 +4922,9 @@ def test_group_ai_chat_waits_when_no_new_real_context(monkeypatch):
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
+        _ensure_normal_pool(session)
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="新群", auth_status="已授权运营", topic_direction="校园日常"))
-        session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status=AccountStatus.ACTIVE.value, session_ciphertext="session-101"))
+        session.add(_normal_account(101, session_ciphertext="session-101"))
         session.add(_online_state(101, datetime(2026, 5, 11, 10, 0, 0)))
         session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=101, can_send=True))
         session.add(
@@ -5336,9 +5370,10 @@ def test_group_ai_chat_dedupes_against_pending_planned_messages(monkeypatch):
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
+        _ensure_normal_pool(session)
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="新群", auth_status="已授权运营", topic_direction="群内接话"))
         for account_id in [101, 102, 103]:
-            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线", session_ciphertext=f"session-{account_id}"))
+            session.add(_normal_account(account_id, status="在线", session_ciphertext=f"session-{account_id}"))
             session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=account_id, can_send=True))
             session.add(_online_state(account_id, now_value))
         session.add(
@@ -5405,9 +5440,10 @@ def test_group_ai_chat_drops_repeated_fixed_shell_phrases(monkeypatch):
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
+        _ensure_normal_pool(session)
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="新群", auth_status="已授权运营", topic_direction="群内接话"))
         for account_id in [101, 102, 103]:
-            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线", session_ciphertext=f"session-{account_id}"))
+            session.add(_normal_account(account_id, status="在线", session_ciphertext=f"session-{account_id}"))
             session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=account_id, can_send=True))
             session.add(_online_state(account_id, now_value))
         session.add(

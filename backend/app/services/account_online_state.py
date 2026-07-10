@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.models import AccountStatus, Task, TgAccount, TgAccountOnlineState, TgGroup, TgGroupAccount
 from app.services._common import _now
-from app.services.account_usage_policy import apply_operational_account_filters
+from app.services.account_usage_policy import apply_consistent_enabled_account_filters, apply_operational_account_filters
 from app.services.account_online_probe import probe_due_online_states, stale_deadline_for_state
 from app.timezone import as_beijing
 
@@ -348,7 +348,7 @@ def _active_session_accounts(session: Session, tenant_id: int) -> list[TgAccount
 
 
 def _keepalive_session_accounts(session: Session, tenant_id: int) -> list[TgAccount]:
-    stmt = apply_operational_account_filters(
+    stmt = apply_consistent_enabled_account_filters(
         select(TgAccount).where(
             TgAccount.tenant_id == tenant_id,
             TgAccount.deleted_at.is_(None),

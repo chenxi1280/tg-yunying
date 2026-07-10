@@ -666,30 +666,7 @@ def validate_group_task_policy(session: Session, task: MessageTask, group: TgGro
 
 def choose_account(session: Session, task: MessageTask) -> tuple[TgAccount | None, str | None, str | None]:
     if task.campaign_id is None and task.target_type in {"private", "group", "channel"} and (task.preferred_account_id or task.account_id):
-        fixed_account_id = task.account_id or task.preferred_account_id
-        account = session.get(TgAccount, fixed_account_id) if fixed_account_id else None
-        if not account or account.deleted_at is not None or account.tenant_id != task.tenant_id or account.status != AccountStatus.ACTIVE.value:
-            return None, FailureType.ACCOUNT_UNAVAILABLE.value, "账号不可用"
-        usage_error = _message_send_usage_error(session, account)
-        if usage_error:
-            return None, FailureType.ACCOUNT_UNAVAILABLE.value, usage_error
-        if task.group_id:
-            group = session.get(TgGroup, task.group_id)
-            if not group:
-                return None, FailureType.GROUP_PERMISSION_DENIED.value, "群不存在"
-            failure_type, failure_detail = validate_group_task_policy(session, task, group)
-            if failure_type:
-                return None, failure_type, failure_detail
-            link = session.scalar(
-                select(TgGroupAccount).where(
-                    TgGroupAccount.group_id == task.group_id,
-                    TgGroupAccount.account_id == account.id,
-                    TgGroupAccount.can_send.is_(True),
-                )
-            )
-            if not link:
-                return None, FailureType.ACCOUNT_UNAVAILABLE.value, "该账号不可向此群发送"
-        return account, None, None
+        return _fixed_message_account(session, task)
     group = session.get(TgGroup, task.group_id)
     if not group or group.auth_status != GroupAuthStatus.AUTHORIZED.value:
         return None, FailureType.GROUP_PERMISSION_DENIED.value, "群未授权运营"
@@ -704,33 +681,15 @@ def choose_account(session: Session, task: MessageTask) -> tuple[TgAccount | Non
     allowed_account_ids = selected.get(str(task.group_id), [])
     now_value = _as_utc(_now())
 
-    if task.preferred_account_id:
-        preferred_allowed = not allowed_account_ids or task.preferred_account_id in allowed_account_ids
-        preferred = session.get(TgAccount, task.preferred_account_id) if preferred_allowed else None
-        link = (
-            session.scalar(
-                select(TgGroupAccount).where(
-                    TgGroupAccount.group_id == task.group_id,
-                    TgGroupAccount.account_id == task.preferred_account_id,
-                    TgGroupAccount.can_send.is_(True),
-                )
-            )
-            if preferred
-            else None
-        )
-        preferred_usable = (
-            preferred
-            and link
-            and preferred.deleted_at is None
-            and preferred.tenant_id == task.tenant_id
-            and preferred.status == AccountStatus.ACTIVE.value
-            and not _message_send_usage_error(session, preferred)
-        )
-        if preferred_usable:
-            if preferred.developer_app and preferred.developer_app.credentials_version > preferred.developer_app_version:
-                preferred.status = AccountStatus.NEED_RELOGIN.value
-            elif not link.last_sent_at or (_as_utc(link.last_sent_at) + timedelta(seconds=group.account_cooldown_seconds)) <= now_value:
-                return preferred, None, None
+    preferred = _preferred_message_account(
+        session,
+        task,
+        group=group,
+        allowed_account_ids=allowed_account_ids,
+        now_value=now_value,
+    )
+    if preferred:
+        return preferred, None, None
 
     stmt = apply_operational_account_filters(
         select(TgAccount)
@@ -760,6 +719,76 @@ def choose_account(session: Session, task: MessageTask) -> tuple[TgAccount | Non
                 continue
         return account, None, None
     return None, FailureType.ACCOUNT_UNAVAILABLE.value, "没有可用于该群的在线账号，或账号仍处于冷却中"
+
+
+def _fixed_message_account(session: Session, task: MessageTask) -> tuple[TgAccount | None, str | None, str | None]:
+    fixed_account_id = task.account_id or task.preferred_account_id
+    account = session.get(TgAccount, fixed_account_id) if fixed_account_id else None
+    if not account or account.deleted_at is not None or account.tenant_id != task.tenant_id or account.status != AccountStatus.ACTIVE.value:
+        return None, FailureType.ACCOUNT_UNAVAILABLE.value, "账号不可用"
+    usage_error = _message_send_usage_error(session, account)
+    if usage_error:
+        return None, FailureType.ACCOUNT_UNAVAILABLE.value, usage_error
+    if task.group_id:
+        failure = _fixed_group_account_failure(session, task, account)
+        if failure:
+            return None, failure[0], failure[1]
+    return account, None, None
+
+
+def _fixed_group_account_failure(session: Session, task: MessageTask, account: TgAccount) -> tuple[str, str] | None:
+    group = session.get(TgGroup, task.group_id)
+    if not group:
+        return FailureType.GROUP_PERMISSION_DENIED.value, "群不存在"
+    failure_type, failure_detail = validate_group_task_policy(session, task, group)
+    if failure_type:
+        return failure_type, failure_detail or ""
+    link = session.scalar(
+        select(TgGroupAccount).where(
+            TgGroupAccount.group_id == task.group_id,
+            TgGroupAccount.account_id == account.id,
+            TgGroupAccount.can_send.is_(True),
+        )
+    )
+    return None if link else (FailureType.ACCOUNT_UNAVAILABLE.value, "该账号不可向此群发送")
+
+
+def _preferred_message_account(
+    session: Session,
+    task: MessageTask,
+    *,
+    group: TgGroup,
+    allowed_account_ids: list[int],
+    now_value: datetime,
+) -> TgAccount | None:
+    if not task.preferred_account_id:
+        return None
+    if allowed_account_ids and task.preferred_account_id not in allowed_account_ids:
+        return None
+    preferred = session.get(TgAccount, task.preferred_account_id)
+    link = _preferred_group_link(session, task, preferred)
+    if not preferred or not link or _message_send_usage_error(session, preferred):
+        return None
+    if preferred.deleted_at is not None or preferred.tenant_id != task.tenant_id or preferred.status != AccountStatus.ACTIVE.value:
+        return None
+    if preferred.developer_app and preferred.developer_app.credentials_version > preferred.developer_app_version:
+        preferred.status = AccountStatus.NEED_RELOGIN.value
+        return None
+    if link.last_sent_at and (_as_utc(link.last_sent_at) + timedelta(seconds=group.account_cooldown_seconds)) > now_value:
+        return None
+    return preferred
+
+
+def _preferred_group_link(session: Session, task: MessageTask, account: TgAccount | None) -> TgGroupAccount | None:
+    if not account:
+        return None
+    return session.scalar(
+        select(TgGroupAccount).where(
+            TgGroupAccount.group_id == task.group_id,
+            TgGroupAccount.account_id == account.id,
+            TgGroupAccount.can_send.is_(True),
+        )
+    )
 
 
 def _message_send_usage_error(session: Session, account: TgAccount) -> str:
