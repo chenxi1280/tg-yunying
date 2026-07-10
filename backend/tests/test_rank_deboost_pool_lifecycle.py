@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
-from fastapi import HTTPException
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
-from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 
+from app.api.routers.account_pools import router as account_pools_router
+from app.auth import create_admin_access_token
 from app.database import Base
-from app.auth import CurrentUser
-from app.api.routers.account_pools import post_rank_deboost_account_pool
+from app.database import get_session
 from app.models import (
     AccountGroupProxyBinding,
     AccountPool,
@@ -23,7 +26,8 @@ from app.models import (
     Tenant,
     TgAccount,
 )
-from app.schemas import AccountPoolUpdate, RankDeboostAccountPoolCreate, TgAccountCreate
+from app.permission_middleware import permission_middleware
+from app.schemas import AccountPoolUpdate, TgAccountCreate
 from app.security import encrypt_secret
 from app.services.accounts import create_account
 from app.services.account_pools import (
@@ -37,7 +41,6 @@ from app.services.account_pools import (
 
 
 pytestmark = pytest.mark.no_postgres
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.fixture
@@ -60,6 +63,34 @@ def session() -> Session:
         yield db
 
 
+@pytest.fixture
+def http_client() -> tuple[TestClient, dict[str, str]]:
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+        future=True,
+    )
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine, future=True)
+    with session_factory() as db:
+        db.add(Tenant(id=1, name="默认运营空间"))
+        db.add(AccountPool(id=1, tenant_id=1, name="普通池", is_default=True))
+        db.commit()
+
+    def override_session():
+        with session_factory() as db:
+            yield db
+
+    app = FastAPI()
+    app.middleware("http")(permission_middleware)
+    app.include_router(account_pools_router)
+    app.dependency_overrides[get_session] = override_session
+    headers = {"Authorization": f"Bearer {create_admin_access_token()}"}
+    with TestClient(app, raise_server_exceptions=False) as client:
+        yield client, headers
+
+
 def _rank_pool(session: Session, name: str = "降权专用一组") -> AccountPool:
     return create_rank_deboost_account_pool(
         session,
@@ -67,30 +98,6 @@ def _rank_pool(session: Session, name: str = "降权专用一组") -> AccountPoo
         name=name,
         description="灰度账号",
         actor="tester",
-    )
-
-
-def _user() -> CurrentUser:
-    return CurrentUser(
-        id=1,
-        tenant_id=1,
-        name="admin",
-        role="系统管理员",
-        role_template="admin",
-        email="admin@example.com",
-        phone=None,
-        tenant_name="默认运营空间",
-        subscription_status="active",
-        subscription_started_at=None,
-        subscription_expires_at=None,
-        subscription_days_remaining=0,
-        can_use_core_features=True,
-        token_balance=0,
-        token_quota_total=0,
-        menu_permissions=[],
-        permissions=["*"],
-        permission_version=1,
-        is_active=True,
     )
 
 
@@ -184,22 +191,85 @@ def test_default_rank_pool_rejects_duplicate_system_rows(session: Session) -> No
         ensure_rank_deboost_account_pool(session, 1)
 
 
-def test_router_supports_custom_body_and_explicit_default_endpoint() -> None:
-    source = (PROJECT_ROOT / "backend/app/api/routers/account_pools.py").read_text()
+def test_rank_pool_http_body_creates_custom_pool(http_client) -> None:
+    client, headers = http_client
 
-    assert "RankDeboostAccountPoolCreate | None" in source
-    assert "create_rank_deboost_account_pool" in source
-    assert '"/api/account-pools/rank-deboost/default"' in source
+    response = client.post(
+        "/api/account-pools/rank-deboost",
+        headers=headers,
+        json={"tenant_id": 1, "name": "HTTP 自定义降权组", "description": "灰度组"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["name"] == "HTTP 自定义降权组"
+    assert response.json()["is_system"] is False
+    assert response.json()["system_key"] == ""
 
 
-def test_custom_rank_pool_route_maps_duplicate_name_to_bad_request(session: Session) -> None:
-    payload = RankDeboostAccountPoolCreate(name="路由重复名")
-    post_rank_deboost_account_pool(payload, None, session, _user())
+def test_rank_pool_http_default_routes_are_idempotent(http_client) -> None:
+    client, headers = http_client
 
-    with pytest.raises(HTTPException) as exc_info:
-        post_rank_deboost_account_pool(payload, None, session, _user())
+    legacy_first = client.post("/api/account-pools/rank-deboost", headers=headers)
+    legacy_second = client.post("/api/account-pools/rank-deboost", headers=headers)
+    explicit = client.post("/api/account-pools/rank-deboost/default", headers=headers)
 
-    assert exc_info.value.status_code == 400
+    assert legacy_first.status_code == 200
+    assert legacy_first.json()["id"] == legacy_second.json()["id"] == explicit.json()["id"]
+    assert explicit.json()["is_system"] is True
+    assert explicit.json()["system_key"] == "rank_deboost"
+
+
+def test_rank_pool_http_duplicate_create_and_rename_return_400(http_client) -> None:
+    client, headers = http_client
+    first = client.post("/api/account-pools/rank-deboost", headers=headers, json={"name": "重复名称"})
+    second = client.post("/api/account-pools/rank-deboost", headers=headers, json={"name": "待重命名"})
+
+    duplicate = client.post("/api/account-pools/rank-deboost", headers=headers, json={"name": "重复名称"})
+    renamed = client.patch(
+        f"/api/account-pools/{second.json()['id']}",
+        headers=headers,
+        json={"name": "重复名称"},
+    )
+
+    assert first.status_code == second.status_code == 200
+    assert duplicate.status_code == 400
+    assert renamed.status_code == 400
+
+
+def test_rank_pool_http_requires_permission_dependency(http_client) -> None:
+    client, _headers = http_client
+
+    response = client.post("/api/account-pools/rank-deboost", json={"name": "未授权"})
+
+    assert response.status_code == 401
+
+
+def test_rank_pool_create_integrity_error_rolls_back(session: Session, monkeypatch) -> None:
+    original_flush = session.flush
+
+    def fail_pool_flush(*args, **kwargs) -> None:
+        if any(isinstance(item, AccountPool) for item in session.new):
+            raise IntegrityError("insert account_pools", {}, RuntimeError("duplicate"))
+        original_flush(*args, **kwargs)
+
+    monkeypatch.setattr(session, "flush", fail_pool_flush)
+    with pytest.raises(ValueError, match="同租户账号组名称必须唯一"):
+        _rank_pool(session, "并发创建")
+
+    assert session.in_transaction() is False
+
+
+def test_rank_pool_update_integrity_error_rolls_back(session: Session, monkeypatch) -> None:
+    pool = _rank_pool(session, "并发重命名")
+
+    def fail_commit() -> None:
+        raise IntegrityError("update account_pools", {}, RuntimeError("duplicate"))
+
+    monkeypatch.setattr(session, "commit", fail_commit)
+    with pytest.raises(ValueError, match="同租户账号组名称必须唯一"):
+        update_account_pool(session, pool.id, AccountPoolUpdate(name="并发冲突"), "tester")
+
+    assert session.in_transaction() is False
 
 
 def test_rank_pool_can_be_disabled_without_changing_accounts(session: Session) -> None:
@@ -312,7 +382,7 @@ def test_normal_to_rank_cancels_only_unstarted_ordinary_work(session: Session) -
 
     assert (moved.pool_id, moved.account_identity) == (rank_pool.id, "rank_deboost")
     assert session.get(Action, "ordinary-pending").status == "skipped"
-    assert session.get(Action, "ordinary-claiming").status == "skipped"
+    assert session.get(Action, "ordinary-claiming").status == "claiming"
     assert session.get(Action, "ordinary-retry").status == "skipped"
     assert session.get(Action, "ordinary-executing").status == "executing"
     assert session.get(Action, "ordinary-success").status == "success"
@@ -331,7 +401,7 @@ def test_normal_to_rank_cancels_only_unstarted_ordinary_work(session: Session) -
         "usage": "rank_deboost",
         "previous_pool_id": normal_pool.id,
         "target_pool_id": rank_pool.id,
-        "cancelled_actions": 3,
+        "cancelled_actions": 2,
         "cancelled_message_tasks": 3,
     }
 
@@ -355,7 +425,7 @@ def test_rank_to_normal_cancels_only_unstarted_rank_actions(session: Session) ->
 
     assert (moved.pool_id, moved.account_identity) == (1, "normal")
     assert session.get(Action, "rank-pending").status == "skipped"
-    assert session.get(Action, "rank-claiming").status == "skipped"
+    assert session.get(Action, "rank-claiming").status == "claiming"
     assert session.get(Action, "rank-retry").status == "skipped"
     assert session.get(Action, "rank-executing").status == "executing"
     assert session.get(Action, "ordinary-pending").status == "pending"

@@ -11,7 +11,7 @@ from ._common import audit
 from .account_usage_policy import AccountUsageSyncSummary, sync_account_usage
 from .dedicated_account_pools import RANK_DEBOOST_POOL_KEY
 
-UNSTARTED_ACTION_STATUSES = frozenset({"pending", "claiming", "retryable_failed"})
+UNSTARTED_ACTION_STATUSES = frozenset({"pending", "retryable_failed"})
 UNSTARTED_MESSAGE_STATUSES = frozenset(
     {
         TaskStatus.DRAFT.value,

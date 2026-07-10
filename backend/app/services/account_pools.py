@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -21,6 +22,7 @@ from .account_pool_usage_transition import locked_account_and_pool, migrate_acco
 from .dedicated_account_pools import (
     CODE_RECEIVER_POOL_KEY,
     RANK_DEBOOST_POOL_KEY,
+    assert_unique_account_pool_name,
     create_rank_deboost_account_pool,
     ensure_code_receiver_account_pool,
     ensure_rank_deboost_account_pool,
@@ -344,7 +346,9 @@ def update_account_pool(session: Session, pool_id: int, payload: AccountPoolUpda
     data = payload.model_dump(exclude_unset=True)
     _validate_pool_update_lifecycle(pool, data)
     if data.get("name") is not None:
-        pool.name = data["name"].strip()
+        name = data["name"].strip()
+        assert_unique_account_pool_name(session, pool.tenant_id, name, exclude_pool_id=pool.id)
+        pool.name = name
     if data.get("description") is not None:
         pool.description = data["description"].strip()
     if data.get("is_default") is not None:
@@ -362,7 +366,11 @@ def update_account_pool(session: Session, pool_id: int, payload: AccountPoolUpda
         pool.disable_reason = str(data["disable_reason"]).strip()
     pool.updated_at = _now()
     audit(session, tenant_id=pool.tenant_id, actor=actor, action="更新账号池", target_type="account_pool", target_id=str(pool.id))
-    session.commit()
+    try:
+        session.commit()
+    except IntegrityError as exc:
+        session.rollback()
+        raise ValueError("同租户账号组名称必须唯一") from exc
     session.refresh(pool)
     return account_pool_snapshot(session, pool)
 

@@ -12,8 +12,6 @@ SQLite 内存数据库 + 真实模型。
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -32,7 +30,6 @@ from app.services.task_center.account_pool import select_task_accounts
 
 
 pytestmark = pytest.mark.no_postgres
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.fixture
@@ -72,13 +69,6 @@ def test_create_rank_deboost_pool_succeeds(session: Session) -> None:
     refreshed = session.get(AccountPool, pool.id)
     assert refreshed is not None
     assert refreshed.pool_purpose == RANK_DEBOOST_POOL_KEY
-
-
-def test_account_pool_router_exposes_rank_deboost_creation_entrypoint() -> None:
-    """前端降权任务向导依赖可自助创建 rank_deboost 账号分组。"""
-    router_source = (PROJECT_ROOT / "backend/app/api/routers/account_pools.py").read_text()
-    assert '"/api/account-pools/rank-deboost"' in router_source
-    assert "ensure_rank_deboost_account_pool" in router_source
 
 
 def test_ensure_rank_deboost_account_pool_creates_system_pool_once(session: Session) -> None:

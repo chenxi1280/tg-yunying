@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import AccountPool, Tenant
@@ -58,23 +59,26 @@ def create_rank_deboost_account_pool(
     description: str = "",
     actor: str = "",
 ) -> AccountPool:
-    _lock_tenant(session, tenant_id)
-    pool_name = (name or RANK_DEBOOST_SYSTEM_POOL_NAME).strip()
-    _validate_unique_pool_name(session, tenant_id, pool_name)
-    pool = AccountPool(
-        tenant_id=tenant_id,
-        name=pool_name,
-        description=description.strip(),
-        pool_purpose=RANK_DEBOOST_POOL_KEY,
-        is_system=False,
-        system_key="",
-    )
-    session.add(pool)
-    session.flush()
-    _audit_rank_pool_creation(session, pool, actor)
-    session.commit()
-    session.refresh(pool)
-    return pool
+    try:
+        _lock_tenant(session, tenant_id)
+        pool_name = (name or RANK_DEBOOST_SYSTEM_POOL_NAME).strip()
+        assert_unique_account_pool_name(session, tenant_id, pool_name)
+        pool = AccountPool(
+            tenant_id=tenant_id,
+            name=pool_name,
+            description=description.strip(),
+            pool_purpose=RANK_DEBOOST_POOL_KEY,
+            is_system=False,
+            system_key="",
+        )
+        session.add(pool)
+        session.flush()
+        _audit_rank_pool_creation(session, pool, actor)
+        session.commit()
+        session.refresh(pool)
+        return pool
+    except IntegrityError as exc:
+        _raise_pool_name_conflict(session, exc)
 
 
 def validate_account_pool_admission(pool: AccountPool) -> None:
@@ -150,17 +154,29 @@ def _available_system_pool_name(session: Session, tenant_id: int) -> str:
     return f"{RANK_DEBOOST_SYSTEM_POOL_NAME}-{suffix}"
 
 
-def _validate_unique_pool_name(session: Session, tenant_id: int, name: str) -> None:
+def assert_unique_account_pool_name(
+    session: Session,
+    tenant_id: int,
+    name: str,
+    *,
+    exclude_pool_id: int | None = None,
+) -> None:
     if not name:
         raise ValueError("account pool name is required")
-    existing_id = session.scalar(
-        select(AccountPool.id).where(
-            AccountPool.tenant_id == tenant_id,
-            AccountPool.name == name,
-        )
+    stmt = select(AccountPool.id).where(
+        AccountPool.tenant_id == tenant_id,
+        AccountPool.name == name,
     )
+    if exclude_pool_id is not None:
+        stmt = stmt.where(AccountPool.id != exclude_pool_id)
+    existing_id = session.scalar(stmt)
     if existing_id:
         raise ValueError("同租户账号组名称必须唯一")
+
+
+def _raise_pool_name_conflict(session: Session, exc: IntegrityError):
+    session.rollback()
+    raise ValueError("同租户账号组名称必须唯一") from exc
 
 
 def _audit_rank_pool_creation(session: Session, pool: AccountPool, actor: str) -> None:
@@ -177,6 +193,7 @@ def _audit_rank_pool_creation(session: Session, pool: AccountPool, actor: str) -
 __all__ = [
     "CODE_RECEIVER_POOL_KEY",
     "RANK_DEBOOST_POOL_KEY",
+    "assert_unique_account_pool_name",
     "create_rank_deboost_account_pool",
     "ensure_code_receiver_account_pool",
     "ensure_rank_deboost_account_pool",
