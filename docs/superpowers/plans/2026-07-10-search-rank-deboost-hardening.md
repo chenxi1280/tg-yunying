@@ -180,25 +180,25 @@ git commit -m "feat: enforce dedicated account usage boundaries"
 - Test: `backend/tests/test_search_rank_deboost_group_proxy_binding.py`
 - Test: `backend/tests/test_rank_deboost_runtime_proxy_binding.py`
 
-- [ ] **Step 1: Write failing binding tests**
+- [x] **Step 1: Write failing binding tests**
 
 Test idempotent reuse of the same active binding, explicit switch increments generation, task stop/delete leaves binding active, unbind is rejected while running/paused tasks reference the pool, raw VMess/VLESS/SS nodes without materialized `runtime_proxy_id` are rejected, and SOCKS/HTTP runtime proxies are accepted only when enabled and reachable by validation.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run the two binding files. Expected: current service rejects reuse, lacks runtime proxy and allows task-owned lifecycle assumptions.
 
-- [ ] **Step 3: Implement binding asset APIs**
+- [x] **Step 3: Implement binding asset APIs**
 
 `PUT /api/account-pools/{pool_id}/rank-deboost-proxy-binding` accepts airport node and resolves a tenant-owned executable `AccountProxy`. Same node/runtime pair returns the existing binding. Switching unbinds the old row and creates generation + 1, then skips stale pending actions and pauses referencing rank tasks. `DELETE` checks running/paused references and never runs as a side effect of task stop/delete.
 
 分组出口观测必须使用独立的 `account_group_proxy_binding_id` 关联或显式 polymorphic scope；不得把分组绑定 ID 写入当前指向 `account_proxy_bindings.id` 的 `proxy_exit_ip_observations.proxy_binding_id`。节点独占检查必须由数据库锁/唯一约束串行化，不能只依赖先查后写。
 
-- [ ] **Step 4: Add fail-closed executable proxy guard**
+- [x] **Step 4: Add fail-closed executable proxy guard**
 
 Allowed protocols are `socks5`, `socks4`, `http`, `https`. Validate protocol, host, port, status and tenant. Never reinterpret VMess/VLESS/SS airport fields as SOCKS. Binding snapshots expose runtime proxy, current exit, probe timestamps, generation and reference count without returning credentials.
 
-- [ ] **Step 5: Verify GREEN and commit**
+- [x] **Step 5: Verify GREEN and commit**
 
 Run binding tests plus task stop/delete tests, then commit:
 
