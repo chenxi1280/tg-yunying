@@ -346,27 +346,37 @@ git commit -m "feat: expose rank deboost group workflows"
 - Modify: `.planning/search-rank-deboost-hardening/progress.md`
 - Test: all backend and frontend checks
 
-- [ ] **Step 1: Run focused rank suite**
+- [x] **Step 1: Run focused rank suite**
 
 Run all `backend/tests/test_search_rank_deboost_*.py`, account usage, pool lifecycle, binding, permission and task dataflow tests under the 60-second backend timeout. Expected: all pass.
 
-- [ ] **Step 2: Run full no-PostgreSQL backend suite**
+Result: `363 passed in 10.12s`.
+
+- [x] **Step 2: Run full no-PostgreSQL backend suite**
 
 Run: `cd backend && /usr/bin/perl -e 'alarm shift; exec @ARGV' 60 /Users/xida/PycharmProjects/tg-yunying/backend/.venv/bin/python -m pytest -q -m no_postgres`
 
 Expected: pass with only documented pre-existing warnings.
 
+Result: `1090 passed, 775 deselected, 5 warnings in 28.54s`. Initial strict usage / runtime proxy fixture failures were fixed without allowing dedicated accounts into ordinary tasks.
+
 - [ ] **Step 3: Run PostgreSQL-dependent migration/concurrency checks**
 
 Use the repository's configured test PostgreSQL when available. If unavailable, mark this evidence `blocked`, not passed; still validate migration SQL and SQLite behavior separately.
 
-- [ ] **Step 4: Run frontend build and diff checks**
+Result: blocked. Offline `alembic upgrade head --sql` is blocked by old migration `0002_developer_app_pool.py` calling `sa.inspect` on offline `MockConnection`; `tests/test_search_rank_deboost_postgres.py` is unavailable.
+
+- [x] **Step 4: Run frontend build and diff checks**
 
 Run `cd frontend && npm run build`, `git diff --check`, placeholder scan, and inspect no secret or generated `dist` file is staged.
 
-- [ ] **Step 5: Synchronize indexes and evidence status**
+Result: frontend build passed with only the existing Vite chunk size warning; `dist/` and temporary node_modules symlink were not staged. `git diff --check` passed after docs/code sync.
+
+- [x] **Step 5: Synchronize indexes and evidence status**
 
 Update structure/dataflow indexes with actual file names and route count. Record `qa_pass`, `postgres_concurrency_pass|blocked`, `production_unproven`; never write `production_fixed` without E4.
+
+Result: indexes and `.planning` evidence updated. Status is `focused_pass`, `full_no_postgres_pass`, `migration_sql_blocked`, `postgres_concurrency_blocked`, `production_unproven`.
 
 - [ ] **Step 6: Commit**
 
