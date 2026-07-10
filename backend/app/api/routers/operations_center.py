@@ -4,7 +4,7 @@ import csv
 import json
 from io import StringIO
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
@@ -192,8 +192,16 @@ def get_operation_center_overview(session: Session = Depends(get_session), curre
 
 
 @router.get("/api/operation-targets/runtime-summary", response_model=list[TargetRuntimeSummaryOut])
-def get_operation_target_runtime_summaries(session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
-    return list_target_runtime_summaries(session, current_user.tenant_id or 1)
+def get_operation_target_runtime_summaries(
+    target_ids: list[int] | None = Query(default=None),
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    selected_ids = None if target_ids is None else tuple(target_ids)
+    try:
+        return list_target_runtime_summaries(session, current_user.tenant_id or 1, selected_ids)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.get("/api/operation-issues", response_model=list[OperationIssueOut])

@@ -10,7 +10,7 @@ from app.auth import get_challenge_target
 from app.database import SessionLocal
 from app.main import app
 from app.integrations.telegram import ChannelCommentSnapshot, ChannelMessageSnapshot, DeveloperAppCredentials, GroupMessageSnapshot, GroupSnapshot, OperationResult, SendResult, VerificationCodeSnapshot
-from app.models import AccountStatus, Action, AiDraft, AiGroupMessageMemory, AiUsageLedger, AuditLog, Campaign, DeveloperAppHealthStatus, FailureType, GroupContextMessage, ListenerSourceState, ManualOperationRecord, Material, MessageFingerprint, MessageTask, OperationTarget, OperationTaskAttempt, ReviewQueue, SchedulingSetting, SourceMediaAsset, Task, TaskStatus, TelegramDeveloperApp, Tenant, TgAccount, TgAccountOnlineState, TgAccountProfileSyncRecord, TgAccountSyncRecord, TgGroup, TgGroupAccount, TgLoginFlow, VerificationTask
+from app.models import AccountStatus, Action, AiDraft, AiGroupMessageMemory, AiUsageLedger, AuditLog, Campaign, DeveloperAppHealthStatus, FailureType, GroupContextMessage, ListenerSourceState, ManualOperationRecord, Material, MessageFingerprint, MessageTask, OperationTarget, OperationTaskAttempt, ReviewQueue, SchedulingSetting, SourceMediaAsset, TargetRuntimeSummary, Task, TaskStatus, TelegramDeveloperApp, Tenant, TgAccount, TgAccountOnlineState, TgAccountProfileSyncRecord, TgAccountSyncRecord, TgGroup, TgGroupAccount, TgLoginFlow, VerificationTask
 from app.services._common import _now
 from app.services.notifications import NotificationResult
 from app.services.task_center.listener_runtime import reset_listener_runtime_cache
@@ -21,6 +21,8 @@ from tests.ai_group_voice_profile_fixtures import assume_default_ai_group_voice_
 
 
 _workspace_phone_suffix = 1000
+ROUTE_TARGET_COUNT = 23
+ROUTE_DEFAULT_PAGE_SIZE = 20
 
 
 @pytest.fixture(autouse=True)
@@ -6860,3 +6862,235 @@ def test_archive_async_and_extended_sync_types():
             assert {"health", "profile_pull"}.issubset({record["sync_type"] for record in sync_records})
     finally:
         object.__setattr__(settings, "tg_gateway_mode", original_mode)
+
+
+def _seed_route_accounts(session, token: str) -> tuple[TgAccount, TgAccount]:
+    account = TgAccount(
+        tenant_id=1,
+        display_name=f"route-account-{token}",
+        phone_masked=f"route-phone-{token}",
+        status=AccountStatus.ACTIVE.value,
+    )
+    other_account = TgAccount(
+        tenant_id=2,
+        display_name=f"route-other-account-{token}",
+        phone_masked=f"route-other-phone-{token}",
+        status=AccountStatus.ACTIVE.value,
+    )
+    session.add_all([account, other_account])
+    session.flush()
+    return account, other_account
+
+
+def _seed_route_targets(session, token: str) -> tuple[list[OperationTarget], list[TgGroup], OperationTarget]:
+    targets: list[OperationTarget] = []
+    groups: list[TgGroup] = []
+    for index in range(ROUTE_TARGET_COUNT):
+        peer_id = f"route-{token}-{index}"
+        target = OperationTarget(
+            tenant_id=1,
+            target_type="group",
+            tg_peer_id=peer_id,
+            title=f"route-page-{token}-{index:02d}",
+            can_send=True,
+            auth_status="已授权运营",
+        )
+        group = TgGroup(
+            tenant_id=1,
+            tg_peer_id=peer_id,
+            title=target.title,
+            can_send=True,
+            auth_status="已授权运营",
+            listener_enabled=index == 0,
+        )
+        session.add_all([target, group])
+        targets.append(target)
+        groups.append(group)
+    other_target = OperationTarget(
+        tenant_id=2,
+        target_type="group",
+        tg_peer_id=f"route-other-{token}",
+        title=f"route-page-{token}-other-tenant",
+        can_send=True,
+        auth_status="已授权运营",
+    )
+    session.add(other_target)
+    session.flush()
+    return targets, groups, other_target
+
+
+def _seed_operation_target_route_fixture() -> dict[str, object]:
+    token = uuid4().hex[:10]
+    with SessionLocal() as session:
+        if session.get(Tenant, 2) is None:
+            session.add(Tenant(id=2, name="路由隔离租户"))
+        account, other_account = _seed_route_accounts(session, token)
+        targets, groups, other_target = _seed_route_targets(session, token)
+        session.add(
+            TgGroupAccount(
+                tenant_id=1,
+                group_id=groups[0].id,
+                account_id=account.id,
+                can_send=True,
+                is_listener=True,
+            )
+        )
+        session.add_all(
+            [TargetRuntimeSummary(tenant_id=1, target_id=target.id) for target in targets[:3]]
+            + [TargetRuntimeSummary(tenant_id=2, target_id=other_target.id, status="failed")]
+        )
+        session.commit()
+        return {
+            "q": f"route-page-{token}",
+            "target_ids": [target.id for target in targets],
+            "linked_group_id": groups[0].id,
+            "account_id": account.id,
+            "other_account_id": other_account.id,
+            "other_target_id": other_target.id,
+        }
+
+
+def test_operation_target_page_route_applies_bounded_defaults_and_headers():
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        fixture = _seed_operation_target_route_fixture()
+        target_ids = fixture["target_ids"]
+
+        first_page = client.get(
+            "/api/operation-targets",
+            headers=headers,
+            params={"q": fixture["q"]},
+        )
+        assert first_page.status_code == 200, first_page.text
+        assert first_page.headers["x-total-count"] == "23"
+        assert first_page.headers["x-page"] == "1"
+        assert first_page.headers["x-page-size"] == "20"
+        assert [row["id"] for row in first_page.json()] == sorted(target_ids, reverse=True)[:20]
+
+        second_page = client.get(
+            "/api/operation-targets",
+            headers=headers,
+            params={"q": fixture["q"], "page": 2, "page_size": 5},
+        )
+        assert second_page.status_code == 200, second_page.text
+        assert second_page.headers["x-total-count"] == "23"
+        assert second_page.headers["x-page"] == "2"
+        assert second_page.headers["x-page-size"] == "5"
+        assert [row["id"] for row in second_page.json()] == sorted(target_ids, reverse=True)[5:10]
+
+
+def test_operation_target_page_route_supports_ids_linked_group_and_capability_filters():
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        fixture = _seed_operation_target_route_fixture()
+        target_ids = fixture["target_ids"]
+
+        selected = client.get(
+            "/api/operation-targets",
+            headers=headers,
+            params=[
+                ("ids", target_ids[0]),
+                ("ids", target_ids[1]),
+                ("ids", fixture["other_target_id"]),
+            ],
+        )
+        assert selected.status_code == 200, selected.text
+        assert selected.headers["x-total-count"] == "2"
+        assert {row["id"] for row in selected.json()} == {target_ids[0], target_ids[1]}
+
+        linked = client.get(
+            "/api/operation-targets",
+            headers=headers,
+            params={"q": fixture["q"], "linked_group_id": fixture["linked_group_id"]},
+        )
+        assert linked.status_code == 200, linked.text
+        assert [row["id"] for row in linked.json()] == [target_ids[0]]
+
+        capable = client.get(
+            "/api/operation-targets",
+            headers=headers,
+            params={"q": fixture["q"], "capability": "listen"},
+        )
+        assert capable.status_code == 200, capable.text
+        assert [row["id"] for row in capable.json()] == [target_ids[0]]
+
+
+def test_operation_target_page_route_preserves_legacy_account_and_type_scope():
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        fixture = _seed_operation_target_route_fixture()
+        target_ids = fixture["target_ids"]
+
+        legacy_account_scope = client.get(
+            "/api/operation-targets",
+            headers=headers,
+            params={"account_id": fixture["account_id"]},
+        )
+        assert legacy_account_scope.status_code == 200, legacy_account_scope.text
+        assert [row["id"] for row in legacy_account_scope.json()] == [target_ids[0]]
+        assert "x-total-count" not in legacy_account_scope.headers
+
+        legacy_type_scope = client.get(
+            "/api/operation-targets",
+            headers=headers,
+            params={"target_type": "group"},
+        )
+        assert legacy_type_scope.status_code == 200, legacy_type_scope.text
+        assert "x-total-count" not in legacy_type_scope.headers
+
+
+def test_operation_target_page_route_rejects_invalid_inputs_and_cross_tenant_account():
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        fixture = _seed_operation_target_route_fixture()
+
+        invalid_queries = [
+            [("capability", "unknown")],
+            [("q", "x" * 121)],
+            [("page", "0")],
+            [("page_size", "101")],
+            [("linked_group_id", "0")],
+            [("ids", "-1")],
+            [("ids", str(value)) for value in range(1, 102)],
+        ]
+        for params in invalid_queries:
+            response = client.get("/api/operation-targets", headers=headers, params=params)
+            assert response.status_code == 422, (params, response.text)
+
+        cross_tenant_account = client.get(
+            "/api/operation-targets",
+            headers=headers,
+            params={"account_id": fixture["other_account_id"]},
+        )
+        assert cross_tenant_account.status_code == 404, cross_tenant_account.text
+
+
+def test_operation_target_hydration_runtime_summary_target_ids_are_tenant_safe():
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        fixture = _seed_operation_target_route_fixture()
+        target_ids = fixture["target_ids"]
+
+        selected = client.get(
+            "/api/operation-targets/runtime-summary",
+            headers=headers,
+            params=[
+                ("target_ids", target_ids[0]),
+                ("target_ids", target_ids[1]),
+                ("target_ids", fixture["other_target_id"]),
+            ],
+        )
+        assert selected.status_code == 200, selected.text
+        assert {row["target_id"] for row in selected.json()} == {target_ids[0], target_ids[1]}
+
+        unbounded = client.get("/api/operation-targets/runtime-summary", headers=headers)
+        assert unbounded.status_code == 200, unbounded.text
+        returned_ids = {row["target_id"] for row in unbounded.json()}
+        assert set(target_ids[:3]).issubset(returned_ids)
+        assert fixture["other_target_id"] not in returned_ids
+
+        explicit_empty = client.get(
+            "/api/operation-targets/runtime-summary?target_ids=",
+            headers=headers,
+        )
+        assert explicit_empty.status_code == 422, explicit_empty.text

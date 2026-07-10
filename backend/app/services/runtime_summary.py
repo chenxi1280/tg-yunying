@@ -64,6 +64,7 @@ ACCOUNT_RISK_MARKERS = (
     "会话失效",
 )
 RISK_LEVEL_THRESHOLDS = (85, 70, 55, 30)
+MAX_RUNTIME_TARGET_IDS = 100
 
 
 def refresh_task_summary(session: Session, task: Task) -> TaskRuntimeSummary:
@@ -537,8 +538,26 @@ def list_account_runtime_summaries(session: Session, tenant_id: int) -> list[Acc
     return list(session.scalars(select(AccountRuntimeSummary).where(AccountRuntimeSummary.tenant_id == tenant_id).order_by(AccountRuntimeSummary.updated_at.desc())))
 
 
-def list_target_runtime_summaries(session: Session, tenant_id: int) -> list[TargetRuntimeSummary]:
-    return list(session.scalars(select(TargetRuntimeSummary).where(TargetRuntimeSummary.tenant_id == tenant_id).order_by(TargetRuntimeSummary.updated_at.desc())))
+def list_target_runtime_summaries(
+    session: Session,
+    tenant_id: int,
+    target_ids: tuple[int, ...] | None = None,
+) -> list[TargetRuntimeSummary]:
+    normalized_ids = _normalize_runtime_target_ids(target_ids)
+    statement = select(TargetRuntimeSummary).where(TargetRuntimeSummary.tenant_id == tenant_id)
+    if normalized_ids is not None:
+        statement = statement.where(TargetRuntimeSummary.target_id.in_(normalized_ids))
+    return list(session.scalars(statement.order_by(TargetRuntimeSummary.updated_at.desc())))
+
+
+def _normalize_runtime_target_ids(target_ids: tuple[int, ...] | None) -> tuple[int, ...] | None:
+    if target_ids is None:
+        return None
+    if len(target_ids) > MAX_RUNTIME_TARGET_IDS:
+        raise ValueError(f"target_ids must contain at most {MAX_RUNTIME_TARGET_IDS} values")
+    if any(isinstance(value, bool) or not isinstance(value, int) or value < 1 for value in target_ids):
+        raise ValueError("target_ids must contain positive integers")
+    return tuple(dict.fromkeys(target_ids))
 
 
 def get_account_runtime_summary(session: Session, tenant_id: int, account_id: int) -> AccountRuntimeSummary:

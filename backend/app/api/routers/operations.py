@@ -3,9 +3,10 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.orm import Session
 
+from app.api.pagination import pagination_headers
 from app.auth import CurrentUser, ensure_permission, get_current_user
 from app.config import get_settings
 from app.database import get_session
@@ -39,7 +40,6 @@ from app.services import (
     export_operation_target_invite_link,
     filter_channel_message_comments,
     filter_channel_messages,
-    filter_operation_targets,
     filter_operation_tasks,
     list_manual_operations,
     list_operation_attempts,
@@ -52,21 +52,71 @@ from app.services import (
     update_operation_target_account_policy,
     update_operation_target,
 )
+from app.services.operation_target_list import OperationTargetListQuery, list_operation_targets_page
+
+
 router = APIRouter()
 legacy_operation_task_router = APIRouter()
+BOUNDED_TARGET_QUERY_PARAMS = frozenset({"page", "page_size", "q", "ids", "linked_group_id", "capability"})
+DEFAULT_TARGET_PAGE = 1
+DEFAULT_TARGET_PAGE_SIZE = 20
+MAX_SELECTED_TARGET_IDS = 100
+
+
+def _target_paging(request: Request, page: int | None, page_size: int | None) -> tuple[int | None, int | None]:
+    bounded = any(name in request.query_params for name in BOUNDED_TARGET_QUERY_PARAMS)
+    if not bounded:
+        return None, None
+    return page or DEFAULT_TARGET_PAGE, page_size or DEFAULT_TARGET_PAGE_SIZE
+
+
+def _selected_target_ids(ids: list[int] | None) -> tuple[int, ...]:
+    values = tuple(ids or ())
+    if len(values) > MAX_SELECTED_TARGET_IDS:
+        raise HTTPException(status_code=422, detail=f"ids must contain at most {MAX_SELECTED_TARGET_IDS} values")
+    if any(value < 1 for value in values):
+        raise HTTPException(status_code=422, detail="ids must contain positive integers")
+    return values
 
 
 @router.get("/api/operation-targets", response_model=list[OperationTargetOut])
 def get_operation_targets(
+    request: Request,
+    response: Response,
     target_type: str | None = None,
     account_id: int | None = None,
+    page: int | None = Query(default=None, ge=1),
+    page_size: int | None = Query(default=None, ge=1, le=100),
+    q: str = Query(default="", max_length=120),
+    ids: list[int] | None = Query(default=None),
+    linked_group_id: int | None = Query(default=None, ge=1),
+    capability: str | None = Query(default=None, pattern="^(send|listen|archive|task)$"),
     session: Session = Depends(get_session),
     current_user: CurrentUser = Depends(get_current_user),
-) -> Sequence[OperationTarget]:
+) -> list[dict]:
+    normalized_page, normalized_page_size = _target_paging(request, page, page_size)
     try:
-        return filter_operation_targets(session, current_user.tenant_id or 1, target_type, account_id)
+        rows, total = list_operation_targets_page(
+            session,
+            OperationTargetListQuery(
+                tenant_id=current_user.tenant_id or 1,
+                page=normalized_page,
+                page_size=normalized_page_size,
+                target_type=target_type,
+                account_id=account_id,
+                q=q,
+                ids=_selected_target_ids(ids),
+                linked_group_id=linked_group_id,
+                capability=capability,
+            ),
+        )
     except ValueError as exc:
         raise not_found(str(exc)) from exc
+    if normalized_page is not None and normalized_page_size is not None:
+        response.headers.update(
+            pagination_headers(total_count=total, page=normalized_page, page_size=normalized_page_size)
+        )
+    return rows
 
 
 @router.get("/api/operation-targets/{target_id}/detail", response_model=OperationTargetDetailOut)

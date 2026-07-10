@@ -42,7 +42,7 @@ from app.services.task_center.service import _action_payload, _channel_subtask_s
 from app.services.task_center.executors.channel_comment import build_plan as build_channel_comment_plan
 from app.services.task_center.payloads import ViewMessagePayload, create_view_action
 from app.services.task_center.stats import planner_backlog_snapshot, refresh_task_stats
-from app.services.runtime_summary import get_operation_issue_detail, refresh_task_summary, upsert_operation_issue
+from app.services.runtime_summary import get_operation_issue_detail, list_target_runtime_summaries, refresh_task_summary, upsert_operation_issue
 from app.timezone import BEIJING_TZ, beijing_day_bounds
 from tests.ai_group_voice_profile_fixtures import assume_default_ai_group_voice_profiles
 
@@ -6591,6 +6591,46 @@ def test_operation_target_filter_rejects_invalid_or_cross_tenant_scope(query_ove
         _seed_operation_target_filter_fixture(session)
         with pytest.raises(ValueError):
             _list_operation_target_page(session, **query_overrides)
+
+
+def test_runtime_summary_target_ids_distinguish_absent_empty_and_tenant_scope():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add_all([Tenant(id=1, name="租户一"), Tenant(id=2, name="租户二")])
+        targets = [
+            OperationTarget(id=101, tenant_id=1, tg_peer_id="runtime-101", title="目标 101"),
+            OperationTarget(id=102, tenant_id=1, tg_peer_id="runtime-102", title="目标 102"),
+            OperationTarget(id=201, tenant_id=2, tg_peer_id="runtime-201", title="目标 201"),
+        ]
+        session.add_all(targets)
+        session.add_all(
+            [
+                TargetRuntimeSummary(tenant_id=1, target_id=101),
+                TargetRuntimeSummary(tenant_id=1, target_id=102),
+                TargetRuntimeSummary(tenant_id=2, target_id=201),
+            ]
+        )
+        session.commit()
+
+        unbounded = list_target_runtime_summaries(session, 1, None)
+        selected = list_target_runtime_summaries(session, 1, (102, 201))
+        empty = list_target_runtime_summaries(session, 1, ())
+
+    assert {row.target_id for row in unbounded} == {101, 102}
+    assert [row.target_id for row in selected] == [102]
+    assert empty == []
+
+
+@pytest.mark.parametrize("target_ids", [(-1,), tuple(range(1, 102))])
+def test_runtime_summary_target_ids_reject_invalid_boundaries(target_ids: tuple[int, ...]):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        with pytest.raises(ValueError):
+            list_target_runtime_summaries(session, 1, target_ids)
 
 
 def test_operation_targets_expose_linked_group_capability_summary():
