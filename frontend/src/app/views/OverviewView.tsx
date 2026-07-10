@@ -1,13 +1,16 @@
 import React from 'react';
 import { Activity, RefreshCcw, Send, ShieldAlert, Smartphone, Users } from 'lucide-react';
 import { Alert, Button, Card, Descriptions, Drawer, Empty, Input, Modal, Select, Space, Table, Tag, Typography, message } from 'antd';
-import type { ColumnsType } from 'antd/es/table';
+import type { ColumnsType, TablePaginationConfig } from 'antd/es/table';
 import type { OperationCenterSummary, OperationIssue, OperationIssueDetail, OperationPlan, OperationPlanApplyResult, OperationPlanGenerateResult, OperationPlanPreview, OperationTarget, Overview, TargetRuntimeSummary } from '../types';
 import { StatCard, Badge, StatusBadge } from '../components/shared';
+import OperationTargetSelect from '../components/OperationTargetSelect';
 import { riskTone } from '../utils';
 import { formatBeijingDateTime } from '../time';
-import { api, ApiError } from '../../shared/api/client';
+import { api, apiWithMeta, ApiError } from '../../shared/api/client';
 import { GROUP_AI_HARD_HOURLY_MIN_MESSAGES } from './taskCenterViewModel';
+
+const TARGET_WORKBENCH_PAGE_SIZE = 8;
 
 type ActivityPoint = NonNullable<Overview['activity_24h']>[number];
 type MetricKey = 'sent_messages' | 'likes' | 'comments' | 'success_rate' | 'failure_rate';
@@ -28,6 +31,41 @@ type TargetWorkbenchRow = {
   summary?: TargetRuntimeSummary;
   issues: OperationIssue[];
 };
+
+type TargetPageQuery = Readonly<{ page: number; pageSize: number }>;
+type OperationDataRequestIdentity = Readonly<{ sequence: number; queryKey: string }>;
+type OperationDataRequest = Readonly<{
+  sequence: number;
+  queryKey: string;
+  query: TargetPageQuery;
+  controller: AbortController;
+}>;
+
+function targetPageQueryKey(query: TargetPageQuery) {
+  return JSON.stringify(query);
+}
+
+function operationTargetPagePath(query: TargetPageQuery) {
+  const params = new URLSearchParams();
+  params.set('page', String(query.page));
+  params.set('page_size', String(query.pageSize));
+  return `/operation-targets?${params.toString()}`;
+}
+
+function targetRuntimeSummaryPath(targetIds: readonly number[]) {
+  const params = new URLSearchParams();
+  if (!targetIds.length) params.append('target_ids', '');
+  for (const targetId of targetIds) params.append('target_ids', String(targetId));
+  return `/operation-targets/runtime-summary?${params.toString()}`;
+}
+
+function operationTargetResponseTotal(headers: Headers) {
+  const rawTotal = headers.get('x-total-count');
+  if (rawTotal === null) throw new Error('运营目标分页响应缺少 x-total-count');
+  const total = Number(rawTotal);
+  if (!Number.isSafeInteger(total) || total < 0) throw new Error(`运营目标总数无效：${rawTotal}`);
+  return total;
+}
 
 interface Props {
   overview: Overview;
@@ -76,6 +114,8 @@ function errorText(error: unknown) {
 export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail, onOpenMessageSending, onOpenAccounts, onOpenAccountDetail, onOpenRules, onOpenRisk, canManageOperationIssues = false }: Props) {
   const [plans, setPlans] = React.useState<OperationPlan[]>([]);
   const [targets, setTargets] = React.useState<OperationTarget[]>([]);
+  const [targetPageQuery, setTargetPageQuery] = React.useState<TargetPageQuery>({ page: 1, pageSize: TARGET_WORKBENCH_PAGE_SIZE });
+  const [targetTotal, setTargetTotal] = React.useState(0);
   const [operationCenter, setOperationCenter] = React.useState<OperationCenterSummary | null>(overview.operation_center ?? null);
   const [targetSummaries, setTargetSummaries] = React.useState<TargetRuntimeSummary[]>([]);
   const [issues, setIssues] = React.useState<OperationIssue[]>([]);
@@ -88,7 +128,9 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
   const [issueAction, setIssueAction] = React.useState<IssueAction | null>(null);
   const [issueActionReason, setIssueActionReason] = React.useState('');
   const activeIssueDetailId = React.useRef<string | null>(null);
-  const operationDataRequestSeq = React.useRef(0);
+  const operationDataRequestRef = React.useRef<OperationDataRequestIdentity>({ sequence: 0, queryKey: '' });
+  const operationDataAbortController = React.useRef<AbortController | null>(null);
+  const targetPageQueryRef = React.useRef(targetPageQuery);
   const activePlanActionKey = React.useRef('');
   const activePlanEditSaveRequestRef = React.useRef<{ seq: number; planId: number | null; signature: string }>({ seq: 0, planId: null, signature: '' });
   const activeImpactApplyRequestRef = React.useRef<{ seq: number; planId: number | null; signature: string }>({ seq: 0, planId: null, signature: '' });
@@ -104,6 +146,7 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
   const [impactOpen, setImpactOpen] = React.useState(false);
   const [impactResult, setImpactResult] = React.useState<OperationPlanApplyResult | null>(null);
   const [impactReason, setImpactReason] = React.useState('');
+  targetPageQueryRef.current = targetPageQuery;
   const activity = React.useMemo(() => normalizedActivity(overview.activity_24h), [overview.activity_24h]);
   const operationSummary = operationCenter ?? overview.operation_center ?? null;
   const totals = activity.reduce(
@@ -125,13 +168,22 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
     return activeIssueDetailId.current === issueId;
   }
 
-  function beginOperationDataRequest() {
-    operationDataRequestSeq.current += 1;
-    return operationDataRequestSeq.current;
+  function beginOperationDataRequest(query: TargetPageQuery): OperationDataRequest {
+    operationDataAbortController.current?.abort();
+    const controller = new AbortController();
+    const identity = {
+      sequence: operationDataRequestRef.current.sequence + 1,
+      queryKey: targetPageQueryKey(query),
+    };
+    operationDataRequestRef.current = identity;
+    operationDataAbortController.current = controller;
+    return { ...identity, query, controller };
   }
 
-  function isActiveOperationDataRequest(requestSeq: number) {
-    return operationDataRequestSeq.current === requestSeq;
+  function isActiveOperationDataRequest(request: OperationDataRequest) {
+    return !request.controller.signal.aborted
+      && operationDataRequestRef.current.sequence === request.sequence
+      && operationDataRequestRef.current.queryKey === request.queryKey;
   }
 
   function beginPlanAction(actionKey: string) {
@@ -240,19 +292,25 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
 
   React.useEffect(() => {
     void loadOperationData();
-  }, []);
+    return () => operationDataAbortController.current?.abort();
+  }, [targetPageQuery]);
 
-  async function fetchOperationData(requestSeq: number) {
-    const [planRows, targetRows, centerSummary, runtimeRows, issueRows] = await Promise.all([
-      api<OperationPlan[]>('/operation-plans'),
-      api<OperationTarget[]>('/operation-targets'),
-      api<OperationCenterSummary>('/operation-center/overview'),
-      api<TargetRuntimeSummary[]>('/operation-targets/runtime-summary'),
-      api<OperationIssue[]>('/operation-issues'),
+  async function fetchOperationData(request: OperationDataRequest) {
+    const requestOptions = { signal: request.controller.signal };
+    const targetRequest = apiWithMeta<OperationTarget[]>(operationTargetPagePath(request.query), requestOptions);
+    const targetResponse = await targetRequest;
+    const runtimePath = targetRuntimeSummaryPath(targetResponse.data.map((target) => target.id));
+    const [planRows, centerSummary, runtimeRows, issueRows] = await Promise.all([
+      api<OperationPlan[]>('/operation-plans', requestOptions),
+      api<OperationCenterSummary>('/operation-center/overview', requestOptions),
+      api<TargetRuntimeSummary[]>(runtimePath, { signal: request.controller.signal }),
+      api<OperationIssue[]>('/operation-issues', requestOptions),
     ]);
-    if (!isActiveOperationDataRequest(requestSeq)) return false;
+    if (!isActiveOperationDataRequest(request)) return false;
+    const responseTotal = operationTargetResponseTotal(targetResponse.headers);
     setPlans(planRows);
-    setTargets(targetRows);
+    setTargets(targetResponse.data);
+    setTargetTotal(responseTotal);
     setOperationCenter(centerSummary);
     setTargetSummaries(runtimeRows);
     setIssues(issueRows);
@@ -260,32 +318,32 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
   }
 
   async function loadOperationData() {
-    const requestSeq = beginOperationDataRequest();
+    const request = beginOperationDataRequest(targetPageQueryRef.current);
     setOperationLoading(true);
     setOperationError('');
     try {
-      await fetchOperationData(requestSeq);
+      await fetchOperationData(request);
     } catch (err) {
-      if (!isActiveOperationDataRequest(requestSeq)) return;
+      if (!isActiveOperationDataRequest(request)) return;
       setOperationError(err instanceof Error ? err.message : String(err));
     } finally {
-      if (isActiveOperationDataRequest(requestSeq)) setOperationLoading(false);
+      if (isActiveOperationDataRequest(request)) setOperationLoading(false);
     }
   }
 
   async function refreshOperationDataAfterAction(actionLabel: string) {
-    const requestSeq = beginOperationDataRequest();
+    const request = beginOperationDataRequest(targetPageQueryRef.current);
     try {
-      await fetchOperationData(requestSeq);
+      await fetchOperationData(request);
     } catch (error) {
-      if (!isActiveOperationDataRequest(requestSeq)) return;
+      if (!isActiveOperationDataRequest(request)) return;
       setOperationError(`运营中心数据刷新失败：${actionLabel}操作已完成，但刷新运营中心数据失败：${errorText(error)}`);
     }
   }
 
   async function createDefaultPlan(target?: OperationTarget) {
-    const selectedTarget = target ?? (targets.length === 1 ? targets[0] : undefined);
-    if (!selectedTarget && targets.length > 1) {
+    const selectedTarget = target ?? (targetTotal === 1 ? targets[0] : undefined);
+    if (!selectedTarget && targetTotal > 1) {
       void message.warning('请在目标工作台的目标行点击创建方案，避免选错目标');
       return;
     }
@@ -554,6 +612,12 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
     setIssueActionReason('');
   }
 
+  function handleTargetWorkbenchTableChange(pagination: TablePaginationConfig) {
+    const pageSize = pagination.pageSize ?? targetPageQuery.pageSize;
+    const page = pageSize === targetPageQuery.pageSize ? pagination.current ?? 1 : 1;
+    setTargetPageQuery({ page, pageSize });
+  }
+
   async function submitIssueAction() {
     const issue = issueDetail?.issue;
     const action = issueAction;
@@ -765,7 +829,13 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
           columns={targetColumns}
           dataSource={targetRows}
           loading={operationLoading}
-          pagination={{ pageSize: 8 }}
+          pagination={{
+            current: targetPageQuery.page,
+            pageSize: targetPageQuery.pageSize,
+            total: targetTotal,
+            showSizeChanger: true,
+          }}
+          onChange={handleTargetWorkbenchTableChange}
           scroll={{ x: 1240 }}
           locale={{ emptyText: '暂无目标运行摘要。' }}
         />
@@ -884,11 +954,11 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
           </Space>
           <label className="form-field">
             <span>绑定目标</span>
-            <Select
+            <OperationTargetSelect
               mode="multiple"
               value={planEditForm.target_ids}
-              options={targets.filter((target) => target.target_type === planEditForm.target_type).map((target) => ({ value: target.id, label: `${target.title} #${target.id}` }))}
-              onChange={(value) => setPlanEditForm((form) => ({ ...form, target_ids: value }))}
+              query={{ targetType: planEditForm.target_type as OperationTarget['target_type'] }}
+              onChange={(value) => setPlanEditForm((form) => ({ ...form, target_ids: Array.isArray(value) ? value : [value] }))}
               placeholder="选择这个方案覆盖的目标"
             />
           </label>

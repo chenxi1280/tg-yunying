@@ -23,11 +23,15 @@ def test_operation_target_detail_does_not_auto_sync_for_read_only_users():
 def test_operation_target_focus_opens_detail_once():
     source = (PROJECT_ROOT / "frontend/src/app/views/OperationTargetsView.tsx").read_text()
     focus_effect = source[source.index("if (!focusTarget || appliedFocusNonce.current === focusTarget.nonce)"):source.index("\n  async function saveTarget")]
-    found_target_block = focus_effect[focus_effect.index("const target = targets.find"):focus_effect.index("async function saveTarget") if "async function saveTarget" in focus_effect else len(focus_effect)]
+    current_target_block = focus_effect[focus_effect.index("const currentTarget = targets.find"):focus_effect.index("focusTargetAbortController.current?.abort()")]
+    hydrated_target_block = focus_effect[focus_effect.index("const target = response.data.find"):]
 
+    assert focus_effect.count("openDetail(currentTarget);") == 1
     assert focus_effect.count("openDetail(target);") == 1
-    assert found_target_block.index("appliedFocusNonce.current = focusTarget.nonce;") < found_target_block.index("openDetail(target);")
-    assert found_target_block.index("openDetail(target);") < found_target_block.rindex("onFocusTargetConsumed?.();")
+    assert current_target_block.index("appliedFocusNonce.current = focusTarget.nonce;") < current_target_block.index("openDetail(currentTarget);")
+    assert current_target_block.index("openDetail(currentTarget);") < current_target_block.index("onFocusTargetConsumed?.();")
+    assert hydrated_target_block.index("appliedFocusNonce.current = focusTarget.nonce;", hydrated_target_block.index("if (!target)")) < hydrated_target_block.index("openDetail(target);")
+    assert hydrated_target_block.index("openDetail(target);") < hydrated_target_block.rindex("onFocusTargetConsumed?.();")
 
 
 def test_operation_targets_load_surfaces_backend_error_detail():
@@ -36,10 +40,10 @@ def test_operation_targets_load_surfaces_backend_error_detail():
     load_block = source[source.index("async function load()"):source.index("\n\n  async function refreshTargetsListAfterAction")]
 
     assert "const [formError, setFormError] = React.useState('');" in source
-    assert "api<OperationTarget[]>('/operation-targets')" in fetch_targets
-    assert "await fetchTargets(requestSeq);" in load_block
+    assert "apiWithMeta<OperationTarget[]>(operationTargetListPath(request.query)" in fetch_targets
+    assert "await fetchTargets(request);" in load_block
     assert "catch (error)" in load_block
-    assert "if (!isActiveTargetsListRequest(requestSeq)) return;" in load_block
+    assert "if (!isActiveTargetsListRequest(request)) return;" in load_block
     assert "setFormError(errorMessage(error));" in load_block
 
 
@@ -65,7 +69,7 @@ def test_operation_target_detail_actions_ignore_stale_target_responses():
     save_policy = source[source.index("async function saveAccountPolicy"):source.index("\n  function openAdmissionRetry")]
     retry_admission = source[source.index("async function retryAdmission"):source.index("\n  function startEdit")]
     open_detail = source[source.index("function openDetail"):source.index("\n  function openCreate")]
-    close_detail = source[source.index("function closeDetail"):source.index("\n  const table")]
+    close_detail = source[source.index("function closeDetail"):source.index("\n\n  function submitTargetSearch")]
 
     assert "const activeDetailTargetId = React.useRef<number | null>(null);" in source
     assert "function isActiveDetailTarget(targetId: number)" in source
@@ -1050,7 +1054,7 @@ def test_overview_issue_actions_surface_backend_error_detail():
     submit_issue_action = source[source.index("async function submitIssueAction"):source.index("\n  const targetRows")]
     open_issue_detail = source[source.index("async function openIssueDetail"):source.index("\n  async function submitIssueAction")]
 
-    assert "import { api, ApiError }" in source
+    assert "import { api, apiWithMeta, ApiError }" in source
     assert "function errorText(error: unknown)" in source
     assert "catch (error)" in submit_issue_action
     assert "message.error(`${actionLabel}失败：${errorText(error)}`)" in submit_issue_action

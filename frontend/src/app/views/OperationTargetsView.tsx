@@ -1,11 +1,13 @@
 import React from 'react';
 import { Alert, App as AntdApp, Button, Card, Descriptions, Empty, Form, Input, InputNumber, List, Modal, Select, Space, Switch, Table, Tag, Typography } from 'antd';
-import type { ColumnsType } from 'antd/es/table';
+import type { ColumnsType, TablePaginationConfig } from 'antd/es/table';
 import { MessageSquareText, RefreshCcw } from 'lucide-react';
-import { api, ApiError } from '../../shared/api/client';
+import { api, apiWithMeta, ApiError } from '../../shared/api/client';
 import type { ChannelMessage, ChannelMessageComment, ChannelMessageCommentSync, OperationTarget, OperationTargetDetail, OperationTargetMessageSync, OperationTargetsSync, TaskCenterTaskType } from '../types';
-import { DetailModal, StatusBadge, useAntdTableControls } from '../components/shared';
+import { DetailModal, StatusBadge } from '../components/shared';
 import { formatBeijingDateTime } from '../time';
+
+const OPERATION_TARGET_PAGE_SIZE = 20;
 
 type Props = {
   onSendToTarget: (target: OperationTarget) => void;
@@ -28,6 +30,35 @@ type OperationTargetFormValues = {
   can_send?: boolean;
   auth_status?: string;
 };
+
+type TargetListQuery = Readonly<{ page: number; pageSize: number; q: string }>;
+type TargetListRequestIdentity = Readonly<{ sequence: number; queryKey: string }>;
+type TargetListRequest = Readonly<{
+  sequence: number;
+  queryKey: string;
+  query: TargetListQuery;
+  controller: AbortController;
+}>;
+
+function targetListQueryKey(query: TargetListQuery) {
+  return JSON.stringify(query);
+}
+
+function operationTargetListPath(query: TargetListQuery) {
+  const params = new URLSearchParams();
+  params.set('page', String(query.page));
+  params.set('page_size', String(query.pageSize));
+  if (query.q) params.set('q', query.q);
+  return `/operation-targets?${params.toString()}`;
+}
+
+function operationTargetResponseTotal(headers: Headers) {
+  const rawTotal = headers.get('x-total-count');
+  if (rawTotal === null) throw new Error('运营目标分页响应缺少 x-total-count');
+  const total = Number(rawTotal);
+  if (!Number.isSafeInteger(total) || total < 0) throw new Error(`运营目标总数无效：${rawTotal}`);
+  return total;
+}
 
 function formatDateTime(value?: string | null) {
   return formatBeijingDateTime(value);
@@ -57,6 +88,9 @@ function capabilityTags(target: OperationTarget) {
 export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromTarget, focusTarget, onFocusTargetConsumed, canManageMessageSending, canManageTargets, canManageTasks, canManageArchives, onOpenTargetProfile }: Props) {
   const { message } = AntdApp.useApp();
   const [targets, setTargets] = React.useState<OperationTarget[]>([]);
+  const [targetQuery, setTargetQuery] = React.useState<TargetListQuery>({ page: 1, pageSize: OPERATION_TARGET_PAGE_SIZE, q: '' });
+  const [targetTotal, setTargetTotal] = React.useState(0);
+  const [targetSearch, setTargetSearch] = React.useState('');
   const [loading, setLoading] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
   const [accountPolicySaving, setAccountPolicySaving] = React.useState('');
@@ -77,12 +111,16 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
   const [detailOpen, setDetailOpen] = React.useState(false);
   const [form] = Form.useForm<OperationTargetFormValues>();
   const appliedFocusNonce = React.useRef<number | null>(null);
-  const activeTargetsListRequestSeq = React.useRef(0);
+  const activeTargetsListRequestRef = React.useRef<TargetListRequestIdentity>({ sequence: 0, queryKey: '' });
+  const targetsListAbortController = React.useRef<AbortController | null>(null);
+  const focusTargetAbortController = React.useRef<AbortController | null>(null);
+  const targetQueryRef = React.useRef(targetQuery);
   const activeTargetsSyncAllRequestSeq = React.useRef(0);
   const activeDetailTargetId = React.useRef<number | null>(null);
   const activeDetailTargetRequestSeq = React.useRef(0);
   const activeDetailTargetWriteSeq = React.useRef(0);
   const activeTargetSaveRequestRef = React.useRef({ seq: 0, signature: '' });
+  targetQueryRef.current = targetQuery;
 
   function errorMessage(error: unknown) {
     if (error instanceof ApiError) return error.message;
@@ -93,13 +131,22 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
     return activeDetailTargetId.current === targetId;
   }
 
-  function beginTargetsListRequest() {
-    activeTargetsListRequestSeq.current += 1;
-    return activeTargetsListRequestSeq.current;
+  function beginTargetsListRequest(query: TargetListQuery): TargetListRequest {
+    targetsListAbortController.current?.abort();
+    const controller = new AbortController();
+    const identity = {
+      sequence: activeTargetsListRequestRef.current.sequence + 1,
+      queryKey: targetListQueryKey(query),
+    };
+    activeTargetsListRequestRef.current = identity;
+    targetsListAbortController.current = controller;
+    return { ...identity, query, controller };
   }
 
-  function isActiveTargetsListRequest(requestSeq: number) {
-    return activeTargetsListRequestSeq.current === requestSeq;
+  function isActiveTargetsListRequest(request: TargetListRequest) {
+    return !request.controller.signal.aborted
+      && activeTargetsListRequestRef.current.sequence === request.sequence
+      && activeTargetsListRequestRef.current.queryKey === request.queryKey;
   }
 
   function beginTargetsSyncAllRequest() {
@@ -161,10 +208,12 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
     return isActiveTargetSaveRequest(request) && currentOperationTargetSavePayloadSignature() === request.signature;
   }
 
-  async function fetchTargets(requestSeq: number): Promise<boolean> {
-    const nextTargets = await api<OperationTarget[]>('/operation-targets');
-    if (!isActiveTargetsListRequest(requestSeq)) return false;
-    setTargets(nextTargets);
+  async function fetchTargets(request: TargetListRequest): Promise<boolean> {
+    const response = await apiWithMeta<OperationTarget[]>(operationTargetListPath(request.query), { signal: request.controller.signal });
+    if (!isActiveTargetsListRequest(request)) return false;
+    const responseTotal = operationTargetResponseTotal(response.headers);
+    setTargets(response.data);
+    setTargetTotal(responseTotal);
     return true;
   }
 
@@ -191,26 +240,26 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
   }
 
   async function load() {
-    const requestSeq = beginTargetsListRequest();
+    const request = beginTargetsListRequest(targetQueryRef.current);
     setLoading(true);
     setFormError('');
     try {
-      await fetchTargets(requestSeq);
+      await fetchTargets(request);
     } catch (error) {
-      if (!isActiveTargetsListRequest(requestSeq)) return;
+      if (!isActiveTargetsListRequest(request)) return;
       setFormError(errorMessage(error));
     } finally {
-      if (isActiveTargetsListRequest(requestSeq)) setLoading(false);
+      if (isActiveTargetsListRequest(request)) setLoading(false);
     }
   }
 
   async function refreshTargetsListAfterAction(actionLabel: string) {
-    const requestSeq = beginTargetsListRequest();
+    const request = beginTargetsListRequest(targetQueryRef.current);
     setLoading(false);
     try {
-      await fetchTargets(requestSeq);
+      await fetchTargets(request);
     } catch (error) {
-      if (!isActiveTargetsListRequest(requestSeq)) return;
+      if (!isActiveTargetsListRequest(request)) return;
       setFormError(`运营目标数据刷新失败：${actionLabel}操作已完成，但刷新运营目标列表失败：${errorMessage(error)}`);
     }
   }
@@ -289,26 +338,52 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
 
   React.useEffect(() => {
     void load();
+    return () => targetsListAbortController.current?.abort();
+  }, [targetQuery]);
+
+  React.useEffect(() => {
     const timer = window.setInterval(() => void load(), 60000);
     return () => window.clearInterval(timer);
   }, []);
 
   React.useEffect(() => {
     if (!focusTarget || appliedFocusNonce.current === focusTarget.nonce) return;
-    if (!targets.length) {
-      void load();
-      return;
-    }
-    const target = targets.find((item) => item.id === focusTarget.targetId);
-    if (!target) {
-      void message.warning(`未找到目标 #${focusTarget.targetId}`);
+    const currentTarget = targets.find((item) => item.id === focusTarget.targetId);
+    if (currentTarget) {
       appliedFocusNonce.current = focusTarget.nonce;
+      openDetail(currentTarget);
       onFocusTargetConsumed?.();
       return;
     }
-    appliedFocusNonce.current = focusTarget.nonce;
-    openDetail(target);
-    onFocusTargetConsumed?.();
+    focusTargetAbortController.current?.abort();
+    const controller = new AbortController();
+    focusTargetAbortController.current = controller;
+    const params = new URLSearchParams();
+    params.set('page', '1');
+    params.set('page_size', '1');
+    params.append('ids', String(focusTarget.targetId));
+    void apiWithMeta<OperationTarget[]>(`/operation-targets?${params.toString()}`, { signal: controller.signal })
+      .then((response) => {
+        if (controller.signal.aborted || appliedFocusNonce.current === focusTarget.nonce) return;
+        const target = response.data.find((item) => item.id === focusTarget.targetId);
+        if (!target) {
+          void message.warning(`未找到目标 #${focusTarget.targetId}`);
+          appliedFocusNonce.current = focusTarget.nonce;
+          onFocusTargetConsumed?.();
+          return;
+        }
+        appliedFocusNonce.current = focusTarget.nonce;
+        openDetail(target);
+        onFocusTargetConsumed?.();
+      })
+      .catch((error) => {
+        if (controller.signal.aborted) return;
+        setFormError(errorMessage(error));
+      });
+    return () => {
+      controller.abort();
+      if (focusTargetAbortController.current === controller) focusTargetAbortController.current = null;
+    };
   }, [focusTarget, message, onFocusTargetConsumed, targets]);
 
   async function saveTarget(values: OperationTargetFormValues) {
@@ -489,11 +564,17 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
     setCreatingArchiveId(null);
   }
 
-  const table = useAntdTableControls<OperationTarget>({
-    rows: targets,
-    placeholder: '搜索群/频道 / peer / username / 状态',
-    search: [(target) => [target.title, target.tg_peer_id, target.username, target.target_type, target.auth_status]],
-  });
+  function submitTargetSearch(value: string) {
+    const q = value.trim();
+    setTargetSearch(value);
+    setTargetQuery((current) => ({ ...current, page: 1, q }));
+  }
+
+  function handleTargetTableChange(pagination: TablePaginationConfig) {
+    const pageSize = pagination.pageSize ?? targetQuery.pageSize;
+    const page = pageSize === targetQuery.pageSize ? pagination.current ?? 1 : 1;
+    setTargetQuery((current) => ({ ...current, page, pageSize }));
+  }
 
   const columns: ColumnsType<OperationTarget> = [
     {
@@ -539,16 +620,29 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
         )}
       >
         <Typography.Text type="secondary">统一维护账号运营目标。群聊用于普通发言，频道用于发帖、查看、点赞和回复任务。</Typography.Text>
+        {formError && <Alert className="form-alert" type="error" showIcon message={formError} />}
         <Space className="toolbar-row" wrap>
-          {table.searchInput}
+          <Input.Search
+            value={targetSearch}
+            allowClear
+            placeholder="搜索群/频道 / peer / username"
+            onChange={(event) => setTargetSearch(event.target.value)}
+            onSearch={submitTargetSearch}
+          />
           <Button loading={loading} onClick={load}>刷新</Button>
         </Space>
         <Table<OperationTarget>
           className="tg-table"
           rowKey="id"
           columns={columns}
-          dataSource={table.filteredRows}
-          pagination={table.pagination}
+          dataSource={targets}
+          pagination={{
+            current: targetQuery.page,
+            pageSize: targetQuery.pageSize,
+            total: targetTotal,
+            showSizeChanger: true,
+          }}
+          onChange={handleTargetTableChange}
           scroll={{ x: 960 }}
           loading={loading}
         />

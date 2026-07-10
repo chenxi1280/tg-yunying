@@ -27,7 +27,7 @@ def _function_body(source: str, function_name: str) -> str:
 def test_overview_plan_actions_surface_write_failures_and_refresh_failures():
     source = _source()
 
-    assert "async function fetchOperationData(requestSeq: number)" in source
+    assert "async function fetchOperationData(request: OperationDataRequest)" in source
     assert "async function refreshOperationDataAfterAction(actionLabel: string)" in source
     assert "运营中心数据刷新失败" in source
     assert "操作已完成" in source
@@ -35,7 +35,7 @@ def test_overview_plan_actions_surface_write_failures_and_refresh_failures():
     helper_start = source.index("async function refreshOperationDataAfterAction")
     helper_end = source.index("\n\n  async function createDefaultPlan", helper_start)
     helper = source[helper_start:helper_end]
-    assert "await fetchOperationData(requestSeq);" in helper
+    assert "await fetchOperationData(request);" in helper
     assert "setOperationError(`运营中心数据刷新失败：" in helper
 
     for function_name in [
@@ -62,29 +62,73 @@ def test_overview_operation_data_refreshes_ignore_stale_responses():
     load_data = _function_body(source, "loadOperationData")
     refresh_data = _function_body(source, "refreshOperationDataAfterAction")
 
-    assert "const operationDataRequestSeq = React.useRef(0);" in source
-    assert "function beginOperationDataRequest()" in source
-    assert "operationDataRequestSeq.current += 1;" in source
-    assert "function isActiveOperationDataRequest(requestSeq: number)" in source
-    assert "async function fetchOperationData(requestSeq: number)" in source
+    assert "const operationDataRequestRef = React.useRef<OperationDataRequestIdentity>" in source
+    assert "const operationDataAbortController = React.useRef<AbortController | null>(null);" in source
+    assert "function beginOperationDataRequest(query: TargetPageQuery)" in source
+    assert "operationDataAbortController.current?.abort();" in source
+    assert "queryKey: targetPageQueryKey(query)" in source
+    assert "function isActiveOperationDataRequest(request: OperationDataRequest)" in source
+    assert "async function fetchOperationData(request: OperationDataRequest)" in source
 
-    stale_guard = "if (!isActiveOperationDataRequest(requestSeq)) return false;"
+    stale_guard = "if (!isActiveOperationDataRequest(request)) return false;"
     assert stale_guard in fetch_data
     assert fetch_data.index(stale_guard) < fetch_data.index("setPlans(planRows);")
     assert "return true;" in fetch_data
 
-    assert "const requestSeq = beginOperationDataRequest();" in load_data
-    assert "await fetchOperationData(requestSeq);" in load_data
-    load_error_guard = "if (!isActiveOperationDataRequest(requestSeq)) return;"
+    assert "const request = beginOperationDataRequest(targetPageQueryRef.current);" in load_data
+    assert "await fetchOperationData(request);" in load_data
+    load_error_guard = "if (!isActiveOperationDataRequest(request)) return;"
     assert load_error_guard in load_data
     assert load_data.index(load_error_guard) < load_data.index("setOperationError(err instanceof Error ? err.message : String(err));")
-    assert "if (isActiveOperationDataRequest(requestSeq)) setOperationLoading(false);" in load_data
+    assert "if (isActiveOperationDataRequest(request)) setOperationLoading(false);" in load_data
 
-    assert "const requestSeq = beginOperationDataRequest();" in refresh_data
-    assert "await fetchOperationData(requestSeq);" in refresh_data
-    refresh_error_guard = "if (!isActiveOperationDataRequest(requestSeq)) return;"
+    assert "const request = beginOperationDataRequest(targetPageQueryRef.current);" in refresh_data
+    assert "await fetchOperationData(request);" in refresh_data
+    refresh_error_guard = "if (!isActiveOperationDataRequest(request)) return;"
     assert refresh_error_guard in refresh_data
     assert refresh_data.index(refresh_error_guard) < refresh_data.index("setOperationError(`运营中心数据刷新失败：")
+
+
+def test_overview_target_workbench_uses_bounded_target_page_then_scoped_runtime_summary():
+    source = _source()
+    fetch_data = _function_body(source, "fetchOperationData")
+
+    assert "const [targetPageQuery, setTargetPageQuery] = React.useState<TargetPageQuery>" in source
+    assert "const [targetTotal, setTargetTotal] = React.useState(0);" in source
+    assert "apiWithMeta<OperationTarget[]>(operationTargetPagePath(request.query)" in fetch_data
+    assert "const targetResponse = await targetRequest;" in fetch_data
+    assert "const runtimePath = targetRuntimeSummaryPath(targetResponse.data.map((target) => target.id));" in fetch_data
+    assert "api<TargetRuntimeSummary[]>(runtimePath, { signal: request.controller.signal })" in fetch_data
+    assert "params.append('target_ids', String(targetId));" in source
+    assert "params.append('target_ids', '');" in source
+    assert "const responseTotal = operationTargetResponseTotal(targetResponse.headers);" in fetch_data
+    assert "setTargetTotal(responseTotal);" in fetch_data
+    assert "current: targetPageQuery.page" in source
+    assert "pageSize: targetPageQuery.pageSize" in source
+    assert "total: targetTotal" in source
+    assert "onChange={handleTargetWorkbenchTableChange}" in source
+    workbench_start = source.index('<Table<TargetWorkbenchRow>')
+    workbench_end = source.index('</Table>', workbench_start) if '</Table>' in source[workbench_start:] else source.index('/>', workbench_start)
+    assert "pagination={{ pageSize: 8 }}" not in source[workbench_start:workbench_end]
+    assert "api<TargetRuntimeSummary[]>('/operation-targets/runtime-summary')" not in source
+
+
+def test_overview_plan_target_selection_is_remote_and_not_bound_to_workbench_page():
+    source = _source()
+    create_default = _function_body(source, "createDefaultPlan")
+    editor_start = source.index("<span>绑定目标</span>")
+    editor_end = source.index("</label>", editor_start)
+    editor = source[editor_start:editor_end]
+
+    assert "import OperationTargetSelect from '../components/OperationTargetSelect';" in source
+    assert "<OperationTargetSelect" in editor
+    assert 'mode="multiple"' in editor
+    assert "query={{ targetType: planEditForm.target_type as OperationTarget['target_type'] }}" in editor
+    assert "value={planEditForm.target_ids}" in editor
+    assert "options={targets.filter" not in editor
+    assert "targetTotal === 1 ? targets[0] : undefined" in create_default
+    assert "targets.length === 1" not in create_default
+    assert "targetTotal > 1" in create_default
 
 
 def test_overview_plan_actions_ignore_stale_action_responses():
