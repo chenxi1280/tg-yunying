@@ -720,8 +720,22 @@ class AccountGroupProxyBindingOut(ApiModel):
     runtime_proxy_id: int | None = None
     binding_generation: int
     status: str
+    observed_exit_ip: str = ""
+    observed_exit_country: str = ""
+    observed_exit_asn: str = ""
+    observed_exit_isp: str = ""
     last_probe_at: datetime | None = None
     last_probe_error: str = ""
+    reference_count: int = 0
+
+
+class RankDeboostProxyBindingRequest(BaseModel):
+    proxy_airport_node_id: int = Field(gt=0)
+    reason: str = Field(default="", max_length=255)
+
+
+class RankDeboostProxyBindingDeleteRequest(BaseModel):
+    reason: str = Field(default="", max_length=255)
 
 
 class SearchRankDeboostClickReservationOut(ApiModel):
@@ -1452,6 +1466,8 @@ __all__ = [
     "PacingConfig",
     "RecommendTaskAccountsRequest",
     "RecommendedTaskAccountOut",
+    "RankDeboostProxyBindingDeleteRequest",
+    "RankDeboostProxyBindingRequest",
     "ReviewApproveRequest",
     "ReviewQueueOut",
     "ReviewRejectRequest",

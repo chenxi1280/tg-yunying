@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.database import Base
 from app.models import (
     AccountPool,
+    AccountProxy,
     AccountProxyBinding,
     ProxyAirportNode,
     ProxyAirportSubscription,
@@ -36,8 +37,8 @@ def _seed_base(session: Session) -> None:
     session.add(AccountPool(id=10, tenant_id=1, name="降权分组A", pool_purpose="rank_deboost"))
     session.add(AccountPool(id=12, tenant_id=1, name="降权分组B", pool_purpose="rank_deboost"))
     session.add(AccountPool(id=11, tenant_id=1, name="普通分组", pool_purpose="normal"))
-    session.add(ProxyAirportNode(id=20, tenant_id=1, subscription_id=1, node_key="node-20", status="healthy", observed_exit_ip="1.1.1.1"))
-    session.add(ProxyAirportNode(id=21, tenant_id=1, subscription_id=1, node_key="node-21", status="healthy", observed_exit_ip="2.2.2.2"))
+    session.add(ProxyAirportNode(id=20, tenant_id=1, subscription_id=1, node_key="node-20", protocol="socks5", proxy_host="127.0.0.20", proxy_port=1080, status="healthy", observed_exit_ip="1.1.1.1"))
+    session.add(ProxyAirportNode(id=21, tenant_id=1, subscription_id=1, node_key="node-21", protocol="socks5", proxy_host="127.0.0.21", proxy_port=1081, status="healthy", observed_exit_ip="2.2.2.2"))
     session.add(ProxyAirportNode(id=23, tenant_id=1, subscription_id=1, node_key="node-23", status="unhealthy"))
     session.commit()
 
@@ -62,9 +63,15 @@ def test_create_group_binding_succeeds() -> None:
         assert binding.account_pool_id == 10
         assert binding.proxy_airport_node_id == 20
         assert binding.binding_generation == 1
+        assert binding.runtime_proxy_id is not None
         assert binding.observed_exit_ip == "1.1.1.1"
         assert binding.bound_by == "alice"
         assert binding.unbound_at is None
+        runtime_proxy = session.get(AccountProxy, binding.runtime_proxy_id)
+        assert runtime_proxy is not None
+        assert runtime_proxy.protocol == "socks5"
+        assert runtime_proxy.host == "127.0.0.20"
+        assert runtime_proxy.port == 1080
 
         active = get_active_group_binding(session, tenant_id=1, account_pool_id=10)
         assert active is not None

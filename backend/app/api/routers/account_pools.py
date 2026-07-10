@@ -12,8 +12,11 @@ from app.api.response_permissions import account_pool_detail_out_for_user
 from app.models import AccountPool
 from app.repositories.tenant import require_resource_tenant
 from app.schemas import (
+    AccountGroupProxyBindingOut,
     AccountPoolCreate, AccountPoolDetailOut, AccountPoolOut, AccountPoolUpdate,
     ContactOut, DirectMessageTaskCreate, MessageTaskOut,
+    RankDeboostProxyBindingDeleteRequest,
+    RankDeboostProxyBindingRequest,
     RankDeboostAccountPoolCreate,
 )
 from app.services import (
@@ -21,6 +24,11 @@ from app.services import (
     create_rank_deboost_account_pool,
     create_pool_direct_message_task, ensure_code_receiver_account_pool, ensure_rank_deboost_account_pool,
     list_account_pools, update_account_pool,
+)
+from app.services.proxy_group_binding_service import (
+    binding_snapshot,
+    create_or_update_rank_deboost_proxy_binding,
+    delete_rank_deboost_proxy_binding,
 )
 
 router = APIRouter()
@@ -119,6 +127,66 @@ def patch_account_pool(
         return update_account_pool(session, pool_id, payload, current_user.name)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.put("/api/account-pools/{pool_id}/rank-deboost-proxy-binding", response_model=AccountGroupProxyBindingOut)
+def put_rank_deboost_proxy_binding(
+    pool_id: int,
+    payload: RankDeboostProxyBindingRequest,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    require_core_feature_access(current_user)
+    require_resource_tenant(session, current_user, AccountPool, pool_id)
+    pool = _require_account_pool(session, pool_id)
+    try:
+        binding = create_or_update_rank_deboost_proxy_binding(
+            session,
+            tenant_id=pool.tenant_id,
+            account_pool_id=pool_id,
+            proxy_airport_node_id=payload.proxy_airport_node_id,
+            operator=current_user.name,
+            reason=payload.reason or "manual_bind",
+        )
+        session.commit()
+        session.refresh(binding)
+        return binding_snapshot(session, binding)
+    except ValueError as exc:
+        session.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.delete("/api/account-pools/{pool_id}/rank-deboost-proxy-binding", response_model=AccountGroupProxyBindingOut)
+def delete_rank_deboost_proxy_binding_route(
+    pool_id: int,
+    payload: RankDeboostProxyBindingDeleteRequest | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    require_core_feature_access(current_user)
+    require_resource_tenant(session, current_user, AccountPool, pool_id)
+    pool = _require_account_pool(session, pool_id)
+    try:
+        binding = delete_rank_deboost_proxy_binding(
+            session,
+            tenant_id=pool.tenant_id,
+            account_pool_id=pool_id,
+            operator=current_user.name,
+            reason=(payload.reason if payload else "") or "manual_unbind",
+        )
+        session.commit()
+        session.refresh(binding)
+        return binding_snapshot(session, binding)
+    except ValueError as exc:
+        session.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _require_account_pool(session: Session, pool_id: int) -> AccountPool:
+    pool = session.get(AccountPool, pool_id)
+    if pool is None:
+        raise not_found("account pool not found")
+    return pool
 
 
 @router.get("/api/account-pools/{pool_id}/detail", response_model=AccountPoolDetailOut)
