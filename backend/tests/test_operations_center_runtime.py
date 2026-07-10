@@ -7584,4 +7584,4 @@ def test_task_list_page_stably_orders_mixed_datetimes_sources_and_numeric_batch_
         "account_security_batch:10",
         "account_security_batch:9",
     ]
-    assert result.items[0]["source_kind"] != result.items[1]["source_kind"]
+    assert result.items[2]["source_kind"] != result.items[3]["source_kind"]

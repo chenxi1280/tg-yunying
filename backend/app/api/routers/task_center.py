@@ -43,6 +43,7 @@ from app.schemas import (
     TaskAICycleOut,
     TaskMessageGroupOut,
     TaskMembershipItemOut,
+    TaskListPageOut,
     TaskOut,
     TaskRelayBatchOut,
     TaskActionReasonRequest,
@@ -85,6 +86,7 @@ from app.services.task_center import (
     list_message_groups_page,
     list_relay_batches_page,
     list_reviews,
+    list_task_page,
     mark_membership_admission_manual_handled,
     membership_admission_failure_rows,
     list_tasks,
@@ -260,6 +262,29 @@ def get_tasks(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     return list_tasks(session, current_user.tenant_id or 1, type, status)
+
+
+@router.get("/api/tasks/page", response_model=TaskListPageOut)
+def get_task_page(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    type: str | None = None,  # noqa: A002 - public query shape.
+    status: str | None = None,
+    q: str = Query(default="", max_length=160),
+    group_key: str | None = Query(default=None, max_length=240),
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    return list_task_page(
+        session,
+        tenant_id=current_user.tenant_id or 1,
+        page=page,
+        page_size=page_size,
+        task_type=type,
+        status=status,
+        q=q,
+        group_key=group_key,
+    )
 
 
 @router.post("/api/tasks/channel-capacity-check", response_model=ChannelCapacityCheckOut)
