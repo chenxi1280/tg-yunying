@@ -68,6 +68,10 @@ class AccountPool(Base):
     pool_purpose: Mapped[str] = mapped_column(String(40), default="normal")
     is_system: Mapped[bool] = mapped_column(Boolean, default=False)
     system_key: Mapped[str] = mapped_column(String(80), default="")
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    disabled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    disabled_by: Mapped[str] = mapped_column(String(100), default="")
+    disable_reason: Mapped[str] = mapped_column(String(255), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 

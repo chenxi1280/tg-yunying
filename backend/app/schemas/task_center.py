@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -712,6 +712,34 @@ class SearchRankDeboostExemptGroupResponse(BaseModel):
     selected_by: str
 
 
+class AccountGroupProxyBindingOut(ApiModel):
+    id: int
+    tenant_id: int
+    account_pool_id: int
+    proxy_airport_node_id: int
+    runtime_proxy_id: int | None = None
+    binding_generation: int
+    status: str
+    last_probe_at: datetime | None = None
+    last_probe_error: str = ""
+
+
+class SearchRankDeboostClickReservationOut(ApiModel):
+    id: str
+    tenant_id: int
+    task_id: str
+    action_id: str
+    account_id: int
+    account_pool_id: int
+    keyword_hash: str
+    local_date: date
+    hour_bucket: datetime
+    reserved_count: int
+    consumed_count: int
+    status: str
+    expires_at: datetime
+
+
 class TaskUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1327,6 +1355,7 @@ class ReviewRejectRequest(BaseModel):
 
 __all__ = [
     "AccountConfig",
+    "AccountGroupProxyBindingOut",
     "ActionOut",
     "ChannelCommentConfig",
     "ChannelCapacityCheckOut",
@@ -1367,6 +1396,7 @@ __all__ = [
     "SearchJoinGroupTaskCreate",
     "SearchJoinVisibilityAttribution",
     "SearchRankDeboostExemptGroupResponse",
+    "SearchRankDeboostClickReservationOut",
     "SearchRankDeboostTaskConfigUpdate",
     "SearchRankDeboostTaskCreate",
     "TaskCreateCommon",

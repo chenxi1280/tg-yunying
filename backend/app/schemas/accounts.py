@@ -26,12 +26,14 @@ class AccountPoolCreate(BaseModel):
     name: str
     description: str = ""
     is_default: bool = False
+    is_enabled: bool = True
 
 
 class AccountPoolUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
     is_default: bool | None = None
+    is_enabled: bool | None = None
 
 
 class MoveAccountPoolRequest(BaseModel):
@@ -39,7 +41,7 @@ class MoveAccountPoolRequest(BaseModel):
 
 
 class AccountIdentityUpdate(BaseModel):
-    identity: str = Field(pattern="^(normal|code_receiver)$")
+    identity: str = Field(pattern="^(normal|code_receiver|rank_deboost)$")
 
 
 class TgAccountProfileUpdate(BaseModel):
@@ -222,6 +224,10 @@ class AccountPoolOut(ApiModel):
     pool_purpose: str = "normal"
     is_system: bool = False
     system_key: str = ""
+    is_enabled: bool = True
+    disabled_at: datetime | None = None
+    disabled_by: str = ""
+    disable_reason: str = ""
     account_count: int = 0
     created_at: datetime
     updated_at: datetime
