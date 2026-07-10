@@ -257,6 +257,47 @@ def test_api_error_message_formats_fastapi_detail_for_direct_error_message_views
     assert "JSON.parse(error.body)" not in modal_state
 
 
+def _required_frontend_source(relative_path: str) -> str:
+    path = PROJECT_ROOT / relative_path
+    assert path.exists(), f"missing frontend source: {relative_path}"
+    return path.read_text()
+
+
+def test_remote_operation_target_hook_uses_bounded_query_identity_and_immutable_hydration():
+    hook = _required_frontend_source("frontend/src/app/hooks/useOperationTargetOptions.ts")
+    types = _required_frontend_source("frontend/src/app/types/operations.ts")
+    client = _required_frontend_source("frontend/src/shared/api/client.ts")
+
+    assert "export type OperationTargetOptionQuery = Readonly<{" in types
+    assert "readonly ids?: readonly number[];" in types
+    for capability in ["'send'", "'listen'", "'archive'", "'task'"]:
+        assert capability in types
+
+    assert "const OPERATION_TARGET_PAGE_SIZE = 50;" in hook
+    assert "params.set('page', '1');" in hook
+    assert "params.set('page_size', String(OPERATION_TARGET_PAGE_SIZE));" in hook
+    assert "params.set('q', query.q);" in hook
+    assert "params.set('target_type', query.targetType);" in hook
+    assert "params.set('account_id', String(query.accountId));" in hook
+    assert "params.set('capability', query.capability);" in hook
+    assert "params.append('ids', String(id));" in hook
+    assert "apiWithMeta<OperationTarget[]>" in hook
+    assert "response.headers.get('x-total-count')" in hook
+
+    assert "type OperationTargetRequestIdentity = Readonly<{" in hook
+    assert "sequence: number;" in hook
+    assert "queryKey: string;" in hook
+    assert "searchRequestRef" in hook
+    assert "hydrationRequestRef" in hook
+    assert "isCurrentRequest" in hook
+    assert "setPageTargets(response.data);" in hook
+    assert "setSelectedTargets((current) => mergeOperationTargets(current, response.data));" in hook
+    assert "return [...byId.values()];" in hook
+
+    assert "const { timeoutMs = 15_000" in client
+    assert "timeoutMs:" not in hook
+
+
 def test_frontend_operator_template_can_open_and_manage_ai_voice_profiles():
     source = (PROJECT_ROOT / "frontend/src/app/AppModals.tsx").read_text()
     operator_template = source[source.index("'运营管理员'"):source.index("'账号添加专员'")]

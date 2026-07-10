@@ -22,6 +22,16 @@ export type OperationTarget = {
   updated_at: string;
 };
 
+export type OperationTargetCapability = 'send' | 'listen' | 'archive' | 'task';
+
+export type OperationTargetOptionQuery = Readonly<{
+  readonly q?: string;
+  readonly targetType?: OperationTarget['target_type'];
+  readonly accountId?: number;
+  readonly capability?: OperationTargetCapability;
+  readonly ids?: readonly number[];
+}>;
+
 export type OperationPlanTarget = {
   id: number;
   tenant_id: number;

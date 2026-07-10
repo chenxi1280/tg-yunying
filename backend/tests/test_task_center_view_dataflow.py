@@ -360,6 +360,34 @@ def test_task_center_action_pages_ignore_stale_page_requests_for_same_task():
     assert catch_guard_index < catch_page_index
 
 
+def _required_remote_target_source(relative_path: str) -> str:
+    path = PROJECT_ROOT / relative_path
+    assert path.exists(), f"missing frontend source: {relative_path}"
+    return path.read_text()
+
+
+def test_remote_operation_target_select_supports_search_errors_and_stable_selected_values():
+    source = _required_remote_target_source("frontend/src/app/components/OperationTargetSelect.tsx")
+
+    assert "useOperationTargetOptions" in source
+    assert "mode?: 'multiple';" in source
+    assert "showSearch" in source
+    assert "filterOption={false}" in source
+    assert "onSearch={search}" in source
+    assert "loading={loading}" in source
+    assert "status={error ? 'error' : status}" in source
+    assert "notFoundContent={notFoundContent}" in source
+    assert "ids: selectedIds" in source
+    assert "value={value}" in source
+    assert "onTargetsLoaded?.(targets);" in source
+    assert "onChange" not in source[source.index("React.useEffect"):source.index("return (")]
+
+
+@pytest.mark.xfail(strict=True, reason="Task 5 migrates TaskCenter to the shared remote target loader")
+def test_target_support_task_center_unbounded_call_is_pending_task_5_migration():
+    assert "api<OperationTarget[]>('/operation-targets')" not in _source()
+
+
 def test_task_center_detail_section_pages_ignore_stale_page_requests_for_same_task():
     source = _source()
     section_page = source[source.index("async function loadDetailSectionPage"):source.index("\n\n  function loadDetailSectionsForDetail")]
