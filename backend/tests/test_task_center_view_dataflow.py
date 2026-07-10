@@ -377,6 +377,9 @@ def test_remote_operation_target_select_supports_search_errors_and_stable_select
     assert "loading={loading}" in source
     assert "status={error ? 'error' : status}" in source
     assert "notFoundContent={notFoundContent}" in source
+    assert 'role="alert"' in source
+    assert "运营目标加载失败：{error}" in source
+    assert source.index('role="alert"') > source.index("notFoundContent={notFoundContent}")
     assert "ids: selectedIds" in source
     assert "value={value}" in source
     assert "onTargetsLoaded?.(targets);" in source

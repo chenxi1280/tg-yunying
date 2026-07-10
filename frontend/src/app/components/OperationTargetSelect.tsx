@@ -57,17 +57,20 @@ export default function OperationTargetSelect({
   }, [onTargetsLoaded, targets]);
 
   return (
-    <Select<OperationTargetSelectValue>
-      {...selectProps}
-      mode={mode}
-      value={value}
-      options={options}
-      showSearch
-      filterOption={false}
-      onSearch={search}
-      loading={loading}
-      status={error ? 'error' : status}
-      notFoundContent={notFoundContent}
-    />
+    <>
+      <Select<OperationTargetSelectValue>
+        {...selectProps}
+        mode={mode}
+        value={value}
+        options={options}
+        showSearch
+        filterOption={false}
+        onSearch={search}
+        loading={loading}
+        status={error ? 'error' : status}
+        notFoundContent={notFoundContent}
+      />
+      {error && <div role="alert">运营目标加载失败：{error}</div>}
+    </>
   );
 }

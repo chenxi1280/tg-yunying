@@ -291,8 +291,16 @@ def test_remote_operation_target_hook_uses_bounded_query_identity_and_immutable_
     assert "hydrationRequestRef" in hook
     assert "isCurrentRequest" in hook
     assert "setPageTargets(response.data);" in hook
-    assert "setSelectedTargets((current) => mergeOperationTargets(current, response.data));" in hook
     assert "return [...byId.values()];" in hook
+
+    hydration_start = hook.index("const ensureIds = React.useCallback")
+    hydration_end = hook.index("const selectedIdsKey", hydration_start)
+    hydration = hook[hydration_start:hydration_end]
+    assert "setSelectedTargets([]);" in hydration
+    assert hydration.index("setSelectedTargets([]);") < hydration.index("setLoading(true);")
+    assert "const hydrated = mergeOperationTargets([], responses.flatMap((response) => response.data));" in hydration
+    assert "setSelectedTargets(hydrated);" in hydration
+    assert "setSelectedTargets((current) => mergeOperationTargets(current, response.data));" not in hydration
 
     assert "const { timeoutMs = 15_000" in client
     assert "timeoutMs:" not in hook

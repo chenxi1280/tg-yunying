@@ -136,6 +136,7 @@ function useOperationTargetHydration(query: OperationTargetOptionQuery, selected
     const normalized = normalizeQuery(query, '', normalizedIds);
     const request = beginRequest(hydrationRequestRef, queryIdentity(normalized));
     setError('');
+    setSelectedTargets([]);
     if (!normalizedIds.length) {
       setLoading(false);
       return;
@@ -144,9 +145,8 @@ function useOperationTargetHydration(query: OperationTargetOptionQuery, selected
     try {
       const responses = await loadTargetIdBatches(normalized);
       if (!isCurrentRequest(hydrationRequestRef, request)) return;
-      for (const response of responses) {
-        setSelectedTargets((current) => mergeOperationTargets(current, response.data));
-      }
+      const hydrated = mergeOperationTargets([], responses.flatMap((response) => response.data));
+      setSelectedTargets(hydrated);
     } catch (error) {
       if (!isCurrentRequest(hydrationRequestRef, request)) return;
       setError(requestErrorMessage(error));
@@ -156,8 +156,6 @@ function useOperationTargetHydration(query: OperationTargetOptionQuery, selected
   }, [query.accountId, query.capability, query.targetType]);
   const selectedIdsKey = selectedIds.join(',');
   React.useEffect(() => {
-    const allowedIds = new Set(selectedIds);
-    setSelectedTargets((current) => current.filter((target) => allowedIds.has(target.id)));
     void ensureIds(selectedIds);
   }, [ensureIds, reloadVersion, selectedIdsKey]);
   return { selectedTargets, loading, error, ensureIds } as const;
