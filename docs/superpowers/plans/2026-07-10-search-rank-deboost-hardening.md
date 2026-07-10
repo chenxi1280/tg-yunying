@@ -134,7 +134,7 @@ git commit -m "feat: add rank deboost persistence and usage policy"
 - Test: `backend/tests/test_account_usage_hard_boundaries.py`
 - Test: `backend/tests/test_search_rank_deboost_account_isolation.py`
 
-- [ ] **Step 1: Write failing lifecycle and boundary tests**
+- [x] **Step 1: Write failing lifecycle and boundary tests**
 
 Cover creating two custom rank pools, one idempotent default pool, enable/disable, immutable purpose, forbidden deletion, normal-to-rank and rank-to-normal atomic movement, and disabled destination rejection. Parametrize the hard boundary over ordinary task all/group/manual, MessageTask/Campaign, listener, profile initialization, mask initialization, 2FA rotation and device cleanup.
 
@@ -145,23 +145,23 @@ def test_ordinary_selection_excludes_dedicated_accounts(session, selection_mode,
     assert ids == [normal_account.id]
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run the three focused files. Expected: custom pool lifecycle and boundary cases fail against current single-group/identity-only behavior.
 
-- [ ] **Step 3: Implement lifecycle and atomic movement**
+- [x] **Step 3: Implement lifecycle and atomic movement**
 
 `POST /api/account-pools/rank-deboost` with body always creates a custom non-system group; empty body delegates to the default endpoint during compatibility. `PATCH` accepts `is_enabled` and disable metadata but rejects purpose/system changes. `move_account_pool` delegates to `sync_account_usage`, cancels incompatible pending actions in the same transaction, audits before/after, and no longer blocks valid normal-to-rank movement.
 
-- [ ] **Step 4: Route all action boundaries through policy**
+- [x] **Step 4: Route all action boundaries through policy**
 
 Replace identity-only filters and direct account dispatches with `apply_operational_account_filters`, `apply_rank_deboost_account_filters`, or `assert_account_action_allowed`. Login, re-login, authorization diagnostics, standby session repair, read-only health/device diagnostics and official code reading remain allowed for all purposes; external operational/security mutations obey the matrix.
 
-- [ ] **Step 5: Verify GREEN and regressions**
+- [x] **Step 5: Verify GREEN and regressions**
 
 Run focused tests and existing account/task permission tests. Expected: all selectors and direct service calls fail closed on mismatch and dedicated accounts cannot enter ordinary actions.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add backend/app/services backend/app/api/routers backend/tests/test_rank_deboost_pool_lifecycle.py backend/tests/test_account_usage_hard_boundaries.py backend/tests/test_search_rank_deboost_account_isolation.py
