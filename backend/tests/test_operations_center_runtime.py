@@ -6538,6 +6538,18 @@ def test_operation_target_filter_supports_search_and_exact_scopes():
     assert [row["id"] for row in account_targets] == [101]
 
 
+def test_operation_target_filter_does_not_search_authorization_status():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        _seed_operation_target_filter_fixture(session)
+        rows, total = _list_operation_target_page(session, q="已授权运营")
+
+    assert total == 0
+    assert rows == []
+
+
 @pytest.mark.parametrize(
     ("capability", "expected_ids"),
     [
@@ -6567,6 +6579,8 @@ def test_operation_target_filter_supports_capability_values(capability: str, exp
         {"capability": "unknown"},
         {"ids": tuple(range(1, 102))},
         {"q": "x" * 121},
+        {"page": 0},
+        {"page_size": 0},
     ],
 )
 def test_operation_target_filter_rejects_invalid_or_cross_tenant_scope(query_overrides: dict):

@@ -75,8 +75,8 @@ def _normalize_query(query: OperationTargetListQuery) -> OperationTargetListQuer
 def _normalized_paging(query: OperationTargetListQuery) -> dict[str, int | None]:
     if query.page is None and query.page_size is None:
         return {"page": None, "page_size": None}
-    page = query.page or DEFAULT_PAGE
-    page_size = query.page_size or DEFAULT_PAGE_SIZE
+    page = query.page if query.page is not None else DEFAULT_PAGE
+    page_size = query.page_size if query.page_size is not None else DEFAULT_PAGE_SIZE
     if page < 1:
         raise ValueError("page must be positive")
     if page_size < 1 or page_size > MAX_PAGE_SIZE:
@@ -163,7 +163,6 @@ def _search_filter(value: str):
         OperationTarget.title.ilike(pattern),
         OperationTarget.username.ilike(pattern),
         OperationTarget.tg_peer_id.ilike(pattern),
-        OperationTarget.auth_status.ilike(pattern),
     ]
     if value.isdigit():
         filters.append(OperationTarget.id == int(value))
