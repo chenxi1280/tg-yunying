@@ -119,15 +119,17 @@ docker compose exec -T worker-planner sh -lc 'now=$(date +%s); last=$(cat "${WOR
 
 ### 真实执行闸门
 
-- 任务创建只进入 `draft` 准备态；`create_and_start` / `start_task` 必须同时满足真实豁免群已从 Telegram Gateway 搜索结果中选出、`execute_search_rank_deboost` gateway 已接入、协议样本和分组级代理绑定预检通过，才能进入 `running`。
+- 当前代码只具备 draft 和闸门结构，真实 `TelethonTelegramGateway` 方法尚未落地；在 `docs/03-feature-designs/search-rank-deboost-hardening-design.md` 对应实现、迁移和测试完成前，不得通过 monkeypatch/fixture 证明生产可运行。
+- 任务创建只进入 `draft` 准备态；`create_and_start` / `start_task` 必须同时满足真实豁免群已从生产 Gateway 搜索结果中选出、生产类显式实现 `search_rank_deboost_candidates/execute_search_rank_deboost`、协议样本和全部涉及分组持久代理绑定预检通过，才能进入 `running`。
 - `search_rank_deboost_exempt_groups.exempt_group_username=pending_real_search` 只表示待接入真实搜索结果；Planner 遇到该占位值必须以 `exempt_group_pending_real_search` 阻断，不得生成 action。
-- Dispatcher 不得用 `account_group_proxy_bindings.observed_exit_ip` 自证出口；真实执行必须由 gateway 本次返回 `observed_exit_ip` / `probe_exit_ip` 后再调用分组级出口校验。缺失、漂移或 binding 非 active 时写 `proxy_egress_guard_failed`，不得回退本机直连。
+- Dispatcher 不得用 `account_group_proxy_bindings.observed_exit_ip` 自证出口；真实执行必须由 Gateway 使用分组 `runtime_proxy_id` 对应的 SOCKS/HTTP 端点完成当前 HTTPS 出口探测，并用同一代理指纹创建 Telethon client。缺失、漂移、协议不支持或 binding 非 active 时写 `proxy_egress_guard_failed`，不得回退本机直连、账号旧代理或授权槽位代理。
+- 每个 action 最多一次 `navigate_only` 真实点击；只有 Gateway 返回 `click_outcomes.status=confirmed` 才写成功点击统计。`observed_no_click` 不计点击成功，`unknown_after_click` 占用配额且不得自动重试。
 
 ### 灰度账号范围
 
-- 首版只允许人工选择 5-10 个已养号账号灰度，账号必须归属于 `pool_purpose=rank_deboost` 专用分组。
-- 不允许默认全量扩到 100+ 账号；扩量必须基于灰度期观察结论，由运营显式确认后再分批增量。
-- 代码硬上限：`validate_rank_deboost_preconditions` 与 Executor `build_plan` 均以常量 `RANK_DEBOOST_GRADUATION_ACCOUNT_LIMIT = 10` 兜底，分组账号数 > 10 时任务创建直接拒绝、任务启动时 Planner 以 `graduation_account_limit_exceeded` 阻断。调整上限必须同步本段文档与代码常量。
+- 首次真实环境验收只使用一个启用降权专用组和 1-2 个已养号账号，先证明用途隔离、同端点出口、真实搜索和单次安全点击闭环。
+- 产品层 `selection_mode=all` 的语义必须是所有启用降权组中的一致可用账号，不设置与该语义冲突的账号数硬上限；风险通过每 action 一次点击、账号/关键词/分组 IP/任务小时 reservation、冷却和分组启禁用控制。
+- 扩量前必须确认普通任务 all/group/manual 均排除降权账号，并按分组逐步启用；不得通过减少候选集、静默抽样或回退普通账号伪装“全部账号”。
 
 ### 协议样本采集门槛
 

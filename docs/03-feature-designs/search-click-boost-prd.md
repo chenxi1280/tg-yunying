@@ -221,7 +221,7 @@ pending -> claiming -> executing -> success / failed / skipped
 | 点击/浏览不帮别人加权 | 非目标结果只做 `navigate_only` 安全浏览，且总量默认 ≤ 3，不加入、不关注、不外跳 | 非目标群被误加权，且系统行为像批量刷点击 |
 | 反作弊结果可见 | 任何 bot 拒绝、FloodWait、结构变化、账号锁、代理问题都进入 stats 和风控，不隐藏为普通跳过 | 运营无法知道是策略问题、账号问题还是第三方规则变化 |
 
-**`search_rank_deboost` 例外条款（对 §4.10 非目标浏览约束的例外）**：对 `search_rank_deboost` 任务，非目标浏览总量不再受 ≤3 限制，但必须满足：(1) 只点击 `button_effect=navigate_only` 的按钮；(2) 竞争群结果项含 `join_candidate` 按钮时只点开导航按钮、不点加入按钮；(3) 每次点击都写 `search_rank_deboost_action_stats`，包含 button hash、位置、effect、停留时长、`joined=false`、`join_button_detected=true/false`；(4) 不得加入、关注、外跳、投票、发言、点击 `external_http_url` 或 `unknown` 按钮；(5) 实时 pacing / random decision 不调用 LLM。`search_join_group` 的「非目标 ≤3 navigate_only」原约束保持不变。
+**`search_rank_deboost` 例外条款（对 §4.10 非目标浏览约束的例外）**：对 `search_rank_deboost` 任务，跨 action 的非目标浏览总量不受 `search_join_group` 单任务 ≤3 约束，但每个 action 最多执行 1 次真实点击，并必须满足：(1) 只点击 `button_effect=navigate_only` 的按钮；(2) 竞争群结果项含 `join_candidate` 按钮时只点开明确分类为导航的独立按钮、不点加入按钮；(3) Gateway 返回逐点击 outcome，只有 `status=confirmed` 才写 `search_rank_deboost_action_stats`，包含 button hash、位置、effect、停留时长、`joined=false`、`join_button_detected=true/false`；(4) `observed_no_click` 不计点击成功，`unknown_after_click` 不自动重试并继续占用配额；(5) 不得加入、关注、外跳、投票、发言、点击 `external_http_url` 或 `unknown` 按钮；(6) 实时 pacing / random decision 不调用 LLM。账号用途、多降权组、分组持久运行代理、同端点出口探测、逐点击 reservation 和真实 Gateway 口径见 `search-rank-deboost-hardening-design.md`。`search_join_group` 的「非目标 ≤3 navigate_only」原约束保持不变。
 
 新增效果归因维度：
 
