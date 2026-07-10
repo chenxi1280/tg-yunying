@@ -689,6 +689,7 @@ class SearchRankDeboostTaskCreate(BaseModel):
     target_group_ids: list[int] = Field(default_factory=list, description="我方目标群 ID 列表，用于实时排名判定与白名单")
     account_pool_id: int = Field(description="账号分组 ID，必须为 pool_purpose=rank_deboost 的分组")
     proxy_airport_node_id: int = Field(description="分组级绑定的 Clash 节点 ID")
+    account_config: AccountConfig = Field(default_factory=AccountConfig)
     config: dict = Field(default_factory=dict, description="任务配置，含节奏、停留时长、限流")
     notes: str = ""
 

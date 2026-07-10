@@ -655,6 +655,8 @@ def create_search_rank_deboost_task(
     tenant_id: int,
     payload: SearchRankDeboostTaskCreate,
     operator: str,
+    *,
+    commit: bool = True,
 ) -> Task:
     """创建搜索排名观察任务。
 
@@ -682,7 +684,7 @@ def create_search_rank_deboost_task(
         status="draft",
         priority=3,
         timezone="Asia/Shanghai",
-        account_config={},
+        account_config=payload.account_config.model_dump(mode="json"),
         pacing_config={},
         failure_policy={},
         type_config=type_config,
@@ -719,8 +721,11 @@ def create_search_rank_deboost_task(
         target_id=task.id,
         detail="search_rank_deboost",
     )
-    session.commit()
-    session.refresh(task)
+    if commit:
+        session.commit()
+        session.refresh(task)
+    else:
+        session.flush()
     return task
 
 
@@ -730,9 +735,13 @@ def create_and_start_search_rank_deboost_task(
     payload: SearchRankDeboostTaskCreate,
     operator: str,
 ) -> Task:
-    """创建并启动搜索排名观察任务；未满足真实执行闸门时保留草稿并抛错。"""
-    task = create_search_rank_deboost_task(session, tenant_id, payload, operator)
-    return start_task(session, tenant_id, task.id, operator)
+    """创建并启动搜索排名观察任务；未满足真实执行闸门时回滚全部创建痕迹。"""
+    try:
+        task = create_search_rank_deboost_task(session, tenant_id, payload, operator, commit=False)
+        return start_task(session, tenant_id, task.id, operator)
+    except Exception:
+        session.rollback()
+        raise
 
 
 def update_search_rank_deboost_config(

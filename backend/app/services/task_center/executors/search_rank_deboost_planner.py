@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import AccountProxy, AccountStatus, SearchRankDeboostExemptGroup, Task, TgAccount
@@ -14,11 +14,11 @@ from app.services.account_usage_policy import apply_rank_deboost_account_filters
 from app.services.proxy_airport_accounts import AVAILABLE_NODE_STATUS, EXECUTABLE_PROXY_PROTOCOLS
 from app.services.search_rank_deboost_alerts import record_exempt_group_missing_alert
 from app.services.task_center.payloads import SearchRankDeboostPayload, create_search_rank_deboost_action
+from app.services.task_center.search_rank_deboost_reservations import reserve_click
 
 from ..search_rank_deboost import (
     EXEMPT_GROUP_PENDING_REAL_SEARCH,
     EXEMPT_PLACEHOLDER_USERNAME,
-    RANK_DEBOOST_GRADUATION_ACCOUNT_LIMIT,
     is_pending_exempt_group,
     validate_rank_deboost_protocol_samples,
 )
@@ -44,12 +44,10 @@ class PlanBlock(Exception):
 @dataclass(frozen=True)
 class PlanContext:
     config: dict
+    account_config: dict
     bot_username: str
     keywords: list[str]
     target_group_ids: list[int]
-    account_pool_id: int
-    proxy_airport_node_id: int
-    binding: AccountGroupProxyBinding
     exempt_group_username: str
     dwell_seconds_min: int
     dwell_seconds_max: int
@@ -64,10 +62,13 @@ def build_plan(session: Session, task: Task) -> int:
     except PlanBlock as exc:
         return _block(task, exc.code, exc.message)
 
-    accounts = _rank_deboost_pool_accounts(session, task.tenant_id, context.account_pool_id)
+    accounts = _rank_deboost_accounts(session, task.tenant_id, context.account_config)
     if not accounts:
         return _block(task, "account_unavailable", "排名观察专用分组无可用账号")
-    return _create_planned_actions(session, task, context, accounts)
+    try:
+        return _create_planned_actions(session, task, context, accounts)
+    except PlanBlock as exc:
+        return _block(task, exc.code, exc.message)
 
 
 def _resolve_plan_context(session: Session, task: Task) -> PlanContext:
@@ -78,19 +79,15 @@ def _resolve_plan_context(session: Session, task: Task) -> PlanContext:
     if not keywords:
         raise PlanBlock("keyword_missing", "搜索排名观察任务缺少关键词配置")
     target_group_ids = _target_group_ids(config)
-    account_pool_id, proxy_airport_node_id = _binding_ids(config)
-    binding = _matching_binding(session, task, account_pool_id, proxy_airport_node_id)
-    _validate_account_limit(session, task, account_pool_id)
+    account_config = _rank_account_config(task, config)
     exempt_group_username = _exempt_group_username(session, task.tenant_id, task.id)
     _record_missing_exempt_group(session, task, exempt_group_username)
     return PlanContext(
         config=config,
+        account_config=account_config,
         bot_username=bot_username,
         keywords=keywords,
         target_group_ids=target_group_ids,
-        account_pool_id=account_pool_id,
-        proxy_airport_node_id=proxy_airport_node_id,
-        binding=binding,
         exempt_group_username=exempt_group_username,
         dwell_seconds_min=int(config.get("dwell_seconds_min") or DEFAULT_DWELL_SECONDS_MIN),
         dwell_seconds_max=int(config.get("dwell_seconds_max") or DEFAULT_DWELL_SECONDS_MAX),
@@ -112,22 +109,23 @@ def _target_group_ids(config: dict) -> list[int]:
     return target_group_ids
 
 
-def _binding_ids(config: dict) -> tuple[int, int]:
+def _rank_account_config(task: Task, config: dict) -> dict:
+    account_config = dict(task.account_config or {})
+    if account_config:
+        return account_config
     account_pool_id = int(config.get("account_pool_id") or 0)
-    proxy_airport_node_id = int(config.get("proxy_airport_node_id") or 0)
-    if account_pool_id <= 0 or proxy_airport_node_id <= 0:
-        raise PlanBlock("binding_missing", "搜索排名观察任务缺少账号分组或代理节点配置")
-    return account_pool_id, proxy_airport_node_id
+    if account_pool_id > 0:
+        return {"selection_mode": "group", "account_group_id": account_pool_id}
+    return {"selection_mode": "all"}
 
 
-def _matching_binding(
+def _matching_binding_for_account(
     session: Session,
     task: Task,
-    account_pool_id: int,
-    proxy_airport_node_id: int,
+    account: TgAccount,
 ) -> AccountGroupProxyBinding:
-    binding = _active_group_binding(session, task.tenant_id, account_pool_id)
-    if binding is None or binding.proxy_airport_node_id != proxy_airport_node_id:
+    binding = _active_group_binding(session, task.tenant_id, int(account.pool_id or 0))
+    if binding is None:
         raise PlanBlock("group_proxy_binding_missing", "搜索排名观察任务缺少 active 分组级代理绑定")
     _assert_runtime_proxy_ready(session, task.tenant_id, binding)
     return binding
@@ -143,21 +141,6 @@ def _assert_runtime_proxy_ready(session: Session, tenant_id: int, binding: Accou
     host = (proxy.host or "").strip()
     if protocol not in EXECUTABLE_PROXY_PROTOCOLS or not host or int(proxy.port or 0) <= 0 or proxy.status != AVAILABLE_NODE_STATUS:
         raise PlanBlock("group_proxy_runtime_proxy_invalid", "搜索排名观察分组绑定 runtime proxy 不可执行")
-
-
-def _validate_account_limit(session: Session, task: Task, account_pool_id: int) -> None:
-    account_count = session.scalar(
-        select(func.count(TgAccount.id)).where(
-            TgAccount.tenant_id == task.tenant_id,
-            TgAccount.pool_id == account_pool_id,
-        )
-    ) or 0
-    if account_count > RANK_DEBOOST_GRADUATION_ACCOUNT_LIMIT:
-        raise PlanBlock(
-            "graduation_account_limit_exceeded",
-            f"rank_deboost 分组 {account_pool_id} 灰度账号数 {account_count} 超过上限 "
-            f"{RANK_DEBOOST_GRADUATION_ACCOUNT_LIMIT}",
-        )
 
 
 def _record_missing_exempt_group(session: Session, task: Task, username: str) -> None:
@@ -199,11 +182,22 @@ def _create_account_action(
     window = deboost_pacing_window(task, now_value)
     for keyword in context.keywords:
         keyword_hash = _hash_keyword(keyword)
-        if not account_click_allowed(session, task, account.id, keyword_hash, context.account_pool_id, window, pacing_stats):
+        account_pool_id = int(account.pool_id or 0)
+        if not account_click_allowed(session, task, account.id, keyword_hash, account_pool_id, window, pacing_stats):
             _count_blocker(blockers, pacing_stats.last_limit_reason or "pacing_blocked")
             continue
-        payload = _build_payload(context, keyword_hash, keyword)
-        create_search_rank_deboost_action(session, task, account.id, now_value, payload)
+        binding = _matching_binding_for_account(session, task, account)
+        payload = _build_payload(context, binding, account_pool_id, keyword_hash, keyword)
+        action = create_search_rank_deboost_action(session, task, account.id, now_value, payload)
+        reserve_click(
+            session,
+            task=task,
+            action=action,
+            account=account,
+            account_pool_id=account_pool_id,
+            keyword_hash=keyword_hash,
+            now_value=now_value,
+        )
         return 1
     return 0
 
@@ -216,25 +210,31 @@ def _pacing_stats(task: Task, now_value) -> DeboostPacingStats:
     )
 
 
-def _build_payload(context: PlanContext, keyword_hash: str, keyword_text: str) -> SearchRankDeboostPayload:
+def _build_payload(
+    context: PlanContext,
+    binding: AccountGroupProxyBinding,
+    account_pool_id: int,
+    keyword_hash: str,
+    keyword_text: str,
+) -> SearchRankDeboostPayload:
     return SearchRankDeboostPayload(
         bot_username=context.bot_username,
         keyword_hash=keyword_hash,
         keyword_text_ciphertext=encrypt_secret(keyword_text),
         target_group_ids=context.target_group_ids,
-        account_pool_id=context.account_pool_id,
-        proxy_airport_node_id=context.proxy_airport_node_id,
+        account_pool_id=account_pool_id,
+        proxy_airport_node_id=int(binding.proxy_airport_node_id),
         exempt_group_username=context.exempt_group_username,
         dwell_seconds_min=context.dwell_seconds_min,
         dwell_seconds_max=context.dwell_seconds_max,
         runtime_environment={
             "proxy_egress_guard": "verified",
-            "group_proxy_binding_id": str(context.binding.id),
-            "runtime_proxy_id": str(context.binding.runtime_proxy_id),
-            "binding_generation": str(context.binding.binding_generation),
-            "proxy_airport_node_id": str(context.proxy_airport_node_id),
-            "account_pool_id": str(context.account_pool_id),
-            "observed_exit_ip": context.binding.observed_exit_ip or "",
+            "group_proxy_binding_id": str(binding.id),
+            "runtime_proxy_id": str(binding.runtime_proxy_id),
+            "binding_generation": str(binding.binding_generation),
+            "proxy_airport_node_id": str(binding.proxy_airport_node_id),
+            "account_pool_id": str(account_pool_id),
+            "observed_exit_ip": binding.observed_exit_ip or "",
         },
     )
 
@@ -267,16 +267,29 @@ def _hash_keyword(text: str) -> str:
     return hashlib.sha256(text.strip().lower().encode("utf-8")).hexdigest()
 
 
-def _rank_deboost_pool_accounts(session: Session, tenant_id: int, account_pool_id: int) -> list[TgAccount]:
+def _rank_deboost_accounts(session: Session, tenant_id: int, account_config: dict) -> list[TgAccount]:
     stmt = apply_rank_deboost_account_filters(
         select(TgAccount).where(
             TgAccount.tenant_id == tenant_id,
-            TgAccount.pool_id == account_pool_id,
             TgAccount.deleted_at.is_(None),
             TgAccount.status == AccountStatus.ACTIVE.value,
         )
     )
+    stmt = _apply_rank_account_selection(stmt, account_config)
+    if stmt is None:
+        return []
     return list(session.scalars(stmt.order_by(TgAccount.id.asc())))
+
+
+def _apply_rank_account_selection(stmt, account_config: dict):
+    mode = str(account_config.get("selection_mode") or "all")
+    if mode == "manual":
+        account_ids = [int(item) for item in account_config.get("account_ids") or [] if int(item) > 0]
+        return stmt.where(TgAccount.id.in_(account_ids)) if account_ids else None
+    if mode == "group":
+        pool_id = int(account_config.get("account_group_id") or 0)
+        return stmt.where(TgAccount.pool_id == pool_id) if pool_id > 0 else None
+    return stmt
 
 
 def _active_group_binding(session: Session, tenant_id: int, account_pool_id: int) -> AccountGroupProxyBinding | None:

@@ -35,6 +35,7 @@ from app.models import (
 from app.models.search_rank_deboost import (
     AccountGroupProxyBinding,
     SearchRankDeboostActionStat,
+    SearchRankDeboostClickReservation,
     SearchRankDeboostExemptGroup,
 )
 from app.services._common import _now
@@ -284,6 +285,11 @@ def test_build_plan_creates_actions_for_rank_deboost_accounts() -> None:
         assert len(actions) == 2
         assert all(a.action_type == "search_rank_deboost" for a in actions)
         assert all(a.status == "pending" for a in actions)
+        reservations = session.query(SearchRankDeboostClickReservation).filter_by(task_id=task.id).all()
+        assert len(reservations) == 2
+        assert {row.action_id for row in reservations} == {action.id for action in actions}
+        assert {row.status for row in reservations} == {"reserved"}
+        assert {row.reserved_count for row in reservations} == {1}
         # payload 含稳定的 runtime proxy 合同
         for action in actions:
             runtime = action.payload["runtime_environment"]
@@ -292,6 +298,129 @@ def test_build_plan_creates_actions_for_rank_deboost_accounts() -> None:
             assert runtime["binding_generation"] == "1"
             assert action.payload["bot_username"] == "jisou"
             assert len(action.payload["keyword_hash"]) == 64
+
+
+def test_executor_consumes_reservation_for_confirmed_gateway_outcome() -> None:
+    """Gateway confirmed factual outcome 消费 reservation 且只按 outcome 写一条 stat。"""
+    engine = _build_engine()
+    with Session(engine) as session:
+        binding, accounts = _seed_base(session)
+        task = _make_task(session)
+        account = accounts[0]
+        payload = _make_payload(task, account_id=account.id, binding_id=binding.id)
+        action = _make_action(session, task, account, payload)
+        reservation = SearchRankDeboostClickReservation(
+            tenant_id=1,
+            task_id=task.id,
+            action_id=action.id,
+            account_id=account.id,
+            account_pool_id=10,
+            keyword_hash=KEYWORD_HASH_A,
+            local_date=_now().date(),
+            hour_bucket=_now().replace(minute=0, second=0, microsecond=0),
+            expires_at=_now() + timedelta(minutes=15),
+        )
+        session.add(reservation)
+        session.commit()
+
+        gateway_execute = lambda *_args: {
+            "success": True,
+            "execution_status": "confirmed",
+            "observed_exit_ip": "1.1.1.1",
+            "search_results": [{"position": 1, "username": "competitor_a"}],
+            "click_outcomes": [{"row": 0, "col": 0, "effect": "navigate_only", "status": "confirmed"}],
+        }
+
+        result = execute_search_rank_deboost(session, action, account, payload, gateway_execute=gateway_execute)
+
+        assert result["success"] is True
+        assert result["execution_status"] == "confirmed"
+        session.refresh(reservation)
+        assert reservation.status == "consumed"
+        assert reservation.consumed_count == 1
+        stats = session.query(SearchRankDeboostActionStat).filter_by(action_id=action.id).all()
+        assert len(stats) == 1
+        assert stats[0].button_effect == "navigate_only"
+
+
+def test_executor_marks_reservation_unknown_after_click() -> None:
+    """unknown_after_click 保留 quota，不写点击 stat，不自动释放重试。"""
+    engine = _build_engine()
+    with Session(engine) as session:
+        binding, accounts = _seed_base(session)
+        task = _make_task(session)
+        account = accounts[0]
+        payload = _make_payload(task, account_id=account.id, binding_id=binding.id)
+        action = _make_action(session, task, account, payload)
+        reservation = SearchRankDeboostClickReservation(
+            tenant_id=1,
+            task_id=task.id,
+            action_id=action.id,
+            account_id=account.id,
+            account_pool_id=10,
+            keyword_hash=KEYWORD_HASH_A,
+            local_date=_now().date(),
+            hour_bucket=_now().replace(minute=0, second=0, microsecond=0),
+            expires_at=_now() + timedelta(minutes=15),
+        )
+        session.add(reservation)
+        session.commit()
+
+        gateway_execute = lambda *_args: {
+            "success": False,
+            "execution_status": "unknown_after_click",
+            "observed_exit_ip": "1.1.1.1",
+            "click_outcomes": [{"row": 0, "col": 0, "effect": "navigate_only", "status": "unknown_after_click"}],
+        }
+
+        result = execute_search_rank_deboost(session, action, account, payload, gateway_execute=gateway_execute)
+
+        assert result["success"] is False
+        assert result["execution_status"] == "unknown_after_click"
+        session.refresh(reservation)
+        assert reservation.status == "unknown"
+        assert reservation.consumed_count == 1
+        assert session.query(SearchRankDeboostActionStat).filter_by(action_id=action.id).count() == 0
+
+
+def test_executor_releases_reservation_for_observed_no_click() -> None:
+    """observed_no_click 不消耗 quota，不写点击 stat。"""
+    engine = _build_engine()
+    with Session(engine) as session:
+        binding, accounts = _seed_base(session)
+        task = _make_task(session)
+        account = accounts[0]
+        payload = _make_payload(task, account_id=account.id, binding_id=binding.id)
+        action = _make_action(session, task, account, payload)
+        reservation = SearchRankDeboostClickReservation(
+            tenant_id=1,
+            task_id=task.id,
+            action_id=action.id,
+            account_id=account.id,
+            account_pool_id=10,
+            keyword_hash=KEYWORD_HASH_A,
+            local_date=_now().date(),
+            hour_bucket=_now().replace(minute=0, second=0, microsecond=0),
+            expires_at=_now() + timedelta(minutes=15),
+        )
+        session.add(reservation)
+        session.commit()
+
+        gateway_execute = lambda *_args: {
+            "success": False,
+            "execution_status": "observed_no_click",
+            "observed_exit_ip": "1.1.1.1",
+            "click_outcomes": [],
+        }
+
+        result = execute_search_rank_deboost(session, action, account, payload, gateway_execute=gateway_execute)
+
+        assert result["success"] is False
+        assert result["skip_reason"] == "observed_no_click"
+        session.refresh(reservation)
+        assert reservation.status == "released"
+        assert reservation.consumed_count == 0
+        assert session.query(SearchRankDeboostActionStat).filter_by(action_id=action.id).count() == 0
 
 
 def test_build_plan_blocks_when_protocol_samples_missing() -> None:
@@ -350,6 +479,48 @@ def test_build_plan_blocks_when_active_binding_has_no_runtime_proxy() -> None:
         assert "runtime proxy" in (task.last_error or "")
         block_code = (task.stats or {}).get("search_rank_deboost_stats", {}).get("hourly_execution", {}).get("block_code", "")
         assert block_code == "group_proxy_runtime_proxy_missing"
+
+
+def test_build_plan_all_mode_uses_accounts_across_rank_pools() -> None:
+    """selection_mode=all 选择所有 enabled rank pool 账号，并按账号所在池绑定代理。"""
+    engine = _build_engine()
+    with Session(engine) as session:
+        _seed_base(session, account_ids=[100])
+        session.add(AccountPool(id=11, tenant_id=1, name="降权分组B", pool_purpose="rank_deboost"))
+        session.add(AccountProxy(id=31, tenant_id=1, name="rank-runtime-b", protocol="socks5", host="127.0.0.2", port=1081, status="healthy", alert_status="normal"))
+        session.add(ProxyAirportNode(id=21, tenant_id=1, subscription_id=1, node_key="node-21", status="healthy", observed_exit_ip="2.2.2.2"))
+        session.add(AccountGroupProxyBinding(
+            id=2,
+            tenant_id=1,
+            account_pool_id=11,
+            proxy_airport_node_id=21,
+            runtime_proxy_id=31,
+            binding_scope="group",
+            observed_exit_ip="2.2.2.2",
+            status="active",
+            bound_by="tester",
+        ))
+        session.add(TgAccount(
+            id=101,
+            tenant_id=1,
+            pool_id=11,
+            display_name="降权账号101",
+            phone_masked="101",
+            status=AccountStatus.ACTIVE.value,
+            account_identity="rank_deboost",
+        ))
+        task = _make_task(session, config={"max_actions_per_hour": 5})
+        task.account_config = {"selection_mode": "all", "max_concurrent": 500}
+        session.query(SearchRankDeboostExemptGroup).update({SearchRankDeboostExemptGroup.task_id: task.id})
+        session.commit()
+
+        created = build_plan(session, task)
+
+        assert created == 2
+        actions = session.query(Action).filter_by(task_id=task.id).order_by(Action.account_id).all()
+        assert [action.account_id for action in actions] == [100, 101]
+        assert [action.payload["runtime_environment"]["runtime_proxy_id"] for action in actions] == ["30", "31"]
+        assert session.query(SearchRankDeboostClickReservation).filter_by(task_id=task.id).count() == 2
 
 
 def test_build_plan_blocks_when_exempt_group_is_pending_real_search() -> None:
@@ -781,6 +952,95 @@ def test_pacing_per_account_daily_click_limit() -> None:
 
         assert allowed is False
         assert "per_account_daily_click_limit_reached" in stats.last_limit_reason
+
+
+@pytest.mark.parametrize(
+    ("reservation_status", "expected_allowed"),
+    [
+        ("reserved", False),
+        ("unknown", False),
+        ("released", True),
+    ],
+)
+def test_pacing_counts_active_reservations_for_daily_limit(reservation_status: str, expected_allowed: bool) -> None:
+    """reserved/unknown 占每日额度，released 不占。"""
+    engine = _build_engine()
+    with Session(engine) as session:
+        binding, accounts = _seed_base(session)
+        task = _make_task(session, config={"per_account_daily_click_limit": 1})
+        account = accounts[0]
+        now_value = _now()
+        session.add(SearchRankDeboostClickReservation(
+            tenant_id=1,
+            task_id=task.id,
+            action_id="reserved-action",
+            account_id=account.id,
+            account_pool_id=10,
+            keyword_hash=KEYWORD_HASH_A,
+            local_date=now_value.date(),
+            hour_bucket=now_value.replace(minute=0, second=0, microsecond=0),
+            reserved_count=1,
+            consumed_count=1 if reservation_status == "unknown" else 0,
+            status=reservation_status,
+            expires_at=now_value + timedelta(minutes=15),
+        ))
+        session.commit()
+
+        window = deboost_pacing_window(task, now_value)
+        stats = DeboostPacingStats(tenant_timezone="Asia/Shanghai", local_date=window.local_date.isoformat())
+        allowed = account_click_allowed(session, task, account.id, KEYWORD_HASH_B, 10, window, stats)
+
+        assert allowed is expected_allowed
+
+
+def test_pacing_does_not_double_count_reserved_action_stat() -> None:
+    """confirmed 后 reservation 与同 action stat 同时存在时只计一次。"""
+    engine = _build_engine()
+    with Session(engine) as session:
+        binding, accounts = _seed_base(session)
+        task = _make_task(session, config={"per_account_daily_click_limit": 2})
+        account = accounts[0]
+        now_value = _now()
+        session.add(SearchRankDeboostClickReservation(
+            tenant_id=1,
+            task_id=task.id,
+            action_id="confirmed-action",
+            account_id=account.id,
+            account_pool_id=10,
+            keyword_hash=KEYWORD_HASH_A,
+            local_date=now_value.date(),
+            hour_bucket=now_value.replace(minute=0, second=0, microsecond=0),
+            reserved_count=1,
+            consumed_count=1,
+            status="consumed",
+            expires_at=now_value + timedelta(minutes=15),
+        ))
+        session.add(SearchRankDeboostActionStat(
+            id=str(uuid4()),
+            tenant_id=1,
+            task_id=task.id,
+            action_id="confirmed-action",
+            account_id=account.id,
+            account_pool_id=10,
+            proxy_airport_node_id=20,
+            bot_username="jisou",
+            keyword_hash=KEYWORD_HASH_A,
+            competitor_group_username="competitor",
+            competitor_position=1,
+            button_hash="hash",
+            button_effect="navigate_only",
+            dwell_seconds=15,
+            hour_bucket=now_value.replace(minute=0, second=0, microsecond=0),
+            captured_at=now_value,
+            skip_reason="",
+        ))
+        session.commit()
+
+        window = deboost_pacing_window(task, now_value)
+        stats = DeboostPacingStats(tenant_timezone="Asia/Shanghai", local_date=window.local_date.isoformat())
+        allowed = account_click_allowed(session, task, account.id, KEYWORD_HASH_B, 10, window, stats)
+
+        assert allowed is True
 
 
 def test_pacing_per_keyword_account_daily_limit() -> None:

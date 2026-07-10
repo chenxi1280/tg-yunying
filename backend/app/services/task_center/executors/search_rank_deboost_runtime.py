@@ -19,6 +19,11 @@ from app.services.search_rank_deboost_alerts import (
     record_join_button_violation_alert,
 )
 from app.services.task_center.payloads import SearchRankDeboostPayload
+from app.services.task_center.search_rank_deboost_reservations import (
+    consume_reservation,
+    mark_reservation_unknown,
+    release_reservation,
+)
 
 from ..search_rank_deboost import (
     ALL_EXEMPT_CLICKS,
@@ -73,6 +78,9 @@ def execute_search_rank_deboost(
             return _skip_result(action, PROXY_EGRESS_GUARD_FAILED, "分组级代理出口校验失败，禁止回退本机直连")
     if runtime_probe_ip is not None and not _verify_proxy_egress(session, action, account, binding_id, runtime_probe_ip):
         return _skip_result(action, PROXY_EGRESS_GUARD_FAILED, "分组级代理出口校验失败，禁止回退本机直连")
+
+    if _is_factual_gateway_result(gateway_result):
+        return _handle_factual_gateway_result(session, action, account, payload, gateway_result)
 
     decision_or_skip = _search_decision(session, action, payload, gateway_result)
     if "skip_reason" in decision_or_skip:
@@ -283,6 +291,55 @@ def _success_result(decision: dict, click_targets: list[dict], run: ClickRunResu
     return result
 
 
+def _is_factual_gateway_result(result: dict) -> bool:
+    return bool(str(result.get("execution_status") or "").strip())
+
+
+def _handle_factual_gateway_result(
+    session: Session,
+    action: Action,
+    account: TgAccount,
+    payload: SearchRankDeboostPayload,
+    gateway_result: dict,
+) -> dict:
+    status = str(gateway_result.get("execution_status") or "").strip()
+    if status == "confirmed":
+        consume_reservation(session, action.id)
+        _write_factual_stats(session, action, payload, gateway_result)
+        return {**gateway_result, "success": True}
+    if status == "unknown_after_click":
+        mark_reservation_unknown(session, action.id)
+        return {**gateway_result, "success": False}
+    release_reservation(session, action.id)
+    return {**gateway_result, "success": False, "skip_reason": status or "observed_no_click"}
+
+
+def _write_factual_stats(session: Session, action: Action, payload: SearchRankDeboostPayload, gateway_result: dict) -> None:
+    hour_bucket = _now().replace(minute=0, second=0, microsecond=0)
+    search_results = _gateway_search_results(gateway_result)
+    target = search_results[0] if search_results else {}
+    for outcome in _confirmed_click_outcomes(gateway_result):
+        _write_clicked_stat(session, action, payload, target, _outcome_button(outcome), False, hour_bucket)
+
+
+def _confirmed_click_outcomes(gateway_result: dict) -> list[dict]:
+    outcomes = gateway_result.get("click_outcomes") or []
+    if not isinstance(outcomes, list):
+        return []
+    return [item for item in outcomes if isinstance(item, dict) and item.get("status") == "confirmed"]
+
+
+def _outcome_button(outcome: dict) -> dict:
+    return {
+        "row": int(outcome.get("row") or 0),
+        "col": int(outcome.get("col") or 0),
+        "text": str(outcome.get("text") or ""),
+        "url": str(outcome.get("url") or ""),
+        "effect": str(outcome.get("effect") or "navigate_only"),
+        "position": int(outcome.get("position") or 1),
+    }
+
+
 def _invoke_gateway(gateway_execute: Any | None, account: TgAccount, payload: SearchRankDeboostPayload) -> dict | None:
     if gateway_execute is None:
         from app.services._common import gateway
@@ -292,7 +349,11 @@ def _invoke_gateway(gateway_execute: Any | None, account: TgAccount, payload: Se
         return None
     keyword_text = decrypt_secret(payload.keyword_text_ciphertext) or ""
     result = gateway_execute(account.id, payload.model_dump(mode="json"), keyword_text)
-    if not isinstance(result, dict) or not result.get("success"):
+    if not isinstance(result, dict):
+        return None
+    if _is_factual_gateway_result(result):
+        return result
+    if not result.get("success"):
         return None
     return result
 

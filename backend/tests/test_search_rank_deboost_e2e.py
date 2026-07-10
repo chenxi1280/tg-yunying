@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from app.database import Base
 from app.models import (
     AccountPool,
+    AccountProxy,
     AccountStatus,
     Action,
     BotProtocolSample,
@@ -32,6 +33,7 @@ from app.models import (
 from app.models.search_rank_deboost import (
     AccountGroupProxyBinding,
     SearchRankDeboostActionStat,
+    SearchRankDeboostClickReservation,
     SearchRankDeboostExemptGroup,
 )
 from app.schemas.task_center import SearchRankDeboostTaskCreate
@@ -42,6 +44,7 @@ from app.services.task_center.executors.search_rank_deboost import (
     execute_search_rank_deboost,
 )
 from app.services.task_center.service import (
+    create_and_start_search_rank_deboost_task,
     create_search_rank_deboost_task,
     get_task_detail,
     reroll_search_rank_deboost_exempt_group,
@@ -109,7 +112,9 @@ def _seed_base(
     session.add(ProxyAirportNode(
         id=proxy_node_id, tenant_id=1, subscription_id=1, node_key=f"node-{proxy_node_id}",
         status="healthy", observed_exit_ip=observed_exit_ip,
+        protocol="socks5", proxy_host="127.0.0.1", proxy_port=1080,
     ))
+    session.add(AccountProxy(id=30, tenant_id=1, name="rank-runtime", protocol="socks5", host="127.0.0.1", port=1080, status="healthy", alert_status="normal"))
     if with_samples:
         _seed_protocol_samples(session)
 
@@ -117,7 +122,7 @@ def _seed_base(
     if with_binding:
         binding = AccountGroupProxyBinding(
             id=1, tenant_id=1, account_pool_id=account_pool_id, proxy_airport_node_id=proxy_node_id,
-            binding_scope="group", observed_exit_ip=observed_exit_ip, status="active", bound_by="tester",
+            runtime_proxy_id=30, binding_scope="group", observed_exit_ip=observed_exit_ip, status="active", bound_by="tester",
         )
         session.add(binding)
 
@@ -258,6 +263,40 @@ def test_e2e_start_rejects_pending_real_search_exempt_group(monkeypatch) -> None
         session.refresh(task)
         assert task.status == "draft"
         assert task.next_run_at is None
+
+
+def test_e2e_create_and_start_rolls_back_pending_real_search_failure(monkeypatch) -> None:
+    """创建并启动失败时不能留下草稿、豁免群、动作、reservation 或分组绑定。"""
+    engine = _build_engine()
+    with Session(engine) as session:
+        _seed_base(session, account_ids=[100], with_binding=False)
+        session.commit()
+
+        from app.services import _common
+
+        monkeypatch.setattr(
+            _common.gateway,
+            "execute_search_rank_deboost",
+            lambda *_args, **_kwargs: {"success": True, "search_results": [], "observed_exit_ip": "1.1.1.1"},
+            raising=False,
+        )
+
+        payload = SearchRankDeboostTaskCreate(
+            name="原子启动失败任务",
+            search_bots=["jisou"],
+            keywords=[{"text": "关键词A"}],
+            target_group_ids=[1001],
+            account_pool_id=10,
+            proxy_airport_node_id=20,
+        )
+        with pytest.raises(ValueError, match="真实搜索结果"):
+            create_and_start_search_rank_deboost_task(session, 1, payload, operator="tester")
+
+        assert session.query(Task).filter_by(name="原子启动失败任务").count() == 0
+        assert session.query(SearchRankDeboostExemptGroup).count() == 0
+        assert session.query(AccountGroupProxyBinding).count() == 0
+        assert session.query(Action).count() == 0
+        assert session.query(SearchRankDeboostClickReservation).count() == 0
 
 
 def test_e2e_reroll_rejects_when_real_search_provider_missing() -> None:
