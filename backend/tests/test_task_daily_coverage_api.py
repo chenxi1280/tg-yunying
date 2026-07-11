@@ -259,7 +259,7 @@ def test_coverage_detail_page_keeps_blocked_accounts_visible(session: Session) -
 
 
 def test_router_exposes_paginated_account_coverage_endpoint() -> None:
-    paths = {route.path for route in router.routes}
+    paths = {path for route in router.routes if (path := getattr(route, "path", None))}
 
     assert "/api/tasks/{task_id}/account-coverage" in paths
 
