@@ -362,6 +362,7 @@ jobs:
           ssh silicon-valley-production-server '
             set -euo pipefail
             docker exec tgyunying-worker-planner test -x /root/.grok/bin/grok
+            docker exec tgyunying-worker-planner git --version
           '
 
       - name: Probe production planner drain
