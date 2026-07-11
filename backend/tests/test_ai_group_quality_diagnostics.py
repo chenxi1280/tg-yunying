@@ -771,6 +771,38 @@ def test_ai_group_quality_diagnostics_blocks_missing_human_quality_payload():
     ]
 
 
+def test_ai_group_quality_diagnostics_exposes_provider_fallback_trace():
+    module = load_quality_diagnostics_module()
+    action = SimpleNamespace(
+        id="a1",
+        status="success",
+        account_id=11,
+        scheduled_at=None,
+        executed_at=None,
+        payload={
+            "message_text": "老师今天高跟鞋挺好看",
+            "requested_model": "MiniMax-M3",
+            "actual_model": "grok-4.5",
+            "fallback_stage": "fallback_grok",
+            "fallback_reason": "previous_stage_failed_or_rejected",
+            "provider_duration_ms": 3210,
+            "generation_attempts": [
+                {"stage": "primary_m3", "outcome": "failed"},
+                {"stage": "fallback_m25", "outcome": "failed"},
+                {"stage": "fallback_grok", "outcome": "success"},
+            ],
+        },
+    )
+
+    sample = module.action_samples([action])[0]
+
+    assert sample["requested_model"] == "MiniMax-M3"
+    assert sample["actual_model"] == "grok-4.5"
+    assert sample["fallback_stage"] == "fallback_grok"
+    assert sample["provider_duration_ms"] == 3210
+    assert len(sample["generation_attempts"]) == 3
+
+
 def test_ai_group_quality_diagnostics_reports_material_trace_samples():
     module = load_quality_diagnostics_module()
     actions = [

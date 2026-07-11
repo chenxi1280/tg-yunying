@@ -363,6 +363,9 @@ def test_group_ai_quality_fill_uses_unique_emoji_after_three_failed_rounds(monke
 
     assert requested_counts == [2, 2, 2]
     assert [item["quality_fallback"] for item in quality_items] == ["emoji_react", "emoji_react"]
+    assert [item["fallback_stage"] for item in quality_items] == ["static_safe_fallback", "static_safe_fallback"]
+    assert [item["actual_model"] for item in quality_items] == ["static_safe_fallback", "static_safe_fallback"]
+    assert all(item["fallback_reason"] == "all_model_stages_failed_or_rejected" for item in quality_items)
     assert len({item["content"] for item in quality_items}) == 2
     assert stats["quality_fallback_count"] == 2
 

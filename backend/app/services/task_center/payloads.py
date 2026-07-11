@@ -41,6 +41,7 @@ class SendMessagePayload(BaseModel):
     ai_message_memory_id: str = ""
     rewrite_attempts: int = 0
     human_quality_decision: str = ""
+    quality_fallback: str = ""
     topic_direction: dict[str, Any] = Field(default_factory=dict)
     teacher_target: dict[str, Any] = Field(default_factory=dict)
     burst_id: str = ""
@@ -73,6 +74,12 @@ class SendMessagePayload(BaseModel):
     ai_generation_id: str = ""
     ai_generation_status: str = ""
     generation_source: str = ""
+    requested_model: str = ""
+    actual_model: str = ""
+    fallback_stage: str = ""
+    fallback_reason: str = ""
+    provider_duration_ms: int = 0
+    generation_attempts: list[dict[str, Any]] = Field(default_factory=list)
     ai_generation_history: str = ""
     ai_generation_tokens: int = 0
     ai_generation_count: int = 0

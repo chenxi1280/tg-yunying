@@ -10,7 +10,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import Action, AiGroupMessageMemory, OperationTarget, RuleSet, Task, TaskAccountDailyCoverage, TgGroup
+from app.models import Action, AiGroupMessageMemory, OperationTarget, RuleSet, Task, TaskAccountDailyCoverage, TenantAiSetting, TgGroup
 from app.services._common import _now
 from app.services.account_online_state import is_account_online_ready_for_planning, reconcile_runtime_online_sources
 from app.services.account_capacity import (
@@ -99,7 +99,11 @@ ACCOUNT_OFFLINE_SAMPLE_LIMIT = 10
 DEFERRED_AI_HISTORY_MAX_CHARS = 1000
 AI_GENERATION_REQUEST_BATCH_SIZE = 30
 MAX_AI_QUALITY_GENERATION_ROUNDS = 3
+AI_GROUP_PRIMARY_STAGE = "primary_m3"
+AI_GROUP_MODEL_FALLBACK_STAGE = "fallback_m25"
+AI_GROUP_GROK_FALLBACK_STAGE = "fallback_grok"
 LOW_RISK_EMOJI_FALLBACK_POOL = ("👍", "👌", "👀", "🤔", "😅", "😂", "🙈", "🤝", "💯", "🤣", "🫡", "🙂")
+LOW_RISK_CHECKIN_FALLBACK_POOL = ("来签到", "先冒个泡", "大家晚上好", "路过打个卡")
 QUALITY_REJECTION_SAMPLE_LIMIT = 5
 VOICE_PROFILE_MATCH_SCORE = 100
 VOICE_PROFILE_MISMATCH_SCORE = 0
@@ -361,7 +365,11 @@ def build_plan(session: Session, task: Task) -> int:
         recent_topic_counts=target_usage.get("topics", {}),
         recent_teacher_counts=target_usage.get("teachers", {}),
     )
-    generation_config = {**generation_config, "generation_slots": generation_slots}
+    generation_config = _with_ai_group_fallback_settings(
+        session,
+        task.tenant_id,
+        {**generation_config, "generation_slots": generation_slots},
+    )
     requested_reply_count = len(reply_targets)
     normal_count = max(0, turn_count - len(reply_targets))
     defer_ai_generation = _defer_ai_generation_for_plan(config, hard_progress)
@@ -568,6 +576,7 @@ def build_plan(session: Session, task: Task) -> int:
                     ai_message_memory_id=memory.id if memory else "",
                     rewrite_attempts=int(quality_item.get("rewrite_attempts") or 0),
                     human_quality_decision=str(quality_item.get("human_quality_decision") or "accepted"),
+                    quality_fallback=str(quality_item.get("quality_fallback") or ""),
                     topic_direction=_quality_topic_direction(quality_item, config),
                     teacher_target=_quality_teacher_target(quality_item, config),
                     **burst_plan.get(index, {}),
@@ -587,6 +596,7 @@ def build_plan(session: Session, task: Task) -> int:
                     ai_generation_id=cycle_id,
                     ai_generation_status="pending" if deferred_ai else "success",
                     generation_source=generation_source,
+                    **_provider_generation_payload(quality_item),
                     ai_generation_history=_deferred_ai_history(history) if deferred_ai else "",
                     ai_generation_tokens=tokens,
                     ai_generation_count=len(quality_items),
@@ -677,6 +687,8 @@ def build_plan(session: Session, task: Task) -> int:
         stats["quality_fill_rounds"] = quality_stats["quality_fill_rounds"]
     if quality_stats.get("quality_fallback_count"):
         stats["quality_fallback_count"] = quality_stats["quality_fallback_count"]
+    if quality_stats.get("ai_generation_stage_failures"):
+        stats["ai_generation_stage_failures"] = quality_stats["ai_generation_stage_failures"]
     if quality_stats.get("voice_profile_anchor_rewrite_count"):
         stats["voice_profile_anchor_rewrite_count"] = quality_stats["voice_profile_anchor_rewrite_count"]
     if quality_stats.get("ai_generation_candidate_count"):
@@ -1001,7 +1013,19 @@ def _all_accounts_daily_coverage(config: dict) -> bool:
 
 
 def _quality_fallback_enabled(config: dict, progress: dict[str, object]) -> bool:
-    return bool(progress) and not _all_accounts_daily_coverage(config)
+    return bool(config.get("_ai_group_static_fallback_enabled", True))
+
+
+def _with_ai_group_fallback_settings(session: Session, tenant_id: int, config: dict) -> dict:
+    setting = session.scalar(select(TenantAiSetting).where(TenantAiSetting.tenant_id == tenant_id))
+    if not setting:
+        return config
+    return {
+        **config,
+        "_ai_group_model_fallback_enabled": bool(setting.ai_group_model_fallback_enabled),
+        "_ai_group_grok_fallback_enabled": bool(setting.ai_group_grok_fallback_enabled),
+        "_ai_group_static_fallback_enabled": bool(setting.ai_group_static_fallback_enabled),
+    }
 
 
 def _coverage_capacity_blocker(
@@ -1682,10 +1706,19 @@ def _planned_item(content: str, reply_target: dict | None, slot: dict | None) ->
 
 def _generated_content_metadata(content: str) -> dict[str, object]:
     result: dict[str, object] = {}
-    for key in ("material_intent", "intent", "mood"):
+    for key in (
+        "material_intent", "intent", "mood", "requested_model", "actual_model",
+        "fallback_stage", "fallback_reason",
+    ):
         value = str(getattr(content, key, "") or "").strip()
         if value:
             result[key] = value
+    duration_ms = max(0, int(getattr(content, "provider_duration_ms", 0) or 0))
+    if duration_ms:
+        result["provider_duration_ms"] = duration_ms
+    attempts = [dict(item) for item in list(getattr(content, "generation_attempts", []) or [])[-3:]]
+    if attempts:
+        result["generation_attempts"] = attempts
     if hasattr(content, "allow_material") and (bool(getattr(content, "allow_material")) or result.get("material_intent")):
         result["allow_material"] = bool(getattr(content, "allow_material"))
     return result
@@ -1701,23 +1734,43 @@ def _generate_quality_filled_items(
     accepted: list[dict[str, str]] = []
     tokens = 0
     stats: dict[str, object] = {}
-    for round_index in range(MAX_AI_QUALITY_GENERATION_ROUNDS):
+    last_error: AiGenerationUnavailable | None = None
+    generation_attempts: list[dict[str, object]] = []
+    stages = _fallback_stages(config)
+    for round_index, stage in enumerate(stages):
         remaining = max(0, int(turn_count or 0) - len(accepted))
         if remaining <= 0:
             break
         round_config = _generation_config_for_pending_slots(config, accepted, remaining)
-        planned_items, used_tokens = _generate_quality_round_planned_items(
-            session,
-            task,
-            round_config,
-            reply_targets=reply_targets,
-            normal_count=normal_count,
-            target_label=target_label,
-            history=history,
-            fill_reply_shortfall_with_normal=fill_reply_shortfall_with_normal,
-            round_index=round_index,
-            remaining=remaining,
-        )
+        round_config = {
+            **round_config,
+            "_ai_fallback_stage": stage,
+            "_ai_generation_attempts": generation_attempts,
+        }
+        try:
+            planned_items, used_tokens = _generate_quality_round_planned_items(
+                session,
+                task,
+                round_config,
+                reply_targets=reply_targets,
+                normal_count=normal_count,
+                target_label=target_label,
+                history=history,
+                fill_reply_shortfall_with_normal=fill_reply_shortfall_with_normal,
+                round_index=round_index,
+                remaining=remaining,
+            )
+        except AiGenerationUnavailable as exc:
+            last_error = exc
+            generation_attempts.append({
+                "stage": stage,
+                "model": _fallback_stage_model(stage),
+                "outcome": "failed",
+                "error_code": "ai_generation_unavailable",
+            })
+            _record_ai_generation_stage_failure(stats, stage)
+            stats["ai_generation_rounds"] = round_index + 1
+            continue
         tokens += used_tokens
         accepted = _accept_quality_round(
             accepted,
@@ -1735,10 +1788,48 @@ def _generate_quality_filled_items(
         if len(accepted) < int(turn_count or 0):
             stats["quality_fill_rounds"] = round_index + 1
     if len(accepted) < int(turn_count or 0) and enable_quality_fallback:
-        fallback = _emoji_fallback_items(int(turn_count or 0) - len(accepted), accepted, duplicate_baseline_messages)
+        fallback = _static_fallback_items(
+            int(turn_count or 0) - len(accepted),
+            accepted,
+            duplicate_baseline_messages,
+            generation_attempts,
+        )
         accepted.extend(fallback)
         stats["quality_fallback_count"] = len(fallback)
+    if not accepted and last_error and not enable_quality_fallback:
+        raise last_error
     return accepted[: max(0, int(turn_count or 0))], tokens, stats
+
+
+def _fallback_stages(config: dict) -> tuple[str, ...]:
+    stages = [AI_GROUP_PRIMARY_STAGE]
+    if bool(config.get("_ai_group_model_fallback_enabled", True)):
+        stages.append(AI_GROUP_MODEL_FALLBACK_STAGE)
+    if bool(config.get("_ai_group_grok_fallback_enabled", True)):
+        stages.append(AI_GROUP_GROK_FALLBACK_STAGE)
+    return tuple(stages)
+
+
+def _record_ai_generation_stage_failure(stats: dict[str, object], stage: str) -> None:
+    failures = list(stats.get("ai_generation_stage_failures") or [])
+    failures.append({"stage": stage, "error_code": "ai_generation_unavailable"})
+    stats["ai_generation_stage_failures"] = failures
+
+
+def _fallback_stage_model(stage: str) -> str:
+    return {
+        AI_GROUP_PRIMARY_STAGE: "MiniMax-M3",
+        AI_GROUP_MODEL_FALLBACK_STAGE: "MiniMax-M2.5",
+        AI_GROUP_GROK_FALLBACK_STAGE: "grok-4.5",
+    }.get(stage, "")
+
+
+def _provider_generation_payload(item: dict) -> dict[str, object]:
+    keys = (
+        "requested_model", "actual_model", "fallback_stage", "fallback_reason",
+        "provider_duration_ms", "generation_attempts",
+    )
+    return {key: item[key] for key in keys if key in item}
 
 
 def _generate_quality_round_planned_items(
@@ -1849,24 +1940,43 @@ def _merge_quality_rejection_samples(target: dict[str, object], value: object) -
     target["quality_rejection_samples"] = samples
 
 
-def _emoji_fallback_items(count: int, accepted: list[dict[str, str]], duplicate_baseline_messages: list[str]) -> list[dict[str, str]]:
+def _static_fallback_items(
+    count: int,
+    accepted: list[dict[str, str]],
+    duplicate_baseline_messages: list[str],
+    generation_attempts: list[dict[str, object]] | None = None,
+) -> list[dict[str, str]]:
     used = {str(item["content"]).strip() for item in accepted}
     used.update(str(message).strip() for message in duplicate_baseline_messages)
-    available = [emoji for emoji in LOW_RISK_EMOJI_FALLBACK_POOL if emoji not in used]
+    pool = [
+        *((content, "emoji_react") for content in LOW_RISK_EMOJI_FALLBACK_POOL),
+        *((content, "safe_checkin") for content in LOW_RISK_CHECKIN_FALLBACK_POOL),
+    ]
+    available = [item for item in pool if item[0] not in used]
     selected = random.sample(available, k=min(max(0, int(count or 0)), len(available)))
     return [
         {
-            "content": emoji,
+            "content": content,
             "semantic_cluster": "",
             "duplicate_risk": "",
             "hallucination_risk": "",
             "quality_skip_reason": "quality_fallback",
-            "quality_fallback": "emoji_react",
+            "quality_fallback": fallback_type,
             "human_quality_decision": "quality_fallback",
             "rewrite_attempts": MAX_AI_QUALITY_GENERATION_ROUNDS - 1,
+            "requested_model": "MiniMax-M3",
+            "actual_model": "static_safe_fallback",
+            "fallback_stage": "static_safe_fallback",
+            "fallback_reason": "all_model_stages_failed_or_rejected",
+            "provider_duration_ms": 0,
+            "generation_attempts": [dict(item) for item in list(generation_attempts or [])[-3:]],
         }
-        for emoji in selected
+        for content, fallback_type in selected
     ]
+
+
+def _emoji_fallback_items(count: int, accepted: list[dict[str, str]], duplicate_baseline_messages: list[str]) -> list[dict[str, str]]:
+    return _static_fallback_items(count, accepted, duplicate_baseline_messages)
 
 
 def _normal_generation_batches(total: int) -> list[int]:
@@ -3340,8 +3450,8 @@ def _record_quality_rejection(
 
 
 def _voice_profile_match_decision_for_item(content: str, voice_profile: dict, quality_item: dict) -> dict[str, object]:
-    if quality_item.get("quality_fallback") == "emoji_react":
-        return {"score": VOICE_PROFILE_MATCH_SCORE, "reason": "质量兜底表情"}
+    if quality_item.get("quality_fallback"):
+        return {"score": VOICE_PROFILE_MATCH_SCORE, "reason": "安全质量兜底"}
     return _voice_profile_match_decision(content, voice_profile)
 
 
