@@ -163,7 +163,8 @@ type MembershipPageState = { current: number; pageSize: number; total: number; l
 type MembershipFilters = { phase: string; manualRequired: string };
 type ActionPageKind = 'planned' | 'executed';
 type ActionPageState = { current: number; pageSize: number; total: number; loading: boolean };
-type DetailSectionKind = 'aiCycles' | 'messageGroups' | 'relayBatches' | 'admissionItems';
+type DetailSectionKind = 'aiCycles' | 'messageGroups' | 'relayBatches' | 'admissionItems' | 'accountCoverage';
+type AccountCoverageFilters = { date: string; state: string; blockerCode: string };
 const TASK_CREATE_TIMEOUT_MS = 120_000;
 const MEMBERSHIP_PAGE_SIZE = 20;
 const ACTION_PAGE_SIZE = 20;
@@ -174,6 +175,7 @@ const TASK_FORM_ACCOUNT_PAGE_SIZE = 200;
 const DEFAULT_MEMBERSHIP_FILTERS: MembershipFilters = { phase: 'all', manualRequired: 'all' };
 const DEFAULT_ACTION_PAGE: ActionPageState = { current: 1, pageSize: ACTION_PAGE_SIZE, total: 0, loading: false };
 const DEFAULT_DETAIL_SECTION_PAGE: ActionPageState = { current: 1, pageSize: DETAIL_SECTION_PAGE_SIZE, total: 0, loading: false };
+const DEFAULT_ACCOUNT_COVERAGE_FILTERS: AccountCoverageFilters = { date: '', state: '', blockerCode: '' };
 const GROUP_AI_RECOMMENDATION_FIELDS: AiLimitRecommendationField[] = ['max_actions_per_hour', 'messages_per_round'];
 const COMMENT_AI_RECOMMENDATION_FIELDS: AiLimitRecommendationField[] = ['max_actions_per_hour', 'target_comments_per_message', 'max_comments_per_account_per_hour'];
 
@@ -273,6 +275,8 @@ export default function TaskCenterView({
   const [messageGroupPage, setMessageGroupPage] = React.useState<ActionPageState>(DEFAULT_DETAIL_SECTION_PAGE);
   const [relayBatchPage, setRelayBatchPage] = React.useState<ActionPageState>(DEFAULT_DETAIL_SECTION_PAGE);
   const [admissionItemPage, setAdmissionItemPage] = React.useState<ActionPageState>(DEFAULT_DETAIL_SECTION_PAGE);
+  const [accountCoveragePage, setAccountCoveragePage] = React.useState<ActionPageState>(DEFAULT_DETAIL_SECTION_PAGE);
+  const [accountCoverageFilters, setAccountCoverageFilters] = React.useState<AccountCoverageFilters>(DEFAULT_ACCOUNT_COVERAGE_FILTERS);
   const [precheck, setPrecheck] = React.useState<TaskPrecheck | null>(null);
   const [precheckPayloadSignature, setPrecheckPayloadSignature] = React.useState('');
   const [precheckLoading, setPrecheckLoading] = React.useState(false);
@@ -304,6 +308,7 @@ export default function TaskCenterView({
     messageGroups: 0,
     relayBatches: 0,
     admissionItems: 0,
+    accountCoverage: 0,
   });
   const activeMembershipPageRequestSeq = React.useRef(0);
   const accountMode = Form.useWatch('selection_mode', form) ?? 'all';
@@ -672,6 +677,8 @@ export default function TaskCenterView({
     setMessageGroupPage(DEFAULT_DETAIL_SECTION_PAGE);
     setRelayBatchPage(DEFAULT_DETAIL_SECTION_PAGE);
     setAdmissionItemPage(DEFAULT_DETAIL_SECTION_PAGE);
+    setAccountCoveragePage(DEFAULT_DETAIL_SECTION_PAGE);
+    setAccountCoverageFilters(DEFAULT_ACCOUNT_COVERAGE_FILTERS);
   }
 
   function setDetailSectionPage(kind: DetailSectionKind, value: ActionPageState | ((current: ActionPageState) => ActionPageState)) {
@@ -680,6 +687,7 @@ export default function TaskCenterView({
       messageGroups: setMessageGroupPage,
       relayBatches: setRelayBatchPage,
       admissionItems: setAdmissionItemPage,
+      accountCoverage: setAccountCoveragePage,
     };
     setters[kind](value);
   }
@@ -745,21 +753,34 @@ export default function TaskCenterView({
     void loadActionPage(taskDetail.task.id, 'executed', 1, ACTION_PAGE_SIZE);
   }
 
-  async function loadDetailSectionPage(taskDetail: TaskCenterDetail, kind: DetailSectionKind, page: number, pageSize: number) {
+  async function loadDetailSectionPage(
+    taskDetail: TaskCenterDetail,
+    kind: DetailSectionKind,
+    page: number,
+    pageSize: number,
+    coverageFilters: AccountCoverageFilters = accountCoverageFilters,
+  ) {
     const requestSeq = beginDetailSectionPageRequest(kind);
     const endpoints = {
       aiCycles: 'ai-cycles',
       messageGroups: 'message-groups',
       relayBatches: 'relay-batches',
       admissionItems: 'membership-admission/items',
+      accountCoverage: 'account-coverage',
     };
     const fields = {
       aiCycles: 'ai_cycles',
       messageGroups: 'message_groups',
       relayBatches: 'relay_batches',
       admissionItems: 'membership_admission_items',
+      accountCoverage: 'account_coverage_items',
     } as const;
     const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
+    if (kind === 'accountCoverage') {
+      if (coverageFilters.date) params.set('date', coverageFilters.date);
+      if (coverageFilters.state) params.set('state', coverageFilters.state);
+      if (coverageFilters.blockerCode) params.set('blocker_code', coverageFilters.blockerCode);
+    }
     setDetailSectionPage(kind, (current) => ({ ...current, current: page, pageSize, loading: true }));
     try {
       const response = await apiWithMeta<any[]>(`/tasks/${taskDetail.task.id}/${endpoints[kind]}?${params.toString()}`);
@@ -775,7 +796,10 @@ export default function TaskCenterView({
   }
 
   function loadDetailSectionsForDetail(taskDetail: TaskCenterDetail) {
-    if (taskDetail.task.type === 'group_ai_chat') void loadDetailSectionPage(taskDetail, 'aiCycles', 1, DETAIL_SECTION_PAGE_SIZE);
+    if (taskDetail.task.type === 'group_ai_chat') {
+      void loadDetailSectionPage(taskDetail, 'aiCycles', 1, DETAIL_SECTION_PAGE_SIZE);
+      void loadDetailSectionPage(taskDetail, 'accountCoverage', 1, DETAIL_SECTION_PAGE_SIZE);
+    }
     if (['channel_view', 'channel_like', 'channel_comment'].includes(taskDetail.task.type)) void loadDetailSectionPage(taskDetail, 'messageGroups', 1, DETAIL_SECTION_PAGE_SIZE);
     if (taskDetail.task.type === 'group_relay') void loadDetailSectionPage(taskDetail, 'relayBatches', 1, DETAIL_SECTION_PAGE_SIZE);
     if (taskDetail.task.type === 'group_membership_admission') void loadDetailSectionPage(taskDetail, 'admissionItems', 1, DETAIL_SECTION_PAGE_SIZE);
@@ -2321,6 +2345,8 @@ export default function TaskCenterView({
         messageGroupPagination={messageGroupPage}
         relayBatchPagination={relayBatchPage}
         admissionItemPagination={admissionItemPage}
+        accountCoveragePagination={accountCoveragePage}
+        accountCoverageFilters={accountCoverageFilters}
         detailProfile={detailProfile}
         detailPlannedTotal={detailPlannedTotal}
         membershipLoading={membershipPage.loading}
@@ -2339,6 +2365,10 @@ export default function TaskCenterView({
         onPlannedActionPageChange={(page, pageSize) => loadDetailActionPage('planned', page, pageSize)}
         onExecutedActionPageChange={(page, pageSize) => loadDetailActionPage('executed', page, pageSize)}
         onDetailSectionPageChange={(kind, page, pageSize) => loadDetailSection(kind, page, pageSize)}
+        onAccountCoverageFiltersChange={(filters) => {
+          setAccountCoverageFilters(filters);
+          if (detail) void loadDetailSectionPage(detail, 'accountCoverage', 1, accountCoveragePage.pageSize, filters);
+        }}
         onEditTask={(task) => void openEditTask(task)}
         onRefreshTask={(task) => void loadDetail(task)}
         telegramBotSettings={telegramBotSettings}

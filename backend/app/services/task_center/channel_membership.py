@@ -9,10 +9,12 @@ from uuid import uuid4
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
-from app.models import AccountStatus, Action, GroupAuthStatus, OperationTarget, Task, Tenant, TgAccount, TgGroup, TgGroupAccount, VerificationTask
+from app.models import AccountStatus, Action, GroupAuthStatus, OperationTarget, Task, TaskMembershipAdmissionItem, Tenant, TgAccount, TgGroup, TgGroupAccount, VerificationTask
+from app.security import decrypt_session
 from app.services._common import _now
 
 from .account_pool import select_task_accounts
+from .account_scope import is_all_accounts_task
 from .membership_recovery import AUTO_RETRY_BUCKET, VERIFICATION_BUCKET, classify_membership_recovery
 from .pacing import schedule_times
 from .payloads import EnsureChannelMembershipPayload, create_membership_action
@@ -50,7 +52,7 @@ class MembershipGateResult:
 
 
 def gate_channel_membership(session: Session, task: Task, channel: OperationTarget, *, require_send: bool = False) -> MembershipGateResult:
-    candidates = candidate_accounts_for_config(session, task.tenant_id, task.account_config or {})
+    candidates = _task_membership_candidates(session, task)
     strategy_enabled, disabled_reason = _membership_action_strategy(task, channel)
     reactivated = _reactivate_auto_verification_memberships(
         session,
@@ -265,6 +267,22 @@ def candidate_accounts_for_config(session: Session, tenant_id: int, account_conf
     return list(session.scalars(stmt)) if stmt is not None else []
 
 
+def _task_membership_candidates(session: Session, task: Task) -> list[TgAccount]:
+    if not is_all_accounts_task(task):
+        return candidate_accounts_for_config(session, task.tenant_id, task.account_config or {})
+    return list(
+        session.scalars(
+            select(TgAccount)
+            .join(TaskMembershipAdmissionItem, TaskMembershipAdmissionItem.account_id == TgAccount.id)
+            .where(
+                TaskMembershipAdmissionItem.task_id == task.id,
+                TgAccount.tenant_id == task.tenant_id,
+            )
+            .order_by(TgAccount.id.asc())
+        )
+    )
+
+
 def _rescue_admin_account_id(session: Session, tenant_id: int) -> int:
     tenant = session.get(Tenant, tenant_id)
     return int(tenant.group_rescue_admin_account_id or 0) if tenant else 0
@@ -372,8 +390,18 @@ def _membership_retry_candidates(
     return [
         account
         for account in candidates
-        if _should_create_membership_attempt_for_account(account.id, existing.get(account.id), joined_ids, task, now_value)
+        if _account_can_attempt_membership(account)
+        and _should_create_membership_attempt_for_account(account.id, existing.get(account.id), joined_ids, task, now_value)
     ]
+
+
+def _account_can_attempt_membership(account: TgAccount) -> bool:
+    if account.deleted_at is not None or account.status != AccountStatus.ACTIVE.value:
+        return False
+    try:
+        return bool(decrypt_session(account.session_ciphertext))
+    except Exception:
+        return False
 
 
 def _should_create_membership_attempt_for_account(
@@ -418,17 +446,41 @@ def _create_membership_actions_for_accounts(
                 action.status = "skipped"
                 action.executed_at = now_value
                 action.result = {"success": True, "membership_status": "already_joined", "detail": f"账号已满足目标{_target_noun(channel)}准入"}
+                _bind_membership_scope_item(session, task, account.id, action, phase="completed")
                 created += 1
                 continue
             scheduled_at = scheduled_times[scheduled_index] if scheduled_index < len(scheduled_times) else now_value
             scheduled_index += 1
             action = create_membership_action(session, task, account.id, scheduled_at, payload, flush=False)
+            _bind_membership_scope_item(session, task, account.id, action, phase="joining")
             if task.type == "group_ai_chat" and (task.type_config or {}).get("hard_hourly_target_enabled"):
                 action.result = {**(action.result or {}), "retry_reason": "hard_hourly_membership_retry"}
             created += 1
     if created:
         session.flush()
     return created
+
+
+def _bind_membership_scope_item(
+    session: Session,
+    task: Task,
+    account_id: int,
+    action: Action,
+    *,
+    phase: str,
+) -> None:
+    if not is_all_accounts_task(task):
+        return
+    item = session.scalar(
+        select(TaskMembershipAdmissionItem).where(
+            TaskMembershipAdmissionItem.task_id == task.id,
+            TaskMembershipAdmissionItem.account_id == account_id,
+        )
+    )
+    if item:
+        item.membership_action_id = action.id
+        item.phase = phase
+        item.updated_at = _now()
 
 
 def _should_create_membership_attempt(action: Action | None, task: Task, now_value) -> bool:

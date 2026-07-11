@@ -167,6 +167,7 @@ def _drain_listener_source(session: Session, source: ListenerRuntimeSource, resu
         result.skipped_count += 1
         return
     recovered = _recover_group_listener_account(session, group, account_ids[0])
+    session.commit()
     try:
         inserted = collect_group_context(
             session,

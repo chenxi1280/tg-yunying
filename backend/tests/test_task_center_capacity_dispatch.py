@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -23,6 +23,7 @@ from app.models import (
     RuntimeCleanupAudit,
     SchedulingSetting,
     Task,
+    TaskAccountDailyCoverage,
     Tenant,
     TenantLearningProfile,
     TgAccount,
@@ -3918,7 +3919,7 @@ def test_group_ai_build_plan_canonicalizes_duplicate_username_target_before_memb
             name="天津",
             type="group_ai_chat",
             status="running",
-            account_config={"selection_mode": "all"},
+            account_config={"selection_mode": "manual", "account_ids": [11]},
             type_config={"target_operation_target_id": 1251},
             stats={},
         )
@@ -4918,8 +4919,22 @@ def test_group_ai_context_bound_quality_schedule_cuts_final_candidates(monkeypat
     assert task.stats["context_bound_planned_turns"] == 2
 
 
+def _add_ready_daily_coverage(session: Session, task: Task, account_ids: list[int]) -> None:
+    session.add_all([
+        TaskAccountDailyCoverage(
+            tenant_id=task.tenant_id,
+            task_id=task.id,
+            group_id=int(task.type_config["target_group_id"]),
+            account_id=account_id,
+            coverage_date=date.today(),
+            state="ready",
+        )
+        for account_id in account_ids
+    ])
+
+
 @pytest.mark.no_postgres
-def test_group_ai_build_plan_uses_unique_emoji_fallback_after_quality_retries(monkeypatch):
+def test_group_ai_all_account_coverage_does_not_use_emoji_fallback_after_quality_retries(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = _now()
@@ -4937,7 +4952,7 @@ def test_group_ai_build_plan_uses_unique_emoji_fallback_after_quality_retries(mo
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
-        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True, active_window="00:00-01:00"))
         session.add_all(
             [
                 TgAccount(id=11, tenant_id=1, display_name="账号A", phone_masked="+861***0011", status="在线", session_ciphertext="session-a"),
@@ -4975,6 +4990,7 @@ def test_group_ai_build_plan_uses_unique_emoji_fallback_after_quality_retries(mo
             stats={},
         )
         session.add(task)
+        _add_ready_daily_coverage(session, task, [11, 12])
         session.add(
             Action(
                 id="previous-ai-photo",
@@ -5020,7 +5036,7 @@ def test_group_ai_build_plan_uses_unique_emoji_fallback_after_quality_retries(mo
         )
         session.commit()
 
-        assert group_ai_chat.build_plan(session, task) == 2
+        assert group_ai_chat.build_plan(session, task) == 0
         actions = list(
             session.scalars(
                 select(Action)
@@ -5031,16 +5047,12 @@ def test_group_ai_build_plan_uses_unique_emoji_fallback_after_quality_retries(mo
         memories = list(session.scalars(select(AiGroupMessageMemory).where(AiGroupMessageMemory.task_id == task.id).order_by(AiGroupMessageMemory.planned_at, AiGroupMessageMemory.id)))
 
     assert requested_counts == [2, 2, 2]
-    assert [action.payload["act_type"] for action in actions] == ["emoji_react", "emoji_react"]
-    assert [action.payload["human_quality_decision"] for action in actions] == ["quality_fallback", "quality_fallback"]
-    assert len({action.payload["message_text"] for action in actions}) == 2
-    assert "👍" not in {action.payload["message_text"] for action in actions}
-    assert len(memories) == 2
-    assert len({memory.normalized_text for memory in memories}) == 2
+    assert actions == []
+    assert memories == []
 
 
 @pytest.mark.no_postgres
-def test_group_ai_emoji_fallback_bypasses_voice_emoji_rejection(monkeypatch):
+def test_group_ai_all_account_coverage_keeps_shortfall_when_voice_candidates_fail(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = _now()
@@ -5091,6 +5103,7 @@ def test_group_ai_emoji_fallback_bypasses_voice_emoji_rejection(monkeypatch):
             stats={},
         )
         session.add(task)
+        _add_ready_daily_coverage(session, task, [11, 12])
         session.add(
             Action(
                 id="previous-ai-photo",
@@ -5124,11 +5137,9 @@ def test_group_ai_emoji_fallback_bypasses_voice_emoji_rejection(monkeypatch):
         actions = list(session.scalars(select(Action).where(Action.task_id == task.id, Action.action_type == "send_message", Action.status == "pending").order_by(Action.created_at)))
         refreshed = session.get(Task, task.id)
 
-    assert created == 2
-    assert [action.payload["act_type"] for action in actions] == ["emoji_react", "emoji_react"]
-    assert [action.payload["human_quality_decision"] for action in actions] == ["quality_fallback", "quality_fallback"]
-    assert len({action.payload["message_text"] for action in actions}) == 2
-    assert "voice_profile_mismatch" not in (refreshed.stats or {}).get("quality_rejection_counts", {})
+    assert created == 0
+    assert actions == []
+    assert refreshed.last_error
 
 
 def test_retry_failed_only_requeues_unknown_after_send_actions():

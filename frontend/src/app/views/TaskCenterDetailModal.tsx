@@ -1,7 +1,7 @@
 import React from 'react';
-import { Alert, Button, Descriptions, Space, Table, Tabs, Tag, Typography } from 'antd';
+import { Alert, Button, Descriptions, Input, Select, Space, Table, Tabs, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import type { HardHourlyRecentBucket, SearchRankDeboostExemptGroup, TaskCenterAction, TaskCenterDetail, TaskCenterTask, TenantBotSettings } from '../types';
+import type { HardHourlyRecentBucket, SearchRankDeboostExemptGroup, TaskAccountCoverageItem, TaskCenterAction, TaskCenterDetail, TaskCenterTask, TenantBotSettings } from '../types';
 import { DetailModal, StatusBadge } from '../components/shared';
 import { parseBeijingDate } from '../time';
 import { API_ORIGIN, api } from '../../shared/api/client';
@@ -16,7 +16,7 @@ type DetailProfile = {
   mode: string;
 } | null;
 
-type DetailSectionKind = 'aiCycles' | 'messageGroups' | 'relayBatches' | 'admissionItems';
+type DetailSectionKind = 'aiCycles' | 'messageGroups' | 'relayBatches' | 'admissionItems' | 'accountCoverage';
 type DetailPagination = { current: number; pageSize: number; total: number; loading?: boolean };
 
 const rescueStatusLabel = (status: string) => {
@@ -38,6 +38,32 @@ const deleteStatusLabel = (status?: string | null) => {
     unknown_after_send: '结果未知',
   };
   return status ? labels[status] || status : '-';
+};
+
+const coverageStateLabel = (state?: string | null) => {
+  const labels: Record<string, string> = {
+    confirmed: '已完成',
+    ready: '待规划',
+    reserved: '已预约',
+    sending: '发送中',
+    pending_admission: '待入群',
+    blocked: '阻塞',
+    unknown: '结果未知',
+  };
+  return labels[String(state || '')] || state || '-';
+};
+
+const coverageStateColor = (state?: string | null) => {
+  const colors: Record<string, string> = {
+    confirmed: 'green',
+    ready: 'blue',
+    reserved: 'cyan',
+    sending: 'processing',
+    pending_admission: 'gold',
+    blocked: 'red',
+    unknown: 'orange',
+  };
+  return colors[String(state || '')] || 'default';
 };
 
 function searchJoinDetailItems(detail: TaskCenterDetail) {
@@ -117,6 +143,8 @@ interface TaskCenterDetailModalProps {
   messageGroupPagination: DetailPagination;
   relayBatchPagination: DetailPagination;
   admissionItemPagination: DetailPagination;
+  accountCoveragePagination: DetailPagination;
+  accountCoverageFilters: { date: string; state: string; blockerCode: string };
   detailProfile: DetailProfile;
   detailPlannedTotal: number;
   membershipLoading: boolean;
@@ -135,6 +163,7 @@ interface TaskCenterDetailModalProps {
   onPlannedActionPageChange: (page: number, pageSize: number) => void;
   onExecutedActionPageChange: (page: number, pageSize: number) => void;
   onDetailSectionPageChange: (kind: DetailSectionKind, page: number, pageSize: number) => void;
+  onAccountCoverageFiltersChange: (filters: { date: string; state: string; blockerCode: string }) => void;
   onEditTask: (task: TaskCenterTask) => void;
   onRefreshTask: (task: TaskCenterTask) => void;
   telegramBotSettings?: TenantBotSettings | null;
@@ -433,6 +462,8 @@ export function TaskCenterDetailModal({
   messageGroupPagination,
   relayBatchPagination,
   admissionItemPagination,
+  accountCoveragePagination,
+  accountCoverageFilters,
   detailProfile,
   detailPlannedTotal,
   membershipLoading,
@@ -451,6 +482,7 @@ export function TaskCenterDetailModal({
   onPlannedActionPageChange,
   onExecutedActionPageChange,
   onDetailSectionPageChange,
+  onAccountCoverageFiltersChange,
   onEditTask,
   onRefreshTask,
   telegramBotSettings,
@@ -493,6 +525,7 @@ export function TaskCenterDetailModal({
     ...detail.profile_batch,
     system_task_type: 'account_profile_init',
   } : null);
+  const coverageItems = detail?.account_coverage_items || [];
   const profileBatchItems = accountSecurityBatch?.items ?? [];
   const archivedSkippedCount = Number(detail?.stats?.archived_skipped_count ?? 0);
   const effectiveSkippedCount = Number(detail?.stats?.skipped_count ?? 0);
@@ -529,6 +562,31 @@ export function TaskCenterDetailModal({
       render: (value) => value ? <img alt="账号头像" src={mediaUrl(value)} style={{ width: 36, height: 36, borderRadius: 4, objectFit: 'cover' }} /> : '-',
     },
     { title: '失败原因', key: 'failure', ellipsis: true, render: (_, item) => item.failure_detail || item.failure_type || '-' },
+  ];
+  const coverageColumns: ColumnsType<TaskAccountCoverageItem> = [
+    {
+      title: '账号',
+      key: 'account',
+      width: 190,
+      render: (_, item) => onOpenAccountDetail ? (
+        <Button type="link" onClick={() => void onOpenAccountDetail(item.account_id)}>{item.display_name || `账号 #${item.account_id}`}</Button>
+      ) : item.display_name || `账号 #${item.account_id}`,
+    },
+    {
+      title: '状态',
+      dataIndex: 'state',
+      width: 110,
+      render: (value) => <Tag color={coverageStateColor(value)}>{coverageStateLabel(value)}</Tag>,
+    },
+    { title: '完成', key: 'progress', width: 90, render: (_, item) => `${item.confirmed_count}/${item.target_count}` },
+    {
+      title: '阻塞事实',
+      key: 'blocker',
+      ellipsis: true,
+      render: (_, item) => item.blocker_detail || item.blocker_code || '-',
+    },
+    { title: '远端消息 ID', dataIndex: 'last_remote_message_id', width: 150, render: (value) => value || '-' },
+    { title: '完成时间', dataIndex: 'completed_at', width: 170, render: (value) => formatDateTime(value) },
   ];
   const admissionColumns: ColumnsType<TaskCenterDetail['membership_admission_items'][number]> = [
     { title: '账号', key: 'account', width: 180, render: (_, item) => item.display_name || `账号 #${item.account_id}` },
@@ -634,6 +692,16 @@ export function TaskCenterDetailModal({
               { key: 'coverage_target_accounts', label: '覆盖目标账号', children: accountCoverage ? Number(accountCoverage.target_account_count ?? accountCoverage.eligible_count ?? 0) : '-' },
               { key: 'coverage_remaining_messages', label: '剩余覆盖消息', children: accountCoverage ? Number(accountCoverage.remaining_message_count ?? 0) : '-' },
               { key: 'coverage_not_ready', label: '未准入/受限', children: accountCoverage ? `${Number(accountCoverage.pending_admission_count ?? 0)} / ${Number(accountCoverage.restricted_count ?? 0)}` : '-' },
+              { key: 'coverage_offline', label: '离线/Session 阻塞', children: accountCoverage ? Number(accountCoverage.offline_or_session_blocked_count ?? 0) : '-' },
+              { key: 'coverage_unknown', label: '结果未知', children: accountCoverage ? Number(accountCoverage.unknown_after_send_count ?? 0) : '-' },
+              {
+                key: 'coverage_capacity',
+                label: '容量证明',
+                children: accountCoverage?.capacity_proof
+                  ? `${accountCoverage.capacity_status === 'blocked' ? '阻塞' : '可履约'}，目标 ${Number(accountCoverage.required_daily_messages ?? 0)}，理论容量 ${Number(accountCoverage.capacity_proof.effective_daily_capacity ?? 0)}，差额 ${Number(accountCoverage.capacity_proof.capacity_gap ?? 0)}`
+                  : '-',
+              },
+              { key: 'coverage_hourly_rate', label: '最低小时成功率', children: accountCoverage ? `${Number(accountCoverage.required_hourly_rate ?? 0)} 条/小时` : '-' },
               { key: 'coverage_estimated_window', label: '预计补齐窗口', children: accountCoverage?.estimated_completion_window?.label || '-' },
               {
                 key: 'coverage_blocked_reasons',
@@ -650,6 +718,55 @@ export function TaskCenterDetailModal({
                 ) : '-',
               },
             ]}
+          />
+          <Space wrap>
+            <input
+              aria-label="覆盖日期"
+              type="date"
+              value={accountCoverageFilters.date}
+              onChange={(event) => onAccountCoverageFiltersChange({ ...accountCoverageFilters, date: event.target.value })}
+            />
+            <Select
+              aria-label="覆盖状态"
+              value={accountCoverageFilters.state || undefined}
+              placeholder="全部状态"
+              allowClear
+              style={{ width: 120 }}
+              options={[
+                { value: 'confirmed', label: '已完成' },
+                { value: 'ready', label: '待规划' },
+                { value: 'reserved', label: '已预约' },
+                { value: 'sending', label: '发送中' },
+                { value: 'pending_admission', label: '待入群' },
+                { value: 'blocked', label: '阻塞' },
+                { value: 'unknown', label: '结果未知' },
+              ]}
+              onChange={(state) => onAccountCoverageFiltersChange({ ...accountCoverageFilters, state: state || '' })}
+            />
+            <Input
+              aria-label="阻塞码"
+              key={accountCoverageFilters.blockerCode}
+              defaultValue={accountCoverageFilters.blockerCode}
+              placeholder="阻塞码"
+              style={{ width: 160 }}
+              onPressEnter={(event) => onAccountCoverageFiltersChange({ ...accountCoverageFilters, blockerCode: event.currentTarget.value })}
+              onBlur={(event) => onAccountCoverageFiltersChange({ ...accountCoverageFilters, blockerCode: event.target.value })}
+            />
+          </Space>
+          <Table<TaskAccountCoverageItem>
+            rowKey="id"
+            size="small"
+            columns={coverageColumns}
+            dataSource={coverageItems}
+            scroll={{ x: 900 }}
+            pagination={{
+              current: accountCoveragePagination.current,
+              pageSize: accountCoveragePagination.pageSize,
+              total: accountCoveragePagination.total,
+              showSizeChanger: true,
+              onChange: (page, pageSize) => onDetailSectionPageChange('accountCoverage', page, pageSize),
+            }}
+            loading={accountCoveragePagination.loading}
           />
           {canManageTasks && <Button onClick={() => onEditTask(detail.task)}>编辑设置</Button>}
         </Space>

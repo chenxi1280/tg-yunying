@@ -18,6 +18,7 @@ from app.models import (
     RuleSetVersion,
     SchedulingSetting,
     Task,
+    TaskAccountDailyCoverage,
     Tenant,
     TgAccount,
     TgAccountOnlineState,
@@ -667,6 +668,7 @@ def test_group_ai_chat_all_accounts_daily_coverage_plans_uncovered_accounts(monk
         return [f"覆盖发言{index}" for index in range(count)], 0
 
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
+    monkeypatch.setattr("app.services.task_center.daily_coverage._now", lambda: now_value)
     monkeypatch.setattr("app.services.account_online_state._now", lambda: now_value)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
@@ -708,6 +710,17 @@ def test_group_ai_chat_all_accounts_daily_coverage_plans_uncovered_accounts(monk
             stats={"force_bootstrap_once": True},
         )
         session.add(task)
+        session.add_all([
+            TaskAccountDailyCoverage(
+                tenant_id=1,
+                task_id=task.id,
+                group_id=7,
+                account_id=account_id,
+                coverage_date=now_value.date(),
+                state="ready",
+            )
+            for account_id in [101, 102, 103, 104]
+        ])
         session.commit()
 
         created = build_group_ai_chat_plan(session, task)
@@ -734,6 +747,7 @@ def test_group_ai_chat_all_accounts_daily_coverage_keeps_uncovered_before_memory
         return ["榜单这两天更新挺快", "新人反馈要再看看"][:count], 0
 
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
+    monkeypatch.setattr("app.services.task_center.daily_coverage._now", lambda: now_value)
     monkeypatch.setattr("app.services.task_center.account_pool._now", lambda: now_value)
     monkeypatch.setattr("app.services.account_online_state._now", lambda: now_value)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
@@ -776,6 +790,18 @@ def test_group_ai_chat_all_accounts_daily_coverage_keeps_uncovered_before_memory
             stats={"force_bootstrap_once": True},
         )
         session.add(task)
+        session.add_all([
+            TaskAccountDailyCoverage(
+                tenant_id=1,
+                task_id=task.id,
+                group_id=7,
+                account_id=account_id,
+                coverage_date=now_value.date(),
+                confirmed_count=1 if account_id in {102, 104} else 0,
+                state="confirmed" if account_id in {102, 104} else "ready",
+            )
+            for account_id in [101, 102, 103, 104]
+        ])
         for account_id in [102, 104]:
             session.add(
                 Action(
@@ -1736,7 +1762,7 @@ def test_group_ai_chat_hard_hourly_membership_permission_blocker(monkeypatch):
             name="硬目标准入权限失败",
             type="group_ai_chat",
             status="running",
-            account_config={"selection_mode": "all", "max_concurrent": 20, "cooldown_per_account_minutes": 0},
+            account_config={"selection_mode": "manual", "account_ids": [101], "max_concurrent": 20, "cooldown_per_account_minutes": 0},
             type_config={
                 "target_operation_target_id": 21,
                 "hard_hourly_target_enabled": True,

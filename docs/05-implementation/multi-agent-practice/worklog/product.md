@@ -455,6 +455,18 @@
 - handoff_message_id: 2026-07-07-channel-comment-ai-meta-filter-release-prodverify-handoff-001
 - unresolved: 补查发布后 `channel_comment` action / worker / Telegram 真实链路，确认 `<think>` / “让我分析...” 这类过程性内容未再发送，或旧 pending 脏 `comment_text` 被 `content_policy` 拦截。
 
+## 2026-07-10 AI 活跃群“全部账号”每日真实发言履约重设计
+
+- message_id: 2026-07-10-ai-all-account-daily-ledger-product-design-001
+- action: 根据生产覆盖矩阵和用户确认口径，重写“全部账号”任务的目标集合、自动准入、每日覆盖、AI 内容解耦、容量证明和生产验收设计。
+- input: 用户确认所有平台内正常、Session 可用账号都必须自动进入每个“全部账号”AI 活跃群任务并推进入群；只有目标群真实成功发言才算当天完成；入群失败、受限和其他阻塞不能从分母移除；同时要求避免每任务频繁全量扫描，失败补覆盖不得破坏 AI 模拟聊天内容。
+- output: 专项 PRD 从“运行时扫描 ready 子集并尽量覆盖”升级为“任务创建快照 + 账号事件增量同步 + 租户级一致性核对 + 持久化准入关系 + 北京时间每日覆盖账本 + 自然对话片段履约”。完成必须同时存在成功 Action、成功 ExecutionAttempt 和非空 Telegram `remote_message_id`；覆盖调度只决定账号 slot，不改变话题、上下文、账号面具、引用、连发和质量门；容量不足显式阻断，不能静默提高上限。
+- evidence: E1 文档证据；已同步 `docs/03-feature-designs/ai-group-all-accounts-daily-coverage-prd.md`、`docs/01-product/tg-ops-platform-prd.md`、`docs/00-index/project-dataflow-index.md` 和状态板；生产规模证据为约 609 个任务候选账号、5 个全部账号任务、目标群 `09:00-23:00` 活跃窗口和 `daily_limit=120` 与约 609 条/日硬目标冲突；文档基线回归 `30 passed, 2 deselected`。
+- decision: `design_status=complete`，需求级别从原 L2 非生产功能升级为 L3 生产问题修复。当前只接受产品设计和 PRD，不声明代码已实现、QA 通过、已发布或线上恢复。
+- next_agent: product
+- handoff_delivery_status: not_sent_pending_user_review
+- unresolved: 等待用户审阅 PRD；账号范围事件、`TaskAccountDailyCoverage`、覆盖协调器、容量预检、listener 超时、前端真实分母、迁移、QA、Release Gate 和完整北京时间自然日 E4 生产验证均未实现。
+
 ## 2026-07-10 生产核心页面有界加载 Product Handoff
 
 - message_id: `handoff-2026-07-10-production-page-performance-dev`

@@ -83,6 +83,27 @@ def test_daily_coverage_does_not_exceed_manual_round_cap(monkeypatch) -> None:
     assert turn_count == 2
 
 
+def test_daily_coverage_does_not_plan_before_current_window_debt(monkeypatch) -> None:
+    accounts = [SimpleNamespace(id=account_id) for account_id in range(1, 4)]
+    monkeypatch.setattr(group_ai_chat.random, "uniform", lambda _lo, _hi: 1.0)
+
+    selected, turn_count = group_ai_chat._select_cycle_accounts(
+        accounts,
+        {
+            "account_coverage_mode": "all_accounts_daily",
+            "messages_per_round_mode": "manual",
+            "messages_per_round": 2,
+        },
+        "正常期",
+        1.0,
+        has_context=True,
+        daily_coverage_uncovered_count=0,
+    )
+
+    assert selected == []
+    assert turn_count == 0
+
+
 def test_ai_next_run_after_uses_hourly_round_interval() -> None:
     pacing_config = {"operation_profile": {"hourly_activity_curve": _curve(20, 6)}}
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+from datetime import date
 from io import StringIO
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
@@ -10,6 +11,7 @@ from app.auth import CurrentUser, get_current_user
 from app.config import get_settings
 from app.common.http import not_found
 from app.database import get_session
+from app.timezone import beijing_now
 from app.schemas import (
     ActionOut,
     ChannelCapacityCheckOut,
@@ -40,6 +42,7 @@ from app.schemas import (
     SearchRankDeboostTaskConfigUpdate,
     SearchRankDeboostTaskCreate,
     TaskDetailOut,
+    TaskAccountCoverageItemOut,
     TaskAICycleOut,
     TaskMessageGroupOut,
     TaskMembershipItemOut,
@@ -79,6 +82,7 @@ from app.services.task_center import (
     generate_group_ai_chat_preview,
     get_task_detail,
     list_ai_cycles_page,
+    list_task_account_coverage_page,
     list_actions_page,
     list_action_attempts,
     list_membership_admission_items_page,
@@ -466,6 +470,36 @@ def get_task_stats(task_id: str, session: Session = Depends(get_session), curren
         return refresh_task_detail_stats(session, current_user.tenant_id or 1, task_id)
     except ValueError as exc:
         raise not_found(str(exc)) from exc
+
+
+@router.get("/api/tasks/{task_id}/account-coverage", response_model=list[TaskAccountCoverageItemOut])
+def get_task_account_coverage(
+    task_id: str,
+    response: Response,
+    coverage_date: str | None = Query(default=None, alias="date"),
+    state: str | None = None,
+    blocker_code: str | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    try:
+        selected_date = date.fromisoformat(coverage_date) if coverage_date else beijing_now().date()
+        rows, total = list_task_account_coverage_page(
+            session,
+            current_user.tenant_id or 1,
+            task_id,
+            coverage_date=selected_date,
+            state=state,
+            blocker_code=blocker_code,
+            page=page,
+            page_size=page_size,
+        )
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
+    _set_page_headers(response, total, page, page_size)
+    return rows
 
 
 @router.get("/api/tasks/{task_id}/actions", response_model=list[ActionOut])

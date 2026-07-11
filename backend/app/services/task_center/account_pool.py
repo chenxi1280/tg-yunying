@@ -49,6 +49,7 @@ def select_task_accounts(
     daily_coverage_action_types: tuple[str, ...] = (),
     daily_coverage_target_count: int = 1,
     daily_coverage_statuses: tuple[str, ...] = DAILY_COVERAGE_STATUSES,
+    candidate_account_ids: list[int] | None = None,
 ) -> list[TgAccount]:
     max_concurrent = int(account_config.get("max_concurrent") or 20)
     requested = int(limit or max_concurrent)
@@ -56,6 +57,10 @@ def select_task_accounts(
     stmt = _account_query(session, tenant_id, account_config, enforce_shard=enforce_shard)
     if stmt is None:
         return []
+    if candidate_account_ids is not None:
+        if not candidate_account_ids:
+            return []
+        stmt = stmt.where(TgAccount.id.in_(candidate_account_ids))
     if target_group_id:
         stmt = stmt.join(TgGroupAccount, TgGroupAccount.account_id == TgAccount.id).where(
             TgGroupAccount.group_id == target_group_id,
