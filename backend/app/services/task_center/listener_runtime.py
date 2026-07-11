@@ -125,7 +125,15 @@ def _task_listener_groups(session: Session, task: Task) -> list[tuple[int, list[
         history_fetch_account_id = _as_int(config.get("history_fetch_account_id"))
         if history_fetch_account_id:
             return [(group_id, [history_fetch_account_id])]
-        accounts = select_task_accounts(session, task.tenant_id, task.account_config or {}, target_group_id=group.id, limit=1)
+        listener_account_config = {**(task.account_config or {}), "cooldown_per_account_minutes": 0}
+        accounts = select_task_accounts(
+            session,
+            task.tenant_id,
+            listener_account_config,
+            target_group_id=group.id,
+            limit=1,
+            enforce_capacity=False,
+        )
         return [(group_id, [account.id for account in accounts])]
     if task.type != "group_relay":
         return []
@@ -364,7 +372,7 @@ def _source_group_account_ids(session: Session, tenant_id: int, group_id: int) -
 
 
 def _usable_group_account_ids(session: Session, group: TgGroup, account_ids: list[int]) -> list[int]:
-    candidate_ids = account_ids or _source_group_account_ids(session, group.tenant_id, group.id)
+    candidate_ids = list(dict.fromkeys(account_ids))
     if not candidate_ids:
         return []
     rows = session.scalars(
@@ -372,7 +380,7 @@ def _usable_group_account_ids(session: Session, group: TgGroup, account_ids: lis
         .join(TgGroupAccount, TgGroupAccount.account_id == TgAccount.id)
         .where(
             TgAccount.tenant_id == group.tenant_id,
-            TgAccount.id.in_(list(dict.fromkeys(candidate_ids))),
+            TgAccount.id.in_(candidate_ids),
             TgAccount.status == AccountStatus.ACTIVE.value,
             TgAccount.account_identity != "code_receiver",
             TgAccount.account_identity != "rank_deboost",
@@ -382,7 +390,7 @@ def _usable_group_account_ids(session: Session, group: TgGroup, account_ids: lis
         )
     )
     valid = set(rows)
-    return [account_id for account_id in dict.fromkeys(candidate_ids) if account_id in valid]
+    return [account_id for account_id in candidate_ids if account_id in valid]
 
 
 def _as_int(value) -> int | None:

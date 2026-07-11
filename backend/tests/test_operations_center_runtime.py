@@ -2281,6 +2281,121 @@ def test_listener_runtime_collects_shared_sources_once_and_recovers_listener(mon
     assert ai_task.next_run_at < future_run
 
 
+@pytest.mark.no_postgres
+def test_ai_listener_selects_one_task_account_without_send_cooldown_fanout(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    SessionFactory = sessionmaker(bind=engine, future=True)
+    reset_listener_runtime_cache()
+    seen_account_ids: list[list[int]] = []
+    selection_calls: list[tuple[dict, dict]] = []
+
+    def fake_select_accounts(session: Session, _tenant_id: int, account_config: dict, **kwargs):
+        selection_calls.append((dict(account_config), dict(kwargs)))
+        return [session.get(TgAccount, 101)]
+
+    def fake_collect(_session: Session, _group: TgGroup, account_ids: list[int] | None = None, **_kwargs) -> int:
+        seen_account_ids.append(list(account_ids or []))
+        return 0
+
+    now_value = _now()
+    with SessionFactory() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add_all(
+            [
+                TgAccount(id=101, tenant_id=1, display_name="高健康账号", phone_masked="101", status="在线", health_score=90),
+                TgAccount(id=102, tenant_id=1, display_name="次健康账号", phone_masked="102", status="在线", health_score=80),
+                TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="活跃群", auth_status="已授权运营"),
+                TgGroupAccount(id=701, tenant_id=1, group_id=7, account_id=101, can_send=True),
+                TgGroupAccount(id=702, tenant_id=1, group_id=7, account_id=102, can_send=True),
+                Task(
+                    id="runtime-ai-cooldown",
+                    tenant_id=1,
+                    name="监听不受发送冷却影响",
+                    type="group_ai_chat",
+                    status="running",
+                    account_config={"selection_mode": "all", "max_concurrent": 20, "cooldown_per_account_minutes": 5},
+                    type_config={"target_group_id": 7},
+                ),
+                Action(
+                    id="recent-send-101",
+                    tenant_id=1,
+                    task_id="runtime-ai-cooldown",
+                    task_type="group_ai_chat",
+                    action_type="send_message",
+                    account_id=101,
+                    status="success",
+                    executed_at=now_value,
+                ),
+                Action(
+                    id="recent-send-102",
+                    tenant_id=1,
+                    task_id="runtime-ai-cooldown",
+                    task_type="group_ai_chat",
+                    action_type="send_message",
+                    account_id=102,
+                    status="success",
+                    executed_at=now_value,
+                ),
+            ]
+        )
+        session.commit()
+
+    monkeypatch.setattr("app.services.task_center.listener_runtime.select_task_accounts", fake_select_accounts)
+    monkeypatch.setattr("app.services.task_center.listener_runtime.collect_group_context", fake_collect)
+    result = drain_listener_runtime(SessionFactory, tenant_id=1, limit=10)
+
+    assert result.source_count == 1
+    assert seen_account_ids == [[101]]
+    assert selection_calls == [
+        (
+            {"selection_mode": "all", "max_concurrent": 20, "cooldown_per_account_minutes": 0},
+            {"target_group_id": 7, "limit": 1, "enforce_capacity": False},
+        )
+    ]
+
+
+@pytest.mark.no_postgres
+def test_ai_listener_does_not_broaden_empty_manual_scope_to_all_group_accounts(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    SessionFactory = sessionmaker(bind=engine, future=True)
+    reset_listener_runtime_cache()
+    collect_calls: list[list[int]] = []
+
+    def fake_collect(_session: Session, _group: TgGroup, account_ids: list[int] | None = None, **_kwargs) -> int:
+        collect_calls.append(list(account_ids or []))
+        return 0
+
+    with SessionFactory() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add_all(
+            [
+                TgAccount(id=101, tenant_id=1, display_name="群账号A", phone_masked="101", status="在线"),
+                TgAccount(id=102, tenant_id=1, display_name="群账号B", phone_masked="102", status="在线"),
+                TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="活跃群", auth_status="已授权运营"),
+                TgGroupAccount(id=701, tenant_id=1, group_id=7, account_id=101, can_send=True),
+                TgGroupAccount(id=702, tenant_id=1, group_id=7, account_id=102, can_send=True),
+                Task(
+                    id="runtime-ai-empty-manual",
+                    tenant_id=1,
+                    name="空手动范围不得扩散",
+                    type="group_ai_chat",
+                    status="running",
+                    account_config={"selection_mode": "manual", "account_ids": []},
+                    type_config={"target_group_id": 7},
+                ),
+            ]
+        )
+        session.commit()
+
+    monkeypatch.setattr("app.services.task_center.listener_runtime.collect_group_context", fake_collect)
+    result = drain_listener_runtime(SessionFactory, tenant_id=1, limit=10)
+
+    assert result.error_count == 1
+    assert collect_calls == []
+
+
 def test_group_message_policy_uses_auto_validation_without_draft_gate():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
