@@ -322,9 +322,9 @@ jobs:
           set -euo pipefail
           ssh silicon-valley-production-server '
             set -euo pipefail
-            test -x /root/.grok/bin/grok
-            /root/.grok/bin/grok --version
-            /root/.grok/bin/grok models | grep -F "grok-4.5"
+            sudo -n test -x /root/.grok/bin/grok
+            sudo -n /root/.grok/bin/grok --version
+            sudo -n /root/.grok/bin/grok models | grep -F "grok-4.5"
           '
 
       - name: Deploy via SSH release script
