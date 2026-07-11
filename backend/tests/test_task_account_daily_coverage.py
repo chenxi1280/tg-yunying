@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import create_engine, event, select
@@ -28,6 +28,7 @@ from app.services.task_center.daily_coverage import (
     release_coverage_reservation,
     reserve_coverage_for_action,
 )
+from app.services.task_center.daily_coverage_readiness import _row_needs_refresh
 
 
 pytestmark = pytest.mark.no_postgres
@@ -254,6 +255,35 @@ def test_daily_coverage_due_debt_uses_elapsed_active_window(session: Session) ->
     assert daily_coverage_due_debt(task, group, rows, now=datetime(2026, 7, 10, 10, 0)) == 1
     assert daily_coverage_due_debt(task, group, rows, now=datetime(2026, 7, 10, 16, 0)) == 7
     assert daily_coverage_due_debt(task, group, rows, now=datetime(2026, 7, 10, 23, 0)) == 14
+
+
+def test_daily_coverage_due_debt_accepts_beijing_aware_now(session: Session) -> None:
+    task = _seed(session)
+    group = session.get(TgGroup, 21)
+    rows = [
+        TaskAccountDailyCoverage(
+            tenant_id=1,
+            task_id=task.id,
+            group_id=21,
+            account_id=account_id,
+            coverage_date=date(2026, 7, 10),
+            state="ready",
+        )
+        for account_id in range(1, 15)
+    ]
+    now = datetime(2026, 7, 10, 16, 0, tzinfo=timezone(timedelta(hours=8)))
+
+    assert daily_coverage_due_debt(task, group, rows, now=now) == 7
+
+
+def test_blocked_coverage_refresh_accepts_mixed_timezone_values() -> None:
+    row = TaskAccountDailyCoverage(
+        state="blocked",
+        next_eligible_at=datetime(2026, 7, 10, 16, 5),
+    )
+    now = datetime(2026, 7, 10, 16, 0, tzinfo=timezone(timedelta(hours=8)))
+
+    assert _row_needs_refresh(row, now) is False
 
 
 def test_daily_coverage_due_debt_subtracts_confirmed_and_reserved(session: Session) -> None:

@@ -25,7 +25,15 @@ def refresh_rows(
 def _row_needs_refresh(row: TaskAccountDailyCoverage, timestamp: datetime) -> bool:
     if row.state in {"confirmed", "reserved", "sending", "unknown"}:
         return False
-    return not (row.state == "blocked" and row.next_eligible_at and row.next_eligible_at > timestamp)
+    return not (
+        row.state == "blocked"
+        and row.next_eligible_at
+        and _wall_time(row.next_eligible_at) > _wall_time(timestamp)
+    )
+
+
+def _wall_time(value: datetime) -> datetime:
+    return value.replace(tzinfo=None) if value.tzinfo else value
 
 
 def _apply_row_readiness(
