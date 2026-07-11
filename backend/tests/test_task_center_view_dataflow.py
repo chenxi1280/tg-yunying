@@ -9,6 +9,7 @@ pytestmark = pytest.mark.no_postgres
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TASK_CENTER_VIEW = PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx"
 TASK_CENTER_DETAIL_MODAL = PROJECT_ROOT / "frontend/src/app/views/TaskCenterDetailModal.tsx"
+TASK_LIST_HOOK = PROJECT_ROOT / "frontend/src/app/hooks/useTaskCenterListPage.ts"
 
 
 def _source() -> str:
@@ -26,20 +27,46 @@ def _function_body(source: str, function_name: str) -> str:
     return source[start:end]
 
 
+def test_task_center_uses_server_paged_list_query_and_global_facets():
+    assert TASK_LIST_HOOK.exists(), "missing paged task-list owner"
+    hook = TASK_LIST_HOOK.read_text()
+    view = _source()
+    types = (PROJECT_ROOT / "frontend/src/app/types/taskCenter.ts").read_text()
+
+    assert "export type TaskCenterListItem" in types
+    assert "export type TaskCenterListPage" in types
+    assert "api<TaskCenterListPage>(`/tasks/page?${params.toString()}`" in hook
+    for parameter in ["page", "page_size", "type", "status", "q", "group_key"]:
+        assert f"params.set('{parameter}'" in hook
+    assert "const controller = new AbortController();" in hook
+    assert "queryKey" in hook
+    assert "controllerRef.current?.abort();" in hook
+    assert "window.setInterval" in hook
+    assert "60000" in hook
+    assert "page: 1, type, groupKey: 'all'" in hook
+    assert "page: 1, q: q.trim(), groupKey: 'all'" in hook
+    assert "useTaskCenterListPage" in view
+    assert "api<TaskCenterTask[]>(`/tasks" not in view
+    assert "taskList.summary.total" in view
+    assert "taskList.groups" in view
+    assert "total: taskList.total" in view
+    assert "<Table<TaskCenterListItem>" in view
+
+
 def test_task_center_actions_distinguish_refresh_failure_from_write_failure():
     source = _source()
 
-    assert "async function fetchTaskListData(requestSeq: number, nextTaskTypeFilter: TaskTypeFilter = taskTypeFilter): Promise<boolean>" in source
     assert "async function refreshTaskListAfterAction(actionLabel: string)" in source
-    assert "async function refreshVisibleTaskAfterAction(actionLabel: string, task: TaskCenterTask)" in source
+    assert "async function refreshVisibleTaskAfterAction(actionLabel: string, task: TaskCenterVisibleTask)" in source
     assert "任务中心数据刷新失败" in source
     assert "操作已完成" in source
 
     list_helper = source[source.index("async function refreshTaskListAfterAction"):source.index("\n\n  async function refreshVisibleTaskAfterAction")]
-    assert "await fetchTaskListData(requestSeq);" in list_helper
+    assert "const refreshError = await taskList.reload();" in list_helper
+    assert "if (!refreshError) return;" in list_helper
     assert "setActionError(`任务中心数据刷新失败：" in list_helper
 
-    detail_helper = source[source.index("async function refreshVisibleTaskAfterAction"):source.index("\n\n  async function ensureTargets")]
+    detail_helper = source[source.index("async function refreshVisibleTaskAfterAction"):source.index("\n\n  async function ensureMessages")]
     assert "await refreshTaskListAfterAction(actionLabel);" in detail_helper
     assert "const taskDetail = await fetchTaskDetail(task.id);" in detail_helper
     assert "setActionError(`任务中心数据刷新失败：" in detail_helper
@@ -63,30 +90,19 @@ def test_task_center_actions_distinguish_refresh_failure_from_write_failure():
 
 
 def test_task_center_task_list_refreshes_ignore_stale_responses():
-    source = _source()
-    fetch_list = source[source.index("async function fetchTaskListData"):source.index("\n\n  async function load")]
-    load_list = source[source.index("async function load("):source.index("\n\n  async function refreshTaskListAfterAction")]
-    refresh_list = source[source.index("async function refreshTaskListAfterAction"):source.index("\n\n  async function refreshVisibleTaskAfterAction")]
+    hook = TASK_LIST_HOOK.read_text()
+    load_list = hook[hook.index("const load = React.useCallback"):hook.index("\n\n  const queryKey")]
 
-    assert "const activeTaskListRequestSeq = React.useRef(0);" in source
-    assert "function beginTaskListRequest()" in source
-    assert "activeTaskListRequestSeq.current += 1;" in source
-    assert "function isActiveTaskListRequest(requestSeq: number)" in source
-
-    assert "async function fetchTaskListData(requestSeq: number, nextTaskTypeFilter: TaskTypeFilter = taskTypeFilter): Promise<boolean>" in fetch_list
-    assert "const [taskData, schedulingData] = await Promise.all([" in fetch_list
-    assert "if (!isActiveTaskListRequest(requestSeq)) return false;" in fetch_list
-    assert fetch_list.index("if (!isActiveTaskListRequest(requestSeq)) return false;") < fetch_list.index("setTasks(taskData);")
-    assert fetch_list.index("setTasks(taskData);") < fetch_list.index("setSchedulingSetting(schedulingData);")
-
-    assert "const requestSeq = beginTaskListRequest();" in load_list
-    assert "await fetchTaskListData(requestSeq, nextTaskTypeFilter);" in load_list
-    assert "if (!isActiveTaskListRequest(requestSeq)) return;" in load_list
-    assert "if (isActiveTaskListRequest(requestSeq)) setLoading(false);" in load_list
-
-    assert "const requestSeq = beginTaskListRequest();" in refresh_list
-    assert "await fetchTaskListData(requestSeq);" in refresh_list
-    assert "if (!isActiveTaskListRequest(requestSeq)) return;" in refresh_list
+    assert "type TaskListRequest" in hook
+    assert "queryKey: string" in hook
+    assert "controllerRef.current?.abort();" in hook
+    assert "function isActiveRequest(" in hook
+    guard = "if (!isActiveRequest(requestRef, request)) return '';"
+    assert guard in load_list
+    assert load_list.index(guard) < load_list.index("setItems(page.items);")
+    assert load_list.index("setItems(page.items);") < load_list.index("setSchedulingSetting(scheduling);")
+    assert "if (isActiveRequest(requestRef, request)) setLoading(false);" in load_list
+    assert "window.clearInterval(timer);" in hook
 
 
 def test_task_center_row_actions_bind_busy_state_to_action_key():
@@ -232,11 +248,11 @@ def test_task_center_action_attempts_ignore_stale_action_responses():
 def test_task_center_form_support_data_ignores_stale_requests():
     source = _source()
     ensure_form = source[source.index("async function ensureTaskFormData"):source.index("\n\n  React.useEffect", source.index("async function ensureTaskFormData"))]
-    lazy_effect = source[source.index("if (!modalOpen && !editOpen) return;"):source.index("}, [editOpen, modalOpen, messageScope, taskType]")]
+    prefill_effect = source[source.index("if (!prefill || appliedPrefillNonce.current === prefill.nonce) return;"):source.index("\n  React.useEffect(() => {\n    if (!focusTask")]
     create_task = _function_body(source, "openCreateTask")
     edit_task = _function_body(source, "openEditTask")
     next_step = _function_body(source, "nextStep")
-    reset_type = source[source.index("function resetTypeFields"):source.index("\n\n  const table")]
+    reset_type = source[source.index("function resetTypeFields"):source.index("\n\n  const columns")]
 
     assert "const activeTaskFormSupportRequestSeq = React.useRef(0);" in source
     assert "function beginTaskFormSupportRequest()" in source
@@ -246,16 +262,14 @@ def test_task_center_form_support_data_ignores_stale_requests():
     assert "if (!isActiveTaskFormSupportRequest(requestSeq)) return false;" in ensure_form
     assert ensure_form.index("if (!isActiveTaskFormSupportRequest(requestSeq)) return false;") > ensure_form.index("await Promise.all(requests);")
     assert "if (isActiveTaskFormSupportRequest(requestSeq)) setSupportLoading(false);" in ensure_form
-    assert "async function loadTaskTypeSupportData(type: TaskCenterTaskType, requestSeq: number): Promise<boolean>" in source
-
-    assert "const requestSeq = beginTaskFormSupportRequest();" in lazy_effect
-    assert "void loadTaskTypeSupportData(taskType, requestSeq).catch((error) => {" in lazy_effect
-    assert "if (!isActiveTaskFormSupportRequest(requestSeq)) return;" in lazy_effect
-    assert lazy_effect.index("if (!isActiveTaskFormSupportRequest(requestSeq)) return;") < lazy_effect.index("setActionError(`读取任务表单支撑数据失败：")
+    assert "loadTaskTypeSupportData" not in source
+    assert "const requestSeq = beginTaskFormSupportRequest();" in prefill_effect
+    assert "void ensureTaskFormData(nextType, requestSeq)" in prefill_effect
+    assert "isActiveTaskFormSupportRequest(requestSeq)" in prefill_effect
 
     for block in [create_task, edit_task, next_step]:
         assert "const requestSeq = beginTaskFormSupportRequest();" in block
-        assert "await ensureTaskFormData(" in block
+        assert "void ensureTaskFormData(" in block
         assert "if (!isActiveTaskFormSupportRequest(requestSeq)) return;" in block
 
     assert "const requestSeq = beginTaskFormSupportRequest();" in reset_type
@@ -287,7 +301,7 @@ def test_task_center_write_refreshes_are_bound_to_active_task():
     source = _source()
     refresh_detail = source[
         source.index("async function refreshVisibleTaskAfterAction"):
-        source.index("\n\n  async function ensureTargets")
+        source.index("\n\n  async function ensureMessages")
     ]
     membership_action = _function_body(source, "membershipAdmissionAction")
 
@@ -307,7 +321,7 @@ def test_task_center_detail_requests_ignore_stale_same_task_responses():
     source = _source()
     refresh_detail = source[
         source.index("async function refreshVisibleTaskAfterAction"):
-        source.index("\n\n  async function ensureTargets")
+        source.index("\n\n  async function ensureMessages")
     ]
     focus_effect = source[
         source.index("if (!focusTask || appliedFocusNonce.current === focusTask.nonce) return;"):
@@ -358,6 +372,72 @@ def test_task_center_action_pages_ignore_stale_page_requests_for_same_task():
 
     assert guard_index < rows_index < page_index
     assert catch_guard_index < catch_page_index
+
+
+def _required_remote_target_source(relative_path: str) -> str:
+    path = PROJECT_ROOT / relative_path
+    assert path.exists(), f"missing frontend source: {relative_path}"
+    return path.read_text()
+
+
+def test_remote_operation_target_select_supports_search_errors_and_stable_selected_values():
+    source = _required_remote_target_source("frontend/src/app/components/OperationTargetSelect.tsx")
+
+    assert "useOperationTargetOptions" in source
+    assert "mode?: 'multiple';" in source
+    assert "showSearch" in source
+    assert "filterOption={false}" in source
+    assert "onSearch={search}" in source
+    assert "loading={loading}" in source
+    assert "status={error ? 'error' : status}" in source
+    assert "notFoundContent={notFoundContent}" in source
+    assert 'role="alert"' in source
+    assert "运营目标加载失败：{error}" in source
+    assert source.index('role="alert"') > source.index("notFoundContent={notFoundContent}")
+    assert "ids: selectedIds" in source
+    assert "value={value}" in source
+    assert "const onTargetsLoadedRef = React.useRef(onTargetsLoaded);" in source
+    assert "onTargetsLoadedRef.current = onTargetsLoaded;" in source
+    assert "onTargetsLoadedRef.current?.(targets);" in source
+    notify_start = source.index("React.useEffect(() => {", source.index("onTargetsLoadedRef.current ="))
+    notify_end = source.index("return (", notify_start)
+    notify_effect = source[notify_start:notify_end]
+    assert "[targets]" in notify_effect
+    assert "[onTargetsLoaded, targets]" not in notify_effect
+    assert "onChange" not in source[source.index("React.useEffect"):source.index("return (")]
+
+
+def test_task_center_uses_remote_target_loading_without_unbounded_support_request():
+    source = _source()
+    wizard = _required_remote_target_source("frontend/src/app/views/TaskCenterTargetSection.tsx")
+
+    assert "api<OperationTarget[]>('/operation-targets')" not in source
+    assert "async function ensureTargets()" not in source
+    assert "import OperationTargetSelect" in wizard
+    assert "<OperationTargetSelect" in wizard
+    assert "targetType: 'group'" in wizard
+    assert "targetType: 'channel'" in wizard
+    assert "capability: 'task'" in wizard
+    assert 'capability="send"' in wizard
+    assert 'capability="listen"' in wizard
+
+
+def test_task_forms_open_before_support_data_and_merge_remote_targets():
+    source = _source()
+    create_task = _function_body(source, "openCreateTask")
+    edit_task = _function_body(source, "openEditTask")
+    prefill_effect = source[
+        source.index("if (!prefill || appliedPrefillNonce.current === prefill.nonce) return;"):
+        source.index("\n  React.useEffect(() => {\n    if (!focusTask")
+    ]
+
+    assert create_task.index("setModalOpen(true);") < create_task.index("ensureTaskFormData(")
+    assert edit_task.index("setEditOpen(true);") < edit_task.index("ensureTaskFormData(")
+    assert "await ensureTaskFormData(" not in create_task
+    assert "await ensureTaskFormData(" not in edit_task
+    assert "mergeOperationTargets(current, loadedTargets)" in source
+    assert "setTargets((current) => mergeOperationTargets(current, [prefill.target]));" in prefill_effect
+    assert "ensureTargets()" not in prefill_effect
 
 
 def test_task_center_detail_section_pages_ignore_stale_page_requests_for_same_task():

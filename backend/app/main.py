@@ -82,6 +82,7 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type"],
+        expose_headers=["X-Total-Count", "X-Page", "X-Page-Size"],
     )
     app.middleware("http")(permission_middleware)
     media_root = Path(settings.media_root)

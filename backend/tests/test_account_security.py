@@ -6,7 +6,7 @@ import os
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.database import Base
@@ -642,6 +642,67 @@ def test_profile_batch_task_list_uses_lightweight_projection(monkeypatch):
         rows = list_tasks(session, 1, task_type="account_profile_init")
 
     assert [row["id"] for row in rows] == [f"account_security_batch:{batch.id}"]
+
+
+def _profile_batch_list_query_count(batch_count: int) -> int:
+    import app.services.task_center as task_center_service
+
+    with _session() as session:
+        account = _seed_account(session)
+        for batch_id in range(1, batch_count + 1):
+            session.add(
+                TgAccountSecurityBatch(
+                    id=batch_id,
+                    tenant_id=1,
+                    action_types='["update_profile"]',
+                    status="running",
+                    total_count=1,
+                    created_by="pytest",
+                )
+            )
+            session.add(
+                TgAccountSecurityBatchItem(
+                    id=batch_id,
+                    batch_id=batch_id,
+                    tenant_id=1,
+                    account_id=account.id,
+                    status="pending",
+                )
+            )
+        session.commit()
+        statements: list[str] = []
+
+        @event.listens_for(session.get_bind(), "before_cursor_execute")
+        def _capture_sql(_conn, _cursor, statement, _parameters, _context, _executemany):  # noqa: ANN001
+            statements.append(statement)
+
+        list_task_page = getattr(task_center_service, "list_task_page", None)
+        assert callable(list_task_page), "list_task_page must be exported from app.services.task_center"
+        result = list_task_page(
+            session,
+            tenant_id=1,
+            page=1,
+            page_size=100,
+            task_type="account_profile_init",
+            status=None,
+            q="",
+            group_key=None,
+        )
+
+    assert result.total == batch_count
+    return sum(
+        statement.lstrip().lower().startswith("select")
+        and "tg_account_security_batch_items" in statement.lower()
+        for statement in statements
+    )
+
+
+def test_profile_batch_list_query_count_does_not_grow_with_batch_count():
+    five_batch_queries = _profile_batch_list_query_count(5)
+    fifty_batch_queries = _profile_batch_list_query_count(50)
+
+    assert five_batch_queries <= 1
+    assert fifty_batch_queries == five_batch_queries
 
 
 def test_account_security_system_task_cannot_be_deleted_from_task_center():

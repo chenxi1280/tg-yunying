@@ -914,6 +914,51 @@ class TaskSourceFilterOverrideRequest(BaseModel):
         return self
 
 
+class TaskListItemOut(ApiModel):
+    id: str
+    tenant_id: int
+    source_kind: str
+    name: str
+    type: str
+    status: str
+    priority: int
+    next_run_at: datetime | None
+    last_error: str
+    stats: dict[str, Any] = Field(default_factory=dict)
+    runtime_stage: dict[str, Any] = Field(default_factory=dict)
+    target_summary: str = ""
+    account_scope_summary: str = ""
+    target_group_label: str = ""
+    associated_channel_label: str = ""
+    group_key: str = ""
+    created_at: datetime
+    updated_at: datetime
+
+
+class TaskListSummaryOut(ApiModel):
+    total: int = 0
+    running: int = 0
+    failed: int = 0
+
+
+class TaskListGroupOut(ApiModel):
+    key: str
+    target_group_label: str
+    associated_channel_label: str
+    task_count: int
+    running_count: int
+    failed_count: int
+
+
+class TaskListPageOut(ApiModel):
+    items: list[TaskListItemOut]
+    total: int
+    page: int
+    page_size: int
+    summary: TaskListSummaryOut
+    groups: list[TaskListGroupOut]
+
+
 class TaskOut(ApiModel):
     id: str
     tenant_id: int
@@ -1431,6 +1476,10 @@ __all__ = [
     "TaskMessageGroupOut",
     "TaskRelayBatchOut",
     "TaskRelayItemOut",
+    "TaskListGroupOut",
+    "TaskListItemOut",
+    "TaskListPageOut",
+    "TaskListSummaryOut",
     "TaskOut",
     "TaskPrecheckOut",
     "TaskPrecheckRequest",

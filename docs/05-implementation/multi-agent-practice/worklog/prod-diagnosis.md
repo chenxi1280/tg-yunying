@@ -244,3 +244,17 @@
 - evidence: 本地定向 `backend/tests/test_ai_gateway.py::test_channel_comment_retries_review_tone_then_fills_missing_with_emojis`、`test_channel_reply_comment_retries_then_fills_missing_with_emojis`、`backend/tests/test_operations_center_runtime.py::test_channel_comment_pre_send_validation_blocks_ai_meta_text` 为 `3 passed`；`backend/.venv/bin/python -m pytest backend/tests/test_ai_gateway.py -m no_postgres -q` 为 `24 passed, 30 deselected`；`compileall` 和 `git diff --check` 通过。Commit `1a915d9aea14b3bdd1494187b581f93db25298d0` 已推送 `master` / `release`；Deploy Production run `28854291743` 的 checks、build-images、deploy 全部 success；生产 `/data/tgyunying/current -> /data/tgyunying/releases/20260707090543_1a915d9`，backend 和所有 worker 镜像均为 `ghcr.io/chenxi1280/tg-yunying-backend:1a915d9aea14b3bdd1494187b581f93db25298d0` 且 healthy。线上 Nginx 入口 `https://tgyunying.telema.cn/task-center` 经本机 `--resolve` 返回 HTTP 200，`/api/health` 返回 `{"status":"ok"}`。生产容器内只读确认 `CHANNEL_COMMENT_MAX_REDESCRIPTION_ATTEMPTS=3`，表情池为 `('👀', '🙂', '👍', '👌', '🙌', '🤔', '😅', '🔥')`，重试 prompt 包含“换一种描述方式”；租户 1 默认 provider 仍为 `MiniMax` / `MiniMax-M2.5` 且 `health_status=健康`。生产容器内纯函数探针模拟前三次均返回审核口吻、第四次返回 1 条正常评论，结果为 `calls=4`、`has_retry_prompt=True`、第二条缺口由表情 `🙌` 补齐。
 - decision: 代码发布、生产健康和生产镜像内行为探针均通过；频道评论 / 引用回复已具备最多 3 次重描述重试，缺口表情兜底，不再用审核说明或模板句兜底。
 - unresolved: 本次没有创建真实 Telegram 评论发送动作；因此只证明生产代码路径和探针行为，不声明已发出新的真实评论样本。
+
+## 2026-07-11 生产核心页面有界加载 E4 验收
+
+- message_id: `2026-07-11-production-page-performance-prodverify-001`
+- input: `2026-07-11-production-page-performance-product-accepted-001`，用户要求继续完成线上慢页修复。
+- output: `production_fixed_page_performance_log_correlation_blocked`
+- release: Commit `357c844d951f90659c077d91e002e9a1e7430ee2` 已同步 `master/release`；Deploy Production run `29110463190` success，release `20260710172417_357c844` 已上线，backend/frontend 镜像 SHA 一致，backend 与全部 worker healthy，公网 `/api/health` HTTP 200。
+- serial evidence: 两个列表各 30 次真实登录态刷新全部 HTTP 200。任务列表 `/api/tasks/page?page=1&page_size=20` p95/p99 `446/451ms`、最大 7.1KB；运营目标 `/api/operation-targets?page=1&page_size=20` p95/p99 `339/346ms`、最大 1.85KB；零 408/499/502。
+- concurrent evidence: 10 路同时打开任务中心全部成功，任务接口最慢 1.699 秒、最大 7.0KB；10 路运营目标全部成功，接口最慢 830ms、最大 1.85KB；所有页面均无失败提示。
+- interaction evidence: 任务中心首屏 1.224 秒，运营目标首屏 1.472 秒；任务详情 1.700 秒；编辑弹窗 427ms 可操作，目标 ids 水合 323ms / 719B，目标候选查询 247ms / 3.9KB 且带 `page_size=50&capability=task`。
+- related pages: 消息发送、规则、归档分别 1.328/2.721/0.710 秒可用；归档弹窗 308ms，目标请求带 `page_size=50&capability=archive`，302ms / 3.9KB；生产 console error 为 0。
+- pass: 当前生产慢页、任务编辑超时和连续刷新 502 症状已恢复，满足 p95 < 2 秒、p99 < 5 秒、单页 < 100KB 和零 408/499/502 的 E4 口径，`production_fixed=confirmed`。
+- blocked: 本机 SSH 只读日志复核被远端关闭连接，未取得同窗口 nginx/backend 请求日志；服务器侧发布、容器和健康证据来自成功部署工作流。
+- unproven: 历史 `/api/tasks` 间歇 502 的唯一直接 upstream 原因；不把发布后的恢复结果倒推成旧故障的唯一底层机制。

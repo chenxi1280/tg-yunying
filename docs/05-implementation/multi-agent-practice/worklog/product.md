@@ -466,3 +466,28 @@
 - next_agent: product
 - handoff_delivery_status: not_sent_pending_user_review
 - unresolved: 等待用户审阅 PRD；账号范围事件、`TaskAccountDailyCoverage`、覆盖协调器、容量预检、listener 超时、前端真实分母、迁移、QA、Release Gate 和完整北京时间自然日 E4 生产验证均未实现。
+
+## 2026-07-10 生产核心页面有界加载 Product Handoff
+
+- message_id: `handoff-2026-07-10-production-page-performance-dev`
+- intake_id: `intake-2026-07-10-production-page-performance`
+- level/lane: `L2 / P1 / standard_team`，`operation-targets + task-center-read-model`
+- input: 用户反馈线上多个页面打开缓慢或超时，明确点名任务编辑页面，并要求定位后修复。
+- production evidence: 真实登录态下 `/api/operation-targets` 返回 3,810 条、约 1.91 MB、17.288 秒，超过前端 15 秒 abort；`/api/tasks` 返回 67 条、约 207 KB，成功样本约 3.43 秒且观察到间歇 502。静态资源与 health 样本约 0.7–1.6 秒，不支持“整站静态资源统一故障”结论。
+- confirmed root: 运营目标列表无分页，并在 Python 中聚合全量关联 ORM 行；任务列表无分页，账号安全系统任务最多形成 50 次 batch-item N+1。`/api/tasks` 502 的唯一直接 upstream 原因因缺少 nginx / 容器 / DB 日志仍为 `unproven`。
+- design output: 更新主 PRD和 `docs/03-feature-designs/production-page-bounded-loading-design.md`；运营目标使用有界分页、重复 `ids`、`linked_group_id`、`capability=send/listen/archive/task` 及当前页 SQL 条件聚合；任务中心新增 `/api/tasks/page`，普通任务与系统任务统一轻量索引、稳定排序、`summary={total,running,failed}`、groups 和当前页水合。
+- frontend scope: 全部七个第一方目标消费者迁移；任务创建/编辑壳层先可操作，再懒加载远程目标；任务列表改服务端分页并只轮询当前查询；保留 15 秒公共 timeout 和请求序号，禁止 silent fallback。
+- Product Design Complete: `design_status=complete`，覆盖原始需求、页面状态、后端/API、数据流、权限与租户隔离、失败与并发路径、兼容面、QA、发布和回滚；无 schema migration、无 worker 行为变化。
+- handoff: `dev_handoff_ready=true`，next_agent=`dev`，Release Gate=`pending`。开发必须先写红测，逐段完成 spec review 与 code quality review。
+- acceptance: 本地规模数据证明单页条数/SQL 次数有界、单页 < 100 KB、前两页无重复遗漏；前端构建和七消费者数据流通过。发布后真实登录态两个列表各自 p95 < 2 秒、p99 < 5 秒，30 次串行 + 10 并发零 408/499/502，任务编辑 2 秒内可操作，并同步核对 nginx/backend 日志。
+- status: 文档与实施计划完成；代码、QA、产品验收、发布和生产 E4 修复证据均未完成，`done_status=not_done`、`production_fixed=unproven`。
+
+## 2026-07-11 生产核心页面有界加载 Product Acceptance
+
+- message_id: `2026-07-11-production-page-performance-product-accepted-001`
+- input: `2026-07-11-production-page-performance-local-qa-001`。
+- acceptance: 已逐项覆盖原始“各页面慢、任务编辑超时”范围：共享目标读取改有界、任务列表改轻量服务端分页、七个消费者迁移、任务编辑先可操作、已选目标 ids 回显、错误可见、15 秒 timeout 保持、旧接口不作为失败回退。CORS 分页头缺口由真实浏览器发现并闭环。
+- evidence: no-postgres `1044 passed`、PostgreSQL 定向 `20 passed`、frontend build 与本地 3,810 目标 / 170 任务 Playwright 性能证据通过；任务编辑 715ms 可操作并在 793ms 显示既有目标。
+- decision: `product_accepted_local=true`；允许进入 Release Gate。生产 E4 未完成，`production_fixed=unproven`；`/api/tasks` 历史间歇 502 的唯一 upstream 原因仍保持 `unproven`。
+- next_agent: prod-diagnosis
+- unresolved: 完成 `master -> release -> Deploy Production`，核对实际镜像 commit，并按真实登录态与同窗口日志完成发布后性能/错误率验收。

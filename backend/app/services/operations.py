@@ -43,6 +43,7 @@ from .ai_config import ai_provider_credentials, get_tenant_ai_setting
 from .developer_apps import credentials_for_account
 from .group_listeners import collect_group_context, recent_context_messages
 from .notifications import notify_ai_failure
+from .operation_target_list import OperationTargetListQuery, list_operation_targets_page
 from .tenant_learning_samples import GROUP_CHAT_SCENE, record_channel_comment_sample
 from .task_center.payloads import EnsureChannelMembershipPayload, create_membership_action
 
@@ -243,81 +244,15 @@ def filter_operation_targets(
     target_type: str | None = None,
     account_id: int | None = None,
 ) -> list[dict]:
-    if account_id:
-        account = session.get(TgAccount, account_id)
-        if not account or account.tenant_id != tenant_id or account.deleted_at is not None:
-            raise ValueError("account not found")
-
-    stmt = (
-        _account_operation_targets_stmt(tenant_id, account_id, target_type)
-        if account_id
-        else _operation_targets_stmt(tenant_id, target_type)
+    rows, _total = list_operation_targets_page(
+        session,
+        OperationTargetListQuery(
+            tenant_id=tenant_id,
+            target_type=target_type,
+            account_id=account_id,
+        ),
     )
-    targets = list(session.scalars(stmt.order_by(OperationTarget.id.desc())))
-    linked_groups = _linked_groups_for_targets(session, tenant_id, targets)
-    links_by_group = _links_by_group(session, tenant_id, [group.id for group in linked_groups.values()])
-    return [
-        _operation_target_list_payload(target, linked_groups.get(target.tg_peer_id), links_by_group)
-        for target in targets
-    ]
-
-
-def _operation_targets_stmt(tenant_id: int, target_type: str | None = None):
-    stmt = select(OperationTarget).where(OperationTarget.tenant_id == tenant_id)
-    if target_type:
-        stmt = stmt.where(OperationTarget.target_type == target_type)
-    return stmt
-
-
-def _account_operation_targets_stmt(tenant_id: int, account_id: int, target_type: str | None = None):
-    stmt = (
-        select(OperationTarget)
-        .join(
-            TgGroup,
-            (TgGroup.tenant_id == OperationTarget.tenant_id) & (TgGroup.tg_peer_id == OperationTarget.tg_peer_id),
-        )
-        .join(
-            TgGroupAccount,
-            (TgGroupAccount.tenant_id == TgGroup.tenant_id) & (TgGroupAccount.group_id == TgGroup.id),
-        )
-        .where(
-            OperationTarget.tenant_id == tenant_id,
-            TgGroupAccount.account_id == account_id,
-            TgGroupAccount.can_send.is_(True),
-        )
-    )
-    if target_type:
-        stmt = stmt.where(OperationTarget.target_type == target_type)
-    return stmt
-
-
-def _linked_groups_for_targets(session: Session, tenant_id: int, targets: list[OperationTarget]) -> dict[str, TgGroup]:
-    target_peer_ids = [target.tg_peer_id for target in targets]
-    if not target_peer_ids:
-        return {}
-    return {
-        group.tg_peer_id: group
-        for group in session.scalars(
-            select(TgGroup).where(
-                TgGroup.tenant_id == tenant_id,
-                TgGroup.tg_peer_id.in_(target_peer_ids),
-            )
-        )
-    }
-
-
-def _links_by_group(session: Session, tenant_id: int, group_ids: list[int]) -> dict[int, list[TgGroupAccount]]:
-    links_by_group: dict[int, list[TgGroupAccount]] = {group_id: [] for group_id in group_ids}
-    if not group_ids:
-        return links_by_group
-    for link in session.scalars(
-        select(TgGroupAccount).where(
-            TgGroupAccount.tenant_id == tenant_id,
-            TgGroupAccount.group_id.in_(group_ids),
-        )
-    ):
-        links_by_group.setdefault(link.group_id, []).append(link)
-    return links_by_group
+    return rows
 
 
 def create_operation_target(session: Session, payload: OperationTargetCreate, actor: str) -> OperationTarget:

@@ -5,6 +5,7 @@ import { CheckCircle2, Database, RefreshCcw, ShieldAlert } from 'lucide-react';
 import { API_BASE, api, apiErrorFromResponse } from '../../shared/api/client';
 import { StatCard, StatusBadge, useAntdTableControls } from '../components/shared';
 import type { OperationTarget, RuleSet, RuleSetBoundTask } from '../types';
+import { mergeOperationTargets } from '../hooks/useOperationTargetOptions';
 import { formatBeijingDateTime } from '../time';
 import {
   MEDIA_SIMULATION_OPTIONS,
@@ -348,16 +349,14 @@ export default function RulesCenterView({ onOpenSystemConfig }: { onOpenSystemCo
   }
 
   async function fetchRulesCenterData(requestSeq: number) {
-    const [nextSummary, nextRuleSets, nextTargets, nextRelayReport] = await Promise.all([
+    const [nextSummary, nextRuleSets, nextRelayReport] = await Promise.all([
       api<RuleSummary>('/rules/summary'),
       api<RuleSet[]>('/rule-sets'),
-      api<OperationTarget[]>('/operation-targets?target_type=group'),
       api<RelayAttributionReport>('/rules/relay-attribution/report'),
     ]);
     if (!isActiveRulesCenterDataRequest(requestSeq)) return false;
     setSummary(nextSummary);
     setRuleSets(nextRuleSets);
-    setOperationTargets(nextTargets);
     setRelayReport(nextRelayReport);
     return true;
   }
@@ -647,6 +646,9 @@ export default function RulesCenterView({ onOpenSystemConfig }: { onOpenSystemCo
     search: ['name', 'description', 'status'],
   });
   const groupTargets = operationTargets.filter((target) => target.target_type === 'group' && target.linked_group_id);
+  const mergeLoadedTargets = React.useCallback((loadedTargets: readonly OperationTarget[]) => {
+    setOperationTargets((current) => mergeOperationTargets(current, loadedTargets));
+  }, []);
   const ruleSetColumns: ColumnsType<RuleSet> = [
     {
       title: '规则集',
@@ -1124,10 +1126,10 @@ export default function RulesCenterView({ onOpenSystemConfig }: { onOpenSystemCo
         )}
       </Modal>
       <Modal className="tg-modal large" title="新建规则集" open={createOpen} width={840} confirmLoading={saving} okText="创建并发布 v1" cancelText="取消" onOk={createRuleSet} onCancel={() => setCreateOpen(false)} destroyOnHidden centered>
-        <RuleSetForm form={createForm} includeBasics groupTargets={groupTargets} />
+        {createOpen && <RuleSetForm form={createForm} includeBasics groupTargets={groupTargets} onTargetsLoaded={mergeLoadedTargets} />}
       </Modal>
       <Modal className="tg-modal large" title={configTarget ? `编辑规则配置：${configTarget.name}` : '编辑规则配置'} open={Boolean(configTarget)} width={840} confirmLoading={saving} okText="保存并发布新版本" cancelText="取消" onOk={saveRuleSetConfig} onCancel={() => setConfigTarget(null)} destroyOnHidden centered>
-        <RuleSetForm form={configForm} groupTargets={groupTargets} />
+        {configTarget && <RuleSetForm form={configForm} groupTargets={groupTargets} onTargetsLoaded={mergeLoadedTargets} />}
       </Modal>
     </section>
   );

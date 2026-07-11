@@ -5,6 +5,8 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 OVERVIEW_VIEW = PROJECT_ROOT / "frontend/src/app/views/OverviewView.tsx"
+OVERVIEW_HOOK = PROJECT_ROOT / "frontend/src/app/hooks/useOverviewOperationData.ts"
+OVERVIEW_WORKBENCH = PROJECT_ROOT / "frontend/src/app/components/OverviewTargetWorkbench.tsx"
 
 pytestmark = pytest.mark.no_postgres
 
@@ -26,17 +28,21 @@ def _function_body(source: str, function_name: str) -> str:
 
 def test_overview_plan_actions_surface_write_failures_and_refresh_failures():
     source = _source()
+    hook = OVERVIEW_HOOK.read_text()
 
-    assert "async function fetchOperationData(requestSeq: number)" in source
-    assert "async function refreshOperationDataAfterAction(actionLabel: string)" in source
-    assert "运营中心数据刷新失败" in source
-    assert "操作已完成" in source
+    assert "async function fetchOperationBase(request: BaseRequest)" in hook
+    assert "async function fetchTargetPage(request: TargetRequest)" in hook
+    assert "const refreshOperationDataAfterAction = React.useCallback(" in hook
+    assert "运营中心数据刷新失败" in hook
+    assert "操作已完成" in hook
 
-    helper_start = source.index("async function refreshOperationDataAfterAction")
-    helper_end = source.index("\n\n  async function createDefaultPlan", helper_start)
-    helper = source[helper_start:helper_end]
-    assert "await fetchOperationData(requestSeq);" in helper
-    assert "setOperationError(`运营中心数据刷新失败：" in helper
+    base_refresh = hook[hook.index("async function refreshOperationBase"):hook.index("\n\nfunction useTargetPage")]
+    target_refresh = hook[hook.index("async function refreshTargetPage"):hook.index("\n\nexport function useOverviewOperationData")]
+    assert "await fetchOperationBase(request);" in base_refresh
+    assert "state.setError(`运营中心数据刷新失败：" in base_refresh
+    assert "await fetchTargetPage(request);" in target_refresh
+    assert "state.setError(`运营中心数据刷新失败：" in target_refresh
+    assert "await Promise.all([refreshOperationBase(base, actionLabel), refreshTargetPage(targetPage, actionLabel)]);" in hook
 
     for function_name in [
         "createDefaultPlan",
@@ -56,35 +62,119 @@ def test_overview_plan_actions_surface_write_failures_and_refresh_failures():
 
 
 def test_overview_operation_data_refreshes_ignore_stale_responses():
+    hook = OVERVIEW_HOOK.read_text()
+    base_owner = hook[hook.index("function useOperationBase"):hook.index("\n\nasync function refreshOperationBase")]
+    target_owner = hook[hook.index("function useTargetPage"):hook.index("\n\nasync function refreshTargetPage")]
+    base_refresh = hook[hook.index("async function refreshOperationBase"):hook.index("\n\nfunction useTargetPage")]
+    target_refresh = hook[hook.index("async function refreshTargetPage"):hook.index("\n\nexport function useOverviewOperationData")]
+
+    assert "function beginBaseRequest(" in hook
+    assert "controllerRef.current?.abort();" in hook
+    assert "function isActiveBaseRequest(" in hook
+    assert "function beginTargetRequest(" in hook
+    assert "queryKey: targetPageQueryKey(query)" in hook
+    assert "function isActiveTargetRequest(" in hook
+    assert "const request = beginBaseRequest(identityRef, controllerRef);" in base_owner
+    assert "if (!isActiveBaseRequest(identityRef, request)) return;" in base_owner
+    assert "if (isActiveBaseRequest(identityRef, request)) setLoading(false);" in base_owner
+    assert "const request = beginTargetRequest(identityRef, controllerRef, queryRef.current);" in target_owner
+    assert "if (!isActiveTargetRequest(identityRef, request)) return;" in target_owner
+    assert "if (isActiveTargetRequest(identityRef, request)) setLoading(false);" in target_owner
+
+    guarded_writes = [
+        (base_owner, "if (!isActiveBaseRequest(identityRef, request)) return;", ["setPlans(result.plans);", "setCenter(result.center);", "setIssues(result.issues);"]),
+        (target_owner, "if (!isActiveTargetRequest(identityRef, request)) return;", ["setTargets(result.targets);", "setSummaries(result.summaries);", "setTotal(result.total);"]),
+        (base_refresh, "if (!isActiveBaseRequest(state.identityRef, request)) return;", ["state.setPlans(result.plans);", "state.setCenter(result.center);", "state.setIssues(result.issues);"]),
+        (target_refresh, "if (!isActiveTargetRequest(state.identityRef, request)) return;", ["state.setTargets(result.targets);", "state.setSummaries(result.summaries);", "state.setTotal(result.total);"]),
+    ]
+    for owner, stale_guard, state_writes in guarded_writes:
+        guard_index = owner.index(stale_guard)
+        for state_write in state_writes:
+            assert guard_index < owner.index(state_write)
+
+
+def test_overview_target_workbench_uses_bounded_target_page_then_scoped_runtime_summary():
+    source = OVERVIEW_HOOK.read_text()
+    workbench = OVERVIEW_WORKBENCH.read_text()
+    fetch_data = source[source.index("async function fetchTargetPage"):source.index("\n\nfunction useOperationBase")]
+
+    assert "const [query, setQuery] = React.useState<TargetPageQuery>" in source
+    assert "const [total, setTotal] = React.useState(0);" in source
+    assert "apiWithMeta<OperationTarget[]>(operationTargetPagePath(request.query)" in fetch_data
+    assert "const targetResponse = await apiWithMeta<OperationTarget[]>" in fetch_data
+    assert "const runtimePath = targetRuntimeSummaryPath(targetResponse.data.map((target) => target.id));" in fetch_data
+    assert "const summaries = await api<TargetRuntimeSummary[]>(runtimePath, options);" in fetch_data
+    assert "params.append('target_ids', String(targetId));" in source
+    assert "params.append('target_ids', '');" in source
+    assert "total: responseTotal(targetResponse.headers)" in fetch_data
+    assert "current: props.targetPageQuery.page" in workbench
+    assert "pageSize: props.targetPageQuery.pageSize" in workbench
+    assert "total: props.targetTotal" in workbench
+    assert "onChange={props.onTargetPageChange}" in workbench
+    assert "api<TargetRuntimeSummary[]>('/operation-targets/runtime-summary')" not in source
+
+
+def test_overview_base_reads_run_in_parallel_and_target_runtime_stays_ordered():
+    source = OVERVIEW_HOOK.read_text()
+    base_fetch = source[source.index("async function fetchOperationBase"):source.index("\n\nasync function fetchTargetPage")]
+    target_fetch = source[source.index("async function fetchTargetPage"):source.index("\n\nfunction useOperationBase")]
+
+    promise_all = base_fetch.index("await Promise.all([")
+    promise_end = base_fetch.index("]);", promise_all)
+    parallel_block = base_fetch[promise_all:promise_end]
+    assert "api<OperationPlan[]>('/operation-plans'" in parallel_block
+    assert "api<OperationCenterSummary>('/operation-center/overview'" in parallel_block
+    assert "api<OperationIssue[]>('/operation-issues'" in parallel_block
+    assert target_fetch.index("const targetResponse = await apiWithMeta") < target_fetch.index("const runtimePath = targetRuntimeSummaryPath")
+    assert target_fetch.index("const runtimePath = targetRuntimeSummaryPath") < target_fetch.index("const summaries = await api<TargetRuntimeSummary[]>")
+
+
+def test_overview_isolates_base_data_from_target_page_refresh_lifecycle():
+    source = OVERVIEW_HOOK.read_text()
+    workbench = OVERVIEW_WORKBENCH.read_text()
+    base_owner = source[source.index("function useOperationBase"):source.index("\n\nasync function refreshOperationBase")]
+    target_owner = source[source.index("function useTargetPage"):source.index("\n\nasync function refreshTargetPage")]
+    base_fetch = source[source.index("async function fetchOperationBase"):source.index("\n\nasync function fetchTargetPage")]
+    target_fetch = source[source.index("async function fetchTargetPage"):source.index("\n\nfunction useOperationBase")]
+
+    assert "const identityRef = React.useRef<BaseRequestIdentity>" in base_owner
+    assert "const controllerRef = React.useRef<AbortController | null>(null);" in base_owner
+    assert "const identityRef = React.useRef<TargetRequestIdentity>" in target_owner
+    assert "const controllerRef = React.useRef<AbortController | null>(null);" in target_owner
+    assert "const [loading, setLoading] = React.useState(false);" in base_owner
+    assert "const [loading, setLoading] = React.useState(false);" in target_owner
+    assert "operationLoading: base.loading || targetPage.loading" in source
+    assert "operationError: [base.error, targetPage.error].filter(Boolean).join('；')" in source
+    assert "/operation-plans" in base_fetch
+    assert "/operation-center/overview" in base_fetch
+    assert "/operation-issues" in base_fetch
+    assert "/operation-targets" not in base_fetch
+    assert "operationTargetPagePath(request.query)" in target_fetch
+    assert "targetRuntimeSummaryPath" in target_fetch
+    assert "/operation-plans" not in target_fetch
+    assert "await Promise.all([base.load(), targetPage.load()]);" in source
+    assert "await Promise.all([refreshOperationBase(base, actionLabel), refreshTargetPage(targetPage, actionLabel)]);" in source
+    assert "void load();\n    return () => controllerRef.current?.abort();" in base_owner
+    assert "}, [load, query]);" in target_owner
+    assert "loading={props.operationLoading} onClick={props.onRefresh}" in workbench
+
+
+def test_overview_plan_target_selection_is_remote_and_not_bound_to_workbench_page():
     source = _source()
+    create_default = _function_body(source, "createDefaultPlan")
+    editor_start = source.index("<span>绑定目标</span>")
+    editor_end = source.index("</label>", editor_start)
+    editor = source[editor_start:editor_end]
 
-    fetch_data = _function_body(source, "fetchOperationData")
-    load_data = _function_body(source, "loadOperationData")
-    refresh_data = _function_body(source, "refreshOperationDataAfterAction")
-
-    assert "const operationDataRequestSeq = React.useRef(0);" in source
-    assert "function beginOperationDataRequest()" in source
-    assert "operationDataRequestSeq.current += 1;" in source
-    assert "function isActiveOperationDataRequest(requestSeq: number)" in source
-    assert "async function fetchOperationData(requestSeq: number)" in source
-
-    stale_guard = "if (!isActiveOperationDataRequest(requestSeq)) return false;"
-    assert stale_guard in fetch_data
-    assert fetch_data.index(stale_guard) < fetch_data.index("setPlans(planRows);")
-    assert "return true;" in fetch_data
-
-    assert "const requestSeq = beginOperationDataRequest();" in load_data
-    assert "await fetchOperationData(requestSeq);" in load_data
-    load_error_guard = "if (!isActiveOperationDataRequest(requestSeq)) return;"
-    assert load_error_guard in load_data
-    assert load_data.index(load_error_guard) < load_data.index("setOperationError(err instanceof Error ? err.message : String(err));")
-    assert "if (isActiveOperationDataRequest(requestSeq)) setOperationLoading(false);" in load_data
-
-    assert "const requestSeq = beginOperationDataRequest();" in refresh_data
-    assert "await fetchOperationData(requestSeq);" in refresh_data
-    refresh_error_guard = "if (!isActiveOperationDataRequest(requestSeq)) return;"
-    assert refresh_error_guard in refresh_data
-    assert refresh_data.index(refresh_error_guard) < refresh_data.index("setOperationError(`运营中心数据刷新失败：")
+    assert "import OperationTargetSelect from '../components/OperationTargetSelect';" in source
+    assert "<OperationTargetSelect" in editor
+    assert 'mode="multiple"' in editor
+    assert "query={{ targetType: planEditForm.target_type as OperationTarget['target_type'] }}" in editor
+    assert "value={planEditForm.target_ids}" in editor
+    assert "options={targets.filter" not in editor
+    assert "targetTotal === 1 ? targets[0] : undefined" in create_default
+    assert "targets.length === 1" not in create_default
+    assert "targetTotal > 1" in create_default
 
 
 def test_overview_plan_actions_ignore_stale_action_responses():
@@ -201,7 +291,7 @@ def test_overview_issue_action_binds_payload_signature_and_modal_session():
     source = _source()
     open_action = source[source.index("function openIssueAction"):source.index("\n\n  async function submitIssueAction")]
     submit_action = _function_body(source, "submitIssueAction")
-    close_modal = source[source.index("function closeIssueActionModal"):source.index("\n\n  const targetRows")]
+    close_modal = source[source.index("function closeIssueActionModal"):source.index("\n\n  async function submitIssueAction")]
 
     assert "const activeIssueActionRequestRef = React.useRef({ seq: 0, issueId: '', signature: '' });" in source
     assert "function issueActionPayloadSignature(issueId: string, action: IssueAction, reason: string)" in source

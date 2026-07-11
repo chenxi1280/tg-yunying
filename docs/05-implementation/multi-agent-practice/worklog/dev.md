@@ -410,3 +410,13 @@
 - decision: status=local_verified_pending_qa；release_gate=required_pending；production_verification=unproven。
 - next_agent: qa
 - unresolved: 尚未发布；未执行生产回填；未经过完整北京时间自然日验证，不能标记 `production_fixed`。
+
+## 2026-07-11 生产核心页面有界加载 Development Complete
+
+- message_id: `2026-07-11-production-page-performance-devcomplete-001`
+- action: 修复生产 3,810 个运营目标和任务中心全量读取导致的慢页、15 秒超时与任务编辑不可用。
+- output: `/api/operation-targets` 新增有界分页、搜索、ids 回显、关联群与能力过滤，并只聚合当前页；runtime summary 支持 `target_ids`；新增 `/api/tasks/page` 统一普通任务与账号安全批任务的轻量分页、统计、分组和当前页水合；七个第一方目标消费者均改为显式有界；任务创建/编辑先打开壳层再远程加载目标；浏览器分页头通过 CORS 显式暴露。
+- evidence: 规模回归覆盖 170 条任务跨页无重复、100 条响应 <100KB、系统批次全计数与当前页 runtime hydration；目标分页覆盖 3,810 / 10,000 规模、组合过滤、租户隔离与常量级 SQL。全量 no-postgres `1044 passed, 806 deselected, 5 warnings in 29.11s`；PostgreSQL 定向 `20 passed`；frontend production build、compileall、diff check 通过。
+- decision: `development_complete=true`；`release_gate=pending`；`production_fixed=unproven`。
+- next_agent: qa
+- unresolved: 尚未合并并推送 `master -> release`，未执行 Deploy Production，生产 p95/p99、30 次串行 + 10 并发和 502 日志复核仍待 E4。

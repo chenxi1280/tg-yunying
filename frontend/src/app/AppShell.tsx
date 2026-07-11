@@ -494,10 +494,22 @@ function AppShell() {
       return;
     }
     try {
-      const targets = await api<OperationTarget[]>('/operation-targets?target_type=group');
+      const params = new URLSearchParams({
+        page: '1',
+        page_size: '1',
+        target_type: 'group',
+        linked_group_id: String(groupId),
+      });
+      const targets = await api<OperationTarget[]>(`/operation-targets?${params.toString()}`);
       const group = groups.find((item) => item.id === groupId);
-      const target = targets.find((item) => item.linked_group_id === groupId)
-        ?? targets.find((item) => group?.tg_peer_id && item.tg_peer_id === group.tg_peer_id);
+      let target: OperationTarget | undefined = targets[0];
+      if (!target && group?.tg_peer_id) {
+        const fallbackParams = new URLSearchParams({ page: '1', target_type: 'group' });
+        fallbackParams.set('q', group.tg_peer_id);
+        fallbackParams.set('page_size', '20');
+        const fallbackTargets = await api<OperationTarget[]>(`/operation-targets?${fallbackParams.toString()}`);
+        target = fallbackTargets.find((item) => item.tg_peer_id === group.tg_peer_id);
+      }
       if (target) {
         openTaskFromTarget('group_ai_chat', target);
         return;

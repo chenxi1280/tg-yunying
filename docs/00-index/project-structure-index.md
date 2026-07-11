@@ -795,6 +795,25 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 
 ## 9. 后续维护约定
 
+### 2026-07-10 生产核心页面有界加载计划结构
+
+本节登记 Product Design Complete 后的目标结构，尚未实现的文件不能按现有代码入口引用：
+
+| 计划文件/维护面 | 目标职责 | 当前状态 |
+| --- | --- | --- |
+| `backend/app/services/operation_target_query.py` | 封装不可变目标查询参数、租户过滤、count、稳定分页和当前页 `TgGroupAccount` 条件聚合；不得返回全租户 ORM 关系集合 | planned |
+| `backend/app/api/routers/operations.py` | 为现有目标列表解析有界参数、写分页头；runtime-summary 解析重复 `target_ids`；旧无新增参数调用仅作兼容 | planned |
+| `backend/app/services/task_center/list_page.py` | 统一编排普通 Task 与账号安全 batch 的轻量索引、稳定跨来源排序、summary/groups、分页和当前页完整对象水合 | implemented |
+| `backend/app/services/task_center/list_candidates.py` | 仅投影任务列表搜索/分组需要的标量和 JSON 子字段；候选阶段不物化完整 Task、完整 type_config 或账号安全 batch 策略字段 | implemented |
+| `backend/app/services/task_center/list_batch_stats.py` | 仅针对当前页账号安全 batch IDs 批量聚合 item 计数和最近失败，不逐批次读取明细 | implemented |
+| `backend/app/services/task_center/profile_batch_projection.py` | 列表路径使用 batch 列或集合聚合，消除逐 batch `_batch_items()` N+1；详情路径保持完整下钻 | planned |
+| `backend/app/schemas/task_center.py`、`backend/app/api/routers/task_center.py` | 暴露 `TaskListPageOut` 与 `GET /api/tasks/page`；旧 `/api/tasks` 暂兼容 | planned |
+| `frontend/src/app/hooks/useOperationTargetOptions.ts`、`frontend/src/app/components/OperationTargetSelect.tsx` | 共享远程目标搜索、分页、请求序号和重复 ids 回显 | planned |
+| `OperationTargetsView.tsx`、`OverviewView.tsx`、`TaskCenterView.tsx`、`RulesCenterView.tsx`、`ArchivesView.tsx`、`MessageSendingView.tsx`、`AppShell.tsx` | 七个第一方目标消费者改为显式分页、按需远程搜索或定点读取；任务中心改用服务端列表页 | planned |
+| `backend/tests/test_workflow.py`、`backend/tests/test_operations_center_runtime.py`、相关前端数据流测试 | 先红后绿覆盖分页头、组合过滤、租户隔离、稳定排序、summary/groups、无 N+1、全部消费者和响应规模 | planned |
+
+实现完成后必须把本表的 `planned` 更新为真实文件、方法、行数与测试入口；截至本记录没有迁移或 worker 结构变化，也不能写 `qa_pass`、`product_accepted` 或 `production_fixed`。
+
 - PRD 改功能边界时，先更新 `docs/01-product/tg-ops-platform-prd.md` 或专项 PRD，再改对应 router/service/view/test。
 - 新增业务域时，同步补齐：router、schema、service、model/migration、front type、view/action、dataflow test。
 - 调整任务执行链路时，至少核对 `task_center/service.py`、`dispatcher.py`、对应 executor、`details.py`、runtime summary 和前端 `TaskCenter*` 文件。

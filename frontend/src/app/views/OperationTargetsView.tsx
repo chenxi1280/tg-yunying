@@ -1,10 +1,11 @@
 import React from 'react';
-import { Alert, App as AntdApp, Button, Card, Descriptions, Empty, Form, Input, InputNumber, List, Modal, Select, Space, Switch, Table, Tag, Typography } from 'antd';
-import type { ColumnsType } from 'antd/es/table';
+import { Alert, App as AntdApp, Button, Card, Descriptions, Empty, Form, Input, InputNumber, List, Modal, Select, Space, Switch, Tag, Typography } from 'antd';
 import { MessageSquareText, RefreshCcw } from 'lucide-react';
 import { api, ApiError } from '../../shared/api/client';
 import type { ChannelMessage, ChannelMessageComment, ChannelMessageCommentSync, OperationTarget, OperationTargetDetail, OperationTargetMessageSync, OperationTargetsSync, TaskCenterTaskType } from '../types';
-import { DetailModal, StatusBadge, useAntdTableControls } from '../components/shared';
+import { DetailModal, StatusBadge } from '../components/shared';
+import OperationTargetManagementTable, { OperationTargetCapabilityTags } from '../components/OperationTargetManagementTable';
+import { useOperationTargetManagementPage } from '../hooks/useOperationTargetManagementPage';
 import { formatBeijingDateTime } from '../time';
 
 type Props = {
@@ -29,6 +30,7 @@ type OperationTargetFormValues = {
   auth_status?: string;
 };
 
+
 function formatDateTime(value?: string | null) {
   return formatBeijingDateTime(value);
 }
@@ -45,19 +47,18 @@ function commentsForMessage(comments: ChannelMessageComment[], messageId: number
   return comments.filter((comment) => comment.channel_message_id === messageId);
 }
 
-function capabilityTags(target: OperationTarget) {
-  if (!target.task_capabilities.length) return <Typography.Text type="secondary">暂无可创建任务</Typography.Text>;
-  return (
-    <Space size={[4, 4]} wrap>
-      {target.task_capabilities.map((item) => <Tag color="blue" key={item}>{item}</Tag>)}
-    </Space>
-  );
-}
-
 export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromTarget, focusTarget, onFocusTargetConsumed, canManageMessageSending, canManageTargets, canManageTasks, canManageArchives, onOpenTargetProfile }: Props) {
   const { message } = AntdApp.useApp();
-  const [targets, setTargets] = React.useState<OperationTarget[]>([]);
-  const [loading, setLoading] = React.useState(false);
+  const [formError, setFormError] = React.useState('');
+  const targetPage = useOperationTargetManagementPage({
+    focusTarget,
+    onFocusTargetConsumed,
+    onOpenFocusedTarget: openDetail,
+    onMissingFocusedTarget: (targetId) => void message.warning(`未找到目标 #${targetId}`),
+    setError: setFormError,
+  });
+  const targets = targetPage.targets;
+  const refreshTargetsListAfterAction = targetPage.refreshAfterAction;
   const [saving, setSaving] = React.useState(false);
   const [accountPolicySaving, setAccountPolicySaving] = React.useState('');
   const [detailLoading, setDetailLoading] = React.useState(false);
@@ -69,15 +70,12 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
   const [admissionRetryAccountIds, setAdmissionRetryAccountIds] = React.useState<number[]>([]);
   const [admissionRetryReason, setAdmissionRetryReason] = React.useState('');
   const [creatingArchiveId, setCreatingArchiveId] = React.useState<number | null>(null);
-  const [formError, setFormError] = React.useState('');
   const [editingTarget, setEditingTarget] = React.useState<OperationTarget | null>(null);
   const [detailTarget, setDetailTarget] = React.useState<OperationTarget | null>(null);
   const [targetDetail, setTargetDetail] = React.useState<OperationTargetDetail | null>(null);
   const [targetModalOpen, setTargetModalOpen] = React.useState(false);
   const [detailOpen, setDetailOpen] = React.useState(false);
   const [form] = Form.useForm<OperationTargetFormValues>();
-  const appliedFocusNonce = React.useRef<number | null>(null);
-  const activeTargetsListRequestSeq = React.useRef(0);
   const activeTargetsSyncAllRequestSeq = React.useRef(0);
   const activeDetailTargetId = React.useRef<number | null>(null);
   const activeDetailTargetRequestSeq = React.useRef(0);
@@ -91,15 +89,6 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
 
   function isActiveDetailTarget(targetId: number) {
     return activeDetailTargetId.current === targetId;
-  }
-
-  function beginTargetsListRequest() {
-    activeTargetsListRequestSeq.current += 1;
-    return activeTargetsListRequestSeq.current;
-  }
-
-  function isActiveTargetsListRequest(requestSeq: number) {
-    return activeTargetsListRequestSeq.current === requestSeq;
   }
 
   function beginTargetsSyncAllRequest() {
@@ -161,13 +150,6 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
     return isActiveTargetSaveRequest(request) && currentOperationTargetSavePayloadSignature() === request.signature;
   }
 
-  async function fetchTargets(requestSeq: number): Promise<boolean> {
-    const nextTargets = await api<OperationTarget[]>('/operation-targets');
-    if (!isActiveTargetsListRequest(requestSeq)) return false;
-    setTargets(nextTargets);
-    return true;
-  }
-
   async function fetchTargetDetail(target: OperationTarget, requestSeq: number): Promise<boolean> {
     const detail = await api<OperationTargetDetail>(`/operation-targets/${target.id}/detail`);
     if (!isActiveDetailTargetRequest(target.id, requestSeq)) return false;
@@ -187,31 +169,6 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
       return false;
     } finally {
       if (isActiveDetailTargetRequest(target.id, requestSeq)) setDetailLoading(false);
-    }
-  }
-
-  async function load() {
-    const requestSeq = beginTargetsListRequest();
-    setLoading(true);
-    setFormError('');
-    try {
-      await fetchTargets(requestSeq);
-    } catch (error) {
-      if (!isActiveTargetsListRequest(requestSeq)) return;
-      setFormError(errorMessage(error));
-    } finally {
-      if (isActiveTargetsListRequest(requestSeq)) setLoading(false);
-    }
-  }
-
-  async function refreshTargetsListAfterAction(actionLabel: string) {
-    const requestSeq = beginTargetsListRequest();
-    setLoading(false);
-    try {
-      await fetchTargets(requestSeq);
-    } catch (error) {
-      if (!isActiveTargetsListRequest(requestSeq)) return;
-      setFormError(`运营目标数据刷新失败：${actionLabel}操作已完成，但刷新运营目标列表失败：${errorMessage(error)}`);
     }
   }
 
@@ -267,7 +224,7 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
 
   async function syncAllTargets() {
     const requestSeq = beginTargetsSyncAllRequest();
-    setLoading(false);
+    targetPage.setLoading(false);
     setSyncingAllTargets(true);
     setFormError('');
     try {
@@ -286,30 +243,6 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
       if (isActiveTargetsSyncAllRequest(requestSeq)) setSyncingAllTargets(false);
     }
   }
-
-  React.useEffect(() => {
-    void load();
-    const timer = window.setInterval(() => void load(), 60000);
-    return () => window.clearInterval(timer);
-  }, []);
-
-  React.useEffect(() => {
-    if (!focusTarget || appliedFocusNonce.current === focusTarget.nonce) return;
-    if (!targets.length) {
-      void load();
-      return;
-    }
-    const target = targets.find((item) => item.id === focusTarget.targetId);
-    if (!target) {
-      void message.warning(`未找到目标 #${focusTarget.targetId}`);
-      appliedFocusNonce.current = focusTarget.nonce;
-      onFocusTargetConsumed?.();
-      return;
-    }
-    appliedFocusNonce.current = focusTarget.nonce;
-    openDetail(target);
-    onFocusTargetConsumed?.();
-  }, [focusTarget, message, onFocusTargetConsumed, targets]);
 
   async function saveTarget(values: OperationTargetFormValues) {
     const actionLabel = editingTarget ? '运营目标保存' : '运营目标新增';
@@ -489,70 +422,28 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
     setCreatingArchiveId(null);
   }
 
-  const table = useAntdTableControls<OperationTarget>({
-    rows: targets,
-    placeholder: '搜索群/频道 / peer / username / 状态',
-    search: [(target) => [target.title, target.tg_peer_id, target.username, target.target_type, target.auth_status]],
-  });
-
-  const columns: ColumnsType<OperationTarget> = [
-    {
-      title: '目标',
-      key: 'target',
-      render: (_, target) => (
-        <Space direction="vertical" size={0}>
-          <Typography.Text strong>{target.title}</Typography.Text>
-          <Typography.Text type="secondary">{target.target_type === 'channel' ? '频道' : '群聊'} / {target.tg_peer_id}{target.username ? ` / @${target.username}` : ''}</Typography.Text>
-        </Space>
-      ),
-    },
-    { title: '人数', dataIndex: 'member_count', key: 'member_count', width: 110 },
-    { title: '使用范围', key: 'auth_status', width: 140, render: (_, target) => <StatusBadge status={target.auth_status} /> },
-    { title: '发送能力', key: 'can_send', width: 140, render: (_, target) => <StatusBadge status={target.can_send ? '可发送' : '只读'} /> },
-    { title: '任务能力', key: 'task_capabilities', width: 240, render: (_, target) => capabilityTags(target) },
-    { title: '最近同步', key: 'last_sync_at', width: 200, render: (_, target) => target.last_sync_at ? formatDateTime(target.last_sync_at) : '手动创建' },
-    {
-      title: '操作',
-      key: 'actions',
-      width: 170,
-      fixed: 'right',
-      render: (_, target) => (
-        <Space wrap>
-          <Button size="small" onClick={() => openDetail(target)}>查看详情</Button>
-          {canManageTargets && <Button size="small" onClick={() => startEdit(target)}>编辑</Button>}
-        </Space>
-      ),
-    },
-  ];
   const failedAdmissionAccounts = targetDetail?.accounts.filter((account) => account.admission_status === 'failed' && account.admission_retryable) ?? [];
 
   return (
     <>
-      <Card
-        className="panel"
-        title="群/频道目标"
-        extra={(
-          <Space wrap>
-            {canManageTargets && <Button icon={<RefreshCcw size={16} />} loading={syncingAllTargets} onClick={syncAllTargets}>同步全部账号目标</Button>}
-            {canManageTargets && <Button type="primary" onClick={openCreate}>新增目标</Button>}
-          </Space>
-        )}
-      >
-        <Typography.Text type="secondary">统一维护账号运营目标。群聊用于普通发言，频道用于发帖、查看、点赞和回复任务。</Typography.Text>
-        <Space className="toolbar-row" wrap>
-          {table.searchInput}
-          <Button loading={loading} onClick={load}>刷新</Button>
-        </Space>
-        <Table<OperationTarget>
-          className="tg-table"
-          rowKey="id"
-          columns={columns}
-          dataSource={table.filteredRows}
-          pagination={table.pagination}
-          scroll={{ x: 960 }}
-          loading={loading}
-        />
-      </Card>
+      <OperationTargetManagementTable
+        targets={targets}
+        query={targetPage.query}
+        total={targetPage.total}
+        search={targetPage.search}
+        loading={targetPage.loading}
+        error={formError}
+        syncingAllTargets={syncingAllTargets}
+        canManageTargets={canManageTargets}
+        onSearchChange={targetPage.setSearch}
+        onSearch={targetPage.submitSearch}
+        onPageChange={targetPage.changePage}
+        onRefresh={() => void targetPage.load()}
+        onSyncAll={() => void syncAllTargets()}
+        onCreate={openCreate}
+        onOpenDetail={openDetail}
+        onEdit={startEdit}
+      />
 
       <Modal
         className="tg-modal medium"
@@ -613,7 +504,7 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
                 { key: 'type', label: '类型', children: targetDetail.target.target_type === 'channel' ? '频道' : '群聊' },
                 { key: 'auth', label: '使用范围', children: <StatusBadge status={targetDetail.target.auth_status} /> },
                 { key: 'send', label: '发送能力', children: <StatusBadge status={targetDetail.target.can_send ? '可发送' : '只读'} /> },
-                { key: 'task', label: '任务能力', span: 3, children: capabilityTags(targetDetail.target) },
+                { key: 'task', label: '任务能力', span: 3, children: <OperationTargetCapabilityTags target={targetDetail.target} /> },
                 { key: 'peer', label: 'Peer', span: 2, children: targetDetail.target.tg_peer_id },
                 { key: 'username', label: 'Username', children: targetDetail.target.username ? `@${targetDetail.target.username}` : '-' },
                 { key: 'members', label: '人数', children: targetDetail.target.member_count },

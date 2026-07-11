@@ -8,6 +8,15 @@ pytestmark = pytest.mark.no_postgres
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TARGETS_VIEW = PROJECT_ROOT / "frontend/src/app/views/OperationTargetsView.tsx"
+OVERVIEW_VIEW = PROJECT_ROOT / "frontend/src/app/views/OverviewView.tsx"
+TARGETS_HOOK = PROJECT_ROOT / "frontend/src/app/hooks/useOperationTargetManagementPage.ts"
+TARGETS_TABLE = PROJECT_ROOT / "frontend/src/app/components/OperationTargetManagementTable.tsx"
+EXTRACTED_TARGET_MODULES = [
+    PROJECT_ROOT / "frontend/src/app/hooks/useOperationTargetManagementPage.ts",
+    PROJECT_ROOT / "frontend/src/app/hooks/useOverviewOperationData.ts",
+    PROJECT_ROOT / "frontend/src/app/components/OperationTargetManagementTable.tsx",
+    PROJECT_ROOT / "frontend/src/app/components/OverviewTargetWorkbench.tsx",
+]
 
 
 def _source() -> str:
@@ -26,18 +35,34 @@ def _function_body(source: str, function_name: str) -> str:
     return source[start:end]
 
 
+def test_bounded_target_workbenches_are_owned_by_small_extracted_modules():
+    for module in EXTRACTED_TARGET_MODULES:
+        assert module.exists(), f"missing extracted owner: {module.relative_to(PROJECT_ROOT)}"
+        assert len(module.read_text().splitlines()) < 500
+
+    targets_view = TARGETS_VIEW.read_text()
+    overview_view = OVERVIEW_VIEW.read_text()
+    assert "useOperationTargetManagementPage" in targets_view
+    assert "<OperationTargetManagementTable" in targets_view
+    assert "useOverviewOperationData" in overview_view
+    assert "<OverviewTargetWorkbench" in overview_view
+    assert len(targets_view.splitlines()) <= 817
+    assert len(overview_view.splitlines()) <= 1394
+
+
 def test_operation_target_actions_distinguish_refresh_failure_from_write_failure():
     source = _source()
+    hook = TARGETS_HOOK.read_text()
 
-    assert "async function fetchTargets(requestSeq: number): Promise<boolean>" in source
-    assert "async function refreshTargetsListAfterAction(actionLabel: string)" in source
+    assert "async function fetchTargetPage(request: TargetListRequest): Promise<TargetListResult>" in hook
+    assert "async function refreshTargetList(" in hook
     assert "async function refreshTargetDetailAfterAction(actionLabel: string, target: OperationTarget)" in source
-    assert "运营目标数据刷新失败" in source
-    assert "操作已完成" in source
+    assert "运营目标数据刷新失败" in hook
+    assert "操作已完成" in hook
 
-    list_helper = source[source.index("async function refreshTargetsListAfterAction"):source.index("\n\n  async function refreshTargetDetailAfterAction")]
-    assert "await fetchTargets(requestSeq);" in list_helper
-    assert "setFormError(`运营目标数据刷新失败：" in list_helper
+    list_helper = hook[hook.index("async function refreshTargetList"):hook.index("\n\nfunction focusedTargetPath")]
+    assert "const result = await fetchTargetPage(request);" in list_helper
+    assert "setError(`运营目标数据刷新失败：" in list_helper
 
     detail_helper = source[source.index("async function refreshTargetDetailAfterAction"):source.index("\n\n  async function syncTargetMessages")]
     assert "await fetchTargetDetail(target" in detail_helper
@@ -63,35 +88,75 @@ def test_operation_target_actions_distinguish_refresh_failure_from_write_failure
 
 def test_operation_targets_list_refreshes_ignore_stale_responses():
     source = _source()
-    fetch_targets = source[source.index("async function fetchTargets"):source.index("\n\n  async function fetchTargetDetail")]
-    load_targets = source[source.index("async function load()"):source.index("\n\n  async function refreshTargetsListAfterAction")]
-    refresh_targets = source[source.index("async function refreshTargetsListAfterAction"):source.index("\n\n  async function refreshTargetDetailAfterAction")]
+    hook = TARGETS_HOOK.read_text()
+    fetch_targets = hook[hook.index("async function fetchTargetPage"):hook.index("\n\nfunction useTargetPolling")]
+    load_targets = hook[hook.index("const load = React.useCallback"):hook.index("\n  useTargetPolling")]
+    refresh_targets = hook[hook.index("async function refreshTargetList"):hook.index("\n\nfunction focusedTargetPath")]
 
-    assert "const activeTargetsListRequestSeq = React.useRef(0);" in source
-    assert "function beginTargetsListRequest()" in source
-    assert "activeTargetsListRequestSeq.current += 1;" in source
-    assert "function isActiveTargetsListRequest(requestSeq: number)" in source
-
-    assert "async function fetchTargets(requestSeq: number): Promise<boolean>" in fetch_targets
-    assert "const nextTargets = await api<OperationTarget[]>('/operation-targets');" in fetch_targets
-    assert "if (!isActiveTargetsListRequest(requestSeq)) return false;" in fetch_targets
-    assert fetch_targets.index("if (!isActiveTargetsListRequest(requestSeq)) return false;") < fetch_targets.index("setTargets(nextTargets);")
-
-    assert "const requestSeq = beginTargetsListRequest();" in load_targets
-    assert "await fetchTargets(requestSeq);" in load_targets
-    assert "if (!isActiveTargetsListRequest(requestSeq)) return;" in load_targets
-    assert "if (isActiveTargetsListRequest(requestSeq)) setLoading(false);" in load_targets
-
-    assert "const requestSeq = beginTargetsListRequest();" in refresh_targets
-    assert "await fetchTargets(requestSeq);" in refresh_targets
-    assert "if (!isActiveTargetsListRequest(requestSeq)) return;" in refresh_targets
-
+    assert "const identityRef = React.useRef<TargetListRequestIdentity>" in hook
+    assert "const controllerRef = React.useRef<AbortController | null>(null);" in hook
+    assert "function beginRequest(" in hook
+    assert "controllerRef.current?.abort();" in hook
+    assert "queryKey: targetListQueryKey(query)" in hook
+    assert "function isActiveRequest(" in hook
+    assert "apiWithMeta<OperationTarget[]>(operationTargetListPath(request.query)" in fetch_targets
+    assert "signal: request.controller.signal" in fetch_targets
+    assert "if (!isActiveRequest(identityRef, request)) return;" in load_targets
+    assert load_targets.index("if (!isActiveRequest(identityRef, request)) return;") < load_targets.index("setTargets(result.targets);")
+    assert "if (isActiveRequest(identityRef, request)) setLoading(false);" in load_targets
+    refresh_guard = "if (!isActiveRequest(state.identityRef, request)) return;"
+    response_guard_index = refresh_targets.index(refresh_guard)
+    assert response_guard_index < refresh_targets.index("state.setTargets(result.targets);")
+    assert response_guard_index < refresh_targets.index("state.setTotal(result.total);")
+    catch_index = refresh_targets.index("catch (error)")
+    catch_guard_index = refresh_targets.index(refresh_guard, catch_index)
+    assert catch_guard_index < refresh_targets.index("setError(`运营目标数据刷新失败：", catch_index)
     assert "async function syncAllTargets" in source
+
+
+def test_operation_targets_use_bounded_server_pagination_and_search():
+    source = _source()
+    hook = TARGETS_HOOK.read_text()
+    table = TARGETS_TABLE.read_text()
+
+    assert "const [query, setQuery] = React.useState<TargetListQuery>" in hook
+    assert "const [total, setTotal] = React.useState(0);" in hook
+    assert "const [search, setSearch] = React.useState('');" in hook
+    assert "params.set('page', String(query.page));" in hook
+    assert "params.set('page_size', String(query.pageSize));" in hook
+    assert "if (query.q) params.set('q', query.q);" in hook
+    assert "headers.get('x-total-count')" in hook
+    assert "dataSource={props.targets}" in table
+    assert "current: props.query.page" in table
+    assert "pageSize: props.query.pageSize" in table
+    assert "total: props.total" in table
+    assert "onChange={props.onPageChange}" in table
+    assert "onSearch={props.onSearch}" in table
+    assert "useAntdTableControls" not in hook + table
+    assert "filteredRows" not in hook + table
+    assert "window.setInterval(() => void load(), 60000)" in hook
+    assert "props.error && <Alert" in table
+    assert "<OperationTargetManagementTable" in source
+
+
+def test_operation_target_focus_uses_exact_bounded_hydration():
+    source = TARGETS_HOOK.read_text()
+    focus_effect = source[source.index("function useFocusedTarget"):source.index("\n\nfunction consumeFocusedTarget")]
+    path_builder = source[source.index("function focusedTargetPath"):source.index("\n\nfunction useFocusedTarget")]
+
+    assert "const controllerRef = React.useRef<AbortController | null>(null);" in focus_effect
+    assert "params.set('page', '1');" in path_builder
+    assert "params.set('page_size', '1');" in path_builder
+    assert "params.append('ids', String(targetId));" in path_builder
+    assert "apiWithMeta<OperationTarget[]>(focusedTargetPath(focus.targetId)" in focus_effect
+    assert "{ signal: controller.signal }" in focus_effect
+    assert "const target = response.data.find((item) => item.id === focus.targetId);" in focus_effect
+    assert "onMissingFocusedTarget(focus.targetId)" in focus_effect
 
 
 def test_operation_targets_sync_all_uses_independent_action_sequence():
     source = _source()
-    sync_all = source[source.index("async function syncAllTargets"):source.index("\n\n  React.useEffect")]
+    sync_all = source[source.index("async function syncAllTargets"):source.index("\n\n  async function saveTarget")]
 
     assert "const activeTargetsSyncAllRequestSeq = React.useRef(0);" in source
     assert "function beginTargetsSyncAllRequest()" in source
@@ -128,7 +193,7 @@ def test_operation_target_detail_fetches_use_request_sequence():
     source = _source()
     fetch_detail = source[source.index("async function fetchTargetDetail"):source.index("\n\n  async function loadTargetDetail")]
     load_detail_start = source.index("async function loadTargetDetail")
-    load_detail = source[load_detail_start:source.index("\n\n  async function load()", load_detail_start)]
+    load_detail = source[load_detail_start:source.index("\n\n  async function refreshTargetDetailAfterAction", load_detail_start)]
     refresh_detail = source[source.index("async function refreshTargetDetailAfterAction"):source.index("\n\n  async function syncTargetMessages")]
 
     assert "const activeDetailTargetRequestSeq = React.useRef(0);" in source

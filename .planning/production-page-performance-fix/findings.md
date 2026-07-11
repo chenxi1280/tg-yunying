@@ -1,0 +1,119 @@
+# Findings and Decisions
+
+## Requirements
+
+- 用户要求检查并修复线上各页面打开缓慢、超时问题，明确举例任务编辑页。
+- 已批准完整修复方向：共享运营目标链路与任务列表都进入本轮范围。
+- 必须按项目生产问题流程完成产品设计、开发、QA、产品验收和生产复核。
+
+## Production Evidence
+
+- `https://tgyunying.telema.cn/task-center` 可进入真实登录态。
+- `/api/operation-targets` 在一次完整 UI 请求中返回 3,810 条、1,914,409 字符，耗时 17,288 ms，HTTP 200。
+- 前端 `apiWithMeta` 默认 15,000 ms 后调用 `AbortController.abort()`；实测该请求发生一次 abort。
+- 任务编辑在打开弹窗前等待 `ensureTaskFormData()`，其中 `ensureTargets()` 调用无参数 `/operation-targets`。
+- `/api/tasks` 返回 67 个任务时约 207,484 decoded bytes；曾返回 nginx 502，成功请求约 3.43 秒。
+- 静态页和健康接口当时可在约 0.7-1.6 秒返回，说明不是整站静态资源不可达。
+
+## Code Findings
+
+- `backend/app/services/operations.py:filter_operation_targets` 先全量读取目标，再读取关联群，再把关联群的全部 `TgGroupAccount` ORM 行加载到 Python 分组和计数。
+- 任务表单目标下拉实际使用 id、title、auth_status、can_send、linked_group_id、available_send_account_count 和 listener_account_count。
+- `OperationTargetsView`、`OverviewView`、`RulesCenterView`、`ArchivesView`、`TaskCenterView` 和部分 AppShell 深链均调用共享 `/operation-targets`。
+- 任务中心前端表格只显示 10 条，但后端 `/tasks` 返回全部 67 条后由 AntD 本地分页。
+- `/api/tasks` 已有详情子资源的 `X-Total-Count/X-Page/X-Page-Size` 分页约定，但列表路由尚未复用。
+- `list_tasks()` 会先读取全部 Task，再构建全部目标/频道搜索上下文，并附加最多 50 条账号安全系统批次；分页必须同时覆盖两类任务或明确排序边界。
+- 任务列表当前本地搜索和“按目标群聊 + 关联频道”分组依赖完整 `type_config`；直接截断为当前页会让分组数量和本地搜索不完整，设计必须改成服务端筛选/分组或保留轻量全量分组元数据。
+- PRD 已规定核心页面只加载当前页面必要数据，详情按 ID 下钻，请求序号不得让旧响应覆盖新状态。
+
+## Technical Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| 保留旧 `/operation-targets` 兼容行为，仅对新查询参数启用有界响应或新增有界契约 | 避免未迁移消费者和同步动作立即破坏 |
+| 统计使用 SQL `GROUP BY`/条件计数 | 页面只需要计数和布尔能力，无需物化每个关系对象 |
+| 运营目标管理使用服务端分页和搜索 | 3,810 条已经超出合理首屏全量边界 |
+| 表单目标选择采用有界搜索并显式包含已选 ID | 兼顾性能和编辑旧任务回显 |
+| 任务列表返回摘要分页，详情仍走现有详情接口 | 保持任务中心职责和既有下钻模型 |
+| 保留 15 秒统一超时 | 超时是可见失败边界，不是根因 |
+| 任务列表不能只加 offset/limit 后继续复用当前本地分组 | 会造成跨页分组数量、筛选和搜索语义错误 |
+
+## Product/Release Classification
+
+- Product 结论为 L2 / P1 / standard_team：多个生产核心页面受影响，但健康检查和部分页面仍可用。
+- 影响生产，必须经过 Release Gate。
+- 若生产连续出现核心页面完全不可进入或数据写操作受阻，升级 L3。
+- Product Design Complete：`design_status=complete`、`dev_handoff_ready=true`、无阻塞输入、无迁移、无 worker 影响。
+- Product Handoff：`handoff-2026-07-10-production-page-performance-dev`，next=`dev`。
+
+## Independent Prod-Diagnosis Review
+
+- `confirmed`：运营目标无界读取和全量关联行物化；7 个直接前端消费者；运营目标页面每分钟全量轮询。
+- `confirmed`：任务列表无分页、宽 `TaskOut`，账号安全系统批次最多形成 50 次 item 查询 N+1。
+- `unproven`：任务列表 502 的唯一直接原因；仍需发布后 nginx/backend/DB 同窗口证据排除 upstream reset、容器/OOM 和连接池等待。
+- 隐藏放大路径：单账号目标同步返回全租户目标，sync-all 在账号循环内重复全量聚合；实现时至少要让第一方写路径不再依赖未分页完整响应。
+- 任务列表分页必须提供全局 summary/facet，否则统计卡和快捷分组会退化为当前页口径。
+- 运营目标分页必须支持 `ids`、`linked_group_id`、`account_id` 和 capability 过滤，否则非首页已选值和深链会静默丢失。
+
+## Resources
+
+- `frontend/src/shared/api/client.ts`
+- `frontend/src/app/views/TaskCenterView.tsx`
+- `frontend/src/app/views/TaskCenterWizardSections.tsx`
+- `frontend/src/app/views/OperationTargetsView.tsx`
+- `frontend/src/app/views/OverviewView.tsx`
+- `frontend/src/app/views/RulesCenterView.tsx`
+- `frontend/src/app/views/ArchivesView.tsx`
+- `backend/app/api/routers/operations.py`
+- `backend/app/services/operations.py`
+- `backend/app/api/routers/task_center.py`
+- `backend/app/services/task_center/`
+- `docs/01-product/tg-ops-platform-prd.md`
+- `docs/00-index/project-dataflow-index.md`
+- `docs/00-index/project-structure-index.md`
+
+## Local Baseline
+
+- 前端 `npm run build` 通过，存在原有 Vite chunk-size warning。
+- no-postgres 数据流/测试设施基线 24 个测试通过。
+- PostgreSQL 集成基线初次因 Docker daemon 未运行而 blocked；启动 Docker 后，compose 拉取 `postgres:16` 遇到 registry EOF，随后复用本机已有 `postgres:16-alpine` 镜像启动独立 `tg_yunying_test` 数据库。
+- PostgreSQL 相关基线最终 22 个测试通过，耗时 1.14 秒。
+
+## Browser Findings
+
+- 任务列表真实页面显示 67 条，客户端当前页只展示 10 条。
+- 任务详情可打开；点击“编辑任务”时必须先完成表单支撑数据加载。
+- 通过临时、已恢复的页面诊断包装记录到 `/operation-targets` 完整响应规模和耗时；未读取或导出浏览器 token、cookie、localStorage。
+
+## Local Production-Scale Verification
+
+- PostgreSQL 注入 3,810 个运营目标、170 个任务；运营目标页 585ms 可见，`page=1&page_size=20` 为 16ms / 8.9KB。
+- `/tasks/page?page=1&page_size=20` 为 66ms / 16KB；切到第二页 430ms 可见。
+- 任务编辑弹窗 715ms 可操作，793ms 完成既有目标回显；详情 100ms / 3.9KB，ids 水合 35ms / 453B。
+- Rules、Archives、MessageSending 目标候选只在弹窗/账号选择后请求，分别携带 `capability=send/archive/send` 和显式 `page=1&page_size=50`。
+- 首轮浏览器复测发现 CORS 未暴露分页头，响应实际含 `X-Total-Count` 但 JavaScript `Headers` 不可读；加入 `Access-Control-Expose-Headers` 后页面复测通过。
+- 没有观察到第一方无界 `/operation-targets` 请求；React StrictMode 的首轮请求会被 AbortController 取消，后续当前请求成功，属于预期旧请求保护。
+
+## Production E4 Verification
+
+- Commit `357c844d951f90659c077d91e002e9a1e7430ee2` 已同步 `master/release`；Deploy Production run `29110463190` success，release `20260710172417_357c844`、backend/frontend 镜像与 Git SHA 一致，backend 与全部 worker healthy，外部 health HTTP 200。
+- 生产任务中心首屏数据 1.224 秒可见；`/api/tasks/page?page=1&page_size=20` 为 HTTP 200、252ms、6.9KB；230 条任务显示 20 条分页，无失败提示。
+- 任务详情 1.700 秒打开；编辑弹窗 427ms 可操作；当前目标 `ids=3828` 水合 323ms / 719B，候选目标 `page_size=50&capability=task` 247ms / 3.9KB。
+- 生产运营目标页 1.472 秒可用；`/api/operation-targets?page=1&page_size=20` 为 HTTP 200、272ms、1.85KB。
+- 串行 30 次：任务列表全部 200，p95/p99 `446/451ms`、最大 7.1KB；运营目标全部 200，p95/p99 `339/346ms`、最大 1.85KB。
+- 10 路并发：任务接口全部 200、最慢 1.699 秒、最大 7.0KB；运营目标全部 200、最慢 830ms、最大 1.85KB；零 408/499/502，页面无失败提示。
+- 消息发送、规则、归档页面分别 1.328/2.721/0.710 秒可用；归档新建弹窗 308ms 可见，目标查询为 `page_size=50&capability=archive`、302ms / 3.9KB；生产控制台功能性 error 为 0。
+- 本机 SSH 只读日志复核返回 connection closed，未取得同窗口 nginx/backend 请求日志；部署工作流仍提供服务器侧镜像、容器和健康证据。该日志关联记为 blocked，不影响已由真实生产浏览器证明的慢页恢复；历史 502 唯一 upstream 原因继续记为 unproven。
+
+## 2026-07-11 Review Remediation Findings
+
+- `/tasks/page` 虽返回当前页，但 `list_task_page()` 在 `_slice_page()` 前调用 `_ordinary_index_rows()` 和 `_profile_batch_index_rows()`，仍加载租户全部 `Task`、完整 JSON 配置和全部安全批次；根因是分页仅发生在 Python 归并之后。
+- `MessageSendingView` 切换发送账号时保留全部 `operation-target:` key，新的远程查询只合并有效目标、不会删除旧账号缓存，因此提交载荷仍可能包含旧账号目标；旧实现曾按 `allowedTargetKeys` 清理。
+- `loadTargetIdBatches()` 对所有 50-ID 批次直接 `Promise.all`，选择数量越大并发请求越多；修复应限制并发而不是新增静默总数上限，以保持已选项回显语义。
+- 当前 35 条前端数据流测试全部通过，说明上述边界尚无回归测试覆盖。
+- `list_page.py` 已有 484 行，候选查询必须拆到独立模块，避免继续扩大职责并越过 500 行限制。
+- 任务全局分组依赖 `type_config` 中目标/频道字段，频道搜索还依赖 `OperationTarget` 与 `ChannelMessage`；只把现有 Python `slice` 提前会破坏搜索和分组。候选查询需要仅投影相关 JSON 路径和关联标题，当前页再读取完整 `Task`。
+- 现有 SQLite `no_postgres` 用例已覆盖统一排序、筛选、分组、批次统计和当前页 runtime 水合，新增红测应补充 SQL 事件监听，断言完整 `Task` 查询只包含当前页 ID。
+- SQLAlchemy JSON 路径投影在项目 SQLite 测试环境会把字符串、数组和对象分别还原为 Python 原始类型，因此可以只读取分组/搜索必需的 `type_config` 与 `account_config` 子字段，不读取完整 JSON 列。
+- 消息发送的最小可靠修复是在账号变化时立即清空 `operation-target:` 选择及其缓存；保留手动个人目标，不等待异步目标水合，也不会出现旧缓存继续进入提交载荷的时间窗口。
+- ID 水合将保留任意数量已选项语义，用固定 worker 数消费 50-ID 批次队列；`Promise.all` 仅等待固定数量 worker，不再按批次数增长并发。

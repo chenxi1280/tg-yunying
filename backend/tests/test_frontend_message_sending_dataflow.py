@@ -19,51 +19,45 @@ def _function_body(source: str, function_name: str) -> str:
     return source[start:end]
 
 
-def test_message_sending_account_target_loads_preserve_partial_success():
+def test_message_sending_account_contacts_load_independently_from_remote_targets():
     source = (PROJECT_ROOT / "frontend/src/app/views/MessageSendingView.tsx").read_text()
     effect_start = source.index("React.useEffect(() => {\n    if (!accountId)")
-    effect_end = source.index("\n  React.useEffect(() => {\n    if (!accountId) return undefined;", effect_start)
+    effect_end = source.index("\n  React.useEffect(() => {\n    function refreshMessageSendingData", effect_start)
     effect_body = source[effect_start:effect_end]
 
-    assert "Promise.allSettled" in effect_body
-    assert "contactResult.status === 'fulfilled'" in effect_body
-    assert "targetResult.status === 'fulfilled'" in effect_body
-    assert "setContacts(contactResult.value)" in effect_body
-    assert "setOperationTargets(targetResult.value)" in effect_body
+    assert "Promise.allSettled" not in effect_body
+    assert "api<Contact[]>(`/tg-accounts/${accountId}/contacts`)" in effect_body
+    assert "api<OperationTarget[]>" not in effect_body
+    assert "setContacts(items)" in effect_body
     assert "setContacts([])" in effect_body
-    assert "setOperationTargets([])" in effect_body
     assert "读取账号联系人失败" in effect_body
-    assert "读取运营目标失败" in effect_body
-    assert "allowedTargetKeys.has(key)" in effect_body
-    assert "key.startsWith('manual:') || key.startsWith('private:')" in effect_body
-    assert "读取账号联系人和运营目标失败" not in effect_body
 
 
 def test_message_sending_target_loads_bind_account_and_request_sequence():
     source = (PROJECT_ROOT / "frontend/src/app/views/MessageSendingView.tsx").read_text()
-    account_effect_start = source.index("React.useEffect(() => {\n    if (!accountId)")
-    account_effect_end = source.index("\n  React.useEffect(() => {\n    if (!accountId) return undefined;", account_effect_start)
-    account_effect = source[account_effect_start:account_effect_end]
-    periodic_effect_start = account_effect_end
-    periodic_effect = source[periodic_effect_start:source.index("\n\n  React.useEffect(() => {\n    function refreshMessageSendingData", periodic_effect_start)]
 
-    assert "const messageContactsRequestRef = React.useRef({ accountId: undefined as number | undefined, seq: 0 });" in source
-    assert "const messageTargetsRequestRef = React.useRef({ accountId: undefined as number | undefined, seq: 0 });" in source
-    assert "function beginMessageContactsRequest(targetAccountId: number | undefined)" in source
-    assert "function isActiveMessageContactsRequest(targetAccountId: number | undefined, requestSeq: number)" in source
-    assert "function beginMessageTargetsRequest(targetAccountId: number | undefined)" in source
-    assert "function isActiveMessageTargetsRequest(targetAccountId: number | undefined, requestSeq: number)" in source
+    assert "import OperationTargetSelect" in source
+    assert "query={{ accountId, capability: 'send' }}" in source
+    assert "accountId && <OperationTargetSelect" in source
+    assert "mergeOperationTargets(current, loadedTargets)" in source
+    assert "const selectedOperationTargetIds" in source
+    assert "key.startsWith('operation-target:')" in source
+    assert "messageTargetsRequestRef" not in source
+    assert "loadOperationTargets" not in source
+    assert "api<OperationTarget[]>(`/operation-targets?account_id=${accountId}`)" not in source
+    assert "window.setInterval(loadOperationTargets, 60000)" not in source
 
-    assert "const contactRequestSeq = beginMessageContactsRequest(accountId);" in account_effect
-    assert "const targetRequestSeq = beginMessageTargetsRequest(accountId);" in account_effect
-    assert "if (isActiveMessageContactsRequest(accountId, contactRequestSeq))" in account_effect
-    assert "if (isActiveMessageTargetsRequest(accountId, targetRequestSeq))" in account_effect
-    assert "if (isActiveMessageContactsRequest(accountId, contactRequestSeq) || isActiveMessageTargetsRequest(accountId, targetRequestSeq))" in account_effect
 
-    assert "const requestSeq = beginMessageTargetsRequest(accountId);" in periodic_effect
-    assert "if (!isActiveMessageTargetsRequest(accountId, requestSeq)) return;" in periodic_effect
-    assert periodic_effect.index("if (!isActiveMessageTargetsRequest(accountId, requestSeq)) return;") < periodic_effect.index("setOperationTargets(items);")
-    assert "if (isActiveMessageTargetsRequest(accountId, requestSeq)) setError(`刷新运营目标失败：${errorText(err)}`);" in periodic_effect
+def test_message_sending_account_change_clears_cached_operation_targets():
+    source = (PROJECT_ROOT / "frontend/src/app/views/MessageSendingView.tsx").read_text()
+    change_start = source.index("onChange={(value) => {", source.index('placeholder="搜索账号、username、手机号"'))
+    change_end = source.index("}}", change_start)
+    change_body = source[change_start:change_end]
+
+    assert "key.startsWith('manual:')" in change_body
+    assert "key.startsWith('operation-target:')" not in change_body
+    assert "option.value.startsWith('operation-target:')" not in change_body
+    assert "setOperationTargets([]);" in change_body
 
 
 def test_message_sending_periodic_refresh_surfaces_backend_error():

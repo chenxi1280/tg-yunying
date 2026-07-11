@@ -1,5 +1,5 @@
 import { ApiError } from '../../shared/api/client';
-import type { Account, AccountPool, HardHourlyBlockers, HardHourlyStatus, OperationTarget, RuleSet, SchedulingSetting, TaskCenterAction, TaskCenterDetail, TaskCenterStats, TaskCenterTask, TaskCenterTaskType } from '../types';
+import type { Account, AccountPool, HardHourlyBlockers, HardHourlyStatus, OperationTarget, RuleSet, SchedulingSetting, TaskCenterAction, TaskCenterDetail, TaskCenterListItem, TaskCenterStats, TaskCenterTask, TaskCenterTaskType } from '../types';
 import { formatBeijingDateTime, toBeijingDateTimeLocalValue } from '../time';
 export { runtimeStage, runtimeStageLabel, statusLabel } from './taskRuntimeStage';
 
@@ -151,14 +151,15 @@ export function formatHardHourlyPipeline(pipeline?: Record<string, string> | nul
     : '-';
 }
 
-export function hardHourlyStats(task?: TaskCenterTask | null): TaskCenterStats | null {
+export function hardHourlyStats(task?: TaskCenterTask | TaskCenterListItem | null): TaskCenterStats | null {
   if (!task || task.type !== 'group_ai_chat') return null;
   const stats = task.stats ?? {};
-  const enabled = Boolean(stats.hard_hourly_target_enabled ?? task.type_config?.hard_hourly_target_enabled);
+  const configEnabled = 'type_config' in task ? task.type_config?.hard_hourly_target_enabled : undefined;
+  const enabled = Boolean(stats.hard_hourly_target_enabled ?? configEnabled);
   return enabled ? stats : null;
 }
 
-export function accountCoverageLabel(value?: TaskCenterTask | TaskCenterStats | null): string {
+export function accountCoverageLabel(value?: TaskCenterTask | TaskCenterListItem | TaskCenterStats | null): string {
   const stats = taskOrStats(value);
   const coverage = stats?.account_coverage;
   if (!coverage || Number(coverage.eligible_count ?? 0) <= 0) return '账号覆盖 -';
@@ -168,7 +169,7 @@ export function accountCoverageLabel(value?: TaskCenterTask | TaskCenterStats | 
   return `账号覆盖 ${covered}/${eligible}，${percent}%`;
 }
 
-function taskOrStats(value?: TaskCenterTask | TaskCenterStats | null): TaskCenterStats | null {
+function taskOrStats(value?: TaskCenterTask | TaskCenterListItem | TaskCenterStats | null): TaskCenterStats | null {
   if (!value) return null;
   return 'stats' in value ? value.stats : value;
 }

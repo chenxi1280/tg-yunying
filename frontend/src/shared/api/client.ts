@@ -60,6 +60,39 @@ export interface ApiResponse<T> {
   status: number;
 }
 
+type RequestAbortCause = 'none' | 'caller' | 'timeout';
+
+type RequestAbortControls = Readonly<{
+  signal: AbortSignal;
+  didTimeout: () => boolean;
+  cleanup: () => void;
+}>;
+
+function createRequestAbortControls(callerSignal: AbortSignal | null | undefined, timeoutMs: number): RequestAbortControls {
+  const controller = new AbortController();
+  let cause: RequestAbortCause = 'none';
+  const abortFromCaller = () => {
+    if (cause !== 'none') return;
+    cause = 'caller';
+    controller.abort(callerSignal?.reason);
+  };
+  if (callerSignal?.aborted) abortFromCaller();
+  else if (callerSignal) callerSignal.addEventListener('abort', abortFromCaller, { once: true });
+  const timeoutId = setTimeout(() => {
+    if (cause !== 'none') return;
+    cause = 'timeout';
+    controller.abort();
+  }, timeoutMs);
+  return {
+    signal: controller.signal,
+    didTimeout: () => cause === 'timeout',
+    cleanup: () => {
+      clearTimeout(timeoutId);
+      if (callerSignal) callerSignal.removeEventListener('abort', abortFromCaller);
+    },
+  };
+}
+
 export function isAuthExpiredError(error: unknown): boolean {
   return error instanceof AuthExpiredError || (error instanceof ApiError && isAuthExpiredResponse(error.status, error.body));
 }
@@ -89,18 +122,17 @@ export async function api<T>(path: string, options?: ApiRequestOptions): Promise
 export async function apiWithMeta<T>(path: string, options?: ApiRequestOptions): Promise<ApiResponse<T>> {
   const token = localStorage.getItem('tg_ops_token');
   const isFormData = options?.body instanceof FormData;
-  const controller = new AbortController();
-  const { timeoutMs = 15_000, ...fetchOptions } = options ?? {};
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  const { timeoutMs = 15_000, signal: callerSignal, ...fetchOptions } = options ?? {};
+  const abortControls = createRequestAbortControls(callerSignal, timeoutMs);
   try {
     const response = await fetch(`${API_BASE}${path}`, {
+      ...fetchOptions,
       headers: {
         ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...(fetchOptions.headers ?? {}),
       },
-      signal: controller.signal,
-      ...fetchOptions,
+      signal: abortControls.signal,
     });
     if (!response.ok) {
       throw await apiErrorFromResponse(response);
@@ -114,11 +146,9 @@ export async function apiWithMeta<T>(path: string, options?: ApiRequestOptions):
     }
     return { data: JSON.parse(text) as T, headers: response.headers, status: response.status };
   } catch (error) {
-    if (error instanceof DOMException && error.name === 'AbortError') {
-      throw new ApiError(408, 'request timeout');
-    }
+    if (abortControls.didTimeout()) throw new ApiError(408, 'request timeout');
     throw error;
   } finally {
-    clearTimeout(timeoutId);
+    abortControls.cleanup();
   }
 }

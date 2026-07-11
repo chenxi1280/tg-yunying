@@ -21,26 +21,30 @@ def test_operation_target_detail_does_not_auto_sync_for_read_only_users():
 
 
 def test_operation_target_focus_opens_detail_once():
-    source = (PROJECT_ROOT / "frontend/src/app/views/OperationTargetsView.tsx").read_text()
-    focus_effect = source[source.index("if (!focusTarget || appliedFocusNonce.current === focusTarget.nonce)"):source.index("\n  async function saveTarget")]
-    found_target_block = focus_effect[focus_effect.index("const target = targets.find"):focus_effect.index("async function saveTarget") if "async function saveTarget" in focus_effect else len(focus_effect)]
+    view = (PROJECT_ROOT / "frontend/src/app/views/OperationTargetsView.tsx").read_text()
+    hook = (PROJECT_ROOT / "frontend/src/app/hooks/useOperationTargetManagementPage.ts").read_text()
+    focus_effect = hook[hook.index("function useFocusedTarget"):hook.index("\n\nfunction consumeFocusedTarget")]
+    consume = hook[hook.index("function consumeFocusedTarget"):hook.index("\n\nexport function useOperationTargetManagementPage")]
 
-    assert focus_effect.count("openDetail(target);") == 1
-    assert found_target_block.index("appliedFocusNonce.current = focusTarget.nonce;") < found_target_block.index("openDetail(target);")
-    assert found_target_block.index("openDetail(target);") < found_target_block.rindex("onFocusTargetConsumed?.();")
+    assert focus_effect.count("consumeFocusedTarget({ target: current") == 1
+    assert focus_effect.count("consumeFocusedTarget({ target, nonce:") == 1
+    assert consume.index("context.appliedNonce.current = context.nonce;") < consume.index("onOpenFocusedTarget(context.target);")
+    assert consume.index("onOpenFocusedTarget(context.target);") < consume.index("onFocusTargetConsumed?.();")
+    assert "onOpenFocusedTarget: openDetail" in view
 
 
 def test_operation_targets_load_surfaces_backend_error_detail():
-    source = (PROJECT_ROOT / "frontend/src/app/views/OperationTargetsView.tsx").read_text()
-    fetch_targets = source[source.index("async function fetchTargets"):source.index("\n\n  async function fetchTargetDetail")]
-    load_block = source[source.index("async function load()"):source.index("\n\n  async function refreshTargetsListAfterAction")]
+    view = (PROJECT_ROOT / "frontend/src/app/views/OperationTargetsView.tsx").read_text()
+    hook = (PROJECT_ROOT / "frontend/src/app/hooks/useOperationTargetManagementPage.ts").read_text()
+    fetch_targets = hook[hook.index("async function fetchTargetPage"):hook.index("\n\nfunction useTargetPolling")]
+    load_block = hook[hook.index("const load = React.useCallback"):hook.index("\n  useTargetPolling")]
 
-    assert "const [formError, setFormError] = React.useState('');" in source
-    assert "api<OperationTarget[]>('/operation-targets')" in fetch_targets
-    assert "await fetchTargets(requestSeq);" in load_block
+    assert "const [formError, setFormError] = React.useState('');" in view
+    assert "setError: setFormError" in view
+    assert "apiWithMeta<OperationTarget[]>(operationTargetListPath(request.query)" in fetch_targets
+    assert "const result = await fetchTargetPage(request);" in load_block
     assert "catch (error)" in load_block
-    assert "if (!isActiveTargetsListRequest(requestSeq)) return;" in load_block
-    assert "setFormError(errorMessage(error));" in load_block
+    assert "if (isActiveRequest(identityRef, request)) setError(requestError(error));" in load_block
 
 
 def test_operation_target_detail_sync_only_runs_after_detail_load_success():
@@ -65,7 +69,7 @@ def test_operation_target_detail_actions_ignore_stale_target_responses():
     save_policy = source[source.index("async function saveAccountPolicy"):source.index("\n  function openAdmissionRetry")]
     retry_admission = source[source.index("async function retryAdmission"):source.index("\n  function startEdit")]
     open_detail = source[source.index("function openDetail"):source.index("\n  function openCreate")]
-    close_detail = source[source.index("function closeDetail"):source.index("\n  const table")]
+    close_detail = source[source.index("function closeDetail"):source.index("\n\n  const failedAdmissionAccounts")]
 
     assert "const activeDetailTargetId = React.useRef<number | null>(null);" in source
     assert "function isActiveDetailTarget(targetId: number)" in source
@@ -89,16 +93,16 @@ def test_operation_target_detail_actions_ignore_stale_target_responses():
 
 def test_task_center_load_and_focus_task_surface_backend_error_detail():
     source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
-    fetch_block = source[source.index("async function fetchTaskListData"):source.index("\n\n  async function load(")]
-    load_block = source[source.index("async function load("):source.index("\n\n  async function refreshTaskListAfterAction")]
+    hook = (PROJECT_ROOT / "frontend/src/app/hooks/useTaskCenterListPage.ts").read_text()
+    load_block = hook[hook.index("const load = React.useCallback"):hook.index("\n\n  const queryKey")]
     focus_effect = source[source.index("if (!focusTask || appliedFocusNonce.current === focusTask.nonce)"):source.index("\n  async function fetchTaskDetail")]
 
-    assert "api<TaskCenterTask[]>" in fetch_block
-    assert "api<SchedulingSetting>" in fetch_block
-    assert "await fetchTaskListData(requestSeq, nextTaskTypeFilter);" in load_block
-    assert "catch (error)" in load_block
-    assert "if (!isActiveTaskListRequest(requestSeq)) return;" in load_block
-    assert "setActionError(`读取任务列表失败：${errorMessage(error)}`);" in load_block
+    assert "api<TaskCenterListPage>" in hook
+    assert "api<SchedulingSetting>" in hook
+    assert "catch (failure)" in load_block
+    assert "if (!isActiveRequest(requestRef, request)) return '';" in load_block
+    assert "setError(`读取任务列表失败：${detail}`);" in load_block
+    assert "taskList.error" in source
     assert ".catch((error) => {" in focus_effect
     assert "if (!isActiveDetailRequest(focusTask.taskId, requestSeq)) return;" in focus_effect
     assert "setActionError(`读取任务 ${focusTask.taskId} 详情失败：${errorMessage(error)}`);" in focus_effect
@@ -106,14 +110,15 @@ def test_task_center_load_and_focus_task_surface_backend_error_detail():
 
 def test_task_center_form_support_load_failures_surface_backend_error_detail():
     source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
-    lazy_effect = source[source.index("if (!modalOpen && !editOpen) return;"):source.index("\n  React.useEffect(() => {\n    if (!prefill")]
     prefill_effect = source[source.index("if (!prefill || appliedPrefillNonce.current === prefill.nonce)"):source.index("\n  React.useEffect(() => {\n    if (!focusTask")]
-    reset_type_fields = source[source.index("function resetTypeFields"):source.index("\n  const table")]
+    create_task = source[source.index("async function openCreateTask"):source.index("\n\n  function editValuesFromTask")]
+    edit_task = source[source.index("async function openEditTask"):source.index("\n\n  function closeEditTaskModal")]
+    reset_type_fields = source[source.index("function resetTypeFields"):source.index("\n  const columns")]
 
-    assert "setActionError(`读取任务表单支撑数据失败：${errorMessage(error)}`)" in lazy_effect
+    assert "setActionError(`读取任务表单支撑数据失败：${errorMessage(error)}`)" in create_task
+    assert "setActionError(`读取任务表单支撑数据失败：${errorMessage(error)}`)" in edit_task
     assert "setActionError(`读取任务预填支撑数据失败：${errorMessage(error)}`)" in prefill_effect
     assert "setActionError(`读取任务类型支撑数据失败：${errorMessage(error)}`)" in reset_type_fields
-    assert "void ensureRuleSets();" not in lazy_effect
     assert "void ensureTargets();" not in prefill_effect
     assert "void ensureTaskFormData(nextType).then" not in reset_type_fields
 
@@ -255,6 +260,121 @@ def test_api_error_message_formats_fastapi_detail_for_direct_error_message_views
     assert "return body || `HTTP ${status}`;" in source
     assert "if (error instanceof ApiError) return error.message;" in modal_state
     assert "JSON.parse(error.body)" not in modal_state
+
+
+def _required_frontend_source(relative_path: str) -> str:
+    path = PROJECT_ROOT / relative_path
+    assert path.exists(), f"missing frontend source: {relative_path}"
+    return path.read_text()
+
+
+def test_remote_operation_target_hook_uses_bounded_query_identity_and_immutable_hydration():
+    hook = _required_frontend_source("frontend/src/app/hooks/useOperationTargetOptions.ts")
+    types = _required_frontend_source("frontend/src/app/types/operations.ts")
+    client = _required_frontend_source("frontend/src/shared/api/client.ts")
+
+    assert "export type OperationTargetOptionQuery = Readonly<{" in types
+    assert "readonly ids?: readonly number[];" in types
+    for capability in ["'send'", "'listen'", "'archive'", "'task'"]:
+        assert capability in types
+
+    assert "const OPERATION_TARGET_PAGE_SIZE = 50;" in hook
+    assert "params.set('page', '1');" in hook
+    assert "params.set('page_size', String(OPERATION_TARGET_PAGE_SIZE));" in hook
+    assert "params.set('q', query.q);" in hook
+    assert "params.set('target_type', query.targetType);" in hook
+    assert "params.set('account_id', String(query.accountId));" in hook
+    assert "params.set('capability', query.capability);" in hook
+    assert "params.append('ids', String(id));" in hook
+    assert "apiWithMeta<OperationTarget[]>" in hook
+    assert "response.headers.get('x-total-count')" in hook
+
+    assert "type OperationTargetRequestIdentity = Readonly<{" in hook
+    assert "sequence: number;" in hook
+    assert "queryKey: string;" in hook
+    assert "searchRequestRef" in hook
+    assert "hydrationRequestRef" in hook
+    assert "isCurrentRequest" in hook
+    assert "setPageTargets(response.data);" in hook
+    assert "return [...byId.values()];" in hook
+
+    hydration_start = hook.index("const hydrateIds = React.useCallback")
+    hydration_end = hook.index("const ensureIds = React.useCallback", hydration_start)
+    hydration = hook[hydration_start:hydration_end]
+    assert "setSelectedTargets([]);" in hydration
+    assert hydration.index("setSelectedTargets([]);") < hydration.index("setLoading(true);")
+    assert "const hydrated = mergeOperationTargets([], responses.flatMap((response) => response.data));" in hydration
+    assert "setSelectedTargets(hydrated);" in hydration
+    assert "setSelectedTargets((current) => mergeOperationTargets(current, response.data));" not in hydration
+
+    assert "const { timeoutMs = 15_000" in client
+    assert "timeoutMs:" not in hook
+
+
+def test_remote_operation_target_requests_debounce_and_cancel_stale_lifecycles():
+    hook = _required_frontend_source("frontend/src/app/hooks/useOperationTargetOptions.ts")
+
+    assert "const OPERATION_TARGET_SEARCH_DEBOUNCE_MS = 250;" in hook
+    assert "window.setTimeout(" in hook
+    assert "OPERATION_TARGET_SEARCH_DEBOUNCE_MS" in hook
+    assert "window.clearTimeout(timerId);" in hook
+    assert hook.count("const controller = new AbortController();") >= 2
+    assert "controller.abort();" in hook
+    assert "loadSearchPage(controller.signal)" in hook
+    assert "ensureIds(selectedIds)" in hook
+    assert "loadTargetIdBatches(normalized, signal)" in hook
+    assert "{ signal }" in hook
+    assert hook.count("signal.aborted || !isCurrentRequest") >= 4
+    search_request = hook[hook.index("const loadSearchPage = React.useCallback"):hook.index("React.useEffect(() => {", hook.index("const loadSearchPage = React.useCallback"))]
+    hydration_request = hook[hook.index("const hydrateIds = React.useCallback"):hook.index("const ensureIds = React.useCallback")]
+    for request in [search_request, hydration_request]:
+        assert "if (signal.aborted) return;" in request
+        assert request.index("if (signal.aborted) return;") < request.index("setLoading(")
+
+
+def test_remote_operation_target_hydration_uses_fixed_concurrency():
+    hook = _required_frontend_source("frontend/src/app/hooks/useOperationTargetOptions.ts")
+    loader_start = hook.index("async function loadTargetIdBatches")
+    loader_end = hook.index("\n\nfunction useOperationTargetSearch", loader_start)
+    loader = hook[loader_start:loader_end]
+
+    assert "const OPERATION_TARGET_HYDRATION_CONCURRENCY = 3;" in hook
+    assert "Math.min(OPERATION_TARGET_HYDRATION_CONCURRENCY, batches.length)" in loader
+    assert "Promise.all(workers)" in loader
+    assert "Promise.all(targetIdBatches(query.ids).map" not in loader
+
+
+def test_remote_operation_target_hook_owns_public_hydration_cancellation():
+    hook = _required_frontend_source("frontend/src/app/hooks/useOperationTargetOptions.ts")
+
+    assert "signal: AbortSignal = new AbortController().signal" not in hook
+    assert "const hydrationControllerRef = React.useRef<AbortController | null>(null);" in hook
+    assert "const hydrateIds = React.useCallback(async (ids: readonly number[], signal: AbortSignal)" in hook
+    assert "const ensureIds = React.useCallback(async (ids: readonly number[])" in hook
+    assert "hydrationControllerRef.current?.abort();" in hook
+    assert "hydrationControllerRef.current = controller;" in hook
+    assert "await hydrateIds(ids, controller.signal);" in hook
+    assert "if (hydrationControllerRef.current === controller)" in hook
+    assert "hydrationControllerRef.current = null;" in hook
+    assert "return () => hydrationControllerRef.current?.abort();" in hook
+
+
+def test_remote_operation_target_api_client_composes_caller_abort_and_timeout():
+    client = _required_frontend_source("frontend/src/shared/api/client.ts")
+    request = client[client.index("export async function apiWithMeta"):]
+
+    assert "type RequestAbortCause = 'none' | 'caller' | 'timeout';" in client
+    assert "function createRequestAbortControls(" in client
+    assert "callerSignal.addEventListener('abort', abortFromCaller, { once: true });" in client
+    assert "callerSignal.removeEventListener('abort', abortFromCaller);" in client
+    assert "cause === 'timeout'" in client
+    assert "const { timeoutMs = 15_000, signal: callerSignal, ...fetchOptions }" in request
+    assert "const abortControls = createRequestAbortControls(callerSignal, timeoutMs);" in request
+    fetch_options = request[request.index("const response = await fetch"):request.index("if (!response.ok)")]
+    assert fetch_options.index("...fetchOptions") < fetch_options.index("signal: abortControls.signal")
+    assert "if (abortControls.didTimeout()) throw new ApiError(408, 'request timeout');" in request
+    assert "error instanceof DOMException && error.name === 'AbortError'" not in request
+    assert "abortControls.cleanup();" in request
 
 
 def test_frontend_operator_template_can_open_and_manage_ai_voice_profiles():
@@ -930,6 +1050,7 @@ def test_frontend_data_loaders_do_not_silently_fake_empty_success():
     checked_files = [
         "frontend/src/app/context/refresh.ts",
         "frontend/src/app/views/OverviewView.tsx",
+        "frontend/src/app/hooks/useOverviewOperationData.ts",
         "frontend/src/app/views/RulesCenterView.tsx",
         "frontend/src/app/views/ArchivesView.tsx",
         "frontend/src/app/context/accountActions.ts",
@@ -944,7 +1065,7 @@ def test_frontend_data_loaders_do_not_silently_fake_empty_success():
 
 def test_overview_issue_actions_surface_backend_error_detail():
     source = (PROJECT_ROOT / "frontend/src/app/views/OverviewView.tsx").read_text()
-    submit_issue_action = source[source.index("async function submitIssueAction"):source.index("\n  const targetRows")]
+    submit_issue_action = source[source.index("async function submitIssueAction"):source.index("\n  const failedActionColumns")]
     open_issue_detail = source[source.index("async function openIssueDetail"):source.index("\n  async function submitIssueAction")]
 
     assert "import { api, ApiError }" in source
@@ -959,7 +1080,7 @@ def test_overview_issue_detail_and_actions_ignore_stale_issue_responses():
     source = (PROJECT_ROOT / "frontend/src/app/views/OverviewView.tsx").read_text()
     open_issue_detail = source[source.index("async function openIssueDetail"):source.index("\n  async function submitIssueAction")]
     close_issue_drawer = source[source.index("function closeIssueDrawer"):source.index("\n  function openIssueAction")]
-    submit_issue_action = source[source.index("async function submitIssueAction"):source.index("\n  const targetRows")]
+    submit_issue_action = source[source.index("async function submitIssueAction"):source.index("\n  const failedActionColumns")]
     drawer_start = source.index("title={issueDetail?.issue ? `目标异常 ${issueDetail.issue.id}` : '目标异常'}")
     drawer = source[drawer_start:source.index("\n      </Drawer>", drawer_start)]
 
@@ -1122,17 +1243,25 @@ def test_risk_control_overview_cards_and_account_actions_are_deep_linked():
     assert open_account_detail.index("goToView('accounts'") < open_account_detail.index("await openAccountDetail")
 
 
-def test_group_create_task_uses_peer_id_when_target_link_is_missing():
+def test_group_create_task_uses_bounded_linked_group_lookup_with_peer_fallback():
     app_shell = (PROJECT_ROOT / "frontend/src/app/AppShell.tsx").read_text()
     open_task = app_shell[
         app_shell.index("async function openTaskFromGroup"):
         app_shell.index("\n  const captchaControl", app_shell.index("async function openTaskFromGroup"))
     ]
 
+    assert "const params = new URLSearchParams" in open_task
+    assert "page: '1'" in open_task
+    assert "page_size: '1'" in open_task
+    assert "target_type: 'group'" in open_task
+    assert "linked_group_id: String(groupId)" in open_task
+    assert "api<OperationTarget[]>(`/operation-targets?${params.toString()}`)" in open_task
+    assert "targets[0]" in open_task
     assert "const group = groups.find((item) => item.id === groupId);" in open_task
-    assert "targets.find((item) => item.linked_group_id === groupId)" in open_task
-    assert "targets.find((item) => group?.tg_peer_id && item.tg_peer_id === group.tg_peer_id)" in open_task
-    assert open_task.index("linked_group_id === groupId") < open_task.index("item.tg_peer_id === group.tg_peer_id")
+    assert "fallbackParams.set('q', group.tg_peer_id);" in open_task
+    assert "fallbackParams.set('page_size', '20');" in open_task
+    assert "fallbackTargets.find((item) => item.tg_peer_id === group.tg_peer_id)" in open_task
+    assert "api<OperationTarget[]>('/operation-targets?target_type=group')" not in open_task
 
 
 def test_account_center_consumes_account_deep_link_query_on_load():
@@ -1311,15 +1440,16 @@ def test_group_rescue_account_search_ignores_stale_responses_and_surfaces_errors
 
 
 def test_task_center_target_selects_support_searching():
-    source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterWizardSections.tsx").read_text()
+    source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterTargetSection.tsx").read_text()
     view = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
 
-    assert "targetSelectProps" in source
-    assert "showSearch: true" in source
-    assert 'optionFilterProp: "label"' in source
-    assert "<Select allowClear options={groupTargetOptions} {...targetSelectProps}" in source
-    assert '<Select mode="multiple" allowClear options={groupTargetOptions} {...targetSelectProps}' in source
-    assert "<Select allowClear options={channelTargetOptions} onChange={onTargetChannelChange} {...targetSelectProps}" in source
+    assert "import OperationTargetSelect" in source
+    assert "<OperationTargetSelect" in source
+    assert "query={{ targetType: 'group', capability }}" in source
+    assert "query={{ targetType: 'channel', capability: 'task' }}" in source
+    assert 'mode="multiple"' in source
+    assert "onTargetsLoaded={onTargetsLoaded}" in source
+    assert "mergeLoadedTargets" in view
     assert "const groupTargets = targets.filter((target) => target.target_type === 'group');" in view
 
 
@@ -1333,8 +1463,8 @@ def test_task_center_review_uses_task_specific_curve_units():
 def test_task_center_ai_group_rows_prefer_target_summary_title():
     source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
 
-    assert "function taskListTitle(task: TaskCenterTask): string" in source
-    assert "return task.target_summary || task.type_config?.target_group_name || task.name;" in source
+    assert "function taskListTitle(task: TaskCenterVisibleTask): string" in source
+    assert "return task.target_summary || task.name;" in source
     assert "<Typography.Text strong>{taskListTitle(task)}</Typography.Text>" in source
 
 
@@ -1669,7 +1799,8 @@ def test_task_center_loads_account_support_data_only_for_forms():
     assert "async function ensureAccounts()" in source
     assert "async function ensurePromptTemplates()" in source
     assert "loadTaskFormAccounts()" in source
-    assert "ensureTargets(), ensureAccounts(), ensurePromptTemplates()" in source
+    assert "[ensureAccounts(), ensurePromptTemplates()]" in source
+    assert "ensureTargets()" not in source
     assert "accounts={taskAccounts}" in source
     assert "accountPools={taskAccountPools}" in source
     assert "const [taskPromptTemplates, setTaskPromptTemplates]" in source
@@ -2279,38 +2410,36 @@ def test_task_center_account_security_system_task_detail_switches_by_batch_type(
     assert "当前 session / 已确认 hash 的主备授权 / 1 个官方锚点" in source
     assert "目标槽位" in source
     assert "验证码读取" in source
-    assert "params.set('type', nextTaskTypeFilter)" in view
+    hook = (PROJECT_ROOT / "frontend/src/app/hooks/useTaskCenterListPage.ts").read_text()
+    assert "params.set('type', query.type)" in hook
 
 
 def test_task_center_exposes_task_type_filter_request_parameter():
     source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
+    hook = (PROJECT_ROOT / "frontend/src/app/hooks/useTaskCenterListPage.ts").read_text()
 
     assert "taskTypeFilter" in source
     assert "account_profile_init" in source
-    assert "params.set('type', nextTaskTypeFilter)" in source
-    assert "api<TaskCenterTask[]>(`/tasks${query ? `?${query}` : ''}`)" in source
+    assert "params.set('type', query.type)" in hook
+    assert "api<TaskCenterListPage>(`/tasks/page?${params.toString()}`" in hook
 
 
 def test_task_center_list_groups_by_target_group_and_channel():
     source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
-    grouping = (PROJECT_ROOT / "frontend/src/app/views/taskCenterListGrouping.ts").read_text()
 
-    assert "buildTaskQuickGroups" in grouping
-    assert "filterTasksByQuickGroup" in grouping
-    assert "targetGroupLabel" in grouping
-    assert "associatedChannelLabel" in grouping
-    assert "const [selectedTaskGroupId, setSelectedTaskGroupId] = React.useState('all');" in source
-    assert "const taskQuickGroups = buildTaskQuickGroups(table.filteredRows);" in source
-    assert "const visibleTaskRows = filterTasksByQuickGroup(table.filteredRows, selectedTaskGroupId);" in source
+    assert "const selectedTaskGroupId = taskList.query.groupKey;" in source
+    assert "taskList.groups.map" in source
+    assert "taskList.setGroup" in source
+    assert "buildTaskQuickGroups" not in source
+    assert "filterTasksByQuickGroup" not in source
     assert "全部任务分组" in source
     assert "<Select<string>" in source
     assert 'aria-label="任务分组"' in source
     assert "TASK_GROUP_SELECT_WIDTH" in source
     assert "TASK_GROUP_DROPDOWN_WIDTH" in source
     assert "popupMatchSelectWidth={TASK_GROUP_DROPDOWN_WIDTH}" in source
-    assert "<Segmented" not in source[source.index("const taskQuickGroups"):source.index("dataSource={visibleTaskRows}")]
-    assert "dataSource={visibleTaskRows}" in source
-    assert "Table<TaskCenterTask>" in source
+    assert "dataSource={tasks}" in source
+    assert "Table<TaskCenterListItem>" in source
     assert "目标群聊" in source
     assert "关联频道" in source
 
@@ -2332,7 +2461,7 @@ def test_task_center_shows_account_coverage_for_active_tasks():
 def test_task_center_hides_delete_for_account_security_system_tasks():
     source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
 
-    assert "function canDeleteTask(task: TaskCenterTask)" in source
+    assert "function canDeleteTask(task: TaskCenterVisibleTask)" in source
     assert "canDeleteTask(task)" in source
     assert "openDangerTaskAction(task, 'delete')" in source
     assert "return canManageTasks && Boolean(task.id) && !isSystemTask(task);" in source
@@ -2341,9 +2470,9 @@ def test_task_center_hides_delete_for_account_security_system_tasks():
 def test_task_center_lifecycle_buttons_match_task_status():
     source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
 
-    assert "function canStartTask(task: TaskCenterTask)" in source
+    assert "function canStartTask(task: TaskCenterVisibleTask)" in source
     assert "return !isSystemTask(task) && task.status !== 'running';" in source
-    assert "function canPauseTask(task: TaskCenterTask)" in source
+    assert "function canPauseTask(task: TaskCenterVisibleTask)" in source
     assert "return !isSystemTask(task) && task.status === 'running';" in source
     assert "canManageTasks && canStartTask(task) &&" in source
     assert "canManageTasks && canPauseTask(task) &&" in source
@@ -2401,7 +2530,7 @@ def test_task_center_create_refreshes_after_long_timeout_and_capacity_summary_ty
 
     assert "const TASK_CREATE_TIMEOUT_MS = 120_000" in view
     assert "timeoutMs: TASK_CREATE_TIMEOUT_MS" in view
-    assert "await load();" in view
+    assert "await taskList.reload();" in view
     assert "capacity_summary" in types
     assert "容量口径" in wizard
     assert "最大并发" in wizard

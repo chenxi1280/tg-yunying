@@ -1,4 +1,12 @@
-import type { BadgeTone, TaskCenterTask, TaskRuntimeSummary } from '../types';
+import type { BadgeTone, TaskCenterStats, TaskRuntimeSummary } from '../types';
+
+type RuntimeStageTask = Readonly<{
+  status: string;
+  next_run_at: string | null;
+  last_error: string;
+  stats: TaskCenterStats;
+  runtime_stage?: Record<string, any>;
+}>;
 
 export type RuntimeStage = {
   primary_status?: string;
@@ -16,7 +24,7 @@ const AI_MARKERS = ['AI 生成不可用', '没有健康 AI', 'read operation tim
 const CONTEXT_MARKERS = ['暂无新的真人上下文', '持续监听中', '等待新消息', '等待群内新消息', '上下文不足'];
 const COOLDOWN_MARKERS = ['冷却', '慢速模式', 'FloodWait', '等待下一轮'];
 
-export function runtimeStage(task: TaskCenterTask, summary?: TaskRuntimeSummary | null, membershipPhase?: Record<string, any>): RuntimeStage {
+export function runtimeStage(task: RuntimeStageTask, summary?: TaskRuntimeSummary | null, membershipPhase?: Record<string, any>): RuntimeStage {
   const provided = task.runtime_stage as RuntimeStage | undefined;
   if (provided?.stage_code) return provided;
   if (task.status === 'paused') return pausedStage(task);
@@ -35,7 +43,7 @@ export function runtimeStage(task: TaskCenterTask, summary?: TaskRuntimeSummary 
   return fallbackStage(task, task.status || 'draft', statusLabel(task.status), task.status === 'failed' ? 'danger' : 'warning', task.last_error || '任务可继续规划和执行');
 }
 
-export function runtimeStageLabel(task: TaskCenterTask, summary?: TaskRuntimeSummary | null, membershipPhase?: Record<string, any>): string {
+export function runtimeStageLabel(task: RuntimeStageTask, summary?: TaskRuntimeSummary | null, membershipPhase?: Record<string, any>): string {
   const stage = runtimeStage(task, summary, membershipPhase);
   return stage.stage_label || statusLabel(task.status);
 }
@@ -56,12 +64,12 @@ export function statusLabel(value?: string | null): string {
   return value || '未运行';
 }
 
-function pausedStage(task: TaskCenterTask): RuntimeStage {
+function pausedStage(task: RuntimeStageTask): RuntimeStage {
   const reason = task.last_error ? `任务已暂停，不会继续规划或执行新动作；最近错误：${task.last_error}` : '任务已暂停，不会继续规划或执行新动作';
   return fallbackStage(task, 'paused', '已暂停', 'danger', reason);
 }
 
-function fallbackStage(task: TaskCenterTask, code: string, label: string, severity: BadgeTone, reason: string): RuntimeStage {
+function fallbackStage(task: RuntimeStageTask, code: string, label: string, severity: BadgeTone, reason: string): RuntimeStage {
   return {
     primary_status: task.status,
     primary_status_label: statusLabel(task.status),
@@ -79,12 +87,12 @@ function withSecondaryReason(stage: RuntimeStage, reason: string): RuntimeStage 
   return { ...stage, reason: `${stage.reason || ''}；同时存在：${reason}`, secondary_reasons: [reason] };
 }
 
-function hasMarker(task: TaskCenterTask, markers: string[]): boolean {
+function hasMarker(task: RuntimeStageTask, markers: string[]): boolean {
   const text = `${task.last_error || ''} ${task.stats?.ai_unavailable_reason || ''} ${task.stats?.context_mode || ''}`;
   return markers.some((marker) => text.toLowerCase().includes(marker.toLowerCase()));
 }
 
-function membershipStage(task: TaskCenterTask, phase?: Record<string, any>): RuntimeStage | null {
+function membershipStage(task: RuntimeStageTask, phase?: Record<string, any>): RuntimeStage | null {
   const source = phase || task.stats?.membership_summary || {};
   const status = String(phase?.status || task.stats?.membership_stage || source.status || '');
   const pending = Number(phase?.pending_account_count ?? task.stats?.membership_need_join_count ?? source.pending_account_count ?? 0);

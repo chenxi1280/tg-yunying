@@ -1,9 +1,12 @@
 import React from 'react';
-import { Activity, RefreshCcw, Send, ShieldAlert, Smartphone, Users } from 'lucide-react';
+import { Activity, Send, ShieldAlert, Smartphone, Users } from 'lucide-react';
 import { Alert, Button, Card, Descriptions, Drawer, Empty, Input, Modal, Select, Space, Table, Tag, Typography, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import type { OperationCenterSummary, OperationIssue, OperationIssueDetail, OperationPlan, OperationPlanApplyResult, OperationPlanGenerateResult, OperationPlanPreview, OperationTarget, Overview, TargetRuntimeSummary } from '../types';
+import type { OperationIssue, OperationIssueDetail, OperationPlan, OperationPlanApplyResult, OperationPlanGenerateResult, OperationPlanPreview, OperationTarget, Overview } from '../types';
 import { StatCard, Badge, StatusBadge } from '../components/shared';
+import OperationTargetSelect from '../components/OperationTargetSelect';
+import OverviewTargetWorkbench, { handlingModeLabel, isMessageIssue, severityLabel, severityTone } from '../components/OverviewTargetWorkbench';
+import { useOverviewOperationData } from '../hooks/useOverviewOperationData';
 import { riskTone } from '../utils';
 import { formatBeijingDateTime } from '../time';
 import { api, ApiError } from '../../shared/api/client';
@@ -21,13 +24,6 @@ type PlanEditForm = {
   task_types: string[];
 };
 
-type TargetWorkbenchRow = {
-  key: string;
-  targetId: number;
-  target?: OperationTarget;
-  summary?: TargetRuntimeSummary;
-  issues: OperationIssue[];
-};
 
 interface Props {
   overview: Overview;
@@ -64,23 +60,17 @@ const PLAN_TASK_OPTIONS: Record<string, Array<{ value: string; label: string }>>
   ],
 };
 
-function isMessageIssue(issue?: OperationIssue | null) {
-  return Boolean(issue?.source_task_id?.startsWith('message_task:') || issue?.return_to?.page === 'message-sending');
-}
-
 function errorText(error: unknown) {
   if (error instanceof ApiError) return error.message;
   return error instanceof Error ? error.message : String(error);
 }
 
 export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail, onOpenMessageSending, onOpenAccounts, onOpenAccountDetail, onOpenRules, onOpenRisk, canManageOperationIssues = false }: Props) {
-  const [plans, setPlans] = React.useState<OperationPlan[]>([]);
-  const [targets, setTargets] = React.useState<OperationTarget[]>([]);
-  const [operationCenter, setOperationCenter] = React.useState<OperationCenterSummary | null>(overview.operation_center ?? null);
-  const [targetSummaries, setTargetSummaries] = React.useState<TargetRuntimeSummary[]>([]);
-  const [issues, setIssues] = React.useState<OperationIssue[]>([]);
-  const [operationLoading, setOperationLoading] = React.useState(false);
-  const [operationError, setOperationError] = React.useState('');
+  const operationData = useOverviewOperationData(overview.operation_center ?? null);
+  const {
+    plans, targets, targetPageQuery, targetTotal, operationCenter, targetSummaries, issues,
+    operationLoading, operationError, loadOperationData, refreshOperationDataAfterAction,
+  } = operationData;
   const [issueDetail, setIssueDetail] = React.useState<OperationIssueDetail | null>(null);
   const [issueDrawerOpen, setIssueDrawerOpen] = React.useState(false);
   const [issueLoading, setIssueLoading] = React.useState(false);
@@ -88,7 +78,6 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
   const [issueAction, setIssueAction] = React.useState<IssueAction | null>(null);
   const [issueActionReason, setIssueActionReason] = React.useState('');
   const activeIssueDetailId = React.useRef<string | null>(null);
-  const operationDataRequestSeq = React.useRef(0);
   const activePlanActionKey = React.useRef('');
   const activePlanEditSaveRequestRef = React.useRef<{ seq: number; planId: number | null; signature: string }>({ seq: 0, planId: null, signature: '' });
   const activeImpactApplyRequestRef = React.useRef<{ seq: number; planId: number | null; signature: string }>({ seq: 0, planId: null, signature: '' });
@@ -123,15 +112,6 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
 
   function isActiveIssueDetail(issueId: string) {
     return activeIssueDetailId.current === issueId;
-  }
-
-  function beginOperationDataRequest() {
-    operationDataRequestSeq.current += 1;
-    return operationDataRequestSeq.current;
-  }
-
-  function isActiveOperationDataRequest(requestSeq: number) {
-    return operationDataRequestSeq.current === requestSeq;
   }
 
   function beginPlanAction(actionKey: string) {
@@ -238,54 +218,9 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
       && currentIssueActionPayloadSignature() === signature;
   }
 
-  React.useEffect(() => {
-    void loadOperationData();
-  }, []);
-
-  async function fetchOperationData(requestSeq: number) {
-    const [planRows, targetRows, centerSummary, runtimeRows, issueRows] = await Promise.all([
-      api<OperationPlan[]>('/operation-plans'),
-      api<OperationTarget[]>('/operation-targets'),
-      api<OperationCenterSummary>('/operation-center/overview'),
-      api<TargetRuntimeSummary[]>('/operation-targets/runtime-summary'),
-      api<OperationIssue[]>('/operation-issues'),
-    ]);
-    if (!isActiveOperationDataRequest(requestSeq)) return false;
-    setPlans(planRows);
-    setTargets(targetRows);
-    setOperationCenter(centerSummary);
-    setTargetSummaries(runtimeRows);
-    setIssues(issueRows);
-    return true;
-  }
-
-  async function loadOperationData() {
-    const requestSeq = beginOperationDataRequest();
-    setOperationLoading(true);
-    setOperationError('');
-    try {
-      await fetchOperationData(requestSeq);
-    } catch (err) {
-      if (!isActiveOperationDataRequest(requestSeq)) return;
-      setOperationError(err instanceof Error ? err.message : String(err));
-    } finally {
-      if (isActiveOperationDataRequest(requestSeq)) setOperationLoading(false);
-    }
-  }
-
-  async function refreshOperationDataAfterAction(actionLabel: string) {
-    const requestSeq = beginOperationDataRequest();
-    try {
-      await fetchOperationData(requestSeq);
-    } catch (error) {
-      if (!isActiveOperationDataRequest(requestSeq)) return;
-      setOperationError(`运营中心数据刷新失败：${actionLabel}操作已完成，但刷新运营中心数据失败：${errorText(error)}`);
-    }
-  }
-
   async function createDefaultPlan(target?: OperationTarget) {
-    const selectedTarget = target ?? (targets.length === 1 ? targets[0] : undefined);
-    if (!selectedTarget && targets.length > 1) {
+    const selectedTarget = target ?? (targetTotal === 1 ? targets[0] : undefined);
+    if (!selectedTarget && targetTotal > 1) {
       void message.warning('请在目标工作台的目标行点击创建方案，避免选错目标');
       return;
     }
@@ -591,98 +526,6 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
     }
   }
 
-  const targetRows = React.useMemo<TargetWorkbenchRow[]>(() => {
-    const issueMap = new Map<number, OperationIssue[]>();
-    issues.forEach((issue) => {
-      if (!issue.target_id) return;
-      issueMap.set(issue.target_id, [...(issueMap.get(issue.target_id) ?? []), issue]);
-    });
-    const rowMap = new Map<number, TargetWorkbenchRow>();
-    targets.forEach((target) => {
-      rowMap.set(target.id, {
-        key: String(target.id),
-        targetId: target.id,
-        target,
-        summary: undefined,
-        issues: issueMap.get(target.id) ?? [],
-      });
-    });
-    targetSummaries.forEach((summary) => {
-      const current = rowMap.get(summary.target_id);
-      rowMap.set(summary.target_id, {
-        key: String(summary.target_id),
-        targetId: summary.target_id,
-        target: current?.target,
-        summary,
-        issues: issueMap.get(summary.target_id) ?? current?.issues ?? [],
-      });
-    });
-    return Array.from(rowMap.values()).sort((left, right) => {
-      const leftOpen = left.summary?.open_issue_count ?? left.issues.length;
-      const rightOpen = right.summary?.open_issue_count ?? right.issues.length;
-      if (rightOpen !== leftOpen) return rightOpen - leftOpen;
-      return (right.summary?.failed_action_count ?? 0) - (left.summary?.failed_action_count ?? 0);
-    });
-  }, [issues, targetSummaries, targets]);
-
-  const targetColumns: ColumnsType<TargetWorkbenchRow> = [
-    {
-      title: '目标',
-      key: 'target',
-      width: 280,
-      render: (_, row) => (
-        <Space orientation="vertical" size={0}>
-          <Typography.Text strong>{row.target?.title ?? `目标 #${row.targetId}`}</Typography.Text>
-          <Typography.Text type="secondary">{row.target?.target_type === 'channel' ? '频道' : '群'} / {row.target?.username ? `@${row.target.username}` : row.target?.tg_peer_id ?? '-'}</Typography.Text>
-        </Space>
-      ),
-    },
-    { title: '运行状态', key: 'status', width: 130, render: (_, row) => <StatusBadge status={row.summary?.status ?? '未汇总'} label={targetRuntimeStatusLabel(row.summary?.status)} /> },
-    { title: 'Open Issue', key: 'open_issue_count', width: 120, render: (_, row) => row.summary?.open_issue_count ?? row.issues.length },
-    { title: '失败执行项', key: 'failed_action_count', width: 120, render: (_, row) => row.summary?.failed_action_count ?? 0 },
-    { title: '关联任务', key: 'affected_task_count', width: 120, render: (_, row) => row.summary?.affected_task_count ?? 0 },
-    { title: '最近失败', key: 'latest_failure_at', width: 190, render: (_, row) => formatBeijingDateTime(row.summary?.latest_failure_at) },
-    {
-      title: '处理入口',
-      key: 'actions',
-      width: 300,
-      fixed: 'right',
-      render: (_, row) => {
-        const issue = row.issues[0];
-        return (
-          <Space size={6} wrap>
-            <Button size="small" icon={<Users size={14} />} onClick={() => onOpenTargets?.(row.targetId)}>目标详情</Button>
-            <Button size="small" icon={<Activity size={14} />} onClick={() => isMessageIssue(issue) ? onOpenMessageSending?.() : onOpenTaskDetail?.(issue?.source_task_id)}>{isMessageIssue(issue) ? '消息发送' : '任务详情'}</Button>
-            <Button size="small" icon={<ShieldAlert size={14} />} disabled={!issue} onClick={() => issue && void openIssueDetail(issue.id)}>查看异常</Button>
-            <Button size="small" loading={planBusy === 'create'} disabled={!row.target} onClick={() => row.target && void createDefaultPlan(row.target)}>创建方案</Button>
-          </Space>
-        );
-      },
-    },
-  ];
-
-  const issueColumns: ColumnsType<OperationIssue> = [
-    { title: '等级', dataIndex: 'severity', width: 90, render: (value) => <Badge tone={severityTone(value)}>{severityLabel(value)}</Badge> },
-    { title: '目标', dataIndex: 'target_id', width: 110, render: (value) => value ? `#${value}` : '未绑定' },
-    { title: '失败类型', dataIndex: 'failure_type', width: 160, render: (value) => value || '-' },
-    { title: '处理方式', dataIndex: 'handling_mode', width: 120, render: (value) => handlingModeLabel(value) },
-    { title: '关联任务', dataIndex: 'source_task_id', width: 180, render: (value, issue) => issue.affected_task_count || value || '-' },
-    { title: '影响账号', key: 'accounts', width: 100, render: (_, issue) => issue.affected_account_count || issue.affected_account_ids.length },
-    { title: '最后出现', dataIndex: 'last_seen_at', width: 190, render: (value) => formatBeijingDateTime(value) },
-    {
-      title: '操作',
-      key: 'actions',
-      width: 190,
-      fixed: 'right',
-      render: (_, issue) => (
-        <Space size={6}>
-          <Button size="small" icon={<ShieldAlert size={14} />} onClick={() => void openIssueDetail(issue.id)}>展开</Button>
-          <Button size="small" icon={<Activity size={14} />} onClick={() => isMessageIssue(issue) ? onOpenMessageSending?.() : onOpenTaskDetail?.(issue.source_task_id)}>{isMessageIssue(issue) ? '消息' : '任务'}</Button>
-        </Space>
-      ),
-    },
-  ];
-
   const failedActionColumns: ColumnsType<Record<string, any>> = [
     { title: '动作', dataIndex: 'action_type', width: 120, render: (value) => value || '-' },
     { title: '账号', dataIndex: 'account_id', width: 110, render: (value) => value ?? '-' },
@@ -735,57 +578,24 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
         <StatCard label="风险提醒" value={overview.risks.length} detail="账号、目标、监听与执行异常" icon={<ShieldAlert size={22} />} />
       </div>
 
-      <Card
-        className="panel operation-workbench"
-        title="目标工作台"
-        extra={<Button size="small" icon={<RefreshCcw size={14} />} loading={operationLoading} onClick={() => void loadOperationData()}>刷新</Button>}
-      >
-        {operationError && <Alert className="form-alert" type="error" showIcon message="运营中心数据刷新失败" description={operationError} />}
-        <div className="operation-kpi-grid">
-          <OperationKpi label="目标异常" value={operationSummary?.open_issue_count ?? 0} detail="open issue" />
-          <OperationKpi label="影响目标" value={operationSummary?.affected_target_count ?? 0} detail="需要运营处理" />
-          <OperationKpi label="失败执行项" value={operationSummary?.failed_action_count ?? 0} detail="来自汇总读模型" />
-          <OperationKpi label="影响账号" value={operationSummary?.affected_account_count ?? 0} detail="关联失败账号" />
-        </div>
-        {operationSummary?.stale && (
-          <Alert
-            className="form-alert"
-            type="warning"
-            showIcon
-            message="汇总数据可能延迟"
-            description={`最近更新时间：${formatBeijingDateTime(operationSummary.latest_updated_at)}`}
-          />
-        )}
-        {!operationSummary?.stale && (
-          <Typography.Text className="operation-updated" type="secondary">最近更新时间：{formatBeijingDateTime(operationSummary?.latest_updated_at)}</Typography.Text>
-        )}
-        <Table<TargetWorkbenchRow>
-          className="tg-table operation-target-table"
-          rowKey="key"
-          columns={targetColumns}
-          dataSource={targetRows}
-          loading={operationLoading}
-          pagination={{ pageSize: 8 }}
-          scroll={{ x: 1240 }}
-          locale={{ emptyText: '暂无目标运行摘要。' }}
-        />
-        <div className="operation-issue-section">
-          <div className="section-title-row">
-            <Typography.Title level={4}>目标异常</Typography.Title>
-            <Typography.Text type="secondary">按目标聚合失败，展开后看关联任务和代表执行项</Typography.Text>
-          </div>
-          <Table<OperationIssue>
-            className="tg-table"
-            rowKey="id"
-            columns={issueColumns}
-            dataSource={issues}
-            loading={operationLoading}
-            pagination={{ pageSize: 6 }}
-            scroll={{ x: 1020 }}
-            locale={{ emptyText: '暂无待处理目标异常。' }}
-          />
-        </div>
-      </Card>
+      <OverviewTargetWorkbench
+        operationSummary={operationSummary}
+        operationError={operationError}
+        operationLoading={operationLoading}
+        targets={targets}
+        targetSummaries={targetSummaries}
+        issues={issues}
+        targetPageQuery={targetPageQuery}
+        targetTotal={targetTotal}
+        planBusy={planBusy}
+        onTargetPageChange={operationData.changeTargetPage}
+        onRefresh={() => void loadOperationData()}
+        onOpenTargets={onOpenTargets}
+        onOpenTaskDetail={onOpenTaskDetail}
+        onOpenMessageSending={onOpenMessageSending}
+        onOpenIssue={(issueId) => void openIssueDetail(issueId)}
+        onCreatePlan={(target) => void createDefaultPlan(target)}
+      />
 
       <Card className="panel" title="运营方案 / 策略模板" extra={<Button loading={planBusy === 'create'} onClick={() => void createDefaultPlan()}>新建默认方案</Button>}>
         {plans.length ? (
@@ -884,11 +694,11 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
           </Space>
           <label className="form-field">
             <span>绑定目标</span>
-            <Select
+            <OperationTargetSelect
               mode="multiple"
               value={planEditForm.target_ids}
-              options={targets.filter((target) => target.target_type === planEditForm.target_type).map((target) => ({ value: target.id, label: `${target.title} #${target.id}` }))}
-              onChange={(value) => setPlanEditForm((form) => ({ ...form, target_ids: value }))}
+              query={{ targetType: planEditForm.target_type as OperationTarget['target_type'] }}
+              onChange={(value) => setPlanEditForm((form) => ({ ...form, target_ids: Array.isArray(value) ? value : [value] }))}
               placeholder="选择这个方案覆盖的目标"
             />
           </label>
@@ -1143,51 +953,11 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
   );
 }
 
-function OperationKpi({ label, value, detail }: { label: string; value: number | string; detail: string }) {
-  return (
-    <div className="operation-kpi-item">
-      <span>{label}</span>
-      <strong>{value}</strong>
-      <small>{detail}</small>
-    </div>
-  );
-}
-
-function targetRuntimeStatusLabel(status?: string) {
-  if (!status) return '未汇总';
-  if (status === 'healthy') return '健康';
-  if (status === 'warning') return '需关注';
-  if (status === 'failed') return '有失败';
-  return status;
-}
-
-function severityTone(value?: string) {
-  if (['critical', 'high', '高'].includes(value ?? '')) return 'danger';
-  if (['medium', '中'].includes(value ?? '')) return 'warning';
-  if (['low', '低'].includes(value ?? '')) return 'positive';
-  return 'neutral';
-}
-
-function severityLabel(value?: string) {
-  if (value === 'critical') return '严重';
-  if (value === 'high') return '高';
-  if (value === 'medium') return '中';
-  if (value === 'low') return '低';
-  return value || '-';
-}
-
 function issueActionLabel(action: IssueAction) {
   if (action === 'claim') return '认领处理';
   if (action === 'acknowledge') return '确认异常';
   if (action === 'resolve') return '标记解决';
   return '忽略异常';
-}
-
-function handlingModeLabel(value?: string) {
-  if (value === 'modal') return '弹窗处理';
-  if (value === 'drawer') return '抽屉处理';
-  if (value === 'deep_link') return '深链跳转';
-  return value || '-';
 }
 
 function returnToLabel(value?: Record<string, any>) {

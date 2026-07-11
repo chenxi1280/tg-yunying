@@ -1,6 +1,7 @@
 import React from 'react';
 import { Alert, Button, Card, Form, Input, InputNumber, Select } from 'antd';
 import type { OperationTarget, RuleSet } from '../types';
+import OperationTargetSelect from '../components/OperationTargetSelect';
 
 function defaultRuleJson() {
   return {
@@ -278,11 +279,7 @@ export function composeRuleConfig(values: Record<string, any>, groupTargets: Ope
   };
 }
 
-export function RuleSetForm({ form, includeBasics = false, groupTargets = [] }: { form: ReturnType<typeof Form.useForm>[0]; includeBasics?: boolean; groupTargets?: OperationTarget[] }) {
-  const operationTargetOptions = groupTargets.map((target) => ({
-    value: target.id,
-    label: `${target.title} / 目标#${target.id} / 群#${target.linked_group_id}`,
-  }));
+export function RuleSetForm({ form, includeBasics = false, groupTargets = [], onTargetsLoaded }: { form: ReturnType<typeof Form.useForm>[0]; includeBasics?: boolean; groupTargets?: OperationTarget[]; onTargetsLoaded?: (targets: readonly OperationTarget[]) => void }) {
 
   function applyVisualTemplate() {
     const values = form.getFieldsValue() as Record<string, any>;
@@ -342,7 +339,7 @@ export function RuleSetForm({ form, includeBasics = false, groupTargets = [] }: 
           <Form.Item name="visual_output_max_length" label="输出最大长度"><InputNumber min={1} style={{ width: '100%' }} /></Form.Item>
           <Form.Item name="visual_output_failure_strategy" label="输出失败策略"><Select options={OUTPUT_FAILURE_OPTIONS} /></Form.Item>
           <Form.Item name="visual_default_operation_target_ids" label="默认运营目标">
-            <Select mode="multiple" allowClear placeholder="选择转发目标" options={operationTargetOptions} />
+            <OperationTargetSelect mode="multiple" allowClear placeholder="选择转发目标" query={{ targetType: 'group', capability: 'send' }} onTargetsLoaded={onTargetsLoaded} />
           </Form.Item>
           <Form.Item name="visual_default_target_group_ids" label="兼容目标群 ID"><Input placeholder="仅旧数据或未建运营目标时填写，如 9, 10" /></Form.Item>
           <Form.Item name="visual_source_group_map" label="源群映射">
