@@ -16,34 +16,39 @@ from app.services.task_center.search_rank_deboost_pacing import DeboostPacingSta
 from app.services.task_center.search_rank_deboost_reservations import reserve_click
 
 
+TEST_TENANT_ID = 990_001
+TEST_POOL_ID = 9_900_010
+TEST_ACCOUNT_ID = 99_000_100
+
+
 def _seed_concurrency_case() -> tuple[str, int]:
     Base.metadata.create_all(engine)
     task_id = str(uuid4())
     with Session(engine) as session:
-        session.add(Tenant(id=1, name="并发测试租户"))
+        session.add(Tenant(id=TEST_TENANT_ID, name="并发测试租户"))
         session.flush()
-        session.add(AccountPool(id=10, tenant_id=1, name="降权组", pool_purpose="rank_deboost", system_key="rank_deboost"))
-        session.add(TgAccount(id=100, tenant_id=1, pool_id=10, account_identity="rank_deboost", display_name="降权账号", phone_masked="100", status="在线"))
+        session.add(AccountPool(id=TEST_POOL_ID, tenant_id=TEST_TENANT_ID, name="降权组", pool_purpose="rank_deboost", system_key="rank_deboost"))
+        session.add(TgAccount(id=TEST_ACCOUNT_ID, tenant_id=TEST_TENANT_ID, pool_id=TEST_POOL_ID, account_identity="rank_deboost", display_name="降权账号", phone_masked=str(TEST_ACCOUNT_ID), status="在线"))
         session.add(
             Task(
                 id=task_id,
-                tenant_id=1,
+                tenant_id=TEST_TENANT_ID,
                 name="并发配额测试",
                 type="search_rank_deboost",
                 status="running",
                 timezone="Asia/Shanghai",
                 type_config={"per_account_daily_click_limit": 1, "per_account_cooldown_hours": 0},
-                account_config={"selection_mode": "group", "account_group_id": 10},
+                account_config={"selection_mode": "group", "account_group_id": TEST_POOL_ID},
             )
         )
         session.commit()
-    return task_id, 100
+    return task_id, TEST_ACCOUNT_ID
 
 
 def _reserve_first_click(session: Session, task: Task, account: TgAccount, now_value: datetime) -> None:
     action = Action(
         id=str(uuid4()),
-        tenant_id=1,
+        tenant_id=TEST_TENANT_ID,
         task_id=task.id,
         task_type=task.type,
         action_type="search_rank_deboost",
@@ -59,7 +64,7 @@ def _reserve_first_click(session: Session, task: Task, account: TgAccount, now_v
         task=task,
         action=action,
         account=account,
-        account_pool_id=10,
+        account_pool_id=TEST_POOL_ID,
         keyword_hash="a" * 64,
         now_value=now_value,
     )
@@ -104,7 +109,7 @@ def _second_planner(state: _ConcurrencyState) -> None:
                 task,
                 account.id,
                 "b" * 64,
-                10,
+                TEST_POOL_ID,
                 deboost_pacing_window(task, state.now_value),
                 stats,
             )

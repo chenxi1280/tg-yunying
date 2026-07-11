@@ -24,6 +24,7 @@ from app.models import AiProvider, FailureType, Tenant, TenantAiSetting
 from app.security import encrypt_secret
 from app.services.task_center.ai_generator import (
     AI_CONTENT_REQUEST_TIMEOUT_SECONDS,
+    AI_GENERATION_UNAVAILABLE_MESSAGE,
     CHANNEL_COMMENT_EMOJI_FALLBACKS,
     CHANNEL_COMMENT_MAX_REDESCRIPTION_ATTEMPTS,
     AiGenerationUnavailable,
@@ -1698,7 +1699,7 @@ def test_channel_reply_comment_retries_then_fills_missing_with_emojis(monkeypatc
     assert tokens == 7
 
 
-def test_group_chat_allows_adult_service_context_in_ai_prompt(monkeypatch):
+def test_group_chat_removes_adult_service_context_before_ai_prompt(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     captured: dict[str, str] = {}
@@ -1706,7 +1707,7 @@ def test_group_chat_allows_adult_service_context_in_ai_prompt(monkeypatch):
     def fake_generate_drafts(_credentials, prompt, **kwargs):
         captured["prompt"] = prompt
         captured["system_prompt"] = kwargs["system_prompt"]
-        return mock_generation_result("河东这个位置有人去过吗")
+        return mock_generation_result("先来签到")
 
     monkeypatch.setattr("app.services.task_center.ai_generator.ai_gateway.generate_drafts", fake_generate_drafts)
 
@@ -1735,21 +1736,13 @@ def test_group_chat_allows_adult_service_context_in_ai_prompt(monkeypatch):
             history="频道原文：所在位置：河东区；服务：陪洗，无套口，制服；特别提示：态度超好，刚入行能理解，大蟒蛇",
         )
 
-    assert contents == ["河东这个位置有人去过吗"]
-    assert "河东区" in captured["prompt"]
-    assert "陪洗" in captured["prompt"]
-    assert "无套口" in captured["prompt"]
-    assert "制服" in captured["prompt"]
-    assert "态度超好" in captured["prompt"]
-    assert "刚入行能理解" in captured["prompt"]
-    assert "大蟒蛇" in captured["prompt"]
-    assert "成人服务描述已按安全口径概括" not in captured["prompt"]
-    assert "敏感场景描述只能作为既有上下文理解" in captured["system_prompt"]
-    assert "成人交易/性服务" not in captured["system_prompt"]
-    assert "不要新增联系线索、成本细节、邀约或促成信息" in captured["system_prompt"]
+    assert contents == ["先来签到"]
+    for forbidden in ("河东区", "陪洗", "无套口", "大蟒蛇"):
+        assert forbidden not in captured["prompt"]
+    assert "Generate Chinese community replies" in captured["system_prompt"]
 
 
-def test_group_chat_keeps_adult_service_context_outputs(monkeypatch):
+def test_group_chat_rejects_adult_service_context_outputs(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
 
@@ -1782,16 +1775,15 @@ def test_group_chat_keeps_adult_service_context_outputs(monkeypatch):
         session.add(TenantAiSetting(tenant_id=1, default_provider_id=1, ai_enabled=True, max_tokens=1024))
         session.commit()
 
-        contents, _tokens = generate_group_messages(
-            session,
-            1,
-            {"topic_hint": "天津音乐学院", "max_message_length": 80},
-            count=3,
-            target_label="天津音乐群",
-            history="频道原文：所在位置：河东区；服务项目：陪洗，无套口，制服",
-        )
-
-    assert contents == ["怎么联系", "河东这个位置有人去过吗", "能安排一下吗", "大蟒蛇具体是啥"]
+        with pytest.raises(AiGenerationUnavailable, match=AI_GENERATION_UNAVAILABLE_MESSAGE):
+            generate_group_messages(
+                session,
+                1,
+                {"topic_hint": "天津音乐学院", "max_message_length": 80},
+                count=3,
+                target_label="天津音乐群",
+                history="频道原文：所在位置：河东区；服务项目：陪洗，无套口，制服",
+            )
 
 
 def mock_generation_result(content: str) -> AiGenerationResult:
