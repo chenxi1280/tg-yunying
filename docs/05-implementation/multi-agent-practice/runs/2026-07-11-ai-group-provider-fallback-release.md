@@ -26,4 +26,13 @@
 
 ## 最终状态
 
-本地 QA 已通过；release、生产迁移、真实受控 dry-run 和线上观测待补录。当前为 `E2 / qa_pass / release_gate=pending`，不得标记 `production_fixed`。
+### 生产发布与受控 dry-run
+
+- 首次发布 run `29154767126` 在 backend checks 暴露 7 项旧安全契约断言和 1 项 PostgreSQL 测试数据隔离问题，生产未部署；修复后 run `29155167996` 的 checks / images 通过，但 root Grok 预检因 Actions 使用 admin 账号而在部署前阻断。SSH 证明 admin 可 `sudo -n` 使用 root Grok 后修复预检。
+- run `29155488726` 成功发布代码；run `29155816821` 使用 GitHub Secret 成功执行 MiniMax Provider 更新；run `29156186509` 成功发布包含 `git` 的最终后端镜像并通过容器 Bridge 依赖预检。
+- 最终生产 release：`/data/tgyunying/releases/20260711143524_21994a1`；backend、planner、dispatcher 1-4 均运行镜像 `21994a190656406a809a84685a8f5d8731f57d43` 且 healthy；Alembic 为 `0090_ai_group_fallback (head)`；内网和公网 `/api/health` 均为 ok，`/task-center` HTTP 200。
+- 生产 Provider：MiniMax-M2.5 id 4 与 MiniMax-M3 id 5 独立 active / 健康；租户 1 默认 provider id 5，AI 和模型 / Grok / 静态三个回退开关均启用。
+- 同一份安全 Prompt 的生产无发送结果：M3 返回“是呀 高跟鞋搭配很显气质”，2.694s；M2.5 返回“确实好看 衬托气质”，9.525s；Grok 4.5 返回“是啊高跟鞋今天看着挺精神”，8.374s。危险输入“多少钱 私聊安排 酒店见”被过滤为 `generic_warmup` 空上下文。
+- 所有 dry-run 均直接调用生成层，没有创建 Task / Action，也没有调用 Telegram；实际线上任务因真实 M3 失败而自动进入后续层的自然发生样本仍需后续运营观测，但不属于本次无发送发布验收的阻断项。
+
+当前状态为 `E4 / release_gate=passed / production_fixed`。
