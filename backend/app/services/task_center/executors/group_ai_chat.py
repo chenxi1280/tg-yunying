@@ -102,6 +102,7 @@ MAX_AI_QUALITY_GENERATION_ROUNDS = 3
 AI_GROUP_PRIMARY_STAGE = "primary_m3"
 AI_GROUP_MODEL_FALLBACK_STAGE = "fallback_m25"
 AI_GROUP_GROK_FALLBACK_STAGE = "fallback_grok"
+AI_GROUP_DIRECT_MIMO_STAGE = "direct_mimo"
 LOW_RISK_EMOJI_FALLBACK_POOL = ("👍", "👌", "👀", "🤔", "😅", "😂", "🙈", "🤝", "💯", "🤣", "🫡", "🙂")
 LOW_RISK_CHECKIN_FALLBACK_POOL = ("来签到", "先冒个泡", "大家晚上好", "路过打个卡")
 QUALITY_REJECTION_SAMPLE_LIMIT = 5
@@ -1742,11 +1743,7 @@ def _generate_quality_filled_items(
         if remaining <= 0:
             break
         round_config = _generation_config_for_pending_slots(config, accepted, remaining)
-        round_config = {
-            **round_config,
-            "_ai_fallback_stage": stage,
-            "_ai_generation_attempts": generation_attempts,
-        }
+        round_config = _fallback_stage_config(round_config, stage, generation_attempts)
         try:
             planned_items, used_tokens = _generate_quality_round_planned_items(
                 session,
@@ -1768,10 +1765,11 @@ def _generate_quality_filled_items(
                 "outcome": "failed",
                 "error_code": "ai_generation_unavailable",
             })
-            _record_ai_generation_stage_failure(stats, stage)
+            _record_ai_generation_stage_failure(stats, stage, "ai_generation_unavailable")
             stats["ai_generation_rounds"] = round_index + 1
             continue
         tokens += used_tokens
+        accepted_before = len(accepted)
         accepted = _accept_quality_round(
             accepted,
             planned_items,
@@ -1787,6 +1785,10 @@ def _generate_quality_filled_items(
         stats["ai_generation_rounds"] = round_index + 1
         if len(accepted) < int(turn_count or 0):
             stats["quality_fill_rounds"] = round_index + 1
+            outcome = "rejected" if len(accepted) == accepted_before else "accepted_partial"
+            generation_attempts.append(_stage_attempt(stage, outcome, planned_items))
+            if outcome == "rejected":
+                _record_ai_generation_stage_failure(stats, stage, "quality_rejected")
     if len(accepted) < int(turn_count or 0) and enable_quality_fallback:
         fallback = _static_fallback_items(
             int(turn_count or 0) - len(accepted),
@@ -1802,6 +1804,8 @@ def _generate_quality_filled_items(
 
 
 def _fallback_stages(config: dict) -> tuple[str, ...]:
+    if bool(config.get("require_mimo_draft")):
+        return (AI_GROUP_DIRECT_MIMO_STAGE,)
     stages = [AI_GROUP_PRIMARY_STAGE]
     if bool(config.get("_ai_group_model_fallback_enabled", True)):
         stages.append(AI_GROUP_MODEL_FALLBACK_STAGE)
@@ -1810,10 +1814,29 @@ def _fallback_stages(config: dict) -> tuple[str, ...]:
     return tuple(stages)
 
 
-def _record_ai_generation_stage_failure(stats: dict[str, object], stage: str) -> None:
+def _record_ai_generation_stage_failure(stats: dict[str, object], stage: str, error_code: str) -> None:
     failures = list(stats.get("ai_generation_stage_failures") or [])
-    failures.append({"stage": stage, "error_code": "ai_generation_unavailable"})
+    failures.append({"stage": stage, "error_code": error_code})
     stats["ai_generation_stage_failures"] = failures
+
+
+def _fallback_stage_config(config: dict, stage: str, attempts: list[dict[str, object]]) -> dict:
+    result = {**config, "_ai_generation_attempts": attempts}
+    if stage == AI_GROUP_DIRECT_MIMO_STAGE:
+        result.pop("_ai_fallback_stage", None)
+    else:
+        result["_ai_fallback_stage"] = stage
+    return result
+
+
+def _stage_attempt(stage: str, outcome: str, planned_items: list[dict]) -> dict[str, object]:
+    durations = [max(0, int(item.get("provider_duration_ms") or 0)) for item in planned_items]
+    return {
+        "stage": stage,
+        "model": _fallback_stage_model(stage),
+        "outcome": outcome,
+        "duration_ms": max(durations or [0]),
+    }
 
 
 def _fallback_stage_model(stage: str) -> str:
@@ -1821,6 +1844,7 @@ def _fallback_stage_model(stage: str) -> str:
         AI_GROUP_PRIMARY_STAGE: "MiniMax-M3",
         AI_GROUP_MODEL_FALLBACK_STAGE: "MiniMax-M2.5",
         AI_GROUP_GROK_FALLBACK_STAGE: "grok-4.5",
+        AI_GROUP_DIRECT_MIMO_STAGE: "mimo",
     }.get(stage, "")
 
 

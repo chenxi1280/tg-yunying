@@ -72,6 +72,10 @@ def test_ai_group_fallback_stages_follow_explicit_switches(config, expected):
     assert group_ai_chat._fallback_stages(config) == expected
 
 
+def test_explicit_mimo_requirement_does_not_enter_default_provider_chain():
+    assert group_ai_chat._fallback_stages({"require_mimo_draft": True}) == ("direct_mimo",)
+
+
 def test_ai_group_fallback_continues_after_stage_error(monkeypatch):
     task = type("TaskStub", (), {"tenant_id": 1, "stats": {}})()
     visited: list[str] = []
@@ -110,6 +114,40 @@ def test_ai_group_fallback_continues_after_stage_error(monkeypatch):
         {"stage": "primary_m3", "error_code": "ai_generation_unavailable"},
         {"stage": "fallback_m25", "error_code": "ai_generation_unavailable"},
     ]
+
+
+def test_ai_group_quality_rejection_is_visible_to_next_stage(monkeypatch):
+    task = type("TaskStub", (), {"tenant_id": 1, "stats": {}})()
+    attempts_seen: list[list[dict]] = []
+
+    def fake_generate(_session, _tenant_id, config, *, count, target_label, history):
+        attempts_seen.append(list(config.get("_ai_generation_attempts") or []))
+        if config["_ai_fallback_stage"] == "primary_m3":
+            return ["重复内容"], 1
+        return ["老师今天高跟鞋挺好看"], 1
+
+    monkeypatch.setattr(group_ai_chat, "generate_group_messages", fake_generate)
+    items, _tokens, stats = group_ai_chat._generate_quality_filled_items(
+        None,
+        task,
+        {},
+        reply_targets=[],
+        normal_count=1,
+        target_label="测试群",
+        history="真人A: 今天这身搭配挺好看",
+        turn_count=1,
+        duplicate_baseline_messages=["重复内容"],
+        chat_mode=group_ai_chat.CHAT_MODE_REPLY,
+        context_message_ids=[1],
+        fact_anchor_required=False,
+        low_confidence_silence_enabled=False,
+        fill_reply_shortfall_with_normal=False,
+        enable_quality_fallback=False,
+    )
+
+    assert items[0]["content"] == "老师今天高跟鞋挺好看"
+    assert attempts_seen[1][0]["outcome"] == "rejected"
+    assert stats["ai_generation_stage_failures"][0]["error_code"] == "quality_rejected"
 
 
 def test_ai_group_stage_provider_requires_exact_model():
