@@ -119,6 +119,18 @@ def test_running_all_account_task_blocks_when_daily_capacity_is_insufficient(ses
     assert task.stats["coverage_capacity_status"] == "blocked"
 
 
+def test_running_all_account_task_clears_recovered_capacity_error(session: Session) -> None:
+    task, group = _seed(session)
+    task.last_error = "全部账号每日覆盖容量不足，已停止创建发送 Action"
+    task.stats = {"coverage_capacity_status": "blocked"}
+
+    blocker = _coverage_capacity_blocker(session, task, group, task.type_config)
+
+    assert blocker == {}
+    assert task.last_error == ""
+    assert "coverage_capacity_status" not in task.stats
+
+
 def test_offline_projection_is_written_to_account_coverage_blocker(session: Session) -> None:
     task, _group = _seed(session)
     account = session.get(TgAccount, 1)

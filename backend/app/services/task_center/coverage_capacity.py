@@ -6,11 +6,12 @@ from datetime import datetime, timedelta
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import Action, SchedulingSetting, Task, TgGroup
+from app.models import Action, SchedulingSetting, Task, TaskAccountDailyCoverage, TgGroup
 from app.services._common import _now
 
 
 OCCUPIED_ACTION_STATUSES = ("pending", "claiming", "executing", "success", "unknown_after_send")
+RESERVED_COVERAGE_STATES = {"reserved", "sending", "unknown"}
 
 
 def coverage_capacity_proof(
@@ -23,6 +24,7 @@ def coverage_capacity_proof(
     account_hour_limit: int,
     account_cooldown_seconds: int,
     confirmed_message_count: int = 0,
+    reserved_message_count: int = 0,
     daily_task_capacity: int | None = None,
     occupied_group_actions: int = 0,
     occupied_task_actions: int = 0,
@@ -31,7 +33,8 @@ def coverage_capacity_proof(
     per_account = max(1, int(target_per_account or 1))
     required = target_accounts * per_account
     confirmed = min(required, max(0, int(confirmed_message_count or 0)))
-    remaining_required = required - confirmed
+    reserved = min(required - confirmed, max(0, int(reserved_message_count or 0)))
+    remaining_required = required - confirmed - reserved
     active_seconds = _active_window_seconds(group.active_window)
     active_hours = max(1, math.ceil(active_seconds / 3600))
     capacities = _capacity_dimensions(
@@ -57,6 +60,7 @@ def coverage_capacity_proof(
     return {
         "required_daily_messages": required,
         "remaining_required_messages": remaining_required,
+        "reserved_messages": reserved,
         "target_account_count": target_accounts,
         "target_per_account": per_account,
         "active_window_hours": active_hours,
@@ -77,6 +81,7 @@ def task_coverage_capacity_proof(
     target_account_count: int,
     target_per_account: int,
     confirmed_message_count: int = 0,
+    reserved_message_count: int = 0,
 ) -> dict[str, object]:
     setting = session.scalar(
         select(SchedulingSetting).where(SchedulingSetting.tenant_id == task.tenant_id)
@@ -88,6 +93,7 @@ def task_coverage_capacity_proof(
         target_account_count=target_account_count,
         target_per_account=target_per_account,
         confirmed_message_count=confirmed_message_count,
+        reserved_message_count=reserved_message_count,
         max_actions_per_hour=int((task.pacing_config or {}).get("max_actions_per_hour") or 0),
         account_day_limit=int(setting.default_account_day_limit or 0),
         account_hour_limit=int(setting.default_account_hour_limit or 0),
@@ -127,6 +133,14 @@ def _capacity_dimensions(
             account_count,
         ),
     }
+
+
+def reserved_coverage_message_count(rows: list[TaskAccountDailyCoverage]) -> int:
+    return sum(
+        min(1, max(0, int(row.target_count or 1) - int(row.confirmed_count or 0)))
+        for row in rows
+        if row.state in RESERVED_COVERAGE_STATES
+    )
 
 
 def _occupied_actions(session: Session, task: Task, group: TgGroup) -> tuple[int, int]:
@@ -264,4 +278,9 @@ def _scaled_window_capacity(window_seconds: int, cooldown_seconds: int, multipli
     return capacity * max(0, multiplier) if capacity is not None else None
 
 
-__all__ = ["coverage_capacity_proof", "daily_task_schedule_capacity", "task_coverage_capacity_proof"]
+__all__ = [
+    "coverage_capacity_proof",
+    "daily_task_schedule_capacity",
+    "reserved_coverage_message_count",
+    "task_coverage_capacity_proof",
+]

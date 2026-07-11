@@ -105,6 +105,36 @@ def test_capacity_proof_does_not_require_confirmed_messages_twice() -> None:
     assert proof["sufficient"] is True
 
 
+def test_capacity_proof_does_not_require_reserved_messages_twice() -> None:
+    group = TgGroup(
+        id=21,
+        tenant_id=1,
+        tg_peer_id="-10021",
+        title="目标群",
+        active_window="09:00-23:00",
+        daily_limit=580,
+    )
+
+    proof = coverage_capacity_proof(
+        group=group,
+        target_account_count=580,
+        target_per_account=1,
+        confirmed_message_count=140,
+        reserved_message_count=10,
+        max_actions_per_hour=100,
+        account_day_limit=400,
+        account_hour_limit=50,
+        account_cooldown_seconds=0,
+        daily_task_capacity=580,
+        occupied_group_actions=150,
+        occupied_task_actions=150,
+    )
+
+    assert proof["remaining_required_messages"] == 430
+    assert proof["capacity_dimensions"]["group_daily_limit"] == 430
+    assert proof["sufficient"] is True
+
+
 def test_precheck_capacity_uses_all_session_ready_accounts(session: Session) -> None:
     session.add(Tenant(id=1, name="租户"))
     session.add(AccountPool(id=10, tenant_id=1, name="普通", pool_purpose="normal", is_enabled=True))
