@@ -23,3 +23,11 @@
 - Migration evidence 阻断：`alembic upgrade head --sql` 被旧迁移 `0002_developer_app_pool.py` 的 offline `sa.inspect(MockConnection)` 阻断；不是本迁移单点通过证据。
 - PostgreSQL 并发证据阻断：仓库当前没有 `backend/tests/test_search_rank_deboost_postgres.py`，命令 exit 4；未取得 Postgres reservation 并发验收。
 - 生产状态保持 `production_unproven`；本轮未做生产部署，未写 `production_fixed`。
+
+## 2026-07-11 Mainline Integration
+
+- 将旧功能分支的 28 个非等价提交重放到当前 `master`，解决 Listener 账号用途和主线配置冲突，保留全部账号每日覆盖与页面性能改动。
+- Listener 补充修复按红绿测试合入：读取账号不受发送冷却/发送容量影响，空手动范围不回退目标群全账号，每来源仍只使用一个账号。
+- 保持已发布 `0087` 不变；新增 `0089_rank_deboost_runtime_index`，冲突 active 节点绑定显式进入 `needs_runtime_proxy` 后建立唯一部分索引。
+- 本地验证：全量 no-PostgreSQL `1180 passed, 806 deselected`；PostgreSQL 805 项分批全部覆盖通过；新增并发 reservation 测试通过；真实迁移链升降级通过；前端生产构建、compileall、`git diff --check` 通过。
+- 本地状态为 `qa_pass`；生产状态仍为 `production_unproven`，真实协议样本、代理出口、1-2 个灰度账号点击和生产监控尚未验证。

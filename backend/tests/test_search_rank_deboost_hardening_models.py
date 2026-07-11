@@ -20,6 +20,7 @@ from app.schemas.accounts import AccountIdentityUpdate, AccountPoolCreate, Accou
 pytestmark = pytest.mark.no_postgres
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MIGRATION_PATH = PROJECT_ROOT / "backend/migrations/versions/0087_search_rank_deboost_hardening.py"
+RUNTIME_INDEX_MIGRATION_PATH = PROJECT_ROOT / "backend/migrations/versions/0089_rank_deboost_runtime_index.py"
 
 
 def _reservation_model():
@@ -32,6 +33,15 @@ def _migration_module():
     spec = importlib.util.spec_from_file_location("search_rank_deboost_hardening_0087", MIGRATION_PATH)
     if spec is None or spec.loader is None:
         raise RuntimeError("migration module could not be loaded")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _runtime_index_migration_module():
+    spec = importlib.util.spec_from_file_location("rank_deboost_runtime_index_0089", RUNTIME_INDEX_MIGRATION_PATH)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("runtime index migration module could not be loaded")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -230,7 +240,7 @@ def test_migration_marks_duplicate_active_node_bindings_before_unique_index() ->
         Column("status", String(30)),
         Column("unbound_at", String(30)),
     )
-    migration = _migration_module()
+    migration = _runtime_index_migration_module()
     metadata.create_all(engine)
     with engine.begin() as connection:
         bindings = metadata.tables["account_group_proxy_bindings"]

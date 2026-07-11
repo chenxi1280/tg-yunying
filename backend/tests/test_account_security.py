@@ -55,6 +55,7 @@ def _session_factory_no_autoflush():
 
 def _seed_account(session: Session, *, status: str = AccountStatus.ACTIVE.value, session_value: str = "session") -> TgAccount:
     session.add(Tenant(id=1, name="默认运营空间"))
+    session.flush()
     session.add(AccountPool(id=1, tenant_id=1, name="普通账号池", pool_purpose="normal", is_default=True))
     app = TelegramDeveloperApp(
         id=1,

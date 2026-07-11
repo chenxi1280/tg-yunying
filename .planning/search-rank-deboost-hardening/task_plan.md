@@ -21,7 +21,7 @@
 - [x] Phase 4: 做占位符、矛盾、范围和可验收性自检。
 - [x] Phase 5: 设计文档已提交并进入实现计划。
 - [x] Phase 6: 完成代码实现与子代理 review 修复。
-- [ ] Phase 7: Release gate 全量验收；no-PostgreSQL 已通过，当前仍被 migration offline SQL 和 PostgreSQL 并发证据阻断。
+- [x] Phase 7: 本地 Release Gate 全量验收；no-PostgreSQL、真实 PostgreSQL、迁移升降级、并发 reservation、前端构建和静态检查均已通过。生产 E4 仍需协议样本和灰度账号验证。
 
 ## Success Criteria
 
@@ -32,11 +32,11 @@
 - 真实 Gateway 通过同一代理完成出口探测、搜索和逐按钮点击，并返回逐点击事实。
 - 点击配额在外部点击前原子占用，统计只由真实 Gateway 结果生成。
 - 文档中的 API、字段和状态名彼此一致且没有 TBD/TODO。
-- 定向 rank、前端契约和全量 no-PostgreSQL 已通过；PostgreSQL 并发和生产 E4 通过后，才允许声明 production-fixed。
+- 定向 rank、前端契约、全量 no-PostgreSQL、PostgreSQL 并发和迁移链已通过；生产 E4 通过后，才允许声明 production-fixed。
 
 ## Errors Encountered
 
 - PRD §2.8 例外条款首次补丁因原文末尾为“原约束”而非预期的“硬约束”未匹配；已读取准确原文后改用精确补丁，不重复原失败命令。
-- 全量 `pytest -q -m no_postgres` 初始失败已修复；最新结果 `1090 passed, 775 deselected, 5 warnings in 28.54s`。
-- `alembic upgrade head --sql` 被旧迁移 `0002_developer_app_pool.py` offline inspect 阻断；当前记录为 migration evidence blocker。
-- PostgreSQL 专项文件 `tests/test_search_rank_deboost_postgres.py` 不存在，Postgres 并发 evidence 记录为 blocked/unavailable。
+- 全量 `pytest -q -m no_postgres` 初始失败已修复；集成主线后的最新结果为 `1180 passed, 806 deselected, 5 warnings in 35.24s`。
+- 旧迁移的 offline SQL 限制不再作为发布证据；临时 PostgreSQL 已完成 `0001 -> 0089 head`、`0089 -> 0088` 和 `0088 -> 0089` 真实升降级。
+- 已新增 `tests/test_search_rank_deboost_postgres.py`，证明同一任务并发 Planner 由 task row lock 串行化，第二事务在首个 reservation 提交后按日限额阻断。

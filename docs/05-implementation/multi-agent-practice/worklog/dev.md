@@ -420,3 +420,13 @@
 - decision: `development_complete=true`；`release_gate=pending`；`production_fixed=unproven`。
 - next_agent: qa
 - unresolved: 尚未合并并推送 `master -> release`，未执行 Deploy Production，生产 p95/p99、30 次串行 + 10 并发和 502 日志复核仍待 E4。
+
+## 2026-07-11 搜索排名观察与 Listener 主线集成 Development Complete
+
+- message_id: `2026-07-11-rank-listener-mainline-integration-devcomplete-001`
+- action: 将本地搜索排名观察强化分支和未提交 Listener 补充修复重新集成到当前主线。
+- output: 真实 Telethon 搜索/安全点击 Gateway、专用账号用途隔离、多降权分组、持久 runtime proxy、逐点击 reservation 和前端分组流程已进入集成分支；Listener 严格单账号读取，不受发送容量/冷却影响，空任务范围不扩散。已发布 `0087` 保持不变，新增 `0089` active 节点唯一索引迁移。
+- evidence: no-PostgreSQL `1180 passed, 806 deselected`；PostgreSQL 805 项分批覆盖通过；PostgreSQL task row lock 并发 reservation 测试通过；`0001 -> 0089`、`0089 -> 0088 -> 0089` 迁移通过；前端 build、compileall、diff check 通过。
+- decision: `development_complete=true`；`release_gate=local_pass`；`production_verification=unproven`。
+- next_agent: qa
+- unresolved: 真实 Telegram 协议样本、代理出口、灰度账号点击和生产 E4 尚未验证。

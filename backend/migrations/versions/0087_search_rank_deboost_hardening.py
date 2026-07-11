@@ -25,16 +25,14 @@ REVALIDATION_ERROR = "migration_requires_gateway_revalidation"
 def upgrade() -> None:
     _add_account_pool_columns()
     _add_group_binding_columns()
-    _mark_bindings_needing_runtime_proxy()
-    _create_group_binding_runtime_indexes()
     _create_click_reservations()
     _backfill_account_usage()
     _migrate_rank_task_scope()
+    _mark_bindings_needing_runtime_proxy()
 
 
 def downgrade() -> None:
     _drop_table_if_exists("search_rank_deboost_click_reservations")
-    _drop_index_if_exists("account_group_proxy_bindings", "uq_account_group_proxy_binding_active_node")
     _drop_column_if_exists("account_group_proxy_bindings", "last_probe_error")
     _drop_column_if_exists("account_group_proxy_bindings", "last_probe_at")
     _drop_foreign_key_column_if_exists("account_group_proxy_bindings", "runtime_proxy_id")
@@ -75,22 +73,6 @@ def _add_group_binding_columns() -> None:
     ]
     for column in columns:
         _add_column_if_missing("account_group_proxy_bindings", column)
-
-
-def _create_group_binding_runtime_indexes() -> None:
-    table_name = "account_group_proxy_bindings"
-    if not _has_table(table_name):
-        return
-    columns = _column_names(table_name)
-    if not {"tenant_id", "proxy_airport_node_id", "status", "unbound_at"} <= columns:
-        return
-    _create_partial_index_if_missing(
-        "uq_account_group_proxy_binding_active_node",
-        table_name,
-        ["tenant_id", "proxy_airport_node_id", "status"],
-        unique=True,
-        where="status = 'active' AND unbound_at IS NULL",
-    )
 
 
 def _create_click_reservations() -> None:
@@ -237,37 +219,8 @@ def _drop_table_if_exists(table_name: str) -> None:
         op.drop_table(table_name)
 
 
-def _create_partial_index_if_missing(
-    index_name: str,
-    table_name: str,
-    columns: list[str],
-    *,
-    unique: bool,
-    where: str,
-) -> None:
-    if index_name in _index_names(table_name):
-        return
-    op.create_index(
-        index_name,
-        table_name,
-        columns,
-        unique=unique,
-        postgresql_where=sa.text(where),
-        sqlite_where=sa.text(where),
-    )
-
-
-def _drop_index_if_exists(table_name: str, index_name: str) -> None:
-    if _has_table(table_name) and index_name in _index_names(table_name):
-        op.drop_index(index_name, table_name=table_name)
-
-
 def _column_names(table_name: str) -> set[str]:
     return {column["name"] for column in sa.inspect(op.get_bind()).get_columns(table_name)}
-
-
-def _index_names(table_name: str) -> set[str]:
-    return {index["name"] for index in sa.inspect(op.get_bind()).get_indexes(table_name)}
 
 
 def _has_table(table_name: str) -> bool:
