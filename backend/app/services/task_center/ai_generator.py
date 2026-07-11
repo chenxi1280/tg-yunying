@@ -15,7 +15,7 @@ from app.services._common import _now, ai_gateway
 from app.services.ai_config import ai_provider_credentials
 from app.services.content_filters import looks_like_ai_meta_content, looks_like_generated_template_noise, looks_like_operator_ui_content
 from app.services.task_center.ai_act_types import canonical_ai_group_act_type
-from app.services.task_center.ai_group_prompt import GroupPromptBundle, build_group_prompt
+from app.services.task_center.ai_group_prompt import GroupPromptBundle, build_group_prompt, contains_disallowed_group_content
 from app.services.grok_cli_bridge import GrokCliBridge, GrokCliUnavailable
 
 
@@ -418,7 +418,7 @@ def _ai_credentials(provider: AiProvider, model_name: str):
 
 def _clean_generated_contents(contents: list[str], purpose: str, count: int, *, mock_provider: bool = False) -> list[str]:
     if purpose in {GROUP_CHAT_PURPOSE, GROUP_CHAT_REPLY_PURPOSE}:
-        contents = _clean_mock_group_chat_contents(contents) if mock_provider else clean_group_chat_contents(contents)
+        contents = _clean_mock_group_chat_contents(contents) if mock_provider else clean_group_chat_contents(contents, restrict_sensitive_trade=True)
         if not contents:
             raise AiGenerationUnavailable(AI_GENERATION_UNAVAILABLE_MESSAGE)
     if purpose in {CHANNEL_COMMENT_PURPOSE, CHANNEL_COMMENT_REPLY_PURPOSE}:
@@ -432,7 +432,7 @@ def _clean_mock_group_chat_contents(contents: list[str]) -> list[str]:
     cleaned: list[str] = []
     for content in contents:
         item = _clean_generated_content(content)
-        if item and not _looks_like_bad_group_chat_content(item):
+        if item and not _looks_like_bad_group_chat_content(item) and not _looks_like_sensitive_trade_facilitation(item):
             cleaned.append(_copy_generated_content_metadata(item, content))
     return cleaned
 
@@ -754,7 +754,7 @@ def _looks_like_bad_group_chat_content(content: str) -> bool:
 
 
 def _looks_like_sensitive_trade_facilitation(content: str) -> bool:
-    return False
+    return contains_disallowed_group_content(content)
 
 
 def _looks_like_ai_provider_refusal(content: str) -> bool:

@@ -103,6 +103,7 @@ AI_GROUP_PRIMARY_STAGE = "primary_m3"
 AI_GROUP_MODEL_FALLBACK_STAGE = "fallback_m25"
 AI_GROUP_GROK_FALLBACK_STAGE = "fallback_grok"
 AI_GROUP_DIRECT_MIMO_STAGE = "direct_mimo"
+AI_GROUP_DIRECT_CONFIGURED_STAGE = "direct_configured_model"
 LOW_RISK_EMOJI_FALLBACK_POOL = ("👍", "👌", "👀", "🤔", "😅", "😂", "🙈", "🤝", "💯", "🤣", "🫡", "🙂")
 LOW_RISK_CHECKIN_FALLBACK_POOL = ("来签到", "先冒个泡", "大家晚上好", "路过打个卡")
 QUALITY_REJECTION_SAMPLE_LIMIT = 5
@@ -394,7 +395,7 @@ def build_plan(session: Session, task: Task) -> int:
                 fact_anchor_required=bool(config.get("fact_anchor_required", True)),
                 low_confidence_silence_enabled=bool(config.get("low_confidence_silence_enabled", True)),
                 fill_reply_shortfall_with_normal=bool(hard_progress),
-                enable_quality_fallback=_quality_fallback_enabled(config, hard_progress),
+                enable_quality_fallback=_quality_fallback_enabled(generation_config, hard_progress),
             )
         except AiGenerationUnavailable as exc:
             task.last_error = str(exc) or AI_GENERATION_UNAVAILABLE_MESSAGE
@@ -1014,13 +1015,20 @@ def _all_accounts_daily_coverage(config: dict) -> bool:
 
 
 def _quality_fallback_enabled(config: dict, progress: dict[str, object]) -> bool:
-    return bool(config.get("_ai_group_static_fallback_enabled", True))
+    configured = config.get("_ai_group_static_fallback_enabled")
+    if configured is None or config.get("ai_model") or config.get("require_mimo_draft"):
+        return bool(progress) and not _all_accounts_daily_coverage(config)
+    return bool(configured) and not _all_accounts_daily_coverage(config)
 
 
 def _with_ai_group_fallback_settings(session: Session, tenant_id: int, config: dict) -> dict:
     setting = session.scalar(select(TenantAiSetting).where(TenantAiSetting.tenant_id == tenant_id))
     if not setting:
-        return config
+        return {
+            **config,
+            "_ai_group_model_fallback_enabled": False,
+            "_ai_group_grok_fallback_enabled": False,
+        }
     return {
         **config,
         "_ai_group_model_fallback_enabled": bool(setting.ai_group_model_fallback_enabled),
@@ -1744,18 +1752,17 @@ def _generate_quality_filled_items(
             break
         round_config = _generation_config_for_pending_slots(config, accepted, remaining)
         round_config = _fallback_stage_config(round_config, stage, generation_attempts)
+        pending_replies = _pending_fallback_reply_targets(reply_targets, accepted, remaining)
         try:
             planned_items, used_tokens = _generate_quality_round_planned_items(
                 session,
                 task,
                 round_config,
-                reply_targets=reply_targets,
-                normal_count=normal_count,
+                reply_targets=pending_replies,
+                normal_count=max(0, remaining - len(pending_replies)),
                 target_label=target_label,
                 history=history,
                 fill_reply_shortfall_with_normal=fill_reply_shortfall_with_normal,
-                round_index=round_index,
-                remaining=remaining,
             )
         except AiGenerationUnavailable as exc:
             last_error = exc
@@ -1806,6 +1813,8 @@ def _generate_quality_filled_items(
 def _fallback_stages(config: dict) -> tuple[str, ...]:
     if bool(config.get("require_mimo_draft")):
         return (AI_GROUP_DIRECT_MIMO_STAGE,)
+    if str(config.get("ai_model") or "").strip():
+        return (AI_GROUP_DIRECT_CONFIGURED_STAGE,)
     stages = [AI_GROUP_PRIMARY_STAGE]
     if bool(config.get("_ai_group_model_fallback_enabled", True)):
         stages.append(AI_GROUP_MODEL_FALLBACK_STAGE)
@@ -1822,7 +1831,7 @@ def _record_ai_generation_stage_failure(stats: dict[str, object], stage: str, er
 
 def _fallback_stage_config(config: dict, stage: str, attempts: list[dict[str, object]]) -> dict:
     result = {**config, "_ai_generation_attempts": attempts}
-    if stage == AI_GROUP_DIRECT_MIMO_STAGE:
+    if stage in {AI_GROUP_DIRECT_MIMO_STAGE, AI_GROUP_DIRECT_CONFIGURED_STAGE}:
         result.pop("_ai_fallback_stage", None)
     else:
         result["_ai_fallback_stage"] = stage
@@ -1845,6 +1854,7 @@ def _fallback_stage_model(stage: str) -> str:
         AI_GROUP_MODEL_FALLBACK_STAGE: "MiniMax-M2.5",
         AI_GROUP_GROK_FALLBACK_STAGE: "grok-4.5",
         AI_GROUP_DIRECT_MIMO_STAGE: "mimo",
+        AI_GROUP_DIRECT_CONFIGURED_STAGE: "configured",
     }.get(stage, "")
 
 
@@ -1854,6 +1864,16 @@ def _provider_generation_payload(item: dict) -> dict[str, object]:
         "provider_duration_ms", "generation_attempts",
     )
     return {key: item[key] for key in keys if key in item}
+
+
+def _pending_fallback_reply_targets(
+    reply_targets: list[dict],
+    accepted: list[dict[str, str]],
+    remaining: int,
+) -> list[dict]:
+    accepted_ids = {_reply_target_message_id(item) for item in accepted}
+    pending = [target for target in reply_targets if int(target.get("message_id") or 0) not in accepted_ids]
+    return pending[: max(0, int(remaining or 0))]
 
 
 def _generate_quality_round_planned_items(
@@ -1866,15 +1886,13 @@ def _generate_quality_round_planned_items(
     target_label: str,
     history: str,
     fill_reply_shortfall_with_normal: bool,
-    round_index: int,
-    remaining: int,
 ) -> tuple[list[dict], int]:
     return _generate_group_planned_items(
         session,
         task,
         config,
-        reply_targets=reply_targets if round_index == 0 else [],
-        normal_count=normal_count if round_index == 0 else remaining,
+        reply_targets=reply_targets,
+        normal_count=normal_count,
         target_label=target_label,
         history=history,
         fill_reply_shortfall_with_normal=fill_reply_shortfall_with_normal,

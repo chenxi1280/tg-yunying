@@ -74,6 +74,7 @@ def test_ai_group_fallback_stages_follow_explicit_switches(config, expected):
 
 def test_explicit_mimo_requirement_does_not_enter_default_provider_chain():
     assert group_ai_chat._fallback_stages({"require_mimo_draft": True}) == ("direct_mimo",)
+    assert group_ai_chat._fallback_stages({"ai_model": "DeepSeek V4 Flash"}) == ("direct_configured_model",)
 
 
 def test_ai_group_fallback_continues_after_stage_error(monkeypatch):
@@ -148,6 +149,39 @@ def test_ai_group_quality_rejection_is_visible_to_next_stage(monkeypatch):
     assert items[0]["content"] == "老师今天高跟鞋挺好看"
     assert attempts_seen[1][0]["outcome"] == "rejected"
     assert stats["ai_generation_stage_failures"][0]["error_code"] == "quality_rejected"
+
+
+def test_ai_group_fallback_retries_the_same_reply_target(monkeypatch):
+    task = type("TaskStub", (), {"tenant_id": 1, "stats": {}})()
+    visited: list[tuple[str, int]] = []
+
+    def fake_reply(_session, _tenant_id, config, *, reply_targets, target_label, history):
+        visited.append((config["_ai_fallback_stage"], reply_targets[0]["message_id"]))
+        if config["_ai_fallback_stage"] == "primary_m3":
+            raise AiGenerationUnavailable("primary failed")
+        return ["这双高跟鞋确实很搭"], 1
+
+    monkeypatch.setattr(group_ai_chat, "generate_group_reply_messages", fake_reply)
+    items, _tokens, _stats = group_ai_chat._generate_quality_filled_items(
+        None,
+        task,
+        {},
+        reply_targets=[{"message_id": 88, "preview": "今天这身搭配挺好看"}],
+        normal_count=0,
+        target_label="测试群",
+        history="真人A: 今天这身搭配挺好看",
+        turn_count=1,
+        duplicate_baseline_messages=[],
+        chat_mode=group_ai_chat.CHAT_MODE_REPLY,
+        context_message_ids=[88],
+        fact_anchor_required=False,
+        low_confidence_silence_enabled=False,
+        fill_reply_shortfall_with_normal=False,
+        enable_quality_fallback=False,
+    )
+
+    assert visited == [("primary_m3", 88), ("fallback_m25", 88)]
+    assert items[0]["reply_target"]["message_id"] == 88
 
 
 def test_ai_group_stage_provider_requires_exact_model():

@@ -820,6 +820,20 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 
 实现完成后必须把本表的 `planned` 更新为真实文件、方法、行数与测试入口；截至本记录没有迁移或 worker 结构变化，也不能写 `qa_pass`、`product_accepted` 或 `production_fixed`。
 
+### 2026-07-11 AI 活跃群 Provider 回退实现
+
+| 文件 | 职责 | 关键入口 |
+| --- | --- | --- |
+| `backend/app/services/task_center/ai_group_prompt.py` | 生成前过滤交易、联系方式、服务、具体行为和年龄风险；构造英文指令、中文安全数据和固定 JSON 契约 | `build_group_prompt`, `sanitize_group_messages` |
+| `backend/app/services/task_center/ai_generator.py` | 精确选择 MiniMax-M3 / MiniMax-M2.5，调用 Grok Bridge，并把 Provider 元数据附着到候选 | `_generate_group_prompt_contents`, `_provider_for_exact_model` |
+| `backend/app/services/grok_cli_bridge.py` | 使用参数数组、单并发文件锁、硬超时、临时 Git 目录和无工具参数调用已授权 Grok CLI | `GrokCliBridge.generate` |
+| `backend/app/services/task_center/executors/group_ai_chat.py` | 按租户开关执行 M3、M2.5、Grok 和静态安全兜底；保留引用目标与失败 slot | `_generate_quality_filled_items`, `_fallback_stages`, `_static_fallback_items` |
+| `backend/app/services/task_center/payloads.py`, `backend/app/services/task_center/details.py` | 持久化并投影模型、阶段、原因、耗时和有界尝试摘要 | `SendMessagePayload`, `_ai_turn_payload` |
+| `.github/scripts/ai_group_quality_diagnostics.py` | 在生产诊断 recent action 样本中暴露 Provider 回退轨迹 | `action_samples` |
+| `docker-compose.server.yml`, `.github/workflows/deploy-production.yml` | 挂载服务器 `/root/.grok`，配置 Bridge，并在发布前后校验 CLI / 模型 / 容器可执行文件 | `GROK_CLI_*`, `Preflight production Grok CLI` |
+
+对应迁移为 `0090_add_ai_group_fallback_settings.py`；测试入口为 `test_ai_group_provider_fallback.py`、`test_ai_group_safe_prompt.py`、`test_grok_cli_bridge.py`、`test_group_ai_chat_dataflow.py` 和 `test_ai_group_quality_diagnostics.py`。
+
 - PRD 改功能边界时，先更新 `docs/01-product/tg-ops-platform-prd.md` 或专项 PRD，再改对应 router/service/view/test。
 - 新增业务域时，同步补齐：router、schema、service、model/migration、front type、view/action、dataflow test。
 - 调整任务执行链路时，至少核对 `task_center/service.py`、`dispatcher.py`、对应 executor、`details.py`、runtime summary 和前端 `TaskCenter*` 文件。

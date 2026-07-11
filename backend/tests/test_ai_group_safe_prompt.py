@@ -42,6 +42,16 @@ def test_sanitizes_transaction_and_age_risk_but_keeps_adult_appearance():
     ]
 
 
+def test_keeps_normal_interest_group_context_without_topic_allowlist():
+    messages = sanitize_group_messages([
+        "今天聊聊摄影构图和光线",
+        "周末徒步路线有人走过吗",
+        "多少钱 私聊安排 酒店见",
+    ])
+
+    assert messages == ["今天聊聊摄影构图和光线", "周末徒步路线有人走过吗"]
+
+
 def test_builds_english_instructions_with_sanitized_chinese_data():
     bundle = build_group_prompt(
         _config(),

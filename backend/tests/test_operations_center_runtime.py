@@ -4263,22 +4263,16 @@ def test_group_ai_chat_generation_uses_healthy_provider_and_model_override(monke
     assert created == 1
     assert captured["provider_name"] == "MiMo"
     assert captured["model_name"] == "mimo-v2.5"
-    assert captured["topic"] == "MiMo 续聊"
+    assert captured["topic"] == "生成自然开场"
     assert captured["temperature"] == 0.75
     assert captured["max_tokens"] == 1024
     assert captured["timeout"] == 120
-    assert "MiMo 活跃群" in str(captured["prompt"])
-    assert "现场接话消息" in str(captured["prompt"])
+    assert "MiMo 活跃群" not in str(captured["prompt"])
+    assert "Sanitized production-shaped input" in str(captured["prompt"])
     assert "sequence_index" in str(captured["prompt"])
-    assert "大家怎么看" in str(captured["prompt"])
-    assert "多数短句不要句号" in str(captured["prompt"])
-    assert "截图里的真人聊天规律" in str(captured["prompt"])
-    assert "8-24 个字" in str(captured["prompt"])
-    assert "不要每句都补完整逗号和句号" in str(captured["system_prompt"])
-    assert "短、碎、具体" in str(captured["system_prompt"])
-    assert "AI 黑话配置：成人行业黑话" in str(captured["system_prompt"])
-    assert "老师=妓女" in str(captured["system_prompt"])
-    assert "开课=开始营业" in str(captured["system_prompt"])
+    assert "Generate Chinese community replies" in str(captured["system_prompt"])
+    assert "老师=妓女" not in str(captured["system_prompt"])
+    assert "开课=开始营业" not in str(captured["system_prompt"])
     assert "老师=对象" not in str(captured["prompt"])
     assert action is not None
     assert action.payload["message_text"] == "这个点接得上 先轻轻聊两句"
@@ -4343,7 +4337,7 @@ def test_group_ai_chat_prompt_adds_mask_theme_anchor_guidance(monkeypatch):
                 status="running",
                 account_config={"selection_mode": "manual", "account_ids": [101], "max_concurrent": 1, "cooldown_per_account_minutes": 0},
                 pacing_config={"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
-                type_config={"target_group_id": 7, "messages_per_round_mode": "manual", "messages_per_round": 1, "silent_mode_enabled": False},
+                type_config={"target_group_id": 7, "ai_model": "MiMo-V2.5", "messages_per_round_mode": "manual", "messages_per_round": 1, "silent_mode_enabled": False},
             )
         )
         session.commit()
@@ -4351,11 +4345,11 @@ def test_group_ai_chat_prompt_adds_mask_theme_anchor_guidance(monkeypatch):
         created = build_group_ai_chat_plan(session, session.get(Task, "ai-mask-anchor-prompt"))
         action = session.scalar(select(Action).where(Action.task_id == "ai-mask-anchor-prompt"))
 
-    assert created == 1
-    assert "夜场主题锚点" in str(captured["prompt"])
-    assert "价格/位置/时间/真假/服务/体验" in str(captured["prompt"])
-    assert action is not None
-    assert action.payload["message_text"] == "这个价格还是得自己问清楚"
+    assert created == 0
+    assert "Generate exactly" in str(captured["prompt"])
+    assert "寻欢客" not in str(captured["prompt"])
+    assert "价格" not in str(captured["prompt"])
+    assert action is None
 
 
 @pytest.mark.no_postgres
@@ -4394,10 +4388,10 @@ def test_group_ai_chat_repairs_mask_theme_candidate_before_voice_gate(monkeypatc
         session.add(
             AiProvider(
                 id=1,
-                provider_name="MiMo",
+                provider_name="MiniMax M3",
                 provider_type="openai_compatible",
-                base_url="https://api.xiaomimimo.com/v1",
-                model_name="mimo-v2.5",
+                base_url="https://api.minimax.io/v1",
+                model_name="MiniMax-M3",
                 api_key_ciphertext=encrypt_secret("test-key"),
                 is_active=True,
                 health_status="健康",
@@ -4435,7 +4429,7 @@ def test_group_ai_chat_keeps_partial_normal_candidates(monkeypatch):
 
     def fake_generate_drafts(credentials, prompt, *, count, topic, tone, persona_set, temperature, max_tokens, **_kwargs):  # noqa: ANN001
         return AiGenerationResult(
-            candidates=[AiDraftCandidate(persona="A", content="这个价格先问清楚", risk_level="低")],
+            candidates=[AiDraftCandidate(persona="A", content="这双高跟鞋确实好看", risk_level="低")],
             usage=AiUsage(total_tokens=44, billable=True),
         )
 
@@ -4452,10 +4446,10 @@ def test_group_ai_chat_keeps_partial_normal_candidates(monkeypatch):
         session.add(
             AiProvider(
                 id=1,
-                provider_name="MiMo",
+                provider_name="MiniMax M3",
                 provider_type="openai_compatible",
-                base_url="https://api.xiaomimimo.com/v1",
-                model_name="mimo-v2.5",
+                base_url="https://api.minimax.io/v1",
+                model_name="MiniMax-M3",
                 api_key_ciphertext=encrypt_secret("test-key"),
                 is_active=True,
                 health_status="健康",
@@ -4479,8 +4473,9 @@ def test_group_ai_chat_keeps_partial_normal_candidates(monkeypatch):
         created = build_group_ai_chat_plan(session, session.get(Task, "ai-partial-normal"))
         actions = list(session.scalars(select(Action).where(Action.task_id == "ai-partial-normal")))
 
-    assert created == 1
-    assert [action.payload["message_text"] for action in actions] == ["这个价格先问清楚"]
+    assert created == 2
+    assert any(action.payload["message_text"] == "这双高跟鞋确实好看" for action in actions)
+    assert sum(action.payload.get("fallback_stage") == "static_safe_fallback" for action in actions) == 1
 
 
 @pytest.mark.no_postgres
@@ -4705,7 +4700,8 @@ def test_group_ai_chat_model_override_selects_matching_deepseek_provider(monkeyp
     assert captured["provider_name"] == "DeepSeek"
     assert captured["base_url"] == "https://api.deepseek.com"
     assert captured["model_name"] == "deepseek-v4-flash"
-    assert "DeepSeek 活跃群" in str(captured["prompt"])
+    assert "DeepSeek 活跃群" not in str(captured["prompt"])
+    assert "Sanitized production-shaped input" in str(captured["prompt"])
     assert action is not None
     assert action.payload["message_text"] == "DeepSeek 这轮也能正常接话"
     assert action.payload["ai_generation_tokens"] == 66

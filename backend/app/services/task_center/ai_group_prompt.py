@@ -70,6 +70,9 @@ def safe_clauses(value: object) -> list[str]:
     for item in clauses:
         if not item or AGE_RISK.search(item):
             continue
+        if not FORBIDDEN.search(item):
+            safe.append(item)
+            continue
         cleaned = normalize(FORBIDDEN.sub("", item))
         if cleaned and _allowed_clause(cleaned):
             safe.append(cleaned)
@@ -103,6 +106,10 @@ def _safe_map(value: object) -> dict[str, str]:
         if clauses:
             result[str(key)] = "；".join(clauses[:3])
     return result
+
+
+def contains_disallowed_group_content(value: object) -> bool:
+    return bool(FORBIDDEN.search(normalize(value)))
 
 
 def _safe_target(value: object, label_key: str) -> dict[str, str]:
@@ -182,4 +189,10 @@ def build_group_prompt(
     return GroupPromptBundle(SYSTEM_PROMPT, user_prompt, context_source, tuple(messages), payload, contract)
 
 
-__all__ = ["DRAFT_KEYS", "GroupPromptBundle", "build_group_prompt", "sanitize_group_messages"]
+__all__ = [
+    "DRAFT_KEYS",
+    "GroupPromptBundle",
+    "build_group_prompt",
+    "contains_disallowed_group_content",
+    "sanitize_group_messages",
+]
