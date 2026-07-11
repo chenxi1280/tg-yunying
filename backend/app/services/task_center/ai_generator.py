@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import random
 import re
+import time
 from dataclasses import replace
 from difflib import SequenceMatcher
 
@@ -14,6 +15,8 @@ from app.services._common import _now, ai_gateway
 from app.services.ai_config import ai_provider_credentials
 from app.services.content_filters import looks_like_ai_meta_content, looks_like_generated_template_noise, looks_like_operator_ui_content
 from app.services.task_center.ai_act_types import canonical_ai_group_act_type
+from app.services.task_center.ai_group_prompt import GroupPromptBundle, build_group_prompt, contains_disallowed_group_content
+from app.services.grok_cli_bridge import GrokCliBridge, GrokCliUnavailable
 
 
 AI_GENERATION_UNAVAILABLE_MESSAGE = "AI 生成不可用，等待恢复后继续执行"
@@ -68,12 +71,24 @@ class GeneratedContent(str):
         allow_material: bool = False,
         intent: str = "",
         mood: str = "",
+        requested_model: str = "",
+        actual_model: str = "",
+        fallback_stage: str = "",
+        fallback_reason: str = "",
+        provider_duration_ms: int = 0,
+        generation_attempts: list[dict] | None = None,
     ):
         obj = str.__new__(cls, value)
         obj.material_intent = str(material_intent or "").strip()
         obj.allow_material = bool(allow_material)
         obj.intent = str(intent or "").strip()
         obj.mood = str(mood or "").strip()
+        obj.requested_model = str(requested_model or "").strip()
+        obj.actual_model = str(actual_model or "").strip()
+        obj.fallback_stage = str(fallback_stage or "").strip()
+        obj.fallback_reason = str(fallback_reason or "").strip()
+        obj.provider_duration_ms = max(0, int(provider_duration_ms or 0))
+        obj.generation_attempts = [dict(item) for item in (generation_attempts or [])]
         return obj
 
 
@@ -127,6 +142,17 @@ def _provider_for_model(session: Session, model_name: str) -> AiProvider | None:
         return exact
     family_match = next((provider for provider in providers if _model_family(provider.model_name) == family or _model_family(provider.provider_name) == family or _model_family(provider.base_url) == family), None)
     return family_match or next((provider for provider in providers if _is_mock_provider(provider)), None)
+
+
+def _provider_for_exact_model(session: Session, model_name: str) -> AiProvider | None:
+    normalized = normalize_ai_model_name(model_name)
+    providers = session.scalars(
+        select(AiProvider)
+        .where(AiProvider.is_active.is_(True), AiProvider.health_status == AiProviderHealthStatus.HEALTHY.value)
+        .order_by(AiProvider.id.asc())
+    ).all()
+    exact = next((provider for provider in providers if normalize_ai_model_name(provider.model_name) == normalized), None)
+    return exact or next((provider for provider in providers if _is_mock_provider(provider)), None)
 
 
 def _provider_matches_family(provider: AiProvider, family: str) -> bool:
@@ -309,6 +335,12 @@ def _generated_content_from_candidate(candidate) -> GeneratedContent:
         allow_material=bool(getattr(candidate, "allow_material", False)),
         intent=getattr(candidate, "intent", ""),
         mood=getattr(candidate, "mood", ""),
+        requested_model=getattr(candidate, "requested_model", ""),
+        actual_model=getattr(candidate, "actual_model", ""),
+        fallback_stage=getattr(candidate, "fallback_stage", ""),
+        fallback_reason=getattr(candidate, "fallback_reason", ""),
+        provider_duration_ms=getattr(candidate, "provider_duration_ms", 0),
+        generation_attempts=getattr(candidate, "generation_attempts", []),
     )
 
 
@@ -321,11 +353,22 @@ def _copy_generated_content_metadata(value: str, source: str) -> str:
         allow_material=bool(getattr(source, "allow_material", False)),
         intent=getattr(source, "intent", ""),
         mood=getattr(source, "mood", ""),
+        requested_model=getattr(source, "requested_model", ""),
+        actual_model=getattr(source, "actual_model", ""),
+        fallback_stage=getattr(source, "fallback_stage", ""),
+        fallback_reason=getattr(source, "fallback_reason", ""),
+        provider_duration_ms=getattr(source, "provider_duration_ms", 0),
+        generation_attempts=getattr(source, "generation_attempts", []),
     )
 
 
 def _has_generated_content_metadata(value: str) -> bool:
-    return any(hasattr(value, key) for key in ("material_intent", "allow_material", "intent", "mood"))
+    keys = (
+        "material_intent", "allow_material", "intent", "mood", "requested_model",
+        "actual_model", "fallback_stage", "fallback_reason", "provider_duration_ms",
+        "generation_attempts",
+    )
+    return any(hasattr(value, key) for key in keys)
 
 
 def _prompt_profile(
@@ -375,7 +418,7 @@ def _ai_credentials(provider: AiProvider, model_name: str):
 
 def _clean_generated_contents(contents: list[str], purpose: str, count: int, *, mock_provider: bool = False) -> list[str]:
     if purpose in {GROUP_CHAT_PURPOSE, GROUP_CHAT_REPLY_PURPOSE}:
-        contents = _clean_mock_group_chat_contents(contents) if mock_provider else clean_group_chat_contents(contents)
+        contents = _clean_mock_group_chat_contents(contents) if mock_provider else clean_group_chat_contents(contents, restrict_sensitive_trade=True)
         if not contents:
             raise AiGenerationUnavailable(AI_GENERATION_UNAVAILABLE_MESSAGE)
     if purpose in {CHANNEL_COMMENT_PURPOSE, CHANNEL_COMMENT_REPLY_PURPOSE}:
@@ -389,7 +432,7 @@ def _clean_mock_group_chat_contents(contents: list[str]) -> list[str]:
     cleaned: list[str] = []
     for content in contents:
         item = _clean_generated_content(content)
-        if item and not _looks_like_bad_group_chat_content(item):
+        if item and not _looks_like_bad_group_chat_content(item) and not _looks_like_sensitive_trade_facilitation(item):
             cleaned.append(_copy_generated_content_metadata(item, content))
     return cleaned
 
@@ -711,7 +754,7 @@ def _looks_like_bad_group_chat_content(content: str) -> bool:
 
 
 def _looks_like_sensitive_trade_facilitation(content: str) -> bool:
-    return False
+    return contains_disallowed_group_content(content)
 
 
 def _looks_like_ai_provider_refusal(content: str) -> bool:
@@ -790,56 +833,19 @@ def _slot_target_text(value: object, label_key: str) -> str:
 
 
 def generate_group_messages(session: Session, tenant_id: int, config: dict, *, count: int, target_label: str, history: str = "") -> tuple[list[str], int]:
-    personas = config.get("account_personas") if isinstance(config.get("account_personas"), dict) else {}
-    persona_prompt = ""
-    if personas:
-        persona_prompt = "账号角色设定：\n" + "\n".join(f"- 账号 {account_id}: {role}" for account_id, role in personas.items() if str(role).strip())
-    memories = config.get("account_memories") if isinstance(config.get("account_memories"), dict) else {}
-    memory_prompt = ""
-    if memories:
-        memory_prompt = "账号历史记忆：\n" + "\n".join(f"- 账号 {account_id}: {memory}" for account_id, memory in memories.items() if str(memory).strip())
-    profiles = config.get("account_profiles") if isinstance(config.get("account_profiles"), dict) else {}
-    profile_prompt = ""
-    if profiles:
-        profile_prompt = "账号长期画像：\n" + "\n".join(f"- 账号 {account_id}: {profile}" for account_id, profile in profiles.items() if str(profile).strip())
-    topic_thread = str(config.get("topic_thread") or "").strip()
-    topic_thread_prompt = f"话题脉络：\n{topic_thread}" if topic_thread else ""
-    topic_plan = str(config.get("topic_plan") or "").strip()
-    topic_plan_prompt = f"本轮话题计划：\n{topic_plan}" if topic_plan else ""
-    active_topic_prompt = _active_topic_prompt(config)
-    active_teacher_prompt = _active_teacher_prompt(config)
-    target_profile_prompt = _target_profile_style_prompt(config.get("target_profile_style"), audience="group")
-    slang_prompt = _slang_system_prompt(session, tenant_id, config)
-    requirements = "\n".join(
-        part
-        for part in [
-            active_topic_prompt,
-            active_teacher_prompt,
-            topic_thread_prompt,
-            topic_plan_prompt,
-            target_profile_prompt,
-            _generation_slots_prompt(config),
-            persona_prompt,
-            memory_prompt,
-            profile_prompt,
-            history,
-            config.get("system_prompt_override") or "",
-        ]
-        if part
+    bundle = build_group_prompt(
+        config,
+        target_label=target_label,
+        history=history,
+        count=count,
     )
-    requirements = _sanitize_sensitive_context(requirements)
-    contents, tokens = generate_contents(
+    contents, tokens = _generate_group_prompt_contents(
         session,
         tenant_id,
-        topic=_active_topic_title(config) or "群聊日常活跃",
-        requirements=requirements,
-        provider_id=config.get("ai_provider_id"),
-        model_name=_group_chat_model(config),
+        config,
+        bundle,
         count=count,
-        purpose="群活跃续聊",
-        target_label=target_label,
-        system_prompt=_group_chat_system_prompt(slang_prompt),
-        required_model_family=_group_chat_required_model_family(config),
+        purpose=GROUP_CHAT_PURPOSE,
     )
     return _trim(contents, config.get("max_message_length")), tokens
 
@@ -853,41 +859,136 @@ def generate_group_reply_messages(
     target_label: str,
     history: str = "",
 ) -> tuple[list[str], int]:
-    reply_lines = "\n".join(_reply_target_line(index, item) for index, item in enumerate(reply_targets, start=1))
-    target_profile_prompt = _target_profile_style_prompt(config.get("target_profile_style"), audience="group")
-    active_topic_prompt = _active_topic_prompt(config)
-    active_teacher_prompt = _active_teacher_prompt(config)
-    requirements = "\n".join(
-        part
-        for part in [
-            active_topic_prompt,
-            active_teacher_prompt,
-            f"引用目标：\n{reply_lines}" if reply_lines else "",
-            f"群聊上下文：\n{history}" if history else "",
-            target_profile_prompt,
-            _generation_slots_prompt(config),
-            config.get("system_prompt_override") or "",
-        ]
-        if part
+    bundle = build_group_prompt(
+        config,
+        target_label=target_label,
+        history=history,
+        count=len(reply_targets),
+        reply_targets=reply_targets,
     )
-    contents, tokens = generate_contents(
+    contents, tokens = _generate_group_prompt_contents(
         session,
         tenant_id,
-        topic=_active_topic_title(config) or "群引用回复",
-        requirements=_sanitize_sensitive_context(requirements),
-        provider_id=config.get("ai_provider_id"),
-        model_name=_group_chat_model(config),
+        config,
+        bundle,
         count=len(reply_targets),
         purpose=GROUP_CHAT_REPLY_PURPOSE,
-        target_label=target_label,
-        system_prompt=_group_chat_system_prompt(_slang_system_prompt(session, tenant_id, config)),
-        required_model_family=_group_chat_required_model_family(config),
     )
     return _trim(contents, config.get("max_message_length")), tokens
 
 
+def _generate_group_prompt_contents(
+    session: Session,
+    tenant_id: int,
+    config: dict,
+    bundle: GroupPromptBundle,
+    *,
+    count: int,
+    purpose: str,
+) -> tuple[list[str], int]:
+    model_name = _group_chat_model(config)
+    stage = str(config.get("_ai_fallback_stage") or "").strip()
+    setting = session.scalar(select(TenantAiSetting).where(TenantAiSetting.tenant_id == tenant_id))
+    if stage == "fallback_grok":
+        return _generate_group_with_grok(config, bundle, count=count, purpose=purpose, setting=setting)
+    provider = _provider_for_exact_model(session, model_name) if stage and setting and setting.ai_enabled else None
+    if not stage:
+        provider, setting = _provider(
+            session,
+            tenant_id,
+            config.get("ai_provider_id"),
+            model_name,
+            required_family=_group_chat_required_model_family(config),
+        )
+    if not provider or not setting:
+        required_family = _group_chat_required_model_family(config)
+        raise AiGenerationUnavailable(f"{AI_GENERATION_UNAVAILABLE_MESSAGE}：{_unavailable_reason(setting, required_family)}")
+    started_at = time.monotonic()
+    result = _generate_with_provider_candidates(
+        session,
+        provider,
+        bundle.user_prompt,
+        count=count,
+        topic=" ".join(bundle.sanitized_context),
+        tone="natural Chinese group chat",
+        persona_set=["普通群友"],
+        temperature=max(float(setting.temperature or 0.7), 0.75),
+        max_tokens=_content_max_tokens(setting.max_tokens, count, purpose),
+        system_prompt=bundle.system_prompt,
+        timeout=AI_CONTENT_REQUEST_TIMEOUT_SECONDS,
+        model_name=model_name,
+        required_model_family=_group_chat_required_model_family(config),
+        allow_quota_rotation=not config.get("ai_provider_id") and not stage,
+        purpose=purpose,
+    )
+    duration_ms = round((time.monotonic() - started_at) * 1000)
+    contents = [
+        _content_with_provider_metadata(item, config, model_name, stage, duration_ms)
+        for item in result.candidates
+        if str(item.content or "").strip()
+    ]
+    cleaned = _clean_generated_contents(contents, purpose, count, mock_provider=_is_mock_provider(provider))
+    usage = getattr(result, "usage", None)
+    return cleaned, int(getattr(usage, "total_tokens", 0) or 0)
+
+
+def _generate_group_with_grok(
+    config: dict,
+    bundle: GroupPromptBundle,
+    *,
+    count: int,
+    purpose: str,
+    setting: TenantAiSetting | None,
+) -> tuple[list[str], int]:
+    if not setting or not setting.ai_enabled:
+        raise AiGenerationUnavailable(f"{AI_GENERATION_UNAVAILABLE_MESSAGE}：tenant_ai_disabled")
+    started_at = time.monotonic()
+    try:
+        result = GrokCliBridge().generate(
+            system_prompt=bundle.system_prompt,
+            user_prompt=bundle.user_prompt,
+            count=count,
+        )
+    except GrokCliUnavailable as exc:
+        raise AiGenerationUnavailable(f"{AI_GENERATION_UNAVAILABLE_MESSAGE}：{exc}") from exc
+    duration_ms = round((time.monotonic() - started_at) * 1000)
+    contents = [
+        _content_with_provider_metadata(item, config, "grok-4.5", "fallback_grok", duration_ms)
+        for item in result.candidates
+        if str(item.content or "").strip()
+    ]
+    cleaned = _clean_generated_contents(contents, purpose, count, mock_provider=False)
+    return cleaned, int(getattr(result.usage, "total_tokens", 0) or 0)
+
+
 def _group_chat_model(config: dict) -> str:
-    return str(config.get("ai_model") or "").strip()
+    if bool(config.get("require_mimo_draft")):
+        return str(config.get("ai_model") or "").strip()
+    stage_models = {
+        "primary_m3": "MiniMax-M3",
+        "fallback_m25": "MiniMax-M2.5",
+        "fallback_grok": "grok-4.5",
+    }
+    stage = str(config.get("_ai_fallback_stage") or "").strip()
+    return stage_models.get(stage, str(config.get("ai_model") or "").strip())
+
+
+def _content_with_provider_metadata(candidate, config: dict, model_name: str, stage: str, duration_ms: int) -> GeneratedContent:
+    prior_attempts = [dict(item) for item in list(config.get("_ai_generation_attempts") or [])[-2:]]
+    attempts = [*prior_attempts, {"stage": stage or "direct", "model": model_name, "outcome": "success", "duration_ms": duration_ms}]
+    return GeneratedContent(
+        str(getattr(candidate, "content", "") or "").strip(),
+        material_intent=getattr(candidate, "material_intent", ""),
+        allow_material=bool(getattr(candidate, "allow_material", False)),
+        intent=getattr(candidate, "intent", ""),
+        mood=getattr(candidate, "mood", ""),
+        requested_model="MiniMax-M3" if stage else model_name,
+        actual_model=model_name,
+        fallback_stage=stage or "direct",
+        fallback_reason="previous_stage_failed_or_rejected" if stage and stage != "primary_m3" else "",
+        provider_duration_ms=duration_ms,
+        generation_attempts=attempts,
+    )
 
 
 def _group_chat_required_model_family(config: dict) -> str:

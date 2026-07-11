@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from app.models import AccountStatus, AiAccountVoiceProfile, AuditLog, TgAccount
+from app.models import AiAccountVoiceProfile, AuditLog, TgAccount
 from app.services._common import _now
 from app.services.ai_config import ai_provider_credentials
 from app.services.task_center.account_stance_memory import group_stance_summaries, upsert_group_stance_memory
@@ -28,6 +28,7 @@ from app.services.task_center.account_voice_profile_generation import (
 )
 from app.services.task_center.account_voice_profile_quality import generate_diverse_voice_profile_batch
 from app.services.task_center.account_voice_profile_search import filter_voice_profile_rows
+from app.services.task_center import account_voice_profile_usage as voice_usage
 
 VOICE_PROFILE_BATCH_SIZE = 2
 PROFILE_LIST_FIELDS = {
@@ -83,6 +84,7 @@ def patch_voice_profile(
     actor: str,
 ) -> AiAccountVoiceProfile:
     account = _require_account(session, tenant_id, account_id)
+    voice_usage.assert_voice_profile_mutation_allowed(session, account)
     current = _latest_profile(session, tenant_id, account_id)
     next_profile = _patched_profile(tenant_id, account.id, current, patch, actor)
     _validate_generated_profile(_serialize_profile(next_profile), account_id)
@@ -103,7 +105,8 @@ def rebuild_voice_profile(
     generator: Callable[[list[int]], list[dict[str, Any]]],
     actor: str,
 ) -> AiAccountVoiceProfile:
-    _require_account(session, tenant_id, account_id)
+    account = _require_account(session, tenant_id, account_id)
+    voice_usage.assert_voice_profile_mutation_allowed(session, account)
     profile = _generated_profile(session, tenant_id, account_id, generator)
     current = _latest_profile(session, tenant_id, account_id)
     profile.version = int(current.version if current else 0) + 1
@@ -125,9 +128,19 @@ def batch_rebuild_voice_profiles(
     actor: str,
     missing_only: bool = False,
 ) -> dict[str, Any]:
-    candidate_ids = _batch_candidate_account_ids(session, tenant_id, account_ids, missing_only)
-    target_ids = _missing_account_ids(session, tenant_id, candidate_ids) if missing_only else candidate_ids
-    skipped_items = _skipped_existing_profile_items(session, tenant_id=tenant_id, candidate_ids=candidate_ids, target_ids=target_ids)
+    candidate_ids = voice_usage.batch_candidate_account_ids(session, tenant_id, account_ids, missing_only)
+    allowed_ids, usage_errors = voice_usage.voice_profile_allowed_ids(session, tenant_id, candidate_ids)
+    target_ids = _missing_account_ids(session, tenant_id, allowed_ids) if missing_only else allowed_ids
+    usage_skips = [
+        _result_item(account_id, "skipped", _latest_profile(session, tenant_id, account_id), skipped_reason=reason)
+        for account_id, reason in usage_errors.items()
+    ]
+    skipped_items = usage_skips + _skipped_existing_profile_items(
+        session,
+        tenant_id=tenant_id,
+        candidate_ids=allowed_ids,
+        target_ids=target_ids,
+    )
     if not target_ids:
         return {"created": 0, "skipped": len(skipped_items), "items": skipped_items}
     result = _batch_insert_generated_with_items(session, tenant_id, target_ids, generator, actor)
@@ -154,6 +167,7 @@ def ensure_voice_profiles_for_accounts(
     account_ids: list[int],
     generator: Callable[[list[int]], list[dict[str, Any]]] | None,
 ) -> int:
+    voice_usage.assert_voice_profile_account_ids_allowed(session, tenant_id, account_ids)
     missing = _missing_account_ids(session, tenant_id, account_ids)
     if not missing:
         return 0
@@ -467,21 +481,6 @@ def _generated_profile(
 
 def _profiles_by_account(generated: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
     return {int(item["account_id"]): item for item in generated if item.get("account_id") is not None}
-
-
-def _batch_candidate_account_ids(session: Session, tenant_id: int, account_ids: list[int], missing_only: bool) -> list[int]:
-    unique_ids = list(dict.fromkeys(int(account_id) for account_id in account_ids))
-    if not unique_ids and missing_only:
-        return list(
-            session.scalars(
-                select(TgAccount.id)
-                .where(TgAccount.tenant_id == tenant_id, TgAccount.deleted_at.is_(None), TgAccount.status == AccountStatus.ACTIVE.value)
-                .order_by(TgAccount.id.asc())
-            )
-        )
-    for account_id in unique_ids:
-        _require_account(session, tenant_id, account_id)
-    return unique_ids
 
 
 def _audit(session: Session, tenant_id: int, actor: str, action: str, account_id: int, detail: str) -> None:

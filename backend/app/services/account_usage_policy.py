@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from sqlalchemy import Select, exists, select
+from sqlalchemy import Select, and_, exists, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import AccountPool, TgAccount
@@ -48,6 +48,8 @@ class AccountUsageSyncSummary:
 
 
 def account_usage(account: TgAccount, pool: AccountPool | None) -> AccountUsage:
+    if pool is None and account.pool_id is None:
+        return "normal" if account.account_identity == "normal" else "mismatch"
     if pool is None or account.pool_id != pool.id:
         return "mismatch"
     if account.tenant_id != pool.tenant_id:
@@ -91,7 +93,7 @@ def _action_allowed(usage: AccountUsage, action_kind: str) -> bool:
 def apply_operational_account_filters(stmt: Select) -> Select:
     return stmt.where(
         TgAccount.account_identity == "normal",
-        _matching_enabled_pool_exists("normal"),
+        or_(TgAccount.pool_id.is_(None), _matching_enabled_pool_exists("normal")),
     )
 
 
@@ -100,6 +102,21 @@ def apply_rank_deboost_account_filters(stmt: Select) -> Select:
         TgAccount.account_identity == "rank_deboost",
         _matching_enabled_pool_exists("rank_deboost"),
     )
+
+
+def apply_consistent_enabled_account_filters(stmt: Select) -> Select:
+    return stmt.where(
+        or_(*(_consistent_usage_condition(purpose) for purpose in sorted(VALID_ACCOUNT_USAGES))),
+    )
+
+
+def _consistent_usage_condition(purpose: str):
+    if purpose == "normal":
+        return and_(
+            TgAccount.account_identity == purpose,
+            or_(TgAccount.pool_id.is_(None), _matching_enabled_pool_exists(purpose)),
+        )
+    return and_(TgAccount.account_identity == purpose, _matching_enabled_pool_exists(purpose))
 
 
 def _matching_enabled_pool_exists(purpose: str):
@@ -179,6 +196,7 @@ __all__ = [
     "AccountUsageSyncSummary",
     "account_usage",
     "apply_operational_account_filters",
+    "apply_consistent_enabled_account_filters",
     "apply_rank_deboost_account_filters",
     "assert_account_action_allowed",
     "sync_account_usage",

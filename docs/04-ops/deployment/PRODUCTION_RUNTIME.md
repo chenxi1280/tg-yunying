@@ -49,6 +49,14 @@ Repository variables:
 
 生产任务通道约定：`search_join_group` / `search_join` 是唯一强制使用 Clash 代理的任务链路；`group_ai_chat`、`channel_view`、`channel_like`、`channel_comment` 的账号健康探测和实际互动调用走账号直连凭证，不因 Clash 节点不可用而阻塞活群、浏览、点赞或评论任务。搜索加群仍通过授权环境绑定和健康代理节点 fail closed。
 
+### AI 活跃群 Grok CLI Bridge
+
+- 生产 Linux 必须在 `/root/.grok/bin/grok` 安装并完成授权，`grok models` 必须包含 `grok-4.5`。发布 workflow 在部署前检查主机 CLI / 模型，部署后检查 planner 容器内可执行文件；任一检查失败则发布失败，不把 Grok 静默视为可用。
+- `docker-compose.server.yml` 将 `${GROK_CLI_HOME_DIR:-/root/.grok}` 挂载到 backend、planner 和四个 dispatcher；共享锁默认位于 `/root/.grok/tgyunying-cli.lock`，同一服务器只允许一个 Grok 生成进程。
+- 默认环境为 `GROK_CLI_ENABLED=true`、`GROK_CLI_MODEL=grok-4.5`、`GROK_CLI_TIMEOUT_SECONDS=90`。租户仍可通过 `ai_group_grok_fallback_enabled` 单独关闭 Grok 阶段，通过 `ai_group_static_fallback_enabled` 关闭静态兜底。
+- Bridge 固定使用 `--no-memory --no-subagents --disable-web-search --permission-mode dontAsk --verbatim`；只保存有界错误码、模型阶段和耗时，不保存 Prompt、推理过程、授权资料或密钥。
+- 生产验收必须分层：CLI / 模型预检通过不等于任务恢复；还需在受控测试任务中观察 `fallback_stage`、`actual_model`、`generation_attempts` 和最终 Action，且测试前不得触发真实 Telegram 发送。
+
 ## 首次服务器准备
 
 服务器需要已经具备：
@@ -119,7 +127,7 @@ docker compose exec -T worker-planner sh -lc 'now=$(date +%s); last=$(cat "${WOR
 
 ### 真实执行闸门
 
-- 当前代码只具备 draft 和闸门结构，真实 `TelethonTelegramGateway` 方法尚未落地；在 `docs/03-feature-designs/search-rank-deboost-hardening-design.md` 对应实现、迁移和测试完成前，不得通过 monkeypatch/fixture 证明生产可运行。
+- 当前代码已实现真实 `TelethonTelegramGateway.search_rank_deboost_candidates/execute_search_rank_deboost`、同代理出口探测和逐点击事实结果；生产状态仍为 `production_unproven`，必须通过协议样本、迁移、真实代理出口和 1-2 个灰度账号的 E4 验证后才能标记生产可用，不得用 monkeypatch/fixture 替代。
 - 任务创建只进入 `draft` 准备态；`create_and_start` / `start_task` 必须同时满足真实豁免群已从生产 Gateway 搜索结果中选出、生产类显式实现 `search_rank_deboost_candidates/execute_search_rank_deboost`、协议样本和全部涉及分组持久代理绑定预检通过，才能进入 `running`。
 - `search_rank_deboost_exempt_groups.exempt_group_username=pending_real_search` 只表示待接入真实搜索结果；Planner 遇到该占位值必须以 `exempt_group_pending_real_search` 阻断，不得生成 action。
 - Dispatcher 不得用 `account_group_proxy_bindings.observed_exit_ip` 自证出口；真实执行必须由 Gateway 使用分组 `runtime_proxy_id` 对应的 SOCKS/HTTP 端点完成当前 HTTPS 出口探测，并用同一代理指纹创建 Telethon client。缺失、漂移、协议不支持或 binding 非 active 时写 `proxy_egress_guard_failed`，不得回退本机直连、账号旧代理或授权槽位代理。

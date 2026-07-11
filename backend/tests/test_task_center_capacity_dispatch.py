@@ -25,6 +25,7 @@ from app.models import (
     Task,
     TaskAccountDailyCoverage,
     Tenant,
+    TenantAiSetting,
     TenantLearningProfile,
     TgAccount,
     TgAccountOnlineState,
@@ -4293,6 +4294,7 @@ def test_group_ai_quality_retry_only_requests_failed_slots(monkeypatch):
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TenantAiSetting(tenant_id=1, ai_enabled=True))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True))
         session.add_all(
             [
@@ -4952,6 +4954,7 @@ def test_group_ai_all_account_coverage_does_not_use_emoji_fallback_after_quality
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TenantAiSetting(tenant_id=1, ai_enabled=True))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True, active_window="00:00-01:00"))
         session.add_all(
             [

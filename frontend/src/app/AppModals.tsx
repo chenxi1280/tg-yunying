@@ -302,6 +302,9 @@ export function AppModals() {
             <label>最大 Token<InputNumber min={128} max={tenantAiMaxTokensLimit(selectedAiProvider)} value={tenantAiSetting.max_tokens} onChange={(value) => setTenantAiSetting({ ...tenantAiSetting, max_tokens: Number(value ?? 128) })} /></label>
             <Checkbox checked={tenantAiSetting.ai_enabled} onChange={(event) => setTenantAiSetting({ ...tenantAiSetting, ai_enabled: event.target.checked })}>启用 AI 内容生成</Checkbox>
             <Checkbox checked={tenantAiSetting.fallback_to_mock} onChange={(event) => setTenantAiSetting({ ...tenantAiSetting, fallback_to_mock: event.target.checked })}>失败回退模板</Checkbox>
+            <Checkbox checked={tenantAiSetting.ai_group_model_fallback_enabled} onChange={(event) => setTenantAiSetting({ ...tenantAiSetting, ai_group_model_fallback_enabled: event.target.checked })}>AI 活群启用 M2.5 回退</Checkbox>
+            <Checkbox checked={tenantAiSetting.ai_group_grok_fallback_enabled} onChange={(event) => setTenantAiSetting({ ...tenantAiSetting, ai_group_grok_fallback_enabled: event.target.checked })}>AI 活群启用 Grok 回退</Checkbox>
+            <Checkbox checked={tenantAiSetting.ai_group_static_fallback_enabled} onChange={(event) => setTenantAiSetting({ ...tenantAiSetting, ai_group_static_fallback_enabled: event.target.checked })}>AI 活群启用签到/表情兜底</Checkbox>
           </div>
           <FormActions onCancel={closeModal} onSubmit={saveTenantAiSetting} loading={isActionPending('tenant-ai:save')} disabled={!aiProviders.length} />
           </div>

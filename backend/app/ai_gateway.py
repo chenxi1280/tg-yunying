@@ -96,6 +96,10 @@ def normalize_ai_model_name(model_name: str) -> str:
     return MODEL_ALIASES.get(normalized, model_name.strip())
 
 
+def parse_draft_candidates(raw: str, *, count: int, persona_set: list[str]) -> list[AiDraftCandidate]:
+    return AiGateway()._parse_candidates(raw, count, persona_set, None)
+
+
 def mock_candidates(
     count: int,
     topic: str,

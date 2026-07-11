@@ -9,6 +9,7 @@ from app.models import AccountProxy, ProxyAirportNode, ProxyAirportSubscription
 AIRPORT_NODE_PROXY_PREFIX = "airport-node-"
 AVAILABLE_NODE_STATUS = "healthy"
 SYNCED_SUBSCRIPTION_STATUS = "synced"
+EXECUTABLE_PROXY_PROTOCOLS = frozenset({"socks5", "socks4", "http", "https"})
 
 
 def list_available_proxy_airport_nodes(session: Session, *, tenant_id: int) -> list[ProxyAirportNode]:
@@ -26,24 +27,42 @@ def require_available_proxy_airport_node(session: Session, *, tenant_id: int, no
 
 def proxy_for_airport_node(session: Session, node: ProxyAirportNode) -> AccountProxy:
     name = f"{AIRPORT_NODE_PROXY_PREFIX}{node.id}"
-    proxy = session.scalar(
-        select(AccountProxy).where(
-            AccountProxy.tenant_id == node.tenant_id,
-            AccountProxy.name == name,
-        )
-    )
+    proxy = _existing_named_proxy(session, node, name)
+    protocol = _node_executable_protocol(node)
+    if protocol is None:
+        raise ValueError("proxy_airport_node has no executable runtime proxy")
+    _assert_node_endpoint(node)
     if proxy is None:
-        proxy = AccountProxy(tenant_id=node.tenant_id, name=name, port=int(node.proxy_port or 0))
+        proxy = AccountProxy(tenant_id=node.tenant_id, name=name, port=int(node.proxy_port))
         session.add(proxy)
-    proxy.protocol = node.protocol or "socks5"
+    proxy.protocol = protocol
     proxy.host = node.proxy_host
-    proxy.port = int(node.proxy_port or 0)
+    proxy.port = int(node.proxy_port)
     proxy.status = AVAILABLE_NODE_STATUS
     proxy.alert_status = "normal"
     proxy.last_error = ""
     proxy.notes = "airport_clash node"
     session.flush()
     return proxy
+
+
+def _existing_named_proxy(session: Session, node: ProxyAirportNode, name: str) -> AccountProxy | None:
+    return session.scalar(
+        select(AccountProxy).where(
+            AccountProxy.tenant_id == node.tenant_id,
+            AccountProxy.name == name,
+        )
+    )
+
+
+def _node_executable_protocol(node: ProxyAirportNode) -> str | None:
+    protocol = (node.protocol or "").strip().lower()
+    return protocol if protocol in EXECUTABLE_PROXY_PROTOCOLS else None
+
+
+def _assert_node_endpoint(node: ProxyAirportNode) -> None:
+    if not (node.proxy_host or "").strip() or int(node.proxy_port or 0) <= 0:
+        raise ValueError("proxy_airport_node_missing_executable_endpoint")
 
 
 def _available_nodes_stmt(tenant_id: int):

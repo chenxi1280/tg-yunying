@@ -49,6 +49,11 @@ x-backend-env: &backend-env
   TARGET_RATE_PER_MINUTE: ${TARGET_RATE_PER_MINUTE:-60}
   MEDIA_RATE_PER_MINUTE: ${MEDIA_RATE_PER_MINUTE:-30}
   MEDIA_ROOT: /app/media
+  GROK_CLI_ENABLED: ${GROK_CLI_ENABLED:-true}
+  GROK_CLI_BIN: ${GROK_CLI_BIN:-/root/.grok/bin/grok}
+  GROK_CLI_MODEL: ${GROK_CLI_MODEL:-grok-4.5}
+  GROK_CLI_TIMEOUT_SECONDS: ${GROK_CLI_TIMEOUT_SECONDS:-90}
+  GROK_CLI_LOCK_PATH: ${GROK_CLI_LOCK_PATH:-/root/.grok/tgyunying-cli.lock}
 
 x-worker-healthcheck: &worker-healthcheck
   test: ["CMD-SHELL", "heartbeat_file=\"$${WORKER_LOCAL_HEALTHCHECK_FILE:-/tmp/tgyunying-worker-heartbeat}\"; now=$$(date +%s); last=$$(cat \"$${heartbeat_file}\" 2>/dev/null || echo 0); test $$((now - last)) -le 120"]
@@ -68,6 +73,7 @@ services:
       - "${TGYUNYING_BACKEND_BIND_HOST:-127.0.0.1}:${TGYUNYING_BACKEND_HOST_PORT:-18090}:8000"
     volumes:
       - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
+      - "${GROK_CLI_HOME_DIR:-/root/.grok}:/root/.grok"
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/health"]
       interval: 15s
@@ -87,6 +93,7 @@ services:
       WORKER_ROLE: planner
     volumes:
       - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
+      - "${GROK_CLI_HOME_DIR:-/root/.grok}:/root/.grok"
     depends_on:
       backend:
         condition: service_healthy
@@ -106,6 +113,7 @@ services:
       ACCOUNT_SHARD_INDEX: "0"
     volumes:
       - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
+      - "${GROK_CLI_HOME_DIR:-/root/.grok}:/root/.grok"
     depends_on:
       backend:
         condition: service_healthy
@@ -125,6 +133,7 @@ services:
       ACCOUNT_SHARD_INDEX: "1"
     volumes:
       - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
+      - "${GROK_CLI_HOME_DIR:-/root/.grok}:/root/.grok"
     depends_on:
       backend:
         condition: service_healthy
@@ -144,6 +153,7 @@ services:
       ACCOUNT_SHARD_INDEX: "2"
     volumes:
       - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
+      - "${GROK_CLI_HOME_DIR:-/root/.grok}:/root/.grok"
     depends_on:
       backend:
         condition: service_healthy
@@ -163,6 +173,7 @@ services:
       ACCOUNT_SHARD_INDEX: "3"
     volumes:
       - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
+      - "${GROK_CLI_HOME_DIR:-/root/.grok}:/root/.grok"
     depends_on:
       backend:
         condition: service_healthy

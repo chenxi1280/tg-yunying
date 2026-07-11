@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.models import AiAccountVoiceProfile, AuditLog, TgAccount
 from app.services._common import _now
 from app.services.task_center.account_voice_profile_cache import refresh_voice_profile_cache
+from app.services.task_center.account_voice_profile_usage import assert_voice_profile_mutation_allowed
 
 
 PROFILE_COPY_FIELDS = (
@@ -62,7 +63,8 @@ def rollback_voice_profile(
     source_version: int,
     actor: str,
 ) -> AiAccountVoiceProfile:
-    _require_account(session, tenant_id, account_id)
+    account = _require_account(session, tenant_id, account_id)
+    assert_voice_profile_mutation_allowed(session, account)
     source = _profile_by_version(session, tenant_id, account_id, source_version)
     current = _latest_profile(session, tenant_id, account_id)
     restored = _copy_profile_for_rollback(source, current, actor)

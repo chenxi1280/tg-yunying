@@ -18,8 +18,10 @@ OPERATIONS_CENTER_LEARNING = PROJECT_ROOT / "backend/app/services/operations_cen
 
 def test_group_listener_runtime_writes_only_tenant_learning_samples():
     source = GROUP_LISTENERS.read_text()
+    writer_source = (PROJECT_ROOT / "backend/app/services/group_listener_context_writer.py").read_text()
 
-    assert "record_tenant_group_learning_sample" in source
+    assert "insert_context_snapshots" in source
+    assert "record_tenant_group_learning_sample" in writer_source
     assert "record_target_group_learning_sample" not in source
     assert "from .target_learning import" not in source
 

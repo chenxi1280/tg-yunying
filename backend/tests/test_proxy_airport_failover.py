@@ -214,7 +214,7 @@ def _add_node(
         subscription_id=subscription.id,
         node_key=name,
         node_name=name,
-        protocol="trojan",
+        protocol="socks5",
         proxy_host=f"{name}.example.com",
         proxy_port=443,
         status=status,

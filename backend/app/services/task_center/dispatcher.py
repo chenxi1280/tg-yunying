@@ -19,6 +19,7 @@ from app.models import AccountStatus, Action, ChannelMessage, ExecutionAttempt, 
 from app.models import AccountEnvironmentBinding, AccountProxy, AccountProxyBinding, TelegramDeveloperApp, TgAccountAuthorization
 from app.security import decrypt_secret
 from app.services._common import _now, audit, gateway
+from app.services.account_usage_policy import assert_account_action_allowed
 from app.services.account_online_state import is_account_online_ready
 from app.services.account_authorizations import attempt_primary_proxy_recovery, attempt_standby_authorization_recovery
 from app.services.account_capacity import account_capacity_decision
@@ -642,16 +643,7 @@ def _apply_claim_account_policy(session: Session, action: Action) -> bool:
     if not account or account.deleted_at is not None or account.status != AccountStatus.ACTIVE.value:
         _fail_with_policy(action, FailureType.ACCOUNT_UNAVAILABLE.value, "账号不可用", auto_check="拦截", validation_stage="account")
         return False
-    if account.account_identity == "code_receiver":
-        _fail_with_policy(action, FailureType.ACCOUNT_UNAVAILABLE.value, "接码专用账号不参与任务执行", auto_check="拦截", validation_stage="account_identity")
-        return False
-    if account.account_identity == "rank_deboost" and action.action_type != "search_rank_deboost":
-        _fail_with_policy(action, FailureType.ACCOUNT_UNAVAILABLE.value, "降权专用账号不参与其他任务执行", auto_check="拦截", validation_stage="account_identity")
-        _record_rank_deboost_isolation_alert(session, action, account, "rank_deboost_account_used_by_other")
-        return False
-    if account.account_identity != "rank_deboost" and action.action_type == "search_rank_deboost":
-        _fail_with_policy(action, FailureType.ACCOUNT_UNAVAILABLE.value, "搜索排名观察任务只能使用专用账号", auto_check="拦截", validation_stage="account_identity")
-        _record_rank_deboost_isolation_alert(session, action, account, "deboost_task_used_normal_account")
+    if not _apply_claim_account_usage_policy(session, action, account):
         return False
     if not account_matches_current_shard(account.id):
         _release_claim(action, delay_seconds=30, reason="account_shard_mismatch")
@@ -1092,6 +1084,50 @@ def _dispatch_send_message(session: Session, action: Action, account: TgAccount,
     result = gateway.send_message_to_target(account_id, target_peer, content, "channel", None, session_ciphertext, credentials)
     _apply_send_result(action, account, result.ok, result.remote_message_id or "", result.failure_type or "", result.detail or "", attempt=attempt)
     return True
+
+
+def _apply_claim_account_usage_policy(session: Session, action: Action, account: TgAccount) -> bool:
+    try:
+        assert_account_action_allowed(account, account.pool, _claim_action_kind(action))
+    except ValueError as exc:
+        _fail_with_policy(
+            action,
+            FailureType.ACCOUNT_UNAVAILABLE.value,
+            _claim_usage_failure_message(action, account, str(exc)),
+            auto_check="拦截",
+            validation_stage="account_usage",
+        )
+        _record_claim_usage_alert_if_needed(session, action, account)
+        return False
+    return True
+
+
+def _claim_action_kind(action: Action) -> str:
+    if action.action_type == "search_rank_deboost":
+        return "search_rank_deboost"
+    if action.action_type in {"send_message", "post_comment"}:
+        return "message_send"
+    if action.action_type in {"ensure_channel_membership", "ensure_target_membership", "invite_group_account"}:
+        return "target_admission"
+    return "operational_task"
+
+
+def _claim_usage_failure_message(action: Action, account: TgAccount, error: str) -> str:
+    if account.account_identity == "code_receiver":
+        return "接码专用账号不参与任务执行"
+    if action.action_type == "search_rank_deboost":
+        return "搜索排名观察任务只能使用专用账号"
+    if account.account_identity == "rank_deboost" or "rank_deboost" in error:
+        return "降权专用账号不参与其他任务执行"
+    return error
+
+
+def _record_claim_usage_alert_if_needed(session: Session, action: Action, account: TgAccount) -> None:
+    pool_purpose = str(account.pool.pool_purpose or "") if account.pool else ""
+    if action.action_type == "search_rank_deboost":
+        _record_rank_deboost_isolation_alert(session, action, account, "deboost_task_used_normal_account")
+    elif account.account_identity == "rank_deboost" or pool_purpose == "rank_deboost":
+        _record_rank_deboost_isolation_alert(session, action, account, "rank_deboost_account_used_by_other")
 
 
 def _group_ai_account_online_ready(

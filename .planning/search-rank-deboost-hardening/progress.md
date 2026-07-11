@@ -11,3 +11,23 @@
 - 已完成设计一致性自检：`git diff --check` 通过，专项设计未发现 `TODO`、`TBD`、`FIXME`，并清理了索引中的过期“待创建”和路由数量表述。
 - 已运行降权任务、账号中心权限及前端权限定向回归：`274 passed in 5.68s`。
 - 设计状态为 `design_complete`；生产代码尚未修改，实施与生产状态分别为 `implementation_not_started`、`production_unproven`。
+
+## 2026-07-10 Implementation Continuation
+
+- 已按实施计划落地账号用途策略、多个 `rank_deboost` 黑账号组、分组 runtime proxy binding、真实 Telethon Gateway、逐点击 reservation、Planner/Runtime factual outcome 状态机和前端账号选择契约。
+- 已完成子代理 review；发现的 P1 reservation 问题已修复：预执行 skip 释放 reservation，retry 不再错误重排 consumed/unknown，released reservation 只在显式 retry 前 reopen。
+- 已保留兼容导出 `_rank_deboost_pool_accounts`，修复旧 hard-boundary 测试 collection 入口。
+- 已将 `search_rank_deboost_runtime.py` 的代理出口告警 helper 拆出到 `search_rank_deboost_runtime_alerts.py`，runtime 文件降至 483 行，符合项目 500 行限制。
+- 验证通过：rank 定向集成套件 `363 passed in 10.12s`；前端契约 / 权限 / task dataflow `160 passed in 1.15s`；全量 no-PostgreSQL `1090 passed, 775 deselected, 5 warnings in 28.54s`；`frontend npm run build` 通过，只有 Vite chunk size warning；`py_compile` 与 `git diff --check` 已通过。
+- Release gate 收敛：旧 fixture / strict usage / runtime proxy readiness 造成的全量 no-PostgreSQL 失败已修复，显式保留 legacy unpooled normal 账号为普通用途，dedicated identity 仍 fail-closed。
+- Migration evidence 阻断：`alembic upgrade head --sql` 被旧迁移 `0002_developer_app_pool.py` 的 offline `sa.inspect(MockConnection)` 阻断；不是本迁移单点通过证据。
+- PostgreSQL 并发证据阻断：仓库当前没有 `backend/tests/test_search_rank_deboost_postgres.py`，命令 exit 4；未取得 Postgres reservation 并发验收。
+- 生产状态保持 `production_unproven`；本轮未做生产部署，未写 `production_fixed`。
+
+## 2026-07-11 Mainline Integration
+
+- 将旧功能分支的 28 个非等价提交重放到当前 `master`，解决 Listener 账号用途和主线配置冲突，保留全部账号每日覆盖与页面性能改动。
+- Listener 补充修复按红绿测试合入：读取账号不受发送冷却/发送容量影响，空手动范围不回退目标群全账号，每来源仍只使用一个账号。
+- 保持已发布 `0087` 不变；新增 `0089_rank_deboost_runtime_index`，冲突 active 节点绑定显式进入 `needs_runtime_proxy` 后建立唯一部分索引。
+- 本地验证：全量 no-PostgreSQL `1180 passed, 806 deselected`；PostgreSQL 805 项分批全部覆盖通过；新增并发 reservation 测试通过；真实迁移链升降级通过；前端生产构建、compileall、`git diff --check` 通过。
+- 本地状态为 `qa_pass`；生产状态仍为 `production_unproven`，真实协议样本、代理出口、1-2 个灰度账号点击和生产监控尚未验证。

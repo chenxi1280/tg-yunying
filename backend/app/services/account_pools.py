@@ -49,6 +49,7 @@ __all__ = [
 ]
 
 def account_pool_snapshot(session: Session, pool: AccountPool) -> dict:
+    binding = _active_rank_deboost_binding(session, pool)
     return {
         "id": pool.id,
         "tenant_id": pool.tenant_id,
@@ -63,9 +64,25 @@ def account_pool_snapshot(session: Session, pool: AccountPool) -> dict:
         "disabled_by": pool.disabled_by,
         "disable_reason": pool.disable_reason,
         "account_count": session.scalar(select(func.count(TgAccount.id)).where(TgAccount.pool_id == pool.id, TgAccount.deleted_at.is_(None))) or 0,
+        "rank_deboost_binding_status": binding.status if binding else "",
+        "rank_deboost_runtime_proxy_id": binding.runtime_proxy_id if binding else None,
+        "rank_deboost_observed_exit_ip": binding.observed_exit_ip if binding else "",
         "created_at": pool.created_at,
         "updated_at": pool.updated_at,
     }
+
+
+def _active_rank_deboost_binding(session: Session, pool: AccountPool) -> AccountGroupProxyBinding | None:
+    if not is_rank_deboost_pool(pool):
+        return None
+    return session.scalar(
+        select(AccountGroupProxyBinding).where(
+            AccountGroupProxyBinding.tenant_id == pool.tenant_id,
+            AccountGroupProxyBinding.account_pool_id == pool.id,
+            AccountGroupProxyBinding.status == "active",
+            AccountGroupProxyBinding.unbound_at.is_(None),
+        ).limit(1)
+    )
 
 
 def ensure_default_account_pool(session: Session, tenant_id: int) -> AccountPool:

@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.models import (
+    AccountPool,
     AccountEnvironmentBinding,
     AccountProxy,
     AccountProxyBinding,
@@ -41,12 +42,13 @@ def session() -> Session:
     Base.metadata.create_all(engine)
     with Session(engine) as db:
         db.add(Tenant(id=1, name="默认运营空间"))
+        db.add(AccountPool(id=1, tenant_id=1, name="普通账号组", pool_purpose="normal", is_enabled=True))
         db.add(OperationTarget(id=17, tenant_id=1, target_type="group", tg_peer_id="-10017", title="上海群", username="shanghai"))
         db.add_all(
             [
-                TgAccount(id=101, tenant_id=1, display_name="账号1", phone_masked="101", status=AccountStatus.ACTIVE.value, session_ciphertext="s1"),
-                TgAccount(id=102, tenant_id=1, display_name="账号2", phone_masked="102", status=AccountStatus.ACTIVE.value, session_ciphertext="s2"),
-                TgAccount(id=103, tenant_id=1, display_name="账号3", phone_masked="103", status=AccountStatus.ACTIVE.value, session_ciphertext="s3"),
+                TgAccount(id=101, tenant_id=1, pool_id=1, display_name="账号1", phone_masked="101", status=AccountStatus.ACTIVE.value, account_identity="normal", session_ciphertext="s1"),
+                TgAccount(id=102, tenant_id=1, pool_id=1, display_name="账号2", phone_masked="102", status=AccountStatus.ACTIVE.value, account_identity="normal", session_ciphertext="s2"),
+                TgAccount(id=103, tenant_id=1, pool_id=1, display_name="账号3", phone_masked="103", status=AccountStatus.ACTIVE.value, account_identity="normal", session_ciphertext="s3"),
             ]
         )
         db.add(

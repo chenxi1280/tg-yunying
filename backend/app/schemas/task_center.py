@@ -687,14 +687,16 @@ class SearchRankDeboostTaskCreate(BaseModel):
     search_bots: list[str] = Field(default=["jisou"], description="首版仅支持 jisou")
     keywords: list[dict] = Field(default_factory=list, description="关键词列表")
     target_group_ids: list[int] = Field(default_factory=list, description="我方目标群 ID 列表，用于实时排名判定与白名单")
-    account_pool_id: int = Field(description="账号分组 ID，必须为 pool_purpose=rank_deboost 的分组")
-    proxy_airport_node_id: int = Field(description="分组级绑定的 Clash 节点 ID")
+    account_pool_id: int | None = Field(default=None, description="兼容字段：账号分组 ID，必须为 pool_purpose=rank_deboost 的分组")
+    proxy_airport_node_id: int | None = Field(default=None, description="兼容字段：分组级绑定的 Clash 节点 ID")
+    account_config: AccountConfig = Field(default_factory=AccountConfig)
     config: dict = Field(default_factory=dict, description="任务配置，含节奏、停留时长、限流")
     notes: str = ""
 
 
 class SearchRankDeboostTaskConfigUpdate(BaseModel):
     """搜索排名降权任务配置更新 schema。"""
+    account_config: AccountConfig | None = None
     keywords: list[dict] | None = None
     target_group_ids: list[int] | None = None
     config: dict | None = None
@@ -720,8 +722,22 @@ class AccountGroupProxyBindingOut(ApiModel):
     runtime_proxy_id: int | None = None
     binding_generation: int
     status: str
+    observed_exit_ip: str = ""
+    observed_exit_country: str = ""
+    observed_exit_asn: str = ""
+    observed_exit_isp: str = ""
     last_probe_at: datetime | None = None
     last_probe_error: str = ""
+    reference_count: int = 0
+
+
+class RankDeboostProxyBindingRequest(BaseModel):
+    proxy_airport_node_id: int = Field(gt=0)
+    reason: str = Field(default="", max_length=255)
+
+
+class RankDeboostProxyBindingDeleteRequest(BaseModel):
+    reason: str = Field(default="", max_length=255)
 
 
 class SearchRankDeboostClickReservationOut(ApiModel):
@@ -1452,6 +1468,8 @@ __all__ = [
     "PacingConfig",
     "RecommendTaskAccountsRequest",
     "RecommendedTaskAccountOut",
+    "RankDeboostProxyBindingDeleteRequest",
+    "RankDeboostProxyBindingRequest",
     "ReviewApproveRequest",
     "ReviewQueueOut",
     "ReviewRejectRequest",

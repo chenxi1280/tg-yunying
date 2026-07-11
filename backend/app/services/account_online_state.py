@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.models import AccountStatus, Task, TgAccount, TgAccountOnlineState, TgGroup, TgGroupAccount
 from app.services._common import _now
+from app.services.account_usage_policy import apply_consistent_enabled_account_filters, apply_operational_account_filters
 from app.services.account_online_probe import probe_due_online_states, stale_deadline_for_state
 from app.timezone import as_beijing
 
@@ -347,18 +348,16 @@ def _active_session_accounts(session: Session, tenant_id: int) -> list[TgAccount
 
 
 def _keepalive_session_accounts(session: Session, tenant_id: int) -> list[TgAccount]:
-    stmt = (
-        select(TgAccount)
-        .where(
+    stmt = apply_consistent_enabled_account_filters(
+        select(TgAccount).where(
             TgAccount.tenant_id == tenant_id,
             TgAccount.deleted_at.is_(None),
             TgAccount.status.not_in(GLOBAL_KEEPALIVE_EXCLUDED_STATUSES),
             TgAccount.session_ciphertext.is_not(None),
             TgAccount.session_ciphertext != "",
         )
-        .order_by(TgAccount.id.asc())
     )
-    return list(session.scalars(stmt))
+    return list(session.scalars(stmt.order_by(TgAccount.id.asc())))
 
 
 def _active_session_account(session: Session, tenant_id: int, account_id: int | None) -> TgAccount | None:
@@ -368,13 +367,14 @@ def _active_session_account(session: Session, tenant_id: int, account_id: int | 
 
 
 def _active_session_account_stmt(tenant_id: int):
-    return select(TgAccount).where(
-        TgAccount.tenant_id == tenant_id,
-        TgAccount.deleted_at.is_(None),
-        TgAccount.status == AccountStatus.ACTIVE.value,
-        TgAccount.account_identity != "code_receiver",
-        TgAccount.session_ciphertext.is_not(None),
-        TgAccount.session_ciphertext != "",
+    return apply_operational_account_filters(
+        select(TgAccount).where(
+            TgAccount.tenant_id == tenant_id,
+            TgAccount.deleted_at.is_(None),
+            TgAccount.status == AccountStatus.ACTIVE.value,
+            TgAccount.session_ciphertext.is_not(None),
+            TgAccount.session_ciphertext != "",
+        )
     )
 
 

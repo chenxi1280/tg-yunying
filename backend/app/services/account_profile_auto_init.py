@@ -5,14 +5,14 @@ import re
 from dataclasses import dataclass
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 
-from app.models import AccountStatus, AuditLog, TgAccount, TgAccountSecurityBatch, TgAccountSecurityBatchItem
+from app.models import AccountPool, AccountStatus, AuditLog, TgAccount, TgAccountSecurityBatch, TgAccountSecurityBatchItem
 from app.schemas.account_security import AccountSecurityBatchCreate, AvatarStrategy, ProfileGenerationStrategy
 from app.services.account_security import create_account_security_batch
+from app.services.account_usage_policy import apply_operational_account_filters, assert_account_action_allowed
 
 
-CODE_RECEIVER_IDENTITY = "code_receiver"
 AUTO_PROFILE_ACTIONS = ["update_profile", "update_username", "update_avatar"]
 AUTO_PROFILE_REASON = "登录成功后自动初始化账号中文资料和头像"
 AUTO_VOICE_PROFILE_REASON = "登录成功后自动初始化账号面具"
@@ -118,19 +118,32 @@ def _candidate_accounts(session: Session, tenant_id: int, account_ids: list[int]
         TgAccount.session_ciphertext.is_not(None),
         TgAccount.session_ciphertext != "",
     )
+    stmt = apply_operational_account_filters(stmt)
     if account_ids:
         stmt = stmt.where(TgAccount.id.in_(account_ids))
     return list(session.scalars(stmt.order_by(TgAccount.id.asc())))
 
 
 def _operational_accounts(accounts: list[TgAccount]) -> list[TgAccount]:
-    return [account for account in accounts if account.account_identity != CODE_RECEIVER_IDENTITY]
+    return [account for account in accounts if _account_action_allowed(account, "account_mask_init")]
 
 
 def _should_queue_account(session: Session, account: TgAccount) -> bool:
-    if account.account_identity == CODE_RECEIVER_IDENTITY:
+    if not _account_action_allowed(account, "profile_init"):
         return False
     return not profile_is_ready(account) and not _has_open_profile_initialization(session, account.id)
+
+
+def _account_action_allowed(account: TgAccount, action_kind: str) -> bool:
+    session = object_session(account)
+    if session is None:
+        return False
+    pool = session.get(AccountPool, account.pool_id) if account.pool_id is not None else None
+    try:
+        assert_account_action_allowed(account, pool, action_kind)
+        return True
+    except ValueError:
+        return False
 
 
 def _has_open_profile_initialization(session: Session, account_id: int) -> bool:

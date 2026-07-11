@@ -97,6 +97,9 @@ class TenantAiSettingUpdate(BaseModel):
     default_provider_id: int | None = None
     ai_enabled: bool | None = None
     fallback_to_mock: bool | None = None
+    ai_group_model_fallback_enabled: bool | None = None
+    ai_group_grok_fallback_enabled: bool | None = None
+    ai_group_static_fallback_enabled: bool | None = None
     temperature: float | None = Field(default=None, ge=0, le=2)
     max_tokens: int | None = Field(default=None, ge=128, le=MINIMAX_MAX_TOKENS_LIMIT)
 
@@ -107,6 +110,9 @@ class TenantAiSettingOut(ApiModel):
     default_provider_id: int | None
     ai_enabled: bool
     fallback_to_mock: bool
+    ai_group_model_fallback_enabled: bool
+    ai_group_grok_fallback_enabled: bool
+    ai_group_static_fallback_enabled: bool
     temperature: float
     max_tokens: int
     updated_at: datetime
@@ -161,6 +167,7 @@ class AiAccountVoiceProfileBatchStatusRequest(BaseModel):
 class AiAccountVoiceProfileBatchStatusOut(ApiModel):
     updated: int = 0
     skipped: int = 0
+    items: list[AiAccountVoiceProfileBatchItemOut] = Field(default_factory=list)
 
 
 class AiAccountVoiceProfileRollbackRequest(BaseModel):

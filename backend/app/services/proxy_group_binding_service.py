@@ -11,6 +11,8 @@ from app.models import (
 )
 from app.models.enums import AccountProxyBindingScope
 from app.services._common import _now, audit
+from app.services.proxy_airport_accounts import proxy_for_airport_node
+from app.services.proxy_group_binding_snapshots import binding_snapshot, rank_deboost_pool_reference_count
 from app.services.task_center.search_rank_deboost import (
     assert_account_pool_for_rank_deboost,
     assert_node_available_for_group_binding,
@@ -32,22 +34,57 @@ def create_group_proxy_binding(
     2. proxy_airport_node_id 节点存在且健康
     3. 节点独占：未被授权槽位级 account_proxy_bindings 绑定
     4. 节点独占：未被其他降权分组绑定
-    5. 该分组当前无 active 绑定
+    5. 同一分组同一节点幂等复用；不同节点显式切换并提升 generation
     """
-    node = _assert_can_create_group_binding(
+    return create_or_update_rank_deboost_proxy_binding(
+        session,
+        tenant_id=tenant_id,
+        account_pool_id=account_pool_id,
+        proxy_airport_node_id=proxy_airport_node_id,
+        operator=operator,
+        reason="create_group_proxy_binding",
+    )
+
+
+def create_or_update_rank_deboost_proxy_binding(
+    session: Session,
+    *,
+    tenant_id: int,
+    account_pool_id: int,
+    proxy_airport_node_id: int,
+    operator: str,
+    reason: str = "",
+) -> AccountGroupProxyBinding:
+    node = _assert_node_available_for_binding_change(
         session,
         tenant_id=tenant_id,
         account_pool_id=account_pool_id,
         proxy_airport_node_id=proxy_airport_node_id,
     )
-    binding = _new_group_binding(tenant_id, account_pool_id, node, operator, generation=1)
+    runtime_proxy = proxy_for_airport_node(session, node)
+    active = _active_group_binding_for_update(session, tenant_id, account_pool_id)
+    if active is not None and _same_binding(active, node.id, runtime_proxy.id):
+        return active
+    generation = int(active.binding_generation or 1) + 1 if active is not None else 1
+    if active is not None:
+        _mark_group_binding_unbound(active, reason or "switch_rank_deboost_proxy_binding")
+    binding = _new_group_binding(
+        tenant_id,
+        account_pool_id,
+        node,
+        operator,
+        generation=generation,
+        reason=reason,
+        runtime_proxy_id=runtime_proxy.id,
+    )
     session.add(binding)
     session.flush()
-    _audit_group_binding(session, binding, operator, "create_group_proxy_binding", detail=f"pool={account_pool_id}, node={node.id}")
+    detail = f"pool={account_pool_id}, node={node.id}, runtime_proxy={runtime_proxy.id}"
+    _audit_group_binding(session, binding, operator, "create_group_proxy_binding", detail=detail)
     return binding
 
 
-def _assert_can_create_group_binding(
+def _assert_node_available_for_binding_change(
     session: Session,
     *,
     tenant_id: int,
@@ -60,10 +97,49 @@ def _assert_can_create_group_binding(
         tenant_id=tenant_id,
         proxy_airport_node_id=proxy_airport_node_id,
     )
+    _assert_node_not_used_by_other_group(session, tenant_id, account_pool_id, node.id)
+    return node
+
+
+def _active_group_binding_for_update(
+    session: Session,
+    tenant_id: int,
+    account_pool_id: int,
+) -> AccountGroupProxyBinding | None:
+    stmt = (
+        select(AccountGroupProxyBinding)
+        .where(
+            AccountGroupProxyBinding.tenant_id == tenant_id,
+            AccountGroupProxyBinding.account_pool_id == int(account_pool_id),
+            AccountGroupProxyBinding.status == "active",
+            AccountGroupProxyBinding.unbound_at.is_(None),
+        )
+        .limit(1)
+        .with_for_update()
+    )
+    return session.scalar(stmt)
+
+
+def _same_binding(binding: AccountGroupProxyBinding, node_id: int, runtime_proxy_id: int) -> bool:
+    return binding.proxy_airport_node_id == node_id and binding.runtime_proxy_id == runtime_proxy_id
+
+
+def _mark_group_binding_unbound(binding: AccountGroupProxyBinding, reason: str) -> None:
+    binding.status = "unbound"
+    binding.unbound_at = _now()
+    binding.change_reason = reason
+
+
+def _assert_node_not_used_by_other_group(
+    session: Session,
+    tenant_id: int,
+    account_pool_id: int,
+    proxy_airport_node_id: int,
+) -> None:
     other_group_binding = session.scalar(
         select(AccountGroupProxyBinding.id).where(
             AccountGroupProxyBinding.tenant_id == tenant_id,
-            AccountGroupProxyBinding.proxy_airport_node_id == node.id,
+            AccountGroupProxyBinding.proxy_airport_node_id == int(proxy_airport_node_id),
             AccountGroupProxyBinding.status == "active",
             AccountGroupProxyBinding.unbound_at.is_(None),
             AccountGroupProxyBinding.account_pool_id != int(account_pool_id),
@@ -71,9 +147,20 @@ def _assert_can_create_group_binding(
     )
     if other_group_binding is not None:
         raise ValueError(f"节点 {proxy_airport_node_id} 已被其他降权分组绑定")
-    if get_active_group_binding(session, tenant_id=tenant_id, account_pool_id=account_pool_id) is not None:
-        raise ValueError(f"分组 {account_pool_id} 已存在 active 绑定，请先解绑")
-    return node
+
+
+def delete_rank_deboost_proxy_binding(
+    session: Session,
+    *,
+    tenant_id: int,
+    account_pool_id: int,
+    operator: str,
+    reason: str,
+) -> AccountGroupProxyBinding:
+    if rank_deboost_pool_reference_count(session, tenant_id, account_pool_id) > 0:
+        raise ValueError("account_pool_has_running/paused_search_rank_deboost_reference")
+    binding = _require_active_group_binding(session, tenant_id, account_pool_id)
+    return unbind_group_proxy_binding(session, binding_id=binding.id, reason=reason, operator=operator)
 
 
 def _new_group_binding(
@@ -84,11 +171,13 @@ def _new_group_binding(
     *,
     generation: int,
     reason: str = "",
+    runtime_proxy_id: int | None = None,
 ) -> AccountGroupProxyBinding:
     return AccountGroupProxyBinding(
         tenant_id=tenant_id,
         account_pool_id=int(account_pool_id),
         proxy_airport_node_id=node.id,
+        runtime_proxy_id=runtime_proxy_id,
         binding_scope=AccountProxyBindingScope.GROUP.value,
         observed_exit_ip=node.observed_exit_ip or "",
         observed_exit_country=node.observed_exit_country or "",
@@ -187,6 +276,7 @@ def failover_group_proxy_binding(
     old_binding = _require_active_group_binding(session, tenant_id, account_pool_id)
     from_node = _require_proxy_airport_node(session, old_binding)
     to_node = _require_failover_node(session, tenant_id, from_node)
+    runtime_proxy = proxy_for_airport_node(session, to_node)
     now = _now()
     old_binding.status = "unbound"
     old_binding.unbound_at = now
@@ -200,11 +290,12 @@ def failover_group_proxy_binding(
         operator,
         generation=int(old_binding.binding_generation or 1) + 1,
         reason=reason,
+        runtime_proxy_id=runtime_proxy.id,
     )
     new_binding.last_failover_at = now
     session.add(new_binding)
     session.flush()
-    detail = f"pool={account_pool_id}, from_node={from_node.id}, to_node={to_node.id}, reason={reason}"
+    detail = f"pool={account_pool_id}, from_node={from_node.id}, to_node={to_node.id}, runtime_proxy={runtime_proxy.id}, reason={reason}"
     _audit_group_binding(session, new_binding, operator, "failover_group_proxy_binding", detail=detail)
     return new_binding
 
@@ -303,26 +394,39 @@ def verify_group_proxy_egress(
     if binding is None or binding.status != "active":
         return False
 
+    now = _now()
     if probe_exit_ip is None or not probe_exit_ip.strip():
+        if binding is not None:
+            binding.last_probe_at = now
+            binding.last_probe_error = "proxy_egress_probe_missing"
+            session.flush()
         return False
 
     probed = probe_exit_ip.strip()
     observed = (binding.observed_exit_ip or "").strip()
     if observed and observed != probed:
+        binding.last_probe_at = now
+        binding.last_probe_error = "proxy_egress_ip_drift"
+        session.flush()
         return False
 
-    now = _now()
     if not observed:
         binding.observed_exit_ip = probed
     binding.last_health_check_at = now
+    binding.last_probe_at = now
+    binding.last_probe_error = ""
     session.flush()
     return True
 
 
 __all__ = [
+    "binding_snapshot",
     "create_group_proxy_binding",
+    "create_or_update_rank_deboost_proxy_binding",
+    "delete_rank_deboost_proxy_binding",
     "failover_group_proxy_binding",
     "get_active_group_binding",
+    "rank_deboost_pool_reference_count",
     "unbind_group_proxy_binding",
     "verify_group_proxy_egress",
 ]

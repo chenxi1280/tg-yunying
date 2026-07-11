@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.integrations.telegram import AccountHealth
-from app.models import AccountStatus, Task, TgAccount, TgAccountOnlineState, TgGroup, TgGroupAccount
+from app.models import AccountPool, AccountStatus, Task, TgAccount, TgAccountOnlineState, TgGroup, TgGroupAccount
 from app.services._common import _now
 from app.services.account_online_state import (
     is_account_online_available,
@@ -31,13 +31,25 @@ def _session() -> Session:
     return Session(engine)
 
 
+def _ensure_normal_pool(session: Session) -> AccountPool:
+    pool = session.get(AccountPool, 1)
+    if pool is None:
+        pool = AccountPool(id=1, tenant_id=1, name="普通账号组", pool_purpose="normal", is_default=True)
+        session.add(pool)
+        session.flush()
+    return pool
+
+
 def _account(session: Session, account_id: int = 101) -> TgAccount:
+    pool = _ensure_normal_pool(session)
     account = TgAccount(
         id=account_id,
         tenant_id=1,
+        pool_id=pool.id,
         display_name=f"账号{account_id}",
         phone_masked=f"138****{account_id}",
         status=AccountStatus.ACTIVE.value,
+        account_identity="normal",
         session_ciphertext="session",
         proxy_id=7,
     )
@@ -634,6 +646,49 @@ def test_runtime_reconcile_can_keep_all_active_session_accounts_online_globally(
         assert changed == 2
         assert set(rows) == {101, 102}
         assert rows[101].desired_sources == [{"source_type": "global", "source_id": "global_keepalive"}]
+
+
+def test_global_keepalive_keeps_consistent_dedicated_accounts_for_health_probe():
+    with _session() as session:
+        session.add(AccountPool(id=2, tenant_id=1, name="接码账号组", pool_purpose="code_receiver"))
+        session.add(AccountPool(id=3, tenant_id=1, name="降权账号组", pool_purpose="rank_deboost"))
+        session.add(
+            TgAccount(
+                id=201,
+                tenant_id=1,
+                pool_id=2,
+                display_name="接码账号",
+                phone_masked="201",
+                status=AccountStatus.ACTIVE.value,
+                account_identity="code_receiver",
+                session_ciphertext="session-201",
+            )
+        )
+        session.add(
+            TgAccount(
+                id=202,
+                tenant_id=1,
+                pool_id=3,
+                display_name="降权账号",
+                phone_masked="202",
+                status=AccountStatus.ACTIVE.value,
+                account_identity="rank_deboost",
+                session_ciphertext="session-202",
+            )
+        )
+        session.commit()
+
+        changed = reconcile_runtime_online_sources(session, tenant_id=1, include_global=True)
+        session.commit()
+
+        rows = {
+            row.account_id: row
+            for row in session.scalars(select(TgAccountOnlineState).where(TgAccountOnlineState.tenant_id == 1))
+        }
+        assert changed == 2
+        assert set(rows) == {201, 202}
+        assert rows[201].desired_sources == [{"source_type": "global", "source_id": "global_keepalive"}]
+        assert rows[202].desired_sources == [{"source_type": "global", "source_id": "global_keepalive"}]
 
 
 def test_global_keepalive_retains_login_required_account_for_recovery():

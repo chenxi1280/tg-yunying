@@ -10,15 +10,21 @@ from uuid import uuid4
 from sqlalchemy.orm import Session
 
 from app.models import AccountStatus, Action, TgAccount
-from app.models.search_rank_deboost import AccountGroupProxyBinding, SearchRankDeboostActionStat
+from app.models.search_rank_deboost import SearchRankDeboostActionStat
 from app.security import decrypt_secret
 from app.services._common import _now
 from app.services.search_rank_deboost_alerts import (
     record_all_exempt_clicks_alert,
-    record_group_proxy_egress_failure_alert,
     record_join_button_violation_alert,
 )
 from app.services.task_center.payloads import SearchRankDeboostPayload
+from app.services.task_center.search_rank_deboost_reservations import (
+    consume_reservation,
+    consume_reserved_reservation,
+    mark_reservation_unknown,
+    release_reserved_reservation,
+    release_reservation,
+)
 
 from ..search_rank_deboost import (
     ALL_EXEMPT_CLICKS,
@@ -27,6 +33,7 @@ from ..search_rank_deboost import (
     compute_deboost_click_targets,
 )
 from ..search_rank_deboost_pacing import DEFAULT_DWELL_SECONDS_MAX, DEFAULT_DWELL_SECONDS_MIN
+from .search_rank_deboost_runtime_alerts import record_proxy_egress_alert
 
 
 PROXY_EGRESS_GUARD_FAILED = "proxy_egress_guard_failed"
@@ -57,22 +64,25 @@ def execute_search_rank_deboost(
     """执行单条搜索排名观察 action；真实 gateway 不可用时显式 skip。"""
     binding_id = _binding_id(payload)
     if binding_id <= 0:
-        return _skip_result(action, PROXY_EGRESS_GUARD_FAILED, "排名观察任务缺少 group_proxy_binding_id")
+        return _skip_without_click(session, action, PROXY_EGRESS_GUARD_FAILED, "排名观察任务缺少 group_proxy_binding_id")
 
     if probe_exit_ip is not _NO_EXPLICIT_PROBE:
         if not _verify_proxy_egress(session, action, account, binding_id, probe_exit_ip):
-            return _skip_result(action, PROXY_EGRESS_GUARD_FAILED, "分组级代理出口校验失败，禁止回退本机直连")
+            return _skip_without_click(session, action, PROXY_EGRESS_GUARD_FAILED, "分组级代理出口校验失败，禁止回退本机直连")
 
     gateway_result = _invoke_gateway(gateway_execute, account, payload)
     if gateway_result is None:
-        return _skip_result(action, GATEWAY_UNAVAILABLE, "搜索排名观察 gateway 尚未接入真实 MTProto 执行器")
+        return _skip_without_click(session, action, GATEWAY_UNAVAILABLE, "搜索排名观察 gateway 尚未接入真实 MTProto 执行器")
 
     runtime_probe_ip = _runtime_probe_exit_ip(gateway_result)
     if runtime_probe_ip is None and probe_exit_ip is _NO_EXPLICIT_PROBE:
         if not _verify_proxy_egress(session, action, account, binding_id, None):
-            return _skip_result(action, PROXY_EGRESS_GUARD_FAILED, "分组级代理出口校验失败，禁止回退本机直连")
+            return _skip_without_click(session, action, PROXY_EGRESS_GUARD_FAILED, "分组级代理出口校验失败，禁止回退本机直连")
     if runtime_probe_ip is not None and not _verify_proxy_egress(session, action, account, binding_id, runtime_probe_ip):
-        return _skip_result(action, PROXY_EGRESS_GUARD_FAILED, "分组级代理出口校验失败，禁止回退本机直连")
+        return _skip_without_click(session, action, PROXY_EGRESS_GUARD_FAILED, "分组级代理出口校验失败，禁止回退本机直连")
+
+    if _is_factual_gateway_result(gateway_result):
+        return _handle_factual_gateway_result(session, action, account, payload, gateway_result)
 
     decision_or_skip = _search_decision(session, action, payload, gateway_result)
     if "skip_reason" in decision_or_skip:
@@ -80,6 +90,10 @@ def execute_search_rank_deboost(
 
     click_targets = decision_or_skip.get("click_targets") or []
     run = _process_click_targets(session, action, account, payload, click_targets)
+    if run.clicked_count > 0:
+        consume_reserved_reservation(session, action.id)
+    else:
+        release_reserved_reservation(session, action.id)
     return _success_result(decision_or_skip, click_targets, run)
 
 
@@ -99,7 +113,7 @@ def _verify_proxy_egress(
 
     if verify_group_proxy_egress(session, binding_id=binding_id, probe_exit_ip=probe_exit_ip):
         return True
-    _record_proxy_egress_alert(session, action=action, account=account, binding_id=binding_id, probe_exit_ip=probe_exit_ip)
+    record_proxy_egress_alert(session, action=action, account=account, binding_id=binding_id, probe_exit_ip=probe_exit_ip)
     return False
 
 
@@ -121,7 +135,7 @@ def _search_decision(
 def _decision_or_skip(session: Session, action: Action, decision: dict) -> dict:
     skipped_reason = decision.get("skipped_reason")
     if skipped_reason == TARGET_NOT_IN_RESULTS:
-        return _skip_result(action, TARGET_NOT_IN_RESULTS, "我方目标群未出现在搜索结果")
+        return _skip_without_click(session, action, TARGET_NOT_IN_RESULTS, "我方目标群未出现在搜索结果")
     if skipped_reason != ALL_EXEMPT_CLICKS:
         return decision
     record_all_exempt_clicks_alert(
@@ -131,7 +145,7 @@ def _decision_or_skip(session: Session, action: Action, decision: dict) -> dict:
         action_id=action.id,
         account_id=int(action.account_id or 0) or None,
     )
-    return _skip_result(action, ALL_EXEMPT_CLICKS, "所有结果都被白名单豁免")
+    return _skip_without_click(session, action, ALL_EXEMPT_CLICKS, "所有结果都被白名单豁免")
 
 
 def _process_click_targets(
@@ -283,6 +297,55 @@ def _success_result(decision: dict, click_targets: list[dict], run: ClickRunResu
     return result
 
 
+def _is_factual_gateway_result(result: dict) -> bool:
+    return bool(str(result.get("execution_status") or "").strip())
+
+
+def _handle_factual_gateway_result(
+    session: Session,
+    action: Action,
+    account: TgAccount,
+    payload: SearchRankDeboostPayload,
+    gateway_result: dict,
+) -> dict:
+    status = str(gateway_result.get("execution_status") or "").strip()
+    if status == "confirmed":
+        consume_reservation(session, action.id)
+        _write_factual_stats(session, action, payload, gateway_result)
+        return {**gateway_result, "success": True}
+    if status == "unknown_after_click":
+        mark_reservation_unknown(session, action.id)
+        return {**gateway_result, "success": False}
+    release_reservation(session, action.id)
+    return {**gateway_result, "success": False, "skip_reason": status or "observed_no_click"}
+
+
+def _write_factual_stats(session: Session, action: Action, payload: SearchRankDeboostPayload, gateway_result: dict) -> None:
+    hour_bucket = _now().replace(minute=0, second=0, microsecond=0)
+    search_results = _gateway_search_results(gateway_result)
+    target = search_results[0] if search_results else {}
+    for outcome in _confirmed_click_outcomes(gateway_result):
+        _write_clicked_stat(session, action, payload, target, _outcome_button(outcome), False, hour_bucket)
+
+
+def _confirmed_click_outcomes(gateway_result: dict) -> list[dict]:
+    outcomes = gateway_result.get("click_outcomes") or []
+    if not isinstance(outcomes, list):
+        return []
+    return [item for item in outcomes if isinstance(item, dict) and item.get("status") == "confirmed"]
+
+
+def _outcome_button(outcome: dict) -> dict:
+    return {
+        "row": int(outcome.get("row") or 0),
+        "col": int(outcome.get("col") or 0),
+        "text": str(outcome.get("text") or ""),
+        "url": str(outcome.get("url") or ""),
+        "effect": str(outcome.get("effect") or "navigate_only"),
+        "position": int(outcome.get("position") or 1),
+    }
+
+
 def _invoke_gateway(gateway_execute: Any | None, account: TgAccount, payload: SearchRankDeboostPayload) -> dict | None:
     if gateway_execute is None:
         from app.services._common import gateway
@@ -292,7 +355,11 @@ def _invoke_gateway(gateway_execute: Any | None, account: TgAccount, payload: Se
         return None
     keyword_text = decrypt_secret(payload.keyword_text_ciphertext) or ""
     result = gateway_execute(account.id, payload.model_dump(mode="json"), keyword_text)
-    if not isinstance(result, dict) or not result.get("success"):
+    if not isinstance(result, dict):
+        return None
+    if _is_factual_gateway_result(result):
+        return result
+    if not result.get("success"):
         return None
     return result
 
@@ -398,30 +465,6 @@ def _write_stat(
     session.flush()
 
 
-def _record_proxy_egress_alert(
-    session: Session,
-    *,
-    action: Action,
-    account: TgAccount,
-    binding_id: int,
-    probe_exit_ip: str | None,
-) -> None:
-    binding = session.get(AccountGroupProxyBinding, int(binding_id))
-    binding_active = binding is not None and binding.status == "active"
-    observed_exit_ip = (binding.observed_exit_ip or "") if binding else ""
-    record_group_proxy_egress_failure_alert(
-        session,
-        tenant_id=action.tenant_id,
-        task_id=action.task_id,
-        action_id=action.id,
-        account_id=int(account.id),
-        binding_id=int(binding_id),
-        binding_active=binding_active,
-        observed_exit_ip=observed_exit_ip,
-        probe_exit_ip=(probe_exit_ip or "").strip(),
-    )
-
-
 def _skip_result(action: Action, code: str, detail: str) -> dict:
     return {
         "success": False,
@@ -430,6 +473,11 @@ def _skip_result(action: Action, code: str, detail: str) -> dict:
         "skip_reason": code,
         "validation_stage": "search_rank_deboost",
     }
+
+
+def _skip_without_click(session: Session, action: Action, code: str, detail: str) -> dict:
+    release_reserved_reservation(session, action.id)
+    return _skip_result(action, code, detail)
 
 
 __all__ = ["execute_search_rank_deboost"]

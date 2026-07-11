@@ -8,10 +8,11 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import Action, Task
-from app.models.search_rank_deboost import SearchRankDeboostActionStat
+from app.models.search_rank_deboost import SearchRankDeboostActionStat, SearchRankDeboostClickReservation
 from app.services._common import _now
 
 REAL_ACTION_STATUSES = {"pending", "claiming", "executing", "success", "failed"}
+ACTIVE_RESERVATION_STATUSES = {"reserved", "consumed", "unknown"}
 DEFAULT_SOURCE_TIMEZONE = ZoneInfo("Asia/Shanghai")
 
 DEFAULT_PER_ACCOUNT_DAILY_CLICK_LIMIT = 5
@@ -107,53 +108,85 @@ def _block(stats: DeboostPacingStats, account_id: int, reason: str) -> bool:
 
 
 def _account_daily_clicks(session: Session, task: Task, account_id: int, local_date: date) -> int:
-    start_at, end_at = _local_day_bounds(task.timezone, local_date)
-    return int(
-        session.scalar(
-            select(func.count(SearchRankDeboostActionStat.id)).where(
-                SearchRankDeboostActionStat.tenant_id == task.tenant_id,
-                SearchRankDeboostActionStat.task_id == task.id,
-                SearchRankDeboostActionStat.account_id == account_id,
-                SearchRankDeboostActionStat.captured_at >= start_at,
-                SearchRankDeboostActionStat.captured_at < end_at,
-                SearchRankDeboostActionStat.skip_reason == "",
-            )
-        )
-        or 0
+    reservation_count = _reservation_count(
+        session,
+        task,
+        local_date,
+        SearchRankDeboostClickReservation.account_id == account_id,
+    )
+    return reservation_count + _legacy_stat_clicks(
+        session,
+        task,
+        local_date,
+        SearchRankDeboostActionStat.account_id == account_id,
     )
 
 
 def _keyword_account_daily_clicks(session: Session, task: Task, account_id: int, keyword_hash: str, local_date: date) -> int:
     if not keyword_hash:
         return 0
-    start_at, end_at = _local_day_bounds(task.timezone, local_date)
+    reservation_count = _reservation_count(
+        session,
+        task,
+        local_date,
+        SearchRankDeboostClickReservation.account_id == account_id,
+        SearchRankDeboostClickReservation.keyword_hash == keyword_hash,
+    )
+    return reservation_count + _legacy_stat_clicks(
+        session,
+        task,
+        local_date,
+        SearchRankDeboostActionStat.account_id == account_id,
+        SearchRankDeboostActionStat.keyword_hash == keyword_hash,
+    )
+
+
+def _group_ip_daily_clicks(session: Session, task: Task, account_pool_id: int, local_date: date) -> int:
+    reservation_count = _reservation_count(
+        session,
+        task,
+        local_date,
+        SearchRankDeboostClickReservation.account_pool_id == account_pool_id,
+    )
+    return reservation_count + _legacy_stat_clicks(
+        session,
+        task,
+        local_date,
+        SearchRankDeboostActionStat.account_pool_id == account_pool_id,
+    )
+
+
+def _reservation_count(session: Session, task: Task, local_date: date, *conditions) -> int:
     return int(
         session.scalar(
-            select(func.count(SearchRankDeboostActionStat.id)).where(
-                SearchRankDeboostActionStat.tenant_id == task.tenant_id,
-                SearchRankDeboostActionStat.task_id == task.id,
-                SearchRankDeboostActionStat.account_id == account_id,
-                SearchRankDeboostActionStat.keyword_hash == keyword_hash,
-                SearchRankDeboostActionStat.captured_at >= start_at,
-                SearchRankDeboostActionStat.captured_at < end_at,
-                SearchRankDeboostActionStat.skip_reason == "",
+            select(func.coalesce(func.sum(SearchRankDeboostClickReservation.reserved_count), 0)).where(
+                SearchRankDeboostClickReservation.tenant_id == task.tenant_id,
+                SearchRankDeboostClickReservation.task_id == task.id,
+                SearchRankDeboostClickReservation.local_date == local_date,
+                SearchRankDeboostClickReservation.status.in_(ACTIVE_RESERVATION_STATUSES),
+                *conditions,
             )
         )
         or 0
     )
 
 
-def _group_ip_daily_clicks(session: Session, task: Task, account_pool_id: int, local_date: date) -> int:
+def _legacy_stat_clicks(session: Session, task: Task, local_date: date, *conditions) -> int:
     start_at, end_at = _local_day_bounds(task.timezone, local_date)
+    reserved_actions = select(SearchRankDeboostClickReservation.action_id).where(
+        SearchRankDeboostClickReservation.tenant_id == task.tenant_id,
+        SearchRankDeboostClickReservation.task_id == task.id,
+    )
     return int(
         session.scalar(
             select(func.count(SearchRankDeboostActionStat.id)).where(
                 SearchRankDeboostActionStat.tenant_id == task.tenant_id,
                 SearchRankDeboostActionStat.task_id == task.id,
-                SearchRankDeboostActionStat.account_pool_id == account_pool_id,
                 SearchRankDeboostActionStat.captured_at >= start_at,
                 SearchRankDeboostActionStat.captured_at < end_at,
                 SearchRankDeboostActionStat.skip_reason == "",
+                SearchRankDeboostActionStat.action_id.not_in(reserved_actions),
+                *conditions,
             )
         )
         or 0

@@ -318,3 +318,13 @@
 - decision: `qa_pass=true`；本地性能目标通过；不把本地数据写成生产恢复。
 - next_agent: product
 - unresolved: CI、生产发布、生产真实登录态 30 次串行 + 10 并发、p95/p99、零 408/499/502 和 nginx/backend 同窗口日志仍未验证。
+
+## 2026-07-11 搜索排名观察与 Listener 主线集成本地 QA
+
+- message_id: `2026-07-11-rank-listener-mainline-integration-local-qa-001`
+- input: `2026-07-11-rank-listener-mainline-integration-devcomplete-001`。
+- output: `local_qa_pass_for_rank_listener_mainline_integration`。
+- evidence: Listener 红绿回归 3 passed；搜索降权定向 210 passed；全量 no-PostgreSQL 1180 passed；PostgreSQL 805 项按 20 项硬超时分批全部覆盖；并发 reservation 1 passed；迁移全链升降级、frontend build、compileall、diff check 通过。
+- decision: `qa_pass=true`；本地 Release Gate 通过；不声明生产可用。
+- next_agent: product
+- unresolved: 真实协议样本、生产代理出口、灰度点击结果和生产监控仍为 `unproven`。

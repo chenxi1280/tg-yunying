@@ -15,7 +15,7 @@ from app.security import decrypt_secret, encrypt_secret
 pytestmark = pytest.mark.no_postgres
 
 
-def test_update_minimax_provider_upserts_checked_provider_without_leaking_key(monkeypatch):
+def test_update_minimax_provider_upserts_m3_and_m25_without_leaking_key(monkeypatch):
     module = _load_script()
     engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -47,17 +47,16 @@ def test_update_minimax_provider_upserts_checked_provider_without_leaking_key(mo
     payload = module._upsert_provider(config)
 
     assert secret_key not in str(payload)
-    assert payload["created"] is False
-    assert payload["base_url"] == "https://api.minimaxi.com/v1"
-    assert payload["model_name"] == "MiniMax-M3"
-    assert payload["health_status"] == "健康"
+    assert payload["primary"]["model_name"] == "MiniMax-M3"
+    assert payload["fallback"]["model_name"] == "MiniMax-M2.5"
     assert payload["tenant_default_updated"] is True
     with Session(engine) as session:
-        provider = session.scalar(select(AiProvider).where(AiProvider.provider_name == "MiniMax"))
+        providers = list(session.scalars(select(AiProvider).order_by(AiProvider.model_name.asc())))
         setting = session.scalar(select(TenantAiSetting).where(TenantAiSetting.tenant_id == 1))
-        assert provider is not None
-        assert decrypt_secret(provider.api_key_ciphertext) == secret_key
-        assert setting.default_provider_id == provider.id
+        assert {provider.model_name for provider in providers} == {"MiniMax-M2.5", "MiniMax-M3"}
+        assert all(decrypt_secret(provider.api_key_ciphertext) == secret_key for provider in providers)
+        primary = next(provider for provider in providers if provider.model_name == "MiniMax-M3")
+        assert setting.default_provider_id == primary.id
         assert setting.ai_enabled is True
         assert setting.fallback_to_mock is False
 
@@ -80,15 +79,13 @@ def test_update_minimax_provider_creates_configured_provider_before_flush(monkey
 
     payload = module._upsert_provider(module._config_from_env())
 
-    assert payload["created"] is True
-    assert payload["base_url"] == "https://api.minimaxi.com/v1"
-    assert payload["model_name"] == "MiniMax-M3"
+    assert payload["primary"]["created"] is True
+    assert payload["fallback"]["created"] is True
     with Session(engine) as session:
-        provider = session.scalar(select(AiProvider).where(AiProvider.provider_name == "MiniMax"))
-        assert provider is not None
-        assert provider.base_url == "https://api.minimaxi.com/v1"
-        assert provider.model_name == "MiniMax-M3"
-        assert decrypt_secret(provider.api_key_ciphertext) == secret_key
+        providers = list(session.scalars(select(AiProvider).order_by(AiProvider.model_name.asc())))
+        assert {provider.model_name for provider in providers} == {"MiniMax-M2.5", "MiniMax-M3"}
+        assert all(provider.base_url == "https://api.minimaxi.com/v1" for provider in providers)
+        assert all(decrypt_secret(provider.api_key_ciphertext) == secret_key for provider in providers)
 
 
 def _load_script():
