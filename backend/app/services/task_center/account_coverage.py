@@ -17,7 +17,7 @@ from .account_pool import (
     daily_account_coverage_counts,
 )
 from .config_normalization import apply_group_ai_account_coverage_defaults
-from .coverage_capacity import task_coverage_capacity_proof
+from .coverage_capacity import reserved_coverage_message_count, task_coverage_capacity_proof
 
 
 def task_account_coverage(session: Session, task: Task) -> dict[str, object]:
@@ -253,6 +253,7 @@ def _ledger_capacity_proof(
         target_account_count=len(rows),
         target_per_account=max(row.target_count for row in rows),
         confirmed_message_count=sum(row.confirmed_count for row in rows),
+        reserved_message_count=reserved_coverage_message_count(rows),
     )
 
 

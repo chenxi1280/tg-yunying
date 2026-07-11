@@ -33,7 +33,7 @@ from ..ai_message_memory import DuplicateMessageReservation, mark_group_ai_messa
 from ..account_voice_profiles import group_stance_summaries, voice_profile_prompt_details
 from ..channel_membership import gate_channel_membership
 from ..config_normalization import normalize_operation_target_references
-from ..coverage_capacity import task_coverage_capacity_proof
+from ..coverage_capacity import reserved_coverage_message_count, task_coverage_capacity_proof
 from ..daily_coverage import (
     block_coverage_accounts,
     daily_coverage_due_debt,
@@ -1023,6 +1023,7 @@ def _coverage_capacity_blocker(
         target_account_count=len(rows),
         target_per_account=max(row.target_count for row in rows),
         confirmed_message_count=sum(row.confirmed_count for row in rows),
+        reserved_message_count=reserved_coverage_message_count(rows),
     )
     if proof.get("sufficient"):
         _clear_coverage_capacity_blocker(task)
@@ -1041,6 +1042,8 @@ def _clear_coverage_capacity_blocker(task: Task) -> None:
     stats.pop("coverage_capacity_status", None)
     stats.pop("coverage_capacity_proof", None)
     task.stats = stats
+    if task.last_error == "全部账号每日覆盖容量不足，已停止创建发送 Action":
+        task.last_error = ""
 
 
 def _coverage_plan_state(
