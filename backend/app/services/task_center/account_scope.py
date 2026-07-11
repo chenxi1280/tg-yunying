@@ -155,7 +155,7 @@ def reconcile_all_account_scopes_if_due(session: Session, *, now: datetime | Non
             RuntimeMetricSnapshot.metric_name == SCOPE_RECONCILE_METRIC
         )
     )
-    if last_at and timestamp - last_at.replace(tzinfo=None) < SCOPE_RECONCILE_INTERVAL:
+    if last_at and _wall_time(timestamp) - _wall_time(last_at) < SCOPE_RECONCILE_INTERVAL:
         return 0
     tenant_ids = list(
         session.scalars(
@@ -189,6 +189,10 @@ def _record_reconcile_metric(
             "eligible_accounts": result.eligible_accounts,
         },
     ))
+
+
+def _wall_time(value: datetime) -> datetime:
+    return value.replace(tzinfo=None) if value.tzinfo else value
 
 
 def sync_account_to_all_tasks(session: Session, account_id: int, *, now: datetime | None = None) -> int:

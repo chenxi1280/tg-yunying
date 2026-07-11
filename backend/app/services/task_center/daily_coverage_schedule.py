@@ -38,6 +38,7 @@ def _cumulative_due(
     now: datetime,
 ) -> int:
     start, end = active_window_bounds(group.active_window, coverage_date)
+    now = _wall_time(now)
     if now <= start:
         return 0
     if now >= end:
@@ -108,6 +109,10 @@ def _uniform_progress(start: datetime, end: datetime, now: datetime) -> float:
     total = max(1.0, (end - start).total_seconds())
     elapsed = min(total, max(0.0, (now - start).total_seconds()))
     return elapsed / total
+
+
+def _wall_time(value: datetime) -> datetime:
+    return value.replace(tzinfo=None) if value.tzinfo else value
 
 
 __all__ = ["active_window_bounds", "daily_coverage_due_debt"]
