@@ -51,7 +51,7 @@ Repository variables:
 
 ### AI 活跃群 Grok CLI Bridge
 
-- 生产 Linux 必须在 `/root/.grok/bin/grok` 安装并完成授权，`grok models` 必须包含 `grok-4.5`。发布 workflow 在部署前检查主机 CLI / 模型，部署后检查 planner 容器内可执行文件；任一检查失败则发布失败，不把 Grok 静默视为可用。
+- 生产 Linux 必须在 `/root/.grok/bin/grok` 安装并完成授权，`grok models` 必须包含 `grok-4.5`。发布 workflow 的 `admin` 部署账号通过 `sudo -n` 在部署前检查 root 的 CLI / 模型，部署后检查 planner 容器内可执行文件；任一检查失败则发布失败，不把 Grok 静默视为可用。
 - `docker-compose.server.yml` 将 `${GROK_CLI_HOME_DIR:-/root/.grok}` 挂载到 backend、planner 和四个 dispatcher；共享锁默认位于 `/root/.grok/tgyunying-cli.lock`，同一服务器只允许一个 Grok 生成进程。
 - 默认环境为 `GROK_CLI_ENABLED=true`、`GROK_CLI_MODEL=grok-4.5`、`GROK_CLI_TIMEOUT_SECONDS=90`。租户仍可通过 `ai_group_grok_fallback_enabled` 单独关闭 Grok 阶段，通过 `ai_group_static_fallback_enabled` 关闭静态兜底。
 - Bridge 固定使用 `--no-memory --no-subagents --disable-web-search --permission-mode dontAsk --verbatim`；只保存有界错误码、模型阶段和耗时，不保存 Prompt、推理过程、授权资料或密钥。
