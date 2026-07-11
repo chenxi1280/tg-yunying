@@ -14,6 +14,7 @@ from app.services._common import _now, ai_gateway
 from app.services.ai_config import ai_provider_credentials
 from app.services.content_filters import looks_like_ai_meta_content, looks_like_generated_template_noise, looks_like_operator_ui_content
 from app.services.task_center.ai_act_types import canonical_ai_group_act_type
+from app.services.task_center.ai_group_prompt import GroupPromptBundle, build_group_prompt
 
 
 AI_GENERATION_UNAVAILABLE_MESSAGE = "AI 生成不可用，等待恢复后继续执行"
@@ -790,56 +791,19 @@ def _slot_target_text(value: object, label_key: str) -> str:
 
 
 def generate_group_messages(session: Session, tenant_id: int, config: dict, *, count: int, target_label: str, history: str = "") -> tuple[list[str], int]:
-    personas = config.get("account_personas") if isinstance(config.get("account_personas"), dict) else {}
-    persona_prompt = ""
-    if personas:
-        persona_prompt = "账号角色设定：\n" + "\n".join(f"- 账号 {account_id}: {role}" for account_id, role in personas.items() if str(role).strip())
-    memories = config.get("account_memories") if isinstance(config.get("account_memories"), dict) else {}
-    memory_prompt = ""
-    if memories:
-        memory_prompt = "账号历史记忆：\n" + "\n".join(f"- 账号 {account_id}: {memory}" for account_id, memory in memories.items() if str(memory).strip())
-    profiles = config.get("account_profiles") if isinstance(config.get("account_profiles"), dict) else {}
-    profile_prompt = ""
-    if profiles:
-        profile_prompt = "账号长期画像：\n" + "\n".join(f"- 账号 {account_id}: {profile}" for account_id, profile in profiles.items() if str(profile).strip())
-    topic_thread = str(config.get("topic_thread") or "").strip()
-    topic_thread_prompt = f"话题脉络：\n{topic_thread}" if topic_thread else ""
-    topic_plan = str(config.get("topic_plan") or "").strip()
-    topic_plan_prompt = f"本轮话题计划：\n{topic_plan}" if topic_plan else ""
-    active_topic_prompt = _active_topic_prompt(config)
-    active_teacher_prompt = _active_teacher_prompt(config)
-    target_profile_prompt = _target_profile_style_prompt(config.get("target_profile_style"), audience="group")
-    slang_prompt = _slang_system_prompt(session, tenant_id, config)
-    requirements = "\n".join(
-        part
-        for part in [
-            active_topic_prompt,
-            active_teacher_prompt,
-            topic_thread_prompt,
-            topic_plan_prompt,
-            target_profile_prompt,
-            _generation_slots_prompt(config),
-            persona_prompt,
-            memory_prompt,
-            profile_prompt,
-            history,
-            config.get("system_prompt_override") or "",
-        ]
-        if part
+    bundle = build_group_prompt(
+        config,
+        target_label=target_label,
+        history=history,
+        count=count,
     )
-    requirements = _sanitize_sensitive_context(requirements)
-    contents, tokens = generate_contents(
+    contents, tokens = _generate_group_prompt_contents(
         session,
         tenant_id,
-        topic=_active_topic_title(config) or "群聊日常活跃",
-        requirements=requirements,
-        provider_id=config.get("ai_provider_id"),
-        model_name=_group_chat_model(config),
+        config,
+        bundle,
         count=count,
-        purpose="群活跃续聊",
-        target_label=target_label,
-        system_prompt=_group_chat_system_prompt(slang_prompt),
-        required_model_family=_group_chat_required_model_family(config),
+        purpose=GROUP_CHAT_PURPOSE,
     )
     return _trim(contents, config.get("max_message_length")), tokens
 
@@ -853,37 +817,65 @@ def generate_group_reply_messages(
     target_label: str,
     history: str = "",
 ) -> tuple[list[str], int]:
-    reply_lines = "\n".join(_reply_target_line(index, item) for index, item in enumerate(reply_targets, start=1))
-    target_profile_prompt = _target_profile_style_prompt(config.get("target_profile_style"), audience="group")
-    active_topic_prompt = _active_topic_prompt(config)
-    active_teacher_prompt = _active_teacher_prompt(config)
-    requirements = "\n".join(
-        part
-        for part in [
-            active_topic_prompt,
-            active_teacher_prompt,
-            f"引用目标：\n{reply_lines}" if reply_lines else "",
-            f"群聊上下文：\n{history}" if history else "",
-            target_profile_prompt,
-            _generation_slots_prompt(config),
-            config.get("system_prompt_override") or "",
-        ]
-        if part
+    bundle = build_group_prompt(
+        config,
+        target_label=target_label,
+        history=history,
+        count=len(reply_targets),
+        reply_targets=reply_targets,
     )
-    contents, tokens = generate_contents(
+    contents, tokens = _generate_group_prompt_contents(
         session,
         tenant_id,
-        topic=_active_topic_title(config) or "群引用回复",
-        requirements=_sanitize_sensitive_context(requirements),
-        provider_id=config.get("ai_provider_id"),
-        model_name=_group_chat_model(config),
+        config,
+        bundle,
         count=len(reply_targets),
         purpose=GROUP_CHAT_REPLY_PURPOSE,
-        target_label=target_label,
-        system_prompt=_group_chat_system_prompt(_slang_system_prompt(session, tenant_id, config)),
-        required_model_family=_group_chat_required_model_family(config),
     )
     return _trim(contents, config.get("max_message_length")), tokens
+
+
+def _generate_group_prompt_contents(
+    session: Session,
+    tenant_id: int,
+    config: dict,
+    bundle: GroupPromptBundle,
+    *,
+    count: int,
+    purpose: str,
+) -> tuple[list[str], int]:
+    model_name = _group_chat_model(config)
+    provider, setting = _provider(
+        session,
+        tenant_id,
+        config.get("ai_provider_id"),
+        model_name,
+        required_family=_group_chat_required_model_family(config),
+    )
+    if not provider or not setting:
+        required_family = _group_chat_required_model_family(config)
+        raise AiGenerationUnavailable(f"{AI_GENERATION_UNAVAILABLE_MESSAGE}：{_unavailable_reason(setting, required_family)}")
+    result = _generate_with_provider_candidates(
+        session,
+        provider,
+        bundle.user_prompt,
+        count=count,
+        topic=" ".join(bundle.sanitized_context),
+        tone="natural Chinese group chat",
+        persona_set=["普通群友"],
+        temperature=max(float(setting.temperature or 0.7), 0.75),
+        max_tokens=_content_max_tokens(setting.max_tokens, count, purpose),
+        system_prompt=bundle.system_prompt,
+        timeout=AI_CONTENT_REQUEST_TIMEOUT_SECONDS,
+        model_name=model_name,
+        required_model_family=_group_chat_required_model_family(config),
+        allow_quota_rotation=not config.get("ai_provider_id"),
+        purpose=purpose,
+    )
+    contents = [_generated_content_from_candidate(item) for item in result.candidates if str(item.content or "").strip()]
+    cleaned = _clean_generated_contents(contents, purpose, count, mock_provider=_is_mock_provider(provider))
+    usage = getattr(result, "usage", None)
+    return cleaned, int(getattr(usage, "total_tokens", 0) or 0)
 
 
 def _group_chat_model(config: dict) -> str:

@@ -79,14 +79,14 @@ def test_sensitive_group_context_is_preserved_before_provider_prompt():
 
 
 @pytest.mark.no_postgres
-def test_group_chat_preserves_safe_male_adult_mask_signal(monkeypatch):
-    captured: dict[str, str] = {}
+def test_group_chat_keeps_adult_signal_but_removes_trade_and_age_risk(monkeypatch):
+    captured: dict[str, object] = {}
 
-    def fake_generate_contents(_session, _tenant_id, *, requirements, **_kwargs):
-        captured["requirements"] = requirements
+    def fake_generate_contents(_session, _tenant_id, _config, bundle, **_kwargs):
+        captured["bundle"] = bundle
         return ["河东这边有人踩过没"], 0
 
-    monkeypatch.setattr("app.services.task_center.ai_generator.generate_contents", fake_generate_contents)
+    monkeypatch.setattr("app.services.task_center.ai_generator._generate_group_prompt_contents", fake_generate_contents)
 
     generate_group_messages(
         None,
@@ -101,13 +101,12 @@ def test_group_chat_preserves_safe_male_adult_mask_signal(monkeypatch):
         history="群友: 这波妹子很嫩 半小时300块 手感咋样",
     )
 
-    requirements = captured["requirements"]
-    assert "男性短句伪装嫖客先问价格位置" in requirements
-    assert "真实反馈" in requirements
-    assert "伪装嫖客" in requirements
-    assert "色情" in requirements
-    assert "妹子" in requirements
-    assert "300块" in requirements
+    user_prompt = captured["bundle"].user_prompt
+    assert "男性成人场景浏览客" in user_prompt
+    assert "伪装嫖客" not in user_prompt
+    assert "色情" not in user_prompt
+    assert "妹子" not in user_prompt
+    assert "300块" not in user_prompt
 
 
 @pytest.mark.no_postgres

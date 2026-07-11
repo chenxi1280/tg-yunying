@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -425,13 +426,13 @@ def test_group_ai_chat_keeps_target_profile_out_of_fact_thread():
 
 
 def test_group_ai_prompt_layers_target_profile_as_style_not_fact(monkeypatch):
-    captured: dict[str, str] = {}
+    captured: dict[str, object] = {}
 
-    def fake_generate_contents(_session, _tenant_id, *, requirements, **_kwargs):
-        captured["requirements"] = requirements
+    def fake_generate_contents(_session, _tenant_id, _config, bundle, **_kwargs):
+        captured["bundle"] = bundle
         return ["停车位那句我懂"], 0
 
-    monkeypatch.setattr(ai_generator, "generate_contents", fake_generate_contents)
+    monkeypatch.setattr(ai_generator, "_generate_group_prompt_contents", fake_generate_contents)
 
     ai_generator.generate_group_messages(
         None,
@@ -449,18 +450,20 @@ def test_group_ai_prompt_layers_target_profile_as_style_not_fact(monkeypatch):
         history="真人A: 今天只聊停车位",
     )
 
-    assert "话题脉络：\n真人A: 今天只聊停车位" in captured["requirements"]
-    assert "本轮话题方向：日常闲聊" in captured["requirements"]
+    user_prompt = captured["bundle"].user_prompt
+    assert "身材" in user_prompt
+    assert "服务反馈" not in user_prompt
+    assert "装修预算" not in user_prompt
 
 
 def test_group_ai_prompt_includes_fixed_generation_slots(monkeypatch):
-    captured: dict[str, str] = {}
+    captured: dict[str, object] = {}
 
-    def fake_generate_contents(_session, _tenant_id, *, requirements, **_kwargs):
-        captured["requirements"] = requirements
+    def fake_generate_contents(_session, _tenant_id, _config, bundle, **_kwargs):
+        captured["bundle"] = bundle
         return ["这句按一号短接", "这句按二号追问"], 0
 
-    monkeypatch.setattr(ai_generator, "generate_contents", fake_generate_contents)
+    monkeypatch.setattr(ai_generator, "_generate_group_prompt_contents", fake_generate_contents)
 
     ai_generator.generate_group_messages(
         None,
@@ -495,28 +498,25 @@ def test_group_ai_prompt_includes_fixed_generation_slots(monkeypatch):
         history="真人A: 昨天照片准",
     )
 
-    assert "固定发言 slots" in captured["requirements"]
-    assert "slot 1：task-1:cycle:1:turn:1；账号 11；行为 short_react" in captured["requirements"]
-    assert "话题 郑州楼凤妹子怎么样；讨论老师 花花老师" in captured["requirements"]
-    assert "青年短句，少表情，爱接别人话" in captured["requirements"]
-    assert "slot 2：task-1:cycle:1:turn:2；账号 12；行为 question" in captured["requirements"]
-    assert "话题 主任最近约新妹子了；讨论老师 新人榜单妹子" in captured["requirements"]
-    assert "行为 light_question" not in captured["requirements"]
-    assert "中年谨慎，常追问价格和位置" in captured["requirements"]
-    assert "讨论老师：花花老师\n对象说明：身材服务反馈" in captured["requirements"]
-    assert "聊天对象" not in captured["requirements"]
-    assert "全站目标画像（只作风格和话题参考，不能作为具体事实来源）：\n常聊装修预算" in captured["requirements"]
-    assert "账号长期画像：\n- 账号 7: 只讲自己知道的上下文" in captured["requirements"]
+    payload = captured["bundle"].input_payload
+    assert payload["generation_slots"] == [
+        {"sequence_index": 1, "slot_id": "task-1:cycle:1:turn:1", "account_id": 11, "act_type": "short_react"},
+        {"sequence_index": 2, "slot_id": "task-1:cycle:1:turn:2", "account_id": 12, "act_type": "light_question"},
+    ]
+    serialized = json.dumps(payload, ensure_ascii=False)
+    assert "楼凤" not in serialized
+    assert "价格和位置" not in serialized
+    assert "身材" in serialized
 
 
 def test_group_ai_reply_prompt_layers_target_profile_as_style_not_fact(monkeypatch):
-    captured: dict[str, str] = {}
+    captured: dict[str, object] = {}
 
-    def fake_generate_contents(_session, _tenant_id, *, requirements, **_kwargs):
-        captured["requirements"] = requirements
+    def fake_generate_contents(_session, _tenant_id, _config, bundle, **_kwargs):
+        captured["bundle"] = bundle
         return ["这句我接一下"], 0
 
-    monkeypatch.setattr(ai_generator, "generate_contents", fake_generate_contents)
+    monkeypatch.setattr(ai_generator, "_generate_group_prompt_contents", fake_generate_contents)
 
     ai_generator.generate_group_reply_messages(
         None,
@@ -535,19 +535,18 @@ def test_group_ai_reply_prompt_layers_target_profile_as_style_not_fact(monkeypat
                 }
             ],
         },
-        reply_targets=[{"author": "真人A", "preview": "停车位快没了", "source": "group"}],
+        reply_targets=[{"author": "真人A", "preview": "这位成年老师高跟鞋好看", "source": "group"}],
         target_label="测试群",
-        history="真人A: 停车位快没了",
+        history="真人A: 这位成年老师高跟鞋好看",
     )
 
-    assert "引用目标 1：作者：真人A；原文：停车位快没了；来源：group" in captured["requirements"]
-    assert "本轮话题方向：日常闲聊" in captured["requirements"]
-    assert "讨论老师：花花老师" in captured["requirements"]
-    assert "slot 1：task-1:cycle:1:turn:1；账号 11；行为 context_reply" in captured["requirements"]
-    assert "只围绕引用短接一句" in captured["requirements"]
-    assert "聊天对象" not in captured["requirements"]
-    assert "群聊上下文：\n真人A: 停车位快没了" in captured["requirements"]
-    assert "全站目标画像（只作风格和话题参考，不能作为具体事实来源）：\n常聊装修预算" in captured["requirements"]
+    payload = captured["bundle"].input_payload
+    assert payload["reply_targets"] == [{"preview": "这位成年老师高跟鞋好看"}]
+    assert payload["context_source"] == "safe_context"
+    assert payload["generation_slots"] == [
+        {"sequence_index": 1, "slot_id": "task-1:cycle:1:turn:1", "account_id": 11, "act_type": "context_reply"}
+    ]
+    assert "装修预算" not in captured["bundle"].user_prompt
 
 
 def test_group_ai_chat_reads_tenant_profile_without_target_identity():
