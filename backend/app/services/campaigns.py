@@ -31,6 +31,7 @@ from app.models import (
 from app.task_queue import get_task_queue
 
 from ._common import _as_utc, _now, audit, gateway, ai_gateway, require_tenant
+from .account_usage_policy import assert_account_action_allowed
 from .ai_config import (
     ai_provider_credentials,
     deduct_ai_usage_tokens,
@@ -69,6 +70,7 @@ def recommend_campaign_accounts(session: Session, payload: CampaignRecommendAcco
             account = session.get(TgAccount, link.account_id)
             if not account or account.deleted_at is not None:
                 continue
+            account_allowed = _account_action_allowed(account, "message_send")
             recent_failures = session.scalar(
                 select(func.count(MessageTask.id)).where(
                     MessageTask.account_id == account.id,
@@ -79,6 +81,7 @@ def recommend_campaign_accounts(session: Session, payload: CampaignRecommendAcco
                 group.auth_status == GroupAuthStatus.AUTHORIZED.value
                 and link.can_send
                 and account.status == AccountStatus.ACTIVE.value
+                and account_allowed
             )
             cooldown_active = False
             cooldown_until = None
@@ -90,6 +93,8 @@ def recommend_campaign_accounts(session: Session, payload: CampaignRecommendAcco
             reason_parts = []
             if account.status != AccountStatus.ACTIVE.value:
                 reason_parts.append(account.status)
+            if not account_allowed:
+                reason_parts.append("账号用途不允许运营发送")
             if group.auth_status != GroupAuthStatus.AUTHORIZED.value:
                 reason_parts.append(group.auth_status)
             if not link.can_send:
@@ -154,6 +159,7 @@ def validate_selected_accounts_by_group(
             )
             if not account or account.deleted_at is not None or account.tenant_id != tenant_id:
                 raise ValueError("selected account not found")
+            assert_account_action_allowed(account, account.pool, "message_send")
             if not link or not link.can_send:
                 raise ValueError("selected account cannot send in target group")
             if account.status != AccountStatus.ACTIVE.value:
@@ -446,6 +452,7 @@ def generate_drafts(
         )
         if not listener_account or listener_account.deleted_at is not None or listener_account.tenant_id != campaign.tenant_id or not listener_link:
             raise ValueError("listener account cannot access target group")
+        assert_account_action_allowed(listener_account, listener_account.pool, "listener")
     decision = resolve_prompt_decision(
         session,
         campaign=campaign,
@@ -683,7 +690,15 @@ def load_selected_accounts_for_group(session: Session, campaign: Campaign, group
         )
     )
     by_id = {account.id: account for account in rows}
-    return [by_id[account_id] for account_id in account_ids if account_id in by_id]
+    return [account for account_id in account_ids if (account := by_id.get(account_id)) and _account_action_allowed(account, "message_send")]
+
+
+def _account_action_allowed(account: TgAccount, action_kind: str) -> bool:
+    try:
+        assert_account_action_allowed(account, account.pool, action_kind)
+    except ValueError:
+        return False
+    return True
 
 
 def task_media_from_draft(session: Session, draft: AiDraft) -> tuple[str, int | None]:
@@ -940,6 +955,7 @@ def update_ai_draft(session: Session, draft_id: int, payload, actor: str) -> AiD
             account = session.get(TgAccount, account_id)
             if not account or account.deleted_at is not None or account.tenant_id != draft.tenant_id:
                 raise ValueError("suggested account not found")
+            assert_account_action_allowed(account, account.pool, "message_send")
             campaign = session.get(Campaign, draft.campaign_id)
             selected_ids = selected_account_ids_for_group(campaign, draft.group_id) if campaign else []
             if selected_ids and account.id not in selected_ids:

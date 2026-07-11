@@ -953,8 +953,9 @@ export default function TaskCenterView({
         search_bots: Array.isArray(deboostConfig.search_bots) ? deboostConfig.search_bots.join(',') : 'jisou',
         keywords: keywordTexts,
         target_group_ids: Array.isArray(deboostConfig.target_group_ids) ? deboostConfig.target_group_ids : [],
-        account_pool_id: deboostConfig.account_pool_id ?? null,
-        proxy_airport_node_id: deboostConfig.proxy_airport_node_id ?? null,
+        selection_mode: task.account_config?.selection_mode ?? 'all',
+        account_group_id: task.account_config?.account_group_id ?? null,
+        account_ids: task.account_config?.account_ids ?? [],
         notes: deboostConfig.notes ?? '',
         per_account_daily_click_limit: deboostConfig.per_account_daily_click_limit ?? 5,
         per_keyword_account_daily_limit: deboostConfig.per_keyword_account_daily_limit ?? 2,
@@ -1214,8 +1215,7 @@ export default function TaskCenterView({
       search_bots: words(values.search_bots || 'jisou'),
       keywords: words(values.keywords).map((text) => ({ text })),
       target_group_ids: csvNumbers(values.target_group_ids),
-      account_pool_id: Number(values.account_pool_id),
-      proxy_airport_node_id: Number(values.proxy_airport_node_id),
+      account_config: accountConfig(values),
       config: {
         per_account_daily_click_limit: values.per_account_daily_click_limit ?? 5,
         per_keyword_account_daily_limit: values.per_keyword_account_daily_limit ?? 2,
@@ -1471,6 +1471,7 @@ export default function TaskCenterView({
     }
     if (type === 'search_rank_deboost') {
       return {
+        account_config: accountConfig(values),
         keywords: words(values.keywords).map((text) => ({ text })),
         target_group_ids: csvNumbers(values.target_group_ids),
         config: {

@@ -26,3 +26,11 @@
 - 分组代理绑定是账号组资产，任务只引用，不负责创建后永久占用或停止时自动解绑。
 - Gateway 执行完整搜索与受限点击，业务层在调用前给出最大点击预算，Gateway 返回逐点击 outcome。
 - 不以写统计代表外部成功，不使用 mock success 或直连 fallback。
+
+## Implementation / QA Findings
+
+- 子代理 review 发现 reservation 状态机两个 P1：pre-factual skip 未释放 reservation，retry 可能重排 consumed/unknown/released reservation；已修复并补测试。
+- 旧测试仍引用 `_rank_deboost_pool_accounts`；保留兼容 wrapper 指向 `account_config group` 语义，避免 collection 入口断裂。
+- 全量 no-PostgreSQL 初始阻断不是 rank 定向套件失败，而是严格账号用途 / runtime proxy readiness 影响旧 fixture：部分任务没有可用 operational 账号，部分代理机场节点没有 executable runtime proxy；已通过 legacy unpooled normal 规则、契约测试更新和可执行 proxy fixture 修复，最新全量 no-PostgreSQL 通过。
+- Alembic offline SQL 阻断来自旧迁移 `0002_developer_app_pool.py` 对 offline `MockConnection` 调用 `sa.inspect`，不能作为本迁移已验证证据。
+- 当前没有 PostgreSQL rank reservation 并发专项文件；Postgres evidence 不可标记通过。

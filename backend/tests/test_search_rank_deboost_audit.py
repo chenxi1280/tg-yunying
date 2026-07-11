@@ -107,6 +107,9 @@ def _seed_base(session: Session) -> None:
             node_key="node-20",
             status="healthy",
             observed_exit_ip="1.1.1.1",
+            protocol="socks5",
+            proxy_host="127.0.0.1",
+            proxy_port=1080,
             node_config_ciphertext=SENSITIVE_NODE_PASSWORD,
         )
     )
@@ -118,6 +121,9 @@ def _seed_base(session: Session) -> None:
             node_key="node-21",
             status="healthy",
             observed_exit_ip="2.2.2.2",
+            protocol="socks5",
+            proxy_host="127.0.0.2",
+            proxy_port=1081,
         )
     )
     _seed_sufficient_samples(session)

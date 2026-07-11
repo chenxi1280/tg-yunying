@@ -26,6 +26,7 @@ from app.schemas.operations_center import (
     ListenerTaskOut,
 )
 from app.services._common import audit
+from app.services.account_usage_policy import apply_operational_account_filters, assert_account_action_allowed
 from app.services.operations_center_defaults import ACTIVE_TASK_STATUSES, LISTENER_TASK_STATUSES
 from app.services.operations_center_utils import as_int, as_int_list, iso
 
@@ -145,7 +146,7 @@ def switch_listener_account(session: Session, tenant_id: int, object_type: str, 
     if not backup:
         raise ValueError("没有可切换的备用监听账号")
     backup_account = session.get(TgAccount, backup.id)
-    if not backup_account or backup_account.tenant_id != tenant_id or backup_account.deleted_at is not None or backup_account.status != "在线":
+    if not _listener_backup_available(backup_account, tenant_id):
         raise ValueError("备用监听账号不可用")
     backup_link = next((link for link in current_links if link.account_id == backup_account.id), None)
     if not backup_link or not backup_link.can_send:
@@ -272,7 +273,7 @@ def _switch_channel_listener_account(session: Session, tenant_id: int, object_id
     if not backup:
         raise ValueError("没有可切换的备用监听账号")
     backup_account = session.get(TgAccount, backup.id)
-    if not backup_account or backup_account.tenant_id != tenant_id or backup_account.deleted_at is not None or backup_account.status != "在线":
+    if not _listener_backup_available(backup_account, tenant_id):
         raise ValueError("备用监听账号不可用")
 
     disabled_ids: set[int] = set()
@@ -394,7 +395,9 @@ def _configured_task_account_ids(session: Session, tenant_id: int, account_confi
         account_ids = as_int_list(account_config.get("account_ids"))
         if not account_ids:
             return []
-        stmt = select(TgAccount.id).where(*base_conditions, TgAccount.id.in_(account_ids))
+        stmt = apply_operational_account_filters(
+            select(TgAccount.id).where(*base_conditions, TgAccount.id.in_(account_ids))
+        )
         if target_group_id:
             stmt = stmt.join(TgGroupAccount, TgGroupAccount.account_id == TgAccount.id).where(
                 TgGroupAccount.group_id == target_group_id,
@@ -403,7 +406,10 @@ def _configured_task_account_ids(session: Session, tenant_id: int, account_confi
         valid_ids = set(session.scalars(stmt))
         return [account_id for account_id in account_ids if account_id in valid_ids]
 
-    stmt = select(TgAccount.id).where(*base_conditions).order_by(TgAccount.health_score.desc(), TgAccount.id.asc())
+    stmt = apply_operational_account_filters(select(TgAccount.id).where(*base_conditions)).order_by(
+        TgAccount.health_score.desc(),
+        TgAccount.id.asc(),
+    )
     if mode == "group":
         pool_id = as_int(account_config.get("account_group_id"))
         if not pool_id:
@@ -420,7 +426,7 @@ def _configured_task_account_ids(session: Session, tenant_id: int, account_confi
 def _group_listener_candidate_account_ids(session: Session, tenant_id: int, group_id: int) -> list[int]:
     listener_ids = list(
         session.scalars(
-            select(TgGroupAccount.account_id)
+            apply_operational_account_filters(select(TgGroupAccount.account_id))
             .join(TgAccount, TgAccount.id == TgGroupAccount.account_id)
             .where(
                 TgGroupAccount.tenant_id == tenant_id,
@@ -435,7 +441,7 @@ def _group_listener_candidate_account_ids(session: Session, tenant_id: int, grou
         return listener_ids
     return list(
         session.scalars(
-            select(TgGroupAccount.account_id)
+            apply_operational_account_filters(select(TgGroupAccount.account_id))
             .join(TgAccount, TgAccount.id == TgGroupAccount.account_id)
             .where(
                 TgGroupAccount.tenant_id == tenant_id,
@@ -452,13 +458,27 @@ def _accounts_by_id(session: Session, tenant_id: int, account_ids: list[int]) ->
     if not account_ids:
         return {}
     rows = session.scalars(
-        select(TgAccount).where(
-            TgAccount.tenant_id == tenant_id,
-            TgAccount.id.in_(list(dict.fromkeys(account_ids))),
-            TgAccount.deleted_at.is_(None),
+        apply_operational_account_filters(
+            select(TgAccount).where(
+                TgAccount.tenant_id == tenant_id,
+                TgAccount.id.in_(list(dict.fromkeys(account_ids))),
+                TgAccount.deleted_at.is_(None),
+            )
         )
     )
     return {account.id: account for account in rows}
+
+
+def _listener_backup_available(account: TgAccount | None, tenant_id: int) -> bool:
+    if not account or account.tenant_id != tenant_id or account.deleted_at is not None:
+        return False
+    if account.status != "在线":
+        return False
+    try:
+        assert_account_action_allowed(account, account.pool, "listener")
+    except ValueError:
+        return False
+    return True
 
 
 def _listener_account_out(account: TgAccount, *, roles: list[str] | None = None, task_ids: list[str] | None = None) -> ListenerAccountOut:
@@ -475,12 +495,13 @@ def _listener_account_out(account: TgAccount, *, roles: list[str] | None = None,
 def _backup_account_for_listener(session: Session, tenant_id: int, listener_accounts: list[ListenerAccountOut]) -> ListenerAccountOut | None:
     active_listener_ids = {account.id for account in listener_accounts if account.status == "在线"}
     row = session.scalar(
-        select(TgAccount)
-        .where(
-            TgAccount.tenant_id == tenant_id,
-            TgAccount.deleted_at.is_(None),
-            TgAccount.status == "在线",
-            ~TgAccount.id.in_(active_listener_ids or {-1}),
+        apply_operational_account_filters(
+            select(TgAccount).where(
+                TgAccount.tenant_id == tenant_id,
+                TgAccount.deleted_at.is_(None),
+                TgAccount.status == "在线",
+                ~TgAccount.id.in_(active_listener_ids or {-1}),
+            )
         )
         .order_by(TgAccount.health_score.desc(), TgAccount.id.asc())
         .limit(1)
@@ -491,7 +512,7 @@ def _backup_account_for_listener(session: Session, tenant_id: int, listener_acco
 def _backup_group_account_for_listener(session: Session, tenant_id: int, group_id: int, listener_accounts: list[ListenerAccountOut]) -> ListenerAccountOut | None:
     active_listener_ids = {account.id for account in listener_accounts if account.status == "在线"}
     row = session.scalar(
-        select(TgAccount)
+        apply_operational_account_filters(select(TgAccount))
         .join(TgGroupAccount, TgGroupAccount.account_id == TgAccount.id)
         .where(
             TgAccount.tenant_id == tenant_id,

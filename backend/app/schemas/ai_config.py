@@ -161,6 +161,7 @@ class AiAccountVoiceProfileBatchStatusRequest(BaseModel):
 class AiAccountVoiceProfileBatchStatusOut(ApiModel):
     updated: int = 0
     skipped: int = 0
+    items: list[AiAccountVoiceProfileBatchItemOut] = Field(default_factory=list)
 
 
 class AiAccountVoiceProfileRollbackRequest(BaseModel):

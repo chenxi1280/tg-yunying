@@ -35,7 +35,7 @@ def test_alembic_versions_have_single_head():
 
     assert all(len(revision) <= 32 for revision in revisions)
     heads = sorted(set(revisions) - referenced)
-    assert heads == ["0088_ai_group_daily_coverage"]
+    assert heads == ["0089_rank_deboost_runtime_index"]
 
 
 def test_backend_test_names_are_unique_per_file():

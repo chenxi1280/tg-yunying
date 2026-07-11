@@ -5,8 +5,9 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import TgAccount, TgAccountAuthorization, TgAccountAuthorizationSnapshot
+from app.models import AccountPool, TgAccount, TgAccountAuthorization, TgAccountAuthorizationSnapshot
 from app.security import decrypt_secret
+from app.services.account_usage_policy import assert_account_action_allowed
 
 
 PLATFORM_APP = "platform_app"
@@ -32,8 +33,15 @@ def cleanup_candidate_authorization_snapshots(
     session: Session,
     account: TgAccount,
 ) -> list[TgAccountAuthorizationSnapshot]:
-    if account.account_identity == "code_receiver":
+    if not _device_cleanup_allowed(session, account):
         return []
+    return cleanup_eligible_authorization_snapshots(session, account)
+
+
+def cleanup_eligible_authorization_snapshots(
+    session: Session,
+    account: TgAccount,
+) -> list[TgAccountAuthorizationSnapshot]:
     role_api_ids = _role_api_ids(session, account.id)
     _add_legacy_primary_api_id(account, role_api_ids)
     protected_hashes = _protected_authorization_hashes(session, account)
@@ -44,6 +52,15 @@ def cleanup_candidate_authorization_snapshots(
         for snapshot in snapshots
         if _can_cleanup_snapshot(snapshot, protected_hashes, official_anchor_ids)
     ]
+
+
+def _device_cleanup_allowed(session: Session, account: TgAccount) -> bool:
+    pool = session.get(AccountPool, account.pool_id) if account.pool_id is not None else None
+    try:
+        assert_account_action_allowed(account, pool, "device_cleanup")
+        return True
+    except ValueError:
+        return False
 
 
 def _role_api_ids(session: Session, account_id: int) -> dict[str, int]:

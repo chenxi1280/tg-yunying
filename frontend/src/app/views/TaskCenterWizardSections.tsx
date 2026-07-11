@@ -2,7 +2,7 @@ import React from 'react';
 import { Alert, Button, Checkbox, Collapse, Descriptions, Form, Input, InputNumber, Select, Space, Typography } from 'antd';
 import type { Account, AccountPool, ChannelMessageComment, OperationTarget, PromptTemplate, ProxyAirportNode, RuleSet, SearchRankDeboostExemptGroup, TaskCenterTaskType, TaskPrecheck } from '../types';
 import { ChannelCommentTypeConfig, ChannelLikeTypeConfig, ChannelViewTypeConfig } from './TaskCenterChannelConfigSections';
-import { GROUP_AI_HARD_HOURLY_MIN_MESSAGES, TASK_TYPES, TYPE_LABEL, OPERATION_PROFILE_TEMPLATES, type OperationProfileTemplateId, accountPrecheck, curveNumbers, curveText, currentOperationProfile, formatDateTime, formatPrecheckReasons, operationProfileSummary, operationTemplate, precheckReasonLabel, ruleSummary, targetName } from './taskCenterViewModel';
+import { GROUP_AI_HARD_HOURLY_MIN_MESSAGES, TASK_TYPES, TYPE_LABEL, OPERATION_PROFILE_TEMPLATES, type OperationProfileTemplateId, accountPrecheck, curveNumbers, curveText, currentOperationProfile, formatDateTime, formatPrecheckReasons, isEligibleRankAccount, operationProfileSummary, operationTemplate, precheckReasonLabel, rankPoolSummaries, ruleSummary, targetName } from './taskCenterViewModel';
 
 const targetSelectProps = {
   showSearch: true,
@@ -324,19 +324,10 @@ export function WizardTypeConfig({
     );
   }
   if (taskType === 'search_rank_deboost') {
-    const rankDeboostPools = accountPools.filter((pool) => pool.pool_purpose === 'rank_deboost');
-    const poolOptions = rankDeboostPools.map((pool) => ({ value: pool.id, label: `${pool.name} (${pool.account_count})` }));
-    const nodeOptions = proxyAirportNodes.map((node) => ({
-      value: node.id,
-      label: `${node.node_name} / ${node.protocol}://${node.proxy_host}:${node.proxy_port}${node.observed_exit_ip ? ` / ${node.observed_exit_ip}` : ''}`,
-    }));
+    const rankDeboostPools = rankPoolSummaries(accountPools);
+    const missingBinding = rankDeboostPools.filter((pool) => pool.is_enabled && pool.missingBinding);
     return (
       <Space direction="vertical" style={{ width: '100%' }}>
-        <Alert
-          type="info"
-          showIcon
-          message="搜索排名观察任务用于灰度验证搜索结果曝光、点击行为和风控边界。首版锁定 jisou（@searchbot）。"
-        />
         {rankDeboostPools.length === 0 && (
           <Alert
             type="warning"
@@ -349,6 +340,13 @@ export function WizardTypeConfig({
             ) : undefined}
           />
         )}
+        {missingBinding.length > 0 && (
+          <Alert
+            type="warning"
+            showIcon
+            message={`代理绑定缺失：${missingBinding.map((pool) => pool.name).join('、')}`}
+          />
+        )}
         <div className="form-grid">
           <Form.Item name="search_bots" label="搜索机器人">
             <Input readOnly value="jisou" />
@@ -356,13 +354,22 @@ export function WizardTypeConfig({
           <Form.Item name="keywords" label="关键词列表（每行一个）" rules={[{ required: true }]}>
             <Input.TextArea rows={4} placeholder={'关键词1\n关键词2'} />
           </Form.Item>
-          <Form.Item name="account_pool_id" label="账号分组（rank_deboost）" rules={[{ required: true }]} tooltip="只列出 pool_purpose=rank_deboost 的分组">
-            <Select options={poolOptions} placeholder="选择排名观察专用账号分组" {...targetSelectProps} />
-          </Form.Item>
-          <Form.Item name="proxy_airport_node_id" label="分组级代理节点" rules={[{ required: true }]} tooltip="Clash 健康节点">
-            <Select options={nodeOptions} placeholder="选择代理节点" {...targetSelectProps} />
-          </Form.Item>
         </div>
+        {rankDeboostPools.length > 0 && (
+          <Descriptions
+            bordered
+            size="small"
+            column={1}
+            title="黑账号分组状态"
+            items={rankDeboostPools.map((pool) => ({
+              key: String(pool.id),
+              label: `${pool.name} (${pool.account_count})`,
+              children: pool.is_enabled
+                ? `${pool.missingBinding ? '缺少代理绑定' : '代理就绪'}${pool.observedExitIp ? ` / ${pool.observedExitIp}` : ''}`
+                : '已停用',
+            }))}
+          />
+        )}
         <Collapse
           ghost
           defaultActiveKey={exemptGroup ? ['exempt-group'] : []}
@@ -569,8 +576,22 @@ export function WizardAccounts({ accountMode, accounts, accountPools, taskType }
     );
   }
   if (taskType === 'search_rank_deboost') {
+    const rankPoolOptions = accountPools
+      .filter((pool) => pool.pool_purpose === 'rank_deboost' && pool.is_enabled !== false)
+      .map((pool) => ({ value: pool.id, label: `${pool.name} (${pool.account_count})` }));
+    const rankAccountOptions = accounts
+      .filter((account) => isEligibleRankAccount(account, accountPools))
+      .map((account) => ({ value: account.id, label: `${account.display_name} / ${account.status}` }));
     return (
-      <Alert type="info" showIcon message="搜索排名观察任务的账号分组和代理节点在「任务配置」步骤中设置，无需在此选择。" />
+      <Space direction="vertical" style={{ width: '100%' }}>
+        <div className="form-grid">
+          <Form.Item name="selection_mode" label="排名观察账号选择">
+            <Select options={[{ value: 'all', label: '全部黑账号组' }, { value: 'group', label: '指定黑账号组' }, { value: 'manual', label: '手动黑账号' }]} />
+          </Form.Item>
+          {accountMode === 'group' && <Form.Item name="account_group_id" label="黑账号组" rules={[{ required: true }]}><Select options={rankPoolOptions} /></Form.Item>}
+          {accountMode === 'manual' && <Form.Item name="account_ids" label="黑账号" rules={[{ required: true }]}><Select mode="multiple" options={rankAccountOptions} /></Form.Item>}
+        </div>
+      </Space>
     );
   }
   return (
@@ -585,7 +606,7 @@ export function WizardAccounts({ accountMode, accounts, accountPools, taskType }
 }
 
 export function WizardReview({ taskType, values, accounts, accountPools, targets, ruleSets, slangTemplates, precheck, loading }: { taskType: TaskCenterTaskType; values: Record<string, any>; accounts: Account[]; accountPools: AccountPool[]; targets: OperationTarget[]; ruleSets: RuleSet[]; slangTemplates: PromptTemplate[]; precheck: TaskPrecheck | null; loading: boolean }) {
-  const account = accountPrecheck(values, accounts, accountPools);
+  const account = accountPrecheck(values, accounts, accountPools, taskType);
   const profile = currentOperationProfile(values);
   const selectedSlang = slangTemplates.find((template) => template.id === values.slang_prompt_template_id);
   const targetSummary = taskType === 'group_relay'

@@ -18,6 +18,7 @@ from app.models import (
 )
 from app.services._common import _now
 from app.services.account_capacity import available_accounts_by_capacity
+from app.services.account_usage_policy import apply_operational_account_filters
 from app.timezone import as_beijing, beijing_day_bounds
 
 
@@ -105,14 +106,13 @@ def _account_query(session: Session, tenant_id: int, account_config: dict, *, en
             TgAccount.tenant_id == tenant_id,
             TgAccount.deleted_at.is_(None),
             TgAccount.status == AccountStatus.ACTIVE.value,
-            TgAccount.account_identity != "code_receiver",
-            TgAccount.account_identity != "rank_deboost",
         )
         .order_by(
             func.coalesce(AccountRuntimeSummary.health_score, TgAccount.health_score).desc(),
             TgAccount.id.asc(),
         )
     )
+    stmt = apply_operational_account_filters(stmt)
     rescue_admin_id = _rescue_admin_account_id(session, tenant_id)
     if rescue_admin_id:
         stmt = stmt.where(TgAccount.id != rescue_admin_id)

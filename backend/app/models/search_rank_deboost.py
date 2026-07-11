@@ -130,6 +130,15 @@ class AccountGroupProxyBinding(Base):
             sqlite_where=text("status = 'active' AND unbound_at IS NULL"),
             postgresql_where=text("status = 'active' AND unbound_at IS NULL"),
         ),
+        Index(
+            "uq_account_group_proxy_binding_active_node",
+            "tenant_id",
+            "proxy_airport_node_id",
+            "status",
+            unique=True,
+            sqlite_where=text("status = 'active' AND unbound_at IS NULL"),
+            postgresql_where=text("status = 'active' AND unbound_at IS NULL"),
+        ),
         Index("ix_account_group_proxy_binding_node", "tenant_id", "proxy_airport_node_id", "status"),
         Index("ix_account_group_proxy_binding_pool", "tenant_id", "account_pool_id", "status"),
     )

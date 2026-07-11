@@ -5,6 +5,7 @@ import hashlib
 import re
 from datetime import datetime, timedelta
 from typing import Any
+from urllib.parse import quote
 from uuid import uuid4
 
 from app.config import Settings, get_settings
@@ -38,6 +39,7 @@ from app.telethon_lifecycle import TelethonClientLifecycle
 from .telethon_media import _parse_custom_emoji_source, _telegram_entity_length, send_media_segment
 from .telethon_utils import resolve_telethon_target, telethon_send_target
 from .search_join import execute_search_join_with_client
+from .search_rank_deboost import execute_rank_deboost_with_client, search_rank_deboost_candidates_with_client
 from app.timezone import BEIJING_TZ
 
 _resolve_telethon_target = resolve_telethon_target
@@ -100,6 +102,47 @@ def _search_join_client_metadata(payload: dict[str, Any]) -> dict[str, str]:
     if any(not str(metadata.get(key) or "").strip() for key in required):
         raise ValueError("search_join client_metadata incomplete")
     return {key: str(value) for key, value in metadata.items()}
+
+
+def _rank_deboost_client_metadata(payload: dict[str, Any]) -> dict[str, str]:
+    metadata = payload.get("client_metadata") if isinstance(payload, dict) else None
+    if not isinstance(metadata, dict):
+        return {}
+    return {key: str(value) for key, value in metadata.items()}
+
+
+def _rank_deboost_runtime(payload: dict[str, Any]) -> dict[str, Any]:
+    runtime = payload.get("runtime_environment") if isinstance(payload, dict) else None
+    if not isinstance(runtime, dict):
+        return {}
+    return runtime
+
+
+def _rank_deboost_guard_failed(code: str, *, observed_exit_ip: str = "") -> dict[str, Any]:
+    return {
+        "success": False,
+        "error_code": "proxy_egress_guard_failed",
+        "detail": code,
+        "observed_exit_ip": observed_exit_ip,
+    }
+
+
+def _rank_deboost_proxy_url(credentials: DeveloperAppCredentials) -> str:
+    protocol = (credentials.proxy_protocol or "").strip().lower()
+    host = (credentials.proxy_host or "").strip()
+    port = int(credentials.proxy_port or 0)
+    if protocol not in {"socks5", "socks4", "http", "https"} or not host or port <= 0:
+        return ""
+    auth = _rank_deboost_proxy_auth(credentials)
+    return f"{protocol}://{auth}{host}:{port}"
+
+
+def _rank_deboost_proxy_auth(credentials: DeveloperAppCredentials) -> str:
+    username = (credentials.proxy_username or "").strip()
+    password = credentials.proxy_password or ""
+    if not username:
+        return ""
+    return f"{quote(username)}:{quote(password)}@"
 
 
 def _verification_button_click_target(message: Any) -> tuple[int, int, str] | None:
@@ -1040,6 +1083,117 @@ class TelethonTelegramGateway(TelegramGateway):
     ) -> dict[str, Any]:
         return self._run(
             self._execute_search_join_async(session_ciphertext, self._usable_credentials(credentials), payload, keyword_text)
+        )
+
+    async def _rank_deboost_client(
+        self,
+        session_ciphertext: str | None,
+        credentials: DeveloperAppCredentials,
+        payload: dict[str, Any],
+    ) -> Any | dict[str, Any]:
+        raw_session = decrypt_session(session_ciphertext)
+        if not raw_session:
+            return {"success": False, "error_code": FailureType.ACCOUNT_UNAVAILABLE.value, "detail": "账号没有可用 session"}
+        guard = await self._verify_rank_deboost_proxy_guard(credentials, payload)
+        if guard is not None:
+            return guard
+        client = await self._get_or_create_client(credentials, raw_session, _rank_deboost_client_metadata(payload))
+        if not await client.is_user_authorized():
+            return {"success": False, "error_code": FailureType.ACCOUNT_UNAVAILABLE.value, "detail": "session 已失效"}
+        return client
+
+    async def _verify_rank_deboost_proxy_guard(
+        self,
+        credentials: DeveloperAppCredentials,
+        payload: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        runtime = _rank_deboost_runtime(payload)
+        expected_proxy_id = int(runtime.get("runtime_proxy_id") or 0)
+        if expected_proxy_id <= 0 or credentials.proxy_id != expected_proxy_id:
+            return _rank_deboost_guard_failed("runtime_proxy_mismatch")
+        try:
+            observed = await self._probe_rank_deboost_proxy_egress_async(credentials, str(runtime.get("observed_exit_ip") or ""))
+        except Exception as exc:  # noqa: BLE001 - proxy proof failure must be explicit and fail-closed.
+            return _rank_deboost_guard_failed(f"proxy_egress_probe_error:{_exception_detail(exc)}")
+        if not observed or observed != str(runtime.get("observed_exit_ip") or "").strip():
+            return _rank_deboost_guard_failed("proxy_egress_guard_failed", observed_exit_ip=observed)
+        return None
+
+    async def _probe_rank_deboost_proxy_egress_async(
+        self,
+        credentials: DeveloperAppCredentials,
+        expected_exit_ip: str,
+    ) -> str:
+        if not expected_exit_ip.strip():
+            return ""
+        proxy_url = _rank_deboost_proxy_url(credentials)
+        if not proxy_url:
+            return ""
+        return await asyncio.to_thread(self._probe_rank_deboost_proxy_egress_sync, proxy_url)
+
+    def _probe_rank_deboost_proxy_egress_sync(self, proxy_url: str) -> str:
+        try:
+            import requests
+        except ImportError as exc:
+            raise RuntimeError("requests package is required for rank deboost proxy egress proof") from exc
+        response = requests.get(
+            self.settings.rank_deboost_egress_probe_url,
+            proxies={"http": proxy_url, "https": proxy_url},
+            timeout=min(float(self.settings.telethon_client_connect_timeout_seconds), 10.0),
+        )
+        response.raise_for_status()
+        return response.text.strip()
+
+    async def _search_rank_deboost_candidates_async(
+        self,
+        session_ciphertext: str | None,
+        credentials: DeveloperAppCredentials,
+        payload: dict[str, Any],
+        keyword_text: str,
+    ) -> dict[str, Any]:
+        client = await self._rank_deboost_client(session_ciphertext, credentials, payload)
+        if isinstance(client, dict):
+            return client
+        result = await search_rank_deboost_candidates_with_client(client, payload, keyword_text=keyword_text)
+        result["observed_exit_ip"] = _rank_deboost_runtime(payload).get("observed_exit_ip", "")
+        return result
+
+    def search_rank_deboost_candidates(
+        self,
+        account_id: int,
+        payload: dict[str, Any],
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+        keyword_text: str = "",
+    ) -> dict[str, Any]:
+        return self._run(
+            self._search_rank_deboost_candidates_async(session_ciphertext, self._usable_credentials(credentials), payload, keyword_text)
+        )
+
+    async def _execute_search_rank_deboost_async(
+        self,
+        session_ciphertext: str | None,
+        credentials: DeveloperAppCredentials,
+        payload: dict[str, Any],
+        keyword_text: str,
+    ) -> dict[str, Any]:
+        client = await self._rank_deboost_client(session_ciphertext, credentials, payload)
+        if isinstance(client, dict):
+            return client
+        result = await execute_rank_deboost_with_client(client, payload, keyword_text=keyword_text)
+        result["observed_exit_ip"] = _rank_deboost_runtime(payload).get("observed_exit_ip", "")
+        return result
+
+    def execute_search_rank_deboost(
+        self,
+        account_id: int,
+        payload: dict[str, Any],
+        keyword_text: str = "",
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> dict[str, Any]:
+        return self._run(
+            self._execute_search_rank_deboost_async(session_ciphertext, self._usable_credentials(credentials), payload, keyword_text)
         )
 
     async def _view_channel_message_async(

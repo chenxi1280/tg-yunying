@@ -10,7 +10,8 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import AccountStatus, AiAccountGroupStanceMemory, AiAccountVoiceProfile, AuditLog, TgAccount
+from app.models import AccountPool, AccountStatus, AiAccountGroupStanceMemory, AiAccountVoiceProfile, AuditLog, TgAccount
+from app.schemas.ai_config import AiAccountVoiceProfileBatchStatusOut
 from app.services.task_center import account_stance_memory, account_voice_profile_cache
 from app.services.task_center.account_voice_profiles import (
     VOICE_PROFILE_INITIAL_MAX_TOKENS,
@@ -49,10 +50,14 @@ def _session() -> Session:
 
 
 def _account(session: Session, account_id: int, name: str, username: str = "") -> None:
+    if session.get(AccountPool, 1) is None:
+        session.add(AccountPool(id=1, tenant_id=1, name="普通账号池", pool_purpose="normal", is_default=True))
     session.add(
         TgAccount(
             id=account_id,
             tenant_id=1,
+            pool_id=1,
+            account_identity="normal",
             display_name=name,
             username=username,
             phone_masked=f"138****{account_id}",
@@ -60,6 +65,25 @@ def _account(session: Session, account_id: int, name: str, username: str = "") -
             session_ciphertext="session",
         )
     )
+    session.commit()
+
+
+def _usage_pool(session: Session, pool_id: int, purpose: str) -> AccountPool:
+    system_key = purpose if purpose in {"code_receiver", "rank_deboost"} else ""
+    pool = session.get(AccountPool, pool_id)
+    if pool is None:
+        pool = AccountPool(id=pool_id, tenant_id=1, name=f"{purpose}账号池", pool_purpose=purpose, system_key=system_key)
+        session.add(pool)
+        session.flush()
+    return pool
+
+
+def _assign_usage(session: Session, account_id: int, *, pool_id: int, purpose: str, identity: str) -> None:
+    _usage_pool(session, pool_id, purpose)
+    account = session.get(TgAccount, account_id)
+    assert account is not None
+    account.pool_id = pool_id
+    account.account_identity = identity
     session.commit()
 
 
@@ -357,6 +381,66 @@ def test_missing_voice_profile_requires_explicit_ai_generator():
     with _session() as session:
         with pytest.raises(RuntimeError, match="voice profile generator is required"):
             ensure_voice_profiles_for_accounts(session, tenant_id=1, account_ids=[101], generator=None)
+
+
+@pytest.mark.parametrize(
+    ("pool_purpose", "account_identity"),
+    [("rank_deboost", "rank_deboost"), ("rank_deboost", "normal")],
+)
+def test_ensure_voice_profiles_rejects_non_normal_account_usage(pool_purpose, account_identity):
+    with _session() as session:
+        _usage_pool(session, 3, pool_purpose)
+        session.add(
+            TgAccount(
+                id=301,
+                tenant_id=1,
+                pool_id=3,
+                account_identity=account_identity,
+                display_name="观察号",
+                phone_masked="138****0301",
+                status=AccountStatus.ACTIVE.value,
+                session_ciphertext="session",
+            )
+        )
+        session.commit()
+
+        def generator(_account_ids: list[int]) -> list[dict]:
+            raise AssertionError("non-normal account must not enter voice profile generation")
+
+        with pytest.raises(ValueError, match="account_action_not_allowed|account_purpose_mismatch"):
+            ensure_voice_profiles_for_accounts(session, tenant_id=1, account_ids=[301], generator=generator)
+
+
+def test_patch_and_rebuild_voice_profile_reject_non_normal_account_usage():
+    with _session() as session:
+        _usage_pool(session, 3, "rank_deboost")
+        session.add(
+            TgAccount(
+                id=302,
+                tenant_id=1,
+                pool_id=3,
+                account_identity="rank_deboost",
+                display_name="观察号",
+                phone_masked="138****0302",
+                status=AccountStatus.ACTIVE.value,
+                session_ciphertext="session",
+            )
+        )
+        session.commit()
+
+        def generator(_account_ids: list[int]) -> list[dict]:
+            raise AssertionError("non-normal account must not rebuild voice profile")
+
+        with pytest.raises(ValueError, match="account_action_not_allowed:rank_deboost:account_mask_init"):
+            patch_voice_profile(
+                session,
+                tenant_id=1,
+                account_id=302,
+                patch={"short_prompt_summary": "青年短句，先看反馈再追问细节"},
+                actor="tester",
+            )
+        with pytest.raises(ValueError, match="account_action_not_allowed:rank_deboost:account_mask_init"):
+            rebuild_voice_profile(session, tenant_id=1, account_id=302, generator=generator, actor="tester")
 
 
 def test_ensure_voice_profiles_uses_batch_generator_and_rejects_generic_summary():
@@ -924,6 +1008,30 @@ def test_rollback_voice_profile_creates_new_active_version_and_audit_log():
         assert audit.detail == "source_version=1,target_version=3"
 
 
+@pytest.mark.parametrize(
+    ("purpose", "identity", "match_text"),
+    [
+        ("rank_deboost", "rank_deboost", "account_action_not_allowed"),
+        ("code_receiver", "code_receiver", "account_action_not_allowed"),
+        ("rank_deboost", "normal", "account_purpose_mismatch"),
+    ],
+)
+def test_rollback_voice_profile_blocks_non_normal_usage(purpose, identity, match_text):
+    with _session() as session:
+        _account(session, 101, "花花号")
+        _assign_usage(session, 101, pool_id=3, purpose=purpose, identity=identity)
+        session.add(_profile(101, "青年短句，爱追问价格，少表情", version=1, status="superseded"))
+        session.add(_profile(101, "青年短句，先观望再追问，偶尔说我看看", version=2, status="active"))
+        session.commit()
+
+        with pytest.raises(ValueError, match=match_text):
+            rollback_voice_profile(session, tenant_id=1, account_id=101, source_version=1, actor="tester")
+
+        profiles = list(session.scalars(select(AiAccountVoiceProfile).order_by(AiAccountVoiceProfile.version)))
+        assert [profile.status for profile in profiles] == ["superseded", "active"]
+        assert session.scalar(select(AuditLog).where(AuditLog.action == "回滚账号面具")) is None
+
+
 def test_rebuild_voice_profile_keeps_existing_profile_when_generator_is_invalid():
     def generator(_account_ids: list[int]) -> list[dict]:
         return [{"account_id": 101, "short_prompt_summary": "自然、随意、真实"}]
@@ -1150,6 +1258,66 @@ def test_batch_update_voice_profile_status_disables_and_restores_profiles():
         }
         audits = list(session.scalars(select(AuditLog).order_by(AuditLog.id)))
         assert [audit.action for audit in audits] == ["批量停用账号面具", "批量停用账号面具", "批量恢复账号面具"]
+
+
+def test_batch_update_voice_profile_status_skips_non_normal_usage():
+    with _session() as session:
+        _account(session, 101, "普通号")
+        _account(session, 102, "降权号")
+        _account(session, 103, "错配号")
+        _account(session, 104, "接码号")
+        _assign_usage(session, 102, pool_id=3, purpose="rank_deboost", identity="rank_deboost")
+        _assign_usage(session, 103, pool_id=3, purpose="rank_deboost", identity="normal")
+        _assign_usage(session, 104, pool_id=2, purpose="code_receiver", identity="code_receiver")
+        for account_id in [101, 102, 103, 104]:
+            session.add(_profile(account_id, f"青年短句，账号{account_id}先问价格"))
+        session.commit()
+
+        result = batch_update_voice_profile_status(
+            session,
+            tenant_id=1,
+            account_ids=[101, 102, 103, 104],
+            status="disabled",
+            actor="tester",
+        )
+        session.commit()
+
+        statuses = {
+            row.account_id: row.status
+            for row in session.scalars(select(AiAccountVoiceProfile).order_by(AiAccountVoiceProfile.account_id))
+        }
+        assert result == {
+            "updated": 1,
+            "skipped": 3,
+            "items": [
+                {"account_id": 101, "status": "updated", "skipped_reason": ""},
+                {"account_id": 102, "status": "skipped", "skipped_reason": "account_action_not_allowed:rank_deboost:account_mask_init"},
+                {"account_id": 103, "status": "skipped", "skipped_reason": "account_purpose_mismatch"},
+                {"account_id": 104, "status": "skipped", "skipped_reason": "account_action_not_allowed:code_receiver:account_mask_init"},
+            ],
+        }
+        assert statuses == {101: "disabled", 102: "active", 103: "active", 104: "active"}
+        audits = list(session.scalars(select(AuditLog)))
+        assert [audit.target_id for audit in audits] == ["101"]
+
+
+def test_batch_status_schema_preserves_skip_reasons():
+    payload = AiAccountVoiceProfileBatchStatusOut(
+        updated=1,
+        skipped=1,
+        items=[
+            {
+                "account_id": 102,
+                "status": "skipped",
+                "skipped_reason": "account_purpose_mismatch",
+            }
+        ],
+    )
+
+    dumped = payload.model_dump()["items"]
+    assert dumped[0]["account_id"] == 102
+    assert dumped[0]["status"] == "skipped"
+    assert dumped[0]["skipped_reason"] == "account_purpose_mismatch"
 
 
 def test_group_stance_memory_upserts_and_reads_summary():

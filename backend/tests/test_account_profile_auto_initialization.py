@@ -8,7 +8,7 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import AccountStatus, AiAccountVoiceProfile, TelegramDeveloperApp, Tenant, TgAccount, TgAccountSecurityBatch, TgAccountSecurityBatchItem, TgLoginFlow
+from app.models import AccountPool, AccountStatus, AiAccountVoiceProfile, TelegramDeveloperApp, Tenant, TgAccount, TgAccountSecurityBatch, TgAccountSecurityBatchItem, TgLoginFlow
 from app.schemas.account_security import AccountSecurityPrecheckRequest, ProfileGenerationStrategy
 from app.security import encrypt_secret, encrypt_session
 from app.services import account_profile_auto_init
@@ -28,6 +28,7 @@ def _session() -> Session:
 
 def _seed_tenant_and_app(session: Session) -> None:
     session.add(Tenant(id=1, name="默认运营空间"))
+    session.add(AccountPool(id=1, tenant_id=1, name="普通账号池", pool_purpose="normal", is_default=True))
     session.add(
         TelegramDeveloperApp(
             id=1,
@@ -50,6 +51,8 @@ def _seed_login_account(session: Session, *, display_name: str = "John Smith", f
         tg_last_name="Smith" if first_name == "John" else "",
         phone_masked="138****0000",
         developer_app_id=1,
+        pool_id=1,
+        account_identity="normal",
         status=AccountStatus.WAITING_CODE.value,
         health_score=80,
     )
@@ -57,6 +60,16 @@ def _seed_login_account(session: Session, *, display_name: str = "John Smith", f
     session.add(TgLoginFlow(tenant_id=1, account_id=11, method="code", status=AccountStatus.WAITING_CODE.value))
     session.commit()
     return account
+
+
+def _assign_pool(session: Session, account: TgAccount, *, pool_purpose: str, account_identity: str) -> None:
+    pool_id = {"normal": 1, "code_receiver": 2, "rank_deboost": 3}[pool_purpose]
+    system_key = pool_purpose if pool_purpose in {"code_receiver", "rank_deboost"} else ""
+    if session.get(AccountPool, pool_id) is None:
+        session.add(AccountPool(id=pool_id, tenant_id=1, name=f"{pool_purpose}账号池", pool_purpose=pool_purpose, system_key=system_key))
+    account.pool_id = pool_id
+    account.account_identity = account_identity
+    session.commit()
 
 
 def _stub_successful_login(monkeypatch) -> None:
@@ -124,12 +137,32 @@ def test_verify_login_initializes_missing_ai_voice_profile(monkeypatch):
 def test_login_skips_profile_and_voice_initialization_for_code_receiver(monkeypatch):
     with _session() as session:
         account = _seed_login_account(session)
-        account.account_identity = "code_receiver"
-        session.commit()
+        _assign_pool(session, account, pool_purpose="code_receiver", account_identity="code_receiver")
         _stub_successful_login(monkeypatch)
 
         def fail_voice_profile_init(*_args, **_kwargs):
             raise AssertionError("code receiver must not create voice profile")
+
+        monkeypatch.setattr(account_profile_auto_init, "_ensure_voice_profiles", fail_voice_profile_init)
+
+        accounts_service.verify_login(session, account.id, "12345", None, actor="tester")
+
+        assert session.scalar(select(TgAccountSecurityBatch)) is None
+        assert session.scalar(select(AiAccountVoiceProfile)) is None
+
+
+@pytest.mark.parametrize(
+    ("pool_purpose", "account_identity"),
+    [("rank_deboost", "rank_deboost"), ("rank_deboost", "normal")],
+)
+def test_login_skips_profile_and_voice_initialization_for_non_normal_usage(monkeypatch, pool_purpose, account_identity):
+    with _session() as session:
+        account = _seed_login_account(session)
+        _assign_pool(session, account, pool_purpose=pool_purpose, account_identity=account_identity)
+        _stub_successful_login(monkeypatch)
+
+        def fail_voice_profile_init(*_args, **_kwargs):
+            raise AssertionError("non-normal account must not create voice profile")
 
         monkeypatch.setattr(account_profile_auto_init, "_ensure_voice_profiles", fail_voice_profile_init)
 
@@ -172,9 +205,11 @@ def test_local_profile_batch_names_do_not_cluster_on_four_to_six_characters():
         _seed_tenant_and_app(session)
         accounts = [
             TgAccount(
-                id=index,
-                tenant_id=1,
-                display_name=f"导入0524-8740-{index:03d}",
+                    id=index,
+                    tenant_id=1,
+                    pool_id=1,
+                    account_identity="normal",
+                    display_name=f"导入0524-8740-{index:03d}",
                 phone_masked=f"138****{index:04d}",
                 developer_app_id=1,
                 status=AccountStatus.ACTIVE.value,
@@ -214,11 +249,13 @@ def test_account_security_precheck_skips_code_receiver_profile_and_2fa(monkeypat
             tg_first_name="John",
             phone_masked="138****0000",
             developer_app_id=1,
+            pool_id=2,
             status=AccountStatus.ACTIVE.value,
             account_identity="code_receiver",
             session_ciphertext=encrypt_session("session"),
             health_score=90,
         )
+        session.add(AccountPool(id=2, tenant_id=1, name="接码账号池", pool_purpose="code_receiver", system_key="code_receiver"))
         session.add(account)
         session.commit()
 
@@ -244,6 +281,64 @@ def test_account_security_precheck_skips_code_receiver_profile_and_2fa(monkeypat
         assert "接码专用账号只允许接收验证码" in item.blockers
 
 
+def test_account_security_precheck_skips_rank_deboost_and_mismatch_profile_mutations(monkeypatch):
+    with _session() as session:
+        normal = _seed_login_account(session)
+        rank = TgAccount(
+            id=12,
+            tenant_id=1,
+            display_name="降权观察号",
+            phone_masked="138****0012",
+            developer_app_id=1,
+            pool_id=3,
+            account_identity="rank_deboost",
+            status=AccountStatus.ACTIVE.value,
+            session_ciphertext=encrypt_session("rank"),
+            health_score=90,
+        )
+        mismatch = TgAccount(
+            id=13,
+            tenant_id=1,
+            display_name="错配号",
+            phone_masked="138****0013",
+            developer_app_id=1,
+            pool_id=3,
+            account_identity="normal",
+            status=AccountStatus.ACTIVE.value,
+            session_ciphertext=encrypt_session("mismatch"),
+            health_score=90,
+        )
+        session.add(AccountPool(id=3, tenant_id=1, name="降权观察池", pool_purpose="rank_deboost", system_key="rank_deboost"))
+        normal.status = AccountStatus.ACTIVE.value
+        normal.session_ciphertext = encrypt_session("normal")
+        session.add_all([rank, mismatch])
+        session.commit()
+
+        def fail_security_refresh(*_args, **_kwargs):
+            raise AssertionError("profile-only precheck should not refresh security")
+
+        monkeypatch.setattr(account_security_service, "refresh_account_security", fail_security_refresh)
+
+        preview = precheck_account_security_batch(
+            session,
+            1,
+            AccountSecurityPrecheckRequest(
+                account_ids=[normal.id, rank.id, mismatch.id],
+                action_types=["update_profile", "update_username"],
+                profile_strategy=ProfileGenerationStrategy(generation_mode="local_random"),
+            ),
+        )
+
+        statuses = {item.account_id: item for item in preview.items}
+        assert preview.summary["executable"] == 1
+        assert preview.summary["skipped"] == 2
+        assert statuses[normal.id].precheck_status == "executable"
+        assert statuses[rank.id].precheck_status == "skipped"
+        assert statuses[mismatch.id].precheck_status == "skipped"
+        assert "账号用途不允许执行账号资料/安全变更" in statuses[rank.id].blockers
+        assert "账号用途不一致，已禁止执行账号资料/安全变更" in statuses[mismatch.id].blockers
+
+
 def test_account_security_worker_blocks_code_receiver_profile_and_2fa(monkeypatch):
     with _session() as session:
         _seed_tenant_and_app(session)
@@ -253,6 +348,7 @@ def test_account_security_worker_blocks_code_receiver_profile_and_2fa(monkeypatc
             display_name="John Smith",
             phone_masked="138****0000",
             developer_app_id=1,
+            pool_id=2,
             status=AccountStatus.ACTIVE.value,
             account_identity="code_receiver",
             session_ciphertext=encrypt_session("session"),
@@ -275,6 +371,7 @@ def test_account_security_worker_blocks_code_receiver_profile_and_2fa(monkeypatc
             profile_status="pending",
             two_fa_status="pending",
         )
+        session.add(AccountPool(id=2, tenant_id=1, name="接码账号池", pool_purpose="code_receiver", system_key="code_receiver"))
         session.add_all([account, batch, item])
         session.commit()
 
