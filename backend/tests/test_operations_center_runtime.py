@@ -2219,11 +2219,13 @@ def test_listener_runtime_collects_shared_sources_once_and_recovers_listener(mon
         session.add_all(
             [
                 TgAccount(id=101, tenant_id=1, display_name="备用监听号", phone_masked="101", status="在线", session_ciphertext="session-101", health_score=90),
+                TgAccount(id=102, tenant_id=1, display_name="第二监听号", phone_masked="102", status="在线", session_ciphertext="session-102", health_score=80),
                 TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="源群", auth_status="已授权运营", listener_interval_seconds=60, listener_last_error="上一轮监听失败"),
                 TgGroup(id=9, tenant_id=1, tg_peer_id="-1009", title="目标群", auth_status="已授权运营"),
                 OperationTarget(id=21, tenant_id=1, target_type="group", tg_peer_id="-1007", title="源群目标", can_send=True, auth_status="已授权运营"),
                 OperationTarget(id=22, tenant_id=1, target_type="group", tg_peer_id="-1009", title="目标群目标", can_send=True, auth_status="已授权运营"),
                 TgGroupAccount(id=701, tenant_id=1, group_id=7, account_id=101, can_send=True, is_listener=False),
+                TgGroupAccount(id=702, tenant_id=1, group_id=7, account_id=102, can_send=True, is_listener=False),
                 TgGroupAccount(id=901, tenant_id=1, group_id=9, account_id=101, can_send=True, is_listener=False),
                 Task(
                     id="runtime-relay",
