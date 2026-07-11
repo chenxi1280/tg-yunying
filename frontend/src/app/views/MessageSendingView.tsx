@@ -585,8 +585,9 @@ export default function MessageSendingView({
                   value={accountId}
                   onChange={(value) => {
                     setAccountId(value);
-                    setTargetKeys((current) => current.filter((key) => key.startsWith('manual:') || key.startsWith('operation-target:')));
-                    setManualTargets((current) => current.filter((option) => option.value.startsWith('manual:') || option.value.startsWith('operation-target:')));
+                    setTargetKeys((current) => current.filter((key) => key.startsWith('manual:')));
+                    setManualTargets((current) => current.filter((option) => option.value.startsWith('manual:')));
+                    setOperationTargets([]);
                   }}
                   filterOption={optionFilter}
                   options={onlineAccounts.map((account) => ({

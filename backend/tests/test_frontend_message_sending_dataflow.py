@@ -48,6 +48,18 @@ def test_message_sending_target_loads_bind_account_and_request_sequence():
     assert "window.setInterval(loadOperationTargets, 60000)" not in source
 
 
+def test_message_sending_account_change_clears_cached_operation_targets():
+    source = (PROJECT_ROOT / "frontend/src/app/views/MessageSendingView.tsx").read_text()
+    change_start = source.index("onChange={(value) => {", source.index('placeholder="搜索账号、username、手机号"'))
+    change_end = source.index("}}", change_start)
+    change_body = source[change_start:change_end]
+
+    assert "key.startsWith('manual:')" in change_body
+    assert "key.startsWith('operation-target:')" not in change_body
+    assert "option.value.startsWith('operation-target:')" not in change_body
+    assert "setOperationTargets([]);" in change_body
+
+
 def test_message_sending_periodic_refresh_surfaces_backend_error():
     source = (PROJECT_ROOT / "frontend/src/app/views/MessageSendingView.tsx").read_text()
     effect_start = source.index("React.useEffect(() => {\n    function refreshMessageSendingData")

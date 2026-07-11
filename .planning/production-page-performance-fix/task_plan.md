@@ -67,6 +67,17 @@ Complete
 - [x] 按 `pass / blocked / unproven` 汇报生产状态。
 - **Status:** complete
 
+### Phase 8: Review Remediation
+
+- [x] 先补任务列表分页前全量 ORM 物化的回归测试，并确认红测。
+- [x] 将任务候选索引改为数据库侧轻量投影，分页后才加载完整任务对象。
+- [x] 先补消息发送切换账号清理旧运营目标的回归测试，并确认红测。
+- [x] 切换账号时立即清理旧运营目标选择与缓存，避免异步时间窗口。
+- [x] 先补已选目标批量水合固定并发度的回归测试，并确认红测。
+- [x] 将无界 `Promise.all` 改为固定并发批次加载，不改变可选目标数量语义。
+- [x] 运行定向测试、全量相关测试、前端构建、静态检查和 diff 审查。
+- **Status:** complete
+
 ## Success Criteria
 
 - 当前生产规模下，任务编辑支撑数据请求目标小于 2 秒，且不触发 15 秒取消。
@@ -100,6 +111,14 @@ Complete
 | zsh 中变量名 `status` 为只读变量 | 1 | 改用 `db_health` 变量后重新检查容器健康 |
 | 本地真实浏览器无法读取响应中已有的 `X-Total-Count` | 1 | 补 CORS expose-headers 红绿测试并显式暴露三个分页头，浏览器复测通过 |
 | AppShell peer 兜底目标被 TypeScript 推断为不可空 | 1 | 显式标注 `OperationTarget | undefined` 后生产构建通过 |
+| macOS 环境缺少 GNU `timeout` 命令（本轮审查复测） | 1 | 使用 Python `subprocess.run(..., timeout=60)`，35 条定向测试通过 |
+| JSON 路径投影探针使用了重复 `backend/` 前缀 | 1 | 在 `backend` 工作目录改用 `.venv/bin/python`，探针通过 |
+| 账号安全批次定向测试 PostgreSQL reset 失败 | 1 | 先完成无数据库回归与代码检查，再恢复既有隔离测试库重跑 |
+| 安全批次统计抽取补丁上下文不匹配 | 1 | 读取准确函数区域后拆分创建模块与删除旧函数，结构检查通过 |
+| zsh 未匹配 `backend/.env*` glob | 1 | 后续直接检查明确文件路径，避免未引用 glob |
+| `.env` 测试库旧地址不可用且本地容器凭据不同 | 1 | 不修改环境文件；测试子进程从 healthy 容器读取现有连接参数，集成测试通过 |
+| 全量 no-postgres 被 `.env` asyncpg URL 污染 | 1 | 测试子进程显式设置 SQLite URL 后重跑，避免安装无关驱动或修改环境文件 |
+| 静态工具配置搜索再次触发 zsh 空 glob | 1 | 已取得函数长度结果；最终验证只使用明确路径，不再使用 glob |
 
 ## Evidence Rules
 

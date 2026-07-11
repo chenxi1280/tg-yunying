@@ -332,6 +332,18 @@ def test_remote_operation_target_requests_debounce_and_cancel_stale_lifecycles()
         assert request.index("if (signal.aborted) return;") < request.index("setLoading(")
 
 
+def test_remote_operation_target_hydration_uses_fixed_concurrency():
+    hook = _required_frontend_source("frontend/src/app/hooks/useOperationTargetOptions.ts")
+    loader_start = hook.index("async function loadTargetIdBatches")
+    loader_end = hook.index("\n\nfunction useOperationTargetSearch", loader_start)
+    loader = hook[loader_start:loader_end]
+
+    assert "const OPERATION_TARGET_HYDRATION_CONCURRENCY = 3;" in hook
+    assert "Math.min(OPERATION_TARGET_HYDRATION_CONCURRENCY, batches.length)" in loader
+    assert "Promise.all(workers)" in loader
+    assert "Promise.all(targetIdBatches(query.ids).map" not in loader
+
+
 def test_remote_operation_target_hook_owns_public_hydration_cancellation():
     hook = _required_frontend_source("frontend/src/app/hooks/useOperationTargetOptions.ts")
 

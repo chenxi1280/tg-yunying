@@ -94,3 +94,25 @@
 | What's the goal? | 消除共享无界读取导致的慢页、超时和 502 |
 | What have I learned? | 见 findings.md 的生产证据与代码根因 |
 | What have I done? | 完成诊断、Product Design、TDD 实现、本地 QA、发布、真实生产浏览器性能验收和生产恢复确认 |
+
+## Session: 2026-07-11 Review Remediation
+
+- **Status:** in_progress
+- 用户要求修复代码审查确认的三项问题。
+- 已确认沿用现有慢页专项设计，不新增产品语义：数据库侧轻量候选、账号切换清理、固定并发水合。
+- 审查复测 `35 passed in 2.32s`；测试尚不能捕获三项问题，下一步进入 TDD 红测。
+- JSON 路径投影探针首次因工作目录已在 `backend/` 却仍使用 `backend/.venv/bin/python` 而未启动；改用 `.venv/bin/python` 后确认 SQLite 能正确返回 JSON 子字段。
+- 三项红测已按预期失败：任务页加载了 6 个完整 Task 而当前页仅 2 个；账号切换仍保留 operation-target；水合 hook 尚无固定并发常量。
+- 前端两项修复各自红绿通过；任务页新增红测也已转绿，只加载当前页 2 个完整 Task。
+- 原有任务列表筛选、分组、排序、分页和统计定向用例 `6 passed, 166 deselected`。
+- 账号安全批次 PostgreSQL 定向测试在执行前被测试库 reset 失败阻断，尚未运行；需恢复隔离测试库后复测。
+- 首次抽取安全批次统计的补丁因上下文与当前文件不完全匹配而未应用；读取准确区域后拆成两个小补丁完成，`list_page.py` 已降至 461 行。
+- 轻量候选、消息发送、目标水合及相关页面数据流 no-postgres 回归 `183 passed in 1.27s`，三个后端模块 compileall 通过。
+- Docker 中 `tg-yunying-postgres` 仍 healthy，`pg_isready` 成功；reset 失败更可能来自当前 `.env` 测试连接配置而非容器停机。
+- `.env` 测试 URL 指向不可用的旧地址；改成 localhost 后又确认凭据与当前容器不一致。随后仅在测试子进程内读取容器环境并连接 `tg_yunying_test`，账号安全批次定向集成测试 `2 passed, 55 deselected`。
+- 前端 `npm run build` 通过，保留原有单个 chunk 超过 600 kB 警告。
+- 全量 no-postgres 首轮在 `117 passed` 后被 `.env` 的 asyncpg URL 污染：no-postgres 测试直接读取 `TEST_DATABASE_URL`，虚拟环境未安装 asyncpg；下一轮显式使用内存 SQLite。
+- 显式 SQLite 的全量 no-postgres 回归完成：`1047 passed, 806 deselected, 5 warnings in 33.51s`。
+- 项目结构索引已同步新增轻量候选和批次统计模块；修改的三个后端模块均无超过 50 行的函数。
+- 最终 Release Gate：全量 no-postgres `1047 passed, 806 deselected, 5 warnings in 34.05s`；PostgreSQL 路由/批次定向 `9 passed, 166 deselected, 7 warnings in 10.61s`；前端 production build exit 0，仅保留既有 chunk-size warning。
+- Phase 8 review remediation complete；未提交、未发布，生产状态不因本地验证而改变。

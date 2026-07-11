@@ -104,3 +104,16 @@
 - 10 路并发：任务接口全部 200、最慢 1.699 秒、最大 7.0KB；运营目标全部 200、最慢 830ms、最大 1.85KB；零 408/499/502，页面无失败提示。
 - 消息发送、规则、归档页面分别 1.328/2.721/0.710 秒可用；归档新建弹窗 308ms 可见，目标查询为 `page_size=50&capability=archive`、302ms / 3.9KB；生产控制台功能性 error 为 0。
 - 本机 SSH 只读日志复核返回 connection closed，未取得同窗口 nginx/backend 请求日志；部署工作流仍提供服务器侧镜像、容器和健康证据。该日志关联记为 blocked，不影响已由真实生产浏览器证明的慢页恢复；历史 502 唯一 upstream 原因继续记为 unproven。
+
+## 2026-07-11 Review Remediation Findings
+
+- `/tasks/page` 虽返回当前页，但 `list_task_page()` 在 `_slice_page()` 前调用 `_ordinary_index_rows()` 和 `_profile_batch_index_rows()`，仍加载租户全部 `Task`、完整 JSON 配置和全部安全批次；根因是分页仅发生在 Python 归并之后。
+- `MessageSendingView` 切换发送账号时保留全部 `operation-target:` key，新的远程查询只合并有效目标、不会删除旧账号缓存，因此提交载荷仍可能包含旧账号目标；旧实现曾按 `allowedTargetKeys` 清理。
+- `loadTargetIdBatches()` 对所有 50-ID 批次直接 `Promise.all`，选择数量越大并发请求越多；修复应限制并发而不是新增静默总数上限，以保持已选项回显语义。
+- 当前 35 条前端数据流测试全部通过，说明上述边界尚无回归测试覆盖。
+- `list_page.py` 已有 484 行，候选查询必须拆到独立模块，避免继续扩大职责并越过 500 行限制。
+- 任务全局分组依赖 `type_config` 中目标/频道字段，频道搜索还依赖 `OperationTarget` 与 `ChannelMessage`；只把现有 Python `slice` 提前会破坏搜索和分组。候选查询需要仅投影相关 JSON 路径和关联标题，当前页再读取完整 `Task`。
+- 现有 SQLite `no_postgres` 用例已覆盖统一排序、筛选、分组、批次统计和当前页 runtime 水合，新增红测应补充 SQL 事件监听，断言完整 `Task` 查询只包含当前页 ID。
+- SQLAlchemy JSON 路径投影在项目 SQLite 测试环境会把字符串、数组和对象分别还原为 Python 原始类型，因此可以只读取分组/搜索必需的 `type_config` 与 `account_config` 子字段，不读取完整 JSON 列。
+- 消息发送的最小可靠修复是在账号变化时立即清空 `operation-target:` 选择及其缓存；保留手动个人目标，不等待异步目标水合，也不会出现旧缓存继续进入提交载荷的时间窗口。
+- ID 水合将保留任意数量已选项语义，用固定 worker 数消费 50-ID 批次队列；`Promise.all` 仅等待固定数量 worker，不再按批次数增长并发。

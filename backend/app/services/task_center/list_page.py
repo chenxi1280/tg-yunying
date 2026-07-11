@@ -6,13 +6,20 @@ import re
 from typing import Any
 
 from sqlalchemy import func, or_, select
-from sqlalchemy.orm import Session, aliased
+from sqlalchemy.orm import Session
 
 from app.models import Task, TaskRuntimeSummary, TgAccount, TgAccountSecurityBatch, TgAccountSecurityBatchItem
 from app.services._common import normalize_list_filter
 from app.services.task_runtime_stage import derive_task_runtime_stage
 
 from .details import build_task_list_payload_context
+from .list_candidates import (
+    ProfileBatchIndexProjection,
+    TaskIndexProjection,
+    list_profile_batch_index_projections,
+    list_task_index_projections,
+)
+from .list_batch_stats import profile_batch_stats, profile_batch_stats_payload
 from .profile_batch_projection import (
     DELETED_PROFILE_BATCH_STATUS,
     PROFILE_BATCH_TASK_PREFIX,
@@ -108,23 +115,18 @@ def _validate_page(page: int, page_size: int) -> None:
 
 
 def _ordinary_index_rows(session: Session, tenant_id: int) -> list[TaskListIndexRow]:
-    tasks = list(
-        session.scalars(
-            select(Task)
-            .where(Task.tenant_id == tenant_id, Task.deleted_at.is_(None))
-            .order_by(Task.id.asc())
-        )
-    )
+    tasks = list_task_index_projections(session, tenant_id)
     if not tasks:
         return []
     context = build_task_list_payload_context(session, tasks)
     return [_ordinary_index(task, context.target_summary_by_task_id.get(task.id, ""), context.config_search_text_by_task_id.get(task.id, "")) for task in tasks]
 
 
-def _ordinary_index(task: Task, target_summary: str, config_search_text: str) -> TaskListIndexRow:
+def _ordinary_index(task: Task | TaskIndexProjection, target_summary: str, config_search_text: str) -> TaskListIndexRow:
     target_group = _target_group_label(task, target_summary)
     channel = _associated_channel_label(task, target_summary)
     search_parts = [task.id, task.name, task.type, task.status, task.last_error, target_summary, config_search_text, _config_text(task.type_config)]
+    hydrated_task = task if isinstance(task, Task) else None
     return TaskListIndexRow(
         id=task.id,
         tenant_id=task.tenant_id,
@@ -139,34 +141,27 @@ def _ordinary_index(task: Task, target_summary: str, config_search_text: str) ->
         next_run_at=task.next_run_at,
         last_error=task.last_error,
         target_summary=target_summary,
-        account_scope_summary=_account_scope_summary(task.account_config),
+        account_scope_summary=_account_scope_summary(hydrated_task.account_config if hydrated_task else None),
         target_group_label=target_group,
         associated_channel_label=channel,
         group_key=_group_key(task, target_group, channel),
         search_text=" ".join(str(part) for part in search_parts if part),
-        stats=dict(task.stats or {}),
-        task=task,
+        stats=dict(hydrated_task.stats or {}) if hydrated_task else {},
+        task=hydrated_task,
     )
 
 
 def _profile_batch_index_rows(session: Session, tenant_id: int) -> list[TaskListIndexRow]:
-    batches = list(
-        session.scalars(
-            select(TgAccountSecurityBatch)
-            .where(
-                TgAccountSecurityBatch.tenant_id == tenant_id,
-                TgAccountSecurityBatch.status != DELETED_PROFILE_BATCH_STATUS,
-            )
-            .order_by(TgAccountSecurityBatch.id.asc())
-        )
-    )
-    stats_by_id = _profile_batch_stats(session, [batch.id for batch in batches])
-    return [_profile_batch_index(batch, stats_by_id.get(batch.id, {})) for batch in batches]
+    batches = list_profile_batch_index_projections(session, tenant_id, DELETED_PROFILE_BATCH_STATUS)
+    return [_profile_batch_index(batch, {}) for batch in batches]
 
 
-def _profile_batch_index(batch: TgAccountSecurityBatch, aggregate: dict[str, Any]) -> TaskListIndexRow:
+def _profile_batch_index(
+    batch: TgAccountSecurityBatch | ProfileBatchIndexProjection,
+    aggregate: dict[str, Any],
+) -> TaskListIndexRow:
     task_type = _task_type_for_batch(batch)
-    stats = _profile_batch_stats_payload(batch, aggregate)
+    stats = profile_batch_stats_payload(batch, aggregate)
     target_summary = f"{TASK_TYPE_SUMMARIES[task_type]} / {batch.total_count} 个账号"
     group_label = "账号安全系统任务"
     channel_label = UNKNOWN_CHANNEL
@@ -191,59 +186,6 @@ def _profile_batch_index(batch: TgAccountSecurityBatch, aggregate: dict[str, Any
         search_text=" ".join(str(part) for part in [batch.id, batch.reason, batch.trace_id, batch.status, target_summary] if part),
         stats=stats,
     )
-
-
-def _profile_batch_stats(session: Session, batch_ids: list[int]) -> dict[int, dict[str, Any]]:
-    if not batch_ids:
-        return {}
-    item = TgAccountSecurityBatchItem
-    latest_item = aliased(TgAccountSecurityBatchItem)
-    latest_failure = (
-        select(latest_item.failure_type)
-        .where(latest_item.batch_id == TgAccountSecurityBatch.id, latest_item.failure_type != "")
-        .order_by(latest_item.id.desc())
-        .limit(1)
-        .correlate(TgAccountSecurityBatch)
-        .scalar_subquery()
-    )
-    statement = _profile_batch_stats_statement(item, latest_failure, batch_ids)
-    return {int(row.batch_id): dict(row._mapping) for row in session.execute(statement)}
-
-
-def _profile_batch_stats_statement(item, latest_failure, batch_ids: list[int]):
-    return (
-        select(
-            TgAccountSecurityBatch.id.label("batch_id"),
-            func.count(item.id).label("total_actions"),
-            func.count(item.id).filter(item.status == "succeeded").label("success_count"),
-            func.count(item.id).filter(item.status.in_(["failed", "partial_success"])).label("failure_count"),
-            func.count(item.id).filter(item.status.in_(["skipped", "manual_required"])).label("skipped_count"),
-            func.count(item.id).filter(item.status == "manual_required").label("manual_required_count"),
-            func.count(item.id).filter(item.status == "pending").label("pending_count"),
-            func.count(item.id).filter(item.avatar_status == "waiting_cache").label("waiting_cache_count"),
-            func.count(item.id).filter(item.status == "running").label("running_count"),
-            latest_failure.label("latest_failure_type"),
-        )
-        .outerjoin(item, item.batch_id == TgAccountSecurityBatch.id)
-        .where(TgAccountSecurityBatch.id.in_(batch_ids))
-        .group_by(TgAccountSecurityBatch.id)
-    )
-
-
-def _profile_batch_stats_payload(batch: TgAccountSecurityBatch, aggregate: dict[str, Any]) -> dict[str, Any]:
-    total_actions = int(aggregate.get("total_actions") or 0)
-    return {
-        "total_actions": total_actions or batch.total_count,
-        "success_count": int(aggregate.get("success_count") or 0),
-        "failure_count": int(aggregate.get("failure_count") or 0),
-        "skipped_count": int(aggregate.get("skipped_count") or 0),
-        "manual_required_count": int(aggregate.get("manual_required_count") or 0),
-        "pending_count": int(aggregate.get("pending_count") or 0),
-        "waiting_cache_count": int(aggregate.get("waiting_cache_count") or 0),
-        "running_count": int(aggregate.get("running_count") or 0),
-        "batch_status": batch.status,
-        "latest_failure_type": str(aggregate.get("latest_failure_type") or ""),
-    }
 
 
 def _batch_query_matches(session: Session, tenant_id: int, q: str) -> set[int]:
@@ -344,9 +286,44 @@ def _slice_page(rows: list[TaskListIndexRow], page: int, page_size: int) -> list
 
 
 def _hydrate_page_items(session: Session, rows: list[TaskListIndexRow]) -> list[dict[str, Any]]:
-    task_ids = [row.id for row in rows if row.task]
+    hydrated_rows = _hydrate_page_rows(session, rows)
+    task_ids = [row.id for row in hydrated_rows if row.task]
     summaries = _runtime_summaries(session, task_ids)
-    return [_list_item_payload(row, summaries.get(row.id)) for row in rows]
+    return [_list_item_payload(row, summaries.get(row.id)) for row in hydrated_rows]
+
+
+def _hydrate_page_rows(session: Session, rows: list[TaskListIndexRow]) -> list[TaskListIndexRow]:
+    ordinary = _hydrate_ordinary_rows(session, rows)
+    batches = _hydrate_profile_batch_rows(session, rows)
+    return [ordinary.get(row.id) or batches.get(row.id) or row for row in rows]
+
+
+def _hydrate_ordinary_rows(session: Session, rows: list[TaskListIndexRow]) -> dict[str, TaskListIndexRow]:
+    task_ids = [row.id for row in rows if row.source_kind == "task"]
+    if not task_ids:
+        return {}
+    tasks = list(session.scalars(select(Task).where(Task.id.in_(task_ids))))
+    context = build_task_list_payload_context(session, tasks)
+    return {
+        task.id: _ordinary_index(
+            task,
+            context.target_summary_by_task_id.get(task.id, ""),
+            context.config_search_text_by_task_id.get(task.id, ""),
+        )
+        for task in tasks
+    }
+
+
+def _hydrate_profile_batch_rows(session: Session, rows: list[TaskListIndexRow]) -> dict[str, TaskListIndexRow]:
+    batch_ids = [int(row.stable_id) for row in rows if row.source_kind == "account_security_batch"]
+    if not batch_ids:
+        return {}
+    batches = list(session.scalars(select(TgAccountSecurityBatch).where(TgAccountSecurityBatch.id.in_(batch_ids))))
+    stats_by_id = profile_batch_stats(session, batch_ids)
+    return {
+        f"{PROFILE_BATCH_TASK_PREFIX}{batch.id}": _profile_batch_index(batch, stats_by_id.get(batch.id, {}))
+        for batch in batches
+    }
 
 
 def _runtime_summaries(session: Session, task_ids: list[str]) -> dict[str, TaskRuntimeSummary]:
@@ -399,7 +376,7 @@ def _ordinary_stats(stats: dict[str, Any], summary: TaskRuntimeSummary | None) -
     return result
 
 
-def _target_group_label(task: Task, target_summary: str) -> str:
+def _target_group_label(task: Task | TaskIndexProjection, target_summary: str) -> str:
     config = task.type_config or {}
     if task.type in {"group_ai_chat", "group_relay"}:
         return _first_text([target_summary, config.get("target_group_name"), config.get("target_group_id")]) or UNKNOWN_TARGET_GROUP
@@ -410,7 +387,7 @@ def _target_group_label(task: Task, target_summary: str) -> str:
     return _first_text([config.get("linked_group_name"), config.get("discussion_group_name"), config.get("target_group_name"), config.get("linked_group_id"), config.get("discussion_group_id")]) or UNKNOWN_TARGET_GROUP
 
 
-def _associated_channel_label(task: Task, target_summary: str) -> str:
+def _associated_channel_label(task: Task | TaskIndexProjection, target_summary: str) -> str:
     config = task.type_config or {}
     if task.type.startswith("channel_"):
         return _first_text([target_summary, config.get("target_channel_name"), config.get("channel_title"), config.get("target_channel_id")]) or UNKNOWN_CHANNEL
@@ -424,7 +401,7 @@ def _associated_channel_label(task: Task, target_summary: str) -> str:
     return "、".join(dict.fromkeys(item for item in channels if item)) or UNKNOWN_CHANNEL
 
 
-def _group_key(task: Task, target_label: str, channel_label: str) -> str:
+def _group_key(task: Task | TaskIndexProjection, target_label: str, channel_label: str) -> str:
     config = task.type_config or {}
     target_key = _key_part([config.get("target_operation_target_id"), config.get("target_group_id"), config.get("linked_group_id"), config.get("discussion_group_id"), target_label])
     channel_key = _key_part([config.get("target_channel_id"), channel_label])

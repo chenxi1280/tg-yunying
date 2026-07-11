@@ -798,7 +798,9 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 | --- | --- | --- |
 | `backend/app/services/operation_target_query.py` | 封装不可变目标查询参数、租户过滤、count、稳定分页和当前页 `TgGroupAccount` 条件聚合；不得返回全租户 ORM 关系集合 | planned |
 | `backend/app/api/routers/operations.py` | 为现有目标列表解析有界参数、写分页头；runtime-summary 解析重复 `target_ids`；旧无新增参数调用仅作兼容 | planned |
-| `backend/app/services/task_center/list_page.py` | 普通 Task 与账号安全 batch 的轻量索引、稳定跨来源排序、summary/groups、分页和当前页水合 | planned |
+| `backend/app/services/task_center/list_page.py` | 统一编排普通 Task 与账号安全 batch 的轻量索引、稳定跨来源排序、summary/groups、分页和当前页完整对象水合 | implemented |
+| `backend/app/services/task_center/list_candidates.py` | 仅投影任务列表搜索/分组需要的标量和 JSON 子字段；候选阶段不物化完整 Task、完整 type_config 或账号安全 batch 策略字段 | implemented |
+| `backend/app/services/task_center/list_batch_stats.py` | 仅针对当前页账号安全 batch IDs 批量聚合 item 计数和最近失败，不逐批次读取明细 | implemented |
 | `backend/app/services/task_center/profile_batch_projection.py` | 列表路径使用 batch 列或集合聚合，消除逐 batch `_batch_items()` N+1；详情路径保持完整下钻 | planned |
 | `backend/app/schemas/task_center.py`、`backend/app/api/routers/task_center.py` | 暴露 `TaskListPageOut` 与 `GET /api/tasks/page`；旧 `/api/tasks` 暂兼容 | planned |
 | `frontend/src/app/hooks/useOperationTargetOptions.ts`、`frontend/src/app/components/OperationTargetSelect.tsx` | 共享远程目标搜索、分页、请求序号和重复 ids 回显 | planned |

@@ -4,6 +4,7 @@ import type { OperationTarget, OperationTargetOptionQuery } from '../types/opera
 
 const OPERATION_TARGET_PAGE_SIZE = 50;
 const OPERATION_TARGET_SEARCH_DEBOUNCE_MS = 250;
+const OPERATION_TARGET_HYDRATION_CONCURRENCY = 3;
 
 type NormalizedTargetQuery = Readonly<{
   q: string;
@@ -93,10 +94,27 @@ export function mergeOperationTargets(
 }
 
 async function loadTargetIdBatches(query: NormalizedTargetQuery, signal: AbortSignal) {
-  return Promise.all(targetIdBatches(query.ids).map((ids) => {
-    const batchQuery = { ...query, ids };
-    return apiWithMeta<OperationTarget[]>(`/operation-targets?${operationTargetParams(batchQuery).toString()}`, { signal });
-  }));
+  const batches = targetIdBatches(query.ids);
+  const responses = new Array<Awaited<ReturnType<typeof loadTargetIdBatch>>>(batches.length);
+  let nextIndex = 0;
+  async function loadNextBatch() {
+    while (nextIndex < batches.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      responses[index] = await loadTargetIdBatch(query, batches[index], signal);
+    }
+  }
+  const workers = Array.from(
+    { length: Math.min(OPERATION_TARGET_HYDRATION_CONCURRENCY, batches.length) },
+    () => loadNextBatch(),
+  );
+  await Promise.all(workers);
+  return responses;
+}
+
+function loadTargetIdBatch(query: NormalizedTargetQuery, ids: readonly number[], signal: AbortSignal) {
+  const batchQuery = { ...query, ids };
+  return apiWithMeta<OperationTarget[]>(`/operation-targets?${operationTargetParams(batchQuery).toString()}`, { signal });
 }
 
 function useOperationTargetSearch(query: OperationTargetOptionQuery, searchText: string, reloadVersion: number) {
