@@ -14,7 +14,6 @@ from app.security import decrypt_session
 from app.services._common import _now
 
 from .account_pool import select_task_accounts
-from .account_scope import is_all_accounts_task
 from .membership_recovery import AUTO_RETRY_BUCKET, VERIFICATION_BUCKET, classify_membership_recovery
 from .pacing import schedule_times
 from .payloads import EnsureChannelMembershipPayload, create_membership_action
@@ -268,7 +267,7 @@ def candidate_accounts_for_config(session: Session, tenant_id: int, account_conf
 
 
 def _task_membership_candidates(session: Session, task: Task) -> list[TgAccount]:
-    if not is_all_accounts_task(task):
+    if not _uses_persisted_all_account_scope(task):
         return candidate_accounts_for_config(session, task.tenant_id, task.account_config or {})
     return list(
         session.scalars(
@@ -390,7 +389,7 @@ def _membership_retry_candidates(
     return [
         account
         for account in candidates
-        if _account_can_attempt_membership(account)
+        if (not _uses_persisted_all_account_scope(task) or _account_can_attempt_membership(account))
         and _should_create_membership_attempt_for_account(account.id, existing.get(account.id), joined_ids, task, now_value)
     ]
 
@@ -402,6 +401,16 @@ def _account_can_attempt_membership(account: TgAccount) -> bool:
         return bool(decrypt_session(account.session_ciphertext))
     except Exception:
         return False
+
+
+def _uses_persisted_all_account_scope(task: Task) -> bool:
+    account_config = task.account_config or {}
+    type_config = task.type_config or {}
+    return (
+        task.type == "group_ai_chat"
+        and str(account_config.get("selection_mode") or "all") == "all"
+        and type_config.get("account_coverage_mode") == "all_accounts_daily"
+    )
 
 
 def _should_create_membership_attempt_for_account(
@@ -469,7 +478,7 @@ def _bind_membership_scope_item(
     *,
     phase: str,
 ) -> None:
-    if not is_all_accounts_task(task):
+    if not _uses_persisted_all_account_scope(task):
         return
     item = session.scalar(
         select(TaskMembershipAdmissionItem).where(
