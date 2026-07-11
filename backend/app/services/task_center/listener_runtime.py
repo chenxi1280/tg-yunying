@@ -163,6 +163,7 @@ def _drain_listener_source(session: Session, source: ListenerRuntimeSource, resu
         result.error_count += 1
         session.commit()
         return
+    account_ids = account_ids[:1]
     if not should_collect_listener("group", group.id, window_seconds=group.listener_interval_seconds):
         result.skipped_count += 1
         return
