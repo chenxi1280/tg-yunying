@@ -482,7 +482,16 @@ def update_tenant_ai_setting(session: Session, tenant_id: int, payload: TenantAi
     data = payload.model_dump(exclude_unset=True)
     provider_id = data.get("default_provider_id", setting.default_provider_id)
     _validate_tenant_ai_token_limit(session, provider_id, data.get("max_tokens"))
-    for field in ["default_provider_id", "ai_enabled", "fallback_to_mock", "temperature", "max_tokens"]:
+    for field in [
+        "default_provider_id",
+        "ai_enabled",
+        "fallback_to_mock",
+        "ai_group_model_fallback_enabled",
+        "ai_group_grok_fallback_enabled",
+        "ai_group_static_fallback_enabled",
+        "temperature",
+        "max_tokens",
+    ]:
         if field in data:
             setattr(setting, field, data[field])
     setting.updated_at = _now()

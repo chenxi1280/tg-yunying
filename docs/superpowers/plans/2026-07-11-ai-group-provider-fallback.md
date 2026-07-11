@@ -16,7 +16,7 @@
 - Modify: `backend/app/models/ai.py`
 - Modify: `backend/app/schemas/ai_config.py`
 - Modify: `backend/app/services/ai_config.py`
-- Create: `backend/migrations/versions/0087_add_ai_group_fallback_settings.py`
+- Create: `backend/migrations/versions/0090_add_ai_group_fallback_settings.py`
 - Modify: `frontend/src/app/types/content.ts`
 - Modify: `frontend/src/app/AppModals.tsx`
 - Modify: `frontend/src/app/views/AISettingsView.tsx`

@@ -215,8 +215,9 @@ export default function AISettingsView({
           </Card>
           <Card className="summary-card" size="small">
             <span>失败策略</span>
-            <strong>{tenantAiSetting?.fallback_to_mock ? '允许模板回退' : '失败即报错'}</strong>
+            <strong>{tenantAiSetting?.ai_group_model_fallback_enabled ? 'M3 → M2.5' : '仅默认模型'}</strong>
             <p>温度 {tenantAiSetting?.temperature ?? '-'} / Token {tenantAiSetting?.max_tokens ?? '-'}</p>
+            <p>Grok {tenantAiSetting?.ai_group_grok_fallback_enabled ? '启用' : '关闭'} / 签到表情 {tenantAiSetting?.ai_group_static_fallback_enabled ? '启用' : '关闭'}</p>
           </Card>
         </div>
       </Card>}

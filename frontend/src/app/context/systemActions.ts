@@ -307,6 +307,9 @@ export function createSystemActions(params: SystemActionParams) {
       default_provider_id: params.selectedAiProviderId || null,
       ai_enabled: params.tenantAiSetting?.ai_enabled,
       fallback_to_mock: params.tenantAiSetting?.fallback_to_mock,
+      ai_group_model_fallback_enabled: params.tenantAiSetting?.ai_group_model_fallback_enabled,
+      ai_group_grok_fallback_enabled: params.tenantAiSetting?.ai_group_grok_fallback_enabled,
+      ai_group_static_fallback_enabled: params.tenantAiSetting?.ai_group_static_fallback_enabled,
       temperature: params.tenantAiSetting?.temperature,
       max_tokens: params.tenantAiSetting?.max_tokens,
     };
