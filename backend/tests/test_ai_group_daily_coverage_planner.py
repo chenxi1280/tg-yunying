@@ -10,8 +10,10 @@ from app.database import Base
 from app.models import AccountPool, Task, TaskAccountDailyCoverage, Tenant, TgAccount, TgGroup, TgGroupAccount
 from app.services.task_center.executors.group_ai_chat import (
     _coverage_capacity_blocker,
+    _coverage_plan_state,
     _coverage_round_config,
     _account_shortage_reason,
+    _canonicalized_task_config,
     _online_ready_accounts,
     _quality_fallback_enabled,
     _select_accounts_for_plan,
@@ -108,7 +110,7 @@ def test_all_account_planner_does_not_fall_back_to_platform_scan_without_ready_d
 
 def test_running_all_account_task_blocks_when_daily_capacity_is_insufficient(session: Session) -> None:
     task, group = _seed(session)
-    group.daily_limit = 2
+    group.daily_limit = 1
 
     blocker = _coverage_capacity_blocker(session, task, group, task.type_config)
 
@@ -141,6 +143,55 @@ def test_all_account_shortage_reason_does_not_scan_platform_accounts(session: Se
 
     assert reason == "account_offline"
     assert "在线" in message
+
+
+def test_planner_does_not_normalize_legacy_coverage_config(session: Session) -> None:
+    task, _group = _seed(session)
+    task.type_config = {**task.type_config, "account_coverage_mode": "natural"}
+
+    config = _canonicalized_task_config(session, task, dict(task.type_config))
+
+    assert config["account_coverage_mode"] == "natural"
+
+
+def test_coverage_plan_state_materializes_scope_once_and_reuses_rows(session: Session, monkeypatch) -> None:
+    task, group = _seed(session)
+    group.active_window = "00:00-23:59"
+    calls = 0
+
+    def count_ensure(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+
+    monkeypatch.setattr(
+        "app.services.task_center.executors.group_ai_chat.ensure_task_daily_coverage",
+        count_ensure,
+    )
+
+    state = _coverage_plan_state(session, task, group, task.type_config, {})
+
+    assert calls == 1
+    assert set(state.rows_by_account) == {1, 2, 3}
+
+
+def test_account_selection_uses_supplied_coverage_snapshot_without_reread(session: Session, monkeypatch) -> None:
+    task, group = _seed(session)
+    row = session.get(TaskAccountDailyCoverage, "coverage-1")
+    monkeypatch.setattr(
+        "app.services.task_center.executors.group_ai_chat.ready_coverage_rows",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("ledger reread")),
+    )
+
+    selected = _select_accounts_for_plan(
+        session,
+        task,
+        group,
+        {},
+        task.type_config,
+        coverage_rows=[row],
+    )
+
+    assert [account.id for account in selected] == [1]
 
 
 def test_all_account_coverage_never_enables_quality_fallback() -> None:

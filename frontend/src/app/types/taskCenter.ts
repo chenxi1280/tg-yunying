@@ -28,6 +28,7 @@ export type HardHourlyRecentBucket = {
 
 export type TaskAccountCoverage = {
   mode?: 'natural' | 'all_accounts_daily';
+  coverage_status?: string;
   covered_count: number;
   confirmed_account_count?: number;
   eligible_count: number;

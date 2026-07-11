@@ -49,6 +49,62 @@ def test_capacity_proof_blocks_impossible_group_daily_target() -> None:
     assert proof["blocker_code"] == "daily_coverage_capacity_insufficient"
 
 
+def test_capacity_proof_uses_total_active_window_task_capacity() -> None:
+    group = TgGroup(
+        id=21,
+        tenant_id=1,
+        tg_peer_id="-10021",
+        title="目标群",
+        active_window="09:00-23:00",
+        daily_limit=100,
+    )
+
+    proof = coverage_capacity_proof(
+        group=group,
+        target_account_count=6,
+        target_per_account=1,
+        max_actions_per_hour=100,
+        account_day_limit=100,
+        account_hour_limit=100,
+        account_cooldown_seconds=0,
+        daily_task_capacity=5,
+    )
+
+    assert proof["capacity_dimensions"]["task_schedule"] == 5
+    assert proof["sufficient"] is False
+    assert "task_schedule" in proof["blockers"]
+
+
+def test_capacity_proof_does_not_require_confirmed_messages_twice() -> None:
+    group = TgGroup(
+        id=21,
+        tenant_id=1,
+        tg_peer_id="-10021",
+        title="目标群",
+        active_window="09:00-23:00",
+        daily_limit=580,
+    )
+
+    proof = coverage_capacity_proof(
+        group=group,
+        target_account_count=580,
+        target_per_account=1,
+        confirmed_message_count=140,
+        max_actions_per_hour=100,
+        account_day_limit=400,
+        account_hour_limit=50,
+        account_cooldown_seconds=0,
+        daily_task_capacity=580,
+        occupied_group_actions=140,
+        occupied_task_actions=140,
+    )
+
+    assert proof["required_daily_messages"] == 580
+    assert proof["remaining_required_messages"] == 440
+    assert proof["capacity_dimensions"]["group_daily_limit"] == 440
+    assert proof["sufficient"] is True
+
+
 def test_precheck_capacity_uses_all_session_ready_accounts(session: Session) -> None:
     session.add(Tenant(id=1, name="租户"))
     session.add(AccountPool(id=10, tenant_id=1, name="普通", pool_purpose="normal", is_enabled=True))
@@ -158,6 +214,29 @@ def test_coverage_summary_uses_frozen_ledger_denominator(session: Session) -> No
     assert summary["required_daily_messages"] == 4
     assert any(item["reason"] == "cannot_send" and item["count"] == 1 for item in summary["blocked_reasons"])
     assert any(item["reason"] == "daily_coverage_capacity_insufficient" for item in summary["blocked_reasons"])
+
+
+def test_missing_all_account_ledger_never_falls_back_to_dynamic_percentage(session: Session) -> None:
+    session.add(Tenant(id=1, name="租户"))
+    session.add(TgGroup(id=21, tenant_id=1, tg_peer_id="-10021", title="目标群"))
+    task = Task(
+        id="missing-ledger",
+        tenant_id=1,
+        name="缺失账本",
+        type="group_ai_chat",
+        status="running",
+        account_config={"selection_mode": "all"},
+        type_config={"target_group_id": 21, "account_coverage_mode": "all_accounts_daily"},
+    )
+    session.add(task)
+    session.commit()
+
+    summary = task_account_coverage(session, task)
+
+    assert summary["mode"] == "all_accounts_daily"
+    assert summary["coverage_status"] == "scope_uninitialized"
+    assert summary["coverage_percent"] == 0
+    assert any(item["reason"] == "coverage_scope_uninitialized" for item in summary["blocked_reasons"])
 
 
 def test_coverage_detail_page_keeps_blocked_accounts_visible(session: Session) -> None:

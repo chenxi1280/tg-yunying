@@ -880,13 +880,14 @@ def check_qr_login(session: Session, account_id: int, actor: str = "普通用户
 
 def health_check_account(session: Session, account_id: int) -> TgAccount:
     account = _ensure_account_available(session.get(TgAccount, account_id))
+    previous_status = account.status
     try:
         credentials = credentials_for_account(session, account)
     except ValueError as exc:
         account.status = AccountStatus.NEED_RELOGIN.value
         account.health_score = min(account.health_score, 45)
         audit(session, tenant_id=account.tenant_id, actor="system", action="账号健康检查", target_type="tg_account", target_id=str(account.id), detail=str(exc))
-        _emit_account_eligibility_event(session, account.id, "health_status_changed")
+        _emit_health_eligibility_event(session, account, previous_status)
         session.commit()
         session.refresh(account)
         return account
@@ -900,20 +901,25 @@ def health_check_account(session: Session, account_id: int) -> TgAccount:
             proxy = attempt_primary_proxy_recovery(session, account, actor="system", reason=result.detail)
             if proxy is not None:
                 account.status = AccountStatus.ACTIVE.value
-                _emit_account_eligibility_event(session, account.id, "health_status_changed")
+                _emit_health_eligibility_event(session, account, previous_status)
                 session.commit()
                 session.refresh(account)
                 return account
         recovered = attempt_standby_authorization_recovery(session, account, actor="system", reason=result.detail)
         if recovered is not None:
-            _emit_account_eligibility_event(session, account.id, "health_status_changed")
+            _emit_health_eligibility_event(session, account, previous_status)
             session.commit()
             session.refresh(account)
             return account
-    _emit_account_eligibility_event(session, account.id, "health_status_changed")
+    _emit_health_eligibility_event(session, account, previous_status)
     session.commit()
     session.refresh(account)
     return account
+
+
+def _emit_health_eligibility_event(session: Session, account: TgAccount, previous_status: str) -> None:
+    if account.status != previous_status:
+        _emit_account_eligibility_event(session, account.id, "health_status_changed")
 
 
 def _emit_account_eligibility_event(session: Session, account_id: int, event_type: str) -> None:

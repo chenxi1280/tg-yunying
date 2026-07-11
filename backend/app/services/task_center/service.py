@@ -491,11 +491,23 @@ def update_task(session: Session, tenant_id: int, task_id: str, payload: TaskUpd
     if task.type == "group_ai_chat" and "account_config" in data:
         task.type_config = apply_group_ai_account_coverage_defaults(task.type, task.type_config or {}, task.account_config or {})
         initialize_all_account_task_scope(session, task)
+        _clear_unfinished_plan(session, task)
+        _requeue_updated_task(task)
     task.updated_at = _now()
     audit(session, tenant_id=tenant_id, actor=actor, action="更新任务中心任务", target_type="task", target_id=task.id)
     session.commit()
     session.refresh(task)
     return task
+
+
+def _requeue_updated_task(task: Task) -> None:
+    if task.status in {"completed", "failed"}:
+        return
+    now = _now()
+    scheduled_start = _naive_datetime(task.scheduled_start)
+    task.status = "pending" if scheduled_start and scheduled_start > now else "running"
+    task.next_run_at = scheduled_start if task.status == "pending" else now
+    task.last_error = ""
 
 
 def update_task_settings(session: Session, tenant_id: int, task_id: str, payload: TaskSettingsUpdate, actor: str) -> Task:

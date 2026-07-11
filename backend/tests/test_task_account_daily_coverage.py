@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime
 
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
@@ -22,7 +22,9 @@ from app.models import (
 from app.security import encrypt_session
 from app.services.task_center.account_scope import initialize_all_account_task_scope, sync_account_to_all_tasks
 from app.services.task_center.daily_coverage import (
+    daily_coverage_due_debt,
     ensure_task_daily_coverage,
+    ready_coverage_rows,
     release_coverage_reservation,
     reserve_coverage_for_action,
 )
@@ -102,7 +104,7 @@ def test_account_state_change_does_not_remove_existing_daily_obligation(session:
     account.status = "Session失效"
     session.commit()
 
-    ensure_task_daily_coverage(session, task, now=datetime(2026, 7, 10, 12))
+    sync_account_to_all_tasks(session, account.id, now=datetime(2026, 7, 10, 12))
     session.commit()
 
     rows = list(session.scalars(select(TaskAccountDailyCoverage)))
@@ -161,3 +163,131 @@ def test_daily_ledger_creation_is_idempotent(session: Session) -> None:
     assert second.created == 0
     assert len(list(session.scalars(select(TaskAccountDailyCoverage)))) == 1
     assert len(list(session.scalars(select(TaskMembershipAdmissionItem)))) == 1
+
+
+def test_existing_complete_daily_scope_skips_per_account_readiness_refresh(session: Session, monkeypatch) -> None:
+    task = _seed(session)
+    session.add(_account(1))
+    session.commit()
+    initialize_all_account_task_scope(session, task, now=datetime(2026, 7, 10, 10))
+    monkeypatch.setattr(
+        "app.services.task_center.daily_coverage.refresh_rows",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected refresh")),
+    )
+
+    result = ensure_task_daily_coverage(session, task, now=datetime(2026, 7, 10, 11))
+
+    assert result.created == 0
+    assert result.refreshed == 0
+
+
+def test_new_daily_scope_uses_batched_readiness_without_per_account_queries(session: Session) -> None:
+    task = _seed(session)
+    for account_id in range(1, 21):
+        session.add(_account(account_id))
+    session.commit()
+    initialize_all_account_task_scope(session, task, now=datetime(2026, 7, 10, 10))
+    statement_count = 0
+
+    def count_select(_conn, _cursor, statement, _parameters, _context, _executemany):
+        nonlocal statement_count
+        if statement.lstrip().upper().startswith("SELECT"):
+            statement_count += 1
+
+    event.listen(session.bind, "before_cursor_execute", count_select)
+
+    result = ensure_task_daily_coverage(session, task, now=datetime(2026, 7, 11, 10))
+
+    event.remove(session.bind, "before_cursor_execute", count_select)
+
+    assert result.created == 20
+    assert result.refreshed == 20
+    assert statement_count <= 7
+
+
+def test_ready_coverage_rows_is_indexed_read_without_implicit_scope_refresh(session: Session, monkeypatch) -> None:
+    task = _seed(session)
+    for account_id in (1, 2):
+        session.add(_account(account_id))
+        session.add(TaskMembershipAdmissionItem(
+            tenant_id=1,
+            task_id=task.id,
+            account_id=account_id,
+            target_id=31,
+            phase="completed",
+        ))
+        session.add(TaskAccountDailyCoverage(
+            tenant_id=1,
+            task_id=task.id,
+            group_id=21,
+            account_id=account_id,
+            coverage_date=date(2026, 7, 10),
+            state="ready",
+        ))
+    session.commit()
+    monkeypatch.setattr(
+        "app.services.task_center.daily_coverage.ensure_task_daily_coverage",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("implicit refresh")),
+    )
+
+    rows = ready_coverage_rows(session, task, now=datetime(2026, 7, 10, 12), limit=1)
+
+    assert [row.account_id for row in rows] == [1]
+
+
+def test_daily_coverage_due_debt_uses_elapsed_active_window(session: Session) -> None:
+    task = _seed(session)
+    group = session.get(TgGroup, 21)
+    rows = [
+        TaskAccountDailyCoverage(
+            tenant_id=1,
+            task_id=task.id,
+            group_id=21,
+            account_id=account_id,
+            coverage_date=date(2026, 7, 10),
+            state="ready",
+        )
+        for account_id in range(1, 15)
+    ]
+
+    assert daily_coverage_due_debt(task, group, rows, now=datetime(2026, 7, 10, 8, 59)) == 0
+    assert daily_coverage_due_debt(task, group, rows, now=datetime(2026, 7, 10, 10, 0)) == 1
+    assert daily_coverage_due_debt(task, group, rows, now=datetime(2026, 7, 10, 16, 0)) == 7
+    assert daily_coverage_due_debt(task, group, rows, now=datetime(2026, 7, 10, 23, 0)) == 14
+
+
+def test_daily_coverage_due_debt_subtracts_confirmed_and_reserved(session: Session) -> None:
+    task = _seed(session)
+    group = session.get(TgGroup, 21)
+    rows = [
+        TaskAccountDailyCoverage(
+            tenant_id=1,
+            task_id=task.id,
+            group_id=21,
+            account_id=1,
+            coverage_date=date(2026, 7, 10),
+            confirmed_count=1,
+            state="confirmed",
+        ),
+        TaskAccountDailyCoverage(
+            tenant_id=1,
+            task_id=task.id,
+            group_id=21,
+            account_id=2,
+            coverage_date=date(2026, 7, 10),
+            state="reserved",
+        ),
+        *[
+            TaskAccountDailyCoverage(
+                tenant_id=1,
+                task_id=task.id,
+                group_id=21,
+                account_id=account_id,
+                coverage_date=date(2026, 7, 10),
+                state="ready",
+            )
+            for account_id in range(3, 15)
+        ],
+    ]
+
+    assert daily_coverage_due_debt(task, group, rows, now=datetime(2026, 7, 10, 11, 0)) == 0

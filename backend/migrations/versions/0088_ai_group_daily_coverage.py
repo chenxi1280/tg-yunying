@@ -18,13 +18,21 @@ depends_on = None
 
 
 def upgrade() -> None:
-    _create_coverage_table()
-    _create_event_table()
+    if not _table_exists("task_account_daily_coverage"):
+        _create_coverage_table()
+    if not _table_exists("account_eligibility_events"):
+        _create_event_table()
 
 
 def downgrade() -> None:
-    op.drop_table("account_eligibility_events")
-    op.drop_table("task_account_daily_coverage")
+    if _table_exists("account_eligibility_events"):
+        op.drop_table("account_eligibility_events")
+    if _table_exists("task_account_daily_coverage"):
+        op.drop_table("task_account_daily_coverage")
+
+
+def _table_exists(table_name: str) -> bool:
+    return sa.inspect(op.get_bind()).has_table(table_name)
 
 
 def _create_coverage_table() -> None:
@@ -80,12 +88,14 @@ def _create_event_table() -> None:
         sa.Column("occurred_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("processed_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("processing_error", sa.Text(), nullable=False, server_default=""),
+        sa.Column("attempt_count", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column("next_attempt_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     )
     op.create_index(
         "ix_account_eligibility_events_pending",
         "account_eligibility_events",
-        ["processed_at", "occurred_at"],
+        ["processed_at", "next_attempt_at", "occurred_at"],
     )
     op.create_index(
         "ix_account_eligibility_events_account",

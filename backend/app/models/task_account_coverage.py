@@ -56,7 +56,7 @@ class TaskAccountDailyCoverage(Base):
 class AccountEligibilityEvent(Base):
     __tablename__ = "account_eligibility_events"
     __table_args__ = (
-        Index("ix_account_eligibility_events_pending", "processed_at", "occurred_at"),
+        Index("ix_account_eligibility_events_pending", "processed_at", "next_attempt_at", "occurred_at"),
         Index("ix_account_eligibility_events_account", "tenant_id", "account_id", "occurred_at"),
     )
 
@@ -67,6 +67,8 @@ class AccountEligibilityEvent(Base):
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     processing_error: Mapped[str] = mapped_column(Text, default="")
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 

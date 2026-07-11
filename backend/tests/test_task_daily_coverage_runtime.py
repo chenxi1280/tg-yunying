@@ -22,10 +22,12 @@ from app.models import (
     TgGroup,
 )
 from app.security import encrypt_session
+from app.schemas.task_center import AccountConfig, TaskUpdate
 from app.services.task_center.account_scope import drain_account_scope_events, emit_account_eligibility_event
 from app.services.task_center.channel_membership import _task_membership_candidates
 from app.services.task_center.daily_coverage import backfill_daily_coverage_confirmations, ensure_task_daily_coverage
 from app.services.task_center.dispatcher import _sync_all_account_membership_state
+from app.services.task_center.service import update_task
 
 
 pytestmark = pytest.mark.no_postgres
@@ -219,3 +221,80 @@ def test_release_backfill_only_confirms_success_with_remote_message_id() -> None
         assert row.state == "confirmed"
         assert row.confirmed_count == 1
         assert row.last_remote_message_id == "tg-existing-1"
+
+
+def test_release_backfill_never_decreases_existing_confirmation() -> None:
+    engine = _engine()
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        task, account = _seed(session)
+        session.add(TaskAccountDailyCoverage(
+            id="already-confirmed",
+            tenant_id=1,
+            task_id=task.id,
+            group_id=21,
+            account_id=account.id,
+            coverage_date=datetime(2026, 7, 10).date(),
+            target_count=2,
+            confirmed_count=2,
+            state="confirmed",
+            last_success_action_id="retained-success",
+            last_remote_message_id="tg-retained",
+        ))
+        action = Action(
+            id="partial-history-success",
+            tenant_id=1,
+            task_id=task.id,
+            task_type=task.type,
+            action_type="send_message",
+            account_id=account.id,
+            status="success",
+            executed_at=datetime(2026, 7, 10, 9),
+        )
+        session.add(action)
+        session.add(ExecutionAttempt(
+            tenant_id=1,
+            action_id=action.id,
+            account_id=account.id,
+            attempt_no=1,
+            status="success",
+            remote_message_id="tg-partial",
+        ))
+        session.flush()
+
+        updated = backfill_daily_coverage_confirmations(session, task, datetime(2026, 7, 10).date())
+        row = session.get(TaskAccountDailyCoverage, "already-confirmed")
+
+        assert updated == 0
+        assert row.confirmed_count == 2
+        assert row.state == "confirmed"
+        assert row.last_success_action_id == "retained-success"
+
+
+def test_account_selection_update_clears_pending_daily_coverage_actions() -> None:
+    engine = _engine()
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        task, account = _seed(session)
+        session.add(Action(
+            id="pending-coverage-action",
+            tenant_id=1,
+            task_id=task.id,
+            task_type=task.type,
+            action_type="send_message",
+            account_id=account.id,
+            status="pending",
+            payload={"coverage_ledger_id": "coverage-1"},
+        ))
+        session.commit()
+
+        update_task(
+            session,
+            1,
+            task.id,
+            TaskUpdate(account_config=AccountConfig(selection_mode="manual", account_ids=[account.id])),
+            "tester",
+        )
+
+        assert session.get(Action, "pending-coverage-action") is None
+        assert session.get(Task, task.id).next_run_at is not None

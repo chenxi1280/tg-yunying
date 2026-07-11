@@ -62,7 +62,7 @@ def test_account_eligibility_event_has_unprocessed_queue_index() -> None:
     event_model, _ = _models()
     indexes = {index.name: tuple(column.name for column in index.columns) for index in event_model.__table__.indexes}
 
-    assert indexes["ix_account_eligibility_events_pending"] == ("processed_at", "occurred_at")
+    assert indexes["ix_account_eligibility_events_pending"] == ("processed_at", "next_attempt_at", "occurred_at")
     assert indexes["ix_account_eligibility_events_account"] == ("tenant_id", "account_id", "occurred_at")
 
 
@@ -87,11 +87,15 @@ def test_coverage_migration_upgrades_and_downgrades_sqlite() -> None:
         migration.op = Operations(MigrationContext.configure(connection))
         migration.upgrade()
         tables = inspect(connection).get_table_names()
+        event_columns = {
+            column["name"] for column in inspect(connection).get_columns("account_eligibility_events")
+        }
         migration.op = Operations(MigrationContext.configure(connection))
         migration.downgrade()
         downgraded_tables = inspect(connection).get_table_names()
 
     assert "task_account_daily_coverage" in tables
     assert "account_eligibility_events" in tables
+    assert {"attempt_count", "next_attempt_at"}.issubset(event_columns)
     assert "task_account_daily_coverage" not in downgraded_tables
     assert "account_eligibility_events" not in downgraded_tables

@@ -1,5 +1,5 @@
 import React from 'react';
-import { Alert, Button, Descriptions, Space, Table, Tabs, Tag, Typography } from 'antd';
+import { Alert, Button, Descriptions, Input, Select, Space, Table, Tabs, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { HardHourlyRecentBucket, SearchRankDeboostExemptGroup, TaskAccountCoverageItem, TaskCenterAction, TaskCenterDetail, TaskCenterTask, TenantBotSettings } from '../types';
 import { DetailModal, StatusBadge } from '../components/shared';
@@ -144,6 +144,7 @@ interface TaskCenterDetailModalProps {
   relayBatchPagination: DetailPagination;
   admissionItemPagination: DetailPagination;
   accountCoveragePagination: DetailPagination;
+  accountCoverageFilters: { date: string; state: string; blockerCode: string };
   detailProfile: DetailProfile;
   detailPlannedTotal: number;
   membershipLoading: boolean;
@@ -162,6 +163,7 @@ interface TaskCenterDetailModalProps {
   onPlannedActionPageChange: (page: number, pageSize: number) => void;
   onExecutedActionPageChange: (page: number, pageSize: number) => void;
   onDetailSectionPageChange: (kind: DetailSectionKind, page: number, pageSize: number) => void;
+  onAccountCoverageFiltersChange: (filters: { date: string; state: string; blockerCode: string }) => void;
   onEditTask: (task: TaskCenterTask) => void;
   onRefreshTask: (task: TaskCenterTask) => void;
   telegramBotSettings?: TenantBotSettings | null;
@@ -461,6 +463,7 @@ export function TaskCenterDetailModal({
   relayBatchPagination,
   admissionItemPagination,
   accountCoveragePagination,
+  accountCoverageFilters,
   detailProfile,
   detailPlannedTotal,
   membershipLoading,
@@ -479,6 +482,7 @@ export function TaskCenterDetailModal({
   onPlannedActionPageChange,
   onExecutedActionPageChange,
   onDetailSectionPageChange,
+  onAccountCoverageFiltersChange,
   onEditTask,
   onRefreshTask,
   telegramBotSettings,
@@ -715,6 +719,40 @@ export function TaskCenterDetailModal({
               },
             ]}
           />
+          <Space wrap>
+            <input
+              aria-label="覆盖日期"
+              type="date"
+              value={accountCoverageFilters.date}
+              onChange={(event) => onAccountCoverageFiltersChange({ ...accountCoverageFilters, date: event.target.value })}
+            />
+            <Select
+              aria-label="覆盖状态"
+              value={accountCoverageFilters.state || undefined}
+              placeholder="全部状态"
+              allowClear
+              style={{ width: 120 }}
+              options={[
+                { value: 'confirmed', label: '已完成' },
+                { value: 'ready', label: '待规划' },
+                { value: 'reserved', label: '已预约' },
+                { value: 'sending', label: '发送中' },
+                { value: 'pending_admission', label: '待入群' },
+                { value: 'blocked', label: '阻塞' },
+                { value: 'unknown', label: '结果未知' },
+              ]}
+              onChange={(state) => onAccountCoverageFiltersChange({ ...accountCoverageFilters, state: state || '' })}
+            />
+            <Input
+              aria-label="阻塞码"
+              key={accountCoverageFilters.blockerCode}
+              defaultValue={accountCoverageFilters.blockerCode}
+              placeholder="阻塞码"
+              style={{ width: 160 }}
+              onPressEnter={(event) => onAccountCoverageFiltersChange({ ...accountCoverageFilters, blockerCode: event.currentTarget.value })}
+              onBlur={(event) => onAccountCoverageFiltersChange({ ...accountCoverageFilters, blockerCode: event.target.value })}
+            />
+          </Space>
           <Table<TaskAccountCoverageItem>
             rowKey="id"
             size="small"

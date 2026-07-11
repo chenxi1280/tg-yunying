@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import date, timedelta
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.database import Base
 import pytest
 
-from app.models import AccountPool, AccountRuntimeSummary, AccountStatus, Action, Task, Tenant, TgAccount, TgAccountSecuritySnapshot, TgGroup, TgGroupAccount
+from app.models import AccountPool, AccountRuntimeSummary, AccountStatus, Action, Task, TaskAccountDailyCoverage, Tenant, TgAccount, TgAccountSecuritySnapshot, TgGroup, TgGroupAccount
 from app.services._common import _now
 from app.services.account_pools import (
     create_account_pool,
@@ -659,9 +659,11 @@ def test_all_account_group_ai_task_uses_daily_success_coverage_when_legacy_confi
         coverage = task_account_coverage(session, task)
 
     assert coverage["mode"] == "all_accounts_daily"
-    assert coverage["statuses"] == ["success"]
-    assert coverage["covered_count"] == 1
-    assert coverage["remaining_count"] == 2
+    assert coverage["statuses"] == ["confirmed"]
+    assert coverage["coverage_status"] == "scope_uninitialized"
+    assert coverage["covered_count"] == 0
+    assert coverage["remaining_count"] == 0
+    assert coverage["blocked_reasons"][0]["reason"] == "coverage_scope_uninitialized"
 
 
 @pytest.mark.no_postgres
@@ -707,6 +709,47 @@ def test_group_ai_all_accounts_coverage_projects_reasons_and_pending_accounts():
             last_error="AI 候选不足",
         )
         session.add(task)
+        session.add_all([
+            TaskAccountDailyCoverage(
+                tenant_id=1,
+                task_id=task.id,
+                group_id=7,
+                account_id=1,
+                coverage_date=date.today(),
+                target_count=2,
+                confirmed_count=1,
+                state="ready",
+            ),
+            TaskAccountDailyCoverage(
+                tenant_id=1,
+                task_id=task.id,
+                group_id=7,
+                account_id=2,
+                coverage_date=date.today(),
+                target_count=2,
+                state="blocked",
+                blocker_code="cannot_send",
+            ),
+            TaskAccountDailyCoverage(
+                tenant_id=1,
+                task_id=task.id,
+                group_id=7,
+                account_id=3,
+                coverage_date=date.today(),
+                target_count=2,
+                state="pending_admission",
+            ),
+            TaskAccountDailyCoverage(
+                tenant_id=1,
+                task_id=task.id,
+                group_id=7,
+                account_id=4,
+                coverage_date=date.today(),
+                target_count=2,
+                confirmed_count=2,
+                state="confirmed",
+            ),
+        ])
         session.add(
             Action(
                 id="today-success-account-1",
@@ -725,13 +768,13 @@ def test_group_ai_all_accounts_coverage_projects_reasons_and_pending_accounts():
 
     assert coverage["mode"] == "all_accounts_daily"
     assert coverage["target_account_count"] == 4
-    assert coverage["eligible_count"] == 2
-    assert coverage["remaining_count"] == 2
+    assert coverage["eligible_count"] == 4
+    assert coverage["remaining_count"] == 3
     assert coverage["pending_admission_count"] == 1
     assert coverage["restricted_count"] == 1
-    assert coverage["remaining_message_count"] == 3
-    assert coverage["estimated_completion_window"]["estimated_min_hours"] == 2
-    assert any(item["reason"] == "coverage_remaining" for item in coverage["pending_accounts"])
+    assert coverage["remaining_message_count"] == 5
+    assert coverage["estimated_completion_window"]["estimated_min_hours"] == 3
+    assert any(item["reason"] == "ready" for item in coverage["pending_accounts"])
     assert any(item["reason"] == "pending_admission" for item in coverage["pending_accounts"])
     assert any(item["reason"] == "cannot_send" for item in coverage["pending_accounts"])
     assert any(item["reason"] == "last_error" and item["message"] == "AI 候选不足" for item in coverage["blocked_reasons"])

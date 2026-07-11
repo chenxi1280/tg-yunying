@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -33,6 +33,7 @@ class ScopeSyncResult:
 
 SCOPE_RECONCILE_INTERVAL = timedelta(hours=6)
 SCOPE_RECONCILE_METRIC = "task_account_scope.reconcile"
+SCOPE_EVENT_RETRY_DELAY = timedelta(minutes=5)
 
 
 def is_all_accounts_task(task: Task) -> bool:
@@ -74,6 +75,7 @@ def initialize_all_account_task_scope(
 ) -> ScopeSyncResult:
     if not is_all_accounts_task(task):
         return ScopeSyncResult()
+    _normalize_all_account_config(task)
     account_ids = eligible_account_ids(session, task.tenant_id)
     created = _sync_task_relations(session, task, account_ids)
     _ensure_daily_coverage(session, task, account_ids, now=now, incremental=False)
@@ -100,10 +102,17 @@ def process_account_eligibility_events(
     limit: int = 100,
     now: datetime | None = None,
 ) -> int:
+    timestamp = now or _now()
     events = list(
         session.scalars(
             select(AccountEligibilityEvent)
-            .where(AccountEligibilityEvent.processed_at.is_(None))
+            .where(
+                AccountEligibilityEvent.processed_at.is_(None),
+                or_(
+                    AccountEligibilityEvent.next_attempt_at.is_(None),
+                    AccountEligibilityEvent.next_attempt_at <= timestamp,
+                ),
+            )
             .order_by(AccountEligibilityEvent.occurred_at.asc(), AccountEligibilityEvent.id.asc())
             .limit(max(1, limit))
             .with_for_update(skip_locked=True)
@@ -112,12 +121,15 @@ def process_account_eligibility_events(
     processed = 0
     for event in events:
         try:
-            sync_account_to_all_tasks(session, event.account_id, now=now)
+            sync_account_to_all_tasks(session, event.account_id, now=timestamp)
         except Exception as exc:
             event.processing_error = str(exc)
+            event.attempt_count += 1
+            event.next_attempt_at = timestamp + SCOPE_EVENT_RETRY_DELAY
             continue
-        event.processed_at = now or _now()
+        event.processed_at = timestamp
         event.processing_error = ""
+        event.next_attempt_at = None
         processed += 1
     session.flush()
     return processed
@@ -232,7 +244,18 @@ def _all_account_tasks(session: Session, tenant_id: int) -> list[Task]:
             Task.status.in_(("draft", "pending", "running", "paused")),
         )
     )
-    return [task for task in tasks if is_all_accounts_task(task)]
+    selected = [task for task in tasks if is_all_accounts_task(task)]
+    for task in selected:
+        _normalize_all_account_config(task)
+    return selected
+
+
+def _normalize_all_account_config(task: Task) -> None:
+    task.type_config = apply_group_ai_account_coverage_defaults(
+        task.type,
+        task.type_config or {},
+        task.account_config or {},
+    )
 
 
 def _sync_task_relations(session: Session, task: Task, account_ids: list[int]) -> int:

@@ -3,22 +3,21 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.models import (
-    AccountStatus,
     Action,
     ExecutionAttempt,
     Task,
     TaskAccountDailyCoverage,
     TaskMembershipAdmissionItem,
-    TgAccount,
     TgGroup,
-    TgGroupAccount,
 )
-from app.security import decrypt_session
 from app.services._common import _now
+
+from .daily_coverage_schedule import daily_coverage_due_debt
+from .daily_coverage_readiness import refresh_rows
 
 
 @dataclass(frozen=True)
@@ -37,6 +36,8 @@ def ensure_task_daily_coverage(
     incremental: bool = False,
 ) -> DailyCoverageSyncResult:
     timestamp = now or _now()
+    if account_ids is None and not incremental and _daily_scope_materialized(session, task, timestamp.date()):
+        return DailyCoverageSyncResult(coverage_date=timestamp.date(), created=0, refreshed=0)
     items = _scope_items(session, task, account_ids)
     if not items:
         return DailyCoverageSyncResult(coverage_date=timestamp.date(), created=0, refreshed=0)
@@ -44,6 +45,7 @@ def ensure_task_daily_coverage(
     coverage_date = _target_date(group, timestamp, incremental=incremental)
     existing = _existing_rows(session, task, coverage_date, [item.account_id for item in items])
     created = 0
+    rows_and_items: list[tuple[TaskAccountDailyCoverage, TaskMembershipAdmissionItem]] = []
     for item in items:
         row = existing.get(item.account_id)
         if row is None:
@@ -51,7 +53,8 @@ def ensure_task_daily_coverage(
             session.add(row)
             existing[item.account_id] = row
             created += 1
-        _refresh_row(session, row, item, group)
+        rows_and_items.append((row, item))
+    refresh_rows(session, rows_and_items, group, timestamp)
     session.flush()
     return DailyCoverageSyncResult(coverage_date=coverage_date, created=created, refreshed=len(items))
 
@@ -251,7 +254,12 @@ def _apply_backfilled_successes(
 ) -> int:
     if not successes:
         return 0
-    confirmed = min(row.target_count, len(successes))
+    observed = min(row.target_count, len(successes))
+    if observed < row.confirmed_count:
+        return 0
+    if observed == row.confirmed_count and row.last_success_action_id:
+        return 0
+    confirmed = max(row.confirmed_count, observed)
     action_id, executed_at, remote_message_id = successes[-1]
     changed = row.confirmed_count != confirmed or row.last_success_action_id != action_id
     row.confirmed_count = confirmed
@@ -272,10 +280,13 @@ def ready_coverage_rows(
     task: Task,
     *,
     now: datetime | None = None,
+    limit: int | None = None,
 ) -> list[TaskAccountDailyCoverage]:
     timestamp = now or _now()
-    ensure_task_daily_coverage(session, task, now=timestamp)
-    return list(session.scalars(_ready_coverage_stmt(task, timestamp)))
+    stmt = _ready_coverage_stmt(task, timestamp)
+    if limit is not None:
+        stmt = stmt.limit(max(1, int(limit)))
+    return list(session.scalars(stmt))
 
 
 def ready_coverage_rows_by_account(
@@ -335,6 +346,23 @@ def _scope_items(session: Session, task: Task, account_ids: list[int] | None) ->
     return list(session.scalars(stmt.order_by(TaskMembershipAdmissionItem.account_id.asc())))
 
 
+def _daily_scope_materialized(session: Session, task: Task, coverage_date: date) -> bool:
+    relation_count = session.scalar(
+        select(func.count(TaskMembershipAdmissionItem.id)).where(
+            TaskMembershipAdmissionItem.task_id == task.id,
+        )
+    ) or 0
+    if relation_count == 0:
+        return True
+    coverage_count = session.scalar(
+        select(func.count(TaskAccountDailyCoverage.id)).where(
+            TaskAccountDailyCoverage.task_id == task.id,
+            TaskAccountDailyCoverage.coverage_date == coverage_date,
+        )
+    ) or 0
+    return int(coverage_count) >= int(relation_count)
+
+
 def _existing_rows(
     session: Session,
     task: Task,
@@ -373,76 +401,6 @@ def _new_coverage(
     )
 
 
-def _refresh_row(
-    session: Session,
-    row: TaskAccountDailyCoverage,
-    item: TaskMembershipAdmissionItem,
-    group: TgGroup,
-) -> None:
-    if row.state in {"confirmed", "reserved", "sending", "unknown"}:
-        return
-    if row.state == "blocked" and row.next_eligible_at and row.next_eligible_at > _now():
-        return
-    state, code, detail = _account_readiness(session, row.account_id, group.id)
-    row.state = state
-    row.blocker_code = code
-    row.blocker_detail = detail
-    row.next_eligible_at = None
-    row.membership_item_id = item.id
-    row.updated_at = _now()
-    _sync_item_phase(item, state, code, detail)
-
-
-def _account_readiness(session: Session, account_id: int, group_id: int) -> tuple[str, str, str]:
-    account = session.get(TgAccount, account_id)
-    if account is None or account.deleted_at is not None:
-        return "blocked", "account_deleted", "账号已删除"
-    if account.status != AccountStatus.ACTIVE.value:
-        return "blocked", _status_blocker(account.status), f"账号状态：{account.status}"
-    try:
-        session_ready = bool(decrypt_session(account.session_ciphertext))
-    except Exception as exc:
-        return "blocked", "session_invalid", str(exc)
-    if not session_ready:
-        return "blocked", "session_missing", "账号缺少可用 Session"
-    link = session.scalar(
-        select(TgGroupAccount).where(
-            TgGroupAccount.group_id == group_id,
-            TgGroupAccount.account_id == account_id,
-        )
-    )
-    if link is None:
-        return "pending_admission", "not_in_group", "账号尚未进入目标群"
-    if not link.can_send:
-        return "blocked", "cannot_send", "账号在目标群不可发言"
-    return "ready", "", ""
-
-
-def _status_blocker(status: str) -> str:
-    mapping = {
-        AccountStatus.SESSION_EXPIRED.value: "session_expired",
-        AccountStatus.NEED_RELOGIN.value: "need_relogin",
-        AccountStatus.LIMITED.value: "account_limited",
-        AccountStatus.BANNED.value: "account_banned",
-        AccountStatus.DISABLED.value: "account_disabled",
-    }
-    return mapping.get(status, "account_offline")
-
-
-def _sync_item_phase(item: TaskMembershipAdmissionItem, state: str, code: str, detail: str) -> None:
-    if state == "ready":
-        item.phase = "completed"
-        item.failure_type = ""
-        item.failure_detail = ""
-        return
-    if state == "pending_admission":
-        item.phase = "pending"
-        return
-    item.phase = "failed"
-    item.failure_type = code
-    item.failure_detail = detail
-
-
 def _target_date(group: TgGroup, timestamp: datetime, *, incremental: bool) -> date:
     if not incremental:
         return timestamp.date()
@@ -465,6 +423,7 @@ __all__ = [
     "block_coverage_accounts",
     "DailyCoverageSyncResult",
     "confirm_coverage_from_attempt",
+    "daily_coverage_due_debt",
     "ensure_task_daily_coverage",
     "ready_coverage_remaining_count",
     "ready_coverage_rows",

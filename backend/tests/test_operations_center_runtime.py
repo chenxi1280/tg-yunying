@@ -2175,14 +2175,26 @@ def test_worker_heartbeat_stale_check_accepts_aware_and_naive_datetimes():
     assert not _is_stale_heartbeat(datetime.now(BEIJING_TZ), cutoff)
 
 
+@pytest.mark.no_postgres
 def test_listener_runtime_collects_shared_sources_once_and_recovers_listener(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     SessionFactory = sessionmaker(bind=engine, future=True)
     reset_listener_runtime_cache()
     seen: list[tuple[int, list[int]]] = []
+    recovery_committed = False
+    original_commit = Session.commit
+
+    def tracking_commit(session: Session) -> None:
+        nonlocal recovery_committed
+        recovery_committed = recovery_committed or any(
+            isinstance(item, TgGroupAccount) and item.is_listener
+            for item in session.dirty
+        )
+        original_commit(session)
 
     def fake_collect(session: Session, group: TgGroup, account_ids: list[int] | None = None, **_kwargs) -> int:
+        assert recovery_committed
         seen.append((group.id, list(account_ids or [])))
         session.add(
             GroupContextMessage(
@@ -2238,6 +2250,7 @@ def test_listener_runtime_collects_shared_sources_once_and_recovers_listener(mon
         session.commit()
 
     monkeypatch.setattr("app.services.task_center.listener_runtime.collect_group_context", fake_collect)
+    monkeypatch.setattr(Session, "commit", tracking_commit)
     result = drain_listener_runtime(SessionFactory, tenant_id=1, limit=10)
 
     with SessionFactory() as session:
@@ -3025,7 +3038,7 @@ def test_group_relay_operation_targets_create_membership_precondition(monkeypatc
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add_all(
             [
-                TgAccount(id=101, tenant_id=1, display_name="账号A", phone_masked="101", status=AccountStatus.ACTIVE.value, health_score=100),
+                TgAccount(id=101, tenant_id=1, display_name="账号A", phone_masked="101", status=AccountStatus.ACTIVE.value, health_score=100, session_ciphertext="session-101"),
                 TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="源群资产", auth_status="已授权运营", can_send=True, listener_context_limit=20),
                 TgGroup(id=9, tenant_id=1, tg_peer_id="-1009", title="目标群资产", auth_status="未确认", can_send=False, listener_context_limit=20),
                 OperationTarget(id=21, tenant_id=1, target_type="group", tg_peer_id="-1007", title="源群目标", can_send=True, auth_status="已授权运营"),
@@ -3041,7 +3054,7 @@ def test_group_relay_operation_targets_create_membership_precondition(monkeypatc
                     sender_name="真实用户",
                     content="需要转发的上下文",
                     remote_message_id="relay-membership-ctx",
-                    sent_at=datetime(2026, 5, 11, 10, 0, 0),
+                    sent_at=_now(),
                 ),
                 Task(
                     id="relay-target-membership",
@@ -3063,7 +3076,8 @@ def test_group_relay_operation_targets_create_membership_precondition(monkeypatc
         )
         session.commit()
 
-        assert build_group_relay_plan(session, session.get(Task, "relay-target-membership")) == 2
+        relay_task = session.get(Task, "relay-target-membership")
+        assert build_group_relay_plan(session, relay_task) == 2, (relay_task.last_error, relay_task.stats)
         membership_actions = list(session.scalars(select(Action).where(Action.task_id == "relay-target-membership", Action.action_type == "ensure_target_membership").order_by(Action.payload["channel_target_id"].as_integer())))
         assert [action.payload["channel_target_id"] for action in membership_actions] == [21, 22]
         assert [action.payload["target_type"] for action in membership_actions] == ["group", "group"]

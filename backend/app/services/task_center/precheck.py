@@ -14,7 +14,7 @@ from .ai_limits import recommend_ai_limits
 from .account_scope import eligible_account_ids
 from .channel_membership import channel_membership_summary
 from .config_fields import COMMON_CREATE_FIELDS, TASK_CREATE_MODELS
-from .coverage_capacity import coverage_capacity_proof
+from .coverage_capacity import coverage_capacity_proof, daily_task_schedule_capacity
 from .pacing import current_hour_rounds
 from .utils import as_int as _as_int, as_int_list as _as_int_list, as_str_list as _as_str_list
 
@@ -243,6 +243,11 @@ def _daily_coverage_capacity_check(
         account_day_limit=int(setting.default_account_day_limit or 0),
         account_hour_limit=int(setting.default_account_hour_limit or 0),
         account_cooldown_seconds=int(setting.default_account_cooldown_seconds or 0),
+        daily_task_capacity=daily_task_schedule_capacity(
+            pacing,
+            int(ai_summary.get("messages_per_round") or 1),
+            group,
+        ),
     )
 
 

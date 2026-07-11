@@ -27,8 +27,7 @@ def task_account_coverage(session: Session, task: Task) -> dict[str, object]:
     config = _effective_coverage_config(task)
     if task.type == "group_ai_chat" and config.get("account_coverage_mode") == "all_accounts_daily":
         ledger_summary = _ledger_account_coverage(session, task)
-        if ledger_summary:
-            return ledger_summary
+        return ledger_summary or _uninitialized_ledger_summary(task)
     target_count = _task_coverage_target_count(task)
     statuses = _task_coverage_statuses(task)
     target_accounts = _task_coverage_all_accounts(session, task)
@@ -59,6 +58,42 @@ def task_account_coverage(session: Session, task: Task) -> dict[str, object]:
         "blocked_reasons": _coverage_blocked_reasons(task, pending_admission_count, restricted_count, remaining_count),
         "estimated_completion_window": _coverage_estimated_window(task, remaining_messages),
         "pending_accounts": _coverage_pending_accounts(target_accounts, readiness, counts, target_count),
+    }
+
+
+def _uninitialized_ledger_summary(task: Task) -> dict[str, object]:
+    message = "全部账号覆盖范围或当日账本尚未初始化"
+    return {
+        "mode": "all_accounts_daily",
+        "coverage_status": "scope_uninitialized",
+        "covered_count": 0,
+        "confirmed_account_count": 0,
+        "eligible_count": 0,
+        "target_account_count": 0,
+        "remaining_count": 0,
+        "remaining_account_count": 0,
+        "remaining_message_count": 0,
+        "pending_admission_count": 0,
+        "restricted_count": 0,
+        "blocked_count": 0,
+        "unknown_count": 0,
+        "target_per_account": _task_coverage_target_count(task),
+        "coverage_rate": 0,
+        "coverage_percent": 0,
+        "action_types": ["send_message"],
+        "statuses": ["confirmed"],
+        "blocked_reasons": [{
+            "reason": "coverage_scope_uninitialized",
+            "count": 1,
+            "message": message,
+        }],
+        "capacity_status": "blocked",
+        "estimated_completion_window": {
+            "status": "unproven",
+            "estimated_min_hours": None,
+            "label": message,
+        },
+        "pending_accounts": [],
     }
 
 
@@ -217,6 +252,7 @@ def _ledger_capacity_proof(
         group,
         target_account_count=len(rows),
         target_per_account=max(row.target_count for row in rows),
+        confirmed_message_count=sum(row.confirmed_count for row in rows),
     )
 
 

@@ -3919,7 +3919,7 @@ def test_group_ai_build_plan_canonicalizes_duplicate_username_target_before_memb
             name="天津",
             type="group_ai_chat",
             status="running",
-            account_config={"selection_mode": "all"},
+            account_config={"selection_mode": "manual", "account_ids": [11]},
             type_config={"target_operation_target_id": 1251},
             stats={},
         )
@@ -4952,7 +4952,7 @@ def test_group_ai_all_account_coverage_does_not_use_emoji_fallback_after_quality
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
-        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True, active_window="00:00-01:00"))
         session.add_all(
             [
                 TgAccount(id=11, tenant_id=1, display_name="账号A", phone_masked="+861***0011", status="在线", session_ciphertext="session-a"),

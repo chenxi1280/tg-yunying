@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine, select
@@ -10,6 +11,7 @@ from app.database import Base
 from app.models import (
     AccountEligibilityEvent,
     AccountPool,
+    AccountStatus,
     OperationTarget,
     Task,
     TaskMembershipAdmissionItem,
@@ -25,6 +27,8 @@ from app.services.task_center.account_scope import (
     initialize_all_account_task_scope,
     process_account_eligibility_events,
 )
+from app.services.task_center.channel_membership import _account_can_attempt_membership
+from app.services import accounts as accounts_service
 from app.services.task_center.service import create_group_ai_chat_task
 
 
@@ -108,6 +112,35 @@ def test_eligible_account_ids_enforces_session_usage_and_rescue_boundaries(sessi
     assert eligible_account_ids(session, 1) == [1]
 
 
+def test_membership_gate_rejects_unreadable_session_ciphertext() -> None:
+    account = TgAccount(
+        id=999,
+        tenant_id=1,
+        display_name="损坏会话",
+        phone_masked="999",
+        status=AccountStatus.ACTIVE.value,
+        session_ciphertext="enc:v2:not-valid-ciphertext",
+    )
+
+    assert _account_can_attempt_membership(account) is False
+
+
+def test_unchanged_health_check_does_not_emit_scope_event(session: Session, monkeypatch) -> None:
+    _seed_scope_base(session)
+    session.add(_account(1, 10))
+    session.commit()
+    monkeypatch.setattr(accounts_service, "credentials_for_account", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(
+        accounts_service.gateway,
+        "check_account_health",
+        lambda *_args, **_kwargs: SimpleNamespace(status=AccountStatus.ACTIVE.value, health_score=95, detail="ok"),
+    )
+
+    accounts_service.health_check_account(session, 1)
+
+    assert session.scalar(select(AccountEligibilityEvent)) is None
+
+
 def test_initial_scope_snapshot_creates_only_all_account_task_relations(session: Session) -> None:
     _seed_scope_base(session)
     session.add_all([_account(1, 10), _account(2, 10), _task("all-task"), _task("manual-task", selection_mode="manual")])
@@ -136,6 +169,7 @@ def test_legacy_all_account_task_with_natural_mode_is_included(session: Session)
     result = initialize_all_account_task_scope(session, legacy_task, now=datetime(2026, 7, 10, 10))
 
     assert result.created_relations == 1
+    assert legacy_task.type_config["account_coverage_mode"] == "all_accounts_daily"
 
 
 def test_account_event_incrementally_syncs_only_changed_account(session: Session) -> None:
@@ -158,6 +192,28 @@ def test_account_event_incrementally_syncs_only_changed_account(session: Session
     event = session.scalar(select(AccountEligibilityEvent))
     assert [item.account_id for item in relations] == [1, 2]
     assert event is not None and event.processed_at is not None and event.processing_error == ""
+
+
+def test_failed_scope_event_is_delayed_without_starving_new_events(session: Session, monkeypatch) -> None:
+    _seed_scope_base(session)
+    session.add_all([_account(1, 10), _account(2, 10)])
+    session.commit()
+    first = emit_account_eligibility_event(session, 1, "health_status_changed")
+    second = emit_account_eligibility_event(session, 2, "login_ready")
+
+    def fail_first(_session, account_id: int, *, now=None):
+        if account_id == 1:
+            raise RuntimeError("temporary sync failure")
+        return 1
+
+    monkeypatch.setattr("app.services.task_center.account_scope.sync_account_to_all_tasks", fail_first)
+    timestamp = datetime(2026, 7, 10, 11)
+
+    assert process_account_eligibility_events(session, limit=1, now=timestamp) == 0
+    assert first.attempt_count == 1
+    assert first.next_attempt_at and first.next_attempt_at > timestamp
+    assert process_account_eligibility_events(session, limit=1, now=timestamp) == 1
+    assert second.processed_at == timestamp
 
 
 def test_group_ai_task_creation_initializes_persistent_account_scope(session: Session) -> None:

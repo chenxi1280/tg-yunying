@@ -10,6 +10,7 @@ from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from app.models import AccountStatus, Action, GroupAuthStatus, OperationTarget, Task, TaskMembershipAdmissionItem, Tenant, TgAccount, TgGroup, TgGroupAccount, VerificationTask
+from app.security import decrypt_session
 from app.services._common import _now
 
 from .account_pool import select_task_accounts
@@ -395,11 +396,12 @@ def _membership_retry_candidates(
 
 
 def _account_can_attempt_membership(account: TgAccount) -> bool:
-    return (
-        account.deleted_at is None
-        and account.status == AccountStatus.ACTIVE.value
-        and bool(account.session_ciphertext)
-    )
+    if account.deleted_at is not None or account.status != AccountStatus.ACTIVE.value:
+        return False
+    try:
+        return bool(decrypt_session(account.session_ciphertext))
+    except Exception:
+        return False
 
 
 def _should_create_membership_attempt_for_account(
