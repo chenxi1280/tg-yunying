@@ -11,6 +11,7 @@ from app.services.grok_cli_bridge import GrokCliBridge, GrokCliUnavailable
 
 
 pytestmark = pytest.mark.no_postgres
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _settings(tmp_path: Path, **overrides):
@@ -76,3 +77,11 @@ def test_grok_cli_bridge_shared_lock_is_explicit(tmp_path):
     finally:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
         lock_file.close()
+
+
+def test_production_image_and_preflight_include_bridge_runtime_dependencies():
+    dockerfile = (PROJECT_ROOT / "Dockerfile.backend").read_text()
+    workflow = (PROJECT_ROOT / ".github/workflows/deploy-production.yml").read_text()
+
+    assert "curl ca-certificates git" in dockerfile
+    assert "docker exec tgyunying-worker-planner git --version" in workflow
