@@ -349,6 +349,60 @@ def test_reactivate_memberships_waits_for_target_reference_change() -> None:
 
 
 @pytest.mark.no_postgres
+def test_all_account_membership_permission_blocker_rechecks_once_next_day() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        target, task, account, rows = _daily_permission_recheck_fixture()
+        session.add_all(rows)
+        session.commit()
+
+        first_created = _reactivate_auto_verification_memberships(session, task, target, [account], require_send=True)
+        second_created = _reactivate_auto_verification_memberships(session, task, target, [account], require_send=True)
+        retry = session.scalar(select(Action).where(Action.task_id == task.id, Action.status == "pending"))
+
+    assert first_created == 1
+    assert second_created == 0
+    assert retry is not None
+    assert retry.result["reactivated_reason"] == "hard_hourly_daily_permission_recheck"
+
+
+def _daily_permission_recheck_fixture() -> tuple[OperationTarget, Task, TgAccount, list]:
+    old_value = _now() - timedelta(days=1)
+    target = OperationTarget(
+        id=908, tenant_id=1, target_type="group", tg_peer_id="https://t.me/daily-recheck",
+        title="每日复检群", auth_status="已授权运营", can_send=True,
+    )
+    group = TgGroup(id=808, tenant_id=1, tg_peer_id=target.tg_peer_id, title=target.title, can_send=True)
+    task = Task(
+        id="task-daily-permission-recheck", tenant_id=1, name="每日权限复检",
+        type="group_ai_chat", status="running", account_config={"selection_mode": "all"},
+        type_config={
+            "account_coverage_mode": "all_accounts_daily", "target_operation_target_id": target.id,
+            "hard_hourly_target_enabled": True, "hourly_min_messages": 10,
+        },
+    )
+    account = TgAccount(
+        id=18, tenant_id=1, display_name="账号18", phone_masked="18",
+        status=AccountStatus.ACTIVE.value, session_ciphertext="session",
+    )
+    failed = Action(
+        id="membership-daily-permission-failed", tenant_id=1, task_id=task.id,
+        task_type=task.type, action_type="ensure_target_membership", account_id=account.id,
+        status="skipped", scheduled_at=old_value, executed_at=old_value,
+        payload={"channel_id": target.tg_peer_id, "channel_target_id": target.id, "require_send": True},
+        result={"error_code": "membership_permission_denied", "membership_status": "permission_denied"},
+    )
+    verification = VerificationTask(
+        id=7008, tenant_id=1, account_id=account.id, group_id=group.id,
+        verification_type="群发言权限", suggested_action="人工处理", status="待处理",
+    )
+    return target, task, account, [target, group, task, account, failed, verification]
+
+
+@pytest.mark.no_postgres
 def test_reactivate_memberships_accepts_legacy_payload_without_channel_id() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
