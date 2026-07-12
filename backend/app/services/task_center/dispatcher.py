@@ -4447,11 +4447,15 @@ def _retry_after_seconds(detail: str) -> int:
 
 
 def _context_expired(session: Session, payload: SendMessagePayload) -> bool:
-    if not payload.cycle_id or not payload.group_id or not payload.context_snapshot_message_id or payload.context_expire_after_messages <= 0:
-        return False
-    if payload.hard_hourly_target and not payload.reply_to_message_id:
+    if not _context_expiration_applies(payload):
         return False
     return _newer_context_count(session, payload) >= payload.context_expire_after_messages
+
+
+def _context_expiration_applies(payload: SendMessagePayload) -> bool:
+    if not payload.cycle_id or not payload.group_id or not payload.context_snapshot_message_id or payload.context_expire_after_messages <= 0:
+        return False
+    return not (payload.hard_hourly_target and not payload.reply_to_message_id)
 
 
 def _newer_context_count(session: Session, payload: SendMessagePayload) -> int:
@@ -4489,9 +4493,13 @@ def _skip_context_expired_cycle(session: Session, current: Action, payload: Send
     )
     for action in pending_actions:
         action_payload = action.payload if isinstance(action.payload, dict) else {}
-        if _same_context_cycle(action_payload, payload):
-            _skip(action, "context_expired", "上下文已过期，跳过本轮剩余发言")
-            _sync_action_coverage_state(session, action)
+        if not _same_context_cycle(action_payload, payload):
+            continue
+        sibling_payload = SendMessagePayload.model_validate(action_payload)
+        if not _context_expiration_applies(sibling_payload):
+            continue
+        _skip(action, "context_expired", "上下文已过期，跳过本轮剩余发言")
+        _sync_action_coverage_state(session, action)
     task = session.get(Task, current.task_id)
     if task:
         task.next_run_at = _now()
