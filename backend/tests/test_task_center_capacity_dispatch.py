@@ -4990,10 +4990,11 @@ def test_group_ai_context_bound_round_limits_far_future_actions(monkeypatch):
 
     assert 1 <= created < 60
     assert len(actions) == created
-    assert max(action.scheduled_at for action in actions) <= now_value + timedelta(hours=1)
+    assert max(action.scheduled_at for action in actions) <= now_value + timedelta(minutes=5)
     assert {action.payload["context_snapshot_message_id"] for action in actions}
     assert refreshed_task.stats["context_bound_requested_turns"] == 60
     assert refreshed_task.stats["context_bound_planned_turns"] == created
+    assert refreshed_task.stats["context_bound_schedule_window_seconds"] == 300
 
 
 @pytest.mark.no_postgres
