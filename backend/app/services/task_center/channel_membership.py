@@ -658,19 +658,24 @@ def _membership_retry_action_row(
 
 
 def _membership_retry_payload(action: Action, channel: OperationTarget) -> EnsureChannelMembershipPayload:
-    payload = EnsureChannelMembershipPayload.model_validate(action.payload or {})
-    return payload.model_copy(update={
+    payload = dict(action.payload) if isinstance(action.payload, dict) else {}
+    payload.update({
         "channel_id": str(channel.tg_peer_id or ""),
         "channel_target_id": channel.id,
+        "target_type": channel.target_type,
         "target_display": channel.title,
         "target_username": str(channel.username or ""),
         "invite_link": _joinable_channel_reference(channel),
     })
+    return EnsureChannelMembershipPayload.model_validate(payload)
 
 
 def _target_reference_changed(action: Action, channel: OperationTarget) -> bool:
-    payload = EnsureChannelMembershipPayload.model_validate(action.payload or {})
-    previous = (_normalized_target_ref(payload.channel_id), _normalized_target_ref(payload.target_username or payload.invite_link))
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    previous = (
+        _normalized_target_ref(str(payload.get("channel_id") or "")),
+        _normalized_target_ref(str(payload.get("target_username") or payload.get("invite_link") or "")),
+    )
     current = (_normalized_target_ref(channel.tg_peer_id), _normalized_target_ref(channel.username or _joinable_channel_reference(channel)))
     return previous != current
 
