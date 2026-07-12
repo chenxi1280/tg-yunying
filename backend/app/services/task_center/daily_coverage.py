@@ -69,7 +69,7 @@ def ensure_task_daily_coverage(
 
 
 def release_terminal_coverage_reservations(session: Session, task: Task, coverage_date: date) -> int:
-    rows = session.execute(
+    rows = list(session.execute(
         select(TaskAccountDailyCoverage, Action)
         .join(Action, Action.id == TaskAccountDailyCoverage.reserved_action_id)
         .where(
@@ -78,7 +78,33 @@ def release_terminal_coverage_reservations(session: Session, task: Task, coverag
             TaskAccountDailyCoverage.state.in_(("reserved", "sending")),
             Action.status.in_(TERMINAL_PRECONFIRMATION_STATUSES),
         )
-    )
+    ))
+    return _release_terminal_rows(session, rows)
+
+
+def recover_terminal_coverage_reservations(
+    session: Session,
+    *,
+    limit: int = 100,
+    now: datetime | None = None,
+) -> int:
+    coverage_date = (now or _now()).date()
+    rows = list(session.execute(
+        select(TaskAccountDailyCoverage, Action)
+        .join(Action, Action.id == TaskAccountDailyCoverage.reserved_action_id)
+        .where(
+            TaskAccountDailyCoverage.coverage_date == coverage_date,
+            TaskAccountDailyCoverage.state.in_(("reserved", "sending")),
+            Action.status.in_(TERMINAL_PRECONFIRMATION_STATUSES),
+        )
+        .order_by(TaskAccountDailyCoverage.updated_at.asc(), TaskAccountDailyCoverage.id.asc())
+        .limit(max(1, int(limit)))
+        .with_for_update(skip_locked=True)
+    ))
+    return _release_terminal_rows(session, rows)
+
+
+def _release_terminal_rows(session: Session, rows) -> int:
     released = 0
     for coverage, action in rows:
         result = action.result if isinstance(action.result, dict) else {}
@@ -464,6 +490,8 @@ __all__ = [
     "ready_coverage_rows",
     "ready_coverage_rows_by_account",
     "mark_coverage_unknown",
+    "recover_terminal_coverage_reservations",
     "release_coverage_reservation",
+    "release_terminal_coverage_reservations",
     "reserve_coverage_for_action",
 ]

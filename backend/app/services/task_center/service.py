@@ -60,6 +60,7 @@ from .channel_membership import (
     mark_channel_membership_joined,
 )
 from .dispatcher import _sync_all_account_membership_state, claim_actions, dispatch_action, due_actions, mark_dispatcher_db_error, recover_expired_claims, recover_expired_hard_hourly_actions
+from .daily_coverage import recover_terminal_coverage_reservations
 from .executors import build_task_plan, prepare_open_actions_for_planning
 from .search_rank_deboost_reservations import reopen_released_reservation, reservation_for_action
 from .details import (
@@ -1547,6 +1548,7 @@ def _drain_task_recovery(session_factory, *, limit: int, process_type: str | Non
         processed += fast_track_pending_hard_hourly_memberships(session, limit=_hard_hourly_recovery_limit(limit))
         processed += recover_missing_hard_hourly_memberships(session, limit=_hard_hourly_recovery_limit(limit))
         processed += fast_track_pending_hard_hourly_memberships(session, limit=_hard_hourly_recovery_limit(limit))
+        processed += recover_terminal_coverage_reservations(session, limit=limit)
         processed += _recover_continuous_task_states(session)
         processed += _recover_stale_executing_actions(session, limit=limit)
         processed += expire_reviews(session)
