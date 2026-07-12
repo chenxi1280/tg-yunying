@@ -542,10 +542,27 @@ def _reactivate_auto_verification_memberships(
         account_id = int(action.account_id or 0)
         verification = verification_by_account.get(account_id)
         account = account_by_id.get(account_id)
-        reason = _membership_recovery_retry_reason(task, action, account, verification, now_value)
+        reason = _membership_recovery_retry_reason(
+            task,
+            action,
+            account,
+            verification,
+            now_value,
+            target_reference_changed=_target_reference_changed(action, channel),
+        )
         if not reason:
             continue
-        rows.append(_membership_retry_action_row(task, action, now_value, created, reason, verification.id if verification else None))
+        rows.append(
+            _membership_retry_action_row(
+                task,
+                action,
+                now_value,
+                created,
+                reason,
+                verification.id if verification else None,
+                channel=channel,
+            )
+        )
         created += 1
     if rows:
         session.bulk_insert_mappings(Action, rows)
@@ -558,6 +575,8 @@ def _membership_recovery_retry_reason(
     account: TgAccount | None,
     verification: VerificationTask | None,
     now_value,
+    *,
+    target_reference_changed: bool,
 ) -> str:
     result = action.result if isinstance(action.result, dict) else {}
     failure_type = str(result.get("error_code") or "")
@@ -576,7 +595,7 @@ def _membership_recovery_retry_reason(
         return _reactivation_reason(task, "auto_verification")
     if recovery.bucket != AUTO_RETRY_BUCKET:
         return ""
-    if _target_ref_retry_due(action, now_value):
+    if _membership_failure_mentions_target_ref(action) and target_reference_changed:
         return _reactivation_reason(task, "target_ref")
     if verification and _auto_verification_retry_due(action, verification, now_value):
         return _reactivation_reason(task, "auto_verification")
@@ -606,8 +625,10 @@ def _membership_retry_action_row(
     offset: int,
     reason: str,
     verification_id: int | None = None,
+    *,
+    channel: OperationTarget,
 ) -> dict[str, Any]:
-    payload = EnsureChannelMembershipPayload.model_validate(action.payload or {})
+    payload = _membership_retry_payload(action, channel)
     scheduled_at = now_value + timedelta(seconds=HARD_HOURLY_MEMBERSHIP_FAST_TRACK_INTERVAL_SECONDS * offset)
     result = {"reactivated_reason": reason}
     if verification_id:
@@ -634,6 +655,33 @@ def _membership_retry_action_row(
         "retry_count": 0,
         "created_at": now_value,
     }
+
+
+def _membership_retry_payload(action: Action, channel: OperationTarget) -> EnsureChannelMembershipPayload:
+    payload = EnsureChannelMembershipPayload.model_validate(action.payload or {})
+    return payload.model_copy(update={
+        "channel_id": str(channel.tg_peer_id or ""),
+        "channel_target_id": channel.id,
+        "target_display": channel.title,
+        "target_username": str(channel.username or ""),
+        "invite_link": _joinable_channel_reference(channel),
+    })
+
+
+def _target_reference_changed(action: Action, channel: OperationTarget) -> bool:
+    payload = EnsureChannelMembershipPayload.model_validate(action.payload or {})
+    previous = (_normalized_target_ref(payload.channel_id), _normalized_target_ref(payload.target_username or payload.invite_link))
+    current = (_normalized_target_ref(channel.tg_peer_id), _normalized_target_ref(channel.username or _joinable_channel_reference(channel)))
+    return previous != current
+
+
+def _normalized_target_ref(value: str) -> str:
+    normalized = str(value or "").strip().lower()
+    for prefix in ("https://t.me/", "http://t.me/", "t.me/", "https://telegram.me/", "http://telegram.me/", "telegram.me/"):
+        if normalized.startswith(prefix):
+            normalized = normalized[len(prefix):]
+            break
+    return normalized.lstrip("@")
 
 
 def _auto_verification_tasks_by_account(
@@ -672,15 +720,6 @@ def _auto_verification_retry_due(action: Action, verification: VerificationTask,
 
 def _required_channel_retry_due(action: Action, now_value) -> bool:
     if not _membership_failure_mentions_required_channel(action):
-        return False
-    last_attempt_at = action.executed_at or action.scheduled_at or action.created_at
-    if not last_attempt_at:
-        return True
-    return (now_value - last_attempt_at.replace(tzinfo=None)).total_seconds() >= HARD_HOURLY_MEMBERSHIP_RETRY_SECONDS
-
-
-def _target_ref_retry_due(action: Action, now_value) -> bool:
-    if not _membership_failure_mentions_target_ref(action):
         return False
     last_attempt_at = action.executed_at or action.scheduled_at or action.created_at
     if not last_attempt_at:

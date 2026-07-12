@@ -8,7 +8,10 @@ from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.models import Action, ExecutionAttempt, Task, TaskAccountDailyCoverage, Tenant, TgAccount, TgGroup
+from app.services.task_center import dispatcher
+from app.services.task_center.ai_message_memory import DuplicateMessageReservation
 from app.services.task_center.dispatcher import _action_can_reassign, _sync_action_coverage_state
+from app.services.task_center.payloads import SendMessagePayload
 
 
 pytestmark = pytest.mark.no_postgres
@@ -114,6 +117,69 @@ def test_terminal_preconfirmation_failure_releases_obligation(session: Session, 
     assert row.reserved_action_id is None
     assert row.confirmed_count == 0
     assert row.blocker_code == "duplicate_message"
+
+
+def test_batch_generation_releases_duplicate_sibling_coverage(session: Session, monkeypatch) -> None:
+    action, _row = _seed_reserved(session)
+    sibling = Action(
+        id="coverage-sibling-action",
+        tenant_id=1,
+        task_id=action.task_id,
+        task_type=action.task_type,
+        action_type="send_message",
+        account_id=2,
+        status="pending",
+        payload={"coverage_ledger_id": "coverage-sibling-row"},
+    )
+    sibling_row = TaskAccountDailyCoverage(
+        id="coverage-sibling-row",
+        tenant_id=1,
+        task_id=action.task_id,
+        group_id=21,
+        account_id=2,
+        coverage_date=date.today(),
+        target_count=1,
+        confirmed_count=0,
+        state="reserved",
+        reserved_action_id=sibling.id,
+    )
+    session.add(TgAccount(id=2, tenant_id=1, display_name="账号2", phone_masked="2", status="在线"))
+    session.add_all([sibling, sibling_row])
+    session.flush()
+    payload = SendMessagePayload(
+        group_id=21,
+        coverage_ledger_id="coverage-row",
+        ai_generation_id="batch-1",
+        ai_generation_status="pending",
+    )
+    sibling_payload = SendMessagePayload(
+        group_id=21,
+        coverage_ledger_id=sibling_row.id,
+        ai_generation_id="batch-1",
+        ai_generation_status="pending",
+    )
+
+    def mark_sibling_duplicate(_session, candidate, _payload, payload_data) -> None:
+        if candidate.id == sibling.id:
+            dispatcher._mark_generated_duplicate(
+                candidate,
+                payload_data,
+                DuplicateMessageReservation(reference_id="memory-1", duplicate_window="7d_semantic"),
+            )
+
+    monkeypatch.setattr(dispatcher, "_attach_generated_message_memory", mark_sibling_duplicate)
+
+    dispatcher._store_generated_send_payloads(
+        session,
+        [(action, payload), (sibling, sibling_payload)],
+        ["第一条", "重复内容"],
+        10,
+    )
+
+    assert sibling.status == "failed"
+    assert sibling_row.state == "ready"
+    assert sibling_row.reserved_action_id is None
+    assert sibling_row.blocker_code == "duplicate_message"
 
 
 def test_retryable_coverage_failure_requires_fresh_planning(session: Session) -> None:

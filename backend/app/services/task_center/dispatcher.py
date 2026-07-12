@@ -910,6 +910,8 @@ def _store_generated_send_payloads(session: Session, batch: list[tuple[Action, S
         payload_data["ai_generation_tokens"] = int(tokens or 0) if index == 0 else 0
         _attach_generated_message_memory(session, action, payload, payload_data)
         action.payload = payload_data
+        if getattr(action, "status", "") in {"failed", "skipped", "retryable_failed"}:
+            _sync_action_coverage_state(session, action)
 
 
 def _attach_generated_message_memory(session: Session, action: Action, payload: SendMessagePayload, payload_data: dict) -> None:

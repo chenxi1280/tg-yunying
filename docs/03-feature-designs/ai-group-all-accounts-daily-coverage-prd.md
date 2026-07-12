@@ -186,6 +186,7 @@ pending_admission -> admission_running -> ready -> reserved -> sending -> confir
 - 已入群但不可发言的账号进入 `cannot_send` 阻塞，不生成主互动 Action。
 - 需要关注频道、点击按钮、回答验证或等待人工处理时，沿用现有验证任务和恢复链路。
 - 入群失败、验证失败和结果未知必须保留原始 Telegram 错误；不能通过删除任务关系让覆盖率升高。
+- 目标 username、peer 或邀请链接无法解析时，按目标级 `target_ref_invalid` 阻塞全部未准入账号；目标引用未变化前不得按账号周期性重复创建相同准入 Action。运营目标的 peer、username 或邀请链接变化后，系统才使用最新引用重新排队未准入账号。
 
 ## 10. 覆盖调度与 AI 内容解耦
 
@@ -219,6 +220,7 @@ pending_admission -> admission_running -> ready -> reserved -> sending -> confir
 “立即回补”只表示立即恢复账号的未完成状态并唤醒后续规划，不表示立即向群发送补量消息：
 
 - 内容重复或质量失败：不发送，释放预约，下一次使用最新上下文重新生成。
+- 批量 AI 生成中任一同批 Action 在发送前进入失败或跳过终态时，必须立即释放该 Action 自己的覆盖预约并写入 blocker；不能只同步当前 Dispatcher Action，导致同批其他账号永久停在 `reserved`。
 - 上下文过期：只废弃当前上下文绑定对话片段的剩余 Action；相关账号回到 `ready`，不得丢失覆盖义务。
 - 账号暂时离线或冷却：记录 `next_eligible_at`，到期后重新参与自然对话。
 - 发送失败：按现有失败类型和风控策略处理；可重试失败释放预约后等待下一次合适 Cycle。
@@ -279,6 +281,7 @@ group.daily_limit >= 当日目标消息数 + 已保留的普通对话预算
 - Action 使用现有 `action_dedupe_key`，并包含覆盖账本 ID 和目标序号。
 - 成功结果与账本 `confirmed_count` 在同一事务中回写；重复消费同一远端结果不得重复计数。
 - Planner 只按 `(task_id, coverage_date, state, next_eligible_at)` 索引分页读取欠账，不扫描全部账号。
+- 在线保活按到期状态分页选取账号；Telegram 健康探测允许受控并发，但账号、凭证读取和状态落库必须留在数据库 Session 所在线程。完整探测周期必须短于 `stale_after` 窗口，不能因串行探测能力不足持续制造假离线。
 - 列表和详情摘要使用账本聚合或每日统计快照；账号明细走分页接口，不把几百个账号 ID 写入 `Task.stats`。
 - 以当前 5 个任务、约 609 个目标账号计算，每日约 3045 条账本记录，属于普通数据库可控规模。
 
