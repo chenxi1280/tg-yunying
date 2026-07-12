@@ -223,7 +223,8 @@ pending_admission -> admission_running -> ready -> reserved -> sending -> confir
 - 内容重复或质量失败：不发送，释放预约，下一次使用最新上下文重新生成。
 - 批量 AI 生成中任一同批 Action 在发送前进入失败或跳过终态时，必须立即释放该 Action 自己的覆盖预约并写入 blocker；不能只同步当前 Dispatcher Action，导致同批其他账号永久停在 `reserved`。
 - 上下文过期：只废弃当前上下文绑定对话片段中仍依赖该上下文或引用锚点的剩余 Action；同一 Cycle 内标记为硬目标、没有 `reply_to_message_id`、并由 Dispatcher 延迟生成文案的普通补量 Action 不得被连带跳过，仍按原 AI prompt、账号面具、话题和质量门生成后发送。被废弃 Action 的相关账号回到 `ready`，不得丢失覆盖义务。
-- 每日覆盖债务存在且本轮没有引用回复目标时，Planner 只规划携带账号面具、话题、讨论老师、行为类型和覆盖账本 ID 的延迟生成 Action，不在规划阶段提前冻结普通发言文案。Dispatcher 只批量生成临近执行窗口内的 Action，并在调用原 AI 生成与质量链前刷新目标群最新真人上下文及上下文快照；尚未生成的未来覆盖 Action 不得因旧快照过期被同轮清理。配置要求引用回复时仍走原引用生成链，不得为了覆盖量取消 `reply_to_message_id`。
+- 每日覆盖债务存在且本轮没有引用回复目标时，Planner 只规划携带账号面具、话题、讨论老师、行为类型和覆盖账本 ID 的延迟生成 Action，不在规划阶段提前冻结普通发言文案。Dispatcher 只批量生成临近执行窗口内的 Action，并在调用原 AI 生成与质量链前刷新目标群最新真人上下文及上下文快照；尚未生成的未来覆盖 Action 不得因旧快照过期被同轮清理。
+- 普通 AI 模拟聊天 Cycle 继续严格执行 `reply_min_per_round`。当可引用对象少于该最小值且仍有到期每日覆盖债务时，本轮必须显式转为覆盖回补 Cycle：不得创建数量不足、伪装成达标的引用回复，本轮全部覆盖 Action 按普通发言延迟生成，且不计入普通聊天 Cycle 的引用回复指标。覆盖回补仍必须保留账号面具、话题、讨论老师和行为类型，并经过最新真人上下文刷新、原 AI 生成、语义去重、内容政策、在线状态校验和 Telegram 真实发送确认；不得使用模板短句或表情兜底。没有每日覆盖债务时仍等待足量引用对象，不得降低用户设置的最少引用回复数。
 - Planner 的 open-action 门禁对普通任务保持不变；全账号每日覆盖任务必须先用当日账本计算到期债务，并扣除 `reserved/sending` 义务。扣除后债务仍大于 0 时，即使同任务还有少量 open 发送 Action，也必须继续规划其他 ready 账号；不得让单个因账号限频顺延的 Action 阻塞整群覆盖。该判断只读取任务当日覆盖账本，不重新扫描平台账号。
 - 仍需在 Planner 预生成且绑定真人上下文 / 引用锚点的 Action，默认只允许排入未来 5 分钟近端窗口；窗口外 slot 不生成 Action，下一轮按最新上下文重新生成。任务显式配置 `context_bound_schedule_window_seconds` 时按显式值执行。不得再用 1 小时默认窗口生成大批远期引用后由 Dispatcher 整轮 `context_expired`。
 - 账号暂时离线或冷却：记录 `next_eligible_at`，到期后重新参与自然对话。

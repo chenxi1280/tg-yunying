@@ -346,7 +346,16 @@ def build_plan(session: Session, task: Task) -> int:
     selected = _prioritize_accounts_for_plan(selected, account_memories, coverage_counts, round_config)
     generation_config = _generation_config_with_profile(round_config, account_memories, account_prompt_profiles, topic_thread, topic_plan, profile_preview)
     cycle_id = f"{task.id}:cycle:{cycle_index}"
-    reply_targets = _reply_targets_for_plan(session, task, group, usable_context_rows, turn_count, config, hard_progress)
+    reply_targets = _reply_targets_for_plan(
+        session,
+        task,
+        group,
+        usable_context_rows,
+        turn_count,
+        config,
+        hard_progress,
+        daily_coverage_debt=coverage_state.due_debt > 0,
+    )
     if reply_targets is None:
         return 0
     allow_account_repeat = bool(round_config.get("allow_account_repeat", True))
@@ -756,6 +765,8 @@ def _reply_targets_for_plan(
     turn_count: int,
     config: dict,
     hard_progress: dict[str, object],
+    *,
+    daily_coverage_debt: bool = False,
 ) -> list[dict] | None:
     if hard_progress:
         return []
@@ -765,6 +776,9 @@ def _reply_targets_for_plan(
     reply_target_pool = _group_reply_target_pool(session, task, group, usable_context_rows)
     if reply_min > len(reply_target_pool):
         stats_inc(task, "reply_target_shortfall_count")
+        if daily_coverage_debt:
+            stats_inc(task, "coverage_reply_shortfall_cycle_count")
+            return []
         task.last_error = "可引用消息不足，等待监听到可回复消息后继续执行"
         return None
     return reply_target_pool[:reply_min]

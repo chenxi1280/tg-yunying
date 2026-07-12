@@ -657,7 +657,7 @@ def test_group_ai_chat_hard_hourly_target_creates_deficit_actions(monkeypatch):
 
 
 @pytest.mark.no_postgres
-def test_group_ai_chat_all_accounts_daily_coverage_plans_uncovered_accounts(monkeypatch):
+def test_group_ai_chat_all_accounts_daily_coverage_plans_uncovered_accounts_when_reply_targets_are_missing(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = datetime(2026, 6, 7, 20, 10)
@@ -704,6 +704,7 @@ def test_group_ai_chat_all_accounts_daily_coverage_plans_uncovered_accounts(monk
                 "participation_rate": 0.25,
                 "participation_jitter": 0,
                 "allow_account_repeat": False,
+                "reply_min_per_round": 1,
                 "fact_anchor_required": False,
                 "hard_hourly_target_enabled": False,
             },
@@ -737,6 +738,8 @@ def test_group_ai_chat_all_accounts_daily_coverage_plans_uncovered_accounts(monk
     assert all(action.payload["coverage_account_completed_before_action"] == 0 for action in actions)
     assert all(action.payload["coverage_account_remaining_before_action"] == 1 for action in actions)
     assert all(action.payload["coverage_reason"] == "daily_account_coverage" for action in actions)
+    assert all(not action.payload.get("reply_to_message_id") for action in actions)
+    assert task.stats["coverage_reply_shortfall_cycle_count"] == 1
 
 
 @pytest.mark.no_postgres
