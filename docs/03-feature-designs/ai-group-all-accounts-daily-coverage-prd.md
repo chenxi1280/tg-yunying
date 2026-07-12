@@ -184,7 +184,7 @@ pending_admission -> admission_running -> ready -> reserved -> sending -> confir
 - 新目标关系未满足 `TgGroupAccount.can_send=true` 时，复用现有目标准入 Action 推进入群和可发言复检。
 - 多个任务同时要求同一账号加入多个群时，准入 Action 必须经过账号全局容量和冷却调度，不能同时并发入群。
 - 已入群但不可发言的账号进入 `cannot_send` 阻塞，不生成主互动 Action。
-- `cannot_send` / `membership_permission_denied` 群权限阻塞在后续北京时间自然日最多自动复检一次；复检仍走原目标准入 Action 和四小时错峰窗口。同一任务、账号、自然日失败后不得再次周期重试，目标引用无效和账号不可用不适用该复检。
+- `cannot_send` / `membership_permission_denied` 群权限阻塞在后续北京时间自然日最多自动复检一次；`unknown_after_send` 只有完成远端补偿复核且复核明确失败为群权限问题后，才适用同一跨日复检。复检仍走原目标准入 Action 和四小时错峰窗口。同一任务、账号、自然日失败后不得再次周期重试，尚未复核的 unknown、目标引用无效和账号不可用不适用该复检。
 - 需要关注频道、点击按钮、回答验证或等待人工处理时，沿用现有验证任务和恢复链路。
 - 入群失败、验证失败和结果未知必须保留原始 Telegram 错误；不能通过删除任务关系让覆盖率升高。
 - 目标 username、peer 或邀请链接无法解析时，按目标级 `target_ref_invalid` 阻塞全部未准入账号；目标引用未变化前不得按账号周期性重复创建相同准入 Action。运营目标的 peer、username 或邀请链接变化后，系统才使用最新引用重新排队未准入账号。

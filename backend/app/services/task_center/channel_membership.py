@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -40,7 +40,7 @@ TARGET_REF_RETRY_MARKERS = (
     "目标群无效",
     "目标无效",
 )
-DAILY_PERMISSION_RECHECK_ERROR_CODES = {"membership_permission_denied", "cannot_send"}
+DAILY_PERMISSION_RECHECK_ERROR_CODES = {"membership_permission_denied", "cannot_send", "群无权限"}
 DAILY_PERMISSION_RECHECK_REASONS = {
     "hard_hourly_daily_permission_recheck",
     "membership_recovery_daily_permission_recheck",
@@ -533,16 +533,25 @@ def _reactivate_auto_verification_memberships(
         return 0
     latest_actions = _membership_actions_by_account(session, channel.id, task_id=task.id)
     candidate_ids = {int(account.id) for account in candidates}
-    failed_actions = [
-        action
-        for account_id, action in latest_actions.items()
-        if account_id in candidate_ids and action.account_id and _is_failed_membership_action(action)
-    ]
-    verification_by_account = _auto_verification_tasks_by_account(session, task, group.id, [int(action.account_id) for action in failed_actions])
     account_by_id = {int(account.id): account for account in candidates}
     now_value = _now()
+    recovery_actions = [
+        action
+        for account_id, action in latest_actions.items()
+        if account_id in candidate_ids
+        and action.account_id
+        and (
+            _is_failed_membership_action(action)
+            or _daily_permission_recheck_due(
+                task, action, now_value, account=account_by_id.get(account_id)
+            )
+        )
+    ]
+    verification_by_account = _auto_verification_tasks_by_account(
+        session, task, group.id, [int(action.account_id) for action in recovery_actions]
+    )
     specs: list[tuple[Action, str, int | None]] = []
-    for action in failed_actions:
+    for action in recovery_actions:
         account_id = int(action.account_id or 0)
         verification = verification_by_account.get(account_id)
         account = account_by_id.get(account_id)
@@ -624,7 +633,7 @@ def _membership_recovery_retry_reason(
         if target_reference_changed:
             return _reactivation_reason(task, "target_ref")
         return ""
-    if _daily_permission_recheck_due(task, action, now_value):
+    if _daily_permission_recheck_due(task, action, now_value, account=account):
         return _reactivation_reason(task, "daily_permission")
     if recovery.bucket == VERIFICATION_BUCKET and verification and _auto_verification_retry_due(action, verification, now_value):
         return _reactivation_reason(task, "auto_verification")
@@ -655,18 +664,36 @@ def _reactivation_reason(task: Task, reason_type: str) -> str:
     return "membership_recovery_required_channel"
 
 
-def _daily_permission_recheck_due(task: Task, action: Action, now_value) -> bool:
-    if not _uses_persisted_all_account_scope(task):
+def _daily_permission_recheck_due(
+    task: Task,
+    action: Action,
+    now_value,
+    *,
+    account: TgAccount | None,
+) -> bool:
+    if not _uses_persisted_all_account_scope(task) or account is None or not _account_can_attempt_membership(account):
         return False
     result = action.result if isinstance(action.result, dict) else {}
+    if action.status == "unknown_after_send" and result.get("unknown_membership_reprobe_status") != "failed":
+        return False
     error_code = str(result.get("error_code") or "").strip().lower()
     membership_status = str(result.get("membership_status") or "").strip().lower()
     if error_code not in DAILY_PERMISSION_RECHECK_ERROR_CODES and membership_status != "permission_denied":
         return False
-    last_attempt_at = _terminal_membership_retry_reference(action)
+    last_attempt_at = _permission_recheck_reference(action, result)
     if not last_attempt_at:
         return False
     return last_attempt_at.replace(tzinfo=None).date() < now_value.replace(tzinfo=None).date()
+
+
+def _permission_recheck_reference(action: Action, result: dict) -> datetime | None:
+    raw = str(result.get("unknown_membership_reprobe_at") or "").strip()
+    if raw:
+        try:
+            return datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+    return _terminal_membership_retry_reference(action)
 
 
 def _membership_retry_action_row(
