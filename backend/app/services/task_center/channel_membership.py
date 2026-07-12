@@ -591,12 +591,14 @@ def _membership_recovery_retry_reason(
         verification_status=verification.status if verification else "",
         can_auto_resolve=bool(verification.can_auto_resolve) if verification else False,
     )
+    if _membership_failure_mentions_target_ref(action):
+        if target_reference_changed:
+            return _reactivation_reason(task, "target_ref")
+        return ""
     if recovery.bucket == VERIFICATION_BUCKET and verification and _auto_verification_retry_due(action, verification, now_value):
         return _reactivation_reason(task, "auto_verification")
     if recovery.bucket != AUTO_RETRY_BUCKET:
         return ""
-    if _membership_failure_mentions_target_ref(action) and target_reference_changed:
-        return _reactivation_reason(task, "target_ref")
     if verification and _auto_verification_retry_due(action, verification, now_value):
         return _reactivation_reason(task, "auto_verification")
     if _required_channel_retry_due(action, now_value):

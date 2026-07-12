@@ -294,7 +294,18 @@ def test_reactivate_memberships_waits_for_target_reference_change() -> None:
             can_send=False,
         )
         group = TgGroup(id=803, tenant_id=1, tg_peer_id="qdsfxy", title="青岛师范学院", auth_status="只读", can_send=False)
-        task = Task(id="task-stale-target-ref", tenant_id=1, name="青岛师范学院", type="group_ai_chat", status="running")
+        task = Task(
+            id="task-stale-target-ref",
+            tenant_id=1,
+            name="青岛师范学院",
+            type="group_ai_chat",
+            status="running",
+            type_config={
+                "target_operation_target_id": channel.id,
+                "hard_hourly_target_enabled": True,
+                "hourly_min_messages": 300,
+            },
+        )
         account = TgAccount(id=13, tenant_id=1, display_name="账号13", phone_masked="13", status=AccountStatus.ACTIVE.value, session_ciphertext="session")
         action = Action(
             id="membership-stale-target-ref",
@@ -309,7 +320,18 @@ def test_reactivate_memberships_waits_for_target_reference_change() -> None:
             payload={"channel_id": "qdsfxy", "channel_target_id": 903, "target_type": "group", "target_display": "青岛师范学院", "target_username": "qdsfxy", "require_send": True},
             result={"error_code": "未知错误", "error_message": 'No user has "qdsfxy" as username'},
         )
-        session.add_all([channel, group, task, account, action])
+        verification = VerificationTask(
+            id=7003,
+            tenant_id=1,
+            account_id=account.id,
+            group_id=group.id,
+            verification_type="群发言权限",
+            detected_reason='No user has "qdsfxy" as username',
+            suggested_action="识别图形验证码",
+            status="失败",
+            handled_at=old_value,
+        )
+        session.add_all([channel, group, task, account, action, verification])
         session.commit()
 
         unchanged_created = _reactivate_auto_verification_memberships(session, task, channel, [account], require_send=True)
@@ -321,7 +343,7 @@ def test_reactivate_memberships_waits_for_target_reference_change() -> None:
     assert unchanged_created == 0
     assert changed_created == 1
     assert retry is not None
-    assert retry.result["reactivated_reason"] == "membership_recovery_target_ref"
+    assert retry.result["reactivated_reason"] == "hard_hourly_target_ref_retry"
     assert retry.payload["target_username"] == "https://t.me/+replacement"
     assert retry.payload["invite_link"] == "https://t.me/+replacement"
 
