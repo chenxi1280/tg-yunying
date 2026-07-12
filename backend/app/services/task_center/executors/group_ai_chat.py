@@ -210,6 +210,7 @@ def build_plan(session: Session, task: Task) -> int:
             mark_plan_result(task, hard_progress, 0, {"target_permission": max(1, int(hard_progress.get("deficit") or 1))})
         return 0
     coverage_state = _coverage_plan_state(session, task, group, config, hard_progress)
+    has_daily_coverage_debt = coverage_state.due_debt > 0
     capacity_blocker = _coverage_capacity_blocker(session, task, group, config, coverage_rows=coverage_state.rows)
     if capacity_blocker:
         if hard_progress:
@@ -280,7 +281,12 @@ def build_plan(session: Session, task: Task) -> int:
     memory_ai_messages = _recent_group_memory_messages(session, task, group, limit=repeat_window)
     duplicate_baseline_messages = [*previous_ai_messages, *planned_ai_messages, *memory_ai_messages]
     idle_continuation = False
-    if not hard_progress and not force_bootstrap_once and _should_wait_for_human_context(session, task, usable_context_rows, unprocessed_rows):
+    if (
+        not hard_progress
+        and not has_daily_coverage_debt
+        and not force_bootstrap_once
+        and _should_wait_for_human_context(session, task, usable_context_rows, unprocessed_rows)
+    ):
         idle_decision = _idle_continuation_decision(session, task, config)
         if idle_decision["due"]:
             idle_continuation = True
@@ -354,7 +360,7 @@ def build_plan(session: Session, task: Task) -> int:
         turn_count,
         config,
         hard_progress,
-        daily_coverage_debt=coverage_state.due_debt > 0,
+        daily_coverage_debt=has_daily_coverage_debt,
     )
     if reply_targets is None:
         return 0
