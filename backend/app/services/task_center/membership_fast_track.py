@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import Action, Task
 from app.services._common import _now
+
+from .channel_membership import DAILY_PERMISSION_RECHECK_REASONS, is_daily_permission_recheck_action
 
 MEMBERSHIP_ACTION_TYPES = ("ensure_target_membership", "ensure_channel_membership")
 FAST_TRACK_INTERVAL_SECONDS = 2
@@ -24,12 +26,18 @@ def fast_track_pending_hard_hourly_memberships(session: Session, *, limit: int) 
                 Action.action_type.in_(MEMBERSHIP_ACTION_TYPES),
                 Action.status == "pending",
                 Action.scheduled_at > now_value,
+                func.coalesce(Action.result["reactivated_reason"].as_string(), "").notin_(
+                    DAILY_PERMISSION_RECHECK_REASONS
+                ),
             )
             .order_by(Action.scheduled_at.asc(), Action.created_at.asc())
             .limit(max(1, int(limit or 1)))
         )
     )
-    filtered = [action for action, config in rows if _hard_hourly_enabled(config or {})]
+    filtered = [
+        action for action, config in rows
+        if _hard_hourly_enabled(config or {}) and not is_daily_permission_recheck_action(action)
+    ]
     task_counts: dict[str, int] = {}
     for index, action in enumerate(filtered):
         action.scheduled_at = now_value + timedelta(seconds=FAST_TRACK_INTERVAL_SECONDS * index)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
@@ -11,6 +12,7 @@ from app.services._common import _now
 from app.services.task_center.membership_fast_track import fast_track_pending_hard_hourly_memberships
 
 
+@pytest.mark.no_postgres
 def test_fast_tracks_future_hard_hourly_membership_actions() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -66,6 +68,17 @@ def test_fast_tracks_future_hard_hourly_membership_actions() -> None:
                     status="pending",
                     scheduled_at=now_value + timedelta(hours=3),
                 ),
+                Action(
+                    id="future-daily-permission-recheck",
+                    tenant_id=1,
+                    task_id="task-ai",
+                    task_type="group_ai_chat",
+                    action_type="ensure_target_membership",
+                    account_id=14,
+                    status="pending",
+                    scheduled_at=now_value + timedelta(hours=4),
+                    result={"reactivated_reason": "hard_hourly_daily_permission_recheck"},
+                ),
             ]
         )
         session.commit()
@@ -80,4 +93,5 @@ def test_fast_tracks_future_hard_hourly_membership_actions() -> None:
         assert rows["future-ai-2"].scheduled_at <= now_value + timedelta(seconds=10)
         assert rows["future-ai-1"].result["fast_tracked_reason"] == "recovery_hard_hourly_membership"
         assert rows["future-normal"].scheduled_at == now_value + timedelta(hours=3)
+        assert rows["future-daily-permission-recheck"].scheduled_at == now_value + timedelta(hours=4)
         assert task_stats["membership_recovery_fast_tracked_actions"] == 2
