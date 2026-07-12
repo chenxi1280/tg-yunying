@@ -1229,6 +1229,52 @@ def test_context_expired_skip_clears_same_cycle_pending_actions(monkeypatch):
 
 
 @pytest.mark.no_postgres
+def test_context_expired_reply_keeps_same_cycle_hard_hourly_plain_send_pending():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        _add_cycle_skip_basics(session, now_value)
+        old_context, _new_context = _add_cycle_contexts(session, now_value)
+        expired_reply_payload = {
+            **_expired_cycle_payload(old_context.id, text="expired reply"),
+            "reply_to_message_id": 1001,
+            "hard_hourly_target": True,
+        }
+        session.add_all(
+            [
+                _cycle_action("action-expired-reply", now_value, expired_reply_payload),
+                _cycle_action(
+                    "action-hard-hourly-plain",
+                    now_value + timedelta(minutes=10),
+                    {
+                        **_expired_cycle_payload(old_context.id, text=""),
+                        "hard_hourly_target": True,
+                        "ai_generation_status": "pending",
+                    },
+                ),
+                _cycle_action(
+                    "action-ordinary-stale",
+                    now_value + timedelta(minutes=20),
+                    _expired_cycle_payload(old_context.id, text="ordinary stale"),
+                ),
+            ]
+        )
+        session.commit()
+
+        current = session.get(Action, "action-expired-reply")
+        payload = task_payloads.SendMessagePayload.model_validate(current.payload or {})
+        dispatcher._skip_context_expired_cycle(session, current, payload)
+
+        hard_hourly_plain = session.get(Action, "action-hard-hourly-plain")
+        ordinary_stale = session.get(Action, "action-ordinary-stale")
+        assert hard_hourly_plain.status == "pending"
+        assert ordinary_stale.status == "skipped"
+        assert ordinary_stale.result["error_code"] == "context_expired"
+
+
+@pytest.mark.no_postgres
 def test_group_ai_send_requires_online_state_before_gateway(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
