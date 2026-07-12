@@ -727,8 +727,10 @@ def test_group_ai_chat_all_accounts_daily_coverage_plans_uncovered_accounts(monk
         actions = list(session.scalars(select(Action).where(Action.task_id == task.id).order_by(Action.account_id.asc())))
 
     assert created == 1
-    assert captured["count"] == 1
+    assert captured == {}
     assert [action.account_id for action in actions] == [101]
+    assert all(action.payload["ai_generation_status"] == "pending" for action in actions)
+    assert all(action.payload["message_text"] == "" for action in actions)
     assert all(action.payload["account_coverage_mode"] == "all_accounts_daily" for action in actions)
     assert all(action.payload["coverage_window_date"] == "2026-06-07" for action in actions)
     assert all(action.payload["coverage_target_per_account"] == 1 for action in actions)

@@ -374,7 +374,11 @@ def build_plan(session: Session, task: Task) -> int:
     )
     requested_reply_count = len(reply_targets)
     normal_count = max(0, turn_count - len(reply_targets))
-    defer_ai_generation = _defer_ai_generation_for_plan(config, hard_progress)
+    defer_ai_generation = _defer_ai_generation_for_plan(
+        config,
+        hard_progress,
+        reply_target_count=len(reply_targets),
+    )
     if defer_ai_generation:
         normal_slots = generation_slots[len(reply_targets):]
         planned_items, tokens = _deferred_ai_planned_items(normal_count, normal_slots), 0
@@ -1607,10 +1611,16 @@ def _hard_hourly_account_scan_target(progress: dict[str, object]) -> int:
     return max(HARD_HOURLY_MIN_BATCH_MESSAGES, goal, deficit)
 
 
-def _defer_ai_generation_for_plan(config: dict, progress: dict[str, object]) -> bool:
-    if not progress or not bool(config.get("hard_hourly_defer_ai_generation", True)):
-        return False
-    return int(progress.get("goal") or 0) >= HARD_HOURLY_DEFER_AI_MIN_GOAL
+def _defer_ai_generation_for_plan(
+    config: dict,
+    progress: dict[str, object],
+    *,
+    reply_target_count: int = 0,
+) -> bool:
+    if progress:
+        enabled = bool(config.get("hard_hourly_defer_ai_generation", True))
+        return enabled and int(progress.get("goal") or 0) >= HARD_HOURLY_DEFER_AI_MIN_GOAL
+    return _all_accounts_daily_coverage(config) and int(reply_target_count or 0) == 0
 
 
 def _deferred_ai_planned_items(count: int, slots: list[dict] | None = None) -> list[dict]:

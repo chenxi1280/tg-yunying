@@ -1259,6 +1259,15 @@ def test_context_expired_reply_keeps_same_cycle_hard_hourly_plain_send_pending()
                     now_value + timedelta(minutes=20),
                     _expired_cycle_payload(old_context.id, text="ordinary stale"),
                 ),
+                _cycle_action(
+                    "action-daily-coverage-deferred",
+                    now_value + timedelta(minutes=30),
+                    {
+                        **_expired_cycle_payload(old_context.id, text=""),
+                        "account_coverage_mode": "all_accounts_daily",
+                        "ai_generation_status": "pending",
+                    },
+                ),
             ]
         )
         session.commit()
@@ -1269,9 +1278,79 @@ def test_context_expired_reply_keeps_same_cycle_hard_hourly_plain_send_pending()
 
         hard_hourly_plain = session.get(Action, "action-hard-hourly-plain")
         ordinary_stale = session.get(Action, "action-ordinary-stale")
+        daily_coverage_deferred = session.get(Action, "action-daily-coverage-deferred")
         assert hard_hourly_plain.status == "pending"
+        assert daily_coverage_deferred.status == "pending"
         assert ordinary_stale.status == "skipped"
         assert ordinary_stale.result["error_code"] == "context_expired"
+
+
+@pytest.mark.no_postgres
+def test_daily_coverage_deferred_generation_refreshes_latest_human_context():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        _add_cycle_skip_basics(session, now_value)
+        old_context, new_context = _add_cycle_contexts(session, now_value)
+        action = _cycle_action(
+            "action-daily-context-refresh",
+            now_value,
+            {
+                **_expired_cycle_payload(old_context.id, text=""),
+                "account_coverage_mode": "all_accounts_daily",
+                "ai_generation_status": "pending",
+                "ai_generation_history": "真人用户: 旧上下文",
+            },
+        )
+        session.add(action)
+        session.commit()
+
+        payload = task_payloads.SendMessagePayload.model_validate(action.payload or {})
+        refreshed = dispatcher._refresh_deferred_generation_context(
+            session,
+            session.get(Task, action.task_id),
+            [(action, payload)],
+        )
+
+        refreshed_payload = refreshed[0][1]
+        assert refreshed_payload.context_snapshot_message_id == new_context.id
+        assert refreshed_payload.context_message_ids == [old_context.id, new_context.id]
+        assert "旧上下文" in refreshed_payload.ai_generation_history
+        assert "新上下文" in refreshed_payload.ai_generation_history
+
+
+@pytest.mark.no_postgres
+def test_daily_coverage_deferred_generation_batches_only_near_term_siblings():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        _add_cycle_skip_basics(session, now_value)
+        payload = {
+            "group_id": 7,
+            "message_text": "",
+            "account_coverage_mode": "all_accounts_daily",
+            "ai_generation_id": "daily-near-term",
+            "ai_generation_status": "pending",
+        }
+        session.add_all([
+            _cycle_action("action-daily-current", now_value, payload),
+            _cycle_action("action-daily-near", now_value + timedelta(minutes=1), payload),
+            _cycle_action("action-daily-far", now_value + timedelta(minutes=10), payload),
+        ])
+        session.commit()
+
+        current = session.get(Action, "action-daily-current")
+        current_payload = task_payloads.SendMessagePayload.model_validate(current.payload or {})
+        batch = dispatcher._pending_ai_generation_batch(session, current, current_payload)
+
+        assert [action.id for action, _payload in batch] == [
+            "action-daily-current",
+            "action-daily-near",
+        ]
 
 
 @pytest.mark.no_postgres
@@ -4982,7 +5061,7 @@ def _add_ready_daily_coverage(session: Session, task: Task, account_ids: list[in
 
 
 @pytest.mark.no_postgres
-def test_group_ai_all_account_coverage_does_not_use_emoji_fallback_after_quality_retries(monkeypatch):
+def test_group_ai_all_account_coverage_defers_plain_ai_without_emoji_fallback(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = _now()
@@ -5085,7 +5164,7 @@ def test_group_ai_all_account_coverage_does_not_use_emoji_fallback_after_quality
         )
         session.commit()
 
-        assert group_ai_chat.build_plan(session, task) == 0
+        assert group_ai_chat.build_plan(session, task) == 2
         actions = list(
             session.scalars(
                 select(Action)
@@ -5095,8 +5174,11 @@ def test_group_ai_all_account_coverage_does_not_use_emoji_fallback_after_quality
         )
         memories = list(session.scalars(select(AiGroupMessageMemory).where(AiGroupMessageMemory.task_id == task.id).order_by(AiGroupMessageMemory.planned_at, AiGroupMessageMemory.id)))
 
-    assert requested_counts == [2, 2, 2]
-    assert actions == []
+    assert requested_counts == []
+    assert len(actions) == 2
+    assert {action.payload["ai_generation_status"] for action in actions} == {"pending"}
+    assert {action.payload["message_text"] for action in actions} == {""}
+    assert {action.payload["quality_fallback"] for action in actions} == {""}
     assert memories == []
 
 

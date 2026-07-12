@@ -223,6 +223,7 @@ pending_admission -> admission_running -> ready -> reserved -> sending -> confir
 - 内容重复或质量失败：不发送，释放预约，下一次使用最新上下文重新生成。
 - 批量 AI 生成中任一同批 Action 在发送前进入失败或跳过终态时，必须立即释放该 Action 自己的覆盖预约并写入 blocker；不能只同步当前 Dispatcher Action，导致同批其他账号永久停在 `reserved`。
 - 上下文过期：只废弃当前上下文绑定对话片段中仍依赖该上下文或引用锚点的剩余 Action；同一 Cycle 内标记为硬目标、没有 `reply_to_message_id`、并由 Dispatcher 延迟生成文案的普通补量 Action 不得被连带跳过，仍按原 AI prompt、账号面具、话题和质量门生成后发送。被废弃 Action 的相关账号回到 `ready`，不得丢失覆盖义务。
+- 每日覆盖债务存在且本轮没有引用回复目标时，Planner 只规划携带账号面具、话题、讨论老师、行为类型和覆盖账本 ID 的延迟生成 Action，不在规划阶段提前冻结普通发言文案。Dispatcher 只批量生成临近执行窗口内的 Action，并在调用原 AI 生成与质量链前刷新目标群最新真人上下文及上下文快照；尚未生成的未来覆盖 Action 不得因旧快照过期被同轮清理。配置要求引用回复时仍走原引用生成链，不得为了覆盖量取消 `reply_to_message_id`。
 - 账号暂时离线或冷却：记录 `next_eligible_at`，到期后重新参与自然对话。
 - 发送失败：按现有失败类型和风控策略处理；可重试失败释放预约后等待下一次合适 Cycle。
 - 结果未知：先复核，不立即重复发送。
