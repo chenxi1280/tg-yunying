@@ -94,6 +94,13 @@ def test_group_ai_hard_hourly_goal_10_defers_ai_generation():
     assert group_ai_chat._defer_ai_generation_for_plan({}, {"goal": 10}) is True
 
 
+def test_group_ai_daily_coverage_without_reply_target_defers_ai_generation():
+    config = {"account_coverage_mode": "all_accounts_daily"}
+
+    assert group_ai_chat._defer_ai_generation_for_plan(config, {}, reply_target_count=0) is True
+    assert group_ai_chat._defer_ai_generation_for_plan(config, {}, reply_target_count=1) is False
+
+
 def test_group_ai_chat_normal_candidate_shortfall_keeps_partial_candidates(monkeypatch):
     task = SimpleNamespace(tenant_id=1, stats={})
 

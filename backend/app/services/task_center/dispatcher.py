@@ -153,6 +153,9 @@ VERIFICATION_READER_CANDIDATE_LIMIT = 5
 HARD_HOURLY_OVERDUE_SEND_PRIORITY_SECONDS = 300
 GROUP_RESCUE_INFLIGHT_CONFLICT_BACKOFF_SECONDS = 30
 AI_DISPATCH_GENERATION_BATCH_SIZE = 10
+AI_DISPATCH_GENERATION_LOOKAHEAD_SECONDS = 120
+AI_DISPATCH_CONTEXT_HISTORY_LIMIT = 50
+AI_DISPATCH_CONTEXT_HISTORY_MAX_CHARS = 1000
 AI_DISPATCH_CANDIDATE_SHORTFALL_MESSAGE = "AI 普通发言候选不足，已跳过本批次发送"
 _ACCOUNT_SESSION_FAILURE_MARKERS = (
     "session",
@@ -798,6 +801,8 @@ def _ensure_send_message_content(session: Session, action: Action, account: TgAc
     if not task:
         raise AiGenerationUnavailable("AI 生成缺少任务配置")
     batch = _pending_ai_generation_batch(session, action, payload)
+    batch = _refresh_deferred_generation_context(session, task, batch)
+    payload = batch[0][1]
     contents, tokens = generate_group_messages(
         session,
         action.tenant_id,
@@ -834,7 +839,7 @@ def _pending_ai_generation_batch(session: Session, action: Action, payload: Send
 
 
 def _pending_ai_generation_sibling_query(action: Action, generation_id: str, limit: int):
-    return (
+    stmt = (
         select(Action)
         .where(
             Action.id != action.id,
@@ -848,6 +853,65 @@ def _pending_ai_generation_sibling_query(action: Action, generation_id: str, lim
         .order_by(Action.scheduled_at.asc(), Action.created_at.asc())
         .limit(max(1, int(limit or 1)))
     )
+    payload = SendMessagePayload.model_validate(action.payload or {})
+    if _deferred_daily_coverage_payload(payload):
+        cutoff = max(_naive_datetime(action.scheduled_at), _now()) + timedelta(
+            seconds=AI_DISPATCH_GENERATION_LOOKAHEAD_SECONDS,
+        )
+        stmt = stmt.where(Action.scheduled_at <= cutoff)
+    return stmt
+
+
+def _refresh_deferred_generation_context(
+    session: Session,
+    task: Task,
+    batch: list[tuple[Action, SendMessagePayload]],
+) -> list[tuple[Action, SendMessagePayload]]:
+    if not batch or not _deferred_daily_coverage_payload(batch[0][1]):
+        return batch
+    rows = _latest_human_context_rows(session, batch[0][1], task)
+    if not rows:
+        return batch
+    history = "\n".join(f"{row.sender_name}: {row.content}" for row in rows)
+    history = history[-AI_DISPATCH_CONTEXT_HISTORY_MAX_CHARS:]
+    context_ids = [int(row.id) for row in rows]
+    refreshed: list[tuple[Action, SendMessagePayload]] = []
+    for action, payload in batch:
+        updated = payload.model_copy(update={
+            "anchor_message_ids": context_ids,
+            "context_message_ids": context_ids,
+            "context_snapshot_message_id": max(context_ids),
+            "ai_generation_history": history,
+            "ai_generation_context_count": len(context_ids),
+        })
+        action.payload = updated.model_dump(mode="json")
+        refreshed.append((action, updated))
+    return refreshed
+
+
+def _latest_human_context_rows(
+    session: Session,
+    payload: SendMessagePayload,
+    task: Task,
+) -> list[GroupContextMessage]:
+    depth = min(
+        AI_DISPATCH_CONTEXT_HISTORY_LIMIT,
+        max(1, int((task.type_config or {}).get("chat_history_depth") or AI_DISPATCH_CONTEXT_HISTORY_LIMIT)),
+    )
+    rows = list(session.scalars(
+        select(GroupContextMessage)
+        .where(
+            GroupContextMessage.group_id == payload.group_id,
+            GroupContextMessage.is_bot.is_(False),
+            GroupContextMessage.content != "",
+        )
+        .order_by(
+            func.coalesce(GroupContextMessage.sent_at, GroupContextMessage.created_at).desc(),
+            GroupContextMessage.id.desc(),
+        )
+        .limit(depth)
+    ))
+    return list(reversed(rows))
 
 
 def _runtime_group_ai_config(task: Task, batch: list[tuple[Action, SendMessagePayload]]) -> dict:
@@ -4455,7 +4519,17 @@ def _context_expired(session: Session, payload: SendMessagePayload) -> bool:
 def _context_expiration_applies(payload: SendMessagePayload) -> bool:
     if not payload.cycle_id or not payload.group_id or not payload.context_snapshot_message_id or payload.context_expire_after_messages <= 0:
         return False
+    if _deferred_daily_coverage_payload(payload):
+        return False
     return not (payload.hard_hourly_target and not payload.reply_to_message_id)
+
+
+def _deferred_daily_coverage_payload(payload: SendMessagePayload) -> bool:
+    return (
+        payload.account_coverage_mode == "all_accounts_daily"
+        and payload.ai_generation_status == "pending"
+        and not payload.reply_to_message_id
+    )
 
 
 def _newer_context_count(session: Session, payload: SendMessagePayload) -> int:
