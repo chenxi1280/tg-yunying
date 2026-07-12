@@ -41,6 +41,10 @@ TARGET_REF_RETRY_MARKERS = (
     "目标无效",
 )
 DAILY_PERMISSION_RECHECK_ERROR_CODES = {"membership_permission_denied", "cannot_send"}
+DAILY_PERMISSION_RECHECK_REASONS = {
+    "hard_hourly_daily_permission_recheck",
+    "membership_recovery_daily_permission_recheck",
+}
 
 
 @dataclass(frozen=True)
@@ -537,8 +541,7 @@ def _reactivate_auto_verification_memberships(
     verification_by_account = _auto_verification_tasks_by_account(session, task, group.id, [int(action.account_id) for action in failed_actions])
     account_by_id = {int(account.id): account for account in candidates}
     now_value = _now()
-    created = 0
-    rows: list[dict[str, Any]] = []
+    specs: list[tuple[Action, str, int | None]] = []
     for action in failed_actions:
         account_id = int(action.account_id or 0)
         verification = verification_by_account.get(account_id)
@@ -553,21 +556,46 @@ def _reactivate_auto_verification_memberships(
         )
         if not reason:
             continue
-        rows.append(
-            _membership_retry_action_row(
-                task,
-                action,
-                now_value,
-                created,
-                reason,
-                verification.id if verification else None,
-                channel=channel,
-            )
-        )
-        created += 1
+        specs.append((action, reason, verification.id if verification else None))
+    rows = _membership_retry_action_rows(task, channel, specs, now_value)
     if rows:
         session.bulk_insert_mappings(Action, rows)
-    return created
+    return len(rows)
+
+
+def _membership_retry_action_rows(
+    task: Task,
+    channel: OperationTarget,
+    specs: list[tuple[Action, str, int | None]],
+    now_value,
+) -> list[dict[str, Any]]:
+    scheduled_times = _membership_reactivation_schedule(specs, now_value)
+    return [
+        _membership_retry_action_row(
+            task,
+            action,
+            scheduled_at=scheduled_at,
+            reason=reason,
+            verification_id=verification_id,
+            channel=channel,
+            created_at=now_value,
+        )
+        for (action, reason, verification_id), scheduled_at in zip(specs, scheduled_times, strict=True)
+    ]
+
+
+def _membership_reactivation_schedule(specs: list[tuple[Action, str, int | None]], now_value) -> list:
+    daily_count = sum(1 for _, reason, _ in specs if _is_daily_permission_recheck_reason(reason))
+    daily_times = iter(_four_hour_membership_schedule(daily_count, now_value))
+    fast_index = 0
+    scheduled_times = []
+    for _, reason, _ in specs:
+        if _is_daily_permission_recheck_reason(reason):
+            scheduled_times.append(next(daily_times))
+            continue
+        scheduled_times.append(now_value + timedelta(seconds=HARD_HOURLY_MEMBERSHIP_FAST_TRACK_INTERVAL_SECONDS * fast_index))
+        fast_index += 1
+    return scheduled_times
 
 
 def _membership_recovery_retry_reason(
@@ -644,15 +672,14 @@ def _daily_permission_recheck_due(task: Task, action: Action, now_value) -> bool
 def _membership_retry_action_row(
     task: Task,
     action: Action,
-    now_value,
-    offset: int,
+    *,
+    scheduled_at,
     reason: str,
     verification_id: int | None = None,
-    *,
     channel: OperationTarget,
+    created_at,
 ) -> dict[str, Any]:
     payload = _membership_retry_payload(action, channel)
-    scheduled_at = now_value + timedelta(seconds=HARD_HOURLY_MEMBERSHIP_FAST_TRACK_INTERVAL_SECONDS * offset)
     result = {"reactivated_reason": reason}
     if verification_id:
         result["verification_task_id"] = verification_id
@@ -668,7 +695,7 @@ def _membership_retry_action_row(
         "lease_owner": "",
         "claim_owner": "",
         "claim_token": "",
-        "plan_batch_key": f"{task.id}:hard-hourly-auto-verification:{now_value.isoformat()}",
+        "plan_batch_key": f"{task.id}:hard-hourly-auto-verification:{created_at.isoformat()}",
         "action_dedupe_key": (
             f"{task.tenant_id}:{task.id}:hard-hourly-auto-verification:"
             f"{action.account_id}:{reason}:{verification_id or 'required-channel'}:{scheduled_at.isoformat()}"
@@ -676,7 +703,7 @@ def _membership_retry_action_row(
         "payload": payload.model_dump(mode="json"),
         "result": result,
         "retry_count": 0,
-        "created_at": now_value,
+        "created_at": created_at,
     }
 
 
@@ -837,10 +864,20 @@ def _fast_track_hard_hourly_membership_actions(session: Session, task: Task, cha
             .order_by(Action.scheduled_at.asc(), Action.created_at.asc())
         )
     )
+    rows = [action for action in rows if not is_daily_permission_recheck_action(action)]
     for index, action in enumerate(rows):
         action.scheduled_at = now_value + timedelta(seconds=HARD_HOURLY_MEMBERSHIP_FAST_TRACK_INTERVAL_SECONDS * index)
         action.result = {**(action.result or {}), "fast_tracked_reason": "hard_hourly_membership"}
     return len(rows)
+
+
+def is_daily_permission_recheck_action(action: Action) -> bool:
+    result = action.result if isinstance(action.result, dict) else {}
+    return _is_daily_permission_recheck_reason(str(result.get("reactivated_reason") or ""))
+
+
+def _is_daily_permission_recheck_reason(reason: str) -> bool:
+    return str(reason or "") in DAILY_PERMISSION_RECHECK_REASONS
 
 
 def _hard_hourly_membership_fast_track_enabled(task: Task) -> bool:
