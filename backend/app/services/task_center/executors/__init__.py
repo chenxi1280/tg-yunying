@@ -43,4 +43,15 @@ def prepare_open_actions_for_planning(session: Session, task: Task) -> int:
     return int(prepare(session, task) or 0)
 
 
-__all__ = ["EXECUTORS", "build_task_plan", "prepare_open_actions_for_planning"]
+def requires_planning_with_open_actions(session: Session, task: Task) -> bool:
+    executor = EXECUTORS.get(task.type)
+    requires = getattr(executor, "requires_planning_with_open_actions", None)
+    return bool(requires and requires(session, task))
+
+
+__all__ = [
+    "EXECUTORS",
+    "build_task_plan",
+    "prepare_open_actions_for_planning",
+    "requires_planning_with_open_actions",
+]

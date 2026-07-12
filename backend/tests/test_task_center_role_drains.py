@@ -405,6 +405,44 @@ def test_planner_does_not_exclude_due_ai_open_actions_with_beijing_clock(monkeyp
 
 
 @pytest.mark.no_postgres
+def test_planner_allows_daily_coverage_debt_with_existing_open_action(monkeypatch):
+    SessionFactory = _session_factory()
+    now_value = _now()
+    built_task_ids: list[str] = []
+
+    monkeypatch.setattr(service, "requires_planning_with_open_actions", lambda *_args: True)
+    monkeypatch.setattr(service, "build_task_plan", lambda _session, task: built_task_ids.append(task.id) or 1)
+
+    with SessionFactory() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        task = Task(
+            id="task-ai-daily-debt-open",
+            tenant_id=1,
+            name="每日覆盖债务",
+            type="group_ai_chat",
+            status="running",
+            next_run_at=now_value - timedelta(seconds=1),
+            type_config={"account_coverage_mode": "all_accounts_daily"},
+        )
+        session.add(task)
+        session.add(Action(
+            id="action-ai-daily-debt-open",
+            tenant_id=1,
+            task_id=task.id,
+            task_type=task.type,
+            action_type="send_message",
+            status="pending",
+            scheduled_at=now_value + timedelta(minutes=1),
+            payload={"message_text": "existing"},
+        ))
+        session.commit()
+
+    service._drain_task_planner(SessionFactory, limit=5, process_type=None)
+
+    assert built_task_ids == ["task-ai-daily-debt-open"]
+
+
+@pytest.mark.no_postgres
 def test_planner_prepares_open_ai_actions_before_skip(monkeypatch):
     SessionFactory = _session_factory()
     now_value = _now()

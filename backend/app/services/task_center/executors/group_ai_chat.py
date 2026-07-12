@@ -1102,6 +1102,23 @@ def _coverage_plan_state(
     )
 
 
+def requires_planning_with_open_actions(session: Session, task: Task) -> bool:
+    config = task.type_config or {}
+    if not _all_accounts_daily_coverage(config):
+        return False
+    group = group_from_reference(
+        session,
+        task.tenant_id,
+        group_id=int(config.get("target_group_id") or 0) or None,
+        operation_target_id=int(config.get("target_operation_target_id") or 0) or None,
+        require_authorized=False,
+    )
+    if not group:
+        return False
+    rows = _load_coverage_rows(session, task)
+    return daily_coverage_due_debt(task, group, rows, now=_now()) > 0
+
+
 def _load_coverage_rows(
     session: Session,
     task: Task,
