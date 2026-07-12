@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.integrations.telegram import AccountHealth
-from app.models import AccountPool, AccountStatus, Task, TgAccount, TgAccountOnlineState, TgGroup, TgGroupAccount
+from app.models import AccountPool, AccountStatus, Task, TaskAccountDailyCoverage, TgAccount, TgAccountOnlineState, TgGroup, TgGroupAccount
 from app.services._common import _now
 from app.services.account_online_state import (
     is_account_online_available,
@@ -283,6 +283,47 @@ def test_probe_due_online_states_marks_healthy_account_online(monkeypatch):
         assert state.last_seen_at == now
         assert state.next_probe_at > now
         assert is_account_online_ready(session, tenant_id=1, account_id=101, now=now) is True
+
+
+def test_online_probe_releases_daily_offline_blocker_for_sendable_group(monkeypatch):
+    now = _now()
+    with _session() as session:
+        _account(session)
+        _group(session)
+        _link(session, 501, 101, can_send=True)
+        session.add(Task(id="coverage-online", tenant_id=1, name="在线恢复", type="group_ai_chat", status="running"))
+        coverage = TaskAccountDailyCoverage(
+            id="coverage-online-row",
+            tenant_id=1,
+            task_id="coverage-online",
+            group_id=501,
+            account_id=101,
+            coverage_date=now.date(),
+            state="blocked",
+            blocker_code="account_offline",
+            blocker_detail="账号实时在线状态不可用",
+        )
+        state = TgAccountOnlineState(
+            tenant_id=1,
+            account_id=101,
+            desired_online=True,
+            desired_sources=[{"source_type": "task", "source_id": "coverage-online"}],
+            online_status="offline",
+            next_probe_at=now - timedelta(seconds=1),
+        )
+        session.add_all([coverage, state])
+        session.commit()
+        monkeypatch.setattr("app.services.account_online_probe.credentials_for_account", lambda *_args, **_kwargs: object())
+        monkeypatch.setattr(
+            "app.services.account_online_probe.gateway.check_account_health",
+            lambda *_args: AccountHealth(status=AccountStatus.ACTIVE.value, health_score=96, detail="账号 session 可用"),
+        )
+
+        assert probe_due_online_states(session, limit=10, now=now) == 1
+        session.refresh(coverage)
+
+        assert coverage.state == "ready"
+        assert coverage.blocker_code == ""
 
 
 def test_probe_due_online_states_marks_session_failure_login_required(monkeypatch):

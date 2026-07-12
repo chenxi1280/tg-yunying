@@ -13,6 +13,7 @@ from app.models import (
     TaskAccountDailyCoverage,
     TaskMembershipAdmissionItem,
     TgGroup,
+    TgGroupAccount,
 )
 from app.services._common import _now
 
@@ -262,6 +263,42 @@ def block_coverage_accounts(
     return int(result.rowcount or 0)
 
 
+def release_online_coverage_blockers(
+    session: Session,
+    *,
+    tenant_id: int,
+    account_id: int,
+    now: datetime | None = None,
+) -> int:
+    timestamp = now or _now()
+    sendable_membership = select(TgGroupAccount.id).where(
+        TgGroupAccount.tenant_id == tenant_id,
+        TgGroupAccount.group_id == TaskAccountDailyCoverage.group_id,
+        TgGroupAccount.account_id == account_id,
+        TgGroupAccount.can_send.is_(True),
+    ).exists()
+    result = session.execute(
+        update(TaskAccountDailyCoverage)
+        .where(
+            TaskAccountDailyCoverage.tenant_id == tenant_id,
+            TaskAccountDailyCoverage.account_id == account_id,
+            TaskAccountDailyCoverage.coverage_date == timestamp.date(),
+            TaskAccountDailyCoverage.state == "blocked",
+            TaskAccountDailyCoverage.blocker_code == "account_offline",
+            TaskAccountDailyCoverage.confirmed_count < TaskAccountDailyCoverage.target_count,
+            sendable_membership,
+        )
+        .values(
+            state="ready",
+            blocker_code="",
+            blocker_detail="",
+            next_eligible_at=None,
+            updated_at=timestamp,
+        )
+    )
+    return int(result.rowcount or 0)
+
+
 def backfill_daily_coverage_confirmations(
     session: Session,
     task: Task,
@@ -491,6 +528,7 @@ __all__ = [
     "ready_coverage_rows_by_account",
     "mark_coverage_unknown",
     "recover_terminal_coverage_reservations",
+    "release_online_coverage_blockers",
     "release_coverage_reservation",
     "release_terminal_coverage_reservations",
     "reserve_coverage_for_action",
