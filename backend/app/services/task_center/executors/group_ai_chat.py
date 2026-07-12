@@ -316,12 +316,23 @@ def build_plan(session: Session, task: Task) -> int:
             session, task, accounts, hard_progress, config, coverage_state=coverage_state,
         ),
     )
+    deferred_coverage_generation = _daily_coverage_generation_is_deferred(
+        session,
+        task,
+        group,
+        usable_context_rows=usable_context_rows,
+        turn_count=turn_count,
+        config=config,
+        hard_progress=hard_progress,
+        has_daily_coverage_debt=has_daily_coverage_debt,
+    )
     planned_times = _schedule_times_for_plan(task, hard_progress, turn_count, mode)
     turn_count, planned_times = _limit_context_bound_turns(
         task,
         config,
         has_context=bool(usable_context_rows),
         progress=hard_progress,
+        deferred_generation=deferred_coverage_generation,
         turn_count=turn_count,
         planned_times=planned_times,
     )
@@ -444,6 +455,7 @@ def build_plan(session: Session, task: Task) -> int:
         config,
         has_context=bool(usable_context_rows),
         progress=hard_progress,
+        deferred_generation=defer_ai_generation,
         quality_items=quality_items,
         planned_times=times,
     )
@@ -790,6 +802,25 @@ def _reply_targets_for_plan(
         task.last_error = "可引用消息不足，等待监听到可回复消息后继续执行"
         return None
     return reply_target_pool[:reply_min]
+
+
+def _daily_coverage_generation_is_deferred(
+    session: Session,
+    task: Task,
+    group: TgGroup,
+    *,
+    usable_context_rows: list,
+    turn_count: int,
+    config: dict,
+    hard_progress: dict[str, object],
+    has_daily_coverage_debt: bool,
+) -> bool:
+    if hard_progress or not has_daily_coverage_debt or not _all_accounts_daily_coverage(config):
+        return False
+    reply_min = min(turn_count, int(config.get("reply_min_per_round") or 0))
+    if reply_min <= 0:
+        return True
+    return len(_group_reply_target_pool(session, task, group, usable_context_rows)) < reply_min
 
 
 def _hard_blocked_last_error(created: int, blockers: dict[str, int], progress: dict[str, object]) -> str:
@@ -2289,10 +2320,11 @@ def _limit_context_bound_turns(
     *,
     has_context: bool,
     progress: dict[str, object],
+    deferred_generation: bool = False,
     turn_count: int,
     planned_times: list[datetime],
 ) -> tuple[int, list[datetime]]:
-    if not _requires_context_bound_window(config, has_context, progress):
+    if not _requires_context_bound_window(config, has_context, progress, deferred_generation):
         _clear_context_bound_limit_stats(task)
         return turn_count, planned_times
     window_seconds = _context_bound_schedule_window_seconds(config)
@@ -2309,10 +2341,11 @@ def _limit_context_bound_quality_schedule(
     *,
     has_context: bool,
     progress: dict[str, object],
+    deferred_generation: bool = False,
     quality_items: list[dict[str, str]],
     planned_times: list[datetime],
 ) -> tuple[list[dict[str, str]], list[datetime]]:
-    if not _requires_context_bound_window(config, has_context, progress):
+    if not _requires_context_bound_window(config, has_context, progress, deferred_generation):
         return quality_items, planned_times
     window_seconds = _context_bound_schedule_window_seconds(config)
     cutoff = _now() + timedelta(seconds=window_seconds)
@@ -2327,8 +2360,18 @@ def _limit_context_bound_quality_schedule(
     return quality_items[:limited_count], planned_times[:limited_count]
 
 
-def _requires_context_bound_window(config: dict, has_context: bool, progress: dict[str, object]) -> bool:
-    return bool(has_context) and not progress and int(config.get("context_expire_after_messages") or 0) > 0
+def _requires_context_bound_window(
+    config: dict,
+    has_context: bool,
+    progress: dict[str, object],
+    deferred_generation: bool = False,
+) -> bool:
+    return (
+        bool(has_context)
+        and not progress
+        and not deferred_generation
+        and int(config.get("context_expire_after_messages") or 0) > 0
+    )
 
 
 def _context_bound_schedule_window_seconds(config: dict) -> int:

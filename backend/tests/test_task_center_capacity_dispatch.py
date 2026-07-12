@@ -5019,6 +5019,28 @@ def test_group_ai_context_bound_limit_does_not_cap_hard_hourly(monkeypatch):
 
 
 @pytest.mark.no_postgres
+def test_group_ai_context_bound_limit_does_not_cap_deferred_daily_coverage(monkeypatch):
+    now_value = datetime(2026, 6, 29, 20, 0)
+    monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
+    task = Task(id="task-deferred-coverage-context", tenant_id=1, name="覆盖延期生成", type="group_ai_chat", stats={})
+    planned_times = [now_value + timedelta(minutes=index * 2) for index in range(30)]
+
+    turn_count, limited_times = group_ai_chat._limit_context_bound_turns(
+        task,
+        {"context_expire_after_messages": 1},
+        has_context=True,
+        progress={},
+        deferred_generation=True,
+        turn_count=30,
+        planned_times=planned_times,
+    )
+
+    assert turn_count == 30
+    assert limited_times == planned_times
+    assert "context_bound_requested_turns" not in (task.stats or {})
+
+
+@pytest.mark.no_postgres
 def test_group_ai_context_bound_quality_schedule_cuts_final_candidates(monkeypatch):
     now_value = datetime(2026, 6, 29, 15, 0)
     monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
