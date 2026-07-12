@@ -657,7 +657,11 @@ def test_group_ai_chat_hard_hourly_target_creates_deficit_actions(monkeypatch):
 
 
 @pytest.mark.no_postgres
-def test_group_ai_chat_all_accounts_daily_coverage_plans_uncovered_accounts_when_reply_targets_are_missing(monkeypatch):
+@pytest.mark.parametrize("wait_for_context", [False, True])
+def test_group_ai_chat_all_accounts_daily_coverage_plans_uncovered_accounts_when_reply_targets_are_missing(
+    monkeypatch,
+    wait_for_context,
+):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = datetime(2026, 6, 7, 20, 10)
@@ -671,6 +675,10 @@ def test_group_ai_chat_all_accounts_daily_coverage_plans_uncovered_accounts_when
     monkeypatch.setattr("app.services.task_center.daily_coverage._now", lambda: now_value)
     monkeypatch.setattr("app.services.account_online_state._now", lambda: now_value)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        "app.services.task_center.executors.group_ai_chat._should_wait_for_human_context",
+        lambda *_args, **_kwargs: wait_for_context,
+    )
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._drop_repeated_planned_items", lambda items, _previous: items)
     monkeypatch.setattr(
@@ -705,10 +713,11 @@ def test_group_ai_chat_all_accounts_daily_coverage_plans_uncovered_accounts_when
                 "participation_jitter": 0,
                 "allow_account_repeat": False,
                 "reply_min_per_round": 1,
+                "idle_continuation_enabled": False,
                 "fact_anchor_required": False,
                 "hard_hourly_target_enabled": False,
             },
-            stats={"force_bootstrap_once": True},
+            stats={},
         )
         session.add(task)
         session.add_all([
