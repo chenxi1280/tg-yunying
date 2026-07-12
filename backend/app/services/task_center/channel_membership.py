@@ -40,6 +40,7 @@ TARGET_REF_RETRY_MARKERS = (
     "目标群无效",
     "目标无效",
 )
+DAILY_PERMISSION_RECHECK_ERROR_CODES = {"membership_permission_denied", "cannot_send"}
 
 
 @dataclass(frozen=True)
@@ -595,6 +596,8 @@ def _membership_recovery_retry_reason(
         if target_reference_changed:
             return _reactivation_reason(task, "target_ref")
         return ""
+    if _daily_permission_recheck_due(task, action, now_value):
+        return _reactivation_reason(task, "daily_permission")
     if recovery.bucket == VERIFICATION_BUCKET and verification and _auto_verification_retry_due(action, verification, now_value):
         return _reactivation_reason(task, "auto_verification")
     if recovery.bucket != AUTO_RETRY_BUCKET:
@@ -612,12 +615,30 @@ def _reactivation_reason(task: Task, reason_type: str) -> str:
             return "hard_hourly_auto_verification_retry"
         if reason_type == "target_ref":
             return "hard_hourly_target_ref_retry"
+        if reason_type == "daily_permission":
+            return "hard_hourly_daily_permission_recheck"
         return "hard_hourly_required_channel_retry"
     if reason_type == "auto_verification":
         return "membership_recovery_auto_verification"
     if reason_type == "target_ref":
         return "membership_recovery_target_ref"
+    if reason_type == "daily_permission":
+        return "membership_recovery_daily_permission_recheck"
     return "membership_recovery_required_channel"
+
+
+def _daily_permission_recheck_due(task: Task, action: Action, now_value) -> bool:
+    if not _uses_persisted_all_account_scope(task):
+        return False
+    result = action.result if isinstance(action.result, dict) else {}
+    error_code = str(result.get("error_code") or "").strip().lower()
+    membership_status = str(result.get("membership_status") or "").strip().lower()
+    if error_code not in DAILY_PERMISSION_RECHECK_ERROR_CODES and membership_status != "permission_denied":
+        return False
+    last_attempt_at = _terminal_membership_retry_reference(action)
+    if not last_attempt_at:
+        return False
+    return last_attempt_at.replace(tzinfo=None).date() < now_value.replace(tzinfo=None).date()
 
 
 def _membership_retry_action_row(
