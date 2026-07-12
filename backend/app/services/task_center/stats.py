@@ -41,8 +41,14 @@ def next_run_after_task(task: Task):
     config = task.type_config or {}
     if task.type == "group_ai_chat":
         hard_next = _stats_datetime(task, "hard_hourly_next_check_at")
-        if hard_hourly_enabled(task) and hard_next:
-            return max(hard_next, _now())
+        coverage_next = _stats_datetime(task, "daily_coverage_next_check_at")
+        priority_checks = [
+            value
+            for value in (hard_next if hard_hourly_enabled(task) else None, coverage_next)
+            if value is not None
+        ]
+        if priority_checks:
+            return max(min(priority_checks), _now())
         waiting_until = _stats_datetime(task, "idle_continuation_next_run_at")
         if waiting_until:
             return waiting_until
