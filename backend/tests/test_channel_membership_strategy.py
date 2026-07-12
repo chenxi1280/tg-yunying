@@ -391,17 +391,46 @@ def _daily_permission_recheck_fixture() -> tuple[OperationTarget, Task, list[TgA
     )
     accounts = [
         TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status=AccountStatus.ACTIVE.value, session_ciphertext="session")
-        for account_id in (18, 19)
+        for account_id in (18, 19, 20)
     ]
     failures = [
-        Action(id=f"membership-daily-permission-failed-{account.id}", tenant_id=1, task_id=task.id, task_type=task.type, action_type="ensure_target_membership", account_id=account.id, status="skipped", scheduled_at=old_value, executed_at=old_value, payload={"channel_id": target.tg_peer_id, "channel_target_id": target.id, "require_send": True}, result={"error_code": "membership_permission_denied", "membership_status": "permission_denied"})
-        for account in accounts
+        _daily_permission_failure(task, target, accounts[0], old_value=old_value, unknown=False),
+        _daily_permission_failure(task, target, accounts[1], old_value=old_value, unknown=True),
+        _daily_permission_failure(
+            task, target, accounts[2], old_value=old_value, unknown=True, reprobe_failed=False,
+        ),
     ]
     verifications = [
         VerificationTask(id=7000 + account.id, tenant_id=1, account_id=account.id, group_id=group.id, verification_type="群发言权限", suggested_action="人工处理", status="待处理")
         for account in accounts
     ]
     return target, task, accounts, [target, group, task, *accounts, *failures, *verifications]
+
+
+def _daily_permission_failure(
+    task: Task,
+    target: OperationTarget,
+    account: TgAccount,
+    *,
+    old_value,
+    unknown: bool,
+    reprobe_failed: bool = True,
+) -> Action:
+    result = {"error_code": "membership_permission_denied", "membership_status": "permission_denied"}
+    if unknown:
+        result = {"error_code": "群无权限"}
+        if reprobe_failed:
+            result.update({
+                "unknown_membership_reprobe_status": "failed",
+                "unknown_membership_reprobe_at": old_value.isoformat(),
+            })
+    return Action(
+        id=f"membership-daily-permission-failed-{account.id}", tenant_id=1, task_id=task.id,
+        task_type=task.type, action_type="ensure_target_membership", account_id=account.id,
+        status="unknown_after_send" if unknown else "skipped", scheduled_at=old_value, executed_at=old_value,
+        payload={"channel_id": target.tg_peer_id, "channel_target_id": target.id, "require_send": True},
+        result=result,
+    )
 
 
 @pytest.mark.no_postgres
