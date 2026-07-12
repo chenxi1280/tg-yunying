@@ -20,6 +20,9 @@ from .daily_coverage_schedule import daily_coverage_due_debt
 from .daily_coverage_readiness import refresh_rows
 
 
+TERMINAL_PRECONFIRMATION_STATUSES = frozenset({"failed", "skipped", "retryable_failed"})
+
+
 @dataclass(frozen=True)
 class DailyCoverageSyncResult:
     coverage_date: date
@@ -36,7 +39,13 @@ def ensure_task_daily_coverage(
     incremental: bool = False,
 ) -> DailyCoverageSyncResult:
     timestamp = now or _now()
-    if account_ids is None and not incremental and _daily_scope_materialized(session, task, timestamp.date()):
+    scope_materialized = (
+        account_ids is None
+        and not incremental
+        and _daily_scope_materialized(session, task, timestamp.date())
+    )
+    if scope_materialized:
+        release_terminal_coverage_reservations(session, task, timestamp.date())
         return DailyCoverageSyncResult(coverage_date=timestamp.date(), created=0, refreshed=0)
     items = _scope_items(session, task, account_ids)
     if not items:
@@ -57,6 +66,32 @@ def ensure_task_daily_coverage(
     refresh_rows(session, rows_and_items, group, timestamp)
     session.flush()
     return DailyCoverageSyncResult(coverage_date=coverage_date, created=created, refreshed=len(items))
+
+
+def release_terminal_coverage_reservations(session: Session, task: Task, coverage_date: date) -> int:
+    rows = session.execute(
+        select(TaskAccountDailyCoverage, Action)
+        .join(Action, Action.id == TaskAccountDailyCoverage.reserved_action_id)
+        .where(
+            TaskAccountDailyCoverage.task_id == task.id,
+            TaskAccountDailyCoverage.coverage_date == coverage_date,
+            TaskAccountDailyCoverage.state.in_(("reserved", "sending")),
+            Action.status.in_(TERMINAL_PRECONFIRMATION_STATUSES),
+        )
+    )
+    released = 0
+    for coverage, action in rows:
+        result = action.result if isinstance(action.result, dict) else {}
+        coverage.state = "ready"
+        coverage.reserved_action_id = None
+        coverage.blocker_code = str(result.get("error_code") or action.status)
+        coverage.blocker_detail = str(result.get("error_message") or "")
+        coverage.next_eligible_at = None
+        coverage.updated_at = _now()
+        released += 1
+    if released:
+        session.flush()
+    return released
 
 
 def reserve_coverage_for_action(

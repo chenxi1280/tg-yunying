@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -21,6 +24,21 @@ from app.services.developer_apps import credentials_for_account
 
 logger = logging.getLogger(__name__)
 MAX_PROBE_FAILURE_DETAIL_LENGTH = 500
+ONLINE_PROBE_MAX_CONCURRENCY = 4
+
+
+@dataclass(frozen=True)
+class OnlineProbeJob:
+    account_id: int
+    session_ciphertext: str | None
+    credentials: Any
+
+
+@dataclass(frozen=True)
+class OnlineProbeResult:
+    account_id: int
+    health: Any = None
+    error: Exception | None = None
 
 
 def probe_due_online_states(
@@ -32,15 +50,58 @@ def probe_due_online_states(
 ) -> int:
     current_time = now or _now()
     states = _due_probe_states(session, limit=limit, now=current_time)
+    states_by_account = {state.account_id: state for state in states}
+    accounts: dict[int, TgAccount] = {}
+    jobs: list[OnlineProbeJob] = []
     for state in states:
         account = session.get(TgAccount, state.account_id)
         if not account or account.deleted_at is not None:
             _mark_probe_blocked(state, current_time, "account_missing", "账号不存在或已删除")
             _commit_probe_progress(session, commit_each)
             continue
-        _probe_account_state(session, account, state, current_time)
+        accounts[account.id] = account
+        try:
+            credentials = credentials_for_account(session, account, use_proxy=False)
+        except ValueError as exc:
+            _mark_probe_blocked(state, current_time, "developer_app_unavailable", str(exc))
+            _commit_probe_progress(session, commit_each)
+            continue
+        jobs.append(OnlineProbeJob(account.id, account.session_ciphertext, credentials))
+    for result in _run_health_probes(jobs):
+        _apply_probe_result(accounts[result.account_id], states_by_account[result.account_id], current_time, result)
         _commit_probe_progress(session, commit_each)
     return len(states)
+
+
+def _run_health_probes(jobs: list[OnlineProbeJob]) -> list[OnlineProbeResult]:
+    if not jobs:
+        return []
+    worker_count = min(ONLINE_PROBE_MAX_CONCURRENCY, len(jobs))
+    with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="account-online-probe") as executor:
+        return list(executor.map(_run_health_probe, jobs))
+
+
+def _run_health_probe(job: OnlineProbeJob) -> OnlineProbeResult:
+    try:
+        health = gateway.check_account_health(job.session_ciphertext, job.credentials)
+        return OnlineProbeResult(account_id=job.account_id, health=health)
+    except Exception as exc:
+        return OnlineProbeResult(account_id=job.account_id, error=exc)
+
+
+def _apply_probe_result(account: TgAccount, state: TgAccountOnlineState, now: datetime, result: OnlineProbeResult) -> None:
+    if isinstance(result.error, ValueError):
+        _mark_probe_blocked(state, now, "developer_app_unavailable", str(result.error))
+        return
+    if result.error is not None:
+        logger.warning("account online probe failed for account_id=%s: %s", account.id, result.error)
+        _mark_probe_exception(account, state, now, result.error)
+        return
+    health = result.health
+    if health.status == AccountStatus.ACTIVE.value:
+        _mark_probe_online(account, state, now, health.health_score, health.detail)
+        return
+    _mark_probe_unavailable(account, state, now, health.status, health.health_score, health.detail)
 
 
 def _due_probe_states(session: Session, *, limit: int, now: datetime) -> list[TgAccountOnlineState]:
@@ -56,22 +117,6 @@ def _due_probe_states(session: Session, *, limit: int, now: datetime) -> list[Tg
             .limit(max(1, limit))
         )
     )
-
-
-def _probe_account_state(session: Session, account: TgAccount, state: TgAccountOnlineState, now: datetime) -> None:
-    try:
-        result = gateway.check_account_health(account.session_ciphertext, credentials_for_account(session, account, use_proxy=False))
-    except ValueError as exc:
-        _mark_probe_blocked(state, now, "developer_app_unavailable", str(exc))
-        return
-    except Exception as exc:
-        logger.warning("account online probe failed for account_id=%s", account.id, exc_info=True)
-        _mark_probe_exception(account, state, now, exc)
-        return
-    if result.status == AccountStatus.ACTIVE.value:
-        _mark_probe_online(account, state, now, result.health_score, result.detail)
-        return
-    _mark_probe_unavailable(account, state, now, result.status, result.health_score, result.detail)
 
 
 def _mark_probe_exception(account: TgAccount, state: TgAccountOnlineState, now: datetime, exc: Exception) -> None:

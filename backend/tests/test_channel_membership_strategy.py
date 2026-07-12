@@ -275,14 +275,24 @@ def test_hard_hourly_reactivation_repairs_auto_verification_failures_when_capaci
     assert retry_count == 1
 
 
-def test_reactivate_memberships_requeues_stale_target_reference() -> None:
+@pytest.mark.no_postgres
+def test_reactivate_memberships_waits_for_target_reference_change() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     old_value = _now() - timedelta(minutes=10)
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
-        channel = OperationTarget(id=903, tenant_id=1, target_type="group", tg_peer_id="qdsfxy", title="青岛师范学院", auth_status="只读", can_send=False)
+        channel = OperationTarget(
+            id=903,
+            tenant_id=1,
+            target_type="group",
+            tg_peer_id="qdsfxy",
+            username="qdsfxy",
+            title="青岛师范学院",
+            auth_status="只读",
+            can_send=False,
+        )
         group = TgGroup(id=803, tenant_id=1, tg_peer_id="qdsfxy", title="青岛师范学院", auth_status="只读", can_send=False)
         task = Task(id="task-stale-target-ref", tenant_id=1, name="青岛师范学院", type="group_ai_chat", status="running")
         account = TgAccount(id=13, tenant_id=1, display_name="账号13", phone_masked="13", status=AccountStatus.ACTIVE.value, session_ciphertext="session")
@@ -302,12 +312,18 @@ def test_reactivate_memberships_requeues_stale_target_reference() -> None:
         session.add_all([channel, group, task, account, action])
         session.commit()
 
-        created = _reactivate_auto_verification_memberships(session, task, channel, [account], require_send=True)
+        unchanged_created = _reactivate_auto_verification_memberships(session, task, channel, [account], require_send=True)
+        channel.username = "https://t.me/+replacement"
+        session.flush()
+        changed_created = _reactivate_auto_verification_memberships(session, task, channel, [account], require_send=True)
         retry = session.scalar(select(Action).where(Action.task_id == task.id, Action.status == "pending"))
 
-    assert created == 1
+    assert unchanged_created == 0
+    assert changed_created == 1
     assert retry is not None
     assert retry.result["reactivated_reason"] == "membership_recovery_target_ref"
+    assert retry.payload["target_username"] == "https://t.me/+replacement"
+    assert retry.payload["invite_link"] == "https://t.me/+replacement"
 
 
 def test_group_send_verification_classifies_arithmetic_captcha_as_reply() -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from datetime import timedelta
 
 import pytest
@@ -360,6 +361,45 @@ def test_probe_due_online_states_continues_after_auth_key_duplicate(monkeypatch)
         assert second.status == AccountStatus.ACTIVE.value
         assert second_state.online_status == "online"
         assert second_state.failure_type == ""
+
+
+def test_probe_due_online_states_runs_health_checks_concurrently(monkeypatch):
+    now = _now()
+    active = 0
+    max_active = 0
+    lock = threading.Lock()
+    release = threading.Event()
+
+    def check_health(_session_ciphertext, _credentials):
+        nonlocal active, max_active
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+            if active >= 2:
+                release.set()
+        release.wait(timeout=0.2)
+        with lock:
+            active -= 1
+        return AccountHealth(status=AccountStatus.ACTIVE.value, health_score=96, detail="账号 session 可用")
+
+    with _session() as session:
+        for account_id in range(101, 105):
+            _account(session, account_id)
+            session.add(TgAccountOnlineState(
+                tenant_id=1,
+                account_id=account_id,
+                desired_online=True,
+                desired_sources=[{"source_type": "task", "source_id": "ai-running"}],
+                online_status="warming",
+                next_probe_at=now - timedelta(seconds=1),
+            ))
+        session.commit()
+        monkeypatch.setattr("app.services.account_online_probe.credentials_for_account", lambda *_args, **_kwargs: object())
+        monkeypatch.setattr("app.services.account_online_probe.gateway.check_account_health", check_health)
+
+        assert probe_due_online_states(session, limit=10, now=now) == 4
+
+    assert max_active >= 2
 
 
 def test_probe_due_online_states_marks_missing_developer_app_blocked(monkeypatch):
