@@ -61,7 +61,7 @@ from .channel_membership import (
 )
 from .dispatcher import _sync_all_account_membership_state, claim_actions, dispatch_action, due_actions, mark_dispatcher_db_error, recover_expired_claims, recover_expired_hard_hourly_actions
 from .daily_coverage import recover_terminal_coverage_reservations
-from .executors import build_task_plan, prepare_open_actions_for_planning
+from .executors import build_task_plan, prepare_open_actions_for_planning, requires_planning_with_open_actions
 from .search_rank_deboost_reservations import reopen_released_reservation, reservation_for_action
 from .details import (
     _accounts_by_id,
@@ -1612,7 +1612,14 @@ def _drain_task_planner(session_factory, *, limit: int, process_type: str | None
             prepared_open_actions = prepare_open_actions_for_planning(session, task)
             processed += prepared_open_actions
             has_open_actions, open_actions_are_future = _open_actions_state(session, task)
-            if task.type == "group_ai_chat" and has_open_actions and not hard_hourly_requires_planning(session, task, _now()):
+            open_actions_allow_planning = has_open_actions and requires_planning_with_open_actions(session, task)
+            should_skip_open_ai_plan = (
+                task.type == "group_ai_chat"
+                and has_open_actions
+                and not hard_hourly_requires_planning(session, task, _now())
+                and not open_actions_allow_planning
+            )
+            if should_skip_open_ai_plan:
                 if open_actions_are_future:
                     future_open_action_task_ids.add(task.id)
                 refresh_task_stats(session, task)

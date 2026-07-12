@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, time
 
 import pytest
 from sqlalchemy import create_engine
@@ -16,6 +16,7 @@ from app.services.task_center.executors.group_ai_chat import (
     _canonicalized_task_config,
     _online_ready_accounts,
     _quality_fallback_enabled,
+    requires_planning_with_open_actions,
     _select_accounts_for_plan,
 )
 from app.services.task_center.payloads import SendMessagePayload
@@ -217,6 +218,20 @@ def test_coverage_round_does_not_repeat_one_account_for_multiple_obligations() -
     config = {"account_coverage_mode": "all_accounts_daily", "allow_account_repeat": True}
 
     assert _coverage_round_config(config)["allow_account_repeat"] is False
+
+
+def test_daily_coverage_open_action_gate_uses_debt_after_reserved(monkeypatch, session: Session) -> None:
+    task, group = _seed(session)
+    group.active_window = "00:00-23:59"
+    now_value = datetime.combine(date.today(), time(23, 59))
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
+
+    assert requires_planning_with_open_actions(session, task) is True
+
+    session.get(TaskAccountDailyCoverage, "coverage-1").state = "reserved"
+    session.get(TaskAccountDailyCoverage, "coverage-3").state = "reserved"
+
+    assert requires_planning_with_open_actions(session, task) is False
 
 
 def test_send_message_payload_carries_coverage_ledger_identity() -> None:
