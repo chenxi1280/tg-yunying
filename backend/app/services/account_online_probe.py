@@ -68,7 +68,7 @@ def probe_due_online_states(
             continue
         jobs.append(OnlineProbeJob(account.id, account.session_ciphertext, credentials))
     for result in _run_health_probes(jobs):
-        _apply_probe_result(accounts[result.account_id], states_by_account[result.account_id], current_time, result)
+        _apply_probe_result(session, accounts[result.account_id], states_by_account[result.account_id], current_time, result)
         _commit_probe_progress(session, commit_each)
     return len(states)
 
@@ -89,7 +89,13 @@ def _run_health_probe(job: OnlineProbeJob) -> OnlineProbeResult:
         return OnlineProbeResult(account_id=job.account_id, error=exc)
 
 
-def _apply_probe_result(account: TgAccount, state: TgAccountOnlineState, now: datetime, result: OnlineProbeResult) -> None:
+def _apply_probe_result(
+    session: Session,
+    account: TgAccount,
+    state: TgAccountOnlineState,
+    now: datetime,
+    result: OnlineProbeResult,
+) -> None:
     if isinstance(result.error, ValueError):
         _mark_probe_blocked(state, now, "developer_app_unavailable", str(result.error))
         return
@@ -100,6 +106,9 @@ def _apply_probe_result(account: TgAccount, state: TgAccountOnlineState, now: da
     health = result.health
     if health.status == AccountStatus.ACTIVE.value:
         _mark_probe_online(account, state, now, health.health_score, health.detail)
+        from app.services.task_center.daily_coverage import release_online_coverage_blockers
+
+        release_online_coverage_blockers(session, tenant_id=account.tenant_id, account_id=account.id, now=now)
         return
     _mark_probe_unavailable(account, state, now, health.status, health.health_score, health.detail)
 
