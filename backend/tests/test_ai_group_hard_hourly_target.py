@@ -749,6 +749,7 @@ def test_group_ai_chat_all_accounts_daily_coverage_plans_uncovered_accounts_when
     assert all(action.payload["coverage_reason"] == "daily_account_coverage" for action in actions)
     assert all(not action.payload.get("reply_to_message_id") for action in actions)
     assert task.stats["coverage_reply_shortfall_cycle_count"] == 1
+    assert task.stats["daily_coverage_next_check_at"] == "2026-06-07T20:12:00"
 
 
 @pytest.mark.no_postgres
@@ -2415,6 +2416,24 @@ def test_next_run_after_task_clamps_stale_hard_hourly_next_check(monkeypatch):
     )
 
     assert next_run_after_task(task) == now_value
+
+
+@pytest.mark.no_postgres
+def test_next_run_after_task_prefers_daily_coverage_debt_check(monkeypatch):
+    now_value = datetime(2026, 6, 7, 20, 10)
+    monkeypatch.setattr("app.services.task_center.stats._now", lambda: now_value)
+    task = Task(
+        id="task-daily-coverage-next-check",
+        tenant_id=1,
+        name="覆盖欠账检查",
+        type="group_ai_chat",
+        status="running",
+        pacing_config={"operation_profile": {"hourly_activity_curve": [1] * 24}},
+        type_config={"target_group_id": 7, "account_coverage_mode": "all_accounts_daily"},
+        stats={"daily_coverage_next_check_at": "2026-06-07T20:12:00"},
+    )
+
+    assert next_run_after_task(task) == datetime(2026, 6, 7, 20, 12)
 
 
 def test_group_ai_chat_hard_hourly_reply_shortfall_fills_with_normal_turns(monkeypatch):
