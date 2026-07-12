@@ -326,6 +326,51 @@ def test_reactivate_memberships_waits_for_target_reference_change() -> None:
     assert retry.payload["invite_link"] == "https://t.me/+replacement"
 
 
+@pytest.mark.no_postgres
+def test_reactivate_memberships_accepts_legacy_payload_without_channel_id() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        channel = OperationTarget(
+            id=904,
+            tenant_id=1,
+            target_type="group",
+            tg_peer_id="-100904",
+            title="历史准入群",
+            auth_status="已授权运营",
+            can_send=True,
+        )
+        group = TgGroup(id=804, tenant_id=1, tg_peer_id="-100904", title="历史准入群")
+        task = Task(id="task-legacy-membership", tenant_id=1, name="历史准入", type="group_ai_chat", status="running")
+        account = TgAccount(
+            id=14,
+            tenant_id=1,
+            display_name="账号14",
+            phone_masked="14",
+            status=AccountStatus.ACTIVE.value,
+            session_ciphertext="session",
+        )
+        action = Action(
+            id="membership-legacy-payload",
+            tenant_id=1,
+            task_id=task.id,
+            task_type=task.type,
+            action_type="ensure_target_membership",
+            account_id=account.id,
+            status="skipped",
+            payload={"channel_target_id": channel.id},
+            result={"error_code": "membership_permission_denied", "membership_status": "permission_denied"},
+        )
+        session.add_all([channel, group, task, account, action])
+        session.commit()
+
+        created = _reactivate_auto_verification_memberships(session, task, channel, [account], require_send=True)
+
+    assert created == 0
+
+
 def test_group_send_verification_classifies_arithmetic_captcha_as_reply() -> None:
     assert dispatcher._group_send_verification_action("请输入 3 + 5 的结果后才能发言") == "发送验证回复"
     assert dispatcher._group_send_verification_action("加减验证码：9-4=?") == "发送验证回复"
