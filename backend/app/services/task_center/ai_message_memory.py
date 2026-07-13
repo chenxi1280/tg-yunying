@@ -6,21 +6,25 @@ from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 from hashlib import sha256
 
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.engine import Row
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import Action, AiGroupMessageMemory
 from app.services._common import _now
+from app.services.task_center.ai_message_memory_queries import (
+    HISTORICAL_BACKFILL_STATUSES,
+    THIRTY_DAY_WINDOW,
+    _historical_group_ai_actions,
+    _memory_exists_for_action,
+)
 
 DEDUP_STATUSES = {"pending", "reserved", "claiming", "executing", "unknown_after_send", "success"}
-HISTORICAL_BACKFILL_STATUSES = {"success", "unknown_after_send"}
 DEFAULT_RESERVATION_TTL = timedelta(minutes=30)
 FIVE_MINUTE_WINDOW = timedelta(minutes=5)
 ONE_HOUR_WINDOW = timedelta(hours=1)
 SEVEN_DAY_WINDOW = timedelta(days=7)
-THIRTY_DAY_WINDOW = timedelta(days=30)
 HIGH_SIMILARITY_THRESHOLD = 0.78
 SEMANTIC_SIMILARITY_THRESHOLD = 0.80
 VAGUE_TEMPLATE_TERMS = ("确实", "感觉", "靠谱", "不错", "可以")
@@ -229,7 +233,7 @@ def backfill_group_ai_message_memory_from_actions(
 ) -> dict[str, int]:
     current_time = now or _now()
     counters = {"created": 0, "skipped_existing": 0, "skipped_invalid": 0}
-    for action in _historical_group_ai_actions(session, tenant_id, current_time, limit):
+    for action in _historical_group_ai_actions(session, tenant_id=tenant_id, now=current_time, limit=limit):
         if _memory_exists_for_action(session, action.id):
             counters["skipped_existing"] += 1
             continue
@@ -241,28 +245,6 @@ def backfill_group_ai_message_memory_from_actions(
         counters["created"] += 1
     session.flush()
     return counters
-
-
-def _historical_group_ai_actions(session: Session, tenant_id: int, now: datetime, limit: int) -> list[Action]:
-    cutoff = now - THIRTY_DAY_WINDOW
-    return list(
-        session.scalars(
-            select(Action)
-            .where(
-                Action.tenant_id == tenant_id,
-                Action.task_type == "group_ai_chat",
-                Action.action_type == "send_message",
-                Action.status.in_(HISTORICAL_BACKFILL_STATUSES),
-                or_(Action.executed_at >= cutoff, Action.scheduled_at >= cutoff, Action.created_at >= cutoff),
-            )
-            .order_by(Action.created_at.asc())
-            .limit(max(1, int(limit)))
-        )
-    )
-
-
-def _memory_exists_for_action(session: Session, action_id: str) -> bool:
-    return bool(session.scalar(select(AiGroupMessageMemory.id).where(AiGroupMessageMemory.action_id == action_id).limit(1)))
 
 
 def _memory_from_historical_action(action: Action) -> AiGroupMessageMemory | None:

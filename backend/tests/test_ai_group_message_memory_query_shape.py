@@ -13,15 +13,21 @@ from sqlalchemy import Column, DateTime, Integer, MetaData, String, Table, creat
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import AiGroupMessageMemory
+from app.models import Action, AiGroupMessageMemory
 from app.services._common import _now
-from app.services.task_center.ai_message_memory import _window_memories
+from app.services.task_center.ai_message_memory import (
+    _historical_group_ai_actions,
+    _window_memories,
+)
 
 
 pytestmark = pytest.mark.no_postgres
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MIGRATION_PATH = PROJECT_ROOT / "backend/migrations/versions/0091_ai_message_memory_dedup_index.py"
 INDEX_NAME = "ix_ai_group_message_memory_tenant_status_planned"
+ACTION_INDEX_MIGRATION_PATH = PROJECT_ROOT / "backend/migrations/versions/0092_ai_message_memory_action_id_index.py"
+ACTION_INDEX_NAME = "ix_ai_group_message_memory_action_id"
+POISONED_ACTION_COUNT = 100
 
 
 def test_window_memories_accepts_only_session_positionally() -> None:
@@ -39,6 +45,15 @@ def _migration_module():
     spec = importlib.util.spec_from_file_location("ai_message_memory_dedup_index_0091", MIGRATION_PATH)
     if spec is None or spec.loader is None:
         raise RuntimeError("migration module could not be loaded")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _action_index_migration_module():
+    spec = importlib.util.spec_from_file_location("ai_message_memory_action_id_index_0092", ACTION_INDEX_MIGRATION_PATH)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("action id index migration module could not be loaded")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -81,6 +96,76 @@ def test_message_memory_model_declares_tenant_window_index_in_query_order() -> N
         "ai_group_message_memory.status",
         "planned_at DESC",
     )
+
+
+def test_message_memory_model_declares_nonunique_action_id_index() -> None:
+    index = next(item for item in AiGroupMessageMemory.__table__.indexes if item.name == ACTION_INDEX_NAME)
+
+    assert tuple(str(expression) for expression in index.expressions) == (
+        "ai_group_message_memory.action_id",
+    )
+    assert index.unique is False
+
+
+def test_action_id_index_migration_upgrades_and_downgrades_sqlite() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    metadata = MetaData()
+    Table(
+        "ai_group_message_memory",
+        metadata,
+        Column("id", String(36), primary_key=True),
+        Column("action_id", String(36), nullable=False),
+    )
+    metadata.create_all(engine)
+    migration = _action_index_migration_module()
+
+    with engine.begin() as connection:
+        migration.op = Operations(MigrationContext.configure(connection))
+        migration.upgrade()
+        upgraded = {item["name"]: item for item in inspect(connection).get_indexes("ai_group_message_memory")}
+        migration.op = Operations(MigrationContext.configure(connection))
+        migration.downgrade()
+        downgraded = {item["name"] for item in inspect(connection).get_indexes("ai_group_message_memory")}
+
+    assert upgraded[ACTION_INDEX_NAME]["unique"] == 0
+    assert ACTION_INDEX_NAME not in downgraded
+
+
+@pytest.mark.parametrize("operation_name", ["upgrade", "downgrade"])
+def test_action_id_index_migration_requires_target_table(operation_name: str) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    migration = _action_index_migration_module()
+
+    with engine.begin() as connection:
+        migration.op = Operations(MigrationContext.configure(connection))
+        with pytest.raises(RuntimeError, match="^required table missing: ai_group_message_memory$"):
+            getattr(migration, operation_name)()
+
+
+def test_action_id_index_postgres_ddl_is_concurrent_and_nonunique(monkeypatch: pytest.MonkeyPatch) -> None:
+    migration = _action_index_migration_module()
+    events: list[str] = []
+    monkeypatch.setattr(migration, "op", _RecordingPostgresOp(events))
+    monkeypatch.setattr(migration, "_require_table", lambda: None)
+    monkeypatch.setattr(migration, "_index_names", lambda **_kwargs: set())
+
+    migration.upgrade()
+
+    assert events == [
+        "enter_autocommit",
+        f"CREATE INDEX CONCURRENTLY {ACTION_INDEX_NAME} ON ai_group_message_memory (action_id)",
+        "exit_autocommit",
+    ]
+    events.clear()
+    monkeypatch.setattr(migration, "_index_names", lambda **_kwargs: {ACTION_INDEX_NAME})
+
+    migration.downgrade()
+
+    assert events == [
+        "enter_autocommit",
+        f"DROP INDEX CONCURRENTLY {ACTION_INDEX_NAME}",
+        "exit_autocommit",
+    ]
 
 
 def test_message_memory_index_migration_declares_concurrent_postgres_contract() -> None:
@@ -247,8 +332,9 @@ def test_postgres_index_migration_preserves_explicit_idempotency(monkeypatch: py
     assert events == []
 
 
-def test_postgres_index_ddl_failure_propagates(monkeypatch: pytest.MonkeyPatch) -> None:
-    migration = _migration_module()
+@pytest.mark.parametrize("migration_factory", [_migration_module, _action_index_migration_module])
+def test_postgres_index_ddl_failure_propagates(monkeypatch: pytest.MonkeyPatch, migration_factory) -> None:
+    migration = migration_factory()
     failure = RuntimeError("postgres index build failed")
 
     class FakeBind:
@@ -338,3 +424,53 @@ def test_window_memories_propagates_database_errors() -> None:
         _window_memories(
             UnavailableSession(), tenant_id=1, group_id=999, cutoff=_now() - timedelta(days=7),
         )
+
+
+def test_historical_backfill_candidates_skip_poisoned_oldest_actions() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now = _now()
+    statements: list[str] = []
+    actions = [
+        Action(
+            id=f"poisoned-action-{index:03d}",
+            tenant_id=1,
+            task_id="task-ai-memory",
+            task_type="group_ai_chat",
+            action_type="send_message",
+            status="success",
+            scheduled_at=now - timedelta(days=1),
+            created_at=now + timedelta(seconds=index),
+            payload={"group_id": 22, "message_text": f"历史消息 {index}"},
+        )
+        for index in range(POISONED_ACTION_COUNT + 1)
+    ]
+    memories = [
+        AiGroupMessageMemory(
+            tenant_id=1,
+            group_id=22,
+            action_id=action.id,
+            status="success",
+            planned_at=now - timedelta(days=1),
+        )
+        for action in actions[:POISONED_ACTION_COUNT]
+    ]
+
+    def capture_select(_connection, _cursor, statement, _parameters, _context, _executemany):
+        if "from actions" in statement.lower():
+            statements.append(statement.lower())
+
+    with Session(engine) as session:
+        session.add_all([*actions, *memories])
+        session.commit()
+        event.listen(engine, "before_cursor_execute", capture_select)
+        try:
+            candidates = _historical_group_ai_actions(
+                session, tenant_id=1, now=now, limit=POISONED_ACTION_COUNT,
+            )
+        finally:
+            event.remove(engine, "before_cursor_execute", capture_select)
+
+    assert [action.id for action in candidates] == ["poisoned-action-100"]
+    assert len(statements) == 1
+    assert "not (exists" in statements[0] or "not exists" in statements[0]

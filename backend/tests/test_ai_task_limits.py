@@ -38,7 +38,7 @@ from app.services.task_center.channel_membership import gate_channel_membership
 from app.services.task_center.dispatcher import claim_actions, dispatch_action
 from app.services.task_center.executors.channel_comment import build_plan as build_channel_comment_plan
 from app.services.task_center.executors.group_ai_chat import build_plan as build_group_ai_chat_plan
-from app.services.task_center.service import precheck_task_creation, reset_task, start_task, update_group_ai_chat_config
+from app.services.task_center.service import precheck_task_creation, reset_task, resume_task, start_task, update_group_ai_chat_config
 from tests.ai_group_voice_profile_fixtures import assume_default_ai_group_voice_profiles
 
 
@@ -444,11 +444,50 @@ def test_channel_comment_resume_checks_lifetime_cap_before_precheck():
         )
         session.commit()
 
-        resumed = start_task(session, 1, task.id, "tester")
+        resumed = resume_task(session, 1, task.id, "tester")
 
         assert resumed.status == "completed"
         assert resumed.next_run_at is None
         assert resumed.stats["completion_reason"] == "lifetime_cap_reached"
+
+
+@pytest.mark.parametrize("starter", [start_task, resume_task], ids=["start_task", "resume_task"])
+@pytest.mark.no_postgres
+def test_channel_comment_cap_completion_is_idempotent_through_public_start_entrypoints(monkeypatch, starter):
+    monkeypatch.setattr(channel_comment_budget, "_now", lambda: NOW)
+    with _session() as session:
+        _add_tenant(session)
+        task = _add_comment_task(session)
+        task.status = "paused"
+        task.next_run_at = NOW
+        task.type_config = {**task.type_config, "max_total_comments": 2, "max_total_comments_jitter": 0}
+        success = Action(
+            id="comment-public-start-success", tenant_id=1, task_id=task.id,
+            task_type=task.type, action_type="post_comment", status="success",
+            scheduled_at=NOW, executed_at=NOW, payload={},
+        )
+        unknown = Action(
+            id="comment-public-start-unknown", tenant_id=1, task_id=task.id,
+            task_type=task.type, action_type="post_comment", status="unknown_after_send",
+            scheduled_at=NOW, executed_at=NOW, payload={},
+        )
+        session.add_all([success, unknown])
+        session.flush()
+        session.add(ExecutionAttempt(action_id=success.id, status="success", remote_message_id="9001"))
+        session.commit()
+
+        first = starter(session, 1, task.id, "tester")
+        first_stats = dict(first.stats)
+        monkeypatch.setattr(channel_comment_budget, "_now", lambda: NOW + timedelta(days=1))
+        second = starter(session, 1, task.id, "tester")
+
+    assert second.status == "completed"
+    assert second.next_run_at is None
+    assert second.stats == first_stats
+    assert second.stats["completed_at"] == NOW.isoformat()
+    assert second.stats["remote_success_count"] == 1
+    assert second.stats["unknown_after_send_count"] == 1
+    assert second.stats["max_total_comments_resolved"] == 2
 
 
 def test_channel_comment_failed_open_action_releases_lifetime_budget():
