@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 from contextlib import contextmanager
 from datetime import timedelta
+from inspect import Parameter, signature
 from pathlib import Path
 
 import pytest
@@ -22,6 +23,16 @@ pytestmark = pytest.mark.no_postgres
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MIGRATION_PATH = PROJECT_ROOT / "backend/migrations/versions/0091_ai_message_memory_dedup_index.py"
 INDEX_NAME = "ix_ai_group_message_memory_tenant_status_planned"
+
+
+def test_window_memories_accepts_only_session_positionally() -> None:
+    positional_parameters = [
+        parameter.name
+        for parameter in signature(_window_memories).parameters.values()
+        if parameter.kind in {Parameter.POSITIONAL_ONLY, Parameter.POSITIONAL_OR_KEYWORD}
+    ]
+
+    assert positional_parameters == ["session"]
 
 
 def _migration_module():
@@ -265,7 +276,9 @@ def test_window_memories_projects_only_similarity_columns_across_groups() -> Non
         session.commit()
         event.listen(engine, "before_cursor_execute", capture_select)
         try:
-            rows = _window_memories(session, 1, 999, now - timedelta(days=7))
+            rows = _window_memories(
+                session, tenant_id=1, group_id=999, cutoff=now - timedelta(days=7),
+            )
         finally:
             event.remove(engine, "before_cursor_execute", capture_select)
 
@@ -291,4 +304,6 @@ def test_window_memories_propagates_database_errors() -> None:
             raise RuntimeError("database unavailable")
 
     with pytest.raises(RuntimeError, match="^database unavailable$"):
-        _window_memories(UnavailableSession(), 1, 999, _now() - timedelta(days=7))
+        _window_memories(
+            UnavailableSession(), tenant_id=1, group_id=999, cutoff=_now() - timedelta(days=7),
+        )

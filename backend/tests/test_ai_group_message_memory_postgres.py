@@ -78,9 +78,9 @@ def _measure_window(session: Session, now_value: datetime) -> tuple[list[Row], f
     started_at = perf_counter()
     rows = _window_memories(
         session,
-        TEST_TENANT_ID,
-        TARGET_GROUP_ID,
-        now_value - timedelta(days=WINDOW_DAYS),
+        tenant_id=TEST_TENANT_ID,
+        group_id=TARGET_GROUP_ID,
+        cutoff=now_value - timedelta(days=WINDOW_DAYS),
     )
     return rows, perf_counter() - started_at
 

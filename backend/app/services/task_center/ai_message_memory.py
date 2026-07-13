@@ -372,7 +372,10 @@ def _find_similar_duplicate(
     exclude_id: str = "",
 ) -> Row | None:
     return _first_similar_memory(
-        _window_memories(session, tenant_id, group_id, now - ONE_HOUR_WINDOW, exclude_id),
+        _window_memories(
+            session, tenant_id=tenant_id, group_id=group_id,
+            cutoff=now - ONE_HOUR_WINDOW, exclude_id=exclude_id,
+        ),
         normalized,
         HIGH_SIMILARITY_THRESHOLD,
     )
@@ -387,7 +390,10 @@ def _find_semantic_duplicate(
     exclude_id: str = "",
 ) -> Row | None:
     return _first_similar_memory(
-        _window_memories(session, tenant_id, group_id, now - SEVEN_DAY_WINDOW, exclude_id),
+        _window_memories(
+            session, tenant_id=tenant_id, group_id=group_id,
+            cutoff=now - SEVEN_DAY_WINDOW, exclude_id=exclude_id,
+        ),
         normalized,
         SEMANTIC_SIMILARITY_THRESHOLD,
     )
@@ -417,7 +423,9 @@ def _find_template_shell_duplicate(
     )
 
 
-def _window_memories(session: Session, tenant_id: int, group_id: int, cutoff: datetime, exclude_id: str = "") -> list[Row]:
+def _window_memories(
+    session: Session, *, tenant_id: int, group_id: int, cutoff: datetime, exclude_id: str = "",
+) -> list[Row]:
     return list(
         session.execute(
             select(
