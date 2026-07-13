@@ -6,7 +6,7 @@
 - `bug_id`: `bug-2026-07-13-ai-group-planner-stall`
 - `level/lane`: `L3 / ai-group-quality/planner-runtime`
 - 用户目标：监督修复生产 AI 活群，确保每个目标群中的全部账号按北京时间每日真实发言一次，并检查评论任务运行状态。
-- 当前状态：AI 活群与评论修复已完成本地 `qa_pass`、`product_accepted`；第三次 release 的 checks/镜像成功且 `fd9cf0c9` 已切到生产，但 deploy 因 Planner 超时失败。生产恢复和完整自然日矩阵仍为 `unproven`，正在修复群准入历史 Action 全量加载。
+- 当前状态：第五次 release `7f7af0cb` 已成功部署，群准入 latest-action 修复已上线；截至 2026-07-13 16:45 CST，2320 项北京时间日覆盖矩阵约 323 项远端确认且仍推进缓慢，阿哥日记已有 3 条真实评论，太郎日记回复尚未恢复。消息记忆三字段轻投影与 0091 已完成 Dev E2，独立 QA、产品验收、新一轮发布及生产 E4 均待完成；该时点数字只代表本次取证，不是最终自然日验收结果。
 
 ## 生产诊断
 
@@ -78,5 +78,6 @@
 
 ## 回滚
 
-- 回滚走正常 release 提交；本次无 schema migration。
-- 回滚后会恢复旧 Planner 查询 / reconcile 行为，不得把服务存活写成业务恢复。
+- 应用回滚走正常 release 提交，默认保留与旧应用兼容的 0091 复合索引，避免回滚应用时额外扩大数据库锁风险。
+- 若索引本身必须回滚，应在维护窗口执行 0091 downgrade 的 `DROP INDEX CONCURRENTLY`，并核对 Alembic current 与目标 revision；不得在业务高峰直接删除索引。
+- 旧应用会恢复消息记忆完整 ORM 查询；应用进程存活、迁移回退或索引删除都不等于本次长事务事故与 AI 活群业务恢复。
