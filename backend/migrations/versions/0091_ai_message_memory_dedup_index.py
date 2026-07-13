@@ -22,6 +22,7 @@ INDEX_COLUMNS = ["tenant_id", "status", sa.text("planned_at DESC")]
 
 
 def upgrade() -> None:
+    _require_table()
     if INDEX_NAME in _index_names():
         return
     if op.get_bind().dialect.name == "postgresql":
@@ -35,6 +36,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    _require_table()
     if INDEX_NAME not in _index_names(valid_only=False):
         return
     if op.get_bind().dialect.name == "postgresql":
@@ -42,6 +44,11 @@ def downgrade() -> None:
             op.execute(f"DROP INDEX CONCURRENTLY {INDEX_NAME}")
         return
     op.drop_index(INDEX_NAME, table_name=TABLE_NAME)
+
+
+def _require_table() -> None:
+    if TABLE_NAME not in sa.inspect(op.get_bind()).get_table_names():
+        raise RuntimeError(f"required table missing: {TABLE_NAME}")
 
 
 def _index_names(*, valid_only: bool = True) -> set[str]:

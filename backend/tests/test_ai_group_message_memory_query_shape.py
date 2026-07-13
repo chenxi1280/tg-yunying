@@ -10,7 +10,6 @@ import pytest
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from sqlalchemy import Column, DateTime, Integer, MetaData, String, Table, create_engine, event, inspect
-from sqlalchemy.exc import NoSuchTableError
 from sqlalchemy.orm import Session
 
 from app.database import Base
@@ -128,7 +127,7 @@ def test_message_memory_index_upgrade_fails_when_target_table_is_missing() -> No
 
     with engine.begin() as connection:
         migration.op = Operations(MigrationContext.configure(connection))
-        with pytest.raises(NoSuchTableError):
+        with pytest.raises(RuntimeError, match="^required table missing: ai_group_message_memory$"):
             migration.upgrade()
 
 
@@ -138,14 +137,38 @@ def test_message_memory_index_downgrade_fails_when_target_table_is_missing() -> 
 
     with engine.begin() as connection:
         migration.op = Operations(MigrationContext.configure(connection))
-        with pytest.raises(NoSuchTableError):
+        with pytest.raises(RuntimeError, match="^required table missing: ai_group_message_memory$"):
             migration.downgrade()
+
+
+@pytest.mark.parametrize("operation_name", ["upgrade", "downgrade"])
+def test_postgres_migration_rejects_missing_required_table(
+    monkeypatch: pytest.MonkeyPatch,
+    operation_name: str,
+) -> None:
+    migration = _migration_module()
+    events: list[str] = []
+
+    class MissingTableInspector:
+        @staticmethod
+        def get_table_names():
+            return ["other_table"]
+
+    monkeypatch.setattr(migration, "op", _RecordingPostgresOp(events))
+    monkeypatch.setattr(migration.sa, "inspect", lambda _bind: MissingTableInspector())
+    monkeypatch.setattr(migration, "_index_names", lambda **_kwargs: set())
+
+    with pytest.raises(RuntimeError, match="^required table missing: ai_group_message_memory$"):
+        getattr(migration, operation_name)()
+
+    assert events == []
 
 
 def test_postgres_concurrent_ddl_runs_inside_autocommit_block(monkeypatch: pytest.MonkeyPatch) -> None:
     migration = _migration_module()
     upgrade_events: list[str] = []
     monkeypatch.setattr(migration, "op", _RecordingPostgresOp(upgrade_events))
+    monkeypatch.setattr(migration, "_require_table", lambda: None, raising=False)
     monkeypatch.setattr(migration, "_index_names", lambda **_kwargs: set())
 
     migration.upgrade()
@@ -206,13 +229,20 @@ def test_postgres_index_catalog_distinguishes_valid_and_invalid_indexes(monkeypa
     assert "index_meta.indisvalid" not in calls[1][0]
 
 
-def test_postgres_upgrade_skips_only_a_valid_existing_index(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_postgres_index_migration_preserves_explicit_idempotency(monkeypatch: pytest.MonkeyPatch) -> None:
     migration = _migration_module()
     events: list[str] = []
     monkeypatch.setattr(migration, "op", _RecordingPostgresOp(events))
+    monkeypatch.setattr(migration, "_require_table", lambda: None, raising=False)
     monkeypatch.setattr(migration, "_index_names", lambda **_kwargs: {INDEX_NAME})
 
     migration.upgrade()
+
+    assert events == []
+
+    monkeypatch.setattr(migration, "_index_names", lambda **_kwargs: set())
+
+    migration.downgrade()
 
     assert events == []
 
@@ -243,6 +273,7 @@ def test_postgres_index_ddl_failure_propagates(monkeypatch: pytest.MonkeyPatch) 
             raise failure
 
     monkeypatch.setattr(migration, "op", FakeOp())
+    monkeypatch.setattr(migration, "_require_table", lambda: None, raising=False)
     monkeypatch.setattr(migration, "_index_names", lambda: set())
 
     with pytest.raises(RuntimeError) as exc_info:
