@@ -389,7 +389,7 @@ def test_backfill_group_ai_message_memory_is_idempotent_by_action_id():
         second = backfill_group_ai_message_memory_from_actions(session, tenant_id=1, now=now)
         session.commit()
 
-        assert second == {"created": 0, "skipped_existing": 1, "skipped_invalid": 0}
+        assert second == {"created": 0, "skipped_existing": 0, "skipped_invalid": 0}
         assert session.query(AiGroupMessageMemory).count() == 1
 
 

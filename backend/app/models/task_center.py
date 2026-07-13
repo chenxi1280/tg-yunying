@@ -322,6 +322,7 @@ class AiGroupMessageMemory(Base):
         Index("ix_ai_group_message_memory_dedupe", "tenant_id", "group_id", "text_fingerprint", "status", "planned_at"),
         Index("ix_ai_group_message_memory_expiry", "status", "expires_at"),
         Index("ix_ai_group_message_memory_task", "tenant_id", "task_id", "planned_at"),
+        Index("ix_ai_group_message_memory_action_id", "action_id"),
         Index(
             "ix_ai_group_message_memory_tenant_status_planned",
             "tenant_id",
