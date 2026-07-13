@@ -934,15 +934,31 @@ def _looks_like_invite_ref(ref: str) -> bool:
 
 
 def _membership_actions_by_account(session: Session, channel_target_id: int, *, task_id: str | None = None) -> dict[int, Action]:
-    filters = [Action.action_type.in_([ACTION_TYPE, LEGACY_ACTION_TYPE]), Action.account_id.is_not(None), Action.payload["channel_target_id"].as_integer() == channel_target_id]
+    filters = [
+        Action.action_type.in_([ACTION_TYPE, LEGACY_ACTION_TYPE]),
+        Action.account_id.is_not(None),
+        Action.payload["channel_target_id"].as_integer() == channel_target_id,
+    ]
     if task_id:
         filters.append(Action.task_id == task_id)
-    rows = list(session.scalars(select(Action).where(*filters).order_by(Action.created_at.desc())))
-    result: dict[int, Action] = {}
-    for action in rows:
-        if action.account_id and action.account_id not in result:
-            result[int(action.account_id)] = action
-    return result
+    ranked = (
+        select(
+            Action.id.label("action_id"),
+            Action.account_id.label("account_id"),
+            Action.created_at.label("created_at"),
+            func.row_number()
+            .over(partition_by=Action.account_id, order_by=(Action.created_at.desc(), Action.id.desc()))
+            .label("account_rank"),
+        )
+        .where(*filters)
+        .subquery()
+    )
+    rows = session.scalars(
+        select(Action)
+        .join(ranked, ranked.c.action_id == Action.id)
+        .where(ranked.c.account_rank == 1)
+    )
+    return {int(action.account_id): action for action in rows if action.account_id}
 
 
 def _is_failed_membership_action(action: Action) -> bool:

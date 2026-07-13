@@ -113,7 +113,7 @@ run_planner_smoke_check() {
   local timeout_seconds="${TGYUNYING_PLANNER_SMOKE_TIMEOUT_SECONDS:-120}"
   echo "==> Running planner smoke check (${PLANNER_SMOKE_MODE})"
   if [[ "$PLANNER_SMOKE_MODE" == "healthcheck" ]]; then
-    timeout "$timeout_seconds" docker exec tgyunying-worker-planner python -m app.worker --healthcheck --role planner
+    timeout "$timeout_seconds" docker exec tgyunying-worker-planner python -m app.worker_health --role planner
     return
   fi
   if [[ "$PLANNER_SMOKE_MODE" == "once" ]]; then
