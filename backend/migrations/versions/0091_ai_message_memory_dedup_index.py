@@ -22,7 +22,7 @@ INDEX_COLUMNS = ["tenant_id", "status", sa.text("planned_at DESC")]
 
 
 def upgrade() -> None:
-    if not _has_table() or INDEX_NAME in _index_names():
+    if INDEX_NAME in _index_names():
         return
     if op.get_bind().dialect.name == "postgresql":
         with op.get_context().autocommit_block():
