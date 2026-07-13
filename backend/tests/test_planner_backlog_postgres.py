@@ -10,6 +10,9 @@ from app.services.task_center import planner_backlog
 from app.timezone import BEIJING_TZ
 
 
+TEST_TENANT_ID = 913_713
+
+
 def _action(
     action_id: str,
     task: Task,
@@ -35,14 +38,14 @@ def test_planner_backlog_postgres_json_legacy_timezone_and_partial_membership(mo
     now = datetime(2026, 7, 13, 12, 30)
     current_bucket = now.replace(minute=0, second=0, microsecond=0, tzinfo=BEIJING_TZ)
     expired_bucket = current_bucket - timedelta(hours=2)
-    task = Task(id="pg-backlog", tenant_id=1, name="pg", type="group_ai_chat", status="running")
+    task = Task(id="pg-backlog", tenant_id=TEST_TENANT_ID, name="pg", type="group_ai_chat", status="running")
     partial = Task(
-        id="pg-partial", tenant_id=1, name="partial", type="group_ai_chat", status="running",
+        id="pg-partial", tenant_id=TEST_TENANT_ID, name="partial", type="group_ai_chat", status="running",
         type_config={"hard_hourly_target_enabled": True, "hourly_min_messages": 10},
         stats={"membership_joined_count": 1, "hard_hourly_last_blockers": {"target_membership_pending": 1}},
     )
     with SessionLocal() as session:
-        session.add(Tenant(id=1, name="default"))
+        session.add(Tenant(id=TEST_TENANT_ID, name="planner backlog test"))
         session.commit()
         session.add_all([task, partial])
         session.commit()
