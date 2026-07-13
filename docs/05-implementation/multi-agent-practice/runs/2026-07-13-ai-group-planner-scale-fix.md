@@ -6,7 +6,7 @@
 - `bug_id`: `bug-2026-07-13-ai-group-planner-stall`
 - `level/lane`: `L3 / ai-group-quality/planner-runtime`
 - 用户目标：监督修复生产 AI 活群，确保每个目标群中的全部账号按北京时间每日真实发言一次，并检查评论任务运行状态。
-- 当前状态：第五次 release `7f7af0cb` 已成功部署，群准入 latest-action 修复已上线；截至 2026-07-13 16:45 CST，2320 项北京时间日覆盖矩阵约 323 项远端确认且仍推进缓慢，阿哥日记已有 3 条真实评论，太郎日记回复尚未恢复。消息记忆三字段轻投影与 0091 的独立 QA / Product Acceptance（仅 E2）事实保留；fresh 生产证据又发现 ai-memory 历史 Action 回填的 `action_id` 无索引点查导致长事务与 heartbeat 锁链，因此标记 `resync=true`、Release Gate 重新 `blocked`，新实现、QA、产品复验及生产 E4 均待完成。该时点数字只代表本次取证，不是最终自然日验收结果。
+- 当前状态：第五次 release `7f7af0cb` 已成功部署，群准入 latest-action 修复已上线；截至 2026-07-13 16:45 CST，2320 项北京时间日覆盖矩阵约 323 项远端确认且仍推进缓慢，阿哥日记已有 3 条真实评论，太郎日记回复尚未恢复。消息记忆三字段轻投影与 0091 的独立 QA / Product Acceptance（仅 E2）事实保留；fresh 生产证据又发现 ai-memory 历史 Action 回填的 `action_id` 无索引点查，以及通用连续任务 recovery 会把 `lifetime_cap_reached` 的评论任务反向复活，两项均标记 `resync=true`、Release Gate `blocked`，各自实现、QA、产品复验及生产 E4 均待完成。该时点数字只代表本次取证，不是最终自然日验收结果。
 
 ## 生产诊断
 
@@ -23,6 +23,16 @@
 - MiniMax `input new_sensitive (1026)` 只在同时出现对应 `unprocessable_entity_error` 时进入首次调用后的最多 3 次安全重描述；其他 HTTP 422 不泛化重试。
 - 重试 Prompt 不得再次拼入原始敏感文本。连续 4 次拒绝保留最终 422、创建 0 个 Action，不使用随机表情伪造成功。
 - 生命周期预算与收口已拆入 `channel_comment_budget.py`；恢复已满任务先验 cap，已满直接 completed。
+
+### 评论生命周期完成态 recovery Product Handoff（resync）
+
+- fresh 生产证据：太郎任务 `313e…` 的 stats 已记录 `completion_reason=lifetime_cap_reached`、`completed_at`、`remote_success_count=51`、`unknown_after_send_count=35`，解析后生命周期总量 86 已满，但任务仍为 `status=running` 且 `next_run_at` 非空。
+- 根因：`service._recover_continuous_task_states` 对 `CHANNEL_DYNAMIC_TASK_TYPES` 中 `completed + scheduled_end=null + 非 specific` 的任务无条件恢复 `running`，没有排除 lifetime-cap completed；因此部署或 recovery drain 会撤销评论生命周期收口。
+- Product Design Complete：`design_status=complete`、`resync=true`、L3；实现、独立 QA 和产品复验前 `done_status=blocked`、`release_gate=blocked`。该变更只收窄 lifetime-cap 完成态的 recovery，不改变普通连续动态任务原有恢复能力。
+- 状态契约：频道评论 / 回复任务一旦写入 `completion_reason=lifetime_cap_reached`，即成为 recovery 吸收终态；通用 recovery、部署恢复或 Planner 状态修复不得改回 `running`，不得重建 `next_run_at`，不得清空 `completed_at`、remote success、unknown 或解析上限统计。普通动态任务因其他原因 completed 时仍按现有语义恢复。
+- start / resume 契约：所有显式 start / resume 入口仍必须先验解析后 lifetime cap；已满时幂等保持 `completed/next_run_at=null`。提高上限也不得由后台 recovery 静默复活，仍需既有显式重置或重新规划动作。
+- E2 红测：构造带 `lifetime_cap_reached + completed_at + 51 remote + 35 unknown` 的 completed 动态评论任务，执行真实 `drain_task_recovery` / `_recover_continuous_task_states` 后断言状态、`next_run_at` 和完成统计完全不变；同组必须证明普通非 lifetime-cap 动态 completed 任务仍恢复 running，并保留 start / resume 已满先验回归。
+- E4 验收：部署实际 commit 后触发并跨越至少一次 recovery drain / 容器重启，太郎任务保持 `completed/next_run_at=null`，完成统计仍为 `51 remote + 35 unknown = 86`，且不再创建新 Action；评论任务仍须按真实远端结果单列 `pass / blocked / unproven`，状态正确不能替代阿哥或其他评论任务真实发送恢复。
 
 ## Product Handoff
 
@@ -92,6 +102,7 @@
 3. 确认 Planner drain 不再长事务停滞；ai-memory 连续至少 3 个 60 秒 maintenance 周期无 `>60s` 事务、无 `action_id` 点查引发的 `DataFileRead` / heartbeat 锁链；account eligibility event 无异常积压，online missing / stale / blocker 可见且持续下降。
 4. 对 4 个 AI 活群任务核对 due debt、Action 创建、远端成功和任务 × 群 × 账号矩阵；只有完整北京时间自然日全部 2320 项由 Telegram 远端成功证据覆盖，才能写 `production_fixed`。
 5. 评论任务必须另列 `pass / blocked / unproven`，核对任务状态、最近规划、执行、远端结果与错误；worker healthy 不能替代评论成功证据。
+6. 对 lifetime-cap 已完成评论任务主动触发 recovery drain / 容器重启后复核吸收终态；任何 `completed -> running`、`next_run_at` 重建或新增 Action 都阻断 Release Gate。
 
 ## 回滚
 

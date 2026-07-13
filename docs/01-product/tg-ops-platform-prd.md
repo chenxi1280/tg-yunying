@@ -3929,6 +3929,7 @@ Listener 采集源群消息
 - 评论候选全部被质量闸门过滤时，本轮不创建假评论 action，并在任务状态、详情和运营异常中展示质量跳过原因。
 - `max_total_comments` 是任务生命周期评论总上限。`pending/claiming/executing/success/unknown_after_send` 共同占用规划预算；达到规划上限但仍有 open Action 时，任务保持 `running`、清空 `last_error` 并展示“达到规划上限，等待已计划评论执行”。open Action 清零后，若 `success + unknown_after_send` 已达到解析后的总上限，任务必须幂等进入 `completed`、`next_run_at=null`，并在 stats 记录 `completion_reason=lifetime_cap_reached`、解析上限、真实远端成功数、结果未知数和完成时间。`unknown_after_send` 计入防重复预算但不得冒充远端成功；若 open Action 最终失败或跳过使预算重新低于上限，任务继续运行并只补缺口。
 - 人工 `paused/stopped/deleted` 状态不得被后台收口覆盖；恢复评论任务时必须先复核生命周期总上限，已满则直接进入 `completed`。提高已完成任务的总上限不得静默复活，必须由显式重置或重新规划动作触发。
+- `completion_reason=lifetime_cap_reached` 是频道评论 / 回复任务的吸收终态。通用连续动态任务 recovery、部署后状态修复、Planner 启动恢复及其他后台恢复入口都不得把该任务从 `completed` 改回 `running`，也不得重建 `next_run_at` 或清除完成统计；普通动态任务因非生命周期上限原因进入 `completed` 时，仍按原连续任务语义恢复。人工 start / resume 同样必须先验解析后的生命周期上限，已满时保持 `completed/next_run_at=null`。E2 红测必须从带 `lifetime_cap_reached`、`completed_at`、远端成功数和 unknown 数的 completed 任务执行真实 recovery，证明状态和统计均不变，同时证明普通动态 completed 任务仍会恢复。
 
 ### 6.6 安全与资料批次
 
