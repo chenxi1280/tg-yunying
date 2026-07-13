@@ -205,14 +205,9 @@ pending_admission -> admission_running -> ready -> reserved -> sending -> confir
 
 ### 10.2 对话片段
 
-每次规划按以下顺序执行：
+每次规划按三阶段执行：Phase A Planner 在不超过 20 条的短事务中固定 Cycle/slot、账号面具、行为类型、话题和 reply target，原子创建 `ai_generation_status=pending` Action、预约 coverage 并推进任务日游标；Phase B Dispatcher claim 提交后在无数据库事务区间完成 reply/normal 的全部外部 AI 生成与 provider-backed 质量轮次；Phase C 在短事务完成 slot 映射、内容、消息记忆、重复和质量落库，通过后才进入无事务 Telegram Gateway 与短事务 finalize。Planner 禁止 AI、Grok、Telegram 或远端上下文外呼。
 
-1. 从当日账本查询 `ready` 且未完成的账号。
-2. 按当小时履约欠账、等待时长、账号容量和冷却排序。
-3. 在 AI 生成前固定本段对话的账号 slot、账号面具、行为类型、话题和引用对象。
-4. 由现有 AI 引擎生成一个连贯的多账号对话片段。
-5. 只为通过全部质量门的内容创建并预约 `send_message` Action。
-6. Dispatcher 真实发送并回写远端结果。
+完整事务、重试和验收合同见 `docs/03-feature-designs/ai-group-dispatcher-ai-generation-transaction-design.md`。
 
 `messages_per_round` 继续作为单个 Cycle 的 Turn 上限。系统可以根据小时履约目标启动多个 Cycle，但不得修改用户手动设置的单轮 Turn 上限。
 
@@ -220,7 +215,7 @@ pending_admission -> admission_running -> ready -> reserved -> sending -> confir
 
 “立即回补”只表示立即恢复账号的未完成状态并唤醒后续规划，不表示立即向群发送补量消息：
 
-- 内容重复或质量失败：不发送，释放预约，下一次使用最新上下文重新生成。
+- 内容重复或质量失败：Phase C 在同一短事务终结对应 Action 并释放自己的预约，不发送；下一次使用最新上下文重新编排。
 - 批量 AI 生成中任一同批 Action 在发送前进入失败或跳过终态时，必须立即释放该 Action 自己的覆盖预约并写入 blocker；不能只同步当前 Dispatcher Action，导致同批其他账号永久停在 `reserved`。
 - 上下文过期：只废弃当前上下文绑定对话片段中仍依赖该上下文或引用锚点的剩余 Action；同一 Cycle 内标记为硬目标、没有 `reply_to_message_id`、并由 Dispatcher 延迟生成文案的普通补量 Action 不得被连带跳过，仍按原 AI prompt、账号面具、话题和质量门生成后发送。被废弃 Action 的相关账号回到 `ready`，不得丢失覆盖义务。
 - 每日覆盖债务存在且本轮没有引用回复目标时，Planner 只规划携带账号面具、话题、讨论老师、行为类型和覆盖账本 ID 的延迟生成 Action，不在规划阶段提前冻结普通发言文案。Dispatcher 只批量生成临近执行窗口内的 Action，并在调用原 AI 生成与质量链前刷新目标群最新真人上下文及上下文快照；尚未生成的未来覆盖 Action 不得因旧快照过期被同轮清理。
@@ -228,7 +223,7 @@ pending_admission -> admission_running -> ready -> reserved -> sending -> confir
 - 普通 AI 模拟聊天在没有新真人上下文时继续按空闲续聊配置等待。存在到期每日覆盖债务时不得在 Planner 的“等待新上下文”门禁提前返回；覆盖回补 Action 仍只保存生成 slot，Dispatcher 临近执行时重新读取目标群最新真人上下文并走原质量链。该例外只作用于覆盖债务，不改变普通聊天的上下文等待规则。
 - 当日到期覆盖债务大于 0 时，Planner 必须写入两分钟后的 `daily_coverage_next_check_at`，任务调度器取硬小时检查、覆盖检查和普通自然曲线中的最早时间；不得继续按晚间低频曲线等待 7.5–15 分钟。该检查只读取任务当日覆盖账本并扣除 `reserved/sending`，不重新扫描平台账号；债务清零后删除覆盖检查时间并恢复普通自然曲线。
 - Planner 的 open-action 门禁对普通任务保持不变；全账号每日覆盖任务必须先用当日账本计算到期债务，并扣除 `reserved/sending` 义务。扣除后债务仍大于 0 时，即使同任务还有少量 open 发送 Action，也必须继续规划其他 ready 账号；不得让单个因账号限频顺延的 Action 阻塞整群覆盖。该判断只读取任务当日覆盖账本，不重新扫描平台账号。
-- 仍需在 Planner 预生成且绑定真人上下文 / 引用锚点的 Action，默认只允许排入未来 5 分钟近端窗口；窗口外 slot 不生成 Action，下一轮按最新上下文重新生成。任务显式配置 `context_bound_schedule_window_seconds` 时按显式值执行。不得再用 1 小时默认窗口生成大批远期引用后由 Dispatcher 整轮 `context_expired`。
+- reply Action 只允许排入未来 5 分钟近端窗口；Planner 仅保存引用目标和上下文快照，不预生成文本。Dispatcher 外呼前重新确认目标消息仍存在、可引用且未过期；失效时不得转为 normal，必须终结 Action、释放 coverage 并由下一轮按新上下文编排。任务显式配置 `context_bound_schedule_window_seconds` 时按显式值执行。
 - 账号暂时离线或冷却：记录 `next_eligible_at`，到期后重新参与自然对话。
 - 发送失败：按现有失败类型和风控策略处理；可重试失败释放预约后等待下一次合适 Cycle。
 - 结果未知：先复核，不立即重复发送。
@@ -284,8 +279,9 @@ group.daily_limit >= 当日目标消息数 + 已保留的普通对话预算
 
 - `TaskMembershipAdmissionItem` 对 `(task_id, account_id)` 保持唯一。
 - `TaskAccountDailyCoverage` 使用日唯一约束，防止重复义务。
-- Planner 通过原子状态更新或 `SELECT ... FOR UPDATE SKIP LOCKED` 预约 `ready` 行。
+- Planner 每批最多 20 条，只在数据库短事务通过原子状态更新或 `SELECT ... FOR UPDATE SKIP LOCKED` 创建 pending Action、预约 `ready` 行并推进游标；不得在事务内外呼。
 - Action 使用现有 `action_dedupe_key`，并包含覆盖账本 ID 和目标序号。
+- `cycle_id + slot_id` 固定账号、coverage、reply/normal、面具、话题和连发位置；Dispatcher AI 批次必须按 slot 一一返回，不能因切批串账号或改变 `messages_per_round`。
 - 成功结果与账本 `confirmed_count` 在同一事务中回写；重复消费同一远端结果不得重复计数。
 - Planner 只按 `(task_id, coverage_date, state, next_eligible_at)` 索引分页读取欠账，不扫描全部账号。
 - 在线保活按到期状态分页选取账号；Telegram 健康探测允许受控并发，但账号、凭证读取和状态落库必须留在数据库 Session 所在线程。完整探测周期必须短于 `stale_after` 窗口，不能因串行探测能力不足持续制造假离线。
@@ -407,6 +403,7 @@ GET /api/tasks/{task_id}/account-coverage?date=YYYY-MM-DD&state=&page=&page_size
 - 失败后不发送模板、通用短句或表情补量。
 - 上下文过期只废弃当前片段，下一片段使用新上下文重新生成。
 - 同一对话片段保持多账号角色分工、账号表达差异和语义去重。
+- reply 目标消失/过期不转 normal；AI 成功但落库失败只记生成结果未知，不得混同 `unknown_after_send` 或进入 Telegram。
 
 ### 18.4 容量与页面
 

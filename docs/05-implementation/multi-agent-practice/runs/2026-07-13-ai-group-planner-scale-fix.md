@@ -167,6 +167,16 @@
 - I3 Migration：`test_runtime_stats_migration.py` 6 passed，覆盖 SQLite 实际 upgrade/downgrade、缺表、缺 cursor、invalid 同名索引和 DDL 原错透传；独立 PostgreSQL 迁移库再次通过 `空库 -> head -> 0092 -> head`。
 - Minor：把本次新增的 coverage cursor 记录/推进职责提取为两个 helper，`group_ai_chat.build_plan` C901 维持基线 `70`，未由 QA 前报告的 73 继续上升。当前仍是 Dev E2 rework，必须重新进入独立 QA，之后再回 Product Acceptance；未发布且生产 E4 仍 blocked。
 
+### Independent QA I1 -> Planner 外部 AI 事务 Product Resync
+
+- Independent QA 新 I1 否定上一节的 AI 事务验收：真实 `build_plan` 在锁定 Task、`TaskDailyCoveragePlanCursor` 和 `TaskAccountDailyCoverage` 后，仍可沿 quality -> `generate_group` / `generate_reply` -> Grok 同步外呼。只在 Grok bridge 前 commit 不能覆盖 MiniMax、显式模型、reply 和 provider-backed 质量/改写；在 AI 返回后直接 commit 又会破坏 Action 创建、coverage reservation 和 cursor 推进的 Phase A 原子性。当前 Dev E2 / Product Acceptance 因此失效，Release Gate 继续 blocked。
+- Phase A Planner：每批最多 20 条，只在短数据库事务固定 Cycle/slot/account/reply target/profile/topic/teacher/质量规则，原子创建 `ai_generation_status=pending` Action、条件预约 coverage 并 CAS 推进任务日游标；Planner 禁止 AI、Grok、Telegram Gateway、远端上下文采集等所有网络外呼。30/60 `messages_per_round` 仍映射 20+10 / 20+20+20，同 Cycle slot 不因事务切批改变。
+- Phase B Dispatcher：短事务 claim 并写 generation lease/attempt 后提交；reply 与 normal 分批，在无数据库事务区间完成 reply 目标复核、normal 最新上下文刷新及全部 provider-backed 生成、fallback、改写和质量轮次。输出必须按 `slot_id` 与 Phase A 的 account/coverage 一一对应；目标消息消失、过期或不可引用时不转 normal、不调用 Telegram。
+- Phase C Dispatcher：以 lease/attempt 条件短事务完成 slot 映射校验、内容、消息记忆、指纹/语义重复、内容政策和质量结果落库；质量失败或 reply 失效必须在同事务终结对应 Action 并释放自己的 coverage。通过后才进入现有无事务 Telegram Gateway 和短事务 finalize；每个 Dispatcher 数据库阶段 `<5s`。
+- 幂等 / unknown：Action、dedupe key、cycle/slot 和 coverage reservation 跨生成重试保持不变。AI 成功但 Phase C commit 失败时群内尚无可见副作用，旧 generation attempt 记 `ai_result_persist_unknown`，恢复只重试同一 Action/slot且不得创建第二个有效预约；该状态不得混同 Telegram `unknown_after_send`。Phase C 已 ready 的 Action 重复消费不得再次调用 AI。
+- E2：断言 Planner 对所有外部入口调用数为 0；验证 Phase A 任一失败整批 Action/coverage/cursor 回滚，580 债务、10/30/60 Turn 映射、reply 目标消失、normal 最新上下文、同批 slot 缺失/额外/重复、质量失败释放、AI 成功后 DB commit 失败恢复、双 Dispatcher claim 和跨租户隔离。Phase A、Phase B claim、Phase C、发送前检查和 finalize 每个事务均 `<5s`，外部 AI / Telegram 调用期间 `session.in_transaction() is False`。
+- Product Design Complete：专项设计 `docs/03-feature-designs/ai-group-dispatcher-ai-generation-transaction-design.md` 与 DF-167/168、BG-004/A/005、PERF-007 覆盖说明已定义原始需求、前后端状态、Worker/API/数据流、权限安全、reply/normal 边界、并发幂等、质量失败、生成/发送 unknown 分层、迁移回滚和 E2/E4。`design_status=complete`、`resync=true`；进入 dev 后必须再次独立 QA 和 Product Acceptance，禁止沿用上一轮 `qa_pass`。
+
 ## Release Gate 与 E4
 
 1. 按 `master -> release -> GitHub Actions Deploy Production` 发布并核对实际镜像 commit。
