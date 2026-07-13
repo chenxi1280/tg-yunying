@@ -54,6 +54,7 @@
 - 群准入 latest-action 回归：SQLite 语义/行数下推与轻量 smoke 共 `3 passed`，membership/worker 定向共 `64 passed`；PostgreSQL membership `14 passed`、原 Planner `15 passed`、全量 no-PostgreSQL `1252 passed`。580 账号 × 4 轮大 JSON 历史单查询返回 580 行、实测 `0.0491s`；`EXPLAIN ANALYZE` 显示过滤在 WindowAgg 前、`row_number <= 1`、执行 `18.054ms`。
 - 群准入 quick-fix 独立 QA：相关集 `77 passed`，最小语义/smoke `7 passed`，Critical / Important / Minor 均为 0；最终 Product Acceptance：`product_accepted=true`（仅 E2），Release Gate 就绪，不等于生产恢复。
 - Release run `29225396989` 因 PostgreSQL fixture 复用 tenant 1 失败；run `29225675866` 因 open-action 测试误拦截遗留任务失败；run `29227840790` 的 checks/镜像成功，但 deploy 三次均在 Planner smoke 或 planner unhealthy 超时，生产实际镜像为 `fd9cf0c9`，不能写发布成功。
+- Release run `29230128879` 在 checks 失败、未构建镜像：新增 580×4 PostgreSQL 规模测试未清理自己提交的 2320 条 Action，后续 backlog 测试读到 2328 条而非自己的 8 条。修复为同租户显式前后清理并跳过与本测试无关的规则自动绑定；按 CI 失败顺序 `2 passed`，membership 相关 PostgreSQL 组 `15 passed`。独立 rework QA 通过，Critical / Important / Minor 均为 0，测试后 Tenant / Task / TgAccount / Action 均为 0，Release Gate 恢复就绪。
 
 ## Release Gate 与 E4
 
