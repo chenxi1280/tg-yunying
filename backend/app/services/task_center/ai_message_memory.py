@@ -7,6 +7,7 @@ from difflib import SequenceMatcher
 from hashlib import sha256
 
 from sqlalchemy import or_, select
+from sqlalchemy.engine import Row
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -349,7 +350,7 @@ def _find_duplicate(
     template_shell_key: str,
     now: datetime,
     exclude_id: str = "",
-) -> tuple[AiGroupMessageMemory | None, str]:
+) -> tuple[AiGroupMessageMemory | Row | None, str]:
     checks = (
         (_find_exact_duplicate(session, tenant_id, group_id, fingerprint, now, exclude_id), "5m_exact"),
         (_find_similar_duplicate(session, tenant_id, group_id, normalized, now, exclude_id), "1h_similar"),
@@ -369,7 +370,7 @@ def _find_similar_duplicate(
     normalized: str,
     now: datetime,
     exclude_id: str = "",
-) -> AiGroupMessageMemory | None:
+) -> Row | None:
     return _first_similar_memory(
         _window_memories(session, tenant_id, group_id, now - ONE_HOUR_WINDOW, exclude_id),
         normalized,
@@ -384,7 +385,7 @@ def _find_semantic_duplicate(
     normalized: str,
     now: datetime,
     exclude_id: str = "",
-) -> AiGroupMessageMemory | None:
+) -> Row | None:
     return _first_similar_memory(
         _window_memories(session, tenant_id, group_id, now - SEVEN_DAY_WINDOW, exclude_id),
         normalized,
@@ -416,10 +417,14 @@ def _find_template_shell_duplicate(
     )
 
 
-def _window_memories(session: Session, tenant_id: int, group_id: int, cutoff: datetime, exclude_id: str = "") -> list[AiGroupMessageMemory]:
+def _window_memories(session: Session, tenant_id: int, group_id: int, cutoff: datetime, exclude_id: str = "") -> list[Row]:
     return list(
-        session.scalars(
-            select(AiGroupMessageMemory)
+        session.execute(
+            select(
+                AiGroupMessageMemory.id,
+                AiGroupMessageMemory.normalized_text,
+                AiGroupMessageMemory.raw_text,
+            )
             .where(
                 AiGroupMessageMemory.tenant_id == tenant_id,
                 AiGroupMessageMemory.status.in_(DEDUP_STATUSES),
@@ -432,10 +437,10 @@ def _window_memories(session: Session, tenant_id: int, group_id: int, cutoff: da
 
 
 def _first_similar_memory(
-    rows: list[AiGroupMessageMemory],
+    rows: list[Row],
     normalized: str,
     threshold: float,
-) -> AiGroupMessageMemory | None:
+) -> Row | None:
     for row in rows:
         if _text_similarity(normalized, row.normalized_text or normalize_group_ai_text(row.raw_text)) >= threshold:
             return row
