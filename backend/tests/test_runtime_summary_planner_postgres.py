@@ -58,8 +58,10 @@ def test_postgres_planner_summary_is_bounded_for_580_configured_accounts(monkeyp
 def test_postgres_account_summary_batches_cover_580_accounts() -> None:
     Base.metadata.create_all(engine)
     _cleanup()
+    prefilled_summary_ids: list[str] = []
     try:
         with SessionLocal() as session:
+            prefilled_summary_ids = _prefill_existing_account_summaries(session)
             session.add(Tenant(id=TEST_TENANT_ID, name="runtime-summary-scale"))
             session.add_all(_account(account_id) for account_id in _account_ids())
             session.commit()
@@ -78,6 +80,7 @@ def test_postgres_account_summary_batches_cover_580_accounts() -> None:
         assert all(summary.updated_at is not None for summary in summaries)
     finally:
         _cleanup()
+        _cleanup_prefilled_summaries(prefilled_summary_ids)
 
 
 def test_postgres_issue_reconcile_scales_with_580_action_sources() -> None:
@@ -167,6 +170,22 @@ def _account_ids() -> list[int]:
     return list(range(ACCOUNT_ID_BASE + 1, ACCOUNT_ID_BASE + ACCOUNT_COUNT + 1))
 
 
+def _prefill_existing_account_summaries(session) -> list[str]:
+    rows = session.execute(
+        select(TgAccount.tenant_id, TgAccount.id)
+        .outerjoin(
+            AccountRuntimeSummary,
+            (AccountRuntimeSummary.tenant_id == TgAccount.tenant_id)
+            & (AccountRuntimeSummary.account_id == TgAccount.id),
+        )
+        .where(TgAccount.deleted_at.is_(None), AccountRuntimeSummary.id.is_(None))
+    )
+    summaries = [AccountRuntimeSummary(tenant_id=tenant_id, account_id=account_id) for tenant_id, account_id in rows]
+    session.add_all(summaries)
+    session.flush()
+    return [summary.id for summary in summaries]
+
+
 def _failed_action(task: Task, index: int) -> Action:
     return Action(
         id=f"pg-runtime-source-{index:03d}",
@@ -215,4 +234,12 @@ def _cleanup() -> None:
         session.execute(delete(Task).where(Task.tenant_id == TEST_TENANT_ID))
         session.execute(delete(TgAccount).where(TgAccount.tenant_id == TEST_TENANT_ID))
         session.execute(delete(Tenant).where(Tenant.id == TEST_TENANT_ID))
+        session.commit()
+
+
+def _cleanup_prefilled_summaries(summary_ids: list[str]) -> None:
+    if not summary_ids:
+        return
+    with SessionLocal() as session:
+        session.execute(delete(AccountRuntimeSummary).where(AccountRuntimeSummary.id.in_(summary_ids)))
         session.commit()
