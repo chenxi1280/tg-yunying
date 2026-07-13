@@ -121,6 +121,16 @@ def test_message_memory_index_upgrade_fails_when_target_table_is_missing() -> No
             migration.upgrade()
 
 
+def test_message_memory_index_downgrade_fails_when_target_table_is_missing() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    migration = _migration_module()
+
+    with engine.begin() as connection:
+        migration.op = Operations(MigrationContext.configure(connection))
+        with pytest.raises(NoSuchTableError):
+            migration.downgrade()
+
+
 def test_postgres_concurrent_ddl_runs_inside_autocommit_block(monkeypatch: pytest.MonkeyPatch) -> None:
     migration = _migration_module()
     upgrade_events: list[str] = []
@@ -138,7 +148,6 @@ def test_postgres_concurrent_ddl_runs_inside_autocommit_block(monkeypatch: pytes
 
     downgrade_events: list[str] = []
     monkeypatch.setattr(migration, "op", _RecordingPostgresOp(downgrade_events))
-    monkeypatch.setattr(migration, "_has_table", lambda: True)
     monkeypatch.setattr(migration, "_index_names", lambda **_kwargs: {INDEX_NAME})
 
     migration.downgrade()
@@ -223,7 +232,6 @@ def test_postgres_index_ddl_failure_propagates(monkeypatch: pytest.MonkeyPatch) 
             raise failure
 
     monkeypatch.setattr(migration, "op", FakeOp())
-    monkeypatch.setattr(migration, "_has_table", lambda: True)
     monkeypatch.setattr(migration, "_index_names", lambda: set())
 
     with pytest.raises(RuntimeError) as exc_info:

@@ -35,17 +35,13 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    if not _has_table() or INDEX_NAME not in _index_names(valid_only=False):
+    if INDEX_NAME not in _index_names(valid_only=False):
         return
     if op.get_bind().dialect.name == "postgresql":
         with op.get_context().autocommit_block():
             op.execute(f"DROP INDEX CONCURRENTLY {INDEX_NAME}")
         return
     op.drop_index(INDEX_NAME, table_name=TABLE_NAME)
-
-
-def _has_table() -> bool:
-    return TABLE_NAME in sa.inspect(op.get_bind()).get_table_names()
 
 
 def _index_names(*, valid_only: bool = True) -> set[str]:
