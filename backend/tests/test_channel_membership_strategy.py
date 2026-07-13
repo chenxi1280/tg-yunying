@@ -16,6 +16,7 @@ from app.services.task_center import dispatcher
 from app.services.task_center.channel_membership import (
     _create_membership_actions_for_accounts,
     _fast_track_hard_hourly_membership_actions,
+    _membership_actions_by_account,
     _reactivate_auto_verification_memberships,
     channel_membership_summary,
     gate_channel_membership,
@@ -1420,6 +1421,100 @@ def test_membership_permission_denied_skip_counts_as_failed() -> None:
     assert summary["failed_account_ids"] == [12]
     assert summary["failed_account_count"] == 1
     assert summary["need_join_account_count"] == 0
+
+
+def test_membership_latest_action_query_loads_one_row_per_account(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(Task(id="task-membership-latest", tenant_id=1, name="最新准入", type="group_ai_chat", status="running"))
+        session.add_all(
+            TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线")
+            for account_id in (11, 12)
+        )
+        for account_id in (11, 12):
+            for index in range(3):
+                session.add(
+                    Action(
+                        id=f"membership-history-{account_id}-{index}",
+                        tenant_id=1,
+                        task_id="task-membership-latest",
+                        task_type="group_ai_chat",
+                        action_type="ensure_channel_membership" if account_id == 12 else "ensure_target_membership",
+                        account_id=account_id,
+                        status="unknown_after_send" if account_id == 12 else "failed",
+                        created_at=now_value + timedelta(seconds=index),
+                        payload={"channel_target_id": 902},
+                        result={"history": "large" * 100},
+                    )
+                )
+        session.commit()
+        session.expunge_all()
+        loaded_row_counts: list[int] = []
+        original_scalars = session.scalars
+
+        def tracked_scalars(*args, **kwargs):
+            rows = list(original_scalars(*args, **kwargs))
+            loaded_row_counts.append(len(rows))
+            return iter(rows)
+
+        monkeypatch.setattr(session, "scalars", tracked_scalars)
+
+        latest = _membership_actions_by_account(session, 902, task_id="task-membership-latest")
+
+    assert {account_id: action.id for account_id, action in latest.items()} == {
+        11: "membership-history-11-2",
+        12: "membership-history-12-2",
+    }
+    assert {account_id: action.status for account_id, action in latest.items()} == {11: "failed", 12: "unknown_after_send"}
+    assert loaded_row_counts == [2]
+
+
+def test_membership_latest_action_query_filters_before_deterministic_ranking() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    created_at = _now()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add_all(
+            [
+                Task(id="task-ranked", tenant_id=1, name="排名任务", type="group_ai_chat", status="running"),
+                Task(id="task-other", tenant_id=1, name="其他任务", type="group_ai_chat", status="running"),
+                TgAccount(id=21, tenant_id=1, display_name="账号21", phone_masked="21", status="在线"),
+            ]
+        )
+        variants = (
+            ("rank-a", "task-ranked", "ensure_target_membership", 902, created_at),
+            ("rank-b", "task-ranked", "ensure_target_membership", 902, created_at),
+            ("rank-wrong-channel", "task-ranked", "ensure_target_membership", 903, created_at + timedelta(seconds=3)),
+            ("rank-wrong-type", "task-ranked", "send_message", 902, created_at + timedelta(seconds=4)),
+            ("rank-wrong-task", "task-other", "ensure_target_membership", 902, created_at + timedelta(seconds=5)),
+        )
+        for action_id, task_id, action_type, channel_id, action_created_at in variants:
+            session.add(
+                Action(
+                    id=action_id,
+                    tenant_id=1,
+                    task_id=task_id,
+                    task_type="group_ai_chat",
+                    action_type=action_type,
+                    account_id=21,
+                    status="success",
+                    created_at=action_created_at,
+                    payload={"channel_target_id": channel_id},
+                )
+            )
+        session.commit()
+
+        latest = _membership_actions_by_account(session, 902, task_id="task-ranked")
+        latest_across_tasks = _membership_actions_by_account(session, 902)
+
+    assert latest[21].id == "rank-b"
+    assert latest_across_tasks[21].id == "rank-wrong-task"
 
 
 def test_membership_unknown_after_send_stays_out_of_retry_candidates() -> None:

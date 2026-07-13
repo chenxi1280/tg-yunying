@@ -6,13 +6,14 @@
 - `bug_id`: `bug-2026-07-13-ai-group-planner-stall`
 - `level/lane`: `L3 / ai-group-quality/planner-runtime`
 - 用户目标：监督修复生产 AI 活群，确保每个目标群中的全部账号按北京时间每日真实发言一次，并检查评论任务运行状态。
-- 当前状态：AI 活群规模修复已完成本地 `qa_pass`、`product_accepted`；评论任务追加修复已完成 dev 定向回归，正在独立 QA。两次 release 流水线均在后端测试阶段暴露测试隔离问题、尚未部署；生产恢复和完整自然日矩阵仍为 `unproven`。
+- 当前状态：AI 活群与评论修复已完成本地 `qa_pass`、`product_accepted`；第三次 release 的 checks/镜像成功且 `fd9cf0c9` 已切到生产，但 deploy 因 Planner 超时失败。生产恢复和完整自然日矩阵仍为 `unproven`，正在修复群准入历史 Action 全量加载。
 
 ## 生产诊断
 
 - 生产存在 4 个 `all_accounts_daily` 任务，每个分母 580，共 2320 条日履约义务。
 - Planner 心跳和主 drain 发生长时间停滞；任务欠账存在，但没有 open coverage Action 推进。
 - 根因是 Planner 事务叠加多项规模放大：每任务重复在线来源 reconcile、逐账号 readiness / capacity 查询、backlog 全量 ORM 加载，以及无 open Action 时仍执行 preparation。
+- 第三次发布后的生产 strace 继续定位到 `_membership_actions_by_account`：每轮按 task/channel 读取全部历史 membership Action 和巨大 payload/result，再在 Python 每账号取最新；Planner 持续接收历史大行，单 drain 超过本地 120 秒心跳阈值，并形成长事务与锁等待。
 - 评论任务生产取证确认两条都在北京时间当天 `0 Action / 0 remote success`：`太郎日记回复` 已达到解析后的生命周期总预算 86，属于配置终止但长期显示 `running + last_error`；`阿哥日记` 尚余 49 条预算，但 MiniMax-M3 返回 `unprocessable_entity_error: input new_sensitive (1026)`，旧分类器未触发重描述。
 
 ## 评论任务补充 Product Handoff
@@ -32,6 +33,13 @@
 - 容量缓存必须与原逐账号判定在 Action / MessageTask 状态、时间、冷却、上限、排除项和 reservation 上等价。
 - 仅低频来源的在线账号恢复 active 时必须立即进入 `warming` 并探测，成功前 fail-closed；已有 global / active 来源不得被误阻断。
 
+### 群准入最新 Action quick-fix
+
+- 行为不变：current/legacy membership、频道、可选 task、account 非空过滤保持原样；每账号按 `created_at DESC, id DESC` 选最新一条。
+- 数据库窗口子查询只投影 id/account/created_at/rank，外层 rank=1 后才加载完整 Action；failed/unknown/open/joined 与 daily recheck 继续复用原判定。
+- 发布 Planner smoke 改用轻量 `app.worker_health` 的真实数据库 heartbeat；不降低超时、不绕过 worker unhealthy。
+- 无 migration；若 PostgreSQL 大历史或生产仍超过 5 秒，升级为索引/迁移标准流程。
+
 ## Dev 与 QA 证据
 
 - `4 tasks × 580 accounts` account-online 第二轮 reconcile：查询有界、`0 UPDATE`、小于 5 秒。
@@ -43,7 +51,9 @@
 - 独立 QA：无 Critical / Important / Minor；Product Acceptance：通过。
 - 评论补充回归：`test_ai_task_limits.py`、评论配置总预算 guard 和 Planner open-action 隔离定向共 `50 passed`；新增 pending 失败释放预算、完成时间幂等、`new_sensitive` 第 1/2/3 次后成功、普通评论/引用回复、连续 4 次拒绝、其他 422 不重试均通过；全量 no-PostgreSQL 更新为 `1252 passed, 810 deselected, 5 warnings in 40.60s`。
 - 评论独立 QA：`81 passed`，Critical / Important / Minor 均为 0；最终 Product Acceptance：`product_accepted=true`（仅 E2），同意进入 Release Gate，不等于生产恢复。
-- Release run `29225396989` 因 PostgreSQL fixture 复用 tenant 1 失败；改为独立 tenant 后，run `29225675866` 又由 `test_task_center_group_ai_chat_does_not_plan_over_open_actions` 误拦截同库遗留任务失败。测试已改为最高优先级目标任务 + `limit=1` 隔离，第三次 Release Gate 待推送。
+- 群准入 latest-action 回归：SQLite 语义/行数下推与轻量 smoke 共 `3 passed`，membership/worker 定向共 `64 passed`；PostgreSQL membership `14 passed`、原 Planner `15 passed`、全量 no-PostgreSQL `1252 passed`。580 账号 × 4 轮大 JSON 历史单查询返回 580 行、实测 `0.0491s`；`EXPLAIN ANALYZE` 显示过滤在 WindowAgg 前、`row_number <= 1`、执行 `18.054ms`。
+- 群准入 quick-fix 独立 QA：相关集 `77 passed`，最小语义/smoke `7 passed`，Critical / Important / Minor 均为 0；最终 Product Acceptance：`product_accepted=true`（仅 E2），Release Gate 就绪，不等于生产恢复。
+- Release run `29225396989` 因 PostgreSQL fixture 复用 tenant 1 失败；run `29225675866` 因 open-action 测试误拦截遗留任务失败；run `29227840790` 的 checks/镜像成功，但 deploy 三次均在 Planner smoke 或 planner unhealthy 超时，生产实际镜像为 `fd9cf0c9`，不能写发布成功。
 
 ## Release Gate 与 E4
 

@@ -2124,6 +2124,8 @@ def test_deploy_scripts_timeout_planner_smoke_and_remote_install():
     assert 'timeout "$REMOTE_INSTALL_TIMEOUT_SECONDS" ssh "${SSH_OPTS[@]}"' in release
     assert 'local timeout_seconds="${TGYUNYING_PLANNER_SMOKE_TIMEOUT_SECONDS:-120}"' in check_web
     assert 'timeout "$timeout_seconds" docker exec tgyunying-worker-planner' in check_web
+    assert "python -m app.worker_health --role planner" in check_web
+    assert "python -m app.worker --healthcheck --role planner" not in check_web
 
 
 def test_production_deploy_passes_public_app_base_url_for_tenant_bot_webhook():
