@@ -189,22 +189,27 @@ def _mark_probe_blocked(state: TgAccountOnlineState, now: datetime, failure_type
 
 
 def _probe_interval_for_state(state: TgAccountOnlineState) -> timedelta:
-    if _only_low_frequency_sources(state):
+    if only_low_frequency_sources(state.desired_sources):
         return ONLINE_LOW_FREQUENCY_PROBE_INTERVAL
     return ONLINE_PROBE_INTERVAL
 
 
 def stale_deadline_for_state(state: TgAccountOnlineState, now: datetime) -> datetime:
-    probe_window = _probe_interval_for_state(state) + ONLINE_STALE_GRACE
+    return stale_deadline_for_sources(state.desired_sources, now)
+
+
+def stale_deadline_for_sources(sources: list[dict], now: datetime) -> datetime:
+    probe_interval = ONLINE_LOW_FREQUENCY_PROBE_INTERVAL if only_low_frequency_sources(sources) else ONLINE_PROBE_INTERVAL
+    probe_window = probe_interval + ONLINE_STALE_GRACE
     stale_window = probe_window if probe_window > ONLINE_STALE_AFTER else ONLINE_STALE_AFTER
     return now + stale_window
 
 
-def _only_low_frequency_sources(state: TgAccountOnlineState) -> bool:
-    sources = state.desired_sources if isinstance(state.desired_sources, list) else []
+def only_low_frequency_sources(raw_sources) -> bool:
+    sources = raw_sources if isinstance(raw_sources, list) else []
     if not sources:
         return False
     return all(isinstance(source, dict) and source.get("keepalive_mode") == "low_frequency" for source in sources)
 
 
-__all__ = ["probe_due_online_states", "stale_deadline_for_state"]
+__all__ = ["only_low_frequency_sources", "probe_due_online_states", "stale_deadline_for_sources", "stale_deadline_for_state"]

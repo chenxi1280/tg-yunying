@@ -502,6 +502,43 @@ def test_planner_prepares_open_ai_actions_before_skip(monkeypatch):
         assert action.status == "skipped"
 
 
+@pytest.mark.no_postgres
+def test_planner_skips_open_action_preparation_when_task_has_no_open_actions(monkeypatch):
+    SessionFactory = _session_factory()
+    now_value = _now()
+    built_task_ids: list[str] = []
+
+    def fail_prepare_open_actions(*_args, **_kwargs):
+        raise AssertionError("no open action should skip preparation")
+
+    def fake_build_task_plan(_session, task):
+        built_task_ids.append(task.id)
+        return 1
+
+    monkeypatch.setattr(service, "prepare_open_actions_for_planning", fail_prepare_open_actions)
+    monkeypatch.setattr(service, "build_task_plan", fake_build_task_plan)
+
+    with SessionFactory() as session:
+        session.add(Tenant(id=1, name="default"))
+        session.add(
+            Task(
+                id="task-ai-no-open-actions",
+                tenant_id=1,
+                name="daily coverage debt",
+                type="group_ai_chat",
+                status="running",
+                next_run_at=now_value - timedelta(seconds=1),
+                type_config={"account_coverage_mode": "all_accounts_daily"},
+            )
+        )
+        session.commit()
+
+    processed, _ = service._drain_task_planner(SessionFactory, limit=5, process_type=None)
+
+    assert processed == 1
+    assert built_task_ids == ["task-ai-no-open-actions"]
+
+
 def test_update_task_settings_restarts_running_task_with_business_clock(monkeypatch):
     SessionFactory = _session_factory()
     beijing_now = datetime.now(UTC).replace(tzinfo=None) + timedelta(hours=8)

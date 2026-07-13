@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
@@ -86,8 +86,8 @@ def _online_state(account_id: int, now: datetime) -> TgAccountOnlineState:
 def assume_group_ai_accounts_ready_for_hard_hourly_tests(monkeypatch):
     assume_default_ai_group_voice_profiles(monkeypatch)
     monkeypatch.setattr(
-        "app.services.task_center.executors.group_ai_chat.is_account_online_ready_for_planning",
-        lambda *args, **kwargs: True,
+        "app.services.task_center.executors.group_ai_chat.online_ready_account_ids_for_planning",
+        lambda _session, *, tenant_id, accounts, now=None: {account.id for account in accounts},
     )
 
 
@@ -732,6 +732,12 @@ def test_group_ai_chat_all_accounts_daily_coverage_plans_uncovered_accounts_when
             for account_id in [101, 102, 103, 104]
         ])
         session.commit()
+        statements: list[str] = []
+        event.listen(
+            engine,
+            "before_cursor_execute",
+            lambda _conn, _cursor, statement, _parameters, _context, _executemany: statements.append(statement),
+        )
 
         created = build_group_ai_chat_plan(session, task)
         actions = list(session.scalars(select(Action).where(Action.task_id == task.id).order_by(Action.account_id.asc())))
@@ -750,6 +756,7 @@ def test_group_ai_chat_all_accounts_daily_coverage_plans_uncovered_accounts_when
     assert all(not action.payload.get("reply_to_message_id") for action in actions)
     assert task.stats["coverage_reply_shortfall_cycle_count"] == 1
     assert task.stats["daily_coverage_next_check_at"] == "2026-06-07T20:12:00"
+    assert not any("UPDATE tg_account_online_state" in statement for statement in statements)
 
 
 @pytest.mark.no_postgres
@@ -1351,7 +1358,10 @@ def test_group_ai_chat_hard_hourly_records_offline_account_samples(monkeypatch):
     Base.metadata.create_all(engine)
     now_value = datetime(2026, 6, 7, 20, 10)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.is_account_online_ready_for_planning", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        "app.services.task_center.executors.group_ai_chat.online_ready_account_ids_for_planning",
+        lambda *_args, **_kwargs: set(),
+    )
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
@@ -2530,8 +2540,10 @@ def test_hard_hourly_refill_rechecks_online_ready_accounts(monkeypatch):
         _voice_profiles_after_first_ten_accounts,
     )
     monkeypatch.setattr(
-        "app.services.task_center.executors.group_ai_chat.is_account_online_ready_for_planning",
-        lambda _session, *, tenant_id, account_id: int(account_id) <= 10 or int(account_id) >= 21,
+        "app.services.task_center.executors.group_ai_chat.online_ready_account_ids_for_planning",
+        lambda _session, *, tenant_id, accounts, now=None: {
+            account.id for account in accounts if int(account.id) <= 10 or int(account.id) >= 21
+        },
     )
 
     with Session(engine) as session:

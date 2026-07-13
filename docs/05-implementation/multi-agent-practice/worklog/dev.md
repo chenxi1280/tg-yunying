@@ -430,3 +430,11 @@
 - decision: `development_complete=true`；`release_gate=local_pass`；`production_verification=unproven`。
 - next_agent: qa
 - unresolved: 真实 Telegram 协议样本、代理出口、灰度账号点击和生产 E4 尚未验证。
+
+## 2026-07-13 AI 活群 Planner 规模治理 Development Complete
+
+- message_id: `2026-07-13-ai-group-planner-scale-devcomplete-001`
+- output: 移除 Planner 每任务在线全量 reconcile；readiness、容量和 backlog 改为批量 / 聚合读取；无 open Action 跳过 preparation；在线来源无变化时零 UPDATE；低频恢复 active 时立即 warming + probe。
+- evidence: TDD 覆盖 4×580、容量全维等价、新账号 E2E、低频转 active 和 PostgreSQL backlog；全量 no-PostgreSQL `1246 passed`，PostgreSQL `15 passed`，编译和 diff check 通过。
+- decision: `development_complete=true`；`qa_pass=true`；`product_accepted=true`；`release_gate=ready_pending_publish`。
+- unresolved: 尚未发布；完整北京时间自然日矩阵和评论任务生产结果 unproven。

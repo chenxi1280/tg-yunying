@@ -4,7 +4,7 @@ from datetime import date, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
@@ -35,6 +35,7 @@ from app.models import (
 )
 from app.schemas.task_center import TaskRetryRequest
 from app.services._common import _now
+from app.services.account_capacity import AccountCapacityCache, available_accounts_by_capacity
 from app.services.task_center import dispatcher
 from app.services.task_center import payloads as task_payloads
 from app.services.task_center.ai_message_memory import mark_group_ai_message_result, reserve_group_ai_message
@@ -4063,7 +4064,7 @@ def test_group_ai_build_plan_canonicalizes_duplicate_username_target_before_memb
 
 
 @pytest.mark.no_postgres
-def test_group_ai_build_plan_reconciles_missing_online_state_before_main_chat(monkeypatch):
+def test_group_ai_build_plan_does_not_reconcile_missing_online_state(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = _now()
@@ -4112,16 +4113,10 @@ def test_group_ai_build_plan_reconciles_missing_online_state_before_main_chat(mo
         assert group_ai_chat.build_plan(session, task) == 0
         states = list(session.scalars(select(TgAccountOnlineState).order_by(TgAccountOnlineState.account_id)))
 
-        assert [state.account_id for state in states] == [11, 12, 99]
-        assert all(state.desired_online for state in states)
-        assert [state.online_status for state in states] == ["warming", "warming", "online"]
-        assert {(item["source_type"], item["source_id"]) for item in states[0].desired_sources} == {
-            ("global", "global_keepalive"),
-            ("task", "task-online-reconcile"),
-        }
-        assert states[0].active_task_count == 1
-        assert states[0].proxy_id == 5
-        assert states[2].desired_sources == [{"source_type": "global", "source_id": "global_keepalive"}]
+        assert [state.account_id for state in states] == [99]
+        assert states[0].desired_sources == [{"source_type": "global", "source_id": "global_keepalive"}]
+        assert task.stats["account_offline_count"] == 2
+        assert task.stats["account_offline_sample_account_ids"] == [11, 12]
         assert "在线状态不可用" in (task.last_error or "")
 
 
@@ -5069,14 +5064,20 @@ def test_group_ai_context_bound_quality_schedule_cuts_final_candidates(monkeypat
     assert task.stats["context_bound_planned_turns"] == 2
 
 
-def _add_ready_daily_coverage(session: Session, task: Task, account_ids: list[int]) -> None:
+def _add_ready_daily_coverage(
+    session: Session,
+    task: Task,
+    account_ids: list[int],
+    *,
+    coverage_date: date | None = None,
+) -> None:
     session.add_all([
         TaskAccountDailyCoverage(
             tenant_id=task.tenant_id,
             task_id=task.id,
             group_id=int(task.type_config["target_group_id"]),
             account_id=account_id,
-            coverage_date=date.today(),
+            coverage_date=coverage_date or date.today(),
             state="ready",
         )
         for account_id in account_ids
@@ -5087,11 +5088,10 @@ def _add_ready_daily_coverage(session: Session, task: Task, account_ids: list[in
 def test_group_ai_all_account_coverage_defers_plain_ai_without_emoji_fallback(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
-    now_value = _now()
+    now_value = datetime(2026, 7, 13, 23, 30)
     monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
     monkeypatch.setattr(group_ai_chat, "should_collect_listener", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(group_ai_chat.random, "sample", lambda pool, k: list(pool)[:k])
-
     requested_counts: list[int] = []
 
     def fake_generate(_session, _tenant_id, _config, *, count, target_label, history):  # noqa: ANN001
@@ -5141,7 +5141,7 @@ def test_group_ai_all_account_coverage_defers_plain_ai_without_emoji_fallback(mo
             stats={},
         )
         session.add(task)
-        _add_ready_daily_coverage(session, task, [11, 12])
+        _add_ready_daily_coverage(session, task, [11, 12], coverage_date=now_value.date())
         session.add(
             Action(
                 id="previous-ai-photo",
@@ -5209,11 +5209,10 @@ def test_group_ai_all_account_coverage_defers_plain_ai_without_emoji_fallback(mo
 def test_group_ai_all_account_coverage_defers_voice_profile_candidates(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
-    now_value = _now()
+    now_value = datetime(2026, 7, 13, 23, 30)
     monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
     monkeypatch.setattr(group_ai_chat, "should_collect_listener", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(group_ai_chat.random, "sample", lambda pool, k: list(pool)[:k])
-
     def fake_generate(_session, _tenant_id, _config, *, count, target_label, history):  # noqa: ANN001
         raise AssertionError("daily coverage plain text must be generated by dispatcher")
 
@@ -5257,7 +5256,7 @@ def test_group_ai_all_account_coverage_defers_voice_profile_candidates(monkeypat
             stats={},
         )
         session.add(task)
-        _add_ready_daily_coverage(session, task, [11, 12])
+        _add_ready_daily_coverage(session, task, [11, 12], coverage_date=now_value.date())
         session.add(
             Action(
                 id="previous-ai-photo",
@@ -5350,6 +5349,127 @@ def test_planner_backlog_ignores_expired_hard_hourly_pending_actions():
 
     assert snapshot["task_pending"] == 1
     assert snapshot["global_pending"] == 1
+
+
+@pytest.mark.no_postgres
+def test_planner_backlog_does_not_materialize_open_actions():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    expired_bucket = (now_value - timedelta(hours=2)).replace(minute=0, second=0, microsecond=0)
+    with Session(engine) as session:
+        task = Task(id="task-backlog-bounded", tenant_id=1, name="bounded", type="group_ai_chat", status="running")
+        other_task = Task(id="task-backlog-other", tenant_id=1, name="other", type="group_relay", status="running")
+        session.add_all([Tenant(id=1, name="default"), task, other_task])
+        session.add_all(
+            [
+                Action(id="expired-hard", tenant_id=1, task_id=task.id, task_type=task.type, action_type="send_message", status="pending", scheduled_at=expired_bucket, payload={"hard_hourly_target": True, "hard_hourly_bucket": expired_bucket.isoformat()}),
+                Action(id="current-task", tenant_id=1, task_id=task.id, task_type=task.type, action_type="send_message", status="pending", scheduled_at=now_value, payload={}),
+                Action(id="current-other", tenant_id=1, task_id=other_task.id, task_type=other_task.type, action_type="send_message", status="pending", scheduled_at=now_value, payload={}),
+            ]
+        )
+        session.commit()
+        session.expunge_all()
+        task = session.get(Task, "task-backlog-bounded")
+        loaded_actions = 0
+
+        def capture_loaded_action(_session, instance):
+            nonlocal loaded_actions
+            loaded_actions += int(isinstance(instance, Action))
+
+        event.listen(session, "loaded_as_persistent", capture_loaded_action)
+        snapshot = planner_backlog_snapshot(session, task)
+
+    assert snapshot["global_pending"] == 2
+    assert snapshot["task_pending"] == 1
+    assert loaded_actions == 0
+
+
+@pytest.mark.no_postgres
+def test_available_accounts_by_capacity_uses_bounded_queries():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    scheduled_at = datetime(2026, 7, 13, 12, 30)
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="default"))
+        session.add(
+            SchedulingSetting(
+                tenant_id=1,
+                default_account_cooldown_seconds=120,
+                default_account_hour_limit=10,
+                default_account_day_limit=50,
+            )
+        )
+        session.commit()
+        accounts = [TgAccount(id=account_id, tenant_id=1) for account_id in range(101, 681)]
+        select_count = 0
+
+        def count_selects(_conn, _cursor, statement, _parameters, _context, _executemany):
+            nonlocal select_count
+            select_count += int(statement.lstrip().upper().startswith("SELECT"))
+
+        event.listen(engine, "before_cursor_execute", count_selects)
+        cache = AccountCapacityCache()
+        available = available_accounts_by_capacity(
+            session,
+            tenant_id=1,
+            accounts=accounts,
+            scheduled_at=scheduled_at,
+            cache=cache,
+        )
+        adjacent_available = available_accounts_by_capacity(
+            session,
+            tenant_id=1,
+            accounts=accounts,
+            scheduled_at=scheduled_at + timedelta(seconds=10),
+            cache=cache,
+        )
+
+    assert len(available) == 580
+    assert len(adjacent_available) == 580
+    assert select_count <= 3
+
+
+@pytest.mark.no_postgres
+def test_bulk_capacity_cache_preserves_hour_limit_decisions():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    scheduled_at = datetime(2026, 7, 13, 12, 30)
+    accounts = [TgAccount(id=101, tenant_id=1), TgAccount(id=102, tenant_id=1)]
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="default"))
+        session.add(SchedulingSetting(tenant_id=1, default_account_hour_limit=1))
+        session.add(
+            Action(
+                id="occupied-account-101",
+                tenant_id=1,
+                task_id="capacity-task",
+                task_type="group_ai_chat",
+                action_type="send_message",
+                account_id=101,
+                status="success",
+                scheduled_at=scheduled_at - timedelta(minutes=5),
+                executed_at=scheduled_at - timedelta(minutes=5),
+            )
+        )
+        session.commit()
+
+        uncached = available_accounts_by_capacity(
+            session,
+            tenant_id=1,
+            accounts=accounts,
+            scheduled_at=scheduled_at,
+        )
+        cached = available_accounts_by_capacity(
+            session,
+            tenant_id=1,
+            accounts=accounts,
+            scheduled_at=scheduled_at,
+            cache=AccountCapacityCache(),
+        )
+
+    assert [account.id for account in uncached] == [102]
+    assert [account.id for account in cached] == [102]
 
 
 def test_runtime_cleanup_summarizes_then_deletes_all_window_out_details():

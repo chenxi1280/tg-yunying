@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.models import Action, AiGroupMessageMemory, OperationTarget, RuleSet, Task, TaskAccountDailyCoverage, TenantAiSetting, TgGroup
 from app.services._common import _now
-from app.services.account_online_state import is_account_online_ready_for_planning, reconcile_runtime_online_sources
+from app.services.account_online_readiness import online_ready_account_ids_for_planning
 from app.services.account_capacity import (
     AccountCapacityCache,
     AccountCapacityReservation,
@@ -223,7 +223,6 @@ def build_plan(session: Session, task: Task) -> int:
     accounts = _select_accounts_for_plan(
         session, task, group, hard_progress, config, coverage_rows=coverage_state.rows,
     )
-    _reconcile_online_sources_for_plan(session, task, accounts)
     accounts = _online_ready_accounts(session, task, accounts, hard_progress)
     if not accounts:
         error_message, reason = _account_shortage_reason(session, task, group, hard_progress)
@@ -989,20 +988,21 @@ def _ready_coverage_rows(
 
 
 def _online_ready_accounts(session: Session, task: Task, accounts: list, progress: dict[str, object]) -> list:
-    ready = [
-        account
-        for account in accounts
-        if is_account_online_ready_for_planning(session, tenant_id=task.tenant_id, account_id=account.id)
-    ]
+    ready_ids = online_ready_account_ids_for_planning(
+        session,
+        tenant_id=task.tenant_id,
+        accounts=accounts,
+        now=_now(),
+    )
+    ready = [account for account in accounts if account.id in ready_ids]
     selected_ids = [account.id for account in accounts]
-    ready_ids = [account.id for account in ready]
-    _record_online_ready_stats(task, selected_ids, ready_ids, progress)
+    ordered_ready_ids = [account.id for account in ready]
+    _record_online_ready_stats(task, selected_ids, ordered_ready_ids, progress)
     if _all_accounts_daily_coverage(getattr(task, "type_config", {}) or {}):
-        ready_set = set(ready_ids)
         block_coverage_accounts(
             session,
             task,
-            [account_id for account_id in selected_ids if account_id not in ready_set],
+            [account_id for account_id in selected_ids if account_id not in ready_ids],
             blocker_code="account_offline",
             blocker_detail="账号实时在线状态不可用",
             next_eligible_at=_now() + timedelta(minutes=5),
@@ -1034,11 +1034,6 @@ def _record_online_ready_stats(
     stats.pop("account_offline_count", None)
     stats.pop("account_offline_sample_account_ids", None)
     task.stats = stats
-
-
-def _reconcile_online_sources_for_plan(session: Session, task: Task, accounts: list) -> None:
-    if accounts:
-        reconcile_runtime_online_sources(session, tenant_id=task.tenant_id)
 
 
 def _daily_coverage_uncovered_count(
