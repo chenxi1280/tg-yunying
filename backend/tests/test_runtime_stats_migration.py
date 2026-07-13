@@ -32,6 +32,7 @@ def _legacy_metadata() -> MetaData:
         "actions",
         metadata,
         Column("id", String(36), primary_key=True),
+        Column("tenant_id", Integer),
         Column("task_id", String(36)),
         Column("status", String(20)),
         Column("action_type", String(30)),

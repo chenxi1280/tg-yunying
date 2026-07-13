@@ -7,7 +7,7 @@ import socket
 from typing import Sequence
 from uuid import uuid4
 
-from sqlalchemy import ColumnElement, or_, select
+from sqlalchemy import ColumnElement, and_, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import Action, Task
@@ -32,7 +32,7 @@ def claim_recovery_actions(
 ) -> list[RecoveryClaim]:
     statement = (
         select(Action)
-        .join(Task, Task.id == Action.task_id)
+        .join(Task, and_(Task.id == Action.task_id, Task.tenant_id == Action.tenant_id))
         .where(
             *conditions,
             Task.status == "running",
@@ -43,7 +43,7 @@ def claim_recovery_actions(
         .limit(max(1, int(limit)))
     )
     if session.bind and session.bind.dialect.name != "sqlite":
-        statement = statement.with_for_update(skip_locked=True)
+        statement = statement.with_for_update(skip_locked=True, of=Action)
     actions = list(session.scalars(statement))
     token = str(uuid4())
     expires_at = now + timedelta(seconds=RECOVERY_CLAIM_SECONDS)

@@ -27,7 +27,7 @@ from app.services.tenant_target_profile import tenant_learning_profile_preview
 from app.services.rule_engine import apply_output_policy, bound_rule_version, evaluate_input_filter
 from app.services.material_rules import MaterialRuleResult, select_material_for_policy
 
-from ..account_pool import DAILY_COVERAGE_SUCCESS_STATUSES, daily_account_coverage_counts, daily_uncovered_account_count, select_task_accounts
+from ..account_pool import DAILY_COVERAGE_SUCCESS_STATUSES, daily_uncovered_account_count, select_task_accounts
 from ..ai_act_types import canonical_ai_group_act_type
 from ..ai_generator import AI_GENERATION_UNAVAILABLE_MESSAGE, AiGenerationUnavailable, generate_group_messages, generate_group_reply_messages
 from ..ai_message_memory import DuplicateMessageReservation, mark_group_ai_message_result, reserve_group_ai_message
@@ -716,7 +716,12 @@ def build_plan(session: Session, task: Task) -> int:
         if payload.ai_message_memory_id:
             mark_group_ai_message_result(session, payload.ai_message_memory_id, status="reserved", action_id=action.id)
         created += 1
-        _remember_reserved_coverage_row(reserved_coverage_rows, coverage_rows, account_id, payload)
+        _remember_reserved_coverage_row(
+            reserved_coverage_rows,
+            coverage_rows,
+            account_id=account_id,
+            payload=payload,
+        )
     _advance_reserved_coverage_cursor(session, task, reserved_coverage_rows)
     for row in unprocessed_rows:
         remember_fingerprint(session, task.tenant_id, fingerprint_source, _context_fingerprint(row))
@@ -765,6 +770,7 @@ def build_plan(session: Session, task: Task) -> int:
 def _remember_reserved_coverage_row(
     reserved_rows: list[TaskAccountDailyCoverage],
     rows_by_account: dict[int, TaskAccountDailyCoverage],
+    *,
     account_id: int,
     payload: SendMessagePayload,
 ) -> None:

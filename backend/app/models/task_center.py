@@ -50,7 +50,15 @@ class Action(Base):
         Index("ix_actions_claim_expiry", "status", "claim_expires_at"),
         Index("ix_actions_lease_recovery", "lease_owner", "lease_expires_at"),
         Index("ix_actions_task_status", "task_id", "status", "executed_at"),
-        Index("ix_actions_task_stats_reconcile", "task_id", "status", "action_type", "account_id", "executed_at"),
+        Index(
+            "ix_actions_task_stats_reconcile",
+            "tenant_id",
+            "task_id",
+            "status",
+            "action_type",
+            "account_id",
+            "executed_at",
+        ),
         Index(
             "ix_actions_executing_recovery",
             "scheduled_at",

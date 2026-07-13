@@ -37,6 +37,7 @@ from app.services.task_center.daily_coverage_planning import (
 from app.services.task_center.service import _claim_stale_executing_action_ids, _stale_executing_action_ids
 from app.services.task_center import service as task_service
 from app.services.task_center.stats import refresh_task_stats
+from app.services.runtime_action_queries import task_action_status_counts_statement
 
 
 pytestmark = pytest.mark.allow_missing_rule_binding
@@ -92,8 +93,10 @@ def test_postgres_metrics_and_recovery_scans_are_bounded_at_production_history_s
     _cleanup()
     try:
         _seed_action_history()
+        _vacuum_actions()
         with SessionLocal() as session:
             task = session.get(Task, TASK_ID)
+            _assert_task_stats_explain(session)
             expected_counts = dict(session.execute(
                 select(Action.status, func.count()).where(Action.task_id == TASK_ID).group_by(Action.status)
             ).all())
@@ -292,6 +295,22 @@ def _assert_recovery_explain(session) -> None:
     )
 
 
+def _assert_task_stats_explain(session) -> None:
+    task = session.get(Task, TASK_ID)
+    statement = task_action_status_counts_statement(task)
+    _assert_explain_uses_index(
+        session,
+        str(statement.compile(engine, compile_kwargs={"literal_binds": True})),
+        {},
+        "ix_actions_task_stats_reconcile",
+    )
+
+
+def _vacuum_actions() -> None:
+    with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as connection:
+        connection.execute(text("VACUUM ANALYZE actions"))
+
+
 def _assert_explain_uses_index(session, query: str, parameters: dict, index_name: str) -> None:
     payload = session.execute(
         text(f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {query}"),
@@ -382,18 +401,24 @@ def _seed_action_history() -> None:
         session.commit()
 
 
-def _seed_stale_recovery_actions(count: int) -> None:
+def _seed_stale_recovery_actions(
+    count: int,
+    *,
+    task_id: str = TASK_ID,
+    action_prefix: str = "pg-recovery",
+) -> None:
     timestamp = _now() - timedelta(hours=2)
     with SessionLocal() as session:
-        session.add(Tenant(id=TENANT_ID, name="recovery-claims"))
-        session.commit()
-        session.add(Task(id=TASK_ID, tenant_id=TENANT_ID, name="recovery", type="target_admission_retry", status="running"))
+        if session.get(Tenant, TENANT_ID) is None:
+            session.add(Tenant(id=TENANT_ID, name="recovery-claims"))
+            session.commit()
+        session.add(Task(id=task_id, tenant_id=TENANT_ID, name="recovery", type="target_admission_retry", status="running"))
         session.flush()
         session.add_all(
             Action(
-                id=f"pg-recovery-{index:03d}",
+                id=f"{action_prefix}-{index:03d}",
                 tenant_id=TENANT_ID,
-                task_id=TASK_ID,
+                task_id=task_id,
                 task_type="target_admission_retry",
                 action_type="ensure_target_membership",
                 status="executing",

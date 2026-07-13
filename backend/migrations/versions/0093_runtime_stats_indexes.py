@@ -22,7 +22,7 @@ INDEX_DEFINITIONS = (
     (
         "ix_actions_task_stats_reconcile",
         "actions",
-        "task_id, status, action_type, account_id, executed_at",
+        "tenant_id, task_id, status, action_type, account_id, executed_at",
         "",
     ),
     (

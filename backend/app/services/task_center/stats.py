@@ -14,6 +14,7 @@ from .hard_hourly import enabled as hard_hourly_enabled, hard_hourly_stats
 from .pacing import ai_next_run_after, next_run_after
 from .planner_backlog import hard_hourly_payload_expired, planner_backlog_snapshot
 from .search_join_config import runtime_search_join_config
+from app.services.runtime_action_queries import task_action_status_counts_statement
 
 ARCHIVED_SKIP_ERROR_CODES = {"context_expired"}
 DEFAULT_AUTO_RETRY_STATUSES = ("failed", "retryable_failed")
@@ -65,13 +66,22 @@ def refresh_task_stats(
 ) -> dict[str, Any]:
     session.flush()
     business_filter = _stats_action_filter(task)
-    rows = session.execute(select(Action.status, func.count(Action.id)).where(Action.task_id == task.id, business_filter).group_by(Action.status)).all()
+    rows = session.execute(task_action_status_counts_statement(task, business_filter)).all()
     counts = {str(status): int(count) for status, count in rows}
     raw_skipped_count = counts.get("skipped", 0)
     archived_skipped_count = _archived_skipped_count(session, task, business_filter)
     skipped_count = max(0, raw_skipped_count - archived_skipped_count)
-    accounts_used = session.scalar(select(func.count(func.distinct(Action.account_id))).where(Action.task_id == task.id, business_filter, Action.account_id.is_not(None))) or 0
-    last_action_at = session.scalar(select(func.max(Action.executed_at)).where(Action.task_id == task.id, business_filter))
+    accounts_used = session.scalar(select(func.count(func.distinct(Action.account_id))).where(
+        Action.tenant_id == task.tenant_id,
+        Action.task_id == task.id,
+        business_filter,
+        Action.account_id.is_not(None),
+    )) or 0
+    last_action_at = session.scalar(select(func.max(Action.executed_at)).where(
+        Action.tenant_id == task.tenant_id,
+        Action.task_id == task.id,
+        business_filter,
+    ))
     stats = dict(task.stats or empty_stats())
     stats = _clear_recovered_planner_backlog_stats(session, task, stats)
     stats.update(
@@ -159,6 +169,7 @@ def _search_rank_deboost_success_count(session: Session, task: Task, start: date
     return int(
         session.scalar(
             select(func.count(Action.id)).where(
+                Action.tenant_id == task.tenant_id,
                 Action.task_id == task.id,
                 Action.action_type == "search_rank_deboost",
                 Action.status == "success",
@@ -176,6 +187,7 @@ def _search_rank_deboost_open_count(session: Session, task: Task, now_value: dat
     return int(
         session.scalar(
             select(func.count(Action.id)).where(
+                Action.tenant_id == task.tenant_id,
                 Action.task_id == task.id,
                 Action.action_type == "search_rank_deboost",
                 Action.status.in_(("pending", "claiming", "executing")),
@@ -241,6 +253,7 @@ def _search_join_success_count(session: Session, task: Task, start: datetime, en
     return int(
         session.scalar(
             select(func.count(Action.id)).where(
+                Action.tenant_id == task.tenant_id,
                 Action.task_id == task.id,
                 Action.action_type == "search_join",
                 Action.status == "success",
@@ -258,6 +271,7 @@ def _search_join_open_count(session: Session, task: Task, now_value: datetime, b
     return int(
         session.scalar(
             select(func.count(Action.id)).where(
+                Action.tenant_id == task.tenant_id,
                 Action.task_id == task.id,
                 Action.action_type == "search_join",
                 Action.status.in_(SEARCH_JOIN_OPEN_STATUSES),
@@ -305,6 +319,7 @@ def _archived_skipped_count(session: Session, task: Task, business_filter) -> in
         return 0
     count = session.scalar(
         select(func.count(Action.id)).where(
+            Action.tenant_id == task.tenant_id,
             Action.task_id == task.id,
             business_filter,
             Action.action_type == "send_message",
@@ -324,6 +339,7 @@ def retry_failed_actions(session: Session, task: Task, *, limit: int = 100) -> i
     backoff = policy.get("retry_backoff") or "none"
     count = 0
     query = select(Action).where(
+        Action.tenant_id == task.tenant_id,
         Action.task_id == task.id,
         Action.status.in_(_auto_retry_statuses(task)),
         Action.retry_count < max_retries,

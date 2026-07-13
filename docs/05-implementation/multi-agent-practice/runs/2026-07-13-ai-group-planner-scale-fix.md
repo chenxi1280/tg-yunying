@@ -177,6 +177,12 @@
 - E2：断言 Planner 对所有外部入口调用数为 0；验证 Phase A 任一失败整批 Action/coverage/cursor 回滚，580 债务、10/30/60 Turn 映射、reply 目标消失、normal 最新上下文、同批 slot 缺失/额外/重复、质量失败释放、AI 成功后 DB commit 失败恢复、双 Dispatcher claim 和跨租户隔离。Phase A、Phase B claim、Phase C、发送前检查和 finalize 每个事务均 `<5s`，外部 AI / Telegram 调用期间 `session.in_transaction() is False`。
 - Product Design Complete：专项设计 `docs/03-feature-designs/ai-group-dispatcher-ai-generation-transaction-design.md` 与 DF-167/168、BG-004/A/005、PERF-007 覆盖说明已定义原始需求、前后端状态、Worker/API/数据流、权限安全、reply/normal 边界、并发幂等、质量失败、生成/发送 unknown 分层、迁移回滚和 E2/E4。`design_status=complete`、`resync=true`；进入 dev 后必须再次独立 QA 和 Product Acceptance，禁止沿用上一轮 `qa_pass`。
 
+### Independent QA I2 / I3 Deterministic Rework
+
+- I2 根因是 Recovery 的裸 `FOR UPDATE SKIP LOCKED` 同时锁住 JOIN 的 Task 行，同一 Task 两个 worker 因而退化为 20/0。改为 `FOR UPDATE OF actions SKIP LOCKED` 并给 Action/Task JOIN 增加 tenant 相等约束后，同 Task 与跨 Task 都稳定并行领取 20/20；跨租户 Action 引用不会被领取。
+- I3 将 stats 和 runtime summary 的 Action 状态计数统一为 tenant + task、`count(*)` 的共享 SQL，并把 `ix_actions_task_stats_reconcile` 调整为 tenant-leading。40,741 Action 经 `VACUUM ANALYZE` 后，对实际 production statement 的 EXPLAIN 命中目标索引且无 Seq Scan；跨租户伪造 Action 不进入任一汇总。
+- 定向真 PostgreSQL 证据：runtime stats 全文件连续两轮 `5 passed`（10.76s / 10.38s），tenant isolation `3 passed`，Recovery lock scope `1 passed`。本节仅恢复 I2/I3 的 Dev E2，I1 仍按上一节专项三阶段合同待实现；独立 re-QA、Product Acceptance、发布和生产 E4 均未完成。
+
 ## Release Gate 与 E4
 
 1. 按 `master -> release -> GitHub Actions Deploy Production` 发布并核对实际镜像 commit。
