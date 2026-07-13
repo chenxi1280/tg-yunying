@@ -22,6 +22,7 @@ from app.services.runtime_summary import reconcile_stale_operation_issues
 from app.services.runtime_summary_batches import refresh_account_runtime_summary_batch
 
 TEST_TENANT_ID = 913_716
+ACCOUNT_ID_BASE = 913_716_000
 ACCOUNT_COUNT = 580
 MAX_PLANNER_SUMMARY_SECONDS = 5.0
 MAX_ACCOUNT_BATCH_SECONDS = 10.0
@@ -48,7 +49,7 @@ def test_postgres_planner_summary_is_bounded_for_580_configured_accounts(monkeyp
             session.commit()
             elapsed = perf_counter() - started_at
 
-        assert refreshed == [7]
+        assert refreshed == [ACCOUNT_ID_BASE + 7]
         assert elapsed < MAX_PLANNER_SUMMARY_SECONDS
     finally:
         _cleanup()
@@ -60,7 +61,7 @@ def test_postgres_account_summary_batches_cover_580_accounts() -> None:
     try:
         with SessionLocal() as session:
             session.add(Tenant(id=TEST_TENANT_ID, name="runtime-summary-scale"))
-            session.add_all(_account(account_id) for account_id in range(1, ACCOUNT_COUNT + 1))
+            session.add_all(_account(account_id) for account_id in _account_ids())
             session.commit()
 
         batch_results = [_timed_batch(100) for _ in EXPECTED_BATCH_COUNTS]
@@ -122,14 +123,15 @@ def test_postgres_issue_reconcile_scales_with_580_action_sources() -> None:
 def _seed_planner_task(session) -> None:
     session.add(Tenant(id=TEST_TENANT_ID, name="runtime-summary-scale"))
     session.commit()
-    session.add(_account(7))
+    failure_account_id = ACCOUNT_ID_BASE + 7
+    session.add(_account(failure_account_id))
     task = Task(
         id="pg-runtime-summary-task",
         tenant_id=TEST_TENANT_ID,
         name="580-account task",
         type="group_ai_chat",
         status="running",
-        account_config={"account_ids": list(range(1, ACCOUNT_COUNT + 1))},
+        account_config={"account_ids": _account_ids()},
     )
     session.add(task)
     session.commit()
@@ -140,7 +142,7 @@ def _seed_planner_task(session) -> None:
             task_id=task.id,
             task_type=task.type,
             action_type="send_message",
-            account_id=7,
+            account_id=failure_account_id,
             status="failed",
             scheduled_at=_now(),
             executed_at=_now(),
@@ -159,6 +161,10 @@ def _account(account_id: int) -> TgAccount:
         status="正常",
         session_ciphertext="session",
     )
+
+
+def _account_ids() -> list[int]:
+    return list(range(ACCOUNT_ID_BASE + 1, ACCOUNT_ID_BASE + ACCOUNT_COUNT + 1))
 
 
 def _failed_action(task: Task, index: int) -> Action:
