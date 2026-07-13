@@ -1839,6 +1839,9 @@ def _recover_continuous_task_states(session: Session) -> int:
         config = task.type_config or {}
         if (config.get("message_scope") or "dynamic_new") == "specific":
             continue
+        stats = task.stats if isinstance(task.stats, dict) else {}
+        if task.type == "channel_comment" and stats.get("completion_reason") == "lifetime_cap_reached":
+            continue
         task.status = "running"
         task.next_run_at = now
         task.last_error = ""

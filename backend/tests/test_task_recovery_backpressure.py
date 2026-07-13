@@ -17,6 +17,70 @@ from app.services.task_center.service import _recover_stale_executing_actions, d
 pytestmark = pytest.mark.no_postgres
 
 
+@pytest.mark.allow_missing_rule_binding
+def test_recovery_preserves_lifetime_cap_comment_completion_and_recovers_regular_dynamic_task():
+    completion_stats = {
+        "completion_reason": "lifetime_cap_reached",
+        "completed_at": "2026-07-13T16:51:56.362702",
+        "max_total_comments_resolved": 86,
+        "remote_success_count": 51,
+        "unknown_after_send_count": 35,
+    }
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        lifetime_task = Task(
+            id="lifetime-cap-comment", tenant_id=1, name="生命周期已完成评论",
+            type="channel_comment", status="completed", next_run_at=None, scheduled_end=None,
+            type_config={"message_scope": "dynamic_new"}, stats=completion_stats,
+        )
+        regular_task = Task(
+            id="regular-dynamic-comment", tenant_id=1, name="普通动态评论",
+            type="channel_comment", status="completed", next_run_at=None, scheduled_end=None,
+            type_config={"message_scope": "dynamic_new"}, stats={},
+        )
+        session.add_all([lifetime_task, regular_task])
+        session.flush()
+
+        recovered = task_service._recover_continuous_task_states(session)
+
+    assert recovered == 1
+    assert lifetime_task.status == "completed"
+    assert lifetime_task.next_run_at is None
+    assert lifetime_task.stats == completion_stats
+    assert regular_task.status == "running"
+    assert regular_task.next_run_at is not None
+
+
+@pytest.mark.allow_missing_rule_binding
+def test_recovery_recovers_regular_dynamic_task_with_non_mapping_stats():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        task = Task(
+            id="legacy-stats-dynamic-comment",
+            tenant_id=1,
+            name="历史统计动态评论",
+            type="channel_comment",
+            status="completed",
+            next_run_at=None,
+            scheduled_end=None,
+            type_config={"message_scope": "dynamic_new"},
+            stats=["legacy-stats"],
+        )
+        session.add(task)
+        session.flush()
+
+        recovered = task_service._recover_continuous_task_states(session)
+
+    assert recovered == 1
+    assert task.status == "running"
+    assert task.next_run_at is not None
+    assert task.stats == ["legacy-stats"]
+
+
 def test_recovery_limits_unknown_membership_reprobes_to_drain_limit(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
