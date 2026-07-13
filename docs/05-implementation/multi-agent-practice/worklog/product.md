@@ -491,3 +491,11 @@
 - decision: `product_accepted_local=true`；允许进入 Release Gate。生产 E4 未完成，`production_fixed=unproven`；`/api/tasks` 历史间歇 502 的唯一 upstream 原因仍保持 `unproven`。
 - next_agent: prod-diagnosis
 - unresolved: 完成 `master -> release -> Deploy Production`，核对实际镜像 commit，并按真实登录态与同窗口日志完成发布后性能/错误率验收。
+
+## 2026-07-13 AI 活群 Planner 规模治理 Product Acceptance
+
+- message_id: `2026-07-13-ai-group-planner-scale-product-accepted-001`
+- acceptance: 不改变全部账号每日覆盖、容量、质量或远端确认合同；新账号自动纳入链路完整；paused-only 低频状态恢复 active 时立即 fail-closed 探测，已有 active 来源不误阻断。
+- evidence: 产品关键验收 9 passed；完整 QA 证据见 `2026-07-13-ai-group-planner-scale-local-qa-001`。
+- decision: `product_accepted=true`；允许发布；`production_fixed=unproven`。
+- unresolved: 生产完整北京时间自然日任务 × 群 × 账号矩阵与评论任务真实结果。

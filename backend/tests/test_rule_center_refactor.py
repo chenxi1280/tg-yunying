@@ -55,8 +55,8 @@ from tests.ai_group_voice_profile_fixtures import assume_default_ai_group_voice_
 def assume_group_ai_accounts_ready_for_rule_tests(monkeypatch):
     assume_default_ai_group_voice_profiles(monkeypatch)
     monkeypatch.setattr(
-        "app.services.task_center.executors.group_ai_chat.is_account_online_ready_for_planning",
-        lambda *args, **kwargs: True,
+        "app.services.task_center.executors.group_ai_chat.online_ready_account_ids_for_planning",
+        lambda _session, *, tenant_id, accounts, now=None: {account.id for account in accounts},
     )
 
 

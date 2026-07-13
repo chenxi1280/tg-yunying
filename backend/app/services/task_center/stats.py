@@ -6,14 +6,13 @@ from typing import Any
 from sqlalchemy import func, select, true
 from sqlalchemy.orm import Session
 
-from app.config import get_settings
 from app.models import Action, Task
 from app.services._common import _now
-from app.timezone import BEIJING_TZ, as_beijing
 
 from .config_fields import CHANNEL_DYNAMIC_TASK_TYPES
 from .hard_hourly import enabled as hard_hourly_enabled, hard_hourly_stats
 from .pacing import ai_next_run_after, next_run_after
+from .planner_backlog import hard_hourly_payload_expired, planner_backlog_snapshot
 from .search_join_config import runtime_search_join_config
 
 ARCHIVED_SKIP_ERROR_CODES = {"context_expired"}
@@ -22,7 +21,6 @@ TARGET_ADMISSION_AUTO_RETRY_STATUSES = ("failed", "retryable_failed")
 TARGET_ADMISSION_DEFAULT_MAX_RETRIES = 1
 TARGET_ADMISSION_DEFAULT_RETRY_DELAY_SECONDS = 30
 BUSINESS_MEMBERSHIP_ACTION_TYPES = ["ensure_channel_membership", "ensure_target_membership"]
-PLANNER_BACKLOG_OPEN_STATUSES = {"pending", "claiming", "executing"}
 PLANNER_BACKLOG_STAT_KEYS = (
     "planner_backlog_blocked",
     "planner_backlog_blocked_at",
@@ -282,52 +280,6 @@ def _stats_action_filter(task: Task):
     return Action.action_type.notin_(BUSINESS_MEMBERSHIP_ACTION_TYPES)
 
 
-def planner_backlog_snapshot(session: Session, task: Task) -> dict[str, int | bool]:
-    settings = get_settings()
-    task_filters = [
-        Action.task_id == task.id,
-        Action.status.in_(PLANNER_BACKLOG_OPEN_STATUSES),
-    ]
-    if _can_plan_with_partial_membership(task):
-        task_filters.append(Action.action_type.notin_(BUSINESS_MEMBERSHIP_ACTION_TYPES))
-    now_value = _now()
-    global_actions = _active_backlog_actions(session, [Action.status.in_(PLANNER_BACKLOG_OPEN_STATUSES)], now_value)
-    task_actions = _active_backlog_actions(session, task_filters, now_value)
-    global_pending = len(global_actions)
-    task_pending = len(task_actions)
-    oldest_pending = min((action.scheduled_at for action in task_actions if action.scheduled_at), default=None)
-    oldest_at = as_beijing(oldest_pending)
-    oldest_age = int((_now() - oldest_at).total_seconds()) if oldest_at else 0
-    blocked = (
-        int(global_pending or 0) >= int(settings.max_pending_global or 0)
-        or int(task_pending or 0) >= int(settings.max_pending_per_task or 0)
-        or oldest_age >= int(settings.oldest_pending_age_seconds or 0)
-    )
-    return {
-        "blocked": blocked,
-        "global_pending": int(global_pending or 0),
-        "task_pending": int(task_pending or 0),
-        "oldest_age_seconds": int(oldest_age),
-    }
-
-
-def _active_backlog_actions(session: Session, filters: list[Any], now_value: datetime) -> list[Action]:
-    actions = session.scalars(select(Action).where(*filters)).all()
-    return [action for action in actions if not _hard_hourly_bucket_expired(action, now_value)]
-
-
-def _can_plan_with_partial_membership(task: Task) -> bool:
-    stats = task.stats if isinstance(task.stats, dict) else {}
-    raw_blockers = stats.get("hard_hourly_last_blockers")
-    blockers = raw_blockers if isinstance(raw_blockers, dict) else {}
-    return (
-        task.type == "group_ai_chat"
-        and hard_hourly_enabled(task)
-        and int(stats.get("membership_joined_count") or 0) > 0
-        and int(blockers.get("target_membership_pending") or 0) > 0
-    )
-
-
 def clear_planner_backlog_stats(stats: dict[str, Any]) -> dict[str, Any]:
     updated = dict(stats or {})
     for key in PLANNER_BACKLOG_STAT_KEYS:
@@ -458,20 +410,7 @@ def _hard_hourly_bucket_expired(action: Action, now_value: datetime) -> bool:
     if action.action_type != "send_message":
         return False
     payload = action.payload if isinstance(action.payload, dict) else {}
-    if not payload.get("hard_hourly_target"):
-        return False
-    bucket_value = str(payload.get("hard_hourly_bucket") or "").strip()
-    if not bucket_value:
-        return False
-    try:
-        bucket_start = datetime.fromisoformat(bucket_value)
-    except ValueError:
-        return False
-    if bucket_start.tzinfo is None:
-        comparable_now = now_value.replace(tzinfo=None)
-    else:
-        comparable_now = now_value.replace(tzinfo=BEIJING_TZ).astimezone(bucket_start.tzinfo)
-    return bucket_start + timedelta(hours=1) <= comparable_now
+    return hard_hourly_payload_expired(payload, now_value)
 
 
 def empty_stats() -> dict[str, Any]:

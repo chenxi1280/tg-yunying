@@ -412,7 +412,11 @@ def test_group_ai_online_ready_clears_stale_offline_count(monkeypatch):
     task = SimpleNamespace(tenant_id=1, stats={"account_offline_count": 2, "other": "kept"})
     accounts = [SimpleNamespace(id=11), SimpleNamespace(id=12)]
 
-    monkeypatch.setattr(group_ai_chat, "is_account_online_ready_for_planning", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        group_ai_chat,
+        "online_ready_account_ids_for_planning",
+        lambda _session, *, tenant_id, accounts, now=None: {account.id for account in accounts},
+    )
 
     ready = group_ai_chat._online_ready_accounts(None, task, accounts, {})
 

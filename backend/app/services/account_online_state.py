@@ -10,11 +10,11 @@ from app.config import get_settings
 from app.models import AccountStatus, Task, TgAccount, TgAccountOnlineState, TgGroup, TgGroupAccount
 from app.services._common import _now
 from app.services.account_usage_policy import apply_consistent_enabled_account_filters, apply_operational_account_filters
-from app.services.account_online_probe import probe_due_online_states, stale_deadline_for_state
-from app.timezone import as_beijing
+from app.services.account_online_probe import probe_due_online_states
+from app.services.account_online_readiness import state_is_available, state_is_ready, state_matches_account_dimensions
+from app.services.account_online_reconciliation import apply_desired_state, clear_desired_state
 
 ONLINE_TASK_STATUSES = {"running", "paused"}
-ONLINE_AVAILABLE_STATUSES = {"online", "warming", "recovering"}
 ACCOUNT_ONLINE_PROBE_BATCH_LIMIT = 20
 GLOBAL_KEEPALIVE_EXCLUDED_STATUSES = {
     AccountStatus.PENDING_LOGIN.value,
@@ -39,12 +39,12 @@ def reconcile_account_online_sources(
     changed = 0
     for account_id, meta in desired.items():
         state = rows.get(account_id) or TgAccountOnlineState(tenant_id=tenant_id, account_id=account_id)
-        changed += _apply_desired_state(state, meta, current_time)
+        changed += apply_desired_state(state, meta, current_time)
         session.add(state)
         rows[account_id] = state
     for account_id, state in rows.items():
         if account_id not in desired and state.desired_online:
-            changed += _clear_desired_state(state, current_time)
+            changed += clear_desired_state(state, current_time)
     return changed
 
 
@@ -58,7 +58,7 @@ def is_account_online_ready(
     current_time = now or _now()
     state = _account_online_state(session, tenant_id, account_id)
     account = session.get(TgAccount, account_id)
-    return _state_is_ready(state, current_time) and _state_matches_account_dimensions(state, account)
+    return state_is_ready(state, current_time) and state_matches_account_dimensions(state, account)
 
 
 def is_account_online_ready_for_planning(
@@ -71,7 +71,7 @@ def is_account_online_ready_for_planning(
     current_time = now or _now()
     state = _account_online_state(session, tenant_id, account_id)
     account = session.get(TgAccount, account_id)
-    return _state_is_ready(state, current_time) and _state_matches_account_dimensions(state, account)
+    return state_is_ready(state, current_time) and state_matches_account_dimensions(state, account)
 
 
 def is_account_online_available(
@@ -84,7 +84,7 @@ def is_account_online_available(
     current_time = now or _now()
     state = _account_online_state(session, tenant_id, account_id)
     account = session.get(TgAccount, account_id)
-    return _state_is_available(state, current_time) and _state_matches_account_dimensions(state, account)
+    return state_is_available(state, current_time) and state_matches_account_dimensions(state, account)
 
 
 def _account_online_state(session: Session, tenant_id: int, account_id: int) -> TgAccountOnlineState | None:
@@ -449,93 +449,6 @@ def _copy_probe_meta(meta: dict[str, Any], source: dict[str, Any]) -> None:
 def _states_by_account(session: Session, tenant_id: int) -> dict[int, TgAccountOnlineState]:
     rows = session.scalars(select(TgAccountOnlineState).where(TgAccountOnlineState.tenant_id == tenant_id))
     return {row.account_id: row for row in rows}
-
-
-def _apply_desired_state(state: TgAccountOnlineState, meta: dict[str, Any], now: datetime) -> int:
-    before = _state_signature(state)
-    state.desired_online = True
-    state.desired_sources = meta["sources"]
-    state.active_task_count = int(meta.get("active_task_count") or 0)
-    state.session_kind = str(meta.get("session_kind") or state.session_kind or "primary")
-    state.session_id = str(meta.get("session_id") or state.session_id or "")
-    if "proxy_id" in meta:
-        state.proxy_id = meta.get("proxy_id")
-    state.online_status = _next_desired_status(state)
-    if state.online_status != "online" or state.stale_after_at is None:
-        state.stale_after_at = stale_deadline_for_state(state, now)
-    elif _probe_after_stale_deadline(state):
-        state.next_probe_at = now
-    state.failure_type = "" if state.online_status != "blocked" else state.failure_type
-    state.reconciled_at = now
-    state.updated_at = now
-    return int(before != _state_signature(state))
-
-
-def _clear_desired_state(state: TgAccountOnlineState, now: datetime) -> int:
-    before = _state_signature(state)
-    state.desired_online = False
-    state.desired_sources = []
-    state.active_task_count = 0
-    state.online_status = "offline"
-    state.failure_type = "desired_source_removed"
-    state.failure_detail = "在线需求来源已移除"
-    state.reconciled_at = now
-    state.updated_at = now
-    return int(before != _state_signature(state))
-
-
-def _next_desired_status(state: TgAccountOnlineState) -> str:
-    if state.online_status == "online":
-        return "online"
-    if state.online_status in {"blocked", "login_required"}:
-        return state.online_status
-    return "warming"
-
-
-def _probe_after_stale_deadline(state: TgAccountOnlineState) -> bool:
-    stale_after = as_beijing(state.stale_after_at)
-    next_probe = as_beijing(state.next_probe_at)
-    return bool(stale_after and (next_probe is None or next_probe >= stale_after))
-
-
-def _state_is_ready(state: TgAccountOnlineState | None, now: datetime) -> bool:
-    if not state or not state.desired_online or state.online_status != "online":
-        return False
-    return not _state_is_stale(state, now)
-
-
-def _state_is_available(state: TgAccountOnlineState | None, now: datetime) -> bool:
-    if not state or not state.desired_online or state.online_status not in ONLINE_AVAILABLE_STATUSES:
-        return False
-    return not _state_is_stale(state, now)
-
-
-def _state_is_stale(state: TgAccountOnlineState, now: datetime) -> bool:
-    stale_after = as_beijing(state.stale_after_at)
-    current_time = as_beijing(now) or now
-    return bool(stale_after and stale_after <= current_time)
-
-
-def _state_matches_account_dimensions(state: TgAccountOnlineState | None, account: TgAccount | None) -> bool:
-    if not state or not account or account.deleted_at is not None:
-        return False
-    if state.session_id and state.session_id != str(account.id):
-        return False
-    if state.proxy_id is not None and state.proxy_id != account.proxy_id:
-        return False
-    return True
-
-
-def _state_signature(state: TgAccountOnlineState) -> tuple[Any, ...]:
-    return (
-        state.desired_online,
-        state.desired_sources,
-        state.online_status,
-        state.session_kind,
-        state.session_id,
-        state.proxy_id,
-        state.active_task_count,
-    )
 
 
 __all__ = ["drain_account_online_keepalive", "is_account_online_available", "is_account_online_ready", "is_account_online_ready_for_planning", "mark_stale_online_states", "probe_due_online_states", "reconcile_account_online_sources", "reconcile_runtime_online_sources"]

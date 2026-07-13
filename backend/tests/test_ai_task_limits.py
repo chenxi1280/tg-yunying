@@ -49,8 +49,8 @@ NOW = datetime(2026, 5, 30, 10, 0, 0)
 def assume_group_ai_accounts_ready_for_limit_tests(monkeypatch):
     assume_default_ai_group_voice_profiles(monkeypatch)
     monkeypatch.setattr(
-        "app.services.task_center.executors.group_ai_chat.is_account_online_ready_for_planning",
-        lambda *args, **kwargs: True,
+        "app.services.task_center.executors.group_ai_chat.online_ready_account_ids_for_planning",
+        lambda _session, *, tenant_id, accounts, now=None: {account.id for account in accounts},
     )
     monkeypatch.setattr(
         "app.services.task_center.dispatcher.is_account_online_ready",

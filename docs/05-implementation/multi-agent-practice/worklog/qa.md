@@ -328,3 +328,11 @@
 - decision: `qa_pass=true`；本地 Release Gate 通过；不声明生产可用。
 - next_agent: product
 - unresolved: 真实协议样本、生产代理出口、灰度点击结果和生产监控仍为 `unproven`。
+
+## 2026-07-13 AI 活群 Planner 规模治理本地 QA
+
+- message_id: `2026-07-13-ai-group-planner-scale-local-qa-001`
+- output: `qa_pass`；无 Critical / Important / Minor。
+- evidence: no-PostgreSQL `1246 passed, 805 deselected`；Docker PostgreSQL `15 passed`；容量 cached / uncached 等价、新账号 event 到 Planner Action、4×580 零重复 UPDATE、low-frequency-only 到 active fail-closed 均通过。
+- decision: 允许进入 Release Gate；不等于已发布或 production_fixed。
+- unresolved: 生产 worker、due debt、远端成功、完整自然日矩阵和评论任务仍需 E4。

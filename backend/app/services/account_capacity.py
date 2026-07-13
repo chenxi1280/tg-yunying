@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 from sqlalchemy import func, select
@@ -10,32 +9,12 @@ from sqlalchemy.orm import Session
 from app.models import Action, MessageTask, SchedulingSetting, TaskStatus, TgAccount
 from app.services._common import _now
 from app.services import account_capacity_timeline
-from app.services.ai_config import get_scheduling_setting
+from app.services.account_capacity_bulk import capacity_setting, prime_capacity_cache
+from app.services.account_capacity_types import AccountCapacityCache, AccountCapacityDecision, AccountCapacityReservation
 
 
 ACTION_OCCUPIED_STATUSES = {"pending", "claiming", "executing", "success", "unknown_after_send"}
 MESSAGE_TASK_OCCUPIED_STATUSES = {TaskStatus.QUEUED.value, TaskStatus.SENDING.value, TaskStatus.SENT.value}
-
-
-@dataclass(frozen=True)
-class AccountCapacityDecision:
-    available: bool
-    defer_until: datetime | None = None
-    reason_code: str = ""
-    reason: str = ""
-
-
-@dataclass(frozen=True)
-class AccountCapacityReservation:
-    account_id: int
-    scheduled_at: datetime
-
-
-@dataclass
-class AccountCapacityCache:
-    occupied_counts: dict[tuple, int] = field(default_factory=dict)
-    last_occupied_at: dict[tuple, datetime | None] = field(default_factory=dict)
-    occupied_timelines: dict[tuple, tuple[datetime, ...]] = field(default_factory=dict)
 
 
 def account_capacity_decision(
@@ -50,7 +29,7 @@ def account_capacity_decision(
     reservations: list[AccountCapacityReservation] | None = None,
     cache: AccountCapacityCache | None = None,
 ) -> AccountCapacityDecision:
-    setting = get_scheduling_setting(session, tenant_id)
+    setting = capacity_setting(session, tenant_id, cache)
     at = _naive(scheduled_at or _now())
     reserved = reservations or []
     excluded_actions = _excluded_action_ids(exclude_action_id, exclude_action_ids)
@@ -123,6 +102,21 @@ def available_accounts_by_capacity(
     reservations: list[AccountCapacityReservation] | None = None,
     cache: AccountCapacityCache | None = None,
 ) -> list[TgAccount]:
+    at = _naive(scheduled_at or _now())
+    excluded_actions = _excluded_action_ids(exclude_action_id, exclude_action_ids)
+    if cache and accounts:
+        prime_capacity_cache(
+            session,
+            tenant_id=tenant_id,
+            account_ids=[account.id for account in accounts],
+            scheduled_at=at,
+            setting=capacity_setting(session, tenant_id, cache),
+            exclude_action_ids=excluded_actions,
+            exclude_message_task_id=exclude_message_task_id,
+            action_statuses=ACTION_OCCUPIED_STATUSES,
+            message_statuses=MESSAGE_TASK_OCCUPIED_STATUSES,
+            cache=cache,
+        )
     available: list[TgAccount] = []
     for account in accounts:
         decision = account_capacity_decision(

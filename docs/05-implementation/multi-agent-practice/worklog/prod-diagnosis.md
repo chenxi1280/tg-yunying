@@ -258,3 +258,11 @@
 - pass: 当前生产慢页、任务编辑超时和连续刷新 502 症状已恢复，满足 p95 < 2 秒、p99 < 5 秒、单页 < 100KB 和零 408/499/502 的 E4 口径，`production_fixed=confirmed`。
 - blocked: 本机 SSH 只读日志复核被远端关闭连接，未取得同窗口 nginx/backend 请求日志；服务器侧发布、容器和健康证据来自成功部署工作流。
 - unproven: 历史 `/api/tasks` 间歇 502 的唯一直接 upstream 原因；不把发布后的恢复结果倒推成旧故障的唯一底层机制。
+
+## 2026-07-13 AI 活群 Planner 停滞生产诊断
+
+- message_id: `2026-07-13-ai-group-planner-scale-prod-diagnosis-001`
+- evidence: 生产 4 个 all_accounts_daily 任务各 580 分母；Planner drain 长事务停滞、due debt 存在但 open coverage Action 为 0；无数据库锁等待，账号/群容量不是主阻断。
+- root: 每任务在线来源全量 reconcile、逐账号 readiness / capacity、backlog ORM 全量加载和无 open preparation 叠加造成规模放大。
+- decision: L3；本地修复已 `qa_pass/product_accepted`，进入正常 release；生产不热补代码。
+- unresolved: 发布、worker 恢复、due debt 推进、2320 项完整自然日远端成功矩阵和评论任务运行状态。

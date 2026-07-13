@@ -1609,9 +1609,10 @@ def _drain_task_planner(session_factory, *, limit: int, process_type: str | None
                 session.commit()
                 continue
             processed += retry_failed_actions(session, task)
-            prepared_open_actions = prepare_open_actions_for_planning(session, task)
-            processed += prepared_open_actions
             has_open_actions, open_actions_are_future = _open_actions_state(session, task)
+            if has_open_actions:
+                processed += prepare_open_actions_for_planning(session, task)
+                has_open_actions, open_actions_are_future = _open_actions_state(session, task)
             open_actions_allow_planning = has_open_actions and requires_planning_with_open_actions(session, task)
             should_skip_open_ai_plan = (
                 task.type == "group_ai_chat"

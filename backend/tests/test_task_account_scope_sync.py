@@ -12,13 +12,19 @@ from app.models import (
     AccountEligibilityEvent,
     AccountPool,
     AccountStatus,
+    Action,
+    AiAccountVoiceProfile,
     OperationTarget,
     Task,
+    TaskAccountDailyCoverage,
     TaskMembershipAdmissionItem,
     Tenant,
     TgAccount,
+    TgAccountOnlineState,
     TgGroup,
+    TgGroupAccount,
 )
+from app.integrations.telegram import AccountHealth
 from app.security import encrypt_session
 from app.schemas.task_center import GroupAIChatTaskCreate
 from app.services.task_center.account_scope import (
@@ -29,6 +35,8 @@ from app.services.task_center.account_scope import (
 )
 from app.services.task_center.channel_membership import _account_can_attempt_membership
 from app.services import accounts as accounts_service
+from app.services.account_online_state import probe_due_online_states, reconcile_runtime_online_sources
+from app.services.task_center.executors import group_ai_chat
 from app.services.task_center.service import create_group_ai_chat_task
 
 
@@ -192,6 +200,70 @@ def test_account_event_incrementally_syncs_only_changed_account(session: Session
     event = session.scalar(select(AccountEligibilityEvent))
     assert [item.account_id for item in relations] == [1, 2]
     assert event is not None and event.processed_at is not None and event.processing_error == ""
+
+
+def _seed_new_account_e2e(session: Session) -> Task:
+    _seed_scope_base(session)
+    task = _task("new-account-e2e")
+    task.account_config = {"selection_mode": "all", "cooldown_per_account_minutes": 0}
+    task.type_config = {
+        **task.type_config,
+        "messages_per_round_mode": "manual",
+        "messages_per_round": 1,
+        "reply_min_per_round": 0,
+        "per_account_daily_min_messages": 2,
+        "fact_anchor_required": False,
+        "low_confidence_silence_enabled": False,
+    }
+    account = _account(1, 10)
+    session.add_all([
+        task,
+        account,
+        TgGroupAccount(tenant_id=1, group_id=21, account_id=1, can_send=True),
+        AiAccountVoiceProfile(
+            tenant_id=1,
+            account_id=1,
+            version=1,
+            status="active",
+            short_prompt_summary="自然短句",
+        ),
+    ])
+    session.commit()
+    emit_account_eligibility_event(session, 1, "login_ready")
+    session.commit()
+    return task
+
+
+def test_new_account_event_reaches_online_probe_and_planner_action(session: Session, monkeypatch) -> None:
+    now = datetime(2026, 7, 13, 22, 30)
+    task = _seed_new_account_e2e(session)
+
+    assert process_account_eligibility_events(session, limit=10, now=now) == 1
+    relation = session.scalar(select(TaskMembershipAdmissionItem).where(TaskMembershipAdmissionItem.task_id == task.id))
+    coverage = session.scalar(select(TaskAccountDailyCoverage).where(TaskAccountDailyCoverage.task_id == task.id))
+    assert relation is not None and coverage is not None
+    assert reconcile_runtime_online_sources(session, tenant_id=1, include_global=False, now=now) == 1
+    state = session.scalar(select(TgAccountOnlineState).where(TgAccountOnlineState.account_id == 1))
+    assert state is not None and state.online_status == "warming"
+
+    monkeypatch.setattr(group_ai_chat, "_now", lambda: now)
+    monkeypatch.setattr(group_ai_chat, "should_collect_listener", lambda *_args, **_kwargs: False)
+    assert group_ai_chat.build_plan(session, task) == 0
+    assert coverage.blocker_code == "account_offline"
+    monkeypatch.setattr("app.services.account_online_probe.credentials_for_account", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(
+        "app.services.account_online_probe.gateway.check_account_health",
+        lambda *_args: AccountHealth(status=AccountStatus.ACTIVE.value, health_score=96, detail="ok"),
+    )
+    assert probe_due_online_states(session, limit=10, now=now) == 1
+    created = group_ai_chat.build_plan(session, task)
+    pending = list(session.scalars(select(Action).where(Action.task_id == task.id, Action.status == "pending")))
+
+    assert state.online_status == "online"
+    assert coverage.blocker_code == ""
+    assert created == 1
+    assert len(pending) == 1
+    assert pending[0].payload["ai_generation_status"] == "pending"
 
 
 def test_failed_scope_event_is_delayed_without_starving_new_events(session: Session, monkeypatch) -> None:

@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import threading
 from datetime import timedelta
+from time import perf_counter
 
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
@@ -21,6 +22,7 @@ from app.services.account_online_state import (
 )
 from app.services.account_online_constants import ONLINE_PROBE_INTERVAL
 from app.services.account_online_projection import task_account_online_summary
+from app.services.task_center.executors import group_ai_chat
 
 
 pytestmark = pytest.mark.no_postgres
@@ -121,6 +123,30 @@ def test_reconcile_online_sources_creates_traceable_desired_state():
         assert state.stale_after_at > now
 
 
+def test_reconcile_online_sources_does_not_rewrite_unchanged_state():
+    now = _now()
+    sources = [{"source_type": "task", "source_id": "task-1", "account_ids": [101]}]
+    with _session() as session:
+        _account(session)
+        reconcile_account_online_sources(session, tenant_id=1, sources=sources, now=now)
+        session.commit()
+        state = session.scalar(select(TgAccountOnlineState).where(TgAccountOnlineState.account_id == 101))
+        original_reconciled_at = state.reconciled_at
+        original_updated_at = state.updated_at
+
+        changed = reconcile_account_online_sources(
+            session,
+            tenant_id=1,
+            sources=sources,
+            now=now + timedelta(minutes=1),
+        )
+
+        assert changed == 0
+        assert state.reconciled_at == original_reconciled_at
+        assert state.updated_at == original_updated_at
+        assert state not in session.dirty
+
+
 def test_reconcile_clears_orphaned_desired_online_when_sources_disappear():
     now = _now()
     with _session() as session:
@@ -164,6 +190,98 @@ def test_stale_online_state_is_not_ready_for_dispatch():
         session.commit()
 
         assert is_account_online_ready(session, tenant_id=1, account_id=101, now=now) is False
+
+
+def test_group_planning_checks_online_readiness_in_one_query():
+    now = _now()
+    with _session() as session:
+        for account_id in range(101, 131):
+            _account(session, account_id)
+            session.add(
+                TgAccountOnlineState(
+                    tenant_id=1,
+                    account_id=account_id,
+                    desired_online=True,
+                    online_status="online",
+                    session_id=str(account_id),
+                    proxy_id=7,
+                    stale_after_at=now + timedelta(minutes=5),
+                )
+            )
+        session.commit()
+        accounts = list(session.scalars(select(TgAccount).where(TgAccount.id.between(101, 130))))
+        task = type("TaskStub", (), {"tenant_id": 1, "stats": {}, "type_config": {}})()
+        select_count = 0
+
+        def count_selects(_conn, _cursor, statement, _parameters, _context, _executemany):
+            nonlocal select_count
+            select_count += int(statement.lstrip().upper().startswith("SELECT"))
+
+        event.listen(session.bind, "before_cursor_execute", count_selects)
+        ready = group_ai_chat._online_ready_accounts(session, task, accounts, {})
+
+        assert len(ready) == 30
+        assert select_count <= 1
+
+
+def _seed_online_scale(session: Session) -> None:
+    accounts = [
+        TgAccount(
+            id=account_id,
+            tenant_id=1,
+            display_name=str(account_id),
+            phone_masked=str(account_id),
+            status=AccountStatus.ACTIVE.value,
+            session_ciphertext=f"session-{account_id}",
+            proxy_id=7,
+        )
+        for account_id in range(101, 681)
+    ]
+    groups = [
+        TgGroup(id=group_id, tenant_id=1, tg_peer_id=f"-100{group_id}", title=str(group_id))
+        for group_id in range(501, 505)
+    ]
+    tasks = [
+        Task(
+            id=f"online-scale-{group.id}", tenant_id=1, name=str(group.id), type="group_ai_chat",
+            status="running", account_config={"selection_mode": "all"}, type_config={"target_group_id": group.id},
+        )
+        for group in groups
+    ]
+    links = [
+        TgGroupAccount(tenant_id=1, group_id=group.id, account_id=account.id, can_send=True)
+        for group in groups
+        for account in accounts
+    ]
+    session.add_all([*accounts, *groups, *tasks, *links])
+    session.commit()
+
+
+def test_runtime_online_reconcile_580_accounts_four_tasks_is_bounded_and_write_free():
+    now = _now()
+    with _session() as session:
+        _seed_online_scale(session)
+        assert reconcile_runtime_online_sources(session, tenant_id=1, include_global=False, now=now) == 580
+        session.commit()
+        select_count = 0
+        update_count = 0
+
+        def count_statements(_conn, _cursor, statement, _parameters, _context, _executemany):
+            nonlocal select_count, update_count
+            normalized = statement.lstrip().upper()
+            select_count += int(normalized.startswith("SELECT"))
+            update_count += int(normalized.startswith("UPDATE"))
+
+        event.listen(session.bind, "before_cursor_execute", count_statements)
+        started_at = perf_counter()
+        changed = reconcile_runtime_online_sources(session, tenant_id=1, include_global=False, now=now + timedelta(minutes=1))
+        elapsed = perf_counter() - started_at
+        session.flush()
+
+        assert changed == 0
+        assert select_count <= 8
+        assert update_count == 0
+        assert elapsed < 5
 
 
 def test_online_ready_requires_recorded_proxy_to_match_current_account():
@@ -570,6 +688,7 @@ def test_runtime_reconcile_backfills_running_ai_relay_and_listener_sources():
 
 
 def test_runtime_reconcile_retains_paused_task_as_low_frequency_keepalive_source():
+    now = _now()
     with _session() as session:
         _account(session, 101)
         group = _group(session, 501)
@@ -587,7 +706,7 @@ def test_runtime_reconcile_retains_paused_task_as_low_frequency_keepalive_source
         )
         session.commit()
 
-        changed = reconcile_runtime_online_sources(session, tenant_id=1, include_global=False)
+        changed = reconcile_runtime_online_sources(session, tenant_id=1, include_global=False, now=now)
         session.commit()
 
         state = session.scalar(select(TgAccountOnlineState).where(TgAccountOnlineState.account_id == 101))
@@ -598,6 +717,61 @@ def test_runtime_reconcile_retains_paused_task_as_low_frequency_keepalive_source
             {"source_type": "task", "source_id": "ai-paused", "keepalive_mode": "low_frequency"}
         ]
         assert state.active_task_count == 0
+        assert state.stale_after_at == now + timedelta(minutes=25)
+
+
+def test_low_frequency_only_to_active_requires_fresh_probe(monkeypatch):
+    paused_at = _now()
+    resumed_at = paused_at + timedelta(minutes=1)
+    sources = [{"source_type": "task", "source_id": "ai", "account_ids": [101], "keepalive_mode": "low_frequency"}]
+    with _session() as session:
+        _account(session, 101)
+        reconcile_account_online_sources(session, tenant_id=1, sources=sources, now=paused_at)
+        state = session.scalar(select(TgAccountOnlineState).where(TgAccountOnlineState.account_id == 101))
+        state.online_status = "online"
+        state.next_probe_at = paused_at + timedelta(minutes=15)
+        state.stale_after_at = paused_at + timedelta(minutes=25)
+        session.commit()
+
+        sources[0].pop("keepalive_mode")
+        assert reconcile_account_online_sources(session, tenant_id=1, sources=sources, now=resumed_at) == 1
+        assert state.online_status == "warming"
+        assert state.next_probe_at == resumed_at
+        assert state.stale_after_at == resumed_at + timedelta(minutes=15)
+        assert is_account_online_ready_for_planning(session, tenant_id=1, account_id=101, now=resumed_at) is False
+        monkeypatch.setattr("app.services.account_online_probe.credentials_for_account", lambda *_args, **_kwargs: object())
+        monkeypatch.setattr(
+            "app.services.account_online_probe.gateway.check_account_health",
+            lambda *_args: AccountHealth(status=AccountStatus.ACTIVE.value, health_score=96, detail="ok"),
+        )
+        assert probe_due_online_states(session, limit=10, now=resumed_at) == 1
+        assert state.online_status == "online"
+        assert state.next_probe_at == resumed_at + timedelta(minutes=5)
+        assert state.stale_after_at == resumed_at + timedelta(minutes=15)
+
+
+def test_existing_active_source_is_not_blocked_when_paused_task_resumes():
+    now = _now()
+    old_sources = [
+        {"source_type": "global", "source_id": "global_keepalive", "account_ids": [101]},
+        {"source_type": "task", "source_id": "ai", "account_ids": [101], "keepalive_mode": "low_frequency"},
+    ]
+    with _session() as session:
+        _account(session, 101)
+        reconcile_account_online_sources(session, tenant_id=1, sources=old_sources, now=now)
+        state = session.scalar(select(TgAccountOnlineState).where(TgAccountOnlineState.account_id == 101))
+        state.online_status = "online"
+        state.next_probe_at = now + timedelta(minutes=5)
+        state.stale_after_at = now + timedelta(minutes=15)
+        session.commit()
+
+        active_sources = [dict(source) for source in old_sources]
+        active_sources[1].pop("keepalive_mode")
+        reconcile_account_online_sources(session, tenant_id=1, sources=active_sources, now=now + timedelta(minutes=1))
+
+        assert state.online_status == "online"
+        assert state.next_probe_at == now + timedelta(minutes=5)
+        assert state.stale_after_at == now + timedelta(minutes=15)
 
 
 def test_probe_due_online_states_uses_longer_interval_for_low_frequency_sources(monkeypatch):
