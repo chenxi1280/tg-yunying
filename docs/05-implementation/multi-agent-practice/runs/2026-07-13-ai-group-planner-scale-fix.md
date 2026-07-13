@@ -6,7 +6,7 @@
 - `bug_id`: `bug-2026-07-13-ai-group-planner-stall`
 - `level/lane`: `L3 / ai-group-quality/planner-runtime`
 - 用户目标：监督修复生产 AI 活群，确保每个目标群中的全部账号按北京时间每日真实发言一次，并检查评论任务运行状态。
-- 当前状态：AI 活群与评论修复已完成本地 `qa_pass`、`product_accepted`；第三次 release 的 checks/镜像成功且 `fd9cf0c9` 已切到生产，但 deploy 因 Planner 超时失败。生产恢复和完整自然日矩阵仍为 `unproven`，正在修复群准入历史 Action 全量加载。
+- 当前状态：第五次 release `7f7af0cb` 已成功部署，群准入 latest-action 修复已上线；截至 2026-07-13 16:45 CST，2320 项北京时间日覆盖矩阵约 323 项远端确认且仍推进缓慢，阿哥日记已有 3 条真实评论，太郎日记回复尚未恢复。消息记忆三字段轻投影与 0091 已完成独立 QA 和 Product Acceptance（仅 E2），Release Gate 就绪；新一轮发布及生产 E4 均待完成，该时点数字只代表本次取证，不是最终自然日验收结果。
 
 ## 生产诊断
 
@@ -55,6 +55,25 @@
 - 群准入 quick-fix 独立 QA：相关集 `77 passed`，最小语义/smoke `7 passed`，Critical / Important / Minor 均为 0；最终 Product Acceptance：`product_accepted=true`（仅 E2），Release Gate 就绪，不等于生产恢复。
 - Release run `29225396989` 因 PostgreSQL fixture 复用 tenant 1 失败；run `29225675866` 因 open-action 测试误拦截遗留任务失败；run `29227840790` 的 checks/镜像成功，但 deploy 三次均在 Planner smoke 或 planner unhealthy 超时，生产实际镜像为 `fd9cf0c9`，不能写发布成功。
 - Release run `29230128879` 在 checks 失败、未构建镜像：新增 580×4 PostgreSQL 规模测试未清理自己提交的 2320 条 Action，后续 backlog 测试读到 2328 条而非自己的 8 条。修复为同租户显式前后清理并跳过与本测试无关的规则自动绑定；按 CI 失败顺序 `2 passed`，membership 相关 PostgreSQL 组 `15 passed`。独立 rework QA 通过，Critical / Important / Minor 均为 0，测试后 Tenant / Task / TgAccount / Action 均为 0，Release Gate 恢复就绪。
+- 第五次 Deploy Production run `29230895485` 成功：checks、镜像与 deploy 全通过，生产 release `/data/tgyunying/releases/20260713071213_7f7af0c`，实际镜像 commit `7f7af0cb`。发布后北京时间 2026-07-13 的 4 个任务共 2320 项覆盖义务，连续样本只从远端确认 318 增长到 321；业务仍未达到完整自然日矩阵。太郎日记回复已达到解析后生命周期总预算但状态未被 Planner 提交收口；阿哥日记无当天新 Action / 远端结果，评论 E4 未恢复。
+- 新生产根因：多个 Planner / Dispatcher PostgreSQL 事务持续 100-400 秒以上并形成锁链，根事务执行租户级 `ai_group_message_memory` 时间窗查询。生产表约 40741 行、总大小约 62MB；查询加载包含 result/画像诊断在内的完整 ORM 大行，而相似度判定只需要 id/normalized_text/raw_text，容器持续接收大结果集，7天聚合在20秒内未完成。Product Handoff 保持租户级跨群去重语义，采用轻投影 + `(tenant_id, status, planned_at DESC)` 并发索引；规格见 `docs/superpowers/specs/2026-07-13-ai-message-memory-dedup-performance-design.md`，实现须等书面规格复核。
+
+### 消息记忆性能 Dev 实现与验证
+
+- 实现提交链为 `532ca921`（三字段轻投影）、`ca831b8c`（模型索引与 0091）、`0e3b0ee6`（迁移失败语义硬化）、`e8043859`（真 PostgreSQL 规模门禁）。`_window_memories` 保持租户级跨群、状态集合、时间窗、排除 id 和 `planned_at DESC` 顺序不变，只返回 `id/normalized_text/raw_text`，不再物化大 `result` / 画像诊断字段。
+- `0091_ai_message_memory_dedup_index.py` 新增 `(tenant_id, status, planned_at DESC)` 索引；PostgreSQL 使用 Alembic `autocommit_block` 执行 `CREATE/DROP INDEX CONCURRENTLY`，catalog 只把 `indisvalid=true` 的同名索引视为已完成，DDL 错误不降级、不吞掉。Alembic 当前唯一 head 为 `0091_ai_memory_index`。
+- 两个 Important 复核项已在 Dev 阶段修正：其一，upgrade 不再因目标表缺失而静默跳过，缺表、并发 DDL 失败会显式失败；同时补齐 PostgreSQL autocommit 顺序与有效/无效索引 catalog 契约。其二，补充真实 PostgreSQL 的生产规模性能门禁，避免只凭 SQLite 查询形状或源码检查推断生产性能。
+- 真 PostgreSQL 规模样本为 40,741 行，每行 `result` 原始逻辑大字段 1,408 bytes，合计约 54.71 MiB；前序性能验收 `_window_memories=0.235042s`、最坏无命中 `_first_similar_memory=0.270144s`，分别低于 2 秒 / 5 秒门禁。本次独立复测同样 40,741 行得到查询 `0.109495s`、扫描 `0.268278s`、无重复命中，首次复测表总 relation 为 `71.23 MiB`；后续 delete/reinsert 观察到的表膨胀不替代 54.71 MiB 原始载荷口径。
+- 专用测试库真 PostgreSQL 定向整组（消息记忆、归一化、跨群、查询形状、规模、dispatcher、任务限制、评论配置）为 `81 passed in 7.80s`，墙钟 `8.89s`；query-shape + merge-integrity + database 迁移证据为 `17 passed in 2.59s`，墙钟 `3.37s`。
+- 全量 `pytest -m no_postgres -q` 在单次 60 秒硬门禁内为 `1262 passed, 814 deselected, 5 warnings in 53.78s`，墙钟 `58.23s`、退出码 0；5 条 warning 均为 SQLAlchemy 使用 Python 3.12 默认 sqlite datetime adapter 的弃用提示。相关 app、0091 和两个新增测试 `py_compile` 通过，仓库根 `git diff --check` 通过。
+- 截至本节 Dev handoff 时点，只证明 Dev E2 与性能测试门禁，独立 QA、Product Acceptance、发布和生产 E4 当时尚未完成；该阶段事实由下方验收记录继续流转，不追改为事后通过。北京时间完整 2320 项远端确认矩阵与评论任务当天真实远端成功仍未恢复。
+
+### 消息记忆独立 QA 与 Product Acceptance
+
+- 初次独立 QA 判定 `qa_pass=false`，发现 2 个 Important：0091 downgrade 在目标表缺失时静默返回，违反失败显式暴露契约；`_window_memories` 暴露 session 之外 4 个位置参数，超过项目最多 3 个位置参数的硬限制。该失败事实保留，不以随后通过覆盖。
+- 修复提交：`d180fd96` 让 downgrade 缺表显式失败；`a928500b` 将 tenant/group/cutoff/exclude 窗口过滤改为 keyword-only，同时保持跨群去重语义；`a03d40bc` 让 upgrade/downgrade 都先执行 `_require_table`，以稳定 `RuntimeError` 暴露缺表并补 PostgreSQL 契约测试。
+- re-QA：业务与性能定向 `85 passed`，query-shape + merge-integrity + database 迁移证据 `21 passed`；40,741 行真 PostgreSQL 复测 `_window_memories=0.146s`、最坏无命中 `_first_similar_memory=0.271s`，低于 2 秒 / 5 秒门禁；Critical / Important / Minor 均为 0，`qa_pass=true`。
+- Product Acceptance：`product_accepted=true`（仅 E2）。轻投影、租户级跨群去重语义、显式失败和 0091 并发索引满足 Product Handoff，允许进入 Release Gate；这不代表已发布或生产恢复，2320 项完整自然日矩阵和评论任务最终 E4 仍待真实生产证据。
 
 ## Release Gate 与 E4
 
@@ -66,5 +85,6 @@
 
 ## 回滚
 
-- 回滚走正常 release 提交；本次无 schema migration。
-- 回滚后会恢复旧 Planner 查询 / reconcile 行为，不得把服务存活写成业务恢复。
+- 应用回滚走正常 release 提交，默认保留与旧应用兼容的 0091 复合索引，避免回滚应用时额外扩大数据库锁风险。
+- 若索引本身必须回滚，应在维护窗口执行 0091 downgrade 的 `DROP INDEX CONCURRENTLY`，并核对 Alembic current 与目标 revision；不得在业务高峰直接删除索引。
+- 旧应用会恢复消息记忆完整 ORM 查询；应用进程存活、迁移回退或索引删除都不等于本次长事务事故与 AI 活群业务恢复。

@@ -322,6 +322,12 @@ class AiGroupMessageMemory(Base):
         Index("ix_ai_group_message_memory_dedupe", "tenant_id", "group_id", "text_fingerprint", "status", "planned_at"),
         Index("ix_ai_group_message_memory_expiry", "status", "expires_at"),
         Index("ix_ai_group_message_memory_task", "tenant_id", "task_id", "planned_at"),
+        Index(
+            "ix_ai_group_message_memory_tenant_status_planned",
+            "tenant_id",
+            "status",
+            text("planned_at DESC"),
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
