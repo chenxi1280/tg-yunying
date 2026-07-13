@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.integrations.telegram import OperationResult
-from app.models import AccountPool, Action, ChannelMessage, ExecutionAttempt, FailureType, MessageFingerprint, OperationIssue, OperationPlanTaskLink, OperationTarget, ReviewQueue, RuntimeMetricSnapshot, RuleSet, RuleSetVersion, Task, TaskRuntimeSummary, TgAccount, TgGroup, WorkerHeartbeat
+from app.models import AccountPool, Action, ChannelMessage, ExecutionAttempt, FailureType, MessageFingerprint, OperationIssue, OperationPlanTaskLink, OperationTarget, ReviewQueue, RuleSet, RuleSetVersion, Task, TaskRuntimeSummary, TgAccount, TgGroup, WorkerHeartbeat
 from app.models.search_rank_deboost import AccountGroupProxyBinding
 from app.schemas.task_center import (
     ChannelCapacityCheckRequest,
@@ -106,13 +106,14 @@ from .reviews import ReviewStateError, approve_review, list_reviews, reject_revi
 from .precheck import run_precheck_task_creation
 from .profile_batch_projection import delete_profile_batch_task, get_profile_batch_task_detail, is_profile_batch_task_id, list_profile_batch_tasks
 from app.services.task_runtime_stage import derive_task_runtime_stage
+from .metrics_runtime import drain_task_metrics
 from .stats import clear_planner_backlog_stats, empty_stats, next_run_after_task, planner_backlog_snapshot, refresh_task_stats, retry_failed_actions
 from .utils import as_int as _as_int, as_int_list as _as_int_list
 from .runtime_retention import cleanup_runtime_details, cleanup_runtime_metric_snapshots_if_due
 from app.services.tenant_target_profile import tenant_learning_profile_preview
 from app.services.source_media import WAITING_MATERIAL_CACHE, expire_waiting_source_media_actions, wake_waiting_actions_for_source_media
 from app.services.account_online_projection import task_account_online_summary
-from app.services.runtime_summary import clear_task_runtime_artifacts, reconcile_stale_operation_issues
+from app.services.runtime_summary import clear_task_runtime_artifacts
 
 _empty_stats = empty_stats
 _next_run_after_task = next_run_after_task
@@ -1615,43 +1616,52 @@ def _drain_task_planner(session_factory, *, limit: int, process_type: str | None
         session.commit()
     future_open_action_task_ids: set[str] = set()
     for task_id in task_ids:
-        with session_factory() as session:
-            _refresh_planner_heartbeat(session, process_type, limit, task_id=task_id)
-            task = session.get(Task, task_id)
-            if not task or task.status != "running":
-                continue
-            if _check_stop_conditions(session, task):
-                session.commit()
-                continue
-            processed += retry_failed_actions(session, task)
-            has_open_actions, open_actions_are_future = _open_actions_state(session, task)
-            if has_open_actions:
-                processed += prepare_open_actions_for_planning(session, task)
-                has_open_actions, open_actions_are_future = _open_actions_state(session, task)
-            open_actions_allow_planning = has_open_actions and requires_planning_with_open_actions(session, task)
-            should_skip_open_ai_plan = (
-                task.type == "group_ai_chat"
-                and has_open_actions
-                and not hard_hourly_requires_planning(session, task, _now())
-                and not open_actions_allow_planning
-            )
-            if should_skip_open_ai_plan:
-                if open_actions_are_future:
-                    future_open_action_task_ids.add(task.id)
-                refresh_task_stats(session, task)
-                session.commit()
-                continue
-            if _planning_backlog_blocked(session, task):
-                refresh_task_stats(session, task)
-                session.commit()
-                continue
-            created = build_task_plan(session, task)
-            refresh_task_stats(session, task)
-            if task.status == "running":
-                task.next_run_at = next_run_after_task(task)
-            session.commit()
-            processed += created
+        task_processed, future_open = _plan_due_task(session_factory, task_id, process_type, limit=limit)
+        processed += task_processed
+        if future_open:
+            future_open_action_task_ids.add(task_id)
     return processed, future_open_action_task_ids
+
+
+def _plan_due_task(session_factory, task_id: str, process_type: str | None, *, limit: int) -> tuple[int, bool]:
+    processed = 0
+    with session_factory() as session:
+        _refresh_planner_heartbeat(session, process_type, limit, task_id=task_id)
+        task = session.get(Task, task_id)
+        if not task or task.status != "running":
+            return processed, False
+        if _check_stop_conditions(session, task):
+            session.commit()
+            return processed, False
+        processed += retry_failed_actions(session, task)
+        has_open_actions, open_actions_are_future = _open_actions_state(session, task)
+        if has_open_actions:
+            processed += prepare_open_actions_for_planning(session, task)
+            has_open_actions, open_actions_are_future = _open_actions_state(session, task)
+        open_actions_allow_planning = has_open_actions and requires_planning_with_open_actions(session, task)
+        if _skip_open_ai_plan(session, task, has_open_actions, allow_planning=open_actions_allow_planning):
+            refresh_task_stats(session, task, include_configured_accounts=False)
+            session.commit()
+            return processed, open_actions_are_future
+        if _planning_backlog_blocked(session, task):
+            refresh_task_stats(session, task, include_configured_accounts=False)
+            session.commit()
+            return processed, False
+        processed += build_task_plan(session, task)
+        refresh_task_stats(session, task, include_configured_accounts=False)
+        if task.status == "running":
+            task.next_run_at = next_run_after_task(task)
+        session.commit()
+        return processed, False
+
+
+def _skip_open_ai_plan(session: Session, task: Task, has_open_actions: bool, *, allow_planning: bool) -> bool:
+    return (
+        task.type == "group_ai_chat"
+        and has_open_actions
+        and not hard_hourly_requires_planning(session, task, _now())
+        and not allow_planning
+    )
 
 
 def _refresh_planner_heartbeat(session: Session, process_type: str | None, limit: int, *, task_id: str | None = None) -> None:
@@ -1729,61 +1739,6 @@ def _record_dispatch_db_error(session_factory, action_id: str, exc: SQLAlchemyEr
                 refresh_task_stats(session, task)
         session.commit()
     return 0
-
-
-def drain_task_metrics(session_factory, limit: int = 100) -> int:
-    now_value = _now()
-    rows: list[RuntimeMetricSnapshot] = []
-    with session_factory() as session:
-        record_worker_heartbeat(session, process_type="metrics", metadata={"limit": limit})
-        statuses = dict(session.execute(select(Action.status, func.count()).select_from(Action).group_by(Action.status)).all())
-        oldest_pending = session.scalar(select(func.min(Action.scheduled_at)).where(Action.status == "pending"))
-        oldest_pending_age = int((now_value - _naive_datetime(oldest_pending)).total_seconds()) if oldest_pending else 0
-        minute_cutoff = now_value - timedelta(minutes=1)
-        recent_statuses = dict(
-            session.execute(
-                select(Action.status, func.count())
-                .select_from(Action)
-                .where(Action.executed_at >= minute_cutoff)
-                .group_by(Action.status)
-            ).all()
-        )
-        created_last_minute = session.scalar(select(func.count()).select_from(Action).where(Action.created_at >= minute_cutoff)) or 0
-        heartbeat_cutoff = now_value - timedelta(minutes=2)
-        active_workers = session.scalar(select(func.count(WorkerHeartbeat.worker_id)).where(WorkerHeartbeat.last_seen_at >= heartbeat_cutoff)) or 0
-        stale_workers = session.scalar(select(func.count(WorkerHeartbeat.worker_id)).where(WorkerHeartbeat.last_seen_at < heartbeat_cutoff)) or 0
-        metrics = {
-            "actions.pending.count": int(statuses.get("pending") or 0),
-            "actions.claiming.count": int(statuses.get("claiming") or 0),
-            "actions.executing.count": int(statuses.get("executing") or 0),
-            "actions.success.count": int(statuses.get("success") or 0),
-            "actions.failed.count": int(statuses.get("failed") or 0),
-            "actions.skipped.count": int(statuses.get("skipped") or 0),
-            "actions.unknown_after_send.count": int(statuses.get("unknown_after_send") or 0),
-            "actions.created.per_minute": int(created_last_minute or 0),
-            "actions.success.per_minute": int(recent_statuses.get("success") or 0),
-            "actions.failed.per_minute": int(recent_statuses.get("failed") or 0),
-            "actions.skipped.per_minute": int(recent_statuses.get("skipped") or 0),
-            "actions.oldest_pending_age_seconds": max(0, oldest_pending_age),
-            "worker.active.count": int(active_workers or 0),
-            "worker.stale.count": int(stale_workers or 0),
-        }
-        for name, value in metrics.items():
-            rows.append(
-                RuntimeMetricSnapshot(
-                    captured_at=now_value,
-                    metric_name=name,
-                    dimension_type="global",
-                    dimension_id="all",
-                    metric_value=int(value),
-                    tags={"worker_role": "metrics"},
-                )
-            )
-        session.add_all(rows)
-        for tenant_id in session.scalars(select(OperationIssue.tenant_id).where(OperationIssue.status == "open").distinct()):
-            reconcile_stale_operation_issues(session, int(tenant_id))
-        session.commit()
-    return len(rows)
 
 
 def _planning_backlog_blocked(session: Session, task: Task) -> bool:

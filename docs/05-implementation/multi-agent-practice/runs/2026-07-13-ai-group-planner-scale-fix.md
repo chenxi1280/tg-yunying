@@ -113,6 +113,17 @@
 - E2 QA：真 PostgreSQL 构造 580-account group_ai_chat 及现存 issue/account 投影，证明 Planner drain 不调用逐账号 `refresh_account_summary`、不产生全量 `UPDATE operation_issue_accounts`，查询/写入数量不随账号数线性增长且单轮 `<5s`；metrics 分批覆盖 580/580、每批最多 100、单事务 `<10s`，中途失败后从游标继续且不重复/漏账号。拆分前后对比上述 task/target/account summary 与 issue/source/account 字段和 resolve/upsert 语义等价。
 - E4：发布实际 commit 后核对 planner、metrics、recovery heartbeat 与数据库 active transaction；并发连续至少 3 个完整 cycles 无 `>60s` 事务、无 Planner 发起的全量 `operation_issue_accounts` 更新；`359/2320` 覆盖分子在连续样本继续增长；太郎必须成为 `completed/next_run_at=null` 且跨 recovery 保持吸收终态。任一项缺失均保持 blocked，不能以 0092 点查成功或容器 healthy 代替。
 
+### Planner 运营摘要职责拆分 Dev E2
+
+- Planner 调用 `refresh_task_stats(..., include_configured_accounts=False)`，因此 task/target、latest failure、代表异常和 latest-failure 单账号摘要继续刷新，但不再遍历 `account_config.account_ids` 中的 580 个配置账号。
+- `upsert_operation_issue` 将历史累计账号与本次观测账号分开：累计集合继续保留在 issue 和计数中，只有本次 failure 账号更新 `operation_issue_accounts.latest_seen_at`；旧账号不会因别人的新失败被伪更新。
+- issue action source 的未解决检查和代表 Action 选择改为 `operation_issue_sources -> actions -> tasks` 直接 JOIN，不再先物化数百 action ID 再生成超长 `IN (...)`。
+- 新增 `runtime_summary_batches.py`：metrics 主指标提交后开启独立事务，生产默认每批 20、硬上限 100；缺失摘要优先，全部建立后按最旧 `updated_at` 轮转，失败显式传播且已提交快照不回退到 Planner 重算。
+- TDD / QA 前验证：SQLite 边界增至 `10 passed`，覆盖失败批次重试、oldest 轮转、跨租户 JOIN 隔离和唯一索引契约；真 PostgreSQL 使用真实 `refresh_account_summary` 完成 6 批 `[100,100,100,100,100,80]`、`580/580` 且每批 `<10s`，同 issue 580 action sources `<5s`。最新两文件 `13 passed in 5.06s`，关联五文件 `43 passed in 6.20s`；全量 no-PostgreSQL `1288 passed, 817 deselected, 5 warnings in 54.67s`；新增模块 Ruff、compileall、`git diff --check` 通过。
+- 硬指标处理：本次 metrics 责任拆为 `metrics_runtime.py`（100 行），issue JOIN / get-or-create 拆为 `runtime_issue_queries.py`（96 行），账号分页为 `runtime_summary_batches.py`（60 行）；新增/修改函数均 `<=50` 行、位置参数 `<=3`。历史大文件没有做无关大重构，且 `runtime_summary.py` 从 HEAD 1581 净降至 1570、`service.py` 从 HEAD 2896 净降至 2851。
+- 独立 re-QA：关联 SQLite + 真 PostgreSQL `43 passed`；完整 no-PostgreSQL 按 60 秒硬门禁分两段 `664 + 624 = 1288 passed`，均 exit 0；新模块 Ruff / C901、compile 和 diff-check 通过。Critical / Important / Minor 均为 0，`qa_pass=true`；当前转 Product Acceptance，仍未发布、未取得 E4。
+- 当前只到 Dev E2，`qa_pass` / `product_accepted` / 发布 / E4 均未声明；生产基线仍为第二轮 release `59d5c3e`、覆盖 `359 -> 361/2320`，长事务与锁链仍存在，太郎仍 `running`，Release Gate 保持 blocked。
+
 ## Release Gate 与 E4
 
 1. 按 `master -> release -> GitHub Actions Deploy Production` 发布并核对实际镜像 commit。
