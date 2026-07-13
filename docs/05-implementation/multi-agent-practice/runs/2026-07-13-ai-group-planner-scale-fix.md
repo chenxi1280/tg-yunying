@@ -158,6 +158,15 @@
 - 真 PostgreSQL E2：2 个 Planner 并发将 580 条到期 coverage 在多个 `<=20` 批次中完整预约；预提交崩溃后 Action、reservation、cursor 全回滚，重试无漏/重复；整测 `1 passed in 3.32s`，且每个测得的 task transaction `<5s`。生产等量 40,741 条 Action 历史下，task stats reconcile `<10s`，Recovery 稳定返回 20 个 id 且 `<5s`，整测 `1 passed in 8.99s`。
 - 当前阶段仅为 Dev E2 handoff：独立 QA、Product Acceptance、发布和生产 E4 均未完成，Release Gate 保持 blocked；不得据此声称 2320 自然日覆盖或评论任务已经生产恢复。
 
+### Dev QA Rework（I1 / I2 / I3 / Minor）
+
+- I1：Grok fallback 在读取 `TenantAiSetting.ai_enabled` 标量后提交 ORM 事务，再进入 `GrokCliBridge.generate`；桥接测试显式断言外部调用期间 `session.in_transaction() is False`，stage/provider metadata 保持不变。
+- I2：新增 `recovery_claims.py`。stale executing 与 due unknown membership 都先按稳定顺序、最多 20 条执行 `FOR UPDATE SKIP LOCKED`，把 claim owner/token/expiry 持久化并提交；probe 后只有 claim token 仍归当前 worker 才能 finalize。真 PostgreSQL 双 recovery worker 同时领取 40 条时各得 20 条且集合不重叠，首批进入 cooldown 后下一批不会再次卡在相同头部。
+- I3 Planner：真实 `group_ai_chat.build_plan` 验证 10 / 30 / 60 `messages_per_round`；60 场景在 active window 23:59 完整生成 `60×9 + 40 = 580`，23:30 的 568 是累计 pacing 应到量而非漏规划。coverage keyset `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` 命中 `ix_task_daily_coverage_plan_ready` 且无 Seq Scan；跨租户 coverage 保持 ready 未被误占。
+- I3 Runtime：40,741 Action 下 metrics 与 SQL status 分组逐字段等价且 `8.58s`，Recovery EXPLAIN 命中 `ix_actions_executing_recovery` 且无 Seq Scan；4 个并发 dispatcher finalize 全部 `<2s`、未执行 Action 历史 `GROUP BY`、结束后无 Lock waiter。
+- I3 Migration：`test_runtime_stats_migration.py` 6 passed，覆盖 SQLite 实际 upgrade/downgrade、缺表、缺 cursor、invalid 同名索引和 DDL 原错透传；独立 PostgreSQL 迁移库再次通过 `空库 -> head -> 0092 -> head`。
+- Minor：把本次新增的 coverage cursor 记录/推进职责提取为两个 helper，`group_ai_chat.build_plan` C901 维持基线 `70`，未由 QA 前报告的 73 继续上升。当前仍是 Dev E2 rework，必须重新进入独立 QA，之后再回 Product Acceptance；未发布且生产 E4 仍 blocked。
+
 ## Release Gate 与 E4
 
 1. 按 `master -> release -> GitHub Actions Deploy Production` 发布并核对实际镜像 commit。

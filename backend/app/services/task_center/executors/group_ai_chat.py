@@ -716,13 +716,8 @@ def build_plan(session: Session, task: Task) -> int:
         if payload.ai_message_memory_id:
             mark_group_ai_message_result(session, payload.ai_message_memory_id, status="reserved", action_id=action.id)
         created += 1
-        if payload.coverage_ledger_id:
-            coverage_row = coverage_rows.get(account_id)
-            if coverage_row is not None:
-                reserved_coverage_rows.append(coverage_row)
-    if reserved_coverage_rows:
-        cursor_row = max(reserved_coverage_rows, key=lambda row: (row.targeted_at, row.account_id, row.id))
-        advance_coverage_plan_cursor(session, task, cursor_row, now=_now())
+        _remember_reserved_coverage_row(reserved_coverage_rows, coverage_rows, account_id, payload)
+    _advance_reserved_coverage_cursor(session, task, reserved_coverage_rows)
     for row in unprocessed_rows:
         remember_fingerprint(session, task.tenant_id, fingerprint_source, _context_fingerprint(row))
     stats = dict(task.stats or {})
@@ -765,6 +760,30 @@ def build_plan(session: Session, task: Task) -> int:
         mark_plan_result(task, hard_progress, created, hard_blockers or None)
     stats_inc(task, "total_rounds")
     return created
+
+
+def _remember_reserved_coverage_row(
+    reserved_rows: list[TaskAccountDailyCoverage],
+    rows_by_account: dict[int, TaskAccountDailyCoverage],
+    account_id: int,
+    payload: SendMessagePayload,
+) -> None:
+    if not payload.coverage_ledger_id:
+        return
+    row = rows_by_account.get(account_id)
+    if row is not None:
+        reserved_rows.append(row)
+
+
+def _advance_reserved_coverage_cursor(
+    session: Session,
+    task: Task,
+    reserved_rows: list[TaskAccountDailyCoverage],
+) -> None:
+    if not reserved_rows:
+        return
+    cursor_row = max(reserved_rows, key=lambda row: (row.targeted_at, row.account_id, row.id))
+    advance_coverage_plan_cursor(session, task, cursor_row, now=_now())
 
 
 def prepare_open_actions_for_planning(session: Session, task: Task) -> int:

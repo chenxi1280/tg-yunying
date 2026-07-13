@@ -242,6 +242,7 @@ def test_grok_stage_uses_cli_bridge_and_preserves_stage_metadata(monkeypatch):
 
     class FakeBridge:
         def generate(self, *, system_prompt, user_prompt, count):
+            assert session.in_transaction() is False
             assert system_prompt == "system"
             assert user_prompt == "user"
             assert count == 1
@@ -258,7 +259,10 @@ def test_grok_stage_uses_cli_bridge_and_preserves_stage_metadata(monkeypatch):
         contents, tokens = ai_generator._generate_group_prompt_contents(
             session,
             1,
-            {"_ai_fallback_stage": "fallback_grok"},
+            {
+                "_ai_fallback_stage": "fallback_grok",
+                "_close_db_transaction_before_ai": True,
+            },
             GroupPromptBundle(
                 system_prompt="system",
                 user_prompt="user",

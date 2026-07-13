@@ -910,7 +910,10 @@ def _generate_group_prompt_contents(
     stage = str(config.get("_ai_fallback_stage") or "").strip()
     setting = session.scalar(select(TenantAiSetting).where(TenantAiSetting.tenant_id == tenant_id))
     if stage == "fallback_grok":
-        return _generate_group_with_grok(config, bundle, count=count, purpose=purpose, setting=setting)
+        ai_enabled = bool(setting and setting.ai_enabled)
+        if config.get("_close_db_transaction_before_ai"):
+            session.commit()
+        return _generate_group_with_grok(config, bundle, count=count, purpose=purpose, ai_enabled=ai_enabled)
     provider = _provider_for_exact_model(session, model_name) if stage and setting and setting.ai_enabled else None
     if not stage:
         provider, setting = _provider(
@@ -959,9 +962,9 @@ def _generate_group_with_grok(
     *,
     count: int,
     purpose: str,
-    setting: TenantAiSetting | None,
+    ai_enabled: bool,
 ) -> tuple[list[str], int]:
-    if not setting or not setting.ai_enabled:
+    if not ai_enabled:
         raise AiGenerationUnavailable(f"{AI_GENERATION_UNAVAILABLE_MESSAGE}：tenant_ai_disabled")
     started_at = time.monotonic()
     try:
