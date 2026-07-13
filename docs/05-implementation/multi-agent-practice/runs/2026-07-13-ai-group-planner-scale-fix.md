@@ -58,6 +58,16 @@
 - 第五次 Deploy Production run `29230895485` 成功：checks、镜像与 deploy 全通过，生产 release `/data/tgyunying/releases/20260713071213_7f7af0c`，实际镜像 commit `7f7af0cb`。发布后北京时间 2026-07-13 的 4 个任务共 2320 项覆盖义务，连续样本只从远端确认 318 增长到 321；业务仍未达到完整自然日矩阵。太郎日记回复已达到解析后生命周期总预算但状态未被 Planner 提交收口；阿哥日记无当天新 Action / 远端结果，评论 E4 未恢复。
 - 新生产根因：多个 Planner / Dispatcher PostgreSQL 事务持续 100-400 秒以上并形成锁链，根事务执行租户级 `ai_group_message_memory` 时间窗查询。生产表约 40741 行、总大小约 62MB；查询加载包含 result/画像诊断在内的完整 ORM 大行，而相似度判定只需要 id/normalized_text/raw_text，容器持续接收大结果集，7天聚合在20秒内未完成。Product Handoff 保持租户级跨群去重语义，采用轻投影 + `(tenant_id, status, planned_at DESC)` 并发索引；规格见 `docs/superpowers/specs/2026-07-13-ai-message-memory-dedup-performance-design.md`，实现须等书面规格复核。
 
+### 消息记忆性能 Dev 实现与验证
+
+- 实现提交链为 `532ca921`（三字段轻投影）、`ca831b8c`（模型索引与 0091）、`0e3b0ee6`（迁移失败语义硬化）、`e8043859`（真 PostgreSQL 规模门禁）。`_window_memories` 保持租户级跨群、状态集合、时间窗、排除 id 和 `planned_at DESC` 顺序不变，只返回 `id/normalized_text/raw_text`，不再物化大 `result` / 画像诊断字段。
+- `0091_ai_message_memory_dedup_index.py` 新增 `(tenant_id, status, planned_at DESC)` 索引；PostgreSQL 使用 Alembic `autocommit_block` 执行 `CREATE/DROP INDEX CONCURRENTLY`，catalog 只把 `indisvalid=true` 的同名索引视为已完成，DDL 错误不降级、不吞掉。Alembic 当前唯一 head 为 `0091_ai_memory_index`。
+- 两个 Important 复核项已在 Dev 阶段修正：其一，upgrade 不再因目标表缺失而静默跳过，缺表、并发 DDL 失败会显式失败；同时补齐 PostgreSQL autocommit 顺序与有效/无效索引 catalog 契约。其二，补充真实 PostgreSQL 的生产规模性能门禁，避免只凭 SQLite 查询形状或源码检查推断生产性能。
+- 真 PostgreSQL 规模样本为 40,741 行，每行 `result` 原始逻辑大字段 1,408 bytes，合计约 54.71 MiB；前序性能验收 `_window_memories=0.235042s`、最坏无命中 `_first_similar_memory=0.270144s`，分别低于 2 秒 / 5 秒门禁。本次独立复测同样 40,741 行得到查询 `0.109495s`、扫描 `0.268278s`、无重复命中，首次复测表总 relation 为 `71.23 MiB`；后续 delete/reinsert 观察到的表膨胀不替代 54.71 MiB 原始载荷口径。
+- 专用测试库真 PostgreSQL 定向整组（消息记忆、归一化、跨群、查询形状、规模、dispatcher、任务限制、评论配置）为 `81 passed in 7.80s`，墙钟 `8.89s`；query-shape + merge-integrity + database 迁移证据为 `17 passed in 2.59s`，墙钟 `3.37s`。
+- 全量 `pytest -m no_postgres -q` 在单次 60 秒硬门禁内为 `1262 passed, 814 deselected, 5 warnings in 53.78s`，墙钟 `58.23s`、退出码 0；5 条 warning 均为 SQLAlchemy 使用 Python 3.12 默认 sqlite datetime adapter 的弃用提示。相关 app、0091 和两个新增测试 `py_compile` 通过，仓库根 `git diff --check` 通过。
+- 本节只证明 Dev E2 与性能测试门禁；尚未完成独立 QA、Product Acceptance、发布或生产 E4。北京时间完整 2320 项远端确认矩阵与评论任务当天真实远端成功仍未恢复，不能标记为 QA 通过、产品验收或生产修复。
+
 ## Release Gate 与 E4
 
 1. 按 `master -> release -> GitHub Actions Deploy Production` 发布并核对实际镜像 commit。
