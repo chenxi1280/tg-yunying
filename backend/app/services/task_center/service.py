@@ -1624,35 +1624,74 @@ def _drain_task_planner(session_factory, *, limit: int, process_type: str | None
 
 
 def _plan_due_task(session_factory, task_id: str, process_type: str | None, *, limit: int) -> tuple[int, bool]:
+    round_goal = _coverage_round_goal(session_factory, task_id)
     processed = 0
+    planned = 0
+    future_open = False
+    while planned < round_goal:
+        plan_limit = round_goal - planned
+        batch_processed, batch_planned, future_open = _plan_due_task_batch(
+            session_factory,
+            task_id,
+            process_type,
+            limit=limit,
+            plan_limit=plan_limit,
+        )
+        processed += batch_processed
+        planned += batch_planned
+        if batch_planned <= 0 or round_goal == 1:
+            break
+    return processed, future_open
+
+
+def _plan_due_task_batch(
+    session_factory,
+    task_id: str,
+    process_type: str | None,
+    *,
+    limit: int,
+    plan_limit: int,
+) -> tuple[int, int, bool]:
     with session_factory() as session:
+        session.info["daily_coverage_plan_limit"] = max(1, plan_limit)
         _refresh_planner_heartbeat(session, process_type, limit, task_id=task_id)
         task = session.get(Task, task_id)
         if not task or task.status != "running":
-            return processed, False
+            return 0, 0, False
         if _check_stop_conditions(session, task):
             session.commit()
-            return processed, False
-        processed += retry_failed_actions(session, task)
+            return 0, 0, False
+        processed = retry_failed_actions(session, task, limit=max(1, limit))
         has_open_actions, open_actions_are_future = _open_actions_state(session, task)
         if has_open_actions:
             processed += prepare_open_actions_for_planning(session, task)
             has_open_actions, open_actions_are_future = _open_actions_state(session, task)
         open_actions_allow_planning = has_open_actions and requires_planning_with_open_actions(session, task)
         if _skip_open_ai_plan(session, task, has_open_actions, allow_planning=open_actions_allow_planning):
-            refresh_task_stats(session, task, include_configured_accounts=False)
             session.commit()
-            return processed, open_actions_are_future
+            return processed, 0, open_actions_are_future
         if _planning_backlog_blocked(session, task):
-            refresh_task_stats(session, task, include_configured_accounts=False)
             session.commit()
-            return processed, False
-        processed += build_task_plan(session, task)
-        refresh_task_stats(session, task, include_configured_accounts=False)
+            return processed, 0, False
+        planned = build_task_plan(session, task)
+        processed += planned
         if task.status == "running":
             task.next_run_at = next_run_after_task(task)
         session.commit()
-        return processed, False
+        return processed, planned, False
+
+
+def _coverage_round_goal(session_factory, task_id: str) -> int:
+    with session_factory() as session:
+        task = session.get(Task, task_id)
+        config = task.type_config if task and isinstance(task.type_config, dict) else {}
+        if not task or task.type != "group_ai_chat":
+            return 1
+        if config.get("account_coverage_mode") != "all_accounts_daily":
+            return 1
+        if config.get("messages_per_round_mode") != "manual":
+            return 1
+        return max(1, int(config.get("messages_per_round") or 1))
 
 
 def _skip_open_ai_plan(session: Session, task: Task, has_open_actions: bool, *, allow_planning: bool) -> bool:
@@ -1721,9 +1760,6 @@ def _dispatch_claimed_action_once(session_factory, action_id: str) -> int:
         if not dispatch_action(session, action):
             session.commit()
             return 0
-        refresh = session.get(Task, action.task_id)
-        if refresh:
-            refresh_task_stats(session, refresh)
         session.commit()
         return 1
 
@@ -1732,11 +1768,6 @@ def _record_dispatch_db_error(session_factory, action_id: str, exc: SQLAlchemyEr
     with session_factory() as session:
         if not mark_dispatcher_db_error(session, action_id, str(exc)):
             return 0
-        action = session.get(Action, action_id)
-        if action and action.task_id:
-            task = session.get(Task, action.task_id)
-            if task:
-                refresh_task_stats(session, task)
         session.commit()
     return 0
 
@@ -1833,6 +1864,30 @@ def _stale_executing_action_rows(
     timeout_minutes: int,
     limit: int,
 ) -> list[tuple[Action, Task, set[str]]]:
+    action_ids = _stale_executing_action_ids(
+        session,
+        now=now,
+        timeout_minutes=timeout_minutes,
+        limit=limit,
+    )
+    heartbeat_cutoff = now - timedelta(minutes=2)
+    stale_worker_ids = set(session.scalars(select(WorkerHeartbeat.worker_id).where(WorkerHeartbeat.last_seen_at < heartbeat_cutoff)))
+    rows: list[tuple[Action, Task, set[str]]] = []
+    for action_id in action_ids:
+        action = session.get(Action, action_id)
+        task = session.get(Task, action.task_id) if action else None
+        if action is not None and task is not None:
+            rows.append((action, task, stale_worker_ids))
+    return rows
+
+
+def _stale_executing_action_ids(
+    session: Session,
+    *,
+    now: datetime,
+    timeout_minutes: int,
+    limit: int,
+) -> list[str]:
     cutoff = now - timedelta(minutes=max(1, int(timeout_minutes or 30)))
     heartbeat_cutoff = now - timedelta(minutes=2)
     stale_worker_ids = set(session.scalars(select(WorkerHeartbeat.worker_id).where(WorkerHeartbeat.last_seen_at < heartbeat_cutoff)))
@@ -1842,8 +1897,8 @@ def _stale_executing_action_rows(
     ]
     if stale_worker_ids:
         recovery_conditions.append(Action.lease_owner.in_(stale_worker_ids))
-    rows = session.execute(
-        select(Action, Task)
+    return list(session.scalars(
+        select(Action.id)
         .join(Task, Task.id == Action.task_id)
         .where(
             Action.status == "executing",
@@ -1851,10 +1906,9 @@ def _stale_executing_action_rows(
             Task.status == "running",
             Task.deleted_at.is_(None),
         )
-        .order_by(Action.scheduled_at.asc())
-        .limit(_recovery_batch_limit(limit))
-    ).all()
-    return [(action, task, stale_worker_ids) for action, task in rows]
+        .order_by(Action.scheduled_at.asc(), Action.id.asc())
+        .limit(min(20, _recovery_batch_limit(limit)))
+    ))
 
 
 def _mark_stale_executing_action(
@@ -2119,12 +2173,16 @@ def _recover_unknown_membership_action(
     if account is None or account.deleted_at is not None:
         return False
     credentials = credentials_for_account(session, account)
+    account_id = account.id
+    target_type = str(payload.get("target_type") or "channel")
+    session_ciphertext = account.session_ciphertext
+    session.commit()
     try:
         result = gateway.probe_target_capabilities(
-            account.id,
+            account_id,
             channel_id,
-            str(payload.get("target_type") or "channel"),
-            account.session_ciphertext,
+            target_type,
+            session_ciphertext,
             credentials,
         )
     except TimeoutError as exc:

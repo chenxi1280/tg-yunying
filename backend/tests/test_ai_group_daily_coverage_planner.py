@@ -20,6 +20,7 @@ from app.services.task_center.executors.group_ai_chat import (
     _select_accounts_for_plan,
 )
 from app.services.task_center.payloads import SendMessagePayload
+from app.services.task_center import daily_coverage
 
 
 pytestmark = pytest.mark.no_postgres
@@ -184,7 +185,8 @@ def test_coverage_plan_state_materializes_scope_once_and_reuses_rows(session: Se
     state = _coverage_plan_state(session, task, group, task.type_config, {})
 
     assert calls == 1
-    assert set(state.rows_by_account) == {1, 2, 3}
+    assert set(state.rows_by_account) == {1}
+    assert state.account_count == 3
 
 
 def test_account_selection_uses_supplied_coverage_snapshot_without_reread(session: Session, monkeypatch) -> None:
@@ -218,6 +220,47 @@ def test_coverage_round_does_not_repeat_one_account_for_multiple_obligations() -
     config = {"account_coverage_mode": "all_accounts_daily", "allow_account_repeat": True}
 
     assert _coverage_round_config(config)["allow_account_repeat"] is False
+
+
+def test_ready_coverage_plan_batch_uses_stable_cursor_and_hard_limit(session: Session) -> None:
+    task, _group = _seed(session)
+    session.query(TaskAccountDailyCoverage).delete()
+    targeted_at = datetime(2026, 7, 13, 9, 0)
+    session.add_all([
+        TaskAccountDailyCoverage(
+            id=f"coverage-batch-{index:02d}", tenant_id=1, task_id=task.id, group_id=21,
+            account_id=100 + index, coverage_date=date.today(), target_count=1,
+            state="ready", targeted_at=targeted_at,
+        )
+        for index in range(25)
+    ])
+    session.commit()
+
+    first = daily_coverage.ready_coverage_plan_batch(session, task, now=targeted_at, limit=100)
+    assert len(first.rows) == 20
+    assert [row.account_id for row in first.rows] == list(range(100, 120))
+    daily_coverage.advance_coverage_plan_cursor(session, task, first.rows[-1], now=targeted_at)
+    for row in first.rows:
+        row.state = "reserved"
+    session.commit()
+
+    second = daily_coverage.ready_coverage_plan_batch(session, task, now=targeted_at, limit=100)
+    assert [row.account_id for row in second.rows] == list(range(120, 125))
+
+
+def test_coverage_plan_cursor_rolls_back_with_failed_batch(session: Session) -> None:
+    task, _group = _seed(session)
+    row = session.get(TaskAccountDailyCoverage, "coverage-1")
+    timestamp = datetime(2026, 7, 13, 9, 0)
+    row.targeted_at = timestamp
+    session.commit()
+
+    batch = daily_coverage.ready_coverage_plan_batch(session, task, now=timestamp, limit=20)
+    daily_coverage.advance_coverage_plan_cursor(session, task, batch.rows[-1], now=timestamp)
+    session.rollback()
+
+    retried = daily_coverage.ready_coverage_plan_batch(session, task, now=timestamp, limit=20)
+    assert [item.id for item in retried.rows] == ["coverage-1"]
 
 
 def test_daily_coverage_open_action_gate_uses_debt_after_reserved(monkeypatch, session: Session) -> None:

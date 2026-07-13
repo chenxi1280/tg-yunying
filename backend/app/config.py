@@ -122,6 +122,7 @@ class Settings:
     action_claim_seconds: int = int(os.getenv("ACTION_CLAIM_SECONDS", "60"))
     action_lease_seconds: int = int(os.getenv("ACTION_LEASE_SECONDS", "1800"))
     dispatcher_concurrency: int = int(os.getenv("DISPATCHER_CONCURRENCY", "20"))
+    daily_coverage_plan_batch_limit: int = int(os.getenv("DAILY_COVERAGE_PLAN_BATCH_LIMIT", "20"))
     account_shard_total: int = int(os.getenv("ACCOUNT_SHARD_TOTAL", "1"))
     account_shard_index: int = int(os.getenv("ACCOUNT_SHARD_INDEX", "0"))
     enable_redis_account_inflight: bool = _bool_env("ENABLE_REDIS_ACCOUNT_INFLIGHT", False)

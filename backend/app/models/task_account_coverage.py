@@ -26,6 +26,10 @@ class TaskAccountDailyCoverage(Base):
             "ix_task_daily_coverage_task_date_state",
             "task_id", "coverage_date", "state", "next_eligible_at",
         ),
+        Index(
+            "ix_task_daily_coverage_plan_ready",
+            "task_id", "coverage_date", "state", "targeted_at", "account_id", "id",
+        ),
         Index("ix_task_daily_coverage_account_date", "tenant_id", "account_id", "coverage_date"),
     )
 
@@ -53,6 +57,28 @@ class TaskAccountDailyCoverage(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
 
+class TaskDailyCoveragePlanCursor(Base):
+    __tablename__ = "task_daily_coverage_plan_cursors"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "task_id", "coverage_date",
+            name="uq_task_daily_coverage_plan_cursor",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"))
+    coverage_date: Mapped[date] = mapped_column(Date)
+    last_targeted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_account_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_coverage_id: Mapped[str] = mapped_column(String(36), default="")
+    wrap_count: Mapped[int] = mapped_column(Integer, default=0)
+    version: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
 class AccountEligibilityEvent(Base):
     __tablename__ = "account_eligibility_events"
     __table_args__ = (
@@ -72,4 +98,4 @@ class AccountEligibilityEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
-__all__ = ["AccountEligibilityEvent", "TaskAccountDailyCoverage"]
+__all__ = ["AccountEligibilityEvent", "TaskAccountDailyCoverage", "TaskDailyCoveragePlanCursor"]

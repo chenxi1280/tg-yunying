@@ -806,19 +806,29 @@ def _ensure_send_message_content(session: Session, action: Action, account: TgAc
     batch = _pending_ai_generation_batch(session, action, payload)
     batch = _refresh_deferred_generation_context(session, task, batch)
     payload = batch[0][1]
+    generation_config = {
+        **_runtime_group_ai_config(task, batch),
+        "_close_db_transaction_before_ai": True,
+    }
+    generation_count = len(batch)
+    tenant_id = action.tenant_id
+    target_label = payload.target_display
+    generation_history = payload.ai_generation_history
+    session.commit()
     contents, tokens = generate_group_messages(
         session,
-        action.tenant_id,
-        _runtime_group_ai_config(task, batch),
-        count=len(batch),
-        target_label=payload.target_display,
-        history=payload.ai_generation_history,
+        tenant_id,
+        generation_config,
+        count=generation_count,
+        target_label=target_label,
+        history=generation_history,
     )
     if len(contents) < len(batch):
         stats_inc(task, "normal_candidate_shortfall_count")
         if not contents:
             raise AiGenerationUnavailable(AI_DISPATCH_CANDIDATE_SHORTFALL_MESSAGE)
     _store_generated_send_payloads(session, batch, contents, tokens)
+    session.commit()
     refreshed = SendMessagePayload.model_validate(action.payload or {})
     if refreshed.quality_skip_reason == "duplicate_message":
         raise AiGenerationUnavailable("AI 活群生成内容重复，已拦截")

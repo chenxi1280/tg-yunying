@@ -30,6 +30,20 @@ def daily_coverage_due_debt(
     return max(0, due - confirmed - reserved)
 
 
+def daily_coverage_due_debt_totals(
+    task: Task,
+    group: TgGroup,
+    coverage_date: date,
+    *,
+    required: int,
+    confirmed: int,
+    reserved: int,
+    now: datetime,
+) -> int:
+    due = _cumulative_due(task, group, coverage_date, max(0, int(required)), now)
+    return max(0, due - max(0, int(confirmed)) - max(0, int(reserved)))
+
+
 def _cumulative_due(
     task: Task,
     group: TgGroup,
@@ -115,4 +129,4 @@ def _wall_time(value: datetime) -> datetime:
     return value.replace(tzinfo=None) if value.tzinfo else value
 
 
-__all__ = ["active_window_bounds", "daily_coverage_due_debt"]
+__all__ = ["active_window_bounds", "daily_coverage_due_debt", "daily_coverage_due_debt_totals"]

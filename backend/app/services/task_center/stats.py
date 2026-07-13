@@ -315,7 +315,7 @@ def _archived_skipped_count(session: Session, task: Task, business_filter) -> in
     return int(count or 0)
 
 
-def retry_failed_actions(session: Session, task: Task) -> int:
+def retry_failed_actions(session: Session, task: Task, *, limit: int = 100) -> int:
     policy = task.failure_policy or {}
     max_retries = _max_retries_for_task(task, policy)
     if max_retries <= 0:
@@ -327,7 +327,7 @@ def retry_failed_actions(session: Session, task: Task) -> int:
         Action.task_id == task.id,
         Action.status.in_(_auto_retry_statuses(task)),
         Action.retry_count < max_retries,
-    )
+    ).order_by(Action.scheduled_at.asc(), Action.id.asc()).limit(max(1, int(limit)))
     for action in session.scalars(query):
         previous_result = dict(action.result or {})
         if _is_terminal_ai_quality_failure(action, previous_result):

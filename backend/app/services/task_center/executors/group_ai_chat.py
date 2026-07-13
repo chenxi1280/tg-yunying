@@ -10,6 +10,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.models import Action, AiGroupMessageMemory, OperationTarget, RuleSet, Task, TaskAccountDailyCoverage, TenantAiSetting, TgGroup
 from app.services._common import _now
 from app.services.account_online_readiness import online_ready_account_ids_for_planning
@@ -40,6 +41,11 @@ from ..daily_coverage import (
     ensure_task_daily_coverage,
     ready_coverage_rows,
     reserve_coverage_for_action,
+)
+from ..daily_coverage_planning import (
+    advance_coverage_plan_cursor,
+    coverage_plan_totals,
+    ready_coverage_plan_batch,
 )
 from ..fingerprints import fingerprint_exists, remember_fingerprint
 from ..hard_hourly import current_progress, enabled as hard_hourly_enabled, hard_schedule_times, mark_plan_result
@@ -79,6 +85,10 @@ class CoveragePlanState:
     rows: list[TaskAccountDailyCoverage]
     rows_by_account: dict[int, TaskAccountDailyCoverage]
     due_debt: int
+    account_count: int = 0
+    target_per_account: int = 1
+    confirmed_count: int = 0
+    reserved_count: int = 0
 
 CHAT_MODE_REPLY = "reply"
 CHAT_MODE_IDLE_WARMUP = "idle_warmup"
@@ -213,7 +223,14 @@ def build_plan(session: Session, task: Task) -> int:
     coverage_state = _coverage_plan_state(session, task, group, config, hard_progress)
     has_daily_coverage_debt = coverage_state.due_debt > 0
     _record_daily_coverage_next_check(task, has_daily_coverage_debt)
-    capacity_blocker = _coverage_capacity_blocker(session, task, group, config, coverage_rows=coverage_state.rows)
+    capacity_blocker = _coverage_capacity_blocker(
+        session,
+        task,
+        group,
+        config,
+        coverage_rows=coverage_state.rows,
+        coverage_state=coverage_state,
+    )
     if capacity_blocker:
         if hard_progress:
             _mark_hard_blocked(task, hard_progress, "daily_coverage_capacity_insufficient")
@@ -683,6 +700,7 @@ def build_plan(session: Session, task: Task) -> int:
         _record_hard_hourly_distribution_skew(task, skew)
         mark_plan_result(task, hard_progress, 0, {"account_distribution_skew": max(1, int(hard_progress.get("deficit") or len(prepared_actions)))})
         return 0
+    reserved_coverage_rows: list[TaskAccountDailyCoverage] = []
     for account_id, planned_at, payload in prepared_actions:
         action = create_send_action(session, task, account_id, planned_at, payload)
         if not _reserve_action_coverage(session, action, payload):
@@ -698,6 +716,13 @@ def build_plan(session: Session, task: Task) -> int:
         if payload.ai_message_memory_id:
             mark_group_ai_message_result(session, payload.ai_message_memory_id, status="reserved", action_id=action.id)
         created += 1
+        if payload.coverage_ledger_id:
+            coverage_row = coverage_rows.get(account_id)
+            if coverage_row is not None:
+                reserved_coverage_rows.append(coverage_row)
+    if reserved_coverage_rows:
+        cursor_row = max(reserved_coverage_rows, key=lambda row: (row.targeted_at, row.account_id, row.id))
+        advance_coverage_plan_cursor(session, task, cursor_row, now=_now())
     for row in unprocessed_rows:
         remember_fingerprint(session, task.tenant_id, fingerprint_source, _context_fingerprint(row))
     stats = dict(task.stats or {})
@@ -1095,20 +1120,25 @@ def _coverage_capacity_blocker(
     group: TgGroup,
     config: dict,
     coverage_rows: list[TaskAccountDailyCoverage] | None = None,
+    coverage_state: CoveragePlanState | None = None,
 ) -> dict[str, object]:
     if not _all_accounts_daily_coverage(config):
         return {}
     rows = coverage_rows if coverage_rows is not None else _load_coverage_rows(session, task)
     if not rows:
         return {}
+    account_count = coverage_state.account_count if coverage_state else len(rows)
+    target_per_account = coverage_state.target_per_account if coverage_state else max(row.target_count for row in rows)
+    confirmed_count = coverage_state.confirmed_count if coverage_state else sum(row.confirmed_count for row in rows)
+    reserved_count = coverage_state.reserved_count if coverage_state else reserved_coverage_message_count(rows)
     proof = task_coverage_capacity_proof(
         session,
         task,
         group,
-        target_account_count=len(rows),
-        target_per_account=max(row.target_count for row in rows),
-        confirmed_message_count=sum(row.confirmed_count for row in rows),
-        reserved_message_count=reserved_coverage_message_count(rows),
+        target_account_count=account_count,
+        target_per_account=target_per_account,
+        confirmed_message_count=confirmed_count,
+        reserved_message_count=reserved_count,
     )
     if proof.get("sufficient"):
         _clear_coverage_capacity_blocker(task)
@@ -1142,11 +1172,23 @@ def _coverage_plan_state(
         return CoveragePlanState(rows=[], rows_by_account={}, due_debt=0)
     timestamp = _now()
     ensure_task_daily_coverage(session, task, now=timestamp)
-    rows = _load_coverage_rows(session, task, now=timestamp)
+    totals = coverage_plan_totals(session, task, group, now=timestamp)
+    configured_limit = int(getattr(get_settings(), "daily_coverage_plan_batch_limit", 20) or 20)
+    remaining_limit = int(session.info.get("daily_coverage_plan_limit", configured_limit))
+    rows = ready_coverage_plan_batch(
+        session,
+        task,
+        now=timestamp,
+        limit=min(configured_limit, remaining_limit, max(0, totals.due_debt) or 1),
+    ).rows
     return CoveragePlanState(
         rows=rows,
         rows_by_account={row.account_id: row for row in rows},
-        due_debt=daily_coverage_due_debt(task, group, rows, now=timestamp),
+        due_debt=totals.due_debt,
+        account_count=totals.account_count,
+        target_per_account=totals.target_per_account,
+        confirmed_count=totals.confirmed_count,
+        reserved_count=totals.reserved_count,
     )
 
 

@@ -148,6 +148,16 @@
 - E4：发布实际 commit 后连续至少 3 个完整 planner/dispatcher/metrics cycles，数据库无 `>60s` transaction、无持续 `>5s` transaction/tuple lock waiter，旧 `operation_issue_accounts` 长查询继续保持 0；覆盖必须从 `394/2320` 在连续样本增长；太郎必须为 `completed/next_run_at=null` 并跨 recovery 保持。任一项缺失均保持 blocked，worker/container healthy 或单条查询变快不能替代整体 E4。
 - 回滚：应用回滚不得撤销已验证有效的 0092 和上一轮运营摘要职责拆分；新增索引默认保留以避免放大锁风险。若新增增量汇总逻辑回滚，必须先停用对应写入者并由 metrics 从 Action 事实源完成一致性 reconcile；回滚本身不等于恢复。
 
+### Planner / Dispatcher 运行时锁边界 Dev Handoff
+
+- R1：Recovery 先以 `scheduled_at,id` 稳定顺序窄投影最多 20 个 executing Action id，再按主键加载有界明细；membership 补偿探测前保存必需标量并提交，外部 Telegram probe 不持有数据库事务。Planner 主路径不再物化无界历史 Action。
+- R2：Planner 与 Dispatcher finalize 不再逐 Action 调用 `refresh_task_stats`。`metrics_runtime` 成为全历史任务统计 owner，每轮最多选择 20 个缺失或最旧 task summary，每任务独立事务 reconcile；失败保持显式，不回退到 Planner/Dispatcher。
+- R3：延期 AI 生成前提交 claim/read 事务，生成后短事务写 payload / message memory；Telegram Gateway 仍处于独立无事务区间，随后短事务 finalize。AI provider 配额轮换在每次外部调用之间提交健康状态，不把下一次调用包在数据库事务内。
+- R4：新增 `TaskDailyCoveragePlanCursor` 和 `daily_coverage_planning.py`。单任务日按 `targeted_at,account_id,id` keyset 选择最多 20 条 ready 义务；Action 创建、条件 coverage reservation 和最后实际成功 reservation 对应游标推进同事务提交，任一失败 rollback 不前进。到尾部回卷复检先前未到期行；任务自己的 `messages_per_round` 精确保留，10 为单批 10、30 为 20+10、60 为 20+20+20，未缩小 580 分母或每日目标。
+- 0093：新增 cursor 表和 `ix_task_daily_coverage_plan_ready`、`ix_actions_task_stats_reconcile`、`ix_actions_executing_recovery`。真实 PostgreSQL 从空库完整 `alembic upgrade head`、downgrade 到 0092、再 upgrade 到 0093 均成功；并发索引通过 autocommit block 创建，invalid 同名索引/缺表/DDL 错误不吞掉。
+- 真 PostgreSQL E2：2 个 Planner 并发将 580 条到期 coverage 在多个 `<=20` 批次中完整预约；预提交崩溃后 Action、reservation、cursor 全回滚，重试无漏/重复；整测 `1 passed in 3.32s`，且每个测得的 task transaction `<5s`。生产等量 40,741 条 Action 历史下，task stats reconcile `<10s`，Recovery 稳定返回 20 个 id 且 `<5s`，整测 `1 passed in 8.99s`。
+- 当前阶段仅为 Dev E2 handoff：独立 QA、Product Acceptance、发布和生产 E4 均未完成，Release Gate 保持 blocked；不得据此声称 2320 自然日覆盖或评论任务已经生产恢复。
+
 ## Release Gate 与 E4
 
 1. 按 `master -> release -> GitHub Actions Deploy Production` 发布并核对实际镜像 commit。

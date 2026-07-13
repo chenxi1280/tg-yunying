@@ -292,6 +292,7 @@ def test_stale_executing_membership_connection_error_clears_lease_and_cools_down
         _seed_stale_executing_membership_action(session, now_value=now_value)
 
         def fake_probe(_account_id, target_peer_id, *_args, **_kwargs):
+            assert session.in_transaction() is False
             calls.append(str(target_peer_id))
             raise ConnectionError("Connection to Telegram failed 5 time(s)")
 
@@ -310,6 +311,39 @@ def test_stale_executing_membership_connection_error_clears_lease_and_cools_down
         assert _recover_stale_executing_actions(session, timeout_minutes=30, limit=1) == 0
 
     assert calls == ["@stale_target"]
+
+
+@pytest.mark.no_postgres
+def test_stale_executing_scan_returns_only_bounded_stable_ids() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="租户"))
+        session.add(Task(
+            id="task-recovery-id-scan", tenant_id=1, name="恢复",
+            type="target_admission_retry", status="running",
+        ))
+        session.add_all([
+            Action(
+                id=f"recovery-action-{index:02d}", tenant_id=1,
+                task_id="task-recovery-id-scan", task_type="target_admission_retry",
+                action_type="ensure_target_membership", account_id=index + 1,
+                status="executing", scheduled_at=now_value - timedelta(hours=2, seconds=index),
+                lease_expires_at=now_value - timedelta(minutes=1), payload={"large": "x" * 1000},
+            )
+            for index in range(25)
+        ])
+        session.commit()
+
+        action_ids = task_service._stale_executing_action_ids(
+            session,
+            now=now_value,
+            timeout_minutes=30,
+            limit=100,
+        )
+
+    assert action_ids == [f"recovery-action-{index:02d}" for index in reversed(range(5, 25))]
 
 
 def _raise_timeout(*_args, **_kwargs):

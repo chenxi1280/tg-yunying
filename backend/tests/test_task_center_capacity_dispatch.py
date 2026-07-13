@@ -557,6 +557,7 @@ def test_dispatch_hard_hourly_generates_pending_ai_message_before_send(monkeypat
         monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
 
         def fake_generate(_session, _tenant_id, config, *, count, target_label, history):  # noqa: ANN001
+            assert _session.in_transaction() is False
             generated.update({"model": config["ai_model"], "count": count, "target": target_label, "history": history, "personas": config["account_personas"]})
             return ["今天先看看群公告", "第二条我也等等看"], 17
 

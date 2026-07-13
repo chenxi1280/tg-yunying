@@ -240,6 +240,7 @@ def generate_contents(
         required_model_family=required_model_family,
         allow_quota_rotation=not provider_id,
         purpose=purpose,
+        close_transaction_before_external=False,
     )
     raw_contents = [
         _generated_content_from_candidate(candidate)
@@ -271,15 +272,17 @@ def _generate_with_provider_candidates(
     required_model_family: str,
     allow_quota_rotation: bool,
     purpose: str,
+    close_transaction_before_external: bool,
 ):
     providers = [provider]
     if allow_quota_rotation:
         providers.extend(_quota_rotation_providers(session, provider, required_model_family))
+    provider_calls = _provider_calls(session, providers, model_name, close_transaction_before_external)
     last_exc: Exception | None = None
-    for candidate in providers:
+    for candidate, credentials in provider_calls:
         try:
             return ai_gateway.generate_drafts(
-                _ai_credentials(candidate, model_name),
+                credentials,
                 prompt,
                 count=count,
                 topic=topic,
@@ -295,6 +298,9 @@ def _generate_with_provider_candidates(
             if not _is_ai_provider_quota_exhausted(exc):
                 break
             _mark_provider_quota_exhausted(candidate, exc)
+            if close_transaction_before_external:
+                session.add(candidate)
+                session.commit()
             if candidate == providers[-1]:
                 break
     if purpose in LONG_RUNNING_AI_PURPOSES:
@@ -302,6 +308,21 @@ def _generate_with_provider_candidates(
     if last_exc:
         raise last_exc
     raise RuntimeError("AI provider generation failed without detail")
+
+
+def _provider_calls(
+    session: Session,
+    providers: list[AiProvider],
+    model_name: str,
+    close_transaction_before_external: bool,
+) -> list[tuple[AiProvider, object]]:
+    calls = [(candidate, _ai_credentials(candidate, model_name)) for candidate in providers]
+    if not close_transaction_before_external:
+        return calls
+    for candidate in providers:
+        session.expunge(candidate)
+    session.commit()
+    return calls
 
 
 def _quota_rotation_providers(session: Session, provider: AiProvider, required_family: str) -> list[AiProvider]:
@@ -919,6 +940,7 @@ def _generate_group_prompt_contents(
         required_model_family=_group_chat_required_model_family(config),
         allow_quota_rotation=not config.get("ai_provider_id") and not stage,
         purpose=purpose,
+        close_transaction_before_external=bool(config.get("_close_db_transaction_before_ai")),
     )
     duration_ms = round((time.monotonic() - started_at) * 1000)
     contents = [
