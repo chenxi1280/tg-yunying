@@ -6,7 +6,7 @@
 - `bug_id`: `bug-2026-07-13-ai-group-planner-stall`
 - `level/lane`: `L3 / ai-group-quality/planner-runtime`
 - 用户目标：监督修复生产 AI 活群，确保每个目标群中的全部账号按北京时间每日真实发言一次，并检查评论任务运行状态。
-- 当前状态：第五次 release `7f7af0cb` 已成功部署，群准入 latest-action 修复已上线；截至 2026-07-13 16:45 CST，2320 项北京时间日覆盖矩阵约 323 项远端确认且仍推进缓慢，阿哥日记已有 3 条真实评论，太郎日记回复尚未恢复。消息记忆三字段轻投影与 0091 已完成 Dev E2，独立 QA、产品验收、新一轮发布及生产 E4 均待完成；该时点数字只代表本次取证，不是最终自然日验收结果。
+- 当前状态：第五次 release `7f7af0cb` 已成功部署，群准入 latest-action 修复已上线；截至 2026-07-13 16:45 CST，2320 项北京时间日覆盖矩阵约 323 项远端确认且仍推进缓慢，阿哥日记已有 3 条真实评论，太郎日记回复尚未恢复。消息记忆三字段轻投影与 0091 已完成独立 QA 和 Product Acceptance（仅 E2），Release Gate 就绪；新一轮发布及生产 E4 均待完成，该时点数字只代表本次取证，不是最终自然日验收结果。
 
 ## 生产诊断
 
@@ -66,7 +66,14 @@
 - 真 PostgreSQL 规模样本为 40,741 行，每行 `result` 原始逻辑大字段 1,408 bytes，合计约 54.71 MiB；前序性能验收 `_window_memories=0.235042s`、最坏无命中 `_first_similar_memory=0.270144s`，分别低于 2 秒 / 5 秒门禁。本次独立复测同样 40,741 行得到查询 `0.109495s`、扫描 `0.268278s`、无重复命中，首次复测表总 relation 为 `71.23 MiB`；后续 delete/reinsert 观察到的表膨胀不替代 54.71 MiB 原始载荷口径。
 - 专用测试库真 PostgreSQL 定向整组（消息记忆、归一化、跨群、查询形状、规模、dispatcher、任务限制、评论配置）为 `81 passed in 7.80s`，墙钟 `8.89s`；query-shape + merge-integrity + database 迁移证据为 `17 passed in 2.59s`，墙钟 `3.37s`。
 - 全量 `pytest -m no_postgres -q` 在单次 60 秒硬门禁内为 `1262 passed, 814 deselected, 5 warnings in 53.78s`，墙钟 `58.23s`、退出码 0；5 条 warning 均为 SQLAlchemy 使用 Python 3.12 默认 sqlite datetime adapter 的弃用提示。相关 app、0091 和两个新增测试 `py_compile` 通过，仓库根 `git diff --check` 通过。
-- 本节只证明 Dev E2 与性能测试门禁；尚未完成独立 QA、Product Acceptance、发布或生产 E4。北京时间完整 2320 项远端确认矩阵与评论任务当天真实远端成功仍未恢复，不能标记为 QA 通过、产品验收或生产修复。
+- 截至本节 Dev handoff 时点，只证明 Dev E2 与性能测试门禁，独立 QA、Product Acceptance、发布和生产 E4 当时尚未完成；该阶段事实由下方验收记录继续流转，不追改为事后通过。北京时间完整 2320 项远端确认矩阵与评论任务当天真实远端成功仍未恢复。
+
+### 消息记忆独立 QA 与 Product Acceptance
+
+- 初次独立 QA 判定 `qa_pass=false`，发现 2 个 Important：0091 downgrade 在目标表缺失时静默返回，违反失败显式暴露契约；`_window_memories` 暴露 session 之外 4 个位置参数，超过项目最多 3 个位置参数的硬限制。该失败事实保留，不以随后通过覆盖。
+- 修复提交：`d180fd96` 让 downgrade 缺表显式失败；`a928500b` 将 tenant/group/cutoff/exclude 窗口过滤改为 keyword-only，同时保持跨群去重语义；`a03d40bc` 让 upgrade/downgrade 都先执行 `_require_table`，以稳定 `RuntimeError` 暴露缺表并补 PostgreSQL 契约测试。
+- re-QA：业务与性能定向 `85 passed`，query-shape + merge-integrity + database 迁移证据 `21 passed`；40,741 行真 PostgreSQL 复测 `_window_memories=0.146s`、最坏无命中 `_first_similar_memory=0.271s`，低于 2 秒 / 5 秒门禁；Critical / Important / Minor 均为 0，`qa_pass=true`。
+- Product Acceptance：`product_accepted=true`（仅 E2）。轻投影、租户级跨群去重语义、显式失败和 0091 并发索引满足 Product Handoff，允许进入 Release Gate；这不代表已发布或生产恢复，2320 项完整自然日矩阵和评论任务最终 E4 仍待真实生产证据。
 
 ## Release Gate 与 E4
 
