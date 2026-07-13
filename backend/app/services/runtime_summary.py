@@ -28,11 +28,17 @@ from app.models.enums import AccountStatus
 from app.models.enums import FailureType
 from app.services._common import _now, audit
 from app.services.account_capacity import account_capacity_decision
+from app.services.runtime_issue_queries import (
+    UNRESOLVED_FAILURE_STATUSES,
+    active_issue_representative_action,
+    get_or_create_operation_issue,
+    has_active_unresolved_issue_actions,
+    issue_has_action_sources,
+)
 from app.services.task_runtime_stage import derive_task_runtime_stage
 
 
 PENDING_STATUSES = {"pending", "claiming", "executing", "retryable_failed", "unknown_after_send"}
-UNRESOLVED_FAILURE_STATUSES = {"failed", "retryable_failed", "unknown_after_send"}
 RISK_SIGNAL_STATUSES = {"failed", "skipped", "retryable_failed", "unknown_after_send"}
 SECURITY_RETRY_STATUSES = {"pending", "waiting", "failed", "partial_success"}
 FAILURE_TYPE_CODES = {item.value: item.name for item in FailureType}
@@ -67,7 +73,12 @@ RISK_LEVEL_THRESHOLDS = (85, 70, 55, 30)
 MAX_RUNTIME_TARGET_IDS = 100
 
 
-def refresh_task_summary(session: Session, task: Task) -> TaskRuntimeSummary:
+def refresh_task_summary(
+    session: Session,
+    task: Task,
+    *,
+    include_configured_accounts: bool = True,
+) -> TaskRuntimeSummary:
     session.flush()
     rows = session.execute(select(Action.status, func.count(Action.id)).where(Action.task_id == task.id).group_by(Action.status)).all()
     counts = {str(status): int(count) for status, count in rows}
@@ -109,10 +120,24 @@ def refresh_task_summary(session: Session, task: Task) -> TaskRuntimeSummary:
         _resolve_task_issues_if_recovered(session, task)
     if target_id:
         refresh_target_summary(session, task.tenant_id, target_id)
-    for account_id in _task_account_ids(task, latest_failure):
+    _refresh_task_account_summaries(session, task, latest_failure, include_configured_accounts=include_configured_accounts)
+    return summary
+
+
+def _refresh_task_account_summaries(
+    session: Session,
+    task: Task,
+    latest_failure: Action | None,
+    *,
+    include_configured_accounts: bool,
+) -> None:
+    for account_id in _task_account_ids(
+        task,
+        latest_failure,
+        include_configured_accounts=include_configured_accounts,
+    ):
         if session.get(TgAccount, account_id):
             refresh_account_summary(session, task.tenant_id, account_id)
-    return summary
 
 
 def _latest_unresolved_failure_action(session: Session, task_id: str) -> Action | None:
@@ -380,27 +405,17 @@ def upsert_operation_issue(
     handling_mode: str = "modal",
 ) -> OperationIssue:
     now_value = _now()
-    issue = session.scalar(
-        select(OperationIssue).where(
-            OperationIssue.tenant_id == tenant_id,
-            OperationIssue.target_id == target_id,
-            OperationIssue.issue_type == issue_type,
-            OperationIssue.failure_type == failure_type,
-            OperationIssue.status == "open",
-        )
+    issue = get_or_create_operation_issue(
+        session,
+        tenant_id=tenant_id,
+        target_id=target_id,
+        issue_type=issue_type,
+        failure_type=failure_type,
+        now_value=now_value,
     )
-    if not issue:
-        issue = OperationIssue(
-            tenant_id=tenant_id,
-            target_id=target_id,
-            issue_type=issue_type,
-            failure_type=failure_type,
-            first_seen_at=now_value,
-        )
-        session.add(issue)
-        session.flush()
+    observed_accounts = {int(item) for item in affected_account_ids if item}
     known_accounts = set(int(item) for item in (issue.affected_account_ids or []) if item)
-    known_accounts.update(int(item) for item in affected_account_ids if item)
+    known_accounts.update(observed_accounts)
     issue.severity = severity
     issue.source_task_id = source_task_id
     issue.representative_action_id = representative_action_id
@@ -416,7 +431,7 @@ def upsert_operation_issue(
     issue.summary = {**(issue.summary or {}), "hit_count": int((issue.summary or {}).get("hit_count") or 0) + 1}
     _upsert_issue_source(session, tenant_id, issue.id, "task", source_task_id, failure_type, now_value, {"representative_action_id": representative_action_id})
     _upsert_issue_source(session, tenant_id, issue.id, "action", representative_action_id, failure_type, now_value, {"source_task_id": source_task_id})
-    for account_id in known_accounts:
+    for account_id in observed_accounts:
         _upsert_issue_account(session, tenant_id, issue.id, account_id, "execution_failure", now_value, {"source_task_id": source_task_id})
     issue.affected_task_count = _issue_source_count(session, tenant_id, issue.id, "task")
     issue.affected_account_count = _issue_account_count(session, tenant_id, issue.id)
@@ -780,8 +795,17 @@ def _task_status_counts(rows: list[TaskRuntimeSummary]) -> dict[str, int]:
     return counts
 
 
-def _task_account_ids(task: Task, latest_failure: Action | None) -> set[int]:
-    ids = {int(item) for item in (task.account_config or {}).get("account_ids", []) if item}
+def _task_account_ids(
+    task: Task,
+    latest_failure: Action | None,
+    *,
+    include_configured_accounts: bool = True,
+) -> set[int]:
+    ids = (
+        {int(item) for item in (task.account_config or {}).get("account_ids", []) if item}
+        if include_configured_accounts
+        else set()
+    )
     if latest_failure and latest_failure.account_id:
         ids.add(int(latest_failure.account_id))
     return ids
@@ -944,9 +968,8 @@ def _task_linked_open_issues(session: Session, task: Task) -> list[OperationIssu
 
 
 def _issue_has_unresolved_task_sources(session: Session, issue: OperationIssue) -> bool:
-    action_source_ids = _issue_source_ids(session, issue.tenant_id, issue.id, "action")
-    if action_source_ids:
-        return _has_active_unresolved_actions(session, issue.tenant_id, action_source_ids)
+    if issue_has_action_sources(session, issue):
+        return has_active_unresolved_issue_actions(session, issue)
     task_source_ids = set(_issue_source_ids(session, issue.tenant_id, issue.id, "task"))
     if issue.source_task_id:
         task_source_ids.add(issue.source_task_id)
@@ -970,7 +993,7 @@ def _issue_has_task_runtime_source(session: Session, issue: OperationIssue) -> b
 
 
 def _refresh_issue_representative(session: Session, issue: OperationIssue) -> None:
-    action = _active_issue_representative_action(session, issue)
+    action = active_issue_representative_action(session, issue)
     if not action:
         return
     issue.source_task_id = action.task_id
@@ -978,24 +1001,6 @@ def _refresh_issue_representative(session: Session, issue: OperationIssue) -> No
     issue.failure_reason = _failure_reason(action)
     issue.return_to = _issue_return_to(issue, source_task_id=action.task_id, representative_action_id=action.id)
     issue.updated_at = _now()
-
-
-def _active_issue_representative_action(session: Session, issue: OperationIssue) -> Action | None:
-    action_source_ids = _issue_source_ids(session, issue.tenant_id, issue.id, "action")
-    if not action_source_ids:
-        return None
-    return session.scalar(
-        select(Action)
-        .join(Task, Task.id == Action.task_id)
-        .where(
-            Action.tenant_id == issue.tenant_id,
-            Action.id.in_(action_source_ids),
-            Action.status.in_(UNRESOLVED_FAILURE_STATUSES),
-            Task.deleted_at.is_(None),
-        )
-        .order_by(Action.executed_at.desc().nullslast(), Action.created_at.desc())
-        .limit(1)
-    )
 
 
 def _issue_source_ids(session: Session, tenant_id: int, issue_id: str, source_type: str) -> list[str]:
@@ -1006,22 +1011,6 @@ def _issue_source_ids(session: Session, tenant_id: int, issue_id: str, source_ty
                 OperationIssueSource.issue_id == issue_id,
                 OperationIssueSource.source_type == source_type,
             )
-        )
-    )
-
-
-def _has_active_unresolved_actions(session: Session, tenant_id: int, action_ids: list[str]) -> bool:
-    return bool(
-        session.scalar(
-            select(Action.id)
-            .join(Task, Task.id == Action.task_id)
-            .where(
-                Action.tenant_id == tenant_id,
-                Action.id.in_(action_ids),
-                Action.status.in_(UNRESOLVED_FAILURE_STATUSES),
-                Task.deleted_at.is_(None),
-            )
-            .limit(1)
         )
     )
 

@@ -57,7 +57,12 @@ def next_run_after_task(task: Task):
     return next_run_after(task.pacing_config or {})
 
 
-def refresh_task_stats(session: Session, task: Task) -> dict[str, Any]:
+def refresh_task_stats(
+    session: Session,
+    task: Task,
+    *,
+    include_configured_accounts: bool = True,
+) -> dict[str, Any]:
     session.flush()
     business_filter = _stats_action_filter(task)
     rows = session.execute(select(Action.status, func.count(Action.id)).where(Action.task_id == task.id, business_filter).group_by(Action.status)).all()
@@ -92,7 +97,7 @@ def refresh_task_stats(session: Session, task: Task) -> dict[str, Any]:
     task.stats = stats
     from app.services.runtime_summary import refresh_task_summary
 
-    refresh_task_summary(session, task)
+    refresh_task_summary(session, task, include_configured_accounts=include_configured_accounts)
     return stats
 
 
