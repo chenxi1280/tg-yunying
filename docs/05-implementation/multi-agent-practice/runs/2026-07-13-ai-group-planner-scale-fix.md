@@ -55,6 +55,8 @@
 - 群准入 quick-fix 独立 QA：相关集 `77 passed`，最小语义/smoke `7 passed`，Critical / Important / Minor 均为 0；最终 Product Acceptance：`product_accepted=true`（仅 E2），Release Gate 就绪，不等于生产恢复。
 - Release run `29225396989` 因 PostgreSQL fixture 复用 tenant 1 失败；run `29225675866` 因 open-action 测试误拦截遗留任务失败；run `29227840790` 的 checks/镜像成功，但 deploy 三次均在 Planner smoke 或 planner unhealthy 超时，生产实际镜像为 `fd9cf0c9`，不能写发布成功。
 - Release run `29230128879` 在 checks 失败、未构建镜像：新增 580×4 PostgreSQL 规模测试未清理自己提交的 2320 条 Action，后续 backlog 测试读到 2328 条而非自己的 8 条。修复为同租户显式前后清理并跳过与本测试无关的规则自动绑定；按 CI 失败顺序 `2 passed`，membership 相关 PostgreSQL 组 `15 passed`。独立 rework QA 通过，Critical / Important / Minor 均为 0，测试后 Tenant / Task / TgAccount / Action 均为 0，Release Gate 恢复就绪。
+- 第五次 Deploy Production run `29230895485` 成功：checks、镜像与 deploy 全通过，生产 release `/data/tgyunying/releases/20260713071213_7f7af0c`，实际镜像 commit `7f7af0cb`。发布后北京时间 2026-07-13 的 4 个任务共 2320 项覆盖义务，连续样本只从远端确认 318 增长到 321；业务仍未达到完整自然日矩阵。太郎日记回复已达到解析后生命周期总预算但状态未被 Planner 提交收口；阿哥日记无当天新 Action / 远端结果，评论 E4 未恢复。
+- 新生产根因：多个 Planner / Dispatcher PostgreSQL 事务持续 100-400 秒以上并形成锁链，根事务执行租户级 `ai_group_message_memory` 时间窗查询。生产表约 40741 行、总大小约 62MB；查询加载包含 result/画像诊断在内的完整 ORM 大行，而相似度判定只需要 id/normalized_text/raw_text，容器持续接收大结果集，7天聚合在20秒内未完成。Product Handoff 保持租户级跨群去重语义，采用轻投影 + `(tenant_id, status, planned_at DESC)` 并发索引；规格见 `docs/superpowers/specs/2026-07-13-ai-message-memory-dedup-performance-design.md`，实现须等书面规格复核。
 
 ## Release Gate 与 E4
 
