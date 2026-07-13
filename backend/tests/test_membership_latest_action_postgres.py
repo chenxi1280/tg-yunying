@@ -3,7 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from time import perf_counter
 
-from sqlalchemy import event
+import pytest
+from sqlalchemy import delete, event
 
 from app.database import Base, SessionLocal, engine
 from app.models import Action, Task, Tenant, TgAccount
@@ -49,6 +50,15 @@ def _seed_membership_history() -> None:
         session.commit()
 
 
+def _cleanup_membership_history() -> None:
+    with SessionLocal() as session:
+        session.execute(delete(Action).where(Action.tenant_id == TEST_TENANT_ID))
+        session.execute(delete(Task).where(Task.tenant_id == TEST_TENANT_ID))
+        session.execute(delete(TgAccount).where(TgAccount.tenant_id == TEST_TENANT_ID))
+        session.execute(delete(Tenant).where(Tenant.id == TEST_TENANT_ID))
+        session.commit()
+
+
 def _history_actions(now_value: datetime):
     for index in range(TEST_ACCOUNT_COUNT):
         account_id = TEST_ACCOUNT_ID_BASE + index
@@ -67,9 +77,10 @@ def _history_actions(now_value: datetime):
             )
 
 
+@pytest.mark.allow_missing_rule_binding
 def test_membership_latest_action_postgres_scales_by_account_not_history() -> None:
     Base.metadata.create_all(engine)
-    _seed_membership_history()
+    _cleanup_membership_history()
     statements: list[str] = []
 
     def track_select(_connection, _cursor, statement, _parameters, _context, _executemany):
@@ -78,6 +89,7 @@ def test_membership_latest_action_postgres_scales_by_account_not_history() -> No
 
     event.listen(engine, "before_cursor_execute", track_select)
     try:
+        _seed_membership_history()
         with SessionLocal() as session:
             started_at = perf_counter()
             latest = _membership_actions_by_account(
@@ -88,6 +100,7 @@ def test_membership_latest_action_postgres_scales_by_account_not_history() -> No
             elapsed = perf_counter() - started_at
     finally:
         event.remove(engine, "before_cursor_execute", track_select)
+        _cleanup_membership_history()
 
     assert len(latest) == TEST_ACCOUNT_COUNT
     assert all(action.id.endswith(f"-{TEST_HISTORY_PER_ACCOUNT - 1}") for action in latest.values())
