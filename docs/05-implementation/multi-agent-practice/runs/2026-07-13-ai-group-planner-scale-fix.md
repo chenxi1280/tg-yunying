@@ -6,7 +6,7 @@
 - `bug_id`: `bug-2026-07-13-ai-group-planner-stall`
 - `level/lane`: `L3 / ai-group-quality/planner-runtime`
 - 用户目标：监督修复生产 AI 活群，确保每个目标群中的全部账号按北京时间每日真实发言一次，并检查评论任务运行状态。
-- 当前状态：第五次 release `7f7af0cb` 已成功部署，群准入 latest-action 修复已上线。ai-memory `action_id` 回填性能和评论 lifetime-cap recovery 两项 resync 已完成 cross re-QA 与最终 Product Acceptance：`qa_pass=true`、`product_accepted=true`（仅 E2），Release Gate ready；尚未发布，生产 E4 pending，禁止写 `production_fixed`。发布前 fresh production baseline 保持 blocked：2026-07-13 17:55/18:00 CST 覆盖为 `347/2320`，阿哥评论 `remote=263` 为 PASS，太郎仍 `running` 为 blocked，100 秒级长事务仍存在。
+- 当前状态：第二轮 release `59d5c3e` 已上线，0092 有效，生产 `action_id` missing 点查 `0.485ms`；但 active planner client `172.19.0.28` 仍出现 `>60s` 事务，当前语句为 `UPDATE operation_issue_accounts`。fresh L3 根因定位到 Planner 在同一事务为 580 个账号逐个刷新运营摘要，覆盖仅从 `347` 增长到 `359/2320`，太郎 lifetime-cap 任务仍 `running/next_run_at` 早于当前时间。新 Product Handoff `design_status=complete`、`resync=true`，实现/QA/发布前 Release Gate `blocked`，禁止写 `production_fixed`。
 
 ## 生产诊断
 
@@ -102,6 +102,16 @@
 - 主代理最终验证：真 PostgreSQL action-index / query-shape / scale `23 passed in 5.47s`；全量 no-PostgreSQL `1278 passed, 814 deselected in 41.27s`；相关 `compileall` / `py_compile`、仓库 `git diff --check` 通过，Alembic 唯一 head 为 `0092_ai_memory_action_idx`。
 - Product Acceptance：`qa_pass=true`、`product_accepted=true`（仅 E2）。两项实现满足 `c8567324` 与 `a5ec1de7` Product Handoff，Release Gate ready；这不证明代码已发布、生产长事务已消失、太郎状态已收口或 2320 自然日覆盖完成。
 - 发布前 blocked baseline（必须保留）：2026-07-13 17:55/18:00 CST，AI 活群远端覆盖 `347/2320`；阿哥评论 `remote=263`，判定 PASS；太郎仍为 `running`，判定 blocked；生产长事务仍存在。只有发布实际 commit 后完成 0092 有效性、recovery 吸收终态、无 `>60s` 事务/锁链和完整自然日覆盖 E4，才可更新生产结论，当前禁止写 `production_fixed`。
+
+### Planner 全账号运营摘要长事务 Mini Bug / L3 Product Handoff（resync）
+
+- Mini Bug Card：症状为 release `59d5c3e`、0092 有效且 missing lookup `0.485ms` 后，active planner `172.19.0.28` 仍连续出现 `>60s` 事务，现场 SQL 为 `UPDATE operation_issue_accounts`；业务影响为 4×580 覆盖只推进到 `359/2320`，太郎 lifetime-cap 仍未收口。等级维持 L3，影响核心 Planner、运营读模型和评论恢复 E4。
+- 根因链：`_drain_task_planner -> refresh_task_stats -> refresh_task_summary -> for _task_account_ids -> refresh_account_summary`。单个 580-account group_ai_chat 在 Planner 主事务内逐账号读取 24 小时 Action、容量、风控、安全与重试信号，并更新 `account_runtime_summary` / `operation_issue_accounts`，把运营观测投影的 O(accounts) 成本和锁持有时间叠加到规划事务。
+- Product Design Complete：`design_status=complete`、`resync=true`。职责边界确定为 Planner 保留规划所需的 task stats、task/target 轻量汇总、latest failure 和单个代表异常；全账号健康 / 容量 / 风险 / retry / 趋势和异常影响账号分页由 metrics worker 独立刷新。不得仅延长 Planner 超时、吞掉摘要错误、跳过账号或返回陈旧数据并伪装实时。
+- metrics 数据流：以显式 `account_summary_batch_size`（生产/QA 首版每事务最多 100 账号）和可恢复游标分批覆盖全部账号，每批独立提交；下一轮从游标继续，最终覆盖 580/580。metrics 失败必须保留最后已提交快照并暴露 heartbeat/error、`updated_at` 和 stale，不得回退到 Planner 内同步全刷。
+- 保留语义：task summary 的 planned/success/failed/pending、oldest pending、latest failure、runtime stage 和 target 关联不变；account summary 的健康分、风险、身份/授权/设备、各能力可用性、容量解释、pending/executing/unknown 占用、不可用原因、next retry、24 小时趋势不变；operation issue/source/account 的异常类型、严重度、代表 task/action、failure type/reason、建议动作、handling mode、来源、影响账号、impact type、latest seen 和人工状态不变。
+- E2 QA：真 PostgreSQL 构造 580-account group_ai_chat 及现存 issue/account 投影，证明 Planner drain 不调用逐账号 `refresh_account_summary`、不产生全量 `UPDATE operation_issue_accounts`，查询/写入数量不随账号数线性增长且单轮 `<5s`；metrics 分批覆盖 580/580、每批最多 100、单事务 `<10s`，中途失败后从游标继续且不重复/漏账号。拆分前后对比上述 task/target/account summary 与 issue/source/account 字段和 resolve/upsert 语义等价。
+- E4：发布实际 commit 后核对 planner、metrics、recovery heartbeat 与数据库 active transaction；并发连续至少 3 个完整 cycles 无 `>60s` 事务、无 Planner 发起的全量 `operation_issue_accounts` 更新；`359/2320` 覆盖分子在连续样本继续增长；太郎必须成为 `completed/next_run_at=null` 且跨 recovery 保持吸收终态。任一项缺失均保持 blocked，不能以 0092 点查成功或容器 healthy 代替。
 
 ## Release Gate 与 E4
 

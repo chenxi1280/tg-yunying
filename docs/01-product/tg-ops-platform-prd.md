@@ -3353,6 +3353,10 @@ AI 与提示词 Tab 维护 AI 底座，不承载素材日常管理。
 | `account_proxies` | `protocol`、`host`、`port`、`status`、`alert_status`、`max_bound_accounts` | 本地代理资源 |
 | `tg_account_security_batches` | `action_types`、`status`、`profile_strategy`、`avatar_strategy`、`trace_id`、`started_at`、`finished_at` | 安全/资料批次；资料初始化、清理登录设备、设置二步密码、备用 session 补齐都需派生任务中心系统任务投影 |
 | `tg_account_security_batch_items` | `batch_id`、`account_id`、`status`、`profile_status`、`username_status`、`avatar_status`、`avatar_source`、`device_cleanup_status`、`two_fa_status`、`standby_session_status`、`failure_type`、`failure_detail`、`next_retry_at` | 单账号批次项；头像缓存状态可由 `avatar_source` 关联素材缓存状态派生，必要时在响应中输出 `avatar_cache_status` |
+
+运营读模型不得反向阻塞核心任务规划。Planner 事务只刷新当前任务规划所需的轻量统计，以及任务级 planned / success / failed / pending、oldest pending、latest failure、runtime stage、目标关联和单个代表失败异常；不得在同一 Planner 事务中遍历任务全部账号并逐个刷新 `account_runtime_summary`、账号容量 / 风险信号或 `operation_issue_accounts`。全账号运营摘要由 metrics worker 或等价独立观测刷新链路负责，按显式 `account_summary_batch_size` 分批且游标续跑，每批独立提交，不能以 batch limit 静默漏掉后续账号。metrics 失败不回退到 Planner 内重算，必须通过 worker heartbeat、错误和摘要 `updated_at` / stale 状态显式暴露。
+
+职责拆分不得削弱运营语义：`account_runtime_summary` 仍保留账号健康分、风险、身份 / 授权 / 设备摘要、发送 / 监听 / 入群 / 评论等可用性、小时 / 日容量、pending / executing / unknown 占用、不可用原因、下一重试时间和 24 小时趋势；`operation_issue`、`operation_issue_sources`、`operation_issue_accounts` 仍保留异常类型、严重度、代表 task / action、failure type / reason、建议动作、handling mode、来源、影响账号、impact type、latest seen 和人工处置状态。分批刷新期间页面读取最后一份已提交快照并显示更新时间，不得伪装为实时；Planner 成功不能清除未被 metrics 重新确认已恢复的异常。
 | `archived_members` | `archive_id`、`member_peer_id`、`display_name`、`username`、`phone_number`、`phone_masked`、`snapshot_at` | 归档成员快照；导出优先完整手机号 |
 | `audit_logs` | `actor_id`、`action`、`object_type`、`object_id`、`result`、`trace_id`、`reason`、`snapshot` | 审计记录；涉及账号、验证码查看、设备清理和接码身份变更时，snapshot 必须保留操作原因、完整对象 ID 和关键前后状态 |
 | `source_media_assets` | `source_peer_id`、`source_message_id`、`cache_status`、`cache_version`、`cache_message_id` | 转发源媒体临时缓存 |
