@@ -61,7 +61,7 @@ from .channel_membership import (
 )
 from .dispatcher import _sync_all_account_membership_state, claim_actions, dispatch_action, due_actions, mark_dispatcher_db_error, recover_expired_claims, recover_expired_hard_hourly_actions
 from .daily_coverage import recover_terminal_coverage_reservations
-from .executors import build_task_plan, prepare_open_actions_for_planning, requires_planning_with_open_actions
+from .executors import build_task_plan, channel_comment, prepare_open_actions_for_planning, requires_planning_with_open_actions
 from .search_rank_deboost_reservations import reopen_released_reservation, reservation_for_action
 from .details import (
     _accounts_by_id,
@@ -945,6 +945,21 @@ def _build_rank_deboost_type_config(
 
 def start_task(session: Session, tenant_id: int, task_id: str, actor: str) -> Task:
     task = _get_task(session, tenant_id, task_id)
+    if task.type == "channel_comment":
+        channel_comment.reconcile_lifetime_cap(session, task)
+        if task.status == "completed":
+            audit(
+                session,
+                tenant_id=tenant_id,
+                actor=actor,
+                action="启动任务中心任务",
+                target_type="task",
+                target_id=task.id,
+                detail="评论任务已达到生命周期总上限",
+            )
+            session.commit()
+            session.refresh(task)
+            return task
     if task.type == "search_rank_deboost":
         _assert_rank_deboost_allows_start(session, tenant_id, task)
     else:
@@ -1632,7 +1647,8 @@ def _drain_task_planner(session_factory, *, limit: int, process_type: str | None
                 continue
             created = build_task_plan(session, task)
             refresh_task_stats(session, task)
-            task.next_run_at = next_run_after_task(task)
+            if task.status == "running":
+                task.next_run_at = next_run_after_task(task)
             session.commit()
             processed += created
     return processed, future_open_action_task_ids

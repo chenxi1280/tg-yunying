@@ -110,13 +110,13 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 
 | 文件 | 行数 |
 | --- | ---: |
-| `backend/tests/test_workflow.py` | 6737 |
+| `backend/tests/test_workflow.py` | 7281 |
 | `backend/tests/test_operations_center_runtime.py` | 6577 |
-| `backend/app/services/task_center/dispatcher.py` | 3967 |
+| `backend/app/services/task_center/dispatcher.py` | 4704 |
 | `backend/tests/test_task_center_capacity_dispatch.py` | 4906 |
 | `frontend/src/app/views/TaskCenterView.tsx` | 2303 |
 | `backend/tests/test_frontend_permission_gating.py` | 2249 |
-| `backend/app/services/task_center/service.py` | 2417 |
+| `backend/app/services/task_center/service.py` | 2893 |
 | `backend/app/integrations/telegram/gateway.py` | 2116 |
 | `backend/app/services/operations.py` | 1897 |
 | `backend/app/services/account_security/service.py` | 1821 |
@@ -128,13 +128,13 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 | `backend/app/services/task_center/executors/group_ai_chat.py` | 3285 |
 | `backend/tests/test_channel_membership_strategy.py` | 1660 |
 | `backend/app/services/runtime_summary.py` | 1562 |
-| `backend/tests/test_ai_task_limits.py` | 1529 |
+| `backend/tests/test_ai_task_limits.py` | 1652 |
 | `backend/app/services/accounts.py` | 1482 |
 | `frontend/src/styles/_legacy.css` | 1408 |
 | `frontend/src/app/views/OverviewView.tsx` | 1394 |
 | `backend/tests/test_group_rescue.py` | 1390 |
 | `frontend/src/app/views/AccountModals.tsx` | 1243 |
-| `backend/tests/test_ai_gateway.py` | 1860 |
+| `backend/tests/test_ai_gateway.py` | 1995 |
 | `frontend/src/app/views/RiskControlView.tsx` | 1180 |
 | `backend/app/services/messages.py` | 1149 |
 | `frontend/src/app/views/RulesCenterView.tsx` | 1134 |
@@ -169,12 +169,13 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 | `frontend/src/app/AppModals.tsx` | 648 |
 | `backend/app/integrations/telegram/mock.py` | 642 |
 | `frontend/src/app/views/taskCenterViewModel.ts` | 677 |
-| `backend/app/services/task_center/executors/channel_comment.py` | 625 |
+| `backend/app/services/task_center/executors/channel_comment.py` | 477 |
+| `backend/app/services/task_center/executors/channel_comment_budget.py` | 271 |
 | `frontend/src/app/views/TaskCenterDetailModal.tsx` | 643 |
 
 ## 8. 完整代码文件业务与方法索引
 
-本节覆盖本次扫描到的 433 个代码/脚本/迁移/配置文件。每行都给出该文件主要处理的业务和可优先检索的方法、类、导出或路由。
+本节覆盖本次扫描到的 434 个代码/脚本/迁移/配置文件。每行都给出该文件主要处理的业务和可优先检索的方法、类、导出或路由。
 
 说明：Router 行的“主要方法”使用 `HTTP 方法 路径 -> 处理函数`；Python service/model/schema 行优先列类和顶层方法；前端行优先列导出组件、hook、工具方法和关键 API 路径；测试行列主要测试方法。
 
@@ -331,7 +332,7 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 | `backend/app/services/task_center/coverage_capacity.py` | 143 | 全部账号每日履约容量证明，比较目标账号总量与群日上限、群冷却、任务小时容量、账号日/小时/冷却聚合容量；不足时返回显式 `daily_coverage_capacity_insufficient`，供预检、运行 Planner 门禁和详情共用。 | 方法：coverage_capacity_proof、task_coverage_capacity_proof；另有 6 项 |
 | `backend/app/services/task_center/account_pool.py` | 449 | 任务账号选择、账号池过滤、健康权重、全账号日覆盖成功数优先、覆盖计数和容量扫描。 | 方法：select_task_accounts、_account_query、_rescue_admin_account_id、_daily_coverage_ordered_query、_cooldown_filtered_accounts、_recent_success_account_ids、daily_uncovered_account_count、daily_account_coverage_counts、_daily_covered_account_ids、_daily_covered_account_query、_daily_covered_account_counts_query、_health_weighted_accounts、_effective_health_scores、_effective_health_score、_clamped_score；另有 12 项 |
 | `backend/app/services/task_center/ai_act_types.py` | 35 | AI 活跃群 PRD 行为类型词表和历史 act_type 兼容归一化，供 Planner、AI Prompt、Action payload、详情和短期立场缓存共用。 | 方法：canonical_ai_group_act_type |
-| `backend/app/services/task_center/ai_generator.py` | 1083 | 任务中心 AI 内容生成、候选校验、模型选择、DeepSeek/MiMo/MiniMax family 匹配、AI 活群固定发言 slots 提示、频道评论/引用回复 provider prompt 原文透传、历史行为类型别名归一、素材意图元数据提示约束、`GeneratedContent` 元数据透传和失败暴露；频道评论清洗会丢弃 provider 拒绝、AI 过程性内容和模板壳句，频道评论 / 回复有效候选不足时最多重描述重试 3 次，仍不足的 slot 用随机表情显式兜底。模型敏感或策略拒绝不自动降级旧 MiniMax 模型、不做暗示词改写。 | 类：AiGenerationUnavailable、GeneratedContent；方法：_provider、_provider_for_model、_provider_matches_family、_is_mock_provider、_first_provider_for_family、_model_family、_looks_like_mimo_family、generate_contents、_generate_with_provider_candidates、_quota_rotation_providers、_is_ai_provider_quota_exhausted、_mark_provider_quota_exhausted；另有 37 项 |
+| `backend/app/services/task_center/ai_generator.py` | 1263 | 任务中心 AI 内容生成、候选校验、模型选择、DeepSeek/MiMo/MiniMax family 匹配、AI 活群固定发言 slots 提示、频道评论/引用回复安全重描述、历史行为类型别名归一、素材意图元数据提示约束、`GeneratedContent` 元数据透传和失败暴露；频道评论清洗会丢弃 provider 拒绝、AI 过程性内容和模板壳句。MiniMax 精确返回 `unprocessable_entity_error: input new_sensitive (1026)` 时，首次调用后最多 3 次使用不含原始敏感文本的中性 Prompt 重试；连续拒绝保留原错且不再用随机表情伪造成功，其他 HTTP 422 不泛化重试。 | 类：AiGenerationUnavailable、GeneratedContent；方法：_provider、_provider_for_model、_provider_matches_family、_is_mock_provider、_first_provider_for_family、_model_family、_looks_like_mimo_family、generate_contents、_generate_with_provider_candidates、_generate_channel_contents_with_retry、_is_retryable_channel_generation_error；另有 41 项 |
 | `backend/app/services/task_center/ai_limits.py` | 82 | 任务中心 ai_limits 子模块，承接任务规划、配置、运行时或详情读模型中的单一职责。 | 方法：clamp_int、recommend_ai_limits、_recommended_group_hourly、_recommended_comment_hourly、_recommended_comment_target、_recommended_comment_per_account、allocate_message_budget |
 | `backend/app/services/task_center/ai_message_memory.py` | 487 | AI 活跃群租户级消息记忆/原子预占服务，归一化文本并抽象 @ 对象 / 讨论老师等可变称呼、5 分钟硬去重、1 小时高相似、7 天语义近似、30 天模板壳句限频（含泛泛正向短评壳句）、全活群 reservation_key 桶化、画像匹配字段、状态回写、历史 action 回填构造和预发送过期可见化。 | 类：DuplicateMessageReservation；方法：normalize_group_ai_text、reserve_group_ai_message、mark_group_ai_message_result、expire_stale_group_ai_reservations、backfill_group_ai_message_memory_from_actions |
 | `backend/app/services/task_center/ai_message_memory_maintenance.py` | 69 | AI 活跃群消息记忆后台维护入口，供 `ai-memory` worker 过期旧预占并按租户回填近 30 天历史成功 / unknown 发送记录。 | 方法：drain_ai_message_memory_maintenance、_backfill_recent_group_ai_history、_tenant_ids_with_group_ai_history |
@@ -380,7 +381,8 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 | 文件 | 行数 | 主要处理业务 | 主要方法/类/导出 |
 | --- | ---: | --- | --- |
 | `backend/app/services/task_center/executors/__init__.py` | 36 | 任务中心   init   executor，处理 action 执行、Telegram 调用、失败分类、attempt 回写和后续动作衔接。 | 类：TaskExecutor(build_plan)；方法：build_task_plan |
-| `backend/app/services/task_center/executors/channel_comment.py` | 625 | 任务中心 channel comment executor，处理 action 执行、Telegram 调用、失败分类、attempt 回写和后续动作衔接。 | 方法：build_plan、_generate_minimum_reply_comments、_reply_minimum_for_mode、_generate_normal_channel_comments、_message_comment_quantities、_remaining_total_comment_budget、_resolved_total_comment_limit、_total_comment_limit_jitter、_total_comment_action_count、_task_hour_limit、_remaining_current_hour_budget、_current_hour_comment_action_count、_apply_daily_coverage_minimum、_message_comment_deficit、_collected_managed_comment_count、_tenant_account_usernames；另有 19 项 |
+| `backend/app/services/task_center/executors/channel_comment.py` | 477 | 频道评论 Planner；负责规则绑定、频道与准入检查、画像、普通评论/引用回复生成、账号选择、排程和 Action payload。生命周期预算、小时预算与 `completed` 收口委托 `channel_comment_budget.py`。 | 方法：build_plan、_generate_minimum_reply_comments、_reply_minimum_for_mode、_generate_normal_channel_comments、_comment_ready_accounts、_valid_reply_targets、_message_reply_targets、_recent_comment_texts |
+| `backend/app/services/task_center/executors/channel_comment_budget.py` | 271 | 频道评论数量预算与生命周期状态机；按消息缺口/小时容量分配评论量，统计 `pending/claiming/executing/success/unknown_after_send` 总预算，到达上限后先 draining，open 清零后幂等进入 `completed`，并将真实远端成功与未知结果分开记录。 | 方法：message_comment_quantities、reconcile_lifetime_cap、resolved_total_comment_limit、total_comment_action_count、_complete_lifetime_cap、_remote_comment_success_count |
 | `backend/app/services/task_center/executors/channel_like.py` | 164 | 任务中心 channel like executor，处理 action 执行、Telegram 调用、失败分类、attempt 回写和后续动作衔接。 | 方法：build_plan、_create_like_actions、_like_actions_for_messages、_reaction_plan、_normalize_reactions、_primary_reaction_count、_extra_reaction_count、_secondary_reactions、_extra_reactions |
 | `backend/app/services/task_center/executors/channel_view.py` | 221 | 任务中心 channel view executor，处理 action 执行、Telegram 调用、失败分类、attempt 回写和后续动作衔接。 | 类：ViewPlanInputs；方法：build_plan、_view_accounts、_create_view_actions、_view_actions_for_messages、_view_quantity_for_message、_remaining_task_daily_capacity、_completed_view_count、_account_has_view_daily_capacity、_message_expired |
 | `backend/app/services/task_center/executors/common.py` | 366 | 任务中心 common executor，处理 action 执行、Telegram 调用、失败分类、attempt 回写和后续动作衔接。 | 方法：quantity_with_jitter、quantity_jitter_bounds、stats_inc、add_tokens、channel_scope、collect_channel_messages、channel_fetch_limit、channel_message_url、normalize_datetime、channel_message_payload、planned_channel_message_ids、unplanned_channel_messages、channel_message_account_ids、_skipped_code_matches、channel_message_action_count、available_channel_accounts_for_message；另有 8 项 |

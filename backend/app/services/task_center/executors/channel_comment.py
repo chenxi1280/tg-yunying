@@ -1,38 +1,37 @@
 from __future__ import annotations
 
-from datetime import timedelta
-
-from sqlalchemy import func, or_, select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from app.models import Action, ChannelMessage, ChannelMessageComment, OperationTarget, RuleSet, Task, TgAccount
-from app.services._common import _now
+from app.models import Action, ChannelMessage, ChannelMessageComment, OperationTarget, RuleSet, Task
 
 from app.services.rule_engine import apply_output_policy, bound_rule_version, evaluate_input_filter
 from ..account_pool import daily_uncovered_account_count, select_task_accounts
-from ..ai_limits import allocate_message_budget
 from ..ai_generator import AiGenerationUnavailable, clean_channel_comment_contents, generate_channel_comments, generate_channel_reply_comments
 from ..channel_membership import channel_member_accounts, gate_channel_membership
 from ..pacing import schedule_times
 from ..payloads import PostCommentPayload, create_comment_action
 from app.services.target_learning_audit import audit_learning_profile_use
 from app.services.tenant_target_profile import tenant_learning_profile_preview
-from .common import add_tokens, adjust_for_account_hour_limit, channel_message_action_count, channel_message_payload, channel_scope, pick_channel_account, quantity_jitter_bounds, quantity_with_jitter, record_channel_capacity_warning, stats_inc
+from .channel_comment_budget import (
+    message_comment_quantities as _message_comment_quantities,
+    reconcile_lifetime_cap,
+    resolved_total_comment_limit as _resolved_total_comment_limit,
+    total_comment_action_count as _total_comment_action_count,
+)
+from .common import add_tokens, adjust_for_account_hour_limit, channel_message_payload, channel_scope, pick_channel_account, quantity_jitter_bounds, record_channel_capacity_warning, stats_inc
 
 CHANNEL_COMMENT_SCENE = "channel_comment"
-MAX_COMMENT_GENERATION_BATCH_PER_MESSAGE = 4
-DEFAULT_MAX_TOTAL_COMMENTS = 80
-DEFAULT_MAX_TOTAL_COMMENTS_JITTER = 0.2
-MAX_TOTAL_COMMENTS_JITTER = 0.3
 PROFILE_SYNCED_STATUS = "已同步"
 COMMENT_ACCOUNT_PROFILE_ERROR = "评论账号资料未初始化，请先在账号中心批量初始化中文昵称、username 和头像"
 AI_COMMENT_CANDIDATE_SHORTFALL_MESSAGE = "AI 评论候选不足，已跳过本轮"
-CURRENT_HOUR_BUDGET_STATUSES = ("pending", "claiming", "executing", "success")
-TOTAL_BUDGET_STATUSES = ("pending", "claiming", "executing", "success", "unknown_after_send")
 
 
 def build_plan(session: Session, task: Task) -> int:
     config = task.type_config or {}
+    total_remaining = reconcile_lifetime_cap(session, task, config)
+    if total_remaining <= 0:
+        return 0
     rule_version = bound_rule_version(session, task)
     if not rule_version:
         return 0
@@ -73,10 +72,6 @@ def build_plan(session: Session, task: Task) -> int:
         task.last_error = COMMENT_ACCOUNT_PROFILE_ERROR if ready_accounts else "没有可用账号，等待账号恢复后继续执行"
         return 0
     coverage_remaining = daily_uncovered_account_count(session, task.id, ("post_comment",), accounts)
-    total_remaining = _remaining_total_comment_budget(session, task, config)
-    if total_remaining <= 0:
-        task.last_error = "任务评论总上限已达到，停止继续规划"
-        return 0
     actions: list[tuple[ChannelMessage, str, dict | None]] = []
     reply_min_by_message: dict[int, int] = {}
     requested_reply_targets = [int(item) for item in config.get("reply_to_message_ids") or [] if int(item or 0) > 0]
@@ -249,150 +244,6 @@ def _generate_normal_channel_comments(
         stats_inc(task, "normal_candidate_shortfall_count")
         raise AiGenerationUnavailable(AI_COMMENT_CANDIDATE_SHORTFALL_MESSAGE)
     return contents, tokens
-
-
-def _message_comment_quantities(
-    session: Session,
-    task: Task,
-    config: dict,
-    messages: list[ChannelMessage],
-    *,
-    daily_coverage_min_total: int = 0,
-    total_remaining: int | None = None,
-) -> list[tuple[ChannelMessage, int]]:
-    managed_usernames = _tenant_account_usernames(session, task.tenant_id)
-    deficits = [_message_comment_deficit(session, task, config, message, managed_usernames) for message in messages]
-    coverage_floor = min(max(0, int(daily_coverage_min_total or 0)), sum(deficits))
-    deficits = _apply_daily_coverage_minimum(deficits, coverage_floor)
-    hour_limit = _task_hour_limit(task)
-    budget = _remaining_current_hour_budget(session, task, hour_limit)
-    if total_remaining is not None:
-        total_budget = max(0, int(total_remaining or 0))
-        budget = min(budget, total_budget) if hour_limit > 0 else total_budget
-    quantities = allocate_message_budget(deficits, budget) if hour_limit > 0 or total_remaining is not None else deficits
-    capped = [min(quantity, MAX_COMMENT_GENERATION_BATCH_PER_MESSAGE) for quantity in quantities]
-    return list(zip(messages, capped, strict=False))
-
-
-def _remaining_total_comment_budget(session: Session, task: Task, config: dict) -> int:
-    limit = _resolved_total_comment_limit(task, config)
-    used = _total_comment_action_count(session, task)
-    return max(0, limit - used)
-
-
-def _resolved_total_comment_limit(task: Task, config: dict) -> int:
-    stats = dict(task.stats or {})
-    existing = int(stats.get("max_total_comments_resolved") or 0)
-    if existing > 0:
-        return existing
-    base = max(1, int(config.get("max_total_comments") or DEFAULT_MAX_TOTAL_COMMENTS))
-    jitter = _total_comment_limit_jitter(config)
-    resolved = quantity_with_jitter(base, jitter)
-    stats["max_total_comments_resolved"] = resolved
-    task.stats = stats
-    return resolved
-
-
-def _total_comment_limit_jitter(config: dict) -> float:
-    jitter_config = config.get("max_total_comments_jitter")
-    jitter = float(DEFAULT_MAX_TOTAL_COMMENTS_JITTER if jitter_config is None else jitter_config)
-    if jitter > MAX_TOTAL_COMMENTS_JITTER:
-        raise ValueError("max_total_comments_jitter 不能超过 0.3")
-    return max(0.0, jitter)
-
-
-def _total_comment_action_count(session: Session, task: Task, *, exclude_action_id: str | None = None) -> int:
-    stmt = select(func.count(Action.id)).where(
-        Action.tenant_id == task.tenant_id,
-        Action.task_id == task.id,
-        Action.task_type == "channel_comment",
-        Action.action_type == "post_comment",
-        Action.status.in_(TOTAL_BUDGET_STATUSES),
-    )
-    if exclude_action_id:
-        stmt = stmt.where(Action.id != exclude_action_id)
-    return int(session.scalar(stmt) or 0)
-
-
-def _task_hour_limit(task: Task) -> int:
-    return max(0, int((task.pacing_config or {}).get("max_actions_per_hour") or 0))
-
-
-def _remaining_current_hour_budget(session: Session, task: Task, hour_limit: int) -> int:
-    if hour_limit <= 0:
-        return 0
-    used = _current_hour_comment_action_count(session, task)
-    return max(0, hour_limit - used)
-
-
-def _current_hour_comment_action_count(session: Session, task: Task) -> int:
-    hour_start = _now().replace(minute=0, second=0, microsecond=0)
-    hour_end = hour_start + timedelta(hours=1)
-    return int(
-        session.scalar(
-            select(func.count(Action.id)).where(
-                Action.tenant_id == task.tenant_id,
-                Action.task_id == task.id,
-                Action.task_type == "channel_comment",
-                Action.action_type == "post_comment",
-                Action.status.in_(CURRENT_HOUR_BUDGET_STATUSES),
-                or_(
-                    (Action.scheduled_at >= hour_start) & (Action.scheduled_at < hour_end),
-                    (Action.executed_at >= hour_start) & (Action.executed_at < hour_end),
-                ),
-            )
-        )
-        or 0
-    )
-
-
-def _apply_daily_coverage_minimum(deficits: list[int], minimum: int) -> list[int]:
-    adjusted = [max(0, int(deficit or 0)) for deficit in deficits]
-    remaining = max(0, int(minimum or 0) - sum(adjusted))
-    if not adjusted or remaining <= 0:
-        return adjusted
-    index = 0
-    while remaining > 0:
-        adjusted[index % len(adjusted)] += 1
-        remaining -= 1
-        index += 1
-    return adjusted
-
-
-def _message_comment_deficit(session: Session, task: Task, config: dict, message: ChannelMessage, managed_usernames: set[str]) -> int:
-    desired = quantity_with_jitter(int(config.get("target_comments_per_message") or 1), float(config.get("comment_count_jitter") or 0))
-    used_count = max(
-        channel_message_action_count(session, task, "post_comment", message),
-        _collected_managed_comment_count(session, task, message, managed_usernames),
-    )
-    return max(0, desired - used_count)
-
-
-def _collected_managed_comment_count(session: Session, task: Task, message: ChannelMessage, managed_usernames: set[str]) -> int:
-    if not managed_usernames:
-        return 0
-    return int(
-        session.scalar(
-            select(func.count(ChannelMessageComment.id)).where(
-                ChannelMessageComment.tenant_id == task.tenant_id,
-                ChannelMessageComment.channel_target_id == message.channel_target_id,
-                ChannelMessageComment.channel_message_id == message.id,
-                func.lower(ChannelMessageComment.author_username).in_(managed_usernames),
-            )
-        )
-        or 0
-    )
-
-
-def _tenant_account_usernames(session: Session, tenant_id: int) -> set[str]:
-    rows = session.scalars(
-        select(TgAccount.username).where(
-            TgAccount.tenant_id == tenant_id,
-            TgAccount.deleted_at.is_(None),
-            TgAccount.username.is_not(None),
-        )
-    )
-    return {str(username or "").strip().lstrip("@").lower() for username in rows if str(username or "").strip()}
 
 
 def _comment_ready_accounts(task: Task, accounts: list) -> list:
