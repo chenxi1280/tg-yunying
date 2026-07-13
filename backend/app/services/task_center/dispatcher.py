@@ -47,7 +47,10 @@ from .ai_message_memory import DuplicateMessageReservation, ensure_group_ai_mess
 from .channel_membership import account_satisfies_authorized_target, linked_channel_group, mark_channel_membership_joined
 from .daily_coverage import confirm_coverage_from_attempt, ensure_task_daily_coverage, mark_coverage_unknown, release_coverage_reservation
 from .executors.common import quantity_jitter_bounds, stats_inc
-from .executors.channel_comment import _resolved_total_comment_limit, _total_comment_action_count
+from .executors.channel_comment_budget import (
+    resolved_total_comment_limit as _resolved_total_comment_limit,
+    total_comment_action_count as _total_comment_action_count,
+)
 from .group_rescue import GROUP_RESCUE_FAILURE_THRESHOLD, infer_rescue_admin_rate_limit, permission_failure_count_for_send_action, refresh_group_rescue_action, trigger_group_rescue
 from .payloads import DeprecatedGroupRescuePayload, DeleteMessagePayload, EnsureChannelMembershipPayload, InviteGroupAccountPayload, LikeMessagePayload, PostCommentPayload, SearchJoinPayload, SearchRankDeboostPayload, SendMessagePayload, ViewMessagePayload, create_membership_action, payload_error_message, validate_action_payload
 from .policies import validate_group_send_policy

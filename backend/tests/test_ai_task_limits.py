@@ -32,13 +32,13 @@ from app.schemas import (
 )
 from app.services.content_filters import ContentFilterResult
 from app.services.task_center import dispatcher
-from app.services.task_center.executors import channel_comment
+from app.services.task_center.executors import channel_comment, channel_comment_budget
 from app.services.task_center.ai_generator import AiGenerationUnavailable, generate_group_reply_messages
 from app.services.task_center.channel_membership import gate_channel_membership
 from app.services.task_center.dispatcher import claim_actions, dispatch_action
 from app.services.task_center.executors.channel_comment import build_plan as build_channel_comment_plan
 from app.services.task_center.executors.group_ai_chat import build_plan as build_group_ai_chat_plan
-from app.services.task_center.service import precheck_task_creation, reset_task, update_group_ai_chat_config
+from app.services.task_center.service import precheck_task_creation, reset_task, start_task, update_group_ai_chat_config
 from tests.ai_group_voice_profile_fixtures import assume_default_ai_group_voice_profiles
 
 
@@ -294,7 +294,7 @@ def test_channel_comment_legacy_config_uses_default_total_limit_jitter(monkeypat
         captured["jitter_ratio"] = jitter_ratio
         return 91
 
-    monkeypatch.setattr(channel_comment, "quantity_with_jitter", fake_quantity_with_jitter)
+    monkeypatch.setattr(channel_comment_budget, "quantity_with_jitter", fake_quantity_with_jitter)
     task = Task(id="legacy-comment-limit", tenant_id=1, name="旧评论任务", type="channel_comment", status="running", stats={})
 
     resolved = channel_comment._resolved_total_comment_limit(task, {})
@@ -349,6 +349,162 @@ def test_channel_comment_planner_respects_task_total_comment_limit(monkeypatch):
 
     assert created == 2
     assert total_actions == 80
+
+
+def test_channel_comment_lifetime_cap_completes_after_open_actions_clear():
+    with _session() as session:
+        _add_tenant(session)
+        task = _add_comment_task(session)
+        task.next_run_at = NOW
+        task.type_config = {**task.type_config, "max_total_comments": 2, "max_total_comments_jitter": 0}
+        success = Action(
+            id="comment-cap-success",
+            tenant_id=1,
+            task_id=task.id,
+            task_type=task.type,
+            action_type="post_comment",
+            status="success",
+            scheduled_at=NOW,
+            executed_at=NOW,
+            payload={},
+        )
+        unknown = Action(
+            id="comment-cap-unknown",
+            tenant_id=1,
+            task_id=task.id,
+            task_type=task.type,
+            action_type="post_comment",
+            status="unknown_after_send",
+            scheduled_at=NOW,
+            executed_at=NOW,
+            payload={},
+        )
+        session.add_all([success, unknown])
+        session.flush()
+        session.add(ExecutionAttempt(action_id=success.id, status="success", remote_message_id="9001"))
+
+        assert build_channel_comment_plan(session, task) == 0
+
+        assert task.status == "completed"
+        assert task.next_run_at is None
+        assert task.last_error == ""
+        assert task.stats["completion_reason"] == "lifetime_cap_reached"
+        assert task.stats["remote_success_count"] == 1
+        assert task.stats["unknown_after_send_count"] == 1
+
+
+def test_channel_comment_lifetime_cap_waits_for_open_actions():
+    with _session() as session:
+        _add_tenant(session)
+        task = _add_comment_task(session)
+        task.last_error = "旧错误"
+        task.type_config = {**task.type_config, "max_total_comments": 2, "max_total_comments_jitter": 0}
+        session.add_all(
+            [
+                Action(
+                    id=f"comment-cap-{status}",
+                    tenant_id=1,
+                    task_id=task.id,
+                    task_type=task.type,
+                    action_type="post_comment",
+                    status=status,
+                    scheduled_at=NOW,
+                    payload={},
+                )
+                for status in ("success", "pending")
+            ]
+        )
+
+        assert build_channel_comment_plan(session, task) == 0
+
+        assert task.status == "running"
+        assert task.last_error == ""
+        assert task.stats["lifetime_cap_phase"] == "draining"
+        assert task.stats["lifetime_cap_open_count"] == 1
+
+
+def test_channel_comment_resume_checks_lifetime_cap_before_precheck():
+    with _session() as session:
+        _add_tenant(session)
+        task = _add_comment_task(session)
+        task.status = "paused"
+        task.type_config = {**task.type_config, "max_total_comments": 1, "max_total_comments_jitter": 0}
+        session.add(
+            Action(
+                id="comment-resume-cap-success",
+                tenant_id=1,
+                task_id=task.id,
+                task_type=task.type,
+                action_type="post_comment",
+                status="success",
+                scheduled_at=NOW,
+                executed_at=NOW,
+                payload={},
+            )
+        )
+        session.commit()
+
+        resumed = start_task(session, 1, task.id, "tester")
+
+        assert resumed.status == "completed"
+        assert resumed.next_run_at is None
+        assert resumed.stats["completion_reason"] == "lifetime_cap_reached"
+
+
+def test_channel_comment_failed_open_action_releases_lifetime_budget():
+    with _session() as session:
+        _add_tenant(session)
+        task = _add_comment_task(session)
+        task.type_config = {**task.type_config, "max_total_comments": 2, "max_total_comments_jitter": 0}
+        session.add_all(
+            [
+                Action(
+                    id=f"comment-cap-release-{status}",
+                    tenant_id=1,
+                    task_id=task.id,
+                    task_type=task.type,
+                    action_type="post_comment",
+                    status=status,
+                    scheduled_at=NOW,
+                    payload={},
+                )
+                for status in ("success", "failed")
+            ]
+        )
+
+        remaining = channel_comment.reconcile_lifetime_cap(session, task)
+
+        assert remaining == 1
+        assert task.status == "running"
+        assert "lifetime_cap_phase" not in task.stats
+
+
+def test_channel_comment_completed_at_is_stable_across_reconciliation(monkeypatch):
+    with _session() as session:
+        _add_tenant(session)
+        task = _add_comment_task(session)
+        task.type_config = {**task.type_config, "max_total_comments": 1, "max_total_comments_jitter": 0}
+        session.add(
+            Action(
+                id="comment-cap-stable-completion",
+                tenant_id=1,
+                task_id=task.id,
+                task_type=task.type,
+                action_type="post_comment",
+                status="success",
+                scheduled_at=NOW,
+                executed_at=NOW,
+                payload={},
+            )
+        )
+
+        channel_comment_budget.reconcile_lifetime_cap(session, task)
+        completed_at = task.stats["completed_at"]
+        monkeypatch.setattr(channel_comment_budget, "_now", lambda: NOW + timedelta(days=1))
+
+        channel_comment_budget.reconcile_lifetime_cap(session, task)
+
+        assert task.stats["completed_at"] == completed_at
 
 
 def test_group_reply_generation_does_not_fallback_without_ai_provider():
@@ -1070,7 +1226,7 @@ def test_channel_comment_planner_uses_remaining_current_hour_budget(monkeypatch)
         return [f"{message_content}：{seeds[index % len(seeds)]}" for index in range(count)], 0
 
     now_value = NOW + timedelta(minutes=30)
-    monkeypatch.setattr("app.services.task_center.executors.channel_comment._now", lambda: now_value, raising=False)
+    monkeypatch.setattr("app.services.task_center.executors.channel_comment_budget._now", lambda: now_value)
     monkeypatch.setattr("app.services.task_center.executors.channel_comment.generate_channel_comments", fake_generate_channel_comments)
     with _session() as session:
         _add_tenant(session)

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import random
 import re
 import time
 from dataclasses import replace
@@ -55,7 +54,7 @@ AI_PROVIDER_QUOTA_EXHAUSTED_MARKERS = (
     "配额耗尽",
 )
 CHANNEL_COMMENT_MAX_REDESCRIPTION_ATTEMPTS = 3
-CHANNEL_COMMENT_EMOJI_FALLBACKS = ("👀", "🙂", "👍", "👌", "🙌", "🤔", "😅", "🔥")
+MINIMAX_NEW_SENSITIVE_ERROR = "input new_sensitive (1026)"
 
 
 class AiGenerationUnavailable(RuntimeError):
@@ -1094,6 +1093,7 @@ def _generate_channel_contents_with_retry(
 ) -> tuple[list[str], int]:
     accepted: list[str] = []
     total_tokens = 0
+    last_retryable_error: AiGenerationUnavailable | None = None
     for attempt in range(CHANNEL_COMMENT_MAX_REDESCRIPTION_ATTEMPTS + 1):
         missing = count - len(accepted)
         if missing <= 0:
@@ -1102,32 +1102,47 @@ def _generate_channel_contents_with_retry(
             contents, tokens = generate_contents(
                 session,
                 tenant_id,
-                topic=topic,
+                topic=_channel_comment_attempt_topic(topic, attempt),
                 requirements=_channel_comment_attempt_requirements(requirements, attempt),
                 provider_id=config.get("ai_provider_id"),
                 model_name=str(config.get("ai_model") or ""),
                 count=missing,
                 purpose=purpose,
                 target_label=target_label,
-                system_prompt=_channel_comment_system_prompt(),
+                system_prompt=_channel_comment_attempt_system_prompt(attempt),
             )
         except AiGenerationUnavailable as exc:
             if not _is_retryable_channel_generation_error(exc):
                 raise
+            last_retryable_error = exc
             continue
         total_tokens += tokens
         accepted = clean_channel_comment_contents([*accepted, *contents], limit=count)
-    return _fill_channel_comment_missing_with_emojis(accepted, count), total_tokens
+    if not accepted and last_retryable_error:
+        raise last_retryable_error
+    return accepted, total_tokens
+
+
+def _channel_comment_attempt_topic(topic: str, attempt: int) -> str:
+    return topic if attempt <= 0 else "频道中性短评"
 
 
 def _channel_comment_attempt_requirements(requirements: str, attempt: int) -> str:
     if attempt <= 0:
         return requirements
     return (
-        f"{requirements}\n\n"
         f"重描述重试 {attempt}/{CHANNEL_COMMENT_MAX_REDESCRIPTION_ATTEMPTS}："
-        "换一种描述方式理解上面的成人语境，只生成非露骨、非交易促成的真实读者短评；"
-        "不要把原文定性为色情/违规/敏感内容，不要输出审核意见、政策说明、分析过程或拒绝话术。"
+        "换一种描述方式生成中性、礼貌的真实读者短评。"
+        "原始内容已从本次请求移除；不要补充未提供的事实，不要输出审核意见、分析过程或拒绝话术。"
+    )
+
+
+def _channel_comment_attempt_system_prompt(attempt: int) -> str:
+    if attempt <= 0:
+        return _channel_comment_system_prompt()
+    return (
+        "你只负责生成中性、礼貌的 Telegram 频道读者短评，并输出 JSON。"
+        "只能使用本次安全概括中提供的信息；信息不足时写一个不引入新事实的简短疑问。"
     )
 
 
@@ -1135,17 +1150,9 @@ def _is_retryable_channel_generation_error(exc: AiGenerationUnavailable) -> bool
     detail = str(exc).lower()
     if "AI 评论候选质量不达标" in str(exc):
         return True
+    if MINIMAX_NEW_SENSITIVE_ERROR in detail and "unprocessable_entity_error" in detail:
+        return True
     return any(marker in detail for marker in AI_PROVIDER_REFUSAL_MARKERS)
-
-
-def _fill_channel_comment_missing_with_emojis(contents: list[str], count: int) -> list[str]:
-    missing = max(0, count - len(contents))
-    if not missing:
-        return contents[:count]
-    if missing <= len(CHANNEL_COMMENT_EMOJI_FALLBACKS):
-        return [*contents, *random.sample(CHANNEL_COMMENT_EMOJI_FALLBACKS, missing)][:count]
-    extras = [random.choice(CHANNEL_COMMENT_EMOJI_FALLBACKS) for _ in range(missing)]
-    return [*contents, *extras][:count]
 
 
 def generate_channel_comments(session: Session, tenant_id: int, config: dict, *, count: int, message_content: str, target_label: str) -> tuple[list[str], int]:
@@ -1243,7 +1250,6 @@ def _trim(contents: list[str], max_length: int | None) -> list[str]:
 
 __all__ = [
     "AI_GENERATION_UNAVAILABLE_MESSAGE",
-    "CHANNEL_COMMENT_EMOJI_FALLBACKS",
     "CHANNEL_COMMENT_MAX_REDESCRIPTION_ATTEMPTS",
     "AiGenerationUnavailable",
     "GeneratedContent",

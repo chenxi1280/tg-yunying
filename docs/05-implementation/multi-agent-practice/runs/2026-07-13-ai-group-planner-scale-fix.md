@@ -6,14 +6,22 @@
 - `bug_id`: `bug-2026-07-13-ai-group-planner-stall`
 - `level/lane`: `L3 / ai-group-quality/planner-runtime`
 - 用户目标：监督修复生产 AI 活群，确保每个目标群中的全部账号按北京时间每日真实发言一次，并检查评论任务运行状态。
-- 当前状态：本地 `qa_pass`、`product_accepted`；尚未发布，生产恢复和完整自然日矩阵仍为 `unproven`。
+- 当前状态：AI 活群规模修复已完成本地 `qa_pass`、`product_accepted`；评论任务追加修复已完成 dev 定向回归，正在独立 QA。两次 release 流水线均在后端测试阶段暴露测试隔离问题、尚未部署；生产恢复和完整自然日矩阵仍为 `unproven`。
 
 ## 生产诊断
 
 - 生产存在 4 个 `all_accounts_daily` 任务，每个分母 580，共 2320 条日履约义务。
 - Planner 心跳和主 drain 发生长时间停滞；任务欠账存在，但没有 open coverage Action 推进。
 - 根因是 Planner 事务叠加多项规模放大：每任务重复在线来源 reconcile、逐账号 readiness / capacity 查询、backlog 全量 ORM 加载，以及无 open Action 时仍执行 preparation。
-- 评论任务不纳入本次代码变更；其生产运行结果必须在发布后由 `prod-diagnosis` 单独以真实 Action / ExecutionAttempt / Telegram 结果取证。
+- 评论任务生产取证确认两条都在北京时间当天 `0 Action / 0 remote success`：`太郎日记回复` 已达到解析后的生命周期总预算 86，属于配置终止但长期显示 `running + last_error`；`阿哥日记` 尚余 49 条预算，但 MiniMax-M3 返回 `unprocessable_entity_error: input new_sensitive (1026)`，旧分类器未触发重描述。
+
+## 评论任务补充 Product Handoff
+
+- 生命周期总预算使用两阶段收口：有 open Action 时保持 `running/draining` 并清空 `last_error`；open 清零且 `success + unknown_after_send` 达上限后幂等转 `completed/next_run_at=null`。
+- `unknown_after_send` 参与防超发预算但不得冒充真实远端成功；完成 stats 分别记录 remote success 与 unknown 数量。
+- MiniMax `input new_sensitive (1026)` 只在同时出现对应 `unprocessable_entity_error` 时进入首次调用后的最多 3 次安全重描述；其他 HTTP 422 不泛化重试。
+- 重试 Prompt 不得再次拼入原始敏感文本。连续 4 次拒绝保留最终 422、创建 0 个 Action，不使用随机表情伪造成功。
+- 生命周期预算与收口已拆入 `channel_comment_budget.py`；恢复已满任务先验 cap，已满直接 completed。
 
 ## Product Handoff
 
@@ -33,6 +41,9 @@
 - 全量 no-PostgreSQL：`1246 passed, 805 deselected, 5 warnings in 41.77s`。
 - PostgreSQL：`15 passed in 3.31s`；Python 编译与 `git diff --check` 通过。
 - 独立 QA：无 Critical / Important / Minor；Product Acceptance：通过。
+- 评论补充回归：`test_ai_task_limits.py`、评论配置总预算 guard 和 Planner open-action 隔离定向共 `50 passed`；新增 pending 失败释放预算、完成时间幂等、`new_sensitive` 第 1/2/3 次后成功、普通评论/引用回复、连续 4 次拒绝、其他 422 不重试均通过；全量 no-PostgreSQL 更新为 `1252 passed, 810 deselected, 5 warnings in 40.60s`。
+- 评论独立 QA：`81 passed`，Critical / Important / Minor 均为 0；最终 Product Acceptance：`product_accepted=true`（仅 E2），同意进入 Release Gate，不等于生产恢复。
+- Release run `29225396989` 因 PostgreSQL fixture 复用 tenant 1 失败；改为独立 tenant 后，run `29225675866` 又由 `test_task_center_group_ai_chat_does_not_plan_over_open_actions` 误拦截同库遗留任务失败。测试已改为最高优先级目标任务 + `limit=1` 隔离，第三次 Release Gate 待推送。
 
 ## Release Gate 与 E4
 

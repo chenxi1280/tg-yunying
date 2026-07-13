@@ -3970,6 +3970,7 @@ def test_task_center_group_ai_chat_does_not_plan_over_open_actions(monkeypatch):
                 name="pytest open action guard",
                 type="group_ai_chat",
                 status="running",
+                priority=-1,
                 next_run_at=datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=1),
                 account_config={},
                 pacing_config={"mode": "fixed", "interval_seconds_min": 60},
@@ -3995,7 +3996,7 @@ def test_task_center_group_ai_chat_does_not_plan_over_open_actions(monkeypatch):
             session.commit()
             task_id = task.id
 
-        assert drain_task_center(SessionLocal, 10) == 0
+        assert drain_task_center(SessionLocal, 1) == 0
         with SessionLocal() as session:
             task = session.get(Task, task_id)
             assert task.next_run_at.replace(tzinfo=None) == future.replace(tzinfo=None)
