@@ -6,7 +6,7 @@
 - `bug_id`: `bug-2026-07-13-ai-group-planner-stall`
 - `level/lane`: `L3 / ai-group-quality/planner-runtime`
 - 用户目标：监督修复生产 AI 活群，确保每个目标群中的全部账号按北京时间每日真实发言一次，并检查评论任务运行状态。
-- 当前状态：第五次 release `7f7af0cb` 已成功部署，群准入 latest-action 修复已上线；截至 2026-07-13 16:45 CST，2320 项北京时间日覆盖矩阵约 323 项远端确认且仍推进缓慢，阿哥日记已有 3 条真实评论，太郎日记回复尚未恢复。消息记忆三字段轻投影与 0091 的独立 QA / Product Acceptance（仅 E2）事实保留；fresh 生产证据又发现 ai-memory 历史 Action 回填的 `action_id` 无索引点查，以及通用连续任务 recovery 会把 `lifetime_cap_reached` 的评论任务反向复活，两项均标记 `resync=true`、Release Gate `blocked`，各自实现、QA、产品复验及生产 E4 均待完成。该时点数字只代表本次取证，不是最终自然日验收结果。
+- 当前状态：第五次 release `7f7af0cb` 已成功部署，群准入 latest-action 修复已上线。ai-memory `action_id` 回填性能和评论 lifetime-cap recovery 两项 resync 已完成 cross re-QA 与最终 Product Acceptance：`qa_pass=true`、`product_accepted=true`（仅 E2），Release Gate ready；尚未发布，生产 E4 pending，禁止写 `production_fixed`。发布前 fresh production baseline 保持 blocked：2026-07-13 17:55/18:00 CST 覆盖为 `347/2320`，阿哥评论 `remote=263` 为 PASS，太郎仍 `running` 为 blocked，100 秒级长事务仍存在。
 
 ## 生产诊断
 
@@ -94,6 +94,14 @@
 - E2 验收：在真 PostgreSQL `ai_group_message_memory >= 40,000` 行的数据集上，分别验证已存在和缺失 `action_id`；两类点查均 `<100ms`，`EXPLAIN` 证明使用目标索引且不做全表顺序扫描，连续核对 100 条的单轮事务 `<10s`；同时断言已存在记录不重复插入、缺失记录确实回填、查询/迁移失败显式暴露。
 - E4 验收：按实际 release commit 和迁移状态核对生产索引有效；planner、dispatcher、ai-memory 等并发运行后，连续至少 3 个 60 秒 maintenance 周期无 `>60s` 事务、无该查询引发的 `DataFileRead`/heartbeat 锁链；抽样同时证明 existing 正确跳过、missing 持续回填，2320 项任务 × 群 × 账号远端确认分子在连续样本中继续增长。worker healthy、事务消失或覆盖单点增长不能单独替代完整自然日 E4。
 - 回滚口径：新增查询索引应为兼容旧应用的加法变更，应用回滚默认保留索引；若必须删除索引，须在维护窗口使用非阻塞方式并核对数据库状态。回滚到无索引旧路径会重新暴露长事务风险，不能记作恢复。
+
+### action memory 与 comment recovery cross re-QA / Product Acceptance
+
+- ai-memory 最终 cross re-QA：Critical / Important / Minor 均为 0。0092 为 `action_id` 非唯一索引，PostgreSQL 使用并发 DDL；缺表、invalid 同名索引和 DDL 失败均显式暴露。历史 Action 查询在 batch limit 前通过 `NOT EXISTS` 排除已有记忆，仍保留近 30 天缺失回填和单条存在性复检，不以跳过回填换性能。
+- comment recovery 最终 re-QA：未发现 Critical / Important；旧测试名称把 start / resume 混写的问题作为 Minor 修正为真实 `resume_task`，主代理评论定向复测 `12 passed`。实现只排除 `channel_comment + completion_reason=lifetime_cap_reached`，普通动态 completed 任务继续恢复，并覆盖 recovery 后不复活与 start / resume 已满幂等。
+- 主代理最终验证：真 PostgreSQL action-index / query-shape / scale `23 passed in 5.47s`；全量 no-PostgreSQL `1278 passed, 814 deselected in 41.27s`；相关 `compileall` / `py_compile`、仓库 `git diff --check` 通过，Alembic 唯一 head 为 `0092_ai_memory_action_idx`。
+- Product Acceptance：`qa_pass=true`、`product_accepted=true`（仅 E2）。两项实现满足 `c8567324` 与 `a5ec1de7` Product Handoff，Release Gate ready；这不证明代码已发布、生产长事务已消失、太郎状态已收口或 2320 自然日覆盖完成。
+- 发布前 blocked baseline（必须保留）：2026-07-13 17:55/18:00 CST，AI 活群远端覆盖 `347/2320`；阿哥评论 `remote=263`，判定 PASS；太郎仍为 `running`，判定 blocked；生产长事务仍存在。只有发布实际 commit 后完成 0092 有效性、recovery 吸收终态、无 `>60s` 事务/锁链和完整自然日覆盖 E4，才可更新生产结论，当前禁止写 `production_fixed`。
 
 ## Release Gate 与 E4
 
