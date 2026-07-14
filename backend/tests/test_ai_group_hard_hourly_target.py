@@ -606,7 +606,6 @@ def test_group_ai_chat_hard_hourly_target_creates_deficit_actions(monkeypatch):
     monkeypatch.setattr("app.services.account_online_state._now", lambda: now_value)
     monkeypatch.setattr("app.services.task_center.account_pool._now", lambda: now_value)
     monkeypatch.setattr("app.services.task_center.account_pool._now", lambda: now_value)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._drop_repeated_planned_items", lambda items, _previous: items)
     monkeypatch.setattr(
@@ -647,8 +646,7 @@ def test_group_ai_chat_hard_hourly_target_creates_deficit_actions(monkeypatch):
         actions = list(session.scalars(select(Action).where(Action.task_id == task.id).order_by(Action.scheduled_at.asc())))
 
     assert created == 5
-    assert captured["count"] == 5
-    assert captured["require_mimo_draft"] is False
+    assert captured == {}
     assert len(actions) == 5
     assert all(action.payload["hard_hourly_target"] is True for action in actions)
     assert all(action.payload["hard_hourly_bucket"] == "2026-06-07T20:00:00+08:00" for action in actions)
@@ -674,7 +672,6 @@ def test_group_ai_chat_all_accounts_daily_coverage_plans_uncovered_accounts_when
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
     monkeypatch.setattr("app.services.task_center.daily_coverage._now", lambda: now_value)
     monkeypatch.setattr("app.services.account_online_state._now", lambda: now_value)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(
         "app.services.task_center.executors.group_ai_chat._should_wait_for_human_context",
         lambda *_args, **_kwargs: wait_for_context,
@@ -725,9 +722,10 @@ def test_group_ai_chat_all_accounts_daily_coverage_plans_uncovered_accounts_when
                 tenant_id=1,
                 task_id=task.id,
                 group_id=7,
-                account_id=account_id,
-                coverage_date=now_value.date(),
-                state="ready",
+                    account_id=account_id,
+                    coverage_date=now_value.date(),
+                    state="ready",
+                    targeted_at=now_value,
             )
             for account_id in [101, 102, 103, 104]
         ])
@@ -742,7 +740,7 @@ def test_group_ai_chat_all_accounts_daily_coverage_plans_uncovered_accounts_when
         created = build_group_ai_chat_plan(session, task)
         actions = list(session.scalars(select(Action).where(Action.task_id == task.id).order_by(Action.account_id.asc())))
 
-    assert created == 1
+    assert created == 1, (task.last_error, task.stats)
     assert captured == {}
     assert [action.account_id for action in actions] == [101]
     assert all(action.payload["ai_generation_status"] == "pending" for action in actions)
@@ -763,7 +761,7 @@ def test_group_ai_chat_all_accounts_daily_coverage_plans_uncovered_accounts_when
 def test_group_ai_chat_all_accounts_daily_coverage_keeps_uncovered_before_memory(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
-    now_value = datetime(2026, 6, 7, 20, 10)
+    now_value = datetime(2026, 6, 7, 23, 0)
 
     def fake_generate_group_messages(_session, _tenant_id, _config, *, count, target_label, history):
         return ["榜单这两天更新挺快", "新人反馈要再看看"][:count], 0
@@ -772,7 +770,6 @@ def test_group_ai_chat_all_accounts_daily_coverage_keeps_uncovered_before_memory
     monkeypatch.setattr("app.services.task_center.daily_coverage._now", lambda: now_value)
     monkeypatch.setattr("app.services.task_center.account_pool._now", lambda: now_value)
     monkeypatch.setattr("app.services.account_online_state._now", lambda: now_value)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._drop_repeated_planned_items", lambda items, _previous: items)
     monkeypatch.setattr(
@@ -816,11 +813,12 @@ def test_group_ai_chat_all_accounts_daily_coverage_keeps_uncovered_before_memory
             TaskAccountDailyCoverage(
                 tenant_id=1,
                 task_id=task.id,
-                group_id=7,
-                account_id=account_id,
-                coverage_date=now_value.date(),
-                confirmed_count=1 if account_id in {102, 104} else 0,
-                state="confirmed" if account_id in {102, 104} else "ready",
+                    group_id=7,
+                    account_id=account_id,
+                    coverage_date=now_value.date(),
+                    confirmed_count=1 if account_id in {102, 104} else 0,
+                    state="confirmed" if account_id in {102, 104} else "ready",
+                    targeted_at=now_value,
             )
             for account_id in [101, 102, 103, 104]
         ])
@@ -848,7 +846,11 @@ def test_group_ai_chat_all_accounts_daily_coverage_keeps_uncovered_before_memory
             if action.status == "pending"
         ]
 
-    assert created == 2
+    assert created == 2, (
+        task.last_error,
+        task.stats,
+        [(action.account_id, action.payload.get("coverage_ledger_id")) for action in actions],
+    )
     assert [action.account_id for action in actions] == [101, 103]
     assert all(action.payload["coverage_account_remaining_before_action"] == 1 for action in actions)
     assert all(action.payload["coverage_reason"] == "daily_account_coverage" for action in actions)
@@ -866,7 +868,6 @@ def test_group_ai_chat_hard_hourly_target_plans_large_deficit_in_batches(monkeyp
         return [f"硬目标缺口补量{batch_index}-{index}" for index in range(count)], 0
 
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._drop_repeated_planned_items", lambda items, _previous: items)
     monkeypatch.setattr(
@@ -925,7 +926,6 @@ def test_group_ai_chat_hard_hourly_ignores_configured_round_size_for_deficit(mon
         return [f"硬目标补量消息{batch_index}-{index}" for index in range(count)], 0
 
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._drop_repeated_planned_items", lambda items, _previous: items)
     monkeypatch.setattr(
@@ -1041,7 +1041,6 @@ def test_group_ai_chat_hard_hourly_reuses_selected_accounts_when_front_accounts_
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
     monkeypatch.setattr("app.services.account_capacity._now", lambda: now_value)
     monkeypatch.setattr("app.services.task_center.account_pool._now", lambda: now_value)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
 
     with Session(engine) as session:
@@ -1108,7 +1107,6 @@ def test_group_ai_chat_hard_hourly_uses_current_slot_when_account_cools_down_lat
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
     monkeypatch.setattr("app.services.account_capacity._now", lambda: now_value)
     monkeypatch.setattr("app.services.task_center.account_pool._now", lambda: now_value)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
 
     with Session(engine) as session:
@@ -1161,7 +1159,6 @@ def test_group_ai_chat_hard_hourly_deferred_ai_ignores_empty_text_voice_gate(mon
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
     monkeypatch.setattr("app.services.account_capacity._now", lambda: now_value)
     monkeypatch.setattr("app.services.task_center.account_pool._now", lambda: now_value)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(
         "app.services.task_center.executors.group_ai_chat.voice_profile_prompt_details",
         lambda _session, *, tenant_id, account_ids: {
@@ -1221,7 +1218,6 @@ def test_group_ai_chat_hard_hourly_preserves_cycle_rotation_over_account_memory(
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
     monkeypatch.setattr("app.services.account_capacity._now", lambda: now_value)
     monkeypatch.setattr("app.services.task_center.account_pool._now", lambda: now_value)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
 
     with Session(engine) as session:
@@ -1277,7 +1273,6 @@ def test_group_ai_chat_hard_hourly_reuses_accounts_in_same_round(monkeypatch):
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
     monkeypatch.setattr("app.services.account_capacity._now", lambda: now_value)
     monkeypatch.setattr("app.services.task_center.account_pool._now", lambda: now_value)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
 
     with Session(engine) as session:
@@ -1388,14 +1383,21 @@ def test_group_ai_chat_hard_hourly_blocks_skewed_new_plan(monkeypatch):
     Base.metadata.create_all(engine)
     now_value = datetime(2026, 6, 7, 20, 10)
 
-    def skewed_quality_items(*_args, **_kwargs):
-        items = [{"content": f"硬目标补量{index}", "slot_account_id": 101} for index in range(3)]
-        return items, 0, {}
+    def skewed_generation_slots(turn, profile, **_kwargs):
+        return [
+            {
+                "slot_id": f"{profile.cycle_id}:turn:{index + 1}",
+                "account_id": 101,
+                "act_type": "short_react",
+            }
+            for index in range(turn.turn_count)
+        ]
 
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._generate_quality_filled_items", skewed_quality_items)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._reserve_planned_message_memory", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        "app.services.task_center.executors.group_ai_chat._immutable_generation_slots",
+        skewed_generation_slots,
+    )
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
@@ -1462,7 +1464,6 @@ def test_group_ai_chat_hard_hourly_plans_when_accounts_are_full(monkeypatch):
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
     monkeypatch.setattr("app.services.account_capacity._now", lambda: now_value)
     monkeypatch.setattr("app.services.task_center.account_pool._now", lambda: now_value)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
 
     with Session(engine) as session:
@@ -1520,7 +1521,6 @@ def test_group_ai_chat_hard_hourly_skips_history_refresh_and_plans(monkeypatch):
         return ["先按群公告来就行", "报名入口有人再发下吗", "后面等通知"][:count], 0
 
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: True)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.collect_group_context", denied_history)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
 
@@ -1574,7 +1574,6 @@ def test_group_ai_chat_hard_hourly_reuses_existing_context_without_refresh(monke
         return ["今晚活动几点开始", "报名入口有人发下吗", "我看群公告写得挺清楚"][:count], 0
 
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: True)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.collect_group_context", broken_history)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._drop_repeated_planned_items", lambda items, _previous: items)
@@ -1640,7 +1639,6 @@ def test_group_ai_chat_non_hard_history_permission_still_blocks(monkeypatch):
         raise RuntimeError("ChannelPrivateError lack permission caused by GetHistoryRequest")
 
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: True)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.collect_group_context", denied_history)
 
     with Session(engine) as session:
@@ -1686,7 +1684,6 @@ def test_group_ai_chat_hard_hourly_defers_history_account_fallback(monkeypatch):
         return ["先按群公告来就行", "报名入口有人再发下吗", "后面等通知"][:count], 0
 
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: True)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.collect_group_context", history_with_first_account_denied)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
 
@@ -1736,7 +1733,6 @@ def test_group_ai_chat_non_hard_history_collect_exposes_non_permission_errors(mo
         raise RuntimeError("telegram gateway unavailable")
 
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: True)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.collect_group_context", broken_history)
 
     with Session(engine) as session:
@@ -2460,7 +2456,6 @@ def test_group_ai_chat_hard_hourly_reply_shortfall_fills_with_normal_turns(monke
         return samples[:count], 0
 
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
 
     with Session(engine) as session:
@@ -2502,7 +2497,6 @@ def test_hard_hourly_refills_accounts_after_missing_voice_profiles(monkeypatch):
     Base.metadata.create_all(engine)
     now_value = datetime(2026, 6, 7, 20, 10)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", _hard_hourly_fake_generate)
     monkeypatch.setattr(
         "app.services.task_center.executors.group_ai_chat.voice_profile_prompt_details",
@@ -2533,7 +2527,6 @@ def test_hard_hourly_refill_rechecks_online_ready_accounts(monkeypatch):
     Base.metadata.create_all(engine)
     now_value = datetime(2026, 6, 7, 20, 10)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", _hard_hourly_fake_generate)
     monkeypatch.setattr(
         "app.services.task_center.executors.group_ai_chat.voice_profile_prompt_details",

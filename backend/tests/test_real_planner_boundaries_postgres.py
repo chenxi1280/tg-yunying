@@ -9,6 +9,8 @@ from app.database import Base, SessionLocal, engine
 from app.models import (
     Action,
     AiAccountVoiceProfile,
+    GroupContextMessage,
+    MessageFingerprint,
     RuleSet,
     RuleSetVersion,
     SchedulingSetting,
@@ -55,7 +57,6 @@ def test_postgres_real_planner_preserves_round_sizes_and_drains_580(
     _cleanup()
     timestamp = _now().replace(hour=23, minute=59 if drain_all else 30, second=0, microsecond=0)
     monkeypatch.setattr(group_ai_chat, "_now", lambda: timestamp)
-    monkeypatch.setattr(group_ai_chat, "should_collect_listener", lambda *_args, **_kwargs: False)
     try:
         _seed_real_planner_scope(messages_per_round, timestamp)
         actual_rounds = _run_real_planner_until(ACCOUNT_COUNT) if drain_all else _run_real_planner_rounds(1)
@@ -79,6 +80,96 @@ def test_postgres_real_planner_preserves_round_sizes_and_drains_580(
         )
         assert sum(actual_rounds) == reserved
         assert minimum_cursor_version <= cursor.version <= reserved
+    finally:
+        _cleanup()
+
+
+def test_postgres_planner_creates_reply_and_normal_pending_without_external_calls(monkeypatch) -> None:
+    Base.metadata.create_all(engine)
+    _cleanup()
+    timestamp = _now().replace(hour=23, minute=30, second=0, microsecond=0)
+    monkeypatch.setattr(group_ai_chat, "_now", lambda: timestamp)
+
+    def forbidden_external(*_args, **_kwargs):
+        raise AssertionError("Planner Phase A must not call external services")
+
+    monkeypatch.setattr(group_ai_chat, "should_collect_listener", forbidden_external, raising=False)
+    monkeypatch.setattr(group_ai_chat, "collect_group_context", forbidden_external, raising=False)
+    monkeypatch.setattr(group_ai_chat, "generate_group_messages", forbidden_external)
+    monkeypatch.setattr(group_ai_chat, "generate_group_reply_messages", forbidden_external)
+    try:
+        _seed_real_planner_scope(10, timestamp)
+        with SessionLocal() as session:
+            task = session.get(Task, TASK_ID)
+            task.type_config = {**task.type_config, "reply_min_per_round": 1}
+            session.add(GroupContextMessage(
+                tenant_id=TENANT_ID,
+                group_id=GROUP_ID,
+                listener_account_id=ACCOUNT_BASE,
+                sender_name="真人用户",
+                content="今天群里聊什么？",
+                remote_message_id="9001",
+                sent_at=timestamp - timedelta(minutes=1),
+            ))
+            session.commit()
+
+        assert _run_real_planner_rounds(1) == [10]
+        with SessionLocal() as session:
+            actions = list(session.scalars(select(Action).where(Action.task_id == TASK_ID)))
+            cursor = session.scalar(select(TaskDailyCoveragePlanCursor).where(
+                TaskDailyCoveragePlanCursor.task_id == TASK_ID,
+            ))
+            reserved = session.scalar(select(func.count()).select_from(TaskAccountDailyCoverage).where(
+                TaskAccountDailyCoverage.task_id == TASK_ID,
+                TaskAccountDailyCoverage.state == "reserved",
+            ))
+
+        assert len(actions) == reserved == 10
+        assert cursor.version >= 1
+        assert sum(bool(action.payload["reply_to_message_id"]) for action in actions) == 1
+        assert all(action.payload["ai_generation_status"] == "pending" for action in actions)
+        assert all(not action.payload["message_text"] for action in actions)
+    finally:
+        _cleanup()
+
+
+def test_postgres_planner_phase_a_rolls_back_actions_coverage_and_cursor(monkeypatch) -> None:
+    Base.metadata.create_all(engine)
+    _cleanup()
+    timestamp = _now().replace(hour=23, minute=30, second=0, microsecond=0)
+    monkeypatch.setattr(group_ai_chat, "_now", lambda: timestamp)
+    original_reserve = group_ai_chat._reserve_action_coverage
+    calls = 0
+
+    def fail_second_reservation(session, action, payload):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("phase-a-reservation-injected-failure")
+        return original_reserve(session, action, payload)
+
+    monkeypatch.setattr(group_ai_chat, "_reserve_action_coverage", fail_second_reservation)
+    try:
+        _seed_real_planner_scope(10, timestamp)
+        with pytest.raises(RuntimeError, match="phase-a-reservation-injected-failure"):
+            with SessionLocal() as session:
+                group_ai_chat.build_plan(session, session.get(Task, TASK_ID))
+        with SessionLocal() as session:
+            actions = session.scalar(select(func.count()).select_from(Action).where(Action.task_id == TASK_ID))
+            reserved = session.scalar(select(func.count()).select_from(TaskAccountDailyCoverage).where(
+                TaskAccountDailyCoverage.task_id == TASK_ID,
+                TaskAccountDailyCoverage.state == "reserved",
+            ))
+            cursor = session.scalar(select(TaskDailyCoveragePlanCursor).where(
+                TaskDailyCoveragePlanCursor.task_id == TASK_ID,
+            ))
+        assert calls == 2
+        assert actions == reserved == 0
+        assert cursor is None or (
+            cursor.version == 0
+            and not cursor.last_coverage_id
+            and cursor.last_account_id is None
+        )
     finally:
         _cleanup()
 
@@ -237,6 +328,8 @@ def _cleanup() -> None:
         session.execute(delete(TaskDailyCoveragePlanCursor).where(TaskDailyCoveragePlanCursor.tenant_id == TENANT_ID))
         session.execute(delete(Action).where(Action.tenant_id == TENANT_ID))
         session.execute(delete(AiAccountVoiceProfile).where(AiAccountVoiceProfile.tenant_id == TENANT_ID))
+        session.execute(delete(GroupContextMessage).where(GroupContextMessage.tenant_id == TENANT_ID))
+        session.execute(delete(MessageFingerprint).where(MessageFingerprint.tenant_id == TENANT_ID))
         session.execute(delete(TgAccountOnlineState).where(TgAccountOnlineState.tenant_id == TENANT_ID))
         session.execute(delete(TgGroupAccount).where(TgGroupAccount.tenant_id == TENANT_ID))
         session.execute(delete(Task).where(Task.tenant_id == TENANT_ID))

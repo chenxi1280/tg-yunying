@@ -263,7 +263,7 @@ def test_grok_stage_uses_cli_bridge_and_preserves_stage_metadata(monkeypatch):
                 "_ai_fallback_stage": "fallback_grok",
                 "_close_db_transaction_before_ai": True,
             },
-            GroupPromptBundle(
+            bundle=GroupPromptBundle(
                 system_prompt="system",
                 user_prompt="user",
                 context_source="neutral_fallback",

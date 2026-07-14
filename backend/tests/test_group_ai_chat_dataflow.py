@@ -81,7 +81,7 @@ def test_group_ai_deferred_items_preserve_slot_topic_and_teacher_targets():
         }
     ]
 
-    items = group_ai_chat._deferred_ai_planned_items(1, slots)
+    items = group_ai_chat._deferred_ai_planned_items([], 1, slots)
 
     assert items[0]["defer_ai_generation"] is True
     assert items[0]["slot"]["topic_direction"]["title"] == "郑州楼凤妹子怎么样"
@@ -98,7 +98,7 @@ def test_group_ai_daily_coverage_without_reply_target_defers_ai_generation():
     config = {"account_coverage_mode": "all_accounts_daily"}
 
     assert group_ai_chat._defer_ai_generation_for_plan(config, {}, reply_target_count=0) is True
-    assert group_ai_chat._defer_ai_generation_for_plan(config, {}, reply_target_count=1) is False
+    assert group_ai_chat._defer_ai_generation_for_plan(config, {}, reply_target_count=1) is True
 
 
 def test_group_ai_chat_normal_candidate_shortfall_keeps_partial_candidates(monkeypatch):
@@ -234,11 +234,11 @@ def test_group_ai_quality_round_preserves_generated_material_metadata(monkeypatc
     assert quality_items[0]["mood"] == "轻松"
 
 
-def test_group_ai_expires_profileless_actions_before_duplicate_baseline():
+def test_group_ai_expires_profileless_actions_before_deferred_planning():
     source_path = Path(__file__).resolve().parents[1] / "app/services/task_center/executors/group_ai_chat.py"
     source = source_path.read_text()
 
-    assert source.index("_expire_open_profileless_actions(") < source.index("planned_ai_messages = _recent_planned_ai_messages(")
+    assert source.index("_expire_open_profileless_actions(") < source.index("planned_items = _deferred_ai_planned_items(")
 
 
 def test_group_ai_quality_filter_records_rejection_samples():

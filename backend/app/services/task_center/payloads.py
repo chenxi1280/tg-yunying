@@ -57,6 +57,9 @@ class SendMessagePayload(BaseModel):
     topic_thread: str = ""
     topic_plan: str = ""
     intent: str = ""
+    mood: str = ""
+    material_intent: str = ""
+    allow_material: bool = False
     chat_mode: str = ""
     reply_to_message_id: int | None = None
     reply_target_label: str = ""
@@ -73,6 +76,12 @@ class SendMessagePayload(BaseModel):
     context_expire_after_messages: int = 0
     ai_generation_id: str = ""
     ai_generation_status: str = ""
+    ai_generation_attempt_id: str = ""
+    ai_generation_request_id: str = ""
+    ai_generation_attempt_history: list[dict[str, Any]] = Field(default_factory=list)
+    ai_generation_result_cache: dict[str, Any] = Field(default_factory=dict)
+    ai_generation_claim_owner: str = ""
+    ai_generation_claim_token: str = ""
     generation_source: str = ""
     requested_model: str = ""
     actual_model: str = ""
@@ -127,7 +136,12 @@ class SendMessagePayload(BaseModel):
     def require_destination(self) -> "SendMessagePayload":
         if self.group_id is None and not self.chat_id.strip():
             raise ValueError("send_message action requires group_id or chat_id")
-        if not self.message_text.strip() and self.ai_generation_status != "pending":
+        pending_generation_statuses = {
+            "pending",
+            "generating",
+            "ai_result_persist_unknown",
+        }
+        if not self.message_text.strip() and self.ai_generation_status not in pending_generation_statuses:
             raise ValueError("send_message action requires message_text unless ai_generation_status is pending")
         if not self.reply_to_message_id and any([self.reply_target_label, self.reply_target_author, self.reply_target_preview, self.reply_target_source]):
             raise ValueError("引用回复 action 缺少 reply_to_message_id")

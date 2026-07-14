@@ -34,6 +34,17 @@ HARD_HOURLY_EXPIRED_ERROR_MESSAGE = "硬目标小时窗口已结束，过期补�
 SEARCH_JOIN_OPEN_STATUSES = ("pending", "claiming", "executing")
 AI_GROUP_TERMINAL_QUALITY_ERRORS = frozenset({"duplicate_message", "ai_message_memory_missing"})
 AI_GROUP_TERMINAL_GENERATION_STATUSES = frozenset({"duplicate_rejected"})
+AI_GENERATION_OPEN_STATUSES = frozenset({"pending", "generating"})
+AI_GENERATION_QUALITY_CODES = frozenset({
+    "content_rejected",
+    "duplicate_message",
+    "duplicate_risk",
+    "hallucination_risk",
+    "quality_rejected",
+    "stance_conflict",
+    "template_shell_limited",
+    "voice_profile_mismatch",
+})
 
 
 def next_run_after_task(task: Task):
@@ -101,14 +112,94 @@ def refresh_task_stats(
             "last_action_at": last_action_at.isoformat() if last_action_at else stats.get("last_action_at"),
         }
     )
+    stats = _ai_generation_stats(session, task, stats)
     stats = hard_hourly_stats(session, task, _now(), stats)
     stats = _search_join_stats(session, task, stats)
     stats = _search_rank_deboost_stats(session, task, stats)
     task.stats = stats
+    _refresh_runtime_summary(session, task, include_configured_accounts=include_configured_accounts)
+    return stats
+
+
+def _refresh_runtime_summary(session: Session, task: Task, *, include_configured_accounts: bool) -> None:
     from app.services.runtime_summary import refresh_task_summary
 
     refresh_task_summary(session, task, include_configured_accounts=include_configured_accounts)
-    return stats
+
+
+def _ai_generation_stats(session: Session, task: Task, stats: dict[str, Any]) -> dict[str, Any]:
+    if task.type != "group_ai_chat":
+        return stats
+    generation_counts = _action_json_counts(
+        session,
+        task,
+        Action.payload["ai_generation_status"].as_string(),
+    )
+    outcome_counts = _action_json_counts(
+        session,
+        task,
+        Action.result["generation_outcome"].as_string(),
+    )
+    updated = _apply_ai_generation_counts(stats, generation_counts, outcome_counts)
+    updated["voice_profile_anchor_rewrite_count"] = _ai_generation_fact_count(
+        session,
+        task,
+        Action.result["voice_profile_anchor_rewritten"].as_boolean().is_(True),
+    )
+    return updated
+
+
+def _ai_generation_fact_count(session: Session, task: Task, condition) -> int:
+    return int(session.scalar(select(func.count(Action.id)).where(
+        Action.tenant_id == task.tenant_id,
+        Action.task_id == task.id,
+        Action.action_type == "send_message",
+        condition,
+    )) or 0)
+
+
+def _action_json_counts(session: Session, task: Task, expression) -> dict[str, int]:
+    rows = session.execute(
+        select(expression, func.count(Action.id))
+        .where(
+            Action.tenant_id == task.tenant_id,
+            Action.task_id == task.id,
+            Action.action_type == "send_message",
+        )
+        .group_by(expression)
+    ).all()
+    return {str(code or ""): int(count) for code, count in rows if code}
+
+
+def _apply_ai_generation_counts(
+    stats: dict[str, Any],
+    generation_counts: dict[str, int],
+    outcome_counts: dict[str, int],
+) -> dict[str, Any]:
+    quality_counts = {
+        code: count
+        for code, count in outcome_counts.items()
+        if code in AI_GENERATION_QUALITY_CODES
+    }
+    closed_statuses = AI_GENERATION_OPEN_STATUSES | {"ready", "ai_result_persist_unknown"}
+    updated = dict(stats)
+    updated.update({
+        "generation_pending_count": generation_counts.get("pending", 0),
+        "generation_claimed_count": generation_counts.get("generating", 0),
+        "generation_ready_count": generation_counts.get("ready", 0),
+        "generation_persist_unknown_count": generation_counts.get("ai_result_persist_unknown", 0),
+        "generation_failed_count": sum(
+            count
+            for status, count in generation_counts.items()
+            if status and status not in closed_statuses
+        ),
+        "quality_rejected_count": sum(quality_counts.values()),
+        "quality_rejection_counts": quality_counts,
+        "reply_target_stale_count": outcome_counts.get("reply_target_stale", 0),
+        "reply_target_missing_count": outcome_counts.get("reply_target_missing", 0),
+        "gateway_unknown_count": int(updated.get("unknown_after_send_count") or 0),
+    })
+    return updated
 
 
 def _search_join_stats(session: Session, task: Task, stats: dict[str, Any]) -> dict[str, Any]:

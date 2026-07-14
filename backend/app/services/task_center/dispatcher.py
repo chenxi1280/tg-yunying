@@ -42,11 +42,17 @@ from app.timezone import BEIJING_TZ, as_beijing
 from .account_pool import account_matches_current_shard, current_account_shard, select_task_accounts
 from .account_scope import is_all_accounts_task
 from .account_voice_profiles import upsert_group_stance_memory
-from .ai_generator import AI_GENERATION_UNAVAILABLE_MESSAGE, AiGenerationUnavailable, generate_group_messages
-from .ai_message_memory import DuplicateMessageReservation, ensure_group_ai_message_sendable, mark_group_ai_message_result, reserve_group_ai_message
+from . import ai_generation_dispatch as _ai_generation_dispatch
+from .ai_generation_composition import PRODUCTION_GENERATION_DEPENDENCIES
+from .ai_generation_dependencies import GenerationDependencies
+from .ai_generator import (
+    AI_GENERATION_UNAVAILABLE_MESSAGE,
+    AiGenerationUnavailable,
+)
+from .ai_message_memory import DuplicateMessageReservation, ensure_group_ai_message_sendable, mark_group_ai_message_result
 from .channel_membership import account_satisfies_authorized_target, linked_channel_group, mark_channel_membership_joined
 from .daily_coverage import confirm_coverage_from_attempt, ensure_task_daily_coverage, mark_coverage_unknown, release_coverage_reservation
-from .executors.common import quantity_jitter_bounds, stats_inc
+from .executors.common import quantity_jitter_bounds
 from .executors.channel_comment_budget import (
     resolved_total_comment_limit as _resolved_total_comment_limit,
     total_comment_action_count as _total_comment_action_count,
@@ -155,11 +161,6 @@ REQUIRED_CHANNEL_ADMISSION_RETRY_SECONDS = 300
 VERIFICATION_READER_CANDIDATE_LIMIT = 5
 HARD_HOURLY_OVERDUE_SEND_PRIORITY_SECONDS = 300
 GROUP_RESCUE_INFLIGHT_CONFLICT_BACKOFF_SECONDS = 30
-AI_DISPATCH_GENERATION_BATCH_SIZE = 10
-AI_DISPATCH_GENERATION_LOOKAHEAD_SECONDS = 120
-AI_DISPATCH_CONTEXT_HISTORY_LIMIT = 50
-AI_DISPATCH_CONTEXT_HISTORY_MAX_CHARS = 1000
-AI_DISPATCH_CANDIDATE_SHORTFALL_MESSAGE = "AI 普通发言候选不足，已跳过本批次发送"
 _ACCOUNT_SESSION_FAILURE_MARKERS = (
     "session",
     "auth key",
@@ -217,6 +218,64 @@ class PreSendRequiredChannelContext:
 
 
 @dataclass(frozen=True)
+class SendMessageDispatchContext:
+    account: TgAccount
+    credentials: object
+    payload: SendMessagePayload
+
+
+@dataclass(frozen=True)
+class AiGenerationFailureContext:
+    payload: SendMessagePayload
+    error: AiGenerationUnavailable
+
+
+@dataclass(frozen=True)
+class ActionDispatchContext:
+    account: TgAccount
+    payload: object
+    generation_dependencies: GenerationDependencies
+
+
+@dataclass(frozen=True)
+class GroupSendGatewayContext:
+    account: TgAccount
+    credentials: object
+    group: TgGroup
+    link: TgGroupAccount
+    payload: SendMessagePayload
+    content: str
+
+
+@dataclass(frozen=True)
+class ActionClaimBatch:
+    action_ids: tuple[str, ...]
+    owner: str
+    token: str
+
+
+@dataclass(frozen=True)
+class GroupGatewayRequest:
+    account_id: int
+    group_id: int
+    content: str
+    segments: object
+    session_ciphertext: str
+    group_peer: str
+    credentials: object
+    reply_to_message_id: int | None
+
+
+@dataclass(frozen=True)
+class TargetGatewayRequest:
+    account_id: int
+    target_peer: str
+    content: str
+    session_ciphertext: str
+    credentials: object
+
+
+@dataclass(frozen=True)
 class InviteGroupAccountContext:
     session: Session
     account: TgAccount
@@ -236,15 +295,29 @@ def _release_runtime_resources(action: Action) -> None:
     _runtime_resources._release_runtime_resources(action)
 
 
-def dispatch_action(session: Session, action: Action) -> bool:
+def dispatch_action(
+    session: Session,
+    action: Action,
+    *,
+    generation_dependencies: GenerationDependencies = PRODUCTION_GENERATION_DEPENDENCIES,
+) -> bool:
     try:
-        return _dispatch_action(session, action)
+        return _dispatch_action(
+            session,
+            action,
+            generation_dependencies=generation_dependencies,
+        )
     finally:
         _sync_action_coverage_state(session, action)
         _sync_all_account_membership_state(session, action)
 
 
-def _dispatch_action(session: Session, action: Action) -> bool:
+def _dispatch_action(
+    session: Session,
+    action: Action,
+    *,
+    generation_dependencies: GenerationDependencies,
+) -> bool:
     if _legacy_review_enabled() and has_pending_review(session, action.id):
         return False
     if _skip_expired_hard_hourly_action(session, action):
@@ -253,42 +326,16 @@ def _dispatch_action(session: Session, action: Action) -> bool:
         return True
     if action.action_type == "invite_group_account" and not _refresh_stale_invite_group_account_action(session, action):
         return True
-    account = session.get(TgAccount, action.account_id) if action.account_id else None
-    if not account or account.deleted_at is not None or account.status != AccountStatus.ACTIVE.value:
-        _fail_with_policy(action, FailureType.ACCOUNT_UNAVAILABLE.value, "账号不可用", auto_check="拦截", validation_stage="account")
-        return True
-    if _is_reserved_rescue_admin_action(session, action, account):
-        _skip(action, "rescue_admin_reserved", "救援管理员账号只允许执行群聊救援动作，不参与普通任务发送、点赞、评论或准入")
-        return True
-    can_reassign = _action_can_reassign(action)
-    account = _account_after_global_policy(session, action, account, allow_reassign=can_reassign)
+    account = _dispatch_account(session, action)
     if account is None:
         return True
     try:
         payload = validate_action_payload(action.action_type, action.payload or {})
-        if action.action_type == "search_join":
-            return _dispatch_search_join(session, action, account, payload)
-        if action.action_type == "search_rank_deboost":
-            return _dispatch_search_rank_deboost(session, action, account, payload)
-        if action.action_type in {"view_message", "like_message", "post_comment"} and not _ensure_channel_action_membership(session, action, account, payload.channel_target_id):
-            return True
-        credentials = credentials_for_account(session, account)
-        if action.action_type in {"ensure_channel_membership", "ensure_target_membership"}:
-            return _dispatch_channel_membership(session, action, account, credentials, payload)
-        if action.action_type == "send_message":
-            return _dispatch_send_message(session, action, account, credentials, payload)
-        if action.action_type == "delete_message":
-            return _dispatch_delete_message(session, action, account, credentials, payload)
-        if action.action_type == "invite_group_account":
-            return _dispatch_invite_group_account(session, action, account, credentials, payload)
-        if action.action_type == "view_message":
-            return _dispatch_view(action, account, credentials, session, payload)
-        if action.action_type == "like_message":
-            return _dispatch_like(action, account, credentials, session, payload)
-        if action.action_type == "post_comment":
-            return _dispatch_comment(action, account, credentials, session, payload)
-        _fail(action, FailureType.UNKNOWN.value, f"未知 action_type: {action.action_type}")
-        return True
+        return _dispatch_validated_action(
+            session,
+            action,
+            ActionDispatchContext(account, payload, generation_dependencies),
+        )
     except (ValidationError, ValueError) as exc:
         _update_reply_payload_error_stats(action)
         _fail(action, FailureType.UNKNOWN.value, payload_error_message(exc))
@@ -299,6 +346,83 @@ def _dispatch_action(session: Session, action: Action) -> bool:
         else:
             _fail(action, FailureType.UNKNOWN.value, str(exc))
         return True
+
+
+def _dispatch_account(session: Session, action: Action) -> TgAccount | None:
+    account = session.get(TgAccount, action.account_id) if action.account_id else None
+    if not account or account.deleted_at is not None or account.status != AccountStatus.ACTIVE.value:
+        _fail_with_policy(
+            action,
+            FailureType.ACCOUNT_UNAVAILABLE.value,
+            "账号不可用",
+            auto_check="拦截",
+            validation_stage="account",
+        )
+        return None
+    if _is_reserved_rescue_admin_action(session, action, account):
+        _skip(
+            action,
+            "rescue_admin_reserved",
+            "救援管理员账号只允许执行群聊救援动作，不参与普通任务发送、点赞、评论或准入",
+        )
+        return None
+    return _account_after_global_policy(
+        session,
+        action,
+        account,
+        allow_reassign=_action_can_reassign(action),
+    )
+
+
+def _dispatch_validated_action(
+    session: Session,
+    action: Action,
+    context: ActionDispatchContext,
+) -> bool:
+    if action.action_type == "search_join":
+        return _dispatch_search_join(session, action, context.account, context.payload)
+    if action.action_type == "search_rank_deboost":
+        return _dispatch_search_rank_deboost(session, action, context.account, context.payload)
+    channel_action_types = {"view_message", "like_message", "post_comment"}
+    if action.action_type in channel_action_types and not _ensure_channel_action_membership(
+        session,
+        action,
+        context.account,
+        context.payload.channel_target_id,
+    ):
+        return True
+    credentials = credentials_for_account(session, context.account)
+    return _dispatch_credentialed_action(session, action, context, credentials=credentials)
+
+
+def _dispatch_credentialed_action(
+    session: Session,
+    action: Action,
+    context: ActionDispatchContext,
+    *,
+    credentials,
+) -> bool:
+    if action.action_type in {"ensure_channel_membership", "ensure_target_membership"}:
+        return _dispatch_channel_membership(session, action, context.account, credentials, context.payload)
+    if action.action_type == "send_message":
+        return _dispatch_send_message(
+            session,
+            action,
+            SendMessageDispatchContext(context.account, credentials, context.payload),
+            generation_dependencies=context.generation_dependencies,
+        )
+    if action.action_type == "delete_message":
+        return _dispatch_delete_message(session, action, context.account, credentials, context.payload)
+    if action.action_type == "invite_group_account":
+        return _dispatch_invite_group_account(session, action, context.account, credentials, context.payload)
+    if action.action_type == "view_message":
+        return _dispatch_view(action, context.account, credentials, session, context.payload)
+    if action.action_type == "like_message":
+        return _dispatch_like(action, context.account, credentials, session, context.payload)
+    if action.action_type == "post_comment":
+        return _dispatch_comment(action, context.account, credentials, session, context.payload)
+    _fail(action, FailureType.UNKNOWN.value, f"未知 action_type: {action.action_type}")
+    return True
 
 
 def mark_dispatcher_db_error(session: Session, action_id: str, detail: str) -> bool:
@@ -437,12 +561,7 @@ def due_actions(session: Session, limit: int = 100, *, exclude_task_ids: set[str
 
 
 def claim_actions(session: Session, limit: int = 100, *, exclude_task_ids: set[str] | None = None, worker_id: str | None = None) -> list[Action]:
-    """Two-stage claim for dispatcher workers.
-
-    The first transaction marks rows as ``claiming`` and releases DB locks before
-    any runtime resource checks. The second transaction confirms rows as
-    ``executing`` only after account in-flight and rate-limit reservations pass.
-    """
+    """Claim actions in two short database stages."""
 
     settings = get_settings()
     configured_limit = _setting(settings, "action_claim_limit", 100)
@@ -489,42 +608,85 @@ def claim_actions(session: Session, limit: int = 100, *, exclude_task_ids: set[s
         action.result = {**(action.result or {}), "claim_owner": owner, "claim_token": token}
     session.commit()
 
-    confirmed_ids: list[str] = []
-    for candidate in candidates:
-        action = session.get(Action, candidate.id)
-        if not action or action.status != "claiming" or action.claim_owner != owner or action.claim_token != token:
-            continue
-        if _skip_expired_hard_hourly_action(session, action):
+    batch = ActionClaimBatch(tuple(action.id for action in candidates), owner, token)
+    return _confirm_action_claim_batch(session, batch)
+
+
+def _confirm_action_claim_batch(session: Session, batch: ActionClaimBatch) -> list[Action]:
+    confirmed_ids = [
+        action_id
+        for action_id in batch.action_ids
+        if _confirm_action_claim_candidate(session, action_id, batch)
+    ]
+    return [
+        action
+        for action in (session.get(Action, action_id) for action_id in confirmed_ids)
+        if action
+    ]
+
+
+def _confirm_action_claim_candidate(
+    session: Session,
+    action_id: str,
+    batch: ActionClaimBatch,
+) -> bool:
+    action = session.get(Action, action_id)
+    if not _action_claim_matches(action, batch):
+        return False
+    if _skip_expired_hard_hourly_action(session, action):
+        session.commit()
+        return False
+    if not _apply_claim_account_policy(session, action):
+        session.commit()
+        return False
+    if _skip_resolved_invite_group_account_action(session, action):
+        session.commit()
+        return False
+    if not _reserve_runtime_resources(action):
+        _release_unconfirmed_action_claim(session, action)
+        return False
+    try:
+        if _confirm_claim(session, action.id, owner=batch.owner, token=batch.token):
             session.commit()
-            continue
-        if not _apply_claim_account_policy(session, action):
-            session.commit()
-            continue
-        if _skip_resolved_invite_group_account_action(session, action):
-            session.commit()
-            continue
-        if not _reserve_runtime_resources(action):
-            result = action.result or {}
-            delay_seconds = _runtime_resource_retry_delay(action, result)
-            _release_claim(action, delay_seconds=delay_seconds, reason=str(result.get("runtime_resource_reason") or "runtime_resource_unavailable"))
-            session.commit()
-            continue
-        action_id = action.id
-        try:
-            if _confirm_claim(session, action.id, owner, token):
-                session.commit()
-                confirmed_ids.append(action_id)
-            else:
-                _release_runtime_resources(action)
-                session.rollback()
-        except IntegrityError:
-            session.rollback()
-            _release_runtime_resources(action)
-            action = session.get(Action, action_id)
-            if action and action.status == "claiming" and action.claim_owner == owner and action.claim_token == token:
-                _release_claim(action, delay_seconds=1, reason="account_inflight_conflict")
-                session.commit()
-    return [action for action in (session.get(Action, action_id) for action_id in confirmed_ids) if action]
+            return True
+        _release_runtime_resources(action)
+        session.rollback()
+    except IntegrityError:
+        _release_conflicting_action_claim(session, action_id, batch, action)
+    return False
+
+
+def _release_unconfirmed_action_claim(session: Session, action: Action) -> None:
+    result = action.result or {}
+    _release_claim(
+        action,
+        delay_seconds=_runtime_resource_retry_delay(action, result),
+        reason=str(result.get("runtime_resource_reason") or "runtime_resource_unavailable"),
+    )
+    session.commit()
+
+
+def _release_conflicting_action_claim(
+    session: Session,
+    action_id: str,
+    batch: ActionClaimBatch,
+    action: Action,
+) -> None:
+    session.rollback()
+    _release_runtime_resources(action)
+    current = session.get(Action, action_id)
+    if _action_claim_matches(current, batch):
+        _release_claim(current, delay_seconds=1, reason="account_inflight_conflict")
+        session.commit()
+
+
+def _action_claim_matches(action: Action | None, batch: ActionClaimBatch) -> bool:
+    return bool(
+        action
+        and action.status == "claiming"
+        and action.claim_owner == batch.owner
+        and action.claim_token == batch.token
+    )
 
 
 def _claimable_candidates(candidates: list[Action]) -> list[Action]:
@@ -625,14 +787,31 @@ def recover_expired_hard_hourly_actions(session: Session, limit: int = 100) -> i
     return recovered
 
 
-def _confirm_claim(session: Session, action_id: str, owner: str, token: str) -> bool:
+def _confirm_claim(
+    session: Session,
+    action_id: str,
+    *,
+    owner: str,
+    token: str,
+) -> bool:
     action = session.get(Action, action_id)
     if not action or action.status != "claiming" or action.claim_owner != owner or action.claim_token != token:
         return False
+    _snapshot_ai_generation_claim(action)
     _mark_executing(action, lease_seconds=_setting(get_settings(), "action_lease_seconds", 1800))
     action.result = {**(action.result or {}), "claim_confirmed_at": _now().isoformat()}
     session.flush()
     return True
+
+
+def _snapshot_ai_generation_claim(action: Action) -> None:
+    payload = dict(action.payload or {})
+    generation_status = payload.get("ai_generation_status")
+    if action.action_type != "send_message" or generation_status not in {"pending", "ai_result_persist_unknown"}:
+        return
+    payload["ai_generation_claim_owner"] = action.claim_owner
+    payload["ai_generation_claim_token"] = action.claim_token
+    action.payload = payload
 
 
 def _release_claim(action: Action, *, delay_seconds: int, reason: str) -> None:
@@ -795,373 +974,374 @@ def _setting(settings, name: str, default):
     return getattr(settings, name, default)
 
 
-def _ensure_send_message_content(session: Session, action: Action, account: TgAccount, payload: SendMessagePayload) -> SendMessagePayload:
-    if payload.message_text.strip():
-        return payload
-    if payload.ai_generation_status != "pending":
-        raise AiGenerationUnavailable("send_message action 缺少可发送文案")
-    task = session.get(Task, action.task_id) if action.task_id else None
-    if not task:
-        raise AiGenerationUnavailable("AI 生成缺少任务配置")
-    batch = _pending_ai_generation_batch(session, action, payload)
-    batch = _refresh_deferred_generation_context(session, task, batch)
-    payload = batch[0][1]
-    generation_config = {
-        **_runtime_group_ai_config(task, batch),
-        "_close_db_transaction_before_ai": True,
-    }
-    generation_count = len(batch)
-    tenant_id = action.tenant_id
-    target_label = payload.target_display
-    generation_history = payload.ai_generation_history
-    session.commit()
-    contents, tokens = generate_group_messages(
-        session,
-        tenant_id,
-        generation_config,
-        count=generation_count,
-        target_label=target_label,
-        history=generation_history,
-    )
-    if len(contents) < len(batch):
-        stats_inc(task, "normal_candidate_shortfall_count")
-        if not contents:
-            raise AiGenerationUnavailable(AI_DISPATCH_CANDIDATE_SHORTFALL_MESSAGE)
-    _store_generated_send_payloads(session, batch, contents, tokens)
-    session.commit()
-    refreshed = SendMessagePayload.model_validate(action.payload or {})
-    if refreshed.quality_skip_reason == "duplicate_message":
-        raise AiGenerationUnavailable("AI 活群生成内容重复，已拦截")
-    if not refreshed.message_text.strip():
-        raise AiGenerationUnavailable(AI_GENERATION_UNAVAILABLE_MESSAGE)
-    return refreshed
-
-
-def _pending_ai_generation_batch(session: Session, action: Action, payload: SendMessagePayload) -> list[tuple[Action, SendMessagePayload]]:
-    rows: list[tuple[Action, SendMessagePayload]] = [(action, payload)]
-    sibling_limit = AI_DISPATCH_GENERATION_BATCH_SIZE - 1
-    if sibling_limit <= 0:
-        return rows
-    generation_id = str(payload.ai_generation_id or "").strip()
-    if not generation_id:
-        return rows
-    siblings = session.scalars(_pending_ai_generation_sibling_query(action, generation_id, sibling_limit))
-    for sibling in siblings:
-        rows.append((sibling, SendMessagePayload.model_validate(sibling.payload or {})))
-    return rows
-
-
-def _pending_ai_generation_sibling_query(action: Action, generation_id: str, limit: int):
-    stmt = (
-        select(Action)
-        .where(
-            Action.id != action.id,
-            Action.tenant_id == action.tenant_id,
-            Action.task_id == action.task_id,
-            Action.action_type == "send_message",
-            Action.status == "pending",
-            Action.payload["ai_generation_status"].as_string() == "pending",
-            Action.payload["ai_generation_id"].as_string() == generation_id,
-        )
-        .order_by(Action.scheduled_at.asc(), Action.created_at.asc())
-        .limit(max(1, int(limit or 1)))
-    )
-    payload = SendMessagePayload.model_validate(action.payload or {})
-    if _deferred_daily_coverage_payload(payload):
-        cutoff = max(_naive_datetime(action.scheduled_at), _now()) + timedelta(
-            seconds=AI_DISPATCH_GENERATION_LOOKAHEAD_SECONDS,
-        )
-        stmt = stmt.where(Action.scheduled_at <= cutoff)
-    return stmt
-
-
-def _refresh_deferred_generation_context(
+def _ensure_send_message_content(
     session: Session,
-    task: Task,
-    batch: list[tuple[Action, SendMessagePayload]],
-) -> list[tuple[Action, SendMessagePayload]]:
-    if not batch or not _deferred_daily_coverage_payload(batch[0][1]):
-        return batch
-    rows = _latest_human_context_rows(session, batch[0][1], task)
-    if not rows:
-        return batch
-    history = "\n".join(f"{row.sender_name}: {row.content}" for row in rows)
-    history = history[-AI_DISPATCH_CONTEXT_HISTORY_MAX_CHARS:]
-    context_ids = [int(row.id) for row in rows]
-    refreshed: list[tuple[Action, SendMessagePayload]] = []
-    for action, payload in batch:
-        updated = payload.model_copy(update={
-            "anchor_message_ids": context_ids,
-            "context_message_ids": context_ids,
-            "context_snapshot_message_id": max(context_ids),
-            "ai_generation_history": history,
-            "ai_generation_context_count": len(context_ids),
-        })
-        action.payload = updated.model_dump(mode="json")
-        refreshed.append((action, updated))
-    return refreshed
-
-
-def _latest_human_context_rows(
-    session: Session,
+    action: Action,
+    account: TgAccount,
+    *,
     payload: SendMessagePayload,
-    task: Task,
-) -> list[GroupContextMessage]:
-    depth = min(
-        AI_DISPATCH_CONTEXT_HISTORY_LIMIT,
-        max(1, int((task.type_config or {}).get("chat_history_depth") or AI_DISPATCH_CONTEXT_HISTORY_LIMIT)),
+    credentials=None,
+    generation_dependencies: GenerationDependencies,
+) -> SendMessagePayload:
+    return _ai_generation_dispatch.ensure_send_message_content(
+        session,
+        action,
+        account,
+        payload=payload,
+        credentials=credentials,
+        dependencies=generation_dependencies,
     )
-    rows = list(session.scalars(
-        select(GroupContextMessage)
-        .where(
-            GroupContextMessage.group_id == payload.group_id,
-            GroupContextMessage.is_bot.is_(False),
-            GroupContextMessage.content != "",
-        )
-        .order_by(
-            func.coalesce(GroupContextMessage.sent_at, GroupContextMessage.created_at).desc(),
-            GroupContextMessage.id.desc(),
-        )
-        .limit(depth)
-    ))
-    return list(reversed(rows))
 
 
-def _runtime_group_ai_config(task: Task, batch: list[tuple[Action, SendMessagePayload]]) -> dict:
-    config = dict(task.type_config or {})
-    config["account_personas"] = _payload_map(batch, "account_role")
-    config["account_memories"] = _payload_map(batch, "account_memory")
-    config["account_profiles"] = _payload_map(batch, "account_profile")
-    config["generation_slots"] = _payload_generation_slots(batch)
-    first_payload = batch[0][1]
-    if first_payload.topic_thread:
-        config["topic_thread"] = first_payload.topic_thread
-    if first_payload.topic_plan:
-        config["topic_plan"] = first_payload.topic_plan
-    return config
-
-
-def _payload_map(batch: list[tuple[Action, SendMessagePayload]], attr: str) -> dict[str, str]:
-    values: dict[str, str] = {}
-    for action, payload in batch:
-        value = str(getattr(payload, attr) or "").strip()
-        if value and action.account_id:
-            values[str(action.account_id)] = value
-    return values
-
-
-def _payload_generation_slots(batch: list[tuple[Action, SendMessagePayload]]) -> list[dict]:
-    slots: list[dict] = []
-    for index, (action, payload) in enumerate(batch, start=1):
-        slot = _payload_generation_slot(action, payload, index)
-        if slot:
-            slots.append(slot)
-    return slots
-
-
-def _payload_generation_slot(action: Action, payload: SendMessagePayload, index: int) -> dict:
-    slot_id = str(payload.slot_id or "").strip()
-    if not slot_id:
-        return {}
-    slot = {
-        "slot_id": slot_id,
-        "sequence_index": int(payload.turn_index or index),
-        "account_id": action.account_id,
-        "act_type": payload.act_type,
-        "account_profile": payload.account_profile,
-        "reply_to_message_id": payload.reply_to_message_id,
-        "reply_to_content": payload.reply_target_preview,
-    }
-    if payload.topic_direction:
-        slot["topic_direction"] = dict(payload.topic_direction)
-    if payload.teacher_target:
-        slot["teacher_target"] = dict(payload.teacher_target)
-    return slot
-
-
-def _store_generated_send_payloads(session: Session, batch: list[tuple[Action, SendMessagePayload]], contents: list[str], tokens: int) -> None:
-    for index, ((action, payload), content) in enumerate(zip(batch, contents, strict=False)):
-        payload_data = payload.model_dump(mode="json")
-        payload_data["message_text"] = str(content or "").strip()
-        payload_data["ai_generation_status"] = "success"
-        payload_data["ai_generation_tokens"] = int(tokens or 0) if index == 0 else 0
-        _attach_generated_message_memory(session, action, payload, payload_data)
-        action.payload = payload_data
-        if getattr(action, "status", "") in {"failed", "skipped", "retryable_failed"}:
-            _sync_action_coverage_state(session, action)
-
-
-def _attach_generated_message_memory(session: Session, action: Action, payload: SendMessagePayload, payload_data: dict) -> None:
-    content = str(payload_data.get("message_text") or "").strip()
-    if action.task_type != "group_ai_chat" or not payload.group_id or not content:
-        return
-    try:
-        memory = reserve_group_ai_message(
+def _dispatch_send_message(
+    session: Session,
+    action: Action,
+    context: SendMessageDispatchContext,
+    *,
+    generation_dependencies: GenerationDependencies,
+) -> bool:
+    if context.payload.group_id:
+        return _dispatch_group_send_message(
             session,
-            tenant_id=action.tenant_id,
-            group_id=int(payload.group_id),
-            task_id=action.task_id,
-            account_id=action.account_id,
-            raw_text=content,
-            topic_direction=_target_label(payload.topic_direction, "title"),
-            teacher_target=_target_label(payload.teacher_target, "name"),
-            profile_version=payload.profile_version or None,
-            profile_match_score=payload.profile_match_score or None,
-            profile_match_reason=payload.profile_match_reason,
+            action,
+            context,
+            generation_dependencies=generation_dependencies,
         )
-    except DuplicateMessageReservation as exc:
-        _mark_generated_duplicate(action, payload_data, exc)
-        return
-    mark_group_ai_message_result(session, memory.id, status="reserved", action_id=action.id)
-    payload_data["ai_message_memory_id"] = memory.id
-    payload_data["semantic_cluster"] = payload_data.get("semantic_cluster") or memory.semantic_cluster
+    return _dispatch_target_send_message(
+        session,
+        action,
+        context,
+        generation_dependencies=generation_dependencies,
+    )
 
 
-def _mark_generated_duplicate(action: Action, payload_data: dict, exc: DuplicateMessageReservation) -> None:
-    payload_data["ai_generation_status"] = "duplicate_rejected"
-    payload_data["quality_skip_reason"] = "duplicate_message"
-    payload_data["duplicate_risk"] = exc.duplicate_window
-    action.payload = payload_data
-    _fail(action, "duplicate_message", f"AI 活群生成内容重复：{exc.duplicate_window}", auto_check="拦截", validation_stage="ai_message_memory")
-    action.result = {
-        **(action.result or {}),
-        "duplicate_reference_id": exc.reference_id,
-        "duplicate_window": exc.duplicate_window,
-    }
-
-
-def _dispatch_send_message(session: Session, action: Action, account: TgAccount, credentials, payload: SendMessagePayload) -> bool:
-    group_id = payload.group_id
-    if group_id:
-        group = session.get(TgGroup, group_id)
-        if not group:
-            _fail(action, FailureType.PEER_INVALID.value, "目标群不存在", auto_check="拦截", validation_stage="target")
-            return True
-        try:
-            payload = _ensure_send_message_content(session, action, account, payload)
-        except AiGenerationUnavailable as exc:
-            if action.status == "failed" and (action.result or {}).get("validation_stage") == "ai_message_memory":
-                return True
-            _fail_group_ai_send_before_gateway(
-                session,
-                action,
-                payload,
-                FailureType.UNKNOWN.value,
-                str(exc) or AI_GENERATION_UNAVAILABLE_MESSAGE,
-                auto_check="失败",
-                validation_stage="ai_generation",
-            )
-            return True
-        content = payload.message_text
-        link = session.scalar(select(TgGroupAccount).where(TgGroupAccount.group_id == group.id, TgGroupAccount.account_id == account.id))
-        if not link or not link.can_send:
-            if link and _defer_send_for_required_channel_admission(action, link):
-                return True
-            _fail_group_ai_send_before_gateway(
-                session,
-                action,
-                payload,
-                FailureType.ACCOUNT_UNAVAILABLE.value,
-                "该账号不可向此群发送",
-                auto_check="拦截",
-                validation_stage="account_target_permission",
-            )
-            return True
-        prompt_ctx = PreSendRequiredChannelContext(session, action, account, credentials, group, link, payload)
-        if _recover_pre_send_required_channel_prompt(prompt_ctx):
-            return True
-        failure_type, failure_detail = validate_group_send_policy(session, tenant_id=action.tenant_id, group=group, content=content, review_approved=payload.review_approved)
-        if failure_type:
-            _fail_group_ai_send_before_gateway(
-                session,
-                action,
-                payload,
-                failure_type,
-                failure_detail or failure_type,
-                auto_check="拦截",
-                validation_stage="content_policy",
-            )
-            return True
-        filtered = filter_outbound_content(session, tenant_id=action.tenant_id, group=group, content=content)
-        if not filtered.ok:
-            _fail_group_ai_send_before_gateway(
-                session,
-                action,
-                payload,
-                FailureType.CONTENT_REJECTED.value,
-                filtered.reason,
-                auto_check="拦截",
-                validation_stage="content_policy",
-            )
-            return True
-        if _context_expired(session, payload):
-            _skip_context_expired_cycle(session, action, payload)
-            _skip(action, "context_expired", "上下文已过期，跳过本轮剩余发言")
-            return True
-        if not _group_ai_account_online_ready(session, action, account, payload):
-            _fail_with_policy(
-                action,
-                FailureType.ACCOUNT_UNAVAILABLE.value,
-                "账号在线状态不可用，等待账号恢复在线后继续执行",
-                auto_check="拦截",
-                validation_stage="account_online",
-            )
-            _mark_ai_message_memory_result(
-                session,
-                payload,
-                status="account_offline",
-                action_id=action.id,
-                result={"error_code": FailureType.ACCOUNT_UNAVAILABLE.value, "validation_stage": "account_online"},
-            )
-            return True
-        if not _group_ai_message_memory_sendable(session, action, payload):
-            return True
-        account_id = account.id
-        group_peer = group.tg_peer_id
-        group_pk = group.id
-        session_ciphertext = account.session_ciphertext
-        attempt = _begin_execution_attempt(session, action, account)
-        _mark_executing(action)
-        session.commit()
-        _mark_gateway_call_started(session, attempt)
-        send_kwargs = {"reply_to_message_id": payload.reply_to_message_id} if payload.reply_to_message_id else {}
-        result = gateway.send_message(
-            account_id,
-            group_pk,
-            content,
-            _outbound_segments(payload),
-            session_ciphertext,
-            group_peer,
-            credentials,
-            **send_kwargs,
-        )
-        if _recover_send_message_required_channel(session, action, account, credentials, group, payload, result, attempt):
-            return True
-        _apply_send_result(action, account, result.ok, result.remote_message_id or "", result.failure_type or "", result.detail or "", attempt=attempt)
-        _mark_ai_message_memory_result(
-            session,
-            payload,
-            status="success" if result.ok else "failed",
-            action_id=action.id,
-            sent_at=_now() if result.ok else None,
-            result=dict(action.result or {}),
-        )
-        if result.ok:
-            _update_group_ai_stance_memory(session, action, account, payload, result.remote_message_id or "")
-        if result.ok:
-            link.last_sent_at = _now()
+def _dispatch_group_send_message(
+    session: Session,
+    action: Action,
+    context: SendMessageDispatchContext,
+    *,
+    generation_dependencies: GenerationDependencies,
+) -> bool:
+    prepared = _prepare_group_send(
+        session,
+        action,
+        context,
+        generation_dependencies=generation_dependencies,
+    )
+    if prepared is None or not _group_send_preconditions_pass(session, action, prepared):
         return True
-    payload = _ensure_send_message_content(session, action, account, payload)
-    content = payload.message_text
-    target_peer = payload.chat_id
-    account_id = account.id
-    session_ciphertext = account.session_ciphertext
-    attempt = _begin_execution_attempt(session, action, account)
+    return _send_group_message_via_gateway(session, action, prepared)
+
+
+def _prepare_group_send(
+    session: Session,
+    action: Action,
+    context: SendMessageDispatchContext,
+    *,
+    generation_dependencies: GenerationDependencies,
+) -> GroupSendGatewayContext | None:
+    group = session.get(TgGroup, context.payload.group_id)
+    if not group:
+        _fail(action, FailureType.PEER_INVALID.value, "目标群不存在", auto_check="拦截", validation_stage="target")
+        return None
+    try:
+        payload = _ensure_send_message_content(
+            session,
+            action,
+            context.account,
+            payload=context.payload,
+            credentials=context.credentials,
+            generation_dependencies=generation_dependencies,
+        )
+    except AiGenerationUnavailable as exc:
+        _handle_ai_generation_failure(
+            session,
+            action,
+            AiGenerationFailureContext(context.payload, exc),
+        )
+        return None
+    link = _group_send_link(session, group, context.account)
+    if link and link.can_send:
+        return GroupSendGatewayContext(
+            context.account,
+            context.credentials,
+            group,
+            link,
+            payload,
+            payload.message_text,
+        )
+    if not link or not _defer_send_for_required_channel_admission(action, link):
+        _fail_group_ai_send_before_gateway(
+            session,
+            action,
+            payload,
+            FailureType.ACCOUNT_UNAVAILABLE.value,
+            "该账号不可向此群发送",
+            auto_check="拦截",
+            validation_stage="account_target_permission",
+        )
+    return None
+
+
+def _group_send_link(
+    session: Session,
+    group: TgGroup,
+    account: TgAccount,
+) -> TgGroupAccount | None:
+    return session.scalar(select(TgGroupAccount).where(
+        TgGroupAccount.group_id == group.id,
+        TgGroupAccount.account_id == account.id,
+    ))
+
+
+def _dispatch_target_send_message(
+    session: Session,
+    action: Action,
+    context: SendMessageDispatchContext,
+    *,
+    generation_dependencies: GenerationDependencies,
+) -> bool:
+    payload = _ensure_send_message_content(
+        session,
+        action,
+        context.account,
+        payload=context.payload,
+        credentials=context.credentials,
+        generation_dependencies=generation_dependencies,
+    )
+    gateway_request = TargetGatewayRequest(
+        account_id=context.account.id,
+        target_peer=payload.chat_id,
+        content=payload.message_text,
+        session_ciphertext=context.account.session_ciphertext,
+        credentials=context.credentials,
+    )
+    attempt = _begin_execution_attempt(session, action, context.account)
     _mark_executing(action)
     session.commit()
     _mark_gateway_call_started(session, attempt)
-    result = gateway.send_message_to_target(account_id, target_peer, content, "channel", None, session_ciphertext, credentials)
-    _apply_send_result(action, account, result.ok, result.remote_message_id or "", result.failure_type or "", result.detail or "", attempt=attempt)
+    result = gateway.send_message_to_target(
+        gateway_request.account_id,
+        gateway_request.target_peer,
+        gateway_request.content,
+        "channel",
+        None,
+        gateway_request.session_ciphertext,
+        gateway_request.credentials,
+    )
+    _apply_send_result(
+        action,
+        context.account,
+        result.ok,
+        result.remote_message_id or "",
+        result.failure_type or "",
+        result.detail or "",
+        attempt=attempt,
+    )
+    return True
+
+
+def _group_send_preconditions_pass(
+    session: Session,
+    action: Action,
+    context: GroupSendGatewayContext,
+) -> bool:
+    prompt_context = PreSendRequiredChannelContext(
+        session,
+        action,
+        context.account,
+        context.credentials,
+        context.group,
+        context.link,
+        context.payload,
+    )
+    if _recover_pre_send_required_channel_prompt(prompt_context):
+        return False
+    if not _group_send_content_allowed(session, action, context):
+        return False
+    if _context_expired(session, context.payload):
+        _skip_context_expired_cycle(session, action, context.payload)
+        _skip(action, "context_expired", "上下文已过期，跳过本轮剩余发言")
+        return False
+    if not _group_ai_account_online_ready(session, action, context.account, context.payload):
+        _fail_offline_group_send(session, action, context.payload)
+        return False
+    return _group_ai_message_memory_sendable(session, action, context.payload)
+
+
+def _group_send_content_allowed(
+    session: Session,
+    action: Action,
+    context: GroupSendGatewayContext,
+) -> bool:
+    failure_type, failure_detail = validate_group_send_policy(
+        session,
+        tenant_id=action.tenant_id,
+        group=context.group,
+        content=context.content,
+        review_approved=context.payload.review_approved,
+    )
+    if failure_type:
+        _fail_group_ai_send_before_gateway(
+            session,
+            action,
+            context.payload,
+            failure_type,
+            failure_detail or failure_type,
+            auto_check="拦截",
+            validation_stage="content_policy",
+        )
+        return False
+    filtered = filter_outbound_content(
+        session,
+        tenant_id=action.tenant_id,
+        group=context.group,
+        content=context.content,
+    )
+    if filtered.ok:
+        return True
+    _fail_group_ai_send_before_gateway(
+        session,
+        action,
+        context.payload,
+        FailureType.CONTENT_REJECTED.value,
+        filtered.reason,
+        auto_check="拦截",
+        validation_stage="content_policy",
+    )
+    return False
+
+
+def _fail_offline_group_send(
+    session: Session,
+    action: Action,
+    payload: SendMessagePayload,
+) -> None:
+    _fail_with_policy(
+        action,
+        FailureType.ACCOUNT_UNAVAILABLE.value,
+        "账号在线状态不可用，等待账号恢复在线后继续执行",
+        auto_check="拦截",
+        validation_stage="account_online",
+    )
+    _mark_ai_message_memory_result(
+        session,
+        payload,
+        status="account_offline",
+        action_id=action.id,
+        result={
+            "error_code": FailureType.ACCOUNT_UNAVAILABLE.value,
+            "validation_stage": "account_online",
+        },
+    )
+
+
+def _send_group_message_via_gateway(
+    session: Session,
+    action: Action,
+    context: GroupSendGatewayContext,
+) -> bool:
+    gateway_request = GroupGatewayRequest(
+        account_id=context.account.id,
+        group_id=context.group.id,
+        content=context.content,
+        segments=_outbound_segments(context.payload),
+        session_ciphertext=context.account.session_ciphertext,
+        group_peer=context.group.tg_peer_id,
+        credentials=context.credentials,
+        reply_to_message_id=context.payload.reply_to_message_id,
+    )
+    attempt = _begin_execution_attempt(session, action, context.account)
+    _mark_executing(action)
+    session.commit()
+    _mark_gateway_call_started(session, attempt)
+    send_kwargs = (
+        {"reply_to_message_id": gateway_request.reply_to_message_id}
+        if gateway_request.reply_to_message_id
+        else {}
+    )
+    result = gateway.send_message(
+        gateway_request.account_id,
+        gateway_request.group_id,
+        gateway_request.content,
+        gateway_request.segments,
+        gateway_request.session_ciphertext,
+        gateway_request.group_peer,
+        gateway_request.credentials,
+        **send_kwargs,
+    )
+    if _recover_send_message_required_channel(
+        session,
+        action,
+        context.account,
+        context.credentials,
+        context.group,
+        context.payload,
+        result,
+        attempt,
+    ):
+        return True
+    _finalize_group_send(session, action, context, result=result, attempt=attempt)
+    return True
+
+
+def _finalize_group_send(
+    session: Session,
+    action: Action,
+    context: GroupSendGatewayContext,
+    *,
+    result,
+    attempt: ExecutionAttempt,
+) -> None:
+    _apply_send_result(
+        action,
+        context.account,
+        result.ok,
+        result.remote_message_id or "",
+        result.failure_type or "",
+        result.detail or "",
+        attempt=attempt,
+    )
+    _mark_ai_message_memory_result(
+        session,
+        context.payload,
+        status="success" if result.ok else "failed",
+        action_id=action.id,
+        sent_at=_now() if result.ok else None,
+        result=dict(action.result or {}),
+    )
+    if result.ok:
+        _update_group_ai_stance_memory(
+            session,
+            action,
+            context.account,
+            context.payload,
+            result.remote_message_id or "",
+        )
+        context.link.last_sent_at = _now()
+
+
+def _handle_ai_generation_failure(
+    session: Session,
+    action: Action,
+    context: AiGenerationFailureContext,
+) -> bool:
+    if isinstance(context.error, _ai_generation_dispatch.GenerationAttemptStale):
+        return True
+    if action.status == "failed":
+        return True
+    current_payload = action.payload if isinstance(action.payload, dict) else {}
+    if current_payload.get("ai_generation_status") == "ai_result_persist_unknown":
+        return True
+    _fail_group_ai_send_before_gateway(
+        session,
+        action,
+        context.payload,
+        FailureType.UNKNOWN.value,
+        str(context.error) or AI_GENERATION_UNAVAILABLE_MESSAGE,
+        auto_check="失败",
+        validation_stage="ai_generation",
+    )
     return True
 
 

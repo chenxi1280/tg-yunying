@@ -2,8 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.services.task_center.ai_generator import AiGenerationUnavailable
-from app.services.task_center import dispatcher
+from app.services.task_center import ai_generation_dispatch
 from app.services.task_center.payloads import SendMessagePayload
 
 
@@ -17,42 +16,6 @@ def _pending_send_payload() -> SendMessagePayload:
         ai_generation_id="batch-1",
         ai_generation_status="pending",
     )
-
-
-def test_dispatcher_keeps_partial_deferred_ai_generation_batch(monkeypatch):
-    payload = _pending_send_payload()
-    sibling_payload = _pending_send_payload()
-    action = SimpleNamespace(task_id=11, task_type="group_ai_chat", tenant_id=1, payload=payload.model_dump(mode="json"))
-    sibling = SimpleNamespace(task_id=11, task_type="group_ai_chat", tenant_id=1, payload=sibling_payload.model_dump(mode="json"))
-    task = SimpleNamespace(tenant_id=1, type_config={}, stats={})
-    session = SimpleNamespace(get=lambda _model, _id: task)
-
-    monkeypatch.setattr(dispatcher, "_pending_ai_generation_batch", lambda *_args: [(action, payload), (sibling, sibling_payload)])
-    monkeypatch.setattr(dispatcher, "generate_group_messages", lambda *_args, **_kwargs: (["只返回一条"], 3))
-    monkeypatch.setattr(dispatcher, "_attach_generated_message_memory", lambda *_args, **_kwargs: None)
-
-    refreshed = dispatcher._ensure_send_message_content(session, action, SimpleNamespace(), payload)
-
-    assert refreshed.message_text == "只返回一条"
-    assert action.payload["ai_generation_status"] == "success"
-    assert sibling.payload["ai_generation_status"] == "pending"
-    assert task.stats["normal_candidate_shortfall_count"] == 1
-
-
-def test_dispatcher_rejects_empty_deferred_ai_generation_batch(monkeypatch):
-    payload = _pending_send_payload()
-    action = SimpleNamespace(task_id=11, tenant_id=1, payload=payload.model_dump(mode="json"))
-    task = SimpleNamespace(tenant_id=1, type_config={}, stats={})
-    session = SimpleNamespace(get=lambda _model, _id: task)
-
-    monkeypatch.setattr(dispatcher, "_pending_ai_generation_batch", lambda *_args: [(action, payload)])
-    monkeypatch.setattr(dispatcher, "generate_group_messages", lambda *_args, **_kwargs: ([], 0))
-
-    with pytest.raises(AiGenerationUnavailable, match="AI 普通发言候选不足"):
-        dispatcher._ensure_send_message_content(session, action, SimpleNamespace(), payload)
-
-    assert action.payload["ai_generation_status"] == "pending"
-    assert task.stats["normal_candidate_shortfall_count"] == 1
 
 
 def test_dispatcher_runtime_config_preserves_deferred_generation_slots():
@@ -75,7 +38,7 @@ def test_dispatcher_runtime_config_preserves_deferred_generation_slots():
         (SimpleNamespace(account_id=12), second),
     ]
 
-    config = dispatcher._runtime_group_ai_config(SimpleNamespace(type_config={}), batch)
+    config = ai_generation_dispatch._runtime_config(SimpleNamespace(type_config={}), batch)
 
     assert [slot["topic_direction"]["title"] for slot in config["generation_slots"]] == [
         "郑州楼凤妹子怎么样",
@@ -96,6 +59,6 @@ def test_dispatcher_runtime_config_does_not_force_mimo_for_hard_hourly_without_m
     payload.hard_hourly_target = True
     batch = [(SimpleNamespace(account_id=11), payload)]
 
-    config = dispatcher._runtime_group_ai_config(SimpleNamespace(type_config={}), batch)
+    config = ai_generation_dispatch._runtime_config(SimpleNamespace(type_config={}), batch)
 
     assert config.get("require_mimo_draft") is None

@@ -37,6 +37,7 @@ from app.schemas.task_center import TaskRetryRequest
 from app.services._common import _now
 from app.services.account_capacity import AccountCapacityCache, available_accounts_by_capacity
 from app.services.task_center import dispatcher
+from app.services.task_center.ai_generation_dependencies import GenerationDependencies
 from app.services.task_center import payloads as task_payloads
 from app.services.task_center.ai_message_memory import mark_group_ai_message_result, reserve_group_ai_message
 from app.services.task_center.executors import group_ai_chat
@@ -480,7 +481,12 @@ def test_dispatch_global_policy_excludes_current_executing_hard_hourly_action(mo
 
 
 @pytest.mark.no_postgres
-def test_dispatch_hard_hourly_generates_pending_ai_message_before_send(monkeypatch):
+@pytest.mark.parametrize(("claim_limit", "expected_generation_count"), [(1, 1), (2, 2)])
+def test_dispatch_hard_hourly_generates_pending_ai_message_before_send(
+    monkeypatch,
+    claim_limit: int,
+    expected_generation_count: int,
+):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = _now()
@@ -490,9 +496,12 @@ def test_dispatch_hard_hourly_generates_pending_ai_message_before_send(monkeypat
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(TgAccount(id=11, tenant_id=1, display_name="账号A", phone_masked="+861***0011", status="在线", session_ciphertext="session-a"))
+        session.add(TgAccount(id=12, tenant_id=1, display_name="账号B", phone_masked="+861***0012", status="在线", session_ciphertext="session-b"))
         session.add(TgAccountOnlineState(tenant_id=1, account_id=11, desired_online=True, online_status="online", last_seen_at=now_value, stale_after_at=now_value + timedelta(minutes=10)))
+        session.add(TgAccountOnlineState(tenant_id=1, account_id=12, desired_online=True, online_status="online", last_seen_at=now_value, stale_after_at=now_value + timedelta(minutes=10)))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True, require_review=False))
         session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True, permission_label="可发言"))
+        session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=12, can_send=True, permission_label="可发言"))
         session.add(
             Task(
                 id="task-hard-hourly-ai",
@@ -523,8 +532,9 @@ def test_dispatch_hard_hourly_generates_pending_ai_message_before_send(monkeypat
                     "ai_generation_status": "pending",
                     "ai_generation_id": "cycle-hard-hourly-ai",
                     "cycle_id": "cycle-hard-hourly-ai",
-                    "ai_generation_history": "真人: 今天怎么安排",
-                    "account_role": "活跃群友",
+                        "ai_generation_history": "真人: 今天怎么安排",
+                        "account_role": "活跃群友",
+                        "reply_to_message_id": None,
                 },
             )
         )
@@ -537,7 +547,7 @@ def test_dispatch_hard_hourly_generates_pending_ai_message_before_send(monkeypat
                 action_type="send_message",
                 account_id=12,
                 status="pending",
-                scheduled_at=now_value + timedelta(seconds=10),
+                scheduled_at=now_value if claim_limit == 2 else now_value + timedelta(seconds=10),
                 payload={
                     "group_id": 7,
                     "target_display": "运营群",
@@ -547,8 +557,9 @@ def test_dispatch_hard_hourly_generates_pending_ai_message_before_send(monkeypat
                     "ai_generation_status": "pending",
                     "ai_generation_id": "cycle-hard-hourly-ai",
                     "cycle_id": "cycle-hard-hourly-ai",
-                    "ai_generation_history": "真人: 今天怎么安排",
-                    "account_role": "追问群友",
+                        "ai_generation_history": "真人: 今天怎么安排",
+                        "account_role": "追问群友",
+                        "reply_to_message_id": None,
                 },
             )
         )
@@ -559,45 +570,74 @@ def test_dispatch_hard_hourly_generates_pending_ai_message_before_send(monkeypat
         def fake_generate(_session, _tenant_id, config, *, count, target_label, history):  # noqa: ANN001
             assert _session.in_transaction() is False
             generated.update({"model": config["ai_model"], "count": count, "target": target_label, "history": history, "personas": config["account_personas"]})
-            return ["今天先看看群公告", "第二条我也等等看"], 17
+            return ["今天先看看群公告", "第二条我也等等看"][:count], 17
 
         def fake_send_message(account_id, _group_pk, content, *_args, **_kwargs):  # noqa: ANN001
             sent.update({"account_id": account_id, "content": content})
             return SendResult(True, remote_message_id="tg-ai-generated")
 
-        monkeypatch.setattr(dispatcher, "generate_group_messages", fake_generate)
         monkeypatch.setattr(dispatcher.gateway, "send_message", fake_send_message)
+        dependencies = GenerationDependencies(
+            normal_generator=fake_generate,
+            reply_generator=lambda *_args, **_kwargs: pytest.fail("normal action must not use reply generator"),
+            reply_target_probe=lambda *_args, **_kwargs: pytest.fail("normal action must not probe reply target"),
+            reply_messages_fetcher=lambda *_args, **_kwargs: pytest.fail("normal action must not fetch reply messages"),
+        )
 
-        [claimed] = claim_actions(session, limit=1, worker_id="worker-test")
+        claimed = claim_actions(session, limit=claim_limit, worker_id="worker-test")
+        assert len(claimed) == expected_generation_count
+        assert len({row.claim_token for row in claimed}) == 1
+        if expected_generation_count == 2:
+            claimed_payload = task_payloads.SendMessagePayload.model_validate(claimed[0].payload or {})
+            generation_batch = dispatcher._ai_generation_dispatch._pending_generation_batch(
+                session,
+                claimed[0],
+                claimed_payload,
+            )
+            assert [row.id for row, _payload in generation_batch] == [
+                "action-hard-hourly-ai",
+                "action-hard-hourly-ai-sibling",
+            ], [
+                (row.id, row.status, row.claim_owner, row.claim_token, row.payload)
+                for row in session.scalars(select(Action).where(Action.task_id == "task-hard-hourly-ai"))
+            ]
 
-        assert dispatcher.dispatch_action(session, claimed) is True
+        assert dispatcher.dispatch_action(
+            session,
+            claimed[0],
+            generation_dependencies=dependencies,
+        ) is True
 
         action = session.get(Action, "action-hard-hourly-ai")
         sibling = session.get(Action, "action-hard-hourly-ai-sibling")
         assert generated == {
             "model": "mino-v2.5",
-            "count": 2,
+            "count": expected_generation_count,
             "target": "运营群",
             "history": "真人: 今天怎么安排",
-            "personas": {"11": "活跃群友", "12": "追问群友"},
+            "personas": {
+                "11": "活跃群友",
+                **({"12": "追问群友"} if expected_generation_count == 2 else {}),
+            },
         }
         assert sent == {"account_id": 11, "content": "今天先看看群公告"}
         assert action.payload["message_text"] == "今天先看看群公告"
-        assert sibling.payload["message_text"] == "第二条我也等等看"
-        assert action.payload["ai_generation_status"] == "success"
-        assert sibling.payload["ai_generation_status"] == "success"
+        assert sibling.payload["message_text"] == ("第二条我也等等看" if expected_generation_count == 2 else "")
+        assert action.payload["ai_generation_status"] == "ready"
+        assert sibling.payload["ai_generation_status"] == ("ready" if expected_generation_count == 2 else "pending")
         assert action.payload["ai_message_memory_id"]
-        assert sibling.payload["ai_message_memory_id"]
+        assert bool(sibling.payload.get("ai_message_memory_id")) is (expected_generation_count == 2)
         assert action.payload["ai_generation_tokens"] == 17
         assert action.status == "success"
         action_memory = session.get(AiGroupMessageMemory, action.payload["ai_message_memory_id"])
-        sibling_memory = session.get(AiGroupMessageMemory, sibling.payload["ai_message_memory_id"])
         assert action_memory is not None
-        assert sibling_memory is not None
         assert action_memory.action_id == action.id
         assert action_memory.status == "success"
-        assert sibling_memory.action_id == sibling.id
-        assert sibling_memory.status == "reserved"
+        if expected_generation_count == 2:
+            sibling_memory = session.get(AiGroupMessageMemory, sibling.payload["ai_message_memory_id"])
+            assert sibling_memory is not None
+            assert sibling_memory.action_id == sibling.id
+            assert sibling_memory.status == "reserved"
 
 
 @pytest.mark.no_postgres
@@ -615,34 +655,62 @@ def test_dispatch_hard_hourly_pending_ai_duplicate_is_blocked(monkeypatch):
         task = Task(id="task-hard-hourly-ai-dup", tenant_id=1, name="硬目标重复", type="group_ai_chat", status="running", priority=1, type_config={"target_group_id": 7, "topic_directions": [{"title": "日常活跃", "weight": 1}]})
         session.add(task)
         reserve_group_ai_message(session, tenant_id=1, group_id=7, task_id="old-ai", account_id=99, raw_text="今天先看看群公告", now=now_value - timedelta(minutes=1))
-        session.add(
-            Action(
-                id="action-hard-hourly-ai-dup",
-                tenant_id=1,
-                task_id=task.id,
-                task_type="group_ai_chat",
-                action_type="send_message",
-                account_id=11,
-                status="pending",
-                scheduled_at=now_value,
-                payload={"group_id": 7, "target_display": "运营群", "message_text": "", "review_approved": True, "hard_hourly_target": True, "ai_generation_status": "pending", "ai_generation_id": "cycle-hard-hourly-ai-dup", "cycle_id": "cycle-hard-hourly-ai-dup", "ai_generation_history": "真人: 今天怎么安排"},
-            )
+        action = Action(
+            id="action-hard-hourly-ai-dup",
+            tenant_id=1,
+            task_id=task.id,
+            task_type="group_ai_chat",
+            action_type="send_message",
+            account_id=11,
+            status="pending",
+            scheduled_at=now_value,
+            payload={"group_id": 7, "target_display": "运营群", "message_text": "", "review_approved": True, "hard_hourly_target": True, "ai_generation_status": "pending", "ai_generation_id": "cycle-hard-hourly-ai-dup", "cycle_id": "cycle-hard-hourly-ai-dup", "ai_generation_history": "真人: 今天怎么安排"},
         )
+        session.add(action)
+        session.flush()
+        coverage = TaskAccountDailyCoverage(
+            id="coverage-hard-hourly-ai-dup",
+            tenant_id=1,
+            task_id=task.id,
+            group_id=7,
+            account_id=11,
+            coverage_date=now_value.date(),
+            state="reserved",
+            reserved_action_id=action.id,
+            targeted_at=now_value,
+        )
+        session.add(coverage)
+        action.payload = {
+            **action.payload,
+            "coverage_ledger_id": coverage.id,
+            "account_coverage_mode": "all_accounts_daily",
+        }
         session.commit()
 
         monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
-        monkeypatch.setattr(dispatcher, "generate_group_messages", lambda *_args, **_kwargs: (["今天先看看群公告"], 9))
         monkeypatch.setattr(dispatcher.gateway, "send_message", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("duplicate must not call TG")))
+        dependencies = GenerationDependencies(
+            normal_generator=lambda *_args, **_kwargs: (["今天先看看群公告"], 9),
+            reply_generator=lambda *_args, **_kwargs: pytest.fail("normal action must not use reply generator"),
+            reply_target_probe=lambda *_args, **_kwargs: pytest.fail("normal action must not probe reply target"),
+            reply_messages_fetcher=lambda *_args, **_kwargs: pytest.fail("normal action must not fetch reply messages"),
+        )
 
         [claimed] = claim_actions(session, limit=1, worker_id="worker-test")
 
-        assert dispatcher.dispatch_action(session, claimed) is True
+        assert dispatcher.dispatch_action(
+            session,
+            claimed,
+            generation_dependencies=dependencies,
+        ) is True
 
         action = session.get(Action, "action-hard-hourly-ai-dup")
         assert action.status == "failed"
         assert action.result["error_code"] == "duplicate_message"
         assert action.result["validation_stage"] == "ai_message_memory"
         assert action.payload["quality_skip_reason"] == "duplicate_message"
+        assert coverage.state == "ready"
+        assert coverage.reserved_action_id is None
 
 
 @pytest.mark.no_postgres
@@ -1310,7 +1378,7 @@ def test_daily_coverage_deferred_generation_refreshes_latest_human_context():
         session.commit()
 
         payload = task_payloads.SendMessagePayload.model_validate(action.payload or {})
-        refreshed = dispatcher._refresh_deferred_generation_context(
+        refreshed = dispatcher._ai_generation_dispatch._refresh_normal_context(
             session,
             session.get(Task, action.task_id),
             [(action, payload)],
@@ -1346,8 +1414,20 @@ def test_daily_coverage_deferred_generation_batches_only_near_term_siblings():
         session.commit()
 
         current = session.get(Action, "action-daily-current")
+        session.get(Action, "action-daily-near").account_id = 12
+        session.get(Action, "action-daily-far").account_id = 13
+        for row in session.query(Action).filter(Action.id.in_(["action-daily-current", "action-daily-near", "action-daily-far"])):
+            row.status = "executing"
+            row.claim_owner = "worker-a"
+            row.claim_token = "claim-daily"
+            row.payload = {
+                **row.payload,
+                "ai_generation_claim_owner": "worker-a",
+                "ai_generation_claim_token": "claim-daily",
+            }
+        session.commit()
         current_payload = task_payloads.SendMessagePayload.model_validate(current.payload or {})
-        batch = dispatcher._pending_ai_generation_batch(session, current, current_payload)
+        batch = dispatcher._ai_generation_dispatch._pending_generation_batch(session, current, current_payload)
 
         assert [action.id for action, _payload in batch] == [
             "action-daily-current",
@@ -2155,13 +2235,52 @@ def test_pending_ai_generation_batch_is_scoped_to_generation_cycle():
                     scheduled_at=now_value + timedelta(seconds=1),
                     payload={**current_payload, "turn_index": 2},
                 ),
+                Action(
+                    id="action-reply-sibling",
+                    tenant_id=1,
+                    task_id="task-ai-batch",
+                    task_type="group_ai_chat",
+                    action_type="send_message",
+                    account_id=14,
+                    status="pending",
+                    scheduled_at=now_value,
+                    payload={**current_payload, "reply_to_message_id": 9001},
+                ),
+                Action(
+                    id="action-other-claim",
+                    tenant_id=1,
+                    task_id="task-ai-batch",
+                    task_type="group_ai_chat",
+                    action_type="send_message",
+                    account_id=15,
+                    status="pending",
+                    scheduled_at=now_value,
+                    payload=current_payload,
+                ),
             ]
         )
         session.commit()
 
         action = session.get(Action, "action-current")
+        for row in session.query(Action).filter(Action.id.in_(["action-current", "action-old-cycle", "action-new-sibling", "action-reply-sibling"])):
+            row.status = "executing"
+            row.claim_owner = "worker-a"
+            row.claim_token = "claim-cycle"
+            row.payload = {
+                **row.payload,
+                "ai_generation_claim_owner": "worker-a",
+                "ai_generation_claim_token": "claim-cycle",
+            }
+        other_claim = session.get(Action, "action-other-claim")
+        other_claim.status = "executing"
+        other_claim.payload = {
+            **other_claim.payload,
+            "ai_generation_claim_owner": "worker-a",
+            "ai_generation_claim_token": "claim-other-cycle",
+        }
+        session.commit()
         payload = dispatcher.validate_action_payload(action.action_type, action.payload or {})
-        batch = dispatcher._pending_ai_generation_batch(session, action, payload)
+        batch = dispatcher._ai_generation_dispatch._pending_generation_batch(session, action, payload)
 
         assert [row.id for row, _payload in batch] == ["action-current", "action-new-sibling"]
 
@@ -4070,7 +4189,6 @@ def test_group_ai_build_plan_does_not_reconcile_missing_online_state(monkeypatch
     Base.metadata.create_all(engine)
     now_value = _now()
     monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
-    monkeypatch.setattr(group_ai_chat, "should_collect_listener", lambda *_args, **_kwargs: False)
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
@@ -4127,7 +4245,6 @@ def test_group_ai_build_plan_writes_topic_teacher_and_burst_payload(monkeypatch)
     Base.metadata.create_all(engine)
     now_value = _now()
     monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
-    monkeypatch.setattr(group_ai_chat, "should_collect_listener", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(group_ai_chat.random, "random", lambda: 0.0)
     monkeypatch.setattr(group_ai_chat.random, "randint", lambda _start, _end: 2)
 
@@ -4223,14 +4340,8 @@ def test_group_ai_build_plan_writes_topic_teacher_and_burst_payload(monkeypatch)
 
         assert group_ai_chat.build_plan(session, task) == 4
         actions = list(session.scalars(select(Action).where(Action.task_id == task.id).order_by(Action.scheduled_at, Action.created_at)))
-        memory_by_id = {
-            row.id: row
-            for row in session.scalars(select(AiGroupMessageMemory).where(AiGroupMessageMemory.task_id == task.id))
-        }
 
-    assert generated_configs[0]["active_topic_direction"]["title"] == "升学规划"
-    assert generated_configs[0]["active_teacher_target"]["name"] == "王老师"
-    assert [slot["account_id"] for slot in generated_configs[0]["generation_slots"][:2]] == [11, 11]
+    assert generated_configs == []
     assert [action.account_id for action in actions[:2]] == [11, 11]
     assert actions[0].payload["burst_id"] == actions[1].payload["burst_id"]
     assert actions[0].payload["burst_index"] == 1
@@ -4246,15 +4357,9 @@ def test_group_ai_build_plan_writes_topic_teacher_and_burst_payload(monkeypatch)
     assert actions[0].payload["profile_version"] == 3
     assert actions[0].payload["profile_match_score"] == 100
     assert actions[0].payload["profile_match_reason"] == "群友偏短句追问，少总结"
-    assert actions[0].payload["ai_message_memory_id"]
-    assert actions[0].payload["human_quality_decision"] == "accepted"
-    memory = memory_by_id.get(actions[0].payload["ai_message_memory_id"])
-    assert memory is not None
-    assert memory.action_id == actions[0].id
-    assert memory.status == "reserved"
-    assert memory.profile_version == 3
-    assert memory.profile_match_score == 100
-    assert memory.profile_match_reason == "群友偏短句追问，少总结"
+    assert all(action.payload["ai_generation_status"] == "pending" for action in actions)
+    assert all(not action.payload["message_text"] for action in actions)
+    assert all(not action.payload["ai_message_memory_id"] for action in actions)
 
 
 @pytest.mark.no_postgres
@@ -4323,12 +4428,11 @@ def test_group_ai_expires_open_actions_without_voice_profile_before_replan():
 
 
 @pytest.mark.no_postgres
-def test_group_ai_build_plan_sends_fixed_slots_to_ai_and_keeps_slot_accounts(monkeypatch):
+def test_group_ai_build_plan_keeps_fixed_pending_slot_accounts(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = _now()
     monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
-    monkeypatch.setattr(group_ai_chat, "should_collect_listener", lambda *_args, **_kwargs: False)
 
     generated_configs: list[dict] = []
 
@@ -4383,23 +4487,20 @@ def test_group_ai_build_plan_sends_fixed_slots_to_ai_and_keeps_slot_accounts(mon
         assert group_ai_chat.build_plan(session, task) == 2
         actions = list(session.scalars(select(Action).where(Action.task_id == task.id).order_by(Action.payload["turn_index"])))
 
-    slots = generated_configs[0]["generation_slots"]
-    assert [slot["slot_id"] for slot in slots] == ["task-slot-first:cycle:1:turn:1", "task-slot-first:cycle:1:turn:2"]
-    assert [slot["account_id"] for slot in slots] == [11, 12]
-    assert [slot["act_type"] for slot in slots] == ["short_react", "detail_follow"]
+    assert generated_configs == []
     assert [action.account_id for action in actions] == [11, 12]
-    assert [action.payload["slot_id"] for action in actions] == [slot["slot_id"] for slot in slots]
-    assert [action.payload["act_type"] for action in actions] == [slot["act_type"] for slot in slots]
+    assert [action.payload["slot_id"] for action in actions] == ["task-slot-first:cycle:1:turn:1", "task-slot-first:cycle:1:turn:2"]
+    assert [action.payload["act_type"] for action in actions] == ["short_react", "detail_follow"]
     assert [action.payload["generation_source"] for action in actions] == ["bootstrap", "bootstrap"]
+    assert [action.payload["ai_generation_status"] for action in actions] == ["pending", "pending"]
 
 
 @pytest.mark.no_postgres
-def test_group_ai_quality_retry_only_requests_failed_slots(monkeypatch):
+def test_group_ai_planner_defers_quality_retry_to_dispatcher(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = _now()
     monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
-    monkeypatch.setattr(group_ai_chat, "should_collect_listener", lambda *_args, **_kwargs: False)
 
     generated_configs: list[dict] = []
     rounds = iter([
@@ -4473,12 +4574,11 @@ def test_group_ai_quality_retry_only_requests_failed_slots(monkeypatch):
         assert group_ai_chat.build_plan(session, task) == 2
         actions = list(session.scalars(select(Action).where(Action.task_id == task.id, Action.status == "pending").order_by(Action.payload["turn_index"])))
 
-    assert len(generated_configs) == 2
-    assert [slot["slot_id"] for slot in generated_configs[1]["generation_slots"]] == ["task-slot-retry:cycle:1:turn:2"]
-    assert [slot["account_id"] for slot in generated_configs[1]["generation_slots"]] == [12]
+    assert generated_configs == []
     assert [action.account_id for action in actions] == [11, 12]
     assert [action.payload["slot_id"] for action in actions] == ["task-slot-retry:cycle:1:turn:1", "task-slot-retry:cycle:1:turn:2"]
-    assert actions[1].payload["rewrite_attempts"] == 1
+    assert [action.payload["rewrite_attempts"] for action in actions] == [0, 0]
+    assert [action.payload["ai_generation_status"] for action in actions] == ["pending", "pending"]
 
 
 @pytest.mark.no_postgres
@@ -4487,7 +4587,6 @@ def test_group_ai_build_plan_blocks_missing_voice_profile(monkeypatch):
     Base.metadata.create_all(engine)
     now_value = _now()
     monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
-    monkeypatch.setattr(group_ai_chat, "should_collect_listener", lambda *_args, **_kwargs: False)
 
     def fake_quality_items(_session, _task, _config, **_kwargs):  # noqa: ANN001
         return (
@@ -4537,12 +4636,11 @@ def test_group_ai_build_plan_blocks_missing_voice_profile(monkeypatch):
 
 
 @pytest.mark.no_postgres
-def test_group_ai_build_plan_blocks_voice_profile_mismatch(monkeypatch):
+def test_group_ai_planner_defers_voice_profile_match_to_dispatcher(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = _now()
     monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
-    monkeypatch.setattr(group_ai_chat, "should_collect_listener", lambda *_args, **_kwargs: False)
 
     def fake_quality_items(_session, _task, _config, **_kwargs):  # noqa: ANN001
         return (
@@ -4592,22 +4690,22 @@ def test_group_ai_build_plan_blocks_voice_profile_mismatch(monkeypatch):
         session.add(task)
         session.commit()
 
-        assert group_ai_chat.build_plan(session, task) == 0
+        assert group_ai_chat.build_plan(session, task) == 1
         actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
         session.refresh(task)
 
-    assert actions == []
-    assert task.stats["quality_rejection_counts"]["voice_profile_mismatch"] == 1
-    assert task.stats["quality_rejection_samples"][0]["content"] == "😀😀"
+    assert len(actions) == 1
+    assert actions[0].payload["ai_generation_status"] == "pending"
+    assert actions[0].payload["message_text"] == ""
+    assert "quality_rejection_counts" not in task.stats
 
 
 @pytest.mark.no_postgres
-def test_group_ai_build_plan_blocks_stance_conflict(monkeypatch):
+def test_group_ai_planner_defers_stance_check_to_dispatcher(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = _now()
     monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
-    monkeypatch.setattr(group_ai_chat, "should_collect_listener", lambda *_args, **_kwargs: False)
 
     def fake_quality_items(_session, _task, _config, **_kwargs):  # noqa: ANN001
         return (
@@ -4655,13 +4753,14 @@ def test_group_ai_build_plan_blocks_stance_conflict(monkeypatch):
         session.add(task)
         session.commit()
 
-        assert group_ai_chat.build_plan(session, task) == 0
+        assert group_ai_chat.build_plan(session, task) == 1
         actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
         session.refresh(task)
 
-    assert actions == []
-    assert task.stats["quality_rejection_counts"]["stance_conflict"] == 1
-    assert task.stats["quality_rejection_samples"][0]["detail"] == "观望立场不能突然强肯定"
+    assert len(actions) == 1
+    assert actions[0].payload["ai_generation_status"] == "pending"
+    assert actions[0].payload["stance_summary"] == "刚围绕王老师表达过观望，别突然强夸"
+    assert "quality_rejection_counts" not in task.stats
 
 
 @pytest.mark.no_postgres
@@ -4670,7 +4769,6 @@ def test_group_ai_build_plan_deprioritizes_recent_topic_and_teacher(monkeypatch)
     Base.metadata.create_all(engine)
     now_value = _now()
     monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
-    monkeypatch.setattr(group_ai_chat, "should_collect_listener", lambda *_args, **_kwargs: False)
 
     generated_configs: list[dict] = []
 
@@ -4766,20 +4864,18 @@ def test_group_ai_build_plan_deprioritizes_recent_topic_and_teacher(monkeypatch)
         assert created == 1, f"last_error={task.last_error!r} stats={task.stats!r}"
         action = session.scalar(select(Action).where(Action.task_id == task.id, Action.id != "recent-topic-teacher"))
 
-    assert generated_configs[0]["active_topic_direction"]["title"] == "资料准备"
-    assert generated_configs[0]["active_teacher_target"]["name"] == "李老师"
+    assert generated_configs == []
     assert action is not None
     assert action.payload["topic_direction"]["title"] == "资料准备"
     assert action.payload["teacher_target"]["name"] == "李老师"
 
 
 @pytest.mark.no_postgres
-def test_group_ai_build_plan_records_memory_duplicate_as_quality_rejection(monkeypatch):
+def test_group_ai_planner_defers_memory_duplicate_check_to_dispatcher(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = _now()
     monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
-    monkeypatch.setattr(group_ai_chat, "should_collect_listener", lambda *_args, **_kwargs: False)
 
     def fake_quality_items(_session, _task, _config, **_kwargs):  # noqa: ANN001
         return (
@@ -4820,11 +4916,13 @@ def test_group_ai_build_plan_records_memory_duplicate_as_quality_rejection(monke
         mark_group_ai_message_result(session, memory.id, status="success", action_id="previous-action")
         session.commit()
 
-        assert group_ai_chat.build_plan(session, task) == 0
+        assert group_ai_chat.build_plan(session, task) == 1
+        action = session.scalar(select(Action).where(Action.task_id == task.id))
 
-    assert task.stats["quality_rejection_counts"]["duplicate_message"] == 1
-    assert task.stats["quality_rejection_samples"][0]["content"] == "花花老师身材服务真好"
-    assert task.stats["quality_rejection_samples"][0]["detail"] == "5m_exact"
+    assert action is not None
+    assert action.payload["ai_generation_status"] == "pending"
+    assert action.payload["message_text"] == ""
+    assert "quality_rejection_counts" not in task.stats
 
 
 @pytest.mark.no_postgres
@@ -4878,7 +4976,6 @@ def test_group_ai_context_bound_round_limits_far_future_actions(monkeypatch):
     now_value = datetime(2026, 6, 29, 4, 0)
     monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
     monkeypatch.setattr("app.services.account_online_state._now", lambda: now_value)
-    monkeypatch.setattr(group_ai_chat, "should_collect_listener", lambda *_args, **_kwargs: False)
     def fake_quality_items(_session, _task, _config, **kwargs):  # noqa: ANN001
         turn_count = int(kwargs["turn_count"])
         return (
@@ -5080,6 +5177,7 @@ def _add_ready_daily_coverage(
             account_id=account_id,
             coverage_date=coverage_date or date.today(),
             state="ready",
+            targeted_at=datetime.combine(coverage_date or date.today(), datetime.min.time()),
         )
         for account_id in account_ids
     ])
@@ -5091,7 +5189,6 @@ def test_group_ai_all_account_coverage_defers_plain_ai_without_emoji_fallback(mo
     Base.metadata.create_all(engine)
     now_value = datetime(2026, 7, 13, 23, 30)
     monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
-    monkeypatch.setattr(group_ai_chat, "should_collect_listener", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(group_ai_chat.random, "sample", lambda pool, k: list(pool)[:k])
     requested_counts: list[int] = []
 
@@ -5212,7 +5309,6 @@ def test_group_ai_all_account_coverage_defers_voice_profile_candidates(monkeypat
     Base.metadata.create_all(engine)
     now_value = datetime(2026, 7, 13, 23, 30)
     monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
-    monkeypatch.setattr(group_ai_chat, "should_collect_listener", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(group_ai_chat.random, "sample", lambda pool, k: list(pool)[:k])
     def fake_generate(_session, _tenant_id, _config, *, count, target_label, history):  # noqa: ANN001
         raise AssertionError("daily coverage plain text must be generated by dispatcher")

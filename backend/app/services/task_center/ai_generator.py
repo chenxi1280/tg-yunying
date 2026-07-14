@@ -61,6 +61,10 @@ class AiGenerationUnavailable(RuntimeError):
     pass
 
 
+def _metadata_text(value: object) -> str:
+    return "" if value is None else str(value).strip()
+
+
 class GeneratedContent(str):
     def __new__(
         cls,
@@ -76,18 +80,26 @@ class GeneratedContent(str):
         fallback_reason: str = "",
         provider_duration_ms: int = 0,
         generation_attempts: list[dict] | None = None,
+        sequence_index: int = 0,
+        reply_to_sequence_index: int | None = None,
     ):
         obj = str.__new__(cls, value)
-        obj.material_intent = str(material_intent or "").strip()
+        obj.material_intent = _metadata_text(material_intent)
         obj.allow_material = bool(allow_material)
-        obj.intent = str(intent or "").strip()
-        obj.mood = str(mood or "").strip()
-        obj.requested_model = str(requested_model or "").strip()
-        obj.actual_model = str(actual_model or "").strip()
-        obj.fallback_stage = str(fallback_stage or "").strip()
-        obj.fallback_reason = str(fallback_reason or "").strip()
+        obj.intent = _metadata_text(intent)
+        obj.mood = _metadata_text(mood)
+        obj.requested_model = _metadata_text(requested_model)
+        obj.actual_model = _metadata_text(actual_model)
+        obj.fallback_stage = _metadata_text(fallback_stage)
+        obj.fallback_reason = _metadata_text(fallback_reason)
         obj.provider_duration_ms = max(0, int(provider_duration_ms or 0))
         obj.generation_attempts = [dict(item) for item in (generation_attempts or [])]
+        obj.sequence_index = int(sequence_index or 0)
+        obj.reply_to_sequence_index = (
+            int(reply_to_sequence_index)
+            if reply_to_sequence_index is not None
+            else None
+        )
         return obj
 
 
@@ -361,6 +373,8 @@ def _generated_content_from_candidate(candidate) -> GeneratedContent:
         fallback_reason=getattr(candidate, "fallback_reason", ""),
         provider_duration_ms=getattr(candidate, "provider_duration_ms", 0),
         generation_attempts=getattr(candidate, "generation_attempts", []),
+        sequence_index=getattr(candidate, "sequence_index", 0),
+        reply_to_sequence_index=getattr(candidate, "reply_to_sequence_index", None),
     )
 
 
@@ -379,6 +393,8 @@ def _copy_generated_content_metadata(value: str, source: str) -> str:
         fallback_reason=getattr(source, "fallback_reason", ""),
         provider_duration_ms=getattr(source, "provider_duration_ms", 0),
         generation_attempts=getattr(source, "generation_attempts", []),
+        sequence_index=getattr(source, "sequence_index", 0),
+        reply_to_sequence_index=getattr(source, "reply_to_sequence_index", None),
     )
 
 
@@ -386,7 +402,7 @@ def _has_generated_content_metadata(value: str) -> bool:
     keys = (
         "material_intent", "allow_material", "intent", "mood", "requested_model",
         "actual_model", "fallback_stage", "fallback_reason", "provider_duration_ms",
-        "generation_attempts",
+        "generation_attempts", "sequence_index", "reply_to_sequence_index",
     )
     return any(hasattr(value, key) for key in keys)
 
@@ -863,7 +879,7 @@ def generate_group_messages(session: Session, tenant_id: int, config: dict, *, c
         session,
         tenant_id,
         config,
-        bundle,
+        bundle=bundle,
         count=count,
         purpose=GROUP_CHAT_PURPOSE,
     )
@@ -890,7 +906,7 @@ def generate_group_reply_messages(
         session,
         tenant_id,
         config,
-        bundle,
+        bundle=bundle,
         count=len(reply_targets),
         purpose=GROUP_CHAT_REPLY_PURPOSE,
     )
@@ -901,31 +917,66 @@ def _generate_group_prompt_contents(
     session: Session,
     tenant_id: int,
     config: dict,
-    bundle: GroupPromptBundle,
     *,
-    count: int,
-    purpose: str,
+    bundle: GroupPromptBundle,
+    count: int, purpose: str,
 ) -> tuple[list[str], int]:
     model_name = _group_chat_model(config)
     stage = str(config.get("_ai_fallback_stage") or "").strip()
     setting = session.scalar(select(TenantAiSetting).where(TenantAiSetting.tenant_id == tenant_id))
     if stage == "fallback_grok":
-        ai_enabled = bool(setting and setting.ai_enabled)
-        if config.get("_close_db_transaction_before_ai"):
-            session.commit()
-        return _generate_group_with_grok(config, bundle, count=count, purpose=purpose, ai_enabled=ai_enabled)
-    provider = _provider_for_exact_model(session, model_name) if stage and setting and setting.ai_enabled else None
-    if not stage:
-        provider, setting = _provider(
+        return _generate_grok_stage(
             session,
-            tenant_id,
-            config.get("ai_provider_id"),
-            model_name,
-            required_family=_group_chat_required_model_family(config),
+            config,
+            bundle,
+            count=count,
+            purpose=purpose,
+            setting=setting,
         )
-    if not provider or not setting:
-        required_family = _group_chat_required_model_family(config)
-        raise AiGenerationUnavailable(f"{AI_GENERATION_UNAVAILABLE_MESSAGE}：{_unavailable_reason(setting, required_family)}")
+    provider, setting = _resolve_group_generation_provider(
+        session,
+        tenant_id,
+        config,
+        setting=setting,
+        model_name=model_name,
+        stage=stage,
+    )
+    provider, setting = _require_group_generation_provider(provider, setting, config)
+    result, started_at = _request_group_provider_candidates(
+        session,
+        provider,
+        bundle,
+        config=config,
+        setting=setting,
+        count=count,
+        purpose=purpose,
+        model_name=model_name,
+        stage=stage,
+    )
+    return _group_provider_result(
+        result,
+        config,
+        provider,
+        model_name=model_name,
+        stage=stage,
+        started_at=started_at,
+        purpose=purpose,
+        count=count,
+    )
+
+
+def _request_group_provider_candidates(
+    session: Session,
+    provider: AiProvider,
+    bundle: GroupPromptBundle,
+    *,
+    config: dict,
+    setting: TenantAiSetting,
+    count: int,
+    purpose: str,
+    model_name: str,
+    stage: str,
+):
     started_at = time.monotonic()
     result = _generate_with_provider_candidates(
         session,
@@ -945,15 +996,93 @@ def _generate_group_prompt_contents(
         purpose=purpose,
         close_transaction_before_external=bool(config.get("_close_db_transaction_before_ai")),
     )
+    return result, started_at
+
+
+def _generate_grok_stage(
+    session: Session,
+    config: dict,
+    bundle: GroupPromptBundle,
+    *,
+    count: int,
+    purpose: str,
+    setting: TenantAiSetting | None,
+) -> tuple[list[str], int]:
+    ai_enabled = bool(setting and setting.ai_enabled)
+    if config.get("_close_db_transaction_before_ai"):
+        session.commit()
+    return _generate_group_with_grok(
+        config,
+        bundle,
+        count=count,
+        purpose=purpose,
+        ai_enabled=ai_enabled,
+    )
+
+
+def _require_group_generation_provider(
+    provider: AiProvider | None,
+    setting: TenantAiSetting | None,
+    config: dict,
+) -> tuple[AiProvider, TenantAiSetting]:
+    if provider and setting:
+        return provider, setting
+    required_family = _group_chat_required_model_family(config)
+    reason = _unavailable_reason(setting, required_family)
+    raise AiGenerationUnavailable(f"{AI_GENERATION_UNAVAILABLE_MESSAGE}：{reason}")
+
+
+def _group_provider_result(
+    result,
+    config: dict,
+    provider: AiProvider,
+    *,
+    model_name: str,
+    stage: str,
+    started_at: float,
+    purpose: str,
+    count: int,
+) -> tuple[list[str], int]:
     duration_ms = round((time.monotonic() - started_at) * 1000)
     contents = [
-        _content_with_provider_metadata(item, config, model_name, stage, duration_ms)
+        _content_with_provider_metadata(
+            item,
+            config,
+            model_name=model_name,
+            stage=stage,
+            duration_ms=duration_ms,
+        )
         for item in result.candidates
         if str(item.content or "").strip()
     ]
     cleaned = _clean_generated_contents(contents, purpose, count, mock_provider=_is_mock_provider(provider))
     usage = getattr(result, "usage", None)
     return cleaned, int(getattr(usage, "total_tokens", 0) or 0)
+
+
+def _resolve_group_generation_provider(
+    session: Session,
+    tenant_id: int,
+    config: dict,
+    *,
+    setting: TenantAiSetting | None,
+    model_name: str,
+    stage: str,
+) -> tuple[AiProvider | None, TenantAiSetting | None]:
+    if stage:
+        provider = (
+            _provider_for_exact_model(session, model_name)
+            if setting and setting.ai_enabled
+            else None
+        )
+        return provider, setting
+    return _provider(
+        session,
+        tenant_id,
+        config.get("ai_provider_id"),
+        model_name,
+        required_family=_group_chat_required_model_family(config),
+    )
 
 
 def _generate_group_with_grok(
@@ -977,7 +1106,13 @@ def _generate_group_with_grok(
         raise AiGenerationUnavailable(f"{AI_GENERATION_UNAVAILABLE_MESSAGE}：{exc}") from exc
     duration_ms = round((time.monotonic() - started_at) * 1000)
     contents = [
-        _content_with_provider_metadata(item, config, "grok-4.5", "fallback_grok", duration_ms)
+        _content_with_provider_metadata(
+            item,
+            config,
+            model_name="grok-4.5",
+            stage="fallback_grok",
+            duration_ms=duration_ms,
+        )
         for item in result.candidates
         if str(item.content or "").strip()
     ]
@@ -997,7 +1132,14 @@ def _group_chat_model(config: dict) -> str:
     return stage_models.get(stage, str(config.get("ai_model") or "").strip())
 
 
-def _content_with_provider_metadata(candidate, config: dict, model_name: str, stage: str, duration_ms: int) -> GeneratedContent:
+def _content_with_provider_metadata(
+    candidate,
+    config: dict,
+    *,
+    model_name: str,
+    stage: str,
+    duration_ms: int,
+) -> GeneratedContent:
     prior_attempts = [dict(item) for item in list(config.get("_ai_generation_attempts") or [])[-2:]]
     attempts = [*prior_attempts, {"stage": stage or "direct", "model": model_name, "outcome": "success", "duration_ms": duration_ms}]
     return GeneratedContent(
@@ -1012,6 +1154,8 @@ def _content_with_provider_metadata(candidate, config: dict, model_name: str, st
         fallback_reason="previous_stage_failed_or_rejected" if stage and stage != "primary_m3" else "",
         provider_duration_ms=duration_ms,
         generation_attempts=attempts,
+        sequence_index=getattr(candidate, "sequence_index", 0),
+        reply_to_sequence_index=getattr(candidate, "reply_to_sequence_index", None),
     )
 
 

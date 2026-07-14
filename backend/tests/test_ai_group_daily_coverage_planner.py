@@ -229,7 +229,7 @@ def test_ready_coverage_plan_batch_uses_stable_cursor_and_hard_limit(session: Se
     session.add_all([
         TaskAccountDailyCoverage(
             id=f"coverage-batch-{index:02d}", tenant_id=1, task_id=task.id, group_id=21,
-            account_id=100 + index, coverage_date=date.today(), target_count=1,
+            account_id=100 + index, coverage_date=targeted_at.date(), target_count=1,
             state="ready", targeted_at=targeted_at,
         )
         for index in range(25)
@@ -252,6 +252,7 @@ def test_coverage_plan_cursor_rolls_back_with_failed_batch(session: Session) -> 
     task, _group = _seed(session)
     row = session.get(TaskAccountDailyCoverage, "coverage-1")
     timestamp = datetime(2026, 7, 13, 9, 0)
+    row.coverage_date = timestamp.date()
     row.targeted_at = timestamp
     session.commit()
 

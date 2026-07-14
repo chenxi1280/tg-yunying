@@ -29,6 +29,7 @@ from app.services.messages import create_message_send_task, dispatch_task, filte
 from app.services.operations import filter_operation_targets, operation_target_detail, retry_operation_target_admission, sync_all_operation_targets, update_operation_target, update_operation_target_account_policy
 from app.services.verification import resolve_group_restriction_batch
 from app.services.task_center.executors.group_ai_chat import _choose_turn_account, _topic_relevant_context_rows, _voice_profile_match_decision, ai_cycle_mode, build_plan as build_group_ai_chat_plan
+from app.services.task_center.ai_generation_dependencies import GenerationDependencies
 from app.services.task_center.ai_generator import _humanize_group_chat_punctuation
 from app.services.operations_center import _is_stale_heartbeat, listener_summary, list_listener_errors, list_listener_events, list_rule_sets, operation_metrics_summary, relay_attribution_csv, relay_attribution_report, reset_listener_watermark, rule_center_summary, switch_listener_account, test_rules as preview_rules, update_rule_set_config
 from app.services.reports import _hourly_activity_24h, build_overview
@@ -112,6 +113,51 @@ def _ai_group_send_gate_payload(
         )
     )
     return {"slot_id": f"{task_id}:cycle:test:turn:{action_id}", "ai_message_memory_id": memory_id}
+
+
+def _dispatch_deferred_ai_actions(
+    session: Session,
+    monkeypatch,
+    *,
+    normal_generator,
+) -> list[Action]:
+    from app.services.task_center import dispatcher
+
+    actions = list(session.scalars(select(Action).where(
+        Action.task_type == "group_ai_chat",
+        Action.action_type == "send_message",
+        Action.status == "pending",
+    ).order_by(Action.scheduled_at.asc(), Action.created_at.asc())))
+    for action in actions:
+        action.status = "executing"
+        action.claim_owner = "operations-runtime-test"
+        action.claim_token = "operations-runtime-claim"
+        payload = dict(action.payload or {})
+        payload["ai_generation_claim_owner"] = action.claim_owner
+        payload["ai_generation_claim_token"] = action.claim_token
+        action.payload = payload
+    session.commit()
+    monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(dispatcher, "is_account_online_ready", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        dispatcher.gateway,
+        "send_message",
+        lambda *_args, **_kwargs: SendResult(True, remote_message_id="ai-runtime-ok"),
+    )
+    dependencies = GenerationDependencies(
+        normal_generator=normal_generator,
+        reply_generator=_forbidden_ai_reply_path,
+        reply_target_probe=_forbidden_ai_reply_path,
+        reply_messages_fetcher=_forbidden_ai_reply_path,
+    )
+    for action in actions:
+        if action.status == "executing":
+            dispatcher.dispatch_action(session, action, generation_dependencies=dependencies)
+    return actions
+
+
+def _forbidden_ai_reply_path(*_args, **_kwargs):
+    raise AssertionError("reply path not expected")
 
 
 @pytest.fixture(autouse=True)
@@ -3077,7 +3123,6 @@ def test_group_executors_resolve_operation_targets_without_normalized_group_ids(
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
 
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
     monkeypatch.setattr("app.services.task_center.executors.group_relay.should_collect_listener", lambda *_args, **_kwargs: False)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", lambda *_args, **_kwargs: (["运营目标直连发言"], 0))
     monkeypatch.setattr("app.services.task_center.executors.group_relay.rewrite_relay_content", lambda *_args, **_kwargs: ("转发内容", 0))
@@ -3941,7 +3986,6 @@ def test_group_ai_chat_round_uses_near_term_schedule_with_operation_curve(monkey
         return samples[:count], 0
 
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: round_start)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
 
     with Session(engine) as session:
@@ -4001,7 +4045,6 @@ def test_group_ai_chat_bootstraps_without_history(monkeypatch):
         captured["account_personas"] = _config.get("account_personas")
         return ["新人刚进群可以先打个招呼。", "今天群里有人想了解活动安排吗？", "我看大家可以先从常见问题聊起。"][:count], 0
 
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
 
     with Session(engine) as session:
@@ -4024,15 +4067,28 @@ def test_group_ai_chat_bootstraps_without_history(monkeypatch):
         )
         session.commit()
 
-        created = build_group_ai_chat_plan(session, session.get(Task, "ai-bootstrap"))
-        actions = list(session.scalars(select(Action).where(Action.task_id == "ai-bootstrap").order_by(Action.created_at.asc())))
+        planned = build_group_ai_chat_plan(session, session.get(Task, "ai-bootstrap"))
+        planned_actions = list(session.scalars(select(Action).where(Action.task_id == "ai-bootstrap")))
+        assert all(action.payload["message_text"] == "" for action in planned_actions)
+        assert all(action.payload["ai_generation_status"] == "pending" for action in planned_actions)
+        actions = _dispatch_deferred_ai_actions(
+            session,
+            monkeypatch,
+            normal_generator=fake_generate_group_messages,
+        )
+        created = sum(action.status == "success" for action in actions)
         task = session.get(Task, "ai-bootstrap")
         stats = dict(task.stats or {})
         last_error = task.last_error
 
+    assert planned == 3
     assert created == 3
     assert captured["count"] == 3
-    assert captured["account_personas"] == {"101": "欢迎新人账号", "102": "提问型账号"}
+    assert captured["account_personas"] == {
+        "101": "欢迎新人账号",
+        "102": "提问型账号",
+        "103": "提问型账号",
+    }
     assert "新人欢迎和日常问候" in str(captured["history"])
     assert stats["context_mode"] == "bootstrap"
     assert last_error == ""
@@ -4055,7 +4111,6 @@ def test_group_ai_chat_uses_recent_account_memory(monkeypatch):
         captured["topic_plan"] = _config.get("topic_plan")
         return ["延续自己之前说的报名时间。", "我从另一个角度补一句。"][:count], 0
 
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
 
     with Session(engine) as session:
@@ -4144,7 +4199,7 @@ def test_group_ai_chat_uses_recent_account_memory(monkeypatch):
         )
         session.commit()
 
-        created = build_group_ai_chat_plan(session, session.get(Task, "ai-memory"))
+        planned = build_group_ai_chat_plan(session, session.get(Task, "ai-memory"))
         new_actions = list(
             session.scalars(
                 select(Action)
@@ -4152,8 +4207,16 @@ def test_group_ai_chat_uses_recent_account_memory(monkeypatch):
                 .order_by(Action.created_at.asc())
             )
         )
+        assert all(action.payload["message_text"] == "" for action in new_actions)
+        dispatched = _dispatch_deferred_ai_actions(
+            session,
+            monkeypatch,
+            normal_generator=fake_generate_group_messages,
+        )
+        created = sum(action.status == "success" for action in dispatched)
         ai_cycles, _total = list_ai_cycles_page(session, 1, "ai-memory", page=1, page_size=20)
 
+    assert planned == 2
     assert created == 2
     assert "101" in captured["account_memories"]
     assert "报名时间" in captured["account_memories"]["101"]
@@ -4202,7 +4265,6 @@ def test_group_ai_chat_generation_uses_healthy_provider_and_model_override(monke
             usage=AiUsage(total_tokens=88, billable=True),
         )
 
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
     monkeypatch.setattr("app.services.task_center.ai_generator.ai_gateway.generate_drafts", fake_generate_drafts)
 
     with Session(engine) as session:
@@ -4256,10 +4318,21 @@ def test_group_ai_chat_generation_uses_healthy_provider_and_model_override(monke
         )
         session.commit()
 
-        created = build_group_ai_chat_plan(session, session.get(Task, "ai-provider-model"))
+        from app.services.task_center import ai_generator
+
+        planned = build_group_ai_chat_plan(session, session.get(Task, "ai-provider-model"))
         action = session.scalar(select(Action).where(Action.task_id == "ai-provider-model"))
+        assert action.payload["message_text"] == ""
+        assert action.payload["ai_generation_status"] == "pending"
+        dispatched = _dispatch_deferred_ai_actions(
+            session,
+            monkeypatch,
+            normal_generator=ai_generator.generate_group_messages,
+        )
+        created = sum(item.status == "success" for item in dispatched)
         task = session.get(Task, "ai-provider-model")
 
+    assert planned == 1
     assert created == 1
     assert captured["provider_name"] == "MiMo"
     assert captured["model_name"] == "mimo-v2.5"
@@ -4305,7 +4378,6 @@ def test_group_ai_chat_prompt_adds_mask_theme_anchor_guidance(monkeypatch):
             }
         }
 
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.voice_profile_prompt_details", fake_voice_profile_prompt_details)
     monkeypatch.setattr("app.services.task_center.ai_generator.ai_gateway.generate_drafts", fake_generate_drafts)
 
@@ -4342,14 +4414,25 @@ def test_group_ai_chat_prompt_adds_mask_theme_anchor_guidance(monkeypatch):
         )
         session.commit()
 
-        created = build_group_ai_chat_plan(session, session.get(Task, "ai-mask-anchor-prompt"))
-        action = session.scalar(select(Action).where(Action.task_id == "ai-mask-anchor-prompt"))
+        from app.services.task_center import ai_generator
 
+        planned = build_group_ai_chat_plan(session, session.get(Task, "ai-mask-anchor-prompt"))
+        action = session.scalar(select(Action).where(Action.task_id == "ai-mask-anchor-prompt"))
+        assert action.payload["ai_generation_status"] == "pending"
+        dispatched = _dispatch_deferred_ai_actions(
+            session,
+            monkeypatch,
+            normal_generator=ai_generator.generate_group_messages,
+        )
+        created = sum(item.status == "success" for item in dispatched)
+
+    assert planned == 1
     assert created == 0
     assert "Generate exactly" in str(captured["prompt"])
     assert "寻欢客" not in str(captured["prompt"])
     assert "价格" not in str(captured["prompt"])
-    assert action is None
+    assert action.status == "failed"
+    assert action.result["error_code"] == "ai_generation_failed"
 
 
 @pytest.mark.no_postgres
@@ -4375,7 +4458,6 @@ def test_group_ai_chat_repairs_mask_theme_candidate_before_voice_gate(monkeypatc
             }
         }
 
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.voice_profile_prompt_details", fake_voice_profile_prompt_details)
     monkeypatch.setattr("app.services.task_center.ai_generator.ai_gateway.generate_drafts", fake_generate_drafts)
 
@@ -4412,11 +4494,22 @@ def test_group_ai_chat_repairs_mask_theme_candidate_before_voice_gate(monkeypatc
         )
         session.commit()
 
-        created = build_group_ai_chat_plan(session, session.get(Task, "ai-mask-anchor-repair"))
-        action = session.scalar(select(Action).where(Action.task_id == "ai-mask-anchor-repair"))
-        task = session.get(Task, "ai-mask-anchor-repair")
+        from app.services.task_center import ai_generator
 
-    assert created == 1
+        planned = build_group_ai_chat_plan(session, session.get(Task, "ai-mask-anchor-repair"))
+        action = session.scalar(select(Action).where(Action.task_id == "ai-mask-anchor-repair"))
+        assert action.payload["ai_generation_status"] == "pending"
+        dispatched = _dispatch_deferred_ai_actions(
+            session,
+            monkeypatch,
+            normal_generator=ai_generator.generate_group_messages,
+        )
+        created = sum(item.status == "success" for item in dispatched)
+        task = session.get(Task, "ai-mask-anchor-repair")
+        refresh_task_stats(session, task, include_configured_accounts=False)
+
+    assert planned == 1
+    assert created == 1, action.result
     assert action is not None
     assert "价格" in action.payload["message_text"]
     assert task.stats["voice_profile_anchor_rewrite_count"] == 1
@@ -4433,7 +4526,6 @@ def test_group_ai_chat_keeps_partial_normal_candidates(monkeypatch):
             usage=AiUsage(total_tokens=44, billable=True),
         )
 
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
     monkeypatch.setattr("app.services.task_center.ai_generator.ai_gateway.generate_drafts", fake_generate_drafts)
 
     with Session(engine) as session:
@@ -4470,12 +4562,21 @@ def test_group_ai_chat_keeps_partial_normal_candidates(monkeypatch):
         )
         session.commit()
 
-        created = build_group_ai_chat_plan(session, session.get(Task, "ai-partial-normal"))
+        from app.services.task_center import ai_generator
+
+        planned = build_group_ai_chat_plan(session, session.get(Task, "ai-partial-normal"))
+        pending = list(session.scalars(select(Action).where(Action.task_id == "ai-partial-normal")))
+        assert all(action.payload["ai_generation_status"] == "pending" for action in pending)
+        _dispatch_deferred_ai_actions(
+            session,
+            monkeypatch,
+            normal_generator=ai_generator.generate_group_messages,
+        )
         actions = list(session.scalars(select(Action).where(Action.task_id == "ai-partial-normal")))
 
-    assert created == 2
-    assert any(action.payload["message_text"] == "这双高跟鞋确实好看" for action in actions)
-    assert sum(action.payload.get("fallback_stage") == "static_safe_fallback" for action in actions) == 1
+    assert planned == 2
+    assert all(action.status == "failed" for action in actions)
+    assert all(action.result["error_code"] == "ai_generation_output_count_mismatch" for action in actions)
 
 
 @pytest.mark.no_postgres
@@ -4493,7 +4594,6 @@ def test_group_ai_chat_rotates_mimo_provider_after_quota_exhausted(monkeypatch):
             usage=AiUsage(total_tokens=42, billable=True),
         )
 
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
     monkeypatch.setattr("app.services.task_center.ai_generator.ai_gateway.generate_drafts", fake_generate_drafts)
 
     with Session(engine) as session:
@@ -4584,7 +4684,6 @@ def test_group_ai_chat_invalid_slang_template_sets_visible_error(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
 
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(
         "app.services.task_center.ai_generator.ai_gateway.generate_drafts",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("invalid slang template must stop before AI call")),
@@ -4637,7 +4736,6 @@ def test_group_ai_chat_model_override_selects_matching_deepseek_provider(monkeyp
             usage=AiUsage(total_tokens=66, billable=True),
         )
 
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
     monkeypatch.setattr("app.services.task_center.ai_generator.ai_gateway.generate_drafts", fake_generate_drafts)
 
     with Session(engine) as session:
@@ -4722,7 +4820,6 @@ def test_group_ai_chat_model_override_selects_matching_minimax_provider(monkeypa
             usage=AiUsage(total_tokens=77, billable=True),
         )
 
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
     monkeypatch.setattr("app.services.task_center.ai_generator.ai_gateway.generate_drafts", fake_generate_drafts)
 
     with Session(engine) as session:
@@ -4792,7 +4889,6 @@ def test_group_ai_chat_without_ai_provider_does_not_create_actions(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
 
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
@@ -4843,7 +4939,6 @@ def test_group_ai_chat_filters_recursive_context_and_duplicate_ai_drafts(monkeyp
             usage=AiUsage(total_tokens=12),
         )
 
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
     monkeypatch.setattr("app.services.task_center.ai_generator.ai_gateway.generate_drafts", fake_generate_drafts)
 
     with Session(engine) as session:
@@ -4913,7 +5008,6 @@ def test_group_ai_chat_waits_when_no_new_real_context(monkeypatch):
         generated.append(history)
         return [f"这条真人消息可以接着问细节 {index}。" for index in range(count)], 0
 
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
 
     with Session(engine) as session:
@@ -4974,7 +5068,6 @@ def test_group_ai_chat_idle_continuation_waits_until_interval(monkeypatch):
 
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
     monkeypatch.setattr("app.services.account_online_state._now", lambda: now_value)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
     monkeypatch.setattr("app.services.account_online_state._now", lambda: now_value)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
 
@@ -5043,7 +5136,6 @@ def test_group_ai_chat_idle_continuation_generates_after_interval(monkeypatch):
 
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
     monkeypatch.setattr("app.services.account_online_state._now", lambda: now_value)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
 
     with Session(engine) as session:
@@ -5114,7 +5206,6 @@ def test_group_ai_chat_rotates_single_turn_accounts_between_cycles(monkeypatch):
 
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
     monkeypatch.setattr("app.services.account_online_state._now", lambda: now_value)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
 
     with Session(engine) as session:
@@ -5183,7 +5274,6 @@ def test_group_ai_chat_manual_round_spreads_messages_across_accounts(monkeypatch
         return messages[:count], 0
 
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
 
     with Session(engine) as session:
@@ -5227,7 +5317,6 @@ def test_group_ai_chat_blocks_unanchored_idle_experience_claims(monkeypatch):
         return ["走之前还确认了下 挺细心"], 0
 
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
 
     with Session(engine) as session:
@@ -5294,7 +5383,6 @@ def test_group_ai_chat_semantic_clusters_drop_repeated_experience_templates(monk
             "这个价格还是得自己问清楚",
         ][:count], 0
 
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
 
     with Session(engine) as session:
@@ -5361,7 +5449,6 @@ def test_group_ai_chat_dedupes_against_pending_planned_messages(monkeypatch):
 
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
     monkeypatch.setattr("app.services.account_online_state._now", lambda: now_value)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
 
     with Session(engine) as session:
@@ -5431,7 +5518,6 @@ def test_group_ai_chat_drops_repeated_fixed_shell_phrases(monkeypatch):
             "最近榜单更新挺快",
         ][:count], 0
 
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
 
     with Session(engine) as session:
@@ -5510,7 +5596,6 @@ def test_group_ai_chat_idle_continuation_can_be_disabled(monkeypatch):
         return ["只应该生成第一轮。"], 0
 
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
 
     with Session(engine) as session:

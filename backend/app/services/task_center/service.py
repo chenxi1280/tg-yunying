@@ -107,6 +107,7 @@ from .precheck import run_precheck_task_creation
 from .profile_batch_projection import delete_profile_batch_task, get_profile_batch_task_detail, is_profile_batch_task_id, list_profile_batch_tasks
 from app.services.task_runtime_stage import derive_task_runtime_stage
 from .metrics_runtime import drain_task_metrics
+from .ai_generation_recovery import recover_stale_pre_gateway_generation
 from .recovery_claims import (
     RecoveryClaim,
     claim_recovery_actions,
@@ -1903,6 +1904,8 @@ def _recover_claimed_stale_action(
     if not recovery_claim_owned(action, claim):
         session.rollback()
         return 0
+    if recovered is None and not gateway_started and recover_stale_pre_gateway_generation(action):
+        recovered = 1
     if recovered is None:
         _mark_stale_executing_action(action=action, task=task, latest_attempt=latest_attempt, stale_worker_ids=stale_worker_ids, now=now)
         recovered = 1
