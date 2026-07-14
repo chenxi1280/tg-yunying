@@ -2964,7 +2964,7 @@ def _auto_messages_per_round(config: dict, mode: str, has_context: bool, pacing_
 
 def _manual_messages_per_round(config: dict, mode: str) -> int:
     messages_per_round = int(config.get("messages_per_round") or 1)
-    if mode == "静默期":
+    if mode == "静默期" and not _all_accounts_daily_coverage(config):
         messages_per_round = min(messages_per_round, int(config.get("silent_messages_per_round") or 1))
     return max(1, messages_per_round)
 

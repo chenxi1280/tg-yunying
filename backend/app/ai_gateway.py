@@ -30,6 +30,7 @@ class AiDraftCandidate:
     intent: str = ""
     mood: str = ""
     suggested_account_id: int | None = None
+    slot_id: str = ""
     sequence_index: int = 0
     reply_to_sequence_index: int | None = None
 
@@ -107,10 +108,12 @@ def mock_candidates(
     persona_set: list[str],
     material_ids: list[int] | None = None,
     selected_account_ids: list[int] | None = None,
+    slot_ids: list[str] | None = None,
 ) -> list[AiDraftCandidate]:
     templates, include_suffix = _mock_templates_for_tone(tone)
     ids = material_ids or []
     account_ids = selected_account_ids or []
+    slots = slot_ids or []
     candidates: list[AiDraftCandidate] = []
     for index in range(count):
         material_id = ids[index % len(ids)] if ids else None
@@ -123,11 +126,17 @@ def mock_candidates(
                 risk_level="低",
                 material_id=material_id,
                 suggested_account_id=suggested_account_id,
+                slot_id=slots[index] if index < len(slots) else "",
                 sequence_index=index + 1,
                 reply_to_sequence_index=index if index else None,
             )
         )
     return candidates
+
+
+def _prompt_slot_ids(prompt: str, count: int) -> list[str]:
+    matches = re.findall(r'"slot_id"\s*:\s*"([^"]+)"', prompt)
+    return matches[:max(0, int(count or 0))]
 
 
 def _mock_templates_for_tone(tone: str) -> tuple[list[str], bool]:
@@ -210,7 +219,15 @@ class AiGateway:
     ) -> AiGenerationResult:
         if credentials.base_url.startswith("mock://"):
             return AiGenerationResult(
-                candidates=mock_candidates(count, topic, tone, persona_set, material_ids, selected_account_ids),
+                candidates=mock_candidates(
+                    count,
+                    topic,
+                    tone,
+                    persona_set,
+                    material_ids,
+                    selected_account_ids,
+                    _prompt_slot_ids(prompt, count),
+                ),
                 usage=AiUsage(),
             )
         if credentials.provider_type != "openai_compatible":
@@ -554,6 +571,7 @@ class AiGateway:
                     intent=str(item.get("intent") or ""),
                     mood=str(item.get("mood") or ""),
                     suggested_account_id=item.get("suggested_account_id") if isinstance(item.get("suggested_account_id"), int) else None,
+                    slot_id=str(item.get("slot_id") or ""),
                     sequence_index=item.get("sequence_index") if isinstance(item.get("sequence_index"), int) else index + 1,
                     reply_to_sequence_index=(
                         item.get("reply_to_sequence_index")

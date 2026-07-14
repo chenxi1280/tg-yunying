@@ -10,6 +10,7 @@ from .payloads import SendMessagePayload
 
 
 GENERATION_AUDIT_FIELDS = (
+    "slot_id",
     "material_intent",
     "allow_material",
     "intent",
@@ -55,8 +56,10 @@ def begin_generation_attempt(
             "ai_generation_attempt_history": history,
         })
         action.payload = data
+        result = dict(action.result or {})
+        result.pop("ai_provider_call_started_at", None)
         action.result = {
-            **(action.result or {}),
+            **result,
             "generation_stage": "generation_claimed",
             "generation_outcome": "in_progress",
             "ai_generation_attempt_id": attempt_id,
@@ -68,14 +71,21 @@ def begin_generation_attempt(
 def validate_generation_mapping(
     batch: list[tuple[Action, SendMessagePayload]],
     contents: list[str],
+    *,
+    generation_slots: list[dict],
 ) -> None:
     slot_ids = [str(payload.slot_id or "").strip() for _action, payload in batch]
     if not all(slot_ids) or len(slot_ids) != len(set(slot_ids)):
         raise GenerationMappingError("ai_generation_slot_mapping_invalid")
     if len(contents) != len(batch):
         raise GenerationMappingError("ai_generation_output_count_mismatch")
-    validate_output_sequences(contents, len(batch), is_reply=False)
+    validate_output_sequences(
+        contents,
+        len(batch),
+        is_reply=bool(batch and batch[0][1].reply_to_message_id),
+    )
     _validate_reply_mapping(batch, contents)
+    _validate_fixed_slots(batch, contents, generation_slots)
     if any(not str(content or "").strip() for content in contents):
         raise GenerationMappingError("ai_generation_output_empty")
 
@@ -122,6 +132,30 @@ def _validate_reply_mapping(
             raise GenerationMappingError("ai_generation_reply_sequence_mismatch")
         if not payload.reply_to_message_id and reply_index is not None:
             raise GenerationMappingError("ai_generation_reply_sequence_unexpected")
+
+
+def validate_output_slot_ids(contents: list[str], generation_slots: list[dict]) -> None:
+    expected = [str(slot.get("slot_id") or "").strip() for slot in generation_slots]
+    actual = [str(getattr(content, "slot_id", "") or "").strip() for content in contents]
+    if not all(expected) or actual != expected:
+        raise GenerationMappingError("ai_generation_slot_mapping_mismatch")
+
+
+def _validate_fixed_slots(
+    batch: list[tuple[Action, SendMessagePayload]],
+    contents: list[str],
+    generation_slots: list[dict],
+) -> None:
+    validate_output_slot_ids(contents, generation_slots)
+    if len(generation_slots) != len(batch):
+        raise GenerationMappingError("ai_generation_slot_mapping_mismatch")
+    for (action, payload), slot in zip(batch, generation_slots, strict=True):
+        if str(slot.get("slot_id") or "") != str(payload.slot_id or ""):
+            raise GenerationMappingError("ai_generation_slot_mapping_mismatch")
+        if int(slot.get("account_id") or 0) != int(action.account_id or 0):
+            raise GenerationMappingError("ai_generation_slot_mapping_mismatch")
+        if str(slot.get("coverage_ledger_id") or "") != str(payload.coverage_ledger_id or ""):
+            raise GenerationMappingError("ai_generation_slot_mapping_mismatch")
 
 
 def cached_generation_result(payload: SendMessagePayload) -> tuple[str, int] | None:

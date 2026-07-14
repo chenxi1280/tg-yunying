@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import delete, func, select
@@ -39,11 +40,17 @@ RULE_VERSION_ID = 913_794
 
 
 @pytest.mark.parametrize(
-    ("messages_per_round", "drain_all", "expected_rounds", "minimum_cursor_version"),
+    (
+        "messages_per_round",
+        "drain_all",
+        "expected_rounds",
+        "expected_transaction_chunks",
+        "minimum_cursor_version",
+    ),
     [
-        (10, False, [10], 1),
-        (30, False, [30], 2),
-        (60, True, [60] * 9, 29),
+        (10, False, [10], [10], 1),
+        (30, False, [30], [20, 10], 2),
+        (60, True, [60] * 9, [20, 20, 20], 29),
     ],
 )
 def test_postgres_real_planner_preserves_round_sizes_and_drains_580(
@@ -51,12 +58,28 @@ def test_postgres_real_planner_preserves_round_sizes_and_drains_580(
     messages_per_round: int,
     drain_all: bool,
     expected_rounds: list[int],
+    expected_transaction_chunks: list[int],
     minimum_cursor_version: int,
 ) -> None:
     Base.metadata.create_all(engine)
     _cleanup()
     timestamp = _now().replace(hour=23, minute=59 if drain_all else 30, second=0, microsecond=0)
     monkeypatch.setattr(group_ai_chat, "_now", lambda: timestamp)
+    monkeypatch.setattr(
+        group_ai_chat,
+        "get_settings",
+        lambda: SimpleNamespace(daily_coverage_plan_batch_limit=20),
+    )
+    transaction_chunks: list[int] = []
+    original_plan_batch = task_service._plan_due_task_batch
+
+    def observe_plan_transaction(*args, **kwargs):
+        result = original_plan_batch(*args, **kwargs)
+        if result[1] > 0:
+            transaction_chunks.append(result[1])
+        return result
+
+    monkeypatch.setattr(task_service, "_plan_due_task_batch", observe_plan_transaction)
     try:
         _seed_real_planner_scope(messages_per_round, timestamp)
         actual_rounds = _run_real_planner_until(ACCOUNT_COUNT) if drain_all else _run_real_planner_rounds(1)
@@ -74,6 +97,8 @@ def test_postgres_real_planner_preserves_round_sizes_and_drains_580(
             ).all()
 
         assert actual_rounds[:len(expected_rounds)] == expected_rounds
+        assert transaction_chunks[:len(expected_transaction_chunks)] == expected_transaction_chunks
+        assert all(0 < count <= 20 for count in transaction_chunks)
         assert all(0 < count <= messages_per_round for count in actual_rounds)
         assert reserved == (ACCOUNT_COUNT if drain_all else sum(expected_rounds)), (
             task.last_error, task.stats, coverage_states,

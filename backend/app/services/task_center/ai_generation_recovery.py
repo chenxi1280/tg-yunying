@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from app.models import Action
 from app.services._common import _now
 
-from .ai_generation_commit import load_generation_batch
+from .ai_generation_commit import commit_generation_action, load_generation_batch
 from .ai_generation_state import generation_result_cache, mark_attempt_outcome
 from .runtime_resources import _release_runtime_resources
 
@@ -19,34 +19,43 @@ def persist_generation_unknown(
     attempt_id: str,
 ) -> None:
     batch = load_generation_batch(session, request)
-    for index, ((action, payload), content) in enumerate(zip(batch, contents, strict=False)):
-        data = payload.model_dump(mode="json")
-        data["ai_generation_status"] = "ai_result_persist_unknown"
-        data["ai_generation_result_cache"] = generation_result_cache(
-            str(content or ""),
-            int(tokens or 0) if index == 0 else 0,
-            attempt_id,
-        )
-        mark_attempt_outcome(
-            data,
-            attempt_id,
-            "ai_result_persist_unknown",
-            timestamp=_now(),
-        )
-        _reset_action_for_recovery(action, data)
+    with session.no_autoflush:
+        for index, ((action, payload), content) in enumerate(zip(batch, contents, strict=False)):
+            data = payload.model_dump(mode="json")
+            data["ai_generation_status"] = "ai_result_persist_unknown"
+            data["ai_generation_result_cache"] = generation_result_cache(
+                content,
+                int(tokens or 0) if index == 0 else 0,
+                attempt_id,
+            )
+            mark_attempt_outcome(
+                data,
+                attempt_id,
+                "ai_result_persist_unknown",
+                timestamp=_now(),
+            )
+            _reset_action_for_recovery(action, data)
+            commit_generation_action(session, request, action)
 
 
-def _reset_action_for_recovery(action: Action, data: dict) -> None:
+def _reset_action_for_recovery(
+    action: Action,
+    data: dict,
+    *,
+    clear_claim: bool = True,
+) -> None:
     action.payload = data
     action.status = "pending"
-    action.claim_owner = ""
-    action.claim_token = ""
-    action.claim_expires_at = None
+    if clear_claim:
+        action.claim_owner = ""
+        action.claim_token = ""
+        action.claim_expires_at = None
     action.lease_owner = ""
     action.lease_expires_at = None
     action.result = {
         **(action.result or {}),
         "generation_stage": "ai_result_persist_unknown",
+        "generation_outcome": "ai_result_persist_unknown",
     }
     _release_runtime_resources(action)
 
@@ -56,6 +65,17 @@ def recover_stale_pre_gateway_generation(action: Action) -> bool:
     if not _is_generating_group_action(action, data):
         return False
     attempt_id = str(data.get("ai_generation_attempt_id") or "")
+    if (action.result or {}).get("ai_provider_call_started_at"):
+        mark_attempt_outcome(
+            data,
+            attempt_id,
+            "ai_result_persist_unknown",
+            timestamp=_now(),
+        )
+        data["ai_generation_status"] = "ai_result_persist_unknown"
+        _reset_action_for_recovery(action, data, clear_claim=False)
+        action.executed_at = None
+        return True
     mark_attempt_outcome(data, attempt_id, "stale_worker_recovered", timestamp=_now())
     data.update({
         "ai_generation_status": "pending",

@@ -80,6 +80,7 @@ class GeneratedContent(str):
         fallback_reason: str = "",
         provider_duration_ms: int = 0,
         generation_attempts: list[dict] | None = None,
+        slot_id: str = "",
         sequence_index: int = 0,
         reply_to_sequence_index: int | None = None,
     ):
@@ -94,6 +95,7 @@ class GeneratedContent(str):
         obj.fallback_reason = _metadata_text(fallback_reason)
         obj.provider_duration_ms = max(0, int(provider_duration_ms or 0))
         obj.generation_attempts = [dict(item) for item in (generation_attempts or [])]
+        obj.slot_id = _metadata_text(slot_id)
         obj.sequence_index = int(sequence_index or 0)
         obj.reply_to_sequence_index = (
             int(reply_to_sequence_index)
@@ -375,6 +377,7 @@ def _generated_content_from_candidate(candidate) -> GeneratedContent:
         generation_attempts=getattr(candidate, "generation_attempts", []),
         sequence_index=getattr(candidate, "sequence_index", 0),
         reply_to_sequence_index=getattr(candidate, "reply_to_sequence_index", None),
+        slot_id=getattr(candidate, "slot_id", ""),
     )
 
 
@@ -395,6 +398,7 @@ def _copy_generated_content_metadata(value: str, source: str) -> str:
         generation_attempts=getattr(source, "generation_attempts", []),
         sequence_index=getattr(source, "sequence_index", 0),
         reply_to_sequence_index=getattr(source, "reply_to_sequence_index", None),
+        slot_id=getattr(source, "slot_id", ""),
     )
 
 
@@ -402,7 +406,7 @@ def _has_generated_content_metadata(value: str) -> bool:
     keys = (
         "material_intent", "allow_material", "intent", "mood", "requested_model",
         "actual_model", "fallback_stage", "fallback_reason", "provider_duration_ms",
-        "generation_attempts", "sequence_index", "reply_to_sequence_index",
+        "generation_attempts", "slot_id", "sequence_index", "reply_to_sequence_index",
     )
     return any(hasattr(value, key) for key in keys)
 
@@ -494,7 +498,7 @@ def _group_chat_prompt(count: int, target_label: str, topic: str, requirements: 
         "9. 黑话词表是理解口径，不是展示内容；该用行业口吻时自然用，不要解释词表。\n"
         f"10. {SENSITIVE_CONTEXT_GUIDANCE}\n"
         "11. 可为少量消息给出素材意图，但只能输出素材意图，不能输出素材 ID、素材 URL 或文件地址；不需要素材时 material_intent 为空且 allow_material=false。\n"
-        '只输出 JSON：{"drafts":[{"sequence_index":1,"reply_to_sequence_index":null,"persona":"不同群友人设","content":"群里要发送的一句话","risk_level":"低","intent":"附和/追问/围观/轻微吐槽","mood":"轻松/谨慎/好奇","material_intent":"表情包:围观 或 空字符串","allow_material":false}]}'
+        '只输出 JSON：{"drafts":[{"slot_id":"原样返回对应槽位ID","sequence_index":1,"reply_to_sequence_index":null,"persona":"不同群友人设","content":"群里要发送的一句话","risk_level":"低","intent":"附和/追问/围观/轻微吐槽","mood":"轻松/谨慎/好奇","material_intent":"表情包:围观 或 空字符串","allow_material":false}]}'
     )
 
 
@@ -514,7 +518,7 @@ def _group_chat_reply_prompt(count: int, target_label: str, topic: str, requirem
         "6. 不要编号、解释、括号备注，不要暴露 AI、任务或提示词。\n"
         f"7. {SENSITIVE_CONTEXT_GUIDANCE}\n"
         "8. 可为少量回复给出素材意图，但只能输出素材意图，不能输出素材 ID、素材 URL 或文件地址；不需要素材时 material_intent 为空且 allow_material=false。\n"
-        '只输出 JSON：{"drafts":[{"sequence_index":1,"persona":"不同群友人设","content":"引用回复要发送的一句话","risk_level":"低","intent":"短答/追问/围观/轻微吐槽","mood":"轻松/谨慎/好奇","material_intent":"表情包:围观 或 空字符串","allow_material":false}]}'
+        '只输出 JSON：{"drafts":[{"slot_id":"原样返回对应槽位ID","sequence_index":1,"persona":"不同群友人设","content":"引用回复要发送的一句话","risk_level":"低","intent":"短答/追问/围观/轻微吐槽","mood":"轻松/谨慎/好奇","material_intent":"表情包:围观 或 空字符串","allow_material":false}]}'
     )
 
 
@@ -1156,6 +1160,7 @@ def _content_with_provider_metadata(
         generation_attempts=attempts,
         sequence_index=getattr(candidate, "sequence_index", 0),
         reply_to_sequence_index=getattr(candidate, "reply_to_sequence_index", None),
+        slot_id=getattr(candidate, "slot_id", ""),
     )
 
 

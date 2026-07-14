@@ -8,7 +8,7 @@ from time import monotonic
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import event, select
+from sqlalchemy import delete, event, select
 
 from app.database import Base, SessionLocal, engine
 from app.integrations.telegram import OperationResult, SendResult
@@ -25,10 +25,12 @@ from app.models import (
     TgGroupAccount,
 )
 from app.services._common import _now
-from app.services.task_center import ai_generation_dispatch, dispatcher
+from app.services.task_center import ai_generation_dispatch, ai_generation_persistence, dispatcher
 from app.services.task_center import service as task_service
 from app.services.task_center.ai_generation_commit import load_generation_batch
 from app.services.task_center.ai_generation_dependencies import GenerationDependencies
+from app.services.task_center.ai_generation_pipeline import SlotGenerationResult
+from app.services.task_center.ai_generator import GeneratedContent
 from app.services.task_center.payloads import SendMessagePayload
 
 
@@ -52,6 +54,8 @@ class RecoveryScope:
 
 DEFAULT_SCOPE = RecoveryScope(TENANT_ID, TASK_ID, GROUP_ID, ACCOUNT_ID, ACTION_ID, "pg-ai-generation-coverage")
 STALE_SCOPE = RecoveryScope(914_004, "pg-ai-generation-stale", 914_004, 914_004, "pg-ai-generation-stale-action", "pg-ai-generation-stale-coverage")
+CAS_SCOPE = RecoveryScope(914_005, "pg-ai-generation-cas", 914_005, 914_005, "pg-ai-generation-cas-action", "pg-ai-generation-cas-coverage")
+STARTED_SCOPE = RecoveryScope(914_006, "pg-ai-generation-started", 914_006, 914_006, "pg-ai-generation-started-action", "pg-ai-generation-started-coverage")
 
 
 def test_phase_c_commit_failure_recovers_cached_ai_result_without_second_generation(monkeypatch) -> None:
@@ -108,7 +112,7 @@ def test_phase_c_commit_failure_recovers_cached_ai_result_without_second_generat
             generation_dependencies=dependencies,
         ) is True
 
-        assert action.status == "success", action.result
+        assert action.status == "success", action.result.get("error_code")
         assert action.payload["ai_generation_status"] == "ready"
         assert action.payload["ai_generation_result_cache"] == {}
         assert observed == {"provider_calls": 1, "gateway_calls": 1}
@@ -146,6 +150,7 @@ def test_stale_pre_gateway_generation_reclaims_same_action_slot_and_coverage(mon
         assert action.status == "pending"
         assert action.payload["slot_id"] == "cycle-reply:turn:1"
         assert action.payload["ai_generation_status"] == "pending"
+        assert not action.result.get("ai_provider_call_started_at")
         assert action.result.get("error_code") not in {"execution_timeout", "unknown_after_send"}
         assert coverage.state == "reserved"
         assert coverage.reserved_action_id == action.id
@@ -167,6 +172,97 @@ def test_stale_pre_gateway_generation_reclaims_same_action_slot_and_coverage(mon
         assert coverage.state == "confirmed"
 
 
+def test_phase_c_rejects_old_worker_after_second_session_replaces_fence(monkeypatch) -> None:
+    Base.metadata.create_all(engine)
+    _cleanup_scope(CAS_SCOPE)
+    with SessionLocal() as session:
+        action, _coverage = _seed_reserved_reply_action(session, CAS_SCOPE)
+        action.status = "pending"
+        session.commit()
+        [action] = dispatcher.claim_actions(session, limit=1, worker_id="old-worker")
+        request = ai_generation_dispatch._prepare_generation_request(
+            session,
+            session.get(Task, CAS_SCOPE.task_id),
+            [(action, SendMessagePayload.model_validate(action.payload))],
+            account=session.get(TgAccount, CAS_SCOPE.account_id),
+            credentials=object(),
+        )
+        original_load = ai_generation_persistence.load_generation_batch
+
+        def replace_fence_after_load(current_session, current_request):
+            batch = original_load(current_session, current_request)
+            with SessionLocal() as competing_session:
+                competing = competing_session.get(Action, CAS_SCOPE.action_id)
+                competing.payload = {
+                    **competing.payload,
+                    "ai_generation_claim_owner": "new-worker",
+                    "ai_generation_claim_token": "new-token",
+                    "ai_generation_attempt_id": "new-attempt",
+                }
+                competing_session.commit()
+            return batch
+
+        monkeypatch.setattr(
+            ai_generation_persistence,
+            "load_generation_batch",
+            replace_fence_after_load,
+        )
+        content = GeneratedContent("就按这个节奏来", sequence_index=1)
+        content.slot_id = "cycle-reply:turn:1"
+        with pytest.raises(ai_generation_dispatch.GenerationAttemptStale):
+            ai_generation_persistence.persist_generation_results(
+                session,
+                request,
+                [SlotGenerationResult(content)],
+                tokens=9,
+            )
+        session.rollback()
+
+    with SessionLocal() as session:
+        action = session.get(Action, CAS_SCOPE.action_id)
+        assert action.payload["ai_generation_claim_owner"] == "new-worker"
+        assert action.payload["ai_generation_claim_token"] == "new-token"
+        assert action.payload["ai_generation_attempt_id"] == "new-attempt"
+        assert action.payload["ai_generation_status"] == "generating"
+        assert session.scalar(select(AiGroupMessageMemory).where(
+            AiGroupMessageMemory.action_id == CAS_SCOPE.action_id,
+        )) is None
+
+
+def test_stale_generation_started_provider_recovers_as_persist_unknown() -> None:
+    Base.metadata.create_all(engine)
+    _cleanup_scope(STARTED_SCOPE)
+    with SessionLocal() as session:
+        action, coverage = _seed_reserved_reply_action(session, STARTED_SCOPE)
+        action.status = "pending"
+        session.commit()
+        [action] = dispatcher.claim_actions(session, limit=1, worker_id="started-worker")
+        request = ai_generation_dispatch._prepare_generation_request(
+            session,
+            session.get(Task, STARTED_SCOPE.task_id),
+            [(action, SendMessagePayload.model_validate(action.payload))],
+            account=session.get(TgAccount, STARTED_SCOPE.account_id),
+            credentials=object(),
+        )
+        ai_generation_dispatch._mark_provider_call_started(session, request)
+        action.lease_expires_at = _now() - timedelta(seconds=1)
+        session.commit()
+
+        assert task_service._recover_stale_executing_actions(session, timeout_minutes=30) == 1
+
+        session.refresh(action)
+        session.refresh(coverage)
+        assert action.id == STARTED_SCOPE.action_id
+        assert action.status == "pending"
+        assert action.payload["ai_generation_status"] == "ai_result_persist_unknown"
+        assert action.payload["ai_generation_attempt_id"] == request.attempt_id
+        assert action.result["generation_stage"] == "ai_result_persist_unknown"
+        assert action.result["generation_outcome"] == "ai_result_persist_unknown"
+        assert action.result.get("error_code") != "unknown_after_send"
+        assert coverage.state == "reserved"
+        assert coverage.reserved_action_id == action.id
+
+
 def _concurrent_claim_ids() -> tuple[list[list[str]], list[float]]:
     barrier = Barrier(2)
 
@@ -181,6 +277,21 @@ def _concurrent_claim_ids() -> tuple[list[list[str]], list[float]]:
         futures = [executor.submit(claim, worker_id) for worker_id in ("worker-a", "worker-b")]
         results = [future.result() for future in futures]
     return [item[0] for item in results], [item[1] for item in results]
+
+
+def _cleanup_scope(scope: RecoveryScope) -> None:
+    with SessionLocal() as session:
+        session.execute(delete(AiGroupMessageMemory).where(AiGroupMessageMemory.tenant_id == scope.tenant_id))
+        session.execute(delete(TaskAccountDailyCoverage).where(TaskAccountDailyCoverage.tenant_id == scope.tenant_id))
+        session.execute(delete(Action).where(Action.tenant_id == scope.tenant_id))
+        session.execute(delete(GroupContextMessage).where(GroupContextMessage.tenant_id == scope.tenant_id))
+        session.execute(delete(TgAccountOnlineState).where(TgAccountOnlineState.tenant_id == scope.tenant_id))
+        session.execute(delete(TgGroupAccount).where(TgGroupAccount.tenant_id == scope.tenant_id))
+        session.execute(delete(Task).where(Task.tenant_id == scope.tenant_id))
+        session.execute(delete(TgGroup).where(TgGroup.tenant_id == scope.tenant_id))
+        session.execute(delete(TgAccount).where(TgAccount.tenant_id == scope.tenant_id))
+        session.execute(delete(Tenant).where(Tenant.id == scope.tenant_id))
+        session.commit()
 
 
 def _listen_for_transaction_durations(session, durations: list[float]) -> None:
@@ -351,7 +462,12 @@ def _reply_generator(observed: dict[str, int]):
     def generate(session, *_args, **_kwargs):
         assert session.in_transaction() is False
         observed["provider_calls"] += 1
-        return ["就按这个节奏来"], 9
+        return [GeneratedContent(
+            "就按这个节奏来",
+            slot_id="cycle-reply:turn:1",
+            sequence_index=1,
+            reply_to_sequence_index=1,
+        )], 9
 
     return generate
 

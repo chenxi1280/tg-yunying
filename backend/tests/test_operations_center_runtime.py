@@ -160,6 +160,11 @@ def _forbidden_ai_reply_path(*_args, **_kwargs):
     raise AssertionError("reply path not expected")
 
 
+def _first_generation_slot_id(prompt: str) -> str:
+    line = next(item.strip() for item in prompt.splitlines() if '"slot_id"' in item)
+    return line.split(":", 1)[1].strip().strip('",')
+
+
 @pytest.fixture(autouse=True)
 def assume_group_ai_accounts_ready_for_runtime_tests(monkeypatch):
     assume_default_ai_group_voice_profiles(monkeypatch)
@@ -4261,7 +4266,12 @@ def test_group_ai_chat_generation_uses_healthy_provider_and_model_override(monke
         captured["max_tokens"] = max_tokens
         captured["timeout"] = _kwargs.get("timeout")
         return AiGenerationResult(
-            candidates=[AiDraftCandidate(persona="A", content="这个点接得上，先轻轻聊两句。", risk_level="低")],
+            candidates=[AiDraftCandidate(
+                persona="A",
+                content="这个点接得上，先轻轻聊两句。",
+                risk_level="低",
+                slot_id=_first_generation_slot_id(prompt),
+            )],
             usage=AiUsage(total_tokens=88, billable=True),
         )
 
@@ -4442,7 +4452,12 @@ def test_group_ai_chat_repairs_mask_theme_candidate_before_voice_gate(monkeypatc
 
     def fake_generate_drafts(credentials, prompt, *, count, topic, tone, persona_set, temperature, max_tokens, **_kwargs):  # noqa: ANN001
         return AiGenerationResult(
-            candidates=[AiDraftCandidate(persona="A", content="快进效率跟得上哈哈", risk_level="低")],
+            candidates=[AiDraftCandidate(
+                persona="A",
+                content="快进效率跟得上哈哈",
+                risk_level="低",
+                slot_id=_first_generation_slot_id(prompt),
+            )],
             usage=AiUsage(total_tokens=88, billable=True),
         )
 

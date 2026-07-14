@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from .ai_generation_dependencies import GenerationDependencies
 from .ai_generator import AiGenerationUnavailable, _copy_generated_content_metadata
-from .ai_generation_state import validate_output_sequences
+from .ai_generation_state import validate_output_sequences, validate_output_slot_ids
 
 
 @dataclass(frozen=True)
@@ -88,6 +88,7 @@ def _generate_stage(
             history=request.history,
         )
     validate_output_sequences(contents, len(indexes), is_reply=request.is_reply)
+    validate_output_slot_ids(contents, config["generation_slots"])
     return contents, tokens
 
 
@@ -148,6 +149,10 @@ def _filter_slot(request, index: int, content: str, *, baseline: list[str]) -> S
         quality_item,
     )
     anchor_rewritten = repaired != str(content)
+    mapped = _copy_generated_content_metadata(repaired, content)
+    mapped.sequence_index = index + 1
+    if request.config["generation_slots"][index].get("reply_to_message_id"):
+        mapped.reply_to_sequence_index = index + 1
     decision = group_ai_chat._voice_profile_match_decision_for_item(
         repaired,
         {"summary": snapshot["account_profile"]},
@@ -155,13 +160,13 @@ def _filter_slot(request, index: int, content: str, *, baseline: list[str]) -> S
     )
     if int(decision["score"]) <= group_ai_chat.VOICE_PROFILE_MISMATCH_SCORE:
         return SlotGenerationResult(
-            repaired,
+            mapped,
             "voice_profile_mismatch",
             str(decision["reason"]),
             anchor_rewritten,
         )
     if reason := group_ai_chat._stance_conflict_reason(repaired, snapshot["stance_summary"]):
-        return SlotGenerationResult(repaired, "stance_conflict", reason, anchor_rewritten)
+        return SlotGenerationResult(mapped, "stance_conflict", reason, anchor_rewritten)
     quality, stats = group_ai_chat._quality_filter_ai_messages(
         [repaired],
         baseline,
@@ -173,9 +178,9 @@ def _filter_slot(request, index: int, content: str, *, baseline: list[str]) -> S
     )
     if not quality:
         code = str(stats.get("skip_reason") or "quality_rejected")
-        return SlotGenerationResult(repaired, code, code, anchor_rewritten)
+        return SlotGenerationResult(mapped, code, code, anchor_rewritten)
     return SlotGenerationResult(
-        _copy_generated_content_metadata(repaired, content),
+        mapped,
         voice_profile_anchor_rewritten=anchor_rewritten,
     )
 

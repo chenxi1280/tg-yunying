@@ -23,8 +23,7 @@ from app.models import (
     TgGroupAccount,
 )
 from app.services._common import _now
-from app.services.task_center import dispatcher
-from app.services.task_center import ai_generation_pipeline
+from app.services.task_center import ai_generation_dispatch, ai_generation_pipeline, dispatcher
 from app.services.task_center.ai_generation_dependencies import GenerationDependencies
 from app.services.task_center.ai_generator import GeneratedContent
 from app.services.task_center.ai_message_memory import reserve_group_ai_message
@@ -166,6 +165,79 @@ def test_invalid_normal_batch_mapping_fails_all_slots_without_gateway(monkeypatc
         assert all(coverage.reserved_action_id is None for coverage in coverages)
 
 
+def test_normal_batch_rejects_swapped_slot_ids_despite_correct_sequences(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    outputs = [
+        GeneratedContent("一号", sequence_index=1),
+        GeneratedContent("二号", sequence_index=2),
+    ]
+    outputs[0].slot_id = "cycle-normal:turn:2"
+    outputs[1].slot_id = "cycle-normal:turn:1"
+    with Session(engine) as session:
+        actions, coverages = _seed_reserved_normal_batch(session, _now())
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args, **_kwargs: object())
+        monkeypatch.setattr(dispatcher.gateway, "send_message", _forbidden_external)
+
+        assert dispatcher.dispatch_action(
+            session,
+            actions[0],
+            generation_dependencies=_generation_dependencies(
+                normal_generator=_normal_generator(session, outputs),
+            ),
+        ) is True
+
+        assert [action.status for action in actions] == ["failed", "failed"]
+        assert all(
+            action.result["error_code"] == "ai_generation_slot_mapping_mismatch"
+            for action in actions
+        )
+        assert [coverage.state for coverage in coverages] == ["ready", "ready"]
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid_value"),
+    [("account_id", 999), ("coverage_ledger_id", "wrong-coverage")],
+)
+def test_normal_batch_rejects_tampered_fixed_slot_binding(
+    monkeypatch,
+    field: str,
+    invalid_value,
+) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    original_slot = ai_generation_dispatch._generation_slot
+
+    def tampered_slot(action, payload, index):
+        slot = original_slot(action, payload, index)
+        return {**slot, field: invalid_value} if index == 1 else slot
+
+    monkeypatch.setattr(ai_generation_dispatch, "_generation_slot", tampered_slot)
+    outputs = [
+        GeneratedContent("一号", slot_id="cycle-normal:turn:1", sequence_index=1),
+        GeneratedContent("二号", slot_id="cycle-normal:turn:2", sequence_index=2),
+    ]
+    with Session(engine) as session:
+        actions, coverages = _seed_reserved_normal_batch(session, _now())
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args, **_kwargs: object())
+        monkeypatch.setattr(dispatcher.gateway, "send_message", _forbidden_external)
+
+        assert dispatcher.dispatch_action(
+            session,
+            actions[0],
+            generation_dependencies=_generation_dependencies(
+                normal_generator=_normal_generator(session, outputs),
+            ),
+        ) is True
+
+        assert [action.status for action in actions] == ["failed", "failed"]
+        assert all(
+            action.result["error_code"] == "ai_generation_slot_mapping_mismatch"
+            for action in actions
+        )
+        assert [coverage.state for coverage in coverages] == ["ready", "ready"]
+
+
 def test_voice_profile_rejection_terminates_only_its_slot_and_releases_coverage(monkeypatch) -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -187,7 +259,7 @@ def test_voice_profile_rejection_terminates_only_its_slot_and_releases_coverage(
             ),
         ) is True
 
-        assert actions[0].status == "success"
+        assert actions[0].status == "success", actions[0].result.get("error_code")
         assert actions[1].status == "failed"
         assert actions[1].result["error_code"] == "voice_profile_mismatch"
         assert coverages[0].state == "confirmed"
@@ -217,7 +289,7 @@ def test_content_policy_rejection_terminates_only_its_slot_and_releases_coverage
             ),
         ) is True
 
-        assert actions[0].status == "success"
+        assert actions[0].status == "success", actions[0].result
         assert actions[1].status == "failed"
         assert actions[1].result["error_code"] == "content_rejected"
         assert coverages[0].state == "confirmed"
@@ -256,7 +328,7 @@ def test_db_duplicate_rejection_terminates_only_its_slot_and_releases_coverage(m
             ),
         ) is True
 
-        assert actions[0].status == "success"
+        assert actions[0].status == "success", actions[0].result
         assert actions[1].status == "failed"
         assert actions[1].result["error_code"] == "duplicate_message"
         assert coverages[0].state == "confirmed"
@@ -274,9 +346,13 @@ def _normal_generator(session: Session, outputs: list[GeneratedContent]):
 
 
 def _barrier_generator(barrier: Barrier, label: str):
-    def generate(*_args, **_kwargs):
+    def generate(_session, _tenant_id, config, **_kwargs):
         barrier.wait(timeout=5)
-        return [label], 1
+        return [GeneratedContent(
+            label,
+            slot_id=config["generation_slots"][0]["slot_id"],
+            sequence_index=1,
+        )], 1
 
     return generate
 
@@ -287,7 +363,10 @@ def _profile_generator(session: Session, observed: dict[str, int]):
         observed["provider_calls"] += 1
         slots = list(config["generation_slots"])
         contents = ["😂😂" if int(slot["account_id"]) == 12 else "今天先签到" for slot in slots]
-        return [GeneratedContent(content, sequence_index=index) for index, content in enumerate(contents, 1)], count
+        return [
+            GeneratedContent(content, slot_id=slot["slot_id"], sequence_index=index)
+            for index, (slot, content) in enumerate(zip(slots, contents, strict=True), 1)
+        ], count
 
     return generate
 
@@ -298,7 +377,10 @@ def _account_content_generator(session: Session, observed: dict[str, int], *, re
         observed["provider_calls"] += 1
         slots = list(config["generation_slots"])
         contents = [rejected_content if int(slot["account_id"]) == 12 else "今天先签到" for slot in slots]
-        return [GeneratedContent(content, sequence_index=index) for index, content in enumerate(contents, 1)], count
+        return [
+            GeneratedContent(content, slot_id=slot["slot_id"], sequence_index=index)
+            for index, (slot, content) in enumerate(zip(slots, contents, strict=True), 1)
+        ], count
 
     return generate
 
@@ -550,12 +632,17 @@ def _forbidden_external(*_args, **_kwargs):
 
 
 def _reply_generator(observed: dict[str, object]):
-    def generate(session, _tenant_id, _config, *, reply_targets, target_label, history):
+    def generate(session, _tenant_id, config, *, reply_targets, target_label, history):
         observed["provider_transaction"] = session.in_transaction()
         observed["reply_target"] = reply_targets[0]["message_id"]
         assert target_label == "运营群"
         assert "今天按原计划吗" in history
-        return ["就按这个节奏来"], 9
+        return [GeneratedContent(
+            "就按这个节奏来",
+            slot_id=config["generation_slots"][0]["slot_id"],
+            sequence_index=1,
+            reply_to_sequence_index=1,
+        )], 9
 
     return generate
 

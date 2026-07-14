@@ -38,6 +38,7 @@ from app.services._common import _now
 from app.services.account_capacity import AccountCapacityCache, available_accounts_by_capacity
 from app.services.task_center import dispatcher
 from app.services.task_center.ai_generation_dependencies import GenerationDependencies
+from app.services.task_center.ai_generator import GeneratedContent
 from app.services.task_center import payloads as task_payloads
 from app.services.task_center.ai_message_memory import mark_group_ai_message_result, reserve_group_ai_message
 from app.services.task_center.executors import group_ai_chat
@@ -532,9 +533,10 @@ def test_dispatch_hard_hourly_generates_pending_ai_message_before_send(
                     "ai_generation_status": "pending",
                     "ai_generation_id": "cycle-hard-hourly-ai",
                     "cycle_id": "cycle-hard-hourly-ai",
-                        "ai_generation_history": "真人: 今天怎么安排",
-                        "account_role": "活跃群友",
-                        "reply_to_message_id": None,
+                    "slot_id": "cycle-hard-hourly-ai:turn:1",
+                    "ai_generation_history": "真人: 今天怎么安排",
+                    "account_role": "活跃群友",
+                    "reply_to_message_id": None,
                 },
             )
         )
@@ -557,9 +559,10 @@ def test_dispatch_hard_hourly_generates_pending_ai_message_before_send(
                     "ai_generation_status": "pending",
                     "ai_generation_id": "cycle-hard-hourly-ai",
                     "cycle_id": "cycle-hard-hourly-ai",
-                        "ai_generation_history": "真人: 今天怎么安排",
-                        "account_role": "追问群友",
-                        "reply_to_message_id": None,
+                    "slot_id": "cycle-hard-hourly-ai:turn:2",
+                    "ai_generation_history": "真人: 今天怎么安排",
+                    "account_role": "追问群友",
+                    "reply_to_message_id": None,
                 },
             )
         )
@@ -570,7 +573,12 @@ def test_dispatch_hard_hourly_generates_pending_ai_message_before_send(
         def fake_generate(_session, _tenant_id, config, *, count, target_label, history):  # noqa: ANN001
             assert _session.in_transaction() is False
             generated.update({"model": config["ai_model"], "count": count, "target": target_label, "history": history, "personas": config["account_personas"]})
-            return ["今天先看看群公告", "第二条我也等等看"][:count], 17
+            texts = ["今天先看看群公告", "第二条我也等等看"][:count]
+            slots = config["generation_slots"]
+            return [
+                GeneratedContent(text, slot_id=slot["slot_id"], sequence_index=index)
+                for index, (slot, text) in enumerate(zip(slots, texts, strict=True), 1)
+            ], 17
 
         def fake_send_message(account_id, _group_pk, content, *_args, **_kwargs):  # noqa: ANN001
             sent.update({"account_id": account_id, "content": content})
@@ -664,7 +672,7 @@ def test_dispatch_hard_hourly_pending_ai_duplicate_is_blocked(monkeypatch):
             account_id=11,
             status="pending",
             scheduled_at=now_value,
-            payload={"group_id": 7, "target_display": "运营群", "message_text": "", "review_approved": True, "hard_hourly_target": True, "ai_generation_status": "pending", "ai_generation_id": "cycle-hard-hourly-ai-dup", "cycle_id": "cycle-hard-hourly-ai-dup", "ai_generation_history": "真人: 今天怎么安排"},
+            payload={"group_id": 7, "target_display": "运营群", "message_text": "", "review_approved": True, "hard_hourly_target": True, "ai_generation_status": "pending", "ai_generation_id": "cycle-hard-hourly-ai-dup", "cycle_id": "cycle-hard-hourly-ai-dup", "slot_id": "cycle-hard-hourly-ai-dup:turn:1", "ai_generation_history": "真人: 今天怎么安排"},
         )
         session.add(action)
         session.flush()
@@ -689,8 +697,16 @@ def test_dispatch_hard_hourly_pending_ai_duplicate_is_blocked(monkeypatch):
 
         monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
         monkeypatch.setattr(dispatcher.gateway, "send_message", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("duplicate must not call TG")))
+
+        def duplicate_generator(_session, _tenant_id, config, **_kwargs):
+            return [GeneratedContent(
+                "今天先看看群公告",
+                slot_id=config["generation_slots"][0]["slot_id"],
+                sequence_index=1,
+            )], 9
+
         dependencies = GenerationDependencies(
-            normal_generator=lambda *_args, **_kwargs: (["今天先看看群公告"], 9),
+            normal_generator=duplicate_generator,
             reply_generator=lambda *_args, **_kwargs: pytest.fail("normal action must not use reply generator"),
             reply_target_probe=lambda *_args, **_kwargs: pytest.fail("normal action must not probe reply target"),
             reply_messages_fetcher=lambda *_args, **_kwargs: pytest.fail("normal action must not fetch reply messages"),

@@ -91,6 +91,7 @@ def test_output_contract_has_exact_keys_for_each_requested_draft():
     assert set(contract) == {"decision", "context_source", "drafts"}
     assert len(contract["drafts"]) == 2
     assert all(set(draft) == DRAFT_KEYS for draft in contract["drafts"])
+    assert contract["drafts"][0]["slot_id"] == "slot-1"
     json.dumps(contract, ensure_ascii=False)
 
 

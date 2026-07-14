@@ -10,6 +10,7 @@ from app.models import Action, GroupContextMessage, Task, TgAccount, TgGroup, Tg
 from app.services._common import _now
 
 from .ai_generation_dependencies import GenerationDependencies
+from .ai_generation_commit import commit_generation_action, load_generation_batch
 from .ai_generation_persistence import persist_generation_results as _persist_generation_results
 from .ai_generation_state import (
     GenerationAttemptStale,
@@ -131,6 +132,9 @@ def _commit_generation_results(
         )
         session.commit()
         raise AiGenerationUnavailable(str(exc)) from exc
+    except GenerationAttemptStale:
+        session.rollback()
+        raise
     except Exception:
         session.rollback()
         contents = [result.content for result in results]
@@ -229,6 +233,8 @@ def _generate_without_transaction(
 ) -> tuple[list[SlotGenerationResult], int]:
     if request.is_reply:
         _validate_remote_reply_target(session, request, dependencies)
+    if not request.cached_contents:
+        _mark_provider_call_started(session, request)
     try:
         return generate_quality_results(session, request, dependencies)
     except AiGenerationUnavailable:
@@ -240,6 +246,18 @@ def _generate_without_transaction(
         )
         session.commit()
         raise
+
+
+def _mark_provider_call_started(session: Session, request: GenerationRequest) -> None:
+    timestamp = _now().isoformat()
+    for action, _payload in load_generation_batch(session, request):
+        action.result = {
+            **(action.result or {}),
+            "generation_stage": "provider_call_started",
+            "ai_provider_call_started_at": timestamp,
+        }
+        commit_generation_action(session, request, action)
+    session.commit()
 
 
 def _validate_local_reply_target(
@@ -428,6 +446,7 @@ def _generation_slot(action: Action, payload: SendMessagePayload, index: int) ->
         "sequence_index": index,
         "cycle_turn_index": int(payload.turn_index or index),
         "account_id": action.account_id,
+        "coverage_ledger_id": payload.coverage_ledger_id,
         "act_type": payload.act_type,
         "account_profile": payload.account_profile,
         "reply_to_message_id": payload.reply_to_message_id,

@@ -8,6 +8,7 @@ from typing import Any
 
 MAX_SAFE_MESSAGES = 5
 DRAFT_KEYS = {
+    "slot_id",
     "sequence_index",
     "reply_to_sequence_index",
     "persona",
@@ -141,12 +142,19 @@ def _safe_reply_targets(value: object) -> list[dict[str, str]]:
     return targets
 
 
-def output_contract(context_source: str, count: int) -> dict[str, Any]:
+def output_contract(
+    context_source: str,
+    count: int,
+    generation_slots: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    slots = list(generation_slots or [])
     drafts = []
     for index in range(max(1, int(count or 1))):
+        slot = slots[index] if index < len(slots) else {}
         drafts.append({
+            "slot_id": str(slot.get("slot_id") or ""),
             "sequence_index": index + 1,
-            "reply_to_sequence_index": None,
+            "reply_to_sequence_index": slot.get("reply_to_sequence_index"),
             "persona": "普通群友",
             "content": "中文回复",
             "risk_level": "low",
@@ -179,7 +187,7 @@ def build_group_prompt(
         "context_source": context_source,
         "sanitized_context": messages,
     }
-    contract = output_contract(context_source, count)
+    contract = output_contract(context_source, count, payload["generation_slots"])
     user_prompt = (
         "Sanitized production-shaped input:\n"
         f"{json.dumps(payload, ensure_ascii=False, indent=2)}\n\n"

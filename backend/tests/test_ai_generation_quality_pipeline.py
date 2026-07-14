@@ -82,7 +82,9 @@ def _request(
 ):
     values = {
         "batch_ids": ["action-1"],
-        "cached_contents": [GeneratedContent(content, sequence_index=1)] if cached else [],
+        "cached_contents": [
+            GeneratedContent(content, slot_id="slot-1", sequence_index=1)
+        ] if cached else [],
         "cached_tokens": 0,
         "duplicate_baseline_messages": [],
         "quality_snapshots": [{"account_profile": account_profile, "stance_summary": stance_summary}],
@@ -107,7 +109,11 @@ def _stage_generator(session: Session, observed: list[str]):
     def generate(_session, _tenant_id, config, **_kwargs):
         assert session.in_transaction() is False
         observed.append(str(config.get("_ai_fallback_stage") or "direct"))
-        return [GeneratedContent("😂😂", sequence_index=1)], 1
+        return [GeneratedContent(
+            "😂😂",
+            slot_id=config["generation_slots"][0]["slot_id"],
+            sequence_index=1,
+        )], 1
 
     return generate
 

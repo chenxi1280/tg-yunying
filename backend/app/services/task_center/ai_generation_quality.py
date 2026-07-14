@@ -8,7 +8,7 @@ from app.services._common import _now
 from app.services.content_filters import filter_outbound_content
 from app.services.material_rules import MaterialRuleResult, select_material_for_policy
 
-from .ai_generation_commit import load_generation_batch
+from .ai_generation_commit import commit_generation_action, load_generation_batch
 from .ai_message_memory import (
     DuplicateMessageReservation,
     mark_group_ai_message_result,
@@ -41,8 +41,10 @@ def fail_generation_batch(
     *,
     detail: str,
 ) -> None:
-    for action, _payload in load_generation_batch(session, request):
-        fail_generation_action(action, code, detail, stage="ai_generation")
+    with session.no_autoflush:
+        for action, _payload in load_generation_batch(session, request):
+            fail_generation_action(action, code, detail, stage="ai_generation")
+            commit_generation_action(session, request, action)
 
 
 def fail_generation_action(action: Action, code: str, detail: str, *, stage: str) -> None:

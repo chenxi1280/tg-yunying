@@ -9,6 +9,7 @@ from app.models import Action, Task, Tenant, TgGroup
 from app.services._common import _now
 from app.services.task_center import ai_generation_dispatch
 from app.services.task_center.ai_generation_pipeline import SlotGenerationResult
+from app.services.task_center.ai_generator import GeneratedContent
 from app.services.task_center.ai_generation_quality import fail_generation_action
 from app.services.task_center.details import _ai_generation_records
 from app.services.task_center.stats import refresh_task_stats
@@ -52,7 +53,14 @@ def test_phase_c_generation_attempt_does_not_update_task_stats_hot_row() -> None
         ai_generation_dispatch._persist_generation_results(
             session,
             request,
-            [SlotGenerationResult("补上价格锚点", voice_profile_anchor_rewritten=True)],
+            [SlotGenerationResult(
+                GeneratedContent(
+                    "补上价格锚点",
+                    slot_id="generation-observable:turn:1",
+                    sequence_index=1,
+                ),
+                voice_profile_anchor_rewritten=True,
+            )],
             tokens=7,
         )
         session.flush()
@@ -148,6 +156,11 @@ def _phase_c_request(task: Task, action: Action):
         "claim_owner": "worker-a",
         "claim_token": "claim-a",
         "attempt_id": "attempt-a",
+        "config": {"generation_slots": [{
+            "slot_id": "generation-observable:turn:1",
+            "account_id": action.account_id,
+            "coverage_ledger_id": "",
+        }]},
     })()
 
 
