@@ -40,7 +40,6 @@ from app.services.task_center import dispatcher
 from app.services.task_center.ai_generation_dependencies import GenerationDependencies
 from app.services.task_center.ai_generator import GeneratedContent
 from app.services.task_center import payloads as task_payloads
-from app.services.task_center.ai_message_memory import mark_group_ai_message_result, reserve_group_ai_message
 from app.services.task_center.executors import group_ai_chat
 from app.services.task_center import service as task_service
 from app.services.task_center import account_pool
@@ -49,6 +48,20 @@ from app.services.task_center.runtime_retention import cleanup_runtime_details
 from app.services.task_center.service import _recover_stale_executing_actions, retry_task
 from app.services.task_center.stats import planner_backlog_snapshot, refresh_task_stats, retry_failed_actions
 from app.timezone import BEIJING_TZ
+from tests.capacity_ai_planner_test_support import (
+    AiPlannerScenario,
+    seed_ai_planner_scope,
+    seed_sent_memory,
+)
+from tests.capacity_ai_dispatch_test_support import (
+    assert_claimed_generation_batch,
+    assert_quality_retry_states,
+    configure_duplicate_generation,
+    configure_pending_generation,
+    pending_generation_cycle_batch,
+    seed_duplicate_generation_scope,
+    seed_pending_generation_scope,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -554,129 +567,16 @@ def test_dispatch_hard_hourly_generates_pending_ai_message_before_send(
     now_value = _now()
     generated: dict[str, object] = {}
     sent: dict[str, object] = {}
-
     with Session(engine) as session:
-        session.add(Tenant(id=1, name="默认运营空间"))
-        session.add(TgAccount(id=11, tenant_id=1, display_name="账号A", phone_masked="+861***0011", status="在线", session_ciphertext="session-a"))
-        session.add(TgAccount(id=12, tenant_id=1, display_name="账号B", phone_masked="+861***0012", status="在线", session_ciphertext="session-b"))
-        session.add(TgAccountOnlineState(tenant_id=1, account_id=11, desired_online=True, online_status="online", last_seen_at=now_value, stale_after_at=now_value + timedelta(minutes=10)))
-        session.add(TgAccountOnlineState(tenant_id=1, account_id=12, desired_online=True, online_status="online", last_seen_at=now_value, stale_after_at=now_value + timedelta(minutes=10)))
-        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True, require_review=False))
-        session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True, permission_label="可发言"))
-        session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=12, can_send=True, permission_label="可发言"))
-        session.add(
-            Task(
-                id="task-hard-hourly-ai",
-                tenant_id=1,
-                name="硬目标",
-                type="group_ai_chat",
-                status="running",
-                priority=1,
-                type_config={"target_group_id": 7, "ai_model": "mino-v2.5", "topic_directions": [{"title": "日常活跃", "weight": 1}]},
-            )
-        )
-        session.add(
-            Action(
-                id="action-hard-hourly-ai",
-                tenant_id=1,
-                task_id="task-hard-hourly-ai",
-                task_type="group_ai_chat",
-                action_type="send_message",
-                account_id=11,
-                status="pending",
-                scheduled_at=now_value,
-                payload={
-                    "group_id": 7,
-                    "target_display": "运营群",
-                    "message_text": "",
-                    "review_approved": True,
-                    "hard_hourly_target": True,
-                    "ai_generation_status": "pending",
-                    "ai_generation_id": "cycle-hard-hourly-ai",
-                    "cycle_id": "cycle-hard-hourly-ai",
-                    "slot_id": "cycle-hard-hourly-ai:turn:1",
-                    "ai_generation_history": "真人: 今天怎么安排",
-                    "account_role": "活跃群友",
-                    "reply_to_message_id": None,
-                },
-            )
-        )
-        session.add(
-            Action(
-                id="action-hard-hourly-ai-sibling",
-                tenant_id=1,
-                task_id="task-hard-hourly-ai",
-                task_type="group_ai_chat",
-                action_type="send_message",
-                account_id=12,
-                status="pending",
-                scheduled_at=now_value if claim_limit == 2 else now_value + timedelta(seconds=10),
-                payload={
-                    "group_id": 7,
-                    "target_display": "运营群",
-                    "message_text": "",
-                    "review_approved": True,
-                    "hard_hourly_target": True,
-                    "ai_generation_status": "pending",
-                    "ai_generation_id": "cycle-hard-hourly-ai",
-                    "cycle_id": "cycle-hard-hourly-ai",
-                    "slot_id": "cycle-hard-hourly-ai:turn:2",
-                    "ai_generation_history": "真人: 今天怎么安排",
-                    "account_role": "追问群友",
-                    "reply_to_message_id": None,
-                },
-            )
-        )
-        session.commit()
-
-        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
-
-        def fake_generate(_session, _tenant_id, config, *, count, target_label, history):  # noqa: ANN001
-            assert _session.in_transaction() is False
-            generated.update({"model": config["ai_model"], "count": count, "target": target_label, "history": history, "personas": config["account_personas"]})
-            texts = ["今天先看看群公告", "第二条我也等等看"][:count]
-            slots = config["generation_slots"]
-            return [
-                GeneratedContent(text, slot_id=slot["slot_id"], sequence_index=index)
-                for index, (slot, text) in enumerate(zip(slots, texts, strict=True), 1)
-            ], 17
-
-        def fake_send_message(account_id, _group_pk, content, *_args, **_kwargs):  # noqa: ANN001
-            sent.update({"account_id": account_id, "content": content})
-            return SendResult(True, remote_message_id="tg-ai-generated")
-
-        monkeypatch.setattr(dispatcher.gateway, "send_message", fake_send_message)
-        dependencies = GenerationDependencies(
-            normal_generator=fake_generate,
-            reply_generator=lambda *_args, **_kwargs: pytest.fail("normal action must not use reply generator"),
-            reply_target_probe=lambda *_args, **_kwargs: pytest.fail("normal action must not probe reply target"),
-            reply_messages_fetcher=lambda *_args, **_kwargs: pytest.fail("normal action must not fetch reply messages"),
-        )
-
+        seed_pending_generation_scope(session, now_value, claim_limit)
+        dependencies = configure_pending_generation(monkeypatch, generated, sent)
         claimed = claim_actions(session, limit=claim_limit, worker_id="worker-test")
-        assert len(claimed) == expected_generation_count
-        assert len({row.claim_token for row in claimed}) == 1
-        if expected_generation_count == 2:
-            claimed_payload = task_payloads.SendMessagePayload.model_validate(claimed[0].payload or {})
-            generation_batch = dispatcher._ai_generation_dispatch._pending_generation_batch(
-                session,
-                claimed[0],
-                claimed_payload,
-            )
-            assert [row.id for row, _payload in generation_batch] == [
-                "action-hard-hourly-ai",
-                "action-hard-hourly-ai-sibling",
-            ], [
-                (row.id, row.status, row.claim_owner, row.claim_token, row.payload)
-                for row in session.scalars(select(Action).where(Action.task_id == "task-hard-hourly-ai"))
-            ]
-
+        assert_claimed_generation_batch(session, claimed, expected_generation_count)
         assert dispatcher.dispatch_action(
             session,
             claimed[0],
             generation_dependencies=dependencies,
         ) is True
-
         action = session.get(Action, "action-hard-hourly-ai")
         sibling = session.get(Action, "action-hard-hourly-ai-sibling")
         assert generated == {
@@ -684,10 +584,7 @@ def test_dispatch_hard_hourly_generates_pending_ai_message_before_send(
             "count": expected_generation_count,
             "target": "运营群",
             "history": "真人: 今天怎么安排",
-            "personas": {
-                "11": "活跃群友",
-                **({"12": "追问群友"} if expected_generation_count == 2 else {}),
-            },
+            "personas": {"11": "活跃群友", **({"12": "追问群友"} if expected_generation_count == 2 else {})},
         }
         assert sent == {"account_id": 11, "content": "今天先看看群公告"}
         assert action.payload["message_text"] == "今天先看看群公告"
@@ -713,75 +610,16 @@ def test_dispatch_hard_hourly_generates_pending_ai_message_before_send(
 def test_dispatch_hard_hourly_pending_ai_duplicate_is_blocked(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
-    now_value = _now()
-
     with Session(engine) as session:
-        session.add(Tenant(id=1, name="默认运营空间"))
-        session.add(TgAccount(id=11, tenant_id=1, display_name="账号A", phone_masked="+861***0011", status="在线", session_ciphertext="session-a"))
-        session.add(TgAccountOnlineState(tenant_id=1, account_id=11, desired_online=True, online_status="online", last_seen_at=now_value, stale_after_at=now_value + timedelta(minutes=10)))
-        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True, require_review=False))
-        session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True, permission_label="可发言"))
-        task = Task(id="task-hard-hourly-ai-dup", tenant_id=1, name="硬目标重复", type="group_ai_chat", status="running", priority=1, type_config={"target_group_id": 7, "topic_directions": [{"title": "日常活跃", "weight": 1}]})
-        session.add(task)
-        reserve_group_ai_message(session, tenant_id=1, group_id=7, task_id="old-ai", account_id=99, raw_text="今天先看看群公告", now=now_value - timedelta(minutes=1))
-        action = Action(
-            id="action-hard-hourly-ai-dup",
-            tenant_id=1,
-            task_id=task.id,
-            task_type="group_ai_chat",
-            action_type="send_message",
-            account_id=11,
-            status="pending",
-            scheduled_at=now_value,
-            payload={"group_id": 7, "target_display": "运营群", "message_text": "", "review_approved": True, "hard_hourly_target": True, "ai_generation_status": "pending", "ai_generation_id": "cycle-hard-hourly-ai-dup", "cycle_id": "cycle-hard-hourly-ai-dup", "slot_id": "cycle-hard-hourly-ai-dup:turn:1", "ai_generation_history": "真人: 今天怎么安排"},
-        )
-        session.add(action)
-        session.flush()
-        coverage = TaskAccountDailyCoverage(
-            id="coverage-hard-hourly-ai-dup",
-            tenant_id=1,
-            task_id=task.id,
-            group_id=7,
-            account_id=11,
-            coverage_date=now_value.date(),
-            state="reserved",
-            reserved_action_id=action.id,
-            targeted_at=now_value,
-        )
-        session.add(coverage)
-        action.payload = {
-            **action.payload,
-            "coverage_ledger_id": coverage.id,
-            "account_coverage_mode": "all_accounts_daily",
-        }
-        session.commit()
-
-        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
-        monkeypatch.setattr(dispatcher.gateway, "send_message", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("duplicate must not call TG")))
-
-        def duplicate_generator(_session, _tenant_id, config, **_kwargs):
-            return [GeneratedContent(
-                "今天先看看群公告",
-                slot_id=config["generation_slots"][0]["slot_id"],
-                sequence_index=1,
-            )], 9
-
-        dependencies = GenerationDependencies(
-            normal_generator=duplicate_generator,
-            reply_generator=lambda *_args, **_kwargs: pytest.fail("normal action must not use reply generator"),
-            reply_target_probe=lambda *_args, **_kwargs: pytest.fail("normal action must not probe reply target"),
-            reply_messages_fetcher=lambda *_args, **_kwargs: pytest.fail("normal action must not fetch reply messages"),
-        )
-
+        action, coverage = seed_duplicate_generation_scope(session, _now())
+        dependencies = configure_duplicate_generation(monkeypatch)
         [claimed] = claim_actions(session, limit=1, worker_id="worker-test")
-
         assert dispatcher.dispatch_action(
             session,
             claimed,
             generation_dependencies=dependencies,
         ) is True
-
-        action = session.get(Action, "action-hard-hourly-ai-dup")
+        session.refresh(action)
         assert action.status == "failed"
         assert action.result["error_code"] == "duplicate_message"
         assert action.result["validation_stage"] == "ai_message_memory"
@@ -2259,106 +2097,8 @@ def test_target_membership_requires_send_rechecks_existing_group_link(monkeypatc
 def test_pending_ai_generation_batch_is_scoped_to_generation_cycle():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
-    now_value = _now()
-    current_payload = {
-        "group_id": 7,
-        "message_text": "",
-        "ai_generation_status": "pending",
-        "ai_generation_id": "cycle-new",
-        "cycle_id": "cycle-new",
-        "ai_generation_history": "第二条真人上下文",
-    }
-
     with Session(engine) as session:
-        session.add(Tenant(id=1, name="默认运营空间"))
-        session.add(Task(id="task-ai-batch", tenant_id=1, name="ai batch", type="group_ai_chat", status="running"))
-        session.add_all(
-            [
-                Action(
-                    id="action-current",
-                    tenant_id=1,
-                    task_id="task-ai-batch",
-                    task_type="group_ai_chat",
-                    action_type="send_message",
-                    account_id=11,
-                    status="pending",
-                    scheduled_at=now_value,
-                    payload=current_payload,
-                ),
-                Action(
-                    id="action-old-cycle",
-                    tenant_id=1,
-                    task_id="task-ai-batch",
-                    task_type="group_ai_chat",
-                    action_type="send_message",
-                    account_id=12,
-                    status="pending",
-                    scheduled_at=now_value - timedelta(seconds=1),
-                    payload={
-                        **current_payload,
-                        "ai_generation_id": "cycle-old",
-                        "cycle_id": "cycle-old",
-                        "ai_generation_history": "第一条真人上下文",
-                    },
-                ),
-                Action(
-                    id="action-new-sibling",
-                    tenant_id=1,
-                    task_id="task-ai-batch",
-                    task_type="group_ai_chat",
-                    action_type="send_message",
-                    account_id=13,
-                    status="pending",
-                    scheduled_at=now_value + timedelta(seconds=1),
-                    payload={**current_payload, "turn_index": 2},
-                ),
-                Action(
-                    id="action-reply-sibling",
-                    tenant_id=1,
-                    task_id="task-ai-batch",
-                    task_type="group_ai_chat",
-                    action_type="send_message",
-                    account_id=14,
-                    status="pending",
-                    scheduled_at=now_value,
-                    payload={**current_payload, "reply_to_message_id": 9001},
-                ),
-                Action(
-                    id="action-other-claim",
-                    tenant_id=1,
-                    task_id="task-ai-batch",
-                    task_type="group_ai_chat",
-                    action_type="send_message",
-                    account_id=15,
-                    status="pending",
-                    scheduled_at=now_value,
-                    payload=current_payload,
-                ),
-            ]
-        )
-        session.commit()
-
-        action = session.get(Action, "action-current")
-        for row in session.query(Action).filter(Action.id.in_(["action-current", "action-old-cycle", "action-new-sibling", "action-reply-sibling"])):
-            row.status = "executing"
-            row.claim_owner = "worker-a"
-            row.claim_token = "claim-cycle"
-            row.payload = {
-                **row.payload,
-                "ai_generation_claim_owner": "worker-a",
-                "ai_generation_claim_token": "claim-cycle",
-            }
-        other_claim = session.get(Action, "action-other-claim")
-        other_claim.status = "executing"
-        other_claim.payload = {
-            **other_claim.payload,
-            "ai_generation_claim_owner": "worker-a",
-            "ai_generation_claim_token": "claim-other-cycle",
-        }
-        session.commit()
-        payload = dispatcher.validate_action_payload(action.action_type, action.payload or {})
-        batch = dispatcher._ai_generation_dispatch._pending_generation_batch(session, action, payload)
-
+        batch = pending_generation_cycle_batch(session, _now())
         assert [row.id for row, _payload in batch] == ["action-current", "action-new-sibling"]
 
 
@@ -4502,54 +4242,20 @@ def test_group_ai_build_plan_keeps_fixed_pending_slot_accounts(monkeypatch):
     Base.metadata.create_all(engine)
     now_value = _now()
     monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
-
     _forbid_planner_ai_generation(monkeypatch)
-
     with Session(engine) as session:
-        session.add(Tenant(id=1, name="默认运营空间"))
-        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True))
-        session.add_all(
-            [
-                TgAccount(id=11, tenant_id=1, display_name="账号A", phone_masked="+861***0011", status="在线", session_ciphertext="session-a"),
-                TgAccount(id=12, tenant_id=1, display_name="账号B", phone_masked="+861***0012", status="在线", session_ciphertext="session-b"),
-            ]
+        task = seed_ai_planner_scope(
+            session,
+            now_value,
+            AiPlannerScenario(
+                task_id="task-slot-first",
+                task_name="slot first",
+                profile_summaries=("青年短句，偶尔表情", "中年短句，轻吐槽"),
+                messages_per_round=2,
+            ),
         )
-        session.add_all(
-            [
-                TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True),
-                TgGroupAccount(tenant_id=1, group_id=7, account_id=12, can_send=True),
-                TgAccountOnlineState(tenant_id=1, account_id=11, desired_online=True, online_status="online", stale_after_at=now_value + timedelta(minutes=5)),
-                TgAccountOnlineState(tenant_id=1, account_id=12, desired_online=True, online_status="online", stale_after_at=now_value + timedelta(minutes=5)),
-                AiAccountVoiceProfile(tenant_id=1, account_id=11, version=1, status="active", quality_status="active", short_prompt_summary="青年短句，偶尔表情"),
-                AiAccountVoiceProfile(tenant_id=1, account_id=12, version=1, status="active", quality_status="active", short_prompt_summary="中年短句，轻吐槽"),
-            ]
-        )
-        task = Task(
-            id="task-slot-first",
-            tenant_id=1,
-            name="slot first",
-            type="group_ai_chat",
-            status="running",
-            account_config={"selection_mode": "all", "max_concurrent": 10, "cooldown_per_account_minutes": 0},
-            pacing_config={"max_actions_per_hour": 120},
-            type_config={
-                "target_group_id": 7,
-                "messages_per_round_mode": "manual",
-                "messages_per_round": 2,
-                "reply_min_per_round": 0,
-                "allow_account_repeat": False,
-                "silent_mode_enabled": False,
-                "fact_anchor_required": False,
-                "low_confidence_silence_enabled": False,
-            },
-            stats={},
-        )
-        session.add(task)
-        session.commit()
-
         assert group_ai_chat.build_plan(session, task) == 2
         actions = list(session.scalars(select(Action).where(Action.task_id == task.id).order_by(Action.payload["turn_index"])))
-
     assert [action.account_id for action in actions] == [11, 12]
     assert [action.payload["slot_id"] for action in actions] == ["task-slot-first:cycle:1:turn:1", "task-slot-first:cycle:1:turn:2"]
     assert [action.payload["act_type"] for action in actions] == ["short_react", "detail_follow"]
@@ -4563,108 +4269,39 @@ def test_group_ai_planner_defers_quality_retry_to_dispatcher(monkeypatch):
     Base.metadata.create_all(engine)
     now_value = _now()
     monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
-
     generated_configs: list[dict] = []
-    rounds = iter([
-        ["😀😀"],
-        ["花花老师价格大概多少"],
-        ["主任最近约新妹子了吗"],
-    ])
+    rounds = iter([["😀😀"], ["花花老师价格大概多少"], ["主任最近约新妹子了吗"]])
 
     def fake_generate(_session, _tenant_id, config, *, count, target_label, history):  # noqa: ANN001
         generated_configs.append(dict(config))
         return _slot_bound_contents(config, next(rounds)[:count]), 5
 
     with Session(engine) as session:
-        session.add(Tenant(id=1, name="默认运营空间"))
-        session.add(TenantAiSetting(tenant_id=1, ai_enabled=True))
-        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True))
-        session.add_all(
-            [
-                TgAccount(id=11, tenant_id=1, display_name="账号A", phone_masked="+861***0011", status="在线", session_ciphertext="session-a"),
-                TgAccount(id=12, tenant_id=1, display_name="账号B", phone_masked="+861***0012", status="在线", session_ciphertext="session-b"),
-            ]
-        )
-        session.add_all(
-            [
-                TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True),
-                TgGroupAccount(tenant_id=1, group_id=7, account_id=12, can_send=True),
-                TgAccountOnlineState(tenant_id=1, account_id=11, desired_online=True, online_status="online", stale_after_at=now_value + timedelta(minutes=5)),
-                TgAccountOnlineState(tenant_id=1, account_id=12, desired_online=True, online_status="online", stale_after_at=now_value + timedelta(minutes=5)),
-                AiAccountVoiceProfile(
-                    tenant_id=1,
-                    account_id=11,
-                    version=1,
-                    status="active",
-                    quality_status="active",
-                    short_prompt_summary="青年短句，爱问价格，少表情",
-                    emoji_policy="少表情，不连续发表情",
-                ),
-                _voice_profile(12, "中年短句，接话补充"),
-                AiGroupMessageMemory(
-                    id="previous-photo-memory",
-                    tenant_id=1,
-                    group_id=7,
-                    task_id="another-task",
-                    account_id=11,
-                    raw_text="昨天照片准",
-                    normalized_text="昨天照片准",
-                    text_fingerprint="previous-photo-memory",
-                    semantic_cluster="photo_accuracy",
-                    status="success",
-                    planned_at=now_value - timedelta(minutes=1),
-                    sent_at=now_value - timedelta(minutes=1),
-                ),
-            ]
-        )
-        task = Task(
-            id="task-slot-retry",
-            tenant_id=1,
-            name="slot retry",
-            type="group_ai_chat",
-            status="running",
-            account_config={"selection_mode": "all", "max_concurrent": 10, "cooldown_per_account_minutes": 0},
-            pacing_config={"max_actions_per_hour": 120},
-            type_config={
-                "target_group_id": 7,
-                "messages_per_round_mode": "manual",
-                "messages_per_round": 2,
-                "reply_min_per_round": 0,
-                "allow_account_repeat": False,
-                "silent_mode_enabled": False,
-                "fact_anchor_required": False,
-                "low_confidence_silence_enabled": False,
-            },
-            stats={},
-        )
-        session.add(task)
-        session.commit()
-
-        assert group_ai_chat.build_plan(session, task) == 2
-        actions = list(session.scalars(select(Action).where(Action.task_id == task.id, Action.status == "pending").order_by(Action.payload["turn_index"])))
-        assert [action.payload["ai_generation_status"] for action in actions] == ["pending", "pending"]
-        _dispatch_planned_ai_actions(
+        task = seed_ai_planner_scope(
             session,
-            monkeypatch,
-            actions,
-            normal_generator=fake_generate,
+            now_value,
+            AiPlannerScenario(
+                task_id="task-slot-retry",
+                task_name="slot retry",
+                profile_summaries=("青年短句，爱问价格，少表情", "中年短句，接话补充"),
+                messages_per_round=2,
+                tenant_ai_enabled=True,
+                emoji_policy="少表情，不连续发表情",
+                include_previous_photo_memory=True,
+            ),
         )
+        assert group_ai_chat.build_plan(session, task) == 2
+        actions = list(session.scalars(select(Action).where(
+            Action.task_id == task.id,
+            Action.status == "pending",
+        ).order_by(Action.payload["turn_index"])))
+        assert [action.payload["ai_generation_status"] for action in actions] == ["pending", "pending"]
+        _dispatch_planned_ai_actions(session, monkeypatch, actions, normal_generator=fake_generate)
         action_states = [
             (action.account_id, action.status, dict(action.payload or {}), dict(action.result or {}))
             for action in actions
         ]
-
-    assert [config["_ai_fallback_stage"] for config in generated_configs] == [
-        "primary_m3",
-        "fallback_m25",
-        "primary_m3",
-    ]
-    assert [state[0] for state in action_states] == [11, 12]
-    assert [state[2]["slot_id"] for state in action_states] == ["task-slot-retry:cycle:1:turn:1", "task-slot-retry:cycle:1:turn:2"]
-    assert [state[2]["rewrite_attempts"] for state in action_states] == [0, 0]
-    assert [state[2]["message_text"] for state in action_states] == ["花花老师价格大概多少", "主任最近约新妹子了吗"]
-    assert [state[2]["ai_generation_status"] for state in action_states] == ["ready", "ready"]
-    assert [state[1] for state in action_states] == ["success", "success"]
+    assert_quality_retry_states(generated_configs, action_states)
 
 
 @pytest.mark.no_postgres
@@ -4725,44 +4362,19 @@ def test_group_ai_planner_defers_voice_profile_match_to_dispatcher(monkeypatch):
         return _slot_bound_contents(config, ["😀😀"]), 3
 
     with Session(engine) as session:
-        session.add(Tenant(id=1, name="默认运营空间"))
-        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True))
-        session.add(TgAccount(id=11, tenant_id=1, display_name="账号A", phone_masked="+861***0011", status="在线", session_ciphertext="session-a"))
-        session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True))
-        session.add(TgAccountOnlineState(tenant_id=1, account_id=11, desired_online=True, online_status="online", stale_after_at=now_value + timedelta(minutes=5)))
-        session.add(
-            AiAccountVoiceProfile(
-                tenant_id=1,
-                account_id=11,
-                version=2,
-                short_prompt_summary="青年短句，少表情，不连续发表情",
+        task = seed_ai_planner_scope(
+            session,
+            now_value,
+            AiPlannerScenario(
+                task_id="task-voice-profile-mismatch",
+                task_name="面具校验",
+                profile_summaries=("青年短句，少表情，不连续发表情",),
                 emoji_policy="少表情，不连续发表情",
-                quality_status="active",
-                status="active",
-            )
+                profile_versions=(2,),
+                max_concurrent=1,
+                include_allow_repeat=False,
+            ),
         )
-        task = Task(
-            id="task-voice-profile-mismatch",
-            tenant_id=1,
-            name="面具校验",
-            type="group_ai_chat",
-            status="running",
-            account_config={"selection_mode": "all", "max_concurrent": 1, "cooldown_per_account_minutes": 0},
-            pacing_config={"max_actions_per_hour": 120},
-            type_config={
-                "target_group_id": 7,
-                "messages_per_round_mode": "manual",
-                "messages_per_round": 1,
-                "reply_min_per_round": 0,
-                "silent_mode_enabled": False,
-                "fact_anchor_required": False,
-                "low_confidence_silence_enabled": False,
-            },
-            stats={},
-        )
-        session.add(task)
-        session.commit()
-
         assert group_ai_chat.build_plan(session, task) == 1
         actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
         assert actions[0].payload["ai_generation_status"] == "pending"
@@ -4792,42 +4404,18 @@ def test_group_ai_planner_defers_stance_check_to_dispatcher(monkeypatch):
         return _slot_bound_contents(config, ["王老师这个绝对可以，闭眼冲就行"]), 3
 
     with Session(engine) as session:
-        session.add(Tenant(id=1, name="默认运营空间"))
-        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True))
-        session.add(TgAccount(id=11, tenant_id=1, display_name="账号A", phone_masked="+861***0011", status="在线", session_ciphertext="session-a"))
-        session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True))
-        session.add(TgAccountOnlineState(tenant_id=1, account_id=11, desired_online=True, online_status="online", stale_after_at=now_value + timedelta(minutes=5)))
-        session.add(_voice_profile(11, "青年短句，谨慎接话"))
-        session.add(
-            AiAccountGroupStanceMemory(
-                tenant_id=1,
-                group_id=7,
-                account_id=11,
-                summary="刚围绕王老师表达过观望，别突然强夸",
-            )
+        task = seed_ai_planner_scope(
+            session,
+            now_value,
+            AiPlannerScenario(
+                task_id="task-stance-conflict",
+                task_name="立场冲突",
+                profile_summaries=("青年短句，谨慎接话",),
+                stance_summary="刚围绕王老师表达过观望，别突然强夸",
+                max_concurrent=1,
+                include_allow_repeat=False,
+            ),
         )
-        task = Task(
-            id="task-stance-conflict",
-            tenant_id=1,
-            name="立场冲突",
-            type="group_ai_chat",
-            status="running",
-            account_config={"selection_mode": "all", "max_concurrent": 1, "cooldown_per_account_minutes": 0},
-            pacing_config={"max_actions_per_hour": 120},
-            type_config={
-                "target_group_id": 7,
-                "messages_per_round_mode": "manual",
-                "messages_per_round": 1,
-                "reply_min_per_round": 0,
-                "silent_mode_enabled": False,
-                "fact_anchor_required": False,
-                "low_confidence_silence_enabled": False,
-            },
-            stats={},
-        )
-        session.add(task)
-        session.commit()
-
         assert group_ai_chat.build_plan(session, task) == 1
         actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
         assert actions[0].payload["ai_generation_status"] == "pending"
@@ -4953,35 +4541,22 @@ def test_group_ai_planner_defers_memory_duplicate_check_to_dispatcher(monkeypatc
         return _slot_bound_contents(config, ["花花老师身材服务真好"]), 5
 
     with Session(engine) as session:
-        session.add(Tenant(id=1, name="默认运营空间"))
-        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True))
-        session.add(TgAccount(id=11, tenant_id=1, display_name="账号A", phone_masked="+861***0011", status="在线", session_ciphertext="session-a"))
-        session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True))
-        session.add(TgAccountOnlineState(tenant_id=1, account_id=11, desired_online=True, online_status="online", stale_after_at=now_value + timedelta(minutes=5)))
-        session.add(_voice_profile(11, "青年短句，少总结"))
-        task = Task(
-            id="task-memory-duplicate",
-            tenant_id=1,
-            name="记忆重复",
-            type="group_ai_chat",
-            status="running",
-            account_config={"selection_mode": "all", "max_concurrent": 10, "cooldown_per_account_minutes": 0},
-            type_config={"target_group_id": 7, "messages_per_round_mode": "manual", "messages_per_round": 1, "fact_anchor_required": False},
-            stats={"force_bootstrap_once": True},
-        )
-        session.add(task)
-        memory = reserve_group_ai_message(
+        task = seed_ai_planner_scope(
             session,
-            tenant_id=1,
-            group_id=7,
-            task_id="previous-task",
-            account_id=11,
-            raw_text="花花老师身材服务真好",
-            now=now_value - timedelta(minutes=1),
+            now_value,
+            AiPlannerScenario(
+                task_id="task-memory-duplicate",
+                task_name="记忆重复",
+                profile_summaries=("青年短句，少总结",),
+                force_bootstrap=True,
+                include_pacing=False,
+                include_reply_min=False,
+                include_allow_repeat=False,
+                include_silent_mode=False,
+                include_low_confidence=False,
+            ),
         )
-        mark_group_ai_message_result(session, memory.id, status="success", action_id="previous-action")
-        session.commit()
-
+        seed_sent_memory(session, now_value, text="花花老师身材服务真好")
         assert group_ai_chat.build_plan(session, task) == 1
         action = session.scalar(select(Action).where(Action.task_id == task.id))
         assert action.payload["ai_generation_status"] == "pending"

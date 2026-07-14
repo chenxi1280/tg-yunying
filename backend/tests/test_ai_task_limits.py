@@ -4,7 +4,6 @@ import pytest
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
-from app.integrations.telegram import OperationResult, SendResult
 from app.database import Base
 from app.models import (
     AccountStatus,
@@ -31,15 +30,18 @@ from app.schemas import (
     TaskSettingsUpdate,
 )
 from app.services.task_center import dispatcher
-from app.services.task_center.ai_generation_dependencies import GenerationDependencies
 from app.services.task_center.executors import channel_comment, channel_comment_budget
-from app.services.task_center.ai_generator import AiGenerationUnavailable, GeneratedContent, generate_group_reply_messages
+from app.services.task_center.ai_generator import AiGenerationUnavailable, generate_group_reply_messages
 from app.services.task_center.channel_membership import gate_channel_membership
 from app.services.task_center.dispatcher import claim_actions, dispatch_action
 from app.services.task_center.executors.channel_comment import build_plan as build_channel_comment_plan
 from app.services.task_center.executors.group_ai_chat import build_plan as build_group_ai_chat_plan
 from app.services.task_center.service import precheck_task_creation, reset_task, resume_task, start_task, update_group_ai_chat_config
 from tests.ai_group_voice_profile_fixtures import assume_default_ai_group_voice_profiles
+from tests.ai_task_limits_test_support import (
+    configure_closed_loop_dispatch,
+    seed_membership_closed_loop,
+)
 
 
 NOW = datetime(2026, 5, 30, 10, 0, 0)
@@ -904,64 +906,16 @@ def test_group_ai_reply_target_check_does_not_scan_irrelevant_history(monkeypatc
 def test_group_ai_hard_hourly_membership_to_send_dispatch_closed_loop(monkeypatch):
     dispatcher._ACTION_RESERVATIONS.clear()
     dispatcher._IN_FLIGHT_ACCOUNTS.clear()
-
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: NOW)
     monkeypatch.setattr("app.services.task_center.dispatcher._now", lambda: NOW)
-    monkeypatch.setattr("app.services.task_center.dispatcher.credentials_for_account", lambda *_args, **_kwargs: object())
-    monkeypatch.setattr("app.services.task_center.dispatcher.gateway.ensure_channel_membership", lambda *_args, **_kwargs: OperationResult(True, "已处理", detail="joined"))
-    monkeypatch.setattr("app.services.task_center.dispatcher.gateway.probe_target_capabilities", lambda *_args, **_kwargs: OperationResult(True, detail="可发言"))
-    monkeypatch.setattr("app.services.task_center.dispatcher.gateway.send_message", lambda *_args, **_kwargs: SendResult(True, remote_message_id="tg-ok"))
-    monkeypatch.setattr("app.services.task_center.dispatcher.gateway.send_message_to_target", lambda *_args, **_kwargs: SendResult(True, remote_message_id="tg-ok"))
-    def normal_generator(_session, _tenant_id, config, *, count, **_kwargs):
-        slots = list(config["generation_slots"])
-        return [
-            GeneratedContent(
-                f"晚点还有安排吗{index}",
-                slot_id=slot["slot_id"],
-                sequence_index=index + 1,
-            )
-            for index, slot in enumerate(slots)
-        ], count
-
-    dependencies = GenerationDependencies(
-        normal_generator=normal_generator,
-        reply_generator=lambda *_args, **_kwargs: pytest.fail("hard-hourly action must not reply"),
-        reply_target_probe=lambda *_args, **_kwargs: pytest.fail("hard-hourly action must not probe reply"),
-        reply_messages_fetcher=lambda *_args, **_kwargs: pytest.fail("hard-hourly action must not fetch reply"),
-    )
+    dependencies = configure_closed_loop_dispatch(monkeypatch)
 
     with _session() as session:
-        _add_tenant(session)
-        session.add(
-            OperationTarget(
-                id=7,
-                tenant_id=1,
-                target_type="group",
-                tg_peer_id="-1007",
-                title="测试群目标",
-                can_send=False,
-                auth_status="只读",
-            )
-        )
-        _add_group(session, account_count=3)
-        group = session.get(TgGroup, 7)
-        group.can_send = False
-        group.slowmode_seconds = None
-        for link in session.scalars(select(TgGroupAccount).where(TgGroupAccount.group_id == 7)):
-            link.can_send = False
-        task = _add_group_task(
+        task, group = seed_membership_closed_loop(
             session,
-            {
-                "target_operation_target_id": 7,
-                "messages_per_round_mode": "manual",
-                "messages_per_round": 3,
-                "reply_min_per_round": 0,
-                "participation_rate": 1,
-                "participation_jitter": 0,
-                "hard_hourly_target_enabled": True,
-                "hourly_min_messages": 3,
-                "hard_hourly_strategy": "force_planning",
-            },
+            add_tenant=_add_tenant,
+            add_group=_add_group,
+            add_group_task=_add_group_task,
         )
         session.commit()
 

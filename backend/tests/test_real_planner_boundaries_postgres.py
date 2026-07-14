@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import timedelta
-from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import delete, func, select
@@ -27,6 +26,7 @@ from app.models import (
 from app.services._common import _now
 from app.services.task_center import service as task_service
 from app.services.task_center.executors import group_ai_chat
+from tests.real_planner_boundaries_test_support import configure_real_planner_test
 
 
 pytestmark = pytest.mark.allow_missing_rule_binding
@@ -64,22 +64,8 @@ def test_postgres_real_planner_preserves_round_sizes_and_drains_580(
     Base.metadata.create_all(engine)
     _cleanup()
     timestamp = _now().replace(hour=23, minute=59 if drain_all else 30, second=0, microsecond=0)
-    monkeypatch.setattr(group_ai_chat, "_now", lambda: timestamp)
-    monkeypatch.setattr(
-        group_ai_chat,
-        "get_settings",
-        lambda: SimpleNamespace(daily_coverage_plan_batch_limit=50),
-    )
     transaction_chunks: list[int] = []
-    original_plan_batch = task_service._plan_due_task_batch
-
-    def observe_plan_transaction(*args, **kwargs):
-        result = original_plan_batch(*args, **kwargs)
-        if result[1] > 0:
-            transaction_chunks.append(result[1])
-        return result
-
-    monkeypatch.setattr(task_service, "_plan_due_task_batch", observe_plan_transaction)
+    configure_real_planner_test(monkeypatch, timestamp, transaction_chunks)
     try:
         _seed_real_planner_scope(messages_per_round, timestamp)
         actual_rounds = _run_real_planner_until(ACCOUNT_COUNT) if drain_all else _run_real_planner_rounds(1)

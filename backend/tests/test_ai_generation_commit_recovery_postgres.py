@@ -8,7 +8,7 @@ from time import monotonic
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import delete, event, select
+from sqlalchemy import delete, event
 
 from app.database import Base, SessionLocal, engine
 from app.integrations.telegram import OperationResult, SendResult
@@ -32,6 +32,11 @@ from app.services.task_center.ai_generation_dependencies import GenerationDepend
 from app.services.task_center.ai_generation_pipeline import SlotGenerationResult
 from app.services.task_center.ai_generator import GeneratedContent
 from app.services.task_center.payloads import SendMessagePayload
+from tests.ai_generation_commit_recovery_test_support import (
+    assert_cas_fence_preserved,
+    assert_persist_unknown_state,
+    assert_recovery_completed,
+)
 
 
 pytestmark = pytest.mark.allow_missing_rule_binding
@@ -81,14 +86,7 @@ def test_phase_c_commit_failure_recovers_cached_ai_result_without_second_generat
             generation_dependencies=dependencies,
         ) is True
 
-        session.refresh(action)
-        session.refresh(coverage)
-        assert action.status == "pending"
-        assert action.payload["ai_generation_status"] == "ai_result_persist_unknown"
-        assert action.payload["ai_generation_result_cache"]["content"] == "就按这个节奏来"
-        assert coverage.state == "reserved"
-        assert observed == {"provider_calls": 1, "gateway_calls": 0}
-        assert list(session.scalars(select(AiGroupMessageMemory))) == []
+        assert_persist_unknown_state(session, action, coverage=coverage, observed=observed)
 
         old_claim_owner = action.payload["ai_generation_claim_owner"]
         old_claim_token = action.payload["ai_generation_claim_token"]
@@ -112,14 +110,7 @@ def test_phase_c_commit_failure_recovers_cached_ai_result_without_second_generat
             generation_dependencies=dependencies,
         ) is True
 
-        assert action.status == "success", action.result.get("error_code")
-        assert action.payload["ai_generation_status"] == "ready"
-        assert action.payload["ai_generation_result_cache"] == {}
-        assert observed == {"provider_calls": 1, "gateway_calls": 1}
-        memory = session.scalar(select(AiGroupMessageMemory).where(AiGroupMessageMemory.action_id == action.id))
-        assert memory.status == "success"
-        assert coverage.state == "confirmed"
-        assert coverage.confirmed_count == 1
+        assert_recovery_completed(session, action, coverage=coverage, observed=observed)
     assert transaction_durations and max(transaction_durations) < 5.0
 
 
@@ -219,14 +210,7 @@ def test_phase_c_rejects_old_worker_after_second_session_replaces_fence(monkeypa
         session.rollback()
 
     with SessionLocal() as session:
-        action = session.get(Action, CAS_SCOPE.action_id)
-        assert action.payload["ai_generation_claim_owner"] == "new-worker"
-        assert action.payload["ai_generation_claim_token"] == "new-token"
-        assert action.payload["ai_generation_attempt_id"] == "new-attempt"
-        assert action.payload["ai_generation_status"] == "generating"
-        assert session.scalar(select(AiGroupMessageMemory).where(
-            AiGroupMessageMemory.action_id == CAS_SCOPE.action_id,
-        )) is None
+        assert_cas_fence_preserved(session, CAS_SCOPE.action_id)
 
 
 def test_stale_generation_started_provider_recovers_as_persist_unknown() -> None:
