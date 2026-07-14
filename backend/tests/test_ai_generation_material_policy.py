@@ -73,33 +73,7 @@ def test_phase_c_material_skip_fails_slot_and_releases_coverage() -> None:
 def _seed_material_action(
     session: Session, *, fallback: str,
 ) -> tuple[Action, SendMessagePayload]:
-    session.add(Tenant(id=1, name="默认运营空间"))
-    session.add(TgAccount(id=101, tenant_id=1, display_name="AI号", phone_masked="101"))
-    session.add(
-        TgGroup(
-            id=201,
-            tenant_id=1,
-            tg_peer_id="-100201",
-            title="素材群",
-            auth_status="已授权运营",
-            can_send=True,
-        ),
-    )
-    session.add(
-        Material(
-            id=9301,
-            tenant_id=1,
-            title="围观表情",
-            material_type="表情包",
-            content="https://trusted.example.com/watch.webp",
-            tags="围观,表情包",
-            emoji_asset_kind="image_meme",
-            cache_ready_status="ready",
-            tg_cache_peer_id="cache-peer",
-            tg_cache_message_id="9301",
-            asset_fingerprint="fp-9301",
-        ),
-    )
+    _seed_material_dependencies(session)
     task = Task(id="material-task", tenant_id=1, name="素材任务", type="group_ai_chat")
     action = Action(
         id="material-action",
@@ -128,6 +102,36 @@ def _seed_material_action(
     )
     action.payload = payload.model_dump(mode="json")
     return action, payload
+
+
+def _seed_material_dependencies(session: Session) -> None:
+    session.add(Tenant(id=1, name="默认运营空间"))
+    session.add(TgAccount(id=101, tenant_id=1, display_name="AI号", phone_masked="101"))
+    session.add(
+        TgGroup(
+            id=201,
+            tenant_id=1,
+            tg_peer_id="-100201",
+            title="素材群",
+            auth_status="已授权运营",
+            can_send=True,
+        ),
+    )
+    session.add(
+        Material(
+            id=9301,
+            tenant_id=1,
+            title="围观表情",
+            material_type="表情包",
+            content="https://trusted.example.com/watch.webp",
+            tags="围观,表情包",
+            emoji_asset_kind="image_meme",
+            cache_ready_status="ready",
+            tg_cache_peer_id="cache-peer",
+            tg_cache_message_id="9301",
+            asset_fingerprint="fp-9301",
+        ),
+    )
 
 
 def _generated_data(payload: SendMessagePayload, *, material_intent: str) -> dict:

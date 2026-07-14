@@ -156,80 +156,13 @@ def test_rule_material_policy_selects_ready_material_for_preview_and_ai_action(m
         "send_message",
         lambda *_args, **_kwargs: SendResult(True, remote_message_id="material-ok"),
     )
-    dependencies = GenerationDependencies(
-        normal_generator=lambda _session, _tenant_id, config, **_kwargs: (
-            [
-                GeneratedContent(
-                    "素材规则触发",
-                    material_intent="表情包:围观",
-                    allow_material=True,
-                    slot_id=config["generation_slots"][0]["slot_id"],
-                    sequence_index=1,
-                ),
-            ],
-            0,
-        ),
-        reply_generator=lambda *_args, **_kwargs: pytest.fail("normal material action must not reply"),
-        reply_target_probe=lambda *_args, **_kwargs: pytest.fail("normal material action must not probe"),
-        reply_messages_fetcher=lambda *_args, **_kwargs: pytest.fail("normal material action must not fetch replies"),
-    )
+    dependencies = _material_generation_dependencies()
 
     with Session(engine) as session:
-        session.add(Tenant(id=1, name="默认运营空间"))
-        account = TgAccount(id=101, tenant_id=1, display_name="AI号", phone_masked="101", status=AccountStatus.ACTIVE.value, session_ciphertext="session")
-        group = TgGroup(id=201, tenant_id=1, tg_peer_id="-100201", title="素材群", auth_status="已授权运营", can_send=True, listener_interval_seconds=0)
-        session.add_all([account, group, TgGroupAccount(tenant_id=1, group_id=201, account_id=101, can_send=True)])
-        session.add(
-            Material(
-                id=9301,
-                tenant_id=1,
-                title="围观表情",
-                material_type="表情包",
-                content="https://trusted.example.com/watch.webp",
-                tags="围观,表情包",
-                emoji_asset_kind="image_meme",
-                cache_ready_status="ready",
-                tg_cache_peer_id="cache-peer",
-                tg_cache_message_id="9301",
-                asset_fingerprint="fp-9301",
-            )
-        )
-        rule_set = create_rule_set(
-            session,
-            1,
-            RuleSetCreate(
-                name="素材规则",
-                task_types=["group_ai_chat"],
-                routing={
-                    "material_policy": {
-                        "enabled": True,
-                        "material_type": "表情包",
-                        "required_tags": ["围观"],
-                        "action": "append_media",
-                        "fallback": "text_only",
-                    }
-                },
-            ),
-            "tester",
-        )
+        _seed_ready_material_target(session)
+        rule_set = _create_material_rule(session, required_tags=["围观"])
         preview = preview_rules(session, 1, "素材规则触发", test_type="group_ai_chat", rule_set_version_id=rule_set.active_version_id)
-        task = Task(
-            id="ai-material-rule",
-            tenant_id=1,
-            name="AI素材规则",
-            type="group_ai_chat",
-            status="running",
-            account_config={"selection_mode": "manual", "account_ids": [101], "cooldown_per_account_minutes": 0},
-            pacing_config={"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0},
-            type_config={
-                    "target_group_id": 201,
-                    "messages_per_round_mode": "manual",
-                    "messages_per_round": 1,
-                "participation_rate": 1,
-                "rule_set_version_id": rule_set.active_version_id,
-            },
-            stats={"force_bootstrap_once": True},
-        )
+        task = _material_rule_task("ai-material-rule", rule_set.active_version_id)
         session.add(task)
         session.commit()
 
@@ -248,6 +181,68 @@ def test_rule_material_policy_selects_ready_material_for_preview_and_ai_action(m
     assert action_payload["ai_generation_status"] == "ready"
     assert action_payload["rule_trace"]["material_id"] == 9301
     assert action_payload["rule_trace"]["material_policy"]["required_tags"] == ["围观"]
+
+
+def _material_generation_dependencies() -> GenerationDependencies:
+    def generate(_session, _tenant_id, config, **_kwargs):
+        return [GeneratedContent(
+            "素材规则触发",
+            material_intent="表情包:围观",
+            allow_material=True,
+            slot_id=config["generation_slots"][0]["slot_id"],
+            sequence_index=1,
+        )], 0
+
+    return GenerationDependencies(
+        normal_generator=generate,
+        reply_generator=lambda *_args, **_kwargs: pytest.fail("normal material action must not reply"),
+        reply_target_probe=lambda *_args, **_kwargs: pytest.fail("normal material action must not probe"),
+        reply_messages_fetcher=lambda *_args, **_kwargs: pytest.fail("normal material action must not fetch replies"),
+    )
+
+
+def _seed_ready_material_target(session: Session) -> None:
+    session.add(Tenant(id=1, name="默认运营空间"))
+    account = TgAccount(id=101, tenant_id=1, display_name="AI号", phone_masked="101", status=AccountStatus.ACTIVE.value, session_ciphertext="session")
+    group = TgGroup(id=201, tenant_id=1, tg_peer_id="-100201", title="素材群", auth_status="已授权运营", can_send=True, listener_interval_seconds=0)
+    session.add_all([account, group, TgGroupAccount(tenant_id=1, group_id=201, account_id=101, can_send=True)])
+    session.add_all([
+        Material(id=9301, tenant_id=1, title="围观表情", material_type="表情包", content="https://trusted.example.com/watch.webp", tags="围观,表情包", emoji_asset_kind="image_meme", cache_ready_status="ready", tg_cache_peer_id="cache-peer", tg_cache_message_id="9301", asset_fingerprint="fp-9301"),
+        Material(id=9302, tenant_id=1, title="欢迎表情", material_type="表情包", content="https://trusted.example.com/welcome.webp", tags="欢迎,表情包", emoji_asset_kind="image_meme", cache_ready_status="ready", tg_cache_peer_id="cache-peer", tg_cache_message_id="9302", asset_fingerprint="fp-9302"),
+    ])
+
+
+def _create_material_rule(session: Session, *, required_tags: list[str] | None = None):
+    if required_tags is None:
+        policy = {
+            "enabled": True, "material_type": "表情包", "mode": "latest",
+            "intent_tag_map": {"表情包:围观": ["围观"]}, "fallback": "text_only",
+        }
+    else:
+        policy = {
+            "enabled": True, "material_type": "表情包",
+            "required_tags": required_tags, "action": "append_media", "fallback": "text_only",
+        }
+    return create_rule_set(
+        session,
+        1,
+        RuleSetCreate(name="素材规则", task_types=["group_ai_chat"], routing={"material_policy": policy}),
+        "tester",
+    )
+
+
+def _material_rule_task(task_id: str, rule_version_id: int) -> Task:
+    return Task(
+        id=task_id,
+        tenant_id=1,
+        name="AI素材规则",
+        type="group_ai_chat",
+        status="running",
+        account_config={"selection_mode": "manual", "account_ids": [101], "cooldown_per_account_minutes": 0},
+        pacing_config={"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0},
+        type_config={"target_group_id": 201, "messages_per_round_mode": "manual", "messages_per_round": 1, "participation_rate": 1, "rule_set_version_id": rule_version_id},
+        stats={"force_bootstrap_once": True},
+    )
 
 
 @pytest.mark.no_postgres
@@ -351,51 +346,9 @@ def test_ai_group_action_does_not_select_material_before_generation():
     Base.metadata.create_all(engine)
 
     with Session(engine) as session:
-        session.add(Tenant(id=1, name="默认运营空间"))
-        account = TgAccount(id=101, tenant_id=1, display_name="AI号", phone_masked="101", status=AccountStatus.ACTIVE.value, session_ciphertext="session")
-        group = TgGroup(id=201, tenant_id=1, tg_peer_id="-100201", title="素材群", auth_status="已授权运营", can_send=True, listener_interval_seconds=0)
-        session.add_all([account, group, TgGroupAccount(tenant_id=1, group_id=201, account_id=101, can_send=True)])
-        session.add_all(
-            [
-                Material(id=9301, tenant_id=1, title="围观表情", material_type="表情包", content="https://trusted.example.com/watch.webp", tags="围观,表情包", emoji_asset_kind="image_meme", cache_ready_status="ready", tg_cache_peer_id="cache-peer", tg_cache_message_id="9301", asset_fingerprint="fp-9301"),
-                Material(id=9302, tenant_id=1, title="欢迎表情", material_type="表情包", content="https://trusted.example.com/welcome.webp", tags="欢迎,表情包", emoji_asset_kind="image_meme", cache_ready_status="ready", tg_cache_peer_id="cache-peer", tg_cache_message_id="9302", asset_fingerprint="fp-9302"),
-            ]
-        )
-        rule_set = create_rule_set(
-            session,
-            1,
-            RuleSetCreate(
-                name="素材意图规则",
-                task_types=["group_ai_chat"],
-                routing={
-                    "material_policy": {
-                        "enabled": True,
-                        "material_type": "表情包",
-                        "mode": "latest",
-                        "intent_tag_map": {"表情包:围观": ["围观"]},
-                        "fallback": "text_only",
-                    }
-                },
-            ),
-            "tester",
-        )
-        task = Task(
-            id="ai-material-intent",
-            tenant_id=1,
-            name="AI素材意图",
-            type="group_ai_chat",
-            status="running",
-            account_config={"selection_mode": "manual", "account_ids": [101], "cooldown_per_account_minutes": 0},
-            pacing_config={"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0},
-            type_config={
-                "target_group_id": 201,
-                "messages_per_round_mode": "manual",
-                "messages_per_round": 1,
-                "participation_rate": 1,
-                "rule_set_version_id": rule_set.active_version_id,
-            },
-            stats={"force_bootstrap_once": True},
-        )
+        _seed_ready_material_target(session)
+        rule_set = _create_material_rule(session)
+        task = _material_rule_task("ai-material-intent", rule_set.active_version_id)
         session.add(task)
         session.commit()
 
