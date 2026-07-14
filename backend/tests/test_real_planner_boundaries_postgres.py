@@ -68,7 +68,7 @@ def test_postgres_real_planner_preserves_round_sizes_and_drains_580(
     monkeypatch.setattr(
         group_ai_chat,
         "get_settings",
-        lambda: SimpleNamespace(daily_coverage_plan_batch_limit=20),
+        lambda: SimpleNamespace(daily_coverage_plan_batch_limit=50),
     )
     transaction_chunks: list[int] = []
     original_plan_batch = task_service._plan_due_task_batch
