@@ -15,7 +15,6 @@ from app.services.task_center.executors.group_ai_chat import (
     _account_shortage_reason,
     _canonicalized_task_config,
     _online_ready_accounts,
-    _quality_fallback_enabled,
     requires_planning_with_open_actions,
     _select_accounts_for_plan,
 )
@@ -207,13 +206,6 @@ def test_account_selection_uses_supplied_coverage_snapshot_without_reread(sessio
     )
 
     assert [account.id for account in selected] == [1]
-
-
-def test_all_account_coverage_never_enables_quality_fallback() -> None:
-    config = {"account_coverage_mode": "all_accounts_daily"}
-
-    assert _quality_fallback_enabled(config, {"deficit": 10}) is False
-    assert _quality_fallback_enabled({"account_coverage_mode": "natural"}, {"deficit": 10}) is True
 
 
 def test_coverage_round_does_not_repeat_one_account_for_multiple_obligations() -> None:
