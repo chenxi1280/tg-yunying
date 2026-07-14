@@ -3427,8 +3427,8 @@ listener_source_state
 
 | Role | 输入 | 输出 | 禁止事项 |
 | --- | --- | --- | --- |
-| Planner | running tasks、规则、账号池、上下文 | pending actions、next_run_at、stats | 不调用 TG API |
-| Dispatcher | due pending actions | action result、execution_attempts、账号状态、任务 stats | 不生成新业务 action |
+| Planner | running tasks、规则、账号池、上下文 | pending actions、next_run_at、stats | 不调用 TG API、AI Provider 或远端上下文 |
+| Dispatcher | due pending actions | action result、execution_attempts、账号状态、任务 stats | 不生成新业务 action；外部 AI / TG 调用不得持有 DB 事务 |
 | Listener | listener source、监听账号、源目标 | 上下文、监听水位、源媒体缓存、事件 | 不发送业务消息 |
 | Recovery | 超时 claim、超时 lease、worker 失联、unknown | 恢复 action、任务错误摘要、审计、unknown membership 有界补偿复检 | 不能无上限调用 TG；不能自动重发业务消息 |
 | Account Security | 账号资料初始化、设置二步密码、清理登录设备、备用 session 补齐 / 自愈批次 | 执行 `tg_account_security_batch_items` pending/waiting 项，回写 profile / username / avatar / 2FA / device / standby session 结果 | 调用 TG，必须独立运行；普通账号维护凭据默认直连，不读取账号级 `proxy_id` |
@@ -3451,11 +3451,11 @@ AI 活跃群 Planner 需要额外满足：
 - 每次 Planner 只规划一个 Cycle；本轮计划数按 `min(每轮上限, 可发言账号容量, 当前小时剩余额度, 全局 / 账号 / 目标风控剩余额度)` 计算。
 - 自动每轮计划数不得使用固定 12 轮 / 小时之类常量；必须根据当前小时轮数、小时发送硬上限和 ready pool 动态推导。
 - 曲线不得参与 `participation_rate * ramp_ratio` 这类双重降速；参与账号比例只影响多轮覆盖排序。
-- 生成结果必须记录漏斗：请求 Turn 数、AI 返回候选数、清洗过滤数、质量过滤数、最终创建 action 数。
-- 引用回复规划必须发生在 AI 生成前。Planner 先确定本轮总 Turn，再按 `reply_min_per_round` 拆出引用回复 Turn，选择可回复消息，组装引用回复专用 Prompt，最后创建带引用 payload 的 `send_message` action。
+- Action 编排与 Dispatcher 生成结果必须记录漏斗：请求 Turn 数、AI 返回候选数、清洗过滤数、质量过滤数、最终 ready / 终结 action 数。
+- 引用回复规划必须发生在 AI 生成前。Planner 先确定本轮总 Turn，再按 `reply_min_per_round` 拆出引用回复 Turn，选择可回复消息，创建带固定引用目标和 `ai_generation_status=pending` 的 `send_message` action；Prompt 组装、AI 生成和 provider-backed 质量判断全部由 Dispatcher claim 提交后执行。
 - 引用回复 Turn 不能复用普通发言候选后再临时挂 `reply_to_message_id`；普通发言和引用回复是两类生成任务。引用回复候选不足时，本轮引用回复缺口必须写入任务 stats / last_error 或 generation 记录。
 - 引用回复对象必须按同租户同目标群跨任务排重。只要有效 AI 活群 action 已规划或已成功 / unknown 发送过同一个 `reply_to_message_id`，其它 AI 活群任务本轮不得再次选用该真人消息作为引用对象，避免多个任务短时间重复接同一句。
-- 普通发言候选数少于本轮请求 Turn 时，也必须写入 AI 候选不足状态和 stats，不能按实际返回数量静默少建 action 或把硬小时目标视为已规划。
+- 普通发言 AI 候选数少于本批 Action 数时，Dispatcher 必须写入 AI 候选不足状态和 stats，不能静默让部分 Action 进入 ready 或把硬小时目标视为已完成。
 - 硬小时目标采用延迟 AI 文案生成时，Dispatcher 批量补齐 pending `send_message` 文案也必须按批次完整性校验；AI 返回候选少于本批 action 数时，本批不得部分写入 `ai_generation_status=success`，必须让当前 action 以 AI 候选不足失败并记录任务 stats。
 - 生成预览接口不创建 action，但仍必须按请求数量校验 AI 候选完整性；短列表不是成功预览，必须暴露为 AI 候选不足。
 - 当配置保存影响轮次、每轮上限、小时上限或账号范围时，清理未来未执行主互动 action，并从当前时间按新配置重排；已经执行和已归档事实保留。
@@ -3483,7 +3483,8 @@ AI 活跃群 Planner 需要额外满足：
 频道评论 / 回复 Planner 需要额外满足：
 
 - 先按单条频道消息累计目标和本轮小时预算计算补差额，再按 `reply_min_per_message` 在补差额内拆出引用回复 action。
-- 引用回复 action 必须在 AI 生成前绑定具体讨论区评论或本任务历史成功评论；直接评论和引用回复分别走普通评论 Prompt 和引用回复 Prompt。
+- 引用回复 action 必须在 AI 生成前绑定具体讨论区评论或本任务历史成功评论；Planner 只创建带账号、频道消息、direct/reply、引用目标、预算和排期快照的 `ai_generation_status=pending` Action，直接评论和引用回复分别由 Dispatcher 走普通评论 Prompt 和引用回复 Prompt。
+- 评论 `action_dedupe_key` 必须只依赖任务、频道消息、账号、direct/reply、引用目标和规划槽位等稳定事实，不依赖尚未生成的文本；Planner 禁止调用 AI 生成、重描述或 provider-backed 质量判断。
 - `reply_min_per_message` 不能额外抬高单条频道消息总目标；当本轮补差额小于最少引用回复数时，以本轮补差额为可规划上限，并记录可见差异。
 - 引用池不足、讨论区评论未采集、历史成功评论缺少 Telegram 远端消息 ID 或 AI 未生成足够引用回复候选时，不得把直接评论标记成引用回复。
 
@@ -3530,11 +3531,14 @@ DB 短事务确认执行
 要求：
 
 - Telegram API 调用期间不能持有数据库事务。
+- AI 活跃群和频道评论的 AI 生成、fallback、重描述、provider-backed 质量判断期间不能持有数据库事务。Dispatcher 必须先用短事务 claim 并提交，再执行外部 AI，最后按 claim token / generation attempt 短事务 CAS 写入文本、生成审计和 `ai_generation_status=ready`。
+- AI 最终失败写 `generation_failed`；AI 已返回但结果落库不确定写 `ai_result_persist_unknown` 并恢复同一 Action；只有 Telegram Gateway 调用边界后结果不明才写 `unknown_after_send`，且不得自动重发。
 - 同一账号默认只能有一个 executing action。
 - 进入 Gateway 调用边界后结果未知，必须标记 `unknown_after_send`，不能自动重发。
 - FloodWait、SlowMode、账号受限、代理异常、目标权限不足和内容拦截必须分类。
 - Dispatcher 不负责选择引用对象，也不负责把普通消息升级为引用回复。它只读取 action payload 中的 `reply_to_message_id`，并把该值传给 Telegram Gateway 的原生 `reply_to` / 评论回复参数。
 - 如果 action payload 标记为引用回复但缺少 `reply_to_message_id`，Dispatcher 必须按配置错误失败并暴露原因，不能静默普通发送。
+- 频道评论达到生命周期总上限后保持 `completed/next_run_at=null`；Recovery 不得因 pending 生成或旧错误恢复而重新启动任务。
 
 ### 5.4 Listener 要求
 
