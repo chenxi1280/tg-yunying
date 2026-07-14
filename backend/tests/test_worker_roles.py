@@ -248,6 +248,36 @@ def test_periodic_heartbeat_refreshes_database_and_local_health(monkeypatch):
     ]
 
 
+def test_periodic_local_heartbeat_runs_when_database_refresh_fails(monkeypatch, caplog):
+    from app import worker
+
+    calls: list[str] = []
+    wait_count = 0
+
+    class StopEvent:
+        def wait(self, _seconds: int) -> bool:
+            nonlocal wait_count
+            wait_count += 1
+            return wait_count > 1
+
+    def fail_database(_role: str, _limit: int) -> None:
+        calls.append("database")
+        raise RuntimeError("database unavailable")
+
+    def fail_local() -> None:
+        calls.append("local")
+        raise OSError("local heartbeat unavailable")
+
+    monkeypatch.setattr(worker, "_record_loop_heartbeat", fail_database)
+    monkeypatch.setattr(worker, "_write_local_healthcheck_heartbeat", fail_local)
+
+    worker._periodic_heartbeat_loop("planner", 10, StopEvent())
+
+    assert calls == ["database", "local"]
+    assert "worker database heartbeat refresh failed role=planner" in caplog.text
+    assert "worker local heartbeat refresh failed role=planner" in caplog.text
+
+
 def test_server_compose_worker_healthcheck_uses_local_heartbeat():
     repo_root = Path(__file__).resolve().parents[2]
     compose = (repo_root / "docker-compose.server.yml").read_text(encoding="utf-8")
