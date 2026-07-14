@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import tempfile
 import threading
 import time
 import traceback
@@ -213,9 +214,24 @@ def _record_loop_heartbeat(role: str, limit: int) -> None:
 def _write_local_healthcheck_heartbeat() -> None:
     heartbeat_path = Path(os.getenv("WORKER_LOCAL_HEALTHCHECK_FILE", LOCAL_HEALTHCHECK_FILE))
     heartbeat_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = heartbeat_path.with_name(f"{heartbeat_path.name}.tmp")
-    tmp_path.write_text(str(int(time.time())), encoding="ascii")
-    tmp_path.replace(heartbeat_path)
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="ascii",
+            dir=heartbeat_path.parent,
+            prefix=f"{heartbeat_path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as tmp_file:
+            tmp_path = Path(tmp_file.name)
+            tmp_file.write(str(int(time.time())))
+            tmp_file.flush()
+            os.fsync(tmp_file.fileno())
+        tmp_path.replace(heartbeat_path)
+    finally:
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
 
 
 def _start_periodic_heartbeat(role: str, limit: int) -> tuple[threading.Event, threading.Thread]:

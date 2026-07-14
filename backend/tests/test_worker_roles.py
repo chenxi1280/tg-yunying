@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -220,6 +222,45 @@ def test_worker_writes_local_healthcheck_heartbeat(monkeypatch, tmp_path):
     worker._write_local_healthcheck_heartbeat()
 
     assert heartbeat_file.read_text(encoding="ascii") == "1234567890"
+
+
+def test_worker_local_heartbeat_supports_concurrent_writers(monkeypatch, tmp_path):
+    from app import worker
+
+    heartbeat_file = tmp_path / "worker-heartbeat"
+    worker_count = 16
+    start = threading.Barrier(worker_count)
+    monkeypatch.setenv("WORKER_LOCAL_HEALTHCHECK_FILE", str(heartbeat_file))
+    monkeypatch.setattr(worker.time, "time", lambda: 1234567890)
+
+    def write_heartbeat() -> None:
+        start.wait()
+        worker._write_local_healthcheck_heartbeat()
+
+    with ThreadPoolExecutor(max_workers=worker_count) as pool:
+        futures = [pool.submit(write_heartbeat) for _ in range(worker_count)]
+
+    assert [future.exception() for future in futures] == [None] * worker_count
+    assert heartbeat_file.read_text(encoding="ascii") == "1234567890"
+    assert list(tmp_path.glob("worker-heartbeat*.tmp")) == []
+
+
+def test_worker_local_heartbeat_cleans_temp_file_on_replace_error(monkeypatch, tmp_path):
+    from app import worker
+
+    heartbeat_file = tmp_path / "worker-heartbeat"
+    monkeypatch.setenv("WORKER_LOCAL_HEALTHCHECK_FILE", str(heartbeat_file))
+
+    def fail_replace(_path: Path, _target: Path) -> None:
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(Path, "replace", fail_replace)
+
+    with pytest.raises(OSError, match="replace failed"):
+        worker._write_local_healthcheck_heartbeat()
+
+    assert list(tmp_path.glob("worker-heartbeat*.tmp")) == []
+    assert not heartbeat_file.exists()
 
 
 def test_periodic_heartbeat_refreshes_database_and_local_health(monkeypatch):
