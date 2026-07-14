@@ -12,6 +12,8 @@ from app.models import (
     ChannelMessage,
     ChannelMessageComment,
     OperationTarget,
+    RuleSet,
+    RuleSetVersion,
     Task,
     Tenant,
     TgAccount,
@@ -29,6 +31,7 @@ def comment_dispatch_session() -> Session:
 
 def seed_dispatch_scope(session: Session, *, reply: bool = False) -> Action:
     session.add(Tenant(id=1, name="评论 Dispatcher 测试"))
+    _seed_rules(session)
     _seed_channel_and_group(session)
     _seed_account(session)
     task = _comment_task()
@@ -38,6 +41,25 @@ def seed_dispatch_scope(session: Session, *, reply: bool = False) -> Action:
     session.add(action)
     session.commit()
     return action
+
+
+def _seed_rules(session: Session) -> None:
+    session.add(RuleSet(
+        id=61,
+        tenant_id=1,
+        name="评论默认规则",
+        status="active",
+        task_types=["channel_comment"],
+    ))
+    session.add(RuleSetVersion(
+        id=62,
+        tenant_id=1,
+        rule_set_id=61,
+        version=1,
+        status="published",
+        output_checks={},
+        transforms={},
+    ))
 
 
 def _seed_channel_and_group(session: Session) -> None:
@@ -113,6 +135,7 @@ def _comment_task() -> Task:
             "max_total_comments": 10,
             "max_total_comments_jitter": 0,
             "context_bound_schedule_window_seconds": 300,
+            "rule_set_version_id": 62,
         },
         stats={},
     )
@@ -153,6 +176,10 @@ def _comment_action(task: Task, *, reply: bool) -> Action:
             "ai_generation_claim_owner": "dispatcher-1",
             "ai_generation_claim_token": "claim-1",
             "ai_generation_attempt_history": [],
+            "rule_set_id": 61,
+            "rule_set_version_id": 62,
+            "resolved_rule_set_version_id": 62,
+            "rule_set_version": 1,
             **reply_payload,
         },
     )

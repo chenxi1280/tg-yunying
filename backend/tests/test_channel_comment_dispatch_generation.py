@@ -4,7 +4,16 @@ import pytest
 
 from app.ai_gateway import AiDraftCandidate, AiGenerationResult, AiUsage
 from app.integrations.telegram import SendResult
-from app.models import Action, AiProvider, ChannelMessageComment, Task, TenantAiSetting, TgGroup
+from app.models import (
+    Action,
+    AiProvider,
+    ChannelMessageComment,
+    RuleSet,
+    RuleSetVersion,
+    Task,
+    TenantAiSetting,
+    TgGroup,
+)
 from app.security import encrypt_secret
 from app.services.task_center import ai_generator, comment_generation_dispatch, dispatcher, service
 from app.services.task_center.ai_generator import AiGenerationUnavailable
@@ -71,6 +80,118 @@ def test_production_comment_provider_call_runs_without_database_transaction(monk
 
         assert action.status == "success"
         assert observed == {"provider": 1, "gateway": 1}
+
+
+def test_phase_b_uses_action_fixed_profile_snapshot_in_provider_config(monkeypatch) -> None:
+    observed = {"config": None, "gateway": 0}
+    with comment_dispatch_session() as session:
+        action = seed_dispatch_scope(session)
+        action.payload = {**action.payload, "profile_hit_summary": "规划时固定画像"}
+        task = session.get(Task, action.task_id)
+        task.type_config = {**task.type_config, "target_comment_profile": "规划后变化画像"}
+        session.commit()
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args: object())
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "reply_channel_message",
+            _gateway_sender(session, observed),
+        )
+
+        def generate(_session, _tenant_id, config, **_kwargs):
+            observed["config"] = dict(config)
+            return ["河东区这个位置方便吗"], 1
+
+        assert dispatcher.dispatch_action(
+            session,
+            action,
+            comment_generation_dependencies=CommentGenerationDependencies(
+                direct_generator=generate,
+                reply_generator=_forbidden_generation,
+            ),
+        ) is True
+
+        assert observed["config"]["target_comment_profile"] == "规划时固定画像"
+        assert observed["gateway"] == 1
+
+
+def test_phase_c_applies_fixed_rule_transform_before_ready(monkeypatch) -> None:
+    observed = {"gateway": 0}
+    with comment_dispatch_session() as session:
+        action = seed_dispatch_scope(session)
+        _bind_rule_version(
+            session,
+            action,
+            output_checks={"forbidden_keywords": ["引流"], "failure_strategy": "transform_once_drop"},
+            transforms={"keyword_replacements": {"引流": "活动"}},
+        )
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args: object())
+        monkeypatch.setattr(dispatcher.gateway, "reply_channel_message", _gateway_sender(session, observed))
+
+        assert dispatcher.dispatch_action(
+            session,
+            action,
+            comment_generation_dependencies=CommentGenerationDependencies(
+                direct_generator=lambda *_args, **_kwargs: (["这个引流细节挺清楚"], 1),
+                reply_generator=_forbidden_generation,
+            ),
+        ) is True
+
+        assert action.status == "success"
+        assert action.payload["comment_text"] == "这个活动细节挺清楚"
+        assert observed["gateway"] == 1
+
+
+def test_phase_c_fixed_rule_rejection_never_enters_gateway(monkeypatch) -> None:
+    with comment_dispatch_session() as session:
+        action = seed_dispatch_scope(session)
+        _bind_rule_version(
+            session,
+            action,
+            output_checks={"forbidden_keywords": ["引流"], "failure_strategy": "drop"},
+            transforms={},
+        )
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args: object())
+        monkeypatch.setattr(dispatcher.gateway, "reply_channel_message", _forbidden_gateway)
+
+        assert dispatcher.dispatch_action(
+            session,
+            action,
+            comment_generation_dependencies=CommentGenerationDependencies(
+                direct_generator=lambda *_args, **_kwargs: (["这个引流细节挺清楚"], 1),
+                reply_generator=_forbidden_generation,
+            ),
+        ) is True
+
+        assert action.status == "failed"
+        assert action.payload["ai_generation_status"] == "rule_output_rejected"
+        assert action.result["error_code"] == "rule_output_rejected"
+
+
+@pytest.mark.parametrize("history_source", ["managed", "remote"])
+def test_phase_c_rejects_same_message_historical_comment_duplicate(monkeypatch, history_source: str) -> None:
+    with comment_dispatch_session() as session:
+        action = seed_dispatch_scope(session)
+        duplicate = "河东区这个位置方便吗"
+        if history_source == "managed":
+            session.add(_historical_comment_action(action, duplicate))
+        else:
+            session.get(ChannelMessageComment, 51).content_preview = duplicate
+        session.commit()
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args: object())
+        monkeypatch.setattr(dispatcher.gateway, "reply_channel_message", _forbidden_gateway)
+
+        assert dispatcher.dispatch_action(
+            session,
+            action,
+            comment_generation_dependencies=CommentGenerationDependencies(
+                direct_generator=lambda *_args, **_kwargs: ([duplicate], 1),
+                reply_generator=_forbidden_generation,
+            ),
+        ) is True
+
+        assert action.status == "failed"
+        assert action.payload["ai_generation_status"] == "duplicate_rejected"
+        assert action.result["error_code"] == "duplicate_rejected"
 
 
 def test_invalid_reply_target_skips_generation_and_gateway_without_direct_downgrade(monkeypatch) -> None:
@@ -282,6 +403,51 @@ def _seed_ai_provider(session) -> None:
         max_tokens=1024,
     ))
     session.commit()
+
+
+def _bind_rule_version(session, action, *, output_checks: dict, transforms: dict) -> None:
+    session.add(RuleSet(
+        id=81,
+        tenant_id=1,
+        name="评论固定规则",
+        status="active",
+        task_types=["channel_comment"],
+    ))
+    session.add(RuleSetVersion(
+        id=82,
+        tenant_id=1,
+        rule_set_id=81,
+        version=1,
+        status="published",
+        output_checks=output_checks,
+        transforms=transforms,
+    ))
+    action.payload = {
+        **action.payload,
+        "rule_set_id": 81,
+        "rule_set_version_id": 82,
+        "resolved_rule_set_version_id": 82,
+        "rule_set_version": 1,
+    }
+    session.commit()
+
+
+def _historical_comment_action(current: Action, content: str) -> Action:
+    return Action(
+        id="historical-comment-action",
+        tenant_id=current.tenant_id,
+        task_id=current.task_id,
+        task_type="channel_comment",
+        action_type="post_comment",
+        account_id=current.account_id,
+        status="success",
+        payload={
+            "channel_target_id": 31,
+            "channel_message_id": 41,
+            "message_id": 9001,
+            "comment_text": content,
+        },
+    )
 
 
 def _direct_generator(session, observed):

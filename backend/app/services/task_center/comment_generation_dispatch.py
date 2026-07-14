@@ -8,9 +8,8 @@ from uuid import uuid4
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session, attributes
 
-from app.models import Action, ChannelMessage, ChannelMessageComment, OperationTarget, Task, TgGroup
+from app.models import Action, ChannelMessage, ChannelMessageComment, Task
 from app.services._common import _now
-from app.services.content_filters import ContentFilterResult, filter_outbound_content
 
 from .ai_generator import (
     AiGenerationUnavailable,
@@ -20,6 +19,7 @@ from .ai_generator import (
 )
 from .ai_generation_state import GenerationAttemptStale, mark_attempt_outcome
 from .channel_payloads import PostCommentPayload
+from .comment_generation_quality import evaluate_comment_generation_quality
 from .runtime_resources import _release_runtime_resources
 
 
@@ -116,7 +116,7 @@ def prepare_comment_generation_request(
         task_id=action.task_id,
         account_id=int(action.account_id or 0),
         payload=PostCommentPayload.model_validate(data),
-        config={**dict(task.type_config or {}), "_close_db_transaction_before_ai": True},
+        config=_generation_config(task, payload),
         attempt_id=attempt_id,
         request_id=request_id,
         claim_owner=str(data.get("ai_generation_claim_owner") or ""),
@@ -127,6 +127,16 @@ def prepare_comment_generation_request(
     session.commit()
     _validate_reply_target(session, action, task, request=request)
     return request
+
+
+def _generation_config(task: Task, payload: PostCommentPayload) -> dict:
+    config = dict(task.type_config or {})
+    config.pop("target_comment_profile", None)
+    summary = str(payload.profile_hit_summary or "").strip()
+    if summary:
+        config["target_comment_profile"] = summary
+    config["_close_db_transaction_before_ai"] = True
+    return config
 
 
 def _validate_generation_claim(action: Action, payload: PostCommentPayload) -> None:
@@ -261,19 +271,25 @@ def persist_comment_generation_result(
     tokens: int,
 ) -> None:
     action = _load_attempt_action(session, request)
-    filtered = _filter_comment_content(
+    decision = evaluate_comment_generation_quality(
         session,
         action,
         payload=request.payload,
         content=content,
     )
-    if not filtered.ok:
-        _fail_before_generation(action, "content_rejected", filtered.reason)
+    if not decision.allowed:
+        _fail_before_generation(
+            action,
+            decision.code,
+            decision.detail,
+            stage="ai_generation_quality",
+        )
+        action.result = {**(action.result or {}), "comment_quality_audit": decision.audit or {}}
         _cas_write_action(session, request, action)
         return
     data = dict(action.payload or {})
     data.update({
-        "comment_text": filtered.content,
+        "comment_text": decision.content,
         "ai_generation_status": "ready",
         "ai_generation_tokens": max(0, int(tokens or 0)),
         "ai_generation_result_cache": {},
@@ -285,30 +301,9 @@ def persist_comment_generation_result(
         "generation_stage": "generation_ready",
         "generation_outcome": "ready",
         "ai_generation_attempt_id": request.attempt_id,
+        "comment_quality_audit": decision.audit or {},
     }
     _cas_write_action(session, request, action)
-
-
-def _filter_comment_content(
-    session: Session,
-    action: Action,
-    *,
-    payload: PostCommentPayload,
-    content: str,
-):
-    channel = session.get(OperationTarget, int(payload.channel_target_id or 0))
-    group = session.scalar(select(TgGroup).where(
-        TgGroup.tenant_id == action.tenant_id,
-        TgGroup.tg_peer_id == (channel.tg_peer_id if channel else ""),
-    ))
-    if not group:
-        return ContentFilterResult(False, "", "频道评论缺少可校验的讨论组")
-    return filter_outbound_content(
-        session,
-        tenant_id=action.tenant_id,
-        group=group,
-        content=content,
-    )
 
 
 def _persist_generation_failure(session: Session, request: CommentGenerationRequest, detail: str) -> None:
@@ -359,7 +354,13 @@ def _persist_generation_unknown(
     _release_runtime_resources(action)
 
 
-def _fail_before_generation(action: Action, code: str, detail: str) -> None:
+def _fail_before_generation(
+    action: Action,
+    code: str,
+    detail: str,
+    *,
+    stage: str = "ai_generation",
+) -> None:
     data = dict(action.payload or {})
     data["ai_generation_status"] = code
     action.payload = data
@@ -375,8 +376,8 @@ def _fail_before_generation(action: Action, code: str, detail: str) -> None:
         "success": False,
         "error_code": code,
         "error_message": detail,
-        "validation_stage": "ai_reply_target" if code.startswith("reply_target") else "ai_generation",
-        "generation_stage": "ai_generation",
+        "validation_stage": "ai_reply_target" if code.startswith("reply_target") else stage,
+        "generation_stage": stage,
         "generation_outcome": code,
     }
 

@@ -22,12 +22,12 @@ from app.models import (
     TgGroupAccount,
 )
 from app.services._common import _now
-from app.services.content_filters import ContentFilterResult
 from app.services.task_center import comment_generation_dispatch, dispatcher
 from app.services.task_center.comment_generation_dispatch import (
     CommentGenerationDependencies,
     GenerationAttemptStale,
 )
+from app.services.task_center.comment_generation_quality import CommentQualityDecision
 
 
 TENANT_ID = 915_715
@@ -37,6 +37,8 @@ ACCOUNT_ID = TENANT_ID + 1
 CHANNEL_ID = TENANT_ID + 2
 MESSAGE_ID = TENANT_ID + 3
 GROUP_ID = TENANT_ID + 4
+RULE_SET_ID = TENANT_ID + 5
+RULE_VERSION_ID = TENANT_ID + 6
 
 
 def test_postgres_two_dispatchers_claim_and_generate_comment_once(monkeypatch) -> None:
@@ -110,9 +112,9 @@ def test_postgres_comment_generation_cas_rejects_worker_losing_token_after_quali
                         "ai_generation_claim_token": "claim-new",
                     }
                     contender.commit()
-                return ContentFilterResult(True, "PG CAS 评论", "")
+                return CommentQualityDecision(True, "PG CAS 评论")
 
-            monkeypatch.setattr(comment_generation_dispatch, "_filter_comment_content", lose_token)
+            monkeypatch.setattr(comment_generation_dispatch, "evaluate_comment_generation_quality", lose_token)
 
             with pytest.raises(GenerationAttemptStale):
                 comment_generation_dispatch.persist_comment_generation_result(
@@ -154,22 +156,8 @@ def _seed_scope() -> None:
     with SessionLocal() as session:
         session.add(Tenant(id=TENANT_ID, name="PG 评论 Dispatcher"))
         session.flush()
-        session.add(OperationTarget(
-            id=CHANNEL_ID,
-            tenant_id=TENANT_ID,
-            target_type="channel",
-            tg_peer_id=f"-100{CHANNEL_ID}",
-            title="PG 评论频道",
-            can_send=True,
-            auth_status="已授权运营",
-        ))
-        session.add(TgGroup(
-            id=GROUP_ID,
-            tenant_id=TENANT_ID,
-            tg_peer_id=f"-100{CHANNEL_ID}",
-            title="PG 评论讨论组",
-            auth_status="已授权运营",
-        ))
+        _seed_rule(session)
+        _seed_target(session)
         session.flush()
         session.add(ChannelMessage(
             id=MESSAGE_ID,
@@ -191,6 +179,45 @@ def _seed_scope() -> None:
         session.flush()
         session.add(_action())
         session.commit()
+
+
+def _seed_rule(session) -> None:
+    session.add(RuleSet(
+        id=RULE_SET_ID,
+        tenant_id=TENANT_ID,
+        name="PG 评论规则",
+        status="active",
+        task_types=["channel_comment"],
+    ))
+    session.flush()
+    session.add(RuleSetVersion(
+        id=RULE_VERSION_ID,
+        tenant_id=TENANT_ID,
+        rule_set_id=RULE_SET_ID,
+        version=1,
+        status="published",
+        output_checks={},
+        transforms={},
+    ))
+
+
+def _seed_target(session) -> None:
+    session.add(OperationTarget(
+        id=CHANNEL_ID,
+        tenant_id=TENANT_ID,
+        target_type="channel",
+        tg_peer_id=f"-100{CHANNEL_ID}",
+        title="PG 评论频道",
+        can_send=True,
+        auth_status="已授权运营",
+    ))
+    session.add(TgGroup(
+        id=GROUP_ID,
+        tenant_id=TENANT_ID,
+        tg_peer_id=f"-100{CHANNEL_ID}",
+        title="PG 评论讨论组",
+        auth_status="已授权运营",
+    ))
 
 
 def _account() -> TgAccount:
@@ -223,6 +250,7 @@ def _task() -> Task:
             "target_comments_per_message": 1,
             "max_total_comments": 10,
             "max_total_comments_jitter": 0,
+            "rule_set_version_id": RULE_VERSION_ID,
         },
         stats={},
     )
@@ -250,6 +278,10 @@ def _action() -> Action:
             "slot_id": f"channel-comment:{MESSAGE_ID}:0",
             "ai_generation_id": f"{TASK_ID}:channel-comment:{MESSAGE_ID}:0",
             "ai_generation_status": "pending",
+            "rule_set_id": RULE_SET_ID,
+            "rule_set_version_id": RULE_VERSION_ID,
+            "resolved_rule_set_version_id": RULE_VERSION_ID,
+            "rule_set_version": 1,
         },
     )
 
