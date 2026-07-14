@@ -1,8 +1,8 @@
 import pytest
 from sqlalchemy import event, select
 
-from app.models import Action, ChannelMessage, ChannelMessageComment, Task, Tenant
-from app.services.task_center.executors import channel_comment
+from app.models import Action, ChannelMessage, ChannelMessageComment, Task, Tenant, TgAccount
+from app.services.task_center.executors import channel_comment, channel_comment_budget
 from channel_comment_planner_test_support import (
     add_existing_comment_action,
     fixed_profile,
@@ -68,6 +68,38 @@ def _batched_state_actions(task: Task) -> list[Action]:
     ]
 
 
+def _batched_managed_comments() -> list[ChannelMessageComment]:
+    return [
+        ChannelMessageComment(
+            tenant_id=1,
+            channel_target_id=31,
+            channel_message_id=43,
+            comment_message_id=8201,
+            author_name="托管账号",
+            author_username="comment_101",
+            content_preview="已由托管账号评论",
+        ),
+        ChannelMessageComment(
+            tenant_id=1,
+            channel_target_id=31,
+            channel_message_id=44,
+            comment_message_id=8202,
+            author_name="外租户同名账号",
+            author_username="foreign_user",
+            content_preview="不应计入本租户托管评论",
+        ),
+        ChannelMessageComment(
+            tenant_id=1,
+            channel_target_id=31,
+            channel_message_id=44,
+            comment_message_id=8203,
+            author_name="空账号",
+            author_username=None,
+            content_preview="空 username 不应计入",
+        ),
+    ]
+
+
 def _seed_batched_message_state(session, task: Task) -> set[str]:
     for database_id, message_id in ((42, 9002), (43, 9003), (44, 9004)):
         session.add(
@@ -81,34 +113,32 @@ def _seed_batched_message_state(session, task: Task) -> set[str]:
             )
         )
     session.add(Tenant(id=2, name="其他租户"))
+    session.add(
+        TgAccount(
+            id=201,
+            tenant_id=2,
+            display_name="外租户账号",
+            username="FOREIGN_USER",
+            phone_masked="201",
+            status="active",
+        )
+    )
     session.add(Task(id="other-comment-task", tenant_id=1, name="其他任务", type="channel_comment", stats={}))
     actions = _batched_state_actions(task)
     session.add_all(actions)
-    session.add(
-        ChannelMessageComment(
-            tenant_id=1,
-            channel_target_id=31,
-            channel_message_id=43,
-            comment_message_id=8201,
-            author_name="托管账号",
-            author_username="comment_101",
-            content_preview="已由托管账号评论",
-        )
-    )
+    session.add_all(_batched_managed_comments())
+    session.get(TgAccount, 101).username = " @COMMENT_101 "
     task.type_config = {**task.type_config, "message_ids": [41, 42, 43, 44], "target_comments_per_message": 1}
     session.commit()
     return {action.id for action in actions}
 
 
-def _comment_state_select_count(session, callback) -> int:
+def _select_count(session, callback) -> int:
     statements: list[str] = []
 
     def capture(_connection, _cursor, statement, _parameters, _context, _executemany):
         normalized = " ".join(statement.lower().split())
-        select_clause = normalized.split(" from ", 1)[0]
-        action_state = "actions.payload" in select_clause and "actions.id" not in select_clause
-        managed_comments = "count(channel_message_comments.id)" in select_clause
-        if action_state or managed_comments:
+        if normalized.startswith("select "):
             statements.append(normalized)
 
     event.listen(session.get_bind(), "before_cursor_execute", capture)
@@ -258,17 +288,28 @@ def test_planner_batches_message_state_with_legacy_and_tenant_isolation(monkeypa
     with planner_session() as session:
         task = seed_comment_task(session, mode="comment", target_count=1)
         existing_action_ids = _seed_batched_message_state(session, task)
-        created = 0
+        messages = list(
+            session.scalars(
+                select(ChannelMessage).where(ChannelMessage.id.in_([41, 42, 43, 44])).order_by(ChannelMessage.id)
+            )
+        )
+        _ = (task.id, task.tenant_id)
+        states = {}
 
-        def plan() -> None:
-            nonlocal created
-            created = channel_comment.build_plan(session, task)
+        def load_states() -> None:
+            nonlocal states
+            states = channel_comment_budget.load_message_comment_plan_states(session, task, messages)
 
-        state_select_count = _comment_state_select_count(session, plan)
+        state_select_count = _select_count(session, load_states)
+        created = channel_comment.build_plan(session, task)
         actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
         new_actions = [action for action in actions if action.id not in existing_action_ids]
 
     assert state_select_count == 2
+    assert (states[41].reservation_count, states[41].next_slot_index, states[41].managed_collected_count) == (1, 1, 0)
+    assert (states[42].reservation_count, states[42].next_slot_index, states[42].managed_collected_count) == (0, 6, 0)
+    assert (states[43].reservation_count, states[43].next_slot_index, states[43].managed_collected_count) == (0, 0, 1)
+    assert (states[44].reservation_count, states[44].next_slot_index, states[44].managed_collected_count) == (0, 0, 0)
     assert created == 2
     assert sorted(action.payload["slot_id"] for action in new_actions) == [
         "channel-comment:42:6",

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import timedelta
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import Action, ChannelMessage, ChannelMessageComment, ExecutionAttempt, Task, TgAccount
@@ -179,18 +179,25 @@ def _managed_collected_comment_counts(
     task: Task,
     messages: list[ChannelMessage],
 ) -> dict[int, int]:
-    managed_usernames = _tenant_account_usernames(session, task.tenant_id)
-    if not managed_usernames:
-        return {}
     message_ids = [message.id for message in messages]
     target_ids = {message.channel_target_id for message in messages}
+    normalized_account_username = func.lower(func.ltrim(func.trim(TgAccount.username), "@"))
     rows = session.execute(
-        select(ChannelMessageComment.channel_message_id, func.count(ChannelMessageComment.id))
+        select(ChannelMessageComment.channel_message_id, func.count(func.distinct(ChannelMessageComment.id)))
+        .join(
+            TgAccount,
+            and_(
+                TgAccount.tenant_id == task.tenant_id,
+                TgAccount.deleted_at.is_(None),
+                TgAccount.username.is_not(None),
+                func.trim(TgAccount.username) != "",
+                normalized_account_username == func.lower(ChannelMessageComment.author_username),
+            ),
+        )
         .where(
             ChannelMessageComment.tenant_id == task.tenant_id,
             ChannelMessageComment.channel_target_id.in_(target_ids),
             ChannelMessageComment.channel_message_id.in_(message_ids),
-            func.lower(ChannelMessageComment.author_username).in_(managed_usernames),
         )
         .group_by(ChannelMessageComment.channel_message_id)
     )
@@ -342,17 +349,6 @@ def _message_comment_deficit(
         state.managed_collected_count,
     )
     return max(0, desired - used_count)
-
-
-def _tenant_account_usernames(session: Session, tenant_id: int) -> set[str]:
-    rows = session.scalars(
-        select(TgAccount.username).where(
-            TgAccount.tenant_id == tenant_id,
-            TgAccount.deleted_at.is_(None),
-            TgAccount.username.is_not(None),
-        )
-    )
-    return {str(value or "").strip().lstrip("@").lower() for value in rows if str(value or "").strip()}
 
 
 __all__ = [
