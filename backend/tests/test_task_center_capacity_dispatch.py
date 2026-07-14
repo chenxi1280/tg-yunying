@@ -154,7 +154,9 @@ def _dispatch_planned_ai_actions(
         "send_message",
         lambda *_args, **_kwargs: SendResult(True, remote_message_id="capacity-ai-ok"),
     )
-    forbidden_reply = lambda *_args, **_kwargs: pytest.fail("normal action must not use reply generation")
+    def forbidden_reply(*_args, **_kwargs):
+        pytest.fail("normal action must not use reply generation")
+
     dependencies = GenerationDependencies(
         normal_generator=normal_generator,
         reply_generator=forbidden_reply,

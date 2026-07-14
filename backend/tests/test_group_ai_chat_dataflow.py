@@ -89,17 +89,6 @@ def test_group_ai_deferred_items_preserve_slot_topic_and_teacher_targets():
     assert items[0]["act_type"] == "short_react"
 
 
-def test_group_ai_hard_hourly_goal_10_defers_ai_generation():
-    assert group_ai_chat._defer_ai_generation_for_plan({}, {"goal": 10}) is True
-
-
-def test_group_ai_daily_coverage_without_reply_target_defers_ai_generation():
-    config = {"account_coverage_mode": "all_accounts_daily"}
-
-    assert group_ai_chat._defer_ai_generation_for_plan(config, {}, reply_target_count=0) is True
-    assert group_ai_chat._defer_ai_generation_for_plan(config, {}, reply_target_count=1) is True
-
-
 def test_group_ai_expires_profileless_actions_before_deferred_planning():
     source_path = Path(__file__).resolve().parents[1] / "app/services/task_center/executors/group_ai_chat.py"
     source = source_path.read_text()
@@ -167,21 +156,6 @@ def test_group_ai_online_ready_clears_stale_offline_count(monkeypatch):
 
     assert ready == accounts
     assert task.stats == {"other": "kept"}
-
-
-def test_group_ai_chat_keeps_target_profile_out_of_fact_thread():
-    config = group_ai_chat._generation_config_with_profile(
-        {"active_topic_direction": {"title": "日常闲聊"}},
-        {"1": "账号只聊已知经历"},
-        {"1": "谨慎短句"},
-        "真人A: 今天只聊停车位",
-        "围绕停车位短句接话",
-        {"profile_hit_summary": "常聊装修预算", "profile_version": 3, "profile_scene": "group_chat"},
-    )
-
-    assert config["topic_thread"] == "真人A: 今天只聊停车位"
-    assert config["target_profile_style"] == "常聊装修预算"
-    assert config["target_learning_profile"]["profile_version"] == 3
 
 
 def test_group_ai_prompt_layers_target_profile_as_style_not_fact(monkeypatch):

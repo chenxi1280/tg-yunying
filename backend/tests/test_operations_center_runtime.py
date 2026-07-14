@@ -4740,8 +4740,6 @@ def test_group_ai_chat_invalid_slang_template_sets_visible_error(monkeypatch):
     )
 
     with Session(engine) as session:
-        from app.services.task_center import ai_generator
-
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="黑话失效群", auth_status="已授权运营"))
         session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status=AccountStatus.ACTIVE.value, session_ciphertext="session-101"))
@@ -4774,7 +4772,6 @@ def test_group_ai_chat_invalid_slang_template_sets_visible_error(monkeypatch):
             normal_generator=_unavailable_ai_generator,
             actions=actions,
         )
-        task = session.get(Task, "ai-invalid-slang")
 
     assert created == 1
     assert actions[0].status == "failed"
@@ -4981,8 +4978,6 @@ def test_group_ai_chat_without_ai_provider_does_not_create_actions(monkeypatch):
 
 
     with Session(engine) as session:
-        from app.services.task_center import ai_generator
-
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="新群", auth_status="已授权运营", topic_direction="新人欢迎和日常问候"))
         session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status="在线", session_ciphertext="session-101"))
@@ -5486,7 +5481,6 @@ def test_group_ai_chat_blocks_unanchored_idle_experience_claims(monkeypatch):
             normal_generator=fake_generate_group_messages,
             actions=[rejected_action],
         )
-        task = session.get(Task, "ai-idle-hallucination")
         action_count = session.scalar(select(func.count(Action.id)).where(Action.task_id == "ai-idle-hallucination"))
 
     assert len(generated) >= 2

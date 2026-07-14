@@ -187,7 +187,9 @@ def _generation_request(*, is_reply: bool = False, duplicate_baseline_messages=N
 
 
 def _generation_dependencies(*, normal_generator=None, reply_generator=None):
-    forbidden = lambda *_args, **_kwargs: pytest.fail("unexpected generation dependency")
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("unexpected generation dependency")
+
     return GenerationDependencies(
         normal_generator=normal_generator or forbidden,
         reply_generator=reply_generator or forbidden,

@@ -2058,16 +2058,6 @@ def _deferred_ai_planned_items(
     return items
 
 
-def _defer_ai_generation_for_plan(
-    _config: dict,
-    _progress: dict[str, object],
-    *,
-    reply_target_count: int = 0,
-) -> bool:
-    del reply_target_count
-    return True
-
-
 def _deferred_slot_metadata(slot: dict) -> dict:
     return {
         "slot": dict(slot),
@@ -2853,26 +2843,6 @@ def _topic_plan_summary(config: dict, group: TgGroup, topic_thread: str, turn_co
         "5. 换个小细节：如果前面已经有人接话，就从反应、吐槽或经历切入。",
     ]
     return "\n".join(steps[: max(1, min(int(turn_count or 1), len(steps)))])
-
-
-def _generation_config_with_profile(
-    config: dict,
-    account_memories: dict,
-    account_profiles: dict,
-    topic_thread: str,
-    topic_plan: str,
-    profile_preview: dict,
-) -> dict:
-    target_profile = str(profile_preview.get("profile_hit_summary") or "").strip()
-    return {
-        **config,
-        "account_memories": account_memories,
-        "account_profiles": account_profiles,
-        "topic_thread": topic_thread,
-        "topic_plan": topic_plan,
-        "target_profile_style": target_profile,
-        "target_learning_profile": profile_preview,
-    }
 
 
 def _clean_topic_text(value: str) -> str:
