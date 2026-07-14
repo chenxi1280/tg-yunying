@@ -14,6 +14,7 @@ from .channel_payloads import PostCommentPayload
 
 
 COMMENT_HISTORY_LIMIT = 50
+FIXED_RULE_SNAPSHOT_STATUSES = frozenset({"published", "archived"})
 OPEN_COMMENT_HISTORY_STATUSES = (
     "pending",
     "claiming",
@@ -97,13 +98,19 @@ def _fixed_rule_version(
     action: Action,
     payload: PostCommentPayload,
 ) -> tuple[RuleSetVersion | None, CommentQualityDecision | None]:
-    version_id = int(payload.resolved_rule_set_version_id or payload.rule_set_version_id or 0)
+    resolved_version_id = int(payload.resolved_rule_set_version_id or 0)
+    configured_version_id = int(payload.rule_set_version_id or 0)
+    rule_set_id = int(payload.rule_set_id or 0)
+    rule_set_version = int(payload.rule_set_version or 0)
+    version_id = resolved_version_id or configured_version_id
     version = session.get(RuleSetVersion, version_id) if version_id else None
     matches = bool(
         version
         and version.tenant_id == action.tenant_id
-        and version.status == "published"
-        and (not payload.rule_set_id or version.rule_set_id == payload.rule_set_id)
+        and version.status in FIXED_RULE_SNAPSHOT_STATUSES
+        and resolved_version_id == configured_version_id == version.id
+        and rule_set_id == version.rule_set_id
+        and rule_set_version == version.version
     )
     if matches:
         return version, None
@@ -111,7 +118,7 @@ def _fixed_rule_version(
         False,
         "",
         "rule_version_unavailable",
-        "Action 固定规则版本不存在、未发布或租户不匹配",
+        "Action 固定规则快照不存在、状态非法或绑定字段不匹配",
         {"rule_set_version_id": version_id},
     )
 
