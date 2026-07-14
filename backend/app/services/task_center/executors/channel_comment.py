@@ -16,8 +16,8 @@ from ..payloads import PostCommentPayload, create_comment_action
 from app.services.target_learning_audit import audit_learning_profile_use
 from app.services.tenant_target_profile import tenant_learning_profile_preview
 from .channel_comment_budget import (
+    load_message_comment_plan_states as _load_message_comment_plan_states,
     message_comment_quantities as _message_comment_quantities,
-    next_message_comment_slot_index as _next_message_comment_slot_index,
     reconcile_lifetime_cap,
     resolved_total_comment_limit as _resolved_total_comment_limit,
     total_comment_action_count as _total_comment_action_count,
@@ -230,6 +230,7 @@ def _comment_plan_slots(
     if comment_mode in {"reply", "mixed"} and requested_reply_targets and not reply_targets:
         task.last_error = "回复对象不属于当前频道消息，请先采集评论后重新选择"
         return None
+    message_states = _load_message_comment_plan_states(session, task, context.messages)
     slots: list[CommentPlanSlot] = []
     for message, quantity in _message_comment_quantities(
         session,
@@ -238,13 +239,14 @@ def _comment_plan_slots(
         context.messages,
         daily_coverage_min_total=coverage_remaining,
         total_remaining=context.total_remaining,
+        message_states=message_states,
     ):
         if not quantity or not _comment_input_allowed(task, context, message):
             continue
         targets = _comment_slot_targets(session, task, context, message, quantity, reply_targets)
         if targets is None:
             return None
-        offset = _next_message_comment_slot_index(session, task, message)
+        offset = message_states[message.id].next_slot_index
         slots.extend(CommentPlanSlot(message, target, offset + index) for index, target in enumerate(targets))
     return slots
 

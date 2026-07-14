@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import timedelta
 
 from sqlalchemy import func, or_, select
@@ -26,6 +27,13 @@ LIFETIME_CAP_RUNTIME_STAT_KEYS = (
 )
 
 
+@dataclass(frozen=True)
+class MessageCommentPlanState:
+    reservation_count: int
+    next_slot_index: int
+    managed_collected_count: int
+
+
 def message_comment_quantities(
     session: Session,
     task: Task,
@@ -34,9 +42,10 @@ def message_comment_quantities(
     *,
     daily_coverage_min_total: int = 0,
     total_remaining: int | None = None,
+    message_states: dict[int, MessageCommentPlanState] | None = None,
 ) -> list[tuple[ChannelMessage, int]]:
-    usernames = _tenant_account_usernames(session, task.tenant_id)
-    deficits = [_message_comment_deficit(session, task, config, message, usernames) for message in messages]
+    states = message_states if message_states is not None else load_message_comment_plan_states(session, task, messages)
+    deficits = [_message_comment_deficit(config, states[message.id]) for message in messages]
     coverage_floor = min(max(0, int(daily_coverage_min_total or 0)), sum(deficits))
     deficits = _apply_daily_coverage_minimum(deficits, coverage_floor)
     hour_limit = _task_hour_limit(task)
@@ -89,46 +98,103 @@ def total_comment_action_count(session: Session, task: Task, *, exclude_action_i
     return int(session.scalar(stmt) or 0)
 
 
-def message_comment_reservation_count(session: Session, task: Task, message: ChannelMessage) -> int:
-    count = 0
-    payloads = session.scalars(
-        select(Action.payload).where(
-            Action.task_id == task.id,
-            Action.action_type == "post_comment",
-            Action.status.in_(COMMENT_RESERVATION_STATUSES),
+def load_message_comment_plan_states(
+    session: Session,
+    task: Task,
+    messages: list[ChannelMessage],
+) -> dict[int, MessageCommentPlanState]:
+    if not messages:
+        return {}
+    action_states = _action_message_plan_states(session, task, messages)
+    managed_counts = _managed_collected_comment_counts(session, task, messages)
+    states: dict[int, MessageCommentPlanState] = {}
+    for message in messages:
+        reserved, historical_count, max_slot_index = action_states.get(message.id, (0, 0, -1))
+        states[message.id] = MessageCommentPlanState(
+            reservation_count=reserved,
+            next_slot_index=max(historical_count, max_slot_index + 1),
+            managed_collected_count=managed_counts.get(message.id, 0),
         )
-    )
-    for payload in payloads:
-        if not isinstance(payload, dict):
-            continue
-        if payload.get("channel_message_id") == message.id or payload.get("message_id") == message.message_id:
-            count += 1
-    return count
+    return states
 
 
-def next_message_comment_slot_index(session: Session, task: Task, message: ChannelMessage) -> int:
-    matching_count = 0
-    max_slot_index = -1
-    slot_prefix = f"channel-comment:{message.id}:"
-    payloads = session.scalars(
-        select(Action.payload).where(
+def _action_message_plan_states(
+    session: Session,
+    task: Task,
+    messages: list[ChannelMessage],
+) -> dict[int, tuple[int, int, int]]:
+    by_database_id = {message.id: message for message in messages}
+    by_message_id = {message.message_id: message for message in messages}
+    states: dict[int, tuple[int, int, int]] = {}
+    rows = session.execute(
+        select(Action.status, Action.payload).where(
+            Action.tenant_id == task.tenant_id,
             Action.task_id == task.id,
+            Action.task_type == "channel_comment",
             Action.action_type == "post_comment",
         )
     )
-    for payload in payloads:
-        if not isinstance(payload, dict):
+    for status, payload in rows:
+        message = _payload_message(payload, by_database_id, by_message_id)
+        if not message:
             continue
-        if payload.get("channel_message_id") != message.id and payload.get("message_id") != message.message_id:
-            continue
-        matching_count += 1
-        slot_id = str(payload.get("slot_id") or "")
-        if not slot_id.startswith(slot_prefix):
-            continue
-        slot_index = slot_id.removeprefix(slot_prefix)
-        if slot_index.isdigit():
-            max_slot_index = max(max_slot_index, int(slot_index))
-    return max(matching_count, max_slot_index + 1)
+        reserved, historical_count, max_slot_index = states.get(message.id, (0, 0, -1))
+        slot_index = _payload_slot_index(payload, message.id)
+        states[message.id] = (
+            reserved + int(status in COMMENT_RESERVATION_STATUSES),
+            historical_count + 1,
+            max(max_slot_index, slot_index),
+        )
+    return states
+
+
+def _payload_message(
+    payload: dict | None,
+    by_database_id: dict[int, ChannelMessage],
+    by_message_id: dict[int, ChannelMessage],
+) -> ChannelMessage | None:
+    if not isinstance(payload, dict):
+        return None
+    database_id = _payload_int(payload, "channel_message_id")
+    message_id = _payload_int(payload, "message_id")
+    return by_database_id.get(database_id) or by_message_id.get(message_id)
+
+
+def _payload_int(payload: dict, key: str) -> int:
+    raw = str(payload.get(key) or "").strip()
+    return int(raw) if raw.isdigit() else 0
+
+
+def _payload_slot_index(payload: dict | None, channel_message_id: int) -> int:
+    if not isinstance(payload, dict):
+        return -1
+    slot_prefix = f"channel-comment:{channel_message_id}:"
+    slot_id = str(payload.get("slot_id") or "")
+    raw_index = slot_id.removeprefix(slot_prefix) if slot_id.startswith(slot_prefix) else ""
+    return int(raw_index) if raw_index.isdigit() else -1
+
+
+def _managed_collected_comment_counts(
+    session: Session,
+    task: Task,
+    messages: list[ChannelMessage],
+) -> dict[int, int]:
+    managed_usernames = _tenant_account_usernames(session, task.tenant_id)
+    if not managed_usernames:
+        return {}
+    message_ids = [message.id for message in messages]
+    target_ids = {message.channel_target_id for message in messages}
+    rows = session.execute(
+        select(ChannelMessageComment.channel_message_id, func.count(ChannelMessageComment.id))
+        .where(
+            ChannelMessageComment.tenant_id == task.tenant_id,
+            ChannelMessageComment.channel_target_id.in_(target_ids),
+            ChannelMessageComment.channel_message_id.in_(message_ids),
+            func.lower(ChannelMessageComment.author_username).in_(managed_usernames),
+        )
+        .group_by(ChannelMessageComment.channel_message_id)
+    )
+    return {int(message_id): int(count) for message_id, count in rows}
 
 
 def _total_comment_action_counts(session: Session, task: Task) -> dict[str, int]:
@@ -264,42 +330,18 @@ def _apply_daily_coverage_minimum(deficits: list[int], minimum: int) -> list[int
 
 
 def _message_comment_deficit(
-    session: Session,
-    task: Task,
     config: dict,
-    message: ChannelMessage,
-    managed_usernames: set[str],
+    state: MessageCommentPlanState,
 ) -> int:
     desired = quantity_with_jitter(
         int(config.get("target_comments_per_message") or 1),
         float(config.get("comment_count_jitter") or 0),
     )
     used_count = max(
-        message_comment_reservation_count(session, task, message),
-        _collected_managed_comment_count(session, task, message, managed_usernames),
+        state.reservation_count,
+        state.managed_collected_count,
     )
     return max(0, desired - used_count)
-
-
-def _collected_managed_comment_count(
-    session: Session,
-    task: Task,
-    message: ChannelMessage,
-    managed_usernames: set[str],
-) -> int:
-    if not managed_usernames:
-        return 0
-    return int(
-        session.scalar(
-            select(func.count(ChannelMessageComment.id)).where(
-                ChannelMessageComment.tenant_id == task.tenant_id,
-                ChannelMessageComment.channel_target_id == message.channel_target_id,
-                ChannelMessageComment.channel_message_id == message.id,
-                func.lower(ChannelMessageComment.author_username).in_(managed_usernames),
-            )
-        )
-        or 0
-    )
 
 
 def _tenant_account_usernames(session: Session, tenant_id: int) -> set[str]:
@@ -314,9 +356,8 @@ def _tenant_account_usernames(session: Session, tenant_id: int) -> set[str]:
 
 
 __all__ = [
-    "message_comment_reservation_count",
+    "load_message_comment_plan_states",
     "message_comment_quantities",
-    "next_message_comment_slot_index",
     "reconcile_lifetime_cap",
     "resolved_total_comment_limit",
     "total_comment_action_count",
