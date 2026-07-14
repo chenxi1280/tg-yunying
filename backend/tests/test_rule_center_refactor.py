@@ -157,12 +157,13 @@ def test_rule_material_policy_selects_ready_material_for_preview_and_ai_action(m
         lambda *_args, **_kwargs: SendResult(True, remote_message_id="material-ok"),
     )
     dependencies = GenerationDependencies(
-        normal_generator=lambda *_args, **_kwargs: (
+        normal_generator=lambda _session, _tenant_id, config, **_kwargs: (
             [
                 GeneratedContent(
                     "素材规则触发",
                     material_intent="表情包:围观",
                     allow_material=True,
+                    slot_id=config["generation_slots"][0]["slot_id"],
                     sequence_index=1,
                 ),
             ],

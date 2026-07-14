@@ -30,7 +30,7 @@ from app.services.operations import filter_operation_targets, operation_target_d
 from app.services.verification import resolve_group_restriction_batch
 from app.services.task_center.executors.group_ai_chat import _choose_turn_account, _topic_relevant_context_rows, _voice_profile_match_decision, ai_cycle_mode, build_plan as build_group_ai_chat_plan
 from app.services.task_center.ai_generation_dependencies import GenerationDependencies
-from app.services.task_center.ai_generator import _humanize_group_chat_punctuation
+from app.services.task_center.ai_generator import GeneratedContent, _humanize_group_chat_punctuation
 from app.services.operations_center import _is_stale_heartbeat, listener_summary, list_listener_errors, list_listener_events, list_rule_sets, operation_metrics_summary, relay_attribution_csv, relay_attribution_report, reset_listener_watermark, rule_center_summary, switch_listener_account, test_rules as preview_rules, update_rule_set_config
 from app.services.reports import _hourly_activity_24h, build_overview
 from app.services.task_center.executors.group_relay import apply_transform_rules, build_plan as build_group_relay_plan, passes_relay_filters, relay_source_filter_reason, resolve_relay_target_ids
@@ -120,14 +120,16 @@ def _dispatch_deferred_ai_actions(
     monkeypatch,
     *,
     normal_generator,
+    actions: list[Action] | None = None,
 ) -> list[Action]:
     from app.services.task_center import dispatcher
 
-    actions = list(session.scalars(select(Action).where(
-        Action.task_type == "group_ai_chat",
-        Action.action_type == "send_message",
-        Action.status == "pending",
-    ).order_by(Action.scheduled_at.asc(), Action.created_at.asc())))
+    if actions is None:
+        actions = list(session.scalars(select(Action).where(
+            Action.task_type == "group_ai_chat",
+            Action.action_type == "send_message",
+            Action.status == "pending",
+        ).order_by(Action.scheduled_at.asc(), Action.created_at.asc())))
     for action in actions:
         action.status = "executing"
         action.claim_owner = "operations-runtime-test"
@@ -163,6 +165,14 @@ def _forbidden_ai_reply_path(*_args, **_kwargs):
 def _first_generation_slot_id(prompt: str) -> str:
     line = next(item.strip() for item in prompt.splitlines() if '"slot_id"' in item)
     return line.split(":", 1)[1].strip().strip('",')
+
+
+def _slot_bound_contents(config: dict, contents: list[str]) -> list[GeneratedContent]:
+    slots = list(config.get("generation_slots") or [])
+    return [
+        GeneratedContent(content, slot_id=slots[index]["slot_id"], sequence_index=index + 1)
+        for index, content in enumerate(contents)
+    ]
 
 
 @pytest.fixture(autouse=True)
@@ -4605,16 +4615,31 @@ def test_group_ai_chat_rotates_mimo_provider_after_quota_exhausted(monkeypatch):
         if credentials.provider_name == "MiMo exhausted":
             raise RuntimeError('AI provider HTTP 429: {"error":{"message":"quota exhausted"}}')
         return AiGenerationResult(
-            candidates=[AiDraftCandidate(persona="A", content="备用小米继续接一句", risk_level="低")],
+            candidates=[AiDraftCandidate(
+                persona="A",
+                content="备用小米继续接一句",
+                risk_level="低",
+                slot_id=_first_generation_slot_id(prompt),
+            )],
             usage=AiUsage(total_tokens=42, billable=True),
         )
 
     monkeypatch.setattr("app.services.task_center.ai_generator.ai_gateway.generate_drafts", fake_generate_drafts)
 
     with Session(engine) as session:
+        from app.services.task_center import ai_generator
+
         _add_mimo_quota_rotation_task(session)
         created = build_group_ai_chat_plan(session, session.get(Task, "ai-provider-quota-rotation"))
         action = session.scalar(select(Action).where(Action.task_id == "ai-provider-quota-rotation"))
+        assert action.payload["ai_generation_status"] == "pending"
+        assert action.payload["message_text"] == ""
+        _dispatch_deferred_ai_actions(
+            session,
+            monkeypatch,
+            normal_generator=ai_generator.generate_group_messages,
+            actions=[action],
+        )
         exhausted = session.get(AiProvider, 1)
         spare = session.get(AiProvider, 2)
 
@@ -4747,13 +4772,20 @@ def test_group_ai_chat_model_override_selects_matching_deepseek_provider(monkeyp
         captured["model_name"] = credentials.model_name
         captured["prompt"] = prompt
         return AiGenerationResult(
-            candidates=[AiDraftCandidate(persona="A", content="DeepSeek 这轮也能正常接话。", risk_level="低")],
+            candidates=[AiDraftCandidate(
+                persona="A",
+                content="DeepSeek 这轮也能正常接话。",
+                risk_level="低",
+                slot_id=_first_generation_slot_id(prompt),
+            )],
             usage=AiUsage(total_tokens=66, billable=True),
         )
 
     monkeypatch.setattr("app.services.task_center.ai_generator.ai_gateway.generate_drafts", fake_generate_drafts)
 
     with Session(engine) as session:
+        from app.services.task_center import ai_generator
+
         session.add(Tenant(id=1, name="默认运营空间"))
         _ensure_normal_pool(session)
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="DeepSeek 活跃群", auth_status="已授权运营"))
@@ -4808,6 +4840,14 @@ def test_group_ai_chat_model_override_selects_matching_deepseek_provider(monkeyp
 
         created = build_group_ai_chat_plan(session, session.get(Task, "ai-deepseek-provider-model"))
         action = session.scalar(select(Action).where(Action.task_id == "ai-deepseek-provider-model"))
+        assert action.payload["ai_generation_status"] == "pending"
+        assert action.payload["message_text"] == ""
+        _dispatch_deferred_ai_actions(
+            session,
+            monkeypatch,
+            normal_generator=ai_generator.generate_group_messages,
+            actions=[action],
+        )
 
     assert created == 1
     assert captured["provider_name"] == "DeepSeek"
@@ -4826,21 +4866,36 @@ def test_group_ai_chat_model_override_selects_matching_minimax_provider(monkeypa
     Base.metadata.create_all(engine)
     captured: dict[str, object] = {}
 
-    def fake_generate_drafts(credentials, _prompt, **_kwargs):  # noqa: ANN001
+    def fake_generate_drafts(credentials, prompt, **_kwargs):  # noqa: ANN001
         captured["provider_name"] = credentials.provider_name
         captured["base_url"] = credentials.base_url
         captured["model_name"] = credentials.model_name
         return AiGenerationResult(
-            candidates=[AiDraftCandidate(persona="A", content="Minimax 这轮也能接上。", risk_level="低")],
+            candidates=[AiDraftCandidate(
+                persona="A",
+                content="Minimax 这轮也能接上。",
+                risk_level="低",
+                slot_id=_first_generation_slot_id(prompt),
+            )],
             usage=AiUsage(total_tokens=77, billable=True),
         )
 
     monkeypatch.setattr("app.services.task_center.ai_generator.ai_gateway.generate_drafts", fake_generate_drafts)
 
     with Session(engine) as session:
+        from app.services.task_center import ai_generator
+
         _add_minimax_model_override_task(session)
         created = build_group_ai_chat_plan(session, session.get(Task, "ai-minimax-provider-model"))
         action = session.scalar(select(Action).where(Action.task_id == "ai-minimax-provider-model"))
+        assert action.payload["ai_generation_status"] == "pending"
+        assert action.payload["message_text"] == ""
+        _dispatch_deferred_ai_actions(
+            session,
+            monkeypatch,
+            normal_generator=ai_generator.generate_group_messages,
+            actions=[action],
+        )
 
     assert created == 1
     assert captured == {
@@ -5019,11 +5074,10 @@ def test_group_ai_chat_waits_when_no_new_real_context(monkeypatch):
     Base.metadata.create_all(engine)
     generated: list[str] = []
 
-    def fake_generate_group_messages(_session, _tenant_id, _config, *, count, target_label, history):
+    def fake_generate_group_messages(_session, _tenant_id, config, *, count, target_label, history):
         generated.append(history)
-        return [f"这条真人消息可以接着问细节 {index}。" for index in range(count)], 0
-
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
+        contents = [f"这条真人消息可以接着问细节 {index}。" for index in range(count)]
+        return _slot_bound_contents(config, contents), 0
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
@@ -5058,7 +5112,19 @@ def test_group_ai_chat_waits_when_no_new_real_context(monkeypatch):
         )
         session.commit()
 
-        assert build_group_ai_chat_plan(session, session.get(Task, "ai-wait-new")) == 1
+        planned = build_group_ai_chat_plan(session, session.get(Task, "ai-wait-new"))
+        pending = list(session.scalars(select(Action).where(Action.task_id == "ai-wait-new")))
+        assert planned == len(pending)
+        assert all(action.payload["ai_generation_status"] == "pending" for action in pending)
+        assert all(action.payload["message_text"] == "" for action in pending)
+        assert generated == []
+        for action in pending:
+            _dispatch_deferred_ai_actions(
+                session,
+                monkeypatch,
+                normal_generator=fake_generate_group_messages,
+                actions=[action],
+            )
         first_generation_call_count = len(generated)
         assert build_group_ai_chat_plan(session, session.get(Task, "ai-wait-new")) == 0
         action_count = session.scalar(select(func.count(Action.id)).where(Action.task_id == "ai-wait-new"))
@@ -5066,8 +5132,8 @@ def test_group_ai_chat_waits_when_no_new_real_context(monkeypatch):
 
     assert first_generation_call_count >= 1
     assert len(generated) == first_generation_call_count
-    assert action_count == 1
-    assert task.last_error == "暂无新的真人上下文，等待群内新消息"
+    assert action_count == planned
+    assert task.last_error == "持续监听中，等待新消息或空闲续聊间隔"
     assert task.stats["context_mode"] == "waiting_new_context"
 
 
@@ -5456,16 +5522,16 @@ def test_group_ai_chat_dedupes_against_pending_planned_messages(monkeypatch):
     Base.metadata.create_all(engine)
     now_value = datetime(2026, 5, 13, 11, 0, 0)
 
-    def fake_generate_group_messages(_session, _tenant_id, _config, *, count, target_label, history):
-        return [
+    def fake_generate_group_messages(_session, _tenant_id, config, *, count, target_label, history):
+        contents = [
             "这个价格还是得自己问清楚",
             "最近榜单更新挺快",
-        ][:count], 0
+        ][:count]
+        return _slot_bound_contents(config, contents), 0
 
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
     monkeypatch.setattr("app.services.account_online_state._now", lambda: now_value)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
-
+    monkeypatch.setattr("app.services.task_center.ai_message_memory._now", lambda: now_value)
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
         _ensure_normal_pool(session)
@@ -5508,16 +5574,46 @@ def test_group_ai_chat_dedupes_against_pending_planned_messages(monkeypatch):
                 account_id=101,
                 status="pending",
                 scheduled_at=now_value + timedelta(minutes=1),
-                    payload={"group_id": 7, "message_text": "这个价格还是得自己问清楚", "account_voice_profile_version": 1},
+                    payload={
+                        "group_id": 7,
+                        "message_text": "这个价格还是得自己问清楚",
+                        "account_voice_profile_version": 1,
+                        **_ai_group_send_gate_payload(
+                            session,
+                            now_value,
+                            action_id="existing-pending-ai-message",
+                            task_id="ai-pending-dedup",
+                            group_id=7,
+                            account_id=101,
+                            text="这个价格还是得自己问清楚",
+                        ),
+                    },
                 )
             )
         session.commit()
 
         created = build_group_ai_chat_plan(session, session.get(Task, "ai-pending-dedup"))
         new_actions = list(session.scalars(select(Action).where(Action.task_id == "ai-pending-dedup", Action.id != "existing-pending-ai-message").order_by(Action.created_at.asc())))
+        assert all(action.payload["ai_generation_status"] == "pending" for action in new_actions)
+        _dispatch_deferred_ai_actions(
+            session,
+            monkeypatch,
+            normal_generator=fake_generate_group_messages,
+            actions=new_actions,
+        )
+        completed = list(session.scalars(select(Action).where(
+            Action.id.in_([action.id for action in new_actions]),
+        )))
+        successful_messages = [
+            action.payload["message_text"] for action in completed if action.status == "success"
+        ]
+        failed_codes = [
+            action.result["error_code"] for action in completed if action.status == "failed"
+        ]
 
-    assert created == 1
-    assert [action.payload["message_text"] for action in new_actions] == ["最近榜单更新挺快"]
+    assert created == 2
+    assert successful_messages == ["最近榜单更新挺快"]
+    assert failed_codes == ["duplicate_message"]
 
 
 @pytest.mark.no_postgres
@@ -5526,14 +5622,13 @@ def test_group_ai_chat_drops_repeated_fixed_shell_phrases(monkeypatch):
     Base.metadata.create_all(engine)
     now_value = datetime(2026, 5, 13, 11, 0, 0)
 
-    def fake_generate_group_messages(_session, _tenant_id, _config, *, count, target_label, history):
-        return [
+    def fake_generate_group_messages(_session, _tenant_id, config, *, count, target_label, history):
+        contents = [
             "这点加分",
             "这点挺加分",
             "最近榜单更新挺快",
-        ][:count], 0
-
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
+        ][:count]
+        return _slot_bound_contents(config, contents), 0
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
@@ -5571,12 +5666,25 @@ def test_group_ai_chat_drops_repeated_fixed_shell_phrases(monkeypatch):
 
         created = build_group_ai_chat_plan(session, session.get(Task, "ai-fixed-shell-dedup"))
         actions = list(session.scalars(select(Action).where(Action.task_id == "ai-fixed-shell-dedup").order_by(Action.created_at.asc())))
-        task = session.get(Task, "ai-fixed-shell-dedup")
+        assert all(action.payload["ai_generation_status"] == "pending" for action in actions)
+        _dispatch_deferred_ai_actions(
+            session,
+            monkeypatch,
+            normal_generator=fake_generate_group_messages,
+            actions=actions,
+        )
+        completed = list(session.scalars(select(Action).where(
+            Action.id.in_([action.id for action in actions]),
+        ).order_by(Action.created_at.asc())))
+        succeeded = [action for action in completed if action.status == "success"]
+        failed_codes = [
+            action.result["error_code"] for action in completed if action.status == "failed"
+        ]
+        successful_messages = [action.payload["message_text"] for action in succeeded]
 
-    assert created == 2
-    assert [action.payload["message_text"] for action in actions] == ["这点加分", "最近榜单更新挺快"]
-    assert [action.payload["semantic_cluster"] for action in actions] == ["fixed_shell_bonus", ""]
-    assert task.stats["duplicate_risk"] == "semantic_cluster"
+    assert created == 3
+    assert successful_messages == ["这点加分", "最近榜单更新挺快"]
+    assert failed_codes == ["duplicate_message"]
 
 
 @pytest.mark.no_postgres
