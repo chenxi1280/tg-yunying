@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import date
 from pathlib import Path
 
 import pytest
@@ -15,6 +14,7 @@ from app.security import encrypt_session
 from app.services.task_center.account_coverage import list_task_account_coverage_page, task_account_coverage
 from app.services.task_center.coverage_capacity import coverage_capacity_proof
 from app.services.task_center.precheck import _daily_coverage_capacity_check
+from app.timezone import beijing_now
 
 
 pytestmark = pytest.mark.no_postgres
@@ -214,7 +214,7 @@ def _seed_coverage(session: Session) -> Task:
             task_id=task.id,
             group_id=21,
             account_id=account_id,
-            coverage_date=date.today(),
+            coverage_date=beijing_now().date(),
             target_count=1,
             confirmed_count=confirmed,
             state=state,
@@ -276,7 +276,7 @@ def test_coverage_detail_page_keeps_blocked_accounts_visible(session: Session) -
         session,
         tenant_id=1,
         task_id=task.id,
-        coverage_date=date.today(),
+        coverage_date=beijing_now().date(),
         state="blocked",
         page=1,
         page_size=20,

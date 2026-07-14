@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datetime import date
-
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -11,6 +9,7 @@ from app.models import Action, ExecutionAttempt, Task, TaskAccountDailyCoverage,
 from app.services.task_center import ai_generation_quality
 from app.services.task_center.ai_message_memory import DuplicateMessageReservation
 from app.services.task_center.dispatcher import _action_can_reassign, _sync_action_coverage_state
+from app.timezone import beijing_now
 
 
 pytestmark = pytest.mark.no_postgres
@@ -50,7 +49,7 @@ def _seed_reserved(session: Session, *, action_status: str = "executing") -> tup
         task_id=task.id,
         group_id=21,
         account_id=1,
-        coverage_date=date.today(),
+        coverage_date=beijing_now().date(),
         target_count=1,
         confirmed_count=0,
         state="reserved",
@@ -136,7 +135,7 @@ def test_batch_generation_releases_duplicate_sibling_coverage(session: Session) 
         task_id=action.task_id,
         group_id=21,
         account_id=2,
-        coverage_date=date.today(),
+        coverage_date=beijing_now().date(),
         target_count=1,
         confirmed_count=0,
         state="reserved",
