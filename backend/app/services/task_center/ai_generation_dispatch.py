@@ -88,8 +88,13 @@ def ensure_send_message_content(
     results, tokens = _generate_request_results(session, request, dependencies)
     _commit_generation_results(session, request, results, tokens=tokens)
     refreshed_action = session.get(Action, action.id)
-    refreshed = SendMessagePayload.model_validate(refreshed_action.payload or {})
-    if refreshed_action.status == "failed" or refreshed.ai_generation_status != "ready":
+    refreshed_data = refreshed_action.payload if isinstance(refreshed_action.payload, dict) else {}
+    if refreshed_action.status == "failed":
+        raise AiGenerationUnavailable(
+            str(refreshed_data.get("ai_generation_status") or AI_GENERATION_UNAVAILABLE_MESSAGE),
+        )
+    refreshed = SendMessagePayload.model_validate(refreshed_data)
+    if refreshed.ai_generation_status != "ready":
         raise AiGenerationUnavailable(refreshed.ai_generation_status or AI_GENERATION_UNAVAILABLE_MESSAGE)
     if not refreshed.message_text.strip():
         raise AiGenerationUnavailable(AI_GENERATION_UNAVAILABLE_MESSAGE)
@@ -237,12 +242,12 @@ def _generate_without_transaction(
         _mark_provider_call_started(session, request)
     try:
         return generate_quality_results(session, request, dependencies)
-    except AiGenerationUnavailable:
+    except AiGenerationUnavailable as exc:
         fail_generation_batch(
             session,
             request,
             "ai_generation_failed",
-            detail=AI_GENERATION_UNAVAILABLE_MESSAGE,
+            detail=str(exc) or AI_GENERATION_UNAVAILABLE_MESSAGE,
         )
         session.commit()
         raise
