@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datetime import date
-
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -18,6 +16,7 @@ from app.models import (
 )
 from app.services.task_center.ai_generation_quality import store_generation_quality
 from app.services.task_center.payloads import SendMessagePayload
+from app.timezone import beijing_now
 
 
 pytestmark = pytest.mark.no_postgres
@@ -50,7 +49,7 @@ def test_phase_c_material_skip_fails_slot_and_releases_coverage() -> None:
             task_id=action.task_id,
             group_id=201,
             account_id=101,
-            coverage_date=date.today(),
+            coverage_date=beijing_now().date(),
             target_count=1,
             state="reserved",
             reserved_action_id=action.id,

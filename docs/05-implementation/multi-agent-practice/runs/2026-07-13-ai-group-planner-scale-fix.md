@@ -202,10 +202,11 @@
 ### Release checks rework 与最终 Product Acceptance
 
 - 首次 release merge `b28bd72b` 的 Deploy Production run `29359103999` 在 checks 阶段失败，`20 failed / 2191 passed / 14 skipped`；镜像构建和 deploy 均未执行，生产继续运行 `fecdcfae`，没有半发布。
+- 第二次 release merge `7aef6a41` 的 run `29362258741` 收敛为 `2 failed / 2209 passed / 14 skipped`，仍在 checks 阶段停止。剩余两项同属 UTC/北京时间跨日测试数据错位；全库 `coverage_date=date.today()` 的 9 处测试账本已统一为 `beijing_now().date()`，不改变生产业务代码。
 - 失败根因分为三组：旧 workflow 测试仍把异步 metrics 当成 Dispatcher 热路径同步统计；UTC runner 在北京时间跨日窗口用 `date.today()` 建覆盖账本；前序 generation recovery 测试留下 running task 的 due pending Action，令后续全局双 Dispatcher 测试分别领取两个不同 Action。
 - 严格 workflow 回归进一步暴露真实缺口：生成重复/质量失败已把 Action 置为 `failed`，但 `_handle_ai_generation_failure` 提前返回且未释放账号 runtime reservation，下一周期持续命中 `account_inflight_conflict`。实现只在该终态分支释放预约，不恢复每 Action 全历史 stats 写入，不接受 pending 作为成功。
 - 测试修复保持生产边界：统计断言先显式运行 metrics worker；动态频道评论先持久化 listener 输入；Deferred AI 输出按稳定 slot 映射后由目标 task dispatcher 实际发送。覆盖日期统一使用北京时间；STARTED_SCOPE 通过 finalizer 清理 Action、Task 和 SchedulingSetting。
-- re-QA：原 12 个失败 workflow `12 passed`；`test_workflow.py` 全文件 `104 passed / 14 skipped`；北京时间 `TZ=UTC` coverage 全文件 `14 passed`；generation recovery + 评论并发 + generation phase + coverage 组合 `38 passed`；前序 recovery 与双 Dispatcher 原失败顺序 `2 passed`。compileall、diff-check、变更函数 `GROWN_OVER50=0 / NEW_OVER50=0` 通过，Critical / Important / Minor=`0 / 0 / 0`。
+- re-QA：原 12 个失败 workflow `12 passed`；`test_workflow.py` 全文件 `104 passed / 14 skipped`；北京时间 `TZ=UTC` 的 5 个 coverage/dispatch/material 文件 `60 passed`；generation recovery + 评论并发 + generation phase + coverage 组合 `38 passed`；前序 recovery 与双 Dispatcher 原失败顺序 `2 passed`。compileall、diff-check、变更函数 `GROWN_OVER50=0 / NEW_OVER50=0` 通过，Critical / Important / Minor=`0 / 0 / 0`。
 - Product Acceptance：`qa_pass=true`、`product_accepted=true`（仅 E2），Release Gate 再次 ready。生产仍为旧 `fecdcfae`，真实 worker、长事务、覆盖矩阵和评论远端结果必须在新 release 上重新取得 E4，当前仍禁止写 `production_fixed`。
 
 ## Release Gate 与 E4

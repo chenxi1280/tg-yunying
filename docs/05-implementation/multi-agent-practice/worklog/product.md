@@ -507,3 +507,11 @@
 - evidence: re-QA `12 + 104 + 14 + 38 + 2` 项分组全绿，Critical / Important / Minor=`0 / 0 / 0`；首次 run `29359103999` 未构建镜像、未部署，生产旧版本事实未被误写为恢复。
 - decision: `product_accepted=true`（仅 E2）；Release Gate ready，下一阶段 `prod-diagnosis`。
 - unresolved: 新 release 的 checks/build/deploy、生产 worker/事务、覆盖增长和评论远端成功 E4。
+
+## 2026-07-14 覆盖账本跨时区 Release Rework Product Acceptance
+
+- message_id: `2026-07-14-coverage-timezone-release-rework-product-accepted-002`
+- acceptance: 仅把测试账本日期统一为产品合同规定的北京时间自然日，不修改生产覆盖分母、目标、调度或远端成功判定。
+- evidence: run `29362258741` 剩余 2 项均为 UTC runner 跨日错位；`TZ=UTC` 相关 5 文件 `60 passed`。
+- decision: `product_accepted=true`（仅 E2）；Release Gate ready。
+- unresolved: 完整发布链和生产 E4。

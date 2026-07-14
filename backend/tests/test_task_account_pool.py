@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+from datetime import timedelta
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -28,6 +28,7 @@ from app.services.messages import create_message_send_task, create_pool_direct_m
 from app.services.task_center.account_coverage import task_account_coverage
 from app.services.task_center.account_pool import select_task_accounts
 from app.services.task_center.channel_membership import candidate_accounts_for_config
+from app.timezone import beijing_now
 
 pytestmark = pytest.mark.no_postgres
 
@@ -751,7 +752,7 @@ def test_group_ai_all_accounts_coverage_projects_reasons_and_pending_accounts():
                 task_id=task.id,
                 group_id=7,
                 account_id=1,
-                coverage_date=date.today(),
+                coverage_date=beijing_now().date(),
                 target_count=2,
                 confirmed_count=1,
                 state="ready",
@@ -761,7 +762,7 @@ def test_group_ai_all_accounts_coverage_projects_reasons_and_pending_accounts():
                 task_id=task.id,
                 group_id=7,
                 account_id=2,
-                coverage_date=date.today(),
+                coverage_date=beijing_now().date(),
                 target_count=2,
                 state="blocked",
                 blocker_code="cannot_send",
@@ -771,7 +772,7 @@ def test_group_ai_all_accounts_coverage_projects_reasons_and_pending_accounts():
                 task_id=task.id,
                 group_id=7,
                 account_id=3,
-                coverage_date=date.today(),
+                coverage_date=beijing_now().date(),
                 target_count=2,
                 state="pending_admission",
             ),
@@ -780,7 +781,7 @@ def test_group_ai_all_accounts_coverage_projects_reasons_and_pending_accounts():
                 task_id=task.id,
                 group_id=7,
                 account_id=4,
-                coverage_date=date.today(),
+                coverage_date=beijing_now().date(),
                 target_count=2,
                 confirmed_count=2,
                 state="confirmed",

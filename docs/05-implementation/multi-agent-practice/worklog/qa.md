@@ -344,3 +344,10 @@
 - evidence: 原 CI 12 项 `12 passed`；workflow 全文件 `104 passed / 14 skipped in 35.07s`；`TZ=UTC` coverage `14 passed`；generation recovery、双 Dispatcher、generation phase、coverage `38 passed`；前序恢复 + 评论并发原失败顺序 `2 passed`。compileall、diff-check 和函数增长硬门禁通过。
 - decision: 真实 runtime reservation 泄漏已由严格第二周期发送回归关闭；允许回到 Product Acceptance。
 - unresolved: GitHub Actions、镜像、deploy 与生产 E4 尚未重新执行。
+
+## 2026-07-14 覆盖账本跨时区 Release Checks 二次 re-QA
+
+- message_id: `2026-07-14-coverage-timezone-release-rework-qa-002`
+- evidence: run `29362258741` 为 `2 failed / 2209 passed / 14 skipped`，两项均由测试 `coverage_date=date.today()` 在 UTC runner 跨北京时间自然日造成；测试库同类 9 处统一使用 `beijing_now().date()` 后，`TZ=UTC` 下 5 个相关文件 `60 passed`。
+- decision: `qa_pass=true`；未改生产覆盖日期、分母或远端成功合同，Release Gate 再次 ready。
+- unresolved: 重新触发完整 checks/build/deploy 和生产 E4。
