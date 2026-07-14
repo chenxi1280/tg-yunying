@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import Action, ChannelMessage, ChannelMessageComment, OperationTarget, RuleSetVersion, TgGroup
@@ -13,7 +13,6 @@ from .ai_generator import clean_channel_comment_contents
 from .channel_payloads import PostCommentPayload
 
 
-COMMENT_HISTORY_LIMIT = 50
 FIXED_RULE_SNAPSHOT_STATUSES = frozenset({"published", "archived"})
 OPEN_COMMENT_HISTORY_STATUSES = (
     "pending",
@@ -40,7 +39,8 @@ def evaluate_comment_generation_quality(
     payload: PostCommentPayload,
     content: str,
 ) -> CommentQualityDecision:
-    _lock_channel_message(session, action, payload)
+    if not _lock_channel_message(session, action, payload):
+        return _unavailable_comment_decision()
     version, error = _fixed_rule_version(session, action, payload)
     if error:
         return error
@@ -82,15 +82,26 @@ def evaluate_comment_generation_quality(
     )
 
 
-def _lock_channel_message(session: Session, action: Action, payload: PostCommentPayload) -> None:
+def _unavailable_comment_decision() -> CommentQualityDecision:
+    return CommentQualityDecision(
+        False,
+        "",
+        "comment_unavailable_message",
+        "频道源消息不存在或评论区已关闭",
+    )
+
+
+def _lock_channel_message(session: Session, action: Action, payload: PostCommentPayload) -> bool:
     statement = select(ChannelMessage.id).where(
         ChannelMessage.id == payload.channel_message_id,
         ChannelMessage.tenant_id == action.tenant_id,
         ChannelMessage.channel_target_id == payload.channel_target_id,
+        ChannelMessage.message_id == payload.message_id,
+        ChannelMessage.comment_available.is_(True),
     )
     if session.get_bind().dialect.name == "postgresql":
         statement = statement.with_for_update()
-    session.scalar(statement)
+    return session.scalar(statement) is not None
 
 
 def _fixed_rule_version(
@@ -128,29 +139,7 @@ def _same_message_comment_history(
     action: Action,
     payload: PostCommentPayload,
 ) -> list[str]:
-    managed = session.scalars(
-        select(Action.payload)
-        .where(
-            Action.id != action.id,
-            Action.tenant_id == action.tenant_id,
-            Action.action_type == "post_comment",
-            Action.status.in_(OPEN_COMMENT_HISTORY_STATUSES),
-            Action.payload["channel_target_id"].as_integer() == payload.channel_target_id,
-            or_(
-                Action.payload["channel_message_id"].as_integer() == payload.channel_message_id,
-                Action.payload["message_id"].as_integer() == payload.message_id,
-            ),
-        )
-        .order_by(Action.created_at.desc())
-        .limit(COMMENT_HISTORY_LIMIT)
-    )
-    managed_texts = [
-        text
-        for item in managed
-        if isinstance(item, dict)
-        if (text := str(item.get("comment_text") or "").strip())
-    ]
-    remaining = max(1, COMMENT_HISTORY_LIMIT - len(managed_texts))
+    managed_texts = _managed_history_texts(session, action, payload)
     remote = session.scalars(
         select(ChannelMessageComment.content_preview)
         .where(
@@ -160,9 +149,44 @@ def _same_message_comment_history(
             ChannelMessageComment.content_preview != "",
         )
         .order_by(ChannelMessageComment.created_at.desc())
-        .limit(remaining)
     )
     return [*managed_texts, *(str(item).strip() for item in remote if str(item).strip())]
+
+
+def _managed_history_texts(
+    session: Session,
+    action: Action,
+    payload: PostCommentPayload,
+) -> list[dict]:
+    target_key, target_value = _payload_history_key(session, "channel_target_id", payload.channel_target_id)
+    channel_key, channel_value = _payload_history_key(session, "channel_message_id", payload.channel_message_id)
+    message_key, message_value = _payload_history_key(session, "message_id", payload.message_id)
+    empty_id = "0" if session.get_bind().dialect.name == "postgresql" else 0
+    content = Action.payload["comment_text"].as_string()
+    common = (
+        Action.id != action.id,
+        Action.tenant_id == action.tenant_id,
+        Action.action_type == "post_comment",
+        Action.status.in_(OPEN_COMMENT_HISTORY_STATUSES),
+        func.trim(content) != "",
+        target_key == target_value,
+    )
+    modern = list(session.scalars(
+        select(content).where(*common, channel_key == channel_value).order_by(Action.created_at.desc())
+    ))
+    legacy = session.scalars(select(content).where(
+        *common,
+        message_key == message_value,
+        or_(channel_key.is_(None), channel_key == "", channel_key == empty_id),
+    ).order_by(Action.created_at.desc()))
+    return [str(item).strip() for item in (*modern, *legacy) if str(item).strip()]
+
+
+def _payload_history_key(session: Session, key: str, value: int | None):
+    expression = Action.payload[key]
+    if session.get_bind().dialect.name == "postgresql":
+        return expression.as_string(), str(int(value or 0))
+    return expression.as_integer(), int(value or 0)
 
 
 def _outbound_decision(

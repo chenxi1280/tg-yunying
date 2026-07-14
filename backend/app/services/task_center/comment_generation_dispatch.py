@@ -75,6 +75,7 @@ def ensure_post_comment_content(
             _mark_provider_call_started(session, request)
         content, tokens = _generate_comment(session, request, dependencies)
     except GenerationAttemptStale:
+        session.rollback()
         raise
     except Exception as exc:
         session.rollback()
@@ -125,6 +126,7 @@ def prepare_comment_generation_request(
         cached_tokens=int(cached.get("tokens") or 0),
     )
     session.commit()
+    _validate_comment_target(session, action, request=request)
     _validate_reply_target(session, action, task, request=request)
     return request
 
@@ -146,6 +148,31 @@ def _validate_generation_claim(action: Action, payload: PostCommentPayload) -> N
         raise GenerationAttemptStale("ai_generation_attempt_stale")
 
 
+def _validate_comment_target(
+    session: Session,
+    action: Action,
+    *,
+    request: CommentGenerationRequest,
+) -> None:
+    payload = request.payload
+    target = session.scalar(select(ChannelMessage.id).where(
+        ChannelMessage.id == payload.channel_message_id,
+        ChannelMessage.tenant_id == action.tenant_id,
+        ChannelMessage.channel_target_id == payload.channel_target_id,
+        ChannelMessage.message_id == payload.message_id,
+        ChannelMessage.comment_available.is_(True),
+    ))
+    if target:
+        session.commit()
+        return
+    _fail_generation_context(
+        session,
+        request,
+        code="comment_unavailable_message",
+        detail="频道源消息不存在或评论区已关闭",
+    )
+
+
 def _validate_reply_target(
     session: Session,
     action: Action,
@@ -162,19 +189,29 @@ def _validate_reply_target(
         ChannelMessageComment.channel_message_id == payload.channel_message_id,
         ChannelMessageComment.comment_message_id == payload.reply_to_message_id,
     ))
-    message = session.scalar(select(ChannelMessage.id).where(
-        ChannelMessage.id == payload.channel_message_id,
-        ChannelMessage.tenant_id == action.tenant_id,
-        ChannelMessage.comment_available.is_(True),
-    ))
     window = int((task.type_config or {}).get("context_bound_schedule_window_seconds") or 300)
     stale = (_naive(_now()) - _naive(action.created_at)).total_seconds() > window
-    if target and message and not stale:
+    if target and not stale:
         session.commit()
         return
     code = "reply_target_stale" if stale else "reply_target_missing"
+    _fail_generation_context(
+        session,
+        request,
+        code=code,
+        detail="引用评论已过期、删除或不可访问",
+    )
+
+
+def _fail_generation_context(
+    session: Session,
+    request: CommentGenerationRequest,
+    *,
+    code: str,
+    detail: str,
+) -> None:
     current = _load_attempt_action(session, request)
-    _fail_before_generation(current, code, "引用评论已过期、删除或不可访问")
+    _fail_before_generation(current, code, detail)
     _cas_write_action(session, request, current)
     session.commit()
     _release_runtime_resources(current)
@@ -198,11 +235,15 @@ def _mark_generating(action: Action, data: dict, *, attempt_id: str, request_id:
         "ai_generation_attempt_history": history,
     })
     action.payload = data
+    result = dict(action.result or {})
+    result.pop("ai_provider_call_started_at", None)
+    result.pop("ai_provider_call_attempt_id", None)
     action.result = {
-        **(action.result or {}),
+        **result,
         "generation_stage": "generation_claimed",
         "generation_outcome": "in_progress",
         "ai_generation_attempt_id": attempt_id,
+        "ai_generation_request_id": request_id,
     }
 
 
@@ -249,6 +290,7 @@ def _mark_provider_call_started(session: Session, request: CommentGenerationRequ
         **(action.result or {}),
         "generation_stage": "provider_call_started",
         "ai_provider_call_started_at": _now().isoformat(),
+        "ai_provider_call_attempt_id": request.attempt_id,
     }
     _cas_write_action(session, request, action)
     session.commit()
@@ -363,6 +405,9 @@ def _fail_before_generation(
 ) -> None:
     data = dict(action.payload or {})
     data["ai_generation_status"] = code
+    attempt_id = str(data.get("ai_generation_attempt_id") or "")
+    if attempt_id:
+        mark_attempt_outcome(data, attempt_id, code, timestamp=_now())
     action.payload = data
     action.status = "failed"
     action.executed_at = _now()

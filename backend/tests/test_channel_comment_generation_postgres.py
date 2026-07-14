@@ -10,6 +10,7 @@ from app.models import (
     AccountStatus,
     Action,
     ChannelMessage,
+    ChannelMessageComment,
     ExecutionAttempt,
     OperationTarget,
     RuleSet,
@@ -39,6 +40,7 @@ MESSAGE_ID = TENANT_ID + 3
 GROUP_ID = TENANT_ID + 4
 RULE_SET_ID = TENANT_ID + 5
 RULE_VERSION_ID = TENANT_ID + 6
+COMMENT_ID = TENANT_ID + 7
 
 
 def test_postgres_two_dispatchers_claim_and_generate_comment_once(monkeypatch) -> None:
@@ -130,6 +132,79 @@ def test_postgres_comment_generation_cas_rejects_worker_losing_token_after_quali
         _cleanup()
 
 
+def test_postgres_reply_comment_uses_persisted_target_and_reply_generator(monkeypatch) -> None:
+    Base.metadata.create_all(engine)
+    _cleanup()
+    calls = {"direct": 0, "reply": 0, "gateway": 0}
+    monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args: object())
+    monkeypatch.setattr(dispatcher.gateway, "reply_channel_message", _counting_gateway(calls))
+    try:
+        _seed_scope()
+        _seed_reply_target()
+        with SessionLocal() as session:
+            claimed = dispatcher.claim_actions(session, limit=1, worker_id="reply-worker")
+            assert len(claimed) == 1
+            dispatcher.dispatch_action(
+                session,
+                claimed[0],
+                comment_generation_dependencies=_reply_dependencies(session, calls),
+            )
+            session.commit()
+
+        with SessionLocal() as session:
+            action = session.get(Action, ACTION_ID)
+            assert action.status == "success"
+            assert action.payload["comment_text"] == "PG 引用回复"
+            assert calls == {"direct": 0, "reply": 1, "gateway": 1}
+    finally:
+        _cleanup()
+
+
+def test_postgres_unknown_result_second_claim_reuses_cache_without_provider(monkeypatch) -> None:
+    Base.metadata.create_all(engine)
+    _cleanup()
+    calls = {"provider": 0, "gateway": 0}
+    monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args: object())
+    monkeypatch.setattr(dispatcher.gateway, "reply_channel_message", _gateway_sender(calls, Lock()))
+    try:
+        _seed_scope()
+        with SessionLocal() as session:
+            first = dispatcher.claim_actions(session, limit=1, worker_id="unknown-worker")[0]
+            dispatcher.dispatch_action(
+                session,
+                first,
+                comment_generation_dependencies=_unknown_dependencies(session, calls),
+            )
+            session.commit()
+
+        with SessionLocal() as session:
+            pending = session.get(Action, ACTION_ID)
+            assert pending.status == "pending"
+            assert pending.payload["ai_generation_status"] == "ai_result_persist_unknown"
+            assert pending.payload["ai_generation_result_cache"]["content"] == "PG 缓存评论"
+            second = dispatcher.claim_actions(session, limit=1, worker_id="cache-worker")[0]
+            dispatcher.dispatch_action(
+                session,
+                second,
+                comment_generation_dependencies=CommentGenerationDependencies(
+                    direct_generator=_forbidden_provider,
+                    reply_generator=_forbidden_provider,
+                ),
+            )
+            session.commit()
+
+        with SessionLocal() as session:
+            action = session.get(Action, ACTION_ID)
+            outcomes = [item["outcome"] for item in action.payload["ai_generation_attempt_history"]]
+            assert action.status == "success"
+            assert action.payload["comment_text"] == "PG 缓存评论"
+            assert action.payload["ai_generation_result_cache"] == {}
+            assert outcomes == ["ai_result_persist_unknown", "ready"]
+            assert calls == {"provider": 1, "gateway": 1}
+    finally:
+        _cleanup()
+
+
 def _dependencies(session, calls, lock) -> CommentGenerationDependencies:
     def generate(*_args, **_kwargs):
         assert session.in_transaction() is False
@@ -150,6 +225,47 @@ def _gateway_sender(calls, lock):
         return SendResult(True, remote_message_id="pg-comment-remote-id")
 
     return send
+
+
+def _counting_gateway(calls):
+    def send(*_args, **_kwargs):
+        calls["gateway"] += 1
+        return SendResult(True, remote_message_id="pg-reply-remote-id")
+
+    return send
+
+
+def _reply_dependencies(session, calls) -> CommentGenerationDependencies:
+    def direct(*_args, **_kwargs):
+        calls["direct"] += 1
+        pytest.fail("reply action must not use direct generation")
+
+    def reply(*_args, **_kwargs):
+        assert session.in_transaction() is False
+        calls["reply"] += 1
+        return ["PG 引用回复"], 2
+
+    return CommentGenerationDependencies(direct_generator=direct, reply_generator=reply)
+
+
+def _unknown_dependencies(session, calls) -> CommentGenerationDependencies:
+    def generate(*_args, **_kwargs):
+        assert session.in_transaction() is False
+        calls["provider"] += 1
+        return ["PG 缓存评论"], 2
+
+    def fail_commit(_session):
+        raise RuntimeError("injected phase c commit failure")
+
+    return CommentGenerationDependencies(
+        direct_generator=generate,
+        reply_generator=generate,
+        phase_c_commit=fail_commit,
+    )
+
+
+def _forbidden_provider(*_args, **_kwargs):
+    pytest.fail("cached retry must not call provider")
 
 
 def _seed_scope() -> None:
@@ -178,6 +294,29 @@ def _seed_scope() -> None:
         session.add(_task())
         session.flush()
         session.add(_action())
+        session.commit()
+
+
+def _seed_reply_target() -> None:
+    with SessionLocal() as session:
+        session.add(ChannelMessageComment(
+            id=COMMENT_ID,
+            tenant_id=TENANT_ID,
+            channel_target_id=CHANNEL_ID,
+            channel_message_id=MESSAGE_ID,
+            comment_message_id=8101,
+            author_name="PG 读者",
+            content_preview="PG 评论问题",
+        ))
+        action = session.get(Action, ACTION_ID)
+        action.payload = {
+            **action.payload,
+            "comment_mode": "reply",
+            "reply_to_message_id": 8101,
+            "reply_target_author": "PG 读者",
+            "reply_target_preview": "PG 评论问题",
+            "reply_target_source": "persisted",
+        }
         session.commit()
 
 
@@ -292,6 +431,7 @@ def _cleanup() -> None:
         session.execute(delete(Action).where(Action.task_id == TASK_ID))
         session.execute(delete(Task).where(Task.id == TASK_ID))
         session.execute(delete(TgGroupAccount).where(TgGroupAccount.tenant_id == TENANT_ID))
+        session.execute(delete(ChannelMessageComment).where(ChannelMessageComment.tenant_id == TENANT_ID))
         session.execute(delete(ChannelMessage).where(ChannelMessage.tenant_id == TENANT_ID))
         session.execute(delete(OperationTarget).where(OperationTarget.tenant_id == TENANT_ID))
         session.execute(delete(TgGroup).where(TgGroup.tenant_id == TENANT_ID))

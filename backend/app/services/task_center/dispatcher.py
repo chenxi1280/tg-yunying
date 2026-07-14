@@ -3309,7 +3309,10 @@ def _dispatch_comment(
             payload=payload,
             dependencies=generation_dependencies,
         )
-    except (AiGenerationUnavailable, GenerationAttemptStale):
+    except GenerationAttemptStale:
+        _release_runtime_resources(action)
+        return True
+    except AiGenerationUnavailable:
         return True
     if payload.ai_generation_status != "ready" or not payload.comment_text.strip():
         return True
