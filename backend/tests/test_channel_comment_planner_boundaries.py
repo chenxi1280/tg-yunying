@@ -17,25 +17,42 @@ pytestmark = pytest.mark.no_postgres
 
 
 @pytest.mark.parametrize("status", ["failed", "skipped"])
-def test_failed_or_skipped_comment_action_releases_message_capacity(monkeypatch, status):
+def test_released_comment_actions_are_replenished_with_monotonic_slots(monkeypatch, status):
     forbid_planner_external_boundaries(monkeypatch)
     fixed_profile(monkeypatch)
     with planner_session() as session:
         task = seed_comment_task(session, mode="comment")
-        add_existing_comment_action(session, task, status)
+        task.type_config = {
+            **task.type_config,
+            "max_total_comments": 2,
+            "max_total_comments_jitter": 0,
+        }
 
-        created = channel_comment.build_plan(session, task)
-        actions = list(
-            session.scalars(
-                select(Action).where(Action.task_id == task.id, Action.id != f"existing-{status}")
-            )
-        )
+        first_created = channel_comment.build_plan(session, task)
+        session.commit()
+        first_actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
+        first_action_ids = {action.id for action in first_actions}
+        for action in first_actions:
+            action.status = status
+        session.commit()
 
-    assert created == 2
-    assert sorted(action.payload["slot_id"] for action in actions) == [
-        "channel-comment:41:0",
-        "channel-comment:41:1",
-    ]
+        replenished = channel_comment.build_plan(session, task)
+        session.commit()
+        all_actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
+        new_actions = [action for action in all_actions if action.id not in first_action_ids]
+        capped = channel_comment.build_plan(session, task)
+
+    assert first_created == 2
+    assert replenished == 2
+    assert capped == 0
+    assert len(all_actions) == 4
+    assert len({action.action_dedupe_key for action in all_actions}) == 4
+    assert sorted(action.payload["slot_id"] for action in first_actions) == ["channel-comment:41:0", "channel-comment:41:1"]
+    assert sorted(action.payload["slot_id"] for action in new_actions) == ["channel-comment:41:2", "channel-comment:41:3"]
+    assert all(action.status == status for action in first_actions)
+    assert all(action.status == "pending" for action in new_actions)
+    assert len({action.account_id for action in new_actions}) == 2
+    assert task.stats["max_total_comments_resolved"] == 2
 
 
 @pytest.mark.parametrize(

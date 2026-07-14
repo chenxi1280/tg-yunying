@@ -106,6 +106,31 @@ def message_comment_reservation_count(session: Session, task: Task, message: Cha
     return count
 
 
+def next_message_comment_slot_index(session: Session, task: Task, message: ChannelMessage) -> int:
+    matching_count = 0
+    max_slot_index = -1
+    slot_prefix = f"channel-comment:{message.id}:"
+    payloads = session.scalars(
+        select(Action.payload).where(
+            Action.task_id == task.id,
+            Action.action_type == "post_comment",
+        )
+    )
+    for payload in payloads:
+        if not isinstance(payload, dict):
+            continue
+        if payload.get("channel_message_id") != message.id and payload.get("message_id") != message.message_id:
+            continue
+        matching_count += 1
+        slot_id = str(payload.get("slot_id") or "")
+        if not slot_id.startswith(slot_prefix):
+            continue
+        slot_index = slot_id.removeprefix(slot_prefix)
+        if slot_index.isdigit():
+            max_slot_index = max(max_slot_index, int(slot_index))
+    return max(matching_count, max_slot_index + 1)
+
+
 def _total_comment_action_counts(session: Session, task: Task) -> dict[str, int]:
     rows = session.execute(
         select(Action.status, func.count(Action.id))
@@ -291,6 +316,7 @@ def _tenant_account_usernames(session: Session, tenant_id: int) -> set[str]:
 __all__ = [
     "message_comment_reservation_count",
     "message_comment_quantities",
+    "next_message_comment_slot_index",
     "reconcile_lifetime_cap",
     "resolved_total_comment_limit",
     "total_comment_action_count",

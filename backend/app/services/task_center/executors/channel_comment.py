@@ -16,8 +16,8 @@ from ..payloads import PostCommentPayload, create_comment_action
 from app.services.target_learning_audit import audit_learning_profile_use
 from app.services.tenant_target_profile import tenant_learning_profile_preview
 from .channel_comment_budget import (
-    message_comment_reservation_count as _message_comment_reservation_count,
     message_comment_quantities as _message_comment_quantities,
+    next_message_comment_slot_index as _next_message_comment_slot_index,
     reconcile_lifetime_cap,
     resolved_total_comment_limit as _resolved_total_comment_limit,
     total_comment_action_count as _total_comment_action_count,
@@ -244,7 +244,7 @@ def _comment_plan_slots(
         targets = _comment_slot_targets(session, task, context, message, quantity, reply_targets)
         if targets is None:
             return None
-        offset = _message_comment_reservation_count(session, task, message)
+        offset = _next_message_comment_slot_index(session, task, message)
         slots.extend(CommentPlanSlot(message, target, offset + index) for index, target in enumerate(targets))
     return slots
 
