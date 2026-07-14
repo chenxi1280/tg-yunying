@@ -19,6 +19,7 @@ from app.services._common import _now
 
 from .daily_coverage_schedule import daily_coverage_due_debt
 from .daily_coverage_readiness import refresh_rows
+from .daily_coverage_planning import advance_coverage_plan_cursor, ready_coverage_plan_batch
 
 
 TERMINAL_PRECONFIRMATION_STATUSES = frozenset({"failed", "skipped", "retryable_failed"})
@@ -523,6 +524,8 @@ __all__ = [
     "confirm_coverage_from_attempt",
     "daily_coverage_due_debt",
     "ensure_task_daily_coverage",
+    "advance_coverage_plan_cursor",
+    "ready_coverage_plan_batch",
     "ready_coverage_remaining_count",
     "ready_coverage_rows",
     "ready_coverage_rows_by_account",

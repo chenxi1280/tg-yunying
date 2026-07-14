@@ -11,6 +11,8 @@ from sqlalchemy.orm import Session
 
 from app.models import Action, Task
 
+from .channel_payloads import LikeMessagePayload, PostCommentPayload, ViewMessagePayload
+
 
 class SendMessagePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -57,6 +59,9 @@ class SendMessagePayload(BaseModel):
     topic_thread: str = ""
     topic_plan: str = ""
     intent: str = ""
+    mood: str = ""
+    material_intent: str = ""
+    allow_material: bool = False
     chat_mode: str = ""
     reply_to_message_id: int | None = None
     reply_target_label: str = ""
@@ -73,6 +78,12 @@ class SendMessagePayload(BaseModel):
     context_expire_after_messages: int = 0
     ai_generation_id: str = ""
     ai_generation_status: str = ""
+    ai_generation_attempt_id: str = ""
+    ai_generation_request_id: str = ""
+    ai_generation_attempt_history: list[dict[str, Any]] = Field(default_factory=list)
+    ai_generation_result_cache: dict[str, Any] = Field(default_factory=dict)
+    ai_generation_claim_owner: str = ""
+    ai_generation_claim_token: str = ""
     generation_source: str = ""
     requested_model: str = ""
     actual_model: str = ""
@@ -127,7 +138,12 @@ class SendMessagePayload(BaseModel):
     def require_destination(self) -> "SendMessagePayload":
         if self.group_id is None and not self.chat_id.strip():
             raise ValueError("send_message action requires group_id or chat_id")
-        if not self.message_text.strip() and self.ai_generation_status != "pending":
+        pending_generation_statuses = {
+            "pending",
+            "generating",
+            "ai_result_persist_unknown",
+        }
+        if not self.message_text.strip() and self.ai_generation_status not in pending_generation_statuses:
             raise ValueError("send_message action requires message_text unless ai_generation_status is pending")
         if not self.reply_to_message_id and any([self.reply_target_label, self.reply_target_author, self.reply_target_preview, self.reply_target_source]):
             raise ValueError("引用回复 action 缺少 reply_to_message_id")
@@ -147,55 +163,6 @@ class DeleteMessagePayload(BaseModel):
     def require_destination(self) -> "DeleteMessagePayload":
         if self.group_id is None and not self.chat_id.strip():
             raise ValueError("delete_message action requires group_id or chat_id")
-        return self
-
-
-class ViewMessagePayload(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    channel_id: str = Field(min_length=1)
-    channel_target_id: int | None = None
-    channel_message_id: int | None = None
-    message_id: int = Field(ge=1)
-    target_display: str = ""
-    message_content: str = ""
-    execution_date: str = ""
-    daily_view_target: int | None = None
-    total_view_target: int | None = None
-
-
-class LikeMessagePayload(ViewMessagePayload):
-    reaction_emoji: str = Field(default="👍", min_length=1, max_length=32)
-
-
-class PostCommentPayload(ViewMessagePayload):
-    message_content: str = ""
-    comment_text: str = Field(min_length=1)
-    comment_mode: str = "comment"
-    reply_to_message_id: int | None = None
-    reply_target_label: str = ""
-    reply_target_author: str = ""
-    reply_target_preview: str = ""
-    reply_target_source: str = ""
-    review_approved: bool = False
-    rule_set_id: int | None = None
-    rule_set_name: str = ""
-    rule_set_version_id: int | None = None
-    resolved_rule_set_version_id: int | None = None
-    rule_set_version: int | None = None
-    rule_binding_mode: str = ""
-    profile_scene: str = ""
-    profile_version: int = 0
-    profile_hit_summary: str = ""
-    profile_unavailable_reason: str = ""
-
-    @model_validator(mode="after")
-    def require_reply_target_id(self) -> "PostCommentPayload":
-        has_reply_meta = any([self.reply_target_label, self.reply_target_author, self.reply_target_preview, self.reply_target_source])
-        if self.comment_mode == "reply" and not self.reply_to_message_id:
-            raise ValueError("引用评论 action 缺少 reply_to_message_id")
-        if has_reply_meta and not self.reply_to_message_id:
-            raise ValueError("引用评论 action 缺少 reply_to_message_id")
         return self
 
 
@@ -335,6 +302,17 @@ DEDUPE_VOLATILE_PAYLOAD_FIELDS = frozenset(
         "waiting_source_media_versions",
     }
 )
+POST_COMMENT_DEDUPE_FIELDS = frozenset(
+    {
+        "channel_id",
+        "channel_target_id",
+        "channel_message_id",
+        "message_id",
+        "comment_mode",
+        "reply_to_message_id",
+        "slot_id",
+    }
+)
 
 
 def validate_action_payload(action_type: str, payload: dict[str, Any]) -> BaseModel:
@@ -400,6 +378,8 @@ def _action_dedupe_key(task: Task, plan_batch_key: str, action_type: str, accoun
     if action_type == "view_message" and payload_data.get("execution_date"):
         message_identity = payload_data.get("channel_message_id") or payload_data.get("message_id")
         return f"{task.tenant_id}:{task.id}:{payload_data.get('execution_date')}:{account_id}:{message_identity}:{action_type}"
+    if action_type == "post_comment":
+        return _post_comment_dedupe_key(task, action_type, account_id, payload_data)
     business_parts = {
         "action_type": action_type,
         "account_id": account_id,
@@ -407,6 +387,19 @@ def _action_dedupe_key(task: Task, plan_batch_key: str, action_type: str, accoun
     }
     digest = hashlib.sha256(json.dumps(business_parts, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")).hexdigest()
     return f"{task.tenant_id}:{plan_batch_key}:{digest}"
+
+
+def _post_comment_dedupe_key(task: Task, action_type: str, account_id: int | None, payload_data: dict[str, Any]) -> str:
+    stable_payload = {key: payload_data.get(key) for key in POST_COMMENT_DEDUPE_FIELDS}
+    business_parts = {
+        "action_type": action_type,
+        "account_id": account_id,
+        "payload": stable_payload,
+    }
+    digest = hashlib.sha256(
+        json.dumps(business_parts, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
+    ).hexdigest()
+    return f"{task.tenant_id}:{task.id}:{digest}"
 
 
 def _stable_payload_for_dedupe(payload_data: dict[str, Any]) -> dict[str, Any]:

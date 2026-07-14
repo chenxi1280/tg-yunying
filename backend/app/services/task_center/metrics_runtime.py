@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 
 from sqlalchemy import func, select
 
-from app.models import Action, OperationIssue, RuntimeMetricSnapshot, WorkerHeartbeat
+from app.models import Action, OperationIssue, RuntimeMetricSnapshot, Task, TaskRuntimeSummary, WorkerHeartbeat
 from app.services._common import _now
 from app.services.runtime_summary import reconcile_stale_operation_issues
 from app.services.runtime_summary_batches import (
@@ -13,6 +13,10 @@ from app.services.runtime_summary_batches import (
 )
 
 from .heartbeat import record_worker_heartbeat
+from .stats import refresh_task_stats
+
+
+DEFAULT_TASK_SUMMARY_BATCH_SIZE = 20
 
 
 def drain_task_metrics(session_factory, limit: int = 100) -> int:
@@ -21,7 +25,8 @@ def drain_task_metrics(session_factory, limit: int = 100) -> int:
         record_count = _record_runtime_metrics(session, now_value, limit)
         session.commit()
     account_count = _refresh_account_summary_batch(session_factory, limit)
-    return record_count + account_count
+    task_count = _refresh_task_summary_batch(session_factory, limit)
+    return record_count + account_count + task_count
 
 
 def _record_runtime_metrics(session, now_value: datetime, limit: int) -> int:
@@ -91,6 +96,36 @@ def _refresh_account_summary_batch(session_factory, limit: int) -> int:
         count = refresh_account_runtime_summary_batch(session, limit=batch_size)
         session.commit()
         return count
+
+
+def _refresh_task_summary_batch(session_factory, limit: int) -> int:
+    batch_size = min(DEFAULT_TASK_SUMMARY_BATCH_SIZE, max(1, int(limit)))
+    with session_factory() as session:
+        task_ids = list(session.scalars(_task_summary_batch_query(batch_size)))
+    refreshed = 0
+    for task_id in task_ids:
+        with session_factory() as session:
+            task = session.get(Task, task_id)
+            if task is None:
+                continue
+            refresh_task_stats(session, task, include_configured_accounts=False)
+            session.commit()
+            refreshed += 1
+    return refreshed
+
+
+def _task_summary_batch_query(limit: int):
+    return (
+        select(Task.id)
+        .outerjoin(TaskRuntimeSummary, TaskRuntimeSummary.task_id == Task.id)
+        .where(Task.deleted_at.is_(None))
+        .order_by(
+            TaskRuntimeSummary.updated_at.asc().nullsfirst(),
+            Task.updated_at.asc(),
+            Task.id.asc(),
+        )
+        .limit(limit)
+    )
 
 
 def _naive_datetime(value: datetime) -> datetime:

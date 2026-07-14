@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from app.ai_gateway import AiDraftCandidate, AiGenerationResult, AiUsage
 from sqlalchemy import create_engine
@@ -9,7 +11,11 @@ from app.database import Base
 from app.models import AiProvider, Tenant, TenantAiSetting
 from app.schemas.ai_config import TenantAiSettingUpdate
 from app.services.ai_config import update_tenant_ai_setting
-from app.services.task_center.ai_generator import AiGenerationUnavailable
+from app.services.task_center.ai_generation_dependencies import GenerationDependencies
+from app.services.task_center.ai_generation_pipeline import generate_quality_results
+from app.services.task_center.ai_generation_state import apply_generated_content_metadata
+from app.services.task_center.ai_generator import AiGenerationUnavailable, GeneratedContent
+from app.services.task_center import ai_generation_pipeline
 from app.services.task_center import ai_generator
 from app.services.task_center.payloads import SendMessagePayload
 from app.services.task_center.ai_group_prompt import GroupPromptBundle
@@ -69,16 +75,15 @@ def test_tenant_ai_group_fallback_switches_can_be_disabled():
     ],
 )
 def test_ai_group_fallback_stages_follow_explicit_switches(config, expected):
-    assert group_ai_chat._fallback_stages(config) == expected
+    assert ai_generation_pipeline._fallback_stages(config) == expected
 
 
 def test_explicit_mimo_requirement_does_not_enter_default_provider_chain():
-    assert group_ai_chat._fallback_stages({"require_mimo_draft": True}) == ("direct_mimo",)
-    assert group_ai_chat._fallback_stages({"ai_model": "DeepSeek V4 Flash"}) == ("direct_configured_model",)
+    assert ai_generation_pipeline._fallback_stages({"require_mimo_draft": True}) == ("direct_mimo",)
+    assert ai_generation_pipeline._fallback_stages({"ai_model": "DeepSeek V4 Flash"}) == ("direct_configured_model",)
 
 
 def test_ai_group_fallback_continues_after_stage_error(monkeypatch):
-    task = type("TaskStub", (), {"tenant_id": 1, "stats": {}})()
     visited: list[str] = []
 
     def fake_generate(_session, _tenant_id, config, *, count, target_label, history):
@@ -86,102 +91,111 @@ def test_ai_group_fallback_continues_after_stage_error(monkeypatch):
         visited.append(stage)
         if stage != "fallback_grok":
             raise AiGenerationUnavailable(f"{stage} unavailable")
-        return ["老师今天高跟鞋挺好看"], 7
+        slot = config["generation_slots"][0]
+        return [GeneratedContent(
+            "老师今天高跟鞋挺好看",
+            slot_id=slot["slot_id"],
+            sequence_index=1,
+        )], 7
 
-    monkeypatch.setattr(group_ai_chat, "generate_group_messages", fake_generate)
-
-    items, tokens, stats = group_ai_chat._generate_quality_filled_items(
-        None,
-        task,
-        {},
-        reply_targets=[],
-        normal_count=1,
-        target_label="测试群",
-        history="真人A: 今天这身搭配挺好看",
-        turn_count=1,
-        duplicate_baseline_messages=[],
-        chat_mode=group_ai_chat.CHAT_MODE_REPLY,
-        context_message_ids=[1],
-        fact_anchor_required=False,
-        low_confidence_silence_enabled=False,
-        fill_reply_shortfall_with_normal=False,
-        enable_quality_fallback=False,
-    )
+    with Session(create_engine("sqlite:///:memory:", future=True)) as session:
+        items, tokens = generate_quality_results(
+            session,
+            _generation_request(),
+            _generation_dependencies(normal_generator=fake_generate),
+        )
 
     assert visited == ["primary_m3", "fallback_m25", "fallback_grok"]
-    assert [item["content"] for item in items] == ["老师今天高跟鞋挺好看"]
+    assert [item.content for item in items] == ["老师今天高跟鞋挺好看"]
     assert tokens == 7
-    assert stats["ai_generation_stage_failures"] == [
-        {"stage": "primary_m3", "error_code": "ai_generation_unavailable"},
-        {"stage": "fallback_m25", "error_code": "ai_generation_unavailable"},
-    ]
 
 
 def test_ai_group_quality_rejection_is_visible_to_next_stage(monkeypatch):
-    task = type("TaskStub", (), {"tenant_id": 1, "stats": {}})()
-    attempts_seen: list[list[dict]] = []
+    visited: list[str] = []
 
     def fake_generate(_session, _tenant_id, config, *, count, target_label, history):
-        attempts_seen.append(list(config.get("_ai_generation_attempts") or []))
-        if config["_ai_fallback_stage"] == "primary_m3":
-            return ["重复内容"], 1
-        return ["老师今天高跟鞋挺好看"], 1
+        stage = config["_ai_fallback_stage"]
+        visited.append(stage)
+        content = "照片没p" if stage == "primary_m3" else "老师今天高跟鞋挺好看"
+        return [GeneratedContent(
+            content,
+            slot_id=config["generation_slots"][0]["slot_id"],
+            sequence_index=1,
+        )], 1
 
-    monkeypatch.setattr(group_ai_chat, "generate_group_messages", fake_generate)
-    items, _tokens, stats = group_ai_chat._generate_quality_filled_items(
-        None,
-        task,
-        {},
-        reply_targets=[],
-        normal_count=1,
-        target_label="测试群",
-        history="真人A: 今天这身搭配挺好看",
-        turn_count=1,
-        duplicate_baseline_messages=["重复内容"],
-        chat_mode=group_ai_chat.CHAT_MODE_REPLY,
-        context_message_ids=[1],
-        fact_anchor_required=False,
-        low_confidence_silence_enabled=False,
-        fill_reply_shortfall_with_normal=False,
-        enable_quality_fallback=False,
-    )
+    request = _generation_request(duplicate_baseline_messages=["照片准"])
+    with Session(create_engine("sqlite:///:memory:", future=True)) as session:
+        items, _tokens = generate_quality_results(
+            session,
+            request,
+            _generation_dependencies(normal_generator=fake_generate),
+        )
 
-    assert items[0]["content"] == "老师今天高跟鞋挺好看"
-    assert attempts_seen[1][0]["outcome"] == "rejected"
-    assert stats["ai_generation_stage_failures"][0]["error_code"] == "quality_rejected"
+    assert items[0].content == "老师今天高跟鞋挺好看"
+    assert visited == ["primary_m3", "fallback_m25"]
 
 
 def test_ai_group_fallback_retries_the_same_reply_target(monkeypatch):
-    task = type("TaskStub", (), {"tenant_id": 1, "stats": {}})()
     visited: list[tuple[str, int]] = []
 
     def fake_reply(_session, _tenant_id, config, *, reply_targets, target_label, history):
         visited.append((config["_ai_fallback_stage"], reply_targets[0]["message_id"]))
         if config["_ai_fallback_stage"] == "primary_m3":
             raise AiGenerationUnavailable("primary failed")
-        return ["这双高跟鞋确实很搭"], 1
+        return [GeneratedContent(
+            "这双高跟鞋确实很搭",
+            slot_id=config["generation_slots"][0]["slot_id"],
+            sequence_index=1,
+            reply_to_sequence_index=1,
+        )], 1
 
-    monkeypatch.setattr(group_ai_chat, "generate_group_reply_messages", fake_reply)
-    items, _tokens, _stats = group_ai_chat._generate_quality_filled_items(
-        None,
-        task,
-        {},
-        reply_targets=[{"message_id": 88, "preview": "今天这身搭配挺好看"}],
-        normal_count=0,
-        target_label="测试群",
-        history="真人A: 今天这身搭配挺好看",
-        turn_count=1,
-        duplicate_baseline_messages=[],
-        chat_mode=group_ai_chat.CHAT_MODE_REPLY,
+    request = _generation_request(is_reply=True)
+    with Session(create_engine("sqlite:///:memory:", future=True)) as session:
+        items, _tokens = generate_quality_results(
+            session,
+            request,
+            _generation_dependencies(reply_generator=fake_reply),
+        )
+
+    assert visited == [("primary_m3", 88), ("fallback_m25", 88)]
+    assert items[0].content == "这双高跟鞋确实很搭"
+
+
+def _generation_request(*, is_reply: bool = False, duplicate_baseline_messages=None):
+    slot = {
+        "slot_id": "provider-fallback:turn:1",
+        "account_id": 11,
+        "reply_to_message_id": 88 if is_reply else None,
+    }
+    return SimpleNamespace(
+        batch_ids=["action-1"],
+        cached_contents=[],
+        cached_tokens=0,
+        duplicate_baseline_messages=list(duplicate_baseline_messages or []),
+        quality_snapshots=[{"account_profile": "", "stance_summary": ""}],
+        config={"generation_slots": [slot]},
+        chat_mode="reply",
         context_message_ids=[88],
         fact_anchor_required=False,
         low_confidence_silence_enabled=False,
-        fill_reply_shortfall_with_normal=False,
-        enable_quality_fallback=False,
+        is_reply=is_reply,
+        tenant_id=1,
+        reply_targets=[{"message_id": 88, "preview": "今天这身搭配挺好看"}],
+        target_label="测试群",
+        history="真人A: 今天这身搭配挺好看",
     )
 
-    assert visited == [("primary_m3", 88), ("fallback_m25", 88)]
-    assert items[0]["reply_target"]["message_id"] == 88
+
+def _generation_dependencies(*, normal_generator=None, reply_generator=None):
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("unexpected generation dependency")
+
+    return GenerationDependencies(
+        normal_generator=normal_generator or forbidden,
+        reply_generator=reply_generator or forbidden,
+        reply_target_probe=forbidden,
+        reply_messages_fetcher=forbidden,
+    )
 
 
 def test_ai_group_stage_provider_requires_exact_model():
@@ -222,7 +236,7 @@ def test_provider_generation_metadata_is_accepted_by_send_payload():
             {"stage": "fallback_m25", "model": "MiniMax-M2.5", "outcome": "success"},
         ],
     )
-    item = {"content": str(content), **group_ai_chat._generated_content_metadata(content)}
+    item = {"content": str(content), **apply_generated_content_metadata({}, content)}
     payload = SendMessagePayload(
         chat_id="-1001",
         message_text=item["content"],
@@ -242,6 +256,7 @@ def test_grok_stage_uses_cli_bridge_and_preserves_stage_metadata(monkeypatch):
 
     class FakeBridge:
         def generate(self, *, system_prompt, user_prompt, count):
+            assert session.in_transaction() is False
             assert system_prompt == "system"
             assert user_prompt == "user"
             assert count == 1
@@ -258,8 +273,11 @@ def test_grok_stage_uses_cli_bridge_and_preserves_stage_metadata(monkeypatch):
         contents, tokens = ai_generator._generate_group_prompt_contents(
             session,
             1,
-            {"_ai_fallback_stage": "fallback_grok"},
-            GroupPromptBundle(
+            {
+                "_ai_fallback_stage": "fallback_grok",
+                "_close_db_transaction_before_ai": True,
+            },
+            bundle=GroupPromptBundle(
                 system_prompt="system",
                 user_prompt="user",
                 context_source="neutral_fallback",

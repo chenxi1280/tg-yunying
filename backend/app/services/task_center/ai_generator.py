@@ -61,6 +61,10 @@ class AiGenerationUnavailable(RuntimeError):
     pass
 
 
+def _metadata_text(value: object) -> str:
+    return "" if value is None else str(value).strip()
+
+
 class GeneratedContent(str):
     def __new__(
         cls,
@@ -76,18 +80,28 @@ class GeneratedContent(str):
         fallback_reason: str = "",
         provider_duration_ms: int = 0,
         generation_attempts: list[dict] | None = None,
+        slot_id: str = "",
+        sequence_index: int = 0,
+        reply_to_sequence_index: int | None = None,
     ):
         obj = str.__new__(cls, value)
-        obj.material_intent = str(material_intent or "").strip()
+        obj.material_intent = _metadata_text(material_intent)
         obj.allow_material = bool(allow_material)
-        obj.intent = str(intent or "").strip()
-        obj.mood = str(mood or "").strip()
-        obj.requested_model = str(requested_model or "").strip()
-        obj.actual_model = str(actual_model or "").strip()
-        obj.fallback_stage = str(fallback_stage or "").strip()
-        obj.fallback_reason = str(fallback_reason or "").strip()
+        obj.intent = _metadata_text(intent)
+        obj.mood = _metadata_text(mood)
+        obj.requested_model = _metadata_text(requested_model)
+        obj.actual_model = _metadata_text(actual_model)
+        obj.fallback_stage = _metadata_text(fallback_stage)
+        obj.fallback_reason = _metadata_text(fallback_reason)
         obj.provider_duration_ms = max(0, int(provider_duration_ms or 0))
         obj.generation_attempts = [dict(item) for item in (generation_attempts or [])]
+        obj.slot_id = _metadata_text(slot_id)
+        obj.sequence_index = int(sequence_index or 0)
+        obj.reply_to_sequence_index = (
+            int(reply_to_sequence_index)
+            if reply_to_sequence_index is not None
+            else None
+        )
         return obj
 
 
@@ -206,6 +220,7 @@ def generate_contents(
     target_label: str = "",
     system_prompt: str | None = None,
     required_model_family: str = "",
+    close_transaction_before_external: bool = False,
 ) -> tuple[list[str], int]:
     topic = _sanitize_sensitive_context(topic)
     requirements = _sanitize_sensitive_context(requirements)
@@ -240,7 +255,18 @@ def generate_contents(
         required_model_family=required_model_family,
         allow_quota_rotation=not provider_id,
         purpose=purpose,
+        close_transaction_before_external=close_transaction_before_external,
     )
+    return _generated_contents_result(result, provider, purpose=purpose, count=count)
+
+
+def _generated_contents_result(
+    result,
+    provider: AiProvider,
+    *,
+    purpose: str,
+    count: int,
+) -> tuple[list[str], int]:
     raw_contents = [
         _generated_content_from_candidate(candidate)
         for candidate in result.candidates
@@ -271,15 +297,18 @@ def _generate_with_provider_candidates(
     required_model_family: str,
     allow_quota_rotation: bool,
     purpose: str,
+    close_transaction_before_external: bool,
 ):
-    providers = [provider]
-    if allow_quota_rotation:
-        providers.extend(_quota_rotation_providers(session, provider, required_model_family))
+    providers = _provider_candidates(
+        session, provider, required_model_family=required_model_family,
+        allow_quota_rotation=allow_quota_rotation,
+    )
+    provider_calls = _provider_calls(session, providers, model_name, close_transaction_before_external)
     last_exc: Exception | None = None
-    for candidate in providers:
+    for candidate, credentials in provider_calls:
         try:
             return ai_gateway.generate_drafts(
-                _ai_credentials(candidate, model_name),
+                credentials,
                 prompt,
                 count=count,
                 topic=topic,
@@ -295,13 +324,48 @@ def _generate_with_provider_candidates(
             if not _is_ai_provider_quota_exhausted(exc):
                 break
             _mark_provider_quota_exhausted(candidate, exc)
+            if close_transaction_before_external:
+                session.add(candidate)
+                session.commit()
             if candidate == providers[-1]:
                 break
+    _raise_provider_generation_failure(last_exc, purpose)
+
+
+def _provider_candidates(
+    session: Session,
+    provider: AiProvider,
+    *,
+    required_model_family: str,
+    allow_quota_rotation: bool,
+) -> list[AiProvider]:
+    providers = [provider]
+    if allow_quota_rotation:
+        providers.extend(_quota_rotation_providers(session, provider, required_model_family))
+    return providers
+
+
+def _raise_provider_generation_failure(last_exc: Exception | None, purpose: str) -> None:
     if purpose in LONG_RUNNING_AI_PURPOSES:
         raise AiGenerationUnavailable(f"{AI_GENERATION_UNAVAILABLE_MESSAGE}：{last_exc}") from last_exc
     if last_exc:
         raise last_exc
     raise RuntimeError("AI provider generation failed without detail")
+
+
+def _provider_calls(
+    session: Session,
+    providers: list[AiProvider],
+    model_name: str,
+    close_transaction_before_external: bool,
+) -> list[tuple[AiProvider, object]]:
+    calls = [(candidate, _ai_credentials(candidate, model_name)) for candidate in providers]
+    if not close_transaction_before_external:
+        return calls
+    for candidate in providers:
+        session.expunge(candidate)
+    session.commit()
+    return calls
 
 
 def _quota_rotation_providers(session: Session, provider: AiProvider, required_family: str) -> list[AiProvider]:
@@ -340,6 +404,9 @@ def _generated_content_from_candidate(candidate) -> GeneratedContent:
         fallback_reason=getattr(candidate, "fallback_reason", ""),
         provider_duration_ms=getattr(candidate, "provider_duration_ms", 0),
         generation_attempts=getattr(candidate, "generation_attempts", []),
+        sequence_index=getattr(candidate, "sequence_index", 0),
+        reply_to_sequence_index=getattr(candidate, "reply_to_sequence_index", None),
+        slot_id=getattr(candidate, "slot_id", ""),
     )
 
 
@@ -358,6 +425,9 @@ def _copy_generated_content_metadata(value: str, source: str) -> str:
         fallback_reason=getattr(source, "fallback_reason", ""),
         provider_duration_ms=getattr(source, "provider_duration_ms", 0),
         generation_attempts=getattr(source, "generation_attempts", []),
+        sequence_index=getattr(source, "sequence_index", 0),
+        reply_to_sequence_index=getattr(source, "reply_to_sequence_index", None),
+        slot_id=getattr(source, "slot_id", ""),
     )
 
 
@@ -365,7 +435,7 @@ def _has_generated_content_metadata(value: str) -> bool:
     keys = (
         "material_intent", "allow_material", "intent", "mood", "requested_model",
         "actual_model", "fallback_stage", "fallback_reason", "provider_duration_ms",
-        "generation_attempts",
+        "generation_attempts", "slot_id", "sequence_index", "reply_to_sequence_index",
     )
     return any(hasattr(value, key) for key in keys)
 
@@ -457,7 +527,7 @@ def _group_chat_prompt(count: int, target_label: str, topic: str, requirements: 
         "9. 黑话词表是理解口径，不是展示内容；该用行业口吻时自然用，不要解释词表。\n"
         f"10. {SENSITIVE_CONTEXT_GUIDANCE}\n"
         "11. 可为少量消息给出素材意图，但只能输出素材意图，不能输出素材 ID、素材 URL 或文件地址；不需要素材时 material_intent 为空且 allow_material=false。\n"
-        '只输出 JSON：{"drafts":[{"sequence_index":1,"reply_to_sequence_index":null,"persona":"不同群友人设","content":"群里要发送的一句话","risk_level":"低","intent":"附和/追问/围观/轻微吐槽","mood":"轻松/谨慎/好奇","material_intent":"表情包:围观 或 空字符串","allow_material":false}]}'
+        '只输出 JSON：{"drafts":[{"slot_id":"原样返回对应槽位ID","sequence_index":1,"reply_to_sequence_index":null,"persona":"不同群友人设","content":"群里要发送的一句话","risk_level":"低","intent":"附和/追问/围观/轻微吐槽","mood":"轻松/谨慎/好奇","material_intent":"表情包:围观 或 空字符串","allow_material":false}]}'
     )
 
 
@@ -477,7 +547,7 @@ def _group_chat_reply_prompt(count: int, target_label: str, topic: str, requirem
         "6. 不要编号、解释、括号备注，不要暴露 AI、任务或提示词。\n"
         f"7. {SENSITIVE_CONTEXT_GUIDANCE}\n"
         "8. 可为少量回复给出素材意图，但只能输出素材意图，不能输出素材 ID、素材 URL 或文件地址；不需要素材时 material_intent 为空且 allow_material=false。\n"
-        '只输出 JSON：{"drafts":[{"sequence_index":1,"persona":"不同群友人设","content":"引用回复要发送的一句话","risk_level":"低","intent":"短答/追问/围观/轻微吐槽","mood":"轻松/谨慎/好奇","material_intent":"表情包:围观 或 空字符串","allow_material":false}]}'
+        '只输出 JSON：{"drafts":[{"slot_id":"原样返回对应槽位ID","sequence_index":1,"persona":"不同群友人设","content":"引用回复要发送的一句话","risk_level":"低","intent":"短答/追问/围观/轻微吐槽","mood":"轻松/谨慎/好奇","material_intent":"表情包:围观 或 空字符串","allow_material":false}]}'
     )
 
 
@@ -842,7 +912,7 @@ def generate_group_messages(session: Session, tenant_id: int, config: dict, *, c
         session,
         tenant_id,
         config,
-        bundle,
+        bundle=bundle,
         count=count,
         purpose=GROUP_CHAT_PURPOSE,
     )
@@ -869,7 +939,7 @@ def generate_group_reply_messages(
         session,
         tenant_id,
         config,
-        bundle,
+        bundle=bundle,
         count=len(reply_targets),
         purpose=GROUP_CHAT_REPLY_PURPOSE,
     )
@@ -880,28 +950,66 @@ def _generate_group_prompt_contents(
     session: Session,
     tenant_id: int,
     config: dict,
-    bundle: GroupPromptBundle,
     *,
-    count: int,
-    purpose: str,
+    bundle: GroupPromptBundle,
+    count: int, purpose: str,
 ) -> tuple[list[str], int]:
     model_name = _group_chat_model(config)
     stage = str(config.get("_ai_fallback_stage") or "").strip()
     setting = session.scalar(select(TenantAiSetting).where(TenantAiSetting.tenant_id == tenant_id))
     if stage == "fallback_grok":
-        return _generate_group_with_grok(config, bundle, count=count, purpose=purpose, setting=setting)
-    provider = _provider_for_exact_model(session, model_name) if stage and setting and setting.ai_enabled else None
-    if not stage:
-        provider, setting = _provider(
+        return _generate_grok_stage(
             session,
-            tenant_id,
-            config.get("ai_provider_id"),
-            model_name,
-            required_family=_group_chat_required_model_family(config),
+            config,
+            bundle,
+            count=count,
+            purpose=purpose,
+            setting=setting,
         )
-    if not provider or not setting:
-        required_family = _group_chat_required_model_family(config)
-        raise AiGenerationUnavailable(f"{AI_GENERATION_UNAVAILABLE_MESSAGE}：{_unavailable_reason(setting, required_family)}")
+    provider, setting = _resolve_group_generation_provider(
+        session,
+        tenant_id,
+        config,
+        setting=setting,
+        model_name=model_name,
+        stage=stage,
+    )
+    provider, setting = _require_group_generation_provider(provider, setting, config)
+    result, started_at = _request_group_provider_candidates(
+        session,
+        provider,
+        bundle,
+        config=config,
+        setting=setting,
+        count=count,
+        purpose=purpose,
+        model_name=model_name,
+        stage=stage,
+    )
+    return _group_provider_result(
+        result,
+        config,
+        provider,
+        model_name=model_name,
+        stage=stage,
+        started_at=started_at,
+        purpose=purpose,
+        count=count,
+    )
+
+
+def _request_group_provider_candidates(
+    session: Session,
+    provider: AiProvider,
+    bundle: GroupPromptBundle,
+    *,
+    config: dict,
+    setting: TenantAiSetting,
+    count: int,
+    purpose: str,
+    model_name: str,
+    stage: str,
+):
     started_at = time.monotonic()
     result = _generate_with_provider_candidates(
         session,
@@ -919,10 +1027,64 @@ def _generate_group_prompt_contents(
         required_model_family=_group_chat_required_model_family(config),
         allow_quota_rotation=not config.get("ai_provider_id") and not stage,
         purpose=purpose,
+        close_transaction_before_external=bool(config.get("_close_db_transaction_before_ai")),
     )
+    return result, started_at
+
+
+def _generate_grok_stage(
+    session: Session,
+    config: dict,
+    bundle: GroupPromptBundle,
+    *,
+    count: int,
+    purpose: str,
+    setting: TenantAiSetting | None,
+) -> tuple[list[str], int]:
+    ai_enabled = bool(setting and setting.ai_enabled)
+    if config.get("_close_db_transaction_before_ai"):
+        session.commit()
+    return _generate_group_with_grok(
+        config,
+        bundle,
+        count=count,
+        purpose=purpose,
+        ai_enabled=ai_enabled,
+    )
+
+
+def _require_group_generation_provider(
+    provider: AiProvider | None,
+    setting: TenantAiSetting | None,
+    config: dict,
+) -> tuple[AiProvider, TenantAiSetting]:
+    if provider and setting:
+        return provider, setting
+    required_family = _group_chat_required_model_family(config)
+    reason = _unavailable_reason(setting, required_family)
+    raise AiGenerationUnavailable(f"{AI_GENERATION_UNAVAILABLE_MESSAGE}：{reason}")
+
+
+def _group_provider_result(
+    result,
+    config: dict,
+    provider: AiProvider,
+    *,
+    model_name: str,
+    stage: str,
+    started_at: float,
+    purpose: str,
+    count: int,
+) -> tuple[list[str], int]:
     duration_ms = round((time.monotonic() - started_at) * 1000)
     contents = [
-        _content_with_provider_metadata(item, config, model_name, stage, duration_ms)
+        _content_with_provider_metadata(
+            item,
+            config,
+            model_name=model_name,
+            stage=stage,
+            duration_ms=duration_ms,
+        )
         for item in result.candidates
         if str(item.content or "").strip()
     ]
@@ -931,15 +1093,40 @@ def _generate_group_prompt_contents(
     return cleaned, int(getattr(usage, "total_tokens", 0) or 0)
 
 
+def _resolve_group_generation_provider(
+    session: Session,
+    tenant_id: int,
+    config: dict,
+    *,
+    setting: TenantAiSetting | None,
+    model_name: str,
+    stage: str,
+) -> tuple[AiProvider | None, TenantAiSetting | None]:
+    if stage:
+        provider = (
+            _provider_for_exact_model(session, model_name)
+            if setting and setting.ai_enabled
+            else None
+        )
+        return provider, setting
+    return _provider(
+        session,
+        tenant_id,
+        config.get("ai_provider_id"),
+        model_name,
+        required_family=_group_chat_required_model_family(config),
+    )
+
+
 def _generate_group_with_grok(
     config: dict,
     bundle: GroupPromptBundle,
     *,
     count: int,
     purpose: str,
-    setting: TenantAiSetting | None,
+    ai_enabled: bool,
 ) -> tuple[list[str], int]:
-    if not setting or not setting.ai_enabled:
+    if not ai_enabled:
         raise AiGenerationUnavailable(f"{AI_GENERATION_UNAVAILABLE_MESSAGE}：tenant_ai_disabled")
     started_at = time.monotonic()
     try:
@@ -952,7 +1139,13 @@ def _generate_group_with_grok(
         raise AiGenerationUnavailable(f"{AI_GENERATION_UNAVAILABLE_MESSAGE}：{exc}") from exc
     duration_ms = round((time.monotonic() - started_at) * 1000)
     contents = [
-        _content_with_provider_metadata(item, config, "grok-4.5", "fallback_grok", duration_ms)
+        _content_with_provider_metadata(
+            item,
+            config,
+            model_name="grok-4.5",
+            stage="fallback_grok",
+            duration_ms=duration_ms,
+        )
         for item in result.candidates
         if str(item.content or "").strip()
     ]
@@ -972,7 +1165,14 @@ def _group_chat_model(config: dict) -> str:
     return stage_models.get(stage, str(config.get("ai_model") or "").strip())
 
 
-def _content_with_provider_metadata(candidate, config: dict, model_name: str, stage: str, duration_ms: int) -> GeneratedContent:
+def _content_with_provider_metadata(
+    candidate,
+    config: dict,
+    *,
+    model_name: str,
+    stage: str,
+    duration_ms: int,
+) -> GeneratedContent:
     prior_attempts = [dict(item) for item in list(config.get("_ai_generation_attempts") or [])[-2:]]
     attempts = [*prior_attempts, {"stage": stage or "direct", "model": model_name, "outcome": "success", "duration_ms": duration_ms}]
     return GeneratedContent(
@@ -987,6 +1187,9 @@ def _content_with_provider_metadata(candidate, config: dict, model_name: str, st
         fallback_reason="previous_stage_failed_or_rejected" if stage and stage != "primary_m3" else "",
         provider_duration_ms=duration_ms,
         generation_attempts=attempts,
+        sequence_index=getattr(candidate, "sequence_index", 0),
+        reply_to_sequence_index=getattr(candidate, "reply_to_sequence_index", None),
+        slot_id=getattr(candidate, "slot_id", ""),
     )
 
 
@@ -1110,6 +1313,7 @@ def _generate_channel_contents_with_retry(
                 purpose=purpose,
                 target_label=target_label,
                 system_prompt=_channel_comment_attempt_system_prompt(attempt),
+                close_transaction_before_external=bool(config.get("_close_db_transaction_before_ai")),
             )
         except AiGenerationUnavailable as exc:
             if not _is_retryable_channel_generation_error(exc):

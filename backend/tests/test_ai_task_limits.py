@@ -4,7 +4,6 @@ import pytest
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
-from app.integrations.telegram import OperationResult, SendResult
 from app.database import Base
 from app.models import (
     AccountStatus,
@@ -30,7 +29,6 @@ from app.schemas import (
     TaskPrecheckRequest,
     TaskSettingsUpdate,
 )
-from app.services.content_filters import ContentFilterResult
 from app.services.task_center import dispatcher
 from app.services.task_center.executors import channel_comment, channel_comment_budget
 from app.services.task_center.ai_generator import AiGenerationUnavailable, generate_group_reply_messages
@@ -40,6 +38,10 @@ from app.services.task_center.executors.channel_comment import build_plan as bui
 from app.services.task_center.executors.group_ai_chat import build_plan as build_group_ai_chat_plan
 from app.services.task_center.service import precheck_task_creation, reset_task, resume_task, start_task, update_group_ai_chat_config
 from tests.ai_group_voice_profile_fixtures import assume_default_ai_group_voice_profiles
+from tests.ai_task_limits_test_support import (
+    configure_closed_loop_dispatch,
+    seed_membership_closed_loop,
+)
 
 
 NOW = datetime(2026, 5, 30, 10, 0, 0)
@@ -122,6 +124,14 @@ def _add_group_task(session: Session, type_config: dict) -> Task:
     )
     session.add(task)
     return task
+
+
+def _forbid_planner_ai_generation(monkeypatch) -> None:
+    def fail(*_args, **_kwargs):
+        pytest.fail("planner phase must not call AI generation")
+
+    monkeypatch.setattr("app.services.task_center.ai_generator.generate_group_messages", fail)
+    monkeypatch.setattr("app.services.task_center.ai_generator.generate_group_reply_messages", fail)
 
 
 def test_group_ai_config_update_preserves_unspecified_round_size() -> None:
@@ -304,11 +314,7 @@ def test_channel_comment_legacy_config_uses_default_total_limit_jitter(monkeypat
     assert task.stats["max_total_comments_resolved"] == 91
 
 
-def test_channel_comment_planner_respects_task_total_comment_limit(monkeypatch):
-    def fake_generate_channel_comments(_session, _tenant_id, _config, *, count, message_content, target_label):
-        return [f"{message_content} 新评论 {index}" for index in range(count)], 0
-
-    monkeypatch.setattr("app.services.task_center.executors.channel_comment.generate_channel_comments", fake_generate_channel_comments)
+def test_channel_comment_planner_respects_task_total_comment_limit():
     with _session() as session:
         _add_tenant(session)
         _add_channel(session, message_count=3, account_count=120)
@@ -661,15 +667,8 @@ def test_regular_task_detail_does_not_default_to_empty_profile_batch():
 
 
 def test_group_ai_manual_participation_does_not_raise_turn_count(monkeypatch):
-    generated_counts: list[int] = []
-
-    def fake_generate_group_messages(_session, _tenant_id, _config, *, count, target_label, history):
-        generated_counts.append(count)
-        return [f"第 {index} 条" for index in range(count)], 0
-
+    _forbid_planner_ai_generation(monkeypatch)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: NOW)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
     with _session() as session:
         _add_tenant(session)
         _add_group(session, account_count=20)
@@ -677,22 +676,16 @@ def test_group_ai_manual_participation_does_not_raise_turn_count(monkeypatch):
         session.commit()
 
         created = build_group_ai_chat_plan(session, task)
+        actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
 
-    assert generated_counts == [3]
     assert created == 3
+    assert all(action.payload["message_text"] == "" for action in actions)
+    assert all(action.payload["ai_generation_status"] == "pending" for action in actions)
 
 
 def test_group_ai_auto_turn_count_uses_hour_limit(monkeypatch):
-    generated_counts: list[int] = []
-
-    def fake_generate_group_messages(_session, _tenant_id, _config, *, count, target_label, history):
-        seeds = ["问安排", "补时间", "聊地点", "接天气", "问人数", "说交通", "提晚饭", "问作业", "聊活动", "接话题"]
-        generated_counts.append(count)
-        return [seeds[index % len(seeds)] for index in range(count)], 0
-
+    _forbid_planner_ai_generation(monkeypatch)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: NOW)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
     with _session() as session:
         _add_tenant(session)
         _add_group(session, account_count=30)
@@ -710,31 +703,16 @@ def test_group_ai_auto_turn_count_uses_hour_limit(monkeypatch):
         session.commit()
 
         created = build_group_ai_chat_plan(session, task)
+        actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
 
-    assert generated_counts == [10]
     assert created == 10
+    assert {action.payload["ai_generation_count"] for action in actions} == {10}
+    assert all(action.payload["ai_generation_status"] == "pending" for action in actions)
 
 
 def test_group_ai_plans_reply_turns_with_bound_targets(monkeypatch):
-    normal_counts: list[int] = []
-    captured_reply_targets: list[dict] = []
-
-    def fake_generate_group_messages(_session, _tenant_id, _config, *, count, target_label, history):
-        normal_counts.append(count)
-        return [f"普通发言 {index}" for index in range(count)], 0
-
-    def fake_generate_group_reply_messages(_session, _tenant_id, _config, *, reply_targets: list[dict], target_label: str, history: str):
-        return [f"回复 {index} {item['author']}：{item['preview']}" for index, item in enumerate(reply_targets)], 0
-
-    def capture_reply_messages(session, tenant_id, config, *, reply_targets: list[dict], target_label: str, history: str):
-        reply_targets_seen = [dict(item) for item in reply_targets]
-        captured_reply_targets.extend(reply_targets_seen)
-        return fake_generate_group_reply_messages(session, tenant_id, config, reply_targets=reply_targets_seen, target_label=target_label, history=history)
-
+    _forbid_planner_ai_generation(monkeypatch)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: NOW)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_reply_messages", capture_reply_messages, raising=False)
     with _session() as session:
         _add_tenant(session)
         _add_group(session, account_count=3)
@@ -754,8 +732,7 @@ def test_group_ai_plans_reply_turns_with_bound_targets(monkeypatch):
         actions = sorted(session.scalars(select(Action).where(Action.task_id == task.id)).all(), key=lambda action: action.payload["turn_index"])
 
     assert created == 3
-    assert normal_counts == [1]
-    assert len(captured_reply_targets) == 2
+    assert all(action.payload["ai_generation_status"] == "pending" for action in actions)
     assert [action.payload["reply_to_message_id"] for action in actions[:2]] == [44, 43]
     assert [action.payload["reply_target_author"] for action in actions[:2]] == ["另一个真人", "真人用户"]
     assert actions[1].payload["reply_target_preview"] == "今天群里有什么安排"
@@ -763,12 +740,8 @@ def test_group_ai_plans_reply_turns_with_bound_targets(monkeypatch):
 
 
 def test_group_ai_does_not_reuse_reply_targets_when_pool_is_short(monkeypatch):
-    def fake_generate_group_messages(_session, _tenant_id, _config, *, count, target_label, history):
-        return [f"普通发言 {index}" for index in range(count)], 0
-
+    _forbid_planner_ai_generation(monkeypatch)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: NOW)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
     with _session() as session:
         _add_tenant(session)
         _add_group(session, account_count=3)
@@ -794,12 +767,8 @@ def test_group_ai_does_not_reuse_reply_targets_when_pool_is_short(monkeypatch):
 
 
 def test_group_ai_ignores_other_task_history_for_reply_targets(monkeypatch):
-    def fake_generate_group_messages(_session, _tenant_id, _config, *, count, target_label, history):
-        return [f"普通发言 {index}" for index in range(count)], 0
-
+    _forbid_planner_ai_generation(monkeypatch)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: NOW)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
     with _session() as session:
         _add_tenant(session)
         _add_group(session, account_count=3)
@@ -849,15 +818,8 @@ def test_group_ai_ignores_other_task_history_for_reply_targets(monkeypatch):
 
 
 def test_group_ai_excludes_already_used_reply_targets_across_rounds(monkeypatch):
-    captured_reply_targets: list[dict] = []
-
-    def fake_generate_group_reply_messages(_session, _tenant_id, _config, *, reply_targets: list[dict], target_label: str, history: str):
-        captured_reply_targets.extend(dict(item) for item in reply_targets)
-        return [f"回复 {item['author']}：{item['preview']}" for item in reply_targets], 0
-
+    _forbid_planner_ai_generation(monkeypatch)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: NOW)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_reply_messages", fake_generate_group_reply_messages, raising=False)
     with _session() as session:
         _add_tenant(session)
         _add_group(session, account_count=1)
@@ -891,17 +853,12 @@ def test_group_ai_excludes_already_used_reply_targets_across_rounds(monkeypatch)
         actions = session.scalars(select(Action).where(Action.task_id == task.id, Action.id != "used-group-reply-action")).all()
 
     assert created == 1
-    assert [item["message_id"] for item in captured_reply_targets] == [43]
+    assert actions[0].payload["ai_generation_status"] == "pending"
     assert [action.payload["reply_to_message_id"] for action in actions] == [43]
 
 
 def test_group_ai_reply_target_check_does_not_scan_irrelevant_history(monkeypatch):
-    captured_reply_targets: list[dict] = []
-
-    def fake_generate_group_reply_messages(_session, _tenant_id, _config, *, reply_targets: list[dict], target_label: str, history: str):
-        captured_reply_targets.extend(dict(item) for item in reply_targets)
-        return [f"回复 {item['author']}：{item['preview']}" for item in reply_targets], 0
-
+    _forbid_planner_ai_generation(monkeypatch)
     def fail_on_irrelevant_history(action, key: str) -> int:
         if str(action.id).startswith("irrelevant-history-"):
             raise AssertionError("reply target lookup loaded irrelevant historical action payloads")
@@ -910,8 +867,6 @@ def test_group_ai_reply_target_check_does_not_scan_irrelevant_history(monkeypatc
         return int(raw) if raw.isdigit() else 0
 
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: NOW)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_reply_messages", fake_generate_group_reply_messages, raising=False)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._payload_int", fail_on_irrelevant_history)
     with _session() as session:
         _add_tenant(session)
@@ -946,72 +901,40 @@ def test_group_ai_reply_target_check_does_not_scan_irrelevant_history(monkeypatc
         created = build_group_ai_chat_plan(session, task)
 
     assert created == 1
-    assert [item["message_id"] for item in captured_reply_targets] == [44]
 
 
 def test_group_ai_hard_hourly_membership_to_send_dispatch_closed_loop(monkeypatch):
     dispatcher._ACTION_RESERVATIONS.clear()
     dispatcher._IN_FLIGHT_ACCOUNTS.clear()
-
-    def fake_generate_group_messages(_session, _tenant_id, _config, *, count, target_label, history):
-        seeds = ["晚点还有安排吗", "我看群里刚才挺热闹", "这个时间大家都在吧"]
-        return [seeds[index % len(seeds)] for index in range(count)], 0
-
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: NOW)
     monkeypatch.setattr("app.services.task_center.dispatcher._now", lambda: NOW)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
-    monkeypatch.setattr("app.services.task_center.dispatcher.credentials_for_account", lambda *_args, **_kwargs: object())
-    monkeypatch.setattr("app.services.task_center.dispatcher.gateway.ensure_channel_membership", lambda *_args, **_kwargs: OperationResult(True, "已处理", detail="joined"))
-    monkeypatch.setattr("app.services.task_center.dispatcher.gateway.probe_target_capabilities", lambda *_args, **_kwargs: OperationResult(True, detail="可发言"))
-    monkeypatch.setattr("app.services.task_center.dispatcher.gateway.send_message", lambda *_args, **_kwargs: SendResult(True, remote_message_id="tg-ok"))
-    monkeypatch.setattr("app.services.task_center.dispatcher.gateway.send_message_to_target", lambda *_args, **_kwargs: SendResult(True, remote_message_id="tg-ok"))
+    dependencies = configure_closed_loop_dispatch(monkeypatch)
 
     with _session() as session:
-        _add_tenant(session)
-        session.add(
-            OperationTarget(
-                id=7,
-                tenant_id=1,
-                target_type="group",
-                tg_peer_id="-1007",
-                title="测试群目标",
-                can_send=False,
-                auth_status="只读",
-            )
-        )
-        _add_group(session, account_count=3)
-        group = session.get(TgGroup, 7)
-        group.can_send = False
-        group.slowmode_seconds = None
-        for link in session.scalars(select(TgGroupAccount).where(TgGroupAccount.group_id == 7)):
-            link.can_send = False
-        task = _add_group_task(
+        task, group = seed_membership_closed_loop(
             session,
-            {
-                "target_operation_target_id": 7,
-                "messages_per_round_mode": "manual",
-                "messages_per_round": 3,
-                "reply_min_per_round": 0,
-                "participation_rate": 1,
-                "participation_jitter": 0,
-                "hard_hourly_target_enabled": True,
-                "hourly_min_messages": 3,
-                "hard_hourly_strategy": "force_planning",
-            },
+            add_tenant=_add_tenant,
+            add_group=_add_group,
+            add_group_task=_add_group_task,
         )
         session.commit()
 
-        first_created = build_group_ai_chat_plan(session, task)
+        with monkeypatch.context() as planner_patch:
+            _forbid_planner_ai_generation(planner_patch)
+            first_created = build_group_ai_chat_plan(session, task)
         membership_actions = list(session.scalars(select(Action).where(Action.task_id == task.id, Action.action_type == "ensure_target_membership")))
         first_send_count = session.scalar(select(func.count(Action.id)).where(Action.task_id == task.id, Action.action_type == "send_message"))
         membership_results = [dispatch_action(session, action) for action in membership_actions]
         session.refresh(group)
         send_links = list(session.scalars(select(TgGroupAccount).where(TgGroupAccount.group_id == 7)))
 
-        second_created = build_group_ai_chat_plan(session, task)
+        with monkeypatch.context() as planner_patch:
+            _forbid_planner_ai_generation(planner_patch)
+            second_created = build_group_ai_chat_plan(session, task)
         [send_action] = claim_actions(session, limit=1, worker_id="hard-hourly-test")
-        send_handled = dispatch_action(session, send_action)
+        send_handled = dispatch_action(
+            session, send_action, generation_dependencies=dependencies,
+        )
         group_can_send = group.can_send
         links_can_send = all(link.can_send for link in send_links)
         send_status = send_action.status
@@ -1101,17 +1024,8 @@ def test_group_ai_hard_hourly_retries_stale_membership_actions(monkeypatch):
     assert [action.status for action in actions if action.account_id == 103] == ["pending"]
 
 
-def test_group_ai_does_not_fill_reply_candidate_shortage_with_normal_turns(monkeypatch):
-    def fake_generate_group_messages(_session, _tenant_id, _config, *, count, target_label, history):
-        return [f"普通发言 {index}" for index in range(count)], 0
-
-    def fake_generate_group_reply_messages(_session, _tenant_id, _config, *, reply_targets: list[dict], target_label: str, history: str):
-        return ["只生成一条引用回复"], 0
-
+def test_group_ai_defers_reply_candidate_quality_to_dispatcher(monkeypatch):
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: NOW)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_reply_messages", fake_generate_group_reply_messages, raising=False)
     with _session() as session:
         _add_tenant(session)
         _add_group(session, account_count=3)
@@ -1128,29 +1042,17 @@ def test_group_ai_does_not_fill_reply_candidate_shortage_with_normal_turns(monke
         session.commit()
 
         created = build_group_ai_chat_plan(session, task)
-        total_actions = session.scalar(select(func.count(Action.id)).where(Action.task_id == task.id))
+        actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
 
-    assert created == 0
-    assert total_actions == 0
-    assert "AI 引用回复候选不足" in task.last_error
+    assert created == 3
+    assert len(actions) == 3
+    assert sum(action.payload.get("reply_to_message_id") is not None for action in actions) == 2
+    assert all(action.payload["ai_generation_status"] == "pending" for action in actions)
 
 
 def test_group_ai_hard_hourly_skips_reply_lookup_for_volume_planning(monkeypatch):
-    def fake_generate_group_messages(_session, _tenant_id, _config, *, count, target_label, history):
-        samples = [
-            "今晚活动几点开始",
-            "报名入口谁再发一下",
-            "新来的可以先看群公告",
-        ]
-        return samples[:count], 0
-
-    def fake_generate_group_reply_messages(*_args, **_kwargs):
-        raise AssertionError("hard-hourly volume planning must not call reply generation")
-
+    _forbid_planner_ai_generation(monkeypatch)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: NOW)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_reply_messages", fake_generate_group_reply_messages, raising=False)
     with _session() as session:
         _add_tenant(session)
         _add_group(session, account_count=3)
@@ -1179,23 +1081,8 @@ def test_group_ai_hard_hourly_skips_reply_lookup_for_volume_planning(monkeypatch
     assert not task.last_error
 
 
-def test_group_ai_does_not_fill_filtered_reply_shortage_with_normal_turns(monkeypatch):
-    def fake_generate_group_messages(_session, _tenant_id, _config, *, count, target_label, history):
-        return [f"普通发言 {index}" for index in range(count)], 0
-
-    def fake_generate_group_reply_messages(_session, _tenant_id, _config, *, reply_targets: list[dict], target_label: str, history: str):
-        return ["拦截这条引用回复", "这条引用回复保留"], 0
-
-    def fake_filter(_session, *, tenant_id, group, content, reject_mentions, reject_replies):
-        if "拦截" in content:
-            return ContentFilterResult(False, content, "测试拦截")
-        return ContentFilterResult(True, content)
-
+def test_group_ai_defers_reply_content_filtering_to_dispatcher(monkeypatch):
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: NOW)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_reply_messages", fake_generate_group_reply_messages, raising=False)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.filter_outbound_content", fake_filter)
     with _session() as session:
         _add_tenant(session)
         _add_group(session, account_count=3)
@@ -1212,30 +1099,15 @@ def test_group_ai_does_not_fill_filtered_reply_shortage_with_normal_turns(monkey
         session.commit()
 
         created = build_group_ai_chat_plan(session, task)
-        total_actions = session.scalar(select(func.count(Action.id)).where(Action.task_id == task.id))
+        actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
 
-    assert created == 0
-    assert total_actions == 0
-    assert "AI 引用回复候选不足" in task.last_error
+    assert created == 3
+    assert len(actions) == 3
+    assert all(action.payload["message_text"] == "" for action in actions)
+    assert all(action.payload["ai_generation_status"] == "pending" for action in actions)
 
 
-def test_channel_comment_planner_respects_current_hour_budget(monkeypatch):
-    def fake_generate_channel_comments(_session, _tenant_id, _config, *, count, message_content, target_label):
-        seeds = [
-            "18cm 收纳盒这个尺寸塞小柜子刚好",
-            "图里那个透明盖子看着挺防尘",
-            "如果能补一下承重数据就更直观",
-            "小户型厨房应该会用得上",
-            "这个边角设计会不会容易卡灰",
-            "颜色如果有磨砂款可能更耐看",
-            "抽屉高度低的柜子也能放吗",
-            "叠放三层之后拿取方便不方便",
-            "这类盒子最怕盖子太松",
-            "有实测清洗后会不会变形吗",
-        ]
-        return [f"{message_content}：{seeds[index % len(seeds)]}" for index in range(count)], 0
-
-    monkeypatch.setattr("app.services.task_center.executors.channel_comment.generate_channel_comments", fake_generate_channel_comments)
+def test_channel_comment_planner_respects_current_hour_budget():
     with _session() as session:
         _add_tenant(session)
         _add_channel(session, message_count=2, account_count=20)
@@ -1255,18 +1127,8 @@ def test_channel_comment_planner_respects_current_hour_budget(monkeypatch):
 
 
 def test_channel_comment_planner_uses_remaining_current_hour_budget(monkeypatch):
-    def fake_generate_channel_comments(_session, _tenant_id, _config, *, count, message_content, target_label):
-        seeds = [
-            "尺寸细节看着挺明确",
-            "透明盖子这点比较实用",
-            "承重信息如果补一下更好",
-            "小厨房收纳应该能用上",
-        ]
-        return [f"{message_content}：{seeds[index % len(seeds)]}" for index in range(count)], 0
-
     now_value = NOW + timedelta(minutes=30)
     monkeypatch.setattr("app.services.task_center.executors.channel_comment_budget._now", lambda: now_value)
-    monkeypatch.setattr("app.services.task_center.executors.channel_comment.generate_channel_comments", fake_generate_channel_comments)
     with _session() as session:
         _add_tenant(session)
         _add_channel(session, message_count=2, account_count=120)
@@ -1304,14 +1166,7 @@ def test_channel_comment_planner_uses_remaining_current_hour_budget(monkeypatch)
     assert total_actions == 100
 
 
-def test_channel_comment_planner_stops_when_collected_comments_reach_target(monkeypatch):
-    generated_counts: list[int] = []
-
-    def fake_generate_channel_comments(_session, _tenant_id, _config, *, count, message_content, target_label):
-        generated_counts.append(count)
-        return [f"新增评论 {index}" for index in range(count)], 0
-
-    monkeypatch.setattr("app.services.task_center.executors.channel_comment.generate_channel_comments", fake_generate_channel_comments)
+def test_channel_comment_planner_stops_when_collected_comments_reach_target():
     with _session() as session:
         _add_tenant(session)
         _add_channel(session, message_count=1, account_count=3)
@@ -1328,16 +1183,11 @@ def test_channel_comment_planner_stops_when_collected_comments_reach_target(monk
         created = build_channel_comment_plan(session, task)
         total_actions = session.scalar(select(func.count(Action.id)).where(Action.task_id == task.id))
 
-    assert generated_counts == []
     assert created == 0
     assert total_actions == 0
 
 
-def test_channel_comment_planner_excludes_uninitialized_profile_accounts(monkeypatch):
-    def fake_generate_channel_comments(_session, _tenant_id, _config, *, count, message_content, target_label):
-        return [f"评论 {index}" for index in range(count)], 0
-
-    monkeypatch.setattr("app.services.task_center.executors.channel_comment.generate_channel_comments", fake_generate_channel_comments)
+def test_channel_comment_planner_excludes_uninitialized_profile_accounts():
     with _session() as session:
         _add_tenant(session)
         _add_channel(session, message_count=1, account_count=2)
@@ -1357,22 +1207,7 @@ def test_channel_comment_planner_excludes_uninitialized_profile_accounts(monkeyp
     assert action_accounts == [102, 102]
 
 
-def test_channel_comment_plans_minimum_auto_replies(monkeypatch):
-    normal_counts: list[int] = []
-    captured_reply_targets: list[dict] = []
-
-    def fake_generate_channel_comments(_session, _tenant_id, _config, *, count, message_content, target_label):
-        seeds = ["普通评论 尺寸信息挺实用", "普通评论 想看更多实测"]
-        normal_counts.append(count)
-        return seeds[:count], 0
-
-    def fake_generate_channel_reply_comments(_session, _tenant_id, _config, *, reply_targets: list[dict], message_content: str, target_label: str):
-        reply_targets_seen = [dict(item) for item in reply_targets]
-        captured_reply_targets.extend(reply_targets_seen)
-        return [f"回复 {item['author']}：{item['preview']}" for item in reply_targets_seen], 0
-
-    monkeypatch.setattr("app.services.task_center.executors.channel_comment.generate_channel_comments", fake_generate_channel_comments)
-    monkeypatch.setattr("app.services.task_center.executors.channel_comment.generate_channel_reply_comments", fake_generate_channel_reply_comments, raising=False)
+def test_channel_comment_plans_minimum_auto_replies():
     with _session() as session:
         _add_tenant(session)
         _add_channel(session, message_count=1, account_count=4)
@@ -1390,28 +1225,18 @@ def test_channel_comment_plans_minimum_auto_replies(monkeypatch):
         session.commit()
 
         created = build_channel_comment_plan(session, task)
-        actions = sorted(session.scalars(select(Action).where(Action.task_id == task.id)).all(), key=lambda action: action.payload["comment_text"])
+        actions = session.scalars(select(Action).where(Action.task_id == task.id).order_by(Action.created_at)).all()
 
     assert created == 4
-    assert normal_counts == [2]
-    assert [item["message_id"] for item in captured_reply_targets] == [8101, 8102]
+    assert all(action.payload["comment_text"] == "" for action in actions)
+    assert all(action.payload["ai_generation_status"] == "pending" for action in actions)
     reply_actions = [action for action in actions if action.payload["reply_to_message_id"]]
     assert [action.payload["reply_to_message_id"] for action in reply_actions] == [8101, 8102]
     assert reply_actions[0].payload["reply_target_author"] == "读者 A"
     assert reply_actions[0].payload["reply_target_preview"] == "这个尺寸多少"
 
 
-def test_channel_comment_comment_mode_ignores_stale_reply_minimum(monkeypatch):
-    def fake_generate_channel_comments(_session, _tenant_id, _config, *, count, message_content, target_label):
-        seeds = [
-            "敲门前那段细节还挺有画面感",
-            "蹦蹦跳跳这个反应写得很真实",
-            "后面节奏如果再展开一点会更好看",
-            "这种日常口吻比硬夸自然很多",
-        ]
-        return [f"{message_content}：{seeds[index % len(seeds)]}" for index in range(count)], 0
-
-    monkeypatch.setattr("app.services.task_center.executors.channel_comment.generate_channel_comments", fake_generate_channel_comments)
+def test_channel_comment_comment_mode_ignores_stale_reply_minimum():
     with _session() as session:
         _add_tenant(session)
         _add_channel(session, message_count=1, account_count=4)
@@ -1434,11 +1259,7 @@ def test_channel_comment_comment_mode_ignores_stale_reply_minimum(monkeypatch):
     assert all(not action.payload["reply_to_message_id"] for action in actions)
 
 
-def test_channel_comment_does_not_reuse_reply_targets_when_pool_is_short(monkeypatch):
-    def fake_generate_channel_comments(_session, _tenant_id, _config, *, count, message_content, target_label):
-        return [f"普通评论 {index}" for index in range(count)], 0
-
-    monkeypatch.setattr("app.services.task_center.executors.channel_comment.generate_channel_comments", fake_generate_channel_comments)
+def test_channel_comment_does_not_reuse_reply_targets_when_pool_is_short():
     with _session() as session:
         _add_tenant(session)
         _add_channel(session, message_count=1, account_count=4)
@@ -1461,18 +1282,7 @@ def test_channel_comment_does_not_reuse_reply_targets_when_pool_is_short(monkeyp
     assert "可引用评论不足" in task.last_error
 
 
-def test_channel_comment_excludes_already_used_reply_targets_across_rounds(monkeypatch):
-    captured_reply_targets: list[dict] = []
-
-    def fake_generate_channel_comments(_session, _tenant_id, _config, *, count, message_content, target_label):
-        return [f"普通评论 {index}" for index in range(count)], 0
-
-    def fake_generate_channel_reply_comments(_session, _tenant_id, _config, *, reply_targets: list[dict], message_content: str, target_label: str):
-        captured_reply_targets.extend(dict(item) for item in reply_targets)
-        return [f"回复 {item['author']}：{item['preview']}" for item in reply_targets], 0
-
-    monkeypatch.setattr("app.services.task_center.executors.channel_comment.generate_channel_comments", fake_generate_channel_comments)
-    monkeypatch.setattr("app.services.task_center.executors.channel_comment.generate_channel_reply_comments", fake_generate_channel_reply_comments, raising=False)
+def test_channel_comment_excludes_already_used_reply_targets_across_rounds():
     with _session() as session:
         _add_tenant(session)
         _add_channel(session, message_count=1, account_count=4)
@@ -1513,19 +1323,10 @@ def test_channel_comment_excludes_already_used_reply_targets_across_rounds(monke
         actions = session.scalars(select(Action).where(Action.task_id == task.id, Action.id != "used-channel-reply-action")).all()
 
     assert created == 1
-    assert [item["message_id"] for item in captured_reply_targets] == [8102]
     assert [action.payload["reply_to_message_id"] for action in actions] == [8102]
 
 
-def test_channel_comment_finds_unused_reply_target_beyond_initial_window(monkeypatch):
-    captured_reply_targets: list[dict] = []
-
-    def fake_generate_channel_reply_comments(_session, _tenant_id, _config, *, reply_targets: list[dict], message_content: str, target_label: str):
-        captured_reply_targets.extend(dict(item) for item in reply_targets)
-        return [f"回复 {item['author']}：{item['preview']}" for item in reply_targets], 0
-
-    monkeypatch.setattr("app.services.task_center.executors.channel_comment.generate_channel_comments", lambda *_args, **_kwargs: ([], 0))
-    monkeypatch.setattr("app.services.task_center.executors.channel_comment.generate_channel_reply_comments", fake_generate_channel_reply_comments, raising=False)
+def test_channel_comment_finds_unused_reply_target_beyond_initial_window():
     with _session() as session:
         _add_tenant(session)
         _add_channel(session, message_count=1, account_count=4)
@@ -1576,19 +1377,10 @@ def test_channel_comment_finds_unused_reply_target_beyond_initial_window(monkeyp
         actions = session.scalars(select(Action).where(Action.task_id == task.id, Action.id.not_like("used-channel-reply-action-%"))).all()
 
     assert created == 1
-    assert [item["message_id"] for item in captured_reply_targets] == [8121]
     assert [action.payload["reply_to_message_id"] for action in actions] == [8121]
 
 
-def test_channel_comment_does_not_fill_reply_candidate_shortage_with_normal_comments(monkeypatch):
-    def fake_generate_channel_comments(_session, _tenant_id, _config, *, count, message_content, target_label):
-        return [f"普通评论 {index}" for index in range(count)], 0
-
-    def fake_generate_channel_reply_comments(_session, _tenant_id, _config, *, reply_targets: list[dict], message_content: str, target_label: str):
-        return ["只生成一条引用评论"], 0
-
-    monkeypatch.setattr("app.services.task_center.executors.channel_comment.generate_channel_comments", fake_generate_channel_comments)
-    monkeypatch.setattr("app.services.task_center.executors.channel_comment.generate_channel_reply_comments", fake_generate_channel_reply_comments, raising=False)
+def test_channel_comment_reserves_reply_minimum_before_generation():
     with _session() as session:
         _add_tenant(session)
         _add_channel(session, message_count=1, account_count=4)
@@ -1607,20 +1399,11 @@ def test_channel_comment_does_not_fill_reply_candidate_shortage_with_normal_comm
         created = build_channel_comment_plan(session, task)
         total_actions = session.scalar(select(func.count(Action.id)).where(Action.task_id == task.id))
 
-    assert created == 0
-    assert total_actions == 0
-    assert "AI 引用评论候选不足" in task.last_error
+    assert created == 4
+    assert total_actions == 4
 
 
-def test_channel_comment_does_not_fill_filtered_reply_shortage_with_normal_comments(monkeypatch):
-    def fake_generate_channel_comments(_session, _tenant_id, _config, *, count, message_content, target_label):
-        return [f"普通评论 {index}" for index in range(count)], 0
-
-    def fake_generate_channel_reply_comments(_session, _tenant_id, _config, *, reply_targets: list[dict], message_content: str, target_label: str):
-        return ["拦截这条引用评论", "这条引用评论保留"], 0
-
-    monkeypatch.setattr("app.services.task_center.executors.channel_comment.generate_channel_comments", fake_generate_channel_comments)
-    monkeypatch.setattr("app.services.task_center.executors.channel_comment.generate_channel_reply_comments", fake_generate_channel_reply_comments, raising=False)
+def test_channel_comment_defers_output_filtering_until_after_generation():
     with _session() as session:
         _add_tenant(session)
         _add_channel(session, message_count=1, account_count=4)
@@ -1642,20 +1425,11 @@ def test_channel_comment_does_not_fill_filtered_reply_shortage_with_normal_comme
         created = build_channel_comment_plan(session, task)
         total_actions = session.scalar(select(func.count(Action.id)).where(Action.task_id == task.id))
 
-    assert created == 0
-    assert total_actions == 0
-    assert "AI 引用评论候选不足" in task.last_error
+    assert created == 4
+    assert total_actions == 4
 
 
-def test_channel_comment_caps_single_message_generation_batch(monkeypatch):
-    generated_counts: list[int] = []
-    seeds = ["河东区位置挺具体", "对象编号这个信息清楚", "报告入口可以再看看", "积分优惠这个点有人用过吗"]
-
-    def fake_generate_channel_comments(_session, _tenant_id, _config, *, count, message_content, target_label):
-        generated_counts.append(count)
-        return seeds[:count], 0
-
-    monkeypatch.setattr("app.services.task_center.executors.channel_comment.generate_channel_comments", fake_generate_channel_comments)
+def test_channel_comment_caps_single_message_planning_batch():
     with _session() as session:
         _add_tenant(session)
         _add_channel(session, message_count=1, account_count=20)
@@ -1666,18 +1440,10 @@ def test_channel_comment_caps_single_message_generation_batch(monkeypatch):
 
         created = build_channel_comment_plan(session, task)
 
-    assert generated_counts == [4]
     assert created == 4
 
 
-def test_channel_comment_skips_messages_without_comment_thread(monkeypatch):
-    generated_message_texts: list[str] = []
-
-    def fake_generate_channel_comments(_session, _tenant_id, _config, *, count, message_content, target_label):
-        generated_message_texts.append(message_content)
-        return [f"{message_content} 可评论"], 0
-
-    monkeypatch.setattr("app.services.task_center.executors.channel_comment.generate_channel_comments", fake_generate_channel_comments)
+def test_channel_comment_skips_messages_without_comment_thread():
     with _session() as session:
         _add_tenant(session)
         _add_channel(session, message_count=2, account_count=2, comment_flags=[False, True])
@@ -1689,7 +1455,6 @@ def test_channel_comment_skips_messages_without_comment_thread(monkeypatch):
         created = build_channel_comment_plan(session, task)
         payloads = session.scalars(select(Action.payload).where(Action.task_id == task.id)).all()
 
-    assert generated_message_texts == ["频道消息 2"]
     assert created == 1
     assert [payload["channel_message_id"] for payload in payloads] == [42]
 

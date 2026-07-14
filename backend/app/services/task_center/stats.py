@@ -13,7 +13,8 @@ from .config_fields import CHANNEL_DYNAMIC_TASK_TYPES
 from .hard_hourly import enabled as hard_hourly_enabled, hard_hourly_stats
 from .pacing import ai_next_run_after, next_run_after
 from .planner_backlog import hard_hourly_payload_expired, planner_backlog_snapshot
-from .search_join_config import runtime_search_join_config
+from app.services.runtime_action_queries import task_action_status_counts_statement
+from .hourly_stats import search_join_hourly_execution, search_rank_deboost_hourly_execution
 
 ARCHIVED_SKIP_ERROR_CODES = {"context_expired"}
 DEFAULT_AUTO_RETRY_STATUSES = ("failed", "retryable_failed")
@@ -30,9 +31,19 @@ PLANNER_BACKLOG_STAT_KEYS = (
 )
 HARD_HOURLY_EXPIRED_ERROR_CODE = "hard_hourly_bucket_expired"
 HARD_HOURLY_EXPIRED_ERROR_MESSAGE = "硬目标小时窗口已结束，过期补量已跳过"
-SEARCH_JOIN_OPEN_STATUSES = ("pending", "claiming", "executing")
 AI_GROUP_TERMINAL_QUALITY_ERRORS = frozenset({"duplicate_message", "ai_message_memory_missing"})
 AI_GROUP_TERMINAL_GENERATION_STATUSES = frozenset({"duplicate_rejected"})
+AI_GENERATION_OPEN_STATUSES = frozenset({"pending", "generating"})
+AI_GENERATION_QUALITY_CODES = frozenset({
+    "content_rejected",
+    "duplicate_message",
+    "duplicate_risk",
+    "hallucination_risk",
+    "quality_rejected",
+    "stance_conflict",
+    "template_shell_limited",
+    "voice_profile_mismatch",
+})
 
 
 def next_run_after_task(task: Task):
@@ -65,13 +76,22 @@ def refresh_task_stats(
 ) -> dict[str, Any]:
     session.flush()
     business_filter = _stats_action_filter(task)
-    rows = session.execute(select(Action.status, func.count(Action.id)).where(Action.task_id == task.id, business_filter).group_by(Action.status)).all()
+    rows = session.execute(task_action_status_counts_statement(task, business_filter)).all()
     counts = {str(status): int(count) for status, count in rows}
     raw_skipped_count = counts.get("skipped", 0)
     archived_skipped_count = _archived_skipped_count(session, task, business_filter)
     skipped_count = max(0, raw_skipped_count - archived_skipped_count)
-    accounts_used = session.scalar(select(func.count(func.distinct(Action.account_id))).where(Action.task_id == task.id, business_filter, Action.account_id.is_not(None))) or 0
-    last_action_at = session.scalar(select(func.max(Action.executed_at)).where(Action.task_id == task.id, business_filter))
+    accounts_used = session.scalar(select(func.count(func.distinct(Action.account_id))).where(
+        Action.tenant_id == task.tenant_id,
+        Action.task_id == task.id,
+        business_filter,
+        Action.account_id.is_not(None),
+    )) or 0
+    last_action_at = session.scalar(select(func.max(Action.executed_at)).where(
+        Action.tenant_id == task.tenant_id,
+        Action.task_id == task.id,
+        business_filter,
+    ))
     stats = dict(task.stats or empty_stats())
     stats = _clear_recovered_planner_backlog_stats(session, task, stats)
     stats.update(
@@ -91,14 +111,94 @@ def refresh_task_stats(
             "last_action_at": last_action_at.isoformat() if last_action_at else stats.get("last_action_at"),
         }
     )
+    stats = _ai_generation_stats(session, task, stats)
     stats = hard_hourly_stats(session, task, _now(), stats)
     stats = _search_join_stats(session, task, stats)
     stats = _search_rank_deboost_stats(session, task, stats)
     task.stats = stats
+    _refresh_runtime_summary(session, task, include_configured_accounts=include_configured_accounts)
+    return stats
+
+
+def _refresh_runtime_summary(session: Session, task: Task, *, include_configured_accounts: bool) -> None:
     from app.services.runtime_summary import refresh_task_summary
 
     refresh_task_summary(session, task, include_configured_accounts=include_configured_accounts)
-    return stats
+
+
+def _ai_generation_stats(session: Session, task: Task, stats: dict[str, Any]) -> dict[str, Any]:
+    if task.type != "group_ai_chat":
+        return stats
+    generation_counts = _action_json_counts(
+        session,
+        task,
+        Action.payload["ai_generation_status"].as_string(),
+    )
+    outcome_counts = _action_json_counts(
+        session,
+        task,
+        Action.result["generation_outcome"].as_string(),
+    )
+    updated = _apply_ai_generation_counts(stats, generation_counts, outcome_counts)
+    updated["voice_profile_anchor_rewrite_count"] = _ai_generation_fact_count(
+        session,
+        task,
+        Action.result["voice_profile_anchor_rewritten"].as_boolean().is_(True),
+    )
+    return updated
+
+
+def _ai_generation_fact_count(session: Session, task: Task, condition) -> int:
+    return int(session.scalar(select(func.count(Action.id)).where(
+        Action.tenant_id == task.tenant_id,
+        Action.task_id == task.id,
+        Action.action_type == "send_message",
+        condition,
+    )) or 0)
+
+
+def _action_json_counts(session: Session, task: Task, expression) -> dict[str, int]:
+    rows = session.execute(
+        select(expression, func.count(Action.id))
+        .where(
+            Action.tenant_id == task.tenant_id,
+            Action.task_id == task.id,
+            Action.action_type == "send_message",
+        )
+        .group_by(expression)
+    ).all()
+    return {str(code or ""): int(count) for code, count in rows if code}
+
+
+def _apply_ai_generation_counts(
+    stats: dict[str, Any],
+    generation_counts: dict[str, int],
+    outcome_counts: dict[str, int],
+) -> dict[str, Any]:
+    quality_counts = {
+        code: count
+        for code, count in outcome_counts.items()
+        if code in AI_GENERATION_QUALITY_CODES
+    }
+    closed_statuses = AI_GENERATION_OPEN_STATUSES | {"ready", "ai_result_persist_unknown"}
+    updated = dict(stats)
+    updated.update({
+        "generation_pending_count": generation_counts.get("pending", 0),
+        "generation_claimed_count": generation_counts.get("generating", 0),
+        "generation_ready_count": generation_counts.get("ready", 0),
+        "generation_persist_unknown_count": generation_counts.get("ai_result_persist_unknown", 0),
+        "generation_failed_count": sum(
+            count
+            for status, count in generation_counts.items()
+            if status and status not in closed_statuses
+        ),
+        "quality_rejected_count": sum(quality_counts.values()),
+        "quality_rejection_counts": quality_counts,
+        "reply_target_stale_count": outcome_counts.get("reply_target_stale", 0),
+        "reply_target_missing_count": outcome_counts.get("reply_target_missing", 0),
+        "gateway_unknown_count": int(updated.get("unknown_after_send_count") or 0),
+    })
+    return updated
 
 
 def _search_join_stats(session: Session, task: Task, stats: dict[str, Any]) -> dict[str, Any]:
@@ -123,160 +223,6 @@ def _search_rank_deboost_stats(session: Session, task: Task, stats: dict[str, An
     deboost_stats["hourly_execution"] = {**previous_hourly, **current_hourly}
     updated["search_rank_deboost_stats"] = deboost_stats
     return updated
-
-
-def search_rank_deboost_hourly_execution(session: Session, task: Task, now_value: datetime) -> dict[str, Any]:
-    """按账号 × 关键词 × 自然小时桶统计降权任务执行情况。
-
-    参考 search_join_hourly_execution 模式，聚合 search_rank_deboost action 与 click stat。
-    """
-    from .search_rank_deboost_pacing import runtime_search_rank_deboost_config
-
-    config = runtime_search_rank_deboost_config(task)
-    bucket_start = now_value.replace(minute=0, second=0, microsecond=0)
-    bucket_end = bucket_start + timedelta(hours=1)
-    success_count = _search_rank_deboost_success_count(session, task, bucket_start, bucket_end)
-    future_open = _search_rank_deboost_open_count(session, task, now_value, bucket_end, overdue=False)
-    overdue_open = _search_rank_deboost_open_count(session, task, now_value, bucket_end, overdue=True)
-    max_actions = int(config.get("max_actions_per_hour") or 0)
-    click_count = _search_rank_deboost_hourly_click_count(session, task, bucket_start, bucket_end)
-    capacity = max(0, max_actions - success_count - future_open - overdue_open)
-    return {
-        "bucket": bucket_start.isoformat(),
-        "status": _search_rank_deboost_hourly_status(max_actions, success_count, capacity),
-        "goal": max_actions,
-        "success_count": success_count,
-        "future_open_count": future_open,
-        "overdue_open_count": overdue_open,
-        "deficit": max(0, max_actions - success_count - future_open),
-        "capacity": capacity,
-        "max_actions_per_hour": max_actions,
-        "hourly_click_count": click_count,
-    }
-
-
-def _search_rank_deboost_success_count(session: Session, task: Task, start: datetime, end: datetime) -> int:
-    return int(
-        session.scalar(
-            select(func.count(Action.id)).where(
-                Action.task_id == task.id,
-                Action.action_type == "search_rank_deboost",
-                Action.status == "success",
-                Action.executed_at >= start,
-                Action.executed_at < end,
-            )
-        )
-        or 0
-    )
-
-
-def _search_rank_deboost_open_count(session: Session, task: Task, now_value: datetime, bucket_end: datetime, *, overdue: bool) -> int:
-    boundary = Action.scheduled_at < now_value if overdue else Action.scheduled_at >= now_value
-    upper = true() if overdue else Action.scheduled_at < bucket_end
-    return int(
-        session.scalar(
-            select(func.count(Action.id)).where(
-                Action.task_id == task.id,
-                Action.action_type == "search_rank_deboost",
-                Action.status.in_(("pending", "claiming", "executing")),
-                boundary,
-                upper,
-            )
-        )
-        or 0
-    )
-
-
-def _search_rank_deboost_hourly_click_count(session: Session, task: Task, start: datetime, end: datetime) -> int:
-    from app.models.search_rank_deboost import SearchRankDeboostActionStat
-
-    return int(
-        session.scalar(
-            select(func.count(SearchRankDeboostActionStat.id)).where(
-                SearchRankDeboostActionStat.task_id == task.id,
-                SearchRankDeboostActionStat.captured_at >= start,
-                SearchRankDeboostActionStat.captured_at < end,
-                SearchRankDeboostActionStat.skip_reason == "",
-            )
-        )
-        or 0
-    )
-
-
-def _search_rank_deboost_hourly_status(goal: int, success_count: int, capacity: int) -> str:
-    if goal <= 0:
-        return "open"
-    if success_count >= goal:
-        return "met"
-    if capacity <= 0:
-        return "blocked"
-    return "catching_up"
-
-
-def search_join_hourly_execution(session: Session, task: Task, now_value: datetime) -> dict[str, Any]:
-    config = runtime_search_join_config(task)
-    bucket_start = now_value.replace(minute=0, second=0, microsecond=0)
-    bucket_end = bucket_start + timedelta(hours=1)
-    success_count = _search_join_success_count(session, task, bucket_start, bucket_end)
-    future_open = _search_join_open_count(session, task, now_value, bucket_end, overdue=False)
-    overdue_open = _search_join_open_count(session, task, now_value, bucket_end, overdue=True)
-    goal = int(config.get("hourly_min_successful_joins") or 0)
-    max_actions = int(config.get("max_actions_per_hour") or 0)
-    deficit = max(0, goal - success_count - future_open)
-    capacity = max(0, max_actions - success_count - future_open - overdue_open)
-    return {
-        "bucket": bucket_start.isoformat(),
-        "status": _search_join_hourly_status(goal, deficit, capacity),
-        "goal": goal,
-        "success_count": success_count,
-        "future_open_count": future_open,
-        "overdue_open_count": overdue_open,
-        "deficit": deficit,
-        "capacity": capacity,
-        "max_actions_per_hour": max_actions,
-    }
-
-
-def _search_join_success_count(session: Session, task: Task, start: datetime, end: datetime) -> int:
-    return int(
-        session.scalar(
-            select(func.count(Action.id)).where(
-                Action.task_id == task.id,
-                Action.action_type == "search_join",
-                Action.status == "success",
-                Action.executed_at >= start,
-                Action.executed_at < end,
-            )
-        )
-        or 0
-    )
-
-
-def _search_join_open_count(session: Session, task: Task, now_value: datetime, bucket_end: datetime, *, overdue: bool) -> int:
-    boundary = Action.scheduled_at < now_value if overdue else Action.scheduled_at >= now_value
-    upper = true() if overdue else Action.scheduled_at < bucket_end
-    return int(
-        session.scalar(
-            select(func.count(Action.id)).where(
-                Action.task_id == task.id,
-                Action.action_type == "search_join",
-                Action.status.in_(SEARCH_JOIN_OPEN_STATUSES),
-                boundary,
-                upper,
-            )
-        )
-        or 0
-    )
-
-
-def _search_join_hourly_status(goal: int, deficit: int, capacity: int) -> str:
-    if goal <= 0:
-        return "open"
-    if deficit <= 0:
-        return "met"
-    if capacity <= 0:
-        return "blocked"
-    return "catching_up"
 
 
 def _stats_action_filter(task: Task):
@@ -305,6 +251,7 @@ def _archived_skipped_count(session: Session, task: Task, business_filter) -> in
         return 0
     count = session.scalar(
         select(func.count(Action.id)).where(
+            Action.tenant_id == task.tenant_id,
             Action.task_id == task.id,
             business_filter,
             Action.action_type == "send_message",
@@ -315,7 +262,7 @@ def _archived_skipped_count(session: Session, task: Task, business_filter) -> in
     return int(count or 0)
 
 
-def retry_failed_actions(session: Session, task: Task) -> int:
+def retry_failed_actions(session: Session, task: Task, *, limit: int = 100) -> int:
     policy = task.failure_policy or {}
     max_retries = _max_retries_for_task(task, policy)
     if max_retries <= 0:
@@ -324,10 +271,11 @@ def retry_failed_actions(session: Session, task: Task) -> int:
     backoff = policy.get("retry_backoff") or "none"
     count = 0
     query = select(Action).where(
+        Action.tenant_id == task.tenant_id,
         Action.task_id == task.id,
         Action.status.in_(_auto_retry_statuses(task)),
         Action.retry_count < max_retries,
-    )
+    ).order_by(Action.scheduled_at.asc(), Action.id.asc()).limit(max(1, int(limit)))
     for action in session.scalars(query):
         previous_result = dict(action.result or {})
         if _is_terminal_ai_quality_failure(action, previous_result):

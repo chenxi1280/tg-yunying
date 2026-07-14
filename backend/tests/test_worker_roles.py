@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -220,6 +222,101 @@ def test_worker_writes_local_healthcheck_heartbeat(monkeypatch, tmp_path):
     worker._write_local_healthcheck_heartbeat()
 
     assert heartbeat_file.read_text(encoding="ascii") == "1234567890"
+
+
+def test_worker_local_heartbeat_supports_concurrent_writers(monkeypatch, tmp_path):
+    from app import worker
+
+    heartbeat_file = tmp_path / "worker-heartbeat"
+    worker_count = 16
+    start = threading.Barrier(worker_count)
+    monkeypatch.setenv("WORKER_LOCAL_HEALTHCHECK_FILE", str(heartbeat_file))
+    monkeypatch.setattr(worker.time, "time", lambda: 1234567890)
+
+    def write_heartbeat() -> None:
+        start.wait()
+        worker._write_local_healthcheck_heartbeat()
+
+    with ThreadPoolExecutor(max_workers=worker_count) as pool:
+        futures = [pool.submit(write_heartbeat) for _ in range(worker_count)]
+
+    assert [future.exception() for future in futures] == [None] * worker_count
+    assert heartbeat_file.read_text(encoding="ascii") == "1234567890"
+    assert list(tmp_path.glob("worker-heartbeat*.tmp")) == []
+
+
+def test_worker_local_heartbeat_cleans_temp_file_on_replace_error(monkeypatch, tmp_path):
+    from app import worker
+
+    heartbeat_file = tmp_path / "worker-heartbeat"
+    monkeypatch.setenv("WORKER_LOCAL_HEALTHCHECK_FILE", str(heartbeat_file))
+
+    def fail_replace(_path: Path, _target: Path) -> None:
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(Path, "replace", fail_replace)
+
+    with pytest.raises(OSError, match="replace failed"):
+        worker._write_local_healthcheck_heartbeat()
+
+    assert list(tmp_path.glob("worker-heartbeat*.tmp")) == []
+    assert not heartbeat_file.exists()
+
+
+def test_periodic_heartbeat_refreshes_database_and_local_health(monkeypatch):
+    from app import worker
+
+    calls: list[tuple[str, object]] = []
+    wait_count = 0
+
+    class StopEvent:
+        def wait(self, seconds: int) -> bool:
+            nonlocal wait_count
+            wait_count += 1
+            calls.append(("wait", seconds))
+            return wait_count > 1
+
+    monkeypatch.setattr(worker, "_record_loop_heartbeat", lambda role, limit: calls.append((role, limit)))
+    monkeypatch.setattr(worker, "_write_local_healthcheck_heartbeat", lambda: calls.append(("local", None)))
+
+    worker._periodic_heartbeat_loop("dispatcher", 20, StopEvent())
+
+    assert calls == [
+        ("wait", 30),
+        ("dispatcher", 20),
+        ("local", None),
+        ("wait", 30),
+    ]
+
+
+def test_periodic_local_heartbeat_runs_when_database_refresh_fails(monkeypatch, caplog):
+    from app import worker
+
+    calls: list[str] = []
+    wait_count = 0
+
+    class StopEvent:
+        def wait(self, _seconds: int) -> bool:
+            nonlocal wait_count
+            wait_count += 1
+            return wait_count > 1
+
+    def fail_database(_role: str, _limit: int) -> None:
+        calls.append("database")
+        raise RuntimeError("database unavailable")
+
+    def fail_local() -> None:
+        calls.append("local")
+        raise OSError("local heartbeat unavailable")
+
+    monkeypatch.setattr(worker, "_record_loop_heartbeat", fail_database)
+    monkeypatch.setattr(worker, "_write_local_healthcheck_heartbeat", fail_local)
+
+    worker._periodic_heartbeat_loop("planner", 10, StopEvent())
+
+    assert calls == ["database", "local"]
+    assert "worker database heartbeat refresh failed role=planner" in caplog.text
+    assert "worker local heartbeat refresh failed role=planner" in caplog.text
 
 
 def test_server_compose_worker_healthcheck_uses_local_heartbeat():

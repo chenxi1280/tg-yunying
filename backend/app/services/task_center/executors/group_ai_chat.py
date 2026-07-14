@@ -10,7 +10,8 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import Action, AiGroupMessageMemory, OperationTarget, RuleSet, Task, TaskAccountDailyCoverage, TenantAiSetting, TgGroup
+from app.config import get_settings
+from app.models import Action, AiGroupMessageMemory, OperationTarget, RuleSet, Task, TaskAccountDailyCoverage, TgGroup
 from app.services._common import _now
 from app.services.account_online_readiness import online_ready_account_ids_for_planning
 from app.services.account_capacity import (
@@ -19,17 +20,16 @@ from app.services.account_capacity import (
     available_accounts_by_capacity,
     next_capacity_window,
 )
-from app.services.content_filters import contains_coarse_language, filter_outbound_content, looks_like_generated_template_noise, looks_like_operator_ui_content
-from app.services.group_listeners import collect_group_context, recent_context_messages
+from app.services.content_filters import contains_coarse_language, looks_like_generated_template_noise, looks_like_operator_ui_content
+from app.services.group_listeners import recent_context_messages
 from app.services.target_learning_audit import audit_learning_profile_use
 from app.services.tenant_target_profile import tenant_learning_profile_preview
-from app.services.rule_engine import apply_output_policy, bound_rule_version, evaluate_input_filter
-from app.services.material_rules import MaterialRuleResult, select_material_for_policy
+from app.services.rule_engine import bound_rule_version, evaluate_input_filter
 
-from ..account_pool import DAILY_COVERAGE_SUCCESS_STATUSES, daily_account_coverage_counts, daily_uncovered_account_count, select_task_accounts
+from ..account_pool import DAILY_COVERAGE_SUCCESS_STATUSES, daily_uncovered_account_count, select_task_accounts
 from ..ai_act_types import canonical_ai_group_act_type
-from ..ai_generator import AI_GENERATION_UNAVAILABLE_MESSAGE, AiGenerationUnavailable, generate_group_messages, generate_group_reply_messages
-from ..ai_message_memory import DuplicateMessageReservation, mark_group_ai_message_result, reserve_group_ai_message
+from ..ai_generator import AI_GENERATION_UNAVAILABLE_MESSAGE
+from ..ai_message_memory import mark_group_ai_message_result, reserve_group_ai_message
 from ..account_voice_profiles import group_stance_summaries, voice_profile_prompt_details
 from ..channel_membership import gate_channel_membership
 from ..config_normalization import normalize_operation_target_references
@@ -41,20 +41,23 @@ from ..daily_coverage import (
     ready_coverage_rows,
     reserve_coverage_for_action,
 )
+from ..daily_coverage_planning import (
+    advance_coverage_plan_cursor,
+    coverage_plan_totals,
+    ready_coverage_plan_batch,
+)
 from ..fingerprints import fingerprint_exists, remember_fingerprint
 from ..hard_hourly import current_progress, enabled as hard_hourly_enabled, hard_schedule_times, mark_plan_result
-from ..listener_runtime import should_collect_listener
 from ..pacing import current_hour_rounds, operation_intensity, schedule_times
 from ..payloads import SendMessagePayload, create_send_action
 from ..targets import group_from_reference
-from .common import add_tokens, stats_inc
+from .common import stats_inc
 
 
 WAITING_NEW_CONTEXT_MESSAGE = "暂无新的真人上下文，等待群内新消息"
 WAITING_IDLE_CONTINUATION_MESSAGE = "持续监听中，等待新消息或空闲续聊间隔"
 AI_QUALITY_ANCHOR_SKIP_MESSAGE = "AI 候选缺少事实锚点，已跳过本轮"
 AI_QUALITY_DUPLICATE_SKIP_MESSAGE = "AI 候选语义重复风险过高，已跳过本轮"
-AI_NORMAL_CANDIDATE_SHORTFALL_MESSAGE = "AI 普通发言候选不足，已跳过本轮"
 ACCOUNT_CAPACITY_BLOCKED_MESSAGE = "账号容量已排满，等待账号额度恢复后继续执行"
 ACCOUNT_COOLDOWN_BLOCKED_MESSAGE = "账号冷却中，等待冷却后继续执行"
 ACCOUNT_UNAVAILABLE_MESSAGE = "没有可用账号，等待账号恢复后继续执行"
@@ -65,13 +68,6 @@ DEFAULT_CONTEXT_BOUND_SCHEDULE_WINDOW_SECONDS = 300
 MIN_CONTEXT_BOUND_SCHEDULE_WINDOW_SECONDS = 60
 DAILY_COVERAGE_DEBT_RECHECK_SECONDS = 120
 GROUP_CHAT_SCENE = "group_chat"
-TARGET_HISTORY_PERMISSION_MARKERS = (
-    "channelprivateerror",
-    "lack permission",
-    "private",
-    "banned",
-    "gethistoryrequest",
-)
 
 
 @dataclass(frozen=True)
@@ -79,6 +75,10 @@ class CoveragePlanState:
     rows: list[TaskAccountDailyCoverage]
     rows_by_account: dict[int, TaskAccountDailyCoverage]
     due_debt: int
+    account_count: int = 0
+    target_per_account: int = 1
+    confirmed_count: int = 0
+    reserved_count: int = 0
 
 CHAT_MODE_REPLY = "reply"
 CHAT_MODE_IDLE_WARMUP = "idle_warmup"
@@ -92,21 +92,11 @@ AI_CHAT_ROUND_INTERVALS_SECONDS = {
     "静默期": (300, 900),
 }
 HARD_HOURLY_MIN_BATCH_MESSAGES = 10
-HARD_HOURLY_DEFER_AI_MIN_GOAL = 10
 HARD_HOURLY_MIN_DISTRIBUTION_ACTIONS = 3
 HARD_HOURLY_MAX_CONSECUTIVE_ACCOUNT_RUN = 2
 HARD_HOURLY_MIN_DISTRIBUTED_ACCOUNTS = 2
 ACCOUNT_OFFLINE_SAMPLE_LIMIT = 10
 DEFERRED_AI_HISTORY_MAX_CHARS = 1000
-AI_GENERATION_REQUEST_BATCH_SIZE = 30
-MAX_AI_QUALITY_GENERATION_ROUNDS = 3
-AI_GROUP_PRIMARY_STAGE = "primary_m3"
-AI_GROUP_MODEL_FALLBACK_STAGE = "fallback_m25"
-AI_GROUP_GROK_FALLBACK_STAGE = "fallback_grok"
-AI_GROUP_DIRECT_MIMO_STAGE = "direct_mimo"
-AI_GROUP_DIRECT_CONFIGURED_STAGE = "direct_configured_model"
-LOW_RISK_EMOJI_FALLBACK_POOL = ("👍", "👌", "👀", "🤔", "😅", "😂", "🙈", "🤝", "💯", "🤣", "🫡", "🙂")
-LOW_RISK_CHECKIN_FALLBACK_POOL = ("来签到", "先冒个泡", "大家晚上好", "路过打个卡")
 QUALITY_REJECTION_SAMPLE_LIMIT = 5
 VOICE_PROFILE_MATCH_SCORE = 100
 VOICE_PROFILE_MISMATCH_SCORE = 0
@@ -179,25 +169,165 @@ MASK_THEME_REWRITE_SUFFIXES = ("价格咋说", "位置方便吗", "时间怎么�
 MASK_THEME_REWRITE_MAX_BASE_CHARS = 12
 
 
-def build_plan(session: Session, task: Task) -> int:
+@dataclass(frozen=True)
+class PlanAbort:
+    created: int = 0
+
+
+@dataclass(frozen=True)
+class PlanFacts:
+    config: dict
+    hard_progress: dict
+    rule_version: Any
+    rule_set: RuleSet | None
+    target: OperationTarget | None
+    group: TgGroup
+    coverage: CoveragePlanState
+    target_label: str
+
+
+@dataclass(frozen=True)
+class AccountPlanState:
+    accounts: list[Any]
+
+
+@dataclass(frozen=True)
+class ContextPlanState:
+    history_depth: int
+    fingerprint_source: str
+    usable_rows: list[Any]
+    unprocessed_rows: list[Any]
+    previous_ai_messages: list[Any]
+    mode: str
+    ramp_ratio: float
+    idle_continuation: bool
+
+
+@dataclass(frozen=True)
+class TurnPlanState:
+    cycle_index: int
+    round_config: dict
+    selected: list[Any]
+    turn_count: int
+    history: str
+
+
+@dataclass(frozen=True)
+class ProfilePlanState:
+    selected: list[Any]
+    topic_thread: str
+    topic_plan: str
+    account_memories: dict
+    account_prompt_profiles: dict
+    voice_profiles: dict
+    stance_summaries: dict
+    profile_preview: dict
+    coverage_counts: dict
+    coverage_rows: dict
+    cycle_id: str
+
+
+@dataclass(frozen=True)
+class GenerationPlanState:
+    quality_items: list[dict]
+    times: list[datetime]
+    requested_reply_count: int
+    burst_plan: dict
+    chat_mode: str
+    context_message_ids: list[int]
+    generation_source: str
+
+
+@dataclass(frozen=True)
+class PlanBlueprint:
+    facts: PlanFacts
+    context: ContextPlanState
+    turn: TurnPlanState
+    profile: ProfilePlanState
+    generation: GenerationPlanState
+
+
+@dataclass(frozen=True)
+class SlotBuildInput:
+    blueprint: PlanBlueprint
+    account: Any
+    index: int
+    item: dict
+    planned_at: datetime
+
+
+@dataclass(frozen=True)
+class SlotSnapshot:
+    account_id: int
+    planned_at: datetime
+    payload: SendMessagePayload
+
+
+@dataclass(frozen=True)
+class PreparedActionPlan:
+    slots: list[SlotSnapshot]
+    hard_blockers: dict[str, int]
+
+
+def _load_plan_facts(session: Session, task: Task) -> PlanFacts | PlanAbort:
     config = {**(task.type_config or {}), "pacing_config": task.pacing_config or {}}
     config = _canonicalized_task_config(session, task, config)
-    hard_progress = current_progress(session, task, _now()) if hard_hourly_enabled(task) else {}
-    hard_progress = hard_progress if int(hard_progress.get("deficit") or 0) > 0 else {}
+    progress = current_progress(session, task, _now()) if hard_hourly_enabled(task) else {}
+    progress = progress if int(progress.get("deficit") or 0) > 0 else {}
     rule_version = bound_rule_version(session, task)
     if not rule_version:
-        if hard_progress:
-            _mark_hard_blocked(task, hard_progress, "rule_binding_missing")
-        return 0
-    rule_set = session.get(RuleSet, rule_version.rule_set_id) if rule_version else None
-    target = session.get(OperationTarget, int(config.get("target_operation_target_id") or 0)) if int(config.get("target_operation_target_id") or 0) else None
-    if target and target.tenant_id == task.tenant_id and target.target_type == "group":
-        gate = gate_channel_membership(session, task, target, require_send=True)
-        if not gate.ready:
-            if hard_progress:
-                blocker = gate.blocker_reason or "target_membership_pending"
-                mark_plan_result(task, hard_progress, 0, {blocker: max(1, int(hard_progress.get("deficit") or gate.created or 1))})
-            return gate.created
+        if progress:
+            _mark_hard_blocked(task, progress, "rule_binding_missing")
+        return PlanAbort()
+    rule_set = session.get(RuleSet, rule_version.rule_set_id)
+    target_id = int(config.get("target_operation_target_id") or 0)
+    target = session.get(OperationTarget, target_id) if target_id else None
+    gate_abort = _target_membership_abort(session, task, target, progress=progress)
+    if gate_abort:
+        return gate_abort
+    group = _resolve_plan_group(session, task, config, progress=progress)
+    if isinstance(group, PlanAbort):
+        return group
+    coverage = _coverage_plan_state(session, task, group, config, progress)
+    _record_daily_coverage_next_check(task, coverage.due_debt > 0)
+    if _coverage_capacity_blocker(
+        session, task, group, config, coverage_rows=coverage.rows, coverage_state=coverage,
+    ):
+        if progress:
+            _mark_hard_blocked(task, progress, "daily_coverage_capacity_insufficient")
+        return PlanAbort()
+    label = target.title if target and target.tenant_id == task.tenant_id else group.title
+    active_config = _with_active_conversation_targets(session, task, config, group)
+    return PlanFacts(
+        config=active_config,
+        hard_progress=progress,
+        rule_version=rule_version,
+        rule_set=rule_set,
+        target=target,
+        group=group,
+        coverage=coverage,
+        target_label=label,
+    )
+
+
+def _target_membership_abort(
+    session: Session, task: Task, target: OperationTarget | None, *, progress: dict,
+) -> PlanAbort | None:
+    if not target or target.tenant_id != task.tenant_id or target.target_type != "group":
+        return None
+    gate = gate_channel_membership(session, task, target, require_send=True)
+    if gate.ready:
+        return None
+    if progress:
+        blocker = gate.blocker_reason or "target_membership_pending"
+        deficit = max(1, int(progress.get("deficit") or gate.created or 1))
+        mark_plan_result(task, progress, 0, {blocker: deficit})
+    return PlanAbort(gate.created)
+
+
+def _resolve_plan_group(
+    session: Session, task: Task, config: dict, *, progress: dict,
+) -> TgGroup | PlanAbort:
     group = group_from_reference(
         session,
         task.tenant_id,
@@ -205,541 +335,772 @@ def build_plan(session: Session, task: Task) -> int:
         operation_target_id=int(config.get("target_operation_target_id") or 0) or None,
         require_authorized=False,
     )
-    if not group:
-        task.last_error = "目标群不存在或未授权"
-        if hard_progress:
-            mark_plan_result(task, hard_progress, 0, {"target_permission": max(1, int(hard_progress.get("deficit") or 1))})
-        return 0
-    coverage_state = _coverage_plan_state(session, task, group, config, hard_progress)
-    has_daily_coverage_debt = coverage_state.due_debt > 0
-    _record_daily_coverage_next_check(task, has_daily_coverage_debt)
-    capacity_blocker = _coverage_capacity_blocker(session, task, group, config, coverage_rows=coverage_state.rows)
-    if capacity_blocker:
-        if hard_progress:
-            _mark_hard_blocked(task, hard_progress, "daily_coverage_capacity_insufficient")
-        return 0
-    target_label = target.title if target and target.tenant_id == task.tenant_id else group.title
-    config = _with_active_conversation_targets(session, task, config, group)
+    if group:
+        return group
+    task.last_error = "目标群不存在或未授权"
+    if progress:
+        deficit = max(1, int(progress.get("deficit") or 1))
+        mark_plan_result(task, progress, 0, {"target_permission": deficit})
+    return PlanAbort()
+
+
+def _load_plan_accounts(
+    session: Session, task: Task, facts: PlanFacts,
+) -> AccountPlanState | PlanAbort:
     accounts = _select_accounts_for_plan(
-        session, task, group, hard_progress, config, coverage_rows=coverage_state.rows,
-    )
-    accounts = _online_ready_accounts(session, task, accounts, hard_progress)
-    if not accounts:
-        error_message, reason = _account_shortage_reason(session, task, group, hard_progress)
-        if int((task.stats or {}).get("account_offline_count") or 0) > 0:
-            error_message, reason = "账号在线状态不可用，等待账号恢复在线后继续执行", "account_offline"
-        task.last_error = error_message
-        if hard_progress:
-            mark_plan_result(task, hard_progress, 0, {reason: max(1, int(hard_progress.get("deficit") or 1))})
-        return 0
-    accounts, ready_voice_profiles, missing_voice_profile_ids = _profile_ready_accounts_for_plan(
         session,
         task,
-        group=group,
-        progress=hard_progress,
-        config=config,
-        accounts=accounts,
-        coverage_rows=coverage_state.rows,
+        facts.group,
+        facts.hard_progress,
+        facts.config,
+        coverage_rows=facts.coverage.rows,
     )
-    _expire_open_profileless_actions(session, task, ready_voice_profiles.keys())
-    if missing_voice_profile_ids:
-        _record_missing_voice_profiles(task, missing_voice_profile_ids)
+    accounts = _online_ready_accounts(session, task, accounts, facts.hard_progress)
     if not accounts:
-        task.last_error = VOICE_PROFILE_MISSING_MESSAGE
-        if hard_progress:
-            _mark_hard_blocked(task, hard_progress, "voice_profile_missing")
-        return 0
-    history_depth = int(config.get("chat_history_depth") or 50)
-    needs_context_refresh = _should_refresh_context_for_plan(session, group, history_depth, hard_progress)
-    if should_collect_listener("group", group.id, window_seconds=group.listener_interval_seconds) and needs_context_refresh:
-        try:
-            _collect_context_with_candidate_accounts(session, task, group, _history_collect_account_ids(config, accounts))
-        except Exception as exc:
-            if not _is_target_history_permission_error(exc):
-                raise
-            if hard_progress:
-                _record_history_collect_degraded(task, exc)
-            else:
-                task.last_error = f"监听账号无法读取目标群历史：{exc}"
-                return 0
-    fingerprint_source = f"{task.id}:group_ai_chat:{group.id}"
-    history_rows = recent_context_messages(session, group, history_depth)
-    context_rows = list(reversed(history_rows[-history_depth:]))
-    usable_context_rows = _topic_relevant_context_rows(
-        config,
+        _mark_account_shortage(session, task, facts)
+        return PlanAbort()
+    accounts, profiles, missing_ids = _profile_ready_accounts_for_plan(
+        session,
+        task,
+        group=facts.group,
+        progress=facts.hard_progress,
+        config=facts.config,
+        accounts=accounts,
+        coverage_rows=facts.coverage.rows,
+    )
+    _expire_open_profileless_actions(session, task, profiles.keys())
+    if missing_ids:
+        _record_missing_voice_profiles(task, missing_ids)
+    if accounts:
+        return AccountPlanState(accounts)
+    task.last_error = VOICE_PROFILE_MISSING_MESSAGE
+    if facts.hard_progress:
+        _mark_hard_blocked(task, facts.hard_progress, "voice_profile_missing")
+    return PlanAbort()
+
+
+def _mark_account_shortage(session: Session, task: Task, facts: PlanFacts) -> None:
+    error_message, reason = _account_shortage_reason(
+        session, task, facts.group, facts.hard_progress,
+    )
+    if int((task.stats or {}).get("account_offline_count") or 0) > 0:
+        error_message = "账号在线状态不可用，等待账号恢复在线后继续执行"
+        reason = "account_offline"
+    task.last_error = error_message
+    if facts.hard_progress:
+        deficit = max(1, int(facts.hard_progress.get("deficit") or 1))
+        mark_plan_result(task, facts.hard_progress, 0, {reason: deficit})
+
+
+def _load_context_plan(
+    session: Session, task: Task, facts: PlanFacts,
+) -> ContextPlanState | PlanAbort:
+    depth = int(facts.config.get("chat_history_depth") or 50)
+    fingerprint_source = f"{task.id}:group_ai_chat:{facts.group.id}"
+    history_rows = recent_context_messages(session, facts.group, depth)
+    context_rows = list(reversed(history_rows[-depth:]))
+    usable_rows = _topic_relevant_context_rows(
+        facts.config,
         [row for row in context_rows if _is_human_context_row(row) and _is_usable_context_message(row.content)],
     )
-    mode, ramp_ratio = ai_cycle_mode(config, task.scheduled_start)
     unprocessed_rows = [
         row
-        for row in usable_context_rows
-        if not fingerprint_exists(session, task.tenant_id, fingerprint_source, _context_fingerprint(row))
+        for row in usable_rows
+        if not fingerprint_exists(
+            session, task.tenant_id, fingerprint_source, _context_fingerprint(row),
+        )
     ]
-    force_bootstrap_once = bool((task.stats or {}).get("force_bootstrap_once"))
-    repeat_window = _semantic_repeat_window(config)
-    previous_ai_messages = _recent_ai_messages(session, task, limit=repeat_window)
-    planned_ai_messages = _recent_planned_ai_messages(session, task, limit=repeat_window)
-    memory_ai_messages = _recent_group_memory_messages(session, task, group, limit=repeat_window)
-    duplicate_baseline_messages = [*previous_ai_messages, *planned_ai_messages, *memory_ai_messages]
-    idle_continuation = False
-    if (
-        not hard_progress
-        and not has_daily_coverage_debt
-        and not force_bootstrap_once
-        and _should_wait_for_human_context(session, task, usable_context_rows, unprocessed_rows)
-    ):
-        idle_decision = _idle_continuation_decision(session, task, config)
-        if idle_decision["due"]:
-            idle_continuation = True
-        else:
-            _mark_waiting_context(
-                task,
-                config,
-                mode,
-                ramp_ratio,
-                context_mode="waiting_new_context",
-                next_run_at=idle_decision["next_run_at"],
-            )
-            return 0
+    mode, ramp_ratio = ai_cycle_mode(facts.config, task.scheduled_start)
+    previous = _recent_ai_messages(
+        session, task, limit=_semantic_repeat_window(facts.config),
+    )
+    idle = _resolve_idle_continuation(
+        session,
+        task,
+        facts,
+        usable_rows=usable_rows,
+        unprocessed_rows=unprocessed_rows,
+        mode=mode,
+        ramp_ratio=ramp_ratio,
+    )
+    if isinstance(idle, PlanAbort):
+        return idle
+    return ContextPlanState(
+        depth, fingerprint_source, usable_rows, unprocessed_rows, previous, mode, ramp_ratio, idle,
+    )
+
+
+def _resolve_idle_continuation(
+    session: Session,
+    task: Task,
+    facts: PlanFacts,
+    *,
+    usable_rows: list[Any],
+    unprocessed_rows: list[Any],
+    mode: str,
+    ramp_ratio: float,
+) -> bool | PlanAbort:
+    force_bootstrap = bool((task.stats or {}).get("force_bootstrap_once"))
+    should_wait = (
+        not facts.hard_progress
+        and facts.coverage.due_debt <= 0
+        and not force_bootstrap
+        and _should_wait_for_human_context(session, task, usable_rows, unprocessed_rows)
+    )
+    if not should_wait:
+        return False
+    decision = _idle_continuation_decision(session, task, facts.config)
+    if decision["due"]:
+        return True
+    _mark_waiting_context(
+        task,
+        facts.config,
+        mode,
+        ramp_ratio,
+        context_mode="waiting_new_context",
+        next_run_at=decision["next_run_at"],
+    )
+    return PlanAbort()
+
+
+def _load_turn_plan(
+    session: Session,
+    task: Task,
+    facts: PlanFacts,
+    *,
+    accounts: list[Any],
+    context: ContextPlanState,
+) -> TurnPlanState:
     cycle_index = _next_cycle_index(session, task)
-    round_config = _coverage_round_config(_hard_hourly_round_config(config, hard_progress))
+    round_config = _coverage_round_config(
+        _hard_hourly_round_config(facts.config, facts.hard_progress),
+    )
     selected, turn_count = _select_cycle_accounts(
         accounts,
         round_config,
-        mode,
-        ramp_ratio,
-        has_context=bool(usable_context_rows),
+        context.mode,
+        context.ramp_ratio,
+        has_context=bool(context.usable_rows),
         cycle_index=cycle_index,
         pacing_config=task.pacing_config or {},
-        daily_coverage_uncovered_count=_daily_coverage_uncovered_count(
-            session, task, accounts, hard_progress, config, coverage_state=coverage_state,
+        daily_coverage_uncovered_count=_turn_daily_uncovered_count(
+            session, task, facts, accounts=accounts,
         ),
     )
-    deferred_coverage_generation = _daily_coverage_generation_is_deferred(
+    deferred = _daily_coverage_generation_is_deferred(
         session,
         task,
-        group,
-        usable_context_rows=usable_context_rows,
+        facts.group,
+        usable_context_rows=context.usable_rows,
         turn_count=turn_count,
-        config=config,
-        hard_progress=hard_progress,
-        has_daily_coverage_debt=has_daily_coverage_debt,
+        config=facts.config,
+        hard_progress=facts.hard_progress,
+        has_daily_coverage_debt=facts.coverage.due_debt > 0,
     )
-    planned_times = _schedule_times_for_plan(task, hard_progress, turn_count, mode)
-    turn_count, planned_times = _limit_context_bound_turns(
+    times = _schedule_times_for_plan(task, facts.hard_progress, turn_count, context.mode)
+    turn_count, _times = _limit_context_bound_turns(
         task,
-        config,
-        has_context=bool(usable_context_rows),
-        progress=hard_progress,
-        deferred_generation=deferred_coverage_generation,
+        facts.config,
+        has_context=bool(context.usable_rows),
+        progress=facts.hard_progress,
+        deferred_generation=deferred,
         turn_count=turn_count,
-        planned_times=planned_times,
+        planned_times=times,
     )
     selected = selected[: max(1, min(len(selected), turn_count))]
-    history_parts = [f"{row.sender_name}: {row.content}" for row in usable_context_rows[-50:]]
-    if idle_continuation:
-        history_parts.append(_idle_continuation_history(config, group, previous_ai_messages))
-    elif not usable_context_rows:
-        history_parts.append(_bootstrap_history(config, group))
-    history = "\n".join(history_parts)
-    if rule_version:
-        input_result = evaluate_input_filter(history, message_type="text", filters=rule_version.filters or {})
-        if not input_result.passed:
-            task.last_error = f"规则输入过滤跳过：{input_result.reason}"
-            stats_inc(task, "skipped_count")
-            if hard_progress:
-                _mark_hard_blocked(task, hard_progress, "input_filter")
-            return 0
-    topic_thread = _topic_thread_summary(config, group, usable_context_rows, previous_ai_messages)
-    topic_plan = _topic_plan_summary(config, group, topic_thread, turn_count)
-    account_memories = _recent_account_memories(session, task, [account.id for account in selected], depth=int(config.get("account_memory_depth") or 3))
-    account_profiles = account_profile_summaries(session, task, [account.id for account in selected])
-    voice_profiles = voice_profile_prompt_details(session, tenant_id=task.tenant_id, account_ids=[account.id for account in selected])
-    stance_summaries = group_stance_summaries(session, tenant_id=task.tenant_id, group_id=group.id, account_ids=[account.id for account in selected])
-    profile_preview = tenant_learning_profile_preview(session, task.tenant_id, GROUP_CHAT_SCENE)
-    audit_learning_profile_use(session, task, profile_preview, "AI活群任务")
-    account_prompt_profiles = _account_prompt_profiles(account_profiles, voice_profiles, stance_summaries)
-    coverage_counts = _coverage_counts_for_plan(selected, round_config, coverage_state.rows_by_account)
-    coverage_rows = _coverage_rows_for_plan(selected, round_config, coverage_state.rows_by_account)
-    selected = _prioritize_accounts_for_plan(selected, account_memories, coverage_counts, round_config)
-    generation_config = _generation_config_with_profile(round_config, account_memories, account_prompt_profiles, topic_thread, topic_plan, profile_preview)
-    cycle_id = f"{task.id}:cycle:{cycle_index}"
+    history = _context_plan_history(facts, context)
+    return TurnPlanState(cycle_index, round_config, selected, turn_count, history)
+
+
+def _turn_daily_uncovered_count(
+    session: Session, task: Task, facts: PlanFacts, *, accounts: list[Any],
+) -> int:
+    return _daily_coverage_uncovered_count(
+        session,
+        task,
+        accounts,
+        facts.hard_progress,
+        facts.config,
+        coverage_state=facts.coverage,
+    )
+
+
+def _context_plan_history(facts: PlanFacts, context: ContextPlanState) -> str:
+    parts = [f"{row.sender_name}: {row.content}" for row in context.usable_rows[-50:]]
+    if context.idle_continuation:
+        parts.append(
+            _idle_continuation_history(
+                facts.config, facts.group, context.previous_ai_messages,
+            ),
+        )
+    elif not context.usable_rows:
+        parts.append(_bootstrap_history(facts.config, facts.group))
+    return "\n".join(parts)
+
+
+def _input_filter_abort(task: Task, facts: PlanFacts, history: str) -> bool:
+    result = evaluate_input_filter(
+        history,
+        message_type="text",
+        filters=facts.rule_version.filters or {},
+    )
+    if result.passed:
+        return False
+    task.last_error = f"规则输入过滤跳过：{result.reason}"
+    stats_inc(task, "skipped_count")
+    if facts.hard_progress:
+        _mark_hard_blocked(task, facts.hard_progress, "input_filter")
+    return True
+
+
+def _load_profile_plan(
+    session: Session,
+    task: Task,
+    facts: PlanFacts,
+    *,
+    context: ContextPlanState,
+    turn: TurnPlanState,
+) -> ProfilePlanState:
+    account_ids = [account.id for account in turn.selected]
+    topic_thread = _topic_thread_summary(
+        facts.config, facts.group, context.usable_rows, context.previous_ai_messages,
+    )
+    topic_plan = _topic_plan_summary(
+        facts.config, facts.group, topic_thread, turn.turn_count,
+    )
+    memories = _recent_account_memories(
+        session,
+        task,
+        account_ids,
+        depth=int(facts.config.get("account_memory_depth") or 3),
+    )
+    account_profiles = account_profile_summaries(session, task, account_ids)
+    voices = voice_profile_prompt_details(
+        session, tenant_id=task.tenant_id, account_ids=account_ids,
+    )
+    stances = group_stance_summaries(
+        session, tenant_id=task.tenant_id, group_id=facts.group.id, account_ids=account_ids,
+    )
+    preview = tenant_learning_profile_preview(session, task.tenant_id, GROUP_CHAT_SCENE)
+    audit_learning_profile_use(session, task, preview, "AI活群任务")
+    prompt_profiles = _account_prompt_profiles(account_profiles, voices, stances)
+    counts = _coverage_counts_for_plan(
+        turn.selected, turn.round_config, facts.coverage.rows_by_account,
+    )
+    rows = _coverage_rows_for_plan(
+        turn.selected, turn.round_config, facts.coverage.rows_by_account,
+    )
+    selected = _prioritize_accounts_for_plan(
+        turn.selected, memories, counts, turn.round_config,
+    )
+    return ProfilePlanState(
+        selected, topic_thread, topic_plan, memories, prompt_profiles, voices, stances,
+        preview, counts, rows, f"{task.id}:cycle:{turn.cycle_index}",
+    )
+
+
+def _load_generation_plan(
+    session: Session,
+    task: Task,
+    facts: PlanFacts,
+    *,
+    context: ContextPlanState,
+    turn: TurnPlanState,
+    profile: ProfilePlanState,
+) -> GenerationPlanState | PlanAbort:
     reply_targets = _reply_targets_for_plan(
         session,
         task,
-        group,
-        usable_context_rows,
-        turn_count,
-        config,
-        hard_progress,
-        daily_coverage_debt=has_daily_coverage_debt,
+        facts.group,
+        context.usable_rows,
+        turn.turn_count,
+        facts.config,
+        facts.hard_progress,
+        daily_coverage_debt=facts.coverage.due_debt > 0,
     )
     if reply_targets is None:
-        return 0
-    allow_account_repeat = bool(round_config.get("allow_account_repeat", True))
-    burst_plan = _consecutive_burst_plan(round_config, turn_count, allow_account_repeat, cycle_id)
-    burst_account = _slot_account(selected, min(burst_plan), allow_account_repeat) if burst_plan else None
-    target_usage = _conversation_target_usage_config(round_config)
-    generation_slots = _generation_slots_for_plan(
-        cycle_id=cycle_id,
-        accounts=selected,
-        turn_count=turn_count,
-        reply_targets=reply_targets,
-        account_prompt_profiles=account_prompt_profiles,
-        allow_account_repeat=allow_account_repeat,
+        return PlanAbort()
+    allow_repeat = bool(turn.round_config.get("allow_account_repeat", True))
+    burst_plan = _consecutive_burst_plan(
+        turn.round_config, turn.turn_count, allow_repeat, profile.cycle_id,
+    )
+    slots = _immutable_generation_slots(
+        turn, profile, reply_targets=reply_targets, allow_repeat=allow_repeat,
         burst_plan=burst_plan,
-        burst_account=burst_account,
-        topic_directions=_slot_topic_directions(round_config),
-        teacher_targets=_slot_teacher_targets(round_config),
-        recent_topic_counts=target_usage.get("topics", {}),
-        recent_teacher_counts=target_usage.get("teachers", {}),
     )
-    generation_config = _with_ai_group_fallback_settings(
-        session,
-        task.tenant_id,
-        {**generation_config, "generation_slots": generation_slots},
-    )
-    requested_reply_count = len(reply_targets)
-    normal_count = max(0, turn_count - len(reply_targets))
-    defer_ai_generation = _defer_ai_generation_for_plan(
-        config,
-        hard_progress,
-        reply_target_count=len(reply_targets),
-    )
-    if defer_ai_generation:
-        normal_slots = generation_slots[len(reply_targets):]
-        planned_items, tokens = _deferred_ai_planned_items(normal_count, normal_slots), 0
-    else:
-        try:
-            quality_items, tokens, quality_stats = _generate_quality_filled_items(
-                session,
-                task,
-                generation_config,
-                reply_targets=reply_targets,
-                normal_count=normal_count,
-                target_label=target_label,
-                history=history,
-                turn_count=turn_count,
-                duplicate_baseline_messages=duplicate_baseline_messages,
-                chat_mode=_chat_mode(usable_context_rows, idle_continuation),
-                context_message_ids=[int(row.id) for row in usable_context_rows[-history_depth:]],
-                fact_anchor_required=bool(config.get("fact_anchor_required", True)),
-                low_confidence_silence_enabled=bool(config.get("low_confidence_silence_enabled", True)),
-                fill_reply_shortfall_with_normal=bool(hard_progress),
-                enable_quality_fallback=_quality_fallback_enabled(generation_config, hard_progress),
-            )
-        except AiGenerationUnavailable as exc:
-            task.last_error = str(exc) or AI_GENERATION_UNAVAILABLE_MESSAGE
-            stats = dict(task.stats or {})
-            stats["current_mode"] = mode
-            stats["ramp_ratio"] = ramp_ratio
-            stats["context_mode"] = _context_mode(usable_context_rows, idle_continuation)
-            task.stats = stats
-            if hard_progress:
-                mark_plan_result(task, hard_progress, 0, {"ai_generation_unavailable": int(hard_progress.get("deficit") or 1)})
-            return 0
-    chat_mode = _chat_mode(usable_context_rows, idle_continuation)
-    context_message_ids = [int(row.id) for row in usable_context_rows[-history_depth:]]
-    if defer_ai_generation:
-        quality_items, quality_stats = planned_items[:turn_count], {}
+    normal_count = max(0, turn.turn_count - len(reply_targets))
+    planned_items = _deferred_ai_planned_items(reply_targets, normal_count, slots)
+    chat_mode = _chat_mode(context.usable_rows, context.idle_continuation)
+    quality_items = planned_items[:turn.turn_count]
     if not quality_items:
-        _mark_quality_skip(task, config, mode, ramp_ratio, _context_mode(usable_context_rows, idle_continuation), chat_mode, quality_stats)
-        if hard_progress:
-            mark_plan_result(task, hard_progress, 0, {"quality_filter": int(hard_progress.get("deficit") or 1)})
-        return 0
-    add_tokens(task, tokens)
-    times = _schedule_times_for_plan(task, hard_progress, len(quality_items), mode)
+        _mark_empty_generation_plan(task, facts, context, chat_mode=chat_mode)
+        return PlanAbort()
+    schedule = _finalize_generation_schedule(
+        task, facts, context, quality_items=quality_items,
+    )
+    if schedule is None:
+        return PlanAbort()
+    quality_items, times = schedule
+    message_ids = [int(row.id) for row in context.usable_rows[-context.history_depth:]]
+    source = _generation_source(context.usable_rows, context.idle_continuation)
+    return GenerationPlanState(
+        quality_items, times, len(reply_targets), burst_plan, chat_mode, message_ids, source,
+    )
+
+
+def _finalize_generation_schedule(
+    task: Task,
+    facts: PlanFacts,
+    context: ContextPlanState,
+    *,
+    quality_items: list[dict],
+) -> tuple[list[dict], list[datetime]] | None:
+    times = _schedule_times_for_plan(
+        task, facts.hard_progress, len(quality_items), context.mode,
+    )
     quality_items, times = _limit_context_bound_quality_schedule(
         task,
-        config,
-        has_context=bool(usable_context_rows),
-        progress=hard_progress,
-        deferred_generation=defer_ai_generation,
+        facts.config,
+        has_context=bool(context.usable_rows),
+        progress=facts.hard_progress,
+        deferred_generation=True,
         quality_items=quality_items,
         planned_times=times,
     )
-    if not quality_items:
-        task.last_error = "上下文绑定计划超出有效发送窗口，等待新上下文后继续执行"
-        stats_inc(task, "skipped_count")
-        return 0
-    context_snapshot_message_id = max(context_message_ids) if context_message_ids else None
-    generation_source = _generation_source(usable_context_rows, idle_continuation)
-    used_account_ids: set[int] = set()
-    hard_blockers: dict[str, int] = {}
-    prepared_actions: list[tuple[int, datetime, SendMessagePayload]] = []
-    capacity_reservations: list[AccountCapacityReservation] = []
+    if quality_items:
+        return quality_items, times
+    task.last_error = "上下文绑定计划超出有效发送窗口，等待新上下文后继续执行"
+    stats_inc(task, "skipped_count")
+    return None
+
+
+def _immutable_generation_slots(
+    turn: TurnPlanState,
+    profile: ProfilePlanState,
+    *,
+    reply_targets: list[dict],
+    allow_repeat: bool,
+    burst_plan: dict,
+) -> list[dict]:
+    burst_account = (
+        _slot_account(profile.selected, min(burst_plan), allow_repeat) if burst_plan else None
+    )
+    usage = _conversation_target_usage_config(turn.round_config)
+    return _generation_slots_for_plan(
+        cycle_id=profile.cycle_id,
+        accounts=profile.selected,
+        turn_count=turn.turn_count,
+        reply_targets=reply_targets,
+        account_prompt_profiles=profile.account_prompt_profiles,
+        allow_account_repeat=allow_repeat,
+        burst_plan=burst_plan,
+        burst_account=burst_account,
+        topic_directions=_slot_topic_directions(turn.round_config),
+        teacher_targets=_slot_teacher_targets(turn.round_config),
+        recent_topic_counts=usage.get("topics", {}),
+        recent_teacher_counts=usage.get("teachers", {}),
+    )
+
+
+def _mark_empty_generation_plan(
+    task: Task, facts: PlanFacts, context: ContextPlanState, *, chat_mode: str,
+) -> None:
+    _mark_quality_skip(
+        task,
+        facts.config,
+        context.mode,
+        context.ramp_ratio,
+        _context_mode(context.usable_rows, context.idle_continuation),
+        chat_mode,
+        {},
+    )
+    if facts.hard_progress:
+        deficit = int(facts.hard_progress.get("deficit") or 1)
+        mark_plan_result(task, facts.hard_progress, 0, {"quality_filter": deficit})
+
+
+def _prepare_plan_blueprint(session: Session, task: Task) -> PlanBlueprint | PlanAbort:
+    facts = _load_plan_facts(session, task)
+    if isinstance(facts, PlanAbort):
+        return facts
+    account_state = _load_plan_accounts(session, task, facts)
+    if isinstance(account_state, PlanAbort):
+        return account_state
+    context = _load_context_plan(session, task, facts)
+    if isinstance(context, PlanAbort):
+        return context
+    turn = _load_turn_plan(
+        session, task, facts, accounts=account_state.accounts, context=context,
+    )
+    if isinstance(turn, PlanAbort):
+        return turn
+    if _input_filter_abort(task, facts, turn.history):
+        return PlanAbort()
+    profile = _load_profile_plan(session, task, facts, context=context, turn=turn)
+    generation = _load_generation_plan(
+        session, task, facts, context=context, turn=turn, profile=profile,
+    )
+    if isinstance(generation, PlanAbort):
+        return generation
+    return PlanBlueprint(facts, context, turn, profile, generation)
+
+
+def _build_slot_snapshot(slot: SlotBuildInput) -> SlotSnapshot:
+    payload_data: dict[str, Any] = {}
+    for fields in (
+        _slot_identity_payload(slot),
+        _slot_profile_payload(slot),
+        _slot_conversation_payload(slot),
+        _slot_generation_payload(slot),
+        _slot_rule_payload(slot),
+    ):
+        payload_data.update(fields)
+    blueprint = slot.blueprint
+    payload_data.update(blueprint.generation.burst_plan.get(slot.index, {}))
+    payload_data.update(
+        _coverage_payload_for_account(
+            blueprint.turn.round_config,
+            slot.account.id,
+            blueprint.profile.coverage_counts,
+            blueprint.profile.coverage_rows,
+        ),
+    )
+    return SlotSnapshot(
+        account_id=slot.account.id,
+        planned_at=slot.planned_at,
+        payload=SendMessagePayload(**payload_data),
+    )
+
+
+def _slot_identity_payload(slot: SlotBuildInput) -> dict[str, Any]:
+    facts = slot.blueprint.facts
+    profile = slot.blueprint.profile
+    item = slot.item
+    account_id = slot.account.id
+    return {
+        "chat_id": facts.group.tg_peer_id,
+        "group_id": facts.group.id,
+        "operation_target_id": int(facts.config.get("target_operation_target_id") or 0) or None,
+        "target_display": facts.target_label,
+        "message_text": "",
+        "media_segments": [],
+        "review_approved": True,
+        "cycle_id": profile.cycle_id,
+        "turn_index": slot.index + 1,
+        "account_role": _role_for_account(account_id, slot.index, facts.config),
+        "account_memory": profile.account_memories.get(str(account_id), ""),
+        "account_profile": profile.account_prompt_profiles.get(str(account_id), ""),
+        "slot_id": _quality_slot_id(item) or _slot_id(profile.cycle_id, slot.index),
+        "act_type": _act_type_for_turn(slot.index, item),
+    }
+
+
+def _slot_profile_payload(slot: SlotBuildInput) -> dict[str, Any]:
+    profile = slot.blueprint.profile
+    item = slot.item
+    voice = profile.voice_profiles.get(slot.account.id, {})
+    summary = str(voice.get("summary") or "")
+    version = int(voice.get("version") or 0)
+    return {
+        "account_voice_profile_version": version,
+        "account_voice_profile_summary": summary,
+        "account_voice_profile_match_score": VOICE_PROFILE_MATCH_SCORE,
+        "account_voice_profile_match_reason": "deferred_ai_generation",
+        "account_mask_version": version,
+        "account_mask_summary": summary,
+        "account_mask_match_score": VOICE_PROFILE_MATCH_SCORE,
+        "account_mask_match_reason": "deferred_ai_generation",
+        "stance_summary": profile.stance_summaries.get(slot.account.id, ""),
+        "ai_message_memory_id": "",
+        "rewrite_attempts": int(item.get("rewrite_attempts") or 0),
+        "human_quality_decision": str(item.get("human_quality_decision") or "accepted"),
+        "quality_fallback": str(item.get("quality_fallback") or ""),
+        "topic_direction": _quality_topic_direction(item, slot.blueprint.facts.config),
+        "teacher_target": _quality_teacher_target(item, slot.blueprint.facts.config),
+    }
+
+
+def _slot_conversation_payload(slot: SlotBuildInput) -> dict[str, Any]:
+    blueprint = slot.blueprint
+    generation = blueprint.generation
+    item = slot.item
+    message_ids = generation.context_message_ids
+    return {
+        "topic_thread": blueprint.profile.topic_thread,
+        "topic_plan": blueprint.profile.topic_plan,
+        "intent": _intent_for_turn(slot.index),
+        "chat_mode": generation.chat_mode,
+        "anchor_message_ids": message_ids,
+        "semantic_cluster": str(item.get("semantic_cluster") or ""),
+        "duplicate_risk": str(item.get("duplicate_risk") or ""),
+        "hallucination_risk": str(item.get("hallucination_risk") or ""),
+        "quality_skip_reason": str(item.get("quality_skip_reason") or ""),
+        "context_message_ids": message_ids,
+        "context_snapshot_message_id": max(message_ids) if message_ids else None,
+        "context_expire_after_messages": int(
+            blueprint.facts.config.get("context_expire_after_messages") or 0,
+        ),
+    }
+
+
+def _slot_generation_payload(slot: SlotBuildInput) -> dict[str, Any]:
+    blueprint = slot.blueprint
+    facts = blueprint.facts
+    profile = blueprint.profile
+    generation = blueprint.generation
+    preview = profile.profile_preview
+    return {
+        "ai_generation_id": profile.cycle_id,
+        "ai_generation_status": "pending",
+        "generation_source": generation.generation_source,
+        **_provider_generation_payload(slot.item),
+        "ai_generation_history": _deferred_ai_history(blueprint.turn.history),
+        "ai_generation_tokens": 0,
+        "ai_generation_count": len(generation.quality_items),
+        "hard_hourly_target": bool(facts.hard_progress),
+        "hard_hourly_bucket": str(facts.hard_progress.get("bucket") or ""),
+        "hard_hourly_deficit_at_plan": int(facts.hard_progress.get("deficit") or 0),
+        "ai_generation_context_count": len(generation.context_message_ids),
+        "ai_generation_memory_count": len(profile.account_memories),
+        "profile_scene": str(preview.get("profile_scene") or GROUP_CHAT_SCENE),
+        "profile_version": int(preview.get("profile_version") or 0),
+        "profile_match_score": _profile_match_score(preview),
+        "profile_match_reason": _profile_match_reason(preview),
+        "profile_hit_summary": str(preview.get("profile_hit_summary") or ""),
+        "profile_unavailable_reason": str(preview.get("profile_unavailable_reason") or ""),
+    }
+
+
+def _slot_rule_payload(slot: SlotBuildInput) -> dict[str, Any]:
+    facts = slot.blueprint.facts
+    item = slot.item
+    rule_version = facts.rule_version
+    fixed_version = bool(facts.config.get("rule_set_version_id"))
+    return {
+        "rule_set_id": rule_version.rule_set_id,
+        "rule_set_name": facts.rule_set.name if facts.rule_set else "",
+        "rule_set_version_id": rule_version.id,
+        "resolved_rule_set_version_id": rule_version.id,
+        "rule_set_version": rule_version.version,
+        "rule_binding_mode": "fixed_version" if fixed_version else "follow_current",
+        "reply_to_message_id": _reply_target_message_id(item),
+        "reply_target_label": _reply_target_label(item),
+        "reply_target_author": _reply_target_text(item, "author"),
+        "reply_target_preview": _reply_target_text(item, "preview"),
+        "reply_target_source": _reply_target_text(item, "source"),
+        "rule_trace": {
+            "material_policy": (rule_version.routing or {}).get("material_policy"),
+            "material_action": "",
+            "material_intent": _material_intent_for_turn(item),
+            "material_matched_tags": [],
+            "material_candidate_count": 0,
+            "material_id": None,
+            "material_failure_reason": "",
+        },
+    }
+
+
+def _prepare_action_slots(
+    session: Session, task: Task, blueprint: PlanBlueprint,
+) -> PreparedActionPlan:
+    generation = blueprint.generation
+    progress = blueprint.facts.hard_progress
+    allow_repeat = bool(blueprint.turn.round_config.get("allow_account_repeat", True))
+    used_ids: set[int] = set()
+    blockers: dict[str, int] = {}
+    slots: list[SlotSnapshot] = []
+    reservations: list[AccountCapacityReservation] = []
     capacity_cache = AccountCapacityCache()
-    account_by_id = {account.id: account for account in selected}
-    action_burst_account = None
-    created = 0
-    for index, quality_item in enumerate(quality_items):
-        content = str(quality_item.get("content") or "")
-        deferred_ai = bool(quality_item.get("defer_ai_generation"))
-        if content and rule_version:
-            policy_result = apply_output_policy(content, rule_version.output_checks or {}, rule_version.transforms or {})
-            if not policy_result.allowed:
-                _hard_blocker_inc(hard_blockers, "content_policy", hard_progress)
-                stats_inc(task, "failure_count")
-                continue
-            content = policy_result.content
-        planned_at = times[index]
-        slot_account = account_by_id.get(_quality_slot_account_id(quality_item))
-        if action_burst_account and index in burst_plan:
-            candidate_accounts = [action_burst_account]
-        elif slot_account:
-            candidate_accounts = [slot_account]
-        else:
-            candidate_accounts = selected
+    burst_account = None
+    for index, item in enumerate(generation.quality_items):
+        candidates = _slot_candidate_accounts(
+            blueprint, item, index, burst_account=burst_account,
+        )
         account, planned_at = _choose_capacity_slot(
             session,
             task,
-            candidate_accounts,
-            planned_at,
+            candidates,
+            generation.times[index],
             index,
-            used_account_ids,
-            allow_account_repeat,
-            hard_progress,
-            capacity_reservations,
+            used_ids,
+            allow_repeat,
+            progress,
+            reservations,
             capacity_cache,
         )
         if not account:
-            _hard_blocker_inc(hard_blockers, "account_capacity", hard_progress)
+            _hard_blocker_inc(blockers, "account_capacity", progress)
             stats_inc(task, "skipped_count")
             continue
-        if burst_plan and index == min(burst_plan):
-            action_burst_account = account
-        used_account_ids.add(account.id)
-        voice_profile = voice_profiles.get(account.id, {})
-        material_intent = _material_intent_for_turn(quality_item)
-        filtered_content = content
-        material_result = MaterialRuleResult()
-        media_segments = []
-        voice_decision = {"score": VOICE_PROFILE_MATCH_SCORE, "reason": "deferred_ai_generation"}
-        stance_summary = stance_summaries.get(account.id, "")
-        memory = None
-        if not deferred_ai:
-            has_native_reply = _reply_target_message_id(quality_item) is not None
-            original_content = content
-            content = _voice_profile_anchor_repaired_content(content, voice_profile, quality_item)
-            if content != original_content:
-                quality_stats["voice_profile_anchor_rewrite_count"] = int(quality_stats.get("voice_profile_anchor_rewrite_count") or 0) + 1
-            filtered_content = content
-            if content:
-                filtered = filter_outbound_content(session, tenant_id=task.tenant_id, group=group, content=content, reject_mentions=True, reject_replies=not has_native_reply)
-                if not filtered.ok:
-                    _hard_blocker_inc(hard_blockers, "content_policy", hard_progress)
-                    stats_inc(task, "failure_count")
-                    continue
-                filtered_content = filtered.content
-            material_result = select_material_for_policy(
-                session,
-                task.tenant_id,
-                (rule_version.routing or {}).get("material_policy") if rule_version else {},
-                context_key=f"{cycle_id}:{index}:{filtered_content or 'pending-ai'}",
-                default_caption="",
-                material_intent=material_intent,
-            )
-            if material_result.failure_reason and material_result.fallback == "skip":
-                _hard_blocker_inc(hard_blockers, "content_policy", hard_progress)
-                stats_inc(task, "failure_count")
-                continue
-            media_segments = [material_result.segment] if material_result.ok and material_result.segment else []
-            voice_decision = _voice_profile_match_decision_for_item(filtered_content, voice_profile, quality_item)
-            if voice_decision["score"] <= VOICE_PROFILE_MISMATCH_SCORE:
-                _record_quality_rejection(
-                    quality_stats,
-                    "voice_profile_mismatch",
-                    filtered_content,
-                    detail=voice_decision["reason"],
-                    account_id=account.id,
-                )
-                _hard_blocker_inc(hard_blockers, "voice_profile_mismatch", hard_progress)
-                stats_inc(task, "skipped_count")
-                continue
-            if stance_reason := _stance_conflict_reason(filtered_content, stance_summary):
-                _record_quality_rejection(
-                    quality_stats,
-                    "stance_conflict",
-                    filtered_content,
-                    detail=stance_reason,
-                    account_id=account.id,
-                )
-                _hard_blocker_inc(hard_blockers, "stance_conflict", hard_progress)
-                stats_inc(task, "skipped_count")
-                continue
-            try:
-                memory = _reserve_planned_message_memory(session, task, group, account.id, filtered_content, config, profile_preview, quality_item)
-            except DuplicateMessageReservation as exc:
-                rejection_reason = _duplicate_window_quality_reason(exc.duplicate_window)
-                _record_quality_rejection(quality_stats, rejection_reason, filtered_content, detail=exc.duplicate_window, account_id=account.id)
-                if rejection_reason == "duplicate_message":
-                    quality_stats["duplicate_risk"] = exc.duplicate_window
-                _hard_blocker_inc(hard_blockers, rejection_reason, hard_progress)
-                stats_inc(task, "skipped_count")
-                continue
-        coverage_payload = _coverage_payload_for_account(round_config, account.id, coverage_counts, coverage_rows)
-        act_type = _act_type_for_turn(index, quality_item)
-        prepared_actions.append(
-            (
-                account.id,
-                planned_at,
-                SendMessagePayload(
-                    chat_id=group.tg_peer_id,
-                    group_id=group.id,
-                    operation_target_id=int(config.get("target_operation_target_id") or 0) or None,
-                    target_display=target_label,
-                    message_text=filtered_content,
-                    media_segments=media_segments,
-                    review_approved=True,
-                    cycle_id=cycle_id,
-                    turn_index=index + 1,
-                    account_role=_role_for_account(account.id, index, config),
-                    account_memory=account_memories.get(str(account.id), ""),
-                    account_profile=account_prompt_profiles.get(str(account.id), ""),
-                    slot_id=_quality_slot_id(quality_item) or _slot_id(cycle_id, index),
-                    act_type=act_type,
-                    account_voice_profile_version=int(voice_profile.get("version") or 0),
-                    account_voice_profile_summary=str(voice_profile.get("summary") or ""),
-                    account_voice_profile_match_score=int(voice_decision["score"]),
-                    account_voice_profile_match_reason=str(voice_decision["reason"]),
-                    account_mask_version=int(voice_profile.get("version") or 0),
-                    account_mask_summary=str(voice_profile.get("summary") or ""),
-                    account_mask_match_score=int(voice_decision["score"]),
-                    account_mask_match_reason=str(voice_decision["reason"]),
-                    stance_summary=stance_summary,
-                    ai_message_memory_id=memory.id if memory else "",
-                    rewrite_attempts=int(quality_item.get("rewrite_attempts") or 0),
-                    human_quality_decision=str(quality_item.get("human_quality_decision") or "accepted"),
-                    quality_fallback=str(quality_item.get("quality_fallback") or ""),
-                    topic_direction=_quality_topic_direction(quality_item, config),
-                    teacher_target=_quality_teacher_target(quality_item, config),
-                    **burst_plan.get(index, {}),
-                    **coverage_payload,
-                    topic_thread=topic_thread,
-                    topic_plan=topic_plan,
-                    intent=_intent_for_turn(index),
-                    chat_mode=chat_mode,
-                    anchor_message_ids=context_message_ids,
-                    semantic_cluster=str(quality_item.get("semantic_cluster") or ""),
-                    duplicate_risk=str(quality_item.get("duplicate_risk") or ""),
-                    hallucination_risk=str(quality_item.get("hallucination_risk") or ""),
-                    quality_skip_reason=str(quality_item.get("quality_skip_reason") or ""),
-                    context_message_ids=context_message_ids,
-                    context_snapshot_message_id=context_snapshot_message_id,
-                    context_expire_after_messages=int(config.get("context_expire_after_messages") or 0),
-                    ai_generation_id=cycle_id,
-                    ai_generation_status="pending" if deferred_ai else "success",
-                    generation_source=generation_source,
-                    **_provider_generation_payload(quality_item),
-                    ai_generation_history=_deferred_ai_history(history) if deferred_ai else "",
-                    ai_generation_tokens=tokens,
-                    ai_generation_count=len(quality_items),
-                    hard_hourly_target=bool(hard_progress),
-                    hard_hourly_bucket=str(hard_progress.get("bucket") or ""),
-                    hard_hourly_deficit_at_plan=int(hard_progress.get("deficit") or 0),
-                    ai_generation_context_count=len(context_message_ids),
-                    ai_generation_memory_count=len(account_memories),
-                    profile_scene=str(profile_preview.get("profile_scene") or GROUP_CHAT_SCENE),
-                    profile_version=int(profile_preview.get("profile_version") or 0),
-                    profile_match_score=_profile_match_score(profile_preview),
-                    profile_match_reason=_profile_match_reason(profile_preview),
-                    profile_hit_summary=str(profile_preview.get("profile_hit_summary") or ""),
-                    profile_unavailable_reason=str(profile_preview.get("profile_unavailable_reason") or ""),
-                    rule_set_id=rule_version.rule_set_id if rule_version else None,
-                    rule_set_name=rule_set.name if rule_set else "",
-                    rule_set_version_id=rule_version.id if rule_version else None,
-                    resolved_rule_set_version_id=rule_version.id if rule_version else None,
-                    rule_set_version=rule_version.version if rule_version else None,
-                    rule_binding_mode="fixed_version" if rule_version and config.get("rule_set_version_id") else "follow_current" if rule_version else "",
-                    reply_to_message_id=_reply_target_message_id(quality_item),
-                    reply_target_label=_reply_target_label(quality_item),
-                    reply_target_author=_reply_target_text(quality_item, "author"),
-                    reply_target_preview=_reply_target_text(quality_item, "preview"),
-                    reply_target_source=_reply_target_text(quality_item, "source"),
-                    rule_trace={
-                        "material_policy": (rule_version.routing or {}).get("material_policy") if rule_version else {},
-                        "material_action": material_result.action,
-                        "material_intent": material_intent,
-                        "material_matched_tags": material_result.matched_tags or [],
-                        "material_candidate_count": int(material_result.candidate_count or 0),
-                        "material_id": material_result.selected.id if material_result.selected else None,
-                        "material_failure_reason": material_result.failure_reason,
-                    },
-                ),
-            )
+        if generation.burst_plan and index == min(generation.burst_plan):
+            burst_account = account
+        used_ids.add(account.id)
+        slots.append(
+            _build_slot_snapshot(
+                SlotBuildInput(blueprint, account, index, item, planned_at),
+            ),
         )
-        _increment_coverage_count(round_config, account.id, coverage_counts)
-        capacity_reservations.append(
-            AccountCapacityReservation(account_id=account.id, scheduled_at=planned_at)
+        _increment_coverage_count(
+            blueprint.turn.round_config,
+            account.id,
+            blueprint.profile.coverage_counts,
         )
-    prepared_reply_count = sum(1 for _account_id, _planned_at, payload in prepared_actions if payload.reply_to_message_id)
-    if prepared_reply_count < requested_reply_count:
+        reservations.append(
+            AccountCapacityReservation(account_id=account.id, scheduled_at=planned_at),
+        )
+    return PreparedActionPlan(slots, blockers)
+
+
+def _slot_candidate_accounts(
+    blueprint: PlanBlueprint, item: dict, index: int, *, burst_account: Any,
+) -> list[Any]:
+    if burst_account and index in blueprint.generation.burst_plan:
+        return [burst_account]
+    slot_id = _quality_slot_account_id(item)
+    account_by_id = {account.id: account for account in blueprint.profile.selected}
+    slot_account = account_by_id.get(slot_id)
+    return [slot_account] if slot_account else blueprint.profile.selected
+
+
+def _prepared_plan_is_blocked(
+    task: Task,
+    blueprint: PlanBlueprint,
+    prepared: PreparedActionPlan,
+    *,
+    prepared_reply_count: int,
+) -> bool:
+    if prepared_reply_count < blueprint.generation.requested_reply_count:
         stats_inc(task, "reply_candidate_shortfall_count")
-        if not hard_progress:
+        if not blueprint.facts.hard_progress:
             task.last_error = "AI 引用回复候选不足，已跳过本轮"
-            return 0
-    skew = _hard_hourly_distribution_skew([account_id for account_id, _planned_at, _payload in prepared_actions], len(selected))
-    if hard_progress and skew:
-        _record_hard_hourly_distribution_skew(task, skew)
-        mark_plan_result(task, hard_progress, 0, {"account_distribution_skew": max(1, int(hard_progress.get("deficit") or len(prepared_actions)))})
-        return 0
-    for account_id, planned_at, payload in prepared_actions:
-        action = create_send_action(session, task, account_id, planned_at, payload)
-        if not _reserve_action_coverage(session, action, payload):
-            if payload.ai_message_memory_id:
-                mark_group_ai_message_result(
-                    session,
-                    payload.ai_message_memory_id,
-                    status="failed",
-                    action_id=action.id,
-                    result=action.result,
-                )
+            return True
+    account_ids = [slot.account_id for slot in prepared.slots]
+    skew = _hard_hourly_distribution_skew(account_ids, len(blueprint.profile.selected))
+    if not blueprint.facts.hard_progress or not skew:
+        return False
+    _record_hard_hourly_distribution_skew(task, skew)
+    deficit = max(
+        1, int(blueprint.facts.hard_progress.get("deficit") or len(prepared.slots)),
+    )
+    mark_plan_result(
+        task, blueprint.facts.hard_progress, 0, {"account_distribution_skew": deficit},
+    )
+    return True
+
+
+def _create_reserved_actions(
+    session: Session,
+    task: Task,
+    *,
+    blueprint: PlanBlueprint,
+    prepared: PreparedActionPlan,
+) -> int:
+    created = 0
+    reserved_rows: list[TaskAccountDailyCoverage] = []
+    for slot in prepared.slots:
+        action = create_send_action(
+            session, task, slot.account_id, slot.planned_at, slot.payload,
+        )
+        if not _reserve_action_coverage(session, action, slot.payload):
             continue
-        if payload.ai_message_memory_id:
-            mark_group_ai_message_result(session, payload.ai_message_memory_id, status="reserved", action_id=action.id)
         created += 1
-    for row in unprocessed_rows:
-        remember_fingerprint(session, task.tenant_id, fingerprint_source, _context_fingerprint(row))
-    stats = dict(task.stats or {})
-    stats["current_mode"] = mode
-    stats["ramp_ratio"] = ramp_ratio
-    stats["context_mode"] = _context_mode(usable_context_rows, idle_continuation)
-    stats["chat_mode"] = chat_mode
-    stats["generation_source"] = generation_source
-    stats["reply_planned_count"] = prepared_reply_count
-    if quality_stats.get("duplicate_risk"):
-        stats["duplicate_risk"] = quality_stats["duplicate_risk"]
-    else:
-        stats.pop("duplicate_risk", None)
-    if quality_stats.get("hallucination_risk"):
-        stats["hallucination_risk"] = quality_stats["hallucination_risk"]
-    else:
-        stats.pop("hallucination_risk", None)
-    if quality_stats.get("ai_generation_rounds"):
-        stats["ai_generation_rounds"] = quality_stats["ai_generation_rounds"]
-    if quality_stats.get("quality_fill_rounds"):
-        stats["quality_fill_rounds"] = quality_stats["quality_fill_rounds"]
-    if quality_stats.get("quality_fallback_count"):
-        stats["quality_fallback_count"] = quality_stats["quality_fallback_count"]
-    if quality_stats.get("ai_generation_stage_failures"):
-        stats["ai_generation_stage_failures"] = quality_stats["ai_generation_stage_failures"]
-    if quality_stats.get("voice_profile_anchor_rewrite_count"):
-        stats["voice_profile_anchor_rewrite_count"] = quality_stats["voice_profile_anchor_rewrite_count"]
-    if quality_stats.get("ai_generation_candidate_count"):
-        stats["ai_generation_candidate_count"] = quality_stats["ai_generation_candidate_count"]
-    if quality_stats.get("quality_rejection_counts"):
-        stats["quality_rejection_counts"] = quality_stats["quality_rejection_counts"]
-    if quality_stats.get("quality_rejection_samples"):
-        stats["quality_rejection_samples"] = quality_stats["quality_rejection_samples"]
-    stats.pop("skip_reason", None)
-    stats.pop("idle_continuation_next_run_at", None)
-    stats.pop("force_bootstrap_once", None)
-    task.last_error = _hard_blocked_last_error(created, hard_blockers, hard_progress)
-    task.stats = stats
-    if hard_progress:
-        mark_plan_result(task, hard_progress, created, hard_blockers or None)
-    stats_inc(task, "total_rounds")
+        _remember_reserved_coverage_row(
+            reserved_rows,
+            blueprint.profile.coverage_rows,
+            account_id=slot.account_id,
+            payload=slot.payload,
+        )
+    _advance_reserved_coverage_cursor(session, task, reserved_rows)
     return created
+
+
+def _record_plan_completion(
+    session: Session,
+    task: Task,
+    blueprint: PlanBlueprint,
+    *,
+    prepared: PreparedActionPlan,
+    prepared_reply_count: int,
+    created: int,
+) -> None:
+    context = blueprint.context
+    for row in context.unprocessed_rows:
+        remember_fingerprint(
+            session, task.tenant_id, context.fingerprint_source, _context_fingerprint(row),
+        )
+    stats = dict(task.stats or {})
+    stats.update(
+        {
+            "current_mode": context.mode,
+            "ramp_ratio": context.ramp_ratio,
+            "context_mode": _context_mode(context.usable_rows, context.idle_continuation),
+            "chat_mode": blueprint.generation.chat_mode,
+            "generation_source": blueprint.generation.generation_source,
+            "reply_planned_count": prepared_reply_count,
+        },
+    )
+    for key in (
+        "duplicate_risk", "hallucination_risk", "skip_reason",
+        "idle_continuation_next_run_at", "force_bootstrap_once",
+    ):
+        stats.pop(key, None)
+    progress = blueprint.facts.hard_progress
+    task.last_error = _hard_blocked_last_error(created, prepared.hard_blockers, progress)
+    task.stats = stats
+    if progress:
+        mark_plan_result(task, progress, created, prepared.hard_blockers or None)
+    stats_inc(task, "total_rounds")
+
+
+def build_plan(session: Session, task: Task) -> int:
+    blueprint = _prepare_plan_blueprint(session, task)
+    if isinstance(blueprint, PlanAbort):
+        return blueprint.created
+    prepared = _prepare_action_slots(session, task, blueprint)
+    prepared_reply_count = sum(
+        1 for slot in prepared.slots if slot.payload.reply_to_message_id
+    )
+    if _prepared_plan_is_blocked(
+        task, blueprint, prepared, prepared_reply_count=prepared_reply_count,
+    ):
+        return 0
+    created = _create_reserved_actions(
+        session, task, blueprint=blueprint, prepared=prepared,
+    )
+    _record_plan_completion(
+        session,
+        task,
+        blueprint,
+        prepared=prepared,
+        prepared_reply_count=prepared_reply_count,
+        created=created,
+    )
+    return created
+
+
+def _remember_reserved_coverage_row(
+    reserved_rows: list[TaskAccountDailyCoverage],
+    rows_by_account: dict[int, TaskAccountDailyCoverage],
+    *,
+    account_id: int,
+    payload: SendMessagePayload,
+) -> None:
+    if not payload.coverage_ledger_id:
+        return
+    row = rows_by_account.get(account_id)
+    if row is not None:
+        reserved_rows.append(row)
+
+
+def _advance_reserved_coverage_cursor(
+    session: Session,
+    task: Task,
+    reserved_rows: list[TaskAccountDailyCoverage],
+) -> None:
+    if not reserved_rows:
+        return
+    cursor_row = max(reserved_rows, key=lambda row: (row.targeted_at, row.account_id, row.id))
+    advance_coverage_plan_cursor(session, task, cursor_row, now=_now())
 
 
 def prepare_open_actions_for_planning(session: Session, task: Task) -> int:
@@ -1066,49 +1427,31 @@ def _all_accounts_daily_coverage(config: dict) -> bool:
     return config.get("account_coverage_mode") == "all_accounts_daily"
 
 
-def _quality_fallback_enabled(config: dict, progress: dict[str, object]) -> bool:
-    configured = config.get("_ai_group_static_fallback_enabled")
-    if configured is None or config.get("ai_model") or config.get("require_mimo_draft"):
-        return bool(progress) and not _all_accounts_daily_coverage(config)
-    return bool(configured) and not _all_accounts_daily_coverage(config)
-
-
-def _with_ai_group_fallback_settings(session: Session, tenant_id: int, config: dict) -> dict:
-    setting = session.scalar(select(TenantAiSetting).where(TenantAiSetting.tenant_id == tenant_id))
-    if not setting:
-        return {
-            **config,
-            "_ai_group_model_fallback_enabled": False,
-            "_ai_group_grok_fallback_enabled": False,
-        }
-    return {
-        **config,
-        "_ai_group_model_fallback_enabled": bool(setting.ai_group_model_fallback_enabled),
-        "_ai_group_grok_fallback_enabled": bool(setting.ai_group_grok_fallback_enabled),
-        "_ai_group_static_fallback_enabled": bool(setting.ai_group_static_fallback_enabled),
-    }
-
-
 def _coverage_capacity_blocker(
     session: Session,
     task: Task,
     group: TgGroup,
     config: dict,
     coverage_rows: list[TaskAccountDailyCoverage] | None = None,
+    coverage_state: CoveragePlanState | None = None,
 ) -> dict[str, object]:
     if not _all_accounts_daily_coverage(config):
         return {}
     rows = coverage_rows if coverage_rows is not None else _load_coverage_rows(session, task)
     if not rows:
         return {}
+    account_count = coverage_state.account_count if coverage_state else len(rows)
+    target_per_account = coverage_state.target_per_account if coverage_state else max(row.target_count for row in rows)
+    confirmed_count = coverage_state.confirmed_count if coverage_state else sum(row.confirmed_count for row in rows)
+    reserved_count = coverage_state.reserved_count if coverage_state else reserved_coverage_message_count(rows)
     proof = task_coverage_capacity_proof(
         session,
         task,
         group,
-        target_account_count=len(rows),
-        target_per_account=max(row.target_count for row in rows),
-        confirmed_message_count=sum(row.confirmed_count for row in rows),
-        reserved_message_count=reserved_coverage_message_count(rows),
+        target_account_count=account_count,
+        target_per_account=target_per_account,
+        confirmed_message_count=confirmed_count,
+        reserved_message_count=reserved_count,
     )
     if proof.get("sufficient"):
         _clear_coverage_capacity_blocker(task)
@@ -1142,11 +1485,23 @@ def _coverage_plan_state(
         return CoveragePlanState(rows=[], rows_by_account={}, due_debt=0)
     timestamp = _now()
     ensure_task_daily_coverage(session, task, now=timestamp)
-    rows = _load_coverage_rows(session, task, now=timestamp)
+    totals = coverage_plan_totals(session, task, group, now=timestamp)
+    configured_limit = int(getattr(get_settings(), "daily_coverage_plan_batch_limit", 20) or 20)
+    remaining_limit = int(session.info.get("daily_coverage_plan_limit", configured_limit))
+    rows = ready_coverage_plan_batch(
+        session,
+        task,
+        now=timestamp,
+        limit=min(configured_limit, remaining_limit, max(0, totals.due_debt) or 1),
+    ).rows
     return CoveragePlanState(
         rows=rows,
         rows_by_account={row.account_id: row for row in rows},
-        due_debt=daily_coverage_due_debt(task, group, rows, now=timestamp),
+        due_debt=totals.due_debt,
+        account_count=totals.account_count,
+        target_per_account=totals.target_per_account,
+        confirmed_count=totals.confirmed_count,
+        reserved_count=totals.reserved_count,
     )
 
 
@@ -1687,23 +2042,16 @@ def _hard_hourly_account_scan_target(progress: dict[str, object]) -> int:
     return max(HARD_HOURLY_MIN_BATCH_MESSAGES, goal, deficit)
 
 
-def _defer_ai_generation_for_plan(
-    config: dict,
-    progress: dict[str, object],
-    *,
-    reply_target_count: int = 0,
-) -> bool:
-    if progress:
-        enabled = bool(config.get("hard_hourly_defer_ai_generation", True))
-        return enabled and int(progress.get("goal") or 0) >= HARD_HOURLY_DEFER_AI_MIN_GOAL
-    return _all_accounts_daily_coverage(config) and int(reply_target_count or 0) == 0
-
-
-def _deferred_ai_planned_items(count: int, slots: list[dict] | None = None) -> list[dict]:
+def _deferred_ai_planned_items(
+    reply_targets: list[dict],
+    normal_count: int,
+    slots: list[dict],
+) -> list[dict]:
     items: list[dict] = []
-    for index in range(max(0, int(count or 0))):
-        item = {"content": "", "reply_target": None, "defer_ai_generation": True}
-        slot = _slot_at(slots or [], index)
+    targets: list[dict | None] = [*reply_targets, *([None] * max(0, int(normal_count or 0)))]
+    for index, target in enumerate(targets):
+        item = {"content": "", "reply_target": target, "defer_ai_generation": True}
+        slot = slots[index] if 0 <= index < len(slots) else None
         if slot:
             item.update(_deferred_slot_metadata(slot))
         items.append(item)
@@ -1723,398 +2071,12 @@ def _deferred_ai_history(history: str) -> str:
     return value[-DEFERRED_AI_HISTORY_MAX_CHARS:] if value else ""
 
 
-def _generation_config_for_slots(config: dict, slots: list[dict]) -> dict:
-    return {**config, "generation_slots": slots}
-
-
-def _generate_group_planned_items(
-    session: Session,
-    task: Task,
-    config: dict,
-    *,
-    reply_targets: list[dict],
-    normal_count: int,
-    target_label: str,
-    history: str,
-    fill_reply_shortfall_with_normal: bool = False,
-) -> tuple[list[dict], int]:
-    items: list[dict] = []
-    tokens = 0
-    generation_slots = _generation_slots(config)
-    reply_slots = generation_slots[: len(reply_targets)]
-    normal_slots = generation_slots[len(reply_targets):]
-    if reply_targets:
-        contents, used_tokens = generate_group_reply_messages(
-            session,
-            task.tenant_id,
-            _generation_config_for_slots(config, reply_slots),
-            reply_targets=reply_targets,
-            target_label=target_label,
-            history=history,
-        )
-        if len(contents) < len(reply_targets):
-            stats_inc(task, "reply_candidate_shortfall_count")
-            shortfall = len(reply_targets) - len(contents)
-            if not fill_reply_shortfall_with_normal:
-                raise AiGenerationUnavailable("AI 引用回复候选不足，已跳过本轮")
-            normal_count += shortfall
-        tokens += used_tokens
-        items.extend(
-            _planned_item(content, target, _slot_at(reply_slots, index))
-            for index, (content, target) in enumerate(zip(contents, reply_targets, strict=False))
-        )
-    if normal_count > 0:
-        normal_offset = 0
-        for batch_count in _normal_generation_batches(normal_count):
-            batch_slots = normal_slots[normal_offset: normal_offset + batch_count]
-            contents, used_tokens = generate_group_messages(
-                session,
-                task.tenant_id,
-                _generation_config_for_slots(config, batch_slots),
-                count=batch_count,
-                target_label=target_label,
-                history=history,
-            )
-            if len(contents) < batch_count:
-                stats_inc(task, "normal_candidate_shortfall_count")
-                if not contents:
-                    raise AiGenerationUnavailable(AI_NORMAL_CANDIDATE_SHORTFALL_MESSAGE)
-            tokens += used_tokens
-            items.extend(_planned_item(content, None, _slot_at(batch_slots, index)) for index, content in enumerate(contents))
-            normal_offset += batch_count
-    return items, tokens
-
-
-def _slot_at(slots: list[dict], index: int) -> dict | None:
-    return slots[index] if 0 <= index < len(slots) else None
-
-
-def _planned_item(content: str, reply_target: dict | None, slot: dict | None) -> dict:
-    item = {"content": str(content), "reply_target": reply_target}
-    if slot:
-        item["slot"] = dict(slot)
-        item["slot_id"] = str(slot.get("slot_id") or "")
-        item["act_type"] = canonical_ai_group_act_type(str(slot.get("act_type") or ""))
-    item.update(_generated_content_metadata(content))
-    return item
-
-
-def _generated_content_metadata(content: str) -> dict[str, object]:
-    result: dict[str, object] = {}
-    for key in (
-        "material_intent", "intent", "mood", "requested_model", "actual_model",
-        "fallback_stage", "fallback_reason",
-    ):
-        value = str(getattr(content, key, "") or "").strip()
-        if value:
-            result[key] = value
-    duration_ms = max(0, int(getattr(content, "provider_duration_ms", 0) or 0))
-    if duration_ms:
-        result["provider_duration_ms"] = duration_ms
-    attempts = [dict(item) for item in list(getattr(content, "generation_attempts", []) or [])[-3:]]
-    if attempts:
-        result["generation_attempts"] = attempts
-    if hasattr(content, "allow_material") and (bool(getattr(content, "allow_material")) or result.get("material_intent")):
-        result["allow_material"] = bool(getattr(content, "allow_material"))
-    return result
-
-
-def _generate_quality_filled_items(
-    session: Session, task: Task, config: dict, *, reply_targets: list[dict], normal_count: int,
-    target_label: str, history: str, turn_count: int, duplicate_baseline_messages: list[str],
-    chat_mode: str, context_message_ids: list[int], fact_anchor_required: bool,
-    low_confidence_silence_enabled: bool, fill_reply_shortfall_with_normal: bool,
-    enable_quality_fallback: bool,
-) -> tuple[list[dict[str, str]], int, dict[str, object]]:
-    accepted: list[dict[str, str]] = []
-    tokens = 0
-    stats: dict[str, object] = {}
-    last_error: AiGenerationUnavailable | None = None
-    generation_attempts: list[dict[str, object]] = []
-    stages = _fallback_stages(config)
-    for round_index, stage in enumerate(stages):
-        remaining = max(0, int(turn_count or 0) - len(accepted))
-        if remaining <= 0:
-            break
-        round_config = _generation_config_for_pending_slots(config, accepted, remaining)
-        round_config = _fallback_stage_config(round_config, stage, generation_attempts)
-        pending_replies = _pending_fallback_reply_targets(reply_targets, accepted, remaining)
-        try:
-            planned_items, used_tokens = _generate_quality_round_planned_items(
-                session,
-                task,
-                round_config,
-                reply_targets=pending_replies,
-                normal_count=max(0, remaining - len(pending_replies)),
-                target_label=target_label,
-                history=history,
-                fill_reply_shortfall_with_normal=fill_reply_shortfall_with_normal,
-            )
-        except AiGenerationUnavailable as exc:
-            last_error = exc
-            generation_attempts.append({
-                "stage": stage,
-                "model": _fallback_stage_model(stage),
-                "outcome": "failed",
-                "error_code": "ai_generation_unavailable",
-            })
-            _record_ai_generation_stage_failure(stats, stage, "ai_generation_unavailable")
-            stats["ai_generation_rounds"] = round_index + 1
-            continue
-        tokens += used_tokens
-        accepted_before = len(accepted)
-        accepted = _accept_quality_round(
-            accepted,
-            planned_items,
-            duplicate_baseline_messages,
-            chat_mode=chat_mode,
-            context_message_ids=context_message_ids,
-            fact_anchor_required=fact_anchor_required,
-            low_confidence_silence_enabled=low_confidence_silence_enabled,
-            remaining=remaining,
-            stats=stats,
-            rewrite_attempts=round_index,
-        )
-        stats["ai_generation_rounds"] = round_index + 1
-        if len(accepted) < int(turn_count or 0):
-            stats["quality_fill_rounds"] = round_index + 1
-            outcome = "rejected" if len(accepted) == accepted_before else "accepted_partial"
-            generation_attempts.append(_stage_attempt(stage, outcome, planned_items))
-            if outcome == "rejected":
-                _record_ai_generation_stage_failure(stats, stage, "quality_rejected")
-    if len(accepted) < int(turn_count or 0) and enable_quality_fallback:
-        fallback = _static_fallback_items(
-            int(turn_count or 0) - len(accepted),
-            accepted,
-            duplicate_baseline_messages,
-            generation_attempts,
-        )
-        accepted.extend(fallback)
-        stats["quality_fallback_count"] = len(fallback)
-    if not accepted and last_error and not enable_quality_fallback:
-        raise last_error
-    return accepted[: max(0, int(turn_count or 0))], tokens, stats
-
-
-def _fallback_stages(config: dict) -> tuple[str, ...]:
-    if bool(config.get("require_mimo_draft")):
-        return (AI_GROUP_DIRECT_MIMO_STAGE,)
-    if str(config.get("ai_model") or "").strip():
-        return (AI_GROUP_DIRECT_CONFIGURED_STAGE,)
-    stages = [AI_GROUP_PRIMARY_STAGE]
-    if bool(config.get("_ai_group_model_fallback_enabled", True)):
-        stages.append(AI_GROUP_MODEL_FALLBACK_STAGE)
-    if bool(config.get("_ai_group_grok_fallback_enabled", True)):
-        stages.append(AI_GROUP_GROK_FALLBACK_STAGE)
-    return tuple(stages)
-
-
-def _record_ai_generation_stage_failure(stats: dict[str, object], stage: str, error_code: str) -> None:
-    failures = list(stats.get("ai_generation_stage_failures") or [])
-    failures.append({"stage": stage, "error_code": error_code})
-    stats["ai_generation_stage_failures"] = failures
-
-
-def _fallback_stage_config(config: dict, stage: str, attempts: list[dict[str, object]]) -> dict:
-    result = {**config, "_ai_generation_attempts": attempts}
-    if stage in {AI_GROUP_DIRECT_MIMO_STAGE, AI_GROUP_DIRECT_CONFIGURED_STAGE}:
-        result.pop("_ai_fallback_stage", None)
-    else:
-        result["_ai_fallback_stage"] = stage
-    return result
-
-
-def _stage_attempt(stage: str, outcome: str, planned_items: list[dict]) -> dict[str, object]:
-    durations = [max(0, int(item.get("provider_duration_ms") or 0)) for item in planned_items]
-    return {
-        "stage": stage,
-        "model": _fallback_stage_model(stage),
-        "outcome": outcome,
-        "duration_ms": max(durations or [0]),
-    }
-
-
-def _fallback_stage_model(stage: str) -> str:
-    return {
-        AI_GROUP_PRIMARY_STAGE: "MiniMax-M3",
-        AI_GROUP_MODEL_FALLBACK_STAGE: "MiniMax-M2.5",
-        AI_GROUP_GROK_FALLBACK_STAGE: "grok-4.5",
-        AI_GROUP_DIRECT_MIMO_STAGE: "mimo",
-        AI_GROUP_DIRECT_CONFIGURED_STAGE: "configured",
-    }.get(stage, "")
-
-
 def _provider_generation_payload(item: dict) -> dict[str, object]:
     keys = (
         "requested_model", "actual_model", "fallback_stage", "fallback_reason",
         "provider_duration_ms", "generation_attempts",
     )
     return {key: item[key] for key in keys if key in item}
-
-
-def _pending_fallback_reply_targets(
-    reply_targets: list[dict],
-    accepted: list[dict[str, str]],
-    remaining: int,
-) -> list[dict]:
-    accepted_ids = {_reply_target_message_id(item) for item in accepted}
-    pending = [target for target in reply_targets if int(target.get("message_id") or 0) not in accepted_ids]
-    return pending[: max(0, int(remaining or 0))]
-
-
-def _generate_quality_round_planned_items(
-    session: Session,
-    task: Task,
-    config: dict,
-    *,
-    reply_targets: list[dict],
-    normal_count: int,
-    target_label: str,
-    history: str,
-    fill_reply_shortfall_with_normal: bool,
-) -> tuple[list[dict], int]:
-    return _generate_group_planned_items(
-        session,
-        task,
-        config,
-        reply_targets=reply_targets,
-        normal_count=normal_count,
-        target_label=target_label,
-        history=history,
-        fill_reply_shortfall_with_normal=fill_reply_shortfall_with_normal,
-    )
-
-
-def _generation_config_for_pending_slots(config: dict, accepted: list[dict[str, str]], remaining: int) -> dict:
-    pending_slots = _pending_generation_slots(config, accepted, remaining)
-    return _generation_config_for_slots(config, pending_slots) if pending_slots else config
-
-
-def _pending_generation_slots(config: dict, accepted: list[dict[str, str]], remaining: int) -> list[dict]:
-    slots = _generation_slots(config)
-    if not slots:
-        return []
-    accepted_slot_ids = {_quality_slot_id(item) for item in accepted}
-    pending = [slot for slot in slots if str(slot.get("slot_id") or "") not in accepted_slot_ids]
-    return pending[: max(0, int(remaining or 0))]
-
-
-def _accept_quality_round(
-    accepted: list[dict[str, str]],
-    planned_items: list[dict],
-    duplicate_baseline_messages: list[str],
-    *,
-    chat_mode: str,
-    context_message_ids: list[int],
-    fact_anchor_required: bool,
-    low_confidence_silence_enabled: bool,
-    remaining: int,
-    stats: dict[str, object],
-    rewrite_attempts: int,
-) -> list[dict[str, str]]:
-    previous_messages = [*duplicate_baseline_messages, *[item["content"] for item in accepted]]
-    clean_items = [item for item in planned_items if not _looks_like_generated_noise(item["content"])]
-    pre_filter_items = clean_items
-    clean_items = _drop_repeated_planned_items(clean_items, previous_messages)
-    _record_prefilter_rejections(stats, pre_filter_items, clean_items)
-    quality_items, quality_stats = _quality_filter_ai_messages(
-        [item["content"] for item in clean_items],
-        previous_messages,
-        chat_mode=chat_mode,
-        anchor_message_ids=context_message_ids,
-        fact_anchor_required=fact_anchor_required,
-        low_confidence_silence_enabled=low_confidence_silence_enabled,
-        limit=remaining,
-    )
-    _merge_quality_stats(stats, quality_stats)
-    attached = _attach_reply_targets(quality_items, clean_items)[:remaining]
-    return [*accepted, *_attach_rewrite_attempts(attached, rewrite_attempts)]
-
-
-def _attach_rewrite_attempts(items: list[dict], rewrite_attempts: int) -> list[dict]:
-    return [{**item, "rewrite_attempts": max(0, int(rewrite_attempts or 0))} for item in items]
-
-
-def _merge_quality_stats(target: dict[str, object], source: dict[str, object]) -> None:
-    for key, value in source.items():
-        if not value:
-            continue
-        if key == "quality_rejection_counts":
-            _merge_quality_rejection_counts(target, value)
-            continue
-        if key == "quality_rejection_samples":
-            _merge_quality_rejection_samples(target, value)
-            continue
-        if key == "ai_generation_candidate_count":
-            target[key] = int(target.get(key) or 0) + int(value or 0)
-            continue
-        target[key] = value
-
-
-def _merge_quality_rejection_counts(target: dict[str, object], value: object) -> None:
-    existing = dict(target.get("quality_rejection_counts") or {})
-    for reason, count in dict(value or {}).items():
-        existing[str(reason)] = int(existing.get(str(reason)) or 0) + int(count or 0)
-    target["quality_rejection_counts"] = existing
-
-
-def _merge_quality_rejection_samples(target: dict[str, object], value: object) -> None:
-    samples = list(target.get("quality_rejection_samples") or [])
-    for sample in list(value or []):
-        reason = str((sample or {}).get("reason") or "")
-        same_reason_count = sum(1 for item in samples if str(item.get("reason") or "") == reason)
-        if same_reason_count < QUALITY_REJECTION_SAMPLE_LIMIT:
-            samples.append(dict(sample or {}))
-    target["quality_rejection_samples"] = samples
-
-
-def _static_fallback_items(
-    count: int,
-    accepted: list[dict[str, str]],
-    duplicate_baseline_messages: list[str],
-    generation_attempts: list[dict[str, object]] | None = None,
-) -> list[dict[str, str]]:
-    used = {str(item["content"]).strip() for item in accepted}
-    used.update(str(message).strip() for message in duplicate_baseline_messages)
-    pool = [
-        *((content, "emoji_react") for content in LOW_RISK_EMOJI_FALLBACK_POOL),
-        *((content, "safe_checkin") for content in LOW_RISK_CHECKIN_FALLBACK_POOL),
-    ]
-    available = [item for item in pool if item[0] not in used]
-    selected = random.sample(available, k=min(max(0, int(count or 0)), len(available)))
-    return [
-        {
-            "content": content,
-            "semantic_cluster": "",
-            "duplicate_risk": "",
-            "hallucination_risk": "",
-            "quality_skip_reason": "quality_fallback",
-            "quality_fallback": fallback_type,
-            "human_quality_decision": "quality_fallback",
-            "rewrite_attempts": MAX_AI_QUALITY_GENERATION_ROUNDS - 1,
-            "requested_model": "MiniMax-M3",
-            "actual_model": "static_safe_fallback",
-            "fallback_stage": "static_safe_fallback",
-            "fallback_reason": "all_model_stages_failed_or_rejected",
-            "provider_duration_ms": 0,
-            "generation_attempts": [dict(item) for item in list(generation_attempts or [])[-3:]],
-        }
-        for content, fallback_type in selected
-    ]
-
-
-def _emoji_fallback_items(count: int, accepted: list[dict[str, str]], duplicate_baseline_messages: list[str]) -> list[dict[str, str]]:
-    return _static_fallback_items(count, accepted, duplicate_baseline_messages)
-
-
-def _normal_generation_batches(total: int) -> list[int]:
-    remaining = max(0, int(total or 0))
-    batches: list[int] = []
-    while remaining > 0:
-        batch_count = min(remaining, AI_GENERATION_REQUEST_BATCH_SIZE)
-        batches.append(batch_count)
-        remaining -= batch_count
-    return batches
 
 
 def _group_reply_target_pool(session: Session, task: Task, group: TgGroup, rows: list) -> list[dict]:
@@ -2218,66 +2180,6 @@ def _reply_target_from_action(action: Action, group: TgGroup) -> dict | None:
         "preview": content[:120],
         "source": "own_history",
     }
-
-
-def _drop_repeated_planned_items(items: list[dict], previous_messages: list[str]) -> list[dict]:
-    normal_contents = [item["content"] for item in items if not item.get("reply_target")]
-    remaining = _drop_repeated_ai_messages(normal_contents, previous_messages)
-    accepted: list[dict] = []
-    for item in items:
-        if item.get("reply_target"):
-            accepted.append(item)
-            continue
-        if not remaining or item["content"] != remaining[0]:
-            continue
-        accepted.append(item)
-        remaining.pop(0)
-    return accepted
-
-
-def _record_prefilter_rejections(stats: dict[str, object] | None, before_items: list[dict], after_items: list[dict]) -> None:
-    if stats is None:
-        return
-    remaining = [str(item["content"]) for item in after_items if not item.get("reply_target")]
-    for item in before_items:
-        if item.get("reply_target"):
-            continue
-        content = str(item["content"])
-        if remaining and content == remaining[0]:
-            remaining.pop(0)
-            continue
-        _record_prefilter_duplicate(stats, content)
-
-
-def _record_prefilter_duplicate(stats: dict[str, object] | None, content: str) -> None:
-    if stats is None:
-        return
-    _record_quality_rejection(stats, "duplicate_message", content, detail="semantic_cluster")
-    stats["duplicate_risk"] = "semantic_cluster"
-    stats["skip_reason"] = stats.get("skip_reason") or "duplicate_risk"
-
-
-def _attach_reply_targets(quality_items: list[dict[str, str]], planned_items: list[dict]) -> list[dict]:
-    by_content: dict[str, dict] = {item["content"]: item for item in planned_items}
-    attached: list[dict] = []
-    for item in quality_items:
-        planned = by_content.get(item["content"]) or {}
-        attached.append(_attach_planned_metadata(item, planned))
-    return attached
-
-
-def _attach_planned_metadata(item: dict, planned: dict) -> dict:
-    result = {**item, "reply_target": planned.get("reply_target")}
-    if planned.get("slot"):
-        result["slot"] = dict(planned["slot"])
-    if planned.get("slot_id"):
-        result["slot_id"] = planned["slot_id"]
-    if planned.get("act_type"):
-        result["act_type"] = canonical_ai_group_act_type(str(planned["act_type"]))
-    for key in ("material_intent", "allow_material", "intent", "mood"):
-        if key in planned:
-            result[key] = planned[key]
-    return result
 
 
 def _reply_target_message_id(item: dict) -> int | None:
@@ -2435,63 +2337,6 @@ def _hard_hourly_schedule(task: Task, progress: dict[str, object], total: int) -
     )
 
 
-def _history_collect_account_ids(config: dict, accounts: list) -> list[int]:
-    account_ids = [int(account.id) for account in accounts]
-    preferred = int(config.get("history_fetch_account_id") or 0)
-    if preferred not in account_ids:
-        return account_ids
-    return [preferred, *[account_id for account_id in account_ids if account_id != preferred]]
-
-
-def _should_refresh_context_for_plan(_session: Session, _group: TgGroup, _history_depth: int, progress: dict[str, object]) -> bool:
-    if progress:
-        # Hard-hourly planning must not wait on synchronous history fetches; listener workers refresh context separately.
-        return False
-    return True
-
-
-def _collect_context_with_candidate_accounts(session: Session, task: Task, group: TgGroup, account_ids: list[int]) -> int:
-    failed_ids: list[int] = []
-    last_error: Exception | None = None
-    for account_id in account_ids:
-        try:
-            inserted = collect_group_context(session, group, [account_id], create_source_media=False, learning_scene=None)
-        except Exception as exc:
-            if not _is_target_history_permission_error(exc):
-                raise
-            failed_ids.append(account_id)
-            last_error = exc
-            continue
-        _record_history_collect_recovery(task, failed_ids, account_id)
-        return inserted
-    if last_error:
-        _record_history_collect_recovery(task, failed_ids, None)
-        raise last_error
-    return 0
-
-
-def _record_history_collect_recovery(task: Task, failed_ids: list[int], success_id: int | None) -> None:
-    stats = dict(task.stats or {})
-    stats.pop("history_fetch_degraded", None)
-    stats.pop("history_fetch_degraded_reason", None)
-    if not failed_ids:
-        task.stats = stats
-        return
-    stats["history_fetch_failed_account_ids"] = failed_ids
-    if success_id is None:
-        stats.pop("history_fetch_fallback_account_id", None)
-    else:
-        stats["history_fetch_fallback_account_id"] = success_id
-    task.stats = stats
-
-
-def _record_history_collect_degraded(task: Task, exc: Exception) -> None:
-    stats = dict(task.stats or {})
-    stats["history_fetch_degraded"] = True
-    stats["history_fetch_degraded_reason"] = str(exc)
-    task.stats = stats
-
-
 def _hard_blocker_inc(blockers: dict[str, int], reason: str, progress: dict[str, object]) -> None:
     if not progress:
         return
@@ -2500,11 +2345,6 @@ def _hard_blocker_inc(blockers: dict[str, int], reason: str, progress: dict[str,
 
 def _mark_hard_blocked(task: Task, progress: dict[str, object], reason: str) -> None:
     mark_plan_result(task, progress, 0, {reason: max(1, int(progress.get("deficit") or 1))})
-
-
-def _is_target_history_permission_error(exc: Exception) -> bool:
-    text = f"{exc.__class__.__name__} {exc}".lower()
-    return any(marker in text for marker in TARGET_HISTORY_PERMISSION_MARKERS)
 
 
 def _mark_waiting_context(
@@ -2635,7 +2475,7 @@ def _auto_messages_per_round(config: dict, mode: str, has_context: bool, pacing_
 
 def _manual_messages_per_round(config: dict, mode: str) -> int:
     messages_per_round = int(config.get("messages_per_round") or 1)
-    if mode == "静默期":
+    if mode == "静默期" and not _all_accounts_daily_coverage(config):
         messages_per_round = min(messages_per_round, int(config.get("silent_messages_per_round") or 1))
     return max(1, messages_per_round)
 
@@ -3003,26 +2843,6 @@ def _topic_plan_summary(config: dict, group: TgGroup, topic_thread: str, turn_co
         "5. 换个小细节：如果前面已经有人接话，就从反应、吐槽或经历切入。",
     ]
     return "\n".join(steps[: max(1, min(int(turn_count or 1), len(steps)))])
-
-
-def _generation_config_with_profile(
-    config: dict,
-    account_memories: dict,
-    account_profiles: dict,
-    topic_thread: str,
-    topic_plan: str,
-    profile_preview: dict,
-) -> dict:
-    target_profile = str(profile_preview.get("profile_hit_summary") or "").strip()
-    return {
-        **config,
-        "account_memories": account_memories,
-        "account_profiles": account_profiles,
-        "topic_thread": topic_thread,
-        "topic_plan": topic_plan,
-        "target_profile_style": target_profile,
-        "target_learning_profile": profile_preview,
-    }
 
 
 def _clean_topic_text(value: str) -> str:

@@ -107,6 +107,13 @@ from .precheck import run_precheck_task_creation
 from .profile_batch_projection import delete_profile_batch_task, get_profile_batch_task_detail, is_profile_batch_task_id, list_profile_batch_tasks
 from app.services.task_runtime_stage import derive_task_runtime_stage
 from .metrics_runtime import drain_task_metrics
+from .ai_generation_recovery import recover_stale_pre_gateway_generation
+from .recovery_claims import (
+    RecoveryClaim,
+    claim_recovery_actions,
+    recovery_claim_owned,
+    release_recovery_claim,
+)
 from .stats import clear_planner_backlog_stats, empty_stats, next_run_after_task, planner_backlog_snapshot, refresh_task_stats, retry_failed_actions
 from .utils import as_int as _as_int, as_int_list as _as_int_list
 from .runtime_retention import cleanup_runtime_details, cleanup_runtime_metric_snapshots_if_due
@@ -1624,35 +1631,74 @@ def _drain_task_planner(session_factory, *, limit: int, process_type: str | None
 
 
 def _plan_due_task(session_factory, task_id: str, process_type: str | None, *, limit: int) -> tuple[int, bool]:
+    round_goal = _coverage_round_goal(session_factory, task_id)
     processed = 0
+    planned = 0
+    future_open = False
+    while planned < round_goal:
+        plan_limit = round_goal - planned
+        batch_processed, batch_planned, future_open = _plan_due_task_batch(
+            session_factory,
+            task_id,
+            process_type,
+            limit=limit,
+            plan_limit=plan_limit,
+        )
+        processed += batch_processed
+        planned += batch_planned
+        if batch_planned <= 0 or round_goal == 1:
+            break
+    return processed, future_open
+
+
+def _plan_due_task_batch(
+    session_factory,
+    task_id: str,
+    process_type: str | None,
+    *,
+    limit: int,
+    plan_limit: int,
+) -> tuple[int, int, bool]:
     with session_factory() as session:
+        session.info["daily_coverage_plan_limit"] = max(1, plan_limit)
         _refresh_planner_heartbeat(session, process_type, limit, task_id=task_id)
         task = session.get(Task, task_id)
         if not task or task.status != "running":
-            return processed, False
+            return 0, 0, False
         if _check_stop_conditions(session, task):
             session.commit()
-            return processed, False
-        processed += retry_failed_actions(session, task)
+            return 0, 0, False
+        processed = retry_failed_actions(session, task, limit=max(1, limit))
         has_open_actions, open_actions_are_future = _open_actions_state(session, task)
         if has_open_actions:
             processed += prepare_open_actions_for_planning(session, task)
             has_open_actions, open_actions_are_future = _open_actions_state(session, task)
         open_actions_allow_planning = has_open_actions and requires_planning_with_open_actions(session, task)
         if _skip_open_ai_plan(session, task, has_open_actions, allow_planning=open_actions_allow_planning):
-            refresh_task_stats(session, task, include_configured_accounts=False)
             session.commit()
-            return processed, open_actions_are_future
+            return processed, 0, open_actions_are_future
         if _planning_backlog_blocked(session, task):
-            refresh_task_stats(session, task, include_configured_accounts=False)
             session.commit()
-            return processed, False
-        processed += build_task_plan(session, task)
-        refresh_task_stats(session, task, include_configured_accounts=False)
+            return processed, 0, False
+        planned = build_task_plan(session, task)
+        processed += planned
         if task.status == "running":
             task.next_run_at = next_run_after_task(task)
         session.commit()
-        return processed, False
+        return processed, planned, False
+
+
+def _coverage_round_goal(session_factory, task_id: str) -> int:
+    with session_factory() as session:
+        task = session.get(Task, task_id)
+        config = task.type_config if task and isinstance(task.type_config, dict) else {}
+        if not task or task.type != "group_ai_chat":
+            return 1
+        if config.get("account_coverage_mode") != "all_accounts_daily":
+            return 1
+        if config.get("messages_per_round_mode") != "manual":
+            return 1
+        return max(1, int(config.get("messages_per_round") or 1))
 
 
 def _skip_open_ai_plan(session: Session, task: Task, has_open_actions: bool, *, allow_planning: bool) -> bool:
@@ -1721,9 +1767,6 @@ def _dispatch_claimed_action_once(session_factory, action_id: str) -> int:
         if not dispatch_action(session, action):
             session.commit()
             return 0
-        refresh = session.get(Task, action.task_id)
-        if refresh:
-            refresh_task_stats(session, refresh)
         session.commit()
         return 1
 
@@ -1732,11 +1775,6 @@ def _record_dispatch_db_error(session_factory, action_id: str, exc: SQLAlchemyEr
     with session_factory() as session:
         if not mark_dispatcher_db_error(session, action_id, str(exc)):
             return 0
-        action = session.get(Action, action_id)
-        if action and action.task_id:
-            task = session.get(Task, action.task_id)
-            if task:
-                refresh_task_stats(session, task)
         session.commit()
     return 0
 
@@ -1807,32 +1845,117 @@ def _recover_continuous_task_states(session: Session) -> int:
 
 def _recover_stale_executing_actions(session: Session, *, timeout_minutes: int = 30, limit: int = DEFAULT_RECOVERY_BATCH_LIMIT) -> int:
     now = _now()
-    recovered = 0
-    for action, task, stale_worker_ids in _stale_executing_action_rows(session, now=now, timeout_minutes=timeout_minutes, limit=limit):
-        latest_attempt = _latest_execution_attempt(session, action)
-        gateway_started = _attempt_gateway_started(latest_attempt)
-        if gateway_started and _recover_unknown_membership_action(session, action=action, task=task, latest_attempt=latest_attempt, now=now):
-            recovered += 1
-            continue
-        if gateway_started and _membership_reprobe_deferred(action):
-            _release_unknown_membership_reprobe_result(action=action, task=task, latest_attempt=latest_attempt, now=now)
-            continue
-        if gateway_started and _membership_reprobe_failed(action):
-            _release_unknown_membership_reprobe_result(action=action, task=task, latest_attempt=latest_attempt, now=now)
-            continue
-        _mark_stale_executing_action(action=action, task=task, latest_attempt=latest_attempt, stale_worker_ids=stale_worker_ids, now=now)
-        recovered += 1
+    claims, stale_worker_ids = _claim_stale_executing_action_ids(
+        session,
+        now=now,
+        timeout_minutes=timeout_minutes,
+        limit=limit,
+    )
+    recovered = sum(
+        _recover_claimed_stale_action(session, claim, stale_worker_ids=stale_worker_ids, now=now)
+        for claim in claims
+    )
     recovered += _recover_existing_unknown_membership_actions(session, now, limit=_membership_reprobe_limit(limit))
     return recovered
 
 
-def _stale_executing_action_rows(
+def _claim_stale_executing_action_ids(
     session: Session,
     *,
     now: datetime,
     timeout_minutes: int,
     limit: int,
-) -> list[tuple[Action, Task, set[str]]]:
+) -> tuple[list[RecoveryClaim], set[str]]:
+    heartbeat_cutoff = now - timedelta(minutes=2)
+    stale_worker_ids = set(session.scalars(select(WorkerHeartbeat.worker_id).where(WorkerHeartbeat.last_seen_at < heartbeat_cutoff)))
+    claims = claim_recovery_actions(
+        session,
+        conditions=_stale_executing_conditions(now, timeout_minutes, stale_worker_ids),
+        order_by=(Action.scheduled_at.asc(), Action.id.asc()),
+        now=now,
+        limit=min(20, _recovery_batch_limit(limit)),
+    )
+    return claims, stale_worker_ids
+
+
+def _recover_claimed_stale_action(
+    session: Session,
+    claim: RecoveryClaim,
+    *,
+    stale_worker_ids: set[str],
+    now: datetime,
+) -> int:
+    action = session.get(Action, claim.action_id)
+    task = session.get(Task, action.task_id) if action else None
+    if not recovery_claim_owned(action, claim) or task is None:
+        session.rollback()
+        return 0
+    latest_attempt = _latest_execution_attempt(session, action)
+    gateway_started = _attempt_gateway_started(latest_attempt)
+    recovered = _recover_claimed_gateway_action(
+        session,
+        claim,
+        action=action,
+        task=task,
+        latest_attempt=latest_attempt,
+        gateway_started=gateway_started,
+        now=now,
+    )
+    if not recovery_claim_owned(action, claim):
+        session.rollback()
+        return 0
+    if recovered is None and not gateway_started and recover_stale_pre_gateway_generation(action):
+        recovered = 1
+    if recovered is None:
+        _mark_stale_executing_action(action=action, task=task, latest_attempt=latest_attempt, stale_worker_ids=stale_worker_ids, now=now)
+        recovered = 1
+    release_recovery_claim(action, claim)
+    session.commit()
+    return recovered
+
+
+def _recover_claimed_gateway_action(
+    session: Session,
+    claim: RecoveryClaim,
+    *,
+    action: Action,
+    task: Task,
+    latest_attempt: ExecutionAttempt | None,
+    gateway_started: bool,
+    now: datetime,
+) -> int | None:
+    if not gateway_started:
+        return None
+    if _recover_unknown_membership_action(
+        session, action=action, task=task, latest_attempt=latest_attempt, now=now, recovery_claim=claim,
+    ):
+        return 1
+    if not recovery_claim_owned(action, claim):
+        return 0
+    if _membership_reprobe_deferred(action) or _membership_reprobe_failed(action):
+        _release_unknown_membership_reprobe_result(action=action, task=task, latest_attempt=latest_attempt, now=now)
+        return 0
+    return None
+
+
+def _stale_executing_conditions(now: datetime, timeout_minutes: int, stale_worker_ids: set[str]):
+    cutoff = now - timedelta(minutes=max(1, int(timeout_minutes or 30)))
+    conditions = [
+        and_(Action.lease_expires_at.is_not(None), Action.lease_expires_at <= now),
+        and_(Action.lease_expires_at.is_(None), Action.scheduled_at <= cutoff),
+    ]
+    if stale_worker_ids:
+        conditions.append(Action.lease_owner.in_(stale_worker_ids))
+    return (Action.status == "executing", or_(*conditions))
+
+
+def _stale_executing_action_ids(
+    session: Session,
+    *,
+    now: datetime,
+    timeout_minutes: int,
+    limit: int,
+) -> list[str]:
     cutoff = now - timedelta(minutes=max(1, int(timeout_minutes or 30)))
     heartbeat_cutoff = now - timedelta(minutes=2)
     stale_worker_ids = set(session.scalars(select(WorkerHeartbeat.worker_id).where(WorkerHeartbeat.last_seen_at < heartbeat_cutoff)))
@@ -1842,8 +1965,8 @@ def _stale_executing_action_rows(
     ]
     if stale_worker_ids:
         recovery_conditions.append(Action.lease_owner.in_(stale_worker_ids))
-    rows = session.execute(
-        select(Action, Task)
+    return list(session.scalars(
+        select(Action.id)
         .join(Task, Task.id == Action.task_id)
         .where(
             Action.status == "executing",
@@ -1851,10 +1974,9 @@ def _stale_executing_action_rows(
             Task.status == "running",
             Task.deleted_at.is_(None),
         )
-        .order_by(Action.scheduled_at.asc())
-        .limit(_recovery_batch_limit(limit))
-    ).all()
-    return [(action, task, stale_worker_ids) for action, task in rows]
+        .order_by(Action.scheduled_at.asc(), Action.id.asc())
+        .limit(min(20, _recovery_batch_limit(limit)))
+    ))
 
 
 def _mark_stale_executing_action(
@@ -1962,42 +2084,65 @@ def _membership_reprobe_limit(limit: int) -> int:
 
 
 def _recover_existing_unknown_membership_actions(session: Session, now: datetime, *, limit: int) -> int:
-    recovered = 0
-    reprobed_identities: set[tuple[int, int, str]] = set()
-    rows = session.execute(
-        select(Action, Task)
-        .join(Task, Task.id == Action.task_id)
-        .where(
+    claims = claim_recovery_actions(
+        session,
+        conditions=(
             Action.status == "unknown_after_send",
             Action.action_type.in_(MEMBERSHIP_ACTION_TYPES),
-            Task.status == "running",
-            Task.deleted_at.is_(None),
             _unknown_membership_reprobe_due_clause(now),
-        )
-        .order_by(Action.executed_at.asc().nullsfirst(), Action.scheduled_at.asc())
-        .limit(_recovery_batch_limit(limit))
-    ).all()
-    for action, task in rows:
-        if _skip_unknown_membership_reprobe(action, now):
-            continue
-        identity = _unknown_membership_reprobe_identity(action)
-        if identity in reprobed_identities:
-            continue
-        reprobed_identities.add(identity)
-        latest_attempt = _latest_execution_attempt(session, action)
-        if _recover_unknown_membership_action(session, action=action, task=task, latest_attempt=latest_attempt, now=now):
-            recovered += 1
-            continue
-        if _membership_reprobe_deferred(action) or _membership_reprobe_failed(action):
-            _propagate_unknown_membership_reprobe_result(session, source_action=action, now=now)
-            continue
-        result = dict(action.result or {})
-        action.result = {
-            **result,
-            "unknown_membership_reprobe_status": "failed",
-            "unknown_membership_reprobe_at": now.isoformat(),
-        }
-    return recovered
+        ),
+        order_by=(Action.executed_at.asc().nullsfirst(), Action.scheduled_at.asc(), Action.id.asc()),
+        now=now,
+        limit=_recovery_batch_limit(limit),
+    )
+    reprobed_identities: set[tuple[int, int, str]] = set()
+    return sum(
+        _recover_claimed_unknown_action(session, claim, now=now, reprobed_identities=reprobed_identities)
+        for claim in claims
+    )
+
+
+def _recover_claimed_unknown_action(
+    session: Session,
+    claim: RecoveryClaim,
+    *,
+    now: datetime,
+    reprobed_identities: set[tuple[int, int, str]],
+) -> int:
+    action = session.get(Action, claim.action_id)
+    task = session.get(Task, action.task_id) if action else None
+    if not recovery_claim_owned(action, claim) or task is None:
+        session.rollback()
+        return 0
+    identity = _unknown_membership_reprobe_identity(action)
+    if _skip_unknown_membership_reprobe(action, now) or identity in reprobed_identities:
+        release_recovery_claim(action, claim)
+        session.commit()
+        return 0
+    reprobed_identities.add(identity)
+    latest_attempt = _latest_execution_attempt(session, action)
+    recovered = _recover_unknown_membership_action(
+        session, action=action, task=task, latest_attempt=latest_attempt, now=now, recovery_claim=claim,
+    )
+    if not recovery_claim_owned(action, claim):
+        session.rollback()
+        return 0
+    if not recovered:
+        _finalize_failed_unknown_reprobe(session, action, now)
+    release_recovery_claim(action, claim)
+    session.commit()
+    return int(recovered)
+
+
+def _finalize_failed_unknown_reprobe(session: Session, action: Action, now: datetime) -> None:
+    if _membership_reprobe_deferred(action) or _membership_reprobe_failed(action):
+        _propagate_unknown_membership_reprobe_result(session, source_action=action, now=now)
+        return
+    action.result = {
+        **dict(action.result or {}),
+        "unknown_membership_reprobe_status": "failed",
+        "unknown_membership_reprobe_at": now.isoformat(),
+    }
 
 
 def _propagate_unknown_membership_reprobe_result(session: Session, *, source_action: Action, now: datetime) -> int:
@@ -2107,6 +2252,7 @@ def _recover_unknown_membership_action(
     task: Task,
     latest_attempt: ExecutionAttempt | None,
     now: datetime,
+    recovery_claim: RecoveryClaim | None = None,
 ) -> bool:
     if action.action_type not in MEMBERSHIP_ACTION_TYPES or not action.account_id:
         return False
@@ -2115,32 +2261,62 @@ def _recover_unknown_membership_action(
     channel_id = str(payload.get("channel_id") or "")
     if not channel_target_id or not channel_id:
         return False
-    account = session.get(TgAccount, action.account_id)
-    if account is None or account.deleted_at is not None:
+    probe_args = _unknown_membership_probe_args(session, action, payload)
+    if probe_args is None:
         return False
-    credentials = credentials_for_account(session, account)
+    session.commit()
     try:
-        result = gateway.probe_target_capabilities(
-            account.id,
-            channel_id,
-            str(payload.get("target_type") or "channel"),
-            account.session_ciphertext,
-            credentials,
-        )
+        result = gateway.probe_target_capabilities(*probe_args)
     except TimeoutError as exc:
+        if recovery_claim and not recovery_claim_owned(action, recovery_claim):
+            return False
         _mark_unknown_membership_reprobe_timeout(action=action, task=task, latest_attempt=latest_attempt, now=now, exc=exc)
         return False
     except ConnectionError as exc:
+        if recovery_claim and not recovery_claim_owned(action, recovery_claim):
+            return False
         _mark_unknown_membership_reprobe_connection_error(action=action, task=task, latest_attempt=latest_attempt, now=now, exc=exc)
+        return False
+    if recovery_claim and not recovery_claim_owned(action, recovery_claim):
         return False
     if not result.ok:
         _mark_unknown_membership_reprobe_failed(action=action, task=task, latest_attempt=latest_attempt, now=now, result=result)
         return False
+    _complete_unknown_membership_recovery(
+        session, action, task=task, latest_attempt=latest_attempt,
+        now=now, result=result, channel_target_id=channel_target_id,
+    )
+    return True
+
+
+def _unknown_membership_probe_args(session: Session, action: Action, payload: dict) -> tuple | None:
+    account = session.get(TgAccount, action.account_id)
+    if account is None or account.deleted_at is not None:
+        return None
+    return (
+        account.id,
+        str(payload.get("channel_id") or ""),
+        str(payload.get("target_type") or "channel"),
+        account.session_ciphertext,
+        credentials_for_account(session, account),
+    )
+
+
+def _complete_unknown_membership_recovery(
+    session: Session,
+    action: Action,
+    *,
+    task: Task,
+    latest_attempt: ExecutionAttempt | None,
+    now: datetime,
+    result,
+    channel_target_id: int,
+) -> None:
+    payload = action.payload if isinstance(action.payload, dict) else {}
     label = "可发言" if payload.get("require_send") else "已关注"
-    mark_channel_membership_joined(session, action.tenant_id, channel_target_id, account.id, permission_label=label)
+    mark_channel_membership_joined(session, action.tenant_id, channel_target_id, action.account_id, permission_label=label)
     _mark_membership_action_recovered(action, task, latest_attempt, now, result.detail or "补偿复检已满足目标准入")
     _sync_all_account_membership_state(session, action)
-    return True
 
 
 def _mark_unknown_membership_reprobe_timeout(

@@ -247,9 +247,15 @@ def test_new_account_event_reaches_online_probe_and_planner_action(session: Sess
     assert state is not None and state.online_status == "warming"
 
     monkeypatch.setattr(group_ai_chat, "_now", lambda: now)
-    monkeypatch.setattr(group_ai_chat, "should_collect_listener", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr("app.services.task_center.daily_coverage._now", lambda: now)
     assert group_ai_chat.build_plan(session, task) == 0
-    assert coverage.blocker_code == "account_offline"
+    assert coverage.blocker_code == "account_offline", (
+        task.last_error,
+        task.stats,
+        coverage.coverage_date,
+        coverage.targeted_at,
+        coverage.state,
+    )
     monkeypatch.setattr("app.services.account_online_probe.credentials_for_account", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(
         "app.services.account_online_probe.gateway.check_account_health",

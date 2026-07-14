@@ -6,7 +6,7 @@
 - `bug_id`: `bug-2026-07-13-ai-group-planner-stall`
 - `level/lane`: `L3 / ai-group-quality/planner-runtime`
 - 用户目标：监督修复生产 AI 活群，确保每个目标群中的全部账号按北京时间每日真实发言一次，并检查评论任务运行状态。
-- 当前状态：第二轮 release `59d5c3e` 已上线，0092 有效，生产 `action_id` missing 点查 `0.485ms`；Planner 运营摘要职责拆分提交 `8352fef0` 已完成独立 QA 和最终 Product Acceptance：`qa_pass=true`、`product_accepted=true`（仅 E2），Release Gate ready。该提交尚未发布，生产 E4 pending；线上基线仍有 `>60s` 事务、覆盖仅 `359 -> 361/2320`、太郎仍 `running`，禁止写 `production_fixed`。
+- 当前状态：release `fecdcfae` 已成功发布，上一轮 Planner 运营摘要拆分已使旧 `operation_issue_accounts` 查询降为 0，证明该子根因修复有效；但稳定周期 2026-07-13 21:48:58 CST 覆盖停在 `394/2320`。Planner `172.19.0.11` 出现 110 秒 Action 全行 SELECT；21:50:51 同容器事务已达 220.6 秒，现场 SQL 是将 `task_account_daily_coverage` 条件更新为 `reserved` 并写 `reserved_action_id`，证明单个 `all_accounts_daily` 任务的一次 build-plan/预约仍可无界处理 580 条义务。Recovery `172.19.0.8` 反复执行约 28 秒的 Action + Task executing membership 查询；dispatcher-1 `172.19.0.23` 出现 107 秒 task stats `GROUP BY`，dispatcher-4 `172.19.0.29` 因更新 `operation_targets/tasks` 形成大量 transaction/tuple lock，现场共 10 个 lock waiters。整体生产 E4 失败，fresh L3 batch `design_status=complete`、`resync=true`、Release Gate 重新 `blocked`，禁止写 `production_fixed`。
 
 ## 生产诊断
 
@@ -132,6 +132,72 @@
 - issue source 查询改为 `operation_issue_sources -> actions -> tasks` 直接 JOIN；同时约束 issue tenant、source tenant 和 Action tenant，跨租户 source id 不能把其他租户失败保留为当前租户 open issue。580 action sources 不再物化长 ID 列表。
 - QA 证据：独立 QA `Critical / Important / Minor = 0 / 0 / 0`、`qa_pass=true`；真实 PostgreSQL 580 账号六批 `[100,100,100,100,100,80]` 均 `<10s`，580 action sources `<5s`，关联套件 `43 passed`；no-PostgreSQL `1288 passed`；新模块分别 96 / 60 / 100 行，相关 compile / diff-check 通过，旧大文件相对 HEAD 净减少。
 - Product Acceptance：`product_accepted=true`（仅 E2）。实现满足 `de23f38e` Product Handoff，Release Gate ready；不代表已发布或生产恢复。E4 仍必须证明 planner/metrics/recovery 并发连续 3 cycles 无 `>60s` 事务、覆盖分子持续增长、太郎为 `completed/next_run_at=null` 且跨 recovery 保持，当前禁止写 `production_fixed`。
+
+### Planner / Dispatcher 运行时统计与锁链 L3 Bug Batch Plan（resync）
+
+- 生产 E4 结论：`fecdcfae` 发布成功，上一轮 `operation_issue_accounts=0` 单项记为 pass，不回退该职责拆分；整体仍为 blocked。21:48:58 稳定周期覆盖 `394/2320` 且无增长，太郎仍未取得 `completed/next_run_at=null` E4。
+- Root Cause Group R1 — Planner / Recovery 历史 Action 全行读取：active planner `172.19.0.11` 的 `SELECT actions` 持续约 110 秒，recovery `172.19.0.8` 的 Action + Task executing membership 查询约 28 秒且反复重扫。Planner 热路径不得为统计、去重、准入或恢复加载任务全部 Action ORM 大行；Recovery 也不得在每轮物化全部 executing Action + Task。两者只允许按明确时间窗 / 状态 / action type 使用 id、task_id、status、account_id、lease/attempt、scheduled/executed 时间及确实需要的 payload 子字段窄投影，聚合使用数据库 count/min/max/window；恢复明细必须按不可变 keyset 稳定排序、有界 limit 和独立短事务继续，不能从头重复扫描同一集合。
+- Root Cause Group R2 — Dispatcher 同步全历史 task stats：dispatcher-1 `172.19.0.23` 的 `SELECT actions.status, count(actions.id) ... task_id ... action_type NOT IN (...) GROUP BY` 持续约 107 秒。每条 Action 执行完成后不得在同一 Dispatcher 事务重扫该任务全部历史 Action；Dispatcher 只按本次显式 `old_status -> new_status` 做 O(1) 幂等增量，或写入待汇总事实，完整 task stats / membership exclusion / archived skipped / hard-hourly 纠偏由 metrics/reconcile 在独立事务完成。
+- Root Cause Group R3 — Dispatcher 共享行写锁：dispatcher-4 `172.19.0.29` 在更新 `operation_targets/tasks` 时形成大量 transaction / tuple lock，现场 10 个 waiters。claim、Telegram/Gateway 调用、Action 结果落库、task/target 读模型刷新必须拆开事务：claim 短事务提交后再调用外部网络；结果事务只校验 action lease / attempt 并落 Action 与必要幂等状态；共享 task/target/issue 汇总由 metrics 批处理，不得让多个 dispatcher 为每条 Action 竞争同一行。所有多表写保持统一锁顺序，失败显式暴露，不得吞锁超时或伪成功。
+- Root Cause Group R4 — 单任务每日覆盖规划 / 预约批次无界：21:50:51 planner `172.19.0.11` 的事务 age 220.6 秒，当前 SQL 为条件 `UPDATE task_account_daily_coverage SET state='reserved', reserved_action_id=...`，说明一次 `all_accounts_daily` build-plan 可在同一事务遍历并预约 580 条义务。实现必须把 `daily_coverage_plan_batch_limit` 定义为受代码常量约束的显式生产配置，首版单任务每批最多 20 条到期 `ready` 义务；查询按 `(coverage_date, targeted_at, account_id, id)` 不可变 keyset 排序。任务日继续游标使用独立于 `Task.stats` 的控制记录，以 tenant/task/date、last key、cycle/version 和 updated_at 标识进度；每批选择、Action 创建、条件预约和游标 compare-and-swap 推进在同一短事务原子提交，任一失败整批回滚且游标不前进。崩溃时从最后已提交游标继续，并在一轮到达末尾后回卷检查此前因 `next_eligible_at` / readiness 未到期而跳过的行；多 Planner 使用条件预约或 `FOR UPDATE SKIP LOCKED`，同一账本义务只能对应一个有效预约。批量上限只限制单事务工作量，不得缩小 580 分母、降低每账号每日目标、覆盖任务自己的 `messages_per_round` 业务配置、把未处理行改为 blocked/confirmed，或用截断结果宣称当日完成。
+- 事实源 / 汇总表责任：Action / ExecutionAttempt 保持发送事实源，`TaskAccountDailyCoverage` 保持北京时间当日任务 × 群 × 账号义务及 580 分母事实源；任务日游标只保存调度控制进度，不能参与分母、完成率或成功判定。`unknown_after_send`、membership Action 排除、archived skipped、remote success 与失败原因语义不变；Task.stats、TaskRuntimeSummary、TargetRuntimeSummary 和运营 issue 是派生读模型。在线增量只接受带 action id / attempt / 状态转换幂等键的原子更新；metrics 必须周期性从 Action / ExecutionAttempt / coverage 事实源做 index-backed reconcile，发现漂移显式修正并记录时间/数量，不能让缓存、游标或增量计数成为唯一事实。
+- 索引约束：E2 必须以真 PostgreSQL `EXPLAIN (ANALYZE, BUFFERS)` 证明 Planner / Recovery 窄查询、task 状态聚合、daily coverage keyset 批次和 metrics reconcile 使用与过滤顺序匹配的索引。Action 路径可选择 `(tenant_id, task_id, status, action_type, scheduled_at/id)` 的复合或等价 partial/index 组合；coverage 路径必须覆盖 `task_id + coverage_date + state + targeted_at + account_id + id`（或语义等价的 partial 组合），让 20 条批次不读取/锁定 580 条。新增索引必须走并发迁移、invalid/DDL 失败显式暴露；禁止只靠加索引保留 Dispatcher 每 Action 全历史重算或 Planner 单事务 580 条预约。
+- 事务边界：Planner 普通单任务规划或 `all_accounts_daily` 单个 coverage 批次、Recovery 单个 keyset 批次、Dispatcher claim、Gateway 外部调用、Action finalize、metrics reconcile 必须是可独立观测的阶段；外部调用期间数据库事务必须关闭。coverage 批次提交前不得继续下一批，失败只回滚当前批且不推进游标；finalize 不同步刷新全量 task/target 统计；metrics 以显式 batch size、稳定游标和短事务提交，失败批次回滚并可重试，不能阻塞 Planner/Dispatcher 主业务事实落库。
+- Product Design Complete：覆盖原始生产证据、四组根因、Planner/Recovery/Dispatcher/metrics 数据流、索引与迁移、每日覆盖稳定游标及分批预约、幂等/并发、unknown 结果、异常显式暴露、回滚和 QA/E4；`design_status=complete`、`resync=true`。该批次统一进入 dev，避免四处各自加临时 timeout 或局部 fallback 后继续制造锁链。
+- E2 QA：在真 PostgreSQL 建立单任务 580 条当日到期覆盖债务、生产等量历史 Action、membership/unknown/archived-skipped 混合状态、2 个并发 Planner 及 4 个并发 dispatcher。要求 580 条债务在多个不超过 20 条的批次中完整进入有效预约 / 后续事实链，每个 planner task transaction `<5s`，中途崩溃重启、游标回卷和并发 Planner 均无漏预约、重复有效预约或分母变化；Planner 不出现无界 `select(Action)`，Recovery executing membership 以窄投影 keyset 分批、单事务 `<5s` 且不从头反复扫描。单 Action finalize 不执行全历史 `GROUP BY` 且事务 `<2s`；metrics 全量 reconcile `<10s` 并与事实源计数逐字段等价；并发执行无 deadlock、无持续 `>5s` lock waiter。测试须覆盖增量重复投递幂等、进程在 coverage select/Action create/conditional reserve/游标提交及 claim/Gateway/finalize 间崩溃、`unknown_after_send` 不重发、跨租户 task/action/coverage 隔离、迁移 upgrade/downgrade 与失败暴露。
+- E4：发布实际 commit 后连续至少 3 个完整 planner/dispatcher/metrics cycles，数据库无 `>60s` transaction、无持续 `>5s` transaction/tuple lock waiter，旧 `operation_issue_accounts` 长查询继续保持 0；覆盖必须从 `394/2320` 在连续样本增长；太郎必须为 `completed/next_run_at=null` 并跨 recovery 保持。任一项缺失均保持 blocked，worker/container healthy 或单条查询变快不能替代整体 E4。
+- 回滚：应用回滚不得撤销已验证有效的 0092 和上一轮运营摘要职责拆分；新增索引默认保留以避免放大锁风险。若新增增量汇总逻辑回滚，必须先停用对应写入者并由 metrics 从 Action 事实源完成一致性 reconcile；回滚本身不等于恢复。
+
+### Planner / Dispatcher 运行时锁边界 Dev Handoff
+
+- R1：Recovery 先以 `scheduled_at,id` 稳定顺序窄投影最多 20 个 executing Action id，再按主键加载有界明细；membership 补偿探测前保存必需标量并提交，外部 Telegram probe 不持有数据库事务。Planner 主路径不再物化无界历史 Action。
+- R2：Planner 与 Dispatcher finalize 不再逐 Action 调用 `refresh_task_stats`。`metrics_runtime` 成为全历史任务统计 owner，每轮最多选择 20 个缺失或最旧 task summary，每任务独立事务 reconcile；失败保持显式，不回退到 Planner/Dispatcher。
+- R3：延期 AI 生成前提交 claim/read 事务，生成后短事务写 payload / message memory；Telegram Gateway 仍处于独立无事务区间，随后短事务 finalize。AI provider 配额轮换在每次外部调用之间提交健康状态，不把下一次调用包在数据库事务内。
+- R4：新增 `TaskDailyCoveragePlanCursor` 和 `daily_coverage_planning.py`。单任务日按 `targeted_at,account_id,id` keyset 选择最多 20 条 ready 义务；Action 创建、条件 coverage reservation 和最后实际成功 reservation 对应游标推进同事务提交，任一失败 rollback 不前进。到尾部回卷复检先前未到期行；任务自己的 `messages_per_round` 精确保留，10 为单批 10、30 为 20+10、60 为 20+20+20，未缩小 580 分母或每日目标。
+- 0093：新增 cursor 表和 `ix_task_daily_coverage_plan_ready`、`ix_actions_task_stats_reconcile`、`ix_actions_executing_recovery`。真实 PostgreSQL 从空库完整 `alembic upgrade head`、downgrade 到 0092、再 upgrade 到 0093 均成功；并发索引通过 autocommit block 创建，invalid 同名索引/缺表/DDL 错误不吞掉。
+- 真 PostgreSQL E2：2 个 Planner 并发将 580 条到期 coverage 在多个 `<=20` 批次中完整预约；预提交崩溃后 Action、reservation、cursor 全回滚，重试无漏/重复；整测 `1 passed in 3.32s`，且每个测得的 task transaction `<5s`。生产等量 40,741 条 Action 历史下，task stats reconcile `<10s`，Recovery 稳定返回 20 个 id 且 `<5s`，整测 `1 passed in 8.99s`。
+- 当前阶段仅为 Dev E2 handoff：独立 QA、Product Acceptance、发布和生产 E4 均未完成，Release Gate 保持 blocked；不得据此声称 2320 自然日覆盖或评论任务已经生产恢复。
+
+### Dev QA Rework（I1 / I2 / I3 / Minor）
+
+- I1：Grok fallback 在读取 `TenantAiSetting.ai_enabled` 标量后提交 ORM 事务，再进入 `GrokCliBridge.generate`；桥接测试显式断言外部调用期间 `session.in_transaction() is False`，stage/provider metadata 保持不变。
+- I2：新增 `recovery_claims.py`。stale executing 与 due unknown membership 都先按稳定顺序、最多 20 条执行 `FOR UPDATE SKIP LOCKED`，把 claim owner/token/expiry 持久化并提交；probe 后只有 claim token 仍归当前 worker 才能 finalize。真 PostgreSQL 双 recovery worker 同时领取 40 条时各得 20 条且集合不重叠，首批进入 cooldown 后下一批不会再次卡在相同头部。
+- I3 Planner：真实 `group_ai_chat.build_plan` 验证 10 / 30 / 60 `messages_per_round`；60 场景在 active window 23:59 完整生成 `60×9 + 40 = 580`，23:30 的 568 是累计 pacing 应到量而非漏规划。coverage keyset `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` 命中 `ix_task_daily_coverage_plan_ready` 且无 Seq Scan；跨租户 coverage 保持 ready 未被误占。
+- I3 Runtime：40,741 Action 下 metrics 与 SQL status 分组逐字段等价且 `8.58s`，Recovery EXPLAIN 命中 `ix_actions_executing_recovery` 且无 Seq Scan；4 个并发 dispatcher finalize 全部 `<2s`、未执行 Action 历史 `GROUP BY`、结束后无 Lock waiter。
+- I3 Migration：`test_runtime_stats_migration.py` 6 passed，覆盖 SQLite 实际 upgrade/downgrade、缺表、缺 cursor、invalid 同名索引和 DDL 原错透传；独立 PostgreSQL 迁移库再次通过 `空库 -> head -> 0092 -> head`。
+- Minor：把本次新增的 coverage cursor 记录/推进职责提取为两个 helper，`group_ai_chat.build_plan` C901 维持基线 `70`，未由 QA 前报告的 73 继续上升。当前仍是 Dev E2 rework，必须重新进入独立 QA，之后再回 Product Acceptance；未发布且生产 E4 仍 blocked。
+
+### Independent QA I1 -> Planner 外部 AI 事务 Product Resync
+
+- Independent QA 新 I1 否定上一节的 AI 事务验收：真实 `build_plan` 在锁定 Task、`TaskDailyCoveragePlanCursor` 和 `TaskAccountDailyCoverage` 后，仍可沿 quality -> `generate_group` / `generate_reply` -> Grok 同步外呼。只在 Grok bridge 前 commit 不能覆盖 MiniMax、显式模型、reply 和 provider-backed 质量/改写；在 AI 返回后直接 commit 又会破坏 Action 创建、coverage reservation 和 cursor 推进的 Phase A 原子性。当前 Dev E2 / Product Acceptance 因此失效，Release Gate 继续 blocked。
+- Phase A Planner：每批最多 20 条，只在短数据库事务固定 Cycle/slot/account/reply target/profile/topic/teacher/质量规则，原子创建 `ai_generation_status=pending` Action、条件预约 coverage 并 CAS 推进任务日游标；Planner 禁止 AI、Grok、Telegram Gateway、远端上下文采集等所有网络外呼。30/60 `messages_per_round` 仍映射 20+10 / 20+20+20，同 Cycle slot 不因事务切批改变。
+- Phase B Dispatcher：短事务 claim 并写 generation lease/attempt 后提交；reply 与 normal 分批，在无数据库事务区间完成 reply 目标复核、normal 最新上下文刷新及全部 provider-backed 生成、fallback、改写和质量轮次。输出必须按 `slot_id` 与 Phase A 的 account/coverage 一一对应；目标消息消失、过期或不可引用时不转 normal、不调用 Telegram。
+- Phase C Dispatcher：以 lease/attempt 条件短事务完成 slot 映射校验、内容、消息记忆、指纹/语义重复、内容政策和质量结果落库；质量失败或 reply 失效必须在同事务终结对应 Action 并释放自己的 coverage。通过后才进入现有无事务 Telegram Gateway 和短事务 finalize；每个 Dispatcher 数据库阶段 `<5s`。
+- 幂等 / unknown：Action、dedupe key、cycle/slot 和 coverage reservation 跨生成重试保持不变。AI 成功但 Phase C commit 失败时群内尚无可见副作用，旧 generation attempt 记 `ai_result_persist_unknown`，恢复只重试同一 Action/slot且不得创建第二个有效预约；该状态不得混同 Telegram `unknown_after_send`。Phase C 已 ready 的 Action 重复消费不得再次调用 AI。
+- E2：断言 Planner 对所有外部入口调用数为 0；验证 Phase A 任一失败整批 Action/coverage/cursor 回滚，580 债务、10/30/60 Turn 映射、reply 目标消失、normal 最新上下文、同批 slot 缺失/额外/重复、质量失败释放、AI 成功后 DB commit 失败恢复、双 Dispatcher claim 和跨租户隔离。Phase A、Phase B claim、Phase C、发送前检查和 finalize 每个事务均 `<5s`，外部 AI / Telegram 调用期间 `session.in_transaction() is False`。
+- Product Design Complete：专项设计 `docs/03-feature-designs/ai-group-dispatcher-ai-generation-transaction-design.md` 与 DF-167/168、BG-004/A/005、PERF-007 覆盖说明已定义原始需求、前后端状态、Worker/API/数据流、权限安全、reply/normal 边界、并发幂等、质量失败、生成/发送 unknown 分层、迁移回滚和 E2/E4。`design_status=complete`、`resync=true`；进入 dev 后必须再次独立 QA 和 Product Acceptance，禁止沿用上一轮 `qa_pass`。
+
+### Independent QA I2 / I3 Deterministic Rework
+
+- I2 根因是 Recovery 的裸 `FOR UPDATE SKIP LOCKED` 同时锁住 JOIN 的 Task 行，同一 Task 两个 worker 因而退化为 20/0。改为 `FOR UPDATE OF actions SKIP LOCKED` 并给 Action/Task JOIN 增加 tenant 相等约束后，同 Task 与跨 Task 都稳定并行领取 20/20；跨租户 Action 引用不会被领取。
+- I3 将 stats 和 runtime summary 的 Action 状态计数统一为 tenant + task、`count(*)` 的共享 SQL，并把 `ix_actions_task_stats_reconcile` 调整为 tenant-leading。40,741 Action 经 `VACUUM ANALYZE` 后，对实际 production statement 的 EXPLAIN 命中目标索引且无 Seq Scan；跨租户伪造 Action 不进入任一汇总。
+- 定向真 PostgreSQL 证据：runtime stats 全文件连续两轮 `5 passed`（10.76s / 10.38s），tenant isolation `3 passed`，Recovery lock scope `1 passed`。本节仅恢复 I2/I3 的 Dev E2，I1 仍按上一节专项三阶段合同待实现；独立 re-QA、Product Acceptance、发布和生产 E4 均未完成。
+
+### AI 活群与频道评论 Phase A/B/C 当前流转
+
+- `prod-diagnosis`：2026-07-14 17:30-17:41 CST 复查时，生产仍运行 `fecdcfae`，不是本轮 `9e26d08c..6bf6dfce` 实现。Planner、dispatcher-2/3/4 不健康，仅 dispatcher-1 健康；数据库有 20 个超过 60 秒的事务、21 个阻塞会话，累计 deadlock 351。当天最近可读的 15:34 覆盖快照仅为 4 个任务各 `13/580、8/580、9/580、18/580`；刷新本身又被锁链阻塞，因此结论保持 `production_blocked`，不能写 `production_fixed`。
+- `product`：提交 `9e26d08c` 已完成 Product Design Complete 和数据流 resync。统一契约是 Planner 只使用持久事实创建稳定蓝图；Dispatcher 在无活动数据库事务时调用 AI，再以 generation lease/attempt CAS 完成 Phase C 质量与结果落库；`ai_result_persist_unknown` 与 Telegram `unknown_after_send` 分层。频道引用回复固定已选目标与规则版本快照，目标失效不降级为普通评论。
+- `dev / group_ai_chat`：`fe7aa6c5..23611480` 将 AI 活群 Planner 收敛为 Phase A：每批最多 20 条，固定 Cycle/slot/account/coverage/reply/画像/话题，原子创建 `pending` Action、预约 coverage 并推进游标；`ai_generation_*` 承担 Phase B 无事务 Provider/Grok/远端 reply 复核和 Phase C slot 映射、内容政策、消息记忆、质量、CAS、恢复。Action/slot/coverage 在重试中保持不变。
+- `dev / channel_comment`：`9e6dd0a2..6bf6dfce` 将评论 Planner 收敛为只读取已采集频道消息并创建空文本 `pending` 蓝图；任务级事务 advisory lock 在准备提交后重新取得，双 Planner 串行 Action 创建且不重复蓝图。failed/skipped 释放预算与 slot，pending/claiming/executing/success/unknown 占用。`comment_generation_dispatch.py` 在 claim 提交后生成 direct/reply 评论，Phase B/C 都复核源消息仍可评论；`comment_generation_quality.py` 使用 Planner 固定的规则版本快照、完整非空 Action/远端历史和统一 outbound policy。`0094_channel_comment_history.py` 为 modern/legacy 历史查询提供 partial index；失效源消息/reply 不调用 Provider/Gateway、不转 direct，stale CAS 释放账号运行时预约，重试按 attempt 清理旧 Provider 标记并终结审计。
+- `dev / worker`：`b5374a09..466585b3` 让独立周期线程同时刷新数据库 heartbeat 与本地 Docker health 文件；本地文件写入串行并原子替换。长 drain 不再只靠主循环返回后刷新健康事实，写失败继续显式记录。
+- `qa / E2 当前证据`：群聊边界测试覆盖 Planner 外部入口零调用、10/30/60 Turn 有界切批、slot/account/coverage 映射、质量失败释放、stale CAS、生成落库未知恢复和真 PostgreSQL 双领取；评论边界测试覆盖 Planner 零 AI/远端采集、预算状态补位、direct/reply 生成、固定 reply/规则快照、源消息关闭、超过 50 条空蓝图不遮挡历史成功、stale runtime reservation 释放、attempt 审计/Provider 标记重置、persist-unknown、真 PostgreSQL 双 Planner/Dispatcher 与 reply/unknown 二次领取；0094 覆盖 SQLite 升降级、缺表/invalid/DDL 失败暴露。worker role 测试覆盖长 drain 期间 DB/local 双心跳和并发文件写。以上 Dev 定向证据均已纳入最终 E2 QA。
+- `qa / Task 3`：频道评论最终独立复核 `39 passed`，上轮 4 个 Important 全部关闭；真 PostgreSQL direct 双 Dispatcher、reply、unknown cache 二次 claim 通过。0094 在真 PostgreSQL 重复 upgrade/downgrade 成功，modern/legacy 查询分别命中两个目标索引；相关 compile、diff-check、文件/函数硬限制通过，并已纳入最终整体 QA。
+- `qa / Task 2 concurrency`：`6bf6dfce` 的真 PostgreSQL 双 Planner 确定性竞态得到创建数 `[0,2]`、最终仅 2 个 Action 且 `<5s`；并发用例连续 10 次和提交后复验均通过。Task 2/3 相关回归、ruff、编译、diff 与代码指标通过；调试输出未进入提交。
+- `qa / final E2`：HEAD `8359662a` 最终分组执行共 `793 passed / 0 failed`，覆盖群聊 Phase A/B/C、频道评论 Planner/Dispatcher/0094、coverage/recovery/worker、dispatcher/capacity/task limits、operations/runtime summary 与真实 PostgreSQL 并发边界。相关 Ruff、compileall、merge integrity、`git diff --check` 及生产/测试代码 metrics gate 均通过；`qa_pass=true`，Critical / Important / Minor 为 `0 / 0 / 0`。
+- `product acceptance`：`product_accepted=true`（仅 E2）。实现覆盖 Planner 蓝图、无事务 AI、Phase C 质量/CAS、生成/发送 unknown 分层、评论预算并发和 worker 双心跳，允许进入 `master -> release` 发布流程；这不等于代码已上线或生产恢复。
+- `配置边界`：郑州任务当前仍绑定 `account_group_id=9 / selection_mode=natural`，不是全账号口径；青岛任务仍为 paused，且存在失效 `@qdsfxy` 与账号可发送能力不足事实。这些是业务配置 / 授权资产 blocker，不属于本次事务边界代码修复；未获产品确认前不擅自改为 all、不恢复青岛任务。
+- `评论生产事实`：15:34 快照中阿哥日记为当天 12 条 success、11 个账号，最新成功约 15:12，仍有 9 条 overdue；17:41 刷新没有取得新的 success + ExecutionAttempt remote message id 组合。评论链路因此仍为 `unproven/blocked`，worker healthy 或本地测试通过都不能替代真实远端成功。
+- 当前阶段：`prod-diagnosis -> product -> dev -> qa -> product` 的 E2 流转已完成，Release Gate 已具备发布条件；代码尚未合入 `master -> release`，本轮生产发布和发布后 `prod-diagnosis` E4 均未执行。生产状态继续为 `unproven/blocked`，禁止写 `production_fixed`。
 
 ## Release Gate 与 E4
 

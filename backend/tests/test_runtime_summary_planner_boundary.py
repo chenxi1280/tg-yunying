@@ -66,7 +66,7 @@ def test_planner_task_summary_skips_all_account_projection(monkeypatch) -> None:
 def test_planner_drain_requests_lightweight_task_stats(monkeypatch) -> None:
     factory = _session_factory()
     calls: list[bool] = []
-    monkeypatch.setattr(service, "retry_failed_actions", lambda *_args: 0)
+    monkeypatch.setattr(service, "retry_failed_actions", lambda *_args, **_kwargs: 0)
     monkeypatch.setattr(service, "_open_actions_state", lambda *_args: (False, False))
     monkeypatch.setattr(service, "_planning_backlog_blocked", lambda *_args: False)
     monkeypatch.setattr(service, "build_task_plan", lambda *_args: 0)
@@ -91,7 +91,7 @@ def test_planner_drain_requests_lightweight_task_stats(monkeypatch) -> None:
 
     service._drain_task_planner(factory, limit=1, process_type=None)
 
-    assert calls == [False]
+    assert calls == []
 
 
 def test_planner_task_summary_still_refreshes_latest_failure_account(monkeypatch) -> None:

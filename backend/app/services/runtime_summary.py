@@ -36,6 +36,7 @@ from app.services.runtime_issue_queries import (
     issue_has_action_sources,
 )
 from app.services.task_runtime_stage import derive_task_runtime_stage
+from app.services.runtime_action_queries import task_action_status_counts_statement
 
 
 PENDING_STATUSES = {"pending", "claiming", "executing", "retryable_failed", "unknown_after_send"}
@@ -80,10 +81,14 @@ def refresh_task_summary(
     include_configured_accounts: bool = True,
 ) -> TaskRuntimeSummary:
     session.flush()
-    rows = session.execute(select(Action.status, func.count(Action.id)).where(Action.task_id == task.id).group_by(Action.status)).all()
+    rows = session.execute(task_action_status_counts_statement(task)).all()
     counts = {str(status): int(count) for status, count in rows}
-    oldest_pending = session.scalar(select(func.min(Action.scheduled_at)).where(Action.task_id == task.id, Action.status.in_(PENDING_STATUSES)))
-    latest_failure = _latest_unresolved_failure_action(session, task.id)
+    oldest_pending = session.scalar(select(func.min(Action.scheduled_at)).where(
+        Action.tenant_id == task.tenant_id,
+        Action.task_id == task.id,
+        Action.status.in_(PENDING_STATUSES),
+    ))
+    latest_failure = _latest_unresolved_failure_action(session, task.tenant_id, task.id)
     target_id = _task_target_id(task)
     summary = _get_or_create_task_summary(session, task.tenant_id, task.id)
     summary.task_status = task.status
@@ -101,6 +106,29 @@ def refresh_task_summary(
         "runtime_stage": derive_task_runtime_stage(task, summary=summary),
     }
     summary.updated_at = _now()
+    _refresh_task_issue_summary(
+        session,
+        task,
+        summary=summary,
+        latest_failure=latest_failure,
+        counts=counts,
+        target_id=target_id,
+    )
+    if target_id:
+        refresh_target_summary(session, task.tenant_id, target_id)
+    _refresh_task_account_summaries(session, task, latest_failure, include_configured_accounts=include_configured_accounts)
+    return summary
+
+
+def _refresh_task_issue_summary(
+    session: Session,
+    task: Task,
+    *,
+    summary: TaskRuntimeSummary,
+    latest_failure: Action | None,
+    counts: dict[str, int],
+    target_id: int | None,
+) -> None:
     if latest_failure:
         latest_failure_type = summary.latest_failure_type
         upsert_operation_issue(
@@ -118,10 +146,6 @@ def refresh_task_summary(
         )
     elif not any(counts.get(status, 0) for status in UNRESOLVED_FAILURE_STATUSES):
         _resolve_task_issues_if_recovered(session, task)
-    if target_id:
-        refresh_target_summary(session, task.tenant_id, target_id)
-    _refresh_task_account_summaries(session, task, latest_failure, include_configured_accounts=include_configured_accounts)
-    return summary
 
 
 def _refresh_task_account_summaries(
@@ -140,10 +164,14 @@ def _refresh_task_account_summaries(
             refresh_account_summary(session, task.tenant_id, account_id)
 
 
-def _latest_unresolved_failure_action(session: Session, task_id: str) -> Action | None:
+def _latest_unresolved_failure_action(session: Session, tenant_id: int, task_id: str) -> Action | None:
     return session.scalar(
         select(Action)
-        .where(Action.task_id == task_id, Action.status.in_(UNRESOLVED_FAILURE_STATUSES))
+        .where(
+            Action.tenant_id == tenant_id,
+            Action.task_id == task_id,
+            Action.status.in_(UNRESOLVED_FAILURE_STATUSES),
+        )
         .order_by(Action.executed_at.desc().nullslast(), Action.created_at.desc())
         .limit(1)
     )

@@ -13,7 +13,7 @@ from app.database import Base
 from app.models import AccountStatus, Action, RuntimeCleanupAudit, RuntimeMetricSnapshot, Task, TaskRuntimeSummary, Tenant, TgAccount, WorkerHeartbeat
 from app.schemas.task_center import TaskSettingsUpdate
 from app.services._common import _now
-from app.services.task_center import dispatcher, service
+from app.services.task_center import dispatcher, metrics_runtime, service
 
 
 @pytest.fixture(autouse=True)
@@ -119,16 +119,31 @@ def test_target_admission_retry_planner_keeps_pending_membership_actions() -> No
     with SessionFactory() as session:
         task = session.get(Task, "task-admission-retry-planner")
         assert task.status == "running"
+        assert "total_actions" not in task.stats
+
+    service.drain_task_metrics(SessionFactory, 5)
+
+    with SessionFactory() as session:
+        task = session.get(Task, "task-admission-retry-planner")
         assert task.stats["total_actions"] == 1
         assert task.stats["pending_count"] == 1
 
 
-def test_metrics_drain_does_not_rebuild_all_runtime_summaries() -> None:
+@pytest.mark.no_postgres
+def test_metrics_drain_reconciles_missing_task_runtime_summary(monkeypatch) -> None:
     SessionFactory = _session_factory()
     now_value = _now()
+    refresh_calls: list[bool] = []
+    real_refresh = metrics_runtime.refresh_task_stats
+
+    def record_refresh(session: Session, task: Task, *, include_configured_accounts: bool = True):
+        refresh_calls.append(include_configured_accounts)
+        return real_refresh(session, task, include_configured_accounts=include_configured_accounts)
+
+    monkeypatch.setattr(metrics_runtime, "refresh_task_stats", record_refresh)
     with SessionFactory() as session:
         session.add(Tenant(id=1, name="默认运营空间"))
-        session.add(Task(id="task-unrelated-summary", tenant_id=1, name="不应被全量汇总", type="group_ai_chat", status="running"))
+        session.add(Task(id="task-unrelated-summary", tenant_id=1, name="待 metrics 汇总", type="group_ai_chat", status="running"))
         session.add(
             Action(
                 id="action-unrelated-summary",
@@ -147,7 +162,102 @@ def test_metrics_drain_does_not_rebuild_all_runtime_summaries() -> None:
     assert service.drain_task_metrics(SessionFactory, 5) >= 1
 
     with SessionFactory() as session:
-        assert session.scalar(select(TaskRuntimeSummary).where(TaskRuntimeSummary.task_id == "task-unrelated-summary")) is None
+        summary = session.scalar(select(TaskRuntimeSummary).where(TaskRuntimeSummary.task_id == "task-unrelated-summary"))
+        assert summary is not None
+        assert summary.failed_count == 1
+    assert refresh_calls == [False]
+
+
+@pytest.mark.no_postgres
+def test_dispatcher_finalize_does_not_refresh_full_task_stats(monkeypatch) -> None:
+    SessionFactory = _session_factory()
+    now_value = _now()
+
+    def fake_dispatch(_session: Session, action: Action) -> bool:
+        action.status = "success"
+        action.executed_at = now_value
+        return True
+
+    monkeypatch.setattr(service, "dispatch_action", fake_dispatch)
+    monkeypatch.setattr(
+        service,
+        "refresh_task_stats",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("dispatcher full stats refresh")),
+    )
+    with SessionFactory() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgAccount(id=101, tenant_id=1, display_name="A", phone_masked="***", status=AccountStatus.ACTIVE.value, session_ciphertext="mock"))
+        session.add(Task(id="task-no-finalize-stats", tenant_id=1, name="dispatcher", type="group_relay", status="running"))
+        session.add(Action(
+            id="action-no-finalize-stats", tenant_id=1, task_id="task-no-finalize-stats",
+            task_type="group_relay", action_type="send_message", account_id=101,
+            status="pending", scheduled_at=now_value - timedelta(seconds=1),
+            payload={"chat_id": "-1001", "message_text": "hello"},
+        ))
+        session.commit()
+
+    assert service.drain_task_dispatcher(SessionFactory, 1) == 1
+
+
+@pytest.mark.no_postgres
+def test_all_account_planner_preserves_round_size_across_short_batches(monkeypatch) -> None:
+    SessionFactory = _session_factory()
+    now_value = _now()
+    calls: list[str] = []
+
+    def fake_build(_session: Session, task: Task) -> int:
+        calls.append(task.id)
+        return min(20, int(_session.info["daily_coverage_plan_limit"]))
+
+    monkeypatch.setattr(service, "build_task_plan", fake_build)
+    monkeypatch.setattr(
+        service,
+        "refresh_task_stats",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("planner full stats refresh")),
+    )
+    with SessionFactory() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(Task(
+            id="task-coverage-short-batches", tenant_id=1, name="覆盖任务",
+            type="group_ai_chat", status="running", next_run_at=now_value - timedelta(seconds=1),
+            type_config={
+                "account_coverage_mode": "all_accounts_daily",
+                "messages_per_round_mode": "manual",
+                "messages_per_round": 60,
+            },
+        ))
+        session.commit()
+
+    assert service.drain_task_planner(SessionFactory, 1) == 60
+    assert calls == ["task-coverage-short-batches"] * 3
+
+
+@pytest.mark.no_postgres
+def test_all_account_planner_does_not_round_thirty_up_to_forty(monkeypatch) -> None:
+    SessionFactory = _session_factory()
+    planned_batches: list[int] = []
+
+    def fake_build(session: Session, _task: Task) -> int:
+        planned = min(20, int(session.info["daily_coverage_plan_limit"]))
+        planned_batches.append(planned)
+        return planned
+
+    monkeypatch.setattr(service, "build_task_plan", fake_build)
+    with SessionFactory() as session:
+        session.add(Tenant(id=1, name="default"))
+        session.add(Task(
+            id="task-coverage-thirty", tenant_id=1, name="coverage",
+            type="group_ai_chat", status="running", next_run_at=_now() - timedelta(seconds=1),
+            type_config={
+                "account_coverage_mode": "all_accounts_daily",
+                "messages_per_round_mode": "manual",
+                "messages_per_round": 30,
+            },
+        ))
+        session.commit()
+
+    assert service.drain_task_planner(SessionFactory, 1) == 30
+    assert planned_batches == [20, 10]
 
 
 def test_metrics_drain_uses_index_friendly_counts() -> None:

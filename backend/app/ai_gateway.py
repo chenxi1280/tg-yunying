@@ -30,6 +30,7 @@ class AiDraftCandidate:
     intent: str = ""
     mood: str = ""
     suggested_account_id: int | None = None
+    slot_id: str = ""
     sequence_index: int = 0
     reply_to_sequence_index: int | None = None
 
@@ -107,10 +108,12 @@ def mock_candidates(
     persona_set: list[str],
     material_ids: list[int] | None = None,
     selected_account_ids: list[int] | None = None,
+    slot_ids: list[str] | None = None,
 ) -> list[AiDraftCandidate]:
     templates, include_suffix = _mock_templates_for_tone(tone)
     ids = material_ids or []
     account_ids = selected_account_ids or []
+    slots = slot_ids or []
     candidates: list[AiDraftCandidate] = []
     for index in range(count):
         material_id = ids[index % len(ids)] if ids else None
@@ -123,11 +126,17 @@ def mock_candidates(
                 risk_level="低",
                 material_id=material_id,
                 suggested_account_id=suggested_account_id,
+                slot_id=slots[index] if index < len(slots) else "",
                 sequence_index=index + 1,
                 reply_to_sequence_index=index if index else None,
             )
         )
     return candidates
+
+
+def _prompt_slot_ids(prompt: str, count: int) -> list[str]:
+    matches = re.findall(r'"slot_id"\s*:\s*"([^"]+)"', prompt)
+    return matches[:max(0, int(count or 0))]
 
 
 def _mock_templates_for_tone(tone: str) -> tuple[list[str], bool]:
@@ -209,9 +218,9 @@ class AiGateway:
         timeout: int = DEFAULT_AI_REQUEST_TIMEOUT_SECONDS,
     ) -> AiGenerationResult:
         if credentials.base_url.startswith("mock://"):
-            return AiGenerationResult(
-                candidates=mock_candidates(count, topic, tone, persona_set, material_ids, selected_account_ids),
-                usage=AiUsage(),
+            return _mock_generation_result(
+                prompt, count, topic=topic, tone=tone, persona_set=persona_set,
+                material_ids=material_ids, selected_account_ids=selected_account_ids,
             )
         if credentials.provider_type != "openai_compatible":
             raise RuntimeError(f"unsupported ai provider type: {credentials.provider_type}")
@@ -226,6 +235,36 @@ class AiGateway:
             reasoning_retry_max_tokens=self._generation_retry_max_tokens(credentials, max_tokens, count),
             timeout=timeout,
         )
+        candidates, usage = self._parse_candidates_with_retry(
+            credentials,
+            prompt,
+            raw=raw,
+            usage=usage,
+            count=count,
+            persona_set=persona_set,
+            material_ids=material_ids,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            system_prompt=system_prompt,
+            timeout=timeout,
+        )
+        return AiGenerationResult(candidates=candidates, usage=usage)
+
+    def _parse_candidates_with_retry(
+        self,
+        credentials: AiProviderCredentials,
+        prompt: str,
+        *,
+        raw: str,
+        usage: AiUsage,
+        count: int,
+        persona_set: list[str],
+        material_ids: list[int] | None,
+        temperature: float,
+        max_tokens: int,
+        system_prompt: str | None,
+        timeout: int,
+    ) -> tuple[list[AiDraftCandidate], AiUsage]:
         retry_tokens = self._generation_retry_max_tokens(credentials, max_tokens, count)
         try:
             candidates = self._parse_candidates(raw, count, persona_set, material_ids)
@@ -242,10 +281,7 @@ class AiGateway:
                 timeout=timeout,
             )
             candidates = self._parse_candidates(raw, count, persona_set, material_ids)
-        return AiGenerationResult(
-            candidates=candidates,
-            usage=usage,
-        )
+        return candidates, usage
 
     def check(self, credentials: AiProviderCredentials) -> tuple[bool, str]:
         if credentials.base_url.startswith("mock://"):
@@ -517,18 +553,9 @@ class AiGateway:
 
     def _parse_candidates(self, raw: str, count: int, persona_set: list[str], material_ids: list[int] | None) -> list[AiDraftCandidate]:
         clean = _extract_json_payload(raw)
-        try:
-            parsed: Any = json.loads(clean)
-        except json.JSONDecodeError:
-            parsed = _loads_jsonish_payload(clean)
-            if parsed is None and _looks_like_json_drafts_fragment(clean):
-                raise RuntimeError(_malformed_drafts_error(clean))
-            if parsed is None:
-                lines = [line.strip(" -\t") for line in clean.splitlines() if line.strip()]
-                return [
-                    AiDraftCandidate(persona=persona_set[index % len(persona_set)], content=line[:1000], risk_level="低")
-                    for index, line in enumerate(lines[:count])
-                ]
+        parsed = _parse_draft_payload(clean)
+        if parsed is None:
+            return _draft_candidates_from_lines(clean, count, persona_set)
         items = _draft_items_from_payload(parsed)
         if not isinstance(items, list):
             raise RuntimeError("AI provider JSON must be a list or {drafts: [...]}")
@@ -537,36 +564,86 @@ class AiGateway:
         for index, item in enumerate(items[:count]):
             if not isinstance(item, dict):
                 continue
-            content = str(item.get("content") or item.get("message") or "").strip()
-            if not content:
-                continue
-            material_id = item.get("material_id")
-            if not isinstance(material_id, int):
-                material_id = fallback_materials[index % len(fallback_materials)] if fallback_materials else None
-            candidates.append(
-                AiDraftCandidate(
-                    persona=str(item.get("persona") or persona_set[index % len(persona_set)]),
-                    content=content[:2000],
-                    risk_level=str(item.get("risk_level") or "低"),
-                    material_id=material_id,
-                    material_intent=str(item.get("material_intent") or ""),
-                    allow_material=bool(item.get("allow_material")),
-                    intent=str(item.get("intent") or ""),
-                    mood=str(item.get("mood") or ""),
-                    suggested_account_id=item.get("suggested_account_id") if isinstance(item.get("suggested_account_id"), int) else None,
-                    sequence_index=item.get("sequence_index") if isinstance(item.get("sequence_index"), int) else index + 1,
-                    reply_to_sequence_index=(
-                        item.get("reply_to_sequence_index")
-                        if isinstance(item.get("reply_to_sequence_index"), int)
-                        else item.get("reply_to_sequence")
-                        if isinstance(item.get("reply_to_sequence"), int)
-                        else None
-                    ),
-                )
+            candidate = _draft_candidate_from_item(
+                item, index, persona_set=persona_set, fallback_materials=fallback_materials
             )
+            if candidate:
+                candidates.append(candidate)
         if not candidates:
             raise RuntimeError("AI provider returned no usable drafts")
         return candidates
+
+
+def _mock_generation_result(
+    prompt: str,
+    count: int,
+    *,
+    topic: str,
+    tone: str,
+    persona_set: list[str],
+    material_ids: list[int] | None,
+    selected_account_ids: list[int] | None,
+) -> AiGenerationResult:
+    candidates = mock_candidates(
+        count,
+        topic,
+        tone,
+        persona_set,
+        material_ids,
+        selected_account_ids,
+        _prompt_slot_ids(prompt, count),
+    )
+    return AiGenerationResult(candidates=candidates, usage=AiUsage())
+
+
+def _parse_draft_payload(clean: str) -> Any | None:
+    try:
+        return json.loads(clean)
+    except json.JSONDecodeError:
+        parsed = _loads_jsonish_payload(clean)
+        if parsed is None and _looks_like_json_drafts_fragment(clean):
+            raise RuntimeError(_malformed_drafts_error(clean))
+        return parsed
+
+
+def _draft_candidates_from_lines(clean: str, count: int, persona_set: list[str]) -> list[AiDraftCandidate]:
+    lines = [line.strip(" -\t") for line in clean.splitlines() if line.strip()]
+    return [
+        AiDraftCandidate(persona=persona_set[index % len(persona_set)], content=line[:1000], risk_level="低")
+        for index, line in enumerate(lines[:count])
+    ]
+
+
+def _draft_candidate_from_item(
+    item: dict[str, Any],
+    index: int,
+    *,
+    persona_set: list[str],
+    fallback_materials: list[int],
+) -> AiDraftCandidate | None:
+    content = str(item.get("content") or item.get("message") or "").strip()
+    if not content:
+        return None
+    material_id = item.get("material_id")
+    if not isinstance(material_id, int):
+        material_id = fallback_materials[index % len(fallback_materials)] if fallback_materials else None
+    reply_index = item.get("reply_to_sequence_index")
+    if not isinstance(reply_index, int):
+        reply_index = item.get("reply_to_sequence") if isinstance(item.get("reply_to_sequence"), int) else None
+    return AiDraftCandidate(
+        persona=str(item.get("persona") or persona_set[index % len(persona_set)]),
+        content=content[:2000],
+        risk_level=str(item.get("risk_level") or "低"),
+        material_id=material_id,
+        material_intent=str(item.get("material_intent") or ""),
+        allow_material=bool(item.get("allow_material")),
+        intent=str(item.get("intent") or ""),
+        mood=str(item.get("mood") or ""),
+        suggested_account_id=item.get("suggested_account_id") if isinstance(item.get("suggested_account_id"), int) else None,
+        slot_id=str(item.get("slot_id") or ""),
+        sequence_index=item.get("sequence_index") if isinstance(item.get("sequence_index"), int) else index + 1,
+        reply_to_sequence_index=reply_index,
+    )
 
 
 def _extract_json_payload(raw: str) -> str:

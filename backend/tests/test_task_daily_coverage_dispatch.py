@@ -8,10 +8,9 @@ from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.models import Action, ExecutionAttempt, Task, TaskAccountDailyCoverage, Tenant, TgAccount, TgGroup
-from app.services.task_center import dispatcher
+from app.services.task_center import ai_generation_quality
 from app.services.task_center.ai_message_memory import DuplicateMessageReservation
 from app.services.task_center.dispatcher import _action_can_reassign, _sync_action_coverage_state
-from app.services.task_center.payloads import SendMessagePayload
 
 
 pytestmark = pytest.mark.no_postgres
@@ -119,7 +118,7 @@ def test_terminal_preconfirmation_failure_releases_obligation(session: Session, 
     assert row.blocker_code == "duplicate_message"
 
 
-def test_batch_generation_releases_duplicate_sibling_coverage(session: Session, monkeypatch) -> None:
+def test_batch_generation_releases_duplicate_sibling_coverage(session: Session) -> None:
     action, _row = _seed_reserved(session)
     sibling = Action(
         id="coverage-sibling-action",
@@ -146,34 +145,13 @@ def test_batch_generation_releases_duplicate_sibling_coverage(session: Session, 
     session.add(TgAccount(id=2, tenant_id=1, display_name="账号2", phone_masked="2", status="在线"))
     session.add_all([sibling, sibling_row])
     session.flush()
-    payload = SendMessagePayload(
-        group_id=21,
-        coverage_ledger_id="coverage-row",
-        ai_generation_id="batch-1",
-        ai_generation_status="pending",
-    )
-    sibling_payload = SendMessagePayload(
-        group_id=21,
-        coverage_ledger_id=sibling_row.id,
-        ai_generation_id="batch-1",
-        ai_generation_status="pending",
-    )
-
-    def mark_sibling_duplicate(_session, candidate, _payload, payload_data) -> None:
-        if candidate.id == sibling.id:
-            dispatcher._mark_generated_duplicate(
-                candidate,
-                payload_data,
-                DuplicateMessageReservation(reference_id="memory-1", duplicate_window="7d_semantic"),
-            )
-
-    monkeypatch.setattr(dispatcher, "_attach_generated_message_memory", mark_sibling_duplicate)
-
-    dispatcher._store_generated_send_payloads(
-        session,
-        [(action, payload), (sibling, sibling_payload)],
-        ["第一条", "重复内容"],
-        10,
+    payload_data = dict(sibling.payload or {})
+    ai_generation_quality._mark_duplicate(
+        sibling,
+        payload_data,
+        DuplicateMessageReservation(
+            reference_id="memory-1", duplicate_window="7d_semantic",
+        ),
     )
 
     assert sibling.status == "failed"
