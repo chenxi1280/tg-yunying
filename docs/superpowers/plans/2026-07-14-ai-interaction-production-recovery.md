@@ -250,16 +250,17 @@ git commit -m "fix: keep worker local health fresh during long drains"
 ### Task 5: Integration QA, indexes and release gate
 
 **Files:**
+- Modify: `docs/01-product/tg-ops-platform-prd.md`
 - Modify: `docs/00-index/project-structure-index.md`
 - Modify: `docs/05-implementation/multi-agent-practice/runs/2026-07-13-ai-group-planner-scale-fix.md`
 - Modify: `docs/superpowers/plans/2026-07-14-ai-interaction-production-recovery.md`
 - Verify: backend focused and PostgreSQL suites
 
-- [ ] **Step 1: Run the complete affected backend suite with per-command 60-second timeouts**
+- [x] **Step 1: Run the complete affected backend suite with per-command 60-second timeouts**
 
 Include group generation, comment generation, dispatcher, coverage, lifetime cap, recovery, worker roles, stats and real PostgreSQL boundary tests. Expected: zero failures and no warnings that hide rollback/connection leaks.
 
-- [ ] **Step 2: Run static hygiene**
+- [x] **Step 2: Run static hygiene**
 
 ```bash
 git diff --check
@@ -272,15 +273,15 @@ Expected: exit 0. Confirm every new function is at most 50 lines, new file at mo
 
 Record the new Planner/Dispatcher module boundaries and E2 evidence. Keep Product Acceptance and production recovery distinct.
 
-- [ ] **Step 4: Independent QA and Product Acceptance**
+- [x] **Step 4: Independent QA and Product Acceptance**
 
 QA checks every E2 item from the专项设计. Product then verifies all original requirements are covered; `qa_pass` alone does not change production status.
 
 - [x] **Step 5: Commit QA/index evidence**
 
 ```bash
-git add docs/00-index/project-structure-index.md docs/05-implementation/multi-agent-practice/runs/2026-07-13-ai-group-planner-scale-fix.md docs/superpowers/plans/2026-07-14-ai-interaction-production-recovery.md
-git commit -m "docs: record AI interaction recovery implementation"
+git add docs/01-product/tg-ops-platform-prd.md docs/00-index/project-structure-index.md docs/05-implementation/multi-agent-practice/runs/2026-07-13-ai-group-planner-scale-fix.md docs/superpowers/plans/2026-07-14-ai-interaction-production-recovery.md
+git commit -m "docs: record final E2 acceptance"
 ```
 
 ### Task 6: Release and production E4
