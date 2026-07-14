@@ -66,100 +66,114 @@ def test_postgres_two_channel_comment_planners_do_not_duplicate_pending_blueprin
         _cleanup()
 
 
+def _seed_rule_scope(session) -> None:
+    session.add(Tenant(id=TENANT_ID, name="PG 评论 Planner"))
+    session.flush()
+    session.add(
+        RuleSet(
+            id=RULE_SET_ID,
+            tenant_id=TENANT_ID,
+            name="PG 评论规则",
+            status="active",
+            task_types=["channel_comment"],
+        )
+    )
+    session.flush()
+    session.add(
+        RuleSetVersion(
+            id=RULE_VERSION_ID,
+            tenant_id=TENANT_ID,
+            rule_set_id=RULE_SET_ID,
+            version=1,
+            status="published",
+            filters={},
+            output_checks={},
+            transforms={},
+        )
+    )
+
+
+def _seed_channel_scope(session) -> None:
+    session.add(
+        OperationTarget(
+            id=TENANT_ID,
+            tenant_id=TENANT_ID,
+            target_type="channel",
+            tg_peer_id=f"-100{TENANT_ID}",
+            title="PG 测试频道",
+            can_send=True,
+            auth_status="已授权运营",
+        )
+    )
+    session.flush()
+    session.add(
+        ChannelMessage(
+            id=TENANT_ID,
+            tenant_id=TENANT_ID,
+            channel_target_id=TENANT_ID,
+            message_id=9001,
+            content_preview="PG 频道消息",
+            comment_available=True,
+        )
+    )
+
+
+def _seed_accounts(session) -> None:
+    for account_id in (TENANT_ID + 1, TENANT_ID + 2):
+        session.add(
+            TgAccount(
+                id=account_id,
+                tenant_id=TENANT_ID,
+                display_name=f"账号 {account_id}",
+                username=f"pg_comment_{account_id}",
+                tg_first_name=f"评论号{account_id}",
+                avatar_object_key=f"avatars/{account_id}.jpg",
+                profile_sync_status="已同步",
+                phone_masked=str(account_id),
+                status=AccountStatus.ACTIVE.value,
+                health_score=100,
+                session_ciphertext=f"session-{account_id}",
+            )
+        )
+
+
+def _postgres_task() -> Task:
+    return Task(
+        id=TASK_ID,
+        tenant_id=TENANT_ID,
+        name="PG 评论 Planner",
+        type="channel_comment",
+        status="running",
+        account_config={"selection_mode": "all", "max_concurrent": 2},
+        pacing_config={
+            "mode": "fixed",
+            "max_actions_per_hour": 10,
+            "interval_seconds_min": 0,
+            "interval_seconds_max": 0,
+            "jitter_percent": 0,
+        },
+        type_config={
+            "target_channel_id": TENANT_ID,
+            "message_scope": "specific",
+            "message_ids": [TENANT_ID],
+            "target_comments_per_message": 2,
+            "comment_count_jitter": 0,
+            "max_total_comments": 10,
+            "max_total_comments_jitter": 0,
+            "max_comments_per_account_per_hour": 500,
+            "comment_mode": "comment",
+            "rule_set_version_id": RULE_VERSION_ID,
+        },
+        stats={},
+    )
+
+
 def _seed_scope() -> None:
     with SessionLocal() as session:
-        session.add(Tenant(id=TENANT_ID, name="PG 评论 Planner"))
-        session.flush()
-        session.add(
-            RuleSet(
-                id=RULE_SET_ID,
-                tenant_id=TENANT_ID,
-                name="PG 评论规则",
-                status="active",
-                task_types=["channel_comment"],
-            )
-        )
-        session.flush()
-        session.add(
-            RuleSetVersion(
-                id=RULE_VERSION_ID,
-                tenant_id=TENANT_ID,
-                rule_set_id=RULE_SET_ID,
-                version=1,
-                status="published",
-                filters={},
-                output_checks={},
-                transforms={},
-            )
-        )
-        session.add(
-            OperationTarget(
-                id=TENANT_ID,
-                tenant_id=TENANT_ID,
-                target_type="channel",
-                tg_peer_id=f"-100{TENANT_ID}",
-                title="PG 测试频道",
-                can_send=True,
-                auth_status="已授权运营",
-            )
-        )
-        session.flush()
-        session.add(
-            ChannelMessage(
-                id=TENANT_ID,
-                tenant_id=TENANT_ID,
-                channel_target_id=TENANT_ID,
-                message_id=9001,
-                content_preview="PG 频道消息",
-                comment_available=True,
-            )
-        )
-        for account_id in (TENANT_ID + 1, TENANT_ID + 2):
-            session.add(
-                TgAccount(
-                    id=account_id,
-                    tenant_id=TENANT_ID,
-                    display_name=f"账号 {account_id}",
-                    username=f"pg_comment_{account_id}",
-                    tg_first_name=f"评论号{account_id}",
-                    avatar_object_key=f"avatars/{account_id}.jpg",
-                    profile_sync_status="已同步",
-                    phone_masked=str(account_id),
-                    status=AccountStatus.ACTIVE.value,
-                    health_score=100,
-                    session_ciphertext=f"session-{account_id}",
-                )
-            )
-        session.add(
-            Task(
-                id=TASK_ID,
-                tenant_id=TENANT_ID,
-                name="PG 评论 Planner",
-                type="channel_comment",
-                status="running",
-                account_config={"selection_mode": "all", "max_concurrent": 2},
-                pacing_config={
-                    "mode": "fixed",
-                    "max_actions_per_hour": 10,
-                    "interval_seconds_min": 0,
-                    "interval_seconds_max": 0,
-                    "jitter_percent": 0,
-                },
-                type_config={
-                    "target_channel_id": TENANT_ID,
-                    "message_scope": "specific",
-                    "message_ids": [TENANT_ID],
-                    "target_comments_per_message": 2,
-                    "comment_count_jitter": 0,
-                    "max_total_comments": 10,
-                    "max_total_comments_jitter": 0,
-                    "max_comments_per_account_per_hour": 500,
-                    "comment_mode": "comment",
-                    "rule_set_version_id": RULE_VERSION_ID,
-                },
-                stats={},
-            )
-        )
+        _seed_rule_scope(session)
+        _seed_channel_scope(session)
+        _seed_accounts(session)
+        session.add(_postgres_task())
         session.commit()
 
 

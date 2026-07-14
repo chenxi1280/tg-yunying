@@ -16,6 +16,7 @@ from ..payloads import PostCommentPayload, create_comment_action
 from app.services.target_learning_audit import audit_learning_profile_use
 from app.services.tenant_target_profile import tenant_learning_profile_preview
 from .channel_comment_budget import (
+    message_comment_reservation_count as _message_comment_reservation_count,
     message_comment_quantities as _message_comment_quantities,
     reconcile_lifetime_cap,
     resolved_total_comment_limit as _resolved_total_comment_limit,
@@ -30,9 +31,8 @@ from .channel_comment_targets import (
 )
 from .common import (
     adjust_for_account_hour_limit,
-    channel_message_action_count,
+    channel_messages,
     channel_message_payload,
-    channel_scope,
     pick_channel_account,
     quantity_jitter_bounds,
     record_channel_capacity_warning,
@@ -137,7 +137,7 @@ def _comment_plan_setup(session: Session, task: Task) -> CommentPlanSetup:
     gate = gate_channel_membership(session, task, channel, require_send=True)
     if not gate.ready:
         return CommentPlanSetup(None, gate.created)
-    channel, messages = channel_scope(session, task, config, comment_available_only=True)
+    channel, messages = _persisted_channel_scope(session, task, config)
     if not channel or not messages:
         return CommentPlanSetup(None)
     profile_preview = tenant_learning_profile_preview(session, task.tenant_id, CHANNEL_COMMENT_SCENE)
@@ -158,6 +158,27 @@ def _comment_plan_setup(session: Session, task: Task) -> CommentPlanSetup:
             accounts=accounts,
         )
     )
+
+
+def _persisted_channel_scope(
+    session: Session,
+    task: Task,
+    config: dict,
+) -> tuple[OperationTarget | None, list[ChannelMessage]]:
+    channel = session.get(OperationTarget, int(config.get("target_channel_id") or 0))
+    if not channel or channel.tenant_id != task.tenant_id or channel.target_type != "channel":
+        task.last_error = "目标频道不存在"
+        return None, []
+    messages = channel_messages(
+        session,
+        task.tenant_id,
+        config,
+        comment_available_only=True,
+    )
+    if not messages:
+        task.last_error = "未找到已采集频道消息，等待监听采集"
+        return None, []
+    return channel, messages
 
 
 def _planning_accounts(session: Session, task: Task, channel: OperationTarget, config: dict) -> list:
@@ -223,7 +244,7 @@ def _comment_plan_slots(
         targets = _comment_slot_targets(session, task, context, message, quantity, reply_targets)
         if targets is None:
             return None
-        offset = channel_message_action_count(session, task, "post_comment", message)
+        offset = _message_comment_reservation_count(session, task, message)
         slots.extend(CommentPlanSlot(message, target, offset + index) for index, target in enumerate(targets))
     return slots
 

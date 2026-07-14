@@ -9,10 +9,11 @@ from app.models import Action, ChannelMessage, ChannelMessageComment, ExecutionA
 from app.services._common import _now
 
 from ..ai_limits import allocate_message_budget
-from .common import channel_message_action_count, quantity_with_jitter
+from .common import quantity_with_jitter
 
-CURRENT_HOUR_BUDGET_STATUSES = ("pending", "claiming", "executing", "success")
-TOTAL_BUDGET_STATUSES = ("pending", "claiming", "executing", "success", "unknown_after_send")
+COMMENT_RESERVATION_STATUSES = ("pending", "claiming", "executing", "success", "unknown_after_send")
+CURRENT_HOUR_BUDGET_STATUSES = COMMENT_RESERVATION_STATUSES
+TOTAL_BUDGET_STATUSES = COMMENT_RESERVATION_STATUSES
 OPEN_TOTAL_BUDGET_STATUSES = ("pending", "claiming", "executing")
 DEFAULT_MAX_TOTAL_COMMENTS = 80
 DEFAULT_MAX_TOTAL_COMMENTS_JITTER = 0.2
@@ -86,6 +87,23 @@ def total_comment_action_count(session: Session, task: Task, *, exclude_action_i
     if exclude_action_id:
         stmt = stmt.where(Action.id != exclude_action_id)
     return int(session.scalar(stmt) or 0)
+
+
+def message_comment_reservation_count(session: Session, task: Task, message: ChannelMessage) -> int:
+    count = 0
+    payloads = session.scalars(
+        select(Action.payload).where(
+            Action.task_id == task.id,
+            Action.action_type == "post_comment",
+            Action.status.in_(COMMENT_RESERVATION_STATUSES),
+        )
+    )
+    for payload in payloads:
+        if not isinstance(payload, dict):
+            continue
+        if payload.get("channel_message_id") == message.id or payload.get("message_id") == message.message_id:
+            count += 1
+    return count
 
 
 def _total_comment_action_counts(session: Session, task: Task) -> dict[str, int]:
@@ -232,7 +250,7 @@ def _message_comment_deficit(
         float(config.get("comment_count_jitter") or 0),
     )
     used_count = max(
-        channel_message_action_count(session, task, "post_comment", message),
+        message_comment_reservation_count(session, task, message),
         _collected_managed_comment_count(session, task, message, managed_usernames),
     )
     return max(0, desired - used_count)
@@ -271,6 +289,7 @@ def _tenant_account_usernames(session: Session, tenant_id: int) -> set[str]:
 
 
 __all__ = [
+    "message_comment_reservation_count",
     "message_comment_quantities",
     "reconcile_lifetime_cap",
     "resolved_total_comment_limit",
