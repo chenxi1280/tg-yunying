@@ -109,7 +109,7 @@ def test_postgres_real_planner_preserves_round_sizes_and_drains_580(
         _cleanup()
 
 
-def test_postgres_planner_creates_reply_and_normal_pending_without_external_calls(monkeypatch) -> None:
+def test_postgres_planner_phase_a_creates_pending_actions_for_dispatcher(monkeypatch) -> None:
     Base.metadata.create_all(engine)
     _cleanup()
     timestamp = _now().replace(hour=23, minute=30, second=0, microsecond=0)
@@ -118,10 +118,9 @@ def test_postgres_planner_creates_reply_and_normal_pending_without_external_call
     def forbidden_external(*_args, **_kwargs):
         raise AssertionError("Planner Phase A must not call external services")
 
-    monkeypatch.setattr(group_ai_chat, "should_collect_listener", forbidden_external, raising=False)
-    monkeypatch.setattr(group_ai_chat, "collect_group_context", forbidden_external, raising=False)
-    monkeypatch.setattr(group_ai_chat, "generate_group_messages", forbidden_external)
-    monkeypatch.setattr(group_ai_chat, "generate_group_reply_messages", forbidden_external)
+    monkeypatch.setattr("app.services.group_listeners.collect_group_context", forbidden_external)
+    monkeypatch.setattr("app.services.task_center.ai_generator.generate_group_messages", forbidden_external)
+    monkeypatch.setattr("app.services.task_center.ai_generator.generate_group_reply_messages", forbidden_external)
     try:
         _seed_real_planner_scope(10, timestamp)
         with SessionLocal() as session:
@@ -151,6 +150,7 @@ def test_postgres_planner_creates_reply_and_normal_pending_without_external_call
 
         assert len(actions) == reserved == 10
         assert cursor.version >= 1
+        assert all(action.status == "pending" for action in actions)
         assert sum(bool(action.payload["reply_to_message_id"]) for action in actions) == 1
         assert all(action.payload["ai_generation_status"] == "pending" for action in actions)
         assert all(not action.payload["message_text"] for action in actions)
