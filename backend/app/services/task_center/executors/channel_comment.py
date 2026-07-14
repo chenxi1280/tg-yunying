@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 
 from sqlalchemy import func, select
@@ -78,7 +78,9 @@ def build_plan(session: Session, task: Task) -> int:
         return setup.created
     if not _lock_comment_task(session, task):
         return 0
-    context = setup.context
+    context = _refresh_locked_comment_budget(session, task, setup.context)
+    if not context:
+        return 0
     slots = _comment_plan_slots(session, task, context)
     if not slots:
         return 0
@@ -90,6 +92,17 @@ def build_plan(session: Session, task: Task) -> int:
     stats["reply_planned_count"] = reply_count
     task.stats = stats
     return _create_prepared_actions(session, task, prepared)
+
+
+def _refresh_locked_comment_budget(
+    session: Session,
+    task: Task,
+    context: CommentPlanContext,
+) -> CommentPlanContext | None:
+    total_remaining = reconcile_lifetime_cap(session, task, context.config)
+    if total_remaining <= 0:
+        return None
+    return replace(context, total_remaining=total_remaining)
 
 
 def _create_prepared_actions(
