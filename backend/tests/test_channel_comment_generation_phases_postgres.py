@@ -1,5 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
+from time import monotonic
 
 from sqlalchemy import delete, func, select
 
@@ -29,6 +30,15 @@ def test_postgres_two_channel_comment_planners_do_not_duplicate_pending_blueprin
     Base.metadata.create_all(engine)
     _cleanup()
     start = Barrier(2)
+    planning_ready = Barrier(2)
+    original_planning_accounts = channel_comment._planning_accounts
+
+    def synchronized_planning_accounts(*args, **kwargs):
+        accounts = original_planning_accounts(*args, **kwargs)
+        planning_ready.wait(timeout=5)
+        return accounts
+
+    monkeypatch.setattr(channel_comment, "_planning_accounts", synchronized_planning_accounts)
     monkeypatch.setattr(
         channel_comment,
         "tenant_learning_profile_preview",
@@ -50,13 +60,16 @@ def test_postgres_two_channel_comment_planners_do_not_duplicate_pending_blueprin
                 session.commit()
                 return created
 
+        started_at = monotonic()
         with ThreadPoolExecutor(max_workers=2) as pool:
             created_counts = list(pool.map(run_planner, range(2)))
+        elapsed = monotonic() - started_at
 
         with SessionLocal() as session:
             actions = list(session.scalars(select(Action).where(Action.task_id == TASK_ID)))
 
         assert sorted(created_counts) == [0, 2]
+        assert elapsed < 5
         assert len(actions) == 2
         assert len({action.action_dedupe_key for action in actions}) == 2
         assert all(action.status == "pending" for action in actions)

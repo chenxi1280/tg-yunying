@@ -76,6 +76,8 @@ def build_plan(session: Session, task: Task) -> int:
     setup = _comment_plan_setup(session, task)
     if not setup.context:
         return setup.created
+    if not _lock_comment_task(session, task):
+        return 0
     context = setup.context
     slots = _comment_plan_slots(session, task, context)
     if not slots:
