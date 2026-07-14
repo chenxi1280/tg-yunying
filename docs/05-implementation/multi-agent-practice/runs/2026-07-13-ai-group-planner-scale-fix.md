@@ -183,6 +183,20 @@
 - I3 将 stats 和 runtime summary 的 Action 状态计数统一为 tenant + task、`count(*)` 的共享 SQL，并把 `ix_actions_task_stats_reconcile` 调整为 tenant-leading。40,741 Action 经 `VACUUM ANALYZE` 后，对实际 production statement 的 EXPLAIN 命中目标索引且无 Seq Scan；跨租户伪造 Action 不进入任一汇总。
 - 定向真 PostgreSQL 证据：runtime stats 全文件连续两轮 `5 passed`（10.76s / 10.38s），tenant isolation `3 passed`，Recovery lock scope `1 passed`。本节仅恢复 I2/I3 的 Dev E2，I1 仍按上一节专项三阶段合同待实现；独立 re-QA、Product Acceptance、发布和生产 E4 均未完成。
 
+### AI 活群与频道评论 Phase A/B/C 当前流转
+
+- `prod-diagnosis`：2026-07-14 17:30-17:41 CST 复查时，生产仍运行 `fecdcfae`，不是本轮 `9e26d08c..6bf6dfce` 实现。Planner、dispatcher-2/3/4 不健康，仅 dispatcher-1 健康；数据库有 20 个超过 60 秒的事务、21 个阻塞会话，累计 deadlock 351。当天最近可读的 15:34 覆盖快照仅为 4 个任务各 `13/580、8/580、9/580、18/580`；刷新本身又被锁链阻塞，因此结论保持 `production_blocked`，不能写 `production_fixed`。
+- `product`：提交 `9e26d08c` 已完成 Product Design Complete 和数据流 resync。统一契约是 Planner 只使用持久事实创建稳定蓝图；Dispatcher 在无活动数据库事务时调用 AI，再以 generation lease/attempt CAS 完成 Phase C 质量与结果落库；`ai_result_persist_unknown` 与 Telegram `unknown_after_send` 分层。频道引用回复固定已选目标与规则版本快照，目标失效不降级为普通评论。
+- `dev / group_ai_chat`：`fe7aa6c5..23611480` 将 AI 活群 Planner 收敛为 Phase A：每批最多 20 条，固定 Cycle/slot/account/coverage/reply/画像/话题，原子创建 `pending` Action、预约 coverage 并推进游标；`ai_generation_*` 承担 Phase B 无事务 Provider/Grok/远端 reply 复核和 Phase C slot 映射、内容政策、消息记忆、质量、CAS、恢复。Action/slot/coverage 在重试中保持不变。
+- `dev / channel_comment`：`9e6dd0a2..6bf6dfce` 将评论 Planner 收敛为只读取已采集频道消息并创建空文本 `pending` 蓝图；任务级事务 advisory lock 在准备提交后重新取得，双 Planner 串行 Action 创建且不重复蓝图。failed/skipped 释放预算与 slot，pending/claiming/executing/success/unknown 占用。`comment_generation_dispatch.py` 在 claim 提交后生成 direct/reply 评论，Phase B/C 都复核源消息仍可评论；`comment_generation_quality.py` 使用 Planner 固定的规则版本快照、完整非空 Action/远端历史和统一 outbound policy。`0094_channel_comment_history.py` 为 modern/legacy 历史查询提供 partial index；失效源消息/reply 不调用 Provider/Gateway、不转 direct，stale CAS 释放账号运行时预约，重试按 attempt 清理旧 Provider 标记并终结审计。
+- `dev / worker`：`b5374a09..466585b3` 让独立周期线程同时刷新数据库 heartbeat 与本地 Docker health 文件；本地文件写入串行并原子替换。长 drain 不再只靠主循环返回后刷新健康事实，写失败继续显式记录。
+- `qa / E2 当前证据`：群聊边界测试覆盖 Planner 外部入口零调用、10/30/60 Turn 有界切批、slot/account/coverage 映射、质量失败释放、stale CAS、生成落库未知恢复和真 PostgreSQL 双领取；评论边界测试覆盖 Planner 零 AI/远端采集、预算状态补位、direct/reply 生成、固定 reply/规则快照、源消息关闭、超过 50 条空蓝图不遮挡历史成功、stale runtime reservation 释放、attempt 审计/Provider 标记重置、persist-unknown、真 PostgreSQL 双 Planner/Dispatcher 与 reply/unknown 二次领取；0094 覆盖 SQLite 升降级、缺表/invalid/DDL 失败暴露。worker role 测试覆盖长 drain 期间 DB/local 双心跳和并发文件写。以上是 Dev 定向 E2 证据，完整受影响套件、独立 re-QA 与 Product Acceptance 仍在 Task 5，尚未写 `qa_pass` 或 `product_accepted`。
+- `qa / Task 3`：频道评论最终独立复核 `39 passed`，上轮 4 个 Important 全部关闭；真 PostgreSQL direct 双 Dispatcher、reply、unknown cache 二次 claim 通过。0094 在真 PostgreSQL 重复 upgrade/downgrade 成功，modern/legacy 查询分别命中两个目标索引；相关 compile、diff-check、文件/函数硬限制通过。该结论只接受 Task 3，Task 5 完整受影响套件与整体 Product Acceptance 尚未完成。
+- `qa / Task 2 concurrency`：`6bf6dfce` 的真 PostgreSQL 双 Planner 确定性竞态得到创建数 `[0,2]`、最终仅 2 个 Action 且 `<5s`；并发用例连续 10 次和提交后复验均通过。Task 2/3 相关回归、ruff、编译、diff 与代码指标通过；调试输出未进入提交。
+- `配置边界`：郑州任务当前仍绑定 `account_group_id=9 / selection_mode=natural`，不是全账号口径；青岛任务仍为 paused，且存在失效 `@qdsfxy` 与账号可发送能力不足事实。这些是业务配置 / 授权资产 blocker，不属于本次事务边界代码修复；未获产品确认前不擅自改为 all、不恢复青岛任务。
+- `评论生产事实`：15:34 快照中阿哥日记为当天 12 条 success、11 个账号，最新成功约 15:12，仍有 9 条 overdue；17:41 刷新没有取得新的 success + ExecutionAttempt remote message id 组合。评论链路因此仍为 `unproven/blocked`，worker healthy 或本地测试通过都不能替代真实远端成功。
+- 当前阶段：`prod-diagnosis -> product -> dev` 已完成，`qa` 正在收口；随后仍须回到 `product` 验收，再进入 `prod-diagnosis` 做真实发布后 E4。代码尚未合入 `master -> release`，尚未触发本轮生产发布，Release Gate 保持 blocked。
+
 ## Release Gate 与 E4
 
 1. 按 `master -> release -> GitHub Actions Deploy Production` 发布并核对实际镜像 commit。
