@@ -3,7 +3,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.services.task_center.ai_generator import AiGenerationUnavailable
 from app.services.task_center import ai_generator
 from app.services.task_center.executors import channel_comment
 
@@ -11,26 +10,11 @@ from app.services.task_center.executors import channel_comment
 pytestmark = pytest.mark.no_postgres
 
 
-def test_channel_comment_normal_candidate_shortfall_is_visible_failure(monkeypatch):
-    task = SimpleNamespace(tenant_id=1, stats={})
+def test_channel_comment_planner_has_no_ai_generation_entrypoints():
+    source = Path(channel_comment.__file__).read_text()
 
-    def fake_generate_channel_comments(_session, _tenant_id, _config, *, count, message_content, target_label):
-        assert count == 3
-        return ["只返回一条评论"], 0
-
-    monkeypatch.setattr(channel_comment, "generate_channel_comments", fake_generate_channel_comments)
-
-    with pytest.raises(AiGenerationUnavailable, match="AI 评论候选不足"):
-        channel_comment._generate_normal_channel_comments(
-            None,
-            task,
-            {},
-            3,
-            SimpleNamespace(content_preview="频道原文", message_url="https://t.me/c/1/2"),
-            "测试频道",
-        )
-
-    assert task.stats["normal_candidate_shortfall_count"] == 1
+    assert "generate_channel_comments" not in source
+    assert "generate_channel_reply_comments" not in source
 
 
 def test_channel_comment_clean_rejects_provider_meta_content():

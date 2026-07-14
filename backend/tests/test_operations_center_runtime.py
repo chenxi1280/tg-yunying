@@ -3767,7 +3767,7 @@ def test_channel_task_explicit_message_scope_is_preserved():
     assert comment_payload.message_scope == "specific"
 
 
-def test_channel_comment_reply_mode_requires_and_plans_reply_targets(monkeypatch):
+def test_channel_comment_reply_mode_requires_and_plans_reply_targets():
     try:
         ChannelCommentTaskCreate(name="缺少回复目标", target_channel_id=1, comment_mode="reply")
     except Exception as exc:  # pydantic validation error
@@ -3780,7 +3780,6 @@ def test_channel_comment_reply_mode_requires_and_plans_reply_targets(monkeypatch
 
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
-    monkeypatch.setattr("app.services.task_center.executors.channel_comment.generate_channel_comments", lambda *_args, **_kwargs: (["回复 A", "回复 B"], 0))
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(_initialized_comment_account())
@@ -3819,10 +3818,9 @@ def test_channel_comment_reply_mode_requires_and_plans_reply_targets(monkeypatch
     assert actions[0].payload["reply_target_label"] == "回复消息 #8101"
 
 
-def test_channel_comment_reply_targets_must_belong_to_selected_messages(monkeypatch):
+def test_channel_comment_reply_targets_must_belong_to_selected_messages():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
-    monkeypatch.setattr("app.services.task_center.executors.channel_comment.generate_channel_comments", lambda *_args, **_kwargs: (["回复 A"], 0))
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(_initialized_comment_account())
@@ -3858,16 +3856,9 @@ def test_channel_comment_reply_targets_must_belong_to_selected_messages(monkeypa
         assert session.scalars(select(Action).where(Action.task_id == task.id)).all() == []
 
 
-def test_channel_comment_drops_ai_template_duplicates_and_missing_fillers(monkeypatch):
+def test_channel_comment_planner_defers_template_and_duplicate_filtering():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
-    generated = [
-        "这个内容挺有参考价值，先收藏一下。",
-        "这个角度不错，值得再讨论一下。",
-        "说得比较实在，后面可以继续展开看看。",
-        "收纳盒这个尺寸有人实测过吗",
-    ]
-    monkeypatch.setattr("app.services.task_center.executors.channel_comment.generate_channel_comments", lambda *_args, **_kwargs: (generated, 0))
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(_initialized_comment_account())
@@ -3907,16 +3898,17 @@ def test_channel_comment_drops_ai_template_duplicates_and_missing_fillers(monkey
         session.commit()
 
         created = build_channel_comment_plan(session, task)
-        comments = [action.payload["comment_text"] for action in session.scalars(select(Action).where(Action.task_id == task.id, Action.status == "pending"))]
+        pending = session.scalars(select(Action).where(Action.task_id == task.id, Action.status == "pending")).all()
 
-    assert created == 1
-    assert comments == ["收纳盒这个尺寸有人实测过吗"]
+    assert created == 4
+    assert len(pending) == 4
+    assert all(action.payload["comment_text"] == "" for action in pending)
+    assert all(action.payload["ai_generation_status"] == "pending" for action in pending)
 
 
-def test_channel_comment_dedupes_same_message_beyond_recent_task_window(monkeypatch):
+def test_channel_comment_planner_defers_same_message_text_dedupe():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
-    monkeypatch.setattr("app.services.task_center.executors.channel_comment.generate_channel_comments", lambda *_args, **_kwargs: (["收纳盒这个尺寸有人实测过吗"], 0))
     base_time = datetime(2026, 5, 24, 12, 0, 0)
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
@@ -3973,10 +3965,12 @@ def test_channel_comment_dedupes_same_message_beyond_recent_task_window(monkeypa
             )
         session.commit()
 
-        assert build_channel_comment_plan(session, task) == 0
+        assert build_channel_comment_plan(session, task) == 1
         pending = session.scalars(select(Action).where(Action.task_id == task.id, Action.status == "pending")).all()
 
-    assert pending == []
+    assert len(pending) == 1
+    assert pending[0].payload["comment_text"] == ""
+    assert pending[0].payload["ai_generation_status"] == "pending"
 
 
 def test_ai_cycle_mode_applies_silent_window_and_daily_ramp():
