@@ -220,6 +220,7 @@ def generate_contents(
     target_label: str = "",
     system_prompt: str | None = None,
     required_model_family: str = "",
+    close_transaction_before_external: bool = False,
 ) -> tuple[list[str], int]:
     topic = _sanitize_sensitive_context(topic)
     requirements = _sanitize_sensitive_context(requirements)
@@ -254,8 +255,18 @@ def generate_contents(
         required_model_family=required_model_family,
         allow_quota_rotation=not provider_id,
         purpose=purpose,
-        close_transaction_before_external=False,
+        close_transaction_before_external=close_transaction_before_external,
     )
+    return _generated_contents_result(result, provider, purpose=purpose, count=count)
+
+
+def _generated_contents_result(
+    result,
+    provider: AiProvider,
+    *,
+    purpose: str,
+    count: int,
+) -> tuple[list[str], int]:
     raw_contents = [
         _generated_content_from_candidate(candidate)
         for candidate in result.candidates
@@ -1284,6 +1295,7 @@ def _generate_channel_contents_with_retry(
                 purpose=purpose,
                 target_label=target_label,
                 system_prompt=_channel_comment_attempt_system_prompt(attempt),
+                close_transaction_before_external=bool(config.get("_close_db_transaction_before_ai")),
             )
         except AiGenerationUnavailable as exc:
             if not _is_retryable_channel_generation_error(exc):

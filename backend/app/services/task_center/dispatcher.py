@@ -45,6 +45,12 @@ from .account_voice_profiles import upsert_group_stance_memory
 from . import ai_generation_dispatch as _ai_generation_dispatch
 from .ai_generation_composition import PRODUCTION_GENERATION_DEPENDENCIES
 from .ai_generation_dependencies import GenerationDependencies
+from .comment_generation_dispatch import (
+    CommentGenerationDependencies,
+    GenerationAttemptStale,
+    PRODUCTION_COMMENT_GENERATION_DEPENDENCIES,
+    ensure_post_comment_content,
+)
 from .ai_generator import (
     AI_GENERATION_UNAVAILABLE_MESSAGE,
     AiGenerationUnavailable,
@@ -235,6 +241,14 @@ class ActionDispatchContext:
     account: TgAccount
     payload: object
     generation_dependencies: GenerationDependencies
+    comment_generation_dependencies: CommentGenerationDependencies
+
+
+@dataclass(frozen=True)
+class CommentDispatchContext:
+    account: TgAccount
+    credentials: object
+    payload: PostCommentPayload
 
 
 @dataclass(frozen=True)
@@ -300,12 +314,14 @@ def dispatch_action(
     action: Action,
     *,
     generation_dependencies: GenerationDependencies = PRODUCTION_GENERATION_DEPENDENCIES,
+    comment_generation_dependencies: CommentGenerationDependencies = PRODUCTION_COMMENT_GENERATION_DEPENDENCIES,
 ) -> bool:
     try:
         return _dispatch_action(
             session,
             action,
             generation_dependencies=generation_dependencies,
+            comment_generation_dependencies=comment_generation_dependencies,
         )
     finally:
         _sync_action_coverage_state(session, action)
@@ -317,6 +333,7 @@ def _dispatch_action(
     action: Action,
     *,
     generation_dependencies: GenerationDependencies,
+    comment_generation_dependencies: CommentGenerationDependencies,
 ) -> bool:
     if _legacy_review_enabled() and has_pending_review(session, action.id):
         return False
@@ -334,7 +351,12 @@ def _dispatch_action(
         return _dispatch_validated_action(
             session,
             action,
-            ActionDispatchContext(account, payload, generation_dependencies),
+            ActionDispatchContext(
+                account,
+                payload,
+                generation_dependencies,
+                comment_generation_dependencies,
+            ),
         )
     except (ValidationError, ValueError) as exc:
         _update_reply_payload_error_stats(action)
@@ -420,7 +442,12 @@ def _dispatch_credentialed_action(
     if action.action_type == "like_message":
         return _dispatch_like(action, context.account, credentials, session, context.payload)
     if action.action_type == "post_comment":
-        return _dispatch_comment(action, context.account, credentials, session, context.payload)
+        return _dispatch_comment(
+            session,
+            action,
+            CommentDispatchContext(context.account, credentials, context.payload),
+            generation_dependencies=context.comment_generation_dependencies,
+        )
     _fail(action, FailureType.UNKNOWN.value, f"未知 action_type: {action.action_type}")
     return True
 
@@ -807,7 +834,7 @@ def _confirm_claim(
 def _snapshot_ai_generation_claim(action: Action) -> None:
     payload = dict(action.payload or {})
     generation_status = payload.get("ai_generation_status")
-    if action.action_type != "send_message" or generation_status not in {"pending", "ai_result_persist_unknown"}:
+    if action.action_type not in {"send_message", "post_comment"} or generation_status not in {"pending", "ai_result_persist_unknown"}:
         return
     payload["ai_generation_claim_owner"] = action.claim_owner
     payload["ai_generation_claim_token"] = action.claim_token
@@ -3258,7 +3285,15 @@ def _dispatch_like(action: Action, account: TgAccount, credentials, session: Ses
     return True
 
 
-def _dispatch_comment(action: Action, account: TgAccount, credentials, session: Session, payload: PostCommentPayload) -> bool:
+def _dispatch_comment(
+    session: Session,
+    action: Action,
+    context: CommentDispatchContext,
+    *,
+    generation_dependencies: CommentGenerationDependencies,
+) -> bool:
+    account = context.account
+    payload = context.payload
     if _comment_total_limit_reached(session, action):
         _skip(action, "comment_task_total_reached", "频道评论任务总上限已达到，跳过旧计划")
         return True
@@ -3266,6 +3301,17 @@ def _dispatch_comment(action: Action, account: TgAccount, credentials, session: 
         _skip(action, "comment_target_reached", "频道消息评论已达到当前上限，跳过旧计划")
         return True
     if not _ensure_channel_action_membership(session, action, account, payload.channel_target_id):
+        return True
+    try:
+        payload = ensure_post_comment_content(
+            session,
+            action,
+            payload=payload,
+            dependencies=generation_dependencies,
+        )
+    except (AiGenerationUnavailable, GenerationAttemptStale):
+        return True
+    if payload.ai_generation_status != "ready" or not payload.comment_text.strip():
         return True
     account_id = account.id
     session_ciphertext = account.session_ciphertext
@@ -3283,7 +3329,7 @@ def _dispatch_comment(action: Action, account: TgAccount, credentials, session: 
     _mark_executing(action)
     session.commit()
     _mark_gateway_call_started(session, attempt)
-    result = gateway.reply_channel_message(account_id, channel_peer, message_id, content, session_ciphertext, credentials, reply_to_message_id=payload.reply_to_message_id)
+    result = gateway.reply_channel_message(account_id, channel_peer, message_id, content, session_ciphertext, context.credentials, reply_to_message_id=payload.reply_to_message_id)
     _apply_send_result(action, account, result.ok, result.remote_message_id or "", result.failure_type or "", result.detail or "", attempt=attempt)
     return True
 

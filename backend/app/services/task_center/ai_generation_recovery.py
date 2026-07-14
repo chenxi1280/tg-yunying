@@ -62,7 +62,7 @@ def _reset_action_for_recovery(
 
 def recover_stale_pre_gateway_generation(action: Action) -> bool:
     data = dict(action.payload or {})
-    if not _is_generating_group_action(action, data):
+    if not _is_generating_ai_action(action, data):
         return False
     attempt_id = str(data.get("ai_generation_attempt_id") or "")
     if (action.result or {}).get("ai_provider_call_started_at"):
@@ -99,12 +99,12 @@ def recover_stale_pre_gateway_generation(action: Action) -> bool:
     return True
 
 
-def _is_generating_group_action(action: Action, data: dict) -> bool:
-    return (
-        action.task_type == "group_ai_chat"
-        and action.action_type == "send_message"
-        and data.get("ai_generation_status") == "generating"
+def _is_generating_ai_action(action: Action, data: dict) -> bool:
+    generation_action = (
+        (action.task_type == "group_ai_chat" and action.action_type == "send_message")
+        or (action.task_type == "channel_comment" and action.action_type == "post_comment")
     )
+    return generation_action and data.get("ai_generation_status") == "generating"
 
 
 __all__ = ["persist_generation_unknown", "recover_stale_pre_gateway_generation"]

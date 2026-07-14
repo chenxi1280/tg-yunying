@@ -41,6 +41,8 @@ class PostCommentPayload(ViewMessagePayload):
     ai_generation_claim_owner: str = ""
     ai_generation_claim_token: str = ""
     ai_generation_attempt_history: list[dict[str, Any]] = Field(default_factory=list)
+    ai_generation_result_cache: dict[str, Any] = Field(default_factory=dict)
+    ai_generation_tokens: int = 0
     rule_set_id: int | None = None
     rule_set_name: str = ""
     rule_set_version_id: int | None = None
