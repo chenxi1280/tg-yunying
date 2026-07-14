@@ -5206,3 +5206,34 @@ def test_runtime_cleanup_summarizes_then_deletes_all_window_out_details():
         assert session.query(RuntimeCleanupAudit).count() == 1
         global_unknown = session.query(DailyRuntimeStat).filter_by(stat_date=old_at.date(), dimension_type="global", dimension_id="all", metric_name="status.unknown_after_send").one()
         assert global_unknown.metric_value == 1
+
+
+def test_runtime_cleanup_batches_details_and_accumulates_totals():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    today = date(2026, 5, 15)
+    old_at = datetime(2026, 5, 9, 10, 0, 0)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(Task(id="task-batch-clean", tenant_id=1, name="clean", type="group_relay", status="running"))
+        session.add_all(
+            Action(
+                id=f"old-{index}", tenant_id=1, task_id="task-batch-clean", task_type="group_relay",
+                action_type="send_message", status="success", scheduled_at=old_at, executed_at=old_at,
+            )
+            for index in range(3)
+        )
+        session.commit()
+
+        assert cleanup_runtime_details(session, retention_days=5, today=today, batch_size=2) == 2
+        session.commit()
+        assert session.query(Action).count() == 1
+        assert cleanup_runtime_details(session, retention_days=5, today=today, batch_size=2) == 1
+        session.commit()
+
+        total = session.query(DailyRuntimeStat).filter_by(
+            stat_date=old_at.date(), dimension_type="global", dimension_id="all", metric_name="total",
+        ).one()
+        assert total.metric_value == 3
+        assert session.query(RuntimeCleanupAudit).count() == 2

@@ -1577,7 +1577,11 @@ def _drain_task_recovery(session_factory, *, limit: int, process_type: str | Non
         processed += expire_reviews(session)
         settings = get_settings()
         if settings.enable_runtime_retention_cleanup:
-            processed += cleanup_runtime_details(session, retention_days=settings.runtime_detail_retention_days)
+            processed += cleanup_runtime_details(
+                session,
+                retention_days=settings.runtime_detail_retention_days,
+                batch_size=limit,
+            )
             processed += cleanup_runtime_metric_snapshots_if_due(
                 session,
                 retention_days=settings.runtime_metric_retention_days,

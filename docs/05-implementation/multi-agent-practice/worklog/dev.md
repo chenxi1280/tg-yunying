@@ -446,3 +446,12 @@
 - evidence: 失败前严格第二周期回归稳定暴露 `account_inflight_conflict`；修复后原 12 项 `12 passed`、workflow 全文件 `104 passed / 14 skipped`、相关 generation/comment/coverage `38 passed`。
 - decision: `development_complete=true`；不恢复 Dispatcher 热路径全历史 stats，不以 pending 冒充发送成功；转独立 re-QA。
 - unresolved: 新 commit 尚未发布，生产仍为 `fecdcfae`。
+
+## 2026-07-15 Runtime Retention 长事务 Development Complete
+
+- message_id: `2026-07-15-runtime-retention-batch-devcomplete-001`
+- root_cause: 生产新 recovery 真实复现 `cleanup_runtime_details` 全量载入并单事务删除所有过期 Action，DELETE 超过 6 分钟且拖慢 planner/dispatcher；不是旧容器残留。
+- output: 按 recovery `limit` 确定性选取最早创建的过期 Action并 `FOR UPDATE SKIP LOCKED`；每批独立汇总、删子表/Action、记审计，统计用原子 upsert 跨批累加。Coverage/Admission 长期记录清空 Action 引用，SearchRank 动作预约随 Action 删除。生产 EXPLAIN 复用 `ix_actions_created_at`，避免 effective-time 排序触发全表扫描。
+- evidence: TDD 红灯为 `batch_size` 不支持；绿灯验证 3 条按 2+1 删除、total=3。独立 review 的 1 Critical/2 Important 由真 PG 全外键与双 session 回归关闭；合并相关测试 `40 passed`，workflow `104 passed / 14 skipped`。
+- decision: `development_complete=true`；转 re-QA，尚未重新发布。
+- unresolved: 完整 Release Checks、新 recovery 每轮事务时长、评论远端成功与北京时间自然日覆盖 E4。

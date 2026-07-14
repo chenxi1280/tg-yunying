@@ -209,6 +209,15 @@
 - re-QA：原 12 个失败 workflow `12 passed`；`test_workflow.py` 全文件 `104 passed / 14 skipped`；北京时间 `TZ=UTC` 的 5 个 coverage/dispatch/material 文件 `60 passed`；generation recovery + 评论并发 + generation phase + coverage 组合 `38 passed`；前序 recovery 与双 Dispatcher 原失败顺序 `2 passed`。compileall、diff-check、变更函数 `GROWN_OVER50=0 / NEW_OVER50=0` 通过，Critical / Important / Minor=`0 / 0 / 0`。
 - Product Acceptance：`qa_pass=true`、`product_accepted=true`（仅 E2），Release Gate 再次 ready。生产仍为旧 `fecdcfae`，真实 worker、长事务、覆盖矩阵和评论远端结果必须在新 release 上重新取得 E4，当前仍禁止写 `production_fixed`。
 
+### 生产发布与 Runtime Retention 三次 rework
+
+- 第三次 release merge `a535ccc8` 的 Deploy Production run `29363008024` 已完整通过 checks、frontend build、backend/frontend image build、SSH deploy 与 Grok bridge；生产 `current` 已切到 `20260714195333_a535ccc`，backend、planner、4 个 dispatcher、listener、recovery、metrics、account 与 ai-memory worker 曾全部转为 healthy。
+- 部署启动被旧容器地址 `172.19.0.8` 的 1 小时事务阻塞：该会话在全量删除 actions，另一个旧 heartbeat 会话及 `0093` 并发索引迁移均被它阻塞。确认旧容器已移除后终止两个陈旧会话，迁移、后端和全部 worker 随后正常启动。
+- 新 recovery 启动后同一问题再次真实复现：`cleanup_runtime_details` 每轮无上限加载所有 5 天前 Action，并在单事务中全量汇总、删除 Attempts/Reviews/Actions；新会话再次连续删除超过 6 分钟，数据库查询延迟升至分钟级，评论动作长期停留 claiming/pending。这证明根因属于当前 retention 实现，不是旧会话偶发残留。
+- Product Handoff：保留 5 天 retention、逐维汇总、审计和显式失败合同；每个 recovery 周期只处理本轮 `limit` 个最老 Action，子表与 Action 同事务删除，每批独立审计；DailyRuntimeStat 对后续批次做累加，不能覆盖前一批汇总。覆盖账本和入群长期记录保留业务快照并清空过期 Action 引用，动作专属搜索降权预约随 Action 删除。禁止跳过清理、吞错或扩大 retention 作为 fallback。
+- Dev：`cleanup_runtime_details` 增加确定性最早创建优先批次并用 `FOR UPDATE SKIP LOCKED` 防止双 worker 重领；recovery 将自身 `limit` 作为批量（生产 100）；统计改为 PostgreSQL/SQLite 原子 upsert 累加。生产 EXPLAIN 从 effective-time 排序的 `Seq Scan + Sort cost 39608` 收敛为复用 `ix_actions_created_at` 的 `Index Scan + Incremental Sort first-100 cost 533`。生产 recovery 在修复发布前显式停止，并终止其已失去客户端的长 DELETE 会话，其他业务 worker 保持 healthy。
+- re-QA：新增红绿回归先稳定暴露不支持 `batch_size`，修复后验证 3 条历史 Action 按 2+1 两轮删除且全局 total 累加为 3；真 PostgreSQL 外键回归覆盖 Coverage 2 字段、Admission 4 字段与 SearchRank reservation；双 session 并发稳定取得 1+1 不重复批次且原子汇总为 2。合并 retention/role/recovery/runtime stats/tenant isolation/generation recovery 共 `40 passed`，workflow `104 passed / 14 skipped`。本轮仍需完整 Release Checks 和新版本生产 E4，当前不得写 `production_fixed`。
+
 ## Release Gate 与 E4
 
 1. 按 `master -> release -> GitHub Actions Deploy Production` 发布并核对实际镜像 commit。

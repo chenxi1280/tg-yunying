@@ -351,3 +351,10 @@
 - evidence: run `29362258741` 为 `2 failed / 2209 passed / 14 skipped`，两项均由测试 `coverage_date=date.today()` 在 UTC runner 跨北京时间自然日造成；测试库同类 9 处统一使用 `beijing_now().date()` 后，`TZ=UTC` 下 5 个相关文件 `60 passed`。
 - decision: `qa_pass=true`；未改生产覆盖日期、分母或远端成功合同，Release Gate 再次 ready。
 - unresolved: 重新触发完整 checks/build/deploy 和生产 E4。
+
+## 2026-07-15 Runtime Retention 长事务 re-QA
+
+- message_id: `2026-07-15-runtime-retention-batch-qa-001`
+- evidence: 新批处理用例验证 2+1 分轮删除和统计累加；真 PostgreSQL 覆盖所有已知 Action 外键及双 session `SKIP LOCKED + atomic upsert`；合并 retention/worker role/recovery/runtime/generation 共 `40 passed`，workflow `104 passed / 14 skipped`。
+- decision: 独立 review 的 Critical/Important 已关闭，`qa_pass=true`；保留 retention 天数、汇总维度、审计和错误暴露，未引入跳过清理或静默降级。
+- unresolved: 完整 GitHub Actions 与修复版本生产长事务、评论、群覆盖 E4。

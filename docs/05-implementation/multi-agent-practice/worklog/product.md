@@ -515,3 +515,11 @@
 - evidence: run `29362258741` 剩余 2 项均为 UTC runner 跨日错位；`TZ=UTC` 相关 5 文件 `60 passed`。
 - decision: `product_accepted=true`（仅 E2）；Release Gate ready。
 - unresolved: 完整发布链和生产 E4。
+
+## 2026-07-15 Runtime Retention 长事务 Product Acceptance
+
+- message_id: `2026-07-15-runtime-retention-batch-product-accepted-001`
+- acceptance: 仅把历史明细清理由单次全量改为 recovery `limit` 分批；5 天 retention、逐维汇总、审计、子表与 Action 原子删除及错误显式暴露不变，跨批统计必须原子累加。长期 Coverage/Admission 保留业务事实并清空过期引用，动作专属 SearchRank reservation 随 Action 删除。
+- evidence: 生产新版本再次复现超过 6 分钟 DELETE；TDD、真 PG 全外键与双 worker 并发回归及合并 `40 passed` 关闭批次、引用、重复领取和累计合同。
+- decision: `product_accepted=true`（仅 E2）；Release Gate ready。
+- unresolved: 新发布与生产 recovery 事务、评论远端成功、完整每日群覆盖 E4。
