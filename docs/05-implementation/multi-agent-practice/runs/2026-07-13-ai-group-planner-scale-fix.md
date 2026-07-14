@@ -199,6 +199,15 @@
 - `评论生产事实`：15:34 快照中阿哥日记为当天 12 条 success、11 个账号，最新成功约 15:12，仍有 9 条 overdue；17:41 刷新没有取得新的 success + ExecutionAttempt remote message id 组合。评论链路因此仍为 `unproven/blocked`，worker healthy 或本地测试通过都不能替代真实远端成功。
 - 当前阶段：`prod-diagnosis -> product -> dev -> qa -> product` 的 E2 流转已完成，Release Gate 已具备发布条件；代码尚未合入 `master -> release`，本轮生产发布和发布后 `prod-diagnosis` E4 均未执行。生产状态继续为 `unproven/blocked`，禁止写 `production_fixed`。
 
+### Release checks rework 与最终 Product Acceptance
+
+- 首次 release merge `b28bd72b` 的 Deploy Production run `29359103999` 在 checks 阶段失败，`20 failed / 2191 passed / 14 skipped`；镜像构建和 deploy 均未执行，生产继续运行 `fecdcfae`，没有半发布。
+- 失败根因分为三组：旧 workflow 测试仍把异步 metrics 当成 Dispatcher 热路径同步统计；UTC runner 在北京时间跨日窗口用 `date.today()` 建覆盖账本；前序 generation recovery 测试留下 running task 的 due pending Action，令后续全局双 Dispatcher 测试分别领取两个不同 Action。
+- 严格 workflow 回归进一步暴露真实缺口：生成重复/质量失败已把 Action 置为 `failed`，但 `_handle_ai_generation_failure` 提前返回且未释放账号 runtime reservation，下一周期持续命中 `account_inflight_conflict`。实现只在该终态分支释放预约，不恢复每 Action 全历史 stats 写入，不接受 pending 作为成功。
+- 测试修复保持生产边界：统计断言先显式运行 metrics worker；动态频道评论先持久化 listener 输入；Deferred AI 输出按稳定 slot 映射后由目标 task dispatcher 实际发送。覆盖日期统一使用北京时间；STARTED_SCOPE 通过 finalizer 清理 Action、Task 和 SchedulingSetting。
+- re-QA：原 12 个失败 workflow `12 passed`；`test_workflow.py` 全文件 `104 passed / 14 skipped`；北京时间 `TZ=UTC` coverage 全文件 `14 passed`；generation recovery + 评论并发 + generation phase + coverage 组合 `38 passed`；前序 recovery 与双 Dispatcher 原失败顺序 `2 passed`。compileall、diff-check、变更函数 `GROWN_OVER50=0 / NEW_OVER50=0` 通过，Critical / Important / Minor=`0 / 0 / 0`。
+- Product Acceptance：`qa_pass=true`、`product_accepted=true`（仅 E2），Release Gate 再次 ready。生产仍为旧 `fecdcfae`，真实 worker、长事务、覆盖矩阵和评论远端结果必须在新 release 上重新取得 E4，当前仍禁止写 `production_fixed`。
+
 ## Release Gate 与 E4
 
 1. 按 `master -> release -> GitHub Actions Deploy Production` 发布并核对实际镜像 commit。

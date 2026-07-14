@@ -438,3 +438,11 @@
 - evidence: TDD 覆盖 4×580、容量全维等价、新账号 E2E、低频转 active 和 PostgreSQL backlog；全量 no-PostgreSQL `1246 passed`，PostgreSQL `15 passed`，编译和 diff check 通过。
 - decision: `development_complete=true`；`qa_pass=true`；`product_accepted=true`；`release_gate=ready_pending_publish`。
 - unresolved: 尚未发布；完整北京时间自然日矩阵和评论任务生产结果 unproven。
+
+## 2026-07-14 AI 交互恢复 Release Checks Rework
+
+- message_id: `2026-07-14-ai-interaction-release-rework-devcomplete-001`
+- output: workflow 测试改按异步 metrics 与持久 listener 输入验收；覆盖测试按北京时间建账；generation recovery 测试清理遗留 pending Action；生成质量失败终态释放账号 runtime reservation。
+- evidence: 失败前严格第二周期回归稳定暴露 `account_inflight_conflict`；修复后原 12 项 `12 passed`、workflow 全文件 `104 passed / 14 skipped`、相关 generation/comment/coverage `38 passed`。
+- decision: `development_complete=true`；不恢复 Dispatcher 热路径全历史 stats，不以 pending 冒充发送成功；转独立 re-QA。
+- unresolved: 新 commit 尚未发布，生产仍为 `fecdcfae`。

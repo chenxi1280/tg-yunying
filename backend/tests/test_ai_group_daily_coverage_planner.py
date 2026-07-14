@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, time
+from datetime import datetime, time
 
 import pytest
 from sqlalchemy import create_engine
@@ -20,6 +20,7 @@ from app.services.task_center.executors.group_ai_chat import (
 )
 from app.services.task_center.payloads import SendMessagePayload
 from app.services.task_center import daily_coverage
+from app.timezone import beijing_now
 
 
 pytestmark = pytest.mark.no_postgres
@@ -76,7 +77,7 @@ def _coverage(
         task_id=task.id,
         group_id=21,
         account_id=account_id,
-        coverage_date=date.today(),
+        coverage_date=beijing_now().date(),
         target_count=1,
         confirmed_count=confirmed_count,
         state=state,
@@ -259,7 +260,7 @@ def test_coverage_plan_cursor_rolls_back_with_failed_batch(session: Session) -> 
 def test_daily_coverage_open_action_gate_uses_debt_after_reserved(monkeypatch, session: Session) -> None:
     task, group = _seed(session)
     group.active_window = "00:00-23:59"
-    now_value = datetime.combine(date.today(), time(23, 59))
+    now_value = datetime.combine(beijing_now().date(), time(23, 59))
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
 
     assert requires_planning_with_open_actions(session, task) is True
