@@ -4,44 +4,52 @@ from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
-from app.models import Action, DailyRuntimeStat, ExecutionAttempt, ReviewQueue, RuntimeCleanupAudit, RuntimeMetricSnapshot
+from app.models import (
+    Action,
+    DailyRuntimeStat,
+    ExecutionAttempt,
+    ReviewQueue,
+    RuntimeCleanupAudit,
+    RuntimeMetricSnapshot,
+    SearchRankDeboostClickReservation,
+    TaskAccountDailyCoverage,
+    TaskMembershipAdmissionItem,
+)
 from app.services._common import _now
 
 RUNTIME_METRIC_CLEANUP_KIND = "runtime_metric_snapshots"
 
 
-def cleanup_runtime_details(session: Session, *, retention_days: int = 5, today: date | None = None) -> int:
-    """Roll runtime detail tables forward while keeping daily totals.
-
-    Details are retained for the most recent ``retention_days`` natural days.
-    Older action and attempt rows are summarized, audited, then physically
-    deleted. Long-lived business configuration is not touched here.
-    """
+def cleanup_runtime_details(
+    session: Session,
+    *,
+    retention_days: int = 5,
+    today: date | None = None,
+    batch_size: int = 100,
+) -> int:
+    """Summarize, audit, and delete one bounded batch of expired runtime details."""
 
     retention_days = max(1, int(retention_days or 5))
+    batch_size = max(1, int(batch_size or 100))
     today = today or _now().date()
     cutoff_date = today - timedelta(days=retention_days)
     cutoff_dt = datetime.combine(cutoff_date, datetime.min.time())
-    rows = list(
-        session.scalars(
-            select(Action).where(
-                func.coalesce(Action.executed_at, Action.scheduled_at, Action.created_at) < cutoff_dt,
-            )
-        )
-    )
+    rows = _runtime_detail_batch(session, cutoff_dt, batch_size)
     if not rows:
         return 0
     stats = _summarize_actions(rows)
     for key, value in stats.items():
-        stat_date, dimension_type, dimension_id, metric_name = key
-        _upsert_stat(session, stat_date, dimension_type, dimension_id, metric_name, value)
+        _upsert_stat(session, key, value)
     action_ids = [row.id for row in rows]
     status_counts = Counter(str(row.status or "unknown") for row in rows)
     attempt_count = session.scalar(select(func.count(ExecutionAttempt.id)).where(ExecutionAttempt.action_id.in_(action_ids))) or 0
     review_count = session.scalar(select(func.count(ReviewQueue.id)).where(ReviewQueue.action_id.in_(action_ids))) or 0
+    reference_counts = _remove_action_references(session, action_ids)
     session.execute(delete(ExecutionAttempt).where(ExecutionAttempt.action_id.in_(action_ids)))
     session.execute(delete(ReviewQueue).where(ReviewQueue.action_id.in_(action_ids)))
     session.execute(delete(Action).where(Action.id.in_(action_ids)))
@@ -49,12 +57,53 @@ def cleanup_runtime_details(session: Session, *, retention_days: int = 5, today:
         RuntimeCleanupAudit(
             cleanup_date=cutoff_date,
             status_counts=dict(status_counts),
-            deleted_counts={"actions": len(action_ids), "execution_attempts": int(attempt_count or 0), "review_queue": int(review_count or 0)},
-            summary={"retention_days": retention_days, "cutoff_date": cutoff_date.isoformat()},
+            deleted_counts={
+                "actions": len(action_ids),
+                "execution_attempts": int(attempt_count or 0),
+                "review_queue": int(review_count or 0),
+                **reference_counts,
+            },
+            summary={
+                "retention_days": retention_days,
+                "cutoff_date": cutoff_date.isoformat(),
+                "batch_size": batch_size,
+            },
             created_at=_now(),
         )
     )
     return len(action_ids) + int(attempt_count or 0) + int(review_count or 0)
+
+
+def _runtime_detail_batch(session: Session, cutoff_dt: datetime, batch_size: int) -> list[Action]:
+    age = func.coalesce(Action.executed_at, Action.scheduled_at, Action.created_at)
+    statement = (
+        select(Action)
+        .where(age < cutoff_dt)
+        .order_by(Action.created_at, Action.id)
+        .limit(batch_size)
+        .with_for_update(of=Action, skip_locked=True)
+    )
+    return list(session.scalars(statement))
+
+
+def _remove_action_references(session: Session, action_ids: list[str]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    nullable_fields = (
+        (TaskAccountDailyCoverage, TaskAccountDailyCoverage.reserved_action_id),
+        (TaskAccountDailyCoverage, TaskAccountDailyCoverage.last_success_action_id),
+        (TaskMembershipAdmissionItem, TaskMembershipAdmissionItem.membership_action_id),
+        (TaskMembershipAdmissionItem, TaskMembershipAdmissionItem.test_message_action_id),
+        (TaskMembershipAdmissionItem, TaskMembershipAdmissionItem.delete_action_id),
+        (TaskMembershipAdmissionItem, TaskMembershipAdmissionItem.rescue_action_id),
+    )
+    for model, field in nullable_fields:
+        result = session.execute(update(model).where(field.in_(action_ids)).values({field.key: None}))
+        counts[f"cleared.{model.__tablename__}.{field.key}"] = int(result.rowcount or 0)
+    result = session.execute(
+        delete(SearchRankDeboostClickReservation).where(SearchRankDeboostClickReservation.action_id.in_(action_ids))
+    )
+    counts["search_rank_deboost_click_reservations"] = int(result.rowcount or 0)
+    return counts
 
 
 def cleanup_runtime_metric_snapshots(
@@ -160,29 +209,39 @@ def _add(stats: dict[tuple[date, str, str, str], int], stat_date: date, dimensio
     stats[(stat_date, dimension_type, dimension_id, metric_name)] += int(value or 0)
 
 
-def _upsert_stat(session: Session, stat_date: date, dimension_type: str, dimension_id: str, metric_name: str, value: int) -> None:
-    existing = session.scalar(
-        select(DailyRuntimeStat).where(
-            DailyRuntimeStat.stat_date == stat_date,
-            DailyRuntimeStat.dimension_type == dimension_type,
-            DailyRuntimeStat.dimension_id == dimension_id,
-            DailyRuntimeStat.metric_name == metric_name,
-        )
+def _upsert_stat(session: Session, key: tuple[date, str, str, str], value: int) -> None:
+    stat_date, dimension_type, dimension_id, metric_name = key
+    timestamp = _now()
+    statement = _daily_stat_insert(session).values(
+        stat_date=stat_date,
+        dimension_type=dimension_type,
+        dimension_id=dimension_id,
+        metric_name=metric_name,
+        metric_value=int(value or 0),
+        updated_at=timestamp,
     )
-    if existing:
-        existing.metric_value = int(value or 0)
-        existing.updated_at = _now()
-        return
-    session.add(
-        DailyRuntimeStat(
-            stat_date=stat_date,
-            dimension_type=dimension_type,
-            dimension_id=dimension_id,
-            metric_name=metric_name,
-            metric_value=int(value or 0),
-            updated_at=_now(),
-        )
+    statement = statement.on_conflict_do_update(
+        index_elements=[
+            DailyRuntimeStat.stat_date,
+            DailyRuntimeStat.dimension_type,
+            DailyRuntimeStat.dimension_id,
+            DailyRuntimeStat.metric_name,
+        ],
+        set_={
+            "metric_value": DailyRuntimeStat.metric_value + statement.excluded.metric_value,
+            "updated_at": timestamp,
+        },
     )
+    session.execute(statement)
+
+
+def _daily_stat_insert(session: Session):
+    dialect = session.get_bind().dialect.name
+    if dialect == "postgresql":
+        return pg_insert(DailyRuntimeStat)
+    if dialect == "sqlite":
+        return sqlite_insert(DailyRuntimeStat)
+    raise RuntimeError(f"unsupported runtime retention dialect: {dialect}")
 
 
 def _action_date(action: Action) -> date:
