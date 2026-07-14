@@ -299,9 +299,10 @@ def _generate_with_provider_candidates(
     purpose: str,
     close_transaction_before_external: bool,
 ):
-    providers = [provider]
-    if allow_quota_rotation:
-        providers.extend(_quota_rotation_providers(session, provider, required_model_family))
+    providers = _provider_candidates(
+        session, provider, required_model_family=required_model_family,
+        allow_quota_rotation=allow_quota_rotation,
+    )
     provider_calls = _provider_calls(session, providers, model_name, close_transaction_before_external)
     last_exc: Exception | None = None
     for candidate, credentials in provider_calls:
@@ -328,6 +329,23 @@ def _generate_with_provider_candidates(
                 session.commit()
             if candidate == providers[-1]:
                 break
+    _raise_provider_generation_failure(last_exc, purpose)
+
+
+def _provider_candidates(
+    session: Session,
+    provider: AiProvider,
+    *,
+    required_model_family: str,
+    allow_quota_rotation: bool,
+) -> list[AiProvider]:
+    providers = [provider]
+    if allow_quota_rotation:
+        providers.extend(_quota_rotation_providers(session, provider, required_model_family))
+    return providers
+
+
+def _raise_provider_generation_failure(last_exc: Exception | None, purpose: str) -> None:
     if purpose in LONG_RUNNING_AI_PURPOSES:
         raise AiGenerationUnavailable(f"{AI_GENERATION_UNAVAILABLE_MESSAGE}：{last_exc}") from last_exc
     if last_exc:

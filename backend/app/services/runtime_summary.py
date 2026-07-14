@@ -106,6 +106,29 @@ def refresh_task_summary(
         "runtime_stage": derive_task_runtime_stage(task, summary=summary),
     }
     summary.updated_at = _now()
+    _refresh_task_issue_summary(
+        session,
+        task,
+        summary=summary,
+        latest_failure=latest_failure,
+        counts=counts,
+        target_id=target_id,
+    )
+    if target_id:
+        refresh_target_summary(session, task.tenant_id, target_id)
+    _refresh_task_account_summaries(session, task, latest_failure, include_configured_accounts=include_configured_accounts)
+    return summary
+
+
+def _refresh_task_issue_summary(
+    session: Session,
+    task: Task,
+    *,
+    summary: TaskRuntimeSummary,
+    latest_failure: Action | None,
+    counts: dict[str, int],
+    target_id: int | None,
+) -> None:
     if latest_failure:
         latest_failure_type = summary.latest_failure_type
         upsert_operation_issue(
@@ -123,10 +146,6 @@ def refresh_task_summary(
         )
     elif not any(counts.get(status, 0) for status in UNRESOLVED_FAILURE_STATUSES):
         _resolve_task_issues_if_recovered(session, task)
-    if target_id:
-        refresh_target_summary(session, task.tenant_id, target_id)
-    _refresh_task_account_summaries(session, task, latest_failure, include_configured_accounts=include_configured_accounts)
-    return summary
 
 
 def _refresh_task_account_summaries(

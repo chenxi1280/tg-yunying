@@ -2261,22 +2261,12 @@ def _recover_unknown_membership_action(
     channel_id = str(payload.get("channel_id") or "")
     if not channel_target_id or not channel_id:
         return False
-    account = session.get(TgAccount, action.account_id)
-    if account is None or account.deleted_at is not None:
+    probe_args = _unknown_membership_probe_args(session, action, payload)
+    if probe_args is None:
         return False
-    credentials = credentials_for_account(session, account)
-    account_id = account.id
-    target_type = str(payload.get("target_type") or "channel")
-    session_ciphertext = account.session_ciphertext
     session.commit()
     try:
-        result = gateway.probe_target_capabilities(
-            account_id,
-            channel_id,
-            target_type,
-            session_ciphertext,
-            credentials,
-        )
+        result = gateway.probe_target_capabilities(*probe_args)
     except TimeoutError as exc:
         if recovery_claim and not recovery_claim_owned(action, recovery_claim):
             return False
@@ -2292,11 +2282,41 @@ def _recover_unknown_membership_action(
     if not result.ok:
         _mark_unknown_membership_reprobe_failed(action=action, task=task, latest_attempt=latest_attempt, now=now, result=result)
         return False
+    _complete_unknown_membership_recovery(
+        session, action, task=task, latest_attempt=latest_attempt,
+        now=now, result=result, channel_target_id=channel_target_id,
+    )
+    return True
+
+
+def _unknown_membership_probe_args(session: Session, action: Action, payload: dict) -> tuple | None:
+    account = session.get(TgAccount, action.account_id)
+    if account is None or account.deleted_at is not None:
+        return None
+    return (
+        account.id,
+        str(payload.get("channel_id") or ""),
+        str(payload.get("target_type") or "channel"),
+        account.session_ciphertext,
+        credentials_for_account(session, account),
+    )
+
+
+def _complete_unknown_membership_recovery(
+    session: Session,
+    action: Action,
+    *,
+    task: Task,
+    latest_attempt: ExecutionAttempt | None,
+    now: datetime,
+    result,
+    channel_target_id: int,
+) -> None:
+    payload = action.payload if isinstance(action.payload, dict) else {}
     label = "可发言" if payload.get("require_send") else "已关注"
-    mark_channel_membership_joined(session, action.tenant_id, channel_target_id, account.id, permission_label=label)
+    mark_channel_membership_joined(session, action.tenant_id, channel_target_id, action.account_id, permission_label=label)
     _mark_membership_action_recovered(action, task, latest_attempt, now, result.detail or "补偿复检已满足目标准入")
     _sync_all_account_membership_state(session, action)
-    return True
 
 
 def _mark_unknown_membership_reprobe_timeout(
