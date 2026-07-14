@@ -10,13 +10,14 @@ from app.auth import get_challenge_target
 from app.database import SessionLocal
 from app.main import app
 from app.integrations.telegram import ChannelCommentSnapshot, ChannelMessageSnapshot, DeveloperAppCredentials, GroupMessageSnapshot, GroupSnapshot, OperationResult, SendResult, VerificationCodeSnapshot
-from app.models import AccountStatus, Action, AiDraft, AiGroupMessageMemory, AiUsageLedger, AuditLog, Campaign, DeveloperAppHealthStatus, FailureType, GroupContextMessage, ListenerSourceState, ManualOperationRecord, Material, MessageFingerprint, MessageTask, OperationTarget, OperationTaskAttempt, ReviewQueue, SchedulingSetting, SourceMediaAsset, TargetRuntimeSummary, Task, TaskStatus, TelegramDeveloperApp, Tenant, TgAccount, TgAccountOnlineState, TgAccountProfileSyncRecord, TgAccountSyncRecord, TgGroup, TgGroupAccount, TgLoginFlow, VerificationTask
+from app.models import AccountStatus, Action, AiDraft, AiGroupMessageMemory, AiUsageLedger, AuditLog, Campaign, DeveloperAppHealthStatus, FailureType, GroupContextMessage, ListenerSourceState, ManualOperationRecord, Material, MessageFingerprint, MessageTask, OperationTarget, OperationTaskAttempt, ReviewQueue, SchedulingSetting, SourceMediaAsset, TargetRuntimeSummary, Task, TaskRuntimeSummary, TaskStatus, TelegramDeveloperApp, Tenant, TgAccount, TgAccountOnlineState, TgAccountProfileSyncRecord, TgAccountSyncRecord, TgGroup, TgGroupAccount, TgLoginFlow, VerificationTask
 from app.services._common import _now
 from app.services.notifications import NotificationResult
 from app.services.task_center.listener_runtime import reset_listener_runtime_cache
+from app.services.task_center.service import drain_task_center
 from fastapi.testclient import TestClient
 import pytest
-from sqlalchemy import inspect, select
+from sqlalchemy import func, inspect, select
 from tests.ai_group_voice_profile_fixtures import assume_default_ai_group_voice_profiles
 
 
@@ -78,6 +79,11 @@ def _workflow_ai_token(index: int) -> str:
     return f"身边例子{index:03d}{uuid4().hex[:6]}"
 
 
+def _workflow_generation_slot_ids(prompt: str) -> list[str]:
+    lines = [item.strip() for item in prompt.splitlines() if '"slot_id"' in item]
+    return [line.split(":", 1)[1].strip().strip('",') for line in lines]
+
+
 def _next_test_phone(prefix: str = "+8613800") -> str:
     global _workspace_phone_suffix
     from app.services.accounts import mask_phone
@@ -103,6 +109,61 @@ def task_detail_actions(client: TestClient, headers: dict[str, str], task_id: st
     response = client.get(f"/api/tasks/{task_id}/actions?{params}", headers=headers)
     assert response.status_code == 200, response.text
     return response.json()
+
+
+def drain_metrics_for_task(task_id: str) -> None:
+    from app.services.task_center.metrics_runtime import DEFAULT_TASK_SUMMARY_BATCH_SIZE, drain_task_metrics
+
+    with SessionLocal() as session:
+        previous_updated_at = session.scalar(
+            select(TaskRuntimeSummary.updated_at).where(TaskRuntimeSummary.task_id == task_id)
+        )
+        task_count = int(session.scalar(select(func.count(Task.id))) or 0)
+    max_rounds = (task_count + DEFAULT_TASK_SUMMARY_BATCH_SIZE - 1) // DEFAULT_TASK_SUMMARY_BATCH_SIZE + 1
+    for _ in range(max_rounds):
+        drain_task_metrics(SessionLocal, limit=DEFAULT_TASK_SUMMARY_BATCH_SIZE)
+        with SessionLocal() as session:
+            updated_at = session.scalar(
+                select(TaskRuntimeSummary.updated_at).where(TaskRuntimeSummary.task_id == task_id)
+            )
+        if updated_at is not None and updated_at != previous_updated_at:
+            return
+    raise AssertionError(f"metrics worker did not refresh task {task_id}")
+
+
+def task_detail_after_metrics(client: TestClient, headers: dict[str, str], task_id: str) -> dict:
+    drain_metrics_for_task(task_id)
+    return client.get(f"/api/tasks/{task_id}", headers=headers).json()
+
+
+def dispatch_pending_task_actions(task_id: str, limit: int = 10) -> int:
+    from app.services.task_center.dispatcher import claim_actions
+    from app.services.task_center.service import _dispatch_claimed_action, drain_task_planner
+
+    with SessionLocal() as session:
+        actions = list(session.scalars(select(Action).where(Action.task_id == task_id, Action.status == "pending")))
+        if not actions:
+            session.get(Task, task_id).next_run_at = _now()
+        session.commit()
+    if not actions:
+        drain_task_planner(SessionLocal, limit)
+    with SessionLocal() as session:
+        actions = list(session.scalars(select(Action).where(Action.task_id == task_id, Action.status == "pending")))
+        for action in actions:
+            action.scheduled_at = _now()
+        session.commit()
+    with SessionLocal() as session:
+        other_task_ids = set(session.scalars(select(Task.id).where(Task.id != task_id)))
+        action_ids = [action.id for action in claim_actions(session, limit=limit, exclude_task_ids=other_task_ids)]
+    return sum(_dispatch_claimed_action(SessionLocal, action_id) for action_id in action_ids)
+
+
+def drain_task_runtime_and_metrics(task_id: str, limit: int = 1000) -> int:
+    from app.services.task_center.service import drain_task_center
+
+    processed = drain_task_center(SessionLocal, limit)
+    drain_metrics_for_task(task_id)
+    return processed
 
 
 def compact_task_debug(task: dict) -> dict:
@@ -788,6 +849,29 @@ def mark_test_channel_comment_ready(channel_target_id: int, account_ids: list[in
             link.can_send = True
             link.permission_label = "普通成员"
         session.commit()
+
+
+def prepare_test_comment_message(
+    client: TestClient,
+    headers: dict[str, str],
+    channel_target: dict,
+    *,
+    account_ids: list[int],
+    message_id: int,
+) -> int:
+    mark_test_channel_comment_ready(channel_target["id"], account_ids)
+    response = client.post(
+        "/api/channel-messages",
+        headers=headers,
+        json={
+            "channel_target_id": channel_target["id"],
+            "message_id": message_id,
+            "message_url": f"https://t.me/{channel_target['username']}/{message_id}",
+            "content_preview": f"测试频道消息 {message_id}",
+        },
+    )
+    assert response.status_code == 200, response.text
+    return message_id
 
 
 def test_clean_seed_requires_config_before_account_create():
@@ -3734,9 +3818,9 @@ def test_task_center_group_ai_chat_creates_and_dispatches_actions(monkeypatch):
         drained = client.post("/api/worker/drain-once", headers=headers, json={"reason": "测试手动 drain"}).json()
         assert drained["processed"] >= 1
         make_task_send_actions_due(task["id"])
-        drained = client.post("/api/worker/drain-once", headers=headers, json={"reason": "测试发送 drain"}).json()
+        drained = client.post("/api/worker/drain-once?role=dispatcher", headers=headers, json={"reason": "测试发送 drain"}).json()
         assert drained["processed"] >= 1
-        detail = client.get(f"/api/tasks/{task['id']}", headers=headers).json()
+        detail = task_detail_after_metrics(client, headers, task["id"])
         assert detail["task"]["stats"]["total_actions"] >= 1
         assert detail["task"]["stats"]["success_count"] >= 1
         actions = task_detail_actions(client, headers, task["id"] if isinstance(task, dict) else task_id)
@@ -3829,12 +3913,12 @@ def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(monkeypatch):
                 ("自然群友", f"第一条真人上下文 {context_suffix} 可以先从实际体验聊起。"),
                 ("补充群友", f"我觉得第一条真人上下文 {context_suffix} 这里要看具体情况。"),
             ]
-        count = int(_kwargs.get("count") or len(base_candidates))
+        count, slot_ids = int(_kwargs.get("count") or len(base_candidates)), _workflow_generation_slot_ids(prompt)
         candidates = []
         for index in range(count):
             persona, content = base_candidates[index % len(base_candidates)]
             token = _workflow_ai_token(index)
-            candidates.append(AiDraftCandidate(persona=persona, content=f"pytest-{token} {content}"))
+            candidates.append(AiDraftCandidate(persona=persona, content=f"pytest-{token} {content}", slot_id=slot_ids[index], sequence_index=index + 1))
         return AiGenerationResult(
             candidates=candidates,
             usage=AiUsage(total_tokens=18),
@@ -3888,8 +3972,9 @@ def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(monkeypatch):
         from app.services.task_center.service import drain_task_center
 
         drain_task_center(SessionLocal, 10)
-        make_task_send_actions_due(task_id)
-        drain_task_center(SessionLocal, 10)
+        if not sends:
+            assert make_task_send_actions_due(task_id) >= 1
+            assert dispatch_pending_task_actions(task_id) >= 1
         with SessionLocal() as session:
             for action in session.scalars(
                 select(Action).where(
@@ -3904,7 +3989,7 @@ def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(monkeypatch):
             session.commit()
         first_context_send_count = len(sends)
         actions = task_detail_actions(client, headers, task_id, action_type="send_message")
-        detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
+        detail = task_detail_after_metrics(client, headers, task_id)
         assert first_context_send_count >= 1, {
             "task": compact_task_debug(detail["task"]),
             "actions": compact_action_debug(actions),
@@ -3925,13 +4010,11 @@ def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(monkeypatch):
         assert inserted >= 1
 
         drain_task_center(SessionLocal, 10)
-        make_task_send_actions_due(task_id)
-        drain_task_center(SessionLocal, 10)
-        detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
+        detail = task_detail_after_metrics(client, headers, task_id)
         if len(sends) <= first_context_send_count:
             make_task_send_actions_due(task_id)
-            drain_task_center(SessionLocal, 10)
-            detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
+            assert dispatch_pending_task_actions(task_id) >= 1
+            detail = task_detail_after_metrics(client, headers, task_id)
         assert len(sends) > first_context_send_count
         second_cycle_sends = sends[first_context_send_count:]
         assert any(second_context_marker in content for content in second_cycle_sends), second_cycle_sends
@@ -4090,7 +4173,7 @@ def test_task_center_channel_view_like_comment_execute(monkeypatch):
         assert processed >= 3
         assert sorted(calls) == ["comment", "like", "view"]
         for task_id in task_ids:
-            detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
+            detail = task_detail_after_metrics(client, headers, task_id)
             assert detail["task"]["status"] == "running"
             assert detail["task"]["stats"]["success_count"] >= 1
             actions = task_detail_actions(client, headers, task_id)
@@ -4234,7 +4317,7 @@ def test_task_center_channel_like_and_view_cap_per_message_by_unique_accounts(mo
             client.post(f"/api/tasks/{task_id}/start", headers=headers)
             client.post("/api/worker/drain-once", headers=headers, json={"reason": "测试手动 drain"})
             client.post("/api/worker/drain-once", headers=headers, json={"reason": "测试手动 drain"})
-            detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
+            detail = task_detail_after_metrics(client, headers, task_id)
             rows = task_detail_actions(client, headers, task_id)
             assert len(rows) == 2
             assert len({row["account_id"] for row in rows}) == 2
@@ -4331,7 +4414,7 @@ def test_task_center_channel_comment_allows_multiple_replies_per_account(monkeyp
         from app.services.task_center.service import drain_task_center
 
         drain_task_center(SessionLocal, 10)
-        detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
+        detail = task_detail_after_metrics(client, headers, task_id)
         actions = task_detail_actions(client, headers, task_id, action_type="post_comment")
         assert len(actions) == 3
         assert detail["task"]["stats"]["total_actions"] == 3
@@ -4462,10 +4545,9 @@ def test_task_center_channel_view_and_comment_default_dynamic_new_keep_collectin
 
     monkeypatch.setattr("app.services.task_center.executors.common.gateway.fetch_channel_messages", fake_fetch_channel_messages)
     monkeypatch.setattr(f"app.services.task_center.dispatcher.gateway.{gateway_attr}", result_factory(calls))
-    from app.services.task_center.service import drain_task_center
-
     with TestClient(app) as client:
         headers = auth_headers(client)
+        enable_mock_ai_provider(client, headers, "pytest dynamic comment") if action_type == "post_comment" else None
         account, _group = ensure_test_workspace(client, headers)
         channel_target = client.post(
             "/api/operation-targets",
@@ -4495,10 +4577,11 @@ def test_task_center_channel_view_and_comment_default_dynamic_new_keep_collectin
         )
         assert created.status_code == 200, created.text
         task_id = created.json()["id"]
+        prepare_test_comment_message(client, headers, channel_target, account_ids=[account["id"]], message_id=fetched_ids[-1]) if action_type == "post_comment" else None
 
         assert drain_task_center(SessionLocal, 10) >= 1
         if calls == []:
-            assert drain_task_center(SessionLocal, 10) >= 1
+            dispatch_pending_task_actions(task_id)
         assert calls == [5101]
 
         with SessionLocal() as session:
@@ -4510,11 +4593,11 @@ def test_task_center_channel_view_and_comment_default_dynamic_new_keep_collectin
             task.next_run_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=1)
             session.commit()
 
-        fetched_ids.append(5102)
+        fetched_ids.append(prepare_test_comment_message(client, headers, channel_target, account_ids=[account["id"]], message_id=5102) if action_type == "post_comment" else 5102)
         reset_listener_runtime_cache()
         assert drain_task_center(SessionLocal, 10) >= 1
         if calls == [5101]:
-            assert drain_task_center(SessionLocal, 10) >= 1
+            dispatch_pending_task_actions(task_id)
         assert calls == [5101, 5102]
 
         detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
@@ -4613,7 +4696,7 @@ def test_task_center_reset_channel_like_rebuilds_from_latest_messages(monkeypatc
         assert detail_after_reset["task"]["stats"]["total_actions"] == 1
 
         drain_task_center(SessionLocal, 10)
-        detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
+        detail = task_detail_after_metrics(client, headers, task_id)
         assert reactions[0] == 4101
         assert 4202 in reactions
         actions = task_detail_actions(client, headers, task_id)
@@ -4689,7 +4772,7 @@ def test_task_center_reset_channel_view_rebuilds_from_latest_messages(monkeypatc
         assert "reviews" not in detail_after_reset
 
         drain_task_center(SessionLocal, 10)
-        detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
+        detail = task_detail_after_metrics(client, headers, task_id)
         assert views[0] == 4301
         assert 4302 in views
         actions = task_detail_actions(client, headers, task_id)
@@ -4734,7 +4817,7 @@ def test_task_center_reset_channel_comment_rebuilds_auto_plan(monkeypatch):
                 "auth_status": "已授权运营",
             },
         ).json()
-        mark_test_channel_comment_ready(channel_target["id"], [account["id"]])
+        prepare_test_comment_message(client, headers, channel_target, account_ids=[account["id"]], message_id=fetched_ids[-1])
         created = client.post(
             "/api/tasks/channel-comment",
             headers=headers,
@@ -4764,7 +4847,7 @@ def test_task_center_reset_channel_comment_rebuilds_auto_plan(monkeypatch):
         assert old_actions[0]["payload"]["message_id"] == 4401
         assert comments == [(4401, old_actions[0]["payload"]["comment_text"])]
 
-        fetched_ids.append(4402)
+        fetched_ids.append(prepare_test_comment_message(client, headers, channel_target, account_ids=[account["id"]], message_id=4402))
         reset = client.post(f"/api/tasks/{task_id}/reset", headers=headers, json={"reason": "测试重置任务"})
         assert reset.status_code == 200, reset.text
         detail_after_reset = client.get(f"/api/tasks/{task_id}", headers=headers).json()
@@ -4781,7 +4864,7 @@ def test_task_center_reset_channel_comment_rebuilds_auto_plan(monkeypatch):
         assert "reviews" not in detail
 
         drain_task_center(SessionLocal, 10)
-        final_detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
+        final_detail = task_detail_after_metrics(client, headers, task_id)
         new_action = next(action for action in actions if action["payload"]["message_id"] == 4402)
         assert comments[-1] == (4402, new_action["payload"]["comment_text"])
         assert final_detail["task"]["stats"]["success_count"] == 2
@@ -5061,7 +5144,7 @@ def test_task_center_group_relay_auto_executes_and_dedupes(monkeypatch):
         assert sends == ["新品上线，适合转发到目标群"]
         reviews = [item for item in client.get("/api/review-queue", headers=headers).json() if item["task_id"] == task_id]
         assert reviews == []
-        detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
+        detail = task_detail_after_metrics(client, headers, task_id)
         assert detail["task"]["stats"]["total_actions"] == 1
         assert detail["task"]["stats"]["success_count"] == 1
 
@@ -5258,7 +5341,7 @@ def test_task_center_group_relay_continues_for_new_source_messages(monkeypatch):
         reset_listener_runtime_cache()
         drain_task_center(SessionLocal, 1000)
         drain_task_center(SessionLocal, 1000)
-        detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
+        detail = task_detail_after_metrics(client, headers, task_id)
         assert sends == ["第一条转发监听消息", "第二条转发监听消息"]
         assert detail["task"]["status"] == "running"
         assert detail["task"]["stats"]["success_count"] == 2
@@ -5695,7 +5778,7 @@ def test_task_center_channel_failed_action_retries_before_task_failed(monkeypatc
             task.next_run_at = _now()
             session.commit()
 
-        drain_task_center(SessionLocal, 1000)
+        drain_task_runtime_and_metrics(task_id)
         with SessionLocal() as session:
             task = session.get(Task, task_id)
             action = session.query(Action).filter(Action.task_id == task_id).one()

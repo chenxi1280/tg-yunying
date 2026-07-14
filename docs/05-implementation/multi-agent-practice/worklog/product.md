@@ -499,3 +499,11 @@
 - evidence: 产品关键验收 9 passed；完整 QA 证据见 `2026-07-13-ai-group-planner-scale-local-qa-001`。
 - decision: `product_accepted=true`；允许发布；`production_fixed=unproven`。
 - unresolved: 生产完整北京时间自然日任务 × 群 × 账号矩阵与评论任务真实结果。
+
+## 2026-07-14 AI 交互恢复 Release Rework Product Acceptance
+
+- message_id: `2026-07-14-ai-interaction-release-rework-product-accepted-001`
+- acceptance: 保持全部账号北京时间每日真实远端发言、评论真实发送、异步 metrics 和 Phase A/B/C 合同；生成失败必须释放账号运行时预约，测试不得恢复热路径统计或接受 pending 假成功。
+- evidence: re-QA `12 + 104 + 14 + 38 + 2` 项分组全绿，Critical / Important / Minor=`0 / 0 / 0`；首次 run `29359103999` 未构建镜像、未部署，生产旧版本事实未被误写为恢复。
+- decision: `product_accepted=true`（仅 E2）；Release Gate ready，下一阶段 `prod-diagnosis`。
+- unresolved: 新 release 的 checks/build/deploy、生产 worker/事务、覆盖增长和评论远端成功 E4。

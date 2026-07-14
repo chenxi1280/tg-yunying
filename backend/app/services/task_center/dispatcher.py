@@ -1356,6 +1356,7 @@ def _handle_ai_generation_failure(
     if isinstance(context.error, _ai_generation_dispatch.GenerationAttemptStale):
         return True
     if action.status == "failed":
+        _release_runtime_resources(action)
         return True
     current_payload = action.payload if isinstance(action.payload, dict) else {}
     if current_payload.get("ai_generation_status") == "ai_result_persist_unknown":

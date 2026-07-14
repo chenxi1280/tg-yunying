@@ -336,3 +336,11 @@
 - evidence: no-PostgreSQL `1246 passed, 805 deselected`；Docker PostgreSQL `15 passed`；容量 cached / uncached 等价、新账号 event 到 Planner Action、4×580 零重复 UPDATE、low-frequency-only 到 active fail-closed 均通过。
 - decision: 允许进入 Release Gate；不等于已发布或 production_fixed。
 - unresolved: 生产 worker、due debt、远端成功、完整自然日矩阵和评论任务仍需 E4。
+
+## 2026-07-14 AI 交互恢复 Release Checks re-QA
+
+- message_id: `2026-07-14-ai-interaction-release-rework-qa-001`
+- output: `qa_pass=true`；Critical / Important / Minor=`0 / 0 / 0`。
+- evidence: 原 CI 12 项 `12 passed`；workflow 全文件 `104 passed / 14 skipped in 35.07s`；`TZ=UTC` coverage `14 passed`；generation recovery、双 Dispatcher、generation phase、coverage `38 passed`；前序恢复 + 评论并发原失败顺序 `2 passed`。compileall、diff-check 和函数增长硬门禁通过。
+- decision: 真实 runtime reservation 泄漏已由严格第二周期发送回归关闭；允许回到 Product Acceptance。
+- unresolved: GitHub Actions、镜像、deploy 与生产 E4 尚未重新执行。

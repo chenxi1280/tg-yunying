@@ -16,6 +16,7 @@ from app.models import (
     Action,
     AiGroupMessageMemory,
     GroupContextMessage,
+    SchedulingSetting,
     Task,
     TaskAccountDailyCoverage,
     Tenant,
@@ -213,9 +214,10 @@ def test_phase_c_rejects_old_worker_after_second_session_replaces_fence(monkeypa
         assert_cas_fence_preserved(session, CAS_SCOPE.action_id)
 
 
-def test_stale_generation_started_provider_recovers_as_persist_unknown() -> None:
+def test_stale_generation_started_provider_recovers_as_persist_unknown(request: pytest.FixtureRequest) -> None:
     Base.metadata.create_all(engine)
     _cleanup_scope(STARTED_SCOPE)
+    request.addfinalizer(lambda: _cleanup_scope(STARTED_SCOPE))
     with SessionLocal() as session:
         action, coverage = _seed_reserved_reply_action(session, STARTED_SCOPE)
         action.status = "pending"
@@ -274,6 +276,7 @@ def _cleanup_scope(scope: RecoveryScope) -> None:
         session.execute(delete(Task).where(Task.tenant_id == scope.tenant_id))
         session.execute(delete(TgGroup).where(TgGroup.tenant_id == scope.tenant_id))
         session.execute(delete(TgAccount).where(TgAccount.tenant_id == scope.tenant_id))
+        session.execute(delete(SchedulingSetting).where(SchedulingSetting.tenant_id == scope.tenant_id))
         session.execute(delete(Tenant).where(Tenant.id == scope.tenant_id))
         session.commit()
 
