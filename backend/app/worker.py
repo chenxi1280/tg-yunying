@@ -234,6 +234,7 @@ def _periodic_heartbeat_loop(role: str, limit: int, stop_event: threading.Event)
     while not stop_event.wait(30):
         try:
             _record_loop_heartbeat(role, limit)
+            _write_local_healthcheck_heartbeat()
         except Exception:
             logger.warning("worker heartbeat refresh failed role=%s:\n%s", role, traceback.format_exc())
 

@@ -222,6 +222,32 @@ def test_worker_writes_local_healthcheck_heartbeat(monkeypatch, tmp_path):
     assert heartbeat_file.read_text(encoding="ascii") == "1234567890"
 
 
+def test_periodic_heartbeat_refreshes_database_and_local_health(monkeypatch):
+    from app import worker
+
+    calls: list[tuple[str, object]] = []
+    wait_count = 0
+
+    class StopEvent:
+        def wait(self, seconds: int) -> bool:
+            nonlocal wait_count
+            wait_count += 1
+            calls.append(("wait", seconds))
+            return wait_count > 1
+
+    monkeypatch.setattr(worker, "_record_loop_heartbeat", lambda role, limit: calls.append((role, limit)))
+    monkeypatch.setattr(worker, "_write_local_healthcheck_heartbeat", lambda: calls.append(("local", None)))
+
+    worker._periodic_heartbeat_loop("dispatcher", 20, StopEvent())
+
+    assert calls == [
+        ("wait", 30),
+        ("dispatcher", 20),
+        ("local", None),
+        ("wait", 30),
+    ]
+
+
 def test_server_compose_worker_healthcheck_uses_local_heartbeat():
     repo_root = Path(__file__).resolve().parents[2]
     compose = (repo_root / "docker-compose.server.yml").read_text(encoding="utf-8")
