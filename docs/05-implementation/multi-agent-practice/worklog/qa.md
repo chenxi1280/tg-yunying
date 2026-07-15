@@ -365,3 +365,10 @@
 - evidence: SQLite 实际升降级与重复执行、PostgreSQL `CREATE INDEX CONCURRENTLY` 语句断言、迁移头和相关回归共 `128 passed`；compileall、diff-check 通过。
 - decision: `qa_pass=true`；索引只加速已有外键校验，不改变清理与业务语义。
 - unresolved: 发布后每批时长、锁等待、群覆盖和评论远端成功 E4。
+
+## 2026-07-15 Runtime Retention 外键索引 Release Checks re-QA
+
+- message_id: `2026-07-15-runtime-retention-fk-index-release-qa-003`
+- evidence: run `29381873407` 为 `2 failed / 2214 passed / 14 skipped` 且未部署；同步 0095 head 断言，并把时间依赖的旧 AI unavailable 测试固定为 manual 1。原失败两项和相关组合 `130 passed`。
+- decision: `qa_pass=true`；只修测试确定性，不改变生产消息条数或调度。
+- unresolved: 重新发布和生产 E4。

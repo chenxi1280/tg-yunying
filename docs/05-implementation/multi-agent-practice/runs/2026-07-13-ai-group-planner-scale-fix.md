@@ -219,6 +219,7 @@
 - re-QA：新增红绿回归先稳定暴露不支持 `batch_size`，修复后验证 3 条历史 Action 按 2+1 两轮删除且全局 total 累加为 3；真 PostgreSQL 外键回归覆盖 Coverage 2 字段、Admission 4 字段与 SearchRank reservation；双 session 并发稳定取得 1+1 不重复批次且原子汇总为 2。合并 retention/role/recovery/runtime stats/tenant isolation/generation recovery 共 `40 passed`，workflow `104 passed / 14 skipped`。本轮仍需完整 Release Checks 和新版本生产 E4，当前不得写 `production_fixed`。
 - 第四次 release `2ca937bf` 的 run `29367174749` 完成 checks、镜像和部署，生产 11 个 worker 全部 healthy；但 09:00 后 E4 显示每个 100 Action 批次仍耗时约 1 至 3 分钟。生产 `pg_constraint + pg_indexes` 证明 9 个 Action 外键中 7 个引用列无 leading index，导致 Action DELETE 的外键校验反复扫描 Coverage、Admission、Review 表；recovery 已再次停止，群与评论 worker 保持运行。
 - 第二层 rework：0095 对 Review action、Coverage reserved/last-success、Admission membership/test/delete/rescue 共 7 列使用 `CREATE INDEX CONCURRENTLY`，模型元数据同步；不改变 retention、任务窗口、消息条数、账号范围或完成判定。迁移幂等/可逆和 PostgreSQL concurrent DDL 加入自动化，相关组合 `128 passed`；待再次发布后用每批时长、无锁等待、评论远端 ID 与每日覆盖增长做 E4。
+- 0095 首次 release merge `496f00a3` 的 run `29381873407` 在 checks 阶段以 `2 failed / 2214 passed / 14 skipped` 停止，未 build/deploy。失败一是 merge integrity 仍硬编码 0094 head；失败二是旧 AI unavailable 测试使用 `messages_per_round_mode=auto`，在 09:35 业务时间生成 3 个到期 slot 却断言 1。更新 head 断言并把该单轮合同固定为 manual 1 后，原失败顺序与相关组合 `130 passed`；生产逻辑和任务配置未改。
 
 ## Release Gate 与 E4
 
