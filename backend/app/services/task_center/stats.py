@@ -187,17 +187,17 @@ def _action_json_counts(
     values: tuple[str, ...],
 ) -> dict[str, int]:
     expression = _json_text_expression(session, column=column, key=key)
-    rows = session.execute(
-        select(expression, func.count())
-        .where(
+    counts: dict[str, int] = {}
+    for value in values:
+        count = session.scalar(select(func.count()).select_from(Action).where(
             Action.tenant_id == task.tenant_id,
             Action.task_id == task.id,
             Action.action_type == "send_message",
-            expression.in_(values),
-        )
-        .group_by(expression)
-    ).all()
-    return {str(code or ""): int(count) for code, count in rows if code}
+            expression == value,
+        )) or 0
+        if count:
+            counts[value] = int(count)
+    return counts
 
 
 def _json_text_expression(session: Session, *, column, key: str):

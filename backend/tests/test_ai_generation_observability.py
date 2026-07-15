@@ -74,6 +74,8 @@ def test_phase_c_generation_attempt_does_not_update_task_stats_hot_row() -> None
 def test_metrics_refresh_idempotently_separates_generation_and_gateway_unknown() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
+    statements: list[str] = []
+    event.listen(engine, "before_cursor_execute", _record_statements(statements))
     with Session(engine) as session:
         task = _seed_observability_actions(session)
 
@@ -88,6 +90,14 @@ def test_metrics_refresh_idempotently_separates_generation_and_gateway_unknown()
         assert second["generation_failed_count"] == 1
         assert second["quality_rejected_count"] == 1
         assert second["quality_rejection_counts"] == {"voice_profile_mismatch": 1}
+        assert not any(
+            "group by" in statement
+            and (
+                "json_extract(actions.payload" in statement
+                or "json_extract(actions.result" in statement
+            )
+            for statement in statements
+        )
 
 
 def test_task_details_keep_generation_unknown_distinct_from_gateway_unknown() -> None:
