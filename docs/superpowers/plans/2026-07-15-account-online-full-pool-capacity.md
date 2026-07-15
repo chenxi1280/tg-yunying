@@ -314,3 +314,150 @@ Cache bounded immutable character profiles. Return immediately on Jaccard accept
 - [ ] **Step 4: Run regressions, release, and collect production E4**
 
 Run equivalence, memory, generation, Dispatcher and PostgreSQL CI coverage, publish through `master -> release`, then prove Phase C duration and executing backlog fall while the four current-day coverage ledgers continue increasing. Keep genuine offline/login-required accounts visible.
+
+### Task 12: Give every account health probe its own event loop
+
+**Files:**
+- Modify: `backend/app/integrations/telegram/mock.py`
+- Modify: `backend/app/integrations/telegram/gateway.py`
+- Modify: `backend/app/services/account_online_probe.py`
+- Modify: `backend/tests/test_telethon_lifecycle.py`
+- Modify: `backend/tests/test_account_online_probe_timing.py`
+- Modify: `docs/01-product/tg-ops-platform-prd.md`
+- Modify: `docs/00-index/project-dataflow-index.md`
+- Modify: `docs/00-index/project-structure-index.md`
+- Modify: `docs/04-ops/deployment/PRODUCTION_RUNTIME.md`
+
+- [ ] **Step 1: Add a failing isolated-loop Gateway test**
+
+Add a test that replaces `_run` with an assertion failure, calls `check_account_health_isolated`, and records the caller thread plus the thread used by `connect`, `is_user_authorized`, `get_me`, and `disconnect`:
+
+```python
+def test_account_health_isolated_runs_on_calling_thread(monkeypatch):
+    gateway = TelethonTelegramGateway(Settings())
+    caller_thread = threading.get_ident()
+    observed_threads: list[int] = []
+
+    class FakeClient:
+        async def connect(self):
+            observed_threads.append(threading.get_ident())
+
+        async def is_user_authorized(self):
+            observed_threads.append(threading.get_ident())
+            return True
+
+        async def get_me(self):
+            observed_threads.append(threading.get_ident())
+
+        async def disconnect(self):
+            observed_threads.append(threading.get_ident())
+
+    monkeypatch.setattr("app.integrations.telegram.gateway.decrypt_session", lambda _value: "raw-session")
+    monkeypatch.setattr(gateway, "_new_client", lambda *_args, **_kwargs: FakeClient())
+    monkeypatch.setattr(gateway, "_run", lambda *_args, **_kwargs: pytest.fail("isolated probe must not use process lifecycle"))
+    credentials = DeveloperAppCredentials(app_id=1, api_id=123, api_hash="hash", credentials_version=1)
+
+    assert gateway.check_account_health_isolated("encrypted-session", credentials).status == "在线"
+    assert observed_threads == [caller_thread] * 4
+```
+
+- [ ] **Step 2: Add a failing account-online routing test**
+
+Add a focused test proving the worker calls the isolated entry and never the process-wide entry:
+
+```python
+def test_health_probe_uses_isolated_gateway_entry(monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "app.services.account_online_probe.gateway.check_account_health_isolated",
+        lambda *_args: calls.append("isolated") or AccountHealth(status=AccountStatus.ACTIVE.value, health_score=95, detail="ok"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.services.account_online_probe.gateway.check_account_health",
+        lambda *_args: pytest.fail("account-online must not use the process-wide loop"),
+    )
+
+    results = list(_run_health_probes([OnlineProbeJob(account_id=1, session_ciphertext="session", credentials=object())]))
+
+    assert calls == ["isolated"]
+    assert results[0].health.status == AccountStatus.ACTIVE.value
+```
+
+- [ ] **Step 3: Run both tests and verify RED**
+
+Run:
+
+```bash
+timeout 60 backend/.venv/bin/pytest -q \
+  backend/tests/test_telethon_lifecycle.py::test_account_health_isolated_runs_on_calling_thread \
+  backend/tests/test_account_online_probe_timing.py::test_health_probe_uses_isolated_gateway_entry
+```
+
+Expected: both fail because the isolated Gateway entry does not exist and `_run_health_probe` still calls `check_account_health`.
+
+- [ ] **Step 4: Implement the isolated health boundary**
+
+In the mock Gateway, add an explicit alias so tests and non-production integration retain identical health semantics:
+
+```python
+def check_account_health_isolated(
+    self,
+    session_ciphertext: str | None,
+    credentials: DeveloperAppCredentials | None = None,
+) -> AccountHealth:
+    return self.check_account_health(session_ciphertext, credentials)
+```
+
+In `TelethonTelegramGateway`, execute the already bounded ephemeral-client coroutine in the current probe thread instead of `TelethonClientLifecycle.run`:
+
+```python
+def check_account_health_isolated(
+    self,
+    session_ciphertext: str | None,
+    credentials: DeveloperAppCredentials | None = None,
+) -> AccountHealth:
+    probe_timeout = self.settings.account_online_probe_timeout_seconds
+    return asyncio.run(
+        self._bounded_health_async(
+            session_ciphertext,
+            self._usable_credentials(credentials),
+            probe_timeout,
+        )
+    )
+```
+
+Change `_run_health_probe` to call `gateway.check_account_health_isolated`. Do not modify `check_account_health`, the process-wide lifecycle, the client cache, database Session ownership, configured concurrency, or timeout values.
+
+- [ ] **Step 5: Run focused and broad regressions**
+
+Run the two red/green tests, then:
+
+```bash
+timeout 60 backend/.venv/bin/pytest -q -m no_postgres \
+  backend/tests/test_account_online_probe_timing.py \
+  backend/tests/test_account_online_state.py \
+  backend/tests/test_telethon_lifecycle.py \
+  backend/tests/test_config_safety.py \
+  backend/tests/test_worker_roles.py
+backend/.venv/bin/python -m compileall -q backend/app backend/tests
+git diff --check
+```
+
+Expected: all selected tests pass, compilation succeeds, and no whitespace errors remain.
+
+- [ ] **Step 6: Update contracts and release through the standard path**
+
+Document that account-online network probes own a thread-local event loop while normal Telegram business operations retain the process-wide lifecycle. Commit the scoped code, tests, PRD, dataflow, structure index, runtime guide, spec, and plan. Push `master`, merge `master` into `release`, push `release`, and require `Deploy Production` success.
+
+- [ ] **Step 7: Collect production E4**
+
+After the account-online worker restarts, require all of the following:
+
+- current release symlink and worker image match the release commit;
+- worker health and heartbeat remain fresh;
+- all due probe-eligible accounts finish a real probe within 15 minutes;
+- `account_health_probe_failed / TimeoutError` does not recur as a batch-wide failure;
+- TCP connections stay near configured concurrency during probing and return to the idle baseline afterward;
+- all four Beijing-current-date coverage ledgers exist, confirmed counts increase during the active window, and remaining obligations retain exact account/login/permission blockers;
+- the channel-comment task has no overdue open actions and recent attempts show real Telegram outcomes.
