@@ -208,7 +208,7 @@ Calculate effective concurrency before claiming and use it as the claim limit. A
 
 Run the focused red/green tests, Dispatcher role and capacity suites with a 60-second timeout, Python compilation, `git diff --check`, and full diff review.
 
-- [ ] **Step 5: Release and verify production E4**
+- [x] **Step 5: Release and verify production E4**
 
 Push `master`, merge into `release`, require Deploy Production success, then prove due comments stop cycling through `claim_expired` and reach real `success` with `telegram_msg_id` or expose a different genuine Telegram/account failure.
 
@@ -231,10 +231,12 @@ Require account health to create a fresh client, avoid `_get_or_create_client`, 
 
 Use `_new_client`, a bounded connect, and `finally: disconnect()` inside `_health_async`; run the 30-second probe timeout inside the event loop, wait for a bounded 5-second cleanup before the synchronous caller returns, preserve the original probe exception when cleanup also fails, and keep the business client cache unchanged.
 
-- [ ] **Step 4: Run regressions and release**
+- [x] **Step 4: Run regressions and release**
 
 Run focused lifecycle, online-state, timing, config, worker, and Dispatcher tests with 60-second limits, compile and diff checks, then publish through `master -> release -> Deploy Production`.
 
-- [ ] **Step 5: Verify production E4**
+- [x] **Step 5: Verify production E4**
 
 Require the new revision and healthy worker, account-online established TCP connections to remain bounded after a full probe cycle, `wrong session ID` / TimeoutError volume to decline, and online / group coverage to improve without reintroducing an account admission cap.
+
+E4 evidence: release `3c3bd889` and workflow `29417207535` succeeded; account-online completed all 582 probe-eligible desired accounts, producing 534 online and 48 blocked while 87 login-required accounts remained separately classified. Established TCP connections stayed near configured concurrency during the batch and fell from the old baseline of about 167 to 2 after completion; new logs contained zero `wrong session ID` and zero `TimeoutError`. Due channel-comment actions were zero, and group coverage resumed growth while blocker counts fell sharply.
