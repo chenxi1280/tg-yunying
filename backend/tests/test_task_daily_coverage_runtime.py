@@ -20,6 +20,7 @@ from app.models import (
     Tenant,
     TgAccount,
     TgGroup,
+    TgGroupAccount,
 )
 from app.security import encrypt_session
 from app.schemas.task_center import AccountConfig, TaskUpdate
@@ -168,6 +169,119 @@ def test_membership_failure_remains_visible_as_daily_blocker() -> None:
         assert row.state == "blocked"
         assert row.blocker_code == "group_permission_denied"
         assert row.blocker_detail == "账号受限，无法入群"
+
+
+def test_membership_success_releases_membership_unknown_coverage() -> None:
+    engine = _engine()
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        task, account = _seed(session)
+        item = TaskMembershipAdmissionItem(
+            tenant_id=1,
+            task_id=task.id,
+            account_id=account.id,
+            target_id=31,
+            phase="failed",
+            failure_type="unknown_after_send",
+            manual_required=True,
+        )
+        session.add(item)
+        session.flush()
+        row = TaskAccountDailyCoverage(
+            id="membership-unknown-row",
+            tenant_id=1,
+            task_id=task.id,
+            group_id=21,
+            account_id=account.id,
+            membership_item_id=item.id,
+            coverage_date=datetime.now().date(),
+            state="unknown",
+            blocker_code="unknown_after_send",
+            blocker_detail="入群结果未知",
+        )
+        action = Action(
+            id="membership-recovered",
+            tenant_id=1,
+            task_id=task.id,
+            task_type=task.type,
+            action_type="ensure_target_membership",
+            account_id=account.id,
+            status="success",
+            result={"success": True, "membership_status": "joined"},
+        )
+        session.add_all([
+            row,
+            action,
+            TgGroupAccount(
+                tenant_id=1,
+                group_id=21,
+                account_id=account.id,
+                can_send=True,
+            ),
+        ])
+        session.flush()
+
+        _sync_all_account_membership_state(session, action)
+
+        assert item.phase == "completed"
+        assert item.manual_required is False
+        assert row.state == "ready"
+        assert row.blocker_code == ""
+        assert row.blocker_detail == ""
+
+
+def test_membership_success_preserves_send_unknown_coverage() -> None:
+    engine = _engine()
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        task, account = _seed(session)
+        item = TaskMembershipAdmissionItem(
+            tenant_id=1,
+            task_id=task.id,
+            account_id=account.id,
+            target_id=31,
+            phase="completed",
+        )
+        send_action = Action(
+            id="send-result-unknown",
+            tenant_id=1,
+            task_id=task.id,
+            task_type=task.type,
+            action_type="send_message",
+            account_id=account.id,
+            status="unknown_after_send",
+        )
+        membership_action = Action(
+            id="membership-reconfirmed",
+            tenant_id=1,
+            task_id=task.id,
+            task_type=task.type,
+            action_type="ensure_target_membership",
+            account_id=account.id,
+            status="success",
+            result={"success": True, "membership_status": "joined"},
+        )
+        session.add_all([item, send_action, membership_action])
+        session.flush()
+        row = TaskAccountDailyCoverage(
+            id="send-unknown-row",
+            tenant_id=1,
+            task_id=task.id,
+            group_id=21,
+            account_id=account.id,
+            membership_item_id=item.id,
+            coverage_date=datetime.now().date(),
+            state="unknown",
+            reserved_action_id=send_action.id,
+            blocker_code="unknown_after_send",
+        )
+        session.add(row)
+        session.flush()
+
+        _sync_all_account_membership_state(session, membership_action)
+
+        assert row.state == "unknown"
+        assert row.reserved_action_id == send_action.id
 
 
 def test_listener_fetch_has_explicit_timeout_and_backfill_script_exists() -> None:

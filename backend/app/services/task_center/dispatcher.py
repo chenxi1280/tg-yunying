@@ -4922,6 +4922,8 @@ def _sync_all_account_membership_state(session: Session, action: Action) -> None
         item.phase = "completed"
         item.failure_type = ""
         item.failure_detail = ""
+        item.manual_required = False
+        _release_membership_unknown_coverage(session, item, task)
         ensure_task_daily_coverage(session, task, account_ids=[int(action.account_id)])
         return
     if action.status == "unknown_after_send":
@@ -4930,6 +4932,27 @@ def _sync_all_account_membership_state(session: Session, action: Action) -> None
         return
     if action.status in {"failed", "retryable_failed", "skipped"}:
         _set_membership_coverage_blocker(session, item, task, action, "blocked")
+
+
+def _release_membership_unknown_coverage(
+    session: Session,
+    item: TaskMembershipAdmissionItem,
+    task: Task,
+) -> None:
+    rows = session.scalars(
+        select(TaskAccountDailyCoverage).where(
+            TaskAccountDailyCoverage.task_id == task.id,
+            TaskAccountDailyCoverage.membership_item_id == item.id,
+            TaskAccountDailyCoverage.state == "unknown",
+            TaskAccountDailyCoverage.reserved_action_id.is_(None),
+            TaskAccountDailyCoverage.confirmed_count < TaskAccountDailyCoverage.target_count,
+        )
+    )
+    for row in rows:
+        row.state = "pending_admission"
+        row.blocker_code = ""
+        row.blocker_detail = ""
+        row.updated_at = _now()
 
 
 def _set_membership_coverage_blocker(
