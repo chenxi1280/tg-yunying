@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 from datetime import timedelta
 from time import perf_counter
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine, event, select
@@ -534,9 +535,7 @@ def test_probe_due_online_states_runs_health_checks_concurrently(monkeypatch):
         with lock:
             active += 1
             max_active = max(max_active, active)
-            if active >= 2:
-                release.set()
-        release.wait(timeout=0.2)
+        release.wait(timeout=1)
         with lock:
             active -= 1
         return AccountHealth(status=AccountStatus.ACTIVE.value, health_score=96, detail="账号 session 可用")
@@ -553,12 +552,22 @@ def test_probe_due_online_states_runs_health_checks_concurrently(monkeypatch):
                 next_probe_at=now - timedelta(seconds=1),
             ))
         session.commit()
+        monkeypatch.setattr(
+            "app.services.account_online_probe.get_settings",
+            lambda: SimpleNamespace(account_online_probe_concurrency=3),
+        )
         monkeypatch.setattr("app.services.account_online_probe.credentials_for_account", lambda *_args, **_kwargs: object())
         monkeypatch.setattr("app.services.account_online_probe.gateway.check_account_health", check_health)
 
-        assert probe_due_online_states(session, limit=10, now=now) == 4
+        timer = threading.Timer(0.1, release.set)
+        timer.start()
+        try:
+            assert probe_due_online_states(session, limit=10, now=now) == 4
+        finally:
+            release.set()
+            timer.join()
 
-    assert max_active >= 2
+    assert max_active == 3
 
 
 def test_probe_due_online_states_marks_missing_developer_app_blocked(monkeypatch):

@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.models import AccountStatus, TgAccount, TgAccountOnlineState
 from app.services._common import _now, gateway
 from app.services.account_online_constants import (
@@ -24,7 +25,6 @@ from app.services.developer_apps import credentials_for_account
 
 logger = logging.getLogger(__name__)
 MAX_PROBE_FAILURE_DETAIL_LENGTH = 500
-ONLINE_PROBE_MAX_CONCURRENCY = 4
 
 
 @dataclass(frozen=True)
@@ -76,7 +76,7 @@ def probe_due_online_states(
 def _run_health_probes(jobs: list[OnlineProbeJob]) -> list[OnlineProbeResult]:
     if not jobs:
         return []
-    worker_count = min(ONLINE_PROBE_MAX_CONCURRENCY, len(jobs))
+    worker_count = min(get_settings().account_online_probe_concurrency, len(jobs))
     with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="account-online-probe") as executor:
         return list(executor.map(_run_health_probe, jobs))
 

@@ -110,7 +110,7 @@ def test_drain_account_online_keepalive_defers_stale_marking_when_probe_batch_is
     assert calls == ["reconcile", "probe:3:commit_each=True"]
 
 
-def test_drain_account_online_keepalive_caps_large_probe_batches(monkeypatch):
+def test_drain_account_online_keepalive_uses_requested_probe_batch(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     calls: list[str] = []
@@ -121,5 +121,5 @@ def test_drain_account_online_keepalive_caps_large_probe_batches(monkeypatch):
 
     from app.services.account_online_state import drain_account_online_keepalive
 
-    assert drain_account_online_keepalive(lambda: Session(engine), limit=500) == 20
-    assert calls == ["reconcile", "probe:20:commit_each=True"]
+    assert drain_account_online_keepalive(lambda: Session(engine), limit=500) == 500
+    assert calls == ["reconcile", "probe:500:commit_each=True"]
