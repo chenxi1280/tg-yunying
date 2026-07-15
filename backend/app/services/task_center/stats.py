@@ -33,7 +33,6 @@ HARD_HOURLY_EXPIRED_ERROR_CODE = "hard_hourly_bucket_expired"
 HARD_HOURLY_EXPIRED_ERROR_MESSAGE = "硬目标小时窗口已结束，过期补量已跳过"
 AI_GROUP_TERMINAL_QUALITY_ERRORS = frozenset({"duplicate_message", "ai_message_memory_missing"})
 AI_GROUP_TERMINAL_GENERATION_STATUSES = frozenset({"duplicate_rejected"})
-AI_GENERATION_OPEN_STATUSES = frozenset({"pending", "generating"})
 AI_GENERATION_CLOSED_STATUSES = ("pending", "generating", "ready", "ai_result_persist_unknown")
 AI_GENERATION_QUALITY_CODES = frozenset({
     "content_rejected",
@@ -136,8 +135,8 @@ def _ai_generation_stats(session: Session, task: Task, stats: dict[str, Any]) ->
         column=Action.payload,
         key="ai_generation_status",
         values=AI_GENERATION_CLOSED_STATUSES,
-        include_failed=True,
     )
+    generation_failed_count = _ai_generation_failed_count(session, task)
     outcome_counts = _action_json_counts(
         session,
         task,
@@ -145,7 +144,12 @@ def _ai_generation_stats(session: Session, task: Task, stats: dict[str, Any]) ->
         key="generation_outcome",
         values=tuple(sorted(AI_GENERATION_QUALITY_CODES | {"reply_target_stale", "reply_target_missing"})),
     )
-    updated = _apply_ai_generation_counts(stats, generation_counts, outcome_counts)
+    updated = _apply_ai_generation_counts(
+        stats,
+        generation_counts,
+        outcome_counts,
+        generation_failed_count=generation_failed_count,
+    )
     updated["voice_profile_anchor_rewrite_count"] = _ai_generation_fact_count(
         session,
         task,
@@ -163,6 +167,17 @@ def _ai_generation_fact_count(session: Session, task: Task, condition) -> int:
     )) or 0)
 
 
+def _ai_generation_failed_count(session: Session, task: Task) -> int:
+    expression = _json_text_expression(session, column=Action.payload, key="ai_generation_status")
+    return int(session.scalar(select(func.count()).select_from(Action).where(
+        Action.tenant_id == task.tenant_id,
+        Action.task_id == task.id,
+        Action.action_type == "send_message",
+        expression.is_not(None),
+        expression.notin_(AI_GENERATION_CLOSED_STATUSES),
+    )) or 0)
+
+
 def _action_json_counts(
     session: Session,
     task: Task,
@@ -170,10 +185,9 @@ def _action_json_counts(
     column,
     key: str,
     values: tuple[str, ...],
-    include_failed: bool = False,
 ) -> dict[str, int]:
     expression = _json_text_expression(session, column=column, key=key)
-    rows = list(session.execute(
+    rows = session.execute(
         select(expression, func.count())
         .where(
             Action.tenant_id == task.tenant_id,
@@ -182,20 +196,7 @@ def _action_json_counts(
             expression.in_(values),
         )
         .group_by(expression)
-    ).all())
-    if include_failed:
-        rows.extend(session.execute(
-            select(expression, func.count())
-            .where(
-                Action.tenant_id == task.tenant_id,
-                Action.task_id == task.id,
-                Action.action_type == "send_message",
-                Action.status == "failed",
-                expression.is_not(None),
-                expression.notin_(values),
-            )
-            .group_by(expression)
-        ).all())
+    ).all()
     return {str(code or ""): int(count) for code, count in rows if code}
 
 
@@ -213,24 +214,21 @@ def _apply_ai_generation_counts(
     stats: dict[str, Any],
     generation_counts: dict[str, int],
     outcome_counts: dict[str, int],
+    *,
+    generation_failed_count: int,
 ) -> dict[str, Any]:
     quality_counts = {
         code: count
         for code, count in outcome_counts.items()
         if code in AI_GENERATION_QUALITY_CODES
     }
-    closed_statuses = AI_GENERATION_OPEN_STATUSES | {"ready", "ai_result_persist_unknown"}
     updated = dict(stats)
     updated.update({
         "generation_pending_count": generation_counts.get("pending", 0),
         "generation_claimed_count": generation_counts.get("generating", 0),
         "generation_ready_count": generation_counts.get("ready", 0),
         "generation_persist_unknown_count": generation_counts.get("ai_result_persist_unknown", 0),
-        "generation_failed_count": sum(
-            count
-            for status, count in generation_counts.items()
-            if status and status not in closed_statuses
-        ),
+        "generation_failed_count": generation_failed_count,
         "quality_rejected_count": sum(quality_counts.values()),
         "quality_rejection_counts": quality_counts,
         "reply_target_stale_count": outcome_counts.get("reply_target_stale", 0),
