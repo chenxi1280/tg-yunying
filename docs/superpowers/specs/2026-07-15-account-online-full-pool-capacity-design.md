@@ -34,6 +34,14 @@
 
 线程池实际并发取 `min(ACCOUNT_ONLINE_PROBE_CONCURRENCY, 本页任务数)`。不得在子线程读取或提交数据库 Session。
 
+### 4.1 探测事件循环隔离
+
+生产复核发现，线程池中的所有 `check_account_health` 调用仍经 `TelethonClientLifecycle.run` 提交到同一个 process-wide asyncio 事件循环。账号连接建立后需要集中处理较多 Telegram 更新时，32 个线程只是同步等待同一个事件循环，形成单核执行瓶颈；2026-07-16 线上出现 582 个可探测账号中 500 个 `account_health_probe_failed / TimeoutError`，同时 account-online 容器保持 35 个线程和约 32 条 Telegram TCP 连接，证明账号没有被数量上限截断，但网络协程没有获得独立执行容量。
+
+健康探测必须在调用它的探测线程内创建并关闭独立 asyncio 事件循环。该线程内仍只创建一次性 Telethon client，并沿用单探测 30 秒超时、最多 5 秒断连和 1 秒调度余量；不创建额外数据库 Session，不共享 Telethon client，也不写入 process-wide client cache。正常发送、监听、登录和其它业务 Gateway 调用继续使用现有 process-wide 生命周期与持久 client cache，本次修复不得改变它们的连接复用语义。
+
+实现边界采用显式的健康探测入口：`TelegramGateway.check_account_health_isolated` 在当前探测线程执行完整异步健康检查；`account_online_probe._run_health_probe` 只调用该入口。不得通过降低 `ACCOUNT_ONLINE_PROBE_CONCURRENCY`、放宽到通用 300 秒超时或把超时结果伪装成 online 来规避共享事件循环瓶颈。
+
 ## 5. 状态与失败处理
 
 - 探测成功：刷新 `online`、`last_seen_at`、`last_probe_at` 和 `stale_after_at`，并释放由账号离线产生的覆盖阻塞。
@@ -48,6 +56,7 @@
 
 - 传入 drain limit 500 时，服务实际向探测层传入 500，而不是 20。
 - 显式配置并发 N 时，探测线程池最多同时执行 N 个网络探测。
+- 并发健康探测不得调用 process-wide `TelethonClientLifecycle.run`；每个探测线程必须在本线程事件循环完成一次性 client 的连接、授权检查、`get_me` 和断连。
 - 快速探测结果必须在慢探测仍未完成时先返回并落库；单个慢探测使用独立的 30 秒超时。
 - 健康探测必须创建一次性 client，完成或失败后断开，且不得调用持久 client cache。
 - 数据库读取与状态落库仍在主线程，子线程只执行 Gateway 健康检查。
@@ -58,6 +67,7 @@
 
 - GitHub Actions 按 `master -> release -> Deploy Production` 完成，线上版本与目标提交一致。
 - `account-online` worker 心跳正常，持续无 drain 级异常。
+- 生产探测批次不得再次出现大量连接已建立但统一在 30 秒到期的 `account_health_probe_failed / TimeoutError`；探测期间 CPU 能跨可用核工作，批次结束后一次性 TCP 连接回落。
 - 所有 `desired_online=true` 账号均有明确状态且无 missing；除按策略尚未到期的 `login_required` 外，所有到期、可探测账号在 15 分钟窗口内完成一轮真实探测。
 - 分别统计 `online`、`stale`、`login_required`、`blocked` 及原始失败原因，不能用 worker 存活替代账号覆盖证明。
 - 四个群的每日发言覆盖持续增长；剩余未完成项按真实 `login_required`、权限、Telegram/代理失败等原因分层，不能再由内部 20 个账号截断造成。

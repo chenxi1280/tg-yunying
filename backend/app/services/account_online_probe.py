@@ -86,7 +86,7 @@ def _run_health_probes(jobs: list[OnlineProbeJob]) -> Iterator[OnlineProbeResult
 
 def _run_health_probe(job: OnlineProbeJob) -> OnlineProbeResult:
     try:
-        health = gateway.check_account_health(job.session_ciphertext, job.credentials)
+        health = gateway.check_account_health_isolated(job.session_ciphertext, job.credentials)
         return OnlineProbeResult(account_id=job.account_id, health=health)
     except Exception as exc:
         return OnlineProbeResult(account_id=job.account_id, error=exc)

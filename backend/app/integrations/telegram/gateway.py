@@ -586,6 +586,65 @@ class TelethonTelegramGateway(TelegramGateway):
             timeout_seconds=probe_timeout + ACCOUNT_HEALTH_DISCONNECT_TIMEOUT_SECONDS + ACCOUNT_HEALTH_RUN_GRACE_SECONDS,
         )
 
+    def check_account_health_isolated(
+        self,
+        session_ciphertext: str | None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> AccountHealth:
+        probe_timeout = self.settings.account_online_probe_timeout_seconds
+        hard_timeout = probe_timeout + ACCOUNT_HEALTH_DISCONNECT_TIMEOUT_SECONDS
+        return self._run_isolated_health(
+            self._bounded_health_async(
+                session_ciphertext,
+                self._usable_credentials(credentials),
+                probe_timeout,
+            ),
+            hard_timeout,
+            ACCOUNT_HEALTH_RUN_GRACE_SECONDS,
+        )
+
+    @staticmethod
+    def _run_isolated_health(coro, hard_timeout: float, cleanup_grace: float) -> AccountHealth:
+        loop = asyncio.new_event_loop()
+        task = None
+        hard_stop = None
+        try:
+            asyncio.set_event_loop(loop)
+            task = loop.create_task(coro)
+            hard_stop = loop.call_later(hard_timeout, loop.stop)
+            try:
+                return loop.run_until_complete(task)
+            except RuntimeError as exc:
+                if task.done():
+                    return task.result()
+                logger.warning("account health isolated loop reached hard deadline")
+                task.cancel()
+                raise TimeoutError from exc
+        finally:
+            if hard_stop is not None:
+                hard_stop.cancel()
+            TelethonTelegramGateway._drain_isolated_tasks(loop, cleanup_grace)
+            asyncio.set_event_loop(None)
+            loop.close()
+
+    @staticmethod
+    def _drain_isolated_tasks(loop: asyncio.AbstractEventLoop, cleanup_grace: float) -> None:
+        pending = {task for task in asyncio.all_tasks(loop) if not task.done()}
+        if not pending:
+            return
+        for task in pending:
+            task.cancel()
+        cleanup = asyncio.gather(*pending, return_exceptions=True)
+        cleanup_stop = loop.call_later(cleanup_grace, loop.stop)
+        try:
+            loop.run_until_complete(cleanup)
+        except RuntimeError:
+            for task in pending:
+                if not task.done():
+                    task._log_destroy_pending = False
+        finally:
+            cleanup_stop.cancel()
+
     async def _list_authorizations_async(
         self,
         session_ciphertext: str | None,
