@@ -149,7 +149,7 @@ def _ai_generation_stats(session: Session, task: Task, stats: dict[str, Any]) ->
 
 
 def _ai_generation_fact_count(session: Session, task: Task, condition) -> int:
-    return int(session.scalar(select(func.count(Action.id)).where(
+    return int(session.scalar(select(func.count()).select_from(Action).where(
         Action.tenant_id == task.tenant_id,
         Action.task_id == task.id,
         Action.action_type == "send_message",
@@ -159,7 +159,7 @@ def _ai_generation_fact_count(session: Session, task: Task, condition) -> int:
 
 def _action_json_counts(session: Session, task: Task, expression) -> dict[str, int]:
     rows = session.execute(
-        select(expression, func.count(Action.id))
+        select(expression, func.count())
         .where(
             Action.tenant_id == task.tenant_id,
             Action.task_id == task.id,
