@@ -17,7 +17,7 @@ from app.models import (
     TgGroupAccount,
 )
 from app.services._common import _now
-from app.services.account_capacity import available_accounts_by_capacity
+from app.services.account_capacity import AccountCapacityCache, available_accounts_by_capacity
 from app.services.account_usage_policy import apply_operational_account_filters
 from app.timezone import as_beijing, beijing_day_bounds
 
@@ -84,6 +84,7 @@ def select_task_accounts(
             tenant_id=tenant_id,
             accounts=accounts,
             scheduled_at=scheduled_at,
+            cache=AccountCapacityCache(),
         )
         if enforce_capacity
         else accounts

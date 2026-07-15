@@ -1,12 +1,12 @@
 from datetime import timedelta
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session
 
 from app.database import Base
 import pytest
 
-from app.models import AccountPool, AccountRuntimeSummary, AccountStatus, Action, Task, TaskAccountDailyCoverage, Tenant, TgAccount, TgAccountSecuritySnapshot, TgGroup, TgGroupAccount
+from app.models import AccountPool, AccountRuntimeSummary, AccountStatus, Action, SchedulingSetting, Task, TaskAccountDailyCoverage, Tenant, TgAccount, TgAccountSecuritySnapshot, TgGroup, TgGroupAccount
 from app.services._common import _now
 from app.services.account_pools import (
     create_account_pool,
@@ -913,3 +913,51 @@ def test_select_task_accounts_compares_capped_and_full_capacity_scan():
 
     assert len(capped) == 20
     assert len(full_capacity) == 30
+
+
+def test_select_task_accounts_bulk_primes_capacity_for_full_pool_scan():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(
+            SchedulingSetting(
+                tenant_id=1,
+                default_account_cooldown_seconds=120,
+                default_account_hour_limit=10,
+                default_account_day_limit=50,
+            )
+        )
+        normal_pool = _add_normal_pool(session)
+        session.add_all(
+            TgAccount(
+                id=account_id,
+                tenant_id=1,
+                pool_id=normal_pool.id,
+                display_name=f"全量账号{account_id}",
+                phone_masked=str(account_id),
+                status=AccountStatus.ACTIVE.value,
+                account_identity="normal",
+                health_score=90,
+            )
+            for account_id in range(1, 121)
+        )
+        session.commit()
+        select_count = 0
+
+        def count_selects(_conn, _cursor, statement, _parameters, _context, _executemany):
+            nonlocal select_count
+            select_count += int(statement.lstrip().upper().startswith("SELECT"))
+
+        event.listen(engine, "before_cursor_execute", count_selects)
+        selected = select_task_accounts(
+            session,
+            1,
+            {"max_concurrent": 120},
+            limit=120,
+            enforce_max_concurrent=False,
+        )
+
+    assert len(selected) == 120
+    assert select_count <= 10

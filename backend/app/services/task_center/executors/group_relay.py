@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import AccountStatus, GroupAuthStatus, OperationTarget, RuleSet, RuleSetVersion, SourceMediaAsset, Task, TgAccount, TgGroup, TgGroupAccount
-from app.services.account_capacity import available_accounts_by_capacity, next_capacity_window
+from app.services.account_capacity import AccountCapacityCache, available_accounts_by_capacity, next_capacity_window
 from app.services.content_filters import filter_outbound_content
 from app.services.group_listeners import collect_group_context, is_listener_ignored_sender, recent_context_messages
 from app.services.rule_engine import apply_output_policy, bound_rule_version
@@ -121,6 +121,7 @@ def build_plan(session: Session, task: Task) -> int:
     if not candidate_actions:
         return membership_actions_created
     times = schedule_times(len(candidate_actions), task.pacing_config or {})
+    capacity_cache = AccountCapacityCache()
     batch_index = int((task.stats or {}).get("total_rounds") or 0) + 1
     relay_batch_id = f"{task.id}:batch:{batch_index}"
     created = 0
@@ -142,6 +143,7 @@ def build_plan(session: Session, task: Task) -> int:
             tenant_id=task.tenant_id,
             accounts=accounts,
             scheduled_at=planned_at,
+            cache=capacity_cache,
         )
         account_pool = available_accounts or accounts
         account = _pick_relay_account(account_pool, target.id, source_id, original, config, target_offsets)
@@ -151,6 +153,7 @@ def build_plan(session: Session, task: Task) -> int:
                 tenant_id=task.tenant_id,
                 account_ids=[item.id for item in accounts],
                 scheduled_at=planned_at,
+                cache=capacity_cache,
             )
             if decision.defer_until:
                 planned_at = decision.defer_until
