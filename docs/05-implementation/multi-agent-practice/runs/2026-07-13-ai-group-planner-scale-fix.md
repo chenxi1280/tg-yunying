@@ -243,6 +243,12 @@
 5. 评论任务必须另列 `pass / blocked / unproven`，核对任务状态、最近规划、执行、远端结果与错误；worker healthy 不能替代评论成功证据。
 6. 对 lifetime-cap 已完成评论任务主动触发 recovery drain / 容器重启后复核吸收终态；任何 `completed -> running`、`next_run_at` 重建或新增 Action 都阻断 Release Gate。
 
+### 2026-07-16 每日欠账与硬小时缺口合并修复
+
+- 生产新版本已证明四个保证群均能创建并真实发送 Action，但复核预算组合发现：`_daily_coverage_uncovered_count` 只要存在 hard-hourly progress 对象就只读取 `deficit`。本小时达到 10 条后 `deficit=0` 会把仍大于 0 的 `due_debt` 清零，理论上无法完成约 580 个账号的自然日覆盖。
+- 产品口径保持不变：硬小时是最低保障，全账号日覆盖是累计目标；Planner 取 `max(hard deficit, daily due debt)`，再由在线 ready 数和单轮 Action 预算截断。不得让任一目标反向屏蔽另一个目标。
+- E2 增加 `deficit=0 / due_debt=15` 回归，必须继续返回 15；凌晨 `due_debt=0 / deficit>0` 与在线候选扩池回归继续保留。发布后 E4 仍以真实 Action、Telegram 成功和北京时间覆盖账本增长为准。
+
 ## 回滚
 
 - 应用回滚走正常 release 提交，默认保留与旧应用兼容的 0091 复合索引，避免回滚应用时额外扩大数据库锁风险。
