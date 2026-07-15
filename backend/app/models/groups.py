@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -65,7 +65,10 @@ class TgGroupAccount(Base):
 
 class GroupContextMessage(Base):
     __tablename__ = "group_context_messages"
-    __table_args__ = (UniqueConstraint("group_id", "remote_message_id"),)
+    __table_args__ = (
+        UniqueConstraint("group_id", "remote_message_id"),
+        Index("ix_group_context_messages_tenant_group_recent", "tenant_id", "group_id", "sent_at", "id"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))

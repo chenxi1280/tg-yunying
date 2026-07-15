@@ -80,3 +80,5 @@
 ## 8. Planner 全池容量查询边界
 
 生产 E4 进一步证明，取消账号数量截断后，`select_task_accounts` 仍对每个候选账号分别查询冷却、小时和日占用；120 账号可产生 1084 次 SELECT，标准 Planner drain 超过 90 秒并阻断每日覆盖 Action 创建。修复必须让任务账号选择和同轮群转发显式复用 `AccountCapacityCache`，以批量占用事件查询填充本轮容量事实。容量判定、reservation、延期和失败原因保持不变；不允许恢复账号总量限制。
+
+发布后的同一 Planner drain 继续暴露最近群上下文查询：按 tenant/group 过滤、`sent_at DESC, id DESC LIMIT N` 的完整行读取因缺少复合索引而单次运行 38–40 秒。必须以 concurrent migration 增加 `(tenant_id, group_id, sent_at DESC, id DESC)`，保持上下文内容与排序不变，并在 E4 中证明该 DataFileRead 慢查询消失。
