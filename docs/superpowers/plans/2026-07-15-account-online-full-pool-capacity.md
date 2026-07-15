@@ -296,3 +296,21 @@ Require the red/green query tests, all no-PostgreSQL AI memory/generation tests,
 - [ ] **Step 5: Release and collect production E4**
 
 Publish through `master -> release -> Deploy Production`. After the new workers start, require healthy services, no Action deadlocks, reduced repeated semantic-window reads/Phase C duration, real coverage confirmations continuing to increase, and current comment-task status. Report login-required and genuine Telegram/account failures separately; do not claim all 580 obligations complete without ledger evidence.
+
+### Task 11: Eliminate CPU-bound full similarity matching inside the cached tenant window
+
+- [x] **Step 1: Capture production evidence**
+
+After Task 10 release, all workers stayed healthy and the 7-day window was loaded once per generation, but shared generation Actions remained `executing` for more than 15 minutes. All four Dispatcher processes showed running Python threads rather than socket waits, PostgreSQL remained CPU-active, and Phase C sessions stayed open while each candidate still invoked `SequenceMatcher` across roughly ten thousand cached rows.
+
+- [x] **Step 2: Add failing equivalence and fast-reject tests**
+
+Require a threshold predicate to match the existing `max(SequenceMatcher ratio, char Jaccard)` decision and prove low-overlap text does not invoke `SequenceMatcher`.
+
+- [x] **Step 3: Implement strict upper-bound pruning**
+
+Cache bounded immutable character profiles. Return immediately on Jaccard acceptance; otherwise use character multiset overlap as a strict upper bound for the SequenceMatcher ratio and skip only rows that mathematically cannot reach the configured threshold. Preserve tenant-wide 1-hour / 7-day scope and thresholds.
+
+- [ ] **Step 4: Run regressions, release, and collect production E4**
+
+Run equivalence, memory, generation, Dispatcher and PostgreSQL CI coverage, publish through `master -> release`, then prove Phase C duration and executing backlog fall while the four current-day coverage ledgers continue increasing. Keep genuine offline/login-required accounts visible.

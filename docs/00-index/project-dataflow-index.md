@@ -290,7 +290,7 @@
 
 > **AI 生成事务边界 Product Resync（2026-07-13）**：独立 QA I1 证明 Planner 锁定 Task、coverage 和任务日游标后仍可沿 quality -> `generate_group` / `generate_reply` -> Grok 同步外呼，因此本段覆盖 DF-167 / DF-168、BG-004 / BG-004A / BG-005 与 PERF-007 中关于生成位置的旧描述。Phase A Planner 只能在每批最多 20 条的数据库事务内创建 `ai_generation_status=pending` Action、条件预约 coverage、保存 cycle/slot/account/reply target/profile/topic/teacher/质量规则快照并 CAS 推进游标，禁止 AI、Grok、Telegram 或远端上下文外呼。Phase B Dispatcher 短事务 claim 并提交后，按 reply/normal 分批在无数据库事务区间完成目标复核、上下文刷新和全部 provider-backed 生成/改写/质量轮次；Phase C 以 lease/attempt 条件短事务校验 slot 一一映射，落内容、消息记忆、重复和质量结果，失败 Action 同事务释放自己的 coverage，通过后才进入无事务 Telegram Gateway 和短 finalize。reply 目标消失/过期不得转 normal；AI 成功但 Phase C 失败记生成结果落库未知，不等同 `unknown_after_send`。`messages_per_round`、580 分母和远端成功确认口径不变。专项合同见 `docs/03-feature-designs/ai-group-dispatcher-ai-generation-transaction-design.md`。
 
-> **AI 记忆批处理补强（2026-07-15）**：Phase C 的租户级 7 天语义去重范围和 30 天模板壳口径不变；同一个 generation 批次通过 `DuplicateMemoryBatch` 只投影一次 `id / normalized_text / raw_text / planned_at` 历史窗口，1 小时窗口从批快照中过滤，并把本批新预约消息即时加入快照。后续 slot 使用 `ix_ai_group_message_memory_tenant_status_updated` 增量合并其他 Dispatcher 在快照后提交的轻量记录；禁止每个 slot 各自重扫约万级历史行，也禁止用陈旧快照放过并发相似消息。这不是缩小去重范围或放宽质量门。
+> **AI 记忆批处理补强（2026-07-15）**：Phase C 的租户级 7 天语义去重范围和 30 天模板壳口径不变；同一个 generation 批次通过 `DuplicateMemoryBatch` 只投影一次 `id / normalized_text / raw_text / planned_at` 历史窗口，1 小时窗口从批快照中过滤，并把本批新预约消息即时加入快照。后续 slot 使用 `ix_ai_group_message_memory_tenant_status_updated` 增量合并其他 Dispatcher 在快照后提交的轻量记录；禁止每个 slot 各自重扫约万级历史行，也禁止用陈旧快照放过并发相似消息。批内逐候选相似判定必须先用字符 Jaccard 与 `SequenceMatcher` 可达上界做等价剪枝，只有仍可能达到 0.78 / 0.80 阈值的历史行才运行昂贵序列匹配；字符画像使用有界缓存。这不是缩小去重范围或放宽质量门。
 
 | ID | API | 动作/业务语义 | 前端/调用入口 | 后端流转 | 数据/状态 | 异步/外部 | 测试/验收入口 |
 | --- | --- | --- | --- | --- | --- | --- | --- |

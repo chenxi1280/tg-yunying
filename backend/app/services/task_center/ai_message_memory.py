@@ -30,7 +30,7 @@ from app.services.task_center.ai_message_memory_text import (
     semantic_cluster,
     template_shell_key,
     text_fingerprint,
-    text_similarity,
+    text_similarity_reaches,
 )
 
 DEDUP_STATUSES = {"pending", "reserved", "claiming", "executing", "unknown_after_send", "success"}
@@ -478,7 +478,11 @@ def _first_similar_memory(
     threshold: float,
 ) -> MemorySimilarityRow | None:
     for row in rows:
-        if text_similarity(normalized, row.normalized_text or normalize_group_ai_text(row.raw_text)) >= threshold:
+        if text_similarity_reaches(
+            normalized,
+            row.normalized_text or normalize_group_ai_text(row.raw_text),
+            threshold,
+        ):
             return row
     return None
 
