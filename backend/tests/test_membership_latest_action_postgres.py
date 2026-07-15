@@ -95,6 +95,7 @@ def test_membership_latest_action_postgres_scales_by_account_not_history() -> No
             latest = _membership_actions_by_account(
                 session,
                 TEST_CHANNEL_ID,
+                tenant_id=TEST_TENANT_ID,
                 task_id="pg-membership-latest",
             )
             elapsed = perf_counter() - started_at
@@ -107,3 +108,4 @@ def test_membership_latest_action_postgres_scales_by_account_not_history() -> No
     assert elapsed < MAX_QUERY_SECONDS
     assert len(statements) == 1
     assert "row_number() over" in statements[0].lower()
+    assert "actions.tenant_id" in statements[0].lower()

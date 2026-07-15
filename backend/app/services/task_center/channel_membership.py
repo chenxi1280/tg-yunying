@@ -214,7 +214,7 @@ def channel_membership_summary(
         if require_send and channel.target_type == "group":
             link_stmt = link_stmt.where(TgGroupAccount.can_send.is_(True))
         joined_ids.update(int(account_id) for account_id in session.scalars(link_stmt))
-    terminal_actions = _membership_actions_by_account(session, channel.id, task_id=task_id)
+    terminal_actions = _membership_actions_by_account(session, channel.id, tenant_id=tenant_id, task_id=task_id)
     failed_ids = {account_id for account_id, action in terminal_actions.items() if account_id in candidate_ids and _is_failed_membership_action(action)}
     unknown_ids = {account_id for account_id, action in terminal_actions.items() if account_id in candidate_ids and _is_unknown_membership_action(action)}
     waiting_ids = failed_ids | unknown_ids
@@ -356,7 +356,7 @@ def _target_requires_membership_for_candidates(target: OperationTarget, candidat
 
 
 def _create_missing_membership_actions(session: Session, task: Task, channel: OperationTarget, candidates: list[TgAccount], *, require_send: bool = False) -> int:
-    existing = _membership_actions_by_account(session, channel.id, task_id=task.id)
+    existing = _membership_actions_by_account(session, channel.id, tenant_id=task.tenant_id, task_id=task.id)
     group = linked_channel_group(session, channel, create=True, prefer_send_ready=require_send)
     joined_ids = _ready_membership_account_ids(session, task, channel, group, candidates, require_send=require_send)
     now_value = _now()
@@ -531,7 +531,7 @@ def _reactivate_auto_verification_memberships(
     group = linked_channel_group(session, channel, create=False, prefer_send_ready=require_send)
     if not group:
         return 0
-    latest_actions = _membership_actions_by_account(session, channel.id, task_id=task.id)
+    latest_actions = _membership_actions_by_account(session, channel.id, tenant_id=task.tenant_id, task_id=task.id)
     candidate_ids = {int(account.id) for account in candidates}
     account_by_id = {int(account.id): account for account in candidates}
     now_value = _now()
@@ -933,8 +933,15 @@ def _looks_like_invite_ref(ref: str) -> bool:
     return value.startswith(("+", "https://t.me/+", "http://t.me/+", "t.me/+", "https://telegram.me/+", "telegram.me/+"))
 
 
-def _membership_actions_by_account(session: Session, channel_target_id: int, *, task_id: str | None = None) -> dict[int, Action]:
+def _membership_actions_by_account(
+    session: Session,
+    channel_target_id: int,
+    *,
+    tenant_id: int,
+    task_id: str | None = None,
+) -> dict[int, Action]:
     filters = [
+        Action.tenant_id == tenant_id,
         Action.action_type.in_([ACTION_TYPE, LEGACY_ACTION_TYPE]),
         Action.account_id.is_not(None),
         Action.payload["channel_target_id"].as_integer() == channel_target_id,

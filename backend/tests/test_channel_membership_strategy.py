@@ -1423,6 +1423,7 @@ def test_membership_permission_denied_skip_counts_as_failed() -> None:
     assert summary["need_join_account_count"] == 0
 
 
+@pytest.mark.no_postgres
 def test_membership_latest_action_query_loads_one_row_per_account(monkeypatch) -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -1463,7 +1464,7 @@ def test_membership_latest_action_query_loads_one_row_per_account(monkeypatch) -
 
         monkeypatch.setattr(session, "scalars", tracked_scalars)
 
-        latest = _membership_actions_by_account(session, 902, task_id="task-membership-latest")
+        latest = _membership_actions_by_account(session, 902, tenant_id=1, task_id="task-membership-latest")
 
     assert {account_id: action.id for account_id, action in latest.items()} == {
         11: "membership-history-11-2",
@@ -1473,6 +1474,7 @@ def test_membership_latest_action_query_loads_one_row_per_account(monkeypatch) -
     assert loaded_row_counts == [2]
 
 
+@pytest.mark.no_postgres
 def test_membership_latest_action_query_filters_before_deterministic_ranking() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -1508,10 +1510,23 @@ def test_membership_latest_action_query_filters_before_deterministic_ranking() -
                     payload={"channel_target_id": channel_id},
                 )
             )
+        session.add(
+            Action(
+                id="rank-wrong-tenant",
+                tenant_id=2,
+                task_id="task-ranked",
+                task_type="group_ai_chat",
+                action_type="ensure_target_membership",
+                account_id=21,
+                status="success",
+                created_at=created_at + timedelta(seconds=6),
+                payload={"channel_target_id": 902},
+            )
+        )
         session.commit()
 
-        latest = _membership_actions_by_account(session, 902, task_id="task-ranked")
-        latest_across_tasks = _membership_actions_by_account(session, 902)
+        latest = _membership_actions_by_account(session, 902, tenant_id=1, task_id="task-ranked")
+        latest_across_tasks = _membership_actions_by_account(session, 902, tenant_id=1)
 
     assert latest[21].id == "rank-b"
     assert latest_across_tasks[21].id == "rank-wrong-task"
