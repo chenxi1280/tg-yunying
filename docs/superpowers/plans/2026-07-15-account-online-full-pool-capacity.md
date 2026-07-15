@@ -502,3 +502,21 @@ Only non-reply slots bound to a current daily-coverage ledger can become `emoji_
 - [ ] **Step 4: Release and collect production E4**
 
 Publish through `master -> release`, require workflow success, then prove real current-day `success/confirmed` growth for active-window groups, exact visible blockers for unavailable accounts, no unexpected duplicate-memory rejection of the explicit fallback, and no overdue comment actions.
+
+### Task 15: Remove per-account capacity-query amplification
+
+- [x] **Step 1: Capture RED in production and unit tests**
+
+Production standard Planner drain exceeded 90 seconds while `pg_stat_activity` repeatedly showed per-account Action `min/count` capacity queries. A 120-account regression reproduced 1084 SELECT statements.
+
+- [x] **Step 2: Bulk-prime the full candidate pool**
+
+Create one `AccountCapacityCache` for each full-pool account selection and reuse one cache across a group-relay planning batch. Preserve cooldown, hourly/day limits, reservations and defer semantics without restoring `max_concurrent` or any hidden total-account cap.
+
+- [x] **Step 3: Verify bounded queries and behavior**
+
+Require the 120-account selection to return all 120 accounts with at most 10 SELECT statements. Run account-pool, bulk-capacity and relay/capacity regressions.
+
+- [ ] **Step 4: Release and collect E4**
+
+Publish through `master -> release`; require the standard production Planner drain to finish, create current-day daily-coverage Action rows, and produce real Telegram success / confirmed growth while comment-task status remains healthy.

@@ -138,6 +138,7 @@ docker compose exec -T worker-planner sh -lc 'now=$(date +%s); last=$(cat "${WOR
 - 当前代码已实现真实 `TelethonTelegramGateway.search_rank_deboost_candidates/execute_search_rank_deboost`、同代理出口探测和逐点击事实结果；生产状态仍为 `production_unproven`，必须通过协议样本、迁移、真实代理出口和 1-2 个灰度账号的 E4 验证后才能标记生产可用，不得用 monkeypatch/fixture 替代。
 - 任务创建只进入 `draft` 准备态；`create_and_start` / `start_task` 必须同时满足真实豁免群已从生产 Gateway 搜索结果中选出、生产类显式实现 `search_rank_deboost_candidates/execute_search_rank_deboost`、协议样本和全部涉及分组持久代理绑定预检通过，才能进入 `running`。
 - `search_rank_deboost_exempt_groups.exempt_group_username=pending_real_search` 只表示待接入真实搜索结果；Planner 遇到该占位值必须以 `exempt_group_pending_real_search` 阻断，不得生成 action。
+- 全账号任务上线后若标准 Planner drain 超过 60 秒，先在 `pg_stat_activity` 核对是否出现按单个 `account_id` 重复执行的 Action / MessageTask `min/max/count` 容量查询。正常实现必须由 `AccountCapacityCache` 批量预取同一候选池的小时、自然日和冷却占用；不得通过恢复账号数量上限解决。生产验收要求 Planner drain 可完成、查询数不随账号数线性增长，并看到真实 Action / coverage 增长。
 - Dispatcher 不得用 `account_group_proxy_bindings.observed_exit_ip` 自证出口；真实执行必须由 Gateway 使用分组 `runtime_proxy_id` 对应的 SOCKS/HTTP 端点完成当前 HTTPS 出口探测，并用同一代理指纹创建 Telethon client。缺失、漂移、协议不支持或 binding 非 active 时写 `proxy_egress_guard_failed`，不得回退本机直连、账号旧代理或授权槽位代理。
 - 每个 action 最多一次 `navigate_only` 真实点击；只有 Gateway 返回 `click_outcomes.status=confirmed` 才写成功点击统计。`observed_no_click` 不计点击成功，`unknown_after_click` 占用配额且不得自动重试。
 

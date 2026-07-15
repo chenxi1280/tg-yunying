@@ -76,3 +76,7 @@
 ## 7. 发布与回滚
 
 发布前运行定向单元测试、相关在线状态回归和配置检查。发布沿用标准 GitHub Actions 流程。若显式并发 32 造成 Telegram、代理或主机压力异常，只回调 `ACCOUNT_ONLINE_PROBE_CONCURRENCY` 并重新部署；若健康探测出现正常网络抖动，可显式调整 `ACCOUNT_ONLINE_PROBE_TIMEOUT_SECONDS`，但不得恢复 300 秒通用超时、隐藏账号截断或应上线账号总量限制。
+
+## 8. Planner 全池容量查询边界
+
+生产 E4 进一步证明，取消账号数量截断后，`select_task_accounts` 仍对每个候选账号分别查询冷却、小时和日占用；120 账号可产生 1084 次 SELECT，标准 Planner drain 超过 90 秒并阻断每日覆盖 Action 创建。修复必须让任务账号选择和同轮群转发显式复用 `AccountCapacityCache`，以批量占用事件查询填充本轮容量事实。容量判定、reservation、延期和失败原因保持不变；不允许恢复账号总量限制。
