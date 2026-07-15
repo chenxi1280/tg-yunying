@@ -31,6 +31,7 @@ from app.services.task_center.executors.group_ai_chat import (
     _coverage_plan_state,
     _next_cycle_index,
     _online_ready_accounts,
+    _plan_account_limit,
     _select_accounts_for_plan,
     build_plan as build_group_ai_chat_plan,
 )
@@ -809,6 +810,7 @@ def test_daily_coverage_scans_past_offline_leading_accounts(monkeypatch):
     assert len(coverage.rows) == 3
     assert [account.id for account in selected] == [101, 102, 103]
     assert [account.id for account in ready] == [103]
+    assert _plan_account_limit(task, {}, planning_limit=1) == 1
 
 
 @pytest.mark.no_postgres

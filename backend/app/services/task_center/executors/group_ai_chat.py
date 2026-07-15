@@ -347,7 +347,11 @@ def _resolve_plan_group(
 def _load_plan_accounts(
     session: Session, task: Task, facts: PlanFacts,
 ) -> AccountPlanState | PlanAbort:
-    account_limit = _plan_account_limit(task, facts.hard_progress)
+    account_limit = _plan_account_limit(
+        task,
+        facts.hard_progress,
+        planning_limit=session.info.get("daily_coverage_plan_limit"),
+    )
     accounts = _select_accounts_for_plan(
         session,
         task,
@@ -1341,10 +1345,20 @@ def _select_accounts_for_plan(
     )
 
 
-def _plan_account_limit(task: Task, progress: dict[str, object]) -> int:
-    if progress:
-        return _hard_hourly_account_scan_target(progress)
-    return max(1, int((task.account_config or {}).get("max_concurrent") or 20))
+def _plan_account_limit(
+    task: Task,
+    progress: dict[str, object],
+    *,
+    planning_limit: int | None = None,
+) -> int:
+    limit = (
+        _hard_hourly_account_scan_target(progress)
+        if progress
+        else max(1, int((task.account_config or {}).get("max_concurrent") or 20))
+    )
+    if _all_accounts_daily_coverage(task.type_config or {}) and planning_limit is not None:
+        return min(limit, max(1, int(planning_limit)))
+    return limit
 
 
 def _ready_coverage_rows(
