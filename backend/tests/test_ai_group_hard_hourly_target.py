@@ -29,6 +29,8 @@ from app.schemas import GroupAIChatTaskCreate, TaskPrecheckRequest
 from app.services.task_center.executors import prepare_open_actions_for_planning
 from app.services.task_center.executors.group_ai_chat import (
     _next_cycle_index,
+    _online_ready_accounts,
+    _select_accounts_for_plan,
     build_plan as build_group_ai_chat_plan,
 )
 from app.services.task_center.hard_hourly import (
@@ -760,6 +762,48 @@ def test_group_ai_chat_all_accounts_daily_coverage_plans_uncovered_accounts_when
     assert task.stats["coverage_reply_shortfall_cycle_count"] == 1
     assert task.stats["daily_coverage_next_check_at"] == "2026-06-07T20:12:00"
     assert not any("UPDATE tg_account_online_state" in statement for statement in statements)
+
+
+@pytest.mark.no_postgres
+def test_daily_coverage_scans_past_offline_leading_accounts(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 7, 20, 10)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
+    monkeypatch.setattr(
+        "app.services.task_center.executors.group_ai_chat.online_ready_account_ids_for_planning",
+        lambda *_args, **_kwargs: {105},
+    )
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        group = TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="覆盖群", auth_status="已授权运营")
+        session.add(group)
+        _add_ready_group_accounts(session, group_id=7, account_ids=[101, 102, 103, 104, 105])
+        task = Task(
+            id="daily-online-scan",
+            tenant_id=1,
+            name="在线扩池",
+            type="group_ai_chat",
+            status="running",
+            account_config={"selection_mode": "all", "max_concurrent": 1, "cooldown_per_account_minutes": 0},
+            type_config={"target_group_id": 7, "account_coverage_mode": "all_accounts_daily"},
+        )
+        session.add(task)
+        session.add_all([
+            TaskAccountDailyCoverage(
+                tenant_id=1, task_id=task.id, group_id=7, account_id=account_id,
+                coverage_date=now_value.date(), state="ready", targeted_at=now_value,
+            )
+            for account_id in [101, 102, 103, 104, 105]
+        ])
+        session.commit()
+        rows = list(session.scalars(select(TaskAccountDailyCoverage).where(TaskAccountDailyCoverage.task_id == task.id)))
+        selected = _select_accounts_for_plan(session, task, group, {}, task.type_config, coverage_rows=rows)
+        ready = _online_ready_accounts(session, task, selected, {})
+
+    assert [account.id for account in selected] == [101, 102, 103, 104, 105]
+    assert [account.id for account in ready] == [105]
 
 
 @pytest.mark.no_postgres

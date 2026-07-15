@@ -347,6 +347,7 @@ def _resolve_plan_group(
 def _load_plan_accounts(
     session: Session, task: Task, facts: PlanFacts,
 ) -> AccountPlanState | PlanAbort:
+    account_limit = _plan_account_limit(task, facts.hard_progress)
     accounts = _select_accounts_for_plan(
         session,
         task,
@@ -356,6 +357,7 @@ def _load_plan_accounts(
         coverage_rows=facts.coverage.rows,
     )
     accounts = _online_ready_accounts(session, task, accounts, facts.hard_progress)
+    accounts = accounts[:account_limit]
     if not accounts:
         _mark_account_shortage(session, task, facts)
         return PlanAbort()
@@ -1323,6 +1325,9 @@ def _select_accounts_for_plan(
         if _all_accounts_daily_coverage(config)
         else None
     )
+    if candidate_account_ids:
+        options["limit"] = len(candidate_account_ids)
+        options["enforce_max_concurrent"] = False
     return select_task_accounts(
         session,
         task.tenant_id,
@@ -1334,6 +1339,12 @@ def _select_accounts_for_plan(
         **coverage_options,
         **options,
     )
+
+
+def _plan_account_limit(task: Task, progress: dict[str, object]) -> int:
+    if progress:
+        return _hard_hourly_account_scan_target(progress)
+    return max(1, int((task.account_config or {}).get("max_concurrent") or 20))
 
 
 def _ready_coverage_rows(
