@@ -85,6 +85,7 @@ def test_metrics_refresh_idempotently_separates_generation_and_gateway_unknown()
         assert second["unknown_after_send_count"] == 1
         assert second["gateway_unknown_count"] == 1
         assert second["generation_ready_count"] == 1
+        assert second["generation_failed_count"] == 1
         assert second["quality_rejected_count"] == 1
         assert second["quality_rejection_counts"] == {"voice_profile_mismatch": 1}
 
