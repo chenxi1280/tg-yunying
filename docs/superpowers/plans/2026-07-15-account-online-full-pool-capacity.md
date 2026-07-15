@@ -527,3 +527,10 @@ Publish through `master -> release`; require the standard production Planner dra
 - [x] Add red/green idempotent, reversible and concurrent-DDL migration tests.
 - [x] Add `0103_group_context_recent_index` on `(tenant_id, group_id, sent_at DESC, id DESC)` and sync model metadata / migration head.
 - [ ] Publish and prove the standard Planner drain completes within 90 seconds, then verify real daily-coverage Action and confirmed growth.
+
+### Task 17: Filter online accounts before applying the per-cycle budget
+
+- [x] Prove production has 531 current online, non-stale, `can_send` accounts in each guaranteed group while task stats incorrectly report one selected offline account.
+- [x] Add a regression where the first four ordered candidates are offline and the fifth is online.
+- [x] Scan the full ready daily-coverage candidate pool, filter online state, then slice to the unchanged per-cycle account budget.
+- [ ] Run focused and relevant regressions, publish through `master -> release`, and prove new Action plus Telegram success / confirmed growth in an active-window group.
