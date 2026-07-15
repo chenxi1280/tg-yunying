@@ -474,3 +474,4 @@ def test_historical_backfill_candidates_skip_poisoned_oldest_actions() -> None:
     assert [action.id for action in candidates] == ["poisoned-action-100"]
     assert len(statements) == 1
     assert "not (exists" in statements[0] or "not exists" in statements[0]
+    assert statements[0].count("from actions") == 2
