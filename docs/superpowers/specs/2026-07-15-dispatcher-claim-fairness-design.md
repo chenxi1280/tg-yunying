@@ -12,7 +12,7 @@
 
 - 每轮领取量不超过本 worker 的真实 Dispatcher 并发能力。
 - 保留 AI 活跃群每小时硬目标的现有最高排序。
-- 在相同硬目标等级和 Task priority 下，`post_comment` 先于普通批量动作，再按 `scheduled_at / created_at` 排序。
+- 在相同硬目标等级和 Task priority 下，`channel_comment` 的目标准入和 `post_comment` 先于普通批量动作，再按 `scheduled_at / created_at` 排序。
 
 改动小、行为可验证，不改变任务配置、账号限额和 Telegram 风控规则。评论量低，不会显著挤压点赞和浏览吞吐。
 
@@ -34,10 +34,10 @@
 2. 当前小时硬目标发送；
 3. 普通动作；
 4. 同一层级内按 Task priority；
-5. 同一优先级内 `post_comment` 先于其他动作；
+5. 同一优先级内 `channel_comment` 任务的目标准入和 `post_comment` 先于其他动作；
 6. 最后按计划时间和创建时间稳定排序。
 
-评论优先只影响已经到期的 action，不提前执行未来评论，不跳过账号在线、账号容量、Redis token bucket、账号 in-flight、目标权限或 Telegram Gateway 校验。
+评论链路优先只影响已经到期的 action，不提前执行未来评论，不跳过账号在线、账号容量、Redis token bucket、账号 in-flight、目标权限或 Telegram Gateway 校验。
 
 ## 4. 失败与恢复
 

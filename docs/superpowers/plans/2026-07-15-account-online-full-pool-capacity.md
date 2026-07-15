@@ -198,11 +198,11 @@ Record that four workers request 100 actions each while effective concurrency is
 
 - [x] **Step 2: Add focused failing tests**
 
-Prove a requested drain of 100 passes only effective concurrency to `claim_actions`, and prove a due `post_comment` is selected before an older ordinary batch action at the same Task priority while hard-hourly sends remain first.
+Prove a requested drain of 100 passes only effective concurrency to `claim_actions`, and prove due `channel_comment` membership / `post_comment` actions are selected before an older ordinary batch action at the same Task priority while hard-hourly sends remain first.
 
 - [x] **Step 3: Implement the minimal dispatcher fix**
 
-Calculate effective concurrency before claiming and use it as the claim limit. Add an explicit post-comment rank after hard-hourly rank and Task priority in both claim and due-action ordering.
+Calculate effective concurrency before claiming and use it as the claim limit. Add an explicit channel-comment task rank after hard-hourly rank and Task priority in both claim and due-action ordering.
 
 - [x] **Step 4: Run Dispatcher regressions and static checks**
 
