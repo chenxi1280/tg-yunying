@@ -211,3 +211,30 @@ Run the focused red/green tests, Dispatcher role and capacity suites with a 60-s
 - [ ] **Step 5: Release and verify production E4**
 
 Push `master`, merge into `release`, require Deploy Production success, then prove due comments stop cycling through `claim_expired` and reach real `success` with `telegram_msg_id` or expose a different genuine Telegram/account failure.
+
+### Task 8: Stop account-online from retaining duplicate session connections
+
+**Files:**
+- Modify: `backend/app/integrations/telegram/gateway.py`
+- Modify: `backend/tests/test_telethon_lifecycle.py`
+- Modify: product, runtime, dataflow, design, and plan documents.
+
+- [x] **Step 1: Capture production evidence**
+
+Confirm 425 desired accounts fail with `TimeoutError`, account-online logs continuously report `Server replied with a wrong session ID`, desired accounts contain zero duplicate session ciphertext values, and the account-online container holds about 167 established TCP connections while each Dispatcher holds far fewer.
+
+- [x] **Step 2: Add the failing lifecycle test**
+
+Require account health to create a fresh client, avoid `_get_or_create_client`, execute the authorization probe, and disconnect in all terminal paths.
+
+- [x] **Step 3: Implement ephemeral health clients**
+
+Use `_new_client`, a bounded connect, and `finally: disconnect()` inside `_health_async`; run the 30-second probe timeout inside the event loop, wait for a bounded 5-second cleanup before the synchronous caller returns, preserve the original probe exception when cleanup also fails, and keep the business client cache unchanged.
+
+- [ ] **Step 4: Run regressions and release**
+
+Run focused lifecycle, online-state, timing, config, worker, and Dispatcher tests with 60-second limits, compile and diff checks, then publish through `master -> release -> Deploy Production`.
+
+- [ ] **Step 5: Verify production E4**
+
+Require the new revision and healthy worker, account-online established TCP connections to remain bounded after a full probe cycle, `wrong session ID` / TimeoutError volume to decline, and online / group coverage to improve without reintroducing an account admission cap.
