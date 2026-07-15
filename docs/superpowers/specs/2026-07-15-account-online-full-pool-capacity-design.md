@@ -26,7 +26,7 @@
 
 数据库 Session、ORM 对象读取和在线状态落库全部保留在 worker 主线程：
 
-1. 主线程分页读取到期在线状态、账号和凭证，生成不可变探测任务。
+1. 主线程分页读取到期在线状态、账号和凭证，生成不可变探测任务，并在启动 Telegram 调用前提交并关闭该读取事务；逐结果提交不得让已加载的同批 ORM 对象过期后再隐式逐账号回表。
 2. 线程池只执行 `TelegramGateway.check_account_health` 网络调用，返回不可变结果，不携带 ORM 对象；健康探测使用独立的 30 秒超时，不继承普通 Telegram 业务操作的 300 秒超时。
 3. 探测结果必须按完成顺序流式返回；主线程每收到一个结果就立即更新并提交 `online`、`login_required`、`blocked`、`failure_detail`、`last_probe_at`、`stale_after_at` 和 `next_probe_at`，不得等待整页全部网络调用完成后才集中落库。
 

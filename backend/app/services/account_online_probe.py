@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from collections import defaultdict
 from collections.abc import Iterator
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -51,42 +52,55 @@ def probe_due_online_states(
     now: datetime | None = None,
     commit_each: bool = False,
 ) -> int:
-    current_time = now or _now()
-    fixed_time = now is not None
-    states = _due_probe_states(session, limit=limit, now=current_time)
-    states_by_account = {state.account_id: state for state in states}
-    accounts: dict[int, TgAccount] = {}
-    jobs: list[OnlineProbeJob] = []
-    schedules: list[tuple[str, timedelta, timedelta | None]] = []
-    batch_completed_at = current_time
-    for state in states:
-        account = session.get(TgAccount, state.account_id)
-        if not account or account.deleted_at is not None:
-            _mark_probe_blocked(state, current_time, "account_missing", "账号不存在或已删除")
+    with _preserve_probe_objects_across_commits(session, enabled=commit_each):
+        current_time = now or _now()
+        fixed_time = now is not None
+        states = _due_probe_states(session, limit=limit, now=current_time)
+        states_by_account = {state.account_id: state for state in states}
+        accounts: dict[int, TgAccount] = {}
+        jobs: list[OnlineProbeJob] = []
+        schedules: list[tuple[str, timedelta, timedelta | None]] = []
+        batch_completed_at = current_time
+        for state in states:
+            account = session.get(TgAccount, state.account_id)
+            if not account or account.deleted_at is not None:
+                _mark_probe_blocked(state, current_time, "account_missing", "账号不存在或已删除")
+                schedules.append(_probe_schedule(state))
+                _commit_probe_progress(session, commit_each)
+                continue
+            accounts[account.id] = account
+            try:
+                credentials = credentials_for_account(session, account, use_proxy=False)
+            except ValueError as exc:
+                _mark_probe_blocked(state, current_time, "developer_app_unavailable", str(exc))
+                schedules.append(_probe_schedule(state))
+                _commit_probe_progress(session, commit_each)
+                continue
+            jobs.append(OnlineProbeJob(account.id, account.session_ciphertext, credentials))
+        _commit_probe_progress(session, commit_each and bool(jobs))
+        for result in _run_health_probes(jobs):
+            completed_at = current_time if fixed_time else max(current_time, result.completed_at or _now())
+            state = states_by_account[result.account_id]
+            _apply_probe_result(session, accounts[result.account_id], state, completed_at, result)
             schedules.append(_probe_schedule(state))
+            batch_completed_at = max(batch_completed_at, completed_at)
             _commit_probe_progress(session, commit_each)
-            continue
-        accounts[account.id] = account
-        try:
-            credentials = credentials_for_account(session, account, use_proxy=False)
-        except ValueError as exc:
-            _mark_probe_blocked(state, current_time, "developer_app_unavailable", str(exc))
-            schedules.append(_probe_schedule(state))
-            _commit_probe_progress(session, commit_each)
-            continue
-        jobs.append(OnlineProbeJob(account.id, account.session_ciphertext, credentials))
-    for result in _run_health_probes(jobs):
-        completed_at = current_time if fixed_time else max(current_time, result.completed_at or _now())
-        state = states_by_account[result.account_id]
-        _apply_probe_result(session, accounts[result.account_id], state, completed_at, result)
-        schedules.append(_probe_schedule(state))
-        batch_completed_at = max(batch_completed_at, completed_at)
-        _commit_probe_progress(session, commit_each)
-    if schedules and not fixed_time:
-        batch_completed_at = max(batch_completed_at, _now())
-    _apply_batch_probe_schedules(session, schedules, batch_completed_at)
-    _commit_probe_progress(session, commit_each and bool(schedules))
-    return len(states)
+        if schedules and not fixed_time:
+            batch_completed_at = max(batch_completed_at, _now())
+        _apply_batch_probe_schedules(session, schedules, batch_completed_at)
+        _commit_probe_progress(session, commit_each and bool(schedules))
+        return len(states)
+
+
+@contextmanager
+def _preserve_probe_objects_across_commits(session: Session, *, enabled: bool) -> Iterator[None]:
+    previous = session.expire_on_commit
+    if enabled:
+        session.expire_on_commit = False
+    try:
+        yield
+    finally:
+        session.expire_on_commit = previous
 
 
 def _probe_schedule(state: TgAccountOnlineState) -> tuple[str, timedelta, timedelta | None]:
