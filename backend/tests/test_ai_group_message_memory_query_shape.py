@@ -410,6 +410,8 @@ def test_window_memories_projects_only_similarity_columns_across_groups() -> Non
         "ai_group_message_memory.id",
         "ai_group_message_memory.normalized_text",
         "ai_group_message_memory.raw_text",
+        "ai_group_message_memory.planned_at",
+        "ai_group_message_memory.status",
     ]
     assert "ai_group_message_memory.result" not in statement
     assert "ai_group_message_memory.group_id" not in statement

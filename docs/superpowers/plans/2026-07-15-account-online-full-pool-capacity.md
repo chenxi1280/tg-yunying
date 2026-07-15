@@ -267,3 +267,32 @@ Detect blank normal `send_message` Actions with pending generation, a generation
 - [ ] **Step 5: Verify, release, and collect E4**
 
 Run focused role-drain and AI generation regressions, compile/diff checks, publish through `master -> release -> Deploy Production`, then require no new post-release Action deadlocks, healthy workers, lower load/lock pressure, and increasing real coverage confirmations. Keep login-required, paused tasks, invalid targets, and remaining Telegram/account failures separately visible.
+
+### Task 10: Remove per-slot tenant memory rescans in AI generation Phase C
+
+**Files:**
+- Modify: `backend/app/services/task_center/ai_message_memory.py`
+- Modify: `backend/app/services/task_center/ai_generation_persistence.py`
+- Modify: `backend/app/services/task_center/ai_generation_quality.py`
+- Modify: `backend/tests/test_ai_group_message_memory_query_shape.py`
+- Modify: product, dataflow, AI generation transaction design, production runtime, and this plan.
+
+- [x] **Step 1: Capture the post-deadlock production bottleneck**
+
+PostgreSQL showed repeated tenant-wide `ai_group_message_memory` similarity reads while Dispatcher Actions stayed in `provider_call_started / generation_claimed`. The live 7-day window contained about 9,877 dedup rows and one projected scan took about 2.76 seconds; the old Phase C repeated the 1-hour and 7-day scans for every accepted slot and eagerly executed later checks even after an exact duplicate was already found.
+
+- [x] **Step 2: Add failing query-shape regressions**
+
+Prove three accepted slots in one generation batch currently issue more than one semantic-window projection, and prove a 5-minute exact duplicate still executes semantic-window scans before returning.
+
+- [x] **Step 3: Cache the generation-level tenant window and short-circuit checks**
+
+Create one `DuplicateMemoryBatch` per persisted generation result batch. Load the tenant-level 7-day lightweight projection once, derive the 1-hour rows from that snapshot, append each newly reserved slot, and use an indexed `updated_at` overlap query before later slots to merge other Dispatcher commits. Evaluate exact, 1-hour, 7-day, and template checks sequentially so a confirmed earlier match stops later work. Do not narrow dedup to one group, use a stale snapshot, or omit pending/reserved/executing/unknown/success states.
+
+- [x] **Step 4: Run focused and broader regressions**
+
+Require the red/green query tests, all no-PostgreSQL AI memory/generation tests, task-center role drains, capacity dispatch regressions, Python compilation, and `git diff --check` to pass within their 60-second test limits.
+
+- [ ] **Step 5: Release and collect production E4**
+
+Publish through `master -> release -> Deploy Production`. After the new workers start, require healthy services, no Action deadlocks, reduced repeated semantic-window reads/Phase C duration, real coverage confirmations continuing to increase, and current comment-task status. Report login-required and genuine Telegram/account failures separately; do not claim all 580 obligations complete without ledger evidence.

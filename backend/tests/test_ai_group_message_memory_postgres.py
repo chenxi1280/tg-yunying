@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from time import perf_counter
 
+import pytest
 from sqlalchemy import delete, func, insert, select, text
 from sqlalchemy.engine import Row
 from sqlalchemy.orm import Session
@@ -11,14 +12,18 @@ from app.database import Base, SessionLocal, engine
 from app.models import Action, AiGroupMessageMemory, Task, Tenant
 from app.services._common import _now
 from app.services.task_center.ai_message_memory import (
+    DuplicateMessageReservation,
     _first_similar_memory,
     _memory_exists_for_action,
     _window_memories,
     backfill_group_ai_message_memory_from_actions,
+    reserve_group_ai_message,
 )
+from app.services.task_center.ai_message_memory_batch import DuplicateMemoryBatch
 
 
 TEST_TENANT_ID = 913_715
+CONCURRENT_TEST_TENANT_ID = 913_716
 ROW_COUNT = 40_741
 BATCH_SIZE = 2_000
 MAX_QUERY_SECONDS = 2.0
@@ -33,7 +38,7 @@ TARGET_GROUP_ID = 999
 WINDOW_DAYS = 7
 WINDOW_SECONDS = int(timedelta(days=WINDOW_DAYS).total_seconds())
 CANDIDATE_TEXT = "完全不相似的唯一候选文本"
-EXPECTED_ROW_KEYS = {"id", "normalized_text", "raw_text"}
+EXPECTED_ROW_KEYS = {"id", "normalized_text", "raw_text", "planned_at", "status"}
 ACTION_INDEX_NAME = "ix_ai_group_message_memory_action_id"
 BACKFILL_ACTION_COUNT = 200
 POISONED_ACTION_COUNT = 100
@@ -246,3 +251,52 @@ def test_ai_message_memory_postgres_scales_at_production_volume() -> None:
         )
     finally:
         _cleanup_memory_rows()
+
+
+def test_duplicate_batch_refresh_sees_concurrent_postgres_commit() -> None:
+    Base.metadata.create_all(engine)
+    _cleanup_concurrent_test_rows()
+    now_value = _now()
+    with SessionLocal() as setup:
+        setup.add(Tenant(id=CONCURRENT_TEST_TENANT_ID, name="AI memory concurrent refresh"))
+        setup.commit()
+
+    try:
+        with SessionLocal() as first:
+            batch = DuplicateMemoryBatch(now=now_value)
+            _reserve_concurrent_test(first, batch, 1, "第一条无关消息")
+            with SessionLocal() as concurrent:
+                _reserve_concurrent_test(concurrent, None, 2, "并发提交的语义消息")
+                concurrent.commit()
+            with pytest.raises(DuplicateMessageReservation) as exc_info:
+                _reserve_concurrent_test(first, batch, 3, "并发提交的语义消息呢")
+
+        assert exc_info.value.duplicate_window in {"1h_similar", "7d_semantic"}
+    finally:
+        _cleanup_concurrent_test_rows()
+
+
+def _reserve_concurrent_test(
+    session: Session,
+    batch: DuplicateMemoryBatch | None,
+    account_id: int,
+    content: str,
+) -> None:
+    reserve_group_ai_message(
+        session,
+        tenant_id=CONCURRENT_TEST_TENANT_ID,
+        group_id=20 + account_id,
+        task_id="pg-concurrent-memory",
+        account_id=None,
+        raw_text=content,
+        duplicate_batch=batch,
+    )
+
+
+def _cleanup_concurrent_test_rows() -> None:
+    with SessionLocal() as session:
+        session.execute(delete(AiGroupMessageMemory).where(
+            AiGroupMessageMemory.tenant_id == CONCURRENT_TEST_TENANT_ID,
+        ))
+        session.execute(delete(Tenant).where(Tenant.id == CONCURRENT_TEST_TENANT_ID))
+        session.commit()

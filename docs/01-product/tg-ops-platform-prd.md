@@ -4570,7 +4570,7 @@ action / attempt 写入完成
 - AI generation 和 action payload / result 必须记录接话 / 暖场 / 沉默模式、事实锚点、语义簇、重复风险、幻觉风险和跳过原因。
 - AI 活跃群在同一目标群内 5 分钟归一化文本完全重复必须为 0，重复拦截需要覆盖并发 Planner、已规划未发送 action 和 Dispatcher 发送前最终检查。
 - AI 活跃群必须在同一租户全部活群范围内执行 7 天高相似语义硬去重和 30 天模板壳句限频；候选不足时记录质量跳过或要求 AI 换角度重写，不能用固定兜底句补量。
-- AI 活跃群租户级消息记忆时间窗查询只能读取重复判定所需的轻量字段，并由 `(tenant_id, status, planned_at DESC)` 或等价索引支撑；禁止为性能把查询范围缩回单个目标群，也禁止加载与判定无关的大字段形成长事务。
+- AI 活跃群租户级消息记忆时间窗查询只能读取重复判定所需的轻量字段，并由 `(tenant_id, status, planned_at DESC)` 或等价索引支撑；同一个 AI generation 批次只能装载一次 7 天租户级语义窗口，1 小时窗口从该批快照中过滤，本批已接受候选必须立即加入快照继续参与后续 slot 判定；后续 slot 还必须通过 `(tenant_id, updated_at DESC)` 增量读取其他 Dispatcher 在批快照后提交的候选及状态退出，不能用陈旧缓存放过并发跨群相似消息，也不能继续误判已转为 `failed / expired_before_send` 的记录。禁止为性能把查询范围缩回单个目标群，也禁止逐 slot 重复全量读取或加载与判定无关的大字段形成长事务。
 - AI 活跃群 action payload / result 必须记录消息记忆命中情况、去重窗口、`profile_version`、`profile_match_score` 和 `profile_match_reason`，用于验证运营学习画像是否真实参与候选评分。
 - AI 活跃群归一化、文本指纹、语义簇和模板壳句 key 在 Planner 与 Dispatcher 中必须一致；相同输入在重复运行中必须得到相同去重结果。
 - AI 活跃群 Planner 写入 action 前必须先原子写入租户级消息记忆预占位；并发写入相同归一化指纹时只能有一个成功，其余必须得到可见重复原因。

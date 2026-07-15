@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from difflib import SequenceMatcher
-from hashlib import sha256
 
 from sqlalchemy import select
 from sqlalchemy.engine import Row
@@ -19,6 +16,22 @@ from app.services.task_center.ai_message_memory_queries import (
     _historical_group_ai_actions,
     _memory_exists_for_action,
 )
+from app.services.task_center.ai_message_memory_batch import (
+    DuplicateMemoryBatch,
+    MemorySimilarityRow,
+    cached_similarity_rows,
+    refresh_duplicate_memory_batch,
+    remember_duplicate_batch_memory,
+)
+from app.services.task_center.ai_message_memory_text import (
+    message_identity,
+    normalize_group_ai_text,
+    reservation_key,
+    semantic_cluster,
+    template_shell_key,
+    text_fingerprint,
+    text_similarity,
+)
 
 DEDUP_STATUSES = {"pending", "reserved", "claiming", "executing", "unknown_after_send", "success"}
 DEFAULT_RESERVATION_TTL = timedelta(minutes=30)
@@ -27,40 +40,10 @@ ONE_HOUR_WINDOW = timedelta(hours=1)
 SEVEN_DAY_WINDOW = timedelta(days=7)
 HIGH_SIMILARITY_THRESHOLD = 0.78
 SEMANTIC_SIMILARITY_THRESHOLD = 0.80
-VAGUE_TEMPLATE_TERMS = ("确实", "感觉", "靠谱", "不错", "可以")
-SPECIFIC_TEMPLATE_TERMS = (
-    "价格", "多少", "怎么", "哪", "问", "照片", "位置", "反馈", "身材", "服务", "新妹子", "上榜", "药",
-)
-_COSMETIC_EMOJI = re.compile(r"[\U0001F300-\U0001FAFF\u2600-\u27BF]+")
-_REPEATED_PUNCT = re.compile(r"([!?！？。,.，、])\1+")
-_SPACE = re.compile(r"\s+")
-_MENTION = re.compile(r"@[a-z0-9_]{3,32}")
-_VARIABLE_PERSON_LABEL = re.compile(r"[\u4e00-\u9fffa-z0-9_]{1,8}(老师|主任|哥|姐)")
-
-
 @dataclass(frozen=True)
 class DuplicateMessageReservation(Exception):
     reference_id: str
     duplicate_window: str
-
-
-def normalize_group_ai_text(text: str) -> str:
-    original = str(text or "").strip().lower()
-    value = _COSMETIC_EMOJI.sub("", original)
-    value = _SPACE.sub("", value)
-    value = _collapse_variable_labels(value)
-    value = _REPEATED_PUNCT.sub(r"\1", value)
-    value = value.replace("！", "!").replace("？", "?").replace("，", ",").replace("。", ".")
-    value = value.strip("!?.,;:，。！？；：、")
-    if value:
-        return value
-    fallback = _SPACE.sub("", original)
-    return _REPEATED_PUNCT.sub(r"\1", fallback).strip("!?.,;:，。！？；：、")
-
-
-def _collapse_variable_labels(value: str) -> str:
-    value = _MENTION.sub("@user", value)
-    return _VARIABLE_PERSON_LABEL.sub("<person>", value)
 
 
 def reserve_group_ai_message(
@@ -68,20 +51,19 @@ def reserve_group_ai_message(
     raw_text: str, now: datetime | None = None, reservation_ttl: timedelta = DEFAULT_RESERVATION_TTL,
     topic_direction: str = "", teacher_target: str = "", profile_version: int | None = None,
     profile_match_score: int | None = None, profile_match_reason: str = "",
+    duplicate_batch: DuplicateMemoryBatch | None = None,
 ) -> AiGroupMessageMemory:
-    current_time = now or _now()
-    normalized = normalize_group_ai_text(raw_text)
-    fingerprint = _fingerprint(normalized)
-    semantic_cluster = _semantic_cluster(normalized)
-    template_shell_key = _template_shell_key(normalized)
+    current_time = now or (duplicate_batch.now if duplicate_batch else _now())
+    normalized, fingerprint, semantic_cluster_value, template_shell = message_identity(raw_text)
     duplicate, duplicate_window = _find_duplicate(
         session,
         tenant_id=tenant_id,
         group_id=group_id,
         fingerprint=fingerprint,
         normalized=normalized,
-        template_shell_key=template_shell_key,
+        template_shell_key=template_shell,
         now=current_time,
+        duplicate_batch=duplicate_batch,
     )
     if duplicate:
         raise DuplicateMessageReservation(reference_id=duplicate.id, duplicate_window=duplicate_window)
@@ -93,8 +75,8 @@ def reserve_group_ai_message(
         raw_text=raw_text,
         normalized=normalized,
         fingerprint=fingerprint,
-        semantic_cluster=semantic_cluster,
-        template_shell_key=template_shell_key,
+        semantic_cluster=semantic_cluster_value,
+        template_shell_key=template_shell,
         current_time=current_time,
         reservation_ttl=reservation_ttl,
         topic_direction=topic_direction,
@@ -103,6 +85,28 @@ def reserve_group_ai_message(
         profile_match_score=profile_match_score,
         profile_match_reason=profile_match_reason,
     )
+    _persist_reserved_memory(
+        session,
+        memory,
+        tenant_id=tenant_id,
+        group_id=group_id,
+        fingerprint=fingerprint,
+        current_time=current_time,
+        duplicate_batch=duplicate_batch,
+    )
+    return memory
+
+
+def _persist_reserved_memory(
+    session: Session,
+    memory: AiGroupMessageMemory,
+    *,
+    tenant_id: int,
+    group_id: int,
+    fingerprint: str,
+    current_time: datetime,
+    duplicate_batch: DuplicateMemoryBatch | None,
+) -> None:
     try:
         with session.begin_nested():
             session.add(memory)
@@ -110,9 +114,11 @@ def reserve_group_ai_message(
     except IntegrityError as exc:
         duplicate = _find_exact_duplicate(session, tenant_id, group_id, fingerprint, current_time)
         if duplicate:
-            raise DuplicateMessageReservation(reference_id=duplicate.id, duplicate_window="5m_exact") from exc
+            raise DuplicateMessageReservation(
+                reference_id=duplicate.id, duplicate_window="5m_exact",
+            ) from exc
         raise
-    return memory
+    remember_duplicate_batch_memory(duplicate_batch, memory)
 
 
 def _new_reserved_memory(
@@ -146,7 +152,7 @@ def _new_reserved_memory(
         text_fingerprint=fingerprint,
         semantic_cluster=semantic_cluster,
         template_shell_key=template_shell_key,
-        reservation_key=_reservation_key(tenant_id, group_id, fingerprint, current_time),
+        reservation_key=reservation_key(tenant_id, fingerprint, current_time, FIVE_MINUTE_WINDOW),
         status="reserved",
         planned_at=current_time,
         expires_at=current_time + reservation_ttl,
@@ -265,9 +271,9 @@ def _memory_from_historical_action(action: Action) -> AiGroupMessageMemory | Non
         teacher_target=_payload_label(payload.get("teacher_target"), "name"),
         raw_text=raw_text,
         normalized_text=normalized,
-        text_fingerprint=_fingerprint(normalized),
-        semantic_cluster=str(payload.get("semantic_cluster") or _semantic_cluster(normalized)),
-        template_shell_key=_template_shell_key(normalized),
+        text_fingerprint=text_fingerprint(normalized),
+        semantic_cluster=str(payload.get("semantic_cluster") or semantic_cluster(normalized)),
+        template_shell_key=template_shell_key(normalized),
         reservation_key="",
         status=action.status,
         planned_at=planned_at,
@@ -332,16 +338,36 @@ def _find_duplicate(
     template_shell_key: str,
     now: datetime,
     exclude_id: str = "",
+    duplicate_batch: DuplicateMemoryBatch | None = None,
 ) -> tuple[AiGroupMessageMemory | Row | None, str]:
-    checks = (
-        (_find_exact_duplicate(session, tenant_id, group_id, fingerprint, now, exclude_id), "5m_exact"),
-        (_find_similar_duplicate(session, tenant_id, group_id, normalized, now, exclude_id), "1h_similar"),
-        (_find_semantic_duplicate(session, tenant_id, group_id, normalized, now, exclude_id), "7d_semantic"),
-        (_find_template_shell_duplicate(session, tenant_id, group_id, template_shell_key, now, exclude_id), "30d_template_shell"),
+    exact = _find_exact_duplicate(session, tenant_id, group_id, fingerprint, now, exclude_id)
+    if exact:
+        return exact, "5m_exact"
+    if duplicate_batch is not None and not exclude_id:
+        refresh_duplicate_memory_batch(
+            session,
+            duplicate_batch,
+            tenant_id=tenant_id,
+            group_id=group_id,
+            statuses=DEDUP_STATUSES,
+            window=SEVEN_DAY_WINDOW,
+            window_loader=_window_memories,
+        )
+    similar = _find_similar_duplicate(
+        session, tenant_id, group_id, normalized, now, exclude_id, duplicate_batch,
     )
-    for duplicate, window in checks:
-        if duplicate:
-            return duplicate, window
+    if similar:
+        return similar, "1h_similar"
+    semantic = _find_semantic_duplicate(
+        session, tenant_id, group_id, normalized, now, exclude_id, duplicate_batch,
+    )
+    if semantic:
+        return semantic, "7d_semantic"
+    template = _find_template_shell_duplicate(
+        session, tenant_id, group_id, template_shell_key, now, exclude_id,
+    )
+    if template:
+        return template, "30d_template_shell"
     return None, ""
 
 
@@ -352,11 +378,12 @@ def _find_similar_duplicate(
     normalized: str,
     now: datetime,
     exclude_id: str = "",
-) -> Row | None:
+    duplicate_batch: DuplicateMemoryBatch | None = None,
+) -> MemorySimilarityRow | None:
     return _first_similar_memory(
-        _window_memories(
-            session, tenant_id=tenant_id, group_id=group_id,
-            cutoff=now - ONE_HOUR_WINDOW, exclude_id=exclude_id,
+        _similarity_window_memories(
+            session, tenant_id=tenant_id, group_id=group_id, cutoff=now - ONE_HOUR_WINDOW,
+            exclude_id=exclude_id, duplicate_batch=duplicate_batch,
         ),
         normalized,
         HIGH_SIMILARITY_THRESHOLD,
@@ -370,11 +397,12 @@ def _find_semantic_duplicate(
     normalized: str,
     now: datetime,
     exclude_id: str = "",
-) -> Row | None:
+    duplicate_batch: DuplicateMemoryBatch | None = None,
+) -> MemorySimilarityRow | None:
     return _first_similar_memory(
-        _window_memories(
-            session, tenant_id=tenant_id, group_id=group_id,
-            cutoff=now - SEVEN_DAY_WINDOW, exclude_id=exclude_id,
+        _similarity_window_memories(
+            session, tenant_id=tenant_id, group_id=group_id, cutoff=now - SEVEN_DAY_WINDOW,
+            exclude_id=exclude_id, duplicate_batch=duplicate_batch,
         ),
         normalized,
         SEMANTIC_SIMILARITY_THRESHOLD,
@@ -414,6 +442,8 @@ def _window_memories(
                 AiGroupMessageMemory.id,
                 AiGroupMessageMemory.normalized_text,
                 AiGroupMessageMemory.raw_text,
+                AiGroupMessageMemory.planned_at,
+                AiGroupMessageMemory.status,
             )
             .where(
                 AiGroupMessageMemory.tenant_id == tenant_id,
@@ -426,49 +456,31 @@ def _window_memories(
     )
 
 
+def _similarity_window_memories(
+    session: Session,
+    *,
+    tenant_id: int,
+    group_id: int,
+    cutoff: datetime,
+    exclude_id: str,
+    duplicate_batch: DuplicateMemoryBatch | None,
+) -> list[MemorySimilarityRow]:
+    if duplicate_batch is None or exclude_id:
+        return _window_memories(
+            session, tenant_id=tenant_id, group_id=group_id, cutoff=cutoff, exclude_id=exclude_id,
+        )
+    return cached_similarity_rows(duplicate_batch, tenant_id=tenant_id, cutoff=cutoff)
+
+
 def _first_similar_memory(
-    rows: list[Row],
+    rows: list[MemorySimilarityRow],
     normalized: str,
     threshold: float,
-) -> Row | None:
+) -> MemorySimilarityRow | None:
     for row in rows:
-        if _text_similarity(normalized, row.normalized_text or normalize_group_ai_text(row.raw_text)) >= threshold:
+        if text_similarity(normalized, row.normalized_text or normalize_group_ai_text(row.raw_text)) >= threshold:
             return row
     return None
-
-
-def _text_similarity(left: str, right: str) -> float:
-    if not left or not right:
-        return 0.0
-    return max(SequenceMatcher(None, left, right).ratio(), _char_jaccard(left, right))
-
-
-def _char_jaccard(left: str, right: str) -> float:
-    left_chars = set(left)
-    right_chars = set(right)
-    if not left_chars or not right_chars:
-        return 0.0
-    return len(left_chars & right_chars) / len(left_chars | right_chars)
-
-
-def _fingerprint(normalized: str) -> str:
-    return sha256(normalized.encode("utf-8")).hexdigest()
-
-
-def _semantic_cluster(normalized: str) -> str:
-    chars = "".join(sorted(set(normalized)))
-    return _fingerprint(chars)[:24] if chars else ""
-
-
-def _template_shell_key(normalized: str) -> str:
-    hits = [term for term in VAGUE_TEMPLATE_TERMS if term in normalized]
-    if len(hits) >= 2 and not any(term in normalized for term in SPECIFIC_TEMPLATE_TERMS):
-        return "vague-positive:generic"
-    return ""
-
-
-def _reservation_key(tenant_id: int, group_id: int, fingerprint: str, now: datetime) -> str:
-    return f"{tenant_id}:all-groups:{fingerprint}:{int(now.timestamp()) // int(FIVE_MINUTE_WINDOW.total_seconds())}"
 
 
 __all__ = [
