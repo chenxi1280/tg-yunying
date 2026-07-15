@@ -45,6 +45,7 @@ from .account_voice_profiles import upsert_group_stance_memory
 from . import ai_generation_dispatch as _ai_generation_dispatch
 from .ai_generation_composition import PRODUCTION_GENERATION_DEPENDENCIES
 from .ai_generation_dependencies import GenerationDependencies
+from .ai_generation_recovery import recover_stale_pre_gateway_generation
 from .comment_generation_dispatch import (
     CommentGenerationDependencies,
     GenerationAttemptStale,
@@ -4363,6 +4364,7 @@ def _defer(action: Action, scheduled_at, code: str, detail: str) -> None:
 
 
 def _release_dispatcher_db_error(action: Action, detail: str) -> None:
+    recover_stale_pre_gateway_generation(action)
     retry_at = _now() + timedelta(seconds=DISPATCHER_DB_ERROR_RETRY_DELAY_SECONDS)
     action.status = "pending"
     action.scheduled_at = retry_at
