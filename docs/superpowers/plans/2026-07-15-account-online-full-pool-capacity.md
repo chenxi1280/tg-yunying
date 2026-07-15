@@ -535,3 +535,11 @@ Publish through `master -> release`; require the standard production Planner dra
 - [x] Scan a bounded ready daily-coverage eligibility page, filter online state, then slice to the unchanged per-cycle account budget; blocked pages advance explicitly until the full pool is covered.
 - [x] Keep hard-hourly planning active when natural daily `due_debt` is zero; cap by ready online accounts, hard deficit and the unchanged transaction budget.
 - [ ] Run focused and relevant regressions, publish through `master -> release`, and prove new Action plus Telegram success / confirmed growth in an active-window group.
+
+### Task 18: Remove the account-online long read transaction and expired-object reloads
+
+- [x] Capture production `psycopg.errors.ConnectionTimeout: connection timeout expired` at 06:57, with the stack reading `state.desired_sources` after a streamed per-result commit while 566 probes remained due.
+- [x] Add a red regression requiring the initial database read transaction to end before `_run_health_probes` enters Telegram.
+- [x] Add a second red regression proving streamed commits must not issue implicit `SELECT tg_accounts / tg_account_online_state` reloads for already frozen batch objects.
+- [x] Commit the read snapshot before network calls and preserve loaded batch objects only for the scoped probe operation; restore the Session setting afterward and keep per-result commits.
+- [ ] Run the complete relevant regression set, publish through `master -> release`, and prove no new drain-level `ConnectionTimeout`, due probes advance, transient coverage blockers release, and all four ledgers continue increasing.

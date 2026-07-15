@@ -4,7 +4,7 @@ import threading
 from datetime import timedelta
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session
 
 from app.database import Base
@@ -188,6 +188,79 @@ def test_probe_batch_defers_early_accounts_until_after_last_completion(monkeypat
         }
         assert states[2].last_probe_at == started_at
         assert states[2].next_probe_at == batch_completed_at + ONLINE_PROBE_FAILURE_RETRY_AFTER
+
+
+def test_probe_batch_closes_database_transaction_before_telegram_calls(monkeypatch):
+    now = _now()
+    with _session() as session:
+        _account(session)
+        session.add(TgAccountOnlineState(
+            tenant_id=1,
+            account_id=101,
+            desired_online=True,
+            desired_sources=[{"source_type": "task", "source_id": "ai-running"}],
+            online_status="warming",
+            next_probe_at=now - timedelta(seconds=1),
+        ))
+        session.commit()
+
+        def _results(_jobs):
+            assert not session.in_transaction()
+            return iter([OnlineProbeResult(
+                account_id=101,
+                error=TimeoutError(),
+                completed_at=now,
+            )])
+
+        monkeypatch.setattr("app.services.account_online_probe.credentials_for_account", lambda *_args, **_kwargs: object())
+        monkeypatch.setattr("app.services.account_online_probe._run_health_probes", _results)
+
+        assert probe_due_online_states(session, limit=10, now=now, commit_each=True) == 1
+
+
+def test_probe_batch_does_not_reload_expired_probe_objects_between_results(monkeypatch):
+    now = _now()
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    statements_after_probe_start: list[str] = []
+    probe_started = False
+
+    @event.listens_for(engine, "before_cursor_execute")
+    def _capture(_conn, _cursor, statement, _parameters, _context, _executemany):
+        if probe_started:
+            statements_after_probe_start.append(statement)
+
+    with Session(engine) as session:
+        for account_id in (101, 102):
+            _account(session, account_id)
+            session.add(TgAccountOnlineState(
+                tenant_id=1,
+                account_id=account_id,
+                desired_online=True,
+                desired_sources=[{"source_type": "task", "source_id": "ai-running"}],
+                online_status="warming",
+                next_probe_at=now - timedelta(seconds=1),
+            ))
+        session.commit()
+
+        def _results(_jobs):
+            nonlocal probe_started
+            probe_started = True
+            return iter([
+                OnlineProbeResult(account_id=101, error=TimeoutError(), completed_at=now),
+                OnlineProbeResult(account_id=102, error=TimeoutError(), completed_at=now),
+            ])
+
+        monkeypatch.setattr("app.services.account_online_probe.credentials_for_account", lambda *_args, **_kwargs: object())
+        monkeypatch.setattr("app.services.account_online_probe._run_health_probes", _results)
+
+        assert probe_due_online_states(session, limit=10, now=now, commit_each=True) == 2
+
+    lazy_probe_selects = [
+        statement for statement in statements_after_probe_start
+        if "FROM tg_accounts" in statement or "FROM tg_account_online_state" in statement
+    ]
+    assert lazy_probe_selects == []
 
 
 def test_mark_stale_online_states_requeues_probe_immediately():
