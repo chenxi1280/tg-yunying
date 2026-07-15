@@ -240,3 +240,30 @@ Run focused lifecycle, online-state, timing, config, worker, and Dispatcher test
 Require the new revision and healthy worker, account-online established TCP connections to remain bounded after a full probe cycle, `wrong session ID` / TimeoutError volume to decline, and online / group coverage to improve without reintroducing an account admission cap.
 
 E4 evidence: release `3c3bd889` and workflow `29417207535` succeeded; account-online completed all 582 probe-eligible desired accounts, producing 534 online and 48 blocked while 87 login-required accounts remained separately classified. Established TCP connections stayed near configured concurrency during the batch and fell from the old baseline of about 167 to 2 after completion; new logs contained zero `wrong session ID` and zero `TimeoutError`. Due channel-comment actions were zero, and group coverage resumed growth while blocker counts fell sharply.
+
+### Task 9: Eliminate overlapping AI generation batches inside one Dispatcher claim
+
+**Files:**
+- Modify: `backend/app/services/task_center/service.py`
+- Modify: `backend/tests/test_task_center_role_drains.py`
+- Modify: AI generation transaction design, PRD, dataflow index, production runtime, and this plan.
+
+- [x] **Step 1: Capture the post-release production failure**
+
+After `3c3bd889`, all workers were healthy but host load remained about 26. PostgreSQL continuously reported two Dispatcher processes deadlocking while both executed `UPDATE actions SET payload=?, result=? WHERE actions.id=?`. Today had thousands of `hard_hourly_bucket_expired` skips and hundreds of `send_message action 缺少可发送文案` / execution timeout failures, while confirmed coverage remained far below the daily denominator.
+
+- [x] **Step 2: Trace the overlapping transaction source**
+
+One worker claims up to its effective concurrency with one claim token and then submits every claimed Action to its thread pool. Each pending normal AI Action independently loads near-term siblings with that same token, commits before provider I/O, and later updates the overlapping batch, so sibling threads acquire the same Action rows in different orders.
+
+- [x] **Step 3: Add a failing concurrency regression**
+
+Create a production-dialect role-drain test with two shared-token pending AI Actions and prove both are currently dispatched concurrently. Require maximum active dispatch count to be one for that claim batch while ordinary non-shared Actions retain existing parallel error isolation behavior.
+
+- [x] **Step 4: Implement the minimal claim-batch serialization**
+
+Detect blank normal `send_message` Actions with pending generation, a generation id, and the snapshotted claim token. Serialize only that worker claim batch; do not change claim size, action scope, account scope, other task types, or cross-worker concurrency.
+
+- [ ] **Step 5: Verify, release, and collect E4**
+
+Run focused role-drain and AI generation regressions, compile/diff checks, publish through `master -> release -> Deploy Production`, then require no new post-release Action deadlocks, healthy workers, lower load/lock pressure, and increasing real coverage confirmations. Keep login-required, paused tasks, invalid targets, and remaining Telegram/account failures separately visible.

@@ -40,6 +40,8 @@ Phase A 每个数据库事务最多处理 20 个 coverage slot，并原子完成
 
 Dispatcher 先在短事务 claim Action，写入 lease token、`ai_generation_status=generating`、generation attempt id 和 request id，然后提交并关闭事务。reply 与 normal 分批，只有同任务、同 Cycle、同 generation mode、临近执行且规则版本一致的 sibling 可进入同一批；每批输出必须按 `slot_id` 一一映射，缺失、额外或重复 slot 都是显式失败。
 
+同一 worker 一次 claim 中，共用 `ai_generation_claim_token` 的 normal pending sibling 只能由最早 Action 作为当前生成批次入口。worker 发现 claim 批次包含这种共享生成批次时，必须按领取顺序串行推进该 claim 批次，先由入口 Action 完成批量生成和 Phase C，再让已得到 `ready` 文本的 sibling 进入发送；不得把每个 pending sibling 同时提交到线程池，使多个线程各自加载并更新重叠的 Action 集合。这个串行边界只约束同一 claim 内的共享 AI 生成事务，不减少应领取、应生成或应发送的 Action 总量，其他不共享生成批次的 Dispatcher Action 保持原并发执行。
+
 提交 claim 后，在无数据库事务区间完成：
 
 - reply：重新确认目标消息仍存在、可引用且未超出 `context_bound_schedule_window_seconds`；随后使用 Phase A 固定的目标、slot、面具和规则生成。
@@ -88,6 +90,7 @@ Phase C 成功提交后才进入现有发送链：账号与权限最终检查短
 - 内容重复、面具不符、内容政策和质量不足均在 Phase C 终结对应 Action 并释放 coverage；通过 slot 的文本、记忆和状态原子提交。
 - 在 AI 成功返回后注入 Phase C commit 失败，证明无 Telegram 调用、旧 attempt 可见为生成结果落库未知，恢复只重试同一 Action/slot且无第二个有效预约。
 - 两个 Dispatcher 并发 claim 不重复外呼同一 attempt；Phase B claim、Phase C、发送前检查和 finalize 每个数据库事务均 `<5s`，全部外部 AI / Telegram 调用期间无数据库事务。
+- 同一 worker 一次领取 2 条以上共享 claim token 的 normal pending sibling 时，只有一个生成入口处于 Phase B/C；Action 更新集合不重叠，PostgreSQL 无 `UPDATE actions ... deadlock detected`，同批 sibling 最终都得到 ready 文本或各自可见终态。
 - 真 PostgreSQL 覆盖频道评论 direct / reply：两个 Planner 不重复创建同一评论 Action，两个 Dispatcher 不重复 claim / 外呼；AI 返回后 Phase C 崩溃只恢复同一 Action，reply 目标失效不转 direct，生命周期总上限完成态不被 Recovery 复活。
 - 群活跃与频道评论 Planner / Dispatcher 并发运行时无死锁，热 Task、Action、coverage、预算和 stats 行没有持续 `>5s` 锁等待；worker 本地健康心跳在长 drain 内按周期刷新，不能仅在 drain 开始时写一次。
 - `unknown_after_send` 不重发，generation unknown 不计远端 unknown；跨租户 Action、coverage、context 和 message memory 隔离。

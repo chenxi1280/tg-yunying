@@ -89,6 +89,8 @@ worker 容器不暴露 backend API 端口，健康检查不能使用 `curl 127.0
 
 账号在线保活默认使用 `ACCOUNT_ONLINE_WORKER_DRAIN_LIMIT=1000` 作为单轮分页数量，使用 `ACCOUNT_ONLINE_PROBE_CONCURRENCY=32` 控制同一时刻的 Telegram 健康探测数，并使用独立的 `ACCOUNT_ONLINE_PROBE_TIMEOUT_SECONDS=30` 限制单个健康探测，不能继承普通业务 Telegram 调用的 300 秒超时。三者只控制处理吞吐，不是账号上线名额：全部 `desired_online=true` 账号都必须进入状态机，账号池超过单页时由后续 drain 继续处理，不得在服务内部再次按前 N 个账号截断。数据库读取和状态落库留在 worker 主线程，探测线程只执行 Telegram 网络调用；结果按完成顺序流式返回，主线程逐条提交，不能等待整页全部探测结束后集中落库。健康探测使用一次性 Telethon client 并在 `finally` 中断开，不得进入业务持久 client cache；30 秒探测超时后最多等待 5 秒有界断连和 1 秒调度余量，调用返回时清理已收口，且清理错误不得覆盖原始 Telegram 错误。生产验收需同时检查 account-online 容器持久 TCP 连接数没有随账号池增长到数百条。并发和超时参数必须为正数，非法配置会使服务明确启动失败。
 
+Dispatcher 若一次 claim 包含共享 `ai_generation_claim_token` 的 normal pending `send_message`，该 worker 会按领取顺序串行推进这一个 claim 批次，避免多个线程同时加载并更新重叠 Action 集合。生产验收必须检查 PostgreSQL 日志在发布后不再新增 `UPDATE actions ... deadlock detected`，并同时确认覆盖继续增长；该串行边界不是 action、账号或任务总量限制。
+
 ## Nginx
 
 参考配置在 `deploy/nginx/tgyunying.conf.example`。

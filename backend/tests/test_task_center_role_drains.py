@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from threading import Lock
+from time import sleep
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
@@ -29,6 +32,56 @@ def _session_factory():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     return sessionmaker(bind=engine, future=True)
+
+
+class _FakePostgresSession:
+    bind = SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def commit(self):
+        return None
+
+
+def _pending_generation_action(index: int, generation_id: str = "generation-batch") -> SimpleNamespace:
+    return SimpleNamespace(
+        id=f"action-ai-{index}",
+        tenant_id=1,
+        task_id="task-ai",
+        action_type="send_message",
+        payload={
+            "message_text": "",
+            "ai_generation_id": generation_id,
+            "ai_generation_status": "pending",
+            "ai_generation_claim_owner": "worker-a",
+            "ai_generation_claim_token": "claim-token",
+        },
+    )
+
+
+def _max_parallel_dispatches(monkeypatch, claimed: list[SimpleNamespace]) -> int:
+    activity = {"active": 0, "maximum": 0}
+    lock = Lock()
+
+    def fake_dispatch(_session_factory, _action_id):
+        with lock:
+            activity["active"] += 1
+            activity["maximum"] = max(activity["maximum"], activity["active"])
+        sleep(0.05)
+        with lock:
+            activity["active"] -= 1
+        return 1
+
+    monkeypatch.setattr(service, "record_worker_heartbeat", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(service, "claim_actions", lambda *_args, **_kwargs: claimed)
+    monkeypatch.setattr(service, "_dispatcher_concurrency", lambda: 2)
+    monkeypatch.setattr(service, "_dispatch_claimed_action", fake_dispatch)
+    assert service.drain_task_dispatcher(_FakePostgresSession, len(claimed)) == len(claimed)
+    return activity["maximum"]
 
 
 def test_role_drains_record_distinct_heartbeats(monkeypatch):
@@ -421,6 +474,38 @@ def test_dispatcher_role_limits_claim_batch_to_effective_concurrency(monkeypatch
 
     assert service.drain_task_dispatcher(SessionFactory, 100) == 0
     assert claimed_limits == [13]
+
+
+@pytest.mark.no_postgres
+def test_dispatcher_serializes_claim_batch_with_pending_ai_generation(monkeypatch):
+    claimed = [_pending_generation_action(1), _pending_generation_action(2)]
+
+    assert _max_parallel_dispatches(monkeypatch, claimed) == 1
+
+
+@pytest.mark.no_postgres
+def test_dispatcher_keeps_non_shared_generation_actions_parallel(monkeypatch):
+    claimed = [
+        _pending_generation_action(1, "generation-a"),
+        _pending_generation_action(2, "generation-b"),
+    ]
+
+    assert _max_parallel_dispatches(monkeypatch, claimed) == 2
+
+
+@pytest.mark.no_postgres
+def test_shared_generation_detection_requires_two_matching_actions():
+    one_generation = _pending_generation_action(1)
+    ordinary = SimpleNamespace(
+        id="action-ordinary",
+        tenant_id=1,
+        task_id="task-ordinary",
+        action_type="send_message",
+        payload={"message_text": "ready"},
+    )
+
+    assert service._has_shared_ai_generation_batch([one_generation]) is False
+    assert service._has_shared_ai_generation_batch([one_generation, ordinary]) is False
 
 
 @pytest.mark.no_postgres
