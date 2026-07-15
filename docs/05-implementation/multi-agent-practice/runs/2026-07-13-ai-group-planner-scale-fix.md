@@ -217,6 +217,8 @@
 - Product Handoff：保留 5 天 retention、逐维汇总、审计和显式失败合同；每个 recovery 周期只处理本轮 `limit` 个最老 Action，子表与 Action 同事务删除，每批独立审计；DailyRuntimeStat 对后续批次做累加，不能覆盖前一批汇总。覆盖账本和入群长期记录保留业务快照并清空过期 Action 引用，动作专属搜索降权预约随 Action 删除。禁止跳过清理、吞错或扩大 retention 作为 fallback。
 - Dev：`cleanup_runtime_details` 增加确定性最早创建优先批次并用 `FOR UPDATE SKIP LOCKED` 防止双 worker 重领；recovery 将自身 `limit` 作为批量（生产 100）；统计改为 PostgreSQL/SQLite 原子 upsert 累加。生产 EXPLAIN 从 effective-time 排序的 `Seq Scan + Sort cost 39608` 收敛为复用 `ix_actions_created_at` 的 `Index Scan + Incremental Sort first-100 cost 533`。生产 recovery 在修复发布前显式停止，并终止其已失去客户端的长 DELETE 会话，其他业务 worker 保持 healthy。
 - re-QA：新增红绿回归先稳定暴露不支持 `batch_size`，修复后验证 3 条历史 Action 按 2+1 两轮删除且全局 total 累加为 3；真 PostgreSQL 外键回归覆盖 Coverage 2 字段、Admission 4 字段与 SearchRank reservation；双 session 并发稳定取得 1+1 不重复批次且原子汇总为 2。合并 retention/role/recovery/runtime stats/tenant isolation/generation recovery 共 `40 passed`，workflow `104 passed / 14 skipped`。本轮仍需完整 Release Checks 和新版本生产 E4，当前不得写 `production_fixed`。
+- 第四次 release `2ca937bf` 的 run `29367174749` 完成 checks、镜像和部署，生产 11 个 worker 全部 healthy；但 09:00 后 E4 显示每个 100 Action 批次仍耗时约 1 至 3 分钟。生产 `pg_constraint + pg_indexes` 证明 9 个 Action 外键中 7 个引用列无 leading index，导致 Action DELETE 的外键校验反复扫描 Coverage、Admission、Review 表；recovery 已再次停止，群与评论 worker 保持运行。
+- 第二层 rework：0095 对 Review action、Coverage reserved/last-success、Admission membership/test/delete/rescue 共 7 列使用 `CREATE INDEX CONCURRENTLY`，模型元数据同步；不改变 retention、任务窗口、消息条数、账号范围或完成判定。迁移幂等/可逆和 PostgreSQL concurrent DDL 加入自动化，相关组合 `128 passed`；待再次发布后用每批时长、无锁等待、评论远端 ID 与每日覆盖增长做 E4。
 
 ## Release Gate 与 E4
 
