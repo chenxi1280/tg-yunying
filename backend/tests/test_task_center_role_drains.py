@@ -408,6 +408,22 @@ def test_dispatcher_role_claims_and_dispatches_without_listener(monkeypatch):
 
 
 @pytest.mark.no_postgres
+def test_dispatcher_role_limits_claim_batch_to_effective_concurrency(monkeypatch):
+    SessionFactory = _session_factory()
+    claimed_limits: list[int] = []
+
+    def fake_claim_actions(_session, *, limit: int, exclude_task_ids=None):
+        claimed_limits.append(limit)
+        return []
+
+    monkeypatch.setattr(service, "claim_actions", fake_claim_actions)
+    monkeypatch.setattr(service, "_dispatcher_concurrency", lambda: 13)
+
+    assert service.drain_task_dispatcher(SessionFactory, 100) == 0
+    assert claimed_limits == [13]
+
+
+@pytest.mark.no_postgres
 def test_dispatcher_db_error_does_not_stop_other_claimed_actions(monkeypatch):
     SessionFactory = _session_factory()
     now_value = _now()

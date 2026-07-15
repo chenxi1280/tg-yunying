@@ -26,7 +26,7 @@
 
 ## 3. 运行时设计
 
-`_drain_task_dispatcher` 先计算数据库方言和 `_dispatcher_concurrency()`，再把 `min(requested_limit, effective_concurrency)` 传入 `claim_actions`。SQLite 测试路径的有效并发固定为 1。领取、确认和执行使用同一个有效并发值，避免“领取 100、执行 13”的不一致。
+`_drain_task_dispatcher` 先计算 `_dispatcher_concurrency()`，再把 `min(requested_limit, effective_concurrency)` 传入 `claim_actions`。生产 PostgreSQL 路径的领取、确认和执行使用同一个有效并发值，避免“领取 100、执行 13”的不一致；SQLite 测试路径仍串行执行，保留数据库错误隔离测试语义。
 
 `claim_actions` 和只读 `due_actions` 共享排序口径：
 

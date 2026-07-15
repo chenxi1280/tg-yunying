@@ -1731,14 +1731,16 @@ def drain_task_dispatcher(session_factory, limit: int = 100) -> int:
 def _drain_task_dispatcher(session_factory, *, limit: int, exclude_task_ids: set[str] | None, process_type: str | None) -> int:
     with session_factory() as session:
         dialect_name = session.bind.dialect.name if session.bind else ""
+        effective_concurrency = _dispatcher_concurrency()
         if process_type:
             record_worker_heartbeat(session, process_type=process_type, metadata={"limit": limit})
             session.commit()
-        claimed = claim_actions(session, limit=max(10, limit), exclude_task_ids=exclude_task_ids)
+        claim_limit = min(max(1, int(limit or 1)), effective_concurrency)
+        claimed = claim_actions(session, limit=claim_limit, exclude_task_ids=exclude_task_ids)
         action_ids = [action.id for action in claimed]
     if not action_ids:
         return 0
-    concurrency = 1 if dialect_name == "sqlite" else _dispatcher_concurrency()
+    concurrency = 1 if dialect_name == "sqlite" else effective_concurrency
     if concurrency <= 1 or len(action_ids) == 1:
         return sum(_dispatch_claimed_action(session_factory, action_id) for action_id in action_ids)
     processed = 0

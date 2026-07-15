@@ -2973,6 +2973,7 @@ def test_claim_actions_filters_accounts_by_current_shard(monkeypatch):
         dispatcher._IN_FLIGHT_ACCOUNTS.clear()
 
 
+@pytest.mark.no_postgres
 def test_claim_actions_prioritizes_due_hard_hourly_send_actions(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -3001,6 +3002,41 @@ def test_claim_actions_prioritizes_due_hard_hourly_send_actions(monkeypatch):
 
         assert [action.id for action in claimed] == ["action-hard"]
         assert session.get(Action, "action-normal").status == "pending"
+
+
+@pytest.mark.no_postgres
+def test_claim_actions_prioritizes_due_comment_before_ordinary_batch_action(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    monkeypatch.setattr(dispatcher, "get_settings", lambda: _redis_bucket_settings(enable_redis_token_bucket=False))
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add_all(
+            [
+                TgAccount(id=11, tenant_id=1, display_name="点赞账号", phone_masked="+861***0011", status="在线"),
+                TgAccount(id=12, tenant_id=1, display_name="评论账号", phone_masked="+861***0012", status="在线"),
+            ]
+        )
+        session.add_all(
+            [
+                Task(id="task-like", tenant_id=1, name="批量点赞", type="channel_like", status="running", priority=3),
+                Task(id="task-comment", tenant_id=1, name="频道评论", type="channel_comment", status="running", priority=3),
+            ]
+        )
+        session.add_all(
+            [
+                Action(id="action-like", tenant_id=1, task_id="task-like", task_type="channel_like", action_type="react_message", account_id=11, status="pending", scheduled_at=now_value - timedelta(minutes=10), payload={"channel_id": "-1001", "message_id": 1, "reaction": "👍"}),
+                Action(id="action-comment", tenant_id=1, task_id="task-comment", task_type="channel_comment", action_type="post_comment", account_id=12, status="pending", scheduled_at=now_value - timedelta(minutes=1), payload={"channel_id": "-1001", "message_id": 1, "comment_text": "收到"}),
+            ]
+        )
+        session.commit()
+
+        claimed = claim_actions(session, limit=1, worker_id="worker-comment")
+
+        assert [action.id for action in claimed] == ["action-comment"]
+        assert session.get(Action, "action-like").status == "pending"
 
 
 def test_claim_actions_prioritizes_hard_hourly_membership_before_send(monkeypatch):

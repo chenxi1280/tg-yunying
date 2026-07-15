@@ -140,11 +140,11 @@ Require the deploy workflow to succeed and the production release directory/imag
 
 Check the account-online container health, worker heartbeat age, drain errors, effective `ACCOUNT_ONLINE_PROBE_CONCURRENCY=32`, and command drain limit 1000.
 
-- [ ] **Step 4: Verify full-pool online behavior**
+- [x] **Step 4: Verify full-pool online behavior**
 
 Query all `desired_online=true` states. Require no missing state rows; report online, stale, blocked, login_required, last-probe freshness, and original failure strings. All due and probe-eligible accounts must complete a real probe within the 15-minute active window; real login-required accounts remain separately counted.
 
-- [ ] **Step 5: Verify group coverage and comment tasks**
+- [x] **Step 5: Verify group coverage and comment tasks**
 
 Compare all four group daily-coverage counts before and after the observation window and inspect current comment-task worker/actions. Require real progress or report the exact remaining external/account blocker without claiming recovery.
 
@@ -179,7 +179,7 @@ Use `as_completed` so the main thread applies and commits each completed immutab
 
 Run the five red/green tests, then the 66-test online-state, config, worker, and Telethon lifecycle regression, Python compilation, and `git diff --check`.
 
-- [ ] **Step 5: Redeploy and repeat E4**
+- [x] **Step 5: Redeploy and repeat E4**
 
 Commit, push `master`, merge into `release`, require a successful Deploy Production run, and repeat the 15-minute full-pool, four-group coverage, and comment-task checks.
 
@@ -192,19 +192,19 @@ Commit, push `master`, merge into `release`, require a successful Deploy Product
 - Modify: `backend/tests/test_task_center_capacity_dispatch.py`
 - Modify: product, dataflow, design, and plan documents.
 
-- [ ] **Step 1: Capture production evidence and product contract**
+- [x] **Step 1: Capture production evidence and product contract**
 
 Record that four workers request 100 actions each while effective concurrency is 13, comments share priority 3 with about one thousand due likes and nearly two hundred views, and due comments repeatedly return to pending with `claim_expired`. Specify effective-concurrency claim sizing and post-comment anti-starvation ordering.
 
-- [ ] **Step 2: Add focused failing tests**
+- [x] **Step 2: Add focused failing tests**
 
 Prove a requested drain of 100 passes only effective concurrency to `claim_actions`, and prove a due `post_comment` is selected before an older ordinary batch action at the same Task priority while hard-hourly sends remain first.
 
-- [ ] **Step 3: Implement the minimal dispatcher fix**
+- [x] **Step 3: Implement the minimal dispatcher fix**
 
 Calculate effective concurrency before claiming and use it as the claim limit. Add an explicit post-comment rank after hard-hourly rank and Task priority in both claim and due-action ordering.
 
-- [ ] **Step 4: Run Dispatcher regressions and static checks**
+- [x] **Step 4: Run Dispatcher regressions and static checks**
 
 Run the focused red/green tests, Dispatcher role and capacity suites with a 60-second timeout, Python compilation, `git diff --check`, and full diff review.
 

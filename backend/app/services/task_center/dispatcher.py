@@ -582,7 +582,13 @@ def due_actions(session: Session, limit: int = 100, *, exclude_task_ids: set[str
             select(Action)
             .join(Task, Task.id == Action.task_id)
             .where(*filters)
-            .order_by(_hard_hourly_claim_rank(), Task.priority.asc(), Action.scheduled_at.asc(), Action.created_at.asc())
+            .order_by(
+                _hard_hourly_claim_rank(),
+                Task.priority.asc(),
+                _comment_claim_rank(),
+                Action.scheduled_at.asc(),
+                Action.created_at.asc(),
+            )
             .limit(limit)
         )
     )
@@ -621,7 +627,13 @@ def claim_actions(session: Session, limit: int = 100, *, exclude_task_ids: set[s
         select(Action)
         .join(Task, Task.id == Action.task_id)
         .where(*filters)
-        .order_by(_hard_hourly_claim_rank(), Task.priority.asc(), Action.scheduled_at.asc(), Action.created_at.asc())
+        .order_by(
+            _hard_hourly_claim_rank(),
+            Task.priority.asc(),
+            _comment_claim_rank(),
+            Action.scheduled_at.asc(),
+            Action.created_at.asc(),
+        )
         .limit(claim_limit)
     )
     if session.bind and session.bind.dialect.name != "sqlite":
@@ -782,6 +794,10 @@ def _hard_hourly_claim_rank():
         (hard_hourly_send, 1),
         else_=2,
     )
+
+
+def _comment_claim_rank():
+    return case((Action.action_type == "post_comment", 0), else_=1)
 
 
 def recover_expired_claims(session: Session) -> int:
