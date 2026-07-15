@@ -520,3 +520,10 @@ Require the 120-account selection to return all 120 accounts with at most 10 SEL
 - [ ] **Step 4: Release and collect E4**
 
 Publish through `master -> release`; require the standard production Planner drain to finish, create current-day daily-coverage Action rows, and produce real Telegram success / confirmed growth while comment-task status remains healthy.
+
+### Task 16: Index recent group-context reads
+
+- [x] Capture production `group_context_messages` DataFileRead at 38–40 seconds during Planner drain.
+- [x] Add red/green idempotent, reversible and concurrent-DDL migration tests.
+- [x] Add `0103_group_context_recent_index` on `(tenant_id, group_id, sent_at DESC, id DESC)` and sync model metadata / migration head.
+- [ ] Publish and prove the standard Planner drain completes within 90 seconds, then verify real daily-coverage Action and confirmed growth.
