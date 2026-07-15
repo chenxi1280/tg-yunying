@@ -23,8 +23,8 @@ def _historical_group_ai_actions(
     memory_exists = select(AiGroupMessageMemory.id).where(
         AiGroupMessageMemory.action_id == Action.id,
     ).exists()
-    statement = (
-        select(Action)
+    candidate_actions = (
+        select(Action.id.label("action_id"), Action.created_at.label("candidate_created_at"))
         .where(
             Action.tenant_id == tenant_id,
             Action.task_type == "group_ai_chat",
@@ -35,6 +35,12 @@ def _historical_group_ai_actions(
         )
         .order_by(Action.created_at.asc())
         .limit(max(1, int(limit)))
+        .subquery()
+    )
+    statement = (
+        select(Action)
+        .join(candidate_actions, candidate_actions.c.action_id == Action.id)
+        .order_by(candidate_actions.c.candidate_created_at.asc())
     )
     return list(session.scalars(statement))
 
