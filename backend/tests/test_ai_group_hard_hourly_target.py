@@ -27,7 +27,10 @@ from app.models import (
 )
 from app.schemas import GroupAIChatTaskCreate, TaskPrecheckRequest
 from app.services.task_center.executors import prepare_open_actions_for_planning
-from app.services.task_center.executors.group_ai_chat import build_plan as build_group_ai_chat_plan
+from app.services.task_center.executors.group_ai_chat import (
+    _next_cycle_index,
+    build_plan as build_group_ai_chat_plan,
+)
 from app.services.task_center.hard_hourly import (
     current_progress as hard_hourly_current_progress,
     hard_schedule_times,
@@ -1183,13 +1186,27 @@ def test_group_ai_chat_hard_hourly_preserves_cycle_rotation_over_account_memory(
             "cycle_id": f"{task.id}:cycle:1",
             "message_text": "上一轮账号101已经发过",
         }
-        session.add(previous)
+        foreign = _send_action(
+            "foreign-cycle",
+            task,
+            "success",
+            account_id=102,
+            scheduled_at=now_value - timedelta(minutes=4),
+            executed_at=now_value - timedelta(minutes=4),
+        )
+        foreign.tenant_id = 2
+        foreign.payload = {"cycle_id": f"{task.id}:cycle:99", "message_text": "其他租户动作"}
+        session.add_all([previous, foreign])
+        session.commit()
+
+        assert _next_cycle_index(session, task) == 2
+        session.delete(foreign)
         session.commit()
 
         created = build_group_ai_chat_plan(session, task)
         new_actions = list(session.scalars(
             select(Action)
-            .where(Action.task_id == task.id, Action.id != previous.id)
+                .where(Action.task_id == task.id, Action.id != previous.id)
             .order_by(Action.payload["turn_index"].as_integer())
         ))
 

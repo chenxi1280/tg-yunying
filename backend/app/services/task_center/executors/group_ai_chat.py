@@ -2413,6 +2413,7 @@ def _last_successful_ai_action_at(session: Session, task: Task) -> datetime | No
     action = session.scalar(
         select(Action)
         .where(
+            Action.tenant_id == task.tenant_id,
             Action.task_id == task.id,
             Action.task_type == "group_ai_chat",
             Action.action_type == "send_message",
@@ -2903,6 +2904,7 @@ def _recent_ai_messages(session: Session, task: Task, *, limit: int) -> list[str
     rows = session.scalars(
         select(Action)
         .where(
+            Action.tenant_id == task.tenant_id,
             Action.task_id == task.id,
             Action.task_type == "group_ai_chat",
             Action.action_type == "send_message",
@@ -2924,6 +2926,7 @@ def _recent_planned_ai_messages(session: Session, task: Task, *, limit: int) -> 
     rows = session.scalars(
         select(Action)
         .where(
+            Action.tenant_id == task.tenant_id,
             Action.task_id == task.id,
             Action.task_type == "group_ai_chat",
             Action.action_type == "send_message",
@@ -3006,6 +3009,7 @@ def _open_hard_hourly_actions_for_distribution_replan(session: Session, task: Ta
     rows = session.scalars(
         select(Action)
         .where(
+            Action.tenant_id == task.tenant_id,
             Action.task_id == task.id,
             Action.task_type == "group_ai_chat",
             Action.action_type == "send_message",
@@ -3071,6 +3075,7 @@ def _recent_account_memories(session: Session, task: Task, account_ids: list[int
     rows = session.scalars(
         select(Action)
         .where(
+            Action.tenant_id == task.tenant_id,
             Action.task_id == task.id,
             Action.task_type == "group_ai_chat",
             Action.action_type == "send_message",
@@ -3557,7 +3562,12 @@ def _next_cycle_index(session: Session, task: Task) -> int:
     max_index = 0
     rows = session.scalars(
         select(Action.payload["cycle_id"].as_string())
-        .where(Action.task_id == task.id, Action.task_type == "group_ai_chat", Action.action_type == "send_message")
+        .where(
+            Action.tenant_id == task.tenant_id,
+            Action.task_id == task.id,
+            Action.task_type == "group_ai_chat",
+            Action.action_type == "send_message",
+        )
         .order_by(Action.created_at.desc())
         .limit(RECENT_CYCLE_SCAN_LIMIT)
     )

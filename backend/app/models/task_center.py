@@ -75,6 +75,7 @@ class Action(Base):
         Index("ix_actions_task_status_schedule_page", "tenant_id", "task_id", "status", "scheduled_at", "created_at"),
         Index("ix_actions_task_type_schedule_page", "tenant_id", "task_id", "action_type", "scheduled_at", "created_at"),
         Index("ix_actions_task_type_executed_at", "tenant_id", "task_id", "action_type", "executed_at"),
+        Index("ix_actions_task_type_created_at", "tenant_id", "task_id", "action_type", text("created_at DESC")),
         Index(
             "uq_actions_executing_account",
             "account_id",
