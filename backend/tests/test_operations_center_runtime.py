@@ -4790,7 +4790,11 @@ def test_group_ai_chat_without_ai_provider_does_not_create_actions(monkeypatch):
                 status="running",
                 account_config={"selection_mode": "all", "max_concurrent": 20, "cooldown_per_account_minutes": 0},
                 pacing_config={"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
-                type_config={"target_group_id": 7, "messages_per_round_mode": "auto"},
+                type_config={
+                    "target_group_id": 7,
+                    "messages_per_round_mode": "manual",
+                    "messages_per_round": 1,
+                },
             )
         )
         session.commit()
