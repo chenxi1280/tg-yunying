@@ -586,6 +586,20 @@ class TelethonTelegramGateway(TelegramGateway):
             timeout_seconds=probe_timeout + ACCOUNT_HEALTH_DISCONNECT_TIMEOUT_SECONDS + ACCOUNT_HEALTH_RUN_GRACE_SECONDS,
         )
 
+    def check_account_health_isolated(
+        self,
+        session_ciphertext: str | None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> AccountHealth:
+        probe_timeout = self.settings.account_online_probe_timeout_seconds
+        return asyncio.run(
+            self._bounded_health_async(
+                session_ciphertext,
+                self._usable_credentials(credentials),
+                probe_timeout,
+            )
+        )
+
     async def _list_authorizations_async(
         self,
         session_ciphertext: str | None,

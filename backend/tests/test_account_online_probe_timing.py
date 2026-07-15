@@ -157,3 +157,26 @@ def test_health_probe_results_stream_as_completed(monkeypatch):
     finally:
         release_slow.set()
         consumer.join(timeout=1)
+
+
+def test_health_probe_uses_isolated_gateway_entry(monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "app.services.account_online_probe.gateway.check_account_health_isolated",
+        lambda *_args: calls.append("isolated")
+        or AccountHealth(status=AccountStatus.ACTIVE.value, health_score=95, detail="ok"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.services.account_online_probe.gateway.check_account_health",
+        lambda *_args: pytest.fail("account-online must not use the process-wide loop"),
+    )
+
+    results = list(
+        _run_health_probes(
+            [OnlineProbeJob(account_id=1, session_ciphertext="session", credentials=object())]
+        )
+    )
+
+    assert calls == ["isolated"]
+    assert results[0].health.status == AccountStatus.ACTIVE.value

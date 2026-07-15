@@ -114,6 +114,13 @@ class TelegramGateway:
             return AccountHealth(status="需重新登录", health_score=45, detail="账号没有可用 session")
         return AccountHealth(status="在线", health_score=95, detail="账号 session 可用")
 
+    def check_account_health_isolated(
+        self,
+        session_ciphertext: str | None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> AccountHealth:
+        return self.check_account_health(session_ciphertext, credentials)
+
     def list_groups(
         self,
         account_id: int,

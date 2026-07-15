@@ -390,6 +390,39 @@ def test_account_health_uses_ephemeral_client_and_disconnects(monkeypatch):
     assert calls == ["connect", "authorized", "get_me", "disconnect"]
 
 
+@pytest.mark.no_postgres
+def test_account_health_isolated_runs_on_calling_thread(monkeypatch):
+    gateway = TelethonTelegramGateway(Settings())
+    caller_thread = threading.get_ident()
+    observed_threads: list[int] = []
+
+    class FakeClient:
+        async def connect(self):
+            observed_threads.append(threading.get_ident())
+
+        async def is_user_authorized(self):
+            observed_threads.append(threading.get_ident())
+            return True
+
+        async def get_me(self):
+            observed_threads.append(threading.get_ident())
+
+        async def disconnect(self):
+            observed_threads.append(threading.get_ident())
+
+    monkeypatch.setattr("app.integrations.telegram.gateway.decrypt_session", lambda _value: "raw-session")
+    monkeypatch.setattr(gateway, "_new_client", lambda *_args, **_kwargs: FakeClient())
+    monkeypatch.setattr(
+        gateway,
+        "_run",
+        lambda *_args, **_kwargs: pytest.fail("isolated probe must not use process lifecycle"),
+    )
+    credentials = DeveloperAppCredentials(app_id=1, api_id=123, api_hash="hash", credentials_version=1)
+
+    assert gateway.check_account_health_isolated("encrypted-session", credentials).status == "在线"
+    assert observed_threads == [caller_thread] * 4
+
+
 def test_account_health_preserves_probe_error_when_disconnect_fails(monkeypatch):
     gateway = TelethonTelegramGateway(Settings())
 

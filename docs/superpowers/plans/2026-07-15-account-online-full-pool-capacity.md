@@ -328,7 +328,7 @@ Run equivalence, memory, generation, Dispatcher and PostgreSQL CI coverage, publ
 - Modify: `docs/00-index/project-structure-index.md`
 - Modify: `docs/04-ops/deployment/PRODUCTION_RUNTIME.md`
 
-- [ ] **Step 1: Add a failing isolated-loop Gateway test**
+- [x] **Step 1: Add a failing isolated-loop Gateway test**
 
 Add a test that replaces `_run` with an assertion failure, calls `check_account_health_isolated`, and records the caller thread plus the thread used by `connect`, `is_user_authorized`, `get_me`, and `disconnect`:
 
@@ -361,7 +361,7 @@ def test_account_health_isolated_runs_on_calling_thread(monkeypatch):
     assert observed_threads == [caller_thread] * 4
 ```
 
-- [ ] **Step 2: Add a failing account-online routing test**
+- [x] **Step 2: Add a failing account-online routing test**
 
 Add a focused test proving the worker calls the isolated entry and never the process-wide entry:
 
@@ -384,7 +384,7 @@ def test_health_probe_uses_isolated_gateway_entry(monkeypatch):
     assert results[0].health.status == AccountStatus.ACTIVE.value
 ```
 
-- [ ] **Step 3: Run both tests and verify RED**
+- [x] **Step 3: Run both tests and verify RED**
 
 Run:
 
@@ -396,7 +396,7 @@ timeout 60 backend/.venv/bin/pytest -q \
 
 Expected: both fail because the isolated Gateway entry does not exist and `_run_health_probe` still calls `check_account_health`.
 
-- [ ] **Step 4: Implement the isolated health boundary**
+- [x] **Step 4: Implement the isolated health boundary**
 
 In the mock Gateway, add an explicit alias so tests and non-production integration retain identical health semantics:
 
@@ -429,7 +429,7 @@ def check_account_health_isolated(
 
 Change `_run_health_probe` to call `gateway.check_account_health_isolated`. Do not modify `check_account_health`, the process-wide lifecycle, the client cache, database Session ownership, configured concurrency, or timeout values.
 
-- [ ] **Step 5: Run focused and broad regressions**
+- [x] **Step 5: Run focused and broad regressions**
 
 Run the two red/green tests, then:
 
