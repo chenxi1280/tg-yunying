@@ -1516,7 +1516,7 @@ def _coverage_plan_state(
         session,
         task,
         now=timestamp,
-        limit=min(configured_limit, max(0, totals.due_debt) or 1),
+        limit=configured_limit,
     ).rows
     return CoveragePlanState(
         rows=rows,
