@@ -169,6 +169,7 @@ def _recent_actions(session: Session, task: Task, earliest: datetime) -> list[Ha
             Action.scheduled_at,
             Action.executed_at,
         ).where(
+            Action.tenant_id == task.tenant_id,
             Action.task_id == task.id,
             *SEND_FILTER,
             (Action.executed_at >= earliest) | (Action.scheduled_at >= earliest),

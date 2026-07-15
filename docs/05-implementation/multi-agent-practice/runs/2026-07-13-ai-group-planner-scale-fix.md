@@ -220,6 +220,8 @@
 - 第四次 release `2ca937bf` 的 run `29367174749` 完成 checks、镜像和部署，生产 11 个 worker 全部 healthy；但 09:00 后 E4 显示每个 100 Action 批次仍耗时约 1 至 3 分钟。生产 `pg_constraint + pg_indexes` 证明 9 个 Action 外键中 7 个引用列无 leading index，导致 Action DELETE 的外键校验反复扫描 Coverage、Admission、Review 表；recovery 已再次停止，群与评论 worker 保持运行。
 - 第二层 rework：0095 对 Review action、Coverage reserved/last-success、Admission membership/test/delete/rescue 共 7 列使用 `CREATE INDEX CONCURRENTLY`，模型元数据同步；不改变 retention、任务窗口、消息条数、账号范围或完成判定。迁移幂等/可逆和 PostgreSQL concurrent DDL 加入自动化，相关组合 `128 passed`；待再次发布后用每批时长、无锁等待、评论远端 ID 与每日覆盖增长做 E4。
 - 0095 首次 release merge `496f00a3` 的 run `29381873407` 在 checks 阶段以 `2 failed / 2214 passed / 14 skipped` 停止，未 build/deploy。失败一是 merge integrity 仍硬编码 0094 head；失败二是旧 AI unavailable 测试使用 `messages_per_round_mode=auto`，在 09:35 业务时间生成 3 个到期 slot 却断言 1。更新 head 断言并把该单轮合同固定为 manual 1 后，原失败顺序与相关组合 `130 passed`；生产逻辑和任务配置未改。
+- 稳定版 release `f085716c` 的 run `29382245541` 已完整通过 checks、镜像构建和 SSH deploy，生产切到 `20260715014914_f085716`，Alembic 为 0095，11 个 worker healthy。发布后持续采样确认 retention 的分钟级 DELETE 已消失，但暴露两个后续根因：metrics 对单任务历史 `send_message` 的 `payload.ai_generation_status` / `result.generation_outcome` 做全量 JSON `GROUP BY` 达 1 分 51 秒；planner 的 hard-hourly 近 24 小时 Action 查询达 43 秒，且缺少 tenant 过滤与 executed_at 对应索引。
+- 0096 行为保持型 rework：为两条 JSON 聚合表达式增加 partial concurrent index，为 `(tenant_id, task_id, action_type, executed_at)` 增加并发索引，使 executed/scheduled 的 OR 两侧都有可用访问路径；聚合由等价的 `count(id)` 改为 `count(*)`，hard-hourly 查询补 `tenant_id` 条件。跨租户红测在修复前得到 1、修复后为 0；迁移 SQLite 幂等/可逆、PostgreSQL concurrent DDL、唯一 migration head 和相关业务组合共 `67 passed in 20.07s`。当前仍仅 E2，必须发布后用生产 EXPLAIN、连续慢事务采样及真实群/评论远端结果完成 E4。
 
 ## Release Gate 与 E4
 

@@ -589,6 +589,33 @@ def test_refresh_task_stats_calculates_hard_hourly_target_progress(monkeypatch):
 
 
 @pytest.mark.no_postgres
+def test_hard_hourly_stats_exclude_actions_from_a_different_tenant(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 7, 20, 30, tzinfo=BEIJING_TZ)
+    monkeypatch.setattr("app.services.task_center.stats._now", lambda: now_value)
+
+    with Session(engine) as session:
+        task = Task(
+            id="task-hard-hourly-tenant",
+            tenant_id=1,
+            name="租户隔离",
+            type="group_ai_chat",
+            status="running",
+            timezone="Asia/Shanghai",
+            type_config={"hard_hourly_target_enabled": True, "hourly_min_messages": 1},
+        )
+        foreign = _send_action("foreign-success", task, "success", executed_at=now_value)
+        foreign.tenant_id = 2
+        session.add_all([Tenant(id=1, name="默认运营空间"), task, foreign])
+        session.commit()
+
+        stats = refresh_task_stats(session, task)
+
+    assert stats["hard_hourly_success_count"] == 0
+
+
+@pytest.mark.no_postgres
 def test_group_ai_chat_hard_hourly_target_creates_deficit_actions(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
