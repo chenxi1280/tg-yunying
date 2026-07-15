@@ -10,6 +10,7 @@ from app.services.material_rules import MaterialRuleResult, select_material_for_
 
 from .ai_generation_commit import commit_generation_action, load_generation_batch
 from .ai_message_memory import (
+    DuplicateMemoryBatch,
     DuplicateMessageReservation,
     mark_group_ai_message_result,
     normalize_group_ai_text,
@@ -26,12 +27,15 @@ def store_generation_quality(
     payload: SendMessagePayload,
     *,
     data: dict,
+    duplicate_batch: DuplicateMemoryBatch | None = None,
 ) -> bool:
     if not _content_policy_allows(session, action, payload, data=data):
         return False
     if not _apply_material_policy(session, action, payload, data=data):
         return False
-    return _attach_message_memory(session, action, payload, data=data)
+    return _attach_message_memory(
+        session, action, payload, data=data, duplicate_batch=duplicate_batch,
+    )
 
 
 def fail_generation_batch(
@@ -157,6 +161,7 @@ def _attach_message_memory(
     payload: SendMessagePayload,
     *,
     data: dict,
+    duplicate_batch: DuplicateMemoryBatch | None = None,
 ) -> bool:
     memory = _reusable_message_memory(session, action, data=data)
     if memory:
@@ -175,6 +180,7 @@ def _attach_message_memory(
             profile_version=payload.profile_version or None,
             profile_match_score=payload.profile_match_score or None,
             profile_match_reason=payload.profile_match_reason,
+            duplicate_batch=duplicate_batch,
         )
     except DuplicateMessageReservation as exc:
         _mark_duplicate(action, data, exc)

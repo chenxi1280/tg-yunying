@@ -7,6 +7,7 @@ from app.services._common import _now
 from .ai_generation_commit import commit_generation_action, load_generation_batch
 from .ai_generation_pipeline import SlotGenerationResult
 from .ai_generation_quality import fail_generation_action, store_generation_quality
+from .ai_message_memory import DuplicateMemoryBatch
 from .ai_generation_state import (
     GenerationMappingError,
     apply_generated_content_metadata,
@@ -30,6 +31,7 @@ def persist_generation_results(
         [result.content for result in results],
         generation_slots=list(request.config.get("generation_slots") or []),
     )
+    duplicate_batch = DuplicateMemoryBatch(now=_now())
     with session.no_autoflush:
         for index, ((action, payload), result) in enumerate(zip(batch, results, strict=True)):
             if result.rejection_code:
@@ -47,7 +49,9 @@ def persist_generation_results(
             data["ai_generation_tokens"] = int(tokens or 0) if index == 0 else 0
             data["ai_generation_result_cache"] = {}
             mark_attempt_outcome(data, request.attempt_id, "ready", timestamp=_now())
-            if not store_generation_quality(session, action, payload, data=data):
+            if not store_generation_quality(
+                session, action, payload, data=data, duplicate_batch=duplicate_batch,
+            ):
                 commit_generation_action(session, request, action)
                 continue
             action.payload = data
