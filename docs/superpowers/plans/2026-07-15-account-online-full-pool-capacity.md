@@ -466,3 +466,21 @@ After the account-online worker restarts, require all of the following:
 - TCP connections stay near configured concurrency during probing and return to the idle baseline afterward;
 - all four Beijing-current-date coverage ledgers exist, confirmed counts increase during the active window, and remaining obligations retain exact account/login/permission blockers;
 - the channel-comment task has no overdue open actions and recent attempts show real Telegram outcomes.
+
+### Task 13: Schedule the next probe from each account's completion time
+
+- [x] **Step 1: Capture the production recurrence**
+
+The first 582-account probe started after a three-minute source reconciliation and finished about ten minutes later. Every result still received the batch-start timestamp, so its five-minute `next_probe_at` was already overdue and the worker immediately entered another full-pool cycle.
+
+- [x] **Step 2: Add a failing completion-clock regression**
+
+Use a controlled clock where the probe completes eight minutes after selection and require `last_probe_at` plus `next_probe_at` to use the completion timestamp.
+
+- [x] **Step 3: Apply completion time per streamed result**
+
+When production does not inject a fixed test time, read the clock as each future completes and pass that timestamp into the existing result transition. Preserve explicit `now=` determinism for unit tests and do not add an account-count cap or silent fallback.
+
+- [ ] **Step 4: Run regressions, release, and collect production E4**
+
+Run account-online timing/state/lifecycle/config/worker regressions, compile, and publish through `master -> release`. Production must show a full cycle followed by a real idle interval, reduced database pressure, no immediate full-pool re-entry, and progressing current-day group coverage.

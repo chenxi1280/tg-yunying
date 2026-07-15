@@ -40,6 +40,7 @@ class OnlineProbeResult:
     account_id: int
     health: Any = None
     error: Exception | None = None
+    completed_at: datetime | None = None
 
 
 def probe_due_online_states(
@@ -50,6 +51,7 @@ def probe_due_online_states(
     commit_each: bool = False,
 ) -> int:
     current_time = now or _now()
+    fixed_time = now is not None
     states = _due_probe_states(session, limit=limit, now=current_time)
     states_by_account = {state.account_id: state for state in states}
     accounts: dict[int, TgAccount] = {}
@@ -69,7 +71,8 @@ def probe_due_online_states(
             continue
         jobs.append(OnlineProbeJob(account.id, account.session_ciphertext, credentials))
     for result in _run_health_probes(jobs):
-        _apply_probe_result(session, accounts[result.account_id], states_by_account[result.account_id], current_time, result)
+        completed_at = current_time if fixed_time else max(current_time, result.completed_at or _now())
+        _apply_probe_result(session, accounts[result.account_id], states_by_account[result.account_id], completed_at, result)
         _commit_probe_progress(session, commit_each)
     return len(states)
 
@@ -87,9 +90,9 @@ def _run_health_probes(jobs: list[OnlineProbeJob]) -> Iterator[OnlineProbeResult
 def _run_health_probe(job: OnlineProbeJob) -> OnlineProbeResult:
     try:
         health = gateway.check_account_health_isolated(job.session_ciphertext, job.credentials)
-        return OnlineProbeResult(account_id=job.account_id, health=health)
+        return OnlineProbeResult(account_id=job.account_id, health=health, completed_at=_now())
     except Exception as exc:
-        return OnlineProbeResult(account_id=job.account_id, error=exc)
+        return OnlineProbeResult(account_id=job.account_id, error=exc, completed_at=_now())
 
 
 def _apply_probe_result(

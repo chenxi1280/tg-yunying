@@ -12,7 +12,7 @@ from app.integrations.telegram import AccountHealth
 from app.models import AccountStatus, TgAccount, TgAccountOnlineState
 from app.services._common import _now
 from app.services.account_online_constants import ONLINE_LOW_FREQUENCY_PROBE_INTERVAL, ONLINE_PROBE_INTERVAL
-from app.services.account_online_probe import OnlineProbeJob, _run_health_probes
+from app.services.account_online_probe import OnlineProbeJob, OnlineProbeResult, _run_health_probes
 from app.services.account_online_state import mark_stale_online_states, probe_due_online_states
 
 
@@ -71,6 +71,71 @@ def test_probe_due_online_states_keeps_stale_window_after_next_probe(monkeypatch
         assert state.stale_after_at > state.next_probe_at
         assert state.next_probe_at >= now + MIN_ACTIVE_PROBE_INTERVAL
         assert state.stale_after_at >= now + MIN_ACTIVE_STALE_WINDOW
+
+
+def test_probe_due_online_states_schedules_from_probe_completion(monkeypatch):
+    started_at = _now()
+    completed_at = started_at + timedelta(minutes=8)
+    clock = iter([started_at, completed_at])
+    with _session() as session:
+        _account(session)
+        state = TgAccountOnlineState(
+            tenant_id=1,
+            account_id=101,
+            desired_online=True,
+            desired_sources=[{"source_type": "task", "source_id": "ai-running"}],
+            online_status="warming",
+            next_probe_at=started_at - timedelta(seconds=1),
+        )
+        session.add(state)
+        session.commit()
+
+        monkeypatch.setattr("app.services.account_online_probe._now", lambda: next(clock))
+        monkeypatch.setattr("app.services.account_online_probe.credentials_for_account", lambda *_args, **_kwargs: object())
+        monkeypatch.setattr(
+            "app.services.account_online_probe.gateway.check_account_health_isolated",
+            lambda *_args: AccountHealth(status=AccountStatus.ACTIVE.value, health_score=96, detail="账号 session 可用"),
+        )
+
+        assert probe_due_online_states(session, limit=10) == 1
+        session.commit()
+
+        assert state.last_probe_at == completed_at
+        assert state.next_probe_at == completed_at + ONLINE_PROBE_INTERVAL
+
+
+def test_probe_due_online_states_uses_worker_completion_not_consume_time(monkeypatch):
+    started_at = _now()
+    completed_at = started_at + timedelta(minutes=2)
+    consumed_at = started_at + timedelta(minutes=8)
+    clock = iter([started_at, consumed_at])
+    with _session() as session:
+        _account(session)
+        state = TgAccountOnlineState(
+            tenant_id=1,
+            account_id=101,
+            desired_online=True,
+            desired_sources=[{"source_type": "task", "source_id": "ai-running"}],
+            online_status="warming",
+            next_probe_at=started_at - timedelta(seconds=1),
+        )
+        session.add(state)
+        session.commit()
+
+        result = OnlineProbeResult(
+            account_id=101,
+            health=AccountHealth(status=AccountStatus.ACTIVE.value, health_score=96, detail="账号 session 可用"),
+            completed_at=completed_at,
+        )
+        monkeypatch.setattr("app.services.account_online_probe._now", lambda: next(clock))
+        monkeypatch.setattr("app.services.account_online_probe.credentials_for_account", lambda *_args, **_kwargs: object())
+        monkeypatch.setattr("app.services.account_online_probe._run_health_probes", lambda _jobs: iter([result]))
+
+        assert probe_due_online_states(session, limit=10) == 1
+        session.commit()
+
+        assert state.last_probe_at == completed_at
+        assert state.next_probe_at == completed_at + ONLINE_PROBE_INTERVAL
 
 
 def test_mark_stale_online_states_requeues_probe_immediately():
