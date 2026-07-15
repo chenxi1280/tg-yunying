@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 from contextlib import contextmanager
-from datetime import timedelta
+from datetime import timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -18,7 +18,10 @@ from app.services.task_center.ai_message_memory import (
     DuplicateMessageReservation,
     reserve_group_ai_message,
 )
-from app.services.task_center.ai_message_memory_batch import DuplicateMemoryBatch
+from app.services.task_center.ai_message_memory_batch import (
+    DuplicateMemoryBatch,
+    cached_similarity_rows,
+)
 
 
 pytestmark = pytest.mark.no_postgres
@@ -91,6 +94,18 @@ def test_batch_refresh_removes_memory_changed_to_inactive_status() -> None:
 
     cached_ids = {str(row.id) for row in batch.rows_by_tenant[1]}
     assert inactive_memory_id not in cached_ids
+
+
+def test_cached_rows_compare_postgres_aware_datetimes_with_naive_cutoff() -> None:
+    now = _now()
+    memory = AiGroupMessageMemory(
+        tenant_id=1, group_id=22, status="success",
+        normalized_text="时区记录", raw_text="时区记录",
+        planned_at=now.replace(tzinfo=timezone(timedelta(hours=8))),
+    )
+    batch = DuplicateMemoryBatch(now=now, rows_by_tenant={1: [memory]})
+
+    assert cached_similarity_rows(batch, tenant_id=1, cutoff=now - timedelta(minutes=1)) == [memory]
 
 
 def test_exact_duplicate_short_circuits_semantic_window_scan() -> None:
