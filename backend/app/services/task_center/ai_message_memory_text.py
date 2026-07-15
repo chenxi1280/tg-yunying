@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from difflib import SequenceMatcher
+from functools import lru_cache
 from hashlib import sha256
 
 
@@ -15,6 +18,13 @@ _REPEATED_PUNCT = re.compile(r"([!?！？。,.，、])\1+")
 _SPACE = re.compile(r"\s+")
 _MENTION = re.compile(r"@[a-z0-9_]{3,32}")
 _VARIABLE_PERSON_LABEL = re.compile(r"[\u4e00-\u9fffa-z0-9_]{1,8}(老师|主任|哥|姐)")
+
+
+@dataclass(frozen=True)
+class _CharProfile:
+    characters: frozenset[str]
+    counts: tuple[tuple[str, int], ...]
+    length: int
 
 
 def normalize_group_ai_text(text: str) -> str:
@@ -35,6 +45,18 @@ def text_similarity(left: str, right: str) -> float:
     if not left or not right:
         return 0.0
     return max(SequenceMatcher(None, left, right).ratio(), _char_jaccard(left, right))
+
+
+def text_similarity_reaches(left: str, right: str, threshold: float) -> bool:
+    if not left or not right:
+        return 0.0 >= threshold
+    left_profile = _char_profile(left)
+    right_profile = _char_profile(right)
+    if _profile_jaccard(left_profile, right_profile) >= threshold:
+        return True
+    if _sequence_ratio_upper_bound(left_profile, right_profile) < threshold:
+        return False
+    return SequenceMatcher(None, left, right).ratio() >= threshold
 
 
 def text_fingerprint(normalized: str) -> str:
@@ -78,11 +100,24 @@ def _collapse_variable_labels(value: str) -> str:
 
 
 def _char_jaccard(left: str, right: str) -> float:
-    left_chars = set(left)
-    right_chars = set(right)
-    if not left_chars or not right_chars:
+    return _profile_jaccard(_char_profile(left), _char_profile(right))
+
+
+@lru_cache(maxsize=65_536)
+def _char_profile(value: str) -> _CharProfile:
+    return _CharProfile(frozenset(value), tuple(Counter(value).items()), len(value))
+
+
+def _profile_jaccard(left: _CharProfile, right: _CharProfile) -> float:
+    if not left.characters or not right.characters:
         return 0.0
-    return len(left_chars & right_chars) / len(left_chars | right_chars)
+    return len(left.characters & right.characters) / len(left.characters | right.characters)
+
+
+def _sequence_ratio_upper_bound(left: _CharProfile, right: _CharProfile) -> float:
+    right_counts = dict(right.counts)
+    matches = sum(min(count, right_counts.get(char, 0)) for char, count in left.counts)
+    return 2 * matches / (left.length + right.length)
 
 
 __all__ = [
@@ -93,4 +128,5 @@ __all__ = [
     "template_shell_key",
     "text_fingerprint",
     "text_similarity",
+    "text_similarity_reaches",
 ]
