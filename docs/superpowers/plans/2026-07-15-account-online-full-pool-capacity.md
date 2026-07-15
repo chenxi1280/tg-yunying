@@ -532,5 +532,6 @@ Publish through `master -> release`; require the standard production Planner dra
 
 - [x] Prove production has 531 current online, non-stale, `can_send` accounts in each guaranteed group while task stats incorrectly report one selected offline account.
 - [x] Add a regression where the leading ordered candidates are offline and a later candidate is online even though the per-cycle action budget is one.
-- [x] Scan the full ready daily-coverage candidate pool, filter online state, then slice to the unchanged per-cycle account budget.
+- [x] Scan a bounded ready daily-coverage eligibility page, filter online state, then slice to the unchanged per-cycle account budget; blocked pages advance explicitly until the full pool is covered.
+- [x] Keep hard-hourly planning active when natural daily `due_debt` is zero; cap by ready online accounts, hard deficit and the unchanged transaction budget.
 - [ ] Run focused and relevant regressions, publish through `master -> release`, and prove new Action plus Telegram success / confirmed growth in an active-window group.

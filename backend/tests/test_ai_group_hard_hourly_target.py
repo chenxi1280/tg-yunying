@@ -29,6 +29,7 @@ from app.schemas import GroupAIChatTaskCreate, TaskPrecheckRequest
 from app.services.task_center.executors import prepare_open_actions_for_planning
 from app.services.task_center.executors.group_ai_chat import (
     _coverage_plan_state,
+    _daily_coverage_uncovered_count,
     _next_cycle_index,
     _online_ready_accounts,
     _plan_account_limit,
@@ -770,7 +771,7 @@ def test_group_ai_chat_all_accounts_daily_coverage_plans_uncovered_accounts_when
 def test_daily_coverage_scans_past_offline_leading_accounts(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
-    now_value = datetime(2026, 6, 7, 15, 0)
+    now_value = datetime(2026, 6, 7, 5, 0)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
     monkeypatch.setattr(
         "app.services.task_center.executors.group_ai_chat.online_ready_account_ids_for_planning",
@@ -806,11 +807,20 @@ def test_daily_coverage_scans_past_offline_leading_accounts(monkeypatch):
             session, task, group, {}, task.type_config, coverage_rows=coverage.rows,
         )
         ready = _online_ready_accounts(session, task, selected, {})
+        hard_uncovered = _daily_coverage_uncovered_count(
+            session,
+            task,
+            ready,
+            {"deficit": 10},
+            task.type_config,
+            coverage_state=coverage,
+        )
 
     assert len(coverage.rows) == 3
-    assert coverage.due_debt == 1
+    assert coverage.due_debt == 0
     assert [account.id for account in selected] == [101, 102, 103]
     assert [account.id for account in ready] == [103]
+    assert hard_uncovered == 1
     assert _plan_account_limit(task, {}, planning_limit=1) == 1
 
 
