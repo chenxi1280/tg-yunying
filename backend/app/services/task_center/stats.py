@@ -34,6 +34,7 @@ HARD_HOURLY_EXPIRED_ERROR_MESSAGE = "硬目标小时窗口已结束，过期补�
 AI_GROUP_TERMINAL_QUALITY_ERRORS = frozenset({"duplicate_message", "ai_message_memory_missing"})
 AI_GROUP_TERMINAL_GENERATION_STATUSES = frozenset({"duplicate_rejected"})
 AI_GENERATION_OPEN_STATUSES = frozenset({"pending", "generating"})
+AI_GENERATION_CLOSED_STATUSES = ("pending", "generating", "ready", "ai_result_persist_unknown")
 AI_GENERATION_QUALITY_CODES = frozenset({
     "content_rejected",
     "duplicate_message",
@@ -134,12 +135,15 @@ def _ai_generation_stats(session: Session, task: Task, stats: dict[str, Any]) ->
         task,
         column=Action.payload,
         key="ai_generation_status",
+        values=AI_GENERATION_CLOSED_STATUSES,
+        include_failed=True,
     )
     outcome_counts = _action_json_counts(
         session,
         task,
         column=Action.result,
         key="generation_outcome",
+        values=tuple(sorted(AI_GENERATION_QUALITY_CODES | {"reply_target_stale", "reply_target_missing"})),
     )
     updated = _apply_ai_generation_counts(stats, generation_counts, outcome_counts)
     updated["voice_profile_anchor_rewrite_count"] = _ai_generation_fact_count(
@@ -159,17 +163,39 @@ def _ai_generation_fact_count(session: Session, task: Task, condition) -> int:
     )) or 0)
 
 
-def _action_json_counts(session: Session, task: Task, *, column, key: str) -> dict[str, int]:
+def _action_json_counts(
+    session: Session,
+    task: Task,
+    *,
+    column,
+    key: str,
+    values: tuple[str, ...],
+    include_failed: bool = False,
+) -> dict[str, int]:
     expression = _json_text_expression(session, column=column, key=key)
-    rows = session.execute(
+    rows = list(session.execute(
         select(expression, func.count())
         .where(
             Action.tenant_id == task.tenant_id,
             Action.task_id == task.id,
             Action.action_type == "send_message",
+            expression.in_(values),
         )
         .group_by(expression)
-    ).all()
+    ).all())
+    if include_failed:
+        rows.extend(session.execute(
+            select(expression, func.count())
+            .where(
+                Action.tenant_id == task.tenant_id,
+                Action.task_id == task.id,
+                Action.action_type == "send_message",
+                Action.status == "failed",
+                expression.is_not(None),
+                expression.notin_(values),
+            )
+            .group_by(expression)
+        ).all())
     return {str(code or ""): int(count) for code, count in rows if code}
 
 
