@@ -284,7 +284,7 @@ group.daily_limit >= 当日目标消息数 + 已保留的普通对话预算
 - `cycle_id + slot_id` 固定账号、coverage、reply/normal、面具、话题和连发位置；Dispatcher AI 批次必须按 slot 一一返回，不能因切批串账号或改变 `messages_per_round`。
 - 成功结果与账本 `confirmed_count` 在同一事务中回写；重复消费同一远端结果不得重复计数。
 - Planner 只按 `(task_id, coverage_date, state, next_eligible_at)` 索引分页读取欠账，不扫描全部账号。
-- 在线保活按到期状态分页选取账号；Telegram 健康探测允许受控并发，但账号、凭证读取和状态落库必须留在数据库 Session 所在线程。完整探测周期必须短于 `stale_after` 窗口，不能因串行探测能力不足持续制造假离线。
+- 在线保活必须让全部 `desired_online=true` 账号进入处理，不得设置隐藏的账号总量上限或内部前 N 个截断；到期状态按显式页大小分页，未覆盖账号由后续页或后续 drain 继续处理。Telegram 健康探测按显式配置受控并发，但账号、凭证读取和状态落库必须留在数据库 Session 所在线程。分页和并发只控制调度吞吐，不限制服务上线账号总量；完整探测周期必须短于 `stale_after` 窗口，不能因串行探测能力不足持续制造假离线。
 - 列表和详情摘要使用账本聚合或每日统计快照；账号明细走分页接口，不把几百个账号 ID 写入 `Task.stats`。
 - 以当前 5 个任务、约 609 个目标账号计算，每日约 3045 条账本记录，属于普通数据库可控规模。
 

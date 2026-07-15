@@ -15,7 +15,6 @@ from app.services.account_online_readiness import state_is_available, state_is_r
 from app.services.account_online_reconciliation import apply_desired_state, clear_desired_state
 
 ONLINE_TASK_STATUSES = {"running", "paused"}
-ACCOUNT_ONLINE_PROBE_BATCH_LIMIT = 20
 GLOBAL_KEEPALIVE_EXCLUDED_STATUSES = {
     AccountStatus.PENDING_LOGIN.value,
     AccountStatus.WAITING_CODE.value,
@@ -104,7 +103,7 @@ def drain_account_online_keepalive(session_factory, limit: int = 100) -> int:
         record_worker_heartbeat(session, process_type="account-online", metadata={"limit": limit})
         reconcile_runtime_online_sources(session)
         session.commit()
-        batch_limit = min(max(1, limit), ACCOUNT_ONLINE_PROBE_BATCH_LIMIT)
+        batch_limit = max(1, limit)
         processed = probe_due_online_states(session, limit=batch_limit, commit_each=True)
         if processed < batch_limit:
             processed += mark_stale_online_states(session, limit=batch_limit)

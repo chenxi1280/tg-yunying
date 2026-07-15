@@ -112,6 +112,7 @@ def test_server_compose_starts_online_and_ai_memory_workers():
     compose = (root / "docker-compose.server.yml").read_text()
     compose_up = (root / "deploy/compose-up.sh").read_text()
     check_web = (root / "deploy/check-web.sh").read_text()
+    env_example = (root / ".env.production.example").read_text()
 
     expected = {
         "worker-account-online": "tgyunying-worker-account-online",
@@ -125,6 +126,10 @@ def test_server_compose_starts_online_and_ai_memory_workers():
 
     assert 'WORKER_ROLE: account-online' in compose
     assert 'WORKER_ROLE: ai-memory' in compose
+    assert 'ACCOUNT_ONLINE_PROBE_CONCURRENCY: ${ACCOUNT_ONLINE_PROBE_CONCURRENCY:-32}' in compose
+    assert '${ACCOUNT_ONLINE_WORKER_DRAIN_LIMIT:-1000}' in compose
+    assert 'ACCOUNT_ONLINE_PROBE_CONCURRENCY=32' in env_example
+    assert 'ACCOUNT_ONLINE_WORKER_DRAIN_LIMIT=1000' in env_example
 
 
 def test_worker_main_healthcheck_uses_role_heartbeat(monkeypatch):

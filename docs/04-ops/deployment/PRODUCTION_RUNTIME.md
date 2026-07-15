@@ -87,6 +87,8 @@ Repository variables:
 
 worker 容器不暴露 backend API 端口，健康检查不能使用 `curl 127.0.0.1:8000/api/health`。生产 compose 的 Docker healthcheck 读取 worker 主循环写入的本地 heartbeat 文件（默认 `/tmp/tgyunying-worker-heartbeat`），避免每 20 秒为每个 worker 启动 Python 并查询 DB；业务观测仍看 `worker_heartbeats` 表。如果某个 worker unhealthy，先看容器内 heartbeat 文件时间、`worker_heartbeats`、容器日志和数据库连接，而不是先排查 backend API。
 
+账号在线保活默认使用 `ACCOUNT_ONLINE_WORKER_DRAIN_LIMIT=1000` 作为单轮分页数量，并使用 `ACCOUNT_ONLINE_PROBE_CONCURRENCY=32` 控制同一时刻的 Telegram 健康探测数。两者只控制处理吞吐，不是账号上线名额：全部 `desired_online=true` 账号都必须进入状态机，账号池超过单页时由后续 drain 继续处理，不得在服务内部再次按前 N 个账号截断。数据库读取和状态落库留在 worker 主线程，探测线程只执行 Telegram 网络调用；并发参数必须为正整数，非法配置会使服务明确启动失败。
+
 ## Nginx
 
 参考配置在 `deploy/nginx/tgyunying.conf.example`。
