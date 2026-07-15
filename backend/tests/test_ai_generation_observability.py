@@ -71,6 +71,39 @@ def test_phase_c_generation_attempt_does_not_update_task_stats_hot_row() -> None
         assert not any(statement.startswith("update tasks ") for statement in statements)
 
 
+def test_phase_c_persists_explicit_static_fallback_audit_fields() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        task, action = _seed_phase_c_action(session)
+        request = _phase_c_request(task, action)
+
+        ai_generation_dispatch._persist_generation_results(
+            session,
+            request,
+            [SlotGenerationResult(
+                GeneratedContent(
+                    "👋✨🌟",
+                    generation_source="static_safe_fallback",
+                    fallback_stage="static_safe_fallback",
+                    fallback_reason="duplicate_message",
+                    slot_id="generation-observable:turn:1",
+                    sequence_index=1,
+                ),
+                quality_fallback="emoji_react",
+                fallback_reason="duplicate_message",
+            )],
+            tokens=0,
+        )
+
+        assert action.payload["act_type"] == "emoji_react"
+        assert action.payload["quality_fallback"] == "emoji_react"
+        assert action.payload["human_quality_decision"] == "explicit_static_quality_fallback"
+        assert action.payload["generation_source"] == "static_safe_fallback"
+        assert action.payload["fallback_stage"] == "static_safe_fallback"
+        assert action.payload["fallback_reason"] == "duplicate_message"
+
+
 def test_metrics_refresh_idempotently_separates_generation_and_gateway_unknown() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

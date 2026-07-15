@@ -477,10 +477,28 @@ The first 582-account probe started after a three-minute source reconciliation a
 
 Use a controlled clock where the probe completes eight minutes after selection and require `last_probe_at` plus `next_probe_at` to use the completion timestamp.
 
-- [x] **Step 3: Apply completion time per streamed result**
+- [x] **Step 3: Preserve per-account completion and anchor the next cycle after batch completion**
 
-When production does not inject a fixed test time, read the clock as each future completes and pass that timestamp into the existing result transition. Preserve explicit `now=` determinism for unit tests and do not add an account-count cap or silent fallback.
+When production does not inject a fixed test time, preserve each worker result's actual completion in `last_probe_at`, keep streamed per-result commits, and after the iterator is exhausted move every completed result's `next_probe_at` (plus successful stale deadline) no earlier than the last completion in that drain plus its configured interval. Preserve explicit `now=` determinism for unit tests and do not add an account-count cap or silent fallback.
 
 - [ ] **Step 4: Run regressions, release, and collect production E4**
 
 Run account-online timing/state/lifecycle/config/worker regressions, compile, and publish through `master -> release`. Production must show a full cycle followed by a real idle interval, reduced database pressure, no immediate full-pool re-entry, and progressing current-day group coverage.
+
+### Task 14: Restore explicit daily-coverage fallback in the Dispatcher pipeline
+
+- [x] **Step 1: Capture the real remaining blocker**
+
+Production task stats showed `skip_reason=quality_gate` and `quality_rejection_counts` dominated by `duplicate_message`; the generic task `last_error` incorrectly looked like a Provider outage. M3, M2.5, and Grok results were being rejected while the approved tenant-controlled static fallback was absent from the refactored pipeline.
+
+- [x] **Step 2: Add red/green pipeline and Phase C regressions**
+
+Cover all-stage quality rejection, all-stage Provider unavailability, cached-result revalidation, tenant switch disabled, distinct batch fallback content, outbound/message-memory persistence, and end-to-end Telegram dispatch state transitions.
+
+- [x] **Step 3: Restore the scoped explicit fallback**
+
+Only non-reply slots bound to a current daily-coverage ledger can become `emoji_react`. Persist `quality_fallback=emoji_react`, `human_quality_decision=explicit_static_quality_fallback`, `generation_source/fallback_stage=static_safe_fallback`, and the original rejection reason. Keep content policy, tenant-wide message-memory dedupe, fixed slot mapping, coverage reservation, and Telegram send gates unchanged.
+
+- [ ] **Step 4: Release and collect production E4**
+
+Publish through `master -> release`, require workflow success, then prove real current-day `success/confirmed` growth for active-window groups, exact visible blockers for unavailable accounts, no unexpected duplicate-memory rejection of the explicit fallback, and no overdue comment actions.

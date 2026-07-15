@@ -8,7 +8,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import AiProvider, Tenant, TenantAiSetting
+from app.models import AiProvider, Task, Tenant, TenantAiSetting
 from app.schemas.ai_config import TenantAiSettingUpdate
 from app.services.ai_config import update_tenant_ai_setting
 from app.services.task_center.ai_generation_dependencies import GenerationDependencies
@@ -16,6 +16,7 @@ from app.services.task_center.ai_generation_pipeline import generate_quality_res
 from app.services.task_center.ai_generation_state import apply_generated_content_metadata
 from app.services.task_center.ai_generator import AiGenerationUnavailable, GeneratedContent
 from app.services.task_center import ai_generation_pipeline
+from app.services.task_center import ai_generation_dispatch
 from app.services.task_center import ai_generator
 from app.services.task_center.payloads import SendMessagePayload
 from app.services.task_center.ai_group_prompt import GroupPromptBundle
@@ -64,6 +65,36 @@ def test_tenant_ai_group_fallback_switches_can_be_disabled():
         assert updated.ai_group_model_fallback_enabled is False
         assert updated.ai_group_grok_fallback_enabled is False
         assert updated.ai_group_static_fallback_enabled is False
+
+
+def test_dispatcher_runtime_uses_tenant_fallback_switches() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        task = Task(
+            id="task-fallback-flags",
+            tenant_id=1,
+            name="AI 活跃群",
+            type="group_ai_chat",
+            status="running",
+        )
+        session.add_all([
+            task,
+            TenantAiSetting(
+                tenant_id=1,
+                ai_group_model_fallback_enabled=False,
+                ai_group_grok_fallback_enabled=True,
+                ai_group_static_fallback_enabled=False,
+            ),
+        ])
+        session.commit()
+
+        assert ai_generation_dispatch._tenant_fallback_flags(task) == {
+            "_ai_group_model_fallback_enabled": False,
+            "_ai_group_grok_fallback_enabled": True,
+            "_ai_group_static_fallback_enabled": False,
+        }
 
 
 @pytest.mark.parametrize(
