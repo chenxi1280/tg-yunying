@@ -128,15 +128,15 @@ Commit only the scoped code, tests, compose, plan, and production runtime docume
 **Files:**
 - Release through existing GitHub Actions and production runtime; do not edit production source files.
 
-- [ ] **Step 1: Integrate through the repository release path**
+- [x] **Step 1: Integrate through the repository release path**
 
 Bring the verified implementation to `master`, then update `release` from `master` and push `release` to trigger `Deploy Production`.
 
-- [ ] **Step 2: Verify GitHub Actions and deployed revision**
+- [x] **Step 2: Verify GitHub Actions and deployed revision**
 
 Require the deploy workflow to succeed and the production release directory/image revision to match the target commit.
 
-- [ ] **Step 3: Verify service health and configuration**
+- [x] **Step 3: Verify service health and configuration**
 
 Check the account-online container health, worker heartbeat age, drain errors, effective `ACCOUNT_ONLINE_PROBE_CONCURRENCY=32`, and command drain limit 1000.
 
@@ -147,3 +147,38 @@ Query all `desired_online=true` states. Require no missing state rows; report on
 - [ ] **Step 5: Verify group coverage and comment tasks**
 
 Compare all four group daily-coverage counts before and after the observation window and inspect current comment-task worker/actions. Require real progress or report the exact remaining external/account blocker without claiming recovery.
+
+### Task 6: Remove production batch-level head-of-line blocking
+
+**Files:**
+- Modify: `backend/app/config.py`
+- Modify: `backend/app/telethon_lifecycle.py`
+- Modify: `backend/app/integrations/telegram/gateway.py`
+- Modify: `backend/app/services/account_online_probe.py`
+- Modify: `backend/tests/test_account_online_probe_timing.py`
+- Modify: `backend/tests/test_config_safety.py`
+- Modify: `backend/tests/test_telethon_lifecycle.py`
+- Modify: `backend/tests/test_worker_roles.py`
+- Modify: `docker-compose.server.yml`
+- Modify: `.env.production.example`
+- Modify: product, feature, dataflow, design, and production runtime documents.
+
+- [x] **Step 1: Capture failed E4 evidence**
+
+The first production release had 669 desired accounts but only 40 probed in 15 minutes, 633 stale, and 582 still due. Logs repeatedly reported `Security error while unpacking a received message: Server replied with a wrong session ID` while `_run_health_probes` waited for its complete result list.
+
+- [x] **Step 2: Add and verify failing tests**
+
+Add tests proving a fast result is not yielded while a slow result remains pending, a dedicated probe timeout cannot be configured, the lifecycle cannot accept an operation-specific timeout, and production config lacks the timeout. Verify all tests fail for the expected missing behavior.
+
+- [x] **Step 3: Stream completed results and bound health probes**
+
+Use `as_completed` so the main thread applies and commits each completed immutable result immediately. Add validated `ACCOUNT_ONLINE_PROBE_TIMEOUT_SECONDS=30` and pass it only through `check_account_health` to `TelethonClientLifecycle.run`; keep the normal Telegram operation timeout unchanged.
+
+- [x] **Step 4: Verify the second fix locally**
+
+Run the five red/green tests, then the 66-test online-state, config, worker, and Telethon lifecycle regression, Python compilation, and `git diff --check`.
+
+- [ ] **Step 5: Redeploy and repeat E4**
+
+Commit, push `master`, merge into `release`, require a successful Deploy Production run, and repeat the 15-minute full-pool, four-group coverage, and comment-task checks.

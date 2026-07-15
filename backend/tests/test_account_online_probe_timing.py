@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from datetime import timedelta
 
 import pytest
@@ -11,6 +12,7 @@ from app.integrations.telegram import AccountHealth
 from app.models import AccountStatus, TgAccount, TgAccountOnlineState
 from app.services._common import _now
 from app.services.account_online_constants import ONLINE_LOW_FREQUENCY_PROBE_INTERVAL, ONLINE_PROBE_INTERVAL
+from app.services.account_online_probe import OnlineProbeJob, _run_health_probes
 from app.services.account_online_state import mark_stale_online_states, probe_due_online_states
 
 
@@ -123,3 +125,35 @@ def test_drain_account_online_keepalive_uses_requested_probe_batch(monkeypatch):
 
     assert drain_account_online_keepalive(lambda: Session(engine), limit=500) == 500
     assert calls == ["reconcile", "probe:500:commit_each=True"]
+
+
+def test_health_probe_results_stream_as_completed(monkeypatch):
+    slow_started = threading.Event()
+    release_slow = threading.Event()
+    first_received = threading.Event()
+    results = []
+
+    def check_health(session_ciphertext, _credentials):
+        if session_ciphertext == "slow":
+            slow_started.set()
+            release_slow.wait(timeout=1)
+        return AccountHealth(status=AccountStatus.ACTIVE.value, health_score=95, detail="ok")
+
+    def consume_results():
+        for result in _run_health_probes([
+            OnlineProbeJob(account_id=1, session_ciphertext="slow", credentials=object()),
+            OnlineProbeJob(account_id=2, session_ciphertext="fast", credentials=object()),
+        ]):
+            results.append(result)
+            first_received.set()
+
+    monkeypatch.setattr("app.services.account_online_probe.gateway.check_account_health", check_health)
+    consumer = threading.Thread(target=consume_results)
+    consumer.start()
+    assert slow_started.wait(timeout=1)
+    try:
+        assert first_received.wait(timeout=0.2)
+        assert results[0].account_id == 2
+    finally:
+        release_slow.set()
+        consumer.join(timeout=1)

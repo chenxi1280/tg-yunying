@@ -7,7 +7,7 @@ from concurrent.futures import TimeoutError as FutureTimeoutError
 import pytest
 
 from app.config import Settings
-from app.integrations.telegram import DeveloperAppCredentials
+from app.integrations.telegram import AccountHealth, DeveloperAppCredentials, TelethonTelegramGateway
 from app.telethon_lifecycle import TelethonClientLifecycle, shutdown_telethon_lifecycle
 
 pytestmark = pytest.mark.no_postgres
@@ -320,7 +320,7 @@ def test_shutdown_telethon_lifecycle_stops_background_loop():
 
 def test_telethon_lifecycle_cancels_coroutine_after_operation_timeout():
     reset_lifecycle_state()
-    settings = Settings(telethon_operation_timeout_seconds=0.01)
+    settings = Settings(telethon_operation_timeout_seconds=1)
     lifecycle = TelethonClientLifecycle(settings)
     cancelled = threading.Event()
 
@@ -332,7 +332,24 @@ def test_telethon_lifecycle_cancels_coroutine_after_operation_timeout():
             raise
 
     with pytest.raises(FutureTimeoutError):
-        lifecycle.run(slow_operation())
+        lifecycle.run(slow_operation(), timeout_seconds=0.01)
 
     assert cancelled.wait(timeout=1)
     shutdown_telethon_lifecycle(timeout_seconds=1)
+
+
+def test_account_health_uses_dedicated_probe_timeout(monkeypatch):
+    settings = Settings(account_online_probe_timeout_seconds=7)
+    gateway = TelethonTelegramGateway(settings)
+    observed = {}
+
+    def run_probe(coro, timeout_seconds=None):
+        coro.close()
+        observed["timeout_seconds"] = timeout_seconds
+        return AccountHealth(status="在线", health_score=95, detail="ok")
+
+    monkeypatch.setattr(gateway._lifecycle, "run", run_probe)
+    credentials = DeveloperAppCredentials(app_id=1, api_id=123, api_hash="hash", credentials_version=1)
+
+    assert gateway.check_account_health("session", credentials).status == "在线"
+    assert observed == {"timeout_seconds": 7}

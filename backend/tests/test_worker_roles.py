@@ -127,8 +127,10 @@ def test_server_compose_starts_online_and_ai_memory_workers():
     assert 'WORKER_ROLE: account-online' in compose
     assert 'WORKER_ROLE: ai-memory' in compose
     assert 'ACCOUNT_ONLINE_PROBE_CONCURRENCY: ${ACCOUNT_ONLINE_PROBE_CONCURRENCY:-32}' in compose
+    assert 'ACCOUNT_ONLINE_PROBE_TIMEOUT_SECONDS: ${ACCOUNT_ONLINE_PROBE_TIMEOUT_SECONDS:-30}' in compose
     assert '${ACCOUNT_ONLINE_WORKER_DRAIN_LIMIT:-1000}' in compose
     assert 'ACCOUNT_ONLINE_PROBE_CONCURRENCY=32' in env_example
+    assert 'ACCOUNT_ONLINE_PROBE_TIMEOUT_SECONDS=30' in env_example
     assert 'ACCOUNT_ONLINE_WORKER_DRAIN_LIMIT=1000' in env_example
 
 

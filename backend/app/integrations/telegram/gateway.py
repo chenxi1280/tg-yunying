@@ -413,9 +413,9 @@ class TelethonTelegramGateway(TelegramGateway):
     def _get_or_create_loop(cls) -> asyncio.AbstractEventLoop:
         return TelethonClientLifecycle.get_or_create_loop()
 
-    def _run(self, coro):
+    def _run(self, coro, *, timeout_seconds: float | None = None):
         """Schedule a coroutine on the persistent event loop and block for its result."""
-        return self._lifecycle.run(coro)
+        return self._lifecycle.run(coro, timeout_seconds=timeout_seconds)
 
     def _new_client(
         self,
@@ -552,7 +552,10 @@ class TelethonTelegramGateway(TelegramGateway):
         session_ciphertext: str | None,
         credentials: DeveloperAppCredentials | None = None,
     ) -> AccountHealth:
-        return self._run(self._health_async(session_ciphertext, self._usable_credentials(credentials)))
+        return self._run(
+            self._health_async(session_ciphertext, self._usable_credentials(credentials)),
+            timeout_seconds=self.settings.account_online_probe_timeout_seconds,
+        )
 
     async def _list_authorizations_async(
         self,

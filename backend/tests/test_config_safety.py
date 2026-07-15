@@ -24,3 +24,8 @@ def test_development_allows_default_bootstrap_admin_password() -> None:
 def test_account_online_probe_concurrency_must_be_positive() -> None:
     with pytest.raises(ValueError, match="ACCOUNT_ONLINE_PROBE_CONCURRENCY"):
         Settings(account_online_probe_concurrency=0)
+
+
+def test_account_online_probe_timeout_must_be_positive() -> None:
+    with pytest.raises(ValueError, match="ACCOUNT_ONLINE_PROBE_TIMEOUT_SECONDS"):
+        Settings(account_online_probe_timeout_seconds=0)

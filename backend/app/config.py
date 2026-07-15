@@ -96,6 +96,8 @@ class Settings:
             )
         if self.account_online_probe_concurrency < 1:
             raise ValueError("ACCOUNT_ONLINE_PROBE_CONCURRENCY must be a positive integer")
+        if self.account_online_probe_timeout_seconds <= 0:
+            raise ValueError("ACCOUNT_ONLINE_PROBE_TIMEOUT_SECONDS must be greater than zero")
     tg_api_id: str | None = os.getenv("TG_API_ID")
     tg_api_hash: str | None = os.getenv("TG_API_HASH")
     tg_gateway_mode: str = os.getenv("TG_GATEWAY_MODE", "mock" if os.getenv("APP_ENV") == "test" else "telethon")
@@ -131,6 +133,7 @@ class Settings:
     redis_account_inflight_seconds: int = int(os.getenv("REDIS_ACCOUNT_INFLIGHT_SECONDS", "1800"))
     enable_global_account_online_keepalive: bool = _bool_env("ENABLE_GLOBAL_ACCOUNT_ONLINE_KEEPALIVE", True)
     account_online_probe_concurrency: int = int(os.getenv("ACCOUNT_ONLINE_PROBE_CONCURRENCY", "32"))
+    account_online_probe_timeout_seconds: float = float(os.getenv("ACCOUNT_ONLINE_PROBE_TIMEOUT_SECONDS", "30"))
     db_pool_size: int = int(os.getenv("DB_POOL_SIZE", "5"))
     db_max_overflow: int = int(os.getenv("DB_MAX_OVERFLOW", "10"))
     db_pool_timeout: int = int(os.getenv("DB_POOL_TIMEOUT", "30"))

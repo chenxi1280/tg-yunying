@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import logging
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
@@ -73,12 +74,14 @@ def probe_due_online_states(
     return len(states)
 
 
-def _run_health_probes(jobs: list[OnlineProbeJob]) -> list[OnlineProbeResult]:
+def _run_health_probes(jobs: list[OnlineProbeJob]) -> Iterator[OnlineProbeResult]:
     if not jobs:
-        return []
+        return
     worker_count = min(get_settings().account_online_probe_concurrency, len(jobs))
     with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="account-online-probe") as executor:
-        return list(executor.map(_run_health_probe, jobs))
+        futures = [executor.submit(_run_health_probe, job) for job in jobs]
+        for future in as_completed(futures):
+            yield future.result()
 
 
 def _run_health_probe(job: OnlineProbeJob) -> OnlineProbeResult:
