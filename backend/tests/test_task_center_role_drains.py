@@ -463,6 +463,42 @@ def test_dispatcher_db_error_does_not_stop_other_claimed_actions(monkeypatch):
     assert succeeded.result["remote_message_id"] == "mock-after-db-error"
 
 
+@pytest.mark.no_postgres
+def test_dispatcher_db_error_resets_pre_gateway_generation_for_retry():
+    SessionFactory = _session_factory()
+    with SessionFactory() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(Task(id="task-generation-db-error", tenant_id=1, name="AI群", type="group_ai_chat"))
+        session.add(Action(
+            id="action-generation-db-error",
+            tenant_id=1,
+            task_id="task-generation-db-error",
+            task_type="group_ai_chat",
+            action_type="send_message",
+            status="executing",
+            payload={
+                "group_id": 7,
+                "ai_generation_status": "generating",
+                "ai_generation_attempt_id": "attempt-db-error",
+                "ai_generation_request_id": "request-db-error",
+                "ai_generation_claim_owner": "worker-a",
+                "ai_generation_claim_token": "claim-a",
+            },
+            result={"generation_stage": "generation_claimed"},
+        ))
+        session.commit()
+
+        assert dispatcher.mark_dispatcher_db_error(session, "action-generation-db-error", "connection timeout")
+        session.commit()
+        action = session.get(Action, "action-generation-db-error")
+
+    assert action.status == "pending"
+    assert action.payload["ai_generation_status"] == "pending"
+    assert action.payload["ai_generation_attempt_id"] == ""
+    assert action.payload["ai_generation_claim_token"] == ""
+    assert action.result["error_code"] == "dispatcher_db_error"
+
+
 def test_planner_does_not_exclude_due_ai_open_actions_with_beijing_clock(monkeypatch):
     SessionFactory = _session_factory()
     beijing_now = datetime.now(UTC).replace(tzinfo=None) + timedelta(hours=8)
