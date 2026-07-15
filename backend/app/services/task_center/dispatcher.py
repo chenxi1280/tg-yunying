@@ -585,7 +585,7 @@ def due_actions(session: Session, limit: int = 100, *, exclude_task_ids: set[str
             .order_by(
                 _hard_hourly_claim_rank(),
                 Task.priority.asc(),
-                _comment_claim_rank(),
+                _channel_comment_claim_rank(),
                 Action.scheduled_at.asc(),
                 Action.created_at.asc(),
             )
@@ -630,7 +630,7 @@ def claim_actions(session: Session, limit: int = 100, *, exclude_task_ids: set[s
         .order_by(
             _hard_hourly_claim_rank(),
             Task.priority.asc(),
-            _comment_claim_rank(),
+            _channel_comment_claim_rank(),
             Action.scheduled_at.asc(),
             Action.created_at.asc(),
         )
@@ -796,8 +796,8 @@ def _hard_hourly_claim_rank():
     )
 
 
-def _comment_claim_rank():
-    return case((Action.action_type == "post_comment", 0), else_=1)
+def _channel_comment_claim_rank():
+    return case((Task.type == "channel_comment", 0), else_=1)
 
 
 def recover_expired_claims(session: Session) -> int:

@@ -3057,7 +3057,7 @@ def test_due_actions_keeps_task_priority_before_comment_rank():
         session.add_all(
             [
                 Action(id="action-priority", tenant_id=1, task_id="task-priority", task_type="channel_like", action_type="react_message", status="pending", scheduled_at=now_value),
-                Action(id="action-comment", tenant_id=1, task_id="task-comment", task_type="channel_comment", action_type="post_comment", status="pending", scheduled_at=now_value),
+                Action(id="action-comment", tenant_id=1, task_id="task-comment", task_type="channel_comment", action_type="ensure_target_membership", status="pending", scheduled_at=now_value),
                 Action(id="action-batch", tenant_id=1, task_id="task-batch", task_type="channel_like", action_type="react_message", status="pending", scheduled_at=now_value - timedelta(minutes=10)),
             ]
         )
