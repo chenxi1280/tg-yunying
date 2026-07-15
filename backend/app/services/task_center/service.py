@@ -1738,9 +1738,12 @@ def _drain_task_dispatcher(session_factory, *, limit: int, exclude_task_ids: set
         claim_limit = min(max(1, int(limit or 1)), effective_concurrency)
         claimed = claim_actions(session, limit=claim_limit, exclude_task_ids=exclude_task_ids)
         action_ids = [action.id for action in claimed]
+        serialize_generation = _has_shared_ai_generation_batch(claimed)
     if not action_ids:
         return 0
     concurrency = 1 if dialect_name == "sqlite" else effective_concurrency
+    if serialize_generation:
+        concurrency = 1
     if concurrency <= 1 or len(action_ids) == 1:
         return sum(_dispatch_claimed_action(session_factory, action_id) for action_id in action_ids)
     processed = 0
@@ -1749,6 +1752,31 @@ def _drain_task_dispatcher(session_factory, *, limit: int, exclude_task_ids: set
         for future in as_completed(futures):
             processed += int(future.result() or 0)
     return processed
+
+
+def _has_shared_ai_generation_batch(actions: list[Action]) -> bool:
+    generation_keys: set[tuple] = set()
+    for action in actions:
+        payload = action.payload if isinstance(action.payload, dict) else {}
+        if action.action_type != "send_message" or str(payload.get("message_text") or "").strip():
+            continue
+        if payload.get("reply_to_message_id"):
+            continue
+        if payload.get("ai_generation_status") not in {"pending", "ai_result_persist_unknown"}:
+            continue
+        key = (
+            action.tenant_id,
+            action.task_id,
+            payload.get("ai_generation_id"),
+            payload.get("ai_generation_claim_owner"),
+            payload.get("ai_generation_claim_token"),
+        )
+        if not all(key):
+            continue
+        if key in generation_keys:
+            return True
+        generation_keys.add(key)
+    return False
 
 
 def _dispatcher_concurrency() -> int:
