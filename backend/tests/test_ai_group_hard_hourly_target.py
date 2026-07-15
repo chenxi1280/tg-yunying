@@ -770,7 +770,7 @@ def test_group_ai_chat_all_accounts_daily_coverage_plans_uncovered_accounts_when
 def test_daily_coverage_scans_past_offline_leading_accounts(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
-    now_value = datetime(2026, 6, 7, 23, 50)
+    now_value = datetime(2026, 6, 7, 15, 0)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
     monkeypatch.setattr(
         "app.services.task_center.executors.group_ai_chat.online_ready_account_ids_for_planning",
@@ -808,6 +808,7 @@ def test_daily_coverage_scans_past_offline_leading_accounts(monkeypatch):
         ready = _online_ready_accounts(session, task, selected, {})
 
     assert len(coverage.rows) == 3
+    assert coverage.due_debt == 1
     assert [account.id for account in selected] == [101, 102, 103]
     assert [account.id for account in ready] == [103]
     assert _plan_account_limit(task, {}, planning_limit=1) == 1
