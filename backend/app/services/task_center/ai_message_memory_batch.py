@@ -61,8 +61,12 @@ def cached_similarity_rows(
 ) -> list[MemorySimilarityRow]:
     return [
         row for row in batch.rows_by_tenant.get(tenant_id, [])
-        if row.planned_at >= cutoff
+        if _naive_datetime(row.planned_at) >= _naive_datetime(cutoff)
     ]
+
+
+def _naive_datetime(value: datetime) -> datetime:
+    return value.replace(tzinfo=None) if value.tzinfo is not None else value
 
 
 def remember_duplicate_batch_memory(
