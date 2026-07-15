@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from app.models import Action, GroupContextMessage, Task, TgAccount, TgGroup, TgGroupAccount
+from app.models import Action, GroupContextMessage, Task, TenantAiSetting, TgAccount, TgGroup, TgGroupAccount
 from app.services._common import _now
 
 from .ai_generation_dependencies import GenerationDependencies
@@ -214,7 +214,11 @@ def _generation_request(
         is_reply=bool(payload.reply_to_message_id),
         target_label=payload.target_display,
         history=payload.ai_generation_history,
-        config={**_runtime_config(task, batch), "_close_db_transaction_before_ai": True},
+        config={
+            **_runtime_config(task, batch),
+            **_tenant_fallback_flags(task),
+            "_close_db_transaction_before_ai": True,
+        },
         reply_targets=_reply_targets(batch),
         batch_ids=[row.id for row, _item in batch],
         attempt_id=attempt_id,
@@ -437,6 +441,24 @@ def _runtime_config(task: Task, batch: list[tuple[Action, SendMessagePayload]]) 
     return config
 
 
+def _tenant_fallback_flags(task: Task) -> dict:
+    session = task._sa_instance_state.session
+    setting = session.scalar(
+        select(TenantAiSetting).where(TenantAiSetting.tenant_id == task.tenant_id)
+    ) if session is not None else None
+    return {
+        "_ai_group_model_fallback_enabled": bool(
+            setting.ai_group_model_fallback_enabled if setting else True
+        ),
+        "_ai_group_grok_fallback_enabled": bool(
+            setting.ai_group_grok_fallback_enabled if setting else True
+        ),
+        "_ai_group_static_fallback_enabled": bool(
+            setting.ai_group_static_fallback_enabled if setting else True
+        ),
+    }
+
+
 def _payload_map(batch: list[tuple[Action, SendMessagePayload]], attr: str) -> dict[str, str]:
     return {
         str(action.account_id): value
@@ -451,7 +473,10 @@ def _generation_slot(action: Action, payload: SendMessagePayload, index: int) ->
         "sequence_index": index,
         "cycle_turn_index": int(payload.turn_index or index),
         "account_id": action.account_id,
+        "group_id": payload.group_id,
         "coverage_ledger_id": payload.coverage_ledger_id,
+        "coverage_window_date": payload.coverage_window_date,
+        "coverage_account_completed_before_action": payload.coverage_account_completed_before_action,
         "act_type": payload.act_type,
         "account_profile": payload.account_profile,
         "reply_to_message_id": payload.reply_to_message_id,

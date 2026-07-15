@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from hashlib import sha256
 
 from sqlalchemy.orm import Session
 
 from .ai_generation_dependencies import GenerationDependencies
-from .ai_generator import AiGenerationUnavailable, _copy_generated_content_metadata
+from .ai_generator import AiGenerationUnavailable, GeneratedContent, _copy_generated_content_metadata
 from .ai_generation_state import validate_output_sequences, validate_output_slot_ids
 
 
@@ -15,6 +16,8 @@ class SlotGenerationResult:
     rejection_code: str = ""
     rejection_detail: str = ""
     voice_profile_anchor_rewritten: bool = False
+    quality_fallback: str = ""
+    fallback_reason: str = ""
 
 
 def generate_quality_results(
@@ -23,7 +26,7 @@ def generate_quality_results(
     dependencies: GenerationDependencies,
 ) -> tuple[list[SlotGenerationResult], int]:
     if request.cached_contents:
-        return _filter_stage_contents(request, request.cached_contents), request.cached_tokens
+        return _cached_quality_results(request), request.cached_tokens
     pending = list(range(len(request.batch_ids)))
     accepted: dict[int, SlotGenerationResult] = {}
     last_rejections: dict[int, SlotGenerationResult] = {}
@@ -53,9 +56,154 @@ def generate_quality_results(
                 continue
             accepted[item_index] = result
         pending = next_pending
-    if pending and last_error and not last_rejections:
+    _apply_static_coverage_fallback(request, pending, accepted, last_rejections)
+    remaining = [index for index in pending if index not in accepted]
+    if remaining and last_error and not last_rejections:
         raise last_error
     return _ordered_results(request, accepted, last_rejections), total_tokens
+
+
+def _cached_quality_results(request) -> list[SlotGenerationResult]:
+    cached_fallbacks = _cached_static_fallbacks(request.cached_contents)
+    accepted = cached_fallbacks if _static_fallback_enabled(request) else {}
+    rejected = {
+        index: SlotGenerationResult(result.content, "static_fallback_disabled", "static_fallback_disabled")
+        for index, result in cached_fallbacks.items()
+        if index not in accepted
+    }
+    plain_indexes = [
+        index for index in range(len(request.cached_contents))
+        if index not in cached_fallbacks
+    ]
+    plain_contents = [request.cached_contents[index] for index in plain_indexes]
+    results = _filter_stage_contents(request, plain_contents, indexes=plain_indexes)
+    accepted.update({index: result for index, result in zip(plain_indexes, results) if not result.rejection_code})
+    rejected.update({index: result for index, result in zip(plain_indexes, results) if result.rejection_code})
+    _apply_static_coverage_fallback(request, list(rejected), accepted, rejected)
+    return _ordered_results(request, accepted, rejected)
+
+
+def _cached_static_fallbacks(contents: list[str]) -> dict[int, SlotGenerationResult]:
+    return {
+        index: SlotGenerationResult(
+            content,
+            quality_fallback="emoji_react",
+            fallback_reason=str(getattr(content, "fallback_reason", "") or "cached_static_fallback"),
+        )
+        for index, content in enumerate(contents)
+        if getattr(content, "quality_fallback", "") == "emoji_react"
+    }
+
+
+def _apply_static_coverage_fallback(
+    request,
+    pending: list[int],
+    accepted: dict[int, SlotGenerationResult],
+    rejected: dict[int, SlotGenerationResult],
+) -> None:
+    if not _static_fallback_enabled(request):
+        return
+    slots = list(request.config.get("generation_slots") or [])
+    used_contents = {str(result.content) for result in accepted.values()}
+    for index in pending:
+        slot = slots[index]
+        if not str(slot.get("coverage_ledger_id") or "").strip():
+            continue
+        reason = (rejected.get(index) or SlotGenerationResult("")).rejection_code or "all_model_stages_rejected"
+        content = _unique_static_emoji_content(slot, index, reason, used_contents)
+        accepted[index] = SlotGenerationResult(
+            content,
+            quality_fallback="emoji_react",
+            fallback_reason=reason,
+        )
+        used_contents.add(str(content))
+        rejected.pop(index, None)
+
+
+def _static_fallback_enabled(request) -> bool:
+    config = request.config
+    return bool(
+        not request.is_reply
+        and not config.get("require_mimo_draft")
+        and not str(config.get("ai_model") or "").strip()
+        and config.get("_ai_group_static_fallback_enabled", True)
+    )
+
+
+def _unique_static_emoji_content(
+    slot: dict,
+    index: int,
+    reason: str,
+    used_contents: set[str],
+) -> GeneratedContent:
+    salt = 0
+    while True:
+        content = _static_emoji_content(slot, index, reason, salt=salt)
+        if str(content) not in used_contents:
+            return content
+        salt += 1
+
+
+def _static_emoji_content(slot: dict, index: int, reason: str, *, salt: int = 0) -> GeneratedContent:
+    return GeneratedContent(
+        _static_emoji_text(slot, salt=salt),
+        generation_source="static_safe_fallback",
+        quality_fallback="emoji_react",
+        fallback_stage="static_safe_fallback",
+        fallback_reason=reason,
+        slot_id=str(slot.get("slot_id") or ""),
+        sequence_index=index + 1,
+    )
+
+
+def _static_emoji_text(slot: dict, *, salt: int = 0) -> str:
+    from math import comb
+
+    pool = _STATIC_EMOJI_POOL
+    capacity = comb(len(pool), 4)
+    rank = int.from_bytes(sha256(_static_emoji_seed(slot, salt).encode()).digest()[:8], "big")
+    distributed_rank = (
+        rank * STATIC_EMOJI_PERMUTATION_FACTOR + STATIC_EMOJI_PERMUTATION_OFFSET
+    ) % capacity
+    indexes = _unrank_combination(len(pool), 4, distributed_rank)
+    return "".join(pool[index] for index in indexes)
+
+
+def _static_emoji_seed(slot: dict, salt: int) -> str:
+    keys = (
+        "coverage_window_date",
+        "group_id",
+        "account_id",
+        "coverage_ledger_id",
+        "coverage_account_completed_before_action",
+        "slot_id",
+    )
+    return "|".join([*(str(slot.get(key) or "") for key in keys), str(salt)])
+
+
+def _unrank_combination(size: int, choose: int, rank: int) -> tuple[int, ...]:
+    from math import comb
+
+    indexes: list[int] = []
+    candidate = 0
+    for remaining in range(choose, 0, -1):
+        while rank >= comb(size - candidate - 1, remaining - 1):
+            rank -= comb(size - candidate - 1, remaining - 1)
+            candidate += 1
+        indexes.append(candidate)
+        candidate += 1
+    return tuple(indexes)
+
+
+_STATIC_EMOJI_POOL = tuple(
+    "😀 😃 😄 😁 😆 😅 😂 🙂 🙃 😉 😊 🥰 😍 🤩 😋 😜 🤪 🤗 🤭 🤫 🤔 🫡 🤓 😎 🥳 🙌 👏 👍 🤝 👋 🤚 ✋ 👌 🤌 🫶 🤟 🤘 ✌ 🫰 💪 🧠 👀 💡 ✨ 🌟 ⭐ 🌈 ☀ ⛅ ☁ ❄ 🌊 🌿 🌱 🌵 🌴 🌻 🌼 🌸 🌹 🌷 🍀 🍁 🍂 🍃 🍎 🍊 🍉 🍇 🍓 🫐 ☕ 🧃 🎯 🎵 "
+    "🐶 🐱 🐭 🐹 🐰 🦊 🐻 🐼 🐨 🐯 🦁 🐮 🐷 🐸 🐵 🐔 🐧 🐦 🐤 🦄 🐝 🦋 🐌 🐞 🐢 🐟 🐠 🐬 🐳 🦭 🐘 🦒 🦘 🐎 🦜 🦢 🦩 🕊 "
+    "🍒 🍑 🥭 🍍 🥝 🍅 🥑 🥦 🥕 🌽 🥐 🍞 🥨 🧀 🥚 🍳 🥞 🧇 🍔 🍟 🍕 🥪 🌮 🍜 🍚 🍙 🍦 🍪 🍩 🍰 🍯 "
+    "⚽ 🏀 🏈 ⚾ 🥎 🎾 🏐 🏉 🥏 🎱 🏓 🏸 🥅 ⛳ 🪁"
+    .split()
+)
+STATIC_EMOJI_PERMUTATION_FACTOR = 104729
+STATIC_EMOJI_PERMUTATION_OFFSET = 7919
 
 
 def _generate_stage(

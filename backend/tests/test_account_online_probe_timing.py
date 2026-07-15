@@ -11,7 +11,11 @@ from app.database import Base
 from app.integrations.telegram import AccountHealth
 from app.models import AccountStatus, TgAccount, TgAccountOnlineState
 from app.services._common import _now
-from app.services.account_online_constants import ONLINE_LOW_FREQUENCY_PROBE_INTERVAL, ONLINE_PROBE_INTERVAL
+from app.services.account_online_constants import (
+    ONLINE_LOW_FREQUENCY_PROBE_INTERVAL,
+    ONLINE_PROBE_FAILURE_RETRY_AFTER,
+    ONLINE_PROBE_INTERVAL,
+)
 from app.services.account_online_probe import OnlineProbeJob, OnlineProbeResult, _run_health_probes
 from app.services.account_online_state import mark_stale_online_states, probe_due_online_states
 
@@ -76,7 +80,7 @@ def test_probe_due_online_states_keeps_stale_window_after_next_probe(monkeypatch
 def test_probe_due_online_states_schedules_from_probe_completion(monkeypatch):
     started_at = _now()
     completed_at = started_at + timedelta(minutes=8)
-    clock = iter([started_at, completed_at])
+    clock = iter([started_at, completed_at, completed_at])
     with _session() as session:
         _account(session)
         state = TgAccountOnlineState(
@@ -104,7 +108,7 @@ def test_probe_due_online_states_schedules_from_probe_completion(monkeypatch):
         assert state.next_probe_at == completed_at + ONLINE_PROBE_INTERVAL
 
 
-def test_probe_due_online_states_uses_worker_completion_not_consume_time(monkeypatch):
+def test_probe_due_online_states_preserves_worker_completion_and_schedules_after_consume(monkeypatch):
     started_at = _now()
     completed_at = started_at + timedelta(minutes=2)
     consumed_at = started_at + timedelta(minutes=8)
@@ -135,7 +139,55 @@ def test_probe_due_online_states_uses_worker_completion_not_consume_time(monkeyp
         session.commit()
 
         assert state.last_probe_at == completed_at
-        assert state.next_probe_at == completed_at + ONLINE_PROBE_INTERVAL
+        assert state.next_probe_at == consumed_at + ONLINE_PROBE_INTERVAL
+
+
+def test_probe_batch_defers_early_accounts_until_after_last_completion(monkeypatch):
+    started_at = _now()
+    first_completed_at = started_at + timedelta(minutes=1)
+    batch_completed_at = started_at + timedelta(minutes=8)
+    with _session() as session:
+        _account(session, 101)
+        _account(session, 102)
+        states = [
+            TgAccountOnlineState(
+                tenant_id=1,
+                account_id=account_id,
+                desired_online=True,
+                desired_sources=[{"source_type": "task", "source_id": "ai-running"}],
+                online_status="warming",
+                next_probe_at=started_at - timedelta(seconds=1),
+            )
+            for account_id in (101, 102, 103)
+        ]
+        session.add_all(states)
+        session.commit()
+        results = [
+            OnlineProbeResult(
+                account_id=101,
+                health=AccountHealth(status=AccountStatus.ACTIVE.value, health_score=96, detail="ok"),
+                completed_at=first_completed_at,
+            ),
+            OnlineProbeResult(
+                account_id=102,
+                health=AccountHealth(status=AccountStatus.ACTIVE.value, health_score=96, detail="ok"),
+                completed_at=batch_completed_at,
+            ),
+        ]
+        monkeypatch.setattr("app.services.account_online_probe._now", lambda: started_at)
+        monkeypatch.setattr("app.services.account_online_probe.credentials_for_account", lambda *_args, **_kwargs: object())
+        monkeypatch.setattr("app.services.account_online_probe._run_health_probes", lambda _jobs: iter(results))
+
+        assert probe_due_online_states(session, limit=10) == 3
+        session.commit()
+
+        assert states[0].last_probe_at == first_completed_at
+        assert states[1].last_probe_at == batch_completed_at
+        assert {state.next_probe_at for state in states[:2]} == {
+            batch_completed_at + ONLINE_PROBE_INTERVAL,
+        }
+        assert states[2].last_probe_at == started_at
+        assert states[2].next_probe_at == batch_completed_at + ONLINE_PROBE_FAILURE_RETRY_AFTER
 
 
 def test_mark_stale_online_states_requeues_probe_immediately():

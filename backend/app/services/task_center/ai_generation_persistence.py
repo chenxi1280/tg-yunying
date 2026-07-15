@@ -48,6 +48,16 @@ def persist_generation_results(
             data["ai_generation_status"] = "ready"
             data["ai_generation_tokens"] = int(tokens or 0) if index == 0 else 0
             data["ai_generation_result_cache"] = {}
+            quality_fallback = result.quality_fallback or str(
+                getattr(result.content, "quality_fallback", "") or ""
+            )
+            if quality_fallback:
+                data.update({
+                    "act_type": "emoji_react",
+                    "human_quality_decision": "explicit_static_quality_fallback",
+                    "quality_fallback": quality_fallback,
+                    "fallback_reason": result.fallback_reason or data.get("fallback_reason", ""),
+                })
             mark_attempt_outcome(data, request.attempt_id, "ready", timestamp=_now())
             if not store_generation_quality(
                 session, action, payload, data=data, duplicate_batch=duplicate_batch,

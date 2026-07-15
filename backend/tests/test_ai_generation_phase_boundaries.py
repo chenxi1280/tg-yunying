@@ -242,7 +242,7 @@ def test_normal_batch_rejects_tampered_fixed_slot_binding(
         assert [coverage.state for coverage in coverages] == ["ready", "ready"]
 
 
-def test_voice_profile_rejection_terminates_only_its_slot_and_releases_coverage(monkeypatch) -> None:
+def test_voice_profile_rejection_uses_explicit_daily_coverage_fallback(monkeypatch) -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     observed = {"provider_calls": 0, "gateway_calls": 0}
@@ -264,12 +264,25 @@ def test_voice_profile_rejection_terminates_only_its_slot_and_releases_coverage(
         ) is True
 
         assert actions[0].status == "success", actions[0].result.get("error_code")
-        assert actions[1].status == "failed"
-        assert actions[1].result["error_code"] == "voice_profile_mismatch"
+        assert actions[1].status == "executing"
+        assert actions[1].payload["ai_generation_status"] == "ready"
+        assert actions[1].payload["quality_fallback"] == "emoji_react"
+        assert actions[1].payload["human_quality_decision"] == "explicit_static_quality_fallback"
         assert coverages[0].state == "confirmed"
-        assert coverages[1].state == "ready"
-        assert coverages[1].reserved_action_id is None
+        assert coverages[1].state == "reserved"
+        assert coverages[1].reserved_action_id == actions[1].id
         assert observed == {"provider_calls": 3, "gateway_calls": 1}
+
+        assert dispatcher.dispatch_action(
+            session,
+            actions[1],
+            generation_dependencies=generation_dependencies(
+                normal_generator=profile_generator(session, observed),
+            ),
+        ) is True
+        assert actions[1].status == "success"
+        assert coverages[1].state == "confirmed"
+        assert observed == {"provider_calls": 3, "gateway_calls": 2}
 
 
 def test_content_policy_rejection_terminates_only_its_slot_and_releases_coverage(monkeypatch) -> None:

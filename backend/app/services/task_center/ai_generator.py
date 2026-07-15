@@ -76,6 +76,8 @@ class GeneratedContent(str):
         mood: str = "",
         requested_model: str = "",
         actual_model: str = "",
+        generation_source: str = "",
+        quality_fallback: str = "",
         fallback_stage: str = "",
         fallback_reason: str = "",
         provider_duration_ms: int = 0,
@@ -91,6 +93,8 @@ class GeneratedContent(str):
         obj.mood = _metadata_text(mood)
         obj.requested_model = _metadata_text(requested_model)
         obj.actual_model = _metadata_text(actual_model)
+        obj.generation_source = _metadata_text(generation_source)
+        obj.quality_fallback = _metadata_text(quality_fallback)
         obj.fallback_stage = _metadata_text(fallback_stage)
         obj.fallback_reason = _metadata_text(fallback_reason)
         obj.provider_duration_ms = max(0, int(provider_duration_ms or 0))
@@ -421,6 +425,8 @@ def _copy_generated_content_metadata(value: str, source: str) -> str:
         mood=getattr(source, "mood", ""),
         requested_model=getattr(source, "requested_model", ""),
         actual_model=getattr(source, "actual_model", ""),
+        generation_source=getattr(source, "generation_source", ""),
+        quality_fallback=getattr(source, "quality_fallback", ""),
         fallback_stage=getattr(source, "fallback_stage", ""),
         fallback_reason=getattr(source, "fallback_reason", ""),
         provider_duration_ms=getattr(source, "provider_duration_ms", 0),
@@ -434,7 +440,8 @@ def _copy_generated_content_metadata(value: str, source: str) -> str:
 def _has_generated_content_metadata(value: str) -> bool:
     keys = (
         "material_intent", "allow_material", "intent", "mood", "requested_model",
-        "actual_model", "fallback_stage", "fallback_reason", "provider_duration_ms",
+        "actual_model", "generation_source", "quality_fallback", "fallback_stage",
+        "fallback_reason", "provider_duration_ms",
         "generation_attempts", "slot_id", "sequence_index", "reply_to_sequence_index",
     )
     return any(hasattr(value, key) for key in keys)

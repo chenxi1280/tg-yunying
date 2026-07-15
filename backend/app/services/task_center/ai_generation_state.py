@@ -17,6 +17,8 @@ GENERATION_AUDIT_FIELDS = (
     "mood",
     "requested_model",
     "actual_model",
+    "generation_source",
+    "quality_fallback",
     "fallback_stage",
     "fallback_reason",
     "provider_duration_ms",

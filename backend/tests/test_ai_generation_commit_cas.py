@@ -66,6 +66,8 @@ def test_phase_c_copies_provider_audit_metadata() -> None:
         "真实文案",
         requested_model="MiniMax-M3",
         actual_model="MiniMax-M2.5",
+        generation_source="static_safe_fallback",
+        quality_fallback="emoji_react",
         fallback_stage="fallback_m25",
         fallback_reason="primary_rejected",
         provider_duration_ms=321,
@@ -76,6 +78,8 @@ def test_phase_c_copies_provider_audit_metadata() -> None:
 
     assert data["requested_model"] == "MiniMax-M3"
     assert data["actual_model"] == "MiniMax-M2.5"
+    assert data["generation_source"] == "static_safe_fallback"
+    assert data["quality_fallback"] == "emoji_react"
     assert data["fallback_stage"] == "fallback_m25"
     assert data["fallback_reason"] == "primary_rejected"
     assert data["provider_duration_ms"] == 321

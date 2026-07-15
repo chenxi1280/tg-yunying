@@ -49,7 +49,7 @@
 
 - 不新增 `task_type`。
 - 不绕过账号健康、登录状态、群准入、Telegram 风控、账号容量、群冷却、内容政策或 AI 质量门。
-- 不用固定模板、通用短句、表情或 mock success 强行补覆盖。
+- 不用固定模板、通用短句或 mock success 强行补覆盖；用户选定 A 方案后，唯一例外是本文 10.3 定义的、三层文本生成均失败后且可独立关闭的显式 `emoji_react` 质量兜底。
 - 不把 `pending`、`failed`、`skipped`、`unknown_after_send` 或仅创建过 Action 视为完成。
 - 不把“立即回补”解释为失败后立即向群发送另一条消息。
 
@@ -215,11 +215,11 @@ pending_admission -> admission_running -> ready -> reserved -> sending -> confir
 
 “立即回补”只表示立即恢复账号的未完成状态并唤醒后续规划，不表示立即向群发送补量消息：
 
-- 内容重复或质量失败：Phase C 在同一短事务终结对应 Action 并释放自己的预约，不发送；下一次使用最新上下文重新编排。
+- 内容重复或质量失败：普通文本候选按 M3、M2.5、Grok 三层依次补写。三层均不合格时，已绑定当日 coverage 且非引用的 slot 在租户开启 `ai_group_static_fallback_enabled` 时转为显式 `emoji_react`；其他情况仍由 Phase C 终结 Action、释放预约并等待最新上下文。
 - 批量 AI 生成中任一同批 Action 在发送前进入失败或跳过终态时，必须立即释放该 Action 自己的覆盖预约并写入 blocker；不能只同步当前 Dispatcher Action，导致同批其他账号永久停在 `reserved`。
 - 上下文过期：只废弃当前上下文绑定对话片段中仍依赖该上下文或引用锚点的剩余 Action；同一 Cycle 内标记为硬目标、没有 `reply_to_message_id`、并由 Dispatcher 延迟生成文案的普通补量 Action 不得被连带跳过，仍按原 AI prompt、账号面具、话题和质量门生成后发送。被废弃 Action 的相关账号回到 `ready`，不得丢失覆盖义务。
 - 每日覆盖债务存在且本轮没有引用回复目标时，Planner 只规划携带账号面具、话题、讨论老师、行为类型和覆盖账本 ID 的延迟生成 Action，不在规划阶段提前冻结普通发言文案。Dispatcher 只批量生成临近执行窗口内的 Action，并在调用原 AI 生成与质量链前刷新目标群最新真人上下文及上下文快照；尚未生成的未来覆盖 Action 不得因旧快照过期被同轮清理。
-- 普通 AI 模拟聊天 Cycle 继续严格执行 `reply_min_per_round`。当可引用对象少于该最小值且仍有到期每日覆盖债务时，本轮必须显式转为覆盖回补 Cycle：不得创建数量不足、伪装成达标的引用回复，本轮全部覆盖 Action 按普通发言延迟生成，且不计入普通聊天 Cycle 的引用回复指标。覆盖回补仍必须保留账号面具、话题、讨论老师和行为类型，并经过最新真人上下文刷新、原 AI 生成、语义去重、内容政策、在线状态校验和 Telegram 真实发送确认；不得使用模板短句或表情兜底。没有每日覆盖债务时仍等待足量引用对象，不得降低用户设置的最少引用回复数。
+- 普通 AI 模拟聊天 Cycle 继续严格执行 `reply_min_per_round`。当可引用对象少于该最小值且仍有到期每日覆盖债务时，本轮必须显式转为覆盖回补 Cycle：不得创建数量不足、伪装成达标的引用回复，本轮全部覆盖 Action 按普通发言延迟生成，且不计入普通聊天 Cycle 的引用回复指标。覆盖回补仍必须保留账号面具、话题、讨论老师和行为类型，并经过最新真人上下文刷新、原 AI 生成、语义去重、内容政策、在线状态校验和 Telegram 真实发送确认；禁止模板短句，但允许按上述三层失败契约使用显式、可审计且仍经去重的 `emoji_react`。没有每日覆盖债务时仍等待足量引用对象，不得降低用户设置的最少引用回复数。
 - 普通 AI 模拟聊天在没有新真人上下文时继续按空闲续聊配置等待。存在到期每日覆盖债务时不得在 Planner 的“等待新上下文”门禁提前返回；覆盖回补 Action 仍只保存生成 slot，Dispatcher 临近执行时重新读取目标群最新真人上下文并走原质量链。该例外只作用于覆盖债务，不改变普通聊天的上下文等待规则。
 - 当日到期覆盖债务大于 0 时，Planner 必须写入两分钟后的 `daily_coverage_next_check_at`，任务调度器取硬小时检查、覆盖检查和普通自然曲线中的最早时间；不得继续按晚间低频曲线等待 7.5–15 分钟。该检查只读取任务当日覆盖账本并扣除 `reserved/sending`，不重新扫描平台账号；债务清零后删除覆盖检查时间并恢复普通自然曲线。
 - Planner 的 open-action 门禁对普通任务保持不变；全账号每日覆盖任务必须先用当日账本计算到期债务，并扣除 `reserved/sending` 义务。扣除后债务仍大于 0 时，即使同任务还有少量 open 发送 Action，也必须继续规划其他 ready 账号；不得让单个因账号限频顺延的 Action 阻塞整群覆盖。该判断只读取任务当日覆盖账本，不重新扫描平台账号。
@@ -228,7 +228,7 @@ pending_admission -> admission_running -> ready -> reserved -> sending -> confir
 - 发送失败：按现有失败类型和风控策略处理；可重试失败释放预约后等待下一次合适 Cycle。
 - 结果未知：先复核，不立即重复发送。
 
-全账号日覆盖不得启用通用表情或模板短句作为覆盖兜底。AI 候选不足时，覆盖账本保持未完成并展示 `ai_candidate_shortfall` 或具体质量原因。
+全账号日覆盖禁止模板短句或伪 AI 成功。三层模型均失败时，只有上述显式 `emoji_react` 可用；必须写入 `quality_fallback=emoji_react`、`human_quality_decision=explicit_static_quality_fallback`、`generation_source/fallback_stage=static_safe_fallback` 和原始失败原因，并继续通过消息记忆与真实发送确认。开关关闭或兜底仍被门禁拒绝时，覆盖账本保持未完成并展示具体原因。
 
 ## 11. 时间与节奏设计
 
@@ -400,7 +400,7 @@ GET /api/tasks/{task_id}/account-coverage?date=YYYY-MM-DD&state=&page=&page_size
 ### 18.3 AI 内容质量
 
 - 覆盖层只改变账号 slot 优先级，不改变话题、老师、账号面具、引用和质量门。
-- 失败后不发送模板、通用短句或表情补量。
+- 失败后不发送模板或通用短句补量；仅允许 10.3 定义的显式 `emoji_react` 质量兜底，且不计为高质量 AI 文本。
 - 上下文过期只废弃当前片段，下一片段使用新上下文重新生成。
 - 同一对话片段保持多账号角色分工、账号表达差异和语义去重。
 - reply 目标消失/过期不转 normal；AI 成功但落库失败只记生成结果未知，不得混同 `unknown_after_send` 或进入 Telegram。

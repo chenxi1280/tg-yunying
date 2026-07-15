@@ -871,7 +871,8 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 | `backend/app/services/task_center/ai_group_prompt.py` | 生成前过滤交易、联系方式、服务、具体行为和年龄风险；构造英文指令、中文安全数据和固定 JSON 契约 | `build_group_prompt`, `sanitize_group_messages` |
 | `backend/app/services/task_center/ai_generator.py` | 精确选择 MiniMax-M3 / MiniMax-M2.5，调用 Grok Bridge，并把 Provider 元数据附着到候选 | `_generate_group_prompt_contents`, `_provider_for_exact_model` |
 | `backend/app/services/grok_cli_bridge.py` | 使用参数数组、单并发文件锁、硬超时、临时 Git 目录和无工具参数调用已授权 Grok CLI | `GrokCliBridge.generate` |
-| `backend/app/services/task_center/executors/group_ai_chat.py` | 按租户开关执行 M3、M2.5、Grok 和静态安全兜底；保留引用目标与失败 slot | `_generate_quality_filled_items`, `_fallback_stages`, `_static_fallback_items` |
+| `backend/app/services/task_center/ai_generation_pipeline.py` | 按租户开关执行 M3、M2.5、Grok；仅对当日覆盖账本的普通 slot 生成显式、可审计且批内不重复的 `emoji_react` 兜底 | `generate_quality_results`, `_apply_static_coverage_fallback`, `_static_emoji_text` |
+| `backend/app/services/task_center/ai_generation_dispatch.py`, `ai_generation_persistence.py` | 把租户三个 fallback 开关、覆盖日期 / 群 / 账号 slot 传入生成链，并持久化 `quality_fallback` 及静态兜底审计字段 | `_tenant_fallback_flags`, `_generation_slot`, `persist_generation_results` |
 | `backend/app/services/task_center/payloads.py`, `backend/app/services/task_center/details.py` | 持久化并投影模型、阶段、原因、耗时和有界尝试摘要 | `SendMessagePayload`, `_ai_turn_payload` |
 | `.github/scripts/ai_group_quality_diagnostics.py` | 在生产诊断 recent action 样本中暴露 Provider 回退轨迹 | `action_samples` |
 | `docker-compose.server.yml`, `.github/workflows/deploy-production.yml` | 挂载服务器 `/root/.grok`，配置 Bridge，并在发布前后校验 CLI / 模型 / 容器可执行文件 | `GROK_CLI_*`, `Preflight production Grok CLI` |

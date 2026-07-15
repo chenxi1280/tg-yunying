@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -56,10 +57,13 @@ def probe_due_online_states(
     states_by_account = {state.account_id: state for state in states}
     accounts: dict[int, TgAccount] = {}
     jobs: list[OnlineProbeJob] = []
+    schedules: list[tuple[str, timedelta, timedelta | None]] = []
+    batch_completed_at = current_time
     for state in states:
         account = session.get(TgAccount, state.account_id)
         if not account or account.deleted_at is not None:
             _mark_probe_blocked(state, current_time, "account_missing", "账号不存在或已删除")
+            schedules.append(_probe_schedule(state))
             _commit_probe_progress(session, commit_each)
             continue
         accounts[account.id] = account
@@ -67,14 +71,62 @@ def probe_due_online_states(
             credentials = credentials_for_account(session, account, use_proxy=False)
         except ValueError as exc:
             _mark_probe_blocked(state, current_time, "developer_app_unavailable", str(exc))
+            schedules.append(_probe_schedule(state))
             _commit_probe_progress(session, commit_each)
             continue
         jobs.append(OnlineProbeJob(account.id, account.session_ciphertext, credentials))
     for result in _run_health_probes(jobs):
         completed_at = current_time if fixed_time else max(current_time, result.completed_at or _now())
-        _apply_probe_result(session, accounts[result.account_id], states_by_account[result.account_id], completed_at, result)
+        state = states_by_account[result.account_id]
+        _apply_probe_result(session, accounts[result.account_id], state, completed_at, result)
+        schedules.append(_probe_schedule(state))
+        batch_completed_at = max(batch_completed_at, completed_at)
         _commit_probe_progress(session, commit_each)
+    if schedules and not fixed_time:
+        batch_completed_at = max(batch_completed_at, _now())
+    _apply_batch_probe_schedules(session, schedules, batch_completed_at)
+    _commit_probe_progress(session, commit_each and bool(schedules))
     return len(states)
+
+
+def _probe_schedule(state: TgAccountOnlineState) -> tuple[str, timedelta, timedelta | None]:
+    retry_interval = _probe_retry_interval(state)
+    stale_interval = None
+    if state.online_status == "online":
+        baseline = state.last_probe_at or _now()
+        stale_interval = stale_deadline_for_state(state, baseline) - baseline
+    return state.id, retry_interval, stale_interval
+
+
+def _apply_batch_probe_schedules(
+    session: Session,
+    schedules: list[tuple[str, timedelta, timedelta | None]],
+    completed_at: datetime,
+) -> None:
+    grouped: dict[tuple[timedelta, timedelta | None], list[str]] = defaultdict(list)
+    for state_id, retry_interval, stale_interval in schedules:
+        grouped[(retry_interval, stale_interval)].append(state_id)
+    for (retry_interval, stale_interval), state_ids in grouped.items():
+        values = {
+            "next_probe_at": completed_at + retry_interval,
+            "updated_at": completed_at,
+        }
+        if stale_interval is not None:
+            values["stale_after_at"] = completed_at + stale_interval
+        session.execute(
+            update(TgAccountOnlineState)
+            .where(TgAccountOnlineState.id.in_(state_ids))
+            .values(**values)
+            .execution_options(synchronize_session="fetch")
+        )
+
+
+def _probe_retry_interval(state: TgAccountOnlineState) -> timedelta:
+    if state.online_status == "login_required":
+        return ONLINE_LOGIN_REQUIRED_RETRY_AFTER
+    if state.online_status == "online":
+        return _probe_interval_for_state(state)
+    return ONLINE_PROBE_FAILURE_RETRY_AFTER
 
 
 def _run_health_probes(jobs: list[OnlineProbeJob]) -> Iterator[OnlineProbeResult]:
