@@ -53,11 +53,12 @@ class TelethonClientLifecycle:
                 cls._loop_thread.start()
             return cls._loop
 
-    def run(self, coro):
+    def run(self, coro, *, timeout_seconds: float | None = None):
         loop = self.get_or_create_loop()
         future = asyncio.run_coroutine_threadsafe(coro, loop)
+        timeout = self.settings.telethon_operation_timeout_seconds if timeout_seconds is None else timeout_seconds
         try:
-            return future.result(timeout=self.settings.telethon_operation_timeout_seconds)
+            return future.result(timeout=timeout)
         except FutureTimeoutError:
             future.cancel()
             raise

@@ -16,7 +16,7 @@
 
 ## 3. 配置与批次设计
 
-新增显式配置 `ACCOUNT_ONLINE_PROBE_CONCURRENCY`，生产默认值为 32。配置必须为正整数；非法值直接使服务启动失败并暴露配置错误，不静默回退。
+新增显式配置 `ACCOUNT_ONLINE_PROBE_CONCURRENCY`，生产默认值为 32；新增健康探测专用 `ACCOUNT_ONLINE_PROBE_TIMEOUT_SECONDS`，生产默认值为 30 秒，避免通用 Telegram 操作 300 秒超时把整个账号池的探测周期拖过 stale 窗口。两项配置必须为正数；非法值直接使服务启动失败并暴露配置错误，不静默回退。
 
 `ACCOUNT_ONLINE_DRAIN_LIMIT` 继续表示单次 drain 的分页数量，生产默认值调整为 1000，以覆盖当前账号池并为增长留出空间。在线状态服务必须完整使用调用方传入的 limit，不再执行内部 `min(..., 20)` 截断。该数值不是账号上线总量上限；账号池超过单页时，调度器继续按到期时间分页处理。
 
@@ -27,8 +27,8 @@
 数据库 Session、ORM 对象读取和在线状态落库全部保留在 worker 主线程：
 
 1. 主线程分页读取到期在线状态、账号和凭证，生成不可变探测任务。
-2. 线程池只执行 `TelegramGateway.check_account_health` 网络调用，返回不可变结果，不携带 ORM 对象。
-3. 主线程按结果更新 `online`、`login_required`、`blocked`、`failure_detail`、`last_probe_at`、`stale_after_at` 和 `next_probe_at`。
+2. 线程池只执行 `TelegramGateway.check_account_health` 网络调用，返回不可变结果，不携带 ORM 对象；健康探测使用独立的 30 秒超时，不继承普通 Telegram 业务操作的 300 秒超时。
+3. 探测结果必须按完成顺序流式返回；主线程每收到一个结果就立即更新并提交 `online`、`login_required`、`blocked`、`failure_detail`、`last_probe_at`、`stale_after_at` 和 `next_probe_at`，不得等待整页全部网络调用完成后才集中落库。
 
 线程池实际并发取 `min(ACCOUNT_ONLINE_PROBE_CONCURRENCY, 本页任务数)`。不得在子线程读取或提交数据库 Session。
 
@@ -46,6 +46,7 @@
 
 - 传入 drain limit 500 时，服务实际向探测层传入 500，而不是 20。
 - 显式配置并发 N 时，探测线程池最多同时执行 N 个网络探测。
+- 快速探测结果必须在慢探测仍未完成时先返回并落库；单个慢探测使用独立的 30 秒超时。
 - 数据库读取与状态落库仍在主线程，子线程只执行 Gateway 健康检查。
 - 批次打满 limit 时不批量执行 stale 标记。
 - 非法并发配置导致显式配置错误。
@@ -60,4 +61,4 @@
 
 ## 7. 发布与回滚
 
-发布前运行定向单元测试、相关在线状态回归和配置检查。发布沿用标准 GitHub Actions 流程。若显式并发 32 造成 Telegram、代理或主机压力异常，只回调 `ACCOUNT_ONLINE_PROBE_CONCURRENCY` 并重新部署；不得恢复隐藏账号截断，也不得限制应上线账号总量。
+发布前运行定向单元测试、相关在线状态回归和配置检查。发布沿用标准 GitHub Actions 流程。若显式并发 32 造成 Telegram、代理或主机压力异常，只回调 `ACCOUNT_ONLINE_PROBE_CONCURRENCY` 并重新部署；若健康探测出现正常网络抖动，可显式调整 `ACCOUNT_ONLINE_PROBE_TIMEOUT_SECONDS`，但不得恢复 300 秒通用超时、隐藏账号截断或应上线账号总量限制。
