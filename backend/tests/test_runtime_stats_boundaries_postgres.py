@@ -36,7 +36,7 @@ from app.services.task_center.daily_coverage_planning import (
 )
 from app.services.task_center.service import _claim_stale_executing_action_ids, _stale_executing_action_ids
 from app.services.task_center import service as task_service
-from app.services.task_center.stats import refresh_task_stats
+from app.services.task_center.stats import _json_text_expression, refresh_task_stats
 from app.services.runtime_action_queries import task_action_status_counts_statement
 
 
@@ -123,6 +123,20 @@ def test_postgres_metrics_and_recovery_scans_are_bounded_at_production_history_s
         assert recovery_elapsed < 5.0
     finally:
         _cleanup()
+
+
+def test_postgres_ai_generation_json_key_is_literal_for_expression_index() -> None:
+    with SessionLocal() as session:
+        expression = _json_text_expression(
+            session,
+            column=Action.payload,
+            key="ai_generation_status",
+        )
+        statement = select(expression, func.count()).select_from(Action).group_by(expression)
+        compiled = str(statement.compile(engine))
+
+    assert "payload ->> 'ai_generation_status'" in compiled
+    assert "ai_generation_status_1" not in compiled
 
 
 def test_postgres_recovery_workers_claim_disjoint_stable_batches() -> None:

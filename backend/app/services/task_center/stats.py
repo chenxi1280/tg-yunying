@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, select, true
+from sqlalchemy import func, literal_column, select, true
 from sqlalchemy.orm import Session
 
 from app.models import Action, Task
@@ -132,12 +132,14 @@ def _ai_generation_stats(session: Session, task: Task, stats: dict[str, Any]) ->
     generation_counts = _action_json_counts(
         session,
         task,
-        Action.payload["ai_generation_status"].as_string(),
+        column=Action.payload,
+        key="ai_generation_status",
     )
     outcome_counts = _action_json_counts(
         session,
         task,
-        Action.result["generation_outcome"].as_string(),
+        column=Action.result,
+        key="generation_outcome",
     )
     updated = _apply_ai_generation_counts(stats, generation_counts, outcome_counts)
     updated["voice_profile_anchor_rewrite_count"] = _ai_generation_fact_count(
@@ -157,7 +159,8 @@ def _ai_generation_fact_count(session: Session, task: Task, condition) -> int:
     )) or 0)
 
 
-def _action_json_counts(session: Session, task: Task, expression) -> dict[str, int]:
+def _action_json_counts(session: Session, task: Task, *, column, key: str) -> dict[str, int]:
+    expression = _json_text_expression(session, column=column, key=key)
     rows = session.execute(
         select(expression, func.count())
         .where(
@@ -168,6 +171,16 @@ def _action_json_counts(session: Session, task: Task, expression) -> dict[str, i
         .group_by(expression)
     ).all()
     return {str(code or ""): int(count) for code, count in rows if code}
+
+
+def _json_text_expression(session: Session, *, column, key: str):
+    if session.get_bind().dialect.name != "postgresql":
+        return column[key].as_string()
+    if column is Action.payload and key == "ai_generation_status":
+        return literal_column("CAST(actions.payload ->> 'ai_generation_status' AS VARCHAR)")
+    if column is Action.result and key == "generation_outcome":
+        return literal_column("CAST(actions.result ->> 'generation_outcome' AS VARCHAR)")
+    raise ValueError(f"unsupported action JSON count expression: {column.key}.{key}")
 
 
 def _apply_ai_generation_counts(
