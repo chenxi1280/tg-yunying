@@ -409,7 +409,7 @@ def check_account_health_isolated(
     return self.check_account_health(session_ciphertext, credentials)
 ```
 
-In `TelethonTelegramGateway`, execute the already bounded ephemeral-client coroutine in the current probe thread instead of `TelethonClientLifecycle.run`:
+In `TelethonTelegramGateway`, execute the already bounded ephemeral-client coroutine in the current probe thread instead of `TelethonClientLifecycle.run`. Use a private event loop with a `probe + disconnect + grace` outer deadline so cancellation that is slow to settle cannot occupy the probe thread indefinitely:
 
 ```python
 def check_account_health_isolated(
@@ -418,14 +418,19 @@ def check_account_health_isolated(
     credentials: DeveloperAppCredentials | None = None,
 ) -> AccountHealth:
     probe_timeout = self.settings.account_online_probe_timeout_seconds
-    return asyncio.run(
+    hard_timeout = probe_timeout + ACCOUNT_HEALTH_DISCONNECT_TIMEOUT_SECONDS
+    return self._run_isolated_health(
         self._bounded_health_async(
             session_ciphertext,
             self._usable_credentials(credentials),
             probe_timeout,
-        )
+        ),
+        hard_timeout,
+        ACCOUNT_HEALTH_RUN_GRACE_SECONDS,
     )
 ```
+
+`_run_isolated_health` creates and installs a new event loop in the current thread, schedules `loop.stop` at the hard deadline, and converts an unfinished `run_until_complete` into `TimeoutError`. Its `finally` path cancels remaining tasks, gives them only `cleanup_grace` to settle, suppresses destruction logging only for tasks still pending after that bounded cleanup, clears the thread event loop, and closes it. Add a regression where `get_me` delays cancellation for 150 ms while test constants reduce the full outer deadline to 30 ms; require the isolated call to return `TimeoutError` within 100 ms without unawaited-coroutine warnings.
 
 Change `_run_health_probe` to call `gateway.check_account_health_isolated`. Do not modify `check_account_health`, the process-wide lifecycle, the client cache, database Session ownership, configured concurrency, or timeout values.
 
