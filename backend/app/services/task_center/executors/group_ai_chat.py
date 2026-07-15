@@ -1498,12 +1498,11 @@ def _coverage_plan_state(
     ensure_task_daily_coverage(session, task, now=timestamp)
     totals = coverage_plan_totals(session, task, group, now=timestamp)
     configured_limit = int(getattr(get_settings(), "daily_coverage_plan_batch_limit", 20) or 20)
-    remaining_limit = int(session.info.get("daily_coverage_plan_limit", configured_limit))
     rows = ready_coverage_plan_batch(
         session,
         task,
         now=timestamp,
-        limit=min(configured_limit, remaining_limit, max(0, totals.due_debt) or 1),
+        limit=min(configured_limit, max(0, totals.due_debt) or 1),
     ).rows
     return CoveragePlanState(
         rows=rows,
