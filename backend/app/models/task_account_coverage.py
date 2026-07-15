@@ -31,6 +31,8 @@ class TaskAccountDailyCoverage(Base):
             "task_id", "coverage_date", "state", "targeted_at", "account_id", "id",
         ),
         Index("ix_task_daily_coverage_account_date", "tenant_id", "account_id", "coverage_date"),
+        Index("ix_task_daily_coverage_reserved_action", "reserved_action_id"),
+        Index("ix_task_daily_coverage_last_success_action", "last_success_action_id"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)

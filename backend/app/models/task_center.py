@@ -247,6 +247,10 @@ class TaskMembershipAdmissionItem(Base):
         UniqueConstraint("task_id", "account_id", name="uq_membership_admission_task_account"),
         Index("ix_membership_admission_task_phase", "task_id", "phase"),
         Index("ix_membership_admission_manual", "task_id", "manual_required"),
+        Index("ix_membership_admission_membership_action", "membership_action_id"),
+        Index("ix_membership_admission_test_message_action", "test_message_action_id"),
+        Index("ix_membership_admission_delete_action", "delete_action_id"),
+        Index("ix_membership_admission_rescue_action", "rescue_action_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -437,6 +441,7 @@ class AiAccountGroupStanceMemory(Base):
 
 class ReviewQueue(Base):
     __tablename__ = "review_queue"
+    __table_args__ = (Index("ix_review_queue_action_id", "action_id"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), default=1)

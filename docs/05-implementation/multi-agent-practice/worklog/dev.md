@@ -455,3 +455,11 @@
 - evidence: TDD 红灯为 `batch_size` 不支持；绿灯验证 3 条按 2+1 删除、total=3。独立 review 的 1 Critical/2 Important 由真 PG 全外键与双 session 回归关闭；合并相关测试 `40 passed`，workflow `104 passed / 14 skipped`。
 - decision: `development_complete=true`；转 re-QA，尚未重新发布。
 - unresolved: 完整 Release Checks、新 recovery 每轮事务时长、评论远端成功与北京时间自然日覆盖 E4。
+
+## 2026-07-15 Runtime Retention 外键扫描 Development Complete
+
+- message_id: `2026-07-15-runtime-retention-fk-index-devcomplete-002`
+- root_cause: 生产 100 条 Action DELETE 仍持续 1 至 3 分钟；9 个 Action 外键中 Review 1 列、Coverage 2 列、Admission 4 列缺少 leading index，外键校验重复全表扫描。
+- output: 0095 使用并发 DDL 补齐 7 个外键索引并同步模型元数据；不调整清理批次、保留期和群/评论配置。
+- evidence: 迁移幂等/可逆及 PostgreSQL concurrent DDL `9 passed`；相关 retention/comment/coverage/recovery `128 passed`。
+- decision: `development_complete=true`；转 re-QA/Product 后发布。

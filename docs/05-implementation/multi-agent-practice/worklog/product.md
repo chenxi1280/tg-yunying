@@ -523,3 +523,11 @@
 - evidence: 生产新版本再次复现超过 6 分钟 DELETE；TDD、真 PG 全外键与双 worker 并发回归及合并 `40 passed` 关闭批次、引用、重复领取和累计合同。
 - decision: `product_accepted=true`（仅 E2）；Release Gate ready。
 - unresolved: 新发布与生产 recovery 事务、评论远端成功、完整每日群覆盖 E4。
+
+## 2026-07-15 Runtime Retention 外键索引 Product Acceptance
+
+- message_id: `2026-07-15-runtime-retention-fk-index-product-accepted-002`
+- acceptance: 只为已有 Action 外键补 leading index，保持 5 天保留、100 条批次、汇总/审计/显式失败，以及群与评论任务配置不变。
+- evidence: 生产约束与索引对照确认 7 个缺口；迁移和相关回归 `128 passed`。
+- decision: `product_accepted=true`（仅 E2）；Release Gate ready。
+- unresolved: 发布及真实业务 E4。

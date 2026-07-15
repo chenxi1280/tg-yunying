@@ -358,3 +358,10 @@
 - evidence: 新批处理用例验证 2+1 分轮删除和统计累加；真 PostgreSQL 覆盖所有已知 Action 外键及双 session `SKIP LOCKED + atomic upsert`；合并 retention/worker role/recovery/runtime/generation 共 `40 passed`，workflow `104 passed / 14 skipped`。
 - decision: 独立 review 的 Critical/Important 已关闭，`qa_pass=true`；保留 retention 天数、汇总维度、审计和错误暴露，未引入跳过清理或静默降级。
 - unresolved: 完整 GitHub Actions 与修复版本生产长事务、评论、群覆盖 E4。
+
+## 2026-07-15 Runtime Retention 外键索引 re-QA
+
+- message_id: `2026-07-15-runtime-retention-fk-index-qa-002`
+- evidence: SQLite 实际升降级与重复执行、PostgreSQL `CREATE INDEX CONCURRENTLY` 语句断言、迁移头和相关回归共 `128 passed`；compileall、diff-check 通过。
+- decision: `qa_pass=true`；索引只加速已有外键校验，不改变清理与业务语义。
+- unresolved: 发布后每批时长、锁等待、群覆盖和评论远端成功 E4。
