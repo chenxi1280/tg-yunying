@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import re
 from datetime import datetime, timedelta
 from typing import Any
@@ -49,6 +50,9 @@ VERIFICATION_CONTEXT_PREVIEW_LIMIT = 500
 GROUP_PERMISSION_DETAIL = "群无权限或账号不可发言"
 TARGET_PERMISSION_DETAIL = "缓存频道不可访问 / 账号无权限"
 VERIFICATION_CONFIRM_BUTTON_MARKERS = ("我已加入", "我已关注", "已关注", "完成验证", "完成关注", "确认")
+ACCOUNT_HEALTH_DISCONNECT_TIMEOUT_SECONDS = 5.0
+ACCOUNT_HEALTH_RUN_GRACE_SECONDS = 1.0
+logger = logging.getLogger(__name__)
 
 
 def _exception_detail(exc: Exception) -> str:
@@ -541,20 +545,45 @@ class TelethonTelegramGateway(TelegramGateway):
         raw_session = decrypt_session(session_ciphertext)
         if not raw_session:
             return AccountHealth(status="需重新登录", health_score=45, detail="账号没有可用 session")
-        client = await self._get_or_create_client(credentials, raw_session)
-        if not await client.is_user_authorized():
-            return AccountHealth(status="需重新登录", health_score=45, detail="session 已失效")
-        await client.get_me()
-        return AccountHealth(status="在线", health_score=95, detail="账号 session 可用")
+        client = self._new_client(credentials, raw_session)
+        operation_error: BaseException | None = None
+        try:
+            await asyncio.wait_for(client.connect(), timeout=self.settings.telethon_client_connect_timeout_seconds)
+            if not await client.is_user_authorized():
+                return AccountHealth(status="需重新登录", health_score=45, detail="session 已失效")
+            await client.get_me()
+            return AccountHealth(status="在线", health_score=95, detail="账号 session 可用")
+        except BaseException as exc:
+            operation_error = exc
+            raise
+        finally:
+            await self._disconnect_health_client(client, operation_error)
+
+    async def _disconnect_health_client(self, client: Any, operation_error: BaseException | None) -> None:
+        try:
+            await asyncio.wait_for(client.disconnect(), timeout=ACCOUNT_HEALTH_DISCONNECT_TIMEOUT_SECONDS)
+        except BaseException:
+            if operation_error is None:
+                raise
+            logger.warning("account health client disconnect failed after probe error", exc_info=True)
+
+    async def _bounded_health_async(
+        self,
+        session_ciphertext: str | None,
+        credentials: DeveloperAppCredentials,
+        timeout_seconds: float,
+    ) -> AccountHealth:
+        return await asyncio.wait_for(self._health_async(session_ciphertext, credentials), timeout=timeout_seconds)
 
     def check_account_health(
         self,
         session_ciphertext: str | None,
         credentials: DeveloperAppCredentials | None = None,
     ) -> AccountHealth:
+        probe_timeout = self.settings.account_online_probe_timeout_seconds
         return self._run(
-            self._health_async(session_ciphertext, self._usable_credentials(credentials)),
-            timeout_seconds=self.settings.account_online_probe_timeout_seconds,
+            self._bounded_health_async(session_ciphertext, self._usable_credentials(credentials), probe_timeout),
+            timeout_seconds=probe_timeout + ACCOUNT_HEALTH_DISCONNECT_TIMEOUT_SECONDS + ACCOUNT_HEALTH_RUN_GRACE_SECONDS,
         )
 
     async def _list_authorizations_async(

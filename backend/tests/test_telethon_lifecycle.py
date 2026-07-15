@@ -338,6 +338,7 @@ def test_telethon_lifecycle_cancels_coroutine_after_operation_timeout():
     shutdown_telethon_lifecycle(timeout_seconds=1)
 
 
+@pytest.mark.no_postgres
 def test_account_health_uses_dedicated_probe_timeout(monkeypatch):
     settings = Settings(account_online_probe_timeout_seconds=7)
     gateway = TelethonTelegramGateway(settings)
@@ -352,4 +353,89 @@ def test_account_health_uses_dedicated_probe_timeout(monkeypatch):
     credentials = DeveloperAppCredentials(app_id=1, api_id=123, api_hash="hash", credentials_version=1)
 
     assert gateway.check_account_health("session", credentials).status == "在线"
-    assert observed == {"timeout_seconds": 7}
+    assert observed == {"timeout_seconds": 13}
+
+
+@pytest.mark.no_postgres
+def test_account_health_uses_ephemeral_client_and_disconnects(monkeypatch):
+    gateway = TelethonTelegramGateway(Settings())
+    calls: list[str] = []
+
+    class FakeClient:
+        async def connect(self):
+            calls.append("connect")
+
+        async def is_user_authorized(self):
+            calls.append("authorized")
+            return True
+
+        async def get_me(self):
+            calls.append("get_me")
+
+        async def disconnect(self):
+            calls.append("disconnect")
+
+    monkeypatch.setattr("app.integrations.telegram.gateway.decrypt_session", lambda _value: "raw-session")
+    monkeypatch.setattr(gateway, "_new_client", lambda *_args, **_kwargs: FakeClient())
+    monkeypatch.setattr(
+        gateway,
+        "_get_or_create_client",
+        lambda *_args, **_kwargs: pytest.fail("health probe must not use the persistent client cache"),
+    )
+    credentials = DeveloperAppCredentials(app_id=1, api_id=123, api_hash="hash", credentials_version=1)
+
+    health = asyncio.run(gateway._health_async("encrypted-session", credentials))
+
+    assert health.status == "在线"
+    assert calls == ["connect", "authorized", "get_me", "disconnect"]
+
+
+def test_account_health_preserves_probe_error_when_disconnect_fails(monkeypatch):
+    gateway = TelethonTelegramGateway(Settings())
+
+    class FakeClient:
+        async def connect(self):
+            raise ConnectionError("probe-connect-error")
+
+        async def disconnect(self):
+            raise RuntimeError("cleanup-disconnect-error")
+
+    monkeypatch.setattr("app.integrations.telegram.gateway.decrypt_session", lambda _value: "raw-session")
+    monkeypatch.setattr(gateway, "_new_client", lambda *_args, **_kwargs: FakeClient())
+    credentials = DeveloperAppCredentials(app_id=1, api_id=123, api_hash="hash", credentials_version=1)
+
+    with pytest.raises(ConnectionError, match="probe-connect-error"):
+        asyncio.run(gateway._health_async("encrypted-session", credentials))
+
+
+def test_account_health_timeout_waits_for_bounded_disconnect(monkeypatch):
+    reset_lifecycle_state()
+    calls: list[str] = []
+    settings = Settings(account_online_probe_timeout_seconds=0.01)
+    gateway = TelethonTelegramGateway(settings)
+
+    class FakeClient:
+        async def connect(self):
+            calls.append("connect")
+
+        async def is_user_authorized(self):
+            return True
+
+        async def get_me(self):
+            await asyncio.sleep(60)
+
+        async def disconnect(self):
+            calls.append("disconnect_start")
+            await asyncio.sleep(0.02)
+            calls.append("disconnect_done")
+
+    monkeypatch.setattr("app.integrations.telegram.gateway.decrypt_session", lambda _value: "raw-session")
+    monkeypatch.setattr(gateway, "_new_client", lambda *_args, **_kwargs: FakeClient())
+    credentials = DeveloperAppCredentials(app_id=1, api_id=123, api_hash="hash", credentials_version=1)
+
+    try:
+        with pytest.raises(FutureTimeoutError):
+            gateway.check_account_health("encrypted-session", credentials)
+        assert calls == ["connect", "disconnect_start", "disconnect_done"]
+    finally:
+        shutdown_telethon_lifecycle(timeout_seconds=1)

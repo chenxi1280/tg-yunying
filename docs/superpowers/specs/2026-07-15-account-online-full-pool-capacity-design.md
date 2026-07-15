@@ -30,6 +30,8 @@
 2. 线程池只执行 `TelegramGateway.check_account_health` 网络调用，返回不可变结果，不携带 ORM 对象；健康探测使用独立的 30 秒超时，不继承普通 Telegram 业务操作的 300 秒超时。
 3. 探测结果必须按完成顺序流式返回；主线程每收到一个结果就立即更新并提交 `online`、`login_required`、`blocked`、`failure_detail`、`last_probe_at`、`stale_after_at` 和 `next_probe_at`，不得等待整页全部网络调用完成后才集中落库。
 
+每次健康探测使用一次性 Telethon client：创建、连接、执行 `is_user_authorized/get_me` 后在 `finally` 中断开，成功、未授权和异常路径都不得进入 process-wide 持久 client cache。业务发送和监听仍可使用现有持久缓存；account-online 不得为数百个账号长期维持重复连接。30 秒探测超时在事件循环内部执行，取消后等待最多 5 秒断连并预留 1 秒线程调度余量，调用返回时不得仍有该 probe 的后台 disconnect；如果探测已有原始异常，断连异常只记录而不覆盖原错，没有原始异常时断连失败显式上抛。
+
 线程池实际并发取 `min(ACCOUNT_ONLINE_PROBE_CONCURRENCY, 本页任务数)`。不得在子线程读取或提交数据库 Session。
 
 ## 5. 状态与失败处理
@@ -47,6 +49,7 @@
 - 传入 drain limit 500 时，服务实际向探测层传入 500，而不是 20。
 - 显式配置并发 N 时，探测线程池最多同时执行 N 个网络探测。
 - 快速探测结果必须在慢探测仍未完成时先返回并落库；单个慢探测使用独立的 30 秒超时。
+- 健康探测必须创建一次性 client，完成或失败后断开，且不得调用持久 client cache。
 - 数据库读取与状态落库仍在主线程，子线程只执行 Gateway 健康检查。
 - 批次打满 limit 时不批量执行 stale 标记。
 - 非法并发配置导致显式配置错误。
