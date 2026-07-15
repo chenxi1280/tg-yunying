@@ -28,6 +28,7 @@ from app.models import (
 from app.schemas import GroupAIChatTaskCreate, TaskPrecheckRequest
 from app.services.task_center.executors import prepare_open_actions_for_planning
 from app.services.task_center.executors.group_ai_chat import (
+    CoveragePlanState,
     _coverage_plan_state,
     _daily_coverage_uncovered_count,
     _next_cycle_index,
@@ -822,6 +823,30 @@ def test_daily_coverage_scans_past_offline_leading_accounts(monkeypatch):
     assert [account.id for account in ready] == [103]
     assert hard_uncovered == 1
     assert _plan_account_limit(task, {}, planning_limit=1) == 1
+
+
+@pytest.mark.no_postgres
+def test_all_accounts_daily_coverage_keeps_daily_debt_after_hourly_goal_is_met() -> None:
+    task = Task(
+        id="daily-debt-after-hourly-goal",
+        tenant_id=1,
+        name="日覆盖欠账",
+        type="group_ai_chat",
+        type_config={"account_coverage_mode": "all_accounts_daily"},
+    )
+    accounts = [object() for _index in range(20)]
+    coverage = CoveragePlanState(rows=[], rows_by_account={}, due_debt=15)
+
+    uncovered = _daily_coverage_uncovered_count(
+        None,
+        task,
+        accounts,
+        {"deficit": 0},
+        task.type_config,
+        coverage_state=coverage,
+    )
+
+    assert uncovered == 15
 
 
 @pytest.mark.no_postgres

@@ -1433,9 +1433,9 @@ def _daily_coverage_uncovered_count(
     if not _all_accounts_daily_coverage(config):
         uncovered = daily_uncovered_account_count(session, task.id, ("send_message",), accounts)
         return min(uncovered, max(0, int(progress.get("deficit") or 0))) if progress else uncovered
-    if progress:
-        return min(len(accounts), max(0, int(progress.get("deficit") or 0)))
-    return coverage_state.due_debt if coverage_state else 0
+    hard_deficit = max(0, int(progress.get("deficit") or 0)) if progress else 0
+    daily_debt = max(0, int(coverage_state.due_debt or 0)) if coverage_state else 0
+    return min(len(accounts), max(hard_deficit, daily_debt))
 
 
 def _daily_coverage_account_options(config: dict) -> dict[str, object]:
