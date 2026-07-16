@@ -1901,7 +1901,7 @@ def _claim_stale_executing_action_ids(
     limit: int,
 ) -> tuple[list[RecoveryClaim], set[str]]:
     heartbeat_cutoff = now - timedelta(minutes=2)
-    stale_worker_ids = set(session.scalars(select(WorkerHeartbeat.worker_id).where(WorkerHeartbeat.last_seen_at < heartbeat_cutoff)))
+    stale_worker_ids = _stale_worker_lease_owners(session, heartbeat_cutoff)
     claims = claim_recovery_actions(
         session,
         conditions=_stale_executing_conditions(now, timeout_minutes, stale_worker_ids),
@@ -1992,7 +1992,7 @@ def _stale_executing_action_ids(
 ) -> list[str]:
     cutoff = now - timedelta(minutes=max(1, int(timeout_minutes or 30)))
     heartbeat_cutoff = now - timedelta(minutes=2)
-    stale_worker_ids = set(session.scalars(select(WorkerHeartbeat.worker_id).where(WorkerHeartbeat.last_seen_at < heartbeat_cutoff)))
+    stale_worker_ids = _stale_worker_lease_owners(session, heartbeat_cutoff)
     recovery_conditions = [
         and_(Action.lease_expires_at.is_not(None), Action.lease_expires_at <= now),
         and_(Action.lease_expires_at.is_(None), Action.scheduled_at <= cutoff),
@@ -2011,6 +2011,21 @@ def _stale_executing_action_ids(
         .order_by(Action.scheduled_at.asc(), Action.id.asc())
         .limit(min(20, _recovery_batch_limit(limit)))
     ))
+
+
+def _stale_worker_lease_owners(session: Session, heartbeat_cutoff: datetime) -> set[str]:
+    rows = session.execute(
+        select(WorkerHeartbeat.worker_id, WorkerHeartbeat.hostname, WorkerHeartbeat.pid).where(
+            WorkerHeartbeat.last_seen_at < heartbeat_cutoff
+        )
+    )
+    owners: set[str] = set()
+    for worker_id, hostname, pid in rows:
+        if worker_id:
+            owners.add(str(worker_id))
+        if hostname and pid is not None:
+            owners.add(f"{hostname}:{pid}")
+    return owners
 
 
 def _mark_stale_executing_action(

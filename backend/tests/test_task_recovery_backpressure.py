@@ -8,13 +8,60 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.database import Base
 from app.integrations.telegram import OperationResult
-from app.models import Action, ExecutionAttempt, OperationTarget, Tenant, TgAccount, Task
+from app.models import Action, ExecutionAttempt, OperationTarget, Tenant, TgAccount, Task, WorkerHeartbeat
 from app.services._common import _now
 from app.services.task_center import service as task_service
 from app.services.task_center.service import _recover_stale_executing_actions, drain_task_recovery
 
 
 pytestmark = pytest.mark.no_postgres
+
+
+def test_recovery_matches_role_suffixed_heartbeat_to_action_lease_owner() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(Task(
+            id="stale-role-worker-task",
+            tenant_id=1,
+            name="角色后缀 worker 恢复",
+            type="group_relay",
+            status="running",
+            stats={},
+        ))
+        session.add(WorkerHeartbeat(
+            worker_id="worker-dead:1:dispatcher",
+            process_type="dispatcher",
+            hostname="worker-dead",
+            pid=1,
+            status="active",
+            heartbeat_metadata={},
+            started_at=now_value - timedelta(minutes=10),
+            last_seen_at=now_value - timedelta(minutes=5),
+        ))
+        action = Action(
+            id="stale-role-worker-action",
+            tenant_id=1,
+            task_id="stale-role-worker-task",
+            task_type="group_relay",
+            action_type="send_message",
+            status="executing",
+            scheduled_at=now_value,
+            lease_owner="worker-dead:1",
+            lease_expires_at=now_value + timedelta(minutes=20),
+            payload={"chat_id": "-1001", "message_text": "test"},
+            result={},
+        )
+        session.add(action)
+        session.commit()
+
+        assert _recover_stale_executing_actions(session, timeout_minutes=30) == 1
+        session.refresh(action)
+
+    assert action.status == "failed"
+    assert action.result["recovery_reason"] == "stale_worker"
 
 
 @pytest.mark.allow_missing_rule_binding
