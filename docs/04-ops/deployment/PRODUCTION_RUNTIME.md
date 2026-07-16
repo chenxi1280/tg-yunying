@@ -90,6 +90,8 @@ Repository variables:
 
 worker 容器不暴露 backend API 端口，健康检查不能使用 `curl 127.0.0.1:8000/api/health`。生产 compose 的 Docker healthcheck 读取 worker 主循环写入的本地 heartbeat 文件（默认 `/tmp/tgyunying-worker-heartbeat`），避免每 20 秒为每个 worker 启动 Python 并查询 DB；业务观测仍看 `worker_heartbeats` 表。如果某个 worker unhealthy，先看容器内 heartbeat 文件时间、`worker_heartbeats`、容器日志和数据库连接，而不是先排查 backend API。
 
+发布替换 worker 容器后，Recovery 以过期心跳记录的 `hostname + pid` 匹配 Action lease owner；heartbeat ID 末尾的角色后缀不参与租约匹配。未进入 Telegram Gateway 的旧容器执行项应立即按 `stale_worker` 回收，已进入 Gateway 的仍按 unknown 防重复口径处理。
+
 账号在线保活默认使用 `ACCOUNT_ONLINE_WORKER_DRAIN_LIMIT=1000` 作为单轮分页数量，使用 `ACCOUNT_ONLINE_PROBE_CONCURRENCY=32` 控制同一时刻的 Telegram 健康探测数，并使用独立的 `ACCOUNT_ONLINE_PROBE_TIMEOUT_SECONDS=30` 限制单个健康探测，不能继承普通业务 Telegram 调用的 300 秒超时。三者只控制处理吞吐，不是账号上线名额：全部 `desired_online=true` 账号都必须进入状态机，账号池超过单页时由后续 drain 继续处理，不得在服务内部再次按前 N 个账号截断。数据库读取和状态落库留在 worker 主线程，探测线程只执行 Telegram 网络调用；结果按完成顺序流式返回，主线程逐条提交，不能等待整页全部探测结束后集中落库。`last_probe_at` 保留各账号实际完成时间；同一 drain 批次的 `next_probe_at` 和成功 stale 窗口则统一不早于本批最后一个网络探测完成后的对应间隔，避免批次耗时超过 5 分钟时早完成账号已再次到期。每个探测线程通过 `check_account_health_isolated` 在本线程独立 asyncio 事件循环中执行一次性 Telethon client，不能把 32 路探测重新提交到 process-wide 事件循环；正常发送、监听和登录仍使用原业务生命周期及持久 client cache。健康探测 client 在 `finally` 中断开，30 秒探测超时后最多等待 5 秒有界断连和 1 秒调度余量，调用返回时清理已收口，且清理错误不得覆盖原始 Telegram 错误。生产验收需同时检查 account-online 批次没有成片 `account_health_probe_failed / TimeoutError`，探测期间 TCP 连接保持在配置并发附近并在批次后回落。并发和超时参数必须为正数，非法配置会使服务明确启动失败。
 
 account-online 主线程冻结本批账号和凭证后必须先提交并结束读取事务，再启动 Telegram 调用；逐结果提交期间本批 ORM 对象保持已加载状态，不得因 `expire_on_commit` 触发逐账号隐式 SELECT。线上出现 `connection timeout expired` 且堆栈位于提交后的 ORM 属性读取时，按该事务边界检查，不能先扩大数据库连接池掩盖。生产验收同时要求没有 drain 级 `ConnectionTimeout`。
