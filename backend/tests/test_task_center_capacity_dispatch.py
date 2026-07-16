@@ -425,6 +425,7 @@ def test_claim_actions_reassigns_account_before_reserving_runtime_resources_and_
         assert action.id not in dispatcher._ACTION_RESERVATIONS
 
 
+@pytest.mark.no_postgres
 def test_claim_actions_reassigns_group_send_action_when_account_lost_permission(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -479,6 +480,56 @@ def test_claim_actions_reassigns_group_send_action_when_account_lost_permission(
         assert action.result["original_account_id"] == 11
         assert action.result["reassigned_account_id"] == 12
         assert action.result["telegram_msg_id"] == "tg-group-reassigned"
+
+
+def _seed_coverage_no_reassign_scope(session: Session) -> tuple[Action, TgAccount]:
+    session.add(Tenant(id=1, name="默认运营空间"))
+    account = TgAccount(
+        id=11, tenant_id=1, display_name="覆盖账号A", phone_masked="+861***0011",
+        status="在线", session_ciphertext="session-a",
+    )
+    session.add_all([
+        account,
+        TgAccount(
+            id=12, tenant_id=1, display_name="账号B", phone_masked="+861***0012",
+            status="在线", session_ciphertext="session-b",
+        ),
+        TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群"),
+        Task(
+            id="task-coverage-no-reassign", tenant_id=1, name="每日覆盖",
+            type="group_ai_chat", status="running", account_config={"selection_mode": "all"},
+        ),
+    ])
+    session.flush()
+    session.add_all([
+        TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=False),
+        TgGroupAccount(tenant_id=1, group_id=7, account_id=12, can_send=True),
+    ])
+    action = Action(
+        id="coverage-no-reassign", tenant_id=1, task_id="task-coverage-no-reassign",
+        task_type="group_ai_chat", action_type="send_message", account_id=11,
+        status="claiming", scheduled_at=_now(),
+        payload={
+            "group_id": 7, "message_text": "覆盖消息", "coverage_ledger_id": "coverage-row",
+            "account_coverage_mode": "all_accounts_daily",
+        },
+    )
+    session.add(action)
+    session.flush()
+    return action, account
+
+
+@pytest.mark.no_postgres
+def test_coverage_action_does_not_reassign_when_account_lost_permission():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        action, account = _seed_coverage_no_reassign_scope(session)
+
+        replacement = dispatcher._replacement_for_lost_group_send_permission(session, action, account)
+
+        assert replacement is None
+        assert action.account_id == 11
 
 
 def test_dispatch_global_policy_excludes_current_executing_hard_hourly_action(monkeypatch):

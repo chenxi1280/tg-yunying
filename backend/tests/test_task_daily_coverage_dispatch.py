@@ -83,6 +83,31 @@ def test_success_requires_successful_attempt_with_remote_message_id(session: Ses
     assert row.last_remote_message_id == "tg-1001"
 
 
+def test_success_by_reassigned_account_releases_original_coverage(session: Session) -> None:
+    action, row = _seed_reserved(session)
+    session.add(TgAccount(id=2, tenant_id=1, display_name="账号2", phone_masked="2", status="在线"))
+    action.account_id = 2
+    action.status = "success"
+    session.add(ExecutionAttempt(
+        tenant_id=1,
+        action_id=action.id,
+        account_id=2,
+        attempt_no=1,
+        status="success",
+        remote_message_id="tg-reassigned",
+    ))
+    session.flush()
+
+    _sync_action_coverage_state(session, action)
+    session.flush()
+
+    assert row.state == "ready"
+    assert row.confirmed_count == 0
+    assert row.reserved_action_id is None
+    assert row.blocker_code == "coverage_account_mismatch"
+    assert action.result["coverage_replan_required"] is True
+
+
 def test_success_without_remote_message_id_stays_unknown_and_unconfirmed(session: Session) -> None:
     action, row = _seed_reserved(session)
     action.status = "success"

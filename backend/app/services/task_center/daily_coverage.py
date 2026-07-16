@@ -191,6 +191,8 @@ def confirm_coverage_from_attempt(
     )
     if row is None or row.reserved_action_id != action_id:
         return False
+    if attempt.account_id is None or int(attempt.account_id) != int(row.account_id):
+        return False
     if row.last_success_action_id == action_id:
         return True
     row.confirmed_count = min(row.target_count, row.confirmed_count + 1)
