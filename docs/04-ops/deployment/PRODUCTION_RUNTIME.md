@@ -58,6 +58,7 @@ Repository variables:
 - `docker-compose.server.yml` 将 `${GROK_CLI_HOME_DIR:-/root/.grok}` 挂载到 backend、planner 和四个 dispatcher；共享锁默认位于 `/root/.grok/tgyunying-cli.lock`，同一服务器只允许一个 Grok 生成进程。
 - 默认环境为 `GROK_CLI_ENABLED=true`、`GROK_CLI_MODEL=grok-4.5`、`GROK_CLI_TIMEOUT_SECONDS=90`。租户仍可通过 `ai_group_grok_fallback_enabled` 单独关闭 Grok 阶段，通过 `ai_group_static_fallback_enabled` 关闭静态兜底。
 - 静态兜底仅适用于已绑定当日覆盖账本的非引用 AI 活群 action；生产验收要同时核对 `quality_fallback=emoji_react`、`generation_source/fallback_stage=static_safe_fallback`、原始 `fallback_reason`、消息记忆预占和真实 Telegram 结果，不能只看 Action 变为 ready。
+- 全账号每日覆盖验收必须逐条核对 `TaskAccountDailyCoverage.account_id = Action.account_id = ExecutionAttempt.account_id`，且 Attempt 为 success、`remote_message_id` 非空；只比较 confirmed 总数会漏掉运行时换号造成的误确认。
 - Bridge 固定使用 `--no-memory --no-subagents --disable-web-search --permission-mode dontAsk --verbatim`；只保存有界错误码、模型阶段和耗时，不保存 Prompt、推理过程、授权资料或密钥。
 - 生产验收必须分层：CLI / 模型预检通过不等于任务恢复；还需在受控测试任务中观察 `fallback_stage`、`actual_model`、`generation_attempts` 和最终 Action，且测试前不得触发真实 Telegram 发送。
 

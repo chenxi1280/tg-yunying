@@ -984,6 +984,8 @@ def _replacement_for_lost_group_send_permission(session: Session, action: Action
     group_id = _action_group_id(action)
     if not group_id or _account_can_send_group(session, action, account.id, group_id):
         return None
+    if not _action_can_reassign(action):
+        return None
     return _replacement_account_for_action(session, action, account)
 
 
@@ -4855,6 +4857,8 @@ def _sync_action_coverage_state(session: Session, action: Action) -> None:
         return
     if action.status == "success":
         attempt = _latest_execution_attempt(session, action.id)
+        if _release_mismatched_coverage_attempt(session, action, coverage_id, attempt):
+            return
         if confirm_coverage_from_attempt(session, coverage_id, action.id, attempt):
             return
         mark_coverage_unknown(
@@ -4880,6 +4884,39 @@ def _sync_action_coverage_state(session: Session, action: Action) -> None:
         if action.status == "retryable_failed":
             action.status = "failed"
             action.result = {**result, "coverage_replan_required": True}
+
+
+def _release_mismatched_coverage_attempt(
+    session: Session,
+    action: Action,
+    coverage_id: str,
+    attempt: ExecutionAttempt | None,
+) -> bool:
+    if attempt is None or attempt.status != "success" or not str(attempt.remote_message_id or "").strip():
+        return False
+    coverage_account_id = session.scalar(
+        select(TaskAccountDailyCoverage.account_id).where(TaskAccountDailyCoverage.id == coverage_id)
+    )
+    actual_account_id = int(attempt.account_id or action.account_id or 0)
+    if coverage_account_id is None or int(coverage_account_id) == actual_account_id:
+        return False
+    detail = f"覆盖账号 {coverage_account_id} 与实际发送账号 {actual_account_id} 不一致，已释放原义务重新规划"
+    released = release_coverage_reservation(
+        session,
+        coverage_id,
+        action.id,
+        blocker_code="coverage_account_mismatch",
+        blocker_detail=detail,
+    )
+    if released:
+        action.result = {
+            **dict(action.result or {}),
+            "coverage_replan_required": True,
+            "coverage_replan_reason": "coverage_account_mismatch",
+            "coverage_account_id": int(coverage_account_id),
+            "actual_account_id": actual_account_id,
+        }
+    return released
 
 
 def _latest_execution_attempt(session: Session, action_id: str) -> ExecutionAttempt | None:
