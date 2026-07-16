@@ -1878,6 +1878,7 @@ def _recover_continuous_task_states(session: Session) -> int:
 
 
 def _recover_stale_executing_actions(session: Session, *, timeout_minutes: int = 30, limit: int = DEFAULT_RECOVERY_BATCH_LIMIT) -> int:
+    session.commit()
     now = _now()
     claims, stale_worker_ids = _claim_stale_executing_action_ids(
         session,
