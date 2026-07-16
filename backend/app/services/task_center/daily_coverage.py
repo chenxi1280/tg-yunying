@@ -162,7 +162,7 @@ def release_coverage_reservation(
         .where(
             TaskAccountDailyCoverage.id == coverage_id,
             TaskAccountDailyCoverage.reserved_action_id == action_id,
-            TaskAccountDailyCoverage.state.in_(("reserved", "sending")),
+            TaskAccountDailyCoverage.state.in_(("reserved", "sending", "unknown")),
         )
         .values(
             state="ready",
