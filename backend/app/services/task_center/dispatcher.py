@@ -325,6 +325,7 @@ def dispatch_action(
             comment_generation_dependencies=comment_generation_dependencies,
         )
     finally:
+        _release_runtime_resources(action)
         _sync_action_coverage_state(session, action)
         _sync_all_account_membership_state(session, action)
 
