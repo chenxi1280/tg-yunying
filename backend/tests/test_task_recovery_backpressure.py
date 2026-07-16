@@ -91,6 +91,54 @@ def test_stale_action_claim_commits_dirty_task_state_first(monkeypatch) -> None:
         assert _recover_stale_executing_actions(session) == 0
 
 
+def test_recovery_drain_separates_action_and_task_repair_transactions(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    SessionFactory = sessionmaker(bind=engine, future=True)
+    with SessionFactory() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(Task(
+            id="recovery-stage-task",
+            tenant_id=1,
+            name="恢复阶段事务",
+            type="group_relay",
+            status="running",
+            stats={},
+        ))
+        session.add(Action(
+            id="recovery-stage-action",
+            tenant_id=1,
+            task_id="recovery-stage-task",
+            task_type="group_relay",
+            action_type="send_message",
+            status="success",
+            scheduled_at=_now(),
+            payload={},
+            result={},
+        ))
+        session.commit()
+
+    def dirty_action(session, *, limit):
+        session.get(Action, "recovery-stage-action").result = {"repaired": True}
+        return 1
+
+    def dirty_task(session):
+        assert not session.dirty
+        session.get(Task, "recovery-stage-task").stats = {"repaired": True}
+        return 1
+
+    def assert_clean_stale_stage(session, *, limit):
+        assert not session.dirty
+        raise RuntimeError("stage boundaries observed")
+
+    monkeypatch.setattr(task_service, "recover_terminal_coverage_reservations", dirty_action)
+    monkeypatch.setattr(task_service, "_recover_continuous_task_states", dirty_task)
+    monkeypatch.setattr(task_service, "_recover_stale_executing_actions", assert_clean_stale_stage)
+
+    with pytest.raises(RuntimeError, match="stage boundaries observed"):
+        task_service._drain_task_recovery(SessionFactory, limit=10, process_type=None)
+
+
 @pytest.mark.allow_missing_rule_binding
 def test_recovery_preserves_lifetime_cap_comment_completion_and_recovers_regular_dynamic_task():
     completion_stats = {
