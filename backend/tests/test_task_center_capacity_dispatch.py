@@ -348,6 +348,29 @@ def test_release_runtime_resources_keeps_later_holder_inflight() -> None:
 
 
 @pytest.mark.no_postgres
+def test_dispatch_action_always_releases_runtime_resources(monkeypatch) -> None:
+    action = Action(
+        id="action-finally-release",
+        tenant_id=1,
+        task_id="task-finally-release",
+        task_type="group_ai_chat",
+        action_type="send_message",
+        account_id=11,
+        payload={},
+    )
+    dispatcher._IN_FLIGHT_ACCOUNTS.add(11)
+    dispatcher._ACTION_RESERVATIONS[action.id] = dispatcher._runtime_resources._RuntimeReservation(
+        account_id=11,
+    )
+    monkeypatch.setattr(dispatcher, "_dispatch_action", lambda *_args, **_kwargs: True)
+
+    assert dispatcher.dispatch_action(object(), action) is True
+
+    assert 11 not in dispatcher._IN_FLIGHT_ACCOUNTS
+    assert action.id not in dispatcher._ACTION_RESERVATIONS
+
+
+@pytest.mark.no_postgres
 def test_action_dedupe_key_ignores_dynamic_generation_metadata() -> None:
     task = Task(id="task-dedupe", tenant_id=1, stats={"current_plan_batch_key": "batch-1"})
     payload = {
