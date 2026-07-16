@@ -3567,6 +3567,7 @@ DB 短事务确认执行
 - 记录恢复原因并暴露在任务详情和运营数据中。
 - `unknown_after_send` membership 只允许按 drain limit 和账号+目标去重后有界补偿复检；Telegram 探测超时必须写入 `telegram_probe_timeout`，连接失败必须写入 `telegram_probe_connection_error`，两者都要记录复检时间和下一次冷却时间，不能抛出打断整轮 recovery，也不能高频重试。Recovery 取补偿复检 batch 时必须在查询层排除已 `failed` 和冷却未到期的行，避免旧结果占满 batch 导致真正待处理行饥饿；Telegram probe 返回 `ok=False` 时必须把失败原因显式写入 `unknown_membership_reprobe_status=failed`，且释放失败 probe 的 Telethon client，避免缓存 client 在后台持续重连；stale `executing` 且已进入 gateway 的 membership probe 如果得到 failed result，必须退出 `executing`、清空 lease 并保留 failed result，不能再被通用 stale recovery 覆盖回普通 `unknown_after_send`。
 - Worker 心跳 ID 带角色后缀时，Recovery 必须使用心跳记录中的 `hostname + pid` 匹配 Action 的 lease owner；发布替换旧容器后，没有进入 Gateway 的执行项应按 `stale_worker` 立即回收，不能误等完整租约。已进入 Gateway 的执行项仍按结果未知防重复口径处理。
+- Recovery 在领取 stale Action 前必须先提交前序 Task 状态修复，使 `claim_recovery_actions` 的事务只刷新和锁定 Action；禁止把 dirty Task 与 Action claim 混在一次提交中，避免与 Dispatcher 的 Task 更新形成反向锁序和 `deadlock detected`。
 
 ### 5.6 Metrics 要求
 

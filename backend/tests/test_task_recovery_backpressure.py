@@ -64,6 +64,33 @@ def test_recovery_matches_role_suffixed_heartbeat_to_action_lease_owner() -> Non
     assert action.result["recovery_reason"] == "stale_worker"
 
 
+def test_stale_action_claim_commits_dirty_task_state_first(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        task = Task(
+            id="dirty-task-before-action-claim",
+            tenant_id=1,
+            name="恢复事务边界",
+            type="group_relay",
+            status="running",
+            stats={},
+        )
+        session.add(task)
+        session.commit()
+        task.stats = {"recovered": True}
+
+        def assert_clean_claim_session(*_args, **_kwargs):
+            assert not session.dirty
+            return [], set()
+
+        monkeypatch.setattr(task_service, "_claim_stale_executing_action_ids", assert_clean_claim_session)
+        monkeypatch.setattr(task_service, "_recover_existing_unknown_membership_actions", lambda *_args, **_kwargs: 0)
+
+        assert _recover_stale_executing_actions(session) == 0
+
+
 @pytest.mark.allow_missing_rule_binding
 def test_recovery_preserves_lifetime_cap_comment_completion_and_recovers_regular_dynamic_task():
     completion_stats = {
