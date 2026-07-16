@@ -151,6 +151,40 @@ def test_reservation_is_bound_to_one_action_and_can_be_released(session: Session
     assert row.blocker_code == "duplicate_message"
 
 
+def test_remotely_absent_unknown_reservation_can_be_released(session: Session) -> None:
+    task = _seed(session)
+    session.add(_account(1))
+    session.add(TgGroupAccount(tenant_id=1, group_id=21, account_id=1, can_send=True))
+    session.commit()
+    initialize_all_account_task_scope(session, task, now=datetime(2026, 7, 10, 10))
+    ensure_task_daily_coverage(session, task, now=datetime(2026, 7, 10, 10))
+    action = Action(
+        id="action-unknown",
+        tenant_id=1,
+        task_id=task.id,
+        task_type=task.type,
+        action_type="send_message",
+        account_id=1,
+    )
+    session.add(action)
+    session.flush()
+    row = session.scalar(select(TaskAccountDailyCoverage))
+    assert reserve_coverage_for_action(session, row.id, action.id) is True
+    row.state = "unknown"
+    session.flush()
+
+    assert release_coverage_reservation(
+        session,
+        row.id,
+        action.id,
+        blocker_code="remote_message_absent_confirmed",
+    ) is True
+    session.refresh(row)
+    assert row.state == "ready"
+    assert row.reserved_action_id is None
+    assert row.blocker_code == "remote_message_absent_confirmed"
+
+
 def test_daily_ledger_creation_is_idempotent(session: Session) -> None:
     task = _seed(session)
     session.add(_account(1))
