@@ -67,6 +67,12 @@ def current_progress(session: Session, task: Task, now: datetime) -> dict[str, A
     }
 
 
+def next_check_for_progress(task: Task, progress: dict[str, Any]) -> datetime:
+    if int(progress.get("deficit") or 0) <= 0:
+        return progress["hour_end"]
+    return _next_check_at(task, {}, progress, progress["now"])
+
+
 def requires_planning(session: Session, task: Task, now: datetime) -> bool:
     progress = current_progress(session, task, now)
     return bool(progress["enabled"]) and int(progress["deficit"]) > 0
@@ -89,8 +95,11 @@ def hard_hourly_stats(session: Session, task: Task, now: datetime, current_stats
     else:
         updated.pop("hard_hourly_last_blockers", None)
     updated["hard_hourly_recent_buckets"] = buckets
-    if int(current.get("deficit") or 0) <= 0:
-        updated.pop("hard_hourly_next_check_at", None)
+    planning_deficit = int(current.get("planning_deficit") or 0) + int(
+        updated.get("hard_hourly_backfill_planning_deficit") or 0
+    )
+    if planning_deficit <= 0:
+        updated["hard_hourly_next_check_at"] = bucket_end.isoformat()
         updated.pop("hard_hourly_last_blockers", None)
     return updated
 

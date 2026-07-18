@@ -535,6 +535,8 @@
 
 补充：BG-004 的硬小时目标不只看当前小时 `planning_deficit`。`hard_hourly.current_progress` 会把已结束小时的净缺口计算为 `hard_hourly_backfill_debt`，扣减当前小时已规划超额后进入 Planner 继续创建真实发送 action；生产质量诊断以 `hard_hourly_backfill_debt > 0` 阻断验收，但不把历史 `missed` bucket 回写伪造成 `met`。
 
+补充：BG-004 的 `hard_hourly_next_check_at` 是 Planner 的持久化复查点，不是展示字段。当前小时和历史补量均无 planning deficit 时写为本小时结束；存在欠债时按 hard-hourly 的既有 30 秒复查节奏写入，避免同一 action 历史在每个 worker drain 中重复统计，同时不掩盖真实补量。
+
 ## 6. 维护口径
 
 ### 2026-07-10 生产核心页面有界加载（设计完成，待实现）

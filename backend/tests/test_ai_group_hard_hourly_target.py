@@ -466,6 +466,139 @@ def test_hard_hourly_wake_skips_future_check_without_recomputing_progress(monkey
     assert task_ids == []
 
 
+@pytest.mark.no_postgres
+def test_hard_hourly_wake_records_hour_end_after_target_is_met(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 7, 20, 30)
+    hour_end = now_value.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+
+    monkeypatch.setattr("app.services.task_center.service._now", lambda: now_value)
+    monkeypatch.setattr(
+        "app.services.task_center.service.hard_hourly_current_progress",
+        lambda *_args, **_kwargs: {"deficit": 0, "hour_end": hour_end},
+    )
+
+    with Session(engine) as session:
+        task = Task(
+            id="task-hard-hourly-met-checkpoint",
+            tenant_id=1,
+            name="硬目标已完成检查点",
+            type="group_ai_chat",
+            status="running",
+            priority=3,
+            next_run_at=now_value + timedelta(hours=1),
+            type_config={"hard_hourly_target_enabled": True, "hourly_min_messages": 300},
+        )
+        session.add_all([Tenant(id=1, name="默认运营空间"), task])
+        session.commit()
+
+        task_ids = _wake_hard_hourly_tasks(session, limit=10)
+
+    assert task_ids == []
+    assert task.stats["hard_hourly_next_check_at"] == hour_end.isoformat()
+
+
+@pytest.mark.no_postgres
+def test_hard_hourly_wake_records_recheck_after_target_has_deficit(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 7, 20, 30)
+
+    monkeypatch.setattr("app.services.task_center.service._now", lambda: now_value)
+    monkeypatch.setattr(
+        "app.services.task_center.service.hard_hourly_current_progress",
+        lambda *_args, **_kwargs: {"deficit": 3, "now": now_value},
+    )
+
+    with Session(engine) as session:
+        task = Task(
+            id="task-hard-hourly-deficit-checkpoint",
+            tenant_id=1,
+            name="硬目标欠债检查点",
+            type="group_ai_chat",
+            status="running",
+            priority=3,
+            next_run_at=now_value + timedelta(hours=1),
+            type_config={"hard_hourly_target_enabled": True, "hourly_min_messages": 300},
+        )
+        session.add_all([Tenant(id=1, name="默认运营空间"), task])
+        session.commit()
+
+        task_ids = _wake_hard_hourly_tasks(session, limit=10)
+
+    assert task_ids == ["task-hard-hourly-deficit-checkpoint"]
+    assert task.stats["hard_hourly_next_check_at"] == (now_value + timedelta(seconds=30)).isoformat()
+
+
+@pytest.mark.no_postgres
+def test_refresh_task_stats_records_hour_end_after_hard_hourly_target_is_met(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 7, 20, 30)
+    hour_end = now_value.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+
+    monkeypatch.setattr("app.services.task_center.stats._now", lambda: now_value)
+
+    with Session(engine) as session:
+        task = Task(
+            id="task-hard-hourly-met-stats",
+            tenant_id=1,
+            name="硬目标已完成统计",
+            type="group_ai_chat",
+            status="running",
+            type_config={"hard_hourly_target_enabled": True, "hourly_min_messages": 1},
+            stats={"started_at": now_value.replace(minute=0, second=0, microsecond=0).isoformat()},
+        )
+        session.add_all(
+            [
+                Tenant(id=1, name="默认运营空间"),
+                task,
+                _send_action("hard-hourly-met-success", task, "success", executed_at=now_value - timedelta(minutes=5)),
+            ]
+        )
+        session.commit()
+
+        stats = refresh_task_stats(session, task)
+
+    assert stats["hard_hourly_deficit"] == 0
+    assert stats["hard_hourly_next_check_at"] == hour_end.isoformat()
+
+
+@pytest.mark.no_postgres
+def test_refresh_task_stats_keeps_recheck_due_for_hard_hourly_backfill_debt(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 7, 20, 30)
+
+    monkeypatch.setattr("app.services.task_center.stats._now", lambda: now_value)
+
+    with Session(engine) as session:
+        task = Task(
+            id="task-hard-hourly-backfill-debt",
+            tenant_id=1,
+            name="硬目标补量欠债",
+            type="group_ai_chat",
+            status="running",
+            type_config={"hard_hourly_target_enabled": True, "hourly_min_messages": 1},
+            stats={"started_at": (now_value - timedelta(hours=1, minutes=30)).isoformat()},
+        )
+        session.add_all(
+            [
+                Tenant(id=1, name="默认运营空间"),
+                task,
+                _send_action("hard-hourly-current-success", task, "success", executed_at=now_value - timedelta(minutes=5)),
+            ]
+        )
+        session.commit()
+
+        stats = refresh_task_stats(session, task)
+
+    assert stats["hard_hourly_deficit"] == 0
+    assert stats["hard_hourly_backfill_planning_deficit"] > 0
+    assert "hard_hourly_next_check_at" not in stats
+
+
 def test_hard_hourly_wake_returns_due_batch_when_worker_limit_is_low(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

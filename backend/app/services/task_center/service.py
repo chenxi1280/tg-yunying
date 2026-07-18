@@ -182,7 +182,12 @@ from .search_rank_deboost import (
     validate_rank_deboost_preconditions,
     validate_rank_deboost_protocol_samples,
 )
-from .hard_hourly import current_progress as hard_hourly_current_progress, enabled as hard_hourly_enabled, requires_planning as hard_hourly_requires_planning
+from .hard_hourly import (
+    current_progress as hard_hourly_current_progress,
+    enabled as hard_hourly_enabled,
+    next_check_for_progress as hard_hourly_next_check_for_progress,
+    requires_planning as hard_hourly_requires_planning,
+)
 from .config_normalization import (
     apply_default_rule_binding,
     apply_default_slang_config,
@@ -2586,9 +2591,16 @@ def _hard_hourly_due_candidate(session: Session, task: Task, now: datetime):
     if next_check_at is not None and next_check_at > now:
         return None
     progress = hard_hourly_current_progress(session, task, now)
+    _record_hard_hourly_checkpoint(task, progress)
     if int(progress.get("deficit") or 0) <= 0:
         return None
     return (_hard_hourly_due_sort_key(task, progress, next_check_at), task)
+
+
+def _record_hard_hourly_checkpoint(task: Task, progress: dict[str, Any]) -> None:
+    stats = dict(task.stats or {})
+    stats["hard_hourly_next_check_at"] = hard_hourly_next_check_for_progress(task, progress).isoformat()
+    task.stats = stats
 
 
 def _hard_hourly_due_sort_key(task: Task, progress: dict[str, Any], next_check_at: datetime | None):
