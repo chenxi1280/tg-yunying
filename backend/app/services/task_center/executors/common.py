@@ -179,7 +179,31 @@ def channel_message_account_ids(
     execution_date: str | None = None,
     include_skipped_codes: set[str] | None = None,
 ) -> set[int]:
-    account_ids: set[int] = set()
+    account_ids_by_message = channel_message_account_ids_for_messages(
+        session,
+        task,
+        action_type,
+        [message],
+        execution_date=execution_date,
+        include_skipped_codes=include_skipped_codes,
+    )
+    return account_ids_by_message[message.id]
+
+
+def channel_message_account_ids_for_messages(
+    session: Session,
+    task: Task,
+    action_type: str,
+    messages: list[ChannelMessage],
+    *,
+    execution_date: str | None = None,
+    include_skipped_codes: set[str] | None = None,
+) -> dict[int, set[int]]:
+    account_ids_by_message = {message.id: set() for message in messages}
+    if not account_ids_by_message:
+        return account_ids_by_message
+    message_by_channel_id = {message.id: message.id for message in messages}
+    message_by_remote_id = {message.message_id: message.id for message in messages if message.message_id is not None}
     statuses = ["pending", "executing", "success"] if execution_date else ["pending", "executing", "success", "failed"]
     if include_skipped_codes:
         statuses.append("skipped")
@@ -197,9 +221,13 @@ def channel_message_account_ids(
             continue
         if execution_date and str(payload.get("execution_date") or "") != execution_date:
             continue
-        if payload.get("channel_message_id") == message.id or payload.get("message_id") == message.message_id:
-            account_ids.add(int(account_id))
-    return account_ids
+        message_ids = {
+            message_by_channel_id.get(payload.get("channel_message_id")),
+            message_by_remote_id.get(payload.get("message_id")),
+        }
+        for message_id in message_ids - {None}:
+            account_ids_by_message[message_id].add(int(account_id))
+    return account_ids_by_message
 
 
 def _skipped_code_matches(result: dict | None, include_skipped_codes: set[str] | None) -> bool:
@@ -351,6 +379,7 @@ __all__ = [
     "add_tokens",
     "adjust_for_account_hour_limit",
     "channel_message_payload",
+    "channel_message_account_ids_for_messages",
     "channel_scope",
     "collect_channel_messages",
     "available_channel_accounts_for_message",

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import func, literal_column, select, true
@@ -65,7 +65,7 @@ def next_run_after_task(task: Task):
         return ai_next_run_after(task.pacing_config or {})
     if task.type in CHANNEL_DYNAMIC_TASK_TYPES and (config.get("message_scope") or "latest_n") == "dynamic_new":
         interval = int(config.get("listener_interval_seconds") or 30)
-        return utc_now_naive() + timedelta(seconds=max(1, interval))
+        return _now() + timedelta(seconds=max(1, interval))
     return next_run_after(task.pacing_config or {})
 
 
@@ -420,10 +420,6 @@ def empty_stats() -> dict[str, Any]:
     }
 
 
-def utc_now_naive() -> datetime:
-    return datetime.now(UTC).replace(tzinfo=None)
-
-
 def _stats_datetime(task: Task, key: str) -> datetime | None:
     stats = task.stats or {}
     if not isinstance(stats, dict):
@@ -454,4 +450,4 @@ def _naive_datetime(value):
     return value
 
 
-__all__ = ["empty_stats", "next_run_after_task", "refresh_task_stats", "retry_failed_actions", "search_rank_deboost_hourly_execution", "utc_now_naive"]
+__all__ = ["empty_stats", "next_run_after_task", "refresh_task_stats", "retry_failed_actions", "search_rank_deboost_hourly_execution"]
