@@ -2591,15 +2591,15 @@ def _hard_hourly_due_candidate(session: Session, task: Task, now: datetime):
     if next_check_at is not None and next_check_at > now:
         return None
     progress = hard_hourly_current_progress(session, task, now)
-    _record_hard_hourly_checkpoint(task, progress)
+    _record_hard_hourly_checkpoint(task, progress, now)
     if int(progress.get("deficit") or 0) <= 0:
         return None
     return (_hard_hourly_due_sort_key(task, progress, next_check_at), task)
 
 
-def _record_hard_hourly_checkpoint(task: Task, progress: dict[str, Any]) -> None:
+def _record_hard_hourly_checkpoint(task: Task, progress: dict[str, Any], now: datetime) -> None:
     stats = dict(task.stats or {})
-    stats["hard_hourly_next_check_at"] = hard_hourly_next_check_for_progress(task, progress).isoformat()
+    stats["hard_hourly_next_check_at"] = hard_hourly_next_check_for_progress(task, progress, now).isoformat()
     task.stats = stats
 
 

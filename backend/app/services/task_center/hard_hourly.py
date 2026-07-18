@@ -67,10 +67,10 @@ def current_progress(session: Session, task: Task, now: datetime) -> dict[str, A
     }
 
 
-def next_check_for_progress(task: Task, progress: dict[str, Any]) -> datetime:
+def next_check_for_progress(task: Task, progress: dict[str, Any], now: datetime) -> datetime:
     if int(progress.get("deficit") or 0) <= 0:
         return progress["hour_end"]
-    return _next_check_at(task, {}, progress, progress["now"])
+    return _next_check_at(task, {}, progress, normalize(task, now))
 
 
 def requires_planning(session: Session, task: Task, now: datetime) -> bool:
