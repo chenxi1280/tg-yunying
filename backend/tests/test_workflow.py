@@ -4521,7 +4521,7 @@ def test_task_center_channel_like_auto_collects_dynamic_new_messages(monkeypatch
         reset_listener_runtime_cache()
         with SessionLocal() as session:
             task = session.get(Task, task_id)
-            task.next_run_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=1)
+            task.next_run_at = _now() - timedelta(seconds=1)
             session.commit()
         assert drain_task_center(SessionLocal, 10) >= 1
         if calls == [4101]:
@@ -4612,9 +4612,10 @@ def test_task_center_channel_view_and_comment_default_dynamic_new_keep_collectin
             task = session.get(Task, task_id)
             assert task.type_config["message_scope"] == "dynamic_new"
             next_run_at = task.next_run_at.replace(tzinfo=None) if task.next_run_at.tzinfo else task.next_run_at
-            assert next_run_at <= datetime.now(UTC).replace(tzinfo=None) + timedelta(seconds=45)
+            now = _now()
+            assert now <= next_run_at <= now + timedelta(seconds=45)
             assert session.query(Action).filter(Action.task_id == task_id, Action.action_type == action_type).count() == 1
-            task.next_run_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=1)
+            task.next_run_at = _now() - timedelta(seconds=1)
             session.commit()
 
         fetched_ids.append(prepare_test_comment_message(client, headers, channel_target, account_ids=[account["id"]], message_id=5102) if action_type == "post_comment" else 5102)
