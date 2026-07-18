@@ -87,6 +87,17 @@ bootstrap_shared_env() {
   exit 1
 }
 
+upgrade_legacy_runtime_cleanup_interval() {
+  local shared_env="${SHARED_DIR}/.env"
+
+  if ! grep -qx 'RUNTIME_METRIC_CLEANUP_INTERVAL_SECONDS=60' "$shared_env"; then
+    return 0
+  fi
+
+  sed -i 's/^RUNTIME_METRIC_CLEANUP_INTERVAL_SECONDS=60$/RUNTIME_METRIC_CLEANUP_INTERVAL_SECONDS=300/' "$shared_env"
+  echo "==> Upgraded RUNTIME_METRIC_CLEANUP_INTERVAL_SECONDS from legacy default 60 to 300"
+}
+
 prune_old_releases() {
   mapfile -t release_paths < <(find "$RELEASES_DIR" -mindepth 1 -maxdepth 1 -type d | sort)
   local total="${#release_paths[@]}"
@@ -151,6 +162,7 @@ run_post_deploy_checks() {
 require_command docker
 prepare_shared_layout
 bootstrap_shared_env
+upgrade_legacy_runtime_cleanup_interval
 
 if [[ ! -f "${RELEASE_DIR}/docker-compose.server.yml" ]]; then
   echo "Release directory is invalid: ${RELEASE_DIR}" >&2
