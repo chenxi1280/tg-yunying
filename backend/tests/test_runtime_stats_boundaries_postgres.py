@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from datetime import timedelta
+from datetime import datetime, timedelta
 from threading import Barrier
 from time import perf_counter
 
@@ -57,13 +57,14 @@ def test_postgres_two_planners_cover_580_rows_in_atomic_bounded_batches() -> Non
     Base.metadata.create_all(engine)
     _cleanup()
     try:
-        _seed_coverage_rows()
-        _seed_foreign_tenant_coverage()
+        now = _now()
+        _seed_coverage_rows(now)
+        _seed_foreign_tenant_coverage(now)
         with SessionLocal() as session:
-            _assert_ready_plan_explain(session)
-        _assert_crash_rolls_back_cursor_and_reservations()
+            _assert_ready_plan_explain(session, now)
+        _assert_crash_rolls_back_cursor_and_reservations(now)
         with ThreadPoolExecutor(max_workers=2) as pool:
-            worker_results = list(pool.map(_reserve_until_empty, range(2)))
+            worker_results = list(pool.map(lambda worker: _reserve_until_empty(worker, now), range(2)))
 
         batch_sizes = [size for results in worker_results for size, _elapsed in results]
         elapsed = [duration for results in worker_results for _size, duration in results]
@@ -217,8 +218,8 @@ def test_postgres_four_dispatch_finalizers_are_bounded_without_history_grouping(
         _cleanup()
 
 
-def _seed_coverage_rows() -> None:
-    timestamp = _now() - timedelta(minutes=1)
+def _seed_coverage_rows(now: datetime) -> None:
+    timestamp = now
     with SessionLocal() as session:
         session.add(Tenant(id=TENANT_ID, name="runtime-boundary"))
         session.commit()
@@ -241,8 +242,8 @@ def _seed_coverage_rows() -> None:
         session.commit()
 
 
-def _seed_foreign_tenant_coverage() -> None:
-    timestamp = _now() - timedelta(minutes=1)
+def _seed_foreign_tenant_coverage(now: datetime) -> None:
+    timestamp = now
     with SessionLocal() as session:
         session.add(Tenant(id=OTHER_TENANT_ID, name="runtime-boundary-other"))
         session.commit()
@@ -269,7 +270,7 @@ def _seed_foreign_tenant_coverage() -> None:
         session.commit()
 
 
-def _assert_ready_plan_explain(session) -> None:
+def _assert_ready_plan_explain(session, now: datetime) -> None:
     session.execute(text("ANALYZE task_account_daily_coverage"))
     cursor_targeted = session.scalar(select(TaskAccountDailyCoverage.targeted_at).where(
         TaskAccountDailyCoverage.task_id == TASK_ID,
@@ -285,8 +286,8 @@ def _assert_ready_plan_explain(session) -> None:
         """,
         {
             "task_id": TASK_ID,
-            "coverage_date": _now().date(),
-            "now": _now(),
+            "coverage_date": now.date(),
+            "now": now,
             "cursor_targeted": cursor_targeted,
             "cursor_account_id": ACCOUNT_BASE + 100,
             "cursor_id": "",
@@ -342,11 +343,11 @@ def _plan_nodes(node: dict):
         yield from _plan_nodes(child)
 
 
-def _assert_crash_rolls_back_cursor_and_reservations() -> None:
+def _assert_crash_rolls_back_cursor_and_reservations(now: datetime) -> None:
     with SessionLocal() as session:
         task = session.get(Task, TASK_ID)
-        rows = ready_coverage_plan_batch(session, task, now=_now(), limit=20).rows
-        _reserve_rows(session, task, rows)
+        rows = ready_coverage_plan_batch(session, task, now=now, limit=20).rows
+        _reserve_rows(session, task, rows, now)
         session.rollback()
     with SessionLocal() as session:
         assert session.scalar(select(func.count()).select_from(Action).where(Action.task_id == TASK_ID)) == 0
@@ -355,15 +356,15 @@ def _assert_crash_rolls_back_cursor_and_reservations() -> None:
         )) == 0
 
 
-def _reserve_until_empty(_worker: int) -> list[tuple[int, float]]:
+def _reserve_until_empty(_worker: int, now: datetime) -> list[tuple[int, float]]:
     results: list[tuple[int, float]] = []
     while True:
         started_at = perf_counter()
         with SessionLocal() as session:
             task = session.get(Task, TASK_ID)
-            rows = ready_coverage_plan_batch(session, task, now=_now(), limit=20).rows
+            rows = ready_coverage_plan_batch(session, task, now=now, limit=20).rows
             if rows:
-                _reserve_rows(session, task, rows)
+                _reserve_rows(session, task, rows, now)
             session.commit()
         elapsed = perf_counter() - started_at
         if not rows:
@@ -371,7 +372,7 @@ def _reserve_until_empty(_worker: int) -> list[tuple[int, float]]:
         results.append((len(rows), elapsed))
 
 
-def _reserve_rows(session, task: Task, rows: list[TaskAccountDailyCoverage]) -> None:
+def _reserve_rows(session, task: Task, rows: list[TaskAccountDailyCoverage], now: datetime) -> None:
     for row in rows:
         action_id = f"a{row.id[1:]}"
         session.add(Action(
@@ -382,11 +383,11 @@ def _reserve_rows(session, task: Task, rows: list[TaskAccountDailyCoverage]) -> 
             action_type="send_message",
             account_id=row.account_id,
             status="pending",
-            scheduled_at=_now(),
+                scheduled_at=now,
         ))
         session.flush()
         assert reserve_coverage_for_action(session, row.id, action_id)
-    advance_coverage_plan_cursor(session, task, rows[-1], now=_now())
+    advance_coverage_plan_cursor(session, task, rows[-1], now=now)
 
 
 def _seed_action_history() -> None:
