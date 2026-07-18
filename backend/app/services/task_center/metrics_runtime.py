@@ -17,20 +17,39 @@ from .stats import refresh_task_stats
 
 
 DEFAULT_TASK_SUMMARY_BATCH_SIZE = 20
+METRICS_CAPTURE_INTERVAL = timedelta(minutes=5)
+METRICS_CAPTURE_MARKER = "actions.pending.count"
 
 
 def drain_task_metrics(session_factory, limit: int = 100) -> int:
     now_value = _now()
     with session_factory() as session:
-        record_count = _record_runtime_metrics(session, now_value, limit)
+        record_worker_heartbeat(session, process_type="metrics", metadata={"limit": limit})
+        if not _runtime_metrics_due(session, now_value):
+            session.commit()
+            return 0
+        record_count = _record_runtime_metrics(session, now_value)
         session.commit()
     account_count = _refresh_account_summary_batch(session_factory, limit)
     task_count = _refresh_task_summary_batch(session_factory, limit)
     return record_count + account_count + task_count
 
 
-def _record_runtime_metrics(session, now_value: datetime, limit: int) -> int:
-    record_worker_heartbeat(session, process_type="metrics", metadata={"limit": limit})
+def _runtime_metrics_due(session, now_value: datetime) -> bool:
+    latest = session.scalar(
+        select(RuntimeMetricSnapshot.captured_at)
+        .where(
+            RuntimeMetricSnapshot.metric_name == METRICS_CAPTURE_MARKER,
+            RuntimeMetricSnapshot.dimension_type == "global",
+            RuntimeMetricSnapshot.dimension_id == "all",
+        )
+        .order_by(RuntimeMetricSnapshot.captured_at.desc())
+        .limit(1)
+    )
+    return latest is None or _elapsed_seconds(latest, now_value) >= METRICS_CAPTURE_INTERVAL.total_seconds()
+
+
+def _record_runtime_metrics(session, now_value: datetime) -> int:
     metrics = _runtime_metric_values(session, now_value)
     session.add_all(_runtime_metric_rows(metrics, now_value))
     tenant_ids = session.scalars(select(OperationIssue.tenant_id).where(OperationIssue.status == "open").distinct())
@@ -130,6 +149,14 @@ def _task_summary_batch_query(limit: int):
 
 def _naive_datetime(value: datetime) -> datetime:
     return value.replace(tzinfo=None) if value.tzinfo else value
+
+
+def _elapsed_seconds(start: datetime, end: datetime) -> float:
+    if start.tzinfo is None and end.tzinfo is not None:
+        start = start.replace(tzinfo=end.tzinfo)
+    if end.tzinfo is None and start.tzinfo is not None:
+        end = end.replace(tzinfo=start.tzinfo)
+    return (end - start).total_seconds()
 
 
 __all__ = ["drain_task_metrics"]
