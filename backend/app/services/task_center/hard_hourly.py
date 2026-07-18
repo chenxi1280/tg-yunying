@@ -15,13 +15,12 @@ from .hard_hourly_history import (
     recent_actions as _recent_actions,
     recent_actions_query as _recent_actions_query,
 )
-from .hard_hourly_pacing import next_check_at as _next_check_at, planning_rate
+from .hard_hourly_pacing import daily_coverage_recheck_at as _daily_coverage_recheck_at, next_check_at as _next_check_at, planning_rate
 
 OPEN_STATUSES = {"pending", "claiming", "executing"}
 STRATEGY_FORCE_PLANNING = "force_planning"
 HARD_HOURLY_FRONTLOAD_WINDOW_SECONDS = 15 * 60
 TRANSIENT_REFRESH_BLOCKERS = frozenset({"account_capacity", "account_offline", "dispatcher_lag"})
-DAILY_COVERAGE_RECHECK_BLOCKERS = frozenset({"coverage_waiting", "daily_coverage_capacity_insufficient"})
 MEMBERSHIP_BLOCKERS = frozenset({"target_join_pending", "target_membership_pending", "target_required_channel_pending"})
 VERIFICATION_BLOCKERS = frozenset({"target_verification_pending", "target_verification_failed", "verification_context_unreadable"})
 CAN_SEND_BLOCKERS = frozenset({"target_can_send_blocked", "target_permission", "rule_binding_missing"})
@@ -151,12 +150,14 @@ def mark_plan_result(task: Task, progress: dict[str, Any], created: int, blocker
         stats["hard_hourly_last_blockers"] = blockers
     elif created > 0:
         stats.pop("hard_hourly_last_blockers", None)
+    coverage_checkpoint = _parse_datetime((task.stats or {}).get("daily_coverage_next_check_at"))
+    coverage_recheck_at = normalize(task, coverage_checkpoint) if coverage_checkpoint is not None else None
     next_check_at = _next_check_at(
         blockers or {},
         progress,
         current,
         created=created,
-        coverage_recheck_at=_daily_coverage_recheck_at(task, blockers or {}, current),
+        coverage_recheck_at=_daily_coverage_recheck_at(blockers or {}, current, coverage_recheck_at),
     )
     stats["hard_hourly_next_check_at"] = next_check_at.isoformat()
     task.hard_hourly_next_check_at = next_check_at
@@ -476,15 +477,6 @@ def _positive_int(value: object) -> int:
         return max(0, int(value or 0))
     except (TypeError, ValueError):
         return 0
-
-
-def _daily_coverage_recheck_at(task: Task, blockers: dict[str, int], current: datetime) -> datetime | None:
-    if not DAILY_COVERAGE_RECHECK_BLOCKERS.intersection(blockers):
-        return None
-    checkpoint = _parse_datetime((task.stats or {}).get("daily_coverage_next_check_at"))
-    if checkpoint is None:
-        return None
-    return max(current, normalize(task, checkpoint))
 
 
 def _task_zone(task: Task) -> ZoneInfo:

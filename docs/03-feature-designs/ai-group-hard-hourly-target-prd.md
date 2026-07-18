@@ -115,6 +115,7 @@ planning_rate = hourly_min_messages
 - 单轮最多创建 `min(deficit, planning_rate)` 个 hard-hourly action，Action 排期和创建后 `hard_hourly_next_check_at` 都必须使用同一个 `planning_rate`。
 - 历史债务超过一个小时目标时，剩余债务保留到后续小时继续追赶，生产质量诊断仍以 `hard_hourly_backfill_debt > 0` 阻断验收。
 - 当前小时临近结束时，当前小时目标仍按剩余窗口压缩排期；该速率规则不得把当前小时目标静默降级。
+- `coverage_waiting` 或 `daily_coverage_capacity_insufficient` 必须沿用已有 `daily_coverage_next_check_at`；该字段缺失时也必须显式写入两分钟复查点，不能回退到 hard-hourly 的 30 秒重算。
 
 ### 4.5 端到端完成链路
 

@@ -1680,6 +1680,28 @@ def test_hard_hourly_coverage_waiting_reuses_daily_coverage_checkpoint():
     assert task.hard_hourly_next_check_at == coverage_next
 
 
+@pytest.mark.no_postgres
+def test_hard_hourly_coverage_waiting_uses_default_checkpoint_when_absent():
+    now_value = datetime(2026, 6, 7, 20, 10)
+    task = Task(
+        id="task-hard-hourly-coverage-default-checkpoint",
+        tenant_id=1,
+        name="硬目标覆盖账本默认等待",
+        type="group_ai_chat",
+        status="running",
+        type_config={"hard_hourly_target_enabled": True, "hourly_min_messages": 120},
+    )
+
+    mark_plan_result(
+        task,
+        {"goal": 120, "deficit": 2400, "hour_end": datetime(2026, 6, 7, 21, 0), "now": now_value},
+        created=0,
+        blockers={"coverage_waiting": 1},
+    )
+
+    assert task.hard_hourly_next_check_at == now_value + timedelta(seconds=120)
+
+
 def test_group_ai_chat_hard_hourly_reuses_selected_accounts_when_front_accounts_are_full(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
