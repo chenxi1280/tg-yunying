@@ -15,6 +15,7 @@ from app.services.account_usage_policy import apply_operational_account_filters
 from app.services.group_listeners import collect_group_context
 
 from .account_pool import select_task_accounts
+from .hard_hourly import enabled as hard_hourly_enabled
 from .targets import group_from_reference
 
 
@@ -321,8 +322,9 @@ def _mark_listener_runtime_success(session: Session, task_ids: list[str], group_
         stats.pop("listener_runtime_last_error", None)
         if inserted > 0:
             stats.pop("idle_continuation_next_run_at", None)
-            if task.type == "group_ai_chat":
-                stats.pop("hard_hourly_next_check_at", None)
+            if task.type == "group_ai_chat" and hard_hourly_enabled(task):
+                stats["hard_hourly_next_check_at"] = occurred_at.isoformat()
+                task.hard_hourly_next_check_at = occurred_at
         task.stats = stats
         next_run_at = _naive_datetime(task.next_run_at)
         if inserted > 0 and (next_run_at is None or next_run_at > occurred_at):

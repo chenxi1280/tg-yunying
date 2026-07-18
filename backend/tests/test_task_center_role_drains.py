@@ -16,7 +16,7 @@ from app.database import Base
 from app.models import AccountStatus, Action, RuntimeCleanupAudit, RuntimeMetricSnapshot, Task, TaskRuntimeSummary, Tenant, TgAccount, WorkerHeartbeat
 from app.schemas.task_center import TaskSettingsUpdate
 from app.services._common import _now
-from app.services.task_center import dispatcher, heartbeat, metrics_runtime, planner_backlog, service
+from app.services.task_center import dispatcher, heartbeat, metrics_runtime, planner_backlog, service, stats as task_stats
 
 
 @pytest.fixture(autouse=True)
@@ -211,12 +211,23 @@ def test_target_admission_retry_planner_keeps_pending_membership_actions() -> No
 def test_metrics_drain_reconciles_missing_task_runtime_summary(monkeypatch) -> None:
     SessionFactory = _session_factory()
     now_value = _now()
-    refresh_calls: list[bool] = []
+    refresh_calls: list[tuple[bool, bool]] = []
     real_refresh = metrics_runtime.refresh_task_stats
 
-    def record_refresh(session: Session, task: Task, *, include_configured_accounts: bool = True):
-        refresh_calls.append(include_configured_accounts)
-        return real_refresh(session, task, include_configured_accounts=include_configured_accounts)
+    def record_refresh(
+        session: Session,
+        task: Task,
+        *,
+        include_configured_accounts: bool = True,
+        include_hard_hourly: bool = True,
+    ):
+        refresh_calls.append((include_configured_accounts, include_hard_hourly))
+        return real_refresh(
+            session,
+            task,
+            include_configured_accounts=include_configured_accounts,
+            include_hard_hourly=include_hard_hourly,
+        )
 
     monkeypatch.setattr(metrics_runtime, "refresh_task_stats", record_refresh)
     with SessionFactory() as session:
@@ -243,7 +254,35 @@ def test_metrics_drain_reconciles_missing_task_runtime_summary(monkeypatch) -> N
         summary = session.scalar(select(TaskRuntimeSummary).where(TaskRuntimeSummary.task_id == "task-unrelated-summary"))
         assert summary is not None
         assert summary.failed_count == 1
-    assert refresh_calls == [False]
+    assert refresh_calls == [(False, False)]
+
+
+@pytest.mark.no_postgres
+def test_metrics_drain_skips_hard_hourly_history_refresh(monkeypatch) -> None:
+    SessionFactory = _session_factory()
+    monkeypatch.setattr(
+        task_stats,
+        "hard_hourly_stats",
+        lambda *_args, **_kwargs: pytest.fail("metrics must not recompute hard-hourly history"),
+    )
+    with SessionFactory() as session:
+        session.add_all(
+            [
+                Tenant(id=1, name="默认运营空间"),
+                Task(
+                    id="hard-hourly-metrics-summary",
+                    tenant_id=1,
+                    name="hard-hourly metrics summary",
+                    type="group_ai_chat",
+                    status="running",
+                    type_config={"hard_hourly_target_enabled": True, "hourly_min_messages": 10},
+                    stats={"hard_hourly_next_check_at": "2026-07-18T12:05:00"},
+                ),
+            ]
+        )
+        session.commit()
+
+    assert service.drain_task_metrics(SessionFactory, 5) >= 1
 
 
 @pytest.mark.no_postgres

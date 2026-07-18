@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.models import Action, Task
 from app.services._common import _now
+from app.timezone import as_beijing
 
 from .config_fields import CHANNEL_DYNAMIC_TASK_TYPES
 from .hard_hourly import enabled as hard_hourly_enabled, hard_hourly_stats
@@ -49,7 +50,7 @@ AI_GENERATION_QUALITY_CODES = frozenset({
 def next_run_after_task(task: Task):
     config = task.type_config or {}
     if task.type == "group_ai_chat":
-        hard_next = _stats_datetime(task, "hard_hourly_next_check_at")
+        hard_next = _hard_hourly_next_check_at(task)
         coverage_next = _stats_datetime(task, "daily_coverage_next_check_at")
         priority_checks = [
             value
@@ -73,6 +74,7 @@ def refresh_task_stats(
     task: Task,
     *,
     include_configured_accounts: bool = True,
+    include_hard_hourly: bool = True,
 ) -> dict[str, Any]:
     session.flush()
     business_filter = _stats_action_filter(task)
@@ -112,7 +114,8 @@ def refresh_task_stats(
         }
     )
     stats = _ai_generation_stats(session, task, stats)
-    stats = hard_hourly_stats(session, task, _now(), stats)
+    if include_hard_hourly:
+        stats = hard_hourly_stats(session, task, _now(), stats)
     stats = _search_join_stats(session, task, stats)
     stats = _search_rank_deboost_stats(session, task, stats)
     task.stats = stats
@@ -433,6 +436,16 @@ def _stats_datetime(task: Task, key: str) -> datetime | None:
     except ValueError:
         return None
     return _naive_datetime(parsed)
+
+
+def _hard_hourly_next_check_at(task: Task) -> datetime | None:
+    checkpoint = as_beijing(task.hard_hourly_next_check_at)
+    if checkpoint is not None:
+        return checkpoint
+    checkpoint = _stats_datetime(task, "hard_hourly_next_check_at")
+    if checkpoint is not None:
+        task.hard_hourly_next_check_at = checkpoint
+    return checkpoint
 
 
 def _naive_datetime(value):

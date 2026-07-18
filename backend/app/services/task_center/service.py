@@ -188,6 +188,7 @@ from .hard_hourly import (
     next_check_for_progress as hard_hourly_next_check_for_progress,
     planner_progress_snapshot as hard_hourly_planner_progress_snapshot,
     requires_planning as hard_hourly_requires_planning,
+    seed_planner_progress_snapshot as seed_hard_hourly_planner_progress_snapshot,
 )
 from .config_normalization import (
     apply_default_rule_binding,
@@ -1654,6 +1655,8 @@ def _plan_due_task(
     global_pending: int | None = None,
 ) -> tuple[int, bool, int]:
     round_goal = _coverage_round_goal(session_factory, task_id)
+    round_hard_progress = _hard_hourly_round_progress(session_factory, task_id)
+    round_goal = _hard_hourly_round_goal(round_goal, round_hard_progress)
     processed = 0
     planned = 0
     future_open = False
@@ -1666,12 +1669,26 @@ def _plan_due_task(
             limit=limit,
             plan_limit=plan_limit,
             global_pending=global_pending,
+            round_hard_progress=round_hard_progress,
         )
         processed += batch_processed
         planned += batch_planned
         if batch_planned <= 0 or round_goal == 1:
             break
     return processed, future_open, global_pending
+
+
+def _hard_hourly_round_progress(session_factory, task_id: str) -> dict[str, Any] | None:
+    with session_factory() as session:
+        task = session.get(Task, task_id)
+        if not task or not hard_hourly_enabled(task):
+            return None
+        return hard_hourly_planner_progress_snapshot(session, task, _now())
+
+
+def _hard_hourly_round_goal(round_goal: int, progress: dict[str, Any] | None) -> int:
+    deficit = int((progress or {}).get("deficit") or 0)
+    return min(round_goal, deficit) if deficit > 0 else round_goal
 
 
 def _plan_due_task_batch(
@@ -1682,6 +1699,7 @@ def _plan_due_task_batch(
     limit: int,
     plan_limit: int,
     global_pending: int | None = None,
+    round_hard_progress: dict[str, Any] | None = None,
 ) -> tuple[int, int, bool, int]:
     with session_factory() as session:
         current_global_pending = global_pending if global_pending is not None else planner_global_pending(session)
@@ -1696,7 +1714,7 @@ def _plan_due_task_batch(
         retried = retry_failed_actions(session, task, limit=max(1, limit))
         processed = retried
         current_global_pending += max(0, int(retried))
-        hard_progress = hard_hourly_planner_progress_snapshot(session, task, _now()) if hard_hourly_enabled(task) else {}
+        hard_progress = _hard_hourly_batch_progress(session, task, round_hard_progress)
         has_open_actions, open_actions_are_future = _open_actions_state(session, task)
         if has_open_actions:
             processed += prepare_open_actions_for_planning(session, task)
@@ -1717,6 +1735,14 @@ def _plan_due_task_batch(
             task.next_run_at = next_run_after_task(task)
         session.commit()
         return processed, planned, False, current_global_pending
+
+
+def _hard_hourly_batch_progress(session: Session, task: Task, progress: dict[str, Any] | None) -> dict[str, Any]:
+    if not hard_hourly_enabled(task):
+        return {}
+    if progress is None:
+        return hard_hourly_planner_progress_snapshot(session, task, _now())
+    return seed_hard_hourly_planner_progress_snapshot(session, task, progress)
 
 
 def _coverage_round_goal(session_factory, task_id: str) -> int:
@@ -2569,7 +2595,7 @@ def _wake_hard_hourly_tasks(session: Session, *, limit: int, now: datetime | Non
     candidates = sorted(
         (
             candidate
-            for task in session.scalars(_hard_hourly_wake_query())
+            for task in session.scalars(_hard_hourly_wake_query(now))
             if (candidate := _hard_hourly_due_candidate(session, task, now)) is not None
         ),
         key=lambda candidate: candidate[0],
@@ -2582,15 +2608,17 @@ def _wake_hard_hourly_tasks(session: Session, *, limit: int, now: datetime | Non
     return [task.id for task in selected]
 
 
-def _hard_hourly_wake_query():
+def _hard_hourly_wake_query(now: datetime):
     return (
         select(Task)
         .where(
             Task.status == "running",
             Task.type == "group_ai_chat",
             Task.deleted_at.is_(None),
+            Task.type_config["hard_hourly_target_enabled"].as_boolean().is_(True),
+            or_(Task.hard_hourly_next_check_at.is_(None), Task.hard_hourly_next_check_at <= now),
         )
-        .order_by(Task.priority.asc(), Task.next_run_at.asc().nullsfirst(), Task.created_at.asc())
+        .order_by(Task.hard_hourly_next_check_at.asc().nullsfirst(), Task.priority.asc(), Task.next_run_at.asc().nullsfirst(), Task.created_at.asc())
     )
 
 
@@ -2613,7 +2641,9 @@ def _hard_hourly_due_candidate(session: Session, task: Task, now: datetime):
 
 def _record_hard_hourly_checkpoint(task: Task, progress: dict[str, Any], now: datetime) -> None:
     stats = dict(task.stats or {})
-    stats["hard_hourly_next_check_at"] = hard_hourly_next_check_for_progress(task, progress, now).isoformat()
+    next_check_at = hard_hourly_next_check_for_progress(task, progress, now)
+    stats["hard_hourly_next_check_at"] = next_check_at.isoformat()
+    task.hard_hourly_next_check_at = next_check_at
     task.stats = stats
 
 
@@ -2636,7 +2666,13 @@ def _hard_hourly_due_sort_key(task: Task, progress: dict[str, Any], next_check_a
 
 
 def _hard_hourly_next_check_at(task: Task) -> datetime | None:
-    return _task_stats_datetime(task, "hard_hourly_next_check_at")
+    checkpoint = as_beijing(task.hard_hourly_next_check_at)
+    if checkpoint is not None:
+        return checkpoint
+    checkpoint = _task_stats_datetime(task, "hard_hourly_next_check_at")
+    if checkpoint is not None:
+        task.hard_hourly_next_check_at = checkpoint
+    return checkpoint
 
 
 def _hard_hourly_recheck_is_pending(task: Task, now: datetime) -> bool:
@@ -2737,6 +2773,7 @@ def _get_task(session: Session, tenant_id: int, task_id: str) -> Task:
 
 
 def _clear_unfinished_plan(session: Session, task: Task) -> None:
+    _clear_hard_hourly_checkpoint(task)
     pending_actions = list(
         session.scalars(select(Action).where(Action.task_id == task.id, Action.status == "pending"))
     )
@@ -2751,6 +2788,15 @@ def _clear_unfinished_plan(session: Session, task: Task) -> None:
             session.execute(delete(Action).where(Action.id.in_(deletable_action_ids)))
     _supersede_active_plan_actions(session, task)
     session.execute(delete(ReviewQueue).where(ReviewQueue.task_id == task.id, ReviewQueue.status == "pending"))
+
+
+def _clear_hard_hourly_checkpoint(task: Task) -> None:
+    if task.type != "group_ai_chat":
+        return
+    stats = dict(task.stats or {})
+    stats.pop("hard_hourly_next_check_at", None)
+    task.hard_hourly_next_check_at = None
+    task.stats = stats
 
 
 def _skip_attempted_pending_actions(pending_actions: list[Action], attempted_action_ids: set[str]) -> None:
