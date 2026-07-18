@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+from subprocess import run
 
 import pytest
 from alembic.migration import MigrationContext
@@ -56,6 +57,24 @@ def test_runtime_retention_batch_orders_by_indexed_age() -> None:
     ).read_text()
 
     assert ".order_by(age.asc(), Action.created_at.asc(), Action.id.asc())" in source
+
+
+def test_server_runtime_cleanup_defaults_and_legacy_upgrade_match() -> None:
+    compose = (PROJECT_ROOT / "docker-compose.server.yml").read_text()
+    env_example = (PROJECT_ROOT / ".env.production.example").read_text()
+    installer = PROJECT_ROOT / "deploy/server-install-release.sh"
+    source = installer.read_text()
+
+    for expected in (
+        "RUNTIME_DETAIL_CLEANUP_INTERVAL_SECONDS: ${RUNTIME_DETAIL_CLEANUP_INTERVAL_SECONDS:-300}",
+        "RUNTIME_METRIC_CLEANUP_INTERVAL_SECONDS: ${RUNTIME_METRIC_CLEANUP_INTERVAL_SECONDS:-300}",
+    ):
+        assert expected in compose
+    assert "RUNTIME_DETAIL_CLEANUP_INTERVAL_SECONDS=300" in env_example
+    assert "RUNTIME_METRIC_CLEANUP_INTERVAL_SECONDS=300" in env_example
+    assert "upgrade_legacy_runtime_cleanup_interval" in source
+    assert "RUNTIME_METRIC_CLEANUP_INTERVAL_SECONDS=60" in source
+    run(["bash", "-n", str(installer)], check=True)
 
 
 def _migration_module():
