@@ -533,6 +533,59 @@ def test_runtime_metric_retention_runs_only_when_due() -> None:
     assert audit_count == 1
 
 
+@pytest.mark.no_postgres
+def test_runtime_detail_retention_runs_only_when_due() -> None:
+    from app.services.task_center.runtime_retention import cleanup_runtime_details_if_due
+
+    SessionFactory = _session_factory()
+    old_at = datetime(2026, 6, 1, 9, 0, tzinfo=UTC)
+    now_value = datetime(2026, 6, 24, 9, 0, tzinfo=UTC)
+    with SessionFactory() as session:
+        session.add_all([
+            Tenant(id=1, name="default"),
+            Task(id="runtime-detail-due", tenant_id=1, name="retention", type="group_relay", status="running"),
+            Action(
+                id="runtime-detail-old",
+                tenant_id=1,
+                task_id="runtime-detail-due",
+                task_type="group_relay",
+                action_type="send_message",
+                status="success",
+                scheduled_at=old_at,
+                executed_at=old_at,
+                created_at=old_at,
+            ),
+        ])
+        session.commit()
+
+        first_deleted = cleanup_runtime_details_if_due(
+            session,
+            retention_days=5,
+            batch_size=1,
+            interval_seconds=300,
+            now_value=now_value,
+        )
+        second_deleted = cleanup_runtime_details_if_due(
+            session,
+            retention_days=5,
+            batch_size=1,
+            interval_seconds=300,
+            now_value=now_value + timedelta(seconds=60),
+        )
+        session.commit()
+
+        remaining_ids = set(session.scalars(select(Action.id)))
+        audits = list(session.scalars(select(RuntimeCleanupAudit)))
+
+    assert first_deleted == 1
+    assert second_deleted == 0
+    assert remaining_ids == set()
+    assert len(audits) == 2
+    checkpoints = [audit for audit in audits if audit.summary.get("cleanup_kind") == "runtime_details"]
+    assert len(checkpoints) == 1
+    assert checkpoints[0].summary["interval_seconds"] == 300
+
+
 def test_dispatcher_role_claims_and_dispatches_without_listener(monkeypatch):
     SessionFactory = _session_factory()
     now_value = _now()
