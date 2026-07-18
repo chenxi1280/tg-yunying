@@ -16,7 +16,7 @@ from app.database import Base
 from app.models import AccountStatus, Action, RuntimeCleanupAudit, RuntimeMetricSnapshot, Task, TaskRuntimeSummary, Tenant, TgAccount, WorkerHeartbeat
 from app.schemas.task_center import TaskSettingsUpdate
 from app.services._common import _now
-from app.services.task_center import dispatcher, metrics_runtime, service
+from app.services.task_center import dispatcher, heartbeat, metrics_runtime, planner_backlog, service
 
 
 @pytest.fixture(autouse=True)
@@ -311,6 +311,65 @@ def test_all_account_planner_does_not_round_thirty_up_to_forty(monkeypatch) -> N
 
     assert service.drain_task_planner(SessionFactory, 1) == 30
     assert planned_batches == [20, 10]
+
+
+@pytest.mark.no_postgres
+def test_planner_computes_global_backlog_once_per_drain(monkeypatch) -> None:
+    SessionFactory = _session_factory()
+    now_value = _now()
+    global_calls = 0
+    original_metrics = planner_backlog._active_backlog_metrics
+
+    def count_global_metrics(session, filters, measured_at):
+        nonlocal global_calls
+        if len(filters) == 1:
+            global_calls += 1
+        return original_metrics(session, filters, measured_at)
+
+    monkeypatch.setattr(planner_backlog, "_active_backlog_metrics", count_global_metrics)
+    monkeypatch.setattr(service, "build_task_plan", lambda *_args, **_kwargs: 0)
+    with SessionFactory() as session:
+        session.add(Tenant(id=1, name="default"))
+        for index in range(2):
+            session.add(Task(
+                id=f"task-planner-backlog-{index}",
+                tenant_id=1,
+                name=f"planner backlog {index}",
+                type="channel_view",
+                status="running",
+                next_run_at=now_value - timedelta(seconds=1),
+            ))
+        session.commit()
+
+    assert service.drain_task_planner(SessionFactory, 2) == 0
+    assert global_calls == 1
+
+
+@pytest.mark.no_postgres
+def test_metrics_drain_keeps_heartbeat_but_defers_expensive_capture(monkeypatch) -> None:
+    SessionFactory = _session_factory()
+    clock = {"now": datetime(2026, 7, 18, 12, 0, tzinfo=UTC)}
+    monkeypatch.setattr(metrics_runtime, "_now", lambda: clock["now"])
+    monkeypatch.setattr(heartbeat, "_now", lambda: clock["now"])
+
+    first = metrics_runtime.drain_task_metrics(SessionFactory, 5)
+    with SessionFactory() as session:
+        first_snapshot_count = session.query(RuntimeMetricSnapshot).count()
+
+    clock["now"] += timedelta(seconds=30)
+    second = metrics_runtime.drain_task_metrics(SessionFactory, 5)
+    with SessionFactory() as session:
+        second_snapshot_count = session.query(RuntimeMetricSnapshot).count()
+        metrics_heartbeat = session.scalar(select(WorkerHeartbeat).where(WorkerHeartbeat.process_type == "metrics"))
+
+    clock["now"] += timedelta(minutes=5)
+    third = metrics_runtime.drain_task_metrics(SessionFactory, 5)
+
+    assert first > 0
+    assert second == 0
+    assert third > 0
+    assert second_snapshot_count == first_snapshot_count
+    assert metrics_heartbeat.last_seen_at.isoformat().startswith("2026-07-18T12:00:30")
 
 
 def test_metrics_drain_uses_index_friendly_counts() -> None:

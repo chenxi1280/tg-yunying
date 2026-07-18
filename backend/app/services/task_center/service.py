@@ -107,6 +107,7 @@ from .precheck import run_precheck_task_creation
 from .profile_batch_projection import delete_profile_batch_task, get_profile_batch_task_detail, is_profile_batch_task_id, list_profile_batch_tasks
 from app.services.task_runtime_stage import derive_task_runtime_stage
 from .metrics_runtime import drain_task_metrics
+from .planner_backlog import planner_global_pending
 from .ai_generation_recovery import recover_stale_pre_gateway_generation
 from .recovery_claims import (
     RecoveryClaim,
@@ -125,6 +126,7 @@ from app.services.runtime_summary import clear_task_runtime_artifacts
 _empty_stats = empty_stats
 _next_run_after_task = next_run_after_task
 _retry_failed_actions = retry_failed_actions
+PLANNER_GLOBAL_PENDING_SESSION_KEY = "planner_global_pending"
 CHANNEL_COMMENT_SCENE = "channel_comment"
 GROUP_CHAT_SCENE = "group_chat"
 GROUP_PREVIEW_CANDIDATE_SHORTFALL_MESSAGE = "AI 普通发言候选不足，无法生成完整预览"
@@ -1626,35 +1628,50 @@ def _drain_task_planner(session_factory, *, limit: int, process_type: str | None
             )
         )
         task_ids = _merge_planner_task_ids(hard_hourly_task_ids, task_ids, limit)
+        global_pending = planner_global_pending(session) if task_ids else 0
         session.commit()
     future_open_action_task_ids: set[str] = set()
     for task_id in task_ids:
-        task_processed, future_open = _plan_due_task(session_factory, task_id, process_type, limit=limit)
+        task_processed, future_open, global_pending = _plan_due_task(
+            session_factory,
+            task_id,
+            process_type,
+            limit=limit,
+            global_pending=global_pending,
+        )
         processed += task_processed
         if future_open:
             future_open_action_task_ids.add(task_id)
     return processed, future_open_action_task_ids
 
 
-def _plan_due_task(session_factory, task_id: str, process_type: str | None, *, limit: int) -> tuple[int, bool]:
+def _plan_due_task(
+    session_factory,
+    task_id: str,
+    process_type: str | None,
+    *,
+    limit: int,
+    global_pending: int,
+) -> tuple[int, bool, int]:
     round_goal = _coverage_round_goal(session_factory, task_id)
     processed = 0
     planned = 0
     future_open = False
     while planned < round_goal:
         plan_limit = round_goal - planned
-        batch_processed, batch_planned, future_open = _plan_due_task_batch(
+        batch_processed, batch_planned, future_open, global_pending = _plan_due_task_batch(
             session_factory,
             task_id,
             process_type,
             limit=limit,
             plan_limit=plan_limit,
+            global_pending=global_pending,
         )
         processed += batch_processed
         planned += batch_planned
         if batch_planned <= 0 or round_goal == 1:
             break
-    return processed, future_open
+    return processed, future_open, global_pending
 
 
 def _plan_due_task_batch(
@@ -1664,17 +1681,20 @@ def _plan_due_task_batch(
     *,
     limit: int,
     plan_limit: int,
-) -> tuple[int, int, bool]:
+    global_pending: int,
+) -> tuple[int, int, bool, int]:
     with session_factory() as session:
         session.info["daily_coverage_plan_limit"] = max(1, plan_limit)
         _refresh_planner_heartbeat(session, process_type, limit, task_id=task_id)
         task = session.get(Task, task_id)
         if not task or task.status != "running":
-            return 0, 0, False
+            return 0, 0, False, global_pending
         if _check_stop_conditions(session, task):
             session.commit()
-            return 0, 0, False
-        processed = retry_failed_actions(session, task, limit=max(1, limit))
+            return 0, 0, False, global_pending
+        retried = retry_failed_actions(session, task, limit=max(1, limit))
+        processed = retried
+        global_pending += max(0, int(retried))
         has_open_actions, open_actions_are_future = _open_actions_state(session, task)
         if has_open_actions:
             processed += prepare_open_actions_for_planning(session, task)
@@ -1682,16 +1702,18 @@ def _plan_due_task_batch(
         open_actions_allow_planning = has_open_actions and requires_planning_with_open_actions(session, task)
         if _skip_open_ai_plan(session, task, has_open_actions, allow_planning=open_actions_allow_planning):
             session.commit()
-            return processed, 0, open_actions_are_future
+            return processed, 0, open_actions_are_future, global_pending
+        session.info[PLANNER_GLOBAL_PENDING_SESSION_KEY] = global_pending
         if _planning_backlog_blocked(session, task):
             session.commit()
-            return processed, 0, False
+            return processed, 0, False, global_pending
         planned = build_task_plan(session, task)
         processed += planned
+        global_pending += max(0, int(planned))
         if task.status == "running":
             task.next_run_at = next_run_after_task(task)
         session.commit()
-        return processed, planned, False
+        return processed, planned, False, global_pending
 
 
 def _coverage_round_goal(session_factory, task_id: str) -> int:
@@ -1816,11 +1838,15 @@ def _record_dispatch_db_error(session_factory, action_id: str, exc: SQLAlchemyEr
 
 
 def _planning_backlog_blocked(session: Session, task: Task) -> bool:
-    snapshot = planner_backlog_snapshot(session, task)
     now_value = _now()
     if hard_hourly_requires_planning(session, task, now_value):
         task.stats = clear_planner_backlog_stats(dict(task.stats or {}))
         return False
+    snapshot = planner_backlog_snapshot(
+        session,
+        task,
+        global_pending=session.info.get(PLANNER_GLOBAL_PENDING_SESSION_KEY),
+    )
     if not snapshot["blocked"]:
         task.stats = clear_planner_backlog_stats(dict(task.stats or {}))
         return False

@@ -17,17 +17,27 @@ BACKLOG_MEMBERSHIP_ACTION_TYPES = ["ensure_channel_membership", "ensure_target_m
 PLANNER_BACKLOG_OPEN_STATUSES = {"pending", "claiming", "executing"}
 
 
-def planner_backlog_snapshot(session: Session, task: Task) -> dict[str, int | bool]:
+def planner_global_pending(session: Session, now_value: datetime | None = None) -> int:
+    count, _ = _active_backlog_metrics(
+        session,
+        [Action.status.in_(PLANNER_BACKLOG_OPEN_STATUSES)],
+        now_value or _now(),
+    )
+    return count
+
+
+def planner_backlog_snapshot(
+    session: Session,
+    task: Task,
+    *,
+    global_pending: int | None = None,
+) -> dict[str, int | bool]:
     settings = get_settings()
     task_filters = [Action.task_id == task.id, Action.status.in_(PLANNER_BACKLOG_OPEN_STATUSES)]
     if _can_plan_with_partial_membership(task):
         task_filters.append(Action.action_type.notin_(BACKLOG_MEMBERSHIP_ACTION_TYPES))
     now_value = _now()
-    global_pending, _ = _active_backlog_metrics(
-        session,
-        [Action.status.in_(PLANNER_BACKLOG_OPEN_STATUSES)],
-        now_value,
-    )
+    global_pending = planner_global_pending(session, now_value) if global_pending is None else global_pending
     task_pending, oldest_pending = _active_backlog_metrics(session, task_filters, now_value)
     oldest_at = as_beijing(oldest_pending)
     oldest_age = int((_now() - oldest_at).total_seconds()) if oldest_at else 0
@@ -91,4 +101,4 @@ def _can_plan_with_partial_membership(task: Task) -> bool:
     )
 
 
-__all__ = ["hard_hourly_payload_expired", "planner_backlog_snapshot"]
+__all__ = ["hard_hourly_payload_expired", "planner_backlog_snapshot", "planner_global_pending"]
