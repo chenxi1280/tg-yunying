@@ -412,6 +412,7 @@ def test_group_ai_chat_create_defaults_to_hard_hourly_target_10():
     assert task.type_config["hard_hourly_strategy"] == "force_planning"
 
 
+@pytest.mark.no_postgres
 def test_hard_hourly_wake_includes_legacy_string_enabled(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
