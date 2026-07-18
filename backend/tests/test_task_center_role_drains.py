@@ -138,6 +138,31 @@ def test_planner_refreshes_heartbeat_between_due_tasks(monkeypatch):
     assert heartbeat_calls.count("planner") >= 3
 
 
+@pytest.mark.no_postgres
+def test_plan_due_task_computes_global_backlog_for_direct_call(monkeypatch):
+    SessionFactory = _session_factory()
+    global_pending_calls = 0
+
+    def fake_global_pending(_session):
+        nonlocal global_pending_calls
+        global_pending_calls += 1
+        return 7
+
+    monkeypatch.setattr(service, "planner_global_pending", fake_global_pending)
+    monkeypatch.setattr(service, "_check_stop_conditions", lambda *_args: False)
+    monkeypatch.setattr(service, "_planning_backlog_blocked", lambda *_args: False)
+    monkeypatch.setattr(service, "build_task_plan", lambda *_args: 0)
+    with SessionFactory() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(Task(id="task-direct-planner", tenant_id=1, name="直接 planner", type="channel_view", status="running"))
+        session.commit()
+
+    result = service._plan_due_task(SessionFactory, "task-direct-planner", None, limit=1)
+
+    assert result == (0, False, 7)
+    assert global_pending_calls == 1
+
+
 def test_target_admission_retry_planner_keeps_pending_membership_actions() -> None:
     SessionFactory = _session_factory()
     now_value = _now()
