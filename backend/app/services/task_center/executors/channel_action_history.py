@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, literal, select, union_all
 from sqlalchemy.orm import Session
 
 from app.models import Action, ChannelMessage, Task
@@ -30,20 +30,21 @@ def channel_message_account_ids_for_messages(
     account_ids_by_message = {message.id: set() for message in messages}
     if not account_ids_by_message:
         return account_ids_by_message
-    statuses = list(ACTIVE_ACTION_STATUSES if execution_date else HISTORY_ACTION_STATUSES)
-    if include_skipped_codes:
-        statuses.append("skipped")
-    channel_key, message_key, execution_date_key = _payload_keys()
-    statement = select(Action.account_id, channel_key, message_key, Action.status, Action.result).where(
-        Action.task_id == task.id,
-        Action.action_type == action_type,
-        Action.account_id.is_not(None),
-        Action.status.in_(statuses),
-        _message_condition(session, messages, channel_key, message_key),
+    statement = union_all(
+        *_account_history_queries(
+            session,
+            task,
+            action_type=action_type,
+            messages=messages,
+            execution_date=execution_date,
+            include_skipped_codes=include_skipped_codes,
+        )
     )
-    if execution_date:
-        statement = statement.where(execution_date_key == execution_date)
-    _add_account_history_rows(session, statement, messages, account_ids_by_message, include_skipped_codes)
+    lookups = _message_lookups(messages)
+    for account_id, message_key, identifier_kind in session.execute(statement):
+        message_id = lookups[str(identifier_kind)].get(str(message_key))
+        if message_id is not None:
+            account_ids_by_message[message_id].add(int(account_id))
     return account_ids_by_message
 
 
@@ -102,42 +103,56 @@ def _payload_keys():
     )
 
 
-def _message_condition(session: Session, messages: list[ChannelMessage], channel_key, message_key):
-    channel_ids = _identifier_values(session, [message.id for message in messages])
-    remote_ids = _identifier_values(session, [message.message_id for message in messages if message.message_id is not None])
-    conditions = [channel_key.in_(channel_ids)]
-    if remote_ids:
-        conditions.append(message_key.in_(remote_ids))
-    return or_(*conditions)
-
-
 def _identifier_values(session: Session, values: list[int]) -> list[int] | list[str]:
     if session.get_bind().dialect.name == "postgresql":
         return [str(value) for value in values]
     return values
 
 
-def _add_account_history_rows(
+def _account_history_queries(
     session: Session,
-    statement,
+    task: Task,
+    *,
+    action_type: str,
     messages: list[ChannelMessage],
-    account_ids_by_message: dict[int, set[int]],
+    execution_date: str | None,
     include_skipped_codes: set[str] | None,
-) -> None:
-    channel_lookup = {str(message.id): message.id for message in messages}
-    remote_lookup = {str(message.message_id): message.id for message in messages if message.message_id is not None}
-    for account_id, channel_message_id, message_id, status, result in session.execute(statement):
-        if status == "skipped" and not _skipped_code_matches(result, include_skipped_codes):
-            continue
-        message_ids = {
-            channel_lookup.get(str(channel_message_id)),
-            remote_lookup.get(str(message_id)),
-        } - {None}
-        for current_message_id in message_ids:
-            account_ids_by_message[current_message_id].add(int(account_id))
+) -> list:
+    channel_key, message_key, execution_date_key = _payload_keys()
+    identities = (
+        ("channel", channel_key, _identifier_values(session, [message.id for message in messages])),
+        ("legacy", message_key, _identifier_values(session, [message.message_id for message in messages if message.message_id is not None])),
+    )
+    statuses = ACTIVE_ACTION_STATUSES if execution_date else HISTORY_ACTION_STATUSES
+    status_groups = [(statuses, None)]
+    if include_skipped_codes:
+        status_groups.append((("skipped",), include_skipped_codes))
+    queries = []
+    for query_statuses, skipped_codes in status_groups:
+        for identifier_kind, identifier, identifier_values in identities:
+            if not identifier_values:
+                continue
+            statement = select(
+                Action.account_id,
+                identifier.label("message_key"),
+                literal(identifier_kind).label("identifier_kind"),
+            ).where(
+                Action.task_id == task.id,
+                Action.action_type == action_type,
+                Action.account_id.is_not(None),
+                Action.status.in_(query_statuses),
+                identifier.in_(identifier_values),
+            )
+            if execution_date:
+                statement = statement.where(execution_date_key == execution_date)
+            if skipped_codes:
+                statement = statement.where(Action.result["error_code"].as_string().in_(sorted(skipped_codes)))
+            queries.append(statement)
+    return queries
 
 
-def _skipped_code_matches(result: dict | None, include_skipped_codes: set[str] | None) -> bool:
-    if not include_skipped_codes or not isinstance(result, dict):
-        return False
-    return str(result.get("error_code") or "") in include_skipped_codes
+def _message_lookups(messages: list[ChannelMessage]) -> dict[str, dict[str, int]]:
+    return {
+        "channel": {str(message.id): message.id for message in messages},
+        "legacy": {str(message.message_id): message.id for message in messages if message.message_id is not None},
+    }
