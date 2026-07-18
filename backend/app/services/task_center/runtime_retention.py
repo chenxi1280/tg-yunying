@@ -22,6 +22,7 @@ from app.models import (
 )
 from app.services._common import _now
 
+RUNTIME_DETAIL_CLEANUP_KIND = "runtime_details"
 RUNTIME_METRIC_CLEANUP_KIND = "runtime_metric_snapshots"
 
 
@@ -31,12 +32,14 @@ def cleanup_runtime_details(
     retention_days: int = 5,
     today: date | None = None,
     batch_size: int = 100,
+    now_value: datetime | None = None,
 ) -> int:
     """Summarize, audit, and delete one bounded batch of expired runtime details."""
 
     retention_days = max(1, int(retention_days or 5))
     batch_size = max(1, int(batch_size or 100))
-    today = today or _now().date()
+    now_value = now_value or _now()
+    today = today or now_value.date()
     cutoff_date = today - timedelta(days=retention_days)
     cutoff_dt = datetime.combine(cutoff_date, datetime.min.time())
     rows = _runtime_detail_batch(session, cutoff_dt, batch_size)
@@ -68,10 +71,49 @@ def cleanup_runtime_details(
                 "cutoff_date": cutoff_date.isoformat(),
                 "batch_size": batch_size,
             },
-            created_at=_now(),
+            created_at=now_value,
         )
     )
     return len(action_ids) + int(attempt_count or 0) + int(review_count or 0)
+
+
+def cleanup_runtime_details_if_due(
+    session: Session,
+    *,
+    retention_days: int = 5,
+    batch_size: int = 100,
+    interval_seconds: int = 300,
+    now_value: datetime | None = None,
+) -> int:
+    now_value = now_value or _now()
+    retention_days = max(1, int(retention_days or 5))
+    batch_size = max(1, int(batch_size or 100))
+    interval_seconds = max(1, int(interval_seconds or 300))
+    latest = _latest_runtime_cleanup_at(session, RUNTIME_DETAIL_CLEANUP_KIND)
+    if latest is not None and _elapsed_seconds(latest, now_value) < interval_seconds:
+        return 0
+    deleted = cleanup_runtime_details(
+        session,
+        retention_days=retention_days,
+        today=now_value.date(),
+        batch_size=batch_size,
+        now_value=now_value,
+    )
+    session.add(
+        RuntimeCleanupAudit(
+            cleanup_date=now_value.date(),
+            status_counts={},
+            deleted_counts={RUNTIME_DETAIL_CLEANUP_KIND: deleted},
+            summary={
+                "cleanup_kind": RUNTIME_DETAIL_CLEANUP_KIND,
+                "retention_days": retention_days,
+                "batch_size": batch_size,
+                "interval_seconds": interval_seconds,
+            },
+            created_at=now_value,
+        )
+    )
+    return deleted
 
 
 def _runtime_detail_batch(session: Session, cutoff_dt: datetime, batch_size: int) -> list[Action]:
@@ -79,7 +121,7 @@ def _runtime_detail_batch(session: Session, cutoff_dt: datetime, batch_size: int
     statement = (
         select(Action)
         .where(age < cutoff_dt)
-        .order_by(Action.created_at, Action.id)
+        .order_by(age.asc(), Action.created_at.asc(), Action.id.asc())
         .limit(batch_size)
         .with_for_update(of=Action, skip_locked=True)
     )
@@ -134,12 +176,12 @@ def cleanup_runtime_metric_snapshots_if_due(
     *,
     retention_days: int = 3,
     batch_size: int = 20000,
-    interval_seconds: int = 60,
+    interval_seconds: int = 300,
     now_value: datetime | None = None,
 ) -> int:
     now_value = now_value or _now()
-    latest = _latest_runtime_metric_cleanup_at(session)
-    if latest is not None and _elapsed_seconds(latest, now_value) < max(1, int(interval_seconds or 60)):
+    latest = _latest_runtime_cleanup_at(session, RUNTIME_METRIC_CLEANUP_KIND)
+    if latest is not None and _elapsed_seconds(latest, now_value) < max(1, int(interval_seconds or 300)):
         return 0
     deleted = cleanup_runtime_metric_snapshots(
         session,
@@ -156,7 +198,7 @@ def cleanup_runtime_metric_snapshots_if_due(
                 "cleanup_kind": RUNTIME_METRIC_CLEANUP_KIND,
                 "retention_days": max(1, int(retention_days or 3)),
                 "batch_size": max(1, int(batch_size or 20000)),
-                "interval_seconds": max(1, int(interval_seconds or 60)),
+                "interval_seconds": max(1, int(interval_seconds or 300)),
             },
             created_at=now_value,
         )
@@ -164,10 +206,10 @@ def cleanup_runtime_metric_snapshots_if_due(
     return deleted
 
 
-def _latest_runtime_metric_cleanup_at(session: Session) -> datetime | None:
+def _latest_runtime_cleanup_at(session: Session, cleanup_kind: str) -> datetime | None:
     return session.scalar(
         select(RuntimeCleanupAudit.created_at)
-        .where(RuntimeCleanupAudit.summary["cleanup_kind"].as_string() == RUNTIME_METRIC_CLEANUP_KIND)
+        .where(RuntimeCleanupAudit.summary["cleanup_kind"].as_string() == cleanup_kind)
         .order_by(RuntimeCleanupAudit.created_at.desc())
         .limit(1)
     )
@@ -257,4 +299,4 @@ def _target_dimension(payload: dict[str, Any]) -> str:
     return ""
 
 
-__all__ = ["cleanup_runtime_details"]
+__all__ = ["cleanup_runtime_details", "cleanup_runtime_details_if_due"]
