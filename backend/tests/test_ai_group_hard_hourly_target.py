@@ -2509,6 +2509,7 @@ def test_hard_hourly_wake_scans_past_non_hard_tasks(monkeypatch):
     assert hard_task.next_run_at == now_value
 
 
+@pytest.mark.no_postgres
 def test_hard_hourly_wake_filters_non_hard_tasks_before_due_check(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
