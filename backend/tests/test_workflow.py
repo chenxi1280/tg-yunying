@@ -10,7 +10,7 @@ from app.auth import get_challenge_target
 from app.database import SessionLocal
 from app.main import app
 from app.integrations.telegram import ChannelCommentSnapshot, ChannelMessageSnapshot, DeveloperAppCredentials, GroupMessageSnapshot, GroupSnapshot, OperationResult, SendResult, VerificationCodeSnapshot
-from app.models import AccountStatus, Action, AiDraft, AiGroupMessageMemory, AiUsageLedger, AuditLog, Campaign, DeveloperAppHealthStatus, FailureType, GroupContextMessage, ListenerSourceState, ManualOperationRecord, Material, MessageFingerprint, MessageTask, OperationTarget, OperationTaskAttempt, ReviewQueue, SchedulingSetting, SourceMediaAsset, TargetRuntimeSummary, Task, TaskRuntimeSummary, TaskStatus, TelegramDeveloperApp, Tenant, TgAccount, TgAccountOnlineState, TgAccountProfileSyncRecord, TgAccountSyncRecord, TgGroup, TgGroupAccount, TgLoginFlow, VerificationTask
+from app.models import AccountStatus, Action, AiDraft, AiGroupMessageMemory, AiUsageLedger, AuditLog, Campaign, DeveloperAppHealthStatus, FailureType, GroupContextMessage, ListenerSourceState, ManualOperationRecord, Material, MessageFingerprint, MessageTask, OperationTarget, OperationTaskAttempt, ReviewQueue, RuntimeMetricSnapshot, SchedulingSetting, SourceMediaAsset, TargetRuntimeSummary, Task, TaskRuntimeSummary, TaskStatus, TelegramDeveloperApp, Tenant, TgAccount, TgAccountOnlineState, TgAccountProfileSyncRecord, TgAccountSyncRecord, TgGroup, TgGroupAccount, TgLoginFlow, VerificationTask
 from app.services._common import _now
 from app.services.notifications import NotificationResult
 from app.services.task_center.listener_runtime import reset_listener_runtime_cache
@@ -112,7 +112,12 @@ def task_detail_actions(client: TestClient, headers: dict[str, str], task_id: st
 
 
 def drain_metrics_for_task(task_id: str) -> None:
-    from app.services.task_center.metrics_runtime import DEFAULT_TASK_SUMMARY_BATCH_SIZE, drain_task_metrics
+    from app.services.task_center.metrics_runtime import (
+        DEFAULT_TASK_SUMMARY_BATCH_SIZE,
+        METRICS_CAPTURE_INTERVAL,
+        METRICS_CAPTURE_MARKER,
+        drain_task_metrics,
+    )
 
     with SessionLocal() as session:
         previous_updated_at = session.scalar(
@@ -121,6 +126,20 @@ def drain_metrics_for_task(task_id: str) -> None:
         task_count = int(session.scalar(select(func.count(Task.id))) or 0)
     max_rounds = (task_count + DEFAULT_TASK_SUMMARY_BATCH_SIZE - 1) // DEFAULT_TASK_SUMMARY_BATCH_SIZE + 1
     for _ in range(max_rounds):
+        with SessionLocal() as session:
+            latest_marker = session.scalar(
+                select(RuntimeMetricSnapshot)
+                .where(
+                    RuntimeMetricSnapshot.metric_name == METRICS_CAPTURE_MARKER,
+                    RuntimeMetricSnapshot.dimension_type == "global",
+                    RuntimeMetricSnapshot.dimension_id == "all",
+                )
+                .order_by(RuntimeMetricSnapshot.captured_at.desc())
+                .limit(1)
+            )
+            if latest_marker is not None:
+                latest_marker.captured_at = _now() - METRICS_CAPTURE_INTERVAL - timedelta(seconds=1)
+                session.commit()
         drain_task_metrics(SessionLocal, limit=DEFAULT_TASK_SUMMARY_BATCH_SIZE)
         with SessionLocal() as session:
             updated_at = session.scalar(

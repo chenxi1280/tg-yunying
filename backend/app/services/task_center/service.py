@@ -1651,7 +1651,7 @@ def _plan_due_task(
     process_type: str | None,
     *,
     limit: int,
-    global_pending: int,
+    global_pending: int | None = None,
 ) -> tuple[int, bool, int]:
     round_goal = _coverage_round_goal(session_factory, task_id)
     processed = 0
@@ -1681,20 +1681,21 @@ def _plan_due_task_batch(
     *,
     limit: int,
     plan_limit: int,
-    global_pending: int,
+    global_pending: int | None = None,
 ) -> tuple[int, int, bool, int]:
     with session_factory() as session:
+        current_global_pending = global_pending if global_pending is not None else planner_global_pending(session)
         session.info["daily_coverage_plan_limit"] = max(1, plan_limit)
         _refresh_planner_heartbeat(session, process_type, limit, task_id=task_id)
         task = session.get(Task, task_id)
         if not task or task.status != "running":
-            return 0, 0, False, global_pending
+            return 0, 0, False, current_global_pending
         if _check_stop_conditions(session, task):
             session.commit()
-            return 0, 0, False, global_pending
+            return 0, 0, False, current_global_pending
         retried = retry_failed_actions(session, task, limit=max(1, limit))
         processed = retried
-        global_pending += max(0, int(retried))
+        current_global_pending += max(0, int(retried))
         has_open_actions, open_actions_are_future = _open_actions_state(session, task)
         if has_open_actions:
             processed += prepare_open_actions_for_planning(session, task)
@@ -1702,18 +1703,18 @@ def _plan_due_task_batch(
         open_actions_allow_planning = has_open_actions and requires_planning_with_open_actions(session, task)
         if _skip_open_ai_plan(session, task, has_open_actions, allow_planning=open_actions_allow_planning):
             session.commit()
-            return processed, 0, open_actions_are_future, global_pending
-        session.info[PLANNER_GLOBAL_PENDING_SESSION_KEY] = global_pending
+            return processed, 0, open_actions_are_future, current_global_pending
+        session.info[PLANNER_GLOBAL_PENDING_SESSION_KEY] = current_global_pending
         if _planning_backlog_blocked(session, task):
             session.commit()
-            return processed, 0, False, global_pending
+            return processed, 0, False, current_global_pending
         planned = build_task_plan(session, task)
         processed += planned
-        global_pending += max(0, int(planned))
+        current_global_pending += max(0, int(planned))
         if task.status == "running":
             task.next_run_at = next_run_after_task(task)
         session.commit()
-        return processed, planned, False, global_pending
+        return processed, planned, False, current_global_pending
 
 
 def _coverage_round_goal(session_factory, task_id: str) -> int:
