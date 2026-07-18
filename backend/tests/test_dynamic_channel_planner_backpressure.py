@@ -127,6 +127,8 @@ def test_channel_message_account_ids_are_loaded_once_for_all_messages() -> None:
     assert len(statements) == 1
     assert "channel_message_id" in repr(statements[0])
     assert "message_id" in repr(statements[0])
+    assert "UNION ALL" in statements[0][0]
+    assert " OR " not in statements[0][0]
 
 
 def test_channel_like_planner_reads_message_history_once() -> None:
@@ -212,6 +214,7 @@ def test_channel_like_planner_reads_message_history_once() -> None:
 
     assert len(statements) == 1
     assert "channel_message_id" in repr(statements[0])
+    assert "UNION ALL" in statements[0][0]
 
 
 def test_channel_view_planner_creates_actions_with_batched_history(monkeypatch) -> None:
