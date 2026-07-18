@@ -1,19 +1,22 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Action, Task
+from app.models import Task
 from app.services.account_capacity import AccountCapacityReservation, account_capacity_decision
 from app.timezone import BEIJING_TZ
 
+from .hard_hourly_history import (
+    HardHourlyAction,
+    recent_actions as _recent_actions,
+    recent_actions_query as _recent_actions_query,
+)
+
 OPEN_STATUSES = {"pending", "claiming", "executing"}
-SEND_FILTER = (Action.task_type == "group_ai_chat", Action.action_type == "send_message")
 STRATEGY_FORCE_PLANNING = "force_planning"
 HARD_HOURLY_FRONTLOAD_WINDOW_SECONDS = 15 * 60
 TRANSIENT_REFRESH_BLOCKERS = frozenset({"account_capacity", "account_offline", "dispatcher_lag"})
@@ -21,15 +24,6 @@ MEMBERSHIP_BLOCKERS = frozenset({"target_join_pending", "target_membership_pendi
 VERIFICATION_BLOCKERS = frozenset({"target_verification_pending", "target_verification_failed", "verification_context_unreadable"})
 CAN_SEND_BLOCKERS = frozenset({"target_can_send_blocked", "target_permission", "rule_binding_missing"})
 AI_DRAFT_BLOCKERS = frozenset({"ai_generation_unavailable", "ai_mino_draft_unavailable", "quality_filter", "content_policy"})
-
-
-@dataclass(frozen=True)
-class HardHourlyAction:
-    id: str
-    status: str
-    account_id: int | None
-    scheduled_at: datetime | None
-    executed_at: datetime | None
 
 
 def enabled(task_or_config: Task | dict[str, Any]) -> bool:
@@ -166,33 +160,6 @@ def _recent_buckets(session: Session, task: Task, now_local: datetime, current_s
     return [
         _bucket_summary(session, task, actions, current_start - timedelta(hours=offset), now_local)
         for offset in reversed(range(24))
-    ]
-
-
-def _recent_actions(session: Session, task: Task, earliest: datetime) -> list[HardHourlyAction]:
-    rows = session.execute(
-        select(
-            Action.id,
-            Action.status,
-            Action.account_id,
-            Action.scheduled_at,
-            Action.executed_at,
-        ).where(
-            Action.tenant_id == task.tenant_id,
-            Action.task_id == task.id,
-            *SEND_FILTER,
-            (Action.executed_at >= earliest) | (Action.scheduled_at >= earliest),
-        )
-    )
-    return [
-        HardHourlyAction(
-            str(row.id),
-            str(row.status),
-            row.account_id,
-            row.scheduled_at,
-            row.executed_at,
-        )
-        for row in rows
     ]
 
 
