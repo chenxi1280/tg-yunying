@@ -102,6 +102,20 @@ deficit = hourly_min_messages - success_current_hour - future_open_current_hour
 
 当 `deficit > 0` 时，Planner 必须尝试追加规划。
 
+#### 4.4.1 历史欠量追赶速率
+
+已结束小时的 `hard_hourly_backfill_planning_deficit` 必须继续保留并通过后续真实发送补偿，不能清零、降级为成功或从验收中移除。为了避免历史总欠量直接放大单轮创建量、排期密度和 24 小时历史重算频率，Planner 使用以下明确速率：
+
+```text
+planning_rate = hourly_min_messages
+                + min(hard_hourly_backfill_planning_deficit, hourly_min_messages)
+```
+
+- 当前小时目标始终保留为 `hourly_min_messages`；只有存在历史欠量时，才额外追加最多一个当前小时目标的追赶量。
+- 单轮最多创建 `min(deficit, planning_rate)` 个 hard-hourly action，Action 排期和创建后 `hard_hourly_next_check_at` 都必须使用同一个 `planning_rate`。
+- 历史债务超过一个小时目标时，剩余债务保留到后续小时继续追赶，生产质量诊断仍以 `hard_hourly_backfill_debt > 0` 阻断验收。
+- 当前小时临近结束时，当前小时目标仍按剩余窗口压缩排期；该速率规则不得把当前小时目标静默降级。
+
 ### 4.5 端到端完成链路
 
 硬目标达成不是单一发送计数，而是以下阶段全部串通后的结果：
@@ -509,6 +523,7 @@ AI 活跃群任务卡片增加硬目标摘要：
 - `max_actions_per_hour` 小于硬目标时，不阻止硬目标规划，但 stats / 详情显示目标超过普通上限。
 - 已存在未来 pending 动作会计入 `open_current_hour`，避免重复规划。
 - 已过期 pending 不计入未来待执行覆盖，必须进入 overdue / dispatcher lag 口径。
+- 历史欠量很大时，单轮创建量、Action 排期和下一次 hard-hourly checkpoint 都必须使用 `planning_rate`；不得把历史总欠量直接作为当前瞬时排期密度或固定 30 秒重算原因。
 - 小时切换后，上一小时未达标结果保留在最近 24 小时桶中。
 - `/api/tasks`、`/api/tasks/{id}` 和 `/api/tasks/{id}/stats` 三个入口返回的硬目标 stats 一致。
 
