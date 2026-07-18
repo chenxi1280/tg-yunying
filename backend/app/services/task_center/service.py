@@ -1874,8 +1874,8 @@ def _recover_continuous_task_states(session: Session) -> int:
             Task.deleted_at.is_(None),
         )
     ):
-        action_count = session.scalar(select(func.count(Action.id)).where(Action.task_id == task.id)) or 0
-        if action_count:
+        has_actions = session.scalar(select(Action.id).where(Action.task_id == task.id).limit(1))
+        if has_actions:
             continue
         last_error = task.last_error or ""
         if not any(text in last_error for text in stale_ai_errors):

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import timedelta
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.database import Base
@@ -201,6 +201,46 @@ def test_recovery_recovers_regular_dynamic_task_with_non_mapping_stats():
     assert task.status == "running"
     assert task.next_run_at is not None
     assert task.stats == ["legacy-stats"]
+
+
+def test_recovery_checks_for_existing_actions_without_counting_history():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    action_queries: list[str] = []
+
+    def record_action_query(_conn, _cursor, statement, _parameters, _context, _executemany):
+        if "FROM actions" in statement:
+            action_queries.append(statement.lower())
+
+    event.listen(engine, "before_cursor_execute", record_action_query)
+    try:
+        with Session(engine) as session:
+            session.add(Tenant(id=1, name="默认运营空间"))
+            session.add(Task(
+                id="continuous-task-with-history",
+                tenant_id=1,
+                name="有历史 action 的连续任务",
+                type="group_ai_chat",
+                status="running",
+                last_error="暂无群上下文",
+            ))
+            session.add(Action(
+                id="continuous-task-history-action",
+                tenant_id=1,
+                task_id="continuous-task-with-history",
+                task_type="group_ai_chat",
+                action_type="send_message",
+                status="success",
+                scheduled_at=_now(),
+            ))
+            session.commit()
+
+            assert task_service._recover_continuous_task_states(session) == 0
+    finally:
+        event.remove(engine, "before_cursor_execute", record_action_query)
+
+    assert any("limit" in statement for statement in action_queries)
+    assert all("count(" not in statement for statement in action_queries)
 
 
 def test_recovery_limits_unknown_membership_reprobes_to_drain_limit(monkeypatch):
