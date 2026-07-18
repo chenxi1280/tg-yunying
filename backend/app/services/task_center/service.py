@@ -2615,7 +2615,10 @@ def _hard_hourly_wake_query(now: datetime):
             Task.status == "running",
             Task.type == "group_ai_chat",
             Task.deleted_at.is_(None),
-            Task.type_config["hard_hourly_target_enabled"].as_boolean().is_(True),
+            or_(
+                Task.type_config["hard_hourly_target_enabled"].as_boolean().is_(True),
+                Task.type_config["hard_hourly_target_enabled"].as_string() == "true",
+            ),
             or_(Task.hard_hourly_next_check_at.is_(None), Task.hard_hourly_next_check_at <= now),
         )
         .order_by(Task.hard_hourly_next_check_at.asc().nullsfirst(), Task.priority.asc(), Task.next_run_at.asc().nullsfirst(), Task.created_at.asc())
