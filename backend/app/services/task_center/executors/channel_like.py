@@ -10,7 +10,8 @@ from ..account_pool import daily_uncovered_account_count, select_task_accounts
 from ..channel_membership import channel_member_accounts, gate_channel_membership
 from ..pacing import schedule_times
 from ..payloads import LikeMessagePayload, create_like_action
-from .common import adjust_for_account_hour_limit, channel_message_account_ids_for_messages, channel_message_payload, channel_scope, quantity_jitter_bounds, quantity_with_jitter, record_channel_capacity_warning
+from .channel_action_history import channel_message_account_ids_for_messages
+from .common import adjust_for_account_hour_limit, channel_message_payload, channel_scope, quantity_jitter_bounds, quantity_with_jitter, record_channel_capacity_warning
 
 LIKE_UNAVAILABLE_SKIP_CODES = {"reaction_unavailable_message", "reaction_unavailable_sibling"}
 PRIMARY_REACTION_RATIO = 0.7

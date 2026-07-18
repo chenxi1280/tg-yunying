@@ -3,17 +3,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import timedelta
 
-from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import Action, ChannelMessage, OperationTarget, Task
+from app.models import ChannelMessage, OperationTarget, Task
 from app.services._common import _now
 
 from ..account_pool import daily_uncovered_account_count, select_task_accounts
 from ..channel_membership import channel_member_accounts, gate_channel_membership
 from ..pacing import schedule_times
 from ..payloads import ViewMessagePayload, create_view_action
-from .common import adjust_for_account_hour_limit, channel_message_account_ids_for_messages, channel_message_payload, channel_scope, quantity_jitter_bounds, quantity_with_jitter, record_channel_capacity_warning
+from .channel_action_history import ChannelViewDailyCounts, channel_message_account_ids_for_messages, channel_message_success_counts, channel_view_daily_action_counts
+from .common import adjust_for_account_hour_limit, channel_message_payload, channel_scope, quantity_jitter_bounds, quantity_with_jitter, record_channel_capacity_warning
 
 
 def build_plan(session: Session, task: Task) -> int:
@@ -38,7 +38,8 @@ def build_plan(session: Session, task: Task) -> int:
         return 0
     record_channel_capacity_warning(task, "浏览", daily_target, len(accounts))
     execution_date = _now().date().isoformat()
-    task_remaining_today = _remaining_task_daily_capacity(session, task, execution_date, effective_daily_cap)
+    daily_counts = _view_daily_counts(session, task, execution_date, effective_daily_cap, config)
+    task_remaining_today = _remaining_task_daily_capacity(effective_daily_cap, daily_counts.total)
     if task_remaining_today <= 0:
         task.last_error = "任务今日浏览安全上限已用完，等待下一日继续规划"
         return 0
@@ -49,6 +50,7 @@ def build_plan(session: Session, task: Task) -> int:
         messages,
         execution_date=execution_date,
     )
+    completed_counts = channel_message_success_counts(session, task, "view_message", messages)
     actions = _view_actions_for_messages(
         session,
         task,
@@ -60,11 +62,13 @@ def build_plan(session: Session, task: Task) -> int:
             daily_target=daily_target,
             total_target=total_target,
             task_remaining_today=task_remaining_today,
+            completed_counts=completed_counts,
+            daily_counts_by_account=daily_counts.by_account,
         ),
         account_ids_by_message,
     )
     if not actions:
-        task.last_error = _empty_view_plan_message(session, task, config, messages, total_target)
+        task.last_error = _empty_view_plan_message(task, config, messages, total_target, completed_counts)
         return 0
     return _create_view_actions(session, task, channel, config, actions, execution_date, daily_target, total_target)
 
@@ -132,12 +136,12 @@ def _view_actions_for_messages(
     for message in inputs.messages:
         if _message_expired(message, config):
             continue
-        quantity = _view_quantity_for_message(session, task, config, inputs, message, coverage_remaining, account_ids_by_message)
+        quantity = _view_quantity_for_message(config, inputs, message, coverage_remaining, account_ids_by_message)
         quantity = min(quantity, task_remaining_today)
         if quantity <= 0:
             continue
         candidates = [account for account in inputs.accounts if account.id not in account_ids_by_message[message.id]]
-        selected = [account for account in candidates if _account_has_view_daily_capacity(session, task, account.id, inputs.execution_date, config)][:quantity]
+        selected = [account for account in candidates if _account_has_view_daily_capacity(account.id, config, inputs.daily_counts_by_account)][:quantity]
         actions.extend((message, account.id) for account in selected)
         coverage_remaining = max(0, coverage_remaining - len(selected))
         task_remaining_today -= len(selected)
@@ -154,11 +158,11 @@ class ViewPlanInputs:
     daily_target: int
     total_target: int
     task_remaining_today: int
+    completed_counts: dict[int, int]
+    daily_counts_by_account: dict[int, int]
 
 
 def _view_quantity_for_message(
-    session: Session,
-    task: Task,
     config: dict,
     inputs: ViewPlanInputs,
     message: ChannelMessage,
@@ -166,59 +170,36 @@ def _view_quantity_for_message(
     account_ids_by_message: dict[int, set[int]],
 ) -> int:
     base = quantity_with_jitter(inputs.daily_target, float(config.get("view_count_jitter") or 0))
-    completed_count = _completed_view_count(session, task, message)
+    completed_count = inputs.completed_counts.get(message.id, 0)
     if completed_count >= inputs.total_target:
         return 0
     used_count = len(account_ids_by_message[message.id])
     return max(0, min(max(base, coverage_remaining), inputs.total_target - completed_count) - used_count)
 
 
-def _remaining_task_daily_capacity(session: Session, task: Task, execution_date: str, daily_cap: int | None) -> int:
+def _view_daily_counts(
+    session: Session,
+    task: Task,
+    execution_date: str,
+    daily_cap: int | None,
+    config: dict,
+) -> ChannelViewDailyCounts:
+    if daily_cap is None and int(config.get("max_views_per_account_per_day") or 0) <= 0:
+        return ChannelViewDailyCounts(total=0, by_account={})
+    return channel_view_daily_action_counts(session, task, execution_date)
+
+
+def _remaining_task_daily_capacity(daily_cap: int | None, planned_today: int) -> int:
     if daily_cap is None:
         return 100000000
-    planned_today = 0
-    for payload in session.scalars(
-        select(Action.payload).where(
-            Action.task_id == task.id,
-            Action.action_type == "view_message",
-            Action.status.in_(["pending", "executing", "success"]),
-        )
-    ):
-        if isinstance(payload, dict) and str(payload.get("execution_date") or "") == execution_date:
-            planned_today += 1
     return max(0, daily_cap - planned_today)
 
 
-def _completed_view_count(session: Session, task: Task, message: ChannelMessage) -> int:
-    return int(
-        session.scalar(
-            select(func.count(Action.id)).where(
-                Action.task_id == task.id,
-                Action.action_type == "view_message",
-                Action.status == "success",
-                Action.payload["channel_message_id"].as_integer() == message.id,
-            )
-        )
-        or 0
-    )
-
-
-def _account_has_view_daily_capacity(session: Session, task: Task, account_id: int, execution_date: str, config: dict) -> bool:
+def _account_has_view_daily_capacity(account_id: int, config: dict, daily_counts_by_account: dict[int, int]) -> bool:
     limit = int(config.get("max_views_per_account_per_day") or 0)
     if limit <= 0:
         return True
-    planned = 0
-    for payload in session.scalars(
-        select(Action.payload).where(
-            Action.task_id == task.id,
-            Action.account_id == account_id,
-            Action.action_type == "view_message",
-            Action.status.in_(["pending", "executing", "success"]),
-        )
-    ):
-        if isinstance(payload, dict) and str(payload.get("execution_date") or "") == execution_date:
-            planned += 1
-    return planned < limit
+    return daily_counts_by_account.get(account_id, 0) < limit
 
 
 def _message_expired(message: ChannelMessage, config: dict) -> bool:
@@ -229,29 +210,28 @@ def _message_expired(message: ChannelMessage, config: dict) -> bool:
 
 
 def _empty_view_plan_message(
-    session: Session,
     task: Task,
     config: dict,
     messages: list[ChannelMessage],
     total_target: int,
+    completed_counts: dict[int, int],
 ) -> str:
-    if _view_targets_inactive_or_reached(session, task, config, messages, total_target):
+    if _view_targets_inactive_or_reached(config, messages, total_target, completed_counts):
         return ""
     return task.last_error or "没有可新增的有效浏览账号"
 
 
 def _view_targets_inactive_or_reached(
-    session: Session,
-    task: Task,
     config: dict,
     messages: list[ChannelMessage],
     total_target: int,
+    completed_counts: dict[int, int],
 ) -> bool:
     if not messages:
         return False
     if all(_message_expired(message, config) for message in messages):
         return True
-    return all(_completed_view_count(session, task, message) >= total_target for message in messages)
+    return all(completed_counts.get(message.id, 0) >= total_target for message in messages)
 
 
 __all__ = ["build_plan"]

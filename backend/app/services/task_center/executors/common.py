@@ -199,41 +199,16 @@ def channel_message_account_ids_for_messages(
     execution_date: str | None = None,
     include_skipped_codes: set[str] | None = None,
 ) -> dict[int, set[int]]:
-    account_ids_by_message = {message.id: set() for message in messages}
-    if not account_ids_by_message:
-        return account_ids_by_message
-    message_by_channel_id = {message.id: message.id for message in messages}
-    message_by_remote_id = {message.message_id: message.id for message in messages if message.message_id is not None}
-    statuses = ["pending", "executing", "success"] if execution_date else ["pending", "executing", "success", "failed"]
-    if include_skipped_codes:
-        statuses.append("skipped")
-    for account_id, payload, status, result in session.execute(
-        select(Action.account_id, Action.payload, Action.status, Action.result).where(
-            Action.task_id == task.id,
-            Action.action_type == action_type,
-            Action.account_id.is_not(None),
-            Action.status.in_(statuses),
-        )
-    ):
-        if not isinstance(payload, dict):
-            continue
-        if status == "skipped" and not _skipped_code_matches(result, include_skipped_codes):
-            continue
-        if execution_date and str(payload.get("execution_date") or "") != execution_date:
-            continue
-        message_ids = {
-            message_by_channel_id.get(payload.get("channel_message_id")),
-            message_by_remote_id.get(payload.get("message_id")),
-        }
-        for message_id in message_ids - {None}:
-            account_ids_by_message[message_id].add(int(account_id))
-    return account_ids_by_message
+    from .channel_action_history import channel_message_account_ids_for_messages as load_account_ids
 
-
-def _skipped_code_matches(result: dict | None, include_skipped_codes: set[str] | None) -> bool:
-    if not include_skipped_codes or not isinstance(result, dict):
-        return False
-    return str(result.get("error_code") or "") in include_skipped_codes
+    return load_account_ids(
+        session,
+        task,
+        action_type,
+        messages,
+        execution_date=execution_date,
+        include_skipped_codes=include_skipped_codes,
+    )
 
 
 def channel_message_action_count(session: Session, task: Task, action_type: str, message: ChannelMessage) -> int:
