@@ -78,6 +78,30 @@ class Action(Base):
         Index("ix_actions_task_type_executed_at", "tenant_id", "task_id", "action_type", "executed_at"),
         Index("ix_actions_task_type_created_at", "tenant_id", "task_id", "action_type", text("created_at DESC")),
         Index(
+            "ix_actions_recovery_hard_hourly_pending",
+            "scheduled_at",
+            "created_at",
+            sqlite_where=text(
+                "task_type = 'group_ai_chat' AND action_type = 'send_message' "
+                "AND status IN ('pending', 'claiming') AND JSON_EXTRACT(payload, '$.hard_hourly_target') IS 1"
+            ),
+            postgresql_where=text(
+                "task_type = 'group_ai_chat' AND action_type = 'send_message' "
+                "AND status IN ('pending', 'claiming') AND CAST(payload ->> 'hard_hourly_target' AS BOOLEAN) IS TRUE"
+            ),
+        ),
+        Index(
+            "ix_actions_pending_membership_fast_track",
+            "scheduled_at",
+            "created_at",
+            sqlite_where=text(
+                "status = 'pending' AND action_type IN ('ensure_target_membership', 'ensure_channel_membership')"
+            ),
+            postgresql_where=text(
+                "status = 'pending' AND action_type IN ('ensure_target_membership', 'ensure_channel_membership')"
+            ),
+        ),
+        Index(
             "uq_actions_executing_account",
             "account_id",
             unique=True,

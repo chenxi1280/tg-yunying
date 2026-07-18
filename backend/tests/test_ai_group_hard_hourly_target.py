@@ -31,6 +31,8 @@ from app.services.task_center.executors.group_ai_chat import (
     CoveragePlanState,
     _coverage_plan_state,
     _daily_coverage_uncovered_count,
+    _hard_hourly_batch_size,
+    _hard_hourly_schedule,
     _next_cycle_index,
     _online_ready_accounts,
     _plan_account_limit,
@@ -42,6 +44,8 @@ from app.services.task_center.hard_hourly import (
     _recent_actions_query,
     current_progress as hard_hourly_current_progress,
     hard_schedule_times,
+    mark_plan_result,
+    planning_rate,
     planner_progress_snapshot,
     requires_planning as hard_hourly_requires_planning,
 )
@@ -1496,7 +1500,7 @@ def test_group_ai_chat_hard_hourly_target_plans_large_deficit_in_batches(monkeyp
     assert created == 300
     assert len(actions) == 300
     assert task.stats["hard_hourly_last_planned_count"] == 300
-    assert task.stats["hard_hourly_next_check_at"] == "2026-06-07T20:10:30"
+    assert task.stats["hard_hourly_next_check_at"] == "2026-06-07T21:00:00"
     assert all(action.payload["hard_hourly_deficit_at_plan"] == 300 for action in actions)
     assert all(action.payload["ai_generation_status"] == "pending" for action in actions)
     assert all(action.payload["message_text"] == "" for action in actions)
@@ -1591,6 +1595,89 @@ def test_hard_hourly_schedule_frontloads_when_bucket_cannot_be_evenly_spaced():
     times = hard_schedule_times(30, task, now_value, target_total=300)
 
     assert times == [now_value for _ in range(30)]
+
+
+@pytest.mark.no_postgres
+def test_hard_hourly_backfill_rate_adds_at_most_one_hour_goal():
+    assert planning_rate({"goal": 120, "backfill_planning_deficit": 0}) == 120
+    assert planning_rate({"goal": 120, "backfill_planning_deficit": 50}) == 170
+    assert planning_rate({"goal": 120, "backfill_planning_deficit": 2400}) == 240
+
+
+@pytest.mark.no_postgres
+def test_hard_hourly_batch_schedule_uses_bounded_backfill_rate(monkeypatch):
+    now_value = datetime(2026, 6, 7, 20, 10)
+    task = Task(
+        id="task-hard-hourly-backfill-rate",
+        tenant_id=1,
+        name="硬目标历史欠量配速",
+        type="group_ai_chat",
+        status="running",
+        timezone="Asia/Shanghai",
+        type_config={"hard_hourly_target_enabled": True, "hourly_min_messages": 120},
+    )
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
+
+    progress = {"goal": 120, "deficit": 2520, "backfill_planning_deficit": 2400}
+
+    assert _hard_hourly_batch_size({}, progress) == 240
+
+    times = _hard_hourly_schedule(task, progress, 60)
+
+    assert times[0] == now_value
+    assert times[1] == now_value + timedelta(seconds=3)
+    assert times[-1] == now_value + timedelta(seconds=177)
+
+
+@pytest.mark.no_postgres
+def test_hard_hourly_created_batch_rechecks_at_bounded_backfill_rate():
+    now_value = datetime(2026, 6, 7, 20, 10)
+    task = Task(
+        id="task-hard-hourly-recheck-rate",
+        tenant_id=1,
+        name="硬目标批次检查频率",
+        type="group_ai_chat",
+        status="running",
+        type_config={"hard_hourly_target_enabled": True, "hourly_min_messages": 120},
+    )
+
+    mark_plan_result(
+        task,
+        {
+            "goal": 120,
+            "deficit": 2520,
+            "backfill_planning_deficit": 2400,
+            "hour_end": datetime(2026, 6, 7, 21, 0),
+            "now": now_value,
+        },
+        created=60,
+    )
+
+    assert task.hard_hourly_next_check_at == datetime(2026, 6, 7, 20, 25)
+
+
+@pytest.mark.no_postgres
+def test_hard_hourly_coverage_waiting_reuses_daily_coverage_checkpoint():
+    now_value = datetime(2026, 6, 7, 20, 10)
+    coverage_next = now_value + timedelta(seconds=120)
+    task = Task(
+        id="task-hard-hourly-coverage-waiting",
+        tenant_id=1,
+        name="硬目标覆盖账本等待",
+        type="group_ai_chat",
+        status="running",
+        type_config={"hard_hourly_target_enabled": True, "hourly_min_messages": 120},
+        stats={"daily_coverage_next_check_at": coverage_next.isoformat()},
+    )
+
+    mark_plan_result(
+        task,
+        {"goal": 120, "deficit": 2400, "hour_end": datetime(2026, 6, 7, 21, 0), "now": now_value},
+        created=0,
+        blockers={"coverage_waiting": 1},
+    )
+
+    assert task.hard_hourly_next_check_at == coverage_next
 
 
 def test_group_ai_chat_hard_hourly_reuses_selected_accounts_when_front_accounts_are_full(monkeypatch):
@@ -3043,7 +3130,7 @@ def test_group_ai_chat_hard_hourly_reply_shortfall_fills_with_normal_turns(monke
     assert all(not action.payload["reply_to_message_id"] for action in actions)
     assert task.stats["hard_hourly_last_planned_count"] == 3
     assert "hard_hourly_last_blockers" not in task.stats
-    assert task.stats["hard_hourly_next_check_at"] == "2026-06-07T20:10:30"
+    assert task.stats["hard_hourly_next_check_at"] == "2026-06-07T21:00:00"
 
 
 @pytest.mark.no_postgres

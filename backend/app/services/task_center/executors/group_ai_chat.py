@@ -47,7 +47,13 @@ from ..daily_coverage_planning import (
     ready_coverage_plan_batch,
 )
 from ..fingerprints import fingerprint_exists, remember_fingerprint
-from ..hard_hourly import current_progress, enabled as hard_hourly_enabled, hard_schedule_times, mark_plan_result
+from ..hard_hourly import (
+    current_progress,
+    enabled as hard_hourly_enabled,
+    hard_schedule_times,
+    mark_plan_result,
+    planning_rate as hard_hourly_planning_rate,
+)
 from ..pacing import current_hour_rounds, operation_intensity, schedule_times
 from ..payloads import SendMessagePayload, create_send_action
 from ..targets import group_from_reference
@@ -2346,17 +2352,18 @@ def _hard_hourly_round_config(config: dict, progress: dict[str, object]) -> dict
 
 def _hard_hourly_batch_size(config: dict, progress: dict[str, object]) -> int:
     deficit = max(1, int(progress.get("deficit") or 1))
-    return deficit
+    return min(deficit, hard_hourly_planning_rate(progress))
 
 
 def _hard_hourly_schedule(task: Task, progress: dict[str, object], total: int) -> list[datetime]:
     if not progress:
         return []
+    hourly_goal = max(total, hard_hourly_planning_rate(progress))
     return hard_schedule_times(
         total,
         task,
         _now(),
-        target_total=int(progress.get("deficit") or total),
+        target_total=hourly_goal,
     )
 
 
