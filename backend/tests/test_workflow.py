@@ -4017,14 +4017,19 @@ def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(monkeypatch):
 
         messages.append((f"ai-context-2-{context_suffix}", f"第二条真人上下文 {context_suffix}"))
         from app.services.group_listeners import collect_group_context
+        from app.services.task_center.listener_runtime import _mark_listener_runtime_success
 
         with SessionLocal() as session:
             db_group = session.get(TgGroup, group["id"])
             assert db_group is not None
             inserted = collect_group_context(session, db_group, [account["id"]])
-            task = session.get(Task, task_id)
-            assert task is not None
-            task.next_run_at = datetime.now(UTC).replace(tzinfo=None)
+            _mark_listener_runtime_success(
+                session,
+                [task_id],
+                group["id"],
+                inserted,
+                datetime.now(UTC).replace(tzinfo=None),
+            )
             session.commit()
         assert inserted >= 1
 

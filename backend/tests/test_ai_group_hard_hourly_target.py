@@ -44,6 +44,7 @@ from app.services.task_center.hard_hourly import (
     hard_schedule_times,
     requires_planning as hard_hourly_requires_planning,
 )
+from app.services.task_center.listener_runtime import _mark_listener_runtime_success
 from app.services.task_center.service import (
     _merge_planner_task_ids,
     _normal_planner_task_ids,
@@ -519,6 +520,40 @@ def test_normal_planner_task_ids_respect_hard_hourly_checkpoint_unless_daily_cov
         task_ids = _normal_planner_task_ids(session, limit=10, now=now_value)
 
     assert set(task_ids) == {"daily-coverage-due", "normal-due"}
+
+
+@pytest.mark.no_postgres
+def test_new_listener_context_wakes_hard_hourly_task_once(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 7, 20, 30)
+    monkeypatch.setattr(
+        "app.services.task_center.service.hard_hourly_current_progress",
+        lambda *_args, **_kwargs: {"deficit": 3},
+    )
+
+    with Session(engine) as session:
+        task = Task(
+            id="hard-hourly-listener-wake",
+            tenant_id=1,
+            name="新上下文唤醒硬目标",
+            type="group_ai_chat",
+            status="running",
+            next_run_at=now_value + timedelta(hours=1),
+            type_config={"hard_hourly_target_enabled": True, "hourly_min_messages": 300},
+            stats={"hard_hourly_next_check_at": (now_value + timedelta(minutes=1)).isoformat()},
+        )
+        session.add_all([Tenant(id=1, name="默认运营空间"), task])
+        session.commit()
+
+        _mark_listener_runtime_success(session, [task.id], group_id=7, inserted=0, occurred_at=now_value)
+        assert "hard_hourly_next_check_at" in task.stats
+
+        _mark_listener_runtime_success(session, [task.id], group_id=7, inserted=1, occurred_at=now_value)
+        assert "hard_hourly_next_check_at" not in task.stats
+        assert task.next_run_at == now_value
+        assert _wake_hard_hourly_tasks(session, limit=10, now=now_value) == [task.id]
+        assert task.stats["hard_hourly_next_check_at"] == (now_value + timedelta(seconds=30)).isoformat()
 
 
 @pytest.mark.no_postgres
