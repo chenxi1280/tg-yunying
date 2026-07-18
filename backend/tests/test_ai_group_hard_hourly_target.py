@@ -46,8 +46,10 @@ from app.services.task_center.hard_hourly import (
 )
 from app.services.task_center.service import (
     _merge_planner_task_ids,
+    _normal_planner_task_ids,
     _wake_hard_hourly_tasks,
     create_group_ai_chat_task,
+    drain_task_planner,
     list_tasks,
     precheck_task_creation,
 )
@@ -466,6 +468,90 @@ def test_hard_hourly_wake_skips_future_check_without_recomputing_progress(monkey
         task_ids = _wake_hard_hourly_tasks(session, limit=10)
 
     assert task_ids == []
+
+
+@pytest.mark.no_postgres
+def test_normal_planner_task_ids_respect_hard_hourly_checkpoint_unless_daily_coverage_is_due():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 7, 20, 30)
+    hard_config = {"hard_hourly_target_enabled": True, "hourly_min_messages": 300}
+
+    with Session(engine) as session:
+        session.add_all(
+            [
+                Tenant(id=1, name="默认运营空间"),
+                Task(
+                    id="hard-hourly-deferred",
+                    tenant_id=1,
+                    name="硬目标等待检查",
+                    type="group_ai_chat",
+                    status="running",
+                    next_run_at=now_value - timedelta(seconds=1),
+                    type_config=hard_config,
+                    stats={"hard_hourly_next_check_at": (now_value + timedelta(minutes=1)).isoformat()},
+                ),
+                Task(
+                    id="daily-coverage-due",
+                    tenant_id=1,
+                    name="日覆盖到期",
+                    type="group_ai_chat",
+                    status="running",
+                    next_run_at=now_value - timedelta(seconds=1),
+                    type_config=hard_config,
+                    stats={
+                        "hard_hourly_next_check_at": (now_value + timedelta(minutes=1)).isoformat(),
+                        "daily_coverage_next_check_at": (now_value - timedelta(seconds=1)).isoformat(),
+                    },
+                ),
+                Task(
+                    id="normal-due",
+                    tenant_id=1,
+                    name="普通到期任务",
+                    type="channel_view",
+                    status="running",
+                    next_run_at=now_value - timedelta(seconds=1),
+                ),
+            ]
+        )
+        session.commit()
+
+        task_ids = _normal_planner_task_ids(session, limit=10, now=now_value)
+
+    assert set(task_ids) == {"daily-coverage-due", "normal-due"}
+
+
+@pytest.mark.no_postgres
+def test_planner_does_not_bypass_future_hard_hourly_checkpoint(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 7, 20, 30)
+
+    monkeypatch.setattr("app.services.task_center.service._now", lambda: now_value)
+    monkeypatch.setattr(
+        "app.services.task_center.service.hard_hourly_current_progress",
+        lambda *_args, **_kwargs: pytest.fail("future hard-hourly check must not enter planner"),
+    )
+
+    with Session(engine) as session:
+        session.add_all(
+            [
+                Tenant(id=1, name="默认运营空间"),
+                Task(
+                    id="hard-hourly-drain-deferred",
+                    tenant_id=1,
+                    name="硬目标 drain 等待检查",
+                    type="group_ai_chat",
+                    status="running",
+                    next_run_at=now_value - timedelta(seconds=1),
+                    type_config={"hard_hourly_target_enabled": True, "hourly_min_messages": 300},
+                    stats={"hard_hourly_next_check_at": (now_value + timedelta(minutes=1)).isoformat()},
+                ),
+            ]
+        )
+        session.commit()
+
+    assert drain_task_planner(lambda: Session(engine), limit=1) == 0
 
 
 @pytest.mark.no_postgres

@@ -1623,15 +1623,9 @@ def _drain_task_planner(session_factory, *, limit: int, process_type: str | None
         processed += process_account_eligibility_events(session, limit=limit)
         processed += reconcile_all_account_scopes_if_due(session)
         _activate_pending_tasks(session)
-        hard_hourly_task_ids = _wake_hard_hourly_tasks(session, limit=limit)
-        task_ids = list(
-            session.scalars(
-                select(Task.id)
-                .where(Task.status == "running", (Task.next_run_at.is_(None)) | (Task.next_run_at <= _now()))
-                .order_by(Task.priority.asc(), Task.next_run_at.asc().nullsfirst(), Task.created_at.asc())
-                .limit(max(1, limit))
-            )
-        )
+        now = _now()
+        hard_hourly_task_ids = _wake_hard_hourly_tasks(session, limit=limit, now=now)
+        task_ids = _normal_planner_task_ids(session, limit=limit, now=now)
         task_ids = _merge_planner_task_ids(hard_hourly_task_ids, task_ids, limit)
         global_pending = planner_global_pending(session) if task_ids else 0
         session.commit()
@@ -2549,8 +2543,25 @@ def _merge_planner_task_ids(primary: list[str], secondary: list[str], limit: int
     return merged
 
 
-def _wake_hard_hourly_tasks(session: Session, *, limit: int) -> list[str]:
-    now = _now()
+def _normal_planner_task_ids(session: Session, *, limit: int, now: datetime) -> list[str]:
+    target_count = max(1, limit)
+    task_ids: list[str] = []
+    query = (
+        select(Task)
+        .where(Task.status == "running", (Task.next_run_at.is_(None)) | (Task.next_run_at <= now))
+        .order_by(Task.priority.asc(), Task.next_run_at.asc().nullsfirst(), Task.created_at.asc())
+    )
+    for task in session.scalars(query).yield_per(target_count):
+        if _hard_hourly_recheck_is_pending(task, now):
+            continue
+        task_ids.append(task.id)
+        if len(task_ids) >= target_count:
+            break
+    return task_ids
+
+
+def _wake_hard_hourly_tasks(session: Session, *, limit: int, now: datetime | None = None) -> list[str]:
+    now = now or _now()
     target_count = max(HARD_HOURLY_WAKE_MIN_SCAN, max(1, limit))
     candidates = sorted(
         (
@@ -2616,8 +2627,20 @@ def _hard_hourly_due_sort_key(task: Task, progress: dict[str, Any], next_check_a
 
 
 def _hard_hourly_next_check_at(task: Task) -> datetime | None:
+    return _task_stats_datetime(task, "hard_hourly_next_check_at")
+
+
+def _hard_hourly_recheck_is_pending(task: Task, now: datetime) -> bool:
+    hard_next_check = _hard_hourly_next_check_at(task)
+    if not hard_hourly_enabled(task) or hard_next_check is None or hard_next_check <= now:
+        return False
+    coverage_next_check = _task_stats_datetime(task, "daily_coverage_next_check_at")
+    return coverage_next_check is None or coverage_next_check > now
+
+
+def _task_stats_datetime(task: Task, key: str) -> datetime | None:
     stats = task.stats if isinstance(task.stats, dict) else {}
-    value = stats.get("hard_hourly_next_check_at")
+    value = stats.get(key)
     if not value:
         return None
     try:
