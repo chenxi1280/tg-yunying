@@ -535,7 +535,7 @@
 
 补充：BG-004 的硬小时目标不只看当前小时 `planning_deficit`。`hard_hourly.current_progress` 会把已结束小时的净缺口计算为 `hard_hourly_backfill_debt`，扣减当前小时已规划超额后进入 Planner 继续创建真实发送 action；生产质量诊断以 `hard_hourly_backfill_debt > 0` 阻断验收，但不把历史 `missed` bucket 回写伪造成 `met`。
 
-补充：BG-004 的 `hard_hourly_next_check_at` 是 Planner 的持久化复查点，不是展示字段。当前小时和历史补量均无 planning deficit 时写为本小时结束；存在欠债时按 hard-hourly 的既有 30 秒复查节奏写入，避免同一 action 历史在每个 worker drain 中重复统计，同时不掩盖真实补量。每个启用 hard-hourly 的 task-batch 只读取一次 progress，open-action、backlog 和 group AI 规划判断复用该快照；listener 新写入真人上下文时，`group_ai_chat` 清除该复查点并单次唤醒 Planner，若该轮规划中止且未写 marker，Planner 必须用同一快照写回复查点，旧 `next_run_at` 不得绕过它。
+补充：BG-004 的 `tasks.hard_hourly_next_check_at` 是 Planner 的持久化复查点，JSON 同名字段仅保留展示兼容，旧值首次读取时提升到独立列。当前小时和历史补量均无 planning deficit 时写为本小时结束；存在欠债时按 hard-hourly 的既有 30 秒复查节奏写入，部分索引只扫描已到期或尚未迁移的 running AI 活群。每个启用 hard-hourly 的任务轮次只读取一次 24 小时 progress，所有最多 20 条的子批次、open-action、backlog 和 group AI 规划判断复用该快照，并按该快照 deficit 截断本轮计划。listener 新写入真人上下文时将复查点显式设为当前时刻并单次唤醒 Planner；重置或配置更新清空旧计划时同步清除检查点，若该轮规划中止且未写 marker，Planner 必须用同一快照写回复查点，旧 `next_run_at` 不得绕过它。metrics 保持五分钟采集，但 task summary 不再触发 hard-hourly 24 小时历史重算。
 
 ## 6. 维护口径
 

@@ -55,6 +55,13 @@ def planner_progress_snapshot(session: Session, task: Task, now: datetime) -> di
     return dict(cache[key])
 
 
+def seed_planner_progress_snapshot(session: Session, task: Task, progress: dict[str, Any]) -> dict[str, Any]:
+    cache = session.info.setdefault(PLANNER_PROGRESS_SESSION_KEY, {})
+    snapshot = dict(progress)
+    cache[(task.tenant_id, task.id)] = snapshot
+    return dict(snapshot)
+
+
 def _current_progress(session: Session, task: Task, now: datetime) -> dict[str, Any]:
     stats = hard_hourly_stats(session, task, now, task.stats or {})
     now_local = normalize(task, now)
@@ -144,7 +151,9 @@ def mark_plan_result(task: Task, progress: dict[str, Any], created: int, blocker
         stats["hard_hourly_last_blockers"] = blockers
     elif created > 0:
         stats.pop("hard_hourly_last_blockers", None)
-    stats["hard_hourly_next_check_at"] = _next_check_at(task, blockers or {}, progress, current).isoformat()
+    next_check_at = _next_check_at(task, blockers or {}, progress, current)
+    stats["hard_hourly_next_check_at"] = next_check_at.isoformat()
+    task.hard_hourly_next_check_at = next_check_at
     task.stats = stats
 
 

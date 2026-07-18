@@ -29,6 +29,7 @@ class Task(Base):
     scheduled_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     max_duration_hours: Mapped[int | None] = mapped_column(Integer, nullable=True)
     next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    hard_hourly_next_check_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[str] = mapped_column(Text, default="")
     account_config: Mapped[dict] = mapped_column(JSON, default=dict)
     pacing_config: Mapped[dict] = mapped_column(JSON, default=dict)

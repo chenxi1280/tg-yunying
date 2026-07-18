@@ -127,7 +127,12 @@ def _refresh_task_summary_batch(session_factory, limit: int) -> int:
             task = session.get(Task, task_id)
             if task is None:
                 continue
-            refresh_task_stats(session, task, include_configured_accounts=False)
+            refresh_task_stats(
+                session,
+                task,
+                include_configured_accounts=False,
+                include_hard_hourly=False,
+            )
             session.commit()
             refreshed += 1
     return refreshed
