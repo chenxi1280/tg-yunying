@@ -2582,11 +2582,11 @@ def _hard_hourly_due_for_planner(session: Session, task: Task, now: datetime) ->
 def _hard_hourly_due_candidate(session: Session, task: Task, now: datetime):
     if not hard_hourly_enabled(task):
         return None
-    progress = hard_hourly_current_progress(session, task, now)
-    if int(progress.get("deficit") or 0) <= 0:
-        return None
     next_check_at = _hard_hourly_next_check_at(task)
     if next_check_at is not None and next_check_at > now:
+        return None
+    progress = hard_hourly_current_progress(session, task, now)
+    if int(progress.get("deficit") or 0) <= 0:
         return None
     return (_hard_hourly_due_sort_key(task, progress, next_check_at), task)
 

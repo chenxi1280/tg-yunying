@@ -434,6 +434,38 @@ def test_hard_hourly_wake_includes_legacy_string_enabled(monkeypatch):
     assert task_ids == ["task-hard-hourly-string-enabled"]
 
 
+@pytest.mark.no_postgres
+def test_hard_hourly_wake_skips_future_check_without_recomputing_progress(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 7, 20, 30)
+
+    monkeypatch.setattr("app.services.task_center.service._now", lambda: now_value)
+    monkeypatch.setattr(
+        "app.services.task_center.service.hard_hourly_current_progress",
+        lambda *_args, **_kwargs: pytest.fail("future hard-hourly check must not recompute progress"),
+    )
+
+    with Session(engine) as session:
+        task = Task(
+            id="task-hard-hourly-future-check",
+            tenant_id=1,
+            name="硬目标未来检查",
+            type="group_ai_chat",
+            status="running",
+            priority=3,
+            next_run_at=now_value + timedelta(hours=1),
+            type_config={"hard_hourly_target_enabled": True, "hourly_min_messages": 300},
+            stats={"hard_hourly_next_check_at": (now_value + timedelta(minutes=1)).isoformat()},
+        )
+        session.add_all([Tenant(id=1, name="默认运营空间"), task])
+        session.commit()
+
+        task_ids = _wake_hard_hourly_tasks(session, limit=10)
+
+    assert task_ids == []
+
+
 def test_hard_hourly_wake_returns_due_batch_when_worker_limit_is_low(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
