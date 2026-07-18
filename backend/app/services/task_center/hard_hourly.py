@@ -24,6 +24,7 @@ MEMBERSHIP_BLOCKERS = frozenset({"target_join_pending", "target_membership_pendi
 VERIFICATION_BLOCKERS = frozenset({"target_verification_pending", "target_verification_failed", "verification_context_unreadable"})
 CAN_SEND_BLOCKERS = frozenset({"target_can_send_blocked", "target_permission", "rule_binding_missing"})
 AI_DRAFT_BLOCKERS = frozenset({"ai_generation_unavailable", "ai_mino_draft_unavailable", "quality_filter", "content_policy"})
+PLANNER_PROGRESS_SESSION_KEY = "task_center.hard_hourly_planner_progress"
 
 
 def enabled(task_or_config: Task | dict[str, Any]) -> bool:
@@ -39,6 +40,22 @@ def goal(config: dict[str, Any]) -> int:
 
 
 def current_progress(session: Session, task: Task, now: datetime) -> dict[str, Any]:
+    cache = session.info.get(PLANNER_PROGRESS_SESSION_KEY, {})
+    cached = cache.get((task.tenant_id, task.id))
+    if cached is not None:
+        return dict(cached)
+    return _current_progress(session, task, now)
+
+
+def planner_progress_snapshot(session: Session, task: Task, now: datetime) -> dict[str, Any]:
+    cache = session.info.setdefault(PLANNER_PROGRESS_SESSION_KEY, {})
+    key = (task.tenant_id, task.id)
+    if key not in cache:
+        cache[key] = _current_progress(session, task, now)
+    return dict(cache[key])
+
+
+def _current_progress(session: Session, task: Task, now: datetime) -> dict[str, Any]:
     stats = hard_hourly_stats(session, task, now, task.stats or {})
     now_local = normalize(task, now)
     delivery_deficit = int(stats.get("hard_hourly_deficit") or 0)

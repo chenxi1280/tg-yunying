@@ -42,12 +42,14 @@ from app.services.task_center.hard_hourly import (
     _recent_actions_query,
     current_progress as hard_hourly_current_progress,
     hard_schedule_times,
+    planner_progress_snapshot,
     requires_planning as hard_hourly_requires_planning,
 )
 from app.services.task_center.listener_runtime import _mark_listener_runtime_success
 from app.services.task_center.service import (
     _merge_planner_task_ids,
     _normal_planner_task_ids,
+    _plan_due_task_batch,
     _wake_hard_hourly_tasks,
     create_group_ai_chat_task,
     drain_task_planner,
@@ -554,6 +556,89 @@ def test_new_listener_context_wakes_hard_hourly_task_once(monkeypatch):
         assert task.next_run_at == now_value
         assert _wake_hard_hourly_tasks(session, limit=10, now=now_value) == [task.id]
         assert task.stats["hard_hourly_next_check_at"] == (now_value + timedelta(seconds=30)).isoformat()
+
+
+@pytest.mark.no_postgres
+def test_planner_progress_snapshot_reuses_one_hard_hourly_calculation(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 7, 20, 30)
+    calls = 0
+
+    def fake_stats(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return {
+            "hard_hourly_target_enabled": True,
+            "hard_hourly_goal": 10,
+            "hard_hourly_planning_deficit": 3,
+        }
+
+    monkeypatch.setattr("app.services.task_center.hard_hourly.hard_hourly_stats", fake_stats)
+    with Session(engine) as session:
+        task = Task(
+            id="hard-hourly-progress-snapshot",
+            tenant_id=1,
+            name="硬目标进度快照",
+            type="group_ai_chat",
+            status="running",
+            type_config={"hard_hourly_target_enabled": True, "hourly_min_messages": 10},
+        )
+        session.add(task)
+        session.commit()
+
+        first = planner_progress_snapshot(session, task, now_value)
+        second = hard_hourly_current_progress(session, task, now_value + timedelta(seconds=1))
+
+    assert calls == 1
+    assert first == second
+
+
+@pytest.mark.no_postgres
+def test_hard_hourly_plan_abort_restores_recheck_checkpoint(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 7, 20, 30)
+    progress_calls = 0
+
+    def fake_progress(*_args, **_kwargs):
+        nonlocal progress_calls
+        progress_calls += 1
+        return {"enabled": True, "deficit": 3, "hour_end": now_value + timedelta(hours=1), "now": now_value}
+
+    monkeypatch.setattr("app.services.task_center.service._now", lambda: now_value)
+    monkeypatch.setattr("app.services.task_center.stats._now", lambda: now_value)
+    monkeypatch.setattr("app.services.task_center.service.build_task_plan", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr("app.services.task_center.hard_hourly._current_progress", fake_progress)
+
+    with Session(engine) as session:
+        task = Task(
+            id="hard-hourly-abort-recheck",
+            tenant_id=1,
+            name="硬目标中止复查",
+            type="group_ai_chat",
+            status="running",
+            next_run_at=now_value,
+            type_config={"hard_hourly_target_enabled": True, "hourly_min_messages": 10},
+        )
+        session.add_all([Tenant(id=1, name="默认运营空间"), task])
+        session.commit()
+
+    _plan_due_task_batch(
+        lambda: Session(engine),
+        "hard-hourly-abort-recheck",
+        None,
+        limit=1,
+        plan_limit=1,
+        global_pending=0,
+    )
+
+    with Session(engine) as session:
+        task = session.get(Task, "hard-hourly-abort-recheck")
+        assert task is not None
+        assert task.stats["hard_hourly_next_check_at"] == (now_value + timedelta(seconds=30)).isoformat()
+        assert task.next_run_at == now_value + timedelta(seconds=30)
+    assert progress_calls == 1
 
 
 @pytest.mark.no_postgres

@@ -186,6 +186,7 @@ from .hard_hourly import (
     current_progress as hard_hourly_current_progress,
     enabled as hard_hourly_enabled,
     next_check_for_progress as hard_hourly_next_check_for_progress,
+    planner_progress_snapshot as hard_hourly_planner_progress_snapshot,
     requires_planning as hard_hourly_requires_planning,
 )
 from .config_normalization import (
@@ -1695,6 +1696,7 @@ def _plan_due_task_batch(
         retried = retry_failed_actions(session, task, limit=max(1, limit))
         processed = retried
         current_global_pending += max(0, int(retried))
+        hard_progress = hard_hourly_planner_progress_snapshot(session, task, _now()) if hard_hourly_enabled(task) else {}
         has_open_actions, open_actions_are_future = _open_actions_state(session, task)
         if has_open_actions:
             processed += prepare_open_actions_for_planning(session, task)
@@ -1711,6 +1713,7 @@ def _plan_due_task_batch(
         processed += planned
         current_global_pending += max(0, int(planned))
         if task.status == "running":
+            _ensure_hard_hourly_checkpoint(task, hard_progress, _now())
             task.next_run_at = next_run_after_task(task)
         session.commit()
         return processed, planned, False, current_global_pending
@@ -2612,6 +2615,12 @@ def _record_hard_hourly_checkpoint(task: Task, progress: dict[str, Any], now: da
     stats = dict(task.stats or {})
     stats["hard_hourly_next_check_at"] = hard_hourly_next_check_for_progress(task, progress, now).isoformat()
     task.stats = stats
+
+
+def _ensure_hard_hourly_checkpoint(task: Task, progress: dict[str, Any], now: datetime) -> None:
+    if not hard_hourly_enabled(task) or not progress or _hard_hourly_next_check_at(task) is not None:
+        return
+    _record_hard_hourly_checkpoint(task, progress, now)
 
 
 def _hard_hourly_due_sort_key(task: Task, progress: dict[str, Any], next_check_at: datetime | None):
