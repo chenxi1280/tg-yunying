@@ -38,6 +38,8 @@ from app.services.task_center.executors.group_ai_chat import (
     build_plan as build_group_ai_chat_plan,
 )
 from app.services.task_center.hard_hourly import (
+    _recent_actions,
+    _recent_actions_query,
     current_progress as hard_hourly_current_progress,
     hard_schedule_times,
     requires_planning as hard_hourly_requires_planning,
@@ -787,6 +789,85 @@ def test_hard_hourly_stats_exclude_actions_from_a_different_tenant(monkeypatch):
         stats = refresh_task_stats(session, task)
 
     assert stats["hard_hourly_success_count"] == 0
+
+
+@pytest.mark.no_postgres
+def test_hard_hourly_recent_actions_deduplicates_time_window_matches():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    earliest = datetime(2026, 6, 7, 20, 0)
+
+    with Session(engine) as session:
+        task = Task(
+            id="task-hard-hourly-recent-actions",
+            tenant_id=1,
+            name="历史动作窗口",
+            type="group_ai_chat",
+            status="running",
+            timezone="Asia/Shanghai",
+            type_config={"hard_hourly_target_enabled": True, "hourly_min_messages": 1},
+        )
+        session.add_all(
+            [
+                Tenant(id=1, name="默认运营空间"),
+                task,
+                _send_action(
+                    "both-timestamps",
+                    task,
+                    "success",
+                    scheduled_at=earliest + timedelta(minutes=1),
+                    executed_at=earliest + timedelta(minutes=2),
+                ),
+                _send_action(
+                    "executed-only",
+                    task,
+                    "success",
+                    scheduled_at=earliest - timedelta(minutes=1),
+                    executed_at=earliest + timedelta(minutes=1),
+                ),
+                _send_action(
+                    "scheduled-only",
+                    task,
+                    "pending",
+                    scheduled_at=earliest + timedelta(minutes=1),
+                    executed_at=earliest - timedelta(minutes=1),
+                ),
+                _send_action(
+                    "outside-window",
+                    task,
+                    "success",
+                    scheduled_at=earliest - timedelta(minutes=2),
+                    executed_at=earliest - timedelta(minutes=1),
+                ),
+            ]
+        )
+        session.commit()
+
+        actions = _recent_actions(session, task, earliest)
+
+    assert {action.id for action in actions} == {
+        "both-timestamps",
+        "executed-only",
+        "scheduled-only",
+    }
+    assert len(actions) == 3
+
+
+@pytest.mark.no_postgres
+def test_hard_hourly_recent_actions_uses_time_indexable_union_query():
+    task = Task(
+        id="task-hard-hourly-history-query",
+        tenant_id=1,
+        name="历史索引查询",
+        type="group_ai_chat",
+        status="running",
+    )
+
+    statement = _recent_actions_query(task, datetime(2026, 6, 7, 20, 0))
+    compiled = str(statement.compile(compile_kwargs={"literal_binds": True}))
+
+    assert "UNION ALL" in compiled
+    assert " OR " not in compiled
 
 
 @pytest.mark.no_postgres
