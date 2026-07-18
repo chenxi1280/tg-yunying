@@ -6,6 +6,8 @@ from typing import Any
 
 HARD_HOURLY_MIN_RECHECK_SECONDS = 30
 HARD_HOURLY_SECONDS_PER_HOUR = 60 * 60
+DAILY_COVERAGE_RECHECK_SECONDS = 120
+DAILY_COVERAGE_RECHECK_BLOCKERS = frozenset({"coverage_waiting", "daily_coverage_capacity_insufficient"})
 
 
 def planning_rate(progress: dict[str, Any]) -> int:
@@ -36,6 +38,14 @@ def next_check_at(
     if blockers.get("dispatcher_lag"):
         return current + timedelta(seconds=30)
     return current + timedelta(seconds=HARD_HOURLY_MIN_RECHECK_SECONDS if int(progress.get("deficit") or 0) else 300)
+
+
+def daily_coverage_recheck_at(
+    blockers: dict[str, int], current: datetime, checkpoint: datetime | None,
+) -> datetime | None:
+    if not DAILY_COVERAGE_RECHECK_BLOCKERS.intersection(blockers):
+        return None
+    return max(current, checkpoint) if checkpoint is not None else current + timedelta(seconds=DAILY_COVERAGE_RECHECK_SECONDS)
 
 
 def _planned_batch_recheck_at(progress: dict[str, Any], current: datetime, created: int) -> datetime | None:

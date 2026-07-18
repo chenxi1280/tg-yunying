@@ -162,7 +162,7 @@ planning_rate = hourly_min_messages
 
 - 当前小时目标保留完整 `hourly_min_messages`；历史欠量最多额外提供一个当前小时目标的追赶速率。
 - 单轮创建量、硬目标 Action 排期和创建后的 `hard_hourly_next_check_at` 必须使用同一个 `planning_rate`，否则会出现单轮受限但下一轮仍立即重算的 CPU 回弹。
-- 当 `coverage_waiting` 或 `daily_coverage_capacity_insufficient` 存在时，复查时间沿用 `daily_coverage_next_check_at`，不得被 hard-hourly 的短复查覆盖。
+- 当 `coverage_waiting` 或 `daily_coverage_capacity_insufficient` 存在时，复查时间沿用 `daily_coverage_next_check_at`；字段缺失时显式使用两分钟 checkpoint，不能被 hard-hourly 的短复查覆盖。
 - 现场排查 CPU 时同时读取 `hard_hourly_last_planned_count`、`hard_hourly_next_check_at`、`hard_hourly_backfill_planning_deficit` 和 worker CPU；只有部署后这些 checkpoint 已按新速率写入且 CPU 稳定下降，才能判定止血生效。
 
 ## 6. 日常巡检流程
