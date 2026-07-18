@@ -23,6 +23,7 @@ from app.models import (
     TgGroupAccount,
 )
 from app.security import encrypt_session
+from app.services._common import _now
 from app.schemas.task_center import AccountConfig, TaskUpdate
 from app.services.task_center.account_scope import drain_account_scope_events, emit_account_eligibility_event
 from app.services.task_center.channel_membership import _task_membership_candidates
@@ -194,7 +195,7 @@ def test_membership_success_releases_membership_unknown_coverage() -> None:
             group_id=21,
             account_id=account.id,
             membership_item_id=item.id,
-            coverage_date=datetime.now().date(),
+            coverage_date=_now().date(),
             state="unknown",
             blocker_code="unknown_after_send",
             blocker_detail="入群结果未知",
@@ -270,7 +271,7 @@ def test_membership_success_preserves_send_unknown_coverage() -> None:
             group_id=21,
             account_id=account.id,
             membership_item_id=item.id,
-            coverage_date=datetime.now().date(),
+            coverage_date=_now().date(),
             state="unknown",
             reserved_action_id=send_action.id,
             blocker_code="unknown_after_send",
