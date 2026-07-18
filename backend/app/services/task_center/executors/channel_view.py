@@ -13,7 +13,7 @@ from ..account_pool import daily_uncovered_account_count, select_task_accounts
 from ..channel_membership import channel_member_accounts, gate_channel_membership
 from ..pacing import schedule_times
 from ..payloads import ViewMessagePayload, create_view_action
-from .common import adjust_for_account_hour_limit, available_channel_accounts_for_message_date, channel_message_account_ids, channel_message_payload, channel_scope, quantity_jitter_bounds, quantity_with_jitter, record_channel_capacity_warning
+from .common import adjust_for_account_hour_limit, channel_message_account_ids_for_messages, channel_message_payload, channel_scope, quantity_jitter_bounds, quantity_with_jitter, record_channel_capacity_warning
 
 
 def build_plan(session: Session, task: Task) -> int:
@@ -42,6 +42,13 @@ def build_plan(session: Session, task: Task) -> int:
     if task_remaining_today <= 0:
         task.last_error = "任务今日浏览安全上限已用完，等待下一日继续规划"
         return 0
+    account_ids_by_message = channel_message_account_ids_for_messages(
+        session,
+        task,
+        "view_message",
+        messages,
+        execution_date=execution_date,
+    )
     actions = _view_actions_for_messages(
         session,
         task,
@@ -54,6 +61,7 @@ def build_plan(session: Session, task: Task) -> int:
             total_target=total_target,
             task_remaining_today=task_remaining_today,
         ),
+        account_ids_by_message,
     )
     if not actions:
         task.last_error = _empty_view_plan_message(session, task, config, messages, total_target)
@@ -116,6 +124,7 @@ def _view_actions_for_messages(
     task: Task,
     config: dict,
     inputs: "ViewPlanInputs",
+    account_ids_by_message: dict[int, set[int]],
 ) -> list[tuple[ChannelMessage, int]]:
     coverage_remaining = daily_uncovered_account_count(session, task.id, ("view_message",), inputs.accounts)
     actions: list[tuple[ChannelMessage, int]] = []
@@ -123,11 +132,11 @@ def _view_actions_for_messages(
     for message in inputs.messages:
         if _message_expired(message, config):
             continue
-        quantity = _view_quantity_for_message(session, task, config, inputs, message, coverage_remaining)
+        quantity = _view_quantity_for_message(session, task, config, inputs, message, coverage_remaining, account_ids_by_message)
         quantity = min(quantity, task_remaining_today)
         if quantity <= 0:
             continue
-        candidates = available_channel_accounts_for_message_date(session, task, "view_message", message, inputs.accounts, inputs.execution_date)
+        candidates = [account for account in inputs.accounts if account.id not in account_ids_by_message[message.id]]
         selected = [account for account in candidates if _account_has_view_daily_capacity(session, task, account.id, inputs.execution_date, config)][:quantity]
         actions.extend((message, account.id) for account in selected)
         coverage_remaining = max(0, coverage_remaining - len(selected))
@@ -154,12 +163,13 @@ def _view_quantity_for_message(
     inputs: ViewPlanInputs,
     message: ChannelMessage,
     coverage_remaining: int,
+    account_ids_by_message: dict[int, set[int]],
 ) -> int:
     base = quantity_with_jitter(inputs.daily_target, float(config.get("view_count_jitter") or 0))
     completed_count = _completed_view_count(session, task, message)
     if completed_count >= inputs.total_target:
         return 0
-    used_count = len(channel_message_account_ids(session, task, "view_message", message, execution_date=inputs.execution_date))
+    used_count = len(account_ids_by_message[message.id])
     return max(0, min(max(base, coverage_remaining), inputs.total_target - completed_count) - used_count)
 
 

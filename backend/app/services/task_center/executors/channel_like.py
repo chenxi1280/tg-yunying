@@ -10,7 +10,7 @@ from ..account_pool import daily_uncovered_account_count, select_task_accounts
 from ..channel_membership import channel_member_accounts, gate_channel_membership
 from ..pacing import schedule_times
 from ..payloads import LikeMessagePayload, create_like_action
-from .common import adjust_for_account_hour_limit, channel_message_account_ids, channel_message_payload, channel_scope, quantity_jitter_bounds, quantity_with_jitter, record_channel_capacity_warning
+from .common import adjust_for_account_hour_limit, channel_message_account_ids_for_messages, channel_message_payload, channel_scope, quantity_jitter_bounds, quantity_with_jitter, record_channel_capacity_warning
 
 LIKE_UNAVAILABLE_SKIP_CODES = {"reaction_unavailable_message", "reaction_unavailable_sibling"}
 PRIMARY_REACTION_RATIO = 0.7
@@ -53,9 +53,16 @@ def build_plan(session: Session, task: Task) -> int:
         task.last_error = "没有可用账号，等待账号恢复后继续执行"
         return 0
     record_channel_capacity_warning(task, "点赞", target_per_message, len(accounts))
-    actions = _like_actions_for_messages(session, task, config, messages, accounts, reactions, target_per_message)
+    account_ids_by_message = channel_message_account_ids_for_messages(
+        session,
+        task,
+        "like_message",
+        messages,
+        include_skipped_codes=LIKE_UNAVAILABLE_SKIP_CODES,
+    )
+    actions = _like_actions_for_messages(session, task, config, messages, accounts, reactions, target_per_message, account_ids_by_message)
     if not actions:
-        task.last_error = _empty_like_plan_message(session, task, messages, target_per_message)
+        task.last_error = _empty_like_plan_message(task, messages, target_per_message, account_ids_by_message)
         return 0
     return _create_like_actions(session, task, channel, config, actions)
 
@@ -91,11 +98,12 @@ def _like_actions_for_messages(
     accounts: list,
     reactions: list[str],
     target_per_message: int,
+    account_ids_by_message: dict[int, set[int]],
 ) -> list[tuple[ChannelMessage, int, str]]:
     coverage_remaining = daily_uncovered_account_count(session, task.id, ("like_message",), accounts)
     actions: list[tuple[ChannelMessage, int, str]] = []
     for message in messages:
-        used_accounts = channel_message_account_ids(session, task, "like_message", message, include_skipped_codes=LIKE_UNAVAILABLE_SKIP_CODES)
+        used_accounts = account_ids_by_message[message.id]
         available_accounts = [account for account in accounts if account.id not in used_accounts]
         base_desired = quantity_with_jitter(target_per_message, float(config.get("like_count_jitter") or 0))
         target_deficit = max(0, base_desired - len(used_accounts))
@@ -107,37 +115,25 @@ def _like_actions_for_messages(
 
 
 def _empty_like_plan_message(
-    session: Session,
     task: Task,
     messages: list[ChannelMessage],
     target_per_message: int,
+    account_ids_by_message: dict[int, set[int]],
 ) -> str:
-    if _all_like_targets_reached(session, task, messages, target_per_message):
+    if _all_like_targets_reached(messages, target_per_message, account_ids_by_message):
         return ""
     return task.last_error or "没有可新增的有效点赞账号"
 
 
 def _all_like_targets_reached(
-    session: Session,
-    task: Task,
     messages: list[ChannelMessage],
     target_per_message: int,
+    account_ids_by_message: dict[int, set[int]],
 ) -> bool:
     target = max(1, int(target_per_message or 1))
     if not messages:
         return False
-    return all(_like_account_count(session, task, message) >= target for message in messages)
-
-
-def _like_account_count(session: Session, task: Task, message: ChannelMessage) -> int:
-    account_ids = channel_message_account_ids(
-        session,
-        task,
-        "like_message",
-        message,
-        include_skipped_codes=LIKE_UNAVAILABLE_SKIP_CODES,
-    )
-    return len(account_ids)
+    return all(len(account_ids_by_message[message.id]) >= target for message in messages)
 
 
 def _reaction_plan(reactions: list[str], quantity: int, reaction_type: str = "random") -> list[str]:
