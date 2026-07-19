@@ -156,7 +156,7 @@ def _ai_generation_stats(session: Session, task: Task, stats: dict[str, Any]) ->
     updated["voice_profile_anchor_rewrite_count"] = _ai_generation_fact_count(
         session,
         task,
-        Action.result["voice_profile_anchor_rewritten"].as_boolean().is_(True),
+        _voice_profile_anchor_rewritten_condition(session),
     )
     return updated
 
@@ -211,6 +211,12 @@ def _json_text_expression(session: Session, *, column, key: str):
     if column is Action.result and key == "generation_outcome":
         return literal_column("CAST(actions.result ->> 'generation_outcome' AS VARCHAR)")
     raise ValueError(f"unsupported action JSON count expression: {column.key}.{key}")
+
+
+def _voice_profile_anchor_rewritten_condition(session: Session):
+    if session.get_bind().dialect.name == "postgresql":
+        return literal_column("CAST(actions.result ->> 'voice_profile_anchor_rewritten' AS BOOLEAN) IS TRUE")
+    return literal_column("JSON_EXTRACT(actions.result, '$.voice_profile_anchor_rewritten') IS 1")
 
 
 def _apply_ai_generation_counts(

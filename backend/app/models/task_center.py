@@ -96,6 +96,19 @@ class Action(Base):
             postgresql_where=text("task_type = 'group_ai_chat' AND action_type = 'send_message'"),
         ),
         Index(
+            "ix_actions_task_voice_anchor_fact",
+            "tenant_id",
+            "task_id",
+            sqlite_where=text(
+                "action_type = 'send_message' "
+                "AND JSON_EXTRACT(result, '$.voice_profile_anchor_rewritten') IS 1"
+            ),
+            postgresql_where=text(
+                "action_type = 'send_message' "
+                "AND CAST(result ->> 'voice_profile_anchor_rewritten' AS BOOLEAN) IS TRUE"
+            ),
+        ),
+        Index(
             "ix_actions_executing_lease_owner",
             "lease_owner",
             sqlite_where=text("status = 'executing' AND lease_owner <> ''"),
