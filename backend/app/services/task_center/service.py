@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy import and_, delete, func, or_, select, tuple_
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -1579,7 +1579,6 @@ def _drain_task_recovery(session_factory, *, limit: int, process_type: str | Non
         processed += recover_expired_hard_hourly_actions(session, limit=_hard_hourly_recovery_limit(limit))
         processed += fast_track_pending_hard_hourly_memberships(session, limit=_hard_hourly_recovery_limit(limit))
         processed += recover_missing_hard_hourly_memberships(session, limit=_hard_hourly_recovery_limit(limit))
-        processed += fast_track_pending_hard_hourly_memberships(session, limit=_hard_hourly_recovery_limit(limit))
         processed += recover_terminal_coverage_reservations(session, limit=limit)
         session.commit()
         processed += _recover_continuous_task_states(session)
@@ -2073,17 +2072,57 @@ def _stale_executing_action_ids(
 
 
 def _stale_worker_lease_owners(session: Session, heartbeat_cutoff: datetime) -> set[str]:
-    rows = session.execute(
+    lease_owners = _executing_lease_owners(session)
+    if not lease_owners:
+        return set()
+    rows = list(session.execute(
         select(WorkerHeartbeat.worker_id, WorkerHeartbeat.hostname, WorkerHeartbeat.pid).where(
-            WorkerHeartbeat.last_seen_at < heartbeat_cutoff
+            WorkerHeartbeat.last_seen_at < heartbeat_cutoff,
+            WorkerHeartbeat.worker_id.in_(lease_owners),
         )
-    )
+    ))
+    legacy_pairs = _legacy_lease_owner_pairs(lease_owners)
+    if legacy_pairs:
+        rows.extend(session.execute(
+            select(WorkerHeartbeat.worker_id, WorkerHeartbeat.hostname, WorkerHeartbeat.pid).where(
+                WorkerHeartbeat.last_seen_at < heartbeat_cutoff,
+                tuple_(WorkerHeartbeat.hostname, WorkerHeartbeat.pid).in_(legacy_pairs),
+            )
+        ))
+    return _matching_stale_lease_owners(rows, lease_owners)
+
+
+def _executing_lease_owners(session: Session) -> set[str]:
+    statement = select(Action.lease_owner).where(
+        Action.status == "executing",
+        Action.lease_owner.is_not(None),
+        Action.lease_owner != "",
+    ).distinct()
+    return {str(owner) for owner in session.scalars(statement) if owner}
+
+
+def _legacy_lease_owner_pairs(lease_owners: set[str]) -> list[tuple[str, int]]:
+    pairs: set[tuple[str, int]] = set()
+    for owner in lease_owners:
+        hostname, separator, pid_value = owner.rpartition(":")
+        if not separator or not hostname:
+            continue
+        try:
+            pairs.add((hostname, int(pid_value)))
+        except ValueError:
+            continue
+    return list(pairs)
+
+
+def _matching_stale_lease_owners(rows, lease_owners: set[str]) -> set[str]:
     owners: set[str] = set()
     for worker_id, hostname, pid in rows:
-        if worker_id:
+        if worker_id and str(worker_id) in lease_owners:
             owners.add(str(worker_id))
         if hostname and pid is not None:
-            owners.add(f"{hostname}:{pid}")
+            legacy_owner = f"{hostname}:{pid}"
+            if legacy_owner in lease_owners:
+                owners.add(legacy_owner)
     return owners
 
 
