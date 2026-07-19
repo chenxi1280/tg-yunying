@@ -127,6 +127,7 @@ _empty_stats = empty_stats
 _next_run_after_task = next_run_after_task
 _retry_failed_actions = retry_failed_actions
 PLANNER_GLOBAL_PENDING_SESSION_KEY = "planner_global_pending"
+HARD_HOURLY_WAKE_PROGRESS_SESSION_KEY = "task_center.hard_hourly_wake_progress"
 CHANNEL_COMMENT_SCENE = "channel_comment"
 GROUP_CHAT_SCENE = "group_chat"
 GROUP_PREVIEW_CANDIDATE_SHORTFALL_MESSAGE = "AI 普通发言候选不足，无法生成完整预览"
@@ -1619,6 +1620,7 @@ def drain_task_planner(session_factory, limit: int = 100) -> int:
 
 def _drain_task_planner(session_factory, *, limit: int, process_type: str | None) -> tuple[int, set[str]]:
     processed = 0
+    hard_hourly_progress_by_task: dict[str, dict[str, Any]] = {}
     with session_factory() as session:
         if process_type:
             record_worker_heartbeat(session, process_type=process_type, metadata={"limit": limit})
@@ -1627,6 +1629,7 @@ def _drain_task_planner(session_factory, *, limit: int, process_type: str | None
         _activate_pending_tasks(session)
         now = _now()
         hard_hourly_task_ids = _wake_hard_hourly_tasks(session, limit=limit, now=now)
+        hard_hourly_progress_by_task = session.info.pop(HARD_HOURLY_WAKE_PROGRESS_SESSION_KEY, {})
         task_ids = _normal_planner_task_ids(session, limit=limit, now=now)
         task_ids = _merge_planner_task_ids(hard_hourly_task_ids, task_ids, limit)
         global_pending = planner_global_pending(session) if task_ids else 0
@@ -1639,6 +1642,7 @@ def _drain_task_planner(session_factory, *, limit: int, process_type: str | None
             process_type,
             limit=limit,
             global_pending=global_pending,
+            round_hard_progress=hard_hourly_progress_by_task.get(task_id),
         )
         processed += task_processed
         if future_open:
@@ -1653,9 +1657,11 @@ def _plan_due_task(
     *,
     limit: int,
     global_pending: int | None = None,
+    round_hard_progress: dict[str, Any] | None = None,
 ) -> tuple[int, bool, int]:
     round_goal = _coverage_round_goal(session_factory, task_id)
-    round_hard_progress = _hard_hourly_round_progress(session_factory, task_id)
+    if round_hard_progress is None:
+        round_hard_progress = _hard_hourly_round_progress(session_factory, task_id)
     round_goal = _hard_hourly_round_goal(round_goal, round_hard_progress)
     processed = 0
     planned = 0
@@ -2640,7 +2646,11 @@ def _wake_hard_hourly_tasks(session: Session, *, limit: int, now: datetime | Non
         ),
         key=lambda candidate: candidate[0],
     )
-    selected = [task for _sort_key, task in candidates[:target_count]]
+    selected_candidates = candidates[:target_count]
+    session.info[HARD_HOURLY_WAKE_PROGRESS_SESSION_KEY] = {
+        task.id: dict(progress) for _sort_key, task, progress in selected_candidates
+    }
+    selected = [task for _sort_key, task, _progress in selected_candidates]
     for task in selected:
         next_run_at = _naive_datetime(task.next_run_at)
         if next_run_at is None or next_run_at > now:
@@ -2679,7 +2689,7 @@ def _hard_hourly_due_candidate(session: Session, task: Task, now: datetime):
     _record_hard_hourly_checkpoint(task, progress, now)
     if int(progress.get("deficit") or 0) <= 0:
         return None
-    return (_hard_hourly_due_sort_key(task, progress, next_check_at), task)
+    return (_hard_hourly_due_sort_key(task, progress, next_check_at), task, progress)
 
 
 def _record_hard_hourly_checkpoint(task: Task, progress: dict[str, Any], now: datetime) -> None:

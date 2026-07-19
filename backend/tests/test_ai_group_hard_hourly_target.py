@@ -49,11 +49,12 @@ from app.services.task_center.hard_hourly import (
     planner_progress_snapshot,
     requires_planning as hard_hourly_requires_planning,
 )
-from app.services.task_center import hard_hourly as hard_hourly_service
+from app.services.task_center import hard_hourly as hard_hourly_service, service as task_service
 from app.services.task_center.hard_hourly_history import HardHourlyAction
 from app.services.task_center.listener_runtime import _mark_listener_runtime_success
 from app.services.task_center.service import (
     _clear_unfinished_plan,
+    _drain_task_planner,
     _merge_planner_task_ids,
     _normal_planner_task_ids,
     _plan_due_task,
@@ -604,6 +605,44 @@ def test_planner_progress_snapshot_reuses_one_hard_hourly_calculation(monkeypatc
 
     assert calls == 1
     assert first == second
+
+
+@pytest.mark.no_postgres
+def test_planner_reuses_wake_hard_hourly_progress_across_sessions(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 7, 20, 30)
+    progress = {"enabled": True, "deficit": 3, "goal": 10, "hour_end": now_value + timedelta(hours=1), "now": now_value}
+    captured_progress: list[dict[str, object] | None] = []
+
+    def fake_batch(*_args, **kwargs):
+        captured_progress.append(kwargs["round_hard_progress"])
+        return 0, 0, False, 0
+
+    monkeypatch.setattr(task_service, "_now", lambda: now_value)
+    monkeypatch.setattr(task_service, "hard_hourly_current_progress", lambda *_args: dict(progress))
+    monkeypatch.setattr(task_service, "_hard_hourly_round_progress", lambda *_args: pytest.fail("planner recomputed wake progress"))
+    monkeypatch.setattr(task_service, "_plan_due_task_batch", fake_batch)
+
+    with Session(engine) as session:
+        session.add_all([
+            Tenant(id=1, name="默认运营空间"),
+            Task(
+                id="hard-hourly-cross-session-progress",
+                tenant_id=1,
+                name="跨 Session 硬目标快照",
+                type="group_ai_chat",
+                status="running",
+                next_run_at=now_value,
+                hard_hourly_next_check_at=now_value - timedelta(seconds=1),
+                type_config={"hard_hourly_target_enabled": True, "hourly_min_messages": 10},
+            ),
+        ])
+        session.commit()
+
+    _drain_task_planner(lambda: Session(engine), limit=10, process_type=None)
+
+    assert captured_progress == [progress]
 
 
 @pytest.mark.no_postgres
