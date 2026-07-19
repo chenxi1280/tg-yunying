@@ -1,14 +1,18 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.models import Action, OperationTarget, Task, Tenant, TgAccount, TgGroup, TgGroupAccount, VerificationTask
 from app.services._common import _now
+from app.services.task_center import membership_recovery_gate
 from app.services.task_center.membership_recovery_gate import recover_missing_hard_hourly_memberships
+
+pytestmark = pytest.mark.no_postgres
 
 
 def test_recovery_creates_missing_hard_hourly_membership_actions() -> None:
@@ -74,6 +78,50 @@ def test_recovery_creates_missing_hard_hourly_membership_actions() -> None:
     assert recovered == 2
     assert {action.account_id for action in actions} == {51, 52}
     assert all(action.status == "pending" for action in actions)
+
+
+def test_recovery_skips_future_hard_hourly_membership_checkpoint(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    monkeypatch.setattr(
+        membership_recovery_gate,
+        "gate_channel_membership",
+        lambda *_args, **_kwargs: pytest.fail("future hard-hourly checkpoint must not enter membership recovery"),
+    )
+
+    with Session(engine) as session:
+        session.add_all(
+            [
+                Tenant(id=1, name="默认运营空间"),
+                OperationTarget(
+                    id=911,
+                    tenant_id=1,
+                    target_type="group",
+                    tg_peer_id="-100911",
+                    title="未来复查群",
+                    auth_status="已授权运营",
+                    can_send=True,
+                ),
+                Task(
+                    id="task-future-hard-hourly-membership-recovery",
+                    tenant_id=1,
+                    name="未来复查准入恢复",
+                    type="group_ai_chat",
+                    status="running",
+                    hard_hourly_next_check_at=now_value + timedelta(minutes=5),
+                    type_config={
+                        "target_operation_target_id": 911,
+                        "hard_hourly_target_enabled": True,
+                        "hourly_min_messages": 60,
+                    },
+                    stats={"membership_need_join_count": 1},
+                ),
+            ]
+        )
+        session.commit()
+
+        assert recover_missing_hard_hourly_memberships(session, limit=10) == 0
 
 
 def test_recovery_rechecks_task_when_some_membership_actions_are_open() -> None:
