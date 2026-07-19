@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, func, select
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Session
 
 from app.database import Base
@@ -12,7 +15,7 @@ from app.services.task_center.ai_generation_pipeline import SlotGenerationResult
 from app.services.task_center.ai_generator import GeneratedContent
 from app.services.task_center.ai_generation_quality import fail_generation_action
 from app.services.task_center.details import _ai_generation_records
-from app.services.task_center.stats import refresh_task_stats
+from app.services.task_center.stats import _voice_profile_anchor_rewritten_condition, refresh_task_stats
 
 
 pytestmark = pytest.mark.no_postgres
@@ -123,6 +126,10 @@ def test_metrics_refresh_idempotently_separates_generation_and_gateway_unknown()
         assert second["generation_failed_count"] == 1
         assert second["quality_rejected_count"] == 1
         assert second["quality_rejection_counts"] == {"voice_profile_mismatch": 1}
+        assert any(
+            "json_extract(actions.result, '$.voice_profile_anchor_rewritten') is 1" in statement
+            for statement in statements
+        )
         assert not any(
             "group by" in statement
             and (
@@ -131,6 +138,22 @@ def test_metrics_refresh_idempotently_separates_generation_and_gateway_unknown()
             )
             for statement in statements
         )
+
+
+def test_voice_anchor_metric_query_uses_static_postgres_index_condition() -> None:
+    session = SimpleNamespace(
+        get_bind=lambda: SimpleNamespace(dialect=postgresql.dialect()),
+    )
+    statement = select(func.count()).select_from(Action).where(
+        Action.tenant_id == 1,
+        Action.task_id == "task-stats",
+        Action.action_type == "send_message",
+        _voice_profile_anchor_rewritten_condition(session),
+    )
+
+    compiled = str(statement.compile(dialect=postgresql.dialect()))
+
+    assert "CAST(actions.result ->> 'voice_profile_anchor_rewritten' AS BOOLEAN) IS TRUE" in compiled
 
 
 def test_task_details_keep_generation_unknown_distinct_from_gateway_unknown() -> None:
