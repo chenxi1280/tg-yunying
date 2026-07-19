@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine, event
@@ -15,6 +16,62 @@ from app.services.task_center.service import _recover_stale_executing_actions, d
 
 
 pytestmark = pytest.mark.no_postgres
+
+
+def _executing_lease_action(*, action_id: str, task_id: str, owner: str, now_value) -> Action:
+    return Action(
+        id=action_id,
+        tenant_id=1,
+        task_id=task_id,
+        task_type="group_relay",
+        action_type="send_message",
+        status="executing",
+        scheduled_at=now_value,
+        lease_owner=owner,
+        lease_expires_at=now_value + timedelta(minutes=20),
+        payload={},
+        result={},
+    )
+
+
+def _stale_heartbeat(*, worker_id: str, hostname: str, pid: int, now_value) -> WorkerHeartbeat:
+    return WorkerHeartbeat(
+        worker_id=worker_id,
+        process_type="dispatcher",
+        hostname=hostname,
+        pid=pid,
+        status="active",
+        heartbeat_metadata={},
+        started_at=now_value - timedelta(minutes=10),
+        last_seen_at=now_value - timedelta(minutes=5),
+    )
+
+
+def _seed_stale_lease_scope(session: Session, now_value) -> None:
+    task_id = "stale-owner-scope-task"
+    session.add_all([
+        Tenant(id=1, name="默认运营空间"),
+        Task(id=task_id, tenant_id=1, name="过期 owner 范围", type="group_relay", status="running", stats={}),
+        _executing_lease_action(action_id="legacy-lease-owner-action", task_id=task_id, owner="worker-dead:1", now_value=now_value),
+        _executing_lease_action(
+            action_id="role-lease-owner-action",
+            task_id=task_id,
+            owner="worker-role:2:dispatcher",
+            now_value=now_value,
+        ),
+        _stale_heartbeat(worker_id="worker-dead:1:dispatcher", hostname="worker-dead", pid=1, now_value=now_value),
+        _stale_heartbeat(worker_id="worker-role:2:dispatcher", hostname="worker-role", pid=2, now_value=now_value),
+        *[
+            _stale_heartbeat(
+                worker_id=f"retired-worker-{index}:3:planner",
+                hostname=f"retired-worker-{index}",
+                pid=3,
+                now_value=now_value,
+            )
+            for index in range(32)
+        ],
+    ])
+    session.commit()
 
 
 def test_recovery_matches_role_suffixed_heartbeat_to_action_lease_owner() -> None:
@@ -62,6 +119,44 @@ def test_recovery_matches_role_suffixed_heartbeat_to_action_lease_owner() -> Non
 
     assert action.status == "failed"
     assert action.result["recovery_reason"] == "stale_worker"
+
+
+def test_stale_worker_lookup_only_returns_executing_lease_owners() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    with Session(engine) as session:
+        _seed_stale_lease_scope(session, now_value)
+        owners = task_service._stale_worker_lease_owners(session, now_value - timedelta(minutes=2))
+
+    assert owners == {"worker-dead:1", "worker-role:2:dispatcher"}
+
+
+def test_stale_worker_lookup_skips_heartbeat_history_without_executing_lease() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    with Session(engine) as session:
+        session.add(_stale_heartbeat(
+            worker_id="retired-worker:3:recovery",
+            hostname="retired-worker",
+            pid=3,
+            now_value=now_value,
+        ))
+        session.commit()
+        statements: list[str] = []
+
+        def record_statement(_conn, _cursor, statement, _parameters, _context, _executemany):
+            statements.append(statement.lower())
+
+        event.listen(engine, "before_cursor_execute", record_statement)
+        try:
+            owners = task_service._stale_worker_lease_owners(session, now_value - timedelta(minutes=2))
+        finally:
+            event.remove(engine, "before_cursor_execute", record_statement)
+
+    assert owners == set()
+    assert not any("worker_heartbeats" in statement for statement in statements)
 
 
 def test_stale_action_claim_commits_dirty_task_state_first(monkeypatch) -> None:
@@ -137,6 +232,35 @@ def test_recovery_drain_separates_action_and_task_repair_transactions(monkeypatc
 
     with pytest.raises(RuntimeError, match="stage boundaries observed"):
         task_service._drain_task_recovery(SessionFactory, limit=10, process_type=None)
+
+
+def test_recovery_fast_tracks_pending_memberships_once(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    SessionFactory = sessionmaker(bind=engine, future=True)
+    calls: list[int] = []
+
+    for name in [
+        "recover_expired_claims",
+        "recover_expired_hard_hourly_actions",
+        "recover_missing_hard_hourly_memberships",
+        "recover_terminal_coverage_reservations",
+        "_recover_continuous_task_states",
+        "_recover_stale_executing_actions",
+        "expire_reviews",
+        "expire_waiting_source_media_actions",
+    ]:
+        monkeypatch.setattr(task_service, name, lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(task_service, "get_settings", lambda: SimpleNamespace(enable_runtime_retention_cleanup=False))
+    monkeypatch.setattr(
+        task_service,
+        "fast_track_pending_hard_hourly_memberships",
+        lambda *_args, **kwargs: calls.append(kwargs["limit"]) or 0,
+    )
+
+    task_service._drain_task_recovery(SessionFactory, limit=10, process_type=None)
+
+    assert calls == [task_service._hard_hourly_recovery_limit(10)]
 
 
 @pytest.mark.allow_missing_rule_binding

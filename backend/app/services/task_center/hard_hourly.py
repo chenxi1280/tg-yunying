@@ -7,7 +7,6 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from sqlalchemy.orm import Session
 
 from app.models import Task
-from app.services.account_capacity import AccountCapacityReservation, account_capacity_decision
 from app.timezone import BEIJING_TZ
 
 from .hard_hourly_history import (
@@ -187,43 +186,65 @@ def _disabled_stats(stats: dict[str, Any]) -> dict[str, Any]:
 
 def _recent_buckets(session: Session, task: Task, now_local: datetime, current_start: datetime) -> list[dict[str, Any]]:
     actions = _recent_actions(session, task, current_start - timedelta(hours=23))
+    starts = _recent_bucket_starts(current_start)
+    counts = _recent_bucket_counts(task, actions, starts, now_local)
     return [
-        _bucket_summary(session, task, actions, current_start - timedelta(hours=offset), now_local)
-        for offset in reversed(range(24))
+        _recent_bucket(task, start, now_local, *counts[index])
+        for index, start in enumerate(starts)
     ]
 
 
-def _bucket_summary(
-    session: Session,
+def _recent_bucket_starts(current_start: datetime) -> list[datetime]:
+    return [current_start - timedelta(hours=offset) for offset in reversed(range(24))]
+
+
+def _recent_bucket_counts(
     task: Task,
     actions: list[HardHourlyAction],
+    starts: list[datetime],
+    now_local: datetime,
+) -> list[tuple[int, int, int]]:
+    counts = [[0, 0, 0] for _ in starts]
+    bucket_indexes = {start: index for index, start in enumerate(starts)}
+    for action in actions:
+        if action.status == "success":
+            executed_at = _normalize_optional(task, action.executed_at)
+            index = _recent_bucket_index(bucket_indexes, executed_at)
+            if index is not None:
+                counts[index][0] += 1
+            continue
+        if action.status not in OPEN_STATUSES:
+            continue
+        scheduled_at = _normalize_optional(task, action.scheduled_at)
+        index = _recent_bucket_index(bucket_indexes, scheduled_at)
+        if index is None:
+            continue
+        counts[index][1 if scheduled_at >= now_local else 2] += 1
+    return [tuple(values) for values in counts]
+
+
+def _recent_bucket_index(bucket_indexes: dict[datetime, int], value: datetime | None) -> int | None:
+    if value is None:
+        return None
+    return bucket_indexes.get(value.replace(minute=0, second=0, microsecond=0))
+
+
+def _recent_bucket(
+    task: Task,
     start: datetime,
     now_local: datetime,
+    success: int,
+    future_open: int,
+    overdue_open: int,
 ) -> dict[str, Any]:
     end = start + timedelta(hours=1)
-    success = sum(1 for action in actions if _is_success_in_bucket(task, action, start, end))
-    future_open, capacity_blocked = _effective_future_open_count(
-        session,
-        task,
-        actions,
-        start,
-        end,
-        now_local,
-    )
-    overdue_open = sum(
-        1
-        for action in actions
-        if _is_overdue_open_in_bucket(task, action, start, end, now_local)
-    )
-    # Hard-hourly acceptance is based on delivered messages.
-    # Future pending work stays visible, but it is not counted as done.
-    effective_future_open = 0 if enabled(task) else future_open
-    delivery_deficit = max(0, goal(task.type_config or {}) - success - effective_future_open)
-    planning_deficit = max(0, goal(task.type_config or {}) - success - future_open)
-    blockers = _bucket_blockers(delivery_deficit, overdue_open, capacity_blocked)
+    bucket_goal = goal(task.type_config or {})
+    delivery_deficit = max(0, bucket_goal - success)
+    planning_deficit = max(0, bucket_goal - success - future_open)
+    blockers = _bucket_blockers(delivery_deficit, overdue_open, 0)
     return {
         "bucket": bucket_iso(task, start),
-        "goal": goal(task.type_config or {}),
+        "goal": bucket_goal,
         "success_count": success,
         "future_open_count": future_open,
         "overdue_open_count": overdue_open,
@@ -234,53 +255,6 @@ def _bucket_summary(
     }
 
 
-def _effective_future_open_count(
-    session: Session,
-    task: Task,
-    actions: list[HardHourlyAction],
-    start: datetime,
-    end: datetime,
-    now_local: datetime,
-) -> tuple[int, int]:
-    future_actions = _future_open_actions(task, actions, start, end, now_local)
-    if enabled(task):
-        return len(future_actions), 0
-    excluded_ids = {action.id for action in future_actions}
-    reservations: list[AccountCapacityReservation] = []
-    accepted = 0
-    blocked = 0
-    for action in future_actions:
-        if not action.account_id or not action.scheduled_at:
-            blocked += 1
-            continue
-        scheduled_at = _normalize_optional(task, action.scheduled_at)
-        decision = account_capacity_decision(
-            session,
-            tenant_id=task.tenant_id,
-            account_id=int(action.account_id),
-            scheduled_at=scheduled_at,
-            exclude_action_ids=excluded_ids,
-            reservations=reservations,
-        )
-        if decision.available:
-            accepted += 1
-            reservations.append(AccountCapacityReservation(int(action.account_id), scheduled_at))
-        else:
-            blocked += 1
-    return accepted, blocked
-
-
-def _future_open_actions(
-    task: Task,
-    actions: list[HardHourlyAction],
-    start: datetime,
-    end: datetime,
-    now_local: datetime,
-) -> list[HardHourlyAction]:
-    rows = [action for action in actions if _is_future_open_in_bucket(task, action, start, end, now_local)]
-    return sorted(rows, key=lambda action: _normalize_optional(task, action.scheduled_at) or end)
-
-
 def _bucket_blockers(deficit: int, overdue_open: int, capacity_blocked: int) -> dict[str, int]:
     blockers: dict[str, int] = {}
     if overdue_open and deficit:
@@ -288,35 +262,6 @@ def _bucket_blockers(deficit: int, overdue_open: int, capacity_blocked: int) -> 
     if capacity_blocked and deficit:
         blockers["account_capacity"] = capacity_blocked
     return blockers
-
-
-def _is_success_in_bucket(task: Task, action: HardHourlyAction, start: datetime, end: datetime) -> bool:
-    executed_at = _normalize_optional(task, action.executed_at)
-    return (
-        action.status == "success"
-        and executed_at is not None
-        and start <= executed_at < end
-    )
-
-
-def _is_future_open_in_bucket(task: Task, action: HardHourlyAction, start: datetime, end: datetime, now_local: datetime) -> bool:
-    scheduled_at = _normalize_optional(task, action.scheduled_at)
-    return (
-        action.status in OPEN_STATUSES
-        and scheduled_at is not None
-        and start <= scheduled_at < end
-        and scheduled_at >= now_local
-    )
-
-
-def _is_overdue_open_in_bucket(task: Task, action: HardHourlyAction, start: datetime, end: datetime, now_local: datetime) -> bool:
-    scheduled_at = _normalize_optional(task, action.scheduled_at)
-    return (
-        action.status in OPEN_STATUSES
-        and scheduled_at is not None
-        and start <= scheduled_at < end
-        and scheduled_at < now_local
-    )
 
 
 def _bucket_status(success: int, deficit: int, overdue: int, start: datetime, end: datetime, now_local: datetime) -> str:

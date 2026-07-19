@@ -49,6 +49,8 @@ from app.services.task_center.hard_hourly import (
     planner_progress_snapshot,
     requires_planning as hard_hourly_requires_planning,
 )
+from app.services.task_center import hard_hourly as hard_hourly_service
+from app.services.task_center.hard_hourly_history import HardHourlyAction
 from app.services.task_center.listener_runtime import _mark_listener_runtime_success
 from app.services.task_center.service import (
     _clear_unfinished_plan,
@@ -1118,6 +1120,7 @@ def test_hard_hourly_recent_actions_deduplicates_time_window_matches():
         )
         session.commit()
 
+        rows = list(session.execute(_recent_actions_query(task, earliest)))
         actions = _recent_actions(session, task, earliest)
 
     assert {action.id for action in actions} == {
@@ -1126,10 +1129,16 @@ def test_hard_hourly_recent_actions_deduplicates_time_window_matches():
         "scheduled-only",
     }
     assert len(actions) == 3
+    assert {str(row.id) for row in rows} == {
+        "both-timestamps",
+        "executed-only",
+        "scheduled-only",
+    }
+    assert len(rows) == 3
 
 
 @pytest.mark.no_postgres
-def test_hard_hourly_recent_actions_uses_time_indexable_union_query():
+def test_hard_hourly_recent_actions_uses_disjoint_time_indexable_union_query():
     task = Task(
         id="task-hard-hourly-history-query",
         tenant_id=1,
@@ -1142,7 +1151,61 @@ def test_hard_hourly_recent_actions_uses_time_indexable_union_query():
     compiled = str(statement.compile(compile_kwargs={"literal_binds": True}))
 
     assert "UNION ALL" in compiled
-    assert " OR " not in compiled
+    assert "actions.executed_at >=" in compiled
+    assert "actions.scheduled_at >=" in compiled
+    assert "actions.executed_at IS NULL OR actions.executed_at <" in compiled
+
+
+@pytest.mark.no_postgres
+def test_hard_hourly_recent_bucket_classification_is_linear(monkeypatch):
+    now_value = datetime(2026, 6, 7, 20, 30)
+    current_start = now_value.replace(minute=0, second=0, microsecond=0)
+    task = Task(
+        id="task-hard-hourly-linear-buckets",
+        tenant_id=1,
+        name="硬目标线性归类",
+        type="group_ai_chat",
+        status="running",
+        timezone="Asia/Shanghai",
+        created_at=now_value - timedelta(days=2),
+        type_config={"hard_hourly_target_enabled": True, "hourly_min_messages": 2},
+    )
+    actions = [
+        action
+        for offset in range(24)
+        for action in (
+            HardHourlyAction(
+                id=f"success-{offset}",
+                status="success",
+                account_id=None,
+                scheduled_at=None,
+                executed_at=current_start - timedelta(hours=offset) + timedelta(minutes=5),
+            ),
+            HardHourlyAction(
+                id=f"pending-{offset}",
+                status="pending",
+                account_id=None,
+                scheduled_at=current_start - timedelta(hours=offset) + timedelta(minutes=45),
+                executed_at=None,
+            ),
+        )
+    ]
+    normalize_calls = 0
+    original_normalize_optional = hard_hourly_service._normalize_optional
+
+    def count_normalize_optional(*args, **kwargs):
+        nonlocal normalize_calls
+        normalize_calls += 1
+        return original_normalize_optional(*args, **kwargs)
+
+    monkeypatch.setattr(hard_hourly_service, "_recent_actions", lambda *_args: actions)
+    monkeypatch.setattr(hard_hourly_service, "_normalize_optional", count_normalize_optional)
+
+    stats = hard_hourly_service.hard_hourly_stats(None, task, now_value, {})
+
+    assert normalize_calls <= len(actions) + 2
+    assert stats["hard_hourly_success_count"] == 1
+    assert stats["hard_hourly_open_count"] == 1
 
 
 @pytest.mark.no_postgres

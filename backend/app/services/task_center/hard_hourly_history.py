@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import select, union_all
+from sqlalchemy import or_, select, union_all
 from sqlalchemy.orm import Session
 
 from app.models import Action, Task
@@ -42,5 +42,9 @@ def recent_actions_query(task: Task, earliest: datetime):
     )
     return union_all(
         select(*columns).where(*filters, Action.executed_at >= earliest),
-        select(*columns).where(*filters, Action.scheduled_at >= earliest),
+        select(*columns).where(
+            *filters,
+            Action.scheduled_at >= earliest,
+            or_(Action.executed_at.is_(None), Action.executed_at < earliest),
+        ),
     )

@@ -78,6 +78,30 @@ class Action(Base):
         Index("ix_actions_task_type_executed_at", "tenant_id", "task_id", "action_type", "executed_at"),
         Index("ix_actions_task_type_created_at", "tenant_id", "task_id", "action_type", text("created_at DESC")),
         Index(
+            "ix_actions_hard_hourly_history_executed",
+            "tenant_id",
+            "task_id",
+            "executed_at",
+            postgresql_include=["id", "status", "account_id", "scheduled_at"],
+            sqlite_where=text("task_type = 'group_ai_chat' AND action_type = 'send_message'"),
+            postgresql_where=text("task_type = 'group_ai_chat' AND action_type = 'send_message'"),
+        ),
+        Index(
+            "ix_actions_hard_hourly_history_scheduled",
+            "tenant_id",
+            "task_id",
+            "scheduled_at",
+            postgresql_include=["id", "status", "account_id", "executed_at"],
+            sqlite_where=text("task_type = 'group_ai_chat' AND action_type = 'send_message'"),
+            postgresql_where=text("task_type = 'group_ai_chat' AND action_type = 'send_message'"),
+        ),
+        Index(
+            "ix_actions_executing_lease_owner",
+            "lease_owner",
+            sqlite_where=text("status = 'executing' AND lease_owner <> ''"),
+            postgresql_where=text("status = 'executing' AND lease_owner <> ''"),
+        ),
+        Index(
             "ix_actions_recovery_hard_hourly_pending",
             "scheduled_at",
             "created_at",
@@ -614,6 +638,9 @@ class TargetLearningProfileVersion(Base):
 
 class WorkerHeartbeat(Base):
     __tablename__ = "worker_heartbeats"
+    __table_args__ = (
+        Index("ix_worker_heartbeats_host_pid_last_seen_at", "hostname", "pid", "last_seen_at"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
     worker_id: Mapped[str] = mapped_column(String(160), unique=True)
