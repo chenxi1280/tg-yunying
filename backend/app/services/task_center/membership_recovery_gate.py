@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.models import OperationTarget, Task
+from app.services._common import _now
 
 from .channel_membership import (
     gate_channel_membership,
@@ -15,7 +17,7 @@ from .hard_hourly import enabled as hard_hourly_enabled
 
 def recover_missing_hard_hourly_memberships(session: Session, *, limit: int) -> int:
     recovered = 0
-    for task in _candidate_tasks(session, limit=limit):
+    for task in _candidate_tasks(session, limit=limit, now=_now()):
         if not _should_recover_task(session, task):
             continue
         target = _target_for_task(session, task)
@@ -26,11 +28,16 @@ def recover_missing_hard_hourly_memberships(session: Session, *, limit: int) -> 
     return recovered
 
 
-def _candidate_tasks(session: Session, *, limit: int) -> list[Task]:
+def _candidate_tasks(session: Session, *, limit: int, now: datetime) -> list[Task]:
     return list(
         session.scalars(
             select(Task)
-            .where(Task.type == "group_ai_chat", Task.status == "running")
+            .where(
+                Task.type == "group_ai_chat",
+                Task.status == "running",
+                Task.deleted_at.is_(None),
+                or_(Task.hard_hourly_next_check_at.is_(None), Task.hard_hourly_next_check_at <= now),
+            )
             .order_by(Task.next_run_at.asc().nullsfirst(), Task.created_at.asc())
             .limit(max(1, int(limit or 1)))
         )
