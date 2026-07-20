@@ -2,11 +2,24 @@ import asyncio
 from datetime import datetime
 from types import SimpleNamespace
 
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import Tenant, TgAccount, TgGroup, TgGroupAccount, VerificationTask
+from app.models import (
+    AccountPool,
+    OperationTarget,
+    Task,
+    TaskAccountDailyCoverage,
+    TaskMembershipAdmissionItem,
+    Tenant,
+    TgAccount,
+    TgGroup,
+    TgGroupAccount,
+    VerificationTask,
+)
+from app.security import encrypt_session
 from app.integrations.telegram import SendResult
 from app.services.verification import (
     _apply_batch_approval_detail,
@@ -15,9 +28,11 @@ from app.services.verification import (
     _verification_action_for_group_restriction,
     _verification_send_failure_status,
     confirm_verification_task,
+    resolve_group_restriction_task,
 )
 from app.integrations.telegram import OperationResult
 from app.integrations.telegram.gateway import _verification_context_row
+from app.services.task_center import daily_coverage
 
 
 def test_batch_approval_detail_marks_blocked_tasks_once():
@@ -162,6 +177,87 @@ def test_confirm_verification_task_runs_auto_image_for_manual_required(monkeypat
     assert updated.status == "已处理"
     assert updated.failure_detail == "MiMo 已识别并提交验证码"
     assert link.can_send is True
+
+def _seed_paused_operation_target_coverage(
+    session: Session,
+    initial_at: datetime,
+    cursor_at: datetime,
+) -> Task:
+    session.add_all([
+        Tenant(id=1, name="默认运营空间"),
+        AccountPool(id=10, tenant_id=1, name="普通", pool_purpose="normal", is_enabled=True),
+        TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="青岛师范学院", can_send=False),
+        OperationTarget(
+            id=90,
+            tenant_id=1,
+            target_type="group",
+            tg_peer_id="-1007",
+            title="青岛师范学院",
+        ),
+        Task(
+            id="coverage-task", tenant_id=1, name="覆盖任务", type="group_ai_chat", status="paused",
+            account_config={"selection_mode": "all"},
+            type_config={"target_operation_target_id": 90, "account_coverage_mode": "all_accounts_daily"},
+        ),
+    ])
+    session.add_all([
+        TgAccount(
+            id=11, tenant_id=1, pool_id=10, display_name="受限账号", phone_masked="11",
+            status="在线", session_ciphertext=encrypt_session("session-11"),
+        ),
+        TgAccount(id=12, tenant_id=1, pool_id=10, display_name="游标账号", phone_masked="12", status="在线"),
+        TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=False),
+        TgGroupAccount(tenant_id=1, group_id=7, account_id=12, can_send=True),
+        TaskMembershipAdmissionItem(
+            id=1, tenant_id=1, task_id="coverage-task", account_id=11, target_id=90, phase="failed",
+        ),
+        TaskAccountDailyCoverage(
+            id="coverage-restricted", tenant_id=1, task_id="coverage-task", group_id=7, account_id=11,
+            membership_item_id=1, coverage_date=initial_at.date(), target_count=1,
+            state="blocked", blocker_code="cannot_send", targeted_at=initial_at,
+        ),
+        TaskAccountDailyCoverage(
+            id="coverage-cursor", tenant_id=1, task_id="coverage-task", group_id=7, account_id=12,
+            coverage_date=initial_at.date(), target_count=1, state="ready", targeted_at=cursor_at,
+        ),
+        VerificationTask(
+            id=101, tenant_id=1, account_id=11, group_id=7, verification_type="群发言不可用",
+            detected_reason="群无权限或账号不可发言", suggested_action="人工处理", status="需人工处理",
+        ),
+    ])
+    session.flush()
+    return session.get(Task, "coverage-task")
+
+
+@pytest.mark.no_postgres
+def test_group_permission_recheck_requeues_all_account_coverage(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    initial_at = datetime(2026, 7, 13, 11, 0)
+    cursor_at = datetime(2026, 7, 13, 11, 1)
+    recovered_at = datetime(2026, 7, 13, 11, 2)
+    monkeypatch.setattr("app.services.verification._now", lambda: recovered_at)
+    monkeypatch.setattr("app.services.verification.credentials_for_account", lambda *_args: object())
+    monkeypatch.setattr(
+        "app.services.verification.gateway.probe_target_capabilities",
+        lambda *_args, **_kwargs: OperationResult(True, detail="group:target:可访问"),
+    )
+
+    with Session(engine) as session:
+        task = _seed_paused_operation_target_coverage(session, initial_at, cursor_at)
+        cursor_row = session.get(TaskAccountDailyCoverage, "coverage-cursor")
+        daily_coverage.advance_coverage_plan_cursor(session, task, cursor_row, now=cursor_at)
+        cursor_row.state = "reserved"
+        session.commit()
+
+        resolved = resolve_group_restriction_task(session, 101, "tester")
+        coverage = session.get(TaskAccountDailyCoverage, "coverage-restricted")
+        batch = daily_coverage.ready_coverage_plan_batch(session, task, now=recovered_at, limit=20)
+
+    assert resolved.status == "已处理"
+    assert coverage.state == "ready"
+    assert coverage.targeted_at == recovered_at
+    assert [row.account_id for row in batch.rows] == [11]
 
 
 def test_verification_context_keeps_button_and_media_challenges():

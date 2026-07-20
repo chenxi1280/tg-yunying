@@ -44,11 +44,14 @@ def _apply_row_readiness(
     detail: str,
     timestamp: datetime,
 ) -> None:
+    was_ready = row.state == "ready"
     row.state = state
     row.blocker_code = code
     row.blocker_detail = detail
     row.next_eligible_at = None
     row.membership_item_id = item.id
+    if state == "ready" and not was_ready:
+        row.targeted_at = timestamp
     row.updated_at = timestamp
     _sync_item_phase(item, state, code, detail)
 

@@ -39,6 +39,7 @@ def ensure_task_daily_coverage(
     now: datetime | None = None,
     account_ids: list[int] | None = None,
     incremental: bool = False,
+    target_group: TgGroup | None = None,
 ) -> DailyCoverageSyncResult:
     timestamp = now or _now()
     scope_materialized = (
@@ -52,7 +53,9 @@ def ensure_task_daily_coverage(
     items = _scope_items(session, task, account_ids)
     if not items:
         return DailyCoverageSyncResult(coverage_date=timestamp.date(), created=0, refreshed=0)
-    group = _task_group(session, task)
+    group = target_group or _task_group(session, task)
+    if group.tenant_id != task.tenant_id:
+        raise ValueError("all-account coverage task target group tenant mismatch")
     coverage_date = _target_date(group, timestamp, incremental=incremental)
     existing = _existing_rows(session, task, coverage_date, [item.account_id for item in items])
     created = 0
@@ -296,6 +299,7 @@ def release_online_coverage_blockers(
             blocker_code="",
             blocker_detail="",
             next_eligible_at=None,
+            targeted_at=timestamp,
             updated_at=timestamp,
         )
     )
