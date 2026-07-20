@@ -256,6 +256,7 @@ class SearchRankDeboostPayload(BaseModel):
     keyword_hash: str = Field(min_length=64, max_length=64)
     keyword_text_ciphertext: str = Field(default="", max_length=1000)
     target_group_ids: list[int] = Field(default_factory=list)
+    target_group_refs: list[dict[str, Any]] = Field(default_factory=list)
     account_pool_id: int = Field(ge=1)
     proxy_airport_node_id: int = Field(ge=1)
     exempt_group_username: str = ""

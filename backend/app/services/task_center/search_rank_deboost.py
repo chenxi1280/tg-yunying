@@ -41,7 +41,7 @@ class ExemptGroupSelection:
 
 def compute_deboost_click_targets(
     search_results: list[dict],
-    my_target_ids: list[int],
+    my_target_ids: list[int | str],
     exempt_group_username: str,
 ) -> dict:
     """实时判定点击范围。
@@ -89,7 +89,7 @@ def compute_deboost_click_targets(
     }
 
 
-def _find_target_position(search_results: list[dict], my_target_ids: list[int]) -> int | None:
+def _find_target_position(search_results: list[dict], my_target_ids: list[int | str]) -> int | None:
     if not my_target_ids:
         return None
     target_tokens = {str(item).strip().lstrip("@") for item in my_target_ids if item is not None}
@@ -222,7 +222,7 @@ def preselect_exempt_group(
     tenant_id: int,
     task_id: str,
     operator: str,
-    my_target_ids: list[int],
+    my_target_ids: list[int | str],
     search_results: list[dict] | None = None,
 ) -> SearchRankDeboostExemptGroup:
     """从搜索结果中随机选取 1 个非我方目标群作为豁免群并写入持久化。
@@ -259,7 +259,9 @@ def require_real_exempt_group(session: Session, *, tenant_id: int, task_id: str)
 
 def require_rank_observation_gateway(gateway_client: Any | None = None) -> None:
     client = gateway_client if gateway_client is not None else _rank_observation_gateway()
-    if not callable(getattr(client, "execute_search_rank_deboost", None)):
+    has_execution = callable(getattr(client, "execute_search_rank_deboost", None))
+    has_candidate_search = callable(getattr(client, "search_rank_deboost_candidates", None))
+    if not (has_execution and has_candidate_search and bool(getattr(client, "supports_rank_deboost_observation", False))):
         raise ValueError("搜索排名观察 gateway 未接入，不能启动真实任务")
 
 
@@ -276,7 +278,7 @@ def _existing_exempt_group(session: Session, tenant_id: int, task_id: str) -> Se
     ))
 
 
-def _select_exempt_group(my_target_ids: list[int], search_results: list[dict] | None) -> ExemptGroupSelection:
+def _select_exempt_group(my_target_ids: list[int | str], search_results: list[dict] | None) -> ExemptGroupSelection:
     import random
 
     if not search_results:

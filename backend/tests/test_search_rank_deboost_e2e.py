@@ -24,9 +24,11 @@ from app.models import (
     AccountStatus,
     Action,
     BotProtocolSample,
+    OperationTarget,
     ProxyAirportNode,
     ProxyAirportSubscription,
     Task,
+    TelegramDeveloperApp,
     Tenant,
     TgAccount,
 )
@@ -36,8 +38,8 @@ from app.models.search_rank_deboost import (
     SearchRankDeboostClickReservation,
     SearchRankDeboostExemptGroup,
 )
-from app.schemas.task_center import SearchRankDeboostTaskCreate
-from app.security import decrypt_secret
+from app.schemas.task_center import SearchRankDeboostSimpleTaskCreate, SearchRankDeboostTaskCreate
+from app.security import decrypt_secret, encrypt_secret, encrypt_session
 from app.services._common import _now
 from app.services.task_center.executors.search_rank_deboost import (
     build_plan,
@@ -46,6 +48,7 @@ from app.services.task_center.executors.search_rank_deboost import (
 from app.services.task_center.service import (
     create_and_start_search_rank_deboost_task,
     create_search_rank_deboost_task,
+    create_simple_search_rank_deboost_task,
     get_task_detail,
     reroll_search_rank_deboost_exempt_group,
     start_task,
@@ -109,12 +112,21 @@ def _seed_base(
         id=1, tenant_id=1, name="主订阅", enabled=True, sync_status="synced", healthy_node_count=3,
     ))
     session.add(AccountPool(id=account_pool_id, tenant_id=1, name="降权分组", pool_purpose="rank_deboost"))
+    session.add(OperationTarget(
+        id=1001,
+        tenant_id=1,
+        target_type="group",
+        tg_peer_id="-1001",
+        title="我方目标群",
+        username="my_target",
+    ))
     session.add(ProxyAirportNode(
         id=proxy_node_id, tenant_id=1, subscription_id=1, node_key=f"node-{proxy_node_id}",
         status="healthy", observed_exit_ip=observed_exit_ip,
         protocol="socks5", proxy_host="127.0.0.1", proxy_port=1080,
     ))
     session.add(AccountProxy(id=30, tenant_id=1, name="rank-runtime", protocol="socks5", host="127.0.0.1", port=1080, status="healthy", alert_status="normal"))
+    session.add(TelegramDeveloperApp(id=40, app_name="rank-app", api_id=12345, api_hash_ciphertext=encrypt_secret("rank-api-hash")))
     if with_samples:
         _seed_protocol_samples(session)
 
@@ -132,30 +144,15 @@ def _seed_base(
             id=account_id, tenant_id=1, pool_id=account_pool_id,
             display_name=f"降权账号{account_id}", phone_masked=str(account_id),
             status=AccountStatus.ACTIVE.value, account_identity="rank_deboost", health_score=95,
+            developer_app_id=40,
+            developer_app_version=1,
+            session_ciphertext=encrypt_session(f"rank-session-{account_id}"),
         )
         session.add(account)
         accounts.append(account)
 
     session.flush()
     return binding, accounts
-
-
-def _make_search_results(
-    count: int = 5, *, target_position: int = 3, target_id: int = 1001,
-    button_effect: str = "navigate_only",
-) -> list[dict]:
-    items: list[dict] = []
-    for position in range(1, count + 1):
-        username = "my_target" if position == target_position else f"competitor_{position}"
-        items.append({
-            "position": position,
-            "username": username,
-            "peer_id": f"-100{position}",
-            "title": f"群 {position}",
-            "buttons": [{"text": "详情", "url": "https://example.com", "effect": button_effect, "position": position}],
-        })
-    items[target_position - 1]["id"] = target_id
-    return items
 
 
 # ==================== 1. 任务创建 → 预检通过 ====================
@@ -268,6 +265,12 @@ def test_e2e_start_rejects_pending_real_search_exempt_group(monkeypatch) -> None
             lambda *_args, **_kwargs: {"success": True, "search_results": [], "observed_exit_ip": "1.1.1.1"},
             raising=False,
         )
+        monkeypatch.setattr(
+            _common.gateway,
+            "search_rank_deboost_candidates",
+            lambda *_args, **_kwargs: {"success": False, "error_code": "candidate_unavailable"},
+        )
+        monkeypatch.setattr(_common.gateway, "supports_rank_deboost_observation", True)
 
         payload = SearchRankDeboostTaskCreate(
             name="草稿启动任务",
@@ -280,12 +283,105 @@ def test_e2e_start_rejects_pending_real_search_exempt_group(monkeypatch) -> None
         task = create_search_rank_deboost_task(session, 1, payload, operator="tester")
         assert task.status == "draft"
 
-        with pytest.raises(ValueError, match="真实搜索结果"):
+        with pytest.raises(ValueError, match="真实搜索候选源"):
             start_task(session, 1, task.id, actor="tester")
 
         session.refresh(task)
         assert task.status == "draft"
         assert task.next_run_at is None
+        readiness = task.stats["rank_deboost_readiness"]
+        assert readiness["status"] == "blocked"
+        assert readiness["blocker"] == "搜索排名观察真实搜索候选源返回格式无效"
+        assert readiness["checked_at"]
+        assert readiness["evidence_summary"] == "rank_start_preparation"
+
+
+def test_e2e_start_prepares_pending_exempt_group_for_simple_rank_draft(monkeypatch) -> None:
+    engine = _build_engine()
+    with Session(engine) as session:
+        _seed_base(session, account_ids=[100], with_binding=True)
+        session.commit()
+        task = create_simple_search_rank_deboost_task(
+            session,
+            1,
+            SearchRankDeboostSimpleTaskCreate(
+                target_operation_target_id=1001,
+                keywords=["关键词A"],
+                target_count=1,
+            ),
+            operator="tester",
+        )
+
+        from app.services import _common
+
+        monkeypatch.setattr(
+            _common.gateway,
+            "search_rank_deboost_candidates",
+            lambda *_args, **_kwargs: {
+                "success": True,
+                "execution_status": "candidates_found",
+                "search_results": [{"username": "real_exempt", "peer_id": "-100999", "title": "真实豁免群"}],
+            },
+        )
+        monkeypatch.setattr(
+            _common.gateway,
+            "execute_search_rank_deboost",
+            lambda *_args, **_kwargs: {"success": True, "observed_exit_ip": "1.1.1.1"},
+        )
+        monkeypatch.setattr(_common.gateway, "supports_rank_deboost_observation", True)
+        executed_statements = []
+        original_execute = session.execute
+
+        def capture_execute(statement, *args, **kwargs):
+            executed_statements.append(statement)
+            return original_execute(statement, *args, **kwargs)
+
+        monkeypatch.setattr(session, "execute", capture_execute)
+
+        started = start_task(session, 1, task.id, actor="tester")
+
+        exempt = session.query(SearchRankDeboostExemptGroup).filter_by(task_id=task.id).one()
+        assert started.status == "running"
+        assert exempt.exempt_group_username == "real_exempt"
+        assert exempt.selected_by == "tester"
+        readiness = started.stats["rank_deboost_readiness"]
+        assert readiness["status"] == "ready"
+        assert readiness["checked_at"]
+        assert readiness["evidence_summary"] == "rank_start_preparation"
+        assert "blocker" not in readiness
+        assert any(getattr(statement, "_for_update_arg", None) is not None for statement in executed_statements)
+
+
+def test_e2e_start_records_candidate_gateway_exception_as_readiness_blocker(monkeypatch) -> None:
+    engine = _build_engine()
+    with Session(engine) as session:
+        _seed_base(session, account_ids=[100], with_binding=True)
+        session.commit()
+        task = create_simple_search_rank_deboost_task(
+            session,
+            1,
+            SearchRankDeboostSimpleTaskCreate(
+                target_operation_target_id=1001,
+                keywords=["关键词A"],
+                target_count=1,
+            ),
+            operator="tester",
+        )
+
+        from app.services import _common
+
+        def raise_transport_error(*_args, **_kwargs):
+            raise RuntimeError("connection reset")
+
+        monkeypatch.setattr(_common.gateway, "search_rank_deboost_candidates", raise_transport_error)
+        monkeypatch.setattr(_common.gateway, "supports_rank_deboost_observation", True)
+
+        with pytest.raises(ValueError, match="真实候选搜索失败"):
+            start_task(session, 1, task.id, actor="tester")
+
+        session.refresh(task)
+        assert task.status == "draft"
+        assert task.stats["rank_deboost_readiness"]["blocker"] == "搜索排名观察真实候选搜索失败：RuntimeError"
 
 
 def test_e2e_create_and_start_rolls_back_pending_real_search_failure(monkeypatch) -> None:
@@ -303,6 +399,12 @@ def test_e2e_create_and_start_rolls_back_pending_real_search_failure(monkeypatch
             lambda *_args, **_kwargs: {"success": True, "search_results": [], "observed_exit_ip": "1.1.1.1"},
             raising=False,
         )
+        monkeypatch.setattr(
+            _common.gateway,
+            "search_rank_deboost_candidates",
+            lambda *_args, **_kwargs: {"success": False, "error_code": "candidate_unavailable"},
+        )
+        monkeypatch.setattr(_common.gateway, "supports_rank_deboost_observation", True)
 
         payload = SearchRankDeboostTaskCreate(
             name="原子启动失败任务",
@@ -312,7 +414,7 @@ def test_e2e_create_and_start_rolls_back_pending_real_search_failure(monkeypatch
             account_pool_id=10,
             proxy_airport_node_id=20,
         )
-        with pytest.raises(ValueError, match="真实搜索结果"):
+        with pytest.raises(ValueError, match="真实搜索候选源"):
             create_and_start_search_rank_deboost_task(session, 1, payload, operator="tester")
 
         assert session.query(Task).filter_by(name="原子启动失败任务").count() == 0
@@ -375,6 +477,30 @@ def test_e2e_start_rejects_when_rank_observation_gateway_missing() -> None:
             start_task(session, 1, task.id, actor="tester")
 
 
+def test_e2e_start_rejects_unresolvable_target_identity_before_gateway_check() -> None:
+    engine = _build_engine()
+    with Session(engine) as session:
+        _seed_base(session, account_ids=[100], with_binding=False)
+        session.commit()
+
+        payload = SearchRankDeboostTaskCreate(
+            name="无可验证目标任务",
+            search_bots=["jisou"],
+            keywords=[{"text": "关键词A"}],
+            target_group_ids=[9999],
+            account_pool_id=10,
+            proxy_airport_node_id=20,
+        )
+        task = create_search_rank_deboost_task(session, 1, payload, operator="tester")
+        exempt = session.query(SearchRankDeboostExemptGroup).filter_by(task_id=task.id).one()
+        exempt.exempt_group_username = "real_exempt"
+        exempt.exempt_group_peer_id = "-100999"
+        session.commit()
+
+        with pytest.raises(ValueError, match="目标群缺少可验证"):
+            start_task(session, 1, task.id, actor="tester")
+
+
 # ==================== 2. 样本采集门控 ====================
 
 
@@ -402,8 +528,8 @@ def test_e2e_create_task_rejected_when_protocol_samples_missing() -> None:
 # ==================== 3. 真实执行（mock Gateway）→ 写 SearchRankDeboostActionStat ====================
 
 
-def test_e2e_build_plan_and_execute_with_mock_gateway_writes_stats() -> None:
-    """完整链路：build_plan 创建 action → mock gateway 搜索 → executor 点击 navigate_only → 写 stat。"""
+def test_e2e_build_plan_and_execute_with_gateway_fact_writes_stats() -> None:
+    """完整链路仅按 Gateway 的实际点击事实写入统计。"""
     engine = _build_engine()
     with Session(engine) as session:
         binding, accounts = _seed_base(session, account_ids=[100])
@@ -444,14 +570,30 @@ def test_e2e_build_plan_and_execute_with_mock_gateway_writes_stats() -> None:
         assert decrypt_secret(payload_data["keyword_text_ciphertext"]) == "关键词A"
         assert payload_data["runtime_environment"]["group_proxy_binding_id"] == str(binding.id)
 
-        # mock gateway 返回搜索结果（目标群在位置 3，竞争群在 1、2 含 navigate_only 按钮）
-        search_results = _make_search_results(count=5, target_position=3, button_effect="navigate_only")
-
         observed_keyword_texts: list[str] = []
 
-        def gateway_execute(account_id, payload_data, keyword_text):
+        def gateway_execute(_account_id, _payload_data, **kwargs):
+            keyword_text = kwargs["keyword_text"]
             observed_keyword_texts.append(keyword_text)
-            return {"success": True, "search_results": search_results}
+            return {
+                "success": True,
+                "execution_status": "confirmed",
+                "observed_exit_ip": "1.1.1.1",
+                "click_outcomes": [{
+                    "status": "confirmed",
+                    "competitor_username": "competitor_1",
+                    "competitor_peer_id": "-10001",
+                    "competitor_title": "竞争群 1",
+                    "competitor_position": 1,
+                    "row": 0,
+                    "col": 0,
+                    "text": "详情",
+                    "url": "https://t.me/competitor_1",
+                    "effect": "navigate_only",
+                    "dwell_seconds": 12,
+                    "joined": False,
+                }],
+            }
 
         from app.services.task_center.payloads import SearchRankDeboostPayload
         payload = SearchRankDeboostPayload.model_validate(action.payload)
@@ -464,19 +606,18 @@ def test_e2e_build_plan_and_execute_with_mock_gateway_writes_stats() -> None:
 
         assert result["success"] is True
         assert observed_keyword_texts == ["关键词A"]
-        assert result["clicked_count"] == 2  # 竞争群 1、2
         # SearchRankDeboostActionStat 已写入
         stats = session.query(SearchRankDeboostActionStat).filter_by(action_id=action.id).all()
-        assert len(stats) == 2
-        for stat in stats:
-            assert stat.skip_reason == ""
-            assert stat.button_effect == "navigate_only"
-            assert stat.joined is False
-            assert stat.join_button_violation is False
-            assert stat.dwell_seconds >= 1
-            assert stat.account_pool_id == 10
-            assert stat.proxy_airport_node_id == 20
-            assert stat.bot_username == "jisou"
+        assert len(stats) == 1
+        stat = stats[0]
+        assert stat.skip_reason == ""
+        assert stat.button_effect == "navigate_only"
+        assert stat.joined is False
+        assert stat.join_button_violation is False
+        assert stat.dwell_seconds == 12
+        assert stat.account_pool_id == 10
+        assert stat.proxy_airport_node_id == 20
+        assert stat.bot_username == "jisou"
 
 
 # ==================== 4. stats 写入：task.stats 含 hourly_execution ====================

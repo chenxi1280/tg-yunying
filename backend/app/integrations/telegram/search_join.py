@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -22,7 +23,6 @@ class SearchJoinButton:
     position: int
     url: str = ""
     target_username: str = ""
-    target_chat_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -36,6 +36,8 @@ async def execute_search_join_with_client(client: Any, payload: dict[str, Any], 
     if not keyword_text.strip():
         return _failed("keyword_text_missing", "搜索关键词缺失")
     target = _target_spec(payload)
+    if not str(target.get("username") or "").strip():
+        return _failed("target_identity_missing", "搜索入群目标缺少可验证 username")
     try:
         return await _execute_search_pages(client, bot_username, keyword_text.strip(), payload, target)
     except Exception as exc:  # Telethon RPC errors are mapped at this adapter boundary.
@@ -60,7 +62,7 @@ async def _execute_search_pages(client: Any, bot_username: str, keyword_text: st
                 return _failed("bot_human_verification_required", "搜索机器人要求人机验证，当前账号不能自动执行")
             buttons = _parse_buttons(page)
             total_results += len(buttons)
-            await _click_page_decoys(page, buttons, payload, decoys)
+            await _click_page_decoys(page, buttons, payload, target, decoys)
             text_match = _find_target_in_text(page, target)
             if text_match:
                 return await _execute_text_target_join(client, payload, target, text_match, decoys, page_no, total_results)
@@ -94,11 +96,17 @@ def _target_not_found(total: int, decoys: list[dict[str, Any]], page_no: int, ma
     }
 
 
-async def _click_page_decoys(page: Any, buttons: list[SearchJoinButton], payload: dict[str, Any], decoys: list[dict[str, Any]]) -> None:
+async def _click_page_decoys(
+    page: Any,
+    buttons: list[SearchJoinButton],
+    payload: dict[str, Any],
+    target: dict[str, Any],
+    decoys: list[dict[str, Any]],
+) -> None:
     limit = int(_safe(payload).get("pre_join_decoy_click_max") or 0)
     if len(decoys) >= limit:
         return
-    clicked = await _click_safe_navigation(page, buttons, limit - len(decoys))
+    clicked = await _click_safe_navigation(page, buttons, target, limit - len(decoys))
     decoys.extend(clicked)
 
 
@@ -160,7 +168,6 @@ def _parse_buttons(message: Any) -> list[SearchJoinButton]:
                     position=position,
                     url=url,
                     target_username=_telegram_username(url),
-                    target_chat_id=_target_chat_id(raw),
                 )
             )
             position += 1
@@ -204,12 +211,17 @@ def _button_effect(button: Any, text: str, url: str) -> str:
     return "unknown"
 
 
-async def _click_safe_navigation(message: Any, buttons: list[SearchJoinButton], limit: int) -> list[dict[str, Any]]:
+async def _click_safe_navigation(
+    message: Any,
+    buttons: list[SearchJoinButton],
+    target: dict[str, Any],
+    limit: int,
+) -> list[dict[str, Any]]:
     clicked: list[dict[str, Any]] = []
     for button in buttons:
         if len(clicked) >= limit:
             break
-        if button.effect != "navigate_only" or _is_page_nav_button(button):
+        if button.effect != "navigate_only" or _is_page_nav_button(button) or _matches_target(button, target):
             continue
         await _click_button(message, button)
         clicked.append({"position": button.position, "button_hash": _button_hash(button), "effect": button.effect, "joined": False})
@@ -233,13 +245,9 @@ def _find_next_button(buttons: list[SearchJoinButton]) -> SearchJoinButton | Non
 
 def _matches_target(button: SearchJoinButton, target: dict[str, Any]) -> bool:
     username = str(target.get("username") or "").strip().lower().lstrip("@")
-    title = str(target.get("title") or "").strip().lower()
-    target_id = int(target.get("group_id") or 0)
     if username and button.target_username.lower() == username:
         return True
-    if target_id and button.target_chat_id == target_id:
-        return True
-    return bool(title and title in button.text.lower())
+    return False
 
 
 async def _click_button(message: Any, button: SearchJoinButton) -> Any:
@@ -328,17 +336,15 @@ def _safe(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _find_target_in_text(message: Any, target: dict[str, Any]) -> TextTargetMatch | None:
-    title = str(target.get("title") or "").strip().lower()
     username = str(target.get("username") or "").strip().lower().lstrip("@")
-    if not title and not username:
+    if not username:
         return None
+    pattern = re.compile(rf"(?<![a-z0-9_])@?{re.escape(username)}(?![a-z0-9_])")
     for position, line in enumerate(_message_text(message).splitlines(), start=1):
         normalized = line.strip().lower()
         if not normalized:
             continue
-        if title and title in normalized:
-            return TextTargetMatch(position, line.strip())
-        if username and username in normalized:
+        if pattern.search(normalized):
             return TextTargetMatch(position, line.strip())
     return None
 
@@ -400,11 +406,6 @@ def _is_already_participant_error(exc: Exception) -> bool:
     return "already" in text and ("participant" in text or "member" in text)
 
 
-def _target_chat_id(button: Any) -> int | None:
-    raw = getattr(button, "target_chat_id", None) or getattr(getattr(button, "button", None), "target_chat_id", None)
-    return int(raw) if str(raw or "").lstrip("-").isdigit() else None
-
-
 def _is_navigation_text(text: str) -> bool:
     normalized = text.strip().lower()
     return any(marker in normalized for marker in NAVIGATION_MARKERS)
@@ -416,7 +417,8 @@ def _is_page_nav_button(button: SearchJoinButton) -> bool:
 
 
 def _button_hash(button: SearchJoinButton) -> str:
-    return str(abs(hash((button.text, button.url, button.position))))[:16]
+    raw = f"{button.text}:{button.url}:{button.position}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
 __all__ = ["SearchJoinButton", "execute_search_join_with_client"]

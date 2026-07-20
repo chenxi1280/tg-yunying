@@ -115,7 +115,8 @@ def test_task_center_form_support_load_failures_surface_backend_error_detail():
     edit_task = source[source.index("async function openEditTask"):source.index("\n\n  function closeEditTaskModal")]
     reset_type_fields = source[source.index("function resetTypeFields"):source.index("\n  const columns")]
 
-    assert "setActionError(`读取任务表单支撑数据失败：${errorMessage(error)}`)" in create_task
+    assert "ensureTaskFormData(" not in create_task
+    assert "读取任务表单支撑数据失败" not in create_task
     assert "setActionError(`读取任务表单支撑数据失败：${errorMessage(error)}`)" in edit_task
     assert "setActionError(`读取任务预填支撑数据失败：${errorMessage(error)}`)" in prefill_effect
     assert "setActionError(`读取任务类型支撑数据失败：${errorMessage(error)}`)" in reset_type_fields
@@ -152,9 +153,11 @@ def test_task_center_frontend_supports_search_join_group_contract():
     assert "搜索目标群点击任务" in view_model
     assert "search_join_group: '/tasks/search-join-group'" in view_model
     assert "search_join_group: '/tasks/search-join-group/create-and-start'" in view_model
-    for field in ["search_bots", "keyword_hashes", "pre_join_decoy_click_max", "post_join_safe_navigation_max"]:
+    for field in ["search_bots", "keyword_hashes", "pre_join_decoy_click_max"]:
         assert field in wizard
-        assert field in view_model
+    assert "target_count" in view_model
+    assert "post_join_safe_navigation_max" not in wizard
+    assert "post_join_safe_navigation_max" not in view_model
     for label in ["目标资料相关性", "内容健康", "极搜生态", "付费关键词广告", "排名观察", "联动状态"]:
         assert label in detail
     assert "search_join_stats" in detail
@@ -1502,12 +1505,13 @@ def test_task_center_edit_ai_limits_can_calculate_and_apply_recommendations():
     assert "一键应用推荐" in source
 
 
-def test_search_join_group_frontend_exposes_pacing_controls_and_details():
+def test_search_join_group_frontend_keeps_pacing_system_managed_and_details_read_only():
     wizard = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterWizardSections.tsx").read_text()
     view = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
     view_model = (PROJECT_ROOT / "frontend/src/app/views/taskCenterViewModel.ts").read_text()
     detail = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterDetailModal.tsx").read_text()
 
+    simple_config = wizard[wizard.index("function SimpleSearchClickConfig"):wizard.index("export function WizardTypeConfig")]
     for field in [
         "per_account_total_action_limit",
         "per_account_daily_action_limit",
@@ -1520,15 +1524,12 @@ def test_search_join_group_frontend_exposes_pacing_controls_and_details():
         "hourly_jitter_percent",
         "daily_jitter_percent",
     ]:
-        assert f'name="{field}"' in wizard
-        assert field in view
-        assert f"'{field}'" in view_model
-    assert "实时 pacing / random decision 不调用 LLM" in wizard
-    assert "填 0 表示不设上限" in wizard
-    assert "membership_observed" in wizard
-    assert "target_not_in_results" in wizard
-    assert "pages_exhausted=true" in wizard
-    assert "停止整个任务" in wizard
+        assert f'name="{field}"' not in simple_config
+    assert "系统自动选择账号、代理和执行节奏" in simple_config
+    assert 'name="keywords"' in simple_config
+    assert 'name="target_count"' in simple_config
+    assert "isSimpleSearchClickTask(taskType)" in view_model
+    assert "simpleSearchClickPayload(values)" in view
     assert "pacing_limits" in detail
     assert "membership_observed 表示" in detail
     assert "最多翻 70 页" in detail
@@ -1799,7 +1800,8 @@ def test_task_center_loads_account_support_data_only_for_forms():
     assert "async function ensureAccounts()" in source
     assert "async function ensurePromptTemplates()" in source
     assert "loadTaskFormAccounts()" in source
-    assert "[ensureAccounts(), ensurePromptTemplates()]" in source
+    assert "function taskFormSupportRequests" in source
+    assert "requests.push(ensureAccounts(), ensurePromptTemplates());" in source
     assert "ensureTargets()" not in source
     assert "accounts={taskAccounts}" in source
     assert "accountPools={taskAccountPools}" in source
@@ -2052,13 +2054,10 @@ def test_task_center_runtime_form_exposes_hour_limit_without_generic_task_daily_
     wizard = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterWizardSections.tsx").read_text()
     view_model = (PROJECT_ROOT / "frontend/src/app/views/taskCenterViewModel.ts").read_text()
 
-    assert "searchJoinTask ? '每小时最大搜索点击数' : '每小时最大发送量'" in wizard
-    assert "min={searchJoinTask ? 0 : 1}" in wizard
-    assert 'placeholder="预检后按账号数推荐"' in wizard
-    assert 'name="max_actions_per_day" label="每日上限"' not in wizard
-    assert "每日上限 ${values.max_actions_per_day" not in wizard
-    assert "if (taskType === 'search_join_group')" in view_model
-    assert "'max_actions_per_day'" in view_model
+    simple_config = wizard[wizard.index("function SimpleSearchClickConfig"):wizard.index("export function WizardTypeConfig")]
+    assert 'name="max_actions_per_hour"' not in simple_config
+    assert 'name="max_actions_per_day"' not in simple_config
+    assert "if (isSimpleSearchClickTask(taskType)) return ['target_operation_target_id', 'keywords', 'target_count'];" in view_model
 
 
 def test_target_profile_is_top_level_page_not_target_detail_governance():
@@ -2525,6 +2524,38 @@ def test_task_center_ai_turns_show_voice_profile_and_memory_fields():
     assert "act_type" in view
 
 
+def test_search_click_creation_uses_three_business_fields_and_system_managed_policy():
+    view_model = (PROJECT_ROOT / "frontend/src/app/views/taskCenterViewModel.ts").read_text()
+    view = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
+    wizard = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterWizardSections.tsx").read_text()
+    target = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterTargetSection.tsx").read_text()
+
+    assert "SIMPLE_SEARCH_CLICK_WIZARD_STEPS = ['任务类型', '目标群', '关键词与目标次数', '确认']" in view_model
+    assert "export function isSimpleSearchClickTask" in view_model
+    assert "export function wizardStepsForTask" in view_model
+    assert "target_count" in view_model
+    assert "function simpleSearchClickPayload(values: any, editing = false)" in view
+    simple_payload = view[view.index("function simpleSearchClickPayload(values: any, editing = false)"):view.index("function parseExcludedSenderInput", view.index("function simpleSearchClickPayload(values: any, editing = false)"))]
+    assert "target_operation_target_id" in simple_payload
+    assert "const keywords = words(values.keywords);" in simple_payload
+    assert "...(keywords.length ? { keywords } : {})," in simple_payload
+    assert "target_count: values.target_count" in simple_payload
+    assert "account_config" not in simple_payload
+    assert "return simpleSearchClickPayload(values);" in view
+    assert "return simpleSearchClickPayload(values, true);" in view
+    assert "simpleSearchCreation" in wizard
+    assert "系统自动选择账号、代理和执行节奏" in wizard
+    assert 'name="target_count"' in wizard
+    simple_config = wizard[wizard.index("function SimpleSearchClickConfig"):wizard.index("export function WizardTypeConfig")]
+    assert '<InputNumber min={1} precision={0}' in simple_config
+    assert "max={100000}" not in simple_config
+    assert "创建为草稿；启动准备时系统检查可用资源和执行条件。" in wizard
+    assert "simpleSearchCreation" in target
+    assert "!simpleSearchClickTask && wizardStep === 3" in view
+    assert "simpleSearchClickTask ? (" in view
+    assert "创建并启动" in view
+
+
 def test_task_center_create_refreshes_after_long_timeout_and_capacity_summary_types():
     view = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
     types = (PROJECT_ROOT / "frontend/src/app/types/taskCenter.ts").read_text()
@@ -2543,20 +2574,32 @@ def test_task_center_create_reuses_review_precheck_before_submit():
 
     create_task = source[source.index("async function createTask"):source.index("\n\n  async function saveTaskSettings")]
     assert "const precheckSignature = taskPrecheckPayloadSignature(taskType, payload);" in create_task
-    assert "const requiresFreshPrecheck = taskType !== 'group_membership_admission' && taskType !== 'search_rank_deboost' && !options.skipCapacityCheck;" in create_task
+    assert "const requiresFreshPrecheck = taskType !== 'group_membership_admission' && !isSimpleSearchClickTask(taskType) && !options.skipCapacityCheck;" in create_task
     assert "precheck && precheckPayloadSignature === precheckSignature" in create_task
     assert "await runTaskPrecheck(values)" in create_task
     assert "if (!result && requiresFreshPrecheck) return;" in create_task
 
 
-def test_search_rank_deboost_create_submits_draft_until_real_exempt_group_exists():
+def test_search_rank_deboost_create_exposes_draft_only_action():
     source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
     create_task = source[source.index("async function createTask"):source.index("\n\n  async function saveTaskSettings")]
 
-    assert "const shouldStartNow = start && taskType !== 'search_rank_deboost';" in create_task
+    assert "const shouldStartNow = taskType === 'search_rank_deboost' ? false : start;" in create_task
+    assert "if (shouldStartNow && result?.decision === 'block')" in create_task
     assert "(shouldStartNow ? CREATE_AND_START_ENDPOINT : CREATE_ENDPOINT)[taskType]" in create_task
-    assert "搜索排名观察任务已创建为草稿" in create_task
     assert "refreshTaskListAfterAction(shouldStartNow ? '任务创建并启动' : '任务创建')" in create_task
+    assert "搜索排名观察任务已创建为草稿" not in create_task
+    assert "taskType === 'search_rank_deboost' ? (" in source
+    assert "创建草稿" in source
+
+
+def test_search_join_edit_omits_hidden_keyword_material_when_unchanged():
+    source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
+
+    assert "const keywords = words(values.keywords);" in source
+    assert "...(keywords.length ? { keywords } : {})," in source
+    assert "...(values.target_count != null ? { target_count: values.target_count } : {})," in source
+    assert "target_count: config.target_count ?? 1" not in source
 
 
 def test_api_error_message_supports_timeout_copy_and_trace_id():

@@ -37,10 +37,10 @@ from app.schemas import (
     ReviewQueueOut,
     ReviewRejectRequest,
     SearchJoinGroupTaskConfigUpdate,
-    SearchJoinGroupTaskCreate,
+    SearchJoinGroupSimpleTaskCreate,
     SearchRankDeboostExemptGroupResponse,
     SearchRankDeboostTaskConfigUpdate,
-    SearchRankDeboostTaskCreate,
+    SearchRankDeboostSimpleTaskCreate,
     TaskDetailOut,
     TaskAccountCoverageItemOut,
     TaskAICycleOut,
@@ -68,15 +68,16 @@ from app.services.task_center import (
     create_and_start_group_membership_admission_task,
     create_and_start_group_relay_task,
     create_and_start_search_join_group_task,
-    create_and_start_search_rank_deboost_task,
+    create_and_start_simple_search_join_group_task,
+    create_and_start_simple_search_rank_deboost_task,
     create_channel_comment_task,
     create_channel_like_task,
     create_channel_view_task,
     create_group_ai_chat_task,
     create_group_membership_admission_task,
     create_group_relay_task,
-    create_search_join_group_task,
-    create_search_rank_deboost_task,
+    create_simple_search_join_group_task,
+    create_simple_search_rank_deboost_task,
     delete_task,
     generate_channel_comment_preview,
     generate_group_ai_chat_preview,
@@ -227,33 +228,33 @@ def post_channel_comment_create_and_start(payload: ChannelCommentTaskCreate, ses
 
 
 @router.post("/api/tasks/search-join-group", response_model=TaskOut)
-def post_search_join_group_task(payload: SearchJoinGroupTaskCreate, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
+def post_search_join_group_task(payload: SearchJoinGroupSimpleTaskCreate, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
     try:
-        return create_search_join_group_task(session, current_user.tenant_id or 1, payload, current_user.name)
+        return create_simple_search_join_group_task(session, current_user.tenant_id or 1, payload, current_user.name)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/api/tasks/search-join-group/create-and-start", response_model=TaskOut)
-def post_search_join_group_create_and_start(payload: SearchJoinGroupTaskCreate, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
+def post_search_join_group_create_and_start(payload: SearchJoinGroupSimpleTaskCreate, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
     try:
-        return create_and_start_search_join_group_task(session, current_user.tenant_id or 1, payload, current_user.name)
+        return create_and_start_simple_search_join_group_task(session, current_user.tenant_id or 1, payload, current_user.name)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/api/tasks/search_rank_deboost", response_model=TaskOut)
-def post_search_rank_deboost_task(payload: SearchRankDeboostTaskCreate, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
+def post_search_rank_deboost_task(payload: SearchRankDeboostSimpleTaskCreate, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
     try:
-        return create_search_rank_deboost_task(session, current_user.tenant_id or 1, payload, current_user.name)
+        return create_simple_search_rank_deboost_task(session, current_user.tenant_id or 1, payload, current_user.name)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/api/tasks/search_rank_deboost/create_and_start", response_model=TaskOut)
-def post_search_rank_deboost_create_and_start(payload: SearchRankDeboostTaskCreate, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
+def post_search_rank_deboost_create_and_start(payload: SearchRankDeboostSimpleTaskCreate, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
     try:
-        return create_and_start_search_rank_deboost_task(session, current_user.tenant_id or 1, payload, current_user.name)
+        return create_and_start_simple_search_rank_deboost_task(session, current_user.tenant_id or 1, payload, current_user.name)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -416,7 +417,9 @@ def post_task_start(task_id: str, session: Session = Depends(get_session), curre
     try:
         return start_task(session, current_user.tenant_id or 1, task_id, current_user.name)
     except ValueError as exc:
-        raise not_found(str(exc)) from exc
+        if str(exc) == "task not found":
+            raise not_found(str(exc)) from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/api/tasks/{task_id}/pause", response_model=TaskOut)

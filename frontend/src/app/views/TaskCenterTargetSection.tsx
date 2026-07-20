@@ -18,6 +18,7 @@ type WizardTargetProps = Readonly<{
   onTargetChannelChange: () => void;
   onTargetsLoaded?: (targets: readonly OperationTarget[]) => void;
   allowInlineTarget?: boolean;
+  simpleSearchCreation?: boolean;
 }>;
 
 type GroupTargetFieldProps = Readonly<{
@@ -38,9 +39,10 @@ function GroupTargetField({ name, label, mode, capability, required, onTargetsLo
 }
 
 function GroupTaskTargetFields({ taskType, onTargetsLoaded, allowInlineTarget }: Pick<WizardTargetProps, 'taskType' | 'onTargetsLoaded' | 'allowInlineTarget'>) {
+  const searchClickTask = taskType === 'search_join_group' || taskType === 'search_rank_deboost';
   return (
     <div className="form-grid">
-      <GroupTargetField name="target_operation_target_id" label="已有运营目标群" capability="task" required={taskType !== 'group_ai_chat'} onTargetsLoaded={onTargetsLoaded} />
+      <GroupTargetField name="target_operation_target_id" label={searchClickTask ? '目标群' : '已有运营目标群'} capability="task" required={taskType !== 'group_ai_chat'} onTargetsLoaded={onTargetsLoaded} />
       {taskType === 'group_ai_chat' && allowInlineTarget && <Form.Item name="target_input" label="粘贴新群入口"><Input placeholder="@group_name / https://t.me/+invite / peer id" /></Form.Item>}
       {taskType === 'group_ai_chat' && allowInlineTarget && <Form.Item name="target_title" label="目标名称"><Input placeholder="可选，不填时使用入口作为名称" /></Form.Item>}
     </div>
@@ -78,7 +80,7 @@ function ChannelTargetFields(props: WizardTargetProps) {
 
 export function WizardTarget(props: WizardTargetProps) {
   const normalizedProps = { ...props, allowInlineTarget: props.allowInlineTarget ?? true };
-  if (['group_ai_chat', 'group_membership_admission', 'search_join_group'].includes(props.taskType)) {
+  if (['group_ai_chat', 'group_membership_admission', 'search_join_group'].includes(props.taskType) || (props.taskType === 'search_rank_deboost' && props.simpleSearchCreation)) {
     return <GroupTaskTargetFields taskType={props.taskType} onTargetsLoaded={props.onTargetsLoaded} allowInlineTarget={normalizedProps.allowInlineTarget} />;
   }
   if (props.taskType === 'search_rank_deboost') {

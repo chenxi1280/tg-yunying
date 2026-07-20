@@ -21,22 +21,27 @@ from sqlalchemy.orm import Session
 from app.database import Base
 from app.models import (
     AccountPool,
+    AccountProxy,
     AccountStatus,
     Action,
     BotProtocolSample,
+    OperationTarget,
     ProxyAirportNode,
     ProxyAirportSubscription,
     SearchRankDeboostAlert,
     Task,
     Tenant,
+    TelegramDeveloperApp,
     TgAccount,
 )
 from app.models.search_rank_deboost import (
     AccountGroupProxyBinding,
     SearchRankDeboostActionStat,
+    SearchRankDeboostClickReservation,
     SearchRankDeboostExemptGroup,
 )
 from app.services._common import _now
+from app.security import encrypt_secret, encrypt_session
 from app.services.task_center.dispatcher import dispatch_action
 from app.services.task_center.executors.search_rank_deboost import (
     build_plan,
@@ -128,7 +133,17 @@ def _seed_base(
     session.add(Tenant(id=1, name="默认运营空间"))
     session.add(ProxyAirportSubscription(id=1, tenant_id=1, name="主订阅", enabled=True, sync_status="synced", healthy_node_count=3))
     session.add(AccountPool(id=account_pool_id, tenant_id=1, name="降权分组", pool_purpose="rank_deboost"))
+    session.add(OperationTarget(
+        id=1001,
+        tenant_id=1,
+        target_type="group",
+        tg_peer_id="-1001",
+        title="我方目标群",
+        username="my_target",
+    ))
     session.add(ProxyAirportNode(id=proxy_node_id, tenant_id=1, subscription_id=1, node_key=f"node-{proxy_node_id}", status="healthy", observed_exit_ip=observed_exit_ip))
+    session.add(AccountProxy(id=30, tenant_id=1, name="rank-runtime", protocol="socks5", host="127.0.0.1", port=1080, status="healthy", alert_status="normal"))
+    session.add(TelegramDeveloperApp(id=40, app_name="rank-app", api_id=12345, api_hash_ciphertext=encrypt_secret("rank-api-hash")))
     _seed_protocol_samples(session)
 
     binding = AccountGroupProxyBinding(
@@ -136,6 +151,7 @@ def _seed_base(
         tenant_id=1,
         account_pool_id=account_pool_id,
         proxy_airport_node_id=proxy_node_id,
+        runtime_proxy_id=30,
         binding_scope="group",
         observed_exit_ip=observed_exit_ip,
         status="active",
@@ -167,6 +183,9 @@ def _seed_base(
             status=AccountStatus.ACTIVE.value,
             account_identity="rank_deboost",
             health_score=95,
+            developer_app_id=40,
+            developer_app_version=1,
+            session_ciphertext=encrypt_session(f"rank-session-{account_id}"),
         )
         session.add(account)
         accounts.append(account)
@@ -193,6 +212,7 @@ def _make_payload(
         keyword_hash=keyword_hash,
         keyword_text_ciphertext=keyword_text,
         target_group_ids=target_group_ids or [1001],
+        target_group_refs=[{"username": "my_target", "peer_id": "-1001"}],
         account_pool_id=account_pool_id,
         proxy_airport_node_id=proxy_node_id,
         exempt_group_username=exempt_group_username,
@@ -201,6 +221,8 @@ def _make_payload(
         runtime_environment={
             "proxy_egress_guard": "verified",
             "group_proxy_binding_id": str(binding_id),
+            "runtime_proxy_id": "30",
+            "binding_generation": "1",
             "proxy_airport_node_id": str(proxy_node_id),
             "account_pool_id": str(account_pool_id),
             "observed_exit_ip": observed_exit_ip,
@@ -226,37 +248,44 @@ def _make_action(session: Session, task: Task, account: TgAccount, payload: Sear
     return action
 
 
-def _make_search_results(
-    count: int = 5,
-    *,
-    target_position: int = 3,
-    target_username: str = "my_target",
-    exempt_position: int | None = 5,
-    exempt_username: str = "exempt_group",
-    include_buttons: bool = True,
-    button_effect: str = "navigate_only",
-) -> list[dict]:
-    items: list[dict] = []
-    for position in range(1, count + 1):
-        if position == target_position:
-            username = target_username
-        elif exempt_position is not None and position == exempt_position:
-            username = exempt_username
-        else:
-            username = f"competitor_{position}"
-        item: dict = {
-            "position": position,
-            "username": username,
-            "peer_id": f"-100{position}",
-            "title": f"群 {position}",
-        }
-        if include_buttons:
-            item["buttons"] = [
-                {"text": "详情", "url": "https://example.com", "effect": button_effect, "position": position},
-            ]
-        items.append(item)
-    items[target_position - 1]["id"] = 1001
-    return items
+def _make_reservation(session: Session, task: Task, action: Action, account: TgAccount) -> None:
+    now_value = _now()
+    session.add(SearchRankDeboostClickReservation(
+        tenant_id=task.tenant_id,
+        task_id=task.id,
+        action_id=action.id,
+        account_id=account.id,
+        account_pool_id=int(account.pool_id or 0),
+        keyword_hash=KEYWORD_HASH_A,
+        local_date=now_value.date(),
+        hour_bucket=now_value.replace(minute=0, second=0, microsecond=0),
+        expires_at=now_value + timedelta(minutes=15),
+    ))
+
+
+def _gateway_result(status: str = "confirmed", *, effect: str = "navigate_only", observed_exit_ip: str = "1.1.1.1") -> dict:
+    result = {
+        "success": status == "confirmed",
+        "execution_status": status,
+        "observed_exit_ip": observed_exit_ip,
+        "click_outcomes": [],
+    }
+    if status == "confirmed":
+        result["click_outcomes"] = [{
+            "status": "confirmed",
+            "competitor_username": "competitor_1",
+            "competitor_peer_id": "-10001",
+            "competitor_title": "竞争群 1",
+            "competitor_position": 1,
+            "row": 0,
+            "col": 0,
+            "text": "详情",
+            "url": "https://t.me/competitor_1",
+            "effect": effect,
+            "dwell_seconds": 12,
+            "joined": False,
+        }]
+    return result
 
 
 # ==================== SubTask 19.2: join_button_violation 告警 ====================
@@ -271,19 +300,11 @@ def test_join_button_violation_generates_alert() -> None:
         account = accounts[0]
         payload = _make_payload(task, account_id=account.id, binding_id=binding.id)
         action = _make_action(session, task, account, payload)
+        _make_reservation(session, task, action, account)
         session.commit()
 
-        search_results = _make_search_results(count=5, target_position=3, button_effect="join_candidate")
-        gateway_execute = lambda account_id, payload_data, keyword_text: {"success": True, "search_results": search_results}
-
-        from app.services.task_center.executors import search_rank_deboost as executor_module
-
-        original_navigable = executor_module.NAVIGABLE_BUTTON_EFFECTS
-        executor_module.NAVIGABLE_BUTTON_EFFECTS = {"navigate_only", "join_candidate"}
-        try:
-            result = execute_search_rank_deboost(session, action, account, payload, gateway_execute=gateway_execute, probe_exit_ip="1.1.1.1")
-        finally:
-            executor_module.NAVIGABLE_BUTTON_EFFECTS = original_navigable
+        gateway_execute = lambda *_args, **_kwargs: _gateway_result(effect="join_candidate")
+        result = execute_search_rank_deboost(session, action, account, payload, gateway_execute=gateway_execute, probe_exit_ip="1.1.1.1")
 
         assert result["success"] is False
         assert result["join_button_violation"] is True
@@ -315,12 +336,13 @@ def test_proxy_egress_ip_drift_generates_alert_in_executor() -> None:
         account = accounts[0]
         payload = _make_payload(task, account_id=account.id, binding_id=binding.id)
         action = _make_action(session, task, account, payload)
+        _make_reservation(session, task, action, account)
         session.commit()
 
         result = execute_search_rank_deboost(session, action, account, payload, probe_exit_ip="9.9.9.9")
 
         assert result["success"] is False
-        assert result["skip_reason"] == "proxy_egress_guard_failed"
+        assert result["error_code"] == "proxy_egress_guard_failed"
 
         alerts = session.query(SearchRankDeboostAlert).filter_by(
             alert_type="rank_deboost_group_ip_drift"
@@ -348,7 +370,7 @@ def test_proxy_egress_node_unreachable_generates_alert_when_probe_empty() -> Non
         result = execute_search_rank_deboost(session, action, account, payload, probe_exit_ip=None)
 
         assert result["success"] is False
-        assert result["skip_reason"] == "proxy_egress_guard_failed"
+        assert result["error_code"] == "proxy_egress_guard_failed"
 
         alerts = session.query(SearchRankDeboostAlert).filter_by(
             alert_type="rank_deboost_node_unreachable"
@@ -376,7 +398,7 @@ def test_proxy_egress_node_unreachable_generates_alert_when_binding_inactive() -
         result = execute_search_rank_deboost(session, action, account, payload, probe_exit_ip="1.1.1.1")
 
         assert result["success"] is False
-        assert result["skip_reason"] == "proxy_egress_guard_failed"
+        assert result["error_code"] == "proxy_egress_guard_failed"
 
         alerts = session.query(SearchRankDeboostAlert).filter_by(
             alert_type="rank_deboost_node_unreachable"
@@ -386,7 +408,7 @@ def test_proxy_egress_node_unreachable_generates_alert_when_binding_inactive() -
 
 
 def test_dispatch_proxy_egress_drift_generates_alert(monkeypatch) -> None:
-    """dispatch_action 在 gateway 本次出口探测为空时生成 node_unreachable 告警。"""
+    """Gateway 调用后出口事实缺失时保留未知配额并生成告警。"""
     engine = _build_engine()
     with Session(engine) as session:
         binding, accounts = _seed_base(session, observed_exit_ip="1.1.1.1")
@@ -394,19 +416,22 @@ def test_dispatch_proxy_egress_drift_generates_alert(monkeypatch) -> None:
         account = accounts[0]
         payload = _make_payload(task, account_id=account.id, binding_id=binding.id)
         action = _make_action(session, task, account, payload)
+        _make_reservation(session, task, action, account)
         session.commit()
 
-        def fake_gateway(_account_id, _payload_data, _keyword_text):
-            return {"success": True, "search_results": []}
+        def fake_gateway(_account_id, _payload_data, **_kwargs):
+            result = _gateway_result()
+            result.pop("observed_exit_ip")
+            return result
 
         from app.services import _common
 
-        monkeypatch.setattr(_common.gateway, "execute_search_rank_deboost", fake_gateway, raising=False)
+        monkeypatch.setattr(_common.gateway, "execute_search_rank_deboost", fake_gateway)
 
         result = dispatch_action(session, action)
 
         assert result is True
-        assert action.status == "skipped"
+        assert action.status == "unknown_after_send"
         alerts = session.query(SearchRankDeboostAlert).filter_by(
             alert_type="rank_deboost_node_unreachable"
         ).all()
@@ -615,11 +640,10 @@ def test_all_exempt_clicks_generates_alert() -> None:
         account = accounts[0]
         payload = _make_payload(task, account_id=account.id, binding_id=binding.id)
         action = _make_action(session, task, account, payload)
+        _make_reservation(session, task, action, account)
         session.commit()
 
-        # 只有一个搜索结果，且就是目标群 → all_exempt_clicks
-        search_results = [{"position": 1, "username": "my_target", "peer_id": "-1001", "id": 1001, "title": "目标群", "buttons": []}]
-        gateway_execute = lambda account_id, payload_data, keyword_text: {"success": True, "search_results": search_results}
+        gateway_execute = lambda *_args, **_kwargs: _gateway_result("all_exempt_clicks")
 
         result = execute_search_rank_deboost(session, action, account, payload, gateway_execute=gateway_execute, probe_exit_ip="1.1.1.1")
 

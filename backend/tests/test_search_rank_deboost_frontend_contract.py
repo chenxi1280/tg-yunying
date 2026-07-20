@@ -17,59 +17,51 @@ def _source(path: Path) -> str:
     return path.read_text()
 
 
-def test_frontend_types_and_helpers_model_rank_deboost_groups() -> None:
+def test_frontend_keeps_rank_deboost_as_a_system_managed_task_type() -> None:
     accounts = _source(ACCOUNT_TYPES)
     view_model = _source(TASK_CENTER_VIEW_MODEL)
 
     assert "pool_purpose: 'normal' | 'code_receiver' | 'rank_deboost' | string;" in accounts
-    assert "export function isOperationalAccount(account: Account, accountPools: AccountPool[])" in view_model
-    assert "export function isEligibleRankAccount(account: Account, accountPools: AccountPool[])" in view_model
-    assert "export function rankPoolSummaries(accountPools: AccountPool[])" in view_model
-    assert "export function accountSelectionPreview(values: Record<string, any>, accounts: Account[], accountPools: AccountPool[], taskType: TaskCenterTaskType)" in view_model
-    assert "return accountSelectionPreview(values, accounts, accountPools, 'search_rank_deboost');" in view_model
+    assert "export function isSimpleSearchClickTask(taskType: TaskCenterTaskType)" in view_model
+    assert "return taskType === 'search_join_group' || taskType === 'search_rank_deboost';" in view_model
+    assert "SIMPLE_SEARCH_CLICK_WIZARD_STEPS" in view_model
 
 
-def test_rank_deboost_wizard_exposes_dedicated_account_selector() -> None:
+def test_rank_deboost_wizard_exposes_only_business_inputs() -> None:
     wizard = _source(TASK_CENTER_WIZARD)
-    type_config_start = wizard.index("export function WizardTypeConfig")
-    rank_start = wizard.index("if (taskType === 'search_rank_deboost')", type_config_start)
-    rank_block = wizard[rank_start:wizard.index("\n  return (", rank_start)]
-    account_start = wizard.index("if (taskType === 'search_rank_deboost')", wizard.index("export function WizardAccounts"))
-    account_block = wizard[account_start:wizard.index("\n\nexport function WizardReview", account_start)]
+    simple_config = wizard[wizard.index("function SimpleSearchClickConfig"):wizard.index("\n\nexport function WizardTypeConfig")]
+    type_config = wizard[wizard.index("export function WizardTypeConfig"):wizard.index("\n\nexport function WizardOperationProfile")]
 
-    assert "const rankDeboostPools = rankPoolSummaries(accountPools);" in rank_block
-    assert "proxy_airport_node_id" not in rank_block
-    assert "account_pool_id" not in rank_block
-    assert "missingBinding" in rank_block
-
-    assert "排名观察账号选择" in account_block
-    assert "selection_mode" in account_block
-    assert "account_group_id" in account_block
-    assert "account_ids" in account_block
-    assert "isEligibleRankAccount(account, accountPools)" in account_block
-    assert "搜索排名观察任务的账号分组和代理节点在「任务配置」步骤中设置" not in wizard
+    assert "name=\"keywords\"" in simple_config
+    assert "name=\"target_count\"" in simple_config
+    assert "账号、代理和执行节奏" in simple_config
+    assert "if (simpleSearchCreation && (taskType === 'search_join_group' || taskType === 'search_rank_deboost'))" in type_config
+    assert "排名观察账号选择" not in wizard
+    assert "proxy_airport_node_id" not in wizard
 
 
-def test_rank_deboost_payload_uses_account_config_not_task_level_proxy_node() -> None:
+def test_rank_deboost_payload_uses_only_three_business_fields() -> None:
     view = _source(TASK_CENTER_VIEW)
-    payload = view[view.index("function searchRankDeboostPayload"):view.index("\n\n  function parseExcludedSenderInput")]
-    create_payload = view[view.index("if (taskType === 'search_rank_deboost')"):view.index("\n    if (taskType === 'group_ai_chat')")]
+    payload = view[view.index("function simpleSearchClickPayload"):view.index("\n\n  function parseExcludedSenderInput")]
+    create_payload = view[view.index("function createPayload"):view.index("\n\n  function settingsPayload")]
 
-    assert "account_config: accountConfig(values)" in payload
+    assert "target_operation_target_id: values.target_operation_target_id" in payload
+    assert "const keywords = words(values.keywords);" in payload
+    assert "keywords," in payload
+    assert "target_count: values.target_count" in payload
+    assert "account_config" not in payload
     assert "account_pool_id:" not in payload
     assert "proxy_airport_node_id:" not in payload
-    assert "Number(values.proxy_airport_node_id)" not in payload
-    assert "Number(values.account_pool_id)" not in payload
-    assert "return searchRankDeboostPayload(values);" in create_payload
+    assert "if (isSimpleSearchClickTask(taskType)) return simpleSearchClickPayload(values);" in create_payload
 
 
-def test_rank_deboost_step_and_submit_fields_include_account_selection() -> None:
+def test_rank_deboost_step_and_submit_fields_exclude_system_controls() -> None:
     view_model = _source(TASK_CENTER_VIEW_MODEL)
     step_block = view_model[view_model.index("export function fieldsForStep"):view_model.index("\n\nexport function accountSelectionFields")]
     submit_block = view_model[view_model.index("export function fieldsForSubmit"):view_model.index("\n\nexport function editFieldsForSubmit")]
+    edit_block = view_model[view_model.index("export function editFieldsForSubmit"):]
 
-    assert "if (step === 2 && taskType === 'search_rank_deboost') return ['keywords'];" in step_block
-    assert "if (step === 3 && taskType === 'search_rank_deboost') return accountSelectionFields(accountMode);" in step_block
-    assert "...accountSelectionFields(accountMode)" in submit_block
-    assert "'account_pool_id'" not in submit_block[submit_block.index("if (taskType === 'search_rank_deboost')"):]
-    assert "'proxy_airport_node_id'" not in submit_block[submit_block.index("if (taskType === 'search_rank_deboost')"):]
+    assert "if (step === 2 && isSimpleSearchClickTask(taskType)) return ['keywords', 'target_count'];" in step_block
+    assert "if (step === 3 && isSimpleSearchClickTask(taskType)) return [];" in step_block
+    assert "if (isSimpleSearchClickTask(taskType)) return ['target_operation_target_id', 'keywords', 'target_count'];" in submit_block
+    assert "if (isSimpleSearchClickTask(taskType)) return ['target_operation_target_id', 'keywords', 'target_count'];" in edit_block

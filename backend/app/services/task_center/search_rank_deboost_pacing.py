@@ -4,15 +4,15 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
-from app.models import Action, Task
+from app.models import Action, Task, Tenant
 from app.models.search_rank_deboost import SearchRankDeboostActionStat, SearchRankDeboostClickReservation
 from app.services._common import _now
 
 REAL_ACTION_STATUSES = {"pending", "claiming", "executing", "success", "failed"}
-ACTIVE_RESERVATION_STATUSES = {"reserved", "consumed", "unknown"}
+NON_EXPIRING_RESERVATION_STATUSES = {"consumed", "unknown"}
 DEFAULT_SOURCE_TIMEZONE = ZoneInfo("Asia/Shanghai")
 
 DEFAULT_PER_ACCOUNT_DAILY_CLICK_LIMIT = 5
@@ -82,6 +82,7 @@ def account_click_allowed(
     stats: DeboostPacingStats,
 ) -> bool:
     """单账号 + 关键词 + 分组 IP + 任务小时级 + 账号冷却 综合校验。"""
+    lock_rank_deboost_quota_scope(session, task)
     config = runtime_search_rank_deboost_config(task)
     cooldown_hours = config.get("per_account_cooldown_hours")
     cooldown_hours = int(cooldown_hours) if cooldown_hours is not None else DEFAULT_PER_ACCOUNT_COOLDOWN_HOURS
@@ -159,11 +160,23 @@ def _group_ip_daily_clicks(session: Session, task: Task, account_pool_id: int, l
 def _reservation_count(session: Session, task: Task, local_date: date, *conditions) -> int:
     return int(
         session.scalar(
-            select(func.coalesce(func.sum(SearchRankDeboostClickReservation.reserved_count), 0)).where(
+            select(func.coalesce(func.sum(SearchRankDeboostClickReservation.reserved_count), 0))
+            .select_from(SearchRankDeboostClickReservation)
+            .outerjoin(Action, Action.id == SearchRankDeboostClickReservation.action_id)
+            .where(
                 SearchRankDeboostClickReservation.tenant_id == task.tenant_id,
-                SearchRankDeboostClickReservation.task_id == task.id,
                 SearchRankDeboostClickReservation.local_date == local_date,
-                SearchRankDeboostClickReservation.status.in_(ACTIVE_RESERVATION_STATUSES),
+                or_(
+                    SearchRankDeboostClickReservation.status.in_(NON_EXPIRING_RESERVATION_STATUSES),
+                    and_(
+                        SearchRankDeboostClickReservation.status == "reserved",
+                        or_(
+                            SearchRankDeboostClickReservation.expires_at > _now(),
+                            Action.id.is_(None),
+                            Action.status != "pending",
+                        ),
+                    ),
+                ),
                 *conditions,
             )
         )
@@ -175,13 +188,11 @@ def _legacy_stat_clicks(session: Session, task: Task, local_date: date, *conditi
     start_at, end_at = _local_day_bounds(task.timezone, local_date)
     reserved_actions = select(SearchRankDeboostClickReservation.action_id).where(
         SearchRankDeboostClickReservation.tenant_id == task.tenant_id,
-        SearchRankDeboostClickReservation.task_id == task.id,
     )
     return int(
         session.scalar(
             select(func.count(SearchRankDeboostActionStat.id)).where(
                 SearchRankDeboostActionStat.tenant_id == task.tenant_id,
-                SearchRankDeboostActionStat.task_id == task.id,
                 SearchRankDeboostActionStat.captured_at >= start_at,
                 SearchRankDeboostActionStat.captured_at < end_at,
                 SearchRankDeboostActionStat.skip_reason == "",
@@ -214,13 +225,20 @@ def _account_cooldown_active(session: Session, task: Task, account_id: int, cool
         return False
     last_at = session.scalar(
         select(func.max(func.coalesce(Action.executed_at, Action.scheduled_at))).where(
-            Action.task_id == task.id,
+            Action.tenant_id == task.tenant_id,
             Action.action_type == "search_rank_deboost",
             Action.account_id == account_id,
             Action.status.in_(REAL_ACTION_STATUSES),
         )
     )
     return bool(last_at and last_at + timedelta(hours=cooldown_hours) > _now())
+
+
+def lock_rank_deboost_quota_scope(session: Session, task: Task) -> None:
+    """串行化同租户 rank planner 的计数和预留，避免跨任务超额。"""
+    session.execute(
+        select(Tenant.id).where(Tenant.id == task.tenant_id).with_for_update()
+    ).scalar_one()
 
 
 def _local_day_bounds(timezone_name: str, local_date: date) -> tuple[datetime, datetime]:
@@ -255,5 +273,6 @@ __all__ = [
     "DeboostPacingWindow",
     "account_click_allowed",
     "deboost_pacing_window",
+    "lock_rank_deboost_quota_scope",
     "runtime_search_rank_deboost_config",
 ]

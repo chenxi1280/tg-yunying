@@ -184,7 +184,13 @@ def test_search_rank_deboost_permission_bits_and_routes_are_defined():
     assert required_permission("PATCH", "/api/tasks/123/search_rank_deboost_config") == (
         "tasks.manage.search_rank_deboost",
     )
+    assert required_permission("PATCH", "/api/tasks/6d93ca5f-4ae0-45dd-8c64-e7d64d90fbde/search_rank_deboost_config") == (
+        "tasks.manage.search_rank_deboost",
+    )
     assert required_permission("POST", "/api/tasks/123/search_rank_deboost_reroll_exempt_group") == (
+        "tasks.manage.search_rank_deboost",
+    )
+    assert required_permission("POST", "/api/tasks/6d93ca5f-4ae0-45dd-8c64-e7d64d90fbde/search_rank_deboost_reroll_exempt_group") == (
         "tasks.manage.search_rank_deboost",
     )
 

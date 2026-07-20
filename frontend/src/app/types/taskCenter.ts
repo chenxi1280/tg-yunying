@@ -14,6 +14,14 @@ export type GroupAIChatHardHourlyConfig = {
 export type HardHourlyBlockers = Record<string, number>;
 export type HardHourlyPipeline = Record<string, string>;
 
+export type SearchClickTargetProgress = {
+  target_count: number | null;
+  confirmed_count: number;
+  held_count: number;
+  remaining_slot_count: number | null;
+  state: 'planning' | 'waiting_confirmation' | 'completed' | 'legacy_unlimited';
+};
+
 export type HardHourlyRecentBucket = {
   bucket: string;
   goal: number;
@@ -82,6 +90,7 @@ export type TaskAccountCoverageItem = {
 
 export type TaskCenterStats = Record<string, any> & {
   account_coverage?: TaskAccountCoverage;
+  search_click_target?: SearchClickTargetProgress;
   hard_hourly_target_enabled?: boolean;
   hard_hourly_goal?: number | null;
   hard_hourly_bucket?: string | null;
@@ -341,6 +350,7 @@ export type TaskCenterDetail = {
   task: TaskCenterTask;
   actions: TaskCenterAction[];
   stats: TaskCenterStats;
+  rank_deboost_exempt_group?: SearchRankDeboostExemptGroup | null;
   task_runtime_summary?: TaskRuntimeSummary | null;
   operation_plan_links?: Array<{ id: number; plan_id: number; target_id: number | null; task_id: string; relation: string; status: string; created_at: string }>;
   accounts: Array<{ id: number; display_name: string; username: string | null; status: string }>;

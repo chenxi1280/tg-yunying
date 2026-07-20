@@ -1,8 +1,8 @@
 import React from 'react';
-import { Alert, Button, Checkbox, Collapse, Descriptions, Form, Input, InputNumber, Select, Space, Typography } from 'antd';
-import type { Account, AccountPool, ChannelMessageComment, OperationTarget, PromptTemplate, ProxyAirportNode, RuleSet, SearchRankDeboostExemptGroup, TaskCenterTaskType, TaskPrecheck } from '../types';
+import { Alert, Checkbox, Collapse, Descriptions, Form, Input, InputNumber, Select, Space, Typography } from 'antd';
+import type { Account, AccountPool, ChannelMessageComment, OperationTarget, PromptTemplate, RuleSet, TaskCenterTaskType, TaskPrecheck } from '../types';
 import { ChannelCommentTypeConfig, ChannelLikeTypeConfig, ChannelViewTypeConfig } from './TaskCenterChannelConfigSections';
-import { GROUP_AI_HARD_HOURLY_MIN_MESSAGES, TASK_TYPES, TYPE_LABEL, OPERATION_PROFILE_TEMPLATES, type OperationProfileTemplateId, accountPrecheck, curveNumbers, curveText, currentOperationProfile, formatDateTime, formatPrecheckReasons, isEligibleRankAccount, operationProfileSummary, operationTemplate, precheckReasonLabel, rankPoolSummaries, ruleSummary, targetName } from './taskCenterViewModel';
+import { GROUP_AI_HARD_HOURLY_MIN_MESSAGES, TASK_TYPES, TYPE_LABEL, OPERATION_PROFILE_TEMPLATES, type OperationProfileTemplateId, accountPrecheck, curveNumbers, curveText, currentOperationProfile, formatDateTime, formatPrecheckReasons, operationProfileSummary, operationTemplate, precheckReasonLabel, ruleSummary, targetName, words } from './taskCenterViewModel';
 
 const targetSelectProps = {
   showSearch: true,
@@ -26,15 +26,50 @@ export function EditBasics() {
 }
 
 export function WizardBasics({ taskType, onTypeChange }: { taskType: TaskCenterTaskType; onTypeChange: (type: TaskCenterTaskType) => void }) {
+  const simpleSearchClickTask = taskType === 'search_join_group' || taskType === 'search_rank_deboost';
   return (
-    <div className="form-grid">
-      <Form.Item label="任务类型">
-        <Select options={TASK_TYPES} value={taskType} onChange={onTypeChange} />
-      </Form.Item>
-      <Form.Item name="name" label="任务名称" rules={[{ required: true }]}><Input /></Form.Item>
-      {taskType === 'group_membership_admission' && <Form.Item name="scheduled_start" label="开始时间" rules={[{ required: true }]}><Input type="datetime-local" /></Form.Item>}
-      <Form.Item name="scheduled_end" label="结束时间（可选）"><Input type="datetime-local" placeholder="不填则持续运行" /></Form.Item>
-    </div>
+    <Space direction="vertical" style={{ width: '100%' }}>
+      <div className="form-grid">
+        <Form.Item label="任务类型">
+          <Select options={TASK_TYPES} value={taskType} onChange={onTypeChange} />
+        </Form.Item>
+        {!simpleSearchClickTask && <Form.Item name="name" label="任务名称" rules={[{ required: true }]}><Input /></Form.Item>}
+        {taskType === 'group_membership_admission' && <Form.Item name="scheduled_start" label="开始时间" rules={[{ required: true }]}><Input type="datetime-local" /></Form.Item>}
+        {!simpleSearchClickTask && <Form.Item name="scheduled_end" label="结束时间（可选）"><Input type="datetime-local" placeholder="不填则持续运行" /></Form.Item>}
+      </div>
+      {simpleSearchClickTask && <Alert type="info" showIcon message="任务名称、账号、代理、执行节奏与风控策略由系统自动管理。" />}
+    </Space>
+  );
+}
+
+function SimpleSearchClickConfig({
+  taskType,
+  editing = false,
+  allowUncappedTargetCount = false,
+}: {
+  taskType: TaskCenterTaskType;
+  editing?: boolean;
+  allowUncappedTargetCount?: boolean;
+}) {
+  const isRankDeboost = taskType === 'search_rank_deboost';
+  const keywordRequired = !editing || isRankDeboost;
+  return (
+    <Space direction="vertical" style={{ width: '100%' }}>
+      <Alert
+        type="info"
+        showIcon
+        message={isRankDeboost ? '系统托管黑账号、代理和执行节奏；启动时系统检查可用资源和执行条件。' : '系统自动选择账号、代理和执行节奏，并在风控约束内完成目标。'}
+        description="目标次数只统计已确认的目标点击；待执行或结果未知的动作会占用额度，避免重复点击。"
+      />
+      <div className="form-grid">
+        <Form.Item name="keywords" label={editing && !isRankDeboost ? '搜索关键词（留空不变）' : '搜索关键词'} rules={keywordRequired ? [{ required: true, message: '请填写至少一个搜索关键词' }] : []}>
+          <Input.TextArea rows={4} placeholder={'上海 留学\n上海 国际学校'} />
+        </Form.Item>
+        <Form.Item name="target_count" label={allowUncappedTargetCount ? '目标次数（留空保持历史不封顶）' : '目标次数'} rules={allowUncappedTargetCount ? [] : [{ required: true, message: '请填写目标次数' }]}>
+          <InputNumber min={1} precision={0} style={{ width: '100%' }} />
+        </Form.Item>
+      </div>
+    </Space>
   );
 }
 
@@ -43,13 +78,9 @@ export function WizardTypeConfig({
   ruleSets = [],
   slangTemplates = [],
   relaySourceOptions = [],
-  accountPools = [],
-  proxyAirportNodes = [],
-  exemptGroup = null,
-  onEnsureRankDeboostPool,
-  onRerollExemptGroup,
-  rankDeboostPoolLoading = false,
-  rerollLoading = false,
+  simpleSearchCreation = false,
+  simpleSearchEditing = false,
+  simpleSearchLegacyUncapped = false,
 }: {
   taskType: TaskCenterTaskType;
   ruleSets?: RuleSet[];
@@ -59,15 +90,14 @@ export function WizardTypeConfig({
   targetChannelId?: number;
   messageScope?: string;
   messageIds?: Array<number | string> | string | null;
-  accountPools?: AccountPool[];
-  proxyAirportNodes?: ProxyAirportNode[];
-  exemptGroup?: SearchRankDeboostExemptGroup | null;
-  onEnsureRankDeboostPool?: () => void;
-  onRerollExemptGroup?: () => void;
-  rankDeboostPoolLoading?: boolean;
-  rerollLoading?: boolean;
+  simpleSearchCreation?: boolean;
+  simpleSearchEditing?: boolean;
+  simpleSearchLegacyUncapped?: boolean;
 }) {
   const form = Form.useFormInstance();
+  if (simpleSearchCreation && (taskType === 'search_join_group' || taskType === 'search_rank_deboost')) {
+    return <SimpleSearchClickConfig taskType={taskType} editing={simpleSearchEditing} allowUncappedTargetCount={simpleSearchLegacyUncapped} />;
+  }
   function markMessagesPerRoundManual(value: number | null) {
     if (value != null) form.setFieldValue('messages_per_round_mode', 'manual');
   }
@@ -282,7 +312,6 @@ export function WizardTypeConfig({
           <Form.Item name="account_locale" label="账号语言"><Input placeholder="zh-CN" /></Form.Item>
           <Form.Item name="proxy_country" label="代理出口国家"><Input placeholder="SG / JP / US" /></Form.Item>
           <Form.Item name="pre_join_decoy_click_max" label="目标确认前非目标浏览上限"><InputNumber min={0} max={3} precision={0} /></Form.Item>
-          <Form.Item name="post_join_safe_navigation_max" label="目标确认后安全浏览上限"><InputNumber min={0} max={3} precision={0} /></Form.Item>
           <Form.Item name="hourly_min_successful_joins" label="每小时最低成功点击"><InputNumber min={1} max={500} precision={0} /></Form.Item>
           <Form.Item name="actions_per_round" label="每轮规划数"><InputNumber min={1} max={20} precision={0} /></Form.Item>
           <Form.Item name="target_relevance_score" label="目标资料相关性"><InputNumber min={0} max={100} precision={0} /></Form.Item>
@@ -316,103 +345,6 @@ export function WizardTypeConfig({
                     <Form.Item name="daily_jitter_percent" label="天抖动百分比"><InputNumber min={0} max={100} precision={0} /></Form.Item>
                   </div>
                 </Space>
-              ),
-            },
-          ]}
-        />
-      </Space>
-    );
-  }
-  if (taskType === 'search_rank_deboost') {
-    const rankDeboostPools = rankPoolSummaries(accountPools);
-    const missingBinding = rankDeboostPools.filter((pool) => pool.is_enabled && pool.missingBinding);
-    return (
-      <Space direction="vertical" style={{ width: '100%' }}>
-        {rankDeboostPools.length === 0 && (
-          <Alert
-            type="warning"
-            showIcon
-            message="暂无排名观察专用账号分组"
-            action={onEnsureRankDeboostPool ? (
-              <Button size="small" loading={rankDeboostPoolLoading} onClick={onEnsureRankDeboostPool}>
-                创建专用分组
-              </Button>
-            ) : undefined}
-          />
-        )}
-        {missingBinding.length > 0 && (
-          <Alert
-            type="warning"
-            showIcon
-            message={`代理绑定缺失：${missingBinding.map((pool) => pool.name).join('、')}`}
-          />
-        )}
-        <div className="form-grid">
-          <Form.Item name="search_bots" label="搜索机器人">
-            <Input readOnly value="jisou" />
-          </Form.Item>
-          <Form.Item name="keywords" label="关键词列表（每行一个）" rules={[{ required: true }]}>
-            <Input.TextArea rows={4} placeholder={'关键词1\n关键词2'} />
-          </Form.Item>
-        </div>
-        {rankDeboostPools.length > 0 && (
-          <Descriptions
-            bordered
-            size="small"
-            column={1}
-            title="黑账号分组状态"
-            items={rankDeboostPools.map((pool) => ({
-              key: String(pool.id),
-              label: `${pool.name} (${pool.account_count})`,
-              children: pool.is_enabled
-                ? `${pool.missingBinding ? '缺少代理绑定' : '代理就绪'}${pool.observedExitIp ? ` / ${pool.observedExitIp}` : ''}`
-                : '已停用',
-            }))}
-          />
-        )}
-        <Collapse
-          ghost
-          defaultActiveKey={exemptGroup ? ['exempt-group'] : []}
-          items={[
-            ...(exemptGroup ? [{
-              key: 'exempt-group',
-              label: '随机豁免群',
-              children: (
-                <Space direction="vertical" style={{ width: '100%' }} size={8}>
-                  <Descriptions bordered column={1} size="small" items={[
-                    { key: 'username', label: '豁免群用户名', children: exemptGroup.exempt_group_username || '-' },
-                    { key: 'title', label: '豁免群名称', children: exemptGroup.exempt_group_title || '-' },
-                    { key: 'peer_id', label: 'Peer ID', children: exemptGroup.exempt_group_peer_id || '-' },
-                    { key: 'strategy', label: '匹配策略', children: exemptGroup.exempt_group_match_strategy || '-' },
-                    { key: 'selected_at', label: '选择时间', children: formatDateTime(exemptGroup.selected_at) },
-                    { key: 'selected_by', label: '操作人', children: exemptGroup.selected_by || '-' },
-                  ]} />
-                  {onRerollExemptGroup && (
-                    <Button loading={rerollLoading} onClick={onRerollExemptGroup}>重选随机豁免群</Button>
-                  )}
-                </Space>
-              ),
-            }] : []),
-            {
-              key: 'click-pacing',
-              label: '点击节奏配置',
-              children: (
-                <div className="form-grid">
-                  <Form.Item name="per_account_daily_click_limit" label="单账号每日点击上限"><InputNumber min={1} max={1000} precision={0} /></Form.Item>
-                  <Form.Item name="per_keyword_account_daily_limit" label="同关键词单账号每日上限"><InputNumber min={0} max={1000} precision={0} /></Form.Item>
-                  <Form.Item name="group_ip_daily_click_limit" label="同 IP 每日点击上限"><InputNumber min={1} max={10000} precision={0} /></Form.Item>
-                  <Form.Item name="max_actions_per_hour" label="每小时最大动作数"><InputNumber min={1} max={1000} precision={0} /></Form.Item>
-                  <Form.Item name="per_account_cooldown_hours" label="账号冷却小时"><InputNumber min={0} max={168} precision={0} /></Form.Item>
-                  <Form.Item name="dwell_seconds_min" label="停留最短秒数"><InputNumber min={1} max={600} precision={0} /></Form.Item>
-                  <Form.Item name="dwell_seconds_max" label="停留最长秒数"><InputNumber min={1} max={600} precision={0} /></Form.Item>
-                </div>
-              ),
-            },
-            {
-              key: 'notes',
-              label: '备注',
-              children: (
-                <Form.Item name="notes" label="备注"><Input.TextArea rows={2} placeholder="任务备注（可选）" /></Form.Item>
               ),
             },
           ]}
@@ -575,25 +507,6 @@ export function WizardAccounts({ accountMode, accounts, accountPools, taskType }
       </div>
     );
   }
-  if (taskType === 'search_rank_deboost') {
-    const rankPoolOptions = accountPools
-      .filter((pool) => pool.pool_purpose === 'rank_deboost' && pool.is_enabled !== false)
-      .map((pool) => ({ value: pool.id, label: `${pool.name} (${pool.account_count})` }));
-    const rankAccountOptions = accounts
-      .filter((account) => isEligibleRankAccount(account, accountPools))
-      .map((account) => ({ value: account.id, label: `${account.display_name} / ${account.status}` }));
-    return (
-      <Space direction="vertical" style={{ width: '100%' }}>
-        <div className="form-grid">
-          <Form.Item name="selection_mode" label="排名观察账号选择">
-            <Select options={[{ value: 'all', label: '全部黑账号组' }, { value: 'group', label: '指定黑账号组' }, { value: 'manual', label: '手动黑账号' }]} />
-          </Form.Item>
-          {accountMode === 'group' && <Form.Item name="account_group_id" label="黑账号组" rules={[{ required: true }]}><Select options={rankPoolOptions} /></Form.Item>}
-          {accountMode === 'manual' && <Form.Item name="account_ids" label="黑账号" rules={[{ required: true }]}><Select mode="multiple" options={rankAccountOptions} /></Form.Item>}
-        </div>
-      </Space>
-    );
-  }
   return (
     <Space direction="vertical" style={{ width: '100%' }}>
       <div className="form-grid">
@@ -605,10 +518,35 @@ export function WizardAccounts({ accountMode, accounts, accountPools, taskType }
   );
 }
 
+function SimpleSearchClickReview({ taskType, values, targets }: Pick<Parameters<typeof WizardReview>[0], 'taskType' | 'values' | 'targets'>) {
+  const displayTarget = targetName(values, targets);
+  return (
+    <Space direction="vertical" style={{ width: '100%' }}>
+      <Alert
+        type="info"
+        showIcon
+        message="系统将在可用账号、代理与风控策略范围内执行，无法确认的动作不会计入目标次数。"
+      />
+      <Descriptions bordered column={2} size="small" items={[
+        { key: 'type', label: '任务类型', children: TYPE_LABEL[taskType] },
+        { key: 'target', label: '目标群', children: displayTarget },
+        { key: 'keywords', label: '搜索关键词', children: words(values.keywords).join('、') || '-' },
+        { key: 'target-count', label: '目标次数', children: `${values.target_count || '-'} 次（以已确认目标点击计）` },
+        { key: 'policy', label: '系统托管', children: '账号、代理、节奏、停留和风控由系统管理' },
+        { key: 'start', label: '创建说明', children: taskType === 'search_rank_deboost' ? '创建为草稿；启动准备时系统检查可用资源和执行条件。' : '创建并启动后由系统按可用资源执行。' },
+      ]} />
+    </Space>
+  );
+}
+
 export function WizardReview({ taskType, values, accounts, accountPools, targets, ruleSets, slangTemplates, precheck, loading }: { taskType: TaskCenterTaskType; values: Record<string, any>; accounts: Account[]; accountPools: AccountPool[]; targets: OperationTarget[]; ruleSets: RuleSet[]; slangTemplates: PromptTemplate[]; precheck: TaskPrecheck | null; loading: boolean }) {
+  if (taskType === 'search_join_group' || taskType === 'search_rank_deboost') {
+    return <SimpleSearchClickReview taskType={taskType} values={values} targets={targets} />;
+  }
   const account = accountPrecheck(values, accounts, accountPools, taskType);
   const profile = currentOperationProfile(values);
   const selectedSlang = slangTemplates.find((template) => template.id === values.slang_prompt_template_id);
+  const displayTarget = targetName(values, targets);
   const targetSummary = taskType === 'group_relay'
     ? values.target_operation_target_ids?.length
       ? `运营目标 #${values.target_operation_target_id || '-'} + ${values.target_operation_target_ids.length} 个附加目标`
@@ -618,7 +556,6 @@ export function WizardReview({ taskType, values, accounts, accountPools, targets
       : values.target_channel_id
         ? `频道 #${values.target_channel_id}`
         : '-';
-  const displayTarget = targetName(values, targets);
   const precheckStatus = loading ? '预检中' : precheck ? precheck.decision === 'allow' ? '通过' : precheck.decision === 'warn' ? '有风险' : '阻塞' : '未执行';
   const recommended = precheck?.capacity_summary?.recommended_limits;
   const replyReference = precheck?.capacity_summary?.reply_reference_summary;
