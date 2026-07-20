@@ -375,6 +375,9 @@ export function ruleSummary(values: Record<string, any>, ruleSets: RuleSet[]) {
 }
 
 export function targetName(values: Record<string, any>, targets: OperationTarget[]) {
+  const targetTitle = String(values.target_title ?? '').trim();
+  const targetLink = String(values.target_link ?? '').trim();
+  if (targetTitle) return targetLink ? `${targetTitle} / ${targetLink}` : targetTitle;
   const targetId = Number(values.target_operation_target_id || values.target_channel_id || 0);
   const target = targets.find((item) => item.id === targetId);
   return target ? `${target.title} #${target.id}` : targetId ? `#${targetId}` : '-';
@@ -522,7 +525,8 @@ export function typeInitialValues(type: TaskCenterTaskType, setting?: Scheduling
   }
   if (type === 'search_join_group') {
     return {
-      target_operation_target_id: null,
+      target_title: '',
+      target_link: '',
       keywords: '',
       target_count: null,
     };
@@ -555,7 +559,8 @@ export function typeInitialValues(type: TaskCenterTaskType, setting?: Scheduling
   }
   if (type === 'search_rank_deboost') {
     return {
-      target_operation_target_id: null,
+      target_title: '',
+      target_link: '',
       keywords: '',
       target_count: null,
     };
@@ -590,7 +595,8 @@ export function defaultRuleSelection(ruleSets: RuleSet[], taskType: TaskCenterTa
 export function fieldsForStep(step: number, taskType: TaskCenterTaskType, messageScope: string, accountMode: string): string[] {
   if (step === 0) return isSimpleSearchClickTask(taskType) ? [] : ['name'];
   if (step === 1) {
-    if (taskType === 'group_ai_chat' || taskType === 'group_membership_admission' || isSimpleSearchClickTask(taskType)) return ['target_operation_target_id'];
+    if (isSimpleSearchClickTask(taskType)) return ['target_title', 'target_link'];
+    if (taskType === 'group_ai_chat' || taskType === 'group_membership_admission') return ['target_operation_target_id'];
     if (taskType === 'group_relay') return ['source_operation_target_ids', 'target_operation_target_id'];
     const fields = ['target_channel_id', 'message_scope'];
     if (['latest_n', 'dynamic_new'].includes(messageScope)) fields.push('message_count');
@@ -629,7 +635,7 @@ export function channelScopeFields(messageScope: string): string[] {
 
 export function fieldsForSubmit(taskType: TaskCenterTaskType, messageScope: string, accountMode: string, pacingMode: string): string[] {
   void pacingMode;
-  if (isSimpleSearchClickTask(taskType)) return ['target_operation_target_id', 'keywords', 'target_count'];
+  if (isSimpleSearchClickTask(taskType)) return ['target_title', 'target_link', 'keywords', 'target_count'];
   const commonFields = ['name', 'scheduled_end', 'operation_template_id', 'hourly_activity_curve', 'quiet_threshold', 'peak_threshold'];
   const baseFields = [...commonFields, ...accountSelectionFields(accountMode), 'max_concurrent', 'cooldown_per_account_minutes', 'ban_policy', 'max_actions_per_hour', 'max_retries'];
   if (taskType === 'group_ai_chat') {
@@ -711,7 +717,7 @@ export function fieldsForSubmit(taskType: TaskCenterTaskType, messageScope: stri
 
 export function editFieldsForSubmit(taskType: TaskCenterTaskType, accountMode: string, pacingMode: string): string[] {
   void pacingMode;
-  if (isSimpleSearchClickTask(taskType)) return ['target_operation_target_id', 'keywords', 'target_count'];
+  if (isSimpleSearchClickTask(taskType)) return ['target_title', 'target_link', 'keywords', 'target_count'];
   const baseFields = ['name', 'scheduled_end', 'operation_template_id', 'hourly_activity_curve', 'quiet_threshold', 'peak_threshold', ...accountFields(accountMode), 'max_actions_per_hour', 'max_retries'];
   if (taskType === 'group_ai_chat') {
     return [

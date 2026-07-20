@@ -38,11 +38,23 @@ function GroupTargetField({ name, label, mode, capability, required, onTargetsLo
   );
 }
 
-function GroupTaskTargetFields({ taskType, onTargetsLoaded, allowInlineTarget }: Pick<WizardTargetProps, 'taskType' | 'onTargetsLoaded' | 'allowInlineTarget'>) {
-  const searchClickTask = taskType === 'search_join_group' || taskType === 'search_rank_deboost';
+function SimpleSearchClickTargetFields() {
   return (
     <div className="form-grid">
-      <GroupTargetField name="target_operation_target_id" label={searchClickTask ? '目标群' : '已有运营目标群'} capability="task" required={taskType !== 'group_ai_chat'} onTargetsLoaded={onTargetsLoaded} />
+      <Form.Item name="target_title" label="目标群完整名称" rules={[{ required: true, message: '请填写目标群完整名称' }]}>
+        <Input placeholder="例如：河南郑州学生会" />
+      </Form.Item>
+      <Form.Item name="target_link" label="公开 Telegram 链接" rules={[{ required: true, message: '请填写目标群公开 Telegram 链接' }]}>
+        <Input placeholder="https://t.me/group_username" />
+      </Form.Item>
+    </div>
+  );
+}
+
+function GroupTaskTargetFields({ taskType, onTargetsLoaded, allowInlineTarget }: Pick<WizardTargetProps, 'taskType' | 'onTargetsLoaded' | 'allowInlineTarget'>) {
+  return (
+    <div className="form-grid">
+      <GroupTargetField name="target_operation_target_id" label="已有运营目标群" capability="task" required={taskType !== 'group_ai_chat'} onTargetsLoaded={onTargetsLoaded} />
       {taskType === 'group_ai_chat' && allowInlineTarget && <Form.Item name="target_input" label="粘贴新群入口"><Input placeholder="@group_name / https://t.me/+invite / peer id" /></Form.Item>}
       {taskType === 'group_ai_chat' && allowInlineTarget && <Form.Item name="target_title" label="目标名称"><Input placeholder="可选，不填时使用入口作为名称" /></Form.Item>}
     </div>
@@ -80,7 +92,12 @@ function ChannelTargetFields(props: WizardTargetProps) {
 
 export function WizardTarget(props: WizardTargetProps) {
   const normalizedProps = { ...props, allowInlineTarget: props.allowInlineTarget ?? true };
-  if (['group_ai_chat', 'group_membership_admission', 'search_join_group'].includes(props.taskType) || (props.taskType === 'search_rank_deboost' && props.simpleSearchCreation)) {
+  const simpleSearchClickTarget = props.taskType === 'search_join_group'
+    || (props.taskType === 'search_rank_deboost' && props.simpleSearchCreation);
+  if (simpleSearchClickTarget) {
+    return <SimpleSearchClickTargetFields />;
+  }
+  if (['group_ai_chat', 'group_membership_admission'].includes(props.taskType)) {
     return <GroupTaskTargetFields taskType={props.taskType} onTargetsLoaded={props.onTargetsLoaded} allowInlineTarget={normalizedProps.allowInlineTarget} />;
   }
   if (props.taskType === 'search_rank_deboost') {

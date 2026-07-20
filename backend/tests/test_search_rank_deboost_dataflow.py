@@ -53,7 +53,8 @@ def _build_payload(**overrides) -> SearchRankDeboostTaskCreate:
 
 def _simple_payload(**overrides) -> SearchRankDeboostSimpleTaskCreate:
     defaults = dict(
-        target_operation_target_id=1001,
+        target_title="我的目标群",
+        target_link="https://t.me/my_target_group",
         keywords=["关键词"],
         target_count=8,
     )
@@ -94,7 +95,8 @@ def test_simple_rank_create_maps_three_inputs_to_system_policy(monkeypatch) -> N
             session,
             1,
             SearchRankDeboostSimpleTaskCreate(
-                target_operation_target_id=1001,
+                target_title="我的目标群",
+                target_link="https://t.me/my_target_group",
                 keywords=["目标关键词"],
                 target_count=8,
             ),
@@ -109,6 +111,8 @@ def test_simple_rank_create_maps_three_inputs_to_system_policy(monkeypatch) -> N
         "target_count": 8,
         "target_operation_target_id": 1001,
         "target_reference_type": "operation_target",
+        "target_title": "我的目标群",
+        "target_link": "https://t.me/my_target_group",
     }
     assert captured["defer_readiness"] is True
 
@@ -116,7 +120,8 @@ def test_simple_rank_create_maps_three_inputs_to_system_policy(monkeypatch) -> N
 def test_simple_rank_create_rejects_system_managed_fields() -> None:
     with pytest.raises(Exception, match="Extra inputs are not permitted"):
         SearchRankDeboostSimpleTaskCreate(
-            target_operation_target_id=1001,
+            target_title="我的目标群",
+            target_link="https://t.me/my_target_group",
             keywords=["目标关键词"],
             target_count=8,
             account_config={"selection_mode": "manual", "account_ids": [1]},
@@ -238,7 +243,10 @@ def test_simple_rank_edit_regenerates_system_name() -> None:
             session,
             1,
             task.id,
-            SearchRankDeboostTaskConfigUpdate(target_operation_target_id=1002),
+            SearchRankDeboostTaskConfigUpdate(
+                target_title="新的目标群",
+                target_link="https://t.me/new_target_group",
+            ),
             operator="tester",
         )
         assert target_updated.name == "新的目标群 搜索排名观察 8 次"
@@ -264,7 +272,8 @@ def test_patch_search_rank_deboost_config(monkeypatch) -> None:
     monkeypatch.setattr(router_module, "update_search_rank_deboost_config", fake_update)
 
     payload = SearchRankDeboostTaskConfigUpdate(
-        target_operation_target_id=1001,
+        target_title="我的目标群",
+        target_link="https://t.me/my_target_group",
         keywords=["更新关键词"],
         target_count=9,
     )

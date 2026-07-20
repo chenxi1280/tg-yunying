@@ -10,6 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TASK_CENTER_VIEW = PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx"
 TASK_CENTER_VIEW_MODEL = PROJECT_ROOT / "frontend/src/app/views/taskCenterViewModel.ts"
 TASK_CENTER_WIZARD = PROJECT_ROOT / "frontend/src/app/views/TaskCenterWizardSections.tsx"
+TASK_CENTER_TARGET = PROJECT_ROOT / "frontend/src/app/views/TaskCenterTargetSection.tsx"
 ACCOUNT_TYPES = PROJECT_ROOT / "frontend/src/app/types/accounts.ts"
 
 
@@ -45,7 +46,9 @@ def test_rank_deboost_payload_uses_only_three_business_fields() -> None:
     payload = view[view.index("function simpleSearchClickPayload"):view.index("\n\n  function parseExcludedSenderInput")]
     create_payload = view[view.index("function createPayload"):view.index("\n\n  function settingsPayload")]
 
-    assert "target_operation_target_id: values.target_operation_target_id" in payload
+    assert "target_title: values.target_title?.trim()" in payload
+    assert "target_link: values.target_link?.trim()" in payload
+    assert "target_operation_target_id" not in payload
     assert "const keywords = words(values.keywords);" in payload
     assert "keywords," in payload
     assert "target_count: values.target_count" in payload
@@ -63,5 +66,19 @@ def test_rank_deboost_step_and_submit_fields_exclude_system_controls() -> None:
 
     assert "if (step === 2 && isSimpleSearchClickTask(taskType)) return ['keywords', 'target_count'];" in step_block
     assert "if (step === 3 && isSimpleSearchClickTask(taskType)) return [];" in step_block
-    assert "if (isSimpleSearchClickTask(taskType)) return ['target_operation_target_id', 'keywords', 'target_count'];" in submit_block
-    assert "if (isSimpleSearchClickTask(taskType)) return ['target_operation_target_id', 'keywords', 'target_count'];" in edit_block
+    assert "if (isSimpleSearchClickTask(taskType)) return ['target_title', 'target_link', 'keywords', 'target_count'];" in submit_block
+    assert "if (isSimpleSearchClickTask(taskType)) return ['target_title', 'target_link', 'keywords', 'target_count'];" in edit_block
+
+
+def test_search_click_target_step_uses_name_and_public_link_not_target_selector() -> None:
+    target_section = _source(TASK_CENTER_TARGET)
+    simple_target = target_section[
+        target_section.index("function SimpleSearchClickTargetFields"):
+        target_section.index("function GroupTaskTargetFields")
+    ]
+
+    assert 'name="target_title"' in simple_target
+    assert 'name="target_link"' in simple_target
+    assert "目标群完整名称" in simple_target
+    assert "公开 Telegram 链接" in simple_target
+    assert "GroupTargetField" not in simple_target
