@@ -182,6 +182,10 @@ UNKNOWN_MEMBERSHIP_REPROBE_PER_DRAIN_LIMIT = 10
 UNKNOWN_MEMBERSHIP_REPROBE_COOLDOWN = timedelta(minutes=30)
 UNKNOWN_MEMBERSHIP_REPROBE_COOLDOWN_STATUSES = {"timeout", "connection_error"}
 PUBLIC_TELEGRAM_USERNAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{4,31}$")
+PUBLIC_TELEGRAM_LINK_RE = re.compile(
+    r"^(?:https?://)?(?:t\.me|telegram\.me)/([A-Za-z][A-Za-z0-9_]{4,31})/?(?:\?[^#]*)?$",
+    re.IGNORECASE,
+)
 
 
 from .config_fields import (
@@ -260,17 +264,10 @@ def create_simple_search_join_group_task(
     payload: SearchJoinGroupSimpleTaskCreate,
     actor: str,
 ) -> Task:
-    target = _simple_search_click_target(session, tenant_id, payload.target_operation_target_id)
     return create_search_join_group_task(
         session,
         tenant_id,
-        SearchJoinGroupTaskCreate(
-            name=_simple_search_click_name(target, "搜索目标群点击", payload.target_count),
-            target_operation_target_id=target.id,
-            keywords=payload.keywords,
-            target_count=payload.target_count,
-            search_bots=[{"username": "jisou", "display_name": "极搜"}],
-        ),
+        _simple_search_join_group_payload(session, tenant_id, payload),
         actor,
     )
 
@@ -309,17 +306,10 @@ def create_and_start_simple_search_join_group_task(
     payload: SearchJoinGroupSimpleTaskCreate,
     actor: str,
 ) -> Task:
-    target = _simple_search_click_target(session, tenant_id, payload.target_operation_target_id)
     return create_and_start_search_join_group_task(
         session,
         tenant_id,
-        SearchJoinGroupTaskCreate(
-            name=_simple_search_click_name(target, "搜索目标群点击", payload.target_count),
-            target_operation_target_id=target.id,
-            keywords=payload.keywords,
-            target_count=payload.target_count,
-            search_bots=[{"username": "jisou", "display_name": "极搜"}],
-        ),
+        _simple_search_join_group_payload(session, tenant_id, payload),
         actor,
     )
 
@@ -371,8 +361,79 @@ def _simple_search_click_target(session: Session, tenant_id: int, target_id: int
     return target
 
 
-def _simple_search_click_name(target: OperationTarget, task_label: str, target_count: int) -> str:
-    target_label = (target.title or f"@{target.username}").strip()
+def _simple_search_join_group_payload(
+    session: Session,
+    tenant_id: int,
+    payload: SearchJoinGroupSimpleTaskCreate,
+) -> SearchJoinGroupTaskCreate:
+    target, canonical_link = _simple_search_click_target_from_input(
+        session, tenant_id, payload.target_title, payload.target_link
+    )
+    return SearchJoinGroupTaskCreate(
+        name=_simple_search_click_name(target, "搜索目标群点击", payload.target_count, payload.target_title),
+        target_operation_target_id=target.id,
+        target_input=canonical_link,
+        target_title=payload.target_title,
+        target_link=canonical_link,
+        keywords=payload.keywords,
+        target_count=payload.target_count,
+        search_bots=[{"username": "jisou", "display_name": "极搜"}],
+    )
+
+
+def _simple_search_click_target_from_input(
+    session: Session,
+    tenant_id: int,
+    target_title: str,
+    target_link: str,
+) -> tuple[OperationTarget, str]:
+    target_title = target_title.strip()
+    if not target_title:
+        raise ValueError("搜索点击目标群名称不能为空")
+    username, canonical_link = _simple_search_click_public_link(target_link)
+    target = session.scalar(
+        select(OperationTarget)
+        .where(
+            OperationTarget.tenant_id == tenant_id,
+            OperationTarget.target_type == "group",
+            or_(func.lower(OperationTarget.username) == username, func.lower(OperationTarget.tg_peer_id) == username),
+        )
+        .order_by(OperationTarget.id.asc())
+        .limit(1)
+    )
+    if target is not None:
+        return _simple_search_click_target(session, tenant_id, target.id), canonical_link
+    target = OperationTarget(
+        tenant_id=tenant_id,
+        target_type="group",
+        tg_peer_id=username,
+        title=target_title,
+        username=username,
+        can_send=False,
+        auth_status="未确认",
+    )
+    session.add(target)
+    session.flush()
+    return target, canonical_link
+
+
+def _simple_search_click_public_link(raw_link: str) -> tuple[str, str]:
+    match = PUBLIC_TELEGRAM_LINK_RE.fullmatch(raw_link.strip())
+    if match is None:
+        raise ValueError("搜索点击目标群必须填写合法公开 Telegram 链接")
+    username = match.group(1).lower()
+    if not PUBLIC_TELEGRAM_USERNAME_RE.fullmatch(username):
+        raise ValueError("搜索点击目标群必须配置合法公开 username")
+    return username, f"https://t.me/{username}"
+
+
+def _simple_search_click_name(
+    target: OperationTarget,
+    task_label: str,
+    target_count: int,
+    target_title: str = "",
+) -> str:
+    target_label = (target_title or target.title or f"@{target.username}").strip()
     return f"{target_label} {task_label} {target_count} 次"[:200]
 
 
@@ -389,7 +450,7 @@ def _refresh_simple_search_click_name(session: Session, task: Task, *, task_labe
     if target_count <= 0:
         return
     target = _simple_search_click_target(session, task.tenant_id, int(target_id))
-    task.name = _simple_search_click_name(target, task_label, target_count)
+    task.name = _simple_search_click_name(target, task_label, target_count, str(config.get("target_title") or ""))
 
 
 def _create_task(session: Session, tenant_id: int, task_type: str, payload, actor: str) -> Task:
@@ -780,22 +841,51 @@ def update_channel_comment_config(session: Session, tenant_id: int, task_id: str
 def update_search_join_group_config(session: Session, tenant_id: int, task_id: str, payload: SearchJoinGroupTaskConfigUpdate, actor: str) -> Task:
     update_data = payload.model_dump(mode="json", exclude_unset=True)
     pacing_data = update_data.pop("pacing_config", None)
-    if "keywords" in update_data:
-        update_data.setdefault("keyword_hashes", [])
-        update_data.setdefault("keyword_text_ciphertexts", [])
     task = _get_task(session, tenant_id, task_id)
     if task.type != "search_join_group":
         raise ValueError(f"任务类型不匹配，当前任务是 {task.type}")
     task.type_config = _normalize_legacy_search_join_config(task.type_config or {})
-    task = _apply_type_config_data(session, tenant_id, task_id, "search_join_group", update_data, actor)
-    if {"target_operation_target_id", "target_count"}.intersection(update_data):
-        _refresh_simple_search_click_name(session, task, task_label="搜索目标群点击")
+    _resolve_search_join_target_input(session, tenant_id, update_data)
+    _remove_unchanged_search_join_target_input(task.type_config, update_data)
+    if "keywords" in update_data:
+        update_data.setdefault("keyword_hashes", [])
+        update_data.setdefault("keyword_text_ciphertexts", [])
+    if update_data:
+        task = _apply_type_config_data(session, tenant_id, task_id, "search_join_group", update_data, actor)
+        if {"target_operation_target_id", "target_title", "target_count"}.intersection(update_data):
+            _refresh_simple_search_click_name(session, task, task_label="搜索目标群点击")
     if pacing_data is not None:
         task.pacing_config = pacing_config_payload(pacing_data)
         task.updated_at = _now()
+    if not update_data and pacing_data is None:
+        return task
     session.commit()
     session.refresh(task)
     return task
+
+
+def _resolve_search_join_target_input(session: Session, tenant_id: int, update_data: dict[str, Any]) -> None:
+    if "target_link" not in update_data:
+        return
+    target, canonical_link = _simple_search_click_target_from_input(
+        session, tenant_id, str(update_data["target_title"]), str(update_data["target_link"])
+    )
+    update_data["target_operation_target_id"] = target.id
+    update_data["target_input"] = canonical_link
+    update_data["target_link"] = canonical_link
+
+
+def _remove_unchanged_search_join_target_input(config: dict[str, Any], update_data: dict[str, Any]) -> None:
+    if "target_link" not in update_data:
+        return
+    unchanged = (
+        int(config.get("target_operation_target_id") or 0) == int(update_data["target_operation_target_id"])
+        and str(config.get("target_title") or "").strip() == str(update_data["target_title"]).strip()
+        and str(config.get("target_link") or config.get("target_input") or "").strip() == str(update_data["target_link"])
+    )
+    if unchanged:
+        for field in ("target_operation_target_id", "target_input", "target_title", "target_link"):
+            update_data.pop(field, None)
 
 
 def _normalize_legacy_search_join_config(config: dict[str, Any]) -> dict[str, Any]:
@@ -919,12 +1009,14 @@ def create_simple_search_rank_deboost_task(
     payload: SearchRankDeboostSimpleTaskCreate,
     operator: str,
 ) -> Task:
-    target = _simple_search_click_target(session, tenant_id, payload.target_operation_target_id)
+    target, canonical_link = _simple_search_click_target_from_input(
+        session, tenant_id, payload.target_title, payload.target_link
+    )
     return create_search_rank_deboost_task(
         session,
         tenant_id,
         SearchRankDeboostTaskCreate(
-            name=_simple_search_click_name(target, "搜索排名观察", payload.target_count),
+            name=_simple_search_click_name(target, "搜索排名观察", payload.target_count, payload.target_title),
             search_bots=["jisou"],
             keywords=[{"text": keyword} for keyword in payload.keywords],
             target_group_ids=[target.id],
@@ -933,6 +1025,8 @@ def create_simple_search_rank_deboost_task(
                 "target_count": payload.target_count,
                 "target_operation_target_id": target.id,
                 "target_reference_type": TARGET_REFERENCE_OPERATION_TARGET,
+                "target_title": payload.target_title,
+                "target_link": canonical_link,
             },
         ),
         operator,
@@ -978,13 +1072,13 @@ def update_search_rank_deboost_config(
     update_data = payload.model_dump(mode="json", exclude_unset=True)
     if not update_data:
         return task
-    next_config, target_changed, keywords_changed, target_count_changed = _next_rank_deboost_config(
+    next_config, target_changed, target_display_changed, keywords_changed, target_count_changed = _next_rank_deboost_config(
         session,
         tenant_id,
         config=task.type_config or {},
         update_data=update_data,
     )
-    if not (target_changed or keywords_changed or target_count_changed):
+    if not (target_changed or target_display_changed or keywords_changed or target_count_changed):
         return task
     task.type_config = next_config
     _apply_rank_deboost_config_change(
@@ -993,6 +1087,7 @@ def update_search_rank_deboost_config(
         task=task,
         config=next_config,
         target_changed=target_changed,
+        target_display_changed=target_display_changed,
         keywords_changed=keywords_changed,
         target_count_changed=target_count_changed,
         operator=operator,
@@ -1019,12 +1114,27 @@ def _next_rank_deboost_config(
     *,
     config: dict[str, Any],
     update_data: dict[str, Any],
-) -> tuple[dict[str, Any], bool, bool, bool]:
+) -> tuple[dict[str, Any], bool, bool, bool, bool]:
     next_config = dict(config)
     target_changed = False
+    target_display_changed = False
     keywords_changed = False
     target_count_changed = False
-    if "target_operation_target_id" in update_data:
+    if "target_link" in update_data:
+        target, canonical_link = _simple_search_click_target_from_input(
+            session, tenant_id, str(update_data["target_title"]), str(update_data["target_link"])
+        )
+        target_changed = _rank_deboost_target_changed(next_config, target.id)
+        target_display_changed = (
+            str(next_config.get("target_title") or "").strip() != str(update_data["target_title"]).strip()
+            or str(next_config.get("target_link") or "").strip() != canonical_link
+        )
+        next_config["target_title"] = str(update_data["target_title"]).strip()
+        next_config["target_link"] = canonical_link
+        next_config["target_group_ids"] = [target.id]
+        next_config["target_operation_target_id"] = target.id
+        next_config["target_reference_type"] = TARGET_REFERENCE_OPERATION_TARGET
+    elif "target_operation_target_id" in update_data:
         target = _simple_search_click_target(session, tenant_id, update_data["target_operation_target_id"])
         target_changed = _rank_deboost_target_changed(next_config, target.id)
         if target_changed:
@@ -1041,7 +1151,7 @@ def _next_rank_deboost_config(
         target_count_changed = target_count != int(next_config.get("target_count") or 0)
         if target_count_changed:
             next_config["target_count"] = target_count
-    return next_config, target_changed, keywords_changed, target_count_changed
+    return next_config, target_changed, target_display_changed, keywords_changed, target_count_changed
 
 
 def _apply_rank_deboost_config_change(
@@ -1051,12 +1161,15 @@ def _apply_rank_deboost_config_change(
     task: Task,
     config: dict[str, Any],
     target_changed: bool,
+    target_display_changed: bool,
     keywords_changed: bool,
     target_count_changed: bool,
     operator: str,
 ) -> None:
-    if target_changed or target_count_changed:
+    if target_changed or target_display_changed or target_count_changed:
         _refresh_simple_search_click_name(session, task, task_label="搜索排名观察")
+    if not (target_changed or keywords_changed or target_count_changed):
+        return
     _clear_unfinished_plan(session, task)
     if target_changed or keywords_changed:
         preselect_exempt_group(

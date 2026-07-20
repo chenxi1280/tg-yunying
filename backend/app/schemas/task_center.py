@@ -537,6 +537,7 @@ class SearchJoinGroupConfig(BaseModel):
     target_group_id: int | None = Field(default=None, gt=0)
     target_input: str | None = Field(default=None, max_length=300)
     target_title: str | None = Field(default=None, max_length=180)
+    target_link: str | None = Field(default=None, max_length=300)
     execution_mode: Literal["mtproto_userbot"] = "mtproto_userbot"
     search_bots: list[SearchJoinBotConfig] = Field(default_factory=list)
     max_pages: int = Field(default=MAX_SEARCH_JOIN_PAGES, ge=1, le=MAX_SEARCH_JOIN_PAGES)
@@ -642,9 +643,18 @@ class SearchClickSimpleTaskCreate(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    target_operation_target_id: int = Field(gt=0)
+    target_title: str = Field(min_length=1, max_length=180)
+    target_link: str = Field(min_length=1, max_length=300)
     keywords: list[str] = Field(min_length=1)
     target_count: int = Field(ge=1)
+
+    @field_validator("target_title", "target_link")
+    @classmethod
+    def normalize_target_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("目标群名称和链接不能为空")
+        return normalized
 
     @field_validator("keywords")
     @classmethod
@@ -739,6 +749,7 @@ class SearchJoinGroupTaskConfigUpdate(BaseModel):
     target_group_id: int | None = Field(default=None, gt=0)
     target_input: str | None = Field(default=None, max_length=300)
     target_title: str | None = Field(default=None, max_length=180)
+    target_link: str | None = Field(default=None, max_length=300)
     execution_mode: Literal["mtproto_userbot"] | None = None
     search_bots: list[SearchJoinBotConfig] | None = None
     max_pages: int | None = Field(default=None, ge=1, le=MAX_SEARCH_JOIN_PAGES)
@@ -766,9 +777,20 @@ class SearchJoinGroupTaskConfigUpdate(BaseModel):
     post_join_task_links: list[dict[str, Any]] | None = None
     pacing_config: SearchJoinPacingConfig | None = None
 
+    @field_validator("target_title", "target_link")
+    @classmethod
+    def normalize_target_text(cls, value: str | None) -> str | None:
+        return SearchClickSimpleTaskCreate.normalize_target_text(value) if value is not None else None
+
     @model_validator(mode="after")
     def validate_keyword_material_patch(self) -> "SearchJoinGroupTaskConfigUpdate":
         fields = self.model_fields_set
+        target_title_supplied = "target_title" in fields
+        target_link_supplied = "target_link" in fields
+        if target_title_supplied != target_link_supplied:
+            raise ValueError("目标群名称和公开链接必须同时填写")
+        if target_title_supplied and (not self.target_title or not self.target_link):
+            raise ValueError("目标群名称和公开链接不能为空")
         hashes_supplied = "keyword_hashes" in fields
         ciphertexts_supplied = "keyword_text_ciphertexts" in fields
         if hashes_supplied != ciphertexts_supplied:
@@ -799,8 +821,24 @@ class SearchRankDeboostTaskConfigUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     target_operation_target_id: int | None = Field(default=None, gt=0)
+    target_title: str | None = Field(default=None, min_length=1, max_length=180)
+    target_link: str | None = Field(default=None, min_length=1, max_length=300)
     keywords: list[str] | None = None
     target_count: int | None = Field(default=None, ge=1)
+
+    @field_validator("target_title", "target_link")
+    @classmethod
+    def normalize_target_text(cls, value: str | None) -> str | None:
+        return SearchClickSimpleTaskCreate.normalize_target_text(value) if value is not None else None
+
+    @model_validator(mode="after")
+    def validate_target_patch(self) -> "SearchRankDeboostTaskConfigUpdate":
+        fields = self.model_fields_set
+        if ("target_title" in fields) != ("target_link" in fields):
+            raise ValueError("目标群名称和公开链接必须同时填写")
+        if "target_title" in fields and (not self.target_title or not self.target_link):
+            raise ValueError("目标群名称和公开链接不能为空")
+        return self
 
     @field_validator("keywords")
     @classmethod

@@ -96,7 +96,7 @@ tg-yunying 当前任务中心已支持 5 类主任务：`group_ai_chat`、`group
 
 1. 代理 IP，见 §6。
 2. 设备指纹，见 §7。
-3. 目标群，任务创建时引用 `OperationTarget`。
+3. 目标群，创建者填写完整名称和公开 Telegram 链接；服务端解析或复用内部 `OperationTarget`。
 4. 搜索机器人，由系统策略固定并写入 `type_config.search_bots`，创建者不选择。
 
 环境栈为授权槽位级五元组：`(account_id, developer_app_id/api_id, authorization_id/session_role, proxy_binding_id, client_metadata fields on account_environment_bindings)`。`authorization_id` 引用 `tg_account_authorizations.id`，`session_role` 对应 `primary / standby_1 / standby_2`。主授权和备用授权不能复用同一客户端元数据、同一 `client_identity_key` 或同一代理节点；不同 TG 开发者应用和不同授权槽位可以拥有不同代理和客户端元数据。
@@ -231,15 +231,15 @@ pending -> claiming -> executing -> success / failed / skipped
 
 | 创建输入 | 约束 | 说明 |
 | --- | --- | --- |
-| `target_operation_target_id` | 必填，单个群目标 | 从已存在的 `OperationTarget` 选择；服务端校验同租户、群类型和可用于搜索匹配的公开 username。 |
+| `target_title` + `target_link` | 均必填，组成单个群目标 | `target_title` 是群完整名称；`target_link` 必须解析为公开 Telegram username。服务端以规范化 username 解析或复用内部 `OperationTarget`，不暴露或接收内部 ID。邀请链接、peer id、机器人链接和无法提取公开 username 的链接明确拒绝。 |
 | `keywords` | 必填，至少一个去重后的非空关键词 | 运营只表达要搜索什么；执行所需的安全存储和关键词匹配由系统处理。 |
 | `target_count` | 必填，正整数 | 一个任务生命周期内要完成的已确认互动次数，不是每小时目标。 |
 
-任务名称、搜索机器人/协议、账号候选与账号组、代理和授权绑定、并发、节奏、停留、配额、重试、资源准备与风险闸门都是系统策略。新建 API 收到这些系统托管字段必须显式拒绝，不能静默忽略或让调用方绕过策略。编辑目标群或目标次数时，服务端必须用当前目标群和目标次数重生成任务名称。存量任务可以继续展示其已保存的高级事实，但这些字段不得重新出现在新建表单或新建请求中。
+“目标群”仍是一项业务输入，由完整名称和链接共同组成；因此新建任务仍只有目标群、关键词、目标次数三个业务概念。链接是可执行身份，完整名称是该任务的展示与审计快照。服务端按规范化 username 创建或复用内部 `OperationTarget`，但不得因本次任务提交静默覆盖既有运营目标目录名称。任务名称、搜索机器人/协议、账号候选与账号组、代理和授权绑定、并发、节奏、停留、配额、重试、资源准备与风险闸门都是系统策略。新建 API 收到内部 `target_operation_target_id` 或这些系统托管字段必须显式拒绝，不能静默忽略或让调用方绕过策略。编辑目标群或目标次数时，服务端必须用当前目标群和目标次数重生成任务名称。存量任务可以继续展示其已保存的高级事实和内部引用，但这些字段不得重新出现在新建表单或新建请求中。
 
 `target_count` 的完成语义：`search_join_group` 以 `Action.status=success` 的 `membership_observed` 计入；`search_rank_deboost` 以真实 Gateway 返回的 factual `confirmed` click 对应 `Action.status=success` 计入。`pending`、`claiming`、`executing` 和 `unknown_after_send` 占用剩余槽位，避免结果未确认时重复安排；`failed`、`skipped` 释放槽位。达到目标后任务写入 `status=completed`、`next_run_at=null` 和 `stats.completion_reason=target_count_reached`。未带 `target_count` 的历史任务保持原有不封顶调度语义。
 
-编辑仍是三项业务输入的 PATCH，不是把详情中的系统配置全量回写。`search_join_group` 不回传关键词明文，编辑页关键词留空表示保持现有加密关键词材料；只有输入新的关键词才替换它。历史任务没有 `target_count` 时，编辑页保持空值并省略该字段，不能为了表单显示写入默认 `1`。`search_rank_deboost` 只在目标群或关键词的实际值发生变化时重做 readiness；仅改目标次数只重算目标进度。旧版重复关键词密文只有在解密后可与既有 hash 集合一一对应时才会去重修复，无法证明对应关系的材料必须显式校验失败。旧版 `post_join_safe_navigation_*` 值在保存存量任务时归零；新请求提交非零值仍明确拒绝。
+编辑仍是三项业务输入的 PATCH，不是把详情中的系统配置全量回写。编辑目标群时同样填写完整名称和公开 Telegram 链接；旧任务的已存 `target_operation_target_id` 仅作为兼容读取来源，不能要求编辑者选择或回传该 ID。`search_join_group` 不回传关键词明文，编辑页关键词留空表示保持现有加密关键词材料；只有输入新的关键词才替换它。历史任务没有 `target_count` 时，编辑页保持空值并省略该字段，不能为了表单显示写入默认 `1`。`search_rank_deboost` 只在目标群或关键词的实际值发生变化时重做 readiness；仅改目标次数只重算目标进度。旧版重复关键词密文只有在解密后可与既有 hash 集合一一对应时才会去重修复，无法证明对应关系的材料必须显式校验失败。旧版 `post_join_safe_navigation_*` 值在保存存量任务时归零；新请求提交非零值仍明确拒绝。
 
 创建后的状态语义保持任务类型差异：搜索目标群点击任务在“创建并启动”时由服务端完成资源校验和启动；搜索排名观察任务先创建草稿，启动准备仍由服务端复核真实搜索准备态。两者都不要求运营补填账号、代理或节奏字段；阻塞时返回可读 blocker，并在任务详情展示事实。
 
@@ -261,7 +261,7 @@ pending -> claiming -> executing -> success / failed / skipped
 
 ## 5. 用户故事
 
-1. 运营人员在任务中心创建搜索目标群点击任务，只选择目标群、输入关键词和目标次数；系统生成任务名称并选择可用账号、机器人、代理和执行节奏。
+1. 运营人员在任务中心创建搜索目标群点击任务，填写目标群完整名称、公开 Telegram 链接、关键词和目标次数；系统解析内部目标记录，生成任务名称并选择可用账号、机器人、代理和执行节奏。
 2. 灰度阶段，运营人员在账号中心维护已养号账号及其环境；任务创建页不再选择账号、代理或真实化参数。
 3. 任务启动后，Planner 按账号授权槽位、关键词、搜索机器人和目标群生成 action；Executor 按真人节奏执行完整链路。
 4. 加入成功后，系统先写入搜索入群事实、目标成员关系和留存观察，再按配置把账号联动到同目标 AI 活跃群等后续任务的 ready pool。
@@ -980,13 +980,13 @@ None raw_response: Message # 原始消息，供 fallback @dataclass class Search
 |`BotSearchDispatcher`|`backend/app/services/task_center/executors/search_join_group.py`|协议解析（见 §10）|
 |`SearchJoinMembershipVerifier`|`backend/app/services/task_center/search_join_membership.py`|验证入群结果、挑战类型、留存策略和失败 taxonomy|
 |数据库表|见 §13.1|包含协议样本、机场订阅、机场节点、出口 IP 观测、代理绑定、环境绑定、warmup state、客户端元数据组合审计、授权执行锁、IP 信誉历史、search_join_action_stats 和 search_join_pacing_decisions 等 search_join 专属表|
-|前端四步极简 search_join_group 分支|`frontend/src/app/views/TaskCenterWizardSections.tsx`|只收集目标群、关键词和目标次数；系统策略与资源 blocker 在确认页/详情展示|
+|前端四步极简 search_join_group 分支|`frontend/src/app/views/TaskCenterWizardSections.tsx`|目标群步骤收集完整名称和公开 Telegram 链接，随后收集关键词和目标次数；系统策略、内部目标解析与资源 blocker 在确认页/详情展示|
 |前端任务详情"搜索入群统计" Tab|`frontend/src/app/views/TaskCenterDetailModal.tsx`|排名轨迹 + 行为漏斗|
 |风控中心 search_join 维度告警|`frontend/src/app/views/RiskControlView.tsx`|proxy_dead / bot_blocked / fingerprint_anomaly 告警类型|
 |
  #
 
-### 11.4 与 OperationTarget 的关系 `target_groups[].operation_target_id` 是任务配置唯一持久引用（现有 `backend/app/models/operation_target.py`）。新建任务从运营目标列表选择一个已有目标并只提交 `target_operation_target_id`；用户名、公开链接、邀请链接或 peer id 的解析 / upsert 属于运营目标创建流程，不是搜索点击新建 API 的输入。task.type_config 只存服务端派生的 `operation_target_id`、匹配策略和权重，不直接存裸 `peer_id`；action payload 可携带来自 OperationTarget 的执行快照和版本号。#
+### 11.4 与 OperationTarget 的关系 `target_groups[].operation_target_id` 仍是任务配置唯一持久内部引用（现有 `backend/app/models/operation_target.py`），但不再是搜索点击表单/API 输入。新建和编辑任务提交 `target_title` 与 `target_link`；服务端只接受可规范化为公开 Telegram username 的链接，以该 username 在同租户解析或创建群类型 `OperationTarget` 后写入内部 ID。`target_title` 作为任务展示/审计快照保存，不得静默改写已存在的运营目标目录名称。邀请链接、peer id、机器人链接和裸 `target_operation_target_id` 都不是搜索点击输入。存量任务继续读取既有内部 ID。task.type_config 只存服务端派生的 `operation_target_id`、匹配策略和权重，不直接存裸 `peer_id`；action payload 可携带来自 OperationTarget 的执行快照和版本号。#
 
 ### 11.5 与 TG Account 的关系 账号创建 / 资料初始化 / 备用 session / 设备清理等复用现有 `account_security/service.py` 全部机制。本任务新增的"账号环境栈"绑定在 `tg_account_authorizations` 授权资产槽位之上，不修改账号主表；`primary / standby_1 / standby_2` 都按独立客户端身份管理。#
 

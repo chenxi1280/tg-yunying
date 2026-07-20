@@ -75,12 +75,64 @@ def _payload(**overrides) -> SearchJoinGroupTaskCreate:
 
 
 @pytest.mark.no_postgres
+def test_simple_search_join_create_resolves_public_link_without_exposing_target_id(session: Session) -> None:
+    task = create_simple_search_join_group_task(
+        session,
+        1,
+        SearchJoinGroupSimpleTaskCreate(
+            target_title="上海留学官方交流群",
+            target_link="https://t.me/shanghai_study_group",
+            keywords=["上海 留学"],
+            target_count=12,
+        ),
+        actor="tester",
+    )
+
+    assert task.name == "上海留学官方交流群 搜索目标群点击 12 次"
+    assert task.type_config["target_operation_target_id"] == 17
+    assert task.type_config["target_title"] == "上海留学官方交流群"
+    assert task.type_config["target_link"] == "https://t.me/shanghai_study_group"
+    assert session.get(OperationTarget, 17).title == "上海留学交流群"
+
+
+@pytest.mark.no_postgres
+def test_simple_search_join_create_creates_missing_public_group_target(session: Session) -> None:
+    task = create_simple_search_join_group_task(
+        session,
+        1,
+        SearchJoinGroupSimpleTaskCreate(
+            target_title="河南郑州学生会",
+            target_link="https://t.me/zzxshxc",
+            keywords=["河南郑州学生会"],
+            target_count=1,
+        ),
+        actor="tester",
+    )
+
+    target = session.query(OperationTarget).filter_by(tenant_id=1, tg_peer_id="zzxshxc").one()
+    assert target.target_type == "group"
+    assert target.title == "河南郑州学生会"
+    assert task.type_config["target_operation_target_id"] == target.id
+
+
+@pytest.mark.no_postgres
+def test_simple_search_join_create_rejects_internal_target_id_input() -> None:
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        SearchJoinGroupSimpleTaskCreate(
+            target_operation_target_id=17,
+            keywords=["上海 留学"],
+            target_count=12,
+        )
+
+
+@pytest.mark.no_postgres
 def test_simple_search_join_create_uses_system_name_and_policy(session: Session) -> None:
     task = create_simple_search_join_group_task(
         session,
         1,
         SearchJoinGroupSimpleTaskCreate(
-            target_operation_target_id=17,
+            target_title="上海留学交流群",
+            target_link="https://t.me/shanghai_study_group",
             keywords=["上海 留学", "上海 国际学校"],
             target_count=12,
         ),
@@ -101,7 +153,8 @@ def test_simple_search_join_edit_regenerates_system_name(session: Session) -> No
         session,
         1,
         SearchJoinGroupSimpleTaskCreate(
-            target_operation_target_id=17,
+            target_title="上海留学交流群",
+            target_link="https://t.me/shanghai_study_group",
             keywords=["上海 留学"],
             target_count=12,
         ),
@@ -123,7 +176,10 @@ def test_simple_search_join_edit_regenerates_system_name(session: Session) -> No
         session,
         1,
         task.id,
-        SearchJoinGroupTaskConfigUpdate(target_operation_target_id=18),
+        SearchJoinGroupTaskConfigUpdate(
+            target_title="北京留学交流群",
+            target_link="https://t.me/beijing_study_group",
+        ),
         actor="tester",
     )
     assert target_updated.name == "北京留学交流群 搜索目标群点击 12 次"
@@ -143,7 +199,8 @@ def test_simple_search_join_edit_regenerates_system_name(session: Session) -> No
 def test_simple_search_join_create_rejects_system_managed_fields() -> None:
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         SearchJoinGroupSimpleTaskCreate(
-            target_operation_target_id=17,
+            target_title="上海留学交流群",
+            target_link="https://t.me/shanghai_study_group",
             keywords=["上海 留学"],
             target_count=12,
             search_bots=[{"username": "other"}],
@@ -170,7 +227,8 @@ def test_simple_search_join_create_rejects_system_managed_fields() -> None:
 def test_simple_search_click_create_rejects_all_system_managed_inputs(payload_type, field: str, value: object) -> None:
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         payload_type(
-            target_operation_target_id=17,
+            target_title="上海留学交流群",
+            target_link="https://t.me/shanghai_study_group",
             keywords=["上海 留学"],
             target_count=12,
             **{field: value},
@@ -180,7 +238,8 @@ def test_simple_search_click_create_rejects_all_system_managed_inputs(payload_ty
 @pytest.mark.no_postgres
 def test_simple_search_join_create_deduplicates_normalized_keywords() -> None:
     payload = SearchJoinGroupSimpleTaskCreate(
-        target_operation_target_id=17,
+        target_title="上海留学交流群",
+        target_link="https://t.me/shanghai_study_group",
         keywords=["  Study   Group  ", "study group"],
         target_count=12,
     )
@@ -191,7 +250,8 @@ def test_simple_search_join_create_deduplicates_normalized_keywords() -> None:
 @pytest.mark.no_postgres
 def test_simple_search_join_create_does_not_impose_an_unstated_target_count_cap() -> None:
     payload = SearchJoinGroupSimpleTaskCreate(
-        target_operation_target_id=17,
+        target_title="上海留学交流群",
+        target_link="https://t.me/shanghai_study_group",
         keywords=["上海 留学"],
         target_count=100_001,
     )
@@ -200,18 +260,15 @@ def test_simple_search_join_create_does_not_impose_an_unstated_target_count_cap(
 
 
 @pytest.mark.no_postgres
-@pytest.mark.parametrize("username", [" @ ", "bad name", "12345", "abcd", "name-with-dash"])
-def test_simple_search_join_create_rejects_target_without_public_username(session: Session, username: str) -> None:
-    target = session.get(OperationTarget, 17)
-    target.username = username
-    session.commit()
-
-    with pytest.raises(ValueError, match="公开 username"):
+@pytest.mark.parametrize("target_link", ["https://t.me/+invite", "https://t.me/joinchat/invite", "@shanghai_study_group"])
+def test_simple_search_join_create_rejects_target_without_public_link(session: Session, target_link: str) -> None:
+    with pytest.raises(ValueError, match="公开 Telegram 链接"):
         create_simple_search_join_group_task(
             session,
             1,
             SearchJoinGroupSimpleTaskCreate(
-                target_operation_target_id=17,
+                target_title="上海留学交流群",
+                target_link=target_link,
                 keywords=["上海 留学"],
                 target_count=12,
             ),

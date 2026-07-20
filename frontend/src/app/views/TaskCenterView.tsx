@@ -580,7 +580,12 @@ export default function TaskCenterView({
       name: `${prefill.target.title} ${TYPE_LABEL[nextType] ?? '任务'}`,
     };
     if (prefill.target.target_type === 'group') {
-      nextValues.target_operation_target_id = prefill.target.id;
+      if (isSimpleSearchClickTask(nextType)) {
+        nextValues.target_title = prefill.target.title;
+        nextValues.target_link = prefill.target.username ? `https://t.me/${prefill.target.username}` : '';
+      } else {
+        nextValues.target_operation_target_id = prefill.target.id;
+      }
       if (nextType === 'group_relay') {
         nextValues.source_operation_target_ids = [prefill.target.id];
         nextValues.source_groups = [{ operation_target_id: prefill.target.id, group_name: prefill.target.title, is_active: true }];
@@ -927,8 +932,8 @@ export default function TaskCenterView({
         : '';
       return {
         keywords: keywordTexts,
-        target_operation_target_id: config.target_operation_target_id
-          ?? (Array.isArray(config.target_group_ids) ? config.target_group_ids[0] ?? null : null),
+        target_title: config.target_title ?? '',
+        target_link: config.target_link ?? config.target_input ?? '',
         target_count: config.target_count,
       };
     }
@@ -1148,15 +1153,19 @@ export default function TaskCenterView({
 
   function simpleSearchClickPayload(values: any, editing = false) {
     const keywords = words(values.keywords);
+    const target = {
+      target_title: values.target_title?.trim(),
+      target_link: values.target_link?.trim(),
+    };
     if (editing) {
       return {
-        target_operation_target_id: values.target_operation_target_id,
+        ...(target.target_title && target.target_link ? target : {}),
         ...(keywords.length ? { keywords } : {}),
         ...(values.target_count != null ? { target_count: values.target_count } : {}),
       };
     }
     return {
-      target_operation_target_id: values.target_operation_target_id,
+      ...target,
       keywords,
       target_count: values.target_count,
     };

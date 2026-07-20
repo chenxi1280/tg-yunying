@@ -2057,7 +2057,7 @@ def test_task_center_runtime_form_exposes_hour_limit_without_generic_task_daily_
     simple_config = wizard[wizard.index("function SimpleSearchClickConfig"):wizard.index("export function WizardTypeConfig")]
     assert 'name="max_actions_per_hour"' not in simple_config
     assert 'name="max_actions_per_day"' not in simple_config
-    assert "if (isSimpleSearchClickTask(taskType)) return ['target_operation_target_id', 'keywords', 'target_count'];" in view_model
+    assert "if (isSimpleSearchClickTask(taskType)) return ['target_title', 'target_link', 'keywords', 'target_count'];" in view_model
 
 
 def test_target_profile_is_top_level_page_not_target_detail_governance():
@@ -2536,7 +2536,9 @@ def test_search_click_creation_uses_three_business_fields_and_system_managed_pol
     assert "target_count" in view_model
     assert "function simpleSearchClickPayload(values: any, editing = false)" in view
     simple_payload = view[view.index("function simpleSearchClickPayload(values: any, editing = false)"):view.index("function parseExcludedSenderInput", view.index("function simpleSearchClickPayload(values: any, editing = false)"))]
-    assert "target_operation_target_id" in simple_payload
+    assert "target_title: values.target_title?.trim()" in simple_payload
+    assert "target_link: values.target_link?.trim()" in simple_payload
+    assert "target_operation_target_id" not in simple_payload
     assert "const keywords = words(values.keywords);" in simple_payload
     assert "...(keywords.length ? { keywords } : {})," in simple_payload
     assert "target_count: values.target_count" in simple_payload

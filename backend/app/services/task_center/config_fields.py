@@ -252,6 +252,7 @@ TYPE_SETTINGS_FIELDS = {
         "target_group_id",
         "target_input",
         "target_title",
+        "target_link",
         "execution_mode",
         "search_bots",
         "max_pages",

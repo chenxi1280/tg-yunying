@@ -305,7 +305,8 @@ def test_e2e_start_prepares_pending_exempt_group_for_simple_rank_draft(monkeypat
             session,
             1,
             SearchRankDeboostSimpleTaskCreate(
-                target_operation_target_id=1001,
+                target_title="我方目标群",
+                target_link="https://t.me/my_target",
                 keywords=["关键词A"],
                 target_count=1,
             ),
@@ -361,7 +362,8 @@ def test_e2e_start_records_candidate_gateway_exception_as_readiness_blocker(monk
             session,
             1,
             SearchRankDeboostSimpleTaskCreate(
-                target_operation_target_id=1001,
+                target_title="我方目标群",
+                target_link="https://t.me/my_target",
                 keywords=["关键词A"],
                 target_count=1,
             ),
