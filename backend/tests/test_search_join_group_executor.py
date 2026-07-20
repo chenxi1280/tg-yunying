@@ -26,6 +26,7 @@ from app.models import (
     TgAccountAuthorization,
 )
 from app.security import encrypt_secret
+from app.search_keywords import normalized_keyword_hash
 from app.schemas.account_environment import ProxyAirportSubscriptionCreate
 from app.services._common import _now
 from app.services.proxy_airport_subscription import create_proxy_airport_subscription, sync_proxy_airport_subscription_by_id
@@ -78,7 +79,7 @@ def _task(**overrides) -> Task:
         "account_locale": "zh-CN",
         "proxy_country": "SG",
         "pre_join_decoy_click_max": 2,
-        "post_join_safe_navigation_max": 1,
+        "post_join_safe_navigation_max": 0,
         "hourly_round_curve": [1] * 24,
         "actions_per_round": 2,
         "max_actions_per_hour": 4,
@@ -207,7 +208,7 @@ def test_search_join_planner_creates_hash_only_search_join_actions(session: Sess
     assert all("keyword" not in action.payload for action in actions)
     assert all(action.payload["max_pages"] == 70 for action in actions)
     assert "上海 留学" not in str([action.payload for action in actions])
-    assert all(action.payload["safe_navigation"]["total_max"] == 3 for action in actions)
+    assert all(action.payload["safe_navigation"]["total_max"] == 2 for action in actions)
     assert all(action.payload["safe_navigation"]["decoy_join_enabled"] is False for action in actions)
     assert actions[0].payload["search_visibility_attribution"]["target_content_health"] == "healthy"
     assert {action.payload["runtime_environment"]["proxy_egress_guard"] for action in actions} == {"verified"}
@@ -227,6 +228,53 @@ def test_search_join_planner_creates_hash_only_search_join_actions(session: Sess
         (102, 51, action_authorizations[102], "primary"),
     ]
     assert session.query(FingerprintComboHistory).count() == 2
+
+
+@pytest.mark.no_postgres
+def test_search_join_planner_caps_new_actions_by_target_count_and_held_slots(session: Session) -> None:
+    _bind_search_join_environment(session, [101, 102])
+    task = _task(type_config={"target_count": 3})
+    session.add(task)
+    session.flush()
+    session.add_all([
+        Action(
+            tenant_id=1,
+            task_id=task.id,
+            task_type=task.type,
+            action_type="search_join",
+            status="success",
+            payload={},
+            result={"join_status": "membership_observed"},
+        ),
+        Action(
+            tenant_id=1,
+            task_id=task.id,
+            task_type=task.type,
+            action_type="search_join",
+            status="unknown_after_send",
+            payload={},
+            result={},
+        ),
+    ])
+    session.commit()
+
+    assert build_task_plan(session, task) == 1
+    assert session.query(Action).filter_by(task_id=task.id, action_type="search_join").count() == 3
+    assert task.stats["search_click_target"]["remaining_slot_count"] == 0
+
+
+@pytest.mark.no_postgres
+def test_search_join_planner_blocks_peer_only_target(session: Session) -> None:
+    _bind_search_join_environment(session, [101])
+    target = session.get(OperationTarget, 17)
+    target.username = ""
+    task = _task(type_config={"actions_per_round": 1, "hourly_min_successful_joins": 1})
+    session.add(task)
+    session.commit()
+
+    assert build_task_plan(session, task) == 0
+    assert session.scalar(select(Action).where(Action.task_id == task.id)) is None
+    assert "可验证 username" in (task.last_error or "")
 
 
 @pytest.mark.no_postgres
@@ -461,7 +509,21 @@ def test_search_join_planner_fails_closed_without_keyword_hash(session: Session)
 
     assert build_task_plan(session, task) == 0
     assert session.scalar(select(Action).where(Action.task_id == task.id)) is None
-    assert task.last_error == "search_join keyword hash missing"
+    assert task.last_error == "search_join keyword hash/ciphertext material missing or mismatched"
+
+
+@pytest.mark.no_postgres
+def test_search_join_planner_repairs_legacy_duplicate_keyword_ciphertexts() -> None:
+    keyword = "上海 留学"
+    keyword_hash = normalized_keyword_hash(keyword)
+    ciphertext = encrypt_secret(keyword)
+
+    materials = search_join_executor._keyword_materials({
+        "keyword_hashes": [keyword_hash],
+        "keyword_text_ciphertexts": [ciphertext, ciphertext],
+    })
+
+    assert materials == [(keyword_hash, ciphertext)]
 
 
 @pytest.mark.no_postgres

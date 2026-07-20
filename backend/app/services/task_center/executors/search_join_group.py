@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.admin_chats import send_admin_chat_broadcast
 from app.models import Action, BotProtocolSample, OperationTarget, Task, Tenant, TgAccount
+from app.search_keywords import repair_legacy_keyword_materials
 from app.security import decrypt_secret
 from app.services.client_metadata import SearchJoinEnvironment, ensure_search_join_environment
 from app.services._common import _now, audit
@@ -19,6 +20,7 @@ from app.services.proxy_airport_subscription import (
 
 from ..account_pool import select_task_accounts
 from ..payloads import SearchJoinPayload, create_search_join_action
+from ..search_click_target_progress import reconcile_search_click_target_progress
 from ..search_join_config import runtime_search_join_config
 from ..search_join_pacing import PacingStats, account_base_allowed, keyword_allowed, pacing_window, planned_action_decision, should_skip_window, task_daily_capacity
 from ..stats import search_join_hourly_execution
@@ -36,7 +38,7 @@ class SearchJoinPlan:
 class PayloadInput:
     config: dict
     plan: SearchJoinPlan
-    index: int
+    keyword_hash: str
     account: TgAccount
     environment: SearchJoinEnvironment
 
@@ -55,12 +57,20 @@ DEFAULT_MAX_SEARCH_JOIN_PAGES = 70
 
 def build_plan(session: Session, task: Task) -> int:
     _lock_task_for_planning(session, task)
+    target_progress = reconcile_search_click_target_progress(session, task)
+    if target_progress.completed or target_progress.remaining_slot_count == 0:
+        return 0
     config = _runtime_config(task)
     bot_username = _first_bot_username(config)
     if not _protocol_sample_ready(session, task.tenant_id, bot_username):
         return _block(task, "protocol_sample_missing", f"search_join protocol sample missing: {bot_username}")
-    if not _keyword_hashes(config):
-        return _block(task, "keyword_hash_missing", "search_join keyword hash missing")
+    try:
+        keyword_materials = _keyword_materials(config)
+    except ValueError as exc:
+        return _block(task, "keyword_material_invalid", f"search_join keyword material invalid: {exc}")
+    if not keyword_materials:
+        return _block(task, "keyword_material_missing", "search_join keyword hash/ciphertext material missing or mismatched")
+    config = _canonical_keyword_materials(task, config, keyword_materials)
     now_value = _now()
     window = pacing_window(task, now_value)
     pacing_stats = PacingStats(tenant_timezone=task.timezone or "Asia/Shanghai", local_date=window.local_date.isoformat())
@@ -68,6 +78,8 @@ def build_plan(session: Session, task: Task) -> int:
         return _record_hourly(task, search_join_hourly_execution(session, task, now_value), 0, {}, pacing_stats)
     hourly = search_join_hourly_execution(session, task, _now())
     plan_count = task_daily_capacity(session, task, window, _plan_count(config, hourly), pacing_stats)
+    if target_progress.remaining_slot_count is not None:
+        plan_count = min(plan_count, target_progress.remaining_slot_count)
     if plan_count <= 0:
         return _record_hourly(task, hourly, 0, {}, pacing_stats)
     if _clash_subscription_pool_unavailable(session, task.tenant_id):
@@ -75,10 +87,13 @@ def build_plan(session: Session, task: Task) -> int:
     accounts = select_task_accounts(session, task.tenant_id, task.account_config or {}, limit=plan_count * ENVIRONMENT_CANDIDATE_MULTIPLIER, enforce_capacity=False)
     if not accounts:
         return _block(task, "account_unavailable", "没有可用账号，等待账号恢复后继续执行")
-    plan = SearchJoinPlan(bot_username=bot_username, keyword_hash="", target=_target(session, task), hourly=hourly)
+    target = _target(session, task)
+    if target is None or not target.username.strip():
+        return _block(task, "target_identity_missing", "搜索入群目标缺少可验证 username")
+    plan = SearchJoinPlan(bot_username=bot_username, keyword_hash="", target=target, hourly=hourly)
     created = 0
     blockers: dict[str, int] = {}
-    keyword_hashes = _keyword_hashes(config)
+    keyword_hashes = [item[0] for item in keyword_materials]
     for account in accounts:
         if not account_base_allowed(session, task, account.id, window, pacing_stats):
             continue
@@ -88,8 +103,13 @@ def build_plan(session: Session, task: Task) -> int:
         environment = _environment(session, account, blockers)
         if environment is None:
             continue
-        payload = _payload(PayloadInput(config=config, plan=plan, index=created, account=account, environment=environment))
-        payload = payload.model_copy(update={"keyword_hash": keyword_hash})
+        payload = _payload(PayloadInput(
+            config=config,
+            plan=plan,
+            keyword_hash=keyword_hash,
+            account=account,
+            environment=environment,
+        ))
         _create_planned_action(session, task, account, payload, keyword_hash, window, config)
         created += 1
         if created >= plan_count:
@@ -99,7 +119,9 @@ def build_plan(session: Session, task: Task) -> int:
             return _record_hourly(task, hourly, 0, blockers, pacing_stats)
         return _block(task, "needs_client_metadata", "搜索入群缺少可执行授权环境栈或客户端 metadata")
     task.last_error = ""
-    return _record_hourly(task, hourly, created, blockers, pacing_stats)
+    planned = _record_hourly(task, hourly, created, blockers, pacing_stats)
+    reconcile_search_click_target_progress(session, task)
+    return planned
 
 
 def _runtime_config(task: Task) -> dict:
@@ -179,9 +201,8 @@ def _candidate_keyword_hash(session: Session, task: Task, account_id: int, keywo
 
 def _payload(payload_input: PayloadInput) -> SearchJoinPayload:
     config = payload_input.config
-    keyword_hashes = _keyword_hashes(config)
-    keyword_hash = str(keyword_hashes[payload_input.index % len(keyword_hashes)])
-    keyword_text_ciphertext = _keyword_ciphertext(config, payload_input.index)
+    keyword_hash = payload_input.keyword_hash
+    keyword_text_ciphertext = _keyword_ciphertext(config, keyword_hash)
     target = payload_input.plan.target
     return SearchJoinPayload(
         execution_mode="mtproto_userbot",
@@ -285,11 +306,11 @@ def _audit_subscription_notification(session: Session, task: Task, result: Notif
     )
 
 
-def _keyword_ciphertext(config: dict, index: int) -> str:
-    keyword_ciphertexts = list(config.get("keyword_text_ciphertexts") or [])
-    if not keyword_ciphertexts:
-        return ""
-    return str(keyword_ciphertexts[index % len(keyword_ciphertexts)])
+def _keyword_ciphertext(config: dict, keyword_hash: str) -> str:
+    for item_hash, ciphertext in _keyword_materials(config):
+        if item_hash == keyword_hash:
+            return ciphertext
+    raise ValueError("search_join keyword ciphertext missing for keyword hash")
 
 
 def _max_pages(config: dict) -> int:
@@ -316,11 +337,10 @@ def _count_blocker(blockers: dict[str, int], code: str) -> None:
 
 def _safe_navigation(config: dict) -> dict:
     pre_max = int(config.get("pre_join_decoy_click_max") or 0)
-    post_max = int(config.get("post_join_safe_navigation_max") or 0)
     return {
         "pre_join_decoy_click_max": pre_max,
-        "post_join_safe_navigation_max": post_max,
-        "total_max": pre_max + post_max,
+        "post_join_safe_navigation_max": 0,
+        "total_max": pre_max,
         "decoy_join_enabled": bool(config.get("decoy_join_enabled") or False),
         "allowed_button_effect": "navigate_only",
     }
@@ -351,7 +371,27 @@ def _first_bot_username(config: dict) -> str:
 
 
 def _keyword_hashes(config: dict) -> list[str]:
-    return [str(item).strip().lower() for item in config.get("keyword_hashes") or [] if str(item).strip()]
+    return [item[0] for item in _keyword_materials(config)]
+
+
+def _keyword_materials(config: dict) -> list[tuple[str, str]]:
+    hashes = [str(item).strip().lower() for item in config.get("keyword_hashes") or [] if str(item).strip()]
+    ciphertexts = [str(item).strip() for item in config.get("keyword_text_ciphertexts") or [] if str(item).strip()]
+    if not hashes:
+        return []
+    if len(hashes) == len(ciphertexts):
+        return [] if len(set(hashes)) != len(hashes) else list(zip(hashes, ciphertexts, strict=True))
+    return repair_legacy_keyword_materials(hashes, ciphertexts)
+
+
+def _canonical_keyword_materials(task: Task, config: dict, materials: list[tuple[str, str]]) -> dict:
+    hashes = [item[0] for item in materials]
+    ciphertexts = [item[1] for item in materials]
+    if config.get("keyword_hashes") == hashes and config.get("keyword_text_ciphertexts") == ciphertexts:
+        return config
+    normalized = {**config, "keyword_hashes": hashes, "keyword_text_ciphertexts": ciphertexts}
+    task.type_config = normalized
+    return normalized
 
 
 def _protocol_sample_ready(session: Session, tenant_id: int, bot_username: str) -> bool:

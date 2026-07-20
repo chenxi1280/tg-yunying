@@ -43,8 +43,17 @@ export const CREATE_AND_START_ENDPOINT: Record<TaskCenterTaskType, string> = {
 };
 
 export const WIZARD_STEPS = ['基础信息', '目标来源', '任务配置', '账号与节奏', '预检确认'];
+export const SIMPLE_SEARCH_CLICK_WIZARD_STEPS = ['任务类型', '目标群', '关键词与目标次数', '确认'];
 export const GROUP_AI_HARD_HOURLY_MIN_MESSAGES = 10;
 export const CHANNEL_COUNT_JITTER_DEFAULT = 0.2;
+
+export function isSimpleSearchClickTask(taskType: TaskCenterTaskType) {
+  return taskType === 'search_join_group' || taskType === 'search_rank_deboost';
+}
+
+export function wizardStepsForTask(taskType: TaskCenterTaskType) {
+  return isSimpleSearchClickTask(taskType) ? SIMPLE_SEARCH_CLICK_WIZARD_STEPS : WIZARD_STEPS;
+}
 
 export const OPERATION_PROFILE_TEMPLATES = [
   { value: 'natural_full_day', label: '全天自然活跃', curve: [2, 2, 1, 1, 0, 0, 1, 2, 4, 5, 6, 6, 5, 4, 6, 7, 8, 9, 10, 10, 8, 6, 4, 3] },
@@ -331,41 +340,12 @@ export function isOperationalAccount(account: Account, accountPools: AccountPool
     && systemKey !== 'rank_deboost';
 }
 
-export function isEligibleRankAccount(account: Account, accountPools: AccountPool[]) {
-  const pool = accountPoolFor(account, accountPools);
-  return Boolean(
-    pool
-    && pool.pool_purpose === 'rank_deboost'
-    && pool.is_enabled !== false
-    && account.account_identity === 'rank_deboost',
-  );
-}
-
-export function rankPoolSummaries(accountPools: AccountPool[]) {
-  return accountPools
-    .filter((pool) => pool.pool_purpose === 'rank_deboost')
-    .map((pool) => {
-      const bindingStatus = pool.rank_deboost_binding_status || '';
-      const missingBinding = bindingStatus !== 'active' && !pool.rank_deboost_runtime_proxy_id;
-      return {
-        id: pool.id,
-        name: pool.name,
-        account_count: pool.account_count,
-        is_enabled: pool.is_enabled !== false,
-        bindingStatus,
-        missingBinding,
-        observedExitIp: pool.rank_deboost_observed_exit_ip || '',
-      };
-    });
-}
-
 export function accountSelectionPreview(values: Record<string, any>, accounts: Account[], accountPools: AccountPool[], taskType: TaskCenterTaskType) {
+  void taskType;
   const mode = values.selection_mode ?? values.account_config?.selection_mode ?? 'all';
   const ids = csvNumbers(values.account_ids ?? values.account_config?.account_ids);
   const poolId = values.account_group_id ?? values.account_config?.account_group_id;
-  const eligibleAccounts = taskType === 'search_rank_deboost'
-    ? accounts.filter((account) => isEligibleRankAccount(account, accountPools))
-    : accounts.filter((account) => isOperationalAccount(account, accountPools));
+  const eligibleAccounts = accounts.filter((account) => isOperationalAccount(account, accountPools));
   const candidates = mode === 'manual'
     ? eligibleAccounts.filter((account) => ids.includes(account.id))
     : mode === 'group'
@@ -382,7 +362,6 @@ export function accountSelectionPreview(values: Record<string, any>, accounts: A
 }
 
 export function accountPrecheck(values: Record<string, any>, accounts: Account[], accountPools: AccountPool[], taskType: TaskCenterTaskType = 'group_ai_chat') {
-  if (taskType === 'search_rank_deboost') return accountSelectionPreview(values, accounts, accountPools, 'search_rank_deboost');
   return accountSelectionPreview(values, accounts, accountPools, taskType);
 }
 
@@ -544,29 +523,8 @@ export function typeInitialValues(type: TaskCenterTaskType, setting?: Scheduling
   if (type === 'search_join_group') {
     return {
       target_operation_target_id: null,
-      search_bots: 'jisou',
       keywords: '',
-      business_region: '',
-      account_locale: 'zh-CN',
-      proxy_country: '',
-      pre_join_decoy_click_max: 2,
-      post_join_safe_navigation_max: 1,
-      hourly_min_successful_joins: 1,
-      actions_per_round: 1,
-      max_actions_per_day: 100,
-      per_account_total_action_limit: 0,
-      per_account_daily_action_limit: 1,
-      per_account_cooldown_days: 0,
-      per_keyword_account_daily_limit: 2,
-      hourly_skip_probability: 0,
-      daily_skip_probability: 0,
-      skip_probability_per_action: 0.1,
-      hourly_jitter_percent: 30,
-      daily_jitter_percent: 20,
-      post_join_policy: 'stay_joined',
-      target_content_health: 'unknown',
-      jisou_ecosystem_status: 'unknown',
-      paid_keyword_ad_status: 'unknown',
+      target_count: null,
     };
   }
   if (type === 'channel_view') {
@@ -597,19 +555,9 @@ export function typeInitialValues(type: TaskCenterTaskType, setting?: Scheduling
   }
   if (type === 'search_rank_deboost') {
     return {
-      search_bots: 'jisou',
+      target_operation_target_id: null,
       keywords: '',
-      target_group_ids: [],
-      account_pool_id: null,
-      proxy_airport_node_id: null,
-      notes: '',
-      per_account_daily_click_limit: 5,
-      per_keyword_account_daily_limit: 2,
-      group_ip_daily_click_limit: 50,
-      max_actions_per_hour: 10,
-      per_account_cooldown_hours: 4,
-      dwell_seconds_min: 10,
-      dwell_seconds_max: 30,
+      target_count: null,
     };
   }
   return {
@@ -640,10 +588,9 @@ export function defaultRuleSelection(ruleSets: RuleSet[], taskType: TaskCenterTa
 
 
 export function fieldsForStep(step: number, taskType: TaskCenterTaskType, messageScope: string, accountMode: string): string[] {
-  if (step === 0) return ['name'];
+  if (step === 0) return isSimpleSearchClickTask(taskType) ? [] : ['name'];
   if (step === 1) {
-    if (taskType === 'group_ai_chat' || taskType === 'group_membership_admission' || taskType === 'search_join_group') return ['target_operation_target_id'];
-    if (taskType === 'search_rank_deboost') return ['target_group_ids'];
+    if (taskType === 'group_ai_chat' || taskType === 'group_membership_admission' || isSimpleSearchClickTask(taskType)) return ['target_operation_target_id'];
     if (taskType === 'group_relay') return ['source_operation_target_ids', 'target_operation_target_id'];
     const fields = ['target_channel_id', 'message_scope'];
     if (['latest_n', 'dynamic_new'].includes(messageScope)) fields.push('message_count');
@@ -651,9 +598,9 @@ export function fieldsForStep(step: number, taskType: TaskCenterTaskType, messag
     if (messageScope === 'date_range') fields.push('date_from', 'date_to');
     return fields;
   }
-  if (step === 2 && taskType === 'search_rank_deboost') return ['keywords'];
+  if (step === 2 && isSimpleSearchClickTask(taskType)) return ['keywords', 'target_count'];
+  if (step === 3 && isSimpleSearchClickTask(taskType)) return [];
   if (step === 3 && taskType === 'group_membership_admission') return ['account_group_ids'];
-  if (step === 3 && taskType === 'search_rank_deboost') return accountSelectionFields(accountMode);
   if (step === 3) return accountSelectionFields(accountMode);
   return [];
 }
@@ -682,6 +629,7 @@ export function channelScopeFields(messageScope: string): string[] {
 
 export function fieldsForSubmit(taskType: TaskCenterTaskType, messageScope: string, accountMode: string, pacingMode: string): string[] {
   void pacingMode;
+  if (isSimpleSearchClickTask(taskType)) return ['target_operation_target_id', 'keywords', 'target_count'];
   const commonFields = ['name', 'scheduled_end', 'operation_template_id', 'hourly_activity_curve', 'quiet_threshold', 'peak_threshold'];
   const baseFields = [...commonFields, ...accountSelectionFields(accountMode), 'max_concurrent', 'cooldown_per_account_minutes', 'ban_policy', 'max_actions_per_hour', 'max_retries'];
   if (taskType === 'group_ai_chat') {
@@ -752,64 +700,18 @@ export function fieldsForSubmit(taskType: TaskCenterTaskType, messageScope: stri
       'delete_after_send',
     ];
   }
-  if (taskType === 'search_join_group') {
-    return [
-      ...baseFields,
-      'target_operation_target_id',
-      'search_bots',
-      'keywords',
-      'keyword_hashes',
-      'business_region',
-      'account_locale',
-      'proxy_country',
-      'pre_join_decoy_click_max',
-      'post_join_safe_navigation_max',
-      'hourly_min_successful_joins',
-      'actions_per_round',
-      'max_actions_per_day',
-      'per_account_total_action_limit',
-      'per_account_daily_action_limit',
-      'per_account_cooldown_days',
-      'per_keyword_account_daily_limit',
-      'hourly_skip_probability',
-      'daily_skip_probability',
-      'skip_probability_per_action',
-      'hourly_jitter_percent',
-      'daily_jitter_percent',
-      'target_relevance_score',
-      'target_content_health',
-      'jisou_ecosystem_status',
-      'paid_keyword_ad_status',
-    ];
-  }
   if (taskType === 'channel_view') {
     return [...baseFields, ...channelScopeFields(messageScope), 'listen_new_messages', 'per_message_daily_view_target', 'per_message_total_view_target', 'message_active_days', 'task_daily_view_safety_cap', 'max_views_per_account_per_day', 'view_count_jitter', 'target_views_per_message'];
   }
   if (taskType === 'channel_like') {
     return [...baseFields, ...channelScopeFields(messageScope), 'target_likes_per_message', 'like_count_jitter', 'reaction_type', 'allowed_reactions'];
   }
-  if (taskType === 'search_rank_deboost') {
-    return [
-      'name',
-      'search_bots',
-      'keywords',
-      'target_group_ids',
-      ...accountSelectionFields(accountMode),
-      'notes',
-      'per_account_daily_click_limit',
-      'per_keyword_account_daily_limit',
-      'group_ip_daily_click_limit',
-      'max_actions_per_hour',
-      'per_account_cooldown_hours',
-      'dwell_seconds_min',
-      'dwell_seconds_max',
-    ];
-  }
   return [...baseFields, ...channelScopeFields(messageScope), 'target_comments_per_message', 'max_total_comments', 'max_total_comments_jitter', 'reply_min_per_message', 'rule_set_id', 'rule_set_version_id', 'comment_style', 'topic_hint'];
 }
 
 export function editFieldsForSubmit(taskType: TaskCenterTaskType, accountMode: string, pacingMode: string): string[] {
   void pacingMode;
+  if (isSimpleSearchClickTask(taskType)) return ['target_operation_target_id', 'keywords', 'target_count'];
   const baseFields = ['name', 'scheduled_end', 'operation_template_id', 'hourly_activity_curve', 'quiet_threshold', 'peak_threshold', ...accountFields(accountMode), 'max_actions_per_hour', 'max_retries'];
   if (taskType === 'group_ai_chat') {
     return [
@@ -866,50 +768,6 @@ export function editFieldsForSubmit(taskType: TaskCenterTaskType, accountMode: s
   }
   if (taskType === 'channel_like') {
     return [...baseFields, 'target_likes_per_message', 'like_count_jitter', 'reaction_type', 'allowed_reactions', 'max_likes_per_account_per_hour'];
-  }
-  if (taskType === 'search_join_group') {
-    return [
-      ...baseFields,
-      'target_operation_target_id',
-      'search_bots',
-      'keywords',
-      'business_region',
-      'account_locale',
-      'proxy_country',
-      'pre_join_decoy_click_max',
-      'post_join_safe_navigation_max',
-      'hourly_min_successful_joins',
-      'actions_per_round',
-      'max_actions_per_day',
-      'per_account_total_action_limit',
-      'per_account_daily_action_limit',
-      'per_account_cooldown_days',
-      'per_keyword_account_daily_limit',
-      'hourly_skip_probability',
-      'daily_skip_probability',
-      'skip_probability_per_action',
-      'hourly_jitter_percent',
-      'daily_jitter_percent',
-      'target_relevance_score',
-      'target_content_health',
-      'jisou_ecosystem_status',
-      'paid_keyword_ad_status',
-    ];
-  }
-  if (taskType === 'search_rank_deboost') {
-    return [
-      ...accountSelectionFields(accountMode),
-      'keywords',
-      'target_group_ids',
-      'notes',
-      'per_account_daily_click_limit',
-      'per_keyword_account_daily_limit',
-      'group_ip_daily_click_limit',
-      'max_actions_per_hour',
-      'per_account_cooldown_hours',
-      'dwell_seconds_min',
-      'dwell_seconds_max',
-    ];
   }
   return [...baseFields, 'target_comments_per_message', 'max_total_comments', 'max_total_comments_jitter', 'reply_min_per_message', 'rule_set_id', 'rule_set_version_id', 'ai_model', 'comment_style', 'topic_hint', 'system_prompt_override', 'language', 'max_comment_length', 'max_comments_per_account_per_hour'];
 }

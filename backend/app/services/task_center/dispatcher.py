@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 import os
 import re
 import socket
@@ -9,7 +10,7 @@ from datetime import datetime, timedelta
 
 from sqlalchemy import case, func, or_, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 from pydantic import ValidationError
 
 from app.admin_chats import send_admin_chat_broadcast
@@ -17,6 +18,7 @@ from app.integrations.telegram import DeveloperAppCredentials, OperationResult, 
 from app.config import get_settings
 from app.models import AccountStatus, Action, ChannelMessage, ExecutionAttempt, FailureType, GroupAuthStatus, GroupContextMessage, OperationTarget, ReviewQueue, Task, TaskAccountDailyCoverage, TaskMembershipAdmissionItem, Tenant, TgAccount, TgGroup, TgGroupAccount, VerificationTask
 from app.models import AccountEnvironmentBinding, AccountProxy, AccountProxyBinding, TelegramDeveloperApp, TgAccountAuthorization
+from app.search_keywords import normalized_keyword_hash
 from app.security import decrypt_secret
 from app.services._common import _now, audit, gateway
 from app.services.account_usage_policy import assert_account_action_allowed
@@ -69,6 +71,12 @@ from .payloads import DeprecatedGroupRescuePayload, DeleteMessagePayload, Ensure
 from .policies import validate_group_send_policy
 from .review import has_pending_review
 from .search_join_linking import create_linked_dispatch_if_membership_observed
+from .search_click_target_progress import reconcile_search_click_target_progress
+from .search_rank_deboost_reservations import (
+    gateway_reservation_blocker,
+    mark_reserved_reservation_unknown,
+    release_reserved_reservation,
+)
 from . import runtime_resources as _runtime_resources
 
 _ACTION_RESERVATIONS = _runtime_resources._ACTION_RESERVATIONS
@@ -328,6 +336,15 @@ def dispatch_action(
         _release_runtime_resources(action)
         _sync_action_coverage_state(session, action)
         _sync_all_account_membership_state(session, action)
+        _sync_search_click_target_progress(session, action)
+
+
+def _sync_search_click_target_progress(session: Session, action: Action) -> None:
+    if action.action_type not in {"search_join", "search_rank_deboost"}:
+        return
+    task = session.get(Task, action.task_id)
+    if task is not None:
+        reconcile_search_click_target_progress(session, task)
 
 
 def _dispatch_action(
@@ -3935,6 +3952,9 @@ def _dispatch_search_join(session: Session, action: Action, account: TgAccount, 
     if not keyword_text.strip():
         _fail(action, "keyword_text_missing", "搜索入群缺少可执行关键词密文", validation_stage="search_join_payload")
         return True
+    if normalized_keyword_hash(keyword_text) != payload.keyword_hash:
+        _fail(action, "keyword_hash_mismatch", "搜索入群关键词密文与审计哈希不一致", validation_stage="search_join_payload")
+        return True
     try:
         runtime_authorization = _search_join_runtime_authorization(session, account, payload)
     except ValueError as exc:
@@ -3953,16 +3973,72 @@ def _dispatch_search_join(session: Session, action: Action, account: TgAccount, 
 def _dispatch_search_rank_deboost(session: Session, action: Action, account: TgAccount, payload: SearchRankDeboostPayload) -> bool:
     from .executors.search_rank_deboost import execute_search_rank_deboost
 
+    if not _rank_deboost_dispatch_ready(session, action, payload):
+        return True
+    attempt = _begin_execution_attempt(session, action, account)
+    session.commit()
+    result = _execute_rank_deboost_with_attempt(
+        session,
+        action=action,
+        account=account,
+        payload=payload,
+        attempt=attempt,
+        execute=execute_search_rank_deboost,
+    )
+    _apply_rank_deboost_result(action=action, payload=payload, result=result, attempt=attempt)
+    return True
+
+
+def _rank_deboost_dispatch_ready(session: Session, action: Action, payload: SearchRankDeboostPayload) -> bool:
     runtime = payload.runtime_environment if isinstance(payload.runtime_environment, dict) else {}
     binding_id = int(runtime.get("group_proxy_binding_id") or 0)
     if binding_id <= 0:
         _skip(action, "proxy_egress_guard_failed", "搜索排名观察任务缺少 group_proxy_binding_id，禁止回退本机直连")
         action.result = {**(action.result or {}), "validation_stage": "search_rank_deboost_proxy"}
+        return False
+    blocker = gateway_reservation_blocker(session, action.id)
+    if not blocker:
         return True
+    _skip(action, blocker, "搜索排名观察 action 缺少可执行的点击预留")
+    action.result = {**(action.result or {}), "validation_stage": "search_rank_deboost_pacing"}
+    return False
 
-    result = execute_search_rank_deboost(session, action, account, payload)
-    skip_reason = result.get("skip_reason") or result.get("error_code")
-    if skip_reason and not result.get("success"):
+
+def _execute_rank_deboost_with_attempt(
+    session: Session,
+    *,
+    action: Action,
+    account: TgAccount,
+    payload: SearchRankDeboostPayload,
+    attempt: ExecutionAttempt,
+    execute: Callable[..., dict],
+) -> dict:
+    try:
+        return execute(
+            session,
+            action,
+            account,
+            payload,
+            before_gateway_call=lambda: _mark_gateway_call_started(session, attempt),
+        )
+    except Exception:
+        if attempt.gateway_call_started_at is None:
+            release_reserved_reservation(session, action.id)
+        raise
+
+
+def _apply_rank_deboost_result(
+    *,
+    action: Action,
+    payload: SearchRankDeboostPayload,
+    result: dict,
+    attempt: ExecutionAttempt,
+) -> None:
+    skip_reason = result.get("skip_reason")
+    if result.get("execution_status") == "unknown_after_click":
+        action.status = "unknown_after_send"
+        action.result = {**(action.result or {}), **result, "validation_stage": "search_rank_deboost_runtime"}
+    elif skip_reason and not result.get("success"):
         _skip(action, skip_reason, result.get("error_message") or skip_reason)
         action.result = {
             **(action.result or {}),
@@ -3974,7 +4050,12 @@ def _dispatch_search_rank_deboost(session: Session, action: Action, account: TgA
         action.status = "success" if result.get("success") else "failed"
         action.result = {**(action.result or {}), **result, "validation_stage": "search_rank_deboost_runtime"}
     action.executed_at = _now()
-    return True
+    _finish_execution_attempt(
+        attempt,
+        action,
+        failure_type=str(result.get("error_code") or result.get("execution_status") or ""),
+        detail=str(result.get("error_message") or result.get("detail") or ""),
+    )
 
 
 def _record_search_join_proxy_failover(
@@ -4314,10 +4395,13 @@ def _fail(action: Action, failure_type: str, detail: str, *, auto_check: str = "
         "validation_stage": validation_stage,
     }
     action.executed_at = _now()
+    _release_rank_deboost_reservation_before_gateway(action)
     _release_runtime_resources(action)
 
 
 def _mark_unknown_after_send(session: Session, action: Action, detail: str) -> None:
+    if action.action_type == "search_rank_deboost":
+        mark_reserved_reservation_unknown(session, action.id)
     action.status = "unknown_after_send"
     _clear_action_lease(action)
     action.result = {
@@ -4371,7 +4455,17 @@ def _skip(action: Action, code: str, detail: str) -> None:
     _clear_action_lease(action)
     action.result = {**(action.result or {}), "success": False, "error_code": code, "error_message": detail, "auto_check": "跳过", "validation_stage": "context"}
     action.executed_at = _now()
+    _release_rank_deboost_reservation_before_gateway(action)
     _release_runtime_resources(action)
+
+
+def _release_rank_deboost_reservation_before_gateway(action: Action) -> None:
+    if action.action_type != "search_rank_deboost":
+        return
+    session = object_session(action)
+    if session is None or _gateway_call_started(session, action):
+        return
+    release_reserved_reservation(session, action.id)
 
 
 def _defer(action: Action, scheduled_at, code: str, detail: str) -> None:
@@ -4654,7 +4748,7 @@ def _finish_execution_attempt(attempt: ExecutionAttempt | None, action: Action, 
     attempt.remote_message_id = remote_id or ""
     attempt.failure_type = failure_type or ""
     attempt.failure_detail = detail or ""
-    attempt.status = "success" if action.status == "success" else "failed" if action.status in {"failed", "retryable_failed"} else action.status
+    attempt.status = "success" if action.status == "success" else "failed" if action.status in {"failed", "retryable_failed"} else "result_unknown" if action.status == "unknown_after_send" else action.status
     attempt.result_snapshot = dict(action.result or {})
 
 

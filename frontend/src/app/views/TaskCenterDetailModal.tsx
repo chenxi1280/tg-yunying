@@ -66,12 +66,24 @@ const coverageStateColor = (state?: string | null) => {
   return colors[String(state || '')] || 'default';
 };
 
+function searchClickTargetProgress(task: TaskCenterTask) {
+  const progress = task.stats?.search_click_target;
+  const targetCount = Number(progress?.target_count ?? task.type_config?.target_count);
+  if (!Number.isInteger(targetCount) || targetCount <= 0) return null;
+  const confirmedCount = Math.max(0, Number(progress?.confirmed_count ?? 0));
+  const heldCount = Math.max(0, Number(progress?.held_count ?? 0));
+  const remainingSlotCount = progress?.remaining_slot_count ?? Math.max(0, targetCount - confirmedCount - heldCount);
+  return { targetCount, confirmedCount, heldCount, remainingSlotCount, state: progress?.state ?? 'planning' };
+}
+
 function searchJoinDetailItems(detail: TaskCenterDetail) {
   const config = detail.task.type_config || {};
   const stats = detail.task.stats?.search_join_stats || {};
   const hourly = stats.hourly_execution || {};
   const pacingLimits = stats.pacing_limits || {};
+  const targetProgress = searchClickTargetProgress(detail.task);
   return [
+    ...(targetProgress ? [{ key: 'target-progress', label: '目标进度', children: `已确认 ${targetProgress.confirmedCount} / ${targetProgress.targetCount}，待确认 ${targetProgress.heldCount}，剩余可规划 ${targetProgress.remainingSlotCount}` }] : []),
     { key: 'success', label: '累计目标点击', children: detail.task.stats?.success_count ?? 0 },
     { key: 'ranking', label: '排名观察', children: hourly.recent_target_positions?.length ? `${hourly.recent_target_positions.length} 条` : '独立快照，不计入 action success' },
     { key: 'hourly', label: '小时执行', children: `${hourly.status || '-'} / 缺口 ${hourly.deficit ?? 0} / 未来 ${hourly.future_open_count ?? 0}` },
@@ -86,7 +98,7 @@ function searchJoinDetailItems(detail: TaskCenterDetail) {
     { key: 'health', label: '内容健康', children: config.target_content_health || '-' },
     { key: 'jisou', label: '极搜生态', children: config.jisou_ecosystem_status || '-' },
     { key: 'paid', label: '付费关键词广告', children: config.paid_keyword_ad_status || '-' },
-    { key: 'decoy', label: '非目标安全浏览', children: `目标确认前 ${config.pre_join_decoy_click_max ?? 0} / 目标确认后 ${config.post_join_safe_navigation_max ?? 0}` },
+    { key: 'decoy', label: '非目标安全浏览', children: `仅目标确认前 ${config.pre_join_decoy_click_max ?? 0}` },
   ];
 }
 
@@ -271,13 +283,21 @@ function deboostSkipReasonLabel(reason: string) {
 
 function SearchRankDeboostStatsPanel({ detail, executedActions, canManageTasks }: { detail: TaskCenterDetail; executedActions: TaskCenterAction[]; canManageTasks: boolean }) {
   const [rerollLoading, setRerollLoading] = React.useState(false);
-  const [exemptGroup, setExemptGroup] = React.useState<SearchRankDeboostExemptGroup | null>(null);
+  const [rerolledExemptGroup, setRerolledExemptGroup] = React.useState<SearchRankDeboostExemptGroup | null>(null);
   const [actionError, setActionError] = React.useState('');
   const [actionWarning, setActionWarning] = React.useState('');
 
   const task = detail.task;
+  const exemptGroup = rerolledExemptGroup ?? detail.rank_deboost_exempt_group ?? null;
   const deboostStats = (task.stats?.search_rank_deboost_stats || {}) as Record<string, any>;
   const hourly = (deboostStats.hourly_execution || {}) as Record<string, any>;
+  const targetProgress = searchClickTargetProgress(task);
+  const readiness = (task.stats?.rank_deboost_readiness || {}) as Record<string, any>;
+  const hasReadiness = Boolean(readiness.status || readiness.blocker || readiness.checked_at);
+
+  React.useEffect(() => {
+    setRerolledExemptGroup(null);
+  }, [task.id]);
 
   const skipReasonCounts: Record<string, number> = {};
   let joinButtonViolationCount = 0;
@@ -311,7 +331,7 @@ function SearchRankDeboostStatsPanel({ detail, executedActions, canManageTasks }
     setRerollLoading(true);
     try {
       const result = await api<SearchRankDeboostExemptGroup>(`/tasks/${task.id}/search_rank_deboost_reroll_exempt_group`, { method: 'POST' });
-      setExemptGroup(result);
+      setRerolledExemptGroup(result);
       setActionWarning('已重选随机豁免群。');
     } catch (error) {
       setActionError(`重选随机豁免群失败：${errorMessage(error)}`);
@@ -328,6 +348,36 @@ function SearchRankDeboostStatsPanel({ detail, executedActions, canManageTasks }
     <Space direction="vertical" size={12} style={{ width: '100%' }}>
       {actionError && <Alert type="error" showIcon message={actionError} closable onClose={() => setActionError('')} />}
       {actionWarning && <Alert type="success" showIcon message={actionWarning} closable onClose={() => setActionWarning('')} />}
+
+      {targetProgress && (
+        <Descriptions
+          bordered
+          size="small"
+          column={4}
+          title="目标进度"
+          items={[
+            { key: 'target', label: '目标次数', children: targetProgress.targetCount },
+            { key: 'confirmed', label: '已确认', children: targetProgress.confirmedCount },
+            { key: 'held', label: '待确认', children: targetProgress.heldCount },
+            { key: 'remaining', label: '剩余可规划', children: targetProgress.remainingSlotCount },
+          ]}
+        />
+      )}
+
+      {hasReadiness && (
+        <Descriptions
+          bordered
+          size="small"
+          column={4}
+          title="启动准备"
+          items={[
+            { key: 'readiness-status', label: '状态', children: <Tag color={readiness.status === 'ready' ? 'green' : readiness.status === 'pending' ? 'blue' : 'red'}>{readiness.status === 'ready' ? '已就绪' : readiness.status === 'pending' ? '待准备' : '阻塞'}</Tag> },
+            { key: 'readiness-blocker', label: '阻塞原因', children: readiness.blocker || '-' },
+            { key: 'readiness-checked-at', label: '检查时间', children: readiness.checked_at ? formatDateTime(readiness.checked_at) : '-' },
+            { key: 'readiness-evidence', label: '准备证据', children: readiness.evidence_summary || '-' },
+          ]}
+        />
+      )}
 
       <Descriptions
         bordered
@@ -346,7 +396,6 @@ function SearchRankDeboostStatsPanel({ detail, executedActions, canManageTasks }
       {canManageTasks && (
         <Space>
           <Button loading={rerollLoading} onClick={() => void handleReroll()}>重选随机豁免群</Button>
-          {!exemptGroup && <Typography.Text type="secondary">点击「重选随机豁免群」获取当前豁免群信息。</Typography.Text>}
         </Space>
       )}
 

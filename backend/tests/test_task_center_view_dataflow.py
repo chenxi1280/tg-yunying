@@ -166,7 +166,7 @@ def test_task_center_precheck_and_recommendation_bind_payload_signature():
 
     assert "const payload = createPayload(values);" in create_task
     assert "const precheckSignature = taskPrecheckPayloadSignature(taskType, payload);" in create_task
-    assert "const requiresFreshPrecheck = taskType !== 'group_membership_admission' && taskType !== 'search_rank_deboost' && !options.skipCapacityCheck;" in create_task
+    assert "const requiresFreshPrecheck = taskType !== 'group_membership_admission' && !isSimpleSearchClickTask(taskType) && !options.skipCapacityCheck;" in create_task
     assert "precheck && precheckPayloadSignature === precheckSignature" in create_task
     assert "await runTaskPrecheck(values)" in create_task
     assert "if (!result && requiresFreshPrecheck) return;" in create_task
@@ -218,6 +218,17 @@ def test_task_center_save_settings_binds_payload_signature_and_edit_session():
     assert "if (!requestSeq || isCurrentTaskSettingsSaveRequest(requestSeq)) setEditSaving(false);" in save_settings
 
 
+def test_search_click_task_settings_use_the_three_field_special_contract():
+    source = _source()
+    settings_payload = source[source.index("function settingsPayload"):source.index("\n\n  async function runTaskPrecheck")]
+    save_settings = _function_body(source, "saveTaskSettings")
+
+    assert "if (isSimpleSearchClickTask(type)) return simpleSearchClickPayload(values, true);" in settings_payload
+    assert "editableType === 'search_join_group'" in save_settings
+    assert "`/tasks/${taskId}/search-join-group`" in save_settings
+    assert "`/tasks/${taskId}/search_rank_deboost_config`" in save_settings
+
+
 def test_task_center_action_attempt_failures_stay_visible_in_modal():
     source = _source()
     attempts_body = _function_body(source, "openActionAttempts")
@@ -267,16 +278,55 @@ def test_task_center_form_support_data_ignores_stale_requests():
     assert "void ensureTaskFormData(nextType, requestSeq)" in prefill_effect
     assert "isActiveTaskFormSupportRequest(requestSeq)" in prefill_effect
 
-    for block in [create_task, edit_task, next_step]:
+    for block in [edit_task, next_step]:
         assert "const requestSeq = beginTaskFormSupportRequest();" in block
         assert "void ensureTaskFormData(" in block
         assert "if (!isActiveTaskFormSupportRequest(requestSeq)) return;" in block
 
+    assert "ensureTaskFormData(" not in create_task
     assert "const requestSeq = beginTaskFormSupportRequest();" in reset_type
     assert "void ensureTaskFormData(nextType, requestSeq)" in reset_type
     assert "if (!loaded || !isActiveTaskFormSupportRequest(requestSeq)) return;" in reset_type
     assert "if (!isActiveTaskFormSupportRequest(requestSeq)) return;" in reset_type[reset_type.index(".catch((error) => {"):]
     assert reset_type.index("if (!loaded || !isActiveTaskFormSupportRequest(requestSeq)) return;") < reset_type.index("applyDefaultRuleSet(loadedRuleSets, nextType);")
+
+
+def test_task_center_does_not_fetch_unrendered_proxy_airport_nodes():
+    source = _source()
+    wizard = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterWizardSections.tsx").read_text()
+
+    assert "proxyAirportNodes" not in source
+    assert "ensureProxyAirportNodes" not in source
+    assert "/account-environment-bindings/proxy-airport-nodes" not in source
+    assert "proxyAirportNodes" not in wizard
+    assert "ProxyAirportNode" not in wizard
+
+
+def test_simple_search_click_create_skips_account_and_prompt_support_requests():
+    source = _source()
+    support_requests = source[source.index("function taskFormSupportRequests"):source.index("\n\n  async function ensureTaskFormData")]
+    ensure_form = source[source.index("async function ensureTaskFormData"):source.index("\n\n  React.useEffect", source.index("async function ensureTaskFormData"))]
+    create_task = _function_body(source, "openCreateTask")
+    edit_task = _function_body(source, "openEditTask")
+    next_step = _function_body(source, "nextStep")
+    reset_type = source[source.index("function resetTypeFields"):source.index("\n\n  const columns")]
+    prefill_effect = source[source.index("if (!prefill || appliedPrefillNonce.current === prefill.nonce) return;"):source.index("\n  React.useEffect(() => {\n    if (!focusTask")]
+
+    simple_branch = support_requests[
+        support_requests.index("if (isSimpleSearchClickTask(type)) {"):support_requests.index("\n    requests.push(ensureAccounts(), ensurePromptTemplates());")
+    ]
+
+    assert "function taskFormSupportRequests(type: TaskCenterTaskType)" in support_requests
+    assert "ensureAccounts()" not in simple_branch
+    assert "ensurePromptTemplates()" not in simple_branch
+    assert "requests.push(ensureAccounts(), ensurePromptTemplates());" in support_requests
+    assert "async function ensureTaskFormData(type: TaskCenterTaskType, requestSeq: number): Promise<boolean>" in ensure_form
+    assert "const requests = taskFormSupportRequests(type);" in ensure_form
+    assert "ensureTaskFormData(" not in create_task
+    assert "void ensureTaskFormData(editableType, requestSeq)" in edit_task
+    assert "void ensureTaskFormData(nextType, requestSeq)" in prefill_effect
+    assert "void ensureTaskFormData(taskType, requestSeq)" in next_step
+    assert "void ensureTaskFormData(nextType, requestSeq)" in reset_type
 
 
 def test_task_detail_failure_errors_are_bound_to_active_task():
@@ -431,7 +481,7 @@ def test_task_forms_open_before_support_data_and_merge_remote_targets():
         source.index("\n  React.useEffect(() => {\n    if (!focusTask")
     ]
 
-    assert create_task.index("setModalOpen(true);") < create_task.index("ensureTaskFormData(")
+    assert "ensureTaskFormData(" not in create_task
     assert edit_task.index("setEditOpen(true);") < edit_task.index("ensureTaskFormData(")
     assert "await ensureTaskFormData(" not in create_task
     assert "await ensureTaskFormData(" not in edit_task
@@ -498,3 +548,11 @@ def test_task_center_only_displays_target_profile_status_without_profile_selecti
     assert "name=\"profile_version\"" not in combined
     assert "profile_scene:" not in combined
     assert "profile_version:" not in combined
+
+
+def test_rank_deboost_detail_shows_start_readiness_blocker():
+    detail = TASK_CENTER_DETAIL_MODAL.read_text()
+
+    assert "rank_deboost_readiness" in detail
+    for label in ["启动准备", "阻塞原因", "检查时间", "准备证据"]:
+        assert label in detail

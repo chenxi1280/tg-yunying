@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -14,7 +14,11 @@ from app.services.account_usage_policy import apply_rank_deboost_account_filters
 from app.services.proxy_airport_accounts import AVAILABLE_NODE_STATUS, EXECUTABLE_PROXY_PROTOCOLS
 from app.services.search_rank_deboost_alerts import record_exempt_group_missing_alert
 from app.services.task_center.payloads import SearchRankDeboostPayload, create_search_rank_deboost_action
-from app.services.task_center.search_rank_deboost_reservations import reserve_click
+from app.services.task_center.rank_deboost_runtime_authorization import resolve_rank_deboost_runtime_authorization
+from app.services.task_center.search_rank_deboost_reservations import (
+    release_expired_pending_reservations,
+    reserve_click,
+)
 
 from ..search_rank_deboost import (
     EXEMPT_GROUP_PENDING_REAL_SEARCH,
@@ -22,6 +26,8 @@ from ..search_rank_deboost import (
     is_pending_exempt_group,
     validate_rank_deboost_protocol_samples,
 )
+from ..search_rank_deboost_targets import require_rank_deboost_target_group_refs
+from ..search_click_target_progress import reconcile_search_click_target_progress
 from ..search_rank_deboost_pacing import (
     DEFAULT_DWELL_SECONDS_MAX,
     DEFAULT_DWELL_SECONDS_MIN,
@@ -29,9 +35,14 @@ from ..search_rank_deboost_pacing import (
     DeboostPacingStats,
     account_click_allowed,
     deboost_pacing_window,
+    lock_rank_deboost_quota_scope,
     runtime_search_rank_deboost_config,
 )
 from ..stats import search_rank_deboost_hourly_execution
+
+
+MIN_DWELL_SECONDS = 1
+MAX_DWELL_SECONDS = 600
 
 
 class PlanBlock(Exception):
@@ -48,6 +59,7 @@ class PlanContext:
     bot_username: str
     keywords: list[str]
     target_group_ids: list[int]
+    target_group_refs: list[dict]
     exempt_group_username: str
     dwell_seconds_min: int
     dwell_seconds_max: int
@@ -57,11 +69,17 @@ class PlanContext:
 def build_plan(session: Session, task: Task) -> int:
     """搜索排名观察 Planner：校验前置条件并创建 search_rank_deboost action。"""
     _lock_task_for_planning(session, task)
+    release_expired_pending_reservations(session, tenant_id=task.tenant_id)
+    target_progress = reconcile_search_click_target_progress(session, task)
+    if target_progress.completed or target_progress.remaining_slot_count == 0:
+        return 0
     try:
         context = _resolve_plan_context(session, task)
     except PlanBlock as exc:
         return _block(task, exc.code, exc.message)
 
+    if target_progress.remaining_slot_count is not None:
+        context = replace(context, max_actions=min(context.max_actions, target_progress.remaining_slot_count))
     accounts = _rank_deboost_accounts(session, task.tenant_id, context.account_config)
     if not accounts:
         return _block(task, "account_unavailable", "排名观察专用分组无可用账号")
@@ -79,20 +97,47 @@ def _resolve_plan_context(session: Session, task: Task) -> PlanContext:
     if not keywords:
         raise PlanBlock("keyword_missing", "搜索排名观察任务缺少关键词配置")
     target_group_ids = _target_group_ids(config)
+    try:
+        target_group_refs = require_rank_deboost_target_group_refs(
+            session,
+            task.tenant_id,
+            target_group_ids,
+            reference_type=_target_reference_type(config),
+        )
+    except ValueError as exc:
+        raise PlanBlock("target_identity_missing", str(exc)) from exc
     account_config = _rank_account_config(task, config)
     exempt_group_username = _exempt_group_username(session, task.tenant_id, task.id)
     _record_missing_exempt_group(session, task, exempt_group_username)
+    dwell_seconds_min, dwell_seconds_max = _dwell_bounds(config)
     return PlanContext(
         config=config,
         account_config=account_config,
         bot_username=bot_username,
         keywords=keywords,
         target_group_ids=target_group_ids,
+        target_group_refs=target_group_refs,
         exempt_group_username=exempt_group_username,
-        dwell_seconds_min=int(config.get("dwell_seconds_min") or DEFAULT_DWELL_SECONDS_MIN),
-        dwell_seconds_max=int(config.get("dwell_seconds_max") or DEFAULT_DWELL_SECONDS_MAX),
+        dwell_seconds_min=dwell_seconds_min,
+        dwell_seconds_max=dwell_seconds_max,
         max_actions=int(config.get("max_actions_per_hour") or DEFAULT_MAX_ACTIONS_PER_HOUR),
     )
+
+
+def _dwell_bounds(config: dict) -> tuple[int, int]:
+    try:
+        raw_minimum = config.get("dwell_seconds_min")
+        raw_maximum = config.get("dwell_seconds_max")
+        minimum = DEFAULT_DWELL_SECONDS_MIN if raw_minimum is None else int(raw_minimum)
+        maximum = DEFAULT_DWELL_SECONDS_MAX if raw_maximum is None else int(raw_maximum)
+    except (TypeError, ValueError) as exc:
+        raise PlanBlock("invalid_dwell_range", "搜索排名观察停留时间必须是整数") from exc
+    if minimum < MIN_DWELL_SECONDS or maximum > MAX_DWELL_SECONDS or maximum < minimum:
+        raise PlanBlock(
+            "invalid_dwell_range",
+            f"dwell_seconds_max 必须在 {MIN_DWELL_SECONDS}..{MAX_DWELL_SECONDS} 且不小于 dwell_seconds_min",
+        )
+    return minimum, maximum
 
 
 def _validate_protocol_samples(session: Session, task: Task, bot_username: str) -> None:
@@ -107,6 +152,11 @@ def _target_group_ids(config: dict) -> list[int]:
     if not target_group_ids:
         raise PlanBlock("target_group_ids_missing", "搜索排名观察任务缺少我方目标群 ID")
     return target_group_ids
+
+
+def _target_reference_type(config: dict) -> str | None:
+    reference_type = str(config.get("target_reference_type") or "").strip()
+    return reference_type or None
 
 
 def _rank_account_config(task: Task, config: dict) -> dict:
@@ -166,6 +216,7 @@ def _create_planned_actions(
         created += _create_account_action(session, task, context, account, pacing_stats, blockers, now_value)
     hourly = search_rank_deboost_hourly_execution(session, task, now_value)
     _record_hourly(task, hourly, created, blockers, pacing_stats)
+    reconcile_search_click_target_progress(session, task)
     task.last_error = ""
     return created
 
@@ -188,6 +239,11 @@ def _create_account_action(
             continue
         binding = _matching_binding_for_account(session, task, account)
         payload = _build_payload(context, binding, account_pool_id, keyword_hash, keyword)
+        try:
+            resolve_rank_deboost_runtime_authorization(session, account, payload)
+        except ValueError as exc:
+            _count_blocker(blockers, str(exc))
+            continue
         action = create_search_rank_deboost_action(session, task, account.id, now_value, payload)
         reserve_click(
             session,
@@ -222,6 +278,7 @@ def _build_payload(
         keyword_hash=keyword_hash,
         keyword_text_ciphertext=encrypt_secret(keyword_text),
         target_group_ids=context.target_group_ids,
+        target_group_refs=context.target_group_refs,
         account_pool_id=account_pool_id,
         proxy_airport_node_id=int(binding.proxy_airport_node_id),
         exempt_group_username=context.exempt_group_username,
@@ -240,6 +297,7 @@ def _build_payload(
 
 
 def _lock_task_for_planning(session: Session, task: Task) -> None:
+    lock_rank_deboost_quota_scope(session, task)
     session.execute(select(Task.id).where(Task.id == task.id).with_for_update()).scalar_one_or_none()
 
 

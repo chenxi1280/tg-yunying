@@ -261,8 +261,6 @@ TYPE_SETTINGS_FIELDS = {
         "proxy_country",
         "pre_join_decoy_click_min",
         "pre_join_decoy_click_max",
-        "post_join_safe_navigation_min",
-        "post_join_safe_navigation_max",
         "decoy_join_enabled",
         "hourly_round_curve",
         "actions_per_round",

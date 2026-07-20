@@ -41,6 +41,8 @@ def source_media_hint(*parts: object) -> str:
 class TelegramGateway:
     """Adapter boundary for Telethon-backed production integration."""
 
+    supports_rank_deboost_observation = False
+
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
 
@@ -77,6 +79,34 @@ class TelegramGateway:
         if code and len(code) >= 4:
             return "在线", f"encrypted-session:{uuid4().hex}"
         return "异常", ""
+
+    def search_rank_deboost_candidates(
+        self,
+        account_id: int,
+        payload: dict,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+        keyword_text: str = "",
+    ) -> dict:
+        return {
+            "success": False,
+            "error_code": "rank_observation_gateway_unavailable",
+            "detail": "mock gateway 不提供搜索排名观察真实候选结果",
+        }
+
+    def execute_search_rank_deboost(
+        self,
+        account_id: int,
+        payload: dict,
+        keyword_text: str = "",
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> dict:
+        return {
+            "success": False,
+            "error_code": "rank_observation_gateway_unavailable",
+            "detail": "mock gateway 不提供搜索排名观察真实执行结果",
+        }
 
     def send_message(
         self,

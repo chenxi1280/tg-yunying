@@ -11,8 +11,8 @@
 
 from __future__ import annotations
 
-import hashlib
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -26,9 +26,11 @@ from app.models import (
     AccountStatus,
     Action,
     BotProtocolSample,
+    OperationTarget,
     ProxyAirportNode,
     ProxyAirportSubscription,
     Task,
+    TelegramDeveloperApp,
     Tenant,
     TgAccount,
 )
@@ -39,12 +41,14 @@ from app.models.search_rank_deboost import (
     SearchRankDeboostExemptGroup,
 )
 from app.schemas.task_center import TaskRetryRequest
+from app.security import encrypt_secret, encrypt_session
 from app.services._common import _now
 from app.services.task_center.dispatcher import dispatch_action
 from app.services.task_center.executors.search_rank_deboost import (
     build_plan,
     execute_search_rank_deboost,
 )
+from app.services.task_center import search_rank_deboost_pacing as rank_deboost_pacing
 from app.services.task_center.payloads import SearchRankDeboostPayload
 from app.services.task_center.search_rank_deboost_pacing import (
     DEFAULT_MAX_ACTIONS_PER_HOUR,
@@ -56,7 +60,7 @@ from app.services.task_center.search_rank_deboost_pacing import (
     account_click_allowed,
     deboost_pacing_window,
 )
-from app.services.task_center.service import retry_task
+from app.services.task_center.service import _mark_stale_executing_action, retry_task
 from app.services.task_center.stats import search_rank_deboost_hourly_execution
 
 
@@ -147,8 +151,17 @@ def _seed_base(
     session.add(Tenant(id=1, name="默认运营空间"))
     session.add(ProxyAirportSubscription(id=1, tenant_id=1, name="主订阅", enabled=True, sync_status="synced", healthy_node_count=3))
     session.add(AccountPool(id=account_pool_id, tenant_id=1, name="降权分组", pool_purpose="rank_deboost"))
+    session.add(OperationTarget(
+        id=1001,
+        tenant_id=1,
+        target_type="group",
+        tg_peer_id="-1001",
+        title="我方目标群",
+        username="my_target",
+    ))
     session.add(ProxyAirportNode(id=proxy_node_id, tenant_id=1, subscription_id=1, node_key=f"node-{proxy_node_id}", status="healthy", observed_exit_ip=observed_exit_ip))
     session.add(AccountProxy(id=30, tenant_id=1, name="rank-runtime", protocol="socks5", host="127.0.0.1", port=1080, status="healthy", alert_status="normal"))
+    session.add(TelegramDeveloperApp(id=40, app_name="rank-app", api_id=12345, api_hash_ciphertext=encrypt_secret("rank-api-hash")))
     _seed_protocol_samples(session)
 
     binding = AccountGroupProxyBinding(
@@ -189,47 +202,15 @@ def _seed_base(
             status=AccountStatus.ACTIVE.value,
             account_identity="rank_deboost",
             health_score=95,
+            developer_app_id=40,
+            developer_app_version=1,
+            session_ciphertext=encrypt_session(f"rank-session-{account_id}"),
         )
         session.add(account)
         accounts.append(account)
 
     session.flush()
     return binding, accounts
-
-
-def _make_search_results(
-    count: int = 5,
-    *,
-    target_position: int = 3,
-    target_username: str = "my_target",
-    exempt_position: int | None = 5,
-    exempt_username: str = "exempt_group",
-    include_buttons: bool = True,
-    button_effect: str = "navigate_only",
-) -> list[dict]:
-    """构造 count 个搜索结果，目标在 target_position，豁免在 exempt_position。"""
-    items: list[dict] = []
-    for position in range(1, count + 1):
-        if position == target_position:
-            username = target_username
-        elif exempt_position is not None and position == exempt_position:
-            username = exempt_username
-        else:
-            username = f"competitor_{position}"
-        item: dict = {
-            "position": position,
-            "username": username,
-            "peer_id": f"-100{position}",
-            "title": f"群 {position}",
-        }
-        if include_buttons:
-            item["buttons"] = [
-                {"text": "详情", "url": "https://example.com", "effect": button_effect, "position": position},
-            ]
-        items.append(item)
-    # 给目标群设置 id 字段以便 compute_deboost_click_targets 通过 id 匹配
-    items[target_position - 1]["id"] = 1001
-    return items
 
 
 def _make_payload(
@@ -252,6 +233,7 @@ def _make_payload(
         keyword_hash=keyword_hash,
         keyword_text_ciphertext=keyword_text,
         target_group_ids=target_group_ids or [1001],
+        target_group_refs=[{"username": "my_target", "peer_id": "-1001"}],
         account_pool_id=account_pool_id,
         proxy_airport_node_id=proxy_node_id,
         exempt_group_username=exempt_group_username,
@@ -260,11 +242,45 @@ def _make_payload(
         runtime_environment={
             "proxy_egress_guard": "verified",
             "group_proxy_binding_id": str(binding_id),
+            "runtime_proxy_id": "30",
+            "binding_generation": "1",
             "proxy_airport_node_id": str(proxy_node_id),
             "account_pool_id": str(account_pool_id),
             "observed_exit_ip": observed_exit_ip,
         },
     )
+
+
+def _gateway_result(
+    status: str = "confirmed",
+    *,
+    observed_exit_ip: str = "1.1.1.1",
+    effect: str = "navigate_only",
+    dwell_seconds: int = 12,
+    joined: bool = False,
+) -> dict:
+    result = {
+        "success": status == "confirmed",
+        "execution_status": status,
+        "observed_exit_ip": observed_exit_ip,
+        "click_outcomes": [],
+    }
+    if status in {"confirmed", "unknown_after_click"}:
+        result["click_outcomes"] = [{
+            "status": status,
+            "competitor_username": "competitor_1",
+            "competitor_peer_id": "-10001",
+            "competitor_title": "竞争群 1",
+            "competitor_position": 1,
+            "row": 0,
+            "col": 0,
+            "text": "详情",
+            "url": "https://t.me/competitor_1",
+            "effect": effect,
+            "dwell_seconds": dwell_seconds,
+            "joined": joined,
+        }]
+    return result
 
 
 # ==================== Planner build_plan 测试 ====================
@@ -302,6 +318,103 @@ def test_build_plan_creates_actions_for_rank_deboost_accounts() -> None:
             assert len(action.payload["keyword_hash"]) == 64
 
 
+def test_rank_planner_caps_new_actions_by_target_count_and_unknown_slot() -> None:
+    engine = _build_engine()
+    with Session(engine) as session:
+        _seed_base(session, account_ids=[100, 101, 102])
+        task = _make_task(session, config={"target_count": 3})
+        session.flush()
+        session.add_all([
+            Action(
+                tenant_id=1,
+                task_id=task.id,
+                task_type=task.type,
+                action_type="search_rank_deboost",
+                account_id=100,
+                status="success",
+                payload={},
+                result={
+                    "execution_status": "confirmed",
+                    "click_outcomes": [{
+                        "status": "confirmed",
+                        "competitor_username": "competitor",
+                        "competitor_position": 1,
+                        "row": 0,
+                        "col": 0,
+                        "dwell_seconds": 10,
+                        "effect": "navigate_only",
+                        "joined": False,
+                    }],
+                },
+            ),
+            Action(
+                tenant_id=1,
+                task_id=task.id,
+                task_type=task.type,
+                action_type="search_rank_deboost",
+                account_id=100,
+                status="unknown_after_send",
+                payload={},
+                result={},
+            ),
+        ])
+        session.query(SearchRankDeboostExemptGroup).update({SearchRankDeboostExemptGroup.task_id: task.id})
+        session.commit()
+
+        assert build_plan(session, task) == 1
+        assert session.query(Action).filter_by(task_id=task.id, action_type="search_rank_deboost").count() == 3
+        assert task.stats["search_click_target"]["remaining_slot_count"] == 0
+
+
+def test_build_plan_blocks_when_target_identity_is_unresolvable() -> None:
+    engine = _build_engine()
+    with Session(engine) as session:
+        _seed_base(session)
+        task = _make_task(session, target_group_ids=[9999])
+        session.query(SearchRankDeboostExemptGroup).update({SearchRankDeboostExemptGroup.task_id: task.id})
+        session.commit()
+
+        created = build_plan(session, task)
+
+        assert created == 0
+        assert session.query(Action).filter_by(task_id=task.id).count() == 0
+        assert "目标群缺少可验证" in (task.last_error or "")
+        hourly = (task.stats or {}).get("search_rank_deboost_stats", {}).get("hourly_execution", {})
+        assert hourly.get("block_code") == "target_identity_missing"
+
+
+def test_build_plan_blocks_peer_only_target_identity() -> None:
+    engine = _build_engine()
+    with Session(engine) as session:
+        _seed_base(session)
+        task = _make_task(session)
+        target = session.get(OperationTarget, 1001)
+        target.username = ""
+        session.query(SearchRankDeboostExemptGroup).update({SearchRankDeboostExemptGroup.task_id: task.id})
+        session.commit()
+
+        created = build_plan(session, task)
+
+        assert created == 0
+        assert session.query(Action).filter_by(task_id=task.id).count() == 0
+        assert "可验证 username" in (task.last_error or "")
+
+
+def test_build_plan_blocks_inverted_dwell_range() -> None:
+    engine = _build_engine()
+    with Session(engine) as session:
+        _seed_base(session)
+        task = _make_task(session, config={"dwell_seconds_min": 30, "dwell_seconds_max": 10})
+        session.query(SearchRankDeboostExemptGroup).update({SearchRankDeboostExemptGroup.task_id: task.id})
+        session.commit()
+
+        created = build_plan(session, task)
+
+        assert created == 0
+        assert session.query(Action).filter_by(task_id=task.id).count() == 0
+        assert "dwell_seconds_max" in (task.last_error or "")
+
+
 def test_executor_consumes_reservation_for_confirmed_gateway_outcome() -> None:
     """Gateway confirmed factual outcome 消费 reservation 且只按 outcome 写一条 stat。"""
     engine = _build_engine()
@@ -325,13 +438,7 @@ def test_executor_consumes_reservation_for_confirmed_gateway_outcome() -> None:
         session.add(reservation)
         session.commit()
 
-        gateway_execute = lambda *_args: {
-            "success": True,
-            "execution_status": "confirmed",
-            "observed_exit_ip": "1.1.1.1",
-            "search_results": [{"position": 1, "username": "competitor_a"}],
-            "click_outcomes": [{"row": 0, "col": 0, "effect": "navigate_only", "status": "confirmed"}],
-        }
+        gateway_execute = lambda *_args, **_kwargs: _gateway_result()
 
         result = execute_search_rank_deboost(session, action, account, payload, gateway_execute=gateway_execute)
 
@@ -368,12 +475,7 @@ def test_executor_marks_reservation_unknown_after_click() -> None:
         session.add(reservation)
         session.commit()
 
-        gateway_execute = lambda *_args: {
-            "success": False,
-            "execution_status": "unknown_after_click",
-            "observed_exit_ip": "1.1.1.1",
-            "click_outcomes": [{"row": 0, "col": 0, "effect": "navigate_only", "status": "unknown_after_click"}],
-        }
+        gateway_execute = lambda *_args, **_kwargs: _gateway_result("unknown_after_click")
 
         result = execute_search_rank_deboost(session, action, account, payload, gateway_execute=gateway_execute)
 
@@ -408,12 +510,7 @@ def test_executor_releases_reservation_for_observed_no_click() -> None:
         session.add(reservation)
         session.commit()
 
-        gateway_execute = lambda *_args: {
-            "success": False,
-            "execution_status": "observed_no_click",
-            "observed_exit_ip": "1.1.1.1",
-            "click_outcomes": [],
-        }
+        gateway_execute = lambda *_args, **_kwargs: _gateway_result("observed_no_click")
 
         result = execute_search_rank_deboost(session, action, account, payload, gateway_execute=gateway_execute)
 
@@ -510,6 +607,9 @@ def test_build_plan_all_mode_uses_accounts_across_rank_pools() -> None:
             phone_masked="101",
             status=AccountStatus.ACTIVE.value,
             account_identity="rank_deboost",
+            developer_app_id=40,
+            developer_app_version=1,
+            session_ciphertext=encrypt_session("rank-session-101"),
         ))
         task = _make_task(session, config={"max_actions_per_hour": 5})
         task.account_config = {"selection_mode": "all", "max_concurrent": 500}
@@ -622,8 +722,8 @@ def _make_reservation(
     return reservation
 
 
-def test_executor_skips_when_gateway_unavailable() -> None:
-    """gateway 不可用时 skip_reason=rank_observation_gateway_unavailable。"""
+def test_executor_fails_when_gateway_unavailable() -> None:
+    """Gateway 不可用是可见失败，不能伪装成业务跳过。"""
     engine = _build_engine()
     with Session(engine) as session:
         binding, accounts = _seed_base(session)
@@ -637,7 +737,7 @@ def test_executor_skips_when_gateway_unavailable() -> None:
         result = execute_search_rank_deboost(session, action, account, payload, gateway_execute=None, probe_exit_ip="1.1.1.1")
 
         assert result["success"] is False
-        assert result["skip_reason"] == "rank_observation_gateway_unavailable"
+        assert result["error_code"] == "rank_observation_gateway_unavailable"
         session.refresh(reservation)
         assert reservation.status == "released"
         assert reservation.consumed_count == 0
@@ -690,8 +790,52 @@ def test_retry_task_reopens_released_rank_reservation() -> None:
         assert reservation.consumed_count == 0
 
 
-def test_executor_skips_when_proxy_egress_guard_failed() -> None:
-    """分组级代理出口校验失败时 skip_reason=proxy_egress_guard_failed。"""
+def test_retry_task_does_not_reopen_released_rank_reservation_after_quota_is_consumed() -> None:
+    """released action 重试前必须重新检查同租户共享日配额。"""
+    engine = _build_engine()
+    with Session(engine) as session:
+        binding, accounts = _seed_base(session)
+        task = _make_task(session, config={"per_account_daily_click_limit": 1, "per_account_cooldown_hours": 0})
+        account = accounts[0]
+        payload = _make_payload(task, account_id=account.id, binding_id=binding.id)
+        released_action = _make_action(session, task, account, payload)
+        released_action.status = "skipped"
+        released_reservation = _make_reservation(session, task, released_action, account, status="released")
+        consumed_action = _make_action(session, task, account, payload)
+        consumed_action.status = "success"
+        _make_reservation(session, task, consumed_action, account, status="consumed")
+        session.commit()
+
+        retry_task(session, 1, task.id, TaskRetryRequest(failed_only=True), "tester")
+
+        session.refresh(released_action)
+        session.refresh(released_reservation)
+        assert released_action.status == "skipped"
+        assert released_reservation.status == "released"
+        assert released_action.result["retry_skipped_reason"] == "rank_deboost_retry_quota_exhausted"
+
+
+def test_retry_task_never_requeues_unknown_rank_action_without_reservation() -> None:
+    """历史缺 reservation 的未知结果也不能被“重试全部”重新打开。"""
+    engine = _build_engine()
+    with Session(engine) as session:
+        binding, accounts = _seed_base(session)
+        task = _make_task(session)
+        account = accounts[0]
+        payload = _make_payload(task, account_id=account.id, binding_id=binding.id)
+        action = _make_action(session, task, account, payload)
+        action.status = "unknown_after_send"
+        session.commit()
+
+        retry_task(session, 1, task.id, TaskRetryRequest(failed_only=False), "tester")
+
+        session.refresh(action)
+        assert action.status == "unknown_after_send"
+        assert action.result["retry_skipped_reason"] == "rank_deboost_gateway_outcome_unknown"
+
+
+def test_executor_fails_when_proxy_egress_guard_failed() -> None:
+    """分组级代理出口校验失败必须失败，不能静默跳过。"""
     engine = _build_engine()
     with Session(engine) as session:
         # binding observed_exit_ip="1.1.1.1"，但 probe_exit_ip 传不同值
@@ -705,11 +849,11 @@ def test_executor_skips_when_proxy_egress_guard_failed() -> None:
         result = execute_search_rank_deboost(session, action, account, payload, probe_exit_ip="9.9.9.9")
 
         assert result["success"] is False
-        assert result["skip_reason"] == "proxy_egress_guard_failed"
+        assert result["error_code"] == "proxy_egress_guard_failed"
 
 
 def test_executor_skips_when_target_not_in_results() -> None:
-    """我方目标群不在搜索结果时 skip_reason=target_not_in_results。"""
+    """仅接受 Gateway 实测的 target_not_in_results，不在本地推断结果。"""
     engine = _build_engine()
     with Session(engine) as session:
         binding, accounts = _seed_base(session)
@@ -717,13 +861,10 @@ def test_executor_skips_when_target_not_in_results() -> None:
         account = accounts[0]
         payload = _make_payload(task, account_id=account.id, binding_id=binding.id, target_group_ids=[9999])
         action = _make_action(session, task, account, payload)
+        _make_reservation(session, task, action, account)
         session.commit()
 
-        # 搜索结果中无 id=9999 的群
-        search_results = _make_search_results(count=5, target_position=3)
-        for item in search_results:
-            item["id"] = int(item["peer_id"].lstrip("-"))
-        gateway_execute = lambda account_id, payload_data, keyword_text: {"success": True, "search_results": search_results}
+        gateway_execute = lambda *_args, **_kwargs: _gateway_result("target_not_in_results")
 
         result = execute_search_rank_deboost(session, action, account, payload, gateway_execute=gateway_execute, probe_exit_ip="1.1.1.1")
 
@@ -732,7 +873,7 @@ def test_executor_skips_when_target_not_in_results() -> None:
 
 
 def test_executor_skips_when_all_exempt_clicks() -> None:
-    """所有结果都被白名单豁免时 skip_reason=all_exempt_clicks。"""
+    """仅接受 Gateway 实测的 all_exempt_clicks，不根据结果列表本地合成。"""
     engine = _build_engine()
     with Session(engine) as session:
         binding, accounts = _seed_base(session)
@@ -740,11 +881,10 @@ def test_executor_skips_when_all_exempt_clicks() -> None:
         account = accounts[0]
         payload = _make_payload(task, account_id=account.id, binding_id=binding.id)
         action = _make_action(session, task, account, payload)
+        _make_reservation(session, task, action, account)
         session.commit()
 
-        # 只有一个搜索结果，且就是目标群
-        search_results = [{"position": 1, "username": "my_target", "peer_id": "-1001", "id": 1001, "title": "目标群", "buttons": []}]
-        gateway_execute = lambda account_id, payload_data, keyword_text: {"success": True, "search_results": search_results}
+        gateway_execute = lambda *_args, **_kwargs: _gateway_result("all_exempt_clicks")
 
         result = execute_search_rank_deboost(session, action, account, payload, gateway_execute=gateway_execute, probe_exit_ip="1.1.1.1")
 
@@ -752,8 +892,8 @@ def test_executor_skips_when_all_exempt_clicks() -> None:
         assert result["skip_reason"] == "all_exempt_clicks"
 
 
-def test_executor_clicks_navigate_only_buttons() -> None:
-    """竞争群含 navigate_only 按钮时正常点击，写 stats。"""
+def test_executor_writes_only_the_confirmed_gateway_click_fact() -> None:
+    """confirmed 仅按 Gateway 返回的一条实际点击事实入库。"""
     engine = _build_engine()
     with Session(engine) as session:
         binding, accounts = _seed_base(session)
@@ -761,29 +901,28 @@ def test_executor_clicks_navigate_only_buttons() -> None:
         account = accounts[0]
         payload = _make_payload(task, account_id=account.id, binding_id=binding.id)
         action = _make_action(session, task, account, payload)
+        _make_reservation(session, task, action, account)
         session.commit()
 
-        search_results = _make_search_results(count=5, target_position=3, button_effect="navigate_only")
-        gateway_execute = lambda account_id, payload_data, keyword_text: {"success": True, "search_results": search_results}
+        gateway_execute = lambda *_args, **_kwargs: _gateway_result()
 
         result = execute_search_rank_deboost(session, action, account, payload, gateway_execute=gateway_execute, probe_exit_ip="1.1.1.1")
 
         assert result["success"] is True
-        assert result["clicked_count"] == 2  # 位置 1, 2 是竞争群
         stats = session.query(SearchRankDeboostActionStat).filter_by(action_id=action.id).all()
-        assert len(stats) == 2
-        for stat in stats:
-            assert stat.skip_reason == ""
-            assert stat.button_effect == "navigate_only"
-            assert stat.joined is False
-            assert stat.join_button_violation is False
-            assert stat.dwell_seconds >= 10
-            assert stat.dwell_seconds <= 30
-            assert stat.button_hash  # 非空
+        assert len(stats) == 1
+        stat = stats[0]
+        assert stat.skip_reason == ""
+        assert stat.competitor_group_username == "competitor_1"
+        assert stat.button_effect == "navigate_only"
+        assert stat.joined is False
+        assert stat.join_button_violation is False
+        assert stat.dwell_seconds == 12
+        assert stat.button_hash
 
 
 def test_executor_skips_competitor_with_no_navigable_button() -> None:
-    """竞争群只含 external_http_url/unknown 按钮时 skip_reason=no_navigable_button。"""
+    """没有与竞争结果精确绑定的按钮时 Gateway 必须报告 no_navigable_button。"""
     engine = _build_engine()
     with Session(engine) as session:
         binding, accounts = _seed_base(session)
@@ -791,24 +930,21 @@ def test_executor_skips_competitor_with_no_navigable_button() -> None:
         account = accounts[0]
         payload = _make_payload(task, account_id=account.id, binding_id=binding.id)
         action = _make_action(session, task, account, payload)
+        _make_reservation(session, task, action, account)
         session.commit()
 
-        search_results = _make_search_results(count=5, target_position=3, button_effect="external")
-        gateway_execute = lambda account_id, payload_data, keyword_text: {"success": True, "search_results": search_results}
+        gateway_execute = lambda *_args, **_kwargs: _gateway_result("no_navigable_button")
 
         result = execute_search_rank_deboost(session, action, account, payload, gateway_execute=gateway_execute, probe_exit_ip="1.1.1.1")
 
-        # action 仍成功（点击范围正确，只是竞争群无 navigable button）
-        assert result["success"] is True
-        assert result["clicked_count"] == 0
+        assert result["success"] is False
+        assert result["skip_reason"] == "no_navigable_button"
         stats = session.query(SearchRankDeboostActionStat).filter_by(action_id=action.id).all()
-        assert len(stats) == 2  # 两个竞争群都写了 stat
-        for stat in stats:
-            assert stat.skip_reason == "no_navigable_button"
+        assert stats == []
 
 
-def test_executor_navigate_only_no_join_click_when_join_candidate_present() -> None:
-    """竞争群含 join_candidate 按钮时只点 navigate_only 按钮，不点加入按钮。"""
+def test_executor_accepts_factual_navigate_only_outcome() -> None:
+    """Gateway 明确记录 navigate_only 且未加入时，执行器可确认该事实。"""
     engine = _build_engine()
     with Session(engine) as session:
         binding, accounts = _seed_base(session)
@@ -816,37 +952,80 @@ def test_executor_navigate_only_no_join_click_when_join_candidate_present() -> N
         account = accounts[0]
         payload = _make_payload(task, account_id=account.id, binding_id=binding.id)
         action = _make_action(session, task, account, payload)
+        _make_reservation(session, task, action, account)
         session.commit()
 
-        # 构造搜索结果：竞争群同时含 navigate_only 和 join_candidate 按钮
-        search_results = _make_search_results(count=5, target_position=3, button_effect="navigate_only")
-        for item in search_results:
-            if item["position"] in (1, 2):  # 竞争群
-                item["buttons"] = [
-                    {"text": "加入", "url": "https://t.me/joinchat/abc", "effect": "join_candidate", "position": 1},
-                    {"text": "详情", "url": "https://example.com", "effect": "navigate_only", "position": 2},
-                ]
-        gateway_execute = lambda account_id, payload_data, keyword_text: {"success": True, "search_results": search_results}
+        gateway_execute = lambda *_args, **_kwargs: _gateway_result(effect="navigate_only", joined=False)
 
         result = execute_search_rank_deboost(session, action, account, payload, gateway_execute=gateway_execute, probe_exit_ip="1.1.1.1")
 
         assert result["success"] is True
-        assert result["clicked_count"] == 2
         stats = session.query(SearchRankDeboostActionStat).filter_by(action_id=action.id).all()
-        assert len(stats) == 2
-        for stat in stats:
-            # 应点击 navigate_only，不点 join_candidate
-            assert stat.button_effect == "navigate_only"
-            assert stat.joined is False
-            assert stat.join_button_detected is True  # 检测到了 join_candidate 按钮
-            assert stat.join_button_violation is False
+        assert len(stats) == 1
+        assert stats[0].button_effect == "navigate_only"
+        assert stats[0].joined is False
+        assert stats[0].join_button_detected is False
+        assert stats[0].join_button_violation is False
+
+
+def test_executor_rejects_confirmed_outcome_without_explicit_no_join_fact() -> None:
+    """Gateway 已调用后缺少点击事实必须保留未知配额。"""
+    engine = _build_engine()
+    with Session(engine) as session:
+        binding, accounts = _seed_base(session)
+        task = _make_task(session)
+        account = accounts[0]
+        payload = _make_payload(task, account_id=account.id, binding_id=binding.id)
+        action = _make_action(session, task, account, payload)
+        reservation = _make_reservation(session, task, action, account)
+        session.commit()
+
+        gateway_result = _gateway_result()
+        gateway_result["click_outcomes"][0].pop("joined")
+        result = execute_search_rank_deboost(
+            session,
+            action,
+            account,
+            payload,
+            gateway_execute=lambda *_args, **_kwargs: gateway_result,
+            probe_exit_ip="1.1.1.1",
+        )
+
+        assert result["success"] is False
+        assert result["error_code"] == "rank_deboost_gateway_contract_invalid"
+        session.refresh(reservation)
+        assert reservation.status == "unknown"
+        assert session.query(SearchRankDeboostActionStat).filter_by(action_id=action.id).count() == 0
+
+
+def test_executor_marks_reservation_unknown_for_unrecognized_gateway_status() -> None:
+    """Gateway 已调用但未声明 no-click 时，未知状态不能释放配额。"""
+    engine = _build_engine()
+    with Session(engine) as session:
+        binding, accounts = _seed_base(session)
+        task = _make_task(session)
+        account = accounts[0]
+        payload = _make_payload(task, account_id=account.id, binding_id=binding.id)
+        action = _make_action(session, task, account, payload)
+        reservation = _make_reservation(session, task, action, account)
+        session.commit()
+
+        result = execute_search_rank_deboost(
+            session,
+            action,
+            account,
+            payload,
+            gateway_execute=lambda *_args, **_kwargs: _gateway_result("unrecognized_status"),
+            probe_exit_ip="1.1.1.1",
+        )
+
+        assert result["execution_status"] == "unknown_after_click"
+        session.refresh(reservation)
+        assert reservation.status == "unknown"
 
 
 def test_executor_join_button_violation_directly() -> None:
-    """直接构造 join_button_violation 场景：竞争群按钮被标记为 navigate_only 但实际是 join_candidate。
-
-    通过 monkeypatch NAVIGABLE_BUTTON_EFFECTS 让 join_candidate 也被视为可点击，触发 violation 自检。
-    """
+    """Gateway 返回 join_candidate 实际事实时必须隔离账号并保留额度。"""
     engine = _build_engine()
     with Session(engine) as session:
         binding, accounts = _seed_base(session)
@@ -854,20 +1033,12 @@ def test_executor_join_button_violation_directly() -> None:
         account = accounts[0]
         payload = _make_payload(task, account_id=account.id, binding_id=binding.id)
         action = _make_action(session, task, account, payload)
+        _make_reservation(session, task, action, account)
         session.commit()
 
-        search_results = _make_search_results(count=5, target_position=3, button_effect="join_candidate")
-        gateway_execute = lambda account_id, payload_data, keyword_text: {"success": True, "search_results": search_results}
+        gateway_execute = lambda *_args, **_kwargs: _gateway_result(effect="join_candidate")
 
-        from app.services.task_center.executors import search_rank_deboost as executor_module
-
-        # 让 join_candidate 也进入 navigable 集合，触发 violation 自检
-        original_navigable = executor_module.NAVIGABLE_BUTTON_EFFECTS
-        executor_module.NAVIGABLE_BUTTON_EFFECTS = {"navigate_only", "join_candidate"}
-        try:
-            result = execute_search_rank_deboost(session, action, account, payload, gateway_execute=gateway_execute, probe_exit_ip="1.1.1.1")
-        finally:
-            executor_module.NAVIGABLE_BUTTON_EFFECTS = original_navigable
+        result = execute_search_rank_deboost(session, action, account, payload, gateway_execute=gateway_execute, probe_exit_ip="1.1.1.1")
 
         assert result["success"] is False
         assert result["join_button_violation"] is True
@@ -881,8 +1052,8 @@ def test_executor_join_button_violation_directly() -> None:
         assert len(violation_stats) >= 1
 
 
-def test_executor_stats_record_correct_fields() -> None:
-    """stats 记录含 button_hash、position、effect、dwell_seconds、joined=false、join_button_detected。"""
+def test_executor_stats_record_confirmed_gateway_fields() -> None:
+    """统计字段必须来自 Gateway 的单条 confirmed outcome。"""
     engine = _build_engine()
     with Session(engine) as session:
         binding, accounts = _seed_base(session)
@@ -890,35 +1061,35 @@ def test_executor_stats_record_correct_fields() -> None:
         account = accounts[0]
         payload = _make_payload(task, account_id=account.id, binding_id=binding.id, dwell_seconds_min=15, dwell_seconds_max=20)
         action = _make_action(session, task, account, payload)
+        _make_reservation(session, task, action, account)
         session.commit()
 
-        search_results = _make_search_results(count=5, target_position=3, button_effect="navigate_only")
-        gateway_execute = lambda account_id, payload_data, keyword_text: {"success": True, "search_results": search_results}
+        gateway_execute = lambda *_args, **_kwargs: _gateway_result(dwell_seconds=17)
 
         result = execute_search_rank_deboost(session, action, account, payload, gateway_execute=gateway_execute, probe_exit_ip="1.1.1.1")
 
         assert result["success"] is True
         stats = session.query(SearchRankDeboostActionStat).filter_by(action_id=action.id).all()
-        assert len(stats) == 2
-        for stat in stats:
-            assert stat.button_hash  # 非空
-            assert stat.competitor_position in (1, 2)
-            assert stat.button_effect == "navigate_only"
-            assert 15 <= stat.dwell_seconds <= 20
-            assert stat.joined is False
-            assert stat.join_button_detected is False
-            assert stat.join_button_violation is False
-            assert stat.account_pool_id == 10
-            assert stat.proxy_airport_node_id == 20
-            assert stat.bot_username == "jisou"
-            assert stat.keyword_hash == KEYWORD_HASH_A
+        assert len(stats) == 1
+        stat = stats[0]
+        assert stat.button_hash
+        assert stat.competitor_position == 1
+        assert stat.button_effect == "navigate_only"
+        assert stat.dwell_seconds == 17
+        assert stat.joined is False
+        assert stat.join_button_detected is False
+        assert stat.join_button_violation is False
+        assert stat.account_pool_id == 10
+        assert stat.proxy_airport_node_id == 20
+        assert stat.bot_username == "jisou"
+        assert stat.keyword_hash == KEYWORD_HASH_A
 
 
 # ==================== Dispatcher 集成测试 ====================
 
 
-def test_dispatch_action_skips_when_gateway_unavailable() -> None:
-    """dispatch_action 处理 search_rank_deboost action，gateway 不可用时 skip。"""
+def test_dispatch_action_fails_when_gateway_unavailable() -> None:
+    """dispatch_action 必须把 Gateway 不可用暴露为失败。"""
     engine = _build_engine()
     with Session(engine) as session:
         binding, accounts = _seed_base(session)
@@ -926,17 +1097,18 @@ def test_dispatch_action_skips_when_gateway_unavailable() -> None:
         account = accounts[0]
         payload = _make_payload(task, account_id=account.id, binding_id=binding.id)
         action = _make_action(session, task, account, payload)
+        _make_reservation(session, task, action, account)
         session.commit()
 
         result = dispatch_action(session, action)
 
         assert result is True
-        assert action.status == "skipped"
-        assert action.result["skip_reason"] == "rank_observation_gateway_unavailable"
+        assert action.status == "failed"
+        assert action.result["error_code"] == "rank_observation_gateway_unavailable"
 
 
-def test_dispatch_action_skips_when_proxy_egress_drift(monkeypatch) -> None:
-    """dispatch_action 在 gateway 本次出口探测缺失时 skip with proxy_egress_guard_failed。"""
+def test_dispatch_action_fails_when_gateway_omits_egress_observation(monkeypatch) -> None:
+    """Gateway 没有本次出口观察时，不能把绑定历史 IP 伪装成真实观察。"""
     engine = _build_engine()
     with Session(engine) as session:
         binding, accounts = _seed_base(session, observed_exit_ip="1.1.1.1")
@@ -944,21 +1116,23 @@ def test_dispatch_action_skips_when_proxy_egress_drift(monkeypatch) -> None:
         account = accounts[0]
         payload = _make_payload(task, account_id=account.id, binding_id=binding.id)
         action = _make_action(session, task, account, payload)
+        reservation = _make_reservation(session, task, action, account)
         session.commit()
 
-        search_results = _make_search_results(count=5, target_position=3, button_effect="navigate_only")
-
-        def fake_gateway(_account_id, _payload_data, _keyword_text):
-            return {"success": True, "search_results": search_results}
+        def fake_gateway(_account_id, _payload_data, **_kwargs):
+            result = _gateway_result()
+            result.pop("observed_exit_ip")
+            return result
 
         from app.services import _common
 
-        monkeypatch.setattr(_common.gateway, "execute_search_rank_deboost", fake_gateway, raising=False)
+        monkeypatch.setattr(_common.gateway, "execute_search_rank_deboost", fake_gateway)
         result = dispatch_action(session, action)
 
         assert result is True
-        assert action.status == "skipped"
+        assert action.status == "unknown_after_send"
         assert action.result["error_code"] == "proxy_egress_guard_failed"
+        assert reservation.status == "unknown"
 
 
 def test_dispatch_action_uses_gateway_probe_instead_of_stored_binding_ip(monkeypatch) -> None:
@@ -970,30 +1144,300 @@ def test_dispatch_action_uses_gateway_probe_instead_of_stored_binding_ip(monkeyp
         account = accounts[0]
         payload = _make_payload(task, account_id=account.id, binding_id=binding.id)
         action = _make_action(session, task, account, payload)
+        reservation = _make_reservation(session, task, action, account)
         session.commit()
 
-        search_results = _make_search_results(count=5, target_position=3, button_effect="navigate_only")
-
-        def fake_gateway(_account_id, _payload_data, _keyword_text):
-            return {
-                "success": True,
-                "observed_exit_ip": "9.9.9.9",
-                "search_results": search_results,
-            }
+        def fake_gateway(_account_id, _payload_data, **_kwargs):
+            return _gateway_result(observed_exit_ip="9.9.9.9")
 
         from app.services import _common
 
-        monkeypatch.setattr(_common.gateway, "execute_search_rank_deboost", fake_gateway, raising=False)
+        monkeypatch.setattr(_common.gateway, "execute_search_rank_deboost", fake_gateway)
+
+        result = dispatch_action(session, action)
+
+        assert result is True
+        assert action.status == "unknown_after_send"
+        assert action.result["error_code"] == "proxy_egress_guard_failed"
+        assert reservation.status == "unknown"
+        assert session.query(SearchRankDeboostActionStat).filter_by(action_id=action.id).count() == 0
+
+
+def test_dispatch_action_marks_invalid_gateway_result_unknown_and_nonretryable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Gateway 返回非对象时，调用边界后的 action 不得释放后重试。"""
+    engine = _build_engine()
+    with Session(engine) as session:
+        binding, accounts = _seed_base(session)
+        task = _make_task(session)
+        account = accounts[0]
+        payload = _make_payload(task, account_id=account.id, binding_id=binding.id)
+        action = _make_action(session, task, account, payload)
+        reservation = _make_reservation(session, task, action, account)
+        session.commit()
+
+        from app.services import _common
+
+        monkeypatch.setattr(_common.gateway, "execute_search_rank_deboost", lambda *_args, **_kwargs: [])
+
+        assert dispatch_action(session, action) is True
+        assert action.status == "unknown_after_send"
+        assert action.result["error_code"] == "rank_deboost_gateway_contract_invalid"
+        assert reservation.status == "unknown"
+
+        retry_task(session, 1, task.id, TaskRetryRequest(failed_only=False), "tester")
+
+        assert action.status == "unknown_after_send"
+        assert action.result["retry_skipped_reason"] == "rank_deboost_gateway_outcome_unknown"
+
+
+def test_dispatch_action_keeps_rank_reservation_unknown_when_gateway_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Gateway 调用边界后的本地异常不能把一次可能已发生的点击重新开放。"""
+    engine = _build_engine()
+    with Session(engine) as session:
+        binding, accounts = _seed_base(session)
+        task = _make_task(session)
+        account = accounts[0]
+        payload = _make_payload(task, account_id=account.id, binding_id=binding.id)
+        action = _make_action(session, task, account, payload)
+        reservation = _make_reservation(session, task, action, account)
+        session.commit()
+
+        def raise_after_gateway(*_args, **_kwargs):
+            raise RuntimeError("transport closed after gateway call")
+
+        from app.services import _common
+
+        monkeypatch.setattr(_common.gateway, "execute_search_rank_deboost", raise_after_gateway)
+
+        result = dispatch_action(session, action)
+
+        assert result is True
+        assert action.status == "unknown_after_send"
+        assert reservation.status == "unknown"
+
+
+def test_dispatch_action_skips_expired_rank_reservation_before_gateway(monkeypatch: pytest.MonkeyPatch) -> None:
+    """失效预留的待执行 action 不能继续进入 Telegram 调用。"""
+    engine = _build_engine()
+    with Session(engine) as session:
+        binding, accounts = _seed_base(session)
+        task = _make_task(session)
+        account = accounts[0]
+        payload = _make_payload(task, account_id=account.id, binding_id=binding.id)
+        action = _make_action(session, task, account, payload)
+        reservation = _make_reservation(session, task, action, account)
+        reservation.expires_at = _now() - timedelta(seconds=1)
+        session.commit()
+
+        from app.services import _common
+
+        monkeypatch.setattr(
+            _common.gateway,
+            "execute_search_rank_deboost",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Gateway must not be called")),
+        )
 
         result = dispatch_action(session, action)
 
         assert result is True
         assert action.status == "skipped"
+        assert action.result["error_code"] == "rank_deboost_reservation_expired"
+        assert reservation.status == "released"
+
+
+def test_dispatch_action_releases_rank_reservation_when_account_is_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """账号预检失败时尚未调用 Gateway，预留不能继续占用日配额。"""
+    engine = _build_engine()
+    with Session(engine) as session:
+        binding, accounts = _seed_base(session)
+        task = _make_task(session, config=_retryable_rank_pacing_config())
+        account = accounts[0]
+        payload = _make_payload(task, account_id=account.id, binding_id=binding.id)
+        action = _make_action(session, task, account, payload)
+        reservation = _make_reservation(session, task, action, account)
+        account.status = AccountStatus.LIMITED.value
+        reservation.expires_at = _now() - timedelta(seconds=1)
+        session.commit()
+
+        from app.services import _common
+
+        monkeypatch.setattr(
+            _common.gateway,
+            "execute_search_rank_deboost",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Gateway must not be called")),
+        )
+
+        assert dispatch_action(session, action) is True
+        assert action.status == "failed"
+        _assert_rank_reservation_released(session, task=task, account=account, reservation=reservation)
+
+
+def test_dispatch_action_releases_rank_reservation_before_proxy_precheck() -> None:
+    """代理绑定预检跳过时尚未调用 Gateway，预留必须释放。"""
+    engine = _build_engine()
+    with Session(engine) as session:
+        binding, accounts = _seed_base(session)
+        task = _make_task(session, config=_retryable_rank_pacing_config())
+        account = accounts[0]
+        payload = _make_payload(task, account_id=account.id, binding_id=binding.id)
+        payload.runtime_environment["group_proxy_binding_id"] = ""
+        action = _make_action(session, task, account, payload)
+        reservation = _make_reservation(session, task, action, account)
+        reservation.expires_at = _now() - timedelta(seconds=1)
+        session.commit()
+
+        assert dispatch_action(session, action) is True
+        assert action.status == "skipped"
         assert action.result["error_code"] == "proxy_egress_guard_failed"
-        assert session.query(SearchRankDeboostActionStat).filter_by(action_id=action.id).count() == 0
+        _assert_rank_reservation_released(session, task=task, account=account, reservation=reservation)
+
+
+def _retryable_rank_pacing_config() -> dict[str, int]:
+    return {
+        "per_account_daily_click_limit": 1,
+        "per_account_cooldown_hours": 0,
+        "max_actions_per_hour": 2,
+    }
+
+
+def _assert_rank_reservation_released(
+    session: Session,
+    *,
+    task: Task,
+    account: TgAccount,
+    reservation: SearchRankDeboostClickReservation,
+) -> None:
+    assert reservation.status == "released"
+    window = deboost_pacing_window(task, _now())
+    stats = DeboostPacingStats(tenant_timezone="Asia/Shanghai", local_date=window.local_date.isoformat())
+    assert account_click_allowed(session, task, account.id, KEYWORD_HASH_B, 10, window, stats) is True
+
+
+def test_stale_rank_gateway_attempt_marks_reservation_unknown() -> None:
+    """Worker 在 Gateway 边界后失联时，预留必须保持未知占用。"""
+    engine = _build_engine()
+    with Session(engine) as session:
+        binding, accounts = _seed_base(session)
+        task = _make_task(session)
+        account = accounts[0]
+        payload = _make_payload(task, account_id=account.id, binding_id=binding.id)
+        action = _make_action(session, task, account, payload)
+        reservation = _make_reservation(session, task, action, account)
+        attempt = SimpleNamespace(
+            gateway_call_started_at=_now(),
+            status="gateway_call_started",
+            after_call_at=None,
+            result_snapshot={},
+        )
+        session.commit()
+
+        _mark_stale_executing_action(
+            action=action,
+            task=task,
+            latest_attempt=attempt,
+            stale_worker_ids=set(),
+            now=_now(),
+        )
+
+        assert action.status == "unknown_after_send"
+        assert reservation.status == "unknown"
+
+
+def test_stale_rank_before_gateway_releases_reservation() -> None:
+    """Gateway 调用前超时的预留必须释放，后续规划可使用该配额。"""
+    engine = _build_engine()
+    with Session(engine) as session:
+        binding, accounts = _seed_base(session)
+        task = _make_task(
+            session,
+            config={
+                "per_account_daily_click_limit": 1,
+                "per_account_cooldown_hours": 0,
+                "max_actions_per_hour": 2,
+            },
+        )
+        account = accounts[0]
+        payload = _make_payload(task, account_id=account.id, binding_id=binding.id)
+        action = _make_action(session, task, account, payload)
+        reservation = _make_reservation(session, task, action, account)
+        reservation.expires_at = _now() - timedelta(seconds=1)
+        session.commit()
+
+        attempt = SimpleNamespace(
+            gateway_call_started_at=None,
+            status="before_call",
+            after_call_at=None,
+            result_snapshot={},
+        )
+        _mark_stale_executing_action(
+            action=action,
+            task=task,
+            latest_attempt=attempt,
+            stale_worker_ids=set(),
+            now=_now(),
+        )
+
+        assert action.status == "failed"
+        assert reservation.status == "released"
+        window = deboost_pacing_window(task, _now())
+        stats = DeboostPacingStats(tenant_timezone="Asia/Shanghai", local_date=window.local_date.isoformat())
+        assert account_click_allowed(session, task, account.id, KEYWORD_HASH_B, 10, window, stats) is True
 
 
 # ==================== Pacing 限流测试 ====================
+
+
+def test_planner_releases_expired_pending_reservation_before_daily_limit() -> None:
+    engine = _build_engine()
+    with Session(engine) as session:
+        binding, accounts = _seed_base(session)
+        task = _make_task(session, config={"per_account_daily_click_limit": 1})
+        account = accounts[0]
+        session.query(SearchRankDeboostExemptGroup).update({SearchRankDeboostExemptGroup.task_id: task.id})
+        payload = _make_payload(task, account_id=account.id, binding_id=binding.id)
+        expired_action = _make_action(session, task, account, payload)
+        expired_action.status = "pending"
+        reservation = SearchRankDeboostClickReservation(
+            tenant_id=1,
+            task_id=task.id,
+            action_id=expired_action.id,
+            account_id=account.id,
+            account_pool_id=10,
+            keyword_hash=KEYWORD_HASH_A,
+            local_date=_now().date(),
+            hour_bucket=_now().replace(minute=0, second=0, microsecond=0),
+            status="reserved",
+            expires_at=_now() - timedelta(seconds=1),
+        )
+        session.add(reservation)
+        session.commit()
+
+        created = build_plan(session, task)
+
+        assert created == 1
+        assert expired_action.status == "skipped"
+        assert reservation.status == "released"
+
+
+def test_pacing_locks_tenant_before_reading_shared_quota(monkeypatch: pytest.MonkeyPatch) -> None:
+    engine = _build_engine()
+    with Session(engine) as session:
+        _binding, accounts = _seed_base(session)
+        task = _make_task(session)
+        session.commit()
+        calls: list[tuple[int, str]] = []
+        monkeypatch.setattr(
+            rank_deboost_pacing,
+            "lock_rank_deboost_quota_scope",
+            lambda _session, locked_task: calls.append((locked_task.tenant_id, locked_task.id)),
+            raising=False,
+        )
+
+        window = deboost_pacing_window(task, _now())
+        stats = DeboostPacingStats(tenant_timezone="Asia/Shanghai", local_date=window.local_date.isoformat())
+        account_click_allowed(session, task, accounts[0].id, KEYWORD_HASH_A, 10, window, stats)
+
+        assert calls == [(1, task.id)]
 
 
 def test_pacing_per_account_daily_click_limit() -> None:
@@ -1072,6 +1516,27 @@ def test_pacing_counts_active_reservations_for_daily_limit(reservation_status: s
         allowed = account_click_allowed(session, task, account.id, KEYWORD_HASH_B, 10, window, stats)
 
         assert allowed is expected_allowed
+
+
+def test_pacing_keeps_expired_executing_reservation_until_gateway_outcome_is_known() -> None:
+    """执行中的预留过期不能被当成未调用 Gateway 而释放额度。"""
+    engine = _build_engine()
+    with Session(engine) as session:
+        binding, accounts = _seed_base(session)
+        task = _make_task(session, config={"per_account_daily_click_limit": 1, "per_account_cooldown_hours": 0})
+        account = accounts[0]
+        payload = _make_payload(task, account_id=account.id, binding_id=binding.id)
+        action = _make_action(session, task, account, payload)
+        reservation = _make_reservation(session, task, action, account)
+        reservation.expires_at = _now() - timedelta(seconds=1)
+        session.commit()
+
+        window = deboost_pacing_window(task, _now())
+        stats = DeboostPacingStats(tenant_timezone="Asia/Shanghai", local_date=window.local_date.isoformat())
+        allowed = account_click_allowed(session, task, account.id, KEYWORD_HASH_B, 10, window, stats)
+
+        assert allowed is False
+        assert stats.last_limit_reason == "per_account_daily_click_limit_reached"
 
 
 def test_pacing_does_not_double_count_reserved_action_stat() -> None:

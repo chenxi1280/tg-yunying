@@ -1,8 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 import hashlib
-import random
-from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 from uuid import uuid4
@@ -18,9 +17,12 @@ from app.services.search_rank_deboost_alerts import (
     record_join_button_violation_alert,
 )
 from app.services.task_center.payloads import SearchRankDeboostPayload
+from app.services.task_center.rank_deboost_runtime_authorization import (
+    RankDeboostRuntimeAuthorization,
+    resolve_rank_deboost_runtime_authorization,
+)
 from app.services.task_center.search_rank_deboost_reservations import (
     consume_reservation,
-    consume_reserved_reservation,
     mark_reservation_unknown,
     release_reserved_reservation,
     release_reservation,
@@ -30,26 +32,20 @@ from ..search_rank_deboost import (
     ALL_EXEMPT_CLICKS,
     RANK_OBSERVATION_GATEWAY_UNAVAILABLE,
     TARGET_NOT_IN_RESULTS,
-    compute_deboost_click_targets,
 )
-from ..search_rank_deboost_pacing import DEFAULT_DWELL_SECONDS_MAX, DEFAULT_DWELL_SECONDS_MIN
 from .search_rank_deboost_runtime_alerts import record_proxy_egress_alert
 
 
 PROXY_EGRESS_GUARD_FAILED = "proxy_egress_guard_failed"
-NO_NAVIGABLE_BUTTON = "no_navigable_button"
-JOIN_BUTTON_VIOLATION = "join_button_violation"
-GATEWAY_UNAVAILABLE = RANK_OBSERVATION_GATEWAY_UNAVAILABLE
-
-NAVIGABLE_BUTTON_EFFECTS = {"navigate_only"}
-JOIN_CANDIDATE_EFFECTS = {"join_candidate"}
+GATEWAY_CONTRACT_INVALID = "rank_deboost_gateway_contract_invalid"
+NO_CLICK_STATUSES = {
+    ALL_EXEMPT_CLICKS,
+    "no_navigable_button",
+    "observed_no_click",
+    TARGET_NOT_IN_RESULTS,
+    "target_identity_missing",
+}
 _NO_EXPLICIT_PROBE = object()
-
-
-@dataclass(frozen=True)
-class ClickRunResult:
-    clicked_count: int
-    violation_detected: bool
 
 
 def execute_search_rank_deboost(
@@ -60,46 +56,54 @@ def execute_search_rank_deboost(
     *,
     gateway_execute: Any | None = None,
     probe_exit_ip: Any = _NO_EXPLICIT_PROBE,
+    before_gateway_call: Callable[[], None] | None = None,
 ) -> dict:
-    """执行单条搜索排名观察 action；真实 gateway 不可用时显式 skip。"""
     binding_id = _binding_id(payload)
     if binding_id <= 0:
-        return _skip_without_click(session, action, PROXY_EGRESS_GUARD_FAILED, "排名观察任务缺少 group_proxy_binding_id")
-
-    if probe_exit_ip is not _NO_EXPLICIT_PROBE:
-        if not _verify_proxy_egress(session, action, account, binding_id, probe_exit_ip):
-            return _skip_without_click(session, action, PROXY_EGRESS_GUARD_FAILED, "分组级代理出口校验失败，禁止回退本机直连")
-
-    gateway_result = _invoke_gateway(gateway_execute, account, payload)
-    if gateway_result is None:
-        return _skip_without_click(session, action, GATEWAY_UNAVAILABLE, "搜索排名观察 gateway 尚未接入真实 MTProto 执行器")
-
-    runtime_probe_ip = _runtime_probe_exit_ip(gateway_result)
-    if runtime_probe_ip is None and probe_exit_ip is _NO_EXPLICIT_PROBE:
-        if not _verify_proxy_egress(session, action, account, binding_id, None):
-            return _skip_without_click(session, action, PROXY_EGRESS_GUARD_FAILED, "分组级代理出口校验失败，禁止回退本机直连")
-    if runtime_probe_ip is not None and not _verify_proxy_egress(session, action, account, binding_id, runtime_probe_ip):
-        return _skip_without_click(session, action, PROXY_EGRESS_GUARD_FAILED, "分组级代理出口校验失败，禁止回退本机直连")
-
-    if _is_factual_gateway_result(gateway_result):
-        return _handle_factual_gateway_result(session, action, account, payload, gateway_result)
-
-    decision_or_skip = _search_decision(session, action, payload, gateway_result)
-    if "skip_reason" in decision_or_skip:
-        return decision_or_skip
-
-    click_targets = decision_or_skip.get("click_targets") or []
-    run = _process_click_targets(session, action, account, payload, click_targets)
-    if run.clicked_count > 0:
-        consume_reserved_reservation(session, action.id)
-    else:
-        release_reserved_reservation(session, action.id)
-    return _success_result(decision_or_skip, click_targets, run)
+        return _failure_without_click(session, action, PROXY_EGRESS_GUARD_FAILED, "排名观察任务缺少 group_proxy_binding_id")
+    if probe_exit_ip is not _NO_EXPLICIT_PROBE and not _verify_proxy_egress(session, action, account, binding_id, probe_exit_ip):
+        return _failure_without_click(session, action, PROXY_EGRESS_GUARD_FAILED, "分组级代理出口校验失败，禁止回退本机直连")
+    try:
+        authorization = resolve_rank_deboost_runtime_authorization(session, account, payload)
+    except ValueError as exc:
+        return _failure_without_click(session, action, str(exc), "排名观察授权上下文不可用")
+    gateway_called, gateway_result = _invoke_gateway(
+        gateway_execute,
+        account,
+        payload,
+        authorization,
+        before_gateway_call=before_gateway_call,
+    )
+    if not gateway_called:
+        return _failure_without_click(session, action, GATEWAY_CONTRACT_INVALID, "搜索排名观察 Gateway 不可用")
+    if not isinstance(gateway_result, dict):
+        return _failure_after_gateway(session, action, GATEWAY_CONTRACT_INVALID, "搜索排名观察 Gateway 未返回对象结果")
+    if not _gateway_egress_verified(session, action, account, binding_id, gateway_result, probe_exit_ip):
+        return _failure_after_gateway(session, action, PROXY_EGRESS_GUARD_FAILED, "分组级代理出口校验失败，禁止回退本机直连")
+    return _handle_gateway_result(session, action, account, payload, gateway_result)
 
 
 def _binding_id(payload: SearchRankDeboostPayload) -> int:
     runtime = payload.runtime_environment or {}
-    return int(runtime.get("group_proxy_binding_id") or 0)
+    return _as_int(runtime.get("group_proxy_binding_id"))
+
+
+def _gateway_egress_verified(
+    session: Session,
+    action: Action,
+    account: TgAccount,
+    binding_id: int,
+    result: dict,
+    probe_exit_ip: Any,
+) -> bool:
+    observed_exit_ip = _observed_exit_ip(result)
+    if observed_exit_ip:
+        return _verify_proxy_egress(session, action, account, binding_id, observed_exit_ip)
+    if probe_exit_ip is not _NO_EXPLICIT_PROBE:
+        return True
+    if not str(result.get("execution_status") or "").strip():
+        return True
+    return _verify_proxy_egress(session, action, account, binding_id, None)
 
 
 def _verify_proxy_egress(
@@ -117,136 +121,130 @@ def _verify_proxy_egress(
     return False
 
 
-def _search_decision(
+def _invoke_gateway(
+    gateway_execute: Any | None,
+    account: TgAccount,
+    payload: SearchRankDeboostPayload,
+    authorization: RankDeboostRuntimeAuthorization,
+    *,
+    before_gateway_call: Callable[[], None] | None,
+) -> tuple[bool, Any]:
+    if gateway_execute is None:
+        from app.services._common import gateway
+
+        gateway_execute = getattr(gateway, "execute_search_rank_deboost", None)
+    if not callable(gateway_execute):
+        return False, None
+    keyword_text = decrypt_secret(payload.keyword_text_ciphertext) or ""
+    if before_gateway_call is not None:
+        before_gateway_call()
+    return True, gateway_execute(
+        account.id,
+        payload.model_dump(mode="json"),
+        session_ciphertext=authorization.session_ciphertext,
+        credentials=authorization.credentials,
+        keyword_text=keyword_text,
+    )
+
+
+def _handle_gateway_result(
     session: Session,
     action: Action,
+    account: TgAccount,
     payload: SearchRankDeboostPayload,
-    gateway_result: dict,
+    result: dict,
 ) -> dict:
-    search_results = _gateway_search_results(gateway_result)
-    decision = compute_deboost_click_targets(
-        search_results=search_results,
-        my_target_ids=list(payload.target_group_ids),
-        exempt_group_username=payload.exempt_group_username,
-    )
-    return _decision_or_skip(session, action, decision)
+    if _gateway_reported_no_call(result):
+        return _failure_without_click(session, action, _gateway_error_code(result), _gateway_error_message(result))
+    status = str(result.get("execution_status") or "").strip()
+    if status == "confirmed":
+        return _handle_confirmed_result(session, action, account, payload, result)
+    if status == "unknown_after_click":
+        mark_reservation_unknown(session, action.id)
+        return {**result, "success": False}
+    if status in NO_CLICK_STATUSES:
+        if status == ALL_EXEMPT_CLICKS:
+            _record_all_exempt_alert(session, action)
+        release_reservation(session, action.id)
+        return {**result, "success": False, "skip_reason": status}
+    return _failure_after_gateway(session, action, _gateway_error_code(result), _gateway_error_message(result))
 
 
-def _decision_or_skip(session: Session, action: Action, decision: dict) -> dict:
-    skipped_reason = decision.get("skipped_reason")
-    if skipped_reason == TARGET_NOT_IN_RESULTS:
-        return _skip_without_click(session, action, TARGET_NOT_IN_RESULTS, "我方目标群未出现在搜索结果")
-    if skipped_reason != ALL_EXEMPT_CLICKS:
-        return decision
-    record_all_exempt_clicks_alert(
+def _handle_confirmed_result(
+    session: Session,
+    action: Action,
+    account: TgAccount,
+    payload: SearchRankDeboostPayload,
+    result: dict,
+) -> dict:
+    outcome = _confirmed_outcome(result)
+    if outcome is None:
+        return _failure_after_gateway(session, action, GATEWAY_CONTRACT_INVALID, "confirmed 结果缺少一条完整的实际点击事实")
+    if not _outcome_is_safe(outcome):
+        return _handle_unsafe_outcome(
+            session,
+            action,
+            account,
+            payload=payload,
+            outcome=outcome,
+            observed_exit_ip=_observed_exit_ip(result),
+        )
+    consume_reservation(session, action.id)
+    _write_factual_stat(
         session,
-        tenant_id=action.tenant_id,
-        task_id=action.task_id,
-        action_id=action.id,
-        account_id=int(action.account_id or 0) or None,
+        action,
+        payload,
+        outcome=outcome,
+        observed_exit_ip=_observed_exit_ip(result),
     )
-    return _skip_without_click(session, action, ALL_EXEMPT_CLICKS, "所有结果都被白名单豁免")
+    return {**result, "success": True}
 
 
-def _process_click_targets(
-    session: Session,
-    action: Action,
-    account: TgAccount,
-    payload: SearchRankDeboostPayload,
-    click_targets: list[dict],
-) -> ClickRunResult:
-    hour_bucket = _now().replace(minute=0, second=0, microsecond=0)
-    clicked_count = 0
-    for target in click_targets:
-        outcome = _process_click_target(session, action, account, payload, target, hour_bucket)
-        clicked_count += int(outcome == "clicked")
-        if outcome == JOIN_BUTTON_VIOLATION:
-            return ClickRunResult(clicked_count=clicked_count, violation_detected=True)
-    return ClickRunResult(clicked_count=clicked_count, violation_detected=False)
+def _confirmed_outcome(result: dict) -> dict | None:
+    outcomes = result.get("click_outcomes")
+    if not isinstance(outcomes, list) or len(outcomes) != 1:
+        return None
+    outcome = outcomes[0]
+    return outcome if isinstance(outcome, dict) and outcome.get("status") == "confirmed" and _outcome_complete(outcome) else None
 
 
-def _process_click_target(
-    session: Session,
-    action: Action,
-    account: TgAccount,
-    payload: SearchRankDeboostPayload,
-    target: dict,
-    hour_bucket: datetime,
-) -> str:
-    buttons = _extract_buttons(target)
-    join_button_detected = any(btn.get("effect") in JOIN_CANDIDATE_EFFECTS for btn in buttons)
-    navigable = [btn for btn in buttons if btn.get("effect") in NAVIGABLE_BUTTON_EFFECTS]
-    if not navigable:
-        _write_no_navigable_stat(session, action, payload, target, join_button_detected, hour_bucket)
-        return NO_NAVIGABLE_BUTTON
-    return _handle_navigable_button(
-        session, action, account, payload, target, navigable[0], join_button_detected, hour_bucket
+def _outcome_complete(outcome: dict) -> bool:
+    identity = str(outcome.get("competitor_username") or outcome.get("competitor_peer_id") or "").strip()
+    required = ("competitor_position", "row", "col", "dwell_seconds", "effect", "joined")
+    return bool(
+        identity
+        and all(key in outcome for key in required)
+        and _as_int(outcome.get("competitor_position")) > 0
+        and str(outcome.get("effect") or "").strip()
+        and isinstance(outcome.get("joined"), bool)
     )
 
 
-def _handle_navigable_button(
+def _outcome_is_safe(outcome: dict) -> bool:
+    return str(outcome.get("effect") or "") == "navigate_only" and outcome.get("joined") is False
+
+
+def _handle_unsafe_outcome(
     session: Session,
     action: Action,
     account: TgAccount,
+    *,
     payload: SearchRankDeboostPayload,
-    target: dict,
-    button: dict,
-    join_button_detected: bool,
-    hour_bucket: datetime,
-) -> str:
-    if button.get("effect") in JOIN_CANDIDATE_EFFECTS:
-        _record_join_violation(session, action, account, payload, target, button, join_button_detected, hour_bucket)
-        return JOIN_BUTTON_VIOLATION
-    _write_clicked_stat(session, action, payload, target, button, join_button_detected, hour_bucket)
-    return "clicked"
-
-
-def _write_no_navigable_stat(
-    session: Session,
-    action: Action,
-    payload: SearchRankDeboostPayload,
-    target: dict,
-    join_button_detected: bool,
-    hour_bucket: datetime,
-) -> None:
-    _write_stat(
+    outcome: dict,
+    observed_exit_ip: str,
+) -> dict:
+    mark_reservation_unknown(session, action.id)
+    account.status = AccountStatus.LIMITED.value
+    _write_factual_stat(
         session,
-        action=action,
-        payload=payload,
-        target=target,
-        button=None,
-        dwell_seconds=0,
-        join_button_detected=join_button_detected,
-        joined=False,
-        skip_reason=NO_NAVIGABLE_BUTTON,
-        hour_bucket=hour_bucket,
-    )
-
-
-def _record_join_violation(
-    session: Session,
-    action: Action,
-    account: TgAccount,
-    payload: SearchRankDeboostPayload,
-    target: dict,
-    button: dict,
-    join_button_detected: bool,
-    hour_bucket: datetime,
-) -> None:
-    _write_stat(
-        session,
-        action=action,
-        payload=payload,
-        target=target,
-        button=button,
-        dwell_seconds=0,
+        action,
+        payload,
+        outcome=outcome,
+        observed_exit_ip=observed_exit_ip,
+        joined=bool(outcome.get("joined")),
         join_button_detected=True,
-        joined=True,
-        skip_reason=JOIN_BUTTON_VIOLATION,
-        hour_bucket=hour_bucket,
         join_button_violation=True,
     )
-    account.status = AccountStatus.LIMITED.value
     session.flush()
     record_join_button_violation_alert(
         session,
@@ -254,189 +252,28 @@ def _record_join_violation(
         task_id=action.task_id,
         action_id=action.id,
         account_id=int(account.id),
-        competitor_username=str(target.get("username") or ""),
-        button_effect=str(button.get("effect") or ""),
+        competitor_username=str(outcome.get("competitor_username") or ""),
+        button_effect=str(outcome.get("effect") or ""),
     )
+    return {
+        "success": False,
+        "error_code": "join_button_violation",
+        "error_message": "Gateway 返回了禁止的点击效果",
+        "join_button_violation": True,
+    }
 
 
-def _write_clicked_stat(
+def _write_factual_stat(
     session: Session,
     action: Action,
     payload: SearchRankDeboostPayload,
-    target: dict,
-    button: dict,
-    join_button_detected: bool,
-    hour_bucket: datetime,
-) -> None:
-    _write_stat(
-        session,
-        action=action,
-        payload=payload,
-        target=target,
-        button=button,
-        dwell_seconds=_random_dwell(payload),
-        join_button_detected=join_button_detected,
-        joined=False,
-        skip_reason="",
-        hour_bucket=hour_bucket,
-    )
-
-
-def _success_result(decision: dict, click_targets: list[dict], run: ClickRunResult) -> dict:
-    result = {
-        "success": not run.violation_detected,
-        "click_targets_count": len(click_targets),
-        "clicked_count": run.clicked_count,
-        "my_target_position": decision.get("my_target_position"),
-        "exempt_position": decision.get("exempt_position"),
-        "join_button_violation": run.violation_detected,
-    }
-    if run.violation_detected:
-        result["error_code"] = JOIN_BUTTON_VIOLATION
-        result["error_message"] = "误点加入按钮，已停止 action 并暂停账号"
-    return result
-
-
-def _is_factual_gateway_result(result: dict) -> bool:
-    return bool(str(result.get("execution_status") or "").strip())
-
-
-def _handle_factual_gateway_result(
-    session: Session,
-    action: Action,
-    account: TgAccount,
-    payload: SearchRankDeboostPayload,
-    gateway_result: dict,
-) -> dict:
-    status = str(gateway_result.get("execution_status") or "").strip()
-    if status == "confirmed":
-        consume_reservation(session, action.id)
-        _write_factual_stats(session, action, payload, gateway_result)
-        return {**gateway_result, "success": True}
-    if status == "unknown_after_click":
-        mark_reservation_unknown(session, action.id)
-        return {**gateway_result, "success": False}
-    release_reservation(session, action.id)
-    return {**gateway_result, "success": False, "skip_reason": status or "observed_no_click"}
-
-
-def _write_factual_stats(session: Session, action: Action, payload: SearchRankDeboostPayload, gateway_result: dict) -> None:
-    hour_bucket = _now().replace(minute=0, second=0, microsecond=0)
-    search_results = _gateway_search_results(gateway_result)
-    target = search_results[0] if search_results else {}
-    for outcome in _confirmed_click_outcomes(gateway_result):
-        _write_clicked_stat(session, action, payload, target, _outcome_button(outcome), False, hour_bucket)
-
-
-def _confirmed_click_outcomes(gateway_result: dict) -> list[dict]:
-    outcomes = gateway_result.get("click_outcomes") or []
-    if not isinstance(outcomes, list):
-        return []
-    return [item for item in outcomes if isinstance(item, dict) and item.get("status") == "confirmed"]
-
-
-def _outcome_button(outcome: dict) -> dict:
-    return {
-        "row": int(outcome.get("row") or 0),
-        "col": int(outcome.get("col") or 0),
-        "text": str(outcome.get("text") or ""),
-        "url": str(outcome.get("url") or ""),
-        "effect": str(outcome.get("effect") or "navigate_only"),
-        "position": int(outcome.get("position") or 1),
-    }
-
-
-def _invoke_gateway(gateway_execute: Any | None, account: TgAccount, payload: SearchRankDeboostPayload) -> dict | None:
-    if gateway_execute is None:
-        from app.services._common import gateway
-
-        gateway_execute = getattr(gateway, "execute_search_rank_deboost", None)
-    if not callable(gateway_execute):
-        return None
-    keyword_text = decrypt_secret(payload.keyword_text_ciphertext) or ""
-    result = gateway_execute(account.id, payload.model_dump(mode="json"), keyword_text)
-    if not isinstance(result, dict):
-        return None
-    if _is_factual_gateway_result(result):
-        return result
-    if not result.get("success"):
-        return None
-    return result
-
-
-def _gateway_search_results(result: dict) -> list[dict]:
-    search_results = result.get("search_results") or result.get("results") or []
-    return search_results if isinstance(search_results, list) else []
-
-
-def _runtime_probe_exit_ip(result: dict) -> str | None:
-    runtime_probe = result.get("observed_exit_ip") or result.get("probe_exit_ip")
-    return str(runtime_probe).strip() if runtime_probe else None
-
-
-def _extract_buttons(target: dict) -> list[dict]:
-    raw_buttons = target.get("buttons") or []
-    if not isinstance(raw_buttons, list):
-        return []
-    return [_normalize_button(raw, index) for index, raw in enumerate(raw_buttons) if isinstance(raw, dict)]
-
-
-def _normalize_button(raw: dict, index: int) -> dict:
-    text = str(raw.get("text") or "").strip()
-    url = str(raw.get("url") or "").strip()
-    effect = str(raw.get("effect") or raw.get("button_effect") or "").strip() or _infer_button_effect(text, url)
-    return {
-        "row": int(raw.get("row") or 0),
-        "col": int(raw.get("col") or index),
-        "text": text,
-        "url": url,
-        "effect": effect,
-        "position": int(raw.get("position") or index + 1),
-    }
-
-
-def _infer_button_effect(text: str, url: str) -> str:
-    text_lower = text.lower()
-    if any(marker in text_lower for marker in ("下一页", "上一页", "next", "prev", "page", "页")):
-        return "navigate_only"
-    if not url:
-        return "unknown"
-    from urllib.parse import urlparse
-
-    host = (urlparse(url).netloc or "").lower()
-    if host in {"t.me", "telegram.me", "www.t.me", "www.telegram.me"}:
-        return "join_candidate"
-    return "external"
-
-
-def _button_hash(button: dict) -> str:
-    raw = f"{button.get('text', '')}:{button.get('url', '')}:{button.get('position', 0)}"
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
-
-
-def _random_dwell(payload: SearchRankDeboostPayload) -> int:
-    dwell_min = int(payload.dwell_seconds_min or DEFAULT_DWELL_SECONDS_MIN)
-    dwell_max = int(payload.dwell_seconds_max or DEFAULT_DWELL_SECONDS_MAX)
-    if dwell_max <= dwell_min:
-        return dwell_min
-    return int(random.randint(dwell_min, dwell_max))
-
-
-def _write_stat(
-    session: Session,
     *,
-    action: Action,
-    payload: SearchRankDeboostPayload,
-    target: dict,
-    button: dict | None,
-    dwell_seconds: int,
-    join_button_detected: bool,
-    joined: bool,
-    skip_reason: str,
-    hour_bucket: datetime,
+    outcome: dict,
+    observed_exit_ip: str,
+    joined: bool = False,
+    join_button_detected: bool = False,
     join_button_violation: bool = False,
 ) -> None:
-    runtime = payload.runtime_environment or {}
     session.add(SearchRankDeboostActionStat(
         id=str(uuid4()),
         tenant_id=action.tenant_id,
@@ -445,39 +282,78 @@ def _write_stat(
         account_id=int(action.account_id or 0),
         account_pool_id=int(payload.account_pool_id),
         proxy_airport_node_id=int(payload.proxy_airport_node_id) or None,
-        observed_exit_ip=str(runtime.get("observed_exit_ip") or ""),
+        observed_exit_ip=observed_exit_ip,
         bot_username=payload.bot_username,
         keyword_hash=payload.keyword_hash,
-        competitor_group_username=str(target.get("username") or ""),
-        competitor_group_peer_id=str(target.get("peer_id") or ""),
-        competitor_group_title=str(target.get("title") or ""),
-        competitor_position=int(target.get("position") or 0),
-        button_hash=_button_hash(button) if button else "",
-        button_effect=str(button.get("effect") or "") if button else "",
+        competitor_group_username=str(outcome.get("competitor_username") or ""),
+        competitor_group_peer_id=str(outcome.get("competitor_peer_id") or ""),
+        competitor_group_title=str(outcome.get("competitor_title") or ""),
+        competitor_position=_as_int(outcome.get("competitor_position")),
+        button_hash=_button_hash(outcome),
+        button_effect=str(outcome.get("effect") or ""),
         join_button_detected=join_button_detected,
         joined=joined,
-        dwell_seconds=dwell_seconds,
-        hour_bucket=hour_bucket,
-        captured_at=_now(),
-        skip_reason=skip_reason,
         join_button_violation=join_button_violation,
+        dwell_seconds=_as_int(outcome.get("dwell_seconds")),
+        hour_bucket=_now().replace(minute=0, second=0, microsecond=0),
+        captured_at=_now(),
+        skip_reason="",
     ))
     session.flush()
 
 
-def _skip_result(action: Action, code: str, detail: str) -> dict:
+def _button_hash(outcome: dict) -> str:
+    raw = f"{outcome.get('text', '')}:{outcome.get('url', '')}:{_as_int(outcome.get('competitor_position'))}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _record_all_exempt_alert(session: Session, action: Action) -> None:
+    record_all_exempt_clicks_alert(
+        session,
+        tenant_id=action.tenant_id,
+        task_id=action.task_id,
+        action_id=action.id,
+        account_id=int(action.account_id or 0) or None,
+    )
+
+
+def _gateway_error_code(result: dict) -> str:
+    return str(result.get("error_code") or result.get("execution_status") or GATEWAY_CONTRACT_INVALID)
+
+
+def _gateway_reported_no_call(result: dict) -> bool:
+    return str(result.get("error_code") or "") == RANK_OBSERVATION_GATEWAY_UNAVAILABLE
+
+
+def _gateway_error_message(result: dict) -> str:
+    return str(result.get("error_message") or result.get("detail") or "搜索排名观察 Gateway 未返回可验证事实")
+
+
+def _observed_exit_ip(result: dict) -> str:
+    return str(result.get("observed_exit_ip") or result.get("probe_exit_ip") or "").strip()
+
+
+def _failure_without_click(session: Session, action: Action, code: str, detail: str) -> dict:
+    release_reserved_reservation(session, action.id)
+    return {"success": False, "error_code": code, "error_message": detail, "validation_stage": "search_rank_deboost"}
+
+
+def _failure_after_gateway(session: Session, action: Action, code: str, detail: str) -> dict:
+    mark_reservation_unknown(session, action.id)
     return {
         "success": False,
+        "execution_status": "unknown_after_click",
         "error_code": code,
         "error_message": detail,
-        "skip_reason": code,
         "validation_stage": "search_rank_deboost",
     }
 
 
-def _skip_without_click(session: Session, action: Action, code: str, detail: str) -> dict:
-    release_reserved_reservation(session, action.id)
-    return _skip_result(action, code, detail)
+def _as_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 __all__ = ["execute_search_rank_deboost"]

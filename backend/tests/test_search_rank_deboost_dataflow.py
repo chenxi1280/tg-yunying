@@ -13,15 +13,20 @@ from app.database import Base
 from app.models import (
     AccountPool,
     AccountProxyBinding,
+    OperationTarget,
     ProxyAirportNode,
+    Task,
     Tenant,
 )
+from app.models.search_rank_deboost import SearchRankDeboostExemptGroup
 from app.permission_middleware import permission_check_result, required_permission
 from app.schemas.task_center import (
     SearchRankDeboostExemptGroupResponse,
+    SearchRankDeboostSimpleTaskCreate,
     SearchRankDeboostTaskConfigUpdate,
     SearchRankDeboostTaskCreate,
 )
+from app.services.task_center import service as task_service
 
 
 pytestmark = pytest.mark.no_postgres
@@ -46,10 +51,76 @@ def _build_payload(**overrides) -> SearchRankDeboostTaskCreate:
     return SearchRankDeboostTaskCreate(**defaults)
 
 
+def _simple_payload(**overrides) -> SearchRankDeboostSimpleTaskCreate:
+    defaults = dict(
+        target_operation_target_id=1001,
+        keywords=["关键词"],
+        target_count=8,
+    )
+    defaults.update(overrides)
+    return SearchRankDeboostSimpleTaskCreate(**defaults)
+
+
 def _build_engine():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     return engine
+
+
+def test_simple_rank_create_maps_three_inputs_to_system_policy(monkeypatch) -> None:
+    engine = _build_engine()
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(
+            OperationTarget(
+                id=1001,
+                tenant_id=1,
+                target_type="group",
+                tg_peer_id="-1001001",
+                title="我的目标群",
+                username="my_target_group",
+            )
+        )
+        session.commit()
+        captured: dict = {}
+
+        def fake_create(_session, _tenant_id, payload, _operator, *, commit=True, defer_readiness=False):
+            captured["payload"] = payload
+            captured["defer_readiness"] = defer_readiness
+            return SimpleNamespace(id="simple-rank", name=payload.name)
+
+        monkeypatch.setattr(task_service, "create_search_rank_deboost_task", fake_create)
+        task = task_service.create_simple_search_rank_deboost_task(
+            session,
+            1,
+            SearchRankDeboostSimpleTaskCreate(
+                target_operation_target_id=1001,
+                keywords=["目标关键词"],
+                target_count=8,
+            ),
+            operator="tester",
+        )
+
+    payload = captured["payload"]
+    assert task.name == "我的目标群 搜索排名观察 8 次"
+    assert payload.target_group_ids == [1001]
+    assert payload.account_config.selection_mode == "all"
+    assert payload.config == {
+        "target_count": 8,
+        "target_operation_target_id": 1001,
+        "target_reference_type": "operation_target",
+    }
+    assert captured["defer_readiness"] is True
+
+
+def test_simple_rank_create_rejects_system_managed_fields() -> None:
+    with pytest.raises(Exception, match="Extra inputs are not permitted"):
+        SearchRankDeboostSimpleTaskCreate(
+            target_operation_target_id=1001,
+            keywords=["目标关键词"],
+            target_count=8,
+            account_config={"selection_mode": "manual", "account_ids": [1]},
+        )
 
 
 # --- 成功路径：mock service 函数，验证路由委派 ---
@@ -63,11 +134,11 @@ def test_post_search_rank_deboost_task_creates_task(monkeypatch) -> None:
         captured["tenant_id"] = tenant_id
         captured["payload"] = payload
         captured["operator"] = operator
-        return SimpleNamespace(id="task-1", name=payload.name, type="search_rank_deboost")
+        return SimpleNamespace(id="task-1", name="系统生成名称", type="search_rank_deboost")
 
-    monkeypatch.setattr(router_module, "create_search_rank_deboost_task", fake_create)
+    monkeypatch.setattr(router_module, "create_simple_search_rank_deboost_task", fake_create)
 
-    payload = _build_payload()
+    payload = _simple_payload()
     user = _make_user(tenant_id=1, name="alice")
     result = router_module.post_search_rank_deboost_task(
         payload=payload, session=object(), current_user=user
@@ -76,28 +147,111 @@ def test_post_search_rank_deboost_task_creates_task(monkeypatch) -> None:
     assert captured["tenant_id"] == 1
     assert captured["operator"] == "alice"
     assert captured["payload"] is payload
-    assert result.name == "降权任务"
+    assert result.name == "系统生成名称"
     assert result.type == "search_rank_deboost"
 
 
-def test_post_search_rank_deboost_create_and_start(monkeypatch) -> None:
-    captured: dict = {}
+def test_post_task_start_returns_bad_request_for_rank_readiness_blocker(monkeypatch) -> None:
+    def fail_start(*_args, **_kwargs):
+        raise ValueError("搜索排名观察真实候选搜索缺少可执行黑账号")
 
-    def fake_create_and_start(session, tenant_id, payload, operator):
-        captured.update(session=session, tenant_id=tenant_id, payload=payload, operator=operator)
-        return SimpleNamespace(id="task-2", type="search_rank_deboost", status="running")
+    monkeypatch.setattr(router_module, "start_task", fail_start)
 
-    monkeypatch.setattr(router_module, "create_and_start_search_rank_deboost_task", fake_create_and_start)
+    with pytest.raises(HTTPException) as exc_info:
+        router_module.post_task_start("rank-task", None, _make_user())
 
-    payload = _build_payload(name="启动任务")
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "搜索排名观察真实候选搜索缺少可执行黑账号"
+
+
+def test_post_search_rank_deboost_create_and_start_rejects_bypassing_draft() -> None:
+    payload = _simple_payload()
     user = _make_user(tenant_id=7, name="bob")
-    result = router_module.post_search_rank_deboost_create_and_start(
-        payload=payload, session=object(), current_user=user
-    )
+    with pytest.raises(HTTPException, match="只能先创建草稿") as exc_info:
+        router_module.post_search_rank_deboost_create_and_start(
+            payload=payload, session=object(), current_user=user
+        )
 
-    assert captured["tenant_id"] == 7
-    assert captured["operator"] == "bob"
-    assert result.status == "running"
+    assert exc_info.value.status_code == 400
+
+
+def test_simple_rank_draft_creation_defers_readiness_to_start() -> None:
+    engine = _build_engine()
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(
+            OperationTarget(
+                id=1001,
+                tenant_id=1,
+                target_type="group",
+                tg_peer_id="-1001001",
+                title="我的目标群",
+                username="my_target_group",
+            )
+        )
+        session.commit()
+
+        task = task_service.create_simple_search_rank_deboost_task(
+            session,
+            1,
+            _simple_payload(),
+            operator="tester",
+        )
+
+        assert task.status == "draft"
+        with pytest.raises(ValueError, match="协议样本不足"):
+            task_service.start_task(session, 1, task.id, "tester")
+        assert task.status == "draft"
+
+
+def test_simple_rank_edit_regenerates_system_name() -> None:
+    engine = _build_engine()
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add_all([
+            OperationTarget(
+                id=1001,
+                tenant_id=1,
+                target_type="group",
+                tg_peer_id="-1001001",
+                title="我的目标群",
+                username="my_target_group",
+            ),
+            OperationTarget(
+                id=1002,
+                tenant_id=1,
+                target_type="group",
+                tg_peer_id="-1001002",
+                title="新的目标群",
+                username="new_target_group",
+            ),
+        ])
+        session.commit()
+        task = task_service.create_simple_search_rank_deboost_task(
+            session,
+            1,
+            _simple_payload(target_count=8),
+            operator="tester",
+        )
+
+        target_updated = task_service.update_search_rank_deboost_config(
+            session,
+            1,
+            task.id,
+            SearchRankDeboostTaskConfigUpdate(target_operation_target_id=1002),
+            operator="tester",
+        )
+        assert target_updated.name == "新的目标群 搜索排名观察 8 次"
+
+        updated = task_service.update_search_rank_deboost_config(
+            session,
+            1,
+            task.id,
+            SearchRankDeboostTaskConfigUpdate(target_count=6),
+            operator="tester",
+        )
+
+    assert updated.name == "新的目标群 搜索排名观察 6 次"
 
 
 def test_patch_search_rank_deboost_config(monkeypatch) -> None:
@@ -109,7 +263,11 @@ def test_patch_search_rank_deboost_config(monkeypatch) -> None:
 
     monkeypatch.setattr(router_module, "update_search_rank_deboost_config", fake_update)
 
-    payload = SearchRankDeboostTaskConfigUpdate(notes="更新备注")
+    payload = SearchRankDeboostTaskConfigUpdate(
+        target_operation_target_id=1001,
+        keywords=["更新关键词"],
+        target_count=9,
+    )
     user = _make_user(tenant_id=1, name="carol")
     result = router_module.patch_search_rank_deboost_config(
         task_id="task-3", payload=payload, session=object(), current_user=user
@@ -119,6 +277,43 @@ def test_patch_search_rank_deboost_config(monkeypatch) -> None:
     assert captured["operator"] == "carol"
     assert captured["payload"] is payload
     assert result.id == "task-3"
+
+
+def test_rank_config_patch_rejects_system_managed_policy_fields() -> None:
+    with pytest.raises(Exception, match="Extra inputs are not permitted"):
+        SearchRankDeboostTaskConfigUpdate(config={"max_actions_per_hour": 999})
+
+
+def test_rank_task_detail_includes_persisted_exempt_group() -> None:
+    engine = _build_engine()
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        task = Task(
+            tenant_id=1,
+            name="黑搜索任务",
+            type="search_rank_deboost",
+            status="draft",
+            type_config={},
+            stats={},
+        )
+        session.add(task)
+        session.flush()
+        session.add(
+            SearchRankDeboostExemptGroup(
+                tenant_id=1,
+                task_id=task.id,
+                exempt_group_username="real_exempt",
+                exempt_group_peer_id="-100123",
+                exempt_group_title="真实豁免群",
+                exempt_group_match_strategy="username",
+                selected_by="tester",
+            )
+        )
+        session.commit()
+
+        detail = task_service.get_task_detail(session, 1, task.id)
+
+    assert detail["rank_deboost_exempt_group"]["exempt_group_username"] == "real_exempt"
 
 
 def test_post_search_rank_deboost_reroll_exempt_group(monkeypatch) -> None:
@@ -153,7 +348,7 @@ def test_post_search_rank_deboost_reroll_exempt_group(monkeypatch) -> None:
 # --- 拒绝路径：真实 SQLite + 真实 service 校验，经路由触发 400 ---
 
 
-def test_post_search_rank_deboost_task_rejects_non_rank_deboost_pool() -> None:
+def test_legacy_rank_create_rejects_non_rank_deboost_pool() -> None:
     engine = _build_engine()
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
@@ -163,15 +358,11 @@ def test_post_search_rank_deboost_task_rejects_non_rank_deboost_pool() -> None:
         payload = _build_payload(account_pool_id=10, proxy_airport_node_id=20)
         user = _make_user()
 
-        with pytest.raises(HTTPException) as exc_info:
-            router_module.post_search_rank_deboost_task(
-                payload=payload, session=session, current_user=user
-            )
-        assert exc_info.value.status_code == 400
-        assert "rank_deboost" in exc_info.value.detail
+        with pytest.raises(ValueError, match="rank_deboost"):
+            task_service.create_search_rank_deboost_task(session, 1, payload, user.name)
 
 
-def test_post_search_rank_deboost_task_rejects_unhealthy_node() -> None:
+def test_legacy_rank_create_rejects_unhealthy_node() -> None:
     engine = _build_engine()
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
@@ -182,14 +373,11 @@ def test_post_search_rank_deboost_task_rejects_unhealthy_node() -> None:
         payload = _build_payload(account_pool_id=10, proxy_airport_node_id=20)
         user = _make_user()
 
-        with pytest.raises(HTTPException) as exc_info:
-            router_module.post_search_rank_deboost_task(
-                payload=payload, session=session, current_user=user
-            )
-        assert exc_info.value.status_code == 400
+        with pytest.raises(ValueError):
+            task_service.create_search_rank_deboost_task(session, 1, payload, user.name)
 
 
-def test_post_search_rank_deboost_task_rejects_node_used_by_authorization_slot() -> None:
+def test_legacy_rank_create_rejects_node_used_by_authorization_slot() -> None:
     engine = _build_engine()
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
@@ -209,12 +397,8 @@ def test_post_search_rank_deboost_task_rejects_node_used_by_authorization_slot()
         payload = _build_payload(account_pool_id=10, proxy_airport_node_id=20)
         user = _make_user()
 
-        with pytest.raises(HTTPException) as exc_info:
-            router_module.post_search_rank_deboost_task(
-                payload=payload, session=session, current_user=user
-            )
-        assert exc_info.value.status_code == 400
-        assert "授权槽位级绑定" in exc_info.value.detail
+        with pytest.raises(ValueError, match="授权槽位级绑定"):
+            task_service.create_search_rank_deboost_task(session, 1, payload, user.name)
 
 
 # --- 权限 403 闸门 ---

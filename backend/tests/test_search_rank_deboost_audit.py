@@ -13,13 +13,18 @@ from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.models import (
+    AccountProxy,
     AccountPool,
+    AccountStatus,
     AuditLog,
     BotProtocolSample,
+    OperationTarget,
     ProxyAirportNode,
     ProxyAirportSubscription,
     SearchRankDeboostExemptGroup,
     Tenant,
+    TelegramDeveloperApp,
+    TgAccount,
 )
 from app.schemas.task_center import (
     SearchRankDeboostTaskConfigUpdate,
@@ -39,6 +44,7 @@ from app.services.task_center.service import (
     update_search_rank_deboost_config,
 )
 from app.schemas.task_center import TaskRetryRequest
+from app.security import encrypt_secret, encrypt_session
 
 
 pytestmark = pytest.mark.no_postgres
@@ -99,6 +105,43 @@ def _seed_base(session: Session) -> None:
         )
     )
     session.add(AccountPool(id=10, tenant_id=1, name="降权分组", pool_purpose="rank_deboost"))
+    session.add(OperationTarget(
+        id=1001,
+        tenant_id=1,
+        target_type="group",
+        tg_peer_id="-1001",
+        title="我方目标群",
+        username="my_target",
+    ))
+    session.add(AccountProxy(
+        id=30,
+        tenant_id=1,
+        name="rank-runtime",
+        protocol="socks5",
+        host="127.0.0.1",
+        port=1080,
+        status="healthy",
+        alert_status="normal",
+    ))
+    session.add(TelegramDeveloperApp(
+        id=40,
+        app_name="rank-app",
+        api_id=12345,
+        api_hash_ciphertext=encrypt_secret("rank-api-hash"),
+    ))
+    session.add(TgAccount(
+        id=100,
+        tenant_id=1,
+        pool_id=10,
+        display_name="降权账号100",
+        phone_masked="100",
+        status=AccountStatus.ACTIVE.value,
+        account_identity="rank_deboost",
+        health_score=95,
+        developer_app_id=40,
+        developer_app_version=1,
+        session_ciphertext=encrypt_session("rank-session-100"),
+    ))
     session.add(
         ProxyAirportNode(
             id=20,
@@ -172,8 +215,8 @@ def _create_ready_task(session: Session, monkeypatch, actor: str = "alice"):
         _common.gateway,
         "execute_search_rank_deboost",
         lambda *_args, **_kwargs: {"success": True, "search_results": [], "observed_exit_ip": "1.1.1.1"},
-        raising=False,
     )
+    monkeypatch.setattr(_common.gateway, "supports_rank_deboost_observation", True)
     return start_task(session, 1, task.id, actor)
 
 
@@ -182,15 +225,18 @@ def _install_exempt_candidate_searcher(monkeypatch, usernames: list[str]) -> Non
 
     remaining = iter(usernames)
 
-    def search_rank_deboost_exempt_candidates(**_kwargs):
+    def search_rank_deboost_candidates(*_args, **_kwargs):
         username = next(remaining)
-        return [{"username": username, "peer_id": f"-100{username}", "title": f"豁免群 {username}"}]
+        return {
+            "success": True,
+            "execution_status": "candidates_found",
+            "search_results": [{"username": username, "peer_id": f"-100{username}", "title": f"豁免群 {username}"}],
+        }
 
     monkeypatch.setattr(
         _common.gateway,
-        "search_rank_deboost_exempt_candidates",
-        search_rank_deboost_exempt_candidates,
-        raising=False,
+        "search_rank_deboost_candidates",
+        search_rank_deboost_candidates,
     )
 
 
@@ -272,8 +318,7 @@ def test_update_config_writes_audit() -> None:
             1,
             task.id,
             SearchRankDeboostTaskConfigUpdate(
-                keywords=[{"text": SENSITIVE_KEYWORD_TEXT}],
-                notes="更新备注",
+                keywords=["审计配置变更关键词"],
             ),
             "carol",
         )
@@ -395,7 +440,7 @@ def test_audit_details_exclude_sensitive_info(monkeypatch) -> None:
             session,
             1,
             task.id,
-            SearchRankDeboostTaskConfigUpdate(keywords=[{"text": SENSITIVE_KEYWORD_TEXT}]),
+            SearchRankDeboostTaskConfigUpdate(keywords=[SENSITIVE_KEYWORD_TEXT]),
             "alice",
         )
         # 重选豁免群

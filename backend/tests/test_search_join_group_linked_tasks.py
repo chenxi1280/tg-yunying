@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import timedelta
 
 import pytest
@@ -30,6 +31,9 @@ from app.services._common import _now
 from app.services.task_center import dispatcher
 from app.services.task_center.dispatcher import dispatch_action
 from app.services.task_center.search_join_linking import create_linked_dispatch_if_membership_observed
+
+
+SEARCH_JOIN_KEYWORD_HASH = hashlib.sha256("上海 留学".encode("utf-8")).hexdigest()
 
 
 @pytest.fixture
@@ -105,7 +109,7 @@ def _action(task: Task, result: dict | None = None) -> Action:
         payload={
             "execution_mode": "mtproto_userbot",
             "bot_username": "jisou",
-            "keyword_hash": "a" * 64,
+            "keyword_hash": SEARCH_JOIN_KEYWORD_HASH,
             "keyword_text_ciphertext": encrypt_secret("上海 留学"),
             "authorization_id": 201,
             "session_role": "primary",
@@ -187,12 +191,34 @@ def test_search_join_dispatch_calls_gateway_with_session_credentials_and_keyword
     assert action.status == "success"
     assert action.result["join_status"] == "membership_observed"
     assert calls[0]["account_id"] == 101
-    assert calls[0]["payload"]["keyword_hash"] == "a" * 64
+    assert calls[0]["payload"]["keyword_hash"] == SEARCH_JOIN_KEYWORD_HASH
     assert calls[0]["payload"]["bot_username"] == "jisou"
     assert calls[0]["session_ciphertext"] == "slot-session-201"
     assert calls[0]["api_id"] == 12345
     assert calls[0]["proxy_id"] == 31
     assert calls[0]["keyword_text"] == "上海 留学"
+
+
+@pytest.mark.no_postgres
+def test_search_join_dispatch_blocks_keyword_hash_ciphertext_mismatch(monkeypatch, session: Session) -> None:
+    _task, action = _persist_task_and_action(session)
+    action.payload = {
+        **action.payload,
+        "keyword_hash": "a" * 64,
+        "runtime_environment": _verified_runtime(),
+    }
+    calls: list[dict] = []
+
+    def execute_search_join(*args, **kwargs):
+        calls.append({"args": args, "kwargs": kwargs})
+        return {"success": True}
+
+    monkeypatch.setattr(dispatcher.gateway, "execute_search_join", execute_search_join, raising=False)
+
+    assert dispatch_action(session, action) is True
+    assert calls == []
+    assert action.status == "failed"
+    assert action.result["error_code"] == "keyword_hash_mismatch"
 
 
 @pytest.mark.no_postgres

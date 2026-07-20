@@ -57,7 +57,7 @@ tg-yunying 当前任务中心已支持 5 类主任务：`group_ai_chat`、`group
     {"text": "天气预报", "region": "AE", "lang": "zh", "decoy": true}
   ],
   "target_groups": [
-    {"operation_target_id": 123, "match_strategy": "username_or_peer_id"}
+    {"operation_target_id": 123, "match_strategy": "username_only"}
   ],
   "anti_detection": {
     "warmup_days": 3,
@@ -97,7 +97,7 @@ tg-yunying 当前任务中心已支持 5 类主任务：`group_ai_chat`、`group
 1. 代理 IP，见 §6。
 2. 设备指纹，见 §7。
 3. 目标群，任务创建时引用 `OperationTarget`。
-4. 搜索机器人，任务创建时选择并写入 `type_config.search_bots`。
+4. 搜索机器人，由系统策略固定并写入 `type_config.search_bots`，创建者不选择。
 
 环境栈为授权槽位级五元组：`(account_id, developer_app_id/api_id, authorization_id/session_role, proxy_binding_id, client_metadata fields on account_environment_bindings)`。`authorization_id` 引用 `tg_account_authorizations.id`，`session_role` 对应 `primary / standby_1 / standby_2`。主授权和备用授权不能复用同一客户端元数据、同一 `client_identity_key` 或同一代理节点；不同 TG 开发者应用和不同授权槽位可以拥有不同代理和客户端元数据。
 
@@ -156,6 +156,8 @@ pending -> claiming -> executing -> success / failed / skipped
 `decoy=true` 表示非目标关键词，用于行为掩护，不计入目标群加入统计；`decoy=false` 才是真正用于目标群加入的关键词。
 
 `business_region` 表示关键词业务区域，`account_locale` 表示账号语言画像，`proxy_country` 表示代理出口国家。三者不强制相等，只要求组合落入允许矩阵。例如“迪拜房产”可以是中文账号、中文客户端语言、新加坡或阿联酋出口 IP、阿联酋业务区域；不应被旧的 `keyword.region == account.region == ip.country` 硬等式误拦。
+
+2026-07-20 起，新建页只接收关键词文本；`decoy`、区域、语言、权重和出口偏好均是系统生成或存量任务的持久化策略，不作为创建输入。
 
 ### 4.7 执行模式
 
@@ -223,6 +225,24 @@ pending -> claiming -> executing -> success / failed / skipped
 
 **`search_rank_deboost` 例外条款（对 §4.10 非目标浏览约束的例外）**：对 `search_rank_deboost` 任务，跨 action 的非目标浏览总量不受 `search_join_group` 单任务 ≤3 约束，但每个 action 最多执行 1 次真实点击，并必须满足：(1) 只点击 `button_effect=navigate_only` 的按钮；(2) 竞争群结果项含 `join_candidate` 按钮时只点开明确分类为导航的独立按钮、不点加入按钮；(3) Gateway 返回逐点击 outcome，只有 `status=confirmed` 才写 `search_rank_deboost_action_stats`，包含 button hash、位置、effect、停留时长、`joined=false`、`join_button_detected=true/false`；(4) `observed_no_click` 不计点击成功，`unknown_after_click` 不自动重试并继续占用配额；(5) 不得加入、关注、外跳、投票、发言、点击 `external_http_url` 或 `unknown` 按钮；(6) 实时 pacing / random decision 不调用 LLM。账号用途、多降权组、分组持久运行代理、同端点出口探测、逐点击 reservation 和真实 Gateway 口径见 `search-rank-deboost-hardening-design.md`。`search_join_group` 的「非目标 ≤3 navigate_only」原约束保持不变。
 
+### 4.11 2026-07-20 三字段创建基线（当前生效）
+
+本节优先于本文其他章节中遗留的高级字段、五步向导和预检表述。`search_join_group` 与 `search_rank_deboost` 的**新建**任务都只接收三个业务输入：**目标群、搜索关键词、目标次数**。
+
+| 创建输入 | 约束 | 说明 |
+| --- | --- | --- |
+| `target_operation_target_id` | 必填，单个群目标 | 从已存在的 `OperationTarget` 选择；服务端校验同租户、群类型和可用于搜索匹配的公开 username。 |
+| `keywords` | 必填，至少一个去重后的非空关键词 | 运营只表达要搜索什么；执行所需的安全存储和关键词匹配由系统处理。 |
+| `target_count` | 必填，正整数 | 一个任务生命周期内要完成的已确认互动次数，不是每小时目标。 |
+
+任务名称、搜索机器人/协议、账号候选与账号组、代理和授权绑定、并发、节奏、停留、配额、重试、资源准备与风险闸门都是系统策略。新建 API 收到这些系统托管字段必须显式拒绝，不能静默忽略或让调用方绕过策略。编辑目标群或目标次数时，服务端必须用当前目标群和目标次数重生成任务名称。存量任务可以继续展示其已保存的高级事实，但这些字段不得重新出现在新建表单或新建请求中。
+
+`target_count` 的完成语义：`search_join_group` 以 `Action.status=success` 的 `membership_observed` 计入；`search_rank_deboost` 以真实 Gateway 返回的 factual `confirmed` click 对应 `Action.status=success` 计入。`pending`、`claiming`、`executing` 和 `unknown_after_send` 占用剩余槽位，避免结果未确认时重复安排；`failed`、`skipped` 释放槽位。达到目标后任务写入 `status=completed`、`next_run_at=null` 和 `stats.completion_reason=target_count_reached`。未带 `target_count` 的历史任务保持原有不封顶调度语义。
+
+编辑仍是三项业务输入的 PATCH，不是把详情中的系统配置全量回写。`search_join_group` 不回传关键词明文，编辑页关键词留空表示保持现有加密关键词材料；只有输入新的关键词才替换它。历史任务没有 `target_count` 时，编辑页保持空值并省略该字段，不能为了表单显示写入默认 `1`。`search_rank_deboost` 只在目标群或关键词的实际值发生变化时重做 readiness；仅改目标次数只重算目标进度。旧版重复关键词密文只有在解密后可与既有 hash 集合一一对应时才会去重修复，无法证明对应关系的材料必须显式校验失败。旧版 `post_join_safe_navigation_*` 值在保存存量任务时归零；新请求提交非零值仍明确拒绝。
+
+创建后的状态语义保持任务类型差异：搜索目标群点击任务在“创建并启动”时由服务端完成资源校验和启动；搜索排名观察任务先创建草稿，启动准备仍由服务端复核真实搜索准备态。两者都不要求运营补填账号、代理或节奏字段；阻塞时返回可读 blocker，并在任务详情展示事实。
+
 新增效果归因维度：
 
 ```jsonc
@@ -241,8 +261,8 @@ pending -> claiming -> executing -> success / failed / skipped
 
 ## 5. 用户故事
 
-1. 运营人员在任务中心创建搜索目标群点击任务，选择 `@searchbot`，导入关键词，选择或粘贴目标群，并配置运营真实性参数。
-2. 灰度阶段，运营人员选择 5-10 个已养号 30 天以上的账号，每个账号都绑定独享静态住宅 IP 和镜像设备指纹。
+1. 运营人员在任务中心创建搜索目标群点击任务，只选择目标群、输入关键词和目标次数；系统生成任务名称并选择可用账号、机器人、代理和执行节奏。
+2. 灰度阶段，运营人员在账号中心维护已养号账号及其环境；任务创建页不再选择账号、代理或真实化参数。
 3. 任务启动后，Planner 按账号授权槽位、关键词、搜索机器人和目标群生成 action；Executor 按真人节奏执行完整链路。
 4. 加入成功后，系统先写入搜索入群事实、目标成员关系和留存观察，再按配置把账号联动到同目标 AI 活跃群等后续任务的 ready pool。
 5. 运营人员在任务详情查看每个账号、关键词、机器人维度的累计入群、目标群平均排名、入群转化率、停留时长、后续任务联动状态和最近失败原因。
@@ -553,23 +573,24 @@ None # 该 (账号, 应用, 授权槽位, IP) 对首次 action 时间 daily_acti
 1. 准备阶段：选择搜索机器人和关键词，通过 env.stack 读取 proxy + client_metadata，校验机场节点健康、账号级执行互斥锁、warmup 和 `proxy_egress_guard`。
 2. 搜索阶段：向目标机器人发送关键词，等待包含 inline button 或 link 的搜索结果；FloodWait、超时和结构变化必须显式记录。
 3. 入群前安全浏览阶段：决策延迟后，按概率打开 0-2 个非目标结果；只允许 `button_effect=navigate_only`，停留 10-30 秒后返回；不得加入、关注、外跳或点击 `join_candidate/external/unknown`。
-4. 匹配阶段：解析搜索结果的 button / link，按 username、peer_id 或标题模糊匹配目标群；默认最多翻 70 页，找满 70 页或搜索机器人提前没有“下一页”仍未匹配写 `target_not_in_results`、`pages_exhausted=true`，并自动停止该搜索目标群点击任务。
+4. 匹配阶段：解析搜索结果的 button / link，只按公开 Telegram URL 中的精确 username 匹配目标群；标题和 peer id 仅用于展示/审计，不得作为可执行匹配依据。当前 Telethon `MessageButton` 不提供可验证的 `target_chat_id`，仅有 peer id 的目标在 Planner 阶段写 `target_identity_missing`，不会创建 action。默认最多翻 70 页，找满 70 页或搜索机器人提前没有“下一页”仍未匹配写 `target_not_in_results`、`pages_exhausted=true`，并自动停止该搜索目标群点击任务。
 5. 加入阶段：通过 MTProto callback 或 Telegram 内部 URL resolve 执行目标群 join；失败必须分类为验证码、审批、链接失效、权限不足或目标机器人拒绝。
 6. 目标群停留阶段：在目标群停留 30-180 秒，只执行低风险 read / history / read_ack；首版默认不发言。
-7. 入群后安全浏览阶段：加入成功后允许按概率返回搜索结果页或翻页再浏览 0-1 个 `navigate_only` 结果；全链路非目标安全浏览总数不得超过 `max_non_target_safe_navigation_per_action=3`，且仍不得加入非目标群 / 频道。
+7. 入群后安全浏览：本期不实现，也不在创建/详情页暴露配置；`post_join_safe_navigation` 固定为空数组。全链路仅保留入群前、已证实 `navigate_only` 的安全浏览，且不得加入非目标群 / 频道。
 8. 入群后策略：默认 `post_join_policy=stay_joined`，不立即退出；任何 delayed leave / leave after dwell 必须有独立清理任务、审批原因和留存结果。
 9. 后续任务联动：写入加入事实和留存观察后，按 §8.9 把账号投递给同目标 AI 活跃群等任务的 ready pool，但必须经过冷却、可发言复检和新成员占比限制。
-10. 记录阶段：写 action result，至少记录目标位置、total_results、dwell、pre/post safe navigation、post_join_policy、proxy_failover_event_id、linked task dispatch 状态和健康累计。
+10. 记录阶段：写 action result，至少记录目标位置、total_results、dwell、入群前安全浏览、post_join_policy、proxy_failover_event_id、linked task dispatch 状态和健康累计。
 
 ### 8.3.1 非目标安全浏览边界
 
 非目标浏览的目的只是避免所有账号在搜索结果中机械地直奔同一个目标，不是给其他结果制造加入量或互动量。硬规则：
 
-- 入群前 `pre_join_decoy_click_count` 默认 0-2，入群后 `post_join_safe_browse_count` 默认 0-1。
-- 单 action `pre_join + post_join` 非目标安全浏览总数默认不超过 3；不得配置为“全点前几个结果”。
+- 入群前 `pre_join_decoy_click_count` 默认 0-2；本期不支持入群后非目标安全浏览。
+- 单 action 入群前非目标安全浏览总数默认不超过 3；不得配置为“全点前几个结果”。
 - 只允许点击协议样本已确认的 `navigate_only`；`join_candidate`、`external_http_url`、`unknown`、会触发加入/关注/投票/发言/外链打开的按钮一律跳过。
 - `decoy_join_enabled=false` 是首版硬默认值；如果未来允许加入非目标群，必须另起风控审批和验收，不得复用本 PRD 默认链路。
-- 每次安全浏览都写入 `pre_join_decoy_clicks` 或 `post_join_safe_navigation`，包含 button hash、position、effect、dwell、joined=false。
+- 每次安全浏览都写入 `pre_join_decoy_clicks`，包含稳定 button hash、position、effect、dwell、joined=false。
+- 选择 decoy 前必须先按精确 username 排除目标按钮；标题和 peer id 不是当前 Telethon adapter 的执行身份，目标按钮不得先作为 decoy 点击再执行目标确认。
 
 ### 8.4 Decoy 关键词机制
 
@@ -726,6 +747,7 @@ Planner 硬闸门顺序：
 - 所有 `0` 作为“不设该项上限”的字段必须在页面文案中显示为“不限制”，不得显示成“0 次”导致误解；但 `max_actions_per_hour=0` 或 `hourly_round_curve` 当前小时为 0 表示该小时不主动规划，页面必须区分“不限制”和“不规划”。
 - 创建、编辑和通用任务设置 API 必须允许 `search_join_group.pacing_config.max_actions_per_hour=0`，普通任务仍保持通用 pacing 小时上限最小为 1；前端也必须只对搜索目标群点击任务开放 0。
 - 仅 search_join 生效的字段不得出现在 AI 活跃群、频道浏览、频道点赞、频道评论 / 回复等任务创建页，也不得被通用 pacing normalization 写回其他任务类型。
+- 编辑时若关键词未变化，前端不得回传空的 `keyword_hashes` / `keyword_text_ciphertexts` 覆盖既有材料；服务端必须保留原有 hash/密文一一配对。提交新的关键词时才重建该配对，显式提交的 hash 与密文必须数量、顺序和规范化关键词 SHA-256 一致；Dispatcher 在调用 Gateway 前再次核验，不一致写 `keyword_hash_mismatch` 并禁止搜索。
 
 ### 8.6 入群转化率 控制
 
@@ -806,11 +828,13 @@ search_join success
 }
 ```
 
-## 9. 任务配置 Schema
+## 9. 系统托管任务策略与持久化 Schema（不是新建 API）
 
-### 9.1 完整 Payload
+本章描述服务端生成的 `type_config`、Planner 使用的运行策略以及存量任务兼容结构。它不改变 §4.11 的三字段创建契约：新建请求不得提交本章中的名称、机器人、目标组数组、账号、代理、节奏、停留、重试或策略字段。
+
+### 9.1 系统托管完整 Payload
 ```jsonc
- { "task_type": "search_join_group", "execution_mode": "mtproto_userbot", "name": "迪拜房产群搜索目标点击", "search_bots": ["jisou"], "keywords": [ {"text": "迪拜房产", "business_region": "AE", "account_locale": "zh-CN", "proxy_country": "SG", "lang": "zh", "weight": 1.0, "decoy": false}, {"text": "迪拜租房", "business_region": "AE", "account_locale": "zh-CN", "proxy_country": "AE", "lang": "zh", "weight": 0.8, "decoy": false}, {"text": "天气预报", "business_region": "CN", "account_locale": "zh-CN", "proxy_country": "SG", "lang": "zh", "weight": 1.0, "decoy": true} ], "target_groups": [ { "operation_target_id": 123, "target_input": "@yourgroup", "match_strategy": "username_or_peer_id" } ], "anti_detection": { /* 见 §8.1 */ }, "proxy_policy": { /* 见 §6.5 */ }, "account_config": { "selection_mode": "manual", "account_ids": [101, 102, 103, 104, 105], "authorization_roles": ["primary", "standby_1"], "same_account_concurrency": 1, "authorization_switch_policy": "primary_first_failover_only", "max_concurrent": 5, "cooldown_per_account_minutes": 30, "ban_policy": "pause_task" }, "pacing_config": { "mode": "curve", "curve_type": "steady", "hourly_round_curve": [0,0,0,0,0,0,1,1,2,2,2,2,1,1,2,2,3,3,2,2,1,1,0,0], "actions_per_round_mode": "auto", "actions_per_round": 5, "max_actions_per_hour": 20, "hourly_min_successful_joins": 0, "max_actions_per_day": 100, "per_account_total_action_limit": 0, "per_account_daily_action_limit": 1, "per_account_cooldown_days": 0, "per_keyword_account_daily_limit": 2, "hourly_skip_probability": 0, "daily_skip_probability": 0, "skip_probability_per_action": 0.1, "hourly_jitter_percent": 30, "daily_jitter_percent": 20, "active_hours": [{"start": "08:00", "end": "23:00"}] }, "failure_policy": { "max_retries": 2, "retry_delay_seconds": 300, "on_account_banned": "pause_task", "on_api_rate_limit": "wait_and_retry", "on_target_not_found": "skip", "on_airport_all_subscriptions_unavailable": "pause_task_and_notify_admins" } }
+ { "task_type": "search_join_group", "execution_mode": "mtproto_userbot", "name": "迪拜房产群搜索目标点击", "search_bots": ["jisou"], "keywords": [ {"text": "迪拜房产", "business_region": "AE", "account_locale": "zh-CN", "proxy_country": "SG", "lang": "zh", "weight": 1.0, "decoy": false}, {"text": "迪拜租房", "business_region": "AE", "account_locale": "zh-CN", "proxy_country": "AE", "lang": "zh", "weight": 0.8, "decoy": false}, {"text": "天气预报", "business_region": "CN", "account_locale": "zh-CN", "proxy_country": "SG", "lang": "zh", "weight": 1.0, "decoy": true} ], "target_groups": [ { "operation_target_id": 123, "target_input": "@yourgroup", "match_strategy": "username_only" } ], "anti_detection": { /* 见 §8.1 */ }, "proxy_policy": { /* 见 §6.5 */ }, "account_config": { "selection_mode": "manual", "account_ids": [101, 102, 103, 104, 105], "authorization_roles": ["primary", "standby_1"], "same_account_concurrency": 1, "authorization_switch_policy": "primary_first_failover_only", "max_concurrent": 5, "cooldown_per_account_minutes": 30, "ban_policy": "pause_task" }, "pacing_config": { "mode": "curve", "curve_type": "steady", "hourly_round_curve": [0,0,0,0,0,0,1,1,2,2,2,2,1,1,2,2,3,3,2,2,1,1,0,0], "actions_per_round_mode": "auto", "actions_per_round": 5, "max_actions_per_hour": 20, "hourly_min_successful_joins": 0, "max_actions_per_day": 100, "per_account_total_action_limit": 0, "per_account_daily_action_limit": 1, "per_account_cooldown_days": 0, "per_keyword_account_daily_limit": 2, "hourly_skip_probability": 0, "daily_skip_probability": 0, "skip_probability_per_action": 0.1, "hourly_jitter_percent": 30, "daily_jitter_percent": 20, "active_hours": [{"start": "08:00", "end": "23:00"}] }, "failure_policy": { "max_retries": 2, "retry_delay_seconds": 300, "on_account_banned": "pause_task", "on_api_rate_limit": "wait_and_retry", "on_target_not_found": "skip", "on_airport_all_subscriptions_unavailable": "pause_task_and_notify_admins" } }
 ```
  ##
 
@@ -830,9 +854,9 @@ search_join success
 
 关键词合法性由“业务区域、账号语言、代理出口国家”允许矩阵决定。禁止继续使用 `keyword.region == account.region_code == ip.country` 这类硬等式；例如中文账号 + 新加坡出口 + 阿联酋业务关键词是允许组合，但必须在配置矩阵中显式声明。
 
-#### 9.1.2 target_groups 复用 OperationTarget `target_groups[].operation_target_id` 是任务配置的唯一持久引用。任务创建向导可以接收 `target_input`（`@username`、公开链接、邀请链接或 peer id）用于解析或 upsert `OperationTarget`，但任务保存后只持久化 `operation_target_id`、`match_strategy` 和可选权重；不得在 `type_config` 中直接保存裸 `peer_id`。Action payload 可以带执行时的目标快照，但必须来自 `OperationTarget`，并带 `operation_target_version` 便于目标资料变更后审计。#
+#### 9.1.2 target_groups 复用 OperationTarget `target_groups[].operation_target_id` 是任务配置的唯一持久引用。任务创建向导可以接收 `target_input`（`@username`、公开链接、邀请链接或 peer id）用于解析或 upsert `OperationTarget`，但任务保存后只持久化 `operation_target_id`、`match_strategy` 和可选权重；不得在 `type_config` 中直接保存裸 `peer_id`。Action payload 可以带执行时的目标快照，但必须来自 `OperationTarget`，并带 `operation_target_version` 便于目标资料变更后审计。当前搜索入群执行链路还必须有公开 username；peer id 可保存为资料和审计身份，但不能单独创建可执行 action。#
 
-### 9.2 Pydantic Schema
+### 9.2 内部 Pydantic / 持久化 Schema
 ```python
  class SearchBotTarget(BaseModel): username: Literal["jisou", "jisou2bot", "soso", "smss", "CJSY"] weight: float = 1.0 class SearchJoinKeyword(BaseModel): text: str = Field(min_length=1, max_length=64) business_region: str | None = None account_locale: str = "zh-CN" proxy_country: str | None = None lang: str = "zh" weight: float = Field(default=1.0, ge=0, le=10) decoy: bool = False class SearchJoinTargetGroup(BaseModel): operation_target_id: int | None = None target_input: str | None = None match_strategy: Literal["username_only", "peer_id_only", "username_or_peer_id", "title_fuzzy"] = "username_or_peer_id" weight: float = Field(default=1.0, ge=0, le=10) class AntiDetectionConfig(BaseModel): warmup_days: int = Field(default=3, ge=0, le=30) warmup_daily_actions: int = Field(default=3, ge=1, le=20) behavior_realism: BehaviorRealismConfig rhythm: RhythmConfig paging: PagingConfig anti_clustering: AntiClusteringConfig class ProxyPolicyConfig(BaseModel): required: bool = True allowed_proxy_types: list[Literal["residential_static", "mobile_4g", "airport_clash"]] = ["residential_static", "airport_clash"] min_ip_reputation_score: float = Field(default=70, ge=0, le=100) min_exit_ip_stability_score: float = Field(default=80, ge=0, le=100) min_binding_age_days: int = Field(default=30, ge=0, le=180) max_accounts_per_asn: int = Field(default=5, ge=1, le=50) max_accounts_per_ip_cidr_24: int = Field(default=3, ge=1, le=20) max_daily_requests_per_ip: int = Field(default=50, ge=1, le=500) max_weekly_requests_per_ip: int = Field(default=200, ge=1, le=2000) class SearchJoinGroupConfig(BaseModel): execution_mode: Literal["mtproto_userbot"] = "mtproto_userbot" search_bots: list[SearchBotTarget] = Field(min_length=1) keywords: list[SearchJoinKeyword] = Field(min_length=1, max_length=500) target_groups: list[SearchJoinTargetGroup] = Field(min_length=1, max_length=50) anti_detection: AntiDetectionConfig proxy_policy: ProxyPolicyConfig same_account_concurrency: Literal[1] = 1
 ```
@@ -840,7 +864,7 @@ search_join success
 
 `SearchJoinGroupConfig.pacing_config` 必须额外包含 §8.5.1 的 search_join 专属字段：`per_account_total_action_limit`、`per_account_daily_action_limit`、`per_account_cooldown_days`、`per_keyword_account_daily_limit`、`max_actions_per_day`、`hourly_skip_probability`、`daily_skip_probability`、`skip_probability_per_action`、`hourly_jitter_percent`、`daily_jitter_percent`。这些字段不得提升到任务中心通用 `PacingConfig` 后影响其他任务。
 
-### 9.3 配置校验规则 - `execution_mode` 首版只能是 `mtproto_userbot`，前端必须说明这不是手机 UI 自动化 - 真实机器人协议样本未采集完成时，只允许保存草稿和运行 parser fixture，不允许启动真实灰度 - `decoy=true` 的关键词占比 ≥ 30%（硬约束，否则任务不创建） - `target_groups[].operation_target_id` 或 `target_input` 至少填一个；保存任务前必须解析 / upsert 为 `OperationTarget` 并持久化 `operation_target_id` - 关键词的 `business_region / account_locale / proxy_country` 必须落入允许矩阵 - `proxy_policy.required=true` 时，账号池中所有被选授权槽位必须已绑代理节点并完成 `observed_exit_ip` 健康检查 - 主/备用授权槽位必须各自拥有完整客户端元数据，且同账号内不得复用元数据组合或代理节点 - 同一 `account_id` 在 `search_join` 执行中只允许 1 个 action 处于 claiming / executing - `anti_detection.behavior_realism.decision_delay_seconds[0] >= 2`（不允许秒点） - `paging.max_pages` 默认且上限为 70，找满 70 页或提前没有下一页仍未命中必须停止任务 - `per_account_total_action_limit >= 0`、`per_account_daily_action_limit >= 0`、`per_account_cooldown_days >= 0`、`per_keyword_account_daily_limit >= 0`、`max_actions_per_day >= 0`；`0` 表示该项不设硬上限 - `hourly_skip_probability / daily_skip_probability / skip_probability_per_action` 必须在 `0..1` - `hourly_jitter_percent / daily_jitter_percent` 必须在 `0..100` - `hourly_min_successful_joins` 不得大于 `max_actions_per_hour`；`max_actions_per_day` 小于 `max_actions_per_hour` 时允许保存但必须提示 planner 会以日上限为准 - `decoy_join_enabled=true` 不作为首版默认能力，若开启必须单独走风控审批和审计 - 默认 `post_join_policy=stay_joined`，任何立即退出策略都必须单独审批并写审计 #
+### 9.3 系统策略校验规则 - `execution_mode` 首版只能是 `mtproto_userbot`，前端必须说明这不是手机 UI 自动化 - 真实机器人协议样本未采集完成时，只允许保存草稿和运行 parser fixture，不允许启动真实灰度 - `decoy=true` 的关键词占比 ≥ 30%（硬约束，否则任务不创建） - `target_groups[].operation_target_id` 或 `target_input` 至少填一个；保存任务前必须解析 / upsert 为 `OperationTarget` 并持久化 `operation_target_id` - 关键词的 `business_region / account_locale / proxy_country` 必须落入允许矩阵 - `proxy_policy.required=true` 时，账号池中所有被选授权槽位必须已绑代理节点并完成 `observed_exit_ip` 健康检查 - 主/备用授权槽位必须各自拥有完整客户端元数据，且同账号内不得复用元数据组合或代理节点 - 同一 `account_id` 在 `search_join` 执行中只允许 1 个 action 处于 claiming / executing - `anti_detection.behavior_realism.decision_delay_seconds[0] >= 2`（不允许秒点） - `paging.max_pages` 默认且上限为 70，找满 70 页或提前没有下一页仍未命中必须停止任务 - `per_account_total_action_limit >= 0`、`per_account_daily_action_limit >= 0`、`per_account_cooldown_days >= 0`、`per_keyword_account_daily_limit >= 0`、`max_actions_per_day >= 0`；`0` 表示该项不设硬上限 - `hourly_skip_probability / daily_skip_probability / skip_probability_per_action` 必须在 `0..1` - `hourly_jitter_percent / daily_jitter_percent` 必须在 `0..100` - `hourly_min_successful_joins` 不得大于 `max_actions_per_hour`；`max_actions_per_day` 小于 `max_actions_per_hour` 时允许保存但必须提示 planner 会以日上限为准 - `decoy_join_enabled=true` 不作为首版默认能力，若开启必须单独走风控审批和审计 - 默认 `post_join_policy=stay_joined`，任何立即退出策略都必须单独审批并写审计。以上规则由服务端生成、校验和执行，不得转换为三字段新建表单的可编辑项。 #
 
 ## 10. 目标机器人 / SOSO 协议交互契约 本节定义 executor 与第三方索引机器人（@searchbot、@soso、@smss、@CJSY）交互的协议契约。**dev 必须先按 §4.8 采集真实样本，再按本节实现 parser 和 executor**；样本缺失时只能跑 fixture / precheck，不允许启动真实灰度。#
 
@@ -862,7 +886,7 @@ search_join success
 | 翻页 | 单次返回 5-10 条结果；更多结果需点击底部“下一页” button |
 | 打开 | 对群对应 button / Telegram 内部 URL 执行 MTProto callback 或 URL resolve，记录协议事实；外部 HTTP URL 不在首版默认打开；decoy 浏览只允许 `navigate_only` 安全按钮 |
 | 入群后策略 | 默认留在目标群；如审批为延迟退出，只能由独立清理任务在留存期后执行 |
- **协议细节**：- **消息格式**：目标机器人结果消息通常为 `InlineKeyboardMarkup`，包含：- 主结果区：每行 1 个 button，button.text 为群名/标题，button.data 或 button.url 携带定位信息 - 底部导航：单独一行 button，如 `« 上一页` `第 1/3 页` `下一页 »` - **button 类型**：- `callback_data`：点击后触发 `GetBotCallbackAnswerRequest`，机器人返回 `BotCallbackAnswer`（含 message 或 url） - `telegram_url`：`t.me` / Telegram 内部 URL，允许在 MTProto 会话内 resolve / join - `external_http_url`：非 Telegram 外部 URL，首版不得默认打开，返回 `external_url_requires_web_profile` - **button effect**：parser 必须把按钮标成 `navigate_only / join_candidate / external / unknown`；入群前 decoy 浏览只能点击 `navigate_only`，不得点击 `join_candidate / external / unknown` - **目标群匹配**：- 优先按 `telegram_url`（如 `https://t.me/yourgroup`）匹配 `OperationTarget.normalized_username` - 次选按 callback_data 携带的 chat_id 匹配 `OperationTarget.peer_id` - 兜底按 button.text 模糊匹配 `OperationTarget.title` #
+**协议细节**：- **消息格式**：目标机器人结果消息通常为 `InlineKeyboardMarkup`，包含：- 主结果区：每行 1 个 button，button.text 为群名/标题，button.data 或 button.url 携带定位信息 - 底部导航：单独一行 button，如 `« 上一页` `第 1/3 页` `下一页 »` - **button 类型**：- `callback_data`：点击后触发 `GetBotCallbackAnswerRequest`，机器人返回 `BotCallbackAnswer`（含 message 或 url） - `telegram_url`：`t.me` / Telegram 内部 URL，允许在 MTProto 会话内 resolve / join - `external_http_url`：非 Telegram 外部 URL，首版不得默认打开，返回 `external_url_requires_web_profile` - **button effect**：parser 必须把按钮标成 `navigate_only / join_candidate / external / unknown`；入群前 decoy 浏览只能点击 `navigate_only`，不得点击 `join_candidate / external / unknown` - **目标群匹配**：当前 Telethon adapter 只接受 `telegram_url`（如 `https://t.me/yourgroup`）中的精确公开 username；不把 `MessageButton` 上不存在的 `target_chat_id`、callback data 或 button.text 推断为目标身份。#
 
 ### 10.3 @soso、@smss、@CJSY（第二版扩展）
 
@@ -956,13 +980,13 @@ None raw_response: Message # 原始消息，供 fallback @dataclass class Search
 |`BotSearchDispatcher`|`backend/app/services/task_center/executors/search_join_group.py`|协议解析（见 §10）|
 |`SearchJoinMembershipVerifier`|`backend/app/services/task_center/search_join_membership.py`|验证入群结果、挑战类型、留存策略和失败 taxonomy|
 |数据库表|见 §13.1|包含协议样本、机场订阅、机场节点、出口 IP 观测、代理绑定、环境绑定、warmup state、客户端元数据组合审计、授权执行锁、IP 信誉历史、search_join_action_stats 和 search_join_pacing_decisions 等 search_join 专属表|
-|前端 Wizard 第 5 步 search_join_group 分支|`frontend/src/app/views/TaskCenterWizardSections.tsx`|运营真实性配置面板|
+|前端四步极简 search_join_group 分支|`frontend/src/app/views/TaskCenterWizardSections.tsx`|只收集目标群、关键词和目标次数；系统策略与资源 blocker 在确认页/详情展示|
 |前端任务详情"搜索入群统计" Tab|`frontend/src/app/views/TaskCenterDetailModal.tsx`|排名轨迹 + 行为漏斗|
 |风控中心 search_join 维度告警|`frontend/src/app/views/RiskControlView.tsx`|proxy_dead / bot_blocked / fingerprint_anomaly 告警类型|
 |
  #
 
-### 11.4 与 OperationTarget 的关系 `target_groups[].operation_target_id` 是任务配置唯一持久引用（现有 `backend/app/models/operation_target.py`）。任务创建向导从运营目标列表中选已有目标，或粘贴 username / 公开链接 / 邀请链接 / peer id 自动解析后 upsert 到 OperationTarget 再引用。task.type_config 只存 `operation_target_id`、匹配策略和权重，不直接存裸 `peer_id`；action payload 可携带来自 OperationTarget 的执行快照和版本号。#
+### 11.4 与 OperationTarget 的关系 `target_groups[].operation_target_id` 是任务配置唯一持久引用（现有 `backend/app/models/operation_target.py`）。新建任务从运营目标列表选择一个已有目标并只提交 `target_operation_target_id`；用户名、公开链接、邀请链接或 peer id 的解析 / upsert 属于运营目标创建流程，不是搜索点击新建 API 的输入。task.type_config 只存服务端派生的 `operation_target_id`、匹配策略和权重，不直接存裸 `peer_id`；action payload 可携带来自 OperationTarget 的执行快照和版本号。#
 
 ### 11.5 与 TG Account 的关系 账号创建 / 资料初始化 / 备用 session / 设备清理等复用现有 `account_security/service.py` 全部机制。本任务新增的"账号环境栈"绑定在 `tg_account_authorizations` 授权资产槽位之上，不修改账号主表；`primary / standby_1 / standby_2` 都按独立客户端身份管理。#
 
@@ -1441,31 +1465,16 @@ CREATE INDEX idx_search_join_pacing_task_date ON search_join_pacing_decisions(ta
 
 ### 14.2 创建向导
 
-5 步向导新增“搜索目标群点击任务”分支：
+`search_join_group` 和 `search_rank_deboost` 使用固定的四步创建向导；它不是通用五步向导的变体。
 
-| 步骤 | 控件 |
-| --- | --- |
-| 1. 基础信息 | 任务名称、目标群聊、结束时间 |
-| 2. 搜索机器人 | 多选搜索机器人；首版仅开放 `@searchbot` |
-| 3. 关键词列表 | 表格录入 `text / business_region / account_locale / proxy_country / lang / weight / decoy`，支持 CSV 导入；decoy 占比提示且低于 30% 阻断 |
-| 4. 运营真实性配置 | warmup、行为真实化、搜索节奏与账号上限、小时 / 天跳过、小时 / 天抖动、翻页、反聚类配置，默认折叠高级项 |
-| 5. 账号 + 预览 | 展示 eligible、protocol sample、observed exit IP、proxy egress guard、API ID / session 一致性、missing proxy、missing client metadata、warmup、proxy_dead、account lock conflict 和 keyword matrix mismatch |
+| 步骤 | 运营填写或确认的内容 | 系统行为 |
+| --- | --- | --- |
+| 1. 任务类型 | 搜索目标群点击任务或搜索排名观察任务 | 切换类型时只切换任务语义，不暴露高级配置。 |
+| 2. 目标群 | 一个运营目标群 | 校验目标归属、群类型和公开 username 是否可用于搜索匹配。 |
+| 3. 关键词与目标次数 | 关键词列表、目标次数 | 关键词去重；系统保存执行所需的受控表示，并以目标次数建立生命周期进度。 |
+| 4. 确认 | 三项业务输入摘要 | 搜索目标群点击任务显示“创建并启动”；搜索排名观察任务显示“创建草稿”。 |
 
-预检返回：
-
-```json
-{
-  "search_join_precheck": {
-    "eligible_accounts": 5,
-    "protocol_sample_status": {"jisou": "ready"},
-    "missing_environment": [{"account_id": 105, "authorization_id": 9003, "session_role": "standby_1", "missing": "client_metadata"}],
-    "exit_ip_health": {"ready_bindings": 10, "exit_ip_changed": 0},
-    "decoy_ratio": 0.35,
-    "estimated_daily_actions": 25,
-    "warnings": ["账号 102 已养号 28 天，建议再养 2 天"]
-  }
-}
-```
+不输入任务名称，不选择账号/账号组/代理/机器人，也不调整节奏、停留、跳过、抖动或重试。服务端执行真实资源和风险校验；任何阻塞原因通过创建错误和任务详情事实展示，而不是退回为运营配置项。
 
 ### 14.3 任务列表
 
@@ -1701,7 +1710,7 @@ AI 活跃群联动 126 个账号待冷却 / 64 个已进入 ready pool
 - 协议样本缺失、样本解析、button type / button effect 分类、授权槽位环境栈缺失、warmup、decoy 比例、proxy_dead、exit_ip_changed、proxy_egress_guard_failed、authorization_proxy_conflict、proxy_node_unreachable、airport_subscription_nodes_unavailable、airport_all_subscriptions_unavailable、admin_notification_failed、search_join_hourly_execution、api_id_client_metadata_mismatch、fingerprint_invalid、订阅格式识别失败、Clash / Base64 URI / JSON 订阅解析失败、多订阅优先级冲突、授权槽位多 active 代理 / 多出口 IP 和主备复用元数据的单元测试。
 - 同账号执行锁、备用 failover、observed exit IP 观测、防直连回退、decoy 只点 `navigate_only` 和关键词明文日志扫描测试。
 - pre-join decoy click 默认只浏览不加入、结果写入 `pre_join_decoy_clicks` 的单元测试。
-- post-join safe navigation 默认只浏览不加入、总非目标安全浏览次数不超过 3、结果写入 `post_join_safe_navigation` 的单元测试。
+- 入群后安全浏览本期不暴露或执行；回归测试必须断言其配置不会进入新建任务 payload，结果保持空数组。
 - search_join 专属节奏与账号上限测试：租户时区日界线、账号日 / 总上限、账号间隔天数、同账号同关键词日上限、任务日上限、日 / 小时跳过采样持久化、小时 / 天抖动不突破硬上限、运行中编辑只影响未来规划。
 - `post_join_policy=stay_joined` 默认策略和 24h / 7d 留存状态回写测试。
 - 搜索入群成功后联动 AI 活跃群 ready pool 的测试：冷却未到不入池、can_send 复检失败不入池、新成员占比超限不入池、任务暂停不入池、满足条件后进入 ready pool。
@@ -1746,8 +1755,8 @@ AI 活跃群联动 126 个账号待冷却 / 64 个已进入 ready pool
 - 每个主执行 action 必须经过 §8.3 的完整 8 步链路；warmup / decoy 路径可按 §8.2 放宽，但必须写清 lifecycle 和 skip reason。
 - 授权槽位未绑唯一代理、同一授权槽位存在多 active 代理、授权槽位未绑客户端元数据时，Executor 返回 `skipped`，并写入 `lifecycle_phase=needs_proxy/needs_client_metadata/authorization_proxy_conflict` 与对应 `skip_reason`，不得返回新 action status。
 - 入群前非目标点击默认只打开/停留/返回，不加入非目标群 / 频道；每次点击必须写入 `action.result.pre_join_decoy_clicks`。
-- 入群后安全浏览默认只打开/停留/返回，不加入非目标群 / 频道；每次点击必须写入 `action.result.post_join_safe_navigation`。
-- 入群前和入群后的非目标安全浏览总数不得超过 3；只允许 `button_effect=navigate_only`；`join_candidate / external / unknown` 都必须跳过。
+- 入群后安全浏览本期不支持；创建/编辑页不得展示相关配置，`action.result.post_join_safe_navigation` 保持空数组以兼容既有详情读取。
+- 入群前非目标安全浏览总数不得超过 3；只允许 `button_effect=navigate_only`；`join_candidate / external / unknown` 都必须跳过。
 - 默认 `post_join_policy=stay_joined`；任何退出策略都必须记录策略、执行时间、审批原因和留存结果。
 - 搜索入群成功不得直接等同于 AI 活跃群 ready；必须在留存观察、冷却、`can_send` 复检、新成员占比和任务状态全部满足后，才能把账号追加到 linked task ready pool。
 - 排名观察必须写入独立 `search_join_rank_observations`，不得计入 action success，也不得把付费广告、流量联盟或内容健康变化自动归因为 search_join action。
@@ -1854,3 +1863,5 @@ AI 活跃群联动 126 个账号待冷却 / 64 个已进入 ready pool
 |2026-07-04|v0.19|Codex（PRD 完整梳理）|按主线程和子代理复核补齐缺口：主 PRD 任务类型表新增 `search_join_group`；系统设置 / 账号面具 / 风控中心代理权属拆成全局 Clash 订阅、授权槽位代理绑定、代理健康处置三层；首版代理路径定为 `airport_clash`；补齐远端观测 `unobservable`、观测刷新 API、运行中节奏编辑影响预览、概率 / 抖动字段范围、全节点不可用 action / 小时 / task 三层状态，以及实时 pacing / random 不调用 AI Gateway 的验收。|
 |2026-07-05|v0.20|Codex（Clash 多订阅主备修订）|按用户确认将 Clash 配置从单个全局订阅修订为租户级多订阅源池：系统设置支持多个订阅地址、主备优先级、启用 / 禁用、默认不自动切回；当前绑定节点不通时优先同订阅切节点，同订阅无健康节点时切备用订阅健康节点；全部启用订阅不可用才写 `airport_all_subscriptions_unavailable`、阻断真实操作并通知管理员。|
 |2026-07-05|v0.21|Codex（Clash 多订阅一致性修订）|清理 v0.17 单订阅残留，补齐 `proxy_airport_subscriptions` SQL 示例中的 `priority/enabled/failover_policy/auto_failback_enabled/failback_cooldown_minutes/node_count/healthy_node_count`，并把 `proxy_node_failover_events` 从单 `subscription_id` 修订为 `from_subscription_id/to_subscription_id`，确保 PRD、数据流索引和实现验收都按多订阅主备口径执行。|
+|2026-07-19|v0.22|Codex（搜索点击契约修复）|收紧目标识别为精确公开 username；peer id 仅作资料/审计身份，peer-only 配置在 Planner 阶段阻断。明确 decoy 必须先排除目标、入群后安全浏览本期不执行；补齐任务局部编辑保留既有关键词 hash/密文配对、服务端与 Gateway 前双重哈希校验的契约。|
+|2026-07-20|v0.23|Codex（三字段创建设计定稿）|将新建任务的有效产品契约收敛为目标群、搜索关键词、目标次数；删除专项 PRD 中仍会误导为五步高级创建的描述。账号、代理、机器人、节奏、停留、配额、重试和资源准备统一改为系统托管，保留存量任务的已保存事实展示。|

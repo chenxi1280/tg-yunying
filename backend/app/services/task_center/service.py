@@ -2,17 +2,21 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime, timedelta
+import hashlib
+import re
 from typing import Any
 
 from sqlalchemy import and_, delete, func, or_, select, tuple_
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 
 from app.config import get_settings
 from app.integrations.telegram import OperationResult
-from app.models import AccountPool, Action, ChannelMessage, ExecutionAttempt, FailureType, MessageFingerprint, OperationIssue, OperationPlanTaskLink, OperationTarget, ReviewQueue, RuleSet, RuleSetVersion, Task, TaskRuntimeSummary, TgAccount, TgGroup, WorkerHeartbeat
-from app.models.search_rank_deboost import AccountGroupProxyBinding
+from app.models import AccountPool, AccountStatus, Action, ChannelMessage, ExecutionAttempt, FailureType, MessageFingerprint, OperationIssue, OperationPlanTaskLink, OperationTarget, ReviewQueue, RuleSet, RuleSetVersion, Task, TaskRuntimeSummary, TgAccount, TgGroup, WorkerHeartbeat
+from app.models.search_rank_deboost import AccountGroupProxyBinding, SearchRankDeboostExemptGroup
+from app.search_keywords import repair_legacy_keyword_materials
 from app.schemas.task_center import (
+    AccountConfig,
     ChannelCapacityCheckRequest,
     ChannelCommentConfig,
     ChannelCommentTaskCreate,
@@ -36,7 +40,9 @@ from app.schemas.task_center import (
     RecommendTaskAccountsRequest,
     SearchJoinGroupTaskCreate,
     SearchJoinGroupTaskConfigUpdate,
+    SearchJoinGroupSimpleTaskCreate,
     SearchRankDeboostExemptGroupResponse,
+    SearchRankDeboostSimpleTaskCreate,
     SearchRankDeboostTaskConfigUpdate,
     SearchRankDeboostTaskCreate,
     TaskPrecheckRequest,
@@ -45,7 +51,9 @@ from app.schemas.task_center import (
     TaskSourceFilterOverrideRequest,
     TaskUpdate,
 )
+from app.security import encrypt_secret
 from app.services._common import _now, audit, gateway, normalize_list_filter
+from app.services.account_usage_policy import apply_rank_deboost_account_filters
 from app.services.developer_apps import credentials_for_account
 from app.timezone import as_beijing
 
@@ -62,7 +70,16 @@ from .channel_membership import (
 from .dispatcher import _sync_all_account_membership_state, claim_actions, dispatch_action, due_actions, mark_dispatcher_db_error, recover_expired_claims, recover_expired_hard_hourly_actions
 from .daily_coverage import recover_terminal_coverage_reservations
 from .executors import build_task_plan, channel_comment, prepare_open_actions_for_planning, requires_planning_with_open_actions
-from .search_rank_deboost_reservations import reopen_released_reservation, reservation_for_action
+from .search_rank_deboost_pacing import DeboostPacingStats, account_click_allowed, deboost_pacing_window, lock_rank_deboost_quota_scope
+from .search_rank_deboost_reservations import (
+    mark_reserved_reservation_unknown,
+    reopen_released_reservation,
+    release_reserved_reservation,
+    reservation_for_action,
+    reserve_click,
+)
+from .payloads import SearchRankDeboostPayload
+from .rank_deboost_runtime_authorization import resolve_rank_deboost_runtime_authorization
 from .details import (
     _accounts_by_id,
     _ai_account_profiles,
@@ -164,6 +181,7 @@ DEFAULT_RECOVERY_BATCH_LIMIT = 100
 UNKNOWN_MEMBERSHIP_REPROBE_PER_DRAIN_LIMIT = 10
 UNKNOWN_MEMBERSHIP_REPROBE_COOLDOWN = timedelta(minutes=30)
 UNKNOWN_MEMBERSHIP_REPROBE_COOLDOWN_STATUSES = {"timeout", "connection_error"}
+PUBLIC_TELEGRAM_USERNAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{4,31}$")
 
 
 from .config_fields import (
@@ -182,6 +200,12 @@ from .search_rank_deboost import (
     to_exempt_group_response,
     validate_rank_deboost_preconditions,
     validate_rank_deboost_protocol_samples,
+)
+from .search_click_target_progress import reconcile_search_click_target_progress
+from .search_rank_deboost_targets import (
+    TARGET_REFERENCE_OPERATION_TARGET,
+    rank_deboost_target_group_refs,
+    require_rank_deboost_target_group_refs,
 )
 from .hard_hourly import (
     current_progress as hard_hourly_current_progress,
@@ -230,6 +254,27 @@ def create_search_join_group_task(session: Session, tenant_id: int, payload: Sea
     return _create_task(session, tenant_id, "search_join_group", payload, actor)
 
 
+def create_simple_search_join_group_task(
+    session: Session,
+    tenant_id: int,
+    payload: SearchJoinGroupSimpleTaskCreate,
+    actor: str,
+) -> Task:
+    target = _simple_search_click_target(session, tenant_id, payload.target_operation_target_id)
+    return create_search_join_group_task(
+        session,
+        tenant_id,
+        SearchJoinGroupTaskCreate(
+            name=_simple_search_click_name(target, "搜索目标群点击", payload.target_count),
+            target_operation_target_id=target.id,
+            keywords=payload.keywords,
+            target_count=payload.target_count,
+            search_bots=[{"username": "jisou", "display_name": "极搜"}],
+        ),
+        actor,
+    )
+
+
 def create_and_start_group_ai_chat_task(session: Session, tenant_id: int, payload: GroupAIChatTaskCreate, actor: str) -> Task:
     return _create_and_start_task(session, tenant_id, "group_ai_chat", payload, actor)
 
@@ -256,6 +301,27 @@ def create_and_start_channel_comment_task(session: Session, tenant_id: int, payl
 
 def create_and_start_search_join_group_task(session: Session, tenant_id: int, payload: SearchJoinGroupTaskCreate, actor: str) -> Task:
     return _create_and_start_task(session, tenant_id, "search_join_group", payload, actor)
+
+
+def create_and_start_simple_search_join_group_task(
+    session: Session,
+    tenant_id: int,
+    payload: SearchJoinGroupSimpleTaskCreate,
+    actor: str,
+) -> Task:
+    target = _simple_search_click_target(session, tenant_id, payload.target_operation_target_id)
+    return create_and_start_search_join_group_task(
+        session,
+        tenant_id,
+        SearchJoinGroupTaskCreate(
+            name=_simple_search_click_name(target, "搜索目标群点击", payload.target_count),
+            target_operation_target_id=target.id,
+            keywords=payload.keywords,
+            target_count=payload.target_count,
+            search_bots=[{"username": "jisou", "display_name": "极搜"}],
+        ),
+        actor,
+    )
 
 
 def _new_task(session: Session, tenant_id: int, task_type: str, payload) -> Task:
@@ -286,6 +352,44 @@ def _new_task(session: Session, tenant_id: int, task_type: str, payload) -> Task
     session.flush()
     initialize_all_account_task_scope(session, task)
     return task
+
+
+def _simple_search_click_target(session: Session, tenant_id: int, target_id: int) -> OperationTarget:
+    target = session.scalar(
+        select(OperationTarget).where(
+            OperationTarget.id == target_id,
+            OperationTarget.tenant_id == tenant_id,
+            OperationTarget.target_type == "group",
+        )
+    )
+    if target is None:
+        raise ValueError("搜索点击目标群不存在或不属于当前租户")
+    raw_username = str(target.username or "")
+    username = raw_username[1:] if raw_username.startswith("@") else raw_username
+    if not PUBLIC_TELEGRAM_USERNAME_RE.fullmatch(username):
+        raise ValueError("搜索点击目标群必须配置合法公开 username")
+    return target
+
+
+def _simple_search_click_name(target: OperationTarget, task_label: str, target_count: int) -> str:
+    target_label = (target.title or f"@{target.username}").strip()
+    return f"{target_label} {task_label} {target_count} 次"[:200]
+
+
+def _refresh_simple_search_click_name(session: Session, task: Task, *, task_label: str) -> None:
+    config = task.type_config or {}
+    target_id = config.get("target_operation_target_id")
+    if target_id is None:
+        target_group_ids = config.get("target_group_ids")
+        if isinstance(target_group_ids, list) and len(target_group_ids) == 1:
+            target_id = target_group_ids[0]
+    if target_id is None:
+        return
+    target_count = int(config.get("target_count") or 0)
+    if target_count <= 0:
+        return
+    target = _simple_search_click_target(session, task.tenant_id, int(target_id))
+    task.name = _simple_search_click_name(target, task_label, target_count)
 
 
 def _create_task(session: Session, tenant_id: int, task_type: str, payload, actor: str) -> Task:
@@ -392,6 +496,7 @@ def _task_summary_detail(session: Session, tenant_id: int, task: Task) -> dict[s
         "task": task_payload,
         "actions": [],
         "stats": stats,
+        "rank_deboost_exempt_group": _rank_deboost_exempt_group_payload(session, task),
         "task_runtime_summary": task_summary,
         "operation_plan_links": operation_plan_links,
         "accounts": [],
@@ -410,6 +515,18 @@ def _task_summary_detail(session: Session, tenant_id: int, task: Task) -> dict[s
         "recent_relay_sources": _relay_recent_sources(session, task) if task.type == "group_relay" else [],
         "learning_profile_preview": _task_learning_profile_preview(session, task),
     }
+
+
+def _rank_deboost_exempt_group_payload(session: Session, task: Task) -> dict[str, Any] | None:
+    if task.type != "search_rank_deboost":
+        return None
+    record = session.scalar(
+        select(SearchRankDeboostExemptGroup).where(
+            SearchRankDeboostExemptGroup.tenant_id == task.tenant_id,
+            SearchRankDeboostExemptGroup.task_id == task.id,
+        )
+    )
+    return to_exempt_group_response(record) if record else None
 
 
 def _ai_quality_actions(session: Session, task: Task) -> list[Action]:
@@ -663,13 +780,36 @@ def update_channel_comment_config(session: Session, tenant_id: int, task_id: str
 def update_search_join_group_config(session: Session, tenant_id: int, task_id: str, payload: SearchJoinGroupTaskConfigUpdate, actor: str) -> Task:
     update_data = payload.model_dump(mode="json", exclude_unset=True)
     pacing_data = update_data.pop("pacing_config", None)
+    if "keywords" in update_data:
+        update_data.setdefault("keyword_hashes", [])
+        update_data.setdefault("keyword_text_ciphertexts", [])
+    task = _get_task(session, tenant_id, task_id)
+    if task.type != "search_join_group":
+        raise ValueError(f"任务类型不匹配，当前任务是 {task.type}")
+    task.type_config = _normalize_legacy_search_join_config(task.type_config or {})
     task = _apply_type_config_data(session, tenant_id, task_id, "search_join_group", update_data, actor)
+    if {"target_operation_target_id", "target_count"}.intersection(update_data):
+        _refresh_simple_search_click_name(session, task, task_label="搜索目标群点击")
     if pacing_data is not None:
         task.pacing_config = pacing_config_payload(pacing_data)
         task.updated_at = _now()
     session.commit()
     session.refresh(task)
     return task
+
+
+def _normalize_legacy_search_join_config(config: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(config)
+    hashes = list(normalized.get("keyword_hashes") or [])
+    ciphertexts = list(normalized.get("keyword_text_ciphertexts") or [])
+    if hashes or ciphertexts:
+        pairs = repair_legacy_keyword_materials(hashes, ciphertexts)
+        normalized["keyword_hashes"] = [item[0] for item in pairs]
+        normalized["keyword_text_ciphertexts"] = [item[1] for item in pairs]
+    if "post_join_safe_navigation_min" in normalized or "post_join_safe_navigation_max" in normalized:
+        normalized["post_join_safe_navigation_min"] = 0
+        normalized["post_join_safe_navigation_max"] = 0
+    return normalized
 
 
 def create_search_rank_deboost_task(
@@ -679,6 +819,7 @@ def create_search_rank_deboost_task(
     operator: str,
     *,
     commit: bool = True,
+    defer_readiness: bool = False,
 ) -> Task:
     """创建搜索排名观察任务。
 
@@ -686,6 +827,9 @@ def create_search_rank_deboost_task(
     - 创建 task 记录（task_type='search_rank_deboost'）
     - 创建 account_group_proxy_bindings 记录
     - 预选随机豁免群
+
+    简单三字段创建传入 ``defer_readiness=True``，只创建草稿；真实执行准备在
+    ``start_task`` 中完成。
     """
     bot_username = _first_rank_deboost_bot(payload.search_bots)
     legacy_binding_requested = payload.account_pool_id is not None and payload.proxy_airport_node_id is not None
@@ -700,9 +844,16 @@ def create_search_rank_deboost_task(
         )
         account_pool_id = int(payload.account_pool_id or 0)
         proxy_airport_node_id = int(payload.proxy_airport_node_id or 0)
+    elif defer_readiness:
+        account_pool_id = 0
+        proxy_airport_node_id = 0
     else:
         validate_rank_deboost_protocol_samples(session, tenant_id, bot_username)
-        bindings = _rank_deboost_ready_bindings(session, tenant_id, payload)
+        bindings = _rank_deboost_ready_bindings(
+            session,
+            tenant_id,
+            payload.account_config.model_dump(mode="json"),
+        )
         account_pool_id = int(bindings[0].account_pool_id)
         proxy_airport_node_id = int(bindings[0].proxy_airport_node_id)
 
@@ -743,6 +894,7 @@ def create_search_rank_deboost_task(
         my_target_ids=list(payload.target_group_ids),
         search_results=None,
     )
+    _record_rank_deboost_readiness_pending(task, "draft_created")
 
     audit(
         session,
@@ -761,6 +913,33 @@ def create_search_rank_deboost_task(
     return task
 
 
+def create_simple_search_rank_deboost_task(
+    session: Session,
+    tenant_id: int,
+    payload: SearchRankDeboostSimpleTaskCreate,
+    operator: str,
+) -> Task:
+    target = _simple_search_click_target(session, tenant_id, payload.target_operation_target_id)
+    return create_search_rank_deboost_task(
+        session,
+        tenant_id,
+        SearchRankDeboostTaskCreate(
+            name=_simple_search_click_name(target, "搜索排名观察", payload.target_count),
+            search_bots=["jisou"],
+            keywords=[{"text": keyword} for keyword in payload.keywords],
+            target_group_ids=[target.id],
+            account_config=AccountConfig(),
+            config={
+                "target_count": payload.target_count,
+                "target_operation_target_id": target.id,
+                "target_reference_type": TARGET_REFERENCE_OPERATION_TARGET,
+            },
+        ),
+        operator,
+        defer_readiness=True,
+    )
+
+
 def create_and_start_search_rank_deboost_task(
     session: Session,
     tenant_id: int,
@@ -770,10 +949,19 @@ def create_and_start_search_rank_deboost_task(
     """创建并启动搜索排名观察任务；未满足真实执行闸门时回滚全部创建痕迹。"""
     try:
         task = create_search_rank_deboost_task(session, tenant_id, payload, operator, commit=False)
-        return start_task(session, tenant_id, task.id, operator)
+        return start_task(session, tenant_id, task.id, operator, persist_rank_readiness_failure=False)
     except Exception:
         session.rollback()
         raise
+
+
+def create_and_start_simple_search_rank_deboost_task(
+    session: Session,
+    tenant_id: int,
+    payload: SearchRankDeboostSimpleTaskCreate,
+    operator: str,
+) -> Task:
+    raise ValueError("搜索排名观察任务只能先创建草稿，再由服务端准备并启动")
 
 
 def update_search_rank_deboost_config(
@@ -783,32 +971,34 @@ def update_search_rank_deboost_config(
     payload: SearchRankDeboostTaskConfigUpdate,
     operator: str,
 ) -> Task:
-    """更新搜索排名观察任务配置（keywords / target_group_ids / config / notes）。"""
+    """更新搜索排名观察任务的目标群、关键词和目标次数。"""
     task = _get_task(session, tenant_id, task_id)
     if task.type != "search_rank_deboost":
         raise ValueError(f"任务类型不匹配，当前任务是 {task.type}")
-
     update_data = payload.model_dump(mode="json", exclude_unset=True)
-    next_config = dict(task.type_config or {})
-
-    if "keywords" in update_data:
-        next_config["keywords"] = update_data["keywords"]
-    if "target_group_ids" in update_data:
-        next_config["target_group_ids"] = update_data["target_group_ids"]
-    if "config" in update_data and update_data["config"] is not None:
-        config_overlay = update_data["config"]
-        if isinstance(config_overlay, dict):
-            next_config.update(config_overlay)
-        else:
-            next_config["config"] = config_overlay
-    if "notes" in update_data:
-        next_config["notes"] = update_data["notes"]
-    if "account_config" in update_data and update_data["account_config"] is not None:
-        task.account_config = update_data["account_config"]
-
+    if not update_data:
+        return task
+    next_config, target_changed, keywords_changed, target_count_changed = _next_rank_deboost_config(
+        session,
+        tenant_id,
+        config=task.type_config or {},
+        update_data=update_data,
+    )
+    if not (target_changed or keywords_changed or target_count_changed):
+        return task
     task.type_config = next_config
-    _clear_unfinished_plan(session, task)
+    _apply_rank_deboost_config_change(
+        session,
+        tenant_id,
+        task=task,
+        config=next_config,
+        target_changed=target_changed,
+        keywords_changed=keywords_changed,
+        target_count_changed=target_count_changed,
+        operator=operator,
+    )
     task.updated_at = _now()
+    task.last_error = ""
     audit(
         session,
         tenant_id=tenant_id,
@@ -821,6 +1011,89 @@ def update_search_rank_deboost_config(
     session.commit()
     session.refresh(task)
     return task
+
+
+def _next_rank_deboost_config(
+    session: Session,
+    tenant_id: int,
+    *,
+    config: dict[str, Any],
+    update_data: dict[str, Any],
+) -> tuple[dict[str, Any], bool, bool, bool]:
+    next_config = dict(config)
+    target_changed = False
+    keywords_changed = False
+    target_count_changed = False
+    if "target_operation_target_id" in update_data:
+        target = _simple_search_click_target(session, tenant_id, update_data["target_operation_target_id"])
+        target_changed = _rank_deboost_target_changed(next_config, target.id)
+        if target_changed:
+            next_config["target_group_ids"] = [target.id]
+            next_config["target_operation_target_id"] = target.id
+            next_config["target_reference_type"] = TARGET_REFERENCE_OPERATION_TARGET
+    if "keywords" in update_data:
+        keywords = list(update_data["keywords"])
+        keywords_changed = keywords != _rank_deboost_keywords(next_config)
+        if keywords_changed:
+            next_config["keywords"] = [{"text": keyword} for keyword in keywords]
+    if "target_count" in update_data:
+        target_count = int(update_data["target_count"])
+        target_count_changed = target_count != int(next_config.get("target_count") or 0)
+        if target_count_changed:
+            next_config["target_count"] = target_count
+    return next_config, target_changed, keywords_changed, target_count_changed
+
+
+def _apply_rank_deboost_config_change(
+    session: Session,
+    tenant_id: int,
+    *,
+    task: Task,
+    config: dict[str, Any],
+    target_changed: bool,
+    keywords_changed: bool,
+    target_count_changed: bool,
+    operator: str,
+) -> None:
+    if target_changed or target_count_changed:
+        _refresh_simple_search_click_name(session, task, task_label="搜索排名观察")
+    _clear_unfinished_plan(session, task)
+    if target_changed or keywords_changed:
+        preselect_exempt_group(
+            session,
+            tenant_id=tenant_id,
+            task_id=task.id,
+            operator=operator,
+            my_target_ids=_rank_deboost_target_tokens(session, task, config),
+            search_results=None,
+        )
+        _record_rank_deboost_readiness_pending(task, "configuration_changed")
+        task.status = "draft"
+        task.next_run_at = None
+    else:
+        progress = reconcile_search_click_target_progress(session, task)
+        if not progress.completed:
+            task.status = "draft"
+            task.next_run_at = None
+
+
+def _rank_deboost_target_changed(config: dict[str, Any], target_id: int) -> bool:
+    configured_target_id = config.get("target_operation_target_id")
+    if configured_target_id is None:
+        target_group_ids = config.get("target_group_ids") or []
+        configured_target_id = target_group_ids[0] if len(target_group_ids) == 1 else 0
+    return (
+        int(configured_target_id or 0) != target_id
+        or _rank_deboost_target_reference_type(config) != TARGET_REFERENCE_OPERATION_TARGET
+    )
+
+
+def _rank_deboost_keywords(config: dict[str, Any]) -> list[str]:
+    return [
+        str(item.get("text") if isinstance(item, dict) else item).strip()
+        for item in config.get("keywords") or []
+        if str(item.get("text") if isinstance(item, dict) else item).strip()
+    ]
 
 
 def reroll_search_rank_deboost_exempt_group(
@@ -842,8 +1115,8 @@ def reroll_search_rank_deboost_exempt_group(
         raise ValueError(f"任务类型不匹配，当前任务是 {task.type}")
 
     type_config = task.type_config or {}
-    my_target_ids = list(type_config.get("target_group_ids") or [])
-    search_results = _rank_deboost_exempt_search_results(task, dict(type_config))
+    my_target_ids = _rank_deboost_target_tokens(session, task, dict(type_config))
+    search_results = _rank_deboost_exempt_search_results(session, task, dict(type_config))
 
     record = preselect_exempt_group(
         session,
@@ -871,20 +1144,116 @@ def reroll_search_rank_deboost_exempt_group(
     return SearchRankDeboostExemptGroupResponse(**to_exempt_group_response(record))
 
 
-def _rank_deboost_exempt_search_results(task: Task, type_config: dict[str, Any]) -> list[dict]:
-    searcher = getattr(gateway, "search_rank_deboost_exempt_candidates", None)
+def _rank_deboost_exempt_search_results(session: Session, task: Task, type_config: dict[str, Any]) -> list[dict]:
+    account = _rank_deboost_exempt_account(session, task)
+    payload, keyword_text = _rank_deboost_exempt_payload(session, task, account, type_config)
+    authorization = resolve_rank_deboost_runtime_authorization(session, account, payload)
+    searcher = getattr(gateway, "search_rank_deboost_candidates", None)
     if not callable(searcher):
         raise ValueError("搜索排名观察真实搜索候选源未接入，不能重选随机豁免群")
-    results = searcher(
-        tenant_id=task.tenant_id,
-        task_id=task.id,
-        task_config=type_config,
-    )
+    try:
+        result = searcher(
+            account.id,
+            payload.model_dump(mode="json"),
+            session_ciphertext=authorization.session_ciphertext,
+            credentials=authorization.credentials,
+            keyword_text=keyword_text,
+        )
+    except Exception as exc:
+        raise ValueError(f"搜索排名观察真实候选搜索失败：{type(exc).__name__}") from exc
+    if not isinstance(result, dict) or result.get("execution_status") != "candidates_found" or not result.get("success"):
+        raise ValueError("搜索排名观察真实搜索候选源返回格式无效")
+    results = result.get("search_results")
     if not isinstance(results, list):
         raise ValueError("搜索排名观察真实搜索候选源返回格式无效")
     if not results:
         raise ValueError("搜索排名观察真实搜索候选源没有返回可用候选群")
     return results
+
+
+def _rank_deboost_exempt_account(session: Session, task: Task) -> TgAccount:
+    pool_ids = _rank_deboost_selected_pool_ids(session, task.tenant_id, dict(task.account_config or {}))
+    statement = apply_rank_deboost_account_filters(select(TgAccount).where(
+        TgAccount.tenant_id == task.tenant_id,
+        TgAccount.pool_id.in_(pool_ids),
+        TgAccount.status == AccountStatus.ACTIVE.value,
+        TgAccount.deleted_at.is_(None),
+    ))
+    account = session.scalar(statement.order_by(TgAccount.id.asc()).limit(1))
+    if account is None:
+        raise ValueError("搜索排名观察真实候选搜索缺少可执行黑账号")
+    return account
+
+
+def _rank_deboost_exempt_payload(
+    session: Session,
+    task: Task,
+    account: TgAccount,
+    type_config: dict[str, Any],
+) -> tuple[SearchRankDeboostPayload, str]:
+    keyword_text = _rank_deboost_first_keyword(type_config)
+    binding = _rank_deboost_active_binding(session, task.tenant_id, int(account.pool_id or 0))
+    target_refs = require_rank_deboost_target_group_refs(
+        session,
+        task.tenant_id,
+        list(type_config.get("target_group_ids") or []),
+        reference_type=_rank_deboost_target_reference_type(type_config),
+    )
+    return SearchRankDeboostPayload(
+        bot_username=_first_rank_deboost_bot(list(type_config.get("search_bots") or [])) or "jisou",
+        keyword_hash=hashlib.sha256(keyword_text.lower().encode("utf-8")).hexdigest(),
+        keyword_text_ciphertext=encrypt_secret(keyword_text),
+        target_group_ids=list(type_config.get("target_group_ids") or []),
+        target_group_refs=target_refs,
+        account_pool_id=int(account.pool_id or 0),
+        proxy_airport_node_id=int(binding.proxy_airport_node_id),
+        runtime_environment={
+            "group_proxy_binding_id": str(binding.id),
+            "runtime_proxy_id": str(binding.runtime_proxy_id or ""),
+            "binding_generation": str(binding.binding_generation),
+            "account_pool_id": str(account.pool_id or ""),
+            "observed_exit_ip": binding.observed_exit_ip or "",
+        },
+    ), keyword_text
+
+
+def _rank_deboost_first_keyword(type_config: dict[str, Any]) -> str:
+    for item in type_config.get("keywords") or []:
+        text = str(item.get("text") if isinstance(item, dict) else item).strip()
+        if text:
+            return text
+    raise ValueError("搜索排名观察真实候选搜索缺少关键词")
+
+
+def _rank_deboost_active_binding(session: Session, tenant_id: int, account_pool_id: int) -> AccountGroupProxyBinding:
+    binding = session.scalar(select(AccountGroupProxyBinding).where(
+        AccountGroupProxyBinding.tenant_id == tenant_id,
+        AccountGroupProxyBinding.account_pool_id == account_pool_id,
+        AccountGroupProxyBinding.status == "active",
+        AccountGroupProxyBinding.unbound_at.is_(None),
+    ).limit(1))
+    if binding is None:
+        raise ValueError("搜索排名观察真实候选搜索缺少 active 分组代理绑定")
+    return binding
+
+
+def _rank_deboost_target_tokens(session: Session, task: Task, type_config: dict[str, Any]) -> list[int | str]:
+    target_ids = list(type_config.get("target_group_ids") or [])
+    refs = rank_deboost_target_group_refs(
+        session,
+        task.tenant_id,
+        target_ids,
+        reference_type=_rank_deboost_target_reference_type(type_config),
+    )
+    tokens: list[int | str] = [*target_ids]
+    for ref in refs:
+        tokens.extend([str(ref.get("username") or ""), str(ref.get("peer_id") or "")])
+    return tokens
+
+
+def _rank_deboost_target_reference_type(type_config: dict[str, Any]) -> str | None:
+    reference_type = str(type_config.get("target_reference_type") or "").strip()
+    return reference_type or None
 
 
 def _first_rank_deboost_bot(search_bots: list[str]) -> str:
@@ -896,9 +1265,9 @@ def _first_rank_deboost_bot(search_bots: list[str]) -> str:
 def _rank_deboost_ready_bindings(
     session: Session,
     tenant_id: int,
-    payload: SearchRankDeboostTaskCreate,
+    account_config: dict[str, Any],
 ) -> list[AccountGroupProxyBinding]:
-    pool_ids = _rank_deboost_selected_pool_ids(session, tenant_id, payload.account_config.model_dump(mode="json"))
+    pool_ids = _rank_deboost_selected_pool_ids(session, tenant_id, account_config)
     bindings = list(session.scalars(select(AccountGroupProxyBinding).where(
         AccountGroupProxyBinding.tenant_id == tenant_id,
         AccountGroupProxyBinding.account_pool_id.in_(pool_ids),
@@ -961,7 +1330,14 @@ def _build_rank_deboost_type_config(
     return config
 
 
-def start_task(session: Session, tenant_id: int, task_id: str, actor: str) -> Task:
+def start_task(
+    session: Session,
+    tenant_id: int,
+    task_id: str,
+    actor: str,
+    *,
+    persist_rank_readiness_failure: bool = True,
+) -> Task:
     task = _get_task(session, tenant_id, task_id)
     if task.type == "channel_comment":
         channel_comment.reconcile_lifetime_cap(session, task)
@@ -978,8 +1354,23 @@ def start_task(session: Session, tenant_id: int, task_id: str, actor: str) -> Ta
             session.commit()
             session.refresh(task)
             return task
+    if task.type in {"search_join_group", "search_rank_deboost"}:
+        if _search_click_task_completed_on_start(session, task):
+            session.commit()
+            session.refresh(task)
+            return task
     if task.type == "search_rank_deboost":
-        _assert_rank_deboost_allows_start(session, tenant_id, task)
+        if task.status in {"running", "pending"}:
+            return task
+        try:
+            _assert_rank_deboost_allows_start(session, tenant_id, task, actor)
+        except ValueError as exc:
+            _record_rank_deboost_readiness_blocker(task, exc)
+            if persist_rank_readiness_failure:
+                session.commit()
+                session.refresh(task)
+            raise
+        _record_rank_deboost_readiness_ready(task)
     else:
         _assert_precheck_allows_start(session, tenant_id, task.type, _task_create_payload_for_precheck(task))
     _mark_task_started(task)
@@ -1042,11 +1433,26 @@ def delete_task(session: Session, tenant_id: int, task_id: str, actor: str, reas
 
 def retry_task(session: Session, tenant_id: int, task_id: str, payload: TaskRetryRequest, actor: str) -> Task:
     task = _get_task(session, tenant_id, task_id)
+    retry_slots: int | None = None
+    if task.type in {"search_join_group", "search_rank_deboost"}:
+        if task.type == "search_rank_deboost":
+            lock_rank_deboost_quota_scope(session, task)
+        session.execute(select(Task.id).where(Task.id == task.id).with_for_update()).scalar_one()
+        session.refresh(task)
+        target_progress = reconcile_search_click_target_progress(session, task)
+        if target_progress.completed:
+            session.commit()
+            session.refresh(task)
+            return task
+        retry_slots = target_progress.remaining_slot_count
     stmt = select(Action).where(Action.task_id == task.id)
-    if payload.failed_only:
+    if payload.failed_only or retry_slots is not None:
         stmt = stmt.where(Action.status.in_(["failed", "unknown_after_send", "skipped"]))
     now = _now()
+    retried_action_count = 0
     for action in session.scalars(stmt):
+        if retry_slots is not None and retry_slots <= 0:
+            break
         if payload.failed_only and not _action_should_retry(session, task, action):
             continue
         if not _prepare_action_retry(session, task, action, now):
@@ -1056,6 +1462,13 @@ def retry_task(session: Session, tenant_id: int, task_id: str, payload: TaskRetr
         action.scheduled_at = now
         action.executed_at = None
         action.result = {}
+        retried_action_count += 1
+        if retry_slots is not None:
+            retry_slots -= 1
+    if retry_slots is not None and not retried_action_count:
+        session.commit()
+        session.refresh(task)
+        return task
     task.status = "running"
     task.next_run_at = now
     task.last_error = ""
@@ -1066,6 +1479,9 @@ def retry_task(session: Session, tenant_id: int, task_id: str, payload: TaskRetr
 
 
 def _action_should_retry(session: Session, task: Task, action: Action) -> bool:
+    if task.type == "search_rank_deboost" and action.status == "unknown_after_send":
+        _set_rank_deboost_retry_blocker(action, "rank_deboost_gateway_outcome_unknown")
+        return False
     if action.status in {"failed", "unknown_after_send"}:
         return True
     if task.type == "search_rank_deboost" and action.status == "skipped":
@@ -1084,32 +1500,100 @@ def _action_should_retry(session: Session, task: Task, action: Action) -> bool:
 def _prepare_action_retry(session: Session, task: Task, action: Action, now: datetime) -> bool:
     if task.type != "search_rank_deboost":
         return True
+    if action.status == "unknown_after_send":
+        _set_rank_deboost_retry_blocker(action, "rank_deboost_gateway_outcome_unknown")
+        return False
     reservation = reservation_for_action(session, action.id)
-    if reservation is None or reservation.status == "reserved":
+    if reservation is not None and reservation.status == "reserved":
         return True
-    if reservation.status == "released":
+    if reservation is not None and reservation.status != "released":
+        _set_rank_deboost_retry_blocker(action, f"rank_deboost_reservation_{reservation.status}")
+        return False
+    return _reopen_rank_deboost_retry_reservation(
+        session,
+        task=task,
+        action=action,
+        reservation=reservation,
+        now=now,
+    )
+
+
+def _reopen_rank_deboost_retry_reservation(
+    session: Session,
+    *,
+    task: Task,
+    action: Action,
+    reservation,
+    now: datetime,
+) -> bool:
+    try:
+        payload = SearchRankDeboostPayload.model_validate(action.payload or {})
+    except ValueError:
+        _set_rank_deboost_retry_blocker(action, "rank_deboost_retry_payload_invalid")
+        return False
+    account = session.get(TgAccount, action.account_id) if action.account_id else None
+    if account is None:
+        _set_rank_deboost_retry_blocker(action, "rank_deboost_retry_account_missing")
+        return False
+    window = deboost_pacing_window(task, now)
+    allowed = account_click_allowed(
+        session,
+        task,
+        account.id,
+        payload.keyword_hash,
+        payload.account_pool_id,
+        window,
+        DeboostPacingStats(),
+    )
+    if not allowed:
+        _set_rank_deboost_retry_blocker(action, "rank_deboost_retry_quota_exhausted")
+        return False
+    if reservation is None:
+        reserve_click(
+            session,
+            task=task,
+            action=action,
+            account=account,
+            account_pool_id=payload.account_pool_id,
+            keyword_hash=payload.keyword_hash,
+            now_value=now,
+        )
+    else:
         reopen_released_reservation(session, action.id, now_value=now)
-        return True
-    action.result = {
-        **(action.result or {}),
-        "retry_skipped_reason": f"rank_deboost_reservation_{reservation.status}",
-    }
-    return False
+    return True
+
+
+def _set_rank_deboost_retry_blocker(action: Action, reason: str) -> None:
+    action.result = {**(action.result or {}), "retry_skipped_reason": reason}
 
 
 def reset_task(session: Session, tenant_id: int, task_id: str, actor: str, reason: str = "") -> Task:
     task = _get_task(session, tenant_id, task_id)
     now = _now()
     stats = empty_stats()
-    stats["started_at"] = now.isoformat()
+    if task.type != "search_rank_deboost":
+        stats["started_at"] = now.isoformat()
     if task.type == "group_ai_chat":
         stats["force_bootstrap_once"] = True
     task.stats = stats
     _clear_unfinished_plan(session, task)
     _clear_group_ai_context_fingerprints(session, task)
     _invalidate_task_listener_cache(task)
-    task.status = "pending" if task.scheduled_start and task.scheduled_start > now else "running"
-    task.next_run_at = task.scheduled_start if task.status == "pending" else now
+    if task.type == "search_rank_deboost":
+        preselect_exempt_group(
+            session,
+            tenant_id=tenant_id,
+            task_id=task.id,
+            operator=actor,
+            my_target_ids=_rank_deboost_target_tokens(session, task, dict(task.type_config or {})),
+            search_results=None,
+        )
+        _record_rank_deboost_readiness_pending(task, "reset_requires_start")
+        task.status = "draft"
+        task.next_run_at = None
+    else:
+        task.status = "pending" if task.scheduled_start and task.scheduled_start > now else "running"
+        task.next_run_at = task.scheduled_start if task.status == "pending" else now
     task.last_error = ""
     task.updated_at = now
     refresh_task_stats(session, task)
@@ -1499,26 +1983,87 @@ def _assert_precheck_allows_start(session: Session, tenant_id: int, task_type: s
         raise ValueError("；".join(str(item) for item in reasons if item))
 
 
-def _assert_rank_deboost_allows_start(session: Session, tenant_id: int, task: Task) -> None:
+def _assert_rank_deboost_allows_start(session: Session, tenant_id: int, task: Task, actor: str) -> None:
     config = dict(task.type_config or {})
-    account_pool_id = int(config.get("account_pool_id") or 0)
-    proxy_airport_node_id = int(config.get("proxy_airport_node_id") or 0)
     bot_username = _first_rank_deboost_bot(list(config.get("search_bots") or ["jisou"]))
-    validate_rank_deboost_preconditions(
+    target_group_ids = list(config.get("target_group_ids") or [])
+    require_rank_deboost_target_group_refs(
         session,
-        tenant_id=tenant_id,
-        account_pool_id=account_pool_id,
-        proxy_airport_node_id=proxy_airport_node_id,
-        target_group_ids=list(config.get("target_group_ids") or []),
-        bot_username=bot_username,
+        tenant_id,
+        target_group_ids,
+        reference_type=_rank_deboost_target_reference_type(config),
     )
-    from app.services.proxy_group_binding_service import get_active_group_binding
-
-    binding = get_active_group_binding(session, tenant_id=tenant_id, account_pool_id=account_pool_id)
-    if binding is None or binding.proxy_airport_node_id != proxy_airport_node_id:
-        raise ValueError("搜索排名观察任务缺少匹配的 active 分组级代理绑定")
-    require_real_exempt_group(session, tenant_id=tenant_id, task_id=task.id)
+    validate_rank_deboost_protocol_samples(session, tenant_id, bot_username)
+    bindings = _rank_deboost_ready_bindings(session, tenant_id, dict(task.account_config or {}))
+    for binding in bindings:
+        validate_rank_deboost_preconditions(
+            session,
+            tenant_id=tenant_id,
+            account_pool_id=int(binding.account_pool_id),
+            proxy_airport_node_id=int(binding.proxy_airport_node_id),
+            target_group_ids=target_group_ids,
+            bot_username=bot_username,
+        )
     require_rank_observation_gateway()
+    _prepare_pending_rank_deboost_exempt_group(session, task, actor)
+
+
+def _record_rank_deboost_readiness_blocker(task: Task, error: ValueError) -> None:
+    stats = dict(task.stats or {})
+    stats["rank_deboost_readiness"] = {
+        "status": "blocked",
+        "blocker": str(error),
+        "checked_at": _now().isoformat(),
+        "evidence_summary": "rank_start_preparation",
+    }
+    task.stats = stats
+    task.last_error = str(error)
+    task.next_run_at = None
+
+
+def _record_rank_deboost_readiness_pending(task: Task, evidence_summary: str) -> None:
+    stats = dict(task.stats or {})
+    stats["rank_deboost_readiness"] = {
+        "status": "pending",
+        "checked_at": _now().isoformat(),
+        "evidence_summary": evidence_summary,
+    }
+    task.stats = stats
+
+
+def _search_click_task_completed_on_start(session: Session, task: Task) -> bool:
+    session.execute(select(Task.id).where(Task.id == task.id).with_for_update()).scalar_one()
+    session.refresh(task)
+    return reconcile_search_click_target_progress(session, task).completed
+
+
+def _record_rank_deboost_readiness_ready(task: Task) -> None:
+    stats = dict(task.stats or {})
+    stats["rank_deboost_readiness"] = {
+        "status": "ready",
+        "checked_at": _now().isoformat(),
+        "evidence_summary": "rank_start_preparation",
+    }
+    task.stats = stats
+
+
+def _prepare_pending_rank_deboost_exempt_group(session: Session, task: Task, actor: str) -> None:
+    try:
+        require_real_exempt_group(session, tenant_id=task.tenant_id, task_id=task.id)
+        return
+    except ValueError:
+        pass
+    type_config = dict(task.type_config or {})
+    search_results = _rank_deboost_exempt_search_results(session, task, type_config)
+    preselect_exempt_group(
+        session,
+        tenant_id=task.tenant_id,
+        task_id=task.id,
+        operator=actor,
+        my_target_ids=_rank_deboost_target_tokens(session, task, type_config),
+        search_results=search_results,
+    )
+    require_real_exempt_group(session, tenant_id=task.tenant_id, task_id=task.id)
 
 
 def _task_create_payload_for_precheck(task: Task) -> dict[str, Any]:
@@ -2145,6 +2690,7 @@ def _mark_stale_executing_action(
     previous_lease_expires_at = action.lease_expires_at
     gateway_started = _attempt_gateway_started(latest_attempt)
     recovery_reason = "stale_worker" if previous_lease_owner in stale_worker_ids else "lease_expired" if previous_lease_expires_at else "execution_timeout"
+    _reconcile_rank_deboost_reservation_after_stale_execution(action, gateway_started)
     action.status = "unknown_after_send" if gateway_started else "failed"
     action.executed_at = now
     action.lease_owner = ""
@@ -2170,6 +2716,18 @@ def _mark_stale_executing_action(
         gateway_started=gateway_started,
         now=now,
     )
+
+
+def _reconcile_rank_deboost_reservation_after_stale_execution(action: Action, gateway_started: bool) -> None:
+    if action.action_type != "search_rank_deboost":
+        return
+    session = object_session(action)
+    if session is None:
+        return
+    if gateway_started:
+        mark_reserved_reservation_unknown(session, action.id)
+        return
+    release_reserved_reservation(session, action.id)
 
 
 def _stale_executing_result(
@@ -3190,7 +3748,9 @@ __all__ = [
     "create_and_start_group_membership_admission_task",
     "create_and_start_group_relay_task",
     "create_and_start_search_join_group_task",
+    "create_and_start_simple_search_join_group_task",
     "create_and_start_search_rank_deboost_task",
+    "create_and_start_simple_search_rank_deboost_task",
     "create_channel_comment_task",
     "create_channel_like_task",
     "create_channel_view_task",
@@ -3198,7 +3758,9 @@ __all__ = [
     "create_group_membership_admission_task",
     "create_group_relay_task",
     "create_search_join_group_task",
+    "create_simple_search_join_group_task",
     "create_search_rank_deboost_task",
+    "create_simple_search_rank_deboost_task",
     "add_task_source_filter_override",
     "delete_task",
     "drain_task_center",

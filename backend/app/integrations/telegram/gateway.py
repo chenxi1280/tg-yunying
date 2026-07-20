@@ -406,6 +406,8 @@ class TelethonTelegramGateway(TelegramGateway):
     creating a new connection for every operation.
     """
 
+    supports_rank_deboost_observation = True
+
     def __init__(self, settings: Settings | None = None) -> None:
         super().__init__(settings)
         self._lifecycle = TelethonClientLifecycle(self.settings)

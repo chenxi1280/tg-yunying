@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.config import Settings
 from app.database import Base
 from app.integrations.telegram.gateway import TelethonTelegramGateway
+from app.integrations.telegram.mock import TelegramGateway
 from app.models import BotProtocolSample, Tenant
 from app.services.task_center.search_rank_deboost import (
     require_rank_observation_gateway,
@@ -251,6 +252,11 @@ def _payload() -> dict:
 
 def test_rank_observation_gateway_accepts_production_class_without_monkeypatch() -> None:
     require_rank_observation_gateway(TelethonTelegramGateway(Settings(telethon_operation_timeout_seconds=1)))
+
+
+def test_rank_observation_gateway_rejects_mock_execution_surface() -> None:
+    with pytest.raises(ValueError, match="gateway 未接入"):
+        require_rank_observation_gateway(TelegramGateway())
 
 
 def test_rank_deboost_candidate_search_parses_positions_without_clicking() -> None:

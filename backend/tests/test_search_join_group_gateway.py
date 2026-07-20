@@ -14,7 +14,6 @@ class FakeButton:
     url: str = ""
     data: bytes | None = None
     effect: str = ""
-    target_chat_id: int | None = None
 
 
 class FakeMessage:
@@ -127,22 +126,53 @@ def test_execute_search_join_sends_keyword_clicks_safe_navigation_and_joins_targ
 
 
 @pytest.mark.no_postgres
-def test_execute_search_join_matches_real_peer_id_and_title() -> None:
-    target = FakeButton("郑州平价资源（交流群）", data=b"target", target_chat_id=2188784621)
+def test_execute_search_join_never_uses_exact_target_as_pre_join_decoy() -> None:
+    target = FakeButton("目标群", url="https://t.me/target_group", effect="navigate_only")
+    message = FakeMessage(101, [[target]])
+    client = FakeSearchJoinClient([FakeMessage(100, []), message])
+
+    result = asyncio.run(execute_search_join_with_client(client, _payload(), keyword_text="上海 留学"))
+
+    assert result["success"] is True
+    assert message.clicked == [(0, 0)]
+    assert result["pre_join_decoy_clicks"] == []
+
+
+@pytest.mark.no_postgres
+def test_execute_search_join_rejects_peer_only_target() -> None:
+    target = FakeButton("郑州平价资源（交流群）", data=b"target")
     message = FakeMessage(101, [[target]], click_results={(0, 0): FakeCallbackAnswer("https://t.me/xiaozisk")})
     client = FakeSearchJoinClient([FakeMessage(100, []), message])
 
     result = asyncio.run(
         execute_search_join_with_client(
             client,
-            _payload(target_username="", target_title="郑州平价资源（交流群）", target_peer_id="-1002188784621"),
+            _payload(target_username="", target_peer_id="-1002188784621"),
             keyword_text="郑州平价资源",
         )
     )
 
-    assert result["success"] is True
-    assert message.clicked == [(0, 0)]
-    assert client.joined == ["xiaozisk"]
+    assert result["error_code"] == "target_identity_missing"
+    assert message.clicked == []
+    assert client.joined == []
+
+
+@pytest.mark.no_postgres
+def test_execute_search_join_never_treats_peer_only_target_as_decoy() -> None:
+    target = FakeButton("目标详情", url="https://t.me/xiaozisk", effect="navigate_only")
+    message = FakeMessage(101, [[target]])
+    client = FakeSearchJoinClient([FakeMessage(100, []), message])
+
+    result = asyncio.run(
+        execute_search_join_with_client(
+            client,
+            _payload(target_username="", target_peer_id="-1002188784621"),
+            keyword_text="郑州平价资源",
+        )
+    )
+
+    assert result["error_code"] == "target_identity_missing"
+    assert message.clicked == []
 
 
 @pytest.mark.no_postgres
@@ -150,7 +180,7 @@ def test_execute_search_join_joins_known_target_when_message_text_matches() -> N
     result_page = FakeMessage(
         101,
         [[FakeButton("👥", data=b"group-category")], [FakeButton("下一页", data=b"next", effect="navigate_only")]],
-        raw_text="👥郑州平价资源（交流群） 46k\n📢其他频道 2k",
+        raw_text="👥郑州平价资源（交流群） @xiaozisk 46k\n📢其他频道 2k",
     )
     client = FakeSearchJoinClient([FakeMessage(100, []), result_page])
 
@@ -165,7 +195,7 @@ def test_execute_search_join_joins_known_target_when_message_text_matches() -> N
     assert result["success"] is True
     assert client.joined == ["xiaozisk"]
     assert result["target_match_source"] == "message_text"
-    assert result["target_line"] == "👥郑州平价资源（交流群） 46k"
+    assert result["target_line"] == "👥郑州平价资源（交流群） @xiaozisk 46k"
 
 
 @pytest.mark.no_postgres
@@ -208,44 +238,44 @@ def test_execute_search_join_reports_target_not_in_results_without_joining() -> 
 
 
 @pytest.mark.no_postgres
-def test_execute_search_join_blocks_external_http_target() -> None:
+def test_execute_search_join_does_not_bind_external_url_without_username() -> None:
     message = FakeMessage(101, [[FakeButton("目标外链", url="https://example.com/target_group")]])
     client = FakeSearchJoinClient([FakeMessage(100, []), message])
 
-    result = asyncio.run(execute_search_join_with_client(client, _payload(target_title="目标外链"), keyword_text="上海 留学"))
+    result = asyncio.run(execute_search_join_with_client(client, _payload(), keyword_text="上海 留学"))
 
     assert result["success"] is False
-    assert result["error_code"] == "external_url_requires_web_profile"
+    assert result["error_code"] == "target_not_in_results"
     assert client.joined == []
 
 
 @pytest.mark.no_postgres
-def test_execute_search_join_uses_callback_answer_telegram_url_for_target_join() -> None:
+def test_execute_search_join_does_not_click_unbound_callback_target() -> None:
     target = FakeButton("目标群", data=b"target-callback")
     message = FakeMessage(101, [[target]], click_results={(0, 0): FakeCallbackAnswer("https://t.me/target_group")})
     client = FakeSearchJoinClient([FakeMessage(100, []), message])
 
     result = asyncio.run(
-        execute_search_join_with_client(client, _payload(target_username="", target_title="目标群"), keyword_text="上海 留学")
+        execute_search_join_with_client(client, _payload(), keyword_text="上海 留学")
     )
 
-    assert result["success"] is True
-    assert message.clicked == [(0, 0)]
-    assert client.joined == ["target_group"]
+    assert result["error_code"] == "target_not_in_results"
+    assert message.clicked == []
+    assert client.joined == []
 
 
 @pytest.mark.no_postgres
-def test_execute_search_join_imports_private_invite_link() -> None:
+def test_execute_search_join_does_not_import_unbound_private_invite() -> None:
     target = FakeButton("目标群", url="https://t.me/+inviteHash")
     message = FakeMessage(101, [[target]])
     client = FakeSearchJoinClient([FakeMessage(100, []), message])
 
     result = asyncio.run(
-        execute_search_join_with_client(client, _payload(target_username="", target_title="目标群"), keyword_text="上海 留学")
+        execute_search_join_with_client(client, _payload(), keyword_text="上海 留学")
     )
 
-    assert result["success"] is True
-    assert client.imported_invites == ["inviteHash"]
+    assert result["error_code"] == "target_not_in_results"
+    assert client.imported_invites == []
 
 
 @pytest.mark.no_postgres
