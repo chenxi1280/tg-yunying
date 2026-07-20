@@ -1,5 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass
+from datetime import datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -9,6 +10,7 @@ from app.models import (
     AccountStatus,
     GroupAuthStatus,
     OperationTarget,
+    Task,
     TgAccount,
     TgGroup,
     TgGroupAccount,
@@ -41,6 +43,7 @@ MANUAL_VERIFICATION_ACTIONS = {"人工处理", "手动处理", "线下处理"}
 GROUP_RESTRICTION_VERIFICATION_TYPES = ("群发言权限", "群发言不可用")
 OPEN_VERIFICATION_STATUSES = ("待处理", "失败", "需人工处理")
 CONFIRMABLE_VERIFICATION_STATUSES = {"待处理", "失败", "需人工处理"}
+COVERAGE_REFRESHABLE_TASK_STATUSES = ("draft", "pending", "running", "paused")
 ADMIN_APPROVAL_CANDIDATE_LIMIT = 10
 VERIFICATION_READER_CANDIDATE_LIMIT = 5
 IMAGE_VERIFICATION_MARKERS = ("图片", "图形", "验证码", "captcha", "bot", "机器人")
@@ -853,11 +856,19 @@ def _apply_group_probe_result(
         )
     )
     if result.ok:
+        timestamp = _now()
         _mark_group_sendable(session, task, account)
         _sync_group_target(session, tenant_id=task.tenant_id, group=group)
+        _refresh_group_permission_coverage(
+            session,
+            tenant_id=task.tenant_id,
+            group_id=group.id,
+            account_id=account.id,
+            timestamp=timestamp,
+        )
         task.status = "已处理"
         task.failure_detail = "目标能力重查通过：可发言。"
-        task.handled_at = _now()
+        task.handled_at = timestamp
         return
     if link:
         link.can_send = False
@@ -866,6 +877,46 @@ def _apply_group_probe_result(
     task.status = "需人工处理"
     task.failure_detail = _group_probe_failure_detail(result)
     task.handled_at = None
+
+
+def _refresh_group_permission_coverage(
+    session: Session,
+    *,
+    tenant_id: int,
+    group_id: int,
+    account_id: int,
+    timestamp: datetime,
+) -> None:
+    from app.services.task_center.account_scope import is_all_accounts_task
+    from app.services.task_center.daily_coverage import ensure_task_daily_coverage
+    from app.services.task_center.targets import group_from_reference
+
+    tasks = session.scalars(select(Task).where(
+        Task.tenant_id == tenant_id,
+        Task.type == "group_ai_chat",
+        Task.status.in_(COVERAGE_REFRESHABLE_TASK_STATUSES),
+        Task.deleted_at.is_(None),
+    ))
+    for coverage_task in tasks:
+        if not is_all_accounts_task(coverage_task):
+            continue
+        type_config = coverage_task.type_config or {}
+        target_group = group_from_reference(
+            session,
+            tenant_id,
+            group_id=int(type_config.get("target_group_id") or 0) or None,
+            operation_target_id=int(type_config.get("target_operation_target_id") or 0) or None,
+        )
+        if target_group is None or target_group.id != group_id:
+            continue
+        ensure_task_daily_coverage(
+            session,
+            coverage_task,
+            now=timestamp,
+            account_ids=[account_id],
+            incremental=True,
+            target_group=target_group,
+        )
 
 
 def _group_probe_failure_detail(result: OperationResult) -> str:

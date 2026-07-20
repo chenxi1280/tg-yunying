@@ -7,7 +7,17 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import AccountPool, Task, TaskAccountDailyCoverage, Tenant, TgAccount, TgGroup, TgGroupAccount
+from app.models import (
+    AccountPool,
+    Task,
+    TaskAccountDailyCoverage,
+    TaskMembershipAdmissionItem,
+    Tenant,
+    TgAccount,
+    TgGroup,
+    TgGroupAccount,
+)
+from app.security import encrypt_session
 from app.services.task_center.executors.group_ai_chat import (
     _coverage_capacity_blocker,
     _coverage_plan_state,
@@ -20,6 +30,7 @@ from app.services.task_center.executors.group_ai_chat import (
 )
 from app.services.task_center.payloads import SendMessagePayload
 from app.services.task_center import daily_coverage
+from app.services.task_center.daily_coverage_readiness import refresh_rows
 from app.timezone import beijing_now
 
 
@@ -239,6 +250,86 @@ def test_ready_coverage_plan_batch_uses_stable_cursor_and_hard_limit(session: Se
 
     second = daily_coverage.ready_coverage_plan_batch(session, task, now=targeted_at, limit=100)
     assert [row.account_id for row in second.rows] == list(range(120, 125))
+
+
+def test_admission_ready_transition_requeues_row_after_cursor(session: Session) -> None:
+    task, group = _seed(session)
+    session.query(TaskAccountDailyCoverage).delete()
+    initial_at = datetime(2026, 7, 13, 9, 0)
+    cursor_at = datetime(2026, 7, 13, 9, 1)
+    after_cursor_at = datetime(2026, 7, 13, 9, 2)
+    admitted_at = datetime(2026, 7, 13, 9, 3)
+    pending = TaskAccountDailyCoverage(
+        id="coverage-pending", tenant_id=1, task_id=task.id, group_id=21,
+        account_id=2, coverage_date=initial_at.date(), target_count=1,
+        state="pending_admission", targeted_at=initial_at,
+    )
+    cursor_row = TaskAccountDailyCoverage(
+        id="coverage-cursor", tenant_id=1, task_id=task.id, group_id=21,
+        account_id=3, coverage_date=initial_at.date(), target_count=1,
+        state="ready", targeted_at=cursor_at,
+    )
+    still_ready = TaskAccountDailyCoverage(
+        id="coverage-still-ready", tenant_id=1, task_id=task.id, group_id=21,
+        account_id=1, coverage_date=initial_at.date(), target_count=1,
+        state="ready", targeted_at=after_cursor_at,
+    )
+    pending_membership = TaskMembershipAdmissionItem(
+        tenant_id=1, task_id=task.id, account_id=2, target_id=21, phase="pending",
+    )
+    ready_membership = TaskMembershipAdmissionItem(
+        tenant_id=1, task_id=task.id, account_id=1, target_id=21, phase="completed",
+    )
+    session.add_all([pending, cursor_row, still_ready, pending_membership, ready_membership])
+    session.get(TgAccount, 1).session_ciphertext = encrypt_session("session-1")
+    session.get(TgAccount, 2).session_ciphertext = encrypt_session("session-2")
+    session.flush()
+    daily_coverage.advance_coverage_plan_cursor(session, task, cursor_row, now=cursor_at)
+    cursor_row.state = "reserved"
+    session.commit()
+
+    refresh_rows(session, [(pending, pending_membership), (still_ready, ready_membership)], group, admitted_at)
+
+    assert pending.targeted_at == admitted_at
+    assert still_ready.targeted_at == after_cursor_at
+    batch = daily_coverage.ready_coverage_plan_batch(session, task, now=admitted_at, limit=20)
+    assert [row.account_id for row in batch.rows] == [1, 2]
+
+
+def test_online_recovery_requeues_row_after_cursor(session: Session) -> None:
+    task, _group = _seed(session)
+    session.query(TaskAccountDailyCoverage).delete()
+    initial_at = datetime(2026, 7, 13, 10, 0)
+    cursor_at = datetime(2026, 7, 13, 10, 1)
+    after_cursor_at = datetime(2026, 7, 13, 10, 2)
+    recovered_at = datetime(2026, 7, 13, 10, 3)
+    offline = TaskAccountDailyCoverage(
+        id="coverage-offline", tenant_id=1, task_id=task.id, group_id=21,
+        account_id=1, coverage_date=initial_at.date(), target_count=1,
+        state="blocked", blocker_code="account_offline", targeted_at=initial_at,
+    )
+    cursor_row = TaskAccountDailyCoverage(
+        id="coverage-online-cursor", tenant_id=1, task_id=task.id, group_id=21,
+        account_id=2, coverage_date=initial_at.date(), target_count=1,
+        state="ready", targeted_at=cursor_at,
+    )
+    after_cursor = TaskAccountDailyCoverage(
+        id="coverage-online-after", tenant_id=1, task_id=task.id, group_id=21,
+        account_id=3, coverage_date=initial_at.date(), target_count=1,
+        state="ready", targeted_at=after_cursor_at,
+    )
+    session.add_all([offline, cursor_row, after_cursor])
+    session.flush()
+    daily_coverage.advance_coverage_plan_cursor(session, task, cursor_row, now=cursor_at)
+    cursor_row.state = "reserved"
+    session.commit()
+
+    assert daily_coverage.release_online_coverage_blockers(
+        session, tenant_id=1, account_id=1, now=recovered_at,
+    ) == 1
+    assert offline.targeted_at == recovered_at
+    batch = daily_coverage.ready_coverage_plan_batch(session, task, now=recovered_at, limit=20)
+    assert [row.account_id for row in batch.rows] == [3, 1]
 
 
 def test_coverage_plan_cursor_rolls_back_with_failed_batch(session: Session) -> None:

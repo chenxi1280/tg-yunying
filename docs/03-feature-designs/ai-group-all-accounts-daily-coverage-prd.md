@@ -176,6 +176,8 @@ pending_admission -> admission_running -> ready -> reserved -> sending -> confir
 
 - `blocked` 保留在目标分母，记录准入失败、不可发言、离线、受限、Session 失效、缺面具或容量不足。
 - 内容生成失败、内容重复、上下文过期或发送前失败时释放 `reserved_action_id`，回到 `ready` 或对应阻塞状态。
+- 准入、群可发言或在线事实使账本从非 `ready` 转为 `ready` 时，必须把该转换时刻写为新的 `targeted_at` 调度位置；不得保留早于已推进任务日游标的旧账号事件时间。保持 `ready` 的账本行不得反复改写该位置。
+- 群发言权限重查成功后，必须按 `target_group_id` 或 `target_operation_target_id` 解析同一目标群，增量刷新受影响 `draft`、`pending`、`running`、`paused` 全部账号任务的账本；暂停或待启动任务后续启动时不得继续保留旧 `cannot_send` blocker。
 - `unknown_after_send` 进入 `unknown`，不计完成，也不能立即重发同一义务；必须先走现有远端复核或人工处理。
 - `confirmed_count >= target_count` 后进入 `confirmed`。
 
@@ -217,6 +219,7 @@ pending_admission -> admission_running -> ready -> reserved -> sending -> confir
 
 - 内容重复或质量失败：普通文本候选按 M3、M2.5、Grok 三层依次补写。三层均不合格时，已绑定当日 coverage 且非引用的 slot 在租户开启 `ai_group_static_fallback_enabled` 时转为显式 `emoji_react`；其他情况仍由 Phase C 终结 Action、释放预约并等待最新上下文。
 - 批量 AI 生成中任一同批 Action 在发送前进入失败或跳过终态时，必须立即释放该 Action 自己的覆盖预约并写入 blocker；不能只同步当前 Dispatcher Action，导致同批其他账号永久停在 `reserved`。
+- 新账号准入完成后，账本从 `pending_admission` / `blocked` 进入 `ready` 必须重新进入当前任务日 keyset 游标之后的调度位置；否则其他批次已推进游标时，该账号会永久停在 `ready` 而没有 `send_message`。该重新排队只发生在状态转换，不能在常规 readiness 刷新中持续改变排序。
 - 上下文过期：只废弃当前上下文绑定对话片段中仍依赖该上下文或引用锚点的剩余 Action；同一 Cycle 内标记为硬目标、没有 `reply_to_message_id`、并由 Dispatcher 延迟生成文案的普通补量 Action 不得被连带跳过，仍按原 AI prompt、账号面具、话题和质量门生成后发送。被废弃 Action 的相关账号回到 `ready`，不得丢失覆盖义务。
 - 每日覆盖债务存在且本轮没有引用回复目标时，Planner 只规划携带账号面具、话题、讨论老师、行为类型和覆盖账本 ID 的延迟生成 Action，不在规划阶段提前冻结普通发言文案。Dispatcher 只批量生成临近执行窗口内的 Action，并在调用原 AI 生成与质量链前刷新目标群最新真人上下文及上下文快照；尚未生成的未来覆盖 Action 不得因旧快照过期被同轮清理。
 - 普通 AI 模拟聊天 Cycle 继续严格执行 `reply_min_per_round`。当可引用对象少于该最小值且仍有到期每日覆盖债务时，本轮必须显式转为覆盖回补 Cycle：不得创建数量不足、伪装成达标的引用回复，本轮全部覆盖 Action 按普通发言延迟生成，且不计入普通聊天 Cycle 的引用回复指标。覆盖回补仍必须保留账号面具、话题、讨论老师和行为类型，并经过最新真人上下文刷新、原 AI 生成、语义去重、内容政策、在线状态校验和 Telegram 真实发送确认；禁止模板短句，但允许按上述三层失败契约使用显式、可审计且仍经去重的 `emoji_react`。没有每日覆盖债务时仍等待足量引用对象，不得降低用户设置的最少引用回复数。
