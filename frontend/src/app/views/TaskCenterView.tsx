@@ -2203,7 +2203,7 @@ export default function TaskCenterView({
         {actionError && <Alert className="form-alert" type="error" showIcon message={actionError} />}
         {actionWarning && <Alert className="form-alert" type="warning" showIcon message={actionWarning} />}
         <Steps className="wizard-steps" current={wizardStep} items={wizardSteps.map((title) => ({ title }))} />
-        <Form form={form} layout="vertical" initialValues={initialValuesForType(taskType, schedulingSetting)}>
+        <Form form={form} layout="vertical" preserve initialValues={initialValuesForType(taskType, schedulingSetting)}>
           {wizardStep === 0 && <WizardBasics taskType={taskType} onTypeChange={resetTypeFields} />}
           {wizardStep === 1 && <WizardTarget taskType={taskType} messages={messages} messageScope={messageScope} targetChannelId={targetChannelId} onTargetChannelChange={() => form.setFieldsValue({ message_ids: [] })} onTargetsLoaded={mergeLoadedTargets} simpleSearchCreation={simpleSearchClickTask} />}
           {wizardStep === 2 && <WizardTypeConfig taskType={taskType} ruleSets={ruleSets} slangTemplates={slangTemplates} comments={comments} relaySourceOptions={[]} targetChannelId={targetChannelId} messageScope={messageScope} messageIds={messageIds} simpleSearchCreation={simpleSearchClickTask} />}
