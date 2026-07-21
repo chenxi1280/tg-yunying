@@ -50,17 +50,18 @@ def session() -> Session:
                 username="shanghai_study_group",
             )
         )
-        db.add(
+        db.add_all([
             TgAccount(
-                id=101,
+                id=account_id,
                 tenant_id=1,
-                pool_id=7,
-                display_name="搜索账号",
-                phone_masked="101",
+                pool_id=7 if account_id <= 108 else 9,
+                display_name=f"搜索账号 {account_id}",
+                phone_masked=str(account_id),
                 status="在线",
-                session_ciphertext="session-101",
+                session_ciphertext=f"session-{account_id}",
             )
-        )
+            for account_id in range(101, 117)
+        ])
         db.commit()
         yield db
 
@@ -167,6 +168,50 @@ def test_simple_search_join_create_uses_system_name_and_policy(session: Session)
 
 
 @pytest.mark.no_postgres
+def test_simple_search_join_rejects_daily_target_without_configured_account_capacity(session: Session) -> None:
+    with pytest.raises(ValueError, match="daily_target_capacity_insufficient"):
+        create_simple_search_join_group_task(
+            session,
+            1,
+            _simple_payload(daily_target_count=9, max_actions_per_day=9),
+            actor="tester",
+        )
+
+
+@pytest.mark.no_postgres
+def test_simple_search_join_allows_explicit_daily_account_limit_to_cover_target(session: Session) -> None:
+    task = create_simple_search_join_group_task(
+        session,
+        1,
+        _simple_payload(
+            daily_target_count=9,
+            max_actions_per_day=9,
+            per_account_daily_action_limit=2,
+        ),
+        actor="tester",
+    )
+
+    assert task.pacing_config["per_account_daily_action_limit"] == 2
+
+
+@pytest.mark.no_postgres
+def test_simple_search_join_edit_rejects_daily_target_without_configured_account_capacity(session: Session) -> None:
+    task = create_simple_search_join_group_task(session, 1, _simple_payload(), actor="tester")
+
+    with pytest.raises(ValueError, match="daily_target_capacity_insufficient"):
+        task_service.update_search_join_group_config(
+            session,
+            1,
+            task.id,
+            SearchJoinGroupTaskConfigUpdate(daily_target_count=9, max_actions_per_day=9),
+            actor="tester",
+        )
+
+    assert task.type_config["daily_target_count"] == 8
+    assert task.pacing_config["per_account_daily_action_limit"] == 1
+
+
+@pytest.mark.no_postgres
 def test_simple_search_join_create_uses_daily_target_not_lifecycle_target(session: Session) -> None:
     payload = SearchJoinGroupSimpleTaskCreate(
         target_title="上海留学交流群",
@@ -267,6 +312,7 @@ def test_simple_search_join_edit_updates_operator_execution_controls(session: Se
         SearchJoinGroupTaskConfigUpdate(
             account_group_id=9,
             max_actions_per_day=8,
+            per_account_daily_action_limit=2,
             scheduled_end=datetime(2030, 2, 1, tzinfo=timezone.utc),
             daily_jitter_percent=10,
             hourly_jitter_percent=15,
@@ -278,6 +324,7 @@ def test_simple_search_join_edit_updates_operator_execution_controls(session: Se
     assert updated.account_config["selection_mode"] == "group"
     assert updated.account_config["account_group_id"] == 9
     assert updated.pacing_config["max_actions_per_day"] == 8
+    assert updated.pacing_config["per_account_daily_action_limit"] == 2
     assert updated.pacing_config["daily_jitter_percent"] == 10
     assert updated.pacing_config["hourly_jitter_percent"] == 15
     assert updated.pacing_config["quiet_hours"] == {"start": "23:00", "end": "07:00", "timezone": "Asia/Shanghai"}
@@ -366,7 +413,6 @@ def test_simple_search_join_create_rejects_system_managed_fields() -> None:
         ("search_bots", ["other_bot"]),
         ("pacing_config", {"max_actions_per_hour": 1}),
         ("dwell_seconds_min", 30),
-        ("per_account_daily_action_limit", 1),
         ("retry_policy", {"max_retries": 3}),
         ("risk_config", {"mode": "caller_selected"}),
     ],
@@ -385,6 +431,23 @@ def test_simple_search_click_create_rejects_all_system_managed_inputs(payload_ty
             hourly_jitter_percent=30,
             **target,
             **{field: value},
+        )
+
+
+@pytest.mark.no_postgres
+def test_simple_search_rank_deboost_rejects_search_join_daily_account_limit() -> None:
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        SearchRankDeboostSimpleTaskCreate(
+            target_title="上海留学交流群",
+            target_link="https://t.me/shanghai_study_group",
+            keywords=["上海 留学"],
+            target_count=12,
+            account_group_id=8,
+            max_actions_per_day=9,
+            scheduled_end=datetime(2030, 1, 1, tzinfo=timezone.utc),
+            daily_jitter_percent=20,
+            hourly_jitter_percent=30,
+            per_account_daily_action_limit=2,
         )
 
 

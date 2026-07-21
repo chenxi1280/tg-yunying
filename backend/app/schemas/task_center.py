@@ -704,6 +704,7 @@ class SearchClickSimpleTaskCreate(BaseModel):
 
 class SearchJoinGroupSimpleTaskCreate(SearchClickSimpleTaskCreate):
     daily_target_count: int = Field(ge=1)
+    per_account_daily_action_limit: int = Field(default=DEFAULT_SEARCH_JOIN_DAILY_ACCOUNT_LIMIT, ge=0, le=1000)
 
     @model_validator(mode="after")
     def validate_daily_action_budget(self) -> "SearchJoinGroupSimpleTaskCreate":
@@ -821,6 +822,7 @@ class SearchJoinGroupTaskConfigUpdate(BaseModel):
     pacing_config: SearchJoinPacingConfig | None = None
     account_group_id: int | None = Field(default=None, gt=0)
     max_actions_per_day: int | None = Field(default=None, ge=1)
+    per_account_daily_action_limit: int | None = Field(default=None, ge=0, le=1000)
     scheduled_end: datetime | None = None
     daily_jitter_percent: int | None = Field(default=None, ge=0, le=100)
     hourly_jitter_percent: int | None = Field(default=None, ge=0, le=100)

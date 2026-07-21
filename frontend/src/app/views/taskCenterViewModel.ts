@@ -582,12 +582,26 @@ function searchClickInitialValues(targetField: 'daily_target_count' | 'target_co
     [targetField]: null,
     account_group_id: null,
     max_actions_per_day: DEFAULT_SEARCH_CLICK_DAILY_ACTIONS,
+    ...(targetField === 'daily_target_count' ? { per_account_daily_action_limit: 1 } : {}),
     scheduled_end: toBeijingDateTimeLocalValue(new Date(Date.now() + DEFAULT_SEARCH_CLICK_DURATION_HOURS * 60 * 60 * 1000).toISOString()),
     daily_jitter_percent: DEFAULT_SEARCH_CLICK_DAILY_JITTER_PERCENT,
     hourly_jitter_percent: DEFAULT_SEARCH_CLICK_HOURLY_JITTER_PERCENT,
     quiet_start: '',
     quiet_end: '',
   };
+}
+
+function simpleSearchExecutionFields(taskType: TaskCenterTaskType): string[] {
+  return [
+    'account_group_id',
+    'max_actions_per_day',
+    ...(taskType === 'search_join_group' ? ['per_account_daily_action_limit'] : []),
+    'scheduled_end',
+    'daily_jitter_percent',
+    'hourly_jitter_percent',
+    'quiet_start',
+    'quiet_end',
+  ];
 }
 
 export function initialValuesForType(type: TaskCenterTaskType, setting?: SchedulingSetting | null) {
@@ -619,7 +633,7 @@ export function fieldsForStep(step: number, taskType: TaskCenterTaskType, messag
     return fields;
   }
   if (step === 2 && isSimpleSearchClickTask(taskType)) return ['keywords', simpleSearchTargetField(taskType)];
-  if (step === 3 && isSimpleSearchClickTask(taskType)) return ['account_group_id', 'max_actions_per_day', 'scheduled_end', 'daily_jitter_percent', 'hourly_jitter_percent', 'quiet_start', 'quiet_end'];
+  if (step === 3 && isSimpleSearchClickTask(taskType)) return simpleSearchExecutionFields(taskType);
   if (step === 3 && taskType === 'group_membership_admission') return ['account_group_ids'];
   if (step === 3) return accountSelectionFields(accountMode);
   return [];
@@ -649,7 +663,7 @@ export function channelScopeFields(messageScope: string): string[] {
 
 export function fieldsForSubmit(taskType: TaskCenterTaskType, messageScope: string, accountMode: string, pacingMode: string): string[] {
   void pacingMode;
-  if (isSimpleSearchClickTask(taskType)) return ['target_title', 'target_link', 'keywords', simpleSearchTargetField(taskType), 'account_group_id', 'max_actions_per_day', 'scheduled_end', 'daily_jitter_percent', 'hourly_jitter_percent', 'quiet_start', 'quiet_end'];
+  if (isSimpleSearchClickTask(taskType)) return ['target_title', 'target_link', 'keywords', simpleSearchTargetField(taskType), ...simpleSearchExecutionFields(taskType)];
   const commonFields = ['name', 'scheduled_end', 'operation_template_id', 'hourly_activity_curve', 'quiet_threshold', 'peak_threshold'];
   const baseFields = [...commonFields, ...accountSelectionFields(accountMode), 'max_concurrent', 'cooldown_per_account_minutes', 'ban_policy', 'max_actions_per_hour', 'max_retries'];
   if (taskType === 'group_ai_chat') {
@@ -731,7 +745,7 @@ export function fieldsForSubmit(taskType: TaskCenterTaskType, messageScope: stri
 
 export function editFieldsForSubmit(taskType: TaskCenterTaskType, accountMode: string, pacingMode: string): string[] {
   void pacingMode;
-  if (isSimpleSearchClickTask(taskType)) return ['target_title', 'target_link', 'keywords', simpleSearchTargetField(taskType), 'account_group_id', 'max_actions_per_day', 'scheduled_end', 'daily_jitter_percent', 'hourly_jitter_percent', 'quiet_start', 'quiet_end'];
+  if (isSimpleSearchClickTask(taskType)) return ['target_title', 'target_link', 'keywords', simpleSearchTargetField(taskType), ...simpleSearchExecutionFields(taskType)];
   const baseFields = ['name', 'scheduled_end', 'operation_template_id', 'hourly_activity_curve', 'quiet_threshold', 'peak_threshold', ...accountFields(accountMode), 'max_actions_per_hour', 'max_retries'];
   if (taskType === 'group_ai_chat') {
     return [
