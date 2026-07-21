@@ -1463,6 +1463,14 @@ def test_task_center_review_uses_task_specific_curve_units():
     assert "${profile.intensity} ${profileUnit}" in source
 
 
+def test_task_center_review_reads_retained_values_after_wizard_fields_unmount():
+    source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
+    review_start = source.index("{wizardStep === wizardSteps.length - 1 && <WizardReview")
+    review_end = source.index('<Space className="modal-actions">', review_start)
+
+    assert "values={form.getFieldsValue(true)}" in source[review_start:review_end]
+
+
 def test_task_center_ai_group_rows_prefer_target_summary_title():
     source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
 
