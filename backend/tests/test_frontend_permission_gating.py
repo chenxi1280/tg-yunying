@@ -1546,7 +1546,8 @@ def test_search_join_group_frontend_keeps_system_risk_policy_managed_and_exposes
         assert f'name="{field}"' in execution_config
     assert "系统负责账号资格、代理、机器人和风险闸门" in simple_config
     assert 'name="keywords"' in simple_config
-    assert 'name="target_count"' in simple_config
+    assert "const targetField = isRankDeboost ? 'target_count' : 'daily_target_count';" in simple_config
+    assert "每天 action 上限不能小于每日目标次数" in execution_config
     assert "isSimpleSearchClickTask(taskType)" in view_model
     assert "simpleSearchClickPayload(values)" in view
     assert "pacing_limits" in detail
@@ -2078,7 +2079,7 @@ def test_task_center_runtime_form_keeps_hour_limit_managed_and_exposes_search_cl
     assert 'name="max_actions_per_hour"' not in simple_config
     assert 'name="max_actions_per_hour"' not in execution_config
     assert 'name="max_actions_per_day"' in execution_config
-    assert "if (isSimpleSearchClickTask(taskType)) return ['target_title', 'target_link', 'keywords', 'target_count', 'account_group_id', 'max_actions_per_day', 'scheduled_end', 'daily_jitter_percent', 'hourly_jitter_percent', 'quiet_start', 'quiet_end'];" in view_model
+    assert "simpleSearchTargetField(taskType)" in view_model
 
 
 def test_target_profile_is_top_level_page_not_target_detail_governance():
@@ -2555,23 +2556,24 @@ def test_search_click_creation_uses_operator_scope_controls_and_system_managed_p
     assert "export function isSimpleSearchClickTask" in view_model
     assert "export function wizardStepsForTask" in view_model
     assert "target_count" in view_model
-    assert "function simpleSearchClickPayload(values: any, editing = false)" in view
-    simple_payload = view[view.index("function simpleSearchClickPayload(values: any, editing = false)"):view.index("function parseExcludedSenderInput", view.index("function simpleSearchClickPayload(values: any, editing = false)"))]
+    assert "function simpleSearchClickPayload(values: any, editing = false, searchTaskType = taskType)" in view
+    simple_payload = view[view.index("function simpleSearchClickPayload(values: any, editing = false, searchTaskType = taskType)"):view.index("function parseExcludedSenderInput", view.index("function simpleSearchClickPayload(values: any, editing = false, searchTaskType = taskType)"))]
     assert "target_title: values.target_title?.trim()" in simple_payload
     assert "target_link: values.target_link?.trim()" in simple_payload
     assert "target_operation_target_id" not in simple_payload
     assert "const keywords = words(values.keywords);" in simple_payload
     assert "...(keywords.length ? { keywords } : {})," in simple_payload
+    assert "daily_target_count: values.daily_target_count" in simple_payload
     assert "target_count: values.target_count" in simple_payload
     assert "account_group_id: values.account_group_id" in simple_payload
     assert "max_actions_per_day: values.max_actions_per_day" in simple_payload
     assert "scheduled_end: fromBeijingDateTimeLocalValue(values.scheduled_end)" in simple_payload
     assert "account_config" not in simple_payload
     assert "return simpleSearchClickPayload(values);" in view
-    assert "return simpleSearchClickPayload(values, true);" in view
+    assert "return simpleSearchClickPayload(values, true, type);" in view
     assert "simpleSearchCreation" in wizard
     assert "系统负责账号资格、代理、机器人和风险闸门" in wizard
-    assert 'name="target_count"' in wizard
+    assert "const targetField = isRankDeboost ? 'target_count' : 'daily_target_count';" in wizard
     simple_config = wizard[wizard.index("function SimpleSearchClickConfig"):wizard.index("export function SearchClickExecutionConfig")]
     execution_config = wizard[wizard.index("export function SearchClickExecutionConfig"):wizard.index("export function WizardTypeConfig")]
     assert '<InputNumber min={1} precision={0}' in simple_config
@@ -2635,7 +2637,7 @@ def test_search_join_edit_omits_hidden_keyword_material_when_unchanged():
 
     assert "const keywords = words(values.keywords);" in source
     assert "...(keywords.length ? { keywords } : {})," in source
-    assert "...(values.target_count != null ? { target_count: values.target_count } : {})," in source
+    assert "values.daily_target_count != null ? { daily_target_count: values.daily_target_count } : {}" in source
     assert "target_count: config.target_count ?? 1" not in source
 
 

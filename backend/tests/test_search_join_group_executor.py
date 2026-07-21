@@ -33,6 +33,7 @@ from app.services._common import _now
 from app.services.proxy_airport_subscription import create_proxy_airport_subscription, sync_proxy_airport_subscription_by_id
 from app.services.task_center import pacing
 from app.services.task_center import search_join_pacing
+from app.services.task_center import search_click_target_progress as search_click_progress
 from app.services.task_center.search_join_pacing import pacing_window
 from app.services.task_center.executors import build_task_plan
 from app.services.task_center.executors import search_join_group as search_join_executor
@@ -265,6 +266,77 @@ def test_search_join_planner_caps_new_actions_by_target_count_and_held_slots(ses
     assert build_task_plan(session, task) == 1
     assert session.query(Action).filter_by(task_id=task.id, action_type="search_join").count() == 3
     assert task.stats["search_click_target"]["remaining_slot_count"] == 0
+
+
+@pytest.mark.no_postgres
+def test_search_join_daily_target_stops_only_the_current_day(session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    _bind_search_join_environment(session, [101])
+    now_value = datetime(2026, 7, 21, 10, 0, 0)
+    monkeypatch.setattr(search_join_executor, "_now", lambda: now_value)
+    monkeypatch.setattr(search_click_progress, "beijing_now", lambda: now_value)
+    task = _task(
+        type_config={
+            "daily_target_count": 1,
+            "actions_per_round": 1,
+            "hourly_min_successful_joins": 1,
+        },
+        pacing_config={"max_actions_per_day": 1},
+    )
+    session.add(task)
+    session.flush()
+    confirmed = Action(
+        tenant_id=1,
+        task_id=task.id,
+        task_type=task.type,
+        action_type="search_join",
+        status="success",
+        payload={},
+        result={"join_status": "membership_observed"},
+        executed_at=now_value,
+    )
+    session.add(confirmed)
+    session.commit()
+
+    assert build_task_plan(session, task) == 0
+    assert task.status == "running"
+    assert task.stats["search_click_target"]["state"] == "daily_target_met"
+
+    confirmed.executed_at = now_value - timedelta(days=1)
+    session.commit()
+
+    assert build_task_plan(session, task) == 1
+    assert session.query(Action).filter_by(task_id=task.id, action_type="search_join").count() == 2
+
+
+@pytest.mark.no_postgres
+def test_search_join_daily_target_raises_hourly_plan_demand(session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    _bind_search_join_environment(session, [101, 102, 103])
+    now_value = datetime(2026, 7, 21, 10, 0, 0)
+    monkeypatch.setattr(search_join_executor, "_now", lambda: now_value)
+    monkeypatch.setattr(search_click_progress, "beijing_now", lambda: now_value)
+    task = _task(
+        type_config={
+            "daily_target_count": 80,
+            "hourly_round_curve": [1] * 24,
+            "actions_per_round": 3,
+            "max_actions_per_hour": 8,
+            "hourly_min_successful_joins": 1,
+        },
+        pacing_config={
+            "max_actions_per_day": 80,
+            "per_account_daily_action_limit": 1,
+            "per_keyword_account_daily_limit": 1,
+            "hourly_jitter_percent": 0,
+            "daily_jitter_percent": 0,
+        },
+    )
+    session.add(task)
+    session.commit()
+
+    assert build_task_plan(session, task) == 3
+    hourly = task.stats["search_join_stats"]["hourly_execution"]
+    assert hourly["goal"] == 6
+    assert hourly["deficit"] == 6
 
 
 @pytest.mark.no_postgres

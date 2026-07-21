@@ -19,7 +19,9 @@ export type SearchClickTargetProgress = {
   confirmed_count: number;
   held_count: number;
   remaining_slot_count: number | null;
-  state: 'planning' | 'waiting_confirmation' | 'completed' | 'legacy_unlimited';
+  state: 'planning' | 'waiting_confirmation' | 'daily_target_met' | 'completed' | 'legacy_unlimited';
+  scope?: 'daily';
+  local_date?: string | null;
 };
 
 export type HardHourlyRecentBucket = {

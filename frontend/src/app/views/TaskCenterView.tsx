@@ -952,7 +952,8 @@ export default function TaskCenterView({
         keywords: keywordTexts,
         target_title: config.target_title ?? '',
         target_link: config.target_link ?? config.target_input ?? '',
-        target_count: config.target_count,
+        daily_target_count: task.type === 'search_join_group' ? config.daily_target_count ?? config.target_count : undefined,
+        target_count: task.type === 'search_rank_deboost' ? config.target_count : undefined,
         account_group_id: account.account_group_id ?? null,
         max_actions_per_day: pacing.max_actions_per_day ?? null,
         scheduled_end: toDateTimeLocal(task.scheduled_end),
@@ -1176,7 +1177,7 @@ export default function TaskCenterView({
     return payload;
   }
 
-  function simpleSearchClickPayload(values: any, editing = false) {
+  function simpleSearchClickPayload(values: any, editing = false, searchTaskType = taskType) {
     const keywords = words(values.keywords);
     const quietStart = String(values.quiet_start || '').trim();
     const quietEnd = String(values.quiet_end || '').trim();
@@ -1195,18 +1196,23 @@ export default function TaskCenterView({
       target_title: values.target_title?.trim(),
       target_link: values.target_link?.trim(),
     };
+    const targetCount = searchTaskType === 'search_join_group'
+      ? { daily_target_count: values.daily_target_count }
+      : { target_count: values.target_count };
     if (editing) {
       return {
         ...(target.target_title && target.target_link ? target : {}),
         ...(keywords.length ? { keywords } : {}),
-        ...(values.target_count != null ? { target_count: values.target_count } : {}),
+        ...(searchTaskType === 'search_join_group'
+          ? values.daily_target_count != null ? { daily_target_count: values.daily_target_count } : {}
+          : values.target_count != null ? { target_count: values.target_count } : {}),
         ...execution,
       };
     }
     return {
       ...target,
       keywords,
-      target_count: values.target_count,
+      ...targetCount,
       ...execution,
     };
   }
@@ -1381,7 +1387,7 @@ export default function TaskCenterView({
   }
 
   function settingsPayload(type: TaskCenterTaskType, values: any): Record<string, any> {
-    if (isSimpleSearchClickTask(type)) return simpleSearchClickPayload(values, true);
+    if (isSimpleSearchClickTask(type)) return simpleSearchClickPayload(values, true, type);
     const base = {
       name: values.name,
       priority: values.priority ?? 3,
@@ -2264,7 +2270,7 @@ export default function TaskCenterView({
             </>
           )}
           <Typography.Title level={5}>类型参数</Typography.Title>
-          <WizardTypeConfig taskType={(detail && !isSystemTask(detail.task) ? detail.task.type : taskType) as TaskCenterTaskType} ruleSets={ruleSets} slangTemplates={slangTemplates} comments={comments} relaySourceOptions={relaySourceOptions(detail)} targetChannelId={editTargetChannelId} messageScope={editMessageScope} messageIds={editMessageIds} simpleSearchCreation={isSimpleSearchClickTask(editableTaskType)} simpleSearchEditing={isSimpleSearchClickTask(editableTaskType)} simpleSearchLegacyUncapped={detail?.task.type_config?.target_count == null} />
+          <WizardTypeConfig taskType={(detail && !isSystemTask(detail.task) ? detail.task.type : taskType) as TaskCenterTaskType} ruleSets={ruleSets} slangTemplates={slangTemplates} comments={comments} relaySourceOptions={relaySourceOptions(detail)} targetChannelId={editTargetChannelId} messageScope={editMessageScope} messageIds={editMessageIds} simpleSearchCreation={isSimpleSearchClickTask(editableTaskType)} simpleSearchEditing={isSimpleSearchClickTask(editableTaskType)} simpleSearchLegacyUncapped={editableTaskType === 'search_join_group' ? detail?.task.type_config?.daily_target_count == null && detail?.task.type_config?.target_count == null : detail?.task.type_config?.target_count == null} />
           {isSimpleSearchClickTask(editableTaskType) && <><Typography.Title level={5}>执行范围与节奏</Typography.Title><SearchClickExecutionConfig taskType={editableTaskType} accountPools={taskAccountPools} /></>}
           {!isSimpleSearchClickTask(editableTaskType) && (
             <>

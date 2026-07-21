@@ -381,13 +381,19 @@ def _simple_search_join_group_payload(
         session, tenant_id, payload.target_title, payload.target_link
     )
     return SearchJoinGroupTaskCreate(
-        name=_simple_search_click_name(target, "搜索目标群点击", payload.target_count, payload.target_title),
+        name=_simple_search_click_name(
+            target,
+            "搜索目标群点击",
+            payload.daily_target_count,
+            payload.target_title,
+            daily_target=True,
+        ),
         target_operation_target_id=target.id,
         target_input=canonical_link,
         target_title=payload.target_title,
         target_link=canonical_link,
         keywords=payload.keywords,
-        target_count=payload.target_count,
+        daily_target_count=payload.daily_target_count,
         search_bots=[{"username": "jisou", "display_name": "极搜"}],
         account_config=search_click_account_config(payload.account_group_id),
         scheduled_end=as_beijing(payload.scheduled_end),
@@ -446,9 +452,12 @@ def _simple_search_click_name(
     task_label: str,
     target_count: int,
     target_title: str = "",
+    *,
+    daily_target: bool = False,
 ) -> str:
     target_label = (target_title or target.title or f"@{target.username}").strip()
-    return f"{target_label} {task_label} {target_count} 次"[:200]
+    count_label = f"每日 {target_count}" if daily_target else str(target_count)
+    return f"{target_label} {task_label} {count_label} 次"[:200]
 
 
 def _refresh_simple_search_click_name(session: Session, task: Task, *, task_label: str) -> None:
@@ -460,11 +469,18 @@ def _refresh_simple_search_click_name(session: Session, task: Task, *, task_labe
             target_id = target_group_ids[0]
     if target_id is None:
         return
-    target_count = int(config.get("target_count") or 0)
+    daily_target = task.type == NORMAL_SEARCH_CLICK_TASK and config.get("daily_target_count") is not None
+    target_count = int(config.get("daily_target_count") if daily_target else config.get("target_count") or 0)
     if target_count <= 0:
         return
     target = _simple_search_click_target(session, task.tenant_id, int(target_id))
-    task.name = _simple_search_click_name(target, task_label, target_count, str(config.get("target_title") or ""))
+    task.name = _simple_search_click_name(
+        target,
+        task_label,
+        target_count,
+        str(config.get("target_title") or ""),
+        daily_target=daily_target,
+    )
 
 
 def _create_task(session: Session, tenant_id: int, task_type: str, payload, actor: str) -> Task:
@@ -859,39 +875,62 @@ def update_search_join_group_config(session: Session, tenant_id: int, task_id: s
     if task.type != "search_join_group":
         raise ValueError(f"任务类型不匹配，当前任务是 {task.type}")
     _require_search_click_operator_fields(payload, task.type)
-    update_data = payload.model_dump(mode="json", exclude_unset=True)
-    pacing_data = update_data.pop("pacing_config", None)
-    operator_controls = _search_click_operator_controls(payload)
-    for field in operator_controls:
-        update_data.pop(field, None)
-    task.type_config = _normalize_legacy_search_join_config(task.type_config or {})
-    _resolve_search_join_target_input(session, tenant_id, update_data)
-    _remove_unchanged_search_join_target_input(task.type_config, update_data)
-    if "keywords" in update_data:
-        update_data.setdefault("keyword_hashes", [])
-        update_data.setdefault("keyword_text_ciphertexts", [])
+    update_data, pacing_data, operator_controls = _search_join_update_values(
+        session, tenant_id, task, payload
+    )
     type_config_updated = bool(update_data)
+    daily_target_updated = "daily_target_count" in update_data
     if type_config_updated:
-        task = _apply_type_config_data(session, tenant_id, task_id, "search_join_group", update_data, actor)
-        if {"target_operation_target_id", "target_title", "target_count"}.intersection(update_data):
+        task = _apply_type_config_data(
+            session,
+            tenant_id,
+            task_id,
+            "search_join_group",
+            update_data,
+            actor,
+            remove_fields=("target_count",) if daily_target_updated else (),
+        )
+        if {"target_operation_target_id", "target_title", "target_count", "daily_target_count"}.intersection(update_data):
             _refresh_simple_search_click_name(session, task, task_label="搜索目标群点击")
     pacing_updated = False
     if pacing_data is not None:
         next_pacing = pacing_config_payload(pacing_data)
         pacing_updated = next_pacing != (task.pacing_config or {})
         task.pacing_config = next_pacing
-    controls_updated = _apply_search_click_operator_controls(
-        session, task, operator_controls
-    )
+    controls_updated = _apply_search_click_operator_controls(session, task, operator_controls)
     if not type_config_updated and (pacing_updated or controls_updated):
         _clear_unfinished_plan(session, task)
         _requeue_updated_task(task)
+    if daily_target_updated:
+        _requeue_search_join_daily_target(task)
+        reconcile_search_click_target_progress(session, task)
     if not type_config_updated and not pacing_updated and not controls_updated:
         return task
     task.updated_at = _now()
     session.commit()
     session.refresh(task)
     return task
+
+
+def _search_join_update_values(
+    session: Session,
+    tenant_id: int,
+    task: Task,
+    payload: SearchJoinGroupTaskConfigUpdate,
+) -> tuple[dict[str, Any], dict[str, Any] | None, dict[str, Any]]:
+    update_data = payload.model_dump(mode="json", exclude_unset=True)
+    pacing_data = update_data.pop("pacing_config", None)
+    operator_controls = _search_click_operator_controls(payload)
+    for field in operator_controls:
+        update_data.pop(field, None)
+    task.type_config = _normalize_legacy_search_join_config(task.type_config or {})
+    _validate_search_join_daily_target(task, update_data, operator_controls)
+    _resolve_search_join_target_input(session, tenant_id, update_data)
+    _remove_unchanged_search_join_target_input(task.type_config, update_data)
+    if "keywords" in update_data:
+        update_data.setdefault("keyword_hashes", [])
+        update_data.setdefault("keyword_text_ciphertexts", [])
+    return update_data, pacing_data, operator_controls
 
 
 SEARCH_CLICK_OPERATOR_CONTROL_FIELDS = (
@@ -908,6 +947,7 @@ SEARCH_JOIN_OPERATOR_EDIT_FIELDS = {
     "target_link",
     "keywords",
     "target_count",
+    "daily_target_count",
     *SEARCH_CLICK_OPERATOR_CONTROL_FIELDS,
 }
 SEARCH_RANK_OPERATOR_EDIT_FIELDS = {
@@ -944,6 +984,25 @@ def _search_click_account_group_changed(task: Task, controls: dict[str, Any]) ->
         return False
     current_group_id = int((task.account_config or {}).get("account_group_id") or 0)
     return current_group_id != int(controls["account_group_id"])
+
+
+def _validate_search_join_daily_target(
+    task: Task,
+    update_data: dict[str, Any],
+    controls: dict[str, Any],
+) -> None:
+    target = update_data.get("daily_target_count", (task.type_config or {}).get("daily_target_count"))
+    if target is None:
+        return
+    max_actions = controls.get("max_actions_per_day", (task.pacing_config or {}).get("max_actions_per_day"))
+    if max_actions is None or int(max_actions) < int(target):
+        raise ValueError("max_actions_per_day 不能小于 daily_target_count")
+
+
+def _requeue_search_join_daily_target(task: Task) -> None:
+    if task.status == "completed":
+        task.status = "running"
+    _requeue_updated_task(task)
 
 
 def _apply_search_click_operator_controls(
@@ -3658,11 +3717,22 @@ def _update_type_config_data(session: Session, tenant_id: int, task_id: str, exp
     return task
 
 
-def _apply_type_config_data(session: Session, tenant_id: int, task_id: str, expected_type: str, update_data: dict[str, Any], actor: str) -> Task:
+def _apply_type_config_data(
+    session: Session,
+    tenant_id: int,
+    task_id: str,
+    expected_type: str,
+    update_data: dict[str, Any],
+    actor: str,
+    *,
+    remove_fields: tuple[str, ...] = (),
+) -> Task:
     task = _get_task(session, tenant_id, task_id)
     if task.type != expected_type:
         raise ValueError(f"任务类型不匹配，当前任务是 {task.type}")
     next_config = {**(task.type_config or {}), **update_data}
+    for field in remove_fields:
+        next_config.pop(field, None)
     next_config = normalize_operation_target_references(session, tenant_id, expected_type, next_config)
     next_config = apply_default_rule_binding(session, tenant_id, task_type=expected_type, config=next_config)
     next_config = apply_group_ai_account_coverage_defaults(expected_type, next_config, task.account_config or {})
