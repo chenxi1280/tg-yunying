@@ -223,7 +223,7 @@ def test_search_click_task_settings_use_the_three_field_special_contract():
     settings_payload = source[source.index("function settingsPayload"):source.index("\n\n  async function runTaskPrecheck")]
     save_settings = _function_body(source, "saveTaskSettings")
 
-    assert "if (isSimpleSearchClickTask(type)) return simpleSearchClickPayload(values, true);" in settings_payload
+    assert "if (isSimpleSearchClickTask(type)) return simpleSearchClickPayload(values, true, type);" in settings_payload
     assert "editableType === 'search_join_group'" in save_settings
     assert "`/tasks/${taskId}/search-join-group`" in save_settings
     assert "`/tasks/${taskId}/search_rank_deboost_config`" in save_settings
