@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -17,12 +17,14 @@ from app.services.proxy_airport_subscription import (
     list_proxy_airport_subscriptions,
     select_proxy_airport_subscription_for_failover,
 )
+from app.timezone import as_beijing
 
 from ..account_pool import select_task_accounts
+from ..pacing import quiet_hours_active
 from ..payloads import SearchJoinPayload, create_search_join_action
 from ..search_click_target_progress import reconcile_search_click_target_progress
 from ..search_join_config import runtime_search_join_config
-from ..search_join_pacing import PacingStats, account_base_allowed, keyword_allowed, pacing_window, planned_action_decision, should_skip_window, task_daily_capacity
+from ..search_join_pacing import PacingStats, account_base_allowed, hourly_action_allowed, keyword_allowed, pacing_window, planned_action_decision, should_skip_window, task_daily_capacity
 from ..stats import search_join_hourly_execution
 
 
@@ -74,6 +76,16 @@ def build_plan(session: Session, task: Task) -> int:
     now_value = _now()
     window = pacing_window(task, now_value)
     pacing_stats = PacingStats(tenant_timezone=task.timezone or "Asia/Shanghai", local_date=window.local_date.isoformat())
+    if quiet_hours_active(now_value, config, timezone_name=task.timezone):
+        pacing_stats.last_limit_reason = "quiet_hours_active"
+        task.last_error = ""
+        return _record_hourly(
+            task,
+            search_join_hourly_execution(session, task, now_value),
+            0,
+            {"quiet_hours_active": 1},
+            pacing_stats,
+        )
     if _window_skipped(session, task, config, window, pacing_stats):
         return _record_hourly(task, search_join_hourly_execution(session, task, now_value), 0, {}, pacing_stats)
     hourly = search_join_hourly_execution(session, task, _now())
@@ -110,8 +122,11 @@ def build_plan(session: Session, task: Task) -> int:
             account=account,
             environment=environment,
         ))
-        _create_planned_action(session, task, account, payload, keyword_hash, window, config)
-        created += 1
+        action_created, blocker = _create_planned_action(session, task, account, payload, keyword_hash, window, config)
+        if blocker:
+            _count_blocker(blockers, blocker)
+        if action_created:
+            created += 1
         if created >= plan_count:
             break
     if created <= 0:
@@ -144,7 +159,15 @@ def _window_skipped(session: Session, task: Task, config: dict, window, pacing_s
     return False
 
 
-def _create_planned_action(session: Session, task: Task, account: TgAccount, payload: SearchJoinPayload, keyword_hash: str, window, config: dict) -> None:
+def _create_planned_action(
+    session: Session,
+    task: Task,
+    account: TgAccount,
+    payload: SearchJoinPayload,
+    keyword_hash: str,
+    window,
+    config: dict,
+) -> tuple[bool, str]:
     candidate_key = f"{window.local_date.isoformat()}:{account.id}:{keyword_hash}:{payload.hourly_execution.get('bucket', '')}"
     decision = planned_action_decision(
         session,
@@ -158,16 +181,36 @@ def _create_planned_action(session: Session, task: Task, account: TgAccount, pay
         keyword_hash=keyword_hash,
         base_scheduled_at=_now(),
     )
+    scheduled_at = _scheduled_before_task_deadline(task, decision.scheduled_at or _now(), _now())
+    if scheduled_at is None:
+        return False, "scheduled_end_reached"
+    if quiet_hours_active(scheduled_at, config, timezone_name=task.timezone):
+        return False, "quiet_hours_active"
+    if not hourly_action_allowed(session, task, scheduled_at, max_actions_per_hour=int(config.get("max_actions_per_hour") or 0)):
+        return False, "task_hourly_limit_reached"
+    decision.scheduled_at = scheduled_at
     if not decision.decision_value.get("skipped"):
-        create_search_join_action(session, task, account.id, decision.scheduled_at or _now(), payload)
-        return
+        create_search_join_action(session, task, account.id, scheduled_at, payload)
+        return True, ""
     lookup = BehaviorSkipLookup(task, account.id, keyword_hash, decision.scheduled_at)
     if _existing_behavior_skip_action(session, lookup):
-        return
-    action = create_search_join_action(session, task, account.id, decision.scheduled_at or _now(), payload)
+        return True, ""
+    action = create_search_join_action(session, task, account.id, scheduled_at, payload)
     action.status = "skipped"
     action.executed_at = _now()
     action.result = {"success": False, "skip_reason": "skipped_by_behavior_pacing"}
+    return True, ""
+
+
+def _scheduled_before_task_deadline(task: Task, scheduled_at: datetime, now_value: datetime) -> datetime | None:
+    candidate = as_beijing(scheduled_at) or scheduled_at
+    if task.scheduled_end is None:
+        return candidate
+    deadline = as_beijing(task.scheduled_end)
+    current = as_beijing(now_value) or now_value
+    if deadline is None or deadline <= current:
+        return None
+    return min(candidate, deadline - timedelta(seconds=1))
 
 
 def _existing_behavior_skip_action(session: Session, lookup: BehaviorSkipLookup) -> Action | None:

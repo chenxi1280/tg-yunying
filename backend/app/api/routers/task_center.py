@@ -318,7 +318,9 @@ def patch_task(task_id: str, payload: TaskUpdate, session: Session = Depends(get
     try:
         return update_task(session, current_user.tenant_id or 1, task_id, payload, current_user.name)
     except ValueError as exc:
-        raise not_found(str(exc)) from exc
+        if str(exc) == "task not found":
+            raise not_found(str(exc)) from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.patch("/api/tasks/{task_id}/settings", response_model=TaskOut)

@@ -39,6 +39,19 @@ class QuietHours(BaseModel):
     end: str = "08:00"
     timezone: str = "Asia/Shanghai"
 
+    @field_validator("start", "end")
+    @classmethod
+    def validate_time(cls, value: str, info) -> str:
+        if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", value):
+            raise ValueError(f"quiet_hours.{info.field_name} 必须是 HH:MM")
+        return value
+
+    @model_validator(mode="after")
+    def validate_window(self) -> "QuietHours":
+        if self.start == self.end:
+            raise ValueError("quiet_hours.start 与 quiet_hours.end 不能相同")
+        return self
+
 
 DEFAULT_HOURLY_ACTIVITY_CURVE = [2, 2, 1, 1, 0, 0, 1, 2, 4, 5, 6, 6, 5, 4, 6, 7, 8, 9, 10, 10, 8, 6, 4, 3]
 
@@ -142,6 +155,12 @@ class SearchJoinPacingConfig(PacingConfig):
         if legacy is not None and hourly is None:
             next_data["hourly_jitter_percent"] = int(legacy)
         return next_data
+
+
+class SearchRankDeboostPacingConfig(PacingConfig):
+    max_actions_per_day: int | None = Field(default=None, ge=1)
+    hourly_jitter_percent: int = Field(default=0, ge=0, le=100)
+    daily_jitter_percent: int = Field(default=0, ge=0, le=100)
 
 
 class FailurePolicy(BaseModel):
@@ -639,7 +658,7 @@ class TaskCreateCommon(BaseModel):
 
 
 class SearchClickSimpleTaskCreate(BaseModel):
-    """搜索点击新建页的三项业务输入。"""
+    """搜索点击新建页的业务目标与运营执行范围输入。"""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -647,6 +666,12 @@ class SearchClickSimpleTaskCreate(BaseModel):
     target_link: str = Field(min_length=1, max_length=300)
     keywords: list[str] = Field(min_length=1)
     target_count: int = Field(ge=1)
+    account_group_id: int = Field(gt=0)
+    max_actions_per_day: int = Field(ge=1)
+    scheduled_end: datetime
+    daily_jitter_percent: int = Field(ge=0, le=100)
+    hourly_jitter_percent: int = Field(ge=0, le=100)
+    quiet_hours: QuietHours | None = None
 
     @field_validator("target_title", "target_link")
     @classmethod
@@ -776,6 +801,12 @@ class SearchJoinGroupTaskConfigUpdate(BaseModel):
     post_join_policy: Literal["stay_joined"] | None = None
     post_join_task_links: list[dict[str, Any]] | None = None
     pacing_config: SearchJoinPacingConfig | None = None
+    account_group_id: int | None = Field(default=None, gt=0)
+    max_actions_per_day: int | None = Field(default=None, ge=1)
+    scheduled_end: datetime | None = None
+    daily_jitter_percent: int | None = Field(default=None, ge=0, le=100)
+    hourly_jitter_percent: int | None = Field(default=None, ge=0, le=100)
+    quiet_hours: QuietHours | None = None
 
     @field_validator("target_title", "target_link")
     @classmethod
@@ -810,13 +841,16 @@ class SearchRankDeboostTaskCreate(BaseModel):
     target_group_ids: list[int] = Field(default_factory=list, description="我方目标群 ID 列表，用于实时排名判定与白名单")
     account_pool_id: int | None = Field(default=None, description="兼容字段：账号分组 ID，必须为 pool_purpose=rank_deboost 的分组")
     proxy_airport_node_id: int | None = Field(default=None, description="兼容字段：分组级绑定的 Clash 节点 ID")
+    timezone: str = "Asia/Shanghai"
+    scheduled_end: datetime | None = None
     account_config: AccountConfig = Field(default_factory=AccountConfig)
+    pacing_config: SearchRankDeboostPacingConfig = Field(default_factory=SearchRankDeboostPacingConfig)
     config: dict = Field(default_factory=dict, description="任务配置，含节奏、停留时长、限流")
     notes: str = ""
 
 
 class SearchRankDeboostTaskConfigUpdate(BaseModel):
-    """搜索排名观察任务的三项业务输入更新。"""
+    """搜索排名观察任务的业务目标与运营执行范围更新。"""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -825,6 +859,12 @@ class SearchRankDeboostTaskConfigUpdate(BaseModel):
     target_link: str | None = Field(default=None, min_length=1, max_length=300)
     keywords: list[str] | None = None
     target_count: int | None = Field(default=None, ge=1)
+    account_group_id: int | None = Field(default=None, gt=0)
+    max_actions_per_day: int | None = Field(default=None, ge=1)
+    scheduled_end: datetime | None = None
+    daily_jitter_percent: int | None = Field(default=None, ge=0, le=100)
+    hourly_jitter_percent: int | None = Field(default=None, ge=0, le=100)
+    quiet_hours: QuietHours | None = None
 
     @field_validator("target_title", "target_link")
     @classmethod

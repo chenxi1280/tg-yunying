@@ -11,7 +11,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -26,6 +26,7 @@ from app.models import (
     AccountStatus,
     Action,
     BotProtocolSample,
+    ExecutionAttempt,
     OperationTarget,
     ProxyAirportNode,
     ProxyAirportSubscription,
@@ -40,7 +41,7 @@ from app.models.search_rank_deboost import (
     SearchRankDeboostClickReservation,
     SearchRankDeboostExemptGroup,
 )
-from app.schemas.task_center import TaskRetryRequest
+from app.schemas.task_center import SearchRankDeboostTaskConfigUpdate, TaskRetryRequest
 from app.security import encrypt_secret, encrypt_session
 from app.services._common import _now
 from app.services.task_center.dispatcher import dispatch_action
@@ -48,6 +49,10 @@ from app.services.task_center.executors.search_rank_deboost import (
     build_plan,
     execute_search_rank_deboost,
 )
+from app.services.task_center.executors import search_rank_deboost as rank_deboost_executor
+from app.services.task_center.executors import search_rank_deboost_planner
+from app.services.task_center import dispatcher as task_dispatcher
+from app.services.task_center import service as task_service
 from app.services.task_center import search_rank_deboost_pacing as rank_deboost_pacing
 from app.services.task_center.payloads import SearchRankDeboostPayload
 from app.services.task_center.search_rank_deboost_pacing import (
@@ -60,7 +65,8 @@ from app.services.task_center.search_rank_deboost_pacing import (
     account_click_allowed,
     deboost_pacing_window,
 )
-from app.services.task_center.service import _mark_stale_executing_action, retry_task
+from app.services.task_center.search_rank_deboost_reservations import RESERVATION_TTL_MINUTES, reserve_click
+from app.services.task_center.service import _mark_stale_executing_action, retry_task, update_search_rank_deboost_config
 from app.services.task_center.stats import search_rank_deboost_hourly_execution
 
 
@@ -316,6 +322,338 @@ def test_build_plan_creates_actions_for_rank_deboost_accounts() -> None:
             assert runtime["binding_generation"] == "1"
             assert action.payload["bot_username"] == "jisou"
             assert len(action.payload["keyword_hash"]) == 64
+
+
+def test_rank_planner_honors_task_daily_action_limit() -> None:
+    engine = _build_engine()
+    with Session(engine) as session:
+        _seed_base(session, account_ids=[100, 101])
+        task = _make_task(session, pacing_config={"max_actions_per_day": 1})
+        session.query(SearchRankDeboostExemptGroup).update({SearchRankDeboostExemptGroup.task_id: task.id})
+        session.commit()
+
+        assert build_plan(session, task) == 1
+
+        limits = task.stats["search_rank_deboost_stats"]["pacing_limits"]
+        assert limits["task_daily_action_count"] == 1
+        assert limits["task_daily_remaining"] == 0
+        assert limits["task_daily_limit_reached"] == 1
+
+
+def test_rank_planner_does_not_create_actions_during_quiet_hours(monkeypatch: pytest.MonkeyPatch) -> None:
+    fixed_now = datetime(2026, 7, 4, 3, 0, 0)
+    monkeypatch.setattr(search_rank_deboost_planner, "_now", lambda: fixed_now)
+    engine = _build_engine()
+    with Session(engine) as session:
+        _seed_base(session, account_ids=[100])
+        task = _make_task(session, pacing_config={"quiet_hours": {"start": "02:00", "end": "08:00"}})
+        session.query(SearchRankDeboostExemptGroup).update({SearchRankDeboostExemptGroup.task_id: task.id})
+        session.commit()
+
+        assert build_plan(session, task) == 0
+
+        assert session.query(Action).filter_by(task_id=task.id).count() == 0
+        assert task.stats["search_rank_deboost_stats"]["pacing_limits"]["last_limit_reason"] == "quiet_hours_active"
+
+
+def test_rank_planner_does_not_schedule_jittered_action_inside_quiet_hours(monkeypatch: pytest.MonkeyPatch) -> None:
+    fixed_now = datetime(2026, 7, 4, 1, 59, 0)
+    monkeypatch.setattr(search_rank_deboost_planner, "_now", lambda: fixed_now)
+    monkeypatch.setattr(
+        search_rank_deboost_planner,
+        "planned_action_at",
+        lambda *_args, **_kwargs: fixed_now + timedelta(minutes=31),
+    )
+    engine = _build_engine()
+    with Session(engine) as session:
+        _seed_base(session, account_ids=[100])
+        task = _make_task(session, pacing_config={"quiet_hours": {"start": "02:00", "end": "08:00"}})
+        session.query(SearchRankDeboostExemptGroup).update({SearchRankDeboostExemptGroup.task_id: task.id})
+        session.commit()
+
+        assert build_plan(session, task) == 0
+
+        assert session.query(Action).filter_by(task_id=task.id).count() == 0
+        assert task.stats["search_rank_deboost_stats"]["hourly_execution"]["last_blockers"] == {"quiet_hours_active": 1}
+
+
+def test_rank_planner_applies_jitter_before_reserving_action(monkeypatch: pytest.MonkeyPatch) -> None:
+    fixed_now = datetime(2026, 7, 4, 10, 0, 0)
+    monkeypatch.setattr(search_rank_deboost_planner, "_now", lambda: fixed_now)
+    engine = _build_engine()
+    with Session(engine) as session:
+        _seed_base(session, account_ids=[100])
+        task = _make_task(session, pacing_config={"daily_jitter_percent": 100, "hourly_jitter_percent": 100})
+        task.id = "rank-jitter-task"
+        session.query(SearchRankDeboostExemptGroup).update({SearchRankDeboostExemptGroup.task_id: task.id})
+        session.commit()
+
+        assert build_plan(session, task) == 1
+
+        action = session.query(Action).filter_by(task_id=task.id).one()
+        reservation = session.query(SearchRankDeboostClickReservation).filter_by(action_id=action.id).one()
+        assert action.scheduled_at > fixed_now
+        assert action.scheduled_at < datetime(2026, 7, 5, 0, 0, 0)
+        assert reservation.expires_at >= action.scheduled_at + timedelta(minutes=RESERVATION_TTL_MINUTES)
+
+
+def test_rank_daily_jitter_spreads_within_remaining_task_local_day(monkeypatch: pytest.MonkeyPatch) -> None:
+    fixed_now = datetime(2026, 7, 4, 10, 0, 0)
+    engine = _build_engine()
+    with Session(engine) as session:
+        task = _make_task(session, pacing_config={"daily_jitter_percent": 100, "hourly_jitter_percent": 0})
+        task.id = "rank-daily-jitter"
+        monkeypatch.setattr(rank_deboost_pacing, "_jitter_ratio", lambda *_args: 1.0)
+
+        scheduled_at = rank_deboost_pacing.planned_action_at(task, "candidate", fixed_now)
+
+        assert scheduled_at == datetime(2026, 7, 4, 23, 59, 59)
+
+
+def test_rank_planner_jitter_never_schedules_after_task_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
+    fixed_now = datetime(2026, 7, 4, 10, 0, 0)
+    deadline = fixed_now + timedelta(seconds=1)
+    monkeypatch.setattr(search_rank_deboost_planner, "_now", lambda: fixed_now)
+    engine = _build_engine()
+    with Session(engine) as session:
+        _seed_base(session, account_ids=[100])
+        task = _make_task(session, pacing_config={"daily_jitter_percent": 100, "hourly_jitter_percent": 100})
+        task.scheduled_end = deadline
+        session.query(SearchRankDeboostExemptGroup).update({SearchRankDeboostExemptGroup.task_id: task.id})
+        session.commit()
+
+        assert build_plan(session, task) == 1
+
+        action = session.query(Action).filter_by(task_id=task.id).one()
+        assert action.scheduled_at < deadline
+
+
+def test_rank_operator_control_update_removes_superseded_pending_reservation() -> None:
+    engine = _build_engine()
+    with Session(engine) as session:
+        binding, accounts = _seed_base(session)
+        task = _make_task(session)
+        account = accounts[0]
+        payload = _make_payload(task, account_id=account.id, binding_id=binding.id)
+        action = _make_action(session, task, account, payload)
+        action.status = "pending"
+        reservation = _make_reservation(session, task, action, account)
+        reservation_id = reservation.id
+        action_id = action.id
+        session.commit()
+
+        update_search_rank_deboost_config(
+            session,
+            1,
+            task.id,
+            SearchRankDeboostTaskConfigUpdate(max_actions_per_day=1),
+            operator="tester",
+        )
+
+        assert session.get(Action, action_id) is None
+        assert session.get(SearchRankDeboostClickReservation, reservation_id) is None
+
+
+def test_rank_operator_control_update_only_preserves_executing_action_after_gateway_boundary() -> None:
+    engine = _build_engine()
+    with Session(engine) as session:
+        binding, accounts = _seed_base(session, account_ids=[100, 101])
+        task = _make_task(session)
+        account = accounts[0]
+        payload = _make_payload(task, account_id=account.id, binding_id=binding.id)
+        claiming_action = _make_action(session, task, account, payload)
+        claiming_action.status = "claiming"
+        claiming_reservation = _make_reservation(session, task, claiming_action, account)
+        pre_gateway_action = _make_action(session, task, account, payload)
+        pre_gateway_reservation = _make_reservation(session, task, pre_gateway_action, account)
+        session.add(
+            ExecutionAttempt(
+                tenant_id=1,
+                action_id=pre_gateway_action.id,
+                account_id=account.id,
+                attempt_no=1,
+                status="before_call",
+                before_call_at=_now(),
+                result_snapshot={},
+            )
+        )
+        gateway_account = accounts[1]
+        gateway_payload = _make_payload(task, account_id=gateway_account.id, binding_id=binding.id)
+        gateway_action = _make_action(session, task, gateway_account, gateway_payload)
+        gateway_reservation = _make_reservation(session, task, gateway_action, gateway_account)
+        session.add(
+            ExecutionAttempt(
+                tenant_id=1,
+                action_id=gateway_action.id,
+                account_id=gateway_account.id,
+                attempt_no=1,
+                status="gateway_call_started",
+                before_call_at=_now(),
+                gateway_call_started_at=_now(),
+                result_snapshot={},
+            )
+        )
+        session.commit()
+
+        update_search_rank_deboost_config(
+            session,
+            1,
+            task.id,
+            SearchRankDeboostTaskConfigUpdate(max_actions_per_day=1),
+            operator="tester",
+        )
+
+        assert claiming_action.status == "skipped"
+        assert claiming_reservation.status == "released"
+        assert pre_gateway_action.status == "skipped"
+        assert pre_gateway_reservation.status == "released"
+        assert gateway_action.status == "executing"
+        assert gateway_reservation.status == "reserved"
+
+
+def test_rank_operator_control_update_supersedes_unmarked_executing_action() -> None:
+    engine = _build_engine()
+    with Session(engine) as session:
+        binding, accounts = _seed_base(session)
+        task = _make_task(session)
+        account = accounts[0]
+        payload = _make_payload(task, account_id=account.id, binding_id=binding.id)
+        action = _make_action(session, task, account, payload)
+        action.status = "executing"
+        reservation = _make_reservation(session, task, action, account)
+        session.commit()
+
+        update_search_rank_deboost_config(
+            session,
+            1,
+            task.id,
+            SearchRankDeboostTaskConfigUpdate(max_actions_per_day=1),
+            operator="tester",
+        )
+
+        assert action.status == "skipped"
+        assert reservation.status == "released"
+
+
+def test_start_expired_rank_draft_completes_before_readiness(monkeypatch: pytest.MonkeyPatch) -> None:
+    fixed_now = datetime(2026, 7, 4, 10, 0, 0)
+    monkeypatch.setattr(task_service, "_now", lambda: fixed_now)
+    engine = _build_engine()
+    with Session(engine) as session:
+        _seed_base(session)
+        task = _make_task(session)
+        task.status = "draft"
+        task.scheduled_end = fixed_now - timedelta(seconds=1)
+        session.commit()
+        monkeypatch.setattr(
+            task_service,
+            "_prepare_rank_deboost_start",
+            lambda *_args, **_kwargs: pytest.fail("过期任务不得执行 readiness"),
+        )
+
+        started = task_service.start_task(session, 1, task.id, "tester")
+
+        assert started.status == "completed"
+        assert started.next_run_at is None
+
+
+def test_rank_display_and_control_update_replans_pending_actions() -> None:
+    engine = _build_engine()
+    with Session(engine) as session:
+        binding, accounts = _seed_base(session)
+        task = _make_task(
+            session,
+            config={
+                "target_operation_target_id": 1001,
+                "target_reference_type": "operation_target",
+                "target_title": "旧目标名称",
+                "target_link": "https://t.me/my_target",
+            },
+        )
+        task.stats = {"rank_deboost_readiness": {"status": "ready"}}
+        account = accounts[0]
+        payload = _make_payload(task, account_id=account.id, binding_id=binding.id)
+        action = _make_action(session, task, account, payload)
+        action.status = "pending"
+        reservation = _make_reservation(session, task, action, account)
+        action_id = action.id
+        reservation_id = reservation.id
+        session.commit()
+
+        updated = update_search_rank_deboost_config(
+            session,
+            1,
+            task.id,
+            SearchRankDeboostTaskConfigUpdate(
+                target_title="新目标名称",
+                target_link="https://t.me/my_target",
+                max_actions_per_day=1,
+            ),
+            operator="tester",
+        )
+
+        assert session.get(Action, action_id) is None
+        assert session.get(SearchRankDeboostClickReservation, reservation_id) is None
+        assert updated.status == "draft"
+        assert updated.stats["rank_deboost_readiness"]["status"] == "ready"
+
+
+def test_rank_pacing_update_keeps_ready_readiness_without_gateway_recheck(monkeypatch: pytest.MonkeyPatch) -> None:
+    engine = _build_engine()
+    with Session(engine) as session:
+        _seed_base(session)
+        task = _make_task(session)
+        task.stats = {"rank_deboost_readiness": {"status": "ready"}}
+        session.commit()
+
+        updated = update_search_rank_deboost_config(
+            session,
+            1,
+            task.id,
+            SearchRankDeboostTaskConfigUpdate(max_actions_per_day=1),
+            operator="tester",
+        )
+        assert updated.status == "draft"
+        assert updated.stats["rank_deboost_readiness"]["status"] == "ready"
+        monkeypatch.setattr(
+            task_service,
+            "_assert_rank_deboost_allows_start",
+            lambda *_args, **_kwargs: pytest.fail("纯节奏修改不应重做 Gateway readiness"),
+        )
+
+        started = task_service.start_task(session, 1, updated.id, "tester")
+
+        assert started.status == "running"
+
+
+def test_rank_account_group_update_rechecks_binding_without_gateway_recheck(monkeypatch: pytest.MonkeyPatch) -> None:
+    engine = _build_engine()
+    with Session(engine) as session:
+        _seed_base(session)
+        session.add(AccountPool(id=11, tenant_id=1, name="未绑定黑搜索组", pool_purpose="rank_deboost"))
+        task = _make_task(session)
+        task.account_config = {"selection_mode": "group", "account_group_id": 10}
+        task.stats = {"rank_deboost_readiness": {"status": "ready"}}
+        session.commit()
+
+        updated = update_search_rank_deboost_config(
+            session,
+            1,
+            task.id,
+            SearchRankDeboostTaskConfigUpdate(account_group_id=11),
+            operator="tester",
+        )
+        monkeypatch.setattr(
+            task_service,
+            "_assert_rank_deboost_allows_start",
+            lambda *_args, **_kwargs: pytest.fail("换黑账号组只应复验新分组绑定"),
+        )
+
+        with pytest.raises(ValueError, match="缺少 active runtime 代理绑定"):
+            task_service.start_task(session, 1, updated.id, "tester")
+
+        assert updated.stats["rank_deboost_readiness"]["status"] == "blocked"
+        assert updated.stats["rank_deboost_readiness"]["required_check"] == "account_group_binding"
 
 
 def test_rank_planner_caps_new_actions_by_target_count_and_unknown_slot() -> None:
@@ -1242,6 +1580,252 @@ def test_dispatch_action_skips_expired_rank_reservation_before_gateway(monkeypat
         assert result is True
         assert action.status == "skipped"
         assert action.result["error_code"] == "rank_deboost_reservation_expired"
+        assert reservation.status == "released"
+
+
+def test_dispatch_action_skips_rank_after_task_deadline_before_gateway(monkeypatch: pytest.MonkeyPatch) -> None:
+    engine = _build_engine()
+    with Session(engine) as session:
+        binding, accounts = _seed_base(session)
+        task = _make_task(session)
+        task.scheduled_end = _now() - timedelta(seconds=1)
+        account = accounts[0]
+        payload = _make_payload(task, account_id=account.id, binding_id=binding.id)
+        action = _make_action(session, task, account, payload)
+        reservation = _make_reservation(session, task, action, account)
+        session.commit()
+
+        from app.services import _common
+
+        monkeypatch.setattr(
+            _common.gateway,
+            "execute_search_rank_deboost",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Gateway must not be called")),
+        )
+
+        assert dispatch_action(session, action) is True
+        assert action.status == "skipped"
+        assert action.result["error_code"] == "scheduled_end_reached"
+        assert reservation.status == "released"
+        assert task.status == "completed"
+
+
+def test_dispatch_deadline_closes_other_unstarted_rank_reservations() -> None:
+    engine = _build_engine()
+    with Session(engine) as session:
+        binding, accounts = _seed_base(session, account_ids=[100, 101])
+        task = _make_task(session)
+        task.scheduled_end = _now() - timedelta(seconds=1)
+        current_account, pending_account = accounts
+        current_payload = _make_payload(task, account_id=current_account.id, binding_id=binding.id)
+        current = _make_action(session, task, current_account, current_payload)
+        current_reservation = _make_reservation(session, task, current, current_account)
+        pending_payload = _make_payload(task, account_id=pending_account.id, binding_id=binding.id)
+        pending = _make_action(session, task, pending_account, pending_payload)
+        pending.status = "pending"
+        pending_reservation = _make_reservation(session, task, pending, pending_account)
+        claiming = _make_action(session, task, pending_account, pending_payload)
+        claiming.status = "claiming"
+        claiming_reservation = _make_reservation(session, task, claiming, pending_account)
+        session.commit()
+
+        assert dispatch_action(session, current) is True
+
+        assert task.status == "completed"
+        for action in (current, pending, claiming):
+            assert action.status == "skipped"
+            assert action.result["error_code"] == "scheduled_end_reached"
+        for reservation in (current_reservation, pending_reservation, claiming_reservation):
+            assert reservation.status == "released"
+
+
+def test_planner_deadline_closes_pending_rank_reservation_before_replanning() -> None:
+    engine = _build_engine()
+    with Session(engine) as session:
+        binding, accounts = _seed_base(session)
+        task = _make_task(session)
+        task.scheduled_end = _now() - timedelta(seconds=1)
+        account = accounts[0]
+        payload = _make_payload(task, account_id=account.id, binding_id=binding.id)
+        action = _make_action(session, task, account, payload)
+        action.status = "pending"
+        reservation = _make_reservation(session, task, action, account)
+        action_id = action.id
+        reservation_id = reservation.id
+        session.commit()
+
+        assert task_service._check_stop_conditions(session, task) is True
+        session.flush()
+
+        assert task.status == "completed"
+        assert session.get(Action, action_id) is None
+        assert session.get(SearchRankDeboostClickReservation, reservation_id) is None
+
+
+def test_rank_reservation_uses_scheduled_task_local_day() -> None:
+    plan_now = datetime(2026, 7, 5, 11, 59, 0)
+    scheduled_at = datetime(2026, 7, 5, 12, 0, 10)
+    engine = _build_engine()
+    with Session(engine) as session:
+        binding, accounts = _seed_base(session)
+        task = _make_task(session)
+        task.timezone = "America/New_York"
+        account = accounts[0]
+        payload = _make_payload(task, account_id=account.id, binding_id=binding.id)
+        action = _make_action(session, task, account, payload)
+        action.scheduled_at = scheduled_at
+        session.flush()
+
+        reservation = reserve_click(
+            session,
+            task=task,
+            action=action,
+            account=account,
+            account_pool_id=10,
+            keyword_hash=KEYWORD_HASH_A,
+            now_value=plan_now,
+        )
+
+        assert reservation.local_date == date(2026, 7, 5)
+        assert reservation.hour_bucket.replace(tzinfo=None) == datetime(2026, 7, 5, 0, 0, 0)
+
+
+def test_rank_planner_checks_daily_limit_for_scheduled_task_local_day(monkeypatch: pytest.MonkeyPatch) -> None:
+    plan_now = datetime(2026, 7, 5, 11, 59, 0)
+    scheduled_at = datetime(2026, 7, 5, 12, 0, 10)
+    monkeypatch.setattr(search_rank_deboost_planner, "_now", lambda: plan_now)
+    monkeypatch.setattr(search_rank_deboost_planner, "planned_action_at", lambda *_args, **_kwargs: scheduled_at)
+    engine = _build_engine()
+    with Session(engine) as session:
+        binding, accounts = _seed_base(session)
+        task = _make_task(session, config={"max_actions_per_day": 1, "per_account_cooldown_hours": 0})
+        task.timezone = "America/New_York"
+        session.query(SearchRankDeboostExemptGroup).update({SearchRankDeboostExemptGroup.task_id: task.id})
+        account = accounts[0]
+        payload = _make_payload(task, account_id=account.id, binding_id=binding.id)
+        reserved_action = _make_action(session, task, account, payload)
+        reserved_action.scheduled_at = scheduled_at
+        reserve_click(
+            session,
+            task=task,
+            action=reserved_action,
+            account=account,
+            account_pool_id=10,
+            keyword_hash=KEYWORD_HASH_A,
+            now_value=plan_now,
+        )
+        session.commit()
+
+        assert build_plan(session, task) == 0
+
+        pacing_limits = task.stats["search_rank_deboost_stats"]["pacing_limits"]
+        assert pacing_limits["last_limit_reason"] == "task_daily_limit_reached"
+
+
+def test_dispatch_action_rechecks_rank_deadline_at_gateway_boundary(monkeypatch: pytest.MonkeyPatch) -> None:
+    fixed_now = datetime(2026, 7, 4, 10, 0, 0)
+    monkeypatch.setattr(task_dispatcher, "_now", lambda: fixed_now)
+    engine = _build_engine()
+    with Session(engine) as session:
+        binding, accounts = _seed_base(session)
+        task = _make_task(session)
+        task.scheduled_end = fixed_now + timedelta(hours=1)
+        account = accounts[0]
+        payload = _make_payload(task, account_id=account.id, binding_id=binding.id)
+        action = _make_action(session, task, account, payload)
+        reservation = _make_reservation(session, task, action, account)
+        session.commit()
+
+        def execute_after_deadline(_session, _action, _account, _payload, *, before_gateway_call):
+            task.scheduled_end = fixed_now - timedelta(seconds=1)
+            before_gateway_call()
+            raise AssertionError("Gateway must not be called after deadline")
+
+        monkeypatch.setattr(rank_deboost_executor, "execute_search_rank_deboost", execute_after_deadline)
+
+        assert dispatch_action(session, action) is True
+        assert action.status == "skipped"
+        assert action.result["error_code"] == "scheduled_end_reached"
+        assert reservation.status == "released"
+        assert task.status == "completed"
+
+
+def test_dispatch_action_skips_rank_during_quiet_hours_before_gateway(monkeypatch: pytest.MonkeyPatch) -> None:
+    fixed_now = datetime(2026, 7, 4, 3, 0, 0)
+    monkeypatch.setattr(task_dispatcher, "_now", lambda: fixed_now)
+    engine = _build_engine()
+    with Session(engine) as session:
+        binding, accounts = _seed_base(session)
+        task = _make_task(session, pacing_config={"quiet_hours": {"start": "02:00", "end": "08:00"}})
+        account = accounts[0]
+        payload = _make_payload(task, account_id=account.id, binding_id=binding.id)
+        action = _make_action(session, task, account, payload)
+        reservation = _make_reservation(session, task, action, account)
+        session.commit()
+
+        from app.services import _common
+
+        monkeypatch.setattr(
+            _common.gateway,
+            "execute_search_rank_deboost",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Gateway must not be called")),
+        )
+
+        assert dispatch_action(session, action) is True
+        assert action.status == "skipped"
+        assert action.result["error_code"] == "quiet_hours_active"
+        assert reservation.status == "released"
+        assert task.status == "running"
+
+
+def test_dispatch_action_rechecks_rank_quiet_hours_at_gateway_boundary(monkeypatch: pytest.MonkeyPatch) -> None:
+    fixed_now = datetime(2026, 7, 4, 3, 0, 0)
+    monkeypatch.setattr(task_dispatcher, "_now", lambda: fixed_now)
+    engine = _build_engine()
+    with Session(engine) as session:
+        binding, accounts = _seed_base(session)
+        task = _make_task(session)
+        account = accounts[0]
+        payload = _make_payload(task, account_id=account.id, binding_id=binding.id)
+        action = _make_action(session, task, account, payload)
+        reservation = _make_reservation(session, task, action, account)
+        session.commit()
+
+        def execute_inside_quiet_hours(_session, _action, _account, _payload, *, before_gateway_call):
+            task.pacing_config = {"quiet_hours": {"start": "02:00", "end": "08:00"}}
+            before_gateway_call()
+            raise AssertionError("Gateway must not be called during quiet hours")
+
+        monkeypatch.setattr(rank_deboost_executor, "execute_search_rank_deboost", execute_inside_quiet_hours)
+
+        assert dispatch_action(session, action) is True
+        assert action.status == "skipped"
+        assert action.result["error_code"] == "quiet_hours_active"
+        assert reservation.status == "released"
+
+
+def test_dispatch_action_rechecks_rank_task_state_at_gateway_boundary(monkeypatch: pytest.MonkeyPatch) -> None:
+    engine = _build_engine()
+    with Session(engine) as session:
+        binding, accounts = _seed_base(session)
+        task = _make_task(session)
+        account = accounts[0]
+        payload = _make_payload(task, account_id=account.id, binding_id=binding.id)
+        action = _make_action(session, task, account, payload)
+        reservation = _make_reservation(session, task, action, account)
+        session.commit()
+
+        def pause_before_gateway(_session, _action, _account, _payload, *, before_gateway_call):
+            task.status = "paused"
+            session.flush()
+            before_gateway_call()
+            raise AssertionError("paused task must not call Gateway")
+
+        monkeypatch.setattr(rank_deboost_executor, "execute_search_rank_deboost", pause_before_gateway)
+
+        assert dispatch_action(session, action) is True
+        assert action.status == "skipped"
+        assert action.result["error_code"] == "task_not_active"
         assert reservation.status == "released"
 
 

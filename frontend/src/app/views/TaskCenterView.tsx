@@ -52,7 +52,7 @@ import {
   words,
   wizardStepsForTask,
 } from './taskCenterViewModel';
-import { EditBasics, TaskRuntimeAdvancedFields, WizardAccounts, WizardBasics, WizardOperationProfile, WizardReview, WizardTypeConfig } from './TaskCenterWizardSections';
+import { EditBasics, SearchClickExecutionConfig, TaskRuntimeAdvancedFields, WizardAccounts, WizardBasics, WizardOperationProfile, WizardReview, WizardTypeConfig } from './TaskCenterWizardSections';
 import { WizardTarget } from './TaskCenterTargetSection';
 import { TaskCenterDetailModal } from './TaskCenterDetailModal';
 import { mergeOperationTargets } from '../hooks/useOperationTargetOptions';
@@ -106,6 +106,13 @@ function HardHourlyTaskSummary({ task }: { task: TaskCenterVisibleTask }) {
       </Space>
     </Space>
   );
+}
+
+function rankDeboostSaveWarning(task: TaskCenterTask): string {
+  const readiness = task.stats?.rank_deboost_readiness || {};
+  if (readiness.status === 'ready') return '已保存，未重复执行 Gateway 准备校验；任务已回到草稿；请重新启动后按新节奏规划。';
+  if (readiness.required_check === 'account_group_binding') return '已保存，启动时仅复验所选黑搜索账号组的代理绑定。';
+  return '已保存，任务已回到草稿，启动时将重新检查准备条件。';
 }
 
 function MembershipTaskSummary({ task }: { task: TaskCenterVisibleTask }) {
@@ -523,6 +530,13 @@ export default function TaskCenterView({
     setTaskAccountPools(nextPools);
   }
 
+  async function ensureAccountPools(): Promise<AccountPool[]> {
+    if (taskAccountPools.length) return taskAccountPools;
+    const pools = await api<AccountPool[]>('/account-pools');
+    setTaskAccountPools(pools);
+    return pools;
+  }
+
   async function ensurePromptTemplates() {
     if (taskPromptTemplates.length) return;
     setTaskPromptTemplates(await api<PromptTemplate[]>('/prompt-templates'));
@@ -546,6 +560,7 @@ export default function TaskCenterView({
   function taskFormSupportRequests(type: TaskCenterTaskType): Array<Promise<unknown>> {
     const requests = taskTypeSupportRequests(type);
     if (isSimpleSearchClickTask(type)) {
+      requests.push(ensureAccountPools());
       return requests;
     }
     requests.push(ensureAccounts(), ensurePromptTemplates());
@@ -927,6 +942,9 @@ export default function TaskCenterView({
   function editValuesFromTask(task: TaskCenterTask): Record<string, any> {
     if (isSimpleSearchClickTask(task.type as TaskCenterTaskType)) {
       const config = task.type_config || {};
+      const account = task.account_config || {};
+      const pacing = task.pacing_config || {};
+      const quietHours = pacing.quiet_hours || {};
       const keywordTexts = task.type === 'search_join_group' ? '' : Array.isArray(config.keywords)
         ? config.keywords.map((item: any) => typeof item === 'string' ? item : item?.text || '').filter(Boolean).join('\n')
         : '';
@@ -935,6 +953,13 @@ export default function TaskCenterView({
         target_title: config.target_title ?? '',
         target_link: config.target_link ?? config.target_input ?? '',
         target_count: config.target_count,
+        account_group_id: account.account_group_id ?? null,
+        max_actions_per_day: pacing.max_actions_per_day ?? null,
+        scheduled_end: toDateTimeLocal(task.scheduled_end),
+        daily_jitter_percent: pacing.daily_jitter_percent ?? 0,
+        hourly_jitter_percent: pacing.hourly_jitter_percent ?? 0,
+        quiet_start: quietHours.start ?? '',
+        quiet_end: quietHours.end ?? '',
       };
     }
     const config = task.type_config || {};
@@ -1153,6 +1178,19 @@ export default function TaskCenterView({
 
   function simpleSearchClickPayload(values: any, editing = false) {
     const keywords = words(values.keywords);
+    const quietStart = String(values.quiet_start || '').trim();
+    const quietEnd = String(values.quiet_end || '').trim();
+    if (Boolean(quietStart) !== Boolean(quietEnd)) throw new Error('请同时填写静默开始和结束时间');
+    if (quietStart && quietStart === quietEnd) throw new Error('静默开始和结束时间不能相同');
+    const quietHours = quietStart && quietEnd ? { start: quietStart, end: quietEnd, timezone: 'Asia/Shanghai' } : editing ? null : undefined;
+    const execution = {
+      account_group_id: values.account_group_id,
+      max_actions_per_day: values.max_actions_per_day,
+      scheduled_end: fromBeijingDateTimeLocalValue(values.scheduled_end),
+      daily_jitter_percent: values.daily_jitter_percent,
+      hourly_jitter_percent: values.hourly_jitter_percent,
+      quiet_hours: quietHours,
+    };
     const target = {
       target_title: values.target_title?.trim(),
       target_link: values.target_link?.trim(),
@@ -1162,12 +1200,14 @@ export default function TaskCenterView({
         ...(target.target_title && target.target_link ? target : {}),
         ...(keywords.length ? { keywords } : {}),
         ...(values.target_count != null ? { target_count: values.target_count } : {}),
+        ...execution,
       };
     }
     return {
       ...target,
       keywords,
       target_count: values.target_count,
+      ...execution,
     };
   }
 
@@ -1545,7 +1585,12 @@ export default function TaskCenterView({
       const updated = await api<TaskCenterTask>(settingsEndpoint, { method: 'PATCH', body: JSON.stringify(payload) });
       if (!isActiveTaskSettingsSaveRequest(taskId, requestSeq, payloadSignature)) return;
       setEditOpen(false);
-      setActionWarning(updated.status === 'draft' && editableType === 'search_rank_deboost' ? '已保存，任务已回到草稿，启动时将重新检查准备条件。' : updated.status === 'running' ? '已保存，下一轮会按新配置重新规划未执行计划。' : '已保存任务配置。');
+      const warning = editableType === 'search_rank_deboost' && updated.status === 'draft'
+        ? rankDeboostSaveWarning(updated)
+        : updated.status === 'running'
+          ? '已保存，下一轮会按新配置重新规划未执行计划。'
+          : '已保存任务配置。';
+      setActionWarning(warning);
       await refreshVisibleTaskAfterAction('任务配置保存', updated);
     } catch (error) {
       if (requestSeq && !isActiveTaskSettingsSaveRequest(taskId, requestSeq, payloadSignature)) return;
@@ -2162,6 +2207,7 @@ export default function TaskCenterView({
           {wizardStep === 0 && <WizardBasics taskType={taskType} onTypeChange={resetTypeFields} />}
           {wizardStep === 1 && <WizardTarget taskType={taskType} messages={messages} messageScope={messageScope} targetChannelId={targetChannelId} onTargetChannelChange={() => form.setFieldsValue({ message_ids: [] })} onTargetsLoaded={mergeLoadedTargets} simpleSearchCreation={simpleSearchClickTask} />}
           {wizardStep === 2 && <WizardTypeConfig taskType={taskType} ruleSets={ruleSets} slangTemplates={slangTemplates} comments={comments} relaySourceOptions={[]} targetChannelId={targetChannelId} messageScope={messageScope} messageIds={messageIds} simpleSearchCreation={simpleSearchClickTask} />}
+          {simpleSearchClickTask && wizardStep === 3 && <SearchClickExecutionConfig taskType={taskType} accountPools={taskAccountPools} />}
           {!simpleSearchClickTask && wizardStep === 3 && (
             <Space direction="vertical" size={16} style={{ width: '100%' }}>
               <WizardAccounts accountMode={accountMode} accounts={taskAccounts} accountPools={taskAccountPools} taskType={taskType} />
@@ -2210,7 +2256,7 @@ export default function TaskCenterView({
         {actionError && <Alert className="form-alert" type="error" showIcon message={actionError} />}
         <Form form={editForm} layout="vertical">
           {!isSimpleSearchClickTask(editableTaskType) && <EditBasics />}
-          {isSimpleSearchClickTask(editableTaskType) && <Alert className="form-alert" type="info" showIcon message="仅可修改目标群、搜索关键词和目标次数；账号、代理、机器人、节奏与风控由系统托管。" />}
+          {isSimpleSearchClickTask(editableTaskType) && <Alert className="form-alert" type="info" showIcon message="可修改目标群、搜索关键词、目标次数、账号组与执行节奏；代理、机器人、账号资格与风控仍由系统托管。" />}
           {detail && !isSystemTask(detail.task) && ['group_ai_chat', 'group_relay', 'search_join_group', 'search_rank_deboost'].includes(detail.task.type) && (
             <>
               <Typography.Title level={5}>目标来源</Typography.Title>
@@ -2219,6 +2265,7 @@ export default function TaskCenterView({
           )}
           <Typography.Title level={5}>类型参数</Typography.Title>
           <WizardTypeConfig taskType={(detail && !isSystemTask(detail.task) ? detail.task.type : taskType) as TaskCenterTaskType} ruleSets={ruleSets} slangTemplates={slangTemplates} comments={comments} relaySourceOptions={relaySourceOptions(detail)} targetChannelId={editTargetChannelId} messageScope={editMessageScope} messageIds={editMessageIds} simpleSearchCreation={isSimpleSearchClickTask(editableTaskType)} simpleSearchEditing={isSimpleSearchClickTask(editableTaskType)} simpleSearchLegacyUncapped={detail?.task.type_config?.target_count == null} />
+          {isSimpleSearchClickTask(editableTaskType) && <><Typography.Title level={5}>执行范围与节奏</Typography.Title><SearchClickExecutionConfig taskType={editableTaskType} accountPools={taskAccountPools} /></>}
           {!isSimpleSearchClickTask(editableTaskType) && (
             <>
               <Typography.Title level={5}>账号选择</Typography.Title>

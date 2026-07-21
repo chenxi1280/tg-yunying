@@ -1505,27 +1505,36 @@ def test_task_center_edit_ai_limits_can_calculate_and_apply_recommendations():
     assert "一键应用推荐" in source
 
 
-def test_search_join_group_frontend_keeps_pacing_system_managed_and_details_read_only():
+def test_search_join_group_frontend_keeps_system_risk_policy_managed_and_exposes_operator_controls():
     wizard = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterWizardSections.tsx").read_text()
     view = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
     view_model = (PROJECT_ROOT / "frontend/src/app/views/taskCenterViewModel.ts").read_text()
     detail = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterDetailModal.tsx").read_text()
 
-    simple_config = wizard[wizard.index("function SimpleSearchClickConfig"):wizard.index("export function WizardTypeConfig")]
+    simple_config = wizard[wizard.index("function SimpleSearchClickConfig"):wizard.index("export function SearchClickExecutionConfig")]
+    execution_config = wizard[wizard.index("export function SearchClickExecutionConfig"):wizard.index("export function WizardTypeConfig")]
     for field in [
         "per_account_total_action_limit",
         "per_account_daily_action_limit",
         "per_account_cooldown_days",
         "per_keyword_account_daily_limit",
-        "max_actions_per_day",
         "hourly_skip_probability",
         "daily_skip_probability",
         "skip_probability_per_action",
-        "hourly_jitter_percent",
-        "daily_jitter_percent",
     ]:
         assert f'name="{field}"' not in simple_config
-    assert "系统自动选择账号、代理和执行节奏" in simple_config
+        assert f'name="{field}"' not in execution_config
+    for field in [
+        "account_group_id",
+        "max_actions_per_day",
+        "scheduled_end",
+        "daily_jitter_percent",
+        "hourly_jitter_percent",
+        "quiet_start",
+        "quiet_end",
+    ]:
+        assert f'name="{field}"' in execution_config
+    assert "系统负责账号资格、代理、机器人和风险闸门" in simple_config
     assert 'name="keywords"' in simple_config
     assert 'name="target_count"' in simple_config
     assert "isSimpleSearchClickTask(taskType)" in view_model
@@ -2050,14 +2059,16 @@ def test_group_ai_quality_funnel_labels_profile_low_match():
     assert "dataIndex: 'detail'" in source
 
 
-def test_task_center_runtime_form_exposes_hour_limit_without_generic_task_daily_cap():
+def test_task_center_runtime_form_keeps_hour_limit_managed_and_exposes_search_click_daily_cap():
     wizard = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterWizardSections.tsx").read_text()
     view_model = (PROJECT_ROOT / "frontend/src/app/views/taskCenterViewModel.ts").read_text()
 
-    simple_config = wizard[wizard.index("function SimpleSearchClickConfig"):wizard.index("export function WizardTypeConfig")]
+    simple_config = wizard[wizard.index("function SimpleSearchClickConfig"):wizard.index("export function SearchClickExecutionConfig")]
+    execution_config = wizard[wizard.index("export function SearchClickExecutionConfig"):wizard.index("export function WizardTypeConfig")]
     assert 'name="max_actions_per_hour"' not in simple_config
-    assert 'name="max_actions_per_day"' not in simple_config
-    assert "if (isSimpleSearchClickTask(taskType)) return ['target_title', 'target_link', 'keywords', 'target_count'];" in view_model
+    assert 'name="max_actions_per_hour"' not in execution_config
+    assert 'name="max_actions_per_day"' in execution_config
+    assert "if (isSimpleSearchClickTask(taskType)) return ['target_title', 'target_link', 'keywords', 'target_count', 'account_group_id', 'max_actions_per_day', 'scheduled_end', 'daily_jitter_percent', 'hourly_jitter_percent', 'quiet_start', 'quiet_end'];" in view_model
 
 
 def test_target_profile_is_top_level_page_not_target_detail_governance():
@@ -2524,13 +2535,13 @@ def test_task_center_ai_turns_show_voice_profile_and_memory_fields():
     assert "act_type" in view
 
 
-def test_search_click_creation_uses_three_business_fields_and_system_managed_policy():
+def test_search_click_creation_uses_operator_scope_controls_and_system_managed_policy():
     view_model = (PROJECT_ROOT / "frontend/src/app/views/taskCenterViewModel.ts").read_text()
     view = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
     wizard = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterWizardSections.tsx").read_text()
     target = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterTargetSection.tsx").read_text()
 
-    assert "SIMPLE_SEARCH_CLICK_WIZARD_STEPS = ['任务类型', '目标群', '关键词与目标次数', '确认']" in view_model
+    assert "SIMPLE_SEARCH_CLICK_WIZARD_STEPS = ['任务类型', '目标群', '关键词与目标次数', '执行范围与节奏', '确认']" in view_model
     assert "export function isSimpleSearchClickTask" in view_model
     assert "export function wizardStepsForTask" in view_model
     assert "target_count" in view_model
@@ -2542,20 +2553,34 @@ def test_search_click_creation_uses_three_business_fields_and_system_managed_pol
     assert "const keywords = words(values.keywords);" in simple_payload
     assert "...(keywords.length ? { keywords } : {})," in simple_payload
     assert "target_count: values.target_count" in simple_payload
+    assert "account_group_id: values.account_group_id" in simple_payload
+    assert "max_actions_per_day: values.max_actions_per_day" in simple_payload
+    assert "scheduled_end: fromBeijingDateTimeLocalValue(values.scheduled_end)" in simple_payload
     assert "account_config" not in simple_payload
     assert "return simpleSearchClickPayload(values);" in view
     assert "return simpleSearchClickPayload(values, true);" in view
     assert "simpleSearchCreation" in wizard
-    assert "系统自动选择账号、代理和执行节奏" in wizard
+    assert "系统负责账号资格、代理、机器人和风险闸门" in wizard
     assert 'name="target_count"' in wizard
-    simple_config = wizard[wizard.index("function SimpleSearchClickConfig"):wizard.index("export function WizardTypeConfig")]
+    simple_config = wizard[wizard.index("function SimpleSearchClickConfig"):wizard.index("export function SearchClickExecutionConfig")]
+    execution_config = wizard[wizard.index("export function SearchClickExecutionConfig"):wizard.index("export function WizardTypeConfig")]
     assert '<InputNumber min={1} precision={0}' in simple_config
     assert "max={100000}" not in simple_config
+    assert 'name="account_group_id"' in execution_config
+    assert 'name="max_actions_per_day"' in execution_config
     assert "创建为草稿；启动准备时系统检查可用资源和执行条件。" in wizard
     assert "simpleSearchCreation" in target
     assert "!simpleSearchClickTask && wizardStep === 3" in view
     assert "simpleSearchClickTask ? (" in view
     assert "创建并启动" in view
+
+
+def test_rank_deboost_operator_edit_warns_that_draft_must_be_started_again():
+    view = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
+
+    assert "function rankDeboostSaveWarning" in view
+    assert "任务已回到草稿；请重新启动后按新节奏规划" in view
+    assert "下一轮会按新节奏重排未执行计划" not in view
 
 
 def test_task_center_create_refreshes_after_long_timeout_and_capacity_summary_types():

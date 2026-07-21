@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import random
 from datetime import datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 from app.services._common import _now
+from app.timezone import BEIJING_TZ
 
 
 TEMPLATES = {
@@ -54,18 +56,22 @@ def operation_intensity(config: dict, value: datetime | None = None) -> tuple[st
     return "正常期", min(1.0, intensity / 100), intensity
 
 
-def _next_active_time(value: datetime, config: dict) -> datetime:
+def _next_active_time(value: datetime, config: dict, *, timezone_name: str | None = None) -> datetime:
     curve = _operation_curve(config)
-    if not curve:
-        return _apply_quiet_hours(value, config)
-    if curve[value.hour] > 0:
+    if curve and not any(curve):
         return value
-    cursor = value.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
-    for _ in range(24):
-        if curve[cursor.hour] > 0:
-            return cursor
-        cursor += timedelta(hours=1)
-    return value
+    candidate = value
+    for _ in range(25):
+        local_candidate = _task_local_datetime(candidate, timezone_name)
+        if curve and curve[local_candidate.hour] <= 0:
+            next_hour = local_candidate.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+            candidate = _from_task_local_datetime(next_hour, value, timezone_name)
+            continue
+        active_candidate = _apply_quiet_hours(candidate, config, timezone_name=timezone_name)
+        if active_candidate == candidate:
+            return candidate
+        candidate = active_candidate
+    return candidate
 
 
 def _curve_schedule_times(total_actions: int, config: dict, start_at: datetime) -> list[datetime]:
@@ -123,27 +129,67 @@ def _duration_and_interval(config: dict, total: int) -> tuple[int, int, int, int
     return duration, lo, hi, int(config.get("jitter_percent") or jitter)
 
 
-def _apply_quiet_hours(value: datetime, config: dict) -> datetime:
+def quiet_hours_active(value: datetime, config: dict, *, timezone_name: str | None = None) -> bool:
+    quiet = config.get("quiet_hours") or None
+    if not quiet:
+        return False
+    start, end = _quiet_hours_window(quiet)
+    current = _quiet_hours_local_time(value, timezone_name)
+    return start <= current < end if start < end else current >= start or current < end
+
+
+def _quiet_hours_local_time(value: datetime, timezone_name: str | None) -> time:
+    return _task_local_datetime(value, timezone_name).time()
+
+
+def _task_local_datetime(value: datetime, timezone_name: str | None) -> datetime:
+    if not timezone_name:
+        return value
+    source = value if value.tzinfo else value.replace(tzinfo=BEIJING_TZ)
+    return source.astimezone(ZoneInfo(timezone_name))
+
+
+def _from_task_local_datetime(value: datetime, original: datetime, timezone_name: str | None) -> datetime:
+    if not timezone_name:
+        return value
+    beijing_value = value.astimezone(BEIJING_TZ)
+    return beijing_value.replace(tzinfo=None) if original.tzinfo is None else beijing_value.astimezone(original.tzinfo)
+
+
+def _apply_quiet_hours(value: datetime, config: dict, *, timezone_name: str | None = None) -> datetime:
     quiet = config.get("quiet_hours") or None
     if not quiet:
         return value
-    start_raw = str(quiet.get("start") or "02:00")
-    end_raw = str(quiet.get("end") or "08:00")
-    try:
-        start_hour, start_minute = [int(item) for item in start_raw.split(":", 1)]
-        end_hour, end_minute = [int(item) for item in end_raw.split(":", 1)]
-    except ValueError:
+    start, end = _quiet_hours_window(quiet)
+    if not quiet_hours_active(value, config, timezone_name=timezone_name):
         return value
-    start = time(start_hour, start_minute)
-    end = time(end_hour, end_minute)
-    current = value.time()
-    in_quiet = start <= current < end if start < end else current >= start or current < end
-    if not in_quiet:
-        return value
+    if timezone_name:
+        return _quiet_hours_end_in_task_timezone(value, start, end, timezone_name)
     next_end = value.replace(hour=end.hour, minute=end.minute, second=0, microsecond=0)
-    if start >= end and current >= start:
+    if start >= end and value.time() >= start:
         next_end += timedelta(days=1)
     return next_end
+
+
+def _quiet_hours_end_in_task_timezone(value: datetime, start: time, end: time, timezone_name: str) -> datetime:
+    local_value = _task_local_datetime(value, timezone_name)
+    next_end = local_value.replace(hour=end.hour, minute=end.minute, second=0, microsecond=0)
+    if start >= end and local_value.time() >= start:
+        next_end += timedelta(days=1)
+    return _from_task_local_datetime(next_end, value, timezone_name)
+
+
+def _quiet_hours_window(quiet: dict) -> tuple[time, time]:
+    start_raw = str(quiet.get("start") or "")
+    end_raw = str(quiet.get("end") or "")
+    try:
+        start = datetime.strptime(start_raw, "%H:%M").time()
+        end = datetime.strptime(end_raw, "%H:%M").time()
+    except ValueError as exc:
+        raise ValueError("quiet_hours 必须使用 HH:MM 格式") from exc
+    if start == end:
+        raise ValueError("quiet_hours.start 与 quiet_hours.end 不能相同")
+    return start, end
 
 
 def schedule_times(total_actions: int, config: dict, *, start_at: datetime | None = None) -> list[datetime]:
@@ -196,14 +242,14 @@ def _fixed_interval_is_immediate(config: dict) -> bool:
     return int(config.get("interval_seconds_min") or 0) <= 0 and int(config.get("interval_seconds_max") or 0) <= 0
 
 
-def next_run_after(config: dict) -> datetime:
+def next_run_after(config: dict, *, timezone_name: str | None = None) -> datetime:
     if (config.get("mode") or "template") == "fixed":
         raw_interval = config.get("interval_seconds_min")
         if raw_interval is None:
             raw_interval = config.get("interval_seconds_max")
         interval = int(300 if raw_interval is None else raw_interval)
-        return _next_active_time(_now() + timedelta(seconds=max(0, interval)), config)
-    return _next_active_time(_now() + timedelta(minutes=5), config)
+        return _next_active_time(_now() + timedelta(seconds=max(0, interval)), config, timezone_name=timezone_name)
+    return _next_active_time(_now() + timedelta(minutes=5), config, timezone_name=timezone_name)
 
 
 def ai_next_run_after(config: dict, value: datetime | None = None) -> datetime:
@@ -215,4 +261,4 @@ def ai_next_run_after(config: dict, value: datetime | None = None) -> datetime:
     return _next_active_time(current + timedelta(seconds=interval_seconds), config)
 
 
-__all__ = ["ai_next_run_after", "current_hour_rounds", "next_run_after", "operation_intensity", "schedule_times"]
+__all__ = ["ai_next_run_after", "current_hour_rounds", "next_run_after", "operation_intensity", "quiet_hours_active", "schedule_times"]

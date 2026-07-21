@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import pytest
 from sqlalchemy import create_engine, select
@@ -197,6 +197,87 @@ def test_search_join_dispatch_calls_gateway_with_session_credentials_and_keyword
     assert calls[0]["api_id"] == 12345
     assert calls[0]["proxy_id"] == 31
     assert calls[0]["keyword_text"] == "上海 留学"
+
+
+@pytest.mark.no_postgres
+def test_search_join_gateway_rechecks_deadline_at_call_boundary(monkeypatch, session: Session) -> None:
+    fixed_now = datetime(2026, 7, 4, 10, 0, 0)
+    monkeypatch.setattr(dispatcher, "_now", lambda: fixed_now)
+    task, action = _persist_task_and_action(session)
+    task.scheduled_end = fixed_now + timedelta(hours=1)
+    action.payload = {**action.payload, "runtime_environment": _verified_runtime()}
+    session.commit()
+    authorize = dispatcher._search_join_runtime_authorization
+
+    def expire_before_gateway(*args, **kwargs):
+        task.scheduled_end = fixed_now - timedelta(seconds=1)
+        session.flush()
+        return authorize(*args, **kwargs)
+
+    monkeypatch.setattr(dispatcher, "_search_join_runtime_authorization", expire_before_gateway)
+    monkeypatch.setattr(
+        dispatcher.gateway,
+        "execute_search_join",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Gateway must not be called after deadline")),
+        raising=False,
+    )
+
+    assert dispatch_action(session, action) is True
+    assert action.status == "skipped"
+    assert action.result["error_code"] == "scheduled_end_reached"
+    assert task.status == "completed"
+
+
+@pytest.mark.no_postgres
+def test_search_join_gateway_rechecks_quiet_hours_at_call_boundary(monkeypatch, session: Session) -> None:
+    fixed_now = datetime(2026, 7, 4, 3, 0, 0)
+    monkeypatch.setattr(dispatcher, "_now", lambda: fixed_now)
+    _task, action = _persist_task_and_action(session)
+    action.payload = {**action.payload, "runtime_environment": _verified_runtime()}
+    session.commit()
+    authorize = dispatcher._search_join_runtime_authorization
+
+    def enter_quiet_hours(*args, **kwargs):
+        _task.pacing_config = {"quiet_hours": {"start": "02:00", "end": "08:00"}}
+        session.flush()
+        return authorize(*args, **kwargs)
+
+    monkeypatch.setattr(dispatcher, "_search_join_runtime_authorization", enter_quiet_hours)
+    monkeypatch.setattr(
+        dispatcher.gateway,
+        "execute_search_join",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Gateway must not be called during quiet hours")),
+        raising=False,
+    )
+
+    assert dispatch_action(session, action) is True
+    assert action.status == "skipped"
+    assert action.result["error_code"] == "quiet_hours_active"
+
+
+@pytest.mark.no_postgres
+def test_search_join_gateway_rechecks_task_state_at_call_boundary(monkeypatch, session: Session) -> None:
+    task, action = _persist_task_and_action(session)
+    action.payload = {**action.payload, "runtime_environment": _verified_runtime()}
+    session.commit()
+    authorize = dispatcher._search_join_runtime_authorization
+
+    def pause_before_gateway(*args, **kwargs):
+        task.status = "paused"
+        session.flush()
+        return authorize(*args, **kwargs)
+
+    monkeypatch.setattr(dispatcher, "_search_join_runtime_authorization", pause_before_gateway)
+    monkeypatch.setattr(
+        dispatcher.gateway,
+        "execute_search_join",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("paused task must not call Gateway")),
+        raising=False,
+    )
+
+    assert dispatch_action(session, action) is True
+    assert action.status == "skipped"
+    assert action.result["error_code"] == "task_not_active"
 
 
 @pytest.mark.no_postgres
