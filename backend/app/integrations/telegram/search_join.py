@@ -75,7 +75,7 @@ async def _execute_search_pages(client: Any, bot_username: str, keyword_text: st
         await conv.get_response()
         await conv.send_message(keyword_text)
         page = await conv.get_response()
-        page, selector_error, group_selector, selector_buttons = await _select_jisou_group_results_page(conv, page, bot)
+        page, selector_error, group_selector, selector_buttons = await _select_jisou_group_results_page(client, page, bot)
         if selector_error is not None:
             return selector_error
         while True:
@@ -94,12 +94,11 @@ async def _execute_search_pages(client: Any, bot_username: str, keyword_text: st
             next_button = _find_next_button(buttons)
             if next_button is None:
                 return _target_not_found(total_results, decoys, page_no, buttons, group_selector, selector_buttons)
-            await _click_button(page, next_button)
-            page = await conv.get_response()
+            page = await _click_and_get_edited_page(client, bot, page, next_button)
 
 
 async def _select_jisou_group_results_page(
-    conv: Any,
+    client: Any,
     page: Any,
     bot_username: str,
 ) -> tuple[Any, dict[str, Any] | None, SearchJoinButton | None, list[SearchJoinButton]]:
@@ -109,8 +108,7 @@ async def _select_jisou_group_results_page(
     group_button = _find_jisou_group_category_button(selector_buttons)
     if group_button is None:
         return page, _failed("jisou_group_selector_missing", "极搜群聊类型选择按钮缺失"), None, selector_buttons
-    await _click_button(page, group_button)
-    return await conv.get_response(), None, group_button, selector_buttons
+    return await _click_and_get_edited_page(client, bot_username, page, group_button), None, group_button, selector_buttons
 
 
 def _is_jisou_bot(bot_username: str) -> bool:
@@ -339,6 +337,14 @@ def _matches_target(button: SearchJoinButton, target: dict[str, Any]) -> bool:
 
 async def _click_button(message: Any, button: SearchJoinButton) -> Any:
     return await message.click(button.row, button.col)
+
+
+async def _click_and_get_edited_page(client: Any, bot_username: str, message: Any, button: SearchJoinButton) -> Any:
+    await _click_button(message, button)
+    edited_page = await client.get_messages(bot_username, ids=message.id)
+    if edited_page is None:
+        raise RuntimeError("callback edited message unavailable")
+    return edited_page
 
 
 async def _join_target(client: Any, button: SearchJoinButton, target: dict[str, Any], click_result: Any = None) -> str:

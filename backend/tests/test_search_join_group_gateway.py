@@ -54,9 +54,16 @@ class FakeConversation:
 
 
 class FakeSearchJoinClient:
-    def __init__(self, responses: list[FakeMessage], join_error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        responses: list[FakeMessage],
+        join_error: Exception | None = None,
+        edits: list[FakeMessage] | None = None,
+    ) -> None:
         self.responses = responses
         self.join_error = join_error
+        self.edits = edits or []
+        self.updated_message_ids: list[int] = []
         self.sent: list[tuple[str, str]] = []
         self.joined: list[str] = []
         self.imported_invites: list[str] = []
@@ -65,6 +72,12 @@ class FakeSearchJoinClient:
     def conversation(self, bot: str, timeout: int):
         assert timeout == 60
         return FakeConversation(self, bot)
+
+    async def get_messages(self, _bot: str, ids: int) -> FakeMessage:
+        self.updated_message_ids.append(ids)
+        if self.edits:
+            return self.edits.pop(0)
+        return self.responses.pop(0)
 
     async def get_entity(self, target: str):
         return target
@@ -158,6 +171,23 @@ def test_execute_search_join_selects_jisou_group_category_before_pagination() ->
     assert target_page.clicked == [(0, 0)]
     assert result["page"] == 4
     assert result["searched_pages"] == 4
+
+
+@pytest.mark.no_postgres
+def test_execute_search_join_reads_jisou_callback_edit_instead_of_unrelated_new_message() -> None:
+    category_page = FakeMessage(101, [[FakeButton("👥", data=b"group-category")]])
+    filtered_results_page = FakeMessage(102, [[FakeButton("目标群", url="https://t.me/target_group")]])
+    unrelated_message = FakeMessage(103, [[FakeButton("其他群", url="https://t.me/other_group")]])
+    client = FakeSearchJoinClient(
+        [FakeMessage(100, []), category_page, unrelated_message],
+        edits=[filtered_results_page],
+    )
+
+    result = asyncio.run(execute_search_join_with_client(client, _payload(bot_username="jisou"), keyword_text="郑州"))
+
+    assert result["success"] is True
+    assert client.updated_message_ids == [101]
+    assert client.responses == [unrelated_message]
 
 
 @pytest.mark.no_postgres
