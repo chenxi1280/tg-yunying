@@ -32,6 +32,8 @@ PAGINATION_SYMBOL_NAMES = {
     "⏪": "fast_reverse",
     "⏮": "previous_track",
 }
+NEXT_PAGE_SYMBOLS = frozenset({">", "▶", "▷", "➡", "→", "»", "›", "⏩", "⏭"})
+VARIATION_SELECTOR = "\ufe0f"
 
 
 @dataclass(frozen=True)
@@ -322,10 +324,19 @@ def _find_target_button(buttons: list[SearchJoinButton], target: dict[str, Any])
 
 def _find_next_button(buttons: list[SearchJoinButton]) -> SearchJoinButton | None:
     for button in buttons:
-        text = button.text.lower()
-        if "下一页" in text or "next" in text:
+        if _is_next_page_button(button):
             return button
     return None
+
+
+def _is_next_page_button(button: SearchJoinButton) -> bool:
+    if button.button_type != "callback_data":
+        return False
+    text = _normalized_button_text(button.text)
+    if "下一页" in text or "next" in text:
+        return True
+    symbols = text.replace(VARIATION_SELECTOR, "")
+    return bool(symbols) and all(symbol in NEXT_PAGE_SYMBOLS for symbol in symbols)
 
 
 def _matches_target(button: SearchJoinButton, target: dict[str, Any]) -> bool:
