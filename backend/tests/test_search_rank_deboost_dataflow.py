@@ -25,6 +25,7 @@ from app.schemas.task_center import (
     SearchRankDeboostSimpleTaskCreate,
     SearchRankDeboostTaskConfigUpdate,
     SearchRankDeboostTaskCreate,
+    TaskUpdate,
 )
 from app.services.task_center import service as task_service
 
@@ -57,6 +58,11 @@ def _simple_payload(**overrides) -> SearchRankDeboostSimpleTaskCreate:
         target_link="https://t.me/my_target_group",
         keywords=["关键词"],
         target_count=8,
+        account_group_id=10,
+        max_actions_per_day=7,
+        scheduled_end=datetime(2030, 1, 1, tzinfo=timezone.utc),
+        daily_jitter_percent=20,
+        hourly_jitter_percent=30,
     )
     defaults.update(overrides)
     return SearchRankDeboostSimpleTaskCreate(**defaults)
@@ -68,10 +74,11 @@ def _build_engine():
     return engine
 
 
-def test_simple_rank_create_maps_three_inputs_to_system_policy(monkeypatch) -> None:
+def test_simple_rank_create_maps_operator_controls_to_task_policy(monkeypatch) -> None:
     engine = _build_engine()
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(AccountPool(id=10, tenant_id=1, name="黑搜索执行组", pool_purpose="rank_deboost"))
         session.add(
             OperationTarget(
                 id=1001,
@@ -94,19 +101,19 @@ def test_simple_rank_create_maps_three_inputs_to_system_policy(monkeypatch) -> N
         task = task_service.create_simple_search_rank_deboost_task(
             session,
             1,
-            SearchRankDeboostSimpleTaskCreate(
-                target_title="我的目标群",
-                target_link="https://t.me/my_target_group",
-                keywords=["目标关键词"],
-                target_count=8,
-            ),
+            _simple_payload(keywords=["目标关键词"]),
             operator="tester",
         )
 
     payload = captured["payload"]
     assert task.name == "我的目标群 搜索排名观察 8 次"
     assert payload.target_group_ids == [1001]
-    assert payload.account_config.selection_mode == "all"
+    assert payload.account_config.selection_mode == "group"
+    assert payload.account_config.account_group_id == 10
+    assert payload.scheduled_end == datetime(2030, 1, 1, 8, 0, 0)
+    assert payload.pacing_config.max_actions_per_day == 7
+    assert payload.pacing_config.daily_jitter_percent == 20
+    assert payload.pacing_config.hourly_jitter_percent == 30
     assert payload.config == {
         "target_count": 8,
         "target_operation_target_id": 1001,
@@ -117,15 +124,36 @@ def test_simple_rank_create_maps_three_inputs_to_system_policy(monkeypatch) -> N
     assert captured["defer_readiness"] is True
 
 
+def test_generic_search_click_patch_returns_bad_request_for_contract_error(monkeypatch) -> None:
+    monkeypatch.setattr(
+        router_module,
+        "update_task",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("搜索点击任务必须通过专用编辑接口更新")),
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        router_module.patch_task("task-1", TaskUpdate(name="更新"), Session(), _make_user())
+
+    assert raised.value.status_code == 400
+    assert raised.value.detail == "搜索点击任务必须通过专用编辑接口更新"
+
+
+def test_generic_patch_keeps_not_found_response(monkeypatch) -> None:
+    monkeypatch.setattr(
+        router_module,
+        "update_task",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("task not found")),
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        router_module.patch_task("missing", TaskUpdate(name="更新"), Session(), _make_user())
+
+    assert raised.value.status_code == 404
+
+
 def test_simple_rank_create_rejects_system_managed_fields() -> None:
     with pytest.raises(Exception, match="Extra inputs are not permitted"):
-        SearchRankDeboostSimpleTaskCreate(
-            target_title="我的目标群",
-            target_link="https://t.me/my_target_group",
-            keywords=["目标关键词"],
-            target_count=8,
-            account_config={"selection_mode": "manual", "account_ids": [1]},
-        )
+        _simple_payload(account_config={"selection_mode": "manual", "account_ids": [1]})
 
 
 # --- 成功路径：mock service 函数，验证路由委派 ---
@@ -184,6 +212,7 @@ def test_simple_rank_draft_creation_defers_readiness_to_start() -> None:
     engine = _build_engine()
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(AccountPool(id=10, tenant_id=1, name="黑搜索执行组", pool_purpose="rank_deboost"))
         session.add(
             OperationTarget(
                 id=1001,
@@ -213,6 +242,7 @@ def test_simple_rank_edit_regenerates_system_name() -> None:
     engine = _build_engine()
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(AccountPool(id=10, tenant_id=1, name="黑搜索执行组", pool_purpose="rank_deboost"))
         session.add_all([
             OperationTarget(
                 id=1001,
@@ -260,6 +290,49 @@ def test_simple_rank_edit_regenerates_system_name() -> None:
         )
 
     assert updated.name == "新的目标群 搜索排名观察 6 次"
+
+
+def test_simple_rank_edit_updates_operator_execution_controls() -> None:
+    engine = _build_engine()
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add_all([
+            AccountPool(id=10, tenant_id=1, name="黑搜索执行组一", pool_purpose="rank_deboost"),
+            AccountPool(id=11, tenant_id=1, name="黑搜索执行组二", pool_purpose="rank_deboost"),
+            OperationTarget(
+                id=1001,
+                tenant_id=1,
+                target_type="group",
+                tg_peer_id="-1001001",
+                title="我的目标群",
+                username="my_target_group",
+            ),
+        ])
+        session.commit()
+        task = task_service.create_simple_search_rank_deboost_task(session, 1, _simple_payload(), operator="tester")
+
+        updated = task_service.update_search_rank_deboost_config(
+            session,
+            1,
+            task.id,
+            SearchRankDeboostTaskConfigUpdate(
+                account_group_id=11,
+                max_actions_per_day=4,
+                scheduled_end=datetime(2030, 2, 1, tzinfo=timezone.utc),
+                daily_jitter_percent=10,
+                hourly_jitter_percent=15,
+                quiet_hours={"start": "23:00", "end": "07:00"},
+            ),
+            operator="tester",
+        )
+
+    assert updated.account_config["selection_mode"] == "group"
+    assert updated.account_config["account_group_id"] == 11
+    assert updated.pacing_config["max_actions_per_day"] == 4
+    assert updated.pacing_config["daily_jitter_percent"] == 10
+    assert updated.pacing_config["hourly_jitter_percent"] == 15
+    assert updated.pacing_config["quiet_hours"] == {"start": "23:00", "end": "07:00", "timezone": "Asia/Shanghai"}
+    assert updated.scheduled_end == datetime(2030, 2, 1, 8, 0, 0)
 
 
 def test_patch_search_rank_deboost_config(monkeypatch) -> None:

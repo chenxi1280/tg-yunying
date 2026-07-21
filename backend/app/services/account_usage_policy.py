@@ -55,14 +55,14 @@ def account_usage(account: TgAccount, pool: AccountPool | None) -> AccountUsage:
     if account.tenant_id != pool.tenant_id:
         return "mismatch"
     purpose = str(pool.pool_purpose or "")
-    if purpose not in VALID_ACCOUNT_USAGES or not _pool_markers_consistent(purpose, pool.system_key):
+    if purpose not in VALID_ACCOUNT_USAGES or not pool_markers_consistent(purpose, pool.system_key):
         return "mismatch"
     if account.account_identity != purpose:
         return "mismatch"
     return purpose  # type: ignore[return-value]
 
 
-def _pool_markers_consistent(purpose: str, system_key: str) -> bool:
+def pool_markers_consistent(purpose: str, system_key: str) -> bool:
     key = str(system_key or "")
     if key in DEDICATED_ACCOUNT_USAGES:
         return key == purpose
@@ -182,7 +182,7 @@ def _validate_usage_target(account: TgAccount, pool: AccountPool) -> None:
         raise ValueError("account pool disabled")
     if pool.pool_purpose not in VALID_ACCOUNT_USAGES:
         raise ValueError("invalid account pool purpose")
-    if not _pool_markers_consistent(pool.pool_purpose, pool.system_key):
+    if not pool_markers_consistent(pool.pool_purpose, pool.system_key):
         raise ValueError("account_purpose_mismatch")
 
 
@@ -199,5 +199,6 @@ __all__ = [
     "apply_consistent_enabled_account_filters",
     "apply_rank_deboost_account_filters",
     "assert_account_action_allowed",
+    "pool_markers_consistent",
     "sync_account_usage",
 ]

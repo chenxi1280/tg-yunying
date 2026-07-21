@@ -225,21 +225,28 @@ pending -> claiming -> executing -> success / failed / skipped
 
 **`search_rank_deboost` 例外条款（对 §4.10 非目标浏览约束的例外）**：对 `search_rank_deboost` 任务，跨 action 的非目标浏览总量不受 `search_join_group` 单任务 ≤3 约束，但每个 action 最多执行 1 次真实点击，并必须满足：(1) 只点击 `button_effect=navigate_only` 的按钮；(2) 竞争群结果项含 `join_candidate` 按钮时只点开明确分类为导航的独立按钮、不点加入按钮；(3) Gateway 返回逐点击 outcome，只有 `status=confirmed` 才写 `search_rank_deboost_action_stats`，包含 button hash、位置、effect、停留时长、`joined=false`、`join_button_detected=true/false`；(4) `observed_no_click` 不计点击成功，`unknown_after_click` 不自动重试并继续占用配额；(5) 不得加入、关注、外跳、投票、发言、点击 `external_http_url` 或 `unknown` 按钮；(6) 实时 pacing / random decision 不调用 LLM。账号用途、多降权组、分组持久运行代理、同端点出口探测、逐点击 reservation 和真实 Gateway 口径见 `search-rank-deboost-hardening-design.md`。`search_join_group` 的「非目标 ≤3 navigate_only」原约束保持不变。
 
-### 4.11 2026-07-20 三字段创建基线（当前生效）
+### 4.11 2026-07-21 运营范围与节奏创建基线（当前生效）
 
-本节优先于本文其他章节中遗留的高级字段、五步向导和预检表述。`search_join_group` 与 `search_rank_deboost` 的**新建**任务都只接收三个业务输入：**目标群、搜索关键词、目标次数**。
+本节优先于本文其他章节中遗留的“三字段极简创建”表述。`search_join_group` 与 `search_rank_deboost` 的**新建和专用编辑**任务接收目标群、搜索关键词、目标次数，以及运营可控的账号组和任务节奏；不开放代理、机器人、单账号风险参数或真实结果语义。
 
 | 创建输入 | 约束 | 说明 |
 | --- | --- | --- |
 | `target_title` + `target_link` | 均必填，组成单个群目标 | `target_title` 是群完整名称；`target_link` 必须解析为公开 Telegram username。服务端以规范化 username 解析或复用内部 `OperationTarget`，不暴露或接收内部 ID。邀请链接、peer id、机器人链接和无法提取公开 username 的链接明确拒绝。 |
 | `keywords` | 必填，至少一个去重后的非空关键词 | 运营只表达要搜索什么；执行所需的安全存储和关键词匹配由系统处理。 |
 | `target_count` | 必填，正整数 | 一个任务生命周期内要完成的已确认互动次数，不是每小时目标。 |
+| `account_group_id` | 必填，单选 | `search_join_group` 只能选当前租户启用的普通账号组；`search_rank_deboost` 只能选当前租户启用的 `pool_purpose=rank_deboost` 黑账号组。服务端复核，不信任前端禁用状态。 |
+| `max_actions_per_day` | 必填，正整数 | 任务自然日内的 action 预算；与 `target_count` 独立，达到每日预算后等待下一个自然日。 |
+| `scheduled_end` | 必填，未来时间 | 任务的真实完成截止时间；到期停止规划和派发，不伪造未完成为成功。 |
+| `daily_jitter_percent` / `hourly_jitter_percent` | 必填，0-100 | 日抖动在任务时区剩余自然日内分散未来 action；小时抖动只在日抖动选中的本地小时内延后。二者不能突破任何硬上限、静默时段或截止时间。 |
+| `quiet_hours` | 可选，`HH:MM` 起止 | 按任务时区停止新 action 规划；跨午夜区间合法，开始与结束相同非法。 |
 
-“目标群”仍是一项业务输入，由完整名称和链接共同组成；因此新建任务仍只有目标群、关键词、目标次数三个业务概念。链接是可执行身份，完整名称是该任务的展示与审计快照。服务端按规范化 username 创建或复用内部 `OperationTarget`，但不得因本次任务提交静默覆盖既有运营目标目录名称。任务名称、搜索机器人/协议、账号候选与账号组、代理和授权绑定、并发、节奏、停留、配额、重试、资源准备与风险闸门都是系统策略。新建 API 收到内部 `target_operation_target_id` 或这些系统托管字段必须显式拒绝，不能静默忽略或让调用方绕过策略。编辑目标群或目标次数时，服务端必须用当前目标群和目标次数重生成任务名称。存量任务可以继续展示其已保存的高级事实和内部引用，但这些字段不得重新出现在新建表单或新建请求中。
+“目标群”仍由完整名称和链接共同组成；链接是可执行身份，完整名称是该任务的展示与审计快照。服务端按规范化 username 创建或复用内部 `OperationTarget`，但不得因本次任务提交静默覆盖既有运营目标目录名称。任务名称、搜索机器人/协议、代理和授权绑定、并发、单账号/关键词限额、停留、重试、资源准备与风险闸门仍是系统策略。新建 API 收到内部 `target_operation_target_id`、代理、机器人、手动账号、单账号限额、停留或重试字段必须显式拒绝，不能静默忽略或让调用方绕过策略。编辑目标群或目标次数时，服务端必须用当前目标群和目标次数重生成任务名称；编辑账号组或节奏时只重排未执行 action，已确认和 unknown 事实不被重写。存量任务可以继续展示其已保存的高级事实和内部引用。
 
 `target_count` 的完成语义：`search_join_group` 以 `Action.status=success` 的 `membership_observed` 计入；`search_rank_deboost` 以真实 Gateway 返回的 factual `confirmed` click 对应 `Action.status=success` 计入。`pending`、`claiming`、`executing` 和 `unknown_after_send` 占用剩余槽位，避免结果未确认时重复安排；`failed`、`skipped` 释放槽位。达到目标后任务写入 `status=completed`、`next_run_at=null` 和 `stats.completion_reason=target_count_reached`。未带 `target_count` 的历史任务保持原有不封顶调度语义。
 
-编辑仍是三项业务输入的 PATCH，不是把详情中的系统配置全量回写。编辑目标群时同样填写完整名称和公开 Telegram 链接；旧任务的已存 `target_operation_target_id` 仅作为兼容读取来源，不能要求编辑者选择或回传该 ID。`search_join_group` 不回传关键词明文，编辑页关键词留空表示保持现有加密关键词材料；只有输入新的关键词才替换它。历史任务没有 `target_count` 时，编辑页保持空值并省略该字段，不能为了表单显示写入默认 `1`。`search_rank_deboost` 只在目标群或关键词的实际值发生变化时重做 readiness；仅改目标次数只重算目标进度。旧版重复关键词密文只有在解密后可与既有 hash 集合一一对应时才会去重修复，无法证明对应关系的材料必须显式校验失败。旧版 `post_join_safe_navigation_*` 值在保存存量任务时归零；新请求提交非零值仍明确拒绝。
+编辑是目标、关键词、目标次数、账号组与任务节奏的局部 PATCH，不是把详情中的系统配置全量回写。编辑目标群时同样填写完整名称和公开 Telegram 链接；旧任务的已存 `target_operation_target_id` 仅作为兼容读取来源，不能要求编辑者选择或回传该 ID。`search_join_group` 不回传关键词明文，编辑页关键词留空表示保持现有加密关键词材料；只有输入新的关键词才替换它。历史任务没有 `target_count` 时，编辑页保持空值并省略该字段，不能为了表单显示写入默认 `1`。`search_rank_deboost` 只在目标群或关键词的实际值发生变化时重做完整 readiness；仅改总目标、每天次数、截止时间、日/小时抖动或静默时段保留已证实 readiness，只重算进度并清理未执行计划；仅改黑账号组时只把 readiness 置为 `required_check=account_group_binding`，启动时复验新分组绑定而不重复 Gateway 准备。旧版重复关键词密文只有在解密后可与既有 hash 集合一一对应时才会去重修复，无法证明对应关系的材料必须显式校验失败。旧版 `post_join_safe_navigation_*` 值在保存存量任务时归零；新请求提交非零值仍明确拒绝。
+
+任务在执行过程中必须始终保持 `running` 才能进入真实 Gateway。Dispatcher 的最终调用边界会重新读取任务状态；若任务已暂停、停止、回到草稿、完成或删除，则 action 写 `skipped + task_not_active`，不产生 Telegram 调用。黑搜索在该边界前同时释放其 reservation；普通搜索不把 `gateway_call_state=before_call` 误作已调用。已经写入 Gateway started 事实的 action 继续按真实结果收口，不能由之后的任务状态变化重写。
 
 创建后的状态语义保持任务类型差异：搜索目标群点击任务在“创建并启动”时由服务端完成资源校验和启动；搜索排名观察任务先创建草稿，启动准备仍由服务端复核真实搜索准备态。两者都不要求运营补填账号、代理或节奏字段；阻塞时返回可读 blocker，并在任务详情展示事实。
 
@@ -261,8 +268,8 @@ pending -> claiming -> executing -> success / failed / skipped
 
 ## 5. 用户故事
 
-1. 运营人员在任务中心创建搜索目标群点击任务，填写目标群完整名称、公开 Telegram 链接、关键词和目标次数；系统解析内部目标记录，生成任务名称并选择可用账号、机器人、代理和执行节奏。
-2. 灰度阶段，运营人员在账号中心维护已养号账号及其环境；任务创建页不再选择账号、代理或真实化参数。
+1. 运营人员在任务中心创建搜索目标群点击任务，填写目标群完整名称、公开 Telegram 链接、关键词、目标次数、账号组、每日执行上限、完成截止时间、日/小时抖动和静默时段；系统解析内部目标记录并生成任务名称。
+2. 灰度阶段，运营人员在账号中心维护已养号账号及其环境；任务创建页只选择合规账号组，不选择单个账号、代理或真实化参数。
 3. 任务启动后，Planner 按账号授权槽位、关键词、搜索机器人和目标群生成 action；Executor 按真人节奏执行完整链路。
 4. 加入成功后，系统先写入搜索入群事实、目标成员关系和留存观察，再按配置把账号联动到同目标 AI 活跃群等后续任务的 ready pool。
 5. 运营人员在任务详情查看每个账号、关键词、机器人维度的累计入群、目标群平均排名、入群转化率、停留时长、后续任务联动状态和最近失败原因。
@@ -687,8 +694,8 @@ Planner 规则：
 | `hourly_skip_probability` | `0` | 每个自然小时进入规划前的跳过概率；命中后本小时不创建真实搜索 action，并写入 pacing stats |
 | `daily_skip_probability` | `0` | 每天进入规划前的跳过概率；命中后当天不创建真实搜索 action，并写入 pacing stats |
 | `skip_probability_per_action` | `0.1` | 单个候选 action 的显式放弃概率；命中后可创建 `skipped` action，`skip_reason=skipped_by_behavior_pacing` |
-| `hourly_jitter_percent` | `30` | 小时内 action 计划时间抖动百分比；影响本小时 `scheduled_at` 分布，不突破小时硬上限 |
-| `daily_jitter_percent` | `20` | 日内预算分布抖动百分比；影响全天 action 在可执行时段内的分配，不突破日硬上限 |
+| `hourly_jitter_percent` | `30` | 选中本地小时内的 action 延后百分比；不突破该小时硬上限 |
+| `daily_jitter_percent` | `20` | 任务时区剩余自然日内的预算分布百分比；影响未来 action 在可执行时段内的分配，不突破日硬上限 |
 
 字段校验：
 
@@ -830,7 +837,7 @@ search_join success
 
 ## 9. 系统托管任务策略与持久化 Schema（不是新建 API）
 
-本章描述服务端生成的 `type_config`、Planner 使用的运行策略以及存量任务兼容结构。它不改变 §4.11 的三字段创建契约：新建请求不得提交本章中的名称、机器人、目标组数组、账号、代理、节奏、停留、重试或策略字段。
+本章描述服务端生成的 `type_config`、Planner 使用的运行策略以及存量任务兼容结构。它不改变 §4.11 的运营范围与节奏创建契约：新建请求只能提交目标群、关键词、总目标、单个合规账号组、任务日预算、完成截止时间、日/小时抖动与静默时段；不得提交本章中的名称、机器人、目标组数组、完整账号配置、代理、单账号限制、停留、重试或策略字段。
 
 ### 9.1 系统托管完整 Payload
 ```jsonc
@@ -864,7 +871,7 @@ search_join success
 
 `SearchJoinGroupConfig.pacing_config` 必须额外包含 §8.5.1 的 search_join 专属字段：`per_account_total_action_limit`、`per_account_daily_action_limit`、`per_account_cooldown_days`、`per_keyword_account_daily_limit`、`max_actions_per_day`、`hourly_skip_probability`、`daily_skip_probability`、`skip_probability_per_action`、`hourly_jitter_percent`、`daily_jitter_percent`。这些字段不得提升到任务中心通用 `PacingConfig` 后影响其他任务。
 
-### 9.3 系统策略校验规则 - `execution_mode` 首版只能是 `mtproto_userbot`，前端必须说明这不是手机 UI 自动化 - 真实机器人协议样本未采集完成时，只允许保存草稿和运行 parser fixture，不允许启动真实灰度 - `decoy=true` 的关键词占比 ≥ 30%（硬约束，否则任务不创建） - `target_groups[].operation_target_id` 或 `target_input` 至少填一个；保存任务前必须解析 / upsert 为 `OperationTarget` 并持久化 `operation_target_id` - 关键词的 `business_region / account_locale / proxy_country` 必须落入允许矩阵 - `proxy_policy.required=true` 时，账号池中所有被选授权槽位必须已绑代理节点并完成 `observed_exit_ip` 健康检查 - 主/备用授权槽位必须各自拥有完整客户端元数据，且同账号内不得复用元数据组合或代理节点 - 同一 `account_id` 在 `search_join` 执行中只允许 1 个 action 处于 claiming / executing - `anti_detection.behavior_realism.decision_delay_seconds[0] >= 2`（不允许秒点） - `paging.max_pages` 默认且上限为 70，找满 70 页或提前没有下一页仍未命中必须停止任务 - `per_account_total_action_limit >= 0`、`per_account_daily_action_limit >= 0`、`per_account_cooldown_days >= 0`、`per_keyword_account_daily_limit >= 0`、`max_actions_per_day >= 0`；`0` 表示该项不设硬上限 - `hourly_skip_probability / daily_skip_probability / skip_probability_per_action` 必须在 `0..1` - `hourly_jitter_percent / daily_jitter_percent` 必须在 `0..100` - `hourly_min_successful_joins` 不得大于 `max_actions_per_hour`；`max_actions_per_day` 小于 `max_actions_per_hour` 时允许保存但必须提示 planner 会以日上限为准 - `decoy_join_enabled=true` 不作为首版默认能力，若开启必须单独走风控审批和审计 - 默认 `post_join_policy=stay_joined`，任何立即退出策略都必须单独审批并写审计。以上规则由服务端生成、校验和执行，不得转换为三字段新建表单的可编辑项。 #
+### 9.3 系统策略校验规则 - `execution_mode` 首版只能是 `mtproto_userbot`，前端必须说明这不是手机 UI 自动化 - 真实机器人协议样本未采集完成时，只允许保存草稿和运行 parser fixture，不允许启动真实灰度 - `decoy=true` 的关键词占比 ≥ 30%（硬约束，否则任务不创建） - `target_groups[].operation_target_id` 或 `target_input` 至少填一个；保存任务前必须解析 / upsert 为 `OperationTarget` 并持久化 `operation_target_id` - 关键词的 `business_region / account_locale / proxy_country` 必须落入允许矩阵 - `proxy_policy.required=true` 时，账号池中所有被选授权槽位必须已绑代理节点并完成 `observed_exit_ip` 健康检查 - 主/备用授权槽位必须各自拥有完整客户端元数据，且同账号内不得复用元数据组合或代理节点 - 同一 `account_id` 在 `search_join` 执行中只允许 1 个 action 处于 claiming / executing - `anti_detection.behavior_realism.decision_delay_seconds[0] >= 2`（不允许秒点） - `paging.max_pages` 默认且上限为 70，找满 70 页或提前没有下一页仍未命中必须停止任务 - `per_account_total_action_limit >= 0`、`per_account_daily_action_limit >= 0`、`per_account_cooldown_days >= 0`、`per_keyword_account_daily_limit >= 0`、`max_actions_per_day >= 0`；`0` 表示该项不设硬上限 - `hourly_skip_probability / daily_skip_probability / skip_probability_per_action` 必须在 `0..1` - `hourly_jitter_percent / daily_jitter_percent` 必须在 `0..100` - `hourly_min_successful_joins` 不得大于 `max_actions_per_hour`；`max_actions_per_day` 小于 `max_actions_per_hour` 时允许保存但必须提示 planner 会以日上限为准 - `decoy_join_enabled=true` 不作为首版默认能力，若开启必须单独走风控审批和审计 - 默认 `post_join_policy=stay_joined`，任何立即退出策略都必须单独审批并写审计。除 §4.11 明确开放的账号组、任务日上限、完成截止时间、日/小时抖动与静默时段外，以上规则由服务端生成、校验和执行，不能转换为前端可编辑项。 #
 
 ## 10. 目标机器人 / SOSO 协议交互契约 本节定义 executor 与第三方索引机器人（@searchbot、@soso、@smss、@CJSY）交互的协议契约。**dev 必须先按 §4.8 采集真实样本，再按本节实现 parser 和 executor**；样本缺失时只能跑 fixture / precheck，不允许启动真实灰度。#
 
@@ -1465,16 +1472,17 @@ CREATE INDEX idx_search_join_pacing_task_date ON search_join_pacing_decisions(ta
 
 ### 14.2 创建向导
 
-`search_join_group` 和 `search_rank_deboost` 使用固定的四步创建向导；它不是通用五步向导的变体。
+`search_join_group` 和 `search_rank_deboost` 使用固定的五步创建向导；它不是通用五步向导的变体。
 
 | 步骤 | 运营填写或确认的内容 | 系统行为 |
 | --- | --- | --- |
 | 1. 任务类型 | 搜索目标群点击任务或搜索排名观察任务 | 切换类型时只切换任务语义，不暴露高级配置。 |
-| 2. 目标群 | 一个运营目标群 | 校验目标归属、群类型和公开 username 是否可用于搜索匹配。 |
+| 2. 目标群 | 群完整名称和公开 Telegram 链接 | 服务端解析或创建内部 `OperationTarget`，校验公开 username 是否可用于搜索匹配。 |
 | 3. 关键词与目标次数 | 关键词列表、目标次数 | 关键词去重；系统保存执行所需的受控表示，并以目标次数建立生命周期进度。 |
-| 4. 确认 | 三项业务输入摘要 | 搜索目标群点击任务显示“创建并启动”；搜索排名观察任务显示“创建草稿”。 |
+| 4. 执行范围与节奏 | 账号组、每天执行次数、完成截止时间、日/小时抖动、可选静默时段 | 普通搜索只显示启用普通账号组；黑搜索只显示启用黑账号组；服务端再次校验账号组用途、截止时间和节奏范围。 |
+| 5. 确认 | 目标、次数、账号组和节奏摘要 | 搜索目标群点击任务显示“创建并启动”；搜索排名观察任务显示“创建草稿”。 |
 
-不输入任务名称，不选择账号/账号组/代理/机器人，也不调整节奏、停留、跳过、抖动或重试。服务端执行真实资源和风险校验；任何阻塞原因通过创建错误和任务详情事实展示，而不是退回为运营配置项。
+不输入任务名称，不选择代理、机器人、单账号、停留、跳过或重试。运营只选择合规账号组并调整任务级日上限、完成截止时间、日/小时抖动与可选静默时段；服务端继续执行真实资源和风险校验。任何阻塞原因通过创建错误和任务详情事实展示，而不是退回为运营配置项。
 
 ### 14.3 任务列表
 
@@ -1865,3 +1873,4 @@ AI 活跃群联动 126 个账号待冷却 / 64 个已进入 ready pool
 |2026-07-05|v0.21|Codex（Clash 多订阅一致性修订）|清理 v0.17 单订阅残留，补齐 `proxy_airport_subscriptions` SQL 示例中的 `priority/enabled/failover_policy/auto_failback_enabled/failback_cooldown_minutes/node_count/healthy_node_count`，并把 `proxy_node_failover_events` 从单 `subscription_id` 修订为 `from_subscription_id/to_subscription_id`，确保 PRD、数据流索引和实现验收都按多订阅主备口径执行。|
 |2026-07-19|v0.22|Codex（搜索点击契约修复）|收紧目标识别为精确公开 username；peer id 仅作资料/审计身份，peer-only 配置在 Planner 阶段阻断。明确 decoy 必须先排除目标、入群后安全浏览本期不执行；补齐任务局部编辑保留既有关键词 hash/密文配对、服务端与 Gateway 前双重哈希校验的契约。|
 |2026-07-20|v0.23|Codex（三字段创建设计定稿）|将新建任务的有效产品契约收敛为目标群、搜索关键词、目标次数；删除专项 PRD 中仍会误导为五步高级创建的描述。账号、代理、机器人、节奏、停留、配额、重试和资源准备统一改为系统托管，保留存量任务的已保存事实展示。|
+|2026-07-21|v0.24|Codex（运营范围与节奏修订）|按运营配置补回受控账号组、每日执行次数、完成截止时间、日/小时抖动与可选静默时段；明确普通搜索与黑搜索账号组用途隔离、截止时间前的计划/派发双重门禁，以及编辑重排时释放未执行黑搜索 reservation。|

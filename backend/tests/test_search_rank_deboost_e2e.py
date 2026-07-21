@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -59,12 +60,29 @@ pytestmark = pytest.mark.no_postgres
 
 
 KEYWORD_HASH_A = "a" * 64
+SIMPLE_SEARCH_CLICK_END = datetime(2030, 1, 1, tzinfo=timezone.utc)
 
 
 def _build_engine():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     return engine
+
+
+def _simple_search_click_payload(**overrides) -> SearchRankDeboostSimpleTaskCreate:
+    data = {
+        "target_title": "我方目标群",
+        "target_link": "https://t.me/my_target",
+        "keywords": ["关键词A"],
+        "target_count": 1,
+        "account_group_id": 10,
+        "max_actions_per_day": 5,
+        "scheduled_end": SIMPLE_SEARCH_CLICK_END,
+        "daily_jitter_percent": 20,
+        "hourly_jitter_percent": 30,
+    }
+    data.update(overrides)
+    return SearchRankDeboostSimpleTaskCreate(**data)
 
 
 def _seed_protocol_samples(session: Session, tenant_id: int = 1, bot_username: str = "jisou") -> None:
@@ -304,12 +322,7 @@ def test_e2e_start_prepares_pending_exempt_group_for_simple_rank_draft(monkeypat
         task = create_simple_search_rank_deboost_task(
             session,
             1,
-            SearchRankDeboostSimpleTaskCreate(
-                target_title="我方目标群",
-                target_link="https://t.me/my_target",
-                keywords=["关键词A"],
-                target_count=1,
-            ),
+            _simple_search_click_payload(),
             operator="tester",
         )
 
@@ -361,12 +374,7 @@ def test_e2e_start_records_candidate_gateway_exception_as_readiness_blocker(monk
         task = create_simple_search_rank_deboost_task(
             session,
             1,
-            SearchRankDeboostSimpleTaskCreate(
-                target_title="我方目标群",
-                target_link="https://t.me/my_target",
-                keywords=["关键词A"],
-                target_count=1,
-            ),
+            _simple_search_click_payload(),
             operator="tester",
         )
 

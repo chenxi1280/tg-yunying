@@ -28,6 +28,7 @@ from ..search_rank_deboost import (
 )
 from ..search_rank_deboost_targets import require_rank_deboost_target_group_refs
 from ..search_click_target_progress import reconcile_search_click_target_progress
+from ..pacing import quiet_hours_active
 from ..search_rank_deboost_pacing import (
     DEFAULT_DWELL_SECONDS_MAX,
     DEFAULT_DWELL_SECONDS_MIN,
@@ -36,6 +37,7 @@ from ..search_rank_deboost_pacing import (
     account_click_allowed,
     deboost_pacing_window,
     lock_rank_deboost_quota_scope,
+    planned_action_at,
     runtime_search_rank_deboost_config,
 )
 from ..stats import search_rank_deboost_hourly_execution
@@ -73,6 +75,9 @@ def build_plan(session: Session, task: Task) -> int:
     target_progress = reconcile_search_click_target_progress(session, task)
     if target_progress.completed or target_progress.remaining_slot_count == 0:
         return 0
+    now_value = _now()
+    if quiet_hours_active(now_value, runtime_search_rank_deboost_config(task), timezone_name=task.timezone):
+        return _record_quiet_hours(session, task, now_value)
     try:
         context = _resolve_plan_context(session, task)
     except PlanBlock as exc:
@@ -234,9 +239,6 @@ def _create_account_action(
     for keyword in context.keywords:
         keyword_hash = _hash_keyword(keyword)
         account_pool_id = int(account.pool_id or 0)
-        if not account_click_allowed(session, task, account.id, keyword_hash, account_pool_id, window, pacing_stats):
-            _count_blocker(blockers, pacing_stats.last_limit_reason or "pacing_blocked")
-            continue
         binding = _matching_binding_for_account(session, task, account)
         payload = _build_payload(context, binding, account_pool_id, keyword_hash, keyword)
         try:
@@ -244,7 +246,22 @@ def _create_account_action(
         except ValueError as exc:
             _count_blocker(blockers, str(exc))
             continue
-        action = create_search_rank_deboost_action(session, task, account.id, now_value, payload)
+        scheduled_at = planned_action_at(
+            task,
+            f"{window.local_date.isoformat()}:{account.id}:{keyword_hash}",
+            now_value,
+        )
+        if scheduled_at is None:
+            _count_blocker(blockers, "scheduled_end_reached")
+            return 0
+        if quiet_hours_active(scheduled_at, context.config, timezone_name=task.timezone):
+            _count_blocker(blockers, "quiet_hours_active")
+            continue
+        scheduled_window = deboost_pacing_window(task, scheduled_at)
+        if not account_click_allowed(session, task, account.id, keyword_hash, account_pool_id, scheduled_window, pacing_stats):
+            _count_blocker(blockers, pacing_stats.last_limit_reason or "pacing_blocked")
+            continue
+        action = create_search_rank_deboost_action(session, task, account.id, scheduled_at, payload)
         reserve_click(
             session,
             task=task,
@@ -263,6 +280,19 @@ def _pacing_stats(task: Task, now_value) -> DeboostPacingStats:
     return DeboostPacingStats(
         tenant_timezone=task.timezone or "Asia/Shanghai",
         local_date=window.local_date.isoformat(),
+    )
+
+
+def _record_quiet_hours(session: Session, task: Task, now_value) -> int:
+    pacing_stats = _pacing_stats(task, now_value)
+    pacing_stats.last_limit_reason = "quiet_hours_active"
+    task.last_error = ""
+    return _record_hourly(
+        task,
+        search_rank_deboost_hourly_execution(session, task, now_value),
+        0,
+        {"quiet_hours_active": 1},
+        pacing_stats,
     )
 
 

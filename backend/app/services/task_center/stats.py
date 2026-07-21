@@ -35,6 +35,7 @@ HARD_HOURLY_EXPIRED_ERROR_MESSAGE = "硬目标小时窗口已结束，过期补�
 AI_GROUP_TERMINAL_QUALITY_ERRORS = frozenset({"duplicate_message", "ai_message_memory_missing"})
 AI_GROUP_TERMINAL_GENERATION_STATUSES = frozenset({"duplicate_rejected"})
 AI_GENERATION_CLOSED_STATUSES = ("pending", "generating", "ready", "ai_result_persist_unknown")
+SEARCH_CLICK_TASK_TYPES = {"search_join_group", "search_rank_deboost"}
 AI_GENERATION_QUALITY_CODES = frozenset({
     "content_rejected",
     "duplicate_message",
@@ -66,7 +67,8 @@ def next_run_after_task(task: Task):
     if task.type in CHANNEL_DYNAMIC_TASK_TYPES and (config.get("message_scope") or "latest_n") == "dynamic_new":
         interval = int(config.get("listener_interval_seconds") or 30)
         return _now() + timedelta(seconds=max(1, interval))
-    return next_run_after(task.pacing_config or {})
+    timezone_name = task.timezone if task.type in SEARCH_CLICK_TASK_TYPES else None
+    return next_run_after(task.pacing_config or {}, timezone_name=timezone_name)
 
 
 def refresh_task_stats(

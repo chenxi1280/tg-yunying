@@ -12,8 +12,8 @@ from sqlalchemy.orm import Session, object_session
 
 from app.config import get_settings
 from app.integrations.telegram import OperationResult
-from app.models import AccountPool, AccountStatus, Action, ChannelMessage, ExecutionAttempt, FailureType, MessageFingerprint, OperationIssue, OperationPlanTaskLink, OperationTarget, ReviewQueue, RuleSet, RuleSetVersion, Task, TaskRuntimeSummary, TgAccount, TgGroup, WorkerHeartbeat
-from app.models.search_rank_deboost import AccountGroupProxyBinding, SearchRankDeboostExemptGroup
+from app.models import AccountPool, AccountStatus, Action, ChannelMessage, ExecutionAttempt, FailureType, MessageFingerprint, OperationIssue, OperationPlanTaskLink, OperationTarget, ReviewQueue, RuleSet, RuleSetVersion, SearchJoinPacingDecision, Task, TaskRuntimeSummary, TgAccount, TgGroup, WorkerHeartbeat
+from app.models.search_rank_deboost import AccountGroupProxyBinding, SearchRankDeboostClickReservation, SearchRankDeboostExemptGroup
 from app.search_keywords import repair_legacy_keyword_materials
 from app.schemas.task_center import (
     AccountConfig,
@@ -206,6 +206,13 @@ from .search_rank_deboost import (
     validate_rank_deboost_protocol_samples,
 )
 from .search_click_target_progress import reconcile_search_click_target_progress
+from .search_click_controls import (
+    NORMAL_SEARCH_CLICK_TASK,
+    RANK_SEARCH_CLICK_TASK,
+    require_search_click_account_group,
+    search_click_account_config,
+    search_click_pacing_config,
+)
 from .search_rank_deboost_targets import (
     TARGET_REFERENCE_OPERATION_TARGET,
     rank_deboost_target_group_refs,
@@ -366,6 +373,10 @@ def _simple_search_join_group_payload(
     tenant_id: int,
     payload: SearchJoinGroupSimpleTaskCreate,
 ) -> SearchJoinGroupTaskCreate:
+    _require_future_search_click_deadline(payload.scheduled_end)
+    require_search_click_account_group(
+        session, tenant_id, NORMAL_SEARCH_CLICK_TASK, payload.account_group_id
+    )
     target, canonical_link = _simple_search_click_target_from_input(
         session, tenant_id, payload.target_title, payload.target_link
     )
@@ -378,6 +389,9 @@ def _simple_search_join_group_payload(
         keywords=payload.keywords,
         target_count=payload.target_count,
         search_bots=[{"username": "jisou", "display_name": "极搜"}],
+        account_config=search_click_account_config(payload.account_group_id),
+        scheduled_end=as_beijing(payload.scheduled_end),
+        pacing_config=search_click_pacing_config(payload),
     )
 
 
@@ -681,6 +695,7 @@ def _task_learning_profile_preview(session: Session, task: Task) -> dict[str, An
 def update_task(session: Session, tenant_id: int, task_id: str, payload: TaskUpdate, actor: str) -> Task:
     task = _get_task(session, tenant_id, task_id)
     raw_data = payload.model_dump(exclude_unset=True)
+    _require_search_click_dedicated_update(task, raw_data)
     data = payload.model_dump(exclude_unset=True, mode="json")
     for field in ["name", "priority", "timezone", "scheduled_start", "scheduled_end", "max_duration_hours"]:
         if field in raw_data:
@@ -713,6 +728,7 @@ def _requeue_updated_task(task: Task) -> None:
 def update_task_settings(session: Session, tenant_id: int, task_id: str, payload: TaskSettingsUpdate, actor: str) -> Task:
     task = _get_task(session, tenant_id, task_id)
     raw_data = payload.model_dump(exclude_unset=True)
+    _require_search_click_dedicated_update(task, raw_data)
     data = payload.model_dump(exclude_unset=True, mode="json")
     type_fields = TYPE_SETTINGS_FIELDS.get(task.type)
     if type_fields is None:
@@ -839,29 +855,141 @@ def update_channel_comment_config(session: Session, tenant_id: int, task_id: str
 
 
 def update_search_join_group_config(session: Session, tenant_id: int, task_id: str, payload: SearchJoinGroupTaskConfigUpdate, actor: str) -> Task:
-    update_data = payload.model_dump(mode="json", exclude_unset=True)
-    pacing_data = update_data.pop("pacing_config", None)
     task = _get_task(session, tenant_id, task_id)
     if task.type != "search_join_group":
         raise ValueError(f"任务类型不匹配，当前任务是 {task.type}")
+    _require_search_click_operator_fields(payload, task.type)
+    update_data = payload.model_dump(mode="json", exclude_unset=True)
+    pacing_data = update_data.pop("pacing_config", None)
+    operator_controls = _search_click_operator_controls(payload)
+    for field in operator_controls:
+        update_data.pop(field, None)
     task.type_config = _normalize_legacy_search_join_config(task.type_config or {})
     _resolve_search_join_target_input(session, tenant_id, update_data)
     _remove_unchanged_search_join_target_input(task.type_config, update_data)
     if "keywords" in update_data:
         update_data.setdefault("keyword_hashes", [])
         update_data.setdefault("keyword_text_ciphertexts", [])
-    if update_data:
+    type_config_updated = bool(update_data)
+    if type_config_updated:
         task = _apply_type_config_data(session, tenant_id, task_id, "search_join_group", update_data, actor)
         if {"target_operation_target_id", "target_title", "target_count"}.intersection(update_data):
             _refresh_simple_search_click_name(session, task, task_label="搜索目标群点击")
+    pacing_updated = False
     if pacing_data is not None:
-        task.pacing_config = pacing_config_payload(pacing_data)
-        task.updated_at = _now()
-    if not update_data and pacing_data is None:
+        next_pacing = pacing_config_payload(pacing_data)
+        pacing_updated = next_pacing != (task.pacing_config or {})
+        task.pacing_config = next_pacing
+    controls_updated = _apply_search_click_operator_controls(
+        session, task, operator_controls
+    )
+    if not type_config_updated and (pacing_updated or controls_updated):
+        _clear_unfinished_plan(session, task)
+        _requeue_updated_task(task)
+    if not type_config_updated and not pacing_updated and not controls_updated:
         return task
+    task.updated_at = _now()
     session.commit()
     session.refresh(task)
     return task
+
+
+SEARCH_CLICK_OPERATOR_CONTROL_FIELDS = (
+    "account_group_id",
+    "max_actions_per_day",
+    "scheduled_end",
+    "daily_jitter_percent",
+    "hourly_jitter_percent",
+    "quiet_hours",
+)
+SEARCH_CLICK_TASK_TYPES = {NORMAL_SEARCH_CLICK_TASK, RANK_SEARCH_CLICK_TASK}
+SEARCH_JOIN_OPERATOR_EDIT_FIELDS = {
+    "target_title",
+    "target_link",
+    "keywords",
+    "target_count",
+    *SEARCH_CLICK_OPERATOR_CONTROL_FIELDS,
+}
+SEARCH_RANK_OPERATOR_EDIT_FIELDS = {
+    "target_title",
+    "target_link",
+    "keywords",
+    "target_count",
+    *SEARCH_CLICK_OPERATOR_CONTROL_FIELDS,
+}
+
+
+def _require_search_click_dedicated_update(task: Task, raw_data: dict[str, Any]) -> None:
+    if task.type in SEARCH_CLICK_TASK_TYPES and raw_data:
+        raise ValueError("搜索点击任务必须通过专用编辑接口更新")
+
+
+def _require_search_click_operator_fields(payload: Any, task_type: str) -> None:
+    allowed = SEARCH_JOIN_OPERATOR_EDIT_FIELDS if task_type == NORMAL_SEARCH_CLICK_TASK else SEARCH_RANK_OPERATOR_EDIT_FIELDS
+    forbidden = sorted(payload.model_fields_set - allowed)
+    if forbidden:
+        raise ValueError(f"搜索点击任务的系统托管字段不能通过运营编辑接口修改: {', '.join(forbidden)}")
+
+
+def _search_click_operator_controls(payload: Any) -> dict[str, Any]:
+    return {
+        field: getattr(payload, field)
+        for field in SEARCH_CLICK_OPERATOR_CONTROL_FIELDS
+        if field in payload.model_fields_set
+    }
+
+
+def _search_click_account_group_changed(task: Task, controls: dict[str, Any]) -> bool:
+    if "account_group_id" not in controls:
+        return False
+    current_group_id = int((task.account_config or {}).get("account_group_id") or 0)
+    return current_group_id != int(controls["account_group_id"])
+
+
+def _apply_search_click_operator_controls(
+    session: Session,
+    task: Task,
+    controls: dict[str, Any],
+) -> bool:
+    if not controls:
+        return False
+    changed = False
+    if "account_group_id" in controls:
+        account_group_id = int(controls["account_group_id"])
+        require_search_click_account_group(session, task.tenant_id, task.type, account_group_id)
+        next_account_config = AccountConfig.model_validate({
+            **(task.account_config or {}),
+            **search_click_account_config(account_group_id),
+        }).model_dump(mode="json")
+        if next_account_config != (task.account_config or {}):
+            task.account_config = next_account_config
+            changed = True
+    next_pacing = dict(task.pacing_config or {})
+    for field in ("max_actions_per_day", "daily_jitter_percent", "hourly_jitter_percent"):
+        if field in controls:
+            next_pacing[field] = controls[field]
+    if "quiet_hours" in controls:
+        quiet_hours = controls["quiet_hours"]
+        if quiet_hours is None:
+            next_pacing.pop("quiet_hours", None)
+        else:
+            next_pacing["quiet_hours"] = quiet_hours.model_dump(mode="json")
+    if next_pacing != (task.pacing_config or {}):
+        task.pacing_config = next_pacing
+        changed = True
+    if "scheduled_end" in controls:
+        _require_future_search_click_deadline(controls["scheduled_end"])
+        scheduled_end = as_beijing(controls["scheduled_end"])
+        if scheduled_end != task.scheduled_end:
+            task.scheduled_end = scheduled_end
+            changed = True
+    return changed
+
+
+def _require_future_search_click_deadline(scheduled_end: datetime | None) -> None:
+    deadline = as_beijing(scheduled_end)
+    if deadline is None or deadline <= _now():
+        raise ValueError("完成截止时间必须晚于当前时间")
 
 
 def _resolve_search_join_target_input(session: Session, tenant_id: int, update_data: dict[str, Any]) -> None:
@@ -955,9 +1083,10 @@ def create_search_rank_deboost_task(
         type="search_rank_deboost",
         status="draft",
         priority=3,
-        timezone="Asia/Shanghai",
+        timezone=payload.timezone,
+        scheduled_end=as_beijing(payload.scheduled_end),
         account_config=payload.account_config.model_dump(mode="json"),
-        pacing_config={},
+        pacing_config=pacing_config_payload(payload.pacing_config),
         failure_policy={},
         type_config=type_config,
         stats=empty_stats(),
@@ -1009,6 +1138,10 @@ def create_simple_search_rank_deboost_task(
     payload: SearchRankDeboostSimpleTaskCreate,
     operator: str,
 ) -> Task:
+    _require_future_search_click_deadline(payload.scheduled_end)
+    require_search_click_account_group(
+        session, tenant_id, RANK_SEARCH_CLICK_TASK, payload.account_group_id
+    )
     target, canonical_link = _simple_search_click_target_from_input(
         session, tenant_id, payload.target_title, payload.target_link
     )
@@ -1020,7 +1153,9 @@ def create_simple_search_rank_deboost_task(
             search_bots=["jisou"],
             keywords=[{"text": keyword} for keyword in payload.keywords],
             target_group_ids=[target.id],
-            account_config=AccountConfig(),
+            account_config=search_click_account_config(payload.account_group_id),
+            scheduled_end=as_beijing(payload.scheduled_end),
+            pacing_config=search_click_pacing_config(payload),
             config={
                 "target_count": payload.target_count,
                 "target_operation_target_id": target.id,
@@ -1065,33 +1200,44 @@ def update_search_rank_deboost_config(
     payload: SearchRankDeboostTaskConfigUpdate,
     operator: str,
 ) -> Task:
-    """更新搜索排名观察任务的目标群、关键词和目标次数。"""
+    """更新搜索排名观察任务的业务目标与运营执行范围。"""
     task = _get_task(session, tenant_id, task_id)
     if task.type != "search_rank_deboost":
         raise ValueError(f"任务类型不匹配，当前任务是 {task.type}")
+    _require_search_click_operator_fields(payload, task.type)
     update_data = payload.model_dump(mode="json", exclude_unset=True)
-    if not update_data:
-        return task
+    operator_controls = _search_click_operator_controls(payload)
+    for field in operator_controls:
+        update_data.pop(field, None)
     next_config, target_changed, target_display_changed, keywords_changed, target_count_changed = _next_rank_deboost_config(
         session,
         tenant_id,
         config=task.type_config or {},
         update_data=update_data,
     )
-    if not (target_changed or target_display_changed or keywords_changed or target_count_changed):
+    type_config_updated = target_changed or target_display_changed or keywords_changed or target_count_changed
+    account_group_changed = _search_click_account_group_changed(task, operator_controls)
+    controls_updated = _apply_search_click_operator_controls(session, task, operator_controls)
+    if not type_config_updated and not controls_updated:
         return task
-    task.type_config = next_config
-    _apply_rank_deboost_config_change(
-        session,
-        tenant_id,
-        task=task,
-        config=next_config,
-        target_changed=target_changed,
-        target_display_changed=target_display_changed,
-        keywords_changed=keywords_changed,
-        target_count_changed=target_count_changed,
-        operator=operator,
-    )
+    type_plan_rebuilt = False
+    if type_config_updated:
+        task.type_config = next_config
+        type_plan_rebuilt = _apply_rank_deboost_config_change(
+            session,
+            tenant_id,
+            task=task,
+            config=next_config,
+            target_changed=target_changed,
+            target_display_changed=target_display_changed,
+            keywords_changed=keywords_changed,
+            target_count_changed=target_count_changed,
+            operator=operator,
+        )
+    if controls_updated and not type_plan_rebuilt:
+        _reset_rank_deboost_plan_after_operator_change(session, task)
+    if controls_updated:
+        _mark_rank_deboost_account_group_binding_recheck(task, account_group_changed)
     task.updated_at = _now()
     task.last_error = ""
     audit(
@@ -1165,11 +1311,11 @@ def _apply_rank_deboost_config_change(
     keywords_changed: bool,
     target_count_changed: bool,
     operator: str,
-) -> None:
+) -> bool:
     if target_changed or target_display_changed or target_count_changed:
         _refresh_simple_search_click_name(session, task, task_label="搜索排名观察")
     if not (target_changed or keywords_changed or target_count_changed):
-        return
+        return False
     _clear_unfinished_plan(session, task)
     if target_changed or keywords_changed:
         preselect_exempt_group(
@@ -1183,11 +1329,31 @@ def _apply_rank_deboost_config_change(
         _record_rank_deboost_readiness_pending(task, "configuration_changed")
         task.status = "draft"
         task.next_run_at = None
-    else:
-        progress = reconcile_search_click_target_progress(session, task)
-        if not progress.completed:
-            task.status = "draft"
-            task.next_run_at = None
+        return True
+    _mark_rank_deboost_pending_if_incomplete(session, task)
+    return True
+
+
+def _reset_rank_deboost_plan_after_operator_change(session: Session, task: Task) -> None:
+    _clear_unfinished_plan(session, task)
+    _mark_rank_deboost_pending_if_incomplete(session, task)
+
+
+def _mark_rank_deboost_pending_if_incomplete(session: Session, task: Task) -> None:
+    if reconcile_search_click_target_progress(session, task).completed:
+        return
+    task.status = "draft"
+    task.next_run_at = None
+
+
+def _mark_rank_deboost_account_group_binding_recheck(task: Task, account_group_changed: bool) -> None:
+    if not account_group_changed or not _rank_deboost_readiness_is_ready(task):
+        return
+    _record_rank_deboost_readiness_pending(
+        task,
+        "account_group_changed",
+        required_check="account_group_binding",
+    )
 
 
 def _rank_deboost_target_changed(config: dict[str, Any], target_id: int) -> bool:
@@ -1468,7 +1634,7 @@ def start_task(
             session.refresh(task)
             return task
     if task.type in {"search_join_group", "search_rank_deboost"}:
-        if _search_click_task_completed_on_start(session, task):
+        if _check_stop_conditions(session, task) or _search_click_task_completed_on_start(session, task):
             session.commit()
             session.refresh(task)
             return task
@@ -1476,14 +1642,13 @@ def start_task(
         if task.status in {"running", "pending"}:
             return task
         try:
-            _assert_rank_deboost_allows_start(session, tenant_id, task, actor)
+            _prepare_rank_deboost_start(session, tenant_id, task, actor)
         except ValueError as exc:
             _record_rank_deboost_readiness_blocker(task, exc)
             if persist_rank_readiness_failure:
                 session.commit()
                 session.refresh(task)
             raise
-        _record_rank_deboost_readiness_ready(task)
     else:
         _assert_precheck_allows_start(session, tenant_id, task.type, _task_create_payload_for_precheck(task))
     _mark_task_started(task)
@@ -2121,26 +2286,53 @@ def _assert_rank_deboost_allows_start(session: Session, tenant_id: int, task: Ta
     _prepare_pending_rank_deboost_exempt_group(session, task, actor)
 
 
+def _prepare_rank_deboost_start(session: Session, tenant_id: int, task: Task, actor: str) -> None:
+    if _rank_deboost_readiness_is_ready(task):
+        return
+    if _rank_deboost_requires_account_group_binding(task):
+        _assert_rank_deboost_account_group_binding(session, tenant_id, task)
+        _record_rank_deboost_readiness_ready(task, evidence_summary="rank_account_group_binding")
+        return
+    _assert_rank_deboost_allows_start(session, tenant_id, task, actor)
+    _record_rank_deboost_readiness_ready(task)
+
+
+def _assert_rank_deboost_account_group_binding(session: Session, tenant_id: int, task: Task) -> None:
+    _rank_deboost_ready_bindings(session, tenant_id, dict(task.account_config or {}))
+
+
 def _record_rank_deboost_readiness_blocker(task: Task, error: ValueError) -> None:
     stats = dict(task.stats or {})
-    stats["rank_deboost_readiness"] = {
+    existing = dict(stats.get("rank_deboost_readiness") or {})
+    readiness = {
         "status": "blocked",
         "blocker": str(error),
         "checked_at": _now().isoformat(),
         "evidence_summary": "rank_start_preparation",
     }
+    if existing.get("required_check"):
+        readiness["required_check"] = existing["required_check"]
+    stats["rank_deboost_readiness"] = readiness
     task.stats = stats
     task.last_error = str(error)
     task.next_run_at = None
 
 
-def _record_rank_deboost_readiness_pending(task: Task, evidence_summary: str) -> None:
+def _record_rank_deboost_readiness_pending(
+    task: Task,
+    evidence_summary: str,
+    *,
+    required_check: str | None = None,
+) -> None:
     stats = dict(task.stats or {})
-    stats["rank_deboost_readiness"] = {
+    readiness = {
         "status": "pending",
         "checked_at": _now().isoformat(),
         "evidence_summary": evidence_summary,
     }
+    if required_check:
+        readiness["required_check"] = required_check
+    stats["rank_deboost_readiness"] = readiness
     task.stats = stats
 
 
@@ -2150,12 +2342,22 @@ def _search_click_task_completed_on_start(session: Session, task: Task) -> bool:
     return reconcile_search_click_target_progress(session, task).completed
 
 
-def _record_rank_deboost_readiness_ready(task: Task) -> None:
+def _rank_deboost_readiness_is_ready(task: Task) -> bool:
+    readiness = (task.stats or {}).get("rank_deboost_readiness") or {}
+    return readiness.get("status") == "ready"
+
+
+def _rank_deboost_requires_account_group_binding(task: Task) -> bool:
+    readiness = (task.stats or {}).get("rank_deboost_readiness") or {}
+    return readiness.get("required_check") == "account_group_binding"
+
+
+def _record_rank_deboost_readiness_ready(task: Task, *, evidence_summary: str = "rank_start_preparation") -> None:
     stats = dict(task.stats or {})
     stats["rank_deboost_readiness"] = {
         "status": "ready",
         "checked_at": _now().isoformat(),
-        "evidence_summary": "rank_start_preparation",
+        "evidence_summary": evidence_summary,
     }
     task.stats = stats
 
@@ -3422,6 +3624,8 @@ def _check_stop_conditions(session: Session, task: Task) -> bool:
     now = _now()
     scheduled_end = _naive_datetime(task.scheduled_end)
     if scheduled_end and scheduled_end <= now:
+        if task.type in SEARCH_CLICK_TASK_TYPES:
+            _clear_unfinished_plan(session, task)
         task.status = "completed"
         task.next_run_at = None
         refresh_task_stats(session, task)
@@ -3501,16 +3705,19 @@ def _clear_unfinished_plan(session: Session, task: Task) -> None:
     pending_actions = list(
         session.scalars(select(Action).where(Action.task_id == task.id, Action.status == "pending"))
     )
+    _clear_superseded_search_join_pacing_decisions(session, pending_actions)
     pending_action_ids = [action.id for action in pending_actions]
     if pending_action_ids:
         _clear_pending_relay_fingerprints(session, task, pending_actions)
         session.execute(delete(ReviewQueue).where(ReviewQueue.task_id == task.id, ReviewQueue.action_id.in_(pending_action_ids)))
         attempted_action_ids = set(session.scalars(select(ExecutionAttempt.action_id).where(ExecutionAttempt.action_id.in_(pending_action_ids))))
-        _skip_attempted_pending_actions(pending_actions, attempted_action_ids)
+        _skip_attempted_pending_actions(session, pending_actions, attempted_action_ids)
         deletable_action_ids = [action_id for action_id in pending_action_ids if action_id not in attempted_action_ids]
         if deletable_action_ids:
+            session.execute(delete(SearchRankDeboostClickReservation).where(SearchRankDeboostClickReservation.action_id.in_(deletable_action_ids)))
             session.execute(delete(Action).where(Action.id.in_(deletable_action_ids)))
     _supersede_active_plan_actions(session, task)
+    _clear_orphaned_search_join_pacing_decisions(session, task)
     session.execute(delete(ReviewQueue).where(ReviewQueue.task_id == task.id, ReviewQueue.status == "pending"))
 
 
@@ -3523,7 +3730,7 @@ def _clear_hard_hourly_checkpoint(task: Task) -> None:
     task.stats = stats
 
 
-def _skip_attempted_pending_actions(pending_actions: list[Action], attempted_action_ids: set[str]) -> None:
+def _skip_attempted_pending_actions(session: Session, pending_actions: list[Action], attempted_action_ids: set[str]) -> None:
     now = _now()
     for action in pending_actions:
         if action.id not in attempted_action_ids:
@@ -3536,20 +3743,94 @@ def _skip_attempted_pending_actions(pending_actions: list[Action], attempted_act
         action.claim_token = ""
         action.claim_expires_at = None
         action.result = {"success": False, "error_code": "plan_superseded", "error_message": "任务配置已更新，旧执行计划已废弃"}
+        release_reserved_reservation(session, action.id)
+
+
+def _clear_superseded_search_join_pacing_decisions(session: Session, actions: list[Action]) -> None:
+    for action in actions:
+        _clear_search_join_pacing_decision(session, action)
+
+
+def _clear_search_join_pacing_decision(session: Session, action: Action) -> None:
+    if action.action_type != "search_join":
+        return
+    keyword_hash = str((action.payload or {}).get("keyword_hash") or "")
+    if not keyword_hash:
+        return
+    session.execute(
+        delete(SearchJoinPacingDecision).where(
+            SearchJoinPacingDecision.task_id == action.task_id,
+            SearchJoinPacingDecision.decision_scope == "action",
+            SearchJoinPacingDecision.account_id == action.account_id,
+            SearchJoinPacingDecision.keyword_hash == keyword_hash,
+            SearchJoinPacingDecision.scheduled_at == action.scheduled_at,
+        )
+    )
+
+
+def _clear_orphaned_search_join_pacing_decisions(session: Session, task: Task) -> None:
+    if task.type != "search_join_group":
+        return
+    retained = {
+        _search_join_pacing_decision_key(action)
+        for action in session.scalars(select(Action).where(Action.task_id == task.id))
+        if _retains_search_join_pacing_decision(action)
+    }
+    for decision in session.scalars(
+        select(SearchJoinPacingDecision).where(
+            SearchJoinPacingDecision.task_id == task.id,
+            SearchJoinPacingDecision.decision_scope == "action",
+        )
+    ):
+        if (decision.account_id, decision.keyword_hash, decision.scheduled_at) not in retained:
+            session.delete(decision)
+
+
+def _retains_search_join_pacing_decision(action: Action) -> bool:
+    if action.action_type != "search_join":
+        return False
+    if action.status in {"success", "unknown_after_send"}:
+        return True
+    return str((action.result or {}).get("gateway_call_state") or "") == "started"
+
+
+def _search_join_pacing_decision_key(action: Action) -> tuple[int | None, str, datetime | None]:
+    return action.account_id, str((action.payload or {}).get("keyword_hash") or ""), action.scheduled_at
 
 
 def _supersede_active_plan_actions(session: Session, task: Task) -> None:
     now = _now()
-    active_statuses = sorted(OPEN_PLAN_ACTION_STATUSES - {"pending"})
-    for action in session.scalars(select(Action).where(Action.task_id == task.id, Action.status.in_(active_statuses))):
-        action.status = "skipped"
-        action.executed_at = now
-        action.lease_owner = ""
-        action.lease_expires_at = None
-        action.claim_owner = ""
-        action.claim_token = ""
-        action.claim_expires_at = None
-        action.result = {"success": False, "error_code": "plan_superseded", "error_message": "任务配置已更新，旧执行计划已废弃"}
+    if task.type in SEARCH_CLICK_TASK_TYPES:
+        statuses = ["claiming", "retryable_failed", "executing"]
+    else:
+        statuses = sorted(OPEN_PLAN_ACTION_STATUSES - {"pending"})
+    actions = session.scalars(select(Action).where(Action.task_id == task.id, Action.status.in_(statuses)))
+    for action in actions:
+        if action.status == "executing" and not _search_click_action_is_pre_gateway(session, action):
+            continue
+        _mark_action_plan_superseded(session, action, now)
+
+
+def _search_click_action_is_pre_gateway(session: Session, action: Action) -> bool:
+    if action.action_type == "search_rank_deboost":
+        attempts = list(session.scalars(select(ExecutionAttempt).where(ExecutionAttempt.action_id == action.id)))
+        return not any(attempt.gateway_call_started_at is not None for attempt in attempts)
+    if action.action_type == "search_join":
+        return str((action.result or {}).get("gateway_call_state") or "") != "started"
+    return False
+
+
+def _mark_action_plan_superseded(session: Session, action: Action, now: datetime) -> None:
+    _clear_search_join_pacing_decision(session, action)
+    action.status = "skipped"
+    action.executed_at = now
+    action.lease_owner = ""
+    action.lease_expires_at = None
+    action.claim_owner = ""
+    action.claim_token = ""
+    action.claim_expires_at = None
+    action.result = {"success": False, "error_code": "plan_superseded", "error_message": "任务配置已更新，旧执行计划已废弃"}
+    release_reserved_reservation(session, action.id)
 
 
 def _clear_pending_relay_fingerprints(session: Session, task: Task, pending_actions: list[Action]) -> None:

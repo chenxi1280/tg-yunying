@@ -37,7 +37,7 @@ export function WizardBasics({ taskType, onTypeChange }: { taskType: TaskCenterT
         {taskType === 'group_membership_admission' && <Form.Item name="scheduled_start" label="开始时间" rules={[{ required: true }]}><Input type="datetime-local" /></Form.Item>}
         {!simpleSearchClickTask && <Form.Item name="scheduled_end" label="结束时间（可选）"><Input type="datetime-local" placeholder="不填则持续运行" /></Form.Item>}
       </div>
-      {simpleSearchClickTask && <Alert type="info" showIcon message="任务名称、账号、代理、执行节奏与风控策略由系统自动管理。" />}
+      {simpleSearchClickTask && <Alert type="info" showIcon message="任务名称、代理、机器人与风控策略由系统管理；下一步可配置账号组与执行节奏。" />}
     </Space>
   );
 }
@@ -58,7 +58,7 @@ function SimpleSearchClickConfig({
       <Alert
         type="info"
         showIcon
-        message={isRankDeboost ? '系统托管黑账号、代理和执行节奏；启动时系统检查可用资源和执行条件。' : '系统自动选择账号、代理和执行节奏，并在风控约束内完成目标。'}
+        message={isRankDeboost ? '系统负责账号资格、代理、机器人和风险闸门；启动时仍会检查黑账号组的真实执行条件。' : '系统负责账号资格、代理、机器人和风险闸门；账号组与执行节奏在下一步配置。'}
         description="目标次数只统计已确认的目标点击；待执行或结果未知的动作会占用额度，避免重复点击。"
       />
       <div className="form-grid">
@@ -67,6 +67,61 @@ function SimpleSearchClickConfig({
         </Form.Item>
         <Form.Item name="target_count" label={allowUncappedTargetCount ? '目标次数（留空保持历史不封顶）' : '目标次数'} rules={allowUncappedTargetCount ? [] : [{ required: true, message: '请填写目标次数' }]}>
           <InputNumber min={1} precision={0} style={{ width: '100%' }} />
+        </Form.Item>
+      </div>
+    </Space>
+  );
+}
+
+function quietHoursRules(peerField: 'quiet_start' | 'quiet_end') {
+  return [
+    ({ getFieldValue }: any) => ({
+      validator(_: unknown, value?: string) {
+        const peer = String(getFieldValue(peerField) || '').trim();
+        const current = String(value || '').trim();
+        if (!current && !peer) return Promise.resolve();
+        if (!current || !peer) return Promise.reject(new Error('请同时填写静默开始和结束时间'));
+        if (current === peer) return Promise.reject(new Error('静默开始和结束时间不能相同'));
+        return Promise.resolve();
+      },
+    }),
+  ];
+}
+
+export function SearchClickExecutionConfig({ taskType, accountPools }: { taskType: TaskCenterTaskType; accountPools: AccountPool[] }) {
+  const isRankDeboost = taskType === 'search_rank_deboost';
+  const requiredPurpose = isRankDeboost ? 'rank_deboost' : 'normal';
+  const poolOptions = accountPools
+    .filter((pool) => pool.pool_purpose === requiredPurpose && pool.is_enabled)
+    .map((pool) => ({ value: pool.id, label: `${pool.name}（${pool.account_count} 个账号）` }));
+  return (
+    <Space direction="vertical" style={{ width: '100%' }}>
+      <Alert
+        type="info"
+        showIcon
+        message={isRankDeboost ? '仅可选择启用的黑搜索账号组。日抖动会在任务时区当日可执行时段分散计划，每小时抖动只在选中小时内延后；代理绑定、账号健康和真实结果仍由系统校验。' : '仅可选择启用的普通账号组。日抖动会在任务时区当日可执行时段分散计划，每小时抖动只在选中小时内延后；代理、账号健康和真实结果仍由系统校验。'}
+      />
+      <div className="form-grid">
+        <Form.Item name="account_group_id" label="执行账号组" rules={[{ required: true, message: '请选择执行账号组' }]}>
+          <Select options={poolOptions} placeholder={isRankDeboost ? '请选择黑搜索账号组' : '请选择普通账号组'} />
+        </Form.Item>
+        <Form.Item name="max_actions_per_day" label="每天执行次数" rules={[{ required: true, message: '请填写每天执行次数' }]}>
+          <InputNumber min={1} precision={0} style={{ width: '100%' }} />
+        </Form.Item>
+        <Form.Item name="scheduled_end" label="完成截止时间" rules={[{ required: true, message: '请选择完成截止时间' }]}>
+          <Input type="datetime-local" />
+        </Form.Item>
+        <Form.Item name="daily_jitter_percent" label="日抖动（%）" rules={[{ required: true, message: '请填写日抖动' }]}>
+          <InputNumber min={0} max={100} precision={0} style={{ width: '100%' }} />
+        </Form.Item>
+        <Form.Item name="hourly_jitter_percent" label="每小时抖动（%）" rules={[{ required: true, message: '请填写每小时抖动' }]}>
+          <InputNumber min={0} max={100} precision={0} style={{ width: '100%' }} />
+        </Form.Item>
+        <Form.Item name="quiet_start" label="静默开始（可选）" rules={quietHoursRules('quiet_end')}>
+          <Input type="time" />
+        </Form.Item>
+        <Form.Item name="quiet_end" label="静默结束（可选）" rules={quietHoursRules('quiet_start')}>
+          <Input type="time" />
         </Form.Item>
       </div>
     </Space>
@@ -518,8 +573,10 @@ export function WizardAccounts({ accountMode, accounts, accountPools, taskType }
   );
 }
 
-function SimpleSearchClickReview({ taskType, values, targets }: Pick<Parameters<typeof WizardReview>[0], 'taskType' | 'values' | 'targets'>) {
+function SimpleSearchClickReview({ taskType, values, targets, accountPools }: Pick<Parameters<typeof WizardReview>[0], 'taskType' | 'values' | 'targets' | 'accountPools'>) {
   const displayTarget = targetName(values, targets);
+  const accountPool = accountPools.find((pool) => pool.id === values.account_group_id);
+  const quietHours = values.quiet_start && values.quiet_end ? `${values.quiet_start} - ${values.quiet_end}` : '未设置';
   return (
     <Space direction="vertical" style={{ width: '100%' }}>
       <Alert
@@ -532,7 +589,12 @@ function SimpleSearchClickReview({ taskType, values, targets }: Pick<Parameters<
         { key: 'target', label: '目标群', children: displayTarget },
         { key: 'keywords', label: '搜索关键词', children: words(values.keywords).join('、') || '-' },
         { key: 'target-count', label: '目标次数', children: `${values.target_count || '-'} 次（以已确认目标点击计）` },
-        { key: 'policy', label: '系统托管', children: '账号、代理、节奏、停留和风控由系统管理' },
+        { key: 'account-group', label: '执行账号组', children: accountPool ? `${accountPool.name}（${accountPool.account_count} 个账号）` : '-' },
+        { key: 'daily-limit', label: '每天执行次数', children: `${values.max_actions_per_day || '-'} 次` },
+        { key: 'end', label: '完成截止时间', children: values.scheduled_end ? formatDateTime(values.scheduled_end) : '-' },
+        { key: 'jitter', label: '抖动', children: `日 ${values.daily_jitter_percent ?? 0}% / 每小时 ${values.hourly_jitter_percent ?? 0}%` },
+        { key: 'quiet', label: '静默时间', children: quietHours },
+        { key: 'policy', label: '系统托管', children: '代理、机器人、账号资格、真实结果与风控由系统管理' },
         { key: 'start', label: '创建说明', children: taskType === 'search_rank_deboost' ? '创建为草稿；启动准备时系统检查可用资源和执行条件。' : '创建并启动后由系统按可用资源执行。' },
       ]} />
     </Space>
@@ -541,7 +603,7 @@ function SimpleSearchClickReview({ taskType, values, targets }: Pick<Parameters<
 
 export function WizardReview({ taskType, values, accounts, accountPools, targets, ruleSets, slangTemplates, precheck, loading }: { taskType: TaskCenterTaskType; values: Record<string, any>; accounts: Account[]; accountPools: AccountPool[]; targets: OperationTarget[]; ruleSets: RuleSet[]; slangTemplates: PromptTemplate[]; precheck: TaskPrecheck | null; loading: boolean }) {
   if (taskType === 'search_join_group' || taskType === 'search_rank_deboost') {
-    return <SimpleSearchClickReview taskType={taskType} values={values} targets={targets} />;
+    return <SimpleSearchClickReview taskType={taskType} values={values} targets={targets} accountPools={accountPools} />;
   }
   const account = accountPrecheck(values, accounts, accountPools, taskType);
   const profile = currentOperationProfile(values);

@@ -4,7 +4,7 @@
 
 | 项目 | 内容 |
 | --- | --- |
-| 设计状态 | Product Design Complete（2026-07-20 三字段创建修订） |
+| 设计状态 | Product Design Complete（2026-07-21 运营范围与节奏创建修订） |
 | 设计日期 | 2026-07-20 |
 | 任务类型 | `search_rank_deboost` |
 | 账号组用途 | `pool_purpose=rank_deboost` |
@@ -189,7 +189,7 @@
 | `group` | 指定的一个启用 `rank_deboost` 分组中的一致、可用账号 |
 | `manual` | 手动 ID 中位于启用 `rank_deboost` 分组且身份一致的账号 |
 
-普通任务使用同名模式，但 `all`、`group`、`manual` 都必须排除 `code_receiver` 和 `rank_deboost`。这不是新建任务 API 的输入模型：新建 `search_rank_deboost` 不接受 `account_config`，服务端固定按 `all` 的系统候选语义计算。前后端共用相同候选摘要字段：
+普通任务使用同名模式，但 `all`、`group`、`manual` 都必须排除 `code_receiver` 和 `rank_deboost`。新建 `search_rank_deboost` 只接收一个 `account_group_id`，服务端将其投影为 `selection_mode=group`；不接受 `all`、手动账号或完整 `account_config`。前后端共用相同候选摘要字段：
 
 ```json
 {
@@ -202,11 +202,13 @@
 }
 ```
 
-### 5.3 2026-07-20 三字段极简创建 API（当前生效）
+### 5.3 2026-07-21 运营范围与节奏创建 API（当前生效）
 
-`POST /api/tasks/search_rank_deboost` 的新建请求只包含 `target_title`、`target_link`、`keywords` 和 `target_count`。`target_title` 与 `target_link` 共同表示一个我方目标群，仍是“目标群、搜索关键词、目标次数”三个业务概念；链接必须可归一化为公开 Telegram username。服务端按该 username 解析或复用内部 `OperationTarget`、将其转换为内部 `target_group_ids`，保存提交名称的任务展示快照，生成任务名称，并固定以全部启用且用途一致的 `rank_deboost` 账号组作为候选范围。邀请链接、peer id、机器人链接和裸 `target_operation_target_id` 必须明确拒绝；存量任务继续使用既有内部引用。
+`POST /api/tasks/search_rank_deboost` 的新建请求包含 `target_title`、`target_link`、`keywords`、`target_count`、`account_group_id`、`max_actions_per_day`、`scheduled_end`、`daily_jitter_percent`、`hourly_jitter_percent` 和可选 `quiet_hours`。`target_title` 与 `target_link` 共同表示一个我方目标群；链接必须可归一化为公开 Telegram username。服务端按该 username 解析或复用内部 `OperationTarget`、将其转换为内部 `target_group_ids`，保存提交名称的任务展示快照并生成任务名称。`account_group_id` 必须指向当前租户启用的 `pool_purpose=rank_deboost` 分组，服务端保存为 `Task.account_config.selection_mode=group`，并在启动准备时只从该黑账号组选择可用账号；邀请链接、peer id、机器人链接和裸 `target_operation_target_id` 必须明确拒绝，存量任务继续使用既有内部引用。
 
-账号选择、`proxy_airport_node_id`、机器人、点击日限额、冷却、每小时上限、停留区间、并发、重试与准备态策略均为系统策略，不是新建 API 或前端创建页的可调字段；额外传入这些字段必须被明确拒绝。创建只生成 draft；启动准备、真实候选搜索和可执行 binding 校验仍由服务端完成，失败时返回 blocker，不要求运营反向补填系统字段。
+`max_actions_per_day` 是任务自然日的 click reservation/action 预算，独立于 `target_count`；`scheduled_end` 是任务真实停止边界；日/小时抖动只能重排 future action 的 `scheduled_at`，不突破任务日/小时限额、静默窗口、截止时间或已有账号/关键词/共享 IP 配额。静默时段按任务时区不创建 action，下一轮调度落在静默结束后；reservation 到期时间必须覆盖带抖动的 `scheduled_at`。创建只生成 draft；启动准备、真实候选搜索和可执行 binding 校验仍由服务端完成，失败时返回 blocker，不要求运营反向补填系统字段。
+
+`proxy_airport_node_id`、机器人、单账号点击日限额、冷却、停留区间、并发、重试与准备态策略均为系统策略，不是新建 API 或前端创建页的可调字段；额外传入这些字段必须被明确拒绝。
 
 `target_count` 表示任务生命周期的 factual confirmed click 数。已确认 action 计入完成；`pending`、`claiming`、`executing` 和未知 Gateway 结果继续占用一个槽位；明确无点击、跳过和失败释放槽位。达到已确认目标时任务设为 `completed` 并清除下一次运行时间；历史无该字段任务保留既有调度行为。
 
@@ -280,7 +282,7 @@ execute_search_rank_deboost(
 
 - `bot_username`
 - `target_group_ids`
-- `target_reference_type`：新三字段任务固定为 `operation_target`，用于说明 `target_group_ids` 引用的是 `OperationTarget.id`；历史未带类型的数据只可在唯一可解析时继续运行，若同一整数同时对应不同的 `OperationTarget` 与 `TgGroup`，必须返回明确 blocker，不能覆盖选一个。
+- `target_reference_type`：新建简化任务固定为 `operation_target`，用于说明 `target_group_ids` 引用的是 `OperationTarget.id`；历史未带类型的数据只可在唯一可解析时继续运行，若同一整数同时对应不同的 `OperationTarget` 与 `TgGroup`，必须返回明确 blocker，不能覆盖选一个。
 - `exempt_group_username`
 - `max_clicks=1`
 - `dwell_seconds_min/max`
@@ -426,7 +428,7 @@ Planner 按任务 `account_config` 解析候选，再逐账号读取其分组 ac
 
 ### 9.1 创建草稿
 
-`POST /api/tasks/search_rank_deboost` 只创建 draft，不拥有代理绑定，也不在创建事务中探测账号、代理或 Gateway。调用方不选择账号范围；服务端只校验目标群的公开 username、关键词和目标次数，并把 readiness 写为 `pending`。豁免群可以暂为 `pending_real_search`，详情直接展示该已持久化记录；前端按钮必须称为“创建草稿”，不得显示为已启动。
+`POST /api/tasks/search_rank_deboost` 只创建 draft，不拥有代理绑定，也不在创建事务中探测账号、代理或 Gateway。调用方选择一个黑账号组及任务日预算/截止时间/抖动/静默窗口；服务端校验目标群公开 username、关键词、总目标和账号组用途，把账号组投影为 `Task.account_config.selection_mode=group`、把节奏写入 `Task.pacing_config` 并把 readiness 写为 `pending`。豁免群可以暂为 `pending_real_search`，详情直接展示该已持久化记录；前端按钮必须称为“创建草稿”，不得显示为已启动。
 
 ### 9.2 准备并启动
 
@@ -453,9 +455,11 @@ Planner 按任务 `account_config` 解析候选，再逐账号读取其分组 ac
 
 ### 9.4 编辑、暂停、停止和删除
 
-- 编辑页只允许修改目标群、关键词和目标次数；目标群填写完整名称和公开 Telegram 链接，不选择或回传内部 `OperationTarget` ID。账号范围、代理、机器人、点击节奏、停留、并发和重试均为系统托管字段。
+- 编辑页可修改目标群、关键词、目标次数、黑账号组、任务日预算、完成截止时间、日/小时抖动和静默时段；目标群填写完整名称和公开 Telegram 链接，不选择或回传内部 `OperationTarget` ID。代理、机器人、单账号点击限额、停留、并发和重试均为系统托管字段。
 - 编辑目标群或关键词的实际值发生变化时，清理未来 pending action、释放未开始 reservation、把 readiness 置为 `pending`、将豁免群重置为 `pending_real_search`，并把任务回到 draft，下一次显式启动必须重新完成真实候选搜索与准备校验。前端可省略未修改字段，服务端仍需比较归一化后的值，不能因重发相同内容误重置。
-- 仅编辑目标次数也会清理未来 pending action 并按既有 factual confirmed click 立即重算完成态；未完成任务回到 draft，等待显式启动，不重选豁免群或重做 readiness。
+- 仅编辑目标次数或运营范围/节奏会清理未来 pending action 并按既有 factual confirmed click 立即重算完成态；未完成任务回到 draft，等待显式启动。仅改日预算、截止时间、抖动或静默时段不重选豁免群、不重做 Gateway readiness；变更黑账号组只写 `required_check=account_group_binding`，启动时仅复验该组 binding，不改变已确认事实。
+- 计划 action 的 reservation 必须按其 `scheduled_at` 对应的任务本地日期和小时桶计数，而不是按 Planner 当前时间计数；日抖动把计划分散到任务时区剩余自然日，小时抖动只在选中本地小时内延后。创建前、Planner 配额校验和 reservation 写入必须使用同一计划窗口。
+- `scheduled_end` 与静默窗口都有 Planner、Dispatcher 和紧邻 Gateway 的三重边界；任务状态也必须在最终 Gateway 边界重读且为 `running`。截止、静默或任务变为暂停/停止/草稿/完成/删除后，尚未进入 Gateway 的 action 写对应 skip 原因（任务状态为 `task_not_active`）并释放黑搜索 reservation；已写 `gateway_call_started_at` 的 action 保留真实结果状态，不被配置更新、截止、静默或后续任务状态改写。
 - 编辑目标群或目标次数后，服务端按当前目标群和目标次数重生成系统任务名称。
 - 暂停不解绑共享分组代理；pending action skipped/released。
 - 停止和删除不解绑共享分组代理；只清理本任务 action、reservation、告警和 readiness。
@@ -482,9 +486,9 @@ Planner 按任务 `account_config` 解析候选，再逐账号读取其分组 ac
 
 ### 10.3 降权任务向导
 
-创建向导固定为“任务类型 → 目标群 → 关键词与目标次数 → 确认”。运营人员填写一个我方目标群的完整名称和公开 Telegram 链接、输入关键词和目标次数；系统自动解析内部目标记录，并从全部启用且用途一致的专用账号组中选择符合配额与风险闸门的账号。
+创建向导固定为“任务类型 → 目标群 → 关键词与目标次数 → 执行范围与节奏 → 确认”。运营人员填写一个我方目标群的完整名称和公开 Telegram 链接、输入关键词和目标次数，并选择一个启用黑账号组、每日执行上限、完成截止时间、日/小时抖动和可选静默时段；系统自动解析内部目标记录，并仅从该分组选择符合配额与风险闸门的账号。
 
-创建草稿不做真实账号、binding 或 Gateway 探测；这些检查在显式启动准备时执行，失败 blocker 写回该 draft。创建后的详情展示已持久化的豁免群、readiness 和执行事实。任务配置不填写单个 `proxy_airport_node_id`，不展示账号选择、并发、节奏、停留或重试配置；代理属于分组资产，其他运行参数属于系统策略。存量任务编辑页同样只保留目标群、关键词和目标次数，账号范围事实仅在详情只读展示。
+创建草稿不做真实账号、binding 或 Gateway 探测；这些检查在显式启动准备时执行，失败 blocker 写回该 draft。创建后的详情展示已持久化的豁免群、readiness 和执行事实。任务配置不填写单个 `proxy_airport_node_id`，不展示手动账号、并发、单账号限额、停留或重试配置；代理属于分组资产，其他运行参数属于系统策略。存量任务编辑页同样展示并可修改已保存的运营范围与节奏，账号范围事实仅在详情只读展示。
 
 ### 10.4 任务详情
 
@@ -558,7 +562,7 @@ Planner 按任务 `account_config` 解析候选，再逐账号读取其分组 ac
 - 可创建多个降权专用组并启禁用。
 - 账号新增/迁移后用途标识立即更新。
 - 普通任务预览、组选择和手动选择均不包含可提交的降权账号。
-- 新建降权任务只显示目标群（完整名称 + 公开 Telegram 链接）、关键词和目标次数；提交体不含内部目标 ID、`account_config`、代理、机器人、节奏、停留或重试字段，额外字段被服务端明确拒绝。
+- 新建降权任务显示目标群（完整名称 + 公开 Telegram 链接）、关键词、目标次数、黑账号组、每日执行上限、完成截止时间、日/小时抖动和静默时段；提交体不含内部目标 ID、完整 `account_config`、代理、机器人、手动账号、单账号限额、停留或重试字段，额外字段被服务端明确拒绝。
 - 系统候选范围只统计启用降权组；缺 binding、协议样本或公开 username 时明确展示 blocker。
 - 详情区分观察、真实点击、无安全按钮、未知和失败。
 
@@ -598,7 +602,7 @@ Release Gate 必须检查：
 
 ## 15. Product Design Complete 自检
 
-- 原始需求：多个黑账号组、普通任务全选排除、降权任务全选只取黑账号，以及新建只填目标群完整名称与公开链接、关键词和目标次数，已覆盖。
+- 原始需求：多个黑账号组、普通任务全选排除、降权任务只取黑账号，以及新建填写目标群完整名称与公开链接、关键词、目标次数、黑账号组、每日执行上限、完成截止时间、日/小时抖动和静默时段，已覆盖。
 - 功能设计：分组、账号迁移、任务选择、绑定、Gateway、限流、详情和告警已覆盖。
 - 前端状态：创建、启禁用、选择、缺口、readiness 和真实结果已覆盖。
 - 后端/API/worker：schema、service、planner、dispatcher、gateway、recovery 和迁移已覆盖。

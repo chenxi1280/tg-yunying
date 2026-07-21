@@ -29,7 +29,7 @@ def reserve_click(
     if existing is not None:
         return existing
     current = now_value or _now()
-    window = deboost_pacing_window(task, current)
+    window = deboost_pacing_window(task, action.scheduled_at or current)
     reservation = SearchRankDeboostClickReservation(
         tenant_id=task.tenant_id,
         task_id=task.id,
@@ -42,7 +42,7 @@ def reserve_click(
         reserved_count=1,
         consumed_count=0,
         status="reserved",
-        expires_at=current + timedelta(minutes=RESERVATION_TTL_MINUTES),
+        expires_at=_reservation_expiry(current, action.scheduled_at),
     )
     session.add(reservation)
     session.flush()
@@ -185,6 +185,13 @@ def _require_reservation(session: Session, action_id: str) -> SearchRankDeboostC
 def _require_status(reservation: SearchRankDeboostClickReservation, allowed: set[str]) -> None:
     if reservation.status not in allowed:
         raise ValueError(f"rank_deboost_reservation_invalid_state:{reservation.status}")
+
+
+def _reservation_expiry(current: datetime, scheduled_at: datetime | None) -> datetime:
+    planned = scheduled_at or current
+    if planned.tzinfo is not None:
+        planned = planned.replace(tzinfo=None)
+    return max(current, planned) + timedelta(minutes=RESERVATION_TTL_MINUTES)
 
 
 __all__ = [

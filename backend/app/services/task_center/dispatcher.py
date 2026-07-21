@@ -68,6 +68,7 @@ from .executors.channel_comment_budget import (
 )
 from .group_rescue import GROUP_RESCUE_FAILURE_THRESHOLD, infer_rescue_admin_rate_limit, permission_failure_count_for_send_action, refresh_group_rescue_action, trigger_group_rescue
 from .payloads import DeprecatedGroupRescuePayload, DeleteMessagePayload, EnsureChannelMembershipPayload, InviteGroupAccountPayload, LikeMessagePayload, PostCommentPayload, SearchJoinPayload, SearchRankDeboostPayload, SendMessagePayload, ViewMessagePayload, create_membership_action, payload_error_message, validate_action_payload
+from .pacing import quiet_hours_active
 from .policies import validate_group_send_policy
 from .review import has_pending_review
 from .search_join_linking import create_linked_dispatch_if_membership_observed
@@ -90,6 +91,15 @@ _COMMENT_THREAD_SKIP_CODES = {
 _REACTION_UNAVAILABLE_SKIP_CODE = "reaction_unavailable_sibling"
 _COMMENT_MEMBERSHIP_RETRY_DELAY = timedelta(minutes=5)
 DISPATCHER_DB_ERROR_RETRY_DELAY_SECONDS = 10
+
+
+class _SearchClickGatewayBlocked(Exception):
+    def __init__(self, code: str, detail: str) -> None:
+        super().__init__(detail)
+        self.code = code
+        self.detail = detail
+
+
 _COMMENT_MEMBERSHIP_REQUIRED_MARKERS = (
     "not participant",
     "not a participant",
@@ -356,6 +366,10 @@ def _dispatch_action(
 ) -> bool:
     if _legacy_review_enabled() and has_pending_review(session, action.id):
         return False
+    if _skip_search_click_action_after_deadline(session, action):
+        return True
+    if _skip_search_click_action_during_quiet_hours(session, action):
+        return True
     if _skip_expired_hard_hourly_action(session, action):
         return True
     if action.action_type == "invite_group_bot" and not _migrate_deprecated_group_rescue_action(session, action):
@@ -690,6 +704,12 @@ def _confirm_action_claim_candidate(
 ) -> bool:
     action = session.get(Action, action_id)
     if not _action_claim_matches(action, batch):
+        return False
+    if _skip_search_click_action_after_deadline(session, action):
+        session.commit()
+        return False
+    if _skip_search_click_action_during_quiet_hours(session, action):
+        session.commit()
         return False
     if _skip_expired_hard_hourly_action(session, action):
         session.commit()
@@ -3937,6 +3957,7 @@ def _skip_like_unavailable_message(action: Action, detail: str) -> None:
 
 
 def _dispatch_search_join(session: Session, action: Action, account: TgAccount, payload: SearchJoinPayload) -> bool:
+    _mark_search_join_before_gateway(session, action)
     search_join = getattr(gateway, "execute_search_join", None)
     if not callable(search_join):
         _skip(action, "search_join_gateway_unavailable", "搜索入群 gateway 尚未接入真实 MTProto 执行器")
@@ -3959,6 +3980,8 @@ def _dispatch_search_join(session: Session, action: Action, account: TgAccount, 
         runtime_authorization = _search_join_runtime_authorization(session, account, payload)
     except ValueError as exc:
         _fail(action, str(exc), "搜索入群授权槽位不可用，禁止回退账号主授权", validation_stage="search_join_authorization")
+        return True
+    if not _mark_search_join_gateway_call_started(session, action):
         return True
     result = search_join(account.id, payload.model_dump(mode="json"), runtime_authorization.session_ciphertext, runtime_authorization.credentials, keyword_text)
     action.status = "success" if result.get("success") else "failed"
@@ -4019,8 +4042,10 @@ def _execute_rank_deboost_with_attempt(
             action,
             account,
             payload,
-            before_gateway_call=lambda: _mark_gateway_call_started(session, attempt),
+            before_gateway_call=lambda: _mark_rank_gateway_call_started(session, action, attempt),
         )
+    except _SearchClickGatewayBlocked as exc:
+        return {"success": False, "skip_reason": exc.code, "error_message": exc.detail}
     except Exception:
         if attempt.gateway_call_started_at is None:
             release_reserved_reservation(session, action.id)
@@ -4459,6 +4484,63 @@ def _skip(action: Action, code: str, detail: str) -> None:
     _release_runtime_resources(action)
 
 
+def _skip_search_click_action_after_deadline(session: Session, action: Action) -> bool:
+    if action.action_type not in {"search_join", "search_rank_deboost"}:
+        return False
+    task = session.get(Task, action.task_id)
+    deadline = as_beijing(task.scheduled_end) if task is not None else None
+    if deadline is None or deadline > _now():
+        return False
+    _skip(action, "scheduled_end_reached", "任务完成截止时间已到，未执行动作已跳过")
+    if task is not None:
+        _skip_unstarted_search_click_actions_after_deadline(session, task)
+        task.status = "completed"
+        task.next_run_at = None
+        reconcile_search_click_target_progress(session, task)
+    return True
+
+
+def _skip_unstarted_search_click_actions_after_deadline(session: Session, task: Task) -> None:
+    actions = session.scalars(
+        select(Action).where(
+            Action.task_id == task.id,
+            Action.action_type.in_(("search_join", "search_rank_deboost")),
+            Action.status.in_(("pending", "claiming")),
+        )
+    )
+    for candidate in actions:
+        _skip(candidate, "scheduled_end_reached", "任务完成截止时间已到，未执行动作已跳过")
+
+
+def _skip_search_click_action_during_quiet_hours(session: Session, action: Action) -> bool:
+    if action.action_type not in {"search_join", "search_rank_deboost"}:
+        return False
+    task = session.get(Task, action.task_id)
+    if task is None:
+        return False
+    config = {**dict(task.type_config or {}), **dict(task.pacing_config or {})}
+    if not quiet_hours_active(_now(), config, timezone_name=task.timezone):
+        return False
+    _skip(action, "quiet_hours_active", "当前处于任务静默时间，未执行动作已跳过并等待重新规划")
+    return True
+
+
+def _skip_inactive_search_click_task(
+    session: Session,
+    action: Action,
+    *,
+    task: Task | None = None,
+) -> bool:
+    if action.action_type not in {"search_join", "search_rank_deboost"}:
+        return False
+    current_task = task or session.get(Task, action.task_id)
+    if current_task is not None and current_task.status == "running":
+        return False
+    status = current_task.status if current_task is not None else "missing"
+    _skip(action, "task_not_active", f"任务状态为 {status}，禁止调用 Gateway")
+    return True
+
+
 def _release_rank_deboost_reservation_before_gateway(action: Action) -> None:
     if action.action_type != "search_rank_deboost":
         return
@@ -4724,8 +4806,57 @@ def _mark_gateway_call_started(session: Session, attempt: ExecutionAttempt) -> N
     session.commit()
 
 
+def _mark_search_join_before_gateway(session: Session, action: Action) -> None:
+    action.result = {**(action.result or {}), "gateway_call_state": "before_call"}
+    session.commit()
+
+
+def _mark_search_join_gateway_call_started(session: Session, action: Action) -> bool:
+    if not _search_click_gateway_call_allowed(session, action):
+        return False
+    action.result = {
+        **(action.result or {}),
+        "gateway_call_state": "started",
+        "gateway_call_started_at": _now().isoformat(),
+    }
+    session.commit()
+    return True
+
+
+def _mark_rank_gateway_call_started(session: Session, action: Action, attempt: ExecutionAttempt) -> None:
+    if not _search_click_gateway_call_allowed(session, action):
+        result = action.result or {}
+        raise _SearchClickGatewayBlocked(str(result.get("error_code") or "plan_superseded"), str(result.get("error_message") or "执行计划已废弃"))
+    _mark_gateway_call_started(session, attempt)
+
+
+def _search_click_gateway_call_allowed(session: Session, action: Action) -> bool:
+    session.refresh(action)
+    task = session.get(Task, action.task_id)
+    if task is not None:
+        session.refresh(task)
+    if _skip_inactive_search_click_task(session, action, task=task):
+        return False
+    if action.status not in {"pending", "executing"}:
+        return False
+    if _skip_search_click_action_after_deadline(session, action):
+        return False
+    return not _skip_search_click_action_during_quiet_hours(session, action)
+
+
 def _gateway_call_started(session: Session, action: Action) -> bool:
-    return _latest_open_gateway_attempt(session, action) is not None
+    if action.action_type == "search_join":
+        return str((action.result or {}).get("gateway_call_state") or "") == "started"
+    return _latest_gateway_attempt(session, action) is not None
+
+
+def _latest_gateway_attempt(session: Session, action: Action) -> ExecutionAttempt | None:
+    return session.scalar(
+        select(ExecutionAttempt)
+        .where(ExecutionAttempt.action_id == action.id, ExecutionAttempt.gateway_call_started_at.is_not(None))
+        .order_by(ExecutionAttempt.attempt_no.desc())
+        .limit(1)
+    )
 
 
 def _latest_open_gateway_attempt(session: Session, action: Action) -> ExecutionAttempt | None:

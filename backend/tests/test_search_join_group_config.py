@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime, timezone
 
 import pytest
 from pydantic import ValidationError
@@ -8,7 +9,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import OperationTarget, Task, Tenant, TgAccount
+from app.models import AccountPool, Action, OperationTarget, SearchJoinPacingDecision, Task, Tenant, TgAccount
 from app.security import decrypt_secret, encrypt_secret
 from app.schemas.task_center import (
     SearchJoinGroupSimpleTaskCreate,
@@ -16,12 +17,14 @@ from app.schemas.task_center import (
     SearchJoinGroupTaskCreate,
     SearchRankDeboostSimpleTaskCreate,
     TaskSettingsUpdate,
+    TaskUpdate,
 )
 from app.services.task_center import service as task_service
 from app.services.task_center.service import (
     create_and_start_search_join_group_task,
     create_search_join_group_task,
     create_simple_search_join_group_task,
+    update_task,
     update_task_settings,
 )
 
@@ -32,6 +35,11 @@ def session() -> Session:
     Base.metadata.create_all(engine)
     with Session(engine) as db:
         db.add(Tenant(id=1, name="默认运营空间"))
+        db.add_all([
+            AccountPool(id=7, tenant_id=1, name="搜索执行组", pool_purpose="normal"),
+            AccountPool(id=9, tenant_id=1, name="搜索执行组二", pool_purpose="normal"),
+            AccountPool(id=8, tenant_id=1, name="黑搜索执行组", pool_purpose="rank_deboost"),
+        ])
         db.add(
             OperationTarget(
                 id=17,
@@ -46,6 +54,7 @@ def session() -> Session:
             TgAccount(
                 id=101,
                 tenant_id=1,
+                pool_id=7,
                 display_name="搜索账号",
                 phone_masked="101",
                 status="在线",
@@ -74,17 +83,28 @@ def _payload(**overrides) -> SearchJoinGroupTaskCreate:
     return SearchJoinGroupTaskCreate(**data)
 
 
+def _simple_payload(**overrides) -> SearchJoinGroupSimpleTaskCreate:
+    data = {
+        "target_title": "上海留学交流群",
+        "target_link": "https://t.me/shanghai_study_group",
+        "keywords": ["上海 留学"],
+        "target_count": 12,
+        "account_group_id": 7,
+        "max_actions_per_day": 9,
+        "scheduled_end": datetime(2030, 1, 1, tzinfo=timezone.utc),
+        "daily_jitter_percent": 20,
+        "hourly_jitter_percent": 30,
+    }
+    data.update(overrides)
+    return SearchJoinGroupSimpleTaskCreate(**data)
+
+
 @pytest.mark.no_postgres
 def test_simple_search_join_create_resolves_public_link_without_exposing_target_id(session: Session) -> None:
     task = create_simple_search_join_group_task(
         session,
         1,
-        SearchJoinGroupSimpleTaskCreate(
-            target_title="上海留学官方交流群",
-            target_link="https://t.me/shanghai_study_group",
-            keywords=["上海 留学"],
-            target_count=12,
-        ),
+        _simple_payload(target_title="上海留学官方交流群"),
         actor="tester",
     )
 
@@ -100,7 +120,7 @@ def test_simple_search_join_create_creates_missing_public_group_target(session: 
     task = create_simple_search_join_group_task(
         session,
         1,
-        SearchJoinGroupSimpleTaskCreate(
+        _simple_payload(
             target_title="河南郑州学生会",
             target_link="https://t.me/zzxshxc",
             keywords=["河南郑州学生会"],
@@ -118,10 +138,8 @@ def test_simple_search_join_create_creates_missing_public_group_target(session: 
 @pytest.mark.no_postgres
 def test_simple_search_join_create_rejects_internal_target_id_input() -> None:
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
-        SearchJoinGroupSimpleTaskCreate(
+        _simple_payload(
             target_operation_target_id=17,
-            keywords=["上海 留学"],
-            target_count=12,
         )
 
 
@@ -130,12 +148,7 @@ def test_simple_search_join_create_uses_system_name_and_policy(session: Session)
     task = create_simple_search_join_group_task(
         session,
         1,
-        SearchJoinGroupSimpleTaskCreate(
-            target_title="上海留学交流群",
-            target_link="https://t.me/shanghai_study_group",
-            keywords=["上海 留学", "上海 国际学校"],
-            target_count=12,
-        ),
+        _simple_payload(keywords=["上海 留学", "上海 国际学校"]),
         actor="tester",
     )
 
@@ -143,7 +156,12 @@ def test_simple_search_join_create_uses_system_name_and_policy(session: Session)
     assert task.type_config["target_operation_target_id"] == 17
     assert task.type_config["target_count"] == 12
     assert task.type_config["search_bots"] == [{"username": "jisou", "display_name": "极搜"}]
-    assert task.account_config["selection_mode"] == "all"
+    assert task.account_config["selection_mode"] == "group"
+    assert task.account_config["account_group_id"] == 7
+    assert task.pacing_config["max_actions_per_day"] == 9
+    assert task.pacing_config["daily_jitter_percent"] == 20
+    assert task.pacing_config["hourly_jitter_percent"] == 30
+    assert task.scheduled_end == datetime(2030, 1, 1, 8, 0, 0)
     assert task.pacing_config["per_account_daily_action_limit"] == 1
 
 
@@ -152,12 +170,7 @@ def test_simple_search_join_edit_regenerates_system_name(session: Session) -> No
     task = create_simple_search_join_group_task(
         session,
         1,
-        SearchJoinGroupSimpleTaskCreate(
-            target_title="上海留学交流群",
-            target_link="https://t.me/shanghai_study_group",
-            keywords=["上海 留学"],
-            target_count=12,
-        ),
+        _simple_payload(),
         actor="tester",
     )
     session.add(
@@ -196,15 +209,70 @@ def test_simple_search_join_edit_regenerates_system_name(session: Session) -> No
 
 
 @pytest.mark.no_postgres
+def test_simple_search_join_edit_updates_operator_execution_controls(session: Session) -> None:
+    task = create_simple_search_join_group_task(session, 1, _simple_payload(), actor="tester")
+    session.add(
+        SearchJoinPacingDecision(
+            tenant_id=1,
+            task_id=task.id,
+            decision_scope="action",
+            scope_key="2026-07-21:101:keyword:10",
+        )
+    )
+    session.commit()
+
+    updated = task_service.update_search_join_group_config(
+        session,
+        1,
+        task.id,
+        SearchJoinGroupTaskConfigUpdate(
+            account_group_id=9,
+            max_actions_per_day=6,
+            scheduled_end=datetime(2030, 2, 1, tzinfo=timezone.utc),
+            daily_jitter_percent=10,
+            hourly_jitter_percent=15,
+            quiet_hours={"start": "23:00", "end": "07:00"},
+        ),
+        actor="tester",
+    )
+
+    assert updated.account_config["selection_mode"] == "group"
+    assert updated.account_config["account_group_id"] == 9
+    assert updated.pacing_config["max_actions_per_day"] == 6
+    assert updated.pacing_config["daily_jitter_percent"] == 10
+    assert updated.pacing_config["hourly_jitter_percent"] == 15
+    assert updated.pacing_config["quiet_hours"] == {"start": "23:00", "end": "07:00", "timezone": "Asia/Shanghai"}
+    assert updated.scheduled_end == datetime(2030, 2, 1, 8, 0, 0)
+    assert session.query(SearchJoinPacingDecision).filter_by(task_id=task.id).count() == 0
+
+
+@pytest.mark.no_postgres
+def test_simple_search_click_rejects_expired_or_cleared_deadline(session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    now_value = datetime(2030, 1, 1)
+    monkeypatch.setattr(task_service, "_now", lambda: now_value)
+    with pytest.raises(ValueError, match="完成截止时间必须晚于当前时间"):
+        create_simple_search_join_group_task(session, 1, _simple_payload(scheduled_end=now_value), actor="tester")
+
+    task = create_simple_search_join_group_task(
+        session,
+        1,
+        _simple_payload(scheduled_end=datetime(2030, 1, 2, tzinfo=timezone.utc)),
+        actor="tester",
+    )
+    with pytest.raises(ValueError, match="完成截止时间必须晚于当前时间"):
+        task_service.update_search_join_group_config(
+            session,
+            1,
+            task.id,
+            SearchJoinGroupTaskConfigUpdate(scheduled_end=None),
+            actor="tester",
+        )
+
+
+@pytest.mark.no_postgres
 def test_simple_search_join_create_rejects_system_managed_fields() -> None:
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
-        SearchJoinGroupSimpleTaskCreate(
-            target_title="上海留学交流群",
-            target_link="https://t.me/shanghai_study_group",
-            keywords=["上海 留学"],
-            target_count=12,
-            search_bots=[{"username": "other"}],
-        )
+        _simple_payload(search_bots=[{"username": "other"}])
 
 
 @pytest.mark.no_postgres
@@ -231,30 +299,25 @@ def test_simple_search_click_create_rejects_all_system_managed_inputs(payload_ty
             target_link="https://t.me/shanghai_study_group",
             keywords=["上海 留学"],
             target_count=12,
+            account_group_id=7,
+            max_actions_per_day=9,
+            scheduled_end=datetime(2030, 1, 1, tzinfo=timezone.utc),
+            daily_jitter_percent=20,
+            hourly_jitter_percent=30,
             **{field: value},
         )
 
 
 @pytest.mark.no_postgres
 def test_simple_search_join_create_deduplicates_normalized_keywords() -> None:
-    payload = SearchJoinGroupSimpleTaskCreate(
-        target_title="上海留学交流群",
-        target_link="https://t.me/shanghai_study_group",
-        keywords=["  Study   Group  ", "study group"],
-        target_count=12,
-    )
+    payload = _simple_payload(keywords=["  Study   Group  ", "study group"])
 
     assert payload.keywords == ["Study   Group"]
 
 
 @pytest.mark.no_postgres
 def test_simple_search_join_create_does_not_impose_an_unstated_target_count_cap() -> None:
-    payload = SearchJoinGroupSimpleTaskCreate(
-        target_title="上海留学交流群",
-        target_link="https://t.me/shanghai_study_group",
-        keywords=["上海 留学"],
-        target_count=100_001,
-    )
+    payload = _simple_payload(target_count=100_001)
 
     assert payload.target_count == 100_001
 
@@ -266,14 +329,48 @@ def test_simple_search_join_create_rejects_target_without_public_link(session: S
         create_simple_search_join_group_task(
             session,
             1,
-            SearchJoinGroupSimpleTaskCreate(
-                target_title="上海留学交流群",
-                target_link=target_link,
-                keywords=["上海 留学"],
-                target_count=12,
-            ),
+            _simple_payload(target_link=target_link),
             actor="tester",
         )
+
+
+@pytest.mark.no_postgres
+def test_simple_search_join_create_rejects_rank_deboost_account_group(session: Session) -> None:
+    with pytest.raises(ValueError, match="普通搜索点击任务只能使用普通账号组"):
+        create_simple_search_join_group_task(
+            session,
+            1,
+            _simple_payload(account_group_id=8),
+            actor="tester",
+        )
+
+
+@pytest.mark.no_postgres
+def test_simple_search_join_create_rejects_account_group_with_conflicting_system_key(session: Session) -> None:
+    session.add(
+        AccountPool(
+            id=10,
+            tenant_id=1,
+            name="冲突普通搜索执行组",
+            pool_purpose="normal",
+            system_key="rank_deboost",
+        )
+    )
+    session.commit()
+
+    with pytest.raises(ValueError, match="普通搜索点击任务只能使用普通账号组"):
+        create_simple_search_join_group_task(
+            session,
+            1,
+            _simple_payload(account_group_id=10),
+            actor="tester",
+        )
+
+
+@pytest.mark.no_postgres
+def test_simple_search_click_rejects_invalid_quiet_hours() -> None:
+    with pytest.raises(ValidationError, match="quiet_hours.start 必须是 HH:MM"):
+        _simple_payload(quiet_hours={"start": "25:00", "end": "08:00"})
 
 
 @pytest.mark.no_postgres
@@ -367,28 +464,30 @@ def test_search_join_group_create_and_start_runs_precheck_and_starts(session: Se
 
 
 @pytest.mark.no_postgres
-def test_search_join_group_settings_update_accepts_pacing_but_other_tasks_reject_it(session: Session) -> None:
-    task = create_search_join_group_task(session, 1, _payload(), actor="tester")
+def test_generic_search_click_updates_cannot_bypass_dedicated_contract(session: Session) -> None:
+    task = create_simple_search_join_group_task(session, 1, _simple_payload(), actor="tester")
+    original_account_config = dict(task.account_config)
+    original_deadline = task.scheduled_end
 
-    updated = update_task_settings(
-        session,
-        1,
-        task.id,
-        TaskSettingsUpdate(name=task.name, pacing_config={"mode": "template", "per_account_daily_action_limit": 0}),
-        actor="tester",
-    )
+    with pytest.raises(ValueError, match="专用编辑接口"):
+        update_task(
+            session,
+            1,
+            task.id,
+            TaskUpdate(account_config={"selection_mode": "manual", "account_ids": [101]}),
+            actor="tester",
+        )
+    with pytest.raises(ValueError, match="专用编辑接口"):
+        update_task_settings(
+            session,
+            1,
+            task.id,
+            TaskSettingsUpdate(scheduled_end=None),
+            actor="tester",
+        )
 
-    assert updated.pacing_config["per_account_daily_action_limit"] == 0
-
-    stopped_capacity = update_task_settings(
-        session,
-        1,
-        task.id,
-        TaskSettingsUpdate(name=task.name, pacing_config={"mode": "template", "max_actions_per_hour": 0}),
-        actor="tester",
-    )
-
-    assert stopped_capacity.pacing_config["max_actions_per_hour"] == 0
+    assert task.account_config == original_account_config
+    assert task.scheduled_end == original_deadline
 
     other = Task(tenant_id=1, name="普通任务", type="channel_like", status="running", type_config={}, stats={})
     session.add(other)
@@ -414,54 +513,108 @@ def test_search_join_group_settings_update_accepts_pacing_but_other_tasks_reject
 
 
 @pytest.mark.no_postgres
-def test_search_join_group_config_update_rolls_back_type_config_when_pacing_fails(session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_search_join_group_config_update_rejects_system_managed_fields_without_mutation(session: Session) -> None:
     task = create_search_join_group_task(session, 1, _payload(), actor="tester")
     original_region = task.type_config["business_region"]
 
-    def fail_pacing(_payload):
-        raise RuntimeError("pacing boom")
-
-    monkeypatch.setattr(task_service, "pacing_config_payload", fail_pacing)
-    with pytest.raises(RuntimeError, match="pacing boom"):
+    with pytest.raises(ValueError, match="系统托管字段"):
         task_service.update_search_join_group_config(
             session,
             1,
             task.id,
             SearchJoinGroupTaskConfigUpdate(
-                target_operation_target_id=17,
                 search_bots=[{"username": "jisou", "display_name": "极搜"}],
                 business_region="CN-ZZ",
-                pacing_config={"mode": "template", "per_account_daily_action_limit": 2},
             ),
             actor="tester",
         )
 
-    session.rollback()
-    session.refresh(task)
     assert task.type_config["business_region"] == original_region
 
 
 @pytest.mark.no_postgres
-def test_search_join_group_schema_accepts_zero_pacing_hourly_override(session: Session) -> None:
+def test_search_join_pacing_update_only_supersedes_pre_gateway_executing_action(session: Session) -> None:
+    task = create_simple_search_join_group_task(session, 1, _simple_payload(), actor="tester")
+    pre_gateway = Action(
+        tenant_id=1,
+        task_id=task.id,
+        task_type=task.type,
+        action_type="search_join",
+        account_id=101,
+        status="executing",
+        payload={},
+        result={"gateway_call_state": "before_call"},
+    )
+    gateway_started = Action(
+        tenant_id=1,
+        task_id=task.id,
+        task_type=task.type,
+        action_type="search_join",
+        account_id=None,
+        status="executing",
+        payload={},
+        result={"gateway_call_state": "started"},
+    )
+    session.add_all([pre_gateway, gateway_started])
+    session.commit()
+
+    task_service.update_search_join_group_config(
+        session,
+        1,
+        task.id,
+        SearchJoinGroupTaskConfigUpdate(max_actions_per_day=1),
+        actor="tester",
+    )
+
+    assert pre_gateway.status == "skipped"
+    assert pre_gateway.result["error_code"] == "plan_superseded"
+    assert gateway_started.status == "executing"
+
+
+@pytest.mark.no_postgres
+def test_search_join_pacing_update_supersedes_unmarked_executing_action(session: Session) -> None:
+    task = create_simple_search_join_group_task(session, 1, _simple_payload(), actor="tester")
+    action = Action(
+        tenant_id=1,
+        task_id=task.id,
+        task_type=task.type,
+        action_type="search_join",
+        account_id=101,
+        status="executing",
+        payload={},
+        result={},
+    )
+    session.add(action)
+    session.commit()
+
+    task_service.update_search_join_group_config(
+        session,
+        1,
+        task.id,
+        SearchJoinGroupTaskConfigUpdate(max_actions_per_day=1),
+        actor="tester",
+    )
+
+    assert action.status == "skipped"
+    assert action.result["error_code"] == "plan_superseded"
+
+
+@pytest.mark.no_postgres
+def test_search_join_group_operator_patch_rejects_raw_pacing_override(session: Session) -> None:
     payload = _payload(pacing_config={"mode": "template", "max_actions_per_hour": 0})
     task = create_search_join_group_task(session, 1, payload, actor="tester")
 
     assert task.type_config["max_actions_per_hour"] == 20
     assert task.pacing_config["max_actions_per_hour"] == 0
 
-    updated = task_service.update_search_join_group_config(
-        session,
-        1,
-        task.id,
-        SearchJoinGroupTaskConfigUpdate(
-            target_operation_target_id=17,
-            search_bots=[{"username": "jisou", "display_name": "极搜"}],
-            pacing_config={"mode": "template", "max_actions_per_hour": 0},
-        ),
-        actor="tester",
-    )
-
-    assert updated.pacing_config["max_actions_per_hour"] == 0
+    with pytest.raises(ValueError, match="系统托管字段"):
+        task_service.update_search_join_group_config(
+            session,
+            1,
+            task.id,
+            SearchJoinGroupTaskConfigUpdate(pacing_config={"mode": "template", "max_actions_per_hour": 0}),
+            actor="tester",
+        )
 
 
 @pytest.mark.no_postgres
@@ -474,11 +627,11 @@ def test_search_join_group_partial_update_preserves_existing_keyword_material(se
         session,
         1,
         task.id,
-        SearchJoinGroupTaskConfigUpdate(business_region="CN-ZZ"),
+        SearchJoinGroupTaskConfigUpdate(target_count=8),
         actor="tester",
     )
 
-    assert updated.type_config["business_region"] == "CN-ZZ"
+    assert updated.type_config["target_count"] == 8
     assert updated.type_config["keyword_hashes"] == original_hashes
     assert updated.type_config["keyword_text_ciphertexts"] == original_ciphertexts
 

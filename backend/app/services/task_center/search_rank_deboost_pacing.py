@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -35,9 +36,12 @@ class DeboostPacingStats:
     tenant_timezone: str = ""
     local_date: str = ""
     last_limit_reason: str = ""
+    task_daily_action_count: int = 0
+    task_daily_remaining: int = 0
     per_account_daily_click_limit_reached: int = 0
     per_keyword_account_daily_limit_reached: int = 0
     group_ip_daily_click_limit_reached: int = 0
+    task_daily_limit_reached: int = 0
     task_hourly_limit_reached: int = 0
     per_account_cooldown_active: int = 0
     blocked_accounts: set[int] = field(default_factory=set)
@@ -47,9 +51,12 @@ class DeboostPacingStats:
             "tenant_timezone": self.tenant_timezone,
             "local_date": self.local_date,
             "last_limit_reason": self.last_limit_reason,
+            "task_daily_action_count": self.task_daily_action_count,
+            "task_daily_remaining": self.task_daily_remaining,
             "per_account_daily_click_limit_reached": self.per_account_daily_click_limit_reached,
             "per_keyword_account_daily_limit_reached": self.per_keyword_account_daily_limit_reached,
             "group_ip_daily_click_limit_reached": self.group_ip_daily_click_limit_reached,
+            "task_daily_limit_reached": self.task_daily_limit_reached,
             "task_hourly_limit_reached": self.task_hourly_limit_reached,
             "per_account_cooldown_active": self.per_account_cooldown_active,
         }
@@ -81,9 +88,18 @@ def account_click_allowed(
     window: DeboostPacingWindow,
     stats: DeboostPacingStats,
 ) -> bool:
-    """单账号 + 关键词 + 分组 IP + 任务小时级 + 账号冷却 综合校验。"""
+    """单账号 + 关键词 + 分组 IP + 任务日/小时级 + 账号冷却综合校验。"""
     lock_rank_deboost_quota_scope(session, task)
     config = runtime_search_rank_deboost_config(task)
+    task_daily_count = _task_daily_clicks(session, task, window.local_date)
+    daily_limit = int(config.get("max_actions_per_day") or 0)
+    stats.task_daily_action_count = task_daily_count
+    if daily_limit > 0:
+        stats.task_daily_remaining = max(0, daily_limit - task_daily_count)
+        if stats.task_daily_remaining <= 0:
+            stats.task_daily_limit_reached += 1
+            stats.last_limit_reason = "task_daily_limit_reached"
+            return False
     cooldown_hours = config.get("per_account_cooldown_hours")
     cooldown_hours = int(cooldown_hours) if cooldown_hours is not None else DEFAULT_PER_ACCOUNT_COOLDOWN_HOURS
     if _account_cooldown_active(session, task, account_id, cooldown_hours):
@@ -155,6 +171,65 @@ def _group_ip_daily_clicks(session: Session, task: Task, account_pool_id: int, l
         local_date,
         SearchRankDeboostActionStat.account_pool_id == account_pool_id,
     )
+
+
+def _task_daily_clicks(session: Session, task: Task, local_date: date) -> int:
+    reservation_count = _reservation_count(
+        session,
+        task,
+        local_date,
+        SearchRankDeboostClickReservation.task_id == task.id,
+    )
+    return reservation_count + _legacy_stat_clicks(
+        session,
+        task,
+        local_date,
+        SearchRankDeboostActionStat.task_id == task.id,
+    )
+
+
+def planned_action_at(task: Task, candidate_key: str, now_value: datetime) -> datetime | None:
+    config = runtime_search_rank_deboost_config(task)
+    local_now = _task_local_datetime(task, now_value)
+    daily_candidate = _delay_within_local_day(
+        task.id,
+        candidate_key,
+        local_now,
+        config.get("daily_jitter_percent"),
+    )
+    scheduled_at = _source_naive(
+        _delay_within_local_hour(task.id, candidate_key, daily_candidate, config.get("hourly_jitter_percent"))
+    )
+    scheduled_end = _source_naive(task.scheduled_end) if task.scheduled_end else None
+    if scheduled_end is not None and scheduled_end <= _source_naive(now_value):
+        return None
+    return min(scheduled_at, scheduled_end - timedelta(seconds=1)) if scheduled_end else scheduled_at
+
+
+def _task_local_datetime(task: Task, value: datetime) -> datetime:
+    source = value if value.tzinfo else value.replace(tzinfo=DEFAULT_SOURCE_TIMEZONE)
+    return source.astimezone(ZoneInfo(task.timezone or "Asia/Shanghai"))
+
+
+def _delay_within_local_day(task_id: str, key: str, value: datetime, percent: object) -> datetime:
+    day_end = value.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+    return _delayed(value, day_end, percent, _jitter_ratio(task_id, f"daily:{value.date().isoformat()}", key))
+
+
+def _delay_within_local_hour(task_id: str, key: str, value: datetime, percent: object) -> datetime:
+    hour_end = value.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+    return _delayed(value, hour_end, percent, _jitter_ratio(task_id, f"hourly:{value.hour}", key))
+
+
+def _delayed(value: datetime, end: datetime, percent: object, ratio: float) -> datetime:
+    seconds = max(0, int((end - value).total_seconds()) - 1)
+    offset = int(seconds * max(0, min(100, int(percent or 0))) / 100 * ratio)
+    return value + timedelta(seconds=offset)
+
+
+def _jitter_ratio(task_id: str, scope: str, candidate_key: str) -> float:
+    digest = hashlib.sha256(f"{task_id}:{scope}:{candidate_key}".encode("utf-8")).hexdigest()
+    return int(digest[:16], 16) / float(0xFFFFFFFFFFFFFFFF)
 
 
 def _reservation_count(session: Session, task: Task, local_date: date, *conditions) -> int:
@@ -274,5 +349,6 @@ __all__ = [
     "account_click_allowed",
     "deboost_pacing_window",
     "lock_rank_deboost_quota_scope",
+    "planned_action_at",
     "runtime_search_rank_deboost_config",
 ]

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine, select
@@ -30,9 +31,12 @@ from app.search_keywords import normalized_keyword_hash
 from app.schemas.account_environment import ProxyAirportSubscriptionCreate
 from app.services._common import _now
 from app.services.proxy_airport_subscription import create_proxy_airport_subscription, sync_proxy_airport_subscription_by_id
+from app.services.task_center import pacing
+from app.services.task_center import search_join_pacing
 from app.services.task_center.search_join_pacing import pacing_window
 from app.services.task_center.executors import build_task_plan
 from app.services.task_center.executors import search_join_group as search_join_executor
+from app.services.task_center.stats import next_run_after_task
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -697,14 +701,77 @@ def test_search_join_planner_applies_jitter_from_persisted_decision(session: Ses
 
     assert action.scheduled_at == decision.scheduled_at
     assert action.scheduled_at >= fixed_now
-    assert action.scheduled_at < fixed_now + timedelta(minutes=18, seconds=1)
+    assert action.scheduled_at < datetime(2026, 7, 5, 0, 0, 0)
     assert decision.reason == "planned"
     assert decision.decision_value["hourly_jitter_percent"] == 30
     assert decision.decision_value["daily_jitter_percent"] == 20
 
 
 @pytest.mark.no_postgres
-def test_search_join_jitter_stays_inside_current_hour_bucket(session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_search_join_planner_does_not_create_actions_during_quiet_hours(session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    fixed_now = datetime(2026, 7, 4, 3, 0, 0)
+    monkeypatch.setattr(search_join_executor, "_now", lambda: fixed_now)
+    _bind_search_join_environment(session, [101])
+    task = _task(
+        type_config={"actions_per_round": 1, "hourly_min_successful_joins": 1},
+        pacing_config={"quiet_hours": {"start": "02:00", "end": "08:00"}},
+    )
+    session.add(task)
+    session.commit()
+
+    assert build_task_plan(session, task) == 0
+    assert session.scalar(select(Action).where(Action.task_id == task.id)) is None
+    assert task.stats["search_join_stats"]["pacing_limits"]["last_limit_reason"] == "quiet_hours_active"
+
+
+@pytest.mark.no_postgres
+def test_search_join_planner_does_not_schedule_jittered_action_inside_quiet_hours(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixed_now = datetime(2026, 7, 4, 1, 59, 0)
+    monkeypatch.setattr(search_join_executor, "_now", lambda: fixed_now)
+    monkeypatch.setattr(
+        search_join_executor,
+        "planned_action_decision",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            scheduled_at=fixed_now + timedelta(minutes=31),
+            decision_value={"skipped": False},
+        ),
+    )
+    _bind_search_join_environment(session, [101])
+    task = _task(
+        type_config={"actions_per_round": 1, "hourly_min_successful_joins": 1},
+        pacing_config={"quiet_hours": {"start": "02:00", "end": "08:00"}},
+    )
+    session.add(task)
+    session.commit()
+
+    assert build_task_plan(session, task) == 0
+    assert session.scalar(select(Action).where(Action.task_id == task.id)) is None
+    assert task.stats["search_join_stats"]["hourly_execution"]["last_blockers"]["quiet_hours_active"] == 1
+
+
+@pytest.mark.no_postgres
+def test_search_join_quiet_hours_follow_task_timezone(session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    fixed_now = datetime(2026, 7, 4, 18, 0, 0)
+    monkeypatch.setattr(search_join_executor, "_now", lambda: fixed_now)
+    _bind_search_join_environment(session, [101])
+    task = _task(
+        timezone="America/New_York",
+        type_config={"actions_per_round": 1, "hourly_min_successful_joins": 1},
+        pacing_config={"quiet_hours": {"start": "02:00", "end": "08:00"}},
+    )
+    session.add(task)
+    session.commit()
+
+    assert build_task_plan(session, task) == 0
+    assert session.scalar(select(Action).where(Action.task_id == task.id)) is None
+    assert task.stats["search_join_stats"]["pacing_limits"]["last_limit_reason"] == "quiet_hours_active"
+
+
+@pytest.mark.no_postgres
+def test_search_join_daily_jitter_stays_inside_current_task_local_day(session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
     fixed_now = _now().replace(year=2026, month=7, day=4, hour=10, minute=50, second=0, microsecond=0)
     monkeypatch.setattr(search_join_executor, "_now", lambda: fixed_now)
     _bind_search_join_environment(session, [101])
@@ -719,7 +786,103 @@ def test_search_join_jitter_stays_inside_current_hour_bucket(session: Session, m
     action = session.scalar(select(Action).where(Action.task_id == task.id))
 
     assert action.scheduled_at >= fixed_now
-    assert action.scheduled_at < fixed_now.replace(minute=0) + timedelta(hours=1)
+    assert action.scheduled_at < datetime(2026, 7, 5, 0, 0, 0)
+
+
+@pytest.mark.no_postgres
+def test_search_join_daily_jitter_spreads_within_remaining_task_local_day(monkeypatch: pytest.MonkeyPatch) -> None:
+    base = datetime(2026, 7, 4, 10, 0, 0)
+    task = _task(timezone="Asia/Shanghai")
+    window = pacing_window(task, base)
+    monkeypatch.setattr(search_join_pacing, "_seeded_float", lambda *_args: 1.0)
+
+    scheduled_at = search_join_pacing._jittered_at(task, "candidate", base, 0, 100, window)
+
+    assert scheduled_at == datetime(2026, 7, 4, 23, 59, 59)
+
+
+@pytest.mark.no_postgres
+def test_search_join_daily_jitter_keeps_future_hour_action_cap(session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    fixed_now = datetime(2026, 7, 4, 10, 0, 0)
+    monkeypatch.setattr(search_join_executor, "_now", lambda: fixed_now)
+    monkeypatch.setattr(search_join_pacing, "_seeded_float", lambda *_args: 1.0)
+    _bind_search_join_environment(session, [101])
+    task = _task(
+        type_config={"actions_per_round": 1, "hourly_min_successful_joins": 1, "max_actions_per_hour": 1},
+        pacing_config={"daily_jitter_percent": 100, "hourly_jitter_percent": 0, "skip_probability_per_action": 0},
+    )
+    session.add(task)
+    session.flush()
+    session.add(
+        Action(
+            tenant_id=1,
+            task_id=task.id,
+            task_type=task.type,
+            action_type="search_join",
+            account_id=102,
+            scheduled_at=datetime(2026, 7, 4, 23, 59, 59),
+            status="pending",
+            payload={"keyword_hash": "a" * 64},
+            result={},
+        )
+    )
+    session.commit()
+
+    assert build_task_plan(session, task) == 0
+
+    actions = session.scalars(select(Action).where(Action.task_id == task.id)).all()
+    assert len(actions) == 1
+    assert actions[0].scheduled_at == datetime(2026, 7, 4, 23, 59, 59)
+
+
+@pytest.mark.no_postgres
+def test_search_join_jitter_never_schedules_after_task_deadline(session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    fixed_now = _now().replace(year=2026, month=7, day=4, hour=9, minute=59, second=50, microsecond=0)
+    deadline = datetime(2026, 7, 4, 2, 0, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(search_join_executor, "_now", lambda: fixed_now)
+    _bind_search_join_environment(session, [101])
+    task = _task(
+        scheduled_end=deadline,
+        type_config={"actions_per_round": 1, "hourly_min_successful_joins": 1},
+        pacing_config={"hourly_jitter_percent": 100, "daily_jitter_percent": 100, "skip_probability_per_action": 0},
+    )
+    session.add(task)
+    session.commit()
+    task.scheduled_end = deadline
+
+    assert build_task_plan(session, task) == 1
+
+    action = session.scalar(select(Action).where(Action.task_id == task.id))
+    decision = session.scalar(select(SearchJoinPacingDecision).where(SearchJoinPacingDecision.task_id == task.id))
+    assert action.scheduled_at < datetime(2026, 7, 4, 10, 0, 0)
+    assert decision.scheduled_at == action.scheduled_at
+
+
+@pytest.mark.no_postgres
+def test_search_click_next_run_exits_quiet_hours_in_task_timezone(monkeypatch: pytest.MonkeyPatch) -> None:
+    beijing_now = datetime(2026, 7, 4, 18, 0, 0)
+    monkeypatch.setattr(pacing, "_now", lambda: beijing_now)
+    task = _task(
+        timezone="America/New_York",
+        pacing_config={"quiet_hours": {"start": "02:00", "end": "08:00"}},
+    )
+
+    assert next_run_after_task(task) == datetime(2026, 7, 4, 20, 0, 0)
+
+
+@pytest.mark.no_postgres
+def test_search_click_next_run_honors_quiet_hours_with_activity_curve(monkeypatch: pytest.MonkeyPatch) -> None:
+    beijing_now = datetime(2026, 7, 4, 18, 0, 0)
+    monkeypatch.setattr(pacing, "_now", lambda: beijing_now)
+    task = _task(
+        timezone="America/New_York",
+        pacing_config={
+            "quiet_hours": {"start": "02:00", "end": "08:00"},
+            "operation_profile": {"hourly_activity_curve": [1] * 24},
+        },
+    )
+
+    assert next_run_after_task(task) == datetime(2026, 7, 4, 20, 0, 0)
 
 
 @pytest.mark.no_postgres
@@ -819,4 +982,31 @@ def test_search_join_daily_limits_count_failed_and_claiming_real_actions(session
     assert build_task_plan(session, task) == 0
     limits = task.stats["search_join_stats"]["pacing_limits"]
     assert limits["task_daily_action_count"] == 2
+    assert limits["task_daily_remaining"] == 0
+
+
+@pytest.mark.no_postgres
+def test_search_join_daily_limit_counts_unknown_after_gateway(session: Session) -> None:
+    _bind_search_join_environment(session, [101])
+    task = _task(pacing_config={"max_actions_per_day": 1})
+    session.add(task)
+    session.flush()
+    session.add(
+        Action(
+            tenant_id=1,
+            task_id=task.id,
+            task_type="search_join_group",
+            action_type="search_join",
+            account_id=101,
+            status="unknown_after_send",
+            executed_at=_now(),
+            payload={"keyword_hash": "a" * 64},
+            result={"gateway_call_state": "started"},
+        )
+    )
+    session.commit()
+
+    assert build_task_plan(session, task) == 0
+    limits = task.stats["search_join_stats"]["pacing_limits"]
+    assert limits["task_daily_action_count"] == 1
     assert limits["task_daily_remaining"] == 0

@@ -338,7 +338,8 @@ def test_rank_edit_repeating_target_and_keywords_keeps_readiness(session: Sessio
         1,
         task.id,
         SearchRankDeboostTaskConfigUpdate(
-            target_operation_target_id=17,
+            target_title="目标群",
+            target_link="https://t.me/target_group",
             keywords=["上海 留学"],
             target_count=2,
         ),

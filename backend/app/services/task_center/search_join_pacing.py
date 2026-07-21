@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.models import Action, SearchJoinPacingDecision, Task
 
-REAL_ACTION_STATUSES = {"pending", "claiming", "executing", "success", "failed"}
+REAL_ACTION_STATUSES = {"pending", "claiming", "executing", "success", "failed", "unknown_after_send"}
 DEFAULT_SOURCE_TIMEZONE = ZoneInfo("Asia/Shanghai")
 
 
@@ -94,7 +94,7 @@ def planned_action_decision(
     sampled = _seeded_float(task.id, "action", candidate_key)
     skipped = sampled < threshold
     scheduled_at = _jittered_at(
-        task.id,
+        task,
         candidate_key,
         base_scheduled_at or datetime.now(),
         int(hourly_jitter_percent or 0),
@@ -163,6 +163,24 @@ def task_daily_capacity(session: Session, task: Task, window: PacingWindow, requ
     return min(requested, remaining)
 
 
+def hourly_action_allowed(session: Session, task: Task, scheduled_at: datetime, *, max_actions_per_hour: int) -> bool:
+    limit = int(max_actions_per_hour or 0)
+    if limit <= 0:
+        return True
+    window = pacing_window(task, scheduled_at)
+    start_at, end_at = _local_hour_bounds_source(task.timezone, window.hour_start)
+    actions = session.scalars(
+        select(Action).where(
+            Action.task_id == task.id,
+            Action.action_type == "search_join",
+            Action.status.in_(REAL_ACTION_STATUSES),
+            func.coalesce(Action.executed_at, Action.scheduled_at) >= start_at,
+            func.coalesce(Action.executed_at, Action.scheduled_at) < end_at,
+        )
+    )
+    return sum(1 for action in actions if not _is_behavior_pacing_skip(action)) < limit
+
+
 def _decision(
     session: Session,
     task: Task,
@@ -219,22 +237,38 @@ def _seeded_float(task_id: str, scope: str, key: str) -> float:
     return random.Random(seed).random()
 
 
-def _jittered_at(task_id: str, key: str, base: datetime, hourly_jitter_percent: int, daily_jitter_percent: int, window: PacingWindow) -> datetime:
-    hourly_seconds = _jitter_seconds(hourly_jitter_percent)
-    daily_seconds = _jitter_seconds(daily_jitter_percent)
-    if hourly_seconds <= 0 and daily_seconds <= 0:
-        return base
-    max_seconds = max(hourly_seconds, daily_seconds)
-    hourly_weight = _seeded_float(task_id, "hourly_jitter", key) * hourly_seconds
-    daily_weight = _seeded_float(task_id, f"daily_jitter:{window.local_date.isoformat()}", key) * daily_seconds
-    divisor = max(1, hourly_seconds + daily_seconds)
-    offset = int(((hourly_weight + daily_weight) / divisor) * max_seconds)
-    candidate = _source_naive(base) + timedelta(seconds=offset)
-    return min(candidate, _bucket_end_source(window) - timedelta(seconds=1))
+def _jittered_at(task: Task, key: str, base: datetime, hourly_jitter_percent: int, daily_jitter_percent: int, window: PacingWindow) -> datetime:
+    local_base = _task_local_datetime(task, base)
+    daily_candidate = _delay_within_local_day(
+        task.id,
+        key,
+        local_base,
+        daily_jitter_percent,
+        window.local_date.isoformat(),
+    )
+    hourly_candidate = _delay_within_local_hour(task.id, key, daily_candidate, hourly_jitter_percent)
+    return _source_naive(hourly_candidate)
 
 
-def _jitter_seconds(percent: int) -> int:
-    return int(3600 * max(0, min(100, int(percent or 0))) / 100)
+def _task_local_datetime(task: Task, value: datetime) -> datetime:
+    source = value if value.tzinfo else value.replace(tzinfo=DEFAULT_SOURCE_TIMEZONE)
+    return source.astimezone(ZoneInfo(task.timezone or "Asia/Shanghai"))
+
+
+def _delay_within_local_day(task_id: str, key: str, value: datetime, percent: int, scope: str) -> datetime:
+    day_end = value.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+    return _delayed(value, day_end, percent, _seeded_float(task_id, f"daily_jitter:{scope}", key))
+
+
+def _delay_within_local_hour(task_id: str, key: str, value: datetime, percent: int) -> datetime:
+    hour_end = value.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+    return _delayed(value, hour_end, percent, _seeded_float(task_id, f"hourly_jitter:{value.hour}", key))
+
+
+def _delayed(value: datetime, end: datetime, percent: int, ratio: float) -> datetime:
+    seconds = max(0, int((end - value).total_seconds()) - 1)
+    offset = int(seconds * max(0, min(100, int(percent or 0))) / 100 * ratio)
+    return value + timedelta(seconds=offset)
 
 
 def _scope_key(scope: str, window: PacingWindow) -> str:
@@ -285,8 +319,10 @@ def _local_day_bounds_source(timezone_name: str, local_date: date) -> tuple[date
     return _source_naive(start), _source_naive(end)
 
 
-def _bucket_end_source(window: PacingWindow) -> datetime:
-    return _source_naive(window.hour_start + timedelta(hours=1))
+def _local_hour_bounds_source(timezone_name: str, hour_start: datetime) -> tuple[datetime, datetime]:
+    timezone = ZoneInfo(timezone_name or "Asia/Shanghai")
+    start = hour_start if hour_start.tzinfo else hour_start.replace(tzinfo=timezone)
+    return _source_naive(start), _source_naive(start + timedelta(hours=1))
 
 
 def _source_naive(value: datetime) -> datetime:
@@ -329,6 +365,7 @@ __all__ = [
     "PacingStats",
     "account_allowed",
     "account_base_allowed",
+    "hourly_action_allowed",
     "keyword_allowed",
     "pacing_window",
     "planned_action_decision",
