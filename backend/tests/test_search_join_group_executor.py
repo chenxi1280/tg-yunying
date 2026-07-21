@@ -656,6 +656,54 @@ def test_search_join_planner_respects_account_and_keyword_daily_limits(session: 
 
 
 @pytest.mark.no_postgres
+def test_search_join_planner_scans_past_daily_limited_accounts(session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    now_value = datetime(2026, 7, 21, 10, 0, 0)
+    monkeypatch.setattr(search_join_executor, "_now", lambda: now_value)
+    monkeypatch.setattr(search_click_progress, "beijing_now", lambda: now_value)
+    session.add(
+        TgAccount(
+            id=104,
+            tenant_id=1,
+            pool_id=1,
+            display_name="账号4",
+            phone_masked="104",
+            status=AccountStatus.ACTIVE.value,
+            account_identity="normal",
+            session_ciphertext="s4",
+        )
+    )
+    _bind_search_join_environment(session, [101, 102, 103, 104])
+    task = _task(
+        type_config={"actions_per_round": 1, "hourly_min_successful_joins": 1},
+        pacing_config={"per_account_daily_action_limit": 1},
+    )
+    session.add(task)
+    session.flush()
+    session.add_all(
+        Action(
+            tenant_id=1,
+            task_id=task.id,
+            task_type="search_join_group",
+            action_type="search_join",
+            account_id=account_id,
+            status="success",
+            executed_at=now_value - timedelta(hours=2),
+            payload={"keyword_hash": "a" * 64},
+            result={"membership_observed": False},
+        )
+        for account_id in [101, 102, 103]
+    )
+    session.commit()
+
+    assert build_task_plan(session, task) == 1
+    action = session.scalar(select(Action).where(Action.task_id == task.id, Action.status == "pending"))
+
+    assert action is not None
+    assert action.account_id == 104
+    assert task.stats["search_join_stats"]["pacing_limits"]["per_account_daily_limit_reached"] == 3
+
+
+@pytest.mark.no_postgres
 def test_search_join_planner_tries_next_keyword_when_account_keyword_limit_is_hit(session: Session) -> None:
     _bind_search_join_environment(session, [101])
     task = _task(

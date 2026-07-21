@@ -744,6 +744,8 @@ Planner 硬闸门顺序：
 8. `skip_probability_per_action`；命中后只允许生成显式 `skipped` action，不能假成功。
 9. `hourly_jitter_percent` 和 `daily_jitter_percent` 只调整 `scheduled_at`，不能突破以上任何硬上限。
 
+候选账号选择必须扫描当前任务所选账号范围内的全部可用候选，直到补足本轮 `plan_count` 或候选真正耗尽；不能只因排序靠前的若干账号已触发账号日上限、总上限、冷却或关键词上限，就把每日目标误报为无账号可用。扫描范围扩大不放宽任何账号级、关键词级、代理级或任务级硬上限，最终创建数仍不得超过本轮计划数。
+
 任务 stats / action result 必须暴露以下事实，方便运营判断“没执行”是主动节奏还是资源阻塞：
 
 - `search_join_stats.pacing_limits.task_daily_action_count`

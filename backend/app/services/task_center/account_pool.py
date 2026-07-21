@@ -51,6 +51,7 @@ def select_task_accounts(
     daily_coverage_target_count: int = 1,
     daily_coverage_statuses: tuple[str, ...] = DAILY_COVERAGE_STATUSES,
     candidate_account_ids: list[int] | None = None,
+    scan_all_candidates: bool = False,
 ) -> list[TgAccount]:
     max_concurrent = int(account_config.get("max_concurrent") or 20)
     requested = int(limit or max_concurrent)
@@ -75,9 +76,7 @@ def select_task_accounts(
             target_count=daily_coverage_target_count,
             statuses=daily_coverage_statuses,
         )
-    scan_limit = max(wanted * LOW_HEALTH_PARTICIPATION_STEP, wanted)
-    accounts = _unique_accounts(session.scalars(stmt.limit(scan_limit)))
-    accounts = _cooldown_filtered_accounts(session, accounts, account_config, scan_limit)
+    accounts = _candidate_accounts(session, stmt, account_config, wanted, scan_all_candidates)
     available = (
         available_accounts_by_capacity(
             session,
@@ -90,7 +89,15 @@ def select_task_accounts(
         else accounts
     )
     scores = _effective_health_scores(session, tenant_id, available)
-    return _health_weighted_accounts(available, wanted, scores)
+    selection_limit = len(available) if scan_all_candidates else wanted
+    return _health_weighted_accounts(available, selection_limit, scores)
+
+
+def _candidate_accounts(session: Session, stmt, account_config: dict, wanted: int, scan_all: bool) -> list[TgAccount]:
+    scan_limit = max(wanted * LOW_HEALTH_PARTICIPATION_STEP, wanted)
+    rows = session.scalars(stmt) if scan_all else session.scalars(stmt.limit(scan_limit))
+    accounts = _unique_accounts(rows)
+    return _cooldown_filtered_accounts(session, accounts, account_config, len(accounts) if scan_all else scan_limit)
 
 
 def _account_query(session: Session, tenant_id: int, account_config: dict, *, enforce_shard: bool):
