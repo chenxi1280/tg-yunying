@@ -3806,7 +3806,11 @@ def _supersede_active_plan_actions(session: Session, task: Task) -> None:
         statuses = sorted(OPEN_PLAN_ACTION_STATUSES - {"pending"})
     actions = session.scalars(select(Action).where(Action.task_id == task.id, Action.status.in_(statuses)))
     for action in actions:
-        if action.status == "executing" and not _search_click_action_is_pre_gateway(session, action):
+        if (
+            task.type in SEARCH_CLICK_TASK_TYPES
+            and action.status == "executing"
+            and not _search_click_action_is_pre_gateway(session, action)
+        ):
             continue
         _mark_action_plan_superseded(session, action, now)
 
