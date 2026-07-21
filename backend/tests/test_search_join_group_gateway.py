@@ -400,6 +400,29 @@ def test_execute_search_join_records_sanitized_jisou_page_structure_when_no_next
     assert result["error_code"] == "target_not_in_results"
     assert result["search_protocol_trace"] == {
         "jisou_group_selector": {"position": 1, "text": "👥"},
+        "selector_page": {
+            "button_count": 2,
+            "button_layout": [
+                {
+                    "row": 0,
+                    "col": 0,
+                    "button_type": "callback_data",
+                    "effect": "unknown",
+                    "text_length": 1,
+                    "contains_page_marker": False,
+                    "navigation_symbols": [],
+                },
+                {
+                    "row": 1,
+                    "col": 0,
+                    "button_type": "callback_data",
+                    "effect": "unknown",
+                    "text_length": 1,
+                    "contains_page_marker": False,
+                    "navigation_symbols": [],
+                },
+            ],
+        },
         "result_page": {
             "button_count": 2,
             "button_layout": [

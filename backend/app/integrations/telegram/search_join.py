@@ -75,7 +75,7 @@ async def _execute_search_pages(client: Any, bot_username: str, keyword_text: st
         await conv.get_response()
         await conv.send_message(keyword_text)
         page = await conv.get_response()
-        page, selector_error, group_selector = await _select_jisou_group_results_page(conv, page, bot)
+        page, selector_error, group_selector, selector_buttons = await _select_jisou_group_results_page(conv, page, bot)
         if selector_error is not None:
             return selector_error
         while True:
@@ -93,7 +93,7 @@ async def _execute_search_pages(client: Any, bot_username: str, keyword_text: st
                 return await _execute_target_join(client, page, payload, target, target_button, decoys, page_no, total_results)
             next_button = _find_next_button(buttons)
             if next_button is None:
-                return _target_not_found(total_results, decoys, page_no, buttons, group_selector)
+                return _target_not_found(total_results, decoys, page_no, buttons, group_selector, selector_buttons)
             await _click_button(page, next_button)
             page = await conv.get_response()
 
@@ -102,14 +102,15 @@ async def _select_jisou_group_results_page(
     conv: Any,
     page: Any,
     bot_username: str,
-) -> tuple[Any, dict[str, Any] | None, SearchJoinButton | None]:
+) -> tuple[Any, dict[str, Any] | None, SearchJoinButton | None, list[SearchJoinButton]]:
     if not _is_jisou_bot(bot_username):
-        return page, None, None
-    group_button = _find_jisou_group_category_button(_parse_buttons(page))
+        return page, None, None, []
+    selector_buttons = _parse_buttons(page)
+    group_button = _find_jisou_group_category_button(selector_buttons)
     if group_button is None:
-        return page, _failed("jisou_group_selector_missing", "极搜群聊类型选择按钮缺失"), None
+        return page, _failed("jisou_group_selector_missing", "极搜群聊类型选择按钮缺失"), None, selector_buttons
     await _click_button(page, group_button)
-    return await conv.get_response(), None, group_button
+    return await conv.get_response(), None, group_button, selector_buttons
 
 
 def _is_jisou_bot(bot_username: str) -> bool:
@@ -135,6 +136,7 @@ def _target_not_found(
     page_no: int,
     buttons: list[SearchJoinButton],
     group_selector: SearchJoinButton | None,
+    selector_buttons: list[SearchJoinButton],
 ) -> dict[str, Any]:
     return {
         **_failed("target_not_in_results", "目标群未出现在搜索结果"),
@@ -144,19 +146,28 @@ def _target_not_found(
         "searched_pages": page_no,
         "last_result_page": page_no,
         "search_end_reason": "no_next_page",
-        **_search_protocol_trace(buttons, group_selector),
+        **_search_protocol_trace(buttons, group_selector, selector_buttons),
     }
 
 
-def _search_protocol_trace(buttons: list[SearchJoinButton], group_selector: SearchJoinButton | None) -> dict[str, Any]:
+def _search_protocol_trace(
+    buttons: list[SearchJoinButton],
+    group_selector: SearchJoinButton | None,
+    selector_buttons: list[SearchJoinButton],
+) -> dict[str, Any]:
     if group_selector is None:
         return {}
     return {
         "search_protocol_trace": {
             "jisou_group_selector": {"position": group_selector.position, "text": group_selector.text},
-            "result_page": {"button_count": len(buttons), "button_layout": [_button_layout(button) for button in buttons]},
+            "selector_page": _page_layout(selector_buttons),
+            "result_page": _page_layout(buttons),
         }
     }
+
+
+def _page_layout(buttons: list[SearchJoinButton]) -> dict[str, Any]:
+    return {"button_count": len(buttons), "button_layout": [_button_layout(button) for button in buttons]}
 
 
 def _button_layout(button: SearchJoinButton) -> dict[str, Any]:
