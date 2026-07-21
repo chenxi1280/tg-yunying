@@ -191,6 +191,25 @@ def test_execute_search_join_reads_jisou_callback_edit_instead_of_unrelated_new_
 
 
 @pytest.mark.no_postgres
+def test_execute_search_join_follows_jisou_right_arrow_until_target_is_found_on_page_four() -> None:
+    category_page = FakeMessage(101, [[FakeButton("👥", data=b"group-category")]])
+    first_page = FakeMessage(102, [[FakeButton("其他群一", url="https://t.me/other_1")], [FakeButton("➡️", data=b"next-1")]])
+    second_page = FakeMessage(103, [[FakeButton("其他群二", url="https://t.me/other_2")], [FakeButton("➡️", data=b"next-2")]])
+    third_page = FakeMessage(104, [[FakeButton("其他群三", url="https://t.me/other_3")], [FakeButton("➡️", data=b"next-3")]])
+    target_page = FakeMessage(105, [[FakeButton("目标群", url="https://t.me/target_group")]])
+    client = FakeSearchJoinClient([FakeMessage(100, []), category_page, first_page, second_page, third_page, target_page])
+
+    result = asyncio.run(execute_search_join_with_client(client, _payload(bot_username="jisou"), keyword_text="郑州"))
+
+    assert result["success"] is True
+    assert result["page"] == 4
+    assert result["searched_pages"] == 4
+    assert first_page.clicked == [(1, 0)]
+    assert second_page.clicked == [(1, 0)]
+    assert third_page.clicked == [(1, 0)]
+
+
+@pytest.mark.no_postgres
 def test_execute_search_join_rejects_unfiltered_jisou_results_when_group_selector_is_missing() -> None:
     result_page = FakeMessage(101, [[FakeButton("目标群", url="https://t.me/target_group")]])
     client = FakeSearchJoinClient([FakeMessage(100, []), result_page])
@@ -421,7 +440,7 @@ def test_execute_search_join_records_sanitized_jisou_page_structure_when_no_next
     )
     result_page = FakeMessage(
         102,
-        [[FakeButton("其他群", url="https://t.me/other_group")], [FakeButton("▶", data=b"next-page")]],
+        [[FakeButton("其他群", url="https://t.me/other_group")], [FakeButton("⏮️", data=b"previous-page")]],
     )
     client = FakeSearchJoinClient([FakeMessage(100, []), category_page, result_page])
 
@@ -470,9 +489,9 @@ def test_execute_search_join_records_sanitized_jisou_page_structure_when_no_next
                     "col": 0,
                     "button_type": "callback_data",
                     "effect": "unknown",
-                    "text_length": 1,
+                    "text_length": 2,
                     "contains_page_marker": False,
-                    "navigation_symbols": ["right_triangle"],
+                    "navigation_symbols": ["previous_track"],
                 },
             ],
         },
