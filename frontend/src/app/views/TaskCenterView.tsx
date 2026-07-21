@@ -2230,7 +2230,7 @@ export default function TaskCenterView({
               />
             </Space>
           )}
-          {wizardStep === wizardSteps.length - 1 && <WizardReview taskType={taskType} values={formValues} accounts={taskAccounts} accountPools={taskAccountPools} targets={targets} ruleSets={ruleSets} slangTemplates={slangTemplates} precheck={precheck} loading={precheckLoading} />}
+          {wizardStep === wizardSteps.length - 1 && <WizardReview taskType={taskType} values={form.getFieldsValue(true)} accounts={taskAccounts} accountPools={taskAccountPools} targets={targets} ruleSets={ruleSets} slangTemplates={slangTemplates} precheck={precheck} loading={precheckLoading} />}
           <Space className="modal-actions">
             <Button onClick={() => setModalOpen(false)}>取消</Button>
             <Button disabled={wizardStep === 0} onClick={() => setWizardStep((value) => Math.max(value - 1, 0))}>上一步</Button>
