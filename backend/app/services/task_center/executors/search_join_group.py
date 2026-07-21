@@ -53,9 +53,6 @@ class BehaviorSkipLookup:
     scheduled_at: datetime | None
 
 
-ENVIRONMENT_CANDIDATE_MULTIPLIER = 3
-
-
 def build_plan(session: Session, task: Task) -> int:
     _lock_task_for_planning(session, task)
     now_value = _now()
@@ -100,7 +97,13 @@ def build_plan(session: Session, task: Task) -> int:
         return _record_hourly(task, hourly, 0, {}, pacing_stats)
     if _clash_subscription_pool_unavailable(session, task.tenant_id):
         return _record_all_subscriptions_unavailable(session, task, hourly, pacing_stats)
-    accounts = select_task_accounts(session, task.tenant_id, task.account_config or {}, limit=plan_count * ENVIRONMENT_CANDIDATE_MULTIPLIER, enforce_capacity=False)
+    accounts = select_task_accounts(
+        session,
+        task.tenant_id,
+        task.account_config or {},
+        enforce_capacity=False,
+        scan_all_candidates=True,
+    )
     if not accounts:
         return _block(task, "account_unavailable", "没有可用账号，等待账号恢复后继续执行")
     target = _target(session, task)
