@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import pytest
+from datetime import datetime, timedelta
+
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
@@ -257,6 +259,74 @@ def test_legacy_task_without_target_count_is_not_capped(session: Session) -> Non
     assert progress.target_count is None
     assert progress.remaining_slot_count is None
     assert task.status == "running"
+
+
+@pytest.mark.no_postgres
+def test_daily_search_join_target_uses_local_day_and_does_not_complete_task(session: Session) -> None:
+    now_value = datetime(2026, 7, 21, 10, 0, 0)
+    task = Task(
+        tenant_id=1,
+        name="每日搜索点击",
+        type="search_join_group",
+        status="running",
+        timezone="Asia/Shanghai",
+        type_config={"daily_target_count": 2},
+        stats={},
+    )
+    session.add(task)
+    session.flush()
+    session.add_all([
+        Action(
+            tenant_id=1,
+            task_id=task.id,
+            task_type=task.type,
+            action_type="search_join",
+            status="success",
+            payload={},
+            result={"join_status": "membership_observed"},
+            executed_at=now_value - timedelta(days=1),
+        ),
+        Action(
+            tenant_id=1,
+            task_id=task.id,
+            task_type=task.type,
+            action_type="search_join",
+            status="success",
+            payload={},
+            result={"join_status": "membership_observed"},
+            executed_at=now_value,
+        ),
+        Action(
+            tenant_id=1,
+            task_id=task.id,
+            task_type=task.type,
+            action_type="search_join",
+            status="pending",
+            payload={},
+            result={},
+            scheduled_at=now_value + timedelta(minutes=30),
+        ),
+    ])
+    session.flush()
+
+    progress = reconcile_search_click_target_progress(session, task, now_value=now_value)
+
+    assert progress.target_count == 2
+    assert progress.confirmed_count == 1
+    assert progress.held_count == 1
+    assert progress.remaining_slot_count == 0
+    assert progress.completed is False
+    assert task.status == "running"
+    assert "completion_reason" not in task.stats
+    assert task.stats["search_click_target"] == {
+        "target_count": 2,
+        "confirmed_count": 1,
+        "held_count": 1,
+        "remaining_slot_count": 0,
+        "state": "waiting_confirmation",
+        "scope": "daily",
+        "local_date": "2026-07-21",
+    }
 
 
 @pytest.mark.no_postgres

@@ -88,7 +88,7 @@ def _simple_payload(**overrides) -> SearchJoinGroupSimpleTaskCreate:
         "target_title": "上海留学交流群",
         "target_link": "https://t.me/shanghai_study_group",
         "keywords": ["上海 留学"],
-        "target_count": 12,
+        "daily_target_count": 8,
         "account_group_id": 7,
         "max_actions_per_day": 9,
         "scheduled_end": datetime(2030, 1, 1, tzinfo=timezone.utc),
@@ -108,7 +108,7 @@ def test_simple_search_join_create_resolves_public_link_without_exposing_target_
         actor="tester",
     )
 
-    assert task.name == "上海留学官方交流群 搜索目标群点击 12 次"
+    assert task.name == "上海留学官方交流群 搜索目标群点击 每日 8 次"
     assert task.type_config["target_operation_target_id"] == 17
     assert task.type_config["target_title"] == "上海留学官方交流群"
     assert task.type_config["target_link"] == "https://t.me/shanghai_study_group"
@@ -124,7 +124,7 @@ def test_simple_search_join_create_creates_missing_public_group_target(session: 
             target_title="河南郑州学生会",
             target_link="https://t.me/zzxshxc",
             keywords=["河南郑州学生会"],
-            target_count=1,
+            daily_target_count=1,
         ),
         actor="tester",
     )
@@ -152,9 +152,10 @@ def test_simple_search_join_create_uses_system_name_and_policy(session: Session)
         actor="tester",
     )
 
-    assert task.name == "上海留学交流群 搜索目标群点击 12 次"
+    assert task.name == "上海留学交流群 搜索目标群点击 每日 8 次"
     assert task.type_config["target_operation_target_id"] == 17
-    assert task.type_config["target_count"] == 12
+    assert task.type_config["daily_target_count"] == 8
+    assert "target_count" not in task.type_config
     assert task.type_config["search_bots"] == [{"username": "jisou", "display_name": "极搜"}]
     assert task.account_config["selection_mode"] == "group"
     assert task.account_config["account_group_id"] == 7
@@ -163,6 +164,44 @@ def test_simple_search_join_create_uses_system_name_and_policy(session: Session)
     assert task.pacing_config["hourly_jitter_percent"] == 30
     assert task.scheduled_end == datetime(2030, 1, 1, 8, 0, 0)
     assert task.pacing_config["per_account_daily_action_limit"] == 1
+
+
+@pytest.mark.no_postgres
+def test_simple_search_join_create_uses_daily_target_not_lifecycle_target(session: Session) -> None:
+    payload = SearchJoinGroupSimpleTaskCreate(
+        target_title="上海留学交流群",
+        target_link="https://t.me/shanghai_study_group",
+        keywords=["上海 留学"],
+        daily_target_count=8,
+        account_group_id=7,
+        max_actions_per_day=8,
+        scheduled_end=datetime(2030, 1, 1, tzinfo=timezone.utc),
+        daily_jitter_percent=20,
+        hourly_jitter_percent=30,
+    )
+
+    task = create_simple_search_join_group_task(session, 1, payload, actor="tester")
+
+    assert task.name == "上海留学交流群 搜索目标群点击 每日 8 次"
+    assert task.type_config["daily_target_count"] == 8
+    assert "target_count" not in task.type_config
+    assert task.pacing_config["max_actions_per_day"] == 8
+
+
+@pytest.mark.no_postgres
+def test_simple_search_join_rejects_daily_target_above_daily_action_budget() -> None:
+    with pytest.raises(ValidationError, match="max_actions_per_day"):
+        SearchJoinGroupSimpleTaskCreate(
+            target_title="上海留学交流群",
+            target_link="https://t.me/shanghai_study_group",
+            keywords=["上海 留学"],
+            daily_target_count=9,
+            account_group_id=7,
+            max_actions_per_day=8,
+            scheduled_end=datetime(2030, 1, 1, tzinfo=timezone.utc),
+            daily_jitter_percent=20,
+            hourly_jitter_percent=30,
+        )
 
 
 @pytest.mark.no_postgres
@@ -195,17 +234,17 @@ def test_simple_search_join_edit_regenerates_system_name(session: Session) -> No
         ),
         actor="tester",
     )
-    assert target_updated.name == "北京留学交流群 搜索目标群点击 12 次"
+    assert target_updated.name == "北京留学交流群 搜索目标群点击 每日 8 次"
 
     updated = task_service.update_search_join_group_config(
         session,
         1,
         task.id,
-        SearchJoinGroupTaskConfigUpdate(target_count=8),
+        SearchJoinGroupTaskConfigUpdate(daily_target_count=7),
         actor="tester",
     )
 
-    assert updated.name == "北京留学交流群 搜索目标群点击 8 次"
+    assert updated.name == "北京留学交流群 搜索目标群点击 每日 7 次"
 
 
 @pytest.mark.no_postgres
@@ -227,7 +266,7 @@ def test_simple_search_join_edit_updates_operator_execution_controls(session: Se
         task.id,
         SearchJoinGroupTaskConfigUpdate(
             account_group_id=9,
-            max_actions_per_day=6,
+            max_actions_per_day=8,
             scheduled_end=datetime(2030, 2, 1, tzinfo=timezone.utc),
             daily_jitter_percent=10,
             hourly_jitter_percent=15,
@@ -238,12 +277,52 @@ def test_simple_search_join_edit_updates_operator_execution_controls(session: Se
 
     assert updated.account_config["selection_mode"] == "group"
     assert updated.account_config["account_group_id"] == 9
-    assert updated.pacing_config["max_actions_per_day"] == 6
+    assert updated.pacing_config["max_actions_per_day"] == 8
     assert updated.pacing_config["daily_jitter_percent"] == 10
     assert updated.pacing_config["hourly_jitter_percent"] == 15
     assert updated.pacing_config["quiet_hours"] == {"start": "23:00", "end": "07:00", "timezone": "Asia/Shanghai"}
     assert updated.scheduled_end == datetime(2030, 2, 1, 8, 0, 0)
     assert session.query(SearchJoinPacingDecision).filter_by(task_id=task.id).count() == 0
+
+
+@pytest.mark.no_postgres
+def test_search_join_daily_target_patch_replaces_legacy_lifecycle_target(session: Session) -> None:
+    task = create_search_join_group_task(session, 1, _payload(target_count=12), actor="tester")
+
+    updated = task_service.update_search_join_group_config(
+        session,
+        1,
+        task.id,
+        SearchJoinGroupTaskConfigUpdate(daily_target_count=8, max_actions_per_day=8),
+        actor="tester",
+    )
+
+    assert updated.name == "上海留学交流群 搜索目标群点击 每日 8 次"
+    assert updated.type_config["daily_target_count"] == 8
+    assert "target_count" not in updated.type_config
+    assert updated.pacing_config["max_actions_per_day"] == 8
+
+
+@pytest.mark.no_postgres
+def test_search_join_daily_target_patch_reopens_completed_legacy_task(session: Session) -> None:
+    task = create_search_join_group_task(session, 1, _payload(target_count=1), actor="tester")
+    task.status = "completed"
+    task.next_run_at = None
+    task.stats = {"completion_reason": "target_count_reached"}
+    session.commit()
+
+    updated = task_service.update_search_join_group_config(
+        session,
+        1,
+        task.id,
+        SearchJoinGroupTaskConfigUpdate(daily_target_count=8, max_actions_per_day=8),
+        actor="tester",
+    )
+
+    assert updated.status == "running"
+    assert updated.next_run_at is not None
+    assert "completion_reason" not in updated.stats
+    assert updated.stats["search_click_target"]["scope"] == "daily"
 
 
 @pytest.mark.no_postgres
@@ -293,17 +372,18 @@ def test_simple_search_join_create_rejects_system_managed_fields() -> None:
     ],
 )
 def test_simple_search_click_create_rejects_all_system_managed_inputs(payload_type, field: str, value: object) -> None:
+    target = {"daily_target_count": 8} if payload_type is SearchJoinGroupSimpleTaskCreate else {"target_count": 12}
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         payload_type(
             target_title="上海留学交流群",
             target_link="https://t.me/shanghai_study_group",
             keywords=["上海 留学"],
-            target_count=12,
             account_group_id=7,
             max_actions_per_day=9,
             scheduled_end=datetime(2030, 1, 1, tzinfo=timezone.utc),
             daily_jitter_percent=20,
             hourly_jitter_percent=30,
+            **target,
             **{field: value},
         )
 
@@ -316,10 +396,10 @@ def test_simple_search_join_create_deduplicates_normalized_keywords() -> None:
 
 
 @pytest.mark.no_postgres
-def test_simple_search_join_create_does_not_impose_an_unstated_target_count_cap() -> None:
-    payload = _simple_payload(target_count=100_001)
+def test_simple_search_join_create_does_not_impose_an_unstated_daily_target_cap() -> None:
+    payload = _simple_payload(daily_target_count=100_001, max_actions_per_day=100_001)
 
-    assert payload.target_count == 100_001
+    assert payload.daily_target_count == 100_001
 
 
 @pytest.mark.no_postgres
@@ -465,7 +545,7 @@ def test_search_join_group_create_and_start_runs_precheck_and_starts(session: Se
 
 @pytest.mark.no_postgres
 def test_generic_search_click_updates_cannot_bypass_dedicated_contract(session: Session) -> None:
-    task = create_simple_search_join_group_task(session, 1, _simple_payload(), actor="tester")
+    task = create_simple_search_join_group_task(session, 1, _simple_payload(daily_target_count=1), actor="tester")
     original_account_config = dict(task.account_config)
     original_deadline = task.scheduled_end
 
@@ -534,7 +614,7 @@ def test_search_join_group_config_update_rejects_system_managed_fields_without_m
 
 @pytest.mark.no_postgres
 def test_search_join_pacing_update_only_supersedes_pre_gateway_executing_action(session: Session) -> None:
-    task = create_simple_search_join_group_task(session, 1, _simple_payload(), actor="tester")
+    task = create_simple_search_join_group_task(session, 1, _simple_payload(daily_target_count=1), actor="tester")
     pre_gateway = Action(
         tenant_id=1,
         task_id=task.id,
@@ -573,7 +653,7 @@ def test_search_join_pacing_update_only_supersedes_pre_gateway_executing_action(
 
 @pytest.mark.no_postgres
 def test_search_join_pacing_update_supersedes_unmarked_executing_action(session: Session) -> None:
-    task = create_simple_search_join_group_task(session, 1, _simple_payload(), actor="tester")
+    task = create_simple_search_join_group_task(session, 1, _simple_payload(daily_target_count=1), actor="tester")
     action = Action(
         tenant_id=1,
         task_id=task.id,

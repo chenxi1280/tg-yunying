@@ -576,6 +576,7 @@ class SearchJoinGroupConfig(BaseModel):
     max_actions_per_hour: int = Field(default=20, ge=1, le=500)
     hourly_min_successful_joins: int = Field(default=1, ge=1, le=500)
     target_count: int | None = Field(default=None, ge=1)
+    daily_target_count: int | None = Field(default=None, ge=1)
     target_relevance_score: int | None = Field(default=None, ge=0, le=100)
     target_content_health: Literal["healthy", "weak", "blocked", "unknown"] = "unknown"
     jisou_ecosystem_status: Literal["bot_joined", "flow_alliance", "unknown"] = "unknown"
@@ -586,6 +587,8 @@ class SearchJoinGroupConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_search_join_config(self) -> "SearchJoinGroupConfig":
+        if self.target_count is not None and self.daily_target_count is not None:
+            raise ValueError("target_count 与 daily_target_count 不能同时填写")
         if not self.target_group_id and not self.target_operation_target_id and not (self.target_input or "").strip():
             raise ValueError("target_group_id、target_operation_target_id 或 target_input 至少填写一个")
         if not self.search_bots:
@@ -665,7 +668,6 @@ class SearchClickSimpleTaskCreate(BaseModel):
     target_title: str = Field(min_length=1, max_length=180)
     target_link: str = Field(min_length=1, max_length=300)
     keywords: list[str] = Field(min_length=1)
-    target_count: int = Field(ge=1)
     account_group_id: int = Field(gt=0)
     max_actions_per_day: int = Field(ge=1)
     scheduled_end: datetime
@@ -701,11 +703,17 @@ class SearchClickSimpleTaskCreate(BaseModel):
 
 
 class SearchJoinGroupSimpleTaskCreate(SearchClickSimpleTaskCreate):
-    pass
+    daily_target_count: int = Field(ge=1)
+
+    @model_validator(mode="after")
+    def validate_daily_action_budget(self) -> "SearchJoinGroupSimpleTaskCreate":
+        if self.max_actions_per_day < self.daily_target_count:
+            raise ValueError("max_actions_per_day 不能小于 daily_target_count")
+        return self
 
 
 class SearchRankDeboostSimpleTaskCreate(SearchClickSimpleTaskCreate):
-    pass
+    target_count: int = Field(ge=1)
 
 
 class GroupAIChatTaskCreate(TaskCreateCommon, GroupAIChatConfig):
@@ -734,6 +742,15 @@ class GroupMembershipAdmissionTaskCreate(TaskCreateCommon, GroupMembershipAdmiss
 
 class SearchJoinGroupTaskCreate(TaskCreateCommon, SearchJoinGroupConfig):
     pacing_config: SearchJoinPacingConfig = Field(default_factory=SearchJoinPacingConfig)
+
+    @model_validator(mode="after")
+    def validate_daily_action_budget(self) -> "SearchJoinGroupTaskCreate":
+        if self.daily_target_count is None:
+            return self
+        max_actions_per_day = self.pacing_config.max_actions_per_day
+        if max_actions_per_day is None or max_actions_per_day < self.daily_target_count:
+            raise ValueError("max_actions_per_day 不能小于 daily_target_count")
+        return self
 
 
 class GroupAIChatTaskConfigUpdate(GroupAIChatConfig):
@@ -771,6 +788,7 @@ class SearchJoinGroupTaskConfigUpdate(BaseModel):
 
     target_operation_target_id: int | None = Field(default=None, gt=0)
     target_count: int | None = Field(default=None, ge=1)
+    daily_target_count: int | None = Field(default=None, ge=1)
     target_group_id: int | None = Field(default=None, gt=0)
     target_input: str | None = Field(default=None, max_length=300)
     target_title: str | None = Field(default=None, max_length=180)
@@ -816,6 +834,8 @@ class SearchJoinGroupTaskConfigUpdate(BaseModel):
     @model_validator(mode="after")
     def validate_keyword_material_patch(self) -> "SearchJoinGroupTaskConfigUpdate":
         fields = self.model_fields_set
+        if "target_count" in fields and "daily_target_count" in fields:
+            raise ValueError("target_count 与 daily_target_count 不能同时填写")
         target_title_supplied = "target_title" in fields
         target_link_supplied = "target_link" in fields
         if target_title_supplied != target_link_supplied:

@@ -34,7 +34,8 @@ def test_search_click_wizard_exposes_operator_execution_controls() -> None:
     type_config = wizard[wizard.index("export function WizardTypeConfig"):wizard.index("\n\nexport function WizardOperationProfile")]
 
     assert "name=\"keywords\"" in simple_config
-    assert "name=\"target_count\"" in simple_config
+    assert "const targetField = isRankDeboost ? 'target_count' : 'daily_target_count';" in simple_config
+    assert "每日目标次数" in simple_config
     assert "系统负责账号资格、代理、机器人和风险闸门" in simple_config
     assert "export function SearchClickExecutionConfig" in wizard
     assert "name=\"account_group_id\"" in wizard
@@ -60,7 +61,9 @@ def test_search_click_payload_includes_operator_execution_controls() -> None:
     assert "target_operation_target_id" not in payload
     assert "const keywords = words(values.keywords);" in payload
     assert "keywords," in payload
+    assert "daily_target_count: values.daily_target_count" in payload
     assert "target_count: values.target_count" in payload
+    assert "searchTaskType === 'search_join_group'" in payload
     assert "account_group_id: values.account_group_id" in payload
     assert "max_actions_per_day: values.max_actions_per_day" in payload
     assert "scheduled_end: fromBeijingDateTimeLocalValue(values.scheduled_end)" in payload
@@ -79,10 +82,10 @@ def test_search_click_step_and_submit_fields_include_operator_controls() -> None
     submit_block = view_model[view_model.index("export function fieldsForSubmit"):view_model.index("\n\nexport function editFieldsForSubmit")]
     edit_block = view_model[view_model.index("export function editFieldsForSubmit"):]
 
-    assert "if (step === 2 && isSimpleSearchClickTask(taskType)) return ['keywords', 'target_count'];" in step_block
+    assert "if (step === 2 && isSimpleSearchClickTask(taskType)) return ['keywords', simpleSearchTargetField(taskType)];" in step_block
     assert "if (step === 3 && isSimpleSearchClickTask(taskType)) return ['account_group_id', 'max_actions_per_day', 'scheduled_end', 'daily_jitter_percent', 'hourly_jitter_percent', 'quiet_start', 'quiet_end'];" in step_block
-    assert "if (isSimpleSearchClickTask(taskType)) return ['target_title', 'target_link', 'keywords', 'target_count', 'account_group_id', 'max_actions_per_day', 'scheduled_end', 'daily_jitter_percent', 'hourly_jitter_percent', 'quiet_start', 'quiet_end'];" in submit_block
-    assert "if (isSimpleSearchClickTask(taskType)) return ['target_title', 'target_link', 'keywords', 'target_count', 'account_group_id', 'max_actions_per_day', 'scheduled_end', 'daily_jitter_percent', 'hourly_jitter_percent', 'quiet_start', 'quiet_end'];" in edit_block
+    assert "if (isSimpleSearchClickTask(taskType)) return ['target_title', 'target_link', 'keywords', simpleSearchTargetField(taskType), 'account_group_id', 'max_actions_per_day', 'scheduled_end', 'daily_jitter_percent', 'hourly_jitter_percent', 'quiet_start', 'quiet_end'];" in submit_block
+    assert "if (isSimpleSearchClickTask(taskType)) return ['target_title', 'target_link', 'keywords', simpleSearchTargetField(taskType), 'account_group_id', 'max_actions_per_day', 'scheduled_end', 'daily_jitter_percent', 'hourly_jitter_percent', 'quiet_start', 'quiet_end'];" in edit_block
 
 
 def test_search_click_target_step_uses_name_and_public_link_not_target_selector() -> None:

@@ -68,12 +68,15 @@ const coverageStateColor = (state?: string | null) => {
 
 function searchClickTargetProgress(task: TaskCenterTask) {
   const progress = task.stats?.search_click_target;
-  const targetCount = Number(progress?.target_count ?? task.type_config?.target_count);
+  const isDailyTarget = task.type === 'search_join_group'
+    && (progress?.scope === 'daily' || task.type_config?.daily_target_count != null);
+  const configuredTarget = isDailyTarget ? task.type_config?.daily_target_count : task.type_config?.target_count;
+  const targetCount = Number(progress?.target_count ?? configuredTarget);
   if (!Number.isInteger(targetCount) || targetCount <= 0) return null;
   const confirmedCount = Math.max(0, Number(progress?.confirmed_count ?? 0));
   const heldCount = Math.max(0, Number(progress?.held_count ?? 0));
   const remainingSlotCount = progress?.remaining_slot_count ?? Math.max(0, targetCount - confirmedCount - heldCount);
-  return { targetCount, confirmedCount, heldCount, remainingSlotCount, state: progress?.state ?? 'planning' };
+  return { targetCount, confirmedCount, heldCount, remainingSlotCount, isDailyTarget, state: progress?.state ?? 'planning' };
 }
 
 function searchJoinDetailItems(detail: TaskCenterDetail) {
@@ -83,7 +86,7 @@ function searchJoinDetailItems(detail: TaskCenterDetail) {
   const pacingLimits = stats.pacing_limits || {};
   const targetProgress = searchClickTargetProgress(detail.task);
   return [
-    ...(targetProgress ? [{ key: 'target-progress', label: '目标进度', children: `已确认 ${targetProgress.confirmedCount} / ${targetProgress.targetCount}，待确认 ${targetProgress.heldCount}，剩余可规划 ${targetProgress.remainingSlotCount}` }] : []),
+    ...(targetProgress ? [{ key: 'target-progress', label: targetProgress.isDailyTarget ? '今日目标进度' : '目标进度', children: `${targetProgress.isDailyTarget ? '今日已确认' : '已确认'} ${targetProgress.confirmedCount} / ${targetProgress.targetCount}，待确认 ${targetProgress.heldCount}，剩余可规划 ${targetProgress.remainingSlotCount}` }] : []),
     { key: 'success', label: '累计目标点击', children: detail.task.stats?.success_count ?? 0 },
     { key: 'ranking', label: '排名观察', children: hourly.recent_target_positions?.length ? `${hourly.recent_target_positions.length} 条` : '独立快照，不计入 action success' },
     { key: 'hourly', label: '小时执行', children: `${hourly.status || '-'} / 缺口 ${hourly.deficit ?? 0} / 未来 ${hourly.future_open_count ?? 0}` },

@@ -59,7 +59,8 @@ DEFAULT_MAX_SEARCH_JOIN_PAGES = 70
 
 def build_plan(session: Session, task: Task) -> int:
     _lock_task_for_planning(session, task)
-    target_progress = reconcile_search_click_target_progress(session, task)
+    now_value = _now()
+    target_progress = reconcile_search_click_target_progress(session, task, now_value=now_value)
     if target_progress.completed or target_progress.remaining_slot_count == 0:
         return 0
     config = _runtime_config(task)
@@ -73,7 +74,6 @@ def build_plan(session: Session, task: Task) -> int:
     if not keyword_materials:
         return _block(task, "keyword_material_missing", "search_join keyword hash/ciphertext material missing or mismatched")
     config = _canonical_keyword_materials(task, config, keyword_materials)
-    now_value = _now()
     window = pacing_window(task, now_value)
     pacing_stats = PacingStats(tenant_timezone=task.timezone or "Asia/Shanghai", local_date=window.local_date.isoformat())
     if quiet_hours_active(now_value, config, timezone_name=task.timezone):
@@ -81,14 +81,19 @@ def build_plan(session: Session, task: Task) -> int:
         task.last_error = ""
         return _record_hourly(
             task,
-            search_join_hourly_execution(session, task, now_value),
+            search_join_hourly_execution(session, task, now_value, target_progress=target_progress),
             0,
             {"quiet_hours_active": 1},
             pacing_stats,
         )
     if _window_skipped(session, task, config, window, pacing_stats):
-        return _record_hourly(task, search_join_hourly_execution(session, task, now_value), 0, {}, pacing_stats)
-    hourly = search_join_hourly_execution(session, task, _now())
+        return _record_hourly(task, search_join_hourly_execution(session, task, now_value, target_progress=target_progress), 0, {}, pacing_stats)
+    hourly = search_join_hourly_execution(
+        session,
+        task,
+        now_value,
+        target_progress=target_progress,
+    )
     plan_count = task_daily_capacity(session, task, window, _plan_count(config, hourly), pacing_stats)
     if target_progress.remaining_slot_count is not None:
         plan_count = min(plan_count, target_progress.remaining_slot_count)

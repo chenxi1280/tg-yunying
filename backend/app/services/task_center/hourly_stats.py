@@ -8,7 +8,9 @@ from sqlalchemy.orm import Session
 
 from app.models import Action, Task
 
+from .search_click_target_progress import SearchClickTargetProgress, search_click_target_progress
 from .search_join_config import runtime_search_join_config
+from .search_join_pacing import pacing_window
 
 SEARCH_JOIN_OPEN_STATUSES = ("pending", "claiming", "executing")
 
@@ -115,7 +117,13 @@ def _search_rank_deboost_hourly_status(goal: int, success_count: int, capacity: 
     return "catching_up"
 
 
-def search_join_hourly_execution(session: Session, task: Task, now_value: datetime) -> dict[str, Any]:
+def search_join_hourly_execution(
+    session: Session,
+    task: Task,
+    now_value: datetime,
+    *,
+    target_progress: SearchClickTargetProgress | None = None,
+) -> dict[str, Any]:
     config = runtime_search_join_config(task)
     bucket_start = now_value.replace(minute=0, second=0, microsecond=0)
     bucket_end = bucket_start + timedelta(hours=1)
@@ -126,7 +134,7 @@ def search_join_hourly_execution(session: Session, task: Task, now_value: dateti
     overdue_open = _search_join_open_count(
         session, task, now_value=now_value, bucket_end=bucket_end, overdue=True
     )
-    goal = int(config.get("hourly_min_successful_joins") or 0)
+    goal = _search_join_hourly_goal(session, task, config, now_value, target_progress)
     max_actions = int(config.get("max_actions_per_hour") or 0)
     deficit = max(0, goal - success_count - future_open)
     capacity = max(0, max_actions - success_count - future_open - overdue_open)
@@ -141,6 +149,41 @@ def search_join_hourly_execution(session: Session, task: Task, now_value: dateti
         "capacity": capacity,
         "max_actions_per_hour": max_actions,
     }
+
+
+def _search_join_hourly_goal(
+    session: Session,
+    task: Task,
+    config: dict[str, Any],
+    now_value: datetime,
+    target_progress: SearchClickTargetProgress | None,
+) -> int:
+    hourly_minimum = int(config.get("hourly_min_successful_joins") or 0)
+    if (task.type_config or {}).get("daily_target_count") is None:
+        return hourly_minimum
+    progress = target_progress or search_click_target_progress(session, task, now_value=now_value)
+    if not progress.is_daily_target or progress.target_count is None:
+        return hourly_minimum
+    remaining_confirmations = max(0, progress.target_count - progress.confirmed_count)
+    if remaining_confirmations <= 0:
+        return 0
+    current_weight, remaining_weight = _remaining_daily_curve_weight(task, config, now_value)
+    if current_weight <= 0 or remaining_weight <= 0:
+        return 0
+    daily_hourly_goal = (remaining_confirmations * current_weight + remaining_weight - 1) // remaining_weight
+    return max(hourly_minimum, daily_hourly_goal)
+
+
+def _remaining_daily_curve_weight(task: Task, config: dict[str, Any], now_value: datetime) -> tuple[int, int]:
+    raw_curve = config.get("hourly_round_curve")
+    if not isinstance(raw_curve, list) or len(raw_curve) != 24:
+        return 0, 0
+    try:
+        curve = [max(0, int(value)) for value in raw_curve]
+    except (TypeError, ValueError):
+        return 0, 0
+    current_hour = pacing_window(task, now_value).hour_start.hour
+    return curve[current_hour], sum(curve[current_hour:])
 
 
 def _search_join_success_count(session: Session, task: Task, *, start: datetime, end: datetime) -> int:

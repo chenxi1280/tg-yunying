@@ -52,6 +52,8 @@ function SimpleSearchClickConfig({
   allowUncappedTargetCount?: boolean;
 }) {
   const isRankDeboost = taskType === 'search_rank_deboost';
+  const targetField = isRankDeboost ? 'target_count' : 'daily_target_count';
+  const targetLabel = isRankDeboost ? '目标次数' : '每日目标次数';
   const keywordRequired = !editing || isRankDeboost;
   return (
     <Space direction="vertical" style={{ width: '100%' }}>
@@ -59,13 +61,15 @@ function SimpleSearchClickConfig({
         type="info"
         showIcon
         message={isRankDeboost ? '系统负责账号资格、代理、机器人和风险闸门；启动时仍会检查黑账号组的真实执行条件。' : '系统负责账号资格、代理、机器人和风险闸门；账号组与执行节奏在下一步配置。'}
-        description="目标次数只统计已确认的目标点击；待执行或结果未知的动作会占用额度，避免重复点击。"
+        description={isRankDeboost
+          ? '目标次数只统计已确认的目标点击；待执行或结果未知的动作会占用额度，避免重复点击。'
+          : '每日目标只统计当天已确认的目标点击；当天达标后任务继续运行，次日按新自然日重新计算。待执行或结果未知的动作会占用当天额度。'}
       />
       <div className="form-grid">
         <Form.Item name="keywords" label={editing && !isRankDeboost ? '搜索关键词（留空不变）' : '搜索关键词'} rules={keywordRequired ? [{ required: true, message: '请填写至少一个搜索关键词' }] : []}>
           <Input.TextArea rows={4} placeholder={'上海 留学\n上海 国际学校'} />
         </Form.Item>
-        <Form.Item name="target_count" label={allowUncappedTargetCount ? '目标次数（留空保持历史不封顶）' : '目标次数'} rules={allowUncappedTargetCount ? [] : [{ required: true, message: '请填写目标次数' }]}>
+        <Form.Item name={targetField} label={allowUncappedTargetCount ? `${targetLabel}（留空保持历史不封顶）` : targetLabel} rules={allowUncappedTargetCount ? [] : [{ required: true, message: `请填写${targetLabel}` }]}>
           <InputNumber min={1} precision={0} style={{ width: '100%' }} />
         </Form.Item>
       </div>
@@ -105,7 +109,20 @@ export function SearchClickExecutionConfig({ taskType, accountPools }: { taskTyp
         <Form.Item name="account_group_id" label="执行账号组" rules={[{ required: true, message: '请选择执行账号组' }]}>
           <Select options={poolOptions} placeholder={isRankDeboost ? '请选择黑搜索账号组' : '请选择普通账号组'} />
         </Form.Item>
-        <Form.Item name="max_actions_per_day" label="每天执行次数" rules={[{ required: true, message: '请填写每天执行次数' }]}>
+        <Form.Item
+          name="max_actions_per_day"
+          label="每天 action 上限"
+          rules={[
+            { required: true, message: '请填写每天 action 上限' },
+            ({ getFieldValue }: any) => ({
+              validator(_: unknown, value?: number) {
+                const dailyTarget = Number(getFieldValue('daily_target_count') || 0);
+                if (isRankDeboost || !dailyTarget || Number(value) >= dailyTarget) return Promise.resolve();
+                return Promise.reject(new Error('每天 action 上限不能小于每日目标次数'));
+              },
+            }),
+          ]}
+        >
           <InputNumber min={1} precision={0} style={{ width: '100%' }} />
         </Form.Item>
         <Form.Item name="scheduled_end" label="完成截止时间" rules={[{ required: true, message: '请选择完成截止时间' }]}>
@@ -575,6 +592,8 @@ export function WizardAccounts({ accountMode, accounts, accountPools, taskType }
 
 function SimpleSearchClickReview({ taskType, values, targets, accountPools }: Pick<Parameters<typeof WizardReview>[0], 'taskType' | 'values' | 'targets' | 'accountPools'>) {
   const displayTarget = targetName(values, targets);
+  const isRankDeboost = taskType === 'search_rank_deboost';
+  const targetCount = isRankDeboost ? values.target_count : values.daily_target_count;
   const accountPool = accountPools.find((pool) => pool.id === values.account_group_id);
   const quietHours = values.quiet_start && values.quiet_end ? `${values.quiet_start} - ${values.quiet_end}` : '未设置';
   return (
@@ -588,9 +607,9 @@ function SimpleSearchClickReview({ taskType, values, targets, accountPools }: Pi
         { key: 'type', label: '任务类型', children: TYPE_LABEL[taskType] },
         { key: 'target', label: '目标群', children: displayTarget },
         { key: 'keywords', label: '搜索关键词', children: words(values.keywords).join('、') || '-' },
-        { key: 'target-count', label: '目标次数', children: `${values.target_count || '-'} 次（以已确认目标点击计）` },
+        { key: 'target-count', label: isRankDeboost ? '目标次数' : '每日目标次数', children: isRankDeboost ? `${targetCount || '-'} 次（以已确认目标点击计）` : `${targetCount || '-'} 次/日（以当天已确认目标点击计，达标不结束任务）` },
         { key: 'account-group', label: '执行账号组', children: accountPool ? `${accountPool.name}（${accountPool.account_count} 个账号）` : '-' },
-        { key: 'daily-limit', label: '每天执行次数', children: `${values.max_actions_per_day || '-'} 次` },
+        { key: 'daily-limit', label: '每天 action 上限', children: `${values.max_actions_per_day || '-'} 次` },
         { key: 'end', label: '完成截止时间', children: values.scheduled_end ? formatDateTime(values.scheduled_end) : '-' },
         { key: 'jitter', label: '抖动', children: `日 ${values.daily_jitter_percent ?? 0}% / 每小时 ${values.hourly_jitter_percent ?? 0}%` },
         { key: 'quiet', label: '静默时间', children: quietHours },
