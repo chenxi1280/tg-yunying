@@ -10,7 +10,8 @@ from urllib.parse import urlparse
 TELEGRAM_HOSTS = {"t.me", "telegram.me", "www.t.me", "www.telegram.me"}
 NAVIGATION_MARKERS = ("下一页", "上一页", "next", "prev", "page", "页")
 HUMAN_VERIFICATION_MARKERS = ("人机验证", "计算结果", "captcha")
-MAX_SEARCH_JOIN_PAGES = 70
+JISOU_BOT_USERNAMES = frozenset({"jisou"})
+JISOU_GROUP_CATEGORY_TEXTS = frozenset({"👥", "群组", "群聊", "groups", "group", "👥群组", "👥群聊"})
 
 
 @dataclass(frozen=True)
@@ -45,19 +46,20 @@ async def execute_search_join_with_client(client: Any, payload: dict[str, Any], 
 
 
 async def _execute_search_pages(client: Any, bot_username: str, keyword_text: str, payload: dict[str, Any], target: dict[str, Any]) -> dict[str, Any]:
-    max_pages = _max_pages(payload)
     decoys: list[dict[str, Any]] = []
     total_results = 0
     page_no = 0
-    pages_exhausted = False
     bot = bot_username.strip().lstrip("@")
     async with client.conversation(bot, timeout=60) as conv:
         await conv.send_message("/start")
         await conv.get_response()
         await conv.send_message(keyword_text)
         page = await conv.get_response()
-        for page_no in range(1, max_pages + 1):
-            pages_exhausted = page_no == max_pages
+        page, selector_error = await _select_jisou_group_results_page(conv, page, bot)
+        if selector_error is not None:
+            return selector_error
+        while True:
+            page_no += 1
             if _human_verification_required(page):
                 return _failed("bot_human_verification_required", "搜索机器人要求人机验证，当前账号不能自动执行")
             buttons = _parse_buttons(page)
@@ -70,29 +72,48 @@ async def _execute_search_pages(client: Any, bot_username: str, keyword_text: st
             if target_button:
                 return await _execute_target_join(client, page, payload, target, target_button, decoys, page_no, total_results)
             next_button = _find_next_button(buttons)
-            if next_button is None or page_no == max_pages:
-                pages_exhausted = True
-                break
+            if next_button is None:
+                return _target_not_found(total_results, decoys, page_no)
             await _click_button(page, next_button)
             page = await conv.get_response()
-    return _target_not_found(total_results, decoys, page_no, max_pages, pages_exhausted)
 
 
-def _max_pages(payload: dict[str, Any]) -> int:
-    raw = int(payload.get("max_pages") or MAX_SEARCH_JOIN_PAGES)
-    if raw < 1 or raw > MAX_SEARCH_JOIN_PAGES:
-        raise ValueError(f"search_join max_pages must be between 1 and {MAX_SEARCH_JOIN_PAGES}")
-    return raw
+async def _select_jisou_group_results_page(conv: Any, page: Any, bot_username: str) -> tuple[Any, dict[str, Any] | None]:
+    if not _is_jisou_bot(bot_username):
+        return page, None
+    group_button = _find_jisou_group_category_button(_parse_buttons(page))
+    if group_button is None:
+        return page, _failed("jisou_group_selector_missing", "极搜群聊类型选择按钮缺失")
+    await _click_button(page, group_button)
+    return await conv.get_response(), None
 
 
-def _target_not_found(total: int, decoys: list[dict[str, Any]], page_no: int, max_pages: int, pages_exhausted: bool) -> dict[str, Any]:
+def _is_jisou_bot(bot_username: str) -> bool:
+    return bot_username.strip().lower().lstrip("@") in JISOU_BOT_USERNAMES
+
+
+def _find_jisou_group_category_button(buttons: list[SearchJoinButton]) -> SearchJoinButton | None:
+    for button in buttons:
+        if button.button_type != "callback_data" or button.effect != "unknown":
+            continue
+        if _normalized_button_text(button.text) in JISOU_GROUP_CATEGORY_TEXTS:
+            return button
+    return None
+
+
+def _normalized_button_text(text: str) -> str:
+    return re.sub(r"\s+", "", text).lower()
+
+
+def _target_not_found(total: int, decoys: list[dict[str, Any]], page_no: int) -> dict[str, Any]:
     return {
         **_failed("target_not_in_results", "目标群未出现在搜索结果"),
         "total_results": total,
         "pre_join_decoy_clicks": decoys,
         "page": page_no,
-        "max_pages": max_pages,
-        "pages_exhausted": pages_exhausted,
+        "searched_pages": page_no,
+        "last_result_page": page_no,
+        "search_end_reason": "no_next_page",
     }
 
 
@@ -313,6 +334,9 @@ def _success(payload: dict[str, Any], button: SearchJoinButton | None, total: in
         "join_status": "membership_observed",
         "target_position": button.position if button else 0,
         "page": page_no,
+        "searched_pages": page_no,
+        "last_result_page": page_no,
+        "search_end_reason": "target_found",
         "total_results": total,
         "target_group_id": payload.get("target_group_id"),
         "pre_join_decoy_clicks": decoys,

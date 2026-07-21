@@ -95,7 +95,7 @@ class FakeAlreadyParticipantError(Exception):
 
 def _payload(**overrides) -> dict:
     payload = {
-        "bot_username": "jisou",
+        "bot_username": "searchbot",
         "keyword_hash": "a" * 64,
         "target_username": "target_group",
         "target_group_id": 17,
@@ -116,13 +116,61 @@ def test_execute_search_join_sends_keyword_clicks_safe_navigation_and_joins_targ
     result = asyncio.run(execute_search_join_with_client(client, _payload(), keyword_text="上海 留学"))
 
     assert result["success"] is True
-    assert client.sent == [("jisou", "/start"), ("jisou", "上海 留学")]
+    assert client.sent == [("searchbot", "/start"), ("searchbot", "上海 留学")]
     assert message.clicked == [(0, 0), (1, 0)]
     assert client.joined == ["target_group"]
     assert client.read_targets == ["target_group"]
     assert result["join_status"] == "membership_observed"
     assert result["pre_join_decoy_clicks"][0]["joined"] is False
     assert "上海 留学" not in str(result)
+
+
+@pytest.mark.no_postgres
+def test_execute_search_join_selects_jisou_group_category_before_pagination() -> None:
+    category_page = FakeMessage(
+        101,
+        [[FakeButton("👥", data=b"group-category")], [FakeButton("📢", data=b"channel-category")]],
+    )
+    first_group_page = FakeMessage(
+        102,
+        [[FakeButton("其他群一", url="https://t.me/other_1")], [FakeButton("下一页", data=b"next-1", effect="navigate_only")]],
+    )
+    second_group_page = FakeMessage(
+        103,
+        [[FakeButton("其他群二", url="https://t.me/other_2")], [FakeButton("下一页", data=b"next-2", effect="navigate_only")]],
+    )
+    third_group_page = FakeMessage(
+        104,
+        [[FakeButton("其他群三", url="https://t.me/other_3")], [FakeButton("下一页", data=b"next-3", effect="navigate_only")]],
+    )
+    target_page = FakeMessage(105, [[FakeButton("目标群", url="https://t.me/target_group")]])
+    client = FakeSearchJoinClient(
+        [FakeMessage(100, []), category_page, first_group_page, second_group_page, third_group_page, target_page]
+    )
+
+    result = asyncio.run(execute_search_join_with_client(client, _payload(bot_username="jisou"), keyword_text="郑州"))
+
+    assert result["success"] is True
+    assert category_page.clicked == [(0, 0)]
+    assert first_group_page.clicked == [(1, 0)]
+    assert second_group_page.clicked == [(1, 0)]
+    assert third_group_page.clicked == [(1, 0)]
+    assert target_page.clicked == [(0, 0)]
+    assert result["page"] == 4
+    assert result["searched_pages"] == 4
+
+
+@pytest.mark.no_postgres
+def test_execute_search_join_rejects_unfiltered_jisou_results_when_group_selector_is_missing() -> None:
+    result_page = FakeMessage(101, [[FakeButton("目标群", url="https://t.me/target_group")]])
+    client = FakeSearchJoinClient([FakeMessage(100, []), result_page])
+
+    result = asyncio.run(execute_search_join_with_client(client, _payload(bot_username="jisou"), keyword_text="郑州"))
+
+    assert result["success"] is False
+    assert result["error_code"] == "jisou_group_selector_missing"
+    assert result_page.clicked == []
+    assert client.joined == []
 
 
 @pytest.mark.no_postgres
@@ -233,7 +281,10 @@ def test_execute_search_join_reports_target_not_in_results_without_joining() -> 
 
     assert result["success"] is False
     assert result["error_code"] == "target_not_in_results"
-    assert result["pages_exhausted"] is True
+    assert result["searched_pages"] == 1
+    assert result["last_result_page"] == 1
+    assert result["search_end_reason"] == "no_next_page"
+    assert "pages_exhausted" not in result
     assert client.joined == []
 
 
@@ -295,36 +346,38 @@ def test_execute_search_join_navigates_pages_until_target_found() -> None:
 
 
 @pytest.mark.no_postgres
-def test_execute_search_join_searches_until_page_70_before_target_found() -> None:
+def test_execute_search_join_searches_beyond_legacy_page_70_until_target_found() -> None:
     pages = [
         FakeMessage(100 + page_no, [[FakeButton("其他群", url=f"https://t.me/other_{page_no}")], [FakeButton("下一页 »", data=b"next", effect="navigate_only")]])
-        for page_no in range(1, 70)
+        for page_no in range(1, 71)
     ]
-    target_page = FakeMessage(170, [[FakeButton("目标群", url="https://t.me/target_group")]])
+    target_page = FakeMessage(171, [[FakeButton("目标群", url="https://t.me/target_group")]])
     client = FakeSearchJoinClient([FakeMessage(100, []), *pages, target_page])
 
     result = asyncio.run(execute_search_join_with_client(client, _payload(), keyword_text="上海 留学"))
 
     assert result["success"] is True
-    assert result["page"] == 70
+    assert result["page"] == 71
+    assert result["searched_pages"] == 71
     assert all(page.clicked == [(1, 0)] for page in pages)
     assert client.joined == ["target_group"]
 
 
 @pytest.mark.no_postgres
-def test_execute_search_join_reports_page_70_exhausted_without_fake_decoys() -> None:
-    pages = [
-        FakeMessage(100 + page_no, [[FakeButton("其他群", url=f"https://t.me/other_{page_no}")], [FakeButton("下一页 »", data=b"next", effect="navigate_only")]])
-        for page_no in range(1, 71)
-    ]
+def test_execute_search_join_reports_actual_last_page_without_legacy_page_cap() -> None:
+    first_page = FakeMessage(101, [[FakeButton("其他群一", url="https://t.me/other_1")], [FakeButton("下一页 »", data=b"next", effect="navigate_only")]])
+    last_page = FakeMessage(102, [[FakeButton("其他群二", url="https://t.me/other_2")]])
+    pages = [first_page, last_page]
     client = FakeSearchJoinClient([FakeMessage(100, []), *pages])
 
     result = asyncio.run(execute_search_join_with_client(client, _payload(max_pages=70), keyword_text="上海 留学"))
 
     assert result["success"] is False
     assert result["error_code"] == "target_not_in_results"
-    assert result["page"] == 70
-    assert result["max_pages"] == 70
-    assert result["pages_exhausted"] is True
+    assert result["page"] == 2
+    assert result["searched_pages"] == 2
+    assert result["last_result_page"] == 2
+    assert result["search_end_reason"] == "no_next_page"
+    assert "pages_exhausted" not in result
     assert result["pre_join_decoy_clicks"] == []
     assert client.joined == []

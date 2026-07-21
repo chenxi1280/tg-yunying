@@ -63,7 +63,7 @@ tg-yunying 当前任务中心已支持 5 类主任务：`group_ai_chat`、`group
     "warmup_days": 3,
     "behavior_realism": {},
     "rhythm": {},
-    "paging": {"max_pages": 70},
+    "paging": {"result_type": "group"},
     "anti_clustering": {}
   },
   "proxy_policy": {
@@ -586,7 +586,7 @@ None # 该 (账号, 应用, 授权槽位, IP) 对首次 action 时间 daily_acti
 1. 准备阶段：选择搜索机器人和关键词，通过 env.stack 读取 proxy + client_metadata，校验机场节点健康、账号级执行互斥锁、warmup 和 `proxy_egress_guard`。
 2. 搜索阶段：向目标机器人发送关键词，等待包含 inline button 或 link 的搜索结果；FloodWait、超时和结构变化必须显式记录。
 3. 入群前安全浏览阶段：决策延迟后，按概率打开 0-2 个非目标结果；只允许 `button_effect=navigate_only`，停留 10-30 秒后返回；不得加入、关注、外跳或点击 `join_candidate/external/unknown`。
-4. 匹配阶段：解析搜索结果的 button / link，只按公开 Telegram URL 中的精确 username 匹配目标群；标题和 peer id 仅用于展示/审计，不得作为可执行匹配依据。当前 Telethon `MessageButton` 不提供可验证的 `target_chat_id`，仅有 peer id 的目标在 Planner 阶段写 `target_identity_missing`，不会创建 action。默认最多翻 70 页，找满 70 页或搜索机器人提前没有“下一页”仍未匹配写 `target_not_in_results`、`pages_exhausted=true`，并自动停止该搜索目标群点击任务。
+4. 匹配阶段：`@jisou` 在关键词回复后必须先点击协议已确认的“群聊 / 群组”类型 selector，再解析搜索结果的 button / link；不得把未筛选的综合结果当作群聊结果。目标只按公开 Telegram URL 中的精确 username 匹配；标题和 peer id 仅用于展示/审计，不得作为可执行匹配依据。当前 Telethon `MessageButton` 不提供可验证的 `target_chat_id`，仅有 peer id 的目标在 Planner 阶段写 `target_identity_missing`，不会创建 action。翻页没有固定页数上限，只有命中精确目标并完成点击 / 成员关系确认才结束本轮成功搜索；机器人真实没有“下一页”仍未命中时写 `target_not_in_results`、`search_end_reason=no_next_page`、`searched_pages` 和 `last_result_page`，该 action 失败但任务保持运行，以后续计划重试，绝不把它伪装成“找满 70 页”或停止整个任务。群聊 selector 缺失属于协议变化，写 `jisou_group_selector_missing`，不回退到未筛选结果。
 5. 加入阶段：通过 MTProto callback 或 Telegram 内部 URL resolve 执行目标群 join；失败必须分类为验证码、审批、链接失效、权限不足或目标机器人拒绝。
 6. 目标群停留阶段：在目标群停留 30-180 秒，只执行低风险 read / history / read_ack；首版默认不发言。
 7. 入群后安全浏览：本期不实现，也不在创建/详情页暴露配置；`post_join_safe_navigation` 固定为空数组。全链路仅保留入群前、已证实 `navigate_only` 的安全浏览，且不得加入非目标群 / 频道。
@@ -719,7 +719,7 @@ Planner 规则：
 
 “操作次数”统计口径：
 
-- 计入：已经创建且预计会向目标机器人发起搜索的 `pending / claiming / executing / success / failed` action；以及已经向目标机器人发送关键词后才失败的 action，包括 `target_not_in_results`、`pages_exhausted=true` 和带重试策略的失败。
+- 计入：已经创建且预计会向目标机器人发起搜索的 `pending / claiming / executing / success / failed` action；以及已经向目标机器人发送关键词后才失败的 action，包括带 `search_end_reason=no_next_page` 的 `target_not_in_results` 和带重试策略的失败。
 - 不计入：`skipped_by_behavior_pacing`、代理 / 环境 / 协议样本 / 权限预检失败、全部启用订阅不可用、缺少客户端元数据、关键词矩阵不允许等尚未向 Telegram / 目标机器人发起真实搜索的 action。
 - 规划时必须同时统计未来 open action，防止同一账号、同一关键词或任务日预算被并发规划透支。
 
@@ -884,7 +884,7 @@ search_join success
 
 `SearchJoinGroupConfig.pacing_config` 必须额外包含 §8.5.1 的 search_join 专属字段：`per_account_total_action_limit`、`per_account_daily_action_limit`、`per_account_cooldown_days`、`per_keyword_account_daily_limit`、`max_actions_per_day`、`hourly_skip_probability`、`daily_skip_probability`、`skip_probability_per_action`、`hourly_jitter_percent`、`daily_jitter_percent`。这些字段不得提升到任务中心通用 `PacingConfig` 后影响其他任务。
 
-### 9.3 系统策略校验规则 - `execution_mode` 首版只能是 `mtproto_userbot`，前端必须说明这不是手机 UI 自动化 - 真实机器人协议样本未采集完成时，只允许保存草稿和运行 parser fixture，不允许启动真实灰度 - `decoy=true` 的关键词占比 ≥ 30%（硬约束，否则任务不创建） - `target_groups[].operation_target_id` 或 `target_input` 至少填一个；保存任务前必须解析 / upsert 为 `OperationTarget` 并持久化 `operation_target_id` - 关键词的 `business_region / account_locale / proxy_country` 必须落入允许矩阵 - `proxy_policy.required=true` 时，账号池中所有被选授权槽位必须已绑代理节点并完成 `observed_exit_ip` 健康检查 - 主/备用授权槽位必须各自拥有完整客户端元数据，且同账号内不得复用元数据组合或代理节点 - 同一 `account_id` 在 `search_join` 执行中只允许 1 个 action 处于 claiming / executing - `anti_detection.behavior_realism.decision_delay_seconds[0] >= 2`（不允许秒点） - `paging.max_pages` 默认且上限为 70，找满 70 页或提前没有下一页仍未命中必须停止任务 - `per_account_total_action_limit >= 0`、`per_account_daily_action_limit >= 0`、`per_account_cooldown_days >= 0`、`per_keyword_account_daily_limit >= 0`、`max_actions_per_day >= 0`；`0` 表示该项不设硬上限 - `hourly_skip_probability / daily_skip_probability / skip_probability_per_action` 必须在 `0..1` - `hourly_jitter_percent / daily_jitter_percent` 必须在 `0..100` - `hourly_min_successful_joins` 不得大于 `max_actions_per_hour`；`max_actions_per_day` 小于 `max_actions_per_hour` 时允许保存但必须提示 planner 会以日上限为准 - `decoy_join_enabled=true` 不作为首版默认能力，若开启必须单独走风控审批和审计 - 默认 `post_join_policy=stay_joined`，任何立即退出策略都必须单独审批并写审计。除 §4.11 明确开放的账号组、任务日上限、完成截止时间、日/小时抖动与静默时段外，以上规则由服务端生成、校验和执行，不能转换为前端可编辑项。 #
+### 9.3 系统策略校验规则 - `execution_mode` 首版只能是 `mtproto_userbot`，前端必须说明这不是手机 UI 自动化 - 真实机器人协议样本未采集完成时，只允许保存草稿和运行 parser fixture，不允许启动真实灰度 - `decoy=true` 的关键词占比 ≥ 30%（硬约束，否则任务不创建） - `target_groups[].operation_target_id` 或 `target_input` 至少填一个；保存任务前必须解析 / upsert 为 `OperationTarget` 并持久化 `operation_target_id` - 关键词的 `business_region / account_locale / proxy_country` 必须落入允许矩阵 - `proxy_policy.required=true` 时，账号池中所有被选授权槽位必须已绑代理节点并完成 `observed_exit_ip` 健康检查 - 主/备用授权槽位必须各自拥有完整客户端元数据，且同账号内不得复用元数据组合或代理节点 - 同一 `account_id` 在 `search_join` 执行中只允许 1 个 action 处于 claiming / executing - `anti_detection.behavior_realism.decision_delay_seconds[0] >= 2`（不允许秒点） - `@jisou` 必须点击协议已确认的群聊类型 selector；selector 缺失显式写 `jisou_group_selector_missing`，不得回退到综合结果；翻页不设固定页数上限，命中精确目标才结束成功搜索 - `per_account_total_action_limit >= 0`、`per_account_daily_action_limit >= 0`、`per_account_cooldown_days >= 0`、`per_keyword_account_daily_limit >= 0`、`max_actions_per_day >= 0`；`0` 表示该项不设硬上限 - `hourly_skip_probability / daily_skip_probability / skip_probability_per_action` 必须在 `0..1` - `hourly_jitter_percent / daily_jitter_percent` 必须在 `0..100` - `hourly_min_successful_joins` 不得大于 `max_actions_per_hour`；`max_actions_per_day` 小于 `max_actions_per_hour` 时允许保存但必须提示 planner 会以日上限为准 - `decoy_join_enabled=true` 不作为首版默认能力，若开启必须单独走风控审批和审计 - 默认 `post_join_policy=stay_joined`，任何立即退出策略都必须单独审批并写审计。除 §4.11 明确开放的账号组、任务日上限、完成截止时间、日/小时抖动与静默时段外，以上规则由服务端生成、校验和执行，不能转换为前端可编辑项。 #
 
 ## 10. 目标机器人 / SOSO 协议交互契约 本节定义 executor 与第三方索引机器人（@searchbot、@soso、@smss、@CJSY）交互的协议契约。**dev 必须先按 §4.8 采集真实样本，再按本节实现 parser 和 executor**；样本缺失时只能跑 fixture / precheck，不允许启动真实灰度。#
 
@@ -941,7 +941,8 @@ None raw_response: Message # 原始消息，供 fallback @dataclass class Search
 |`BotBlockedError`|账号被机器人拉黑（目标机器人主动 block）|账号下线，标记 `bot_blocked`，换账号继续|
 |`TimeoutError` (conv.get_response 超时)|机器人维护 / 网络问题|retry 3 次，指数退避|
 |空消息回复|关键词无结果|action 标 `skipped`，`skip_reason=keyword_no_results`|
-|找满 70 页或提前没有下一页仍无目标群 button|关键词相关但目标群不在结果中|action 标 `failed`，`error_code=target_not_in_results`，任务自动 `stopped`|
+|群聊类型 selector 缺失|极搜按钮结构变化，无法证明已进入群聊结果|action 标 `failed`，`error_code=jisou_group_selector_missing`，不回退到综合结果、不停止任务|
+|真实没有下一页仍无目标群 button|已经扫描完当前群聊结果|action 标 `failed`，`error_code=target_not_in_results`，写 `search_end_reason=no_next_page`、实际 `searched_pages/last_result_page`，任务保持运行|
 |外部 HTTP URL button|button 指向非 `t.me` / Telegram 内部地址|action 标 `skipped`，`skip_reason=external_url_requires_web_profile`，不默认打开|
 |button effect unknown|样本无法判断点击后是否入群、外跳或触发验证|action 标 `skipped`，`skip_reason=button_effect_unknown`，等待人工样本确认|
 |代理出口防泄漏失败|MTProto 连接未证明走绑定代理或 observed exit IP 不一致|action 标 `skipped`，`skip_reason=proxy_egress_guard_failed`|
@@ -1833,7 +1834,7 @@ AI 活跃群联动 126 个账号待冷却 / 64 个已进入 ready pool
 | 复核项 | 缺口 / 易混点 | PRD 收口 |
 | --- | --- | --- |
 | 任务命名 | “搜索自动入群”容易让运营误解为只要未入群才执行 | 用户可见统一为“搜索目标群点击任务”；账号已在群内也必须执行搜索、目标点击 / 确认，成功事实写 `membership_observed` |
-| 找不到目标 | 只写“翻页匹配”不足以说明失败终止条件 | 默认最多翻 70 页；找满或提前没有下一页仍未命中写 `target_not_in_results` 和 `pages_exhausted=true`，该搜索目标群点击任务自动停止 |
+| 群聊筛选与找不到目标 | 综合结果会遗漏群聊页，固定页数会把过程误当完成 | `@jisou` 关键词后必须先选择群聊；只在精确目标命中后结束成功搜索。真实末页未命中记录实际页码和 `no_next_page`，action 失败但任务继续运行 |
 | 非目标浏览 | “假装点击其他结果”容易被实现成全点或误加入 | 非目标浏览只允许 `button_effect=navigate_only`，不得加入、关注、外跳或点击 `join_candidate/external/unknown`；pre + post 总数默认不超过 3，并写入 action result |
 | 节奏配置 | 每账号总上限、每日上限、间隔天数、小时 / 天跳过和抖动可能被通用任务误用 | `pacing_config` 是 search_join 专属；创建 / 编辑页只在 `search_join_group` 展示这些字段；planner 先执行账号 / 关键词 / 任务日限额，再做小时补量 |
 | 随机决策 | 实时 pacing / random decision 如果调 LLM 会不可复现且增加失败面 | 实时路径禁止调用 AI Gateway、AI Provider 和 `task_center/ai_generator.py`；只允许规则、配置、seeded random 和持久化 `search_join_pacing_decisions` |
@@ -1887,3 +1888,4 @@ AI 活跃群联动 126 个账号待冷却 / 64 个已进入 ready pool
 |2026-07-19|v0.22|Codex（搜索点击契约修复）|收紧目标识别为精确公开 username；peer id 仅作资料/审计身份，peer-only 配置在 Planner 阶段阻断。明确 decoy 必须先排除目标、入群后安全浏览本期不执行；补齐任务局部编辑保留既有关键词 hash/密文配对、服务端与 Gateway 前双重哈希校验的契约。|
 |2026-07-20|v0.23|Codex（三字段创建设计定稿）|将新建任务的有效产品契约收敛为目标群、搜索关键词、目标次数；删除专项 PRD 中仍会误导为五步高级创建的描述。账号、代理、机器人、节奏、停留、配额、重试和资源准备统一改为系统托管，保留存量任务的已保存事实展示。|
 |2026-07-21|v0.24|Codex（运营范围与节奏修订）|按运营配置补回受控账号组、每日执行次数、完成截止时间、日/小时抖动与可选静默时段；明确普通搜索与黑搜索账号组用途隔离、截止时间前的计划/派发双重门禁，以及编辑重排时释放未执行黑搜索 reservation。|
+|2026-07-21|v0.25|Codex（极搜群聊分页修复）|按线上郑州搜索实证恢复 `@jisou` 关键词后的群聊 selector；删除固定 70 页作为任务停止条件。只有精确目标命中才结束成功搜索；真实末页未命中写实际页码并保留任务后续重试。|

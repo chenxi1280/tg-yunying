@@ -214,7 +214,7 @@ class SearchJoinPayload(BaseModel):
 
     execution_mode: str = "mtproto_userbot"
     bot_username: str = Field(min_length=1, max_length=80)
-    max_pages: int = Field(default=70, ge=1, le=70)
+    max_pages: int = Field(default=70, ge=1, le=70, exclude=True)
     keyword_hash: str = Field(min_length=64, max_length=64)
     keyword_text_ciphertext: str = Field(default="", max_length=1000)
     authorization_id: int = Field(default=0, ge=0)

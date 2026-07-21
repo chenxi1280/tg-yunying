@@ -3988,7 +3988,6 @@ def _dispatch_search_join(session: Session, action: Action, account: TgAccount, 
     action.result = {**(action.result or {}), **result}
     _record_search_join_proxy_failover(session, action, payload, result)
     action.executed_at = _now()
-    _stop_search_join_task_if_target_exhausted(session, action, result)
     _create_search_join_linked_dispatches(session, action, payload)
     return True
 
@@ -4346,42 +4345,6 @@ def _proxy_binding_matches_environment(proxy_binding: AccountProxyBinding, bindi
         and proxy_binding.proxy_id == binding.proxy_id
         and proxy_binding.status == "active"
         and proxy_binding.unbound_at is None
-    )
-
-
-def _stop_search_join_task_if_target_exhausted(session: Session, action: Action, result: dict) -> None:
-    if result.get("success") or result.get("error_code") != "target_not_in_results":
-        return
-    if result.get("pages_exhausted") is not True:
-        return
-    task = session.get(Task, action.task_id)
-    if task is None:
-        return
-    max_pages = int(result.get("max_pages") or 0)
-    task.status = "stopped"
-    task.next_run_at = None
-    task.last_error = f"搜索目标群点击任务找满 {max_pages} 页仍未命中目标群，已自动停止"
-    for pending in _open_search_join_siblings(session, action):
-        pending.status = "skipped"
-        pending.executed_at = _now()
-        _clear_action_lease(pending)
-        pending.result = {
-            "success": False,
-            "error_code": "search_join_target_not_found_task_stopped",
-            "error_message": task.last_error,
-            "auto_check": "跳过",
-            "validation_stage": "search_join_target_match",
-        }
-
-
-def _open_search_join_siblings(session: Session, action: Action):
-    return session.scalars(
-        select(Action).where(
-            Action.task_id == action.task_id,
-            Action.id != action.id,
-            Action.action_type == "search_join",
-            Action.status.in_(["pending", "claiming", "retryable_failed"]),
-        )
     )
 
 
