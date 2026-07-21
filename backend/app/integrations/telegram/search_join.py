@@ -12,6 +12,26 @@ NAVIGATION_MARKERS = ("下一页", "上一页", "next", "prev", "page", "页")
 HUMAN_VERIFICATION_MARKERS = ("人机验证", "计算结果", "captcha")
 JISOU_BOT_USERNAMES = frozenset({"jisou"})
 JISOU_GROUP_CATEGORY_TEXTS = frozenset({"👥", "群组", "群聊", "groups", "group", "👥群组", "👥群聊"})
+PAGINATION_SYMBOL_NAMES = {
+    ">": "greater_than",
+    "▶": "right_triangle",
+    "▷": "white_right_triangle",
+    "➡": "right_arrow",
+    "→": "right_arrow",
+    "»": "right_double_angle",
+    "›": "right_angle",
+    "⏩": "fast_forward",
+    "⏭": "next_track",
+    "<": "less_than",
+    "◀": "left_triangle",
+    "◁": "white_left_triangle",
+    "⬅": "left_arrow",
+    "←": "left_arrow",
+    "«": "left_double_angle",
+    "‹": "left_angle",
+    "⏪": "fast_reverse",
+    "⏮": "previous_track",
+}
 
 
 @dataclass(frozen=True)
@@ -55,7 +75,7 @@ async def _execute_search_pages(client: Any, bot_username: str, keyword_text: st
         await conv.get_response()
         await conv.send_message(keyword_text)
         page = await conv.get_response()
-        page, selector_error = await _select_jisou_group_results_page(conv, page, bot)
+        page, selector_error, group_selector = await _select_jisou_group_results_page(conv, page, bot)
         if selector_error is not None:
             return selector_error
         while True:
@@ -73,19 +93,23 @@ async def _execute_search_pages(client: Any, bot_username: str, keyword_text: st
                 return await _execute_target_join(client, page, payload, target, target_button, decoys, page_no, total_results)
             next_button = _find_next_button(buttons)
             if next_button is None:
-                return _target_not_found(total_results, decoys, page_no)
+                return _target_not_found(total_results, decoys, page_no, buttons, group_selector)
             await _click_button(page, next_button)
             page = await conv.get_response()
 
 
-async def _select_jisou_group_results_page(conv: Any, page: Any, bot_username: str) -> tuple[Any, dict[str, Any] | None]:
+async def _select_jisou_group_results_page(
+    conv: Any,
+    page: Any,
+    bot_username: str,
+) -> tuple[Any, dict[str, Any] | None, SearchJoinButton | None]:
     if not _is_jisou_bot(bot_username):
-        return page, None
+        return page, None, None
     group_button = _find_jisou_group_category_button(_parse_buttons(page))
     if group_button is None:
-        return page, _failed("jisou_group_selector_missing", "极搜群聊类型选择按钮缺失")
+        return page, _failed("jisou_group_selector_missing", "极搜群聊类型选择按钮缺失"), None
     await _click_button(page, group_button)
-    return await conv.get_response(), None
+    return await conv.get_response(), None, group_button
 
 
 def _is_jisou_bot(bot_username: str) -> bool:
@@ -105,7 +129,13 @@ def _normalized_button_text(text: str) -> str:
     return re.sub(r"\s+", "", text).lower()
 
 
-def _target_not_found(total: int, decoys: list[dict[str, Any]], page_no: int) -> dict[str, Any]:
+def _target_not_found(
+    total: int,
+    decoys: list[dict[str, Any]],
+    page_no: int,
+    buttons: list[SearchJoinButton],
+    group_selector: SearchJoinButton | None,
+) -> dict[str, Any]:
     return {
         **_failed("target_not_in_results", "目标群未出现在搜索结果"),
         "total_results": total,
@@ -114,6 +144,31 @@ def _target_not_found(total: int, decoys: list[dict[str, Any]], page_no: int) ->
         "searched_pages": page_no,
         "last_result_page": page_no,
         "search_end_reason": "no_next_page",
+        **_search_protocol_trace(buttons, group_selector),
+    }
+
+
+def _search_protocol_trace(buttons: list[SearchJoinButton], group_selector: SearchJoinButton | None) -> dict[str, Any]:
+    if group_selector is None:
+        return {}
+    return {
+        "search_protocol_trace": {
+            "jisou_group_selector": {"position": group_selector.position, "text": group_selector.text},
+            "result_page": {"button_count": len(buttons), "button_layout": [_button_layout(button) for button in buttons]},
+        }
+    }
+
+
+def _button_layout(button: SearchJoinButton) -> dict[str, Any]:
+    normalized = _normalized_button_text(button.text)
+    return {
+        "row": button.row,
+        "col": button.col,
+        "button_type": button.button_type,
+        "effect": button.effect,
+        "text_length": len(button.text),
+        "contains_page_marker": any(marker in normalized for marker in NAVIGATION_MARKERS),
+        "navigation_symbols": [name for symbol, name in PAGINATION_SYMBOL_NAMES.items() if symbol in button.text],
     }
 
 
