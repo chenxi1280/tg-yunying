@@ -43,6 +43,8 @@ def search_click_pacing_config(payload: Any) -> dict[str, Any]:
         "daily_jitter_percent": payload.daily_jitter_percent,
         "hourly_jitter_percent": payload.hourly_jitter_percent,
     }
+    if hasattr(payload, "per_account_daily_action_limit"):
+        config["per_account_daily_action_limit"] = payload.per_account_daily_action_limit
     if payload.quiet_hours is not None:
         config["quiet_hours"] = payload.quiet_hours.model_dump(mode="json")
     return config

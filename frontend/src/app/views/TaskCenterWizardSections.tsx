@@ -125,6 +125,16 @@ export function SearchClickExecutionConfig({ taskType, accountPools }: { taskTyp
         >
           <InputNumber min={1} precision={0} style={{ width: '100%' }} />
         </Form.Item>
+        {!isRankDeboost && (
+          <Form.Item
+            name="per_account_daily_action_limit"
+            label="单账号每日上限"
+            extra="0 表示不设此项上限，仍受同关键词每日上限约束。"
+            rules={[{ required: true, message: '请填写单账号每日上限' }]}
+          >
+            <InputNumber min={0} max={1000} precision={0} style={{ width: '100%' }} />
+          </Form.Item>
+        )}
         <Form.Item name="scheduled_end" label="完成截止时间" rules={[{ required: true, message: '请选择完成截止时间' }]}>
           <Input type="datetime-local" />
         </Form.Item>

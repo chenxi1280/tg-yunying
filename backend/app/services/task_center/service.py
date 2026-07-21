@@ -14,7 +14,7 @@ from app.config import get_settings
 from app.integrations.telegram import OperationResult
 from app.models import AccountPool, AccountStatus, Action, ChannelMessage, ExecutionAttempt, FailureType, MessageFingerprint, OperationIssue, OperationPlanTaskLink, OperationTarget, ReviewQueue, RuleSet, RuleSetVersion, SearchJoinPacingDecision, Task, TaskRuntimeSummary, TgAccount, TgGroup, WorkerHeartbeat
 from app.models.search_rank_deboost import AccountGroupProxyBinding, SearchRankDeboostClickReservation, SearchRankDeboostExemptGroup
-from app.search_keywords import repair_legacy_keyword_materials
+from app.search_keywords import normalized_keyword_hash, repair_legacy_keyword_materials
 from app.schemas.task_center import (
     AccountConfig,
     ChannelCapacityCheckRequest,
@@ -380,7 +380,7 @@ def _simple_search_join_group_payload(
     target, canonical_link = _simple_search_click_target_from_input(
         session, tenant_id, payload.target_title, payload.target_link
     )
-    return SearchJoinGroupTaskCreate(
+    task_payload = SearchJoinGroupTaskCreate(
         name=_simple_search_click_name(
             target,
             "搜索目标群点击",
@@ -399,6 +399,15 @@ def _simple_search_join_group_payload(
         scheduled_end=as_beijing(payload.scheduled_end),
         pacing_config=search_click_pacing_config(payload),
     )
+    _validate_search_join_configured_daily_capacity(
+        session,
+        tenant_id,
+        account_config=task_payload.account_config.model_dump(mode="json"),
+        pacing_config=task_payload.pacing_config.model_dump(mode="json"),
+        daily_target_count=task_payload.daily_target_count,
+        keyword_count=len(task_payload.keyword_hashes),
+    )
+    return task_payload
 
 
 def _simple_search_click_target_from_input(
@@ -920,11 +929,11 @@ def _search_join_update_values(
 ) -> tuple[dict[str, Any], dict[str, Any] | None, dict[str, Any]]:
     update_data = payload.model_dump(mode="json", exclude_unset=True)
     pacing_data = update_data.pop("pacing_config", None)
-    operator_controls = _search_click_operator_controls(payload)
+    operator_controls = _search_click_operator_controls(payload, task.type)
     for field in operator_controls:
         update_data.pop(field, None)
     task.type_config = _normalize_legacy_search_join_config(task.type_config or {})
-    _validate_search_join_daily_target(task, update_data, operator_controls)
+    _validate_search_join_daily_target(session, task, update_data, operator_controls)
     _resolve_search_join_target_input(session, tenant_id, update_data)
     _remove_unchanged_search_join_target_input(task.type_config, update_data)
     if "keywords" in update_data:
@@ -941,6 +950,10 @@ SEARCH_CLICK_OPERATOR_CONTROL_FIELDS = (
     "hourly_jitter_percent",
     "quiet_hours",
 )
+SEARCH_JOIN_OPERATOR_CONTROL_FIELDS = (
+    *SEARCH_CLICK_OPERATOR_CONTROL_FIELDS,
+    "per_account_daily_action_limit",
+)
 SEARCH_CLICK_TASK_TYPES = {NORMAL_SEARCH_CLICK_TASK, RANK_SEARCH_CLICK_TASK}
 SEARCH_JOIN_OPERATOR_EDIT_FIELDS = {
     "target_title",
@@ -948,7 +961,7 @@ SEARCH_JOIN_OPERATOR_EDIT_FIELDS = {
     "keywords",
     "target_count",
     "daily_target_count",
-    *SEARCH_CLICK_OPERATOR_CONTROL_FIELDS,
+    *SEARCH_JOIN_OPERATOR_CONTROL_FIELDS,
 }
 SEARCH_RANK_OPERATOR_EDIT_FIELDS = {
     "target_title",
@@ -971,10 +984,11 @@ def _require_search_click_operator_fields(payload: Any, task_type: str) -> None:
         raise ValueError(f"搜索点击任务的系统托管字段不能通过运营编辑接口修改: {', '.join(forbidden)}")
 
 
-def _search_click_operator_controls(payload: Any) -> dict[str, Any]:
+def _search_click_operator_controls(payload: Any, task_type: str) -> dict[str, Any]:
+    fields = SEARCH_JOIN_OPERATOR_CONTROL_FIELDS if task_type == NORMAL_SEARCH_CLICK_TASK else SEARCH_CLICK_OPERATOR_CONTROL_FIELDS
     return {
         field: getattr(payload, field)
-        for field in SEARCH_CLICK_OPERATOR_CONTROL_FIELDS
+        for field in fields
         if field in payload.model_fields_set
     }
 
@@ -987,6 +1001,7 @@ def _search_click_account_group_changed(task: Task, controls: dict[str, Any]) ->
 
 
 def _validate_search_join_daily_target(
+    session: Session,
     task: Task,
     update_data: dict[str, Any],
     controls: dict[str, Any],
@@ -997,6 +1012,80 @@ def _validate_search_join_daily_target(
     max_actions = controls.get("max_actions_per_day", (task.pacing_config or {}).get("max_actions_per_day"))
     if max_actions is None or int(max_actions) < int(target):
         raise ValueError("max_actions_per_day 不能小于 daily_target_count")
+    _validate_search_join_configured_daily_capacity(
+        session,
+        task.tenant_id,
+        account_config=_next_search_join_account_config(session, task, controls),
+        pacing_config=_next_search_join_pacing_config(task, controls),
+        daily_target_count=int(target),
+        keyword_count=_search_join_keyword_count(task, update_data),
+    )
+
+
+def _next_search_join_account_config(session: Session, task: Task, controls: dict[str, Any]) -> dict[str, Any]:
+    account_group_id = controls.get("account_group_id")
+    if account_group_id is None:
+        return dict(task.account_config or {})
+    require_search_click_account_group(session, task.tenant_id, task.type, int(account_group_id))
+    return {
+        **(task.account_config or {}),
+        **search_click_account_config(int(account_group_id)),
+    }
+
+
+def _next_search_join_pacing_config(task: Task, controls: dict[str, Any]) -> dict[str, Any]:
+    fields = ("max_actions_per_day", "daily_jitter_percent", "hourly_jitter_percent", "per_account_daily_action_limit")
+    return {
+        **(task.pacing_config or {}),
+        **{field: controls[field] for field in fields if field in controls},
+    }
+
+
+def _search_join_keyword_count(task: Task, update_data: dict[str, Any]) -> int:
+    if "keywords" not in update_data:
+        return len((task.type_config or {}).get("keyword_hashes") or [])
+    return len({normalized_keyword_hash(str(item)) for item in update_data["keywords"] if str(item).strip()})
+
+
+def _validate_search_join_configured_daily_capacity(
+    session: Session,
+    tenant_id: int,
+    *,
+    account_config: dict[str, Any],
+    pacing_config: dict[str, Any],
+    daily_target_count: int | None,
+    keyword_count: int,
+) -> None:
+    if daily_target_count is None:
+        return
+    target = int(daily_target_count)
+    daily_budget = int(pacing_config.get("max_actions_per_day") or 0) or target
+    candidates = select_task_accounts(
+        session,
+        tenant_id,
+        account_config,
+        enforce_capacity=False,
+        scan_all_candidates=True,
+    )
+    per_account_limit = _effective_search_join_account_daily_limit(pacing_config, keyword_count, daily_budget)
+    capacity = min(daily_budget, len(candidates) * per_account_limit)
+    if target > capacity:
+        raise ValueError(
+            "daily_target_capacity_insufficient: "
+            f"daily_target_count={target}, candidate_accounts={len(candidates)}, "
+            f"effective_per_account_daily_limit={per_account_limit}, configured_daily_capacity={capacity}"
+        )
+
+
+def _effective_search_join_account_daily_limit(
+    pacing_config: dict[str, Any],
+    keyword_count: int,
+    daily_budget: int,
+) -> int:
+    account_limit = int(pacing_config.get("per_account_daily_action_limit") or 0)
+    keyword_limit = int(pacing_config.get("per_keyword_account_daily_limit") or 0)
+    limits = [limit for limit in (account_limit, keyword_limit * max(1, keyword_count)) if limit > 0]
+    return min(limits) if limits else daily_budget
 
 
 def _requeue_search_join_daily_target(task: Task) -> None:
@@ -1024,7 +1113,7 @@ def _apply_search_click_operator_controls(
             task.account_config = next_account_config
             changed = True
     next_pacing = dict(task.pacing_config or {})
-    for field in ("max_actions_per_day", "daily_jitter_percent", "hourly_jitter_percent"):
+    for field in ("max_actions_per_day", "daily_jitter_percent", "hourly_jitter_percent", "per_account_daily_action_limit"):
         if field in controls:
             next_pacing[field] = controls[field]
     if "quiet_hours" in controls:
@@ -1265,7 +1354,7 @@ def update_search_rank_deboost_config(
         raise ValueError(f"任务类型不匹配，当前任务是 {task.type}")
     _require_search_click_operator_fields(payload, task.type)
     update_data = payload.model_dump(mode="json", exclude_unset=True)
-    operator_controls = _search_click_operator_controls(payload)
+    operator_controls = _search_click_operator_controls(payload, task.type)
     for field in operator_controls:
         update_data.pop(field, None)
     next_config, target_changed, target_display_changed, keywords_changed, target_count_changed = _next_rank_deboost_config(

@@ -1525,7 +1525,6 @@ def test_search_join_group_frontend_keeps_system_risk_policy_managed_and_exposes
     execution_config = wizard[wizard.index("export function SearchClickExecutionConfig"):wizard.index("export function WizardTypeConfig")]
     for field in [
         "per_account_total_action_limit",
-        "per_account_daily_action_limit",
         "per_account_cooldown_days",
         "per_keyword_account_daily_limit",
         "hourly_skip_probability",
@@ -1534,6 +1533,8 @@ def test_search_join_group_frontend_keeps_system_risk_policy_managed_and_exposes
     ]:
         assert f'name="{field}"' not in simple_config
         assert f'name="{field}"' not in execution_config
+    assert 'name="per_account_daily_action_limit"' in execution_config
+    assert "!isRankDeboost" in execution_config
     for field in [
         "account_group_id",
         "max_actions_per_day",
@@ -2567,6 +2568,7 @@ def test_search_click_creation_uses_operator_scope_controls_and_system_managed_p
     assert "target_count: values.target_count" in simple_payload
     assert "account_group_id: values.account_group_id" in simple_payload
     assert "max_actions_per_day: values.max_actions_per_day" in simple_payload
+    assert "per_account_daily_action_limit: values.per_account_daily_action_limit" in simple_payload
     assert "scheduled_end: fromBeijingDateTimeLocalValue(values.scheduled_end)" in simple_payload
     assert "account_config" not in simple_payload
     assert "return simpleSearchClickPayload(values);" in view
