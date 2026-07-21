@@ -556,7 +556,7 @@ def test_search_join_dispatch_creates_linked_records_after_membership_observed(m
 
 
 @pytest.mark.no_postgres
-def test_search_join_dispatch_stops_task_when_target_not_found_after_max_pages(monkeypatch, session: Session) -> None:
+def test_search_join_dispatch_keeps_task_running_when_real_last_page_misses_target(monkeypatch, session: Session) -> None:
     task, action = _persist_task_and_action(session)
     action.payload = {
         **action.payload,
@@ -574,19 +574,21 @@ def test_search_join_dispatch_stops_task_when_target_not_found_after_max_pages(m
             "error_code": "target_not_in_results",
             "detail": "目标群未出现在搜索结果",
             "join_status": "failed",
-            "page": 70,
+            "page": 4,
             "max_pages": 70,
             "pages_exhausted": True,
+            "searched_pages": 4,
+            "last_result_page": 4,
+            "search_end_reason": "no_next_page",
         }
 
     monkeypatch.setattr(dispatcher.gateway, "execute_search_join", execute_search_join, raising=False)
 
     assert dispatch_action(session, action) is True
     assert action.status == "failed"
-    assert task.status == "stopped"
-    assert "70" in task.last_error
-    assert pending.status == "skipped"
-    assert pending.result["error_code"] == "search_join_target_not_found_task_stopped"
+    assert task.status == "running"
+    assert task.last_error == ""
+    assert pending.status == "pending"
 
 
 @pytest.mark.no_postgres
