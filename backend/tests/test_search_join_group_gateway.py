@@ -381,3 +381,46 @@ def test_execute_search_join_reports_actual_last_page_without_legacy_page_cap() 
     assert "pages_exhausted" not in result
     assert result["pre_join_decoy_clicks"] == []
     assert client.joined == []
+
+
+@pytest.mark.no_postgres
+def test_execute_search_join_records_sanitized_jisou_page_structure_when_no_next_page_exists() -> None:
+    category_page = FakeMessage(
+        101,
+        [[FakeButton("👥", data=b"group-category")], [FakeButton("📢", data=b"channel-category")]],
+    )
+    result_page = FakeMessage(
+        102,
+        [[FakeButton("其他群", url="https://t.me/other_group")], [FakeButton("▶", data=b"next-page")]],
+    )
+    client = FakeSearchJoinClient([FakeMessage(100, []), category_page, result_page])
+
+    result = asyncio.run(execute_search_join_with_client(client, _payload(bot_username="jisou"), keyword_text="郑州"))
+
+    assert result["error_code"] == "target_not_in_results"
+    assert result["search_protocol_trace"] == {
+        "jisou_group_selector": {"position": 1, "text": "👥"},
+        "result_page": {
+            "button_count": 2,
+            "button_layout": [
+                {
+                    "row": 0,
+                    "col": 0,
+                    "button_type": "telegram_url",
+                    "effect": "join_candidate",
+                    "text_length": 3,
+                    "contains_page_marker": False,
+                    "navigation_symbols": [],
+                },
+                {
+                    "row": 1,
+                    "col": 0,
+                    "button_type": "callback_data",
+                    "effect": "unknown",
+                    "text_length": 1,
+                    "contains_page_marker": False,
+                    "navigation_symbols": ["right_triangle"],
+                },
+            ],
+        },
+    }
