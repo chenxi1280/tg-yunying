@@ -1465,9 +1465,11 @@ def test_task_center_review_uses_task_specific_curve_units():
 
 def test_task_center_review_reads_retained_values_after_wizard_fields_unmount():
     source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
+    form_start = source.index('<Form form={form} layout="vertical"')
     review_start = source.index("{wizardStep === wizardSteps.length - 1 && <WizardReview")
     review_end = source.index('<Space className="modal-actions">', review_start)
 
+    assert '<Form form={form} layout="vertical" preserve ' in source[form_start:review_start]
     assert "values={form.getFieldsValue(true)}" in source[review_start:review_end]
 
 
