@@ -20,6 +20,7 @@ from app.schemas.task_center import (
     TaskUpdate,
 )
 from app.services.task_center import service as task_service
+from app.services.task_center import search_click_target_progress as target_progress
 from app.services.task_center.service import (
     create_and_start_search_join_group_task,
     create_search_join_group_task,
@@ -416,6 +417,73 @@ def test_search_join_daily_target_patch_reopens_completed_legacy_task(session: S
     assert updated.next_run_at is not None
     assert "completion_reason" not in updated.stats
     assert updated.stats["search_click_target"]["scope"] == "daily"
+
+
+@pytest.mark.no_postgres
+def test_deadline_extension_reopens_incomplete_daily_search_join_task(session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    now_value = datetime(2030, 1, 1, 10, 0, 0)
+    monkeypatch.setattr(task_service, "_now", lambda: now_value)
+    task = create_simple_search_join_group_task(
+        session,
+        1,
+        _simple_payload(scheduled_end=datetime(2030, 1, 2, tzinfo=timezone.utc)),
+        actor="tester",
+    )
+    task.status = "completed"
+    task.next_run_at = None
+    task.scheduled_end = datetime(2030, 1, 1, 9, 0, 0)
+    session.commit()
+
+    updated = task_service.update_search_join_group_config(
+        session,
+        1,
+        task.id,
+        SearchJoinGroupTaskConfigUpdate(scheduled_end=datetime(2030, 1, 1, 12, 0, tzinfo=timezone.utc)),
+        actor="tester",
+    )
+
+    assert updated.status == "running"
+    assert updated.next_run_at == now_value
+    assert updated.scheduled_end == datetime(2030, 1, 1, 20, 0, 0)
+
+
+@pytest.mark.no_postgres
+def test_deadline_extension_keeps_daily_task_ready_for_the_next_day(session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    now_value = datetime(2030, 1, 1, 10, 0, 0)
+    monkeypatch.setattr(task_service, "_now", lambda: now_value)
+    monkeypatch.setattr(target_progress, "beijing_now", lambda: now_value)
+    task = create_simple_search_join_group_task(
+        session,
+        1,
+        _simple_payload(daily_target_count=1, max_actions_per_day=1, scheduled_end=datetime(2030, 1, 2, tzinfo=timezone.utc)),
+        actor="tester",
+    )
+    task.status = "completed"
+    task.next_run_at = None
+    task.scheduled_end = datetime(2030, 1, 1, 9, 0, 0)
+    session.add(
+        Action(
+            tenant_id=1,
+            task_id=task.id,
+            task_type="search_join_group",
+            action_type="search_join",
+            status="success",
+            executed_at=now_value,
+            result={"join_status": "membership_observed"},
+        )
+    )
+    session.commit()
+
+    updated = task_service.update_search_join_group_config(
+        session,
+        1,
+        task.id,
+        SearchJoinGroupTaskConfigUpdate(scheduled_end=datetime(2030, 1, 1, 12, 0, tzinfo=timezone.utc)),
+        actor="tester",
+    )
+
+    assert updated.status == "running"
+    assert updated.next_run_at == now_value
 
 
 @pytest.mark.no_postgres

@@ -56,6 +56,10 @@ class TextTargetMatch:
     source: str
 
 
+class _JoinRequestPendingError(Exception):
+    pass
+
+
 async def execute_search_join_with_client(client: Any, payload: dict[str, Any], *, keyword_text: str) -> dict[str, Any]:
     bot_username = _bot_username(payload)
     if not keyword_text.strip():
@@ -111,7 +115,7 @@ async def _select_jisou_group_results_page(
     selector_buttons = _parse_buttons(page)
     group_button = _find_jisou_group_category_button(selector_buttons)
     if group_button is None:
-        return page, _failed("jisou_group_selector_missing", "极搜群聊类型选择按钮缺失"), None, selector_buttons
+        return page, _selector_missing(selector_buttons), None, selector_buttons
     return await _click_and_get_edited_page(client, bot_username, page, group_button), None, group_button, selector_buttons
 
 
@@ -130,6 +134,13 @@ def _find_jisou_group_category_button(buttons: list[SearchJoinButton]) -> Search
 
 def _normalized_button_text(text: str) -> str:
     return re.sub(r"\s+", "", text).lower()
+
+
+def _selector_missing(selector_buttons: list[SearchJoinButton]) -> dict[str, Any]:
+    return {
+        **_failed("jisou_group_selector_missing", "极搜群聊类型选择按钮缺失"),
+        "search_protocol_trace": {"selector_page": _page_layout(selector_buttons)},
+    }
 
 
 def _target_not_found(
@@ -212,9 +223,13 @@ async def _execute_target_join(
     if button.button_type == "external_http_url":
         return _external_blocked(button, total, decoys)
     click_result = await _click_button(page, button)
-    joined_target = await _join_target(client, button, target, click_result)
+    target_result = _success(payload, button, total, decoys, page_no)
+    try:
+        joined_target = await _join_target(client, button, target, click_result)
+    except _JoinRequestPendingError:
+        return _join_request_pending(target_result)
     await _mark_read_if_supported(client, joined_target)
-    return _success(payload, button, total, decoys, page_no)
+    return target_result
 
 
 async def _execute_text_target_join(
@@ -229,15 +244,19 @@ async def _execute_text_target_join(
     join_ref = str(target.get("username") or target.get("group_id") or "").strip()
     if not join_ref:
         return _failed("target_join_reference_missing", "正文命中目标但缺少可加入的 username / peer")
-    entity = await client.get_entity(join_ref)
-    await _join_channel(client, entity)
-    await _mark_read_if_supported(client, str(entity))
-    return {
+    target_result = {
         **_success(payload, None, total, decoys, page_no),
         "target_position": match.position,
         "target_match_source": match.source,
         "target_line": match.line,
     }
+    entity = await client.get_entity(join_ref)
+    try:
+        await _join_channel(client, entity)
+    except _JoinRequestPendingError:
+        return _join_request_pending(target_result)
+    await _mark_read_if_supported(client, str(entity))
+    return target_result
 
 
 def _parse_buttons(message: Any) -> list[SearchJoinButton]:
@@ -384,6 +403,8 @@ async def _join_channel(client: Any, entity: Any) -> None:
     except Exception as exc:
         if _is_already_participant_error(exc):
             return
+        if _is_join_request_pending_error(exc):
+            raise _JoinRequestPendingError from exc
         raise
 
 
@@ -395,6 +416,8 @@ async def _import_invite(client: Any, invite_hash: str) -> None:
     except Exception as exc:
         if _is_already_participant_error(exc):
             return
+        if _is_join_request_pending_error(exc):
+            raise _JoinRequestPendingError from exc
         raise
 
 
@@ -428,6 +451,16 @@ def _success(payload: dict[str, Any], button: SearchJoinButton | None, total: in
         "post_join_safe_navigation": [],
         "post_join_policy": payload.get("post_join_policy") or "stay_joined",
         "keyword_hash": payload.get("keyword_hash"),
+    }
+
+
+def _join_request_pending(target_result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **target_result,
+        "success": False,
+        "error_code": "join_request_pending",
+        "detail": "目标群开启入群审批，已提交申请但尚未观察到成员关系",
+        "join_status": "join_request_pending",
     }
 
 
@@ -538,6 +571,11 @@ def _click_result_url(result: Any) -> str:
 def _is_already_participant_error(exc: Exception) -> bool:
     text = f"{exc.__class__.__name__} {exc}".lower()
     return "already" in text and ("participant" in text or "member" in text)
+
+
+def _is_join_request_pending_error(exc: Exception) -> bool:
+    text = f"{exc.__class__.__name__} {exc}".lower()
+    return "requested to join this chat or channel" in text
 
 
 def _is_navigation_text(text: str) -> bool:

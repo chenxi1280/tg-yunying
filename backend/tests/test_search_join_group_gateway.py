@@ -106,6 +106,11 @@ class FakeAlreadyParticipantError(Exception):
         return "The authenticated user is already a participant of the channel"
 
 
+class FakeJoinRequestPendingError(Exception):
+    def __str__(self) -> str:
+        return "You have successfully requested to join this chat or channel (caused by JoinChannelRequest)"
+
+
 def _payload(**overrides) -> dict:
     payload = {
         "bot_username": "searchbot",
@@ -211,13 +216,29 @@ def test_execute_search_join_follows_jisou_right_arrow_until_target_is_found_on_
 
 @pytest.mark.no_postgres
 def test_execute_search_join_rejects_unfiltered_jisou_results_when_group_selector_is_missing() -> None:
-    result_page = FakeMessage(101, [[FakeButton("目标群", url="https://t.me/target_group")]])
+    result_page = FakeMessage(101, [[FakeButton("📢", data=b"channel-category")]])
     client = FakeSearchJoinClient([FakeMessage(100, []), result_page])
 
     result = asyncio.run(execute_search_join_with_client(client, _payload(bot_username="jisou"), keyword_text="郑州"))
 
     assert result["success"] is False
     assert result["error_code"] == "jisou_group_selector_missing"
+    assert result["search_protocol_trace"] == {
+        "selector_page": {
+            "button_count": 1,
+            "button_layout": [
+                {
+                    "row": 0,
+                    "col": 0,
+                    "button_type": "callback_data",
+                    "effect": "unknown",
+                    "text_length": 1,
+                    "contains_page_marker": False,
+                    "navigation_symbols": [],
+                }
+            ],
+        }
+    }
     assert result_page.clicked == []
     assert client.joined == []
 
@@ -364,6 +385,31 @@ def test_execute_search_join_counts_target_click_success_when_account_already_jo
     assert message.clicked == [(0, 0)]
     assert client.read_targets == ["target_group"]
     assert result["join_status"] == "membership_observed"
+
+
+@pytest.mark.no_postgres
+def test_execute_search_join_records_target_match_when_join_request_is_pending() -> None:
+    result_page = FakeMessage(101, [], raw_text="👥 河南郑州学生会 · 公开群")
+    client = FakeSearchJoinClient(
+        [FakeMessage(100, []), result_page],
+        join_error=FakeJoinRequestPendingError(),
+    )
+
+    result = asyncio.run(
+        execute_search_join_with_client(
+            client,
+            _payload(target_username="zzxshxc", target_title="河南郑州学生会"),
+            keyword_text="郑州",
+        )
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "join_request_pending"
+    assert result["join_status"] == "join_request_pending"
+    assert result["search_end_reason"] == "target_found"
+    assert result["target_match_source"] == "message_title_username_verified"
+    assert result["target_line"] == "👥 河南郑州学生会 · 公开群"
+    assert client.read_targets == []
 
 
 @pytest.mark.no_postgres

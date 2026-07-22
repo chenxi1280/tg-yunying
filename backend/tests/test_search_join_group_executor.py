@@ -236,6 +236,28 @@ def test_search_join_planner_creates_hash_only_search_join_actions(session: Sess
 
 
 @pytest.mark.no_postgres
+def test_search_join_planner_rejects_environment_authorization_from_another_account(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _bind_search_join_environment(session, [101, 102])
+    wrong_environment = search_join_executor.ensure_search_join_environment(session, session.get(TgAccount, 102))
+    task = _task(
+        account_config={"selection_mode": "manual", "account_ids": [101], "max_concurrent": 1},
+        type_config={"actions_per_round": 1, "hourly_min_successful_joins": 1},
+    )
+    session.add(task)
+    session.commit()
+    monkeypatch.setattr(search_join_executor, "ensure_search_join_environment", lambda *_args: wrong_environment)
+
+    assert build_task_plan(session, task) == 0
+    assert session.scalar(select(Action).where(Action.task_id == task.id)) is None
+    assert task.stats["search_join_stats"]["hourly_execution"]["last_blockers"] == {
+        "search_join_environment_authorization_scope_mismatch": 1
+    }
+
+
+@pytest.mark.no_postgres
 def test_search_join_planner_caps_new_actions_by_target_count_and_held_slots(session: Session) -> None:
     _bind_search_join_environment(session, [101, 102])
     task = _task(type_config={"target_count": 3})
@@ -1103,6 +1125,42 @@ def test_search_join_daily_limits_count_failed_and_claiming_real_actions(session
     limits = task.stats["search_join_stats"]["pacing_limits"]
     assert limits["task_daily_action_count"] == 2
     assert limits["task_daily_remaining"] == 0
+
+
+@pytest.mark.no_postgres
+def test_search_join_planner_avoids_repeat_join_request_for_same_account(session: Session) -> None:
+    _bind_search_join_environment(session, [101, 102])
+    task = _task(
+        account_config={"selection_mode": "manual", "account_ids": [101, 102], "max_concurrent": 2},
+        type_config={"actions_per_round": 1, "hourly_min_successful_joins": 1},
+        pacing_config={"per_account_daily_action_limit": 2},
+    )
+    session.add(task)
+    session.flush()
+    session.add(
+        Action(
+            tenant_id=1,
+            task_id=task.id,
+            task_type="search_join_group",
+            action_type="search_join",
+            account_id=101,
+            status="failed",
+            executed_at=_now(),
+            payload={"keyword_hash": "a" * 64},
+            result={
+                "error_code": "search_join_execution_failed",
+                "detail": "You have successfully requested to join this chat or channel (caused by JoinChannelRequest)",
+            },
+        )
+    )
+    session.commit()
+
+    assert build_task_plan(session, task) == 1
+    action = session.scalar(select(Action).where(Action.task_id == task.id, Action.status == "pending"))
+
+    assert action is not None
+    assert action.account_id == 102
+    assert task.stats["search_join_stats"]["pacing_limits"]["join_request_pending"] == 1
 
 
 @pytest.mark.no_postgres
