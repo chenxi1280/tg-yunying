@@ -554,6 +554,8 @@
 
 补充：BG-004 的 `tasks.hard_hourly_next_check_at` 是 Planner 的持久化复查点，JSON 同名字段仅保留展示兼容，旧值首次读取时提升到独立列。当前小时和历史补量均无 planning deficit 时写为本小时结束；存在欠债且本轮创建 Action 时按 `created / planning_rate` 写入；`coverage_waiting` 或 `daily_coverage_capacity_insufficient` 复用已有 `daily_coverage_next_check_at`，字段缺失时明确写入两分钟 checkpoint，部分索引只扫描已到期或尚未迁移的 running AI 活群。每个启用 hard-hourly 的任务轮次只读取一次 24 小时 progress，所有最多 20 条的子批次、open-action、backlog 和 group AI 规划判断复用该快照，并按该快照 deficit 截断本轮计划。listener 新写入真人上下文时将复查点显式设为当前时刻并单次唤醒 Planner；重置或配置更新清空旧计划时同步清除检查点，若该轮规划中止且未写 marker，Planner 必须用同一快照写回复查点，旧 `next_run_at` 不得绕过它。metrics 保持五分钟采集，但 task summary 不再触发 hard-hourly 24 小时历史重算。
 
+> **授权切换在线重探（2026-07-22）**：`switch_primary_authorization` 更换 primary session / proxy 时，必须把已有 `TgAccountOnlineState` 重置为 `warming`、清空旧 session 的探测事实并把 `next_probe_at` 置为当前时刻；account-online worker 对新 primary 完成真实健康探测前，Planner / Dispatcher 仍不可把该账号视为可发送。
+
 ## 6. 维护口径
 
 ### 2026-07-10 生产核心页面有界加载（设计完成，待实现）

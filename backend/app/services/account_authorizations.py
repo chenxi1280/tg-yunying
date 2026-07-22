@@ -12,6 +12,7 @@ from app.models import (
     TelegramDeveloperApp,
     TgAccount,
     TgAccountAuthorization,
+    TgAccountOnlineState,
     TgLoginFlow,
     TgVerificationCode,
 )
@@ -194,6 +195,7 @@ def switch_primary_authorization(
     _preserve_legacy_primary_if_needed(session, account, reason)
     _demote_current_authorizations(session, account, authorization_id, reason)
     _promote_authorization(account, target)
+    _reset_online_state_after_authorization_switch(session, account)
     audit(
         session,
         tenant_id=account.tenant_id,
@@ -206,6 +208,28 @@ def switch_primary_authorization(
     session.commit()
     session.refresh(account)
     return account
+
+
+def _reset_online_state_after_authorization_switch(session: Session, account: TgAccount) -> None:
+    state = session.scalar(
+        select(TgAccountOnlineState).where(
+            TgAccountOnlineState.tenant_id == account.tenant_id,
+            TgAccountOnlineState.account_id == account.id,
+        )
+    )
+    if not state:
+        return
+    timestamp = _now()
+    state.online_status = "warming"
+    state.last_seen_at = None
+    state.last_probe_at = None
+    state.last_keepalive_at = None
+    state.stale_after_at = None
+    state.failure_type = ""
+    state.failure_detail = ""
+    state.recovery_status = "authorization_switched"
+    state.next_probe_at = timestamp
+    state.updated_at = timestamp
 
 
 def activate_authorization(
