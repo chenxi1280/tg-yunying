@@ -296,6 +296,63 @@ def test_execute_search_join_joins_known_target_when_message_text_matches() -> N
 
 
 @pytest.mark.no_postgres
+def test_execute_search_join_uses_visible_exact_title_with_configured_username_on_jisou_page_four() -> None:
+    category_page = FakeMessage(101, [[FakeButton("👥", data=b"group-category")]])
+    first_page = FakeMessage(102, [[FakeButton("其他群一", url="https://t.me/other_1")], [FakeButton("➡️", data=b"next-1")]])
+    second_page = FakeMessage(103, [[FakeButton("其他群二", url="https://t.me/other_2")], [FakeButton("➡️", data=b"next-2")]])
+    third_page = FakeMessage(104, [[FakeButton("其他群三", url="https://t.me/other_3")], [FakeButton("➡️", data=b"next-3")]])
+    target_page = FakeMessage(
+        105,
+        [[FakeButton("其他群四", url="https://t.me/other_4")]],
+        raw_text="👥 河南郑州学生会 · 公开群",
+    )
+    client = FakeSearchJoinClient(
+        [FakeMessage(100, []), category_page, first_page, second_page, third_page, target_page]
+    )
+
+    result = asyncio.run(
+        execute_search_join_with_client(
+            client,
+            _payload(
+                bot_username="jisou",
+                target_username="zzxshxc",
+                target_title="河南郑州学生会",
+                target_peer_id="-1003298633687",
+            ),
+            keyword_text="郑州",
+        )
+    )
+
+    assert result["success"] is True
+    assert result["page"] == 4
+    assert result["target_match_source"] == "message_title_username_verified"
+    assert result["target_line"] == "👥 河南郑州学生会 · 公开群"
+    assert target_page.clicked == []
+    assert client.joined == ["zzxshxc"]
+
+
+@pytest.mark.no_postgres
+def test_execute_search_join_does_not_use_title_prefix_as_target_match() -> None:
+    result_page = FakeMessage(
+        101,
+        [[FakeButton("其他群", url="https://t.me/other_group")]],
+        raw_text="👥 河南郑州学生会新生群",
+    )
+    client = FakeSearchJoinClient([FakeMessage(100, []), result_page])
+
+    result = asyncio.run(
+        execute_search_join_with_client(
+            client,
+            _payload(target_username="zzxshxc", target_title="河南郑州学生会"),
+            keyword_text="郑州",
+        )
+    )
+
+    assert result["error_code"] == "target_not_in_results"
+    assert client.joined == []
+
+
+@pytest.mark.no_postgres
 def test_execute_search_join_counts_target_click_success_when_account_already_joined() -> None:
     target = FakeButton("目标群", url="https://t.me/target_group")
     message = FakeMessage(101, [[target]])

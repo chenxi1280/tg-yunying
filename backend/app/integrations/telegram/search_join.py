@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
@@ -52,6 +53,7 @@ class SearchJoinButton:
 class TextTargetMatch:
     position: int
     line: str
+    source: str
 
 
 async def execute_search_join_with_client(client: Any, payload: dict[str, Any], *, keyword_text: str) -> dict[str, Any]:
@@ -233,7 +235,7 @@ async def _execute_text_target_join(
     return {
         **_success(payload, None, total, decoys, page_no),
         "target_position": match.position,
-        "target_match_source": "message_text",
+        "target_match_source": match.source,
         "target_line": match.line,
     }
 
@@ -446,14 +448,39 @@ def _find_target_in_text(message: Any, target: dict[str, Any]) -> TextTargetMatc
     username = str(target.get("username") or "").strip().lower().lstrip("@")
     if not username:
         return None
+    title = _normalized_target_title(target.get("title"))
     pattern = re.compile(rf"(?<![a-z0-9_])@?{re.escape(username)}(?![a-z0-9_])")
     for position, line in enumerate(_message_text(message).splitlines(), start=1):
         normalized = line.strip().lower()
         if not normalized:
             continue
         if pattern.search(normalized):
-            return TextTargetMatch(position, line.strip())
+            return TextTargetMatch(position, line.strip(), "message_text")
+        if _line_has_exact_target_title(line, title):
+            return TextTargetMatch(position, line.strip(), "message_title_username_verified")
     return None
+
+
+def _line_has_exact_target_title(line: str, title: str) -> bool:
+    normalized_line = _normalized_target_title(line)
+    position = normalized_line.find(title)
+    while position >= 0:
+        before = normalized_line[position - 1] if position else ""
+        end = position + len(title)
+        after = normalized_line[end] if end < len(normalized_line) else ""
+        if not _is_title_name_character(before) and not _is_title_name_character(after):
+            return True
+        position = normalized_line.find(title, position + 1)
+    return False
+
+
+def _normalized_target_title(value: Any) -> str:
+    text = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    return "".join(char for char in text if not char.isspace() and char != VARIATION_SELECTOR)
+
+
+def _is_title_name_character(value: str) -> bool:
+    return bool(value) and (value.isalnum() or value == "_")
 
 
 def _human_verification_required(message: Any) -> bool:
