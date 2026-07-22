@@ -659,6 +659,7 @@ def due_actions(session: Session, limit: int = 100, *, exclude_task_ids: set[str
             .order_by(
                 _target_admission_retry_claim_rank(),
                 _hard_hourly_claim_rank(),
+                _search_join_membership_claim_rank(),
                 Task.priority.asc(),
                 _channel_comment_claim_rank(),
                 Action.scheduled_at.asc(),
@@ -705,6 +706,7 @@ def claim_actions(session: Session, limit: int = 100, *, exclude_task_ids: set[s
         .order_by(
             _target_admission_retry_claim_rank(),
             _hard_hourly_claim_rank(),
+            _search_join_membership_claim_rank(),
             Task.priority.asc(),
             _channel_comment_claim_rank(),
             Action.scheduled_at.asc(),
@@ -880,6 +882,10 @@ def _hard_hourly_claim_rank():
         (hard_hourly_send, 1),
         else_=2,
     )
+
+
+def _search_join_membership_claim_rank():
+    return case((Action.action_type == SEARCH_JOIN_MEMBERSHIP_ACTION_TYPE, 0), else_=1)
 
 
 def _channel_comment_claim_rank():

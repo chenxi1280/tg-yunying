@@ -3554,7 +3554,7 @@ DB 短事务确认执行
 - 同一账号默认只能有一个 executing action。
 - Dispatcher 单轮预领取量不得大于该 worker 的实际执行并发，避免批次尾部在资源确认前超过 `claim_expires_at`；worker 命令的 drain limit 大于实际并发时，只表示后续轮次继续处理，不得一次占住全部 action。
 - 同一次 claim 中共用 AI generation claim token 的 normal pending `send_message` 属于一个共享生成批次。该 claim 批次必须由单一入口按领取顺序推进批量生成、Phase C 和后续 sibling 发送，不能把每个空文本 sibling 同时交给线程池并发加载、更新重叠 Action 集合；这个串行边界只消除同批生成写冲突，不得截断最终应处理 Action，也不得成为账号或任务准入上限。不共享生成批次的 Action 继续按 Dispatcher 实际并发执行。
-- AI 活跃群每小时硬目标排序保持最高；其余同 Task priority 的到期动作中，`channel_comment` 任务的目标准入和 `post_comment` 必须先于普通批量点赞 / 浏览动作领取，避免频道评论链路被批量积压长期饥饿。该排序不得绕过账号、限流、权限或 Telegram Gateway 校验。
+- AI 活跃群每小时硬目标排序保持最高；其余同 Task priority 的到期动作中，`channel_comment` 任务的目标准入和 `post_comment` 必须先于普通批量点赞 / 浏览动作领取，避免频道评论链路被批量积压长期饥饿。已命中搜索目标的 `search_join_membership` child 属于准入收口，不得被普通 AI 活群批量 action 长期饿死：在既有目标准入重试和 AI 硬目标之后、普通批量 action 之前领取；仍必须通过原账号、授权槽位、账号限流、权限和 Telegram Gateway 校验。
 - 进入 Gateway 调用边界后结果未知，必须标记 `unknown_after_send`，不能自动重发。
 - FloodWait、SlowMode、账号受限、代理异常、目标权限不足和内容拦截必须分类。
 - Dispatcher 不负责选择引用对象，也不负责把普通消息升级为引用回复。它只读取 action payload 中的 `reply_to_message_id`，并把该值传给 Telegram Gateway 的原生 `reply_to` / 评论回复参数。
