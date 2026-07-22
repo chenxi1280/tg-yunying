@@ -50,6 +50,11 @@ from .task_center.payloads import EnsureChannelMembershipPayload, create_members
 
 
 ADMISSION_RETRY_TASK_TYPE = "target_admission_retry"
+TELEGRAM_PUBLIC_LINK_PREFIXES = (
+    "https://t.me/", "http://t.me/", "t.me/",
+    "https://telegram.me/", "http://telegram.me/", "telegram.me/",
+    "https://www.t.me/", "http://www.t.me/",
+)
 
 
 def _account_id_csv(values: list[int] | str | None) -> str:
@@ -1106,6 +1111,114 @@ def export_operation_target_invite_link(session: Session, tenant_id: int, target
             "attempted_account_count": len(failures) + 1,
         }
     raise ValueError(f"invite link export failed after {len(failures)} accounts: {'; '.join(failures[:5])}")
+
+
+def canonicalize_operation_target_peer(
+    session: Session,
+    tenant_id: int,
+    target_id: int,
+    observer_account_id: int,
+    actor: str,
+) -> dict:
+    target = _operation_target_for_tenant(session, tenant_id, target_id)
+    group = _legacy_target_group(session, target)
+    public_username = _legacy_public_username(target.tg_peer_id)
+    observer, link = _canonicalization_observer(session, tenant_id, group, observer_account_id)
+    snapshots = gateway.list_groups(observer.id, observer.session_ciphertext, credentials_for_account(session, observer))
+    snapshot = _snapshot_for_public_username(snapshots, public_username)
+    _assert_canonical_peer_available(session, target, group, snapshot.tg_peer_id)
+    old_peer_id = target.tg_peer_id
+    _apply_canonical_snapshot(session, target, group, link, snapshot)
+    audit(
+        session,
+        tenant_id=tenant_id,
+        actor=actor,
+        action="规范化运营目标 Telegram Peer",
+        target_type="operation_target",
+        target_id=str(target.id),
+        detail=f"old_peer_id={old_peer_id}; new_peer_id={snapshot.tg_peer_id}; observer_account_id={observer.id}",
+    )
+    session.commit()
+    return {"target_id": target.id, "group_id": group.id, "stable_peer_id": snapshot.tg_peer_id, "observer_account_id": observer.id}
+
+
+def _legacy_target_group(session: Session, target: OperationTarget) -> TgGroup:
+    if target.target_type != "group":
+        raise ValueError("only group targets can canonicalize Telegram peers")
+    group = _linked_group_for_target(session, target)
+    if not group:
+        raise ValueError("target group link not found")
+    if _is_stable_telegram_peer(target.tg_peer_id):
+        raise ValueError("target already has a stable Telegram peer")
+    return group
+
+
+def _legacy_public_username(peer_id: str) -> str:
+    raw = str(peer_id or "").strip()
+    normalized = raw.lstrip("@") if raw.startswith("@") else ""
+    for prefix in TELEGRAM_PUBLIC_LINK_PREFIXES:
+        if raw.lower().startswith(prefix):
+            normalized = raw[len(prefix):].split("?", 1)[0].strip("/")
+            break
+    if not normalized or "/" in normalized or normalized.startswith(("+", "joinchat/", "c/")):
+        raise ValueError("target must use a public Telegram username before peer canonicalization")
+    return normalized.lower()
+
+
+def _canonicalization_observer(session: Session, tenant_id: int, group: TgGroup, account_id: int) -> tuple[TgAccount, TgGroupAccount]:
+    account = session.get(TgAccount, account_id)
+    link = session.scalar(
+        select(TgGroupAccount).where(
+            TgGroupAccount.tenant_id == tenant_id,
+            TgGroupAccount.group_id == group.id,
+            TgGroupAccount.account_id == account_id,
+        )
+    )
+    if not _is_send_ready_observer(account, tenant_id, link):
+        raise ValueError("observer account is not a send-ready linked group member")
+    return account, link
+
+
+def _is_send_ready_observer(account: TgAccount | None, tenant_id: int, link: TgGroupAccount | None) -> bool:
+    return bool(
+        account
+        and account.tenant_id == tenant_id
+        and account.deleted_at is None
+        and account.status == AccountStatus.ACTIVE.value
+        and account.session_ciphertext
+        and link
+        and link.can_send
+    )
+
+
+def _snapshot_for_public_username(snapshots: list, public_username: str):
+    matches = [snapshot for snapshot in snapshots if str(snapshot.username or "").strip().lstrip("@").lower() == public_username]
+    if not matches:
+        raise ValueError("public Telegram username was not observed in observer account groups")
+    if len(matches) != 1 or not _is_stable_telegram_peer(matches[0].tg_peer_id):
+        raise ValueError("public Telegram username did not resolve to one stable peer")
+    return matches[0]
+
+
+def _assert_canonical_peer_available(session: Session, target: OperationTarget, group: TgGroup, peer_id: str) -> None:
+    target_conflict = session.scalar(select(OperationTarget.id).where(OperationTarget.tenant_id == target.tenant_id, OperationTarget.tg_peer_id == peer_id, OperationTarget.id != target.id))
+    group_conflict = session.scalar(select(TgGroup.id).where(TgGroup.tenant_id == group.tenant_id, TgGroup.tg_peer_id == peer_id, TgGroup.id != group.id))
+    if target_conflict or group_conflict:
+        raise ValueError("stable Telegram peer already assigned to another target or group")
+
+
+def _apply_canonical_snapshot(session: Session, target: OperationTarget, group: TgGroup, link: TgGroupAccount, snapshot) -> None:
+    target.tg_peer_id = snapshot.tg_peer_id
+    target.title = snapshot.title
+    target.username = target.username or snapshot.username or ""
+    target.member_count = snapshot.member_count
+    group.tg_peer_id = snapshot.tg_peer_id
+    group.title = snapshot.title
+    group.group_type = snapshot.group_type
+    group.member_count = snapshot.member_count
+    link.permission_label = snapshot.permission_label
+    link.can_send = bool(snapshot.can_send)
+    _refresh_target_capability_from_group(session, target, group)
 
 
 def _invite_export_candidate_accounts(session: Session, target: OperationTarget) -> list[TgAccount]:
