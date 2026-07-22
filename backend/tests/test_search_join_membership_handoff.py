@@ -26,8 +26,12 @@ from app.security import encrypt_secret
 from app.services.task_center import dispatcher
 from app.services.task_center.dispatcher import dispatch_action
 from app.services.task_center.payloads import SearchJoinMembershipPayload
-from app.services.task_center.search_click_target_progress import search_click_target_progress
-from app.services.task_center.search_join_pacing import PacingStats, PacingWindow, account_base_allowed
+from app.services.task_center.search_click_target_progress import (
+    reconcile_search_click_target_progress,
+    search_click_target_progress,
+    search_join_membership_target_progress,
+)
+from app.services.task_center.search_join_pacing import PacingStats, PacingWindow, account_base_allowed, keyword_allowed
 
 
 KEYWORD_HASH = hashlib.sha256("郑州".encode("utf-8")).hexdigest()
@@ -115,6 +119,8 @@ def test_target_found_creates_one_scoped_membership_child(monkeypatch, session: 
     children = list(session.scalars(select(Action).where(Action.task_id == source.task_id, Action.action_type == "search_join_membership")))
     assert source.status == "success"
     assert source.result["join_status"] == "membership_pending"
+    assert source.result["target_click_observed"] is True
+    assert source.result["target_found_at"]
     assert len(children) == 1
     assert children[0].payload["source_search_join_action_id"] == source.id
     assert SearchJoinMembershipPayload.model_validate(children[0].payload).target_username == "zzxshxc"
@@ -223,6 +229,64 @@ def test_pending_application_reprobes_without_reapplying_and_blocks_next_day(mon
     assert child.status == "success"
     assert source.result["join_status"] == "membership_observed"
     assert calls == {"apply": 1, "probe": 1}
+
+
+@pytest.mark.no_postgres
+def test_repeat_application_mode_allows_same_account_after_pending_request(session: Session) -> None:
+    task, source = _source_action(session)
+    task.type_config = {
+        "daily_click_target_count": 500,
+        "daily_target_count": 80,
+        "allow_same_account_repeat_application": True,
+    }
+    task.pacing_config = {
+        "per_account_daily_action_limit": 1,
+        "per_keyword_account_daily_limit": 1,
+    }
+    source.status = "success"
+    source.executed_at = datetime(2026, 7, 23, 9, 0)
+    source.result = {"join_status": "membership_pending"}
+    session.commit()
+
+    window = PacingWindow(local_date=datetime(2026, 7, 23).date(), hour_start=datetime(2026, 7, 23, 10))
+
+    assert account_base_allowed(session, task, 101, window, PacingStats()) is True
+    assert keyword_allowed(session, task, 101, KEYWORD_HASH, window, PacingStats()) is True
+
+
+@pytest.mark.no_postgres
+def test_click_and_membership_progress_are_counted_from_distinct_facts(session: Session) -> None:
+    task, source = _source_action(session)
+    task.type_config = {
+        "daily_click_target_count": 500,
+        "daily_target_count": 80,
+    }
+    source.status = "success"
+    source.executed_at = datetime(2026, 7, 23, 9, 0)
+    source.result = {
+        "success": True,
+        "join_status": "membership_pending",
+        "target_click_observed": True,
+        "target_found_at": "2026-07-23T09:00:00+08:00",
+    }
+    session.commit()
+
+    click_progress = reconcile_search_click_target_progress(
+        session, task, now_value=datetime(2026, 7, 23, 10, 0)
+    )
+    membership_progress = search_join_membership_target_progress(
+        session, task, now_value=datetime(2026, 7, 23, 10, 0)
+    )
+
+    assert click_progress.confirmed_count == 1
+    assert click_progress.held_count == 0
+    assert click_progress.remaining_slot_count == 499
+    assert membership_progress is not None
+    assert membership_progress.confirmed_count == 0
+    assert membership_progress.held_count == 1
+    assert membership_progress.remaining_slot_count == 79
+    assert task.stats["search_click_target"]["confirmed_count"] == 1
+    assert task.stats["search_join_membership_target"]["confirmed_count"] == 0
 
 
 @pytest.mark.no_postgres

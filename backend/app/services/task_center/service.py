@@ -388,16 +388,21 @@ def _simple_search_join_group_payload(
         name=_simple_search_click_name(
             target,
             "搜索目标群点击",
-            payload.daily_target_count,
+            payload.daily_click_target_count or payload.daily_target_count,
             payload.target_title,
             daily_target=True,
+            daily_membership_target_count=(
+                payload.daily_target_count if payload.daily_click_target_count is not None else None
+            ),
         ),
         target_operation_target_id=target.id,
         target_input=canonical_link,
         target_title=payload.target_title,
         target_link=canonical_link,
         keywords=payload.keywords,
+        daily_click_target_count=payload.daily_click_target_count,
         daily_target_count=payload.daily_target_count,
+        allow_same_account_repeat_application=payload.allow_same_account_repeat_application,
         strict_daily_target=True,
         search_bots=[{"username": "jisou", "display_name": "极搜"}],
         account_config=search_click_account_config(payload.account_group_id),
@@ -409,7 +414,9 @@ def _simple_search_join_group_payload(
         tenant_id,
         account_config=task_payload.account_config.model_dump(mode="json"),
         pacing_config=task_payload.pacing_config.model_dump(mode="json"),
+        daily_click_target_count=task_payload.daily_click_target_count,
         daily_target_count=task_payload.daily_target_count,
+        allow_same_account_repeat_application=task_payload.allow_same_account_repeat_application,
         keyword_count=len(task_payload.keyword_hashes),
     )
     return task_payload
@@ -468,9 +475,13 @@ def _simple_search_click_name(
     target_title: str = "",
     *,
     daily_target: bool = False,
+    daily_membership_target_count: int | None = None,
 ) -> str:
     target_label = (target_title or target.title or f"@{target.username}").strip()
     count_label = f"每日 {target_count}" if daily_target else str(target_count)
+    if daily_target and daily_membership_target_count is not None:
+        count_label = f"每日点击 {target_count} 次（加入目标 {daily_membership_target_count} 次）"
+        return f"{target_label} {task_label} {count_label}"[:200]
     return f"{target_label} {task_label} {count_label} 次"[:200]
 
 
@@ -483,8 +494,13 @@ def _refresh_simple_search_click_name(session: Session, task: Task, *, task_labe
             target_id = target_group_ids[0]
     if target_id is None:
         return
+    daily_click_target = task.type == NORMAL_SEARCH_CLICK_TASK and config.get("daily_click_target_count") is not None
     daily_target = task.type == NORMAL_SEARCH_CLICK_TASK and config.get("daily_target_count") is not None
-    target_count = int(config.get("daily_target_count") if daily_target else config.get("target_count") or 0)
+    target_count = int(
+        config.get("daily_click_target_count") if daily_click_target
+        else config.get("daily_target_count") if daily_target
+        else config.get("target_count") or 0
+    )
     if target_count <= 0:
         return
     target = _simple_search_click_target(session, task.tenant_id, int(target_id))
@@ -493,7 +509,10 @@ def _refresh_simple_search_click_name(session: Session, task: Task, *, task_labe
         task_label,
         target_count,
         str(config.get("target_title") or ""),
-        daily_target=daily_target,
+        daily_target=daily_target or daily_click_target,
+        daily_membership_target_count=(
+            int(config.get("daily_target_count")) if daily_click_target and config.get("daily_target_count") is not None else None
+        ),
     )
 
 
@@ -893,7 +912,9 @@ def update_search_join_group_config(session: Session, tenant_id: int, task_id: s
         session, tenant_id, task, payload
     )
     type_config_updated = bool(update_data)
-    daily_target_updated = "daily_target_count" in update_data
+    daily_target_updated = bool(
+        {"daily_click_target_count", "daily_target_count"}.intersection(update_data)
+    )
     if type_config_updated:
         task = _apply_type_config_data(
             session,
@@ -904,7 +925,13 @@ def update_search_join_group_config(session: Session, tenant_id: int, task_id: s
             actor,
             remove_fields=("target_count",) if daily_target_updated else (),
         )
-        if {"target_operation_target_id", "target_title", "target_count", "daily_target_count"}.intersection(update_data):
+        if {
+            "target_operation_target_id",
+            "target_title",
+            "target_count",
+            "daily_click_target_count",
+            "daily_target_count",
+        }.intersection(update_data):
             _refresh_simple_search_click_name(session, task, task_label="搜索目标群点击")
     pacing_updated = False
     if pacing_data is not None:
@@ -912,7 +939,15 @@ def update_search_join_group_config(session: Session, tenant_id: int, task_id: s
         pacing_updated = next_pacing != (task.pacing_config or {})
         task.pacing_config = next_pacing
     controls_updated = _apply_search_click_operator_controls(session, task, operator_controls)
-    if not type_config_updated and (pacing_updated or controls_updated):
+    planning_type_config_fields = {
+        "allow_same_account_repeat_application",
+        "actions_per_round",
+        "max_actions_per_hour",
+        "hourly_min_successful_joins",
+    }
+    if planning_type_config_fields.intersection(update_data) or (
+        not type_config_updated and (pacing_updated or controls_updated)
+    ):
         _clear_unfinished_plan(session, task)
         _requeue_search_join_after_operator_change(session, task, operator_controls)
     if daily_target_updated:
@@ -966,7 +1001,12 @@ SEARCH_JOIN_OPERATOR_EDIT_FIELDS = {
     "target_link",
     "keywords",
     "target_count",
+    "daily_click_target_count",
     "daily_target_count",
+    "allow_same_account_repeat_application",
+    "actions_per_round",
+    "max_actions_per_hour",
+    "hourly_min_successful_joins",
     *SEARCH_JOIN_OPERATOR_CONTROL_FIELDS,
 }
 SEARCH_RANK_OPERATOR_EDIT_FIELDS = {
@@ -1012,18 +1052,33 @@ def _validate_search_join_daily_target(
     update_data: dict[str, Any],
     controls: dict[str, Any],
 ) -> None:
-    target = update_data.get("daily_target_count", (task.type_config or {}).get("daily_target_count"))
-    if target is None:
+    daily_click_target = update_data.get(
+        "daily_click_target_count",
+        (task.type_config or {}).get("daily_click_target_count"),
+    )
+    daily_membership_target = update_data.get(
+        "daily_target_count",
+        (task.type_config or {}).get("daily_target_count"),
+    )
+    source_target = daily_click_target or daily_membership_target
+    if source_target is None:
         return
     max_actions = controls.get("max_actions_per_day", (task.pacing_config or {}).get("max_actions_per_day"))
-    if max_actions is None or int(max_actions) < int(target):
-        raise ValueError("max_actions_per_day 不能小于 daily_target_count")
+    if max_actions is None or int(max_actions) < int(source_target):
+        raise ValueError("max_actions_per_day 不能小于每日点击目标")
     _validate_search_join_configured_daily_capacity(
         session,
         task.tenant_id,
         account_config=_next_search_join_account_config(session, task, controls),
         pacing_config=_next_search_join_pacing_config(task, controls),
-        daily_target_count=int(target),
+        daily_click_target_count=int(daily_click_target) if daily_click_target is not None else None,
+        daily_target_count=int(daily_membership_target) if daily_membership_target is not None else None,
+        allow_same_account_repeat_application=bool(
+            update_data.get(
+                "allow_same_account_repeat_application",
+                (task.type_config or {}).get("allow_same_account_repeat_application"),
+            )
+        ),
         keyword_count=_search_join_keyword_count(task, update_data),
     )
 
@@ -1059,12 +1114,15 @@ def _validate_search_join_configured_daily_capacity(
     *,
     account_config: dict[str, Any],
     pacing_config: dict[str, Any],
+    daily_click_target_count: int | None,
     daily_target_count: int | None,
+    allow_same_account_repeat_application: bool,
     keyword_count: int,
 ) -> None:
-    if daily_target_count is None:
+    source_target = daily_click_target_count or daily_target_count
+    if source_target is None:
         return
-    target = int(daily_target_count)
+    target = int(source_target)
     daily_budget = int(pacing_config.get("max_actions_per_day") or 0) or target
     candidates = select_task_accounts(
         session,
@@ -1073,12 +1131,17 @@ def _validate_search_join_configured_daily_capacity(
         enforce_capacity=False,
         scan_all_candidates=True,
     )
-    per_account_limit = _effective_search_join_account_daily_limit(pacing_config, keyword_count, daily_budget)
+    per_account_limit = (
+        daily_budget
+        if allow_same_account_repeat_application
+        else _effective_search_join_account_daily_limit(pacing_config, keyword_count, daily_budget)
+    )
     capacity = min(daily_budget, len(candidates) * per_account_limit)
     if target > capacity:
+        target_field = "daily_click_target_count" if daily_click_target_count is not None else "daily_target_count"
         raise ValueError(
             "daily_target_capacity_insufficient: "
-            f"daily_target_count={target}, candidate_accounts={len(candidates)}, "
+            f"{target_field}={target}, candidate_accounts={len(candidates)}, "
             f"effective_per_account_daily_limit={per_account_limit}, configured_daily_capacity={capacity}"
         )
 
