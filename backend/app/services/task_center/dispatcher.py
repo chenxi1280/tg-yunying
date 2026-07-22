@@ -1015,7 +1015,7 @@ def _record_rank_deboost_isolation_alert(session: Session, action: Action, accou
 
 
 def _is_membership_action(action: Action) -> bool:
-    return action.action_type in MEMBERSHIP_ACTION_TYPES
+    return action.action_type in (*MEMBERSHIP_ACTION_TYPES, SEARCH_JOIN_MEMBERSHIP_ACTION_TYPE)
 
 
 def _is_group_rescue_action(action: Action) -> bool:
