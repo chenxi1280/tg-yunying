@@ -132,6 +132,7 @@ def _seed_reply_scope(session: Session, now_value) -> GroupContextMessage:
         auth_status="已授权运营",
         can_send=True,
         require_review=False,
+        group_cooldown_seconds=0,
     ))
     session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True))
     context = GroupContextMessage(

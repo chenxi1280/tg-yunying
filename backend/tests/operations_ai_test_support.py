@@ -29,6 +29,7 @@ def seed_group_accounts(
     topic_direction: str = "",
     normal_pool: bool = False,
     online_at: datetime | None = None,
+    group_cooldown_seconds: int = 0,
 ) -> None:
     session.add(Tenant(id=1, name="默认运营空间"))
     if normal_pool:
@@ -36,6 +37,7 @@ def seed_group_accounts(
     session.add(TgGroup(
         id=group_id, tenant_id=1, tg_peer_id=f"-100{group_id}", title=title,
         auth_status="已授权运营", topic_direction=topic_direction,
+        group_cooldown_seconds=group_cooldown_seconds,
     ))
     for account_id in account_ids:
         account = TgAccount(
