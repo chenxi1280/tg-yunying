@@ -432,6 +432,7 @@ def test_execute_search_join_records_target_match_when_join_request_is_pending()
     assert result["success"] is False
     assert result["error_code"] == "join_request_pending"
     assert result["join_status"] == "join_request_pending"
+    assert "membership_observed" not in result
     assert source_result["search_end_reason"] == "target_found"
     assert source_result["target_match_source"] == "message_title_username_verified"
     assert source_result["target_line"] == "👥 河南郑州学生会 · 公开群"

@@ -337,6 +337,32 @@ def test_pending_application_reprobes_without_reapplying_and_blocks_next_day(mon
 
 
 @pytest.mark.no_postgres
+def test_pending_reprobe_clears_stale_membership_observed_fact(monkeypatch, session: Session) -> None:
+    task, source = _source_action(session)
+    monkeypatch.setattr(dispatcher.gateway, "execute_search_join", lambda *_args: _target_found_result(), raising=False)
+    assert dispatch_action(session, source) is True
+    child = session.scalar(select(Action).where(Action.task_id == task.id, Action.action_type == "search_join_membership"))
+    assert child is not None
+    child.result = {
+        "application_submitted_at": "2026-07-22T20:50:00+08:00",
+        "join_status": "join_request_pending",
+        "membership_observed": True,
+    }
+    session.commit()
+    monkeypatch.setattr(
+        dispatcher.gateway,
+        "probe_search_join_membership",
+        lambda *_args: {"success": False, "error_code": "membership_not_observed", "join_status": "membership_pending"},
+        raising=False,
+    )
+
+    assert dispatch_action(session, child) is True
+
+    assert child.status == "pending"
+    assert "membership_observed" not in child.result
+
+
+@pytest.mark.no_postgres
 def test_repeat_application_mode_allows_same_account_after_pending_request(session: Session) -> None:
     task, source = _source_action(session)
     task.type_config = {

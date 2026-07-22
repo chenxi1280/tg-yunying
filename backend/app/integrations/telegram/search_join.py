@@ -471,8 +471,11 @@ def _membership_not_observed(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _join_request_pending(target_result: dict[str, Any]) -> dict[str, Any]:
+    pending_result = dict(target_result)
+    pending_result.pop("membership_observed", None)
+    pending_result.pop("membership_observed_at", None)
     return {
-        **target_result,
+        **pending_result,
         "success": False,
         "error_code": "join_request_pending",
         "detail": "目标群开启入群审批，已提交申请但尚未观察到成员关系",
