@@ -205,7 +205,7 @@ from .search_rank_deboost import (
     validate_rank_deboost_preconditions,
     validate_rank_deboost_protocol_samples,
 )
-from .search_click_target_progress import reconcile_search_click_target_progress
+from .search_click_target_progress import reconcile_search_click_target_progress, search_click_target_progress
 from .search_click_controls import (
     DAILY_TARGET_ACTION_SKIP_PROBABILITY,
     NORMAL_SEARCH_CLICK_TASK,
@@ -914,7 +914,7 @@ def update_search_join_group_config(session: Session, tenant_id: int, task_id: s
     controls_updated = _apply_search_click_operator_controls(session, task, operator_controls)
     if not type_config_updated and (pacing_updated or controls_updated):
         _clear_unfinished_plan(session, task)
-        _requeue_updated_task(task)
+        _requeue_search_join_after_operator_change(session, task, operator_controls)
     if daily_target_updated:
         _requeue_search_join_daily_target(task)
         reconcile_search_click_target_progress(session, task)
@@ -1098,6 +1098,24 @@ def _requeue_search_join_daily_target(task: Task) -> None:
     if task.status == "completed":
         task.status = "running"
     _requeue_updated_task(task)
+
+
+def _requeue_search_join_after_operator_change(session: Session, task: Task, controls: dict[str, Any]) -> None:
+    if _deadline_extension_reopens_daily_target(session, task, controls):
+        _requeue_search_join_daily_target(task)
+        return
+    _requeue_updated_task(task)
+
+
+def _deadline_extension_reopens_daily_target(
+    session: Session,
+    task: Task,
+    controls: dict[str, Any],
+) -> bool:
+    if task.status != "completed" or "scheduled_end" not in controls:
+        return False
+    progress = search_click_target_progress(session, task)
+    return progress.is_daily_target
 
 
 def _apply_search_click_operator_controls(

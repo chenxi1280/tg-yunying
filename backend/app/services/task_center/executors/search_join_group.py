@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.admin_chats import send_admin_chat_broadcast
-from app.models import Action, BotProtocolSample, OperationTarget, Task, Tenant, TgAccount
+from app.models import Action, BotProtocolSample, OperationTarget, Task, Tenant, TgAccount, TgAccountAuthorization
 from app.search_keywords import repair_legacy_keyword_materials
 from app.security import decrypt_secret
 from app.services.client_metadata import SearchJoinEnvironment, ensure_search_join_environment
@@ -287,7 +287,24 @@ def _environment(session: Session, account: TgAccount, blockers: dict[str, int])
         return None
     if environment is None:
         _count_blocker(blockers, "needs_client_metadata")
+    elif not _environment_authorization_matches_account(session, account, environment):
+        _count_blocker(blockers, "search_join_environment_authorization_scope_mismatch")
+        return None
     return environment
+
+
+def _environment_authorization_matches_account(
+    session: Session,
+    account: TgAccount,
+    environment: SearchJoinEnvironment,
+) -> bool:
+    authorization = session.get(TgAccountAuthorization, environment.authorization_id)
+    return bool(
+        authorization
+        and authorization.tenant_id == account.tenant_id
+        and authorization.account_id == account.id
+        and authorization.role == environment.session_role
+    )
 
 
 def _clash_subscription_pool_unavailable(session: Session, tenant_id: int) -> bool:

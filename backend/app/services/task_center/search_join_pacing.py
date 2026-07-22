@@ -31,6 +31,7 @@ class PacingStats:
     per_account_total_limit_reached: int = 0
     per_account_cooldown_days_active: int = 0
     per_keyword_account_daily_limit_reached: int = 0
+    join_request_pending: int = 0
     task_daily_limit_reached: int = 0
     hourly_skipped_by_pacing: int = 0
     daily_skipped_by_pacing: int = 0
@@ -47,6 +48,7 @@ class PacingStats:
             "per_account_total_limit_reached": self.per_account_total_limit_reached,
             "per_account_cooldown_days_active": self.per_account_cooldown_days_active,
             "per_keyword_account_daily_limit_reached": self.per_keyword_account_daily_limit_reached,
+            "join_request_pending": self.join_request_pending,
             "task_daily_limit_reached": self.task_daily_limit_reached,
             "hourly_skipped_by_pacing": self.hourly_skipped_by_pacing,
             "daily_skipped_by_pacing": self.daily_skipped_by_pacing,
@@ -129,6 +131,8 @@ def account_allowed(session: Session, task: Task, account_id: int, keyword_hash:
 def account_base_allowed(session: Session, task: Task, account_id: int, window: PacingWindow, stats: PacingStats) -> bool:
     pacing = task.pacing_config or {}
     allowed = True
+    if _has_join_request_pending(session, task, account_id, window.local_date):
+        allowed = _block_account(stats, account_id, "join_request_pending")
     if _total_count(session, task, account_id) >= int(pacing.get("per_account_total_action_limit") or 0) > 0:
         allowed = _block_account(stats, account_id, "per_account_total_limit_reached")
     if _cooldown_active(session, task, account_id, int(pacing.get("per_account_cooldown_days") or 0)):
@@ -334,6 +338,31 @@ def _source_naive(value: datetime) -> datetime:
 def _is_behavior_pacing_skip(action: Action) -> bool:
     result = action.result or {}
     return result.get("skip_reason") == "skipped_by_behavior_pacing"
+
+
+def _has_join_request_pending(session: Session, task: Task, account_id: int, local_date: date) -> bool:
+    start_at, end_at = _local_day_bounds_source(task.timezone, local_date)
+    action_at = func.coalesce(Action.executed_at, Action.scheduled_at)
+    actions = session.scalars(
+        select(Action).where(
+            Action.task_id == task.id,
+            Action.action_type == "search_join",
+            Action.account_id == account_id,
+            Action.status == "failed",
+            action_at >= start_at,
+            action_at < end_at,
+        )
+    )
+    return any(_is_join_request_pending_result(action.result) for action in actions)
+
+
+def _is_join_request_pending_result(result: object) -> bool:
+    if not isinstance(result, dict):
+        return False
+    if result.get("error_code") == "join_request_pending":
+        return True
+    detail = str(result.get("detail") or result.get("error_message") or "").lower()
+    return "requested to join this chat or channel" in detail
 
 
 def _cooldown_active(session: Session, task: Task, account_id: int, cooldown_days: int) -> bool:
