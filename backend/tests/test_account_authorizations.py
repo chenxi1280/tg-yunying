@@ -9,7 +9,7 @@ from app.database import Base
 from app.integrations.telegram.gateway import TelethonTelegramGateway
 from app.integrations.telegram.mock import TelegramGateway
 from app.integrations.telegram.contracts import AccountHealth, LoginChallenge
-from app.models import Action, AccountProxy, AccountStatus, FailureType, Task, TelegramDeveloperApp, Tenant, TgAccount, TgAccountAuthorization, TgLoginFlow
+from app.models import Action, AccountProxy, AccountStatus, FailureType, Task, TelegramDeveloperApp, Tenant, TgAccount, TgAccountAuthorization, TgAccountOnlineState, TgLoginFlow
 from app.security import decrypt_session, encrypt_secret
 from app.services import account_authorizations as authorization_service
 from app.services import accounts as accounts_service
@@ -451,6 +451,15 @@ def test_self_heal_activates_healthy_standby_before_refreshing_primary() -> None
         )
         account = TgAccount(id=19, tenant_id=1, display_name="自愈账号", phone_masked="19", status=AccountStatus.SESSION_EXPIRED.value, developer_app_id=33, proxy_id=43, session_ciphertext="primary-old")
         session.add(account)
+        session.add(
+            TgAccountOnlineState(
+                tenant_id=1,
+                account_id=19,
+                desired_online=True,
+                online_status="login_required",
+                failure_detail="session 已失效",
+            )
+        )
         standby = TgAccountAuthorization(id=1902, tenant_id=1, account_id=19, role="standby_1", developer_app_id=34, proxy_id=44, status="standby", health_status="healthy", session_ciphertext="standby-ok")
         session.add(standby)
         session.commit()
@@ -462,6 +471,10 @@ def test_self_heal_activates_healthy_standby_before_refreshing_primary() -> None
         assert result["activated_authorization_id"] == 1902
         assert account.session_ciphertext == "standby-ok"
         assert account.status == AccountStatus.ACTIVE.value
+        online_state = session.query(TgAccountOnlineState).filter_by(account_id=19).one()
+        assert online_state.online_status == "warming"
+        assert online_state.failure_detail == ""
+        assert online_state.next_probe_at is not None
 
 
 @pytest.mark.no_postgres

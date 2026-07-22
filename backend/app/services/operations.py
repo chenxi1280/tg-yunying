@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 import random
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import case, select
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -24,6 +24,7 @@ from app.models import (
     OperationTaskAttempt,
     Task,
     TaskStatus,
+    Tenant,
     TgAccount,
     TgGroup,
     TgGroupAccount,
@@ -1097,6 +1098,8 @@ def _invite_export_candidate_accounts(session: Session, target: OperationTarget)
     group = _linked_group_for_target(session, target)
     if not group:
         return []
+    tenant = session.get(Tenant, target.tenant_id)
+    rescue_admin_id = tenant.group_rescue_admin_account_id if tenant and tenant.group_rescue_enabled else None
     return list(
         session.scalars(
             select(TgAccount)
@@ -1109,7 +1112,7 @@ def _invite_export_candidate_accounts(session: Session, target: OperationTarget)
                 TgGroupAccount.group_id == group.id,
                 TgGroupAccount.can_send.is_(True),
             )
-            .order_by(TgAccount.id.asc())
+            .order_by(case((TgAccount.id == rescue_admin_id, 0), else_=1), TgAccount.id.asc())
             .limit(200)
         )
     )

@@ -657,6 +657,7 @@ def due_actions(session: Session, limit: int = 100, *, exclude_task_ids: set[str
             .join(Task, Task.id == Action.task_id)
             .where(*filters)
             .order_by(
+                _target_admission_retry_claim_rank(),
                 _hard_hourly_claim_rank(),
                 Task.priority.asc(),
                 _channel_comment_claim_rank(),
@@ -702,6 +703,7 @@ def claim_actions(session: Session, limit: int = 100, *, exclude_task_ids: set[s
         .join(Task, Task.id == Action.task_id)
         .where(*filters)
         .order_by(
+            _target_admission_retry_claim_rank(),
             _hard_hourly_claim_rank(),
             Task.priority.asc(),
             _channel_comment_claim_rank(),
@@ -859,6 +861,10 @@ def _skip_resolved_invite_group_account_action(session: Session, action: Action)
     _skip(action, "admission_retry_target_already_joined", "被救援账号已在目标群可发言，跳过过期入群邀请")
     action.result = {**(action.result or {}), "rescue_status": "already_joined_skipped"}
     return True
+
+
+def _target_admission_retry_claim_rank():
+    return case((Task.type == "target_admission_retry", 0), else_=1)
 
 
 def _hard_hourly_claim_rank():

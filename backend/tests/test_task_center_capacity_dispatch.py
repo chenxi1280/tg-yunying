@@ -263,6 +263,29 @@ def test_claim_actions_takes_one_group_rescue_invite_per_admin_batch():
 
 
 @pytest.mark.no_postgres
+def test_claim_actions_prioritizes_target_admission_retry_over_overdue_group_send():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        session.add_all([
+            Tenant(id=1, name="默认运营空间"),
+            TgAccount(id=11, tenant_id=1, display_name="准入账号", phone_masked="+195***0011", status="在线"),
+            TgAccount(id=12, tenant_id=1, display_name="活群账号", phone_masked="+195***0012", status="在线"),
+            Task(id="task-admission", tenant_id=1, name="准入重试", type="target_admission_retry", status="running", priority=3),
+            Task(id="task-ai", tenant_id=1, name="AI 活群", type="group_ai_chat", status="running", priority=3),
+            Action(id="admission", tenant_id=1, task_id="task-admission", task_type="target_admission_retry", action_type="ensure_target_membership", account_id=11, status="pending", scheduled_at=now_value - timedelta(seconds=10)),
+            Action(id="ai-send", tenant_id=1, task_id="task-ai", task_type="group_ai_chat", action_type="send_message", account_id=12, status="pending", scheduled_at=now_value - timedelta(seconds=20), payload={"message_text": "排队消息"}),
+        ])
+        session.commit()
+
+        claimed = claim_actions(session, limit=1, worker_id="worker-test")
+
+    assert [action.id for action in claimed] == ["admission"]
+
+
+@pytest.mark.no_postgres
 def test_claim_actions_backs_off_group_rescue_inflight_conflict(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
