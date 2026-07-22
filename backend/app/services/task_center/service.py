@@ -78,7 +78,11 @@ from .search_rank_deboost_reservations import (
     reservation_for_action,
     reserve_click,
 )
-from .payloads import SearchRankDeboostPayload
+from .payloads import SearchJoinMembershipPayload, SearchRankDeboostPayload
+from .search_join_membership import (
+    MEMBERSHIP_ACTION_TYPE as SEARCH_JOIN_MEMBERSHIP_ACTION_TYPE,
+    SOURCE_ACTION_TYPE as SEARCH_JOIN_SOURCE_ACTION_TYPE,
+)
 from .rank_deboost_runtime_authorization import resolve_rank_deboost_runtime_authorization
 from .details import (
     _accounts_by_id,
@@ -2019,6 +2023,9 @@ def _action_should_retry(session: Session, task: Task, action: Action) -> bool:
 
 
 def _prepare_action_retry(session: Session, task: Task, action: Action, now: datetime) -> bool:
+    if action.action_type == SEARCH_JOIN_MEMBERSHIP_ACTION_TYPE:
+        _rebind_search_join_membership_retry_to_source_account(session, action)
+        return True
     if task.type != "search_rank_deboost":
         return True
     if action.status == "unknown_after_send":
@@ -2037,6 +2044,19 @@ def _prepare_action_retry(session: Session, task: Task, action: Action, now: dat
         reservation=reservation,
         now=now,
     )
+
+
+def _rebind_search_join_membership_retry_to_source_account(session: Session, action: Action) -> None:
+    try:
+        payload = SearchJoinMembershipPayload.model_validate(action.payload or {})
+    except ValueError:
+        return
+    source = session.get(Action, payload.source_search_join_action_id)
+    if source is None or source.action_type != SEARCH_JOIN_SOURCE_ACTION_TYPE:
+        return
+    if source.tenant_id != action.tenant_id or source.task_id != action.task_id or source.account_id is None:
+        return
+    action.account_id = source.account_id
 
 
 def _reopen_rank_deboost_retry_reservation(
