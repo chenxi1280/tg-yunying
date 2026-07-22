@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -37,6 +38,18 @@ RULE_BINDING_REQUIRED_TEST_TASK_TYPES = frozenset({"group_relay", "group_ai_chat
 TEST_RULE_SET_ID_BASE = 900_000_000
 TEST_RULE_VERSION_ID_BASE = 901_000_000
 AUTO_BOUND_TASKS_SESSION_KEY = "auto_bound_rule_tasks"
+
+
+@pytest.fixture(autouse=True)
+def keep_default_group_send_tests_inside_active_window(monkeypatch):
+    from app.services.task_center import group_send_limits
+
+    current_now = group_send_limits._now
+    monkeypatch.setattr(
+        group_send_limits,
+        "_now",
+        lambda: current_now().replace(hour=12, minute=0, second=0, microsecond=0),
+    )
 
 
 def _normalize_postgres_url(raw_url: str) -> str:
