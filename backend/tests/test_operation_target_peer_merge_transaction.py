@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.database import Base
 from app.integrations.telegram.contracts import GroupSnapshot
 from app.models import OperationTarget, Tenant, TgAccount, TgGroup, TgGroupAccount
-from app.services import operations
+from app.services import operation_target_peer_merge, operations
 
 
 pytestmark = pytest.mark.no_postgres
@@ -87,3 +87,20 @@ def test_canonicalization_resolves_public_username_without_listing_all_dialogs(m
 
     assert result["stable_peer_id"] == "-1003573333444"
     assert resolved_usernames == ["zhengzhou167"]
+
+
+def test_runtime_config_reference_streams_action_payload_scan() -> None:
+    payload_statements = []
+
+    class RecordingSession:
+        def execute(self, _statement):
+            return ()
+
+        def scalars(self, statement):
+            payload_statements.append(statement)
+            return iter([{"routing": {"target_group_ids": [2810]}}])
+
+    referenced = operation_target_peer_merge._has_runtime_config_reference(RecordingSession(), 1, 2790, 2810)
+
+    assert referenced is True
+    assert payload_statements[0].get_execution_options()["yield_per"] == operation_target_peer_merge.ACTION_PAYLOAD_STREAM_BATCH_SIZE

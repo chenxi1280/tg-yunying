@@ -24,6 +24,7 @@ from app.models import (
 
 
 FINGERPRINT_GROUP_SEGMENTS = ("relay", "target", "group_ai_chat")
+ACTION_PAYLOAD_STREAM_BATCH_SIZE = 500
 
 
 def require_fresh_peer_merge_session(session: Session) -> None:
@@ -201,7 +202,11 @@ def _has_runtime_config_reference(session: Session, tenant_id: int, target_id: i
     )
     if any(_config_references_ids(config, identifiers) for row in task_configs for config in row):
         return True
-    payloads = session.scalars(select(Action.payload).where(Action.tenant_id == tenant_id))
+    payloads = session.scalars(
+        select(Action.payload)
+        .where(Action.tenant_id == tenant_id)
+        .execution_options(yield_per=ACTION_PAYLOAD_STREAM_BATCH_SIZE)
+    )
     return any(_config_references_ids(payload, identifiers) for payload in payloads)
 
 
