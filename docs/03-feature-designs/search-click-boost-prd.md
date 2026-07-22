@@ -74,13 +74,13 @@ tg-yunying 当前任务中心已支持 5 类主任务：`group_ai_chat`、`group
 }
 ```
 
-每个 source `search_join` action = 一个账号授权槽位 × 一个关键词 × 一个搜索机器人 × 一个目标群匹配策略 = 一次完整搜索目标群点击链路。账号已在目标群内时，不跳过该 source action；仍需完成搜索、命中目标和目标点击 / 确认。命中后 source action 必须立即写 `target_click_observed=true` 与 `target_found_at`，并创建唯一 `search_join_membership` 准入子 action；子 action 在同一授权槽位环境下申请或复核成员关系。`membership_observed` 是独立的成员关系事实，不回写或覆盖已经成立的目标点击事实。
+每个 source `search_join` action = 一个账号授权槽位 × 一个关键词 × 一个搜索机器人 × 一个目标群匹配策略 = 一次完整搜索目标群点击链路。账号已在目标群内时，不跳过该 source action；仍需完成搜索、命中目标和目标点击 / 确认。source 在计划后和调度前都必须保持该授权槽位所属账号，不能因全局容量转派到其他账号。命中后 source action 必须立即写 `target_click_observed=true` 与 `target_found_at`，并创建唯一 `search_join_membership` 准入子 action；子 action 在同一授权槽位环境下申请或复核成员关系。`membership_observed` 是独立的成员关系事实，不回写或覆盖已经成立的目标点击事实。
 
 ### 4.1.1 每日目标契约（2026-07-21）
 
 新建或更新的 `search_join_group` 可同时使用 `daily_click_target_count` 与 `daily_target_count`。前者表示任务时区每个自然日需要达到的目标点击数，只从 source 的 `target_click_observed/target_found_at` 读取；后者表示同一自然日观察到的 `membership_observed` 数，只从 `membership_observed_at` 读取。`pending`、`claiming`、`executing`、`unknown_after_send` 仅占相应未确认槽位；source `membership_pending` 只占成员关系槽位，不占已经确认的点击槽位，失败的成员关系也不回滚目标点击。两个进度分别写入 `stats.search_click_target` 和 `stats.search_join_membership_target`，详情页必须并排显示，不能再把加入成功伪装为点击成功。
 
-准入子 action 的 `join_request_pending` 不是失败成功混淆：它保留 source 的目标命中事实并使其 `join_status=membership_pending`。同一 source 的 child 仍只进行成员关系复核，不能在 retry 中重复提交相同申请，并且必须固定使用 source 的同一账号和授权槽位，不能因全局账号容量被转派到其他账号；历史 child 若曾被错绑账号，运营重试时先恢复 source 账号再继续复核。`allow_same_account_repeat_application=true` 只允许新的 source 使用同一账号在当天继续搜索并进入各自 child，不能改变既有 child 的 source 归属；新的 source 也不能被既有 pending、账号日限额或关键词日限额静默阻断。每个 child 的 Telegram 回执都必须如实落库，不能把“已申请”“待审批”或拒绝写成已加入。
+准入子 action 的 `join_request_pending` 不是失败成功混淆：它保留 source 的目标命中事实并使其 `join_status=membership_pending`。同一 source 的 child 仍只进行成员关系复核，不能在 retry 中重复提交相同申请，并且必须固定使用 source 的同一账号和授权槽位，不能因全局账号容量被转派到其他账号；每次调度前和运营重试前都要把历史错绑 child 恢复为 source 账号后再复核。`allow_same_account_repeat_application=true` 只允许新的 source 使用同一账号在当天继续搜索并进入各自 child，不能改变既有 child 的 source 归属；新的 source 也不能被既有 pending、账号日限额或关键词日限额静默阻断。每个 child 的 Telegram 回执都必须如实落库，不能把“已申请”“待审批”或拒绝写成已加入。
 
 `max_actions_per_day` 是独立的 source action 硬预算，必须不小于 `daily_click_target_count`；旧任务未设置点击目标时继续按 `daily_target_count` 的历史校验。当天点击目标达成后 Planner 停止新的 source，但已经创建的 child 继续按真实结果收口；任务保持 `running`，下一个自然日重新计算。旧 `search_join_group.target_count` 任务保持原有生命周期完成语义；`search_rank_deboost.target_count` 同样继续是生命周期 confirmed click 目标，达到后才可写 `target_count_reached`。
 

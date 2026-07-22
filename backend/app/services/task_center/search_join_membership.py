@@ -52,6 +52,22 @@ def source_action_for_membership(session: Session, action: Action, payload: Sear
     return source
 
 
+def rebind_membership_action_to_source_account(session: Session, action: Action) -> bool:
+    if action.action_type != MEMBERSHIP_ACTION_TYPE:
+        return False
+    try:
+        payload = SearchJoinMembershipPayload.model_validate(action.payload or {})
+    except ValueError:
+        return False
+    source = session.get(Action, payload.source_search_join_action_id)
+    if source is None or source.action_type != SOURCE_ACTION_TYPE:
+        return False
+    if source.tenant_id != action.tenant_id or source.task_id != action.task_id or source.account_id is None:
+        return False
+    action.account_id = source.account_id
+    return True
+
+
 def mark_source_membership_pending(source: Action, child: Action, *, timestamp: datetime, detail: str = "") -> None:
     result = dict(source.result or {})
     result.update(
@@ -166,5 +182,6 @@ __all__ = [
     "mark_source_membership_observed",
     "mark_source_membership_pending",
     "membership_child_for_source",
+    "rebind_membership_action_to_source_account",
     "source_action_for_membership",
 ]
