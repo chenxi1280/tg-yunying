@@ -332,6 +332,8 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 
 ### 任务中心编排服务
 
+> **严格搜索日目标领取（2026-07-23）**：`dispatcher.py` 对未达成严格每日点击目标的到期搜索链路按 `target_admission_retry -> search_join_membership -> search_join -> AI hard-hourly -> ordinary` 排序，避免持续 AI 硬目标令搜索 source 或 child 饥饿；其余 Gateway、账号和预算边界不变。
+
 | 文件 | 行数 | 主要处理业务 | 主要方法/类/导出 |
 | --- | ---: | --- | --- |
 | `backend/app/services/task_center/__init__.py` | 3 | 任务中心 __init__ 子模块，承接任务规划、配置、运行时或详情读模型中的单一职责。 | 无显式主方法/仅导入导出或常量 |

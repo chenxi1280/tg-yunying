@@ -3172,7 +3172,7 @@ def test_claim_actions_prioritizes_due_search_membership_before_ordinary_batch_a
 
 
 @pytest.mark.no_postgres
-def test_claim_actions_prioritizes_strict_search_source_before_ordinary_batch_action(monkeypatch):
+def test_claim_actions_prioritizes_strict_search_source_before_hard_hourly_action(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = _now()
@@ -3184,11 +3184,13 @@ def test_claim_actions_prioritizes_strict_search_source_before_ordinary_batch_ac
             [
                 TgAccount(id=11, tenant_id=1, display_name="批量账号", phone_masked="+861***0011", status="在线"),
                 TgAccount(id=12, tenant_id=1, display_name="搜索账号", phone_masked="+861***0012", status="在线"),
+                TgAccount(id=13, tenant_id=1, display_name="硬目标账号", phone_masked="+861***0013", status="在线"),
             ]
         )
         session.add_all(
             [
                 Task(id="task-ai", tenant_id=1, name="普通活跃群", type="group_ai_chat", status="running", priority=3),
+                Task(id="task-hard", tenant_id=1, name="硬目标活跃群", type="group_ai_chat", status="running", priority=3),
                 Task(
                     id="task-search",
                     tenant_id=1,
@@ -3203,6 +3205,7 @@ def test_claim_actions_prioritizes_strict_search_source_before_ordinary_batch_ac
         session.add_all(
             [
                 Action(id="action-batch", tenant_id=1, task_id="task-ai", task_type="group_ai_chat", action_type="send_message", account_id=11, status="pending", scheduled_at=now_value - timedelta(minutes=10), payload={"message_text": "普通批量动作"}),
+                Action(id="action-hard", tenant_id=1, task_id="task-hard", task_type="group_ai_chat", action_type="send_message", account_id=13, status="pending", scheduled_at=now_value - timedelta(minutes=1), payload={"message_text": "硬目标动作", "hard_hourly_target": True}),
                 Action(id="action-source", tenant_id=1, task_id="task-search", task_type="search_join_group", action_type="search_join", account_id=12, status="pending", scheduled_at=now_value, payload={}),
             ]
         )
@@ -3215,7 +3218,7 @@ def test_claim_actions_prioritizes_strict_search_source_before_ordinary_batch_ac
 
 
 @pytest.mark.no_postgres
-def test_due_actions_keeps_hard_target_before_search_membership_before_batch():
+def test_due_actions_prioritizes_search_membership_before_hard_target_before_batch():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = _now()
@@ -3240,7 +3243,7 @@ def test_due_actions_keeps_hard_target_before_search_membership_before_batch():
 
         actions = dispatcher.due_actions(session, limit=3)
 
-        assert [action.id for action in actions] == ["action-hard", "action-membership", "action-batch"]
+        assert [action.id for action in actions] == ["action-membership", "action-hard", "action-batch"]
 
 
 @pytest.mark.no_postgres
@@ -3254,6 +3257,7 @@ def test_due_actions_keeps_search_membership_before_strict_source_before_batch()
         session.add_all(
             [
                 Task(id="task-search", tenant_id=1, name="严格搜索点击", type="search_join_group", status="running", priority=3, type_config={"strict_daily_target": True, "daily_click_target_count": 500}),
+                Task(id="task-hard", tenant_id=1, name="硬目标", type="group_ai_chat", status="running", priority=3),
                 Task(id="task-batch", tenant_id=1, name="普通批量", type="group_ai_chat", status="running", priority=1),
             ]
         )
@@ -3261,14 +3265,15 @@ def test_due_actions_keeps_search_membership_before_strict_source_before_batch()
             [
                 Action(id="action-membership", tenant_id=1, task_id="task-search", task_type="search_join_group", action_type="search_join_membership", status="pending", scheduled_at=now_value, payload={}),
                 Action(id="action-source", tenant_id=1, task_id="task-search", task_type="search_join_group", action_type="search_join", status="pending", scheduled_at=now_value, payload={}),
+                Action(id="action-hard", tenant_id=1, task_id="task-hard", task_type="group_ai_chat", action_type="send_message", status="pending", scheduled_at=now_value - timedelta(minutes=1), payload={"hard_hourly_target": True}),
                 Action(id="action-batch", tenant_id=1, task_id="task-batch", task_type="group_ai_chat", action_type="send_message", status="pending", scheduled_at=now_value - timedelta(minutes=10), payload={}),
             ]
         )
         session.commit()
 
-        actions = dispatcher.due_actions(session, limit=3)
+        actions = dispatcher.due_actions(session, limit=4)
 
-        assert [action.id for action in actions] == ["action-membership", "action-source", "action-batch"]
+        assert [action.id for action in actions] == ["action-membership", "action-source", "action-hard", "action-batch"]
 
 
 @pytest.mark.no_postgres

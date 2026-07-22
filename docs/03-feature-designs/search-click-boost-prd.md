@@ -84,6 +84,10 @@ tg-yunying 当前任务中心已支持 5 类主任务：`group_ai_chat`、`group
 
 `max_actions_per_day` 是独立的 source action 硬预算，必须不小于 `daily_click_target_count`；旧任务未设置点击目标时继续按 `daily_target_count` 的历史校验。当天点击目标达成后 Planner 停止新的 source，但已经创建的 child 继续按真实结果收口；任务保持 `running`，下一个自然日重新计算。旧 `search_join_group.target_count` 任务保持原有生命周期完成语义；`search_rank_deboost.target_count` 同样继续是生命周期 confirmed click 目标，达到后才可写 `target_count_reached`。
 
+### 4.1.2 严格每日目标领取顺序（2026-07-23）
+
+当严格 `search_join_group` 的日点击目标未达成时，Dispatcher 到期领取顺序固定为：既有 `target_admission_retry`、`search_join_membership` child、严格 `search_join` source、AI 硬小时 action、普通批量 action。该顺序只改变领取优先级，不放宽 source 日预算、账号/代理/授权槽位绑定、静默时段、截止时间或 Gateway 风控；它避免持续产生的 AI 硬目标使已到期的搜索点击或待审批成员复核长期得不到执行。
+
 ### 4.2 第三方索引机器人
 
 首版目标机器人只接入 `@searchbot`，其余机器人进入第二版适配。
@@ -1906,3 +1910,4 @@ AI 活跃群联动 126 个账号待冷却 / 64 个已进入 ready pool
 |2026-07-22|v0.31|Codex（待审批成员事实修复）|`join_request_pending` / `membership_pending` 明确不得携带或计入 `membership_observed`；事实核算忽略历史矛盾字段，后续 child 复核自动清除，点击和已加入继续分别计数。|
 |2026-07-23|v0.32|Codex（搜索准入派发收口）|已命中目标的 `search_join_membership` child 在 Dispatcher 中列为准入收口，位于既有目标准入重试和 AI 硬目标之后、普通批量 action 之前；避免 AI 活群积压令已点击后的申请/成员复核长期停在 pending。|
 |2026-07-23|v0.33|Codex（严格日目标跨日收口）|严格每日目标的 source 在 child 之后、普通批量 action 之前领取；前日未进入 Gateway 的 source 作为次日点击/预算 carryover，只有最旧 pending 年龄软阻塞时允许在硬队列阈值和剩余槽位内补量；source 在 claim 与 Gateway 前都恢复授权槽位账号且禁止容量转派。|
+|2026-07-23|v0.34|Codex（严格日目标反饥饿）|线上证实 AI 硬小时队列可把到期 source 推到数百位之后，故领取顺序调整为：目标准入重试、search membership child、严格 source、AI 硬小时、普通批量；不改变任何 Telegram 风控或日预算边界。|
