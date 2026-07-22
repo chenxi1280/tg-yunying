@@ -60,6 +60,10 @@ class _JoinRequestPendingError(Exception):
     pass
 
 
+class _MembershipNotObservedError(Exception):
+    pass
+
+
 async def execute_search_join_with_client(client: Any, payload: dict[str, Any], *, keyword_text: str) -> dict[str, Any]:
     bot_username = _bot_username(payload)
     if not keyword_text.strip():
@@ -71,6 +75,36 @@ async def execute_search_join_with_client(client: Any, payload: dict[str, Any], 
         return await _execute_search_pages(client, bot_username, keyword_text.strip(), payload, target)
     except Exception as exc:  # Telethon RPC errors are mapped at this adapter boundary.
         return _failed("search_join_execution_failed", str(exc) or exc.__class__.__name__)
+
+
+async def ensure_search_join_membership_with_client(client: Any, payload: dict[str, Any]) -> dict[str, Any]:
+    target = _target_spec(payload)
+    join_ref = _target_join_ref(target)
+    if not join_ref:
+        return _failed("target_join_reference_missing", "搜索命中目标缺少可加入的 username / peer")
+    try:
+        entity = await client.get_entity(join_ref)
+        await _join_channel(client, entity)
+    except _JoinRequestPendingError:
+        return _join_request_pending(_membership_observed_result(payload))
+    except Exception as exc:
+        return _failed("search_join_membership_failed", str(exc) or exc.__class__.__name__)
+    return _membership_observed_result(payload)
+
+
+async def probe_search_join_membership_with_client(client: Any, payload: dict[str, Any]) -> dict[str, Any]:
+    target = _target_spec(payload)
+    join_ref = _target_join_ref(target)
+    if not join_ref:
+        return _failed("target_join_reference_missing", "搜索命中目标缺少可复核的 username / peer")
+    try:
+        entity = await client.get_entity(join_ref)
+        await _assert_current_account_is_member(client, entity)
+    except _MembershipNotObservedError:
+        return _membership_not_observed(payload)
+    except Exception as exc:
+        return _failed("search_join_membership_probe_failed", str(exc) or exc.__class__.__name__)
+    return _membership_observed_result(payload)
 
 
 async def _execute_search_pages(client: Any, bot_username: str, keyword_text: str, payload: dict[str, Any], target: dict[str, Any]) -> dict[str, Any]:
@@ -222,14 +256,8 @@ async def _execute_target_join(
 ) -> dict[str, Any]:
     if button.button_type == "external_http_url":
         return _external_blocked(button, total, decoys)
-    click_result = await _click_button(page, button)
-    target_result = _success(payload, button, total, decoys, page_no)
-    try:
-        joined_target = await _join_target(client, button, target, click_result)
-    except _JoinRequestPendingError:
-        return _join_request_pending(target_result)
-    await _mark_read_if_supported(client, joined_target)
-    return target_result
+    await _click_button(page, button)
+    return _success(payload, button, total, decoys, page_no)
 
 
 async def _execute_text_target_join(
@@ -241,22 +269,12 @@ async def _execute_text_target_join(
     page_no: int,
     total: int,
 ) -> dict[str, Any]:
-    join_ref = str(target.get("username") or target.get("group_id") or "").strip()
-    if not join_ref:
-        return _failed("target_join_reference_missing", "正文命中目标但缺少可加入的 username / peer")
-    target_result = {
+    return {
         **_success(payload, None, total, decoys, page_no),
         "target_position": match.position,
         "target_match_source": match.source,
         "target_line": match.line,
     }
-    entity = await client.get_entity(join_ref)
-    try:
-        await _join_channel(client, entity)
-    except _JoinRequestPendingError:
-        return _join_request_pending(target_result)
-    await _mark_read_if_supported(client, str(entity))
-    return target_result
 
 
 def _parse_buttons(message: Any) -> list[SearchJoinButton]:
@@ -379,22 +397,6 @@ async def _click_and_get_edited_page(client: Any, bot_username: str, message: An
     return edited_page
 
 
-async def _join_target(client: Any, button: SearchJoinButton, target: dict[str, Any], click_result: Any = None) -> str:
-    url_ref = _click_result_url(click_result) or button.url
-    invite_hash = _invite_hash(url_ref)
-    if invite_hash:
-        await _import_invite(client, invite_hash)
-        return invite_hash
-    join_ref = _telegram_username(url_ref) or button.target_username or str(target.get("username") or target.get("group_id") or "")
-    if button.button_type == "callback_data" and not join_ref:
-        raise RuntimeError("callback button did not expose a join target")
-    if not join_ref:
-        raise RuntimeError("target join reference missing")
-    entity = await client.get_entity(join_ref)
-    await _join_channel(client, entity)
-    return str(entity)
-
-
 async def _join_channel(client: Any, entity: Any) -> None:
     from telethon import functions
 
@@ -408,23 +410,16 @@ async def _join_channel(client: Any, entity: Any) -> None:
         raise
 
 
-async def _import_invite(client: Any, invite_hash: str) -> None:
+async def _assert_current_account_is_member(client: Any, entity: Any) -> None:
     from telethon import functions
 
     try:
-        await client(functions.messages.ImportChatInviteRequest(invite_hash))
+        current_account = await client.get_me(input_peer=True)
+        await client(functions.channels.GetParticipantRequest(channel=entity, participant=current_account))
     except Exception as exc:
-        if _is_already_participant_error(exc):
-            return
-        if _is_join_request_pending_error(exc):
-            raise _JoinRequestPendingError from exc
+        if _is_not_participant_error(exc):
+            raise _MembershipNotObservedError from exc
         raise
-
-
-async def _mark_read_if_supported(client: Any, target: str) -> None:
-    mark_read = getattr(client, "mark_read", None)
-    if callable(mark_read):
-        await mark_read(target)
 
 
 def _external_blocked(button: SearchJoinButton, total: int, decoys: list[dict[str, Any]]) -> dict[str, Any]:
@@ -439,7 +434,7 @@ def _external_blocked(button: SearchJoinButton, total: int, decoys: list[dict[st
 def _success(payload: dict[str, Any], button: SearchJoinButton | None, total: int, decoys: list[dict[str, Any]], page_no: int) -> dict[str, Any]:
     return {
         "success": True,
-        "join_status": "membership_observed",
+        "join_status": "target_found",
         "target_position": button.position if button else 0,
         "page": page_no,
         "searched_pages": page_no,
@@ -451,6 +446,27 @@ def _success(payload: dict[str, Any], button: SearchJoinButton | None, total: in
         "post_join_safe_navigation": [],
         "post_join_policy": payload.get("post_join_policy") or "stay_joined",
         "keyword_hash": payload.get("keyword_hash"),
+    }
+
+
+def _membership_observed_result(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "success": True,
+        "join_status": "membership_observed",
+        "membership_observed": True,
+        "target_group_id": payload.get("target_group_id"),
+        "target_peer_id": payload.get("target_peer_id"),
+        "post_join_policy": payload.get("post_join_policy") or "stay_joined",
+    }
+
+
+def _membership_not_observed(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "success": False,
+        "error_code": "membership_not_observed",
+        "detail": "入群申请仍未观察到成员关系",
+        "join_status": "membership_pending",
+        "target_group_id": payload.get("target_group_id"),
     }
 
 
@@ -533,6 +549,10 @@ def _target_spec(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _target_join_ref(target: dict[str, Any]) -> str:
+    return str(target.get("username") or target.get("group_id") or "").strip()
+
+
 def _telegram_channel_id(value: Any) -> int:
     text = str(value or "").strip()
     if not text.lstrip("-").isdigit():
@@ -552,22 +572,6 @@ def _telegram_username(url: str) -> str:
     return path.split("/", 1)[0].lstrip("@")
 
 
-def _invite_hash(url: str) -> str:
-    parsed = urlparse(url)
-    if (parsed.netloc or "").lower() not in TELEGRAM_HOSTS:
-        return ""
-    path = parsed.path.strip("/")
-    if path.startswith("+"):
-        return path[1:]
-    if path.startswith("joinchat/"):
-        return path.split("/", 1)[1]
-    return ""
-
-
-def _click_result_url(result: Any) -> str:
-    return str(getattr(result, "url", "") or "").strip()
-
-
 def _is_already_participant_error(exc: Exception) -> bool:
     text = f"{exc.__class__.__name__} {exc}".lower()
     return "already" in text and ("participant" in text or "member" in text)
@@ -576,6 +580,11 @@ def _is_already_participant_error(exc: Exception) -> bool:
 def _is_join_request_pending_error(exc: Exception) -> bool:
     text = f"{exc.__class__.__name__} {exc}".lower()
     return "requested to join this chat or channel" in text
+
+
+def _is_not_participant_error(exc: Exception) -> bool:
+    text = f"{exc.__class__.__name__} {exc}".lower()
+    return "notparticipant" in text or "not a participant" in text
 
 
 def _is_navigation_text(text: str) -> bool:

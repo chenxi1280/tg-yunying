@@ -67,11 +67,19 @@ from .executors.channel_comment_budget import (
     total_comment_action_count as _total_comment_action_count,
 )
 from .group_rescue import GROUP_RESCUE_FAILURE_THRESHOLD, infer_rescue_admin_rate_limit, permission_failure_count_for_send_action, refresh_group_rescue_action, trigger_group_rescue
-from .payloads import DeprecatedGroupRescuePayload, DeleteMessagePayload, EnsureChannelMembershipPayload, InviteGroupAccountPayload, LikeMessagePayload, PostCommentPayload, SearchJoinPayload, SearchRankDeboostPayload, SendMessagePayload, ViewMessagePayload, create_membership_action, payload_error_message, validate_action_payload
+from .payloads import DeprecatedGroupRescuePayload, DeleteMessagePayload, EnsureChannelMembershipPayload, InviteGroupAccountPayload, LikeMessagePayload, PostCommentPayload, SearchJoinMembershipPayload, SearchJoinPayload, SearchRankDeboostPayload, SendMessagePayload, ViewMessagePayload, create_membership_action, payload_error_message, validate_action_payload
 from .pacing import quiet_hours_active
 from .policies import validate_group_send_policy
 from .review import has_pending_review
 from .search_join_linking import create_linked_dispatch_if_membership_observed
+from .search_join_membership import (
+    MEMBERSHIP_ACTION_TYPE as SEARCH_JOIN_MEMBERSHIP_ACTION_TYPE,
+    create_membership_child,
+    mark_source_membership_failed,
+    mark_source_membership_observed,
+    mark_source_membership_pending,
+    source_action_for_membership,
+)
 from .search_click_target_progress import reconcile_search_click_target_progress
 from .search_rank_deboost_reservations import (
     gateway_reservation_blocker,
@@ -84,6 +92,9 @@ _ACTION_RESERVATIONS = _runtime_resources._ACTION_RESERVATIONS
 _IN_FLIGHT_ACCOUNTS = _runtime_resources._IN_FLIGHT_ACCOUNTS
 _redis_client = _runtime_resources._redis_client
 MEMBERSHIP_ACTION_TYPES = ("ensure_channel_membership", "ensure_target_membership")
+SEARCH_CLICK_ACTION_TYPES = {"search_join", "search_join_membership", "search_rank_deboost"}
+SEARCH_JOIN_RUNTIME_ACTION_TYPES = {"search_join", "search_join_membership"}
+SEARCH_JOIN_MEMBERSHIP_RECHECK_SECONDS = 300
 _COMMENT_THREAD_UNAVAILABLE_FAILURES = {FailureType.COMMENT_UNAVAILABLE.value}
 _COMMENT_THREAD_SKIP_CODES = {
     FailureType.COMMENT_UNAVAILABLE.value: "comment_unavailable_sibling",
@@ -180,6 +191,17 @@ ACTIVE_SEARCH_JOIN_AUTHORIZATION_STATUSES = {"active", "standby"}
 class SearchJoinRuntimeAuthorization:
     session_ciphertext: str
     credentials: DeveloperAppCredentials
+
+
+@dataclass(frozen=True)
+class SearchJoinMembershipDispatchContext:
+    session: Session
+    action: Action
+    account: TgAccount
+    payload: SearchJoinMembershipPayload
+    source: Action
+    runtime_authorization: SearchJoinRuntimeAuthorization
+
 RECENT_REQUIRED_CHANNEL_PROMPT_LIMIT = 25
 RECENT_REQUIRED_CHANNEL_PROMPT_LOOKBACK_HOURS = 6
 REQUIRED_CHANNEL_ADMISSION_RETRY_SECONDS = 300
@@ -350,7 +372,7 @@ def dispatch_action(
 
 
 def _sync_search_click_target_progress(session: Session, action: Action) -> None:
-    if action.action_type not in {"search_join", "search_rank_deboost"}:
+    if action.action_type not in SEARCH_CLICK_ACTION_TYPES:
         return
     task = session.get(Task, action.task_id)
     if task is not None:
@@ -436,6 +458,8 @@ def _dispatch_validated_action(
 ) -> bool:
     if action.action_type == "search_join":
         return _dispatch_search_join(session, action, context.account, context.payload)
+    if action.action_type == SEARCH_JOIN_MEMBERSHIP_ACTION_TYPE:
+        return _dispatch_search_join_membership(session, action, context.account, context.payload)
     if action.action_type == "search_rank_deboost":
         return _dispatch_search_rank_deboost(session, action, context.account, context.payload)
     channel_action_types = {"view_message", "like_message", "post_comment"}
@@ -3988,8 +4012,151 @@ def _dispatch_search_join(session: Session, action: Action, account: TgAccount, 
     action.result = {**(action.result or {}), **result}
     _record_search_join_proxy_failover(session, action, payload, result)
     action.executed_at = _now()
+    if action.status == "success" and result.get("join_status") == "target_found":
+        child = create_membership_child(session, action, payload, _now())
+        mark_source_membership_pending(action, child, timestamp=_now())
+        return True
     _create_search_join_linked_dispatches(session, action, payload)
     return True
+
+
+def _dispatch_search_join_membership(
+    session: Session,
+    action: Action,
+    account: TgAccount,
+    payload: SearchJoinMembershipPayload,
+) -> bool:
+    source = source_action_for_membership(session, action, payload)
+    if source is None:
+        _fail(action, "search_join_membership_source_invalid", "搜索准入子动作缺少同任务同账号 source action")
+        return True
+    if not _search_join_proxy_guard_verified(payload):
+        _fail(action, "proxy_egress_guard_missing", "搜索准入缺少已验证代理出口 guard，禁止回退本机直连")
+        return True
+    if not _search_join_client_metadata_verified(payload):
+        _fail(action, "client_metadata_missing", "搜索准入缺少已绑定客户端 metadata，禁止使用默认 MTProto 指纹")
+        return True
+    try:
+        runtime_authorization = _search_join_runtime_authorization(session, account, payload)
+    except ValueError as exc:
+        _fail(action, str(exc), "搜索准入授权槽位不可用，禁止回退账号主授权")
+        return True
+    context = SearchJoinMembershipDispatchContext(
+        session=session,
+        action=action,
+        account=account,
+        payload=payload,
+        source=source,
+        runtime_authorization=runtime_authorization,
+    )
+    return _dispatch_search_join_membership_gateway(context)
+
+
+def _dispatch_search_join_membership_gateway(context: SearchJoinMembershipDispatchContext) -> bool:
+    method_name = "probe_search_join_membership" if _search_join_membership_reprobe_due(context.action) else "ensure_search_join_membership"
+    membership = getattr(gateway, method_name, None)
+    if not callable(membership):
+        _fail(context.action, "search_join_membership_gateway_unavailable", "搜索目标群准入 gateway 尚未接入真实 MTProto 执行器")
+        return True
+    _mark_search_join_before_gateway(context.session, context.action)
+    if not _mark_search_join_gateway_call_started(context.session, context.action):
+        return True
+    result = membership(
+        context.account.id,
+        context.payload.model_dump(mode="json"),
+        context.runtime_authorization.session_ciphertext,
+        context.runtime_authorization.credentials,
+    )
+    return _apply_search_join_membership_result(context, result)
+
+
+def _apply_search_join_membership_result(context: SearchJoinMembershipDispatchContext, result: dict) -> bool:
+    result = _approve_pending_search_join_membership(context, result)
+    timestamp = _now()
+    action = context.action
+    source = context.source
+    action.result = {**(action.result or {}), **result}
+    if result.get("success") and result.get("join_status") == "membership_observed":
+        action.status = "success"
+        action.executed_at = timestamp
+        source_payload = SearchJoinPayload.model_validate(source.payload or {})
+        mark_source_membership_observed(source, action, result, observed_at=timestamp)
+        _create_search_join_linked_dispatches(context.session, source, source_payload)
+        return True
+    if _search_join_membership_is_pending(result):
+        _defer_search_join_membership_probe(action, result, timestamp)
+        mark_source_membership_pending(source, action, timestamp=timestamp, detail=str(result.get("detail") or ""))
+        return True
+    action.status = "failed"
+    action.executed_at = timestamp
+    mark_source_membership_failed(source, action, result, observed_at=timestamp)
+    _release_runtime_resources(action)
+    return True
+
+
+def _approve_pending_search_join_membership(context: SearchJoinMembershipDispatchContext, result: dict) -> dict:
+    if result.get("join_status") != "join_request_pending":
+        return result
+    if (context.action.result or {}).get("join_request_approval_attempted"):
+        return result
+    admin = _tenant_rescue_admin(context.session, context.action.tenant_id)
+    if admin is None:
+        context.action.result = {**(context.action.result or {}), "join_request_approval_status": "not_configured"}
+        return result
+    target_ref = _account_invite_ref(context.account)
+    if not target_ref:
+        context.action.result = {**(context.action.result or {}), "join_request_approval_status": "target_account_reference_missing"}
+        return result
+    credentials = credentials_for_account(context.session, admin)
+    group_peer_id = f"@{context.payload.target_username.lstrip('@')}"
+    approved = gateway.approve_group_join_request(admin.id, group_peer_id, target_ref, admin.session_ciphertext, credentials)
+    _record_search_join_membership_approval(context.action, approved)
+    if not approved.ok:
+        return result
+    probe = getattr(gateway, "probe_search_join_membership", None)
+    if not callable(probe):
+        return {"success": False, "error_code": "search_join_membership_probe_gateway_unavailable", "join_status": "membership_pending", "detail": "入群申请已审批，但成员关系复核 gateway 不可用"}
+    return probe(
+        context.account.id,
+        context.payload.model_dump(mode="json"),
+        context.runtime_authorization.session_ciphertext,
+        context.runtime_authorization.credentials,
+    )
+
+
+def _record_search_join_membership_approval(action: Action, approved: OperationResult) -> None:
+    action.result = {
+        **(action.result or {}),
+        "join_request_approval_attempted": True,
+        "join_request_approval_status": "approved" if approved.ok else "failed",
+        "join_request_approval_detail": approved.detail or approved.failure_type,
+    }
+
+
+def _search_join_membership_reprobe_due(action: Action) -> bool:
+    result = action.result if isinstance(action.result, dict) else {}
+    return bool(result.get("application_submitted_at"))
+
+
+def _search_join_membership_is_pending(result: dict) -> bool:
+    return result.get("join_status") in {"join_request_pending", "membership_pending"}
+
+
+def _defer_search_join_membership_probe(action: Action, result: dict, timestamp: datetime) -> None:
+    next_probe_at = timestamp + timedelta(seconds=SEARCH_JOIN_MEMBERSHIP_RECHECK_SECONDS)
+    application_submitted_at = (action.result or {}).get("application_submitted_at") or timestamp.isoformat()
+    action.status = "pending"
+    action.scheduled_at = next_probe_at
+    action.executed_at = None
+    _clear_action_lease(action)
+    action.result = {
+        **(action.result or {}),
+        **result,
+        "application_submitted_at": application_submitted_at,
+        "membership_phase": "waiting_approval",
+        "next_membership_probe_at": next_probe_at.isoformat(),
+    }
+    _release_runtime_resources(action)
 
 
 def _dispatch_search_rank_deboost(session: Session, action: Action, account: TgAccount, payload: SearchRankDeboostPayload) -> bool:
@@ -4219,12 +4386,12 @@ def _audit_runtime_subscription_notification(session: Session, action: Action, r
     )
 
 
-def _search_join_proxy_guard_verified(payload: SearchJoinPayload) -> bool:
+def _search_join_proxy_guard_verified(payload: SearchJoinPayload | SearchJoinMembershipPayload) -> bool:
     runtime = payload.runtime_environment if isinstance(payload.runtime_environment, dict) else {}
     return runtime.get("proxy_egress_guard") == "verified"
 
 
-def _search_join_client_metadata_verified(payload: SearchJoinPayload) -> bool:
+def _search_join_client_metadata_verified(payload: SearchJoinPayload | SearchJoinMembershipPayload) -> bool:
     runtime = payload.runtime_environment if isinstance(payload.runtime_environment, dict) else {}
     metadata = payload.client_metadata if isinstance(payload.client_metadata, dict) else {}
     required = ("device_model", "system_version", "app_version", "platform", "client_identity_key")
@@ -4234,7 +4401,7 @@ def _search_join_client_metadata_verified(payload: SearchJoinPayload) -> bool:
 def _search_join_runtime_authorization(
     session: Session,
     account: TgAccount,
-    payload: SearchJoinPayload,
+    payload: SearchJoinPayload | SearchJoinMembershipPayload,
 ) -> SearchJoinRuntimeAuthorization:
     authorization = session.get(TgAccountAuthorization, payload.authorization_id)
     if authorization is None or authorization.tenant_id != account.tenant_id:
@@ -4256,7 +4423,7 @@ def _search_join_runtime_authorization(
 def _search_join_developer_app(
     session: Session,
     authorization: TgAccountAuthorization,
-    payload: SearchJoinPayload,
+    payload: SearchJoinPayload | SearchJoinMembershipPayload,
 ) -> TelegramDeveloperApp:
     app = session.get(TelegramDeveloperApp, int(authorization.developer_app_id or 0))
     if app is None:
@@ -4272,7 +4439,7 @@ def _search_join_proxy(
     session: Session,
     account: TgAccount,
     authorization: TgAccountAuthorization,
-    payload: SearchJoinPayload,
+    payload: SearchJoinPayload | SearchJoinMembershipPayload,
 ) -> AccountProxy:
     runtime = payload.runtime_environment if isinstance(payload.runtime_environment, dict) else {}
     binding = _search_join_environment_binding(session, account, authorization, runtime)
@@ -4448,13 +4615,14 @@ def _skip(action: Action, code: str, detail: str) -> None:
 
 
 def _skip_search_click_action_after_deadline(session: Session, action: Action) -> bool:
-    if action.action_type not in {"search_join", "search_rank_deboost"}:
+    if action.action_type not in SEARCH_CLICK_ACTION_TYPES:
         return False
     task = session.get(Task, action.task_id)
     deadline = as_beijing(task.scheduled_end) if task is not None else None
     if deadline is None or deadline > _now():
         return False
     _skip(action, "scheduled_end_reached", "任务完成截止时间已到，未执行动作已跳过")
+    _mark_search_join_membership_deadline(session, action)
     if task is not None:
         _skip_unstarted_search_click_actions_after_deadline(session, task)
         task.status = "completed"
@@ -4467,12 +4635,25 @@ def _skip_unstarted_search_click_actions_after_deadline(session: Session, task: 
     actions = session.scalars(
         select(Action).where(
             Action.task_id == task.id,
-            Action.action_type.in_(("search_join", "search_rank_deboost")),
+            Action.action_type.in_(tuple(SEARCH_CLICK_ACTION_TYPES)),
             Action.status.in_(("pending", "claiming")),
         )
     )
     for candidate in actions:
         _skip(candidate, "scheduled_end_reached", "任务完成截止时间已到，未执行动作已跳过")
+        _mark_search_join_membership_deadline(session, candidate)
+
+
+def _mark_search_join_membership_deadline(session: Session, action: Action) -> None:
+    if action.action_type != SEARCH_JOIN_MEMBERSHIP_ACTION_TYPE:
+        return
+    try:
+        payload = SearchJoinMembershipPayload.model_validate(action.payload or {})
+    except ValidationError:
+        return
+    source = source_action_for_membership(session, action, payload)
+    if source is not None:
+        mark_source_membership_failed(source, action, action.result or {}, observed_at=_now())
 
 
 def _skip_search_click_action_during_quiet_hours(session: Session, action: Action) -> bool:
@@ -4494,7 +4675,7 @@ def _skip_inactive_search_click_task(
     *,
     task: Task | None = None,
 ) -> bool:
-    if action.action_type not in {"search_join", "search_rank_deboost"}:
+    if action.action_type not in SEARCH_CLICK_ACTION_TYPES:
         return False
     current_task = task or session.get(Task, action.task_id)
     if current_task is not None and current_task.status == "running":
@@ -4808,7 +4989,7 @@ def _search_click_gateway_call_allowed(session: Session, action: Action) -> bool
 
 
 def _gateway_call_started(session: Session, action: Action) -> bool:
-    if action.action_type == "search_join":
+    if action.action_type in SEARCH_JOIN_RUNTIME_ACTION_TYPES:
         return str((action.result or {}).get("gateway_call_state") or "") == "started"
     return _latest_gateway_attempt(session, action) is not None
 

@@ -108,6 +108,32 @@ class TelegramGateway:
             "detail": "mock gateway 不提供搜索排名观察真实执行结果",
         }
 
+    def ensure_search_join_membership(
+        self,
+        account_id: int,
+        payload: dict,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> dict:
+        return {
+            "success": False,
+            "error_code": "search_join_membership_gateway_unavailable",
+            "detail": "mock gateway 不提供搜索目标群真实准入",
+        }
+
+    def probe_search_join_membership(
+        self,
+        account_id: int,
+        payload: dict,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> dict:
+        return {
+            "success": False,
+            "error_code": "search_join_membership_gateway_unavailable",
+            "detail": "mock gateway 不提供搜索目标群成员关系复核",
+        }
+
     def send_message(
         self,
         account_id: int,

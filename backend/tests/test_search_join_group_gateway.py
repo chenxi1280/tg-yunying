@@ -5,7 +5,11 @@ from dataclasses import dataclass
 
 import pytest
 
-from app.integrations.telegram.search_join import execute_search_join_with_client
+from app.integrations.telegram.search_join import (
+    ensure_search_join_membership_with_client,
+    execute_search_join_with_client,
+    probe_search_join_membership_with_client,
+)
 
 
 @dataclass
@@ -58,10 +62,12 @@ class FakeSearchJoinClient:
         self,
         responses: list[FakeMessage],
         join_error: Exception | None = None,
+        membership_probe_error: Exception | None = None,
         edits: list[FakeMessage] | None = None,
     ) -> None:
         self.responses = responses
         self.join_error = join_error
+        self.membership_probe_error = membership_probe_error
         self.edits = edits or []
         self.updated_message_ids: list[int] = []
         self.sent: list[tuple[str, str]] = []
@@ -82,6 +88,10 @@ class FakeSearchJoinClient:
     async def get_entity(self, target: str):
         return target
 
+    async def get_me(self, input_peer: bool = False):
+        assert input_peer is True
+        return "me"
+
     async def mark_read(self, target: str) -> None:
         self.read_targets.append(target)
 
@@ -93,6 +103,8 @@ class FakeSearchJoinClient:
             self.joined.append(str(request.channel))
         if name == "ImportChatInviteRequest":
             self.imported_invites.append(str(request.hash))
+        if name == "GetParticipantRequest" and self.membership_probe_error:
+            raise self.membership_probe_error
         return None
 
 
@@ -111,6 +123,11 @@ class FakeJoinRequestPendingError(Exception):
         return "You have successfully requested to join this chat or channel (caused by JoinChannelRequest)"
 
 
+class FakeNotParticipantError(Exception):
+    def __str__(self) -> str:
+        return "User is not a participant of the channel"
+
+
 def _payload(**overrides) -> dict:
     payload = {
         "bot_username": "searchbot",
@@ -125,7 +142,7 @@ def _payload(**overrides) -> dict:
 
 
 @pytest.mark.no_postgres
-def test_execute_search_join_sends_keyword_clicks_safe_navigation_and_joins_target() -> None:
+def test_execute_search_join_sends_keyword_clicks_safe_navigation_and_marks_target_found() -> None:
     safe = FakeButton("看看介绍", data=b"safe", effect="navigate_only")
     target = FakeButton("目标群", url="https://t.me/target_group")
     message = FakeMessage(101, [[safe], [target]])
@@ -136,11 +153,22 @@ def test_execute_search_join_sends_keyword_clicks_safe_navigation_and_joins_targ
     assert result["success"] is True
     assert client.sent == [("searchbot", "/start"), ("searchbot", "上海 留学")]
     assert message.clicked == [(0, 0), (1, 0)]
-    assert client.joined == ["target_group"]
-    assert client.read_targets == ["target_group"]
-    assert result["join_status"] == "membership_observed"
+    assert client.joined == []
+    assert client.read_targets == []
+    assert result["join_status"] == "target_found"
     assert result["pre_join_decoy_clicks"][0]["joined"] is False
     assert "上海 留学" not in str(result)
+
+
+@pytest.mark.no_postgres
+def test_search_join_membership_applies_after_target_found() -> None:
+    client = FakeSearchJoinClient([])
+
+    result = asyncio.run(ensure_search_join_membership_with_client(client, _payload()))
+
+    assert result["success"] is True
+    assert result["join_status"] == "membership_observed"
+    assert client.joined == ["target_group"]
 
 
 @pytest.mark.no_postgres
@@ -294,7 +322,7 @@ def test_execute_search_join_never_treats_peer_only_target_as_decoy() -> None:
 
 
 @pytest.mark.no_postgres
-def test_execute_search_join_joins_known_target_when_message_text_matches() -> None:
+def test_execute_search_join_marks_known_target_when_message_text_matches() -> None:
     result_page = FakeMessage(
         101,
         [[FakeButton("👥", data=b"group-category")], [FakeButton("下一页", data=b"next", effect="navigate_only")]],
@@ -311,7 +339,8 @@ def test_execute_search_join_joins_known_target_when_message_text_matches() -> N
     )
 
     assert result["success"] is True
-    assert client.joined == ["xiaozisk"]
+    assert client.joined == []
+    assert result["join_status"] == "target_found"
     assert result["target_match_source"] == "message_text"
     assert result["target_line"] == "👥郑州平价资源（交流群） @xiaozisk 46k"
 
@@ -349,7 +378,7 @@ def test_execute_search_join_uses_visible_exact_title_with_configured_username_o
     assert result["target_match_source"] == "message_title_username_verified"
     assert result["target_line"] == "👥 河南郑州学生会 · 公开群"
     assert target_page.clicked == []
-    assert client.joined == ["zzxshxc"]
+    assert client.joined == []
 
 
 @pytest.mark.no_postgres
@@ -375,15 +404,11 @@ def test_execute_search_join_does_not_use_title_prefix_as_target_match() -> None
 
 @pytest.mark.no_postgres
 def test_execute_search_join_counts_target_click_success_when_account_already_joined() -> None:
-    target = FakeButton("目标群", url="https://t.me/target_group")
-    message = FakeMessage(101, [[target]])
-    client = FakeSearchJoinClient([FakeMessage(100, []), message], join_error=FakeAlreadyParticipantError())
+    client = FakeSearchJoinClient([], join_error=FakeAlreadyParticipantError())
 
-    result = asyncio.run(execute_search_join_with_client(client, _payload(), keyword_text="上海 留学"))
+    result = asyncio.run(ensure_search_join_membership_with_client(client, _payload()))
 
     assert result["success"] is True
-    assert message.clicked == [(0, 0)]
-    assert client.read_targets == ["target_group"]
     assert result["join_status"] == "membership_observed"
 
 
@@ -395,20 +420,21 @@ def test_execute_search_join_records_target_match_when_join_request_is_pending()
         join_error=FakeJoinRequestPendingError(),
     )
 
-    result = asyncio.run(
+    source_result = asyncio.run(
         execute_search_join_with_client(
             client,
             _payload(target_username="zzxshxc", target_title="河南郑州学生会"),
             keyword_text="郑州",
         )
     )
+    result = asyncio.run(ensure_search_join_membership_with_client(client, _payload(target_username="zzxshxc", target_title="河南郑州学生会")))
 
     assert result["success"] is False
     assert result["error_code"] == "join_request_pending"
     assert result["join_status"] == "join_request_pending"
-    assert result["search_end_reason"] == "target_found"
-    assert result["target_match_source"] == "message_title_username_verified"
-    assert result["target_line"] == "👥 河南郑州学生会 · 公开群"
+    assert source_result["search_end_reason"] == "target_found"
+    assert source_result["target_match_source"] == "message_title_username_verified"
+    assert source_result["target_line"] == "👥 河南郑州学生会 · 公开群"
     assert client.read_targets == []
 
 
@@ -512,7 +538,18 @@ def test_execute_search_join_searches_beyond_legacy_page_70_until_target_found()
     assert result["page"] == 71
     assert result["searched_pages"] == 71
     assert all(page.clicked == [(1, 0)] for page in pages)
-    assert client.joined == ["target_group"]
+    assert client.joined == []
+
+
+@pytest.mark.no_postgres
+def test_probe_search_join_membership_keeps_waiting_for_approval_visible() -> None:
+    client = FakeSearchJoinClient([], membership_probe_error=FakeNotParticipantError())
+
+    result = asyncio.run(probe_search_join_membership_with_client(client, _payload()))
+
+    assert result["success"] is False
+    assert result["error_code"] == "membership_not_observed"
+    assert result["join_status"] == "membership_pending"
 
 
 @pytest.mark.no_postgres
