@@ -4429,6 +4429,8 @@ def test_group_ai_planner_defers_quality_retry_to_dispatcher(monkeypatch):
                 include_previous_photo_memory=True,
             ),
         )
+        session.get(TgGroup, 7).group_cooldown_seconds = 0
+        session.commit()
         assert group_ai_chat.build_plan(session, task) == 2
         actions = list(session.scalars(select(Action).where(
             Action.task_id == task.id,

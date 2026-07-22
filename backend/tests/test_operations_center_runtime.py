@@ -5374,6 +5374,7 @@ def test_group_ai_chat_drops_repeated_fixed_shell_phrases(monkeypatch):
             topic_direction="群内接话", remote_message_id="real-list",
             type_overrides={"participation_rate": 1, "participation_jitter": 0},
         )
+        session.get(TgGroup, 7).group_cooldown_seconds = 0
         session.commit()
 
         created = build_group_ai_chat_plan(session, session.get(Task, "ai-fixed-shell-dedup"))

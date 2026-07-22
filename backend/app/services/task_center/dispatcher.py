@@ -67,6 +67,7 @@ from .executors.channel_comment_budget import (
     total_comment_action_count as _total_comment_action_count,
 )
 from .group_rescue import GROUP_RESCUE_FAILURE_THRESHOLD, infer_rescue_admin_rate_limit, permission_failure_count_for_send_action, refresh_group_rescue_action, trigger_group_rescue
+from .group_send_limits import GroupSendSlotBlock, group_send_slot_block
 from .payloads import DeprecatedGroupRescuePayload, DeleteMessagePayload, EnsureChannelMembershipPayload, InviteGroupAccountPayload, LikeMessagePayload, PostCommentPayload, SearchJoinMembershipPayload, SearchJoinPayload, SearchRankDeboostPayload, SendMessagePayload, ViewMessagePayload, create_membership_action, payload_error_message, validate_action_payload
 from .pacing import quiet_hours_active
 from .policies import validate_group_send_policy
@@ -1359,9 +1360,9 @@ def _send_group_message_via_gateway(
         credentials=context.credentials,
         reply_to_message_id=context.payload.reply_to_message_id,
     )
-    attempt = _begin_execution_attempt(session, action, context.account)
-    _mark_executing(action)
-    session.commit()
+    attempt = _reserve_group_send_attempt(session, action, context)
+    if attempt is None:
+        return True
     _mark_gateway_call_started(session, attempt)
     send_kwargs = (
         {"reply_to_message_id": gateway_request.reply_to_message_id}
@@ -1391,6 +1392,41 @@ def _send_group_message_via_gateway(
         return True
     _finalize_group_send(session, action, context, result=result, attempt=attempt)
     return True
+
+
+def _reserve_group_send_attempt(
+    session: Session,
+    action: Action,
+    context: GroupSendGatewayContext,
+) -> ExecutionAttempt | None:
+    group = session.scalar(select(TgGroup).where(TgGroup.id == context.group.id).with_for_update())
+    block = group_send_slot_block(session, action=action, group=group)
+    if block:
+        _defer_group_send_for_limit(action, block)
+        return None
+    attempt = _begin_execution_attempt(session, action, context.account)
+    _mark_executing(action)
+    session.commit()
+    return attempt
+
+
+def _defer_group_send_for_limit(action: Action, block: GroupSendSlotBlock) -> None:
+    retry_at = _now() + timedelta(seconds=block.retry_after_seconds)
+    action.status = "pending"
+    action.scheduled_at = retry_at
+    action.executed_at = None
+    _clear_action_lease(action)
+    action.result = {
+        **(action.result or {}),
+        "success": False,
+        "error_code": block.failure_type,
+        "error_message": block.detail,
+        "auto_check": "延后",
+        "validation_stage": "group_send_limit",
+        "retry_after_seconds": block.retry_after_seconds,
+        "next_retry_at": retry_at.isoformat(),
+        "rate_limit_source": "group",
+    }
 
 
 def _finalize_group_send(
