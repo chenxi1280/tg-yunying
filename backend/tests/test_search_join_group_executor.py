@@ -1164,6 +1164,64 @@ def test_search_join_planner_avoids_repeat_join_request_for_same_account(session
 
 
 @pytest.mark.no_postgres
+def test_search_join_repeat_application_mode_reuses_the_same_account_within_one_plan(session: Session) -> None:
+    _bind_search_join_environment(session, [101])
+    task = _task(
+        account_config={"selection_mode": "manual", "account_ids": [101], "max_concurrent": 1},
+        type_config={
+            "daily_click_target_count": 2,
+            "daily_target_count": 1,
+            "allow_same_account_repeat_application": True,
+            "actions_per_round": 2,
+            "max_actions_per_hour": 2,
+            "hourly_min_successful_joins": 2,
+        },
+        pacing_config={
+            "max_actions_per_day": 2,
+            "per_account_daily_action_limit": 1,
+            "per_keyword_account_daily_limit": 1,
+            "hourly_jitter_percent": 0,
+            "daily_jitter_percent": 0,
+        },
+    )
+    session.add(task)
+    session.commit()
+
+    assert build_task_plan(session, task) == 2
+
+    actions = list(session.scalars(select(Action).where(Action.task_id == task.id, Action.action_type == "search_join")))
+    assert [action.account_id for action in actions] == [101, 101]
+
+
+@pytest.mark.no_postgres
+def test_click_only_daily_target_uses_remaining_daily_curve(session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    fixed_now = datetime(2026, 7, 23, 23, 30)
+    monkeypatch.setattr(search_join_executor, "_now", lambda: fixed_now)
+    _bind_search_join_environment(session, [101])
+    task = _task(
+        account_config={"selection_mode": "manual", "account_ids": [101], "max_concurrent": 1},
+        type_config={
+            "daily_click_target_count": 50,
+            "allow_same_account_repeat_application": True,
+            "hourly_round_curve": [0] * 23 + [1],
+            "actions_per_round": 20,
+            "max_actions_per_hour": 50,
+            "hourly_min_successful_joins": 1,
+        },
+        pacing_config={
+            "max_actions_per_day": 50,
+            "hourly_jitter_percent": 0,
+            "daily_jitter_percent": 0,
+        },
+    )
+    session.add(task)
+    session.commit()
+
+    assert build_task_plan(session, task) == 20
+    assert task.stats["search_join_stats"]["hourly_execution"]["goal"] == 50
+
+
+@pytest.mark.no_postgres
 def test_search_join_daily_limit_counts_unknown_after_gateway(session: Session) -> None:
     _bind_search_join_environment(session, [101])
     task = _task(pacing_config={"max_actions_per_day": 1})

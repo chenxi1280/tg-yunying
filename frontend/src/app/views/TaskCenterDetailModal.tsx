@@ -68,15 +68,29 @@ const coverageStateColor = (state?: string | null) => {
 
 function searchClickTargetProgress(task: TaskCenterTask) {
   const progress = task.stats?.search_click_target;
+  const hasDualTarget = task.type === 'search_join_group' && task.type_config?.daily_click_target_count != null;
   const isDailyTarget = task.type === 'search_join_group'
-    && (progress?.scope === 'daily' || task.type_config?.daily_target_count != null);
-  const configuredTarget = isDailyTarget ? task.type_config?.daily_target_count : task.type_config?.target_count;
+    && (progress?.scope === 'daily' || task.type_config?.daily_click_target_count != null || task.type_config?.daily_target_count != null);
+  const configuredTarget = isDailyTarget
+    ? hasDualTarget ? task.type_config?.daily_click_target_count : task.type_config?.daily_target_count
+    : task.type_config?.target_count;
   const targetCount = Number(progress?.target_count ?? configuredTarget);
   if (!Number.isInteger(targetCount) || targetCount <= 0) return null;
   const confirmedCount = Math.max(0, Number(progress?.confirmed_count ?? 0));
   const heldCount = Math.max(0, Number(progress?.held_count ?? 0));
   const remainingSlotCount = progress?.remaining_slot_count ?? Math.max(0, targetCount - confirmedCount - heldCount);
-  return { targetCount, confirmedCount, heldCount, remainingSlotCount, isDailyTarget, state: progress?.state ?? 'planning' };
+  return { targetCount, confirmedCount, heldCount, remainingSlotCount, isDailyTarget, hasDualTarget, state: progress?.state ?? 'planning' };
+}
+
+function searchJoinMembershipTargetProgress(task: TaskCenterTask) {
+  if (task.type !== 'search_join_group' || task.type_config?.daily_click_target_count == null) return null;
+  const progress = task.stats?.search_join_membership_target;
+  const targetCount = Number(progress?.target_count ?? task.type_config?.daily_target_count);
+  if (!Number.isInteger(targetCount) || targetCount <= 0) return null;
+  const confirmedCount = Math.max(0, Number(progress?.confirmed_count ?? 0));
+  const heldCount = Math.max(0, Number(progress?.held_count ?? 0));
+  const remainingSlotCount = progress?.remaining_slot_count ?? Math.max(0, targetCount - confirmedCount - heldCount);
+  return { targetCount, confirmedCount, heldCount, remainingSlotCount };
 }
 
 function searchJoinDetailItems(detail: TaskCenterDetail) {
@@ -85,8 +99,10 @@ function searchJoinDetailItems(detail: TaskCenterDetail) {
   const hourly = stats.hourly_execution || {};
   const pacingLimits = stats.pacing_limits || {};
   const targetProgress = searchClickTargetProgress(detail.task);
+  const membershipProgress = searchJoinMembershipTargetProgress(detail.task);
   return [
-    ...(targetProgress ? [{ key: 'target-progress', label: targetProgress.isDailyTarget ? '今日目标进度' : '目标进度', children: `${targetProgress.isDailyTarget ? '今日已确认' : '已确认'} ${targetProgress.confirmedCount} / ${targetProgress.targetCount}，待确认 ${targetProgress.heldCount}，剩余可规划 ${targetProgress.remainingSlotCount}` }] : []),
+    ...(targetProgress ? [{ key: 'target-progress', label: targetProgress.hasDualTarget ? '今日目标点击' : targetProgress.isDailyTarget ? '今日目标进度' : '目标进度', children: `${targetProgress.isDailyTarget ? '今日已确认' : '已确认'} ${targetProgress.confirmedCount} / ${targetProgress.targetCount}，待确认 ${targetProgress.heldCount}，剩余可规划 ${targetProgress.remainingSlotCount}` }] : []),
+    ...(membershipProgress ? [{ key: 'membership-progress', label: '今日成员关系观察', children: `已观察 ${membershipProgress.confirmedCount} / ${membershipProgress.targetCount}，待确认 ${membershipProgress.heldCount}，剩余 ${membershipProgress.remainingSlotCount}` }] : []),
     { key: 'success', label: '累计目标点击', children: detail.task.stats?.success_count ?? 0 },
     { key: 'ranking', label: '排名观察', children: hourly.recent_target_positions?.length ? `${hourly.recent_target_positions.length} 条` : '独立快照，不计入 action success' },
     { key: 'hourly', label: '小时执行', children: `${hourly.status || '-'} / 缺口 ${hourly.deficit ?? 0} / 未来 ${hourly.future_open_count ?? 0}` },
@@ -95,7 +111,7 @@ function searchJoinDetailItems(detail: TaskCenterDetail) {
     { key: 'keyword-limit', label: '关键词限制命中', children: pacingLimits.per_keyword_account_daily_limit_reached ?? 0 },
     { key: 'pacing-skip', label: 'Pacing 跳过', children: `天 ${pacingLimits.daily_skipped_by_pacing ?? 0} / 小时 ${pacingLimits.hourly_skipped_by_pacing ?? 0} / 最近 ${pacingLimits.last_limit_reason || '-'}` },
     { key: 'link', label: '联动状态', children: stats.linked_task_status || '等待 membership_observed 后进入 ready pool 判定' },
-    { key: 'membership-observed', label: '成员关系结果', children: 'membership_observed 表示完成目标点击后观察到成员关系，不等同于本次新加入' },
+    { key: 'membership-observed', label: '成员关系结果', children: 'membership_observed 仅表示观察到成员关系；它与目标点击独立计数，也不等同于本次新加入' },
     { key: 'target-not-found', label: '未命中处理', children: '不设固定翻页上限；只有命中目标才结束成功搜索。真实末页未命中写 target_not_in_results / no_next_page 与实际页码，当前 action 失败但任务继续规划。' },
     { key: 'relevance', label: '目标资料相关性', children: config.target_relevance_score ?? '-' },
     { key: 'health', label: '内容健康', children: config.target_content_health || '-' },

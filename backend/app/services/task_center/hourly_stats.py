@@ -159,7 +159,8 @@ def _search_join_hourly_goal(
     target_progress: SearchClickTargetProgress | None,
 ) -> int:
     hourly_minimum = int(config.get("hourly_min_successful_joins") or 0)
-    if (task.type_config or {}).get("daily_target_count") is None:
+    task_config = task.type_config or {}
+    if task_config.get("daily_click_target_count") is None and task_config.get("daily_target_count") is None:
         return hourly_minimum
     progress = target_progress or search_click_target_progress(session, task, now_value=now_value)
     if not progress.is_daily_target or progress.target_count is None:

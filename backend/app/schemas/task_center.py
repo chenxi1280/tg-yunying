@@ -576,7 +576,9 @@ class SearchJoinGroupConfig(BaseModel):
     max_actions_per_hour: int = Field(default=20, ge=1, le=500)
     hourly_min_successful_joins: int = Field(default=1, ge=1, le=500)
     target_count: int | None = Field(default=None, ge=1)
+    daily_click_target_count: int | None = Field(default=None, ge=1)
     daily_target_count: int | None = Field(default=None, ge=1)
+    allow_same_account_repeat_application: bool = False
     strict_daily_target: bool = False
     target_relevance_score: int | None = Field(default=None, ge=0, le=100)
     target_content_health: Literal["healthy", "weak", "blocked", "unknown"] = "unknown"
@@ -588,8 +590,10 @@ class SearchJoinGroupConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_search_join_config(self) -> "SearchJoinGroupConfig":
-        if self.target_count is not None and self.daily_target_count is not None:
-            raise ValueError("target_count 与 daily_target_count 不能同时填写")
+        if self.target_count is not None and (
+            self.daily_click_target_count is not None or self.daily_target_count is not None
+        ):
+            raise ValueError("target_count 与每日目标不能同时填写")
         if not self.target_group_id and not self.target_operation_target_id and not (self.target_input or "").strip():
             raise ValueError("target_group_id、target_operation_target_id 或 target_input 至少填写一个")
         if not self.search_bots:
@@ -704,13 +708,16 @@ class SearchClickSimpleTaskCreate(BaseModel):
 
 
 class SearchJoinGroupSimpleTaskCreate(SearchClickSimpleTaskCreate):
+    daily_click_target_count: int | None = Field(default=None, ge=1)
     daily_target_count: int = Field(ge=1)
+    allow_same_account_repeat_application: bool = False
     per_account_daily_action_limit: int = Field(default=DEFAULT_SEARCH_JOIN_DAILY_ACCOUNT_LIMIT, ge=0, le=1000)
 
     @model_validator(mode="after")
     def validate_daily_action_budget(self) -> "SearchJoinGroupSimpleTaskCreate":
-        if self.max_actions_per_day < self.daily_target_count:
-            raise ValueError("max_actions_per_day 不能小于 daily_target_count")
+        source_target = self.daily_click_target_count or self.daily_target_count
+        if self.max_actions_per_day < source_target:
+            raise ValueError("max_actions_per_day 不能小于每日点击目标")
         return self
 
 
@@ -747,11 +754,12 @@ class SearchJoinGroupTaskCreate(TaskCreateCommon, SearchJoinGroupConfig):
 
     @model_validator(mode="after")
     def validate_daily_action_budget(self) -> "SearchJoinGroupTaskCreate":
-        if self.daily_target_count is None:
+        source_target = self.daily_click_target_count or self.daily_target_count
+        if source_target is None:
             return self
         max_actions_per_day = self.pacing_config.max_actions_per_day
-        if max_actions_per_day is None or max_actions_per_day < self.daily_target_count:
-            raise ValueError("max_actions_per_day 不能小于 daily_target_count")
+        if max_actions_per_day is None or max_actions_per_day < source_target:
+            raise ValueError("max_actions_per_day 不能小于每日点击目标")
         return self
 
 
@@ -790,7 +798,9 @@ class SearchJoinGroupTaskConfigUpdate(BaseModel):
 
     target_operation_target_id: int | None = Field(default=None, gt=0)
     target_count: int | None = Field(default=None, ge=1)
+    daily_click_target_count: int | None = Field(default=None, ge=1)
     daily_target_count: int | None = Field(default=None, ge=1)
+    allow_same_account_repeat_application: bool | None = None
     target_group_id: int | None = Field(default=None, gt=0)
     target_input: str | None = Field(default=None, max_length=300)
     target_title: str | None = Field(default=None, max_length=180)
@@ -838,8 +848,11 @@ class SearchJoinGroupTaskConfigUpdate(BaseModel):
     @model_validator(mode="after")
     def validate_keyword_material_patch(self) -> "SearchJoinGroupTaskConfigUpdate":
         fields = self.model_fields_set
-        if "target_count" in fields and "daily_target_count" in fields:
-            raise ValueError("target_count 与 daily_target_count 不能同时填写")
+        if "target_count" in fields and {
+            "daily_click_target_count",
+            "daily_target_count",
+        }.intersection(fields):
+            raise ValueError("target_count 与每日目标不能同时填写")
         target_title_supplied = "target_title" in fields
         target_link_supplied = "target_link" in fields
         if target_title_supplied != target_link_supplied:
