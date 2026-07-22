@@ -45,7 +45,11 @@ from .ai_config import ai_provider_credentials, get_tenant_ai_setting
 from .developer_apps import credentials_for_account
 from .group_listeners import collect_group_context, recent_context_messages
 from .notifications import notify_ai_failure
-from .operation_target_peer_merge import begin_peer_merge_transaction, merge_duplicate_canonical_peer
+from .operation_target_peer_merge import (
+    begin_peer_merge_transaction,
+    merge_duplicate_canonical_peer,
+    require_fresh_peer_merge_session,
+)
 from .operation_target_list import OperationTargetListQuery, list_operation_targets_page
 from .tenant_learning_samples import GROUP_CHAT_SCENE, record_channel_comment_sample
 from .task_center.payloads import EnsureChannelMembershipPayload, create_membership_action
@@ -1122,14 +1126,49 @@ def canonicalize_operation_target_peer(
     observer_account_id: int,
     actor: str,
 ) -> dict:
-    begin_peer_merge_transaction(session)
-    target = _operation_target_for_tenant(session, tenant_id, target_id)
-    group = _legacy_target_group(session, target)
-    public_username = _legacy_public_username(target.tg_peer_id)
-    observer, link = _canonicalization_observer(session, tenant_id, group, observer_account_id)
-    snapshots = gateway.list_groups(observer.id, observer.session_ciphertext, credentials_for_account(session, observer))
-    snapshot = _snapshot_for_public_username(snapshots, public_username)
+    require_fresh_peer_merge_session(session)
+    snapshot, public_username = _fetch_canonical_peer_snapshot(session, tenant_id, target_id, observer_account_id)
+    return _canonicalize_peer_snapshot(session, tenant_id, target_id, observer_account_id, actor, snapshot, public_username)
+
+
+def _fetch_canonical_peer_snapshot(
+    session: Session,
+    tenant_id: int,
+    target_id: int,
+    observer_account_id: int,
+) -> tuple[object, str]:
     try:
+        target = _operation_target_for_tenant(session, tenant_id, target_id)
+        group = _legacy_target_group(session, target)
+        public_username = _legacy_public_username(target.tg_peer_id)
+        observer, _link = _canonicalization_observer(session, tenant_id, group, observer_account_id)
+        snapshot = gateway.resolve_group_by_public_username(
+            observer.id,
+            public_username,
+            observer.session_ciphertext,
+            credentials_for_account(session, observer),
+        )
+        return _snapshot_for_public_username([snapshot], public_username), public_username
+    finally:
+        session.rollback()
+
+
+def _canonicalize_peer_snapshot(
+    session: Session,
+    tenant_id: int,
+    target_id: int,
+    observer_account_id: int,
+    actor: str,
+    snapshot: object,
+    public_username: str,
+) -> dict:
+    begin_peer_merge_transaction(session)
+    try:
+        target = _operation_target_for_tenant(session, tenant_id, target_id)
+        if _legacy_public_username(target.tg_peer_id) != public_username:
+            raise ValueError("target changed before peer canonicalization")
+        group = _legacy_target_group(session, target)
+        observer, link = _canonicalization_observer(session, tenant_id, group, observer_account_id)
         merged = merge_duplicate_canonical_peer(session, target, group, snapshot, public_username)
         _assert_canonical_peer_available(session, target, group, snapshot.tg_peer_id)
         old_peer_id = target.tg_peer_id
@@ -1151,20 +1190,21 @@ def canonicalize_operation_target_peer(
                 f"observer_account_id={observer.id}{merged_detail}"
             ),
         )
+        result = {
+            "target_id": target.id,
+            "group_id": group.id,
+            "stable_peer_id": snapshot.tg_peer_id,
+            "observer_account_id": observer.id,
+            **merged,
+        }
         session.commit()
+        return result
     except (IntegrityError, OperationalError) as exc:
         session.rollback()
         raise ValueError(f"peer canonicalization transaction rolled back: {exc.orig}") from exc
     except ValueError:
         session.rollback()
         raise
-    return {
-        "target_id": target.id,
-        "group_id": group.id,
-        "stable_peer_id": snapshot.tg_peer_id,
-        "observer_account_id": observer.id,
-        **merged,
-    }
 
 
 def _legacy_target_group(session: Session, target: OperationTarget) -> TgGroup:

@@ -32,8 +32,8 @@ pytestmark = pytest.mark.no_postgres
 
 def _patch_canonicalization_gateway(monkeypatch) -> None:
     class FakeGateway:
-        def list_groups(self, *_args, **_kwargs):
-            return [GroupSnapshot("-1003573333444", "郑州楼凤", "supergroup", 1200, "可发言", True, username="zhengzhou167")]
+        def resolve_group_by_public_username(self, *_args, **_kwargs):
+            return GroupSnapshot("-1003573333444", "郑州楼凤", "supergroup", 1200, "可发言", True, username="zhengzhou167")
 
     monkeypatch.setattr("app.services.operations.gateway", FakeGateway())
     monkeypatch.setattr("app.services.operations.credentials_for_account", lambda *args, **_kwargs: None)
@@ -129,18 +129,16 @@ def test_canonicalize_legacy_public_target_peer_keeps_existing_group(monkeypatch
     Base.metadata.create_all(engine)
 
     class FakeGateway:
-        def list_groups(self, *_args, **_kwargs):
-            return [
-                GroupSnapshot(
-                    tg_peer_id="-1003573333444",
-                    title="郑州楼凤",
-                    group_type="supergroup",
-                    member_count=1200,
-                    permission_label="可发言",
-                    can_send=True,
-                    username="zhengzhou167",
-                )
-            ]
+        def resolve_group_by_public_username(self, *_args, **_kwargs):
+            return GroupSnapshot(
+                tg_peer_id="-1003573333444",
+                title="郑州楼凤",
+                group_type="supergroup",
+                member_count=1200,
+                permission_label="可发言",
+                can_send=True,
+                username="zhengzhou167",
+            )
 
     monkeypatch.setattr("app.services.operations.gateway", FakeGateway())
     monkeypatch.setattr("app.services.operations.credentials_for_account", lambda *args, **kwargs: None)
@@ -171,8 +169,8 @@ def test_canonicalize_legacy_public_target_peer_merges_unreferenced_duplicate(mo
     Base.metadata.create_all(engine)
 
     class FakeGateway:
-        def list_groups(self, *_args, **_kwargs):
-            return [GroupSnapshot("-1003573333444", "郑州楼凤", "supergroup", 1200, "可发言", True, username="zhengzhou167")]
+        def resolve_group_by_public_username(self, *_args, **_kwargs):
+            return GroupSnapshot("-1003573333444", "郑州楼凤", "supergroup", 1200, "可发言", True, username="zhengzhou167")
 
     monkeypatch.setattr("app.services.operations.gateway", FakeGateway())
     monkeypatch.setattr("app.services.operations.credentials_for_account", lambda *args, **_kwargs: None)
@@ -212,8 +210,8 @@ def test_canonicalize_legacy_public_target_peer_rejects_existing_peer(monkeypatc
     Base.metadata.create_all(engine)
 
     class FakeGateway:
-        def list_groups(self, *_args, **_kwargs):
-            return [GroupSnapshot("-1003573333444", "郑州楼凤", "supergroup", 1200, "可发言", True, username="zhengzhou167")]
+        def resolve_group_by_public_username(self, *_args, **_kwargs):
+            return GroupSnapshot("-1003573333444", "郑州楼凤", "supergroup", 1200, "可发言", True, username="zhengzhou167")
 
     monkeypatch.setattr("app.services.operations.gateway", FakeGateway())
     monkeypatch.setattr("app.services.operations.credentials_for_account", lambda *args, **kwargs: None)

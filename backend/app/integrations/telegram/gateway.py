@@ -896,6 +896,55 @@ class TelethonTelegramGateway(TelegramGateway):
     ) -> list[GroupSnapshot]:
         return self._run(self._groups_async(session_ciphertext, self._usable_credentials(credentials)))
 
+    async def _resolve_group_by_public_username_async(
+        self,
+        public_username: str,
+        session_ciphertext: str | None,
+        credentials: DeveloperAppCredentials,
+    ) -> GroupSnapshot:
+        normalized_username = public_username.strip().lstrip("@")
+        if not normalized_username:
+            raise RuntimeError("public group username is required")
+        client = await self._authorized_client(
+            session_ciphertext,
+            credentials,
+            error_message="stable group peer resolution requires a valid session",
+        )
+        from telethon import types, utils
+
+        entity = await client.get_entity(normalized_username)
+        if not isinstance(entity, (types.Channel, types.Chat)):
+            raise RuntimeError("public Telegram username did not resolve to a group or channel")
+        permissions = await client.get_permissions(entity, "me")
+        resolved_entity = getattr(entity, "migrated_to", None) or entity
+        can_send = _can_send_text_in_group(entity, permissions)
+        is_channel = isinstance(entity, types.Channel)
+        return GroupSnapshot(
+            tg_peer_id=str(utils.get_peer_id(resolved_entity)),
+            title=getattr(entity, "title", None) or "未命名群聊",
+            group_type="supergroup" if getattr(entity, "migrated_to", None) or getattr(entity, "megagroup", False) else "channel" if is_channel else "group",
+            member_count=int(getattr(entity, "participants_count", 0) or 0),
+            permission_label="可发言" if can_send else "不可发言",
+            can_send=can_send,
+            slowmode_seconds=getattr(entity, "slowmode_seconds", None),
+            username=getattr(entity, "username", None),
+        )
+
+    def resolve_group_by_public_username(
+        self,
+        account_id: int,
+        public_username: str,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> GroupSnapshot:
+        return self._run(
+            self._resolve_group_by_public_username_async(
+                public_username,
+                session_ciphertext,
+                self._usable_credentials(credentials),
+            )
+        )
+
     async def _verification_codes_async(
         self,
         session_ciphertext: str | None,

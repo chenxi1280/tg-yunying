@@ -189,6 +189,23 @@ class TelegramGateway:
             GroupSnapshot("-100003", "海外用户增长群", "supergroup", 1289, "普通成员", True, 30, "growth_group"),
         ]
 
+    def resolve_group_by_public_username(
+        self,
+        account_id: int,
+        public_username: str,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> GroupSnapshot:
+        normalized = public_username.strip().lstrip("@").lower()
+        matches = [
+            snapshot
+            for snapshot in self.list_groups(account_id, session_ciphertext, credentials)
+            if str(snapshot.username or "").strip().lstrip("@").lower() == normalized
+        ]
+        if len(matches) != 1:
+            raise RuntimeError("public Telegram username did not resolve to one group")
+        return matches[0]
+
     def send_message_to_target(
         self,
         account_id: int,

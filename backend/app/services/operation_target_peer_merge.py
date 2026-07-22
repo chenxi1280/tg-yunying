@@ -26,9 +26,13 @@ from app.models import (
 FINGERPRINT_GROUP_SEGMENTS = ("relay", "target", "group_ai_chat")
 
 
-def begin_peer_merge_transaction(session: Session) -> None:
+def require_fresh_peer_merge_session(session: Session) -> None:
     if session.in_transaction():
         raise ValueError("stable Telegram peer canonicalization requires a fresh database session")
+
+
+def begin_peer_merge_transaction(session: Session) -> None:
+    require_fresh_peer_merge_session(session)
     session.connection(execution_options={"isolation_level": "SERIALIZABLE"})
 
 
