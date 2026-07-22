@@ -228,6 +228,38 @@ def test_dispatch_rebinds_legacy_membership_child_to_source_account(monkeypatch,
 
 
 @pytest.mark.no_postgres
+def test_dispatch_rebinds_legacy_search_source_to_authorization_account(monkeypatch, session: Session) -> None:
+    _task, source = _source_action(session)
+    session.add(TgAccount(
+        id=102,
+        tenant_id=1,
+        display_name="误转派账号",
+        username="reassigned-account",
+        phone_masked="102",
+        status=AccountStatus.ACTIVE.value,
+        session_ciphertext="reassigned-session",
+        developer_app_id=1,
+        developer_app_version=1,
+    ))
+    source.account_id = 102
+    session.commit()
+    calls: list[int] = []
+    monkeypatch.setattr(
+        dispatcher.gateway,
+        "execute_search_join",
+        lambda account_id, *_args: calls.append(account_id) or _target_found_result(),
+        raising=False,
+    )
+
+    assert dispatcher._action_can_reassign(source) is False
+    assert dispatch_action(session, source) is True
+
+    assert source.account_id == 101
+    assert source.status == "success"
+    assert calls == [101]
+
+
+@pytest.mark.no_postgres
 def test_pending_application_uses_rescue_admin_then_reprobes_source_slot(monkeypatch, session: Session) -> None:
     tenant = session.get(Tenant, 1)
     assert tenant is not None

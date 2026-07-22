@@ -74,7 +74,7 @@ tg-yunying 当前任务中心已支持 5 类主任务：`group_ai_chat`、`group
 }
 ```
 
-每个 source `search_join` action = 一个账号授权槽位 × 一个关键词 × 一个搜索机器人 × 一个目标群匹配策略 = 一次完整搜索目标群点击链路。账号已在目标群内时，不跳过该 source action；仍需完成搜索、命中目标和目标点击 / 确认。命中后 source action 必须立即写 `target_click_observed=true` 与 `target_found_at`，并创建唯一 `search_join_membership` 准入子 action；子 action 在同一授权槽位环境下申请或复核成员关系。`membership_observed` 是独立的成员关系事实，不回写或覆盖已经成立的目标点击事实。
+每个 source `search_join` action = 一个账号授权槽位 × 一个关键词 × 一个搜索机器人 × 一个目标群匹配策略 = 一次完整搜索目标群点击链路。账号已在目标群内时，不跳过该 source action；仍需完成搜索、命中目标和目标点击 / 确认。source 在计划后和调度前都必须保持该授权槽位所属账号，不能因全局容量转派到其他账号。命中后 source action 必须立即写 `target_click_observed=true` 与 `target_found_at`，并创建唯一 `search_join_membership` 准入子 action；子 action 在同一授权槽位环境下申请或复核成员关系。`membership_observed` 是独立的成员关系事实，不回写或覆盖已经成立的目标点击事实。
 
 ### 4.1.1 每日目标契约（2026-07-21）
 

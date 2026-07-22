@@ -400,6 +400,8 @@ def _dispatch_action(
         return True
     if action.action_type == "invite_group_account" and not _refresh_stale_invite_group_account_action(session, action):
         return True
+    if action.action_type == "search_join":
+        _rebind_search_join_source_action_to_authorization_account(session, action)
     if action.action_type == SEARCH_JOIN_MEMBERSHIP_ACTION_TYPE:
         rebind_membership_action_to_source_account(session, action)
     account = _dispatch_account(session, action)
@@ -453,6 +455,17 @@ def _dispatch_account(session: Session, action: Action) -> TgAccount | None:
         account,
         allow_reassign=_action_can_reassign(action),
     )
+
+
+def _rebind_search_join_source_action_to_authorization_account(session: Session, action: Action) -> None:
+    try:
+        payload = SearchJoinPayload.model_validate(action.payload or {})
+    except ValidationError:
+        return
+    authorization = session.get(TgAccountAuthorization, payload.authorization_id)
+    if authorization is None or authorization.tenant_id != action.tenant_id:
+        return
+    action.account_id = authorization.account_id
 
 
 def _dispatch_validated_action(
@@ -529,6 +542,7 @@ def _action_can_reassign(action: Action) -> bool:
     return (
         action.status != "executing"
         and not _is_membership_action(action)
+        and action.action_type not in SEARCH_JOIN_RUNTIME_ACTION_TYPES
         and action.action_type not in {"invite_group_bot", "invite_group_account"}
         and not bool(payload.get("coverage_ledger_id"))
     )
