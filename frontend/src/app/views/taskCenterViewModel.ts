@@ -582,7 +582,11 @@ function searchClickInitialValues(targetField: 'daily_target_count' | 'target_co
     [targetField]: null,
     account_group_id: null,
     max_actions_per_day: DEFAULT_SEARCH_CLICK_DAILY_ACTIONS,
-    ...(targetField === 'daily_target_count' ? { per_account_daily_action_limit: 1 } : {}),
+    ...(targetField === 'daily_target_count' ? {
+      daily_click_target_count: null,
+      allow_same_account_repeat_application: false,
+      per_account_daily_action_limit: 1,
+    } : {}),
     scheduled_end: toBeijingDateTimeLocalValue(new Date(Date.now() + DEFAULT_SEARCH_CLICK_DURATION_HOURS * 60 * 60 * 1000).toISOString()),
     daily_jitter_percent: DEFAULT_SEARCH_CLICK_DAILY_JITTER_PERCENT,
     hourly_jitter_percent: DEFAULT_SEARCH_CLICK_HOURLY_JITTER_PERCENT,
@@ -595,7 +599,7 @@ function simpleSearchExecutionFields(taskType: TaskCenterTaskType): string[] {
   return [
     'account_group_id',
     'max_actions_per_day',
-    ...(taskType === 'search_join_group' ? ['per_account_daily_action_limit'] : []),
+    ...(taskType === 'search_join_group' ? ['per_account_daily_action_limit', 'allow_same_account_repeat_application'] : []),
     'scheduled_end',
     'daily_jitter_percent',
     'hourly_jitter_percent',
@@ -632,7 +636,11 @@ export function fieldsForStep(step: number, taskType: TaskCenterTaskType, messag
     if (messageScope === 'date_range') fields.push('date_from', 'date_to');
     return fields;
   }
-  if (step === 2 && isSimpleSearchClickTask(taskType)) return ['keywords', simpleSearchTargetField(taskType)];
+  if (step === 2 && isSimpleSearchClickTask(taskType)) {
+    return taskType === 'search_join_group'
+      ? ['keywords', 'daily_click_target_count', 'daily_target_count']
+      : ['keywords', simpleSearchTargetField(taskType)];
+  }
   if (step === 3 && isSimpleSearchClickTask(taskType)) return simpleSearchExecutionFields(taskType);
   if (step === 3 && taskType === 'group_membership_admission') return ['account_group_ids'];
   if (step === 3) return accountSelectionFields(accountMode);

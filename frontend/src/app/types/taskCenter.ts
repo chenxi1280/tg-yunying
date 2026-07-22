@@ -93,6 +93,7 @@ export type TaskAccountCoverageItem = {
 export type TaskCenterStats = Record<string, any> & {
   account_coverage?: TaskAccountCoverage;
   search_click_target?: SearchClickTargetProgress;
+  search_join_membership_target?: SearchClickTargetProgress;
   hard_hourly_target_enabled?: boolean;
   hard_hourly_goal?: number | null;
   hard_hourly_bucket?: string | null;
