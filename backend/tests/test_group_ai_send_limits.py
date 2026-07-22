@@ -201,6 +201,29 @@ def test_group_ai_send_counts_legacy_group_sends(monkeypatch: pytest.MonkeyPatch
 
 
 @pytest.mark.no_postgres
+def test_group_ai_send_daily_limit_waits_for_next_active_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 7, 21, 22, 0)
+    monkeypatch.setattr(dispatcher, "_now", lambda: now_value)
+    monkeypatch.setattr(group_send_limits, "_now", lambda: now_value)
+    monkeypatch.setattr(dispatcher, "_group_ai_account_online_ready", lambda *_args: True)
+
+    with Session(engine) as session:
+        _seed_send_scope(
+            session,
+            daily_limit=1,
+            group_cooldown_seconds=0,
+            now_value=now_value,
+        )
+
+        action = _dispatch_current_action(session, monkeypatch)
+
+        assert action.status == "pending"
+        assert action.scheduled_at == datetime(2026, 7, 22, 9, 0)
+
+
+@pytest.mark.no_postgres
 def test_group_ai_send_cooldown_crosses_beijing_day(monkeypatch: pytest.MonkeyPatch) -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

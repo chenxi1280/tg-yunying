@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.models import Action, ExecutionAttempt, FailureType, MessageTask, TaskStatus, TgGroup
 from app.services._common import _now
+from app.services.task_center.daily_coverage_schedule import active_window_bounds
 from app.timezone import as_beijing, beijing_day_bounds
 
 
@@ -31,11 +32,11 @@ def group_send_slot_block(
     attempts = _same_day_group_attempts(session, action=action, group=group, now_value=now_value)
     legacy_count = _legacy_group_send_count(session, action=action, group=group, now_value=now_value)
     if len(attempts) + legacy_count >= int(group.daily_limit or 0):
-        _day_start, day_end = beijing_day_bounds(now_value)
+        retry_at = _next_daily_group_window_start(group, now_value)
         return GroupSendSlotBlock(
             FailureType.SLOWMODE.value,
             f"群当日发送已达上限 {group.daily_limit}",
-            max(1, int((day_end - now_value).total_seconds())),
+            max(1, int((retry_at - now_value).total_seconds())),
         )
     last_slot_at = _latest_group_slot_at(session, action=action, group=group)
     cooldown = int(group.group_cooldown_seconds or 0)
@@ -118,6 +119,12 @@ def _latest_group_slot_at(session: Session, *, action: Action, group: TgGroup) -
 
 def _beijing_now() -> datetime:
     return as_beijing(_now()) or _now()
+
+
+def _next_daily_group_window_start(group: TgGroup, now_value: datetime) -> datetime:
+    _day_start, next_day_start = beijing_day_bounds(now_value)
+    window_start, _window_end = active_window_bounds(group.active_window, next_day_start.date())
+    return window_start
 
 
 __all__ = ["GroupSendSlotBlock", "group_send_slot_block"]
