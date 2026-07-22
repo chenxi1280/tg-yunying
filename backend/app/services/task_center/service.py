@@ -2992,7 +2992,7 @@ def _planning_backlog_blocked(session: Session, task: Task) -> bool:
         task,
         global_pending=session.info.get(PLANNER_GLOBAL_PENDING_SESSION_KEY),
     )
-    if not snapshot["blocked"]:
+    if not snapshot["blocked"] or _strict_search_daily_target_can_plan(session, task, snapshot, now_value):
         task.stats = clear_planner_backlog_stats(dict(task.stats or {}))
         return False
     stats = dict(task.stats or {})
@@ -3005,6 +3005,32 @@ def _planning_backlog_blocked(session: Session, task: Task) -> bool:
     interval = max(10, min(300, int((task.pacing_config or {}).get("interval_seconds") or 30)))
     task.next_run_at = now_value + timedelta(seconds=interval)
     return True
+
+
+def _strict_search_daily_target_can_plan(
+    session: Session,
+    task: Task,
+    snapshot: dict[str, int | bool],
+    now_value: datetime,
+) -> bool:
+    config = task.type_config if isinstance(task.type_config, dict) else {}
+    if task.type != NORMAL_SEARCH_CLICK_TASK or not config.get("strict_daily_target"):
+        return False
+    settings = get_settings()
+    max_global = int(settings.max_pending_global or 0)
+    max_task = int(settings.max_pending_per_task or 0)
+    stale_after = int(settings.oldest_pending_age_seconds or 0)
+    if (
+        max_global <= 0
+        or max_task <= 0
+        or stale_after <= 0
+        or int(snapshot["global_pending"]) >= max_global
+        or int(snapshot["task_pending"]) >= max_task
+        or int(snapshot["oldest_age_seconds"]) < stale_after
+    ):
+        return False
+    progress = search_click_target_progress(session, task, now_value=now_value)
+    return bool(progress.remaining_slot_count and progress.remaining_slot_count > 0)
 
 
 def _recover_continuous_task_states(session: Session) -> int:

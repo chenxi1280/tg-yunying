@@ -6037,6 +6037,97 @@ def test_planning_backlog_blocked_clears_stale_stats_when_queue_recovers(monkeyp
     assert task.stats == {"success_count": 12}
 
 
+@pytest.mark.no_postgres
+def test_strict_search_daily_target_bypasses_stale_age_backlog(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 7, 23, 10, 0, 0)
+    settings = SimpleNamespace(
+        max_pending_global=10,
+        max_pending_per_task=10,
+        oldest_pending_age_seconds=60,
+    )
+    monkeypatch.setattr("app.services.task_center.service.get_settings", lambda: settings)
+    monkeypatch.setattr("app.services.task_center.planner_backlog.get_settings", lambda: settings)
+    monkeypatch.setattr("app.services.task_center.service._now", lambda: now_value)
+    monkeypatch.setattr("app.services.task_center.planner_backlog._now", lambda: now_value)
+
+    with Session(engine) as session:
+        task = Task(
+            id="task-strict-search-backlog",
+            tenant_id=1,
+            name="严格搜索点击",
+            type="search_join_group",
+            status="running",
+            type_config={"strict_daily_target": True, "daily_click_target_count": 3},
+            pacing_config={"max_actions_per_day": 3},
+        )
+        session.add_all([
+            Tenant(id=1, name="默认运营空间"),
+            task,
+            Action(
+                id="source-old-pending",
+                tenant_id=1,
+                task_id=task.id,
+                task_type=task.type,
+                action_type="search_join",
+                status="pending",
+                scheduled_at=now_value - timedelta(hours=2),
+            ),
+        ])
+        session.commit()
+
+        snapshot = planner_backlog_snapshot(session, task)
+        blocked = _planning_backlog_blocked(session, task)
+
+    assert snapshot["blocked"] is True
+    assert snapshot["global_pending"] == 1
+    assert snapshot["task_pending"] == 1
+    assert blocked is False
+
+
+@pytest.mark.no_postgres
+def test_strict_search_daily_target_keeps_global_backlog_hard_limit(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 7, 23, 10, 0, 0)
+    settings = SimpleNamespace(
+        max_pending_global=1,
+        max_pending_per_task=10,
+        oldest_pending_age_seconds=60,
+    )
+    monkeypatch.setattr("app.services.task_center.service.get_settings", lambda: settings)
+    monkeypatch.setattr("app.services.task_center.planner_backlog.get_settings", lambda: settings)
+    monkeypatch.setattr("app.services.task_center.service._now", lambda: now_value)
+    monkeypatch.setattr("app.services.task_center.planner_backlog._now", lambda: now_value)
+
+    with Session(engine) as session:
+        task = Task(
+            id="task-strict-search-hard-backlog",
+            tenant_id=1,
+            name="严格搜索点击",
+            type="search_join_group",
+            status="running",
+            type_config={"strict_daily_target": True, "daily_click_target_count": 3},
+        )
+        session.add_all([
+            Tenant(id=1, name="默认运营空间"),
+            task,
+            Action(
+                id="source-hard-backlog",
+                tenant_id=1,
+                task_id=task.id,
+                task_type=task.type,
+                action_type="search_join",
+                status="pending",
+                scheduled_at=now_value - timedelta(hours=2),
+            ),
+        ])
+        session.commit()
+
+        assert _planning_backlog_blocked(session, task) is True
+
+
 def test_planning_backlog_ignores_unrelated_old_pending_actions(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

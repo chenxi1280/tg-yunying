@@ -3172,6 +3172,49 @@ def test_claim_actions_prioritizes_due_search_membership_before_ordinary_batch_a
 
 
 @pytest.mark.no_postgres
+def test_claim_actions_prioritizes_strict_search_source_before_ordinary_batch_action(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    monkeypatch.setattr(dispatcher, "get_settings", lambda: _redis_bucket_settings(enable_redis_token_bucket=False))
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add_all(
+            [
+                TgAccount(id=11, tenant_id=1, display_name="批量账号", phone_masked="+861***0011", status="在线"),
+                TgAccount(id=12, tenant_id=1, display_name="搜索账号", phone_masked="+861***0012", status="在线"),
+            ]
+        )
+        session.add_all(
+            [
+                Task(id="task-ai", tenant_id=1, name="普通活跃群", type="group_ai_chat", status="running", priority=3),
+                Task(
+                    id="task-search",
+                    tenant_id=1,
+                    name="严格搜索点击",
+                    type="search_join_group",
+                    status="running",
+                    priority=3,
+                    type_config={"strict_daily_target": True, "daily_click_target_count": 500},
+                ),
+            ]
+        )
+        session.add_all(
+            [
+                Action(id="action-batch", tenant_id=1, task_id="task-ai", task_type="group_ai_chat", action_type="send_message", account_id=11, status="pending", scheduled_at=now_value - timedelta(minutes=10), payload={"message_text": "普通批量动作"}),
+                Action(id="action-source", tenant_id=1, task_id="task-search", task_type="search_join_group", action_type="search_join", account_id=12, status="pending", scheduled_at=now_value, payload={}),
+            ]
+        )
+        session.commit()
+
+        claimed = claim_actions(session, limit=1, worker_id="worker-search-source")
+
+        assert [action.id for action in claimed] == ["action-source"]
+        assert session.get(Action, "action-batch").status == "pending"
+
+
+@pytest.mark.no_postgres
 def test_due_actions_keeps_hard_target_before_search_membership_before_batch():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -3198,6 +3241,34 @@ def test_due_actions_keeps_hard_target_before_search_membership_before_batch():
         actions = dispatcher.due_actions(session, limit=3)
 
         assert [action.id for action in actions] == ["action-hard", "action-membership", "action-batch"]
+
+
+@pytest.mark.no_postgres
+def test_due_actions_keeps_search_membership_before_strict_source_before_batch():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add_all(
+            [
+                Task(id="task-search", tenant_id=1, name="严格搜索点击", type="search_join_group", status="running", priority=3, type_config={"strict_daily_target": True, "daily_click_target_count": 500}),
+                Task(id="task-batch", tenant_id=1, name="普通批量", type="group_ai_chat", status="running", priority=1),
+            ]
+        )
+        session.add_all(
+            [
+                Action(id="action-membership", tenant_id=1, task_id="task-search", task_type="search_join_group", action_type="search_join_membership", status="pending", scheduled_at=now_value, payload={}),
+                Action(id="action-source", tenant_id=1, task_id="task-search", task_type="search_join_group", action_type="search_join", status="pending", scheduled_at=now_value, payload={}),
+                Action(id="action-batch", tenant_id=1, task_id="task-batch", task_type="group_ai_chat", action_type="send_message", status="pending", scheduled_at=now_value - timedelta(minutes=10), payload={}),
+            ]
+        )
+        session.commit()
+
+        actions = dispatcher.due_actions(session, limit=3)
+
+        assert [action.id for action in actions] == ["action-membership", "action-source", "action-batch"]
 
 
 @pytest.mark.no_postgres

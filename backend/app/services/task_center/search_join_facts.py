@@ -7,6 +7,7 @@ from app.models import Action
 
 
 SOURCE_TIMEZONE = ZoneInfo("Asia/Shanghai")
+CARRYOVER_CLICK_STATUSES = {"pending", "claiming", "executing"}
 
 
 def search_join_fact_in_window(
@@ -35,7 +36,11 @@ def search_join_held_in_window(
     statuses: tuple[str, ...],
 ) -> bool:
     if action.status in statuses:
-        return _action_in_window(action, start_at, end_at)
+        return _action_in_window(action, start_at, end_at) or _is_click_carryover(
+            action,
+            start_at,
+            fact_kind,
+        )
     if fact_kind == "membership" and has_pending_membership(action.result):
         return _action_in_window(action, start_at, end_at)
     return False
@@ -86,6 +91,19 @@ def _result_timestamp(result: object, field: str) -> datetime | None:
 
 def _action_in_window(action: Action, start_at: datetime | None, end_at: datetime | None) -> bool:
     return _time_in_window(_action_time(action), start_at, end_at)
+
+
+def _is_click_carryover(action: Action, start_at: datetime | None, fact_kind: str) -> bool:
+    if (
+        fact_kind != "click"
+        or start_at is None
+        or action.executed_at is not None
+        or action.status not in CARRYOVER_CLICK_STATUSES
+    ):
+        return False
+    scheduled_at = action.scheduled_at
+    source_scheduled_at = _source_naive(scheduled_at) if scheduled_at.tzinfo else scheduled_at
+    return source_scheduled_at < start_at
 
 
 def _action_time(action: Action) -> datetime | None:

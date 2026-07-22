@@ -14,6 +14,7 @@ from app.models import Action, SearchJoinPacingDecision, Task
 from .search_join_membership import MEMBERSHIP_ACTION_TYPE, MEMBERSHIP_PENDING_STATUS, is_join_request_pending
 
 REAL_ACTION_STATUSES = {"pending", "claiming", "executing", "success", "failed", "unknown_after_send"}
+PENDING_CARRYOVER_STATUSES = {"pending", "claiming", "executing"}
 DEFAULT_SOURCE_TIMEZONE = ZoneInfo("Asia/Shanghai")
 
 
@@ -322,7 +323,20 @@ def _count_for_local_date(session: Session, task: Task, local_date: date, *, acc
     if keyword_hash:
         filters.append(Action.payload["keyword_hash"].as_string() == keyword_hash)
     actions = session.scalars(select(Action).where(*filters))
-    return sum(1 for action in actions if not _is_behavior_pacing_skip(action))
+    current_count = sum(1 for action in actions if not _is_behavior_pacing_skip(action))
+    carryover_filters = [
+        Action.task_id == task.id,
+        Action.action_type == "search_join",
+        Action.status.in_(PENDING_CARRYOVER_STATUSES),
+        Action.executed_at.is_(None),
+        Action.scheduled_at < start_at,
+    ]
+    if account_id is not None:
+        carryover_filters.append(Action.account_id == account_id)
+    if keyword_hash:
+        carryover_filters.append(Action.payload["keyword_hash"].as_string() == keyword_hash)
+    carryover_count = session.scalar(select(func.count(Action.id)).where(*carryover_filters)) or 0
+    return current_count + int(carryover_count)
 
 
 def _local_day_bounds_source(timezone_name: str, local_date: date) -> tuple[datetime, datetime]:
