@@ -6871,6 +6871,45 @@ def test_operation_target_admission_retry_reuses_running_task_and_dedupes_action
     assert len(actions) == 3
 
 
+@pytest.mark.no_postgres
+def test_operation_target_admission_retry_refreshes_pending_action_invite_link(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    monkeypatch.setattr("app.services.operations.gateway.list_groups", lambda *_args, **_kwargs: [])
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        target = OperationTarget(
+            id=21,
+            tenant_id=1,
+            target_type="group",
+            tg_peer_id="-1001",
+            title="运营群",
+            username="https://t.me/+staleInvite",
+            can_send=False,
+            auth_status="只读",
+        )
+        session.add_all(
+            [
+                target,
+                TgGroup(id=7, tenant_id=1, tg_peer_id="-1001", title="运营群", auth_status="只读", can_send=False),
+                TgAccount(id=11, tenant_id=1, display_name="账号11", phone_masked="11", status=AccountStatus.ACTIVE.value, session_ciphertext="session-11"),
+                TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=False, permission_label="未加入"),
+            ]
+        )
+        session.commit()
+        request = OperationTargetAdmissionRetryRequest(reason="刷新邀请链接后重试", account_ids=[11])
+        first = retry_operation_target_admission(session, 1, 21, request, "pytest")
+        target.username = "https://t.me/+freshInvite"
+        second = retry_operation_target_admission(session, 1, 21, request, "pytest")
+        action = session.scalar(select(Action).where(Action.action_type == "ensure_target_membership"))
+
+    assert first["admission_retry"]["queued_action_count"] == 1
+    assert second["admission_retry"]["queued_action_count"] == 0
+    assert action is not None
+    assert action.payload["target_username"] == "https://t.me/+freshInvite"
+
+
 def test_operation_target_bulk_admission_retry_queues_membership_actions_without_gateway_calls(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
