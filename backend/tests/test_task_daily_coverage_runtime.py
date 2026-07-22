@@ -231,6 +231,68 @@ def test_membership_success_releases_membership_unknown_coverage() -> None:
         assert row.blocker_detail == ""
 
 
+def test_target_admission_retry_success_refreshes_all_account_coverage() -> None:
+    engine = _engine()
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        task, account = _seed(session)
+        item = TaskMembershipAdmissionItem(
+            tenant_id=1,
+            task_id=task.id,
+            account_id=account.id,
+            target_id=31,
+            phase="failed",
+            failure_type="cannot_send",
+        )
+        row = TaskAccountDailyCoverage(
+            id="target-retry-blocked-row",
+            tenant_id=1,
+            task_id=task.id,
+            group_id=21,
+            account_id=account.id,
+            membership_item_id=item.id,
+            coverage_date=_now().date(),
+            state="blocked",
+            blocker_code="cannot_send",
+            blocker_detail="账号在目标群不可发言",
+        )
+        retry_task = Task(
+            id="target-admission-retry",
+            tenant_id=1,
+            name="重试目标准入",
+            type="target_admission_retry",
+            status="running",
+            type_config={"target_operation_target_id": 31},
+        )
+        retry_action = Action(
+            id="target-admission-retry-success",
+            tenant_id=1,
+            task_id=retry_task.id,
+            task_type=retry_task.type,
+            action_type="ensure_target_membership",
+            account_id=account.id,
+            status="success",
+            payload={"channel_target_id": 31, "channel_id": "-10021", "target_type": "group"},
+            result={"success": True, "membership_status": "joined"},
+        )
+        session.add_all([
+            item,
+            row,
+            retry_task,
+            retry_action,
+            TgGroupAccount(tenant_id=1, group_id=21, account_id=account.id, can_send=True),
+        ])
+        session.flush()
+
+        _sync_all_account_membership_state(session, retry_action)
+
+        assert item.phase == "completed"
+        assert item.membership_action_id == retry_action.id
+        assert row.state == "ready"
+        assert row.blocker_code == ""
+        assert row.blocker_detail == ""
+
+
 def test_membership_success_preserves_send_unknown_coverage() -> None:
     engine = _engine()
     Base.metadata.create_all(engine)

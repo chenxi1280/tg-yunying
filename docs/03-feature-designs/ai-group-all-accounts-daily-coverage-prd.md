@@ -191,6 +191,7 @@ pending_admission -> admission_running -> ready -> reserved -> sending -> confir
 - 入群失败、验证失败和结果未知必须保留原始 Telegram 错误；不能通过删除任务关系让覆盖率升高。
 - 目标 username、peer 或邀请链接无法解析时，按目标级 `target_ref_invalid` 阻塞全部未准入账号；目标引用未变化前不得按账号周期性重复创建相同准入 Action。运营目标的 peer、username 或邀请链接变化后，系统必须用最新引用重新排队未准入账号，或原地刷新仍处于 `pending` 的同一准入 Action。
 - 存量目标若仅保存公开链接而没有稳定 Telegram peer，只能由已关联、可发言且具备 Session 的观察账号实际拉取群快照，以公开 username 精确匹配后，在同一事务中更新原 `OperationTarget` 和原 `TgGroup` 的 peer；任务、账本和成员关系继续引用原 ID。若快照没有唯一稳定 peer，或稳定 peer 已归属另一目标/群，必须显式中止，不得按中文标题猜测、创建重复目标或覆盖既有记录；成功规范化必须写审计，再导出新邀请链接并批量重试准入。
+- 独立 `target_admission_retry` 的终态不能只更新自己的重试任务：必须按 `target_operation_target_id` 解析目标群，并把同租户、同群且处于 `draft`、`pending`、`running`、`paused` 的全部账号 AI 活群任务中对应账号账本重新按实际 `TgGroupAccount` 状态刷新。准入成功后旧 `cannot_send` 必须回流 `ready` 并重写 `targeted_at`；失败或未知仍按原始 Telegram 结果保留为 `blocked` 或 `unknown`。
 
 ## 10. 覆盖调度与 AI 内容解耦
 

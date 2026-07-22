@@ -94,6 +94,9 @@ _ACTION_RESERVATIONS = _runtime_resources._ACTION_RESERVATIONS
 _IN_FLIGHT_ACCOUNTS = _runtime_resources._IN_FLIGHT_ACCOUNTS
 _redis_client = _runtime_resources._redis_client
 MEMBERSHIP_ACTION_TYPES = ("ensure_channel_membership", "ensure_target_membership")
+TARGET_ADMISSION_RETRY_TASK_TYPE = "target_admission_retry"
+TARGET_ADMISSION_RETRY_TERMINAL_STATUSES = {"success", "unknown_after_send", "failed", "retryable_failed", "skipped"}
+ALL_ACCOUNT_COVERAGE_TASK_STATUSES = ("draft", "pending", "running", "paused")
 SEARCH_CLICK_ACTION_TYPES = {"search_join", "search_join_membership", "search_rank_deboost"}
 SEARCH_JOIN_RUNTIME_ACTION_TYPES = {"search_join", "search_join_membership"}
 SEARCH_JOIN_MEMBERSHIP_RECHECK_SECONDS = 300
@@ -5380,8 +5383,46 @@ def _sync_all_account_membership_state(session: Session, action: Action) -> None
     if action.action_type not in MEMBERSHIP_ACTION_TYPES or not action.account_id:
         return
     task = session.get(Task, action.task_id)
-    if task is None or not is_all_accounts_task(task):
+    if task is None:
         return
+    for coverage_task in _membership_coverage_tasks(session, task, action):
+        _sync_membership_state_for_task(session, action, coverage_task)
+
+
+def _membership_coverage_tasks(session: Session, task: Task, action: Action) -> list[Task]:
+    if is_all_accounts_task(task):
+        return [task]
+    if task.type != TARGET_ADMISSION_RETRY_TASK_TYPE or action.status not in TARGET_ADMISSION_RETRY_TERMINAL_STATUSES:
+        return []
+    target_id = _target_admission_retry_target_id(task, action)
+    return _all_account_tasks_for_operation_target(session, task.tenant_id, target_id)
+
+
+def _target_admission_retry_target_id(task: Task, action: Action) -> int | None:
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    raw_target_id = (task.type_config or {}).get("target_operation_target_id") or payload.get("channel_target_id")
+    return int(raw_target_id) if str(raw_target_id or "").isdigit() else None
+
+
+def _all_account_tasks_for_operation_target(session: Session, tenant_id: int, target_id: int | None) -> list[Task]:
+    target = session.get(OperationTarget, target_id) if target_id else None
+    if target is None or target.tenant_id != tenant_id or target.target_type != "group":
+        return []
+    group = session.scalar(select(TgGroup).where(TgGroup.tenant_id == tenant_id, TgGroup.tg_peer_id == target.tg_peer_id))
+    if group is None:
+        return []
+    tasks = session.scalars(
+        select(Task).where(
+            Task.tenant_id == tenant_id,
+            Task.type == "group_ai_chat",
+            Task.status.in_(ALL_ACCOUNT_COVERAGE_TASK_STATUSES),
+            Task.type_config["target_group_id"].as_integer() == group.id,
+        )
+    )
+    return [candidate for candidate in tasks if is_all_accounts_task(candidate)]
+
+
+def _sync_membership_state_for_task(session: Session, action: Action, task: Task) -> None:
     item = session.scalar(
         select(TaskMembershipAdmissionItem).where(
             TaskMembershipAdmissionItem.task_id == task.id,
