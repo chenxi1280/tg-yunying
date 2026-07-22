@@ -64,10 +64,11 @@ def has_confirmed_click_fact(result: object) -> bool:
 
 
 def has_confirmed_membership_fact(result: object) -> bool:
-    return isinstance(result, dict) and (
-        result.get("join_status") == "membership_observed"
-        or result.get("membership_observed") is True
-    )
+    if not isinstance(result, dict):
+        return False
+    if result.get("join_status") in {"join_request_pending", "membership_pending"}:
+        return False
+    return result.get("join_status") == "membership_observed" or result.get("membership_observed") is True
 
 
 def _result_timestamp(result: object, field: str) -> datetime | None:

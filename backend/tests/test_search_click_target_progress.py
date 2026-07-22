@@ -14,6 +14,7 @@ from app.services.task_center.search_click_target_progress import (
     reconcile_search_click_target_progress,
     search_click_target_progress,
 )
+from app.services.task_center.search_join_facts import has_confirmed_membership_fact
 from app.services.task_center.service import (
     reset_task,
     retry_task,
@@ -74,6 +75,18 @@ def _confirmed_result(action_type: str) -> dict:
             "joined": False,
         }],
     }
+
+
+@pytest.mark.no_postgres
+def test_join_request_pending_is_not_a_membership_fact_when_legacy_observed_flag_exists() -> None:
+    assert not has_confirmed_membership_fact(
+        {
+            "success": False,
+            "error_code": "join_request_pending",
+            "join_status": "join_request_pending",
+            "membership_observed": True,
+        }
+    )
 
 
 @pytest.mark.no_postgres

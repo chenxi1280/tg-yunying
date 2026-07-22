@@ -4204,13 +4204,15 @@ def _search_join_membership_is_pending(result: dict) -> bool:
 def _defer_search_join_membership_probe(action: Action, result: dict, timestamp: datetime) -> None:
     next_probe_at = timestamp + timedelta(seconds=SEARCH_JOIN_MEMBERSHIP_RECHECK_SECONDS)
     application_submitted_at = (action.result or {}).get("application_submitted_at") or timestamp.isoformat()
+    deferred_result = {**(action.result or {}), **result}
+    deferred_result.pop("membership_observed", None)
+    deferred_result.pop("membership_observed_at", None)
     action.status = "pending"
     action.scheduled_at = next_probe_at
     action.executed_at = None
     _clear_action_lease(action)
     action.result = {
-        **(action.result or {}),
-        **result,
+        **deferred_result,
         "application_submitted_at": application_submitted_at,
         "membership_phase": "waiting_approval",
         "next_membership_probe_at": next_probe_at.isoformat(),
