@@ -79,6 +79,7 @@ from .search_join_membership import (
     mark_source_membership_failed,
     mark_source_membership_observed,
     mark_source_membership_pending,
+    rebind_membership_action_to_source_account,
     source_action_for_membership,
 )
 from .search_click_target_progress import reconcile_search_click_target_progress
@@ -399,6 +400,8 @@ def _dispatch_action(
         return True
     if action.action_type == "invite_group_account" and not _refresh_stale_invite_group_account_action(session, action):
         return True
+    if action.action_type == SEARCH_JOIN_MEMBERSHIP_ACTION_TYPE:
+        rebind_membership_action_to_source_account(session, action)
     account = _dispatch_account(session, action)
     if account is None:
         return True

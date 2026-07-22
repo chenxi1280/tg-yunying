@@ -193,6 +193,41 @@ def test_retry_rebinds_search_membership_child_to_source_account(session: Sessio
 
 
 @pytest.mark.no_postgres
+def test_dispatch_rebinds_legacy_membership_child_to_source_account(monkeypatch, session: Session) -> None:
+    _task, source = _source_action(session)
+    monkeypatch.setattr(dispatcher.gateway, "execute_search_join", lambda *_args: _target_found_result(), raising=False)
+    assert dispatch_action(session, source) is True
+    child = session.scalar(select(Action).where(Action.task_id == source.task_id, Action.action_type == "search_join_membership"))
+    assert child is not None
+    session.add(TgAccount(
+        id=102,
+        tenant_id=1,
+        display_name="误转派账号",
+        username="reassigned-account",
+        phone_masked="102",
+        status=AccountStatus.ACTIVE.value,
+        session_ciphertext="reassigned-session",
+        developer_app_id=1,
+        developer_app_version=1,
+    ))
+    child.account_id = 102
+    session.commit()
+    calls: list[int] = []
+    monkeypatch.setattr(
+        dispatcher.gateway,
+        "ensure_search_join_membership",
+        lambda account_id, *_args: calls.append(account_id) or {"success": True, "join_status": "membership_observed", "target_group_id": 17},
+        raising=False,
+    )
+
+    assert dispatch_action(session, child) is True
+
+    assert child.account_id == source.account_id
+    assert child.status == "success"
+    assert calls == [source.account_id]
+
+
+@pytest.mark.no_postgres
 def test_pending_application_uses_rescue_admin_then_reprobes_source_slot(monkeypatch, session: Session) -> None:
     tenant = session.get(Tenant, 1)
     assert tenant is not None
