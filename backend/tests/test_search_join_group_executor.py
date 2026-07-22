@@ -331,6 +331,45 @@ def test_search_join_daily_target_stops_only_the_current_day(session: Session, m
 
 
 @pytest.mark.no_postgres
+def test_search_join_pending_source_carryover_holds_next_day_click_budget(session: Session) -> None:
+    now_value = datetime(2026, 7, 23, 0, 5, 0)
+    task = _task(
+        type_config={"daily_click_target_count": 3},
+        pacing_config={"max_actions_per_day": 3},
+    )
+    session.add(task)
+    session.flush()
+    session.add(Action(
+        id="source-carryover",
+        tenant_id=1,
+        task_id=task.id,
+        task_type=task.type,
+        action_type="search_join",
+        account_id=101,
+        status="pending",
+        scheduled_at=now_value - timedelta(minutes=10),
+        payload={},
+        result={},
+    ))
+    session.commit()
+
+    progress = search_click_progress.search_click_target_progress(session, task, now_value=now_value)
+    pacing_stats = search_join_pacing.PacingStats()
+    capacity = search_join_pacing.task_daily_capacity(
+        session,
+        task,
+        pacing_window(task, now_value),
+        3,
+        pacing_stats,
+    )
+
+    assert progress.held_count == 1
+    assert progress.remaining_slot_count == 2
+    assert capacity == 2
+    assert pacing_stats.task_daily_action_count == 1
+
+
+@pytest.mark.no_postgres
 def test_search_join_daily_target_raises_hourly_plan_demand(session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
     _bind_search_join_environment(session, [101, 102, 103])
     now_value = datetime(2026, 7, 21, 10, 0, 0)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine, select
@@ -257,6 +258,45 @@ def test_dispatch_rebinds_legacy_search_source_to_authorization_account(monkeypa
     assert source.account_id == 101
     assert source.status == "success"
     assert calls == [101]
+
+
+@pytest.mark.no_postgres
+def test_claim_rebinds_source_before_account_policy_and_does_not_reassign(monkeypatch, session: Session) -> None:
+    _task, source = _source_action(session)
+    session.add(TgAccount(
+        id=102,
+        tenant_id=1,
+        display_name="错误转派账号",
+        username="wrong-claim-account",
+        phone_masked="102",
+        status=AccountStatus.ACTIVE.value,
+        session_ciphertext="wrong-session",
+        developer_app_id=1,
+        developer_app_version=1,
+    ))
+    source.account_id = 102
+    session.commit()
+    checked_accounts: list[int] = []
+
+    def unavailable(*_args, account_id: int, **_kwargs):
+        checked_accounts.append(account_id)
+        return SimpleNamespace(
+            available=False,
+            defer_until=datetime(2026, 7, 23, 10, 0),
+            reason="账号全局冷却中",
+        )
+
+    monkeypatch.setattr(dispatcher, "account_capacity_decision", unavailable)
+    monkeypatch.setattr(dispatcher, "_replacement_account_for_action", lambda *_args: session.get(TgAccount, 101))
+
+    assert dispatcher.claim_actions(session, limit=1, worker_id="worker-test") == []
+
+    action = session.get(Action, source.id)
+    assert checked_accounts == [101]
+    assert action is not None
+    assert action.account_id == 101
+    assert action.status == "pending"
+    assert action.result["error_code"] == "global_account_policy"
 
 
 @pytest.mark.no_postgres

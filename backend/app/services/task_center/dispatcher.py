@@ -661,8 +661,9 @@ def due_actions(session: Session, limit: int = 100, *, exclude_task_ids: set[str
             .where(*filters)
             .order_by(
                 _target_admission_retry_claim_rank(),
-                _hard_hourly_claim_rank(),
                 _search_join_membership_claim_rank(),
+                _strict_search_join_source_claim_rank(),
+                _hard_hourly_claim_rank(),
                 Task.priority.asc(),
                 _channel_comment_claim_rank(),
                 Action.scheduled_at.asc(),
@@ -708,8 +709,9 @@ def claim_actions(session: Session, limit: int = 100, *, exclude_task_ids: set[s
         .where(*filters)
         .order_by(
             _target_admission_retry_claim_rank(),
-            _hard_hourly_claim_rank(),
             _search_join_membership_claim_rank(),
+            _strict_search_join_source_claim_rank(),
+            _hard_hourly_claim_rank(),
             Task.priority.asc(),
             _channel_comment_claim_rank(),
             Action.scheduled_at.asc(),
@@ -763,6 +765,8 @@ def _confirm_action_claim_candidate(
     if _skip_expired_hard_hourly_action(session, action):
         session.commit()
         return False
+    if action.action_type == "search_join":
+        _rebind_search_join_source_action_to_authorization_account(session, action)
     if not _apply_claim_account_policy(session, action):
         session.commit()
         return False
@@ -891,6 +895,15 @@ def _search_join_membership_claim_rank():
     return case((Action.action_type == SEARCH_JOIN_MEMBERSHIP_ACTION_TYPE, 0), else_=1)
 
 
+def _strict_search_join_source_claim_rank():
+    strict_source = (
+        (Task.type == "search_join_group")
+        & (Action.action_type == "search_join")
+        & Task.type_config["strict_daily_target"].as_boolean().is_(True)
+    )
+    return case((strict_source, 0), else_=1)
+
+
 def _channel_comment_claim_rank():
     return case((Task.type == "channel_comment", 0), else_=1)
 
@@ -1008,7 +1021,7 @@ def _apply_claim_account_policy(session: Session, action: Action) -> bool:
     )
     if decision.available:
         return True
-    replacement = _replacement_account_for_action(session, action, account) if not _is_membership_action(action) else None
+    replacement = _replacement_account_for_action(session, action, account) if _action_can_reassign(action) else None
     if replacement:
         action.result = {
             **(action.result or {}),
