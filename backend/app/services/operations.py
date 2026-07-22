@@ -5,6 +5,7 @@ import random
 from uuid import uuid4
 
 from sqlalchemy import case, select
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -44,6 +45,7 @@ from .ai_config import ai_provider_credentials, get_tenant_ai_setting
 from .developer_apps import credentials_for_account
 from .group_listeners import collect_group_context, recent_context_messages
 from .notifications import notify_ai_failure
+from .operation_target_peer_merge import begin_peer_merge_transaction, merge_duplicate_canonical_peer
 from .operation_target_list import OperationTargetListQuery, list_operation_targets_page
 from .tenant_learning_samples import GROUP_CHAT_SCENE, record_channel_comment_sample
 from .task_center.payloads import EnsureChannelMembershipPayload, create_membership_action
@@ -1120,26 +1122,49 @@ def canonicalize_operation_target_peer(
     observer_account_id: int,
     actor: str,
 ) -> dict:
+    begin_peer_merge_transaction(session)
     target = _operation_target_for_tenant(session, tenant_id, target_id)
     group = _legacy_target_group(session, target)
     public_username = _legacy_public_username(target.tg_peer_id)
     observer, link = _canonicalization_observer(session, tenant_id, group, observer_account_id)
     snapshots = gateway.list_groups(observer.id, observer.session_ciphertext, credentials_for_account(session, observer))
     snapshot = _snapshot_for_public_username(snapshots, public_username)
-    _assert_canonical_peer_available(session, target, group, snapshot.tg_peer_id)
-    old_peer_id = target.tg_peer_id
-    _apply_canonical_snapshot(session, target, group, link, snapshot)
-    audit(
-        session,
-        tenant_id=tenant_id,
-        actor=actor,
-        action="规范化运营目标 Telegram Peer",
-        target_type="operation_target",
-        target_id=str(target.id),
-        detail=f"old_peer_id={old_peer_id}; new_peer_id={snapshot.tg_peer_id}; observer_account_id={observer.id}",
-    )
-    session.commit()
-    return {"target_id": target.id, "group_id": group.id, "stable_peer_id": snapshot.tg_peer_id, "observer_account_id": observer.id}
+    try:
+        merged = merge_duplicate_canonical_peer(session, target, group, snapshot, public_username)
+        _assert_canonical_peer_available(session, target, group, snapshot.tg_peer_id)
+        old_peer_id = target.tg_peer_id
+        _apply_canonical_snapshot(session, target, group, link, snapshot)
+        merged_detail = (
+            f"; merged_duplicate_target_id={merged['merged_duplicate_target_id']}; "
+            f"merged_duplicate_group_id={merged['merged_duplicate_group_id']}"
+            if merged else ""
+        )
+        audit(
+            session,
+            tenant_id=tenant_id,
+            actor=actor,
+            action="规范化运营目标 Telegram Peer",
+            target_type="operation_target",
+            target_id=str(target.id),
+            detail=(
+                f"old_peer_id={old_peer_id}; new_peer_id={snapshot.tg_peer_id}; "
+                f"observer_account_id={observer.id}{merged_detail}"
+            ),
+        )
+        session.commit()
+    except (IntegrityError, OperationalError) as exc:
+        session.rollback()
+        raise ValueError(f"peer canonicalization transaction rolled back: {exc.orig}") from exc
+    except ValueError:
+        session.rollback()
+        raise
+    return {
+        "target_id": target.id,
+        "group_id": group.id,
+        "stable_peer_id": snapshot.tg_peer_id,
+        "observer_account_id": observer.id,
+        **merged,
+    }
 
 
 def _legacy_target_group(session: Session, target: OperationTarget) -> TgGroup:
