@@ -83,7 +83,7 @@ def search_click_target_progress(
         confirmed_count = _confirmed_action_count(
             session, task, action_type, start_at=start_at, end_at=end_at
         )
-        held_count = _action_count(
+        held_count = _held_action_count(
             session, task, action_type, HELD_ACTION_STATUSES, start_at=start_at, end_at=end_at
         )
         remaining = _remaining_slots(daily_target_count, confirmed_count, held_count)
@@ -97,7 +97,7 @@ def search_click_target_progress(
         )
     target_count = _target_count(task)
     confirmed_count = _confirmed_action_count(session, task, action_type)
-    held_count = _action_count(session, task, action_type, HELD_ACTION_STATUSES)
+    held_count = _held_action_count(session, task, action_type, HELD_ACTION_STATUSES)
     remaining = _remaining_slots(target_count, confirmed_count, held_count)
     return SearchClickTargetProgress(target_count, confirmed_count, held_count, remaining)
 
@@ -186,6 +186,28 @@ def _action_count(
     return int(count or 0)
 
 
+def _held_action_count(
+    session: Session,
+    task: Task,
+    action_type: str,
+    statuses: tuple[str, ...],
+    *,
+    start_at: datetime | None = None,
+    end_at: datetime | None = None,
+) -> int:
+    if task.type != "search_join_group":
+        return _action_count(session, task, action_type, statuses, start_at=start_at, end_at=end_at)
+    actions = session.scalars(
+        select(Action).where(
+            Action.tenant_id == task.tenant_id,
+            Action.task_id == task.id,
+            Action.action_type == action_type,
+            Action.status.in_((*statuses, "success")),
+        )
+    )
+    return sum(_is_held_search_join_action(action, statuses, start_at, end_at) for action in actions)
+
+
 def _confirmed_action_count(
     session: Session,
     task: Task,
@@ -194,6 +216,16 @@ def _confirmed_action_count(
     start_at: datetime | None = None,
     end_at: datetime | None = None,
 ) -> int:
+    if task.type == "search_join_group":
+        actions = session.scalars(
+            select(Action).where(
+                Action.tenant_id == task.tenant_id,
+                Action.task_id == task.id,
+                Action.action_type == action_type,
+                Action.status == "success",
+            )
+        )
+        return sum(_search_join_observed_in_window(action, start_at, end_at) for action in actions)
     filters = [
         Action.tenant_id == task.tenant_id,
         Action.task_id == task.id,
@@ -203,6 +235,62 @@ def _confirmed_action_count(
     _append_time_window(filters, start_at, end_at)
     actions = session.scalars(select(Action).where(*filters))
     return sum(_has_confirmed_click_fact(task.type, action.result) for action in actions)
+
+
+def _is_held_search_join_action(
+    action: Action,
+    statuses: tuple[str, ...],
+    start_at: datetime | None,
+    end_at: datetime | None,
+) -> bool:
+    if action.status not in statuses and not _has_pending_search_join_membership(action.result):
+        return False
+    return _action_in_window(action, start_at, end_at)
+
+
+def _search_join_observed_in_window(
+    action: Action,
+    start_at: datetime | None,
+    end_at: datetime | None,
+) -> bool:
+    if not _has_confirmed_click_fact("search_join_group", action.result):
+        return False
+    observed_at = _membership_observed_at(action.result) or _action_time(action)
+    return _time_in_window(observed_at, start_at, end_at)
+
+
+def _has_pending_search_join_membership(result: object) -> bool:
+    return isinstance(result, dict) and result.get("join_status") == "membership_pending"
+
+
+def _membership_observed_at(result: object) -> datetime | None:
+    if not isinstance(result, dict):
+        return None
+    raw = str(result.get("membership_observed_at") or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo is None else _source_naive(parsed)
+    except ValueError:
+        return None
+
+
+def _action_in_window(action: Action, start_at: datetime | None, end_at: datetime | None) -> bool:
+    return _time_in_window(_action_time(action), start_at, end_at)
+
+
+def _action_time(action: Action) -> datetime | None:
+    return action.executed_at or action.scheduled_at
+
+
+def _time_in_window(value: datetime | None, start_at: datetime | None, end_at: datetime | None) -> bool:
+    if value is None:
+        return False
+    source_value = _source_naive(value) if value.tzinfo else value
+    if start_at is None or end_at is None:
+        return True
+    return start_at <= source_value < end_at
 
 
 def _append_time_window(filters: list, start_at: datetime | None, end_at: datetime | None) -> None:

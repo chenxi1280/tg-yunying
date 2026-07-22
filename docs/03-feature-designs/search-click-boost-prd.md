@@ -74,11 +74,13 @@ tg-yunying 当前任务中心已支持 5 类主任务：`group_ai_chat`、`group
 }
 ```
 
-每个 action = 一个账号授权槽位 × 一个关键词 × 一个搜索机器人 × 一个目标群匹配策略 = 一次完整搜索目标群点击 / 确认链路。账号已在目标群内时，不跳过该 action；仍需完成搜索、命中目标和目标点击 / 成员确认，成功结果继续记录为 `membership_observed`，并可附带 already joined 事实。
+每个 source `search_join` action = 一个账号授权槽位 × 一个关键词 × 一个搜索机器人 × 一个目标群匹配策略 = 一次完整搜索目标群点击链路。账号已在目标群内时，不跳过该 source action；仍需完成搜索、命中目标和目标点击 / 确认。命中后 source action 必须创建唯一 `search_join_membership` 准入子 action，由子 action 在同一授权槽位环境下申请或复核成员关系；只有子 action 回写 `membership_observed` 后，source action 才可计入成功，并可附带 already joined 事实。
 
 ### 4.1.1 每日目标契约（2026-07-21）
 
-新建或更新的 `search_join_group` 使用 `daily_target_count`，表示任务时区每个自然日需要达到的 `membership_observed` 确认数；它不是累计次数。`pending`、`claiming`、`executing` 与 `unknown_after_send` 仅在其计划/执行时间落入当天时占用当日待确认槽位，失败和跳过释放槽位。Planner 把未确认的当日目标按当天剩余 `hourly_round_curve` 权重折算为当前小时目标，并与既有 `hourly_min_successful_joins` 取较高值；这会提高日目标的小时规划需求，但不绕过每轮、每小时、账号、关键词、代理或风控上限。当天达到目标后 Planner 停止继续创建该日 action，但任务保持 `running`，下一个自然日重新计算；任务只在 `scheduled_end` 到达、运营停止或其他既有终止事实时结束。
+新建或更新的 `search_join_group` 使用 `daily_target_count`，表示任务时区每个自然日需要达到的 `membership_observed` 确认数；它不是累计次数。`pending`、`claiming`、`executing`、`unknown_after_send` 与 source result 为 `membership_pending` 的 action 仅在其计划/执行时间落入当天时占用当日待确认槽位，失败和跳过释放槽位。Planner 把未确认的当日目标按当天剩余 `hourly_round_curve` 权重折算为当前小时目标，并与既有 `hourly_min_successful_joins` 取较高值；这会提高日目标的小时规划需求，但不绕过每轮、每小时、账号、关键词、代理或风控上限。当天达到目标后 Planner 停止继续创建该日 action，但任务保持 `running`，下一个自然日重新计算；任务只在 `scheduled_end` 到达、运营停止或其他既有终止事实时结束。
+
+准入子 action 的 `join_request_pending` 不是失败成功混淆：它保留 source 的目标命中事实并使其 `join_status=membership_pending`，子 action 仅进行成员关系复核，不能再次提交相同申请。未解决申请必须在同一任务、同一账号、同一目标范围内跨自然日阻止重复申请。成员关系在后续复核成功时，按 `membership_observed_at` 所属任务时区自然日计入每日目标，而不是回溯到最初搜索日期。
 
 `max_actions_per_day` 是独立的 action 硬预算，必须不小于 `daily_target_count`。它限制当天可创建/占用的实际 action 数，不应被小时补量或失败重试绕过。旧 `search_join_group.target_count` 任务保持原有的生命周期完成语义；`search_rank_deboost.target_count` 同样继续是生命周期 confirmed click 目标，达到后才可写 `target_count_reached`。
 
@@ -590,7 +592,7 @@ None # 该 (账号, 应用, 授权槽位, IP) 对首次 action 时间 daily_acti
 2. 搜索阶段：向目标机器人发送关键词，等待包含 inline button 或 link 的搜索结果；FloodWait、超时和结构变化必须显式记录。
 3. 入群前安全浏览阶段：决策延迟后，按概率打开 0-2 个非目标结果；只允许 `button_effect=navigate_only`，停留 10-30 秒后返回；不得加入、关注、外跳或点击 `join_candidate/external/unknown`。
 4. 匹配阶段：`@jisou` 在关键词回复后必须先点击协议已确认的“群聊 / 群组”类型 selector，再按该 callback 的原 message ID 重新读取被编辑的消息后解析搜索结果的 button / link；不得消费任意随后到达的新消息，也不得把未筛选的综合结果当作群聊结果。翻页 callback 同样按原 message ID 读取编辑结果；“下一页 / next”与仅由右向分页符号组成的 callback（例如 `➡️`）都属于下一页，不能把左向符号或群结果按钮误判为下一页。目标优先按公开 Telegram URL 或正文中的精确 username 匹配；当群聊结果正文中出现由非字母数字边界包围的精确 `target_title`、且任务仍具备公开 `target_username` 时，标题只可作为“结果可见”线索，执行器必须继续按已配置 username resolve / 加入，并写 `target_match_source=message_title_username_verified`。标题、callback data 和 peer id 都不得单独成为可执行身份或任意点击目标。当前 Telethon `MessageButton` 不提供可验证的 `target_chat_id`，仅有 peer id 的目标在 Planner 阶段写 `target_identity_missing`，不会创建 action。翻页没有固定页数上限，只有命中精确目标并完成点击 / 成员关系确认才结束本轮成功搜索；机器人真实没有“下一页”仍未命中时写 `target_not_in_results`、`search_end_reason=no_next_page`、`searched_pages` 和 `last_result_page`，该 action 失败但任务保持运行，以后续计划重试，绝不把它伪装成“找满 70 页”或停止整个任务。群聊 selector 缺失属于协议变化，写 `jisou_group_selector_missing`，不回退到未筛选结果，并写仅含 button 数量、位置、类型、effect、文本长度和导航符号的 `search_protocol_trace.selector_page`。Jisou 已完成群聊 selector 但仍无下一页时，`Action.result.search_protocol_trace` 仅保存 selector 页和结果页 button 的脱敏结构（位置、类型、effect、长度、页码标记与导航符号），不得保存搜索结果标题，用于定位协议分页变化。
-5. 加入阶段：通过 MTProto callback 或 Telegram 内部 URL resolve 执行目标群 join；失败必须分类为验证码、审批、链接失效、权限不足或目标机器人拒绝。Telegram 返回“已提交入群申请”时写 `error_code=join_request_pending`、`join_status=join_request_pending` 与已命中的页码 / `target_match_source`，并保留 `search_end_reason=target_found`；它不是 `membership_observed`，不得计入每日已确认目标。Planner 在同一任务时区自然日内不得对该账号重复提交相同申请，历史泛化错误文本中含同一 Telegram 提示也必须识别为待审批。
+5. 准入阶段：source `search_join` 命中精确目标后必须立即停止翻页，写 `search_end_reason=target_found` 和 `join_status=membership_pending`，再创建唯一 `search_join_membership` 子 action。子 action 通过 MTProto callback 或 Telegram 内部 URL resolve 自己执行目标群申请，并且必须使用 source 的 `authorization_id/session_role`、开发者应用、代理绑定与客户端元数据；不得改用账号主 session 或通用 `ensure_target_membership` credentials。申请与成员复核分离：Telegram 返回“已提交入群申请”时子 action 写 `error_code=join_request_pending`、`join_status=join_request_pending`；它不是 `membership_observed`，不得计入每日已确认目标，也不得重复申请。若目标群管理员属于本租户已配置救援管理员，子 action 可让该管理员以其自身 session 审批申请，但审批 API 成功后必须立即用 source 固化授权槽位复核成员关系；管理员审批本身不能计完成。否则如实保持等待审批。后续子 action 仅复核成员关系；获得真实成员关系后把 source 回写为 `membership_observed` 和 `membership_observed_at`，不得伪造完成。
 6. 目标群停留阶段：在目标群停留 30-180 秒，只执行低风险 read / history / read_ack；首版默认不发言。
 7. 入群后安全浏览：本期不实现，也不在创建/详情页暴露配置；`post_join_safe_navigation` 固定为空数组。全链路仅保留入群前、已证实 `navigate_only` 的安全浏览，且不得加入非目标群 / 频道。
 8. 入群后策略：默认 `post_join_policy=stay_joined`，不立即退出；任何 delayed leave / leave after dwell 必须有独立清理任务、审批原因和留存结果。

@@ -11,6 +11,8 @@ from sqlalchemy.orm import Session
 
 from app.models import Action, SearchJoinPacingDecision, Task
 
+from .search_join_membership import MEMBERSHIP_ACTION_TYPE, MEMBERSHIP_PENDING_STATUS, is_join_request_pending
+
 REAL_ACTION_STATUSES = {"pending", "claiming", "executing", "success", "failed", "unknown_after_send"}
 DEFAULT_SOURCE_TIMEZONE = ZoneInfo("Asia/Shanghai")
 
@@ -341,28 +343,21 @@ def _is_behavior_pacing_skip(action: Action) -> bool:
 
 
 def _has_join_request_pending(session: Session, task: Task, account_id: int, local_date: date) -> bool:
-    start_at, end_at = _local_day_bounds_source(task.timezone, local_date)
-    action_at = func.coalesce(Action.executed_at, Action.scheduled_at)
     actions = session.scalars(
         select(Action).where(
             Action.task_id == task.id,
-            Action.action_type == "search_join",
+            Action.action_type.in_(("search_join", MEMBERSHIP_ACTION_TYPE)),
             Action.account_id == account_id,
-            Action.status == "failed",
-            action_at >= start_at,
-            action_at < end_at,
         )
     )
-    return any(_is_join_request_pending_result(action.result) for action in actions)
+    return any(_has_unresolved_join_request(action) for action in actions)
 
 
-def _is_join_request_pending_result(result: object) -> bool:
-    if not isinstance(result, dict):
-        return False
-    if result.get("error_code") == "join_request_pending":
+def _has_unresolved_join_request(action: Action) -> bool:
+    result = action.result if isinstance(action.result, dict) else {}
+    if action.action_type == "search_join" and result.get("join_status") == MEMBERSHIP_PENDING_STATUS:
         return True
-    detail = str(result.get("detail") or result.get("error_message") or "").lower()
-    return "requested to join this chat or channel" in detail
+    return is_join_request_pending(result) and action.status != "success"
 
 
 def _cooldown_active(session: Session, task: Task, account_id: int, cooldown_days: int) -> bool:
