@@ -35,6 +35,7 @@ def _seed_send_scope(
     group_cooldown_seconds: int,
     now_value: datetime | None = None,
     prior_sent_at: datetime | None = None,
+    active_window: str = "09:00-23:00",
 ) -> Action:
     now_value = now_value or _now()
     prior_sent_at = prior_sent_at or now_value - timedelta(minutes=2)
@@ -45,6 +46,7 @@ def _seed_send_scope(
         title="运营群",
         auth_status="已授权运营",
         can_send=True,
+        active_window=active_window,
         daily_limit=daily_limit,
         group_cooldown_seconds=group_cooldown_seconds,
         require_review=False,
@@ -162,9 +164,13 @@ def test_group_ai_send_respects_group_daily_limit(monkeypatch: pytest.MonkeyPatc
 def test_group_ai_send_respects_group_cooldown(monkeypatch: pytest.MonkeyPatch) -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
+    now_value = datetime(2026, 7, 22, 10, 0)
+    monkeypatch.setattr(dispatcher, "_now", lambda: now_value)
+    monkeypatch.setattr(group_send_limits, "_now", lambda: now_value)
+    monkeypatch.setattr(dispatcher, "_group_ai_account_online_ready", lambda *_args: True)
 
     with Session(engine) as session:
-        _seed_send_scope(session, daily_limit=2, group_cooldown_seconds=300)
+        _seed_send_scope(session, daily_limit=2, group_cooldown_seconds=300, now_value=now_value)
 
         action = _dispatch_current_action(session, monkeypatch)
 
@@ -173,6 +179,25 @@ def test_group_ai_send_respects_group_cooldown(monkeypatch: pytest.MonkeyPatch) 
         assert action.result["validation_stage"] == "group_send_limit"
         assert action.result["rate_limit_source"] == "group"
         assert 0 < action.result["retry_after_seconds"] <= 300
+
+
+@pytest.mark.no_postgres
+def test_group_ai_send_waits_for_configured_active_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 7, 22, 0, 1)
+    monkeypatch.setattr(dispatcher, "_now", lambda: now_value)
+    monkeypatch.setattr(group_send_limits, "_now", lambda: now_value)
+    monkeypatch.setattr(dispatcher, "_group_ai_account_online_ready", lambda *_args: True)
+
+    with Session(engine) as session:
+        _seed_send_scope(session, daily_limit=2, group_cooldown_seconds=0, now_value=now_value)
+
+        action = _dispatch_current_action(session, monkeypatch)
+
+        assert action.status == "pending"
+        assert action.result["validation_stage"] == "group_send_limit"
+        assert action.scheduled_at == datetime(2026, 7, 22, 9, 0)
 
 
 @pytest.mark.no_postgres
@@ -239,6 +264,7 @@ def test_group_ai_send_cooldown_crosses_beijing_day(monkeypatch: pytest.MonkeyPa
             group_cooldown_seconds=300,
             now_value=now_value,
             prior_sent_at=datetime(2026, 7, 21, 23, 59),
+            active_window="22:00-02:00",
         )
 
         action = _dispatch_current_action(session, monkeypatch)

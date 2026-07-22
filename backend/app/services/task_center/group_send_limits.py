@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -29,6 +29,13 @@ def group_send_slot_block(
     group: TgGroup,
 ) -> GroupSendSlotBlock | None:
     now_value = _beijing_now()
+    active_window_retry_at = _next_group_active_window_start(group, now_value)
+    if active_window_retry_at is not None:
+        return GroupSendSlotBlock(
+            FailureType.SLOWMODE.value,
+            f"群不在活动时段 {group.active_window}，延后至 {active_window_retry_at.isoformat()}",
+            max(1, int((active_window_retry_at - now_value).total_seconds())),
+        )
     attempts = _same_day_group_attempts(session, action=action, group=group, now_value=now_value)
     legacy_count = _legacy_group_send_count(session, action=action, group=group, now_value=now_value)
     if len(attempts) + legacy_count >= int(group.daily_limit or 0):
@@ -125,6 +132,17 @@ def _next_daily_group_window_start(group: TgGroup, now_value: datetime) -> datet
     _day_start, next_day_start = beijing_day_bounds(now_value)
     window_start, _window_end = active_window_bounds(group.active_window, next_day_start.date())
     return window_start
+
+
+def _next_group_active_window_start(group: TgGroup, now_value: datetime) -> datetime | None:
+    current_start, current_end = active_window_bounds(group.active_window, now_value.date())
+    previous_start, previous_end = active_window_bounds(group.active_window, now_value.date() - timedelta(days=1))
+    if previous_start <= now_value < previous_end or current_start <= now_value < current_end:
+        return None
+    if now_value < current_start:
+        return current_start
+    next_start, _next_end = active_window_bounds(group.active_window, now_value.date() + timedelta(days=1))
+    return next_start
 
 
 __all__ = ["GroupSendSlotBlock", "group_send_slot_block"]
