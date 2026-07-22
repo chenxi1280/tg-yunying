@@ -1520,6 +1520,7 @@ def test_search_join_group_frontend_keeps_system_risk_policy_managed_and_exposes
     view = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
     view_model = (PROJECT_ROOT / "frontend/src/app/views/taskCenterViewModel.ts").read_text()
     detail = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterDetailModal.tsx").read_text()
+    execution_payload = view[view.index("function searchJoinExecutionPayload"):view.index("function simpleSearchClickPayload")]
 
     simple_config = wizard[wizard.index("function SimpleSearchClickConfig"):wizard.index("export function SearchClickExecutionConfig")]
     execution_config = wizard[wizard.index("export function SearchClickExecutionConfig"):wizard.index("export function WizardTypeConfig")]
@@ -1550,12 +1551,23 @@ def test_search_join_group_frontend_keeps_system_risk_policy_managed_and_exposes
     assert "严格每日目标" in wizard
     assert "系统负责账号资格、代理、机器人和风险闸门" in simple_config
     assert 'name="keywords"' in simple_config
-    assert "const targetField = isRankDeboost ? 'target_count' : 'daily_target_count';" in simple_config
-    assert "每天 action 上限不能小于每日目标次数" in execution_config
+    assert 'name="daily_click_target_count"' in simple_config
+    assert 'name="daily_target_count"' in simple_config
+    assert "每天 action 上限不能小于每日目标点击次数" in execution_config
+    assert 'name="actions_per_round"' in execution_config
+    assert 'name="max_actions_per_hour"' in execution_config
+    assert 'name="hourly_min_successful_joins"' in execution_config
+    assert "editing={true}" in view
+    assert "actions_per_round: task.type === 'search_join_group' ? config.actions_per_round ?? 1 : undefined" in view
+    assert "max_actions_per_hour: task.type === 'search_join_group' ? config.max_actions_per_hour ?? 20 : undefined" in view
+    assert "hourly_min_successful_joins: task.type === 'search_join_group' ? config.hourly_min_successful_joins ?? 1 : undefined" in view
+    assert "actions_per_round: values.actions_per_round" in execution_payload
+    assert "max_actions_per_hour: values.max_actions_per_hour" in execution_payload
+    assert "hourly_min_successful_joins: values.hourly_min_successful_joins" in execution_payload
     assert "isSimpleSearchClickTask(taskType)" in view_model
     assert "simpleSearchClickPayload(values)" in view
     assert "pacing_limits" in detail
-    assert "membership_observed 表示" in detail
+    assert "membership_observed 仅表示观察到成员关系；它与目标点击独立计数" in detail
     assert "不设固定翻页上限" in detail
     assert "当前 action 失败但任务继续规划" in detail
     assert "不设固定翻页上限" in wizard
@@ -2078,14 +2090,17 @@ def test_group_ai_quality_funnel_labels_profile_low_match():
     assert "dataIndex: 'detail'" in source
 
 
-def test_task_center_runtime_form_keeps_hour_limit_managed_and_exposes_search_click_daily_cap():
+def test_task_center_runtime_form_exposes_search_click_hourly_controls_only_when_editing():
     wizard = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterWizardSections.tsx").read_text()
     view_model = (PROJECT_ROOT / "frontend/src/app/views/taskCenterViewModel.ts").read_text()
 
     simple_config = wizard[wizard.index("function SimpleSearchClickConfig"):wizard.index("export function SearchClickExecutionConfig")]
     execution_config = wizard[wizard.index("export function SearchClickExecutionConfig"):wizard.index("export function WizardTypeConfig")]
     assert 'name="max_actions_per_hour"' not in simple_config
-    assert 'name="max_actions_per_hour"' not in execution_config
+    assert 'name="max_actions_per_hour"' in execution_config
+    assert "editing && !isRankDeboost" in execution_config
+    assert 'name="actions_per_round"' in execution_config
+    assert 'name="hourly_min_successful_joins"' in execution_config
     assert 'name="max_actions_per_day"' in execution_config
     assert "simpleSearchTargetField(taskType)" in view_model
 
@@ -2565,24 +2580,27 @@ def test_search_click_creation_uses_operator_scope_controls_and_system_managed_p
     assert "export function wizardStepsForTask" in view_model
     assert "target_count" in view_model
     assert "function simpleSearchClickPayload(values: any, editing = false, searchTaskType = taskType)" in view
+    execution_payload = view[view.index("function searchJoinExecutionPayload"):view.index("function simpleSearchClickPayload")]
     simple_payload = view[view.index("function simpleSearchClickPayload(values: any, editing = false, searchTaskType = taskType)"):view.index("function parseExcludedSenderInput", view.index("function simpleSearchClickPayload(values: any, editing = false, searchTaskType = taskType)"))]
     assert "target_title: values.target_title?.trim()" in simple_payload
     assert "target_link: values.target_link?.trim()" in simple_payload
     assert "target_operation_target_id" not in simple_payload
     assert "const keywords = words(values.keywords);" in simple_payload
     assert "...(keywords.length ? { keywords } : {})," in simple_payload
+    assert "daily_click_target_count: values.daily_click_target_count" in simple_payload
     assert "daily_target_count: values.daily_target_count" in simple_payload
     assert "target_count: values.target_count" in simple_payload
     assert "account_group_id: values.account_group_id" in simple_payload
     assert "max_actions_per_day: values.max_actions_per_day" in simple_payload
-    assert "per_account_daily_action_limit: values.per_account_daily_action_limit" in simple_payload
+    assert "per_account_daily_action_limit: values.per_account_daily_action_limit" in execution_payload
     assert "scheduled_end: fromBeijingDateTimeLocalValue(values.scheduled_end)" in simple_payload
     assert "account_config" not in simple_payload
     assert "return simpleSearchClickPayload(values);" in view
     assert "return simpleSearchClickPayload(values, true, type);" in view
     assert "simpleSearchCreation" in wizard
     assert "系统负责账号资格、代理、机器人和风险闸门" in wizard
-    assert "const targetField = isRankDeboost ? 'target_count' : 'daily_target_count';" in wizard
+    assert 'name="daily_click_target_count"' in wizard
+    assert 'name="allow_same_account_repeat_application"' in wizard
     simple_config = wizard[wizard.index("function SimpleSearchClickConfig"):wizard.index("export function SearchClickExecutionConfig")]
     execution_config = wizard[wizard.index("export function SearchClickExecutionConfig"):wizard.index("export function WizardTypeConfig")]
     assert '<InputNumber min={1} precision={0}' in simple_config

@@ -235,7 +235,7 @@ pending -> claiming -> executing -> success / failed / skipped
 
 ### 4.11 2026-07-21 运营范围与节奏创建基线（当前生效）
 
-本节优先于本文其他章节中遗留的“三字段极简创建”表述。`search_join_group` 的**新建和专用编辑**任务接收目标群、搜索关键词、每日目标点击 `daily_click_target_count`、每日成员关系观察目标 `daily_target_count` 与显式同账号重复申请开关 `allow_same_account_repeat_application`；`search_rank_deboost` 接收生命周期 `target_count`。两者都接收运营可控的账号组和任务节奏；不开放代理、机器人、单账号风险参数或真实结果语义。
+本节优先于本文其他章节中遗留的“三字段极简创建”表述。`search_join_group` 的**新建和专用编辑**任务接收目标群、搜索关键词、每日目标点击 `daily_click_target_count`、每日成员关系观察目标 `daily_target_count` 与显式同账号重复申请开关 `allow_same_account_repeat_application`；`search_rank_deboost` 接收生命周期 `target_count`。普通搜索的存量任务专用编辑另开放受控的每轮和每小时容量，使已配置的每日点击目标能够在真实剩余时段内排程；不开放代理、机器人、单账号风险参数或真实结果语义。
 
 | 创建输入 | 约束 | 说明 |
 | --- | --- | --- |
@@ -244,6 +244,7 @@ pending -> claiming -> executing -> success / failed / skipped
 | `daily_click_target_count` / `daily_target_count`（普通搜索） / `target_count`（排名观察） | 普通搜索点击目标必填、成员关系目标可配置；排名观察必填 | 普通搜索前者是任务时区当日的精确目标点击，后者是当日 `membership_observed` 观察目标；排名观察是任务生命周期内的已确认互动次数。 |
 | `account_group_id` | 必填，单选 | `search_join_group` 只能选当前租户启用的普通账号组；`search_rank_deboost` 只能选当前租户启用的 `pool_purpose=rank_deboost` 黑账号组。服务端复核，不信任前端禁用状态。 |
 | `max_actions_per_day` | 必填，正整数 | 任务自然日内的 source action 硬预算；普通搜索必须不小于 `daily_click_target_count`，达到预算后等待下一个自然日。 |
+| `actions_per_round` / `max_actions_per_hour` / `hourly_min_successful_joins`（仅普通搜索存量任务编辑） | 分别为 `1..20` / `1..500` / `1..500` | 每轮 source 计划数、每小时 source 上限和当前小时最低计划目标；用于调高已保存任务的可执行点击容量，不改变 Telegram、账号、代理或成员关系成功事实。 |
 | `allow_same_account_repeat_application`（仅普通搜索） | 可选，默认 `false` | 显式开启后，同账号当天可对新的 source 重复搜索并申请；旧 pending、账号日限额和关键词日限额不再阻止该 source，仍保留每条 source child 唯一和 Telegram 真实结果记录。 |
 | `per_account_daily_action_limit`（仅普通搜索） | 必填，`0..1000` | 未开启重复申请时的单账号当天 source action 上限；`0` 表示不设该项上限。开启重复申请时不作为该任务的重复 source 阻塞条件。 |
 | `scheduled_end` | 必填，未来时间 | 任务的真实完成截止时间；到期停止规划和派发，不伪造未完成为成功。 |
@@ -1901,3 +1902,4 @@ AI 活跃群联动 126 个账号待冷却 / 64 个已进入 ready pool
 |2026-07-22|v0.27|Codex（极搜正文标题命中修复）|当极搜群聊页仅在正文展示精确群名而未暴露目标 username / URL 时，标题只作为可见线索；执行仍按已配置的公开 username resolve / 加入并记录 `message_title_username_verified`，不允许以标题、callback 或 peer id 单独选择任意群。|
 |2026-07-22|v0.28|Codex（每日目标恢复与审批状态修复）|完成截止时间导致每日目标未达成而完成的任务，运营把截止时间改为未来时必须重新入队；Planner 创建 action 前再次核验授权槽位归属所选账号。Telegram 已提交入群申请必须显式写 `join_request_pending`，保留已命中证据而不计成员关系成功；极搜 selector 缺失也必须回传脱敏协议结构。|
 |2026-07-22|v0.29|Codex（点击/加入双目标与重复申请）|新增 `daily_click_target_count`、独立 `stats.search_click_target` / `stats.search_join_membership_target`，目标命中立即写 `target_click_observed/target_found_at`，成员关系仅按 `membership_observed_at` 计数；显式 `allow_same_account_repeat_application=true` 允许同账号同日为不同 source 再次申请，同时保留单条 source child 的幂等复核。|
+|2026-07-22|v0.30|Codex（高日点击目标编辑容量）|普通搜索存量任务专用编辑新增 `actions_per_round`、`max_actions_per_hour` 与 `hourly_min_successful_joins`，使每日点击目标可以按真实剩余时段重排，不再被旧每小时 20 次默认值隐性限制。|

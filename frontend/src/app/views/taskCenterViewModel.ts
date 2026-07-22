@@ -595,17 +595,24 @@ function searchClickInitialValues(targetField: 'daily_target_count' | 'target_co
   };
 }
 
-function simpleSearchExecutionFields(taskType: TaskCenterTaskType): string[] {
+function simpleSearchExecutionFields(taskType: TaskCenterTaskType, editing = false): string[] {
   return [
     'account_group_id',
     'max_actions_per_day',
     ...(taskType === 'search_join_group' ? ['per_account_daily_action_limit', 'allow_same_account_repeat_application'] : []),
+    ...(editing && taskType === 'search_join_group' ? ['actions_per_round', 'max_actions_per_hour', 'hourly_min_successful_joins'] : []),
     'scheduled_end',
     'daily_jitter_percent',
     'hourly_jitter_percent',
     'quiet_start',
     'quiet_end',
   ];
+}
+
+function simpleSearchTargetFields(taskType: TaskCenterTaskType): string[] {
+  return taskType === 'search_join_group'
+    ? ['daily_click_target_count', 'daily_target_count']
+    : [simpleSearchTargetField(taskType)];
 }
 
 export function initialValuesForType(type: TaskCenterTaskType, setting?: SchedulingSetting | null) {
@@ -671,7 +678,7 @@ export function channelScopeFields(messageScope: string): string[] {
 
 export function fieldsForSubmit(taskType: TaskCenterTaskType, messageScope: string, accountMode: string, pacingMode: string): string[] {
   void pacingMode;
-  if (isSimpleSearchClickTask(taskType)) return ['target_title', 'target_link', 'keywords', simpleSearchTargetField(taskType), ...simpleSearchExecutionFields(taskType)];
+  if (isSimpleSearchClickTask(taskType)) return ['target_title', 'target_link', 'keywords', ...simpleSearchTargetFields(taskType), ...simpleSearchExecutionFields(taskType)];
   const commonFields = ['name', 'scheduled_end', 'operation_template_id', 'hourly_activity_curve', 'quiet_threshold', 'peak_threshold'];
   const baseFields = [...commonFields, ...accountSelectionFields(accountMode), 'max_concurrent', 'cooldown_per_account_minutes', 'ban_policy', 'max_actions_per_hour', 'max_retries'];
   if (taskType === 'group_ai_chat') {
@@ -753,7 +760,7 @@ export function fieldsForSubmit(taskType: TaskCenterTaskType, messageScope: stri
 
 export function editFieldsForSubmit(taskType: TaskCenterTaskType, accountMode: string, pacingMode: string): string[] {
   void pacingMode;
-  if (isSimpleSearchClickTask(taskType)) return ['target_title', 'target_link', 'keywords', simpleSearchTargetField(taskType), ...simpleSearchExecutionFields(taskType)];
+  if (isSimpleSearchClickTask(taskType)) return ['target_title', 'target_link', 'keywords', ...simpleSearchTargetFields(taskType), ...simpleSearchExecutionFields(taskType, true)];
   const baseFields = ['name', 'scheduled_end', 'operation_template_id', 'hourly_activity_curve', 'quiet_threshold', 'peak_threshold', ...accountFields(accountMode), 'max_actions_per_hour', 'max_retries'];
   if (taskType === 'group_ai_chat') {
     return [

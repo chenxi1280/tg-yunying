@@ -959,6 +959,9 @@ export default function TaskCenterView({
         account_group_id: account.account_group_id ?? null,
         max_actions_per_day: pacing.max_actions_per_day ?? null,
         per_account_daily_action_limit: task.type === 'search_join_group' ? pacing.per_account_daily_action_limit ?? 1 : undefined,
+        actions_per_round: task.type === 'search_join_group' ? config.actions_per_round ?? 1 : undefined,
+        max_actions_per_hour: task.type === 'search_join_group' ? config.max_actions_per_hour ?? 20 : undefined,
+        hourly_min_successful_joins: task.type === 'search_join_group' ? config.hourly_min_successful_joins ?? 1 : undefined,
         scheduled_end: toDateTimeLocal(task.scheduled_end),
         daily_jitter_percent: pacing.daily_jitter_percent ?? 0,
         hourly_jitter_percent: pacing.hourly_jitter_percent ?? 0,
@@ -1180,6 +1183,19 @@ export default function TaskCenterView({
     return payload;
   }
 
+  function searchJoinExecutionPayload(values: any, editing: boolean, searchTaskType: TaskCenterTaskType) {
+    if (searchTaskType !== 'search_join_group') return {};
+    return {
+      per_account_daily_action_limit: values.per_account_daily_action_limit,
+      allow_same_account_repeat_application: Boolean(values.allow_same_account_repeat_application),
+      ...(editing ? {
+        actions_per_round: values.actions_per_round,
+        max_actions_per_hour: values.max_actions_per_hour,
+        hourly_min_successful_joins: values.hourly_min_successful_joins,
+      } : {}),
+    };
+  }
+
   function simpleSearchClickPayload(values: any, editing = false, searchTaskType = taskType) {
     const keywords = words(values.keywords);
     const quietStart = String(values.quiet_start || '').trim();
@@ -1190,10 +1206,7 @@ export default function TaskCenterView({
     const execution = {
       account_group_id: values.account_group_id,
       max_actions_per_day: values.max_actions_per_day,
-      ...(searchTaskType === 'search_join_group' ? {
-        per_account_daily_action_limit: values.per_account_daily_action_limit,
-        allow_same_account_repeat_application: Boolean(values.allow_same_account_repeat_application),
-      } : {}),
+      ...searchJoinExecutionPayload(values, editing, searchTaskType),
       ...(editing && searchTaskType === 'search_join_group' && values.enable_strict_daily_target ? { enable_strict_daily_target: true } : {}),
       scheduled_end: fromBeijingDateTimeLocalValue(values.scheduled_end),
       daily_jitter_percent: values.daily_jitter_percent,
@@ -2285,7 +2298,7 @@ export default function TaskCenterView({
           )}
           <Typography.Title level={5}>类型参数</Typography.Title>
           <WizardTypeConfig taskType={(detail && !isSystemTask(detail.task) ? detail.task.type : taskType) as TaskCenterTaskType} ruleSets={ruleSets} slangTemplates={slangTemplates} comments={comments} relaySourceOptions={relaySourceOptions(detail)} targetChannelId={editTargetChannelId} messageScope={editMessageScope} messageIds={editMessageIds} simpleSearchCreation={isSimpleSearchClickTask(editableTaskType)} simpleSearchEditing={isSimpleSearchClickTask(editableTaskType)} simpleSearchLegacyUncapped={editableTaskType === 'search_join_group' ? detail?.task.type_config?.daily_target_count == null && detail?.task.type_config?.target_count == null : detail?.task.type_config?.target_count == null} />
-          {isSimpleSearchClickTask(editableTaskType) && <><Typography.Title level={5}>执行范围与节奏</Typography.Title><SearchClickExecutionConfig taskType={editableTaskType} accountPools={taskAccountPools} strictDailyTargetEnabled={Boolean(detail?.task.type_config?.strict_daily_target)} showStrictDailyTargetOptIn={editableTaskType === 'search_join_group' && (detail?.task.type_config?.daily_click_target_count != null || detail?.task.type_config?.daily_target_count != null)} /></>}
+          {isSimpleSearchClickTask(editableTaskType) && <><Typography.Title level={5}>执行范围与节奏</Typography.Title><SearchClickExecutionConfig taskType={editableTaskType} accountPools={taskAccountPools} editing={true} strictDailyTargetEnabled={Boolean(detail?.task.type_config?.strict_daily_target)} showStrictDailyTargetOptIn={editableTaskType === 'search_join_group' && (detail?.task.type_config?.daily_click_target_count != null || detail?.task.type_config?.daily_target_count != null)} /></>}
           {!isSimpleSearchClickTask(editableTaskType) && (
             <>
               <Typography.Title level={5}>账号选择</Typography.Title>
