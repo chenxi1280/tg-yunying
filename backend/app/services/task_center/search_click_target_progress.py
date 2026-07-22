@@ -10,6 +10,12 @@ from sqlalchemy.orm import Session
 from app.models import Action, Task
 from app.timezone import beijing_now
 
+from .search_join_facts import (
+    has_confirmed_membership_fact,
+    search_join_fact_in_window,
+    search_join_held_in_window,
+)
+
 
 ACTION_TYPE_BY_TASK_TYPE = {
     "search_join_group": "search_join",
@@ -76,6 +82,8 @@ def search_click_target_progress(
     *,
     now_value: datetime | None = None,
 ) -> SearchClickTargetProgress:
+    if task.type == "search_join_group":
+        return _search_join_click_target_progress(session, task, now_value=now_value)
     daily_target_count = _daily_target_count(task)
     action_type = _action_type(task)
     if daily_target_count is not None:
@@ -102,6 +110,93 @@ def search_click_target_progress(
     return SearchClickTargetProgress(target_count, confirmed_count, held_count, remaining)
 
 
+def search_join_membership_target_progress(
+    session: Session,
+    task: Task,
+    *,
+    now_value: datetime | None = None,
+) -> SearchClickTargetProgress | None:
+    if task.type != "search_join_group" or _daily_click_target_count(task) is None:
+        return None
+    daily_target_count = _daily_target_count(task)
+    if daily_target_count is None:
+        return None
+    return _search_join_daily_progress(
+        session,
+        task,
+        target_count=daily_target_count,
+        now_value=now_value or beijing_now(),
+        fact_kind="membership",
+    )
+
+
+def _search_join_click_target_progress(
+    session: Session,
+    task: Task,
+    *,
+    now_value: datetime | None,
+) -> SearchClickTargetProgress:
+    daily_click_target_count = _daily_click_target_count(task)
+    if daily_click_target_count is not None:
+        return _search_join_daily_progress(
+            session,
+            task,
+            target_count=daily_click_target_count,
+            now_value=now_value or beijing_now(),
+            fact_kind="click",
+        )
+    daily_target_count = _daily_target_count(task)
+    if daily_target_count is not None:
+        return _search_join_daily_progress(
+            session,
+            task,
+            target_count=daily_target_count,
+            now_value=now_value or beijing_now(),
+            fact_kind="membership",
+        )
+    action_type = _action_type(task)
+    target_count = _target_count(task)
+    confirmed_count = _confirmed_action_count(session, task, action_type)
+    held_count = _held_action_count(session, task, action_type, HELD_ACTION_STATUSES)
+    remaining = _remaining_slots(target_count, confirmed_count, held_count)
+    return SearchClickTargetProgress(target_count, confirmed_count, held_count, remaining)
+
+
+def _search_join_daily_progress(
+    session: Session,
+    task: Task,
+    *,
+    target_count: int,
+    now_value: datetime,
+    fact_kind: str,
+) -> SearchClickTargetProgress:
+    start_at, end_at, local_date = _local_day_bounds(task, now_value)
+    actions = session.scalars(
+        select(Action).where(
+            Action.tenant_id == task.tenant_id,
+            Action.task_id == task.id,
+            Action.action_type == "search_join",
+        )
+    )
+    rows = list(actions)
+    confirmed_count = sum(
+        search_join_fact_in_window(action, start_at, end_at, fact_kind)
+        for action in rows
+    )
+    held_count = sum(
+        search_join_held_in_window(action, start_at, end_at, fact_kind, statuses=HELD_ACTION_STATUSES)
+        for action in rows
+    )
+    return SearchClickTargetProgress(
+        target_count,
+        confirmed_count,
+        held_count,
+        _remaining_slots(target_count, confirmed_count, held_count),
+        "daily",
+        local_date,
+    )
+
+
 def reconcile_search_click_target_progress(
     session: Session,
     task: Task,
@@ -113,6 +208,11 @@ def reconcile_search_click_target_progress(
         return progress
     stats = dict(task.stats or {})
     stats["search_click_target"] = progress.as_dict()
+    membership_progress = search_join_membership_target_progress(
+        session, task, now_value=now_value
+    )
+    if membership_progress is not None:
+        stats["search_join_membership_target"] = membership_progress.as_dict()
     if progress.is_daily_target:
         if stats.get("completion_reason") == "target_count_reached":
             stats.pop("completion_reason")
@@ -154,6 +254,21 @@ def _daily_target_count(task: Task) -> int | None:
         raise ValueError("search_click_daily_target_count_invalid") from exc
     if target_count <= 0:
         raise ValueError("search_click_daily_target_count_invalid")
+    return target_count
+
+
+def _daily_click_target_count(task: Task) -> int | None:
+    if task.type != "search_join_group":
+        return None
+    value = (task.type_config or {}).get("daily_click_target_count")
+    if value is None:
+        return None
+    try:
+        target_count = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("search_click_daily_click_target_count_invalid") from exc
+    if target_count <= 0:
+        raise ValueError("search_click_daily_click_target_count_invalid")
     return target_count
 
 
@@ -243,9 +358,13 @@ def _is_held_search_join_action(
     start_at: datetime | None,
     end_at: datetime | None,
 ) -> bool:
-    if action.status not in statuses and not _has_pending_search_join_membership(action.result):
-        return False
-    return _action_in_window(action, start_at, end_at)
+    return search_join_held_in_window(
+        action,
+        start_at,
+        end_at,
+        "membership",
+        statuses=statuses,
+    )
 
 
 def _search_join_observed_in_window(
@@ -253,44 +372,7 @@ def _search_join_observed_in_window(
     start_at: datetime | None,
     end_at: datetime | None,
 ) -> bool:
-    if not _has_confirmed_click_fact("search_join_group", action.result):
-        return False
-    observed_at = _membership_observed_at(action.result) or _action_time(action)
-    return _time_in_window(observed_at, start_at, end_at)
-
-
-def _has_pending_search_join_membership(result: object) -> bool:
-    return isinstance(result, dict) and result.get("join_status") == "membership_pending"
-
-
-def _membership_observed_at(result: object) -> datetime | None:
-    if not isinstance(result, dict):
-        return None
-    raw = str(result.get("membership_observed_at") or "").strip()
-    if not raw:
-        return None
-    try:
-        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-        return parsed if parsed.tzinfo is None else _source_naive(parsed)
-    except ValueError:
-        return None
-
-
-def _action_in_window(action: Action, start_at: datetime | None, end_at: datetime | None) -> bool:
-    return _time_in_window(_action_time(action), start_at, end_at)
-
-
-def _action_time(action: Action) -> datetime | None:
-    return action.executed_at or action.scheduled_at
-
-
-def _time_in_window(value: datetime | None, start_at: datetime | None, end_at: datetime | None) -> bool:
-    if value is None:
-        return False
-    source_value = _source_naive(value) if value.tzinfo else value
-    if start_at is None or end_at is None:
-        return True
-    return start_at <= source_value < end_at
+    return search_join_fact_in_window(action, start_at, end_at, "membership")
 
 
 def _append_time_window(filters: list, start_at: datetime | None, end_at: datetime | None) -> None:
@@ -320,7 +402,7 @@ def _has_confirmed_click_fact(task_type: str, result: object) -> bool:
     if not isinstance(result, dict):
         return False
     if task_type == "search_join_group":
-        return result.get("join_status") == "membership_observed" or result.get("membership_observed") is True
+        return has_confirmed_membership_fact(result)
     if task_type == "search_rank_deboost":
         return _has_confirmed_rank_deboost_click_fact(result)
     return False
@@ -358,4 +440,5 @@ __all__ = [
     "SearchClickTargetProgress",
     "reconcile_search_click_target_progress",
     "search_click_target_progress",
+    "search_join_membership_target_progress",
 ]

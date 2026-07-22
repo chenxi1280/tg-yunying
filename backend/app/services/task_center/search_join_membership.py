@@ -58,6 +58,8 @@ def mark_source_membership_pending(source: Action, child: Action, *, timestamp: 
         {
             "success": True,
             "join_status": MEMBERSHIP_PENDING_STATUS,
+            "target_click_observed": True,
+            "target_found_at": result.get("target_found_at") or timestamp.isoformat(),
             "membership_action_id": child.id,
             "membership_pending_at": timestamp.isoformat(),
         }

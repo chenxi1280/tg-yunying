@@ -113,7 +113,13 @@ def build_plan(session: Session, task: Task) -> int:
     created = 0
     blockers: dict[str, int] = {}
     keyword_hashes = [item[0] for item in keyword_materials]
-    for account in accounts:
+    planning_accounts = _planning_accounts(
+        accounts,
+        plan_count,
+        allow_repeat=bool((task.type_config or {}).get("allow_same_account_repeat_application")),
+    )
+    candidate_offset = pacing_stats.task_daily_action_count
+    for candidate_index, account in enumerate(planning_accounts, start=candidate_offset):
         if not account_base_allowed(session, task, account.id, window, pacing_stats):
             continue
         keyword_hash = _candidate_keyword_hash(session, task, account.id, keyword_hashes, created, window, pacing_stats)
@@ -129,7 +135,16 @@ def build_plan(session: Session, task: Task) -> int:
             account=account,
             environment=environment,
         ))
-        action_created, blocker = _create_planned_action(session, task, account, payload, keyword_hash, window, config)
+        action_created, blocker = _create_planned_action(
+            session,
+            task,
+            account,
+            payload,
+            keyword_hash,
+            window,
+            config,
+            candidate_index=candidate_index,
+        )
         if blocker:
             _count_blocker(blockers, blocker)
         if action_created:
@@ -148,6 +163,12 @@ def build_plan(session: Session, task: Task) -> int:
 
 def _runtime_config(task: Task) -> dict:
     return runtime_search_join_config(task)
+
+
+def _planning_accounts(accounts: list[TgAccount], plan_count: int, *, allow_repeat: bool) -> list[TgAccount]:
+    if not allow_repeat or len(accounts) >= plan_count:
+        return accounts
+    return [accounts[index % len(accounts)] for index in range(plan_count)]
 
 
 def _lock_task_for_planning(session: Session, task: Task) -> None:
@@ -174,8 +195,10 @@ def _create_planned_action(
     keyword_hash: str,
     window,
     config: dict,
+    *,
+    candidate_index: int,
 ) -> tuple[bool, str]:
-    candidate_key = f"{window.local_date.isoformat()}:{account.id}:{keyword_hash}:{payload.hourly_execution.get('bucket', '')}"
+    candidate_key = f"{window.local_date.isoformat()}:{account.id}:{keyword_hash}:{payload.hourly_execution.get('bucket', '')}:{candidate_index}"
     decision = planned_action_decision(
         session,
         task,

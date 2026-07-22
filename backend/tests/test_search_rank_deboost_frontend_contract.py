@@ -34,8 +34,9 @@ def test_search_click_wizard_exposes_operator_execution_controls() -> None:
     type_config = wizard[wizard.index("export function WizardTypeConfig"):wizard.index("\n\nexport function WizardOperationProfile")]
 
     assert "name=\"keywords\"" in simple_config
-    assert "const targetField = isRankDeboost ? 'target_count' : 'daily_target_count';" in simple_config
-    assert "每日目标次数" in simple_config
+    assert "const targetField = 'target_count';" in simple_config
+    assert 'name="daily_click_target_count"' in simple_config
+    assert 'name="daily_target_count"' in simple_config
     assert "系统负责账号资格、代理、机器人和风险闸门" in simple_config
     assert "export function SearchClickExecutionConfig" in wizard
     assert "name=\"account_group_id\"" in wizard
@@ -53,6 +54,7 @@ def test_search_click_wizard_exposes_operator_execution_controls() -> None:
 
 def test_search_click_payload_includes_operator_execution_controls() -> None:
     view = _source(TASK_CENTER_VIEW)
+    execution_payload = view[view.index("function searchJoinExecutionPayload"):view.index("function simpleSearchClickPayload")]
     payload = view[view.index("function simpleSearchClickPayload"):view.index("\n\n  function parseExcludedSenderInput")]
     create_payload = view[view.index("function createPayload"):view.index("\n\n  function settingsPayload")]
 
@@ -61,12 +63,13 @@ def test_search_click_payload_includes_operator_execution_controls() -> None:
     assert "target_operation_target_id" not in payload
     assert "const keywords = words(values.keywords);" in payload
     assert "keywords," in payload
+    assert "daily_click_target_count: values.daily_click_target_count" in payload
     assert "daily_target_count: values.daily_target_count" in payload
     assert "target_count: values.target_count" in payload
     assert "searchTaskType === 'search_join_group'" in payload
     assert "account_group_id: values.account_group_id" in payload
     assert "max_actions_per_day: values.max_actions_per_day" in payload
-    assert "per_account_daily_action_limit: values.per_account_daily_action_limit" in payload
+    assert "per_account_daily_action_limit: values.per_account_daily_action_limit" in execution_payload
     assert "scheduled_end: fromBeijingDateTimeLocalValue(values.scheduled_end)" in payload
     assert "daily_jitter_percent: values.daily_jitter_percent" in payload
     assert "hourly_jitter_percent: values.hourly_jitter_percent" in payload
@@ -83,12 +86,13 @@ def test_search_click_step_and_submit_fields_include_operator_controls() -> None
     submit_block = view_model[view_model.index("export function fieldsForSubmit"):view_model.index("\n\nexport function editFieldsForSubmit")]
     edit_block = view_model[view_model.index("export function editFieldsForSubmit"):]
 
-    assert "if (step === 2 && isSimpleSearchClickTask(taskType)) return ['keywords', simpleSearchTargetField(taskType)];" in step_block
+    assert "? ['keywords', 'daily_click_target_count', 'daily_target_count']" in step_block
     assert "function simpleSearchExecutionFields" in view_model
     assert "per_account_daily_action_limit" in view_model
     assert "if (step === 3 && isSimpleSearchClickTask(taskType)) return simpleSearchExecutionFields(taskType);" in step_block
-    assert "simpleSearchExecutionFields(taskType)" in submit_block
-    assert "simpleSearchExecutionFields(taskType)" in edit_block
+    assert "simpleSearchTargetFields(taskType)" in submit_block
+    assert "simpleSearchTargetFields(taskType)" in edit_block
+    assert "simpleSearchExecutionFields(taskType, true)" in edit_block
 
 
 def test_search_click_target_step_uses_name_and_public_link_not_target_selector() -> None:

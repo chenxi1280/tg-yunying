@@ -171,6 +171,81 @@ def test_simple_search_join_create_uses_system_name_and_policy(session: Session)
 
 
 @pytest.mark.no_postgres
+def test_simple_search_join_persists_independent_click_target_and_repeat_application_mode(session: Session) -> None:
+    task = create_simple_search_join_group_task(
+        session,
+        1,
+        _simple_payload(
+            daily_click_target_count=500,
+            daily_target_count=80,
+            allow_same_account_repeat_application=True,
+            max_actions_per_day=500,
+        ),
+        actor="tester",
+    )
+
+    assert task.name == "上海留学交流群 搜索目标群点击 每日点击 500 次（加入目标 80 次）"
+    assert task.type_config["daily_click_target_count"] == 500
+    assert task.type_config["daily_target_count"] == 80
+    assert task.type_config["allow_same_account_repeat_application"] is True
+    assert task.pacing_config["max_actions_per_day"] == 500
+
+
+@pytest.mark.no_postgres
+def test_simple_search_join_edit_requeues_dual_target_with_repeat_application_mode(session: Session) -> None:
+    task = create_simple_search_join_group_task(session, 1, _simple_payload(), actor="tester")
+    task.status = "completed"
+    task.next_run_at = None
+    session.commit()
+
+    updated = task_service.update_search_join_group_config(
+        session,
+        1,
+        task.id,
+        SearchJoinGroupTaskConfigUpdate(
+            daily_click_target_count=500,
+            daily_target_count=80,
+            allow_same_account_repeat_application=True,
+            actions_per_round=20,
+            max_actions_per_hour=500,
+            hourly_min_successful_joins=500,
+            max_actions_per_day=500,
+        ),
+        actor="tester",
+    )
+
+    assert updated.status == "running"
+    assert updated.next_run_at is not None
+    assert updated.name == "上海留学交流群 搜索目标群点击 每日点击 500 次（加入目标 80 次）"
+    assert updated.type_config["daily_click_target_count"] == 500
+    assert updated.type_config["daily_target_count"] == 80
+    assert updated.type_config["allow_same_account_repeat_application"] is True
+    assert updated.type_config["actions_per_round"] == 20
+    assert updated.type_config["max_actions_per_hour"] == 500
+    assert updated.type_config["hourly_min_successful_joins"] == 500
+    assert updated.pacing_config["max_actions_per_day"] == 500
+
+
+@pytest.mark.no_postgres
+def test_repeat_application_setting_requeues_existing_search_join_task(session: Session) -> None:
+    task = create_simple_search_join_group_task(session, 1, _simple_payload(), actor="tester")
+    task.status = "running"
+    task.next_run_at = None
+    session.commit()
+
+    updated = task_service.update_search_join_group_config(
+        session,
+        1,
+        task.id,
+        SearchJoinGroupTaskConfigUpdate(allow_same_account_repeat_application=True),
+        actor="tester",
+    )
+
+    assert updated.type_config["allow_same_account_repeat_application"] is True
+    assert updated.next_run_at is not None
+
+
+@pytest.mark.no_postgres
 def test_simple_search_join_rejects_daily_target_without_configured_account_capacity(session: Session) -> None:
     with pytest.raises(ValueError, match="daily_target_capacity_insufficient"):
         create_simple_search_join_group_task(

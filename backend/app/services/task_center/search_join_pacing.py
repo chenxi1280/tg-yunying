@@ -133,23 +133,30 @@ def account_allowed(session: Session, task: Task, account_id: int, keyword_hash:
 def account_base_allowed(session: Session, task: Task, account_id: int, window: PacingWindow, stats: PacingStats) -> bool:
     pacing = task.pacing_config or {}
     allowed = True
-    if _has_join_request_pending(session, task, account_id, window.local_date):
+    repeat_applications_allowed = _repeat_applications_allowed(task)
+    if not repeat_applications_allowed and _has_join_request_pending(session, task, account_id, window.local_date):
         allowed = _block_account(stats, account_id, "join_request_pending")
     if _total_count(session, task, account_id) >= int(pacing.get("per_account_total_action_limit") or 0) > 0:
         allowed = _block_account(stats, account_id, "per_account_total_limit_reached")
     if _cooldown_active(session, task, account_id, int(pacing.get("per_account_cooldown_days") or 0)):
         allowed = _block_account(stats, account_id, "per_account_cooldown_days_active")
-    if _daily_count(session, task, account_id, window.local_date) >= int(pacing.get("per_account_daily_action_limit") or 0) > 0:
+    if not repeat_applications_allowed and _daily_count(session, task, account_id, window.local_date) >= int(pacing.get("per_account_daily_action_limit") or 0) > 0:
         allowed = _block_account(stats, account_id, "per_account_daily_limit_reached")
     return allowed
 
 
 def keyword_allowed(session: Session, task: Task, account_id: int, keyword_hash: str, window: PacingWindow, stats: PacingStats) -> bool:
+    if _repeat_applications_allowed(task):
+        return True
     pacing = task.pacing_config or {}
     limit = int(pacing.get("per_keyword_account_daily_limit") or 0)
     if limit > 0 and _daily_count(session, task, account_id, window.local_date, keyword_hash=keyword_hash) >= limit:
         return _block_account(stats, account_id, "per_keyword_account_daily_limit_reached")
     return True
+
+
+def _repeat_applications_allowed(task: Task) -> bool:
+    return bool((task.type_config or {}).get("allow_same_account_repeat_application"))
 
 
 def task_daily_capacity(session: Session, task: Task, window: PacingWindow, requested: int, stats: PacingStats) -> int:
