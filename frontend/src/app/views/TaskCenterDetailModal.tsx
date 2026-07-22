@@ -96,7 +96,7 @@ function searchJoinDetailItems(detail: TaskCenterDetail) {
     { key: 'pacing-skip', label: 'Pacing 跳过', children: `天 ${pacingLimits.daily_skipped_by_pacing ?? 0} / 小时 ${pacingLimits.hourly_skipped_by_pacing ?? 0} / 最近 ${pacingLimits.last_limit_reason || '-'}` },
     { key: 'link', label: '联动状态', children: stats.linked_task_status || '等待 membership_observed 后进入 ready pool 判定' },
     { key: 'membership-observed', label: '成员关系结果', children: 'membership_observed 表示完成目标点击后观察到成员关系，不等同于本次新加入' },
-    { key: 'target-not-found', label: '未命中停止', children: '最多翻 70 页；未命中写 target_not_in_results / pages_exhausted=true 并停止整个任务' },
+    { key: 'target-not-found', label: '未命中处理', children: '不设固定翻页上限；只有命中目标才结束成功搜索。真实末页未命中写 target_not_in_results / no_next_page 与实际页码，当前 action 失败但任务继续规划。' },
     { key: 'relevance', label: '目标资料相关性', children: config.target_relevance_score ?? '-' },
     { key: 'health', label: '内容健康', children: config.target_content_health || '-' },
     { key: 'jisou', label: '极搜生态', children: config.jisou_ecosystem_status || '-' },

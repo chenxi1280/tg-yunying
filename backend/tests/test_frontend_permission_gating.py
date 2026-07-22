@@ -1556,7 +1556,11 @@ def test_search_join_group_frontend_keeps_system_risk_policy_managed_and_exposes
     assert "simpleSearchClickPayload(values)" in view
     assert "pacing_limits" in detail
     assert "membership_observed 表示" in detail
-    assert "最多翻 70 页" in detail
+    assert "不设固定翻页上限" in detail
+    assert "当前 action 失败但任务继续规划" in detail
+    assert "不设固定翻页上限" in wizard
+    assert "最多翻 70 页" not in detail
+    assert "最多翻 70 页" not in wizard
     assert "账号限制命中" in detail
     assert "Pacing 跳过" in detail
 
