@@ -25,7 +25,9 @@ from app.models import (
 from app.security import encrypt_secret
 from app.services.task_center import dispatcher
 from app.services.task_center.dispatcher import dispatch_action
-from app.services.task_center.payloads import SearchJoinMembershipPayload
+from app.services.task_center.payloads import SearchJoinMembershipPayload, SearchJoinPayload
+from app.schemas.task_center import TaskRetryRequest
+from app.services.task_center.service import retry_task
 from app.services.task_center.search_click_target_progress import (
     reconcile_search_click_target_progress,
     search_click_target_progress,
@@ -152,6 +154,42 @@ def test_membership_child_uses_source_slot_and_only_then_counts(monkeypatch, ses
     assert isinstance(calls[0]["credentials"], DeveloperAppCredentials)
     assert calls[0]["credentials"].proxy_id == 31
     assert session.scalar(select(SearchJoinLinkedTaskDispatch).where(SearchJoinLinkedTaskDispatch.search_join_action_id == source.id)) is not None
+
+
+@pytest.mark.no_postgres
+def test_retry_rebinds_search_membership_child_to_source_account(session: Session) -> None:
+    task, source = _source_action(session)
+    task.type_config = {"daily_click_target_count": 500, "daily_target_count": 80}
+    source.result = {"success": True, "join_status": "membership_pending", "target_click_observed": True}
+    session.add(
+        TgAccount(
+            id=102,
+            tenant_id=1,
+            display_name="误转派账号",
+            username="reassigned-account",
+            phone_masked="102",
+            status=AccountStatus.ACTIVE.value,
+            session_ciphertext="reassigned-session",
+            developer_app_id=1,
+            developer_app_version=1,
+        )
+    )
+    child = dispatcher.create_membership_child(
+        session,
+        source,
+        SearchJoinPayload.model_validate(_source_payload()),
+        datetime(2026, 7, 22, 19, 56),
+    )
+    child.status = "failed"
+    child.account_id = 102
+    session.commit()
+
+    assert dispatcher._action_can_reassign(child) is False
+
+    retry_task(session, 1, task.id, TaskRetryRequest(failed_only=True), "tester")
+
+    assert child.status == "pending"
+    assert child.account_id == source.account_id
 
 
 @pytest.mark.no_postgres
