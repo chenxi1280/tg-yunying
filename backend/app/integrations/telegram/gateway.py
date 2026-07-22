@@ -39,7 +39,11 @@ from app.security import decrypt_session
 from app.telethon_lifecycle import TelethonClientLifecycle
 from .telethon_media import _parse_custom_emoji_source, _telegram_entity_length, send_media_segment
 from .telethon_utils import resolve_telethon_target, telethon_send_target
-from .search_join import execute_search_join_with_client
+from .search_join import (
+    ensure_search_join_membership_with_client,
+    execute_search_join_with_client,
+    probe_search_join_membership_with_client,
+)
 from .search_rank_deboost import execute_rank_deboost_with_client, search_rank_deboost_candidates_with_client
 from app.timezone import BEIJING_TZ
 
@@ -1177,6 +1181,64 @@ class TelethonTelegramGateway(TelegramGateway):
         return self._run(
             self._execute_search_join_async(session_ciphertext, self._usable_credentials(credentials), payload, keyword_text)
         )
+
+    async def _ensure_search_join_membership_async(
+        self,
+        session_ciphertext: str | None,
+        credentials: DeveloperAppCredentials,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        client = await self._search_join_membership_client(session_ciphertext, credentials, payload)
+        if isinstance(client, dict):
+            return client
+        return await ensure_search_join_membership_with_client(client, payload)
+
+    def ensure_search_join_membership(
+        self,
+        account_id: int,
+        payload: dict[str, Any],
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> dict[str, Any]:
+        return self._run(
+            self._ensure_search_join_membership_async(session_ciphertext, self._usable_credentials(credentials), payload)
+        )
+
+    async def _probe_search_join_membership_async(
+        self,
+        session_ciphertext: str | None,
+        credentials: DeveloperAppCredentials,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        client = await self._search_join_membership_client(session_ciphertext, credentials, payload)
+        if isinstance(client, dict):
+            return client
+        return await probe_search_join_membership_with_client(client, payload)
+
+    def probe_search_join_membership(
+        self,
+        account_id: int,
+        payload: dict[str, Any],
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> dict[str, Any]:
+        return self._run(
+            self._probe_search_join_membership_async(session_ciphertext, self._usable_credentials(credentials), payload)
+        )
+
+    async def _search_join_membership_client(
+        self,
+        session_ciphertext: str | None,
+        credentials: DeveloperAppCredentials,
+        payload: dict[str, Any],
+    ) -> Any | dict[str, Any]:
+        raw_session = decrypt_session(session_ciphertext)
+        if not raw_session:
+            return {"success": False, "error_code": FailureType.ACCOUNT_UNAVAILABLE.value, "detail": "账号没有可用 session"}
+        client = await self._get_or_create_client(credentials, raw_session, _search_join_client_metadata(payload))
+        if not await client.is_user_authorized():
+            return {"success": False, "error_code": FailureType.ACCOUNT_UNAVAILABLE.value, "detail": "session 已失效"}
+        return client
 
     async def _rank_deboost_client(
         self,

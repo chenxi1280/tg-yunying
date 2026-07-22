@@ -249,6 +249,28 @@ class SearchJoinPayload(BaseModel):
         return self
 
 
+class SearchJoinMembershipPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_search_join_action_id: str = Field(min_length=1, max_length=36)
+    authorization_id: int = Field(ge=1)
+    session_role: str = Field(min_length=1)
+    client_metadata: dict[str, str] = Field(default_factory=dict)
+    target_operation_target_id: int | None = None
+    target_group_id: int | None = None
+    target_username: str = Field(min_length=1, max_length=80)
+    target_title: str = ""
+    target_peer_id: str = ""
+    post_join_policy: str = "stay_joined"
+    runtime_environment: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_runtime_scope(self) -> "SearchJoinMembershipPayload":
+        if _missing_client_metadata(self.client_metadata):
+            raise ValueError("search_join_membership requires complete client_metadata")
+        return self
+
+
 class SearchRankDeboostPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -281,6 +303,7 @@ PAYLOAD_MODELS = {
     "like_message": LikeMessagePayload,
     "post_comment": PostCommentPayload,
     "search_join": SearchJoinPayload,
+    "search_join_membership": SearchJoinMembershipPayload,
     "search_rank_deboost": SearchRankDeboostPayload,
 }
 
@@ -443,6 +466,16 @@ def create_search_join_action(session: Session, task: Task, account_id: int | No
     return _create_action(session, task, "search_join", account_id, scheduled_at, payload)
 
 
+def create_search_join_membership_action(
+    session: Session,
+    task: Task,
+    account_id: int | None,
+    scheduled_at: datetime,
+    payload: SearchJoinMembershipPayload,
+) -> Action:
+    return _create_action(session, task, "search_join_membership", account_id, scheduled_at, payload)
+
+
 def create_search_rank_deboost_action(session: Session, task: Task, account_id: int | None, scheduled_at: datetime, payload: SearchRankDeboostPayload) -> Action:
     return _create_action(session, task, "search_rank_deboost", account_id, scheduled_at, payload)
 
@@ -458,6 +491,7 @@ __all__ = [
     "LikeMessagePayload",
     "PostCommentPayload",
     "SearchJoinPayload",
+    "SearchJoinMembershipPayload",
     "SearchRankDeboostPayload",
     "SendMessagePayload",
     "ViewMessagePayload",
@@ -465,6 +499,7 @@ __all__ = [
     "create_like_action",
     "create_membership_action",
     "create_search_join_action",
+    "create_search_join_membership_action",
     "create_search_rank_deboost_action",
     "create_send_action",
     "create_view_action",
