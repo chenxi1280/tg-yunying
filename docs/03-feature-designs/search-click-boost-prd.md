@@ -589,7 +589,7 @@ None # 该 (账号, 应用, 授权槽位, IP) 对首次 action 时间 daily_acti
 1. 准备阶段：选择搜索机器人和关键词，通过 env.stack 读取 proxy + client_metadata，校验机场节点健康、账号级执行互斥锁、warmup 和 `proxy_egress_guard`。
 2. 搜索阶段：向目标机器人发送关键词，等待包含 inline button 或 link 的搜索结果；FloodWait、超时和结构变化必须显式记录。
 3. 入群前安全浏览阶段：决策延迟后，按概率打开 0-2 个非目标结果；只允许 `button_effect=navigate_only`，停留 10-30 秒后返回；不得加入、关注、外跳或点击 `join_candidate/external/unknown`。
-4. 匹配阶段：`@jisou` 在关键词回复后必须先点击协议已确认的“群聊 / 群组”类型 selector，再按该 callback 的原 message ID 重新读取被编辑的消息后解析搜索结果的 button / link；不得消费任意随后到达的新消息，也不得把未筛选的综合结果当作群聊结果。翻页 callback 同样按原 message ID 读取编辑结果；“下一页 / next”与仅由右向分页符号组成的 callback（例如 `➡️`）都属于下一页，不能把左向符号或群结果按钮误判为下一页。目标只按公开 Telegram URL 中的精确 username 匹配；标题和 peer id 仅用于展示/审计，不得作为可执行匹配依据。当前 Telethon `MessageButton` 不提供可验证的 `target_chat_id`，仅有 peer id 的目标在 Planner 阶段写 `target_identity_missing`，不会创建 action。翻页没有固定页数上限，只有命中精确目标并完成点击 / 成员关系确认才结束本轮成功搜索；机器人真实没有“下一页”仍未命中时写 `target_not_in_results`、`search_end_reason=no_next_page`、`searched_pages` 和 `last_result_page`，该 action 失败但任务保持运行，以后续计划重试，绝不把它伪装成“找满 70 页”或停止整个任务。群聊 selector 缺失属于协议变化，写 `jisou_group_selector_missing`，不回退到未筛选结果。Jisou 已完成群聊 selector 但仍无下一页时，`Action.result.search_protocol_trace` 仅保存 selector 页和结果页 button 的脱敏结构（位置、类型、effect、长度、页码标记与导航符号），不得保存搜索结果标题，用于定位协议分页变化。
+4. 匹配阶段：`@jisou` 在关键词回复后必须先点击协议已确认的“群聊 / 群组”类型 selector，再按该 callback 的原 message ID 重新读取被编辑的消息后解析搜索结果的 button / link；不得消费任意随后到达的新消息，也不得把未筛选的综合结果当作群聊结果。翻页 callback 同样按原 message ID 读取编辑结果；“下一页 / next”与仅由右向分页符号组成的 callback（例如 `➡️`）都属于下一页，不能把左向符号或群结果按钮误判为下一页。目标优先按公开 Telegram URL 或正文中的精确 username 匹配；当群聊结果正文中出现由非字母数字边界包围的精确 `target_title`、且任务仍具备公开 `target_username` 时，标题只可作为“结果可见”线索，执行器必须继续按已配置 username resolve / 加入，并写 `target_match_source=message_title_username_verified`。标题、callback data 和 peer id 都不得单独成为可执行身份或任意点击目标。当前 Telethon `MessageButton` 不提供可验证的 `target_chat_id`，仅有 peer id 的目标在 Planner 阶段写 `target_identity_missing`，不会创建 action。翻页没有固定页数上限，只有命中精确目标并完成点击 / 成员关系确认才结束本轮成功搜索；机器人真实没有“下一页”仍未命中时写 `target_not_in_results`、`search_end_reason=no_next_page`、`searched_pages` 和 `last_result_page`，该 action 失败但任务保持运行，以后续计划重试，绝不把它伪装成“找满 70 页”或停止整个任务。群聊 selector 缺失属于协议变化，写 `jisou_group_selector_missing`，不回退到未筛选结果。Jisou 已完成群聊 selector 但仍无下一页时，`Action.result.search_protocol_trace` 仅保存 selector 页和结果页 button 的脱敏结构（位置、类型、effect、长度、页码标记与导航符号），不得保存搜索结果标题，用于定位协议分页变化。
 5. 加入阶段：通过 MTProto callback 或 Telegram 内部 URL resolve 执行目标群 join；失败必须分类为验证码、审批、链接失效、权限不足或目标机器人拒绝。
 6. 目标群停留阶段：在目标群停留 30-180 秒，只执行低风险 read / history / read_ack；首版默认不发言。
 7. 入群后安全浏览：本期不实现，也不在创建/详情页暴露配置；`post_join_safe_navigation` 固定为空数组。全链路仅保留入群前、已证实 `navigate_only` 的安全浏览，且不得加入非目标群 / 频道。
@@ -606,7 +606,7 @@ None # 该 (账号, 应用, 授权槽位, IP) 对首次 action 时间 daily_acti
 - 只允许点击协议样本已确认的 `navigate_only`；`join_candidate`、`external_http_url`、`unknown`、会触发加入/关注/投票/发言/外链打开的按钮一律跳过。
 - `decoy_join_enabled=false` 是首版硬默认值；如果未来允许加入非目标群，必须另起风控审批和验收，不得复用本 PRD 默认链路。
 - 每次安全浏览都写入 `pre_join_decoy_clicks`，包含稳定 button hash、position、effect、dwell、joined=false。
-- 选择 decoy 前必须先按精确 username 排除目标按钮；标题和 peer id 不是当前 Telethon adapter 的执行身份，目标按钮不得先作为 decoy 点击再执行目标确认。
+- 选择 decoy 前必须先按精确 username 排除目标按钮；正文精确标题命中只会触发已配置 username 的验证加入，不能使同名按钮成为 decoy 或任意目标；目标按钮不得先作为 decoy 点击再执行目标确认。
 
 ### 8.4 Decoy 关键词机制
 
@@ -911,7 +911,7 @@ search_join success
 | 翻页 | 单次返回 5-10 条结果；更多结果需点击底部“下一页” button |
 | 打开 | 对群对应 button / Telegram 内部 URL 执行 MTProto callback 或 URL resolve，记录协议事实；外部 HTTP URL 不在首版默认打开；decoy 浏览只允许 `navigate_only` 安全按钮 |
 | 入群后策略 | 默认留在目标群；如审批为延迟退出，只能由独立清理任务在留存期后执行 |
-**协议细节**：- **消息格式**：目标机器人结果消息通常为 `InlineKeyboardMarkup`，包含：- 主结果区：每行 1 个 button，button.text 为群名/标题，button.data 或 button.url 携带定位信息 - 底部导航：单独一行 button，如 `« 上一页` `第 1/3 页` `下一页 »` - **button 类型**：- `callback_data`：点击后触发 `GetBotCallbackAnswerRequest`，机器人返回 `BotCallbackAnswer`（含 message 或 url） - `telegram_url`：`t.me` / Telegram 内部 URL，允许在 MTProto 会话内 resolve / join - `external_http_url`：非 Telegram 外部 URL，首版不得默认打开，返回 `external_url_requires_web_profile` - **button effect**：parser 必须把按钮标成 `navigate_only / join_candidate / external / unknown`；入群前 decoy 浏览只能点击 `navigate_only`，不得点击 `join_candidate / external / unknown` - **目标群匹配**：当前 Telethon adapter 只接受 `telegram_url`（如 `https://t.me/yourgroup`）中的精确公开 username；不把 `MessageButton` 上不存在的 `target_chat_id`、callback data 或 button.text 推断为目标身份。#
+**协议细节**：- **消息格式**：目标机器人结果消息通常为 `InlineKeyboardMarkup`，包含：- 主结果区：每行 1 个 button，button.text 为群名/标题，button.data 或 button.url 携带定位信息 - 底部导航：单独一行 button，如 `« 上一页` `第 1/3 页` `下一页 »` - **button 类型**：- `callback_data`：点击后触发 `GetBotCallbackAnswerRequest`，机器人返回 `BotCallbackAnswer`（含 message 或 url） - `telegram_url`：`t.me` / Telegram 内部 URL，允许在 MTProto 会话内 resolve / join - `external_http_url`：非 Telegram 外部 URL，首版不得默认打开，返回 `external_url_requires_web_profile` - **button effect**：parser 必须把按钮标成 `navigate_only / join_candidate / external / unknown`；入群前 decoy 浏览只能点击 `navigate_only`，不得点击 `join_candidate / external / unknown` - **目标群匹配**：优先匹配 `telegram_url` 或正文中的精确公开 username；正文中独立展示的精确 `target_title` 只在任务已有公开 username 时作为结果可见线索，实际 resolve / join 仍使用该 username。不得从 `MessageButton` 缺失的 `target_chat_id`、callback data 或 button.text 推断任意目标身份。#
 
 ### 10.3 @soso、@smss、@CJSY（第二版扩展）
 
@@ -1895,3 +1895,4 @@ AI 活跃群联动 126 个账号待冷却 / 64 个已进入 ready pool
 |2026-07-21|v0.24|Codex（运营范围与节奏修订）|按运营配置补回受控账号组、每日执行次数、完成截止时间、日/小时抖动与可选静默时段；明确普通搜索与黑搜索账号组用途隔离、截止时间前的计划/派发双重门禁，以及编辑重排时释放未执行黑搜索 reservation。|
 |2026-07-21|v0.25|Codex（极搜群聊分页修复）|按线上郑州搜索实证恢复 `@jisou` 关键词后的群聊 selector；删除固定 70 页作为任务停止条件。只有精确目标命中才结束成功搜索；真实末页未命中写实际页码并保留任务后续重试。|
 |2026-07-22|v0.26|Codex（每日目标容量修复）|普通搜索创建和专用编辑开放受控的 `per_account_daily_action_limit`；保存前按全部候选账号、关键词日上限与任务日预算校验 `daily_target_count` 的可规划日容量，容量不足以 `daily_target_capacity_insufficient` 显式拒绝，不静默放宽账号上限。|
+|2026-07-22|v0.27|Codex（极搜正文标题命中修复）|当极搜群聊页仅在正文展示精确群名而未暴露目标 username / URL 时，标题只作为可见线索；执行仍按已配置的公开 username resolve / 加入并记录 `message_title_username_verified`，不允许以标题、callback 或 peer id 单独选择任意群。|
