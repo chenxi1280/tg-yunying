@@ -130,11 +130,13 @@ function StrictDailyTargetOptIn({ enabled, visible }: { enabled: boolean; visibl
 export function SearchClickExecutionConfig({
   taskType,
   accountPools,
+  editing = false,
   strictDailyTargetEnabled = false,
   showStrictDailyTargetOptIn = false,
 }: {
   taskType: TaskCenterTaskType;
   accountPools: AccountPool[];
+  editing?: boolean;
   strictDailyTargetEnabled?: boolean;
   showStrictDailyTargetOptIn?: boolean;
 }) {
@@ -189,6 +191,19 @@ export function SearchClickExecutionConfig({
           >
             <Checkbox>允许同账号当天重复申请</Checkbox>
           </Form.Item>
+        )}
+        {editing && !isRankDeboost && (
+          <>
+            <Form.Item name="actions_per_round" label="每轮计划点击数" rules={[{ required: true, message: '请填写每轮计划点击数' }]}>
+              <InputNumber min={1} max={20} precision={0} style={{ width: '100%' }} />
+            </Form.Item>
+            <Form.Item name="max_actions_per_hour" label="每小时最大搜索点击数" rules={[{ required: true, message: '请填写每小时最大搜索点击数' }]}>
+              <InputNumber min={1} max={500} precision={0} style={{ width: '100%' }} />
+            </Form.Item>
+            <Form.Item name="hourly_min_successful_joins" label="每小时最低计划点击数" rules={[{ required: true, message: '请填写每小时最低计划点击数' }]}>
+              <InputNumber min={1} max={500} precision={0} style={{ width: '100%' }} />
+            </Form.Item>
+          </>
         )}
         {!isRankDeboost && <StrictDailyTargetOptIn enabled={strictDailyTargetEnabled} visible={showStrictDailyTargetOptIn} />}
         <Form.Item name="scheduled_end" label="完成截止时间" rules={[{ required: true, message: '请选择完成截止时间' }]}>
