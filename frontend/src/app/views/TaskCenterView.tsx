@@ -1189,6 +1189,7 @@ export default function TaskCenterView({
       account_group_id: values.account_group_id,
       max_actions_per_day: values.max_actions_per_day,
       ...(searchTaskType === 'search_join_group' ? { per_account_daily_action_limit: values.per_account_daily_action_limit } : {}),
+      ...(editing && searchTaskType === 'search_join_group' && values.enable_strict_daily_target ? { enable_strict_daily_target: true } : {}),
       scheduled_end: fromBeijingDateTimeLocalValue(values.scheduled_end),
       daily_jitter_percent: values.daily_jitter_percent,
       hourly_jitter_percent: values.hourly_jitter_percent,
@@ -2273,7 +2274,7 @@ export default function TaskCenterView({
           )}
           <Typography.Title level={5}>类型参数</Typography.Title>
           <WizardTypeConfig taskType={(detail && !isSystemTask(detail.task) ? detail.task.type : taskType) as TaskCenterTaskType} ruleSets={ruleSets} slangTemplates={slangTemplates} comments={comments} relaySourceOptions={relaySourceOptions(detail)} targetChannelId={editTargetChannelId} messageScope={editMessageScope} messageIds={editMessageIds} simpleSearchCreation={isSimpleSearchClickTask(editableTaskType)} simpleSearchEditing={isSimpleSearchClickTask(editableTaskType)} simpleSearchLegacyUncapped={editableTaskType === 'search_join_group' ? detail?.task.type_config?.daily_target_count == null && detail?.task.type_config?.target_count == null : detail?.task.type_config?.target_count == null} />
-          {isSimpleSearchClickTask(editableTaskType) && <><Typography.Title level={5}>执行范围与节奏</Typography.Title><SearchClickExecutionConfig taskType={editableTaskType} accountPools={taskAccountPools} /></>}
+          {isSimpleSearchClickTask(editableTaskType) && <><Typography.Title level={5}>执行范围与节奏</Typography.Title><SearchClickExecutionConfig taskType={editableTaskType} accountPools={taskAccountPools} strictDailyTargetEnabled={Boolean(detail?.task.type_config?.strict_daily_target)} showStrictDailyTargetOptIn={editableTaskType === 'search_join_group' && detail?.task.type_config?.daily_target_count != null} /></>}
           {!isSimpleSearchClickTask(editableTaskType) && (
             <>
               <Typography.Title level={5}>账号选择</Typography.Title>

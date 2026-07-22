@@ -577,6 +577,7 @@ class SearchJoinGroupConfig(BaseModel):
     hourly_min_successful_joins: int = Field(default=1, ge=1, le=500)
     target_count: int | None = Field(default=None, ge=1)
     daily_target_count: int | None = Field(default=None, ge=1)
+    strict_daily_target: bool = False
     target_relevance_score: int | None = Field(default=None, ge=0, le=100)
     target_content_health: Literal["healthy", "weak", "blocked", "unknown"] = "unknown"
     jisou_ecosystem_status: Literal["bot_joined", "flow_alliance", "unknown"] = "unknown"
@@ -823,6 +824,7 @@ class SearchJoinGroupTaskConfigUpdate(BaseModel):
     account_group_id: int | None = Field(default=None, gt=0)
     max_actions_per_day: int | None = Field(default=None, ge=1)
     per_account_daily_action_limit: int | None = Field(default=None, ge=0, le=1000)
+    enable_strict_daily_target: Literal[True] | None = None
     scheduled_end: datetime | None = None
     daily_jitter_percent: int | None = Field(default=None, ge=0, le=100)
     hourly_jitter_percent: int | None = Field(default=None, ge=0, le=100)

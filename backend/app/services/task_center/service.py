@@ -207,6 +207,7 @@ from .search_rank_deboost import (
 )
 from .search_click_target_progress import reconcile_search_click_target_progress
 from .search_click_controls import (
+    DAILY_TARGET_ACTION_SKIP_PROBABILITY,
     NORMAL_SEARCH_CLICK_TASK,
     RANK_SEARCH_CLICK_TASK,
     require_search_click_account_group,
@@ -329,6 +330,9 @@ def _new_task(session: Session, tenant_id: int, task_type: str, payload) -> Task
     raw_type_config = apply_group_ai_account_coverage_defaults(task_type, raw_type_config, payload.account_config.model_dump(mode="json"))
     type_config = validated_type_config(task_type, raw_type_config)
     validate_rule_binding(session, tenant_id, type_config)
+    pacing_config = pacing_config_payload(payload.pacing_config)
+    if task_type == NORMAL_SEARCH_CLICK_TASK and type_config.get("strict_daily_target"):
+        pacing_config["skip_probability_per_action"] = DAILY_TARGET_ACTION_SKIP_PROBABILITY
     task = Task(
         tenant_id=tenant_id,
         name=payload.name,
@@ -340,7 +344,7 @@ def _new_task(session: Session, tenant_id: int, task_type: str, payload) -> Task
         scheduled_end=payload.scheduled_end,
         max_duration_hours=payload.max_duration_hours,
         account_config=payload.account_config.model_dump(mode="json"),
-        pacing_config=pacing_config_payload(payload.pacing_config),
+        pacing_config=pacing_config,
         failure_policy=payload.failure_policy.model_dump(mode="json"),
         type_config=type_config,
         stats=empty_stats(),
@@ -394,6 +398,7 @@ def _simple_search_join_group_payload(
         target_link=canonical_link,
         keywords=payload.keywords,
         daily_target_count=payload.daily_target_count,
+        strict_daily_target=True,
         search_bots=[{"username": "jisou", "display_name": "极搜"}],
         account_config=search_click_account_config(payload.account_group_id),
         scheduled_end=as_beijing(payload.scheduled_end),
@@ -953,6 +958,7 @@ SEARCH_CLICK_OPERATOR_CONTROL_FIELDS = (
 SEARCH_JOIN_OPERATOR_CONTROL_FIELDS = (
     *SEARCH_CLICK_OPERATOR_CONTROL_FIELDS,
     "per_account_daily_action_limit",
+    "enable_strict_daily_target",
 )
 SEARCH_CLICK_TASK_TYPES = {NORMAL_SEARCH_CLICK_TASK, RANK_SEARCH_CLICK_TASK}
 SEARCH_JOIN_OPERATOR_EDIT_FIELDS = {
@@ -1122,6 +1128,14 @@ def _apply_search_click_operator_controls(
             next_pacing.pop("quiet_hours", None)
         else:
             next_pacing["quiet_hours"] = quiet_hours.model_dump(mode="json")
+    if controls.get("enable_strict_daily_target"):
+        if (task.type_config or {}).get("daily_target_count") is None:
+            raise ValueError("严格每日目标仅适用于 daily_target_count 任务")
+        next_type_config = {**(task.type_config or {}), "strict_daily_target": True}
+        if next_type_config != (task.type_config or {}):
+            task.type_config = next_type_config
+            changed = True
+        next_pacing["skip_probability_per_action"] = DAILY_TARGET_ACTION_SKIP_PROBABILITY
     if next_pacing != (task.pacing_config or {}):
         task.pacing_config = next_pacing
         changed = True

@@ -112,6 +112,8 @@ def validated_type_config(task_type: str, data: dict[str, Any]) -> dict[str, Any
         raise ValueError(f"unknown task type: {task_type}")
     data = _normalize_legacy_group_ai_config(task_type, data or {})
     normalized = model(**(data or {})).model_dump(mode="json", exclude_none=True)
+    if task_type == "search_join_group" and not normalized.get("strict_daily_target"):
+        normalized.pop("strict_daily_target", None)
     if task_type == "group_ai_chat":
         for field in GROUP_AI_LEGACY_RUNTIME_FIELDS:
             normalized.pop(field, None)

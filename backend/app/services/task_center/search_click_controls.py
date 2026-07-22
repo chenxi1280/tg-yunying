@@ -11,6 +11,7 @@ from app.services.account_usage_policy import pool_markers_consistent
 
 NORMAL_SEARCH_CLICK_TASK = "search_join_group"
 RANK_SEARCH_CLICK_TASK = "search_rank_deboost"
+DAILY_TARGET_ACTION_SKIP_PROBABILITY = 0.0
 
 
 def require_search_click_account_group(
@@ -45,6 +46,7 @@ def search_click_pacing_config(payload: Any) -> dict[str, Any]:
     }
     if hasattr(payload, "per_account_daily_action_limit"):
         config["per_account_daily_action_limit"] = payload.per_account_daily_action_limit
+        config["skip_probability_per_action"] = DAILY_TARGET_ACTION_SKIP_PROBABILITY
     if payload.quiet_hours is not None:
         config["quiet_hours"] = payload.quiet_hours.model_dump(mode="json")
     return config
@@ -59,6 +61,7 @@ def _account_group_error(task_type: str) -> str:
 __all__ = [
     "NORMAL_SEARCH_CLICK_TASK",
     "RANK_SEARCH_CLICK_TASK",
+    "DAILY_TARGET_ACTION_SKIP_PROBABILITY",
     "require_search_click_account_group",
     "search_click_account_config",
     "search_click_pacing_config",

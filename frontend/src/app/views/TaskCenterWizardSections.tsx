@@ -92,7 +92,38 @@ function quietHoursRules(peerField: 'quiet_start' | 'quiet_end') {
   ];
 }
 
-export function SearchClickExecutionConfig({ taskType, accountPools }: { taskType: TaskCenterTaskType; accountPools: AccountPool[] }) {
+function StrictDailyTargetOptIn({ enabled, visible }: { enabled: boolean; visible: boolean }) {
+  if (!visible) return null;
+  if (enabled) {
+    return (
+      <Form.Item label="每日目标执行">
+        <Typography.Text type="success">已启用严格每日目标，不使用随机跳过。</Typography.Text>
+      </Form.Item>
+    );
+  }
+  return (
+    <Form.Item
+      name="enable_strict_daily_target"
+      label="每日目标执行"
+      valuePropName="checked"
+      extra="启用后会取消隐藏的随机跳过；代理、账号资格、风控和第三方检索失败仍按真实结果记录。"
+    >
+      <Checkbox>严格每日目标（不使用随机跳过）</Checkbox>
+    </Form.Item>
+  );
+}
+
+export function SearchClickExecutionConfig({
+  taskType,
+  accountPools,
+  strictDailyTargetEnabled = false,
+  showStrictDailyTargetOptIn = false,
+}: {
+  taskType: TaskCenterTaskType;
+  accountPools: AccountPool[];
+  strictDailyTargetEnabled?: boolean;
+  showStrictDailyTargetOptIn?: boolean;
+}) {
   const isRankDeboost = taskType === 'search_rank_deboost';
   const requiredPurpose = isRankDeboost ? 'rank_deboost' : 'normal';
   const poolOptions = accountPools
@@ -135,6 +166,7 @@ export function SearchClickExecutionConfig({ taskType, accountPools }: { taskTyp
             <InputNumber min={0} max={1000} precision={0} style={{ width: '100%' }} />
           </Form.Item>
         )}
+        {!isRankDeboost && <StrictDailyTargetOptIn enabled={strictDailyTargetEnabled} visible={showStrictDailyTargetOptIn} />}
         <Form.Item name="scheduled_end" label="完成截止时间" rules={[{ required: true, message: '请选择完成截止时间' }]}>
           <Input type="datetime-local" />
         </Form.Item>

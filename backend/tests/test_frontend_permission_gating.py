@@ -1545,6 +1545,9 @@ def test_search_join_group_frontend_keeps_system_risk_policy_managed_and_exposes
         "quiet_end",
     ]:
         assert f'name="{field}"' in execution_config
+    assert "StrictDailyTargetOptIn" in execution_config
+    assert 'name="enable_strict_daily_target"' in wizard
+    assert "严格每日目标" in wizard
     assert "系统负责账号资格、代理、机器人和风险闸门" in simple_config
     assert 'name="keywords"' in simple_config
     assert "const targetField = isRankDeboost ? 'target_count' : 'daily_target_count';" in simple_config

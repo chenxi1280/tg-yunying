@@ -165,6 +165,8 @@ def test_simple_search_join_create_uses_system_name_and_policy(session: Session)
     assert task.pacing_config["hourly_jitter_percent"] == 30
     assert task.scheduled_end == datetime(2030, 1, 1, 8, 0, 0)
     assert task.pacing_config["per_account_daily_action_limit"] == 1
+    assert task.pacing_config["skip_probability_per_action"] == 0
+    assert task.type_config["strict_daily_target"] is True
 
 
 @pytest.mark.no_postgres
@@ -257,6 +259,8 @@ def test_simple_search_join_edit_regenerates_system_name(session: Session) -> No
         _simple_payload(),
         actor="tester",
     )
+    task.type_config = {key: value for key, value in task.type_config.items() if key != "strict_daily_target"}
+    task.pacing_config = {**task.pacing_config, "skip_probability_per_action": 0.1}
     session.add(
         OperationTarget(
             id=18,
@@ -280,6 +284,8 @@ def test_simple_search_join_edit_regenerates_system_name(session: Session) -> No
         actor="tester",
     )
     assert target_updated.name == "北京留学交流群 搜索目标群点击 每日 8 次"
+    assert target_updated.pacing_config["skip_probability_per_action"] == 0.1
+    assert "strict_daily_target" not in target_updated.type_config
 
     updated = task_service.update_search_join_group_config(
         session,
@@ -295,6 +301,8 @@ def test_simple_search_join_edit_regenerates_system_name(session: Session) -> No
 @pytest.mark.no_postgres
 def test_simple_search_join_edit_updates_operator_execution_controls(session: Session) -> None:
     task = create_simple_search_join_group_task(session, 1, _simple_payload(), actor="tester")
+    task.type_config = {key: value for key, value in task.type_config.items() if key != "strict_daily_target"}
+    task.pacing_config = {**task.pacing_config, "skip_probability_per_action": 0.1}
     session.add(
         SearchJoinPacingDecision(
             tenant_id=1,
@@ -317,6 +325,7 @@ def test_simple_search_join_edit_updates_operator_execution_controls(session: Se
             daily_jitter_percent=10,
             hourly_jitter_percent=15,
             quiet_hours={"start": "23:00", "end": "07:00"},
+            enable_strict_daily_target=True,
         ),
         actor="tester",
     )
@@ -328,8 +337,45 @@ def test_simple_search_join_edit_updates_operator_execution_controls(session: Se
     assert updated.pacing_config["daily_jitter_percent"] == 10
     assert updated.pacing_config["hourly_jitter_percent"] == 15
     assert updated.pacing_config["quiet_hours"] == {"start": "23:00", "end": "07:00", "timezone": "Asia/Shanghai"}
+    assert updated.pacing_config["skip_probability_per_action"] == 0
+    assert updated.type_config["strict_daily_target"] is True
     assert updated.scheduled_end == datetime(2030, 2, 1, 8, 0, 0)
     assert session.query(SearchJoinPacingDecision).filter_by(task_id=task.id).count() == 0
+
+
+@pytest.mark.no_postgres
+def test_advanced_daily_search_join_edit_preserves_behavior_pacing(session: Session) -> None:
+    task = create_search_join_group_task(
+        session,
+        1,
+        _payload(daily_target_count=8),
+        actor="tester",
+    )
+
+    updated = task_service.update_search_join_group_config(
+        session,
+        1,
+        task.id,
+        SearchJoinGroupTaskConfigUpdate(max_actions_per_day=9),
+        actor="tester",
+    )
+
+    assert updated.pacing_config["skip_probability_per_action"] == 0.1
+    assert "strict_daily_target" not in updated.type_config
+
+
+@pytest.mark.no_postgres
+def test_search_join_group_rejects_strict_daily_target_for_lifecycle_task(session: Session) -> None:
+    task = create_search_join_group_task(session, 1, _payload(target_count=8), actor="tester")
+
+    with pytest.raises(ValueError, match="严格每日目标仅适用于 daily_target_count 任务"):
+        task_service.update_search_join_group_config(
+            session,
+            1,
+            task.id,
+            SearchJoinGroupTaskConfigUpdate(enable_strict_daily_target=True),
+            actor="tester",
+        )
 
 
 @pytest.mark.no_postgres
