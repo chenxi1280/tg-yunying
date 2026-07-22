@@ -214,50 +214,6 @@ def test_simple_search_join_edit_rejects_daily_target_without_configured_account
 
 
 @pytest.mark.no_postgres
-def test_simple_search_join_rejects_daily_target_without_configured_account_capacity(session: Session) -> None:
-    with pytest.raises(ValueError, match="daily_target_capacity_insufficient"):
-        create_simple_search_join_group_task(
-            session,
-            1,
-            _simple_payload(daily_target_count=9, max_actions_per_day=9),
-            actor="tester",
-        )
-
-
-@pytest.mark.no_postgres
-def test_simple_search_join_allows_explicit_daily_account_limit_to_cover_target(session: Session) -> None:
-    task = create_simple_search_join_group_task(
-        session,
-        1,
-        _simple_payload(
-            daily_target_count=9,
-            max_actions_per_day=9,
-            per_account_daily_action_limit=2,
-        ),
-        actor="tester",
-    )
-
-    assert task.pacing_config["per_account_daily_action_limit"] == 2
-
-
-@pytest.mark.no_postgres
-def test_simple_search_join_edit_rejects_daily_target_without_configured_account_capacity(session: Session) -> None:
-    task = create_simple_search_join_group_task(session, 1, _simple_payload(), actor="tester")
-
-    with pytest.raises(ValueError, match="daily_target_capacity_insufficient"):
-        task_service.update_search_join_group_config(
-            session,
-            1,
-            task.id,
-            SearchJoinGroupTaskConfigUpdate(daily_target_count=9, max_actions_per_day=9),
-            actor="tester",
-        )
-
-    assert task.type_config["daily_target_count"] == 8
-    assert task.pacing_config["per_account_daily_action_limit"] == 1
-
-
-@pytest.mark.no_postgres
 def test_simple_search_join_create_uses_daily_target_not_lifecycle_target(session: Session) -> None:
     payload = SearchJoinGroupSimpleTaskCreate(
         target_title="上海留学交流群",
