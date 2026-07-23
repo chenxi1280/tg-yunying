@@ -3017,7 +3017,7 @@ def _record_dispatch_db_error(session_factory, action_id: str, exc: SQLAlchemyEr
 
 def _planning_backlog_blocked(session: Session, task: Task) -> bool:
     now_value = _now()
-    if hard_hourly_requires_planning(session, task, now_value):
+    if _hard_hourly_deficit_bypasses_backlog(session, task, now_value):
         task.stats = clear_planner_backlog_stats(dict(task.stats or {}))
         return False
     snapshot = planner_backlog_snapshot(
@@ -3038,6 +3038,11 @@ def _planning_backlog_blocked(session: Session, task: Task) -> bool:
     interval = max(10, min(300, int((task.pacing_config or {}).get("interval_seconds") or 30)))
     task.next_run_at = now_value + timedelta(seconds=interval)
     return True
+
+
+def _hard_hourly_deficit_bypasses_backlog(session: Session, task: Task, now_value: datetime) -> bool:
+    progress = hard_hourly_current_progress(session, task, now_value)
+    return bool(progress.get("enabled")) and int(progress.get("deficit") or 0) > 0
 
 
 def _strict_search_daily_target_can_plan(

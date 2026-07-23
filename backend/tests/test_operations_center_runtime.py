@@ -6249,6 +6249,7 @@ def test_planning_backlog_ignores_same_task_old_membership_actions(monkeypatch):
     assert blocked is False
 
 
+@pytest.mark.no_postgres
 def test_planning_backlog_allows_due_hard_hourly_deficit(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
