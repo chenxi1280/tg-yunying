@@ -8,7 +8,9 @@ from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.models import (
+    Action,
     AccountPool,
+    ExecutionAttempt,
     Task,
     TaskAccountDailyCoverage,
     TaskMembershipAdmissionItem,
@@ -198,6 +200,46 @@ def test_coverage_plan_state_materializes_scope_once_and_reuses_rows(session: Se
     assert calls == 1
     assert set(state.rows_by_account) == {1}
     assert state.account_count == 3
+
+
+def test_coverage_plan_state_reconciles_remote_success_before_capacity_gate(session: Session) -> None:
+    task, group = _seed(session)
+    group.daily_limit = 3
+    for account_id in (1, 2, 3):
+        row = session.get(TaskAccountDailyCoverage, f"coverage-{account_id}")
+        row.state = "ready"
+        row.confirmed_count = 0
+    action = Action(
+        id="today-success",
+        tenant_id=1,
+        task_id=task.id,
+        task_type=task.type,
+        action_type="send_message",
+        account_id=1,
+        status="success",
+        executed_at=beijing_now(),
+        payload={"group_id": group.id},
+    )
+    session.add_all([
+        action,
+        ExecutionAttempt(
+            tenant_id=1,
+            action_id=action.id,
+            account_id=1,
+            attempt_no=1,
+            status="success",
+            remote_message_id="tg-current-day",
+        ),
+    ])
+    session.flush()
+
+    state = _coverage_plan_state(session, task, group, task.type_config, {})
+
+    assert state.confirmed_count == 1
+    assert session.get(TaskAccountDailyCoverage, "coverage-1").state == "confirmed"
+    assert _coverage_capacity_blocker(
+        session, task, group, task.type_config, coverage_rows=state.rows, coverage_state=state,
+    ) == {}
 
 
 def test_account_selection_uses_supplied_coverage_snapshot_without_reread(session: Session, monkeypatch) -> None:

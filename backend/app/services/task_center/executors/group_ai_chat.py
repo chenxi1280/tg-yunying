@@ -35,6 +35,7 @@ from ..channel_membership import gate_channel_membership
 from ..config_normalization import normalize_operation_target_references
 from ..coverage_capacity import reserved_coverage_message_count, task_coverage_capacity_proof
 from ..daily_coverage import (
+    backfill_daily_coverage_confirmations,
     block_coverage_accounts,
     daily_coverage_due_debt,
     ensure_task_daily_coverage,
@@ -1515,6 +1516,7 @@ def _coverage_plan_state(
         return CoveragePlanState(rows=[], rows_by_account={}, due_debt=0)
     timestamp = _now()
     ensure_task_daily_coverage(session, task, now=timestamp)
+    backfill_daily_coverage_confirmations(session, task, timestamp.date())
     totals = coverage_plan_totals(session, task, group, now=timestamp)
     configured_limit = int(getattr(get_settings(), "daily_coverage_plan_batch_limit", 20) or 20)
     rows = ready_coverage_plan_batch(
