@@ -7,7 +7,9 @@ from sqlalchemy import func, select, true
 from sqlalchemy.orm import Session
 
 from app.models import Action, Task
+from app.timezone import BEIJING_TZ, as_beijing
 
+from .pacing import quiet_hours_active
 from .search_click_target_progress import SearchClickTargetProgress, search_click_target_progress
 from .search_join_config import runtime_search_join_config
 from .search_join_facts import search_join_fact_in_window
@@ -184,8 +186,50 @@ def _remaining_daily_curve_weight(task: Task, config: dict[str, Any], now_value:
         curve = [max(0, int(value)) for value in raw_curve]
     except (TypeError, ValueError):
         return 0, 0
-    current_hour = pacing_window(task, now_value).hour_start.hour
-    return curve[current_hour], sum(curve[current_hour:])
+    current_hour = pacing_window(task, now_value).hour_start
+    current_time = _curve_local_time(now_value, current_hour)
+    cutoff = _daily_curve_cutoff(task, current_hour)
+    if cutoff <= current_time:
+        return 0, 0
+    current_eligible = _curve_bucket_is_executable(task, config, current_hour, current_time, cutoff)
+    remaining_weight = 0
+    bucket_start = current_hour
+    while bucket_start < cutoff:
+        if _curve_bucket_is_executable(task, config, bucket_start, current_time, cutoff):
+            remaining_weight += curve[bucket_start.hour]
+        bucket_start += timedelta(hours=1)
+    return (curve[current_hour.hour] if current_eligible else 0), remaining_weight
+
+
+def _curve_local_time(value: datetime, hour_start: datetime) -> datetime:
+    beijing_value = as_beijing(value)
+    if beijing_value is None:
+        raise ValueError("curve time is required")
+    return beijing_value.replace(tzinfo=BEIJING_TZ).astimezone(hour_start.tzinfo)
+
+
+def _daily_curve_cutoff(task: Task, current_hour: datetime) -> datetime:
+    local_day_end = current_hour.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+    scheduled_end = as_beijing(task.scheduled_end)
+    if scheduled_end is None:
+        return local_day_end
+    return min(local_day_end, _curve_local_time(scheduled_end, current_hour))
+
+
+def _curve_bucket_is_executable(
+    task: Task,
+    config: dict[str, Any],
+    bucket_start: datetime,
+    current_time: datetime,
+    cutoff: datetime,
+) -> bool:
+    start = max(bucket_start, current_time)
+    end = min(bucket_start + timedelta(hours=1), cutoff)
+    if start >= end:
+        return False
+    if not quiet_hours_active(start, config, timezone_name=task.timezone):
+        return True
+    return not quiet_hours_active(end - timedelta(microseconds=1), config, timezone_name=task.timezone)
 
 
 def _search_join_success_count(session: Session, task: Task, *, start: datetime, end: datetime) -> int:

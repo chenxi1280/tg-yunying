@@ -34,6 +34,7 @@ from app.services._common import _now
 from app.services.proxy_airport_subscription import create_proxy_airport_subscription, sync_proxy_airport_subscription_by_id
 from app.services.task_center import pacing
 from app.services.task_center import search_join_pacing
+from app.services.task_center import hourly_stats
 from app.services.task_center.jisou_selector_accounts import select_jisou_selector_candidates
 from app.services.task_center import search_click_target_progress as search_click_progress
 from app.services.task_center.search_join_pacing import pacing_window
@@ -1665,6 +1666,33 @@ def test_click_only_daily_target_uses_remaining_daily_curve(session: Session, mo
 
     assert build_task_plan(session, task) == 20
     assert task.stats["search_join_stats"]["hourly_execution"]["goal"] == 50
+
+
+@pytest.mark.no_postgres
+def test_click_daily_target_uses_only_deadline_and_quiet_eligible_curve_weight(session: Session) -> None:
+    now_value = datetime(2026, 7, 24, 8, 0)
+    task = _task(
+        timezone="Asia/Shanghai",
+        scheduled_end=datetime(2026, 7, 24, 10, 30),
+        type_config={
+            "daily_click_target_count": 100,
+            "hourly_round_curve": [0] * 8 + [1, 1, 1] + [9] * 13,
+            "hourly_min_successful_joins": 1,
+        },
+        pacing_config={"quiet_hours": {"start": "09:00", "end": "10:00"}},
+    )
+    config = {**task.type_config, **task.pacing_config}
+    progress = search_click_progress.SearchClickTargetProgress(
+        target_count=100,
+        confirmed_count=0,
+        held_count=0,
+        remaining_slot_count=100,
+        scope="daily",
+        local_date="2026-07-24",
+    )
+
+    assert hourly_stats._remaining_daily_curve_weight(task, config, now_value) == (1, 2)
+    assert hourly_stats._search_join_hourly_goal(session, task, config, now_value, progress) == 50
 
 
 @pytest.mark.no_postgres

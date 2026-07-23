@@ -679,6 +679,8 @@ deficit =
   max(hourly_goal - success_current_hour - future_open_current_hour, 0)
 ```
 
+`remaining_today_curve_weight` 只能累计任务时区当前自然日内仍有可执行时间的小时桶：截至 `scheduled_end` 前、排除被 `quiet_hours` 完全覆盖的桶；当前或截止边界所在的部分小时只要存在非静默的可执行片段即可参与。截止已到、当前小时曲线权重为 `0` 或当前小时仍处于静默时，当前小时不创建 source；实现不得把截止后或静默的曲线权重留在分母中稀释截止前的补量需求，也不得为达标突破截止时间、静默、小时上限、账号容量或 Gateway 风控。
+
 不计入成功：
 
 - `skipped`、`failed`、`unknown_after_send` 或执行结果未知。
@@ -1912,3 +1914,4 @@ AI 活跃群联动 126 个账号待冷却 / 64 个已进入 ready pool
 |2026-07-23|v0.33|Codex（严格日目标跨日收口）|严格每日目标的 source 在 child 之后、普通批量 action 之前领取；前日未进入 Gateway 的 source 作为次日点击/预算 carryover，只有最旧 pending 年龄软阻塞时允许在硬队列阈值和剩余槽位内补量；source 在 claim 与 Gateway 前都恢复授权槽位账号且禁止容量转派。|
 |2026-07-23|v0.34|Codex（严格日目标反饥饿）|线上证实 AI 硬小时队列可把到期 source 推到数百位之后，故领取顺序调整为：目标准入重试、search membership child、严格 source、AI 硬小时、普通批量；不改变任何 Telegram 风控或日预算边界。|
 |2026-07-24|v0.35|Codex（极搜账号 selector 能力分层）|当同一任务的极搜账号呈现不同 selector 回复结构时，按最近 24 小时的真实 source 回执分层：最新回执为 `jisou_group_selector_missing` 的账号不再参与新 source 排程，最新已确认目标点击的账号优先，未验证账号其次；没有可用账号时显式阻断，不回退到综合结果或已失败账号。|
+|2026-07-24|v0.36|Codex（严格日目标可执行小时加权）|每日点击目标的曲线分母只统计截止时间前且未被静默窗口完全覆盖的剩余本地小时；边界小时存在可执行片段时保留其权重。不会以截止后或静默小时稀释补量，也不会因此突破既有时间、容量或 Gateway 硬门禁。|
