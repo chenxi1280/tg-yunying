@@ -88,6 +88,8 @@ ACCOUNT_COOLDOWN_BLOCKED_MESSAGE = "账号冷却中，等待冷却后继续执�
 ACCOUNT_UNAVAILABLE_MESSAGE = "没有可用账号，等待账号恢复后继续执行"
 VOICE_PROFILE_MISSING_MESSAGE = "账号面具缺失，等待账号面具初始化后继续执行"
 ACCOUNT_DISTRIBUTION_SKEW_MESSAGE = "账号分布偏斜，已阻断本轮硬目标规划"
+ALL_ACCOUNT_DAILY_COVERAGE_REPLAN_CODE = "all_account_daily_coverage_replan"
+ALL_ACCOUNT_DAILY_COVERAGE_REPLAN_MESSAGE = "任务已切换为全部账号每日覆盖，旧硬目标规划已跳过等待按覆盖账本重建"
 DEFAULT_IDLE_CONTINUATION_SECONDS = 300
 DEFAULT_CONTEXT_BOUND_SCHEDULE_WINDOW_SECONDS = 300
 MIN_CONTEXT_BOUND_SCHEDULE_WINDOW_SECONDS = 60
@@ -1148,6 +1150,7 @@ def _advance_reserved_coverage_cursor(
 def prepare_open_actions_for_planning(session: Session, task: Task) -> int:
     config = {**(task.type_config or {}), "pacing_config": task.pacing_config or {}}
     config = _canonicalized_task_config(session, task, config)
+    legacy_replanned = _skip_legacy_hard_hourly_open_actions_for_daily_coverage_replan(session, task, config)
     group = group_from_reference(
         session,
         task.tenant_id,
@@ -1156,20 +1159,20 @@ def prepare_open_actions_for_planning(session: Session, task: Task) -> int:
         require_authorized=False,
     )
     if not group:
-        return 0
+        return legacy_replanned
     hard_progress = current_progress(session, task, _now()) if hard_hourly_enabled(task) else {}
     hard_progress = hard_progress if int(hard_progress.get("deficit") or 0) > 0 else {}
     accounts = _select_accounts_for_plan(session, task, group, hard_progress, config)
     accounts = _online_ready_accounts(session, task, accounts, hard_progress)
     if not accounts:
-        return 0
+        return legacy_replanned
     ready_voice_profiles = voice_profile_prompt_details(
         session,
         tenant_id=task.tenant_id,
         account_ids=[account.id for account in accounts],
     )
     skipped = _skip_skewed_hard_hourly_open_actions_for_replan(session, task, len(accounts))
-    return skipped + _expire_open_profileless_actions(session, task, ready_voice_profiles.keys())
+    return legacy_replanned + skipped + _expire_open_profileless_actions(session, task, ready_voice_profiles.keys())
 
 
 def _canonicalized_task_config(session: Session, task: Task, config: dict) -> dict:
@@ -3133,6 +3136,36 @@ def _skip_skewed_hard_hourly_open_actions_for_replan(session: Session, task: Tas
     return len(actions)
 
 
+def _skip_legacy_hard_hourly_open_actions_for_daily_coverage_replan(
+    session: Session,
+    task: Task,
+    config: dict,
+) -> int:
+    if not _all_accounts_daily_coverage(config):
+        return 0
+    current_time = _now()
+    skipped = 0
+    for action in _open_hard_hourly_actions_for_distribution_replan(session, task):
+        payload = action.payload if isinstance(action.payload, dict) else {}
+        if str(payload.get("coverage_ledger_id") or "").strip():
+            continue
+        _skip_open_action_for_replan(
+            session,
+            action,
+            current_time,
+            error_code=ALL_ACCOUNT_DAILY_COVERAGE_REPLAN_CODE,
+            message=ALL_ACCOUNT_DAILY_COVERAGE_REPLAN_MESSAGE,
+        )
+        skipped += 1
+    if skipped:
+        stats = dict(task.stats or {})
+        stats["all_account_daily_coverage_replanned_open_action_count"] = int(
+            stats.get("all_account_daily_coverage_replanned_open_action_count") or 0
+        ) + skipped
+        task.stats = stats
+    return skipped
+
+
 def _open_hard_hourly_actions_for_distribution_replan(session: Session, task: Task) -> list[Action]:
     rows = session.scalars(
         select(Action)
@@ -3154,22 +3187,13 @@ def _action_is_hard_hourly_target(action: Action) -> bool:
 
 
 def _skip_distribution_skew_action_for_replan(session: Session, action: Action, current_time: datetime) -> None:
-    payload = action.payload if isinstance(action.payload, dict) else {}
-    action.status = "skipped"
-    action.executed_at = current_time
-    action.lease_owner = ""
-    action.lease_expires_at = None
-    action.claim_owner = ""
-    action.claim_token = ""
-    action.claim_expires_at = None
-    action.result = {"error_code": "hard_hourly_distribution_skew_replan", "message": "硬目标账号分布偏斜，旧规划已跳过等待重新生成"}
-    if memory_id := str(payload.get("ai_message_memory_id") or "").strip():
-        mark_group_ai_message_result(
-            session,
-            memory_id,
-            status="expired_before_send",
-            result={"error_code": "hard_hourly_distribution_skew_replan", "action_id": action.id},
-        )
+    _skip_open_action_for_replan(
+        session,
+        action,
+        current_time,
+        error_code="hard_hourly_distribution_skew_replan",
+        message="硬目标账号分布偏斜，旧规划已跳过等待重新生成",
+    )
 
 
 def _payload_voice_profile_version(payload: dict) -> int:
@@ -3177,6 +3201,23 @@ def _payload_voice_profile_version(payload: dict) -> int:
 
 
 def _skip_profileless_action_for_replan(session: Session, action: Action, current_time: datetime) -> None:
+    _skip_open_action_for_replan(
+        session,
+        action,
+        current_time,
+        error_code="voice_profile_replan",
+        message="账号面具已生效，旧规划已跳过等待重新生成",
+    )
+
+
+def _skip_open_action_for_replan(
+    session: Session,
+    action: Action,
+    current_time: datetime,
+    *,
+    error_code: str,
+    message: str,
+) -> None:
     payload = action.payload if isinstance(action.payload, dict) else {}
     action.status = "skipped"
     action.executed_at = current_time
@@ -3185,13 +3226,13 @@ def _skip_profileless_action_for_replan(session: Session, action: Action, curren
     action.claim_owner = ""
     action.claim_token = ""
     action.claim_expires_at = None
-    action.result = {"error_code": "voice_profile_replan", "message": "账号面具已生效，旧规划已跳过等待重新生成"}
+    action.result = {"error_code": error_code, "message": message}
     if memory_id := str(payload.get("ai_message_memory_id") or "").strip():
         mark_group_ai_message_result(
             session,
             memory_id,
             status="expired_before_send",
-            result={"error_code": "voice_profile_replan", "action_id": action.id},
+            result={"error_code": error_code, "action_id": action.id},
         )
 
 

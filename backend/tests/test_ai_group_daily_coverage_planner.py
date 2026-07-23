@@ -28,6 +28,7 @@ from app.services.task_center.executors.group_ai_chat import (
     _account_shortage_reason,
     _canonicalized_task_config,
     _online_ready_accounts,
+    _skip_legacy_hard_hourly_open_actions_for_daily_coverage_replan,
     requires_planning_with_open_actions,
     _select_accounts_for_plan,
 )
@@ -200,6 +201,43 @@ def test_planner_normalizes_legacy_all_account_coverage_config(session: Session)
     assert task.type_config["account_coverage_mode"] == "all_accounts_daily"
     assert config["rule_set_id"]
     assert task.type_config["rule_set_id"] == config["rule_set_id"]
+
+def test_daily_coverage_replan_skips_legacy_hard_hourly_open_actions(session: Session) -> None:
+    task, _group = _seed(session)
+    legacy = Action(
+        id="legacy-hard-hourly",
+        tenant_id=task.tenant_id,
+        task_id=task.id,
+        task_type=task.type,
+        action_type="send_message",
+        account_id=1,
+        status="pending",
+        payload={"hard_hourly_target": True},
+    )
+    ledger_backed = Action(
+        id="ledger-backed-hard-hourly",
+        tenant_id=task.tenant_id,
+        task_id=task.id,
+        task_type=task.type,
+        action_type="send_message",
+        account_id=2,
+        status="pending",
+        payload={"hard_hourly_target": True, "coverage_ledger_id": "coverage-2"},
+    )
+    session.add_all([legacy, ledger_backed])
+    session.flush()
+
+    skipped = _skip_legacy_hard_hourly_open_actions_for_daily_coverage_replan(
+        session,
+        task,
+        task.type_config,
+    )
+
+    assert skipped == 1
+    assert legacy.status == "skipped"
+    assert legacy.result["error_code"] == "all_account_daily_coverage_replan"
+    assert ledger_backed.status == "pending"
+
 
 def test_coverage_plan_state_materializes_scope_once_and_reuses_rows(session: Session, monkeypatch) -> None:
     task, group = _seed(session)
