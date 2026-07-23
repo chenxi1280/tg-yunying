@@ -15,6 +15,7 @@ from app.models import (
     OperationIssue,
     OperationIssueAccount,
     OperationIssueSource,
+    OperationTarget,
     RuleSet,
     RuleSetVersion,
     SchedulingSetting,
@@ -499,6 +500,7 @@ def _cleanup() -> None:
         session.execute(delete(TaskAccountDailyCoverage).where(TaskAccountDailyCoverage.tenant_id.in_(tenant_ids)))
         session.execute(delete(TaskDailyCoveragePlanCursor).where(TaskDailyCoveragePlanCursor.tenant_id.in_(tenant_ids)))
         session.execute(delete(TaskMembershipAdmissionItem).where(TaskMembershipAdmissionItem.tenant_id.in_(tenant_ids)))
+        session.execute(delete(OperationTarget).where(OperationTarget.tenant_id.in_(tenant_ids)))
         session.execute(delete(TaskRuntimeSummary).where(TaskRuntimeSummary.tenant_id.in_(tenant_ids)))
         session.execute(delete(Action).where(Action.tenant_id.in_(tenant_ids)))
         session.execute(delete(AiAccountVoiceProfile).where(AiAccountVoiceProfile.tenant_id.in_(tenant_ids)))
