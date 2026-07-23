@@ -369,7 +369,12 @@ def test_release_backfill_only_confirms_success_with_remote_message_id() -> None
             phase="completed",
         ))
         session.flush()
-        ensure_task_daily_coverage(session, task, now=datetime(2026, 7, 10, 10))
+        ensure_task_daily_coverage(
+            session,
+            task,
+            now=datetime(2026, 7, 10, 10),
+            account_ids=[account.id],
+        )
         action = Action(
             id="backfill-success",
             tenant_id=1,
