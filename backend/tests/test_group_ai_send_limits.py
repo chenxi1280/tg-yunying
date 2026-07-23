@@ -146,9 +146,18 @@ def _dispatch_current_action(session: Session, monkeypatch: pytest.MonkeyPatch) 
 def test_group_ai_send_respects_group_daily_limit(monkeypatch: pytest.MonkeyPatch) -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
+    now_value = datetime(2026, 7, 22, 12, 0)
+    monkeypatch.setattr(dispatcher, "_now", lambda: now_value)
+    monkeypatch.setattr(group_send_limits, "_now", lambda: now_value)
+    monkeypatch.setattr(dispatcher, "_group_ai_account_online_ready", lambda *_args: True)
 
     with Session(engine) as session:
-        _seed_send_scope(session, daily_limit=1, group_cooldown_seconds=0)
+        _seed_send_scope(
+            session,
+            daily_limit=1,
+            group_cooldown_seconds=0,
+            now_value=now_value,
+        )
 
         action = _dispatch_current_action(session, monkeypatch)
 
@@ -204,9 +213,18 @@ def test_group_ai_send_waits_for_configured_active_window(monkeypatch: pytest.Mo
 def test_group_ai_send_counts_legacy_group_sends(monkeypatch: pytest.MonkeyPatch) -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
+    now_value = datetime(2026, 7, 22, 12, 0)
+    monkeypatch.setattr(dispatcher, "_now", lambda: now_value)
+    monkeypatch.setattr(group_send_limits, "_now", lambda: now_value)
+    monkeypatch.setattr(dispatcher, "_group_ai_account_online_ready", lambda *_args: True)
 
     with Session(engine) as session:
-        _seed_send_scope(session, daily_limit=2, group_cooldown_seconds=0)
+        _seed_send_scope(
+            session,
+            daily_limit=2,
+            group_cooldown_seconds=0,
+            now_value=now_value,
+        )
         session.add(MessageTask(
             tenant_id=1,
             group_id=7,
@@ -214,7 +232,7 @@ def test_group_ai_send_counts_legacy_group_sends(monkeypatch: pytest.MonkeyPatch
             content="旧消息发送已成功",
             target_type="group",
             status=TaskStatus.SENT.value,
-            sent_at=_now(),
+            sent_at=now_value,
             idempotency_key="legacy-group-send-limit",
         ))
         session.commit()
