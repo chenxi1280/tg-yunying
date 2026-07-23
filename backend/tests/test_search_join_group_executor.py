@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
@@ -41,6 +41,7 @@ from app.services.task_center.executors import search_join_group as search_join_
 from app.services.task_center.stats import next_run_after_task
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+MAX_REPEAT_SOURCE_ACTION_SELECTS = 120
 
 
 @pytest.fixture
@@ -1387,6 +1388,56 @@ def test_search_join_planner_defers_repeat_sources_to_global_account_capacity(
         fixed_now + timedelta(seconds=180),
         fixed_now + timedelta(seconds=360),
     ]
+
+
+@pytest.mark.no_postgres
+def test_search_join_repeat_plan_reuses_capacity_cache(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixed_now = datetime(2026, 7, 23, 10, 0, 0)
+    monkeypatch.setattr(search_join_executor, "_now", lambda: fixed_now)
+    _bind_search_join_environment(session, [101])
+    session.add(
+        SchedulingSetting(
+            tenant_id=1,
+            jitter_min_seconds=0,
+            jitter_max_seconds=0,
+            default_account_cooldown_seconds=180,
+        )
+    )
+    task = _task(
+        account_config={"selection_mode": "manual", "account_ids": [101], "max_concurrent": 1},
+        type_config={
+            "daily_click_target_count": 20,
+            "daily_target_count": 1,
+            "allow_same_account_repeat_application": True,
+            "actions_per_round": 20,
+            "max_actions_per_hour": 20,
+            "hourly_min_successful_joins": 20,
+        },
+        pacing_config={"max_actions_per_day": 20, "hourly_jitter_percent": 0, "daily_jitter_percent": 0},
+    )
+    session.add(task)
+    session.commit()
+
+    action_selects: list[str] = []
+    engine = session.get_bind()
+
+    def record_action_selects(_, __, statement, ___, ____, _____) -> None:
+        normalized = statement.upper()
+        if statement.lstrip().upper().startswith("SELECT") and ("FROM ACTIONS" in normalized or "FROM MESSAGE_TASKS" in normalized):
+            action_selects.append(statement)
+
+    event.listen(engine, "before_cursor_execute", record_action_selects)
+    try:
+        assert build_task_plan(session, task) == 20
+    finally:
+        event.remove(engine, "before_cursor_execute", record_action_selects)
+
+    actions = list(session.scalars(select(Action).where(Action.task_id == task.id, Action.action_type == "search_join")))
+    assert len(actions) == 20
+    assert len(action_selects) <= MAX_REPEAT_SOURCE_ACTION_SELECTS
 
 
 @pytest.mark.no_postgres

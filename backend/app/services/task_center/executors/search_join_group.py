@@ -10,7 +10,14 @@ from app.admin_chats import send_admin_chat_broadcast
 from app.models import Action, BotProtocolSample, OperationTarget, Task, Tenant, TgAccount, TgAccountAuthorization
 from app.search_keywords import repair_legacy_keyword_materials
 from app.security import decrypt_secret
-from app.services.account_capacity import account_capacity_decision
+from app.services.account_capacity import (
+    ACTION_OCCUPIED_STATUSES,
+    MESSAGE_TASK_OCCUPIED_STATUSES,
+    AccountCapacityCache,
+    AccountCapacityReservation,
+    account_capacity_decision,
+)
+from app.services.account_capacity_bulk import capacity_setting, prime_capacity_cache
 from app.services.client_metadata import SearchJoinEnvironment, ensure_search_join_environment
 from app.services._common import _now, audit
 from app.services.notifications import NotificationResult, send_telegram_bot_message
@@ -52,6 +59,15 @@ class BehaviorSkipLookup:
     account_id: int
     keyword_hash: str
     scheduled_at: datetime | None
+
+
+@dataclass
+class CapacityPlan:
+    tenant_id: int
+    scheduled_end: datetime | None
+    account_ids: list[int]
+    cache: AccountCapacityCache
+    reservations: list[AccountCapacityReservation]
 
 
 def build_plan(session: Session, task: Task) -> int:
@@ -119,6 +135,7 @@ def build_plan(session: Session, task: Task) -> int:
         plan_count,
         allow_repeat=bool((task.type_config or {}).get("allow_same_account_repeat_application")),
     )
+    capacity_plan = _capacity_plan(task, planning_accounts)
     candidate_offset = pacing_stats.task_daily_action_count
     for candidate_index, account in enumerate(planning_accounts, start=candidate_offset):
         if not account_base_allowed(session, task, account.id, window, pacing_stats):
@@ -136,7 +153,7 @@ def build_plan(session: Session, task: Task) -> int:
             account=account,
             environment=environment,
         ))
-        action_created, blocker = _create_planned_action(
+        action_created, blocker, reserved_at = _create_planned_action(
             session,
             task,
             account,
@@ -144,12 +161,15 @@ def build_plan(session: Session, task: Task) -> int:
             keyword_hash,
             window,
             config,
+            capacity_plan,
             candidate_index=candidate_index,
         )
         if blocker:
             _count_blocker(blockers, blocker)
         if action_created:
             created += 1
+        if reserved_at:
+            capacity_plan.reservations.append(AccountCapacityReservation(account_id=account.id, scheduled_at=reserved_at))
         if created >= plan_count:
             break
     if created <= 0:
@@ -170,6 +190,32 @@ def _planning_accounts(accounts: list[TgAccount], plan_count: int, *, allow_repe
     if not allow_repeat or len(accounts) >= plan_count:
         return accounts
     return [accounts[index % len(accounts)] for index in range(plan_count)]
+
+
+def _capacity_plan(task: Task, accounts: list[TgAccount]) -> CapacityPlan:
+    return CapacityPlan(
+        tenant_id=task.tenant_id,
+        scheduled_end=task.scheduled_end,
+        account_ids=list(dict.fromkeys(account.id for account in accounts)),
+        cache=AccountCapacityCache(),
+        reservations=[],
+    )
+
+
+def _prime_capacity_plan(session: Session, capacity_plan: CapacityPlan, scheduled_at: datetime) -> None:
+    cache = capacity_plan.cache
+    prime_capacity_cache(
+        session,
+        tenant_id=capacity_plan.tenant_id,
+        account_ids=capacity_plan.account_ids,
+        scheduled_at=scheduled_at,
+        setting=capacity_setting(session, capacity_plan.tenant_id, cache),
+        exclude_action_ids=set(),
+        exclude_message_task_id=None,
+        action_statuses=ACTION_OCCUPIED_STATUSES,
+        message_statuses=MESSAGE_TASK_OCCUPIED_STATUSES,
+        cache=cache,
+    )
 
 
 def _lock_task_for_planning(session: Session, task: Task) -> None:
@@ -196,9 +242,10 @@ def _create_planned_action(
     keyword_hash: str,
     window,
     config: dict,
+    capacity_plan: CapacityPlan,
     *,
     candidate_index: int,
-) -> tuple[bool, str]:
+) -> tuple[bool, str, datetime | None]:
     candidate_key = f"{window.local_date.isoformat()}:{account.id}:{keyword_hash}:{payload.hourly_execution.get('bucket', '')}:{candidate_index}"
     decision = planned_action_decision(
         session,
@@ -214,50 +261,58 @@ def _create_planned_action(
     )
     scheduled_at = _scheduled_before_task_deadline(task, decision.scheduled_at or _now(), _now())
     if scheduled_at is None:
-        return False, "scheduled_end_reached"
+        return False, "scheduled_end_reached", None
     if not decision.decision_value.get("skipped"):
-        scheduled_at = _next_account_capacity_slot(session, task, account.id, scheduled_at)
+        scheduled_at = _next_account_capacity_slot(session, account.id, scheduled_at, capacity_plan)
         if scheduled_at is None:
-            return False, "scheduled_end_reached"
+            return False, "scheduled_end_reached", None
     if quiet_hours_active(scheduled_at, config, timezone_name=task.timezone):
-        return False, "quiet_hours_active"
+        return False, "quiet_hours_active", None
     if not hourly_action_allowed(session, task, scheduled_at, max_actions_per_hour=int(config.get("max_actions_per_hour") or 0)):
-        return False, "task_hourly_limit_reached"
+        return False, "task_hourly_limit_reached", None
     decision.scheduled_at = scheduled_at
     if not decision.decision_value.get("skipped"):
         create_search_join_action(session, task, account.id, scheduled_at, payload)
-        return True, ""
+        return True, "", scheduled_at
     lookup = BehaviorSkipLookup(task, account.id, keyword_hash, decision.scheduled_at)
     if _existing_behavior_skip_action(session, lookup):
-        return True, ""
+        return True, "", None
     action = create_search_join_action(session, task, account.id, scheduled_at, payload)
     action.status = "skipped"
     action.executed_at = _now()
     action.result = {"success": False, "skip_reason": "skipped_by_behavior_pacing"}
-    return True, ""
+    return True, "", None
 
 
-def _next_account_capacity_slot(session: Session, task: Task, account_id: int, scheduled_at: datetime) -> datetime | None:
+def _next_account_capacity_slot(
+    session: Session,
+    account_id: int,
+    scheduled_at: datetime,
+    capacity_plan: CapacityPlan,
+) -> datetime | None:
     cursor = scheduled_at
     while True:
+        _prime_capacity_plan(session, capacity_plan, cursor)
         decision = account_capacity_decision(
             session,
-            tenant_id=task.tenant_id,
+            tenant_id=capacity_plan.tenant_id,
             account_id=account_id,
             scheduled_at=cursor,
+            reservations=capacity_plan.reservations,
+            cache=capacity_plan.cache,
         )
         if decision.available:
             return cursor
         deferred_at = decision.defer_until
         if deferred_at is None or deferred_at <= cursor:
             raise RuntimeError(f"search_join account capacity did not advance account_id={account_id}")
-        if not _before_task_deadline(task, deferred_at):
+        if not _before_task_deadline(capacity_plan.scheduled_end, deferred_at):
             return None
         cursor = deferred_at
 
 
-def _before_task_deadline(task: Task, scheduled_at: datetime) -> bool:
-    deadline = as_beijing(task.scheduled_end)
+def _before_task_deadline(scheduled_end: datetime | None, scheduled_at: datetime) -> bool:
+    deadline = as_beijing(scheduled_end)
     return deadline is None or scheduled_at < deadline
 
 
