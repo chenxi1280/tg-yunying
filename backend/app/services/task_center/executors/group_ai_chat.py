@@ -33,7 +33,12 @@ from ..ai_message_memory import mark_group_ai_message_result, reserve_group_ai_m
 from ..account_voice_profiles import group_stance_summaries, voice_profile_prompt_details
 from ..channel_membership import gate_channel_membership
 from ..config_normalization import normalize_operation_target_references
-from ..coverage_capacity import reserved_coverage_message_count, task_coverage_capacity_proof
+from ..coverage_capacity import (
+    HARD_HOURLY_GROUP_COOLDOWN_BLOCKED_MESSAGE,
+    hard_hourly_group_cooldown_proof,
+    reserved_coverage_message_count,
+    task_coverage_capacity_proof,
+)
 from ..daily_coverage import (
     backfill_daily_coverage_confirmations,
     block_coverage_accounts,
@@ -295,6 +300,8 @@ def _load_plan_facts(session: Session, task: Task) -> PlanFacts | PlanAbort:
     group = _resolve_plan_group(session, task, config, progress=progress)
     if isinstance(group, PlanAbort):
         return group
+    if _hard_hourly_group_cooldown_blocker(task, group, progress):
+        return PlanAbort()
     coverage = _coverage_plan_state(session, task, group, config, progress)
     _record_daily_coverage_next_check(task, coverage.due_debt > 0)
     if _coverage_capacity_blocker(
@@ -1456,6 +1463,41 @@ def _daily_coverage_account_options(config: dict) -> dict[str, object]:
 
 def _all_accounts_daily_coverage(config: dict) -> bool:
     return config.get("account_coverage_mode") == "all_accounts_daily"
+
+
+def _hard_hourly_group_cooldown_blocker(
+    task: Task,
+    group: TgGroup,
+    progress: dict[str, object],
+) -> dict[str, object]:
+    if not progress:
+        _clear_hard_hourly_group_cooldown_blocker(task)
+        return {}
+    proof = hard_hourly_group_cooldown_proof(
+        group=group,
+        hourly_target=int(progress.get("goal") or 0),
+        required_hourly_messages=int(progress.get("deficit") or 0),
+    )
+    if proof["sufficient"]:
+        _clear_hard_hourly_group_cooldown_blocker(task)
+        return {}
+    task.stats = {
+        **(task.stats or {}),
+        "hard_hourly_capacity_status": "blocked",
+        "hard_hourly_capacity_proof": proof,
+    }
+    task.last_error = HARD_HOURLY_GROUP_COOLDOWN_BLOCKED_MESSAGE
+    _mark_hard_blocked(task, progress, str(proof["blocker_code"]))
+    return proof
+
+
+def _clear_hard_hourly_group_cooldown_blocker(task: Task) -> None:
+    stats = dict(task.stats or {})
+    stats.pop("hard_hourly_capacity_status", None)
+    stats.pop("hard_hourly_capacity_proof", None)
+    task.stats = stats
+    if task.last_error == HARD_HOURLY_GROUP_COOLDOWN_BLOCKED_MESSAGE:
+        task.last_error = ""
 
 
 def _coverage_capacity_blocker(

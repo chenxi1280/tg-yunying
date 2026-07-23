@@ -16,7 +16,13 @@ from .ai_limits import recommend_ai_limits
 from .account_scope import eligible_account_ids
 from .channel_membership import channel_membership_summary
 from .config_fields import COMMON_CREATE_FIELDS, TASK_CREATE_MODELS
-from .coverage_capacity import coverage_capacity_proof, daily_task_schedule_capacity
+from .config_normalization import apply_group_ai_account_coverage_defaults
+from .coverage_capacity import (
+    HARD_HOURLY_GROUP_COOLDOWN_BLOCKER_CODE,
+    coverage_capacity_proof,
+    daily_task_schedule_capacity,
+    hard_hourly_group_cooldown_proof,
+)
 from .pacing import current_hour_rounds
 from .utils import as_int as _as_int, as_int_list as _as_int_list, as_str_list as _as_str_list
 
@@ -52,13 +58,16 @@ def run_precheck_task_creation(
     membership_summary: dict[str, Any] = {}
     capacity_summary: dict[str, Any] = {}
     type_config: dict[str, Any] = {}
+    account_config: dict[str, Any] = {}
     estimated_actions = 0
     capacity_shortfall = 0
     try:
         create_payload = model(**(payload.payload or {}))
+        account_config = create_payload.account_config.model_dump(mode="json")
         raw_config = create_payload.model_dump(mode="json", exclude=COMMON_CREATE_FIELDS, exclude_unset=True)
         normalized_config = normalize_operation_target_references(session, tenant_id, task_type, raw_config)
         type_config = validated_type_config(task_type, normalized_config)
+        type_config = apply_group_ai_account_coverage_defaults(task_type, type_config, account_config)
         target_resolution = _precheck_target_resolution(session, tenant_id, task_type, raw_config, type_config)
         validate_rule_binding(session, tenant_id, type_config)
         rule_version = _precheck_rule_version(session, tenant_id, type_config)
@@ -71,7 +80,8 @@ def run_precheck_task_creation(
         target_ids = []
         target_per_unit = 1
 
-    account_config = create_payload.account_config.model_dump(mode="json") if create_payload else dict((payload.payload or {}).get("account_config") or {})
+    if not account_config:
+        account_config = dict((payload.payload or {}).get("account_config") or {})
     candidates = _precheck_candidate_accounts(session, tenant_id, account_config)
     if task_type in {"channel_view", "channel_like", "channel_comment", "group_ai_chat", "group_relay"} and target_ability:
         membership_summary = _precheck_membership_summary(session, tenant_id, target_ability, account_config, type_config, candidates)
@@ -121,8 +131,17 @@ def run_precheck_task_creation(
         if int(reply_reference_summary.get("shortfall_count") or 0):
             warnings.append(str(reply_reference_summary.get("warning") or "引用回复对象不足"))
     ai_round_summary = _precheck_ai_round_summary(task_type, create_payload, membership_summary, available_count)
-    hard_hourly_target = _precheck_hard_hourly_target(task_type, create_payload, ai_round_summary)
+    hard_hourly_target = _precheck_hard_hourly_target(
+        session,
+        tenant_id,
+        task_type,
+        create_payload,
+        ai_round_summary,
+        type_config,
+    )
     warnings.extend(_as_str_list(hard_hourly_target.get("warnings") if hard_hourly_target else []))
+    if hard_hourly_target.get("group_cooldown_blocked"):
+        blockers.append(HARD_HOURLY_GROUP_COOLDOWN_BLOCKER_CODE)
     capacity_summary["recommended_limits"] = recommend_ai_limits(
         task_type,
         _precheck_ready_account_count(task_type, membership_summary, available_count),
@@ -264,7 +283,14 @@ def _is_all_account_daily_coverage(task_type: str, create_payload: Any, type_con
     return selection_mode == "all" and coverage_mode == "all_accounts_daily"
 
 
-def _precheck_hard_hourly_target(task_type: str, create_payload: Any, ai_round_summary: dict[str, Any]) -> dict[str, Any]:
+def _precheck_hard_hourly_target(
+    session: Session,
+    tenant_id: int,
+    task_type: str,
+    create_payload: Any,
+    ai_round_summary: dict[str, Any],
+    type_config: dict[str, Any],
+) -> dict[str, Any]:
     if task_type != "group_ai_chat" or not create_payload:
         return {}
     enabled = bool(getattr(create_payload, "hard_hourly_target_enabled", False))
@@ -272,7 +298,7 @@ def _precheck_hard_hourly_target(task_type: str, create_payload: Any, ai_round_s
     capacity = int(ai_round_summary.get("estimated_hourly_capacity") or 0)
     gap = max(0, minimum - capacity) if enabled else 0
     warnings = ["硬目标高于当前账号容量，可能持续未达标"] if gap else []
-    return {
+    result = {
         "enabled": enabled,
         "hourly_min_messages": minimum,
         "estimated_hourly_capacity": capacity,
@@ -280,6 +306,34 @@ def _precheck_hard_hourly_target(task_type: str, create_payload: Any, ai_round_s
         "hard_target_over_capacity": gap > 0,
         "warnings": warnings,
     }
+    group = _precheck_hard_hourly_group(session, tenant_id, type_config)
+    if not enabled or group is None:
+        return result
+    cooldown_proof = hard_hourly_group_cooldown_proof(group=group, hourly_target=minimum)
+    cooldown_blocked = not bool(cooldown_proof["sufficient"])
+    if cooldown_blocked:
+        warnings.append("硬目标高于群冷却小时容量，无法在任一小时完成")
+    return {
+        **result,
+        "hard_target_over_capacity": bool(result["hard_target_over_capacity"] or cooldown_blocked),
+        "group_cooldown_capacity": cooldown_proof,
+        "group_cooldown_blocked": cooldown_blocked,
+    }
+
+
+def _precheck_hard_hourly_group(session: Session, tenant_id: int, type_config: dict[str, Any]) -> TgGroup | None:
+    group_id = _as_int(type_config.get("target_group_id"))
+    group = session.get(TgGroup, group_id) if group_id else None
+    if group and group.tenant_id == tenant_id:
+        return group
+    target_id = _as_int(type_config.get("target_operation_target_id"))
+    target = session.get(OperationTarget, target_id) if target_id else None
+    if not target or target.tenant_id != tenant_id:
+        return None
+    return session.scalar(select(TgGroup).where(
+        TgGroup.tenant_id == tenant_id,
+        TgGroup.tg_peer_id == target.tg_peer_id,
+    ))
 
 
 def _precheck_capacity_summary(

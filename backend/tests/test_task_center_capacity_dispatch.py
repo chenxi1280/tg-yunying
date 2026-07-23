@@ -429,6 +429,40 @@ def test_claim_actions_skips_past_execution_date_channel_action_before_account_p
 
 
 @pytest.mark.no_postgres
+def test_claim_actions_preserves_undated_like_action() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        session.add_all(
+            [
+                Tenant(id=1, name="默认运营空间"),
+                TgAccount(id=11, tenant_id=1, display_name="点赞账号", phone_masked="+195***0011", status="在线"),
+                Task(id="task-undated-like", tenant_id=1, name="历史点赞", type="channel_like", status="running"),
+                Action(
+                    id="undated-like",
+                    tenant_id=1,
+                    task_id="task-undated-like",
+                    task_type="channel_like",
+                    action_type="like_message",
+                    account_id=11,
+                    status="pending",
+                    scheduled_at=now_value - timedelta(minutes=1),
+                    payload={"channel_id": "-1001", "message_id": 1, "reaction_emoji": "👍"},
+                ),
+            ]
+        )
+        session.commit()
+
+        claimed = claim_actions(session, limit=1, worker_id="worker-test")
+
+        assert [action.id for action in claimed] == ["undated-like"]
+        assert session.get(Action, "undated-like").status == "executing"
+        dispatcher._release_runtime_resources(session.get(Action, "undated-like"))
+
+
+@pytest.mark.no_postgres
 def test_claim_actions_sweeps_stale_channel_actions_before_claiming_fresh_work() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -476,6 +510,71 @@ def test_claim_actions_sweeps_stale_channel_actions_before_claiming_fresh_work()
         assert stale.status == "skipped"
         assert stale.result["error_code"] == "stale_channel_daily_action"
         dispatcher._release_runtime_resources(session.get(Action, "fresh-send"))
+
+
+@pytest.mark.no_postgres
+def test_recovery_skips_hard_hourly_actions_that_exceed_group_cooldown_capacity() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        session.add_all(
+            [
+                Tenant(id=1, name="默认运营空间"),
+                TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="冷却不足群", group_cooldown_seconds=60),
+                TgGroup(id=8, tenant_id=1, tg_peer_id="-1008", title="冷却可达群", group_cooldown_seconds=60),
+                Task(
+                    id="hard-hourly-unreachable",
+                    tenant_id=1,
+                    name="历史欠量超过冷却容量",
+                    type="group_ai_chat",
+                    status="running",
+                    type_config={"target_group_id": 7, "hard_hourly_target_enabled": True, "hourly_min_messages": 10},
+                ),
+                Task(
+                    id="hard-hourly-reachable",
+                    tenant_id=1,
+                    name="群冷却可完成",
+                    type="group_ai_chat",
+                    status="running",
+                    type_config={"target_group_id": 8, "hard_hourly_target_enabled": True, "hourly_min_messages": 10},
+                ),
+                Action(
+                    id="hard-hourly-unreachable-action",
+                    tenant_id=1,
+                    task_id="hard-hourly-unreachable",
+                    task_type="group_ai_chat",
+                    action_type="send_message",
+                    status="pending",
+                    scheduled_at=now_value,
+                    payload={"hard_hourly_target": True, "hard_hourly_deficit_at_plan": 71},
+                ),
+                Action(
+                    id="hard-hourly-reachable-action",
+                    tenant_id=1,
+                    task_id="hard-hourly-reachable",
+                    task_type="group_ai_chat",
+                    action_type="send_message",
+                    status="pending",
+                    scheduled_at=now_value,
+                    payload={"hard_hourly_target": True, "hard_hourly_deficit_at_plan": 60},
+                ),
+            ]
+        )
+        session.commit()
+
+        assert dispatcher.recover_unreachable_hard_hourly_actions(session, limit=10) == 1
+
+        blocked = session.get(Action, "hard-hourly-unreachable-action")
+        preserved = session.get(Action, "hard-hourly-reachable-action")
+        task = session.get(Task, "hard-hourly-unreachable")
+
+        assert blocked.status == "skipped"
+        assert blocked.result["error_code"] == "hard_hourly_group_cooldown_insufficient"
+        assert blocked.result["hard_hourly_capacity_proof"]["required_hourly_messages"] == 71
+        assert task.last_error == "硬小时目标超过群冷却容量，已停止创建会过期的 Action"
+        assert preserved.status == "pending"
 
 
 @pytest.mark.no_postgres

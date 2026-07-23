@@ -13,7 +13,7 @@ from app.models import AccountPool, Task, TaskAccountDailyCoverage, Tenant, TgAc
 from app.schemas.task_center import GroupAIChatTaskCreate, TaskAccountCoverageItemOut
 from app.security import encrypt_session
 from app.services.task_center.account_coverage import list_task_account_coverage_page, task_account_coverage
-from app.services.task_center.coverage_capacity import coverage_capacity_proof
+from app.services.task_center.coverage_capacity import coverage_capacity_proof, hard_hourly_group_cooldown_proof
 from app.services.task_center.precheck import _daily_coverage_capacity_check
 from app.timezone import beijing_now
 
@@ -110,6 +110,24 @@ def test_capacity_proof_blocks_when_remaining_group_cooldown_slots_cannot_finish
     assert proof["sufficient"] is False
     assert "group_cooldown" in proof["blockers"]
     assert proof["capacity_gap"] == 189
+
+
+def test_hard_hourly_group_cooldown_proof_blocks_unreachable_target() -> None:
+    group = TgGroup(
+        id=21,
+        tenant_id=1,
+        tg_peer_id="-10021",
+        title="目标群",
+        group_cooldown_seconds=60,
+    )
+
+    proof = hard_hourly_group_cooldown_proof(group=group, hourly_target=120)
+
+    assert proof["group_cooldown_hourly_capacity"] == 60
+    assert proof["sufficient"] is False
+    assert proof["capacity_gap"] == 60
+    assert proof["recommended_max_group_cooldown_seconds"] == 30
+    assert proof["blocker_code"] == "hard_hourly_group_cooldown_insufficient"
 
 
 def test_capacity_proof_does_not_require_confirmed_messages_twice() -> None:

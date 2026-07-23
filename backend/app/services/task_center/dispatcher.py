@@ -60,6 +60,11 @@ from .ai_generator import (
 )
 from .ai_message_memory import DuplicateMessageReservation, ensure_group_ai_message_sendable, mark_group_ai_message_result
 from .channel_membership import account_satisfies_authorized_target, linked_channel_group, mark_channel_membership_joined
+from .coverage_capacity import (
+    HARD_HOURLY_GROUP_COOLDOWN_BLOCKED_MESSAGE,
+    HARD_HOURLY_GROUP_COOLDOWN_BLOCKER_CODE,
+    hard_hourly_group_cooldown_proof,
+)
 from .daily_coverage import confirm_coverage_from_attempt, ensure_task_daily_coverage, mark_coverage_unknown, release_coverage_reservation
 from .executors.common import quantity_jitter_bounds
 from .executors.channel_comment_budget import (
@@ -107,7 +112,7 @@ _COMMENT_THREAD_SKIP_CODES = {
 _REACTION_UNAVAILABLE_SKIP_CODE = "reaction_unavailable_sibling"
 _COMMENT_MEMBERSHIP_RETRY_DELAY = timedelta(minutes=5)
 DISPATCHER_DB_ERROR_RETRY_DELAY_SECONDS = 10
-CHANNEL_DAILY_ACTION_TYPES = {"view_message", "like_message"}
+CHANNEL_DAILY_ACTION_TYPES = {"view_message"}
 
 
 class _SearchClickGatewayBlocked(Exception):
@@ -943,6 +948,73 @@ def recover_expired_hard_hourly_actions(session: Session, limit: int = 100) -> i
         _skip(action, "hard_hourly_bucket_expired", "硬目标小时窗口已结束，过期补量已跳过")
         recovered += 1
     return recovered
+
+
+def recover_unreachable_hard_hourly_actions(session: Session, limit: int = 100) -> int:
+    rows = list(
+        session.scalars(
+            select(Action)
+            .where(
+                Action.task_type == "group_ai_chat",
+                Action.action_type == "send_message",
+                Action.status.in_(["pending", "claiming"]),
+                Action.payload["hard_hourly_target"].as_boolean().is_(True),
+            )
+            .order_by(Action.scheduled_at.asc(), Action.created_at.asc())
+            .limit(max(1, int(limit or 100)))
+        )
+    )
+    return sum(_skip_unreachable_hard_hourly_action(session, action) for action in rows)
+
+
+def _skip_unreachable_hard_hourly_action(session: Session, action: Action) -> bool:
+    task = session.get(Task, action.task_id)
+    if not task or not bool((task.type_config or {}).get("hard_hourly_target_enabled")):
+        return False
+    group = _hard_hourly_action_group(session, task)
+    if group is None:
+        return False
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    hourly_target = int((task.type_config or {}).get("hourly_min_messages") or 0)
+    required = max(hourly_target, int(payload.get("hard_hourly_deficit_at_plan") or 0))
+    proof = hard_hourly_group_cooldown_proof(
+        group=group,
+        hourly_target=hourly_target,
+        required_hourly_messages=required,
+    )
+    if proof["sufficient"]:
+        return False
+    _skip(action, HARD_HOURLY_GROUP_COOLDOWN_BLOCKER_CODE, "硬小时目标超过群冷却容量，旧 Action 已跳过")
+    action.result = {**action.result, "hard_hourly_capacity_proof": proof}
+    _mark_hard_hourly_group_cooldown_block(task, proof)
+    return True
+
+
+def _hard_hourly_action_group(session: Session, task: Task) -> TgGroup | None:
+    config = task.type_config or {}
+    group_id = int(config.get("target_group_id") or 0)
+    group = session.get(TgGroup, group_id) if group_id else None
+    if group and group.tenant_id == task.tenant_id:
+        return group
+    target_id = int(config.get("target_operation_target_id") or 0)
+    target = session.get(OperationTarget, target_id) if target_id else None
+    if not target or target.tenant_id != task.tenant_id:
+        return None
+    return session.scalar(
+        select(TgGroup).where(
+            TgGroup.tenant_id == task.tenant_id,
+            TgGroup.tg_peer_id == target.tg_peer_id,
+        )
+    )
+
+
+def _mark_hard_hourly_group_cooldown_block(task: Task, proof: dict[str, object]) -> None:
+    task.stats = {
+        **(task.stats or {}),
+        "hard_hourly_capacity_status": "blocked",
+        "hard_hourly_capacity_proof": proof,
+    }
+    task.last_error = HARD_HOURLY_GROUP_COOLDOWN_BLOCKED_MESSAGE
 
 
 def _confirm_claim(
@@ -5543,4 +5615,11 @@ def _set_membership_coverage_blocker(
         row.updated_at = _now()
 
 
-__all__ = ["claim_actions", "dispatch_action", "due_actions", "recover_expired_claims", "recover_expired_hard_hourly_actions"]
+__all__ = [
+    "claim_actions",
+    "dispatch_action",
+    "due_actions",
+    "recover_expired_claims",
+    "recover_expired_hard_hourly_actions",
+    "recover_unreachable_hard_hourly_actions",
+]

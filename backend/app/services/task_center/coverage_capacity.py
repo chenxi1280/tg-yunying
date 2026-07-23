@@ -15,6 +15,9 @@ from .daily_coverage_schedule import active_window_bounds
 OCCUPIED_ACTION_STATUSES = ("pending", "claiming", "executing", "success", "unknown_after_send")
 RESERVED_COVERAGE_STATES = {"reserved", "sending", "unknown"}
 PENDING_ACTION_STATUSES = ("pending", "claiming", "executing")
+HARD_HOURLY_WINDOW_SECONDS = 60 * 60
+HARD_HOURLY_GROUP_COOLDOWN_BLOCKER_CODE = "hard_hourly_group_cooldown_insufficient"
+HARD_HOURLY_GROUP_COOLDOWN_BLOCKED_MESSAGE = "硬小时目标超过群冷却容量，已停止创建会过期的 Action"
 
 
 def coverage_capacity_proof(
@@ -79,6 +82,30 @@ def coverage_capacity_proof(
         "sufficient": not blockers,
         "blockers": blockers,
         "blocker_code": "" if not blockers else "daily_coverage_capacity_insufficient",
+    }
+
+
+def hard_hourly_group_cooldown_proof(
+    *,
+    group: TgGroup,
+    hourly_target: int,
+    required_hourly_messages: int | None = None,
+) -> dict[str, object]:
+    target = max(0, int(hourly_target or 0))
+    required = max(target, int(required_hourly_messages or 0))
+    cooldown = max(0, int(group.group_cooldown_seconds or 0))
+    capacity = _hard_hourly_cooldown_capacity(cooldown)
+    gap = max(0, required - capacity) if capacity is not None else 0
+    sufficient = capacity is None or capacity >= required
+    return {
+        "hourly_target": target,
+        "required_hourly_messages": required,
+        "group_cooldown_seconds": cooldown,
+        "group_cooldown_hourly_capacity": capacity,
+        "capacity_gap": gap,
+        "recommended_max_group_cooldown_seconds": _recommended_hard_hourly_cooldown(required),
+        "sufficient": sufficient,
+        "blocker_code": "" if sufficient else HARD_HOURLY_GROUP_COOLDOWN_BLOCKER_CODE,
     }
 
 
@@ -376,6 +403,18 @@ def _window_capacity(window_seconds: int, cooldown_seconds: int) -> int | None:
     return max(1, window_seconds // cooldown_seconds + 1)
 
 
+def _hard_hourly_cooldown_capacity(cooldown_seconds: int) -> int | None:
+    if cooldown_seconds <= 0:
+        return None
+    return HARD_HOURLY_WINDOW_SECONDS // cooldown_seconds
+
+
+def _recommended_hard_hourly_cooldown(hourly_target: int) -> int | None:
+    if hourly_target <= 0:
+        return None
+    return max(1, HARD_HOURLY_WINDOW_SECONDS // hourly_target)
+
+
 def _scaled_window_capacity(window_seconds: int, cooldown_seconds: int, multiplier: int) -> int | None:
     capacity = _window_capacity(window_seconds, max(0, int(cooldown_seconds or 0)))
     return capacity * max(0, multiplier) if capacity is not None else None
@@ -384,6 +423,9 @@ def _scaled_window_capacity(window_seconds: int, cooldown_seconds: int, multipli
 __all__ = [
     "coverage_capacity_proof",
     "daily_task_schedule_capacity",
+    "HARD_HOURLY_GROUP_COOLDOWN_BLOCKED_MESSAGE",
+    "HARD_HOURLY_GROUP_COOLDOWN_BLOCKER_CODE",
+    "hard_hourly_group_cooldown_proof",
     "reserved_coverage_message_count",
     "task_coverage_capacity_proof",
 ]

@@ -260,6 +260,7 @@ pending_admission -> admission_running -> ready -> reserved -> sending -> confir
 - 当日目标消息数；
 - 活跃窗口可用秒数；
 - 群冷却允许的理论槽位；
+- 启用硬小时目标时，单小时 `hourly_min_messages`、当前小时规划缺口（含历史补量）与群冷却理论槽位；
 - `max_actions_per_hour` 在活跃窗口内的任务容量；
 - 账号全局小时/日容量和冷却；
 - 群 `daily_limit`；
@@ -272,9 +273,10 @@ group.daily_limit >= 当日目标消息数 + 已保留的普通对话预算
 群冷却理论槽位 >= 当日目标消息数
 任务小时容量总和 >= 当日目标消息数
 账号聚合容量 >= 当日目标消息数
+启用硬小时目标时：floor(3600 / group_cooldown_seconds) >= max(hourly_min_messages, 当前小时规划缺口)（未设置群冷却时不限制）
 ```
 
-系统不得静默提高群日上限或绕过风险配置。容量不足时，预检和任务详情必须展示当前值、最低需要值和差额，并阻止新任务启动；已有运行任务进入显式 `coverage_capacity_blocked` 运行阻塞，不得显示可按时完成。运营人员应用推荐值并保存后才生效，所有调整写审计日志。
+系统不得静默提高群日上限、降低群冷却或绕过风险配置。容量不足时，预检和任务详情必须展示当前值、最低需要值和差额，并阻止新任务启动；已有运行任务进入显式 `coverage_capacity_blocked` 或 `hard_hourly_group_cooldown_insufficient` 运行阻塞，不得显示可按时完成。硬小时目标或当前小时补量超过群冷却单小时槽位时，Planner 不得继续创建必然在 bucket 到期后跳过的 Action；Recovery 必须将遗留的 pending/claiming 硬小时 Action 标记为 `hard_hourly_group_cooldown_insufficient` 并释放覆盖预约，避免继续挤占点赞、浏览或评论调度。运营人员应用推荐值并保存后才生效，所有调整写审计日志。
 
 Telegram 调用前还必须执行最终运行时校验：Dispatcher 在 `TgGroup` 行锁内先核对当前北京时间是否处于 `active_window`，再统计本群已持久化的 `before_call`、`gateway_call_started`、`success`、`result_unknown` 槽位及旧消息发送成功事实；仅在活动时段、群日上限和群冷却均允许时，写入并提交当前 `ExecutionAttempt(before_call)`，随后才可调用 Telegram。活动时段外的 Action 必须延后到下一次群活跃窗口开始；命中群日上限时，Action 必须延后到下一自然日的群活跃窗口开始；命中群冷却时延后到冷却结束。三者都不调用 Telegram，也不得落入通用的一秒重试；覆盖预约和消息记忆继续保留，不能伪造失败或完成。
 

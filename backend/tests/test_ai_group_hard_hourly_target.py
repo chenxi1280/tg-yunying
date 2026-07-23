@@ -1301,6 +1301,63 @@ def test_group_ai_chat_hard_hourly_target_creates_deficit_actions(monkeypatch):
 
 
 @pytest.mark.no_postgres
+def test_group_ai_chat_hard_hourly_target_blocks_when_group_cooldown_cannot_meet_goal(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 7, 20, 10)
+    _forbid_planner_external_work(monkeypatch)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgGroup(
+            id=7,
+            tenant_id=1,
+            tg_peer_id="-1007",
+            title="硬目标群",
+            auth_status="已授权运营",
+            group_cooldown_seconds=60,
+        ))
+        session.add(TgAccount(
+            id=101,
+            tenant_id=1,
+            display_name="账号101",
+            phone_masked="101",
+            status="在线",
+            session_ciphertext="session-101",
+        ))
+        session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=101, can_send=True))
+        task = Task(
+            id="ai-hard-hourly-cooldown-block",
+            tenant_id=1,
+            name="硬目标群冷却冲突",
+            type="group_ai_chat",
+            status="running",
+            account_config={"selection_mode": "all", "max_concurrent": 20, "cooldown_per_account_minutes": 0},
+            type_config={
+                "target_group_id": 7,
+                "messages_per_round_mode": "manual",
+                "messages_per_round": 1,
+                "fact_anchor_required": False,
+                "hard_hourly_target_enabled": True,
+                "hourly_min_messages": 120,
+                "hard_hourly_strategy": "force_planning",
+            },
+        )
+        session.add(task)
+        session.commit()
+
+        created = build_group_ai_chat_plan(session, task)
+        actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
+
+    assert created == 0
+    assert actions == []
+    assert task.last_error == "硬小时目标超过群冷却容量，已停止创建会过期的 Action"
+    assert task.stats["hard_hourly_capacity_status"] == "blocked"
+    assert task.stats["hard_hourly_capacity_proof"]["capacity_gap"] == 60
+
+
+@pytest.mark.no_postgres
 @pytest.mark.parametrize("wait_for_context", [False, True])
 def test_group_ai_chat_all_accounts_daily_coverage_plans_uncovered_accounts_when_reply_targets_are_missing(
     monkeypatch,
@@ -3395,3 +3452,81 @@ def test_precheck_reports_hard_hourly_capacity_without_blocking_on_max_actions(m
         "warnings": ["硬目标高于当前账号容量，可能持续未达标"],
     }
     assert "硬目标高于当前账号容量，可能持续未达标" in result["warnings"]
+
+
+@pytest.mark.no_postgres
+def test_precheck_blocks_hard_hourly_target_above_group_cooldown_capacity(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    risk_result = {
+        "decision": "allow",
+        "decision_reasons": [],
+        "available_accounts": [101, 102, 103],
+        "limited_accounts": [],
+        "blocked_accounts": [],
+        "target_warnings": [],
+        "content_warnings": [],
+        "proxy_warnings": [],
+        "suggested_actions": [],
+        "trace_id": "risk-ok",
+    }
+    monkeypatch.setattr("app.services.task_center.precheck.risk_preflight", lambda *_args, **_kwargs: risk_result)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgGroup(
+            id=7,
+            tenant_id=1,
+            tg_peer_id="-1007",
+            title="硬目标群",
+            auth_status="已授权运营",
+            can_send=True,
+            active_window="00:00-23:59",
+            daily_limit=675,
+            group_cooldown_seconds=60,
+        ))
+        for account_id in [101, 102, 103]:
+            session.add(TgAccount(
+                id=account_id,
+                tenant_id=1,
+                display_name=f"账号{account_id}",
+                phone_masked=str(account_id),
+                status="在线",
+                session_ciphertext=f"session-{account_id}",
+            ))
+        session.commit()
+
+        result = precheck_task_creation(
+            session,
+            1,
+            TaskPrecheckRequest(
+                task_type="group_ai_chat",
+                payload={
+                    "name": "硬目标群冷却预检",
+                    "target_group_id": 7,
+                    "account_config": {"selection_mode": "all", "max_concurrent": 20, "cooldown_per_account_minutes": 0},
+                    "pacing_config": {
+                        "mode": "template",
+                        "max_actions_per_hour": 120,
+                        "operation_profile": {
+                            "hourly_activity_curve": [1] * 24,
+                            "quiet_threshold": 2,
+                            "peak_threshold": 8,
+                        },
+                    },
+                    "messages_per_round_mode": "manual",
+                    "messages_per_round": 120,
+                    "hard_hourly_target_enabled": True,
+                    "hourly_min_messages": 120,
+                    "hard_hourly_strategy": "force_planning",
+                },
+            ),
+        )
+
+    hard_target = result["hard_hourly_target"]
+    assert result["decision"] == "block"
+    assert "hard_hourly_group_cooldown_insufficient" in result["blockers"]
+    assert hard_target["capacity_gap"] == 0
+    assert hard_target["group_cooldown_blocked"] is True
+    assert hard_target["group_cooldown_capacity"]["group_cooldown_hourly_capacity"] == 60
+    assert "硬目标高于群冷却小时容量，无法在任一小时完成" in result["warnings"]

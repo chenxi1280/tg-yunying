@@ -67,7 +67,16 @@ from .channel_membership import (
     channel_membership_summary,
     mark_channel_membership_joined,
 )
-from .dispatcher import _sync_all_account_membership_state, claim_actions, dispatch_action, due_actions, mark_dispatcher_db_error, recover_expired_claims, recover_expired_hard_hourly_actions
+from .dispatcher import (
+    _sync_all_account_membership_state,
+    claim_actions,
+    dispatch_action,
+    due_actions,
+    mark_dispatcher_db_error,
+    recover_expired_claims,
+    recover_expired_hard_hourly_actions,
+    recover_unreachable_hard_hourly_actions,
+)
 from .daily_coverage import recover_terminal_coverage_reservations
 from .executors import build_task_plan, channel_comment, prepare_open_actions_for_planning, requires_planning_with_open_actions
 from .search_rank_deboost_pacing import DeboostPacingStats, account_click_allowed, deboost_pacing_window, lock_rank_deboost_quota_scope
@@ -2687,6 +2696,7 @@ def _drain_task_recovery(session_factory, *, limit: int, process_type: str | Non
         if process_type:
             record_worker_heartbeat(session, process_type=process_type, metadata={"limit": limit})
         processed += recover_expired_claims(session)
+        processed += recover_unreachable_hard_hourly_actions(session, limit=_hard_hourly_recovery_limit(limit))
         processed += recover_expired_hard_hourly_actions(session, limit=_hard_hourly_recovery_limit(limit))
         processed += fast_track_pending_hard_hourly_memberships(session, limit=_hard_hourly_recovery_limit(limit))
         processed += recover_missing_hard_hourly_memberships(session, limit=_hard_hourly_recovery_limit(limit))
