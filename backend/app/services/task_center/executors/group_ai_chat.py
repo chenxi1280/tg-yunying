@@ -11,7 +11,16 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.models import Action, AiGroupMessageMemory, OperationTarget, RuleSet, Task, TaskAccountDailyCoverage, TgGroup
+from app.models import (
+    Action,
+    AiGroupMessageMemory,
+    OperationTarget,
+    RuleSet,
+    Task,
+    TaskAccountDailyCoverage,
+    TaskMembershipAdmissionItem,
+    TgGroup,
+)
 from app.services._common import _now
 from app.services.account_online_readiness import online_ready_account_ids_for_planning
 from app.services.account_capacity import (
@@ -1160,10 +1169,21 @@ def prepare_open_actions_for_planning(session: Session, task: Task) -> int:
 
 def _canonicalized_task_config(session: Session, task: Task, config: dict) -> dict:
     normalized = normalize_operation_target_references(session, task.tenant_id, task.type, config)
-    normalized = apply_group_ai_account_coverage_defaults(task.type, normalized, task.account_config or {})
+    if _has_persistent_all_account_scope(session, task):
+        normalized = apply_group_ai_account_coverage_defaults(task.type, normalized, task.account_config or {})
     if normalized != config:
         task.type_config = {key: value for key, value in normalized.items() if key != "pacing_config"}
     return normalized
+
+
+def _has_persistent_all_account_scope(session: Session, task: Task) -> bool:
+    if str((task.account_config or {}).get("selection_mode") or "") != "all":
+        return False
+    return session.scalar(
+        select(TaskMembershipAdmissionItem.id)
+        .where(TaskMembershipAdmissionItem.task_id == task.id)
+        .limit(1)
+    ) is not None
 
 
 def _reply_targets_for_plan(

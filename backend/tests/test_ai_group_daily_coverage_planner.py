@@ -175,11 +175,40 @@ def test_all_account_shortage_reason_does_not_scan_platform_accounts(session: Se
 def test_planner_normalizes_legacy_all_account_coverage_config(session: Session) -> None:
     task, _group = _seed(session)
     task.type_config = {**task.type_config, "account_coverage_mode": "natural"}
+    session.add(TaskMembershipAdmissionItem(
+        tenant_id=task.tenant_id,
+        task_id=task.id,
+        account_id=1,
+        target_id=21,
+        phase="completed",
+    ))
+    session.flush()
 
     config = _canonicalized_task_config(session, task, dict(task.type_config))
 
     assert config["account_coverage_mode"] == "all_accounts_daily"
     assert task.type_config["account_coverage_mode"] == "all_accounts_daily"
+
+
+def test_planner_preserves_natural_config_without_explicit_all_account_selection(session: Session) -> None:
+    task, _group = _seed(session)
+    task.account_config = {}
+    task.type_config = {**task.type_config, "account_coverage_mode": "natural"}
+
+    config = _canonicalized_task_config(session, task, dict(task.type_config))
+
+    assert config["account_coverage_mode"] == "natural"
+    assert task.type_config["account_coverage_mode"] == "natural"
+
+
+def test_planner_preserves_natural_config_without_persistent_all_account_scope(session: Session) -> None:
+    task, _group = _seed(session)
+    task.type_config = {**task.type_config, "account_coverage_mode": "natural"}
+
+    config = _canonicalized_task_config(session, task, dict(task.type_config))
+
+    assert config["account_coverage_mode"] == "natural"
+    assert task.type_config["account_coverage_mode"] == "natural"
 
 
 def test_coverage_plan_state_materializes_scope_once_and_reuses_rows(session: Session, monkeypatch) -> None:
