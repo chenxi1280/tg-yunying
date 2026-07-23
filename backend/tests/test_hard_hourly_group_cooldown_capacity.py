@@ -2,11 +2,15 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from app.services.task_center.coverage_capacity import (
     HARD_HOURLY_GROUP_COOLDOWN_BLOCKER_CODE,
     hard_hourly_group_cooldown_proof,
     hard_hourly_required_hourly_messages,
 )
+
+pytestmark = pytest.mark.no_postgres
 
 
 def test_hard_hourly_required_caps_full_backfill_debt_to_planning_rate() -> None:

@@ -3499,7 +3499,14 @@ def test_precheck_reports_hard_hourly_capacity_without_blocking_on_max_actions(m
                 payload={
                     "name": "硬目标预检",
                     "target_operation_target_id": 21,
-                    "account_config": {"selection_mode": "all", "max_concurrent": 20, "cooldown_per_account_minutes": 0},
+                    # manual selection keeps coverage natural and avoids end-of-day
+                    # all-account daily-capacity precheck flakiness.
+                    "account_config": {
+                        "selection_mode": "manual",
+                        "account_ids": [101, 102, 103],
+                        "max_concurrent": 20,
+                        "cooldown_per_account_minutes": 0,
+                    },
                     "pacing_config": {
                         "mode": "template",
                         "max_actions_per_hour": 2,
@@ -3530,6 +3537,7 @@ def test_precheck_reports_hard_hourly_capacity_without_blocking_on_max_actions(m
         "group_cooldown_capacity": {
             "hourly_target": 300,
             "required_hourly_messages": 300,
+            "backfill_planning_deficit": 0,
             "group_cooldown_seconds": 12,
             "group_cooldown_hourly_capacity": 300,
             "capacity_gap": 0,

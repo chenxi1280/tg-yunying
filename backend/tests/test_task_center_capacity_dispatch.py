@@ -522,15 +522,18 @@ def test_recovery_skips_hard_hourly_actions_that_exceed_group_cooldown_capacity(
         session.add_all(
             [
                 Tenant(id=1, name="默认运营空间"),
+                # 60s cooldown => 60 messages/hour capacity.
                 TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="冷却不足群", group_cooldown_seconds=60),
                 TgGroup(id=8, tenant_id=1, tg_peer_id="-1008", title="冷却可达群", group_cooldown_seconds=60),
                 Task(
                     id="hard-hourly-unreachable",
                     tenant_id=1,
-                    name="历史欠量超过冷却容量",
+                    name="小时目标超过冷却容量",
                     type="group_ai_chat",
                     status="running",
-                    type_config={"target_group_id": 7, "hard_hourly_target_enabled": True, "hourly_min_messages": 10},
+                    # Planning rate is goal(+backfill cap). 120/h > 60 capacity => skip.
+                    type_config={"target_group_id": 7, "hard_hourly_target_enabled": True, "hourly_min_messages": 120},
+                    stats={"hard_hourly_backfill_planning_deficit": 50},
                 ),
                 Task(
                     id="hard-hourly-reachable",
@@ -539,6 +542,7 @@ def test_recovery_skips_hard_hourly_actions_that_exceed_group_cooldown_capacity(
                     type="group_ai_chat",
                     status="running",
                     type_config={"target_group_id": 8, "hard_hourly_target_enabled": True, "hourly_min_messages": 10},
+                    stats={"hard_hourly_backfill_planning_deficit": 2000},
                 ),
                 Action(
                     id="hard-hourly-unreachable-action",
@@ -548,7 +552,8 @@ def test_recovery_skips_hard_hourly_actions_that_exceed_group_cooldown_capacity(
                     action_type="send_message",
                     status="pending",
                     scheduled_at=now_value,
-                    payload={"hard_hourly_target": True, "hard_hourly_deficit_at_plan": 71},
+                    # Legacy multi-hour deficit must not be required raw; planning rate still exceeds capacity.
+                    payload={"hard_hourly_target": True, "hard_hourly_deficit_at_plan": 240},
                 ),
                 Action(
                     id="hard-hourly-reachable-action",
@@ -558,7 +563,8 @@ def test_recovery_skips_hard_hourly_actions_that_exceed_group_cooldown_capacity(
                     action_type="send_message",
                     status="pending",
                     scheduled_at=now_value,
-                    payload={"hard_hourly_target": True, "hard_hourly_deficit_at_plan": 60},
+                    # Large historical deficit is capped to planning rate (20) under capacity 60.
+                    payload={"hard_hourly_target": True, "hard_hourly_deficit_at_plan": 2500},
                 ),
             ]
         )
@@ -572,7 +578,8 @@ def test_recovery_skips_hard_hourly_actions_that_exceed_group_cooldown_capacity(
 
         assert blocked.status == "skipped"
         assert blocked.result["error_code"] == "hard_hourly_group_cooldown_insufficient"
-        assert blocked.result["hard_hourly_capacity_proof"]["required_hourly_messages"] == 71
+        assert blocked.result["hard_hourly_capacity_proof"]["required_hourly_messages"] == 170
+        assert blocked.result["hard_hourly_capacity_proof"]["group_cooldown_hourly_capacity"] == 60
         assert task.last_error == "硬小时目标超过群冷却容量，已停止创建会过期的 Action"
         assert preserved.status == "pending"
 
