@@ -3745,7 +3745,7 @@ tg_accounts 在线
 operation_targets
   -> 账号同步、任务创建 target_input、运营目标页管理修订都可以写入
   -> 按 tg_peer_id / username / invite_hash 去重
-  -> 历史公开链接解析出稳定 peer 时，如存在同 username 的重复稳定目标/群，只能由 fresh Session 在 `SERIALIZABLE` 事务和同租户行锁内确认重复对象无业务外键、非外键群运行状态或任务/Action 配置引用，且仅有同租户可迁移账号-群关系时合并；保留被任务引用的既有目标/群 ID 及其群策略，迁移账号关系、删除无引用重复对象并写审计，历史审计事实保留旧 ID；因无外键历史状态无法由数据库自动阻止任意新写入，生产合并必须在相关 writer 已静默、复核为空的操作窗口执行；任一条件、并发冲突或事务失败不满足时必须回滚并显式保留冲突
+  -> 历史公开链接解析出稳定 peer 时，如存在同 username 的重复稳定目标/群，只能由 fresh Session 在 `SERIALIZABLE` 事务和同租户行锁内确认重复对象无业务外键、非外键群运行状态、无 Task 配置引用、无 `pending` / `claiming` / `executing` / `retryable_failed` / `unknown_after_send` / `waiting_cache` 运行中 Action 配置引用，且无 `failed` Action 配置引用（为避免失败策略重新排程而保守阻断），并且仅有同租户可迁移账号-群关系时合并；`success` / `skipped` 终态 Action 历史保留但不构成运行中引用。保留被任务引用的既有目标/群 ID 及其群策略，迁移账号关系、删除无引用重复对象并写审计，历史审计事实保留旧 ID；因无外键历史状态无法由数据库自动阻止任意新写入，生产合并必须在相关 writer 已静默、复核运行中状态和配置引用为空的操作窗口执行；任一条件、并发冲突或事务失败不满足时必须回滚并显式保留冲突
   -> 观察账号必须用公开 username 的单目标 `resolve_group_by_public_username` 实测 stable peer 和当前发言权限，禁止为规范化调用全量 `list_groups`；该外部读取必须在 fresh Session 的只读预检阶段完成并结束该事务，只有已解析快照可进入后续 `SERIALIZABLE` 写事务
   -> 写入 source_type、last_synced_account_id、审计和目标能力快照
   -> 检查账号-目标关系

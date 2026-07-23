@@ -391,7 +391,21 @@ def test_canonicalize_legacy_peer_requires_fresh_session(monkeypatch) -> None:
             canonicalize_operation_target_peer(session, 1, 2785, 11, "tester")
 
 
-def test_canonicalize_legacy_peer_rejects_action_payload_reference(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("status", "blocked"),
+    (
+        ("pending", True),
+        ("claiming", True),
+        ("executing", True),
+        ("retryable_failed", True),
+        ("unknown_after_send", True),
+        ("waiting_cache", True),
+        ("failed", True),
+        ("success", False),
+        ("skipped", False),
+    ),
+)
+def test_canonicalize_legacy_peer_blocks_active_and_failed_action_payload_reference(monkeypatch, status: str, blocked: bool) -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     _patch_canonicalization_gateway(monkeypatch)
@@ -406,13 +420,21 @@ def test_canonicalize_legacy_peer_rejects_action_payload_reference(monkeypatch) 
                 task_id="task-action",
                 task_type="group_ai_chat",
                 action_type="send_message",
+                status=status,
                 payload={"routing": {"target_group_ids": [2810]}},
             ),
         ])
         session.commit()
 
-        with pytest.raises(ValueError, match="duplicate pair is used by a task"):
-            canonicalize_operation_target_peer(session, 1, 2785, 11, "tester")
+        if blocked:
+            with pytest.raises(ValueError, match="duplicate pair is used by a task"):
+                canonicalize_operation_target_peer(session, 1, 2785, 11, "tester")
+        else:
+            result = canonicalize_operation_target_peer(session, 1, 2785, 11, "tester")
+
+    if not blocked:
+        assert result["merged_duplicate_target_id"] == 2790
+        assert result["merged_duplicate_group_id"] == 2810
 
 
 def test_canonicalize_legacy_peer_rejects_campaign_csv_reference(monkeypatch) -> None:
