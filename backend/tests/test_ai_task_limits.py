@@ -111,13 +111,23 @@ def _add_group(session: Session, account_count: int) -> None:
 
 
 def _add_group_task(session: Session, type_config: dict) -> Task:
+    account_ids = list(session.scalars(
+        select(TgGroupAccount.account_id)
+        .where(TgGroupAccount.group_id == 7)
+        .order_by(TgGroupAccount.account_id.asc())
+    ))
     task = Task(
         id="ai-limit-task",
         tenant_id=1,
         name="AI 活群数量",
         type="group_ai_chat",
         status="running",
-        account_config={"selection_mode": "all", "max_concurrent": 50, "cooldown_per_account_minutes": 0},
+        account_config={
+            "selection_mode": "manual",
+            "account_ids": account_ids,
+            "max_concurrent": 50,
+            "cooldown_per_account_minutes": 0,
+        },
         pacing_config={"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
         type_config={"target_group_id": 7, "fact_anchor_required": False, **type_config},
         stats={},

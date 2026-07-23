@@ -2542,7 +2542,7 @@ def test_group_ai_chat_non_hard_planner_defers_history_collection(monkeypatch):
             name="普通历史权限",
             type="group_ai_chat",
             status="running",
-            account_config={"selection_mode": "all", "max_concurrent": 20, "cooldown_per_account_minutes": 0},
+            account_config={"selection_mode": "manual", "account_ids": [101], "max_concurrent": 20, "cooldown_per_account_minutes": 0},
             type_config={"target_group_id": 7},
         )
         session.add(task)
@@ -2632,7 +2632,7 @@ def test_group_ai_chat_non_hard_planner_snapshots_stored_context(monkeypatch):
             name="普通历史非权限错误",
             type="group_ai_chat",
             status="running",
-            account_config={"selection_mode": "all", "max_concurrent": 20, "cooldown_per_account_minutes": 0},
+            account_config={"selection_mode": "manual", "account_ids": [101], "max_concurrent": 20, "cooldown_per_account_minutes": 0},
             type_config={"target_group_id": 7},
         )
         session.add(task)

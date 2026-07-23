@@ -42,7 +42,6 @@ from ..ai_message_memory import mark_group_ai_message_result, reserve_group_ai_m
 from ..account_voice_profiles import group_stance_summaries, voice_profile_prompt_details
 from ..channel_membership import gate_channel_membership
 from ..config_normalization import (
-    apply_default_rule_binding,
     apply_group_ai_account_coverage_defaults,
     normalize_operation_target_references,
 )
@@ -1178,7 +1177,6 @@ def prepare_open_actions_for_planning(session: Session, task: Task) -> int:
 def _canonicalized_task_config(session: Session, task: Task, config: dict) -> dict:
     normalized = normalize_operation_target_references(session, task.tenant_id, task.type, config)
     normalized = apply_group_ai_account_coverage_defaults(task.type, normalized, task.account_config or {})
-    normalized = apply_default_rule_binding(session, task.tenant_id, task_type=task.type, config=normalized)
     if normalized != config:
         task.type_config = {key: value for key, value in normalized.items() if key != "pacing_config"}
     return normalized

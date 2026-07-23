@@ -199,8 +199,6 @@ def test_planner_normalizes_legacy_all_account_coverage_config(session: Session)
 
     assert config["account_coverage_mode"] == "all_accounts_daily"
     assert task.type_config["account_coverage_mode"] == "all_accounts_daily"
-    assert config["rule_set_id"]
-    assert task.type_config["rule_set_id"] == config["rule_set_id"]
 
 def test_daily_coverage_replan_skips_legacy_hard_hourly_open_actions(session: Session) -> None:
     task, _group = _seed(session)

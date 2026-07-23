@@ -121,10 +121,10 @@ def upgrade() -> None:
             sa.text(
                 f"""
                 {insert_prefix} operation_targets
-                    (tenant_id, target_type, tg_peer_id, title, member_count, can_send, auth_status, last_sync_at, created_at, updated_at)
+                    (tenant_id, target_type, tg_peer_id, title, username, member_count, can_send, auth_status, last_sync_at, created_at, updated_at)
                 SELECT tenant_id,
                     CASE WHEN group_type = 'channel' THEN 'channel' ELSE 'group' END,
-                    tg_peer_id, title, member_count, can_send, auth_status, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                    tg_peer_id, title, '', member_count, can_send, auth_status, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
                 FROM tg_groups
                 {conflict_suffix}
                 """

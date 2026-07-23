@@ -4062,9 +4062,10 @@ def test_group_ai_chat_bootstraps_without_history(monkeypatch):
         )
         add_ai_task(
             session, task_id="ai-bootstrap", name="AI 无上下文开场",
-            account_ids=[], messages_per_round=None,
+            account_ids=[101, 102, 103, 104], messages_per_round=None,
+            selection_mode="manual",
             type_overrides={"messages_per_round_mode": "auto", "account_personas": {"101": "欢迎新人账号", "102": "提问型账号"}},
-        ).account_config = {"selection_mode": "all", "max_concurrent": 20, "cooldown_per_account_minutes": 0}
+        )
         session.commit()
 
         planned = build_group_ai_chat_plan(session, session.get(Task, "ai-bootstrap"))
@@ -4122,10 +4123,11 @@ def test_group_ai_chat_uses_recent_account_memory(monkeypatch):
         seed_group_accounts(session, title="记忆测试群", account_ids=[101, 102], group_id=8)
         _seed_account_memory_history(session)
         add_ai_task(
-            session, task_id="ai-memory", name="AI 账号记忆", account_ids=[],
+            session, task_id="ai-memory", name="AI 账号记忆", account_ids=[101, 102],
             messages_per_round=1, group_id=8,
+            selection_mode="manual",
             type_overrides={"participation_rate": 1, "participation_jitter": 0, "account_memory_depth": 2},
-        ).account_config = {"selection_mode": "all", "max_concurrent": 20, "cooldown_per_account_minutes": 0}
+        )
         _seed_current_account_memory(session)
         session.commit()
 
@@ -4788,7 +4790,7 @@ def test_group_ai_chat_without_ai_provider_does_not_create_actions(monkeypatch):
                 name="AI 不可用不发",
                 type="group_ai_chat",
                 status="running",
-                account_config={"selection_mode": "all", "max_concurrent": 20, "cooldown_per_account_minutes": 0},
+                account_config={"selection_mode": "manual", "account_ids": [101], "max_concurrent": 20, "cooldown_per_account_minutes": 0},
                 pacing_config={"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
                 type_config={
                     "target_group_id": 7,
@@ -4843,7 +4845,14 @@ def test_group_ai_chat_filters_recursive_context_and_duplicate_ai_drafts(monkeyp
         session.flush()
         session.get(TenantAiSetting, 1).temperature = 0.8
         _seed_recursive_group_context(session)
-        add_ai_task(session, task_id="ai-natural", name="AI 自然续聊", account_ids=[], messages_per_round=2)
+        add_ai_task(
+            session,
+            task_id="ai-natural",
+            name="AI 自然续聊",
+            account_ids=[101, 102, 103],
+            messages_per_round=2,
+            selection_mode="manual",
+        )
         session.commit()
 
         created = build_group_ai_chat_plan(session, session.get(Task, "ai-natural"))
@@ -5120,7 +5129,7 @@ def test_group_ai_chat_rotates_single_turn_accounts_between_cycles(monkeypatch):
                 name="AI 单条轮换",
                 type="group_ai_chat",
                 status="running",
-                account_config={"selection_mode": "all", "max_concurrent": 20, "cooldown_per_account_minutes": 0},
+                account_config={"selection_mode": "manual", "account_ids": [101, 102, 103], "max_concurrent": 20, "cooldown_per_account_minutes": 0},
                 pacing_config={"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
                 type_config={"target_group_id": 7, "messages_per_round_mode": "manual", "participation_rate": 0.05, "messages_per_round": 1, "idle_continuation_seconds": 300, "fact_anchor_required": False},
             )

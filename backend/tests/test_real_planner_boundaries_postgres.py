@@ -17,6 +17,7 @@ from app.models import (
     Task,
     TaskAccountDailyCoverage,
     TaskDailyCoveragePlanCursor,
+    TaskMembershipAdmissionItem,
     Tenant,
     TgAccount,
     TgAccountOnlineState,
@@ -339,6 +340,7 @@ def _cleanup() -> None:
     with SessionLocal() as session:
         session.execute(delete(TaskAccountDailyCoverage).where(TaskAccountDailyCoverage.tenant_id == TENANT_ID))
         session.execute(delete(TaskDailyCoveragePlanCursor).where(TaskDailyCoveragePlanCursor.tenant_id == TENANT_ID))
+        session.execute(delete(TaskMembershipAdmissionItem).where(TaskMembershipAdmissionItem.tenant_id == TENANT_ID))
         session.execute(delete(Action).where(Action.tenant_id == TENANT_ID))
         session.execute(delete(AiAccountVoiceProfile).where(AiAccountVoiceProfile.tenant_id == TENANT_ID))
         session.execute(delete(GroupContextMessage).where(GroupContextMessage.tenant_id == TENANT_ID))
