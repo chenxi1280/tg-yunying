@@ -6,7 +6,7 @@ import re
 import socket
 from dataclasses import dataclass
 from uuid import uuid4
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from sqlalchemy import case, func, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -107,6 +107,7 @@ _COMMENT_THREAD_SKIP_CODES = {
 _REACTION_UNAVAILABLE_SKIP_CODE = "reaction_unavailable_sibling"
 _COMMENT_MEMBERSHIP_RETRY_DELAY = timedelta(minutes=5)
 DISPATCHER_DB_ERROR_RETRY_DELAY_SECONDS = 10
+CHANNEL_DAILY_ACTION_TYPES = {"view_message", "like_message"}
 
 
 class _SearchClickGatewayBlocked(Exception):
@@ -755,6 +756,9 @@ def _confirm_action_claim_candidate(
 ) -> bool:
     action = session.get(Action, action_id)
     if not _action_claim_matches(action, batch):
+        return False
+    if _skip_stale_channel_daily_action(action):
+        session.commit()
         return False
     if _skip_search_click_action_after_deadline(session, action):
         session.commit()
@@ -4695,6 +4699,23 @@ def _skip(action: Action, code: str, detail: str) -> None:
     action.executed_at = _now()
     _release_rank_deboost_reservation_before_gateway(action)
     _release_runtime_resources(action)
+
+
+def _skip_stale_channel_daily_action(action: Action) -> bool:
+    if action.action_type not in CHANNEL_DAILY_ACTION_TYPES:
+        return False
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    raw_execution_date = str(payload.get("execution_date") or "").strip()
+    if not raw_execution_date:
+        return False
+    try:
+        execution_date = date.fromisoformat(raw_execution_date)
+    except ValueError:
+        return False
+    if execution_date >= _now().date():
+        return False
+    _skip(action, "stale_channel_daily_action", "日维度频道任务已过期，不再占用当日调度容量")
+    return True
 
 
 def _skip_search_click_action_after_deadline(session: Session, action: Action) -> bool:

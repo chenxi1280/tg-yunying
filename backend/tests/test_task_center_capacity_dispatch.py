@@ -388,6 +388,47 @@ def test_claim_actions_skips_resolved_group_rescue_invite_before_runtime_reserva
 
 
 @pytest.mark.no_postgres
+def test_claim_actions_skips_past_execution_date_channel_action_before_account_policy(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    stale_date = (now_value.date() - timedelta(days=1)).isoformat()
+
+    with Session(engine) as session:
+        session.add_all(
+            [
+                Tenant(id=1, name="默认运营空间"),
+                TgAccount(id=11, tenant_id=1, display_name="账号", phone_masked="+195***0011", status="在线"),
+                Task(id="task-stale-channel", tenant_id=1, name="过期浏览", type="channel_view", status="running"),
+                Action(
+                    id="stale-view",
+                    tenant_id=1,
+                    task_id="task-stale-channel",
+                    task_type="channel_view",
+                    action_type="view_message",
+                    account_id=11,
+                    status="pending",
+                    scheduled_at=now_value - timedelta(minutes=1),
+                    payload={"channel_id": "-1001", "message_id": 1, "execution_date": stale_date},
+                ),
+            ]
+        )
+        session.commit()
+
+        monkeypatch.setattr(
+            dispatcher,
+            "_reserve_runtime_resources",
+            lambda _action: pytest.fail("过期日维度 Action 不应占用运行时资源"),
+        )
+
+        assert claim_actions(session, limit=1, worker_id="worker-test") == []
+
+        action = session.get(Action, "stale-view")
+        assert action.status == "skipped"
+        assert action.result["error_code"] == "stale_channel_daily_action"
+
+
+@pytest.mark.no_postgres
 def test_release_runtime_resources_keeps_later_holder_inflight() -> None:
     old_action = Action(id="old-action", account_id=11)
     dispatcher._IN_FLIGHT_ACCOUNTS.add(11)
