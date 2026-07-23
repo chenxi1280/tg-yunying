@@ -263,7 +263,32 @@ def _pending_action_commitments(
 
 def _task_daily_schedule_capacity(task: Task, group: TgGroup, *, now: datetime | None = None) -> int | None:
     pacing = task.pacing_config or {}
-    return daily_task_schedule_capacity(pacing, _messages_per_round(task), group, now=now)
+    natural_capacity = daily_task_schedule_capacity(pacing, _messages_per_round(task), group, now=now)
+    hard_hourly_capacity = _hard_hourly_daily_schedule_capacity(task, group, now=now)
+    if natural_capacity is None:
+        return hard_hourly_capacity
+    if hard_hourly_capacity is None:
+        return natural_capacity
+    return max(natural_capacity, hard_hourly_capacity)
+
+
+def _hard_hourly_daily_schedule_capacity(
+    task: Task,
+    group: TgGroup,
+    *,
+    now: datetime | None = None,
+) -> int | None:
+    config = task.type_config or {}
+    if not bool(config.get("hard_hourly_target_enabled")):
+        return None
+    try:
+        hourly_target = max(0, int(config.get("hourly_min_messages") or 0))
+    except (TypeError, ValueError):
+        return None
+    if hourly_target <= 0:
+        return None
+    active_hours = math.ceil(_available_active_window_seconds(group.active_window, now) / 3600)
+    return hourly_target * active_hours
 
 
 def daily_task_schedule_capacity(

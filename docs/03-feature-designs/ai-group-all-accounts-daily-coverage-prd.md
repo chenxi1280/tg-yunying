@@ -113,7 +113,7 @@ task_id、group_id、account_id、coverage_date 与覆盖账本一致
 
 ### 7.1 初始快照
 
-创建或首次迁移“全部账号”任务时，一次性读取目标账号并批量建立 `TaskMembershipAdmissionItem`。该表作为任务与账号的持久化目标关系，既包含已准入账号，也包含待准入和阻塞账号。
+创建或首次迁移“全部账号”任务时，一次性读取目标账号并批量建立 `TaskMembershipAdmissionItem`，并补齐任务要求的已发布默认规则绑定。存量运行任务在首次被 Planner 识别为 `all_accounts_daily`、但尚无任何持久化账号关系时，执行一次同样的 scope bootstrap；后续常规 Planner 只读取账本，不重新扫描平台账号。该表作为任务与账号的持久化目标关系，既包含已准入账号，也包含待准入和阻塞账号。
 
 ### 7.2 增量事件
 

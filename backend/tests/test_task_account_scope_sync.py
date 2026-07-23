@@ -183,6 +183,30 @@ def test_legacy_all_account_task_with_natural_mode_is_included(session: Session)
     assert legacy_task.type_config["account_coverage_mode"] == "all_accounts_daily"
 
 
+def test_planner_bootstraps_missing_legacy_all_account_scope_once(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed_scope_base(session)
+    task = _task("legacy-planner-bootstrap")
+    session.add_all([
+        _account(1, 10),
+        task,
+        TgGroupAccount(tenant_id=1, group_id=21, account_id=1, can_send=True),
+    ])
+    session.commit()
+    timestamp = datetime(2026, 7, 10, 10)
+    monkeypatch.setattr(group_ai_chat, "_now", lambda: timestamp)
+
+    first = group_ai_chat._coverage_plan_state(session, task, session.get(TgGroup, 21), task.type_config, {})
+    second = group_ai_chat._coverage_plan_state(session, task, session.get(TgGroup, 21), task.type_config, {})
+
+    relations = list(session.scalars(select(TaskMembershipAdmissionItem).where(TaskMembershipAdmissionItem.task_id == task.id)))
+    assert set(first.rows_by_account) == {1}
+    assert set(second.rows_by_account) == {1}
+    assert [item.account_id for item in relations] == [1]
+
+
 def test_daily_scope_reconcile_runs_at_new_day_before_interval_elapses(session: Session) -> None:
     _seed_scope_base(session)
     task = _task("daily-reconcile-task")

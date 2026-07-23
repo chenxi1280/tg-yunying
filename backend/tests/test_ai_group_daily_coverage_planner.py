@@ -189,44 +189,17 @@ def test_all_account_shortage_reason_does_not_scan_platform_accounts(session: Se
     assert "在线" in message
 
 
+@pytest.mark.allow_missing_rule_binding
 def test_planner_normalizes_legacy_all_account_coverage_config(session: Session) -> None:
     task, _group = _seed(session)
     task.type_config = {**task.type_config, "account_coverage_mode": "natural"}
-    session.add(TaskMembershipAdmissionItem(
-        tenant_id=task.tenant_id,
-        task_id=task.id,
-        account_id=1,
-        target_id=21,
-        phase="completed",
-    ))
-    session.flush()
 
     config = _canonicalized_task_config(session, task, dict(task.type_config))
 
     assert config["account_coverage_mode"] == "all_accounts_daily"
     assert task.type_config["account_coverage_mode"] == "all_accounts_daily"
-
-
-def test_planner_preserves_natural_config_without_explicit_all_account_selection(session: Session) -> None:
-    task, _group = _seed(session)
-    task.account_config = {}
-    task.type_config = {**task.type_config, "account_coverage_mode": "natural"}
-
-    config = _canonicalized_task_config(session, task, dict(task.type_config))
-
-    assert config["account_coverage_mode"] == "natural"
-    assert task.type_config["account_coverage_mode"] == "natural"
-
-
-def test_planner_preserves_natural_config_without_persistent_all_account_scope(session: Session) -> None:
-    task, _group = _seed(session)
-    task.type_config = {**task.type_config, "account_coverage_mode": "natural"}
-
-    config = _canonicalized_task_config(session, task, dict(task.type_config))
-
-    assert config["account_coverage_mode"] == "natural"
-    assert task.type_config["account_coverage_mode"] == "natural"
-
+    assert config["rule_set_id"]
+    assert task.type_config["rule_set_id"] == config["rule_set_id"]
 
 def test_coverage_plan_state_materializes_scope_once_and_reuses_rows(session: Session, monkeypatch) -> None:
     task, group = _seed(session)
@@ -315,7 +288,8 @@ def test_account_selection_uses_supplied_coverage_snapshot_without_reread(sessio
 def test_coverage_round_does_not_repeat_one_account_for_multiple_obligations() -> None:
     config = {"account_coverage_mode": "all_accounts_daily", "allow_account_repeat": True}
 
-    assert _coverage_round_config(config)["allow_account_repeat"] is False
+    assert _coverage_round_config(config, {})["allow_account_repeat"] is False
+    assert _coverage_round_config(config, {"deficit": 1})["allow_account_repeat"] is True
 
 
 def test_ready_coverage_plan_batch_uses_stable_cursor_and_hard_limit(session: Session) -> None:

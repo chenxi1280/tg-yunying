@@ -32,6 +32,8 @@
 
 > **DF-179 搜索 source 全局容量槽位对齐（2026-07-23）**：`search_join_group.build_plan` 为每个已固定账号/授权槽位的 source 先执行全局 `account_capacity_decision`，命中账号冷却、全局小时或日限额时使用其 `defer_until` 继续寻找可用槽位，再创建 Action；Planner 批量缓存既有容量占用，并通过同轮 source 的内存 reservation 参与后续决策，避免同一账号被密集排入相同或冲突时间且不产生随 source 数量二次放大的数据库读取。该步骤不允许将 source 转派给其他账号，也不放宽 Dispatcher 在领取和 Gateway 前的最终容量校验；截止时间或静默窗口不允许时如实不创建 source。回归入口：`test_search_join_group_executor.py`。
 
+> **DF-180 AI 活群存量账号范围首次迁移（2026-07-23）**：`group_ai_chat` 首次识别到 `all_accounts_daily` 但尚无 `TaskMembershipAdmissionItem` 时，Planner 只执行一次持久化 bootstrap：补齐任务要求的默认已发布规则绑定，由目标群关联/恢复 `OperationTarget`，建立任务账号关系和当日 `TaskAccountDailyCoverage`；scope 已存在后的常规 Planner 只读账本，不回退为每轮全量账号扫描。回归入口：`test_task_account_scope_sync.py`、`test_ai_group_daily_coverage_planner.py`。
+
 ## 3. 业务域流转总览
 
 | 业务域 | API 流转数 | 主要入口 | 数据落点 | 关键异步/外部 | 主要测试 |

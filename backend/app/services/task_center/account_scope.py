@@ -82,6 +82,25 @@ def initialize_all_account_task_scope(
     return ScopeSyncResult(task_count=1, created_relations=created, eligible_accounts=len(account_ids))
 
 
+def bootstrap_missing_all_account_task_scope(
+    session: Session,
+    task: Task,
+    *,
+    now: datetime | None = None,
+) -> ScopeSyncResult:
+    if not is_all_accounts_task(task) or _scope_exists(session, task):
+        return ScopeSyncResult()
+    return initialize_all_account_task_scope(session, task, now=now)
+
+
+def scoped_account_ids(session: Session, task: Task) -> list[int]:
+    return list(session.scalars(
+        select(TaskMembershipAdmissionItem.account_id)
+        .where(TaskMembershipAdmissionItem.task_id == task.id)
+        .order_by(TaskMembershipAdmissionItem.account_id.asc())
+    ))
+
+
 def emit_account_eligibility_event(session: Session, account_id: int, event_type: str) -> AccountEligibilityEvent:
     account = session.get(TgAccount, account_id)
     if account is None:
@@ -308,9 +327,35 @@ def _task_target(session: Session, task: Task) -> OperationTarget:
                 OperationTarget.tg_peer_id == group.tg_peer_id,
             )
         ) if group else None
+    if target is None and group is not None and group.tenant_id == task.tenant_id:
+        target = _create_task_target_from_group(session, task, group)
     if target is None or target.tenant_id != task.tenant_id:
         raise ValueError("all-account coverage task operation target not found")
     return target
+
+
+def _create_task_target_from_group(session: Session, task: Task, group: TgGroup) -> OperationTarget:
+    target = OperationTarget(
+        tenant_id=task.tenant_id,
+        target_type="group",
+        tg_peer_id=group.tg_peer_id,
+        title=group.title,
+        member_count=group.member_count,
+        can_send=group.can_send,
+        auth_status=group.auth_status,
+    )
+    session.add(target)
+    session.flush()
+    task.type_config = {**(task.type_config or {}), "target_operation_target_id": target.id}
+    return target
+
+
+def _scope_exists(session: Session, task: Task) -> bool:
+    return session.scalar(
+        select(TaskMembershipAdmissionItem.id)
+        .where(TaskMembershipAdmissionItem.task_id == task.id)
+        .limit(1)
+    ) is not None
 
 
 def _relation(session: Session, task_id: str, account_id: int) -> TaskMembershipAdmissionItem | None:
@@ -355,6 +400,7 @@ def _rescue_admin_account_id(session: Session, tenant_id: int) -> int:
 
 __all__ = [
     "ScopeSyncResult",
+    "bootstrap_missing_all_account_task_scope",
     "eligible_account_ids",
     "drain_account_scope_events",
     "emit_account_eligibility_event",
@@ -362,6 +408,7 @@ __all__ = [
     "is_all_accounts_task",
     "process_account_eligibility_events",
     "reconcile_all_account_scopes_if_due",
+    "scoped_account_ids",
     "reconcile_tenant_all_account_scopes",
     "sync_account_to_all_tasks",
 ]

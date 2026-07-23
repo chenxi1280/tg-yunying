@@ -18,7 +18,6 @@ from app.models import (
     RuleSet,
     Task,
     TaskAccountDailyCoverage,
-    TaskMembershipAdmissionItem,
     TgGroup,
 )
 from app.services._common import _now
@@ -36,12 +35,17 @@ from app.services.tenant_target_profile import tenant_learning_profile_preview
 from app.services.rule_engine import bound_rule_version, evaluate_input_filter
 
 from ..account_pool import DAILY_COVERAGE_SUCCESS_STATUSES, daily_uncovered_account_count, select_task_accounts
+from ..account_scope import bootstrap_missing_all_account_task_scope, scoped_account_ids
 from ..ai_act_types import canonical_ai_group_act_type
 from ..ai_generator import AI_GENERATION_UNAVAILABLE_MESSAGE
 from ..ai_message_memory import mark_group_ai_message_result, reserve_group_ai_message
 from ..account_voice_profiles import group_stance_summaries, voice_profile_prompt_details
 from ..channel_membership import gate_channel_membership
-from ..config_normalization import apply_group_ai_account_coverage_defaults, normalize_operation_target_references
+from ..config_normalization import (
+    apply_default_rule_binding,
+    apply_group_ai_account_coverage_defaults,
+    normalize_operation_target_references,
+)
 from ..coverage_capacity import (
     HARD_HOURLY_GROUP_COOLDOWN_BLOCKED_MESSAGE,
     hard_hourly_group_cooldown_proof,
@@ -506,6 +510,7 @@ def _load_turn_plan(
     cycle_index = _next_cycle_index(session, task)
     round_config = _coverage_round_config(
         _hard_hourly_round_config(facts.config, facts.hard_progress),
+        facts.hard_progress,
     )
     selected, turn_count = _select_cycle_accounts(
         accounts,
@@ -1169,21 +1174,11 @@ def prepare_open_actions_for_planning(session: Session, task: Task) -> int:
 
 def _canonicalized_task_config(session: Session, task: Task, config: dict) -> dict:
     normalized = normalize_operation_target_references(session, task.tenant_id, task.type, config)
-    if _has_persistent_all_account_scope(session, task):
-        normalized = apply_group_ai_account_coverage_defaults(task.type, normalized, task.account_config or {})
+    normalized = apply_group_ai_account_coverage_defaults(task.type, normalized, task.account_config or {})
+    normalized = apply_default_rule_binding(session, task.tenant_id, task_type=task.type, config=normalized)
     if normalized != config:
         task.type_config = {key: value for key, value in normalized.items() if key != "pacing_config"}
     return normalized
-
-
-def _has_persistent_all_account_scope(session: Session, task: Task) -> bool:
-    if str((task.account_config or {}).get("selection_mode") or "") != "all":
-        return False
-    return session.scalar(
-        select(TaskMembershipAdmissionItem.id)
-        .where(TaskMembershipAdmissionItem.task_id == task.id)
-        .limit(1)
-    ) is not None
 
 
 def _reply_targets_for_plan(
@@ -1375,10 +1370,12 @@ def _select_accounts_for_plan(
     ready_rows = _ready_coverage_rows(config, coverage_rows)
     if _all_accounts_daily_coverage(config) and coverage_rows is None:
         ready_rows = ready_coverage_rows(session, task)
-    candidate_account_ids = (
-        [row.account_id for row in ready_rows]
-        if _all_accounts_daily_coverage(config)
-        else None
+    candidate_account_ids = _candidate_account_ids_for_plan(
+        session,
+        task,
+        config,
+        ready_rows,
+        progress,
     )
     if candidate_account_ids:
         options["limit"] = len(candidate_account_ids)
@@ -1394,6 +1391,20 @@ def _select_accounts_for_plan(
         **coverage_options,
         **options,
     )
+
+
+def _candidate_account_ids_for_plan(
+    session: Session,
+    task: Task,
+    config: dict,
+    ready_rows: list[TaskAccountDailyCoverage],
+    progress: dict[str, object],
+) -> list[int] | None:
+    if not _all_accounts_daily_coverage(config):
+        return None
+    if ready_rows:
+        return [row.account_id for row in ready_rows]
+    return scoped_account_ids(session, task) if progress else []
 
 
 def _plan_account_limit(
@@ -1597,6 +1608,7 @@ def _coverage_plan_state(
     if not _all_accounts_daily_coverage(config):
         return CoveragePlanState(rows=[], rows_by_account={}, due_debt=0)
     timestamp = _now()
+    bootstrap_missing_all_account_task_scope(session, task, now=timestamp)
     ensure_task_daily_coverage(session, task, now=timestamp)
     backfill_daily_coverage_confirmations(session, task, timestamp.date())
     totals = coverage_plan_totals(session, task, group, now=timestamp)
@@ -1659,8 +1671,10 @@ def _load_coverage_rows(
     )))
 
 
-def _coverage_round_config(config: dict) -> dict:
+def _coverage_round_config(config: dict, progress: dict[str, object]) -> dict:
     if not _all_accounts_daily_coverage(config):
+        return config
+    if progress:
         return config
     return {**config, "allow_account_repeat": False}
 
@@ -1718,7 +1732,7 @@ def _coverage_payload_for_account(
         "coverage_account_completed_before_action": completed,
         "coverage_account_remaining_before_action": remaining,
         "coverage_reason": "daily_account_coverage" if remaining else "",
-        "coverage_ledger_id": row.id if row else "",
+        "coverage_ledger_id": row.id if row and remaining else "",
     }
 
 
@@ -2553,7 +2567,7 @@ def _select_cycle_accounts(
     daily_coverage_uncovered_count: int = 0,
 ) -> tuple[list, int]:
     coverage_count = max(0, min(int(daily_coverage_uncovered_count or 0), len(accounts)))
-    if _all_accounts_daily_coverage(config) and coverage_count == 0:
+    if _all_accounts_daily_coverage(config) and coverage_count == 0 and not bool(config.get("hard_hourly_planning")):
         return [], 0
     rotated_accounts = accounts if coverage_count else _rotate_accounts(accounts, cycle_index)
     if str(config.get("messages_per_round_mode") or "auto") == "manual":
