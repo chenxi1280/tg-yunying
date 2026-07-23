@@ -30,7 +30,7 @@
 
 > **DF-174 严格搜索日目标反饥饿与未命中补量（2026-07-23）**：当 `search_join_group.type_config.strict_daily_target=true` 且日点击未达标时，Dispatcher 的到期领取顺序为 `target_admission_retry -> search_join_membership -> search_join -> AI hard-hourly -> ordinary`。当天终态但未写 `target_click_observed/target_found_at` 的 source 会增加一条 effective source replacement budget；`pending` / `claiming` / `executing` / `unknown_after_send` 继续占槽位。该机制不改变账号/授权槽位绑定、静默窗口、截止时间或 Telegram Gateway 风控；回归入口：`test_task_center_capacity_dispatch.py`、`test_search_join_group_executor.py`。
 
-> **DF-179 搜索 source 全局容量槽位对齐（2026-07-23）**：`search_join_group.build_plan` 为每个已固定账号/授权槽位的 source 先执行全局 `account_capacity_decision`，命中账号冷却、全局小时或日限额时使用其 `defer_until` 继续寻找可用槽位，再创建 Action；同轮已经创建的 source 也必须参与后续容量决策，避免同一账号被密集排入相同或冲突时间。该步骤不允许将 source 转派给其他账号，也不放宽 Dispatcher 在领取和 Gateway 前的最终容量校验；截止时间或静默窗口不允许时如实不创建 source。回归入口：`test_search_join_group_executor.py`。
+> **DF-179 搜索 source 全局容量槽位对齐（2026-07-23）**：`search_join_group.build_plan` 为每个已固定账号/授权槽位的 source 先执行全局 `account_capacity_decision`，命中账号冷却、全局小时或日限额时使用其 `defer_until` 继续寻找可用槽位，再创建 Action；Planner 批量缓存既有容量占用，并通过同轮 source 的内存 reservation 参与后续决策，避免同一账号被密集排入相同或冲突时间且不产生随 source 数量二次放大的数据库读取。该步骤不允许将 source 转派给其他账号，也不放宽 Dispatcher 在领取和 Gateway 前的最终容量校验；截止时间或静默窗口不允许时如实不创建 source。回归入口：`test_search_join_group_executor.py`。
 
 ## 3. 业务域流转总览
 
