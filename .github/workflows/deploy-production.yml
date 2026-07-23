@@ -300,6 +300,7 @@ jobs:
 
           PORT="${DEPLOY_PORT:-22}"
           CONNECT_TIMEOUT="${SSH_CONNECT_TIMEOUT:-60}"
+          CONNECTION_ATTEMPTS="${SSH_CONNECTION_ATTEMPTS:-3}"
           cat > ~/.ssh/config <<EOF
           Host silicon-valley-production-server
             HostName ${DEPLOY_HOST}
@@ -309,6 +310,7 @@ jobs:
             IdentitiesOnly yes
             StrictHostKeyChecking accept-new
             ConnectTimeout ${CONNECT_TIMEOUT}
+            ConnectionAttempts ${CONNECTION_ATTEMPTS}
             ServerAliveInterval 15
             ServerAliveCountMax 8
             ControlMaster auto
