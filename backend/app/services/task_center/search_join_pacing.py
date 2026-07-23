@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.models import Action, SearchJoinPacingDecision, Task
 
+from .search_join_facts import has_confirmed_click_fact
 from .search_join_membership import MEMBERSHIP_ACTION_TYPE, MEMBERSHIP_PENDING_STATUS, is_join_request_pending
 
 REAL_ACTION_STATUSES = {"pending", "claiming", "executing", "success", "failed", "unknown_after_send"}
@@ -29,6 +30,9 @@ class PacingStats:
     tenant_timezone: str = ""
     local_date: str = ""
     task_daily_action_count: int = 0
+    task_daily_base_budget: int = 0
+    terminal_unconfirmed_click_count: int = 0
+    task_daily_effective_budget: int = 0
     task_daily_remaining: int = 0
     per_account_daily_limit_reached: int = 0
     per_account_total_limit_reached: int = 0
@@ -44,6 +48,9 @@ class PacingStats:
     def as_dict(self) -> dict[str, int | str]:
         return {
             "task_daily_action_count": self.task_daily_action_count,
+            "task_daily_base_budget": self.task_daily_base_budget,
+            "terminal_unconfirmed_click_count": self.terminal_unconfirmed_click_count,
+            "task_daily_effective_budget": self.task_daily_effective_budget,
             "task_daily_remaining": self.task_daily_remaining,
             "tenant_timezone": self.tenant_timezone,
             "local_date": self.local_date,
@@ -161,20 +168,43 @@ def _repeat_applications_allowed(task: Task) -> bool:
 
 
 def task_daily_capacity(session: Session, task: Task, window: PacingWindow, requested: int, stats: PacingStats) -> int:
-    max_daily = int((task.pacing_config or {}).get("max_actions_per_day") or 0)
+    base_budget = int((task.pacing_config or {}).get("max_actions_per_day") or 0)
     count = _task_daily_count(session, task, window.local_date)
     stats.tenant_timezone = task.timezone or "Asia/Shanghai"
     stats.local_date = window.local_date.isoformat()
     stats.task_daily_action_count = count
-    if max_daily <= 0:
+    stats.task_daily_base_budget = base_budget
+    if base_budget <= 0:
         stats.task_daily_remaining = requested
         return requested
-    remaining = max(0, max_daily - count)
+    replacement_count = _strict_daily_click_replacement_count(session, task, window.local_date)
+    effective_budget = base_budget + replacement_count
+    stats.terminal_unconfirmed_click_count = replacement_count
+    stats.task_daily_effective_budget = effective_budget
+    remaining = max(0, effective_budget - count)
     stats.task_daily_remaining = remaining
     if remaining <= 0:
         stats.task_daily_limit_reached = 1
         stats.last_limit_reason = "task_daily_limit_reached"
     return min(requested, remaining)
+
+
+def _strict_daily_click_replacement_count(session: Session, task: Task, local_date: date) -> int:
+    config = task.type_config or {}
+    if not config.get("strict_daily_target") or config.get("daily_click_target_count") is None:
+        return 0
+    start_at, end_at = _local_day_bounds_source(task.timezone, local_date)
+    action_at = func.coalesce(Action.executed_at, Action.scheduled_at)
+    actions = session.scalars(
+        select(Action).where(
+            Action.task_id == task.id,
+            Action.action_type == "search_join",
+            Action.status.in_(("success", "failed")),
+            action_at >= start_at,
+            action_at < end_at,
+        )
+    )
+    return sum(not has_confirmed_click_fact(action.result) for action in actions)
 
 
 def hourly_action_allowed(session: Session, task: Task, scheduled_at: datetime, *, max_actions_per_hour: int) -> bool:

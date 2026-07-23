@@ -10,6 +10,7 @@ from app.models import Action, Task
 
 from .search_click_target_progress import SearchClickTargetProgress, search_click_target_progress
 from .search_join_config import runtime_search_join_config
+from .search_join_facts import search_join_fact_in_window
 from .search_join_pacing import pacing_window
 
 SEARCH_JOIN_OPEN_STATUSES = ("pending", "claiming", "executing")
@@ -127,7 +128,7 @@ def search_join_hourly_execution(
     config = runtime_search_join_config(task)
     bucket_start = now_value.replace(minute=0, second=0, microsecond=0)
     bucket_end = bucket_start + timedelta(hours=1)
-    success_count = _search_join_success_count(session, task, start=bucket_start, end=bucket_end)
+    success_count = _search_join_hourly_fact_count(session, task, start=bucket_start, end=bucket_end)
     future_open = _search_join_open_count(
         session, task, now_value=now_value, bucket_end=bucket_end, overdue=False
     )
@@ -201,6 +202,19 @@ def _search_join_success_count(session: Session, task: Task, *, start: datetime,
         )
         or 0
     )
+
+
+def _search_join_hourly_fact_count(session: Session, task: Task, *, start: datetime, end: datetime) -> int:
+    if (task.type_config or {}).get("daily_click_target_count") is None:
+        return _search_join_success_count(session, task, start=start, end=end)
+    actions = session.scalars(
+        select(Action).where(
+            Action.tenant_id == task.tenant_id,
+            Action.task_id == task.id,
+            Action.action_type == "search_join",
+        )
+    )
+    return sum(search_join_fact_in_window(action, start, end, "click") for action in actions)
 
 
 def _search_join_open_count(

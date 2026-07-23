@@ -1167,6 +1167,96 @@ def test_search_join_daily_limits_count_failed_and_claiming_real_actions(session
 
 
 @pytest.mark.no_postgres
+def test_strict_daily_click_target_replaces_terminal_sources_without_click_fact(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixed_now = datetime(2026, 7, 23, 10, 0, 0)
+    monkeypatch.setattr(search_join_executor, "_now", lambda: fixed_now)
+    _bind_search_join_environment(session, [101])
+    task = _task(
+        account_config={"selection_mode": "manual", "account_ids": [101], "max_concurrent": 1},
+        type_config={
+            "daily_click_target_count": 2,
+            "strict_daily_target": True,
+            "allow_same_account_repeat_application": True,
+            "hourly_round_curve": [0] * 10 + [1] + [0] * 13,
+            "actions_per_round": 2,
+            "max_actions_per_hour": 4,
+            "hourly_min_successful_joins": 2,
+        },
+        pacing_config={"max_actions_per_day": 2, "hourly_jitter_percent": 0, "daily_jitter_percent": 0},
+    )
+    session.add(task)
+    session.flush()
+    session.add_all([
+        Action(
+            tenant_id=1,
+            task_id=task.id,
+            task_type=task.type,
+            action_type="search_join",
+            account_id=101,
+            status="success",
+            executed_at=fixed_now,
+            payload={},
+            result={"search_end_reason": "target_not_found"},
+        ),
+        Action(
+            tenant_id=1,
+            task_id=task.id,
+            task_type=task.type,
+            action_type="search_join",
+            account_id=101,
+            status="failed",
+            executed_at=fixed_now,
+            payload={},
+            result={"success": False},
+        ),
+    ])
+    session.commit()
+
+    assert build_task_plan(session, task) == 2
+    limits = task.stats["search_join_stats"]["pacing_limits"]
+
+    assert session.query(Action).filter_by(task_id=task.id, action_type="search_join").count() == 4
+    assert limits["task_daily_action_count"] == 2
+    assert limits["task_daily_base_budget"] == 2
+    assert limits["terminal_unconfirmed_click_count"] == 2
+    assert limits["task_daily_effective_budget"] == 4
+    assert limits["task_daily_remaining"] == 2
+
+
+@pytest.mark.no_postgres
+def test_strict_daily_click_target_keeps_unknown_after_send_in_held_budget(session: Session) -> None:
+    now_value = datetime(2026, 7, 23, 10, 0, 0)
+    task = _task(
+        type_config={"daily_click_target_count": 1, "strict_daily_target": True},
+        pacing_config={"max_actions_per_day": 1},
+    )
+    session.add(task)
+    session.flush()
+    session.add(Action(
+        tenant_id=1,
+        task_id=task.id,
+        task_type=task.type,
+        action_type="search_join",
+        account_id=101,
+        status="unknown_after_send",
+        executed_at=now_value,
+        payload={},
+        result={"gateway_call_state": "started"},
+    ))
+    session.commit()
+
+    limits = search_join_pacing.PacingStats()
+    capacity = search_join_pacing.task_daily_capacity(session, task, pacing_window(task, now_value), 1, limits)
+
+    assert capacity == 0
+    assert limits.terminal_unconfirmed_click_count == 0
+    assert limits.task_daily_effective_budget == 1
+
+
+@pytest.mark.no_postgres
 def test_search_join_planner_avoids_repeat_join_request_for_same_account(session: Session) -> None:
     _bind_search_join_environment(session, [101, 102])
     task = _task(
