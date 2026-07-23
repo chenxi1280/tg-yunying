@@ -172,13 +172,14 @@ def test_all_account_shortage_reason_does_not_scan_platform_accounts(session: Se
     assert "在线" in message
 
 
-def test_planner_does_not_normalize_legacy_coverage_config(session: Session) -> None:
+def test_planner_normalizes_legacy_all_account_coverage_config(session: Session) -> None:
     task, _group = _seed(session)
     task.type_config = {**task.type_config, "account_coverage_mode": "natural"}
 
     config = _canonicalized_task_config(session, task, dict(task.type_config))
 
-    assert config["account_coverage_mode"] == "natural"
+    assert config["account_coverage_mode"] == "all_accounts_daily"
+    assert task.type_config["account_coverage_mode"] == "all_accounts_daily"
 
 
 def test_coverage_plan_state_materializes_scope_once_and_reuses_rows(session: Session, monkeypatch) -> None:

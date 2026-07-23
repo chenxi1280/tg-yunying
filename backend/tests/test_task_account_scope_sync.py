@@ -15,6 +15,7 @@ from app.models import (
     Action,
     AiAccountVoiceProfile,
     OperationTarget,
+    RuntimeMetricSnapshot,
     Task,
     TaskAccountDailyCoverage,
     TaskMembershipAdmissionItem,
@@ -32,6 +33,8 @@ from app.services.task_center.account_scope import (
     emit_account_eligibility_event,
     initialize_all_account_task_scope,
     process_account_eligibility_events,
+    reconcile_all_account_scopes_if_due,
+    SCOPE_RECONCILE_METRIC,
 )
 from app.services.task_center.channel_membership import _account_can_attempt_membership
 from app.services import accounts as accounts_service
@@ -178,6 +181,36 @@ def test_legacy_all_account_task_with_natural_mode_is_included(session: Session)
 
     assert result.created_relations == 1
     assert legacy_task.type_config["account_coverage_mode"] == "all_accounts_daily"
+
+
+def test_daily_scope_reconcile_runs_at_new_day_before_interval_elapses(session: Session) -> None:
+    _seed_scope_base(session)
+    task = _task("daily-reconcile-task")
+    session.add_all([
+        _account(1, 10),
+        _account(2, 11, identity="code_receiver"),
+        task,
+        TaskMembershipAdmissionItem(
+            tenant_id=1,
+            task_id=task.id,
+            account_id=2,
+            target_id=31,
+            phase="failed",
+        ),
+        RuntimeMetricSnapshot(
+            captured_at=datetime(2026, 7, 10, 23, 59),
+            metric_name=SCOPE_RECONCILE_METRIC,
+        ),
+    ])
+    session.commit()
+
+    assert reconcile_all_account_scopes_if_due(session, now=datetime(2026, 7, 11, 0, 0, 1)) == 1
+
+    rows = list(session.scalars(select(TaskAccountDailyCoverage).where(
+        TaskAccountDailyCoverage.task_id == task.id,
+        TaskAccountDailyCoverage.coverage_date == datetime(2026, 7, 11).date(),
+    )))
+    assert [row.account_id for row in rows] == [1]
 
 
 def test_account_event_incrementally_syncs_only_changed_account(session: Session) -> None:

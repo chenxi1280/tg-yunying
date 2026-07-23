@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import create_engine, event, select
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
@@ -279,28 +279,41 @@ def test_existing_complete_daily_scope_skips_per_account_readiness_refresh(sessi
     assert result.refreshed == 0
 
 
-def test_new_daily_scope_uses_batched_readiness_without_per_account_queries(session: Session) -> None:
+def test_new_daily_scope_is_materialized_by_account_scope(session: Session) -> None:
     task = _seed(session)
     for account_id in range(1, 21):
         session.add(_account(account_id))
     session.commit()
     initialize_all_account_task_scope(session, task, now=datetime(2026, 7, 10, 10))
-    statement_count = 0
 
-    def count_select(_conn, _cursor, statement, _parameters, _context, _executemany):
-        nonlocal statement_count
-        if statement.lstrip().upper().startswith("SELECT"):
-            statement_count += 1
+    result = ensure_task_daily_coverage(session, task, now=datetime(2026, 7, 11, 10))
+    initialize_all_account_task_scope(session, task, now=datetime(2026, 7, 11, 10))
 
-    event.listen(session.bind, "before_cursor_execute", count_select)
+    rows = list(session.scalars(select(TaskAccountDailyCoverage).where(
+        TaskAccountDailyCoverage.coverage_date == date(2026, 7, 11),
+    )))
+    assert result.created == 0
+    assert result.refreshed == 0
+    assert len(rows) == 20
+
+
+def test_no_id_daily_coverage_does_not_rebuild_from_stale_task_relations(session: Session) -> None:
+    task = _seed(session)
+    session.add(_account(1, status="Session失效"))
+    session.add(TaskMembershipAdmissionItem(
+        tenant_id=1,
+        task_id=task.id,
+        account_id=1,
+        target_id=31,
+        phase="failed",
+    ))
+    session.commit()
 
     result = ensure_task_daily_coverage(session, task, now=datetime(2026, 7, 11, 10))
 
-    event.remove(session.bind, "before_cursor_execute", count_select)
-
-    assert result.created == 20
-    assert result.refreshed == 20
-    assert statement_count <= 7
+    assert result.created == 0
+    assert result.refreshed == 0
+    assert session.scalar(select(TaskAccountDailyCoverage)) is None
 
 
 def test_ready_coverage_rows_is_indexed_read_without_implicit_scope_refresh(session: Session, monkeypatch) -> None:
