@@ -319,12 +319,20 @@ def _run_real_planner_rounds(round_count: int) -> list[int]:
     planned_rounds: list[int] = []
     for _index in range(round_count):
         with SessionLocal() as session:
-            before = session.scalar(select(func.count()).select_from(Action).where(Action.task_id == TASK_ID)) or 0
+            before = _planned_send_count(session)
         task_service._plan_due_task(SessionLocal, TASK_ID, None, limit=100)
         with SessionLocal() as session:
-            after = session.scalar(select(func.count()).select_from(Action).where(Action.task_id == TASK_ID)) or 0
+            after = _planned_send_count(session)
         planned_rounds.append(after - before)
     return planned_rounds
+
+
+def _planned_send_count(session) -> int:
+    return session.scalar(
+        select(func.count())
+        .select_from(Action)
+        .where(Action.task_id == TASK_ID, Action.action_type == "send_message")
+    ) or 0
 
 
 def _run_real_planner_until(target_count: int) -> list[int]:
