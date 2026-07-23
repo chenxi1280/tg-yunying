@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 from sqlalchemy import create_engine
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Session
 
 from app.database import Base
@@ -104,3 +105,11 @@ def test_runtime_config_reference_streams_action_payload_scan() -> None:
 
     assert referenced is True
     assert payload_statements[0].get_execution_options()["yield_per"] == operation_target_peer_merge.ACTION_PAYLOAD_STREAM_BATCH_SIZE
+
+
+def test_duplicate_group_link_lock_targets_only_group_accounts() -> None:
+    statement = operation_target_peer_merge._duplicate_group_link_rows_statement(2810)
+
+    sql = str(statement.compile(dialect=postgresql.dialect()))
+
+    assert "FOR UPDATE OF tg_group_accounts" in sql

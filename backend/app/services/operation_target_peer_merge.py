@@ -245,12 +245,7 @@ def _key_is_target_or_group(key: object) -> bool:
 
 
 def _merge_duplicate_group_links(session: Session, group: TgGroup, duplicate_group: TgGroup) -> None:
-    rows = list(session.execute(
-        select(TgGroupAccount, TgAccount)
-        .outerjoin(TgAccount, TgAccount.id == TgGroupAccount.account_id)
-        .where(TgGroupAccount.group_id == duplicate_group.id)
-        .with_for_update()
-    ))
+    rows = list(session.execute(_duplicate_group_link_rows_statement(duplicate_group.id)))
     destinations = {
         link.account_id: link
         for link in session.scalars(select(TgGroupAccount).where(TgGroupAccount.group_id == group.id).with_for_update())
@@ -267,6 +262,15 @@ def _merge_duplicate_group_links(session: Session, group: TgGroup, duplicate_gro
             session.delete(source)
         else:
             source.group = group
+
+
+def _duplicate_group_link_rows_statement(duplicate_group_id: int):
+    return (
+        select(TgGroupAccount, TgAccount)
+        .outerjoin(TgAccount, TgAccount.id == TgGroupAccount.account_id)
+        .where(TgGroupAccount.group_id == duplicate_group_id)
+        .with_for_update(of=TgGroupAccount)
+    )
 
 
 def _assert_link_tenant_matches(group: TgGroup, link: TgGroupAccount, account: TgAccount | None) -> None:
