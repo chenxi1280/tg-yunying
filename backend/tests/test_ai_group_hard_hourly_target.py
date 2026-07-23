@@ -1358,6 +1358,50 @@ def test_group_ai_chat_hard_hourly_target_blocks_when_group_cooldown_cannot_meet
 
 
 @pytest.mark.no_postgres
+def test_all_accounts_daily_coverage_continues_when_hard_hourly_cooldown_is_unreachable(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 7, 20, 10)
+    _forbid_planner_external_work(monkeypatch)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
+    monkeypatch.setattr("app.services.task_center.daily_coverage._now", lambda: now_value)
+
+    with Session(engine) as session:
+        session.add_all([Tenant(id=1, name="默认运营空间"), TgGroup(
+            id=7, tenant_id=1, tg_peer_id="-1007", title="日覆盖群", auth_status="已授权运营",
+            daily_limit=675, group_cooldown_seconds=60,
+        )])
+        _add_ready_group_accounts(session, group_id=7, account_ids=[101, 102, 103, 104])
+        task = Task(
+            id="ai-daily-coverage-cooldown", tenant_id=1, name="日覆盖优先", type="group_ai_chat",
+            status="running", account_config={"selection_mode": "all", "max_concurrent": 4},
+            pacing_config={"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "max_actions_per_hour": 24},
+            type_config={"target_group_id": 7, "account_coverage_mode": "all_accounts_daily",
+                         "per_account_daily_min_messages": 1, "messages_per_round_mode": "manual",
+                         "messages_per_round": 4, "participation_rate": 1, "participation_jitter": 0,
+                         "allow_account_repeat": False, "reply_min_per_round": 0, "fact_anchor_required": False,
+                         "hard_hourly_target_enabled": True, "hourly_min_messages": 120},
+        )
+        session.add(task)
+        session.add_all([TaskAccountDailyCoverage(
+            tenant_id=1, task_id=task.id, group_id=7, account_id=account_id,
+            coverage_date=now_value.date(), state="ready", targeted_at=now_value,
+        ) for account_id in [101, 102, 103, 104]])
+        session.commit()
+        created = build_group_ai_chat_plan(session, task)
+        actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
+
+    assert created == len(actions)
+    assert created > 0
+    assert all(action.payload["account_coverage_mode"] == "all_accounts_daily" for action in actions)
+    assert all(action.payload["hard_hourly_target"] is False for action in actions)
+    assert all(action.payload["hard_hourly_bucket"] == "" for action in actions)
+    assert all(action.payload["hard_hourly_deficit_at_plan"] == 0 for action in actions)
+    assert task.stats["hard_hourly_capacity_status"] == "blocked"
+    assert task.last_error == "硬小时目标超过群冷却容量，已停止创建会过期的 Action"
+
+
+@pytest.mark.no_postgres
 @pytest.mark.parametrize("wait_for_context", [False, True])
 def test_group_ai_chat_all_accounts_daily_coverage_plans_uncovered_accounts_when_reply_targets_are_missing(
     monkeypatch,

@@ -276,7 +276,7 @@ group.daily_limit >= 当日目标消息数 + 已保留的普通对话预算
 启用硬小时目标时：floor(3600 / group_cooldown_seconds) >= max(hourly_min_messages, 当前小时规划缺口)（未设置群冷却时不限制）
 ```
 
-系统不得静默提高群日上限、降低群冷却或绕过风险配置。容量不足时，预检和任务详情必须展示当前值、最低需要值和差额，并阻止新任务启动；已有运行任务进入显式 `coverage_capacity_blocked` 或 `hard_hourly_group_cooldown_insufficient` 运行阻塞，不得显示可按时完成。硬小时目标或当前小时补量超过群冷却单小时槽位时，Planner 不得继续创建必然在 bucket 到期后跳过的 Action；Recovery 必须将遗留的 pending/claiming 硬小时 Action 标记为 `hard_hourly_group_cooldown_insufficient` 并释放覆盖预约，避免继续挤占点赞、浏览或评论调度。运营人员应用推荐值并保存后才生效，所有调整写审计日志。
+系统不得静默提高群日上限、降低群冷却或绕过风险配置。容量不足时，预检和任务详情必须展示当前值、最低需要值和差额，并阻止新任务启动；已有运行任务进入显式 `coverage_capacity_blocked` 或 `hard_hourly_group_cooldown_insufficient` 运行阻塞，不得显示可按时完成。硬小时目标或当前小时补量超过群冷却单小时槽位时，Planner 不得继续创建必然在 bucket 到期后跳过的 `hard_hourly_target=true` Action；Recovery 必须将遗留的 pending/claiming 硬小时 Action 标记为 `hard_hourly_group_cooldown_insufficient` 并释放覆盖预约，避免继续挤占点赞、浏览或评论调度。若同一 `all_accounts_daily` 任务的日覆盖容量证明仍为 `sufficient`，该硬小时阻塞不得停止日覆盖：Planner 必须继续按 `daily_coverage_due_debt` 创建不携带 `hard_hourly_target`、`hard_hourly_bucket` 或 `hard_hourly_deficit_at_plan` 的覆盖 Action，且详情页分别展示硬小时阻塞和日覆盖进度。运营人员应用推荐值并保存后才生效，所有调整写审计日志。
 
 Telegram 调用前还必须执行最终运行时校验：Dispatcher 在 `TgGroup` 行锁内先核对当前北京时间是否处于 `active_window`，再统计本群已持久化的 `before_call`、`gateway_call_started`、`success`、`result_unknown` 槽位及旧消息发送成功事实；仅在活动时段、群日上限和群冷却均允许时，写入并提交当前 `ExecutionAttempt(before_call)`，随后才可调用 Telegram。活动时段外的 Action 必须延后到下一次群活跃窗口开始；命中群日上限时，Action 必须延后到下一自然日的群活跃窗口开始；命中群冷却时延后到冷却结束。三者都不调用 Telegram，也不得落入通用的一秒重试；覆盖预约和消息记忆继续保留，不能伪造失败或完成。
 

@@ -301,7 +301,10 @@ def _load_plan_facts(session: Session, task: Task) -> PlanFacts | PlanAbort:
     if isinstance(group, PlanAbort):
         return group
     if _hard_hourly_group_cooldown_blocker(task, group, progress):
-        return PlanAbort()
+        if not _all_accounts_daily_coverage(config):
+            return PlanAbort()
+        # Keep the unreachable hard target visible, but do not tag daily coverage as hard-hourly work.
+        progress = {}
     coverage = _coverage_plan_state(session, task, group, config, progress)
     _record_daily_coverage_next_check(task, coverage.due_debt > 0)
     if _coverage_capacity_blocker(
@@ -1065,7 +1068,12 @@ def _record_plan_completion(
     ):
         stats.pop(key, None)
     progress = blueprint.facts.hard_progress
-    task.last_error = _hard_blocked_last_error(created, prepared.hard_blockers, progress)
+    task.last_error = _hard_blocked_last_error(
+        task,
+        created=created,
+        blockers=prepared.hard_blockers,
+        progress=progress,
+    )
     task.stats = stats
     if progress:
         mark_plan_result(task, progress, created, prepared.hard_blockers or None)
@@ -1203,7 +1211,15 @@ def _daily_coverage_generation_is_deferred(
     return len(_group_reply_target_pool(session, task, group, usable_context_rows)) < reply_min
 
 
-def _hard_blocked_last_error(created: int, blockers: dict[str, int], progress: dict[str, object]) -> str:
+def _hard_blocked_last_error(
+    task: Task,
+    *,
+    created: int,
+    blockers: dict[str, int],
+    progress: dict[str, object],
+) -> str:
+    if task.last_error == HARD_HOURLY_GROUP_COOLDOWN_BLOCKED_MESSAGE:
+        return task.last_error
     if created > 0 or not progress:
         return ""
     if blockers.get("account_capacity"):
