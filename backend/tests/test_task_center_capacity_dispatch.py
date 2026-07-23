@@ -104,10 +104,39 @@ class FakeRedisAccountLock:
         self.set_calls.append((str(key), str(token), bool(nx), int(ex)))
         return self.locked
 
+    def get(self, _key):  # noqa: ANN001
+        return None
+
     def eval(self, _script, numkeys, *args):  # noqa: ANN001
         if numkeys == 1:
             self.released_keys.append(str(args[0]))
         return 1
+
+
+class FakeRedisRecoverableAccountLock:
+    def __init__(self, locks: dict[str, str]) -> None:
+        self.locks = dict(locks)
+        self.released_keys: list[str] = []
+
+    def set(self, key, token, *, nx, ex):  # noqa: ANN001
+        key_text = str(key)
+        if nx and key_text in self.locks:
+            return False
+        self.locks[key_text] = str(token)
+        return True
+
+    def get(self, key):  # noqa: ANN001
+        value = self.locks.get(str(key))
+        return value.encode() if value else None
+
+    def eval(self, _script, numkeys, *args):  # noqa: ANN001
+        assert numkeys == 1
+        key_text, token = str(args[0]), str(args[1])
+        self.released_keys.append(key_text)
+        if self.locks.get(key_text) == token:
+            del self.locks[key_text]
+            return 1
+        return 0
 
 
 def _voice_profile(account_id: int, summary: str = "青年短句，少总结，偶尔追问") -> AiAccountVoiceProfile:
@@ -3862,6 +3891,82 @@ def test_claim_actions_uses_redis_account_inflight_lock(monkeypatch):
         assert action.result["claim_released_reason"] == "account_inflight_conflict"
         assert fake_redis.set_calls[0][0] == "inflight:account:11"
         assert 11 not in dispatcher._IN_FLIGHT_ACCOUNTS
+
+
+@pytest.mark.no_postgres
+def test_claim_actions_reclaims_redis_lock_owned_by_terminal_action(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    lock_key = "inflight:account:11"
+    fake_redis = FakeRedisRecoverableAccountLock({lock_key: "terminal-action:old-worker-token"})
+    settings = _redis_bucket_settings(
+        enable_redis_token_bucket=False,
+        enable_redis_account_inflight=True,
+    )
+    monkeypatch.setattr(dispatcher, "get_settings", lambda: settings)
+    monkeypatch.setattr(dispatcher, "_redis_client", lambda _redis_url: fake_redis)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgAccount(id=11, tenant_id=1, display_name="账号", phone_masked="+861***0011", status="在线"))
+        session.add_all(
+            [
+                Task(id="task-terminal-lock", tenant_id=1, name="terminal lock", type="group_relay", status="running", priority=1),
+                Task(id="task-next-lock", tenant_id=1, name="next lock", type="group_relay", status="running", priority=1),
+            ]
+        )
+        session.add_all(
+            [
+                Action(id="terminal-action", tenant_id=1, task_id="task-terminal-lock", task_type="group_relay", action_type="send_message", account_id=11, status="failed", scheduled_at=now_value, executed_at=now_value, payload={}),
+                Action(id="next-action", tenant_id=1, task_id="task-next-lock", task_type="group_relay", action_type="send_message", account_id=11, status="pending", scheduled_at=now_value, payload={"chat_id": "-1001", "message_text": "hello"}),
+            ]
+        )
+        session.commit()
+
+        claimed = claim_actions(session, limit=1, worker_id="worker-test")
+
+        assert [action.id for action in claimed] == ["next-action"]
+        action = session.get(Action, "next-action")
+        assert action.result["terminal_holder_lock_recovered_action_id"] == "terminal-action"
+        assert fake_redis.released_keys == [lock_key]
+        assert fake_redis.locks[lock_key].startswith("next-action:")
+
+
+@pytest.mark.no_postgres
+def test_claim_actions_keeps_redis_lock_owned_by_executing_action(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    lock_key = "inflight:account:11"
+    holder_token = "executing-action:live-worker-token"
+    fake_redis = FakeRedisRecoverableAccountLock({lock_key: holder_token})
+    settings = _redis_bucket_settings(
+        enable_redis_token_bucket=False,
+        enable_redis_account_inflight=True,
+    )
+    monkeypatch.setattr(dispatcher, "get_settings", lambda: settings)
+    monkeypatch.setattr(dispatcher, "_redis_client", lambda _redis_url: fake_redis)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgAccount(id=11, tenant_id=1, display_name="账号", phone_masked="+861***0011", status="在线"))
+        session.add(Task(id="task-executing-lock", tenant_id=1, name="executing lock", type="group_relay", status="running", priority=1))
+        session.add_all(
+            [
+                Action(id="executing-action", tenant_id=1, task_id="task-executing-lock", task_type="group_relay", action_type="send_message", account_id=11, status="executing", scheduled_at=now_value, payload={}),
+                Action(id="next-action", tenant_id=1, task_id="task-executing-lock", task_type="group_relay", action_type="send_message", account_id=11, status="pending", scheduled_at=now_value, payload={"chat_id": "-1001", "message_text": "hello"}),
+            ]
+        )
+        session.commit()
+
+        assert claim_actions(session, limit=1, worker_id="worker-test") == []
+
+        action = session.get(Action, "next-action")
+        assert action.status == "pending"
+        assert action.result["claim_released_reason"] == "account_inflight_conflict"
+        assert fake_redis.locks[lock_key] == holder_token
+        assert fake_redis.released_keys == []
 
 
 def test_claim_actions_keeps_pending_and_delays_when_redis_token_bucket_is_limited(monkeypatch):

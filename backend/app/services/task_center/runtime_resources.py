@@ -16,6 +16,8 @@ def _setting(settings, name: str, default):
 _IN_FLIGHT_LOCK = threading.Lock()
 _IN_FLIGHT_ACCOUNTS: set[int] = set()
 _ACTION_RESERVATIONS: dict[str, "_RuntimeReservation"] = {}
+_TERMINAL_LOCK_HOLDER_STATUSES = frozenset({"success", "failed", "skipped", "unknown_after_send"})
+_RELEASE_IF_OWNER_LUA = "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end"
 
 
 @dataclass(frozen=True)
@@ -124,6 +126,15 @@ def _reserve_redis_account_lock(action: Action, account_id: int | None) -> tuple
     try:
         client = _redis_client(settings.redis_url)
         locked = client.set(lock_key, lock_token, nx=True, ex=ttl_seconds)
+        if not locked:
+            recovered_action_id = _recover_terminal_redis_account_lock(action, client, lock_key, account_id)
+            if recovered_action_id:
+                locked = client.set(lock_key, lock_token, nx=True, ex=ttl_seconds)
+                if locked:
+                    action.result = {
+                        **(action.result or {}),
+                        "terminal_holder_lock_recovered_action_id": recovered_action_id,
+                    }
     except Exception:
         action.result = {
             **(action.result or {}),
@@ -139,6 +150,21 @@ def _reserve_redis_account_lock(action: Action, account_id: int | None) -> tuple
         "runtime_resource_wait_seconds": 1,
     }
     return False
+
+
+def _recover_terminal_redis_account_lock(action: Action, client, lock_key: str, account_id: int) -> str | None:  # noqa: ANN001
+    raw_token = client.get(lock_key)
+    lock_token = raw_token.decode("utf-8", "replace") if isinstance(raw_token, bytes) else str(raw_token or "")
+    holder_action_id, separator, _ = lock_token.partition(":")
+    if not separator:
+        return None
+    from sqlalchemy.orm import object_session
+
+    session = object_session(action)
+    holder = session.get(Action, holder_action_id) if session else None
+    if not holder or holder.account_id != account_id or holder.status not in _TERMINAL_LOCK_HOLDER_STATUSES:
+        return None
+    return holder.id if _delete_redis_value_if_matches(client, lock_key, lock_token) else None
 
 
 def _redis_client(redis_url: str):
@@ -252,7 +278,10 @@ def _task_type_weight(task_type: str, settings) -> float:
 def _release_redis_reservation(key: str, token: str) -> None:
     try:
         client = _redis_client(get_settings().redis_url)
-        script = "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end"
-        client.eval(script, 1, key, token)
+        _delete_redis_value_if_matches(client, key, token)
     except Exception:
         return
+
+
+def _delete_redis_value_if_matches(client, key: str, token: str) -> bool:  # noqa: ANN001
+    return bool(client.eval(_RELEASE_IF_OWNER_LUA, 1, key, token))
