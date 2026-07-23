@@ -4,7 +4,7 @@ from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, delete, event, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
@@ -18,6 +18,7 @@ from app.models import (
     RuntimeMetricSnapshot,
     Task,
     TaskAccountDailyCoverage,
+    TaskDailyCoveragePlanCursor,
     TaskMembershipAdmissionItem,
     Tenant,
     TgAccount,
@@ -205,6 +206,43 @@ def test_planner_bootstraps_missing_legacy_all_account_scope_once(
     assert set(first.rows_by_account) == {1}
     assert set(second.rows_by_account) == {1}
     assert [item.account_id for item in relations] == [1]
+
+
+def test_hard_deleting_task_cascades_daily_scope_rows() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+
+    @event.listens_for(engine, "connect")
+    def enable_foreign_keys(dbapi_connection, _connection_record) -> None:
+        dbapi_connection.execute("PRAGMA foreign_keys=ON")
+
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="租户"))
+        session.flush()
+        session.add(AccountPool(id=10, tenant_id=1, name="普通", pool_purpose="normal", is_enabled=True))
+        session.add(TgGroup(id=21, tenant_id=1, tg_peer_id="-10021", title="目标群"))
+        session.add(OperationTarget(
+            id=31, tenant_id=1, target_type="group", tg_peer_id="-10021", title="目标群",
+            auth_status="已授权运营", can_send=True,
+        ))
+        session.flush()
+        task = _task("delete-cascade-task")
+        session.add_all([_account(1, 10), task])
+        session.commit()
+        initialize_all_account_task_scope(session, task, now=datetime(2026, 7, 10, 10))
+        session.add(TaskDailyCoveragePlanCursor(
+            tenant_id=1,
+            task_id=task.id,
+            coverage_date=datetime(2026, 7, 10).date(),
+        ))
+        session.commit()
+
+        session.execute(delete(Task).where(Task.id == task.id))
+        session.commit()
+
+        assert session.scalar(select(TaskMembershipAdmissionItem)) is None
+        assert session.scalar(select(TaskAccountDailyCoverage)) is None
+        assert session.scalar(select(TaskDailyCoveragePlanCursor)) is None
 
 
 def test_daily_scope_reconcile_runs_at_new_day_before_interval_elapses(session: Session) -> None:

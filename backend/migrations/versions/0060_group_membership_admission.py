@@ -28,7 +28,7 @@ def upgrade() -> None:
         "task_membership_admission_items",
         sa.Column("id", sa.Integer(), primary_key=True),
         sa.Column("tenant_id", sa.Integer(), sa.ForeignKey("tenants.id"), nullable=False),
-        sa.Column("task_id", sa.String(length=36), sa.ForeignKey("tasks.id"), nullable=False),
+        sa.Column("task_id", sa.String(length=36), sa.ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False),
         sa.Column("account_id", sa.Integer(), sa.ForeignKey("tg_accounts.id"), nullable=False),
         sa.Column("target_id", sa.Integer(), sa.ForeignKey("operation_targets.id"), nullable=False),
         sa.Column("phase", sa.String(length=40), nullable=False, server_default="pending"),

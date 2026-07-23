@@ -319,7 +319,7 @@ class TaskMembershipAdmissionItem(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), default=1)
-    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"))
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"))
     account_id: Mapped[int] = mapped_column(ForeignKey("tg_accounts.id"))
     target_id: Mapped[int] = mapped_column(ForeignKey("operation_targets.id"))
     phase: Mapped[str] = mapped_column(String(40), default="pending")

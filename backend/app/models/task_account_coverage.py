@@ -37,11 +37,11 @@ class TaskAccountDailyCoverage(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
-    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"))
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"))
     group_id: Mapped[int] = mapped_column(ForeignKey("tg_groups.id"))
     account_id: Mapped[int] = mapped_column(ForeignKey("tg_accounts.id"))
     membership_item_id: Mapped[int | None] = mapped_column(
-        ForeignKey("task_membership_admission_items.id"), nullable=True,
+        ForeignKey("task_membership_admission_items.id", ondelete="CASCADE"), nullable=True,
     )
     coverage_date: Mapped[date] = mapped_column(Date)
     target_count: Mapped[int] = mapped_column(Integer, default=1)
@@ -70,7 +70,7 @@ class TaskDailyCoveragePlanCursor(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
-    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"))
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"))
     coverage_date: Mapped[date] = mapped_column(Date)
     last_targeted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_account_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
