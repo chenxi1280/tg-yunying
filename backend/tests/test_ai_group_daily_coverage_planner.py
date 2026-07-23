@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from datetime import datetime, time
 
 import pytest
@@ -32,7 +33,9 @@ from app.services.task_center.executors.group_ai_chat import (
 )
 from app.services.task_center.payloads import SendMessagePayload
 from app.services.task_center import daily_coverage
+from app.services.task_center import coverage_capacity
 from app.services.task_center.daily_coverage_readiness import refresh_rows
+from app.services.task_center.executors import group_ai_chat
 from app.timezone import beijing_now
 
 
@@ -45,6 +48,14 @@ def session() -> Session:
     Base.metadata.create_all(engine)
     with Session(engine) as current:
         yield current
+
+
+@pytest.fixture
+def stable_capacity_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    fixed_now = beijing_now().replace(hour=20, minute=0, second=0, microsecond=0)
+    monkeypatch.setattr(sys.modules[__name__], "beijing_now", lambda: fixed_now)
+    monkeypatch.setattr(group_ai_chat, "_now", lambda: fixed_now)
+    monkeypatch.setattr(coverage_capacity, "_now", lambda: fixed_now)
 
 
 def _seed(session: Session) -> tuple[Task, TgGroup]:
@@ -123,7 +134,10 @@ def test_all_account_planner_does_not_fall_back_to_platform_scan_without_ready_d
     assert selected == []
 
 
-def test_running_all_account_task_blocks_when_daily_capacity_is_insufficient(session: Session) -> None:
+def test_running_all_account_task_blocks_when_daily_capacity_is_insufficient(
+    session: Session,
+    stable_capacity_clock: None,
+) -> None:
     task, group = _seed(session)
     group.daily_limit = 1
 
@@ -134,7 +148,10 @@ def test_running_all_account_task_blocks_when_daily_capacity_is_insufficient(ses
     assert task.stats["coverage_capacity_status"] == "blocked"
 
 
-def test_running_all_account_task_clears_recovered_capacity_error(session: Session) -> None:
+def test_running_all_account_task_clears_recovered_capacity_error(
+    session: Session,
+    stable_capacity_clock: None,
+) -> None:
     task, group = _seed(session)
     task.last_error = "全部账号每日覆盖容量不足，已停止创建发送 Action"
     task.stats = {"coverage_capacity_status": "blocked"}
@@ -202,7 +219,10 @@ def test_coverage_plan_state_materializes_scope_once_and_reuses_rows(session: Se
     assert state.account_count == 3
 
 
-def test_coverage_plan_state_reconciles_remote_success_before_capacity_gate(session: Session) -> None:
+def test_coverage_plan_state_reconciles_remote_success_before_capacity_gate(
+    session: Session,
+    stable_capacity_clock: None,
+) -> None:
     task, group = _seed(session)
     group.daily_limit = 3
     for account_id in (1, 2, 3):
