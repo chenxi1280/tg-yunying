@@ -670,6 +670,23 @@ def test_dispatcher_keeps_non_shared_generation_actions_parallel(monkeypatch):
 
 
 @pytest.mark.no_postgres
+def test_dispatcher_keeps_unrelated_action_parallel_to_shared_generation_batch(monkeypatch):
+    claimed = [
+        _pending_generation_action(1),
+        _pending_generation_action(2),
+        SimpleNamespace(
+            id="action-ordinary",
+            tenant_id=1,
+            task_id="task-ordinary",
+            action_type="send_message",
+            payload={"message_text": "ready"},
+        ),
+    ]
+
+    assert _max_parallel_dispatches(monkeypatch, claimed) == 2
+
+
+@pytest.mark.no_postgres
 def test_shared_generation_detection_requires_two_matching_actions():
     one_generation = _pending_generation_action(1)
     ordinary = SimpleNamespace(

@@ -2906,46 +2906,65 @@ def _drain_task_dispatcher(session_factory, *, limit: int, exclude_task_ids: set
             session.commit()
         claim_limit = min(max(1, int(limit or 1)), effective_concurrency)
         claimed = claim_actions(session, limit=claim_limit, exclude_task_ids=exclude_task_ids)
-        action_ids = [action.id for action in claimed]
-        serialize_generation = _has_shared_ai_generation_batch(claimed)
-    if not action_ids:
+        action_batches = _dispatcher_execution_batches(claimed)
+    if not action_batches:
         return 0
     concurrency = 1 if dialect_name == "sqlite" else effective_concurrency
-    if serialize_generation:
-        concurrency = 1
-    if concurrency <= 1 or len(action_ids) == 1:
-        return sum(_dispatch_claimed_action(session_factory, action_id) for action_id in action_ids)
+    if concurrency <= 1 or len(action_batches) == 1:
+        return sum(_dispatch_claimed_action_batch(session_factory, batch) for batch in action_batches)
     processed = 0
-    with ThreadPoolExecutor(max_workers=min(concurrency, len(action_ids)), thread_name_prefix="task-dispatcher") as executor:
-        futures = [executor.submit(_dispatch_claimed_action, session_factory, action_id) for action_id in action_ids]
+    with ThreadPoolExecutor(max_workers=min(concurrency, len(action_batches)), thread_name_prefix="task-dispatcher") as executor:
+        futures = [executor.submit(_dispatch_claimed_action_batch, session_factory, batch) for batch in action_batches]
         for future in as_completed(futures):
             processed += int(future.result() or 0)
     return processed
 
 
+def _dispatcher_execution_batches(actions: list[Action]) -> list[tuple[str, ...]]:
+    if not _has_shared_ai_generation_batch(actions):
+        return [(action.id,) for action in actions]
+    batches: list[list[str]] = []
+    batch_indexes: dict[tuple[object, ...], int] = {}
+    for action in actions:
+        key = _shared_ai_generation_batch_key(action)
+        if key is None:
+            batches.append([action.id])
+            continue
+        index = batch_indexes.get(key)
+        if index is None:
+            batch_indexes[key] = len(batches)
+            batches.append([action.id])
+            continue
+        batches[index].append(action.id)
+    return [tuple(batch) for batch in batches]
+
+
 def _has_shared_ai_generation_batch(actions: list[Action]) -> bool:
     generation_keys: set[tuple] = set()
     for action in actions:
-        payload = action.payload if isinstance(action.payload, dict) else {}
-        if action.action_type != "send_message" or str(payload.get("message_text") or "").strip():
-            continue
-        if payload.get("reply_to_message_id"):
-            continue
-        if payload.get("ai_generation_status") not in {"pending", "ai_result_persist_unknown"}:
-            continue
-        key = (
-            action.tenant_id,
-            action.task_id,
-            payload.get("ai_generation_id"),
-            payload.get("ai_generation_claim_owner"),
-            payload.get("ai_generation_claim_token"),
-        )
-        if not all(key):
+        key = _shared_ai_generation_batch_key(action)
+        if key is None:
             continue
         if key in generation_keys:
             return True
         generation_keys.add(key)
     return False
+
+
+def _shared_ai_generation_batch_key(action: Action) -> tuple[object, ...] | None:
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    if action.action_type != "send_message" or str(payload.get("message_text") or "").strip():
+        return None
+    if payload.get("reply_to_message_id") or payload.get("ai_generation_status") not in {"pending", "ai_result_persist_unknown"}:
+        return None
+    key = (
+        action.tenant_id,
+        action.task_id,
+        payload.get("ai_generation_id"),
+        payload.get("ai_generation_claim_owner"),
+        payload.get("ai_generation_claim_token"),
+    )
+    return key if all(key) else None
 
 
 def _dispatcher_concurrency() -> int:
@@ -2960,6 +2979,10 @@ def _dispatch_claimed_action(session_factory, action_id: str) -> int:
         return _dispatch_claimed_action_once(session_factory, action_id)
     except SQLAlchemyError as exc:
         return _record_dispatch_db_error(session_factory, action_id, exc)
+
+
+def _dispatch_claimed_action_batch(session_factory, action_ids: tuple[str, ...]) -> int:
+    return sum(_dispatch_claimed_action(session_factory, action_id) for action_id in action_ids)
 
 
 def _dispatch_claimed_action_once(session_factory, action_id: str) -> int:
