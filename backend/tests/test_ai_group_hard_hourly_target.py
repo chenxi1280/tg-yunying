@@ -45,6 +45,7 @@ from app.services.task_center.hard_hourly import (
     current_progress as hard_hourly_current_progress,
     hard_schedule_times,
     mark_plan_result,
+    next_check_for_progress as hard_hourly_next_check_for_progress,
     planning_rate,
     planner_progress_snapshot,
     requires_planning as hard_hourly_requires_planning,
@@ -2705,7 +2706,8 @@ def test_group_ai_chat_hard_hourly_membership_permission_blocker(monkeypatch):
     assert task.stats["hard_hourly_last_blockers"] == {"target_permission": 3}
 
 
-def test_hard_hourly_future_pending_is_visible_but_does_not_cover_deficit(monkeypatch):
+@pytest.mark.no_postgres
+def test_hard_hourly_overdue_pending_blocks_replanning_until_dispatch_recovers(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = datetime(2026, 6, 7, 20, 30)
@@ -2738,6 +2740,7 @@ def test_hard_hourly_future_pending_is_visible_but_does_not_cover_deficit(monkey
         session.commit()
 
         stats = refresh_task_stats(session, task)
+        progress = hard_hourly_current_progress(session, task, now_value)
         needs_more = hard_hourly_requires_planning(session, task, now_value)
 
     assert stats["hard_hourly_success_count"] == 1
@@ -2747,7 +2750,54 @@ def test_hard_hourly_future_pending_is_visible_but_does_not_cover_deficit(monkey
     assert stats["hard_hourly_planning_deficit"] == 1
     assert stats["hard_hourly_status"] == "blocked"
     assert stats["hard_hourly_last_blockers"] == {"dispatcher_lag": 1}
-    assert needs_more is True
+    assert progress["planning_blocked"] is True
+    assert hard_hourly_next_check_for_progress(task, progress, now_value) == now_value + timedelta(seconds=30)
+    assert needs_more is False
+
+
+@pytest.mark.no_postgres
+def test_daily_coverage_planner_does_not_create_actions_behind_overdue_hard_hourly_send(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 7, 20, 30)
+    monkeypatch.setattr("app.services.task_center.service._now", lambda: now_value)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
+    monkeypatch.setattr(
+        "app.services.task_center.service.build_task_plan",
+        lambda *_args, **_kwargs: pytest.fail("dispatcher lag must not create another hard-hourly action"),
+    )
+
+    with Session(engine) as session:
+        task = Task(
+            id="daily-coverage-dispatcher-lag",
+            tenant_id=1,
+            name="日覆盖执行积压",
+            type="group_ai_chat",
+            status="running",
+            type_config={
+                "account_coverage_mode": "all_accounts_daily",
+                "hard_hourly_target_enabled": True,
+                "hourly_min_messages": 1,
+                "hard_hourly_strategy": "force_planning",
+            },
+        )
+        session.add_all([
+            Tenant(id=1, name="默认运营空间"),
+            task,
+            _send_action("overdue-send", task, "pending", account_id=101, scheduled_at=now_value - timedelta(minutes=1)),
+        ])
+        session.commit()
+
+    result = _plan_due_task_batch(
+        lambda: Session(engine),
+        "daily-coverage-dispatcher-lag",
+        None,
+        limit=1,
+        plan_limit=1,
+        global_pending=0,
+    )
+
+    assert result == (0, 0, False, 0)
 
 
 def test_hard_hourly_future_pending_covers_planning_deficit_only(monkeypatch):

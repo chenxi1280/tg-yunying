@@ -39,10 +39,10 @@ def goal(config: dict[str, Any]) -> int:
         return 0
 
 
-def current_progress(session: Session, task: Task, now: datetime) -> dict[str, Any]:
+def current_progress(session: Session, task: Task, now: datetime, *, fresh: bool = False) -> dict[str, Any]:
     cache = session.info.get(PLANNER_PROGRESS_SESSION_KEY, {})
     cached = cache.get((task.tenant_id, task.id))
-    if cached is not None:
+    if cached is not None and not fresh:
         return dict(cached)
     return _current_progress(session, task, now)
 
@@ -69,29 +69,48 @@ def _current_progress(session: Session, task: Task, now: datetime) -> dict[str, 
     planning_deficit = int(stats.get("hard_hourly_planning_deficit", delivery_deficit) or 0)
     backfill_delivery_deficit = int(stats.get("hard_hourly_backfill_delivery_deficit") or 0)
     backfill_planning_deficit = int(stats.get("hard_hourly_backfill_planning_deficit") or 0)
+    total_planning_deficit = planning_deficit + backfill_planning_deficit
+    overdue_open_count = int(stats.get("hard_hourly_overdue_open_count") or 0)
     return {
         "enabled": bool(stats.get("hard_hourly_target_enabled")),
         "goal": int(stats.get("hard_hourly_goal") or 0),
         "bucket": str(stats.get("hard_hourly_bucket") or ""),
-        "deficit": planning_deficit + backfill_planning_deficit,
+        "deficit": total_planning_deficit,
         "delivery_deficit": delivery_deficit + backfill_delivery_deficit,
         "backfill_debt": int(stats.get("hard_hourly_backfill_debt") or 0),
         "backfill_planning_deficit": backfill_planning_deficit,
         "backfill_delivery_deficit": backfill_delivery_deficit,
         "future_open_count": int(stats.get("hard_hourly_open_count") or 0),
-        "overdue_open_count": int(stats.get("hard_hourly_overdue_open_count") or 0),
+        "overdue_open_count": overdue_open_count,
+        "planning_blocked": overdue_open_count > 0 and total_planning_deficit > 0,
         "hour_end": hour_bounds(task, now)[1],
         "now": now_local,
     }
 
 
 def next_check_for_progress(task: Task, progress: dict[str, Any], now: datetime) -> datetime:
+    if planning_blocked_by_dispatcher_lag(progress):
+        return _next_check_at(
+            {"dispatcher_lag": int(progress.get("overdue_open_count") or 1)},
+            progress,
+            normalize(task, now),
+        )
     return progress["hour_end"] if int(progress.get("deficit") or 0) <= 0 else _next_check_at({}, progress, normalize(task, now))
 
 
-def requires_planning(session: Session, task: Task, now: datetime) -> bool:
-    progress = current_progress(session, task, now)
-    return bool(progress["enabled"]) and int(progress["deficit"]) > 0
+def requires_planning(session: Session, task: Task, now: datetime, *, fresh: bool = False) -> bool:
+    progress = current_progress(session, task, now, fresh=fresh)
+    return (
+        bool(progress["enabled"])
+        and int(progress["deficit"]) > 0
+        and not planning_blocked_by_dispatcher_lag(progress)
+    )
+
+
+def planning_blocked_by_dispatcher_lag(progress: dict[str, Any]) -> bool:
+    if "planning_blocked" in progress:
+        return bool(progress["planning_blocked"])
+    return int(progress.get("overdue_open_count") or 0) > 0 and int(progress.get("deficit") or 0) > 0
 
 
 def hard_hourly_stats(session: Session, task: Task, now: datetime, current_stats: dict[str, Any]) -> dict[str, Any]:

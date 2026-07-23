@@ -2888,7 +2888,7 @@ def _skip_open_ai_plan(session: Session, task: Task, has_open_actions: bool, *, 
     return (
         task.type == "group_ai_chat"
         and has_open_actions
-        and not hard_hourly_requires_planning(session, task, _now())
+        and not hard_hourly_requires_planning(session, task, _now(), fresh=True)
         and not allow_planning
     )
 

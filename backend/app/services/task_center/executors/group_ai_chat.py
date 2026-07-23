@@ -70,7 +70,9 @@ from ..hard_hourly import (
     enabled as hard_hourly_enabled,
     hard_schedule_times,
     mark_plan_result,
+    planning_blocked_by_dispatcher_lag,
     planning_rate as hard_hourly_planning_rate,
+    requires_planning as hard_hourly_requires_planning,
 )
 from ..pacing import current_hour_rounds, operation_intensity, schedule_times
 from ..payloads import SendMessagePayload, create_send_action
@@ -1159,6 +1161,9 @@ def prepare_open_actions_for_planning(session: Session, task: Task) -> int:
     )
     if not group:
         return legacy_replanned
+    fresh_hard_progress = current_progress(session, task, _now(), fresh=True) if hard_hourly_enabled(task) else {}
+    if planning_blocked_by_dispatcher_lag(fresh_hard_progress):
+        return legacy_replanned
     hard_progress = current_progress(session, task, _now()) if hard_hourly_enabled(task) else {}
     hard_progress = hard_progress if int(hard_progress.get("deficit") or 0) > 0 else {}
     accounts = _select_accounts_for_plan(session, task, group, hard_progress, config)
@@ -1644,6 +1649,8 @@ def _coverage_plan_state(
 def requires_planning_with_open_actions(session: Session, task: Task) -> bool:
     config = task.type_config or {}
     if not _all_accounts_daily_coverage(config):
+        return False
+    if hard_hourly_enabled(task) and not hard_hourly_requires_planning(session, task, _now(), fresh=True):
         return False
     group = group_from_reference(
         session,

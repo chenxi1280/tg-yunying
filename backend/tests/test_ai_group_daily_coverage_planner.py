@@ -136,6 +136,36 @@ def test_all_account_planner_does_not_fall_back_to_platform_scan_without_ready_d
     assert selected == []
 
 
+def test_daily_coverage_does_not_replan_while_hard_hourly_dispatch_is_lagging(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task, _group = _seed(session)
+    now_value = beijing_now().replace(hour=20, minute=30, second=0, microsecond=0)
+    task.type_config = {
+        **task.type_config,
+        "hard_hourly_target_enabled": True,
+        "hourly_min_messages": 1,
+        "hard_hourly_strategy": "force_planning",
+    }
+    session.add(
+        Action(
+            id="overdue-hard-hourly-send",
+            tenant_id=task.tenant_id,
+            task_id=task.id,
+            task_type=task.type,
+            action_type="send_message",
+            account_id=1,
+            status="pending",
+            scheduled_at=now_value.replace(minute=15),
+        )
+    )
+    session.commit()
+    monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
+
+    assert requires_planning_with_open_actions(session, task) is False
+
+
 def test_running_all_account_task_blocks_when_daily_capacity_is_insufficient(
     session: Session,
     stable_capacity_clock: None,
