@@ -9,9 +9,12 @@ from sqlalchemy.orm import Session
 from app.models import Action, SchedulingSetting, Task, TaskAccountDailyCoverage, TgGroup
 from app.services._common import _now
 
+from .daily_coverage_schedule import active_window_bounds
+
 
 OCCUPIED_ACTION_STATUSES = ("pending", "claiming", "executing", "success", "unknown_after_send")
 RESERVED_COVERAGE_STATES = {"reserved", "sending", "unknown"}
+PENDING_ACTION_STATUSES = ("pending", "claiming", "executing")
 
 
 def coverage_capacity_proof(
@@ -28,6 +31,9 @@ def coverage_capacity_proof(
     daily_task_capacity: int | None = None,
     occupied_group_actions: int = 0,
     occupied_task_actions: int = 0,
+    pending_group_actions: int = 0,
+    pending_task_actions: int = 0,
+    now: datetime | None = None,
 ) -> dict[str, object]:
     target_accounts = max(0, int(target_account_count or 0))
     per_account = max(1, int(target_per_account or 1))
@@ -35,8 +41,8 @@ def coverage_capacity_proof(
     confirmed = min(required, max(0, int(confirmed_message_count or 0)))
     reserved = min(required - confirmed, max(0, int(reserved_message_count or 0)))
     remaining_required = required - confirmed - reserved
-    active_seconds = _active_window_seconds(group.active_window)
-    active_hours = max(1, math.ceil(active_seconds / 3600))
+    active_seconds = _available_active_window_seconds(group.active_window, now)
+    active_hours = math.ceil(active_seconds / 3600)
     capacities = _capacity_dimensions(
         group=group,
         account_count=target_accounts,
@@ -49,6 +55,8 @@ def coverage_capacity_proof(
         account_day_limit=account_day_limit,
         account_hour_limit=account_hour_limit,
         account_cooldown_seconds=account_cooldown_seconds,
+        pending_group_actions=pending_group_actions,
+        pending_task_actions=pending_task_actions,
     )
     bounded = [value for value in capacities.values() if value is not None]
     effective = min(bounded) if bounded else required
@@ -64,6 +72,7 @@ def coverage_capacity_proof(
         "target_account_count": target_accounts,
         "target_per_account": per_account,
         "active_window_hours": active_hours,
+        "remaining_active_window_seconds": active_seconds,
         "capacity_dimensions": capacities,
         "effective_daily_capacity": effective,
         "capacity_gap": max(0, remaining_required - effective),
@@ -82,12 +91,15 @@ def task_coverage_capacity_proof(
     target_per_account: int,
     confirmed_message_count: int = 0,
     reserved_message_count: int = 0,
+    now: datetime | None = None,
 ) -> dict[str, object]:
+    now_value = now or _naive_now()
     setting = session.scalar(
         select(SchedulingSetting).where(SchedulingSetting.tenant_id == task.tenant_id)
     )
     setting = setting or SchedulingSetting(tenant_id=task.tenant_id)
     group_occupied, task_occupied = _occupied_actions(session, task, group)
+    pending_group, pending_task = _pending_action_commitments(session, task, group, now=now_value)
     return coverage_capacity_proof(
         group=group,
         target_account_count=target_account_count,
@@ -98,9 +110,12 @@ def task_coverage_capacity_proof(
         account_day_limit=int(setting.default_account_day_limit or 0),
         account_hour_limit=int(setting.default_account_hour_limit or 0),
         account_cooldown_seconds=int(setting.default_account_cooldown_seconds or 0),
-        daily_task_capacity=_task_daily_schedule_capacity(task, group),
+        daily_task_capacity=_task_daily_schedule_capacity(task, group, now=now_value),
         occupied_group_actions=group_occupied,
         occupied_task_actions=task_occupied,
+        pending_group_actions=pending_group,
+        pending_task_actions=pending_task,
+        now=now_value,
     )
 
 
@@ -117,13 +132,17 @@ def _capacity_dimensions(
     account_day_limit: int,
     account_hour_limit: int,
     account_cooldown_seconds: int,
+    pending_group_actions: int,
+    pending_task_actions: int,
 ) -> dict[str, int | None]:
     group_cooldown = max(0, int(group.group_cooldown_seconds or 0))
     return {
         "group_daily_limit": _remaining_limit(group.daily_limit, occupied_group_actions),
-        "group_cooldown": _window_capacity(active_seconds, group_cooldown),
+        "group_cooldown": _remaining_capacity(
+            _window_capacity(active_seconds, group_cooldown), pending_group_actions,
+        ),
         "task_schedule": _remaining_task_capacity(
-            daily_task_capacity, max_actions_per_hour, active_hours, occupied_task_actions,
+            daily_task_capacity, max_actions_per_hour, active_hours, pending_task_actions,
         ),
         "account_day_limit": _scaled_limit(account_day_limit, account_count),
         "account_hour_limit": _scaled_limit(account_hour_limit, account_count * active_hours),
@@ -161,24 +180,51 @@ def _occupied_actions(session: Session, task: Task, group: TgGroup) -> tuple[int
     return int(group_count), int(task_count)
 
 
-def _task_daily_schedule_capacity(task: Task, group: TgGroup) -> int | None:
+def _pending_action_commitments(
+    session: Session,
+    task: Task,
+    group: TgGroup,
+    *,
+    now: datetime,
+) -> tuple[int, int]:
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    day_end = day_start + timedelta(days=1)
+    filters = [
+        Action.tenant_id == task.tenant_id,
+        Action.action_type == "send_message",
+        Action.status.in_(PENDING_ACTION_STATUSES),
+        Action.scheduled_at >= day_start,
+        Action.scheduled_at < day_end,
+    ]
+    group_filter = Action.payload["group_id"].as_integer() == group.id
+    group_count = session.scalar(select(func.count(Action.id)).where(*filters, group_filter)) or 0
+    task_count = session.scalar(select(func.count(Action.id)).where(*filters, Action.task_id == task.id)) or 0
+    return int(group_count), int(task_count)
+
+
+def _task_daily_schedule_capacity(task: Task, group: TgGroup, *, now: datetime | None = None) -> int | None:
     pacing = task.pacing_config or {}
-    return daily_task_schedule_capacity(pacing, _messages_per_round(task), group)
+    return daily_task_schedule_capacity(pacing, _messages_per_round(task), group, now=now)
 
 
 def daily_task_schedule_capacity(
     pacing: dict,
     messages_per_round: int,
     group: TgGroup,
+    *,
+    now: datetime | None = None,
 ) -> int | None:
     curve = _hourly_round_curve(pacing)
     max_per_hour = _positive_limit(int(pacing.get("max_actions_per_hour") or 0))
     messages = max(1, int(messages_per_round or 1))
     if curve:
+        if now is not None:
+            return _remaining_curve_capacity(curve, messages, max_per_hour, group, now)
         return sum(_hour_capacity(rounds, messages, max_per_hour) for rounds in _active_rounds(curve, group))
     if max_per_hour is None:
         return None
-    return max_per_hour * max(1, math.ceil(_active_window_seconds(group.active_window) / 3600))
+    active_seconds = _available_active_window_seconds(group.active_window, now)
+    return max_per_hour * math.ceil(active_seconds / 3600)
 
 
 def _hourly_round_curve(pacing: dict) -> list[int]:
@@ -227,6 +273,55 @@ def _active_window_seconds(active_window: str) -> int:
     return max(60, minutes * 60)
 
 
+def _available_active_window_seconds(active_window: str, now: datetime | None) -> int:
+    if now is None:
+        return _active_window_seconds(active_window)
+    bounds = _remaining_active_window_bounds(active_window, now)
+    if bounds is None:
+        return 0
+    start, end = bounds
+    return max(0, int((end - start).total_seconds()))
+
+
+def _remaining_active_window_bounds(
+    active_window: str,
+    now: datetime,
+) -> tuple[datetime, datetime] | None:
+    previous_start, previous_end = active_window_bounds(active_window, now.date() - timedelta(days=1))
+    current_start, current_end = active_window_bounds(active_window, now.date())
+    if previous_start <= now < previous_end:
+        return now, previous_end
+    if now < current_start:
+        return current_start, current_end
+    if now < current_end:
+        return now, current_end
+    return None
+
+
+def _remaining_curve_capacity(
+    curve: list[int],
+    messages: int,
+    max_per_hour: int | None,
+    group: TgGroup,
+    now: datetime,
+) -> int:
+    bounds = _remaining_active_window_bounds(group.active_window, now)
+    if bounds is None:
+        return 0
+    start, end = bounds
+    cursor = start.replace(minute=0, second=0, microsecond=0)
+    capacity = 0
+    while cursor < end:
+        next_hour = cursor + timedelta(hours=1)
+        overlap_start = max(cursor, start)
+        overlap_end = min(next_hour, end)
+        overlap_seconds = max(0, int((overlap_end - overlap_start).total_seconds()))
+        hourly_capacity = _hour_capacity(curve[cursor.hour], messages, max_per_hour)
+        capacity += math.floor(hourly_capacity * overlap_seconds / 3600)
+        cursor = next_hour
+    return capacity
+
+
 def _minute_of_day(value: str) -> int:
     hour, minute = value.strip().split(":", 1)
     parsed_hour = int(hour)
@@ -244,6 +339,12 @@ def _positive_limit(value: int) -> int | None:
 def _remaining_limit(value: int, occupied: int) -> int | None:
     limit = _positive_limit(value)
     return max(0, limit - max(0, int(occupied))) if limit is not None else None
+
+
+def _remaining_capacity(capacity: int | None, occupied: int) -> int | None:
+    if capacity is None:
+        return None
+    return max(0, int(capacity) - max(0, int(occupied)))
 
 
 def _remaining_task_capacity(
@@ -268,6 +369,8 @@ def _scaled_limit(value: int, multiplier: int) -> int | None:
 
 
 def _window_capacity(window_seconds: int, cooldown_seconds: int) -> int | None:
+    if window_seconds <= 0:
+        return 0
     if cooldown_seconds <= 0:
         return None
     return max(1, window_seconds // cooldown_seconds + 1)

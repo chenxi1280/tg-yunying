@@ -684,6 +684,8 @@ def claim_actions(session: Session, limit: int = 100, *, exclude_task_ids: set[s
     owner = worker_id or _lease_owner()
     token = str(uuid4())
     now_value = _now()
+    if _skip_stale_channel_daily_actions(session, today=now_value.date()):
+        session.commit()
     pending_review_exists = None
     if _legacy_review_enabled():
         pending_review_exists = (
@@ -4701,7 +4703,17 @@ def _skip(action: Action, code: str, detail: str) -> None:
     _release_runtime_resources(action)
 
 
-def _skip_stale_channel_daily_action(action: Action) -> bool:
+def _skip_stale_channel_daily_actions(session: Session, *, today: date) -> int:
+    stale_actions = session.scalars(
+        select(Action).where(
+            Action.status == "pending",
+            Action.action_type.in_(CHANNEL_DAILY_ACTION_TYPES),
+        )
+    )
+    return sum(_skip_stale_channel_daily_action(action, today=today) for action in stale_actions)
+
+
+def _skip_stale_channel_daily_action(action: Action, *, today: date | None = None) -> bool:
     if action.action_type not in CHANNEL_DAILY_ACTION_TYPES:
         return False
     payload = action.payload if isinstance(action.payload, dict) else {}
@@ -4712,7 +4724,7 @@ def _skip_stale_channel_daily_action(action: Action) -> bool:
         execution_date = date.fromisoformat(raw_execution_date)
     except ValueError:
         return False
-    if execution_date >= _now().date():
+    if execution_date >= (today or _now().date()):
         return False
     _skip(action, "stale_channel_daily_action", "日维度频道任务已过期，不再占用当日调度容量")
     return True

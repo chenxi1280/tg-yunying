@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -73,6 +74,42 @@ def test_capacity_proof_uses_total_active_window_task_capacity() -> None:
     assert proof["capacity_dimensions"]["task_schedule"] == 5
     assert proof["sufficient"] is False
     assert "task_schedule" in proof["blockers"]
+
+
+def test_capacity_proof_blocks_when_remaining_group_cooldown_slots_cannot_finish_coverage() -> None:
+    group = TgGroup(
+        id=21,
+        tenant_id=1,
+        tg_peer_id="-10021",
+        title="目标群",
+        active_window="09:00-23:00",
+        daily_limit=675,
+        group_cooldown_seconds=60,
+    )
+
+    proof = coverage_capacity_proof(
+        group=group,
+        target_account_count=675,
+        target_per_account=1,
+        confirmed_message_count=20,
+        reserved_message_count=140,
+        max_actions_per_hour=120,
+        account_day_limit=400,
+        account_hour_limit=50,
+        account_cooldown_seconds=180,
+        daily_task_capacity=840,
+        occupied_group_actions=160,
+        occupied_task_actions=160,
+        pending_group_actions=140,
+        pending_task_actions=140,
+        now=datetime(2026, 7, 23, 15, 15),
+    )
+
+    assert proof["remaining_active_window_seconds"] == 7 * 60 * 60 + 45 * 60
+    assert proof["capacity_dimensions"]["group_cooldown"] == 326
+    assert proof["sufficient"] is False
+    assert "group_cooldown" in proof["blockers"]
+    assert proof["capacity_gap"] == 189
 
 
 def test_capacity_proof_does_not_require_confirmed_messages_twice() -> None:

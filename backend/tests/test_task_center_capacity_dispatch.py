@@ -429,6 +429,56 @@ def test_claim_actions_skips_past_execution_date_channel_action_before_account_p
 
 
 @pytest.mark.no_postgres
+def test_claim_actions_sweeps_stale_channel_actions_before_claiming_fresh_work() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    stale_date = (now_value.date() - timedelta(days=1)).isoformat()
+
+    with Session(engine) as session:
+        session.add_all(
+            [
+                Tenant(id=1, name="默认运营空间"),
+                TgAccount(id=11, tenant_id=1, display_name="过期浏览账号", phone_masked="+195***0011", status="在线"),
+                TgAccount(id=12, tenant_id=1, display_name="当前发送账号", phone_masked="+195***0012", status="在线"),
+                Task(id="task-stale-channel", tenant_id=1, name="过期浏览", type="channel_view", status="running"),
+                Task(id="task-current-send", tenant_id=1, name="当前发送", type="group_relay", status="running"),
+                Action(
+                    id="stale-view",
+                    tenant_id=1,
+                    task_id="task-stale-channel",
+                    task_type="channel_view",
+                    action_type="view_message",
+                    account_id=11,
+                    status="pending",
+                    scheduled_at=now_value - timedelta(minutes=2),
+                    payload={"channel_id": "-1001", "message_id": 1, "execution_date": stale_date},
+                ),
+                Action(
+                    id="fresh-send",
+                    tenant_id=1,
+                    task_id="task-current-send",
+                    task_type="group_relay",
+                    action_type="send_message",
+                    account_id=12,
+                    status="pending",
+                    scheduled_at=now_value - timedelta(minutes=1),
+                    payload={"chat_id": "-1002", "message_text": "当前任务"},
+                ),
+            ]
+        )
+        session.commit()
+
+        claimed = claim_actions(session, limit=1, worker_id="worker-test")
+
+        assert [action.id for action in claimed] == ["fresh-send"]
+        stale = session.get(Action, "stale-view")
+        assert stale.status == "skipped"
+        assert stale.result["error_code"] == "stale_channel_daily_action"
+        dispatcher._release_runtime_resources(session.get(Action, "fresh-send"))
+
+
+@pytest.mark.no_postgres
 def test_release_runtime_resources_keeps_later_holder_inflight() -> None:
     old_action = Action(id="old-action", account_id=11)
     dispatcher._IN_FLIGHT_ACCOUNTS.add(11)
@@ -5262,7 +5312,7 @@ def test_group_ai_all_account_coverage_defers_plain_ai_without_emoji_fallback(mo
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(TenantAiSetting(tenant_id=1, ai_enabled=True))
-        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True, active_window="00:00-01:00"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True, active_window="00:00-23:59"))
         session.add_all(
             [
                 TgAccount(id=11, tenant_id=1, display_name="账号A", phone_masked="+861***0011", status="在线", session_ciphertext="session-a"),
@@ -5374,7 +5424,7 @@ def test_group_ai_all_account_coverage_defers_voice_profile_candidates(monkeypat
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
-        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True, active_window="00:00-23:59"))
         for account_id in [11, 12]:
             session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线", session_ciphertext=f"session-{account_id}"))
             session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=account_id, can_send=True))

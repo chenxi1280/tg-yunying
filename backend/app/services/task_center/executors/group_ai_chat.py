@@ -1483,6 +1483,7 @@ def _coverage_capacity_blocker(
         target_per_account=target_per_account,
         confirmed_message_count=confirmed_count,
         reserved_message_count=reserved_count,
+        now=_now(),
     )
     if proof.get("sufficient"):
         _clear_coverage_capacity_blocker(task)

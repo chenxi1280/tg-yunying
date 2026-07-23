@@ -10,6 +10,7 @@ from app.schemas.risk_control import RiskPreflightRequest
 from app.schemas.task_center import TaskPrecheckRequest
 from app.services.account_usage_policy import apply_operational_account_filters
 from app.services.risk_control import risk_preflight
+from app.timezone import beijing_now
 
 from .ai_limits import recommend_ai_limits
 from .account_scope import eligible_account_ids
@@ -236,6 +237,7 @@ def _daily_coverage_capacity_check(
     configured_hourly_limit = int(pacing.get("max_actions_per_hour") or 0)
     if configured_hourly_limit > 0:
         hourly_capacity = min(hourly_capacity, configured_hourly_limit)
+    now_value = beijing_now()
     return coverage_capacity_proof(
         group=group,
         target_account_count=eligible_count,
@@ -248,7 +250,9 @@ def _daily_coverage_capacity_check(
             pacing,
             int(ai_summary.get("messages_per_round") or 1),
             group,
+            now=now_value,
         ),
+        now=now_value,
     )
 
 
