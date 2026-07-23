@@ -320,9 +320,12 @@ jobs:
           chmod 600 ~/.ssh/config
 
       - name: Preflight production Grok CLI
+        env:
+          RELEASE_SSH_ATTEMPTS: ${{ vars.RELEASE_SSH_ATTEMPTS }}
+          RELEASE_SSH_RETRY_DELAY: ${{ vars.RELEASE_SSH_RETRY_DELAY }}
         run: |
           set -euo pipefail
-          ssh silicon-valley-production-server '
+          bash deploy/ssh_retry.sh silicon-valley-production-server '
             set -euo pipefail
             sudo -n test -x /root/.grok/bin/grok
             sudo -n /root/.grok/bin/grok --version
@@ -359,9 +362,12 @@ jobs:
             --branch-list "${BRANCHES}"
 
       - name: Verify production Grok CLI bridge
+        env:
+          RELEASE_SSH_ATTEMPTS: ${{ vars.RELEASE_SSH_ATTEMPTS }}
+          RELEASE_SSH_RETRY_DELAY: ${{ vars.RELEASE_SSH_RETRY_DELAY }}
         run: |
           set -euo pipefail
-          ssh silicon-valley-production-server '
+          bash deploy/ssh_retry.sh silicon-valley-production-server '
             set -euo pipefail
             docker exec tgyunying-worker-planner test -x /root/.grok/bin/grok
             docker exec tgyunying-worker-planner git --version
