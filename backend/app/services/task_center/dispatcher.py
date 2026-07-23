@@ -976,11 +976,14 @@ def _skip_unreachable_hard_hourly_action(session: Session, action: Action) -> bo
         return False
     payload = action.payload if isinstance(action.payload, dict) else {}
     hourly_target = int((task.type_config or {}).get("hourly_min_messages") or 0)
-    required = max(hourly_target, int(payload.get("hard_hourly_deficit_at_plan") or 0))
+    stats = task.stats if isinstance(task.stats, dict) else {}
+    backfill = int(stats.get("hard_hourly_backfill_planning_deficit") or 0)
+    # Cap to one-hour planning rate; never require multi-hour backfill debt at once.
     proof = hard_hourly_group_cooldown_proof(
         group=group,
         hourly_target=hourly_target,
-        required_hourly_messages=required,
+        backfill_planning_deficit=backfill,
+        required_hourly_messages=int(payload.get("hard_hourly_deficit_at_plan") or 0),
     )
     if proof["sufficient"]:
         return False

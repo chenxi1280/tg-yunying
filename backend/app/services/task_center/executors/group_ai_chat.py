@@ -882,7 +882,7 @@ def _slot_generation_payload(slot: SlotBuildInput) -> dict[str, Any]:
         "ai_generation_count": len(generation.quality_items),
         "hard_hourly_target": bool(facts.hard_progress),
         "hard_hourly_bucket": str(facts.hard_progress.get("bucket") or ""),
-        "hard_hourly_deficit_at_plan": int(facts.hard_progress.get("deficit") or 0),
+        "hard_hourly_deficit_at_plan": int(hard_hourly_planning_rate(facts.hard_progress) if facts.hard_progress else 0),
         "ai_generation_context_count": len(generation.context_message_ids),
         "ai_generation_memory_count": len(profile.account_memories),
         "profile_scene": str(preview.get("profile_scene") or GROUP_CHAT_SCENE),
@@ -1489,10 +1489,12 @@ def _hard_hourly_group_cooldown_blocker(
     if not progress:
         _clear_hard_hourly_group_cooldown_blocker(task)
         return {}
+    # Gate against one-hour planning rate, never the full multi-hour backfill debt.
     proof = hard_hourly_group_cooldown_proof(
         group=group,
         hourly_target=int(progress.get("goal") or 0),
-        required_hourly_messages=int(progress.get("deficit") or 0),
+        backfill_planning_deficit=int(progress.get("backfill_planning_deficit") or 0),
+        required_hourly_messages=hard_hourly_planning_rate(progress),
     )
     if proof["sufficient"]:
         _clear_hard_hourly_group_cooldown_blocker(task)

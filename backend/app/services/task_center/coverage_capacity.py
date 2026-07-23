@@ -85,14 +85,45 @@ def coverage_capacity_proof(
     }
 
 
+def hard_hourly_required_hourly_messages(
+    *,
+    hourly_target: int,
+    backfill_planning_deficit: int = 0,
+    required_hourly_messages: int | None = None,
+) -> int:
+    """Single-hour send pressure used by the group-cooldown gate.
+
+    Historical backfill debt must not be required inside one hour. Match planner
+    batching: goal + min(goal, backfill_planning_deficit). Explicit
+    required_hourly_messages is capped by that planning rate when provided.
+    """
+    target = max(0, int(hourly_target or 0))
+    backfill = max(0, int(backfill_planning_deficit or 0))
+    planning_rate = target + min(target, backfill) if target > 0 else backfill
+    if required_hourly_messages is None:
+        return planning_rate
+    try:
+        explicit = max(0, int(required_hourly_messages))
+    except (TypeError, ValueError):
+        explicit = 0
+    if planning_rate <= 0:
+        return max(target, explicit)
+    return min(max(target, explicit), planning_rate)
+
+
 def hard_hourly_group_cooldown_proof(
     *,
     group: TgGroup,
     hourly_target: int,
     required_hourly_messages: int | None = None,
+    backfill_planning_deficit: int = 0,
 ) -> dict[str, object]:
     target = max(0, int(hourly_target or 0))
-    required = max(target, int(required_hourly_messages or 0))
+    required = hard_hourly_required_hourly_messages(
+        hourly_target=target,
+        backfill_planning_deficit=backfill_planning_deficit,
+        required_hourly_messages=required_hourly_messages,
+    )
     cooldown = max(0, int(group.group_cooldown_seconds or 0))
     capacity = _hard_hourly_cooldown_capacity(cooldown)
     gap = max(0, required - capacity) if capacity is not None else 0
@@ -100,6 +131,7 @@ def hard_hourly_group_cooldown_proof(
     return {
         "hourly_target": target,
         "required_hourly_messages": required,
+        "backfill_planning_deficit": max(0, int(backfill_planning_deficit or 0)),
         "group_cooldown_seconds": cooldown,
         "group_cooldown_hourly_capacity": capacity,
         "capacity_gap": gap,
@@ -426,6 +458,7 @@ __all__ = [
     "HARD_HOURLY_GROUP_COOLDOWN_BLOCKED_MESSAGE",
     "HARD_HOURLY_GROUP_COOLDOWN_BLOCKER_CODE",
     "hard_hourly_group_cooldown_proof",
+    "hard_hourly_required_hourly_messages",
     "reserved_coverage_message_count",
     "task_coverage_capacity_proof",
 ]
