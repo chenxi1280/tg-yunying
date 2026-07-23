@@ -1175,11 +1175,17 @@ def prepare_open_actions_for_planning(session: Session, task: Task) -> int:
 
 
 def _canonicalized_task_config(session: Session, task: Task, config: dict) -> dict:
-    normalized = normalize_operation_target_references(session, task.tenant_id, task.type, config)
+    source_config = {
+        key: value
+        for key, value in config.items()
+        if key != "_daily_coverage_enforced"
+    }
+    daily_coverage_enforced = source_config.get("account_coverage_mode") == "all_accounts_daily"
+    normalized = normalize_operation_target_references(session, task.tenant_id, task.type, source_config)
     normalized = apply_group_ai_account_coverage_defaults(task.type, normalized, task.account_config or {})
-    if normalized != config:
+    if normalized != source_config:
         task.type_config = {key: value for key, value in normalized.items() if key != "pacing_config"}
-    return normalized
+    return {**normalized, "_daily_coverage_enforced": daily_coverage_enforced}
 
 
 def _reply_targets_for_plan(
@@ -1369,7 +1375,7 @@ def _select_accounts_for_plan(
         options["enforce_capacity"] = False
     coverage_options = _daily_coverage_account_options(config)
     ready_rows = _ready_coverage_rows(config, coverage_rows)
-    if _all_accounts_daily_coverage(config) and coverage_rows is None:
+    if _daily_coverage_enforced(config) and coverage_rows is None:
         ready_rows = ready_coverage_rows(session, task)
     candidate_account_ids = _candidate_account_ids_for_plan(
         session,
@@ -1401,7 +1407,7 @@ def _candidate_account_ids_for_plan(
     ready_rows: list[TaskAccountDailyCoverage],
     _progress: dict[str, object],
 ) -> list[int] | None:
-    if not _all_accounts_daily_coverage(config):
+    if not _daily_coverage_enforced(config):
         return None
     if ready_rows:
         return [row.account_id for row in ready_rows]
@@ -1428,7 +1434,7 @@ def _ready_coverage_rows(
     config: dict,
     coverage_rows: list[TaskAccountDailyCoverage] | None,
 ) -> list[TaskAccountDailyCoverage]:
-    if not _all_accounts_daily_coverage(config) or coverage_rows is None:
+    if not _daily_coverage_enforced(config) or coverage_rows is None:
         return []
     return [
         row for row in coverage_rows
@@ -1502,7 +1508,7 @@ def _daily_coverage_uncovered_count(
 
 
 def _daily_coverage_account_options(config: dict) -> dict[str, object]:
-    if not _all_accounts_daily_coverage(config):
+    if not _daily_coverage_enforced(config):
         return {}
     return {
         "daily_coverage_target_count": _coverage_target_per_account(config),
@@ -1512,6 +1518,10 @@ def _daily_coverage_account_options(config: dict) -> dict[str, object]:
 
 def _all_accounts_daily_coverage(config: dict) -> bool:
     return config.get("account_coverage_mode") == "all_accounts_daily"
+
+
+def _daily_coverage_enforced(config: dict) -> bool:
+    return _all_accounts_daily_coverage(config) and bool(config.get("_daily_coverage_enforced", True))
 
 
 def _hard_hourly_group_cooldown_blocker(
@@ -1672,8 +1682,8 @@ def _load_coverage_rows(
     )))
 
 
-def _coverage_round_config(config: dict, progress: dict[str, object]) -> dict:
-    if _all_accounts_daily_coverage(config):
+def _coverage_round_config(config: dict, _progress: dict[str, object]) -> dict:
+    if _daily_coverage_enforced(config):
         return {**config, "allow_account_repeat": False}
     return config
 
@@ -3137,7 +3147,7 @@ def _skip_legacy_hard_hourly_open_actions_for_daily_coverage_replan(
     task: Task,
     config: dict,
 ) -> int:
-    if not _all_accounts_daily_coverage(config):
+    if not _daily_coverage_enforced(config):
         return 0
     current_time = _now()
     skipped = 0

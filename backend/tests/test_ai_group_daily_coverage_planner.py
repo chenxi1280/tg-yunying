@@ -197,9 +197,16 @@ def test_planner_normalizes_legacy_all_account_coverage_config(session: Session)
     task.type_config = {**task.type_config, "account_coverage_mode": "natural"}
 
     config = _canonicalized_task_config(session, task, dict(task.type_config))
+    progress = {"deficit": 1, "goal": 1}
+    round_config = _coverage_round_config(
+        _hard_hourly_round_config(config, progress),
+        progress,
+    )
 
     assert config["account_coverage_mode"] == "all_accounts_daily"
+    assert config["_daily_coverage_enforced"] is False
     assert task.type_config["account_coverage_mode"] == "all_accounts_daily"
+    assert round_config["allow_account_repeat"] is True
 
 def test_daily_coverage_replan_skips_legacy_hard_hourly_open_actions(session: Session) -> None:
     task, _group = _seed(session)
