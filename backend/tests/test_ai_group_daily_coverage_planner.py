@@ -223,7 +223,20 @@ def test_daily_coverage_replan_skips_legacy_hard_hourly_open_actions(session: Se
         status="pending",
         payload={"hard_hourly_target": True, "coverage_ledger_id": "coverage-2"},
     )
-    session.add_all([legacy, ledger_backed])
+    unbound_daily = Action(
+        id="unbound-daily-hard-hourly",
+        tenant_id=task.tenant_id,
+        task_id=task.id,
+        task_type=task.type,
+        action_type="send_message",
+        account_id=3,
+        status="pending",
+        payload={
+            "hard_hourly_target": True,
+            "account_coverage_mode": "all_accounts_daily",
+        },
+    )
+    session.add_all([legacy, ledger_backed, unbound_daily])
     session.flush()
 
     skipped = _skip_legacy_hard_hourly_open_actions_for_daily_coverage_replan(
@@ -232,9 +245,11 @@ def test_daily_coverage_replan_skips_legacy_hard_hourly_open_actions(session: Se
         task.type_config,
     )
 
-    assert skipped == 1
+    assert skipped == 2
     assert legacy.status == "skipped"
     assert legacy.result["error_code"] == "all_account_daily_coverage_replan"
+    assert unbound_daily.status == "skipped"
+    assert unbound_daily.result["error_code"] == "all_account_daily_coverage_replan"
     assert ledger_backed.status == "pending"
 
 

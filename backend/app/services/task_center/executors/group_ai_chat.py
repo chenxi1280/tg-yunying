@@ -3143,10 +3143,7 @@ def _skip_legacy_hard_hourly_open_actions_for_daily_coverage_replan(
     skipped = 0
     for action in _open_hard_hourly_actions_for_distribution_replan(session, task):
         payload = action.payload if isinstance(action.payload, dict) else {}
-        if (
-            str(payload.get("coverage_ledger_id") or "").strip()
-            or payload.get("account_coverage_mode") == "all_accounts_daily"
-        ):
+        if str(payload.get("coverage_ledger_id") or "").strip():
             continue
         _skip_open_action_for_replan(
             session,
