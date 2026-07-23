@@ -32,7 +32,7 @@ from ..ai_generator import AI_GENERATION_UNAVAILABLE_MESSAGE
 from ..ai_message_memory import mark_group_ai_message_result, reserve_group_ai_message
 from ..account_voice_profiles import group_stance_summaries, voice_profile_prompt_details
 from ..channel_membership import gate_channel_membership
-from ..config_normalization import normalize_operation_target_references
+from ..config_normalization import apply_group_ai_account_coverage_defaults, normalize_operation_target_references
 from ..coverage_capacity import (
     HARD_HOURLY_GROUP_COOLDOWN_BLOCKED_MESSAGE,
     hard_hourly_group_cooldown_proof,
@@ -1160,6 +1160,7 @@ def prepare_open_actions_for_planning(session: Session, task: Task) -> int:
 
 def _canonicalized_task_config(session: Session, task: Task, config: dict) -> dict:
     normalized = normalize_operation_target_references(session, task.tenant_id, task.type, config)
+    normalized = apply_group_ai_account_coverage_defaults(task.type, normalized, task.account_config or {})
     if normalized != config:
         task.type_config = {key: value for key, value in normalized.items() if key != "pacing_config"}
     return normalized

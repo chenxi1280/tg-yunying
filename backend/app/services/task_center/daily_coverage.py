@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
-from sqlalchemy import func, select, update
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -42,12 +42,7 @@ def ensure_task_daily_coverage(
     target_group: TgGroup | None = None,
 ) -> DailyCoverageSyncResult:
     timestamp = now or _now()
-    scope_materialized = (
-        account_ids is None
-        and not incremental
-        and _daily_scope_materialized(session, task, timestamp.date())
-    )
-    if scope_materialized:
+    if account_ids is None and not incremental:
         release_terminal_coverage_reservations(session, task, timestamp.date())
         return DailyCoverageSyncResult(coverage_date=timestamp.date(), created=0, refreshed=0)
     items = _scope_items(session, task, account_ids)
@@ -449,23 +444,6 @@ def _scope_items(session: Session, task: Task, account_ids: list[int] | None) ->
     if account_ids is not None:
         stmt = stmt.where(TaskMembershipAdmissionItem.account_id.in_(account_ids))
     return list(session.scalars(stmt.order_by(TaskMembershipAdmissionItem.account_id.asc())))
-
-
-def _daily_scope_materialized(session: Session, task: Task, coverage_date: date) -> bool:
-    relation_count = session.scalar(
-        select(func.count(TaskMembershipAdmissionItem.id)).where(
-            TaskMembershipAdmissionItem.task_id == task.id,
-        )
-    ) or 0
-    if relation_count == 0:
-        return True
-    coverage_count = session.scalar(
-        select(func.count(TaskAccountDailyCoverage.id)).where(
-            TaskAccountDailyCoverage.task_id == task.id,
-            TaskAccountDailyCoverage.coverage_date == coverage_date,
-        )
-    ) or 0
-    return int(coverage_count) >= int(relation_count)
 
 
 def _existing_rows(
