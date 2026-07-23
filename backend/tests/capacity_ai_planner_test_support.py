@@ -118,6 +118,7 @@ def _add_optional_memories(session, now_value, scenario: AiPlannerScenario) -> N
 
 
 def _scenario_task(scenario: AiPlannerScenario) -> Task:
+    account_ids = list(range(11, 11 + len(scenario.profile_summaries)))
     return Task(
         id=scenario.task_id,
         tenant_id=1,
@@ -125,7 +126,8 @@ def _scenario_task(scenario: AiPlannerScenario) -> Task:
         type="group_ai_chat",
         status="running",
         account_config={
-            "selection_mode": "all",
+            "selection_mode": "manual",
+            "account_ids": account_ids,
             "max_concurrent": scenario.max_concurrent,
             "cooldown_per_account_minutes": 0,
         },

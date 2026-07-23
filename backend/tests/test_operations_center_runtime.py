@@ -4977,8 +4977,9 @@ def _seed_group_ai_context_task(
     if idle_continuation_seconds is not None:
         overrides["idle_continuation_seconds"] = idle_continuation_seconds
     return add_ai_task(
-        session, task_id=task_id, name=name, account_ids=[],
+        session, task_id=task_id, name=name, account_ids=ids,
         messages_per_round=messages_per_round, type_overrides=overrides,
+        selection_mode="manual",
     )
 
 

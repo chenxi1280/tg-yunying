@@ -4729,7 +4729,12 @@ def test_group_ai_build_plan_writes_topic_teacher_and_burst_payload(monkeypatch)
             name="话题老师连发",
             type="group_ai_chat",
             status="running",
-            account_config={"selection_mode": "all", "max_concurrent": 10, "cooldown_per_account_minutes": 0},
+            account_config={
+                "selection_mode": "manual",
+                "account_ids": [11, 12],
+                "max_concurrent": 10,
+                "cooldown_per_account_minutes": 0,
+            },
             pacing_config={"max_actions_per_hour": 120},
             type_config={
                 "target_group_id": 7,
@@ -5070,7 +5075,12 @@ def test_group_ai_build_plan_deprioritizes_recent_topic_and_teacher(monkeypatch)
             name="话题老师轮换",
             type="group_ai_chat",
             status="running",
-            account_config={"selection_mode": "all", "max_concurrent": 10, "cooldown_per_account_minutes": 0},
+            account_config={
+                "selection_mode": "manual",
+                "account_ids": [11],
+                "max_concurrent": 10,
+                "cooldown_per_account_minutes": 0,
+            },
             type_config={
                 "target_group_id": 7,
                 "messages_per_round_mode": "manual",
@@ -5276,7 +5286,12 @@ def test_group_ai_context_bound_round_limits_far_future_actions(monkeypatch):
             name="上下文近端",
             type="group_ai_chat",
             status="running",
-            account_config={"selection_mode": "all", "max_concurrent": 100, "cooldown_per_account_minutes": 0},
+            account_config={
+                "selection_mode": "manual",
+                "account_ids": list(range(100, 120)),
+                "max_concurrent": 100,
+                "cooldown_per_account_minutes": 0,
+            },
             pacing_config={
                 "operation_profile": {
                     "hourly_activity_curve": [2, 2, 1, 1, 0, 0, 1, 2, 4, 5, 6, 6, 5, 4, 6, 7, 8, 9, 10, 10, 8, 6, 4, 3],

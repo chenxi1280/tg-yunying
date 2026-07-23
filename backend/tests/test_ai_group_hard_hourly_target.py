@@ -176,7 +176,12 @@ def _hard_hourly_memory_rotation_task() -> Task:
         name="硬目标记忆不压制轮转",
         type="group_ai_chat",
         status="running",
-        account_config={"selection_mode": "all", "max_concurrent": 20, "cooldown_per_account_minutes": 0},
+        account_config={
+            "selection_mode": "manual",
+            "account_ids": [101, 102, 103],
+            "max_concurrent": 20,
+            "cooldown_per_account_minutes": 0,
+        },
         type_config={
             "target_group_id": 7,
             "participation_rate": 1,
@@ -198,7 +203,12 @@ def _hard_hourly_profile_refill_task(*, max_concurrent: int = PROFILE_REFILL_ACC
         name="硬目标面具扩池",
         type="group_ai_chat",
         status="running",
-        account_config={"selection_mode": "all", "max_concurrent": max_concurrent, "cooldown_per_account_minutes": 0},
+        account_config={
+            "selection_mode": "manual",
+            "account_ids": list(range(1, max_concurrent + 1)),
+            "max_concurrent": max_concurrent,
+            "cooldown_per_account_minutes": 0,
+        },
         type_config={
             "target_group_id": 7,
             "reply_min_per_round": 0,
@@ -1270,7 +1280,12 @@ def test_group_ai_chat_hard_hourly_target_creates_deficit_actions(monkeypatch):
             name="硬目标补量",
             type="group_ai_chat",
             status="running",
-            account_config={"selection_mode": "all", "max_concurrent": 20, "cooldown_per_account_minutes": 0},
+            account_config={
+                "selection_mode": "manual",
+                "account_ids": [101, 102, 103, 104, 105],
+                "max_concurrent": 20,
+                "cooldown_per_account_minutes": 0,
+            },
             pacing_config={"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0, "max_actions_per_hour": 1},
             type_config={
                 "target_group_id": 7,
@@ -1333,7 +1348,12 @@ def test_group_ai_chat_hard_hourly_target_blocks_when_group_cooldown_cannot_meet
             name="硬目标群冷却冲突",
             type="group_ai_chat",
             status="running",
-            account_config={"selection_mode": "all", "max_concurrent": 20, "cooldown_per_account_minutes": 0},
+            account_config={
+                "selection_mode": "manual",
+                "account_ids": [101],
+                "max_concurrent": 20,
+                "cooldown_per_account_minutes": 0,
+            },
             type_config={
                 "target_group_id": 7,
                 "messages_per_round_mode": "manual",

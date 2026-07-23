@@ -1369,7 +1369,7 @@ def _select_accounts_for_plan(
     options = _hard_hourly_account_options(progress)
     if progress:
         options["enforce_capacity"] = False
-    coverage_options = _daily_coverage_account_options(config)
+    coverage_options = _daily_coverage_account_options(config) if not progress else {}
     ready_rows = _ready_coverage_rows(config, coverage_rows)
     if _all_accounts_daily_coverage(config) and coverage_rows is None:
         ready_rows = ready_coverage_rows(session, task)
@@ -1405,9 +1405,11 @@ def _candidate_account_ids_for_plan(
 ) -> list[int] | None:
     if not _all_accounts_daily_coverage(config):
         return None
+    if progress:
+        return scoped_account_ids(session, task)
     if ready_rows:
         return [row.account_id for row in ready_rows]
-    return scoped_account_ids(session, task) if progress else []
+    return []
 
 
 def _plan_account_limit(
@@ -1421,7 +1423,7 @@ def _plan_account_limit(
         if progress
         else max(1, int((task.account_config or {}).get("max_concurrent") or 20))
     )
-    if _all_accounts_daily_coverage(task.type_config or {}) and planning_limit is not None:
+    if not progress and _all_accounts_daily_coverage(task.type_config or {}) and planning_limit is not None:
         return min(limit, max(1, int(planning_limit)))
     return limit
 
@@ -2658,7 +2660,7 @@ def _prioritize_accounts_for_plan(
 ) -> list:
     if len(accounts) <= 1:
         return accounts
-    if _hard_hourly_planning(config) and not _all_accounts_daily_coverage(config):
+    if _hard_hourly_planning(config):
         return accounts
     if not _all_accounts_daily_coverage(config):
         return _prioritize_account_memory(accounts, account_memories)
@@ -3147,7 +3149,10 @@ def _skip_legacy_hard_hourly_open_actions_for_daily_coverage_replan(
     skipped = 0
     for action in _open_hard_hourly_actions_for_distribution_replan(session, task):
         payload = action.payload if isinstance(action.payload, dict) else {}
-        if str(payload.get("coverage_ledger_id") or "").strip():
+        if (
+            str(payload.get("coverage_ledger_id") or "").strip()
+            or payload.get("account_coverage_mode") == "all_accounts_daily"
+        ):
             continue
         _skip_open_action_for_replan(
             session,
