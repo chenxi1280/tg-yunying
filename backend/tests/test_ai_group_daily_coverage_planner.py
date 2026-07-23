@@ -27,6 +27,7 @@ from app.services.task_center.executors.group_ai_chat import (
     _coverage_round_config,
     _account_shortage_reason,
     _canonicalized_task_config,
+    _hard_hourly_round_config,
     _online_ready_accounts,
     _skip_legacy_hard_hourly_open_actions_for_daily_coverage_replan,
     requires_planning_with_open_actions,
@@ -325,7 +326,40 @@ def test_coverage_round_does_not_repeat_one_account_for_multiple_obligations() -
     config = {"account_coverage_mode": "all_accounts_daily", "allow_account_repeat": True}
 
     assert _coverage_round_config(config, {})["allow_account_repeat"] is False
-    assert _coverage_round_config(config, {"deficit": 1})["allow_account_repeat"] is True
+    assert _coverage_round_config(config, {"deficit": 1})["allow_account_repeat"] is False
+
+
+def test_daily_coverage_hard_hourly_round_uses_only_ready_ledger_accounts(session: Session) -> None:
+    task, group = _seed(session)
+    session.add_all([
+        TaskMembershipAdmissionItem(
+            tenant_id=1,
+            task_id=task.id,
+            account_id=account_id,
+            target_id=group.id,
+            phase="completed",
+        )
+        for account_id in (1, 2, 3)
+    ])
+    session.flush()
+    ready_row = session.get(TaskAccountDailyCoverage, "coverage-1")
+    progress = {"deficit": 120, "goal": 120}
+
+    selected = _select_accounts_for_plan(
+        session,
+        task,
+        group,
+        progress,
+        task.type_config,
+        coverage_rows=[ready_row],
+    )
+    round_config = _coverage_round_config(
+        _hard_hourly_round_config(task.type_config, progress),
+        progress,
+    )
+
+    assert [account.id for account in selected] == [1]
+    assert round_config["allow_account_repeat"] is False
 
 
 def test_ready_coverage_plan_batch_uses_stable_cursor_and_hard_limit(session: Session) -> None:

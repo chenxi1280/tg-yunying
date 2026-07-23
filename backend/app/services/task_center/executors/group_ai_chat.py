@@ -35,7 +35,7 @@ from app.services.tenant_target_profile import tenant_learning_profile_preview
 from app.services.rule_engine import bound_rule_version, evaluate_input_filter
 
 from ..account_pool import DAILY_COVERAGE_SUCCESS_STATUSES, daily_uncovered_account_count, select_task_accounts
-from ..account_scope import bootstrap_missing_all_account_task_scope, scoped_account_ids
+from ..account_scope import bootstrap_missing_all_account_task_scope
 from ..ai_act_types import canonical_ai_group_act_type
 from ..ai_generator import AI_GENERATION_UNAVAILABLE_MESSAGE
 from ..ai_message_memory import mark_group_ai_message_result, reserve_group_ai_message
@@ -1367,7 +1367,7 @@ def _select_accounts_for_plan(
     options = _hard_hourly_account_options(progress)
     if progress:
         options["enforce_capacity"] = False
-    coverage_options = _daily_coverage_account_options(config) if not progress else {}
+    coverage_options = _daily_coverage_account_options(config)
     ready_rows = _ready_coverage_rows(config, coverage_rows)
     if _all_accounts_daily_coverage(config) and coverage_rows is None:
         ready_rows = ready_coverage_rows(session, task)
@@ -1399,12 +1399,10 @@ def _candidate_account_ids_for_plan(
     task: Task,
     config: dict,
     ready_rows: list[TaskAccountDailyCoverage],
-    progress: dict[str, object],
+    _progress: dict[str, object],
 ) -> list[int] | None:
     if not _all_accounts_daily_coverage(config):
         return None
-    if progress:
-        return scoped_account_ids(session, task)
     if ready_rows:
         return [row.account_id for row in ready_rows]
     return []
@@ -1675,11 +1673,9 @@ def _load_coverage_rows(
 
 
 def _coverage_round_config(config: dict, progress: dict[str, object]) -> dict:
-    if not _all_accounts_daily_coverage(config):
-        return config
-    if progress:
-        return config
-    return {**config, "allow_account_repeat": False}
+    if _all_accounts_daily_coverage(config):
+        return {**config, "allow_account_repeat": False}
+    return config
 
 
 def _coverage_target_per_account(config: dict) -> int:
