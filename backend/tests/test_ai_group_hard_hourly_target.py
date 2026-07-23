@@ -1620,6 +1620,7 @@ def test_group_ai_chat_all_accounts_daily_coverage_keeps_uncovered_before_memory
     assert all(action.payload["coverage_reason"] == "daily_account_coverage" for action in actions)
 
 
+@pytest.mark.no_postgres
 def test_group_ai_chat_hard_hourly_target_plans_large_deficit_in_batches(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -1629,7 +1630,14 @@ def test_group_ai_chat_hard_hourly_target_plans_large_deficit_in_batches(monkeyp
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
-        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="硬目标群", auth_status="已授权运营"))
+        session.add(TgGroup(
+            id=7,
+            tenant_id=1,
+            tg_peer_id="-1007",
+            title="硬目标群",
+            auth_status="已授权运营",
+            group_cooldown_seconds=12,
+        ))
         for account_id in range(101, 111):
             session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线", session_ciphertext=f"session-{account_id}"))
             session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=account_id, can_send=True))
@@ -1665,6 +1673,7 @@ def test_group_ai_chat_hard_hourly_target_plans_large_deficit_in_batches(monkeyp
     assert all(action.payload["message_text"] == "" for action in actions)
 
 
+@pytest.mark.no_postgres
 def test_group_ai_chat_hard_hourly_ignores_configured_round_size_for_deficit(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -1674,7 +1683,14 @@ def test_group_ai_chat_hard_hourly_ignores_configured_round_size_for_deficit(mon
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
-        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="硬目标群", auth_status="已授权运营"))
+        session.add(TgGroup(
+            id=7,
+            tenant_id=1,
+            tg_peer_id="-1007",
+            title="硬目标群",
+            auth_status="已授权运营",
+            group_cooldown_seconds=12,
+        ))
         for account_id in range(101, 161):
             session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线", session_ciphertext=f"session-{account_id}"))
             session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=account_id, can_send=True))
@@ -1861,6 +1877,7 @@ def test_hard_hourly_coverage_waiting_uses_default_checkpoint_when_absent():
     assert task.hard_hourly_next_check_at == now_value + timedelta(seconds=120)
 
 
+@pytest.mark.no_postgres
 def test_group_ai_chat_hard_hourly_reuses_selected_accounts_when_front_accounts_are_full(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -1874,7 +1891,14 @@ def test_group_ai_chat_hard_hourly_reuses_selected_accounts_when_front_accounts_
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(SchedulingSetting(tenant_id=1, default_account_hour_limit=1))
-        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="硬目标群", auth_status="已授权运营"))
+        session.add(TgGroup(
+            id=7,
+            tenant_id=1,
+            tg_peer_id="-1007",
+            title="硬目标群",
+            auth_status="已授权运营",
+            group_cooldown_seconds=12,
+        ))
         for account_id in range(101, 201):
             session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线", session_ciphertext=f"session-{account_id}"))
             session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=account_id, can_send=True))
@@ -3379,6 +3403,7 @@ def test_hard_hourly_refill_rechecks_online_ready_accounts(monkeypatch):
     assert task.stats["account_offline_count"] == 10
 
 
+@pytest.mark.no_postgres
 def test_precheck_reports_hard_hourly_capacity_without_blocking_on_max_actions(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -3410,6 +3435,14 @@ def test_precheck_reports_hard_hourly_capacity_without_blocking_on_max_actions(m
                 auth_status="已授权运营",
             )
         )
+        session.add(TgGroup(
+            id=7,
+            tenant_id=1,
+            tg_peer_id="-1007",
+            title="硬目标群",
+            auth_status="已授权运营",
+            group_cooldown_seconds=12,
+        ))
         for account_id in [101, 102, 103]:
             session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线", session_ciphertext=f"session-{account_id}"))
         session.commit()
@@ -3450,6 +3483,17 @@ def test_precheck_reports_hard_hourly_capacity_without_blocking_on_max_actions(m
         "capacity_gap": 297,
         "hard_target_over_capacity": True,
         "warnings": ["硬目标高于当前账号容量，可能持续未达标"],
+        "group_cooldown_capacity": {
+            "hourly_target": 300,
+            "required_hourly_messages": 300,
+            "group_cooldown_seconds": 12,
+            "group_cooldown_hourly_capacity": 300,
+            "capacity_gap": 0,
+            "recommended_max_group_cooldown_seconds": 12,
+            "sufficient": True,
+            "blocker_code": "",
+        },
+        "group_cooldown_blocked": False,
     }
     assert "硬目标高于当前账号容量，可能持续未达标" in result["warnings"]
 
