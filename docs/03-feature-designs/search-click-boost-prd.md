@@ -74,7 +74,7 @@ tg-yunying 当前任务中心已支持 5 类主任务：`group_ai_chat`、`group
 }
 ```
 
-每个 source `search_join` action = 一个账号授权槽位 × 一个关键词 × 一个搜索机器人 × 一个目标群匹配策略 = 一次完整搜索目标群点击链路。账号已在目标群内时，不跳过该 source action；仍需完成搜索、命中目标和目标点击 / 确认。source 在计划后和调度前都必须保持该授权槽位所属账号，不能因全局容量转派到其他账号。命中后 source action 必须立即写 `target_click_observed=true` 与 `target_found_at`，并创建唯一 `search_join_membership` 准入子 action；子 action 在同一授权槽位环境下申请或复核成员关系。`membership_observed` 是独立的成员关系事实，不回写或覆盖已经成立的目标点击事实。
+每个 source `search_join` action = 一个账号授权槽位 × 一个关键词 × 一个搜索机器人 × 一个目标群匹配策略 = 一次完整搜索目标群点击链路。账号已在目标群内时，不跳过该 source action；仍需完成搜索、命中目标和目标点击 / 确认。source 在计划后和调度前都必须保持该授权槽位所属账号，不能因全局容量转派到其他账号。Planner 在创建 source 前必须以该账号和候选时间执行与 Dispatcher 相同的全局容量决策；如命中账号冷却或全局小时/日限额，必须将 source 排到决策返回的下一个可用时段，不能先在不可用时段堆积 action 再由 Dispatcher 反复写 `global_account_policy` 延期。排程后的 source 仍固定原账号和授权槽位，Dispatcher 保留到 Gateway 前的最终容量校验。命中后 source action 必须立即写 `target_click_observed=true` 与 `target_found_at`，并创建唯一 `search_join_membership` 准入子 action；子 action 在同一授权槽位环境下申请或复核成员关系。`membership_observed` 是独立的成员关系事实，不回写或覆盖已经成立的目标点击事实。
 
 ### 4.1.1 每日目标契约（2026-07-21）
 

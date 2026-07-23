@@ -10,6 +10,7 @@ from app.admin_chats import send_admin_chat_broadcast
 from app.models import Action, BotProtocolSample, OperationTarget, Task, Tenant, TgAccount, TgAccountAuthorization
 from app.search_keywords import repair_legacy_keyword_materials
 from app.security import decrypt_secret
+from app.services.account_capacity import account_capacity_decision
 from app.services.client_metadata import SearchJoinEnvironment, ensure_search_join_environment
 from app.services._common import _now, audit
 from app.services.notifications import NotificationResult, send_telegram_bot_message
@@ -214,6 +215,10 @@ def _create_planned_action(
     scheduled_at = _scheduled_before_task_deadline(task, decision.scheduled_at or _now(), _now())
     if scheduled_at is None:
         return False, "scheduled_end_reached"
+    if not decision.decision_value.get("skipped"):
+        scheduled_at = _next_account_capacity_slot(session, task, account.id, scheduled_at)
+        if scheduled_at is None:
+            return False, "scheduled_end_reached"
     if quiet_hours_active(scheduled_at, config, timezone_name=task.timezone):
         return False, "quiet_hours_active"
     if not hourly_action_allowed(session, task, scheduled_at, max_actions_per_hour=int(config.get("max_actions_per_hour") or 0)):
@@ -230,6 +235,30 @@ def _create_planned_action(
     action.executed_at = _now()
     action.result = {"success": False, "skip_reason": "skipped_by_behavior_pacing"}
     return True, ""
+
+
+def _next_account_capacity_slot(session: Session, task: Task, account_id: int, scheduled_at: datetime) -> datetime | None:
+    cursor = scheduled_at
+    while True:
+        decision = account_capacity_decision(
+            session,
+            tenant_id=task.tenant_id,
+            account_id=account_id,
+            scheduled_at=cursor,
+        )
+        if decision.available:
+            return cursor
+        deferred_at = decision.defer_until
+        if deferred_at is None or deferred_at <= cursor:
+            raise RuntimeError(f"search_join account capacity did not advance account_id={account_id}")
+        if not _before_task_deadline(task, deferred_at):
+            return None
+        cursor = deferred_at
+
+
+def _before_task_deadline(task: Task, scheduled_at: datetime) -> bool:
+    deadline = as_beijing(task.scheduled_end)
+    return deadline is None or scheduled_at < deadline
 
 
 def _scheduled_before_task_deadline(task: Task, scheduled_at: datetime, now_value: datetime) -> datetime | None:

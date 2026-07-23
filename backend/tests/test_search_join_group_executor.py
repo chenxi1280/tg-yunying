@@ -19,6 +19,7 @@ from app.models import (
     BotProtocolSample,
     FingerprintComboHistory,
     OperationTarget,
+    SchedulingSetting,
     SearchJoinPacingDecision,
     Task,
     TelegramDeveloperApp,
@@ -1320,6 +1321,116 @@ def test_search_join_repeat_application_mode_reuses_the_same_account_within_one_
 
     actions = list(session.scalars(select(Action).where(Action.task_id == task.id, Action.action_type == "search_join")))
     assert [action.account_id for action in actions] == [101, 101]
+
+
+@pytest.mark.no_postgres
+def test_search_join_planner_defers_repeat_sources_to_global_account_capacity(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixed_now = datetime(2026, 7, 23, 10, 0, 0)
+    monkeypatch.setattr(search_join_executor, "_now", lambda: fixed_now)
+    _bind_search_join_environment(session, [101])
+    session.add(
+        SchedulingSetting(
+            tenant_id=1,
+            jitter_min_seconds=0,
+            jitter_max_seconds=0,
+            default_account_cooldown_seconds=180,
+        )
+    )
+    task = _task(
+        account_config={"selection_mode": "manual", "account_ids": [101], "max_concurrent": 1},
+        type_config={
+            "daily_click_target_count": 2,
+            "daily_target_count": 1,
+            "allow_same_account_repeat_application": True,
+            "actions_per_round": 2,
+            "max_actions_per_hour": 2,
+            "hourly_min_successful_joins": 2,
+        },
+        pacing_config={
+            "max_actions_per_day": 2,
+            "hourly_jitter_percent": 0,
+            "daily_jitter_percent": 0,
+        },
+    )
+    session.add(task)
+    session.flush()
+    session.add(
+        Action(
+            tenant_id=1,
+            task_id=task.id,
+            task_type=task.type,
+            action_type="send_message",
+            account_id=101,
+            status="success",
+            scheduled_at=fixed_now,
+            executed_at=fixed_now,
+            payload={},
+            result={},
+        )
+    )
+    session.commit()
+
+    assert build_task_plan(session, task) == 2
+
+    actions = list(
+        session.scalars(
+            select(Action)
+            .where(Action.task_id == task.id, Action.action_type == "search_join")
+            .order_by(Action.scheduled_at)
+        )
+    )
+
+    assert [action.scheduled_at for action in actions] == [
+        fixed_now + timedelta(seconds=180),
+        fixed_now + timedelta(seconds=360),
+    ]
+
+
+@pytest.mark.no_postgres
+def test_search_join_planner_does_not_defer_source_past_task_deadline(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixed_now = datetime(2026, 7, 23, 10, 0, 0)
+    monkeypatch.setattr(search_join_executor, "_now", lambda: fixed_now)
+    _bind_search_join_environment(session, [101])
+    session.add(
+        SchedulingSetting(
+            tenant_id=1,
+            jitter_min_seconds=0,
+            jitter_max_seconds=0,
+            default_account_cooldown_seconds=180,
+        )
+    )
+    task = _task(
+        scheduled_end=fixed_now + timedelta(seconds=120),
+        account_config={"selection_mode": "manual", "account_ids": [101], "max_concurrent": 1},
+        type_config={"actions_per_round": 1, "hourly_min_successful_joins": 1},
+        pacing_config={"max_actions_per_day": 1, "hourly_jitter_percent": 0, "daily_jitter_percent": 0},
+    )
+    session.add(task)
+    session.flush()
+    session.add(
+        Action(
+            tenant_id=1,
+            task_id=task.id,
+            task_type=task.type,
+            action_type="send_message",
+            account_id=101,
+            status="success",
+            scheduled_at=fixed_now,
+            executed_at=fixed_now,
+            payload={},
+            result={},
+        )
+    )
+    session.commit()
+
+    assert build_task_plan(session, task) == 0
+    assert not list(session.scalars(select(Action).where(Action.task_id == task.id, Action.action_type == "search_join")))
 
 
 @pytest.mark.no_postgres
