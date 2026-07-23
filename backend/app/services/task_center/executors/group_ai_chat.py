@@ -60,6 +60,7 @@ from ..daily_coverage import (
     reserve_coverage_for_action,
 )
 from ..daily_coverage_planning import (
+    SENDABLE_COVERAGE_STATES,
     advance_coverage_plan_cursor,
     coverage_plan_totals,
     ready_coverage_plan_batch,
@@ -96,6 +97,8 @@ DEFAULT_CONTEXT_BOUND_SCHEDULE_WINDOW_SECONDS = 300
 MIN_CONTEXT_BOUND_SCHEDULE_WINDOW_SECONDS = 60
 DAILY_COVERAGE_DEBT_RECHECK_SECONDS = 120
 GROUP_CHAT_SCENE = "group_chat"
+ALL_ACCOUNT_COVERAGE_CAPACITY_BLOCKED_MESSAGE = "全部账号每日覆盖容量不足，已停止创建发送 Action"
+SENDABLE_COVERAGE_CAPACITY_BLOCKED_MESSAGE = "当前可发账号每日覆盖容量不足，已停止创建发送 Action"
 
 
 @dataclass(frozen=True)
@@ -107,6 +110,17 @@ class CoveragePlanState:
     target_per_account: int = 1
     confirmed_count: int = 0
     reserved_count: int = 0
+    sendable_account_count: int = 0
+    sendable_confirmed_count: int = 0
+    sendable_reserved_count: int = 0
+
+
+@dataclass(frozen=True)
+class CoverageCapacityScope:
+    account_count: int
+    target_per_account: int
+    confirmed_count: int
+    reserved_count: int
 
 CHAT_MODE_REPLY = "reply"
 CHAT_MODE_IDLE_WARMUP = "idle_warmup"
@@ -1579,38 +1593,122 @@ def _coverage_capacity_blocker(
     rows = coverage_rows if coverage_rows is not None else _load_coverage_rows(session, task)
     if not rows:
         return {}
-    account_count = coverage_state.account_count if coverage_state else len(rows)
-    target_per_account = coverage_state.target_per_account if coverage_state else max(row.target_count for row in rows)
-    confirmed_count = coverage_state.confirmed_count if coverage_state else sum(row.confirmed_count for row in rows)
-    reserved_count = coverage_state.reserved_count if coverage_state else reserved_coverage_message_count(rows)
-    proof = task_coverage_capacity_proof(
+    full_proof = _coverage_capacity_proof(
+        session, task, group, _coverage_capacity_scope(rows, coverage_state),
+    )
+    if full_proof.get("sufficient"):
+        _clear_coverage_capacity_blocker(task)
+        return {}
+    sendable_scope = _sendable_coverage_capacity_scope(rows, coverage_state)
+    if sendable_scope.account_count == 0:
+        return _record_coverage_capacity_blocker(task, full_proof)
+    sendable_proof = _coverage_capacity_proof(session, task, group, sendable_scope)
+    if not sendable_proof.get("sufficient"):
+        return _record_coverage_capacity_blocker(task, sendable_proof)
+    _record_partial_coverage_capacity(task, full_proof, sendable_proof)
+    return {}
+
+
+def _coverage_capacity_scope(
+    rows: list[TaskAccountDailyCoverage],
+    coverage_state: CoveragePlanState | None,
+) -> CoverageCapacityScope:
+    if coverage_state:
+        return CoverageCapacityScope(
+            account_count=coverage_state.account_count,
+            target_per_account=coverage_state.target_per_account,
+            confirmed_count=coverage_state.confirmed_count,
+            reserved_count=coverage_state.reserved_count,
+        )
+    return _coverage_capacity_scope_from_rows(rows)
+
+
+def _sendable_coverage_capacity_scope(
+    rows: list[TaskAccountDailyCoverage],
+    coverage_state: CoveragePlanState | None,
+) -> CoverageCapacityScope:
+    if coverage_state:
+        return CoverageCapacityScope(
+            account_count=coverage_state.sendable_account_count,
+            target_per_account=coverage_state.target_per_account,
+            confirmed_count=coverage_state.sendable_confirmed_count,
+            reserved_count=coverage_state.sendable_reserved_count,
+        )
+    return _coverage_capacity_scope_from_rows([
+        row for row in rows if row.state in SENDABLE_COVERAGE_STATES
+    ])
+
+
+def _coverage_capacity_scope_from_rows(
+    rows: list[TaskAccountDailyCoverage],
+) -> CoverageCapacityScope:
+    if not rows:
+        return CoverageCapacityScope(0, 1, 0, 0)
+    return CoverageCapacityScope(
+        account_count=len(rows),
+        target_per_account=max(row.target_count for row in rows),
+        confirmed_count=sum(row.confirmed_count for row in rows),
+        reserved_count=reserved_coverage_message_count(rows),
+    )
+
+
+def _coverage_capacity_proof(
+    session: Session,
+    task: Task,
+    group: TgGroup,
+    scope: CoverageCapacityScope,
+) -> dict[str, object]:
+    return task_coverage_capacity_proof(
         session,
         task,
         group,
-        target_account_count=account_count,
-        target_per_account=target_per_account,
-        confirmed_message_count=confirmed_count,
-        reserved_message_count=reserved_count,
+        target_account_count=scope.account_count,
+        target_per_account=scope.target_per_account,
+        confirmed_message_count=scope.confirmed_count,
+        reserved_message_count=scope.reserved_count,
         now=_now(),
     )
-    if proof.get("sufficient"):
-        _clear_coverage_capacity_blocker(task)
-        return {}
+
+
+def _record_coverage_capacity_blocker(task: Task, proof: dict[str, object]) -> dict[str, object]:
     task.stats = {
         **(task.stats or {}),
         "coverage_capacity_status": "blocked",
         "coverage_capacity_proof": proof,
     }
-    task.last_error = "全部账号每日覆盖容量不足，已停止创建发送 Action"
+    task.stats.pop("sendable_coverage_capacity_proof", None)
+    task.last_error = SENDABLE_COVERAGE_CAPACITY_BLOCKED_MESSAGE
     return proof
+
+
+def _record_partial_coverage_capacity(
+    task: Task,
+    full_proof: dict[str, object],
+    sendable_proof: dict[str, object],
+) -> None:
+    task.stats = {
+        **(task.stats or {}),
+        "coverage_capacity_status": "partial",
+        "coverage_capacity_proof": full_proof,
+        "sendable_coverage_capacity_proof": sendable_proof,
+    }
+    if task.last_error in {
+        ALL_ACCOUNT_COVERAGE_CAPACITY_BLOCKED_MESSAGE,
+        SENDABLE_COVERAGE_CAPACITY_BLOCKED_MESSAGE,
+    }:
+        task.last_error = ""
 
 
 def _clear_coverage_capacity_blocker(task: Task) -> None:
     stats = dict(task.stats or {})
     stats.pop("coverage_capacity_status", None)
     stats.pop("coverage_capacity_proof", None)
+    stats.pop("sendable_coverage_capacity_proof", None)
     task.stats = stats
-    if task.last_error == "全部账号每日覆盖容量不足，已停止创建发送 Action":
+    if task.last_error in {
+        ALL_ACCOUNT_COVERAGE_CAPACITY_BLOCKED_MESSAGE,
+        SENDABLE_COVERAGE_CAPACITY_BLOCKED_MESSAGE,
+    }:
         task.last_error = ""
 
 
@@ -1643,6 +1741,9 @@ def _coverage_plan_state(
         target_per_account=totals.target_per_account,
         confirmed_count=totals.confirmed_count,
         reserved_count=totals.reserved_count,
+        sendable_account_count=totals.sendable_account_count,
+        sendable_confirmed_count=totals.sendable_confirmed_count,
+        sendable_reserved_count=totals.sendable_reserved_count,
     )
 
 

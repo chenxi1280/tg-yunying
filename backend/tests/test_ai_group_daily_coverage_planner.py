@@ -37,6 +37,7 @@ from app.services.task_center.payloads import SendMessagePayload
 from app.services.task_center import daily_coverage
 from app.services.task_center import coverage_capacity
 from app.services.task_center.daily_coverage_readiness import refresh_rows
+from app.services.task_center.daily_coverage_planning import coverage_plan_totals
 from app.services.task_center.executors import group_ai_chat
 from app.timezone import beijing_now
 
@@ -172,12 +173,57 @@ def test_running_all_account_task_blocks_when_daily_capacity_is_insufficient(
 ) -> None:
     task, group = _seed(session)
     group.daily_limit = 1
+    ready_row = session.get(TaskAccountDailyCoverage, "coverage-2")
+    ready_row.state = "ready"
+    ready_row.confirmed_count = 0
+    session.commit()
 
     blocker = _coverage_capacity_blocker(session, task, group, task.type_config)
 
     assert blocker["blocker_code"] == "daily_coverage_capacity_insufficient"
     assert blocker["capacity_gap"] == 1
     assert task.stats["coverage_capacity_status"] == "blocked"
+
+
+def test_pending_admission_capacity_gap_does_not_stop_ready_accounts(
+    session: Session,
+    stable_capacity_clock: None,
+) -> None:
+    task, group = _seed(session)
+    group.daily_limit = 1
+    for account_id in (2, 3):
+        row = session.get(TaskAccountDailyCoverage, f"coverage-{account_id}")
+        row.state = "pending_admission"
+        row.blocker_code = "not_in_group"
+        row.confirmed_count = 0
+    session.commit()
+
+    blocker = _coverage_capacity_blocker(session, task, group, task.type_config)
+
+    assert blocker == {}
+    assert task.stats["coverage_capacity_status"] == "partial"
+    assert task.stats["coverage_capacity_proof"]["sufficient"] is False
+    assert task.stats["sendable_coverage_capacity_proof"]["sufficient"] is True
+
+
+def test_coverage_totals_exclude_pending_admission_from_sendable_capacity(
+    session: Session,
+    stable_capacity_clock: None,
+) -> None:
+    task, group = _seed(session)
+    for account_id in (2, 3):
+        row = session.get(TaskAccountDailyCoverage, f"coverage-{account_id}")
+        row.state = "pending_admission"
+        row.blocker_code = "not_in_group"
+        row.confirmed_count = 0
+    session.commit()
+
+    totals = coverage_plan_totals(session, task, group, now=beijing_now())
+
+    assert totals.account_count == 3
+    assert totals.sendable_account_count == 1
+    assert totals.sendable_confirmed_count == 0
+    assert totals.sendable_reserved_count == 0
 
 
 def test_running_all_account_task_clears_recovered_capacity_error(

@@ -13,6 +13,7 @@ from .daily_coverage_schedule import daily_coverage_due_debt_totals
 
 
 MAX_DAILY_COVERAGE_PLAN_BATCH = 20
+SENDABLE_COVERAGE_STATES = ("ready", "reserved", "sending", "unknown")
 
 
 @dataclass(frozen=True)
@@ -27,6 +28,9 @@ class CoveragePlanTotals:
     required_count: int
     confirmed_count: int
     reserved_count: int
+    sendable_account_count: int
+    sendable_confirmed_count: int
+    sendable_reserved_count: int
     target_per_account: int
     due_debt: int
 
@@ -75,27 +79,8 @@ def coverage_plan_totals(
     now: datetime | None = None,
 ) -> CoveragePlanTotals:
     timestamp = now or _now()
-    reserved_case = case(
-        (
-            TaskAccountDailyCoverage.state.in_(("reserved", "sending")),
-            1,
-        ),
-        else_=0,
-    )
-    row = session.execute(
-        select(
-            func.count(TaskAccountDailyCoverage.id),
-            func.coalesce(func.sum(TaskAccountDailyCoverage.target_count), 0),
-            func.coalesce(func.sum(TaskAccountDailyCoverage.confirmed_count), 0),
-            func.coalesce(func.sum(reserved_case), 0),
-            func.coalesce(func.max(TaskAccountDailyCoverage.target_count), 1),
-        ).where(
-            TaskAccountDailyCoverage.tenant_id == task.tenant_id,
-            TaskAccountDailyCoverage.task_id == task.id,
-            TaskAccountDailyCoverage.coverage_date == timestamp.date(),
-        )
-    ).one()
-    account_count, required, confirmed, reserved, target_per_account = map(int, row)
+    values = _coverage_totals_row(session, task, timestamp)
+    required, confirmed, reserved = values[1:4]
     due_debt = daily_coverage_due_debt_totals(
         task,
         group,
@@ -105,14 +90,39 @@ def coverage_plan_totals(
         reserved=reserved,
         now=timestamp,
     )
-    return CoveragePlanTotals(
-        account_count=account_count,
-        required_count=required,
-        confirmed_count=confirmed,
-        reserved_count=reserved,
-        target_per_account=target_per_account,
-        due_debt=due_debt,
+    return CoveragePlanTotals(*values, due_debt=due_debt)
+
+
+def _coverage_totals_row(session: Session, task: Task, timestamp: datetime) -> tuple[int, ...]:
+    sendable_state = TaskAccountDailyCoverage.state.in_(SENDABLE_COVERAGE_STATES)
+    reserved_case = case(
+        (TaskAccountDailyCoverage.state.in_(("reserved", "sending")), 1),
+        else_=0,
     )
+    sendable_reserved_case = case(
+        (TaskAccountDailyCoverage.state.in_(("reserved", "sending", "unknown")), 1),
+        else_=0,
+    )
+    row = session.execute(
+        select(
+            func.count(TaskAccountDailyCoverage.id),
+            func.coalesce(func.sum(TaskAccountDailyCoverage.target_count), 0),
+            func.coalesce(func.sum(TaskAccountDailyCoverage.confirmed_count), 0),
+            func.coalesce(func.sum(reserved_case), 0),
+            func.coalesce(func.sum(case((sendable_state, 1), else_=0)), 0),
+            func.coalesce(
+                func.sum(case((sendable_state, TaskAccountDailyCoverage.confirmed_count), else_=0)),
+                0,
+            ),
+            func.coalesce(func.sum(sendable_reserved_case), 0),
+            func.coalesce(func.max(TaskAccountDailyCoverage.target_count), 1),
+        ).where(
+            TaskAccountDailyCoverage.tenant_id == task.tenant_id,
+            TaskAccountDailyCoverage.task_id == task.id,
+            TaskAccountDailyCoverage.coverage_date == timestamp.date(),
+        )
+    ).one()
+    return tuple(map(int, row))
 
 
 def _locked_cursor(
@@ -206,6 +216,7 @@ __all__ = [
     "CoveragePlanBatch",
     "CoveragePlanTotals",
     "MAX_DAILY_COVERAGE_PLAN_BATCH",
+    "SENDABLE_COVERAGE_STATES",
     "advance_coverage_plan_cursor",
     "coverage_plan_totals",
     "ready_coverage_plan_batch",
