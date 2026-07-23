@@ -1476,7 +1476,7 @@ def test_all_accounts_daily_coverage_keeps_daily_debt_after_hourly_goal_is_met()
 def test_group_ai_chat_all_accounts_daily_coverage_keeps_uncovered_before_memory(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
-    now_value = datetime(2026, 6, 7, 23, 0)
+    now_value = datetime(2026, 6, 7, 20, 10)
 
     _forbid_planner_external_work(monkeypatch)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)

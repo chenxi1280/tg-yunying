@@ -211,7 +211,7 @@ def _seed_real_planner_scope(messages_per_round: int, timestamp) -> None:
             tg_peer_id="-100913793",
             title="real coverage",
             auth_status="已授权运营",
-            active_window="00:00-23:59",
+            active_window="23:00-22:00",
             daily_limit=5_000,
             account_cooldown_seconds=0,
             group_cooldown_seconds=0,
