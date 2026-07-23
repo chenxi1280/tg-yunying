@@ -28,6 +28,7 @@ from app.services.proxy_airport_subscription import (
 from app.timezone import as_beijing
 
 from ..account_pool import select_task_accounts
+from ..jisou_selector_accounts import select_jisou_selector_candidates
 from ..pacing import quiet_hours_active
 from ..payloads import SearchJoinPayload, create_search_join_action
 from ..search_click_target_progress import reconcile_search_click_target_progress
@@ -129,6 +130,25 @@ def build_plan(session: Session, task: Task) -> int:
     plan = SearchJoinPlan(bot_username=bot_username, keyword_hash="", target=target, hourly=hourly)
     created = 0
     blockers: dict[str, int] = {}
+    selector_candidates = select_jisou_selector_candidates(
+        session,
+        task,
+        accounts,
+        bot_username=bot_username,
+        now_value=now_value,
+    )
+    if selector_candidates.excluded_count:
+        blockers["jisou_group_selector_account_excluded"] = selector_candidates.excluded_count
+    accounts = list(selector_candidates.accounts)
+    if not accounts:
+        task.last_error = "极搜群聊 selector 在候选账号上均不可用"
+        return _record_hourly(
+            task,
+            hourly,
+            0,
+            {"jisou_group_selector_account_unavailable": selector_candidates.excluded_count},
+            pacing_stats,
+        )
     keyword_hashes = [item[0] for item in keyword_materials]
     planning_accounts = _planning_accounts(
         accounts,

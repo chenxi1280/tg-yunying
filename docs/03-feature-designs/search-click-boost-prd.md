@@ -954,7 +954,7 @@ None raw_response: Message # 原始消息，供 fallback @dataclass class Search
 |`BotBlockedError`|账号被机器人拉黑（目标机器人主动 block）|账号下线，标记 `bot_blocked`，换账号继续|
 |`TimeoutError` (conv.get_response 超时)|机器人维护 / 网络问题|retry 3 次，指数退避|
 |空消息回复|关键词无结果|action 标 `skipped`，`skip_reason=keyword_no_results`|
-|群聊类型 selector 缺失|极搜按钮结构变化，无法证明已进入群聊结果|action 标 `failed`，`error_code=jisou_group_selector_missing`，不回退到综合结果、不停止任务|
+|群聊类型 selector 缺失|极搜按钮结构变化，无法证明已进入群聊结果|action 标 `failed`，`error_code=jisou_group_selector_missing`，不回退到综合结果；Planner 在该任务的最近 24 小时内不再把该账号作为极搜 source 候选，已验证命中过的账号优先，未验证账号次之；全部候选都缺失时不创建新 source，并写 `jisou_group_selector_account_unavailable`，不静默回退到已失败账号|
 |真实没有下一页仍无目标群 button|已经扫描完当前群聊结果|action 标 `failed`，`error_code=target_not_in_results`，写 `search_end_reason=no_next_page`、实际 `searched_pages/last_result_page`，任务保持运行|
 |外部 HTTP URL button|button 指向非 `t.me` / Telegram 内部地址|action 标 `skipped`，`skip_reason=external_url_requires_web_profile`，不默认打开|
 |button effect unknown|样本无法判断点击后是否入群、外跳或触发验证|action 标 `skipped`，`skip_reason=button_effect_unknown`，等待人工样本确认|
@@ -1911,3 +1911,4 @@ AI 活跃群联动 126 个账号待冷却 / 64 个已进入 ready pool
 |2026-07-23|v0.32|Codex（搜索准入派发收口）|已命中目标的 `search_join_membership` child 在 Dispatcher 中列为准入收口，位于既有目标准入重试和 AI 硬目标之后、普通批量 action 之前；避免 AI 活群积压令已点击后的申请/成员复核长期停在 pending。|
 |2026-07-23|v0.33|Codex（严格日目标跨日收口）|严格每日目标的 source 在 child 之后、普通批量 action 之前领取；前日未进入 Gateway 的 source 作为次日点击/预算 carryover，只有最旧 pending 年龄软阻塞时允许在硬队列阈值和剩余槽位内补量；source 在 claim 与 Gateway 前都恢复授权槽位账号且禁止容量转派。|
 |2026-07-23|v0.34|Codex（严格日目标反饥饿）|线上证实 AI 硬小时队列可把到期 source 推到数百位之后，故领取顺序调整为：目标准入重试、search membership child、严格 source、AI 硬小时、普通批量；不改变任何 Telegram 风控或日预算边界。|
+|2026-07-24|v0.35|Codex（极搜账号 selector 能力分层）|当同一任务的极搜账号呈现不同 selector 回复结构时，按最近 24 小时的真实 source 回执分层：最新回执为 `jisou_group_selector_missing` 的账号不再参与新 source 排程，最新已确认目标点击的账号优先，未验证账号其次；没有可用账号时显式阻断，不回退到综合结果或已失败账号。|

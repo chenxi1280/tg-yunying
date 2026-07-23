@@ -34,6 +34,7 @@ from app.services._common import _now
 from app.services.proxy_airport_subscription import create_proxy_airport_subscription, sync_proxy_airport_subscription_by_id
 from app.services.task_center import pacing
 from app.services.task_center import search_join_pacing
+from app.services.task_center.jisou_selector_accounts import select_jisou_selector_candidates
 from app.services.task_center import search_click_target_progress as search_click_progress
 from app.services.task_center.search_join_pacing import pacing_window
 from app.services.task_center.executors import build_task_plan
@@ -99,6 +100,28 @@ def _task(**overrides) -> Task:
     }
     config.update(overrides.pop("type_config", {}))
     return Task(tenant_id=1, name="搜索入群", type="search_join_group", status="running", type_config=config, stats={}, **overrides)
+
+
+def _search_join_source_action(
+    task: Task,
+    account_id: int,
+    *,
+    status: str,
+    result: dict,
+    executed_at: datetime,
+    bot_username: str = "jisou",
+) -> Action:
+    return Action(
+        tenant_id=task.tenant_id,
+        task_id=task.id,
+        task_type=task.type,
+        action_type="search_join",
+        account_id=account_id,
+        status=status,
+        executed_at=executed_at,
+        payload={"bot_username": bot_username},
+        result=result,
+    )
 
 
 @pytest.mark.no_postgres
@@ -235,6 +258,138 @@ def test_search_join_planner_creates_hash_only_search_join_actions(session: Sess
         (102, 51, action_authorizations[102], "primary"),
     ]
     assert session.query(FingerprintComboHistory).count() == 2
+
+
+@pytest.mark.no_postgres
+def test_search_join_planner_excludes_selector_failed_jisou_accounts_and_prefers_verified_accounts(
+    session: Session,
+) -> None:
+    _bind_search_join_environment(session, [101, 102, 103])
+    task = _task(
+        account_config={"selection_mode": "manual", "account_ids": [101, 102, 103], "max_concurrent": 3},
+        type_config={"actions_per_round": 2, "hourly_min_successful_joins": 3},
+    )
+    session.add(task)
+    session.flush()
+    observed_at = _now()
+    session.add_all([
+        _search_join_source_action(
+            task, 101,
+            status="failed",
+            executed_at=observed_at,
+            result={"error_code": "jisou_group_selector_missing"},
+        ),
+        _search_join_source_action(
+            task, 102,
+            status="success",
+            executed_at=observed_at,
+            result={"target_click_observed": True, "target_found_at": observed_at.isoformat()},
+        ),
+    ])
+    session.commit()
+
+    candidates = select_jisou_selector_candidates(
+        session,
+        task,
+        [session.get(TgAccount, account_id) for account_id in (101, 102, 103)],
+        bot_username="jisou",
+        now_value=observed_at,
+    )
+    assert [account.id for account in candidates.accounts] == [102, 103]
+
+    assert build_task_plan(session, task) == 2
+
+    actions = list(session.scalars(
+        select(Action)
+        .where(Action.task_id == task.id, Action.status == "pending")
+        .order_by(Action.id)
+    ))
+    assert {action.account_id for action in actions} == {102, 103}
+    assert task.stats["search_join_stats"]["hourly_execution"]["last_blockers"] == {
+        "jisou_group_selector_account_excluded": 1
+    }
+
+
+@pytest.mark.no_postgres
+def test_jisou_selector_candidates_ignore_other_bot_outcomes(session: Session) -> None:
+    task = _task()
+    session.add(task)
+    session.flush()
+    observed_at = _now()
+    session.add(_search_join_source_action(
+        task, 101,
+        status="failed",
+        executed_at=observed_at,
+        result={"error_code": "jisou_group_selector_missing"},
+        bot_username="soso",
+    ))
+    session.commit()
+
+    candidates = select_jisou_selector_candidates(
+        session,
+        task,
+        [session.get(TgAccount, 101)],
+        bot_username="jisou",
+        now_value=observed_at,
+    )
+    assert [account.id for account in candidates.accounts] == [101]
+
+
+@pytest.mark.no_postgres
+def test_search_join_planner_fails_closed_when_all_jisou_accounts_lack_group_selector(session: Session) -> None:
+    _bind_search_join_environment(session, [101, 102])
+    task = _task(account_config={"selection_mode": "manual", "account_ids": [101, 102], "max_concurrent": 2})
+    session.add(task)
+    session.flush()
+    observed_at = _now()
+    for account_id in (101, 102):
+        session.add(_search_join_source_action(
+            task, account_id,
+            status="failed",
+            executed_at=observed_at,
+            result={"error_code": "jisou_group_selector_missing"},
+        ))
+    session.commit()
+
+    assert build_task_plan(session, task) == 0
+    assert session.scalar(select(Action).where(Action.task_id == task.id, Action.status == "pending")) is None
+    assert task.last_error == "极搜群聊 selector 在候选账号上均不可用"
+    assert task.stats["search_join_stats"]["hourly_execution"]["last_blockers"] == {
+        "jisou_group_selector_account_unavailable": 2
+    }
+
+
+@pytest.mark.no_postgres
+def test_search_join_planner_restores_account_after_a_later_verified_jisou_click(session: Session) -> None:
+    _bind_search_join_environment(session, [101])
+    task = _task(
+        account_config={"selection_mode": "manual", "account_ids": [101], "max_concurrent": 1},
+        type_config={"actions_per_round": 1, "hourly_min_successful_joins": 2},
+    )
+    session.add(task)
+    session.flush()
+    observed_at = _now()
+    session.add_all([
+        _search_join_source_action(
+            task, 101,
+            status="failed",
+            executed_at=observed_at - timedelta(minutes=1),
+            result={"error_code": "jisou_group_selector_missing"},
+        ),
+        _search_join_source_action(
+            task, 101,
+            status="success",
+            executed_at=observed_at,
+            result={"target_click_observed": True, "target_found_at": observed_at.isoformat()},
+        ),
+    ])
+    session.commit()
+
+    assert build_task_plan(session, task) == 1
+
+    action = session.scalar(select(Action).where(Action.task_id == task.id, Action.status == "pending"))
+    assert action is not None
+    assert action.account_id == 101
 
 
 @pytest.mark.no_postgres
