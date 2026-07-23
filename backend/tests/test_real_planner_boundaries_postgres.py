@@ -66,6 +66,8 @@ def test_postgres_real_planner_preserves_round_sizes_and_drains_580(
     timestamp = _now().replace(hour=23, minute=59 if drain_all else 30, second=0, microsecond=0)
     transaction_chunks: list[int] = []
     configure_real_planner_test(monkeypatch, timestamp, transaction_chunks)
+    # This boundary fixture isolates cursor chunking from the time-dependent capacity policy.
+    monkeypatch.setattr(group_ai_chat, "_coverage_capacity_blocker", lambda *_args, **_kwargs: {})
     try:
         _seed_real_planner_scope(messages_per_round, timestamp)
         actual_rounds = _run_real_planner_until(ACCOUNT_COUNT) if drain_all else _run_real_planner_rounds(1)
@@ -211,7 +213,7 @@ def _seed_real_planner_scope(messages_per_round: int, timestamp) -> None:
             tg_peer_id="-100913793",
             title="real coverage",
             auth_status="已授权运营",
-            active_window="23:00-22:00",
+            active_window="00:00-23:59",
             daily_limit=5_000,
             account_cooldown_seconds=0,
             group_cooldown_seconds=0,
