@@ -10,7 +10,7 @@ from datetime import date, datetime, timedelta
 
 from sqlalchemy import case, func, or_, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session, object_session
+from sqlalchemy.orm import Session, aliased, object_session
 from pydantic import ValidationError
 
 from app.admin_chats import send_admin_chat_broadcast
@@ -902,12 +902,30 @@ def _hard_hourly_claim_rank():
             HARD_HOURLY_ADMISSION_BLOCKED_SEND_ERROR_CODES
         )
     )
-    return case(
-        (hard_hourly_send & ~admission_blocked_hard_hourly_send, 0),
-        (hard_hourly_membership, 1),
-        (admission_blocked_hard_hourly_send, 2),
-        else_=3,
+    membership_unblocks_admission_blocked_send = _membership_unblocks_admission_blocked_send(
+        hard_hourly_membership
     )
+    return case(
+        (membership_unblocks_admission_blocked_send, 0),
+        (hard_hourly_send & ~admission_blocked_hard_hourly_send, 1),
+        (hard_hourly_membership, 2),
+        (admission_blocked_hard_hourly_send, 3),
+        else_=4,
+    )
+
+
+def _membership_unblocks_admission_blocked_send(hard_hourly_membership):
+    blocked_send = aliased(Action)
+    matching_blocked_send = select(blocked_send.id).where(
+        blocked_send.task_id == Action.task_id,
+        blocked_send.account_id == Action.account_id,
+        blocked_send.action_type == "send_message",
+        blocked_send.status == "pending",
+        func.coalesce(blocked_send.result["error_code"].as_string(), "").in_(
+            HARD_HOURLY_ADMISSION_BLOCKED_SEND_ERROR_CODES
+        ),
+    ).exists()
+    return hard_hourly_membership & Action.account_id.is_not(None) & matching_blocked_send
 
 
 def _search_join_membership_claim_rank():
