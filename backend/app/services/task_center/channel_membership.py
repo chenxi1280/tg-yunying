@@ -95,11 +95,13 @@ def gate_channel_membership(session: Session, task: Task, channel: OperationTarg
         task.last_error = disabled_reason
         return MembershipGateResult(False, blocked=True, blocker_reason="target_membership_disabled")
     created = _create_missing_membership_actions(session, task, channel, candidates, require_send=require_send)
+    fast_tracked = _fast_track_hard_hourly_membership_actions(session, task, channel)
     if created:
         stats["membership_stage"] = "membership_running"
         stats["membership_created_actions"] = int(stats.get("membership_created_actions") or 0) + created
         if _uses_four_hour_membership_window(task, channel, require_send=require_send):
             stats["membership_schedule_window_hours"] = AI_GROUP_MEMBERSHIP_SCHEDULE_WINDOW_HOURS
+        _record_fast_tracked_memberships(stats, fast_tracked)
         task.stats = stats
         if ready_count > 0:
             if task.last_error in {"正在执行关注频道前置阶段", "没有账号成功关注目标频道", "正在执行目标准入前置阶段", "没有账号成功准备目标"}:
@@ -109,6 +111,7 @@ def gate_channel_membership(session: Session, task: Task, channel: OperationTarg
         return MembershipGateResult(False, created=created, waiting=True)
     if open_count:
         stats["membership_stage"] = "membership_running"
+        _record_fast_tracked_memberships(stats, fast_tracked)
         task.stats = stats
         if ready_count > 0:
             if task.last_error in {"正在执行频道关注前置阶段", "正在执行关注频道前置阶段", "正在执行目标准入前置阶段"}:
@@ -903,6 +906,36 @@ def _is_daily_permission_recheck_reason(reason: str) -> bool:
 def _hard_hourly_membership_fast_track_enabled(task: Task) -> bool:
     config = task.type_config or {}
     return task.type == "group_ai_chat" and bool(config.get("hard_hourly_target_enabled")) and int(config.get("hourly_min_messages") or 0) > 0
+
+
+def _fast_track_hard_hourly_membership_actions(session: Session, task: Task, channel: OperationTarget) -> int:
+    """Pull future hard-hourly membership actions forward so admission does not wait hours."""
+    if not _hard_hourly_membership_fast_track_enabled(task):
+        return 0
+    now_value = _now()
+    rows = list(
+        session.scalars(
+            select(Action)
+            .where(
+                Action.task_id == task.id,
+                Action.action_type.in_([ACTION_TYPE, LEGACY_ACTION_TYPE]),
+                Action.status == "pending",
+                Action.scheduled_at > now_value,
+                Action.payload["channel_target_id"].as_integer() == channel.id,
+            )
+            .order_by(Action.scheduled_at.asc(), Action.created_at.asc())
+        )
+    )
+    rows = [action for action in rows if not is_daily_permission_recheck_action(action)]
+    for index, action in enumerate(rows):
+        action.scheduled_at = now_value + timedelta(seconds=HARD_HOURLY_MEMBERSHIP_FAST_TRACK_INTERVAL_SECONDS * index)
+        action.result = {**(action.result or {}), "fast_tracked_reason": "hard_hourly_membership"}
+    return len(rows)
+
+
+def _record_fast_tracked_memberships(stats: dict[str, Any], count: int) -> None:
+    if count:
+        stats["membership_fast_tracked_actions"] = int(stats.get("membership_fast_tracked_actions") or 0) + count
 
 
 def _hard_hourly_membership_schedule(pending_count: int, now_value) -> list:

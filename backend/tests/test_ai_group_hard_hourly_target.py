@@ -1874,12 +1874,13 @@ def test_hard_hourly_schedule_uses_remaining_deficit_for_batch_spacing():
     )
 
     times = hard_schedule_times(10, task, now_value, target_total=300)
+    expected_start = now_value.replace(tzinfo=BEIJING_TZ)
 
     assert len(times) == 10
-    assert times[0] == now_value
+    assert times[0] == expected_start
     assert times[1] - times[0] <= timedelta(seconds=3)
-    assert times[-1] <= now_value + timedelta(seconds=30)
-    assert max(times) < datetime(2026, 6, 7, 21, 0)
+    assert times[-1] <= expected_start + timedelta(seconds=30)
+    assert max(times) < datetime(2026, 6, 7, 21, 0, tzinfo=BEIJING_TZ)
 
 
 def test_hard_hourly_schedule_frontloads_when_bucket_cannot_be_evenly_spaced():
@@ -1899,8 +1900,9 @@ def test_hard_hourly_schedule_frontloads_when_bucket_cannot_be_evenly_spaced():
     )
 
     times = hard_schedule_times(30, task, now_value, target_total=300)
+    expected = now_value.replace(tzinfo=BEIJING_TZ)
 
-    assert times == [now_value for _ in range(30)]
+    assert times == [expected for _ in range(30)]
 
 
 @pytest.mark.no_postgres
@@ -3539,7 +3541,7 @@ def test_group_ai_chat_hard_hourly_reply_shortfall_fills_with_normal_turns(monke
     assert all(not action.payload["reply_to_message_id"] for action in actions)
     assert task.stats["hard_hourly_last_planned_count"] == 3
     assert "hard_hourly_last_blockers" not in task.stats
-    assert task.stats["hard_hourly_next_check_at"] == "2026-06-07T21:00:00"
+    assert task.stats["hard_hourly_next_check_at"] == "2026-06-07T21:00:00+08:00"
 
 
 @pytest.mark.no_postgres

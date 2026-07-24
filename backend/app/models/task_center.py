@@ -54,7 +54,7 @@ class DispatchFairnessCursor(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), nullable=False)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
     last_claim_class: Mapped[str] = mapped_column(String(40), default="")
     last_reason: Mapped[str] = mapped_column(String(80), default="")
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)

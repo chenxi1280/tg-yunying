@@ -1969,6 +1969,7 @@ def test_hard_hourly_missing_membership_batches_action_flush(monkeypatch) -> Non
     assert flush_flags == [False, False]
 
 
+@pytest.mark.no_postgres
 def test_hard_hourly_group_ai_fast_tracks_future_membership_actions() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

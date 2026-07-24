@@ -1102,45 +1102,61 @@ def _higher_priority_claim_condition(now_value: datetime):
     )
 
 
-def _fairness_claim_rank(force_ordinary_tenants: set[int], now_value: datetime):
-    """Order hard/ordinary choices before SQL LIMIT without weakening hard AI work.
+def _hard_hourly_claim_rank_for_ordering(force_ordinary_tenants: set[int], now_value: datetime):
+    """Admission-aware hard rank with fairness demotion for non-overdue hard sends.
 
-    Production priority (release fixes 2026-07-24): hard-hourly before search backlog.
-    Fairness only demotes non-overdue hard sends after ordinary when a tenant was
-    forced ordinary by the previous successful claim class.
+    Default: ready hard send before membership (production hard-AI priority).
+    When a tenant is forced ordinary by the fairness cursor, non-overdue hard sends
+    fall after ordinary work while overdue hard sends and membership stay protected.
     """
+    hard_hourly_membership = _hard_hourly_membership_claim_condition()
     hard_hourly_send = _hard_hourly_send_claim_condition()
-    ordinary = _ordinary_fairness_claim_condition()
-    overdue_or_membership = _hard_hourly_membership_claim_condition() | _overdue_hard_hourly_send_condition(now_value)
-    if not force_ordinary_tenants:
-        return case(
-            (_target_admission_retry_claim_condition(), 0),
-            (overdue_or_membership, 1),
-            (hard_hourly_send, 2),
-            (_search_join_membership_claim_condition(), 3),
-            (_strict_search_join_source_claim_condition(), 4),
-            (ordinary, 5),
-            else_=6,
+    admission_blocked_hard_hourly_send = (
+        hard_hourly_send
+        & func.coalesce(Action.result["error_code"].as_string(), "").in_(
+            HARD_HOURLY_ADMISSION_BLOCKED_SEND_ERROR_CODES
         )
-    forced = Action.tenant_id.in_(sorted(force_ordinary_tenants))
-    return case(
-        (_target_admission_retry_claim_condition(), 0),
-        (overdue_or_membership, 1),
-        (hard_hourly_send & ~forced, 2),
-        (_search_join_membership_claim_condition(), 3),
-        (_strict_search_join_source_claim_condition(), 4),
-        (ordinary & forced, 5),
-        (hard_hourly_send & forced, 6),
-        (ordinary, 7),
-        else_=8,
     )
+    admission_blocked_send_waiting_for_membership = (
+        admission_blocked_hard_hourly_send & _open_admission_membership_action()
+    )
+    ready_hard_hourly_send = hard_hourly_send & ~admission_blocked_send_waiting_for_membership
+    non_overdue_ready_hard_send = ready_hard_hourly_send & ~_overdue_hard_hourly_send_condition(now_value)
+    membership_unblocks = _membership_unblocks_admission_blocked_send(hard_hourly_membership)
+    if force_ordinary_tenants:
+        forced = Action.tenant_id.in_(sorted(force_ordinary_tenants))
+        demoted_hard = forced & non_overdue_ready_hard_send
+        protected_ready = ready_hard_hourly_send & ~demoted_hard
+        return case(
+            (membership_unblocks, 0),
+            (protected_ready, 1),
+            (hard_hourly_membership, 2),
+            (admission_blocked_send_waiting_for_membership, 3),
+            (demoted_hard, 6),
+            else_=4,
+        )
+    return case(
+        (membership_unblocks, 0),
+        (ready_hard_hourly_send, 1),
+        (hard_hourly_membership, 2),
+        (admission_blocked_send_waiting_for_membership, 3),
+        else_=4,
+    )
+
+
+def _ordinary_claim_rank():
+    """Ordinary actions sort after protected hard ranks (0-3) and before demoted hard (6)."""
+    return case((_ordinary_fairness_claim_condition(), 5), else_=4)
 
 
 def claim_action_ordering(force_ordinary_tenants: set[int], now_value: datetime):
     """Return the canonical Action row-lock order used by Dispatcher claims."""
     return (
-        _fairness_claim_rank(force_ordinary_tenants, now_value),
-        _hard_hourly_claim_rank(),
+        _target_admission_retry_claim_rank(),
+        _hard_hourly_claim_rank_for_ordering(force_ordinary_tenants, now_value),
+        _ordinary_claim_rank(),
+        _search_join_membership_claim_rank(),
+        _strict_search_join_source_claim_rank(),
         Task.priority.asc(),
         _channel_comment_claim_rank(),
         Action.scheduled_at.asc(),
