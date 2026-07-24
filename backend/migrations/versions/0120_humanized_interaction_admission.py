@@ -3,6 +3,9 @@
 Revision ID: 0120_humanized_interaction_admission
 Revises: 0119_disable_grok_fallback
 Create Date: 2026-07-25
+
+Idempotent for CI: tests may create_all() before alembic upgrade, so tables
+can already exist. Pattern mirrors 0114_ai_continuity_lifecycle.
 """
 
 from __future__ import annotations
@@ -18,7 +21,7 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.create_table(
+    _create_table_if_missing(
         "conversation_speaker_states",
         sa.Column("id", sa.Integer(), primary_key=True),
         sa.Column("tenant_id", sa.Integer(), sa.ForeignKey("tenants.id"), nullable=False, server_default="1"),
@@ -37,9 +40,13 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         sa.UniqueConstraint("tenant_id", "surface", "conversation_key", name="uq_conversation_speaker_state_key"),
     )
-    op.create_index("ix_conversation_speaker_state_updated", "conversation_speaker_states", ["updated_at"])
+    _create_index_if_missing(
+        "ix_conversation_speaker_state_updated",
+        "conversation_speaker_states",
+        ["updated_at"],
+    )
 
-    op.create_table(
+    _create_table_if_missing(
         "conversation_speaker_turns",
         sa.Column("id", sa.Integer(), primary_key=True),
         sa.Column("tenant_id", sa.Integer(), sa.ForeignKey("tenants.id"), nullable=False, server_default="1"),
@@ -63,13 +70,13 @@ def upgrade() -> None:
             name="uq_conversation_speaker_turn_remote",
         ),
     )
-    op.create_index(
+    _create_index_if_missing(
         "ix_conversation_speaker_turn_lookup",
         "conversation_speaker_turns",
         ["tenant_id", "surface", "conversation_key", "observed_at"],
     )
 
-    op.create_table(
+    _create_table_if_missing(
         "group_bot_admission_policies",
         sa.Column("id", sa.Integer(), primary_key=True),
         sa.Column("tenant_id", sa.Integer(), sa.ForeignKey("tenants.id"), nullable=False, server_default="1"),
@@ -87,12 +94,12 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
     )
-    op.create_index(
+    _create_index_if_missing(
         "ix_group_bot_policy_group",
         "group_bot_admission_policies",
         ["tenant_id", "group_id", "status"],
     )
-    op.create_index(
+    _create_index_if_missing(
         "ix_group_bot_policy_bot",
         "group_bot_admission_policies",
         ["tenant_id", "group_id", "trusted_bot_peer_id", "status"],
@@ -117,7 +124,7 @@ def upgrade() -> None:
         )
     )
 
-    op.create_table(
+    _create_table_if_missing(
         "group_bot_admissions",
         sa.Column("id", sa.Integer(), primary_key=True),
         sa.Column("tenant_id", sa.Integer(), sa.ForeignKey("tenants.id"), nullable=False, server_default="1"),
@@ -147,13 +154,18 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         sa.UniqueConstraint("tenant_id", "group_id", "account_id", name="uq_group_bot_admission_account"),
     )
-    op.create_index(
+    _create_index_if_missing(
         "ix_group_bot_admission_state",
         "group_bot_admissions",
         ["tenant_id", "group_id", "state"],
     )
+    _create_index_if_missing(
+        "ix_group_bot_admission_version",
+        "group_bot_admissions",
+        ["tenant_id", "group_id", "account_id", "admission_version"],
+    )
 
-    op.create_table(
+    _create_table_if_missing(
         "group_bot_required_channel_follows",
         sa.Column("id", sa.Integer(), primary_key=True),
         sa.Column("admission_id", sa.Integer(), sa.ForeignKey("group_bot_admissions.id"), nullable=False),
@@ -169,8 +181,13 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         sa.UniqueConstraint("admission_id", "channel_ref", name="uq_group_bot_required_channel_follow"),
     )
+    _create_index_if_missing(
+        "ix_group_bot_channel_follow_status",
+        "group_bot_required_channel_follows",
+        ["admission_id", "status"],
+    )
 
-    op.create_table(
+    _create_table_if_missing(
         "group_bot_admission_observations",
         sa.Column("id", sa.Integer(), primary_key=True),
         sa.Column("admission_id", sa.Integer(), sa.ForeignKey("group_bot_admissions.id"), nullable=False),
@@ -184,8 +201,13 @@ def upgrade() -> None:
         sa.Column("result_summary", sa.JSON(), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     )
+    _create_index_if_missing(
+        "ix_group_bot_observation_admission",
+        "group_bot_admission_observations",
+        ["admission_id", "created_at"],
+    )
 
-    op.create_table(
+    _create_table_if_missing(
         "pending_visibility_credits",
         sa.Column("id", sa.Integer(), primary_key=True),
         sa.Column("tenant_id", sa.Integer(), sa.ForeignKey("tenants.id"), nullable=False, server_default="1"),
@@ -199,23 +221,7 @@ def upgrade() -> None:
         sa.Column("closed_at", sa.DateTime(timezone=True), nullable=True),
         sa.UniqueConstraint("action_id", name="uq_pending_visibility_credit_action"),
     )
-
-    op.create_index(
-        "ix_group_bot_admission_version",
-        "group_bot_admissions",
-        ["tenant_id", "group_id", "account_id", "admission_version"],
-    )
-    op.create_index(
-        "ix_group_bot_channel_follow_status",
-        "group_bot_required_channel_follows",
-        ["admission_id", "status"],
-    )
-    op.create_index(
-        "ix_group_bot_observation_admission",
-        "group_bot_admission_observations",
-        ["admission_id", "created_at"],
-    )
-    op.create_index(
+    _create_index_if_missing(
         "ix_pending_visibility_credit_bucket",
         "pending_visibility_credits",
         ["bucket_id", "created_at"],
@@ -223,18 +229,63 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index("ix_pending_visibility_credit_bucket", table_name="pending_visibility_credits")
-    op.drop_index("ix_group_bot_observation_admission", table_name="group_bot_admission_observations")
-    op.drop_index("ix_group_bot_channel_follow_status", table_name="group_bot_required_channel_follows")
-    op.drop_index("ix_group_bot_admission_version", table_name="group_bot_admissions")
-    op.drop_table("pending_visibility_credits")
-    op.drop_table("group_bot_admission_observations")
-    op.drop_table("group_bot_required_channel_follows")
-    op.drop_table("group_bot_admissions")
+    if _has_table("pending_visibility_credits"):
+        if _has_index("pending_visibility_credits", "ix_pending_visibility_credit_bucket"):
+            op.drop_index("ix_pending_visibility_credit_bucket", table_name="pending_visibility_credits")
+        op.drop_table("pending_visibility_credits")
+    if _has_table("group_bot_admission_observations"):
+        if _has_index("group_bot_admission_observations", "ix_group_bot_observation_admission"):
+            op.drop_index("ix_group_bot_observation_admission", table_name="group_bot_admission_observations")
+        op.drop_table("group_bot_admission_observations")
+    if _has_table("group_bot_required_channel_follows"):
+        if _has_index("group_bot_required_channel_follows", "ix_group_bot_channel_follow_status"):
+            op.drop_index("ix_group_bot_channel_follow_status", table_name="group_bot_required_channel_follows")
+        op.drop_table("group_bot_required_channel_follows")
+    if _has_table("group_bot_admissions"):
+        if _has_index("group_bot_admissions", "ix_group_bot_admission_version"):
+            op.drop_index("ix_group_bot_admission_version", table_name="group_bot_admissions")
+        if _has_index("group_bot_admissions", "ix_group_bot_admission_state"):
+            op.drop_index("ix_group_bot_admission_state", table_name="group_bot_admissions")
+        op.drop_table("group_bot_admissions")
     op.execute(sa.text("DROP INDEX IF EXISTS uq_group_bot_policy_active_follow_sufficient"))
     op.execute(sa.text("DROP INDEX IF EXISTS uq_group_bot_policy_active_not_required"))
-    op.drop_table("group_bot_admission_policies")
-    op.drop_index("ix_conversation_speaker_turn_lookup", table_name="conversation_speaker_turns")
-    op.drop_table("conversation_speaker_turns")
-    op.drop_index("ix_conversation_speaker_state_updated", table_name="conversation_speaker_states")
-    op.drop_table("conversation_speaker_states")
+    if _has_table("group_bot_admission_policies"):
+        if _has_index("group_bot_admission_policies", "ix_group_bot_policy_bot"):
+            op.drop_index("ix_group_bot_policy_bot", table_name="group_bot_admission_policies")
+        if _has_index("group_bot_admission_policies", "ix_group_bot_policy_group"):
+            op.drop_index("ix_group_bot_policy_group", table_name="group_bot_admission_policies")
+        op.drop_table("group_bot_admission_policies")
+    if _has_table("conversation_speaker_turns"):
+        if _has_index("conversation_speaker_turns", "ix_conversation_speaker_turn_lookup"):
+            op.drop_index("ix_conversation_speaker_turn_lookup", table_name="conversation_speaker_turns")
+        op.drop_table("conversation_speaker_turns")
+    if _has_table("conversation_speaker_states"):
+        if _has_index("conversation_speaker_states", "ix_conversation_speaker_state_updated"):
+            op.drop_index("ix_conversation_speaker_state_updated", table_name="conversation_speaker_states")
+        op.drop_table("conversation_speaker_states")
+
+
+def _inspector():
+    return sa.inspect(op.get_bind())
+
+
+def _has_table(table_name: str) -> bool:
+    return table_name in _inspector().get_table_names()
+
+
+def _has_index(table_name: str, index_name: str) -> bool:
+    if not _has_table(table_name):
+        return False
+    return any(index["name"] == index_name for index in _inspector().get_indexes(table_name))
+
+
+def _create_table_if_missing(table_name: str, *columns_and_constraints) -> None:
+    if _has_table(table_name):
+        return
+    op.create_table(table_name, *columns_and_constraints)
+
+
+def _create_index_if_missing(index_name: str, table_name: str, columns: list[str]) -> None:
+    if _has_index(table_name, index_name):
+        return
+    op.create_index(index_name, table_name, columns)
