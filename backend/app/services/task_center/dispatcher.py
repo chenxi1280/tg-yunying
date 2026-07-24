@@ -902,14 +902,18 @@ def _hard_hourly_claim_rank():
             HARD_HOURLY_ADMISSION_BLOCKED_SEND_ERROR_CODES
         )
     )
+    admission_blocked_send_waiting_for_membership = (
+        admission_blocked_hard_hourly_send & _open_admission_membership_action()
+    )
+    ready_hard_hourly_send = hard_hourly_send & ~admission_blocked_send_waiting_for_membership
     membership_unblocks_admission_blocked_send = _membership_unblocks_admission_blocked_send(
         hard_hourly_membership
     )
     return case(
         (membership_unblocks_admission_blocked_send, 0),
-        (hard_hourly_send & ~admission_blocked_hard_hourly_send, 1),
+        (ready_hard_hourly_send, 1),
         (hard_hourly_membership, 2),
-        (admission_blocked_hard_hourly_send, 3),
+        (admission_blocked_send_waiting_for_membership, 3),
         else_=4,
     )
 
@@ -926,6 +930,16 @@ def _membership_unblocks_admission_blocked_send(hard_hourly_membership):
         ),
     ).exists()
     return hard_hourly_membership & Action.account_id.is_not(None) & matching_blocked_send
+
+
+def _open_admission_membership_action():
+    membership = aliased(Action)
+    return select(membership.id).where(
+        membership.task_id == Action.task_id,
+        membership.account_id == Action.account_id,
+        membership.action_type.in_(MEMBERSHIP_ACTION_TYPES),
+        membership.status.in_(("pending", "claiming", "executing", "retryable_failed")),
+    ).exists()
 
 
 def _search_join_membership_claim_rank():

@@ -3735,6 +3735,62 @@ def test_due_actions_prioritizes_membership_that_unblocks_admission_blocked_send
         assert [action.id for action in actions] == ["membership-unblocks-send"]
 
 
+@pytest.mark.no_postgres
+def test_due_actions_promotes_admission_blocked_send_after_membership_completes():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add_all(
+            [
+                Task(
+                    id="task-hard", tenant_id=1,
+                    name="硬目标", type="group_ai_chat",
+                    status="running", type_config={"hard_hourly_target_enabled": True, "hourly_min_messages": 300},
+                ),
+                Action(
+                    id="completed-membership",
+                    tenant_id=1,
+                    task_id="task-hard", task_type="group_ai_chat",
+                    action_type="ensure_target_membership",
+                    account_id=11,
+                    status="success",
+                    scheduled_at=now_value - timedelta(minutes=1),
+                    executed_at=now_value - timedelta(seconds=30),
+                    payload={"channel_id": "-1007", "channel_target_id": 7, "target_type": "group", "require_send": True},
+                ),
+                Action(
+                    id="admission-blocked-send",
+                    tenant_id=1,
+                    task_id="task-hard", task_type="group_ai_chat",
+                    action_type="send_message",
+                    account_id=11,
+                    status="pending",
+                    scheduled_at=now_value,
+                    payload={"message_text": "ready", "hard_hourly_target": True},
+                    result={"error_code": "required_channel_admission_pending"},
+                ),
+                Action(
+                    id="general-membership",
+                    tenant_id=1,
+                    task_id="task-hard", task_type="group_ai_chat",
+                    action_type="ensure_target_membership",
+                    account_id=12,
+                    status="pending",
+                    scheduled_at=now_value - timedelta(minutes=2),
+                    payload={"channel_id": "-1008", "channel_target_id": 8, "target_type": "group", "require_send": True},
+                ),
+            ]
+        )
+        session.commit()
+
+        actions = dispatcher.due_actions(session, limit=1)
+
+        assert [action.id for action in actions] == ["admission-blocked-send"]
+
+
 def test_claim_actions_does_not_starve_overdue_hard_hourly_send_behind_membership(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
