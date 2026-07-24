@@ -310,8 +310,8 @@ def _comment_slot_targets(
         if mode == "reply":
             # Hard reply mode cannot plan without valid targets.
             return None
-        # Mixed mode: keep normal comments and record shortfall (PRD §1.2.4).
-        return [None] * quantity
+        # Mixed mode: use available replies, keep remaining as normal comments (PRD §1.2.4).
+        return [*pool, *([None] * max(0, quantity - len(pool)))]
     return [*pool[:required], *([None] * (quantity - required))]
 
 

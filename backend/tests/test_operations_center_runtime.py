@@ -139,6 +139,20 @@ def _dispatch_deferred_ai_actions(
         "send_message",
         lambda *_args, **_kwargs: SendResult(True, remote_message_id="ai-runtime-ok"),
     )
+    # Runtime unit tests inject generator text; keep humanization quality gates from
+    # collapsing multi-slot plans into single check-in / quality_rejected outcomes.
+    monkeypatch.setattr(
+        "app.services.task_center.executors.group_ai_chat._quality_filter_ai_messages",
+        lambda messages, *args, **kwargs: (list(messages), {"accepted": len(messages)}),
+    )
+    monkeypatch.setattr(
+        "app.services.task_center.executors.group_ai_chat._voice_profile_match_decision_for_item",
+        lambda *_args, **_kwargs: {"score": 100, "reason": "test_bypass"},
+    )
+    monkeypatch.setattr(
+        "app.services.task_center.executors.group_ai_chat._stance_conflict_reason",
+        lambda *_args, **_kwargs: "",
+    )
     dependencies = GenerationDependencies(
         normal_generator=normal_generator,
         reply_generator=_forbidden_ai_reply_path,

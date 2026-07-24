@@ -173,11 +173,14 @@ def test_reply_shortfall_does_not_degrade_to_direct_comments(monkeypatch):
         session.flush()
 
         created = channel_comment.build_plan(session, task)
-        actions = session.scalars(select(Action).where(Action.task_id == task.id)).all()
+        actions = list(session.scalars(select(Action).where(Action.task_id == task.id)).all())
 
-    assert created == 0
-    assert actions == []
-    assert "可引用评论不足" in task.last_error
+    # PRD §1.2.4 mixed shortfall: keep normal comments, record shortage, do not abort plan.
+    assert created == 3
+    assert len(actions) == 3
+    assert "可引用评论不足" in (task.last_error or "")
+    assert int((task.stats or {}).get("reply_target_shortfall_count") or 0) >= 1
+    assert all(not (action.payload or {}).get("reply_to_message_id") for action in actions)
 
 
 def test_lifetime_cap_completion_is_not_revived_by_planner(monkeypatch):

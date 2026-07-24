@@ -1307,11 +1307,15 @@ def test_channel_comment_does_not_reuse_reply_targets_when_pool_is_short():
         session.commit()
 
         created = build_channel_comment_plan(session, task)
-        total_actions = session.scalar(select(func.count(Action.id)).where(Action.task_id == task.id))
+        actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
 
-    assert created == 0
-    assert total_actions == 0
-    assert "可引用评论不足" in task.last_error
+    # Mixed shortfall keeps normal comments; only one reply target is available.
+    assert created == 4
+    assert len(actions) == 4
+    assert "可引用评论不足" in (task.last_error or "")
+    reply_actions = [action for action in actions if (action.payload or {}).get("reply_to_message_id")]
+    assert len(reply_actions) == 1
+    assert int(reply_actions[0].payload["reply_to_message_id"]) == 8101
 
 
 def test_channel_comment_excludes_already_used_reply_targets_across_rounds():
