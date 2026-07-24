@@ -1253,19 +1253,7 @@ def _canonicalized_task_config(session: Session, task: Task, config: dict) -> di
     normalized = normalize_operation_target_references(session, task.tenant_id, task.type, source_config)
     normalized = apply_group_ai_account_coverage_defaults(task.type, normalized, task.account_config or {})
     if normalized != source_config:
-        persistable = {key: value for key, value in normalized.items() if key != "pacing_config"}
-        # Implicit all-account coverage default is plan-time only. Persisting it without the
-        # explicit source mode would make later shortage checks treat hard-hourly as coverage-gated.
-        if not daily_coverage_enforced and persistable.get("account_coverage_mode") == "all_accounts_daily":
-            persistable = {
-                key: value
-                for key, value in persistable.items()
-                if key != "account_coverage_mode"
-            }
-            if source_config.get("account_coverage_mode") is not None:
-                persistable["account_coverage_mode"] = source_config.get("account_coverage_mode")
-        if persistable != source_config:
-            task.type_config = persistable
+        task.type_config = {key: value for key, value in normalized.items() if key != "pacing_config"}
     return {**normalized, "_daily_coverage_enforced": daily_coverage_enforced}
 
 

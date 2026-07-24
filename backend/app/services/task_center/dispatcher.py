@@ -1145,25 +1145,22 @@ def _hard_hourly_claim_rank_for_ordering(force_ordinary_tenants: set[int], now_v
 
 
 def _fairness_demoted_hard_rank(force_ordinary_tenants: set[int], now_value: datetime):
-    """After task priority/comment ranks, put demoted hard sends after ordinary work."""
+    """After task priority/comment ranks, demote only forced non-overdue hard sends.
+
+    When fairness is idle, keep a no-op rank so scheduled_at decides among hard sends.
+    """
+    if not force_ordinary_tenants:
+        return case((True, 0), else_=0)
     ordinary = _ordinary_fairness_claim_condition()
     non_overdue_ready_hard = (
         _hard_hourly_send_claim_condition()
         & ~_overdue_hard_hourly_send_condition(now_value)
     )
-    if not force_ordinary_tenants:
-        return case(
-            (non_overdue_ready_hard, 0),
-            (ordinary, 1),
-            else_=1,
-        )
     forced = Action.tenant_id.in_(sorted(force_ordinary_tenants))
     return case(
         (forced & ordinary, 0),
         (forced & non_overdue_ready_hard, 1),
-        (non_overdue_ready_hard, 0),
-        (ordinary, 1),
-        else_=1,
+        else_=0,
     )
 
 

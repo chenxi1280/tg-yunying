@@ -3856,6 +3856,7 @@ def test_claim_actions_does_not_starve_overdue_hard_hourly_send_behind_membershi
         assert session.get(Action, "action-hard-membership").status == "pending"
 
 
+@pytest.mark.no_postgres
 def test_claim_actions_ignores_overdue_hard_hourly_siblings_for_capacity(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
