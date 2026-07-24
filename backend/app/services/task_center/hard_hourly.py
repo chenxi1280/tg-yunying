@@ -214,20 +214,27 @@ def _ledger_stat_values(session: Session | None, task: Task, now: datetime) -> d
 def hard_schedule_times(total: int, task: Task, now: datetime, *, target_total: int | None = None) -> list[datetime]:
     if total <= 0:
         return []
+    # Preserve naive wall-time inputs for callers/tests that still compare naively.
+    keep_naive = now.tzinfo is None
     current = normalize(task, now)
     _start, hour_end = hour_bounds(task, current)
     available = max(0, int((hour_end - current).total_seconds()) - 1)
     available = min(available, HARD_HOURLY_FRONTLOAD_WINDOW_SECONDS)
     if available <= 0 or total == 1:
-        return [current for _ in range(total)]
-    spacing_total = max(total, int(target_total or total), 1)
-    step = available // spacing_total
-    if step <= 0:
-        return [current for _ in range(total)]
-    return [
-        min(current + timedelta(seconds=step * index), hour_end - timedelta(seconds=1))
-        for index in range(total)
-    ]
+        times = [current for _ in range(total)]
+    else:
+        spacing_total = max(total, int(target_total or total), 1)
+        step = available // spacing_total
+        if step <= 0:
+            times = [current for _ in range(total)]
+        else:
+            times = [
+                min(current + timedelta(seconds=step * index), hour_end - timedelta(seconds=1))
+                for index in range(total)
+            ]
+    if keep_naive:
+        return [value.replace(tzinfo=None) for value in times]
+    return times
 
 
 def mark_plan_result(task: Task, progress: dict[str, Any], created: int, blockers: dict[str, int] | None = None) -> None:

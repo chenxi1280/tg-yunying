@@ -1103,20 +1103,36 @@ def _higher_priority_claim_condition(now_value: datetime):
 
 
 def _fairness_claim_rank(force_ordinary_tenants: set[int], now_value: datetime):
-    """Order hard/ordinary choices before SQL LIMIT without weakening strict work."""
+    """Order hard/ordinary choices before SQL LIMIT without weakening hard AI work.
+
+    Production priority (release fixes 2026-07-24): hard-hourly before search backlog.
+    Fairness only demotes non-overdue hard sends after ordinary when a tenant was
+    forced ordinary by the previous successful claim class.
+    """
     hard_hourly_send = _hard_hourly_send_claim_condition()
     ordinary = _ordinary_fairness_claim_condition()
-    forced = Action.tenant_id.in_(force_ordinary_tenants) if force_ordinary_tenants else False
+    overdue_or_membership = _hard_hourly_membership_claim_condition() | _overdue_hard_hourly_send_condition(now_value)
+    if not force_ordinary_tenants:
+        return case(
+            (_target_admission_retry_claim_condition(), 0),
+            (overdue_or_membership, 1),
+            (hard_hourly_send, 2),
+            (_search_join_membership_claim_condition(), 3),
+            (_strict_search_join_source_claim_condition(), 4),
+            (ordinary, 5),
+            else_=6,
+        )
+    forced = Action.tenant_id.in_(sorted(force_ordinary_tenants))
     return case(
         (_target_admission_retry_claim_condition(), 0),
-        (_search_join_membership_claim_condition(), 1),
-        (_strict_search_join_source_claim_condition(), 2),
-        ((_hard_hourly_membership_claim_condition() | _overdue_hard_hourly_send_condition(now_value)), 3),
-        ((ordinary & forced), 4),
-        ((hard_hourly_send & forced), 5),
-        (hard_hourly_send, 4),
-        (ordinary, 5),
-        else_=5,
+        (overdue_or_membership, 1),
+        (hard_hourly_send & ~forced, 2),
+        (_search_join_membership_claim_condition(), 3),
+        (_strict_search_join_source_claim_condition(), 4),
+        (ordinary & forced, 5),
+        (hard_hourly_send & forced, 6),
+        (ordinary, 7),
+        else_=8,
     )
 
 

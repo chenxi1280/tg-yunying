@@ -19,6 +19,16 @@ depends_on = None
 
 def upgrade() -> None:
     bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    if "task_hard_hourly_delivery_credits" not in inspector.get_table_names():
+        return
+    columns = {column["name"]: column for column in inspector.get_columns("task_hard_hourly_delivery_credits")}
+    column = columns.get("execution_attempt_id")
+    if column is None:
+        return
+    column_type = column.get("type")
+    if isinstance(column_type, sa.String) or getattr(column_type, "python_type", None) is str:
+        return
     existing = bind.execute(
         sa.text(
             "SELECT count(*) FROM task_hard_hourly_delivery_credits "
@@ -28,7 +38,7 @@ def upgrade() -> None:
     if existing:
         raise RuntimeError(
             "task_hard_hourly_delivery_credits contains integer attempt references; "
-            "repair them before applying 0114"
+            "repair them before applying 0115_hh_credit_attempt_uuid"
         )
     if bind.dialect.name == "postgresql":
         op.alter_column(

@@ -18,17 +18,39 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column("operation_targets", sa.Column("lifecycle_status", sa.String(length=40), server_default="active", nullable=False))
-    op.add_column("operation_targets", sa.Column("lifecycle_reason", sa.String(length=500), server_default="", nullable=False))
-    op.add_column("operation_targets", sa.Column("lifecycle_detail", sa.Text(), server_default="", nullable=False))
-    op.add_column("operation_targets", sa.Column("lifecycle_at", sa.DateTime(), nullable=True))
-    op.add_column("operation_targets", sa.Column("lifecycle_by", sa.String(length=100), server_default="", nullable=False))
-    op.add_column("operation_targets", sa.Column("lifecycle_version", sa.Integer(), server_default="1", nullable=False))
-    op.add_column("operation_targets", sa.Column("reference_revision", sa.Integer(), server_default="1", nullable=False))
-
-    op.add_column("tasks", sa.Column("config_revision", sa.Integer(), server_default="1", nullable=False))
-
-    op.add_column(
+    _add_column_if_missing(
+        "operation_targets",
+        sa.Column("lifecycle_status", sa.String(length=40), server_default="active", nullable=False),
+    )
+    _add_column_if_missing(
+        "operation_targets",
+        sa.Column("lifecycle_reason", sa.String(length=500), server_default="", nullable=False),
+    )
+    _add_column_if_missing(
+        "operation_targets",
+        sa.Column("lifecycle_detail", sa.Text(), server_default="", nullable=False),
+    )
+    _add_column_if_missing(
+        "operation_targets",
+        sa.Column("lifecycle_at", sa.DateTime(), nullable=True),
+    )
+    _add_column_if_missing(
+        "operation_targets",
+        sa.Column("lifecycle_by", sa.String(length=100), server_default="", nullable=False),
+    )
+    _add_column_if_missing(
+        "operation_targets",
+        sa.Column("lifecycle_version", sa.Integer(), server_default="1", nullable=False),
+    )
+    _add_column_if_missing(
+        "operation_targets",
+        sa.Column("reference_revision", sa.Integer(), server_default="1", nullable=False),
+    )
+    _add_column_if_missing(
+        "tasks",
+        sa.Column("config_revision", sa.Integer(), server_default="1", nullable=False),
+    )
+    _add_column_if_missing(
         "tg_groups",
         sa.Column("send_limit_mode", sa.String(length=60), server_default="legacy_group_slot", nullable=True),
     )
@@ -36,7 +58,7 @@ def upgrade() -> None:
     with op.batch_alter_table("tg_groups") as batch:
         batch.alter_column("send_limit_mode", nullable=False, server_default="legacy_group_slot")
 
-    op.create_table(
+    _create_table_if_missing(
         "task_hard_hourly_buckets",
         sa.Column("id", sa.Integer(), primary_key=True),
         sa.Column("tenant_id", sa.Integer(), sa.ForeignKey("tenants.id"), nullable=False),
@@ -62,13 +84,12 @@ def upgrade() -> None:
             name="uq_hard_hourly_bucket_epoch",
         ),
     )
-    op.create_index(
+    _create_index_if_missing(
         "ix_hard_hourly_bucket_lookup",
         "task_hard_hourly_buckets",
         ["tenant_id", "task_id", "operation_target_id", "target_reference_revision", "bucket_start"],
     )
-
-    op.create_table(
+    _create_table_if_missing(
         "task_hard_hourly_delivery_credits",
         sa.Column("id", sa.Integer(), primary_key=True),
         sa.Column("bucket_id", sa.Integer(), sa.ForeignKey("task_hard_hourly_buckets.id"), nullable=False),
@@ -79,7 +100,7 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.UniqueConstraint("action_id", name="uq_hard_hourly_credit_action"),
     )
-    op.create_index(
+    _create_index_if_missing(
         "ix_hard_hourly_credit_bucket_executed",
         "task_hard_hourly_delivery_credits",
         ["bucket_id", "executed_at"],
@@ -87,19 +108,67 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index("ix_hard_hourly_credit_bucket_executed", table_name="task_hard_hourly_delivery_credits")
-    op.drop_table("task_hard_hourly_delivery_credits")
-    op.drop_index("ix_hard_hourly_bucket_lookup", table_name="task_hard_hourly_buckets")
-    op.drop_table("task_hard_hourly_buckets")
+    if _has_index("task_hard_hourly_delivery_credits", "ix_hard_hourly_credit_bucket_executed"):
+        op.drop_index("ix_hard_hourly_credit_bucket_executed", table_name="task_hard_hourly_delivery_credits")
+    if _has_table("task_hard_hourly_delivery_credits"):
+        op.drop_table("task_hard_hourly_delivery_credits")
+    if _has_index("task_hard_hourly_buckets", "ix_hard_hourly_bucket_lookup"):
+        op.drop_index("ix_hard_hourly_bucket_lookup", table_name="task_hard_hourly_buckets")
+    if _has_table("task_hard_hourly_buckets"):
+        op.drop_table("task_hard_hourly_buckets")
     with op.batch_alter_table("tg_groups") as batch:
-        batch.drop_column("send_limit_mode")
+        if _has_column("tg_groups", "send_limit_mode"):
+            batch.drop_column("send_limit_mode")
     with op.batch_alter_table("tasks") as batch:
-        batch.drop_column("config_revision")
+        if _has_column("tasks", "config_revision"):
+            batch.drop_column("config_revision")
     with op.batch_alter_table("operation_targets") as batch:
-        batch.drop_column("reference_revision")
-        batch.drop_column("lifecycle_version")
-        batch.drop_column("lifecycle_by")
-        batch.drop_column("lifecycle_at")
-        batch.drop_column("lifecycle_detail")
-        batch.drop_column("lifecycle_reason")
-        batch.drop_column("lifecycle_status")
+        for column in (
+            "reference_revision",
+            "lifecycle_version",
+            "lifecycle_by",
+            "lifecycle_at",
+            "lifecycle_detail",
+            "lifecycle_reason",
+            "lifecycle_status",
+        ):
+            if _has_column("operation_targets", column):
+                batch.drop_column(column)
+
+
+def _inspector():
+    return sa.inspect(op.get_bind())
+
+
+def _has_table(table_name: str) -> bool:
+    return table_name in _inspector().get_table_names()
+
+
+def _has_column(table_name: str, column_name: str) -> bool:
+    if not _has_table(table_name):
+        return False
+    return any(column["name"] == column_name for column in _inspector().get_columns(table_name))
+
+
+def _has_index(table_name: str, index_name: str) -> bool:
+    if not _has_table(table_name):
+        return False
+    return any(index["name"] == index_name for index in _inspector().get_indexes(table_name))
+
+
+def _add_column_if_missing(table_name: str, column: sa.Column) -> None:
+    if _has_column(table_name, column.name):
+        return
+    op.add_column(table_name, column)
+
+
+def _create_table_if_missing(table_name: str, *columns_and_constraints) -> None:
+    if _has_table(table_name):
+        return
+    op.create_table(table_name, *columns_and_constraints)
+
+
+def _create_index_if_missing(index_name: str, table_name: str, columns: list[str]) -> None:
+    if _has_index(table_name, index_name):
+        return
+    op.create_index(index_name, table_name, columns)
