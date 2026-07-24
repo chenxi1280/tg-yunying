@@ -99,6 +99,7 @@ _ACTION_RESERVATIONS = _runtime_resources._ACTION_RESERVATIONS
 _IN_FLIGHT_ACCOUNTS = _runtime_resources._IN_FLIGHT_ACCOUNTS
 _redis_client = _runtime_resources._redis_client
 MEMBERSHIP_ACTION_TYPES = ("ensure_channel_membership", "ensure_target_membership")
+HARD_HOURLY_ADMISSION_BLOCKED_SEND_ERROR_CODES = ("required_channel_admission_pending",)
 TARGET_ADMISSION_RETRY_TASK_TYPE = "target_admission_retry"
 TARGET_ADMISSION_RETRY_TERMINAL_STATUSES = {"success", "unknown_after_send", "failed", "retryable_failed", "skipped"}
 ALL_ACCOUNT_COVERAGE_TASK_STATUSES = ("draft", "pending", "running", "paused")
@@ -891,11 +892,21 @@ def _hard_hourly_claim_rank():
         Task.type_config["hard_hourly_target_enabled"].as_boolean().is_(True)
         & Action.action_type.in_(MEMBERSHIP_ACTION_TYPES)
     )
-    hard_hourly_send = Action.payload["hard_hourly_target"].as_boolean().is_(True)
+    hard_hourly_send = (
+        (Action.action_type == "send_message")
+        & Action.payload["hard_hourly_target"].as_boolean().is_(True)
+    )
+    admission_blocked_hard_hourly_send = (
+        hard_hourly_send
+        & func.coalesce(Action.result["error_code"].as_string(), "").in_(
+            HARD_HOURLY_ADMISSION_BLOCKED_SEND_ERROR_CODES
+        )
+    )
     return case(
-        (hard_hourly_send, 0),
+        (hard_hourly_send & ~admission_blocked_hard_hourly_send, 0),
         (hard_hourly_membership, 1),
-        else_=2,
+        (admission_blocked_hard_hourly_send, 2),
+        else_=3,
     )
 
 
