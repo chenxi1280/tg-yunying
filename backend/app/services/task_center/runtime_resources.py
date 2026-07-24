@@ -39,6 +39,15 @@ def _reserve_runtime_resources(action: Action) -> bool:
     account_id = int(action.account_id) if action.account_id is not None else None
     if account_id is not None:
         with _IN_FLIGHT_LOCK:
+            account_inflight = account_id in _IN_FLIGHT_ACCOUNTS
+        if account_inflight and not _recover_stale_local_inflight_reservation(action, account_id):
+            action.result = {
+                **(action.result or {}),
+                "runtime_resource_reason": "account_inflight_conflict",
+                "runtime_resource_wait_seconds": 0,
+            }
+            return False
+        with _IN_FLIGHT_LOCK:
             if account_id in _IN_FLIGHT_ACCOUNTS:
                 action.result = {
                     **(action.result or {}),
@@ -78,6 +87,33 @@ def _release_runtime_resources(action: Action) -> None:
             _release_redis_reservation(redis_key, redis_token)
         if reservation.redis_account_lock:
             _release_redis_reservation(*reservation.redis_account_lock)
+
+
+def _recover_stale_local_inflight_reservation(action: Action, account_id: int) -> bool:
+    with _IN_FLIGHT_LOCK:
+        holder_ids = tuple(
+            action_id
+            for action_id, reservation in _ACTION_RESERVATIONS.items()
+            if reservation.account_id == account_id
+        )
+        if not holder_ids:
+            _IN_FLIGHT_ACCOUNTS.discard(account_id)
+            action.result = {**(action.result or {}), "local_inflight_reservation_recovered": "missing_reservation"}
+            return True
+    if len(holder_ids) != 1:
+        return False
+    from sqlalchemy.orm import object_session
+
+    session = object_session(action)
+    holder = session.get(Action, holder_ids[0]) if session else None
+    if not holder or holder.account_id != account_id or holder.status not in _TERMINAL_LOCK_HOLDER_STATUSES:
+        return False
+    _release_runtime_resources(holder)
+    action.result = {
+        **(action.result or {}),
+        "terminal_holder_local_reservation_recovered_action_id": holder.id,
+    }
+    return True
 
 
 def _reserve_redis_token(action: Action) -> tuple[tuple[str, str], ...] | None | bool:

@@ -597,6 +597,39 @@ def test_release_runtime_resources_keeps_later_holder_inflight() -> None:
 
 
 @pytest.mark.no_postgres
+def test_claim_actions_recovers_terminal_local_inflight_reservation(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    monkeypatch.setattr(
+        dispatcher,
+        "get_settings",
+        lambda: _redis_bucket_settings(enable_redis_token_bucket=False, enable_redis_account_inflight=False),
+    )
+
+    with Session(engine) as session:
+        session.add_all(
+            [
+                Tenant(id=1, name="默认运营空间"),
+                TgAccount(id=11, tenant_id=1, display_name="账号", phone_masked="+861***0011", status="在线"),
+                Task(id="task-local-inflight", tenant_id=1, name="local inflight", type="group_relay", status="running"),
+                Action(id="terminal-holder", tenant_id=1, task_id="task-local-inflight", task_type="group_relay", action_type="send_message", account_id=11, status="failed", scheduled_at=now_value, payload={}),
+                Action(id="fresh-action", tenant_id=1, task_id="task-local-inflight", task_type="group_relay", action_type="send_message", account_id=11, status="pending", scheduled_at=now_value, payload={"chat_id": "-1001", "message_text": "hello"}),
+            ]
+        )
+        session.commit()
+        dispatcher._IN_FLIGHT_ACCOUNTS.add(11)
+        dispatcher._ACTION_RESERVATIONS["terminal-holder"] = dispatcher._runtime_resources._RuntimeReservation(account_id=11)
+
+        [claimed] = claim_actions(session, limit=1, worker_id="worker-test")
+
+        assert claimed.id == "fresh-action"
+        assert claimed.status == "executing"
+        assert "terminal-holder" not in dispatcher._ACTION_RESERVATIONS
+        dispatcher._release_runtime_resources(claimed)
+
+
+@pytest.mark.no_postgres
 def test_dispatch_action_always_releases_runtime_resources(monkeypatch) -> None:
     action = Action(
         id="action-finally-release",
