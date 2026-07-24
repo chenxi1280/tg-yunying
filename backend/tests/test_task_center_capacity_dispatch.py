@@ -3431,7 +3431,7 @@ def test_claim_actions_prioritizes_due_search_membership_before_ordinary_batch_a
 
 
 @pytest.mark.no_postgres
-def test_claim_actions_prioritizes_strict_search_source_before_hard_hourly_action(monkeypatch):
+def test_claim_actions_prioritizes_hard_hourly_action_before_strict_search_source(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = _now()
@@ -3472,12 +3472,12 @@ def test_claim_actions_prioritizes_strict_search_source_before_hard_hourly_actio
 
         claimed = claim_actions(session, limit=1, worker_id="worker-search-source")
 
-        assert [action.id for action in claimed] == ["action-source"]
+        assert [action.id for action in claimed] == ["action-hard"]
         assert session.get(Action, "action-batch").status == "pending"
 
 
 @pytest.mark.no_postgres
-def test_due_actions_prioritizes_search_membership_before_hard_target_before_batch():
+def test_due_actions_prioritizes_hard_target_before_search_membership_and_batch():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = _now()
@@ -3502,11 +3502,11 @@ def test_due_actions_prioritizes_search_membership_before_hard_target_before_bat
 
         actions = dispatcher.due_actions(session, limit=3)
 
-        assert [action.id for action in actions] == ["action-membership", "action-hard", "action-batch"]
+        assert [action.id for action in actions] == ["action-hard", "action-membership", "action-batch"]
 
 
 @pytest.mark.no_postgres
-def test_due_actions_keeps_search_membership_before_strict_source_before_batch():
+def test_due_actions_prioritizes_hard_target_before_search_actions_and_batch():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = _now()
@@ -3532,7 +3532,7 @@ def test_due_actions_keeps_search_membership_before_strict_source_before_batch()
 
         actions = dispatcher.due_actions(session, limit=4)
 
-        assert [action.id for action in actions] == ["action-membership", "action-source", "action-hard", "action-batch"]
+        assert [action.id for action in actions] == ["action-hard", "action-membership", "action-source", "action-batch"]
 
 
 @pytest.mark.no_postgres

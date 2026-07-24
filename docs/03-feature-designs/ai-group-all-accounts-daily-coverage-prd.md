@@ -280,7 +280,7 @@ group.daily_limit >= 当日目标消息数 + 已保留的普通对话预算
 
 全账号容量证明始终以冻结的全部目标账号为分母，`pending_admission` 和 `cannot_send` 账号不得从中删除，也不得被伪造为完成；但准入失败不能反向停止已经确认 `can_send=true` 的账号发言。若全账号容量缺口只来自待准入或不可发账号，而当前可发账号按其剩余覆盖义务计算的容量为 `sufficient`，Planner 必须继续为可发账号创建 `send_message`，任务运行阶段显示为部分履约并同时保留全账号覆盖未达标和准入缺口。只有当前可发账号自身的剩余目标容量也不足时，才停止创建发送 Action。部分履约绝不等同于全账号日目标完成。
 
-Dispatcher 取件时，显式 `target_admission_retry` 仍优先处理；其余常规 Action 中，`hard_hourly_target=true` 且可直接执行的 `send_message` 必须先于一般 `ensure_target_membership` 和 `ensure_channel_membership`。已记录 `required_channel_admission_pending` 的发送仅在同任务、同账号仍存在未完成准入 Action 时排在该前置之后；能直接解除这类发送前置条件的准入 Action 必须先于普通硬小时发言，避免已知阻塞发送反复占用取件名额或其前置准入被持续饿死。前置准入成功后，该发送必须恢复为可直接执行的硬小时优先级，不得继续被无关入群队列饿死。其他准入 Action 仍不抢占已确认 `can_send=true` 账号的硬小时发言优先级。任务列表的硬小时状态必须由当前 bucket 的 Action 成功事实定期刷新，不能沿用历史 bucket 的 `met` 快照。
+Dispatcher 取件时，显式 `target_admission_retry` 仍优先处理；其余常规 Action 中，AI 硬小时优先级必须高于 `search_join_membership` 和严格 `search_join`，避免搜索点击积压持续挤占 AI 活群目标。`hard_hourly_target=true` 且可直接执行的 `send_message` 必须先于一般 `ensure_target_membership` 和 `ensure_channel_membership`。已记录 `required_channel_admission_pending` 的发送仅在同任务、同账号仍存在未完成准入 Action 时排在该前置之后；能直接解除这类发送前置条件的准入 Action 必须先于普通硬小时发言，避免已知阻塞发送反复占用取件名额或其前置准入被持续饿死。前置准入成功后，该发送必须恢复为可直接执行的硬小时优先级，不得继续被无关入群队列饿死。其他准入 Action 仍不抢占已确认 `can_send=true` 账号的硬小时发言优先级。任务列表的硬小时状态必须由当前 bucket 的 Action 成功事实定期刷新，不能沿用历史 bucket 的 `met` 快照。
 
 Telegram 调用前还必须执行最终运行时校验：Dispatcher 在 `TgGroup` 行锁内先核对当前北京时间是否处于 `active_window`，再统计本群已持久化的 `before_call`、`gateway_call_started`、`success`、`result_unknown` 槽位及旧消息发送成功事实；仅在活动时段、群日上限和群冷却均允许时，写入并提交当前 `ExecutionAttempt(before_call)`，随后才可调用 Telegram。活动时段外的 Action 必须延后到下一次群活跃窗口开始；命中群日上限时，Action 必须延后到下一自然日的群活跃窗口开始；命中群冷却时延后到冷却结束。三者都不调用 Telegram，也不得落入通用的一秒重试；覆盖预约和消息记忆继续保留，不能伪造失败或完成。
 
