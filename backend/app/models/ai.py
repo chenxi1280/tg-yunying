@@ -57,7 +57,7 @@ class TenantAiSetting(Base):
     ai_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     fallback_to_mock: Mapped[bool] = mapped_column(Boolean, default=False)
     ai_group_model_fallback_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
-    ai_group_grok_fallback_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    ai_group_grok_fallback_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     ai_group_static_fallback_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     temperature: Mapped[float] = mapped_column(Float, default=0.8)
     max_tokens: Mapped[int] = mapped_column(Integer, default=1024)

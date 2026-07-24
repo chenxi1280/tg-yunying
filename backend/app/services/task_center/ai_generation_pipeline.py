@@ -264,7 +264,7 @@ def _fallback_stages(config: dict) -> tuple[str, ...]:
     stages = ["primary_m3"]
     if bool(config.get("_ai_group_model_fallback_enabled", True)):
         stages.append("fallback_m25")
-    if bool(config.get("_ai_group_grok_fallback_enabled", True)):
+    if bool(config.get("_ai_group_grok_fallback_enabled", False)):
         stages.append("fallback_grok")
     return tuple(stages)
 

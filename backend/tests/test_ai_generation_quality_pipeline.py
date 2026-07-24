@@ -14,7 +14,7 @@ from app.services.task_center.ai_generation_pipeline import _static_emoji_text, 
 pytestmark = pytest.mark.no_postgres
 
 
-def test_quality_pipeline_runs_m3_m25_grok_without_open_transactions() -> None:
+def test_quality_pipeline_runs_m3_m25_without_open_transactions() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     observed: list[str] = []
     with Session(engine) as session:
@@ -26,7 +26,7 @@ def test_quality_pipeline_runs_m3_m25_grok_without_open_transactions() -> None:
             _dependencies(normal_generator=_stage_generator(session, observed)),
         )
 
-    assert observed == ["primary_m3", "fallback_m25", "fallback_grok"]
+    assert observed == ["primary_m3", "fallback_m25"]
     assert results[0].rejection_code == "voice_profile_mismatch"
 
 
@@ -99,7 +99,7 @@ def test_daily_coverage_uses_distinct_explicit_static_fallback_after_all_models_
             _dependencies(normal_generator=_stage_generator(session, observed)),
         )
 
-    assert observed == ["primary_m3", "fallback_m25", "fallback_grok"]
+    assert observed == ["primary_m3", "fallback_m25"]
     assert len({str(result.content) for result in results}) == 2
     assert {result.rejection_code for result in results} == {""}
     assert {result.quality_fallback for result in results} == {"emoji_react"}

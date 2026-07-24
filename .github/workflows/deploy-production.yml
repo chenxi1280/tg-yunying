@@ -319,19 +319,6 @@ jobs:
           EOF
           chmod 600 ~/.ssh/config
 
-      - name: Preflight production Grok CLI
-        env:
-          RELEASE_SSH_ATTEMPTS: ${{ vars.RELEASE_SSH_ATTEMPTS }}
-          RELEASE_SSH_RETRY_DELAY: ${{ vars.RELEASE_SSH_RETRY_DELAY }}
-        run: |
-          set -euo pipefail
-          bash deploy/ssh_retry.sh silicon-valley-production-server '
-            set -euo pipefail
-            sudo -n test -x /root/.grok/bin/grok
-            sudo -n /root/.grok/bin/grok --version
-            sudo -n /root/.grok/bin/grok models | grep -F "grok-4.5"
-          '
-
       - name: Deploy via SSH release script
         env:
           SILICON_VALLEY_PRODUCTION_BASE_DIR: ${{ vars.SILICON_VALLEY_PRODUCTION_BASE_DIR }}
@@ -360,18 +347,6 @@ jobs:
             --user "${DEPLOY_USER}" \
             --base-dir "${BASE_DIR}" \
             --branch-list "${BRANCHES}"
-
-      - name: Verify production Grok CLI bridge
-        env:
-          RELEASE_SSH_ATTEMPTS: ${{ vars.RELEASE_SSH_ATTEMPTS }}
-          RELEASE_SSH_RETRY_DELAY: ${{ vars.RELEASE_SSH_RETRY_DELAY }}
-        run: |
-          set -euo pipefail
-          bash deploy/ssh_retry.sh silicon-valley-production-server '
-            set -euo pipefail
-            docker exec tgyunying-worker-planner test -x /root/.grok/bin/grok
-            docker exec tgyunying-worker-planner git --version
-          '
 
       - name: Probe production planner drain
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_production_diagnostics }}

@@ -451,7 +451,7 @@ def _tenant_fallback_flags(task: Task) -> dict:
             setting.ai_group_model_fallback_enabled if setting else True
         ),
         "_ai_group_grok_fallback_enabled": bool(
-            setting.ai_group_grok_fallback_enabled if setting else True
+            setting.ai_group_grok_fallback_enabled if setting else False
         ),
         "_ai_group_static_fallback_enabled": bool(
             setting.ai_group_static_fallback_enabled if setting else True

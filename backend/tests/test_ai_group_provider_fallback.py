@@ -38,7 +38,7 @@ def test_tenant_ai_group_fallback_switches_default_enabled():
         session.refresh(setting)
 
         assert setting.ai_group_model_fallback_enabled is True
-        assert setting.ai_group_grok_fallback_enabled is True
+        assert setting.ai_group_grok_fallback_enabled is False
         assert setting.ai_group_static_fallback_enabled is True
 
 
@@ -100,8 +100,9 @@ def test_dispatcher_runtime_uses_tenant_fallback_switches() -> None:
 @pytest.mark.parametrize(
     ("config", "expected"),
     [
-        ({}, ("primary_m3", "fallback_m25", "fallback_grok")),
-        ({"_ai_group_model_fallback_enabled": False}, ("primary_m3", "fallback_grok")),
+        ({}, ("primary_m3", "fallback_m25")),
+        ({"_ai_group_model_fallback_enabled": False}, ("primary_m3",)),
+        ({"_ai_group_grok_fallback_enabled": True}, ("primary_m3", "fallback_m25", "fallback_grok")),
         ({"_ai_group_grok_fallback_enabled": False}, ("primary_m3", "fallback_m25")),
     ],
 )
@@ -120,7 +121,7 @@ def test_ai_group_fallback_continues_after_stage_error(monkeypatch):
     def fake_generate(_session, _tenant_id, config, *, count, target_label, history):
         stage = config["_ai_fallback_stage"]
         visited.append(stage)
-        if stage != "fallback_grok":
+        if stage != "fallback_m25":
             raise AiGenerationUnavailable(f"{stage} unavailable")
         slot = config["generation_slots"][0]
         return [GeneratedContent(
@@ -136,7 +137,7 @@ def test_ai_group_fallback_continues_after_stage_error(monkeypatch):
             _generation_dependencies(normal_generator=fake_generate),
         )
 
-    assert visited == ["primary_m3", "fallback_m25", "fallback_grok"]
+    assert visited == ["primary_m3", "fallback_m25"]
     assert [item.content for item in items] == ["老师今天高跟鞋挺好看"]
     assert tokens == 7
 

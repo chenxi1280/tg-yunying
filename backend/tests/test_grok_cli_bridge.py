@@ -79,9 +79,13 @@ def test_grok_cli_bridge_shared_lock_is_explicit(tmp_path):
         lock_file.close()
 
 
-def test_production_image_and_preflight_include_bridge_runtime_dependencies():
+def test_production_image_keeps_runtime_deps_without_grok_cli_deploy_gate():
     dockerfile = (PROJECT_ROOT / "Dockerfile.backend").read_text()
     workflow = (PROJECT_ROOT / ".github/workflows/deploy-production.yml").read_text()
+    compose = (PROJECT_ROOT / "docker-compose.server.yml").read_text()
 
     assert "curl ca-certificates git" in dockerfile
-    assert "docker exec tgyunying-worker-planner git --version" in workflow
+    # Grok CLI is optional fallback only; deploy must not fail closed on CLI preflight.
+    assert "Preflight production Grok CLI" not in workflow
+    assert "Verify production Grok CLI bridge" not in workflow
+    assert "GROK_CLI_ENABLED: ${GROK_CLI_ENABLED:-false}" in compose
