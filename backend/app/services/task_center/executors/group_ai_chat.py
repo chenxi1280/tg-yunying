@@ -471,7 +471,7 @@ def _load_plan_accounts(
 
 def _mark_account_shortage(session: Session, task: Task, facts: PlanFacts) -> None:
     error_message, reason = _account_shortage_reason(
-        session, task, facts.group, facts.hard_progress,
+        session, task, facts.group, facts.hard_progress, config=facts.config,
     )
     if int((task.stats or {}).get("account_offline_count") or 0) > 0:
         error_message = "账号在线状态不可用，等待账号恢复在线后继续执行"
@@ -1253,7 +1253,19 @@ def _canonicalized_task_config(session: Session, task: Task, config: dict) -> di
     normalized = normalize_operation_target_references(session, task.tenant_id, task.type, source_config)
     normalized = apply_group_ai_account_coverage_defaults(task.type, normalized, task.account_config or {})
     if normalized != source_config:
-        task.type_config = {key: value for key, value in normalized.items() if key != "pacing_config"}
+        persistable = {key: value for key, value in normalized.items() if key != "pacing_config"}
+        # Implicit all-account coverage default is plan-time only. Persisting it without the
+        # explicit source mode would make later shortage checks treat hard-hourly as coverage-gated.
+        if not daily_coverage_enforced and persistable.get("account_coverage_mode") == "all_accounts_daily":
+            persistable = {
+                key: value
+                for key, value in persistable.items()
+                if key != "account_coverage_mode"
+            }
+            if source_config.get("account_coverage_mode") is not None:
+                persistable["account_coverage_mode"] = source_config.get("account_coverage_mode")
+        if persistable != source_config:
+            task.type_config = persistable
     return {**normalized, "_daily_coverage_enforced": daily_coverage_enforced}
 
 
@@ -2283,8 +2295,13 @@ def _account_shortage_reason(
     task: Task,
     group: TgGroup,
     progress: dict[str, object],
+    *,
+    config: dict[str, object] | None = None,
 ) -> tuple[str, str]:
-    if _all_accounts_daily_coverage(task.type_config or {}):
+    # Use plan-time config with `_daily_coverage_enforced`. Scope bootstrap may persist
+    # implicit all_accounts_daily defaults onto task.type_config without enabling the ledger gate.
+    plan_config = config if isinstance(config, dict) else (task.type_config or {})
+    if _daily_coverage_enforced(plan_config):
         if int((task.stats or {}).get("account_offline_count") or 0) > 0:
             return "账号在线状态不可用，等待账号恢复在线后继续执行", "account_offline"
         return "当日覆盖账本暂无可执行账号，等待阻塞恢复或冷却到期", "coverage_waiting"

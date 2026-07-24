@@ -1144,21 +1144,43 @@ def _hard_hourly_claim_rank_for_ordering(force_ordinary_tenants: set[int], now_v
     )
 
 
-def _ordinary_claim_rank():
-    """Ordinary actions sort after protected hard ranks (0-3) and before demoted hard (6)."""
-    return case((_ordinary_fairness_claim_condition(), 5), else_=4)
+def _fairness_demoted_hard_rank(force_ordinary_tenants: set[int], now_value: datetime):
+    """After task priority/comment ranks, put demoted hard sends after ordinary work."""
+    ordinary = _ordinary_fairness_claim_condition()
+    non_overdue_ready_hard = (
+        _hard_hourly_send_claim_condition()
+        & ~_overdue_hard_hourly_send_condition(now_value)
+    )
+    if not force_ordinary_tenants:
+        return case(
+            (non_overdue_ready_hard, 0),
+            (ordinary, 1),
+            else_=1,
+        )
+    forced = Action.tenant_id.in_(sorted(force_ordinary_tenants))
+    return case(
+        (forced & ordinary, 0),
+        (forced & non_overdue_ready_hard, 1),
+        (non_overdue_ready_hard, 0),
+        (ordinary, 1),
+        else_=1,
+    )
 
 
 def claim_action_ordering(force_ordinary_tenants: set[int], now_value: datetime):
-    """Return the canonical Action row-lock order used by Dispatcher claims."""
+    """Return the canonical Action row-lock order used by Dispatcher claims.
+
+    Mirrors production hard-AI-before-search ordering, then task priority and
+    comment rank. Fairness only reorders non-overdue hard sends vs ordinary.
+    """
     return (
         _target_admission_retry_claim_rank(),
         _hard_hourly_claim_rank_for_ordering(force_ordinary_tenants, now_value),
-        _ordinary_claim_rank(),
         _search_join_membership_claim_rank(),
         _strict_search_join_source_claim_rank(),
         Task.priority.asc(),
         _channel_comment_claim_rank(),
+        _fairness_demoted_hard_rank(force_ordinary_tenants, now_value),
         Action.scheduled_at.asc(),
         Action.created_at.asc(),
         Action.id.asc(),

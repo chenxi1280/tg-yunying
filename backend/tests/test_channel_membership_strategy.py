@@ -63,6 +63,7 @@ def test_group_ai_membership_actions_default_to_four_hour_window(monkeypatch) ->
 
 
 @pytest.mark.no_postgres
+@pytest.mark.no_postgres
 def test_hard_hourly_membership_actions_are_created_in_immediate_claim_order() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

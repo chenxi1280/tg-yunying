@@ -909,10 +909,16 @@ def _hard_hourly_membership_fast_track_enabled(task: Task) -> bool:
 
 
 def _fast_track_hard_hourly_membership_actions(session: Session, task: Task, channel: OperationTarget) -> int:
-    """Pull future hard-hourly membership actions forward so admission does not wait hours."""
+    """Pull far-future hard-hourly membership actions forward for immediate claim.
+
+    Hard-hourly creation already staggers new actions by a few seconds. Only
+    rewrite rows that are still scheduled beyond that immediate window so we
+    do not collapse the create-time stagger on the same gate pass.
+    """
     if not _hard_hourly_membership_fast_track_enabled(task):
         return 0
     now_value = _now()
+    immediate_horizon = now_value + timedelta(seconds=max(30, HARD_HOURLY_MEMBERSHIP_FAST_TRACK_INTERVAL_SECONDS * 20))
     rows = list(
         session.scalars(
             select(Action)
@@ -920,7 +926,7 @@ def _fast_track_hard_hourly_membership_actions(session: Session, task: Task, cha
                 Action.task_id == task.id,
                 Action.action_type.in_([ACTION_TYPE, LEGACY_ACTION_TYPE]),
                 Action.status == "pending",
-                Action.scheduled_at > now_value,
+                Action.scheduled_at > immediate_horizon,
                 Action.payload["channel_target_id"].as_integer() == channel.id,
             )
             .order_by(Action.scheduled_at.asc(), Action.created_at.asc())
