@@ -71,7 +71,11 @@ def test_ssh_retry_surfaces_failure_after_final_attempt(tmp_path: Path) -> None:
     assert "failed after 2 attempt(s)" in result.stderr
 
 
-def test_deploy_preflight_and_bridge_check_use_explicit_ssh_retry() -> None:
+def test_deploy_no_longer_gates_release_on_grok_cli_ssh_preflight() -> None:
     workflow = DEPLOY_WORKFLOW.read_text()
 
-    assert workflow.count("bash deploy/ssh_retry.sh silicon-valley-production-server") == 2
+    # Grok CLI preflight previously used ssh_retry twice and blocked deploys when
+    # the host CLI was unavailable. Continuity releases must not depend on it.
+    assert "Preflight production Grok CLI" not in workflow
+    assert "Verify production Grok CLI bridge" not in workflow
+    assert "bash deploy/ssh_retry.sh silicon-valley-production-server" not in workflow

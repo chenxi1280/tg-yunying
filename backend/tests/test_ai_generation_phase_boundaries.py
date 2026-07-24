@@ -271,7 +271,8 @@ def test_voice_profile_rejection_uses_explicit_daily_coverage_fallback(monkeypat
         assert coverages[0].state == "confirmed"
         assert coverages[1].state == "reserved"
         assert coverages[1].reserved_action_id == actions[1].id
-        assert observed == {"provider_calls": 3, "gateway_calls": 1}
+        # Grok fallback is off by default: primary_m3 + fallback_m25 only.
+        assert observed == {"provider_calls": 2, "gateway_calls": 1}
 
         assert dispatcher.dispatch_action(
             session,
@@ -282,7 +283,7 @@ def test_voice_profile_rejection_uses_explicit_daily_coverage_fallback(monkeypat
         ) is True
         assert actions[1].status == "success"
         assert coverages[1].state == "confirmed"
-        assert observed == {"provider_calls": 3, "gateway_calls": 2}
+        assert observed == {"provider_calls": 2, "gateway_calls": 2}
 
 
 def test_content_policy_rejection_terminates_only_its_slot_and_releases_coverage(monkeypatch) -> None:
