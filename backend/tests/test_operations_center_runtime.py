@@ -132,15 +132,6 @@ def _dispatch_deferred_ai_actions(
             Action.action_type == "send_message",
             Action.status == "pending",
         ).order_by(Action.scheduled_at.asc(), Action.created_at.asc())))
-    for action in actions:
-        action.status = "executing"
-        action.claim_owner = "operations-runtime-test"
-        action.claim_token = "operations-runtime-claim"
-        payload = dict(action.payload or {})
-        payload["ai_generation_claim_owner"] = action.claim_owner
-        payload["ai_generation_claim_token"] = action.claim_token
-        action.payload = payload
-    session.commit()
     monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(dispatcher, "is_account_online_ready", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(
@@ -154,9 +145,40 @@ def _dispatch_deferred_ai_actions(
         reply_target_probe=_forbidden_ai_reply_path,
         reply_messages_fetcher=_forbidden_ai_reply_path,
     )
+    # Claim/dispatch one action at a time: partial unique uq_actions_executing_account
+    # forbids two executing rows for the same account_id.
     for action in actions:
-        if action.status == "executing":
+        for stuck in session.scalars(
+            select(Action).where(
+                Action.account_id == action.account_id,
+                Action.status == "executing",
+                Action.id != action.id,
+            )
+        ):
+            stuck.status = "failed"
+            stuck.claim_owner = stuck.claim_owner or "operations-runtime-test"
+            stuck.claim_token = stuck.claim_token or "operations-runtime-claim"
+            stuck.result = {**(stuck.result or {}), "error_code": "test_preempted_for_next_claim"}
+        session.commit()
+        action.status = "executing"
+        action.claim_owner = "operations-runtime-test"
+        action.claim_token = "operations-runtime-claim"
+        payload = dict(action.payload or {})
+        payload["ai_generation_claim_owner"] = action.claim_owner
+        payload["ai_generation_claim_token"] = action.claim_token
+        action.payload = payload
+        session.commit()
+        # Multi-phase AI generation may leave status=executing after phase B/C; drain until terminal.
+        for _ in range(6):
+            if action.status != "executing":
+                break
             dispatcher.dispatch_action(session, action, generation_dependencies=dependencies)
+            session.refresh(action)
+        if action.status == "executing":
+            # Avoid blocking later claims for the same account in unit tests.
+            action.status = "failed"
+            action.result = {**(action.result or {}), "error_code": "test_left_executing"}
+            session.commit()
     return actions
 
 
@@ -4921,11 +4943,17 @@ def test_group_ai_chat_waits_when_no_new_real_context(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     generated: list[str] = []
+    now_value = datetime(2026, 5, 11, 10, 5, 0)
 
     def fake_generate_group_messages(_session, _tenant_id, config, *, count, target_label, history):
         generated.append(history)
         contents = [f"这条真人消息可以接着问细节 {index}。" for index in range(count)]
         return _slot_bound_contents(config, contents), 0
+
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
+    monkeypatch.setattr("app.services.account_online_state._now", lambda: now_value)
+    monkeypatch.setattr("app.services.task_center.dispatcher._now", lambda: now_value)
+    _forbid_planner_ai_generation(monkeypatch)
 
     with Session(engine) as session:
         _seed_group_ai_context_task(
