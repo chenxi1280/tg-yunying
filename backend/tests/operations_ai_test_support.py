@@ -69,6 +69,10 @@ def add_ai_task(
         "target_group_id": group_id,
         "messages_per_round_mode": "manual",
         "silent_mode_enabled": False,
+        # Runtime unit tests supply explicit generator text; keep quality/humanization
+        # gates from converting multi-slot plans into single 签到 fallbacks.
+        "fact_anchor_required": False,
+        "low_confidence_silence_enabled": False,
     }
     if messages_per_round is not None:
         type_config["messages_per_round"] = messages_per_round

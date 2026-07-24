@@ -37,11 +37,17 @@ def insert_context_snapshots(
             ignored_sender=ignored_sender,
             learning_scene=learning_scene,
         )
+        # PRD: group-bot admission is independent of can_send. Skip legacy helper that
+        # rewrites TgGroupAccount.can_send whenever any admission row exists for this group.
+        has_group_bot_admission = session.scalar(
+            select(GroupBotAdmission.id).where(
+                GroupBotAdmission.tenant_id == group.tenant_id,
+                GroupBotAdmission.group_id == group.id,
+            ).limit(1)
+        ) is not None
         if message is None or not try_insert_context_message(session, message):
-            # Even if not inserted as AI context, still run legacy required-channel helper
-            # for non-AI-group tasks; group-bot admission already handled above.
             content = str(getattr(snapshot, "content", "") or "").strip()
-            if content:
+            if content and not has_group_bot_admission:
                 apply_required_channel_prompt_admission(
                     session,
                     group,
@@ -49,12 +55,13 @@ def insert_context_snapshots(
                     remote_message_id=str(getattr(snapshot, "remote_message_id", "") or ""),
                 )
             continue
-        apply_required_channel_prompt_admission(
-            session,
-            group,
-            message.content,
-            remote_message_id=message.remote_message_id,
-        )
+        if not has_group_bot_admission:
+            apply_required_channel_prompt_admission(
+                session,
+                group,
+                message.content,
+                remote_message_id=message.remote_message_id,
+            )
         if create_source_media and message.message_type != "text":
             _ensure_source_media(session, group, account, snapshot, message)
         inserted += 1
@@ -230,9 +237,8 @@ def _context_message(
     if not content:
         return None
     if learning_scene:
-        # Control bots should not enter learning samples.
-        if not bool(getattr(snapshot, "is_bot", False)):
-            record_tenant_group_learning_sample(session, group, snapshot)
+        # Always record for audit; tenant learning module rejects bots/managed accounts.
+        record_tenant_group_learning_sample(session, group, snapshot)
     if ignored_sender(snapshot) or _message_exists(session, group.id, str(snapshot.remote_message_id)):
         return None
     # Do not put group-bot control prompts into AI-usable context when they look like rules.

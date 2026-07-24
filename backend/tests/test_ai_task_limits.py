@@ -947,7 +947,18 @@ def test_group_ai_hard_hourly_membership_to_send_dispatch_closed_loop(monkeypatc
             admission.state = READY_STATE
             admission.completion_policy = "not_required"
             admission.failure_code = ""
+            # Skip first-send visibility hold for this closed-loop unit test.
+            admission.post_send_visibility_state = "visible_confirmed"
         session.flush()
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "probe_message_visible",
+            lambda *args, **kwargs: type(
+                "V",
+                (),
+                {"ok": True, "visible": True, "detail": "message_visible", "failure_type": "", "status": "已完成", "remote_message_id": "tg-ok"},
+            )(),
+        )
 
         with monkeypatch.context() as planner_patch:
             _forbid_planner_ai_generation(planner_patch)

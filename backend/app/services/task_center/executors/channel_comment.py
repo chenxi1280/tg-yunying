@@ -307,7 +307,11 @@ def _comment_slot_targets(
     if required > len(pool):
         stats_inc(task, "reply_target_shortfall_count")
         task.last_error = "可引用评论不足，等待采集到可回复评论后继续执行"
-        return None
+        if mode == "reply":
+            # Hard reply mode cannot plan without valid targets.
+            return None
+        # Mixed mode: keep normal comments and record shortfall (PRD §1.2.4).
+        return [None] * quantity
     return [*pool[:required], *([None] * (quantity - required))]
 
 
