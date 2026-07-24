@@ -13,6 +13,7 @@ from app.services.runtime_summary_batches import (
 )
 
 from .heartbeat import record_worker_heartbeat
+from .hard_hourly import enabled as hard_hourly_enabled
 from .stats import refresh_task_stats
 
 
@@ -131,7 +132,7 @@ def _refresh_task_summary_batch(session_factory, limit: int) -> int:
                 session,
                 task,
                 include_configured_accounts=False,
-                include_hard_hourly=False,
+                include_hard_hourly=task.status == "running" and hard_hourly_enabled(task),
             )
             session.commit()
             refreshed += 1

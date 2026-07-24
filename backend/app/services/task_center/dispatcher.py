@@ -217,7 +217,6 @@ RECENT_REQUIRED_CHANNEL_PROMPT_LIMIT = 25
 RECENT_REQUIRED_CHANNEL_PROMPT_LOOKBACK_HOURS = 6
 REQUIRED_CHANNEL_ADMISSION_RETRY_SECONDS = 300
 VERIFICATION_READER_CANDIDATE_LIMIT = 5
-HARD_HOURLY_OVERDUE_SEND_PRIORITY_SECONDS = 300
 GROUP_RESCUE_INFLIGHT_CONFLICT_BACKOFF_SECONDS = 30
 _ACCOUNT_SESSION_FAILURE_MARKERS = (
     "session",
@@ -893,11 +892,9 @@ def _hard_hourly_claim_rank():
         & Action.action_type.in_(MEMBERSHIP_ACTION_TYPES)
     )
     hard_hourly_send = Action.payload["hard_hourly_target"].as_boolean().is_(True)
-    overdue_hard_hourly_send = hard_hourly_send & (Action.scheduled_at <= _now() - timedelta(seconds=HARD_HOURLY_OVERDUE_SEND_PRIORITY_SECONDS))
     return case(
-        (overdue_hard_hourly_send, 0),
-        (hard_hourly_membership, 0),
-        (hard_hourly_send, 1),
+        (hard_hourly_send, 0),
+        (hard_hourly_membership, 1),
         else_=2,
     )
 

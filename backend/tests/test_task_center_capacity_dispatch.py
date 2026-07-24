@@ -3564,7 +3564,8 @@ def test_due_actions_keeps_task_priority_before_comment_rank():
         assert [action.id for action in actions] == ["action-priority", "action-comment", "action-batch"]
 
 
-def test_claim_actions_prioritizes_hard_hourly_membership_before_send(monkeypatch):
+@pytest.mark.no_postgres
+def test_claim_actions_prioritizes_hard_hourly_send_before_membership(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = _now()
@@ -3619,8 +3620,8 @@ def test_claim_actions_prioritizes_hard_hourly_membership_before_send(monkeypatc
 
         claimed = claim_actions(session, limit=1, worker_id="worker-hard-hourly")
 
-        assert [action.id for action in claimed] == ["action-hard-membership"]
-        assert session.get(Action, "action-hard-send").status == "pending"
+        assert [action.id for action in claimed] == ["action-hard-send"]
+        assert session.get(Action, "action-hard-membership").status == "pending"
 
 
 def test_claim_actions_does_not_starve_overdue_hard_hourly_send_behind_membership(monkeypatch):

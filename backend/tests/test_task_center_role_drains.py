@@ -16,7 +16,7 @@ from app.database import Base
 from app.models import AccountStatus, Action, RuntimeCleanupAudit, RuntimeMetricSnapshot, Task, TaskRuntimeSummary, Tenant, TgAccount, WorkerHeartbeat
 from app.schemas.task_center import TaskSettingsUpdate
 from app.services._common import _now
-from app.services.task_center import dispatcher, heartbeat, metrics_runtime, planner_backlog, service, stats as task_stats
+from app.services.task_center import dispatcher, heartbeat, metrics_runtime, planner_backlog, service
 
 
 @pytest.fixture(autouse=True)
@@ -258,13 +258,9 @@ def test_metrics_drain_reconciles_missing_task_runtime_summary(monkeypatch) -> N
 
 
 @pytest.mark.no_postgres
-def test_metrics_drain_skips_hard_hourly_history_refresh(monkeypatch) -> None:
+def test_metrics_drain_refreshes_running_hard_hourly_history() -> None:
     SessionFactory = _session_factory()
-    monkeypatch.setattr(
-        task_stats,
-        "hard_hourly_stats",
-        lambda *_args, **_kwargs: pytest.fail("metrics must not recompute hard-hourly history"),
-    )
+    now_value = _now()
     with SessionFactory() as session:
         session.add_all(
             [
@@ -278,11 +274,26 @@ def test_metrics_drain_skips_hard_hourly_history_refresh(monkeypatch) -> None:
                     type_config={"hard_hourly_target_enabled": True, "hourly_min_messages": 10},
                     stats={"hard_hourly_next_check_at": "2026-07-18T12:05:00"},
                 ),
+                Action(
+                    id="hard-hourly-metrics-action",
+                    tenant_id=1,
+                    task_id="hard-hourly-metrics-summary",
+                    task_type="group_ai_chat",
+                    action_type="send_message",
+                    status="success",
+                    scheduled_at=now_value,
+                    executed_at=now_value,
+                    payload={"hard_hourly_target": True},
+                ),
             ]
         )
         session.commit()
 
     assert service.drain_task_metrics(SessionFactory, 5) >= 1
+
+    with SessionFactory() as session:
+        task = session.get(Task, "hard-hourly-metrics-summary")
+        assert task.stats["hard_hourly_success_count"] == 1
 
 
 @pytest.mark.no_postgres
