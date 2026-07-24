@@ -620,17 +620,18 @@ def test_group_ai_schema_exposes_membership_strategy_defaults():
     payload = GroupAIChatTaskCreate(name="准入策略", target_group_id=7)
 
     assert payload.auto_join_target is True
-    assert payload.auto_follow_required_channel is True
+    assert payload.group_bot_admission_required is True
     assert payload.auto_resolve_verification is True
     assert payload.ai_assisted_verification is True
     assert payload.captcha_failure_policy == "manual"
     assert payload.membership_max_concurrent == 5
+    assert not hasattr(payload, "auto_follow_required_channel")
 
 
 def test_group_ai_settings_update_accepts_membership_strategy_fields():
     payload = TaskSettingsUpdate(
         auto_join_target=False,
-        auto_follow_required_channel=False,
+        group_bot_admission_required=True,
         auto_resolve_verification=False,
         ai_assisted_verification=False,
         captcha_failure_policy="manual",
@@ -638,7 +639,7 @@ def test_group_ai_settings_update_accepts_membership_strategy_fields():
     )
 
     assert payload.auto_join_target is False
-    assert payload.auto_follow_required_channel is False
+    assert payload.group_bot_admission_required is True
     assert payload.auto_resolve_verification is False
     assert payload.ai_assisted_verification is False
     assert payload.captcha_failure_policy == "manual"
@@ -937,6 +938,16 @@ def test_group_ai_hard_hourly_membership_to_send_dispatch_closed_loop(monkeypatc
         membership_results = [dispatch_action(session, action) for action in membership_actions]
         session.refresh(group)
         send_links = list(session.scalars(select(TgGroupAccount).where(TgGroupAccount.group_id == 7)))
+        # Membership creates group-bot admission rows that block send until ready/policy.
+        # Closed-loop unit test has no group bot: mark admissions ready for transport path.
+        from app.models import GroupBotAdmission
+        from app.services.task_center.group_bot_admission import READY_STATE
+
+        for admission in session.scalars(select(GroupBotAdmission).where(GroupBotAdmission.group_id == 7)):
+            admission.state = READY_STATE
+            admission.completion_policy = "not_required"
+            admission.failure_code = ""
+        session.flush()
 
         with monkeypatch.context() as planner_patch:
             _forbid_planner_ai_generation(planner_patch)

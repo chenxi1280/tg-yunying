@@ -55,6 +55,14 @@ class PostCommentPayload(ViewMessagePayload):
     profile_version: int = 0
     profile_hit_summary: str = ""
     profile_unavailable_reason: str = ""
+    # Humanized interaction / speaker rotation audit fields
+    conversation_surface: str = ""
+    conversation_key: str = ""
+    speaker_selection_reason: str = ""
+    content_source: str = ""
+    quality_fallback: str = ""
+    fallback_reason: str = ""
+    human_quality_decision: str = ""
 
     @model_validator(mode="after")
     def validate_comment_state(self) -> "PostCommentPayload":

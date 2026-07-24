@@ -25,7 +25,7 @@ class ConversationSpeakerState(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), default=1)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), default=1)
     surface: Mapped[str] = mapped_column(String(40), default="group_ai_chat")
     conversation_key: Mapped[str] = mapped_column(String(120))
     last_platform_account_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -63,7 +63,7 @@ class ConversationSpeakerTurn(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), default=1)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), default=1)
     surface: Mapped[str] = mapped_column(String(40), default="group_ai_chat")
     conversation_key: Mapped[str] = mapped_column(String(120))
     remote_message_id: Mapped[str] = mapped_column(String(160))

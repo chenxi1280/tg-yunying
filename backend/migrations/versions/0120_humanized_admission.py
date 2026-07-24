@@ -1,11 +1,12 @@
 """Humanized interaction speaker state and group-bot admission.
 
-Revision ID: 0120_humanized_interaction_admission
+Revision ID: 0120_humanized_admission
 Revises: 0119_disable_grok_fallback
 Create Date: 2026-07-25
 
 Idempotent for CI: tests may create_all() before alembic upgrade, so tables
 can already exist. Pattern mirrors 0114_ai_continuity_lifecycle.
+Revision id length must stay <= 32 for alembic_version.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0120_humanized_interaction_admission"
+revision = "0120_humanized_admission"
 down_revision = "0119_disable_grok_fallback"
 branch_labels = None
 depends_on = None
@@ -24,7 +25,7 @@ def upgrade() -> None:
     _create_table_if_missing(
         "conversation_speaker_states",
         sa.Column("id", sa.Integer(), primary_key=True),
-        sa.Column("tenant_id", sa.Integer(), sa.ForeignKey("tenants.id"), nullable=False, server_default="1"),
+        sa.Column("tenant_id", sa.Integer(), sa.ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, server_default="1"),
         sa.Column("surface", sa.String(length=40), nullable=False, server_default="group_ai_chat"),
         sa.Column("conversation_key", sa.String(length=120), nullable=False),
         sa.Column("last_platform_account_id", sa.Integer(), nullable=True),
@@ -49,7 +50,7 @@ def upgrade() -> None:
     _create_table_if_missing(
         "conversation_speaker_turns",
         sa.Column("id", sa.Integer(), primary_key=True),
-        sa.Column("tenant_id", sa.Integer(), sa.ForeignKey("tenants.id"), nullable=False, server_default="1"),
+        sa.Column("tenant_id", sa.Integer(), sa.ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, server_default="1"),
         sa.Column("surface", sa.String(length=40), nullable=False, server_default="group_ai_chat"),
         sa.Column("conversation_key", sa.String(length=120), nullable=False),
         sa.Column("remote_message_id", sa.String(length=160), nullable=False),
@@ -79,7 +80,7 @@ def upgrade() -> None:
     _create_table_if_missing(
         "group_bot_admission_policies",
         sa.Column("id", sa.Integer(), primary_key=True),
-        sa.Column("tenant_id", sa.Integer(), sa.ForeignKey("tenants.id"), nullable=False, server_default="1"),
+        sa.Column("tenant_id", sa.Integer(), sa.ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, server_default="1"),
         sa.Column("group_id", sa.Integer(), nullable=False),
         sa.Column("trusted_bot_peer_id", sa.String(length=80), nullable=False, server_default=""),
         sa.Column("completion_policy", sa.String(length=40), nullable=False),
@@ -127,7 +128,7 @@ def upgrade() -> None:
     _create_table_if_missing(
         "group_bot_admissions",
         sa.Column("id", sa.Integer(), primary_key=True),
-        sa.Column("tenant_id", sa.Integer(), sa.ForeignKey("tenants.id"), nullable=False, server_default="1"),
+        sa.Column("tenant_id", sa.Integer(), sa.ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, server_default="1"),
         sa.Column("group_id", sa.Integer(), nullable=False),
         sa.Column("account_id", sa.Integer(), nullable=False),
         sa.Column("membership_action_id", sa.String(length=36), nullable=False, server_default=""),
@@ -210,9 +211,9 @@ def upgrade() -> None:
     _create_table_if_missing(
         "pending_visibility_credits",
         sa.Column("id", sa.Integer(), primary_key=True),
-        sa.Column("tenant_id", sa.Integer(), sa.ForeignKey("tenants.id"), nullable=False, server_default="1"),
+        sa.Column("tenant_id", sa.Integer(), sa.ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, server_default="1"),
         sa.Column("bucket_id", sa.Integer(), nullable=True),
-        sa.Column("action_id", sa.String(length=36), sa.ForeignKey("actions.id"), nullable=False),
+        sa.Column("action_id", sa.String(length=36), sa.ForeignKey("actions.id", ondelete="CASCADE"), nullable=False),
         sa.Column("execution_attempt_id", sa.String(length=36), nullable=True),
         sa.Column("remote_message_id", sa.String(length=160), nullable=False, server_default=""),
         sa.Column("hold_reason", sa.String(length=40), nullable=False, server_default="pending_visibility"),

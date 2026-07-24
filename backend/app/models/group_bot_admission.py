@@ -20,7 +20,7 @@ class GroupBotAdmissionPolicy(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), default=1)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), default=1)
     group_id: Mapped[int] = mapped_column(Integer)
     trusted_bot_peer_id: Mapped[str] = mapped_column(String(80), default="")
     completion_policy: Mapped[str] = mapped_column(String(40))
@@ -52,7 +52,7 @@ class GroupBotAdmission(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), default=1)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), default=1)
     group_id: Mapped[int] = mapped_column(Integer)
     account_id: Mapped[int] = mapped_column(Integer)
     membership_action_id: Mapped[str] = mapped_column(String(36), default="")
@@ -137,9 +137,9 @@ class PendingVisibilityCredit(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), default=1)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), default=1)
     bucket_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    action_id: Mapped[str] = mapped_column(String(36), ForeignKey("actions.id"))
+    action_id: Mapped[str] = mapped_column(String(36), ForeignKey("actions.id", ondelete="CASCADE"))
     execution_attempt_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     remote_message_id: Mapped[str] = mapped_column(String(160), default="")
     hold_reason: Mapped[str] = mapped_column(String(40), default="pending_visibility")

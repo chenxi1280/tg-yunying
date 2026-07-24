@@ -1347,7 +1347,9 @@ def test_task_center_ai_chat_account_distribution_controls_are_visible():
     assert "阻塞原因" in detail
     assert "近期待补账号" in detail
     assert 'name="auto_join_target"' in source
-    assert 'name="auto_follow_required_channel"' in source
+    # auto_follow_required_channel removed; group-bot admission is always required.
+    assert 'name="auto_follow_required_channel"' not in source
+    assert "group_bot_admission_required" in source or "group_bot_admission_required" in view
     assert 'name="auto_resolve_verification"' in source
     assert 'name="ai_assisted_verification"' in source
     assert 'name="captcha_failure_policy"' in source

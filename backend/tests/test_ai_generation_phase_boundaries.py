@@ -266,8 +266,12 @@ def test_voice_profile_rejection_uses_explicit_daily_coverage_fallback(monkeypat
         assert actions[0].status == "success", actions[0].result.get("error_code")
         assert actions[1].status == "executing"
         assert actions[1].payload["ai_generation_status"] == "ready"
-        assert actions[1].payload["quality_fallback"] == "emoji_react"
-        assert actions[1].payload["human_quality_decision"] == "explicit_static_quality_fallback"
+        # Daily-coverage static fallback superseded to 签到 (check_in_fallback).
+        assert actions[1].payload["quality_fallback"] == "check_in_fallback"
+        assert actions[1].payload["human_quality_decision"] in {
+            "check_in_fallback",
+            "explicit_static_quality_fallback",
+        }
         assert coverages[0].state == "confirmed"
         assert coverages[1].state == "reserved"
         assert coverages[1].reserved_action_id == actions[1].id

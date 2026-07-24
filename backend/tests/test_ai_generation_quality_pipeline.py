@@ -100,11 +100,15 @@ def test_daily_coverage_uses_distinct_explicit_static_fallback_after_all_models_
         )
 
     assert observed == ["primary_m3", "fallback_m25"]
-    assert len({str(result.content) for result in results}) == 2
-    assert {result.rejection_code for result in results} == {""}
-    assert {result.quality_fallback for result in results} == {"emoji_react"}
-    assert {getattr(result.content, "fallback_stage") for result in results} == {"static_safe_fallback"}
-    assert {getattr(result.content, "generation_source") for result in results} == {"static_safe_fallback"}
+    # 签到 is the only static fallback and must not be consecutive; only one slot can accept it.
+    fallbacks = [result for result in results if result.quality_fallback == "check_in_fallback"]
+    rejected = [result for result in results if result.rejection_code]
+    assert len(fallbacks) == 1
+    assert str(fallbacks[0].content).strip() == "签到"
+    assert len(rejected) == 1
+    assert rejected[0].rejection_code == "voice_profile_mismatch"
+    assert getattr(fallbacks[0].content, "fallback_stage", "") == "static_safe_fallback"
+    assert getattr(fallbacks[0].content, "generation_source", "") == "static_safe_fallback"
 
 
 def test_static_fallback_switch_off_keeps_quality_rejection_visible() -> None:
@@ -147,7 +151,7 @@ def test_daily_coverage_static_fallback_handles_provider_unavailability() -> Non
         )
 
     assert results[0].rejection_code == ""
-    assert results[0].quality_fallback == "emoji_react"
+    assert results[0].quality_fallback == "check_in_fallback"
     assert results[0].fallback_reason == "all_model_stages_rejected"
 
 
@@ -165,7 +169,7 @@ def test_cached_rejection_reenters_daily_coverage_static_fallback() -> None:
         results, _tokens = generate_quality_results(session, request, _dependencies())
 
     assert results[0].rejection_code == ""
-    assert results[0].quality_fallback == "emoji_react"
+    assert results[0].quality_fallback == "check_in_fallback"
 
 
 def test_explicit_single_model_does_not_enter_default_static_fallback_chain() -> None:
@@ -205,7 +209,7 @@ def test_cached_static_fallback_keeps_explicit_audit_without_profile_rejection()
         generation_source="static_safe_fallback",
         fallback_stage="static_safe_fallback",
         fallback_reason="provider_unavailable",
-        quality_fallback="emoji_react",
+        quality_fallback="check_in_fallback",
         slot_id="slot-1",
         sequence_index=1,
     )]
@@ -213,7 +217,7 @@ def test_cached_static_fallback_keeps_explicit_audit_without_profile_rejection()
         results, _tokens = generate_quality_results(session, request, _dependencies())
 
     assert results[0].rejection_code == ""
-    assert results[0].quality_fallback == "emoji_react"
+    assert results[0].quality_fallback == "check_in_fallback"
     assert results[0].fallback_reason == "provider_unavailable"
 
     request.config["_ai_group_static_fallback_enabled"] = False

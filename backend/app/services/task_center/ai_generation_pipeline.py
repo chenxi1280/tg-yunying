@@ -119,39 +119,53 @@ def _apply_static_coverage_fallback(
 
     slots = list(request.config.get("generation_slots") or [])
     used_contents = {str(result.content) for result in accepted.values()}
-    conversation_key = conversation_key_for_group(group_id=request.group_id)
-    surface = "group_ai_chat"
-    last_source = last_platform_content_source(
-        session,
-        tenant_id=request.tenant_id,
-        surface=surface,
-        conversation_key=conversation_key,
+    tenant_id = int(getattr(request, "tenant_id", 0) or 0)
+    task_id = str(getattr(request, "task_id", "") or "")
+    is_reply = bool(getattr(request, "is_reply", False))
+    group_id = int(getattr(request, "group_id", 0) or 0)
+    surface = str(getattr(request, "surface", "") or "group_ai_chat")
+    conversation_key = (
+        conversation_key_for_group(group_id=group_id)
+        if group_id > 0
+        else str(getattr(request, "conversation_key", "") or "")
     )
-    last_text = last_platform_text(
-        session,
-        tenant_id=request.tenant_id,
-        surface=surface,
-        conversation_key=conversation_key,
-    )
-    session_30m_count = _session_check_in_count_30m(
-        session,
-        tenant_id=request.tenant_id,
-        surface=surface,
-        conversation_key=conversation_key,
-    )
+    last_source = ""
+    last_text = ""
+    session_30m_count = 0
+    if conversation_key and tenant_id:
+        last_source = last_platform_content_source(
+            session,
+            tenant_id=tenant_id,
+            surface=surface,
+            conversation_key=conversation_key,
+        )
+        last_text = last_platform_text(
+            session,
+            tenant_id=tenant_id,
+            surface=surface,
+            conversation_key=conversation_key,
+        )
+        session_30m_count = _session_check_in_count_30m(
+            session,
+            tenant_id=tenant_id,
+            surface=surface,
+            conversation_key=conversation_key,
+        )
     task_hour_limit = _task_hour_check_in_limit(request.config)
-    task_hour_count = _task_hour_check_in_count(
-        session,
-        tenant_id=request.tenant_id,
-        task_id=request.task_id,
-    )
+    task_hour_count = 0
+    if tenant_id and task_id:
+        task_hour_count = _task_hour_check_in_count(
+            session,
+            tenant_id=tenant_id,
+            task_id=task_id,
+        )
     for index in pending:
         slot = slots[index]
         if not str(slot.get("coverage_ledger_id") or "").strip():
             continue
         reason = (rejected.get(index) or SlotGenerationResult("")).rejection_code or "all_model_stages_rejected"
         decision = resolve_content_fallback(
-            is_reply=request.is_reply,
+            is_reply=is_reply,
             static_fallback_enabled=True,
             last_platform_content_source=last_source,
             last_platform_text=last_text,
@@ -183,9 +197,14 @@ def _apply_static_coverage_fallback(
 
 
 def _static_fallback_enabled(request) -> bool:
-    config = request.config
+    config = getattr(request, "config", {}) or {}
+    # Explicit single-model requests keep quality rejections visible; they do not
+    # enter the multi-stage default static fallback chain.
+    if str(config.get("ai_model") or "").strip():
+        return False
+    is_reply = bool(getattr(request, "is_reply", False))
     return bool(
-        not request.is_reply
+        not is_reply
         and not config.get("require_mimo_draft")
         and config.get("_ai_group_static_fallback_enabled", True)
     )

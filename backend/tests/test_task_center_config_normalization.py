@@ -31,6 +31,18 @@ def _load_required_rule_binding_migration():
 
 @pytest.mark.no_postgres
 def test_group_ai_config_accepts_topic_teacher_and_consecutive_settings() -> None:
+    # consecutive_message_* removed by humanization PRD; create must reject extra fields.
+    with pytest.raises(ValidationError):
+        GroupAIChatTaskCreate(
+            name="AI 活群",
+            target_group_id=7,
+            consecutive_message_enabled=True,
+            consecutive_message_min=2,
+            consecutive_message_max=4,
+            consecutive_message_probability=0.3,
+            hourly_min_messages=10,
+        )
+
     payload = GroupAIChatTaskCreate(
         name="AI 活群",
         target_group_id=7,
@@ -42,10 +54,6 @@ def test_group_ai_config_accepts_topic_teacher_and_consecutive_settings() -> Non
             {"name": "王老师", "description": "负责报名答疑", "priority": 20},
             {"name": "李老师", "description": "负责材料审核", "priority": 10},
         ],
-        consecutive_message_enabled=True,
-        consecutive_message_min=2,
-        consecutive_message_max=4,
-        consecutive_message_probability=0.3,
         hourly_min_messages=10,
     )
 
@@ -53,7 +61,9 @@ def test_group_ai_config_accepts_topic_teacher_and_consecutive_settings() -> Non
 
     assert data["topic_directions"][0]["title"] == "升学规划"
     assert data["teacher_targets"][0]["name"] == "王老师"
-    assert data["consecutive_message_min"] == 2
+    assert "consecutive_message_min" not in data
+    assert data["group_bot_admission_required"] is True
+    assert data["reply_min_per_round"] == 1
 
 
 @pytest.mark.no_postgres

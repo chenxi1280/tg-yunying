@@ -103,6 +103,14 @@ class OperationTargetReactivateRequest(BaseModel):
     tg_peer_id: str | None = Field(default=None, min_length=1, max_length=120)
     username: str | None = None
 
+    @model_validator(mode="after")
+    def require_reverified_reference(self) -> "OperationTargetReactivateRequest":
+        peer = (self.tg_peer_id or "").strip()
+        username = (self.username or "").strip()
+        if not peer and not username:
+            raise ValueError("重新激活必须提交重新核验后的目标引用")
+        return self
+
 
 class GroupBotAdmissionPolicyCreate(BaseModel):
     completion_policy: str = Field(pattern="^(not_required|follow_sufficient|explicit_bot_confirmation)$")

@@ -4948,10 +4948,6 @@ def test_group_ai_build_plan_writes_topic_teacher_and_burst_payload(monkeypatch)
                 "low_confidence_silence_enabled": False,
                 "topic_directions": [{"title": "升学规划", "description": "围绕择校节奏聊", "weight": 1}],
                 "teacher_targets": [{"name": "王老师", "description": "负责报名答疑", "priority": 10}],
-                "consecutive_message_enabled": True,
-                "consecutive_message_min": 2,
-                "consecutive_message_max": 2,
-                "consecutive_message_probability": 1,
             },
             stats={},
         )
@@ -4961,11 +4957,11 @@ def test_group_ai_build_plan_writes_topic_teacher_and_burst_payload(monkeypatch)
         assert group_ai_chat.build_plan(session, task) == 4
         actions = list(session.scalars(select(Action).where(Action.task_id == task.id).order_by(Action.scheduled_at, Action.created_at)))
 
-    assert [action.account_id for action in actions[:2]] == [11, 11]
-    assert actions[0].payload["burst_id"] == actions[1].payload["burst_id"]
-    assert actions[0].payload["burst_index"] == 1
-    assert actions[1].payload["burst_index"] == 2
-    assert actions[0].payload["burst_size"] == 2
+    # consecutive burst removed by humanization PRD; first two turns must rotate accounts.
+    assert [action.account_id for action in actions[:2]] == [11, 12]
+    assert not actions[0].payload.get("burst_id")
+    assert int(actions[0].payload.get("burst_index") or 0) == 0
+    assert int(actions[0].payload.get("burst_size") or 0) == 0
     assert actions[0].payload["topic_direction"]["title"] == "升学规划"
     assert actions[0].payload["teacher_target"]["name"] == "王老师"
     assert actions[0].payload["slot_id"] == "task-topic-teacher-burst:cycle:1:turn:1"

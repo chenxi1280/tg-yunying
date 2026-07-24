@@ -5566,6 +5566,8 @@ def _mark_unknown_after_send(session: Session, action: Action, detail: str) -> N
         attempt.failure_detail = detail or ""
         attempt.result_snapshot = dict(action.result or {})
     _mark_group_ai_unknown_side_effects(session, action)
+    # Keep speaker reservation occupied for unknown_after_send (rotation hold).
+    _finalize_speaker_after_send(session, action, outcome="unknown_after_send", remote_id="")
     _release_runtime_resources(action)
 
 

@@ -138,6 +138,15 @@ class SendMessagePayload(BaseModel):
     rule_set_version: int | None = None
     rule_binding_mode: str = ""
     rule_trace: dict[str, Any] = Field(default_factory=dict)
+    # Humanized interaction / speaker rotation / group-bot admission audit fields
+    conversation_surface: str = ""
+    conversation_key: str = ""
+    speaker_selection_reason: str = ""
+    content_source: str = ""
+    admission_id: int | None = None
+    admission_version: int | None = None
+    group_bot_admission_id: int | None = None
+    group_bot_admission_state: str = ""
 
     @model_validator(mode="after")
     def require_destination(self) -> "SendMessagePayload":
