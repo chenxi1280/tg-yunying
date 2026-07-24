@@ -52,10 +52,16 @@ def persist_generation_results(
                 getattr(result.content, "quality_fallback", "") or ""
             )
             if quality_fallback:
+                is_check_in = (
+                    quality_fallback == "check_in_fallback"
+                    or str(result.content).strip() == "签到"
+                )
                 data.update({
-                    "act_type": "emoji_react",
-                    "human_quality_decision": "explicit_static_quality_fallback",
-                    "quality_fallback": quality_fallback,
+                    "act_type": "check_in" if is_check_in else quality_fallback,
+                    "human_quality_decision": "check_in_fallback" if is_check_in else "explicit_static_quality_fallback",
+                    "quality_fallback": "check_in_fallback" if is_check_in else quality_fallback,
+                    "content_source": "check_in_fallback" if is_check_in else data.get("content_source", ""),
+                    "generation_source": "static_safe_fallback" if is_check_in else data.get("generation_source", ""),
                     "fallback_reason": result.fallback_reason or data.get("fallback_reason", ""),
                 })
             mark_attempt_outcome(data, request.attempt_id, "ready", timestamp=_now())

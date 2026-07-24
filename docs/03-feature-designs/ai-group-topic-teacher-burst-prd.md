@@ -1,19 +1,21 @@
 # AI 活跃群话题、讨论老师与连发模拟设计
 
+> **2026-07-25 supersede：** `consecutive_message_*` 同账号连发与 burst 规划已被 `docs/03-feature-designs/ai-conversation-humanization-and-group-bot-admission-prd.md` **删除**。新实现不得再暴露连发配置、不得生成同账号 burst action；无真人打断时相邻平台消息必须换账号。下文连发段落仅保留为历史说明。`topic_directions` / `teacher_targets` / TG bot 轻量设置仍有效。
+
 ## 背景
 
-运营人员需要让每个 AI 活跃群任务围绕多个可配置主题和讨论老师展开，同时让同一账号偶尔连续发送 2-4 条短消息，模拟真人补充、追问或连续表达。
+运营人员需要让每个 AI 活跃群任务围绕多个可配置主题和讨论老师展开。历史版本曾支持同一账号偶尔连续发送 2-4 条短消息；该能力已由真人化专项废止。
 
 本设计只覆盖 `group_ai_chat`，不改变转发、频道浏览、频道点赞、频道评论等任务类型。
 
 ## 产品范围
 
-- 任务配置新增 `topic_directions`、`teacher_targets`、`consecutive_message_*` 字段。
+- 任务配置新增 `topic_directions`、`teacher_targets` 字段；~~`consecutive_message_*`~~ 已删除（见文首 supersede）。
 - Web 系统设置新增租户级 TG Bot 配置中心，支持 Bot Token、多个管理员 Chat ID、AI 活群 Bot 设置开关、测试发送和 webhook 配置状态。
 - Web 任务详情页提供 AI 活跃群专项设置；创建 / 编辑任务表单同步支持，并以多行文本作为话题方向和讨论老师主入口。
 - TG bot 作为轻量运营入口，支持管理员选择任务、查看设置摘要、查看话题 / 讨论老师摘要，并通过按钮用多行文本设置话题方向和讨论老师。
 - 执行器每轮把选中的话题方向和讨论老师写入 AI prompt、话题计划和 action payload。
-- 同账号连发模拟生成多条独立 action，并受现有容量、硬目标、风控和质量过滤约束。
+- ~~同账号连发模拟~~：已废止；见真人化专项轮换规则。
 
 ## 租户级 TG Bot 配置
 
@@ -50,13 +52,9 @@ Web 创建 / 编辑表单和 TG bot 配置会话不要求用户手写数组或 J
 
 运营人员可以把任务内的多行话题方向和讨论老师合称为该任务的“话题包”。当前阶段话题包随任务保存，不新增跨任务模板表；后续如需要复用到多个任务，再单独设计模板中心、版本和发布流程。
 
-连发模拟：
+连发模拟（**已 supersede，不得实现**）：
 
-- `consecutive_message_enabled` 默认 `false`。
-- `consecutive_message_min` 默认 `2`，范围 2-4。
-- `consecutive_message_max` 默认 `4`，范围 2-4。
-- `consecutive_message_probability` 默认 `0.3`，范围 0-1。
-- 若 `consecutive_message_min > consecutive_message_max`，配置必须失败。
+- 历史字段 `consecutive_message_enabled/min/max/probability` 在迁移中删除；运行时 schema 拒绝写回。
 
 旧 `topic_hint` 必须通过迁移写入 `topic_directions`，迁移后移除旧字段。若任务已经有 `topic_directions`，迁移只移除旧 `topic_hint`，避免同一任务出现两套话题来源。迁移完成后 AI 活群 schema、设置白名单、TG bot 摘要和执行器都不得再读取 `topic_hint`；未配置话题方向时只回退到目标群运营方向。
 
@@ -65,9 +63,7 @@ Web 创建 / 编辑表单和 TG bot 配置会话不要求用户手写数组或 J
 - 每轮先读取同目标群近期话题方向 / 讨论老师使用记录，再为本轮每个发言 slot 分配话题方向和讨论老师；分配时按近期使用量与本轮已使用量优先分散，使用量相同时按配置顺序衍生的 weight / priority 排序。
 - 若没有配置话题方向，slot 回退到群目标方向；若没有配置讨论老师，slot 的讨论老师为空。
 - AI 生成提示必须在固定 slot 中明确每条的“话题方向”和“讨论老师”，但不得在群聊内容中暴露系统、任务或 AI。
-- 连发触发后，选定同一个账号承接本轮连续窗口内的多条 action；窗口大小不超过本轮计划条数。
-- 连发 action 必须写入同一个 `burst_id`，并分别写 `burst_index`、`burst_size`。
-- 连发不得绕过 `allow_account_repeat=false` 的硬限制；当任务禁止账号重复发言时，连发不触发。
+- ~~连发 burst_id / burst_index~~：已废止。Planner 必须按会话真实顺序换号；无替代账号时 `speaker_rotation_wait`。
 
 ## Web 交互
 

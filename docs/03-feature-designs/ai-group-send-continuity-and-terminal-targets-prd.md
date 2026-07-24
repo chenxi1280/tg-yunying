@@ -6,11 +6,11 @@
 | --- | --- |
 | 需求级别 | L3 生产可靠性与目标处置优化 |
 | 设计状态 | `complete` |
-| 修订说明 | 2026-07-24 评审修订合订：义务归属 credit、unknown 占位、planning_rate / 公平调度、Phase A 身份灰度、多目标粒度、canary 体感；§5.5 青岛 `qdsfxy` 预置 `target_ref_invalid`（非解散）；§5.1/§5.4 补 invalid 任务·Action·覆盖处置与自动写入门槛；§7.3.4 明确失败 Action 再规划；§7.5 死锁 / §9.0 时区为前置基线；§9 发布插队顺序；总 PRD / 实现计划 / 数据流同步同一口径 |
+| 修订说明 | 2026-07-24 评审修订合订：义务归属 credit、unknown 占位、planning_rate / 公平调度、Phase A 身份灰度、多目标粒度、canary 体感；§5.5 青岛 `qdsfxy` 预置 `target_ref_invalid`（非解散）；§5.1/§5.4 补 invalid 任务·Action·覆盖处置与自动写入门槛；§7.3.4 明确失败 Action 再规划；§7.5 死锁 / §9.0 时区为前置基线；§9 发布插队顺序；总 PRD / 实现计划 / 数据流同步同一口径。**2026-07-25 交叉：** 与 `ai-conversation-humanization-and-group-bot-admission-prd.md` 对齐——`pending_visibility` 计入 `unknown_after_send_hold_count`；需群管可见性核验的消息先 `pending_visibility_credit` 再正式 credit；`admission_abandoned` 可排除 durable_debt；群管 follow 复用 `target_admission_retry` 档且限作用域（见 §4.3 / §7.2 / §7.3 / §7.4 增量注） |
 | 产品范围 | Phase A 覆盖所有 Telegram 出站入口的终态目标拦截；Phase B 覆盖 `group_ai_chat` 的每小时硬目标连续履约 |
 | 统计时区 | 任务配置时区；未配置时沿用平台 `Asia/Shanghai` 口径 |
 | 上位文档 | `docs/01-product/tg-ops-platform-prd.md` §8.4 |
-| 关联文档 | `ai-group-all-accounts-daily-coverage-prd.md`、`ai-group-hard-hourly-target-prd.md`、`docs/00-index/project-dataflow-index.md` |
+| 关联文档 | `ai-group-all-accounts-daily-coverage-prd.md`、`ai-group-hard-hourly-target-prd.md`、`ai-conversation-humanization-and-group-bot-admission-prd.md`（群管准入 / 轮换 / 签到 / 可见性与 credit 交叉）、`docs/00-index/project-dataflow-index.md` |
 | 实现计划 | `docs/superpowers/plans/2026-07-24-ai-group-send-continuity-terminal-targets.md` |
 
 本文对“目标生命周期、引用版本、跨小时硬目标、未知发送、群发送策略、灰度发布”具有专项优先级。关联专项 PRD 中与本文冲突的旧口径，仅在未启用本能力的历史运行路径下保留为历史说明，不得用于新实现。
@@ -92,9 +92,11 @@ Target epoch    = tenant_id + operation_target_id + reference_revision
 | 已确认成功 | `Action.status=success`、`ExecutionAttempt.status=success`、远端 message id 非空，且目标 revision 一致；credit 写入**计划桶** | 是 | 关闭 1 个计划义务 |
 | 可抵扣开放动作 | 尚未进入 Gateway 且目标、账号、内容、引用 revision 都仍有效的 `pending/claiming/executing` 动作 | 否 | 计入 `eligible_open_count` |
 | `unknown_after_send` | 已进入 Gateway，但本地无法确认远端结果 | 否 | 计入 `unknown_after_send_hold_count`（占位 1，**禁止替代重发该 Action**）；**不**整目标停规划 |
-| 已跳过 | 尚未进入 Gateway 时被终态、失效引用或显式停止拦截 | 否 | 不占开放、不计成功 |
+| `pending_visibility`（真人化/群管专项） | 已进入 Gateway 且已有 remote id，但首条准入后正文仍待群内可见性核验 | 否 | **与 unknown 同语义占位**：计入同一 `unknown_after_send_hold_count`（可用 hold_reason 区分展示）；**禁止**另开公式项；**禁止**替代重发 |
+| 已跳过 | 尚未进入 Gateway 时被终态、失效引用、显式停止或 `admission_abandoned` 拦截 | 否 | 不占开放、不计成功 |
 
-成功永远不是 UI toast、AI 文案、Action payload 或任务状态的推断结果。
+成功永远不是 UI toast、AI 文案、Action payload 或任务状态的推断结果。  
+需群管可见性核验的消息在 `visible_confirmed` 前不得记为「已确认成功」；正式 hard-hourly credit 时序见 §7.2 增量与真人化专项 §5.8.3。
 
 ### 4.4 硬小时目标粒度
 
@@ -262,6 +264,8 @@ credit 包含：
 
 只有在同一短事务中确认成功 Attempt 与非空远端 message id 后，成功插入 credit 才能增加**计划桶**的 `success_count`。重试、补偿核验、重复回写或多 worker 竞争都不能让一条 Telegram Action 产生两份成功计数。
 
+**与群管可见性核验的交叉（2026-07-25）：** 当 Action 被标记为需要首条准入后可见性核验时，Gateway 回执 **不得**立即插入正式 `TaskHardHourlyDeliveryCredit` / 增加 `success_count`。必须先幂等写入 `pending_visibility_credit`（`UNIQUE(action_id)`，关联计划桶，**不**增加 `success_count`），并占用 `unknown_after_send_hold_count`。仅 `visible_confirmed`（或 continuity 裁决确认可见）后，在同一短事务关闭 pending 占位并插入正式 credit。`post_send_intercepted` / 确认失败则关闭 pending、无正式 credit。不需要可见性核验的消息仍按上段「Attempt success + remote id」直接正式 credit。
+
 **产品定论：义务归属，不是“实际小时产量桶”。**
 
 | 维度 | 规则 |
@@ -287,14 +291,19 @@ durable_debt =
   sum over past buckets in same (task, target epoch):
     max(goal - confirmed_success, 0)
   # 排除：已终态目标、superseded epoch、发布锚点前仅作历史展示的缺口
+  # 排除：义务绑定账号在该目标上已审计 admission_abandoned
+  #       （见真人化专项 §5.8.2；不得静默排除，须运营 abandon）
 
 eligible_open_count =
   尚未进入 Gateway、且目标/账号/内容/revision 仍有效的
   pending/claiming/executing 硬小时 Action 数（按目标 epoch）
 
 unknown_after_send_hold_count =
-  同一目标 epoch 下、仍未核验收口的 hard-hour unknown_after_send 数
-  # 每个 unknown 只占 1 个规划名额，禁止对同一 Action 替代重发
+  同一目标 epoch 下、仍未核验收口的 hard-hour 占位 Action 数
+  # 包含：unknown_after_send
+  # 包含：pending_visibility（群管首条可见性核验中；与 unknown 同语义，hold_reason 可区分）
+  # 每个此类 Action 只占 1 个规划名额，禁止对同一义务替代重发
+  # 公式不新增第三加项
 
 planning_reservation = eligible_open_count + unknown_after_send_hold_count
 
@@ -344,6 +353,8 @@ target_admission_retry
 -> AI hard-hourly
 -> ordinary
 ```
+
+**群管准入子动作（2026-07-25）：** `group_bot_required_channel_follow`、控制观察与精确确认类 action **复用 `target_admission_retry` 档**，但就绪集合必须限制在 **同一 `tenant_id + task_id + account_id`（及对应目标群）** 且用于解除该账号 `group_bot_admission_wait` 时；不得跨任务/跨账号把群管 follow 做成全局插队，从而饿死 `search_join_*`。详见真人化专项 §8.3。
 
 **“一轮”的可测定义：** 在 Dispatcher 的**一次 claim 类别选择**（一次持久化 cursor 决策）中，若本次选择了 AI hard-hourly，且当时存在已到期的 ordinary 动作、且无更高优先级项，则**下一次** claim 类别选择在同样前提下必须选择 ordinary。不得用“一个 worker 进程内碰巧夹杂”或“批次里碰巧有一条 ordinary”冒充公平。
 

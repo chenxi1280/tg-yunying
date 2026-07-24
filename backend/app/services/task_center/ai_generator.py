@@ -614,26 +614,12 @@ def _content_max_tokens(setting_max_tokens: int, count: int, purpose: str) -> in
 
 
 def _fallback_contents(topic: str, requirements: str, purpose: str, target_label: str, count: int) -> list[str]:
-    topic_text = _fallback_topic(topic, requirements, target_label)
-    if purpose == "群活跃续聊":
-        context_text = _fallback_recent_context(requirements)
-        if context_text:
-            templates = [
-                f"刚才那句 {context_text[:24]} 我懂",
-                f"{context_text[:28]} 这个细节挺关键",
-                f"我也想问下 {context_text[:24]}",
-                f"{context_text[:28]} 这块可以再说说",
-            ]
-        else:
-            templates = [
-                "这会儿有点安静啊",
-                "有人在吗",
-                "我先冒个泡",
-                f"{topic_text[:24]} 今天有人聊吗",
-            ]
-    else:
-        templates = [(requirements or topic or "这事可以再看看。").strip()]
-    return [templates[index % len(templates)] for index in range(max(1, count))][:count]
+    # Humanization PRD §7.2: 签到 fallback 仅用于非引用 action。
+    from app.services.task_center.conversation_content_quality import CHECK_IN_TEXT
+
+    if purpose == "group_chat_reply":
+        return []
+    return [CHECK_IN_TEXT for _ in range(max(1, int(count or 1)))][: max(1, int(count or 1))]
 
 
 def _fallback_topic(topic: str, requirements: str, target_label: str) -> str:

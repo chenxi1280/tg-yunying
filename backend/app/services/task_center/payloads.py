@@ -185,6 +185,44 @@ class EnsureChannelMembershipPayload(BaseModel):
     require_send: bool = False
 
 
+class GroupBotRequiredChannelFollowPayload(BaseModel):
+    """Exact channel follow required by a trusted group-bot prompt."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    group_id: int = Field(ge=1)
+    admission_id: int = Field(ge=1)
+    admission_version: int = Field(default=1, ge=1)
+    channel_ref: str = Field(min_length=1, max_length=255)
+    source_message_id: str = ""
+    # Claim-class binding (PRD §8.3): only bound actions get target_admission_retry tier.
+    admission_bound_task_id: str = Field(min_length=1)
+    admission_bound_account_id: int = Field(ge=1)
+
+
+class GroupBotControlObservationPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    group_id: int = Field(ge=1)
+    admission_id: int = Field(ge=1)
+    admission_version: int = Field(default=1, ge=1)
+    join_start_cursor: str = ""
+    admission_bound_task_id: str = Field(min_length=1)
+    admission_bound_account_id: int = Field(ge=1)
+
+
+class GroupBotConfirmationButtonPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    group_id: int = Field(ge=1)
+    admission_id: int = Field(ge=1)
+    admission_version: int = Field(default=1, ge=1)
+    source_message_id: str = ""
+    button_data: str = ""
+    admission_bound_task_id: str = Field(min_length=1)
+    admission_bound_account_id: int = Field(ge=1)
+
+
 class DeprecatedGroupRescuePayload(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -312,6 +350,9 @@ PAYLOAD_MODELS = {
     "search_join": SearchJoinPayload,
     "search_join_membership": SearchJoinMembershipPayload,
     "search_rank_deboost": SearchRankDeboostPayload,
+    "group_bot_required_channel_follow": GroupBotRequiredChannelFollowPayload,
+    "group_bot_control_observation": GroupBotControlObservationPayload,
+    "group_bot_confirmation_button": GroupBotConfirmationButtonPayload,
 }
 
 DEDUPE_VOLATILE_PAYLOAD_FIELDS = frozenset(
@@ -457,6 +498,26 @@ def create_membership_action(
     return _create_action(session, task, "ensure_target_membership", account_id, scheduled_at, payload, flush=flush)
 
 
+def create_group_bot_required_channel_follow_action(
+    session: Session,
+    task: Task,
+    account_id: int,
+    scheduled_at: datetime,
+    payload: GroupBotRequiredChannelFollowPayload,
+    *,
+    flush: bool = True,
+) -> Action:
+    return _create_action(
+        session,
+        task,
+        "group_bot_required_channel_follow",
+        account_id,
+        scheduled_at,
+        payload,
+        flush=flush,
+    )
+
+
 def create_view_action(session: Session, task: Task, account_id: int | None, scheduled_at: datetime, payload: ViewMessagePayload) -> Action:
     return _create_action(session, task, "view_message", account_id, scheduled_at, payload)
 
@@ -495,6 +556,10 @@ def payload_error_message(exc: ValidationError | ValueError) -> str:
 
 __all__ = [
     "EnsureChannelMembershipPayload",
+    "GroupBotRequiredChannelFollowPayload",
+    "GroupBotControlObservationPayload",
+    "GroupBotConfirmationButtonPayload",
+    "create_group_bot_required_channel_follow_action",
     "LikeMessagePayload",
     "PostCommentPayload",
     "SearchJoinPayload",

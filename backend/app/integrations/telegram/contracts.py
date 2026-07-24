@@ -57,6 +57,14 @@ class ChannelMembershipResult(OperationResult):
 
 
 @dataclass(frozen=True)
+class MessageVisibilityResult(OperationResult):
+    """Post-send visibility probe: visible True/False/None(unknown)."""
+
+    visible: bool | None = None
+    remote_message_id: str = ""
+
+
+@dataclass(frozen=True)
 class InviteLinkResult(OperationResult):
     invite_link: str = ""
 

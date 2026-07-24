@@ -24,3 +24,5 @@ from .tenants import *  # noqa: F401,F403
 from .task_center import *  # noqa: F401,F403
 from .task_account_coverage import *  # noqa: F401,F403
 from .hard_hourly_ledger import *  # noqa: F401,F403
+from .conversation_speaker import *  # noqa: F401,F403
+from .group_bot_admission import *  # noqa: F401,F403

@@ -103,13 +103,58 @@ class OperationTargetReactivateRequest(BaseModel):
     tg_peer_id: str | None = Field(default=None, min_length=1, max_length=120)
     username: str | None = None
 
-    @model_validator(mode="after")
-    def require_reverified_reference(self) -> "OperationTargetReactivateRequest":
-        peer_id = str(self.tg_peer_id or "").strip()
-        username = str(self.username or "").strip().lstrip("@")
-        if not peer_id and not username:
-            raise ValueError("重新激活必须提交重新核验后的目标引用")
-        return self
+
+class GroupBotAdmissionPolicyCreate(BaseModel):
+    completion_policy: str = Field(pattern="^(not_required|follow_sufficient|explicit_bot_confirmation)$")
+    reason: str = Field(min_length=1, max_length=500)
+    evidence_ref: str = Field(min_length=1, max_length=1000)
+    trusted_bot_peer_id: str = ""
+    expected_policy_version: int | None = Field(default=None, ge=0)
+    group_id: int | None = Field(default=None, ge=1)
+
+
+class GroupBotAdmissionPolicyOut(BaseModel):
+    id: int
+    tenant_id: int
+    group_id: int
+    trusted_bot_peer_id: str = ""
+    completion_policy: str
+    evidence_ref: str = ""
+    reason: str = ""
+    policy_version: int
+    status: str
+    created_by: str = ""
+    revoked_by: str = ""
+    effective_at: datetime | None = None
+    revoked_at: datetime | None = None
+
+
+class GroupBotAdmissionAbandonRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=500)
+    evidence_ref: str = Field(min_length=1, max_length=1000)
+    expected_admission_version: int = Field(ge=1)
+
+
+class GroupBotAdmissionOut(BaseModel):
+    id: int
+    tenant_id: int
+    group_id: int
+    account_id: int
+    state: str
+    completion_policy: str = ""
+    policy_version: int = 0
+    admission_version: int = 1
+    trusted_bot_peer_id: str = ""
+    failure_code: str = ""
+    evidence_ref: str = ""
+    join_start_cursor: str = ""
+    observed_end_cursor: str = ""
+    post_send_visibility_state: str = ""
+    join_success_at: datetime | None = None
+    observation_closes_at: datetime | None = None
+    required_channel_refs: str = ""
+    abandoned_reason: str = ""
+    abandoned_at: datetime | None = None
 
 
 class ChannelMessageCreate(BaseModel):
@@ -381,6 +426,10 @@ __all__ = [
     "OperationTargetLifecycleImpactOut",
     "OperationTargetLifecycleResultOut",
     "OperationTargetReactivateRequest",
+    "GroupBotAdmissionPolicyCreate",
+    "GroupBotAdmissionPolicyOut",
+    "GroupBotAdmissionAbandonRequest",
+    "GroupBotAdmissionOut",
     "ChannelMessageCreate",
     "ChannelMessageCommentOut",
     "ChannelMessageCommentSyncOut",

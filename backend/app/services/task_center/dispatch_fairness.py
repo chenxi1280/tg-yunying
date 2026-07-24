@@ -140,6 +140,15 @@ def classify_action_payload(action_type: str, payload: dict | None, task_type: s
     payload = payload or {}
     if action_type == "target_admission_retry":
         return "target_admission_retry"
+    if action_type in {
+        "group_bot_required_channel_follow",
+        "group_bot_control_observation",
+        "group_bot_confirmation_button",
+    }:
+        # PRD §8.3: only enjoy target_admission_retry tier when bound to same tenant+task+account admission.
+        if payload.get("admission_bound_task_id") and payload.get("admission_bound_account_id"):
+            return "target_admission_retry"
+        return "ordinary"
     if action_type in {"ensure_target_membership", "ensure_channel_membership"}:
         if task_type == "search_join_group" or payload.get("search_join_membership"):
             return "search_join_membership"

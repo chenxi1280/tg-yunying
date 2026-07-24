@@ -27,6 +27,7 @@ from .contracts import (
     GroupSnapshot,
     InviteLinkResult,
     LoginChallenge,
+    MessageVisibilityResult,
     OperationResult,
     OutboundSegment,
     ProfileUpdateResult,
@@ -1829,6 +1830,103 @@ class TelethonTelegramGateway(TelegramGateway):
         credentials: DeveloperAppCredentials | None = None,
     ) -> OperationResult:
         return self._run(self._delete_message_async(session_ciphertext, target_peer_id, message_id, self._usable_credentials(credentials)))
+
+    def probe_message_visible(
+        self,
+        account_id: int,
+        target_peer_id: str,
+        message_id: int,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> MessageVisibilityResult:
+        """No-body probe: whether a previously sent message is still visible in target."""
+        raw_session = decrypt_session(session_ciphertext)
+        if not raw_session:
+            return MessageVisibilityResult(
+                False,
+                "失败",
+                FailureType.ACCOUNT_UNAVAILABLE.value,
+                "账号没有可用 session",
+                visible=None,
+                remote_message_id=str(message_id),
+            )
+        if not credentials:
+            return MessageVisibilityResult(
+                False,
+                "失败",
+                FailureType.ACCOUNT_UNAVAILABLE.value,
+                "开发者应用不可用",
+                visible=None,
+                remote_message_id=str(message_id),
+            )
+        return self._run(
+            self._probe_message_visible_async(
+                raw_session,
+                target_peer_id,
+                int(message_id),
+                self._usable_credentials(credentials),
+            )
+        )
+
+    async def _probe_message_visible_async(
+        self,
+        raw_session: str,
+        target_peer_id: str,
+        message_id: int,
+        credentials: DeveloperAppCredentials,
+    ) -> MessageVisibilityResult:
+        client = await self._get_or_create_client(credentials, raw_session)
+        if not await client.is_user_authorized():
+            return MessageVisibilityResult(
+                False,
+                "失败",
+                FailureType.ACCOUNT_UNAVAILABLE.value,
+                "session 已失效",
+                visible=None,
+                remote_message_id=str(message_id),
+            )
+        try:
+            target = await resolve_telethon_target(client, target_peer_id, group_id=0)
+            messages = await client.get_messages(target, ids=[message_id])
+            message = messages[0] if isinstance(messages, list) else messages
+            if message is None:
+                return MessageVisibilityResult(
+                    True,
+                    "已完成",
+                    "",
+                    "message_missing",
+                    visible=False,
+                    remote_message_id=str(message_id),
+                )
+            # Deleted/service empty messages still return objects sometimes; treat empty id as missing.
+            mid = getattr(message, "id", None)
+            if mid is None:
+                return MessageVisibilityResult(
+                    True,
+                    "已完成",
+                    "",
+                    "message_missing",
+                    visible=False,
+                    remote_message_id=str(message_id),
+                )
+            return MessageVisibilityResult(
+                True,
+                "已完成",
+                "",
+                "message_visible",
+                visible=True,
+                remote_message_id=str(mid),
+            )
+        except Exception as exc:  # noqa: BLE001
+            mapped = self._map_send_error(exc)
+            return MessageVisibilityResult(
+                False,
+                "失败",
+                mapped.failure_type or FailureType.UNKNOWN.value,
+                mapped.detail or str(exc),
+                visible=None,
+                remote_message_id=str(message_id),
+            )
 
     def probe_target_capabilities(
         self,

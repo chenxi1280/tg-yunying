@@ -9,6 +9,15 @@
 > 5. 多目标任务下每个目标各自完整 `hourly_min_messages`；活动窗外欠账只累计不发送。
 >
 > 本文件正文中“最近 24 小时摘要”“过期 pending / dispatcher lag”“历史欠量追赶 / 实际小时入账”等与上文冲突的旧表述，只保留为 **feature-off 历史运行路径** 说明，不得用于新实现。
+>
+> **2026-07-25 真人化 / 群管准入 supersede：** `docs/03-feature-designs/ai-conversation-humanization-and-group-bot-admission-prd.md` 生效后：
+>
+> 1. **禁止**“正文发送后被群管要求关注频道 → 自动关注 → 原 action 重排重发”的正常路径；记 `post_send_intercepted` / `legacy_group_bot_intercepted` / `unknown_after_send` / `pending_visibility`，义务按 continuity 占位或失败后再规划**新** Action，且仅在 `GroupBotAdmission.ready` 之后。
+> 2. 硬小时可发账号池必须同时满足 `can_send=true` 与 `GroupBotAdmission.state=group_bot_admission_ready`；未 ready 不计入产能证明。运营 `admission_abandoned` 后该账号未关闭义务从 `durable_debt` 排除。
+> 3. 同会话无真人打断时禁止同账号连发；单 ready 账号时写 `speaker_rotation_wait` 与产能 warning，不得为凑硬小时静默放宽。
+> 4. **credit 时序：** 需群管可见性核验的消息在 Gateway 回执后进入 `pending_visibility`，计入 `unknown_after_send_hold_count`（公式不变）；先写 `pending_visibility_credit`（不涨 bucket success_count），仅 `visible_confirmed` 后落正式 `TaskHardHourlyDeliveryCredit`。
+> 5. 质量兜底仅精确 `签到`（受配额），不得用表情/泛化短句补硬小时。
+> 6. 群管 follow/观察 action 复用 Dispatcher `target_admission_retry` 档且限 tenant+task+account，不得饿死 search_join。
 
 ## 1. 背景
 
@@ -325,17 +334,14 @@ AI 活跃群任务卡片增加硬目标摘要：
 
 该标记用于详情、统计、审计和排障，不影响发送内容。
 
-当 `send_message` 已进入 Telegram 调用并被群管理提示“需要关注频道才能发言”或消息被删除时，不能把该动作写成成功，也不能永久降级为普通发送失败。Dispatcher 必须从失败详情、按钮或关联频道中解析必需频道，完成自动关注；如果验证消息带“我已加入 / 我已关注 / 完成验证”确认按钮，必须点击确认后再复检目标群 `can_send`。复检通过后，原发送动作回到 `pending`，并在 result 中记录：
-
-```json
-{
-  "error_code": "required_channel_followed_retry",
-  "required_channels_followed": ["qiyue201"],
-  "prerequisite_channel_followed": true
-}
-```
-
-如果必需频道解析、关注或复检失败，动作保持真实失败原因；不得用模板发送、mock 成功或跳过消息来抵扣硬小时目标。
+> **历史路径（已 supersede，仅 legacy feature-off）：** 旧实现允许 `send_message` 进入 Telegram 后被群管要求关注频道时自动关注并把**原 action** 重排重发（`required_channel_followed_retry`）。
+>
+> **新实现强制口径（真人化专项）：**
+>
+> 1. 新账号必须在 AI / 正文 / test_message **之前**完成群管控制观察与精确频道关注；`GroupBotAdmission` 未 ready 时不得创建 ExecutionAttempt。
+> 2. 若历史/状态失真导致发送后才发现群管拦截：写 `legacy_group_bot_intercepted` 或 `post_send_intercepted`，**停止该 action**，撤回/阻断 admission ready，**不得**在同一次正文后自动关注并重发。
+> 3. 硬小时义务：该 action 不计成功；unknown 按 continuity 占位；明确拦截/失败不占 planning_reservation，由下一 tick 在账号重新 `group_bot_admission_ready` 后受控创建**新** Action。
+> 4. 不得用模板、mock 成功、跳过消息或表情/泛化短句抵扣硬小时目标；唯一确定性文本兜底为精确 `签到`（受开关与配额）。
 
 ## 8. Planner 行为
 
@@ -522,8 +528,8 @@ AI 活跃群任务卡片增加硬目标摘要：
 - `can_auto_resolve=true` 只代表可尝试自动验证；如果读取验证聊天失败，例如 `private`、`lack permission`、`banned` 或 `GetHistoryRequest`，必须记录 `verification_context_unreadable`，不得算作自动验证已完成。
 - join ref、verification peer 和 send peer 必须分开展示和验收；通过 username / invite 完成准入时，不能继续用旧 numeric peer 读取验证码或规划发送。
 - 需要关注多个频道才能入群时，每个频道关注动作要有独立结果；全部必需频道满足后才允许复检目标群 `can_send`。
-- 已跳过的准入失败如果错误详情包含必需频道链接或“需要关注频道”提示，硬目标模式必须按重试周期重新生成准入动作，让自动关注和 `can_send` 复检继续推进；不能把这类账号永久留在失败池。
-- 发送阶段被管理员提示“需要关注频道才能发言”或消息被删除时，dispatcher 必须自动关注必需频道、复检 `can_send`，并把原发送动作重排；只有重发成功才计入硬目标成功数。
+- 已跳过的准入失败如果错误详情包含必需频道链接或“需要关注频道”提示，硬目标模式必须按重试周期推进**前置** `group_bot_required_channel_follow` / 群管准入状态机与 `can_send` 复检；不能把这类账号永久留在失败池，也不得用正文发送试探。
+- 发送阶段才发现被管理员/群管拦截时（legacy）：记 `legacy_group_bot_intercepted` 或 `post_send_intercepted`，停止该 action 并不自动重发；硬目标成功数只计 admission ready 之后、Attempt 成功且远端 message id 非空（及必要可见性确认）的发送。
 - 验证完成但 `can_send=false` 时，不创建主发送动作，原因记录为 `target_can_send_blocked`。
 - 文本 draft 使用小米 MiMo/Mino 健康供应商；MiMo/Mino 不可用、返回空内容或 malformed JSON 时记录 `ai_generation_unavailable`，不得走 mock 或模板成功。
 - 当前小时无真人新上下文时，硬目标可以触发空闲续聊 / 暖场。

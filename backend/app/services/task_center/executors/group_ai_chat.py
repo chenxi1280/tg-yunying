@@ -136,7 +136,7 @@ AI_CHAT_ROUND_INTERVALS_SECONDS = {
 }
 HARD_HOURLY_MIN_BATCH_MESSAGES = 10
 HARD_HOURLY_MIN_DISTRIBUTION_ACTIONS = 3
-HARD_HOURLY_MAX_CONSECUTIVE_ACCOUNT_RUN = 2
+HARD_HOURLY_MAX_CONSECUTIVE_ACCOUNT_RUN = 1
 HARD_HOURLY_MIN_DISTRIBUTED_ACCOUNTS = 2
 ACCOUNT_OFFLINE_SAMPLE_LIMIT = 10
 DEFERRED_AI_HISTORY_MAX_CHARS = 1000
@@ -2215,8 +2215,8 @@ def _slot_id(cycle_id: str, index: int) -> str:
 
 
 def _act_type_for_turn(index: int, quality_item: dict) -> str:
-    if quality_item.get("quality_fallback") == "emoji_react":
-        return "emoji_react"
+    if quality_item.get("quality_fallback") == "check_in_fallback":
+        return "check_in_fallback"
     if quality_item.get("act_type"):
         return canonical_ai_group_act_type(str(quality_item.get("act_type")))
     if _reply_target_message_id(quality_item) is not None:
@@ -3028,15 +3028,8 @@ def _teacher_target_text(teacher: dict) -> str:
 
 
 def _consecutive_burst_plan(config: dict, count: int, allow_repeat: bool, cycle_id: str) -> dict[int, dict]:
-    if not allow_repeat or not bool(config.get("consecutive_message_enabled")):
-        return {}
-    minimum = int(config.get("consecutive_message_min") or 2)
-    maximum = int(config.get("consecutive_message_max") or minimum)
-    if count < minimum or random.random() > float(config.get("consecutive_message_probability") or 0):
-        return {}
-    size = min(count, random.randint(minimum, maximum))
-    burst_id = f"{cycle_id}:burst:1"
-    return {index: {"burst_id": burst_id, "burst_index": index + 1, "burst_size": size} for index in range(size)}
+    # Humanization PRD: same-account consecutive burst is removed.
+    return {}
 
 
 def _bootstrap_history(config: dict, group: TgGroup) -> str:

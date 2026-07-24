@@ -516,7 +516,7 @@ Planner 闸门顺序固定为：账号 / 授权槽位环境栈 -> 协议样本 -
 ### 2.14 2026-06-04 更新记录
 
 - AI 活跃群和 AI 评论新增 Telegram 原生引用回复口径：引用回复必须在 Planner 阶段规划为独立 action，不得在执行层临时决定或用文本假引用替代。
-- AI 活跃群配置“每轮最少引用回复数”，AI 评论配置“每条频道消息最少引用回复数”。配置为 0 表示关闭；大于 0 时，Planner 必须按最少数量创建带 `reply_to_message_id` 的引用回复 action。
+- AI 活跃群配置“每轮最少引用回复数”，AI 评论配置“每条频道消息最少引用回复数”。新建任务默认值均为 `1`，最小值为 `1`；Planner 必须按最少数量创建带 `reply_to_message_id` 的引用回复 action。若当前目标没有合格候选，必须记录 `reply_target_shortfall` 并显式等待/跳过，不能把引用要求关闭、伪造引用或用普通正文替代。
 - 引用对象不提供“真人消息 / 自己历史消息”范围选择。系统自动从当前目标内可回复的真人消息、托管账号历史成功消息、已采集评论和本任务历史成功评论中混合选择。
 - 普通消息和引用回复消息必须走不同生成提示词。引用回复在生成前先绑定具体引用对象，Prompt 必须包含被回复消息作者、原文、当前上下文和“本条是引用回复”的生成要求；不做生成后的语义匹配校验。
 - 任务详情、Action payload、执行结果和审计必须展示引用关系，包括引用对象 ID、作者、预览、来源、Telegram 远端消息 ID 和失败原因，便于区分内容不自然、引用对象不足和 Telegram 执行失败。
@@ -1840,7 +1840,7 @@ AI 活跃群仍然以当前任务的目标群上下文为事实来源，画像�
 | 搜索目标群点击任务 | `search_join_group` | 通过第三方索引机器人执行关键词搜索、翻页、目标匹配、目标点击 / 加入或已加入确认、停留和后续联动；实时 pacing / random decision 不调用 LLM |
 | 搜索排名观察任务 | `search_rank_deboost` | 在集搜机器人（首版仅 `@searchbot`/`jisou`）的搜索结果中灰度观察曝光、真实安全导航点击和风控边界；不得承诺“降低竞争群排名”，排名变化只作为观察指标。新建填写单个目标群、搜索关键词、目标次数、黑搜索账号组、每天执行次数、完成截止时间、日/小时抖动和可选静默时段，创建只生成草稿，启动前由系统完成预检和准备态；代理、机器人、单账号策略和停留由系统托管。系统候选范围仅为所选启用 `pool_purpose=rank_deboost` 分组内的一致账号。点击语义为 `navigate_only`，每个 action 最多一次真实点击，按钮必须与当前搜索结果中的公开 username 精确绑定；没有 username 的目标不得只凭 peer id 执行。Gateway 必须返回逐点击 confirmed/unknown outcome 与实测停留时长，只有 confirmed 才写成功统计。代理模型为「1 分组 = 1 持久运行绑定」，任务复用绑定；Gateway 必须使用同一 SOCKS/HTTP 运行端点完成当前出口探测和 Telethon 连接，不得用绑定旧 IP 自证或回退直连。任务与 `search_join_group` 平行，互不依赖；实时 pacing / random decision 不调用 LLM。完整设计见 `docs/03-feature-designs/search-rank-deboost-hardening-design.md`。 |
 
-### AI 活跃群话题、讨论老师与连发模拟
+### AI 活跃群话题、讨论老师、真人化互动与群管机器人准入
 
 `group_ai_chat` 必须支持按任务配置多个话题方向和多个讨论老师。话题方向用于约束每轮 AI 生成的主线，讨论老师用于描述本轮群聊围绕的人物、小姐、老师称呼或对象；它不是账号 persona，也不要求绑定 Telegram 真实用户。
 
@@ -1850,16 +1850,23 @@ AI 活跃群仍然以当前任务的目标群上下文为事实来源，画像�
 | --- | --- |
 | `topic_directions` | 话题方向列表，每项包含 `title`、`description`、`weight`；Web 和 TG bot 主入口只要求每行一个话题，系统按行顺序自动生成权重；旧 `topic_hint` 通过迁移写入本字段后移除 |
 | `teacher_targets` | 讨论老师列表，每项包含 `name`、`description`、`priority`；Web 和 TG bot 主入口只要求每行一个对象，系统按行顺序自动生成优先级 |
-| `consecutive_message_enabled` | 是否启用同账号连续发言模拟 |
-| `consecutive_message_min` / `consecutive_message_max` | 连发条数窗口，必须在 2-4 范围内且最小值不大于最大值 |
-| `consecutive_message_probability` | 每轮触发连发模拟的概率，默认 0.3 |
+| `reply_min_per_round` | 每个群聊轮次至少一个真实引用回复；没有候选时记录短缺，不伪造回复 |
+| `group_bot_admission_required` | 固定为 `true`；AI 活群账号新入群后必须先完成群管机器人准入，不能由任务开关绕过 |
 
 执行规则：
 
 - 每轮规划必须先解析本轮话题方向和讨论老师，再写入 AI 生成提示、话题计划、上下文过滤和 action payload。
-- 连发模拟只改变同轮账号分配，不突破每轮消息数、每小时硬目标、账号容量、目标权限、内容规则和风控限制。
-- 触发连发时必须生成多条独立 `send_message` action，payload 写入 `burst_id`、`burst_index`、`burst_size`、`topic_direction`、`teacher_target`，用于详情审计。
-- 当本轮计划消息数少于 `consecutive_message_min` 时，不触发连发。
+- 同一群聊或频道讨论会话中，连续的两条平台消息必须由不同账号发送；若两条消息之间已出现真人发言，则不再视为同账号连续发言。群管机器人控制消息不打断该规则。没有替代账号时 Action 必须显式等待 `speaker_rotation_wait`，不能为了补量而同账号连发。
+- 群聊和频道评论都优先使用 Telegram 原生 `reply_to_message_id`；有合格候选时每批至少一条引用回复，候选不足只记录 `reply_target_shortfall`，不得把“回复某人”伪装进普通正文。
+- 非引用内容在生成与真人化质量门均不能得到合格候选时，唯一允许的确定性兜底为精确文本 `签到`，并写入 `content_source=check_in_fallback` 与原因；引用动作不能降级为未引用的 `签到`，也不能连续发送两个 `签到`。
+- 群聊和评论必须在发送前执行统一真人化质量门：拒绝模板壳、重复起句、无事实锚点、错误引用、语义复读和不符合账号口吻的候选；质量门只能给出可审计拒绝，不能静默改写正文。
+- 新入群的 AI 活群账号必须先完成群管机器人准入。`TgGroupAccount.can_send` 只表示 Telegram 传输权限，`GroupBotAdmission.state` 单独表示群管机器人规则；两者不得相互伪造。可信群管机器人提示中的每个频道引用都创建独立关注 action，Gateway 必须验证目标是广播频道。关注成功和 Telegram 无正文能力探测都不能单独证明群管机器人放行；需要同一可信机器人**可解析完成事件**（精确确认按钮或版本化确认模板表），或运营明确配置并审计的 `follow_sufficient` 协议。该协议必须写入按“目标群 + 可信机器人 peer”生效的 `GroupBotAdmissionPolicy`，带证据、版本、操作者和撤销事实，不能做成任务 JSON 或租户全局开关。任何未 ready 状态均不得调用 AI、test_message 或 Telegram 正文发送。专项完整口径见 `docs/03-feature-designs/ai-conversation-humanization-and-group-bot-admission-prd.md`。
+- 群管控制观察必须从本次入群前记录的 `join_start_cursor` 严格增量读取至可审计的 `observed_end_cursor`。观察**闭合窗口**（默认 120s，仅决定何时结束观察）与**放行**分离：窗口到期且游标连续、无可信规则时，有 active `not_required` 才写 clear，否则写 `group_bot_policy_unresolved` 并支持运营一键/批量审计创建策略；不得靠固定等待自动 ready。最新 N 条普通上下文、私聊提示、普通成员转发文本或 `probe.ok` 均不是放行证据。
+- 首次通过群管准入后的正文，以及 `admission_version` 递增后的首条正文，都必须做无正文远端可见性核验（默认窗口 90s）。Action 进入 `pending_visibility`：**与** `unknown_after_send` **共用** `unknown_after_send_hold_count` 占位 1，`planning_reservation` 公式不变，禁止对同一义务再规划替代发送。需核验消息在 `visible_confirmed` 前**不得**落正式 hard-hourly credit / 覆盖确认，须先 `pending_visibility_credit`（不涨 success_count）。可信机器人删除/拒绝写 `post_send_intercepted`、撤回群管 ready、停止后续未进 Gateway action 且不计正式 credit；账号永久不再履约仅当运营 `targets.manage` 显式 `admission_abandoned` 后才从硬小时 `durable_debt` 排除（覆盖分母保留 blocked）。超时不得当成功。
+- 已入群的存量账号不得把旧 `can_send=true` 直接当作新群管准入通过，也不得批量改写该 Telegram 权限字段。迁移分 canary：C1 仅新入群 enforce，存量新建 action 仍可发送但打 `legacy_send_until_reviewed`；C2 复核完成只影响之后新 action，存量 unknown 只走终态/continuity 裁决；全量 enforce 前不得一夜抽空 ready 池。
+- 无替代账号且无真人打断时写 `speaker_rotation_wait`，预检对 `rotatable_ready_account_count < 2` 给产能 warning；不得为 hard-hourly/日覆盖静默同号连发。`签到` 为唯一确定性文本兜底，并受会话 30 分钟与任务小时配额约束；历史 `emoji_react` 与同账号 `consecutive_message_*` 连发不得用于新实现。
+- `group_bot_required_channel_follow` / 控制观察 action 在 Dispatcher 复用 `target_admission_retry` 档，但仅限同一 `tenant+task+account` 解除 admission wait，不得跨任务饿死严格搜索。
+- 目标终态、引用 revision、unknown 占位与硬小时计划桶 credit 仍以 `ai-group-send-continuity-and-terminal-targets-prd.md` 为准，并以真人化专项 §1.2 / §5.8 交叉条款解释可见性与 abandoned；群管模块不得把 `qdsfxy` 等引用失败写成“群里已被解散”。
 
 交互入口：
 
@@ -1867,8 +1874,8 @@ AI 活跃群仍然以当前任务的目标群上下文为事实来源，画像�
 - 保存有效 Bot Token 和管理员 Chat ID 后必须立即调用 Telegram `setWebhook`，随后调用 `getWebhookInfo` 校验 Telegram 当前 URL 与系统期望公网 URL 一致；只有一致时 webhook 状态才能标记为 `registered`。
 - `POST /api/tenant-bot-settings/test-message` 只代表出站 `sendMessage` 成功，不能覆盖 webhook 注册失败、查询失败或 URL mismatch；多管理员 Chat ID 时应向全部管理员发送测试消息。
 - Web 必须展示 webhook 状态、期望 URL、Telegram 当前 URL、最后检查时间和错误摘要，并提供刷新 / 删除 webhook 操作；“配置已保存但 webhook 注册失败 / 未注册 / 与预期 URL 不一致”必须显示为不可用。
-- Web 任务详情页必须提供 AI 活跃群专项设置区，可查看和保存话题方向、讨论老师、连发模拟和全账号日覆盖配置；创建 / 编辑任务表单必须同步支持同一字段。话题方向和讨论老师主入口必须是普通多行文本：每行一个，越靠前权重 / 优先级越高，不要求运营人员手写数组或 JSON。运营人员可把同一组多行话题和讨论老师当作单任务“话题包”维护；当前阶段不新增跨任务模板表，避免为紧急配置链路引入额外迁移和同步成本。
-- TG bot 是轻量运营入口。管理员在 bot 内可以选择 AI 活跃群任务、查看当前设置摘要、查看话题 / 讨论老师摘要，并通过按钮分别设置“话题方向”和“讨论老师”；Bot 设置只接受每行一个的多行文本，按顺序生成权重 / 优先级。连发参数、全账号日覆盖参数、规则集、账号策略等完整配置仍必须到 Web 任务详情编辑。`/ai_group_set <json>` 这类手写配置入口不得作为主入口，旧命令必须返回可见说明。`/start` 和 `/admin` 都必须返回可见菜单或状态说明，不能静默无响应。
+- Web 任务详情页必须提供 AI 活跃群专项设置区，可查看和保存话题方向、讨论老师、引用计划、账号轮换、群管机器人准入和全账号日覆盖配置；创建 / 编辑任务表单必须同步支持同一字段。话题方向和讨论老师主入口必须是普通多行文本：每行一个，越靠前权重 / 优先级越高，不要求运营人员手写数组或 JSON。运营人员可把同一组多行话题和讨论老师当作单任务“话题包”维护；当前阶段不新增跨任务模板表，避免为紧急配置链路引入额外迁移和同步成本。
+- TG bot 是轻量运营入口。管理员在 bot 内可以选择 AI 活跃群任务、查看当前设置摘要、查看话题 / 讨论老师摘要，并通过按钮分别设置“话题方向”和“讨论老师”；Bot 设置只接受每行一个的多行文本，按顺序生成权重 / 优先级。引用、轮换、群管机器人准入、全账号日覆盖参数、规则集、账号策略等完整配置仍必须到 Web 任务详情编辑。`/ai_group_set <json>` 这类手写配置入口不得作为主入口，旧命令必须返回可见说明。`/start` 和 `/admin` 都必须返回可见菜单或状态说明，不能静默无响应。
 - 旧 `topic_hint` 不再作为 AI 活群 UI、API 或运行时配置字段保留；发布迁移必须把旧值写入 `topic_directions` 并移除旧字段，运行时不得再从 `topic_hint` 回退，避免同一任务出现两套话题来源。频道评论任务的 `topic_hint` 是独立字段，不受 AI 活群迁移影响。
 - TG bot 入站必须通过租户级 webhook secret 路由到对应运营空间，不能依赖 Telegram update 体内携带业务 `tenant_id`。Chat ID 不在管理员列表、未启用 AI 活群 Bot 设置、任务不存在或配置非法时必须给用户可见拒绝 / 状态说明并记录审计；未启用 AI 活群时仍应回复“bot 已连接但 AI 活群设置未启用”，不得表现为无回复。
 
@@ -2052,7 +2059,7 @@ AI 活跃群仍然以当前任务的目标群上下文为事实来源，画像�
 | 频道点赞 | 预计每条点赞、Reaction 范围 | 点赞抖动、每号每小时点赞上限、随机 / 指定 reaction |
 | 频道评论 / 回复 | 规则集、规则版本、预计每条评论 / 回复、互动方式、评论方向、主题方向 | 回复对象、每号每小时评论上限、最大评论长度、System Prompt 覆盖 |
 
-AI 活跃群必须默认使用“真人接话为主、空闲低频暖场为辅”的策略。无人续聊是低频暖场，不得在有真人上下文时刷模板话；上下文不足、事实无锚点或重复风险高时应沉默并留痕，只有租户明确启用本节定义的 `static_safe_fallback` 时才允许使用审核过的签到 / 表情兜底。成人交易 / 性服务描述只允许在输入边界被识别和过滤，不得把露骨服务词、价格、联系信息、预约、位置或交易编号原样或概括后送入生成 Prompt；只有与交易无关的普通城市、天气、签到、穿搭等安全短句可以继续进入模型。生成内容不得新增联系方式、价格、邀约或交易撮合信息；经历只能来自允许的账号风格设定或当前安全上下文，不能扩展成新的具体交易事实。
+AI 活跃群必须默认使用“真人接话为主、空闲低频暖场为辅”的策略。无人续聊是低频暖场，不得在有真人上下文时刷模板话；上下文不足、事实无锚点或重复风险高时应沉默并留痕。只有租户明确启用本节定义的 `static_safe_fallback`、当前 action 是非引用动作且仍满足轮换、准入和出站门禁时，才允许使用精确文本 `签到`；不得使用表情、随机短句或泛化问候兜底。成人交易 / 性服务描述只允许在输入边界被识别和过滤，不得把露骨服务词、价格、联系信息、预约、位置或交易编号原样或概括后送入生成 Prompt；只有与交易无关的普通城市、天气、签到、穿搭等安全短句可以继续进入模型。生成内容不得新增联系方式、价格、邀约或交易撮合信息；经历只能来自允许的账号风格设定或当前安全上下文，不能扩展成新的具体交易事实。
 
 #### AI 活跃群安全上下文、英文 Prompt 与模型回退
 
@@ -2065,15 +2072,15 @@ System Prompt 和 User Prompt 的指令部分统一使用英文，动态上下�
 1. `MiniMax-M3`：租户默认文本模型和第一生成层，使用独立 AI Provider 记录。
 2. `MiniMax-M2.5`：第二生成层，使用独立 AI Provider 记录，不覆盖 M3 配置。
 3. `Grok 4.5`：第三生成层，通过受限的生产 Grok CLI Bridge 调用。
-4. `签到 / 表情`：前三层均失败后的显式最终兜底，只能从审核过的低信息签到短句和现有低风险 `emoji_react` 表情集合中选择。
+4. `签到`：前三层均失败后的显式最终兜底，精确文本只能是 `签到`；仅适用于非引用、未连续发送 `签到` 且仍满足账号轮换、群管准入和出站策略的 action。
 
 只有在输入已通过安全上下文分类、属于允许生成的普通群聊或明确成年人的非露骨话题时，才允许进入模型回退链。被输入规则判定为交易撮合、联系方式、预约、具体性行为或未成年人风险的内容必须先过滤或转为 `generic_warmup`，不得通过切换模型强行生成。模型层回退触发条件包括超时、网络 / 配额 / 未知模型错误、空回复、拒答、最终 JSON 无法解析、候选不足或输出质量门禁失败；每层只能尝试一次，不得无限循环。
 
 Grok CLI Bridge 必须关闭网页搜索、记忆、子代理和工具权限，固定 `grok-4.5`，使用受控工作目录、并发上限和硬超时；CLI 登录态和运行日志不得进入 Prompt、action payload 或前端响应。Bridge 不可用时立即进入最终兜底，不得阻塞 Planner 或持有数据库事务等待。
 
-最终签到 / 表情兜底是用户批准的显式运行策略，不是模型成功。兜底内容不得引用不存在的人物、地点、经历或交易事实；必须写入 `generation_source=static_safe_fallback`，并允许在租户 AI 设置中独立关闭。关闭后，所有模型层失败时应跳过本轮并展示原因，不创建伪 AI 成功。
+最终兜底是用户批准的显式运行策略，不是模型成功。唯一允许的确定性正文为 `签到`；兜底内容不得引用不存在的人物、地点、经历或交易事实；必须写入 `generation_source=static_safe_fallback` 和 `content_source=check_in_fallback`，并允许在租户 AI 设置中独立关闭。关闭后，所有模型层失败时应跳过本轮并展示原因，不创建伪 AI 成功。
 
-每次生成必须记录 `requested_model`、`actual_model`、`fallback_stage`、`fallback_reason`、每层耗时 / 错误、最终 JSON / 质量门禁结果和 `generation_source`。任务详情、运行诊断和质量统计必须区分 M3 成功、M2.5 回退成功、Grok 回退成功、静态兜底和全链失败；任何回退都不得静默记为首选模型成功。
+每次生成必须记录 `requested_model`、`actual_model`、`fallback_stage`、`fallback_reason`、每层耗时 / 错误、最终 JSON / 质量门禁结果和 `generation_source`。任务详情、运行诊断和质量统计必须区分 M3 成功、M2.5 回退成功、Grok 回退成功、`签到` 兜底和全链失败；任何回退都不得静默记为首选模型成功。
 
 频道评论 / 回复必须复用 AI 活跃群的“去模板 + 语义去重 + 质量跳过”原则。评论候选必须贴频道消息里的具体词、数字、物品、场景或问题；成人交易 / 性服务描述允许作为频道消息上下文进入 AI 评论生成，但进入生成前应先安全概括，评论只能围绕原文已有事实自然短评或追问，不得新增联系方式、价格、邀约或交易撮合信息；不得用“这个内容挺有参考价值”“这个角度不错”“说得比较实在”“值得再讨论”“支持一下”等泛化评论补量。频道评论 Planner 只能为 Telegram 标记存在评论入口的频道帖子创建评论 / 回复 `pending` 蓝图；AI 不可用、候选不足、语义重复、模板化或消息本身不可评论时，不得写成 `ready` 或假成功，已有蓝图必须显式失败并释放对应预约和预算，同时在任务详情记录可见原因。
 
@@ -2272,7 +2279,7 @@ AI 活跃群不得再通过 `曲线强度 / 100` 同时压低轮数和参与账�
 频道浏览、点赞、评论、回复、AI 活跃群、转发监听群和转发目标群启动前必须先检查账号对目标的准入状态：
 
 - 准入前置是一等运行对象。AI 活跃群和转发目标群创建 / 启动时，系统必须创建或复用一个任务中心可见的准入前置子任务；子任务与父任务通过 `parent_task_id` / `membership_task_id` 绑定，出现在任务列表、父任务详情和子任务详情中。
-- 频道任务中已关注频道的账号标记 `ready`；转发监听源群只要求账号已加入 / 可读取；AI 活跃群和转发目标群必须要求账号已加入且可发言，只有 `can_send=True` 才能进入主互动 action。
+- 频道任务中已关注频道的账号标记 `ready`；转发监听源群只要求账号已加入 / 可读取；转发目标群必须要求账号已加入且 Telegram `can_send=True`。AI 活跃群除 Telegram `can_send=True` 外，还必须满足 `GroupBotAdmission.state=group_bot_admission_ready`；二者是独立事实，任何一个不满足都不能进入主互动 action。
 - 频道浏览、点赞和评论不能把 `max_concurrent` 当成本轮总参与账号上限。Planner 必须按单条消息目标量扫描有效账号，再由调度层按最大并发执行，避免目标每条 30 但只生成 20 个动作。
 - 未关注 / 未加入但有加入入口的账号生成统一准入前置 action。
 - 统一准入 action 命名为 `ensure_target_membership`，覆盖频道关注和群聊加入；历史 `ensure_channel_membership` 必须继续兼容展示和执行。
@@ -2289,10 +2296,12 @@ AI 活跃群不得再通过 `曲线强度 / 100` 同时压低轮数和参与账�
 账号范围
   -> 检查是否已加入目标群 / 已关注频道
   -> 未加入目标群：执行入群
-  -> 目标要求先关注频道：执行频道关注
+  -> AI 活群：记录入群前控制游标并执行群管机器人控制观察
+  -> 可信群管机器人要求先关注频道：按精确引用创建频道关注 action
+  -> 必要时执行同一机器人给出的精确确认按钮，并等待明确放行或目标级审计的 `follow_sufficient` 协议
   -> 入群后检查是否需要验证
   -> 执行按钮 / 文本问答 / 算数题 / 多模态视觉图片验证码识别
-  -> 复检 can_send
+  -> 复检 Telegram can_send；群管机器人准入与 Telegram 权限分别留痕
   -> 写入 ready_pool，下一轮主任务可直接选用
 ```
 
@@ -2304,12 +2313,16 @@ AI 活跃群不得再通过 `曲线强度 / 100` 同时压低轮数和参与账�
 | `joining` | 正在入群 |
 | `channel_follow_required` | 目标要求关注关联频道后才能发言 |
 | `following_channel` | 正在关注关联频道 |
+| `awaiting_group_bot_rule` | AI 活群新入群账号正在读取群管机器人控制事件，尚未证明可发言 |
+| `awaiting_group_bot_confirmation` | 所有要求频道已完成，但仍等待同一可信机器人放行 |
+| `group_bot_policy_unresolved` | 没有可验证的无机器人 / 完成协议，必须显式补充目标级策略 |
+| `post_send_intercepted` | 首条正常正文被可信群管机器人删除/拒绝，已撤回群管 ready 并停止后续 action |
 | `challenge_required` | 已加入但需要验证 |
 | `challenge_solving` | 正在自动 / AI 辅助处理验证 |
 | `challenge_context_empty` | 已判定需要验证，但最近验证聊天为空、无机器人 / 管理员验证消息，或当前账号无法读取验证上下文 |
 | `captcha_solving` | 正在下载验证图片并调用多模态视觉模型识别 |
 | `manual_required` | 需要人工处理，例如图形验证码无法识别或等待群管理员审批 |
-| `ready` | 已加入并复检可发言，可进入主任务发言池 |
+| `ready` | 已加入且 Telegram `can_send=True`；AI 活群还必须同时满足 `GroupBotAdmission.state=group_bot_admission_ready`，才可进入主任务发言池 |
 | `failed` | 准入失败，保留失败原因和原始错误 |
 
 父任务与准入子任务的调度关系：
@@ -2487,7 +2500,7 @@ Planner 和 Dispatcher 都必须使用同一套消息记忆：
 - Dispatcher 发送前必须做最终去重检查，覆盖 Planner 并发、上一批 action 尚未执行、worker 重试和跨任务撞车；发送结果必须回写同一条消息记忆，不能另建一条脱节记录。
 - `pending`、`reserved`、`claiming`、`executing`、`unknown_after_send`、`success` 都参与去重；只有明确未到达 Telegram 发送网关的失败才可从发送历史里排除。
 - 预占位超时不能静默删除，必须按 action 状态转为 `expired_before_send` 或 `failed_before_gateway`，并保留足够时间用于排查并发重复。
-- 候选不足时应要求 AI 换角度重写或记录质量跳过；频道评论 / 回复最多允许 3 次重描述生成，仍不足的缺口按用户确认的显式兜底规则补随机表情，不使用泛化兜底句伪装成自然评论。
+- 候选不足时应要求 AI 换角度重写或记录质量跳过；频道评论 / 回复最多允许 3 次重描述生成，仍不足时只能按本 PRD 的 `签到` 规则处理非引用 action，或显式跳过，不得补随机表情、泛化短句或假成功。
 
 去重窗口和处置口径：
 
@@ -2533,8 +2546,8 @@ AI 活跃群不能只在发送瞬间临时拉起账号。平台需要提供全�
 
 Planner 和 Dispatcher 必须把在线状态作为主互动硬前置：
 
-- Planner 只能从 `task_ready_accounts` 且 `online_status=online` 或明确可立即 warm 的账号中生成文本、表情或引用回复 slot。
-- 账号掉线导致活跃要求未达标时，原因必须记为 `account_offline`、`login_required`、`session_invalid` 或代理 / 风控原因，不能归为 AI 候选不足，也不能用 `emoji_react` 兜底伪装成已完成活跃。
+- Planner 只能从 `task_ready_accounts` 且 `online_status=online` 或明确可立即 warm 的账号中生成文本或引用回复 slot。
+- 账号掉线导致活跃要求未达标时，原因必须记为 `account_offline`、`login_required`、`session_invalid` 或代理 / 风控原因，不能归为 AI 候选不足，也不能用表情或其他非 `签到` 正文兜底伪装成已完成活跃。
 - Dispatcher 发送前必须做最终在线检查；action claim 后账号掉线时，action 进入可见失败或等待恢复状态，由 recovery / 在线保活链路处理，不能静默换号发送。
 - 在线恢复成功后，账号重新进入后续轮次分配；已经固化给其它账号的 action 不被后台抢占改写。
 
@@ -2600,7 +2613,7 @@ AI 活跃群的真人感目标不是让模型自由编造身份，而是让自�
 | `detail_follow` | 围绕当前对象补一个小角度 | 必须贴当前讨论对象，不能编账号面具或上下文之外的具体经历 |
 | `light_disagree` | 轻微犹豫、保留意见 | 低频使用，不能制造冲突 |
 | `topic_shift` | 当前话题断掉后轻转场 | 只在空闲场景低频使用 |
-| `emoji_react` | 文本候选三轮仍不合格但账号本轮需要活跃 | 从低风险表情池随机选择或生成极短反应；同一轮不能多个账号发同一个表情，必须限频并记录为质量兜底 |
+| `check_in_fallback` | 非引用文本候选三轮仍不合格且通过轮换、准入、出站与非连续签到门禁 | 发送精确文本 `签到`；必须记录 `content_source=check_in_fallback`、`fallback_reason` 和质量拒绝原因，不计为高质量 AI 文本 |
 | `silence` | 重复风险高、上下文不足、质量不足 | 允许不发满本轮计划 |
 
 历史配置、旧 action、旧短期立场记忆或测试数据里出现的 `light_question`、`side_comment`、`experience`、`追问`、`提问`、`问细节`、`观望`、`保留` 只允许在兼容层读取，并必须在进入 Planner 内部、AI Prompt、Action payload、任务详情、短期立场 DB 写入和 Redis 热缓存前归一为 PRD 词表；未知历史值按兼容口径归到 `detail_follow`，不得继续暴露原始旧值。线上观测、质量统计和 PRD 均只使用上表词表。
@@ -2641,11 +2654,11 @@ AI 味废话必须单独拦截。没有具体对象、事实锚点、追问点�
 - 面具缓存，不每轮重建。
 - 消息行为配比用规则生成，不调用 AI。
 - 一轮默认一次批量 AI 请求，输入 slots 数组；质量不合格时允许最多两次补位调用，只重写失败 slot，不重写已通过 slot。
-- 高质量文本优先；只有三轮文本生成均不合格且该账号有本轮活跃要求时，才可降级为 `emoji_react` 或极短低风险反应。`emoji_react` 必须从表情池随机选取，同一轮同目标群内不得重复使用同一个表情；无账号活跃要求时减少发送量或沉默。兜底发送必须记录 `quality_fallback=emoji_react`，不能伪装成高质量 AI 文本。
+- 高质量文本优先；三轮文本生成均不合格时，仅非引用 action 可在满足轮换、准入、出站与非连续签到门禁后降级为精确文本 `签到`，否则减少发送量或沉默。兜底发送必须记录 `content_source=check_in_fallback`、`quality_fallback=check_in_fallback` 和原始拒绝原因，不能伪装成高质量 AI 文本。
 - 每个 slot 只传短上下文、短面具、短画像摘要和必要禁用样例。
 - 当批量生成无法稳定区分账号口气时，最多按账号风格组拆成少量请求，不能退化为每条消息一次请求。
 
-频道 AI 评论也必须额外经过质量规则：候选评论按近期已规划 / 已成功评论做语义去重；命中“参考价值、先收藏、角度不错、值得讨论、继续展开、支持一下、感谢分享”等模板簇时直接丢弃；生成结果不足时不允许用固定兜底句补足目标数量。
+频道 AI 评论也必须额外经过质量规则：候选评论按近期已规划 / 已成功评论做语义去重；命中“参考价值、先收藏、角度不错、值得讨论、继续展开、支持一下、感谢分享”等模板簇时直接丢弃；生成结果不足时不允许用通用固定兜底句补足目标数量，唯一例外是非引用 action 在轮换、出站和非连续签到门禁均通过时使用精确文本 `签到` 并留下审计。
 
 ---
 
@@ -3033,14 +3046,14 @@ AI 活跃群和频道评论 / 回复的创建向导必须使用“小时总预�
 - AI 活跃群的 `每小时轮数曲线` 只决定该小时最多启动多少轮 Cycle；不得再解释成每小时发言量或曲线强度。
 - `每小时最大发送量` 是任务级硬上限，必须在创建页给出明确默认值，不得空着依赖隐含系统值。
 - `每轮计划发言数` 只决定 AI 活跃群本轮计划生成多少个 Turn，不是单账号上限，也不是风控上限。
-- `每轮最少引用回复数` 只决定 AI 活跃群本轮至少多少个 Turn 必须是 Telegram 原生引用回复。配置为 0 表示不要求引用回复；大于 0 时普通发言不能冒充引用回复。
+- `每轮最少引用回复数` 只决定 AI 活跃群本轮至少多少个 Turn 必须是 Telegram 原生引用回复。新建任务默认值和最小值均为 1；普通发言不能冒充引用回复。当前没有合格候选时，后端记录 `reply_target_shortfall`，不把字段降为 0。
 - `预计每条评论 / 回复` 只决定频道评论对每条频道消息的累计目标，Planner 每轮只补差额，不重复为同一消息满额生成。
-- `每条频道消息最少引用回复数` 只决定单条频道消息补计划时至少多少个 action 必须回复讨论区已有消息。配置为 0 表示不要求引用回复；大于 0 时直接评论不能冒充引用回复。
+- `每条频道消息最少引用回复数` 只决定单条频道消息补计划时至少多少个 action 必须回复讨论区已有消息。新建任务默认值和最小值均为 1；直接评论不能冒充引用回复。当前没有合格候选时，后端记录 `reply_target_shortfall`，不把字段降为 0。
 - `参与账号比例` 是多轮滚动窗口内的账号覆盖目标；Planner 必须优先补同一任务当天尚未参与、可用且冷却已过的账号，并在小时预算允许时把本轮下限抬到未覆盖可用账号数。
 - 抖动只作用于数量浮动、发送时间和账号选择排序，不得突破任务每小时上限、账号每小时上限或全局风控。
 - 前端必须在字段旁展示口径说明和推荐值来源，例如“按当前可发言账号数推荐”“小时上限控制总量”“参与比例按多轮统计”。
 - 任务中心列表和详情必须展示 AI 活跃群、频道浏览、频道点赞、频道评论 / 回复的今日账号参与覆盖，格式至少包含已参与账号数、当前任务账号范围总数和百分比；AI Cycle 和频道消息分组明细必须展示本组唯一参与账号数 / 动作数。
-- AI 活跃群选择“全部可用账号”时默认启用 `全账号日覆盖模式`。系统必须为所有 active、normal、Session 可用且未被安全边界排除的账号建立持久化任务关系和北京时间每日覆盖账本，并推动其完成目标准入；账号未准入、不可发言、离线、受限或结果未知时仍保留在当日分母并展示阻塞。只有成功 `send_message`、成功 `ExecutionAttempt` 和非空 Telegram 远端消息 ID 同时存在才算完成。覆盖调度只决定下一段自然对话优先使用哪些未完成账号，不得改变 AI 活群的话题、上下文、账号面具、引用关系、连发结构和内容质量门，也不得使用模板、通用短句或表情强行补量。专项口径以 `docs/03-feature-designs/ai-group-all-accounts-daily-coverage-prd.md` 为准。
+- AI 活跃群选择“全部可用账号”时默认启用 `全账号日覆盖模式`。系统必须为所有 active、normal、Session 可用且未被安全边界排除的账号建立持久化任务关系和北京时间每日覆盖账本，并推动其完成目标准入；账号未准入、不可发言、离线、受限或结果未知时仍保留在当日分母并展示阻塞。只有成功 `send_message`、成功 `ExecutionAttempt`、非空 Telegram 远端消息 ID且通过必要的群管后可见性核验时才算完成。覆盖调度只决定下一段自然对话优先使用哪些未完成账号，不得改变 AI 活群的话题、上下文、账号面具、引用关系、会话轮换和内容质量门，也不得使用模板、通用短句或表情强行补量；仅非引用 action 可在所有门禁通过时使用精确文本 `签到`。专项口径以 `docs/03-feature-designs/ai-group-all-accounts-daily-coverage-prd.md` 为准。
 - 带 `coverage_ledger_id` 的发送 Action 必须由该账本行绑定的同一账号执行，群权限丢失、账号容量不足或其他运行时策略均不得把它静默转派给另一账号；原账号暂不可发言时应终结该 Action、释放原义务并在准入或容量恢复后重新规划。覆盖确认必须再次校验 `TaskAccountDailyCoverage.account_id = Action.account_id = ExecutionAttempt.account_id`，不一致时不得计入完成。
 - 同一 AI Cycle 内引用回复因上下文过期被跳过时，只能清理仍依赖该上下文或引用锚点的动作；不带 `reply_to_message_id` 的硬目标普通补量动作继续走 Dispatcher 延迟 AI 生成和原质量门，不能因同轮引用过期被批量误杀。
 - 全账号每日覆盖存在到期债务且本轮没有引用回复目标时，普通补量文案应在 Dispatcher 临近发送时按最新真人上下文批量生成，继续携带 Planner 已确定的账号面具、话题、讨论老师和行为类型并通过原质量门；未来尚未生成的覆盖动作不能因规划时旧快照过期被整轮删除。配置要求引用回复时不得改成普通补量。
@@ -3067,16 +3080,16 @@ AI 活跃群配置：
 
 | UI 位置 | 控件 | 默认值 | 前端校验 | 文案说明 |
 | --- | --- | --- | --- | --- |
-| 创建向导第 3 步“任务配置”，紧跟“每轮计划发言数” | 数字输入 `每轮最少引用回复数` | 0 | 必须为整数，最小 0；手动每轮发言数模式下不得大于 `每轮计划发言数`；自动模式下不得大于当前推荐每轮计划数 | `0 表示不要求引用回复；该数量包含在每轮计划发言数内，不额外增加发送量` |
-| 编辑任务弹窗“AI 活跃群配置” | 同一数字输入 | 读取现有配置，旧任务缺失时显示 0 | 保存前同创建校验；变更后展示“会影响后续规划，未来未执行主互动 action 将按重排规则处理” | `系统自动从当前群可回复消息和历史成功发言中选择引用对象` |
+| 创建向导第 3 步“任务配置”，紧跟“每轮计划发言数” | 数字输入 `每轮最少引用回复数` | 1 | 必须为整数，最小 1；手动每轮发言数模式下不得大于 `每轮计划发言数`；自动模式下不得大于当前推荐每轮计划数 | `该数量包含在每轮计划发言数内，不额外增加发送量；没有合格候选时任务显示引用短缺` |
+| 编辑任务弹窗“AI 活跃群配置” | 同一数字输入 | 读取现有配置，旧任务缺失时按 1 展示并标注待迁移 | 保存前同创建校验；变更后展示“会影响后续规划，未来未执行主互动 action 将按重排规则处理” | `系统自动从当前群可回复消息和历史成功发言中选择引用对象` |
 | 预检确认页 | 只读摘要 + warning | 当前表单值 | 如果后端返回可引用消息估算不足，展示 warning，不在前端静默改值 | `本轮最少引用 X 条；当前可引用消息约 Y 条，创建并启动时后端会重新计算` |
 
 AI 评论 / 回复配置：
 
 | UI 位置 | 控件 | 默认值 | 前端校验 | 文案说明 |
 | --- | --- | --- | --- | --- |
-| 创建向导第 3 步“任务配置”，紧跟“预计每条评论 / 回复” | 数字输入 `每条消息最少引用回复数` | 0 | 必须为整数，最小 0；不得大于 `预计每条评论 / 回复` | `0 表示不要求引用回复；该数量包含在单条消息补差额内，不额外增加评论目标` |
-| 编辑任务弹窗“频道评论配置” | 同一数字输入 | 读取现有配置，旧任务缺失时显示 0 | 保存前同创建校验；变更后展示“只影响未来未执行 / 未规划的频道消息补差额” | `系统自动从已采集讨论区评论和历史成功评论中选择引用对象` |
+| 创建向导第 3 步“任务配置”，紧跟“预计每条评论 / 回复” | 数字输入 `每条消息最少引用回复数` | 1 | 必须为整数，最小 1；不得大于 `预计每条评论 / 回复` | `该数量包含在单条消息补差额内，不额外增加评论目标；没有合格候选时任务显示引用短缺` |
+| 编辑任务弹窗“频道评论配置” | 同一数字输入 | 读取现有配置，旧任务缺失时按 1 展示并标注待迁移 | 保存前同创建校验；变更后展示“只影响未来未执行 / 未规划的频道消息补差额” | `系统自动从已采集讨论区评论和历史成功评论中选择引用对象` |
 | 预检确认页 | 只读摘要 + warning | 当前表单值 | 如果讨论区不可用或可回复评论估算不足，展示 warning，不在前端静默改值 | `每条频道消息最少引用 X 条；当前已采集可回复评论约 Y 条` |
 
 前端交互规则：
@@ -3285,7 +3298,8 @@ AI 与提示词 Tab 维护 AI 底座，不承载素材日常管理。
 | 目标画像 | `tenant_learning_profiles`、`tenant_learning_sources`、`tenant_learning_samples`、`tenant_learning_quality_rules`、`tenant_learning_profile_versions`、`tenant_learning_runs` |
 | 运营方案 | `operation_plan_templates`、`operation_plan_targets`、`operation_plan_task_links`、`operation_plan_generation_runs` |
 | 新版任务中心 | `tasks`、`actions`、`execution_attempts` |
-| AI 活群质量记忆 | `ai_group_message_memory`、`ai_account_voice_profiles`、`ai_account_group_stance_memory` |
+| AI 活群质量与会话事实 | `ai_group_message_memory`、`ai_account_voice_profiles`、`ai_account_group_stance_memory`、`conversation_speaker_states`、`conversation_speaker_turns` |
+| AI 活群群管准入（专项设计待开发） | `group_bot_admission_policies`、`group_bot_admissions`、`group_bot_required_channel_follows`、`group_bot_admission_observations` |
 | 目标准入 | `target_membership_items`、`target_membership_challenge_attempts`、`task_ready_accounts` |
 | 搜索入群环境与结果 | `bot_protocol_samples`、`proxy_airport_subscriptions`、`proxy_airport_nodes`、`proxy_exit_ip_observations`、`account_proxy_bindings`、`account_environment_bindings`、`account_proxy_warmup_states`、`fingerprint_combo_history`、`account_authorization_execution_locks`、`ip_reputation_history`、`search_join_action_stats`、`search_join_rank_observations`、`search_join_pacing_decisions`、`search_join_linked_task_dispatches` |
 | 监听与运行 | `listener_source_state`、`worker_heartbeats`、`runtime_metric_snapshots`、`daily_runtime_stats`、`runtime_cleanup_audits` |
@@ -3329,8 +3343,13 @@ AI 与提示词 Tab 维护 AI 底座，不承载素材日常管理。
 | `ai_group_message_memory` | `tenant_id`、`group_id`、`task_id`、`action_id`、`account_id`、`topic_direction`、`teacher_target`、`raw_text`、`normalized_text`、`text_fingerprint`、`semantic_cluster`、`template_shell_key`、`reservation_key`、`status`、`planned_at`、`sent_at`、`expires_at`、`duplicate_window`、`duplicate_reference_id`、`quality_decision`、`profile_version`、`profile_match_score`、`profile_match_reason` | AI 活跃群消息记忆；Planner 原子预占位，Dispatcher 发送前复查并回写同一记录；用于 5 分钟硬去重、1 小时高相似拦截、7 天语义硬去重、30 天模板壳句限频、同批次多样性和画像生效追踪；至少保留 30 天；`pending`、`reserved`、`claiming`、`executing`、`unknown_after_send`、`success` 均参与去重 |
 | `ai_account_voice_profiles` | `tenant_id`、`account_id`、`version`、`mask_name`、`audience_archetype`、`identity_frame`、`preference_tags`、`age_band`、`persona_experiences`、`consumption_experiences`、`sentence_length`、`interaction_habits`、`tone_strength`、`lexical_preferences`、`emoji_policy`、`forbidden_expressions`、`short_prompt_summary`、`source`、`status`、`similarity_score`、`quality_status`、`last_rebuilt_at`、`updated_by`、`updated_at` | AI 活跃群账号面具事实源；表名暂保留 `ai_account_voice_profiles` 作为兼容技术名，API 和前端展示统一称为账号面具。同一账号在所有 AI 活跃群中使用同一张全局 active 面具，按账号保存长期对外身份感、偏好标签、年龄段、经历 / 消费经历设定和口气差异；支持“账号面具”一级菜单中搜索、查看、编辑、批量生成、批量重建、停用、版本回滚和审计；Redis 只能缓存短摘要，不得作为唯一存储；面具不得冒充真实用户、管理员或具体自然人 |
 | `ai_account_group_stance_memory` | `tenant_id`、`group_id`、`account_id`、`topic_direction`、`teacher_target`、`stance`、`last_act_type`、`last_semantic_cluster`、`last_message_id`、`last_spoken_at`、`window_start_at`、`window_end_at`、`summary`、`updated_at` | 账号在目标群内的短期立场事实源；用于保持 24 小时到 7 天内的态度、对象和话题连续性，避免前后表达断裂；Redis 只缓存最近几轮热状态，丢失后必须可由数据库恢复 |
+| `conversation_speaker_states`（专项设计待开发） | `tenant_id`、`surface`、`conversation_key`、`last_platform_account_id`、`last_platform_action_id`、`last_human_cursor`、`reserved_account_id`、`reserved_action_id`、`reserved_at`、`version` | 每个真实会话的一行锁/预约状态；只用于并发裁决，不能替代远端事件事实。 |
+| `conversation_speaker_turns`（专项设计待开发） | `tenant_id`、`surface`、`conversation_key`、`remote_message_id`、`remote_cursor`、`sender_kind`、`account_id`、`outcome`、`content_source`、`action_id`、`observed_at` | 群聊/频道讨论区真实消息顺序；真人消息才可打断同账号连续发言，群管机器人/系统服务消息不打断。`unknown_after_send` 和待可见性核验消息保守保留占位，不能因本地 Planner 排序覆盖。 |
 | `tg_groups` | `tg_peer_id`、`group_type`、`auth_status`、`can_send` | 账号同步得到的群/频道资产 |
-| `tg_group_accounts` | `group_id`、`account_id`、`can_send`、`is_listener` | 账号和群/频道能力关系 |
+| `tg_group_accounts` | `group_id`、`account_id`、`can_send`、`is_listener` | 账号和群/频道的 Telegram 传输能力关系；`can_send` 只表达 Telegram 权限，不能承担 AI 活群群管机器人准入。 |
+| `group_bot_admission_policies`（专项设计待开发） | `tenant_id`、`group_id`、`trusted_bot_peer_id`、`completion_policy`、`evidence_ref`、`reason`、`policy_version`、`status`、`created_by`、`revoked_by`、`effective_at`、`revoked_at` | 目标级群管完成协议审计。`follow_sufficient` 必须绑定目标群和已观察到的可信机器人 peer；`not_required` 必须引用连续控制观察。数据库保证每目标群一个 active `not_required`、每目标群+机器人 peer 一个 active `follow_sufficient`。写入/撤销需 `targets.manage`、版本并发校验和审计。 |
+| `group_bot_admissions`（专项设计待开发） | `tenant_id`、`group_id`、`account_id`、`membership_action_id`、`state`、`completion_policy`、`policy_version`、`trusted_bot_peer_id`、`join_start_cursor`、`observed_end_cursor`、`source_message_id`、`confirmation_message_id`、`transport_observation`、`post_send_visibility_state`、`failure_code`、`updated_at` | AI 活群账号的群管机器人准入事实；独立于 `can_send`，保存可信来源、连续控制游标、完成协议与发送后可见性。`probe.ok` 不可推进 ready。 |
+| `group_bot_required_channel_follows`（专项设计待开发） | `admission_id`、`channel_ref`、`source_message_id`、`action_id`、`resolved_peer_id`、`resolved_type`、`status`、`failure_code`、`completed_at` | 每个可信提示里的精确频道引用对应一条独立关注 action；执行前必须验证为广播频道，不能根据文案或跳转猜测任意目标。 |
 | `tg_account_online_state` | `tenant_id`、`account_id`、`desired_online`、`desired_sources`、`online_status`、`session_kind`、`session_id`、`proxy_id`、`last_seen_at`、`last_probe_at`、`last_keepalive_at`、`stale_after_at`、`failure_type`、`failure_detail`、`recovery_status`、`next_probe_at`、`active_task_count`、`reconciled_at`、`updated_at` | 账号在线保活事实源；全局保活和 AI 活跃群、转发、监听任务要求账号持续在线时写入 `desired_online=true`，保活 worker 分批探测和 warm，Planner / Dispatcher 只使用在线就绪账号；掉线、需重登、session 失效、代理异常、stale 状态和需求来源必须可见；任务暂停 / 停止 / 删除或账号范围变更后必须 reconcile 清理来源 |
 | `tasks` | `type`、`status`、`account_config`、`pacing_config`、`failure_policy`、`type_config`、`stats` | 新版任务中心任务 |
 | `actions` | `task_id`、`action_type`、`account_id`、`status`、`claim_*`、`lease_*`、`payload`、`result`、`action_dedupe_key` | 可执行动作；待处理重查只允许更新已满足条件 action 的状态或创建缺失的准入补齐动作，不得绕过 `action_dedupe_key` 生成重复发送 |
@@ -3763,7 +3782,7 @@ operation_targets
 
 - 准入候选来自任务账号配置选中的全部在线账号，例如全部可用账号、指定账号分组或手动选择账号；只有账号本体离线、不可用、无 session、被明确排除或账号级安全阻塞时才剔除。
 - `max_concurrent`、每轮发言数、账号冷却、健康权重和发送容量只影响主互动规划与发送节奏，不得截断关注 / 入群 / 可发言能力准备。
-- 对 AI 活跃群和转发目标群，准入完成条件是已加入且可发言。权限探测必须区分“缺字段 / 未知”“账号不在群”“默认禁言”“单账号被禁言”“发送 API 明确失败”；不能把缺少 `send_messages` 字段直接判定为 `can_send=False`。
+- 对转发目标群，准入完成条件是已加入且 Telegram 可发言；对 AI 活跃群，除已加入和 Telegram `can_send=True` 外，还必须满足独立的群管机器人准入 ready。权限探测必须区分“缺字段 / 未知”“账号不在群”“默认禁言”“单账号被禁言”“发送 API 明确失败”；不能把缺少 `send_messages` 字段直接判定为 `can_send=False`，也不能把 Telegram 探测成功当成群管机器人放行。
 - 对频道点赞，准入完成条件是账号已关注 / 已加入目标频道。Planner 阶段不得把没有账号-频道关系的账号直接安排点赞；Dispatcher 运行时如果发现账号未关注 / 未加入，应补齐准入动作并延后当前点赞，而不是把该 action 终态失败或直接调用 Telegram 点赞接口。
 - 对频道评论 / 回复，准入完成条件是账号已关注 / 已加入频道并能访问对应讨论区。Planner 阶段不得把没有账号-频道关系的账号直接安排评论；Dispatcher 运行时如果发现账号未关注 / 未加入，应补齐准入动作并延后当前评论，而不是把该 action 终态失败或跳过。
 - 群机器人、图形验证码和入群问题只在当前证据仍存在时展示。目标群已经没有对应机器人或验证消息时，账号详情和任务详情必须刷新为最新目标能力，不得沿用旧文案。
@@ -3882,7 +3901,7 @@ AI 活跃群的默认策略是“接话为主、低频暖场为辅”：
 - AI 活跃群引用池固定来自当前目标群已采集的可回复上下文消息，以及同任务历史成功 `send_message` action 返回的 Telegram 远端消息 ID。运营人员不需要选择真人消息或自己历史消息范围，系统自动混合挑选可回复对象；已被同租户同目标群其它有效 AI 活群 action 引用过的真人消息要从引用池排除。
 - 引用回复 Turn 必须先绑定具体引用对象，再生成内容。引用回复 Prompt 必须包含被回复消息作者、原文、当前群上下文、任务配置、全站目标画像、账号角色 / 记忆和规则约束，并明确“本条是引用回复，只围绕被引用消息自然接一句，不要复述原文，不要像普通发言展开话题”。
 - 参与账号比例是多轮滚动窗口里的覆盖目标。账号选择必须优先补同一任务当天未参与、冷却已过、健康状态好的账号；如果本轮 Turn 数低于未覆盖可用账号数，Planner 可以抬高到未覆盖人数，但不得突破小时预算、账号容量和目标能力，不足部分继续在后续轮次补覆盖。
-- 同轮默认优先一号一条。只有本轮 Turn 数超过可用账号数或用户明确允许重复时，才允许同号在同一轮复用；跨轮复用受重复冷却轮数、账号小时上限和全局风控约束。
+- 同轮默认优先一号一条。即使本轮 Turn 数超过可用账号数，也不得让同号在没有真人消息间隔的情况下连续发送；没有可替代账号时，剩余 Turn 写为 `speaker_rotation_wait`。跨轮复用同样以真实真人消息打断为前提，并受账号小时上限和全局风控约束。
 - 自动模式必须根据任务小时上限、当前小时轮数、可发言账号数、当前接话 / 暖场 / 沉默模式和质量风险估算本轮计划数，不得固定为极低的 1 条、固定 2-5 个账号或固定 12 轮 / 小时。
 - 手动模式只接受用户配置的每轮计划发言数作为计划上限，不得再用 `max(每轮计划发言数, 参与账号数)` 让参与比例反向增加发言总量。
 - 每轮发言上限是请求上限，不是保证发送量。详情页必须展示请求 Turn 数、AI 返回候选数、清洗过滤数、质量过滤数、最终计划 action 数和减少原因。
@@ -3892,7 +3911,7 @@ AI 活跃群的默认策略是“接话为主、低频暖场为辅”：
 - Planner 对完整候选账号池执行账号冷却、小时上限和日上限判断时，必须按租户、候选集合和时间窗批量读取 Action / MessageTask 占用事实并在本轮复用；不得对每个账号分别执行 `min/max/count` 容量 SQL。取消 `max_concurrent` 等账号数量截断不得退化为随账号数线性增长的查询风暴，也不得用恢复隐藏上限来规避性能问题。
 - Planner 读取目标群最近上下文必须同时按 `tenant_id + group_id` 过滤，并由 `(tenant_id, group_id, sent_at DESC, id DESC)` 或等价索引直接取得有界最新记录；不得先按全租户/全表时间排序再过滤目标群，也不得因上下文历史增长让单轮 Planner 超过 60 秒。
 - 每个北京时间自然日必须为目标账号建立冻结的“任务 × 群 × 账号”覆盖账本。账号在当日活跃窗口内满足 active、normal、Session 可用且未被安全边界排除时加入当日目标；一旦加入，即使随后离线、受限、Session 失效、未入群或不可发言，当日也不能从分母移除。活跃窗口结束后才满足条件的账号从下一自然日开始履约。
-- Planner 只从当日账本中选择未完成且当前可执行账号，并在 AI 生成前固定账号 slot、账号面具、行为类型、话题和引用对象。覆盖调度只改变账号优先级，不改变现有 AI 活群内容管线；内容重复、质量失败或上下文过期时释放预约并保留覆盖义务，下一次使用最新上下文重新编排，不能立即发送模板或表情补量。
+- Planner 只从当日账本中选择未完成且当前可执行账号，并在 AI 生成前固定账号 slot、账号面具、行为类型、话题和引用对象。覆盖调度只改变账号优先级，不改变现有 AI 活群内容管线；内容重复、质量失败或上下文过期时释放预约并保留覆盖义务，下一次使用最新上下文重新编排，不能立即发送模板、表情或其他非 `签到` 正文补量。
 - 覆盖完成必须同时存在成功 `send_message` Action、成功 `ExecutionAttempt` 和非空 Telegram `remote_message_id`。`pending`、`failed`、`skipped`、`unknown_after_send`、未准入、不可发言、风控受限和内容生成失败均不计完成。详情页完成率固定使用“远端确认完成账号数 / 当日全部目标账号数”，并展示准入、权限、在线、Session、内容、容量、发送和未知结果的账号级阻塞。发送型 `unknown_after_send` 只有在远端按账号、目标、时间窗和原文确认消息不存在后，才允许释放原 Action 的覆盖预约并重新规划；未完成远端核验时不得释放或自动重发。
 - Dispatcher 对账号进程内占用和 Redis 占用的释放必须以 `dispatch_action` 的统一 `finally` 为最终兜底，成功、失败、跳过、生成异常和准入改道均不得遗留本地账号占用；数据库已无 executing Action 时不得持续返回 `account_inflight_conflict`。
 - 全账号日目标必须按 `hourly_activity_curve` 在目标群活跃窗口内平滑分配；`messages_per_round` 仍是单个 Cycle 的 Turn 上限，系统可为日履约启动多个自然对话 Cycle，但不得修改用户手动单轮上限。创建、启动、账号范围或节奏变化前必须验证群 `daily_limit`、群冷却理论槽位、任务小时上限和账号聚合容量能够承载日目标；容量不足时阻止新任务启动或把运行任务显式标记为 `coverage_capacity_blocked`，不得静默提高风险上限或显示可按时完成。
@@ -3910,10 +3929,10 @@ AI 活跃群质量管线必须先做确定性约束，再做 AI 生成，最后�
 - 质量过滤顺序固定为：空内容 / 禁词 / 事实锚点缺失 -> 账号面具不匹配 -> 同批语义重复 -> 5 分钟归一化硬重复 -> 1 小时高相似短期重复 -> 7 天语义硬重复 -> 30 天模板壳句限频 -> 同账号短期立场冲突。任何阶段失败都必须留下具体 `quality_decision` 和 `quality_reason`。
 - 5 分钟归一化硬去重必须通过数据库唯一预占实现。Planner 写 action 前先原子插入 `ai_group_message_memory.reservation_key`，并发相同指纹只能一个成功；Dispatcher 发送前必须基于同一归一化函数复查，不能只相信 Planner 结果。
 - 7 天语义去重和 30 天模板壳句限频必须覆盖已成功、未知发送、执行中、已规划未发送和本轮已接受候选；`pending`、`reserved`、`claiming`、`executing`、`unknown_after_send`、`success` 都参与重复判定。
-- 同批候选需要先聚类再分配，不能让多个账号在同一轮连续使用相同语义、相同总结型壳句、相同表情或相同立场。高质量文本优先；第三轮仍不合格时，只能按显式降级策略减少发送量或发唯一低风险表情。
+- 同批候选需要先聚类再分配，不能让多个账号在同一轮连续使用相同语义、相同总结型壳句、相同表情或相同立场。高质量文本优先；第三轮仍不合格时，只能按显式降级策略减少发送量，或在租户已启用 `static_safe_fallback`、且满足所有门禁时发送精确文本 `签到`。
 - Dispatcher 发送成功、失败、未知发送、账号离线、权限失败都必须回写同一条 `ai_group_message_memory`；成功和未知发送还要更新账号群内短期立场，用于下一轮避免立场跳变。
 - 旧任务、存量可登录账号、运行中的 AI 活跃群和监听源必须通过迁移 / reconcile 写入在线需求来源。没有来源的在线状态不得被误认为可用；有运行任务但缺在线状态时，任务详情必须暴露为“在线状态未初始化 / 待保活”，不能归类为 AI 无候选。
-- 质量管线的所有决策都必须进入任务详情漏斗：候选数、AI 调用轮次、补位次数、重复命中窗口、模板壳命中、面具低分、立场冲突、在线状态剔除、最终 action 数和降级表情数。
+- 质量管线的所有决策都必须进入任务详情漏斗：候选数、AI 调用轮次、补位次数、重复命中窗口、模板壳命中、面具低分、立场冲突、在线状态剔除、最终 action 数和 `签到` 兜底数。
 
 ### 6.4 转发监听群
 
@@ -3942,7 +3961,7 @@ Listener 采集源群消息
   -> 0 已满足且 0 准入成功则主互动 blocked
 ```
 
-频道评论 / 回复生成时必须读取全站唯一目标画像，但频道消息和讨论区评论仍是事实锚点。画像只提供读者口吻、短评长度、提问方式、追问方式和讨论倾向；候选评论必须贴频道原文或被回复评论里的具体信息。成人交易 / 性服务描述可作为既有频道原文或讨论区评论上下文进入生成链路，但不能被扩写为新增联系方式、价格、邀约、交易撮合或虚构亲历体验。频道消息采集必须记录该消息是否存在 Telegram 评论入口，频道评论 / 回复只对可评论消息补计划；画像不可用、讨论区不可用、频道原文过短、候选重复或模板化时，Planner 不创建补量假评论。若 AI 返回明确的内容安全拒绝，系统在首次调用后最多执行 3 次安全重描述重试；重试请求只能携带不含原始敏感词的安全事实概括，不能把原文再次拼入 Prompt。MiniMax `unprocessable_entity_error: input new_sensitive (1026)` 属于该精确重试范围，其他 HTTP 422 不得泛化重试。连续 4 次调用仍被拒绝时必须保留最终错误；Phase A 已创建的 `pending` 蓝图必须显式进入生成失败终态并释放对应预约和预算，不得创建 `ready` Action、随机表情 Action 或假成功。只有租户显式启用静态安全兜底时才允许补表情，且必须标记 `generation_source=static_safe_fallback`。
+频道评论 / 回复生成时必须读取全站唯一目标画像，但频道消息和讨论区评论仍是事实锚点。画像只提供读者口吻、短评长度、提问方式、追问方式和讨论倾向；候选评论必须贴频道原文或被回复评论里的具体信息。成人交易 / 性服务描述可作为既有频道原文或讨论区评论上下文进入生成链路，但不能被扩写为新增联系方式、价格、邀约、交易撮合或虚构亲历体验。频道消息采集必须记录该消息是否存在 Telegram 评论入口，频道评论 / 回复只对可评论消息补计划；画像不可用、讨论区不可用、频道原文过短、候选重复或模板化时，Planner 不创建补量假评论。若 AI 返回明确的内容安全拒绝，系统在首次调用后最多执行 3 次安全重描述重试；重试请求只能携带不含原始敏感词的安全事实概括，不能把原文再次拼入 Prompt。MiniMax `unprocessable_entity_error: input new_sensitive (1026)` 属于该精确重试范围，其他 HTTP 422 不得泛化重试。连续 4 次调用仍被拒绝时必须保留最终错误；Phase A 已创建的 `pending` 蓝图必须显式进入生成失败终态并释放对应预约和预算，不得创建 `ready` Action、随机表情 Action 或假成功。仅当租户显式启用 `static_safe_fallback`、当前 action 非引用且仍满足账号轮换、准入和出站门禁时，才允许发送精确文本 `签到`，并标记 `generation_source=static_safe_fallback` 与 `content_source=check_in_fallback`。
 
 频道评论 / 回复运行时异常必须按可恢复性分流：
 
@@ -4340,7 +4359,7 @@ action / attempt 写入完成
 
 | 功能面 | AI 活跃群影响 | AI 评论 / 回复影响 |
 | --- | --- | --- |
-| 创建向导 | 任务配置步骤新增“每轮最少引用回复数”，默认 0；字段说明必须写明该值包含在每轮计划发言数内，不额外增加总发送量 | 任务配置步骤新增“每条频道消息最少引用回复数”，默认 0；字段说明必须写明该值包含在单条消息补差额内，不额外增加总评论目标 |
+| 创建向导 | 任务配置步骤新增“每轮最少引用回复数”，默认 1；字段说明必须写明该值包含在每轮计划发言数内，不额外增加总发送量；无合格候选时明确显示引用短缺 | 任务配置步骤新增“每条频道消息最少引用回复数”，默认 1；字段说明必须写明该值包含在单条消息补差额内，不额外增加总评论目标；无合格候选时明确显示引用短缺 |
 | 编辑任务 | 保存该字段后属于会影响后续规划的配置变更；未来未执行主互动 action 需要按既有重排规则处理 | 保存该字段后只影响未来未执行 / 未规划的频道消息补差额；已成功评论和历史 action 不回滚 |
 | 预检确认 | 展示当前配置值、预计本轮可引用消息数量、引用不足 warning；预检只做提示，创建并启动仍由后端重算 | 展示当前配置值、已采集可回复评论数量、引用不足 warning；讨论区不可用时引用回复能力显示不可用 |
 | 前端校验 | `reply_min_per_round` 必须为整数且不大于当前每轮计划数；非法时阻止提交，不自动改值 | `reply_min_per_message` 必须为整数且不大于每条评论 / 回复目标；非法时阻止提交，不自动改值 |
@@ -4599,7 +4618,7 @@ action / attempt 写入完成
 - Telegram 调用结果未知时进入 `unknown_after_send`，不自动重发。
 - AI generation 和 action payload / result 必须记录接话 / 暖场 / 沉默模式、事实锚点、语义簇、重复风险、幻觉风险和跳过原因。
 - AI 活跃群在同一目标群内 5 分钟归一化文本完全重复必须为 0，重复拦截需要覆盖并发 Planner、已规划未发送 action 和 Dispatcher 发送前最终检查。
-- AI 活跃群必须在同一租户全部活群范围内执行 7 天高相似语义硬去重和 30 天模板壳句限频；候选不足时记录质量跳过或要求 AI 换角度重写，不能用固定兜底句补量。
+- AI 活跃群必须在同一租户全部活群范围内执行 7 天高相似语义硬去重和 30 天模板壳句限频；候选不足时记录质量跳过或要求 AI 换角度重写，不能用通用固定兜底句补量；唯一例外是非引用 action 在全部轮换、准入、出站与非连续签到门禁通过时使用精确文本 `签到` 并留审计。
 - AI 活跃群租户级消息记忆时间窗查询只能读取重复判定所需的轻量字段，并由 `(tenant_id, status, planned_at DESC)` 或等价索引支撑；同一个 AI generation 批次只能装载一次 7 天租户级语义窗口，1 小时窗口从该批快照中过滤，本批已接受候选必须立即加入快照继续参与后续 slot 判定；后续 slot 还必须通过 `(tenant_id, updated_at DESC)` 增量读取其他 Dispatcher 在批快照后提交的候选及状态退出，不能用陈旧缓存放过并发跨群相似消息，也不能继续误判已转为 `failed / expired_before_send` 的记录。禁止为性能把查询范围缩回单个目标群，也禁止逐 slot 重复全量读取或加载与判定无关的大字段形成长事务。
 - AI 活跃群 action payload / result 必须记录消息记忆命中情况、去重窗口、`profile_version`、`profile_match_score` 和 `profile_match_reason`，用于验证运营学习画像是否真实参与候选评分。
 - AI 活跃群归一化、文本指纹、语义簇和模板壳句 key 在 Planner 与 Dispatcher 中必须一致；相同输入在重复运行中必须得到相同去重结果。
@@ -4608,7 +4627,7 @@ action / attempt 写入完成
 - AI 活跃群生产质量诊断必须把近 24 小时仍可能继续发送的重复文本作为 release gate blocker；`pending`、`claiming`、`executing` 与已发送 / 发送未知文本构成重复时，必须输出 `AI_GROUP_QUALITY_RECENT_DUPLICATE_GATE_FAILED` 并阻断发布。已 `success` / `unknown_after_send` 的历史重复必须继续输出为 `sent_duplicate_observations`，用于追踪历史质量债，但不能把已不可回滚的历史消息单独作为当前发布 blocker。
 - AI 活跃群生产质量诊断还必须检查近 24 小时有效发送 action 的真人感 payload 完整性；仍可能发送或已经作为质量样本的 action 缺少 `account_voice_profile_version`、`ai_message_memory_id`、`human_quality_decision`、`generation_source` 或 `act_type` 时，必须输出 `AI_GROUP_QUALITY_PAYLOAD_GATE_FAILED` 并阻断发布，避免 TG bot / Web 配置未真实进入 AI 讨论链路却被误报为完成。诊断任务还必须在任务快照和 action 样本中输出 `rule_trace.material_intent`、`material_matched_tags`、`material_candidate_count` 和素材选择结果，用于证明 AI 素材意图没有在生成、质量过滤或 action 持久化阶段丢失。AI 生成提示词只能要求模型输出素材意图和是否允许素材，不允许模型输出素材 ID、素材 URL 或文件地址。
 - `ai_group_message_memory.reservation_key` 必须有数据库唯一约束或等价原子锁，重复冲突必须暴露为质量拦截，不得通过查询后插入的竞态窗口放过并发重复。
-- AI 活跃群 Planner 和 Dispatcher 必须把 `tg_account_online_state` 作为主互动硬前置；只有 `online` 且未超过 `stale_after_at` 的账号才能生成 / 发送文本或表情 slot。`warming`、`recovering` 只表示保活准备或恢复中，离线、需重登、session 失效或代理异常的账号不得生成 / 发送文本或表情 slot，失败原因必须记录为账号在线问题，不能归为 AI 质量不足或用 `emoji_react` 兜底。
+- AI 活跃群 Planner 和 Dispatcher 必须把 `tg_account_online_state` 作为主互动硬前置；只有 `online` 且未超过 `stale_after_at` 的账号才能生成 / 发送文本或引用回复 slot。`warming`、`recovering` 只表示保活准备或恢复中，离线、需重登、session 失效或代理异常的账号不得生成 / 发送文本或引用回复 slot，失败原因必须记录为账号在线问题，不能归为 AI 质量不足或用表情/泛化短句兜底。
 - 在线保活只能做连接、session warm、轻量探测和必要自愈，不得通过目标群可见消息、点赞、关注等动作制造在线证据；探测必须分批、带抖动并落库。
 - `desired_online` 必须按全局保活、任务、监听源等来源引用计数维护；任务暂停、停止、删除、账号范围变更和存量任务迁移都必须触发 reconcile，不能留下孤儿在线需求或 stale 在线状态。
 - 在线状态必须记录 session 维度，并在专项代理任务中记录授权环境代理维度；普通账号维护和 2FA 不再因账号级历史 `proxy_id` 异常阻断。超过 `stale_after_at` 未成功探测的账号不得继续参与 Planner / Dispatcher，必须转为 warming / offline 并展示最近失败或未探测原因；周期 reconcile 不得把已 stale 的 `online` 状态重新续期。
@@ -4622,12 +4641,11 @@ action / attempt 写入完成
 - 同一账号在同一目标群内的短期立场必须连续；缺少新上下文时，不能在 24 小时窗口内从观望、质疑突然切换为强肯定。
 - 账号面具和账号群内短期立场必须以数据库为事实源；Redis 缓存清空、过期或不可用时，系统必须从数据库恢复短摘要和立场，不得随机重建或静默降级为统一口气。
 - “账号面具”一级菜单必须提供账号面具管理入口，至少支持搜索、查看、编辑、重建、停用、版本回滚和审计查看；同一账号的面具修改必须影响该账号参与的所有 AI 活跃群任务。
-- 账号初始化必须批量生成账号面具；缺面具账号在“账号面具”一级菜单中必须可筛选并可批量补齐 / 批量重建。缺面具账号即使在线且具备目标发言权限，也不能参与 AI 活群文本生成或表情兜底，避免新增账号退化成统一口气。
+- 账号初始化必须批量生成账号面具；缺面具账号在“账号面具”一级菜单中必须可筛选并可批量补齐 / 批量重建。缺面具账号即使在线且具备目标发言权限，也不能参与 AI 活群文本生成或 `签到` 兜底，避免新增账号退化成统一口气。
 - 账号面具初始化提示词必须输出结构化字段、可执行表达原则和禁用表达；生成协议采用每账号一行紧凑 JSONL，服务端保留旧 pipe 行解析兼容；批量结构化输出格式错误时拆成单账号继续请求真实 AI，单账号仍不合格则暴露失败；禁止只生成“自然、随意、真实”等泛化描述；同批面具差异度不足时不得启用。批量补齐 / 批量重建必须返回逐账号结果明细，包含生成状态、版本、差异度、跳过原因和失败原因；批量重建已有 active 面具时必须创建新版本并将旧版本置为 superseded，不能覆盖旧版本或撞唯一约束。
 - 面具编辑下一轮规划生效；已生成且带面具版本的 action 必须固化旧面具版本，不受后续编辑影响。缺面具时期生成、尚未发送且没有面具版本的 open action 在账号面具补齐后必须重排，不能继续按统一口气发送。
-- 第三轮生成后仍不合格但账号有本轮活跃要求时，只能显式降级为 `emoji_react` 或极短低风险反应，并记录 `quality_fallback`；该兜底不得计为高质量 AI 文本。普通候选仍必须按账号面具校验，但已标记 `quality_fallback=emoji_react` 的低风险表情兜底不得被“少表情 / 不用表情”面具规则误杀，否则会破坏账号活跃补齐语义。
-- `emoji_react` 必须从低风险表情池随机选择；同一规划轮同一目标群内不能多个账号发送同一个表情。
-- Dispatcher 仅对已绑定当日覆盖账本、非引用回复的普通发言 slot 执行该显式兜底；M3、M2.5、Grok 三层均不可用或均被质量闸门拒绝后，写入 `quality_fallback=emoji_react`、`human_quality_decision=explicit_static_quality_fallback`、`generation_source/fallback_stage=static_safe_fallback` 和原始拒绝原因。内容仍须通过出站规则、租户级消息记忆去重与 Telegram 发送门禁；租户关闭 `ai_group_static_fallback_enabled` 时保持可见失败。
+- 第三轮生成后仍不合格时，只有非引用普通发言 slot 才能显式降级为精确文本 `签到`，并记录 `quality_fallback=check_in_fallback`；该兜底不得计为高质量 AI 文本。`签到` 仍必须通过账号面具、轮换、群管准入、出站、消息记忆去重与“上一条平台消息不是签到”门禁；不满足任一条件时保持可见失败/等待。
+- Dispatcher 仅对已由正常 Planner 创建、非引用的普通群聊或频道评论 slot 执行该显式兜底；不得为补量单独创建 `签到` Action。M3、M2.5、Grok 三层均不可用或均被质量闸门拒绝后，写入 `quality_fallback=check_in_fallback`、`human_quality_decision=check_in_fallback`、`generation_source/fallback_stage=static_safe_fallback`、`content_source=check_in_fallback` 和原始拒绝原因。群聊 Action 已绑定覆盖账本时必须保留原 `coverage_ledger_id`，频道评论必须保留原频道消息/讨论区上下文；内容仍须通过出站规则、租户级消息记忆去重、账号轮换、群管准入和 Telegram 发送门禁；租户关闭 `static_safe_fallback` 时保持可见失败。
 - `ai_group_message_memory` 保留期不得低于 30 天，清理任务不能破坏 7 天语义去重和 30 天模板壳句限频。
 - Listener 压力不拖慢发送 action。
 - AI prompt 拼装必须分层传入实时事实、任务配置、全站画像、账号画像和规则约束；全站画像不得作为具体事实来源。

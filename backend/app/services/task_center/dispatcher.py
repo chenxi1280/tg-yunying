@@ -99,7 +99,15 @@ _ACTION_RESERVATIONS = _runtime_resources._ACTION_RESERVATIONS
 _IN_FLIGHT_ACCOUNTS = _runtime_resources._IN_FLIGHT_ACCOUNTS
 _redis_client = _runtime_resources._redis_client
 MEMBERSHIP_ACTION_TYPES = ("ensure_channel_membership", "ensure_target_membership")
-HARD_HOURLY_ADMISSION_BLOCKED_SEND_ERROR_CODES = ("required_channel_admission_pending",)
+GROUP_BOT_ADMISSION_ACTION_TYPES = (
+    "group_bot_required_channel_follow",
+    "group_bot_control_observation",
+    "group_bot_confirmation_button",
+)
+HARD_HOURLY_ADMISSION_BLOCKED_SEND_ERROR_CODES = (
+    "required_channel_admission_pending",
+    "group_bot_admission_wait",
+)
 HARD_HOURLY_OVERDUE_SEND_PRIORITY_SECONDS = 300
 TARGET_ADMISSION_RETRY_TASK_TYPE = "target_admission_retry"
 TARGET_ADMISSION_RETRY_TERMINAL_STATUSES = {"success", "unknown_after_send", "failed", "retryable_failed", "skipped"}
@@ -532,6 +540,14 @@ def _dispatch_credentialed_action(
             CommentDispatchContext(context.account, credentials, context.payload),
             generation_dependencies=context.comment_generation_dependencies,
         )
+    if action.action_type == "group_bot_required_channel_follow":
+        return _dispatch_group_bot_required_channel_follow(
+            session, action, context.account, credentials, context.payload
+        )
+    if action.action_type in {"group_bot_control_observation", "group_bot_confirmation_button"}:
+        # Observation/confirmation are primarily listener-driven; mark success if still pending.
+        _skip(action, "listener_driven", "由监听控制事件推进，无需 Gateway 正文")
+        return True
     _fail(action, FailureType.UNKNOWN.value, f"未知 action_type: {action.action_type}")
     return True
 
@@ -554,6 +570,7 @@ def _action_can_reassign(action: Action) -> bool:
         and not _is_membership_action(action)
         and action.action_type not in SEARCH_JOIN_RUNTIME_ACTION_TYPES
         and action.action_type not in {"invite_group_bot", "invite_group_account"}
+        and action.action_type not in GROUP_BOT_ADMISSION_ACTION_TYPES
         and not bool(payload.get("coverage_ledger_id"))
     )
 
@@ -1042,7 +1059,16 @@ def _channel_comment_claim_rank():
 
 
 def _target_admission_retry_claim_condition():
-    return Task.type == TARGET_ADMISSION_RETRY_TASK_TYPE
+    # Group-bot admission children only rank with target_admission_retry when bound
+    # to a concrete task+account admission (PRD §8.3 / dispatch_fairness classify).
+    bound_task_id = func.coalesce(Action.payload["admission_bound_task_id"].as_string(), "")
+    bound_account_id = Action.payload["admission_bound_account_id"].as_integer()
+    bound_group_bot = (
+        Action.action_type.in_(GROUP_BOT_ADMISSION_ACTION_TYPES)
+        & (bound_task_id != "")
+        & bound_account_id.is_not(None)
+    )
+    return (Task.type == TARGET_ADMISSION_RETRY_TASK_TYPE) | bound_group_bot
 
 
 def _search_join_membership_claim_condition():
@@ -1226,6 +1252,159 @@ def recover_hard_hourly_delivery_credits(session: Session, limit: int = 100) -> 
         )
     )
     return sum(1 for action in rows if _recover_hard_hourly_delivery_credit(session, action))
+
+
+def _post_send_visibility_window_seconds(session: Session, action: Action) -> int:
+    """PRD §5.8: default 90, overridable per target via post_send_visibility_window_seconds (60-180)."""
+    default = 90
+    if not action.task_id:
+        return default
+    task = session.get(Task, action.task_id)
+    if not task:
+        return default
+    config = task.type_config if isinstance(task.type_config, dict) else {}
+    raw = int(config.get("post_send_visibility_window_seconds") or default)
+    return max(60, min(180, raw))
+
+
+def recover_pending_visibility_credits(session: Session, limit: int = 100) -> int:
+    """Close pending_visibility holds via Gateway probe or explicit evidence.
+
+    - visible_confirmed (probe or result flag) -> formal credit
+    - post_send_intercepted / not_visible -> fail, revoke admission ready
+    - no evidence after window -> keep unknown hold (never timeout-as-success)
+    """
+    from app.models import PendingVisibilityCredit, TgGroup
+    from app.services.task_center.group_bot_admission import (
+        close_pending_visibility_credit,
+        get_admission,
+        mark_post_send_intercepted,
+        mark_visible_confirmed,
+    )
+    from app.services.task_center.hard_hourly_ledger import credit_success_once
+    from app.services.task_center.continuity_rollout import continuity_enabled
+
+    rows = list(
+        session.scalars(
+            select(PendingVisibilityCredit)
+            .where(PendingVisibilityCredit.status == "open")
+            .order_by(PendingVisibilityCredit.created_at.asc(), PendingVisibilityCredit.id.asc())
+            .limit(max(1, int(limit or 100)))
+        )
+    )
+    closed = 0
+    for hold in rows:
+        action = session.get(Action, hold.action_id)
+        if action is None:
+            close_pending_visibility_credit(session, action_id=hold.action_id, status="orphaned")
+            closed += 1
+            continue
+        result = action.result if isinstance(action.result, dict) else {}
+        visibility = str(result.get("visibility_status") or "")
+        payload = action.payload if isinstance(action.payload, dict) else {}
+        group_id = int(payload.get("group_id") or 0)
+        account_id = int(action.account_id or 0)
+        remote_id = str(hold.remote_message_id or result.get("telegram_msg_id") or "")
+        admission = (
+            get_admission(session, tenant_id=action.tenant_id, group_id=group_id, account_id=account_id)
+            if group_id and account_id
+            else None
+        )
+        # Best-effort live probe when no explicit visibility flag yet.
+        if not visibility and remote_id and group_id and account_id:
+            probed = _probe_post_send_visibility(
+                session,
+                action=action,
+                group_id=group_id,
+                remote_message_id=remote_id,
+            )
+            if probed:
+                visibility = probed
+                result = {**result, "visibility_status": probed, "visibility_probe": True}
+                action.result = result
+        if visibility == "visible_confirmed":
+            if admission is not None:
+                mark_visible_confirmed(session, admission=admission)
+            close_pending_visibility_credit(session, action_id=action.id, status="visible_confirmed")
+            action.status = "success"
+            action.result = {
+                **result,
+                "success": True,
+                "pending_visibility": False,
+                "hold_reason": "",
+                "visibility_status": "visible_confirmed",
+            }
+            if continuity_enabled(session, action.tenant_id) and _is_hard_hourly_send_action(action):
+                outcome = credit_success_once(
+                    session,
+                    action=action,
+                    execution_attempt_id=hold.execution_attempt_id,
+                    remote_message_id=remote_id,
+                    executed_at=action.executed_at or _now(),
+                )
+                _apply_hard_hourly_credit_outcome(action, outcome)
+            closed += 1
+            continue
+        if visibility in {"post_send_intercepted", "not_visible"}:
+            if admission is not None:
+                mark_post_send_intercepted(session, admission=admission)
+            close_pending_visibility_credit(session, action_id=action.id, status="post_send_intercepted")
+            action.status = "failed"
+            action.result = {
+                **result,
+                "success": False,
+                "error_code": "post_send_intercepted",
+                "pending_visibility": False,
+                "visibility_status": visibility,
+            }
+            closed += 1
+            continue
+        # No evidence yet: leave open (unknown hold semantics). Optionally stamp age for ops.
+        age_seconds = int((_now() - (hold.created_at or _now())).total_seconds()) if hold.created_at else 0
+        window = _post_send_visibility_window_seconds(session, action)
+        if age_seconds >= window:
+            action.result = {
+                **result,
+                "pending_visibility_age_seconds": age_seconds,
+                "hold_reason": "unknown_after_send",
+            }
+    return closed
+
+
+def _probe_post_send_visibility(
+    session: Session,
+    *,
+    action: Action,
+    group_id: int,
+    remote_message_id: str,
+) -> str:
+    """Return visible_confirmed / not_visible / '' (unknown) via Gateway get_messages."""
+    account = session.get(TgAccount, action.account_id) if action.account_id else None
+    group = session.get(TgGroup, group_id)
+    if account is None or group is None:
+        return ""
+    try:
+        message_id = int(str(remote_message_id).strip())
+    except (TypeError, ValueError):
+        return ""
+    credentials = credentials_for_account(session, account)
+    try:
+        probe = gateway.probe_message_visible(
+            account.id,
+            str(group.tg_peer_id or ""),
+            message_id,
+            account.session_ciphertext,
+            credentials,
+        )
+    except Exception:  # noqa: BLE001 - visibility probe must not kill recovery
+        return ""
+    if probe is None:
+        return ""
+    if getattr(probe, "ok", False) and getattr(probe, "visible", None) is True:
+        return "visible_confirmed"
+    if getattr(probe, "ok", False) and getattr(probe, "visible", None) is False:
+        return "not_visible"
+    return ""
 
 
 def recover_unreachable_hard_hourly_actions(session: Session, limit: int = 100) -> int:
@@ -1555,13 +1734,30 @@ def _prepare_group_send(
     if not group:
         _fail(action, FailureType.PEER_INVALID.value, "目标群不存在", auto_check="拦截", validation_stage="target")
         return None
+    if not _group_bot_admission_gate_pass(session, action, group_id=int(group.id), account_id=int(context.account.id)):
+        return None
+    if not _speaker_rotation_gate_pass(session, action, group_id=int(group.id), account_id=int(context.account.id)):
+        return None
+    # Speaker rotation may have changed action.account_id; reload account for the actual sender.
+    account = context.account
+    credentials = context.credentials
+    if int(action.account_id or 0) and int(action.account_id) != int(context.account.id):
+        rotated_account = session.get(TgAccount, int(action.account_id))
+        if rotated_account:
+            account = rotated_account
+            credentials = credentials_for_account(session, rotated_account) or context.credentials
+            # Re-check admission gate for the rotated account.
+            if not _group_bot_admission_gate_pass(
+                session, action, group_id=int(group.id), account_id=int(account.id)
+            ):
+                return None
     try:
         payload = _ensure_send_message_content(
             session,
             action,
-            context.account,
+            account,
             payload=context.payload,
-            credentials=context.credentials,
+            credentials=credentials,
             generation_dependencies=generation_dependencies,
         )
     except AiGenerationUnavailable as exc:
@@ -1571,11 +1767,11 @@ def _prepare_group_send(
             AiGenerationFailureContext(context.payload, exc),
         )
         return None
-    link = _group_send_link(session, group, context.account)
+    link = _group_send_link(session, group, account)
     if link and link.can_send:
         return GroupSendGatewayContext(
-            context.account,
-            context.credentials,
+            account,
+            credentials,
             group,
             link,
             payload,
@@ -2925,6 +3121,33 @@ def _recover_send_message_required_channel(
     detail = send_result.detail or send_result.failure_type or ""
     if send_result.ok or send_result.failure_type != FailureType.GROUP_PERMISSION_DENIED.value:
         return False
+    # Humanization PRD: new group_ai_chat path must not auto-follow-and-resend after body send.
+    if action.task_type == "group_ai_chat":
+        from app.services.task_center.group_bot_admission import get_admission, mark_post_send_intercepted
+
+        admission = get_admission(
+            session,
+            tenant_id=action.tenant_id,
+            group_id=int(group.id),
+            account_id=int(account.id),
+        )
+        if admission is not None and not bool((action.payload or {}).get("legacy_send_until_reviewed")):
+            mark_post_send_intercepted(session, admission=admission)
+            _fail(
+                action,
+                send_result.failure_type,
+                detail or "post_send_intercepted",
+                auto_check="失败",
+                validation_stage="group_bot_admission",
+            )
+            action.result = {
+                **(action.result or {}),
+                "error_code": "legacy_group_bot_intercepted",
+                "group_bot_admission_id": admission.id,
+            }
+            _finish_execution_attempt(attempt, action, failure_type=send_result.failure_type, detail=detail)
+            _release_runtime_resources(action)
+            return True
     membership_payload = _group_send_membership_payload(session, action, group, payload)
     if membership_payload is None:
         return False
@@ -3365,6 +3588,56 @@ def _mark_membership_joined(session: Session, action: Action, account: TgAccount
     target.auth_status = GroupAuthStatus.AUTHORIZED.value
     target.can_send = bool(target.can_send or target_can_send)
     target.updated_at = _now()
+    _maybe_start_group_bot_admission_after_join(
+        session,
+        action=action,
+        account=account,
+        group=group,
+        payload=payload,
+    )
+
+
+def _maybe_start_group_bot_admission_after_join(
+    session: Session,
+    *,
+    action: Action,
+    account: TgAccount,
+    group: TgGroup,
+    payload: EnsureChannelMembershipPayload,
+) -> None:
+    """Create/reset GroupBotAdmission after AI-group membership join success.
+
+    Does not rewrite TgGroupAccount.can_send; admission is an independent fact.
+    """
+    if str(payload.target_type or "") != "group":
+        return
+    task = session.get(Task, action.task_id) if action.task_id else None
+    if task is None or task.type != "group_ai_chat":
+        return
+    config = task.type_config if isinstance(task.type_config, dict) else {}
+    if config.get("group_bot_admission_required") is False:
+        return
+    from app.services.task_center.group_bot_admission import ensure_admission_after_join
+
+    join_cursor = str(
+        (action.result or {}).get("join_start_cursor")
+        or (action.payload or {}).get("join_start_cursor")
+        or ""
+    )
+    admission = ensure_admission_after_join(
+        session,
+        tenant_id=action.tenant_id,
+        group_id=int(group.id),
+        account_id=int(account.id),
+        membership_action_id=str(action.id),
+        join_start_cursor=join_cursor,
+    )
+    action.result = {
+        **(action.result or {}),
+        "group_bot_admission_id": admission.id,
+        "group_bot_admission_state": admission.state,
+        "admission_version": int(admission.admission_version or 1),
+    }
 
 
 def _membership_group_for_payload(
@@ -3976,6 +4249,8 @@ def _dispatch_comment(
         return True
     if not _ensure_channel_action_membership(session, action, account, payload.channel_target_id):
         return True
+    if not _channel_comment_speaker_rotation_gate_pass(session, action, account_id=int(account.id), payload=payload):
+        return True
     try:
         payload = ensure_post_comment_content(
             session,
@@ -4018,6 +4293,81 @@ def _comment_content_policy_group(session: Session, action: Action, payload: Pos
         return group
     _fail(action, FailureType.PEER_INVALID.value, "频道评论缺少可校验的讨论组", auto_check="拦截", validation_stage="target")
     return None
+
+
+def _channel_comment_speaker_rotation_gate_pass(
+    session: Session,
+    action: Action,
+    *,
+    account_id: int,
+    payload,
+) -> bool:
+    if action.action_type != "post_comment":
+        return True
+    channel_target_id = int(getattr(payload, "channel_target_id", 0) or 0)
+    channel = session.get(OperationTarget, channel_target_id) if channel_target_id else None
+    discussion = linked_channel_group(session, channel, create=False) if channel else None
+    if discussion is None:
+        return True
+    from app.services.task_center.conversation_speaker_rotation import (
+        conversation_key_for_discussion,
+        reserve_speaker_turn,
+    )
+
+    key = conversation_key_for_discussion(discussion_group_id=int(discussion.id))
+    candidate_ids = [account_id]
+    links = session.scalars(
+        select(TgGroupAccount.account_id).where(
+            TgGroupAccount.group_id == int(discussion.id),
+            TgGroupAccount.can_send.is_(True),
+        )
+    ).all()
+    for item in links:
+        value = int(item or 0)
+        if value and value not in candidate_ids:
+            candidate_ids.append(value)
+    decision = reserve_speaker_turn(
+        session,
+        action=action,
+        surface="channel_comment",
+        conversation_key=key,
+        candidate_account_ids=candidate_ids,
+        coverage_bound=False,
+    )
+    data = action.payload if isinstance(action.payload, dict) else {}
+    if decision.allowed:
+        if decision.account_id and int(decision.account_id) != int(account_id):
+            action.account_id = int(decision.account_id)
+            data = {
+                **data,
+                "account_id": int(decision.account_id),
+                "speaker_selection_reason": decision.reason,
+                "previous_speaker_account_id": account_id,
+                "conversation_surface": "channel_comment",
+                "conversation_key": key,
+            }
+            data.pop("comment_text", None)
+            data["ai_generation_status"] = "pending"
+            action.payload = data
+        else:
+            action.payload = {
+                **data,
+                "conversation_surface": "channel_comment",
+                "conversation_key": key,
+                "speaker_selection_reason": decision.reason,
+            }
+        return True
+    if decision.code == "speaker_rotation_wait":
+        action.status = "pending"
+        action.result = {
+            **(action.result or {}),
+            "error_code": "speaker_rotation_wait",
+            "speaker_rotation_reason": decision.reason,
+        }
+        action.scheduled_at = _now() + timedelta(seconds=45)
+        _release_runtime_resources(action)
+        return False
+    return True
 
 
 def _comment_total_limit_reached(session: Session, action: Action) -> bool:
@@ -4248,7 +4598,11 @@ def _apply_send_result(action: Action, account: TgAccount, ok: bool, remote_id: 
     if not ok:
         _maybe_auto_mark_target_ref_invalid(action, account, detail or failure_type, attempt)
     if ok:
-        _credit_hard_hourly_success(action, attempt=attempt, remote_id=remote_id)
+        if not _maybe_hold_pending_visibility(action, attempt=attempt, remote_id=remote_id):
+            _credit_hard_hourly_success(action, attempt=attempt, remote_id=remote_id)
+            session = object_session(action)
+            if session is not None:
+                _finalize_speaker_after_send(session, action, outcome="success", remote_id=remote_id)
 
 
 def _maybe_auto_mark_target_ref_invalid(
@@ -5461,6 +5815,325 @@ def _is_hard_hourly_send_action(action: Action) -> bool:
     return action.action_type == "send_message" and bool(payload.get("hard_hourly_target"))
 
 
+def _group_bot_admission_gate_pass(session: Session, action: Action, *, group_id: int, account_id: int) -> bool:
+    if action.task_type != "group_ai_chat" or action.action_type != "send_message":
+        return True
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    if bool(payload.get("legacy_send_until_reviewed")):
+        return True
+    from app.services.task_center.group_bot_admission import evaluate_send_gate
+
+    decision = evaluate_send_gate(
+        session,
+        tenant_id=action.tenant_id,
+        group_id=group_id,
+        account_id=account_id,
+        enforce=True,
+    )
+    if decision.allowed:
+        if decision.admission_version is not None:
+            frozen_version = payload.get("admission_version")
+            if frozen_version is not None and int(frozen_version) != int(decision.admission_version):
+                # PRD §5.1.1: version mismatch → must re-verify, not carry old payload into Gateway.
+                action.status = "pending"
+                action.result = {
+                    **(action.result or {}),
+                    "error_code": "admission_version_stale",
+                    "frozen_admission_version": frozen_version,
+                    "current_admission_version": decision.admission_version,
+                }
+                action.scheduled_at = _now() + timedelta(seconds=30)
+                _release_runtime_resources(action)
+                return False
+            action.payload = {
+                **payload,
+                "group_bot_admission_id": decision.admission_id,
+                "admission_version": decision.admission_version,
+            }
+        return True
+    action.status = "pending"
+    action.result = {
+        **(action.result or {}),
+        "error_code": decision.code or "group_bot_admission_wait",
+        "group_bot_admission_state": decision.state,
+        "group_bot_admission_id": decision.admission_id,
+    }
+    action.scheduled_at = _now() + timedelta(seconds=30)
+    _release_runtime_resources(action)
+    return False
+
+
+def _speaker_rotation_gate_pass(session: Session, action: Action, *, group_id: int, account_id: int) -> bool:
+    if action.task_type != "group_ai_chat" or action.action_type != "send_message":
+        return True
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    from app.services.task_center.conversation_speaker_rotation import (
+        conversation_key_for_group,
+        reserve_speaker_turn,
+    )
+
+    coverage_bound = bool(payload.get("coverage_ledger_id"))
+    candidates = _speaker_rotation_candidates(session, action, group_id=group_id, account_id=account_id)
+    decision = reserve_speaker_turn(
+        session,
+        action=action,
+        surface="group_ai_chat",
+        conversation_key=conversation_key_for_group(group_id=group_id),
+        candidate_account_ids=candidates,
+        coverage_bound=coverage_bound,
+    )
+    if decision.allowed:
+        if decision.account_id and int(decision.account_id) != int(account_id) and not coverage_bound:
+            action.account_id = int(decision.account_id)
+            action.payload = {
+                **payload,
+                "account_id": int(decision.account_id),
+                "speaker_selection_reason": decision.reason,
+                "previous_speaker_account_id": account_id,
+                "conversation_surface": "group_ai_chat",
+                "conversation_key": conversation_key_for_group(group_id=group_id),
+            }
+            # Force content regeneration for rebound account.
+            data = dict(action.payload)
+            data.pop("message_text", None)
+            data["ai_generation_status"] = "pending"
+            action.payload = data
+        else:
+            action.payload = {
+                **payload,
+                "conversation_surface": "group_ai_chat",
+                "conversation_key": conversation_key_for_group(group_id=group_id),
+                "speaker_selection_reason": decision.reason,
+            }
+        return True
+    if decision.code == "speaker_rotation_wait":
+        action.status = "pending"
+        action.result = {
+            **(action.result or {}),
+            "error_code": "speaker_rotation_wait",
+            "speaker_rotation_reason": decision.reason,
+        }
+        action.scheduled_at = _now() + timedelta(seconds=45)
+        _release_runtime_resources(action)
+        return False
+    return True
+
+
+def _speaker_rotation_candidates(session: Session, action: Action, *, group_id: int, account_id: int) -> list[int]:
+    ids = [int(account_id)]
+    links = session.scalars(
+        select(TgGroupAccount.account_id).where(
+            TgGroupAccount.group_id == group_id,
+            TgGroupAccount.can_send.is_(True),
+        )
+    ).all()
+    from app.models import GroupBotAdmission
+    from app.services.task_center.group_bot_admission import READY_STATE
+
+    for item in links:
+        value = int(item or 0)
+        if not value or value in ids:
+            continue
+        # PRD §8.1: non group_bot_admission_ready accounts must not enter send pool.
+        admission = session.scalar(
+            select(GroupBotAdmission).where(
+                GroupBotAdmission.tenant_id == action.tenant_id,
+                GroupBotAdmission.group_id == group_id,
+                GroupBotAdmission.account_id == value,
+            )
+        )
+        if admission and admission.state != READY_STATE:
+            continue
+        ids.append(value)
+    return ids
+
+
+def _action_needs_pending_visibility(session: Session, action: Action, *, remote_id: str) -> bool:
+    if action.task_type != "group_ai_chat" or not remote_id:
+        return False
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    if bool(payload.get("legacy_send_until_reviewed")):
+        return False
+    group_id = int(payload.get("group_id") or 0)
+    account_id = int(action.account_id or 0)
+    if not group_id or not account_id:
+        return False
+    from app.services.task_center.group_bot_admission import get_admission, needs_post_send_visibility
+
+    admission = get_admission(
+        session,
+        tenant_id=action.tenant_id,
+        group_id=group_id,
+        account_id=account_id,
+    )
+    action_version = payload.get("admission_version")
+    return needs_post_send_visibility(
+        admission,
+        action_admission_version=int(action_version) if action_version is not None else None,
+    )
+
+
+def _finalize_speaker_after_send(
+    session: Session,
+    action: Action,
+    *,
+    outcome: str,
+    remote_id: str = "",
+) -> None:
+    if action.task_type not in {"group_ai_chat", "channel_comment"}:
+        return
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    group_id = int(payload.get("group_id") or 0)
+    content_source = str(payload.get("content_source") or "")
+    message_text = str(payload.get("message_text") or payload.get("comment_text") or "").strip()
+    if not content_source and message_text == "签到":
+        content_source = "check_in_fallback"
+        action.payload = {**payload, "content_source": content_source}
+    if action.task_type == "channel_comment":
+        # Discussion session key already written by rotation gate when present.
+        key = str(payload.get("conversation_key") or "")
+        surface = "channel_comment"
+        if not key:
+            return
+    else:
+        if not group_id:
+            return
+        from app.services.task_center.conversation_speaker_rotation import conversation_key_for_group
+
+        key = conversation_key_for_group(group_id=group_id)
+        surface = "group_ai_chat"
+    from app.services.task_center.conversation_speaker_rotation import finalize_speaker_turn
+
+    finalize_speaker_turn(
+        session,
+        action=action,
+        surface=surface,
+        conversation_key=key,
+        outcome=outcome,
+        remote_message_id=remote_id,
+        content_source=content_source,
+        content_preview=message_text[:200],
+        account_id=int(action.account_id or 0) or None,
+    )
+
+
+def _dispatch_group_bot_required_channel_follow(
+    session: Session,
+    action: Action,
+    account: TgAccount,
+    credentials,
+    payload,
+) -> bool:
+    """Execute exact required-channel follow for group-bot admission."""
+    from app.models import GroupBotAdmission
+    from app.services.task_center.group_bot_admission import mark_channel_follow_completed
+
+    admission_id = int(getattr(payload, "admission_id", 0) or 0)
+    group_id = int(getattr(payload, "group_id", 0) or 0)
+    channel_ref = str(getattr(payload, "channel_ref", "") or "").strip()
+    if not admission_id or not group_id or not channel_ref:
+        _fail(action, FailureType.UNKNOWN.value, "group_bot_required_channel_follow payload incomplete")
+        return True
+    admission = session.scalar(
+        select(GroupBotAdmission).where(
+            GroupBotAdmission.id == admission_id,
+            GroupBotAdmission.tenant_id == action.tenant_id,
+        )
+    )
+    if admission is None:
+        _fail(action, FailureType.UNKNOWN.value, "admission not found")
+        return True
+    if int(admission.account_id) != int(account.id):
+        _fail(action, FailureType.ACCOUNT_UNAVAILABLE.value, "admission account mismatch")
+        return True
+    if int(admission.admission_version or 1) != int(getattr(payload, "admission_version", 1) or 1):
+        _skip(action, "admission_version_stale", "admission_version 已变化，跳过旧 follow action")
+        return True
+
+    is_link = "t.me/" in channel_ref or channel_ref.startswith("http")
+    channel_peer = channel_ref if is_link or channel_ref.startswith("@") else f"@{channel_ref.lstrip('@')}"
+    result = gateway.ensure_channel_membership(
+        account.id,
+        "" if is_link else channel_peer,
+        account.session_ciphertext,
+        credentials,
+        invite_link=channel_ref if is_link else "",
+    )
+    if not result.ok:
+        failure = result.failure_type or FailureType.PEER_INVALID.value
+        _fail(action, failure, result.detail or "required channel follow failed")
+        action.result = {
+            **(action.result or {}),
+            "error_code": "required_channel_follow_failed",
+            "channel_ref": channel_ref,
+        }
+        return True
+
+    detail = str(result.detail or "")
+    if "megagroup" in detail.lower() or "supergroup" in detail.lower():
+        _fail(action, FailureType.PEER_INVALID.value, "required_channel_ref_invalid: not broadcast channel")
+        action.result = {
+            **(action.result or {}),
+            "error_code": "required_channel_ref_invalid",
+            "channel_ref": channel_ref,
+        }
+        return True
+
+    mark_channel_follow_completed(
+        session,
+        admission=admission,
+        channel_ref=channel_ref.lstrip("@") if not is_link else channel_ref,
+        resolved_peer_id=channel_peer,
+        resolved_type="broadcast",
+        action_id=str(action.id),
+    )
+    _apply_operation_result(action, account, True, "", detail or "required_channel_followed")
+    action.result = {
+        **(action.result or {}),
+        "success": True,
+        "channel_ref": channel_ref,
+        "group_bot_admission_id": admission.id,
+        "group_bot_admission_state": admission.state,
+    }
+    return True
+
+
+def _maybe_hold_pending_visibility(
+    action: Action,
+    *,
+    attempt: ExecutionAttempt | None,
+    remote_id: str,
+) -> bool:
+    session = object_session(action)
+    if session is None or not remote_id:
+        return False
+    if not _action_needs_pending_visibility(session, action, remote_id=remote_id):
+        return False
+    from app.services.task_center.group_bot_admission import open_pending_visibility_credit
+
+    open_pending_visibility_credit(
+        session,
+        tenant_id=action.tenant_id,
+        action_id=action.id,
+        remote_message_id=remote_id,
+        execution_attempt_id=str(attempt.id) if attempt and attempt.id else None,
+    )
+    action.status = "unknown_after_send"
+    action.result = {
+        **(action.result or {}),
+        "success": False,
+        "pending_visibility": True,
+        "hold_reason": "pending_visibility",
+        "telegram_msg_id": remote_id,
+        "hard_hourly_credit_status": "pending_visibility",
+    }
+    if attempt is not None:
+        attempt.status = "success"
+        attempt.remote_message_id = remote_id
+    _finalize_speaker_after_send(session, action, outcome="pending_visibility", remote_id=remote_id)
+    return True
+
+
 def _credit_hard_hourly_success(
     action: Action,
     *,
@@ -5469,8 +6142,6 @@ def _credit_hard_hourly_success(
 ) -> None:
     if not _is_hard_hourly_send_action(action):
         return
-    from sqlalchemy.orm import object_session
-
     from app.services.task_center.hard_hourly_ledger import credit_success_once
     from app.services.task_center.continuity_rollout import continuity_enabled
 
@@ -5479,6 +6150,7 @@ def _credit_hard_hourly_success(
         return
     if not continuity_enabled(session, action.tenant_id):
         return
+    payload = action.payload if isinstance(action.payload, dict) else {}
     outcome = credit_success_once(
         session,
         action=action,
@@ -5487,6 +6159,8 @@ def _credit_hard_hourly_success(
         executed_at=action.executed_at or _now(),
     )
     _apply_hard_hourly_credit_outcome(action, outcome)
+    if str(payload.get("content_source") or "") == "check_in_fallback" or str(payload.get("message_text") or "").strip() == "签到":
+        action.result = {**(action.result or {}), "content_source": "check_in_fallback"}
 
 
 def _apply_hard_hourly_credit_outcome(action: Action, outcome) -> None:
@@ -6207,5 +6881,6 @@ __all__ = [
     "recover_expired_claims",
     "recover_expired_hard_hourly_actions",
     "recover_hard_hourly_delivery_credits",
+    "recover_pending_visibility_credits",
     "recover_unreachable_hard_hourly_actions",
 ]

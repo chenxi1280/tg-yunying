@@ -281,11 +281,7 @@ class GroupAIChatConfig(BaseModel):
     account_memory_depth: int = Field(default=3, ge=0, le=20)
     messages_per_round_mode: Literal["auto", "manual"] = "auto"
     messages_per_round: int = Field(default=1, ge=1)
-    reply_min_per_round: int = Field(default=0, ge=0)
-    consecutive_message_enabled: bool = False
-    consecutive_message_min: int = Field(default=2, ge=2, le=4)
-    consecutive_message_max: int = Field(default=4, ge=2, le=4)
-    consecutive_message_probability: float = Field(default=0.3, ge=0, le=1)
+    reply_min_per_round: int = Field(default=1, ge=0)
     account_coverage_mode: Literal["natural", "all_accounts_daily"] = "natural"
     per_account_daily_min_messages: int = Field(default=1, ge=1, le=2)
     per_account_daily_max_messages: int = Field(default=2, ge=1, le=2)
@@ -295,7 +291,7 @@ class GroupAIChatConfig(BaseModel):
     hard_hourly_strategy: Literal["force_planning"] = "force_planning"
     history_fetch_account_id: int | None = None
     auto_join_target: bool = True
-    auto_follow_required_channel: bool = True
+    group_bot_admission_required: bool = True
     auto_resolve_verification: bool = True
     ai_assisted_verification: bool = True
     captcha_failure_policy: Literal["manual"] = "manual"
@@ -330,8 +326,8 @@ class GroupAIChatConfig(BaseModel):
             raise ValueError("target_group_id、target_operation_target_id 或 target_input 至少填写一个")
         if self.reply_min_per_round > self.messages_per_round:
             raise ValueError("reply_min_per_round 不能大于 messages_per_round")
-        if self.consecutive_message_min > self.consecutive_message_max:
-            raise ValueError("consecutive_message_min 不能大于 consecutive_message_max")
+        if not self.group_bot_admission_required:
+            raise ValueError("AI 活跃群必须启用群管机器人准入")
         if self.per_account_daily_min_messages > self.per_account_daily_max_messages:
             raise ValueError("per_account_daily_min_messages 不能大于 per_account_daily_max_messages")
         if not self.hard_hourly_target_enabled:
@@ -462,9 +458,9 @@ class ChannelCommentConfig(ChannelMessageScopeConfig):
     comment_count_jitter: float = Field(default=0.3, ge=0, le=1)
     max_total_comments: int = Field(default=80, ge=1, le=100000)
     max_total_comments_jitter: float = Field(default=0.2, ge=0, le=MAX_TOTAL_COMMENT_JITTER)
-    comment_mode: Literal["comment", "reply", "mixed"] = "comment"
+    comment_mode: Literal["comment", "reply", "mixed"] = "mixed"
     reply_to_message_ids: list[int] = Field(default_factory=list)
-    reply_min_per_message: int = Field(default=0, ge=0)
+    reply_min_per_message: int = Field(default=1, ge=0)
     rule_set_id: int | None = None
     rule_set_version_id: int | None = None
     ai_model: str = ""
@@ -1026,10 +1022,6 @@ class TaskSettingsUpdate(TaskUpdate):
     messages_per_round_mode: Literal["auto", "manual"] | None = None
     messages_per_round: int | None = Field(default=None, ge=1)
     reply_min_per_round: int | None = Field(default=None, ge=0)
-    consecutive_message_enabled: bool | None = None
-    consecutive_message_min: int | None = Field(default=None, ge=2, le=4)
-    consecutive_message_max: int | None = Field(default=None, ge=2, le=4)
-    consecutive_message_probability: float | None = Field(default=None, ge=0, le=1)
     account_coverage_mode: Literal["natural", "all_accounts_daily"] | None = None
     per_account_daily_min_messages: int | None = Field(default=None, ge=1, le=2)
     per_account_daily_max_messages: int | None = Field(default=None, ge=1, le=2)
@@ -1039,7 +1031,7 @@ class TaskSettingsUpdate(TaskUpdate):
     hard_hourly_strategy: Literal["force_planning"] | None = None
     history_fetch_account_id: int | None = None
     auto_join_target: bool | None = None
-    auto_follow_required_channel: bool | None = None
+    group_bot_admission_required: bool | None = None
     auto_resolve_verification: bool | None = None
     ai_assisted_verification: bool | None = None
     captcha_failure_policy: Literal["manual"] | None = None
@@ -1109,13 +1101,7 @@ class TaskSettingsUpdate(TaskUpdate):
     max_comment_length: int | None = Field(default=None, ge=1)
     max_comments_per_account_per_hour: int | None = Field(default=None, ge=1, le=500)
 
-    @model_validator(mode="after")
-    def validate_consecutive_window(self) -> "TaskSettingsUpdate":
-        if self.consecutive_message_min is None or self.consecutive_message_max is None:
-            return self
-        if self.consecutive_message_min > self.consecutive_message_max:
-            raise ValueError("consecutive_message_min 不能大于 consecutive_message_max")
-        return self
+
 
     @model_validator(mode="after")
     def validate_account_coverage_window(self) -> "TaskSettingsUpdate":

@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
 from hashlib import sha256
 
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
+
+from app.models import Action, ConversationSpeakerTurn
+from app.services._common import _now
 
 from .ai_generation_dependencies import GenerationDependencies
 from .ai_generator import AiGenerationUnavailable, GeneratedContent, _copy_generated_content_metadata
@@ -26,7 +31,7 @@ def generate_quality_results(
     dependencies: GenerationDependencies,
 ) -> tuple[list[SlotGenerationResult], int]:
     if request.cached_contents:
-        return _cached_quality_results(request), request.cached_tokens
+        return _cached_quality_results(session, request), request.cached_tokens
     pending = list(range(len(request.batch_ids)))
     accepted: dict[int, SlotGenerationResult] = {}
     last_rejections: dict[int, SlotGenerationResult] = {}
@@ -56,14 +61,14 @@ def generate_quality_results(
                 continue
             accepted[item_index] = result
         pending = next_pending
-    _apply_static_coverage_fallback(request, pending, accepted, last_rejections)
+    _apply_static_coverage_fallback(session, request, pending, accepted, last_rejections)
     remaining = [index for index in pending if index not in accepted]
     if remaining and last_error and not last_rejections:
         raise last_error
     return _ordered_results(request, accepted, last_rejections), total_tokens
 
 
-def _cached_quality_results(request) -> list[SlotGenerationResult]:
+def _cached_quality_results(session: Session, request) -> list[SlotGenerationResult]:
     cached_fallbacks = _cached_static_fallbacks(request.cached_contents)
     accepted = cached_fallbacks if _static_fallback_enabled(request) else {}
     rejected = {
@@ -79,7 +84,7 @@ def _cached_quality_results(request) -> list[SlotGenerationResult]:
     results = _filter_stage_contents(request, plain_contents, indexes=plain_indexes)
     accepted.update({index: result for index, result in zip(plain_indexes, results) if not result.rejection_code})
     rejected.update({index: result for index, result in zip(plain_indexes, results) if result.rejection_code})
-    _apply_static_coverage_fallback(request, list(rejected), accepted, rejected)
+    _apply_static_coverage_fallback(session, request, list(rejected), accepted, rejected)
     return _ordered_results(request, accepted, rejected)
 
 
@@ -87,15 +92,17 @@ def _cached_static_fallbacks(contents: list[str]) -> dict[int, SlotGenerationRes
     return {
         index: SlotGenerationResult(
             content,
-            quality_fallback="emoji_react",
+            quality_fallback="check_in_fallback",
             fallback_reason=str(getattr(content, "fallback_reason", "") or "cached_static_fallback"),
         )
         for index, content in enumerate(contents)
-        if getattr(content, "quality_fallback", "") == "emoji_react"
+        if getattr(content, "quality_fallback", "") == "check_in_fallback"
+        or str(content).strip() == "签到"
     }
 
 
 def _apply_static_coverage_fallback(
+    session: Session,
     request,
     pending: list[int],
     accepted: dict[int, SlotGenerationResult],
@@ -103,20 +110,75 @@ def _apply_static_coverage_fallback(
 ) -> None:
     if not _static_fallback_enabled(request):
         return
+    from app.services.task_center.conversation_content_quality import resolve_content_fallback
+    from app.services.task_center.conversation_speaker_rotation import (
+        conversation_key_for_group,
+        last_platform_content_source,
+        last_platform_text,
+    )
+
     slots = list(request.config.get("generation_slots") or [])
     used_contents = {str(result.content) for result in accepted.values()}
+    conversation_key = conversation_key_for_group(group_id=request.group_id)
+    surface = "group_ai_chat"
+    last_source = last_platform_content_source(
+        session,
+        tenant_id=request.tenant_id,
+        surface=surface,
+        conversation_key=conversation_key,
+    )
+    last_text = last_platform_text(
+        session,
+        tenant_id=request.tenant_id,
+        surface=surface,
+        conversation_key=conversation_key,
+    )
+    session_30m_count = _session_check_in_count_30m(
+        session,
+        tenant_id=request.tenant_id,
+        surface=surface,
+        conversation_key=conversation_key,
+    )
+    task_hour_limit = _task_hour_check_in_limit(request.config)
+    task_hour_count = _task_hour_check_in_count(
+        session,
+        tenant_id=request.tenant_id,
+        task_id=request.task_id,
+    )
     for index in pending:
         slot = slots[index]
         if not str(slot.get("coverage_ledger_id") or "").strip():
             continue
         reason = (rejected.get(index) or SlotGenerationResult("")).rejection_code or "all_model_stages_rejected"
-        content = _unique_static_emoji_content(slot, index, reason, used_contents)
-        accepted[index] = SlotGenerationResult(
-            content,
-            quality_fallback="emoji_react",
+        decision = resolve_content_fallback(
+            is_reply=request.is_reply,
+            static_fallback_enabled=True,
+            last_platform_content_source=last_source,
+            last_platform_text=last_text,
+            session_check_in_count_30m=session_30m_count,
+            task_hour_check_in_count=task_hour_count,
+            task_hour_check_in_limit=task_hour_limit,
             fallback_reason=reason,
         )
-        used_contents.add(str(content))
+        if not decision.allowed:
+            rejected[index] = SlotGenerationResult(
+                "",
+                decision.code or "check_in_fallback_blocked",
+                decision.fallback_reason or reason,
+            )
+            continue
+        content = _check_in_fallback_content(slot, index, reason)
+        text = str(content)
+        if text in used_contents:
+            continue
+        accepted[index] = SlotGenerationResult(
+            content,
+            quality_fallback="check_in_fallback",
+            fallback_reason=reason,
+        )
+        used_contents.add(text)
+        session_30m_count += 1
+        task_hour_count += 1
         rejected.pop(index, None)
 
 
@@ -125,8 +187,73 @@ def _static_fallback_enabled(request) -> bool:
     return bool(
         not request.is_reply
         and not config.get("require_mimo_draft")
-        and not str(config.get("ai_model") or "").strip()
         and config.get("_ai_group_static_fallback_enabled", True)
+    )
+
+
+def _task_hour_check_in_limit(config: dict) -> int:
+    """PRD §7.2: max(1, floor(hourly_min_messages * 0.2)); no hard-hourly → ≤ 3."""
+    hourly_min = int(
+        config.get("hourly_min_messages")
+        or config.get("hourly_min")
+        or config.get("hard_hourly_min")
+        or 0
+    )
+    if hourly_min <= 0:
+        return 3
+    return max(1, hourly_min * 2 // 10)
+
+
+def _session_check_in_count_30m(
+    session: Session,
+    *,
+    tenant_id: int,
+    surface: str,
+    conversation_key: str,
+) -> int:
+    cutoff = _now() - timedelta(minutes=30)
+    return int(
+        session.scalar(
+            select(func.count(ConversationSpeakerTurn.id)).where(
+                ConversationSpeakerTurn.tenant_id == tenant_id,
+                ConversationSpeakerTurn.surface == surface,
+                ConversationSpeakerTurn.conversation_key == conversation_key,
+                ConversationSpeakerTurn.content_source == "check_in_fallback",
+                ConversationSpeakerTurn.observed_at >= cutoff,
+            )
+        )
+        or 0
+    )
+
+
+def _task_hour_check_in_count(session: Session, *, tenant_id: int, task_id: str) -> int:
+    now = _now()
+    hour_start = now.replace(minute=0, second=0, microsecond=0)
+    return int(
+        session.scalar(
+            select(func.count(Action.id)).where(
+                Action.tenant_id == tenant_id,
+                Action.task_id == task_id,
+                Action.status == "success",
+                Action.payload["content_source"].as_string() == "check_in_fallback",
+                Action.executed_at >= hour_start,
+            )
+        )
+        or 0
+    )
+
+
+def _check_in_fallback_content(slot: dict, index: int, reason: str) -> GeneratedContent:
+    from app.services.task_center.conversation_content_quality import CHECK_IN_TEXT
+
+    return GeneratedContent(
+        CHECK_IN_TEXT,
+        generation_source="static_safe_fallback",
+        quality_fallback="check_in_fallback",
+        fallback_stage="static_safe_fallback",
+        fallback_reason=reason,
+        slot_id=str(slot.get("slot_id") or ""),
+        sequence_index=index + 1,
     )
 
 
@@ -136,24 +263,12 @@ def _unique_static_emoji_content(
     reason: str,
     used_contents: set[str],
 ) -> GeneratedContent:
-    salt = 0
-    while True:
-        content = _static_emoji_content(slot, index, reason, salt=salt)
-        if str(content) not in used_contents:
-            return content
-        salt += 1
+    # Backward-compatible alias; humanization path uses exact 签到.
+    return _check_in_fallback_content(slot, index, reason)
 
 
 def _static_emoji_content(slot: dict, index: int, reason: str, *, salt: int = 0) -> GeneratedContent:
-    return GeneratedContent(
-        _static_emoji_text(slot, salt=salt),
-        generation_source="static_safe_fallback",
-        quality_fallback="emoji_react",
-        fallback_stage="static_safe_fallback",
-        fallback_reason=reason,
-        slot_id=str(slot.get("slot_id") or ""),
-        sequence_index=index + 1,
-    )
+    return _check_in_fallback_content(slot, index, reason)
 
 
 def _static_emoji_text(slot: dict, *, salt: int = 0) -> str:

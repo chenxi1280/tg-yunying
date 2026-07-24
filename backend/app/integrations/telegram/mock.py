@@ -23,6 +23,7 @@ from .contracts import (
     GroupSnapshot,
     InviteLinkResult,
     LoginChallenge,
+    MessageVisibilityResult,
     OperationResult,
     OutboundSegment,
     ProfileUpdateResult,
@@ -255,6 +256,38 @@ class TelegramGateway:
         if "blocked" in target.lower():
             return ChannelMembershipResult(False, "失败", FailureType.PEER_INVALID.value, "频道不可访问", "failed")
         return ChannelMembershipResult(True, detail=f"joined:{target}:{account_id}", membership_status="joined")
+
+    def probe_message_visible(
+        self,
+        account_id: int,
+        target_peer_id: str,
+        message_id: int,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> MessageVisibilityResult:
+        peer = str(target_peer_id or "")
+        if "missing" in peer.lower() or int(message_id or 0) <= 0:
+            return MessageVisibilityResult(
+                True,
+                detail="message_missing",
+                visible=False,
+                remote_message_id=str(message_id),
+            )
+        if "unknown" in peer.lower():
+            return MessageVisibilityResult(
+                False,
+                "失败",
+                FailureType.UNKNOWN.value,
+                "visibility_unknown",
+                visible=None,
+                remote_message_id=str(message_id),
+            )
+        return MessageVisibilityResult(
+            True,
+            detail="message_visible",
+            visible=True,
+            remote_message_id=str(message_id),
+        )
 
     def export_group_invite_link(
         self,

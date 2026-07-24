@@ -778,9 +778,9 @@ export function TaskCenterDetailModal({
             items={[
               { key: 'topic_directions', label: '话题方向', children: topicDirectionTags(detail.task.type_config?.topic_directions) },
               { key: 'teacher_targets', label: '讨论老师', children: teacherTargetTags(detail.task.type_config?.teacher_targets) },
-              { key: 'burst_enabled', label: '同账号连发', children: detail.task.type_config?.consecutive_message_enabled ? '开启' : '关闭' },
-              { key: 'burst_window', label: '连发窗口', children: `${detail.task.type_config?.consecutive_message_min ?? 2}-${detail.task.type_config?.consecutive_message_max ?? 4}` },
-              { key: 'burst_probability', label: '连发概率', children: detail.task.type_config?.consecutive_message_probability ?? 0.3 },
+              { key: 'speaker_rotation', label: '账号轮换', children: '必须' },
+              { key: 'group_bot_admission', label: '群管准入', children: detail.task.type_config?.group_bot_admission_required === false ? '异常关闭' : '必须' },
+              { key: 'reply_min_per_round', label: '每轮最少引用', children: detail.task.type_config?.reply_min_per_round ?? 1 },
               { key: 'coverage_mode', label: '全账号日覆盖', children: (accountCoverage?.mode ?? detail.task.type_config?.account_coverage_mode) === 'all_accounts_daily' ? '开启' : '关闭' },
               { key: 'coverage_window', label: '覆盖窗口', children: `${detail.task.type_config?.coverage_window_hours ?? 24} 小时` },
               { key: 'coverage_range', label: '每账号消息数', children: `${detail.task.type_config?.per_account_daily_min_messages ?? 1}-${detail.task.type_config?.per_account_daily_max_messages ?? 2}` },

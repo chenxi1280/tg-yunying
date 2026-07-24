@@ -332,10 +332,13 @@ export function WizardTypeConfig({
           <Form.Item name="messages_per_round_mode" label="每轮发言"><Select options={[{ value: 'auto', label: '系统自动判定' }, { value: 'manual', label: '手动指定' }]} /></Form.Item>
           <Form.Item name="messages_per_round" label="每轮总发言数"><InputNumber min={1} onChange={markMessagesPerRoundManual} /></Form.Item>
           <Form.Item name="reply_min_per_round" label="每轮最少引用回复数" dependencies={['messages_per_round']} rules={replyMinPerRoundRules}><InputNumber min={0} /></Form.Item>
-          <Form.Item name="consecutive_message_enabled" label="同账号连发"><Select options={[{ value: true, label: '开启' }, { value: false, label: '关闭' }]} /></Form.Item>
-          <Form.Item name="consecutive_message_min" label="连发最少条数"><InputNumber min={2} max={4} precision={0} /></Form.Item>
-          <Form.Item name="consecutive_message_max" label="连发最多条数"><InputNumber min={2} max={4} precision={0} /></Form.Item>
-          <Form.Item name="consecutive_message_probability" label="连发概率"><InputNumber min={0} max={1} step={0.05} /></Form.Item>
+          <Form.Item label="账号轮换">
+            <Input value="必须" disabled />
+          </Form.Item>
+          <Form.Item label="群管准入">
+            <Input value="必须" disabled />
+          </Form.Item>
+          <Form.Item name="group_bot_admission_required" hidden><Input /></Form.Item>
           <Form.Item name="account_coverage_mode" label="全账号日覆盖模式">
             <Select options={[{ value: 'natural', label: '关闭' }, { value: 'all_accounts_daily', label: '开启' }]} />
           </Form.Item>
@@ -417,7 +420,7 @@ export function WizardTypeConfig({
               children: (
                 <div className="form-grid">
                   <Form.Item name="auto_join_target" label="自动入群"><Select options={[{ value: true, label: '开启' }, { value: false, label: '关闭' }]} /></Form.Item>
-                  <Form.Item name="auto_follow_required_channel" label="自动关注关联频道"><Select options={[{ value: true, label: '开启' }, { value: false, label: '关闭' }]} /></Form.Item>
+
                   <Form.Item name="auto_resolve_verification" label="自动处理验证"><Select options={[{ value: true, label: '开启' }, { value: false, label: '关闭' }]} /></Form.Item>
                   <Form.Item name="ai_assisted_verification" label="AI 辅助验证"><Select options={[{ value: true, label: '开启' }, { value: false, label: '关闭' }]} /></Form.Item>
                   <Form.Item name="captcha_failure_policy" label="图形验证码失败处理"><Select options={[{ value: 'manual', label: '转人工处理' }]} /></Form.Item>

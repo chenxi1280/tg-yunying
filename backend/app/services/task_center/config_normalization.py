@@ -218,10 +218,29 @@ def _next_default_rule_version_number(session: Session, rule_set: RuleSet) -> in
     return int(latest or 0) + 1
 
 
+_REMOVED_GROUP_AI_FIELDS = {
+    "consecutive_message_enabled",
+    "consecutive_message_min",
+    "consecutive_message_max",
+    "consecutive_message_probability",
+    "auto_follow_required_channel",
+}
+
+
 def _normalize_legacy_group_ai_config(task_type: str, data: dict[str, Any]) -> dict[str, Any]:
-    if task_type != "group_ai_chat" or "messages_per_round_mode" in data or "messages_per_round" not in data:
-        return data
-    return {**data, "messages_per_round_mode": "manual"}
+    next_data = dict(data or {})
+    if task_type == "group_ai_chat":
+        for field in _REMOVED_GROUP_AI_FIELDS:
+            next_data.pop(field, None)
+        next_data["group_bot_admission_required"] = True
+        if "messages_per_round_mode" not in next_data and "messages_per_round" in next_data:
+            next_data["messages_per_round_mode"] = "manual"
+        return next_data
+    if task_type == "channel_comment":
+        # Preserve explicit create/update values; only fill missing keys for legacy JSON.
+        next_data.setdefault("comment_mode", "mixed")
+        next_data.setdefault("reply_min_per_message", 1)
+    return next_data
 
 
 def pacing_config_payload(pacing_config) -> dict[str, Any]:

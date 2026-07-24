@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.pagination import pagination_headers
@@ -11,12 +12,16 @@ from app.auth import CurrentUser, ensure_permission, get_current_user
 from app.config import get_settings
 from app.database import get_session
 from app.common.http import not_found
-from app.models import ChannelMessage, ChannelMessageComment, ManualOperationRecord, OperationTarget, OperationTask, OperationTaskAttempt
+from app.models import ChannelMessage, ChannelMessageComment, ManualOperationRecord, OperationTarget, OperationTask, OperationTaskAttempt, TgGroup
 from app.schemas import (
     ChannelMessageCreate,
     ChannelMessageCommentOut,
     ChannelMessageCommentSyncOut,
     ChannelMessageOut,
+    GroupBotAdmissionAbandonRequest,
+    GroupBotAdmissionOut,
+    GroupBotAdmissionPolicyCreate,
+    GroupBotAdmissionPolicyOut,
     ManualOperationRecordOut,
     OperationTargetCreate,
     OperationTargetAccountUpdate,
@@ -269,6 +274,199 @@ def patch_operation_target_lifecycle(
         blocked_coverage=result.blocked_coverage,
         paused_tasks=result.paused_tasks,
     )
+
+
+@router.post(
+    "/api/operation-targets/{target_id}/group-bot-admission-policies",
+    response_model=GroupBotAdmissionPolicyOut,
+)
+def post_group_bot_admission_policy(
+    target_id: int,
+    payload: GroupBotAdmissionPolicyCreate,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> GroupBotAdmissionPolicyOut:
+    ensure_permission(current_user, "targets.manage")
+    from app.services.task_center.group_bot_admission import create_policy, reconcile_unresolved_with_not_required
+
+    target = session.get(OperationTarget, target_id)
+    if not target or target.tenant_id != (current_user.tenant_id or 1):
+        raise not_found("target not found")
+    group = session.scalar(
+        select(TgGroup).where(
+            TgGroup.tenant_id == target.tenant_id,
+            TgGroup.tg_peer_id == target.tg_peer_id,
+        )
+    )
+    if group is None and payload.group_id:
+        group = session.get(TgGroup, int(payload.group_id))
+    if group is None or group.tenant_id != target.tenant_id:
+        raise HTTPException(status_code=422, detail="group not resolved for target")
+    try:
+        policy = create_policy(
+            session,
+            tenant_id=target.tenant_id,
+            group_id=int(group.id),
+            completion_policy=payload.completion_policy,
+            reason=payload.reason,
+            evidence_ref=payload.evidence_ref,
+            created_by=current_user.name,
+            trusted_bot_peer_id=payload.trusted_bot_peer_id,
+            expected_policy_version=payload.expected_policy_version,
+        )
+        if payload.completion_policy == "not_required":
+            reconcile_unresolved_with_not_required(session, tenant_id=target.tenant_id, group_id=int(group.id))
+        session.commit()
+        session.refresh(policy)
+        return GroupBotAdmissionPolicyOut.model_validate(policy, from_attributes=True)
+    except ValueError as exc:
+        if str(exc) == "policy_version_conflict":
+            raise HTTPException(status_code=409, detail="policy_version_conflict") from exc
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post(
+    "/api/groups/{group_id}/group-bot-admissions/{account_id}/abandon",
+    response_model=GroupBotAdmissionOut,
+)
+def post_group_bot_admission_abandon(
+    group_id: int,
+    account_id: int,
+    payload: GroupBotAdmissionAbandonRequest,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> GroupBotAdmissionOut:
+    ensure_permission(current_user, "targets.manage")
+    from app.services.task_center.group_bot_admission import abandon_admission, get_admission
+
+    tenant_id = current_user.tenant_id or 1
+    admission = get_admission(session, tenant_id=tenant_id, group_id=group_id, account_id=account_id)
+    if admission is None:
+        raise not_found("admission not found")
+    try:
+        abandon_admission(
+            session,
+            admission=admission,
+            reason=payload.reason,
+            evidence_ref=payload.evidence_ref,
+            abandoned_by=current_user.name,
+            expected_admission_version=payload.expected_admission_version,
+        )
+        session.commit()
+        session.refresh(admission)
+        return GroupBotAdmissionOut.model_validate(admission, from_attributes=True)
+    except ValueError as exc:
+        if str(exc) == "admission_version_conflict":
+            raise HTTPException(status_code=409, detail="admission_version_conflict") from exc
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get(
+    "/api/groups/{group_id}/group-bot-admissions",
+    response_model=list[GroupBotAdmissionOut],
+)
+def list_group_bot_admissions(
+    group_id: int,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> list[GroupBotAdmissionOut]:
+    ensure_permission(current_user, "targets.view")
+    from app.models import GroupBotAdmission
+    from sqlalchemy import select
+
+    rows = session.scalars(
+        select(GroupBotAdmission).where(
+            GroupBotAdmission.tenant_id == (current_user.tenant_id or 1),
+            GroupBotAdmission.group_id == group_id,
+        )
+    ).all()
+    return [GroupBotAdmissionOut.model_validate(row, from_attributes=True) for row in rows]
+
+
+@router.post(
+    "/api/groups/{group_id}/group-bot-admissions/{account_id}/reopen",
+    response_model=GroupBotAdmissionOut,
+)
+def post_group_bot_admission_reopen(
+    group_id: int,
+    account_id: int,
+    payload: GroupBotAdmissionAbandonRequest,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> GroupBotAdmissionOut:
+    ensure_permission(current_user, "targets.manage")
+    from app.services.task_center.group_bot_admission import get_admission, reopen_admission
+
+    tenant_id = current_user.tenant_id or 1
+    admission = get_admission(session, tenant_id=tenant_id, group_id=group_id, account_id=account_id)
+    if admission is None:
+        raise not_found("admission not found")
+    try:
+        reopen_admission(
+            session,
+            admission=admission,
+            expected_admission_version=payload.expected_admission_version,
+            reopened_by=current_user.name,
+        )
+        session.commit()
+        session.refresh(admission)
+        return GroupBotAdmissionOut.model_validate(admission, from_attributes=True)
+    except ValueError as exc:
+        if str(exc) == "admission_version_conflict":
+            raise HTTPException(status_code=409, detail="admission_version_conflict") from exc
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post(
+    "/api/operation-targets/{target_id}/group-bot-admission-policies/{policy_id}/revoke",
+    response_model=GroupBotAdmissionPolicyOut,
+)
+def post_group_bot_admission_policy_revoke(
+    target_id: int,
+    policy_id: int,
+    payload: GroupBotAdmissionPolicyCreate,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> GroupBotAdmissionPolicyOut:
+    ensure_permission(current_user, "targets.manage")
+    from app.models import GroupBotAdmissionPolicy
+    from app.services.task_center.group_bot_admission import revoke_policy
+
+    policy = session.get(GroupBotAdmissionPolicy, policy_id)
+    if not policy or policy.tenant_id != (current_user.tenant_id or 1):
+        raise not_found("policy not found")
+    try:
+        revoke_policy(
+            session,
+            policy=policy,
+            revoked_by=current_user.name,
+            expected_policy_version=payload.expected_policy_version or 0,
+        )
+        session.commit()
+        session.refresh(policy)
+        return GroupBotAdmissionPolicyOut.model_validate(policy, from_attributes=True)
+    except ValueError as exc:
+        if str(exc) == "policy_version_conflict":
+            raise HTTPException(status_code=409, detail="policy_version_conflict") from exc
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post(
+    "/api/groups/{group_id}/group-bot-admissions/reconcile",
+    response_model=dict,
+)
+def post_group_bot_admission_reconcile(
+    group_id: int,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    ensure_permission(current_user, "targets.manage")
+    from app.services.task_center.group_bot_admission import reconcile_unresolved_with_not_required
+
+    tenant_id = current_user.tenant_id or 1
+    count = reconcile_unresolved_with_not_required(session, tenant_id=tenant_id, group_id=group_id)
+    session.commit()
+    return {"reconciled": count}
 
 
 @router.post("/api/operation-targets/{target_id}/reactivate", response_model=OperationTargetOut)

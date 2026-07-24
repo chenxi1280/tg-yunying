@@ -5,7 +5,7 @@ from collections.abc import Callable, Iterable
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import GroupContextMessage, TgAccount, TgGroup
+from app.models import GroupBotAdmission, GroupContextMessage, TgAccount, TgGroup
 
 from .group_context_messages import try_insert_context_message
 from .required_channel_prompts import apply_required_channel_prompt_admission
@@ -25,8 +25,29 @@ def insert_context_snapshots(
 ) -> int:
     inserted = 0
     for snapshot in snapshots:
-        message = _context_message(session, group, account, snapshot, ignored_sender=ignored_sender, learning_scene=learning_scene)
+        # Control-event path runs before context dedupe / ignore / learning filters.
+        _process_group_bot_control_event(session, group, snapshot)
+        _record_speaker_event(session, group, snapshot, account=account)
+
+        message = _context_message(
+            session,
+            group,
+            account,
+            snapshot,
+            ignored_sender=ignored_sender,
+            learning_scene=learning_scene,
+        )
         if message is None or not try_insert_context_message(session, message):
+            # Even if not inserted as AI context, still run legacy required-channel helper
+            # for non-AI-group tasks; group-bot admission already handled above.
+            content = str(getattr(snapshot, "content", "") or "").strip()
+            if content:
+                apply_required_channel_prompt_admission(
+                    session,
+                    group,
+                    content,
+                    remote_message_id=str(getattr(snapshot, "remote_message_id", "") or ""),
+                )
             continue
         apply_required_channel_prompt_admission(
             session,
@@ -40,6 +61,161 @@ def insert_context_snapshots(
     return inserted
 
 
+def _process_group_bot_control_event(session: Session, group: TgGroup, snapshot) -> None:
+    from app.services.task_center.group_bot_admission import (
+        apply_confirmation_event,
+        attribute_prompt_to_account,
+        close_observation_if_due,
+        get_admission,
+        ingest_trusted_bot_prompt,
+    )
+
+    content = str(getattr(snapshot, "content", "") or "")
+    remote_id = str(getattr(snapshot, "remote_message_id", "") or "")
+    is_bot = bool(getattr(snapshot, "is_bot", False))
+    sender_role = str(getattr(snapshot, "sender_role", "") or "member").lower()
+    bot_peer = str(getattr(snapshot, "sender_peer_id", "") or "")
+    if not remote_id:
+        return
+
+    waiting = list(
+        session.scalars(
+            select(GroupBotAdmission).where(
+                GroupBotAdmission.tenant_id == group.tenant_id,
+                GroupBotAdmission.group_id == group.id,
+                GroupBotAdmission.state.in_(
+                    [
+                        "awaiting_group_bot_rule",
+                        "observation_open",
+                        "group_bot_policy_unresolved",
+                        "required_channel_follow_pending",
+                        "following_required_channel",
+                        "awaiting_group_bot_confirmation",
+                        "group_bot_rule_unattributed",
+                    ]
+                ),
+            )
+        )
+    )
+    for admission in waiting:
+        close_observation_if_due(session, admission=admission)
+
+    if not is_bot:
+        return
+    is_admin_bot = sender_role in {"admin", "administrator", "creator", "owner"} or bool(
+        getattr(snapshot, "sender_is_admin", False)
+    )
+    if not waiting:
+        # No waiting admissions: still allow legacy prompt helper via normal path.
+        return
+
+    waiting_ids = [int(item.account_id) for item in waiting]
+    usernames = {
+        int(item.account_id): str(getattr(item, "account_username", "") or "")
+        for item in waiting
+    }
+    # Best-effort account identity from TgAccount rows.
+    accounts = {
+        int(row.id): row
+        for row in session.scalars(select(TgAccount).where(TgAccount.id.in_(waiting_ids))).all()
+    }
+    usernames = {
+        account_id: str(accounts[account_id].username or "") if account_id in accounts else ""
+        for account_id in waiting_ids
+    }
+    display_names = {
+        account_id: str(accounts[account_id].display_name or accounts[account_id].username or "")
+        if account_id in accounts
+        else ""
+        for account_id in waiting_ids
+    }
+    target_id, reason = attribute_prompt_to_account(
+        text=content,
+        waiting_account_ids=waiting_ids,
+        account_usernames=usernames,
+        account_display_names=display_names,
+    )
+    if target_id is None:
+        for admission in waiting:
+            if admission.state in {
+                "awaiting_group_bot_rule",
+                "observation_open",
+                "group_bot_policy_unresolved",
+            }:
+                admission.state = "group_bot_rule_unattributed"
+                admission.failure_code = "group_bot_rule_unattributed"
+        session.flush()
+        return
+
+    admission = get_admission(
+        session,
+        tenant_id=group.tenant_id,
+        group_id=group.id,
+        account_id=int(target_id),
+    )
+    if admission is None:
+        return
+    if admission.state in {"awaiting_group_bot_confirmation", "following_required_channel", "required_channel_follow_pending"}:
+        apply_confirmation_event(
+            session,
+            admission=admission,
+            message_id=remote_id,
+            text=content,
+            bot_peer_id=bot_peer,
+            button_confirmed=bool(getattr(snapshot, "button_confirmed", False)),
+        )
+    from app.services.task_center.group_bot_admission import resolve_bound_task_id_for_group
+
+    bound_task_id = resolve_bound_task_id_for_group(
+        session,
+        tenant_id=group.tenant_id,
+        group_id=int(group.id),
+    )
+    ingest_trusted_bot_prompt(
+        session,
+        admission=admission,
+        message_id=remote_id,
+        text=content,
+        bot_peer_id=bot_peer,
+        is_admin_bot=is_admin_bot,
+        bound_task_id=bound_task_id,
+    )
+    # reason retained for audit via failure/evidence fields when unattributed handled above.
+    if reason:
+        admission.evidence_ref = f"attr:{reason};msg:{remote_id}"
+        session.flush()
+
+
+def _record_speaker_event(session: Session, group: TgGroup, snapshot, *, account: TgAccount) -> None:
+    from app.services.task_center.conversation_speaker_rotation import (
+        CONTROL_KIND,
+        HUMAN_KIND,
+        conversation_key_for_group,
+        record_conversation_event,
+    )
+
+    remote_id = str(getattr(snapshot, "remote_message_id", "") or "")
+    if not remote_id:
+        return
+    is_bot = bool(getattr(snapshot, "is_bot", False))
+    sender_role = str(getattr(snapshot, "sender_role", "") or "").lower()
+    if is_bot or sender_role in {"admin", "administrator", "creator", "system", "service"}:
+        kind = CONTROL_KIND if is_bot else "system"
+    else:
+        # Platform accounts are not tagged here; default to human for external senders.
+        kind = HUMAN_KIND
+    record_conversation_event(
+        session,
+        tenant_id=group.tenant_id,
+        surface="group_ai_chat",
+        conversation_key=conversation_key_for_group(group_id=int(group.id)),
+        remote_message_id=remote_id,
+        sender_kind=kind,
+        remote_cursor=remote_id,
+        account_id=None,
+    )
+
+
 def _context_message(
     session: Session,
     group: TgGroup,
@@ -50,11 +226,17 @@ def _context_message(
     learning_scene: str | None,
 ) -> GroupContextMessage | None:
     content = str(snapshot.content or "").strip()
+    # Empty content control messages are still handled in control path; skip AI context.
     if not content:
         return None
     if learning_scene:
-        record_tenant_group_learning_sample(session, group, snapshot)
+        # Control bots should not enter learning samples.
+        if not bool(getattr(snapshot, "is_bot", False)):
+            record_tenant_group_learning_sample(session, group, snapshot)
     if ignored_sender(snapshot) or _message_exists(session, group.id, str(snapshot.remote_message_id)):
+        return None
+    # Do not put group-bot control prompts into AI-usable context when they look like rules.
+    if bool(getattr(snapshot, "is_bot", False)) and _looks_like_group_bot_rule(content):
         return None
     return GroupContextMessage(
         tenant_id=group.tenant_id,
@@ -70,6 +252,12 @@ def _context_message(
         remote_message_id=str(snapshot.remote_message_id),
         sent_at=snapshot.sent_at,
     )
+
+
+def _looks_like_group_bot_rule(text: str) -> bool:
+    lowered = (text or "").lower()
+    markers = ("关注", "频道", "验证", "解禁", "发言", "follow", "channel", "unmute")
+    return any(marker in text or marker in lowered for marker in markers)
 
 
 def _message_exists(session: Session, group_id: int, remote_message_id: str) -> bool:

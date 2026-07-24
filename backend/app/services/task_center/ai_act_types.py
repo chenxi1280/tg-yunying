@@ -8,7 +8,6 @@ PRD_AI_GROUP_ACT_TYPES = frozenset(
         "detail_follow",
         "light_disagree",
         "topic_shift",
-        "emoji_react",
         "silence",
     }
 )

@@ -76,6 +76,7 @@ from .dispatcher import (
     recover_expired_claims,
     recover_expired_hard_hourly_actions,
     recover_hard_hourly_delivery_credits,
+    recover_pending_visibility_credits,
     recover_unreachable_hard_hourly_actions,
 )
 from .daily_coverage import recover_terminal_coverage_reservations
@@ -2722,6 +2723,7 @@ def _drain_task_recovery(session_factory, *, limit: int, process_type: str | Non
         processed += recover_unreachable_hard_hourly_actions(session, limit=_hard_hourly_recovery_limit(limit))
         processed += recover_expired_hard_hourly_actions(session, limit=_hard_hourly_recovery_limit(limit))
         processed += recover_hard_hourly_delivery_credits(session, limit=_hard_hourly_recovery_limit(limit))
+        processed += recover_pending_visibility_credits(session, limit=_hard_hourly_recovery_limit(limit))
         session.commit()
         # Fast-track locks and updates only Action rows.  Release those locks
         # before separately persisting Task-level observability counters.

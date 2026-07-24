@@ -153,7 +153,8 @@ def _task_settings_text(session: Session, tenant_id: int, task_id: str) -> str:
             f"讨论老师数：{len(targets)}",
             f"话题摘要：{_compact_list(topics) or '-'}",
             f"讨论老师摘要：{_compact_list(targets) or '-'}",
-            f"连发：{config.get('consecutive_message_enabled', False)} {config.get('consecutive_message_min', 2)}-{config.get('consecutive_message_max', 4)}",
+            f"账号轮换：必须；群管准入：{config.get('group_bot_admission_required', True)}",
+            f"最少引用/轮：{config.get('reply_min_per_round', 1)}",
             f"全账号日覆盖：{config.get('account_coverage_mode', 'natural')} {config.get('per_account_daily_min_messages', 1)}-{config.get('per_account_daily_max_messages', 2)}",
             "Bot 可设置：话题方向、讨论老师；其它配置请到 Web 任务详情。",
         ]

@@ -161,6 +161,9 @@ function failureDiagnosis(action: TaskCenterAction) {
 function actionReplyTarget(action: TaskCenterAction) {
   const payload = action.payload ?? {};
   const isCommentAction = action.task_type === 'channel_comment' || action.action_type === 'post_comment';
+  if (payload.content_source === 'check_in_fallback' || payload.quality_fallback === 'check_in_fallback') {
+    return <Tag color="orange">签到</Tag>;
+  }
   if (!payload.reply_to_message_id) return <Tag>{isCommentAction ? '普通评论' : '普通发言'}</Tag>;
   const label = payload.reply_target_author || payload.reply_target_label || `#${payload.reply_to_message_id}`;
   return <Space size={4}><Tag color="blue">{isCommentAction ? '回复评论' : '引用回复'}</Tag><Typography.Text ellipsis>{label}：{payload.reply_target_preview || '-'}</Typography.Text></Space>;
@@ -1294,7 +1297,7 @@ export default function TaskCenterView({
   function membershipStrategyPayload(values: any) {
     return {
       auto_join_target: values.auto_join_target !== false,
-      auto_follow_required_channel: values.auto_follow_required_channel !== false,
+      group_bot_admission_required: true,
       auto_resolve_verification: values.auto_resolve_verification !== false,
       ai_assisted_verification: values.ai_assisted_verification !== false,
       captcha_failure_policy: values.captcha_failure_policy ?? 'manual',
@@ -1365,11 +1368,8 @@ export default function TaskCenterView({
         account_memory_depth: values.account_memory_depth ?? 3,
         messages_per_round_mode: values.messages_per_round_mode ?? 'auto',
         messages_per_round: values.messages_per_round ?? 1,
-        reply_min_per_round: values.reply_min_per_round ?? 0,
-        consecutive_message_enabled: Boolean(values.consecutive_message_enabled),
-        consecutive_message_min: values.consecutive_message_min ?? 2,
-        consecutive_message_max: values.consecutive_message_max ?? 4,
-        consecutive_message_probability: values.consecutive_message_probability ?? 0.3,
+        reply_min_per_round: values.reply_min_per_round ?? 1,
+        group_bot_admission_required: true,
         account_coverage_mode: values.account_coverage_mode ?? 'all_accounts_daily',
         per_account_daily_min_messages: values.per_account_daily_min_messages ?? 1,
         per_account_daily_max_messages: values.per_account_daily_max_messages ?? 2,
@@ -1455,11 +1455,8 @@ export default function TaskCenterView({
         account_memory_depth: values.account_memory_depth ?? 3,
         messages_per_round_mode: values.messages_per_round_mode ?? 'auto',
         messages_per_round: values.messages_per_round ?? 1,
-        reply_min_per_round: values.reply_min_per_round ?? 0,
-        consecutive_message_enabled: Boolean(values.consecutive_message_enabled),
-        consecutive_message_min: values.consecutive_message_min ?? 2,
-        consecutive_message_max: values.consecutive_message_max ?? 4,
-        consecutive_message_probability: values.consecutive_message_probability ?? 0.3,
+        reply_min_per_round: values.reply_min_per_round ?? 1,
+        group_bot_admission_required: true,
         account_coverage_mode: values.account_coverage_mode ?? 'all_accounts_daily',
         per_account_daily_min_messages: values.per_account_daily_min_messages ?? 1,
         per_account_daily_max_messages: values.per_account_daily_max_messages ?? 2,
