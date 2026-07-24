@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session
 
 from app.database import Base
@@ -290,3 +290,33 @@ def test_group_ai_send_cooldown_crosses_beijing_day(monkeypatch: pytest.MonkeyPa
         assert action.status == "pending"
         assert action.result["validation_stage"] == "group_send_limit"
         assert 0 < action.result["retry_after_seconds"] <= 300
+
+
+@pytest.mark.no_postgres
+def test_group_ai_send_limit_aggregates_execution_attempts_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 7, 22, 12, 0)
+    monkeypatch.setattr(group_send_limits, "_now", lambda: now_value)
+
+    with Session(engine) as session:
+        action = _seed_send_scope(
+            session,
+            daily_limit=10,
+            group_cooldown_seconds=0,
+            now_value=now_value,
+        )
+        group = session.get(TgGroup, 7)
+        statements: list[str] = []
+
+        def capture_execution_attempt_query(_conn, _cursor, statement, _parameters, _context, _executemany) -> None:
+            if "execution_attempts" in statement.lower():
+                statements.append(statement)
+
+        event.listen(engine, "before_cursor_execute", capture_execution_attempt_query)
+        try:
+            assert group_send_limits.group_send_slot_block(session, action=action, group=group) is None
+        finally:
+            event.remove(engine, "before_cursor_execute", capture_execution_attempt_query)
+
+    assert len(statements) == 1

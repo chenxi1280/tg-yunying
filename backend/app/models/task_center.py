@@ -169,6 +169,16 @@ class Action(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
+Index(
+    "ix_actions_send_group_slot_lookup",
+    Action.tenant_id,
+    Action.payload["group_id"].as_integer(),
+    Action.id,
+    sqlite_where=Action.action_type == "send_message",
+    postgresql_where=Action.action_type == "send_message",
+)
+
+
 class ExecutionAttempt(Base):
     __tablename__ = "execution_attempts"
     __table_args__ = (

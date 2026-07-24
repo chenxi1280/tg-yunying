@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, case, func, select
 from sqlalchemy.orm import Session
 
 from app.models import Action, ExecutionAttempt, FailureType, MessageTask, TaskStatus, TgGroup
@@ -22,6 +22,12 @@ class GroupSendSlotBlock:
     retry_after_seconds: int
 
 
+@dataclass(frozen=True)
+class GroupSendSlotSummary:
+    same_day_count: int
+    latest_at: datetime | None
+
+
 def group_send_slot_block(
     session: Session,
     *,
@@ -36,16 +42,16 @@ def group_send_slot_block(
             f"群不在活动时段 {group.active_window}，延后至 {active_window_retry_at.isoformat()}",
             max(1, int((active_window_retry_at - now_value).total_seconds())),
         )
-    attempts = _same_day_group_attempts(session, action=action, group=group, now_value=now_value)
-    legacy_count = _legacy_group_send_count(session, action=action, group=group, now_value=now_value)
-    if len(attempts) + legacy_count >= int(group.daily_limit or 0):
+    attempt_summary = _group_attempt_summary(session, action=action, group=group, now_value=now_value)
+    legacy_summary = _legacy_group_send_summary(session, action=action, group=group, now_value=now_value)
+    if attempt_summary.same_day_count + legacy_summary.same_day_count >= int(group.daily_limit or 0):
         retry_at = _next_daily_group_window_start(group, now_value)
         return GroupSendSlotBlock(
             FailureType.SLOWMODE.value,
             f"群当日发送已达上限 {group.daily_limit}",
             max(1, int((retry_at - now_value).total_seconds())),
         )
-    last_slot_at = _latest_group_slot_at(session, action=action, group=group)
+    last_slot_at = _latest_group_slot_at(attempt_summary.latest_at, legacy_summary.latest_at)
     cooldown = int(group.group_cooldown_seconds or 0)
     if cooldown > 0 and last_slot_at is not None:
         elapsed = (now_value - last_slot_at).total_seconds()
@@ -59,51 +65,31 @@ def group_send_slot_block(
     return None
 
 
-def _same_day_group_attempts(
+def _group_attempt_summary(
     session: Session,
     *,
     action: Action,
     group: TgGroup,
     now_value: datetime,
-) -> list[ExecutionAttempt]:
+) -> GroupSendSlotSummary:
     day_start, day_end = beijing_day_bounds(now_value)
-    return list(session.scalars(
-        select(ExecutionAttempt)
-        .join(Action, Action.id == ExecutionAttempt.action_id)
-        .where(
-            Action.tenant_id == action.tenant_id,
-            Action.action_type == "send_message",
-            Action.payload["group_id"].as_integer() == group.id,
-            ExecutionAttempt.status.in_(GROUP_SEND_SLOT_STATUSES),
-            ExecutionAttempt.before_call_at >= day_start,
-            ExecutionAttempt.before_call_at < day_end,
-        )
-    ))
-
-
-def _legacy_group_send_count(
-    session: Session,
-    *,
-    action: Action,
-    group: TgGroup,
-    now_value: datetime,
-) -> int:
-    day_start, day_end = beijing_day_bounds(now_value)
-    filters = (
-        MessageTask.tenant_id == action.tenant_id,
-        MessageTask.group_id == group.id,
-        MessageTask.status == TaskStatus.SENT.value,
-        MessageTask.sent_at.is_not(None),
-        MessageTask.sent_at >= day_start,
-        MessageTask.sent_at < day_end,
+    same_day_count = func.coalesce(
+        func.sum(
+            case(
+                (
+                    and_(
+                        ExecutionAttempt.before_call_at >= day_start,
+                        ExecutionAttempt.before_call_at < day_end,
+                    ),
+                    1,
+                ),
+                else_=0,
+            )
+        ),
+        0,
     )
-    count = session.scalar(select(func.count(MessageTask.id)).where(*filters)) or 0
-    return int(count)
-
-
-def _latest_group_slot_at(session: Session, *, action: Action, group: TgGroup) -> datetime | None:
-    attempt_at = session.scalar(
-        select(func.max(ExecutionAttempt.before_call_at))
+    count, latest_at = session.execute(
+        select(same_day_count, func.max(ExecutionAttempt.before_call_at))
         .join(Action, Action.id == ExecutionAttempt.action_id)
         .where(
             Action.tenant_id == action.tenant_id,
@@ -111,16 +97,39 @@ def _latest_group_slot_at(session: Session, *, action: Action, group: TgGroup) -
             Action.payload["group_id"].as_integer() == group.id,
             ExecutionAttempt.status.in_(GROUP_SEND_SLOT_STATUSES),
         )
+    ).one()
+    return GroupSendSlotSummary(same_day_count=int(count or 0), latest_at=as_beijing(latest_at))
+
+
+def _legacy_group_send_summary(
+    session: Session,
+    *,
+    action: Action,
+    group: TgGroup,
+    now_value: datetime,
+) -> GroupSendSlotSummary:
+    day_start, day_end = beijing_day_bounds(now_value)
+    same_day_count = func.coalesce(
+        func.sum(
+            case(
+                (and_(MessageTask.sent_at >= day_start, MessageTask.sent_at < day_end), 1),
+                else_=0,
+            )
+        ),
+        0,
     )
-    legacy_at = session.scalar(
-        select(func.max(MessageTask.sent_at)).where(
+    count, latest_at = session.execute(
+        select(same_day_count, func.max(MessageTask.sent_at)).where(
             MessageTask.tenant_id == action.tenant_id,
             MessageTask.group_id == group.id,
             MessageTask.status == TaskStatus.SENT.value,
             MessageTask.sent_at.is_not(None),
         )
-    )
-    values = [as_beijing(attempt_at), as_beijing(legacy_at)]
+    ).one()
+    return GroupSendSlotSummary(same_day_count=int(count or 0), latest_at=as_beijing(latest_at))
+
+
+def _latest_group_slot_at(*values: datetime | None) -> datetime | None:
     return max((value for value in values if value is not None), default=None)
 
 
