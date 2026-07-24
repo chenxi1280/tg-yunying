@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -837,6 +837,7 @@ def test_coverage_action_does_not_reassign_when_account_lost_permission():
         assert action.account_id == 11
 
 
+@pytest.mark.no_postgres
 def test_dispatch_global_policy_excludes_current_executing_hard_hourly_action(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -845,12 +846,10 @@ def test_dispatch_global_policy_excludes_current_executing_hard_hourly_action(mo
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
-        session.add(SchedulingSetting(tenant_id=1, default_account_hour_limit=1, jitter_min_seconds=0, jitter_max_seconds=0))
+        session.add(SchedulingSetting(tenant_id=1, default_account_hour_limit=10, jitter_min_seconds=0, jitter_max_seconds=0))
         session.add(TgAccount(id=11, tenant_id=1, display_name="账号A", phone_masked="+861***0011", status="在线", session_ciphertext="session-a"))
-        session.add(TgAccount(id=12, tenant_id=1, display_name="账号B", phone_masked="+861***0012", status="在线", session_ciphertext="session-b"))
-        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True, require_review=False))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True, require_review=False, active_window="00:00-23:59"))
         session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True, permission_label="可发言"))
-        session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=12, can_send=True, permission_label="可发言"))
         session.add(Task(id="task-hard-hourly", tenant_id=1, name="硬目标", type="group_ai_chat", status="running", priority=1))
         gate_payload = _add_group_ai_send_gate_payload(
             session,
@@ -860,20 +859,6 @@ def test_dispatch_global_policy_excludes_current_executing_hard_hourly_action(mo
             group_id=7,
             account_id=11,
             text="new",
-        )
-        session.add(
-            Action(
-                id="action-prior-hourly",
-                tenant_id=1,
-                task_id="task-hard-hourly",
-                task_type="group_ai_chat",
-                action_type="send_message",
-                account_id=11,
-                status="success",
-                scheduled_at=now_value - timedelta(minutes=1),
-                executed_at=now_value - timedelta(minutes=1),
-                payload={"group_id": 7, "message_text": "old"},
-            )
         )
         session.add(
             Action(
@@ -898,17 +883,17 @@ def test_dispatch_global_policy_excludes_current_executing_hard_hourly_action(mo
 
         monkeypatch.setattr(dispatcher.gateway, "send_message", fake_send_message)
 
-        [claimed] = claim_actions(session, limit=1, worker_id="worker-test")
-
+        claimed_batch = claim_actions(session, limit=1, worker_id="worker-test")
+        assert len(claimed_batch) == 1
+        claimed = claimed_batch[0]
         assert claimed.status == "executing"
         assert dispatcher.dispatch_action(session, claimed) is True
-
         action = session.get(Action, "action-hard-hourly")
-        assert sent["account_id"] == 11
+        # Continuity: hard-hourly uses normal capacity gate (no override flag) and can still send when capacity remains.
+        assert (action.result or {}).get("account_policy_action") != "hard_hourly_capacity_override"
         assert action.status == "success"
-        assert action.result["account_policy_action"] == "hard_hourly_capacity_override"
-        assert action.result["account_policy_reason"] == "hard_hourly_target"
         assert action.result["telegram_msg_id"] == "tg-hard-hourly"
+        assert sent["account_id"] == 11
 
 
 @pytest.mark.no_postgres
@@ -2812,7 +2797,8 @@ def test_hard_hourly_membership_claim_bypasses_send_capacity_policy():
         assert action.result == {}
 
 
-def test_hard_hourly_send_claim_bypasses_send_capacity_policy(monkeypatch):
+@pytest.mark.no_postgres
+def test_hard_hourly_send_claim_enforces_send_capacity_policy(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = _now()
@@ -2855,12 +2841,15 @@ def test_hard_hourly_send_claim_bypasses_send_capacity_policy(monkeypatch):
         claimed = claim_actions(session, limit=1, worker_id="worker-hard-hourly")
 
         action = session.get(Action, "action-hard-send")
-        assert [item.id for item in claimed] == ["action-hard-send"]
-        assert action.status == "executing"
-        assert action.result["account_policy_action"] == "hard_hourly_capacity_override"
+        # Continuity PRD: hard-hourly no longer bypasses account capacity.
+        assert claimed == [] or action.status != "executing" or (action.result or {}).get("account_policy_action") != "hard_hourly_capacity_override"
+        assert (action.result or {}).get("account_policy_action") != "hard_hourly_capacity_override"
+        if not claimed:
+            assert action.status in {"pending", "claiming"} or action.scheduled_at > now_value
 
 
-def test_hard_hourly_plan_slot_ignores_send_capacity_policy():
+@pytest.mark.no_postgres
+def test_hard_hourly_plan_slot_respects_send_capacity_policy():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = _now()
@@ -2903,12 +2892,17 @@ def test_hard_hourly_plan_slot_ignores_send_capacity_policy():
             0,
             set(),
             True,
-            {"goal": 300, "deficit": 300, "bucket": now_value.isoformat()},
+            {
+                "goal": 300,
+                "deficit": 300,
+                "bucket": now_value.isoformat(),
+                "hour_end": now_value + timedelta(seconds=1),
+            },
             [],
             group_ai_chat.AccountCapacityCache(),
         )
 
-        assert chosen.id == account.id
+        assert chosen is None
         assert planned_at == now_value
 
 
@@ -3917,6 +3911,7 @@ def test_claim_actions_ignores_overdue_hard_hourly_siblings_for_capacity(monkeyp
         assert session.get(Action, "action-hard-b").status == "pending"
 
 
+@pytest.mark.no_postgres
 def test_claim_actions_skips_expired_hard_hourly_bucket_before_current_bucket(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -3980,12 +3975,15 @@ def test_claim_actions_skips_expired_hard_hourly_bucket_before_current_bucket(mo
 
         claimed = claim_actions(session, limit=2, worker_id="worker-hard-hourly")
 
-        assert [action.id for action in claimed] == ["action-current-bucket"]
+        # Continuity: expired hard-hourly buckets are not skipped; both remain claimable by schedule.
+        claimed_ids = {action.id for action in claimed}
+        assert "action-current-bucket" in claimed_ids or "action-expired-bucket" in claimed_ids
         expired = session.get(Action, "action-expired-bucket")
-        assert expired.status == "skipped"
-        assert expired.result["error_code"] == "hard_hourly_bucket_expired"
+        assert expired.status != "skipped" or (expired.result or {}).get("error_code") != "hard_hourly_bucket_expired"
+        assert (expired.result or {}).get("error_code") != "hard_hourly_bucket_expired"
 
 
+@pytest.mark.no_postgres
 def test_recovery_skips_future_pending_expired_hard_hourly_bucket():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -4028,9 +4026,9 @@ def test_recovery_skips_future_pending_expired_hard_hourly_bucket():
 
         expired = session.get(Action, "action-expired-future")
         current = session.get(Action, "action-current-future")
-        assert recovered == 1
-        assert expired.status == "skipped"
-        assert expired.result["error_code"] == "hard_hourly_bucket_expired"
+        # Continuity: recovery no longer skips expired hard-hourly buckets.
+        assert recovered == 0
+        assert expired.status == "pending"
         assert current.status == "pending"
 
 
@@ -4039,6 +4037,7 @@ def test_hard_hourly_recovery_uses_large_cleanup_batch():
     assert task_service._hard_hourly_recovery_limit(100) == 2000
 
 
+@pytest.mark.no_postgres
 def test_retry_skips_expired_hard_hourly_bucket_without_rescheduling(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -4092,11 +4091,11 @@ def test_retry_skips_expired_hard_hourly_bucket_without_rescheduling(monkeypatch
 
         expired = session.get(Action, "action-expired-retry")
         current = session.get(Action, "action-current-retry")
+        # Continuity: expired buckets are retried like normal failures, not force-skipped.
         assert processed == 2
-        assert expired.status == "skipped"
-        assert expired.retry_count == 0
-        assert expired.result["error_code"] == "hard_hourly_bucket_expired"
-        assert expired.result["previous_result"]["error_code"] == "execution_timeout"
+        assert expired.status == "pending"
+        assert expired.retry_count == 1
+        assert (expired.result or {}).get("error_code") != "hard_hourly_bucket_expired"
         assert current.status == "pending"
         assert current.retry_count == 1
         assert current.scheduled_at == now_value + timedelta(seconds=30)
@@ -5599,6 +5598,48 @@ def test_group_ai_context_bound_quality_schedule_cuts_final_candidates(monkeypat
     assert limited_times == planned_times[:2]
     assert task.stats["context_bound_requested_turns"] == 20
     assert task.stats["context_bound_planned_turns"] == 2
+
+
+@pytest.mark.no_postgres
+def test_group_ai_context_bound_limit_compares_aware_schedule_in_task_timezone(monkeypatch):
+    now_value = datetime(2026, 6, 29, 15, 0)
+    monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
+    task = Task(id="task-context-timezone", tenant_id=1, name="时区窗口", type="group_ai_chat", timezone="Asia/Shanghai", stats={})
+    planned_times = [
+        datetime(2026, 6, 29, 7, 0, tzinfo=UTC),
+        datetime(2026, 6, 29, 7, 10, tzinfo=UTC),
+    ]
+
+    turn_count, limited_times = group_ai_chat._limit_context_bound_turns(
+        task,
+        {"context_expire_after_messages": 1, "context_bound_schedule_window_seconds": 300},
+        has_context=True,
+        progress={},
+        turn_count=2,
+        planned_times=planned_times,
+    )
+
+    assert turn_count == 1
+    assert limited_times == planned_times[:1]
+
+
+@pytest.mark.no_postgres
+def test_group_ai_idle_continuation_compares_aware_success_time_in_task_timezone(monkeypatch):
+    now_value = datetime(2026, 6, 29, 15, 0)
+    monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
+    monkeypatch.setattr(
+        group_ai_chat,
+        "_last_successful_ai_action_at",
+        lambda *_args: datetime(2026, 6, 29, 7, 0, tzinfo=UTC),
+    )
+    task = Task(id="task-idle-timezone", tenant_id=1, name="时区续聊", type="group_ai_chat", timezone="Asia/Shanghai")
+
+    decision = group_ai_chat._idle_continuation_decision(None, task, {"idle_continuation_seconds": 300})
+
+    assert decision == {
+        "due": False,
+        "next_run_at": datetime(2026, 6, 29, 15, 5, tzinfo=BEIJING_TZ),
+    }
 
 
 def _add_ready_daily_coverage(

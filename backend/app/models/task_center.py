@@ -36,11 +36,28 @@ class Task(Base):
     failure_policy: Mapped[dict] = mapped_column(JSON, default=dict)
     type_config: Mapped[dict] = mapped_column(JSON, default=dict)
     stats: Mapped[dict] = mapped_column(JSON, default=dict)
+    config_revision: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     deleted_by: Mapped[str] = mapped_column(String(100), default="")
     delete_reason: Mapped[str] = mapped_column(String(255), default="")
+
+
+class DispatchFairnessCursor(Base):
+    """Tenant-scoped persisted alternation state for dispatcher claims."""
+
+    __tablename__ = "dispatch_fairness_cursors"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", name="uq_dispatch_fairness_cursor_tenant"),
+        Index("ix_dispatch_fairness_cursor_updated", "updated_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), nullable=False)
+    last_claim_class: Mapped[str] = mapped_column(String(40), default="")
+    last_reason: Mapped[str] = mapped_column(String(80), default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
 
 class Action(Base):
@@ -682,6 +699,7 @@ __all__ = [
     "AiAccountVoiceProfile",
     "AiGroupMessageMemory",
     "DailyRuntimeStat",
+    "DispatchFairnessCursor",
     "ExecutionAttempt",
     "ListenerSourceState",
     "MessageFingerprint",

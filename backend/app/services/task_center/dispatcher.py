@@ -100,6 +100,7 @@ _IN_FLIGHT_ACCOUNTS = _runtime_resources._IN_FLIGHT_ACCOUNTS
 _redis_client = _runtime_resources._redis_client
 MEMBERSHIP_ACTION_TYPES = ("ensure_channel_membership", "ensure_target_membership")
 HARD_HOURLY_ADMISSION_BLOCKED_SEND_ERROR_CODES = ("required_channel_admission_pending",)
+HARD_HOURLY_OVERDUE_SEND_PRIORITY_SECONDS = 300
 TARGET_ADMISSION_RETRY_TASK_TYPE = "target_admission_retry"
 TARGET_ADMISSION_RETRY_TERMINAL_STATUSES = {"success", "unknown_after_send", "failed", "retryable_failed", "skipped"}
 ALL_ACCOUNT_COVERAGE_TASK_STATUSES = ("draft", "pending", "running", "paused")
@@ -665,16 +666,7 @@ def due_actions(session: Session, limit: int = 100, *, exclude_task_ids: set[str
             select(Action)
             .join(Task, Task.id == Action.task_id)
             .where(*filters)
-            .order_by(
-                _target_admission_retry_claim_rank(),
-                _hard_hourly_claim_rank(),
-                _search_join_membership_claim_rank(),
-                _strict_search_join_source_claim_rank(),
-                Task.priority.asc(),
-                _channel_comment_claim_rank(),
-                Action.scheduled_at.asc(),
-                Action.created_at.asc(),
-            )
+            .order_by(*claim_action_ordering(set(), _now()))
             .limit(limit)
         )
     )
@@ -711,25 +703,24 @@ def claim_actions(session: Session, limit: int = 100, *, exclude_task_ids: set[s
         filters.append(Action.task_id.not_in(exclude_task_ids))
     if pending_review_exists is not None:
         filters.append(~pending_review_exists)
+    # Read-only fairness decision — never persist cursor until at least one claim confirms.
+    fairness_decisions = _claim_fairness_decisions(session, filters, now_value)
+    force_ordinary_tenants = {
+        tenant_id
+        for tenant_id, decision in fairness_decisions.items()
+        if decision.preferred_class == "ordinary"
+    }
     stmt = (
         select(Action)
         .join(Task, Task.id == Action.task_id)
         .where(*filters)
-        .order_by(
-            _target_admission_retry_claim_rank(),
-            _hard_hourly_claim_rank(),
-            _search_join_membership_claim_rank(),
-            _strict_search_join_source_claim_rank(),
-            Task.priority.asc(),
-            _channel_comment_claim_rank(),
-            Action.scheduled_at.asc(),
-            Action.created_at.asc(),
-        )
+        .order_by(*claim_action_ordering(force_ordinary_tenants, now_value))
         .limit(claim_limit)
     )
     if session.bind and session.bind.dialect.name != "sqlite":
-        stmt = stmt.with_for_update(skip_locked=True)
+        stmt = stmt.with_for_update(of=Action, skip_locked=True)
     candidates = _claimable_candidates(list(session.scalars(stmt)))
+    _annotate_dispatch_fairness(session, candidates, fairness_decisions)
     claim_until = now_value + timedelta(seconds=max(5, int(_setting(settings, "action_claim_seconds", 60) or 60)))
     for action in candidates:
         action.status = "claiming"
@@ -740,7 +731,107 @@ def claim_actions(session: Session, limit: int = 100, *, exclude_task_ids: set[s
     session.commit()
 
     batch = ActionClaimBatch(tuple(action.id for action in candidates), owner, token)
-    return _confirm_action_claim_batch(session, batch)
+    confirmed = _confirm_action_claim_batch(session, batch)
+    _record_dispatch_fairness_after_confirm(session, confirmed, fairness_decisions)
+    if confirmed:
+        confirmed_ids = [action.id for action in confirmed]
+        session.commit()
+        # Re-bind after commit so callers never receive detached Action instances.
+        confirmed = [
+            action
+            for action_id in confirmed_ids
+            if (action := session.get(Action, action_id)) is not None
+        ]
+    return confirmed
+
+
+def _claim_fairness_decisions(session: Session, filters: list, now_value: datetime) -> dict[int, object]:
+    """Read fairness preference without mutating the cursor (claim success writes later)."""
+    from app.services.task_center.dispatch_fairness import (
+        should_prefer_ordinary_after_hard_hourly,
+    )
+
+    hard_hourly = _hard_hourly_send_claim_condition()
+    ordinary = _ordinary_fairness_claim_condition()
+    higher_priority = _higher_priority_claim_condition(now_value)
+    rows = session.execute(
+        select(
+            Action.tenant_id,
+            func.max(case((hard_hourly, 1), else_=0)),
+            func.max(case((ordinary, 1), else_=0)),
+            func.max(case((higher_priority, 1), else_=0)),
+        )
+        .join(Task, Task.id == Action.task_id)
+        .where(*filters)
+        .group_by(Action.tenant_id)
+    ).all()
+    decisions: dict[int, object] = {}
+    for tenant_id, has_hard, has_ordinary, has_higher in rows:
+        if not has_hard or not has_ordinary:
+            continue
+        decisions[int(tenant_id)] = should_prefer_ordinary_after_hard_hourly(
+            session,
+            tenant_id=int(tenant_id),
+            has_due_ordinary=bool(has_ordinary),
+            has_due_hard_hourly=bool(has_hard),
+            has_due_higher_priority=bool(has_higher),
+        )
+    return decisions
+
+
+def _annotate_dispatch_fairness(session: Session, candidates: list[Action], decisions: dict[int, object]) -> None:
+    """Attach the selection reason to candidate Action rows (cursor not written yet)."""
+    from app.services.task_center.dispatch_fairness import classify_action_payload
+
+    first_claim_for_tenant: set[int] = set()
+    for action in candidates:
+        tenant_id = int(action.tenant_id)
+        claim_class = classify_action_payload(
+            action.action_type,
+            action.payload if isinstance(action.payload, dict) else {},
+            action.task_type,
+        )
+        decision = decisions.get(tenant_id)
+        reason = getattr(decision, "reason", "default_order") if tenant_id not in first_claim_for_tenant else "batch_following"
+        action.result = {
+            **(action.result or {}),
+            "dispatch_fairness_reason": reason,
+            "dispatch_claim_class": claim_class,
+        }
+        first_claim_for_tenant.add(tenant_id)
+
+
+def _record_dispatch_fairness_after_confirm(
+    session: Session,
+    confirmed: list[Action],
+    decisions: dict[int, object],
+) -> None:
+    """Persist fairness cursor only after at least one Action is successfully claimed."""
+    if not confirmed:
+        return
+    from app.services.task_center.dispatch_fairness import classify_action_payload, record_claim_class
+
+    recorded: set[int] = set()
+    for action in confirmed:
+        tenant_id = int(action.tenant_id)
+        if tenant_id in recorded:
+            continue
+        claim_class = classify_action_payload(
+            action.action_type,
+            action.payload if isinstance(action.payload, dict) else {},
+            action.task_type,
+        )
+        decision = decisions.get(tenant_id)
+        reason = str(getattr(decision, "reason", "selected") or "selected")
+        # Only hard_hourly/ordinary alternation needs durable cursor updates.
+        if claim_class in {"hard_hourly", "ordinary"}:
+            record_claim_class(
+                session,
+                tenant_id=tenant_id,
+                claimed_class=claim_class,  # type: ignore[arg-type]
+                reason=reason,
+            )
+            recorded.add(tenant_id)
 
 
 def _confirm_action_claim_batch(session: Session, batch: ActionClaimBatch) -> list[Action]:
@@ -884,18 +975,13 @@ def _skip_resolved_invite_group_account_action(session: Session, action: Action)
 
 
 def _target_admission_retry_claim_rank():
-    return case((Task.type == "target_admission_retry", 0), else_=1)
+    return case((_target_admission_retry_claim_condition(), 0), else_=1)
 
 
 def _hard_hourly_claim_rank():
-    hard_hourly_membership = (
-        Task.type_config["hard_hourly_target_enabled"].as_boolean().is_(True)
-        & Action.action_type.in_(MEMBERSHIP_ACTION_TYPES)
-    )
-    hard_hourly_send = (
-        (Action.action_type == "send_message")
-        & Action.payload["hard_hourly_target"].as_boolean().is_(True)
-    )
+    """Prefer membership that unblocks admission-gated hard sends, then ready sends."""
+    hard_hourly_membership = _hard_hourly_membership_claim_condition()
+    hard_hourly_send = _hard_hourly_send_claim_condition()
     admission_blocked_hard_hourly_send = (
         hard_hourly_send
         & func.coalesce(Action.result["error_code"].as_string(), "").in_(
@@ -943,20 +1029,108 @@ def _open_admission_membership_action():
 
 
 def _search_join_membership_claim_rank():
-    return case((Action.action_type == SEARCH_JOIN_MEMBERSHIP_ACTION_TYPE, 0), else_=1)
+    return case((_search_join_membership_claim_condition(), 0), else_=1)
 
 
 def _strict_search_join_source_claim_rank():
-    strict_source = (
-        (Task.type == "search_join_group")
-        & (Action.action_type == "search_join")
-        & Task.type_config["strict_daily_target"].as_boolean().is_(True)
-    )
+    strict_source = _strict_search_join_source_claim_condition()
     return case((strict_source, 0), else_=1)
 
 
 def _channel_comment_claim_rank():
-    return case((Task.type == "channel_comment", 0), else_=1)
+    return case((_channel_comment_claim_condition(), 0), else_=1)
+
+
+def _target_admission_retry_claim_condition():
+    return Task.type == TARGET_ADMISSION_RETRY_TASK_TYPE
+
+
+def _search_join_membership_claim_condition():
+    return Action.action_type == SEARCH_JOIN_MEMBERSHIP_ACTION_TYPE
+
+
+def _strict_search_join_source_claim_condition():
+    return (
+        (Task.type == "search_join_group")
+        & (Action.action_type == "search_join")
+        & Task.type_config["strict_daily_target"].as_boolean().is_(True)
+    )
+
+
+def _hard_hourly_membership_claim_condition():
+    return (
+        Task.type_config["hard_hourly_target_enabled"].as_boolean().is_(True)
+        & Action.action_type.in_(MEMBERSHIP_ACTION_TYPES)
+    )
+
+
+def _hard_hourly_send_claim_condition():
+    return (
+        (Action.action_type == "send_message")
+        & Action.payload["hard_hourly_target"].as_boolean().is_(True)
+    )
+
+
+def _overdue_hard_hourly_send_condition(now_value: datetime):
+    cutoff = now_value - timedelta(seconds=HARD_HOURLY_OVERDUE_SEND_PRIORITY_SECONDS)
+    return _hard_hourly_send_claim_condition() & (Action.scheduled_at <= cutoff)
+
+
+def _channel_comment_claim_condition():
+    return Task.type == "channel_comment"
+
+
+def _ordinary_fairness_claim_condition():
+    special = (
+        _target_admission_retry_claim_condition()
+        | _search_join_membership_claim_condition()
+        | _strict_search_join_source_claim_condition()
+        | _hard_hourly_membership_claim_condition()
+        | _hard_hourly_send_claim_condition()
+        | _channel_comment_claim_condition()
+    )
+    return ~special
+
+
+def _higher_priority_claim_condition(now_value: datetime):
+    return (
+        _target_admission_retry_claim_condition()
+        | _search_join_membership_claim_condition()
+        | _strict_search_join_source_claim_condition()
+        | _hard_hourly_membership_claim_condition()
+        | _overdue_hard_hourly_send_condition(now_value)
+    )
+
+
+def _fairness_claim_rank(force_ordinary_tenants: set[int], now_value: datetime):
+    """Order hard/ordinary choices before SQL LIMIT without weakening strict work."""
+    hard_hourly_send = _hard_hourly_send_claim_condition()
+    ordinary = _ordinary_fairness_claim_condition()
+    forced = Action.tenant_id.in_(force_ordinary_tenants) if force_ordinary_tenants else False
+    return case(
+        (_target_admission_retry_claim_condition(), 0),
+        (_search_join_membership_claim_condition(), 1),
+        (_strict_search_join_source_claim_condition(), 2),
+        ((_hard_hourly_membership_claim_condition() | _overdue_hard_hourly_send_condition(now_value)), 3),
+        ((ordinary & forced), 4),
+        ((hard_hourly_send & forced), 5),
+        (hard_hourly_send, 4),
+        (ordinary, 5),
+        else_=5,
+    )
+
+
+def claim_action_ordering(force_ordinary_tenants: set[int], now_value: datetime):
+    """Return the canonical Action row-lock order used by Dispatcher claims."""
+    return (
+        _fairness_claim_rank(force_ordinary_tenants, now_value),
+        _hard_hourly_claim_rank(),
+        Task.priority.asc(),
+        _channel_comment_claim_rank(),
+        Action.scheduled_at.asc(),
+        Action.created_at.asc(),
+        Action.id.asc(),
+    )
 
 
 def recover_expired_claims(session: Session) -> int:
@@ -968,26 +1142,39 @@ def recover_expired_claims(session: Session) -> int:
 
 
 def recover_expired_hard_hourly_actions(session: Session, limit: int = 100) -> int:
+    """Continuity PRD: never skip open hard-hourly actions for bucket expiry.
+
+    Historical recovery entry is kept for call-site compatibility but is a no-op.
+    Carried-over actions remain pending/claiming and continue under capacity gates.
+    """
+    _ = session, limit
+    return 0
+
+
+def recover_hard_hourly_delivery_credits(session: Session, limit: int = 100) -> int:
+    """Re-credit confirmed hard-hourly successes whose ledger write previously failed.
+
+    Telegram success is already durable on Action/Attempt; this only closes the
+    plan-bucket debt when credit_status was left failed/retryable.
+    """
     rows = list(
         session.scalars(
             select(Action)
             .where(
                 Action.task_type == "group_ai_chat",
                 Action.action_type == "send_message",
-                Action.status.in_(["pending", "claiming"]),
+                Action.status == "success",
                 Action.payload["hard_hourly_target"].as_boolean().is_(True),
+                or_(
+                    Action.result["hard_hourly_credit_retryable"].as_boolean().is_(True),
+                    Action.result["hard_hourly_credit_status"].as_string() == "failed",
+                ),
             )
-            .order_by(Action.scheduled_at.asc(), Action.created_at.asc())
+            .order_by(Action.executed_at.asc().nullsfirst(), Action.id.asc())
             .limit(max(1, int(limit or 100)))
         )
     )
-    recovered = 0
-    for action in rows:
-        if not _hard_hourly_bucket_expired(action):
-            continue
-        _skip(action, "hard_hourly_bucket_expired", "硬目标小时窗口已结束，过期补量已跳过")
-        recovered += 1
-    return recovered
+    return sum(1 for action in rows if _recover_hard_hourly_delivery_credit(session, action))
 
 
 def recover_unreachable_hard_hourly_actions(session: Session, limit: int = 100) -> int:
@@ -1130,9 +1317,7 @@ def _apply_claim_account_policy(session: Session, action: Action) -> bool:
         return True
     if _is_hard_hourly_membership_action(session, action):
         return True
-    if _is_hard_hourly_send_action(action):
-        _record_hard_hourly_capacity_override(action)
-        return True
+    # Continuity PRD: hard-hourly sends use the same claim-time account capacity gate.
     decision = account_capacity_decision(
         session,
         tenant_id=action.tenant_id,
@@ -1391,10 +1576,9 @@ def _dispatch_target_send_message(
         session_ciphertext=context.account.session_ciphertext,
         credentials=context.credentials,
     )
-    attempt = _begin_execution_attempt(session, action, context.account)
-    _mark_executing(action)
-    session.commit()
-    _mark_gateway_call_started(session, attempt)
+    attempt = _reserve_target_send_attempt(session, action, context.account, payload)
+    if attempt is None:
+        return True
     result = gateway.send_message_to_target(
         gateway_request.account_id,
         gateway_request.target_peer,
@@ -1529,7 +1713,6 @@ def _send_group_message_via_gateway(
     attempt = _reserve_group_send_attempt(session, action, context)
     if attempt is None:
         return True
-    _mark_gateway_call_started(session, attempt)
     send_kwargs = (
         {"reply_to_message_id": gateway_request.reply_to_message_id}
         if gateway_request.reply_to_message_id
@@ -1565,15 +1748,169 @@ def _reserve_group_send_attempt(
     action: Action,
     context: GroupSendGatewayContext,
 ) -> ExecutionAttempt | None:
+    target = _lock_outbound_target(session, action, group=context.group)
+    _lock_action_after_target(session, action)
     group = session.scalar(select(TgGroup).where(TgGroup.id == context.group.id).with_for_update())
+    if group is None:
+        _fail(action, FailureType.PEER_INVALID.value, "目标群不存在", validation_stage="target")
+        session.commit()
+        return None
+    from app.services.outbound_target_gate import evaluate_outbound_target_gate
+
+    gate_block = evaluate_outbound_target_gate(
+        session,
+        action=action,
+        target=target,
+        group=group,
+        require_identity=_action_declares_target_identity(action),
+    )
+    if gate_block is not None:
+        if gate_block.code in {
+            "target_group_dissolved",
+            "target_ref_invalid",
+            "target_reference_superseded",
+            "target_identity_unresolved",
+            "target_tenant_mismatch",
+        }:
+            _skip(action, gate_block.code, gate_block.detail)
+            session.commit()
+            return None
+        _defer_group_send_for_limit(
+            action,
+            GroupSendSlotBlock(gate_block.code, gate_block.detail, max(1, int(gate_block.retry_after_seconds or 60))),
+        )
+        session.commit()
+        return None
     block = group_send_slot_block(session, action=action, group=group)
     if block:
         _defer_group_send_for_limit(action, block)
+        session.commit()
         return None
     attempt = _begin_execution_attempt(session, action, context.account)
     _mark_executing(action)
+    _mark_gateway_call_started(session, attempt, commit=False)
     session.commit()
     return attempt
+
+
+def _reserve_target_send_attempt(
+    session: Session,
+    action: Action,
+    account: TgAccount,
+    payload: SendMessagePayload,
+) -> ExecutionAttempt | None:
+    from app.services.outbound_target_gate import evaluate_outbound_target_gate
+
+    target = _lock_outbound_target(session, action)
+    _lock_action_after_target(session, action)
+    gate_block = evaluate_outbound_target_gate(
+        session,
+        action=action,
+        target=target,
+        outbound_peer=payload.chat_id,
+        require_identity=_action_declares_target_identity(action),
+    )
+    if gate_block is not None:
+        _skip(action, gate_block.code, gate_block.detail)
+        session.commit()
+        return None
+    attempt = _begin_execution_attempt(session, action, account)
+    _mark_executing(action)
+    _mark_gateway_call_started(session, attempt, commit=False)
+    session.commit()
+    return attempt
+
+
+def _reserve_channel_action_attempt(
+    session: Session,
+    action: Action,
+    account: TgAccount,
+    payload: ViewMessagePayload,
+) -> ExecutionAttempt | None:
+    from app.services.outbound_target_gate import evaluate_outbound_target_gate
+
+    target = _lock_outbound_target(session, action)
+    _lock_action_after_target(session, action)
+    gate_block = evaluate_outbound_target_gate(
+        session,
+        action=action,
+        target=target,
+        outbound_peer=payload.channel_id,
+        expected_revision=payload.target_reference_revision,
+        expected_reference_snapshot=payload.target_reference_snapshot,
+        require_identity=True,
+        include_group_policy=False,
+    )
+    if gate_block is not None:
+        _skip(action, gate_block.code, gate_block.detail)
+        session.commit()
+        return None
+    attempt = _begin_execution_attempt(session, action, account)
+    _mark_executing(action)
+    _mark_gateway_call_started(session, attempt, commit=False)
+    session.commit()
+    return attempt
+
+
+def _reserve_channel_membership_attempt(
+    session: Session,
+    action: Action,
+    account: TgAccount,
+    payload: EnsureChannelMembershipPayload,
+) -> ExecutionAttempt | None:
+    from app.services.outbound_target_gate import evaluate_outbound_target_gate
+
+    target = _lock_outbound_target(session, action)
+    _lock_action_after_target(session, action)
+    gate_block = evaluate_outbound_target_gate(
+        session,
+        action=action,
+        target=target,
+        outbound_peer=payload.channel_id,
+        require_identity=True,
+        require_frozen_identity=True,
+        expected_target_id=payload.channel_target_id,
+        expected_revision=payload.target_reference_revision,
+        expected_reference_snapshot=payload.target_reference_snapshot,
+        include_group_policy=False,
+    )
+    if gate_block is not None:
+        _skip(action, gate_block.code, gate_block.detail)
+        session.commit()
+        return None
+    attempt = _begin_execution_attempt(session, action, account)
+    _mark_executing(action)
+    _mark_gateway_call_started(session, attempt, commit=False)
+    session.commit()
+    return attempt
+
+
+def _lock_outbound_target(
+    session: Session,
+    action: Action,
+    *,
+    group: TgGroup | None = None,
+) -> OperationTarget | None:
+    from app.services.outbound_target_gate import resolve_outbound_target
+    from app.services.task_center.target_lifecycle import lock_target
+
+    target = resolve_outbound_target(session, action=action, group=group)
+    if target is None:
+        return None
+    return lock_target(session, tenant_id=action.tenant_id, target_id=target.id)
+
+
+def _lock_action_after_target(session: Session, action: Action) -> None:
+    session.scalar(
+        select(Action)
+        .where(Action.id == action.id, Action.tenant_id == action.tenant_id)
+        .with_for_update()
+    )
+
+
+def _action_declares_target_identity(action: Action) -> bool:
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    return bool(payload.get("target_operation_target_id") or payload.get("operation_target_id"))
 
 
 def _defer_group_send_for_limit(action: Action, block: GroupSendSlotBlock) -> None:
@@ -2022,10 +2359,9 @@ def _dispatch_channel_membership(session: Session, action: Action, account: TgAc
         )
         if existing_link and _dispatch_existing_membership(session, action, account, credentials, payload, existing_link):
             return True
-    attempt = _begin_execution_attempt(session, action, account)
-    _mark_executing(action)
-    session.commit()
-    _mark_gateway_call_started(session, attempt)
+    attempt = _reserve_channel_membership_attempt(session, action, account, payload)
+    if attempt is None:
+        return True
     ctx = MembershipDispatchContext(session, action, account, credentials, payload, attempt)
     result, payload, fallback_ref = _ensure_membership_with_peer_candidates(ctx)
     runtime_ctx = MembershipDispatchContext(session, action, account, credentials, payload, attempt)
@@ -2323,11 +2659,10 @@ def _dispatch_existing_membership(
         return True
     if not link.can_send:
         return False
-    attempt = _begin_execution_attempt(session, action, account)
+    attempt = _reserve_channel_membership_attempt(session, action, account, payload)
+    if attempt is None:
+        return True
     ctx = MembershipDispatchContext(session, action, account, credentials, payload, attempt)
-    _mark_executing(action)
-    session.commit()
-    _mark_gateway_call_started(session, attempt)
     result = gateway.probe_target_capabilities(account.id, payload.channel_id, payload.target_type, account.session_ciphertext, credentials)
     if result.ok:
         _record_group_send_permission_allowed(session, action, account, payload)
@@ -2667,6 +3002,12 @@ def _group_send_membership_payload(
     return EnsureChannelMembershipPayload(
         channel_id=group.tg_peer_id,
         channel_target_id=target.id,
+        target_reference_revision=int(target.reference_revision or 1),
+        target_reference_snapshot={
+            "tg_peer_id": str(target.tg_peer_id),
+            "username": str(target.username or ""),
+            "title": str(target.title),
+        },
         target_type="group",
         target_display=payload.target_display or group.title or target.title,
         require_send=True,
@@ -3543,10 +3884,9 @@ def _dispatch_view(action: Action, account: TgAccount, credentials, session: Ses
     session_ciphertext = account.session_ciphertext
     channel_peer = payload.channel_id
     message_id = payload.message_id
-    attempt = _begin_execution_attempt(session, action, account)
-    _mark_executing(action)
-    session.commit()
-    _mark_gateway_call_started(session, attempt)
+    attempt = _reserve_channel_action_attempt(session, action, account, payload)
+    if attempt is None:
+        return True
     result = gateway.view_channel_message(account_id, channel_peer, message_id, session_ciphertext, credentials)
     _apply_operation_result(action, account, result.ok, result.failure_type, result.detail, attempt=attempt)
     return True
@@ -3560,10 +3900,9 @@ def _dispatch_like(action: Action, account: TgAccount, credentials, session: Ses
     channel_peer = payload.channel_id
     message_id = payload.message_id
     reaction = payload.reaction_emoji
-    attempt = _begin_execution_attempt(session, action, account)
-    _mark_executing(action)
-    session.commit()
-    _mark_gateway_call_started(session, attempt)
+    attempt = _reserve_channel_action_attempt(session, action, account, payload)
+    if attempt is None:
+        return True
     result = gateway.send_channel_reaction(account_id, channel_peer, message_id, reaction, session_ciphertext, credentials)
     _apply_operation_result(action, account, result.ok, result.failure_type, result.detail, attempt=attempt)
     return True
@@ -3612,10 +3951,9 @@ def _dispatch_comment(
     if not filtered.ok:
         _fail(action, FailureType.CONTENT_REJECTED.value, filtered.reason, auto_check="拦截", validation_stage="content_policy")
         return True
-    attempt = _begin_execution_attempt(session, action, account)
-    _mark_executing(action)
-    session.commit()
-    _mark_gateway_call_started(session, attempt)
+    attempt = _reserve_channel_action_attempt(session, action, account, payload)
+    if attempt is None:
+        return True
     result = gateway.reply_channel_message(account_id, channel_peer, message_id, content, session_ciphertext, context.credentials, reply_to_message_id=payload.reply_to_message_id)
     _apply_send_result(action, account, result.ok, result.remote_message_id or "", result.failure_type or "", result.detail or "", attempt=attempt)
     return True
@@ -3800,6 +4138,12 @@ def _channel_membership_payload(channel: OperationTarget, *, require_send: bool)
     return EnsureChannelMembershipPayload(
         channel_id=channel.tg_peer_id,
         channel_target_id=channel.id,
+        target_reference_revision=int(channel.reference_revision or 1),
+        target_reference_snapshot={
+            "tg_peer_id": str(channel.tg_peer_id),
+            "username": str(channel.username or ""),
+            "title": str(channel.title),
+        },
         target_type=channel.target_type,
         target_display=channel.title,
         target_username=channel.username or "",
@@ -3850,6 +4194,43 @@ def _apply_send_result(action: Action, account: TgAccount, ok: bool, remote_id: 
     action.executed_at = None if action.status == "pending" else _now()
     _update_reply_result_stats(action, ok, failure_type or "")
     _finish_execution_attempt(attempt, action, remote_id=remote_id, failure_type=failure_type or "", detail=detail or "")
+    if not ok:
+        _maybe_auto_mark_target_ref_invalid(action, account, detail or failure_type, attempt)
+    if ok:
+        _credit_hard_hourly_success(action, attempt=attempt, remote_id=remote_id)
+
+
+def _maybe_auto_mark_target_ref_invalid(
+    action: Action,
+    account: TgAccount,
+    failure_detail: str,
+    attempt: ExecutionAttempt | None,
+) -> None:
+    from app.services.outbound_target_gate import GATE_MODE_DUAL_READ, outbound_target_gate_mode
+    from app.services.task_center.target_lifecycle import auto_mark_target_ref_invalid, resolve_action_target
+
+    session = object_session(action)
+    if session is None or outbound_target_gate_mode(session, action.tenant_id) == GATE_MODE_DUAL_READ:
+        return
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    revision = payload.get("target_reference_revision")
+    target = resolve_action_target(session, action)
+    if target is None:
+        return
+    result = auto_mark_target_ref_invalid(
+        session,
+        target=target,
+        reference_revision=int(revision) if revision is not None else None,
+        account_id=account.id,
+        failure_detail=failure_detail,
+        source_ref=f"action={action.id}; attempt={attempt.id if attempt else ''}",
+    )
+    if result is not None:
+        action.result = {
+            **(action.result or {}),
+            "target_lifecycle_auto_transition": result.target.lifecycle_status,
+            "target_lifecycle_version": int(result.target.lifecycle_version or 1),
+        }
 
 
 def _update_reply_result_stats(action: Action, ok: bool, failure_type: str) -> None:
@@ -4960,9 +5341,7 @@ def _account_after_global_policy(session: Session, action: Action, account: TgAc
         return account
     if _is_hard_hourly_membership_action(session, action):
         return account
-    if _is_hard_hourly_send_action(action):
-        _record_hard_hourly_capacity_override(action)
-        return account
+    # Continuity PRD: hard-hourly sends must pass the same account capacity gate.
     decision = account_capacity_decision(
         session,
         tenant_id=action.tenant_id,
@@ -5016,46 +5395,155 @@ def _capacity_excluded_action_ids(session: Session, action: Action, account_id: 
     return excluded
 
 
+HARD_HOURLY_CREDIT_RETRYABLE_REASONS = frozenset(
+    {
+        "missing_attempt",
+        "missing_epoch",
+        "empty_remote_id",
+        "action_not_success",
+    }
+)
+
+
 def _is_hard_hourly_send_action(action: Action) -> bool:
     payload = action.payload if isinstance(action.payload, dict) else {}
     return action.action_type == "send_message" and bool(payload.get("hard_hourly_target"))
 
 
-def _record_hard_hourly_capacity_override(action: Action) -> None:
+def _credit_hard_hourly_success(
+    action: Action,
+    *,
+    attempt: ExecutionAttempt | None,
+    remote_id: str,
+) -> None:
+    if not _is_hard_hourly_send_action(action):
+        return
+    from sqlalchemy.orm import object_session
+
+    from app.services.task_center.hard_hourly_ledger import credit_success_once
+    from app.services.task_center.continuity_rollout import continuity_enabled
+
+    session = object_session(action)
+    if session is None:
+        return
+    if not continuity_enabled(session, action.tenant_id):
+        return
+    outcome = credit_success_once(
+        session,
+        action=action,
+        execution_attempt_id=str(attempt.id) if attempt and attempt.id else None,
+        remote_message_id=remote_id,
+        executed_at=action.executed_at or _now(),
+    )
+    _apply_hard_hourly_credit_outcome(action, outcome)
+
+
+def _apply_hard_hourly_credit_outcome(action: Action, outcome) -> None:
+    # Never hide ledger miss after a confirmed Telegram success — debt would never close.
+    result = dict(action.result or {})
+    if outcome.credited:
+        result["hard_hourly_credit_status"] = "credited"
+        result.pop("hard_hourly_credit_error", None)
+        result.pop("hard_hourly_credit_retryable", None)
+        action.result = result
+        return
+    if outcome.reason == "already_credited":
+        result["hard_hourly_credit_status"] = "already_credited"
+        result.pop("hard_hourly_credit_error", None)
+        result.pop("hard_hourly_credit_retryable", None)
+        action.result = result
+        return
+    result["hard_hourly_credit_status"] = "failed"
+    result["hard_hourly_credit_error"] = outcome.reason
+    result["hard_hourly_credit_retryable"] = outcome.reason in HARD_HOURLY_CREDIT_RETRYABLE_REASONS
+    action.result = result
+
+
+def _recover_hard_hourly_delivery_credit(session: Session, action: Action) -> bool:
+    from app.services.task_center.continuity_rollout import continuity_enabled
+    from app.services.task_center.hard_hourly_ledger import credit_success_once
+
+    if not continuity_enabled(session, action.tenant_id):
+        return False
+    result = action.result if isinstance(action.result, dict) else {}
+    if result.get("hard_hourly_credit_status") in {"credited", "already_credited"}:
+        return False
+    if result.get("hard_hourly_credit_status") == "failed" and result.get("hard_hourly_credit_retryable") is False:
+        return False
+    remote_id, attempt = _resolve_hard_hourly_credit_inputs(session, action)
+    if not remote_id:
+        action.result = {
+            **result,
+            "hard_hourly_credit_status": "failed",
+            "hard_hourly_credit_error": "empty_remote_id",
+            "hard_hourly_credit_retryable": True,
+            "hard_hourly_credit_recovery_at": _now().isoformat(),
+        }
+        return False
+    outcome = credit_success_once(
+        session,
+        action=action,
+        execution_attempt_id=str(attempt.id) if attempt and attempt.id else None,
+        remote_message_id=remote_id,
+        executed_at=action.executed_at or _now(),
+    )
+    _apply_hard_hourly_credit_outcome(action, outcome)
     action.result = {
         **(action.result or {}),
-        "account_policy_action": "hard_hourly_capacity_override",
-        "account_policy_reason": "hard_hourly_target",
+        "hard_hourly_credit_recovery_at": _now().isoformat(),
     }
+    return bool(outcome.credited or outcome.reason == "already_credited")
+
+
+def _resolve_hard_hourly_credit_inputs(
+    session: Session,
+    action: Action,
+) -> tuple[str, ExecutionAttempt | None]:
+    result = action.result if isinstance(action.result, dict) else {}
+    remote_id = ""
+    for key in ("telegram_msg_id", "remote_message_id", "message_id"):
+        candidate = str(result.get(key) or "").strip()
+        if candidate:
+            remote_id = candidate
+            break
+    attempt = _success_attempt_for_hard_hourly_credit(session, action, remote_id)
+    if not remote_id and attempt is not None:
+        remote_id = str(attempt.remote_message_id or "").strip()
+    return remote_id, attempt
+
+
+def _success_attempt_for_hard_hourly_credit(
+    session: Session,
+    action: Action,
+    remote_id: str,
+) -> ExecutionAttempt | None:
+    conditions = [
+        ExecutionAttempt.action_id == action.id,
+        ExecutionAttempt.tenant_id == action.tenant_id,
+        ExecutionAttempt.status == "success",
+        ExecutionAttempt.remote_message_id.is_not(None),
+        ExecutionAttempt.remote_message_id != "",
+    ]
+    if remote_id:
+        conditions.append(ExecutionAttempt.remote_message_id == remote_id)
+    return session.scalar(
+        select(ExecutionAttempt)
+        .where(*conditions)
+        .order_by(ExecutionAttempt.attempt_no.desc())
+        .limit(1)
+    )
 
 
 def _skip_expired_hard_hourly_action(session: Session, action: Action) -> bool:
-    if not _hard_hourly_bucket_expired(action):
-        return False
-    _skip(action, "hard_hourly_bucket_expired", "硬目标小时窗口已结束，过期补量已跳过")
-    task = session.get(Task, action.task_id) if action.task_id else None
-    if task:
-        task.next_run_at = _now()
-    return True
+    """Continuity PRD: never skip for hard_hourly_bucket_expired; allow cross-hour carry."""
+    _ = session, action
+    return False
 
 
 def _hard_hourly_bucket_expired(action: Action) -> bool:
-    if not _is_hard_hourly_send_action(action):
-        return False
-    payload = action.payload if isinstance(action.payload, dict) else {}
-    bucket_value = str(payload.get("hard_hourly_bucket") or "").strip()
-    if not bucket_value:
-        return False
-    try:
-        bucket_start = datetime.fromisoformat(bucket_value)
-    except ValueError:
-        return False
-    now_value = _now()
-    if bucket_start.tzinfo is None:
-        now_value = now_value.replace(tzinfo=None)
-    else:
-        now_value = now_value.replace(tzinfo=BEIJING_TZ).astimezone(bucket_start.tzinfo)
-    return bucket_start + timedelta(hours=1) <= now_value
+    """Legacy helper retained for tests/call sites; always False under continuity rules."""
+    _ = action
+    return False
 
 
 def _replacement_account_for_action(session: Session, action: Action, account: TgAccount) -> TgAccount | None:
@@ -5175,10 +5663,13 @@ def _begin_execution_attempt(session: Session, action: Action, account: TgAccoun
     return attempt
 
 
-def _mark_gateway_call_started(session: Session, attempt: ExecutionAttempt) -> None:
+def _mark_gateway_call_started(session: Session, attempt: ExecutionAttempt, *, commit: bool = True) -> None:
     attempt.gateway_call_started_at = _now()
     attempt.status = "gateway_call_started"
-    session.commit()
+    if commit:
+        session.commit()
+    else:
+        session.flush()
 
 
 def _mark_search_join_before_gateway(session: Session, action: Action) -> None:
@@ -5664,5 +6155,6 @@ __all__ = [
     "due_actions",
     "recover_expired_claims",
     "recover_expired_hard_hourly_actions",
+    "recover_hard_hourly_delivery_credits",
     "recover_unreachable_hard_hourly_actions",
 ]

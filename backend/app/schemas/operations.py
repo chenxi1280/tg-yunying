@@ -46,6 +46,13 @@ class OperationTargetOut(ApiModel):
     member_count: int
     can_send: bool
     auth_status: str
+    lifecycle_status: str = "active"
+    lifecycle_reason: str = ""
+    lifecycle_detail: str = ""
+    lifecycle_at: datetime | None = None
+    lifecycle_by: str = ""
+    lifecycle_version: int = 1
+    reference_revision: int = 1
     linked_group_id: int | None = None
     can_listen: bool = False
     can_archive: bool = False
@@ -56,6 +63,53 @@ class OperationTargetOut(ApiModel):
     last_sync_at: datetime | None
     created_at: datetime
     updated_at: datetime
+
+
+class OperationTargetLifecycleUpdate(BaseModel):
+    lifecycle_status: str = Field(pattern="^(group_dissolved|target_ref_invalid)$")
+    reason: str = Field(min_length=1, max_length=500)
+    evidence_ref: str = Field(min_length=1, max_length=1000)
+    expected_lifecycle_version: int = Field(ge=1)
+
+
+class OperationTargetLifecycleImpactOut(BaseModel):
+    unstarted_action_count: int = 0
+    unknown_action_count: int = 0
+    unstarted_message_task_count: int = 0
+    unknown_message_task_count: int = 0
+    unstarted_operation_task_count: int = 0
+    unknown_operation_task_count: int = 0
+    coverage_count: int = 0
+    single_target_task_count: int = 0
+
+
+class OperationTargetLifecycleResultOut(BaseModel):
+    target_id: int
+    lifecycle_status: str
+    reference_revision: int
+    lifecycle_version: int
+    evidence_ref: str = ""
+    skipped_actions: int = 0
+    skipped_message_tasks: int = 0
+    skipped_operation_tasks: int = 0
+    blocked_coverage: int = 0
+    paused_tasks: int = 0
+
+
+class OperationTargetReactivateRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=500)
+    evidence_ref: str = Field(min_length=1, max_length=1000)
+    expected_lifecycle_version: int = Field(ge=1)
+    tg_peer_id: str | None = Field(default=None, min_length=1, max_length=120)
+    username: str | None = None
+
+    @model_validator(mode="after")
+    def require_reverified_reference(self) -> "OperationTargetReactivateRequest":
+        peer_id = str(self.tg_peer_id or "").strip()
+        username = str(self.username or "").strip().lstrip("@")
+        if not peer_id and not username:
+            raise ValueError("重新激活必须提交重新核验后的目标引用")
+        return self
 
 
 class ChannelMessageCreate(BaseModel):
@@ -323,6 +377,10 @@ __all__ = [
     "OperationTargetCreate",
     "OperationTargetUpdate",
     "OperationTargetOut",
+    "OperationTargetLifecycleUpdate",
+    "OperationTargetLifecycleImpactOut",
+    "OperationTargetLifecycleResultOut",
+    "OperationTargetReactivateRequest",
     "ChannelMessageCreate",
     "ChannelMessageCommentOut",
     "ChannelMessageCommentSyncOut",

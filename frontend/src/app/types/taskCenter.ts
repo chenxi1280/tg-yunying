@@ -3,7 +3,7 @@ export type TaskCenterSystemTaskType = 'account_profile_init' | 'account_device_
 export type TaskCenterAnyTaskType = TaskCenterTaskType | TaskCenterSystemTaskType;
 
 export type HardHourlyStrategy = 'force_planning';
-export type HardHourlyStatus = 'disabled' | 'met' | 'catching_up' | 'blocked' | 'missed';
+export type HardHourlyStatus = 'disabled' | 'met' | 'catching_up' | 'blocked' | 'missed' | 'awaiting_confirmation';
 
 export type GroupAIChatHardHourlyConfig = {
   hard_hourly_target_enabled?: boolean;
@@ -107,6 +107,15 @@ export type TaskCenterStats = Record<string, any> & {
   hard_hourly_last_blockers?: HardHourlyBlockers;
   hard_hourly_pipeline?: HardHourlyPipeline;
   hard_hourly_recent_buckets?: HardHourlyRecentBucket[];
+  hard_hourly_durable_debt?: number;
+  hard_hourly_unknown_after_send_hold_count?: number;
+  hard_hourly_eligible_open_count?: number;
+  hard_hourly_planning_rate?: number;
+  hard_hourly_required_new?: number;
+  hard_hourly_awaiting_confirmation?: boolean;
+  hard_hourly_target_operation_target_id?: number | null;
+  hard_hourly_target_reference_revision?: number;
+  hard_hourly_task_config_revision?: number;
 };
 
 export type TaskCenterTask = {

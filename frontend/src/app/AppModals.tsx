@@ -608,6 +608,22 @@ export function AppModals() {
             <label>每日上限<InputNumber value={groupPolicy.daily_limit} onChange={(value) => setGroupPolicy({ ...groupPolicy, daily_limit: Number(value ?? 0) })} /></label>
             <label>账号冷却秒<InputNumber value={groupPolicy.account_cooldown_seconds} onChange={(value) => setGroupPolicy({ ...groupPolicy, account_cooldown_seconds: Number(value ?? 0) })} /></label>
             <label>群冷却秒<InputNumber value={groupPolicy.group_cooldown_seconds} onChange={(value) => setGroupPolicy({ ...groupPolicy, group_cooldown_seconds: Number(value ?? 0) })} /></label>
+            <label>
+              群发送策略
+              <Select
+                value={groupPolicy.send_limit_mode}
+                style={{ width: '100%' }}
+                onChange={(value) => setGroupPolicy({ ...groupPolicy, send_limit_mode: value })}
+                options={[
+                  { value: 'legacy_group_slot', label: '旧模式：群日限额 + 群冷却（默认）' },
+                  { value: 'account_only', label: '仅账号容量（关闭群冷却/群日限额）' },
+                  { value: 'account_only_with_group_daily_limit', label: '仅账号容量 + 群日限额（关闭群冷却）' },
+                ]}
+              />
+            </label>
+            <Typography.Text type="secondary">
+              默认仍为旧模式。仅 canary 群可切 account_only；活动时段与账号容量始终生效。
+            </Typography.Text>
             <label>话题方向<Input.TextArea value={groupPolicy.topic_direction} onChange={(event) => setGroupPolicy({ ...groupPolicy, topic_direction: event.target.value })} /></label>
             <label>禁用词<Input.TextArea value={groupPolicy.banned_words} onChange={(event) => setGroupPolicy({ ...groupPolicy, banned_words: event.target.value })} /></label>
             <label>链接白名单<Input.TextArea value={groupPolicy.link_whitelist} onChange={(event) => setGroupPolicy({ ...groupPolicy, link_whitelist: event.target.value })} /></label>

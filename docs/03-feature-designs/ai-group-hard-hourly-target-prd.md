@@ -1,5 +1,15 @@
 # AI 活跃群每小时硬目标 PRD
 
+> **2026-07-24 VNext 优先级说明（评审修订版）：** `docs/03-feature-designs/ai-group-send-continuity-and-terminal-targets-prd.md` 对目标生命周期、引用版本、跨小时 Action、持久化小时桶、成功 credit、`unknown_after_send`、调度公平性和群发送策略具有优先级。启用 `ai_group_send_continuity_v1` 后的不可变口径：
+>
+> 1. 成功 credit **关闭计划桶义务**；`executed_at` 仅审计，禁止“实际小时入账 + 计划桶永久欠债”。
+> 2. `unknown_after_send` 每个占 1 个 planning reservation，禁止替代重发，**不得**整目标停规划。
+> 3. `planning_rate = hourly_min_messages + min(durable_debt, hourly_min_messages)`；`durable_debt` 取代仅 24h 窗口的 backfill 统计作为债务事实源。
+> 4. 跨小时未进入 Gateway 的 Action 可继续调度，禁止新增 `hard_hourly_bucket_expired`。
+> 5. 多目标任务下每个目标各自完整 `hourly_min_messages`；活动窗外欠账只累计不发送。
+>
+> 本文件正文中“最近 24 小时摘要”“过期 pending / dispatcher lag”“历史欠量追赶 / 实际小时入账”等与上文冲突的旧表述，只保留为 **feature-off 历史运行路径** 说明，不得用于新实现。
+
 ## 1. 背景
 
 线上 AI 活跃群任务已经支持 `messages_per_round`、`max_actions_per_hour` 和 24 小时活跃曲线，但这些配置本质是“每轮生成量”“每小时上限”和“自然分布权重”。当运营人员把目标设置得很高时，系统仍可能因为自然曲线、账号冷却、上下文等待、入群前置动作或质量过滤，把待发送动作分散到后续时间。

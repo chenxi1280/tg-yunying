@@ -21,6 +21,7 @@ export type Group = {
   auth_status: string;
   can_send: boolean;
   active_window: string;
+  send_limit_mode?: 'legacy_group_slot' | 'account_only' | 'account_only_with_group_daily_limit';
   daily_limit: number;
   account_cooldown_seconds: number;
   group_cooldown_seconds: number;

@@ -8,9 +8,9 @@ from sqlalchemy.orm import Session
 
 from app.models import Action, Task
 from app.services._common import _now
-from app.timezone import as_beijing
 
 from .config_fields import CHANNEL_DYNAMIC_TASK_TYPES
+from .datetime_compat import parse_zone, to_zone
 from .hard_hourly import enabled as hard_hourly_enabled, hard_hourly_stats
 from .pacing import ai_next_run_after, next_run_after
 from .planner_backlog import hard_hourly_payload_expired, planner_backlog_snapshot
@@ -59,7 +59,7 @@ def next_run_after_task(task: Task):
             if value is not None
         ]
         if priority_checks:
-            return max(min(priority_checks), _now())
+            return max(min(priority_checks), to_zone(_now(), parse_zone(task.timezone)))
         waiting_until = _stats_datetime(task, "idle_continuation_next_run_at")
         if waiting_until:
             return waiting_until
@@ -390,28 +390,15 @@ def _retry_delay_seconds_for_task(task: Task, policy: dict[str, Any]) -> int:
 
 
 def _skip_expired_hard_hourly_retry(action: Action, previous_result: dict[str, Any], now_value: datetime) -> bool:
-    if not _hard_hourly_bucket_expired(action, now_value):
-        return False
-    action.status = "skipped"
-    action.executed_at = now_value
-    action.lease_owner = ""
-    action.lease_expires_at = None
-    action.result = {
-        "success": False,
-        "error_code": HARD_HOURLY_EXPIRED_ERROR_CODE,
-        "error_message": HARD_HOURLY_EXPIRED_ERROR_MESSAGE,
-        "validation_stage": "hard_hourly_retry_recovery",
-        "auto_check": "过期补量跳过",
-        "previous_result": previous_result,
-    }
-    return True
+    """Continuity PRD: do not skip retries for hard_hourly_bucket_expired; allow replan path."""
+    _ = action, previous_result, now_value
+    return False
 
 
 def _hard_hourly_bucket_expired(action: Action, now_value: datetime) -> bool:
-    if action.action_type != "send_message":
-        return False
-    payload = action.payload if isinstance(action.payload, dict) else {}
-    return hard_hourly_payload_expired(payload, now_value)
+    """Legacy helper: always False under continuity rules."""
+    _ = action, now_value
+    return False
 
 
 def empty_stats() -> dict[str, Any]:
@@ -439,23 +426,19 @@ def _stats_datetime(task: Task, key: str) -> datetime | None:
         parsed = datetime.fromisoformat(str(value))
     except ValueError:
         return None
-    return _naive_datetime(parsed)
+    return to_zone(parsed, parse_zone(task.timezone))
 
 
 def _hard_hourly_next_check_at(task: Task) -> datetime | None:
-    checkpoint = as_beijing(task.hard_hourly_next_check_at)
+    checkpoint = (
+        to_zone(task.hard_hourly_next_check_at, parse_zone(task.timezone))
+        if task.hard_hourly_next_check_at is not None
+        else None
+    )
     if checkpoint is not None:
         return checkpoint
     checkpoint = _stats_datetime(task, "hard_hourly_next_check_at")
     if checkpoint is not None:
         task.hard_hourly_next_check_at = checkpoint
     return checkpoint
-
-
-def _naive_datetime(value):
-    if value and getattr(value, "tzinfo", None):
-        return value.replace(tzinfo=None)
-    return value
-
-
 __all__ = ["empty_stats", "next_run_after_task", "refresh_task_stats", "retry_failed_actions", "search_rank_deboost_hourly_execution"]

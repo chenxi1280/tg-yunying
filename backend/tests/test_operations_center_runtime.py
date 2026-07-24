@@ -3959,6 +3959,7 @@ def _seed_other_message_comments(session: Session, task: Task, base_time: dateti
         ))
 
 
+@pytest.mark.no_postgres
 def test_ai_cycle_mode_applies_silent_window_and_daily_ramp():
     config = {
         "silent_mode_enabled": True,
@@ -3970,6 +3971,11 @@ def test_ai_cycle_mode_applies_silent_window_and_daily_ramp():
 
     assert ai_cycle_mode(config, datetime(2026, 5, 11, 9, 0), datetime(2026, 5, 11, 9, 15)) == ("启动期", 0.438)
     assert ai_cycle_mode(config, datetime(2026, 5, 11, 9, 0), datetime(2026, 5, 11, 23, 30)) == ("静默期", 1.0)
+    assert ai_cycle_mode(
+        config,
+        datetime(2026, 5, 11, 9, 0, tzinfo=BEIJING_TZ),
+        datetime(2026, 5, 11, 9, 15),
+    ) == ("启动期", 0.438)
 
 
 def test_operation_profile_drives_schedule_and_ai_cycle_mode():
@@ -5035,8 +5041,9 @@ def test_group_ai_chat_idle_continuation_waits_until_interval(monkeypatch):
     assert task.status == "running"
     assert task.last_error == "持续监听中，等待新消息或空闲续聊间隔"
     assert task.stats["context_mode"] == "waiting_new_context"
-    assert task.stats["idle_continuation_next_run_at"] == (now_value + timedelta(seconds=300)).isoformat()
-    assert task.next_run_at == now_value + timedelta(seconds=300)
+    expected_next_run_at = (now_value + timedelta(seconds=300)).replace(tzinfo=BEIJING_TZ)
+    assert task.stats["idle_continuation_next_run_at"] == expected_next_run_at.isoformat()
+    assert task.next_run_at == expected_next_run_at
 
 
 def test_group_ai_chat_idle_continuation_generates_after_interval(monkeypatch):

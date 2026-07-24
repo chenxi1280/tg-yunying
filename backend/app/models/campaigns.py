@@ -97,6 +97,9 @@ class MessageTask(Base):
     target_type: Mapped[str] = mapped_column(String(30), default="group")
     target_peer_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
     target_display: Mapped[str] = mapped_column(String(160), default="")
+    operation_target_id: Mapped[int | None] = mapped_column(ForeignKey("operation_targets.id"), nullable=True)
+    target_reference_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    target_reference_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     preferred_account_id: Mapped[int | None] = mapped_column(ForeignKey("tg_accounts.id"), nullable=True)
     planned_delay_seconds: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(30), default=TaskStatus.QUEUED.value)
@@ -108,6 +111,7 @@ class MessageTask(Base):
     material_asset_fingerprint: Mapped[str] = mapped_column(String(128), default="")
     material_cache_ready_status: Mapped[str] = mapped_column(String(40), default="")
     scheduled_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    gateway_call_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 

@@ -1,5 +1,7 @@
 import type { TaskCenterTaskType } from './taskCenter';
 
+export type OperationTargetLifecycleStatus = 'active' | 'target_ref_invalid' | 'group_dissolved';
+
 export type OperationTarget = {
   id: number;
   tenant_id: number;
@@ -10,6 +12,13 @@ export type OperationTarget = {
   member_count: number;
   can_send: boolean;
   auth_status: string;
+  lifecycle_status?: OperationTargetLifecycleStatus;
+  lifecycle_reason?: string;
+  lifecycle_detail?: string;
+  lifecycle_at?: string | null;
+  lifecycle_by?: string;
+  lifecycle_version?: number;
+  reference_revision?: number;
   linked_group_id: number | null;
   can_listen: boolean;
   can_archive: boolean;
@@ -20,6 +29,23 @@ export type OperationTarget = {
   last_sync_at: string | null;
   created_at: string;
   updated_at: string;
+};
+
+export type OperationTargetLifecycleImpact = {
+  unstarted_action_count: number;
+  unknown_action_count: number;
+  coverage_count: number;
+  single_target_task_count: number;
+};
+
+export type OperationTargetLifecycleResult = {
+  target_id: number;
+  lifecycle_status: OperationTargetLifecycleStatus;
+  reference_revision: number;
+  lifecycle_version: number;
+  skipped_actions: number;
+  blocked_coverage: number;
+  paused_tasks: number;
 };
 
 export type OperationTargetCapability = 'send' | 'listen' | 'archive' | 'task';

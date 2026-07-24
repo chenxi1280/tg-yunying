@@ -238,6 +238,13 @@ function HardHourlyExecutionPanel({ detail }: { detail: TaskCenterDetail }) {
     { title: '状态', dataIndex: 'status', width: 100, render: (value) => <Tag color={hardHourlyStatusColor(value)}>{hardHourlyStatusLabel(value)}</Tag> },
     { title: '阻塞原因', key: 'blockers', ellipsis: true, render: (_, item) => formatHardHourlyBlockers(item.blockers) },
   ];
+  const durableDebt = Number(stats.hard_hourly_durable_debt ?? 0);
+  const unknownHold = Number(stats.hard_hourly_unknown_after_send_hold_count ?? 0);
+  const eligibleOpen = Number(stats.hard_hourly_eligible_open_count ?? futureOpen + overdueOpen);
+  const planningRate = Number(stats.hard_hourly_planning_rate ?? 0);
+  const requiredNew = Number(stats.hard_hourly_required_new ?? 0);
+  const targetRevision = Number(stats.hard_hourly_target_reference_revision ?? 0);
+  const configRevision = Number(stats.hard_hourly_task_config_revision ?? 0);
   return (
     <Space direction="vertical" size={8} style={{ width: '100%' }}>
       {overdueOpen > 0 && (
@@ -245,24 +252,46 @@ function HardHourlyExecutionPanel({ detail }: { detail: TaskCenterDetail }) {
           type="warning"
           showIcon
           message={`当前小时有 ${overdueOpen} 条执行滞后`}
-          description="这些过期待执行项不抵扣硬目标缺口，请按 dispatcher_lag / worker 执行延迟排查。"
+          description="跨小时未进入 Gateway 的动作会继续执行，不再因小时结束跳过；滞后项仍计入开放预约。"
+        />
+      )}
+      {unknownHold > 0 && (
+        <Alert
+          type="warning"
+          showIcon
+          message={`有 ${unknownHold} 条 Gateway 后待核验`}
+          description="unknown_after_send 不计成功、不替代重发，仅占规划名额；其余缺口仍可按 planning_rate 补齐。"
+        />
+      )}
+      {durableDebt > 0 && (
+        <Alert
+          type="info"
+          showIcon
+          message={`历史持久欠账 ${durableDebt}`}
+          description="欠账按目标 epoch 累计，不因 24 小时展示窗口消失；活动窗外只累计不发送。"
         />
       )}
       <Descriptions
         bordered
         size="small"
         column={4}
-        title="硬目标执行"
+        title="硬目标执行（连续性）"
         items={[
-          { key: 'bucket', label: '小时桶', children: formatDateTime(stats.hard_hourly_bucket) },
+          { key: 'bucket', label: '计划小时桶', children: formatDateTime(stats.hard_hourly_bucket) },
           { key: 'status', label: '状态', children: <Tag color={hardHourlyStatusColor(stats.hard_hourly_status)}>{hardHourlyStatusLabel(stats.hard_hourly_status)}</Tag> },
-          { key: 'success', label: '成功 / 目标', children: `${success} / ${goal || '-'}` },
-          { key: 'deficit', label: '缺口', children: deficit },
-          { key: 'future-open', label: '未来待执行覆盖', children: futureOpen },
-          { key: 'overdue-open', label: '执行滞后（不抵扣缺口）', children: overdueOpen },
+          { key: 'success', label: '本小时成功 / 目标', children: `${success} / ${goal || '-'}` },
+          { key: 'deficit', label: '本小时缺口', children: deficit },
+          { key: 'durable-debt', label: '历史欠账', children: durableDebt },
+          { key: 'eligible-open', label: '可抵扣开放动作', children: eligibleOpen },
+          { key: 'unknown-hold', label: '待核验占位', children: unknownHold },
+          { key: 'required-new', label: '本轮可新建', children: planningRate > 0 ? `${requiredNew} / rate ${planningRate}` : requiredNew },
+          { key: 'future-open', label: '未来待执行', children: futureOpen },
+          { key: 'overdue-open', label: '执行滞后', children: overdueOpen },
+          { key: 'target-rev', label: '目标 revision', children: targetRevision || '-' },
+          { key: 'config-rev', label: '任务 config revision', children: configRevision || '-' },
           { key: 'pipeline', label: '端到端阶段', children: formatHardHourlyPipeline(stats.hard_hourly_pipeline) },
           { key: 'last-plan', label: '最近强推', children: stats.hard_hourly_last_check_at ? `${formatDateTime(stats.hard_hourly_last_check_at)} / 创建 ${stats.hard_hourly_last_planned_count ?? 0} 条` : '-' },
-          { key: 'blockers', label: '阻塞原因', children: formatHardHourlyBlockers(stats.hard_hourly_last_blockers) },
+          { key: 'blockers', label: '阻塞原因', span: 2, children: formatHardHourlyBlockers(stats.hard_hourly_last_blockers) },
         ]}
       />
       {recentBuckets.length > 0 && (

@@ -21,6 +21,7 @@ from app.models import (
     GroupAuthStatus,
     Material,
     MessageTask,
+    OperationTarget,
     PromptTemplate,
     TaskStatus,
     TenantAiSetting,
@@ -719,6 +720,15 @@ def build_message_task_from_draft(session: Session, draft: AiDraft, actor: str, 
     scheduled_at, planned_delay = scheduled_at_for_campaign(session, campaign, index)
     message_type, material_id = task_media_from_draft(session, draft)
     group_id = target_group_id or draft.group_id
+    group = session.get(TgGroup, group_id)
+    if not group or group.tenant_id != draft.tenant_id:
+        raise ValueError("campaign target group not found")
+    operation_target = session.scalar(
+        select(OperationTarget).where(
+            OperationTarget.tenant_id == draft.tenant_id,
+            OperationTarget.tg_peer_id == group.tg_peer_id,
+        )
+    )
     selected_ids = selected_account_ids_for_group(campaign, group_id)
     preferred_account_id = draft.suggested_account_id
     if preferred_account_id not in selected_ids:
@@ -732,6 +742,23 @@ def build_message_task_from_draft(session: Session, draft: AiDraft, actor: str, 
         message_type=message_type,
         material_id=material_id,
         target_type="group",
+        target_peer_id=group.tg_peer_id,
+        target_display=group.title,
+        operation_target_id=operation_target.id if operation_target else None,
+        target_reference_revision=(
+            int(operation_target.reference_revision or 1)
+            if operation_target
+            else None
+        ),
+        target_reference_snapshot=(
+            {
+                "tg_peer_id": str(operation_target.tg_peer_id),
+                "username": str(operation_target.username or ""),
+                "title": str(operation_target.title),
+            }
+            if operation_target
+            else None
+        ),
         preferred_account_id=preferred_account_id,
         planned_delay_seconds=planned_delay,
         scheduled_at=scheduled_at,
@@ -753,6 +780,9 @@ def approve_draft(session: Session, draft_id: int, actor: str) -> MessageTask:
     draft.status = TaskStatus.APPROVED.value
     campaign = session.get(Campaign, draft.campaign_id)
     target_group_ids = campaign_target_group_ids(campaign) if campaign else [draft.group_id]
+    target_group_ids = _filter_groups_allowed_for_outbound(session, draft.tenant_id, target_group_ids)
+    if not target_group_ids:
+        raise ValueError("目标群已解散或引用无效，无法审核发送")
     ensure_task_quota_available(session, draft.tenant_id, len(target_group_ids))
     tasks = [build_message_task_from_draft(session, draft, actor, index, group_id) for index, group_id in enumerate(target_group_ids)]
     if campaign:
@@ -776,7 +806,13 @@ def approve_all_drafts(session: Session, campaign_id: int, actor: str) -> list[M
         )
     )
     tasks: list[MessageTask] = []
-    target_group_ids = campaign_target_group_ids(campaign)
+    target_group_ids = _filter_groups_allowed_for_outbound(
+        session,
+        campaign.tenant_id,
+        campaign_target_group_ids(campaign),
+    )
+    if not target_group_ids:
+        raise ValueError("目标群已解散或引用无效，无法批量审核发送")
     ensure_task_quota_available(session, campaign.tenant_id, len(drafts) * len(target_group_ids))
     task_index = 0
     for draft in drafts:
@@ -791,6 +827,20 @@ def approve_all_drafts(session: Session, campaign_id: int, actor: str) -> list[M
     for task in tasks:
         session.refresh(task)
     return tasks
+
+
+def _filter_groups_allowed_for_outbound(session: Session, tenant_id: int, group_ids: list[int]) -> list[int]:
+    from app.services.outbound_target_gate import group_lifecycle_allows_outbound
+
+    allowed: list[int] = []
+    for group_id in group_ids:
+        group = session.get(TgGroup, int(group_id))
+        if group is None or group.tenant_id != tenant_id:
+            continue
+        if group_lifecycle_allows_outbound(session, group) is not None:
+            continue
+        allowed.append(int(group_id))
+    return allowed
 
 
 def _campaign_group_payload(group: TgGroup) -> dict:

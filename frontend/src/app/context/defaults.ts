@@ -70,6 +70,7 @@ export function defaultGroupPolicy() {
     daily_limit: 120,
     account_cooldown_seconds: 180,
     group_cooldown_seconds: 60,
+    send_limit_mode: 'legacy_group_slot' as 'legacy_group_slot' | 'account_only' | 'account_only_with_group_daily_limit',
     topic_direction: '',
     banned_words: '',
     link_whitelist: '',

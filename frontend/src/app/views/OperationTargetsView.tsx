@@ -5,6 +5,7 @@ import { api, ApiError } from '../../shared/api/client';
 import type { ChannelMessage, ChannelMessageComment, ChannelMessageCommentSync, OperationTarget, OperationTargetDetail, OperationTargetMessageSync, OperationTargetsSync, TaskCenterTaskType } from '../types';
 import { DetailModal, StatusBadge } from '../components/shared';
 import OperationTargetManagementTable, { OperationTargetCapabilityTags } from '../components/OperationTargetManagementTable';
+import OperationTargetLifecycleActions, { OperationTargetLifecycleTag } from '../components/OperationTargetLifecycleActions';
 import { useOperationTargetManagementPage } from '../hooks/useOperationTargetManagementPage';
 import { formatBeijingDateTime } from '../time';
 
@@ -259,9 +260,15 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
         can_send: values.can_send ?? true,
         auth_status: values.auth_status ?? '已授权运营',
       };
+      const updateBody = {
+        title: body.title,
+        member_count: body.member_count,
+        can_send: body.can_send,
+        auth_status: body.auth_status,
+      };
       await api<OperationTarget>(editingTarget ? `/operation-targets/${editingTarget.id}` : '/operation-targets', {
         method: editingTarget ? 'PATCH' : 'POST',
-        body: JSON.stringify(body),
+        body: JSON.stringify(editingTarget ? updateBody : body),
       });
       if (!isCurrentTargetSaveRequest(saveRequest)) return;
       setEditingTarget(null);
@@ -458,17 +465,18 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
         {formError && <Alert className="form-alert" type="error" showIcon message={formError} />}
         <Form form={form} layout="vertical" onFinish={saveTarget} initialValues={{ target_type: 'group', can_send: true, auth_status: '已授权运营', member_count: 0 }}>
           <Form.Item name="target_type" label="目标类型" rules={[{ required: true }]}>
-            <Select options={[{ value: 'group', label: '群聊' }, { value: 'channel', label: '频道' }]} />
+            <Select disabled={Boolean(editingTarget)} options={[{ value: 'group', label: '群聊' }, { value: 'channel', label: '频道' }]} />
           </Form.Item>
           <Form.Item name="title" label="名称" rules={[{ required: true }]}>
             <Input />
           </Form.Item>
           <Form.Item name="tg_peer_id" label="Peer ID / @username / 频道链接" rules={[{ required: true }]}>
-            <Input placeholder="@channel、https://t.me/channel、https://t.me/+invite 或 -100..." />
+            <Input disabled={Boolean(editingTarget)} placeholder="@channel、https://t.me/channel、https://t.me/+invite 或 -100..." />
           </Form.Item>
           <Form.Item name="username" label="Username">
-            <Input />
+            <Input disabled={Boolean(editingTarget)} />
           </Form.Item>
+          {editingTarget ? <Typography.Text type="secondary">实际发送引用请在目标详情的生命周期处置中完成核验和修复。</Typography.Text> : null}
           <Form.Item name="member_count" label="人数">
             <InputNumber min={0} style={{ width: '100%' }} />
           </Form.Item>
@@ -502,6 +510,7 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
               column={3}
               items={[
                 { key: 'type', label: '类型', children: targetDetail.target.target_type === 'channel' ? '频道' : '群聊' },
+                { key: 'lifecycle', label: '生命周期', children: <OperationTargetLifecycleTag target={targetDetail.target} /> },
                 { key: 'auth', label: '使用范围', children: <StatusBadge status={targetDetail.target.auth_status} /> },
                 { key: 'send', label: '发送能力', children: <StatusBadge status={targetDetail.target.can_send ? '可发送' : '只读'} /> },
                 { key: 'task', label: '任务能力', span: 3, children: <OperationTargetCapabilityTags target={targetDetail.target} /> },
@@ -511,10 +520,43 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
                 { key: 'sync', label: '最近同步', span: 2, children: formatDateTime(targetDetail.target.last_sync_at) },
               ]}
             />
+            <Card className="sub-panel compact-panel" title="生命周期处置">
+              <OperationTargetLifecycleActions
+                target={targetDetail.target}
+                canManage={canManageTargets}
+                onChanged={async () => {
+                  if (detailTarget) await loadTargetDetail(detailTarget);
+                  await targetPage.refreshAfterAction('生命周期更新');
+                }}
+              />
+            </Card>
             <Space wrap>
-              {canManageMessageSending && <Button type="primary" icon={<MessageSquareText size={16} />} onClick={() => onSendToTarget(targetDetail.target)}>去发送消息</Button>}
-              {canManageTasks && targetDetail.target.target_type === 'group' && <Button onClick={() => onCreateTaskFromTarget('group_ai_chat', targetDetail.target)}>创建 AI 活跃群任务</Button>}
-              {canManageTasks && targetDetail.target.target_type === 'group' && <Button onClick={() => onCreateTaskFromTarget('group_relay', targetDetail.target)}>创建转发监听任务</Button>}
+              {canManageMessageSending && (
+                <Button
+                  type="primary"
+                  icon={<MessageSquareText size={16} />}
+                  disabled={(targetDetail.target.lifecycle_status || 'active') !== 'active'}
+                  onClick={() => onSendToTarget(targetDetail.target)}
+                >
+                  去发送消息
+                </Button>
+              )}
+              {canManageTasks && targetDetail.target.target_type === 'group' && (
+                <Button
+                  disabled={(targetDetail.target.lifecycle_status || 'active') !== 'active'}
+                  onClick={() => onCreateTaskFromTarget('group_ai_chat', targetDetail.target)}
+                >
+                  创建 AI 活跃群任务
+                </Button>
+              )}
+              {canManageTasks && targetDetail.target.target_type === 'group' && (
+                <Button
+                  disabled={(targetDetail.target.lifecycle_status || 'active') !== 'active'}
+                  onClick={() => onCreateTaskFromTarget('group_relay', targetDetail.target)}
+                >
+                  创建转发监听任务
+                </Button>
+              )}
               {canManageArchives && targetDetail.target.target_type === 'group' && targetDetail.target.can_archive && (
                 <Button loading={creatingArchiveId === targetDetail.target.id} onClick={() => createArchiveFromTarget(targetDetail.target)}>创建归档</Button>
               )}

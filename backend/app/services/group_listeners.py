@@ -348,6 +348,13 @@ def trigger_listener_auto_reply(session: Session, group: TgGroup) -> int:
     )
     if not unprocessed or not group.listener_auto_reply_enabled:
         return 0
+    from app.services.outbound_target_gate import group_lifecycle_allows_outbound
+
+    gate_block = group_lifecycle_allows_outbound(session, group)
+    if gate_block is not None:
+        group.listener_last_error = gate_block.detail
+        session.commit()
+        return 0
     try:
         user = _system_user(session, group.tenant_id)
     except ValueError as exc:

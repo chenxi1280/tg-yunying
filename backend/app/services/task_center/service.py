@@ -75,6 +75,7 @@ from .dispatcher import (
     mark_dispatcher_db_error,
     recover_expired_claims,
     recover_expired_hard_hourly_actions,
+    recover_hard_hourly_delivery_credits,
     recover_unreachable_hard_hourly_actions,
 )
 from .daily_coverage import recover_terminal_coverage_reservations
@@ -120,7 +121,7 @@ from .details import (
 from .fingerprints import content_fingerprint
 from .heartbeat import record_worker_heartbeat
 from .listener_runtime import drain_listener_runtime, invalidate_listener_collect
-from .membership_fast_track import fast_track_pending_hard_hourly_memberships
+from .membership_fast_track import fast_track_pending_hard_hourly_memberships, record_fast_track_task_counts
 from .membership_admission import (
     list_membership_admission_items_page,
     mark_membership_admission_manual_handled,
@@ -249,6 +250,8 @@ from .config_normalization import (
     validate_rule_binding,
     validated_type_config,
 )
+from .continuity_config import increment_revision_for_continuity_change
+from .datetime_compat import parse_zone, to_zone
 
 
 def create_group_ai_chat_task(session: Session, tenant_id: int, payload: GroupAIChatTaskCreate, actor: str) -> Task:
@@ -756,6 +759,8 @@ def _task_learning_profile_preview(session: Session, task: Task) -> dict[str, An
 
 def update_task(session: Session, tenant_id: int, task_id: str, payload: TaskUpdate, actor: str) -> Task:
     task = _get_task(session, tenant_id, task_id)
+    previous_config = dict(task.type_config or {})
+    previous_timezone = str(task.timezone or "")
     raw_data = payload.model_dump(exclude_unset=True)
     _require_search_click_dedicated_update(task, raw_data)
     data = payload.model_dump(exclude_unset=True, mode="json")
@@ -770,6 +775,11 @@ def update_task(session: Session, tenant_id: int, task_id: str, payload: TaskUpd
         initialize_all_account_task_scope(session, task)
         _clear_unfinished_plan(session, task)
         _requeue_updated_task(task)
+    increment_revision_for_continuity_change(
+        task,
+        previous_config=previous_config,
+        previous_timezone=previous_timezone,
+    )
     task.updated_at = _now()
     audit(session, tenant_id=tenant_id, actor=actor, action="更新任务中心任务", target_type="task", target_id=task.id)
     session.commit()
@@ -789,6 +799,8 @@ def _requeue_updated_task(task: Task) -> None:
 
 def update_task_settings(session: Session, tenant_id: int, task_id: str, payload: TaskSettingsUpdate, actor: str) -> Task:
     task = _get_task(session, tenant_id, task_id)
+    previous_config = dict(task.type_config or {})
+    previous_timezone = str(task.timezone or "")
     raw_data = payload.model_dump(exclude_unset=True)
     _require_search_click_dedicated_update(task, raw_data)
     data = payload.model_dump(exclude_unset=True, mode="json")
@@ -821,6 +833,11 @@ def update_task_settings(session: Session, tenant_id: int, task_id: str, payload
         next_config = normalize_operation_target_references(session, tenant_id, task.type, next_config)
         next_config = apply_group_ai_account_coverage_defaults(task.type, next_config, task.account_config or {})
         task.type_config = validated_type_config(task.type, next_config)
+    increment_revision_for_continuity_change(
+        task,
+        previous_config=previous_config,
+        previous_timezone=previous_timezone,
+    )
     initialize_all_account_task_scope(session, task)
     _clear_unfinished_plan(session, task)
     if task.status not in {"completed", "failed"}:
@@ -1932,6 +1949,9 @@ def stop_task(session: Session, tenant_id: int, task_id: str, actor: str, reason
     task = _get_task(session, tenant_id, task_id)
     task.status = "stopped"
     task.next_run_at = None
+    from .hard_hourly_ledger import terminalize_task_buckets
+
+    terminalize_task_buckets(session, task=task, blocker_code="task_stopped")
     for action in session.scalars(select(Action).where(Action.task_id == task.id, Action.status == "pending")):
         action.status = "skipped"
         action.result = {"success": False, "error_code": "task_stopped", "error_message": "任务已停止"}
@@ -1949,6 +1969,9 @@ def delete_task(session: Session, tenant_id: int, task_id: str, actor: str, reas
         return
     task = _get_task(session, tenant_id, task_id)
     now = _now()
+    from .hard_hourly_ledger import terminalize_task_buckets
+
+    terminalize_task_buckets(session, task=task, blocker_code="task_deleted")
     for action in session.scalars(select(Action).where(Action.task_id == task.id, Action.status.in_(["pending", "executing"]))):
         action.status = "skipped"
         action.result = {"success": False, "error_code": "task_deleted", "error_message": "任务已删除"}
@@ -2698,7 +2721,18 @@ def _drain_task_recovery(session_factory, *, limit: int, process_type: str | Non
         processed += recover_expired_claims(session)
         processed += recover_unreachable_hard_hourly_actions(session, limit=_hard_hourly_recovery_limit(limit))
         processed += recover_expired_hard_hourly_actions(session, limit=_hard_hourly_recovery_limit(limit))
-        processed += fast_track_pending_hard_hourly_memberships(session, limit=_hard_hourly_recovery_limit(limit))
+        processed += recover_hard_hourly_delivery_credits(session, limit=_hard_hourly_recovery_limit(limit))
+        session.commit()
+        # Fast-track locks and updates only Action rows.  Release those locks
+        # before separately persisting Task-level observability counters.
+        fast_track_result = fast_track_pending_hard_hourly_memberships(
+            session,
+            limit=_hard_hourly_recovery_limit(limit),
+        )
+        processed += fast_track_result.processed
+        session.commit()
+        record_fast_track_task_counts(session, fast_track_result.task_counts)
+        session.commit()
         processed += recover_missing_hard_hourly_memberships(session, limit=_hard_hourly_recovery_limit(limit))
         processed += recover_terminal_coverage_reservations(session, limit=limit)
         session.commit()
@@ -3824,11 +3858,12 @@ def _normal_planner_task_ids(session: Session, *, limit: int, now: datetime) -> 
 
 def _wake_hard_hourly_tasks(session: Session, *, limit: int, now: datetime | None = None) -> list[str]:
     now = now or _now()
+    query_now = to_zone(now)
     target_count = max(HARD_HOURLY_WAKE_MIN_SCAN, max(1, limit))
     candidates = sorted(
         (
             candidate
-            for task in session.scalars(_hard_hourly_wake_query(now))
+            for task in session.scalars(_hard_hourly_wake_query(query_now))
             if (candidate := _hard_hourly_due_candidate(session, task, now)) is not None
         ),
         key=lambda candidate: candidate[0],
@@ -3839,8 +3874,8 @@ def _wake_hard_hourly_tasks(session: Session, *, limit: int, now: datetime | Non
     }
     selected = [task for _sort_key, task, _progress in selected_candidates]
     for task in selected:
-        next_run_at = _naive_datetime(task.next_run_at)
-        if next_run_at is None or next_run_at > now:
+        next_run_at = task.next_run_at
+        if next_run_at is None or _hard_hourly_time_after(task, next_run_at, now):
             task.next_run_at = now
     return [task.id for task in selected]
 
@@ -3870,7 +3905,7 @@ def _hard_hourly_due_candidate(session: Session, task: Task, now: datetime):
     if not hard_hourly_enabled(task):
         return None
     next_check_at = _hard_hourly_next_check_at(task)
-    if next_check_at is not None and next_check_at > now:
+    if next_check_at is not None and _hard_hourly_time_after(task, next_check_at, now):
         return None
     progress = hard_hourly_current_progress(session, task, now)
     _record_hard_hourly_checkpoint(task, progress, now)
@@ -3894,19 +3929,17 @@ def _ensure_hard_hourly_checkpoint(task: Task, progress: dict[str, Any], now: da
 
 
 def _hard_hourly_due_sort_key(task: Task, progress: dict[str, Any], next_check_at: datetime | None):
-    next_run_at = _naive_datetime(task.next_run_at) or datetime.min
-    created_at = _naive_datetime(task.created_at) or datetime.min
     return (
-        next_check_at or datetime.min,
+        _hard_hourly_sort_timestamp(next_check_at),
         -int(progress.get("deficit") or 0),
         int(task.priority or 0),
-        next_run_at,
-        created_at,
+        _hard_hourly_sort_timestamp(task.next_run_at),
+        _hard_hourly_sort_timestamp(task.created_at),
     )
 
 
 def _hard_hourly_next_check_at(task: Task) -> datetime | None:
-    checkpoint = as_beijing(task.hard_hourly_next_check_at)
+    checkpoint = _hard_hourly_task_time(task, task.hard_hourly_next_check_at)
     if checkpoint is not None:
         return checkpoint
     checkpoint = _task_stats_datetime(task, "hard_hourly_next_check_at")
@@ -3917,10 +3950,10 @@ def _hard_hourly_next_check_at(task: Task) -> datetime | None:
 
 def _hard_hourly_recheck_is_pending(task: Task, now: datetime) -> bool:
     hard_next_check = _hard_hourly_next_check_at(task)
-    if not hard_hourly_enabled(task) or hard_next_check is None or hard_next_check <= now:
+    if not hard_hourly_enabled(task) or hard_next_check is None or not _hard_hourly_time_after(task, hard_next_check, now):
         return False
     coverage_next_check = _task_stats_datetime(task, "daily_coverage_next_check_at")
-    return coverage_next_check is None or coverage_next_check > now
+    return coverage_next_check is None or _hard_hourly_time_after(task, coverage_next_check, now)
 
 
 def _task_stats_datetime(task: Task, key: str) -> datetime | None:
@@ -3929,9 +3962,23 @@ def _task_stats_datetime(task: Task, key: str) -> datetime | None:
     if not value:
         return None
     try:
-        return as_beijing(datetime.fromisoformat(str(value)))
+        return _hard_hourly_task_time(task, datetime.fromisoformat(str(value)))
     except ValueError:
         return None
+
+
+def _hard_hourly_task_time(task: Task, value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    return to_zone(value, parse_zone(task.timezone))
+
+
+def _hard_hourly_time_after(task: Task, left: datetime, right: datetime) -> bool:
+    return _hard_hourly_task_time(task, left) > _hard_hourly_task_time(task, right)
+
+
+def _hard_hourly_sort_timestamp(value: datetime | None) -> float:
+    return to_zone(value).timestamp() if value is not None else float("-inf")
 
 
 def _check_stop_conditions(session: Session, task: Task) -> bool:
@@ -3985,6 +4032,8 @@ def _apply_type_config_data(
     task = _get_task(session, tenant_id, task_id)
     if task.type != expected_type:
         raise ValueError(f"任务类型不匹配，当前任务是 {task.type}")
+    previous_config = dict(task.type_config or {})
+    previous_timezone = str(task.timezone or "")
     next_config = {**(task.type_config or {}), **update_data}
     for field in remove_fields:
         next_config.pop(field, None)
@@ -3994,6 +4043,11 @@ def _apply_type_config_data(
     next_config = validated_type_config(expected_type, next_config)
     validate_rule_binding(session, tenant_id, next_config)
     task.type_config = next_config
+    increment_revision_for_continuity_change(
+        task,
+        previous_config=previous_config,
+        previous_timezone=previous_timezone,
+    )
     _clear_unfinished_plan(session, task)
     if task.status not in {"completed", "failed"}:
         now = _now()

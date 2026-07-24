@@ -147,6 +147,12 @@ def channel_message_payload(channel: OperationTarget, message: ChannelMessage) -
     return {
         "channel_id": channel.tg_peer_id,
         "channel_target_id": channel.id,
+        "target_reference_revision": int(channel.reference_revision or 1),
+        "target_reference_snapshot": {
+            "tg_peer_id": str(channel.tg_peer_id),
+            "username": str(channel.username or ""),
+            "title": str(channel.title),
+        },
         "channel_message_id": message.id,
         "message_id": message.message_id,
         "target_display": channel.title,

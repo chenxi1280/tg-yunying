@@ -12,6 +12,7 @@ from app.integrations.telegram import OperationResult
 from app.models import Action, ExecutionAttempt, OperationTarget, Tenant, TgAccount, Task, WorkerHeartbeat
 from app.services._common import _now
 from app.services.task_center import service as task_service
+from app.services.task_center.membership_fast_track import FastTrackResult
 from app.services.task_center.service import _recover_stale_executing_actions, drain_task_recovery
 
 
@@ -243,6 +244,7 @@ def test_recovery_fast_tracks_pending_memberships_once(monkeypatch) -> None:
     for name in [
         "recover_expired_claims",
         "recover_expired_hard_hourly_actions",
+        "recover_hard_hourly_delivery_credits",
         "recover_missing_hard_hourly_memberships",
         "recover_terminal_coverage_reservations",
         "_recover_continuous_task_states",
@@ -255,7 +257,7 @@ def test_recovery_fast_tracks_pending_memberships_once(monkeypatch) -> None:
     monkeypatch.setattr(
         task_service,
         "fast_track_pending_hard_hourly_memberships",
-        lambda *_args, **kwargs: calls.append(kwargs["limit"]) or 0,
+        lambda *_args, **kwargs: calls.append(kwargs["limit"]) or FastTrackResult(processed=0, task_counts={}),
     )
 
     task_service._drain_task_recovery(SessionFactory, limit=10, process_type=None)

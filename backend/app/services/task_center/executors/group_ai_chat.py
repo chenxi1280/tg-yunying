@@ -51,6 +51,7 @@ from ..coverage_capacity import (
     reserved_coverage_message_count,
     task_coverage_capacity_proof,
 )
+from ..datetime_compat import parse_zone, to_zone
 from ..daily_coverage import (
     backfill_daily_coverage_confirmations,
     block_coverage_accounts,
@@ -219,6 +220,7 @@ class PlanAbort:
 @dataclass(frozen=True)
 class PlanFacts:
     config: dict
+    task_config_revision: int
     hard_progress: dict
     rule_version: Any
     rule_set: RuleSet | None
@@ -330,6 +332,9 @@ def _load_plan_facts(session: Session, task: Task) -> PlanFacts | PlanAbort:
     group = _resolve_plan_group(session, task, config, progress=progress)
     if isinstance(group, PlanAbort):
         return group
+    gate_abort = _plan_outbound_target_abort(session, task, target, group, progress)
+    if gate_abort:
+        return gate_abort
     if _hard_hourly_group_cooldown_blocker(task, group, progress):
         if not _all_accounts_daily_coverage(config):
             return PlanAbort()
@@ -347,6 +352,7 @@ def _load_plan_facts(session: Session, task: Task) -> PlanFacts | PlanAbort:
     active_config = _with_active_conversation_targets(session, task, config, group)
     return PlanFacts(
         config=active_config,
+        task_config_revision=int(task.config_revision or 1),
         hard_progress=progress,
         rule_version=rule_version,
         rule_set=rule_set,
@@ -362,6 +368,9 @@ def _target_membership_abort(
 ) -> PlanAbort | None:
     if not target or target.tenant_id != task.tenant_id or target.target_type != "group":
         return None
+    lifecycle_abort = _plan_outbound_target_abort(session, task, target, None, progress)
+    if lifecycle_abort:
+        return lifecycle_abort
     gate = gate_channel_membership(session, task, target, require_send=True)
     if gate.ready:
         return None
@@ -370,6 +379,34 @@ def _target_membership_abort(
         deficit = max(1, int(progress.get("deficit") or gate.created or 1))
         mark_plan_result(task, progress, 0, {blocker: deficit})
     return PlanAbort(gate.created)
+
+
+def _plan_outbound_target_abort(
+    session: Session,
+    task: Task,
+    target: OperationTarget | None,
+    group: TgGroup | None,
+    progress: dict,
+) -> PlanAbort | None:
+    from app.services.outbound_target_gate import evaluate_outbound_target_gate
+
+    peer_id = target.tg_peer_id if target else (group.tg_peer_id if group else "")
+    block = evaluate_outbound_target_gate(
+        session,
+        target=target,
+        group=group,
+        tenant_id=task.tenant_id,
+        outbound_peer=peer_id,
+        require_identity=target is not None,
+        include_group_policy=False,
+    )
+    if block is None:
+        return None
+    task.last_error = block.detail
+    if progress:
+        deficit = max(1, int(progress.get("deficit") or 1))
+        mark_plan_result(task, progress, 0, {block.code: deficit})
+    return PlanAbort()
 
 
 def _resolve_plan_group(
@@ -831,10 +868,22 @@ def _slot_identity_payload(slot: SlotBuildInput) -> dict[str, Any]:
     profile = slot.blueprint.profile
     item = slot.item
     account_id = slot.account.id
+    target = facts.target
+    target_id = target.id if target else int(facts.config.get("target_operation_target_id") or 0) or None
+    target_revision = int(target.reference_revision or 1) if target else int(facts.config.get("target_reference_revision") or 0) or None
+    target_snapshot = {
+        "tg_peer_id": str(target.tg_peer_id if target else facts.group.tg_peer_id),
+        "username": str(target.username if target else ""),
+        "title": str(target.title if target else facts.target_label),
+    }
     return {
         "chat_id": facts.group.tg_peer_id,
         "group_id": facts.group.id,
-        "operation_target_id": int(facts.config.get("target_operation_target_id") or 0) or None,
+        "operation_target_id": target_id,
+        "target_operation_target_id": target_id,
+        "target_reference_revision": target_revision,
+        "target_reference_snapshot": target_snapshot,
+        "task_config_revision": facts.task_config_revision,
         "target_display": facts.target_label,
         "message_text": "",
         "media_segments": [],
@@ -913,6 +962,7 @@ def _slot_generation_payload(slot: SlotBuildInput) -> dict[str, Any]:
         "ai_generation_count": len(generation.quality_items),
         "hard_hourly_target": bool(facts.hard_progress),
         "hard_hourly_bucket": str(facts.hard_progress.get("bucket") or ""),
+        "hard_hourly_goal_at_plan": int(facts.hard_progress.get("goal") or 0),
         "hard_hourly_deficit_at_plan": int(hard_hourly_planning_rate(facts.hard_progress) if facts.hard_progress else 0),
         "ai_generation_context_count": len(generation.context_message_ids),
         "ai_generation_memory_count": len(profile.account_memories),
@@ -1313,9 +1363,6 @@ def _choose_capacity_slot(
     reservations: list[AccountCapacityReservation],
     capacity_cache: AccountCapacityCache,
 ) -> tuple[object | None, datetime]:
-    if progress:
-        # Hard-hourly targets are explicit quota commitments; claim/dispatch records the capacity override.
-        return _choose_turn_account(selected, selected, index, used_account_ids, allow_repeat), planned_at
     candidate_limit = _capacity_candidate_limit(used_account_ids)
     available = _available_accounts_at(session, task, selected, planned_at, reservations, capacity_cache, limit=candidate_limit)
     account = _choose_turn_account(available, available, index, used_account_ids, allow_repeat)
@@ -1363,7 +1410,11 @@ def _available_accounts_at(
 
 def _defer_crosses_hard_hour(progress: dict[str, object], defer_until: datetime) -> bool:
     hour_end = progress.get("hour_end") if progress else None
-    return isinstance(hour_end, datetime) and defer_until >= hour_end
+    if not isinstance(hour_end, datetime):
+        return False
+    from app.services.task_center.datetime_compat import is_after_or_equal
+
+    return is_after_or_equal(defer_until, hour_end)
 
 
 def _reserve_action_coverage(session: Session, action: Action, payload: SendMessagePayload) -> bool:
@@ -1390,8 +1441,6 @@ def _select_accounts_for_plan(
     coverage_rows: list[TaskAccountDailyCoverage] | None = None,
 ) -> list:
     options = _hard_hourly_account_options(progress)
-    if progress:
-        options["enforce_capacity"] = False
     coverage_options = _daily_coverage_account_options(config)
     ready_rows = _ready_coverage_rows(config, coverage_rows)
     if _daily_coverage_enforced(config) and coverage_rows is None:
@@ -2262,7 +2311,7 @@ def _has_account_candidate(
             task.tenant_id,
             account_config,
             target_group_id=group.id,
-            enforce_capacity=False,
+            enforce_capacity=True,
             **options,
         )
     )
@@ -2273,7 +2322,8 @@ def _hard_hourly_account_options(progress: dict[str, object]) -> dict[str, objec
         return {}
     return {
         "limit": _hard_hourly_account_scan_target(progress),
-        "enforce_max_concurrent": False,
+        # Continuity PRD: hard-hourly planning must respect account concurrency/capacity.
+        "enforce_max_concurrent": True,
     }
 
 
@@ -2469,8 +2519,8 @@ def _limit_context_bound_turns(
         _clear_context_bound_limit_stats(task)
         return turn_count, planned_times
     window_seconds = _context_bound_schedule_window_seconds(config)
-    cutoff = _now() + timedelta(seconds=window_seconds)
-    allowed_count = len([time_item for time_item in planned_times if _naive_datetime(time_item) <= cutoff])
+    cutoff = _task_datetime(task, _now()) + timedelta(seconds=window_seconds)
+    allowed_count = len([time_item for time_item in planned_times if _task_datetime(task, time_item) <= cutoff])
     limited_count = max(1, min(int(turn_count or 1), allowed_count))
     _record_context_bound_limit_stats(task, turn_count, limited_count, window_seconds)
     return limited_count, planned_times[:limited_count]
@@ -2489,8 +2539,8 @@ def _limit_context_bound_quality_schedule(
     if not _requires_context_bound_window(config, has_context, progress, deferred_generation):
         return quality_items, planned_times
     window_seconds = _context_bound_schedule_window_seconds(config)
-    cutoff = _now() + timedelta(seconds=window_seconds)
-    allowed_count = len([item for item in planned_times if _naive_datetime(item) <= cutoff])
+    cutoff = _task_datetime(task, _now()) + timedelta(seconds=window_seconds)
+    allowed_count = len([item for item in planned_times if _task_datetime(task, item) <= cutoff])
     limited_count = min(len(quality_items), allowed_count)
     _record_context_bound_limit_stats(
         task,
@@ -2611,8 +2661,9 @@ def _mark_waiting_context(
     stats.pop("duplicate_risk", None)
     stats.pop("hallucination_risk", None)
     if next_run_at:
-        stats["idle_continuation_next_run_at"] = _naive_datetime(next_run_at).isoformat()
-        task.next_run_at = _naive_datetime(next_run_at)
+        normalized_next_run_at = _task_datetime(task, next_run_at)
+        stats["idle_continuation_next_run_at"] = normalized_next_run_at.isoformat()
+        task.next_run_at = normalized_next_run_at
         task.last_error = WAITING_IDLE_CONTINUATION_MESSAGE
     else:
         stats.pop("idle_continuation_next_run_at", None)
@@ -2634,8 +2685,8 @@ def _idle_continuation_decision(session: Session, task: Task, config: dict) -> d
     last_success_at = _last_successful_ai_action_at(session, task)
     if not last_success_at:
         return {"due": False, "next_run_at": None}
-    next_run_at = _naive_datetime(last_success_at) + timedelta(seconds=_idle_continuation_seconds(config))
-    return {"due": _now() >= next_run_at, "next_run_at": next_run_at}
+    next_run_at = _task_datetime(task, last_success_at) + timedelta(seconds=_idle_continuation_seconds(config))
+    return {"due": _task_datetime(task, _now()) >= next_run_at, "next_run_at": next_run_at}
 
 
 def _idle_continuation_seconds(config: dict) -> int:
@@ -2669,7 +2720,7 @@ def _last_successful_ai_action_at(session: Session, task: Task) -> datetime | No
     )
     if not action:
         return None
-    return _naive_datetime(action.executed_at or action.scheduled_at or action.created_at)
+    return _task_datetime(task, action.executed_at or action.scheduled_at or action.created_at)
 
 
 def _select_cycle_accounts(
@@ -3109,10 +3160,9 @@ def ai_cycle_mode(config: dict, scheduled_start: datetime | None = None, now: da
     ramp_minutes = int(config.get("ramp_up_minutes") or 0)
     if ramp_minutes <= 0:
         return mode, 1.0
-    start = scheduled_start or current.replace(hour=0, minute=0, second=0, microsecond=0)
-    if start.tzinfo is not None:
-        start = start.replace(tzinfo=None)
-    elapsed_minutes = max(0.0, (current - start).total_seconds() / 60)
+    current_in_zone = to_zone(current)
+    start = scheduled_start or current_in_zone.replace(hour=0, minute=0, second=0, microsecond=0)
+    elapsed_minutes = max(0.0, (current_in_zone - to_zone(start)).total_seconds() / 60)
     if elapsed_minutes >= ramp_minutes:
         return mode, 1.0
     start_ratio = float(config.get("ramp_start_ratio") or 0.3)
@@ -3134,10 +3184,8 @@ def _parse_time(value: str, fallback: time) -> time:
         return fallback
 
 
-def _naive_datetime(value: datetime) -> datetime:
-    if value and getattr(value, "tzinfo", None):
-        return value.replace(tzinfo=None)
-    return value
+def _task_datetime(task: Task, value: datetime) -> datetime:
+    return to_zone(value, parse_zone(task.timezone))
 
 
 def _context_fingerprint(row) -> str:

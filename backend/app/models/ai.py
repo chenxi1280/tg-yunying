@@ -87,6 +87,9 @@ class SchedulingSetting(Base):
     default_account_hour_limit: Mapped[int] = mapped_column(Integer, default=0)
     default_account_day_limit: Mapped[int] = mapped_column(Integer, default=0)
     default_account_cooldown_seconds: Mapped[int] = mapped_column(Integer, default=0)
+    outbound_target_gate_mode: Mapped[str] = mapped_column(String(20), default="dual_read")
+    ai_group_send_continuity_v1: Mapped[bool] = mapped_column(Boolean, default=False)
+    ai_group_continuity_release_anchor: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 

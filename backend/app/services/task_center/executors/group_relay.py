@@ -98,7 +98,7 @@ def build_plan(session: Session, task: Task) -> int:
                         "source_id": source.id,
                         "source_group_title": source.title,
                         "source_operation_target_id": source_operation_target_id,
-                        "target_operation_target_id": _operation_target_id_for_group(session, task.tenant_id, target),
+                        "target_operation_target": _operation_target_for_group(session, task.tenant_id, target),
                         "original": message.content,
                         "content": filtered.content,
                         "source_info": f"{source.title} / {message.sender_name}",
@@ -130,7 +130,8 @@ def build_plan(session: Session, task: Task) -> int:
         target = candidate["target"]
         source_id = int(candidate["source_id"])
         source_operation_target_id = candidate.get("source_operation_target_id")
-        target_operation_target_id = candidate.get("target_operation_target_id")
+        target_operation_target = candidate.get("target_operation_target")
+        target_operation_target_id = target_operation_target.id if target_operation_target else None
         original = str(candidate.get("original") or "")
         content = str(candidate.get("content") or "")
         accounts = account_cache.get(target.id) or []
@@ -180,6 +181,22 @@ def build_plan(session: Session, task: Task) -> int:
                 chat_id=target.tg_peer_id,
                 group_id=target.id,
                 operation_target_id=target_operation_target_id,
+                target_operation_target_id=target_operation_target_id,
+                target_reference_revision=(
+                    int(target_operation_target.reference_revision or 1)
+                    if target_operation_target
+                    else None
+                ),
+                target_reference_snapshot=(
+                    {
+                        "tg_peer_id": str(target_operation_target.tg_peer_id),
+                        "username": str(target_operation_target.username or ""),
+                        "title": str(target_operation_target.title),
+                    }
+                    if target_operation_target
+                    else {}
+                ),
+                task_config_revision=int(task.config_revision or 1),
                 target_display=target.title,
                 message_text=content,
                 original_text=original,
@@ -308,8 +325,8 @@ def _source_operation_target_id(config: dict[str, Any], source_group_id: int) ->
     return None
 
 
-def _operation_target_id_for_group(session: Session, tenant_id: int, group: TgGroup) -> int | None:
-    target = session.scalar(
+def _operation_target_for_group(session: Session, tenant_id: int, group: TgGroup) -> OperationTarget | None:
+    return session.scalar(
         select(OperationTarget)
         .where(
             OperationTarget.tenant_id == tenant_id,
@@ -319,7 +336,6 @@ def _operation_target_id_for_group(session: Session, tenant_id: int, group: TgGr
         .order_by(OperationTarget.id.asc())
         .limit(1)
     )
-    return target.id if target else None
 
 
 def effective_relay_config(session: Session, task: Task) -> dict[str, Any]:
@@ -695,19 +711,31 @@ def _relay_targets_with_membership(session: Session, task: Task, config: dict[st
     target_ids = resolve_relay_target_ids(config, source_group_id, content)
     for target_id in _unique_ints(target_ids):
         target = session.get(TgGroup, target_id)
-        if target and target.tenant_id == task.tenant_id and target.auth_status == GroupAuthStatus.AUTHORIZED.value:
+        if (
+            target
+            and target.tenant_id == task.tenant_id
+            and target.auth_status == GroupAuthStatus.AUTHORIZED.value
+            and _relay_target_allows_outbound(session, target)
+        ):
             seen.add(target.id)
             targets.append(target)
     for operation_target_id in _relay_target_operation_ids(config):
         operation_target = _operation_target_from_id(session, task.tenant_id, operation_target_id)
         if not operation_target or operation_target.target_type != "group":
             continue
+        if not _relay_operation_target_allows_outbound(session, task, operation_target):
+            continue
         gate = gate_channel_membership(session, task, operation_target, require_send=True)
         created += gate.created
         if not gate.ready:
             continue
         group = linked_channel_group(session, operation_target, create=False)
-        if group and group.tenant_id == task.tenant_id and group.id not in seen:
+        if (
+            group
+            and group.tenant_id == task.tenant_id
+            and group.id not in seen
+            and _relay_target_allows_outbound(session, group)
+        ):
             seen.add(group.id)
             targets.append(group)
     return targets, created
@@ -724,6 +752,29 @@ def _operation_target_from_id(session: Session, tenant_id: int, target_id: Any) 
     if not target or target.tenant_id != tenant_id:
         return None
     return target
+
+
+def _relay_target_allows_outbound(session: Session, group: TgGroup) -> bool:
+    from app.services.outbound_target_gate import group_lifecycle_allows_outbound
+
+    return group_lifecycle_allows_outbound(session, group) is None
+
+
+def _relay_operation_target_allows_outbound(
+    session: Session,
+    task: Task,
+    target: OperationTarget,
+) -> bool:
+    from app.services.outbound_target_gate import evaluate_outbound_target_gate
+
+    return evaluate_outbound_target_gate(
+        session,
+        target=target,
+        tenant_id=task.tenant_id,
+        outbound_peer=target.tg_peer_id,
+        require_identity=True,
+        include_group_policy=False,
+    ) is None
 
 
 def _relay_target_operation_ids(config: dict[str, Any]) -> list[int]:

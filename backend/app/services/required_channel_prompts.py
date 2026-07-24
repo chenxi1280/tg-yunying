@@ -184,6 +184,12 @@ def _membership_payload(target: OperationTarget) -> dict[str, object]:
     return {
         "channel_id": target.tg_peer_id,
         "channel_target_id": target.id,
+        "target_reference_revision": int(target.reference_revision or 1),
+        "target_reference_snapshot": {
+            "tg_peer_id": str(target.tg_peer_id),
+            "username": str(target.username or ""),
+            "title": str(target.title),
+        },
         "target_type": "group",
         "target_display": target.title,
         "target_username": target.username or "",

@@ -23,3 +23,4 @@ from .tenant_learning import *  # noqa: F401,F403
 from .tenants import *  # noqa: F401,F403
 from .task_center import *  # noqa: F401,F403
 from .task_account_coverage import *  # noqa: F401,F403
+from .hard_hourly_ledger import *  # noqa: F401,F403

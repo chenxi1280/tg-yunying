@@ -6,6 +6,7 @@ import type { OperationTarget } from '../types';
 import type { TargetListQuery } from '../hooks/useOperationTargetManagementPage';
 import { StatusBadge } from './shared';
 import { formatBeijingDateTime } from '../time';
+import { OperationTargetLifecycleTag } from './OperationTargetLifecycleActions';
 
 type ColumnOptions = Readonly<{
   canManageTargets: boolean;
@@ -54,6 +55,7 @@ function operationTargetColumns(options: ColumnOptions): ColumnsType<OperationTa
       ),
     },
     { title: '人数', dataIndex: 'member_count', key: 'member_count', width: 110 },
+    { title: '生命周期', key: 'lifecycle_status', width: 150, render: (_, target) => <OperationTargetLifecycleTag target={target} /> },
     { title: '使用范围', key: 'auth_status', width: 140, render: (_, target) => <StatusBadge status={target.auth_status} /> },
     { title: '发送能力', key: 'can_send', width: 140, render: (_, target) => <StatusBadge status={target.can_send ? '可发送' : '只读'} /> },
     { title: '任务能力', key: 'task_capabilities', width: 240, render: (_, target) => <OperationTargetCapabilityTags target={target} /> },

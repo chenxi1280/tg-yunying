@@ -4694,6 +4694,84 @@ action / attempt 写入完成
 
 ---
 
+### 8.4 AI 活群发送连续性与终态目标（2026-07-24）
+
+本节是 `docs/03-feature-designs/ai-group-send-continuity-and-terminal-targets-prd.md` 的总 PRD 摘要（以 2026-07-24 评审修订版为准）。涉及目标生命周期、目标引用版本、跨小时硬目标、未知发送、群发送策略和出站终态拦截时，以该专项 PRD 为详细设计依据；旧专项文档的冲突表述只保留为未启用新能力时的历史兼容口径。
+
+#### 8.4.1 产品目标与分期
+
+- Phase A：所有 Telegram 出站入口（AI 活群、转发监听自动回复、手动发送、Campaign / 旧任务兼容发送）在规划、claim、Telegram Gateway 调用前共享同一目标终态门禁；已确认解散目标不得继续产生新出站。默认**不**改变同群多账号互挡。
+- Phase B：仅 `group_ai_chat` 启用持久化硬小时账本；未进入 Gateway 的 Action 跨小时继续受控执行；历史欠账不因 24 小时页面展示窗口消失。成功 credit **关闭计划桶义务**（义务归属），`executed_at` 仅作审计时间。
+- Phase B canary：仅运营显式切换的群使用 `account_only*`，才解除“账号 A 占槽挡 B/C/D”的群冷却体感；全量默认仍为 `legacy_group_slot`。
+- 任意任务显示“成功 / 完成”必须有 `Action.status=success`、成功 `ExecutionAttempt` 和非空 Telegram 远端消息 ID；`pending`、`skipped`、`unknown_after_send`、AI draft 就绪和 toast 都不是成功证据。
+
+#### 8.4.2 目标生命周期与引用版本
+
+`OperationTarget` 是租户内目标身份真相源，必须保存 `lifecycle_status`、`lifecycle_reason`、`lifecycle_detail`、`lifecycle_at`、`lifecycle_by`、`lifecycle_version` 与从 1 开始的 `reference_revision`。目标状态只有：
+
+| 状态 | 处置 |
+| --- | --- |
+| `active` | 继续经过目标能力、活动窗口、账号容量、内容和风险门禁 |
+| `target_ref_invalid` | 仅在确定的引用解析失败时写入；停止该引用自动重试；须经专用引用修复接口恢复，仅改标题无效 |
+| `group_dissolved` | 仅在运营人员基于证据确认后写入；跳过未进入 Gateway 的动作 |
+
+`ChannelInvalidError`、账号视角不可访问、同步矛盾等无法确定根因的 `PEER_INVALID` 只能写 `target_resolution_unverified` 诊断，不能自动变成 `target_ref_invalid` 或 `group_dissolved`。禁止按群名、标题或模糊匹配定位目标。
+
+任务配置和每个出站 Action 必须固定 `target_operation_target_id + target_reference_revision`。引用变更、引用修复或受控重新激活时递增 revision；旧 revision 尚未进入 Gateway 的 Action 标记 `target_reference_superseded`，已进入 Gateway 的 Action 保持原始结果或未知核验。旧 revision 的硬小时欠账、成功 credit 和历史 Action 永不迁移到新引用。多目标任务下每个目标各自承担完整 `hourly_min_messages`，不做任务内均分。
+
+#### 8.4.3 终态操作、引用无效、青岛师范学院和覆盖账本
+
+生命周期专用接口（解散确认、引用无效预置、引用修复、重新激活）只能由 `targets.manage` 用户调用，必须提交 `expected_lifecycle_version`、理由和证据引用；版本冲突返回 `409`；不得混入通用目标编辑表单。
+
+**`group_dissolved`（仅人工基于独立外部证据）：** 确认前先返回无副作用 impact preview。确认后：未进入 Gateway 的动作写 `skipped / target_group_dissolved`，文案固定为“群里已被解散，已跳过本目标”；已进入 Gateway 或 `unknown_after_send` 不可伪造为 skipped / success；单目标任务暂停；多目标仅跳过该目标；不得写 `completed`；覆盖行 `blocked / target_group_dissolved` 且 `next_eligible_at=null`。
+
+**`target_ref_invalid`（自动或受控预置）：** 仅当错误可归因于绑定引用本身，且不能用“单账号被踢/无权限但其他账号仍 can_send”误升。写入后：未开始动作 `skipped / target_ref_invalid`；覆盖 `blocked / target_ref_invalid`；单目标任务 pause/结构 blocker 并停止在该无效引用上继续硬小时规划；文案引导引用修复，**禁止**使用解散文案。恢复只能走专用引用修复接口，递增 `reference_revision`，旧 debt 不迁移。
+
+“青岛师范学院”的 `qdsfxy` 报错 `No user has "qdsfxy" as username` 仅证明当前引用失效，**不构成**群解散证据。此次发布在 Gate 启用前先精确核对目标 ID、peer、username 和原始错误，再以受控 lifecycle **预置 `target_ref_invalid`**（不是 `group_dissolved`）；第一轮调度跳过未开始动作并引导引用修复。不得把该字符串或同名目标写成代码特例。若后续另有解散证据，再人工标 `group_dissolved`。
+
+已解散目标不能自动恢复。重新激活必须提交新或已重新验证的引用、理由和当前版本，递增 `reference_revision`，并在真实 `can_send` / 目标能力检查通过后才恢复 `active`。
+#### 8.4.4 出站门禁与群发送策略
+
+所有 Phase A 出站路径必须调用同一 `OutboundTargetGate`，按以下顺序校验：租户隔离、目标 ID 与 revision、生命周期、活动时段、准入 / 目标能力、账号容量与并发、任务 / 内容 / 风控策略。不能按标题放行。目标身份无法唯一解析时按灰度：feature-off 仅诊断；canary 先 enforce 已绑定 OT 路径；全量后才硬阻断 `target_identity_unresolved`。
+
+群策略只控制群级限制，不能取消账号最终容量和活动时段：
+
+| `send_limit_mode` | 群日限额 | 群冷却 | 账号容量 / 冷却 | 活动时段 |
+| --- | --- | --- | --- | --- |
+| `legacy_group_slot` | 启用 | 启用 | 始终启用 | 始终启用 |
+| `account_only` | 不启用 | 不启用 | 始终启用 | 始终启用 |
+| `account_only_with_group_daily_limit` | 启用 | 不启用 | 始终启用 | 始终启用 |
+
+首次发布时所有历史群和新同步群均明确使用 `legacy_group_slot`；只有运营人员选定的 canary 群可显式切换新模式。硬小时不得再绕过账号容量或同账号并发约束。
+
+#### 8.4.5 硬小时真实账本与公平调度
+
+`Task.config_revision` 由服务端在目标引用、任务时区、硬小时目标或有效硬小时策略保存时原子递增；桶和 Action 固定该版本，变更只影响后续桶。新增硬小时桶和成功 credit。桶唯一键为：
+
+```text
+(tenant_id, task_id, operation_target_id, target_reference_revision, bucket_key)
+```
+
+每个 `TaskHardHourlyDeliveryCredit` 以 `UNIQUE(action_id)` 保证一条 Action 最多贡献一次成功；仅成功 Attempt 与非空远端消息 ID 的原子 credit 插入可以增加**计划桶**成功数。`executed_at` 记录实际发送时间，但完成义务只看计划桶；14:59 计划、15:02 成功时关闭 14 点义务，不得把成功记入 15 点计划桶而留下 14 点永久债务。
+
+```text
+planning_rate = hourly_min_messages + min(durable_debt, hourly_min_messages)
+planning_reservation = eligible_open_count + unknown_after_send_hold_count
+required_new = min(planning_rate,
+                   max(0, current_hour_deficit + durable_debt - planning_reservation))
+```
+
+`unknown_after_send` 不计成功、不自动重发、没有静默超时释放；每个 unknown 只占 1 个规划名额，**禁止**对同一 Action 替代重发，但**不得**因存在任意 unknown 就整目标停止全部硬小时规划。活动窗外或账号打满时欠账只累计不发送。未进入 Gateway 的跨小时 Action 可继续调度，禁止新增 `hard_hourly_bucket_expired`。
+
+严格搜索日目标仍优先于 AI 硬小时。在 Dispatcher **一次 claim 类别选择**中若选了 hard-hourly，且存在到期 ordinary、无更高优先级，则**下一次**类别选择必须服务 ordinary；cursor 和 reason 必须先以独立短事务持久化、提交后再锁 Action。新建 hard-hourly membership Action 直接按 claim 顺序近期排程；仅 Recovery 可对既有 future Action 做 ≤50 行、仅锁 `actions` 的 fast-track，提交释放锁后再单独写统计，Planner 不得批量改写旧 Action。
+
+#### 8.4.6 发布、观测和验收
+
+- 部署顺序：时区基线修复 → 死锁收敛 → schema / dual-read feature-off → 可重跑迁移与回填 → Phase A canary（已绑定 OT）→ Phase A 全量（unresolved 可接受）→ 精确目标预置 `target_ref_invalid`（如青岛）→ Phase B canary → 显式群策略 canary。`ai_group_send_continuity_v1` 必须可见、可审计，不得 silent fallback。
+- 历史 `hard_hourly_bucket_expired` 和已跳过记录保留历史，不自动复活；发布锚点之前的缺口不得虚构为新 debt；E4 只验收锚点之后的连续履约。
+- 至少观测 `hard_hourly_durable_debt`、最早 debt 年龄、`unknown_after_send_hold_count`、终态跳过数、引用无效 / 未核验 / identity unresolved 数、调度类别份额、`send_limit_mode`、`deadlock_detected_total`、`datetime_timezone_compare_error_total`。
+- 生产 `pass` 需要真实 Telegram 远端消息 ID、成功 Attempt、硬小时 credit、终态/引用无效审计、Action 状态和页面一致性；本地测试只能说明 `unproven`，账号 / 目标 / 迁移无法继续时为 `blocked`。
+
 ## 9. 后续实施优先级
 
 本节只定义代码重构的执行顺序。若与总设计或实施清单发生差异，以 `docs/05-implementation/tg-ops-platform-prd-refactor-checklist.md` 为拆分和验收入口，再回写 PRD。
@@ -4778,4 +4856,5 @@ action / attempt 写入完成
 - `docs/03-feature-designs/rules-center-design.md`：规则中心专项。
 - `docs/03-feature-designs/risk-control-and-account-center-design.md`：账号中心和风控专项。
 - `docs/03-feature-designs/material-library-design.md`：素材和媒体专项。
+- `docs/03-feature-designs/ai-group-send-continuity-and-terminal-targets-prd.md`：AI 活群连续履约、目标终态、引用版本和群发送策略专项。
 - `docs/02-architecture/capacity-and-dispatch-upgrade-plan.md`：容量和调度专项。

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -23,6 +23,13 @@ class OperationTarget(Base):
     member_count: Mapped[int] = mapped_column(Integer, default=0)
     can_send: Mapped[bool] = mapped_column(Boolean, default=True)
     auth_status: Mapped[str] = mapped_column(String(30), default="未确认")
+    lifecycle_status: Mapped[str] = mapped_column(String(40), default="active")
+    lifecycle_reason: Mapped[str] = mapped_column(String(500), default="")
+    lifecycle_detail: Mapped[str] = mapped_column(Text, default="")
+    lifecycle_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    lifecycle_by: Mapped[str] = mapped_column(String(100), default="")
+    lifecycle_version: Mapped[int] = mapped_column(Integer, default=1)
+    reference_revision: Mapped[int] = mapped_column(Integer, default=1)
     last_sync_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now)
@@ -70,6 +77,8 @@ class OperationTask(Base):
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), default=1)
     task_type: Mapped[str] = mapped_column(String(40))
     target_id: Mapped[int | None] = mapped_column(ForeignKey("operation_targets.id"), nullable=True)
+    target_reference_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    target_reference_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     channel_message_id: Mapped[int | None] = mapped_column(ForeignKey("channel_messages.id"), nullable=True)
     title: Mapped[str] = mapped_column(String(180), default="")
     content: Mapped[str] = mapped_column(Text, default="")
@@ -106,6 +115,7 @@ class OperationTaskAttempt(Base):
     idempotency_key: Mapped[str] = mapped_column(String(100), default="")
     planned_delay_seconds: Mapped[int] = mapped_column(Integer, default=0)
     scheduled_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    gateway_call_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     executed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
@@ -122,6 +132,7 @@ class ManualOperationRecord(Base):
     failure_type: Mapped[str] = mapped_column(String(60), default="")
     failure_detail: Mapped[str] = mapped_column(Text, default="")
     remote_message_id: Mapped[str] = mapped_column(String(160), default="")
+    gateway_call_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     actor: Mapped[str] = mapped_column(String(100), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 

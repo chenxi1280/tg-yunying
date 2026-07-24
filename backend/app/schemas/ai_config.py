@@ -249,6 +249,9 @@ class SchedulingSettingUpdate(BaseModel):
     default_account_hour_limit: int | None = Field(default=None, ge=0)
     default_account_day_limit: int | None = Field(default=None, ge=0)
     default_account_cooldown_seconds: int | None = Field(default=None, ge=0)
+    outbound_target_gate_mode: Literal["dual_read", "canary", "full"] | None = None
+    ai_group_send_continuity_v1: bool | None = None
+    ai_group_continuity_release_anchor: datetime | None = None
 
 
 class SchedulingSettingOut(ApiModel):
@@ -271,6 +274,9 @@ class SchedulingSettingOut(ApiModel):
     default_account_hour_limit: int
     default_account_day_limit: int
     default_account_cooldown_seconds: int
+    outbound_target_gate_mode: str
+    ai_group_send_continuity_v1: bool
+    ai_group_continuity_release_anchor: datetime | None
     updated_at: datetime
 
 

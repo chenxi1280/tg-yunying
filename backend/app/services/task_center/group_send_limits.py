@@ -14,6 +14,10 @@ from app.timezone import as_beijing, beijing_day_bounds
 
 GROUP_SEND_SLOT_STATUSES = ("before_call", "gateway_call_started", "success", "result_unknown")
 
+SEND_LIMIT_MODE_LEGACY_GROUP_SLOT = "legacy_group_slot"
+SEND_LIMIT_MODE_ACCOUNT_ONLY = "account_only"
+SEND_LIMIT_MODE_ACCOUNT_ONLY_WITH_GROUP_DAILY_LIMIT = "account_only_with_group_daily_limit"
+
 
 @dataclass(frozen=True)
 class GroupSendSlotBlock:
@@ -34,7 +38,18 @@ def group_send_slot_block(
     action: Action,
     group: TgGroup,
 ) -> GroupSendSlotBlock | None:
+    """Backward-compatible entry: active window + group policy for the group's mode."""
     now_value = _beijing_now()
+    window = active_window_block(group, now_value)
+    if window is not None:
+        return window
+    return group_policy_block(session, action=action, group=group, now_value=now_value)
+
+
+def active_window_block(group: TgGroup, now: datetime | None = None) -> GroupSendSlotBlock | None:
+    now_value = as_beijing(now) if now is not None else _beijing_now()
+    if now_value is None:
+        now_value = _beijing_now()
     active_window_retry_at = _next_group_active_window_start(group, now_value)
     if active_window_retry_at is not None:
         return GroupSendSlotBlock(
@@ -42,26 +57,49 @@ def group_send_slot_block(
             f"群不在活动时段 {group.active_window}，延后至 {active_window_retry_at.isoformat()}",
             max(1, int((active_window_retry_at - now_value).total_seconds())),
         )
-    attempt_summary = _group_attempt_summary(session, action=action, group=group, now_value=now_value)
-    legacy_summary = _legacy_group_send_summary(session, action=action, group=group, now_value=now_value)
-    if attempt_summary.same_day_count + legacy_summary.same_day_count >= int(group.daily_limit or 0):
-        retry_at = _next_daily_group_window_start(group, now_value)
-        return GroupSendSlotBlock(
-            FailureType.SLOWMODE.value,
-            f"群当日发送已达上限 {group.daily_limit}",
-            max(1, int((retry_at - now_value).total_seconds())),
-        )
-    last_slot_at = _latest_group_slot_at(attempt_summary.latest_at, legacy_summary.latest_at)
-    cooldown = int(group.group_cooldown_seconds or 0)
-    if cooldown > 0 and last_slot_at is not None:
-        elapsed = (now_value - last_slot_at).total_seconds()
-        if elapsed < cooldown:
-            retry_after = max(1, int(cooldown - elapsed))
+    return None
+
+
+def group_policy_block(
+    session: Session,
+    *,
+    action: Action,
+    group: TgGroup,
+    now_value: datetime | None = None,
+) -> GroupSendSlotBlock | None:
+    """Apply group daily/cooldown policy according to send_limit_mode.
+
+    Uses aggregated attempt summaries (index-friendly) rather than loading attempt rows.
+    """
+    now_local = now_value or _beijing_now()
+    mode = str(getattr(group, "send_limit_mode", None) or SEND_LIMIT_MODE_LEGACY_GROUP_SLOT)
+    enforce_daily = mode in {
+        SEND_LIMIT_MODE_LEGACY_GROUP_SLOT,
+        SEND_LIMIT_MODE_ACCOUNT_ONLY_WITH_GROUP_DAILY_LIMIT,
+    }
+    enforce_cooldown = mode == SEND_LIMIT_MODE_LEGACY_GROUP_SLOT
+    attempt_summary = _group_attempt_summary(session, action=action, group=group, now_value=now_local)
+    legacy_summary = _legacy_group_send_summary(session, action=action, group=group, now_value=now_local)
+    if enforce_daily:
+        if attempt_summary.same_day_count + legacy_summary.same_day_count >= int(group.daily_limit or 0):
+            retry_at = _next_daily_group_window_start(group, now_local)
             return GroupSendSlotBlock(
                 FailureType.SLOWMODE.value,
-                f"群冷却中，还需等待 {retry_after} 秒",
-                retry_after,
+                f"群当日发送已达上限 {group.daily_limit}",
+                max(1, int((retry_at - now_local).total_seconds())),
             )
+    if enforce_cooldown:
+        last_slot_at = _latest_group_slot_at(attempt_summary.latest_at, legacy_summary.latest_at)
+        cooldown = int(group.group_cooldown_seconds or 0)
+        if cooldown > 0 and last_slot_at is not None:
+            elapsed = (now_local - last_slot_at).total_seconds()
+            if elapsed < cooldown:
+                retry_after = max(1, int(cooldown - elapsed))
+                return GroupSendSlotBlock(
+                    FailureType.SLOWMODE.value,
+                    f"群冷却中，还需等待 {retry_after} 秒",
+                    retry_after,
+                )
     return None
 
 
@@ -154,4 +192,12 @@ def _next_group_active_window_start(group: TgGroup, now_value: datetime) -> date
     return next_start
 
 
-__all__ = ["GroupSendSlotBlock", "group_send_slot_block"]
+__all__ = [
+    "GroupSendSlotBlock",
+    "SEND_LIMIT_MODE_ACCOUNT_ONLY",
+    "SEND_LIMIT_MODE_ACCOUNT_ONLY_WITH_GROUP_DAILY_LIMIT",
+    "SEND_LIMIT_MODE_LEGACY_GROUP_SLOT",
+    "active_window_block",
+    "group_policy_block",
+    "group_send_slot_block",
+]

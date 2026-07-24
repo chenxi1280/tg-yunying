@@ -1,5 +1,19 @@
 # AI 活跃群每小时硬目标 OPS
 
+> **2026-07-24 VNext 运行优先级（评审修订版）：** 启用 `ai_group_send_continuity_v1` 后，以 `docs/03-feature-designs/ai-group-send-continuity-and-terminal-targets-prd.md` 为准。要点：
+>
+> - 成功 credit **关闭计划桶义务**；`executed_at` 只作审计，禁止实际小时入账导致计划桶永久欠债。
+> - `hard_hourly_success_count` 只能来自成功 Attempt + 非空远端消息 ID 的 delivery credit。
+> - 最近 24 小时桶只用于展示，不能截断 `durable_debt`；发布锚点前历史缺口不虚构为 debt。
+> - `unknown_after_send` 每个占 1 个规划名额，禁止替代重发；**不得**整目标停规划；提供核验 / 人工裁决与堆积告警。
+> - 跨小时未进入 Gateway 的 Action 不得写 `hard_hourly_bucket_expired`。
+> - 默认 `legacy_group_slot` 仍可能同群账号互挡；多账号并行体感依赖显式 `account_only` canary。
+> - `group_dissolved` 终态固定文案：“群里已被解散，已跳过本目标”。
+> - `target_ref_invalid`（含青岛 `qdsfxy` 预置）文案引导引用修复，**禁止**使用解散文案；覆盖 `blocked / target_ref_invalid`，单目标任务 pause/blocker。
+> - 发布前置：时区基线修复、fast_track/claim 死锁收敛后再开 Phase B。
+>
+> 本文件其余旧巡检条目在未启用新能力时保持历史兼容。
+
 ## 1. 运行原则
 每小时硬目标是 AI 活跃群的强运营模式。它的目标是让系统主动追赶每小时最低真实发送量，而不是只靠自然曲线等待下一轮。
 

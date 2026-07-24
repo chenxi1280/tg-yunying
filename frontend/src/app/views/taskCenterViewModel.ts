@@ -99,6 +99,7 @@ const PRECHECK_REASON_LABELS: Record<string, string> = {
 };
 
 const HARD_HOURLY_STATUS_LABELS: Record<HardHourlyStatus, string> = {
+  awaiting_confirmation: '待远端核验',
   disabled: '未启用',
   met: '已达标',
   catching_up: '追赶中',
@@ -112,6 +113,7 @@ const HARD_HOURLY_STATUS_COLORS: Record<HardHourlyStatus, string> = {
   catching_up: 'blue',
   blocked: 'red',
   missed: 'volcano',
+  awaiting_confirmation: 'gold',
 };
 
 const HARD_HOURLY_BLOCKER_LABELS: Record<string, string> = {
@@ -126,6 +128,9 @@ const HARD_HOURLY_BLOCKER_LABELS: Record<string, string> = {
   tg_rate_limit: 'TG 限速',
   dispatcher_lag: '执行滞后',
   unknown_after_send: '发送结果未知',
+  target_group_dissolved: '目标群已解散',
+  target_ref_invalid: '目标引用无效',
+  target_reference_superseded: '目标引用已变更',
 };
 const HARD_HOURLY_PIPELINE_LABELS: Record<string, string> = {
   membership: '入群',

@@ -38,6 +38,51 @@
 
 > **DF-180 AI 活群存量账号范围首次迁移（2026-07-23）**：`group_ai_chat` 首次识别到 `all_accounts_daily` 但尚无 `TaskMembershipAdmissionItem` 时，Planner 只执行一次持久化 bootstrap：补齐任务要求的默认已发布规则绑定，由目标群关联/恢复 `OperationTarget`，建立任务账号关系和当日 `TaskAccountDailyCoverage`；scope 已存在后的常规 Planner 只读账本，不回退为每轮全量账号扫描。回归入口：`test_task_account_scope_sync.py`、`test_ai_group_daily_coverage_planner.py`。
 
+### AI 活群连续性与终态目标契约（2026-07-24）
+
+专项真相源：`docs/03-feature-designs/ai-group-send-continuity-and-terminal-targets-prd.md`；总 PRD 摘要：`docs/01-product/tg-ops-platform-prd.md` §8.4。以下是待实现后的规范数据流，不能把它误读为当前线上已完成。
+
+```text
+运营目标生命周期预览 / 确认
+  -> operations router + targets.manage
+  -> OperationTarget(lifecycle_status, lifecycle_version, reference_revision)
+  -> AuditLog + impact preview
+  -> 未进入 Gateway 的同目标 / 同 revision Action:
+       group_dissolved  -> skipped / target_group_dissolved
+       target_ref_invalid -> skipped / target_ref_invalid
+  -> TaskAccountDailyCoverage: blocked / (target_group_dissolved|target_ref_invalid) / next_eligible_at=null
+  -> 单目标任务 pause 或结构 blocker；不得 completed
+  -> task runtime summary / OperationTarget detail / Task Center
+
+所有 Telegram 出站入口
+  -> OutboundTargetGate
+  -> tenant + operation_target_id + reference_revision + lifecycle
+  -> active window + target capability + account capacity + task/risk/content policy
+  -> dual_read: Action result / AuditLog 诊断，不阻断历史路径
+  -> canary: 已绑定 OT 的终态阻断，未绑定身份继续诊断
+  -> full: 终态或身份未解析均为可见 blocker，绝不进入 Gateway
+
+发布前身份对账
+  -> reconcile_outbound_target_identity.py (先只读，再 --apply)
+  -> 仅同租户精确 peer / channel target 回填 Action、MessageTask、OperationTask 的 target + revision + snapshot
+  -> hard-hourly open Action 同时固定计划小时桶 / goal / task config revision 并建 bucket
+  -> full 配置保存复核 unresolved inventory；存量非零拒绝切换
+
+group_ai_chat 硬小时
+  -> Planner 读取 TaskHardHourlyBucket（task + target + revision + 时区小时）
+  -> Action 固定 target/revision、原计划 bucket、task config revision
+  -> planning_rate = hourly_min + min(durable_debt, hourly_min)
+  -> required_new = min(planning_rate, max(0, deficit + debt - eligible_open - unknown_hold))
+  -> Dispatcher Gateway 前复验 OutboundTargetGate
+  -> ExecutionAttempt 成功且 remote message id 非空
+  -> TaskHardHourlyDeliveryCredit（action_id 唯一，bucket=计划桶义务）
+  -> 计划桶 success_count / durable_debt / metrics / Task Center
+```
+
+引用更新、引用修复或重新激活会递增 `reference_revision`：旧 revision 未进入 Gateway 的 Action 标为 `target_reference_superseded`，已进入 Gateway 的 Action 保留原始结果或 `unknown_after_send`；`MessageTask` / `OperationTaskAttempt` 只有当前重试尚未写入 `gateway_call_started_at` 时才可被生命周期终结。成功 credit **关闭计划桶义务**（`executed_at` 仅审计时间），禁止“实际小时入账 + 计划桶永久欠债”双计。`unknown_after_send` 不计成功，每个占 1 个 planning reservation，禁止替代重发该 Action，但**不得**因存在任意 unknown 就整目标停止硬小时规划。明确失败 Action 不占 reservation，下一 tick 可受控重建。`group_dissolved` 只能由受控人工确认写入；确定的引用解析失败可自动或预置 `target_ref_invalid`（须专用修复恢复，侧效应见上），模糊 `PEER_INVALID` 仍为 `target_resolution_unverified`，单账号权限失败不得升级整目标 invalid。目标身份 unresolved：feature-off 仅诊断，全量后才硬阻断。青岛 `qdsfxy` 上线数据操作预置 `target_ref_invalid`（非解散文案）。
+
+Phase A 目标生命周期门禁覆盖 AI 活群、转发监听自动回复、`message_tasks`、Campaign / 旧任务兼容发送和人工发送；Phase B 硬小时账本仅覆盖 `group_ai_chat`。公平 cursor 先短事务持久化本次类别选择并提交，再锁 Action；新建 hard-hourly membership Action 直接按 claim 顺序近期排程；仅 Recovery 对存量 future Action 做 ≤50 行、仅锁 `actions` 的 fast-track，提交释放 Action 锁后才另写任务统计。发布前置：时区基线与 dead-lock 收敛。首次发布所有群保持 `legacy_group_slot`（默认不解除多账号互挡），只有显式 canary 才能切换 `account_only` 类策略。专项：`docs/03-feature-designs/ai-group-send-continuity-and-terminal-targets-prd.md`。计划测试入口：`test_target_lifecycle.py`、`test_outbound_target_gate.py`、`test_hard_hourly_ledger.py`、`test_task_center_capacity_dispatch.py`、各历史发送入口的数据流回归。
+
 ## 3. 业务域流转总览
 
 | 业务域 | API 流转数 | 主要入口 | 数据落点 | 关键异步/外部 | 主要测试 |

@@ -13,6 +13,10 @@ class GroupPolicyUpdate(BaseModel):
     daily_limit: int | None = None
     account_cooldown_seconds: int | None = None
     group_cooldown_seconds: int | None = None
+    send_limit_mode: str | None = Field(
+        default=None,
+        pattern="^(legacy_group_slot|account_only|account_only_with_group_daily_limit)$",
+    )
     topic_direction: str | None = None
     banned_words: str | None = None
     link_whitelist: str | None = None
@@ -78,6 +82,7 @@ class GroupOut(ApiModel):
     active_window: str
     daily_limit: int
     account_cooldown_seconds: int
+    send_limit_mode: str = "legacy_group_slot"
     group_cooldown_seconds: int
     topic_direction: str
     banned_words: str

@@ -163,6 +163,7 @@ export interface AppState {
     daily_limit: number;
     account_cooldown_seconds: number;
     group_cooldown_seconds: number;
+    send_limit_mode: 'legacy_group_slot' | 'account_only' | 'account_only_with_group_daily_limit';
     topic_direction: string;
     banned_words: string;
     link_whitelist: string;
@@ -178,6 +179,7 @@ export interface AppState {
     daily_limit: number;
     account_cooldown_seconds: number;
     group_cooldown_seconds: number;
+    send_limit_mode: 'legacy_group_slot' | 'account_only' | 'account_only_with_group_daily_limit';
     topic_direction: string;
     banned_words: string;
     link_whitelist: string;

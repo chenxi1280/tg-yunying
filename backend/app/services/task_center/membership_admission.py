@@ -428,6 +428,12 @@ def _membership_payload(target: OperationTarget) -> EnsureChannelMembershipPaylo
     return EnsureChannelMembershipPayload(
         channel_id=str(target.tg_peer_id or username),
         channel_target_id=target.id,
+        target_reference_revision=int(target.reference_revision or 1),
+        target_reference_snapshot={
+            "tg_peer_id": str(target.tg_peer_id),
+            "username": username,
+            "title": str(target.title),
+        },
         target_type="group",
         target_display=target.title,
         target_username=username,

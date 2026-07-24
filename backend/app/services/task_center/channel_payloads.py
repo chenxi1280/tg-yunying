@@ -10,6 +10,8 @@ class ViewMessagePayload(BaseModel):
 
     channel_id: str = Field(min_length=1)
     channel_target_id: int | None = None
+    target_reference_revision: int | None = None
+    target_reference_snapshot: dict[str, str] = Field(default_factory=dict)
     channel_message_id: int | None = None
     message_id: int = Field(ge=1)
     target_display: str = ""

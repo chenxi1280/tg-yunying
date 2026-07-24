@@ -4,6 +4,7 @@ import json
 import math
 import random
 import re
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -52,6 +53,17 @@ SEGMENT_MEDIA_TYPES = {"图片", "表情包", "文件"}
 READY_CACHE_STATUS = "ready"
 UNAVAILABLE_CACHE_STATUSES = {"not_cached", "refreshing", "flood_wait", "unrecoverable", "cache_failed"}
 CODE_RECEIVER_IDENTITY = "code_receiver"
+
+
+@dataclass(frozen=True)
+class ResolvedMessageTarget:
+    target_type: str
+    peer_id: str | None
+    display: str
+    group_id: int | None
+    operation_target_id: int | None
+    reference_revision: int | None
+    reference_snapshot: dict[str, str]
 
 
 def _validate_message_material(session: Session, tenant_id: int, message_type: str, material_id: int | None) -> Material | None:
@@ -209,16 +221,22 @@ def _ensure_message_send_usage(session: Session, account: TgAccount) -> None:
         raise ValueError(str(exc)) from exc
 
 
-def _resolve_message_target(session: Session, account: TgAccount, target: MessageSendTarget | MessageSendTaskCreate) -> tuple[str, str | None, str, int | None]:
+def _resolve_message_target(
+    session: Session,
+    account: TgAccount,
+    target: MessageSendTarget | MessageSendTaskCreate,
+) -> ResolvedMessageTarget:
     target_type = target.target_type
     target_peer_id = (target.target_peer_id or "").strip() or None
     target_display = target.target_display.strip()
     group_id: int | None = None
+    operation_target: OperationTarget | None = None
 
     if target_type == "private":
         if not target_peer_id:
             raise ValueError("请选择或输入联系人")
         target_display = target_display or target_peer_id
+        operation_target = _operation_target_for_peer(session, account.tenant_id, target_peer_id)
     elif target_type == "group":
         if target.group_id:
             group = session.get(TgGroup, target.group_id)
@@ -228,6 +246,7 @@ def _resolve_message_target(session: Session, account: TgAccount, target: Messag
             group_id = group.id
             target_peer_id = group.tg_peer_id
             target_display = group.title
+            operation_target = _operation_target_for_peer(session, account.tenant_id, target_peer_id)
         elif target.operation_target_id:
             operation_target = _resolve_operation_target(session, account.tenant_id, target.operation_target_id, "group")
             linked_group = _ensure_account_can_send_operation_target(session, account, operation_target)
@@ -236,6 +255,7 @@ def _resolve_message_target(session: Session, account: TgAccount, target: Messag
             target_display = operation_target.title
         elif target_peer_id:
             target_display = target_display or target_peer_id
+            operation_target = _operation_target_for_peer(session, account.tenant_id, target_peer_id)
         else:
             raise ValueError("请选择群聊目标")
     else:
@@ -246,17 +266,44 @@ def _resolve_message_target(session: Session, account: TgAccount, target: Messag
             target_display = operation_target.title
         elif target_peer_id:
             target_display = target_display or target_peer_id
+            operation_target = _operation_target_for_peer(session, account.tenant_id, target_peer_id)
         else:
             raise ValueError("请选择频道目标")
-    return target_type, target_peer_id, target_display, group_id
+    return ResolvedMessageTarget(
+        target_type=target_type,
+        peer_id=target_peer_id,
+        display=target_display,
+        group_id=group_id,
+        operation_target_id=operation_target.id if operation_target else None,
+        reference_revision=int(operation_target.reference_revision or 1) if operation_target else None,
+        reference_snapshot=_target_reference_snapshot(operation_target),
+    )
+
+
+def _operation_target_for_peer(session: Session, tenant_id: int, peer_id: str | None) -> OperationTarget | None:
+    if not peer_id:
+        return None
+    return session.scalar(
+        select(OperationTarget).where(
+            OperationTarget.tenant_id == tenant_id,
+            OperationTarget.tg_peer_id == peer_id,
+        )
+    )
+
+
+def _target_reference_snapshot(target: OperationTarget | None) -> dict[str, str]:
+    if target is None:
+        return {}
+    return {
+        "tg_peer_id": str(target.tg_peer_id),
+        "username": str(target.username or ""),
+        "title": str(target.title),
+    }
 
 
 def _message_task(
     account: TgAccount,
-    target_type: str,
-    target_peer_id: str | None,
-    target_display: str,
-    group_id: int | None,
+    target: ResolvedMessageTarget,
     content: str,
     message_type: str,
     material_id: int | None,
@@ -267,16 +314,19 @@ def _message_task(
     return MessageTask(
         tenant_id=account.tenant_id,
         campaign_id=None,
-        group_id=group_id,
+        group_id=target.group_id,
         account_id=account.id,
         preferred_account_id=account.id,
         content=content,
         message_type=message_type,
         material_id=material_id,
         media_sent=media_sent,
-        target_type=target_type,
-        target_peer_id=target_peer_id,
-        target_display=target_display,
+        target_type=target.target_type,
+        target_peer_id=target.peer_id,
+        target_display=target.display,
+        operation_target_id=target.operation_target_id,
+        target_reference_revision=target.reference_revision,
+        target_reference_snapshot=target.reference_snapshot or None,
         planned_delay_seconds=planned_delay_seconds,
         scheduled_at=scheduled_at,
         status=TaskStatus.QUEUED.value,
@@ -392,7 +442,7 @@ def create_message_send_task(session: Session, payload: MessageSendTaskCreate, a
         raise ValueError("请输入消息内容")
     material = _validate_message_material(session, account.tenant_id, payload.message_type, payload.material_id)
     _ensure_risk_preflight_passed(session, account, [payload], content, payload.scheduled_at)
-    target_type, target_peer_id, target_display, group_id = _resolve_message_target(session, account, payload)
+    target = _resolve_message_target(session, account, payload)
     jitter_min = max(payload.jitter_min_seconds, 0)
     jitter_max = max(payload.jitter_max_seconds, jitter_min)
     jitter_seconds = random.randint(jitter_min, jitter_max) if jitter_max else 0
@@ -401,10 +451,7 @@ def create_message_send_task(session: Session, payload: MessageSendTaskCreate, a
     planned_delay_seconds = _planned_delay_seconds(scheduled_at)
     task = _message_task(
         account,
-        target_type,
-        target_peer_id,
-        target_display,
-        group_id,
+        target,
         content,
         payload.message_type,
         payload.material_id,
@@ -422,7 +469,7 @@ def create_message_send_task(session: Session, payload: MessageSendTaskCreate, a
         action="创建消息发送任务",
         target_type="message_task",
         target_id=str(task.id),
-        detail=f"{target_type}:{target_display}",
+        detail=f"{target.target_type}:{target.display}",
     )
     session.commit()
     session.refresh(task)
@@ -446,16 +493,13 @@ def create_message_send_tasks_batch(session: Session, payload: MessageSendBatchC
     tasks: list[MessageTask] = []
 
     for index, target in enumerate(payload.targets):
-        target_type, target_peer_id, target_display, group_id = _resolve_message_target(session, account, target)
+        resolved_target = _resolve_message_target(session, account, target)
         jitter_seconds = random.randint(jitter_min, jitter_max) if jitter_max else 0
         scheduled_at = start_at + timedelta(seconds=index * batch_interval + jitter_seconds)
         planned_delay_seconds = _planned_delay_seconds(scheduled_at, now_value)
         task = _message_task(
             account,
-            target_type,
-            target_peer_id,
-            target_display,
-            group_id,
+            resolved_target,
             content,
             payload.message_type,
             payload.material_id,
@@ -473,7 +517,7 @@ def create_message_send_tasks_batch(session: Session, payload: MessageSendBatchC
             action="批量创建消息发送任务",
             target_type="message_task",
             target_id=str(task.id),
-            detail=f"{target_type}:{target_display}",
+            detail=f"{resolved_target.target_type}:{resolved_target.display}",
         )
         tasks.append(task)
 
@@ -884,8 +928,10 @@ def dispatch_task(session_factory, task_id: int) -> MessageTask:
             session.refresh(task)
             return _attach_operation_issue_status(session, task)
 
-        task.account_id = account.id
-        task.status = TaskStatus.SENDING.value
+        gate_block = _message_task_outbound_gate(session, task)
+        if gate_block is not None:
+            return _fail_message_task_gate(session, task, account, gate_block)
+
         try:
             credentials = credentials_for_account(session, account)
         except ValueError as exc:
@@ -900,6 +946,12 @@ def dispatch_task(session_factory, task_id: int) -> MessageTask:
             session.commit()
             session.refresh(task)
             return _attach_operation_issue_status(session, task)
+        gate_block = _mark_message_task_gateway_started(session, task, account_id=account.id)
+        if gate_block is not None:
+            if gate_block.code == "message_task_not_queued":
+                session.refresh(task)
+                return _attach_operation_issue_status(session, task)
+            return _fail_message_task_gate(session, task, account, gate_block)
         session.commit()
         content = task.content
         outbound_segments = build_outbound_segments(session, task)
@@ -911,25 +963,6 @@ def dispatch_task(session_factory, task_id: int) -> MessageTask:
         if not peer_id:
             group = session.get(TgGroup, group_id)
             peer_id = group.tg_peer_id if group else None
-
-    with session_factory() as session:
-        account = session.get(TgAccount, account_id)
-        task = session.get(MessageTask, task_id)
-        if not task:
-            raise ValueError("task not found")
-        if not account or account.deleted_at is not None or account.status != AccountStatus.ACTIVE.value:
-            task.status = TaskStatus.FAILED.value
-            task.failure_type = FailureType.ACCOUNT_UNAVAILABLE.value
-            task.failure_detail = "账号不可用"
-            if task.message_type in MEDIA_MESSAGE_TYPES:
-                task.media_sent = False
-                task.media_failure_reason = task.failure_type
-            session.add(MessageTaskAttempt(tenant_id=task.tenant_id, task_id=task.id, account_id=account_id, status=task.status, failure_type=task.failure_type, detail=task.failure_detail))
-            rollup_message_task_failure(session, task)
-            audit(session, tenant_id=task.tenant_id, actor="tg-worker", action="执行消息发送", target_type="message_task", target_id=str(task.id), detail=task.failure_detail)
-            session.commit()
-            session.refresh(task)
-            return _attach_operation_issue_status(session, task)
 
     result = gateway.send_message(
         account_id,
@@ -1004,6 +1037,12 @@ def dispatch_task(session_factory, task_id: int) -> MessageTask:
                 if account:
                     account.status = AccountStatus.LIMITED.value
                     account.health_score = min(account.health_score, 55)
+            _maybe_auto_mark_message_task_target_ref_invalid(
+                session,
+                task,
+                account_id=account_id,
+                failure_detail=result.detail or result.failure_type or "",
+            )
 
         session.add(
             MessageTaskAttempt(
@@ -1062,23 +1101,165 @@ def _linked_group_for_peer(session: Session, task: MessageTask) -> TgGroup | Non
     return session.scalar(select(TgGroup).where(TgGroup.tenant_id == task.tenant_id, TgGroup.tg_peer_id == task.target_peer_id))
 
 
+def _message_task_outbound_gate(session: Session, task: MessageTask):
+    target, group, peer_id = _message_task_target_context(session, task)
+    return _evaluate_message_task_gate(session, task, target=target, group=group, peer_id=peer_id)
+
+
+def _maybe_auto_mark_message_task_target_ref_invalid(
+    session: Session,
+    task: MessageTask,
+    *,
+    account_id: int,
+    failure_detail: str,
+) -> None:
+    from app.services.outbound_target_gate import GATE_MODE_DUAL_READ, outbound_target_gate_mode
+    from app.services.task_center.target_lifecycle import auto_mark_target_ref_invalid
+
+    if outbound_target_gate_mode(session, task.tenant_id) == GATE_MODE_DUAL_READ:
+        return
+    target, _group, _peer = _message_task_target_context(session, task)
+    if target is None:
+        return
+    auto_mark_target_ref_invalid(
+        session,
+        target=target,
+        reference_revision=task.target_reference_revision,
+        account_id=account_id,
+        failure_detail=failure_detail,
+        source_ref=f"message_task={task.id}",
+    )
+
+
+def _mark_message_task_gateway_started(
+    session: Session,
+    task: MessageTask,
+    *,
+    account_id: int,
+):
+    from app.services.task_center.target_lifecycle import lock_target
+
+    target, group, peer_id = _message_task_target_context(session, task)
+    if target is not None and target.tenant_id == task.tenant_id:
+        target = lock_target(session, tenant_id=task.tenant_id, target_id=target.id)
+    locked_task = session.scalar(
+        select(MessageTask)
+        .where(MessageTask.id == task.id, MessageTask.tenant_id == task.tenant_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if locked_task is None or locked_task.status != TaskStatus.QUEUED.value:
+        return _message_task_not_queued_block(locked_task)
+    if group is not None:
+        group = session.scalar(select(TgGroup).where(TgGroup.id == group.id).with_for_update())
+    block = _evaluate_message_task_gate(session, locked_task, target=target, group=group, peer_id=peer_id)
+    if block is None:
+        locked_task.account_id = account_id
+        locked_task.status = TaskStatus.SENDING.value
+        locked_task.gateway_call_started_at = _now()
+    return block
+
+
+def _message_task_not_queued_block(task: MessageTask | None):
+    from app.services.outbound_target_gate import OutboundGateBlock
+
+    status = task.status if task is not None else "missing"
+    return OutboundGateBlock(
+        "message_task_not_queued",
+        f"消息任务状态已变为 {status}，不会重复进入 Telegram Gateway",
+    )
+
+
+def _message_task_target_context(
+    session: Session,
+    task: MessageTask,
+) -> tuple[OperationTarget | None, TgGroup | None, str]:
+    from app.services.outbound_target_gate import resolve_outbound_target
+
+    group = session.get(TgGroup, task.group_id) if task.group_id else _linked_group_for_peer(session, task)
+    peer_id = task.target_peer_id or (group.tg_peer_id if group else "")
+    target = session.get(OperationTarget, task.operation_target_id) if task.operation_target_id else None
+    if target is None:
+        target = resolve_outbound_target(
+            session,
+            group=group,
+            outbound_peer=peer_id,
+            tenant_id=task.tenant_id,
+        )
+    return target, group, peer_id
+
+
+def _evaluate_message_task_gate(
+    session: Session,
+    task: MessageTask,
+    *,
+    target: OperationTarget | None,
+    group: TgGroup | None,
+    peer_id: str,
+):
+    from app.services.outbound_target_gate import OutboundGateDiagnosticTarget, evaluate_outbound_target_gate
+
+    return evaluate_outbound_target_gate(
+        session,
+        target=target,
+        group=group,
+        tenant_id=task.tenant_id,
+        outbound_peer=peer_id,
+        expected_revision=task.target_reference_revision,
+        expected_reference_snapshot=(
+            task.target_reference_snapshot
+            if isinstance(task.target_reference_snapshot, dict)
+            else None
+        ),
+        require_identity=task.operation_target_id is not None,
+        require_frozen_identity=True,
+        expected_target_id=task.operation_target_id,
+        diagnostic_target=OutboundGateDiagnosticTarget(
+            target_type="message_task",
+            target_id=str(task.id),
+            actor="tg-worker",
+        ),
+    )
+
+
+def _fail_message_task_gate(session: Session, task: MessageTask, account: TgAccount, block) -> MessageTask:
+    task.status = TaskStatus.FAILED.value
+    task.failure_type = block.code
+    task.failure_detail = block.detail
+    if task.message_type in MEDIA_MESSAGE_TYPES:
+        task.media_sent = False
+        task.media_failure_reason = block.code
+    session.add(
+        MessageTaskAttempt(
+            tenant_id=task.tenant_id,
+            task_id=task.id,
+            account_id=account.id,
+            status=task.status,
+            failure_type=task.failure_type,
+            detail=task.failure_detail,
+        )
+    )
+    rollup_message_task_failure(session, task)
+    audit(
+        session,
+        tenant_id=task.tenant_id,
+        actor="tg-worker",
+        action="执行消息发送",
+        target_type="message_task",
+        target_id=str(task.id),
+        detail=task.failure_detail,
+    )
+    session.commit()
+    session.refresh(task)
+    return _attach_operation_issue_status(session, task)
+
+
 def _defer_message_task_for_capacity(session: Session, task: MessageTask, decision) -> MessageTask:
     defer_until = decision.defer_until or (_now() + timedelta(seconds=60))
     task.status = TaskStatus.QUEUED.value
     task.scheduled_at = defer_until
     task.planned_delay_seconds = _planned_delay_seconds(defer_until)
     task.failure_type = decision.reason_code or "账号全局限额"
-    task.failure_detail = decision.reason or "账号全局限额或冷却中，已延后执行"
-    session.add(
-        MessageTaskAttempt(
-            tenant_id=task.tenant_id,
-            task_id=task.id,
-            account_id=task.account_id,
-            status=TaskStatus.QUEUED.value,
-            failure_type=task.failure_type,
-            detail=f"{task.failure_detail}；下次尝试 {defer_until:%Y-%m-%d %H:%M:%S}",
-        )
-    )
     audit(
         session,
         tenant_id=task.tenant_id,
@@ -1109,6 +1290,7 @@ def retry_task(session_factory, task_id: int, actor: str, dispatch_now: bool) ->
         task.failure_type = None
         task.failure_detail = None
         task.account_id = None
+        task.gateway_call_started_at = None
         task.scheduled_at = _now()
         task.planned_delay_seconds = 0
         audit(session, tenant_id=task.tenant_id, actor=actor, action="重试消息任务", target_type="message_task", target_id=str(task.id))

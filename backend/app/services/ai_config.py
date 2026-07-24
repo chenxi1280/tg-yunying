@@ -534,6 +534,9 @@ def get_scheduling_setting(session: Session, tenant_id: int | None) -> Schedulin
 def update_scheduling_setting(session: Session, tenant_id: int | None, payload: SchedulingSettingUpdate, actor: str) -> SchedulingSetting:
     setting = get_scheduling_setting(session, tenant_id)
     data = payload.model_dump(exclude_unset=True)
+    if data.get("outbound_target_gate_mode") == "full" and setting.outbound_target_gate_mode != "full":
+        _require_full_outbound_gate_readiness(session, tenant_id)
+    changed: dict[str, tuple[object, object]] = {}
     for field in [
         "jitter_min_seconds",
         "jitter_max_seconds",
@@ -552,16 +555,52 @@ def update_scheduling_setting(session: Session, tenant_id: int | None, payload: 
         "default_account_hour_limit",
         "default_account_day_limit",
         "default_account_cooldown_seconds",
+        "outbound_target_gate_mode",
+        "ai_group_send_continuity_v1",
+        "ai_group_continuity_release_anchor",
     ]:
-        if data.get(field) is not None:
-            setattr(setting, field, data[field])
+        if field not in data:
+            continue
+        value = data[field]
+        if value is None and field != "ai_group_continuity_release_anchor":
+            continue
+        previous = getattr(setting, field)
+        if previous != value:
+            changed[field] = (previous, value)
+            setattr(setting, field, value)
     if setting.jitter_max_seconds < setting.jitter_min_seconds:
         setting.jitter_max_seconds = setting.jitter_min_seconds
+    if setting.ai_group_send_continuity_v1 and setting.ai_group_continuity_release_anchor is None:
+        anchor = _now()
+        changed["ai_group_continuity_release_anchor"] = (None, anchor)
+        setting.ai_group_continuity_release_anchor = anchor
     setting.updated_at = _now()
-    audit(session, tenant_id=tenant_id, actor=actor, action="更新发送节奏配置", target_type="scheduling_setting", target_id=str(setting.id))
+    detail = "; ".join(f"{field}={before}->{after}" for field, (before, after) in changed.items())
+    audit(
+        session,
+        tenant_id=tenant_id,
+        actor=actor,
+        action="更新发送节奏配置",
+        target_type="scheduling_setting",
+        target_id=str(setting.id),
+        detail=detail,
+    )
     session.commit()
     session.refresh(setting)
     return setting
+
+
+def _require_full_outbound_gate_readiness(session: Session, tenant_id: int | None) -> None:
+    from app.services.task_center.outbound_identity_reconcile import outbound_identity_inventory
+
+    inventory = outbound_identity_inventory(session, tenant_id)
+    if inventory.total:
+        raise ValueError(
+            "切换 full 前必须先完成出站目标身份对账："
+            f"Action={inventory.unresolved_action_count}，"
+            f"消息任务={inventory.unresolved_message_task_count}，"
+            f"运营尝试={inventory.unresolved_operation_attempt_count}"
+        )
 
 
 def _material_id_matches(value: Any, material_id: int) -> bool:

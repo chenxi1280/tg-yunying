@@ -25,6 +25,7 @@ def update_group_policy(session: Session, group_id: int, payload: GroupPolicyUpd
         raise ValueError("group not found")
 
     data = payload.model_dump(exclude_unset=True)
+    previous_send_limit_mode = group.send_limit_mode
     listener_account_ids = data.pop("listener_account_ids", None)
     for key, value in data.items():
         if key in {"id", "tenant_id", "created_at", "updated_at"}:
@@ -32,7 +33,18 @@ def update_group_policy(session: Session, group_id: int, payload: GroupPolicyUpd
         setattr(group, key, value)
     if listener_account_ids is not None:
         apply_group_listener_accounts(session, group, listener_account_ids)
-    audit(session, tenant_id=group.tenant_id, actor=actor, action="更新群运营配置", target_type="tg_group", target_id=str(group.id))
+    detail = ""
+    if "send_limit_mode" in data and previous_send_limit_mode != group.send_limit_mode:
+        detail = f"send_limit_mode={previous_send_limit_mode}->{group.send_limit_mode}"
+    audit(
+        session,
+        tenant_id=group.tenant_id,
+        actor=actor,
+        action="更新群运营配置",
+        target_type="tg_group",
+        target_id=str(group.id),
+        detail=detail,
+    )
     session.commit()
     session.refresh(group)
     return group

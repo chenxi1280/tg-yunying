@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import create_engine, select
@@ -15,9 +15,10 @@ from app.services.membership_challenges import _image_verification_provider
 from app.services.task_center import dispatcher
 from app.services.task_center.channel_membership import (
     _create_membership_actions_for_accounts,
-    _fast_track_hard_hourly_membership_actions,
+    _daily_permission_recheck_due,
     _membership_actions_by_account,
     _reactivate_auto_verification_memberships,
+    _should_create_membership_attempt,
     channel_membership_summary,
     gate_channel_membership,
 )
@@ -26,6 +27,7 @@ from app.services.task_center.payloads import EnsureChannelMembershipPayload
 from app.services.task_center.targets import group_from_reference
 
 
+@pytest.mark.no_postgres
 def test_group_ai_membership_actions_default_to_four_hour_window(monkeypatch) -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -54,7 +56,92 @@ def test_group_ai_membership_actions_default_to_four_hour_window(monkeypatch) ->
     assert result.created == 40
     assert len(rows) == 40
     assert rows[-1].scheduled_at - rows[0].scheduled_at <= timedelta(hours=4)
+    assert all(row.payload["channel_target_id"] == 920 for row in rows)
+    assert all(row.payload["target_reference_revision"] == 1 for row in rows)
+    assert all(row.payload["target_reference_snapshot"]["tg_peer_id"] == "-100920" for row in rows)
     assert task.stats["membership_schedule_window_hours"] == 4
+
+
+@pytest.mark.no_postgres
+def test_hard_hourly_membership_actions_are_created_in_immediate_claim_order() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        target = OperationTarget(id=921, tenant_id=1, target_type="group", tg_peer_id="-100921", title="硬小时准入群", auth_status="只读", can_send=False)
+        session.add(target)
+        for account_id in range(41, 44):
+            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线", session_ciphertext="session"))
+        task = Task(
+            id="task-hard-hourly-membership",
+            tenant_id=1,
+            name="硬小时准入",
+            type="group_ai_chat",
+            status="running",
+            account_config={"selection_mode": "all"},
+            type_config={"target_operation_target_id": target.id, "hard_hourly_target_enabled": True, "hourly_min_messages": 60},
+        )
+        session.add(task)
+        session.commit()
+
+        result = gate_channel_membership(session, task, target, require_send=True)
+        rows = list(session.scalars(select(Action).where(Action.task_id == task.id).order_by(Action.scheduled_at.asc(), Action.id.asc())))
+
+    assert result.created == 3
+    assert rows[-1].scheduled_at - rows[0].scheduled_at == timedelta(seconds=4)
+    assert "membership_schedule_window_hours" not in (task.stats or {})
+
+
+@pytest.mark.no_postgres
+def test_hard_hourly_membership_retry_compares_aware_time_in_task_timezone() -> None:
+    task = Task(
+        id="task-membership-timezone",
+        tenant_id=1,
+        name="时区准入",
+        type="group_ai_chat",
+        timezone="Asia/Shanghai",
+        type_config={"hard_hourly_target_enabled": True, "hourly_min_messages": 60},
+    )
+    action = Action(
+        id="membership-timezone",
+        tenant_id=1,
+        task_id=task.id,
+        task_type=task.type,
+        action_type="ensure_target_membership",
+        status="skipped",
+        scheduled_at=datetime(2026, 7, 1, 7, 0, tzinfo=UTC),
+        executed_at=datetime(2026, 7, 1, 7, 0, tzinfo=UTC),
+        result={},
+    )
+
+    assert not _should_create_membership_attempt(action, task, datetime(2026, 7, 1, 15, 4))
+
+
+@pytest.mark.no_postgres
+def test_daily_permission_recheck_uses_task_local_date_for_aware_attempt() -> None:
+    task = Task(
+        id="task-daily-timezone",
+        tenant_id=1,
+        name="时区日复检",
+        type="group_ai_chat",
+        timezone="Asia/Shanghai",
+        type_config={"account_coverage_mode": "all_accounts_daily"},
+    )
+    account = TgAccount(id=99, tenant_id=1, display_name="账号99", phone_masked="99", status=AccountStatus.ACTIVE.value)
+    action = Action(
+        id="membership-daily-timezone",
+        tenant_id=1,
+        task_id=task.id,
+        task_type=task.type,
+        action_type="ensure_target_membership",
+        status="skipped",
+        scheduled_at=datetime(2026, 6, 30, 16, 30, tzinfo=UTC),
+        executed_at=datetime(2026, 6, 30, 16, 30, tzinfo=UTC),
+        result={"error_code": "membership_permission_denied", "membership_status": "permission_denied"},
+    )
+
+    assert not _daily_permission_recheck_due(task, action, datetime(2026, 7, 1, 0, 45), account=account)
 
 
 def test_group_ai_membership_strategy_can_disable_auto_join_actions() -> None:
@@ -348,6 +435,8 @@ def test_reactivate_memberships_waits_for_target_reference_change() -> None:
     assert retry.result["reactivated_reason"] == "hard_hourly_target_ref_retry"
     assert retry.payload["target_username"] == "https://t.me/+replacement"
     assert retry.payload["invite_link"] == "https://t.me/+replacement"
+    assert retry.payload["target_reference_revision"] == 1
+    assert retry.payload["target_reference_snapshot"]["tg_peer_id"] == "qdsfxy"
 
 
 @pytest.mark.no_postgres
@@ -364,12 +453,10 @@ def test_all_account_membership_permission_blocker_rechecks_once_next_day() -> N
         first_created = _reactivate_auto_verification_memberships(session, task, target, accounts, require_send=True)
         retries = list(session.scalars(select(Action).where(Action.task_id == task.id, Action.status == "pending").order_by(Action.scheduled_at)))
         scheduled_before = [action.scheduled_at for action in retries]
-        fast_tracked = _fast_track_hard_hourly_membership_actions(session, task, target)
         second_created = _reactivate_auto_verification_memberships(session, task, target, accounts, require_send=True)
 
     assert first_created == 2
     assert second_created == 0
-    assert fast_tracked == 0
     assert [action.scheduled_at for action in retries] == scheduled_before
     assert scheduled_before[-1] - scheduled_before[0] == timedelta(hours=4)
     assert {action.result["reactivated_reason"] for action in retries} == {"hard_hourly_daily_permission_recheck"}

@@ -14,7 +14,12 @@ from .hard_hourly_history import (
     recent_actions as _recent_actions,
     recent_actions_query as _recent_actions_query,
 )
-from .hard_hourly_pacing import daily_coverage_recheck_at as _daily_coverage_recheck_at, next_check_at as _next_check_at, planning_rate
+from .hard_hourly_pacing import (
+    daily_coverage_recheck_at as _daily_coverage_recheck_at,
+    next_check_at as _next_check_at,
+    planning_rate,
+)
+from .datetime_compat import to_zone
 
 OPEN_STATUSES = {"pending", "claiming", "executing"}
 STRATEGY_FORCE_PLANNING = "force_planning"
@@ -71,7 +76,7 @@ def _current_progress(session: Session, task: Task, now: datetime) -> dict[str, 
     backfill_planning_deficit = int(stats.get("hard_hourly_backfill_planning_deficit") or 0)
     total_planning_deficit = planning_deficit + backfill_planning_deficit
     overdue_open_count = int(stats.get("hard_hourly_overdue_open_count") or 0)
-    return {
+    legacy_progress = {
         "enabled": bool(stats.get("hard_hourly_target_enabled")),
         "goal": int(stats.get("hard_hourly_goal") or 0),
         "bucket": str(stats.get("hard_hourly_bucket") or ""),
@@ -86,6 +91,21 @@ def _current_progress(session: Session, task: Task, now: datetime) -> dict[str, 
         "hour_end": hour_bounds(task, now)[1],
         "now": now_local,
     }
+    from .continuity_rollout import continuity_enabled
+
+    if not continuity_enabled(session, task.tenant_id):
+        return legacy_progress
+    from .hard_hourly_ledger import progress_overlay_from_ledger
+    config = task.type_config or {}
+    # Never create buckets from progress/stats reads — only credit/plan writers may ensure_bucket.
+    return progress_overlay_from_ledger(
+        session,
+        task,
+        legacy_progress,
+        operation_target_id=int(config.get("target_operation_target_id") or 0),
+        target_reference_revision=int(config.get("target_reference_revision") or 0),
+        create_bucket=False,
+    )
 
 
 def next_check_for_progress(task: Task, progress: dict[str, Any], now: datetime) -> datetime:
@@ -100,11 +120,11 @@ def next_check_for_progress(task: Task, progress: dict[str, Any], now: datetime)
 
 def requires_planning(session: Session, task: Task, now: datetime, *, fresh: bool = False) -> bool:
     progress = current_progress(session, task, now, fresh=fresh)
-    return (
-        bool(progress["enabled"])
-        and int(progress["deficit"]) > 0
-        and not planning_blocked_by_dispatcher_lag(progress)
-    )
+    if not bool(progress["enabled"]) or int(progress["deficit"]) <= 0:
+        return False
+    from .continuity_rollout import continuity_enabled
+
+    return continuity_enabled(session, task.tenant_id) or not planning_blocked_by_dispatcher_lag(progress)
 
 
 def planning_blocked_by_dispatcher_lag(progress: dict[str, Any]) -> bool:
@@ -136,7 +156,59 @@ def hard_hourly_stats(session: Session, task: Task, now: datetime, current_stats
     if planning_deficit <= 0:
         updated["hard_hourly_next_check_at"] = bucket_end.isoformat()
         updated.pop("hard_hourly_last_blockers", None)
+    updated.update(_ledger_stat_values(session, task, now))
     return updated
+
+
+def _ledger_stat_values(session: Session | None, task: Task, now: datetime) -> dict[str, Any]:
+    if session is None:
+        return {}
+    from .continuity_rollout import continuity_enabled
+
+    if not continuity_enabled(session, task.tenant_id):
+        return {}
+    from .hard_hourly_ledger import ledger_progress, recent_bucket_summaries
+
+    # Stats refresh is observational — never insert empty hour buckets.
+    progress = ledger_progress(session, task, now, create_bucket=False)
+    if progress is None:
+        return {}
+    current_deficit = int(progress["current_delivery_deficit"])
+    debt = int(progress["durable_debt"])
+    unknown = int(progress["unknown_after_send_hold_count"])
+    status = "met" if current_deficit <= 0 and debt <= 0 else "awaiting_confirmation" if unknown else "catching_up"
+    config = task.type_config or {}
+    target_id = int(config.get("target_operation_target_id") or 0)
+    revision = int(config.get("target_reference_revision") or 1)
+    return {
+        "hard_hourly_goal": progress["goal"],
+        "hard_hourly_bucket": progress["bucket"],
+        "hard_hourly_success_count": progress["success_count"],
+        "hard_hourly_open_count": progress["future_open_count"],
+        "hard_hourly_overdue_open_count": progress["overdue_open_count"],
+        "hard_hourly_deficit": current_deficit,
+        "hard_hourly_planning_deficit": progress["required_new"],
+        "hard_hourly_backfill_debt": debt,
+        "hard_hourly_backfill_planning_deficit": debt,
+        "hard_hourly_backfill_delivery_deficit": debt,
+        "hard_hourly_durable_debt": debt,
+        "hard_hourly_eligible_open_count": progress["eligible_open_count"],
+        "hard_hourly_unknown_after_send_hold_count": unknown,
+        "hard_hourly_planning_rate": progress["planning_rate"],
+        "hard_hourly_required_new": progress["required_new"],
+        "hard_hourly_awaiting_confirmation": unknown > 0,
+        "hard_hourly_target_operation_target_id": target_id or None,
+        "hard_hourly_target_reference_revision": revision,
+        "hard_hourly_task_config_revision": int(task.config_revision or 1),
+        "hard_hourly_status": status,
+        "hard_hourly_recent_buckets": recent_bucket_summaries(
+            session,
+            task=task,
+            now=now,
+            operation_target_id=target_id,
+            target_reference_revision=revision,
+        ),
+    }
 
 
 def hard_schedule_times(total: int, task: Task, now: datetime, *, target_total: int | None = None) -> list[datetime]:
@@ -160,8 +232,8 @@ def hard_schedule_times(total: int, task: Task, now: datetime, *, target_total: 
 
 def mark_plan_result(task: Task, progress: dict[str, Any], created: int, blockers: dict[str, int] | None = None) -> None:
     stats = dict(task.stats or {})
-    current = progress.get("now")
-    current = current if isinstance(current, datetime) else normalize(task, datetime.now())
+    current_value = progress.get("now")
+    current = normalize(task, current_value if isinstance(current_value, datetime) else datetime.now())
     stats["hard_hourly_last_check_at"] = current.isoformat()
     stats["hard_hourly_last_planned_count"] = int(created)
     if blockers:
@@ -185,9 +257,7 @@ def mark_plan_result(task: Task, progress: dict[str, Any], created: int, blocker
 def normalize(task: Task, value: datetime | None) -> datetime:
     if value is None:
         raise ValueError("datetime value is required")
-    if value.tzinfo is None:
-        return value
-    return value.astimezone(_task_zone(task)).replace(tzinfo=None)
+    return to_zone(value, _task_zone(task))
 
 
 def hour_bounds(task: Task, value: datetime) -> tuple[datetime, datetime]:
@@ -197,7 +267,7 @@ def hour_bounds(task: Task, value: datetime) -> tuple[datetime, datetime]:
 
 
 def bucket_iso(task: Task, bucket_start: datetime) -> str:
-    return bucket_start.replace(tzinfo=_task_zone(task)).isoformat()
+    return normalize(task, bucket_start).isoformat()
 
 def _disabled_stats(stats: dict[str, Any]) -> dict[str, Any]:
     return {**stats, "hard_hourly_target_enabled": False, "hard_hourly_status": "disabled"}

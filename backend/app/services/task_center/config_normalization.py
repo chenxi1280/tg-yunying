@@ -30,6 +30,7 @@ from .utils import as_int as _as_int, as_int_list as _as_int_list
 def normalize_operation_target_references(session: Session, tenant_id: int, task_type: str, config: dict[str, Any]) -> dict[str, Any]:
     next_config = dict(config)
     if task_type == "group_ai_chat":
+        next_config.pop("target_reference_revision", None)
         _normalize_inline_target_input(session, tenant_id, next_config, target_type="group")
         target_id = _as_int(next_config.get("target_operation_target_id"))
         if target_id:
@@ -37,6 +38,7 @@ def normalize_operation_target_references(session: Session, tenant_id: int, task
             next_config["target_operation_target_id"] = target.id
             next_config["target_group_id"] = group.id
             next_config["target_group_name"] = target.title or group.title
+            next_config["target_reference_revision"] = int(target.reference_revision or 1)
     elif task_type == "group_relay":
         normalized_sources: list[dict[str, Any]] = []
         for item in next_config.get("source_groups") or []:
@@ -110,8 +112,11 @@ def validated_type_config(task_type: str, data: dict[str, Any]) -> dict[str, Any
     model = TYPE_CONFIG_MODELS.get(task_type)
     if not model:
         raise ValueError(f"unknown task type: {task_type}")
-    data = _normalize_legacy_group_ai_config(task_type, data or {})
+    data = _normalize_legacy_group_ai_config(task_type, dict(data or {}))
+    target_reference_revision = data.pop("target_reference_revision", None)
     normalized = model(**(data or {})).model_dump(mode="json", exclude_none=True)
+    if task_type == "group_ai_chat" and _as_int(target_reference_revision):
+        normalized["target_reference_revision"] = _as_int(target_reference_revision)
     if task_type == "search_join_group" and not normalized.get("strict_daily_target"):
         normalized.pop("strict_daily_target", None)
     if task_type == "group_ai_chat":

@@ -23,8 +23,12 @@ from app.schemas import (
     OperationTargetAdmissionRetryRequest,
     OperationTargetDetailOut,
     OperationTargetInviteLinkExportOut,
+    OperationTargetLifecycleImpactOut,
+    OperationTargetLifecycleResultOut,
+    OperationTargetLifecycleUpdate,
     OperationTargetMessageSyncOut,
     OperationTargetOut,
+    OperationTargetReactivateRequest,
     OperationTargetsSyncOut,
     OperationTargetUpdate,
     OperationTaskAttemptOut,
@@ -180,6 +184,124 @@ def patch_operation_target(
         return update_operation_target(session, current_user.tenant_id or 1, target_id, payload, current_user.name)
     except ValueError as exc:
         raise not_found(str(exc)) from exc
+
+
+@router.post(
+    "/api/operation-targets/{target_id}/lifecycle-impact-preview",
+    response_model=OperationTargetLifecycleImpactOut,
+)
+def post_operation_target_lifecycle_impact_preview(
+    target_id: int,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> OperationTargetLifecycleImpactOut:
+    ensure_permission(current_user, "targets.manage")
+    from app.services.task_center.target_lifecycle import preview_target_group_dissolution
+
+    target = session.get(OperationTarget, target_id)
+    if not target or target.tenant_id != (current_user.tenant_id or 1):
+        raise not_found("target not found")
+    impact = preview_target_group_dissolution(session, target=target)
+    return OperationTargetLifecycleImpactOut(
+        unstarted_action_count=impact.unstarted_action_count,
+        unknown_action_count=impact.unknown_action_count,
+        unstarted_message_task_count=impact.unstarted_message_task_count,
+        unknown_message_task_count=impact.unknown_message_task_count,
+        unstarted_operation_task_count=impact.unstarted_operation_task_count,
+        unknown_operation_task_count=impact.unknown_operation_task_count,
+        coverage_count=impact.coverage_count,
+        single_target_task_count=impact.single_target_task_count,
+    )
+
+
+@router.patch(
+    "/api/operation-targets/{target_id}/lifecycle",
+    response_model=OperationTargetLifecycleResultOut,
+)
+def patch_operation_target_lifecycle(
+    target_id: int,
+    payload: OperationTargetLifecycleUpdate,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> OperationTargetLifecycleResultOut:
+    ensure_permission(current_user, "targets.manage")
+    from app.services.task_center.target_lifecycle import (
+        mark_target_group_dissolved,
+        mark_target_ref_invalid,
+    )
+
+    target = session.get(OperationTarget, target_id)
+    if not target or target.tenant_id != (current_user.tenant_id or 1):
+        raise not_found("target not found")
+    try:
+        if payload.lifecycle_status == "group_dissolved":
+            result = mark_target_group_dissolved(
+                session,
+                target=target,
+                actor=current_user.name,
+                reason=payload.reason,
+                evidence_ref=payload.evidence_ref,
+                expected_version=payload.expected_lifecycle_version,
+            )
+        else:
+            result = mark_target_ref_invalid(
+                session,
+                target=target,
+                actor=current_user.name,
+                reason=payload.reason,
+                evidence_ref=payload.evidence_ref,
+                expected_version=payload.expected_lifecycle_version,
+            )
+        session.commit()
+    except LookupError as exc:
+        raise HTTPException(status_code=409, detail="lifecycle_version_conflict") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return OperationTargetLifecycleResultOut(
+        target_id=result.target.id,
+        lifecycle_status=result.target.lifecycle_status,
+        reference_revision=int(result.target.reference_revision or 1),
+        lifecycle_version=int(result.target.lifecycle_version or 1),
+        evidence_ref=result.target.lifecycle_detail,
+        skipped_actions=result.skipped_actions,
+        skipped_message_tasks=result.skipped_message_tasks,
+        skipped_operation_tasks=result.skipped_operation_tasks,
+        blocked_coverage=result.blocked_coverage,
+        paused_tasks=result.paused_tasks,
+    )
+
+
+@router.post("/api/operation-targets/{target_id}/reactivate", response_model=OperationTargetOut)
+def post_operation_target_reactivate(
+    target_id: int,
+    payload: OperationTargetReactivateRequest,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> OperationTarget:
+    ensure_permission(current_user, "targets.manage")
+    from app.services.task_center.target_lifecycle import reactivate_target
+
+    target = session.get(OperationTarget, target_id)
+    if not target or target.tenant_id != (current_user.tenant_id or 1):
+        raise not_found("target not found")
+    try:
+        target = reactivate_target(
+            session,
+            target=target,
+            actor=current_user.name,
+            reason=payload.reason,
+            evidence_ref=payload.evidence_ref,
+            expected_version=payload.expected_lifecycle_version,
+            new_peer_id=payload.tg_peer_id,
+            new_username=payload.username,
+        )
+        session.commit()
+        session.refresh(target)
+        return target
+    except LookupError as exc:
+        raise HTTPException(status_code=409, detail="lifecycle_version_conflict") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.patch("/api/operation-targets/{target_id}/accounts/{account_id}", response_model=OperationTargetDetailOut)

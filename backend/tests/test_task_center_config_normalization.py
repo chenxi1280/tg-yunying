@@ -11,9 +11,10 @@ from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.models import OperationTarget, RuleSet, RuleSetVersion, Tenant
-from app.schemas.task_center import GroupAIChatTaskCreate
+from app.schemas.task_center import GroupAIChatTaskConfigUpdate, GroupAIChatTaskCreate
 from app.services.task_center.config_normalization import normalize_operation_target_references
-from app.services.task_center.service import create_group_ai_chat_task
+from app.services.task_center.payloads import SendMessagePayload
+from app.services.task_center.service import create_group_ai_chat_task, update_group_ai_chat_config
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -343,3 +344,101 @@ def test_group_ai_config_prefers_stable_duplicate_target_by_username() -> None:
 
     assert normalized["target_operation_target_id"] == 485
     assert normalized["target_group_name"] == "天津"
+
+
+@pytest.mark.no_postgres
+def test_group_ai_target_normalization_freezes_current_reference_revision() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(
+            OperationTarget(
+                id=88,
+                tenant_id=1,
+                target_type="group",
+                tg_peer_id="-10088",
+                title="版本冻结群",
+                reference_revision=4,
+            )
+        )
+        session.commit()
+
+        normalized = normalize_operation_target_references(
+            session,
+            1,
+            "group_ai_chat",
+            {"target_operation_target_id": 88},
+        )
+
+    assert normalized["target_operation_target_id"] == 88
+    assert normalized["target_reference_revision"] == 4
+
+
+@pytest.mark.no_postgres
+def test_send_message_payload_carries_frozen_target_epoch_and_snapshot() -> None:
+    payload = SendMessagePayload(
+        group_id=7,
+        chat_id="-1007",
+        message_text="测试消息",
+        target_operation_target_id=88,
+        target_reference_revision=4,
+        target_reference_snapshot={
+            "tg_peer_id": "-1007",
+            "username": "versioned_group",
+            "title": "版本冻结群",
+        },
+        task_config_revision=3,
+    )
+
+    assert payload.target_operation_target_id == 88
+    assert payload.target_reference_revision == 4
+    assert payload.target_reference_snapshot["tg_peer_id"] == "-1007"
+    assert payload.task_config_revision == 3
+
+
+@pytest.mark.no_postgres
+def test_group_ai_hard_hourly_config_change_increments_server_revision() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(
+            OperationTarget(
+                id=91,
+                tenant_id=1,
+                target_type="group",
+                tg_peer_id="-10091",
+                title="配置版本群",
+                reference_revision=2,
+            )
+        )
+        session.commit()
+        task = create_group_ai_chat_task(
+            session,
+            1,
+            GroupAIChatTaskCreate(
+                name="配置版本 AI 活群",
+                target_operation_target_id=91,
+                hourly_min_messages=10,
+            ),
+            actor="tester",
+        )
+        initial_revision = task.config_revision
+
+        updated = update_group_ai_chat_config(
+            session,
+            1,
+            task.id,
+            GroupAIChatTaskConfigUpdate(
+                target_operation_target_id=91,
+                hourly_min_messages=11,
+            ),
+            actor="tester",
+        )
+
+    assert initial_revision == 1
+    assert updated.config_revision == 2
+    assert updated.type_config["target_reference_revision"] == 2

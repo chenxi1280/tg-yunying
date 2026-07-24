@@ -9,7 +9,10 @@ from sqlalchemy.orm import Session
 from app.database import Base
 from app.models import Action, Task, Tenant
 from app.services._common import _now
-from app.services.task_center.membership_fast_track import fast_track_pending_hard_hourly_memberships
+from app.services.task_center.membership_fast_track import (
+    fast_track_pending_hard_hourly_memberships,
+    record_fast_track_task_counts,
+)
 
 
 @pytest.mark.no_postgres
@@ -83,15 +86,69 @@ def test_fast_tracks_future_hard_hourly_membership_actions() -> None:
         )
         session.commit()
 
-        moved = fast_track_pending_hard_hourly_memberships(session, limit=10)
+        result = fast_track_pending_hard_hourly_memberships(session, limit=10)
         rows = {action.id: action for action in session.query(Action).all()}
+        session.commit()
+        record_fast_track_task_counts(session, result.task_counts)
+        session.commit()
         task = session.get(Task, "task-ai")
         task_stats = dict(task.stats or {}) if task else {}
 
-        assert moved == 2
+        assert result.processed == 2
         assert rows["future-ai-1"].scheduled_at <= now_value + timedelta(seconds=5)
         assert rows["future-ai-2"].scheduled_at <= now_value + timedelta(seconds=10)
         assert rows["future-ai-1"].result["fast_tracked_reason"] == "recovery_hard_hourly_membership"
         assert rows["future-normal"].scheduled_at == now_value + timedelta(hours=3)
         assert rows["future-daily-permission-recheck"].scheduled_at == now_value + timedelta(hours=4)
         assert task_stats["membership_recovery_fast_tracked_actions"] == 2
+
+
+@pytest.mark.no_postgres
+def test_fast_track_uses_the_dispatcher_stable_action_lock_order() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(
+            Task(
+                id="task-ai",
+                tenant_id=1,
+                name="AI 活跃群",
+                type="group_ai_chat",
+                status="running",
+                type_config={"hard_hourly_target_enabled": True, "hourly_min_messages": 60},
+            )
+        )
+        scheduled_at = now_value + timedelta(hours=1)
+        session.add_all(
+            [
+                Action(
+                    id="future-ai-b",
+                    tenant_id=1,
+                    task_id="task-ai",
+                    task_type="group_ai_chat",
+                    action_type="ensure_target_membership",
+                    status="pending",
+                    scheduled_at=scheduled_at,
+                    created_at=now_value,
+                ),
+                Action(
+                    id="future-ai-a",
+                    tenant_id=1,
+                    task_id="task-ai",
+                    task_type="group_ai_chat",
+                    action_type="ensure_target_membership",
+                    status="pending",
+                    scheduled_at=scheduled_at,
+                    created_at=now_value,
+                ),
+            ]
+        )
+        session.commit()
+
+        assert fast_track_pending_hard_hourly_memberships(session, limit=2).processed == 2
+        rows = {action.id: action for action in session.query(Action).all()}
+
+    assert rows["future-ai-a"].scheduled_at < rows["future-ai-b"].scheduled_at

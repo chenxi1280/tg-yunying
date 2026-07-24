@@ -20,6 +20,10 @@ class SendMessagePayload(BaseModel):
     chat_id: str = ""
     group_id: int | None = None
     operation_target_id: int | None = None
+    target_operation_target_id: int | None = None
+    target_reference_revision: int | None = None
+    target_reference_snapshot: dict[str, str] = Field(default_factory=dict)
+    task_config_revision: int = 1
     target_display: str = ""
     message_text: str = ""
     original_text: str = ""
@@ -96,6 +100,7 @@ class SendMessagePayload(BaseModel):
     ai_generation_count: int = 0
     hard_hourly_target: bool = False
     hard_hourly_bucket: str = ""
+    hard_hourly_goal_at_plan: int = 0
     hard_hourly_deficit_at_plan: int = 0
     ai_generation_context_count: int = 0
     ai_generation_memory_count: int = 0
@@ -171,6 +176,8 @@ class EnsureChannelMembershipPayload(BaseModel):
 
     channel_id: str = Field(min_length=1)
     channel_target_id: int
+    target_reference_revision: int | None = None
+    target_reference_snapshot: dict[str, str] = Field(default_factory=dict)
     target_type: str = "channel"
     target_display: str = ""
     target_username: str = ""

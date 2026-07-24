@@ -198,6 +198,7 @@ export function AppProvider({ children }: AppProviderProps) {
       daily_limit: selectedGroup.daily_limit,
       account_cooldown_seconds: selectedGroup.account_cooldown_seconds,
       group_cooldown_seconds: selectedGroup.group_cooldown_seconds,
+      send_limit_mode: selectedGroup.send_limit_mode ?? 'legacy_group_slot',
       topic_direction: selectedGroup.topic_direction,
       banned_words: selectedGroup.banned_words,
       link_whitelist: selectedGroup.link_whitelist,

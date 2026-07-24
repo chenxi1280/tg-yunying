@@ -97,11 +97,15 @@ function HardHourlyTaskSummary({ task }: { task: TaskCenterVisibleTask }) {
   const goal = Number(stats.hard_hourly_goal ?? configuredGoal ?? 0);
   const success = Number(stats.hard_hourly_success_count ?? 0);
   const deficit = Number(stats.hard_hourly_deficit ?? Math.max(0, goal - success));
+  const durableDebt = Number(stats.hard_hourly_durable_debt ?? 0);
+  const unknownHold = Number(stats.hard_hourly_unknown_after_send_hold_count ?? 0);
   return (
     <Space direction="vertical" size={0}>
       <Typography.Text type="secondary">本小时硬目标 {success} / {goal || '-'}</Typography.Text>
-      <Space size={6}>
+      <Space size={6} wrap>
         <Typography.Text type="secondary">缺口 {deficit}</Typography.Text>
+        {durableDebt > 0 && <Typography.Text type="secondary">历史欠账 {durableDebt}</Typography.Text>}
+        {unknownHold > 0 && <Typography.Text style={{ color: '#d48806' }}>待核验 {unknownHold}</Typography.Text>}
         <Tag color={hardHourlyStatusColor(stats.hard_hourly_status)}>{hardHourlyStatusLabel(stats.hard_hourly_status)}</Tag>
       </Space>
     </Space>

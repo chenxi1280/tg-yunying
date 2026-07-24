@@ -11,6 +11,8 @@
 | 统计时区 | `Asia/Shanghai` 自然日 |
 | 生产完成条件 | 一个完整北京时间自然日的“任务 × 群 × 账号”矩阵全部完成，或未完成项均以阻塞事实展示；不能用本地测试或部署成功替代 |
 
+> **2026-07-24 VNext 优先级说明（评审修订版）：** `docs/03-feature-designs/ai-group-send-continuity-and-terminal-targets-prd.md` 定义目标终态、目标引用 revision、`target_group_dissolved` 覆盖阻塞和群发送策略。本文件的群冷却 / 群日限额表述在新能力启用后必须按 `send_limit_mode` 解释：默认 `legacy_group_slot` 仍启用群冷却；仅显式 canary 的 `account_only*` 解除群冷却互挡。每日覆盖行遇到已解散群必须保留在分母并保持 `blocked`，不能通过释放预约回到 `ready` 或显示完成。
+
 ## 2. 背景与问题
 
 现有 `all_accounts_daily` 只在 Planner 运行时动态选择当前已准入、可发言账号，并从成功 Action 反查当日覆盖。生产检查证明该实现没有满足“全部账号任务中的每个账号每天都要发言”：

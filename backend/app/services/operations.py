@@ -338,7 +338,8 @@ def _ensure_linked_group_for_target(session: Session, target: OperationTarget) -
     return group
 
 
-TARGET_FIELDS = {"target_type", "tg_peer_id", "title", "username", "member_count", "can_send", "auth_status"}
+TARGET_FIELDS = {"title", "member_count", "can_send", "auth_status"}
+REFERENCE_FIELDS = {"target_type", "tg_peer_id", "username"}
 GROUP_RISK_FIELDS = {
     "active_window",
     "daily_limit",
@@ -355,11 +356,13 @@ def update_operation_target(session: Session, tenant_id: int, target_id: int, pa
     if not target or target.tenant_id != tenant_id:
         raise ValueError("target not found")
     data = payload.model_dump(exclude_unset=True)
+    if REFERENCE_FIELDS.intersection(data):
+        raise ValueError("实际发送引用请使用生命周期中的引用修复入口更新")
     for key, value in data.items():
         if key not in TARGET_FIELDS:
             continue
         setattr(target, key, value)
-    if any(key in data for key in GROUP_RISK_FIELDS):
+    if any(key in data for key in GROUP_RISK_FIELDS | {"can_send", "auth_status"}):
         linked_group = _linked_group_for_target(session, target)
         if not linked_group or linked_group.tenant_id != tenant_id or target.target_type != "group":
             raise ValueError("target group policy not found")
@@ -1629,22 +1632,51 @@ def sync_operation_target_messages(session: Session, tenant_id: int, target_id: 
 
 
 def create_operation_task(session: Session, payload: OperationTaskCreate, actor: str) -> OperationTask:
+    target: OperationTarget | None = None
     if payload.task_type == "MESSAGE_SEND":
         target = session.get(OperationTarget, payload.target_id)
-        if not target:
+        if not target or target.tenant_id != payload.tenant_id:
             raise ValueError("message send task requires target_id")
         if target.target_type == "channel" and not target.can_send:
             raise ValueError("频道无发帖权限")
         if not payload.content.strip():
             raise ValueError("message send task requires content or AI prompt")
+        from app.services.outbound_target_gate import evaluate_outbound_target_gate
+
+        gate_block = evaluate_outbound_target_gate(
+            session,
+            target=target,
+            tenant_id=payload.tenant_id,
+            outbound_peer=target.tg_peer_id,
+            require_identity=True,
+            include_group_policy=False,
+        )
+        if gate_block is not None:
+            raise ValueError(gate_block.detail)
     else:
         channel_message = session.get(ChannelMessage, payload.channel_message_id)
-        if not channel_message:
+        if not channel_message or channel_message.tenant_id != payload.tenant_id:
             raise ValueError("channel task requires channel_message_id")
+        target = session.get(OperationTarget, channel_message.channel_target_id)
+        if not target or target.tenant_id != payload.tenant_id or target.target_type != "channel":
+            raise ValueError("channel task requires current tenant channel target")
         if payload.task_type == "CHANNEL_REACTION" and not payload.reaction.strip():
             raise ValueError("channel reaction task requires reaction")
         if payload.task_type == "CHANNEL_REPLY" and not payload.content.strip():
             raise ValueError("channel reply task requires AI prompt")
+        if payload.task_type in {"CHANNEL_REACTION", "CHANNEL_REPLY"}:
+            from app.services.outbound_target_gate import evaluate_outbound_target_gate
+
+            gate_block = evaluate_outbound_target_gate(
+                session,
+                target=target,
+                tenant_id=payload.tenant_id,
+                outbound_peer=target.tg_peer_id,
+                require_identity=True,
+                include_group_policy=False,
+            )
+            if gate_block is not None:
+                raise ValueError(gate_block.detail)
     actual_quantity = resolve_actual_quantity(payload.quantity, payload.quantity_jitter_ratio)
     if payload.task_type == "CHANNEL_REPLY":
         content_mode = "ai"
@@ -1655,7 +1687,9 @@ def create_operation_task(session: Session, payload: OperationTaskCreate, actor:
     task = OperationTask(
         tenant_id=payload.tenant_id,
         task_type=payload.task_type,
-        target_id=payload.target_id,
+        target_id=target.id if target else None,
+        target_reference_revision=int(target.reference_revision or 1) if target else None,
+        target_reference_snapshot=_operation_target_reference_snapshot(target),
         channel_message_id=payload.channel_message_id,
         title=payload.title or payload.task_type,
         content=payload.content,
@@ -1695,6 +1729,16 @@ def create_operation_task(session: Session, payload: OperationTaskCreate, actor:
     session.commit()
     session.refresh(task)
     return task
+
+
+def _operation_target_reference_snapshot(target: OperationTarget | None) -> dict[str, str] | None:
+    if target is None:
+        return None
+    return {
+        "tg_peer_id": str(target.tg_peer_id),
+        "username": str(target.username or ""),
+        "title": str(target.title),
+    }
 
 
 def filter_operation_tasks(session: Session, tenant_id: int = 1, status: str | None = None) -> list[OperationTask]:
@@ -1755,9 +1799,75 @@ def _channel_message_context(session: Session, task: OperationTask) -> tuple[Cha
     if not message:
         raise ValueError("channel message not found")
     channel = session.get(OperationTarget, message.channel_target_id)
-    if not channel or channel.target_type != "channel":
+    if not channel or channel.tenant_id != task.tenant_id or channel.target_type != "channel":
         raise ValueError("channel target not found")
+    if task.target_id and task.target_id != channel.id:
+        raise ValueError("channel task target reference mismatch")
     return message, channel
+
+
+def _reserve_operation_gateway_attempt(
+    session: Session,
+    task: OperationTask,
+    attempt: OperationTaskAttempt,
+    target: OperationTarget | None,
+) -> tuple[OperationTarget | None, OperationTaskAttempt | None, str, str]:
+    from app.services.outbound_target_gate import OutboundGateDiagnosticTarget, evaluate_outbound_target_gate
+    from app.services.task_center.target_lifecycle import lock_target
+
+    if target is None:
+        return None, _fail_operation_attempt(
+            attempt,
+            "target_identity_unresolved",
+            "无法解析稳定运营目标身份，已阻断出站",
+        ), "target_identity_unresolved", "无法解析稳定运营目标身份，已阻断出站"
+    locked_target = lock_target(session, tenant_id=task.tenant_id, target_id=target.id)
+    locked_attempt = session.scalar(
+        select(OperationTaskAttempt)
+        .where(OperationTaskAttempt.id == attempt.id, OperationTaskAttempt.task_id == task.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if locked_attempt is None or locked_attempt.status != TaskStatus.QUEUED.value:
+        status = locked_attempt.status if locked_attempt is not None else "missing"
+        return locked_target, None, "operation_attempt_not_queued", f"运营任务尝试状态已变为 {status}，不会重复进入 Telegram Gateway"
+    block = evaluate_outbound_target_gate(
+        session,
+        target=locked_target,
+        tenant_id=task.tenant_id,
+        outbound_peer=locked_target.tg_peer_id,
+        require_identity=True,
+        require_frozen_identity=True,
+        expected_target_id=task.target_id,
+        expected_revision=task.target_reference_revision,
+        expected_reference_snapshot=(
+            task.target_reference_snapshot
+            if isinstance(task.target_reference_snapshot, dict)
+            else None
+        ),
+        diagnostic_target=OutboundGateDiagnosticTarget(
+            target_type="operation_task_attempt",
+            target_id=str(locked_attempt.id),
+            actor="operation-task-worker",
+        ),
+    )
+    if block is not None:
+        return locked_target, _fail_operation_attempt(locked_attempt, block.code, block.detail), block.code, block.detail
+    locked_attempt.gateway_call_started_at = _now()
+    session.commit()
+    return locked_target, locked_attempt, "", ""
+
+
+def _fail_operation_attempt(
+    attempt: OperationTaskAttempt,
+    failure_type: str,
+    failure_detail: str,
+) -> OperationTaskAttempt:
+    attempt.status = TaskStatus.FAILED.value
+    attempt.failure_type = failure_type
+    attempt.failure_detail = failure_detail
+    attempt.executed_at = _now()
+    return attempt
 
 
 def _execute_operation_attempt(
@@ -1777,8 +1887,12 @@ def _execute_operation_attempt(
     try:
         credentials = credentials_for_account(session, account)
         if task.task_type == "MESSAGE_SEND":
-            if not target:
-                raise ValueError("target not found")
+            target, attempt, failure_type, detail = _reserve_operation_gateway_attempt(
+                session, task, attempt, target,
+            )
+            if failure_type:
+                return False, failure_type, detail
+            assert target is not None and attempt is not None
             result = gateway.send_message_to_target(
                 account.id,
                 target.tg_peer_id,
@@ -1793,14 +1907,24 @@ def _execute_operation_attempt(
             detail = result.detail or ""
             remote_id = result.remote_message_id or ""
         elif task.task_type == "CHANNEL_VIEW":
-            assert channel_message and channel
+            channel, attempt, failure_type, detail = _reserve_operation_gateway_attempt(
+                session, task, attempt, channel,
+            )
+            if failure_type:
+                return False, failure_type, detail
+            assert channel_message and channel and attempt is not None
             op = gateway.view_channel_message(account.id, channel.tg_peer_id, channel_message.message_id, account.session_ciphertext, credentials)
             ok = op.ok
             failure_type = op.failure_type
             detail = op.detail
             remote_id = ""
         elif task.task_type == "CHANNEL_REACTION":
-            assert channel_message and channel
+            channel, attempt, failure_type, detail = _reserve_operation_gateway_attempt(
+                session, task, attempt, channel,
+            )
+            if failure_type:
+                return False, failure_type, detail
+            assert channel_message and channel and attempt is not None
             op = gateway.send_channel_reaction(
                 account.id,
                 channel.tg_peer_id,
@@ -1814,7 +1938,12 @@ def _execute_operation_attempt(
             detail = op.detail
             remote_id = ""
         else:
-            assert channel_message and channel
+            channel, attempt, failure_type, detail = _reserve_operation_gateway_attempt(
+                session, task, attempt, channel,
+            )
+            if failure_type:
+                return False, failure_type, detail
+            assert channel_message and channel and attempt is not None
             result = gateway.reply_channel_message(
                 account.id,
                 channel.tg_peer_id,
@@ -1849,6 +1978,15 @@ def _execute_operation_attempt(
         if failure_type == FailureType.ACCOUNT_LIMITED.value:
             account.status = AccountStatus.LIMITED.value
             account.health_score = min(account.health_score, 55)
+        _maybe_auto_mark_operation_target_ref_invalid(
+            session,
+            tenant_id=task.tenant_id,
+            reference_revision=task.target_reference_revision,
+            target=target or channel,
+            account_id=account.id,
+            failure_detail=detail,
+            source_ref=f"operation_task={task.id}; attempt={attempt.id}",
+        )
     attempt.executed_at = _now()
     return ok, attempt.failure_type, attempt.failure_detail
 
@@ -1865,6 +2003,31 @@ def _legacy_channel_account_has_membership(session: Session, tenant_id: int, acc
                 TgGroupAccount.account_id == account_id,
             )
         )
+    )
+
+
+def _maybe_auto_mark_operation_target_ref_invalid(
+    session: Session,
+    *,
+    tenant_id: int,
+    reference_revision: int | None,
+    target: OperationTarget | None,
+    account_id: int,
+    failure_detail: str,
+    source_ref: str,
+) -> None:
+    from app.services.outbound_target_gate import GATE_MODE_DUAL_READ, outbound_target_gate_mode
+    from app.services.task_center.target_lifecycle import auto_mark_target_ref_invalid
+
+    if target is None or outbound_target_gate_mode(session, tenant_id) == GATE_MODE_DUAL_READ:
+        return
+    auto_mark_target_ref_invalid(
+        session,
+        target=target,
+        reference_revision=reference_revision,
+        account_id=account_id,
+        failure_detail=failure_detail,
+        source_ref=source_ref,
     )
 
 
@@ -1979,6 +2142,7 @@ def retry_operation_task(session: Session, task_id: int, actor: str) -> Operatio
             attempt.failure_type = ""
             attempt.failure_detail = ""
             attempt.remote_message_id = ""
+            attempt.gateway_call_started_at = None
             attempt.scheduled_at = _now()
             attempt.planned_delay_seconds = 0
             attempt.executed_at = None
@@ -2009,8 +2173,11 @@ def manual_send(session: Session, account_id: int, payload: ManualSendRequest, a
     if not account or account.deleted_at is not None or account.status != AccountStatus.ACTIVE.value:
         raise ValueError("账号不可用")
     target = session.get(OperationTarget, payload.target_id)
-    if not target:
+    if not target or target.tenant_id != account.tenant_id:
         raise ValueError("target not found")
+    from app.services.task_center.target_lifecycle import lock_target
+
+    target = lock_target(session, tenant_id=account.tenant_id, target_id=target.id)
     if target.target_type == "channel" and not target.can_send:
         record = ManualOperationRecord(
             tenant_id=account.tenant_id,
@@ -2027,33 +2194,79 @@ def manual_send(session: Session, account_id: int, payload: ManualSendRequest, a
         session.commit()
         session.refresh(record)
         return record
+    from app.services.outbound_target_gate import OutboundGateDiagnosticTarget, evaluate_outbound_target_gate
+
+    gate_block = evaluate_outbound_target_gate(
+        session,
+        target=target,
+        tenant_id=account.tenant_id,
+        outbound_peer=target.tg_peer_id,
+        require_identity=True,
+        diagnostic_target=OutboundGateDiagnosticTarget(
+            target_type="operation_target",
+            target_id=str(target.id),
+            actor=actor,
+        ),
+    )
+    if gate_block is not None:
+        record = ManualOperationRecord(
+            tenant_id=account.tenant_id,
+            account_id=account.id,
+            target_id=target.id,
+            operation_type="MESSAGE_SEND",
+            content=payload.content,
+            status=TaskStatus.FAILED.value,
+            failure_type=gate_block.code,
+            failure_detail=gate_block.detail,
+            actor=actor,
+        )
+        session.add(record)
+        session.commit()
+        session.refresh(record)
+        return record
     credentials = credentials_for_account(session, account)
+    target_id = target.id
+    target_peer_id = target.tg_peer_id
+    target_type = target.target_type
+    record = ManualOperationRecord(
+        tenant_id=account.tenant_id,
+        account_id=account.id,
+        target_id=target_id,
+        operation_type="MESSAGE_SEND",
+        content=payload.content,
+        status=TaskStatus.SENDING.value,
+        gateway_call_started_at=_now(),
+        actor=actor,
+    )
+    session.add(record)
+    session.commit()
     result = gateway.send_message_to_target(
         account.id,
-        target.tg_peer_id,
+        target_peer_id,
         payload.content,
-        target.target_type,
+        target_type,
         None,
         account.session_ciphertext,
         credentials,
     )
-    record = ManualOperationRecord(
-        tenant_id=account.tenant_id,
-        account_id=account.id,
-        target_id=target.id,
-        operation_type="MESSAGE_SEND",
-        content=payload.content,
-        status=TaskStatus.COMPLETED.value if result.ok else TaskStatus.FAILED.value,
-        failure_type=result.failure_type or "",
-        failure_detail=result.detail or "",
-        remote_message_id=result.remote_message_id or "",
-        actor=actor,
-    )
+    record.status = TaskStatus.COMPLETED.value if result.ok else TaskStatus.FAILED.value
+    record.failure_type = result.failure_type or ""
+    record.failure_detail = result.detail or ""
+    record.remote_message_id = result.remote_message_id or ""
+    if not result.ok:
+        _maybe_auto_mark_operation_target_ref_invalid(
+            session,
+            tenant_id=account.tenant_id,
+            reference_revision=int(target.reference_revision or 1),
+            target=target,
+            account_id=account.id,
+            failure_detail=result.detail or result.failure_type or "",
+            source_ref=f"manual_operation={record.id}",
+        )
     if result.ok:
         account.last_active_at = _now()
     elif result.failure_type == FailureType.ACCOUNT_LIMITED.value:
         account.status = AccountStatus.LIMITED.value
-    session.add(record)
     audit(session, tenant_id=account.tenant_id, actor=actor, action="账号立即发送", target_type="manual_operation", target_id=str(account.id), detail=target.title)
     session.commit()
     session.refresh(record)

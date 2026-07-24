@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.auth import CurrentUser, get_current_user, require_core_feature_access, resolve_tenant_id
+from app.auth import CurrentUser, ensure_permission, get_current_user, require_core_feature_access, resolve_tenant_id
 from app.database import get_session
 from app.common.http import not_found
 from app.models import TgAccount, TgGroup, VerificationTask
@@ -54,6 +54,8 @@ def patch_group(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     require_core_feature_access(current_user)
+    if payload.send_limit_mode is not None:
+        ensure_permission(current_user, "targets.manage")
     try:
         require_resource_tenant(session, current_user, TgGroup, group_id)
         return update_group_policy(session, group_id, payload, current_user.name)

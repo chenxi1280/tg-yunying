@@ -256,6 +256,7 @@ class GroupAIChatConfig(BaseModel):
 
     target_group_id: int | None = None
     target_operation_target_id: int | None = None
+    target_reference_revision: int | None = Field(default=None, ge=1, exclude=True)
     target_type: Literal["group"] = "group"
     target_input: str | None = None
     target_title: str | None = None
