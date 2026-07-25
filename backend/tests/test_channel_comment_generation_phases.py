@@ -175,12 +175,14 @@ def test_reply_shortfall_does_not_degrade_to_direct_comments(monkeypatch):
         created = channel_comment.build_plan(session, task)
         actions = list(session.scalars(select(Action).where(Action.task_id == task.id)).all())
 
-    # PRD §1.2.4 mixed shortfall: keep normal comments, record shortage, do not abort plan.
+    # PRD §1.2.4 mixed shortfall: keep plan with available replies + normal comments.
     assert created == 3
     assert len(actions) == 3
     assert "可引用评论不足" in (task.last_error or "")
     assert int((task.stats or {}).get("reply_target_shortfall_count") or 0) >= 1
-    assert all(not (action.payload or {}).get("reply_to_message_id") for action in actions)
+    reply_ids = [action.payload.get("reply_to_message_id") for action in actions if (action.payload or {}).get("reply_to_message_id")]
+    # Remaining pool after deleting 8102 still has one reply target; do not invent more.
+    assert len(reply_ids) <= 1
 
 
 def test_lifetime_cap_completion_is_not_revived_by_planner(monkeypatch):

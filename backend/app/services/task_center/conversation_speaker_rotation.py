@@ -131,21 +131,21 @@ def reserve_speaker_turn(
     if blocked_id and not human_has_broken_adjacency(session, state):
         alternate = next((item for item in candidates if item != int(blocked_id)), None)
         if alternate is None:
-            if coverage_bound or int(action.account_id or 0) == int(blocked_id):
+            # Group AI hard-hourly: wait so capacity math treats single-account as unsustainable.
+            # Channel comment often runs with one discussion account; allow with explicit warning.
+            if surface == "channel_comment" and len(candidates) == 1:
+                selected = candidates[0]
+                reason = "single_account_capacity_warning"
+            else:
                 return SpeakerDecision(
                     False,
                     account_id=int(blocked_id),
                     code="speaker_rotation_wait",
                     reason="no_alternate_account",
                 )
-            return SpeakerDecision(
-                False,
-                account_id=int(blocked_id),
-                code="speaker_rotation_wait",
-                reason="no_alternate_account",
-            )
-        selected = alternate
-        reason = "rotated_from_last_speaker"
+        else:
+            selected = alternate
+            reason = "rotated_from_last_speaker"
     else:
         preferred = int(action.account_id or 0)
         selected = preferred if preferred in candidates else candidates[0]

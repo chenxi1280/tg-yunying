@@ -139,8 +139,10 @@ def _dispatch_deferred_ai_actions(
         "send_message",
         lambda *_args, **_kwargs: SendResult(True, remote_message_id="ai-runtime-ok"),
     )
-    # Runtime unit tests inject generator text; keep humanization quality gates from
-    # collapsing multi-slot plans into single check-in / quality_rejected outcomes.
+    # Runtime unit tests inject generator text; bypass humanization gates that would
+    # collapse multi-slot plans into single check-in / quality_rejected / rotation waits.
+    from app.services.task_center.conversation_speaker_rotation import SpeakerDecision
+
     monkeypatch.setattr(
         "app.services.task_center.executors.group_ai_chat._quality_filter_ai_messages",
         lambda messages, *args, **kwargs: (list(messages), {"accepted": len(messages)}),
@@ -152,6 +154,32 @@ def _dispatch_deferred_ai_actions(
     monkeypatch.setattr(
         "app.services.task_center.executors.group_ai_chat._stance_conflict_reason",
         lambda *_args, **_kwargs: "",
+    )
+    monkeypatch.setattr(
+        "app.services.task_center.ai_generation_pipeline._filter_stage_contents",
+        lambda request, contents, indexes=None: [
+            __import__(
+                "app.services.task_center.ai_generation_pipeline",
+                fromlist=["SlotGenerationResult"],
+            ).SlotGenerationResult(content)
+            for content in contents
+        ],
+    )
+    monkeypatch.setattr(
+        "app.services.task_center.conversation_speaker_rotation.reserve_speaker_turn",
+        lambda session, action, surface, conversation_key, candidate_account_ids, coverage_bound=False: SpeakerDecision(
+            True,
+            account_id=int(action.account_id or (candidate_account_ids[0] if candidate_account_ids else 0) or 0),
+            reason="test_bypass",
+        ),
+    )
+    monkeypatch.setattr(
+        "app.services.task_center.dispatcher._speaker_rotation_gate_pass",
+        lambda *args, **kwargs: True,
+    )
+    monkeypatch.setattr(
+        "app.services.task_center.dispatcher._group_bot_admission_gate_pass",
+        lambda *args, **kwargs: True,
     )
     dependencies = GenerationDependencies(
         normal_generator=normal_generator,
