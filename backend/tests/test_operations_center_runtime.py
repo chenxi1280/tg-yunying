@@ -139,40 +139,9 @@ def _dispatch_deferred_ai_actions(
         "send_message",
         lambda *_args, **_kwargs: SendResult(True, remote_message_id="ai-runtime-ok"),
     )
-    # Runtime unit tests inject generator text; bypass humanization gates that would
-    # collapse multi-slot plans into single check-in / quality_rejected / rotation waits.
-    from app.services.task_center.conversation_speaker_rotation import SpeakerDecision
-
-    monkeypatch.setattr(
-        "app.services.task_center.executors.group_ai_chat._quality_filter_ai_messages",
-        lambda messages, *args, **kwargs: (list(messages), {"accepted": len(messages)}),
-    )
-    monkeypatch.setattr(
-        "app.services.task_center.executors.group_ai_chat._voice_profile_match_decision_for_item",
-        lambda *_args, **_kwargs: {"score": 100, "reason": "test_bypass"},
-    )
-    monkeypatch.setattr(
-        "app.services.task_center.executors.group_ai_chat._stance_conflict_reason",
-        lambda *_args, **_kwargs: "",
-    )
-    monkeypatch.setattr(
-        "app.services.task_center.ai_generation_pipeline._filter_stage_contents",
-        lambda request, contents, indexes=None: [
-            __import__(
-                "app.services.task_center.ai_generation_pipeline",
-                fromlist=["SlotGenerationResult"],
-            ).SlotGenerationResult(content)
-            for content in contents
-        ],
-    )
-    monkeypatch.setattr(
-        "app.services.task_center.conversation_speaker_rotation.reserve_speaker_turn",
-        lambda session, action, surface, conversation_key, candidate_account_ids, coverage_bound=False: SpeakerDecision(
-            True,
-            account_id=int(action.account_id or (candidate_account_ids[0] if candidate_account_ids else 0) or 0),
-            reason="test_bypass",
-        ),
-    )
+    # Keep quality gates intact (dedupe/shell/unanchored tests rely on them).
+    # Only bypass speaker rotation / group-bot admission so multi-account unit
+    # suites are not blocked by new humanization hold states.
     monkeypatch.setattr(
         "app.services.task_center.dispatcher._speaker_rotation_gate_pass",
         lambda *args, **kwargs: True,

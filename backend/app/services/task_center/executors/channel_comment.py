@@ -306,11 +306,14 @@ def _comment_slot_targets(
     required = quantity if mode == "reply" else _reply_minimum_for_mode(mode, quantity, context.config)
     if required > len(pool):
         stats_inc(task, "reply_target_shortfall_count")
-        task.last_error = "可引用评论不足，等待采集到可回复评论后继续执行"
         if mode == "reply":
+            task.last_error = "可引用评论不足，等待采集到可回复评论后继续执行"
             # Hard reply mode cannot plan without valid targets.
             return None
         # Mixed mode: use available replies, keep remaining as normal comments (PRD §1.2.4).
+        # Do not set task.last_error to a hard wait message — plan continues.
+        if not pool:
+            task.last_error = "可引用评论不足，已按普通评论继续规划"
         return [*pool, *([None] * max(0, quantity - len(pool)))]
     return [*pool[:required], *([None] * (quantity - required))]
 
