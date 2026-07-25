@@ -1312,7 +1312,7 @@ def test_channel_comment_does_not_reuse_reply_targets_when_pool_is_short():
     # Mixed shortfall keeps normal comments; only one reply target is available.
     assert created == 4
     assert len(actions) == 4
-    assert "可引用评论不足" in (task.last_error or "")
+    assert int((task.stats or {}).get("reply_target_shortfall_count") or 0) >= 1
     reply_actions = [action for action in actions if (action.payload or {}).get("reply_to_message_id")]
     assert len(reply_actions) == 1
     assert int(reply_actions[0].payload["reply_to_message_id"]) == 8101

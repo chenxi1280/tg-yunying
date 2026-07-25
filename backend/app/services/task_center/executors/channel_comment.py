@@ -311,9 +311,7 @@ def _comment_slot_targets(
             # Hard reply mode cannot plan without valid targets.
             return None
         # Mixed mode: use available replies, keep remaining as normal comments (PRD §1.2.4).
-        # Do not set task.last_error to a hard wait message — plan continues.
-        if not pool:
-            task.last_error = "可引用评论不足，已按普通评论继续规划"
+        # Keep last_error empty so healthy tasks are not marked blocked; shortfall is in stats.
         return [*pool, *([None] * max(0, quantity - len(pool)))]
     return [*pool[:required], *([None] * (quantity - required))]
 
