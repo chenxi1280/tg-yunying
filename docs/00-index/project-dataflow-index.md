@@ -132,7 +132,7 @@ group_ai_chat 账号入群
   -> 以同群既有 listener 读取最大数值消息 ID
   -> 写 membership Action.join_start_cursor，创建 GroupBotAdmission(awaiting_group_bot_rule)
      无基线 / 读取失败 -> observation_stale(join_start_cursor_missing)，不得从 0 推断
-  -> listener 每轮 fetch_group_messages 后：快照保留 bot peer + 无 callback data 的按钮(row/col/text/url/type)摘要
+  -> listener 每轮 fetch_group_messages 后：快照保留 bot peer + 无 callback data 的按钮(row/col/text/url/type)摘要；同 group/message/peer 的历史空摘要只回填该安全字段
   -> 控制事件：先检查 admin / 已绑定 peer / active explicit-or-follow policy peer，来源不可信则零状态写入
      仅可信来源才按账号身份归属；不唯一只影响该可信 prompt，绝不批量污染 waiting admission
      bot 控制消息持久化为 is_bot 审计上下文，不进 AI/学习/引用候选

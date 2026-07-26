@@ -74,6 +74,47 @@ def _insert_snapshot(session: Session, group: TgGroup, account: TgAccount, snaps
     )
 
 
+def _serialized_membership_setup(session: Session):
+    group, first, second = _group(), _account(11, "账号甲"), _account(12, "账号乙")
+    task = Task(
+        id="task-ai-1",
+        tenant_id=1,
+        name="ai",
+        type="group_ai_chat",
+        status="running",
+        type_config={"group_bot_admission_required": True, "target_group_id": group.id},
+    )
+    target = OperationTarget(id=8, tenant_id=1, target_type="group", tg_peer_id=group.tg_peer_id, title=group.title)
+    session.add_all([Tenant(id=1, name="t"), group, first, second, task, target])
+    first_admission = ensure_admission_after_join(
+        session,
+        tenant_id=1,
+        group_id=group.id,
+        account_id=first.id,
+        membership_action_id="join-11",
+        join_start_cursor="100",
+    )
+    payload = EnsureChannelMembershipPayload(
+        channel_id=group.tg_peer_id,
+        channel_target_id=target.id,
+        target_type="group",
+        target_display=group.title,
+        require_send=True,
+    )
+    action = Action(
+        id="join-second",
+        tenant_id=1,
+        task_id=task.id,
+        task_type="group_ai_chat",
+        action_type="ensure_target_membership",
+        account_id=second.id,
+        status="executing",
+        payload=payload.model_dump(),
+    )
+    session.add(action)
+    return first_admission, action, payload, second
+
+
 def test_untrusted_bot_does_not_mutate_concurrent_waiting_admissions() -> None:
     with _session() as session:
         group = _group()
@@ -99,7 +140,7 @@ def test_untrusted_bot_does_not_mutate_concurrent_waiting_admissions() -> None:
         assert states == ["awaiting_group_bot_rule", "awaiting_group_bot_rule"]
 
 
-def test_policy_trusted_button_prompt_persists_controls_and_plans_exact_actions() -> None:
+def test_policy_trusted_replayed_button_prompt_updates_legacy_context_and_plans_exact_actions() -> None:
     with _session() as session:
         group, account = _group(), _account(11, "账号甲")
         task = Task(
@@ -128,6 +169,20 @@ def test_policy_trusted_button_prompt_persists_controls_and_plans_exact_actions(
             reason="production prompt evidence",
             evidence_ref="message:bot-message-1",
             created_by="operator",
+        )
+        session.add(
+            GroupContextMessage(
+                tenant_id=1,
+                group_id=group.id,
+                listener_account_id=account.id,
+                sender_peer_id="trusted-bot",
+                sender_name="群管机器人",
+                is_bot=True,
+                sender_role="unknown",
+                content="账号甲，请先完成频道关注",
+                remote_message_id="bot-message-1",
+                control_buttons=[],
+            )
         )
         buttons = [
             {"row": 0, "col": 0, "text": "关注频道", "url": "https://t.me/channel_alpha", "action_type": "url"},
@@ -252,3 +307,28 @@ def test_second_group_membership_defers_before_gateway_while_admission_is_open(m
         assert gateway_calls == []
         assert action.status == "pending"
         assert action.result["error_code"] == "group_bot_admission_window_busy"
+
+
+def test_deferred_group_membership_runs_after_previous_admission_is_ready(monkeypatch) -> None:
+    with _session() as session:
+        first_admission, action, payload, second = _serialized_membership_setup(session)
+        calls: list[int] = []
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "ensure_channel_membership",
+            lambda *args, **kwargs: calls.append(1) or OperationResult(True, detail="joined"),
+        )
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "probe_target_capabilities",
+            lambda *args, **kwargs: OperationResult(True, detail="can_send"),
+        )
+
+        assert dispatcher._dispatch_channel_membership(session, action, second, object(), payload) is True
+        assert calls == []
+        first_admission.state = "group_bot_admission_ready"
+        action.status = "executing"
+
+        assert dispatcher._dispatch_channel_membership(session, action, second, object(), payload) is True
+        assert calls == [1]
+        assert action.status == "success"

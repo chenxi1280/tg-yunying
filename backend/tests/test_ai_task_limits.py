@@ -144,6 +144,18 @@ def _forbid_planner_ai_generation(monkeypatch) -> None:
     monkeypatch.setattr("app.services.task_center.ai_generator.generate_group_reply_messages", fail)
 
 
+def _mark_group_bot_admissions_ready_for_test(session: Session) -> None:
+    from app.models import GroupBotAdmission
+    from app.services.task_center.group_bot_admission import READY_STATE
+
+    for admission in session.scalars(select(GroupBotAdmission).where(GroupBotAdmission.group_id == 7)):
+        admission.state = READY_STATE
+        admission.completion_policy = "not_required"
+        admission.failure_code = ""
+        admission.post_send_visibility_state = "visible_confirmed"
+    session.flush()
+
+
 def test_group_ai_config_update_preserves_unspecified_round_size() -> None:
     with _session() as session:
         _add_tenant(session)
@@ -936,20 +948,17 @@ def test_group_ai_hard_hourly_membership_to_send_dispatch_closed_loop(monkeypatc
         membership_actions = list(session.scalars(select(Action).where(Action.task_id == task.id, Action.action_type == "ensure_target_membership")))
         first_send_count = session.scalar(select(func.count(Action.id)).where(Action.task_id == task.id, Action.action_type == "send_message"))
         membership_results = [dispatch_action(session, action) for action in membership_actions]
+        # Group-bot admission permits only one new account at a time. The closed-loop
+        # test marks each completed admission ready before dispatching the next retry.
+        for action in membership_actions:
+            if action.status == "success":
+                continue
+            _mark_group_bot_admissions_ready_for_test(session)
+            action.scheduled_at = NOW
+            assert dispatch_action(session, action) is True
+        _mark_group_bot_admissions_ready_for_test(session)
         session.refresh(group)
         send_links = list(session.scalars(select(TgGroupAccount).where(TgGroupAccount.group_id == 7)))
-        # Membership creates group-bot admission rows that block send until ready/policy.
-        # Closed-loop unit test has no group bot: mark admissions ready for transport path.
-        from app.models import GroupBotAdmission
-        from app.services.task_center.group_bot_admission import READY_STATE
-
-        for admission in session.scalars(select(GroupBotAdmission).where(GroupBotAdmission.group_id == 7)):
-            admission.state = READY_STATE
-            admission.completion_policy = "not_required"
-            admission.failure_code = ""
-            # Skip first-send visibility hold for this closed-loop unit test.
-            admission.post_send_visibility_state = "visible_confirmed"
-        session.flush()
         monkeypatch.setattr(
             dispatcher.gateway,
             "probe_message_visible",

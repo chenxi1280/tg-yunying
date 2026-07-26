@@ -27,8 +27,8 @@ def insert_context_snapshots(
     for snapshot in snapshots:
         # Control-event path runs before context dedupe / ignore / learning filters.
         _process_group_bot_control_event(session, group, snapshot)
+        _refresh_existing_control_buttons(session, group, snapshot)
         _record_speaker_event(session, group, snapshot, account=account)
-
         message = _context_message(
             session,
             group,
@@ -46,14 +46,7 @@ def insert_context_snapshots(
             ).limit(1)
         ) is not None
         if message is None or not try_insert_context_message(session, message):
-            content = str(getattr(snapshot, "content", "") or "").strip()
-            if content and not has_group_bot_admission:
-                apply_required_channel_prompt_admission(
-                    session,
-                    group,
-                    content,
-                    remote_message_id=str(getattr(snapshot, "remote_message_id", "") or ""),
-                )
+            _maybe_apply_legacy_required_channel_prompt(session, group, snapshot, has_group_bot_admission)
             continue
         if not has_group_bot_admission:
             apply_required_channel_prompt_admission(
@@ -66,6 +59,41 @@ def insert_context_snapshots(
             _ensure_source_media(session, group, account, snapshot, message)
         inserted += 1
     return inserted
+
+
+def _maybe_apply_legacy_required_channel_prompt(session: Session, group: TgGroup, snapshot, has_admission: bool) -> None:
+    content = str(getattr(snapshot, "content", "") or "").strip()
+    if not content or has_admission:
+        return
+    apply_required_channel_prompt_admission(
+        session,
+        group,
+        content,
+        remote_message_id=str(getattr(snapshot, "remote_message_id", "") or ""),
+    )
+
+
+def _refresh_existing_control_buttons(session: Session, group: TgGroup, snapshot) -> None:
+    controls = _control_button_summaries(snapshot)
+    peer_id = str(getattr(snapshot, "sender_peer_id", "") or "")
+    remote_id = str(getattr(snapshot, "remote_message_id", "") or "")
+    if not bool(getattr(snapshot, "is_bot", False)) or not controls or not peer_id or not remote_id:
+        return
+    existing = session.scalar(
+        select(GroupContextMessage).where(
+            GroupContextMessage.group_id == group.id,
+            GroupContextMessage.remote_message_id == remote_id,
+        )
+    )
+    if (
+        existing is None
+        or not existing.is_bot
+        or existing.sender_peer_id != peer_id
+        or existing.control_buttons
+    ):
+        return
+    existing.control_buttons = controls
+    session.flush()
 
 
 def _process_group_bot_control_event(session: Session, group: TgGroup, snapshot) -> None:

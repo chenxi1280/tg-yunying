@@ -23,7 +23,7 @@
 4. 控制 bot 规则先处理，观察窗口后闭合。无可信规则且有 active `not_required` 才 ready；无策略只到 `group_bot_policy_unresolved`。
 5. 已上线但无游标的 admission 只能通过 `targets.manage` 的显式“重启观察”从当前上下文水位重新开始；请求含 expected version、reason、evidence，API 记录审计。无可读水位返回显式错误。
 6. 非可信 bot 消息在来源过滤阶段即停止，不能读取/修改 waiting admissions；unknown role 只有目标级 explicit/follow policy 绑定的 peer 才能作为受限可信来源。
-7. 内联按钮的 URL/callback 是协议事实：频道 follow 仅使用同一消息的精确广播频道 URL；确认 click 必须重读同一 source message 并逐项校验 peer、坐标、文本和 callback 类型，click 本身不 ready。
+7. 内联按钮的 URL/callback 是协议事实：频道 follow 仅使用同一消息的精确广播频道 URL；确认 click 必须重读同一 source message 并逐项校验 peer、坐标、文本和 callback 类型，click 本身不 ready。历史同一 bot message 若先前只保存空摘要，重新监听到同 peer 的按钮时只回填安全摘要，不改写 admission 或正文。
 8. 每群同一时刻只有一个 new admission window；第二个 membership action 必须在 Gateway 前写 `group_bot_admission_window_busy` 并等待当前 admission 收口，不能发送试探正文或批量重置历史状态。
 
 ## File plan
@@ -76,7 +76,7 @@
 
 **Steps:**
 1. 保持已实现的基线/观察/成功事实合同；在 membership Gateway 调用前新增行锁 admission window 的 reserve/defer/release，未知 Gateway 结果必须保持明确窗口状态。
-2. 将 `GroupMessageSnapshot` 扩展为安全按钮摘要，listener 把 bot 控制消息持久化到 `GroupContextMessage.control_buttons`；迁移只加可回滚 JSON 列。
+2. 将 `GroupMessageSnapshot` 扩展为安全按钮摘要，listener 把 bot 控制消息持久化到 `GroupContextMessage.control_buttons`；若历史同 group/message/peer 行为空摘要，重复监听只回填该安全字段；迁移只加可回滚 JSON 列。
 3. 将来源资格判断移动到 `attribute_prompt_to_account` 之前；显式 policy peer 支持 unknown role，但 `explicit_bot_confirmation`/`follow_sufficient` 都必须有 trusted peer，`not_required` 不可授权来源。
 4. 从正文和同源 URL 按钮提取精确公共频道，计划 follow action；全部 follow 后计划精确 confirmation action，Gateway 重读并校验 source message 后 click，click 不直接 ready。
 5. 将 `group_bot_rule_unattributed` 纳入单账号 restart 恢复范围，不创建批量自动恢复或 `not_required`。
