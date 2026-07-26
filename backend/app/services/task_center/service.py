@@ -4476,11 +4476,15 @@ def _observable_action_payload(action: Action) -> dict[str, Any]:
 
 
 def _action_failure_type(action: Action) -> str:
+    if action.status == "success":
+        return ""
     result = action.result or {}
     return str(result.get("error_code") or result.get("failure_type") or "")
 
 
 def _action_failure_reason(action: Action) -> str:
+    if action.status == "success":
+        return ""
     result = action.result or {}
     return str(result.get("error_message") or result.get("failure_reason") or result.get("detail") or "")
 

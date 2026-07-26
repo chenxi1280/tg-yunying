@@ -19,6 +19,7 @@ from app.schemas import (
     ChannelMessageCommentSyncOut,
     ChannelMessageOut,
     GroupBotAdmissionAbandonRequest,
+    GroupBotAdmissionObservationRestartRequest,
     GroupBotAdmissionOut,
     GroupBotAdmissionPolicyCreate,
     GroupBotAdmissionPolicyOut,
@@ -407,6 +408,52 @@ def post_group_bot_admission_reopen(
             admission=admission,
             expected_admission_version=payload.expected_admission_version,
             reopened_by=current_user.name,
+        )
+        session.commit()
+        session.refresh(admission)
+        return GroupBotAdmissionOut.model_validate(admission, from_attributes=True)
+    except ValueError as exc:
+        if str(exc) == "admission_version_conflict":
+            raise HTTPException(status_code=409, detail="admission_version_conflict") from exc
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post(
+    "/api/groups/{group_id}/group-bot-admissions/{account_id}/restart-observation",
+    response_model=GroupBotAdmissionOut,
+)
+def post_group_bot_admission_restart_observation(
+    group_id: int,
+    account_id: int,
+    payload: GroupBotAdmissionObservationRestartRequest,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> GroupBotAdmissionOut:
+    ensure_permission(current_user, "targets.manage")
+    from app.services._common import audit
+    from app.services.task_center.group_bot_admission import get_admission
+    from app.services.task_center.group_bot_observation import restart_admission_observation
+
+    tenant_id = current_user.tenant_id or 1
+    admission = get_admission(session, tenant_id=tenant_id, group_id=group_id, account_id=account_id)
+    if admission is None:
+        raise not_found("admission not found")
+    try:
+        restart_admission_observation(
+            session,
+            admission=admission,
+            expected_admission_version=payload.expected_admission_version,
+            reason=payload.reason,
+            evidence_ref=payload.evidence_ref,
+        )
+        audit(
+            session,
+            tenant_id=tenant_id,
+            actor=current_user.name,
+            action="group_bot_admission_observation_restarted",
+            target_type="group_bot_admission",
+            target_id=str(admission.id),
+            detail=f"reason={payload.reason}; evidence_ref={payload.evidence_ref}",
         )
         session.commit()
         session.refresh(admission)

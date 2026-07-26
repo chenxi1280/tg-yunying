@@ -117,6 +117,12 @@ HARD_HOURLY_ADMISSION_BLOCKED_SEND_ERROR_CODES = (
     "required_channel_admission_pending",
     "group_bot_admission_wait",
 )
+GROUP_BOT_ADMISSION_STATE_MESSAGES = {
+    "required_channel_follow_pending": "群管机器人已要求关注指定频道，等待精确关注完成",
+    "following_required_channel": "群管机器人要求的频道关注正在执行",
+    "group_bot_policy_unresolved": "未发现可信频道要求，等待目标级准入策略",
+    "observation_stale": "群管机器人观察证据不足，需要重启观察或修复监听水位",
+}
 HARD_HOURLY_OVERDUE_SEND_PRIORITY_SECONDS = 300
 TARGET_ADMISSION_RETRY_TASK_TYPE = "target_admission_retry"
 TARGET_ADMISSION_RETRY_TERMINAL_STATUSES = {"success", "unknown_after_send", "failed", "retryable_failed", "skipped"}
@@ -215,6 +221,7 @@ _GROUP_SEND_RETRYABLE_VERIFICATION_MARKERS = (
     "不可发言",
 )
 ACTIVE_SEARCH_JOIN_AUTHORIZATION_STATUSES = {"active", "standby"}
+SUCCESS_RESULT_FAILURE_KEYS = frozenset({"error_code", "error_message", "failure_type", "failure_reason", "detail", "raw_error", "raw_response", "exception"})
 
 
 @dataclass(frozen=True)
@@ -2818,6 +2825,8 @@ def _join_after_admin_restriction_lift(
 
 
 def _ensure_membership_with_peer_candidates(ctx: MembershipDispatchContext):
+    if _capture_group_bot_join_baseline(ctx):
+        ctx.session.commit()
     result, next_payload, fallback_ref = _ensure_membership_refs(ctx, _membership_static_refs(ctx.session, ctx.action, ctx.payload))
     if result.ok or not _membership_peer_ref_invalid(result):
         return result, next_payload, fallback_ref
@@ -2825,6 +2834,68 @@ def _ensure_membership_with_peer_candidates(ctx: MembershipDispatchContext):
     if not dialog_refs:
         return result, next_payload, fallback_ref
     return _ensure_membership_refs(ctx, dialog_refs, fallback_ref=fallback_ref)
+
+
+def _capture_group_bot_join_baseline(ctx: MembershipDispatchContext) -> bool:
+    if ctx.payload.target_type != "group" or not ctx.payload.require_send:
+        return False
+    task = ctx.session.get(Task, ctx.action.task_id) if ctx.action.task_id else None
+    config = task.type_config if task and isinstance(task.type_config, dict) else {}
+    if task is None or task.type != "group_ai_chat" or config.get("group_bot_admission_required") is False:
+        return False
+    group = _group_bot_baseline_group(ctx)
+    listener = _group_bot_baseline_listener(ctx.session, group, ctx.account.id) if group else None
+    if listener is None or group is None:
+        _record_group_bot_baseline(ctx.action, error_code="join_start_cursor_listener_unavailable")
+        return True
+    try:
+        snapshots = gateway.fetch_group_messages(
+            listener.id,
+            group.tg_peer_id,
+            listener.session_ciphertext,
+            credentials_for_account(ctx.session, listener),
+            limit=group.listener_context_limit,
+        )
+    except Exception:  # noqa: BLE001 - preserve explicit missing-baseline fact and let membership continue stale.
+        _record_group_bot_baseline(ctx.action, error_code="join_start_cursor_fetch_failed")
+        return True
+    from .group_bot_observation import max_snapshot_cursor
+
+    cursor = max_snapshot_cursor(snapshots)
+    _record_group_bot_baseline(ctx.action, cursor=cursor, error_code="join_start_cursor_missing")
+    return True
+
+
+def _group_bot_baseline_group(ctx: MembershipDispatchContext) -> TgGroup | None:
+    groups = _membership_candidate_groups(ctx.session, ctx.action.tenant_id, ctx.payload)
+    return groups[0] if groups else None
+
+
+def _group_bot_baseline_listener(session: Session, group: TgGroup, joining_account_id: int) -> TgAccount | None:
+    links = session.scalars(
+        select(TgGroupAccount).where(
+            TgGroupAccount.tenant_id == group.tenant_id,
+            TgGroupAccount.group_id == group.id,
+            TgGroupAccount.account_id != joining_account_id,
+            TgGroupAccount.is_listener.is_(True),
+        ).order_by(TgGroupAccount.id.asc())
+    )
+    for link in links:
+        account = session.get(TgAccount, link.account_id)
+        if account and account.status == AccountStatus.ACTIVE.value and account.session_ciphertext:
+            return account
+    return None
+
+
+def _record_group_bot_baseline(action: Action, *, cursor: str = "", error_code: str = "") -> None:
+    result = dict(action.result or {})
+    if cursor:
+        result["join_start_cursor"] = cursor
+        result.pop("join_start_cursor_error", None)
+    else:
+        result.pop("join_start_cursor", None)
+        result["join_start_cursor_error"] = error_code or "join_start_cursor_missing"
+    action.result = result
 
 
 def _ensure_membership_refs(
@@ -4686,7 +4757,12 @@ def _classify_membership_failure(failure_type: str, detail: str) -> str:
 def _apply_send_result(action: Action, account: TgAccount, ok: bool, remote_id: str = "", failure_type: str = "", detail: str = "", *, attempt: ExecutionAttempt | None = None) -> None:
     if ok:
         action.status = "success"
-        action.result = {**(action.result or {}), "success": True, "telegram_msg_id": remote_id, "auto_check": "通过", "validation_stage": "sent"}
+        result = {
+            key: value
+            for key, value in (action.result or {}).items()
+            if key not in SUCCESS_RESULT_FAILURE_KEYS
+        }
+        action.result = {**result, "success": True, "telegram_msg_id": remote_id, "auto_check": "通过", "validation_stage": "sent"}
         _clear_action_lease(action)
         account.last_active_at = _now()
         _release_runtime_resources(action)
@@ -6087,13 +6163,20 @@ def _group_bot_admission_gate_pass(session: Session, action: Action, *, group_id
     action.status = "pending"
     action.result = {
         **(action.result or {}),
+        "success": False,
         "error_code": decision.code or "group_bot_admission_wait",
+        "error_message": _group_bot_admission_wait_message(decision.state),
+        "validation_stage": "group_bot_admission",
         "group_bot_admission_state": decision.state,
         "group_bot_admission_id": decision.admission_id,
     }
     action.scheduled_at = _now() + timedelta(seconds=30)
     _release_runtime_resources(action)
     return False
+
+
+def _group_bot_admission_wait_message(state: str) -> str:
+    return GROUP_BOT_ADMISSION_STATE_MESSAGES.get(state, "群管机器人准入观察中，暂不发送正文")
 
 
 def _speaker_rotation_gate_pass(session: Session, action: Action, *, group_id: int, account_id: int) -> bool:

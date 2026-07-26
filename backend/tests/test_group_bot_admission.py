@@ -21,6 +21,7 @@ from app.services.task_center.group_bot_admission import (
     mark_channel_follow_completed,
     parse_channel_refs,
     record_probe_observation,
+    record_observation_batch,
     reconcile_unresolved_with_not_required,
 )
 
@@ -75,6 +76,13 @@ def test_joined_account_waits_until_observation_and_policy():
         assert gate.code == "group_bot_admission_wait"
 
         admission.observation_closes_at = model_now() - timedelta(seconds=1)
+        record_observation_batch(
+            session,
+            admission=admission,
+            observed_end_cursor="101",
+            listener_account_id=12,
+            read_count=2,
+        )
         close_observation_if_due(session, admission=admission)
         assert admission.state == "group_bot_policy_unresolved"
 

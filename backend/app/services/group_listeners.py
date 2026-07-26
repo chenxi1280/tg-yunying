@@ -25,6 +25,7 @@ from ._common import SUBSCRIPTION_INACTIVE_DETAIL, _now, audit, gateway, require
 from .account_usage_policy import assert_account_action_allowed
 from .campaigns import approve_all_drafts, create_campaign, generate_drafts
 from .group_listener_context_writer import insert_context_snapshots
+from .group_listener_admission import ListenerSnapshotFetchError, fetch_listener_snapshots, record_group_bot_observations
 from .developer_apps import credentials_for_account
 from .tenant_learning_samples import GROUP_CHAT_SCENE
 
@@ -289,13 +290,7 @@ def collect_group_context(
             continue
         usable_listener_count += 1
         credentials = credentials_for_account(session, account)
-        snapshots = gateway.fetch_group_messages(
-            account.id,
-            group.tg_peer_id,
-            account.session_ciphertext,
-            credentials,
-            limit=group.listener_context_limit,
-        )
+        snapshots = fetch_listener_snapshots(session, group=group, account=account, credentials=credentials)
         inserted += insert_context_snapshots(
             session,
             group,
@@ -305,6 +300,7 @@ def collect_group_context(
             create_source_media=create_source_media,
             learning_scene=learning_scene,
         )
+        record_group_bot_observations(session, group=group, account=account, snapshots=snapshots)
     if invalid_listener_errors and usable_listener_count == 0:
         group.listener_last_error = "监听账号用途不允许：" + "；".join(invalid_listener_errors[:3])
         raise ValueError(group.listener_last_error)
@@ -455,10 +451,26 @@ def process_group_listener(session: Session, group_id: int) -> int:
         session.rollback()
         group = session.get(TgGroup, group_id)
         if group:
+            _record_listener_fetch_failure(session, group, exc)
             group.listener_last_error = str(exc)
             group.listener_last_polled_at = now_value
             session.commit()
         return 0
+
+
+def _record_listener_fetch_failure(session: Session, group: TgGroup, error: Exception) -> None:
+    if not isinstance(error, ListenerSnapshotFetchError):
+        return
+    account = session.get(TgAccount, error.account_id)
+    if account is None:
+        raise ValueError(f"listener account {error.account_id} disappeared while recording fetch failure")
+    record_group_bot_observations(
+        session,
+        group=group,
+        account=account,
+        snapshots=(),
+        failure_code="listener_fetch_failed",
+    )
 
 
 def drain_group_listeners(session_factory, limit: int = 10) -> int:

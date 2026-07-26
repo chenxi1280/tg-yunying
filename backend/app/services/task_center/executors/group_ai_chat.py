@@ -72,6 +72,7 @@ from ..daily_coverage import (
     VOICE_PROFILE_MISSING_MESSAGE,
 )
 from ..daily_coverage_planning import (
+    MAX_DAILY_COVERAGE_PLAN_BATCH,
     SENDABLE_COVERAGE_STATES,
     advance_coverage_plan_cursor,
     coverage_plan_totals,
@@ -1681,8 +1682,11 @@ def _plan_account_limit(
         if progress
         else max(1, int((task.account_config or {}).get("max_concurrent") or 20))
     )
-    if not progress and _all_accounts_daily_coverage(task.type_config or {}) and planning_limit is not None:
-        return min(limit, max(1, int(planning_limit)))
+    if _all_accounts_daily_coverage(task.type_config or {}):
+        transaction_limit = MAX_DAILY_COVERAGE_PLAN_BATCH
+        if planning_limit is not None:
+            transaction_limit = min(transaction_limit, max(1, int(planning_limit)))
+        return min(limit, transaction_limit)
     return limit
 
 

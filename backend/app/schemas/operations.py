@@ -143,6 +143,12 @@ class GroupBotAdmissionAbandonRequest(BaseModel):
     expected_admission_version: int = Field(ge=1)
 
 
+class GroupBotAdmissionObservationRestartRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=500)
+    evidence_ref: str = Field(min_length=1, max_length=1000)
+    expected_admission_version: int = Field(ge=1)
+
+
 class GroupBotAdmissionOut(BaseModel):
     id: int
     tenant_id: int
@@ -437,6 +443,7 @@ __all__ = [
     "GroupBotAdmissionPolicyCreate",
     "GroupBotAdmissionPolicyOut",
     "GroupBotAdmissionAbandonRequest",
+    "GroupBotAdmissionObservationRestartRequest",
     "GroupBotAdmissionOut",
     "ChannelMessageCreate",
     "ChannelMessageCommentOut",

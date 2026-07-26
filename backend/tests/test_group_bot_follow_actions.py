@@ -43,6 +43,7 @@ def test_plan_required_channel_follow_actions_writes_admission_bound_fields():
             group_id=7,
             account_id=11,
             membership_action_id="join-1",
+            join_start_cursor="100",
         )
         ingest_trusted_bot_prompt(
             session,
@@ -86,7 +87,12 @@ def test_dispatch_group_bot_required_channel_follow_marks_admission():
         session.add_all([account, task])
         session.flush()
         admission = ensure_admission_after_join(
-            session, tenant_id=1, group_id=7, account_id=11, membership_action_id="join-1"
+            session,
+            tenant_id=1,
+            group_id=7,
+            account_id=11,
+            membership_action_id="join-1",
+            join_start_cursor="100",
         )
         ingest_trusted_bot_prompt(
             session,

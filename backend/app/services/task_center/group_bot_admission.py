@@ -12,12 +12,13 @@ from sqlalchemy.orm import Session
 
 from app.models import (
     GroupBotAdmission,
-    GroupBotAdmissionObservation,
     GroupBotAdmissionPolicy,
     GroupBotRequiredChannelFollow,
     PendingVisibilityCredit,
 )
 from app.models.enums import now as model_now
+
+from .group_bot_observation import has_valid_observation, numeric_cursor, record_observation_batch
 
 
 DEFAULT_OBSERVATION_WINDOW_SECONDS = 120
@@ -95,14 +96,16 @@ def ensure_admission_after_join(
     existing = get_admission(session, tenant_id=tenant_id, group_id=group_id, account_id=account_id)
     now = model_now()
     closes = now + timedelta(seconds=max(60, min(300, int(observation_window_seconds or DEFAULT_OBSERVATION_WINDOW_SECONDS))))
+    state, failure_code = _observation_start_state(join_start_cursor)
     if existing is None:
         row = GroupBotAdmission(
             tenant_id=tenant_id,
             group_id=group_id,
             account_id=account_id,
             membership_action_id=str(membership_action_id or ""),
-            state="awaiting_group_bot_rule",
+            state=state,
             join_start_cursor=str(join_start_cursor or ""),
+            failure_code=failure_code,
             join_success_at=now,
             observation_closes_at=closes,
             admission_version=1,
@@ -116,18 +119,24 @@ def ensure_admission_after_join(
     # Rejoin / new membership generation resets observation.
     if membership_action_id and existing.membership_action_id != str(membership_action_id):
         existing.membership_action_id = str(membership_action_id)
-        existing.state = "awaiting_group_bot_rule"
+        existing.state = state
         existing.admission_version = int(existing.admission_version or 1) + 1
-        existing.join_start_cursor = str(join_start_cursor or existing.join_start_cursor or "")
+        existing.join_start_cursor = str(join_start_cursor or "")
         existing.observed_end_cursor = ""
         existing.trusted_bot_peer_id = ""
         existing.required_channel_refs = []
-        existing.failure_code = ""
+        existing.failure_code = failure_code
         existing.join_success_at = now
         existing.observation_closes_at = closes
         existing.post_send_visibility_state = ""
         session.flush()
     return existing
+
+
+def _observation_start_state(join_start_cursor: str) -> tuple[str, str]:
+    if numeric_cursor(join_start_cursor) is not None:
+        return "awaiting_group_bot_rule", ""
+    return "observation_stale", "join_start_cursor_missing"
 
 
 def active_policy(
@@ -218,38 +227,6 @@ def abandon_admission(
     return admission
 
 
-def record_observation_batch(
-    session: Session,
-    *,
-    admission: GroupBotAdmission,
-    observed_end_cursor: str,
-    listener_account_id: int | None = None,
-    read_count: int = 0,
-    cursor_gap: bool = False,
-    failure_code: str = "",
-    result_summary: dict[str, Any] | None = None,
-) -> GroupBotAdmissionObservation:
-    obs = GroupBotAdmissionObservation(
-        admission_id=admission.id,
-        join_start_cursor=str(admission.join_start_cursor or ""),
-        observed_end_cursor=str(observed_end_cursor or ""),
-        listener_account_id=listener_account_id,
-        read_count=int(read_count or 0),
-        cursor_gap=bool(cursor_gap),
-        failure_code=str(failure_code or ""),
-        observation_version=int(admission.admission_version or 1),
-        result_summary=dict(result_summary or {}),
-    )
-    session.add(obs)
-    if not cursor_gap and not failure_code:
-        admission.observed_end_cursor = str(observed_end_cursor or admission.observed_end_cursor or "")
-    elif cursor_gap:
-        admission.state = "observation_stale"
-        admission.failure_code = failure_code or "cursor_gap"
-    session.flush()
-    return obs
-
-
 def close_observation_if_due(
     session: Session,
     *,
@@ -258,12 +235,18 @@ def close_observation_if_due(
 ) -> GroupBotAdmission:
     if admission.state not in {"awaiting_group_bot_rule", "observation_open", "observation_stale"}:
         return admission
-    if admission.failure_code == "cursor_gap" or admission.state == "observation_stale":
+    if admission.state == "observation_stale":
         return admission
     current = now or model_now()
     closes_at = admission.observation_closes_at
     if closes_at is not None and current < closes_at:
-        admission.state = "observation_open"
+        if has_valid_observation(session, admission=admission):
+            admission.state = "observation_open"
+            session.flush()
+        return admission
+    if not has_valid_observation(session, admission=admission):
+        admission.state = "observation_stale"
+        admission.failure_code = _observation_evidence_failure(admission)
         session.flush()
         return admission
     # Observation window closed with continuous cursor and no trusted rule.
@@ -285,6 +268,10 @@ def close_observation_if_due(
         admission.failure_code = "group_bot_policy_unresolved"
     session.flush()
     return admission
+
+
+def _observation_evidence_failure(admission: GroupBotAdmission) -> str:
+    return "join_start_cursor_missing" if numeric_cursor(admission.join_start_cursor) is None else "observation_evidence_missing"
 
 
 def parse_channel_refs(text: str) -> list[str]:
@@ -571,6 +558,7 @@ def evaluate_send_gate(
     if admission is None:
         # C1 canary: stock accounts without admission rows keep legacy send path.
         return AdmissionGateDecision(True, code="legacy_send_until_reviewed", state="missing")
+    close_observation_if_due(session, admission=admission)
     if admission.state == "abandoned":
         return AdmissionGateDecision(
             False,
@@ -702,8 +690,9 @@ def reopen_admission(
         raise ValueError("admission_not_abandoned")
     if int(admission.admission_version or 1) != int(expected_admission_version):
         raise ValueError("admission_version_conflict")
-    admission.state = "awaiting_group_bot_rule"
-    admission.failure_code = ""
+    admission.join_start_cursor = ""
+    admission.observed_end_cursor = ""
+    admission.state, admission.failure_code = _observation_start_state(admission.join_start_cursor)
     admission.abandoned_reason = ""
     admission.post_send_visibility_state = ""
     admission.admission_version = int(admission.admission_version or 1) + 1

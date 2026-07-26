@@ -72,7 +72,6 @@ def _process_group_bot_control_event(session: Session, group: TgGroup, snapshot)
     from app.services.task_center.group_bot_admission import (
         apply_confirmation_event,
         attribute_prompt_to_account,
-        close_observation_if_due,
         get_admission,
         ingest_trusted_bot_prompt,
     )
@@ -104,9 +103,6 @@ def _process_group_bot_control_event(session: Session, group: TgGroup, snapshot)
             )
         )
     )
-    for admission in waiting:
-        close_observation_if_due(session, admission=admission)
-
     if not is_bot:
         return
     is_admin_bot = sender_role in {"admin", "administrator", "creator", "owner"} or bool(

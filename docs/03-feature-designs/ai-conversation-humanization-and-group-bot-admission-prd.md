@@ -5,8 +5,8 @@
 | 项目 | 内容 |
 | --- | --- |
 | 需求级别 | L2 产品能力升级（上线后影响生产 AI 活群 / 频道评论行为） |
-| 设计状态 | `complete`（2026-07-25 评审修补合订） |
-| 修订说明 | 2026-07-25 评审修补合订 + **continuity 交叉 P0/P1 合订**：① 待可见性核验计入 `unknown_after_send_hold_count`；② `admission_abandoned` 释放永久不可准入硬小时 debt；③ `pending_visibility_credit` 延后真实 credit；④ follow/观察 action 复用 `target_admission_retry` 档且限 tenant+task+account；⑤ 定义 `admission_version`；⑥ C1/C2 action 边界与存量 unknown 走 continuity 裁决 |
+| 设计状态 | `complete`（2026-07-27 生产观察链路修补） |
+| 修订说明 | 2026-07-25 评审修补合订 + **continuity 交叉 P0/P1 合订**：① 待可见性核验计入 `unknown_after_send_hold_count`；② `admission_abandoned` 释放永久不可准入硬小时 debt；③ `pending_visibility_credit` 延后真实 credit；④ follow/观察 action 复用 `target_admission_retry` 档且限 tenant+task+account；⑤ 定义 `admission_version`；⑥ C1/C2 action 边界与存量 unknown 走 continuity 裁决。2026-07-27 补齐：入群前基线游标、每轮 listener observation 落库、控制事件优先后闭合、存量无基线显式重启观察，以及成功终态压过历史临时错误展示。 |
 | 产品范围 | 真人化：`group_ai_chat` + `channel_comment`；群管机器人准入：仅 `group_ai_chat` |
 | 统计时区 | 任务配置时区；未配置时沿用平台 `Asia/Shanghai` |
 | 上位文档 | `docs/01-product/tg-ops-platform-prd.md` |
@@ -106,6 +106,8 @@
 **规划占位：** 「待可见性核验」与 `unknown_after_send` **同一占位语义**，计入 continuity 的 `unknown_after_send_hold_count`（见 §5.8.1）；`planning_reservation` 公式**不变**。  
 `post_send_intercepted` 不计成功；明确失败后不占 `planning_reservation`（continuity §7.3.4）。
 
+**成功事实展示契约：** `Action.status=success` 且该发送有非空 `telegram_msg_id` / `remote_message_id` 时，Task Center 的结果、失败类型、失败原因和诊断必须以成功事实为准。一次性准入错误（例如 `required_channel_admission_pending`）在成功写回时必须清理；历史 action 即使保留该原始字段用于审计，读取投影和前端也不得将其显示为当前“需关注频道”或失败。`pending` 的准入等待与 `success` 的远端发送绝不可共用同一展示语义。
+
 ## 5. 群管机器人准入
 
 ### 5.1 状态机
@@ -188,6 +190,18 @@ elif now >= join_success_at + observation_window
 else:
   stay observation_open
 ```
+
+#### 5.2.2.1 运行时观察执行契约（2026-07-27）
+
+1. `join_start_cursor` 必须在 Telegram join/rejoin Gateway 调用**之前**，由同群既有、可用 listener 账号读取当前最大数值远端消息 ID 后写入 membership action result。没有 listener、读取失败、返回无数值游标或目标群未解析时，join 本身可以按既有 Telegram 结果收口，但新建 admission 必须立即进入 `observation_stale`，`failure_code=join_start_cursor_missing` 或明确读取失败码；禁止把空值、`0`、最新 N 条的最低 ID 补写为基线。
+2. 每次 `collect_group_context()` 成功取得快照后，必须对同群所有 `awaiting_group_bot_rule` / `observation_open` admission 写一条 `GroupBotAdmissionObservation`，包括 listener account、读取条数、批次最低/最高数值 ID、基线、版本、失败码和 `cursor_gap`。没有新 bot 文本也必须写观察批次，不能只靠收到控制消息时推进状态；若 listener 拉取异常触发 worker rollback，rollback 后仍必须以 `listener_fetch_failed` 单独落库并写 listener 错误，禁止把读失败回滚成无记录。
+3. 本版本的“连续追平”定义为：单次成功拉取的最新窗口同时包含不大于 `join_start_cursor` 的数值消息和不小于该基线的当前最大数值消息，且 Gateway 未报告读失败、分页缺口或限流。Telegram 消息 ID 不要求相邻数字；若批次最低 ID 大于基线，则只能证明窗口截断，写 `observation_stale/cursor_gap`，不得闭合。
+4. 同一轮顺序固定为：**先**逐快照处理可信群管 bot prompt / confirmation，**再**写批次观察并按窗口时间调用 close。这样同轮的真实规则不能被“无规则闭合”覆盖。
+5. `close_observation_if_due()` 只能消费当前 `admission_version` 的有效 observation；没有有效 observation、基线缺失、读失败或 gap 时不得从 waiting/stale 进入 `policy_unresolved`、clear 或 ready。
+
+#### 5.2.2.2 存量无基线 recovery
+
+已上线且 `join_start_cursor` 为空的 admission 不得批量推定为 ready。`targets.manage` 可以调用“重启观察”：服务从该群已持久化 listener context 取得当前最大数值游标，要求 `expected_admission_version + reason + evidence_ref`，递增版本、清空旧观察终点并开始新的 60–300 秒窗口，同时写 `AuditLog`。没有当前数值水位时返回显式 `join_start_cursor_missing`；重启后的放行仍只能来自可信规则完成或闭合观察后的显式目标级 policy。
 
 #### 5.2.3 控制事件处理顺序
 
@@ -467,6 +481,7 @@ target_admission_retry
 | 一键 not_required | `targets.manage` | 从 `group_bot_policy_unresolved` 详情带 evidence 创建 |
 | `POST .../group-bot-admissions/{id}/abandon` | `targets.manage` | §5.8.2：`admission_abandoned` + preview + reason + evidence + `expected_admission_version` |
 | `POST .../group-bot-admissions/{id}/reopen` | `targets.manage` | 放弃后重新观察；递增 `admission_version` |
+| `POST .../group-bot-admissions/{id}/restart-observation` | `targets.manage` | 仅修复存量无基线/观察失效：从已持久化 listener waterline 取新基线，要求 reason、evidence、`expected_admission_version`，递增 version 并写审计；无水位 `422`，不自动 ready |
 
 全部写审计；版本冲突 `409`。
 
@@ -474,7 +489,7 @@ target_admission_retry
 
 - 创建/向导：强制文案“账号轮换：必须”“群管准入：必须”；展示可轮换 ready 数、引用候选摘要；**无**连发开关、**无**关闭群管准入开关。
 - 详情/Action：互动类型（发言/引用/评论/回复/签到）、上一位账号、轮换原因、质量拒绝码、兜底原因。
-- AI 活群账号/准入区：admission 状态、protocol、trusted bot peer、游标范围、频道子 action、确认/可见性、failure_code、version；提示**全文**仅 `tasks.view`+任务权限；列表脱敏。
+- AI 活群账号/准入区：admission 状态、protocol、trusted bot peer、游标范围、频道子 action、确认/可见性、failure_code、version；`required_channel_*` 只在已记录可信 bot 的精确频道引用时显示“需要关注频道”，`group_bot_policy_unresolved` 显示“未发现频道要求，等待目标策略”，`observation_stale` 显示“观察证据不足”；成功 Action 必须显示远端消息 ID/成功，不复用旧准入错误。提示**全文**仅 `tasks.view`+任务权限；列表脱敏。
 - 运营目标：策略版本时间线、创建/撤销人、evidence 链接；禁止在任务 JSON 编辑里改 protocol。
 
 ### 9.3 预检字段
@@ -551,6 +566,9 @@ target_admission_retry
 | 新账号入群 | 观察/准入完成前无 AI、无正文、无 test_message |
 | 无 bot + 有 not_required | 窗口闭合且游标连续 → clear → ready |
 | 无 bot + 无策略 | 窗口闭合 → `policy_unresolved`；一键策略后 reconcile clear |
+| listener 空轮询 | 无新消息也写 observation；到期后仅依据有效游标批次进入 unresolved / clear |
+| 存量无基线 | 显式 restart observation 写审计和新 version；无 listener waterline 明确失败，不批量 ready |
+| 历史成功带旧准入错误 | API/页面显示远端成功，不把旧 `required_channel_admission_pending` 显示为当前失败 |
 | 可信 bot 要关注 | 仅归属账号建精确 follow；`can_send` 不被业务改写 |
 | 双账号同时等 | 无 @ 不批量 follow → unattributed |
 | 完成事件 | 仅识别器路径或 follow_sufficient → ready；`probe.ok` 无效 |
@@ -564,6 +582,7 @@ target_admission_retry
 | 场景 | 必须证明 |
 | --- | --- |
 | 观察未闭合（缺口/失联） | 不 clear、不 send |
+| 空基线 / 被截断最新窗口 | `observation_stale`，不得以 0、最新快照或等待时间推断连续 |
 | 窗口到期但无 not_required | unresolved，不是 ready |
 | hard-hourly 旧发送后重发路径 | 新路径不存在；拦截后不自动重发 |
 | 日覆盖 emoji_react | 新实现不可再发送；仅签到或 skip |

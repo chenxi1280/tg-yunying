@@ -4077,9 +4077,11 @@ operation_targets
 - 准入候选来自任务账号配置选中的全部在线账号，例如全部可用账号、指定账号分组或手动选择账号；只有账号本体离线、不可用、无 session、被明确排除或账号级安全阻塞时才剔除。
 - `max_concurrent`、每轮发言数、账号冷却、健康权重和发送容量只影响主互动规划与发送节奏，不得截断关注 / 入群 / 可发言能力准备。
 - 对转发目标群，准入完成条件是已加入且 Telegram 可发言；对 AI 活跃群，除已加入和 Telegram `can_send=True` 外，还必须满足独立的群管机器人准入 ready。权限探测必须区分“缺字段 / 未知”“账号不在群”“默认禁言”“单账号被禁言”“发送 API 明确失败”；不能把缺少 `send_messages` 字段直接判定为 `can_send=False`，也不能把 Telegram 探测成功当成群管机器人放行。
+- 群管机器人准入的控制观察必须有入群前 listener 基线和每轮 listener 拉取的持久化 observation 证据；没有基线、读取失败或最新窗口未覆盖基线时显式为 `observation_stale`，不得靠等待时间、`can_send=True`、历史发言或最新 N 条快照自动 ready。无可信频道规则且无目标级 policy 时为 `group_bot_policy_unresolved`，不能展示成“需要关注频道”。线上存量无基线只能由 `targets.manage` 带版本、理由、证据重启观察。
 - 对频道点赞，准入完成条件是账号已关注 / 已加入目标频道。Planner 阶段不得把没有账号-频道关系的账号直接安排点赞；Dispatcher 运行时如果发现账号未关注 / 未加入，应补齐准入动作并延后当前点赞，而不是把该 action 终态失败或直接调用 Telegram 点赞接口。
 - 对频道评论 / 回复，准入完成条件是账号已关注 / 已加入频道并能访问对应讨论区。Planner 阶段不得把没有账号-频道关系的账号直接安排评论；Dispatcher 运行时如果发现账号未关注 / 未加入，应补齐准入动作并延后当前评论，而不是把该 action 终态失败或跳过。
 - 群机器人、图形验证码和入群问题只在当前证据仍存在时展示。目标群已经没有对应机器人或验证消息时，账号详情和任务详情必须刷新为最新目标能力，不得沿用旧文案。
+- Task Center 对成功发送必须先使用 `Action.status=success`、成功 Attempt 和非空 Telegram 远端消息 ID；历史 `result.error_code/error_message` 若来自此前的准入等待，不得把已成功 Action 投影成“需关注频道”、失败类型或运营异常。原始字段可保留审计，但读取展示必须与当前终态一致。
 
 ### 6.1.2 运营方案到任务
 
@@ -4207,6 +4209,7 @@ AI 活跃群的默认策略是“接话为主、低频暖场为辅”：
 - 每个北京时间自然日必须为目标账号建立冻结的“任务 × 群 × 账号”覆盖账本。账号在当日活跃窗口内满足 active、normal、Session 可用且未被安全边界排除时加入当日目标；一旦加入，即使随后离线、受限、Session 失效、未入群或不可发言，当日也不能从分母移除。活跃窗口结束后才满足条件的账号从下一自然日开始履约。
 - Planner 只从当日账本中选择未完成且当前可执行账号，并在 AI 生成前固定账号 slot、账号面具、行为类型、话题和引用对象。覆盖调度只改变账号优先级，不改变现有 AI 活群内容管线；内容重复、质量失败或上下文过期时释放预约并保留覆盖义务，下一次使用最新上下文重新编排，不能立即发送模板、表情或其他非 `签到` 正文补量。
 - 覆盖完成必须同时存在成功 `send_message` Action、成功 `ExecutionAttempt` 和非空 Telegram `remote_message_id`。`pending`、`failed`、`skipped`、`unknown_after_send`、未准入、不可发言、风控受限和内容生成失败均不计完成。详情页完成率固定使用“远端确认完成账号数 / 当日全部目标账号数”，并展示准入、权限、在线、Session、内容、容量、发送和未知结果的账号级阻塞。发送型 `unknown_after_send` 只有在远端按账号、目标、时间窗和原文确认消息不存在后，才允许释放原 Action 的覆盖预约并重新规划；未完成远端核验时不得释放或自动重发。
+- 群管准入、重复内容、容量和远端核验是独立 blocker。修复其中一项不得缩小日覆盖分母、停止其他可发送账号的规划，或把剩余 blocker 伪装为任务已完成；任务是否按目标完成仍以当天覆盖账本和远端成功事实验收。
 - Dispatcher 对账号进程内占用和 Redis 占用的释放必须以 `dispatch_action` 的统一 `finally` 为最终兜底，成功、失败、跳过、生成异常和准入改道均不得遗留本地账号占用；数据库已无 executing Action 时不得持续返回 `account_inflight_conflict`。
 - 全账号日目标必须按 `hourly_activity_curve` 在目标群活跃窗口内平滑分配；`messages_per_round` 仍是单个 Cycle 的 Turn 上限，系统可为日履约启动多个自然对话 Cycle，但不得修改用户手动单轮上限。创建、启动、账号范围或节奏变化前必须验证并展示群 `daily_limit`、群冷却理论槽位、任务小时上限和账号聚合容量。对字段、目标引用和规则绑定均合法的 `group_ai_chat`，`daily_coverage_capacity_insufficient` 与 `hard_hourly_group_cooldown_insufficient` 只能作为显式预检警告，不能拒绝“创建并启动”；任务必须持久化并进入 `running`，由 Planner / Dispatcher 在实际 Action 和 Gateway 前继续执行原有门禁。必填字段、目标引用解析、规则绑定、账号或目标不可用等其他阻塞仍按原规则处理。容量不足不得静默提高风险上限、不得显示可按时完成，并须在任务详情保留 `coverage_capacity_blocked`、`daily_coverage_capacity_insufficient` 或对应运行事实。
 - 全账号日覆盖和参与账号比例的关系：全账号日覆盖是更强的日级履约目标，参与账号比例只能作为普通多轮分配参考，不能降低覆盖账本目标、缩小分母或把失败补量变成低质量内容。
@@ -5016,6 +5019,7 @@ action / attempt 写入完成
 - Phase B：仅 `group_ai_chat` 启用持久化硬小时账本；未进入 Gateway 的 Action 跨小时继续受控执行；历史欠账不因 24 小时页面展示窗口消失。成功 credit **关闭计划桶义务**（义务归属），`executed_at` 仅作审计时间。
 - Phase B canary：仅运营显式切换的群使用 `account_only*`，才解除“账号 A 占槽挡 B/C/D”的群冷却体感；全量默认仍为 `legacy_group_slot`。
 - 任意任务显示“成功 / 完成”必须有 `Action.status=success`、成功 `ExecutionAttempt` 和非空 Telegram 远端消息 ID；`pending`、`skipped`、`unknown_after_send`、AI draft 就绪和 toast 都不是成功证据。
+- `success` 与历史临时错误字段冲突时，以终态成功和远端消息 ID为展示事实；页面不得因旧的准入错误字段把已成功发送误报为频道关注失败。
 
 #### 8.4.2 目标生命周期与引用版本
 

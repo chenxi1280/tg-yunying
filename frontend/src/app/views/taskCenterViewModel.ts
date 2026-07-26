@@ -438,6 +438,10 @@ export function actionContent(action: TaskCenterAction): string {
 }
 
 export function actionResult(action: TaskCenterAction): string {
+  if (action.status === 'success') {
+    if (action.result?.telegram_msg_id) return `消息ID ${action.result.telegram_msg_id}`;
+    return '成功';
+  }
   if (action.result?.error_message) {
     const prefix = action.result?.auto_check ? `自动校验：${action.result.auto_check} / ` : '';
     return `${prefix}${action.result.error_message}`;

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
@@ -23,6 +24,7 @@ from app.services.task_center.group_bot_admission import READY_STATE, ensure_adm
 
 
 NOW = datetime(2026, 6, 14, 23, 40, 0)
+pytestmark = pytest.mark.no_postgres
 
 
 def _session() -> Session:
@@ -88,7 +90,7 @@ def test_listener_prompt_downgrades_send_permission_and_queues_membership(monkey
             group_id=7,
             account_id=11,
             membership_action_id="join-1",
-            join_start_cursor="0",
+            join_start_cursor="100",
         )
         session.commit()
 
