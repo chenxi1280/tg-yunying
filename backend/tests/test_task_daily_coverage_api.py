@@ -1,15 +1,18 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
+from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import pytest
+from fastapi import Response
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from app.api.routers.task_center import router
+from app.api.routers.task_center import get_task_daily_fulfillment, router
 from app.database import Base
-from app.models import AccountPool, Task, TaskAccountDailyCoverage, Tenant, TgAccount, TgGroup
+from app.models import Action, AccountPool, Task, TaskAccountDailyCoverage, Tenant, TgAccount, TgGroup
 from app.schemas.task_center import GroupAIChatTaskCreate, TaskAccountCoverageItemOut
 from app.security import encrypt_session
 from app.services.task_center.account_coverage import list_task_account_coverage_page, task_account_coverage
@@ -373,6 +376,124 @@ def test_daily_fulfillment_detail_separates_blockers_and_exposes_recovery_fields
     assert rows[1]["blocker_stage"] == "admission"
     assert rows[1]["recovery_path"] == "permission_recheck"
     assert rows[1]["last_action_id"] == "action-last"
+
+
+def test_search_join_daily_fulfillment_detail_keeps_fact_layers_separate(session: Session) -> None:
+    session.add(Tenant(id=1, name="租户"))
+    task = Task(
+        id="search-daily-detail",
+        tenant_id=1,
+        name="搜索日履约",
+        type="search_join_group",
+        status="running",
+        timezone="Asia/Shanghai",
+        type_config={"daily_click_target_count": 1000, "daily_target_count": 80},
+        stats={
+            "search_join_stats": {
+                "daily_fulfillment": {
+                    "effective_date": "2026-07-26",
+                    "daily_outcome": "blocked",
+                    "blocker_code": "daily_target_capacity_insufficient",
+                    "strict_hour_ceiling": 400,
+                    "strict_planning_capacity": 374,
+                },
+            },
+        },
+    )
+    session.add_all([
+        task,
+        Action(
+            id="search-click-pending-membership",
+            tenant_id=1,
+            task_id=task.id,
+            task_type=task.type,
+            action_type="search_join",
+            account_id=1,
+            status="success",
+            scheduled_at=datetime(2026, 7, 26, 9),
+            executed_at=datetime(2026, 7, 26, 9),
+            payload={},
+            result={
+                "target_click_observed": True,
+                "target_found_at": "2026-07-26T09:00:00+08:00",
+                "join_status": "membership_pending",
+            },
+        ),
+    ])
+    session.commit()
+
+    detail = daily_fulfillment_detail(
+        session,
+        tenant_id=1,
+        task_id=task.id,
+        coverage_date=date(2026, 7, 26),
+        now=datetime(2026, 7, 27, 12),
+    )
+
+    assert detail["fulfillment_kind"] == "search_join_daily_target"
+    assert detail["coverage_rows_supported"] is False
+    assert detail["click_target"]["confirmed_count"] == 1
+    assert detail["membership_target"]["confirmed_count"] == 0
+    assert detail["membership_target"]["held_count"] == 1
+    assert detail["daily_capacity"]["daily_outcome"] == "blocked"
+    assert detail["daily_capacity"]["blocker_code"] == "daily_target_capacity_insufficient"
+
+    payload = get_task_daily_fulfillment(
+        task_id=task.id,
+        response=Response(),
+        coverage_date="2026-07-26",
+        page=1,
+        page_size=50,
+        session=session,
+        current_user=SimpleNamespace(tenant_id=1),
+    )
+
+    assert payload["coverage_rows"] == []
+    assert payload["coverage_total"] == 0
+    assert payload["click_target"]["confirmed_count"] == 1
+
+
+def test_daily_fulfillment_detail_defaults_to_task_timezone_date(session: Session) -> None:
+    session.add_all([
+        Tenant(id=1, name="租户"),
+        TgGroup(id=31, tenant_id=1, tg_peer_id="-10031", title="目标群"),
+        TgAccount(id=31, tenant_id=1, display_name="账号31", phone_masked="31", status="在线"),
+    ])
+    task = Task(
+        id="timezone-daily-detail",
+        tenant_id=1,
+        name="跨时区日履约",
+        type="group_ai_chat",
+        status="running",
+        timezone="America/Los_Angeles",
+        type_config={"target_group_id": 31, "account_coverage_mode": "all_accounts_daily"},
+    )
+    session.add_all([
+        task,
+        TaskAccountDailyCoverage(
+            id="timezone-row",
+            tenant_id=1,
+            task_id=task.id,
+            group_id=31,
+            account_id=31,
+            coverage_date=date(2026, 7, 25),
+            target_count=1,
+            confirmed_count=1,
+            state="confirmed",
+        ),
+    ])
+    session.commit()
+
+    detail = daily_fulfillment_detail(
+        session,
+        tenant_id=1,
+        task_id=task.id,
+        coverage_date=None,
+        now=datetime(2026, 7, 26, 7, tzinfo=ZoneInfo("Asia/Shanghai")),
+    )
+
+    assert detail["coverage_date"] == "2026-07-25"
+    assert detail["confirmed_count"] == 1
 
 
 def test_router_exposes_paginated_account_coverage_endpoint() -> None:

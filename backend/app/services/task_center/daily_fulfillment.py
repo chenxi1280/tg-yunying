@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
@@ -10,10 +11,14 @@ from app.models import AiGenerationContractAudit, Action, Task, TaskAccountDaily
 from app.services._common import _now
 
 from .datetime_compat import is_after_or_equal, is_before
+from .dispatch_reservations import task_dispatch_claim_snapshot
+from .search_click_target_progress import search_click_target_progress, search_join_membership_target_progress
+from .search_join_protocol import task_search_join_protocol_snapshot
 
 
 OPEN_ACTION_STATUSES = frozenset({"pending", "claiming", "executing"})
 DECISION_RECHECK_SECONDS = 120
+SOURCE_TIMEZONE = ZoneInfo("Asia/Shanghai")
 
 
 @dataclass(frozen=True)
@@ -49,7 +54,7 @@ def summarize_daily_fulfillment(
     coverage_date: date | None = None,
 ) -> DailyFulfillmentSummary:
     timestamp = now or _now()
-    rows = _current_rows(session, task, coverage_date or timestamp.date())
+    rows = _current_rows(session, task, coverage_date or _task_coverage_date(task, timestamp))
     _reconcile_open_coverage_rows(session, task, rows, timestamp)
     actions = _actions_by_id(session, rows)
     counts = _state_counts(rows, actions, timestamp)
@@ -69,7 +74,7 @@ def record_daily_fulfillment_decision(
     session.add(TaskDailyFulfillmentDecision(
         tenant_id=task.tenant_id,
         task_id=task.id,
-        coverage_date=timestamp.date(),
+        coverage_date=_task_coverage_date(task, timestamp),
         decided_at=timestamp,
         full_shortfall_count=summary.full_shortfall_count,
         valid_future_open_cover_count=summary.valid_future_open_cover_count,
@@ -91,22 +96,67 @@ def daily_fulfillment_detail(
     tenant_id: int,
     task_id: str,
     *,
-    coverage_date: date,
+    coverage_date: date | None,
     now: datetime | None = None,
 ) -> dict[str, object]:
     task = session.get(Task, task_id)
     if task is None or task.tenant_id != tenant_id or task.deleted_at is not None:
         raise ValueError("task not found")
     timestamp = now or _now()
-    summary = summarize_daily_fulfillment(session, task, now=timestamp, coverage_date=coverage_date)
-    rows = _current_rows(session, task, coverage_date)
+    selected_date = coverage_date or _task_coverage_date(task, timestamp)
+    if task.type == "search_join_group":
+        return _search_join_daily_fulfillment_detail(session, task, selected_date, timestamp)
+    summary = summarize_daily_fulfillment(session, task, now=timestamp, coverage_date=selected_date)
+    rows = _current_rows(session, task, selected_date)
     return {
-        "coverage_date": coverage_date.isoformat(),
+        "fulfillment_kind": "ai_account_coverage",
+        "coverage_rows_supported": True,
+        "coverage_date": selected_date.isoformat(),
         **summary.as_dict(),
         "maximum_confirmable_count": _maximum_confirmable_count(rows, summary.frozen_denominator_count),
         "quality_funnel": _quality_funnel(rows),
         "generation_contract_funnel": _generation_contract_funnel(session, task, rows),
     }
+
+
+def _search_join_daily_fulfillment_detail(
+    session: Session,
+    task: Task,
+    coverage_date: date,
+    timestamp: datetime,
+) -> dict[str, object]:
+    click_target = search_click_target_progress(
+        session, task, now_value=timestamp, coverage_date=coverage_date,
+    )
+    membership_target = search_join_membership_target_progress(
+        session, task, now_value=timestamp, coverage_date=coverage_date,
+    )
+    capacity_status, capacity = _search_join_daily_capacity(task, coverage_date)
+    return {
+        "fulfillment_kind": "search_join_daily_target",
+        "coverage_rows_supported": False,
+        "coverage_date": coverage_date.isoformat(),
+        "click_target": click_target.as_dict(),
+        "membership_target": membership_target.as_dict() if membership_target else None,
+        "daily_capacity_snapshot_status": capacity_status,
+        "daily_capacity": capacity,
+        "dispatch_claim": task_dispatch_claim_snapshot(session, task),
+        "search_join_protocol": task_search_join_protocol_snapshot(session, task.id),
+    }
+
+
+def _search_join_daily_capacity(task: Task, coverage_date: date) -> tuple[str, dict[str, object] | None]:
+    stats = task.stats if isinstance(task.stats, dict) else {}
+    search_stats = stats.get("search_join_stats") if isinstance(stats.get("search_join_stats"), dict) else {}
+    snapshot = search_stats.get("daily_fulfillment") if isinstance(search_stats.get("daily_fulfillment"), dict) else {}
+    if str(snapshot.get("effective_date") or "") == coverage_date.isoformat():
+        return "recorded", dict(snapshot)
+    return "not_recorded_for_selected_date", None
+
+
+def _task_coverage_date(task: Task, timestamp: datetime) -> date:
+    source = timestamp if timestamp.tzinfo else timestamp.replace(tzinfo=SOURCE_TIMEZONE)
+    return source.astimezone(ZoneInfo(task.timezone or "Asia/Shanghai")).date()
 
 
 def _current_rows(session: Session, task: Task, coverage_date: date) -> list[TaskAccountDailyCoverage]:

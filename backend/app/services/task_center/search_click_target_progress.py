@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
@@ -81,9 +81,15 @@ def search_click_target_progress(
     task: Task,
     *,
     now_value: datetime | None = None,
+    coverage_date: date | None = None,
 ) -> SearchClickTargetProgress:
     if task.type == "search_join_group":
-        return _search_join_click_target_progress(session, task, now_value=now_value)
+        return _search_join_click_target_progress(
+            session,
+            task,
+            now_value=now_value,
+            coverage_date=coverage_date,
+        )
     daily_target_count = _daily_target_count(task)
     action_type = _action_type(task)
     if daily_target_count is not None:
@@ -115,6 +121,7 @@ def search_join_membership_target_progress(
     task: Task,
     *,
     now_value: datetime | None = None,
+    coverage_date: date | None = None,
 ) -> SearchClickTargetProgress | None:
     if task.type != "search_join_group" or _daily_click_target_count(task) is None:
         return None
@@ -127,6 +134,7 @@ def search_join_membership_target_progress(
         target_count=daily_target_count,
         now_value=now_value or beijing_now(),
         fact_kind="membership",
+        coverage_date=coverage_date,
     )
 
 
@@ -135,6 +143,7 @@ def _search_join_click_target_progress(
     task: Task,
     *,
     now_value: datetime | None,
+    coverage_date: date | None,
 ) -> SearchClickTargetProgress:
     daily_click_target_count = _daily_click_target_count(task)
     if daily_click_target_count is not None:
@@ -144,6 +153,7 @@ def _search_join_click_target_progress(
             target_count=daily_click_target_count,
             now_value=now_value or beijing_now(),
             fact_kind="click",
+            coverage_date=coverage_date,
         )
     daily_target_count = _daily_target_count(task)
     if daily_target_count is not None:
@@ -153,6 +163,7 @@ def _search_join_click_target_progress(
             target_count=daily_target_count,
             now_value=now_value or beijing_now(),
             fact_kind="membership",
+            coverage_date=coverage_date,
         )
     action_type = _action_type(task)
     target_count = _target_count(task)
@@ -169,8 +180,9 @@ def _search_join_daily_progress(
     target_count: int,
     now_value: datetime,
     fact_kind: str,
+    coverage_date: date | None,
 ) -> SearchClickTargetProgress:
-    start_at, end_at, local_date = _local_day_bounds(task, now_value)
+    start_at, end_at, local_date = _local_day_bounds(task, now_value, coverage_date)
     actions = session.scalars(
         select(Action).where(
             Action.tenant_id == task.tenant_id,
@@ -382,11 +394,16 @@ def _append_time_window(filters: list, start_at: datetime | None, end_at: dateti
     filters.extend((action_at >= start_at, action_at < end_at))
 
 
-def _local_day_bounds(task: Task, now_value: datetime) -> tuple[datetime, datetime, str]:
+def _local_day_bounds(
+    task: Task,
+    now_value: datetime,
+    coverage_date: date | None = None,
+) -> tuple[datetime, datetime, str]:
     source_now = now_value if now_value.tzinfo else now_value.replace(tzinfo=SOURCE_TIMEZONE)
     timezone = ZoneInfo(task.timezone or "Asia/Shanghai")
     local_now = source_now.astimezone(timezone)
-    local_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    selected_date = coverage_date or local_now.date()
+    local_start = datetime.combine(selected_date, time.min, tzinfo=timezone)
     return (
         _source_naive(local_start),
         _source_naive(local_start + timedelta(days=1)),

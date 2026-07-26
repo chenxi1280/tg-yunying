@@ -489,21 +489,24 @@ def get_task_daily_fulfillment(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     try:
-        selected_date = date.fromisoformat(coverage_date) if coverage_date else beijing_now().date()
+        selected_date = date.fromisoformat(coverage_date) if coverage_date else None
         payload = daily_fulfillment_detail(
             session,
             current_user.tenant_id or 1,
             task_id,
             coverage_date=selected_date,
         )
-        rows, total = list_task_account_coverage_page(
-            session,
-            current_user.tenant_id or 1,
-            task_id,
-            coverage_date=selected_date,
-            page=page,
-            page_size=page_size,
-        )
+        resolved_date = date.fromisoformat(str(payload["coverage_date"]))
+        rows, total = ([], 0)
+        if payload.get("coverage_rows_supported"):
+            rows, total = list_task_account_coverage_page(
+                session,
+                current_user.tenant_id or 1,
+                task_id,
+                coverage_date=resolved_date,
+                page=page,
+                page_size=page_size,
+            )
     except ValueError as exc:
         raise not_found(str(exc)) from exc
     _set_page_headers(response, total, page, page_size)

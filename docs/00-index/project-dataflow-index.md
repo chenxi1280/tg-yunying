@@ -69,6 +69,8 @@ AI 活群冻结日覆盖账本
   -> 同一 source ExecutionAttempt、target_click_observed、membership_pending、membership_observed 独立回写
 ~~~
 
+`GET /api/tasks/{task_id}/daily-fulfillment?date=` 按 `Task.timezone` 解析未指定日期：`group_ai_chat` 返回账号日覆盖账本和决策漏斗；`search_join_group` 返回点击目标、成员观察目标、所选日期的已记录严格容量结论、全局 dispatch claim 快照和脱敏协议轨迹。搜索任务不再伪装成 AI 覆盖账本，也不会把未记录日期的容量结论降级为全零事实。
+
 AI 的内容重复、批量 slot 映射与权限阻塞以 ai-group-daily-fulfillment-remediation-prd.md 为准；搜索的容量、份额、极搜协议和双目标事实以 search-click-daily-fulfillment-remediation-prd.md 为准。冻结分母、pending、unknown、申请待审批、source 尝试容量和 worker 心跳均不是完成事实。
 
 ### AI 活群连续性与终态目标契约（2026-07-24）
