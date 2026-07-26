@@ -10,6 +10,7 @@ from app.services.task_center.dispatcher import _apply_send_result, _group_bot_a
 from app.services.task_center.service import _action_payload
 
 pytestmark = pytest.mark.no_postgres
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _success_action() -> Action:
@@ -57,7 +58,7 @@ def test_success_payload_hides_legacy_failure_diagnosis() -> None:
 
 
 def test_frontend_success_result_precedes_stale_error_message() -> None:
-    source = Path("frontend/src/app/views/taskCenterViewModel.ts").read_text(encoding="utf-8")
+    source = (REPOSITORY_ROOT / "frontend/src/app/views/taskCenterViewModel.ts").read_text(encoding="utf-8")
     start = source.index("export function actionResult")
     body = source[start:source.index("export function isPlannedAction", start)]
 
