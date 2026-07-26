@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import Action, SearchJoinPacingDecision, Task
@@ -178,7 +178,7 @@ def task_daily_capacity(session: Session, task: Task, window: PacingWindow, requ
         stats.task_daily_remaining = requested
         return requested
     replacement_count = _strict_daily_click_replacement_count(session, task, window.local_date)
-    effective_budget = base_budget + replacement_count
+    effective_budget = base_budget if _strict_daily_source_ceiling(task) else base_budget + replacement_count
     stats.terminal_unconfirmed_click_count = replacement_count
     stats.task_daily_effective_budget = effective_budget
     remaining = max(0, effective_budget - count)
@@ -187,6 +187,11 @@ def task_daily_capacity(session: Session, task: Task, window: PacingWindow, requ
         stats.task_daily_limit_reached = 1
         stats.last_limit_reason = "task_daily_limit_reached"
     return min(requested, remaining)
+
+
+def _strict_daily_source_ceiling(task: Task) -> bool:
+    config = task.type_config or {}
+    return bool(config.get("strict_daily_target") and config.get("daily_click_target_count") is not None)
 
 
 def _strict_daily_click_replacement_count(session: Session, task: Task, local_date: date) -> int:
@@ -223,6 +228,54 @@ def hourly_action_allowed(session: Session, task: Task, scheduled_at: datetime, 
         )
     )
     return sum(1 for action in actions if not _is_behavior_pacing_skip(action)) < limit
+
+
+def hourly_source_occupancy(
+    session: Session,
+    task: Task,
+    window: PacingWindow,
+    *,
+    now_value: datetime,
+) -> dict[int, int]:
+    day_start, day_end = _local_day_bounds_source(task.timezone, window.local_date)
+    action_at = func.coalesce(Action.executed_at, Action.scheduled_at)
+    carryover = and_(
+        Action.status.in_(PENDING_CARRYOVER_STATUSES),
+        Action.executed_at.is_(None),
+        Action.scheduled_at.is_not(None),
+        Action.scheduled_at < day_end,
+    )
+    actions = session.scalars(
+        select(Action).where(
+            Action.task_id == task.id,
+            Action.action_type == "search_join",
+            Action.status.in_(REAL_ACTION_STATUSES),
+            or_(
+                and_(action_at >= day_start, action_at < day_end),
+                carryover,
+            ),
+        )
+    )
+    now_source = _source_naive(_task_local_datetime(task, now_value))
+    counts: dict[int, int] = {}
+    for action in actions:
+        hour = _occupied_source_hour(task, action, now_source, window.hour_start.hour)
+        counts[hour] = int(counts.get(hour, 0)) + 1
+    return counts
+
+
+def _occupied_source_hour(task: Task, action: Action, now_source: datetime, current_hour: int) -> int:
+    if (
+        action.status in PENDING_CARRYOVER_STATUSES
+        and action.executed_at is None
+        and action.scheduled_at is not None
+        and action.scheduled_at <= now_source
+    ):
+        return current_hour
+    source_time = action.executed_at or action.scheduled_at
+    if source_time is None:
+        return current_hour
+    return _task_local_datetime(task, source_time).hour
 
 
 def _decision(
@@ -440,6 +493,7 @@ __all__ = [
     "PacingStats",
     "account_allowed",
     "account_base_allowed",
+    "hourly_source_occupancy",
     "hourly_action_allowed",
     "keyword_allowed",
     "pacing_window",

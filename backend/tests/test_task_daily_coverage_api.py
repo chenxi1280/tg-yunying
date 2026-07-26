@@ -13,6 +13,7 @@ from app.models import AccountPool, Task, TaskAccountDailyCoverage, Tenant, TgAc
 from app.schemas.task_center import GroupAIChatTaskCreate, TaskAccountCoverageItemOut
 from app.security import encrypt_session
 from app.services.task_center.account_coverage import list_task_account_coverage_page, task_account_coverage
+from app.services.task_center.daily_fulfillment import daily_fulfillment_detail
 from app.services.task_center.coverage_capacity import coverage_capacity_proof, hard_hourly_group_cooldown_proof
 from app.services.task_center.precheck import _daily_coverage_capacity_check
 from app.timezone import beijing_now
@@ -343,10 +344,42 @@ def test_coverage_detail_page_keeps_blocked_accounts_visible(session: Session) -
     assert TaskAccountCoverageItemOut.model_validate(rows[0]).state == "blocked"
 
 
+def test_daily_fulfillment_detail_separates_blockers_and_exposes_recovery_fields(session: Session) -> None:
+    task = _seed_coverage(session)
+    blocked = session.get(TaskAccountDailyCoverage, "row-2")
+    blocked.blocker_stage = "admission"
+    blocked.recovery_path = "permission_recheck"
+    blocked.last_action_id = "action-last"
+    session.commit()
+
+    detail = daily_fulfillment_detail(
+        session,
+        tenant_id=1,
+        task_id=task.id,
+        coverage_date=beijing_now().date(),
+    )
+    rows, _total = list_task_account_coverage_page(
+        session,
+        tenant_id=1,
+        task_id=task.id,
+        coverage_date=beijing_now().date(),
+    )
+
+    assert detail["frozen_denominator_count"] == 4
+    assert detail["confirmed_count"] == 1
+    assert detail["daily_outcome"] == "blocked"
+    assert detail["maximum_confirmable_count"] == 3
+    assert detail["quality_funnel"]["duplicate_message"] == 1
+    assert rows[1]["blocker_stage"] == "admission"
+    assert rows[1]["recovery_path"] == "permission_recheck"
+    assert rows[1]["last_action_id"] == "action-last"
+
+
 def test_router_exposes_paginated_account_coverage_endpoint() -> None:
     paths = {path for route in router.routes if (path := getattr(route, "path", None))}
 
     assert "/api/tasks/{task_id}/account-coverage" in paths
+    assert "/api/tasks/{task_id}/daily-fulfillment" in paths
 
 
 def test_frontend_exposes_paginated_blocked_account_coverage_table() -> None:
@@ -358,3 +391,5 @@ def test_frontend_exposes_paginated_blocked_account_coverage_table() -> None:
     assert "account-coverage" in view_source
     assert "coverageItems" in modal_source
     assert "blocker_detail" in modal_source
+    assert "dailyFulfillment" in modal_source
+    assert "recovery_path" in modal_source

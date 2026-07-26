@@ -23,6 +23,16 @@ from .daily_coverage_planning import advance_coverage_plan_cursor, ready_coverag
 
 
 TERMINAL_PRECONFIRMATION_STATUSES = frozenset({"failed", "skipped", "retryable_failed"})
+GENERATION_CONTRACT_ERROR_CODES = frozenset({
+    "ai_generation_output_count_mismatch",
+    "ai_generation_slot_mapping_invalid",
+    "ai_generation_slot_mapping_mismatch",
+    "ai_generation_output_sequence_duplicate",
+    "ai_generation_output_sequence_mismatch",
+    "ai_generation_reply_sequence_mismatch",
+    "ai_generation_reply_sequence_unexpected",
+    "ai_generation_output_empty",
+})
 
 
 @dataclass(frozen=True)
@@ -108,13 +118,12 @@ def _release_terminal_rows(session: Session, rows) -> int:
     released = 0
     for coverage, action in rows:
         result = action.result if isinstance(action.result, dict) else {}
-        coverage.state = "ready"
-        coverage.reserved_action_id = None
-        coverage.blocker_code = str(result.get("error_code") or action.status)
-        coverage.blocker_detail = str(result.get("error_message") or "")
-        coverage.next_eligible_at = None
-        coverage.updated_at = _now()
-        released += 1
+        code = str(result.get("error_code") or action.status)
+        detail = str(result.get("error_message") or "")
+        if code in GENERATION_CONTRACT_ERROR_CODES:
+            released += int(block_generation_contract_coverage(session, coverage.id, action.id, blocker_code=code, blocker_detail=detail))
+        else:
+            released += int(release_coverage_reservation(session, coverage.id, action.id, blocker_code=code, blocker_detail=detail))
     if released:
         session.flush()
     return released
@@ -138,8 +147,12 @@ def reserve_coverage_for_action(
         .values(
             state="reserved",
             reserved_action_id=action_id,
+            last_action_id=action_id,
             blocker_code="",
+            blocker_stage="",
             blocker_detail="",
+            recovery_path="",
+            next_decision_at=None,
             updated_at=now or _now(),
         )
     )
@@ -155,6 +168,7 @@ def release_coverage_reservation(
     blocker_detail: str = "",
     next_eligible_at: datetime | None = None,
 ) -> bool:
+    blocker_stage, recovery_path = _recovery_for_blocker(blocker_code)
     result = session.execute(
         update(TaskAccountDailyCoverage)
         .where(
@@ -165,9 +179,44 @@ def release_coverage_reservation(
         .values(
             state="ready",
             reserved_action_id=None,
+            last_action_id=action_id,
             blocker_code=blocker_code,
+            blocker_stage=blocker_stage,
             blocker_detail=blocker_detail,
+            recovery_path=recovery_path,
             next_eligible_at=next_eligible_at,
+            next_decision_at=next_eligible_at,
+            updated_at=_now(),
+        )
+    )
+    return result.rowcount == 1
+
+
+def block_generation_contract_coverage(
+    session: Session,
+    coverage_id: str,
+    action_id: str,
+    *,
+    blocker_code: str,
+    blocker_detail: str,
+) -> bool:
+    result = session.execute(
+        update(TaskAccountDailyCoverage)
+        .where(
+            TaskAccountDailyCoverage.id == coverage_id,
+            TaskAccountDailyCoverage.reserved_action_id == action_id,
+            TaskAccountDailyCoverage.state.in_(("reserved", "sending", "unknown")),
+        )
+        .values(
+            state="blocked",
+            reserved_action_id=None,
+            last_action_id=action_id,
+            blocker_code=blocker_code,
+            blocker_stage="generation_contract",
+            blocker_detail=blocker_detail,
+            recovery_path="generation_contract_repair",
+            next_eligible_at=None,
+            next_decision_at=None,
             updated_at=_now(),
         )
     )
@@ -195,10 +244,14 @@ def confirm_coverage_from_attempt(
         return True
     row.confirmed_count = min(row.target_count, row.confirmed_count + 1)
     row.last_success_action_id = action_id
+    row.last_action_id = action_id
     row.last_remote_message_id = str(attempt.remote_message_id)
     row.reserved_action_id = None
     row.blocker_code = ""
+    row.blocker_stage = ""
     row.blocker_detail = ""
+    row.recovery_path = ""
+    row.next_decision_at = None
     row.updated_at = _now()
     if row.confirmed_count >= row.target_count:
         row.state = "confirmed"
@@ -225,8 +278,12 @@ def mark_coverage_unknown(
         )
         .values(
             state="unknown",
+            last_action_id=action_id,
             blocker_code=blocker_code,
+            blocker_stage="remote_reconcile",
             blocker_detail=blocker_detail,
+            recovery_path="remote_reconcile",
+            next_decision_at=None,
             updated_at=_now(),
         )
     )
@@ -256,8 +313,11 @@ def block_coverage_accounts(
         .values(
             state="blocked",
             blocker_code=blocker_code,
+            blocker_stage="admission",
             blocker_detail=blocker_detail,
+            recovery_path="permission_recheck",
             next_eligible_at=next_eligible_at,
+            next_decision_at=next_eligible_at,
             updated_at=_now(),
         )
     )
@@ -292,13 +352,54 @@ def release_online_coverage_blockers(
         .values(
             state="ready",
             blocker_code="",
+            blocker_stage="",
             blocker_detail="",
+            recovery_path="",
             next_eligible_at=None,
+            next_decision_at=timestamp,
             targeted_at=timestamp,
             updated_at=timestamp,
         )
     )
     return int(result.rowcount or 0)
+
+
+def release_generation_contract_blocker(
+    session: Session,
+    coverage_id: str,
+    *,
+    approved_reason: str,
+    now: datetime | None = None,
+) -> bool:
+    if not str(approved_reason or "").strip():
+        raise ValueError("generation contract recovery requires an approval reason")
+    timestamp = now or _now()
+    result = session.execute(
+        update(TaskAccountDailyCoverage)
+        .where(
+            TaskAccountDailyCoverage.id == coverage_id,
+            TaskAccountDailyCoverage.state == "blocked",
+            TaskAccountDailyCoverage.blocker_stage == "generation_contract",
+        )
+        .values(
+            state="ready",
+            blocker_detail=approved_reason,
+            recovery_path="",
+            next_eligible_at=None,
+            next_decision_at=timestamp,
+            targeted_at=timestamp,
+            updated_at=timestamp,
+        )
+    )
+    return result.rowcount == 1
+
+
+def _recovery_for_blocker(blocker_code: str) -> tuple[str, str]:
+    if blocker_code in {"duplicate_message", "content_variation_key_conflict"}:
+        return "quality", "replan_with_new_variation"
+    if blocker_code in GENERATION_CONTRACT_ERROR_CODES:
+        return "generation_contract", "generation_contract_repair"
+    return "planning", ""
 
 
 def backfill_daily_coverage_confirmations(
@@ -503,6 +604,7 @@ def _window_end(active_window: str) -> tuple[int, int]:
 
 __all__ = [
     "backfill_daily_coverage_confirmations",
+    "block_generation_contract_coverage",
     "block_coverage_accounts",
     "DailyCoverageSyncResult",
     "confirm_coverage_from_attempt",
@@ -516,6 +618,7 @@ __all__ = [
     "mark_coverage_unknown",
     "recover_terminal_coverage_reservations",
     "release_online_coverage_blockers",
+    "release_generation_contract_blocker",
     "release_coverage_reservation",
     "release_terminal_coverage_reservations",
     "reserve_coverage_for_action",

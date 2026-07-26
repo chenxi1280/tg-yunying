@@ -15,6 +15,8 @@
 >
 > **2026-07-25 真人化 / 群管准入 supersede：** `docs/03-feature-designs/ai-conversation-humanization-and-group-bot-admission-prd.md` 生效后：① 三层文本失败后的唯一确定性正文兜底为精确 `签到`（受 `static_safe_fallback` 与签到配额约束），本文历史 `emoji_react` 兜底不得用于新实现；② 非 `GroupBotAdmission.ready` 账号不计入 ready 产能，但保留在覆盖分母并显示 `pending_group_bot_admission` / 等价 blocker；③ `pending_visibility` 与 unknown 同语义占位，确认覆盖完成须 `visible_confirmed`（或无需核验路径的正式成功）；④ 运营 `admission_abandoned` 后覆盖行 `blocked/admission_abandoned` 仍在分母；⑤ 同账号连发与发送后自动关注重发均禁止。
 
+> **2026-07-26 每日履约收口 supersede：** 当前生产暴露的内容重复、批量生成契约失败、权限硬阻塞和 hard_hourly 达标后遗漏日覆盖 debt，以 docs/03-feature-designs/ai-group-daily-fulfillment-remediation-prd.md 为增量真相源。它不缩小冻结分母、不放宽质量或准入门，要求逐条保留 blocker、generation contract 审计与下一次规划决定。
+
 ## 2. 背景与问题
 
 现有 `all_accounts_daily` 只在 Planner 运行时动态选择当前已准入、可发言账号，并从成功 Action 反查当日覆盖。生产检查证明该实现没有满足“全部账号任务中的每个账号每天都要发言”：

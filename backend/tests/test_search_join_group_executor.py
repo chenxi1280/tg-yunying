@@ -17,9 +17,11 @@ from app.models import (
     AccountStatus,
     Action,
     BotProtocolSample,
+    ExecutionAttempt,
     FingerprintComboHistory,
     OperationTarget,
     SchedulingSetting,
+    SearchJoinProtocolTrace,
     SearchJoinPacingDecision,
     Task,
     TelegramDeveloperApp,
@@ -40,10 +42,36 @@ from app.services.task_center import search_click_target_progress as search_clic
 from app.services.task_center.search_join_pacing import pacing_window
 from app.services.task_center.executors import build_task_plan
 from app.services.task_center.executors import search_join_group as search_join_executor
+from app.services.task_center import dispatcher
+from app.services.task_center.payloads import SearchJoinPayload
+from app.services.task_center.service import get_task_detail
 from app.services.task_center.stats import next_run_after_task
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MAX_REPEAT_SOURCE_ACTION_SELECTS = 120
+
+
+def _approved_jisou_protocol_profile() -> dict:
+    return {
+        "page_fingerprints": [
+            {"page_phase": "verification_page", "text_enums": ["human_verification"]},
+            {"page_phase": "hot_list_page", "text_enums": ["hot_list"]},
+            {
+                "page_phase": "search_category_page",
+                "button_text_enums_any": ["jisou_group_category", "jisou_channel_category"],
+                "selector_rules": [
+                    {
+                        "row": 0,
+                        "col": 0,
+                        "button_type": "callback_data",
+                        "effect": "unknown",
+                        "normalized_text": "jisou_group_category",
+                    }
+                ],
+            },
+            {"page_phase": "group_result_page", "button_effects_any": ["join_candidate", "navigate_only"]},
+        ]
+    }
 
 
 @pytest.fixture
@@ -68,7 +96,7 @@ def session() -> Session:
                 sample_type="search_results",
                 sample_hash="sample-hash",
                 schema_version="v1",
-                structure_json={"buttons": [{"effect": "join_candidate"}]},
+                structure_json=_approved_jisou_protocol_profile(),
                 pii_scrubbed=True,
                 is_active=True,
             )
@@ -222,6 +250,238 @@ def _bind_search_join_authorization_without_environment(session: Session, accoun
     )
 
 
+def _search_join_dispatch_payload(*, approved_protocol_profile: dict | None = None) -> SearchJoinPayload:
+    return SearchJoinPayload(
+        bot_username="jisou",
+        keyword_hash=normalized_keyword_hash("上海 留学"),
+        keyword_text_ciphertext=encrypt_secret("上海 留学"),
+        authorization_id=601,
+        session_role="primary",
+        client_metadata={
+            "device_model": "iPhone 15",
+            "system_version": "iOS 17.5",
+            "app_version": "10.14.1",
+            "platform": "ios",
+            "client_identity_key": "test-identity",
+        },
+        runtime_environment={
+            "proxy_egress_guard": "verified",
+            "client_metadata_guard": "verified",
+        },
+        approved_protocol_profile=_approved_jisou_protocol_profile() if approved_protocol_profile is None else approved_protocol_profile,
+    )
+
+
+@pytest.mark.no_postgres
+def test_search_join_records_one_execution_attempt_around_gateway(session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    task = _task()
+    session.add(task)
+    session.flush()
+    action = Action(
+        tenant_id=1,
+        task_id=task.id,
+        task_type=task.type,
+        action_type="search_join",
+        account_id=101,
+        status="pending",
+        scheduled_at=_now(),
+        payload={},
+    )
+    session.add(action)
+    session.commit()
+    payload = _search_join_dispatch_payload()
+    monkeypatch.setattr(
+        dispatcher,
+        "_search_join_runtime_authorization",
+        lambda *_args: SimpleNamespace(session_ciphertext="search-session", credentials={}),
+    )
+    monkeypatch.setattr(
+        dispatcher.gateway,
+        "execute_search_join",
+        lambda *_args: {"success": False, "error_code": "target_not_in_results", "detail": "not found"},
+        raising=False,
+    )
+
+    assert dispatcher._dispatch_search_join(session, action, session.get(TgAccount, 101), payload) is True
+
+    attempt = session.scalar(select(ExecutionAttempt).where(ExecutionAttempt.action_id == action.id))
+    assert attempt is not None
+    assert attempt.attempt_no == 1
+    assert attempt.before_call_at is not None
+    assert attempt.gateway_call_started_at is not None
+    assert attempt.after_call_at is not None
+    assert attempt.status == "failed"
+    assert attempt.failure_type == "target_not_in_results"
+
+
+@pytest.mark.no_postgres
+def test_search_join_records_pre_gateway_skip_on_gateway_unavailable(session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    task = _task()
+    session.add(task)
+    session.flush()
+    action = Action(
+        tenant_id=1,
+        task_id=task.id,
+        task_type=task.type,
+        action_type="search_join",
+        account_id=101,
+        status="pending",
+        scheduled_at=_now(),
+        payload={},
+    )
+    session.add(action)
+    session.commit()
+    monkeypatch.setattr(dispatcher.gateway, "execute_search_join", None, raising=False)
+
+    assert dispatcher._dispatch_search_join(session, action, session.get(TgAccount, 101), _search_join_dispatch_payload()) is True
+
+    attempt = session.scalar(select(ExecutionAttempt).where(ExecutionAttempt.action_id == action.id))
+    assert action.status == "skipped"
+    assert attempt is not None
+    assert attempt.status == "skipped_before_gateway"
+    assert attempt.gateway_call_started_at is None
+    assert attempt.failure_type == "search_join_gateway_unavailable"
+
+
+@pytest.mark.no_postgres
+def test_search_join_blocks_legacy_protocol_payload_before_gateway(session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    task = _task()
+    session.add(task)
+    session.flush()
+    action = Action(
+        tenant_id=1,
+        task_id=task.id,
+        task_type=task.type,
+        action_type="search_join",
+        account_id=101,
+        status="pending",
+        scheduled_at=_now(),
+        payload={},
+    )
+    session.add(action)
+    session.commit()
+    called = False
+
+    def gateway_call(*_args):
+        nonlocal called
+        called = True
+        return {"success": True}
+
+    monkeypatch.setattr(dispatcher.gateway, "execute_search_join", gateway_call, raising=False)
+
+    assert dispatcher._dispatch_search_join(
+        session,
+        action,
+        session.get(TgAccount, 101),
+        _search_join_dispatch_payload(approved_protocol_profile={}),
+    ) is True
+
+    attempt = session.scalar(select(ExecutionAttempt).where(ExecutionAttempt.action_id == action.id))
+    assert called is False
+    assert action.status == "failed"
+    assert action.result["error_code"] == "protocol_sample_invalid"
+    assert attempt is not None
+    assert attempt.status == "skipped_before_gateway"
+    assert attempt.gateway_call_started_at is None
+
+
+@pytest.mark.no_postgres
+def test_search_join_gateway_exception_becomes_unknown_on_same_attempt(session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    task = _task()
+    session.add(task)
+    session.flush()
+    payload = _search_join_dispatch_payload()
+    action = Action(
+        tenant_id=1,
+        task_id=task.id,
+        task_type=task.type,
+        action_type="search_join",
+        account_id=101,
+        status="pending",
+        scheduled_at=_now(),
+        payload=payload.model_dump(mode="json"),
+    )
+    session.add(action)
+    session.commit()
+    monkeypatch.setattr(
+        dispatcher,
+        "_search_join_runtime_authorization",
+        lambda *_args: SimpleNamespace(session_ciphertext="search-session", credentials={}),
+    )
+    monkeypatch.setattr(
+        dispatcher.gateway,
+        "execute_search_join",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("gateway interrupted")),
+        raising=False,
+    )
+
+    assert dispatcher.dispatch_action(session, action) is True
+
+    attempt = session.scalar(select(ExecutionAttempt).where(ExecutionAttempt.action_id == action.id))
+    assert action.status == "unknown_after_send"
+    assert attempt is not None
+    assert attempt.status == "result_unknown"
+    assert attempt.gateway_call_started_at is not None
+    assert attempt.after_call_at is not None
+
+
+@pytest.mark.no_postgres
+def test_search_join_hot_list_gets_one_persisted_reset_then_session_deviation(session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    task = _task()
+    session.add(task)
+    session.flush()
+    payload = _search_join_dispatch_payload()
+    action = Action(
+        tenant_id=1,
+        task_id=task.id,
+        task_type=task.type,
+        action_type="search_join",
+        account_id=101,
+        status="pending",
+        scheduled_at=_now(),
+        payload=payload.model_dump(mode="json"),
+    )
+    session.add(action)
+    session.commit()
+    monkeypatch.setattr(
+        dispatcher,
+        "_search_join_runtime_authorization",
+        lambda *_args: SimpleNamespace(session_ciphertext="search-session", credentials={}),
+    )
+    monkeypatch.setattr(
+        dispatcher.gateway,
+        "execute_search_join",
+        lambda *_args: {
+            "success": False,
+            "error_code": "jisou_hot_list_page",
+            "jisou_page_phase": "hot_list_page",
+            "search_protocol_trace": {"page_phase": "hot_list_page", "page": {"button_count": 0, "button_layout": []}},
+        },
+        raising=False,
+    )
+
+    assert dispatcher._dispatch_search_join(session, action, session.get(TgAccount, 101), payload) is True
+    assert action.status == "pending"
+    assert action.payload["jisou_recovery_kind"] == "hot_list_reset"
+    assert session.query(SearchJoinProtocolTrace).filter_by(action_id=action.id).count() == 2
+
+    reset_payload = SearchJoinPayload.model_validate(action.payload)
+    assert dispatcher._dispatch_search_join(session, action, session.get(TgAccount, 101), reset_payload) is True
+
+    assert action.status == "failed"
+    assert action.result["error_code"] == "jisou_session_state_deviated"
+    reset_trace = session.scalar(select(SearchJoinProtocolTrace).where(
+        SearchJoinProtocolTrace.action_id == action.id,
+        SearchJoinProtocolTrace.recovery_kind == "hot_list_reset",
+    ))
+    assert reset_trace is not None
+    assert reset_trace.status == "reset_deviated"
+    assert reset_trace.event_type == "post_reset_page_classified"
+    protocol = get_task_detail(session, 1, task.id)["task"]["stats"]["search_join_protocol"]
+    assert protocol["latest_page_phase"] == "hot_list_page"
+    assert protocol["recent_traces"][0]["event_type"] == "post_reset_page_classified"
+
+
 @pytest.mark.no_postgres
 def test_search_join_planner_creates_hash_only_search_join_actions(session: Session) -> None:
     _bind_search_join_environment(session, [101, 102])
@@ -259,6 +519,24 @@ def test_search_join_planner_creates_hash_only_search_join_actions(session: Sess
         (102, 51, action_authorizations[102], "primary"),
     ]
     assert session.query(FingerprintComboHistory).count() == 2
+
+
+@pytest.mark.no_postgres
+def test_search_join_planner_blocks_legacy_jisou_sample_without_page_fingerprints(session: Session) -> None:
+    _bind_search_join_environment(session, [101])
+    sample = session.scalar(select(BotProtocolSample).where(BotProtocolSample.bot_username == "jisou"))
+    assert sample is not None
+    sample.structure_json = {"buttons": [{"effect": "join_candidate"}]}
+    task = _task(
+        account_config={"selection_mode": "manual", "account_ids": [101], "max_concurrent": 1},
+        type_config={"actions_per_round": 1, "hourly_min_successful_joins": 1},
+    )
+    session.add(task)
+    session.commit()
+
+    assert build_task_plan(session, task) == 0
+    assert task.last_error == "search_join protocol sample lacks approved fingerprints: jisou"
+    assert session.scalar(select(Action).where(Action.task_id == task.id)) is None
 
 
 @pytest.mark.no_postgres
@@ -1325,7 +1603,7 @@ def test_search_join_daily_limits_count_failed_and_claiming_real_actions(session
 
 
 @pytest.mark.no_postgres
-def test_strict_daily_click_target_replaces_terminal_sources_without_click_fact(
+def test_strict_daily_click_target_does_not_expand_source_budget_after_terminal_miss(
     session: Session,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1373,15 +1651,15 @@ def test_strict_daily_click_target_replaces_terminal_sources_without_click_fact(
     ])
     session.commit()
 
-    assert build_task_plan(session, task) == 2
+    assert build_task_plan(session, task) == 0
     limits = task.stats["search_join_stats"]["pacing_limits"]
 
-    assert session.query(Action).filter_by(task_id=task.id, action_type="search_join").count() == 4
+    assert session.query(Action).filter_by(task_id=task.id, action_type="search_join").count() == 2
     assert limits["task_daily_action_count"] == 2
     assert limits["task_daily_base_budget"] == 2
     assert limits["terminal_unconfirmed_click_count"] == 2
-    assert limits["task_daily_effective_budget"] == 4
-    assert limits["task_daily_remaining"] == 2
+    assert limits["task_daily_effective_budget"] == 2
+    assert limits["task_daily_remaining"] == 0
 
 
 @pytest.mark.no_postgres
@@ -1666,6 +1944,132 @@ def test_click_only_daily_target_uses_remaining_daily_curve(session: Session, mo
 
     assert build_task_plan(session, task) == 20
     assert task.stats["search_join_stats"]["hourly_execution"]["goal"] == 50
+
+
+@pytest.mark.no_postgres
+def test_strict_daily_target_stops_new_sources_when_remaining_capacity_is_impossible(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now_value = datetime(2026, 7, 23, 23, 30, 0)
+    monkeypatch.setattr(search_join_executor, "_now", lambda: now_value)
+    monkeypatch.setattr(search_click_progress, "beijing_now", lambda: now_value)
+    _bind_search_join_environment(session, [101])
+    task = _task(
+        account_config={"selection_mode": "manual", "account_ids": [101], "max_concurrent": 1},
+        type_config={
+            "daily_click_target_count": 21,
+            "strict_daily_target": True,
+            "allow_same_account_repeat_application": True,
+            "hourly_round_curve": [0] * 23 + [1],
+            "actions_per_round": 20,
+            "max_actions_per_hour": 20,
+            "hourly_min_successful_joins": 20,
+        },
+        pacing_config={"max_actions_per_day": 21, "hourly_jitter_percent": 0, "daily_jitter_percent": 0},
+    )
+    session.add(task)
+    sample = session.scalar(select(BotProtocolSample).where(BotProtocolSample.bot_username == "jisou"))
+    assert sample is not None
+    sample.structure_json = {"buttons": [{"effect": "join_candidate"}]}
+    session.commit()
+
+    assert build_task_plan(session, task) == 0
+    daily = task.stats["search_join_stats"]["daily_fulfillment"]
+
+    assert daily["daily_outcome"] == "blocked"
+    assert daily["blocker_code"] == "daily_target_capacity_insufficient"
+    assert session.query(Action).filter_by(task_id=task.id, action_type="search_join").count() == 0
+
+
+@pytest.mark.no_postgres
+def test_strict_daily_target_deducts_current_hour_open_sources_and_catches_up(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixed_now = datetime(2026, 7, 23, 10, 0, 0)
+    monkeypatch.setattr(search_join_executor, "_now", lambda: fixed_now)
+    monkeypatch.setattr(search_click_progress, "beijing_now", lambda: fixed_now)
+    _bind_search_join_environment(session, [101])
+    task = _task(
+        account_config={"selection_mode": "manual", "account_ids": [101], "max_concurrent": 1},
+        type_config={
+            "daily_click_target_count": 4,
+            "strict_daily_target": True,
+            "allow_same_account_repeat_application": True,
+            "hourly_round_curve": [0] * 10 + [1] + [0] * 13,
+            "actions_per_round": 1,
+            "max_actions_per_hour": 4,
+            "hourly_min_successful_joins": 1,
+        },
+        pacing_config={"max_actions_per_day": 4, "hourly_jitter_percent": 0, "daily_jitter_percent": 0},
+    )
+    session.add(task)
+    session.flush()
+    session.add_all([
+        Action(
+            id=f"existing-current-hour-{index}",
+            tenant_id=task.tenant_id,
+            task_id=task.id,
+            task_type=task.type,
+            action_type="search_join",
+            account_id=101,
+            status="pending",
+            scheduled_at=fixed_now,
+            payload={"keyword_hash": "a" * 64},
+            result={},
+        )
+        for index in range(2)
+    ])
+    session.commit()
+
+    capacity = search_join_executor._remaining_strict_daily_capacity(
+        session,
+        task,
+        search_join_executor._runtime_config(task),
+        [session.get(TgAccount, 101)],
+        fixed_now,
+        search_join_executor.PacingStats(),
+    )
+
+    assert capacity is not None
+    assert capacity.strict_hour_ceiling == 2
+    assert capacity.current_hour_source_occupied == 2
+    assert capacity.current_hour_available == 2
+    assert build_task_plan(session, task) == 2
+    assert session.query(Action).filter_by(task_id=task.id, action_type="search_join").count() == 4
+
+
+@pytest.mark.no_postgres
+def test_strict_daily_target_uses_remaining_windows_not_actions_per_round(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixed_now = datetime(2026, 7, 23, 10, 0, 0)
+    monkeypatch.setattr(search_join_executor, "_now", lambda: fixed_now)
+    monkeypatch.setattr(search_click_progress, "beijing_now", lambda: fixed_now)
+    _bind_search_join_environment(session, [101])
+    task = _task(
+        account_config={"selection_mode": "manual", "account_ids": [101], "max_concurrent": 1},
+        type_config={
+            "daily_click_target_count": 3,
+            "strict_daily_target": True,
+            "allow_same_account_repeat_application": True,
+            "hourly_round_curve": [0] * 10 + [1] + [0] * 13,
+            "actions_per_round": 1,
+            "max_actions_per_hour": 3,
+            "hourly_min_successful_joins": 1,
+        },
+        pacing_config={"max_actions_per_day": 3, "hourly_jitter_percent": 0, "daily_jitter_percent": 0},
+    )
+    session.add(task)
+    session.commit()
+
+    assert build_task_plan(session, task) == 3
+    actions = list(session.scalars(select(Action).where(Action.task_id == task.id, Action.action_type == "search_join")))
+    assert sum(action.status == "pending" for action in actions) == 3, [
+        (action.status, action.result, action.scheduled_at) for action in actions
+    ]
 
 
 @pytest.mark.no_postgres

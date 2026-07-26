@@ -24,6 +24,58 @@ export type SearchClickTargetProgress = {
   local_date?: string | null;
 };
 
+export type DispatchClaimReservation = {
+  id: string;
+  claim_class: string;
+  account_shard_total: number;
+  account_shard_index: number;
+  required_claims: number;
+  reserved_claims: number;
+  claimed_count: number;
+  available_claims: number;
+  urgency_score: number;
+  reason: string;
+};
+
+export type DispatchClaimSnapshot = {
+  status?: string;
+  dispatcher_scope?: string;
+  bucket_start?: string;
+  bucket_end?: string;
+  claim_capacity?: number;
+  active_claim_count?: number;
+  global_claim_capacity?: number;
+  global_active_claim_count?: number;
+  unclaimed_allocated_count?: number;
+  allocation_epoch?: number;
+  invariant_ok?: boolean;
+  shard_total?: number;
+  shard_index?: number;
+  required_claims?: number;
+  available_claims?: number;
+  unserved_strict_classes?: string[];
+  reservations?: DispatchClaimReservation[];
+};
+
+export type SearchJoinProtocolTrace = {
+  action_id: string;
+  protocol_sample_version: string;
+  recovery_kind: string;
+  status: string;
+  event_type: string;
+  attempt_no: number;
+  page_phase: string;
+  post_reset_page_phase: string;
+  trace_summary: Record<string, any>;
+  updated_at: string;
+};
+
+export type SearchJoinProtocolSnapshot = {
+  latest_page_phase: string;
+  latest_protocol_sample_version: string;
+  recent_traces: SearchJoinProtocolTrace[];
+};
+
 export type HardHourlyRecentBucket = {
   bucket: string;
   goal: number;
@@ -65,10 +117,33 @@ export type TaskAccountCoverage = {
   required_daily_messages?: number;
   required_hourly_rate?: number;
   pending_accounts?: Array<{ account_id: number; display_name?: string; completed_count: number; target_count: number; remaining_count: number; reason: string }>;
+  daily_fulfillment?: DailyFulfillment;
   coverage_rate: number;
   coverage_percent: number;
   action_types: string[];
   statuses: string[];
+};
+
+export type DailyFulfillment = {
+  frozen_denominator_count: number;
+  confirmed_count: number;
+  ready_count: number;
+  reserved_or_sending_count: number;
+  unknown_hold_count: number;
+  blocked_count: number;
+  full_shortfall_count: number;
+  valid_future_open_cover_count: number;
+  overdue_open_count: number;
+  ready_to_plan_count: number;
+  blocked_shortfall_count: number;
+  sendable_capacity_count: number;
+  required_new: number;
+  blocker_counts: Record<string, number>;
+  daily_outcome: 'feasible' | 'at_risk' | 'blocked' | 'met';
+  next_decision_at: string | null;
+  maximum_confirmable_count?: number;
+  quality_funnel?: Record<string, number>;
+  generation_contract_funnel?: { blocked_coverage_count: number; audit_count: number };
 };
 
 export type TaskAccountCoverageItem = {
@@ -81,11 +156,15 @@ export type TaskAccountCoverageItem = {
   confirmed_count: number;
   state: string;
   blocker_code: string;
+  blocker_stage: string;
   blocker_detail: string;
   reserved_action_id: string | null;
+  last_action_id: string | null;
   last_success_action_id: string | null;
   last_remote_message_id: string;
   next_eligible_at: string | null;
+  next_decision_at: string | null;
+  recovery_path: string;
   targeted_at: string;
   completed_at: string | null;
 };
@@ -94,6 +173,8 @@ export type TaskCenterStats = Record<string, any> & {
   account_coverage?: TaskAccountCoverage;
   search_click_target?: SearchClickTargetProgress;
   search_join_membership_target?: SearchClickTargetProgress;
+  dispatch_claim?: DispatchClaimSnapshot;
+  search_join_protocol?: SearchJoinProtocolSnapshot;
   hard_hourly_target_enabled?: boolean;
   hard_hourly_goal?: number | null;
   hard_hourly_bucket?: string | null;

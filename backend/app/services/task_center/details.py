@@ -17,6 +17,8 @@ from .hard_hourly import enabled as hard_hourly_enabled, hard_hourly_stats
 from .ai_act_types import canonical_ai_group_act_type
 from .membership_recovery import classify_membership_recovery
 from .account_coverage import task_account_coverage
+from .dispatch_reservations import task_dispatch_claim_snapshot
+from .search_join_protocol import task_search_join_protocol_snapshot
 from app.services._common import _now
 from app.services.task_runtime_stage import derive_task_runtime_stage
 
@@ -38,6 +40,8 @@ def _task_payload(
 ) -> dict[str, Any]:
     target_summary = _target_summary(session, task, list_context)
     stats = _stats_with_account_coverage(session, task, task.stats or {}) if include_live_stats else dict(task.stats or {})
+    if not include_detail_search:
+        stats = _with_dispatch_claim_snapshot(session, task, stats)
     search_parts = [
         task.id,
         task.name,
@@ -94,6 +98,20 @@ def _stats_with_account_coverage(session: Session, task: Task, stats: dict[str, 
     coverage = task_account_coverage(session, task)
     if coverage:
         result["account_coverage"] = coverage
+    return result
+
+
+def _with_dispatch_claim_snapshot(session: Session, task: Task, stats: dict[str, Any]) -> dict[str, Any]:
+    result = dict(stats)
+    if task.type in {"group_ai_chat", "search_join_group"}:
+        snapshot = task_dispatch_claim_snapshot(session, task)
+        if snapshot:
+            existing = result.get("dispatch_claim") if isinstance(result.get("dispatch_claim"), dict) else {}
+            result["dispatch_claim"] = {**existing, **snapshot}
+    if task.type == "search_join_group":
+        protocol = task_search_join_protocol_snapshot(session, task.id)
+        if protocol:
+            result["search_join_protocol"] = protocol
     return result
 
 

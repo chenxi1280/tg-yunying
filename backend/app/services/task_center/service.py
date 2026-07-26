@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 import hashlib
 import re
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy import and_, delete, func, or_, select, tuple_
 from sqlalchemy.exc import SQLAlchemyError
@@ -12,7 +13,7 @@ from sqlalchemy.orm import Session, object_session
 
 from app.config import get_settings
 from app.integrations.telegram import OperationResult
-from app.models import AccountPool, AccountStatus, Action, ChannelMessage, ExecutionAttempt, FailureType, MessageFingerprint, OperationIssue, OperationPlanTaskLink, OperationTarget, ReviewQueue, RuleSet, RuleSetVersion, SearchJoinPacingDecision, Task, TaskRuntimeSummary, TgAccount, TgGroup, WorkerHeartbeat
+from app.models import AccountPool, AccountStatus, Action, ChannelMessage, ExecutionAttempt, FailureType, MessageFingerprint, OperationIssue, OperationPlanTaskLink, OperationTarget, ReviewQueue, RuleSet, RuleSetVersion, SearchJoinPacingDecision, Task, TaskAccountDailyCoverage, TaskRuntimeSummary, TgAccount, TgGroup, WorkerHeartbeat
 from app.models.search_rank_deboost import AccountGroupProxyBinding, SearchRankDeboostClickReservation, SearchRankDeboostExemptGroup
 from app.search_keywords import normalized_keyword_hash, repair_legacy_keyword_materials
 from app.schemas.task_center import (
@@ -73,6 +74,7 @@ from .dispatcher import (
     dispatch_action,
     due_actions,
     mark_dispatcher_db_error,
+    release_dispatch_claim,
     recover_expired_claims,
     recover_expired_hard_hourly_actions,
     recover_hard_hourly_delivery_credits,
@@ -80,6 +82,7 @@ from .dispatcher import (
     recover_unreachable_hard_hourly_actions,
 )
 from .daily_coverage import recover_terminal_coverage_reservations
+from .daily_fulfillment import record_daily_fulfillment_decision
 from .executors import build_task_plan, channel_comment, prepare_open_actions_for_planning, requires_planning_with_open_actions
 from .search_rank_deboost_pacing import DeboostPacingStats, account_click_allowed, deboost_pacing_window, lock_rank_deboost_quota_scope
 from .search_rank_deboost_reservations import (
@@ -93,6 +96,11 @@ from .payloads import SearchRankDeboostPayload
 from .search_join_membership import (
     MEMBERSHIP_ACTION_TYPE as SEARCH_JOIN_MEMBERSHIP_ACTION_TYPE,
     rebind_membership_action_to_source_account,
+)
+from .search_join_daily_capacity import (
+    configured_capacity_window,
+    configured_account_source_capacity,
+    strict_daily_capacity,
 )
 from .rank_deboost_runtime_authorization import resolve_rank_deboost_runtime_authorization
 from .details import (
@@ -114,6 +122,7 @@ from .details import (
     _relay_batches,
     _relay_recent_sources,
     _stats_with_account_coverage,
+    _with_dispatch_claim_snapshot,
     _task_payload,
     _verification_tasks_by_group_account,
     build_task_list_payload_context,
@@ -340,6 +349,7 @@ def create_and_start_simple_search_join_group_task(
 
 
 def _new_task(session: Session, tenant_id: int, task_type: str, payload) -> Task:
+    task_id = str(uuid4())
     raw_type_config = payload.model_dump(mode="json", exclude=COMMON_CREATE_FIELDS, exclude_unset=True)
     raw_type_config = normalize_operation_target_references(session, tenant_id, task_type, raw_type_config)
     raw_type_config = apply_default_slang_config(session, tenant_id, task_type, raw_type_config)
@@ -350,7 +360,20 @@ def _new_task(session: Session, tenant_id: int, task_type: str, payload) -> Task
     pacing_config = pacing_config_payload(payload.pacing_config)
     if task_type == NORMAL_SEARCH_CLICK_TASK and type_config.get("strict_daily_target"):
         pacing_config["skip_probability_per_action"] = DAILY_TARGET_ACTION_SKIP_PROBABILITY
+    if task_type == NORMAL_SEARCH_CLICK_TASK:
+        _validate_strict_search_join_daily_capacity(
+            session,
+            tenant_id,
+            account_config=payload.account_config.model_dump(mode="json"),
+            type_config=type_config,
+            pacing_config=pacing_config,
+            timezone_name=payload.timezone,
+            scheduled_start=payload.scheduled_start,
+            scheduled_end=payload.scheduled_end,
+            task_id=task_id,
+        )
     task = Task(
+        id=task_id,
         tenant_id=tenant_id,
         name=payload.name,
         type=task_type,
@@ -621,14 +644,19 @@ def get_task_detail(session: Session, tenant_id: int, task_id: str) -> dict[str,
 
 def refresh_task_detail_stats(session: Session, tenant_id: int, task_id: str) -> dict[str, Any]:
     task = _get_task(session, tenant_id, task_id)
-    return _stats_with_account_coverage(session, task, refresh_task_stats(session, task))
+    stats = _stats_with_account_coverage(session, task, refresh_task_stats(session, task))
+    return _with_dispatch_claim_snapshot(session, task, stats)
 
 
 def _task_summary_detail(session: Session, tenant_id: int, task: Task) -> dict[str, Any]:
     task_summary = session.scalar(select(TaskRuntimeSummary).where(TaskRuntimeSummary.tenant_id == tenant_id, TaskRuntimeSummary.task_id == task.id))
     operation_plan_links = list(session.scalars(select(OperationPlanTaskLink).where(OperationPlanTaskLink.tenant_id == tenant_id, OperationPlanTaskLink.task_id == task.id)))
     membership_phase = _summary_membership_phase(session, task)
-    stats = _stats_with_account_coverage(session, task, _summary_stats(task, membership_phase))
+    stats = _with_dispatch_claim_snapshot(
+        session,
+        task,
+        _stats_with_account_coverage(session, task, _summary_stats(task, membership_phase)),
+    )
     admission_phase = membership_admission_summary(session, task)
     task_payload = _task_payload(session, task, actions=[], include_detail_search=False)
     task_payload["runtime_stage"] = derive_task_runtime_stage(task, actions=[], membership_phase=membership_phase, summary=task_summary)
@@ -1112,6 +1140,22 @@ def _validate_search_join_daily_target(
         ),
         keyword_count=_search_join_keyword_count(task, update_data),
     )
+    next_type_config = {
+        **(task.type_config or {}),
+        **update_data,
+        **({"strict_daily_target": True} if controls.get("enable_strict_daily_target") else {}),
+    }
+    _validate_strict_search_join_daily_capacity(
+        session,
+        task.tenant_id,
+        account_config=_next_search_join_account_config(session, task, controls),
+        type_config=next_type_config,
+        pacing_config=_next_search_join_pacing_config(task, controls),
+        timezone_name=task.timezone,
+        scheduled_start=task.scheduled_start,
+        scheduled_end=controls.get("scheduled_end", task.scheduled_end),
+        task_id=task.id,
+    )
 
 
 def _next_search_join_account_config(session: Session, task: Task, controls: dict[str, Any]) -> dict[str, Any]:
@@ -1127,10 +1171,18 @@ def _next_search_join_account_config(session: Session, task: Task, controls: dic
 
 def _next_search_join_pacing_config(task: Task, controls: dict[str, Any]) -> dict[str, Any]:
     fields = ("max_actions_per_day", "daily_jitter_percent", "hourly_jitter_percent", "per_account_daily_action_limit")
-    return {
+    next_config = {
         **(task.pacing_config or {}),
         **{field: controls[field] for field in fields if field in controls},
     }
+    if "quiet_hours" not in controls:
+        return next_config
+    quiet_hours = controls["quiet_hours"]
+    if quiet_hours is None:
+        next_config.pop("quiet_hours", None)
+    else:
+        next_config["quiet_hours"] = quiet_hours.model_dump(mode="json")
+    return next_config
 
 
 def _search_join_keyword_count(task: Task, update_data: dict[str, Any]) -> int:
@@ -1175,6 +1227,70 @@ def _validate_search_join_configured_daily_capacity(
             f"{target_field}={target}, candidate_accounts={len(candidates)}, "
             f"effective_per_account_daily_limit={per_account_limit}, configured_daily_capacity={capacity}"
         )
+
+
+def _validate_strict_search_join_daily_capacity(
+    session: Session,
+    tenant_id: int,
+    *,
+    account_config: dict[str, Any],
+    type_config: dict[str, Any],
+    pacing_config: dict[str, Any],
+    timezone_name: str,
+    scheduled_start: datetime | None,
+    scheduled_end: datetime | None,
+    task_id: str,
+) -> None:
+    if not type_config.get("strict_daily_target"):
+        return
+    target = type_config.get("daily_click_target_count") or type_config.get("daily_target_count")
+    if target is None:
+        return
+    capacity_window = configured_capacity_window(
+        timezone_name,
+        now_value=_now(),
+        scheduled_start=scheduled_start,
+        scheduled_end=scheduled_end,
+    )
+    if capacity_window is None:
+        raise ValueError("daily_target_capacity_insufficient: no_executable_window")
+    effective_date, day_kind, active_start, active_end = capacity_window
+    candidates = select_task_accounts(
+        session,
+        tenant_id,
+        account_config,
+        enforce_capacity=False,
+        scan_all_candidates=True,
+    )
+    config = {**type_config, **{key: value for key, value in pacing_config.items() if value is not None}}
+    account_capacity = configured_account_source_capacity(
+        config,
+        candidate_account_count=len(candidates),
+        allow_repeat=bool(type_config.get("allow_same_account_repeat_application")),
+        keyword_count=len(type_config.get("keyword_hashes") or []),
+    )
+    capacity = strict_daily_capacity(
+        task_id,
+        timezone_name,
+        config,
+        candidate_account_count=len(candidates),
+        account_source_capacity=account_capacity,
+        effective_date=effective_date,
+        capacity_day_kind=day_kind,
+        active_start=active_start,
+        active_end=active_end,
+    )
+    if int(target) <= capacity.strict_planning_capacity:
+        return
+    raise ValueError(
+        "daily_target_capacity_insufficient: "
+        f"target={int(target)}, normal_curve_capacity={capacity.normal_curve_capacity}, "
+        f"strict_hour_ceiling={capacity.strict_hour_ceiling}, "
+        f"account_source_capacity={capacity.account_source_capacity}, "
+        f"max_source_attempts={capacity.max_source_attempts}, "
+        f"strict_planning_capacity={capacity.strict_planning_capacity}, "
+        f"effective_date={capacity.effective_date}, capacity_day_kind={capacity.capacity_day_kind}"
+    )
 
 
 def _effective_search_join_account_daily_limit(
@@ -2887,6 +3003,7 @@ def _plan_due_task_batch(
             return processed, 0, open_actions_are_future, current_global_pending
         session.info[PLANNER_GLOBAL_PENDING_SESSION_KEY] = current_global_pending
         if _planning_backlog_blocked(session, task):
+            _record_planner_backlog_daily_fulfillment(session, task)
             session.commit()
             return processed, 0, False, current_global_pending
         planned = build_task_plan(session, task)
@@ -3076,6 +3193,35 @@ def _planning_backlog_blocked(session: Session, task: Task) -> bool:
     return True
 
 
+def _record_planner_backlog_daily_fulfillment(session: Session, task: Task) -> None:
+    config = task.type_config if isinstance(task.type_config, dict) else {}
+    if task.type != "group_ai_chat" or config.get("account_coverage_mode") != "all_accounts_daily":
+        return
+    timestamp = _now()
+    next_decision_at = task.next_run_at or timestamp
+    rows = session.scalars(
+        select(TaskAccountDailyCoverage).where(
+            TaskAccountDailyCoverage.task_id == task.id,
+            TaskAccountDailyCoverage.coverage_date == timestamp.date(),
+            TaskAccountDailyCoverage.state == "ready",
+            TaskAccountDailyCoverage.confirmed_count < TaskAccountDailyCoverage.target_count,
+        )
+    )
+    for row in rows:
+        row.blocker_code = "planner_capacity_insufficient"
+        row.blocker_stage = "planning"
+        row.blocker_detail = "Planner 待执行队列达到上限，尚未创建新的覆盖 Action"
+        row.recovery_path = "planner_backlog_recheck"
+        row.next_decision_at = next_decision_at
+        row.updated_at = timestamp
+    record_daily_fulfillment_decision(
+        session,
+        task,
+        reason="planner_capacity_insufficient",
+        now=timestamp,
+    )
+
+
 def _hard_hourly_deficit_bypasses_backlog(session: Session, task: Task, now_value: datetime) -> bool:
     progress = hard_hourly_current_progress(session, task, now_value)
     return bool(progress.get("enabled")) and int(progress.get("deficit") or 0) > 0
@@ -3217,6 +3363,7 @@ def _recover_claimed_stale_action(
     if recovered is None:
         _mark_stale_executing_action(action=action, task=task, latest_attempt=latest_attempt, stale_worker_ids=stale_worker_ids, now=now)
         recovered = 1
+    release_dispatch_claim(session, action)
     release_recovery_claim(action, claim)
     session.commit()
     return recovered

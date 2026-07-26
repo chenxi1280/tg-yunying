@@ -1504,11 +1504,15 @@ class TaskAccountCoverageItemOut(BaseModel):
     confirmed_count: int
     state: str
     blocker_code: str = ""
+    blocker_stage: str = ""
     blocker_detail: str = ""
     reserved_action_id: str | None = None
+    last_action_id: str | None = None
     last_success_action_id: str | None = None
     last_remote_message_id: str = ""
     next_eligible_at: datetime | None = None
+    next_decision_at: datetime | None = None
+    recovery_path: str = ""
     targeted_at: datetime
     completed_at: datetime | None = None
 

@@ -154,6 +154,8 @@ def _ledger_summary_payload(
     task: Task,
     rows: list[TaskAccountDailyCoverage],
 ) -> dict[str, object]:
+    from .daily_fulfillment import daily_fulfillment_detail
+
     target_messages = sum(row.target_count for row in rows)
     confirmed_messages = sum(min(row.target_count, row.confirmed_count) for row in rows)
     covered = sum(1 for row in rows if row.confirmed_count >= row.target_count)
@@ -166,6 +168,12 @@ def _ledger_summary_payload(
     offline_blockers = {
         "account_offline", "session_expired", "session_invalid", "session_missing", "need_relogin",
     }
+    fulfillment = daily_fulfillment_detail(
+        session,
+        task.tenant_id,
+        task.id,
+        coverage_date=_now().date(),
+    )
     return {
         "mode": "all_accounts_daily",
         "covered_count": covered,
@@ -198,6 +206,7 @@ def _ledger_summary_payload(
         "required_hourly_rate": (remaining_messages + active_hours - 1) // active_hours,
         "estimated_completion_window": _coverage_estimated_window(task, remaining_messages),
         "pending_accounts": _ledger_pending_accounts(session, rows),
+        "daily_fulfillment": fulfillment,
     }
 
 
@@ -300,11 +309,15 @@ def _coverage_item_payload(row: TaskAccountDailyCoverage, account: TgAccount) ->
         "confirmed_count": row.confirmed_count,
         "state": row.state,
         "blocker_code": row.blocker_code,
+        "blocker_stage": row.blocker_stage,
         "blocker_detail": row.blocker_detail,
         "reserved_action_id": row.reserved_action_id,
+        "last_action_id": row.last_action_id,
         "last_success_action_id": row.last_success_action_id,
         "last_remote_message_id": row.last_remote_message_id,
         "next_eligible_at": row.next_eligible_at,
+        "next_decision_at": row.next_decision_at,
+        "recovery_path": row.recovery_path,
         "targeted_at": row.targeted_at,
         "completed_at": row.completed_at,
     }

@@ -3,7 +3,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Action, AiGroupMessageMemory, TgGroup
+from app.models import Action, AiCoverageVariationIntent, AiGenerationContractAudit, AiGroupMessageMemory, TgGroup
 from app.services._common import _now
 from app.services.content_filters import filter_outbound_content
 from app.services.material_rules import MaterialRuleResult, select_material_for_policy
@@ -17,6 +17,7 @@ from .ai_message_memory import (
     reserve_group_ai_message,
 )
 from .daily_coverage import release_coverage_reservation
+from .daily_coverage import block_generation_contract_coverage
 from .payloads import SendMessagePayload
 from .policies import validate_group_send_policy
 
@@ -44,14 +45,31 @@ def fail_generation_batch(
     code: str,
     *,
     detail: str,
+    mapping_error: Exception | None = None,
 ) -> None:
+    is_contract_failure = code in _GENERATION_CONTRACT_CODES
+    if is_contract_failure:
+        _record_generation_contract_audit(session, request, code, detail, mapping_error)
     with session.no_autoflush:
         for action, _payload in load_generation_batch(session, request):
-            fail_generation_action(action, code, detail, stage="ai_generation")
+            fail_generation_action(
+                action,
+                code,
+                detail,
+                stage="generation_contract" if is_contract_failure else "ai_generation",
+                generation_contract=is_contract_failure,
+            )
             commit_generation_action(session, request, action)
 
 
-def fail_generation_action(action: Action, code: str, detail: str, *, stage: str) -> None:
+def fail_generation_action(
+    action: Action,
+    code: str,
+    detail: str,
+    *,
+    stage: str,
+    generation_contract: bool = False,
+) -> None:
     data = dict(action.payload or {})
     data["ai_generation_status"] = code
     action.payload = data
@@ -68,7 +86,13 @@ def fail_generation_action(action: Action, code: str, detail: str, *, stage: str
         "generation_outcome": code,
         "generation_category": _generation_category(code, stage),
     }
-    _release_action_coverage(action, data, code=code, detail=detail)
+    _release_action_coverage(
+        action,
+        data,
+        code=code,
+        detail=detail,
+        generation_contract=generation_contract,
+    )
 
 
 def _generation_category(code: str, stage: str) -> str:
@@ -233,18 +257,89 @@ def _release_action_coverage(
     *,
     code: str,
     detail: str,
+    generation_contract: bool = False,
 ) -> None:
     coverage_id = str(data.get("coverage_ledger_id") or "")
     session = action._sa_instance_state.session
     if not coverage_id or session is None:
         return
-    release_coverage_reservation(
-        session,
-        coverage_id,
-        action.id,
-        blocker_code=code,
-        blocker_detail=detail,
-    )
+    _record_variation_outcome(session, action, code)
+    if generation_contract:
+        block_generation_contract_coverage(
+            session,
+            coverage_id,
+            action.id,
+            blocker_code=code,
+            blocker_detail=detail,
+        )
+        return
+    release_coverage_reservation(session, coverage_id, action.id, blocker_code=code, blocker_detail=detail)
+
+
+def _record_variation_outcome(session: Session, action: Action, code: str) -> None:
+    if code != "duplicate_message":
+        return
+    intent = session.scalar(select(AiCoverageVariationIntent).where(
+        AiCoverageVariationIntent.action_id == action.id,
+    ))
+    if intent is not None:
+        intent.outcome = "quality_rejected"
+
+
+_GENERATION_CONTRACT_CODES = frozenset({
+    "ai_generation_output_count_mismatch",
+    "ai_generation_slot_mapping_invalid",
+    "ai_generation_slot_mapping_mismatch",
+    "ai_generation_output_sequence_duplicate",
+    "ai_generation_output_sequence_mismatch",
+    "ai_generation_reply_sequence_mismatch",
+    "ai_generation_reply_sequence_unexpected",
+    "ai_generation_output_empty",
+})
+
+
+def _record_generation_contract_audit(
+    session: Session,
+    request,
+    code: str,
+    detail: str,
+    mapping_error: Exception | None,
+) -> None:
+    attempt_id = str(getattr(request, "attempt_id", "") or "")
+    if not attempt_id:
+        return
+    existing = session.scalar(select(AiGenerationContractAudit).where(
+        AiGenerationContractAudit.generation_attempt_id == attempt_id,
+    ))
+    if existing is not None:
+        return
+    slots = list(getattr(request, "config", {}).get("generation_slots") or [])
+    batch_ids = list(getattr(request, "batch_ids", []) or [])
+    first_action = session.get(Action, batch_ids[0]) if batch_ids else None
+    payload = first_action.payload if first_action and isinstance(first_action.payload, dict) else {}
+    config = getattr(request, "config", {}) or {}
+    session.add(AiGenerationContractAudit(
+        tenant_id=int(getattr(request, "tenant_id", 0) or 0),
+        task_id=str(getattr(request, "task_id", "") or ""),
+        generation_attempt_id=attempt_id,
+        request_id=str(payload.get("ai_generation_request_id") or ""),
+        provider_id=str(config.get("provider_id") or config.get("provider") or ""),
+        model_id=str(config.get("actual_model") or config.get("requested_model") or ""),
+        prompt_contract_version=str(config.get("prompt_contract_version") or ""),
+        parser_version=str(config.get("parser_version") or ""),
+        expected_slot_count=len(slots),
+        received_slot_count=int(getattr(mapping_error, "received_slot_count", 0) or 0),
+        slot_summary=_contract_slot_summary(slots),
+        error_code=code,
+        restricted_response_summary=str(detail or code)[:500],
+    ))
+
+
+def _contract_slot_summary(slots: list[dict]) -> dict:
+    return {
+        "slot_ids": [str(slot.get("slot_id") or "") for slot in slots],
+        "sequence_indexes": [index for index, _slot in enumerate(slots, 1)],
+    }
 
 
 __all__ = ["fail_generation_action", "fail_generation_batch", "store_generation_quality"]

@@ -98,18 +98,90 @@ function searchJoinDetailItems(detail: TaskCenterDetail) {
   const stats = detail.task.stats?.search_join_stats || {};
   const hourly = stats.hourly_execution || {};
   const pacingLimits = stats.pacing_limits || {};
+  const dispatchClaim = detail.task.stats?.dispatch_claim;
+  const dispatchReservations = dispatchClaim?.reservations || [];
+  const protocol = detail.task.stats?.search_join_protocol;
+  const protocolTraces = protocol?.recent_traces || [];
   const targetProgress = searchClickTargetProgress(detail.task);
   const membershipProgress = searchJoinMembershipTargetProgress(detail.task);
+  const dailyFulfillment = stats.daily_fulfillment || {};
+  const capacityProofAvailable = Boolean(dailyFulfillment.effective_date || dailyFulfillment.strict_hour_ceiling != null);
+  const pacingReasons = Array.isArray(dailyFulfillment.behavior_pacing_unavailable_reasons)
+    ? dailyFulfillment.behavior_pacing_unavailable_reasons
+    : [];
   return [
     ...(targetProgress ? [{ key: 'target-progress', label: targetProgress.hasDualTarget ? '今日目标点击' : targetProgress.isDailyTarget ? '今日目标进度' : '目标进度', children: `${targetProgress.isDailyTarget ? '今日已确认' : '已确认'} ${targetProgress.confirmedCount} / ${targetProgress.targetCount}，待确认 ${targetProgress.heldCount}，剩余可规划 ${targetProgress.remainingSlotCount}` }] : []),
     ...(membershipProgress ? [{ key: 'membership-progress', label: '今日成员关系观察', children: `已观察 ${membershipProgress.confirmedCount} / ${membershipProgress.targetCount}，待确认 ${membershipProgress.heldCount}，剩余 ${membershipProgress.remainingSlotCount}` }] : []),
     { key: 'success', label: '累计目标点击', children: detail.task.stats?.success_count ?? 0 },
     { key: 'ranking', label: '排名观察', children: hourly.recent_target_positions?.length ? `${hourly.recent_target_positions.length} 条` : '独立快照，不计入 action success' },
     { key: 'hourly', label: '小时执行', children: `${hourly.status || '-'} / 缺口 ${hourly.deficit ?? 0} / 未来 ${hourly.future_open_count ?? 0}` },
+    {
+      key: 'strict-daily-outcome',
+      label: '严格日履约',
+      children: capacityProofAvailable
+        ? `${dailyFulfillment.daily_outcome || '-'}${dailyFulfillment.blocker_code ? ` / ${dailyFulfillment.blocker_code}` : ''}`
+        : '-',
+    },
+    {
+      key: 'strict-daily-progress',
+      label: '日目标确认 / 待核验 / 待规划',
+      children: capacityProofAvailable
+        ? `${dailyFulfillment.confirmed_click_count ?? 0} / ${dailyFulfillment.held_click_count ?? 0} / ${dailyFulfillment.remaining_click_slots ?? 0}`
+        : '-',
+    },
+    {
+      key: 'strict-capacity-proof',
+      label: '严格容量证明',
+      children: capacityProofAvailable
+        ? `常规 ${dailyFulfillment.normal_curve_capacity ?? 0}；小时上界 ${dailyFulfillment.strict_hour_ceiling ?? 0}；账号余量 ${dailyFulfillment.account_source_capacity ?? 0}；可尝试 ${dailyFulfillment.max_source_attempts ?? 0}；可规划 ${dailyFulfillment.strict_planning_capacity ?? 0}`
+        : '-',
+    },
+    {
+      key: 'strict-current-hour',
+      label: '当前小时 source 槽位',
+      children: capacityProofAvailable
+        ? `已占 ${dailyFulfillment.current_hour_source_occupied ?? 0}；可排 ${dailyFulfillment.current_hour_available ?? 0}；日期 ${dailyFulfillment.effective_date || '-'}`
+        : '-',
+    },
+    {
+      key: 'strict-pacing-deduction',
+      label: '节奏扣减',
+      children: capacityProofAvailable
+        ? `${dailyFulfillment.behavior_pacing_unavailable_count ?? 0}${pacingReasons.length ? `（${pacingReasons.join('、')}）` : ''}`
+        : '-',
+    },
     { key: 'daily-limit', label: '本日已规划', children: `${pacingLimits.task_daily_action_count ?? 0} / 上限 ${detail.task.pacing_config?.max_actions_per_day ?? '-'}` },
     { key: 'account-limit', label: '账号限制命中', children: `日 ${pacingLimits.per_account_daily_limit_reached ?? 0} / 总 ${pacingLimits.per_account_total_limit_reached ?? 0} / 冷却 ${pacingLimits.per_account_cooldown_days_active ?? 0}` },
     { key: 'keyword-limit', label: '关键词限制命中', children: pacingLimits.per_keyword_account_daily_limit_reached ?? 0 },
     { key: 'pacing-skip', label: 'Pacing 跳过', children: `天 ${pacingLimits.daily_skipped_by_pacing ?? 0} / 小时 ${pacingLimits.hourly_skipped_by_pacing ?? 0} / 最近 ${pacingLimits.last_limit_reason || '-'}` },
+    {
+      key: 'dispatch-claim-window',
+      label: '全局领取窗口',
+      children: dispatchClaim?.dispatcher_scope
+        ? `${dispatchClaim.dispatcher_scope}：本窗活跃 ${dispatchClaim.active_claim_count ?? 0} / ${dispatchClaim.claim_capacity ?? 0}；全局活跃 ${dispatchClaim.global_active_claim_count ?? 0} / ${dispatchClaim.global_claim_capacity ?? dispatchClaim.claim_capacity ?? 0}；待领取 ${dispatchClaim.unclaimed_allocated_count ?? 0}，epoch ${dispatchClaim.allocation_epoch ?? '-'}`
+        : '-',
+    },
+    {
+      key: 'dispatch-reservations',
+      label: '严格份额保留',
+      children: dispatchReservations.length
+        ? dispatchReservations.map((item) => `${item.claim_class}[${item.account_shard_index}/${item.account_shard_total}] 需${item.required_claims} 留${item.reserved_claims} 领${item.claimed_count} 余${item.available_claims}`).join('；')
+        : '-',
+    },
+    {
+      key: 'dispatch-capacity',
+      label: '共享调度容量',
+      children: dispatchClaim?.status === 'shared_dispatch_capacity_insufficient'
+        ? `不足：需 ${dispatchClaim.required_claims ?? 0}，可用 ${dispatchClaim.available_claims ?? 0}；未服务 ${dispatchClaim.unserved_strict_classes?.join('、') || '-'}`
+        : dispatchClaim?.invariant_ok === false ? '账本不变量异常，需立即排查' : '正常',
+    },
+    {
+      key: 'jisou-protocol',
+      label: '极搜协议轨迹',
+      children: protocol
+        ? `最新 ${protocol.latest_page_phase || '-'} / 样本 ${protocol.latest_protocol_sample_version || '-'}；${protocolTraces.map((item) => `${item.event_type}:${item.page_phase}/${item.status}`).join('；') || '暂无轨迹'}`
+        : '-',
+    },
     { key: 'link', label: '联动状态', children: stats.linked_task_status || '等待 membership_observed 后进入 ready pool 判定' },
     { key: 'membership-observed', label: '成员关系结果', children: 'membership_observed 仅表示观察到成员关系；它与目标点击独立计数，也不等同于本次新加入' },
     { key: 'target-not-found', label: '未命中处理', children: '不设固定翻页上限；只有命中目标才结束成功搜索。真实末页未命中写 target_not_in_results / no_next_page 与实际页码，当前 action 失败但任务继续规划。' },
@@ -682,6 +754,10 @@ export function TaskCenterDetailModal({
       ellipsis: true,
       render: (_, item) => item.blocker_detail || item.blocker_code || '-',
     },
+    { title: '阻塞阶段', dataIndex: 'blocker_stage', width: 130, render: (value) => value || '-' },
+    { title: '恢复路径', dataIndex: 'recovery_path', width: 180, render: (value) => value || '-' },
+    { title: '最近 Action', dataIndex: 'last_action_id', width: 130, render: (value) => value ? value.slice(0, 12) : '-' },
+    { title: '下次决策', dataIndex: 'next_decision_at', width: 170, render: (value) => formatDateTime(value) },
     { title: '远端消息 ID', dataIndex: 'last_remote_message_id', width: 150, render: (value) => value || '-' },
     { title: '完成时间', dataIndex: 'completed_at', width: 170, render: (value) => formatDateTime(value) },
   ];
@@ -732,6 +808,7 @@ export function TaskCenterDetailModal({
   const botMissingReasons = botAvailabilityReasons(telegramBotSettings);
   const showTargetTab = detail ? ['group_relay', 'channel_view', 'channel_like', 'channel_comment'].includes(detail.task.type) : false;
   const accountCoverage = detail?.task.stats?.account_coverage;
+  const dailyFulfillment = accountCoverage?.daily_fulfillment;
   const detailTabs = detail ? [
     showSearchJoinTab ? {
       key: 'search-join',
@@ -791,6 +868,20 @@ export function TaskCenterDetailModal({
               { key: 'coverage_not_ready', label: '未准入/受限', children: accountCoverage ? `${Number(accountCoverage.pending_admission_count ?? 0)} / ${Number(accountCoverage.restricted_count ?? 0)}` : '-' },
               { key: 'coverage_offline', label: '离线/Session 阻塞', children: accountCoverage ? Number(accountCoverage.offline_or_session_blocked_count ?? 0) : '-' },
               { key: 'coverage_unknown', label: '结果未知', children: accountCoverage ? Number(accountCoverage.unknown_after_send_count ?? 0) : '-' },
+              { key: 'daily_outcome', label: '当日履约状态', children: dailyFulfillment ? <Tag color={dailyFulfillment.daily_outcome === 'met' ? 'green' : dailyFulfillment.daily_outcome === 'blocked' ? 'red' : dailyFulfillment.daily_outcome === 'at_risk' ? 'orange' : 'blue'}>{dailyFulfillment.daily_outcome}</Tag> : '-' },
+              { key: 'daily_shortfall', label: '日覆盖缺口', children: dailyFulfillment ? `${dailyFulfillment.confirmed_count}/${dailyFulfillment.frozen_denominator_count}，缺口 ${dailyFulfillment.full_shortfall_count}` : '-' },
+              { key: 'daily_new', label: '待新建 / 有效预约', children: dailyFulfillment ? `${dailyFulfillment.required_new} / ${dailyFulfillment.valid_future_open_cover_count}` : '-' },
+              { key: 'daily_overdue', label: '逾期未收口', children: dailyFulfillment ? dailyFulfillment.overdue_open_count : '-' },
+              { key: 'daily_blocked', label: '阻塞 / 未知', children: dailyFulfillment ? `${dailyFulfillment.blocked_shortfall_count} / ${dailyFulfillment.unknown_hold_count}` : '-' },
+              { key: 'daily_sendable', label: '可发送容量', children: dailyFulfillment ? dailyFulfillment.sendable_capacity_count : '-' },
+              { key: 'daily_next_decision', label: '下次决策', children: dailyFulfillment?.next_decision_at ? formatDateTime(dailyFulfillment.next_decision_at) : '-' },
+              {
+                key: 'daily_contract',
+                label: '生成契约阻塞',
+                children: dailyFulfillment?.generation_contract_funnel
+                  ? `${dailyFulfillment.generation_contract_funnel.blocked_coverage_count} 条 / 审计 ${dailyFulfillment.generation_contract_funnel.audit_count}`
+                  : '-',
+              },
               {
                 key: 'coverage_capacity',
                 label: '容量证明',

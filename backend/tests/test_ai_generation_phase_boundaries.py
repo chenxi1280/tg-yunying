@@ -9,6 +9,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.database import Base
+from app.models import AiCoverageVariationIntent, AiGenerationContractAudit
 from app.services._common import _now
 from app.services.task_center import ai_generation_dispatch, ai_generation_pipeline, dispatcher
 from app.services.task_center.ai_generator import GeneratedContent
@@ -165,8 +166,13 @@ def test_invalid_normal_batch_mapping_fails_all_slots_without_gateway(monkeypatc
 
         assert [action.status for action in actions] == ["failed", "failed"]
         assert all(action.result["error_code"].startswith("ai_generation_output_") for action in actions)
-        assert [coverage.state for coverage in coverages] == ["ready", "ready"]
+        assert [coverage.state for coverage in coverages] == ["blocked", "blocked"]
         assert all(coverage.reserved_action_id is None for coverage in coverages)
+        assert all(coverage.blocker_stage == "generation_contract" for coverage in coverages)
+        assert all(coverage.recovery_path == "generation_contract_repair" for coverage in coverages)
+        audit = session.query(AiGenerationContractAudit).one()
+        assert audit.expected_slot_count == 2
+        assert audit.error_code.startswith("ai_generation_output_")
 
 
 def test_normal_batch_rejects_swapped_slot_ids_despite_correct_sequences(monkeypatch) -> None:
@@ -196,7 +202,8 @@ def test_normal_batch_rejects_swapped_slot_ids_despite_correct_sequences(monkeyp
             action.result["error_code"] == "ai_generation_slot_mapping_mismatch"
             for action in actions
         )
-        assert [coverage.state for coverage in coverages] == ["ready", "ready"]
+        assert [coverage.state for coverage in coverages] == ["blocked", "blocked"]
+        assert session.query(AiGenerationContractAudit).count() == 1
 
 
 @pytest.mark.parametrize(
@@ -239,7 +246,8 @@ def test_normal_batch_rejects_tampered_fixed_slot_binding(
             action.result["error_code"] == "ai_generation_slot_mapping_mismatch"
             for action in actions
         )
-        assert [coverage.state for coverage in coverages] == ["ready", "ready"]
+        assert [coverage.state for coverage in coverages] == ["blocked", "blocked"]
+        assert session.query(AiGenerationContractAudit).count() == 1
 
 
 def test_voice_profile_rejection_uses_explicit_daily_coverage_fallback(monkeypatch) -> None:
@@ -326,6 +334,16 @@ def test_db_duplicate_rejection_terminates_only_its_slot_and_releases_coverage(m
     observed = {"provider_calls": 0, "gateway_calls": 0}
     with Session(engine) as session:
         actions, coverages = seed_reserved_normal_batch(session, _now())
+        variation = AiCoverageVariationIntent(
+            tenant_id=1,
+            coverage_ledger_id=coverages[1].id,
+            action_id=actions[1].id,
+            content_variation_key="duplicate-variation",
+            context_version="context-v1",
+            intent_snapshot_hash="a" * 64,
+            outcome="reserved",
+        )
+        session.add(variation)
         from app.services.task_center.ai_message_memory import reserve_group_ai_message
 
         reserve_group_ai_message(
@@ -358,4 +376,5 @@ def test_db_duplicate_rejection_terminates_only_its_slot_and_releases_coverage(m
         assert coverages[0].state == "confirmed"
         assert coverages[1].state == "ready"
         assert coverages[1].reserved_action_id is None
+        assert variation.outcome == "quality_rejected"
         assert observed == {"provider_calls": 1, "gateway_calls": 1}

@@ -17,6 +17,8 @@
 
 ## 2. 背景与问题
 
+> **2026-07-26 共享 Claim 份额 supersede：** 本文 §7.4 的历史静态顺序不再单独作为严格搜索与 AI hard_hourly 共存时的实现算法。保留目标准入优先和所有安全门，但必须按 search-click-daily-fulfillment-remediation-prd.md 的 DispatchClaimReservation、当期 required_claims 与持久化轮转分配 Dispatcher 份额；任一严格任务无法获得足够份额时显式写 shared_dispatch_capacity_insufficient，不能静默饿死。
+
 当前 AI 活群存在四类会让任务长期无法收口或显示失真的问题：
 
 1. 群日限额和群冷却对所有账号共同生效，一个账号占槽后会阻断其他可用账号。

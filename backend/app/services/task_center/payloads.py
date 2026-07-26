@@ -60,6 +60,8 @@ class SendMessagePayload(BaseModel):
     coverage_account_remaining_before_action: int = 0
     coverage_reason: str = ""
     coverage_ledger_id: str = ""
+    content_variation_key: str = ""
+    content_context_version: str = ""
     topic_thread: str = ""
     topic_plan: str = ""
     intent: str = ""
@@ -285,6 +287,10 @@ class SearchJoinPayload(BaseModel):
     hourly_execution: dict[str, Any] = Field(default_factory=dict)
     linked_task_policy: list[dict[str, Any]] = Field(default_factory=list)
     runtime_environment: dict[str, Any] = Field(default_factory=dict)
+    protocol_sample_version: str = Field(default="", max_length=40)
+    approved_protocol_profile: dict[str, Any] = Field(default_factory=dict)
+    planning_slot_key: str = ""
+    jisou_recovery_kind: str = Field(default="", max_length=40)
 
     @model_validator(mode="after")
     def validate_safe_navigation(self) -> "SearchJoinPayload":
@@ -412,6 +418,7 @@ def _create_action(
     payload: BaseModel,
     *,
     flush: bool = True,
+    action_id: str | None = None,
 ) -> Action:
     payload_data = payload.model_dump(mode="json")
     plan_batch_key = _plan_batch_key(task, scheduled_at)
@@ -420,6 +427,7 @@ def _create_action(
     if existing:
         return existing
     action = Action(
+        **({"id": action_id} if action_id else {}),
         tenant_id=task.tenant_id,
         task_id=task.id,
         task_type=task.type,
@@ -487,8 +495,16 @@ def _stable_payload_for_dedupe(payload_data: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in payload_data.items() if key not in DEDUPE_VOLATILE_PAYLOAD_FIELDS}
 
 
-def create_send_action(session: Session, task: Task, account_id: int | None, scheduled_at: datetime, payload: SendMessagePayload) -> Action:
-    return _create_action(session, task, "send_message", account_id, scheduled_at, payload)
+def create_send_action(
+    session: Session,
+    task: Task,
+    account_id: int | None,
+    scheduled_at: datetime,
+    payload: SendMessagePayload,
+    *,
+    action_id: str | None = None,
+) -> Action:
+    return _create_action(session, task, "send_message", account_id, scheduled_at, payload, action_id=action_id)
 
 
 def create_delete_action(session: Session, task: Task, account_id: int | None, scheduled_at: datetime, payload: DeleteMessagePayload) -> Action:

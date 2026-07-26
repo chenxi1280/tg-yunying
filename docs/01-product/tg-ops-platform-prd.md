@@ -295,7 +295,7 @@ Planner 闸门顺序固定为：账号 / 授权槽位环境栈 -> 协议样本 -
 
 新建操作固定为“任务类型 → 目标群 → 关键词与目标次数 → 执行账号组与节奏 → 确认”。执行范围与节奏只开放账号组、每天执行次数、完成截止时间、日/小时抖动和可选静默时段。`search_join_group` 使用“创建并启动”，`search_rank_deboost` 使用“创建草稿”；二者都不得要求运营补填代理、机器人、单账号策略或其他系统配置。服务端负责检查公开 username、候选账号、代理/授权绑定、协议样本和配额，失败时返回可读 blocker 并在任务详情展示事实。
 
-找不到目标群时，`@jisou` Executor 必须先选择协议确认的“群聊 / 群组”类型，再持续翻页；固定页数不构成停止条件。只有精确公开 username 命中并完成目标点击 / 成员关系确认才结束成功搜索。机器人真实没有“下一页”仍未命中时，action 写 `target_not_in_results`、`search_end_reason=no_next_page` 和实际 `searched_pages/last_result_page`，但任务保持 `running` 供后续计划重试；群聊 selector 缺失写 `jisou_group_selector_missing`，不得回退到综合结果。非目标安全浏览只允许 `navigate_only`，总量默认不超过 3，不加入、不关注、不外跳。
+找不到目标群时，`@jisou` Executor 必须先以当前已审批、版本化的 `BotProtocolSample.page_fingerprints` 分类关键词响应，再选择协议确认的“群聊 / 群组”类型并持续翻页；固定页数不构成停止条件。分类优先级固定为验证页、热搜页、搜索分类页、群聊结果页、未知页。旧版只有 `buttons` 摘要的样本或 Action 缺冻结 profile 时，Planner / Dispatcher 必须写 `protocol_sample_invalid` 并在 Gateway 前停手；不得用硬编码文案猜测。热搜页只允许一次可审计会话重置，未知页零点击，只有已确认搜索分类页缺少已审批 selector 才写 `jisou_group_selector_missing`。结果 trace 只能保留 hash、长度、按钮类型/effect、审批匹配标记和版本，禁止持久化机器人正文、按钮原文、目标群名或目标行。只有精确公开 username 命中并完成目标点击 / 成员关系确认才结束成功搜索。机器人真实没有“下一页”仍未命中时，action 写 `target_not_in_results`、`search_end_reason=no_next_page` 和实际 `searched_pages/last_result_page`，但任务保持 `running` 供后续计划重试。非目标安全浏览只允许当前样本批准的 `navigate_only`，总量默认不超过 3，不加入、不关注、不外跳。
 
 `search_join_group` 的实时 pacing、random decision、账号是否执行、目标是否点击、是否跳过和是否重排都不得调用 LLM。LLM 只允许用于离线配置建议、关键词生成、目标相关性解释和复盘分析；这些 LLM 输出必须作为建议或解释进入人工可见页面，不能直接替代 Planner / Executor 决策。
 
@@ -553,6 +553,17 @@ Planner 闸门顺序固定为：账号 / 授权槽位环境栈 -> 协议样本 -
 - 保持公共 15 秒 timeout、请求序号、权限 / 租户隔离和错误可见性；本轮无迁移、无 worker 行为变化，发布失败或指标不达标时按代码版本回滚，不实现静默旧接口 fallback。
 
 ---
+
+### 2.18 2026-07-26 AI 活群与搜索点击每日履约修复方向
+
+生产核验确认：AI 活群和搜索目标群点击都不能以 worker 健康、Action 创建、pending 数量或局部 stats 替代日目标完成。两类任务均以任务时区自然日内的远端事实为准，并保留完整目标分母与原始 blocker。
+
+- AI 活群：全部账号冻结分母不得因 cannot_send、membership_permission_denied、内容重复、批量生成契约失败或等待审批而缩小。daily fulfillment 必须把 full_shortfall、valid_future_open_cover、unknown_hold、blocked_shortfall 与 required_new 分开审计；内容重复才允许新的内容变体重新规划。批量生成契约失败必须写入受限审计、释放本 Action reservation 并阻塞该覆盖行，不能自动伪装成新的 variation 或用签到绕过质量门。
+- 搜索点击：每日点击目标必须通过常规曲线、严格小时上界、账号可用 source 槽位、任务日预算和已配置行为节奏的五重校验。`max_source_attempts` 只是最多真实 source 尝试数，不能替代 target_click_observed；严格 Planner 不得忽略 skip 决策。创建/编辑按首个完整日校验，运行中按当天剩余窗口重算，日结论按 Task.timezone + local_date 独立保存。
+- 共用 Dispatcher：目标准入仍优先；严格搜索 child/source 与 AI hard_hourly 必须先在真实 dispatcher scope 的 `DispatchClaimScope` 内核算跨 Window active capacity，再经当前 `DispatchClaimWindow`、`DispatchClaimShardAllocation` 授予 account shard，最后按当前 required claims 分配 Reservation。scope capacity 来自有效并发和 active claims，不能由每个 worker 或 shard 各自估计；任一严格任务无法获得足够份额时必须显示 shared_dispatch_capacity_insufficient，不能让固定排序长期饿死另一方或重复超配。
+- 极搜：必须先按版本化协议样本识别页面相位；热搜排行榜、验证页、未知页和正确分类页缺 selector 是不同错误。仅经批准且以 action 级 CAS 账本保证一次性的同机器人重置序列可以恢复会话；未知 button、外链和未审样本不得自动点击，原始机器人文本不得写入 trace。
+
+专项真相源为 docs/03-feature-designs/ai-group-daily-fulfillment-remediation-prd.md 与 docs/03-feature-designs/search-click-daily-fulfillment-remediation-prd.md。两份文档只代表设计完成，代码、迁移、发布与完整自然日生产证据仍须分别验收。
 
 ## 3. 模块 PRD
 
@@ -1878,6 +1889,19 @@ AI 活跃群仍然以当前任务的目标群上下文为事实来源，画像�
 - TG bot 是轻量运营入口。管理员在 bot 内可以选择 AI 活跃群任务、查看当前设置摘要、查看话题 / 讨论老师摘要，并通过按钮分别设置“话题方向”和“讨论老师”；Bot 设置只接受每行一个的多行文本，按顺序生成权重 / 优先级。引用、轮换、群管机器人准入、全账号日覆盖参数、规则集、账号策略等完整配置仍必须到 Web 任务详情编辑。`/ai_group_set <json>` 这类手写配置入口不得作为主入口，旧命令必须返回可见说明。`/start` 和 `/admin` 都必须返回可见菜单或状态说明，不能静默无响应。
 - 旧 `topic_hint` 不再作为 AI 活群 UI、API 或运行时配置字段保留；发布迁移必须把旧值写入 `topic_directions` 并移除旧字段，运行时不得再从 `topic_hint` 回退，避免同一任务出现两套话题来源。频道评论任务的 `topic_hint` 是独立字段，不受 AI 活群迁移影响。
 - TG bot 入站必须通过租户级 webhook secret 路由到对应运营空间，不能依赖 Telegram update 体内携带业务 `tenant_id`。Chat ID 不在管理员列表、未启用 AI 活群 Bot 设置、任务不存在或配置非法时必须给用户可见拒绝 / 状态说明并记录审计；未启用 AI 活群时仍应回复“bot 已连接但 AI 活群设置未启用”，不得表现为无回复。
+
+### 任务日目标履约与共用 Dispatcher 仲裁
+
+当任务配置了全部账号每日履约、严格每日点击或每日成员关系目标时，任务中心必须展示“目标是否可达”和“为何未达”两个独立维度：
+
+| 维度 | AI 活群 | 搜索目标群点击 |
+| --- | --- | --- |
+| 冻结目标 | 当日任务 × 群 × 账号覆盖分母 | 当日点击目标与成员关系目标 |
+| 成功事实 | success Action + success ExecutionAttempt + remote_message_id | target_click_observed / target_found_at 与 membership_observed / membership_observed_at 分别统计 |
+| 不可达 | 权限、入群审批、目标引用、账号/时间容量或未知发送阻塞 | 日预算、小时/静默容量、账号 source 槽位、Dispatcher 份额、协议或成员审批阻塞 |
+| 禁止 | 缩分母、质量门绕过、Action 创建即成功 | pending/申请待审批算成功、未知页面点击、临时 drain 算修复 |
+
+严格搜索与 AI hard_hourly 共用 Dispatcher 时，系统必须先在真实 scope 的 `DispatchClaimScope` 内持久化跨 Window active ledger，再在当前 `DispatchClaimWindow` 内以 `DispatchClaimShardAllocation` 授予 shard 并创建 Reservation，最后领取 Action。任务详情需显示 scope 与 Window capacity、全局和 shard 的 active/unclaimed allocation、每类 required/reserved/claimed、allocation epoch、未服务原因和 shared_dispatch_capacity_insufficient；静态优先级不能单独作为完成保证，Reservation 也不等同 Telegram 远端成功。
 
 ### 任务列表
 
@@ -3523,8 +3547,10 @@ AI 活跃群 Planner 需要额外满足：
 
 搜索目标群点击任务的创建与 Planner 需要额外满足：
 
-- `search_join_group` 新建及专用编辑 API 接收：目标群（`target_title` + `target_link`）、搜索关键词、每日目标点击数 `daily_click_target_count`、每日成员关系观察目标 `daily_target_count`、显式的 `allow_same_account_repeat_application`、单个普通 `account_group_id`、任务每日 source action 基础预算 `max_actions_per_day`、完成截止时间 `scheduled_end`、日/小时抖动 `daily_jitter_percent` / `hourly_jitter_percent` 与可选 `quiet_hours`。存量任务的专用编辑还可受控调整 `actions_per_round`（1..20）、`max_actions_per_hour`（1..500）和 `hourly_min_successful_joins`（1..500），用于把已配置的每日点击目标在真实剩余时段内排程；新建页不暴露这些运行时容量字段。`daily_click_target_count` 按 source `search_join` 的精确目标命中与 `target_found_at` 计数；`daily_target_count` 只按真实 `membership_observed_at` 的本地日期计数，二者绝不互相替代或把 pending/失败伪装为成功。source 命中目标后必须创建唯一 `search_join_membership` 准入子 action；子 action 继承 source 的授权槽位、开发者应用、代理绑定和客户端 metadata，禁止回退账号主 session。source 在 claim 前和 Gateway 前都必须恢复 payload 授权槽位所属账号，且不能因全局账号容量转派；申请待审批时，若本租户已配置该目标群的救援管理员，可由管理员以自身 session 审批，再立即用 source 授权槽位复核成员关系；审批成功本身不能计入成员关系完成。否则同一 source 的子 action只做成员复核，不重复提交。启用 `allow_same_account_repeat_application=true` 后，不再用该账号的未决申请、账号日限额或关键词日限额阻止新的 source；每条新 source 仍各自创建唯一 child 并记录 Telegram 的真实申请结果。点击进度写 `stats.search_click_target`，成员关系进度写 `stats.search_join_membership_target`；当天点击目标达成后停止创建新的 source，但既有 child 继续收口，次日按新的自然日重新计算。跨日仍未进入 Gateway 的 source（`pending` / `claiming` / `executing`）是当日点击槽位和 source 基础预算的 carryover，不能既忽略它又额外创建同等数量的新 source。严格每日目标未满时，source 领取排在既有目标准入重试、AI 硬目标和已命中 child 之后、普通批量 action 之前；仅当全局和任务积压硬上限均未触发时，可越过“最旧 pending 年龄”软阻塞补足受剩余槽位约束的计划。严格目标在当天已有 `success` 或 `failed` source 未写 `target_click_observed/target_found_at` 时，每条未命中 source 都使 effective source budget 增加一条 replacement；`pending` / `claiming` / `executing` / `unknown_after_send` 始终占槽位、不会重复补量。replacement 同样受截止时间、静默、账号/授权槽位绑定、全局容量和 Gateway 风控限制，不能伪造真实 Telegram 点击或成员关系结果。`max_actions_per_day` 是 source 基础预算，必须不小于 `daily_click_target_count`（旧任务没有该字段时继续按历史 `daily_target_count` 校验）；完成只由 `scheduled_end` 或运营显式停止触发。每日任务因旧 `scheduled_end` 进入 `completed` 后，运营将截止时间改为未来时必须重新入队，避免既不能继续当天补量、也不能在次日重新计算每日目标。
-- 严格每日点击目标的到期领取顺序以完成目标为准：先处理既有 `target_admission_retry`，再处理 `search_join_membership` child 与严格 `search_join` source，随后才处理 AI 硬小时 action 和普通批量 action。这样持续补入的 AI 硬目标不能饿死已到期的搜索点击或成员关系复核；账号、代理、授权槽位、静默时段、截止时间和 Gateway 风控边界不变。
+- `search_join_group` 新建及专用编辑 API 接收：目标群（`target_title` + `target_link`）、搜索关键词、每日目标点击数 `daily_click_target_count`、每日成员关系观察目标 `daily_target_count`、显式的 `allow_same_account_repeat_application`、单个普通 `account_group_id`、任务每日 source action 基础预算 `max_actions_per_day`、完成截止时间 `scheduled_end`、日/小时抖动 `daily_jitter_percent` / `hourly_jitter_percent` 与可选 `quiet_hours`。存量任务的专用编辑还可受控调整 `actions_per_round`（1..20）、`max_actions_per_hour`（1..500）和 `hourly_min_successful_joins`（1..500），用于把已配置的每日点击目标在真实剩余时段内排程；新建页不暴露这些运行时容量字段。`daily_click_target_count` 按 source `search_join` 的精确目标命中与 `target_found_at` 计数；`daily_target_count` 只按真实 `membership_observed_at` 的本地日期计数，二者绝不互相替代或把 pending/失败伪装为成功。source 命中目标后必须创建唯一 `search_join_membership` 准入子 action；子 action 继承 source 的授权槽位、开发者应用、代理绑定和客户端 metadata，禁止回退账号主 session。source 在 claim 前和 Gateway 前都必须恢复 payload 授权槽位所属账号，且不能因全局账号容量转派；申请待审批时，若本租户已配置该目标群的救援管理员，可由管理员以自身 session 审批，再立即用 source 授权槽位复核成员关系；审批成功本身不能计入成员关系完成。否则同一 source 的子 action只做成员复核，不重复提交。启用 `allow_same_account_repeat_application=true` 后，不再用该账号的未决申请、账号日限额或关键词日限额阻止新的 source；每条新 source 仍各自创建唯一 child 并记录 Telegram 的真实申请结果。点击进度写 `stats.search_click_target`，成员关系进度写 `stats.search_join_membership_target`；当天点击目标达成后停止创建新的 source，但既有 child 继续收口，次日按新的自然日重新计算。跨日仍未进入 Gateway 的 source（`pending` / `claiming` / `executing`）是当日点击槽位和 source 基础预算的 carryover，不能既忽略它又额外创建同等数量的新 source。严格每日目标未满时，`target_admission_retry` 与已点击 child 保留不可替代优先级；严格 source 与 AI hard-hourly 由 `DispatchClaimScope -> DispatchClaimWindow -> DispatchClaimShardAllocation -> DispatchClaimReservation` 的需求/urgency 份额决定领取，普通批量只能使用剩余容量。仅当全局和任务积压硬上限均未触发时，可越过“最旧 pending 年龄”软阻塞补足受剩余槽位约束的计划。严格目标在当天已有 `success` 或 `failed` source 未写 `target_click_observed/target_found_at` 时，每条未命中 source 都使 effective source budget 增加一条 replacement；`pending` / `claiming` / `executing` / `unknown_after_send` 始终占槽位、不会重复补量。replacement 同样受截止时间、静默、账号/授权槽位绑定、全局容量和 Gateway 风控限制，不能伪造真实 Telegram 点击或成员关系结果。`max_actions_per_day` 是 source 基础预算，必须不小于 `daily_click_target_count`（旧任务没有该字段时继续按历史 `daily_target_count` 校验）；完成只由 `scheduled_end` 或运营显式停止触发。每日任务因旧 `scheduled_end` 进入 `completed` 后，运营将截止时间改为未来时必须重新入队，避免既不能继续当天补量、也不能在次日重新计算每日目标。
+- 本节此前出现的“AI 硬目标在严格 source 之前”的历史固定排序，以本条 Claim Window 合同为准覆盖；历史描述仅说明旧版本行为，不得用于实现或验收。
+- 严格每日点击目标不得再依赖固定 SQL 排序。Dispatcher 先在真实共享 scope 的 `DispatchClaimScope` 中 reconcile 跨 Window 的 executing active claim，再在当前 `DispatchClaimWindow` 内保留不可替代的 `target_admission_retry`、已点击的 `search_join_membership` child；严格 `search_join` source 与 AI hard_hourly 按当期需求/urgency 获得各自 Reservation，普通批量只能使用剩余份额。容量不足写 `shared_dispatch_capacity_insufficient`，而不是让任一类别静默吞掉全部 slot；账号、代理、授权槽位、静默时段、截止时间和 Gateway 风控边界不变。
+- `strict_daily_target=true` 的搜索容量证明必须从每个任务时区小时的 `max_actions_per_hour` 中扣除 carry、claim 与 Gateway source，占用与行为跳过使用相同 task ID、`strict_capacity_action_key` 和 `planning_slot_key`。`strict_planning_capacity` 小于剩余点击目标时写 `daily_target_capacity_insufficient`；严格追赶按剩余目标/剩余可执行小时规划，不得受普通 `actions_per_round` 上限截断。
 - `search_rank_deboost` 继续接收生命周期 `target_count`：它是任务生命周期的已确认成功数，达到目标后写 `completed + target_count_reached`；其 `max_actions_per_day` 仍是自然日 action 预算。已有 `search_join_group.target_count` 任务保留历史生命周期语义，未设置两种目标字段的历史任务保持原行为。普通搜索只能选择启用的普通账号组；搜索排名观察只能选择启用的 `pool_purpose=rank_deboost` 黑账号组。代理、机器人、授权环境、单账号安全上限、停留、重试和风险参数继续由系统托管，调用方传入这些系统字段必须显式拒绝。
 - `scheduled_end` 是真实停止边界：到期后任务停止规划和派发；尚未进入 Gateway 的当前、pending 或 claiming action 写 `scheduled_end_reached`，黑搜索同时释放 `reserved` reservation；Gateway 已开始的 action 保留真实结果状态，绝不伪造成功。任务状态也是 Gateway 前硬约束：任务在执行过程中变为非 `running`（包括暂停、停止、草稿、完成或已删除）时，最终守卫必须写 `task_not_active` 并禁止真实 Telegram 调用，黑搜索同时释放尚未进入 Gateway 的 reservation。`quiet_hours` 按任务时区判断，Planner 不创建 action，`next_run_at` 跳到静默结束之后，Dispatcher 和紧邻 Gateway 的最后一道守卫都会再次阻止新的 Telegram 调用。日抖动在任务时区剩余自然日内分散未来 action，小时抖动只在其选中本地小时内延后；二者不能突破任务日上限、任务小时上限、截止时间、静默窗口或既有账号/关键词配额。
 
@@ -3543,6 +3569,8 @@ AI 活跃群 Planner 需要额外满足：
 - 用稳定 `action_dedupe_key` 防止同账号同日对同机器人、同关键词、同目标群重复规划超过阈值。
 - action payload / result / stats / worker 日志不得保存关键词明文，统一使用 `keyword_hash` 和必要的加密展示字段。
 - search_join 的强度解释独立于 AI 活跃群小时轮数和频道动作预算，默认受单账号每日、单授权槽位每日、单关键词每日、单 IP 每日和跨账号同关键词并发限制共同约束。
+
+> **2026-07-26 每日履约覆盖规则：** Dispatcher 的通用 claim、执行和回写流程同时服务 AI 活群与严格搜索任务时，必须先读取真实 dispatcher scope 的全局 `DispatchClaimScope`，按全部 `executing + dispatch_claim_active` Action reconcile active ledger，再读取对应当前 `DispatchClaimWindow`、`DispatchClaimShardAllocation` 和其中的 `DispatchClaimReservation`。已绑定的 target admission 先处理；search_join_membership child 优先于新的严格 source；严格 source 与 AI hard_hourly 只领取各自在当前 epoch 尚未消耗的份额。scope capacity 由有效并发和跨 Window active claims 决定，任一 worker 或 shard 都不得重复预留；无法满足总需求时必须写 shared_dispatch_capacity_insufficient。不得用 Action 的静态排序、worker 心跳或 claim 成功替代远端业务成功。
 
 ### 5.3 Dispatcher 执行要求
 
@@ -3574,7 +3602,7 @@ DB 短事务确认执行
 - 同一账号默认只能有一个 executing action。
 - Dispatcher 单轮预领取量不得大于该 worker 的实际执行并发，避免批次尾部在资源确认前超过 `claim_expires_at`；worker 命令的 drain limit 大于实际并发时，只表示后续轮次继续处理，不得一次占住全部 action。
 - 同一次 claim 中共用 AI generation claim token 的 normal pending `send_message` 属于一个共享生成批次。该 claim 批次必须由单一入口按领取顺序推进批量生成、Phase C 和后续 sibling 发送，不能把每个空文本 sibling 同时交给线程池并发加载、更新重叠 Action 集合；这个串行边界只消除同批生成写冲突，不得截断最终应处理 Action，也不得成为账号或任务准入上限。不共享生成批次的 Action 继续按 Dispatcher 实际并发执行。
-- AI 活跃群每小时硬目标排序保持最高；其余同 Task priority 的到期动作中，`channel_comment` 任务的目标准入和 `post_comment` 必须先于普通批量点赞 / 浏览动作领取，避免频道评论链路被批量积压长期饥饿。已命中搜索目标的 `search_join_membership` child 属于准入收口，不得被普通 AI 活群批量 action 长期饿死：在既有目标准入重试和 AI 硬目标之后、普通批量 action 之前领取；仍必须通过原账号、授权槽位、账号限流、权限和 Telegram Gateway 校验。
+- AI 活跃群每小时硬目标、严格搜索 source 与已点击 `search_join_membership` child 的容量仲裁以 `DispatchClaimScope` 跨 Window active ledger + 当前 `DispatchClaimWindow` / shard Allocation / Reservation 为准，不再以“硬小时永远最高”的固定排序决定领取。`target_admission_retry` 与已点击 child 保留不可替代优先级；严格 source 和 hard-hourly 均须有可审计份额，普通批量、`channel_comment` 的既有任务优先级只在严格份额后的剩余容量中生效。所有 Action 仍必须通过原账号、授权槽位、账号限流、权限和 Telegram Gateway 校验。
 - 进入 Gateway 调用边界后结果未知，必须标记 `unknown_after_send`，不能自动重发。
 - FloodWait、SlowMode、账号受限、代理异常、目标权限不足和内容拦截必须分类。
 - Dispatcher 不负责选择引用对象，也不负责把普通消息升级为引用回复。它只读取 action payload 中的 `reply_to_message_id`，并把该值传给 Telegram Gateway 的原生 `reply_to` / 评论回复参数。

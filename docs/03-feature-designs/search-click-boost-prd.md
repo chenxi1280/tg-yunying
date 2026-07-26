@@ -1,5 +1,7 @@
 # 搜索目标群点击任务（目标机器人 / SOSO 等第三方索引机器人）专项 PRD
 
+> **2026-07-26 每日履约修复 supersede：** 严格日目标的容量证明、AI hard_hourly 共用 Dispatcher 的 claim reservation、极搜 page_phase 与会话重置、以及 source/ExecutionAttempt 事实链，以 docs/03-feature-designs/search-click-daily-fulfillment-remediation-prd.md 为增量真相源。该文档替代旧文中相互冲突的严格搜索与 AI hard-hourly 固定排序表述；不会放宽账号、代理、协议或 Telegram 风控。
+
 ## 1. 背景
 
 tg-yunying 当前任务中心已支持 5 类主任务：`group_ai_chat`、`group_relay`、`channel_view`、`channel_like`、`channel_comment`。这些任务主要围绕 Telegram 内的群聊、频道和内容互动展开。

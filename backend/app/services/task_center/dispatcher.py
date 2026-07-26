@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 import os
 import re
 import socket
@@ -20,6 +20,7 @@ from app.models import AccountStatus, Action, ChannelMessage, ExecutionAttempt, 
 from app.models import AccountEnvironmentBinding, AccountProxy, AccountProxyBinding, TelegramDeveloperApp, TgAccountAuthorization
 from app.search_keywords import normalized_keyword_hash
 from app.security import decrypt_secret
+from app.search_join_protocol import is_jisou_bot, protocol_profile_is_approved
 from app.services._common import _now, audit, gateway
 from app.services.account_usage_policy import assert_account_action_allowed
 from app.services.account_online_state import is_account_online_ready
@@ -66,6 +67,13 @@ from .coverage_capacity import (
     hard_hourly_group_cooldown_proof,
 )
 from .daily_coverage import confirm_coverage_from_attempt, ensure_task_daily_coverage, mark_coverage_unknown, release_coverage_reservation
+from .dispatch_reservations import (
+    DispatchClaimBinding,
+    confirm_dispatch_claim,
+    dispatcher_claim_capacity,
+    plan_dispatch_claims,
+    release_dispatch_claim,
+)
 from .executors.common import quantity_jitter_bounds
 from .executors.channel_comment_budget import (
     resolved_total_comment_limit as _resolved_total_comment_limit,
@@ -78,6 +86,7 @@ from .pacing import quiet_hours_active
 from .policies import validate_group_send_policy
 from .review import has_pending_review
 from .search_join_linking import create_linked_dispatch_if_membership_observed
+from .search_join_protocol import begin_hot_list_reset, record_search_join_protocol_trace, schedule_hot_list_reset
 from .search_join_membership import (
     MEMBERSHIP_ACTION_TYPE as SEARCH_JOIN_MEMBERSHIP_ACTION_TYPE,
     create_membership_child,
@@ -222,6 +231,7 @@ class SearchJoinMembershipDispatchContext:
     payload: SearchJoinMembershipPayload
     source: Action
     runtime_authorization: SearchJoinRuntimeAuthorization
+    attempt: ExecutionAttempt
 
 RECENT_REQUIRED_CHANNEL_PROMPT_LIMIT = 25
 RECENT_REQUIRED_CHANNEL_PROMPT_LOOKBACK_HOURS = 6
@@ -327,6 +337,7 @@ class ActionClaimBatch:
     action_ids: tuple[str, ...]
     owner: str
     token: str
+    reservation_bindings: Mapping[str, DispatchClaimBinding]
 
 
 @dataclass(frozen=True)
@@ -386,6 +397,7 @@ def dispatch_action(
         )
     finally:
         _release_runtime_resources(action)
+        release_dispatch_claim(session, action)
         _sync_action_coverage_state(session, action)
         _sync_all_account_membership_state(session, action)
         _sync_search_click_target_progress(session, action)
@@ -558,8 +570,10 @@ def mark_dispatcher_db_error(session: Session, action_id: str, detail: str) -> b
         return False
     if _latest_open_gateway_attempt(session, action):
         _mark_unknown_after_send(session, action, detail)
+        release_dispatch_claim(session, action)
         return True
     _release_dispatcher_db_error(action, detail)
+    release_dispatch_claim(session, action)
     return True
 
 
@@ -691,53 +705,77 @@ def due_actions(session: Session, limit: int = 100, *, exclude_task_ids: set[str
 
 def claim_actions(session: Session, limit: int = 100, *, exclude_task_ids: set[str] | None = None, worker_id: str | None = None) -> list[Action]:
     """Claim actions in two short database stages."""
-
     settings = get_settings()
-    configured_limit = _setting(settings, "action_claim_limit", 100)
-    claim_limit = max(1, min(int(limit or configured_limit or 100), int(configured_limit or limit or 100)))
     owner = worker_id or _lease_owner()
     token = str(uuid4())
     now_value = _now()
     if _skip_stale_channel_daily_actions(session, today=now_value.date()):
         session.commit()
-    pending_review_exists = None
-    if _legacy_review_enabled():
-        pending_review_exists = (
-            select(ReviewQueue.id)
-            .where(ReviewQueue.action_id == Action.id, ReviewQueue.status == "pending")
-            .exists()
-        )
-    filters = [
-        Action.status == "pending",
-        Action.scheduled_at <= now_value,
-        Task.status == "running",
-        Task.deleted_at.is_(None),
-    ]
+    claim_limit = _claim_limit(settings, limit)
+    candidates, fairness_decisions, bindings = _select_claim_candidates(
+        session, settings, claim_limit, now_value, exclude_task_ids,
+    )
+    _mark_claiming_candidates(session, candidates, owner, token, settings, now_value)
+    batch = ActionClaimBatch(tuple(action.id for action in candidates), owner, token, bindings)
+    return _confirm_claim_batch(session, batch, fairness_decisions)
+
+
+def _claim_limit(settings, requested_limit: int) -> int:
+    configured_limit = _setting(settings, "action_claim_limit", 100)
+    return max(1, min(int(requested_limit or configured_limit or 100), int(configured_limit or requested_limit or 100)))
+
+
+def _select_claim_candidates(
+    session: Session,
+    settings,
+    claim_limit: int,
+    now_value: datetime,
+    exclude_task_ids: set[str] | None,
+) -> tuple[list[Action], dict[int, object], Mapping[str, DispatchClaimBinding]]:
+    base_filters = _claim_base_filters(now_value, exclude_task_ids)
     shard_total, shard_index = current_account_shard()
-    if shard_total > 1:
-        filters.append(or_(Action.account_id.is_(None), (Action.account_id % shard_total) == shard_index))
+    fairness = _claim_fairness_decisions(session, _claim_shard_filters(base_filters, shard_total, shard_index), now_value)
+    forced = {tenant_id for tenant_id, decision in fairness.items() if decision.preferred_class == "ordinary"}
+    plan = plan_dispatch_claims(
+        session,
+        _dispatch_claim_window_actions(session, base_filters, settings=settings, now_value=now_value, force_ordinary_tenants=forced),
+        settings=settings,
+        now=now_value,
+        shard_total=shard_total,
+        shard_index=shard_index,
+        fairness_decisions=fairness,
+    )
+    candidates = _claimable_candidates(_locked_claim_plan_candidates(session, plan, claim_limit, now_value, forced))
+    _annotate_dispatch_fairness(session, candidates, fairness, defer_action_ids=set(plan.bindings_by_action_id))
+    bindings = {action.id: plan.bindings_by_action_id[action.id] for action in candidates if action.id in plan.bindings_by_action_id}
+    return candidates, fairness, bindings
+
+
+def _claim_base_filters(now_value: datetime, exclude_task_ids: set[str] | None) -> list:
+    filters = [Action.status == "pending", Action.scheduled_at <= now_value, Task.status == "running", Task.deleted_at.is_(None)]
     if exclude_task_ids:
         filters.append(Action.task_id.not_in(exclude_task_ids))
-    if pending_review_exists is not None:
-        filters.append(~pending_review_exists)
-    # Read-only fairness decision — never persist cursor until at least one claim confirms.
-    fairness_decisions = _claim_fairness_decisions(session, filters, now_value)
-    force_ordinary_tenants = {
-        tenant_id
-        for tenant_id, decision in fairness_decisions.items()
-        if decision.preferred_class == "ordinary"
-    }
-    stmt = (
-        select(Action)
-        .join(Task, Task.id == Action.task_id)
-        .where(*filters)
-        .order_by(*claim_action_ordering(force_ordinary_tenants, now_value))
-        .limit(claim_limit)
-    )
-    if session.bind and session.bind.dialect.name != "sqlite":
-        stmt = stmt.with_for_update(of=Action, skip_locked=True)
-    candidates = _claimable_candidates(list(session.scalars(stmt)))
-    _annotate_dispatch_fairness(session, candidates, fairness_decisions)
+    if _legacy_review_enabled():
+        pending_review = select(ReviewQueue.id).where(ReviewQueue.action_id == Action.id, ReviewQueue.status == "pending").exists()
+        filters.append(~pending_review)
+    return filters
+
+
+def _claim_shard_filters(base_filters: list, shard_total: int, shard_index: int) -> list:
+    filters = list(base_filters)
+    if shard_total > 1:
+        filters.append(or_(Action.account_id.is_(None), (Action.account_id % shard_total) == shard_index))
+    return filters
+
+
+def _mark_claiming_candidates(
+    session: Session,
+    candidates: list[Action],
+    owner: str,
+    token: str,
+    settings,
+    now_value: datetime,
+) -> None:
     claim_until = now_value + timedelta(seconds=max(5, int(_setting(settings, "action_claim_seconds", 60) or 60)))
     for action in candidates:
         action.status = "claiming"
@@ -747,19 +785,81 @@ def claim_actions(session: Session, limit: int = 100, *, exclude_task_ids: set[s
         action.result = {**(action.result or {}), "claim_owner": owner, "claim_token": token}
     session.commit()
 
-    batch = ActionClaimBatch(tuple(action.id for action in candidates), owner, token)
+
+def _confirm_claim_batch(
+    session: Session,
+    batch: ActionClaimBatch,
+    fairness_decisions: dict[int, object],
+) -> list[Action]:
     confirmed = _confirm_action_claim_batch(session, batch)
     _record_dispatch_fairness_after_confirm(session, confirmed, fairness_decisions)
-    if confirmed:
-        confirmed_ids = [action.id for action in confirmed]
-        session.commit()
-        # Re-bind after commit so callers never receive detached Action instances.
-        confirmed = [
-            action
-            for action_id in confirmed_ids
-            if (action := session.get(Action, action_id)) is not None
-        ]
-    return confirmed
+    if not confirmed:
+        return []
+    confirmed_ids = [action.id for action in confirmed]
+    session.commit()
+    return [action for action_id in confirmed_ids if (action := session.get(Action, action_id)) is not None]
+
+
+def _dispatch_claim_window_actions(
+    session: Session,
+    filters: list,
+    *,
+    settings,
+    now_value: datetime,
+    force_ordinary_tenants: set[int],
+) -> list[Action]:
+    capacity = dispatcher_claim_capacity(settings, _setting(settings, "action_claim_limit", 100))
+    strict_statement = (
+        select(Action)
+        .join(Task, Task.id == Action.task_id)
+        .where(*filters, _strict_dispatch_claim_condition())
+        .order_by(Action.scheduled_at.asc(), Action.created_at.asc(), Action.id.asc())
+    )
+    ordinary_statement = (
+        select(Action)
+        .join(Task, Task.id == Action.task_id)
+        .where(*filters)
+        .order_by(*claim_action_ordering(force_ordinary_tenants, now_value))
+        .limit(capacity)
+    )
+    rows = list(session.scalars(strict_statement)) + list(session.scalars(ordinary_statement))
+    return list({action.id: action for action in rows}.values())
+
+
+def _strict_dispatch_claim_condition():
+    return (
+        _target_admission_retry_claim_condition()
+        | _search_join_membership_claim_condition()
+        | _strict_search_join_source_claim_condition()
+        | _hard_hourly_send_claim_condition()
+    )
+
+
+def _locked_claim_plan_candidates(
+    session: Session,
+    claim_plan,
+    claim_limit: int,
+    now_value: datetime,
+    force_ordinary_tenants: set[int],
+) -> list[Action]:
+    action_ids = tuple(claim_plan.candidate_action_ids)
+    if not action_ids:
+        return []
+    statement = (
+        select(Action)
+        .join(Task, Task.id == Action.task_id)
+        .where(
+            Action.id.in_(action_ids),
+            Action.status == "pending",
+            Action.scheduled_at <= now_value,
+            Task.status == "running",
+            Task.deleted_at.is_(None),
+        )
+        .order_by(*claim_action_ordering(force_ordinary_tenants, now_value))
+    )
+    if session.bind and session.bind.dialect.name != "sqlite":
+        statement = statement.with_for_update(of=Action, skip_locked=True)
+    return list(session.scalars(statement).fetchmany(claim_limit))
 
 
 def _claim_fairness_decisions(session: Session, filters: list, now_value: datetime) -> dict[int, object]:
@@ -796,12 +896,20 @@ def _claim_fairness_decisions(session: Session, filters: list, now_value: dateti
     return decisions
 
 
-def _annotate_dispatch_fairness(session: Session, candidates: list[Action], decisions: dict[int, object]) -> None:
+def _annotate_dispatch_fairness(
+    session: Session,
+    candidates: list[Action],
+    decisions: dict[int, object],
+    *,
+    defer_action_ids: set[str] | None = None,
+) -> None:
     """Attach the selection reason to candidate Action rows (cursor not written yet)."""
     from app.services.task_center.dispatch_fairness import classify_action_payload
 
     first_claim_for_tenant: set[int] = set()
     for action in candidates:
+        if defer_action_ids and action.id in defer_action_ids:
+            continue
         tenant_id = int(action.tenant_id)
         claim_class = classify_action_payload(
             action.action_type,
@@ -896,14 +1004,23 @@ def _confirm_action_claim_candidate(
         _release_unconfirmed_action_claim(session, action)
         return False
     try:
-        if _confirm_claim(session, action.id, owner=batch.owner, token=batch.token):
+        binding = batch.reservation_bindings.get(action.id)
+        if _confirm_claim(session, action.id, owner=batch.owner, token=batch.token, reservation_binding=binding):
             session.commit()
             return True
         _release_runtime_resources(action)
         session.rollback()
+        _release_failed_claim_confirmation(session, action_id, batch)
     except IntegrityError:
         _release_conflicting_action_claim(session, action_id, batch, action)
     return False
+
+
+def _release_failed_claim_confirmation(session: Session, action_id: str, batch: ActionClaimBatch) -> None:
+    current = session.get(Action, action_id)
+    if _action_claim_matches(current, batch):
+        _release_claim(current, delay_seconds=1, reason="dispatch_claim_confirmation_unavailable")
+        session.commit()
 
 
 def _release_unconfirmed_action_claim(session: Session, action: Action) -> None:
@@ -1483,9 +1600,12 @@ def _confirm_claim(
     *,
     owner: str,
     token: str,
+    reservation_binding: DispatchClaimBinding | None = None,
 ) -> bool:
     action = session.get(Action, action_id)
     if not action or action.status != "claiming" or action.claim_owner != owner or action.claim_token != token:
+        return False
+    if reservation_binding is not None and not confirm_dispatch_claim(session, action, reservation_binding):
         return False
     _snapshot_ai_generation_claim(action)
     _mark_executing(action, lease_seconds=_setting(get_settings(), "action_lease_seconds", 1800))
@@ -4969,37 +5089,25 @@ def _skip_like_unavailable_message(action: Action, detail: str) -> None:
 
 
 def _dispatch_search_join(session: Session, action: Action, account: TgAccount, payload: SearchJoinPayload) -> bool:
-    _mark_search_join_before_gateway(session, action)
-    search_join = getattr(gateway, "execute_search_join", None)
-    if not callable(search_join):
-        _skip(action, "search_join_gateway_unavailable", "搜索入群 gateway 尚未接入真实 MTProto 执行器")
-        action.result = {**(action.result or {}), "validation_stage": "search_join_gateway", "bot_username": payload.bot_username}
+    attempt = _begin_search_join_attempt(session, action, account)
+    _mark_search_join_before_gateway(session, action, attempt)
+    ready = _search_join_gateway_prerequisites(session, action, account, payload, attempt)
+    if ready is None:
         return True
-    if not _search_join_proxy_guard_verified(payload):
-        _fail(action, "proxy_egress_guard_missing", "搜索入群缺少已验证代理出口 guard，禁止回退本机直连", validation_stage="search_join_proxy")
-        return True
-    if not _search_join_client_metadata_verified(payload):
-        _fail(action, "client_metadata_missing", "搜索入群缺少已绑定客户端 metadata，禁止使用默认 MTProto 指纹", validation_stage="search_join_client_metadata")
-        return True
-    keyword_text = decrypt_secret(payload.keyword_text_ciphertext) or ""
-    if not keyword_text.strip():
-        _fail(action, "keyword_text_missing", "搜索入群缺少可执行关键词密文", validation_stage="search_join_payload")
-        return True
-    if normalized_keyword_hash(keyword_text) != payload.keyword_hash:
-        _fail(action, "keyword_hash_mismatch", "搜索入群关键词密文与审计哈希不一致", validation_stage="search_join_payload")
-        return True
-    try:
-        runtime_authorization = _search_join_runtime_authorization(session, account, payload)
-    except ValueError as exc:
-        _fail(action, str(exc), "搜索入群授权槽位不可用，禁止回退账号主授权", validation_stage="search_join_authorization")
-        return True
-    if not _mark_search_join_gateway_call_started(session, action):
+    search_join, runtime_authorization, keyword_text = ready
+    if not _mark_search_join_gateway_call_started(session, action, attempt):
+        _finish_search_join_before_gateway(session, action, attempt, "search_join_gateway_not_allowed")
         return True
     result = search_join(account.id, payload.model_dump(mode="json"), runtime_authorization.session_ciphertext, runtime_authorization.credentials, keyword_text)
+    _record_search_join_protocol_result(session, action, payload, result, attempt)
+    if _schedule_jisou_hot_list_reset(session, action, payload, result, attempt):
+        return True
+    result = _terminal_jisou_result(result)
     action.status = "success" if result.get("success") else "failed"
     action.result = {**(action.result or {}), **result}
     _record_search_join_proxy_failover(session, action, payload, result)
     action.executed_at = _now()
+    _finish_search_join_attempt(attempt, action, result)
     if action.status == "success" and result.get("join_status") == "target_found":
         child = create_membership_child(session, action, payload, _now())
         mark_source_membership_pending(action, child, timestamp=_now())
@@ -5008,26 +5116,124 @@ def _dispatch_search_join(session: Session, action: Action, account: TgAccount, 
     return True
 
 
+def _record_search_join_protocol_result(
+    session: Session,
+    action: Action,
+    payload: SearchJoinPayload,
+    result: dict,
+    attempt: ExecutionAttempt,
+) -> None:
+    record_search_join_protocol_trace(
+        session,
+        action,
+        payload=payload.model_dump(mode="json"),
+        result=result,
+        attempt=attempt,
+    )
+
+
+def _schedule_jisou_hot_list_reset(
+    session: Session,
+    action: Action,
+    payload: SearchJoinPayload,
+    result: dict,
+    attempt: ExecutionAttempt,
+) -> bool:
+    if str(result.get("error_code") or "") != "jisou_hot_list_page":
+        return False
+    if not begin_hot_list_reset(session, action, payload=payload.model_dump(mode="json"), result=result, attempt=attempt):
+        return False
+    schedule_hot_list_reset(action, result)
+    _finish_search_join_attempt(attempt, action, result)
+    attempt.status = "hot_list_reset_scheduled"
+    attempt.result_snapshot = dict(action.result or {})
+    session.commit()
+    return True
+
+
+def _terminal_jisou_result(result: dict) -> dict:
+    if str(result.get("error_code") or "") != "jisou_hot_list_page":
+        return result
+    return {
+        **result,
+        "error_code": "jisou_session_state_deviated",
+        "detail": "极搜热搜页受控会话重置已执行，响应仍偏离搜索协议",
+        "jisou_hot_list_reset_status": "deviated",
+    }
+
+
+def _search_join_gateway_prerequisites(
+    session: Session,
+    action: Action,
+    account: TgAccount,
+    payload: SearchJoinPayload,
+    attempt: ExecutionAttempt,
+) -> tuple[Callable, SearchJoinRuntimeAuthorization, str] | None:
+    search_join = getattr(gateway, "execute_search_join", None)
+    if not callable(search_join):
+        _skip(action, "search_join_gateway_unavailable", "搜索入群 gateway 尚未接入真实 MTProto 执行器")
+        action.result = {**(action.result or {}), "validation_stage": "search_join_gateway", "bot_username": payload.bot_username}
+        _finish_search_join_before_gateway(session, action, attempt, "search_join_gateway_unavailable")
+        return None
+    failure = _search_join_pre_gateway_failure(action, payload)
+    if failure:
+        _finish_search_join_before_gateway(session, action, attempt, failure)
+        return None
+    try:
+        authorization = _search_join_runtime_authorization(session, account, payload)
+    except ValueError as exc:
+        _fail(action, str(exc), "搜索入群授权槽位不可用，禁止回退账号主授权", validation_stage="search_join_authorization")
+        _finish_search_join_before_gateway(session, action, attempt, str(exc))
+        return None
+    return search_join, authorization, decrypt_secret(payload.keyword_text_ciphertext) or ""
+
+
+def _search_join_pre_gateway_failure(action: Action, payload: SearchJoinPayload) -> str:
+    if not _search_join_proxy_guard_verified(payload):
+        _fail(action, "proxy_egress_guard_missing", "搜索入群缺少已验证代理出口 guard，禁止回退本机直连", validation_stage="search_join_proxy")
+        return "proxy_egress_guard_missing"
+    if not _search_join_client_metadata_verified(payload):
+        _fail(action, "client_metadata_missing", "搜索入群缺少已绑定客户端 metadata，禁止使用默认 MTProto 指纹", validation_stage="search_join_client_metadata")
+        return "client_metadata_missing"
+    if is_jisou_bot(payload.bot_username) and not protocol_profile_is_approved(payload.approved_protocol_profile):
+        _fail(action, "protocol_sample_invalid", "极搜缺少已审核的页面相位与 selector 指纹，禁止调用 Gateway", validation_stage="search_join_protocol")
+        return "protocol_sample_invalid"
+    keyword_text = decrypt_secret(payload.keyword_text_ciphertext) or ""
+    if not keyword_text.strip():
+        _fail(action, "keyword_text_missing", "搜索入群缺少可执行关键词密文", validation_stage="search_join_payload")
+        return "keyword_text_missing"
+    if normalized_keyword_hash(keyword_text) != payload.keyword_hash:
+        _fail(action, "keyword_hash_mismatch", "搜索入群关键词密文与审计哈希不一致", validation_stage="search_join_payload")
+        return "keyword_hash_mismatch"
+    return ""
+
+
 def _dispatch_search_join_membership(
     session: Session,
     action: Action,
     account: TgAccount,
     payload: SearchJoinMembershipPayload,
 ) -> bool:
+    attempt = _begin_search_join_attempt(session, action, account)
+    _mark_search_join_before_gateway(session, action, attempt)
     source = source_action_for_membership(session, action, payload)
     if source is None:
         _fail(action, "search_join_membership_source_invalid", "搜索准入子动作缺少同任务同账号 source action")
+        _finish_search_join_before_gateway(session, action, attempt, "search_join_membership_source_invalid")
         return True
     if not _search_join_proxy_guard_verified(payload):
         _fail(action, "proxy_egress_guard_missing", "搜索准入缺少已验证代理出口 guard，禁止回退本机直连")
+        _finish_search_join_before_gateway(session, action, attempt, "proxy_egress_guard_missing")
         return True
     if not _search_join_client_metadata_verified(payload):
         _fail(action, "client_metadata_missing", "搜索准入缺少已绑定客户端 metadata，禁止使用默认 MTProto 指纹")
+        _finish_search_join_before_gateway(session, action, attempt, "client_metadata_missing")
         return True
     try:
         runtime_authorization = _search_join_runtime_authorization(session, account, payload)
     except ValueError as exc:
         _fail(action, str(exc), "搜索准入授权槽位不可用，禁止回退账号主授权")
+        _finish_search_join_before_gateway(session, action, attempt, str(exc))
         return True
     context = SearchJoinMembershipDispatchContext(
         session=session,
@@ -5036,6 +5242,7 @@ def _dispatch_search_join_membership(
         payload=payload,
         source=source,
         runtime_authorization=runtime_authorization,
+        attempt=attempt,
     )
     return _dispatch_search_join_membership_gateway(context)
 
@@ -5045,9 +5252,20 @@ def _dispatch_search_join_membership_gateway(context: SearchJoinMembershipDispat
     membership = getattr(gateway, method_name, None)
     if not callable(membership):
         _fail(context.action, "search_join_membership_gateway_unavailable", "搜索目标群准入 gateway 尚未接入真实 MTProto 执行器")
+        _finish_search_join_before_gateway(
+            context.session,
+            context.action,
+            context.attempt,
+            "search_join_membership_gateway_unavailable",
+        )
         return True
-    _mark_search_join_before_gateway(context.session, context.action)
-    if not _mark_search_join_gateway_call_started(context.session, context.action):
+    if not _mark_search_join_gateway_call_started(context.session, context.action, context.attempt):
+        _finish_search_join_before_gateway(
+            context.session,
+            context.action,
+            context.attempt,
+            "search_join_membership_gateway_not_allowed",
+        )
         return True
     result = membership(
         context.account.id,
@@ -5055,7 +5273,9 @@ def _dispatch_search_join_membership_gateway(context: SearchJoinMembershipDispat
         context.runtime_authorization.session_ciphertext,
         context.runtime_authorization.credentials,
     )
-    return _apply_search_join_membership_result(context, result)
+    handled = _apply_search_join_membership_result(context, result)
+    _finish_search_join_attempt(context.attempt, context.action, result)
+    return handled
 
 
 def _apply_search_join_membership_result(context: SearchJoinMembershipDispatchContext, result: dict) -> bool:
@@ -6399,12 +6619,19 @@ def _mark_gateway_call_started(session: Session, attempt: ExecutionAttempt, *, c
         session.flush()
 
 
-def _mark_search_join_before_gateway(session: Session, action: Action) -> None:
+def _begin_search_join_attempt(session: Session, action: Action, account: TgAccount) -> ExecutionAttempt:
+    attempt = _begin_execution_attempt(session, action, account)
+    attempt.status = "before_gateway"
+    return attempt
+
+
+def _mark_search_join_before_gateway(session: Session, action: Action, attempt: ExecutionAttempt) -> None:
     action.result = {**(action.result or {}), "gateway_call_state": "before_call"}
+    attempt.result_snapshot = dict(action.result or {})
     session.commit()
 
 
-def _mark_search_join_gateway_call_started(session: Session, action: Action) -> bool:
+def _mark_search_join_gateway_call_started(session: Session, action: Action, attempt: ExecutionAttempt) -> bool:
     if not _search_click_gateway_call_allowed(session, action):
         return False
     action.result = {
@@ -6412,8 +6639,33 @@ def _mark_search_join_gateway_call_started(session: Session, action: Action) -> 
         "gateway_call_state": "started",
         "gateway_call_started_at": _now().isoformat(),
     }
+    _mark_gateway_call_started(session, attempt, commit=False)
     session.commit()
     return True
+
+
+def _finish_search_join_before_gateway(
+    session: Session,
+    action: Action,
+    attempt: ExecutionAttempt,
+    failure_type: str,
+) -> None:
+    attempt.after_call_at = _now()
+    attempt.status = "skipped_before_gateway"
+    attempt.failure_type = failure_type
+    attempt.failure_detail = str((action.result or {}).get("error_message") or failure_type)
+    attempt.result_snapshot = dict(action.result or {})
+    session.commit()
+
+
+def _finish_search_join_attempt(attempt: ExecutionAttempt, action: Action, result: dict) -> None:
+    _finish_execution_attempt(
+        attempt,
+        action,
+        remote_id=str(result.get("remote_message_id") or result.get("telegram_msg_id") or ""),
+        failure_type=str(result.get("error_code") or ""),
+        detail=str(result.get("error_message") or result.get("detail") or ""),
+    )
 
 
 def _mark_rank_gateway_call_started(session: Session, action: Action, attempt: ExecutionAttempt) -> None:
@@ -6439,7 +6691,7 @@ def _search_click_gateway_call_allowed(session: Session, action: Action) -> bool
 
 def _gateway_call_started(session: Session, action: Action) -> bool:
     if action.action_type in SEARCH_JOIN_RUNTIME_ACTION_TYPES:
-        return str((action.result or {}).get("gateway_call_state") or "") == "started"
+        return _latest_gateway_attempt(session, action) is not None
     return _latest_gateway_attempt(session, action) is not None
 
 

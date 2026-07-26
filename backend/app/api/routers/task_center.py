@@ -120,6 +120,7 @@ from app.services.task_center import (
     update_search_rank_deboost_config,
     update_task_settings,
 )
+from app.services.task_center.daily_fulfillment import daily_fulfillment_detail
 
 router = APIRouter()
 legacy_review_router = APIRouter()
@@ -475,6 +476,38 @@ def get_task_stats(task_id: str, session: Session = Depends(get_session), curren
         return refresh_task_detail_stats(session, current_user.tenant_id or 1, task_id)
     except ValueError as exc:
         raise not_found(str(exc)) from exc
+
+
+@router.get("/api/tasks/{task_id}/daily-fulfillment")
+def get_task_daily_fulfillment(
+    task_id: str,
+    response: Response,
+    coverage_date: str | None = Query(default=None, alias="date"),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    try:
+        selected_date = date.fromisoformat(coverage_date) if coverage_date else beijing_now().date()
+        payload = daily_fulfillment_detail(
+            session,
+            current_user.tenant_id or 1,
+            task_id,
+            coverage_date=selected_date,
+        )
+        rows, total = list_task_account_coverage_page(
+            session,
+            current_user.tenant_id or 1,
+            task_id,
+            coverage_date=selected_date,
+            page=page,
+            page_size=page_size,
+        )
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
+    _set_page_headers(response, total, page, page_size)
+    return {**payload, "coverage_rows": rows, "coverage_total": total, "page": page, "page_size": page_size}
 
 
 @router.get("/api/tasks/{task_id}/account-coverage", response_model=list[TaskAccountCoverageItemOut])

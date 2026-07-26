@@ -1,19 +1,21 @@
 from __future__ import annotations
 
 import sys
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.models import (
     Action,
     AccountPool,
+    AiCoverageVariationIntent,
     ExecutionAttempt,
     Task,
     TaskAccountDailyCoverage,
+    TaskDailyFulfillmentDecision,
     TaskMembershipAdmissionItem,
     Tenant,
     TgAccount,
@@ -38,7 +40,9 @@ from app.services.task_center import daily_coverage
 from app.services.task_center import coverage_capacity
 from app.services.task_center.daily_coverage_readiness import refresh_rows
 from app.services.task_center.daily_coverage_planning import coverage_plan_totals
+from app.services.task_center.daily_fulfillment import summarize_daily_fulfillment
 from app.services.task_center.executors import group_ai_chat
+from app.services.task_center import service as task_service
 from app.timezone import beijing_now
 
 
@@ -164,7 +168,150 @@ def test_daily_coverage_does_not_replan_while_hard_hourly_dispatch_is_lagging(
     session.commit()
     monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
 
-    assert requires_planning_with_open_actions(session, task) is False
+    assert requires_planning_with_open_actions(session, task) is True
+
+
+def test_daily_coverage_requires_planning_after_hard_hourly_target_is_met(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task, _group = _seed(session)
+    task.type_config = {
+        **task.type_config,
+        "hard_hourly_target_enabled": True,
+        "hourly_min_messages": 1,
+        "hard_hourly_strategy": "force_planning",
+    }
+    monkeypatch.setattr(
+        group_ai_chat,
+        "_now",
+        lambda: beijing_now().replace(hour=22, minute=50, second=0, microsecond=0),
+    )
+    monkeypatch.setattr(group_ai_chat, "hard_hourly_requires_planning", lambda *_args, **_kwargs: False)
+
+    assert requires_planning_with_open_actions(session, task) is True
+
+
+def test_daily_fulfillment_repairs_ready_row_with_future_coverage_action(session: Session) -> None:
+    task, _group = _seed(session)
+    row = session.get(TaskAccountDailyCoverage, "coverage-1")
+    future_at = beijing_now().replace(hour=22, minute=0, second=0, microsecond=0)
+    action = Action(
+        id="future-coverage-action",
+        tenant_id=task.tenant_id,
+        task_id=task.id,
+        task_type=task.type,
+        action_type="send_message",
+        account_id=row.account_id,
+        status="pending",
+        scheduled_at=future_at,
+        payload={"coverage_ledger_id": row.id},
+    )
+    session.add(action)
+    session.commit()
+
+    summary = summarize_daily_fulfillment(session, task, now=future_at.replace(hour=21))
+
+    session.refresh(row)
+    assert row.state == "reserved"
+    assert row.reserved_action_id == action.id
+    assert summary.ready_to_plan_count == 0
+    assert summary.valid_future_open_cover_count == 1
+
+
+def test_daily_fulfillment_marks_overdue_reserved_action_unknown_instead_of_feasible(session: Session) -> None:
+    task, _group = _seed(session)
+    row = session.get(TaskAccountDailyCoverage, "coverage-1")
+    blocked = session.get(TaskAccountDailyCoverage, "coverage-3")
+    blocked.state = "confirmed"
+    blocked.confirmed_count = 1
+    now_value = beijing_now().replace(hour=21, minute=0, second=0, microsecond=0)
+    action = Action(
+        id="overdue-coverage-action",
+        tenant_id=task.tenant_id,
+        task_id=task.id,
+        task_type=task.type,
+        action_type="send_message",
+        account_id=row.account_id,
+        status="pending",
+        scheduled_at=now_value - timedelta(minutes=5),
+        payload={"coverage_ledger_id": row.id},
+    )
+    row.state = "reserved"
+    row.reserved_action_id = action.id
+    session.add(action)
+    session.commit()
+
+    summary = summarize_daily_fulfillment(session, task, now=now_value)
+
+    session.refresh(row)
+    assert row.state == "unknown"
+    assert row.reserved_action_id == action.id
+    assert row.blocker_code == "coverage_action_overdue"
+    assert summary.valid_future_open_cover_count == 0
+    assert summary.unknown_hold_count == 1
+    assert summary.daily_outcome == "at_risk"
+
+
+def test_planner_backlog_records_daily_fulfillment_risk_and_recheck(session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    task, _group = _seed(session)
+    timestamp = beijing_now().replace(hour=21, minute=0, second=0, microsecond=0)
+    blocked = session.get(TaskAccountDailyCoverage, "coverage-3")
+    blocked.state = "confirmed"
+    blocked.confirmed_count = 1
+    task.next_run_at = timestamp + timedelta(seconds=30)
+    session.commit()
+    monkeypatch.setattr(task_service, "_now", lambda: timestamp)
+
+    task_service._record_planner_backlog_daily_fulfillment(session, task)
+
+    row = session.get(TaskAccountDailyCoverage, "coverage-1")
+    decision = session.scalar(select(TaskDailyFulfillmentDecision).where(
+        TaskDailyFulfillmentDecision.task_id == task.id,
+    ))
+    assert row.state == "ready"
+    assert row.blocker_code == "planner_capacity_insufficient"
+    assert row.blocker_stage == "planning"
+    assert row.next_decision_at == task.next_run_at
+    assert decision is not None
+    assert decision.reason == "planner_capacity_insufficient"
+    assert decision.decision_snapshot["daily_outcome"] == "at_risk"
+    assert task.stats["daily_fulfillment"]["blocker_counts"]["planner_capacity_insufficient"] == 1
+
+
+def test_daily_coverage_persists_variation_intent_before_creating_action(session: Session) -> None:
+    task, _group = _seed(session)
+    row = session.get(TaskAccountDailyCoverage, "coverage-1")
+    payload = SendMessagePayload(
+        group_id=21,
+        account_coverage_mode="all_accounts_daily",
+        coverage_ledger_id=row.id,
+        coverage_window_date=row.coverage_date.isoformat(),
+        content_variation_key="variation-coverage-1-v1",
+        content_context_version="context-v1",
+        ai_generation_status="pending",
+    )
+    blueprint = type("Blueprint", (), {"profile": type("Profile", (), {"coverage_rows": {row.account_id: row}})()})()
+    prepared = group_ai_chat.PreparedActionPlan(
+        [group_ai_chat.SlotSnapshot(account_id=row.account_id, planned_at=beijing_now(), payload=payload)],
+        {},
+    )
+
+    assert group_ai_chat._create_reserved_actions(session, task, blueprint=blueprint, prepared=prepared) == 1
+
+    action = session.scalar(select(Action).where(Action.task_id == task.id, Action.action_type == "send_message"))
+    intent = session.scalar(select(AiCoverageVariationIntent).where(AiCoverageVariationIntent.coverage_ledger_id == row.id))
+    assert action is not None
+    assert intent is not None
+    assert intent.action_id == action.id
+    assert intent.outcome == "reserved"
+    assert row.reserved_action_id == action.id
+
+    row.state = "ready"
+    row.reserved_action_id = None
+    assert group_ai_chat._create_reserved_actions(session, task, blueprint=blueprint, prepared=prepared) == 0
+    assert session.scalar(select(Action).where(Action.task_id == task.id, Action.action_type == "send_message").order_by(Action.created_at.desc())) == action
+    assert row.blocker_code == "content_variation_key_conflict"
 
 
 def test_running_all_account_task_blocks_when_daily_capacity_is_insufficient(

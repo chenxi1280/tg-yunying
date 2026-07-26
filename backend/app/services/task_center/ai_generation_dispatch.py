@@ -109,7 +109,7 @@ def _generate_request_results(
     try:
         return _generate_without_transaction(session, request, dependencies)
     except GenerationMappingError as exc:
-        fail_generation_batch(session, request, str(exc), detail=str(exc))
+        fail_generation_batch(session, request, str(exc), detail=str(exc), mapping_error=exc)
         session.commit()
         raise AiGenerationUnavailable(str(exc)) from exc
     except GenerationAttemptStale:
@@ -134,6 +134,7 @@ def _commit_generation_results(
             request,
             str(exc),
             detail=str(exc),
+            mapping_error=exc,
         )
         session.commit()
         raise AiGenerationUnavailable(str(exc)) from exc

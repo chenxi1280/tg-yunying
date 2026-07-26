@@ -7,12 +7,12 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
 
+from app.search_join_protocol import ProtocolPageClassification, classify_jisou_page, is_jisou_bot, normalize_visible_text
+
 
 TELEGRAM_HOSTS = {"t.me", "telegram.me", "www.t.me", "www.telegram.me"}
 NAVIGATION_MARKERS = ("下一页", "上一页", "next", "prev", "page", "页")
 HUMAN_VERIFICATION_MARKERS = ("人机验证", "计算结果", "captcha")
-JISOU_BOT_USERNAMES = frozenset({"jisou"})
-JISOU_GROUP_CATEGORY_TEXTS = frozenset({"👥", "群组", "群聊", "groups", "group", "👥群组", "👥群聊"})
 PAGINATION_SYMBOL_NAMES = {
     ">": "greater_than",
     "▶": "right_triangle",
@@ -112,69 +112,178 @@ async def _execute_search_pages(client: Any, bot_username: str, keyword_text: st
     total_results = 0
     page_no = 0
     bot = bot_username.strip().lstrip("@")
+    jisou = is_jisou_bot(bot)
+    protocol_profile = payload.get("approved_protocol_profile")
     async with client.conversation(bot, timeout=60) as conv:
         await conv.send_message("/start")
         await conv.get_response()
         await conv.send_message(keyword_text)
         page = await conv.get_response()
-        page, selector_error, group_selector, selector_buttons = await _select_jisou_group_results_page(client, page, bot)
+        page, selector_error, group_selector, selector_buttons = await _select_jisou_group_results_page(
+            client,
+            page,
+            bot,
+            protocol_profile,
+        )
         if selector_error is not None:
             return selector_error
         while True:
             page_no += 1
-            if _human_verification_required(page):
-                return _failed("bot_human_verification_required", "搜索机器人要求人机验证，当前账号不能自动执行")
             buttons = _parse_buttons(page)
+            classification = _jisou_page_classification(jisou, protocol_profile, page, buttons)
+            if jisou and classification.page_phase != "group_result_page":
+                return _jisou_result_page_error(classification, buttons, group_selector, selector_buttons)
+            if not jisou and _human_verification_required(page):
+                return _protocol_phase_error(
+                    "bot_human_verification_required",
+                    "搜索机器人要求人机验证，当前账号不能自动执行",
+                    ProtocolPageClassification("verification_page", frozenset(), frozenset()),
+                    buttons,
+                )
             total_results += len(buttons)
-            await _click_page_decoys(page, buttons, payload, target, decoys)
+            approved_positions = classification.approved_button_positions if jisou else None
+            await _click_page_decoys(page, buttons, payload, target, decoys, approved_positions=approved_positions)
             text_match = _find_target_in_text(page, target)
             if text_match:
-                return await _execute_text_target_join(client, payload, target, text_match, decoys, page_no, total_results)
-            target_button = _find_target_button(buttons, target)
+                result = await _execute_text_target_join(client, payload, target, text_match, decoys, page_no, total_results)
+                traced = _with_search_protocol_trace(result, buttons, group_selector, selector_buttons, approved_positions, enabled=jisou)
+                return _with_jisou_result_phase(traced, jisou)
+            target_button = _find_target_button(buttons, target, approved_positions=approved_positions)
             if target_button:
-                return await _execute_target_join(client, page, payload, target, target_button, decoys, page_no, total_results)
-            next_button = _find_next_button(buttons)
+                result = await _execute_target_join(client, page, payload, target, target_button, decoys, page_no, total_results)
+                traced = _with_search_protocol_trace(result, buttons, group_selector, selector_buttons, approved_positions, enabled=jisou)
+                return _with_jisou_result_phase(traced, jisou)
+            next_button = _find_next_button(buttons, approved_positions=approved_positions)
             if next_button is None:
-                return _target_not_found(total_results, decoys, page_no, buttons, group_selector, selector_buttons)
+                result = _target_not_found(
+                    total_results,
+                    decoys,
+                    page_no,
+                    buttons,
+                    group_selector,
+                    selector_buttons,
+                    approved_positions,
+                    jisou,
+                )
+                return _with_jisou_result_phase(result, jisou)
             page = await _click_and_get_edited_page(client, bot, page, next_button)
+
+
+def _with_jisou_result_phase(result: dict[str, Any], jisou: bool) -> dict[str, Any]:
+    if not jisou:
+        return result
+    return {
+        **result,
+        "jisou_page_phase": str(result.get("jisou_page_phase") or "group_result_page"),
+        "protocol_event_type": str(result.get("protocol_event_type") or "page_classified"),
+    }
 
 
 async def _select_jisou_group_results_page(
     client: Any,
     page: Any,
     bot_username: str,
+    protocol_profile: object,
 ) -> tuple[Any, dict[str, Any] | None, SearchJoinButton | None, list[SearchJoinButton]]:
-    if not _is_jisou_bot(bot_username):
+    if not is_jisou_bot(bot_username):
         return page, None, None, []
     selector_buttons = _parse_buttons(page)
-    group_button = _find_jisou_group_category_button(selector_buttons)
+    classification = classify_jisou_page(
+        profile=protocol_profile,
+        message_text=_message_text(page),
+        buttons=selector_buttons,
+    )
+    phase = classification.page_phase
+    if phase == "verification_page":
+        return page, _protocol_phase_error(
+            "bot_human_verification_required",
+            "搜索机器人要求人机验证，当前账号不能自动执行",
+            classification,
+            selector_buttons,
+        ), None, selector_buttons
+    if phase == "hot_list_page":
+        return page, _protocol_phase_error(
+            "jisou_hot_list_page",
+            "极搜关键词响应为热搜排行榜页，需受控会话重置",
+            classification,
+            selector_buttons,
+        ), None, selector_buttons
+    if phase == "group_result_page":
+        return page, None, None, selector_buttons
+    if phase != "search_category_page":
+        return page, _protocol_phase_error(
+            "jisou_protocol_page_unknown",
+            "极搜关键词响应未匹配已知协议页面，未点击任何按钮",
+            classification,
+            selector_buttons,
+        ), None, selector_buttons
+    group_button = _find_button_by_position(selector_buttons, classification.selector_positions)
     if group_button is None:
-        return page, _selector_missing(selector_buttons), None, selector_buttons
-    return await _click_and_get_edited_page(client, bot_username, page, group_button), None, group_button, selector_buttons
-
-
-def _is_jisou_bot(bot_username: str) -> bool:
-    return bot_username.strip().lower().lstrip("@") in JISOU_BOT_USERNAMES
-
-
-def _find_jisou_group_category_button(buttons: list[SearchJoinButton]) -> SearchJoinButton | None:
-    for button in buttons:
-        if button.button_type != "callback_data" or button.effect != "unknown":
-            continue
-        if _normalized_button_text(button.text) in JISOU_GROUP_CATEGORY_TEXTS:
-            return button
-    return None
+        return page, _selector_missing(selector_buttons, classification), None, selector_buttons
+    result_page = await _click_and_get_edited_page(client, bot_username, page, group_button)
+    result_buttons = _parse_buttons(result_page)
+    result_classification = classify_jisou_page(
+        profile=protocol_profile,
+        message_text=_message_text(result_page),
+        buttons=result_buttons,
+    )
+    if result_classification.page_phase != "group_result_page":
+        return result_page, _jisou_result_page_error(result_classification, result_buttons, group_button, selector_buttons), group_button, selector_buttons
+    return result_page, None, group_button, selector_buttons
 
 
 def _normalized_button_text(text: str) -> str:
-    return re.sub(r"\s+", "", text).lower()
+    return normalize_visible_text(text)
 
 
-def _selector_missing(selector_buttons: list[SearchJoinButton]) -> dict[str, Any]:
+def _selector_missing(selector_buttons: list[SearchJoinButton], classification: ProtocolPageClassification) -> dict[str, Any]:
     return {
         **_failed("jisou_group_selector_missing", "极搜群聊类型选择按钮缺失"),
-        "search_protocol_trace": {"selector_page": _page_layout(selector_buttons)},
+        "jisou_page_phase": "search_category_page",
+        "protocol_event_type": "page_classified",
+        "search_protocol_trace": {"selector_page": _page_layout(selector_buttons, classification.approved_button_positions)},
     }
+
+
+def _protocol_phase_error(
+    code: str,
+    detail: str,
+    classification: ProtocolPageClassification,
+    buttons: list[SearchJoinButton],
+) -> dict[str, Any]:
+    return {
+        **_failed(code, detail),
+        "jisou_page_phase": classification.page_phase,
+        "protocol_event_type": "page_classified",
+        "search_protocol_trace": {
+            "page_phase": classification.page_phase,
+            "page": _page_layout(buttons, classification.approved_button_positions),
+        },
+    }
+
+
+def _jisou_page_classification(
+    jisou: bool,
+    protocol_profile: object,
+    page: Any,
+    buttons: list[SearchJoinButton],
+) -> ProtocolPageClassification:
+    if not jisou:
+        return ProtocolPageClassification("", frozenset(), frozenset())
+    return classify_jisou_page(profile=protocol_profile, message_text=_message_text(page), buttons=buttons)
+
+
+def _jisou_result_page_error(
+    classification: ProtocolPageClassification,
+    buttons: list[SearchJoinButton],
+    group_selector: SearchJoinButton | None,
+    selector_buttons: list[SearchJoinButton],
+) -> dict[str, Any]:
+    if classification.page_phase == "verification_page":
+        result = _protocol_phase_error("bot_human_verification_required", "极搜结果页要求人机验证，当前账号不能自动执行", classification, buttons)
+    else:
+        result = _protocol_phase_error("jisou_session_state_deviated", "极搜已进入群聊结果路径后页面偏离已审批协议", classification, buttons)
+    return _with_search_protocol_trace(result, buttons, group_selector, selector_buttons, classification.approved_button_positions)
 
 
 def _target_not_found(
@@ -184,6 +293,8 @@ def _target_not_found(
     buttons: list[SearchJoinButton],
     group_selector: SearchJoinButton | None,
     selector_buttons: list[SearchJoinButton],
+    approved_positions: frozenset[int] | None,
+    jisou: bool,
 ) -> dict[str, Any]:
     return {
         **_failed("target_not_in_results", "目标群未出现在搜索结果"),
@@ -193,7 +304,7 @@ def _target_not_found(
         "searched_pages": page_no,
         "last_result_page": page_no,
         "search_end_reason": "no_next_page",
-        **_search_protocol_trace(buttons, group_selector, selector_buttons),
+        **_search_protocol_trace(buttons, group_selector, selector_buttons, approved_positions, enabled=jisou),
     }
 
 
@@ -201,23 +312,46 @@ def _search_protocol_trace(
     buttons: list[SearchJoinButton],
     group_selector: SearchJoinButton | None,
     selector_buttons: list[SearchJoinButton],
+    approved_positions: frozenset[int] | None,
+    *,
+    enabled: bool,
 ) -> dict[str, Any]:
-    if group_selector is None:
+    if not enabled:
         return {}
-    return {
-        "search_protocol_trace": {
-            "jisou_group_selector": {"position": group_selector.position, "text": group_selector.text},
-            "selector_page": _page_layout(selector_buttons),
-            "result_page": _page_layout(buttons),
+    selector_positions = frozenset({group_selector.position}) if group_selector is not None else frozenset()
+    trace = {"result_page": _page_layout(buttons, approved_positions)}
+    if group_selector is not None:
+        trace["jisou_group_selector"] = {
+            "position": group_selector.position,
+            "text_hash": _button_hash(group_selector),
+            "text_length": len(group_selector.text),
+            "approved_sample_match": True,
         }
+        trace["selector_page"] = _page_layout(selector_buttons, selector_positions)
+    return {
+        "search_protocol_trace": trace
     }
 
 
-def _page_layout(buttons: list[SearchJoinButton]) -> dict[str, Any]:
-    return {"button_count": len(buttons), "button_layout": [_button_layout(button) for button in buttons]}
+def _with_search_protocol_trace(
+    result: dict[str, Any],
+    buttons: list[SearchJoinButton],
+    group_selector: SearchJoinButton | None,
+    selector_buttons: list[SearchJoinButton],
+    approved_positions: frozenset[int] | None,
+    *,
+    enabled: bool = True,
+) -> dict[str, Any]:
+    trace = _search_protocol_trace(buttons, group_selector, selector_buttons, approved_positions, enabled=enabled)
+    return result if not trace else {**result, **trace}
 
 
-def _button_layout(button: SearchJoinButton) -> dict[str, Any]:
+def _page_layout(buttons: list[SearchJoinButton], approved_positions: frozenset[int] | None = None) -> dict[str, Any]:
+    approved = approved_positions or frozenset()
+    return {"button_count": len(buttons), "button_layout": [_button_layout(button, approved) for button in buttons]}
+
+
+def _button_layout(button: SearchJoinButton, approved_positions: frozenset[int]) -> dict[str, Any]:
     normalized = _normalized_button_text(button.text)
     return {
         "row": button.row,
@@ -227,6 +361,7 @@ def _button_layout(button: SearchJoinButton) -> dict[str, Any]:
         "text_length": len(button.text),
         "contains_page_marker": any(marker in normalized for marker in NAVIGATION_MARKERS),
         "navigation_symbols": [name for symbol, name in PAGINATION_SYMBOL_NAMES.items() if symbol in button.text],
+        "approved_sample_match": button.position in approved_positions,
     }
 
 
@@ -236,11 +371,13 @@ async def _click_page_decoys(
     payload: dict[str, Any],
     target: dict[str, Any],
     decoys: list[dict[str, Any]],
+    *,
+    approved_positions: frozenset[int] | None,
 ) -> None:
     limit = int(_safe(payload).get("pre_join_decoy_click_max") or 0)
     if len(decoys) >= limit:
         return
-    clicked = await _click_safe_navigation(page, buttons, target, limit - len(decoys))
+    clicked = await _click_safe_navigation(page, buttons, target, limit - len(decoys), approved_positions=approved_positions)
     decoys.extend(clicked)
 
 
@@ -273,7 +410,8 @@ async def _execute_text_target_join(
         **_success(payload, None, total, decoys, page_no),
         "target_position": match.position,
         "target_match_source": match.source,
-        "target_line": match.line,
+        "target_line_hash": _text_hash(match.line),
+        "target_line_length": len(match.line),
     }
 
 
@@ -328,7 +466,7 @@ def _button_effect(button: Any, text: str, url: str) -> str:
     explicit = str(getattr(button, "effect", "") or getattr(button, "button_effect", "") or "").strip()
     if explicit:
         return explicit
-    if _is_navigation_text(text):
+    if _is_navigation_text(text) or _is_next_page_text(text):
         return "navigate_only"
     if url and (urlparse(url).netloc or "").lower() not in TELEGRAM_HOSTS:
         return "external"
@@ -342,11 +480,15 @@ async def _click_safe_navigation(
     buttons: list[SearchJoinButton],
     target: dict[str, Any],
     limit: int,
+    *,
+    approved_positions: frozenset[int] | None,
 ) -> list[dict[str, Any]]:
     clicked: list[dict[str, Any]] = []
     for button in buttons:
         if len(clicked) >= limit:
             break
+        if approved_positions is not None and button.position not in approved_positions:
+            continue
         if button.effect != "navigate_only" or _is_page_nav_button(button) or _matches_target(button, target):
             continue
         await _click_button(message, button)
@@ -354,15 +496,28 @@ async def _click_safe_navigation(
     return clicked
 
 
-def _find_target_button(buttons: list[SearchJoinButton], target: dict[str, Any]) -> SearchJoinButton | None:
+def _find_target_button(
+    buttons: list[SearchJoinButton],
+    target: dict[str, Any],
+    *,
+    approved_positions: frozenset[int] | None,
+) -> SearchJoinButton | None:
     for button in buttons:
+        if approved_positions is not None and button.position not in approved_positions:
+            continue
         if _matches_target(button, target):
             return button
     return None
 
 
-def _find_next_button(buttons: list[SearchJoinButton]) -> SearchJoinButton | None:
+def _find_next_button(
+    buttons: list[SearchJoinButton],
+    *,
+    approved_positions: frozenset[int] | None,
+) -> SearchJoinButton | None:
     for button in buttons:
+        if approved_positions is not None and button.position not in approved_positions:
+            continue
         if _is_next_page_button(button):
             return button
     return None
@@ -371,7 +526,11 @@ def _find_next_button(buttons: list[SearchJoinButton]) -> SearchJoinButton | Non
 def _is_next_page_button(button: SearchJoinButton) -> bool:
     if button.button_type != "callback_data":
         return False
-    text = _normalized_button_text(button.text)
+    return _is_next_page_text(button.text)
+
+
+def _is_next_page_text(value: str) -> bool:
+    text = _normalized_button_text(value)
     if "下一页" in text or "next" in text:
         return True
     symbols = text.replace(VARIATION_SELECTOR, "")
@@ -383,6 +542,10 @@ def _matches_target(button: SearchJoinButton, target: dict[str, Any]) -> bool:
     if username and button.target_username.lower() == username:
         return True
     return False
+
+
+def _find_button_by_position(buttons: list[SearchJoinButton], positions: frozenset[int]) -> SearchJoinButton | None:
+    return next((button for button in buttons if button.position in positions), None)
 
 
 async def _click_button(message: Any, button: SearchJoinButton) -> Any:
@@ -597,12 +760,16 @@ def _is_navigation_text(text: str) -> bool:
 
 def _is_page_nav_button(button: SearchJoinButton) -> bool:
     text = button.text.lower()
-    return "下一页" in text or "上一页" in text or "next" in text or "prev" in text
+    return _is_next_page_text(button.text) or "上一页" in text or "prev" in text
 
 
 def _button_hash(button: SearchJoinButton) -> str:
     raw = f"{button.text}:{button.url}:{button.position}"
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+    return _text_hash(raw)[:16]
+
+
+def _text_hash(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 __all__ = ["SearchJoinButton", "execute_search_join_with_client"]

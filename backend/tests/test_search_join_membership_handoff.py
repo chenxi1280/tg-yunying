@@ -16,6 +16,7 @@ from app.models import (
     AccountProxyBinding,
     AccountStatus,
     Action,
+    ExecutionAttempt,
     SearchJoinLinkedTaskDispatch,
     Task,
     TelegramDeveloperApp,
@@ -69,6 +70,29 @@ def _runtime() -> dict[str, str]:
     }
 
 
+def _approved_jisou_protocol_profile() -> dict:
+    return {
+        "page_fingerprints": [
+            {"page_phase": "verification_page", "text_enums": ["human_verification"]},
+            {"page_phase": "hot_list_page", "text_enums": ["hot_list"]},
+            {
+                "page_phase": "search_category_page",
+                "button_text_enums_any": ["jisou_group_category", "jisou_channel_category"],
+                "selector_rules": [
+                    {
+                        "row": 0,
+                        "col": 0,
+                        "button_type": "callback_data",
+                        "effect": "unknown",
+                        "normalized_text": "jisou_group_category",
+                    }
+                ],
+            },
+            {"page_phase": "group_result_page", "button_effects_any": ["join_candidate", "navigate_only"]},
+        ]
+    }
+
+
 def _source_payload() -> dict:
     return {
         "execution_mode": "mtproto_userbot",
@@ -95,6 +119,7 @@ def _source_payload() -> dict:
         "hourly_execution": {},
         "linked_task_policy": [{"linked_task_id": "ai-task-1"}],
         "runtime_environment": _runtime(),
+        "approved_protocol_profile": _approved_jisou_protocol_profile(),
     }
 
 
@@ -155,6 +180,10 @@ def test_membership_child_uses_source_slot_and_only_then_counts(monkeypatch, ses
     assert isinstance(calls[0]["credentials"], DeveloperAppCredentials)
     assert calls[0]["credentials"].proxy_id == 31
     assert session.scalar(select(SearchJoinLinkedTaskDispatch).where(SearchJoinLinkedTaskDispatch.search_join_action_id == source.id)) is not None
+    attempts = list(session.scalars(select(ExecutionAttempt).where(ExecutionAttempt.action_id == child.id)))
+    assert len(attempts) == 1
+    assert attempts[0].status == "success"
+    assert attempts[0].gateway_call_started_at is not None
 
 
 @pytest.mark.no_postgres

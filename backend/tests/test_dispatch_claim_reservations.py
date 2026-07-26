@@ -1,0 +1,204 @@
+from __future__ import annotations
+
+from datetime import timedelta
+from types import SimpleNamespace
+
+import pytest
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import Session
+
+from app.database import Base
+from app.models import Action, DispatchClaimReservation, DispatchClaimScope, DispatchClaimShardAllocation, DispatchClaimWindow, Task, Tenant, TgAccount
+from app.services._common import _now
+from app.services.task_center import dispatcher
+from app.services.task_center import account_pool
+from app.services.task_center.dispatch_reservations import task_dispatch_claim_snapshot
+from app.services.task_center.service import get_task_detail
+
+
+pytestmark = pytest.mark.no_postgres
+
+
+@pytest.fixture(autouse=True)
+def clear_runtime_reservations():
+    dispatcher._ACTION_RESERVATIONS.clear()
+    dispatcher._IN_FLIGHT_ACCOUNTS.clear()
+    yield
+    dispatcher._ACTION_RESERVATIONS.clear()
+    dispatcher._IN_FLIGHT_ACCOUNTS.clear()
+
+
+def test_strict_search_and_hard_hourly_receive_persisted_claim_reservations(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    monkeypatch.setattr(dispatcher, "get_settings", lambda: _settings(dispatcher_concurrency=2))
+    now_value = _now()
+
+    with Session(engine) as session:
+        _seed_strict_actions(session, now_value)
+        claimed = dispatcher.claim_actions(session, limit=2, worker_id="reservation-test")
+
+        assert {action.id for action in claimed} == {"strict-search", "hard-hourly"}
+        _assert_claim_metadata(claimed)
+        window = session.scalar(select(DispatchClaimWindow))
+        allocations = list(session.scalars(select(DispatchClaimShardAllocation)))
+        reservations = list(session.scalars(select(DispatchClaimReservation)))
+        assert window and window.claim_capacity == 2
+        assert window.active_claim_count == 2
+        assert window.unclaimed_allocated_count == 0
+        assert sum(row.active_claim_count for row in allocations) == 2
+        assert {row.claim_class for row in reservations} == {"search_join", "hard_hourly"}
+        assert all(row.claimed_count == 1 for row in reservations)
+        snapshot = task_dispatch_claim_snapshot(session, session.get(Task, "search-task"))
+        assert snapshot["dispatcher_scope"] == "task_center_dispatch"
+        assert snapshot["reservations"][0]["claim_class"] == "search_join"
+        detail = get_task_detail(session, 1, "search-task")
+        assert detail["task"]["stats"]["dispatch_claim"]["reservations"][0]["claim_class"] == "search_join"
+
+        for action in claimed:
+            action.status = "success"
+            assert dispatcher.release_dispatch_claim(session, action) is True
+        session.flush()
+        assert window.active_claim_count == 0
+        assert sum(row.active_claim_count for row in allocations) == 0
+
+
+def test_unserved_strict_demand_is_explicit_when_window_capacity_is_exhausted(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    monkeypatch.setattr(dispatcher, "get_settings", lambda: _settings(dispatcher_concurrency=1))
+    now_value = _now()
+
+    with Session(engine) as session:
+        _seed_strict_actions(session, now_value)
+        claimed = dispatcher.claim_actions(session, limit=1, worker_id="capacity-test")
+
+        assert len(claimed) == 1
+        tasks = [session.get(Task, "search-task"), session.get(Task, "hard-task")]
+        blocked = [task for task in tasks if task and task.stats.get("dispatch_claim", {}).get("status")]
+        assert blocked
+        assert all(task.stats["dispatch_claim"]["status"] == "shared_dispatch_capacity_insufficient" for task in blocked)
+        assert claimed[0].result["dispatch_unserved_strict_classes"]
+
+
+def test_two_shards_consume_one_shared_window_without_overallocation(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    settings = _settings(dispatcher_concurrency=2)
+    settings.account_shard_total = 2
+    settings.account_shard_index = 0
+    monkeypatch.setattr(dispatcher, "get_settings", lambda: settings)
+    monkeypatch.setattr(account_pool, "get_settings", lambda: settings)
+    now_value = _now()
+
+    with Session(engine) as session:
+        _seed_strict_actions(session, now_value)
+        first = dispatcher.claim_actions(session, limit=1, worker_id="shard-zero")
+        settings.account_shard_index = 1
+        second = dispatcher.claim_actions(session, limit=1, worker_id="shard-one")
+
+        assert {action.id for action in first + second} == {"strict-search", "hard-hourly"}
+        window = session.scalar(select(DispatchClaimWindow))
+        allocations = list(session.scalars(select(DispatchClaimShardAllocation)))
+        assert window and window.active_claim_count == 2
+        assert window.active_claim_count + window.unclaimed_allocated_count <= window.claim_capacity
+        assert {(row.account_shard_total, row.account_shard_index) for row in allocations} == {(2, 0), (2, 1)}
+
+
+def test_cross_window_claims_keep_executing_scope_capacity_reserved(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    settings = _settings(dispatcher_concurrency=1)
+    now_value = _now().replace(second=0, microsecond=0)
+    clock = {"now": now_value}
+    monkeypatch.setattr(dispatcher, "get_settings", lambda: settings)
+    monkeypatch.setattr(dispatcher, "_now", lambda: clock["now"])
+
+    with Session(engine) as session:
+        _seed_strict_actions(session, now_value)
+        first = dispatcher.claim_actions(session, limit=1, worker_id="first-window")
+        assert len(first) == 1
+        assert first[0].status == "executing"
+
+        clock["now"] = now_value + timedelta(seconds=61)
+        assert dispatcher.claim_actions(session, limit=1, worker_id="second-window") == []
+        scope = session.scalar(select(DispatchClaimScope))
+        assert scope is not None
+        assert scope.active_claim_count == 1
+
+        first[0].status = "success"
+        assert dispatcher.release_dispatch_claim(session, first[0]) is True
+        assert len(dispatcher.claim_actions(session, limit=1, worker_id="released-window")) == 1
+
+
+def _seed_strict_actions(session: Session, now_value) -> None:
+    session.add(Tenant(id=1, name="tenant"))
+    session.add_all(
+        [
+            TgAccount(id=11, tenant_id=1, display_name="搜索账号", phone_masked="+861***0011", status="在线"),
+            TgAccount(id=12, tenant_id=1, display_name="硬小时账号", phone_masked="+861***0012", status="在线"),
+            Task(
+                id="search-task",
+                tenant_id=1,
+                name="严格搜索",
+                type="search_join_group",
+                status="running",
+                type_config={"strict_daily_target": True, "daily_click_target_count": 20},
+            ),
+            Task(id="hard-task", tenant_id=1, name="硬小时", type="group_ai_chat", status="running"),
+            Action(
+                id="strict-search",
+                tenant_id=1,
+                task_id="search-task",
+                task_type="search_join_group",
+                action_type="search_join",
+                account_id=11,
+                status="pending",
+                scheduled_at=now_value,
+                payload={},
+            ),
+            Action(
+                id="hard-hourly",
+                tenant_id=1,
+                task_id="hard-task",
+                task_type="group_ai_chat",
+                action_type="send_message",
+                account_id=12,
+                status="pending",
+                scheduled_at=now_value - timedelta(seconds=1),
+                payload={"message_text": "硬小时动作", "hard_hourly_target": True},
+            ),
+        ]
+    )
+    session.commit()
+
+
+def _assert_claim_metadata(actions: list[Action]) -> None:
+    keys = {
+        "dispatch_claim_class",
+        "dispatch_reservation_id",
+        "dispatch_claim_window_id",
+        "dispatch_claim_shard_allocation_id",
+        "dispatch_claim_scope",
+        "dispatch_claim_shard",
+        "dispatch_allocation_epoch",
+        "dispatch_reservation_reason",
+        "dispatch_urgency_score",
+        "dispatch_unserved_strict_classes",
+    }
+    for action in actions:
+        assert keys <= set(action.result)
+
+
+def _settings(*, dispatcher_concurrency: int):
+    return SimpleNamespace(
+        enable_redis_token_bucket=False,
+        action_claim_limit=10,
+        action_claim_seconds=60,
+        action_lease_seconds=1800,
+        dispatcher_concurrency=dispatcher_concurrency,
+        account_shard_total=1,
+        account_shard_index=0,
+        enable_redis_account_inflight=False,
+        redis_account_inflight_seconds=1800,
+    )

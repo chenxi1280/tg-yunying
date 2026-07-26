@@ -1,18 +1,23 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import random
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta
 from difflib import SequenceMatcher
 import re
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.models import (
     Action,
+    AiCoverageVariationIntent,
     AiGroupMessageMemory,
     OperationTarget,
     RuleSet,
@@ -58,6 +63,7 @@ from ..daily_coverage import (
     daily_coverage_due_debt,
     ensure_task_daily_coverage,
     ready_coverage_rows,
+    release_coverage_reservation,
     reserve_coverage_for_action,
 )
 from ..daily_coverage_planning import (
@@ -66,13 +72,13 @@ from ..daily_coverage_planning import (
     coverage_plan_totals,
     ready_coverage_plan_batch,
 )
+from ..daily_fulfillment import record_daily_fulfillment_decision
 from ..fingerprints import fingerprint_exists, remember_fingerprint
 from ..hard_hourly import (
     current_progress,
     enabled as hard_hourly_enabled,
     hard_schedule_times,
     mark_plan_result,
-    planning_blocked_by_dispatcher_lag,
     planning_rate as hard_hourly_planning_rate,
     requires_planning as hard_hourly_requires_planning,
 )
@@ -114,6 +120,7 @@ class CoveragePlanState:
     sendable_account_count: int = 0
     sendable_confirmed_count: int = 0
     sendable_reserved_count: int = 0
+    required_new: int = 0
 
 
 @dataclass(frozen=True)
@@ -341,7 +348,7 @@ def _load_plan_facts(session: Session, task: Task) -> PlanFacts | PlanAbort:
         # Keep the unreachable hard target visible, but do not tag daily coverage as hard-hourly work.
         progress = {}
     coverage = _coverage_plan_state(session, task, group, config, progress)
-    _record_daily_coverage_next_check(task, coverage.due_debt > 0)
+    _record_daily_coverage_next_check(task, coverage.required_new > 0)
     if _coverage_capacity_blocker(
         session, task, group, config, coverage_rows=coverage.rows, coverage_state=coverage,
     ):
@@ -533,7 +540,7 @@ def _resolve_idle_continuation(
     force_bootstrap = bool((task.stats or {}).get("force_bootstrap_once"))
     should_wait = (
         not facts.hard_progress
-        and facts.coverage.due_debt <= 0
+        and facts.coverage.required_new <= 0
         and not force_bootstrap
         and _should_wait_for_human_context(session, task, usable_rows, unprocessed_rows)
     )
@@ -586,7 +593,7 @@ def _load_turn_plan(
         turn_count=turn_count,
         config=facts.config,
         hard_progress=facts.hard_progress,
-        has_daily_coverage_debt=facts.coverage.due_debt > 0,
+        has_daily_coverage_debt=facts.coverage.required_new > 0,
     )
     times = _schedule_times_for_plan(task, facts.hard_progress, turn_count, context.mode)
     turn_count, _times = _limit_context_bound_turns(
@@ -707,7 +714,7 @@ def _load_generation_plan(
         turn.turn_count,
         facts.config,
         facts.hard_progress,
-        daily_coverage_debt=facts.coverage.due_debt > 0,
+        daily_coverage_debt=facts.coverage.required_new > 0,
     )
     if reply_targets is None:
         return PlanAbort()
@@ -856,11 +863,38 @@ def _build_slot_snapshot(slot: SlotBuildInput) -> SlotSnapshot:
             blueprint.profile.coverage_rows,
         ),
     )
+    payload = _with_content_variation_key(SendMessagePayload(**payload_data), slot)
     return SlotSnapshot(
         account_id=slot.account.id,
         planned_at=slot.planned_at,
-        payload=SendMessagePayload(**payload_data),
+        payload=payload,
     )
+
+
+def _with_content_variation_key(payload: SendMessagePayload, slot: SlotBuildInput) -> SendMessagePayload:
+    if not payload.coverage_ledger_id:
+        return payload
+    source = {
+        "coverage_ledger_id": payload.coverage_ledger_id,
+        "target_reference_revision": payload.target_reference_revision,
+        "coverage_window_date": payload.coverage_window_date,
+        "account_id": slot.account.id,
+        "cycle_id": payload.cycle_id,
+        "slot_id": payload.slot_id,
+        "topic_direction": payload.topic_direction,
+        "teacher_target": payload.teacher_target,
+        "act_type": payload.act_type,
+        "reply_to_message_id": payload.reply_to_message_id,
+        "context_message_ids": payload.context_message_ids,
+    }
+    encoded = json.dumps(source, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
+    context_version = hashlib.sha256(
+        json.dumps(payload.context_message_ids, ensure_ascii=False).encode("utf-8")
+    ).hexdigest()[:24]
+    return payload.model_copy(update={
+        "content_variation_key": hashlib.sha256(encoded).hexdigest(),
+        "content_context_version": context_version,
+    })
 
 
 def _slot_identity_payload(slot: SlotBuildInput) -> dict[str, Any]:
@@ -1102,10 +1136,8 @@ def _create_reserved_actions(
     created = 0
     reserved_rows: list[TaskAccountDailyCoverage] = []
     for slot in prepared.slots:
-        action = create_send_action(
-            session, task, slot.account_id, slot.planned_at, slot.payload,
-        )
-        if not _reserve_action_coverage(session, action, slot.payload):
+        action = _create_reserved_action(session, task, slot)
+        if action is None:
             continue
         created += 1
         _remember_reserved_coverage_row(
@@ -1116,6 +1148,77 @@ def _create_reserved_actions(
         )
     _advance_reserved_coverage_cursor(session, task, reserved_rows)
     return created
+
+
+def _create_reserved_action(session: Session, task: Task, slot: SlotSnapshot) -> Action | None:
+    payload = slot.payload
+    coverage_id = str(payload.coverage_ledger_id or "")
+    if not coverage_id:
+        return create_send_action(session, task, slot.account_id, slot.planned_at, payload)
+    action_id = str(uuid4())
+    if not reserve_coverage_for_action(session, coverage_id, action_id, now=_now()):
+        return None
+    intent = _create_coverage_variation_intent(session, task, payload, action_id)
+    if intent is None:
+        _release_variation_conflict(session, coverage_id, action_id)
+        return None
+    action = create_send_action(session, task, slot.account_id, slot.planned_at, payload, action_id=action_id)
+    if action.id != action_id:
+        intent.outcome = "action_deduplicated"
+        _release_variation_conflict(session, coverage_id, action_id)
+        return None
+    return action
+
+
+def _create_coverage_variation_intent(
+    session: Session,
+    task: Task,
+    payload: SendMessagePayload,
+    action_id: str,
+) -> AiCoverageVariationIntent | None:
+    variation_key = str(payload.content_variation_key or "")
+    coverage_id = str(payload.coverage_ledger_id or "")
+    if not variation_key:
+        raise ValueError("daily coverage action requires content_variation_key")
+    snapshot = _variation_intent_snapshot(payload)
+    intent = AiCoverageVariationIntent(
+        tenant_id=task.tenant_id,
+        coverage_ledger_id=coverage_id,
+        action_id=action_id,
+        content_variation_key=variation_key,
+        context_version=str(payload.content_context_version or ""),
+        intent_snapshot_hash=hashlib.sha256(snapshot).hexdigest(),
+        outcome="reserved",
+    )
+    try:
+        with session.begin_nested():
+            session.add(intent)
+            session.flush()
+    except IntegrityError:
+        return None
+    return intent
+
+
+def _variation_intent_snapshot(payload: SendMessagePayload) -> bytes:
+    source = {
+        "variation_key": payload.content_variation_key,
+        "context_version": payload.content_context_version,
+        "target_reference_revision": payload.target_reference_revision,
+        "coverage_window_date": payload.coverage_window_date,
+        "act_type": payload.act_type,
+        "reply_to_message_id": payload.reply_to_message_id,
+    }
+    return json.dumps(source, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
+
+
+def _release_variation_conflict(session: Session, coverage_id: str, action_id: str) -> None:
+    release_coverage_reservation(
+        session,
+        coverage_id,
+        action_id,
+        blocker_code="content_variation_key_conflict",
+        blocker_detail="当前覆盖义务已使用相同内容变体，等待新的上下文版本",
+    )
 
 
 def _record_plan_completion(
@@ -1224,9 +1327,6 @@ def prepare_open_actions_for_planning(session: Session, task: Task) -> int:
         require_authorized=False,
     )
     if not group:
-        return legacy_replanned
-    fresh_hard_progress = current_progress(session, task, _now(), fresh=True) if hard_hourly_enabled(task) else {}
-    if planning_blocked_by_dispatcher_lag(fresh_hard_progress):
         return legacy_replanned
     hard_progress = current_progress(session, task, _now()) if hard_hourly_enabled(task) else {}
     hard_progress = hard_progress if int(hard_progress.get("deficit") or 0) > 0 else {}
@@ -1415,21 +1515,6 @@ def _defer_crosses_hard_hour(progress: dict[str, object], defer_until: datetime)
     from app.services.task_center.datetime_compat import is_after_or_equal
 
     return is_after_or_equal(defer_until, hour_end)
-
-
-def _reserve_action_coverage(session: Session, action: Action, payload: SendMessagePayload) -> bool:
-    coverage_id = str(payload.coverage_ledger_id or "")
-    if not coverage_id:
-        return True
-    if reserve_coverage_for_action(session, coverage_id, action.id, now=_now()):
-        return True
-    action.status = "skipped"
-    action.result = {
-        "success": False,
-        "skip_reason": "coverage_reservation_conflict",
-        "error_message": "覆盖义务已被其他 Action 预约",
-    }
-    return False
 
 
 def _select_accounts_for_plan(
@@ -1775,6 +1860,13 @@ def _coverage_plan_state(
     ensure_task_daily_coverage(session, task, now=timestamp)
     backfill_daily_coverage_confirmations(session, task, timestamp.date())
     totals = coverage_plan_totals(session, task, group, now=timestamp)
+    summary = record_daily_fulfillment_decision(
+        session,
+        task,
+        reason="planner_evaluated",
+        hard_hourly_required_new=int(_progress.get("deficit") or 0),
+        now=timestamp,
+    )
     configured_limit = int(getattr(get_settings(), "daily_coverage_plan_batch_limit", 20) or 20)
     rows = ready_coverage_plan_batch(
         session,
@@ -1793,14 +1885,13 @@ def _coverage_plan_state(
         sendable_account_count=totals.sendable_account_count,
         sendable_confirmed_count=totals.sendable_confirmed_count,
         sendable_reserved_count=totals.sendable_reserved_count,
+        required_new=summary.ready_to_plan_count,
     )
 
 
 def requires_planning_with_open_actions(session: Session, task: Task) -> bool:
     config = task.type_config or {}
     if not _all_accounts_daily_coverage(config):
-        return False
-    if hard_hourly_enabled(task) and not hard_hourly_requires_planning(session, task, _now(), fresh=True):
         return False
     group = group_from_reference(
         session,
@@ -1811,8 +1902,8 @@ def requires_planning_with_open_actions(session: Session, task: Task) -> bool:
     )
     if not group:
         return False
-    rows = _load_coverage_rows(session, task)
-    return daily_coverage_due_debt(task, group, rows, now=_now()) > 0
+    summary = record_daily_fulfillment_decision(session, task, reason="open_actions_gate", now=_now())
+    return summary.ready_to_plan_count > 0
 
 
 def _record_daily_coverage_next_check(task: Task, has_debt: bool) -> None:

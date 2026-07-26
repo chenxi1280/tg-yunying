@@ -25,6 +25,8 @@ def refresh_rows(
 def _row_needs_refresh(row: TaskAccountDailyCoverage, timestamp: datetime) -> bool:
     if row.state in {"confirmed", "reserved", "sending", "unknown"}:
         return False
+    if row.blocker_stage == "generation_contract":
+        return False
     return not (
         row.state == "blocked"
         and row.next_eligible_at

@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.admin_chats import send_admin_chat_broadcast
 from app.models import Action, BotProtocolSample, OperationTarget, Task, Tenant, TgAccount, TgAccountAuthorization
+from app.search_join_protocol import approved_protocol_profile, is_jisou_bot
 from app.search_keywords import repair_legacy_keyword_materials
 from app.security import decrypt_secret
 from app.services.account_capacity import (
@@ -25,7 +27,7 @@ from app.services.proxy_airport_subscription import (
     list_proxy_airport_subscriptions,
     select_proxy_airport_subscription_for_failover,
 )
-from app.timezone import as_beijing
+from app.timezone import BEIJING_TZ, as_beijing
 
 from ..account_pool import select_task_accounts
 from ..jisou_selector_accounts import select_jisou_selector_candidates
@@ -33,7 +35,23 @@ from ..pacing import quiet_hours_active
 from ..payloads import SearchJoinPayload, create_search_join_action
 from ..search_click_target_progress import reconcile_search_click_target_progress
 from ..search_join_config import runtime_search_join_config
-from ..search_join_pacing import PacingStats, account_base_allowed, hourly_action_allowed, keyword_allowed, pacing_window, planned_action_decision, should_skip_window, task_daily_capacity
+from ..search_join_daily_capacity import (
+    SearchJoinDailyCapacity,
+    configured_account_source_capacity,
+    strict_capacity_action_key,
+    strict_daily_capacity,
+)
+from ..search_join_pacing import (
+    PacingStats,
+    account_base_allowed,
+    hourly_action_allowed,
+    hourly_source_occupancy,
+    keyword_allowed,
+    pacing_window,
+    planned_action_decision,
+    should_skip_window,
+    task_daily_capacity,
+)
 from ..stats import search_join_hourly_execution
 
 
@@ -43,6 +61,8 @@ class SearchJoinPlan:
     keyword_hash: str
     target: OperationTarget | None
     hourly: dict
+    protocol_sample_version: str
+    approved_protocol_profile: dict
 
 
 @dataclass(frozen=True)
@@ -79,8 +99,6 @@ def build_plan(session: Session, task: Task) -> int:
         return 0
     config = _runtime_config(task)
     bot_username = _first_bot_username(config)
-    if not _protocol_sample_ready(session, task.tenant_id, bot_username):
-        return _block(task, "protocol_sample_missing", f"search_join protocol sample missing: {bot_username}")
     try:
         keyword_materials = _keyword_materials(config)
     except ValueError as exc:
@@ -90,6 +108,30 @@ def build_plan(session: Session, task: Task) -> int:
     config = _canonical_keyword_materials(task, config, keyword_materials)
     window = pacing_window(task, now_value)
     pacing_stats = PacingStats(tenant_timezone=task.timezone or "Asia/Shanghai", local_date=window.local_date.isoformat())
+    strict_window_skipped = bool((task.type_config or {}).get("strict_daily_target")) and _window_skipped(
+        session,
+        task,
+        config,
+        window,
+        pacing_stats,
+    )
+    accounts = select_task_accounts(
+        session,
+        task.tenant_id,
+        task.account_config or {},
+        enforce_capacity=False,
+        scan_all_candidates=True,
+    )
+    strict_capacity = _remaining_strict_daily_capacity(session, task, config, accounts, now_value, pacing_stats)
+    _record_strict_capacity_snapshot(task, target_progress, strict_capacity)
+    if _strict_daily_target_is_impossible(task, target_progress, strict_capacity):
+        return _record_strict_capacity_blocked(task, target_progress, strict_capacity, pacing_stats)
+    protocol_sample = _protocol_sample(session, task.tenant_id, bot_username)
+    if protocol_sample is None:
+        return _block(task, "protocol_sample_missing", f"search_join protocol sample missing: {bot_username}")
+    protocol_profile = _approved_protocol_profile(protocol_sample, bot_username)
+    if protocol_profile is None:
+        return _block(task, "protocol_sample_invalid", f"search_join protocol sample lacks approved fingerprints: {bot_username}")
     if quiet_hours_active(now_value, config, timezone_name=task.timezone):
         pacing_stats.last_limit_reason = "quiet_hours_active"
         task.last_error = ""
@@ -100,7 +142,7 @@ def build_plan(session: Session, task: Task) -> int:
             {"quiet_hours_active": 1},
             pacing_stats,
         )
-    if _window_skipped(session, task, config, window, pacing_stats):
+    if strict_window_skipped or _window_skipped(session, task, config, window, pacing_stats):
         return _record_hourly(task, search_join_hourly_execution(session, task, now_value, target_progress=target_progress), 0, {}, pacing_stats)
     hourly = search_join_hourly_execution(
         session,
@@ -108,26 +150,32 @@ def build_plan(session: Session, task: Task) -> int:
         now_value,
         target_progress=target_progress,
     )
-    plan_count = task_daily_capacity(session, task, window, _plan_count(config, hourly), pacing_stats)
+    requested_plan_count = _plan_count(
+        config,
+        hourly,
+        target_progress=target_progress,
+        strict_capacity=strict_capacity,
+    )
+    plan_count = task_daily_capacity(session, task, window, requested_plan_count, pacing_stats)
     if target_progress.remaining_slot_count is not None:
         plan_count = min(plan_count, target_progress.remaining_slot_count)
     if plan_count <= 0:
         return _record_hourly(task, hourly, 0, {}, pacing_stats)
     if _clash_subscription_pool_unavailable(session, task.tenant_id):
         return _record_all_subscriptions_unavailable(session, task, hourly, pacing_stats)
-    accounts = select_task_accounts(
-        session,
-        task.tenant_id,
-        task.account_config or {},
-        enforce_capacity=False,
-        scan_all_candidates=True,
-    )
     if not accounts:
         return _block(task, "account_unavailable", "没有可用账号，等待账号恢复后继续执行")
     target = _target(session, task)
     if target is None or not target.username.strip():
         return _block(task, "target_identity_missing", "搜索入群目标缺少可验证 username")
-    plan = SearchJoinPlan(bot_username=bot_username, keyword_hash="", target=target, hourly=hourly)
+    plan = SearchJoinPlan(
+        bot_username=bot_username,
+        keyword_hash="",
+        target=target,
+        hourly=hourly,
+        protocol_sample_version=protocol_sample.schema_version,
+        approved_protocol_profile=protocol_profile,
+    )
     created = 0
     blockers: dict[str, int] = {}
     selector_candidates = select_jisou_selector_candidates(
@@ -156,7 +204,11 @@ def build_plan(session: Session, task: Task) -> int:
         allow_repeat=bool((task.type_config or {}).get("allow_same_account_repeat_application")),
     )
     capacity_plan = _capacity_plan(task, planning_accounts)
-    candidate_offset = pacing_stats.task_daily_action_count
+    candidate_offset = (
+        strict_capacity.current_hour_source_occupied
+        if strict_capacity is not None
+        else pacing_stats.task_daily_action_count
+    )
     for candidate_index, account in enumerate(planning_accounts, start=candidate_offset):
         if not account_base_allowed(session, task, account.id, window, pacing_stats):
             continue
@@ -183,6 +235,7 @@ def build_plan(session: Session, task: Task) -> int:
             config,
             capacity_plan,
             candidate_index=candidate_index,
+            strict_capacity=strict_capacity,
         )
         if blocker:
             _count_blocker(blockers, blocker)
@@ -198,7 +251,18 @@ def build_plan(session: Session, task: Task) -> int:
         return _block(task, "needs_client_metadata", "搜索入群缺少可执行授权环境栈或客户端 metadata")
     task.last_error = ""
     planned = _record_hourly(task, hourly, created, blockers, pacing_stats)
-    reconcile_search_click_target_progress(session, task)
+    current_progress = reconcile_search_click_target_progress(session, task, now_value=now_value)
+    if strict_capacity is not None:
+        refreshed_stats = PacingStats()
+        refreshed_capacity = _remaining_strict_daily_capacity(
+            session,
+            task,
+            config,
+            accounts,
+            now_value,
+            refreshed_stats,
+        )
+        _record_strict_capacity_snapshot(task, current_progress, refreshed_capacity)
     return planned
 
 
@@ -265,8 +329,17 @@ def _create_planned_action(
     capacity_plan: CapacityPlan,
     *,
     candidate_index: int,
+    strict_capacity: SearchJoinDailyCapacity | None,
 ) -> tuple[bool, str, datetime | None]:
-    candidate_key = f"{window.local_date.isoformat()}:{account.id}:{keyword_hash}:{payload.hourly_execution.get('bucket', '')}:{candidate_index}"
+    candidate_key = _candidate_key(
+        task,
+        account,
+        keyword_hash,
+        payload,
+        window,
+        candidate_index,
+        strict_capacity,
+    )
     decision = planned_action_decision(
         session,
         task,
@@ -291,17 +364,37 @@ def _create_planned_action(
     if not hourly_action_allowed(session, task, scheduled_at, max_actions_per_hour=int(config.get("max_actions_per_hour") or 0)):
         return False, "task_hourly_limit_reached", None
     decision.scheduled_at = scheduled_at
+    action_payload = payload.model_copy(update={"planning_slot_key": candidate_key})
     if not decision.decision_value.get("skipped"):
-        create_search_join_action(session, task, account.id, scheduled_at, payload)
+        create_search_join_action(session, task, account.id, scheduled_at, action_payload)
         return True, "", scheduled_at
     lookup = BehaviorSkipLookup(task, account.id, keyword_hash, decision.scheduled_at)
     if _existing_behavior_skip_action(session, lookup):
         return True, "", None
-    action = create_search_join_action(session, task, account.id, scheduled_at, payload)
+    action = create_search_join_action(session, task, account.id, scheduled_at, action_payload)
     action.status = "skipped"
     action.executed_at = _now()
     action.result = {"success": False, "skip_reason": "skipped_by_behavior_pacing"}
     return True, "", None
+
+
+def _candidate_key(
+    task: Task,
+    account: TgAccount,
+    keyword_hash: str,
+    payload: SearchJoinPayload,
+    window,
+    candidate_index: int,
+    strict_capacity: SearchJoinDailyCapacity | None,
+) -> str:
+    if strict_capacity is not None:
+        return strict_capacity_action_key(
+            task.timezone,
+            window.local_date,
+            window.hour_start.hour,
+            candidate_index,
+        )
+    return f"{window.local_date.isoformat()}:{account.id}:{keyword_hash}:{payload.hourly_execution.get('bucket', '')}:{candidate_index}"
 
 
 def _next_account_capacity_slot(
@@ -400,6 +493,8 @@ def _payload(payload_input: PayloadInput) -> SearchJoinPayload:
         hourly_execution=dict(payload_input.plan.hourly),
         linked_task_policy=list(config.get("post_join_task_links") or []),
         runtime_environment=_runtime_environment(payload_input.environment),
+        protocol_sample_version=payload_input.plan.protocol_sample_version,
+        approved_protocol_profile=payload_input.plan.approved_protocol_profile,
     )
 
 
@@ -583,24 +678,166 @@ def _canonical_keyword_materials(task: Task, config: dict, materials: list[tuple
     return normalized
 
 
-def _protocol_sample_ready(session: Session, tenant_id: int, bot_username: str) -> bool:
+def _protocol_sample(session: Session, tenant_id: int, bot_username: str) -> BotProtocolSample | None:
     if not bot_username:
-        return False
-    statement = select(BotProtocolSample.id).where(
+        return None
+    statement = select(BotProtocolSample).where(
         BotProtocolSample.tenant_id == tenant_id,
         BotProtocolSample.bot_username == bot_username,
         BotProtocolSample.sample_type == "search_results",
         BotProtocolSample.is_active.is_(True),
         BotProtocolSample.pii_scrubbed.is_(True),
     )
-    return session.scalar(statement.limit(1)) is not None
+    return session.scalar(statement.order_by(BotProtocolSample.captured_at.desc(), BotProtocolSample.id.desc()).limit(1))
 
 
-def _plan_count(config: dict, hourly: dict) -> int:
+def _approved_protocol_profile(sample: BotProtocolSample, bot_username: str) -> dict | None:
+    if not is_jisou_bot(bot_username):
+        return {}
+    return approved_protocol_profile(sample.structure_json)
+
+
+def _plan_count(
+    config: dict,
+    hourly: dict,
+    *,
+    target_progress=None,
+    strict_capacity: SearchJoinDailyCapacity | None = None,
+) -> int:
+    if strict_capacity is not None:
+        return _strict_plan_count(target_progress, strict_capacity)
     if int(config.get("hourly_min_successful_joins") or 0) <= 0:
         return 0
     per_round = int(config.get("actions_per_round") or 1)
     return max(0, min(per_round, int(hourly.get("deficit") or 0), int(hourly.get("capacity") or 0)))
+
+
+def _strict_plan_count(target_progress, capacity: SearchJoinDailyCapacity) -> int:
+    remaining = max(0, int(getattr(target_progress, "remaining_slot_count", 0) or 0))
+    if remaining <= 0 or capacity.remaining_executable_hours <= 0:
+        return 0
+    required_this_window = (remaining + capacity.remaining_executable_hours - 1) // capacity.remaining_executable_hours
+    return min(
+        remaining,
+        capacity.current_hour_available,
+        capacity.strict_planning_capacity,
+        required_this_window,
+    )
+
+
+def _remaining_strict_daily_capacity(
+    session: Session,
+    task: Task,
+    config: dict,
+    accounts: list[TgAccount],
+    now_value: datetime,
+    pacing_stats: PacingStats,
+) -> SearchJoinDailyCapacity | None:
+    target = (task.type_config or {}).get("daily_click_target_count")
+    if not (task.type_config or {}).get("strict_daily_target") or target is None:
+        return None
+    task_daily_capacity(session, task, pacing_window(task, now_value), 1_000_000, pacing_stats)
+    base_budget = int(config.get("max_actions_per_day") or 0)
+    remaining_budget = max(0, base_budget - pacing_stats.task_daily_action_count) if base_budget else None
+    account_capacity = configured_account_source_capacity(
+        config,
+        candidate_account_count=len(accounts),
+        allow_repeat=bool((task.type_config or {}).get("allow_same_account_repeat_application")),
+        keyword_count=len(config.get("keyword_hashes") or []),
+    )
+    remaining_account_capacity = max(0, account_capacity - pacing_stats.task_daily_action_count)
+    timezone = ZoneInfo(task.timezone or "Asia/Shanghai")
+    source_now = now_value.replace(tzinfo=BEIJING_TZ) if now_value.tzinfo is None else now_value
+    local_now = source_now.astimezone(timezone)
+    day_end = local_now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+    deadline = task.scheduled_end
+    deadline_local = (
+        (deadline.replace(tzinfo=BEIJING_TZ) if deadline.tzinfo is None else deadline).astimezone(timezone)
+        if deadline
+        else None
+    )
+    active_end = min(day_end, deadline_local) if deadline_local else day_end
+    return strict_daily_capacity(
+        task.id,
+        task.timezone,
+        config,
+        candidate_account_count=len(accounts),
+        account_source_capacity=remaining_account_capacity,
+        effective_date=local_now.date(),
+        capacity_day_kind="partial_day",
+        active_start=local_now,
+        active_end=active_end,
+        daily_source_budget=remaining_budget,
+        occupied_sources_by_hour=hourly_source_occupancy(
+            session,
+            task,
+            pacing_window(task, now_value),
+            now_value=now_value,
+        ),
+        current_hour=local_now.hour,
+    )
+
+
+def _strict_daily_target_is_impossible(task: Task, target_progress, capacity: SearchJoinDailyCapacity | None) -> bool:
+    if capacity is None:
+        return False
+    target = int((task.type_config or {}).get("daily_click_target_count") or 0)
+    return (
+        int(target_progress.confirmed_count)
+        + int(target_progress.held_count)
+        + capacity.strict_planning_capacity
+        < target
+    )
+
+
+def _record_strict_capacity_blocked(
+    task: Task,
+    target_progress,
+    capacity: SearchJoinDailyCapacity | None,
+    pacing_stats: PacingStats,
+) -> int:
+    if capacity is None:
+        raise ValueError("strict capacity is required")
+    _record_strict_capacity_snapshot(task, target_progress, capacity, blocked=True)
+    stats = dict(task.stats or {})
+    search_stats = dict(stats.get("search_join_stats") or {})
+    search_stats["pacing_limits"] = pacing_stats.as_dict()
+    stats["search_join_stats"] = search_stats
+    task.stats = stats
+    task.last_error = "daily_target_capacity_insufficient"
+    return 0
+
+
+def _record_strict_capacity_snapshot(
+    task: Task,
+    target_progress,
+    capacity: SearchJoinDailyCapacity | None,
+    *,
+    blocked: bool = False,
+) -> None:
+    if capacity is None:
+        return
+    target = int((task.type_config or {}).get("daily_click_target_count") or 0)
+    confirmed = int(getattr(target_progress, "confirmed_count", 0) or 0)
+    held = int(getattr(target_progress, "held_count", 0) or 0)
+    capacity_feasible = confirmed + held + capacity.strict_planning_capacity >= target
+    daily_outcome = "met" if target > 0 and confirmed >= target else "blocked" if blocked else "at_risk"
+    stats = dict(task.stats or {})
+    search_stats = dict(stats.get("search_join_stats") or {})
+    search_stats["daily_fulfillment"] = {
+        **capacity.as_dict(),
+        "daily_click_target_count": target,
+        "confirmed_click_count": confirmed,
+        "held_click_count": held,
+        "remaining_click_slots": int(getattr(target_progress, "remaining_slot_count", 0) or 0),
+        "capacity_feasible": capacity_feasible,
+        "daily_outcome": daily_outcome,
+        **({"blocker_code": "daily_target_capacity_insufficient"} if blocked else {}),
+    }
+    stats["search_join_stats"] = search_stats
+    task.stats = stats
+    if not blocked and task.last_error == "daily_target_capacity_insufficient":
+        task.last_error = ""
 
 
 def _block(task: Task, code: str, message: str) -> int:

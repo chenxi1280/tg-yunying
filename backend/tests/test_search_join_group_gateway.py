@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from dataclasses import dataclass
 
 import pytest
@@ -138,7 +139,32 @@ def _payload(**overrides) -> dict:
         "post_join_policy": "stay_joined",
     }
     payload.update(overrides)
+    if str(payload.get("bot_username") or "").lstrip("@").lower() == "jisou" and "approved_protocol_profile" not in overrides:
+        payload["approved_protocol_profile"] = _jisou_protocol_profile()
     return payload
+
+
+def _jisou_protocol_profile() -> dict:
+    return {
+        "page_fingerprints": [
+            {"page_phase": "verification_page", "text_enums": ["human_verification"]},
+            {"page_phase": "hot_list_page", "text_enums": ["hot_list"]},
+            {
+                "page_phase": "search_category_page",
+                "button_text_enums_any": ["jisou_group_category", "jisou_channel_category"],
+                "selector_rules": [
+                    {
+                        "row": 0,
+                        "col": 0,
+                        "button_type": "callback_data",
+                        "effect": "unknown",
+                        "normalized_text": "jisou_group_category",
+                    }
+                ],
+            },
+            {"page_phase": "group_result_page", "button_effects_any": ["join_candidate", "navigate_only"]},
+        ]
+    }
 
 
 @pytest.mark.no_postgres
@@ -158,6 +184,44 @@ def test_execute_search_join_sends_keyword_clicks_safe_navigation_and_marks_targ
     assert result["join_status"] == "target_found"
     assert result["pre_join_decoy_clicks"][0]["joined"] is False
     assert "上海 留学" not in str(result)
+
+
+@pytest.mark.no_postgres
+def test_execute_search_join_rejects_jisou_without_approved_profile() -> None:
+    category_page = FakeMessage(101, [[FakeButton("👥", data=b"group-category")]])
+    client = FakeSearchJoinClient([FakeMessage(100, []), category_page])
+
+    result = asyncio.run(
+        execute_search_join_with_client(
+            client,
+            _payload(bot_username="jisou", approved_protocol_profile={}),
+            keyword_text="郑州",
+        )
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "jisou_protocol_page_unknown"
+    assert result["jisou_page_phase"] == "unknown_page"
+    assert category_page.clicked == []
+
+
+@pytest.mark.no_postgres
+def test_execute_search_join_marks_buttons_matched_to_the_approved_profile() -> None:
+    category_page = FakeMessage(101, [[FakeButton("👥", data=b"group-category")]])
+    result_page = FakeMessage(102, [[FakeButton("目标群", url="https://t.me/target_group")]])
+    client = FakeSearchJoinClient([FakeMessage(100, []), category_page, result_page])
+
+    result = asyncio.run(
+        execute_search_join_with_client(
+            client,
+            _payload(bot_username="jisou", approved_protocol_profile=_jisou_protocol_profile()),
+            keyword_text="郑州",
+        )
+    )
+
+    assert result["success"] is True
+    assert result["search_protocol_trace"]["selector_page"]["button_layout"][0]["approved_sample_match"] is True
+    assert result["search_protocol_trace"]["result_page"]["button_layout"][0]["approved_sample_match"] is True
 
 
 @pytest.mark.no_postgres
@@ -251,24 +315,41 @@ def test_execute_search_join_rejects_unfiltered_jisou_results_when_group_selecto
 
     assert result["success"] is False
     assert result["error_code"] == "jisou_group_selector_missing"
-    assert result["search_protocol_trace"] == {
-        "selector_page": {
-            "button_count": 1,
-            "button_layout": [
-                {
-                    "row": 0,
-                    "col": 0,
-                    "button_type": "callback_data",
-                    "effect": "unknown",
-                    "text_length": 1,
-                    "contains_page_marker": False,
-                    "navigation_symbols": [],
-                }
-            ],
-        }
-    }
+    assert result["jisou_page_phase"] == "search_category_page"
+    selector_page = result["search_protocol_trace"]["selector_page"]
+    assert selector_page["button_count"] == 1
+    assert selector_page["button_layout"][0]["approved_sample_match"] is True
+    assert "text" not in selector_page["button_layout"][0]
     assert result_page.clicked == []
     assert client.joined == []
+
+
+@pytest.mark.no_postgres
+def test_execute_search_join_accepts_jisou_group_results_page_without_category_selector() -> None:
+    result_page = FakeMessage(101, [[FakeButton("目标群", url="https://t.me/target_group")]])
+    client = FakeSearchJoinClient([FakeMessage(100, []), result_page])
+
+    result = asyncio.run(execute_search_join_with_client(client, _payload(bot_username="jisou"), keyword_text="郑州"))
+
+    assert result["success"] is True
+    assert result_page.clicked == [(0, 0)]
+
+
+@pytest.mark.no_postgres
+def test_execute_search_join_reports_hot_list_as_session_state_not_selector_missing() -> None:
+    hot_list_page = FakeMessage(
+        101,
+        [[FakeButton("未知入口", data=b"unknown")]],
+        raw_text="热搜排行榜",
+    )
+    client = FakeSearchJoinClient([FakeMessage(100, []), hot_list_page])
+
+    result = asyncio.run(execute_search_join_with_client(client, _payload(bot_username="jisou"), keyword_text="郑州"))
+
+    assert result["success"] is False
+    assert result["error_code"] == "jisou_hot_list_page"
+    assert result["jisou_page_phase"] == "hot_list_page"
+    assert hot_list_page.clicked == []
 
 
 @pytest.mark.no_postgres
@@ -342,7 +423,9 @@ def test_execute_search_join_marks_known_target_when_message_text_matches() -> N
     assert client.joined == []
     assert result["join_status"] == "target_found"
     assert result["target_match_source"] == "message_text"
-    assert result["target_line"] == "👥郑州平价资源（交流群） @xiaozisk 46k"
+    assert result["target_line_hash"] == hashlib.sha256("👥郑州平价资源（交流群） @xiaozisk 46k".encode()).hexdigest()
+    assert result["target_line_length"] == len("👥郑州平价资源（交流群） @xiaozisk 46k")
+    assert "target_line" not in result
 
 
 @pytest.mark.no_postgres
@@ -376,7 +459,8 @@ def test_execute_search_join_uses_visible_exact_title_with_configured_username_o
     assert result["success"] is True
     assert result["page"] == 4
     assert result["target_match_source"] == "message_title_username_verified"
-    assert result["target_line"] == "👥 河南郑州学生会 · 公开群"
+    assert result["target_line_hash"] == hashlib.sha256("👥 河南郑州学生会 · 公开群".encode()).hexdigest()
+    assert "target_line" not in result
     assert target_page.clicked == []
     assert client.joined == []
 
@@ -435,7 +519,8 @@ def test_execute_search_join_records_target_match_when_join_request_is_pending()
     assert "membership_observed" not in result
     assert source_result["search_end_reason"] == "target_found"
     assert source_result["target_match_source"] == "message_title_username_verified"
-    assert source_result["target_line"] == "👥 河南郑州学生会 · 公开群"
+    assert source_result["target_line_hash"] == hashlib.sha256("👥 河南郑州学生会 · 公开群".encode()).hexdigest()
+    assert "target_line" not in source_result
     assert client.read_targets == []
 
 
@@ -588,52 +673,13 @@ def test_execute_search_join_records_sanitized_jisou_page_structure_when_no_next
     result = asyncio.run(execute_search_join_with_client(client, _payload(bot_username="jisou"), keyword_text="郑州"))
 
     assert result["error_code"] == "target_not_in_results"
-    assert result["search_protocol_trace"] == {
-        "jisou_group_selector": {"position": 1, "text": "👥"},
-        "selector_page": {
-            "button_count": 2,
-            "button_layout": [
-                {
-                    "row": 0,
-                    "col": 0,
-                    "button_type": "callback_data",
-                    "effect": "unknown",
-                    "text_length": 1,
-                    "contains_page_marker": False,
-                    "navigation_symbols": [],
-                },
-                {
-                    "row": 1,
-                    "col": 0,
-                    "button_type": "callback_data",
-                    "effect": "unknown",
-                    "text_length": 1,
-                    "contains_page_marker": False,
-                    "navigation_symbols": [],
-                },
-            ],
-        },
-        "result_page": {
-            "button_count": 2,
-            "button_layout": [
-                {
-                    "row": 0,
-                    "col": 0,
-                    "button_type": "telegram_url",
-                    "effect": "join_candidate",
-                    "text_length": 3,
-                    "contains_page_marker": False,
-                    "navigation_symbols": [],
-                },
-                {
-                    "row": 1,
-                    "col": 0,
-                    "button_type": "callback_data",
-                    "effect": "unknown",
-                    "text_length": 2,
-                    "contains_page_marker": False,
-                    "navigation_symbols": ["previous_track"],
-                },
-            ],
-        },
+    trace = result["search_protocol_trace"]
+    assert trace["jisou_group_selector"] == {
+        "position": 1,
+        "text_hash": "d7b93ac850112f54",
+        "text_length": 1,
+        "approved_sample_match": True,
     }
+    assert [item["approved_sample_match"] for item in trace["selector_page"]["button_layout"]] == [True, False]
+    assert [item["approved_sample_match"] for item in trace["result_page"]["button_layout"]] == [True, False]
+    assert "text" not in trace["jisou_group_selector"]

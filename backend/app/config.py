@@ -124,6 +124,7 @@ class Settings:
     worker_role: str = os.getenv("WORKER_ROLE", "all")
     action_claim_limit: int = int(os.getenv("ACTION_CLAIM_LIMIT", "100"))
     action_claim_seconds: int = int(os.getenv("ACTION_CLAIM_SECONDS", "60"))
+    dispatcher_claim_scope: str = os.getenv("DISPATCHER_CLAIM_SCOPE", "task_center_dispatch")
     action_lease_seconds: int = int(os.getenv("ACTION_LEASE_SECONDS", "1800"))
     dispatcher_concurrency: int = int(os.getenv("DISPATCHER_CONCURRENCY", "20"))
     daily_coverage_plan_batch_limit: int = int(os.getenv("DAILY_COVERAGE_PLAN_BATCH_LIMIT", "20"))
