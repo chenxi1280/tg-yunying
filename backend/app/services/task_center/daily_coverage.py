@@ -25,6 +25,7 @@ from .daily_coverage_planning import advance_coverage_plan_cursor, ready_coverag
 
 
 TERMINAL_PRECONFIRMATION_STATUSES = frozenset({"failed", "skipped", "retryable_failed"})
+RECOVERABLE_TERMINAL_COVERAGE_STATES = frozenset({"reserved", "sending", "unknown"})
 GENERATION_CONTRACT_ERROR_CODES = frozenset({
     "ai_generation_output_count_mismatch",
     "ai_generation_slot_mapping_invalid",
@@ -89,7 +90,7 @@ def release_terminal_coverage_reservations(session: Session, task: Task, coverag
         .where(
             TaskAccountDailyCoverage.task_id == task.id,
             TaskAccountDailyCoverage.coverage_date == coverage_date,
-            TaskAccountDailyCoverage.state.in_(("reserved", "sending")),
+            TaskAccountDailyCoverage.state.in_(RECOVERABLE_TERMINAL_COVERAGE_STATES),
             Action.status.in_(TERMINAL_PRECONFIRMATION_STATUSES),
         )
     ))
@@ -108,7 +109,7 @@ def recover_terminal_coverage_reservations(
         .join(Action, Action.id == TaskAccountDailyCoverage.reserved_action_id)
         .where(
             TaskAccountDailyCoverage.coverage_date == coverage_date,
-            TaskAccountDailyCoverage.state.in_(("reserved", "sending")),
+            TaskAccountDailyCoverage.state.in_(RECOVERABLE_TERMINAL_COVERAGE_STATES),
             Action.status.in_(TERMINAL_PRECONFIRMATION_STATUSES),
         )
         .order_by(TaskAccountDailyCoverage.updated_at.asc(), TaskAccountDailyCoverage.id.asc())
@@ -120,7 +121,10 @@ def recover_terminal_coverage_reservations(
 
 def _release_terminal_rows(session: Session, rows) -> int:
     released = 0
+    gateway_started_ids = _gateway_started_action_ids(session, rows)
     for coverage, action in rows:
+        if coverage.state == "unknown" and action.id in gateway_started_ids:
+            continue
         result = action.result if isinstance(action.result, dict) else {}
         code = str(result.get("error_code") or action.status)
         detail = str(result.get("error_message") or "")
@@ -131,6 +135,18 @@ def _release_terminal_rows(session: Session, rows) -> int:
     if released:
         session.flush()
     return released
+
+
+def _gateway_started_action_ids(session: Session, rows) -> set[str]:
+    action_ids = [action.id for coverage, action in rows if coverage.state == "unknown"]
+    if not action_ids:
+        return set()
+    return set(session.scalars(
+        select(ExecutionAttempt.action_id).where(
+            ExecutionAttempt.action_id.in_(action_ids),
+            ExecutionAttempt.gateway_call_started_at.is_not(None),
+        ).distinct()
+    ))
 
 
 def reserve_coverage_for_action(

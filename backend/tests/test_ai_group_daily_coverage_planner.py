@@ -219,7 +219,7 @@ def test_daily_fulfillment_repairs_ready_row_with_future_coverage_action(session
     assert summary.valid_future_open_cover_count == 1
 
 
-def test_daily_fulfillment_marks_overdue_reserved_action_unknown_instead_of_feasible(session: Session) -> None:
+def test_daily_fulfillment_marks_overdue_pre_gateway_action_as_dispatcher_lag(session: Session) -> None:
     task, _group = _seed(session)
     row = session.get(TaskAccountDailyCoverage, "coverage-1")
     blocked = session.get(TaskAccountDailyCoverage, "coverage-3")
@@ -245,12 +245,46 @@ def test_daily_fulfillment_marks_overdue_reserved_action_unknown_instead_of_feas
     summary = summarize_daily_fulfillment(session, task, now=now_value)
 
     session.refresh(row)
-    assert row.state == "unknown"
+    assert row.state == "reserved"
     assert row.reserved_action_id == action.id
-    assert row.blocker_code == "coverage_action_overdue"
+    assert row.blocker_code == "dispatcher_lag"
+    assert row.blocker_stage == "dispatcher"
     assert summary.valid_future_open_cover_count == 0
-    assert summary.unknown_hold_count == 1
+    assert summary.overdue_open_count == 1
+    assert summary.unknown_hold_count == 0
     assert summary.daily_outcome == "at_risk"
+
+
+def test_daily_fulfillment_restores_legacy_pre_gateway_unknown_to_reserved(session: Session) -> None:
+    task, _group = _seed(session)
+    row = session.get(TaskAccountDailyCoverage, "coverage-1")
+    timestamp = beijing_now().replace(hour=21, minute=0, second=0, microsecond=0)
+    action = Action(
+        id="legacy-pre-gateway-overdue-action",
+        tenant_id=task.tenant_id,
+        task_id=task.id,
+        task_type=task.type,
+        action_type="send_message",
+        account_id=row.account_id,
+        status="pending",
+        scheduled_at=timestamp - timedelta(minutes=5),
+        payload={"coverage_ledger_id": row.id},
+    )
+    row.state = "unknown"
+    row.reserved_action_id = action.id
+    row.blocker_code = "coverage_action_overdue"
+    row.blocker_stage = "remote_reconcile"
+    session.add(action)
+    session.commit()
+
+    summary = summarize_daily_fulfillment(session, task, now=timestamp)
+
+    session.refresh(row)
+    assert row.state == "reserved"
+    assert row.blocker_code == "dispatcher_lag"
+    assert row.recovery_path == "dispatcher_recheck"
+    assert summary.unknown_hold_count == 0
+    assert summary.overdue_open_count == 1
 
 
 def test_daily_fulfillment_normalizes_aware_action_time_from_postgres(session: Session) -> None:
@@ -275,7 +309,47 @@ def test_daily_fulfillment_normalizes_aware_action_time_from_postgres(session: S
 
     summary = summarize_daily_fulfillment(session, task, now=timestamp)
 
+    assert row.state == "reserved"
+    assert row.blocker_code == "dispatcher_lag"
+    assert summary.overdue_open_count == 1
+
+
+def test_daily_fulfillment_marks_gateway_started_overdue_action_unknown(session: Session) -> None:
+    task, _group = _seed(session)
+    row = session.get(TaskAccountDailyCoverage, "coverage-1")
+    timestamp = beijing_now().replace(hour=21, minute=0, second=0, microsecond=0)
+    action = Action(
+        id="gateway-started-overdue-action",
+        tenant_id=task.tenant_id,
+        task_id=task.id,
+        task_type=task.type,
+        action_type="send_message",
+        account_id=row.account_id,
+        status="executing",
+        scheduled_at=timestamp - timedelta(minutes=5),
+        payload={"coverage_ledger_id": row.id},
+    )
+    attempt = ExecutionAttempt(
+        id="gateway-started-overdue-attempt",
+        tenant_id=task.tenant_id,
+        action_id=action.id,
+        account_id=row.account_id,
+        worker_id="dispatcher",
+        attempt_no=1,
+        status="gateway_call_started",
+        gateway_call_started_at=timestamp - timedelta(minutes=4),
+    )
+    row.state = "reserved"
+    row.reserved_action_id = action.id
+    session.add_all([action, attempt])
+    session.commit()
+
+    summary = summarize_daily_fulfillment(session, task, now=timestamp)
+
+    session.refresh(row)
     assert row.state == "unknown"
+    assert row.blocker_code == "coverage_action_overdue"
+    assert summary.unknown_hold_count == 1
     assert summary.overdue_open_count == 1
 
 

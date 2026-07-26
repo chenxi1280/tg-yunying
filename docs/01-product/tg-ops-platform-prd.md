@@ -565,6 +565,12 @@ Planner 闸门顺序固定为：账号 / 授权槽位环境栈 -> 协议样本 -
 
 专项真相源为 docs/03-feature-designs/ai-group-daily-fulfillment-remediation-prd.md 与 docs/03-feature-designs/search-click-daily-fulfillment-remediation-prd.md。两份文档只代表设计完成，代码、迁移、发布与完整自然日生产证据仍须分别验收。
 
+#### 2.18.1 2026-07-27 AI 日覆盖 pre-Gateway 与 claim recovery 修订
+
+生产证据确认，AI 日覆盖 overdue 不能一概视为 Telegram 远端未知。`ExecutionAttempt.gateway_call_started_at` 是唯一边界：为空时覆盖行保持 `reserved + dispatcher_lag + dispatcher_recheck`，仍占自身 reservation、不能生成第二条 Action；非空时才进入 `unknown + coverage_action_overdue + remote_reconcile`，不得重发。历史被误标为 unknown 但无 Gateway 事实、且原 Action 已明确 terminal 的行，必须按真实终态释放 reservation 后重新规划。
+
+`DispatchClaimScope`、`DispatchClaimWindow`、`DispatchClaimShardAllocation` 的 active count 是可由 `executing + dispatch_claim_active` Action 重算的投影。跨 Window stale Recovery 释放 Action 时必须按原 binding 重算 Scope/Window/Allocation；如果计数漂移，Action.result 记录 before/after 审计后继续释放，不能因某个旧 Window 的零值抛 underflow 并让 Recovery 回滚。binding 缺失仍应显式失败。该修订不放宽群冷却、质量、账号、准入、风险或 unknown_after_send 的安全门。
+
 ### 2.19 极搜会话状态偏离与图片验证码识别设计（RC-5a/5b/5c/8）
 
 落实 PRD §2.18 极搜口径（line 563「热搜排行榜、验证页、未知页和正确分类页缺 selector 是不同错误」）的详细设计。P0 工单 `TKT-2026-07-25-SEARCH-JOIN-P0` S1/S2 线上实机证据（账号 99 + 165，2026-07-26/27 生产容器）确认原 RC-5「极搜群分类按钮缺失」需拆分为 4 个独立错误码，且图片算式验证码高频出现（推翻原 RC-8「无验证码」结论）。

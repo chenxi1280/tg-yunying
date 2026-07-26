@@ -46,14 +46,17 @@
 
 ~~~text
 AI 活群冻结日覆盖账本
-  -> daily_fulfillment 投影（confirmed / ready / reserved / unknown / blocked）
-  -> full_shortfall / valid_future_open_cover / unknown_hold / blocked_shortfall / required_new 决策审计
+  -> daily_fulfillment 投影（confirmed / ready / reserved / dispatcher_lag / unknown / blocked）
+  -> full_shortfall / valid_future_open_cover / overdue_open / unknown_hold / blocked_shortfall / required_new 决策审计
   -> CAS coverage reservation -> 持久化 AiCoverageVariationIntent -> 创建同 action_id 的 Action
   -> Planner backlog：planner_capacity_insufficient + next_decision_at（保留 ready debt）
   -> 批量 generation contract audit
       -> 契约失败：terminal Action + release reservation + generation_contract blocker
       -> 经批准的 provider / prompt-contract / parser 版本修复后才重新 ready
   -> 内容质量门或 Telegram Gateway
+  -> pre-Gateway overdue：reserved + dispatcher_lag，不能重建第二条 Action
+  -> ExecutionAttempt.gateway_call_started_at（唯一远端未知边界）
+  -> post-Gateway overdue：unknown + remote_reconcile，不能重发
   -> ExecutionAttempt + remote_message_id
   -> coverage confirmed，或带 recovery_path 的 blocker
 
@@ -73,6 +76,8 @@ AI 活群冻结日覆盖账本
 `GET /api/tasks/{task_id}/daily-fulfillment?date=` 按 `Task.timezone` 解析未指定日期：`group_ai_chat` 返回账号日覆盖账本和决策漏斗；`search_join_group` 返回点击目标、成员观察目标、所选日期的已记录严格容量结论、全局 dispatch claim 快照和脱敏协议轨迹。搜索任务不再伪装成 AI 覆盖账本，也不会把未记录日期的容量结论降级为全零事实。
 
 AI 的内容重复、批量 slot 映射与权限阻塞以 ai-group-daily-fulfillment-remediation-prd.md 为准；搜索的容量、份额、极搜协议和双目标事实以 search-click-daily-fulfillment-remediation-prd.md 为准。冻结分母、pending、unknown、申请待审批、source 尝试容量和 worker 心跳均不是完成事实。
+
+> **DF-188 AI 日覆盖 overdue 与跨 Window claim recovery（2026-07-27）**：`daily_fulfillment` 读取同 Action 的 `ExecutionAttempt.gateway_call_started_at` 区分 pre-Gateway Dispatcher 积压与 post-Gateway remote unknown；前者仍为 `reserved + dispatcher_lag + dispatcher_recheck` 并计入 overdue，后者才为 `unknown + coverage_action_overdue`。`service._recover_claimed_stale_action` 将 stale Action 收口后同步 coverage：pre-Gateway terminal 释放 `reserved/sending/legacy unknown` reservation，Gateway-started unknown 保留。`release_dispatch_claim` 以同 scope 仍为 `executing + dispatch_claim_active` 的 Action 重算 exact Scope/Window/Allocation active counter；漂移写入 Action.result 的 reconciliation 审计后继续释放，binding 缺失显式失败。terminal coverage Recovery 索引同时覆盖 `reserved/sending/unknown`。回归入口：`test_ai_group_daily_coverage_planner.py`、`test_task_account_daily_coverage.py`、`test_dispatch_claim_reservations.py`、`test_task_recovery_backpressure.py`。
 
 > **DF-187 AI 活群容量预检与执行门禁解耦（2026-07-27）**：字段、目标引用和规则绑定合法的 `group_ai_chat` 先经 `POST /api/tasks/precheck` 计算容量事实；`daily_coverage_capacity_insufficient` 与 `hard_hourly_group_cooldown_insufficient` 作为 warning 返回，`POST /api/tasks/group-ai-chat/create-and-start` 必须持久化 `Task(running)`，不得因这两类容量事实拒绝创建。随后 Planner 仅在可履约时创建 Action，Dispatcher 仍在 Gateway 前执行群冷却、日上限、账号、准入、质量和风控门禁；warning 不代表目标可达，也不允许提高任何限制或伪造完成。字段、目标、规则、账号、准入和其他风控 blocker 仍保持原有拒绝语义。回归入口：`test_ai_group_hard_hourly_target.py`。
 

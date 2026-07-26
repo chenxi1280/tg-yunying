@@ -69,6 +69,7 @@ from .channel_membership import (
     mark_channel_membership_joined,
 )
 from .dispatcher import (
+    _sync_action_coverage_state,
     _sync_all_account_membership_state,
     claim_actions,
     dispatch_action,
@@ -3364,6 +3365,7 @@ def _recover_claimed_stale_action(
         _mark_stale_executing_action(action=action, task=task, latest_attempt=latest_attempt, stale_worker_ids=stale_worker_ids, now=now)
         recovered = 1
     release_dispatch_claim(session, action)
+    _sync_action_coverage_state(session, action)
     release_recovery_claim(action, claim)
     session.commit()
     return recovered

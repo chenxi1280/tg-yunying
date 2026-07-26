@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.database import Base
 from app.integrations.telegram import OperationResult
-from app.models import Action, ExecutionAttempt, OperationTarget, Tenant, TgAccount, Task, WorkerHeartbeat
+from app.models import Action, ExecutionAttempt, OperationTarget, TaskAccountDailyCoverage, Tenant, TgAccount, TgGroup, Task, WorkerHeartbeat
 from app.services._common import _now
 from app.services.task_center import service as task_service
 from app.services.task_center.membership_fast_track import FastTrackResult
@@ -120,6 +120,56 @@ def test_recovery_matches_role_suffixed_heartbeat_to_action_lease_owner() -> Non
 
     assert action.status == "failed"
     assert action.result["recovery_reason"] == "stale_worker"
+
+
+def test_stale_pre_gateway_recovery_releases_coverage_reservation() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    with Session(engine) as session:
+        session.add_all([
+            Tenant(id=1, name="默认运营空间"),
+            TgAccount(id=1, tenant_id=1, display_name="覆盖账号", phone_masked="+861***0001", status="在线"),
+            TgGroup(id=1, tenant_id=1, tg_peer_id="-1001", title="覆盖群"),
+            Task(id="coverage-recovery-task", tenant_id=1, name="覆盖恢复", type="group_ai_chat", status="running", stats={}),
+        ])
+        action = Action(
+            id="coverage-recovery-action",
+            tenant_id=1,
+            task_id="coverage-recovery-task",
+            task_type="group_ai_chat",
+            action_type="send_message",
+            account_id=1,
+            status="executing",
+            scheduled_at=now_value - timedelta(hours=1),
+            lease_owner="dispatcher",
+            lease_expires_at=now_value - timedelta(minutes=1),
+            payload={"coverage_ledger_id": "coverage-recovery-row"},
+            result={},
+        )
+        coverage = TaskAccountDailyCoverage(
+            id="coverage-recovery-row",
+            tenant_id=1,
+            task_id="coverage-recovery-task",
+            group_id=1,
+            account_id=1,
+            coverage_date=now_value.date(),
+            state="reserved",
+            reserved_action_id=action.id,
+            target_count=1,
+            targeted_at=now_value - timedelta(hours=1),
+        )
+        session.add_all([action, coverage])
+        session.commit()
+
+        assert _recover_stale_executing_actions(session, timeout_minutes=30, limit=1) == 1
+        session.refresh(action)
+        session.refresh(coverage)
+
+    assert action.status == "failed"
+    assert coverage.state == "ready"
+    assert coverage.reserved_action_id is None
+    assert coverage.blocker_code == "execution_timeout"
 
 
 def test_stale_worker_lookup_only_returns_executing_lease_owners() -> None:

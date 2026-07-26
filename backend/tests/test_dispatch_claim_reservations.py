@@ -200,6 +200,36 @@ def test_cross_window_claims_keep_executing_scope_capacity_reserved(monkeypatch)
         assert len(dispatcher.claim_actions(session, limit=1, worker_id="released-window")) == 1
 
 
+def test_release_reconciles_drifted_old_window_counters(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    monkeypatch.setattr(dispatcher, "get_settings", lambda: _settings(dispatcher_concurrency=1))
+    now_value = _now().replace(second=0, microsecond=0)
+
+    with Session(engine) as session:
+        _seed_strict_actions(session, now_value)
+        action = dispatcher.claim_actions(session, limit=1, worker_id="old-window")[0]
+        scope = session.scalar(select(DispatchClaimScope))
+        window = session.scalar(select(DispatchClaimWindow))
+        allocation = session.scalar(select(DispatchClaimShardAllocation))
+        assert scope is not None and window is not None and allocation is not None
+        action.status = "pending"
+        window.active_claim_count = 0
+        allocation.active_claim_count = 0
+        session.flush()
+
+        assert dispatcher.release_dispatch_claim(session, action) is True
+
+        assert scope.active_claim_count == 0
+        assert window.active_claim_count == 0
+        assert allocation.active_claim_count == 0
+        assert action.result["dispatch_claim_active"] is False
+        reconciliation = action.result["dispatch_claim_release_reconciliation"]
+        assert reconciliation["drifted"] is True
+        assert reconciliation["window"]["before"] == 0
+        assert reconciliation["window"]["after"] == 0
+
+
 def test_terminal_claim_without_finalizer_is_reconciled_before_window_reallocation(monkeypatch) -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

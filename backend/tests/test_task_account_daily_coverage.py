@@ -10,6 +10,7 @@ from app.database import Base
 from app.models import (
     AccountPool,
     Action,
+    ExecutionAttempt,
     OperationTarget,
     Task,
     TaskAccountDailyCoverage,
@@ -309,6 +310,82 @@ def test_recovery_worker_releases_terminal_reservations_without_planner_entry(se
     assert row.blocker_code == "duplicate_message"
 
 
+def test_recovery_worker_releases_terminal_legacy_overdue_unknown_reservation(session: Session) -> None:
+    task = _seed(session)
+    session.add(_account(1))
+    session.add(TgGroupAccount(tenant_id=1, group_id=21, account_id=1, can_send=True))
+    session.commit()
+    timestamp = datetime(2026, 7, 10, 10)
+    initialize_all_account_task_scope(session, task, now=timestamp)
+    row = session.scalar(select(TaskAccountDailyCoverage))
+    action = Action(
+        id="legacy-overdue-terminal-action",
+        tenant_id=1,
+        task_id=task.id,
+        task_type=task.type,
+        action_type="send_message",
+        account_id=1,
+        status="failed",
+        result={"error_code": "execution_timeout", "error_message": "未进入网关即超时"},
+    )
+    session.add(action)
+    session.flush()
+    assert reserve_coverage_for_action(session, row.id, action.id) is True
+    row.state = "unknown"
+    row.blocker_code = "coverage_action_overdue"
+    row.blocker_stage = "remote_reconcile"
+    session.commit()
+
+    assert recover_terminal_coverage_reservations(session, limit=10, now=timestamp + timedelta(hours=1)) == 1
+
+    session.refresh(row)
+    assert row.state == "ready"
+    assert row.reserved_action_id is None
+    assert row.blocker_code == "execution_timeout"
+
+
+def test_recovery_worker_keeps_gateway_started_unknown_reservation(session: Session) -> None:
+    task = _seed(session)
+    session.add(_account(1))
+    session.add(TgGroupAccount(tenant_id=1, group_id=21, account_id=1, can_send=True))
+    session.commit()
+    timestamp = datetime(2026, 7, 10, 10)
+    initialize_all_account_task_scope(session, task, now=timestamp)
+    row = session.scalar(select(TaskAccountDailyCoverage))
+    action = Action(
+        id="gateway-started-terminal-action",
+        tenant_id=1,
+        task_id=task.id,
+        task_type=task.type,
+        action_type="send_message",
+        account_id=1,
+        status="failed",
+        result={"error_code": "execution_timeout"},
+    )
+    session.add_all([
+        action,
+        ExecutionAttempt(
+            id="gateway-started-terminal-attempt",
+            tenant_id=1,
+            action_id=action.id,
+            account_id=1,
+            worker_id="dispatcher",
+            attempt_no=1,
+            status="gateway_call_started",
+            gateway_call_started_at=timestamp,
+        ),
+    ])
+    session.flush()
+    assert reserve_coverage_for_action(session, row.id, action.id) is True
+    row.state = "unknown"
+    row.blocker_code = "coverage_action_overdue"
+    session.commit()
+
+    assert recover_terminal_coverage_reservations(session, limit=10, now=timestamp + timedelta(hours=1)) == 0
+
+    session.refresh(row)
+    assert row.state == "unknown"
+    assert row.reserved_action_id == action.id
 def test_existing_complete_daily_scope_skips_per_account_readiness_refresh(session: Session, monkeypatch) -> None:
     task = _seed(session)
     session.add(_account(1))

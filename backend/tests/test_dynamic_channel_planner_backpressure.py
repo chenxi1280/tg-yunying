@@ -312,6 +312,21 @@ def test_dynamic_channel_planner_backpressure_migration_repairs_schedule_and_ind
         assert expected in source
 
 
+def test_terminal_unknown_coverage_recovery_index_migration_is_present() -> None:
+    migration = Path(__file__).resolve().parents[1] / "migrations" / "versions" / "0126_coverage_terminal_unknown_index.py"
+
+    assert migration.exists(), "missing terminal unknown coverage recovery index migration"
+
+    source = migration.read_text()
+    for expected in (
+        "ix_task_daily_coverage_recovery_terminal_v2",
+        "ix_task_daily_coverage_recovery_terminal",
+        "'reserved', 'sending', 'unknown'",
+        "reserved_action_id",
+    ):
+        assert expected in source
+
+
 def test_channel_planner_history_backpressure_migration_declares_bounded_lookup_indexes() -> None:
     migration = Path(__file__).resolve().parents[1] / "migrations" / "versions" / "0109_channel_planner_history_backpressure.py"
 

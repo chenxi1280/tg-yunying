@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from app.models import AiGenerationContractAudit, Action, Task, TaskAccountDailyCoverage, TaskDailyFulfillmentDecision
+from app.models import AiGenerationContractAudit, Action, ExecutionAttempt, Task, TaskAccountDailyCoverage, TaskDailyFulfillmentDecision
 from app.services._common import _now
 
 from .datetime_compat import is_after_or_equal, is_before
@@ -214,13 +214,42 @@ def _reconcile_open_coverage_rows(
     actions = _open_actions_by_coverage(session, task, rows)
     if not actions:
         return
+    gateway_started_ids = _gateway_started_action_ids(session, actions)
     for row in rows:
         action = actions.get(row.id)
-        if row.state == "ready" and _is_valid_future_open(action, timestamp):
-            _reserve_ready_row(row, action, timestamp)
-        elif _is_overdue_open(action, timestamp):
-            _mark_overdue_open_row(row, action, timestamp)
+        _reconcile_open_coverage_row(row, action, action.id in gateway_started_ids if action else False, timestamp)
     session.flush()
+
+
+def _gateway_started_action_ids(session: Session, actions: dict[str, Action]) -> set[str]:
+    action_ids = [action.id for action in actions.values()]
+    if not action_ids:
+        return set()
+    return set(session.scalars(
+        select(ExecutionAttempt.action_id).where(
+            ExecutionAttempt.action_id.in_(action_ids),
+            ExecutionAttempt.gateway_call_started_at.is_not(None),
+        ).distinct()
+    ))
+
+
+def _reconcile_open_coverage_row(
+    row: TaskAccountDailyCoverage,
+    action: Action | None,
+    gateway_started: bool,
+    timestamp: datetime,
+) -> None:
+    if _is_valid_future_open(action, timestamp):
+        _mark_future_open_row(row, action, timestamp)
+    elif _is_overdue_open(action, timestamp):
+        _mark_overdue_open_row(row, action, gateway_started, timestamp)
+
+
+def _mark_future_open_row(row: TaskAccountDailyCoverage, action: Action, timestamp: datetime) -> None:
+    if row.state == "ready":
+        _reserve_ready_row(row, action, timestamp)
+    elif _holds_pre_gateway_overdue(row):
+        _reserve_pre_gateway_open_row(row, action, timestamp)
 
 
 def _reserve_ready_row(row: TaskAccountDailyCoverage, action: Action, timestamp: datetime) -> None:
@@ -231,8 +260,16 @@ def _reserve_ready_row(row: TaskAccountDailyCoverage, action: Action, timestamp:
     row.updated_at = timestamp
 
 
-def _mark_overdue_open_row(row: TaskAccountDailyCoverage, action: Action, timestamp: datetime) -> None:
-    if row.state not in {"ready", "reserved", "sending"}:
+def _mark_overdue_open_row(
+    row: TaskAccountDailyCoverage,
+    action: Action,
+    gateway_started: bool,
+    timestamp: datetime,
+) -> None:
+    if not _can_reconcile_open_row(row):
+        return
+    if not gateway_started:
+        _reserve_pre_gateway_open_row(row, action, timestamp)
         return
     row.state = "unknown"
     row.reserved_action_id = action.id
@@ -242,6 +279,26 @@ def _mark_overdue_open_row(row: TaskAccountDailyCoverage, action: Action, timest
     row.blocker_detail = "覆盖 Action 已到期仍未进入终态，等待执行事实核验"
     row.recovery_path = "remote_reconcile"
     row.next_decision_at = None
+    row.updated_at = timestamp
+
+
+def _can_reconcile_open_row(row: TaskAccountDailyCoverage) -> bool:
+    return row.state in {"ready", "reserved", "sending"} or _holds_pre_gateway_overdue(row)
+
+
+def _holds_pre_gateway_overdue(row: TaskAccountDailyCoverage) -> bool:
+    return row.state == "unknown" and row.blocker_code == "coverage_action_overdue"
+
+
+def _reserve_pre_gateway_open_row(row: TaskAccountDailyCoverage, action: Action, timestamp: datetime) -> None:
+    row.state = "reserved"
+    row.reserved_action_id = action.id
+    row.last_action_id = action.id
+    row.blocker_code = "dispatcher_lag"
+    row.blocker_stage = "dispatcher"
+    row.blocker_detail = "覆盖 Action 已到期但尚未进入 Telegram Gateway，等待 Dispatcher 或 Recovery 收口"
+    row.recovery_path = "dispatcher_recheck"
+    row.next_decision_at = timestamp
     row.updated_at = timestamp
 
 
@@ -321,6 +378,8 @@ def _count_row_state(
         if _is_valid_future_open(action, timestamp):
             counts["valid_open"] += remaining
             counts["sendable"] += remaining
+        elif _is_overdue_open(action, timestamp):
+            counts["overdue_open"] += remaining
     elif row.state == "unknown":
         counts["unknown"] += remaining
         if row.blocker_code == "coverage_action_overdue":
@@ -347,7 +406,7 @@ def _summary_from_counts(
     blocked = int(counts["blocked"])
     unknown = int(counts["unknown"])
     next_decision = _next_decision_at(rows, timestamp, ready)
-    outcome = _daily_outcome(full_shortfall, blocked, unknown, ready)
+    outcome = _daily_outcome(full_shortfall, blocked, unknown, ready, int(counts["overdue_open"]))
     return DailyFulfillmentSummary(
         frozen, confirmed, ready, int(counts["reserved"]), unknown, blocked,
         full_shortfall, int(counts["valid_open"]), int(counts["overdue_open"]), ready, int(counts["blocked_shortfall"]), int(counts["sendable"]),
@@ -377,12 +436,12 @@ def _next_decision_at(rows: list[TaskAccountDailyCoverage], timestamp: datetime,
     return min(values) if values else None
 
 
-def _daily_outcome(full_shortfall: int, blocked: int, unknown: int, ready: int) -> str:
-    if full_shortfall == 0 and unknown == 0:
+def _daily_outcome(full_shortfall: int, blocked: int, unknown: int, ready: int, overdue: int) -> str:
+    if full_shortfall == 0 and unknown == 0 and overdue == 0:
         return "met"
     if blocked > 0:
         return "blocked"
-    if ready > 0 or unknown > 0:
+    if ready > 0 or unknown > 0 or overdue > 0:
         return "at_risk"
     return "feasible"
 

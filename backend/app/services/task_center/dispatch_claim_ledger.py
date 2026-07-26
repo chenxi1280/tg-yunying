@@ -129,22 +129,98 @@ def release_dispatch_claim(session: Session, action: Action) -> bool:
     result = action.result if isinstance(action.result, dict) else {}
     if action.status == "executing" or not result.get("dispatch_claim_active"):
         return False
+    scope, window, allocation = _locked_release_ledger(session, action, result)
+    reconciliation = _reconcile_released_claim(session, scope, window, allocation)
+    action.result = _released_claim_result(result, reconciliation)
+    return True
+
+
+def _locked_release_ledger(
+    session: Session,
+    action: Action,
+    result: dict,
+) -> tuple[DispatchClaimScope, DispatchClaimWindow, DispatchClaimShardAllocation]:
     scope = _locked_scope(session, str(result.get("dispatch_claim_scope") or ""))
     window = _locked_window(session, str(result.get("dispatch_claim_window_id") or ""))
     allocation = _locked_allocation(session, str(result.get("dispatch_claim_shard_allocation_id") or ""))
     reservation = _locked_reservation(session, str(result.get("dispatch_reservation_id") or ""))
-    if scope is None or reservation is None or allocation is None or window is None:
+    if scope is None or window is None or allocation is None or reservation is None:
         raise RuntimeError(f"dispatch claim ledger missing for action {action.id}")
-    if scope.active_claim_count <= 0 or allocation.active_claim_count <= 0 or window.active_claim_count <= 0:
-        raise RuntimeError(f"dispatch claim ledger underflow for action {action.id}")
-    scope.active_claim_count -= 1
-    scope.version += 1
-    allocation.active_claim_count -= 1
-    allocation.version += 1
-    window.active_claim_count -= 1
-    window.version += 1
-    action.result = {**result, "dispatch_claim_active": False, "dispatch_claim_released_at": _now().isoformat()}
-    return True
+    if not _release_binding_matches(scope, window, allocation, reservation):
+        raise RuntimeError(f"dispatch claim ledger binding mismatch for action {action.id}")
+    return scope, window, allocation
+
+
+def _release_binding_matches(
+    scope: DispatchClaimScope,
+    window: DispatchClaimWindow,
+    allocation: DispatchClaimShardAllocation,
+    reservation: DispatchClaimReservation,
+) -> bool:
+    return bool(
+        window.dispatcher_scope == scope.dispatcher_scope
+        and allocation.dispatch_claim_window_id == window.id
+        and reservation.dispatch_claim_shard_allocation_id == allocation.id
+    )
+
+
+def _reconcile_released_claim(
+    session: Session,
+    scope: DispatchClaimScope,
+    window: DispatchClaimWindow,
+    allocation: DispatchClaimShardAllocation,
+) -> dict[str, object]:
+    before = _release_counter_snapshot(scope, window, allocation)
+    active_actions = _scope_active_claims(session, scope.dispatcher_scope)
+    expected = _release_counter_expectation(window, allocation, active_actions)
+    reconcile_scope_active(session, scope)
+    reconcile_window_active(window, window_allocations(session, window.id), active_actions)
+    after = _release_counter_snapshot(scope, window, allocation)
+    return _release_reconciliation_snapshot(before, expected, after)
+
+
+def _release_counter_snapshot(
+    scope: DispatchClaimScope,
+    window: DispatchClaimWindow,
+    allocation: DispatchClaimShardAllocation,
+) -> dict[str, int]:
+    return {
+        "scope": int(scope.active_claim_count),
+        "window": int(window.active_claim_count),
+        "allocation": int(allocation.active_claim_count),
+    }
+
+
+def _release_counter_expectation(
+    window: DispatchClaimWindow,
+    allocation: DispatchClaimShardAllocation,
+    active_actions: list[Action],
+) -> dict[str, int]:
+    allocation_counts = _active_claim_counts_by_allocation(window, active_actions)
+    return {
+        "scope": len(active_actions),
+        "window": sum(allocation_counts.values()),
+        "allocation": allocation_counts.get(allocation.id, 0),
+    }
+
+
+def _release_reconciliation_snapshot(
+    before: dict[str, int],
+    expected: dict[str, int],
+    after: dict[str, int],
+) -> dict[str, object]:
+    drifted = any(before[name] != expected[name] + 1 for name in before)
+    return {
+        "drifted": drifted,
+        **{name: {"before": before[name], "after": after[name]} for name in before},
+    }
+
+
+def _released_claim_result(result: dict, reconciliation: dict[str, object]) -> dict:
+    released = {**result, "dispatch_claim_active": False, "dispatch_claim_released_at": _now().isoformat()}
+    if reconciliation["drifted"]:
+        released["dispatch_claim_release_reconciliation"] = reconciliation
+    return released
 
 
 def task_dispatch_claim_snapshot(session: Session, task: Task) -> dict[str, object]:
