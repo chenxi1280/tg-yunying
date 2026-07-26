@@ -180,6 +180,48 @@ def test_terminal_claim_without_finalizer_is_reconciled_before_window_reallocati
         assert allocation is not None and allocation.active_claim_count == 1
 
 
+def test_stale_unclaimed_reservation_is_released_for_new_due_action(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    settings = _settings(dispatcher_concurrency=2)
+    now_value = _now().replace(second=0, microsecond=0)
+    monkeypatch.setattr(dispatcher, "get_settings", lambda: settings)
+    monkeypatch.setattr(dispatcher, "_now", lambda: now_value)
+
+    with Session(engine) as session:
+        _seed_strict_actions(session, now_value)
+        first = dispatcher.claim_actions(session, limit=1, worker_id="stale-unclaimed")
+
+        assert len(first) == 1
+        window = session.scalar(select(DispatchClaimWindow))
+        assert window is not None and window.unclaimed_allocated_count == 1
+        for action_id in ("strict-search", "hard-hourly"):
+            session.get(Action, action_id).status = "skipped"
+        session.add(
+            Task(id="fresh-task", tenant_id=1, name="新任务", type="group_relay", status="running")
+        )
+        session.add(
+            Action(
+                id="fresh-action",
+                tenant_id=1,
+                task_id="fresh-task",
+                task_type="group_relay",
+                action_type="send_message",
+                account_id=11,
+                status="pending",
+                scheduled_at=now_value,
+                payload={"message_text": "新任务"},
+            )
+        )
+        session.commit()
+
+        second = dispatcher.claim_actions(session, limit=1, worker_id="fresh-claim")
+
+        assert [action.id for action in second] == ["fresh-action"]
+        stale = list(session.scalars(select(DispatchClaimReservation).where(DispatchClaimReservation.task_id != "fresh-task")))
+        assert any(row.reason == "unclaimed_action_no_longer_due" for row in stale)
+
+
 def _seed_strict_actions(session: Session, now_value) -> None:
     session.add(Tenant(id=1, name="tenant"))
     session.add_all(

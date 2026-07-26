@@ -12,20 +12,18 @@ from app.timezone import as_beijing_aware
 
 from .dispatch_claim_allocation import normal_demands, rotated_demands, rotation_value, strict_non_priority_demands
 from .dispatch_claim_ledger import reservation_available
+from .dispatch_claim_reconciliation import account_shard_for_action, claim_class_for_action
 from .dispatch_claim_types import (
     DispatchClaimBinding,
     DispatchClaimDemand,
     DispatchClaimPlan,
-    GROUP_BOT_ADMISSION_ACTION_TYPES,
     HARD_HOURLY_CLAIM_CLASS,
     PRIORITY_CLAIM_CLASSES,
     SEARCH_MEMBERSHIP_CLAIM_CLASS,
     SEARCH_SOURCE_CLAIM_CLASS,
     SHARED_CAPACITY_ERROR,
     TARGET_ADMISSION_CLAIM_CLASS,
-    TARGET_ADMISSION_RETRY_TASK_TYPE,
 )
-from .dispatch_fairness import classify_action_payload
 
 
 def tasks_by_id(session: Session, actions: list[Action]) -> dict[str, Task]:
@@ -46,8 +44,8 @@ def build_demands(
         task = tasks.get(action.task_id)
         if task is None:
             continue
-        claim_class = _claim_class(task, action)
-        key = (action.tenant_id, action.task_id, claim_class, shard_total, _action_shard(action, shard_total))
+        claim_class = claim_class_for_action(task, action)
+        key = (action.tenant_id, action.task_id, claim_class, shard_total, account_shard_for_action(action, shard_total))
         grouped[key].append(action)
     return [_demand_from_group(key, rows, tasks[key[1]], now) for key, rows in grouped.items()]
 
@@ -90,31 +88,11 @@ def _demand_from_group(
     )
 
 
-def _claim_class(task: Task, action: Action) -> str:
-    payload = action.payload if isinstance(action.payload, dict) else {}
-    if task.type == TARGET_ADMISSION_RETRY_TASK_TYPE:
-        return TARGET_ADMISSION_CLAIM_CLASS
-    if action.action_type in GROUP_BOT_ADMISSION_ACTION_TYPES and _bound_admission_payload(payload):
-        return TARGET_ADMISSION_CLAIM_CLASS
-    if action.action_type == SEARCH_MEMBERSHIP_CLAIM_CLASS:
-        return SEARCH_MEMBERSHIP_CLAIM_CLASS
-    return classify_action_payload(action.action_type, payload, task.type)
-
-
-def _bound_admission_payload(payload: Mapping[str, object]) -> bool:
-    return bool(payload.get("admission_bound_task_id") and payload.get("admission_bound_account_id"))
-
-
 def _is_strict_claim(task: Task, claim_class: str) -> bool:
     if claim_class in {TARGET_ADMISSION_CLAIM_CLASS, SEARCH_MEMBERSHIP_CLAIM_CLASS, HARD_HOURLY_CLAIM_CLASS}:
         return True
     config = task.type_config if isinstance(task.type_config, dict) else {}
     return claim_class == SEARCH_SOURCE_CLAIM_CLASS and bool(config.get("strict_daily_target"))
-
-
-def _action_shard(action: Action, shard_total: int) -> int:
-    account_id = int(action.account_id or 0)
-    return account_id % shard_total if account_id else 0
 
 
 def _action_order_key(action: Action) -> tuple[datetime, datetime, str]:

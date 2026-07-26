@@ -29,6 +29,7 @@ from .dispatch_claim_ledger import (
     window_for_update,
     window_reservations,
 )
+from .dispatch_claim_reconciliation import reconcile_window_unclaimed
 from .dispatch_claim_selection import build_demands, plan_from_reservations, tasks_by_id
 from .dispatch_claim_types import DispatchClaimBinding, DispatchClaimPlan
 
@@ -57,6 +58,14 @@ def plan_dispatch_claims(
     window = window_for_update(session, scope_name, now, capacity)
     allocations = window_allocations(session, window.id)
     reconcile_window_active(window, allocations, active_actions)
+    reservations = window_reservations(session, window.id)
+    reconcile_window_unclaimed(
+        session,
+        window,
+        allocations=allocations,
+        reservations=reservations,
+        now=now,
+    )
     sync_window_capacity(window, capacity)
     if window.unclaimed_allocated_count == 0:
         allocate_window(session, scope, window, allocations, demands)

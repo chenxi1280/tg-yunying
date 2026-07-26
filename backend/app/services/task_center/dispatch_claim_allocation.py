@@ -58,7 +58,8 @@ def _clear_unclaimed_reservations(session: Session, window_id: str) -> None:
         if reservation.reserved_claims != reservation.claimed_count:
             raise RuntimeError("cannot replace dispatch allocation with unclaimed reservations")
         reservation.required_claims = 0
-        reservation.reason = "allocation_epoch_replaced"
+        if reservation.reason != "unclaimed_action_no_longer_due":
+            reservation.reason = "allocation_epoch_replaced"
         reservation.version += 1
 
 

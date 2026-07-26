@@ -307,6 +307,7 @@ daily_outcome_preview
 | 存量任务日中变得不可达 | daily_outcome=blocked，已有 Gateway/child 正常收口，不再假装严格目标可达 |
 | 目标群未出现在结果中 | source 尝试可计入 max_source_attempts，但不增加 target_click_observed；日结果保持 at_risk 或按剩余尝试变为 blocked |
 | 两个 shard、多个 Dispatcher 同时 claim | 同一 scope 的全局 Window 及各 shard Allocation 都不超配；claimed_count 不超过 reserved_claims，aggregate capacity 不被多进程重复预留 |
+| 旧 Window Reservation 对应 Action 已终态、暂停、删除或延后 | Allocation 前只回收无“运行中任务 + 到期 pending Action”的未领取槽位，写 unclaimed_action_no_longer_due；仍有效的严格 Reservation 保留，新到期任务可以获得回收后的份额 |
 | 同时存在严格搜索与 AI hard_hourly | 二者均有持久 Window / Reservation；无长期 pending 饥饿；容量不足时双方收到 shared_dispatch_capacity_insufficient |
 | 已点击 child 与新 source | child 先获得自己的严格份额，且不改变 source 的授权槽位 |
 | 热搜排行榜页重复投递或恢复 | hot_list_reset 账本唯一，最多发送一次 /start；仍偏离时写 jisou_session_state_deviated，零未知 button 点击 |
@@ -340,5 +341,5 @@ daily_outcome_preview
 
 - `search_join_daily_capacity.py` 用当前/后续小时 source 占用和行为决策扣减严格容量；`search_join_pacing.py` 查询 carry、claim、Gateway source 占用。
 - `executors/search_join_group.py` 以剩余目标和剩余可执行小时追赶，严格模式不再受普通 `actions_per_round` 上限截断；不足时把 `daily_target_capacity_insufficient` 及容量证明写入 `stats.search_join_stats.daily_fulfillment`。
-- `dispatch_claim_*.py` 以 `DispatchClaimScope` 把跨 Window 的 active claim 纳入容量账本，并在每次 Allocation 前从真实 executing Action 回写 Window/shard active 计数，详情同时显示当前 Window 与全局 scope 数值。
+- `dispatch_claim_*.py` 以 `DispatchClaimScope` 把跨 Window 的 active claim 纳入容量账本；每次 Allocation 前从真实 executing Action 回写 Window/shard active 计数，并只保留仍由运行中任务的到期 pending Action 支撑的 unclaimed Reservation，回收原因写 `unclaimed_action_no_longer_due`，详情同时显示当前 Window 与全局 scope 数值。
 - 迁移 `0122_dispatch_claims_protocol_trace.py` 创建 scope/window/shard/reservation 与极搜协议 trace；自动化回归覆盖跨 Window 容量、严格 carry 扣减、种子一致性和 slot 去重。
