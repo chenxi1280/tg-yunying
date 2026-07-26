@@ -729,6 +729,16 @@ export type TaskPrecheck = {
   target_ability: Array<Record<string, any>>;
   target_resolution: Record<string, any>;
   membership_summary: Record<string, any>;
+  voice_profile_summary: {
+    target_account_count?: number;
+    usable_account_count?: number;
+    queued_account_count?: number;
+    retry_wait_account_count?: number;
+    manual_required_account_count?: number;
+    disabled_account_count?: number;
+    missing_account_count?: number;
+    samples?: Record<string, number[]>;
+  };
   ready_account_count: number;
   preparable_account_count: number;
   estimated_membership_actions: number;

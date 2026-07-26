@@ -747,6 +747,18 @@ export function WizardReview({ taskType, values, accounts, accountPools, targets
     ? `；可引用 ${replyReference.available_reference_count ?? 0}，缺口 ${replyReference.shortfall_count ?? 0}`
     : '';
   const hardTarget = precheck?.hard_hourly_target;
+  const voiceProfile = precheck?.voice_profile_summary;
+  const voiceProfileSummary = taskType === 'group_ai_chat' && voiceProfile
+    ? [
+      `目标 ${voiceProfile.target_account_count ?? 0}`,
+      `可用 ${voiceProfile.usable_account_count ?? 0}`,
+      `待生成 ${voiceProfile.queued_account_count ?? 0}`,
+      `等待重试 ${voiceProfile.retry_wait_account_count ?? 0}`,
+      `待人工 ${voiceProfile.manual_required_account_count ?? 0}`,
+      `已停用 ${voiceProfile.disabled_account_count ?? 0}`,
+      `未入队 ${voiceProfile.missing_account_count ?? 0}`,
+    ].join('，')
+    : '仅 AI 活群任务使用';
   const hardTargetSummary = values.hard_hourly_target_enabled
     ? [
       `目标 ${values.hourly_min_messages || hardTarget?.hourly_min_messages || '-'} 条/小时`,
@@ -778,6 +790,7 @@ export function WizardReview({ taskType, values, accounts, accountPools, targets
       { key: 'target', label: '任务目标', children: displayTarget === '-' ? targetSummary : displayTarget },
       { key: 'targetResolution', label: '目标解析', children: resolutionSummary },
       { key: 'account', label: '账号摘要', children: precheck ? `候选 ${precheck.candidate_account_count} 个，可用 ${precheck.available_account_count} 个，受限 ${precheck.limited_account_count} 个，阻塞 ${precheck.blocked_account_count} 个` : `${account.label}，候选 ${account.total} 个，当前在线 ${account.online} 个，受限/离线 ${account.limited} 个` },
+      { key: 'voice-profile', label: '账号面具覆盖', children: voiceProfileSummary },
       { key: 'membership', label: '准入前置', children: precheck?.membership_subtask_preview?.subtask_type ? `已满足 ${precheck.ready_account_count} 个，待准备 ${precheck.preparable_account_count} 个，预计准入动作 ${precheck.estimated_membership_actions} 个，进度 ${precheck.membership_subtask_preview.progress_percent ?? 0}%` : '无额外准入动作' },
       { key: 'targetAbility', label: '目标能力', children: precheck?.target_ability?.length ? precheck.target_ability.map((item) => `${item.title || item.target_id} / ${item.can_task ? '可创建任务' : item.auth_status || '不可用'}`).join('；') : displayTarget },
       { key: 'estimate', label: '预计动作量', children: precheck ? `预计 ${precheck.estimated_actions} 条，容量缺口 ${precheck.capacity_shortfall}` : '等待预检' },

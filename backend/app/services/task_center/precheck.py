@@ -14,6 +14,7 @@ from app.timezone import beijing_now
 
 from .ai_limits import recommend_ai_limits
 from .account_scope import eligible_account_ids
+from .account_voice_profile_generation_reconcile import voice_profile_precheck_summary
 from .channel_membership import channel_membership_summary
 from .config_fields import COMMON_CREATE_FIELDS, TASK_CREATE_MODELS
 from .config_normalization import apply_group_ai_account_coverage_defaults
@@ -63,6 +64,7 @@ def run_precheck_task_creation(
     capacity_summary: dict[str, Any] = {}
     type_config: dict[str, Any] = {}
     account_config: dict[str, Any] = {}
+    voice_profile_summary: dict[str, object] = {}
     estimated_actions = 0
     capacity_shortfall = 0
     try:
@@ -87,6 +89,12 @@ def run_precheck_task_creation(
     if not account_config:
         account_config = dict((payload.payload or {}).get("account_config") or {})
     candidates = _precheck_candidate_accounts(session, tenant_id, account_config)
+    if task_type == "group_ai_chat":
+        voice_profile_summary = voice_profile_precheck_summary(
+            session,
+            tenant_id=tenant_id,
+            account_ids=[int(account.id) for account in candidates],
+        )
     if task_type in {"channel_view", "channel_like", "channel_comment", "group_ai_chat", "group_relay"} and target_ability:
         membership_summary = _precheck_membership_summary(session, tenant_id, target_ability, account_config, type_config, candidates)
     membership_subtask_preview = _membership_subtask_preview(membership_summary)
@@ -189,6 +197,7 @@ def run_precheck_task_creation(
         "target_ability": target_ability,
         "target_resolution": target_resolution,
         "membership_summary": membership_summary,
+        "voice_profile_summary": voice_profile_summary,
         "ready_account_count": int(membership_summary.get("joined_account_count") or 0),
         "preparable_account_count": int(membership_summary.get("need_join_account_count") or 0),
         "estimated_membership_actions": int(membership_summary.get("estimated_membership_actions") or 0),

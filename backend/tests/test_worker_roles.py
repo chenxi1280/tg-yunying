@@ -31,6 +31,7 @@ def test_drain_once_dispatches_task_center_roles(monkeypatch):
     monkeypatch.setattr(worker, "drain_task_metrics", lambda _factory, limit: calls.append(("metrics", limit)) or 5)
     monkeypatch.setattr(worker, "drain_account_online_keepalive", lambda _factory, limit: calls.append(("account_online", limit)) or 11, raising=False)
     monkeypatch.setattr(worker, "drain_ai_message_memory_maintenance", lambda _factory, limit: calls.append(("ai_memory", limit)) or 13, raising=False)
+    monkeypatch.setattr(worker, "drain_voice_profile_generation", lambda _factory, limit, **_kwargs: calls.append(("voice_profile", limit)) or 17, raising=False)
 
     assert worker.drain_once(7, role="planner") == 1
     assert worker.drain_once(7, role="dispatcher") == 2
@@ -41,6 +42,7 @@ def test_drain_once_dispatches_task_center_roles(monkeypatch):
     assert worker.drain_once(7, role="metrics") == 5
     assert worker.drain_once(7, role="account-online") == 11
     assert worker.drain_once(7, role="ai-memory") == 13
+    assert worker.drain_once(7, role="voice-profile") == 17
 
     assert calls == [
         ("planner", 7),
@@ -53,6 +55,7 @@ def test_drain_once_dispatches_task_center_roles(monkeypatch):
         ("metrics", 7),
         ("account_online", 7),
         ("ai_memory", 7),
+        ("voice_profile", 7),
     ]
 
 
@@ -132,6 +135,26 @@ def test_server_compose_starts_online_and_ai_memory_workers():
     assert 'ACCOUNT_ONLINE_PROBE_CONCURRENCY=32' in env_example
     assert 'ACCOUNT_ONLINE_PROBE_TIMEOUT_SECONDS=30' in env_example
     assert 'ACCOUNT_ONLINE_WORKER_DRAIN_LIMIT=1000' in env_example
+
+
+def test_server_compose_starts_voice_profile_worker():
+    root = Path(__file__).resolve().parents[2]
+    compose = (root / "docker-compose.server.yml").read_text()
+    compose_up = (root / "deploy/compose-up.sh").read_text()
+    check_web = (root / "deploy/check-web.sh").read_text()
+    env_example = (root / ".env.production.example").read_text()
+
+    assert "  worker-voice-profile:" in compose
+    assert "container_name: tgyunying-worker-voice-profile" in compose
+    assert 'WORKER_ROLE: voice-profile' in compose
+    assert "VOICE_PROFILE_WORKER_DRAIN_LIMIT" in compose
+    assert "VOICE_PROFILE_WORKER_INTERVAL_SECONDS" in compose
+    assert "VOICE_PROFILE_RECONCILE_INTERVAL_SECONDS" in compose
+    assert "VOICE_PROFILE_RECONCILE_BATCH_LIMIT" in compose
+    assert "  worker-voice-profile" in compose_up
+    assert "  tgyunying-worker-voice-profile" in check_web
+    assert "VOICE_PROFILE_WORKER_DRAIN_LIMIT=20" in env_example
+    assert "VOICE_PROFILE_RECONCILE_INTERVAL_SECONDS=120" in env_example
 
 
 def test_worker_main_healthcheck_uses_role_heartbeat(monkeypatch):

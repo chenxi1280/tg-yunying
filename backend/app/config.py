@@ -98,6 +98,16 @@ class Settings:
             raise ValueError("ACCOUNT_ONLINE_PROBE_CONCURRENCY must be a positive integer")
         if self.account_online_probe_timeout_seconds <= 0:
             raise ValueError("ACCOUNT_ONLINE_PROBE_TIMEOUT_SECONDS must be greater than zero")
+        if self.voice_profile_reconcile_interval_seconds <= 0:
+            raise ValueError("VOICE_PROFILE_RECONCILE_INTERVAL_SECONDS must be greater than zero")
+        if self.voice_profile_reconcile_batch_limit < 1:
+            raise ValueError("VOICE_PROFILE_RECONCILE_BATCH_LIMIT must be positive")
+        if self.voice_profile_provider_rate_per_minute < 1:
+            raise ValueError("VOICE_PROFILE_PROVIDER_RATE_PER_MINUTE must be positive")
+        if self.voice_profile_provider_concurrency < 1:
+            raise ValueError("VOICE_PROFILE_PROVIDER_CONCURRENCY must be positive")
+        if self.voice_profile_provider_lease_seconds < 30:
+            raise ValueError("VOICE_PROFILE_PROVIDER_LEASE_SECONDS must be at least 30")
     tg_api_id: str | None = os.getenv("TG_API_ID")
     tg_api_hash: str | None = os.getenv("TG_API_HASH")
     tg_gateway_mode: str = os.getenv("TG_GATEWAY_MODE", "mock" if os.getenv("APP_ENV") == "test" else "telethon")
@@ -122,10 +132,22 @@ class Settings:
     embedded_worker_interval_seconds: float = float(os.getenv("EMBEDDED_WORKER_INTERVAL_SECONDS", "2.0"))
     embedded_worker_limit: int = int(os.getenv("EMBEDDED_WORKER_LIMIT", "100"))
     worker_role: str = os.getenv("WORKER_ROLE", "all")
+    voice_profile_reconcile_interval_seconds: float = float(os.getenv("VOICE_PROFILE_RECONCILE_INTERVAL_SECONDS", "120"))
+    voice_profile_reconcile_batch_limit: int = int(os.getenv("VOICE_PROFILE_RECONCILE_BATCH_LIMIT", "100"))
+    voice_profile_provider_rate_per_minute: int = int(os.getenv("VOICE_PROFILE_PROVIDER_RATE_PER_MINUTE", "30"))
+    voice_profile_provider_concurrency: int = int(os.getenv("VOICE_PROFILE_PROVIDER_CONCURRENCY", "2"))
+    voice_profile_provider_lease_seconds: int = int(os.getenv("VOICE_PROFILE_PROVIDER_LEASE_SECONDS", "120"))
     action_claim_limit: int = int(os.getenv("ACTION_CLAIM_LIMIT", "100"))
     action_claim_seconds: int = int(os.getenv("ACTION_CLAIM_SECONDS", "60"))
     dispatcher_claim_scope: str = os.getenv("DISPATCHER_CLAIM_SCOPE", "task_center_dispatch")
     action_lease_seconds: int = int(os.getenv("ACTION_LEASE_SECONDS", "1800"))
+    # PRD §2.20.2 RC-3: search_join_membership 子动作的 lease_timeout 默认 180s，
+    # 覆盖 join 请求发送 → TG 服务端处理 → membership 事件回推的全链路。
+    search_join_membership_lease_seconds: int = int(os.getenv("SEARCH_JOIN_MEMBERSHIP_LEASE_SECONDS", "180"))
+    # PRD §2.20.2 RC-3: UAS 补偿确认终态关闭超时（秒），默认 10 分钟。
+    search_join_membership_confirmation_timeout_seconds: int = int(os.getenv("SEARCH_JOIN_MEMBERSHIP_CONFIRMATION_TIMEOUT_SECONDS", "600"))
+    # PRD §2.19.5 频率控制：账号级搜索频率冷却，单账号 1 小时内最多 N 次搜索，0 表示不限制。
+    search_join_per_account_hourly_limit: int = int(os.getenv("SEARCH_JOIN_PER_ACCOUNT_HOURLY_LIMIT", "0"))
     dispatcher_concurrency: int = int(os.getenv("DISPATCHER_CONCURRENCY", "20"))
     daily_coverage_plan_batch_limit: int = int(os.getenv("DAILY_COVERAGE_PLAN_BATCH_LIMIT", "20"))
     account_shard_total: int = int(os.getenv("ACCOUNT_SHARD_TOTAL", "1"))

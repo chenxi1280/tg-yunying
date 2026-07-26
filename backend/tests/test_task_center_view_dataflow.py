@@ -185,6 +185,17 @@ def test_task_center_precheck_and_recommendation_bind_payload_signature():
     assert "if (!requestSeq || isCurrentEditRecommendationRequest(requestSeq)) setEditRecommendationLoading(false);" in run_recommendation
 
 
+def test_task_wizard_exposes_voice_profile_coverage_precheck():
+    types = (PROJECT_ROOT / "frontend/src/app/types/taskCenter.ts").read_text()
+    wizard = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterWizardSections.tsx").read_text()
+
+    assert "voice_profile_summary:" in types
+    assert "const voiceProfile = precheck?.voice_profile_summary;" in wizard
+    assert "{ key: 'voice-profile', label: '账号面具覆盖'" in wizard
+    assert "待生成 ${voiceProfile.queued_account_count ?? 0}" in wizard
+    assert "待人工 ${voiceProfile.manual_required_account_count ?? 0}" in wizard
+
+
 def test_task_center_save_settings_binds_payload_signature_and_edit_session():
     source = _source()
     save_settings = _function_body(source, "saveTaskSettings")

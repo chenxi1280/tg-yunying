@@ -44,7 +44,7 @@ name: Deploy Production
         default: false
         type: boolean
       update_account_masks_direction:
-        description: Update all active production account masks to the male/adult disguise direction
+        description: Update all active production account masks to the adult male everyday-social direction
         required: false
         default: false
         type: boolean

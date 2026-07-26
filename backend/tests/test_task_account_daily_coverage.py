@@ -30,6 +30,7 @@ from app.services.task_center.daily_coverage import (
     reserve_coverage_for_action,
 )
 from app.services.task_center.daily_coverage_readiness import _row_needs_refresh
+from app.services.task_center import daily_coverage
 
 
 pytestmark = pytest.mark.no_postgres
@@ -93,6 +94,51 @@ def test_daily_ledger_keeps_ready_pending_and_blocked_accounts_in_denominator(se
         (3, "blocked", "cannot_send"),
     ]
     assert all(row.coverage_date == date(2026, 7, 10) for row in rows)
+
+
+def test_voice_profile_blocker_keeps_daily_obligation_and_wakes_task_after_recovery(session: Session) -> None:
+    task = _seed(session)
+    session.add(_account(1))
+    session.add(TgGroupAccount(tenant_id=1, group_id=21, account_id=1, can_send=True))
+    session.commit()
+    timestamp = datetime(2026, 7, 10, 10)
+    initialize_all_account_task_scope(session, task, now=timestamp)
+    ensure_task_daily_coverage(session, task, now=timestamp)
+    row = session.scalar(select(TaskAccountDailyCoverage))
+    assert row is not None
+
+    blocked = daily_coverage.block_voice_profile_coverage(
+        session,
+        task=task,
+        account_ids=[1],
+        next_retry_at=timestamp + timedelta(minutes=1),
+        detail="voice_profile_output_malformed",
+        now=timestamp,
+    )
+    session.commit()
+    session.refresh(row)
+
+    assert blocked == 1
+    assert row.state == "blocked"
+    assert row.blocker_code == "voice_profile_missing"
+    assert row.blocker_stage == "voice_profile"
+    assert row.confirmed_count == 0
+
+    released = daily_coverage.release_voice_profile_coverage(
+        session,
+        tenant_id=1,
+        account_id=1,
+        now=timestamp + timedelta(minutes=2),
+    )
+    session.commit()
+    session.refresh(row)
+    session.refresh(task)
+
+    assert released == 1
+    assert row.state == "ready"
+    assert row.blocker_code == ""
+    assert row.targeted_at == timestamp + timedelta(minutes=2)
+    assert task.next_run_at == timestamp + timedelta(minutes=2)
 
 
 def test_account_state_change_does_not_remove_existing_daily_obligation(session: Session) -> None:

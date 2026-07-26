@@ -73,18 +73,35 @@ def _queue_voice_profile_initialization(session: Session, tenant_id: int, accoun
     if not accounts:
         return
     account_ids = [account.id for account in accounts]
-    try:
-        created = _ensure_voice_profiles(session, tenant_id, account_ids)
-        _audit_voice_profile_init(session, tenant_id, actor, "账号面具初始化", account_ids, f"created={created}")
-    except (RuntimeError, ValueError) as exc:
-        _audit_voice_profile_init(session, tenant_id, actor, "账号面具初始化失败", account_ids, str(exc))
+    result = _enqueue_voice_profile_generation(
+        session,
+        tenant_id,
+        account_ids,
+        source="login_auto",
+        actor=actor,
+    )
+    detail = f"created={list(result.created_account_ids)};existing={list(result.existing_account_ids)}"
+    _audit_voice_profile_init(session, tenant_id, actor, "账号面具初始化已入队", account_ids, detail)
 
 
-def _ensure_voice_profiles(session: Session, tenant_id: int, account_ids: list[int]) -> int:
-    from app.services.task_center.account_voice_profiles import ensure_voice_profiles_for_accounts, generate_voice_profiles_with_ai
+def _enqueue_voice_profile_generation(
+    session: Session,
+    tenant_id: int,
+    account_ids: list[int],
+    *,
+    source: str,
+    actor: str,
+):
+    from app.services.task_center.account_voice_profile_generation_jobs import enqueue_voice_profile_generation
 
-    generator = generate_voice_profiles_with_ai(session, tenant_id=tenant_id)
-    return ensure_voice_profiles_for_accounts(session, tenant_id=tenant_id, account_ids=account_ids, generator=generator)
+    return enqueue_voice_profile_generation(
+        session,
+        tenant_id=tenant_id,
+        account_ids=account_ids,
+        source=source,
+        actor=actor,
+        reason=AUTO_VOICE_PROFILE_REASON,
+    )
 
 
 def _audit_voice_profile_init(session: Session, tenant_id: int, actor: str, action: str, account_ids: list[int], detail: str) -> None:

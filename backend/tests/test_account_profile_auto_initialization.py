@@ -8,7 +8,7 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import AccountPool, AccountStatus, AiAccountVoiceProfile, TelegramDeveloperApp, Tenant, TgAccount, TgAccountSecurityBatch, TgAccountSecurityBatchItem, TgLoginFlow
+from app.models import AccountPool, AccountStatus, AiAccountVoiceProfile, AiAccountVoiceProfileGenerationItem, TelegramDeveloperApp, Tenant, TgAccount, TgAccountSecurityBatch, TgAccountSecurityBatchItem, TgLoginFlow
 from app.schemas.account_security import AccountSecurityPrecheckRequest, ProfileGenerationStrategy
 from app.security import encrypt_secret, encrypt_session
 from app.services import account_profile_auto_init
@@ -106,32 +106,59 @@ def test_verify_login_queues_chinese_profile_initialization_for_english_account(
         assert not any("A" <= char <= "z" for char in item.generated_display_name)
 
 
-def test_verify_login_initializes_missing_ai_voice_profile(monkeypatch):
+def test_verify_login_queues_missing_ai_voice_profile_generation(monkeypatch):
     with _session() as session:
         account = _seed_login_account(session)
         _stub_successful_login(monkeypatch)
 
-        def fake_ensure(_session, tenant_id: int, account_ids: list[int]):
-            assert tenant_id == 1
-            session.add(
-                AiAccountVoiceProfile(
-                    tenant_id=tenant_id,
-                    account_id=account_ids[0],
-                    short_prompt_summary="青年短句，先观望再追问，偶尔说我看看",
-                    status="active",
-                    quality_status="active",
-                )
-            )
-            return 1
-
-        monkeypatch.setattr(account_profile_auto_init, "_ensure_voice_profiles", fake_ensure)
-
         accounts_service.verify_login(session, account.id, "12345", None, actor="tester")
 
         voice_profile = session.scalar(select(AiAccountVoiceProfile))
-        assert voice_profile is not None
-        assert voice_profile.account_id == account.id
-        assert voice_profile.short_prompt_summary == "青年短句，先观望再追问，偶尔说我看看"
+        generation_item = session.scalar(select(AiAccountVoiceProfileGenerationItem))
+        assert voice_profile is None
+        assert generation_item is not None
+        assert generation_item.account_id == account.id
+        assert generation_item.status == "queued"
+
+
+def test_verify_login_queues_durable_voice_profile_generation(monkeypatch):
+    with _session() as session:
+        account = _seed_login_account(session)
+        _stub_successful_login(monkeypatch)
+        queued: list[tuple[int, tuple[int, ...], str, str]] = []
+
+        def fake_enqueue(_session, tenant_id: int, account_ids: list[int], *, source: str, actor: str):
+            queued.append((tenant_id, tuple(account_ids), source, actor))
+            return SimpleNamespace(created_account_ids=tuple(account_ids), existing_account_ids=())
+
+        monkeypatch.setattr(account_profile_auto_init, "_enqueue_voice_profile_generation", fake_enqueue, raising=False)
+
+        accounts_service.verify_login(session, account.id, "12345", None, actor="tester")
+
+        assert queued == [(1, (account.id,), "login_auto", "tester")]
+
+
+def test_verify_login_rolls_back_when_voice_profile_queue_cannot_persist(monkeypatch):
+    with _session() as session:
+        account = _seed_login_account(session)
+        _stub_successful_login(monkeypatch)
+
+        def fail_enqueue(*_args, **_kwargs):
+            raise RuntimeError("voice profile generation queue write failed")
+
+        monkeypatch.setattr(account_profile_auto_init, "_enqueue_voice_profile_generation", fail_enqueue)
+
+        with pytest.raises(RuntimeError, match="queue write failed"):
+            accounts_service.verify_login(session, account.id, "12345", None, actor="tester")
+
+        session.rollback()
+        persisted = session.get(TgAccount, account.id)
+        generation_item = session.scalar(select(AiAccountVoiceProfileGenerationItem))
+
+    assert persisted is not None
+    assert persisted.status == AccountStatus.WAITING_CODE.value
+    assert persisted.session_ciphertext is None
+    assert generation_item is None
 
 
 def test_login_skips_profile_and_voice_initialization_for_code_receiver(monkeypatch):
@@ -143,7 +170,7 @@ def test_login_skips_profile_and_voice_initialization_for_code_receiver(monkeypa
         def fail_voice_profile_init(*_args, **_kwargs):
             raise AssertionError("code receiver must not create voice profile")
 
-        monkeypatch.setattr(account_profile_auto_init, "_ensure_voice_profiles", fail_voice_profile_init)
+        monkeypatch.setattr(account_profile_auto_init, "_enqueue_voice_profile_generation", fail_voice_profile_init)
 
         accounts_service.verify_login(session, account.id, "12345", None, actor="tester")
 
@@ -164,7 +191,7 @@ def test_login_skips_profile_and_voice_initialization_for_non_normal_usage(monke
         def fail_voice_profile_init(*_args, **_kwargs):
             raise AssertionError("non-normal account must not create voice profile")
 
-        monkeypatch.setattr(account_profile_auto_init, "_ensure_voice_profiles", fail_voice_profile_init)
+        monkeypatch.setattr(account_profile_auto_init, "_enqueue_voice_profile_generation", fail_voice_profile_init)
 
         accounts_service.verify_login(session, account.id, "12345", None, actor="tester")
 
@@ -431,22 +458,25 @@ def test_profile_reconcile_script_applies_when_only_voice_profiles_are_missing()
     assert module._reconcile_account_ids(before) == [11, 12]
 
 
-def test_profile_reconcile_script_fails_when_voice_profiles_remain_missing():
+def test_profile_reconcile_script_accepts_durable_retry_but_rejects_orphaned_missing_mask():
     module = _load_profile_reconcile_script()
 
     before = {"missing_voice_profile_count": 2}
-    after = {"missing_voice_profile_count": 2}
+    retrying = {"missing_voice_profile_count": 2, "open_voice_profile_generation_count": 2}
+    orphaned = {"missing_voice_profile_count": 2, "open_voice_profile_generation_count": 0}
 
-    with pytest.raises(RuntimeError, match="did not complete"):
-        module._assert_reconcile_effective(before, after, True)
+    module._assert_reconcile_effective(before, retrying, True)
 
-    module._assert_reconcile_effective(before, {"missing_voice_profile_count": 0}, True)
-    module._assert_reconcile_effective(before, after, False)
+    with pytest.raises(RuntimeError, match="orphaned"):
+        module._assert_reconcile_effective(before, orphaned, True)
+
+    module._assert_reconcile_effective(before, orphaned, False)
 
 
-def test_profile_reconcile_script_commits_voice_profiles_per_batch(monkeypatch):
+def test_profile_reconcile_script_queues_voice_profile_jobs_per_batch(monkeypatch):
     module = _load_profile_reconcile_script()
     committed_batches = []
+    queued_batches = []
 
     class FakeSession:
         batch = None
@@ -463,27 +493,25 @@ def test_profile_reconcile_script_commits_voice_profiles_per_batch(monkeypatch):
     def fake_session_factory():
         return FakeSession()
 
-    def fake_generate_voice_profiles_with_ai(session, *, tenant_id):
-        return object()
-
-    def fake_ensure(session, *, tenant_id, account_ids, generator):
+    def fake_enqueue(session, *, tenant_id, account_ids, source, actor, reason):
         if account_ids == [13, 14]:
             raise RuntimeError("AI provider HTTP 429: quota exhausted")
         session.batch = list(account_ids)
-        return len(account_ids)
+        queued_batches.append((tenant_id, list(account_ids), source, actor, reason))
+        return SimpleNamespace(created_account_ids=tuple(account_ids), existing_account_ids=())
 
     monkeypatch.setattr(module, "VOICE_PROFILE_COMMIT_CHUNK_SIZE", 2)
     monkeypatch.setattr(module, "SessionLocal", fake_session_factory)
-    monkeypatch.setattr(module, "generate_voice_profiles_with_ai", fake_generate_voice_profiles_with_ai)
-    monkeypatch.setattr(module, "ensure_voice_profiles_for_accounts", fake_ensure)
+    monkeypatch.setattr(module, "enqueue_voice_profile_generation", fake_enqueue)
 
     result = module._reconcile_voice_profiles([11, 12, 13, 14])
 
-    assert result["created"] == 2
-    assert result["completed_account_ids"] == [11, 12]
+    assert result["queued_account_ids"] == [11, 12]
+    assert result["existing_account_ids"] == []
     assert result["failed_batch_account_ids"] == [13, 14]
     assert result["error"]["message"] == "AI provider HTTP 429: quota exhausted"
     assert committed_batches == [[11, 12]]
+    assert queued_batches == [(1, [11, 12], "recovery", "github-actions", "生产账号面具恢复：全量检查后自动入队")]
 
 
 def _load_profile_reconcile_script():

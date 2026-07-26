@@ -17,6 +17,7 @@ from .database import SessionLocal
 from .models import MessageTask, TaskStatus, WorkerHeartbeat
 from .services._common import _as_utc, _now
 from .services.task_center.heartbeat import record_worker_heartbeat
+from .services.task_center.account_voice_profile_generation_worker import drain_voice_profile_generation
 from .task_queue import get_task_queue
 from .services import (
     drain_account_sync_records,
@@ -51,6 +52,7 @@ VALID_WORKER_ROLES = {
     "account-online",
     "account-security",
     "ai-memory",
+    "voice-profile",
     "material-cache",
     "metrics",
 }
@@ -90,6 +92,14 @@ def drain_once(limit: int = 100, *, role: str | None = None) -> int:
         return _drain_account_security_once(limit)
     if selected_role == "ai-memory":
         return drain_ai_message_memory_maintenance(SessionLocal, limit)
+    if selected_role == "voice-profile":
+        settings = get_settings()
+        return drain_voice_profile_generation(
+            SessionLocal,
+            limit=limit,
+            reconcile_interval_seconds=settings.voice_profile_reconcile_interval_seconds,
+            reconcile_limit=settings.voice_profile_reconcile_batch_limit,
+        )
     if selected_role == "material-cache":
         return drain_material_cache(SessionLocal, limit)
     if selected_role == "metrics":
@@ -196,6 +206,7 @@ def _health_process_types(role: str) -> set[str]:
             "account-online",
             "account-security",
             "ai-memory",
+            "voice-profile",
             "material-cache",
             "metrics",
         }

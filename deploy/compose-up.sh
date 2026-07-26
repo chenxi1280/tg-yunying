@@ -170,6 +170,7 @@ BACKEND_SERVICES=(
   worker-listener
   worker-recovery
   worker-account-security
+  worker-voice-profile
   worker-account-online
   worker-ai-memory
   worker-metrics

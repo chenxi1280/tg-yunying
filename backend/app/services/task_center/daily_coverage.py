@@ -3,15 +3,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.models import (
+    AccountStatus,
     Action,
     ExecutionAttempt,
     Task,
     TaskAccountDailyCoverage,
     TaskMembershipAdmissionItem,
+    TgAccount,
     TgGroup,
     TgGroupAccount,
 )
@@ -33,6 +35,8 @@ GENERATION_CONTRACT_ERROR_CODES = frozenset({
     "ai_generation_reply_sequence_unexpected",
     "ai_generation_output_empty",
 })
+VOICE_PROFILE_MISSING_BLOCKER_CODE = "voice_profile_missing"
+VOICE_PROFILE_MISSING_MESSAGE = "账号面具待恢复，受影响账号已隔离并等待自动重建"
 
 
 @dataclass(frozen=True)
@@ -417,6 +421,137 @@ def block_coverage_accounts(
     return int(result.rowcount or 0)
 
 
+def block_voice_profile_coverage(
+    session: Session,
+    *,
+    task: Task,
+    account_ids: list[int],
+    next_retry_at: datetime | None,
+    detail: str,
+    now: datetime | None = None,
+) -> int:
+    if not account_ids:
+        return 0
+    timestamp = now or _now()
+    result = session.execute(
+        update(TaskAccountDailyCoverage)
+        .where(
+            TaskAccountDailyCoverage.task_id == task.id,
+            TaskAccountDailyCoverage.coverage_date == timestamp.date(),
+            TaskAccountDailyCoverage.account_id.in_(account_ids),
+            TaskAccountDailyCoverage.confirmed_count < TaskAccountDailyCoverage.target_count,
+            TaskAccountDailyCoverage.state.in_(("ready", "blocked")),
+        )
+        .values(
+            state="blocked",
+            blocker_code=VOICE_PROFILE_MISSING_BLOCKER_CODE,
+            blocker_stage="voice_profile",
+            blocker_detail=detail,
+            recovery_path="voice_profile_generation",
+            next_eligible_at=next_retry_at,
+            next_decision_at=next_retry_at,
+            updated_at=timestamp,
+        )
+    )
+    return int(result.rowcount or 0)
+
+
+def release_voice_profile_coverage(
+    session: Session,
+    *,
+    tenant_id: int,
+    account_id: int,
+    now: datetime | None = None,
+) -> int:
+    timestamp = now or _now()
+    task_ids = _voice_profile_blocked_task_ids(session, tenant_id, account_id, timestamp)
+    if not task_ids:
+        return 0
+    result = session.execute(
+        update(TaskAccountDailyCoverage)
+        .where(
+            TaskAccountDailyCoverage.tenant_id == tenant_id,
+            TaskAccountDailyCoverage.task_id.in_(task_ids),
+            TaskAccountDailyCoverage.account_id == account_id,
+            TaskAccountDailyCoverage.coverage_date == timestamp.date(),
+            TaskAccountDailyCoverage.state == "blocked",
+            TaskAccountDailyCoverage.blocker_code == VOICE_PROFILE_MISSING_BLOCKER_CODE,
+            _sendable_coverage_account(tenant_id, account_id),
+        )
+        .values(
+            state="ready",
+            blocker_code="",
+            blocker_stage="",
+            blocker_detail="",
+            recovery_path="",
+            next_eligible_at=None,
+            next_decision_at=timestamp,
+            targeted_at=timestamp,
+            updated_at=timestamp,
+        )
+    )
+    released = int(result.rowcount or 0)
+    if released:
+        _refresh_voice_profile_task_stats(session, task_ids, timestamp)
+        session.execute(
+            update(Task)
+            .where(Task.id.in_(task_ids), Task.status == "running")
+            .values(next_run_at=timestamp, updated_at=timestamp)
+        )
+    return released
+
+
+def _voice_profile_blocked_task_ids(
+    session: Session,
+    tenant_id: int,
+    account_id: int,
+    timestamp: datetime,
+) -> list[str]:
+    return list(session.scalars(
+        select(TaskAccountDailyCoverage.task_id).where(
+            TaskAccountDailyCoverage.tenant_id == tenant_id,
+            TaskAccountDailyCoverage.account_id == account_id,
+            TaskAccountDailyCoverage.coverage_date == timestamp.date(),
+            TaskAccountDailyCoverage.state == "blocked",
+            TaskAccountDailyCoverage.blocker_code == VOICE_PROFILE_MISSING_BLOCKER_CODE,
+        )
+    ))
+
+
+def _refresh_voice_profile_task_stats(session: Session, task_ids: list[str], timestamp: datetime) -> None:
+    for task in session.scalars(select(Task).where(Task.id.in_(task_ids))):
+        missing_count = session.scalar(
+            select(func.count(func.distinct(TaskAccountDailyCoverage.account_id))).where(
+                TaskAccountDailyCoverage.task_id == task.id,
+                TaskAccountDailyCoverage.coverage_date == timestamp.date(),
+                TaskAccountDailyCoverage.state == "blocked",
+                TaskAccountDailyCoverage.blocker_code == VOICE_PROFILE_MISSING_BLOCKER_CODE,
+            )
+        )
+        stats = dict(task.stats or {})
+        stats["voice_profile_missing_account_count"] = int(missing_count or 0)
+        task.stats = stats
+        if not missing_count and task.last_error == VOICE_PROFILE_MISSING_MESSAGE:
+            task.last_error = ""
+
+
+def _sendable_coverage_account(tenant_id: int, account_id: int):
+    return select(TgGroupAccount.id).join(
+        TgAccount,
+        TgAccount.id == TgGroupAccount.account_id,
+    ).where(
+        TgGroupAccount.tenant_id == tenant_id,
+        TgGroupAccount.group_id == TaskAccountDailyCoverage.group_id,
+        TgGroupAccount.account_id == account_id,
+        TgGroupAccount.can_send.is_(True),
+        TgAccount.tenant_id == tenant_id,
+        TgAccount.deleted_at.is_(None),
+        TgAccount.status == AccountStatus.ACTIVE.value,
+        TgAccount.session_ciphertext.is_not(None),
+        TgAccount.session_ciphertext != "",
+    ).exists()
+
+
 def release_online_coverage_blockers(
     session: Session,
     *,
@@ -700,6 +835,7 @@ __all__ = [
     "backfill_daily_coverage_confirmations",
     "bind_coverage_reservation",
     "block_generation_contract_coverage",
+    "block_voice_profile_coverage",
     "block_coverage_accounts",
     "DailyCoverageSyncResult",
     "confirm_coverage_from_attempt",
@@ -713,6 +849,7 @@ __all__ = [
     "mark_coverage_unknown",
     "recover_terminal_coverage_reservations",
     "release_online_coverage_blockers",
+    "release_voice_profile_coverage",
     "release_generation_contract_blocker",
     "release_coverage_reservation",
     "release_planned_coverage_reservation",

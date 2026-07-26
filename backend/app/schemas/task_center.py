@@ -1594,6 +1594,7 @@ class TaskPrecheckOut(ApiModel):
     target_ability: list[dict[str, Any]] = Field(default_factory=list)
     target_resolution: dict[str, Any] = Field(default_factory=dict)
     membership_summary: dict[str, Any] = Field(default_factory=dict)
+    voice_profile_summary: dict[str, Any] = Field(default_factory=dict)
     ready_account_count: int = 0
     preparable_account_count: int = 0
     estimated_membership_actions: int = 0

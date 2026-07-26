@@ -44,15 +44,20 @@ def ready_coverage_plan_batch(
     *,
     now: datetime | None = None,
     limit: int = MAX_DAILY_COVERAGE_PLAN_BATCH,
+    exclude_account_ids: set[int] | None = None,
 ) -> CoveragePlanBatch:
     timestamp = now or _now()
     batch_limit = min(MAX_DAILY_COVERAGE_PLAN_BATCH, max(1, int(limit)))
     cursor = _locked_cursor(session, task, timestamp)
-    rows = _ready_rows_after_cursor(session, task, cursor, timestamp, batch_limit)
+    rows = _ready_rows_after_cursor(
+        session, task, cursor, timestamp, batch_limit, exclude_account_ids,
+    )
     if rows or not cursor.last_coverage_id:
         return CoveragePlanBatch(rows=rows, wrapped=False)
     _rewind_cursor(cursor, timestamp)
-    rows = _ready_rows_after_cursor(session, task, cursor, timestamp, batch_limit)
+    rows = _ready_rows_after_cursor(
+        session, task, cursor, timestamp, batch_limit, exclude_account_ids,
+    )
     return CoveragePlanBatch(rows=rows, wrapped=True)
 
 
@@ -185,6 +190,7 @@ def _ready_rows_after_cursor(
     cursor: TaskDailyCoveragePlanCursor,
     timestamp: datetime,
     limit: int,
+    exclude_account_ids: set[int] | None,
 ) -> list[TaskAccountDailyCoverage]:
     filters = [
         TaskAccountDailyCoverage.tenant_id == task.tenant_id,
@@ -211,6 +217,8 @@ def _ready_rows_after_cursor(
                 cursor.last_coverage_id,
             )
         )
+    if exclude_account_ids:
+        filters.append(TaskAccountDailyCoverage.account_id.not_in(exclude_account_ids))
     statement = (
         select(TaskAccountDailyCoverage)
         .where(*filters)

@@ -9,9 +9,16 @@ from typing import Any
 from sqlalchemy import select
 
 from app.database import SessionLocal
-from app.models import AccountStatus, AiAccountVoiceProfile, Material, TgAccount
+from app.models import (
+    AccountStatus,
+    AiAccountVoiceProfile,
+    AiAccountVoiceProfileGenerationItem,
+    Material,
+    TgAccount,
+)
 from app.services.account_profile_auto_init import profile_is_ready, queue_profile_initialization_for_accounts
-from app.services.task_center.account_voice_profiles import ensure_voice_profiles_for_accounts, generate_voice_profiles_with_ai
+from app.services.account_usage_policy import apply_operational_account_filters
+from app.services.task_center.account_voice_profile_generation_jobs import enqueue_voice_profile_generation
 
 
 ASCII_LETTER_RE = re.compile(r"[A-Za-z]")
@@ -25,7 +32,8 @@ VOICE_PROFILE_COMMIT_CHUNK_SIZE = int(os.getenv("ACCOUNT_PROFILE_RECONCILE_VOICE
 def main() -> int:
     before = _inspect_accounts()
     result = None
-    processed = 0
+    account_security_processed = 0
+    voice_profile_processed = 0
     voice_profile_result = _empty_voice_profile_result()
     if APPLY and _should_apply_reconcile(before):
         profile_account_ids = _not_ready_account_ids(before)
@@ -45,16 +53,19 @@ def main() -> int:
         if DRAIN_ONCE:
             from app.worker import drain_once
 
-            processed = drain_once(200, role="account-security")
+            account_security_processed = drain_once(200, role="account-security")
+            voice_profile_processed = drain_once(200, role="voice-profile")
     after = _inspect_accounts()
     payload = {
         "tenant_id": TENANT_ID,
         "apply": APPLY,
         "drain_once": DRAIN_ONCE,
-        "worker_processed": processed,
+        "account_security_worker_processed": account_security_processed,
+        "voice_profile_worker_processed": voice_profile_processed,
         "before": before,
         "after": after,
-        "created_voice_profiles": voice_profile_result["created"],
+        "queued_voice_profile_account_ids": voice_profile_result["queued_account_ids"],
+        "existing_voice_profile_account_ids": voice_profile_result["existing_account_ids"],
         "voice_profile_reconcile": voice_profile_result,
         "queued_account_ids": list(result.queued_account_ids) if result else [],
         "batch_ids": list(result.batch_ids) if result else [],
@@ -68,34 +79,38 @@ def _reconcile_voice_profiles(account_ids: list[int]) -> dict[str, object]:
     result = _empty_voice_profile_result()
     for batch in _chunks(account_ids, VOICE_PROFILE_COMMIT_CHUNK_SIZE):
         try:
-            created = _commit_voice_profile_batch(batch)
+            queued = _commit_voice_profile_batch(batch)
         except Exception as exc:  # noqa: BLE001 - print structured progress before failing the gate.
             result["failed_batch_account_ids"] = batch
             result["error"] = _error_summary(exc)
             return result
-        result["created"] = int(result["created"]) + int(created)
-        result["completed_account_ids"].extend(batch)
+        result["queued_account_ids"].extend(queued["queued_account_ids"])
+        result["existing_account_ids"].extend(queued["existing_account_ids"])
         _print_voice_profile_progress(result)
     return result
 
 
-def _commit_voice_profile_batch(account_ids: list[int]) -> int:
+def _commit_voice_profile_batch(account_ids: list[int]) -> dict[str, list[int]]:
     with SessionLocal() as session:
-        generator = generate_voice_profiles_with_ai(session, tenant_id=TENANT_ID)
-        created = ensure_voice_profiles_for_accounts(
+        result = enqueue_voice_profile_generation(
             session,
             tenant_id=TENANT_ID,
             account_ids=account_ids,
-            generator=generator,
+            source="recovery",
+            actor="github-actions",
+            reason="生产账号面具恢复：全量检查后自动入队",
         )
         session.commit()
-        return created
+        return {
+            "queued_account_ids": list(result.created_account_ids),
+            "existing_account_ids": list(result.existing_account_ids),
+        }
 
 
 def _empty_voice_profile_result() -> dict[str, Any]:
     return {
-        "created": 0,
-        "completed_account_ids": [],
+        "queued_account_ids": [],
+        "existing_account_ids": [],
         "failed_batch_account_ids": [],
         "commit_chunk_size": VOICE_PROFILE_COMMIT_CHUNK_SIZE,
         "error": None,
@@ -128,10 +143,24 @@ def _inspect_accounts() -> dict[str, object]:
             "not_ready_account_ids": [item["account_id"] for item in samples],
             "missing_voice_profile_count": len(missing_voice_ids),
             "missing_voice_profile_account_ids": missing_voice_ids,
+            **_voice_profile_generation_summary(session),
             "not_ready_reason_counts": dict(Counter(reason for item in samples for reason in item["reasons"])),
             "not_ready_samples": samples[:MAX_SAMPLE],
             "avatar_materials": _avatar_material_summary(session),
         }
+
+
+def _voice_profile_generation_summary(session) -> dict[str, int]:
+    statuses = list(session.scalars(
+        select(AiAccountVoiceProfileGenerationItem.status).where(
+            AiAccountVoiceProfileGenerationItem.tenant_id == TENANT_ID,
+        )
+    ))
+    open_statuses = {"queued", "generating", "validating", "retry_wait", "persist_unknown"}
+    return {
+        "open_voice_profile_generation_count": sum(status in open_statuses for status in statuses),
+        "manual_required_voice_profile_generation_count": sum(status == "manual_required" for status in statuses),
+    }
 
 
 def _should_apply_reconcile(before: dict[str, object]) -> bool:
@@ -161,10 +190,13 @@ def _assert_reconcile_effective(
         return
     if voice_error:
         raise RuntimeError(f"voice profile reconcile failed: {voice_error}")
-    before_missing = int(before.get("missing_voice_profile_count") or 0)
     after_missing = int(after.get("missing_voice_profile_count") or 0)
-    if before_missing and after_missing:
-        raise RuntimeError(f"voice profile reconcile did not complete: before={before_missing}, after={after_missing}")
+    if not after_missing:
+        return
+    if int(after.get("manual_required_voice_profile_generation_count") or 0):
+        raise RuntimeError(f"voice profile reconcile requires manual handling: after={after}")
+    if int(after.get("open_voice_profile_generation_count") or 0) == 0:
+        raise RuntimeError(f"voice profile reconcile left orphaned missing masks: before={before}, after={after}")
 
 
 def _missing_voice_profile_account_ids(session, accounts: list[TgAccount]) -> list[int]:
@@ -178,6 +210,7 @@ def _missing_voice_profile_account_ids(session, accounts: list[TgAccount]) -> li
                 AiAccountVoiceProfile.account_id.in_(account_ids),
                 AiAccountVoiceProfile.status == "active",
                 AiAccountVoiceProfile.quality_status == "active",
+                AiAccountVoiceProfile.short_prompt_summary != "",
             )
         )
     )
@@ -185,19 +218,14 @@ def _missing_voice_profile_account_ids(session, accounts: list[TgAccount]) -> li
 
 
 def _active_accounts(session) -> list[TgAccount]:
-    return list(
-        session.scalars(
-            select(TgAccount)
-            .where(
-                TgAccount.tenant_id == TENANT_ID,
-                TgAccount.deleted_at.is_(None),
-                TgAccount.status == AccountStatus.ACTIVE.value,
-                TgAccount.session_ciphertext.is_not(None),
-                TgAccount.session_ciphertext != "",
-            )
-            .order_by(TgAccount.id.asc())
-        )
+    statement = select(TgAccount).where(
+        TgAccount.tenant_id == TENANT_ID,
+        TgAccount.deleted_at.is_(None),
+        TgAccount.status == AccountStatus.ACTIVE.value,
+        TgAccount.session_ciphertext.is_not(None),
+        TgAccount.session_ciphertext != "",
     )
+    return list(session.scalars(apply_operational_account_filters(statement).order_by(TgAccount.id.asc())))
 
 
 def _account_summary(account: TgAccount) -> dict[str, object]:

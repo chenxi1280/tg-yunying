@@ -835,12 +835,13 @@ def verify_login(session: Session, account_id: int, code: str | None, password_2
                 )
             should_sync = True
 
+    if should_sync:
+        queue_login_profile_initialization(session, account.id, actor)
     audit(session, tenant_id=account.tenant_id, actor=actor, action="验证TG登录", target_type="tg_account", target_id=str(account.id), detail=f"status={status}")
     _emit_account_eligibility_event(session, account.id, "login_status_changed")
     session.commit()
     if should_sync:
         run_account_sync_now(session, account.id, actor, trigger_source="login")
-        queue_login_profile_initialization(session, account.id, actor)
     session.refresh(account)
     return account
 
@@ -868,12 +869,13 @@ def check_qr_login(session: Session, account_id: int, actor: str = "普通用户
         if status == AccountStatus.ACTIVE.value:
             should_sync = True
     latest_flow.status = status
+    if should_sync:
+        queue_login_profile_initialization(session, account.id, actor)
     audit(session, tenant_id=account.tenant_id, actor=actor, action="检查QR登录", target_type="tg_account", target_id=str(account.id), detail=f"status={status}")
     _emit_account_eligibility_event(session, account.id, "login_status_changed")
     session.commit()
     if should_sync:
         run_account_sync_now(session, account.id, actor, trigger_source="login")
-        queue_login_profile_initialization(session, account.id, actor)
     session.refresh(account)
     return account
 

@@ -170,6 +170,85 @@ class AiAccountVoiceProfileBatchStatusOut(ApiModel):
     items: list[AiAccountVoiceProfileBatchItemOut] = Field(default_factory=list)
 
 
+class AiAccountVoiceProfileGenerationJobCreateRequest(BaseModel):
+    mode: Literal["selected", "missing"] = "selected"
+    account_ids: list[int] = Field(default_factory=list)
+    rebuild_existing: bool = False
+    reason: str = Field(default="", max_length=500)
+    idempotency_key: str = Field(..., min_length=1, max_length=120)
+
+
+class AiAccountVoiceProfileGenerationItemRetryRequest(BaseModel):
+    reason: str = Field(default="", max_length=500)
+    expected_status: Literal["retry_wait", "manual_required"]
+    expected_profile_version: int = Field(..., ge=1)
+    idempotency_key: str = Field(..., min_length=1, max_length=120)
+
+
+class AiAccountVoiceProfileGenerationAttemptOut(ApiModel):
+    id: str
+    attempt_no: int
+    stage: str = ""
+    provider: str = ""
+    provider_request_id: str = ""
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    outcome: str = ""
+    error_code: str = ""
+    error_detail: str = ""
+    prompt_feedback_summary: str = ""
+
+
+class AiAccountVoiceProfileGenerationItemOut(ApiModel):
+    id: str
+    account_id: int
+    status: str = ""
+    source: str = ""
+    expected_profile_version: int = 0
+    base_profile_version: int = 0
+    result_profile_version: int | None = None
+    attempt_count: int = 0
+    next_retry_at: datetime | None = None
+    error_code: str = ""
+    error_detail: str = ""
+    previous_item_id: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    finished_at: datetime | None = None
+    attempts: list[AiAccountVoiceProfileGenerationAttemptOut] = Field(default_factory=list)
+
+
+class AiAccountVoiceProfileGenerationJobOut(ApiModel):
+    id: str
+    source: str = ""
+    status: str = ""
+    requested_by: str = ""
+    reason: str = ""
+    total_count: int = 0
+    succeeded_count: int = 0
+    retry_wait_count: int = 0
+    failed_count: int = 0
+    skipped_count: int = 0
+    created_at: datetime | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+
+
+class AiAccountVoiceProfileGenerationJobDetailOut(AiAccountVoiceProfileGenerationJobOut):
+    items: list[AiAccountVoiceProfileGenerationItemOut] = Field(default_factory=list)
+
+
+class AiAccountVoiceProfileGenerationJobListOut(ApiModel):
+    items: list[AiAccountVoiceProfileGenerationJobOut] = Field(default_factory=list)
+    offset: int = 0
+    limit: int = 100
+
+
+class AiAccountVoiceProfileGenerationRetryOut(ApiModel):
+    job: AiAccountVoiceProfileGenerationJobDetailOut
+    item: AiAccountVoiceProfileGenerationItemOut
+
+
 class AiAccountVoiceProfileRollbackRequest(BaseModel):
     source_version: int = Field(..., ge=1)
 

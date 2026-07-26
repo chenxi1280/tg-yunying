@@ -295,7 +295,7 @@ Planner 闸门顺序固定为：账号 / 授权槽位环境栈 -> 协议样本 -
 
 新建操作固定为“任务类型 → 目标群 → 关键词与目标次数 → 执行账号组与节奏 → 确认”。执行范围与节奏只开放账号组、每天执行次数、完成截止时间、日/小时抖动和可选静默时段。`search_join_group` 使用“创建并启动”，`search_rank_deboost` 使用“创建草稿”；二者都不得要求运营补填代理、机器人、单账号策略或其他系统配置。服务端负责检查公开 username、候选账号、代理/授权绑定、协议样本和配额，失败时返回可读 blocker 并在任务详情展示事实。
 
-找不到目标群时，`@jisou` Executor 必须先以当前已审批、版本化的 `BotProtocolSample.page_fingerprints` 分类关键词响应，再选择协议确认的“群聊 / 群组”类型并持续翻页；固定页数不构成停止条件。分类优先级固定为验证页、热搜页、搜索分类页、群聊结果页、未知页。旧版只有 `buttons` 摘要的样本或 Action 缺冻结 profile 时，Planner / Dispatcher 必须写 `protocol_sample_invalid` 并在 Gateway 前停手；不得用硬编码文案猜测。热搜页只允许一次可审计会话重置，未知页零点击，只有已确认搜索分类页缺少已审批 selector 才写 `jisou_group_selector_missing`。结果 trace 只能保留 hash、长度、按钮类型/effect、审批匹配标记和版本，禁止持久化机器人正文、按钮原文、目标群名或目标行。只有精确公开 username 命中并完成目标点击 / 成员关系确认才结束成功搜索。机器人真实没有“下一页”仍未命中时，action 写 `target_not_in_results`、`search_end_reason=no_next_page` 和实际 `searched_pages/last_result_page`，但任务保持 `running` 供后续计划重试。非目标安全浏览只允许当前样本批准的 `navigate_only`，总量默认不超过 3，不加入、不关注、不外跳。
+找不到目标群时，`@jisou` Executor 必须先以当前已审批、版本化的 `BotProtocolSample.page_fingerprints` 分类关键词响应，再选择协议确认的“群聊 / 群组”类型并持续翻页；固定页数不构成停止条件。分类优先级固定为验证页、热搜页、搜索分类页、群聊结果页、未知页。旧版只有 `buttons` 摘要的样本或 Action 缺冻结 profile 时，Planner / Dispatcher 必须写 `protocol_sample_invalid` 并在 Gateway 前停手；不得用硬编码文案猜测。热搜页只允许一次可审计会话重置（重置方式固定为 `/cancel` + `/start` + 重发原始关键词，禁止点击 `👥群组导航` 等 telegram_url 外链），重置后仍为热搜页或进入未知页时写 `jisou_session_state_deviated`；图片验证码页（按钮矩阵含图片/计算题按钮且无 `👥` callback_data 群分类按钮）写 `jisou_image_verification_required`；只有已确认搜索分类页缺少已审批 selector 才写 `jisou_group_selector_missing`。三类错误码严格区分，24h 账号排除规则只对 `jisou_session_state_deviated` 和 `jisou_image_verification_required` 生效；`jisou_group_selector_missing` 单独评估是否为协议样本过期，不自动套用 24h 排除。结果 trace 只能保留 hash、长度、按钮类型/effect、审批匹配标记和版本，禁止持久化机器人正文、按钮原文、目标群名或目标行。只有精确公开 username 命中并完成目标点击 / 成员关系确认才结束成功搜索。机器人真实没有“下一页”仍未命中时，action 写 `target_not_in_results`、`search_end_reason=no_next_page` 和实际 `searched_pages/last_result_page`，但任务保持 `running` 供后续计划重试。非目标安全浏览只允许当前样本批准的 `navigate_only`，总量默认不超过 3，不加入、不关注、不外跳。
 
 `search_join_group` 的实时 pacing、random decision、账号是否执行、目标是否点击、是否跳过和是否重排都不得调用 LLM。LLM 只允许用于离线配置建议、关键词生成、目标相关性解释和复盘分析；这些 LLM 输出必须作为建议或解释进入人工可见页面，不能直接替代 Planner / Executor 决策。
 
@@ -564,6 +564,271 @@ Planner 闸门顺序固定为：账号 / 授权槽位环境栈 -> 协议样本 -
 - 极搜：必须先按版本化协议样本识别页面相位；热搜排行榜、验证页、未知页和正确分类页缺 selector 是不同错误。仅经批准且以 action 级 CAS 账本保证一次性的同机器人重置序列可以恢复会话；未知 button、外链和未审样本不得自动点击，原始机器人文本不得写入 trace。
 
 专项真相源为 docs/03-feature-designs/ai-group-daily-fulfillment-remediation-prd.md 与 docs/03-feature-designs/search-click-daily-fulfillment-remediation-prd.md。两份文档只代表设计完成，代码、迁移、发布与完整自然日生产证据仍须分别验收。
+
+### 2.19 极搜会话状态偏离与图片验证码识别设计（RC-5a/5b/5c/8）
+
+落实 PRD §2.18 极搜口径（line 563「热搜排行榜、验证页、未知页和正确分类页缺 selector 是不同错误」）的详细设计。P0 工单 `TKT-2026-07-25-SEARCH-JOIN-P0` S1/S2 线上实机证据（账号 99 + 165，2026-07-26/27 生产容器）确认原 RC-5「极搜群分类按钮缺失」需拆分为 4 个独立错误码，且图片算式验证码高频出现（推翻原 RC-8「无验证码」结论）。
+
+#### 2.19.1 页面相位分类前置
+
+`_execute_search_pages` 入口必须先对极搜响应页分类，不同相位走不同分支，禁止在任何相位直接报 `jisou_group_selector_missing`：
+
+| 相位 | 判定条件 | 处置 |
+| --- | --- | --- |
+| `hot_list_page` | 文本含「热搜排行榜/近期热搜/热门搜索」 | 写 `jisou_session_state_deviated`，账号 24h 排除，不尝试重置 |
+| `verification_image_page` | `MessageMediaPhoto` + 文本含「人机验证/计算结果」 + ≥8 个 callback_data 数字按钮 | 走 §2.19.2 验证码识别流程 |
+| `search_category_page` | 含 `👥` callback_data 群分类按钮 | 走原有 `_select_jisou_group_results_page` 流程 |
+| `group_result_page` | 含「下一页/next」导航按钮 | 走原有目标群匹配流程 |
+| `unknown` | 以上都不匹配 | 写 `jisou_session_state_deviated`，账号 24h 排除 |
+
+热搜页重置（`/cancel` + `/start` + 重发关键词）已在线上验证**不可行**（极搜把关键词当文本回显，不执行搜索），禁止再尝试。禁止点击 `👥群组导航` 等 telegram_url 外链进入子页面（PRD §2.18 外链禁令）。
+
+#### 2.19.2 图片算式验证码识别流程
+
+检测到 `verification_image_page` 时执行：
+
+1. **下载图片**：`client.download_media(message, file=bytes)` 获取验证码图片字节。
+2. **minimax 识别**：调用 `ai_gateway.solve_image_verification`（minimax/mimo 多模态），prompt 固定为「识别图片中的算式并计算结果，输出 JSON：{"answer":数字,"confidence":0到1}。answer 必须是算式计算后的正整数。只输出紧凑 JSON，不要解释。」。返回空内容时重试 1-2 次（复用 `ai_gateway` 现有重试机制或显式重试），仍空写 `jisou_image_verification_failed`。
+3. **双重校验（硬约束）**：
+   - 置信度 ≥ 0.70（必要条件）；
+   - **answer 必须在按钮矩阵 callback_data 数字按钮的 `text` 集合中**（充分条件，最后一道安全门）。
+   - 任一不满足禁止点击，直接写 `jisou_image_verification_failed`，账号 24h 排除。线上实测高置信也可能识别错（round 7：answer=7 conf=0.95 但按钮矩阵无 7），按钮矩阵匹配不可省略。
+4. **点击匹配按钮**：在按钮矩阵找 `button_type=callback_data` 且 `text=answer` 的按钮，CAS 点击，重新取页面分类。
+5. **失败处置**：识别失败、置信度不足、answer 不在矩阵、重试仍空、minimax provider 全部不可用，都写 `jisou_image_verification_failed`，账号 24h 排除（复用 `jisou_selector_accounts` 机制），不 silent fallback。
+6. **递归上限**：验证码识别成功点击后，重新取页面分类若再次进入 `verification_image_page`，最多重试 2 次（同一次 search action 内）。第 3 次仍为验证码页写 `jisou_image_verification_failed`，账号 24h 排除，防止无限循环。
+
+线上实测成功率约 50%（4/8 按钮匹配成功），触发验证码的账号有效产能约为未触发账号的 50%。产品需评估账号池容量是否足够（§2.20.3 账号产能设计与此关联）。
+
+#### 2.19.3 错误码细分与 24h 排除规则
+
+| 错误码 | 触发条件 | 24h 排除 | 说明 |
+| --- | --- | --- | --- |
+| `jisou_session_state_deviated` | hot_list_page 或 unknown 相位 | 是 | 账号级会话状态偏离，重置不可行 |
+| `jisou_image_verification_required` | 检测到 verification_image_page | 是 | 进入验证码识别流程的前置标记 |
+| `jisou_image_verification_failed` | 验证码识别失败（任一硬约束不满足） | 是 | 识别错误或 minimax 不可用 |
+| `jisou_group_selector_missing` | search_category_page 缺已审批 selector | 否 | 单独评估是否协议样本过期，不自动 24h 排除 |
+
+`jisou_selector_accounts` 排除逻辑（`backend/app/services/task_center/jisou_selector_accounts.py`）必须按上述错误码区分：前三个 24h 排除，`jisou_group_selector_missing` 不自动排除。
+
+#### 2.19.4 观测盲点修复（RC-5c）
+
+`_button_layout` 必须把已计算的 `normalized_text` 写入 trace（当前代码已计算但未持久化）。`jisou_group_selector_missing` / `jisou_session_state_deviated` / `jisou_image_verification_required` / `jisou_image_verification_failed` 失败时 trace 必须含每个按钮的 `normalized_text`、`button_type`、`effect`、`url`、`position`、`row`、`col`，便于回放真实按钮文案。仍禁止持久化机器人正文、按钮原文、目标群名（脱敏后 normalized_text 可存）。
+
+`search_join_protocol_traces` 表当前 `COUNT(*)=0`（线上确认从未写入），dev 必须保证失败 trace 实际落表，否则观测盲点无法闭合。
+
+#### 2.19.5 频率控制与 LLM 边界
+
+- **频率控制**：账号级搜索频率冷却（单账号 1 小时内最多 N 次搜索，N 由产品配置），作为前置减压避免高频触发验证码。触发 `jisou_image_verification_required` 的账号 24h 排除。
+- **LLM 边界**：minimax/mimo 仅用于图片算式识别（OCR + 答案匹配），不用于实时 pacing、random decision、账号是否执行、目标是否点击等决策（PRD §2.8.3 LLM 边界不变）。
+
+#### 2.19.6 验收口径
+
+- 单元测试：4 种相位分类、验证码识别双重校验（含 answer 不在矩阵的 round 7 场景）、minimax 返回空重试、错误码细分落表。
+- QA 定向：`jisou_group_selector_missing` 日失败率显著下降；`jisou_session_state_deviated` 与 `jisou_image_verification_*` 可区分；`search_join_protocol_traces` 失败 trace 实际落表且含 normalized_text。
+- E4 / production_fixed：完整自然日 click confirmed ≥ 1000 且 mem confirmed ≥ 80（需 §2.19 + §2.20 一起修复），证据写入工单或 prod-diagnosis worklog。
+
+#### 2.19.7 不允许
+
+- silent 把热搜页 / 验证码页当搜索结果处理。
+- mock 验证码识别成功；点击 telegram_url 外链进入子页面。
+- 单靠 confidence 阈值放行点击（必须按钮矩阵匹配）。
+- 为冲量取消 24h 排除规则。
+- 未经验证宣称 `production_fixed`。
+
+design_status=complete。dev 实现时需同步更新 `docs/03-feature-designs/search-click-boost-prd.md` 和项目结构索引。
+
+### 2.20 搜索入群日目标达成保障设计（RC-3/4/6）
+
+落实 PRD §2.18「共用 Dispatcher」口径（line 562「不能让固定排序长期饿死另一方」）和「搜索点击」口径（line 561 五重校验）的详细设计。P0 工单 S2 线上观测（2026-07-27）确认：任务 `85261b6b…` 截至观测时 `click confirmed=0/1000, mem confirmed=0/80, daily_outcome=blocked, blocker_code=daily_target_capacity_insufficient`，根因为 RC-3 membership UAS、RC-4 claim 饿死、RC-6 账号产能极低三个独立问题。§2.19 修复极搜侧，§2.20 修复任务履约侧，缺一不可。
+
+#### 2.20.1 RC-4 Dispatcher claim 公平性保障
+
+**问题**：`dispatch_claim_reservations` 6h 聚合显示 `hard_hourly required=80795 claimed=6034`，`search_join required=1916 reserved=311 claimed=0`。search_join 的 311 个 reservation 一个都没 claim 成功，capacity 全被 hard_hourly 占满，`reason=shared_dispatch_capacity_insufficient`。这违反 §2.18 line 562「不能让固定排序长期饿死另一方」的已有口径。
+
+**设计决策**：
+
+1. **最小份额保障**：严格搜索日目标任务（strict daily target）与 AI hard-hourly 共存时，dispatcher 必须在 `DispatchClaimScope` allocation 阶段给 search_join 保留最小份额 `min_reserved_capacity`，默认值为 scope capacity 的 30%（产品可配置，范围 20%-50%）。当 search_join required_claims > 0 且 available_capacity < required 时，hard_hourly 不能独占全部 available，必须先满足 search_join 的 min_reserved_capacity。
+2. **公平性算法**：allocation 按加权公平队列（weighted fair queue）分配，权重 = `required_claims / sum(required_claims)`，但严格任务有权重下限（min_reserved_capacity / scope_capacity）。算法必须持久化到 `DispatchClaimShardAllocation`，任务详情显示每类 required/reserved/claimed 和未服务原因。
+3. **饿死告警**：search_join 连续 3 个 `DispatchClaimWindow`（默认 15 分钟/窗口）reserved > 0 但 claimed = 0 时，写 `dispatch_claim_starvation` 告警，运营中心可见。
+4. **禁止**：用 `exclude_task_ids=AI` 临时放行作为常态；silent 把 search_join reservation 记为 claimed；取消 strict 日目标的严格性；静态优先级单独作为完成保证。
+
+#### 2.20.2 RC-3 membership 子动作 UAS 修复
+
+**问题**：`search_join_membership` action 仅 2 条，全部 `unknown_after_send`（`lease_expired` 后 recovery 标记）。click 成功后 membership 子动作执行超时（lease_expired），mem confirmed 长期 0。
+
+**设计决策**：
+
+1. **lease_timeout 调整**：membership 子动作的 lease_timeout 必须覆盖真实 TG 入群确认耗时。当前 lease 过短导致 UAS。新默认值 180s（产品可配置），覆盖 join 请求发送 → TG 服务端处理 → membership 事件回推的全链路。
+2. **链路完整性**：click 成功后 membership 子动作必须按「创建 → claim → 执行 → 确认」完整链路执行，每一步有独立超时和错误码。click 的 `target_click_observed=true` 不等于 membership 已确认；membership 必须有独立的 `membership_observed` 事实。
+3. **UAS 补偿确认**：`unknown_after_send` 的 membership action 不能长期挂起。recovery 必须在 lease_expired 后执行补偿确认（重新查询 membership 状态），确认成功写 `membership_observed`，确认失败写 `membership_not_observed`，超时（如 10 分钟）未确认写 `membership_confirmation_timeout` 终态关闭。
+4. **禁止**：silent 把 UAS 记为 confirmed；mock 入群确认；membership 子动作无超时边界；UAS 长期挂起不终态关闭。
+
+#### 2.20.3 RC-6 账号产能保障
+
+**问题**：pool 3 有 67 个在线账号，但 48h 内 planner 只用了 7 个（acct=90/96/99/102/151/165/221），acct=96 独占 26 个 pending（全未 claim）。`per_account_daily_action_limit=2` + 账号选择范围窄 → 理论日上限仅 14 action（7 账号 × 2），远不够 1000 目标。`pacing_limits` 显示 `per_account_daily_limit_reached=0`（不是冷却问题，是 planner 没用全账号）。
+
+**设计决策**：
+
+1. **planner 账号选择全覆盖**：planner 规划 search_join action 时，账号候选集必须覆盖任务 `account_config` 指定范围内全部 `status=在线` + `health_score >= 55` + 未被 `jisou_selector_accounts` 24h 排除的账号。禁止只用 7/67。账号选择范围窄（实际候选 < 配置候选 50%）时写 `planner_account_selection_narrow` 告警。
+2. **per_account_daily_action_limit 调整**：当前默认 2 无法支撑 1000 日目标。产品决策：若日目标 1000 不可降，`per_account_daily_action_limit` 提升至 N（N = ceil(1000 / 有效账号数 × 安全系数)，安全系数 1.5）。67 在线账号时 N ≈ 23。该值由产品在 `pacing_config` 配置，dev 不擅自改默认值。
+3. **产能预判**：planner 在每日规划前必须预判「有效账号数 × per_account_daily_action_limit × (1 - 验证码触发率)」是否 ≥ 日目标。不足时写 `daily_target_capacity_insufficient` blocker，任务详情可见，禁止 silent 用不足产能冲目标。
+4. **禁止**：silent 用 7 个账号冲 1000 目标；为冲量取消 per_account_daily_action_limit 且无产品确认；planner 账号选择范围窄但不告警。
+
+#### 2.20.4 RC-1 静默窗口（设计约束，非 bug）
+
+线上证据：21 个 skipped 中大量 `error_code=quiet_hours_active`（03:00-07:38 Asia/Shanghai）。这是设计约束（PRD §2.18 hourly_round_curve + quiet_hours），非 bug。是否过严由产品确认（S6），开发勿擅自取消除非产品改 PRD。若产品确认 1000 日目标需压缩静默窗口，则单独改 quiet_hours / hourly_round_curve 配置，不在本节范围。
+
+#### 2.20.5 前端任务详情显示
+
+任务详情页必须新增以下字段（只读展示，不在创建/编辑表单可调）：
+
+| 区域 | 新增字段 | 数据源 |
+| --- | --- | --- |
+| dispatch_claim | `min_reserved_capacity`、公平性 allocation（每类 required/reserved/claimed）、`dispatch_claim_starvation` 告警 | `DispatchClaimShardAllocation` |
+| daily_outcome | `daily_target_capacity_insufficient` blocker、有效账号数、`per_account_daily_action_limit`、验证码触发率预估 | planner 产能预判 |
+| membership | UAS membership action 计数、`membership_confirmation_timeout` 计数 | actions 聚合 |
+| 账号选择 | 实际候选账号数 / 配置候选账号数、`planner_account_selection_narrow` 告警 | planner 决策 |
+
+#### 2.20.6 边界场景
+
+- **minimax provider 全部不可用**：`ai_gateway.solve_image_verification` 抛错或返回空，按 §2.19.2 第 5 步写 `jisou_image_verification_failed`，账号 24h 排除。不降级为跳过验证码直接搜索。
+- **验证码识别成功后再次触发验证码**：按 §2.19.2 第 6 步递归上限 2 次处理。
+- **dispatcher scope 只有一个严格任务**：min_reserved_capacity 不生效（无竞争方），正常分配。
+- **planner 账号全部被 24h 排除**：写 `daily_target_capacity_insufficient` blocker，任务暂停规划，不 silent 用空账号池冲目标。
+- **membership 子动作 click 关联失败**：`source_search_join_action_id` 指向的 click action 不存在或未 confirmed，membership 子动作写 `membership_source_click_invalid` 终态关闭，不执行。
+
+#### 2.20.7 迁移与回滚
+
+- **迁移**：`per_account_daily_action_limit` 默认值变更（2 → N）通过 `pacing_config` JSON 配置，无需数据库迁移；`min_reserved_capacity` 为新增 `DispatchClaimScope` 配置字段，需迁移加列（默认 0.30）；`membership_lease_timeout` 为新增配置，需迁移加列（默认 180s）。dev 必须在 Release Gate 前提供迁移脚本和回滚脚本。
+- **回滚**：若 §2.19 验证码识别引入生产问题，回滚方式为临时禁用 `verification_image_page` 识别流程（配置开关），退化为直接写 `jisou_image_verification_failed` 24h 排除（不识别不点击），不影响 §2.20。若 §2.20 公平性算法引入问题，回滚方式为 `min_reserved_capacity=0` 退化为原固定排序（接受 search_join 饿死），不影响 §2.19。两节设计独立，可分别回滚。
+- **发布顺序**：§2.19 和 §2.20 可独立发布，但 E4 验收需两者都在线。建议先发布 §2.20（解除 claim 饿死 + 账号产能 + membership UAS），再发布 §2.19（验证码识别），避免验证码识别触发后账号被排除但产能未补齐的过渡期。
+
+#### 2.20.8 验收口径
+
+- RC-4：search_join 连续 3 个 window reserved > 0 且 claimed = 0 不再出现；任务详情显示 min_reserved_capacity 和公平性 allocation。
+- RC-3：membership action `unknown_after_send` 比例显著下降；mem confirmed 随成功 click 增长，不再长期 0；UAS membership action 在 10 分钟内终态关闭。
+- RC-6：planner 实际用账号数 ≥ 配置候选 80%；`daily_target_capacity_insufficient` blocker 在产能不足时可见；日目标达成或明确 blocker。
+- E4 / production_fixed：完整自然日 click confirmed ≥ 1000 且 mem confirmed ≥ 80（需 §2.19 + §2.20 一起修复）。
+
+#### 2.20.9 不允许
+
+- silent 把 UAS / pending 记为 confirmed success。
+- mock 极搜点击 / 入群确认 / minimax 识别。
+- 为冲量取消全部静默 / 曲线且无产品书面确认。
+- 用 `exclude_task_ids=AI` 临时放行作为常态。
+- 未经验证宣称 `production_fixed`。
+
+design_status=complete。dev 实现时需同步更新 `docs/03-feature-designs/search-click-boost-prd.md`、`docs/03-feature-designs/search-click-daily-fulfillment-remediation-prd.md`、`docs/superpowers/specs/2026-07-15-dispatcher-claim-fairness-design.md` 和项目结构索引。
+
+> 线上观测证据详见 P0 工单 `docs/04-ops/tickets/2026-07-25-p0-search-join-daily-target-failure.md` S1/S2 章节。诊断脚本 `backend/scripts/diagnose_jisou_selector.py`（含 `--solve-captcha` 只读测试模式）保留用于回归验证。
+
+### 2.21 PRD §2.19 + §2.20 线上可行性与代码现状评估（2026-07-27）
+
+按 PRD §2.19 + §2.20 到线上环境测试方案可行性。由于 SSH 服务端在并行长连接后暂时拒绝连接（sshd 资源耗尽），部分多账号测试待恢复后补跑。基于已有线上证据（账号 99/165）和代码层面分析，评估结论如下。
+
+#### 2.21.1 §2.19 极搜侧可行性
+
+| 子节 | 设计要点 | 代码现状 | 可行性 | dev 待办 |
+| --- | --- | --- | --- | --- |
+| §2.19.1 相位分类 | 5 相位表格 + 不同分支 | `classify_jisou_page`（`search_join_protocol.py:55`）已有 `hot_list_page` / `verification_page` / `unknown_page` 分类，但 `verification_page` 走 `bot_human_verification_required` 错误码，不区分图片验证码 | ✅ 可行 | 扩展 `verification_page` 为 `verification_image_page`，新增图片验证码检测（`MessageMediaPhoto` + ≥8 数字按钮） |
+| §2.19.2 验证码识别 | 6 步流程 + 双重校验 + 递归上限 | 完全不存在 | ✅ 可行（账号 165 实测 4/8 成功） | 新增完整流程：下载图片 → minimax 识别 → 双重校验 → 点击 → 递归上限 |
+| §2.19.3 错误码细分 | 4 类错误码 + 24h 排除规则反转 | 已有 `jisou_group_selector_missing` / `jisou_hot_list_page` / `jisou_protocol_page_unknown` / `jisou_session_state_deviated`；**缺** `jisou_image_verification_required` / `jisou_image_verification_failed` | ✅ 可行 | 新增 2 个错误码；**反转 24h 排除逻辑**（当前只排除 `jisou_group_selector_missing`，PRD 要求 `jisou_group_selector_missing` 不排除，其他三个排除） |
+| §2.19.4 观测盲点 | normalized_text 落表 + protocol_traces 实际写入 | `_button_layout`（`search_join.py:354`）已计算 `normalized` 但未写入返回 dict；`record_search_join_protocol_trace`（`dispatcher.py:5133`）有调用但表空 | ✅ 可行 | `_button_layout` 加 `normalized_text` 字段；protocol_traces 表空是 §2.20 RC-4 claim 饿死的连锁反应（action 卡在 pending 没执行到 gateway），§2.20 修复后 trace 会自然落表 |
+| §2.19.5 频率控制 | 账号级搜索频率冷却 | 不存在 | ✅ 可行 | 新增账号级频率冷却配置 |
+
+**关键代码差异（dev 必须注意）**：
+
+1. **24h 排除逻辑与 PRD 相反**：`jisou_selector_accounts.py:40-43` 当前只排除 `jisou_group_selector_missing`，PRD §2.19.3 要求 `jisou_group_selector_missing` 不排除，`jisou_session_state_deviated` / `jisou_image_verification_required` / `jisou_image_verification_failed` 排除。dev 必须反转逻辑。
+2. **验证码检测走两条路径**：非 jisou 用 `_human_verification_required`（`search_join.py:701`，substring 匹配），jisou 用 `classify_jisou_page`（`search_join_protocol.py:55`，protocol_profile 指纹匹配）。PRD §2.19.2 要求 jisou 检测到 `verification_image_page` 时走 minimax 识别，需 dev 在 jisou 路径新增图片验证码识别分支，不能复用非 jisou 的 `_human_verification_required`。
+3. **protocol_traces 表空是连锁反应**：代码有写入逻辑（`dispatcher.py:5133` 调用 `record_search_join_protocol_trace`），但 action 被 §2.20 RC-4 claim 饿死卡在 pending，根本没执行到 `_record_search_join_protocol_result`（`dispatcher.py:5108`）。§2.20 修复后 trace 会自然落表，不需要单独修复 trace 写入路径。
+
+#### 2.21.2 §2.20 任务履约侧可行性
+
+| 子节 | 设计要点 | 线上现状（2026-07-27 最新证据） | 可行性 | dev 待办 |
+| --- | --- | --- | --- | --- |
+| §2.20.1 RC-4 claim 公平性 | min_reserved_capacity 30% + 加权公平队列 | `search_join reserved=44 claimed=0`（1h 内），`hard_hourly required=110883 claimed=546` | ✅ 可行 | 新增 `min_reserved_capacity` 字段 + 加权公平队列算法 |
+| §2.20.2 RC-3 membership UAS | lease_timeout 180s + 补偿确认 | 2 条 membership action 全 `unknown_after_send`，未修复 | ✅ 可行 | 调整 lease_timeout + 新增补偿确认 + 10 分钟终态关闭 |
+| §2.20.3 RC-6 账号产能 | planner 全覆盖 + per_account_daily_action_limit 提升 | 7/67 账号（10.4%），acct=96 独占 26 pending | ✅ 可行 | 修复 planner 账号选择逻辑 + 产品决策 per_account_daily_action_limit |
+
+#### 2.21.3 §2.19 + §2.20 依赖关系
+
+- **§2.20 必须先于 §2.19 发布**（PRD §2.20.7 已记）：§2.19 验证码识别触发后账号被 24h 排除，若 §2.20 账号产能未补齐，会导致账号池快速耗尽。
+- **§2.19.4 protocol_traces 落表依赖 §2.20.1**：action 被 claim 饿死卡在 pending 时根本不会执行到 gateway 调用阶段，trace 自然空。§2.20.1 修复后 trace 会自然落表。
+- **§2.19.5 频率控制与 §2.20.3 账号产能关联**：频率冷却（单账号 1h N 次搜索）会降低单账号产能，需与 per_account_daily_action_limit 一起评估。
+
+#### 2.21.4 线上测试结果（2026-07-27 生产容器，SSH 恢复后补跑）
+
+**测试 1：多账号相位分类（§2.21.4-1）**
+
+3 个账号各跑 5-8 轮搜索，验证 PRD §2.19.1 五相位分类覆盖率：
+
+| 账号 | 轮数 | hot_list_page | verification_image_page | search_category_page | group_result_page | unknown |
+| --- | --- | --- | --- | --- | --- | --- |
+| 99 | 5 | 1 | 4 | 0 | 0 | 0 |
+| 165 | 8 | 0 | 8 | 0 | 0 | 0 |
+| 221 | 8 | 0 | 8 | 0 | 0 | 0 |
+
+关键发现：
+- **账号 99 行为变化**：首次进入 `hot_list_page`（1 次），后续 4 次全部进入 `verification_image_page`。说明热搜页偏离账号在首次搜索后会被极搜强制进入验证码流程，PRD §2.19.1 的 `hot_list_page` → `jisou_session_state_deviated` 24h 排除设计正确——若不排除，后续搜索会持续触发验证码。
+- **验证码高频确认**：3 个账号 21 轮搜索中，20 轮触发验证码页（95.2%），仅账号 99 首轮是 hot_list_page。**极搜已对所有测试账号强制验证码**，PRD §2.19.2 验证码识别流程是必须的，不是可选的。
+- **`verification_image_page` 判定条件验证**：所有验证码页都是 `has_photo=True` + `button_count=10` + `digit_btns=10`（10 个 callback_data 数字按钮），完全符合 PRD §2.19.1 判定条件（`MessageMediaPhoto` + 文本含「人机验证/计算结果」+ ≥8 个 callback_data 数字按钮）。
+- **`search_category_page` 和 `group_result_page` 未出现**：3 个账号 21 轮全部没进入正常搜索分类页或群结果页。说明极搜当前对所有账号强制验证码，PRD §2.19.1 的 `search_category_page` / `group_result_page` 分支在当前环境无法实测，但代码路径已存在（`classify_jisou_page` 已有分类），dev 实现后回归测试即可。
+
+**测试 2：验证码识别多账号回归（§2.21.4-2）**
+
+账号 165 + 221 各跑 8 轮 `--solve-captcha`，验证 PRD §2.19.2 双重校验 + 递归上限：
+
+| 账号 | 轮数 | 按钮匹配成功 | 高置信但被矩阵拦截 | minimax 返回空 | 低置信被阈值过滤 |
+| --- | --- | --- | --- | --- | --- |
+| 165 | 8 | 3 (37.5%) | 2 (25%) | 1 (12.5%) | 2 (25%) |
+| 221 | 8 | 4 (50%) | 1 (12.5%) | 1 (12.5%) | 2 (25%) |
+| **合计** | **16** | **7 (43.8%)** | **3 (18.8%)** | **2 (12.5%)** | **4 (25%)** |
+
+关键发现：
+- **双重校验有效拦截高置信错答**：3 次高置信但 answer 不在按钮矩阵（165r7 conf=0.85 answer=40、221r1 conf=0.75 answer=26、221r5 conf=0.7 answer=7），全部被矩阵匹配拦截，验证 PRD §2.19.2 第 3 步「answer 必须在按钮矩阵」是必要安全门。若单靠 confidence ≥ 0.70 阈值，这 3 次会误点击错误按钮。
+- **minimax 返回空确认重试需求**：2 次返回空（165r4、221r8），占 12.5%。PRD §2.19.2 第 2 步「重试 1-2 次」设计正确，预计重试后空内容率可降至 5% 以下。
+- **成功率约 44%**：7/16 按钮匹配成功，与之前账号 165 单测的 4/8 (50%) 一致。PRD §2.19.2 第 5 步「识别失败 24h 排除」设计正确——触发验证码的账号有效产能约为未触发账号的 44%。
+- **递归上限未触发**：所有轮次都是独立搜索（不是同一次 search action 内的递归），PRD §2.19.2 第 6 步递归上限 2 次的设计需 dev 实现后在真实 search action 内验证。
+
+**测试 3：minimax provider 状态确认（§2.21.4-3）**
+
+| provider_id | name | model | active | health |
+| --- | --- | --- | --- | --- |
+| 1 | xiaomi-mino | mimo-v2.5 | False | 禁用 |
+| 4 | MiniMax MiniMax-M2.5 | MiniMax-M2.5 | True | 健康 |
+| 5 | MiniMax MiniMax-M3 | MiniMax-M3 | True | 健康 |
+
+- **minimax provider 可用**：id=4/5 两个 provider 健康，PRD §2.19.2 调用 `ai_gateway.solve_image_verification` 可行。
+- **降级路径验证**：测试 2 中 2 次 minimax 返回空（`AiEmptyFinalContentError`），当前代码直接报错。PRD §2.19.2 第 2 步「重试 1-2 次，仍空写 `jisou_image_verification_failed`」设计正确，dev 需实现重试逻辑。
+- **provider 全部不可用场景**：未实测（需 dev 实现后临时禁用 minimax provider 测试），但 PRD §2.20.6 边界场景已覆盖「minimax provider 全部不可用 → `jisou_image_verification_failed` 24h 排除」。
+
+**测试 4：§2.20 线上状态复查（RC-4/3/6）+ §2.19.4 protocol_traces**
+
+| 根因 | 最新证据（2026-07-27 01:40） | PRD 设计验证 |
+| --- | --- | --- |
+| RC-4 claim 饿死 | `search_join reserved=41 claimed=0`（1h 内），`hard_hourly required=99806 claimed=478` | §2.20.1 min_reserved_capacity 30% 设计必要且可行 |
+| RC-3 membership UAS | 2 条 membership action 全 `unknown_after_send`，未修复 | §2.20.2 lease_timeout 180s + 补偿确认设计必要且可行 |
+| RC-6 账号产能 | 7/67 账号（10.4%），48h 内 57 actions | §2.20.3 planner 全覆盖 + per_account_daily_action_limit 提升设计必要且可行 |
+| RC-5c protocol_traces | `COUNT(*)=0`（仍空） | §2.19.4 观测盲点修复必要；表空是 RC-4 claim 饿死连锁反应，§2.20.1 修复后自然落表 |
+
+#### 2.21.5 综合结论
+
+PRD §2.19 + §2.20 方案**整体可行**，线上测试已验证核心设计要点：
+
+1. **§2.19.1 五相位分类可行**：`verification_image_page` 判定条件（`has_photo=True` + 10 个 callback_data 数字按钮）100% 命中所有验证码页。`hot_list_page` 和 `verification_image_page` 是当前线上主要相位（`search_category_page` / `group_result_page` 因极搜强制验证码未出现，但代码路径已存在）。
+2. **§2.19.2 验证码识别双重校验可行且必要**：按钮矩阵匹配拦截了 3 次高置信错答（18.8%），证明单靠 confidence 阈值不足。成功率约 44%，需 §2.20.3 账号产能补齐。
+3. **§2.19.2 minimax 重试设计必要**：12.5% 返回空，重试 1-2 次可降低失败率。
+4. **§2.20 三个根因设计全部必要且可行**：RC-4 仍饿死（search_join claimed=0）、RC-3 仍 UAS、RC-6 仍 10.4% 覆盖率，PRD 设计直接对应线上问题。
+5. **§2.19.4 protocol_traces 表空是 §2.20 连锁反应**，不需单独修复。
+
+关键风险点：
+
+1. **24h 排除逻辑反转**是高风险改动（当前逻辑与 PRD 完全相反），dev 必须仔细测试。
+2. **§2.20 必须先于 §2.19 发布**，否则验证码识别触发后账号池快速耗尽（44% 成功率 + 24h 排除 → 账号池日衰减率高）。
+3. **极搜已对所有测试账号强制验证码**（21 轮 20 轮验证码），PRD §2.19.2 验证码识别是必须的，不是可选的。
+4. **minimax 识别成功率约 44%**，需 §2.20.3 账号产能补齐（per_account_daily_action_limit 提升 + planner 全覆盖）才能支撑 1000 日目标。
+
+design_status=complete，可进入 dev。dev 实现后需补跑：递归上限测试（同一次 search action 内）、minimax provider 全部不可用降级测试、`search_category_page` / `group_result_page` 相位回归测试。
 
 ## 3. 模块 PRD
 
@@ -2598,7 +2863,7 @@ AI 活跃群的真人感目标不是让模型自由编造身份，而是让自�
 账号面具必须满足：
 
 - 面具字段包括面具名称、目标受众身份感、年龄段 / 阶段感、兴趣偏好标签、句长偏好、互动习惯、语气强度、用词偏好、表情倾向、是否爱追问、是否爱附和、是否偶尔轻吐槽、禁用表达。
-- 面具性别统一固定为男性嫖客视角；面具名称、目标受众身份感、身份框架或短摘要中必须能明确看出男客 / 男大 / 男性 / 嫖客 / 老哥 / 大哥 / 老板等男性身份，不允许生成女客、女性账号或中性身份面具。
+- 面具性别统一固定为成年男性日常社交视角；面具名称、目标受众身份感、身份框架或短摘要中必须能明确看出男性 / 男生 / 男士 / 老哥 / 大哥 / 老板 / 先生等男性身份，不允许生成女客、女性账号或中性身份面具。面具字段不得使用色情、性交易、寻欢、夜场、楼凤、外围、招嫖等敏感交易措辞。
 - 面具允许配置经历设定和消费经历设定；这些内容只作为账号长期表达约束使用，生成内容仍需遵守任务上下文、去重和质量规则，不得脱离上下文新增可核验事实、联系方式、价格、邀约或交易撮合信息。
 - 面具是账号级全局资产，同一个账号在所有 AI 活跃群任务里使用同一张 active 面具；任务和目标群只能追加短期上下文、话题和立场，不能为同一账号生成另一套长期面具。
 - 面具在账号初始化流程中批量生成；存量账号缺面具时，由“账号面具”一级菜单或任务启动前触发批量补齐。日常 Planner 只读取缓存，不每轮调用 AI 分析。
@@ -3948,7 +4213,7 @@ AI 活跃群的默认策略是“接话为主、低频暖场为辅”：
 
 AI 活跃群质量管线必须先做确定性约束，再做 AI 生成，最后做发送前复查：
 
-- Planner 启动本轮前先读取 ready pool、`tg_account_online_state`、账号面具、账号群内短期立场、最近真人上下文、同任务历史成功消息和 `ai_group_message_memory`。任一账号在线状态为 `stale`、`offline`、`login_required`、`session_invalid`、`proxy_failed` 时，不得进入文本生成候选；任一账号缺少 active 账号面具或面具短摘要时，也不得进入 AI 活群生成候选，必须记录 `mask_missing` / 兼容旧名 `voice_profile_missing` 并等待面具初始化 / 重建完成。
+- Planner 启动本轮前先读取 ready pool、`tg_account_online_state`、账号面具、账号群内短期立场、最近真人上下文、同任务历史成功消息和 `ai_group_message_memory`。任一账号在线状态为 `stale`、`offline`、`login_required`、`session_invalid`、`proxy_failed` 时，不得进入文本生成候选；任一账号缺少 active 账号面具或面具短摘要时，也不得进入 AI 活群生成候选，必须记录 `mask_missing` / 兼容旧名 `voice_profile_missing` 并等待面具初始化 / 重建完成。单账号恢复可以生成该账号独立的轻量面具以降低输出复杂度，但不得复用其他账号面具、空摘要或绕过准入；缺失账号保留在当日覆盖分母。
 - `all_accounts_daily` 选号必须按显式覆盖扫描页读取 ready 候选并批量判定实时在线状态，再从在线子集按本轮消息预算取账号；候选扫描页大小不能被单轮 Action 预算或当前 `due_debt` 缩成 1，也不得先按 `max_concurrent` / 小时缺口截断、再过滤在线状态，否则靠前离线账号会遮蔽后续在线账号并形成虚假的“账号在线状态不可用”。扫描页只用于候选资格判定，离线页会显式标阻塞并由后续页继续，不改变单轮消息预算、欠账数量、容量、冷却或风控规则，也不构成服务上线账号总量限制。
 - 当同一 `all_accounts_daily` 任务启用硬小时目标时，Planner 必须以当前 `planning_deficit` 与日覆盖 `due_debt` 的较大值作为待规划欠账，再受本轮 ready 且在线账号数和单轮 Action 限额约束。这样自然节奏 `due_debt=0` 不会压掉真实硬小时缺口，当前小时硬目标已完成也不会反向清零更大的每日全账号欠账。
 - 当硬小时目标因 `hard_hourly_group_cooldown_insufficient` 无法在当前群冷却内履约、但全账号日覆盖容量证明仍为 `sufficient` 时，硬小时链路必须保持 `blocked`，不得把不可达目标降级为成功；但该阻塞只能停止带 `hard_hourly_target=true` 的 Action。Planner 仍必须按 `daily_coverage_due_debt` 创建不带硬小时 bucket / deficit 标记的日覆盖 Action，并让它们走正常群冷却、日上限、账号容量、AI 质量和远端确认链路。任务详情必须并列显示“硬小时阻塞”与“日覆盖进度”，不能因前者把后者停掉。

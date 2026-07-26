@@ -44,6 +44,7 @@ from ..account_scope import bootstrap_missing_all_account_task_scope
 from ..ai_act_types import canonical_ai_group_act_type
 from ..ai_generator import AI_GENERATION_UNAVAILABLE_MESSAGE
 from ..ai_message_memory import mark_group_ai_message_result, reserve_group_ai_message
+from ..account_voice_profile_generation_jobs import enqueue_voice_profile_generation
 from ..account_voice_profiles import group_stance_summaries, voice_profile_prompt_details
 from ..channel_membership import gate_channel_membership
 from ..config_normalization import (
@@ -61,11 +62,14 @@ from ..daily_coverage import (
     backfill_daily_coverage_confirmations,
     bind_coverage_reservation,
     block_coverage_accounts,
+    block_voice_profile_coverage,
     daily_coverage_due_debt,
     ensure_task_daily_coverage,
     ready_coverage_rows,
     release_planned_coverage_reservation,
     reserve_coverage_for_planned_action,
+    VOICE_PROFILE_MISSING_BLOCKER_CODE,
+    VOICE_PROFILE_MISSING_MESSAGE,
 )
 from ..daily_coverage_planning import (
     SENDABLE_COVERAGE_STATES,
@@ -96,7 +100,6 @@ AI_QUALITY_DUPLICATE_SKIP_MESSAGE = "AI 候选语义重复风险过高，已跳�
 ACCOUNT_CAPACITY_BLOCKED_MESSAGE = "账号容量已排满，等待账号额度恢复后继续执行"
 ACCOUNT_COOLDOWN_BLOCKED_MESSAGE = "账号冷却中，等待冷却后继续执行"
 ACCOUNT_UNAVAILABLE_MESSAGE = "没有可用账号，等待账号恢复后继续执行"
-VOICE_PROFILE_MISSING_MESSAGE = "账号面具缺失，等待账号面具初始化后继续执行"
 ACCOUNT_DISTRIBUTION_SKEW_MESSAGE = "账号分布偏斜，已阻断本轮硬目标规划"
 ALL_ACCOUNT_DAILY_COVERAGE_REPLAN_CODE = "all_account_daily_coverage_replan"
 ALL_ACCOUNT_DAILY_COVERAGE_REPLAN_MESSAGE = "任务已切换为全部账号每日覆盖，旧硬目标规划已跳过等待按覆盖账本重建"
@@ -444,6 +447,8 @@ def _load_plan_accounts(
         facts.hard_progress,
         planning_limit=session.info.get("daily_coverage_plan_limit"),
     )
+    if _all_accounts_daily_coverage(facts.config):
+        return _load_daily_coverage_plan_accounts(session, task, facts, account_limit)
     accounts = _select_accounts_for_plan(
         session,
         task,
@@ -468,13 +473,97 @@ def _load_plan_accounts(
     )
     _expire_open_profileless_actions(session, task, profiles.keys())
     if missing_ids:
-        _record_missing_voice_profiles(task, missing_ids)
+        _queue_missing_voice_profile_recovery(session, task, facts.config, missing_ids)
+        _record_missing_voice_profiles(session, task, missing_ids)
     if accounts:
         return AccountPlanState(accounts)
     task.last_error = VOICE_PROFILE_MISSING_MESSAGE
     if facts.hard_progress:
         _mark_hard_blocked(task, facts.hard_progress, "voice_profile_missing")
     return PlanAbort()
+
+
+def _load_daily_coverage_plan_accounts(
+    session: Session,
+    task: Task,
+    facts: PlanFacts,
+    account_limit: int,
+) -> AccountPlanState | PlanAbort:
+    selected: list = []
+    profiles: dict[int, dict[str, str | int]] = {}
+    seen_account_ids: set[int] = set()
+    missing_account_ids: list[int] = []
+    page_limit = _daily_coverage_scan_page_limit()
+    while len(selected) < account_limit:
+        rows = ready_coverage_plan_batch(
+            session,
+            task,
+            now=_now(),
+            limit=page_limit,
+            exclude_account_ids=seen_account_ids,
+        ).rows
+        if not rows:
+            break
+        seen_account_ids.update(int(row.account_id) for row in rows)
+        _include_daily_coverage_rows(facts.coverage, rows)
+        accounts = _select_accounts_for_plan(
+            session, task, facts.group, facts.hard_progress, facts.config, coverage_rows=rows,
+        )
+        accounts = _online_ready_accounts(session, task, accounts, facts.hard_progress)
+        ready, page_profiles, missing_ids = _daily_voice_profile_page(session, task, accounts)
+        profiles.update(page_profiles)
+        if missing_ids:
+            _queue_missing_voice_profile_recovery(session, task, facts.config, missing_ids)
+            _record_missing_voice_profiles(session, task, missing_ids)
+            missing_account_ids.extend(missing_ids)
+        remaining = max(0, account_limit - len(selected))
+        selected.extend(ready[:remaining])
+    _record_voice_profile_refill(task, account_limit, len(seen_account_ids))
+    _expire_open_profileless_actions(session, task, profiles.keys())
+    _record_daily_voice_profile_capacity(task, len(selected))
+    if selected:
+        return AccountPlanState(selected)
+    if missing_account_ids:
+        task.last_error = VOICE_PROFILE_MISSING_MESSAGE
+        if facts.hard_progress:
+            _mark_hard_blocked(task, facts.hard_progress, "voice_profile_missing")
+        return PlanAbort()
+    _mark_account_shortage(session, task, facts)
+    return PlanAbort()
+
+
+def _daily_coverage_scan_page_limit() -> int:
+    configured = int(get_settings().daily_coverage_plan_batch_limit or 1)
+    return max(1, configured)
+
+
+def _include_daily_coverage_rows(
+    coverage: CoveragePlanState,
+    rows: list[TaskAccountDailyCoverage],
+) -> None:
+    known_ids = {row.id for row in coverage.rows}
+    coverage.rows.extend(row for row in rows if row.id not in known_ids)
+    coverage.rows_by_account.update({int(row.account_id): row for row in rows})
+
+
+def _daily_voice_profile_page(
+    session: Session,
+    task: Task,
+    accounts: list,
+) -> tuple[list, dict[int, dict[str, str | int]], list[int]]:
+    profiles = voice_profile_prompt_details(
+        session,
+        tenant_id=task.tenant_id,
+        account_ids=[account.id for account in accounts],
+    )
+    ready, missing = _accounts_with_ready_voice_profiles(accounts, profiles)
+    return ready, profiles, missing
+
+
+def _record_daily_voice_profile_capacity(task: Task, ready_count: int) -> None:
+    stats = dict(task.stats or {})
+    stats["voice_profile_ready_account_count"] = ready_count
+    task.stats = stats
 
 
 def _mark_account_shortage(session: Session, task: Task, facts: PlanFacts) -> None:
@@ -2090,15 +2179,65 @@ def _voice_profile_ready(profile: dict[str, str | int] | None) -> bool:
     return int(profile.get("version") or 0) > 0 and bool(str(profile.get("summary") or "").strip())
 
 
-def _record_missing_voice_profiles(task: Task, account_ids: list[int]) -> None:
+def _queue_missing_voice_profile_recovery(
+    session: Session,
+    task: Task,
+    config: dict,
+    account_ids: list[int],
+) -> None:
+    result = enqueue_voice_profile_generation(
+        session,
+        tenant_id=task.tenant_id,
+        account_ids=account_ids,
+        source="task_precheck",
+        actor="task-planner",
+        reason="AI 活跃群发现账号面具待恢复",
+    )
+    if _all_accounts_daily_coverage(config):
+        block_voice_profile_coverage(
+            session,
+            task=task,
+            account_ids=list(
+                result.created_account_ids
+                + result.existing_account_ids
+                + result.manual_required_account_ids
+            ),
+            next_retry_at=result.next_retry_at,
+            detail="账号面具待恢复，已创建或关联自动重建任务",
+            now=_now(),
+        )
+    if result.next_retry_at is not None:
+        task.next_run_at = result.next_retry_at
+
+
+def _record_missing_voice_profiles(session: Session, task: Task, account_ids: list[int]) -> None:
     stats_inc(task, "skipped_count", len(account_ids))
     stats = dict(task.stats or {})
-    stats["voice_profile_missing_count"] = int(stats.get("voice_profile_missing_count") or 0) + len(account_ids)
+    observed = int(stats.get("voice_profile_missing_observation_count") or 0) + len(account_ids)
+    stats["voice_profile_missing_observation_count"] = observed
+    stats["voice_profile_missing_account_count"] = _current_missing_voice_profile_account_count(session, task, account_ids)
     counts = dict(stats.get("quality_rejection_counts") or {})
     counts["voice_profile_missing"] = int(counts.get("voice_profile_missing") or 0) + len(account_ids)
     stats["quality_rejection_counts"] = counts
     stats["quality_rejection_samples"] = _missing_voice_profile_samples(stats, account_ids)
     task.stats = stats
+
+
+def _current_missing_voice_profile_account_count(
+    session: Session,
+    task: Task,
+    account_ids: list[int],
+) -> int:
+    if not _all_accounts_daily_coverage(task.type_config or {}):
+        return len(set(account_ids))
+    return int(session.scalar(
+        select(func.count(TaskAccountDailyCoverage.account_id)).where(
+            TaskAccountDailyCoverage.task_id == task.id,
+            TaskAccountDailyCoverage.coverage_date == _now().date(),
+            TaskAccountDailyCoverage.state == "blocked",
+            TaskAccountDailyCoverage.blocker_code == VOICE_PROFILE_MISSING_BLOCKER_CODE,
+        )
+    ) or 0)
 
 
 def _missing_voice_profile_samples(stats: dict[str, object], account_ids: list[int]) -> list[dict[str, object]]:

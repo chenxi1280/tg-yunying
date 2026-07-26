@@ -18,7 +18,6 @@ from app.services.task_center.account_voice_profile_cache import (
 )
 from app.services.task_center.account_voice_profile_generation import (
     VOICE_PROFILE_INITIAL_MAX_TOKENS,
-    VOICE_PROFILE_RETRY_MAX_TOKENS,
     _generate_voice_profile_payloads,
     _parse_voice_profile_payloads,
     _valid_summary,

@@ -13,6 +13,10 @@ from app.models import DispatchClaimReservation, DispatchClaimScope, DispatchCla
 from .dispatch_claim_ledger import for_update, window_reservations
 from .dispatch_claim_types import DispatchClaimDemand, PRIORITY_CLAIM_CLASSES, SHARED_CAPACITY_ERROR
 
+# PRD §2.20.1 RC-4 claim 公平性：strict search_join 最小保留份额比例
+SEARCH_JOIN_CLAIM_CLASS = "search_join"
+MIN_RESERVED_CAPACITY_RATIO = 0.30
+
 
 def allocate_window(
     session: Session,
@@ -24,7 +28,7 @@ def allocate_window(
     epoch = _next_allocation_epoch(window, allocations)
     _clear_unclaimed_reservations(session, window.id)
     available = max(0, int(scope.claim_capacity) - int(scope.active_claim_count))
-    grants = _allocate_demands(demands, available, epoch)
+    grants = _allocate_demands(demands, available, epoch, scope_capacity=int(scope.claim_capacity))
     _persist_allocations(session, window, allocations, demands, grants, epoch)
 
 
@@ -67,12 +71,36 @@ def _allocate_demands(
     demands: list[DispatchClaimDemand],
     available: int,
     epoch: int,
+    *,
+    scope_capacity: int = 0,
 ) -> dict[tuple[int, str, str, int, int], int]:
     grants = {demand.key: 0 for demand in demands}
     remaining = _allocate_priority_demands(demands, grants, available, epoch)
+    remaining = _allocate_strict_search_join_reserved(demands, grants, remaining, epoch, scope_capacity)
     remaining = _allocate_balanced_demands(strict_non_priority_demands(demands), grants, remaining, epoch)
     _allocate_balanced_demands(normal_demands(demands), grants, remaining, epoch)
     return grants
+
+
+def _allocate_strict_search_join_reserved(
+    demands: list[DispatchClaimDemand],
+    grants: dict[tuple[int, str, str, int, int], int],
+    available: int,
+    epoch: int,
+    scope_capacity: int,
+) -> int:
+    """PRD §2.20.1: 给 strict search_join 预留 min_reserved_capacity，防止 hard_hourly 饿死。"""
+    search_join_demands = [
+        demand for demand in demands
+        if demand.claim_class == SEARCH_JOIN_CLAIM_CLASS and demand.is_strict
+    ]
+    if not search_join_demands or available <= 0:
+        return available
+    base = scope_capacity if scope_capacity > 0 else available
+    min_reserved = max(1, int(base * MIN_RESERVED_CAPACITY_RATIO))
+    reserve_budget = min(available, min_reserved)
+    unused = _allocate_in_order(search_join_demands, grants, reserve_budget, epoch)
+    return available - reserve_budget + unused
 
 
 def _allocate_priority_demands(
@@ -130,7 +158,7 @@ def _allocate_first_share(
     for demand in rotated_demands(demands, epoch):
         if remaining == 0:
             break
-        if demand.required_claims > 0:
+        if demand.required_claims > 0 and grants[demand.key] < demand.required_claims:
             grants[demand.key] += 1
             remaining -= 1
     return remaining

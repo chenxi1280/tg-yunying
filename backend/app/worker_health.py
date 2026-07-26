@@ -23,6 +23,7 @@ VALID_WORKER_ROLES = {
     "account-online",
     "account-security",
     "ai-memory",
+    "voice-profile",
     "material-cache",
     "metrics",
 }
@@ -72,6 +73,7 @@ def _health_process_types(role: str) -> set[str]:
             "account-online",
             "account-security",
             "ai-memory",
+            "voice-profile",
             "material-cache",
             "metrics",
         }

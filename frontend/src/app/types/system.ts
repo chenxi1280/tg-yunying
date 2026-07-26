@@ -185,6 +185,56 @@ export type AiAccountVoiceProfileAudit = {
   created_at: string | null;
 };
 
+export type AiAccountVoiceProfileGenerationAttempt = {
+  id: string;
+  attempt_no: number;
+  stage: string;
+  provider: string;
+  provider_request_id: string;
+  started_at: string | null;
+  finished_at: string | null;
+  outcome: string;
+  error_code: string;
+  error_detail: string;
+  prompt_feedback_summary: string;
+};
+
+export type AiAccountVoiceProfileGenerationItem = {
+  id: string;
+  account_id: number;
+  status: string;
+  source: string;
+  expected_profile_version: number;
+  base_profile_version: number;
+  result_profile_version: number | null;
+  attempt_count: number;
+  next_retry_at: string | null;
+  error_code: string;
+  error_detail: string;
+  previous_item_id: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  finished_at: string | null;
+  attempts: AiAccountVoiceProfileGenerationAttempt[];
+};
+
+export type AiAccountVoiceProfileGenerationJob = {
+  id: string;
+  source: string;
+  status: string;
+  requested_by: string;
+  reason: string;
+  total_count: number;
+  succeeded_count: number;
+  retry_wait_count: number;
+  failed_count: number;
+  skipped_count: number;
+  created_at: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  items: AiAccountVoiceProfileGenerationItem[];
+};
+
 export type ProxyAirportSubscription = {
   id: number | null;
   tenant_id: number;

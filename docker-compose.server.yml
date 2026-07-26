@@ -30,6 +30,11 @@ x-backend-env: &backend-env
   WORKER_ROLE: ${WORKER_ROLE:-all}
   WORKER_DRAIN_LIMIT: ${WORKER_DRAIN_LIMIT:-100}
   WORKER_INTERVAL_SECONDS: ${WORKER_INTERVAL_SECONDS:-2.0}
+  VOICE_PROFILE_RECONCILE_INTERVAL_SECONDS: ${VOICE_PROFILE_RECONCILE_INTERVAL_SECONDS:-120}
+  VOICE_PROFILE_RECONCILE_BATCH_LIMIT: ${VOICE_PROFILE_RECONCILE_BATCH_LIMIT:-100}
+  VOICE_PROFILE_PROVIDER_RATE_PER_MINUTE: ${VOICE_PROFILE_PROVIDER_RATE_PER_MINUTE:-30}
+  VOICE_PROFILE_PROVIDER_CONCURRENCY: ${VOICE_PROFILE_PROVIDER_CONCURRENCY:-2}
+  VOICE_PROFILE_PROVIDER_LEASE_SECONDS: ${VOICE_PROFILE_PROVIDER_LEASE_SECONDS:-120}
   DISPATCHER_CONCURRENCY: ${DISPATCHER_CONCURRENCY:-20}
   ACCOUNT_ONLINE_PROBE_CONCURRENCY: ${ACCOUNT_ONLINE_PROBE_CONCURRENCY:-32}
   ACCOUNT_ONLINE_PROBE_TIMEOUT_SECONDS: ${ACCOUNT_ONLINE_PROBE_TIMEOUT_SECONDS:-30}
@@ -227,6 +232,27 @@ services:
     environment:
       <<: *backend-env
       WORKER_ROLE: account-security
+    volumes:
+      - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck: *worker-healthcheck
+    networks:
+      - infra_default
+
+  worker-voice-profile:
+    image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
+    container_name: tgyunying-worker-voice-profile
+    restart: unless-stopped
+    command: ["python", "-m", "app.worker", "--role", "voice-profile", "--limit", "${VOICE_PROFILE_WORKER_DRAIN_LIMIT:-20}", "--interval", "${VOICE_PROFILE_WORKER_INTERVAL_SECONDS:-2.0}"]
+    environment:
+      <<: *backend-env
+      WORKER_ROLE: voice-profile
+      VOICE_PROFILE_WORKER_INTERVAL_SECONDS: ${VOICE_PROFILE_WORKER_INTERVAL_SECONDS:-2.0}
+      VOICE_PROFILE_RECONCILE_INTERVAL_SECONDS: ${VOICE_PROFILE_RECONCILE_INTERVAL_SECONDS:-120}
+      VOICE_PROFILE_RECONCILE_BATCH_LIMIT: ${VOICE_PROFILE_RECONCILE_BATCH_LIMIT:-100}
+      WORKER_INTERVAL_SECONDS: ${VOICE_PROFILE_WORKER_INTERVAL_SECONDS:-2.0}
     volumes:
       - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
     depends_on:

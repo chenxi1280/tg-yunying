@@ -65,6 +65,51 @@ def test_strict_search_and_hard_hourly_receive_persisted_claim_reservations(monk
         assert sum(row.active_claim_count for row in allocations) == 0
 
 
+def test_strict_search_join_receives_min_reserved_capacity_against_hard_hourly(monkeypatch) -> None:
+    """PRD §2.20.1 RC-4: strict search_join 在 hard_hourly 高需求时仍能拿到 min_reserved_capacity。"""
+    from app.services.task_center.dispatch_claim_allocation import _allocate_demands, DispatchClaimDemand
+
+    # 构造 1 个 strict search_join demand + 10 个 strict hard_hourly demand
+    search_demand = DispatchClaimDemand(
+        tenant_id=1, task_id="search-task", claim_class="search_join",
+        shard_total=1, shard_index=0, action_ids=("s1",), required_claims=5, is_strict=True, urgency_score=10,
+    )
+    hard_demands = [
+        DispatchClaimDemand(
+            tenant_id=1, task_id=f"hard-task-{i}", claim_class="hard_hourly",
+            shard_total=1, shard_index=0, action_ids=(f"h{i}",), required_claims=10, is_strict=True, urgency_score=100,
+        )
+        for i in range(10)
+    ]
+    demands = [search_demand, *hard_demands]
+    # scope_capacity=10, available=10, min_reserved=max(1, int(10*0.30))=3
+    grants = _allocate_demands(demands, available=10, epoch=1, scope_capacity=10)
+    search_grant = grants[search_demand.key]
+    # search_join 至少拿到 3（30% of 10）
+    assert search_grant >= 3, f"search_join should get min_reserved_capacity=3, got {search_grant}"
+    # hard_hourly 总和不超过 7
+    hard_total = sum(grants[d.key] for d in hard_demands)
+    assert hard_total <= 7, f"hard_hourly total should be <= 7, got {hard_total}"
+    # 总分配不超过 available
+    assert search_grant + hard_total == 10
+
+
+def test_no_search_join_demands_skips_reserved_allocation() -> None:
+    """PRD §2.20.1: 无 strict search_join demand 时不触发预留逻辑。"""
+    from app.services.task_center.dispatch_claim_allocation import _allocate_demands, DispatchClaimDemand
+
+    hard_demands = [
+        DispatchClaimDemand(
+            tenant_id=1, task_id=f"hard-task-{i}", claim_class="hard_hourly",
+            shard_total=1, shard_index=0, action_ids=(f"h{i}",), required_claims=5, is_strict=True, urgency_score=100,
+        )
+        for i in range(3)
+    ]
+    grants = _allocate_demands(hard_demands, available=10, epoch=1, scope_capacity=10)
+    total = sum(grants[d.key] for d in hard_demands)
+    assert total == 10, f"all capacity should go to hard_hourly, got total={total}"
+
+
 def test_dispatch_claim_urgency_normalizes_persisted_timezone() -> None:
     scheduled_at = datetime(2026, 7, 26, 9, 0, tzinfo=BEIJING_TZ)
     task = Task(id="timezone-task", tenant_id=1, name="时区", type="group_relay", status="running")

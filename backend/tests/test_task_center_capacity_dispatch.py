@@ -10,9 +10,11 @@ from sqlalchemy.orm import Session
 from app.database import Base
 from app.integrations.telegram import OperationResult, SendResult
 from app.models import (
+    AccountPool,
     Action,
     AiAccountGroupStanceMemory,
     AiAccountVoiceProfile,
+    AiAccountVoiceProfileGenerationItem,
     AiGroupMessageMemory,
     DailyRuntimeStat,
     ExecutionAttempt,
@@ -5155,8 +5157,154 @@ def test_group_ai_build_plan_blocks_missing_voice_profile(monkeypatch):
 
     assert actions == []
     assert task.last_error == group_ai_chat.VOICE_PROFILE_MISSING_MESSAGE
-    assert task.stats["voice_profile_missing_count"] == 1
+    assert task.stats["voice_profile_missing_account_count"] == 1
+    assert task.stats["voice_profile_missing_observation_count"] == 1
     assert task.stats["quality_rejection_counts"]["voice_profile_missing"] == 1
+
+
+@pytest.mark.no_postgres
+def test_all_accounts_daily_isolates_missing_mask_and_plans_other_accounts(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
+    _forbid_planner_ai_generation(monkeypatch)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(AccountPool(id=1, tenant_id=1, name="普通账号池", pool_purpose="normal", is_default=True))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True, active_window="00:00-23:59"))
+        for account_id in (11, 12):
+            session.add(
+                TgAccount(
+                    id=account_id,
+                    tenant_id=1,
+                    pool_id=1,
+                    account_identity="normal",
+                    display_name=f"账号{account_id}",
+                    phone_masked=f"+861***00{account_id}",
+                    status="在线",
+                    session_ciphertext=f"session-{account_id}",
+                )
+            )
+            session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=account_id, can_send=True))
+            session.add(TgAccountOnlineState(tenant_id=1, account_id=account_id, desired_online=True, online_status="online", stale_after_at=now_value + timedelta(minutes=5)))
+        session.add(AiAccountVoiceProfile(tenant_id=1, account_id=12, version=1, status="active", quality_status="active", short_prompt_summary="男性熟客说话克制，先看价格和反馈"))
+        task = Task(
+            id="task-daily-isolate-missing-mask",
+            tenant_id=1,
+            name="全账号面具隔离",
+            type="group_ai_chat",
+            status="running",
+            account_config={"selection_mode": "all", "max_concurrent": 2, "cooldown_per_account_minutes": 0},
+            pacing_config={"max_actions_per_hour": 120},
+            type_config={
+                "target_group_id": 7,
+                "account_coverage_mode": "all_accounts_daily",
+                "per_account_daily_min_messages": 1,
+                "messages_per_round_mode": "manual",
+                "messages_per_round": 1,
+                "reply_min_per_round": 0,
+                "silent_mode_enabled": False,
+                "fact_anchor_required": False,
+                "low_confidence_silence_enabled": False,
+            },
+            stats={},
+        )
+        session.add(task)
+        session.add_all(
+            [
+                TaskAccountDailyCoverage(
+                    tenant_id=1,
+                    task_id=task.id,
+                    group_id=7,
+                    account_id=account_id,
+                    coverage_date=now_value.date(),
+                    state="ready",
+                    targeted_at=now_value,
+                )
+                for account_id in (11, 12)
+            ]
+        )
+        session.commit()
+
+        facts = group_ai_chat._load_plan_facts(session, task)
+        state = group_ai_chat._load_plan_accounts(session, task, facts)
+        missing_row = session.scalar(select(TaskAccountDailyCoverage).where(TaskAccountDailyCoverage.account_id == 11))
+        generation_item = session.scalar(select(AiAccountVoiceProfileGenerationItem).where(AiAccountVoiceProfileGenerationItem.account_id == 11))
+        session.refresh(task)
+
+    assert isinstance(state, group_ai_chat.AccountPlanState)
+    assert [account.id for account in state.accounts] == [12]
+    assert missing_row is not None and missing_row.state == "blocked"
+    assert missing_row.blocker_code == "voice_profile_missing"
+    assert generation_item is not None and generation_item.status == "queued"
+    assert task.last_error == ""
+
+
+@pytest.mark.no_postgres
+def test_all_accounts_daily_scans_later_page_after_missing_masks(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
+    _forbid_planner_ai_generation(monkeypatch)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(AccountPool(id=1, tenant_id=1, name="普通账号池", pool_purpose="normal", is_default=True))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True, active_window="00:00-23:59"))
+        for account_id in (11, 12, 13):
+            session.add(TgAccount(
+                id=account_id, tenant_id=1, pool_id=1, account_identity="normal",
+                display_name=f"账号{account_id}", phone_masked=f"+861***00{account_id}",
+                status="在线", session_ciphertext=f"session-{account_id}",
+            ))
+            session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=account_id, can_send=True))
+            session.add(TgAccountOnlineState(
+                tenant_id=1, account_id=account_id, desired_online=True,
+                online_status="online", stale_after_at=now_value + timedelta(minutes=5),
+            ))
+        session.add(AiAccountVoiceProfile(
+            tenant_id=1, account_id=13, version=1, status="active", quality_status="active",
+            short_prompt_summary="男性熟客说话克制，先看价格和反馈",
+        ))
+        task = Task(
+            id="task-daily-later-profile-page", tenant_id=1, name="全账号跨页面具隔离",
+            type="group_ai_chat", status="running",
+            account_config={"selection_mode": "all", "max_concurrent": 1, "cooldown_per_account_minutes": 0},
+            pacing_config={"max_actions_per_hour": 120},
+            type_config={
+                "target_group_id": 7, "account_coverage_mode": "all_accounts_daily",
+                "per_account_daily_min_messages": 1, "messages_per_round_mode": "manual",
+                "messages_per_round": 1, "reply_min_per_round": 0,
+                "silent_mode_enabled": False, "fact_anchor_required": False,
+                "low_confidence_silence_enabled": False,
+            },
+            stats={},
+        )
+        session.add(task)
+        session.add_all([
+            TaskAccountDailyCoverage(
+                tenant_id=1, task_id=task.id, group_id=7, account_id=account_id,
+                coverage_date=now_value.date(), state="ready", targeted_at=now_value,
+            )
+            for account_id in (11, 12, 13)
+        ])
+        session.commit()
+
+        facts = group_ai_chat._load_plan_facts(session, task)
+        state = group_ai_chat._load_plan_accounts(session, task, facts)
+        blocked = list(session.scalars(select(TaskAccountDailyCoverage).where(
+            TaskAccountDailyCoverage.blocker_code == "voice_profile_missing",
+        ).order_by(TaskAccountDailyCoverage.account_id)))
+        session.refresh(task)
+
+    assert isinstance(state, group_ai_chat.AccountPlanState)
+    assert [account.id for account in state.accounts] == [13]
+    assert [row.account_id for row in blocked] == [11, 12]
+    assert task.stats["voice_profile_missing_account_count"] == 2
+    assert task.stats["voice_profile_refill_account_count"] == 2
 
 
 @pytest.mark.no_postgres

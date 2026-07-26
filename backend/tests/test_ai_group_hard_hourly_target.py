@@ -3580,7 +3580,8 @@ def test_hard_hourly_refills_accounts_after_missing_voice_profiles(monkeypatch):
 
     assert created == 6
     assert [action.account_id for action in actions] == [11, 12, 13, 14, 15, 16]
-    assert task.stats["voice_profile_missing_count"] == 10
+    assert task.stats["voice_profile_missing_account_count"] == 10
+    assert task.stats["voice_profile_missing_observation_count"] == 10
     assert task.stats["voice_profile_refill_account_count"] == 10
     assert task.stats["hard_hourly_last_planned_count"] == 6
     assert "hard_hourly_last_blockers" not in task.stats
@@ -3616,7 +3617,8 @@ def test_hard_hourly_refill_rechecks_online_ready_accounts(monkeypatch):
 
     assert created == 6
     assert [action.account_id for action in actions] == [21, 22, 23, 24, 25, 26]
-    assert task.stats["voice_profile_missing_count"] == 10
+    assert task.stats["voice_profile_missing_account_count"] == 10
+    assert task.stats["voice_profile_missing_observation_count"] == 10
     assert task.stats["voice_profile_refill_account_count"] == 10
     assert task.stats["account_offline_count"] == 10
 
@@ -3700,6 +3702,22 @@ def test_precheck_reports_hard_hourly_capacity_without_blocking_on_max_actions(m
         )
 
     assert result["decision"] == "warn"
+    assert result["voice_profile_summary"] == {
+        "target_account_count": 3,
+        "usable_account_count": 0,
+        "queued_account_count": 0,
+        "retry_wait_account_count": 0,
+        "manual_required_account_count": 0,
+        "disabled_account_count": 0,
+        "missing_account_count": 3,
+        "samples": {
+            "queued": [],
+            "retry_wait": [],
+            "manual_required": [],
+            "disabled": [],
+            "missing": [101, 102, 103],
+        },
+    }
     assert result["estimated_hourly_capacity"] == 3
     assert result["hard_hourly_target"] == {
         "enabled": True,

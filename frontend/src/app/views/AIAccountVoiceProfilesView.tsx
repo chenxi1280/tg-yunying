@@ -1,11 +1,10 @@
 import React from 'react';
 import { Alert, Button, Card, Empty, Input, Modal, Select, Space, Table, Tag, Typography } from 'antd';
 import { api } from '../../shared/api/client';
+import { useVoiceProfileGeneration } from './AIAccountVoiceProfileGeneration';
 import type {
   AiAccountVoiceProfile,
   AiAccountVoiceProfileAudit,
-  AiAccountVoiceProfileBatchRebuildOut,
-  AiAccountVoiceProfileBatchResultItem,
   AiAccountVoiceProfileBatchStatusOut,
   AiAccountVoiceProfileVersion,
 } from '../types';
@@ -112,18 +111,6 @@ function profileStatusTag(status: string) {
   return <Tag>{status || '-'}</Tag>;
 }
 
-function batchResultStatusTag(status: string) {
-  if (status === 'created') return <Tag color="green">已生成</Tag>;
-  if (status === 'failed') return <Tag color="red">失败</Tag>;
-  if (status === 'skipped') return <Tag color="default">跳过</Tag>;
-  return <Tag>{status || '-'}</Tag>;
-}
-
-function batchResultNotice(prefix: string, result: AiAccountVoiceProfileBatchRebuildOut) {
-  const failed = result.items.filter((item) => item.status === 'failed').length;
-  return `${prefix}完成：新增 ${result.created}，跳过 ${result.skipped}，失败 ${failed}`;
-}
-
 export default function AIAccountVoiceProfilesView({ canManageVoiceProfiles = false }: Props) {
   const [profiles, setProfiles] = React.useState<AiAccountVoiceProfile[]>([]);
   const [search, setSearch] = React.useState('');
@@ -139,7 +126,6 @@ export default function AIAccountVoiceProfilesView({ canManageVoiceProfiles = fa
   const [historyLoading, setHistoryLoading] = React.useState(false);
   const [draft, setDraft] = React.useState<EditableProfile | null>(null);
   const [selectedAccountIds, setSelectedAccountIds] = React.useState<number[]>([]);
-  const [batchResultItems, setBatchResultItems] = React.useState<AiAccountVoiceProfileBatchResultItem[]>([]);
   const loadSeqRef = React.useRef(0);
 
   React.useEffect(() => {
@@ -163,6 +149,15 @@ export default function AIAccountVoiceProfilesView({ canManageVoiceProfiles = fa
       if (loadSeqRef.current === requestSeq) setLoading(false);
     }
   }
+
+  const generation = useVoiceProfileGeneration({
+    canManage: canManageVoiceProfiles,
+    selectedAccountIds,
+    clearSelectedAccountIds: () => setSelectedAccountIds([]),
+    onError: setError,
+    onNotice: setNotice,
+    refreshProfiles: () => loadProfiles(),
+  });
 
   function openEdit(profile: AiAccountVoiceProfile) {
     setEditing(profile);
@@ -214,21 +209,6 @@ export default function AIAccountVoiceProfilesView({ canManageVoiceProfiles = fa
     }
   }
 
-  async function rebuildProfile(profile: AiAccountVoiceProfile) {
-    const actionKey = `rebuild:${profile.account_id}`;
-    setSavingKey(actionKey);
-    setError('');
-    try {
-      const updated = await api<AiAccountVoiceProfile>(`/ai-account-voice-profiles/${profile.account_id}/rebuild`, { method: 'POST' });
-      setProfiles((current) => current.map((item) => item.account_id === updated.account_id ? updated : item));
-      setNotice(`${accountTitle(updated)} 已重建面具`);
-    } catch (rebuildError) {
-      setError(errorText(rebuildError));
-    } finally {
-      setSavingKey('');
-    }
-  }
-
   async function rollbackProfile(profile: AiAccountVoiceProfile, sourceVersion: number) {
     const actionKey = `rollback:${profile.account_id}:${sourceVersion}`;
     setSavingKey(actionKey);
@@ -243,45 +223,6 @@ export default function AIAccountVoiceProfilesView({ canManageVoiceProfiles = fa
       await openHistory(updated);
     } catch (rollbackError) {
       setError(errorText(rollbackError));
-    } finally {
-      setSavingKey('');
-    }
-  }
-
-  async function batchRebuildMissing() {
-    setSavingKey('batch-rebuild-missing');
-    setError('');
-    try {
-      const result = await api<AiAccountVoiceProfileBatchRebuildOut>('/ai-account-voice-profiles/batch-rebuild', {
-        method: 'POST',
-        body: JSON.stringify({ account_ids: [], missing_only: true }),
-        timeoutMs: 60_000,
-      });
-      setBatchResultItems(result.items || []);
-      setNotice(batchResultNotice('批量补齐', result));
-      await loadProfiles();
-    } catch (batchError) {
-      setError(errorText(batchError));
-    } finally {
-      setSavingKey('');
-    }
-  }
-
-  async function batchRebuildSelected() {
-    setSavingKey('batch-rebuild-selected');
-    setError('');
-    try {
-      const result = await api<AiAccountVoiceProfileBatchRebuildOut>('/ai-account-voice-profiles/batch-rebuild', {
-        method: 'POST',
-        body: JSON.stringify({ account_ids: selectedAccountIds, missing_only: false }),
-        timeoutMs: 60_000,
-      });
-      setBatchResultItems(result.items || []);
-      setNotice(batchResultNotice('批量重建', result));
-      setSelectedAccountIds([]);
-      await loadProfiles();
-    } catch (batchError) {
-      setError(errorText(batchError));
     } finally {
       setSavingKey('');
     }
@@ -320,7 +261,7 @@ export default function AIAccountVoiceProfilesView({ canManageVoiceProfiles = fa
     { title: '摘要', dataIndex: 'short_prompt_summary', ellipsis: true },
     { title: '差异度', dataIndex: 'similarity_score', width: 90, render: (value: number | null) => value ?? '-' },
     { title: '更新', width: 170, render: (_: unknown, profile: AiAccountVoiceProfile) => profile.updated_at ? profile.updated_at.replace('T', ' ').slice(0, 16) : '-' },
-    { title: '操作', width: 250, render: (_: unknown, profile: AiAccountVoiceProfile) => <Space><Button size="small" onClick={() => openEdit(profile)}>编辑</Button><Button size="small" onClick={() => openHistory(profile)}>版本历史</Button><Button size="small" disabled={!canManageVoiceProfiles} loading={savingKey === `rebuild:${profile.account_id}`} onClick={() => rebuildProfile(profile)}>重建</Button></Space> },
+    { title: '操作', width: 250, render: (_: unknown, profile: AiAccountVoiceProfile) => <Space><Button size="small" onClick={() => openEdit(profile)}>编辑</Button><Button size="small" onClick={() => openHistory(profile)}>版本历史</Button><Button size="small" disabled={!canManageVoiceProfiles} loading={generation.savingKey === `rebuild:${profile.account_id}`} onClick={() => generation.rebuildProfile(profile)}>重建</Button></Space> },
   ];
 
   const versionColumns = [
@@ -353,15 +294,6 @@ export default function AIAccountVoiceProfilesView({ canManageVoiceProfiles = fa
     { title: '详情', dataIndex: 'detail', ellipsis: true },
   ];
 
-  const batchResultColumns = [
-    { title: '账号', dataIndex: 'account_id', width: 100, render: (value: number) => `#${value}` },
-    { title: '结果', dataIndex: 'status', width: 90, render: (status: string) => batchResultStatusTag(status) },
-    { title: '版本', dataIndex: 'version', width: 70 },
-    { title: '差异度', dataIndex: 'similarity_score', width: 90, render: (value: number | null) => value ?? '-' },
-    { title: '失败原因', dataIndex: 'failure_reason', ellipsis: true, render: (value: string) => value || '-' },
-    { title: '跳过原因', dataIndex: 'skipped_reason', ellipsis: true, render: (value: string) => value || '-' },
-  ];
-
   return (
     <Card className="panel" title="账号面具" extra={<Typography.Text type="secondary">账号级全局真人感原则</Typography.Text>}>
       <Space direction="vertical" size={12} style={{ width: '100%' }}>
@@ -379,8 +311,9 @@ export default function AIAccountVoiceProfilesView({ canManageVoiceProfiles = fa
           />
           <Select value={profileStatus} onChange={setProfileStatus} options={PROFILE_STATUS_OPTIONS} style={{ width: 160 }} />
           <Button onClick={() => loadProfiles()} loading={loading}>刷新</Button>
-          <Button type="primary" disabled={!canManageVoiceProfiles} loading={savingKey === 'batch-rebuild-missing'} onClick={batchRebuildMissing}>批量补齐缺面具账号</Button>
-          <Button disabled={!canManageVoiceProfiles || !selectedAccountIds.length} loading={savingKey === 'batch-rebuild-selected'} onClick={batchRebuildSelected}>批量重建</Button>
+          <Button type="primary" disabled={!canManageVoiceProfiles} loading={generation.savingKey === 'batch-rebuild-missing'} onClick={generation.batchRebuildMissing}>批量补齐缺面具账号</Button>
+          <Button disabled={!canManageVoiceProfiles || !selectedAccountIds.length} loading={generation.savingKey === 'batch-rebuild-selected'} onClick={generation.batchRebuildSelected}>批量重建</Button>
+          <Button disabled={!generation.job} loading={generation.savingKey === 'refresh-generation-job'} onClick={generation.refreshJob}>刷新生成状态</Button>
           <Button disabled={!canManageVoiceProfiles || !selectedAccountIds.length} loading={savingKey === 'batch-status:disabled'} onClick={() => batchUpdateStatus('disabled')}>批量停用</Button>
           <Button disabled={!canManageVoiceProfiles || !selectedAccountIds.length} loading={savingKey === 'batch-status:active'} onClick={() => batchUpdateStatus('active')}>批量恢复</Button>
         </Space>
@@ -394,19 +327,7 @@ export default function AIAccountVoiceProfilesView({ canManageVoiceProfiles = fa
           locale={{ emptyText: <Empty description="暂无账号面具数据" /> }}
           pagination={{ pageSize: 20, showSizeChanger: false }}
         />
-        {batchResultItems.length > 0 && (
-          <Space direction="vertical" size={8} style={{ width: '100%' }}>
-            <Typography.Title level={5} style={{ margin: 0 }}>批量生成结果</Typography.Title>
-            <Table
-              rowKey={(item) => `${item.account_id}:${item.status}:${item.version}`}
-              size="small"
-              dataSource={batchResultItems}
-              columns={batchResultColumns}
-              pagination={false}
-              scroll={{ x: 760 }}
-            />
-          </Space>
-        )}
+        {generation.panel}
       </Space>
       <Modal
         className="tg-modal large"

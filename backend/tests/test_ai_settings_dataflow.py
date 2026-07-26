@@ -56,6 +56,7 @@ def test_ai_settings_cache_account_selector_is_searchable_by_label():
 
 def test_ai_account_voice_profile_routes_exist_and_require_real_service():
     router = (PROJECT_ROOT / "backend/app/api/routers/ai_config.py").read_text()
+    generation_router = (PROJECT_ROOT / "backend/app/api/routers/voice_profile_generation.py").read_text()
     schemas = (PROJECT_ROOT / "backend/app/schemas/ai_config.py").read_text()
 
     assert '"/api/ai-account-voice-profiles"' in router
@@ -84,12 +85,21 @@ def test_ai_account_voice_profile_routes_exist_and_require_real_service():
     assert "AiAccountVoiceProfileBatchItemOut" in schemas
     assert "AiAccountVoiceProfileBatchStatusRequest" in schemas
     assert "AiAccountVoiceProfileBatchStatusOut" in schemas
+    assert '"/api/ai-account-voice-profile-generation-jobs"' in generation_router
+    assert '"/api/ai-account-voice-profile-generation-jobs/{job_id}"' in generation_router
+    assert '"/api/ai-account-voice-profile-generation-items/{item_id}/retry"' in generation_router
+    assert "create_voice_profile_generation_job(" in generation_router
+    assert "retry_voice_profile_generation_item(" in generation_router
+    assert "AiAccountVoiceProfileGenerationJobCreateRequest" in schemas
+    assert "AiAccountVoiceProfileGenerationItemRetryRequest" in schemas
+    assert "AiAccountVoiceProfileGenerationJobDetailOut" in schemas
 
 
 def test_account_masks_view_exposes_ai_account_voice_profile_management_tab():
     system_view = (PROJECT_ROOT / "frontend/src/app/views/SystemConfigView.tsx").read_text()
     account_masks_view = (PROJECT_ROOT / "frontend/src/app/views/AccountMasksView.tsx").read_text()
     profile_view = (PROJECT_ROOT / "frontend/src/app/views/AIAccountVoiceProfilesView.tsx").read_text()
+    generation_view = (PROJECT_ROOT / "frontend/src/app/views/AIAccountVoiceProfileGeneration.tsx").read_text()
     system_types = (PROJECT_ROOT / "frontend/src/app/types/system.ts").read_text()
 
     assert "import AIAccountVoiceProfilesView from './AIAccountVoiceProfilesView';" not in system_view
@@ -111,16 +121,18 @@ def test_account_masks_view_exposes_ai_account_voice_profile_management_tab():
     assert "export type AiAccountVoiceProfileAudit" in system_types
     assert "api<AiAccountVoiceProfile[]>('/ai-account-voice-profiles" in profile_view
     assert "api<AiAccountVoiceProfile>(`/ai-account-voice-profiles/${profile.account_id}`" in profile_view
-    assert "api<AiAccountVoiceProfile>(`/ai-account-voice-profiles/${profile.account_id}/rebuild`" in profile_view
     assert "api<AiAccountVoiceProfileVersion[]>(`/ai-account-voice-profiles/${profile.account_id}/versions`" in profile_view
     assert "api<AiAccountVoiceProfileAudit[]>(`/ai-account-voice-profiles/${profile.account_id}/audits`" in profile_view
     assert "api<AiAccountVoiceProfile>(`/ai-account-voice-profiles/${profile.account_id}/rollback`" in profile_view
-    assert "api<AiAccountVoiceProfileBatchRebuildOut>('/ai-account-voice-profiles/batch-rebuild'" in profile_view
-    assert "missing_only: false" in profile_view
     assert "api<AiAccountVoiceProfileBatchStatusOut>('/ai-account-voice-profiles/batch-status'" in profile_view
-    assert "批量生成结果" in profile_view
-    assert "title: '失败原因'" in profile_view
-    assert "title: '跳过原因'" in profile_view
+    assert "useVoiceProfileGeneration" in profile_view
+    assert "'/ai-account-voice-profile-generation-jobs'" in generation_view
+    assert "`/ai-account-voice-profile-generation-jobs/${context.job?.id}`" in generation_view
+    assert "`/ai-account-voice-profile-generation-items/${item.id}/retry`" in generation_view
+    assert "loadLatestGenerationJob" in generation_view
+    assert "'/ai-account-voice-profile-generation-jobs?limit=1'" in generation_view
+    assert "账号面具生成任务" in generation_view
+    assert "履约状态" in generation_view
     assert "缺面具" in profile_view
     assert "批量补齐缺面具账号" in profile_view
     assert "面具名称" in profile_view
