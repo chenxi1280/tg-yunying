@@ -6,7 +6,7 @@
 | --- | --- |
 | 需求级别 | L2 产品能力升级（上线后影响生产 AI 活群 / 频道评论行为） |
 | 设计状态 | `complete`（2026-07-27 控制提示分类与受控恢复修订） |
-| 修订说明 | 2026-07-25 评审修补合订 + **continuity 交叉 P0/P1 合订**：① 待可见性核验计入 `unknown_after_send_hold_count`；② `admission_abandoned` 释放永久不可准入硬小时 debt；③ `pending_visibility_credit` 延后真实 credit；④ follow/观察 action 复用 `target_admission_retry` 档且限 tenant+task+account；⑤ 定义 `admission_version`；⑥ C1/C2 action 边界与存量 unknown 走 continuity 裁决。2026-07-27 首次补齐：入群前基线游标、每轮 listener observation 落库、控制事件优先后闭合、存量无基线显式重启观察，以及成功终态压过历史临时错误展示。**同日生产复核再补齐：来源信任必须早于归属；可信 peer 只是候选来源而不是“每条消息都是控制指令”；频道与确认动作可仅存在于 Telegram 内联按钮；已审计的目标级 bot peer 可作为 unknown role 的受限信任根；同群新入群 admission 必须串行，避免并发提示无法归属；历史已入库的同一 bot 消息重新被监听到按钮时，只回填安全按钮摘要以支持精确恢复；频道 follow 的持久 Action 类型固定为 `group_bot_channel_follow`，必须适配 `actions.action_type` 的 30 字符上限；`required_channel_refs` 只代表当前世代，误判提示暂停后必须由 explicit restart 与不同 source 的新有效控制提示受控 rearm。** |
+| 修订说明 | 2026-07-25 评审修补合订 + **continuity 交叉 P0/P1 合订**：① 待可见性核验计入 `unknown_after_send_hold_count`；② `admission_abandoned` 释放永久不可准入硬小时 debt；③ `pending_visibility_credit` 延后真实 credit；④ follow/观察 action 复用 `target_admission_retry` 档且限 tenant+task+account；⑤ 定义 `admission_version`；⑥ C1/C2 action 边界与存量 unknown 走 continuity 裁决。2026-07-27 首次补齐：入群前基线游标、每轮 listener observation 落库、控制事件优先后闭合、存量无基线显式重启观察，以及成功终态压过历史临时错误展示。**同日生产复核再补齐：来源信任必须早于归属；可信 peer 只是候选来源而不是“每条消息都是控制指令”；频道与确认动作可仅存在于 Telegram 内联按钮；已审计的目标级 bot peer 可作为 unknown role 的受限信任根；同群新入群 admission 必须串行，避免并发提示无法归属；历史已入库的同一 bot 消息重新被监听到按钮时，只回填安全按钮摘要以支持精确恢复；频道 follow 的持久 Action 类型固定为 `group_bot_channel_follow`，必须适配 `actions.action_type` 的 30 字符上限；`required_channel_refs` 只代表当前世代，误判提示暂停后必须由 explicit restart 与不同 source 的新有效控制提示受控 rearm；带明确收件人的控制提示必须精确归属，不能被唯一 waiting account 兜底错配。** |
 | 产品范围 | 真人化：`group_ai_chat` + `channel_comment`；群管机器人准入：仅 `group_ai_chat` |
 | 统计时区 | 任务配置时区；未配置时沿用平台 `Asia/Shanghai` |
 | 上位文档 | `docs/01-product/tg-ops-platform-prd.md` |
@@ -217,7 +217,7 @@ else:
 4. 可信 peer 只表示该 sender **可以进入控制提示识别器**，绝不表示该 peer 的每条发言都是控制事件。可信 peer 的普通推广、内容发布、联系人/频道广告，即使恰好能归属到唯一 waiting account，也只可留只读上下文审计，**不得**改变 admission 的 state、failure_code、trusted peer、source message、频道子动作或 ready 结论。
 5. 非 bot、未知 peer、普通成员转发、私聊提示，以及未命中上述任一信任条件的 bot：只可留只读审计/指标，**不得**改变任何 admission 的 state、failure_code、trusted peer、频道子动作或 ready 结论。
 6. **多 bot**：另一可信 admin/policy bot 在 admission 未 ready 前发出规则，且当前尚无 trusted peer → 采用该 bot；已绑定 peer 且新 peer 不同 → 仅该 account 写 `group_bot_multi_bot_conflict`（`blocked`），不批量关注，等待运营指定 peer 或撤销后重建观察。
-7. 仅在来源已经可信**且消息已通过控制提示识别**后，才按 `@ / username / 展示名 → 回复关系 / 入群服务事件 → 同观察窗口内唯一等待账号` 归属。仍不能唯一归属时，只写该可信控制消息关联的 admission `group_bot_rule_unattributed`；绝不因一条普通 bot 消息污染一批等待账号。
+7. 仅在来源已经可信**且消息已通过控制提示识别**后，才按 `@ / username / 展示名 → 回复关系 / 入群服务事件 → 同观察窗口内唯一等待账号` 归属。若控制文本含确定的收件人前缀（例如“`Ray，您需要关注…`”），该收件人必须匹配 waiting account 的 Telegram username 或展示名；不匹配或存在多个匹配时必须拒绝归属，**不得**降级为唯一 waiting account。唯一等待兜底仅适用于不含明确收件人的通用控制提示。仍不能唯一归属时，只写该可信控制消息关联的 admission `group_bot_rule_unattributed`；绝不因一条普通 bot 消息污染一批等待账号。
 
 ### 5.4 频道关注子动作
 

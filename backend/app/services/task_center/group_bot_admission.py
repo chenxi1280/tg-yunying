@@ -58,6 +58,10 @@ CONTROL_PROMPT_PATTERNS = (
     re.compile(rf"(?:频道|群|channel|group).{{0,{CONTROL_PROMPT_MAX_GAP}}}(?:关注|订阅|加入|入群)", re.I),
     re.compile(r"(?:完成验证|验证后|解除禁言|可以发言|发言权限)", re.I),
 )
+EXPLICIT_RECIPIENT_PREFIX_RE = re.compile(
+    r"^\s*(?P<recipient>[^,，\r\n]{1,80})[,，]\s*(?:您|你)(?:需要|需|请|先)",
+    re.I,
+)
 CONTROL_PROMPT_UNVERIFIED_CODE = "group_bot_control_prompt_unverified"
 REARMABLE_FOLLOW_STATES = {"awaiting_group_bot_rule", "observation_open"}
 
@@ -422,21 +426,30 @@ def attribute_prompt_to_account(
     if explicit_account_id and explicit_account_id in waiting_account_ids:
         return int(explicit_account_id), "explicit"
     text_l = (text or "").lower()
+    recipient = _explicit_control_recipient(text)
+    match_text = recipient.lower() if recipient else text_l
     hits: list[int] = []
     for account_id in waiting_account_ids:
         username = str(account_usernames.get(account_id) or "").strip().lstrip("@").lower()
         display = str(account_display_names.get(account_id) or "").strip().lower()
-        if username and (f"@{username}" in text_l or username in text_l):
+        if username and (f"@{username}" in match_text or username in match_text):
             hits.append(account_id)
             continue
-        if display and display in text_l:
+        if display and display in match_text:
             hits.append(account_id)
     hits = list(dict.fromkeys(hits))
     if len(hits) == 1:
-        return hits[0], "text_match"
+        return hits[0], "explicit_recipient_match" if recipient else "text_match"
+    if recipient:
+        return None, "explicit_recipient_unmatched" if not hits else "explicit_recipient_ambiguous"
     if len(waiting_account_ids) == 1:
         return int(waiting_account_ids[0]), "unique_waiting"
     return None, "unattributed"
+
+
+def _explicit_control_recipient(text: str) -> str:
+    match = EXPLICIT_RECIPIENT_PREFIX_RE.match(text or "")
+    return str(match.group("recipient")).strip() if match else ""
 
 
 def ingest_trusted_bot_prompt(

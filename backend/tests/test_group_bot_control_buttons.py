@@ -261,6 +261,49 @@ def test_policy_trusted_promotion_without_control_signal_does_not_mutate_admissi
         assert session.scalar(select(GroupBotRequiredChannelFollow)) is None
 
 
+def test_trusted_foreign_recipient_control_does_not_use_unique_waiting_fallback() -> None:
+    with _session() as session:
+        group, account = _group(), _account(11, "橘白")
+        task = Task(id="task-ai-1", tenant_id=1, name="ai", type="group_ai_chat", status="running", type_config={"target_group_id": group.id})
+        session.add_all([Tenant(id=1, name="t"), group, account, task])
+        admission = ensure_admission_after_join(
+            session,
+            tenant_id=1,
+            group_id=group.id,
+            account_id=account.id,
+            membership_action_id="join-11",
+            join_start_cursor="100",
+        )
+        create_policy(
+            session,
+            tenant_id=1,
+            group_id=group.id,
+            completion_policy="explicit_bot_confirmation",
+            trusted_bot_peer_id="trusted-bot",
+            reason="production prompt evidence",
+            evidence_ref="message:control-1",
+            created_by="operator",
+        )
+        _insert_snapshot(
+            session,
+            group,
+            account,
+            _bot_snapshot(
+                content="🐨霏霏吖.😌 Ray，您需要关注我们的频道才能发言。",
+                peer_id="trusted-bot",
+                buttons=[
+                    {"row": 0, "col": 0, "text": "频道", "url": "https://t.me/channel_alpha", "action_type": "url"},
+                    {"row": 1, "col": 0, "text": "我已加入", "url": "", "action_type": "callback"},
+                ],
+            ),
+        )
+
+        assert session.scalar(select(GroupContextMessage)) is not None
+        assert admission.state == "awaiting_group_bot_rule"
+        assert admission.required_channel_refs == []
+        assert session.scalar(select(Action).where(Action.task_id == task.id)) is None
+
+
 def test_confirmation_action_calls_exact_gateway_operation_without_marking_ready(monkeypatch) -> None:
     with _session() as session:
         group, account = _group(), _account(11, "账号甲")

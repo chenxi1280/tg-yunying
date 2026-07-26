@@ -135,7 +135,7 @@ group_ai_chat 账号入群
   -> listener 每轮 fetch_group_messages 后：快照保留 bot peer + 无 callback data 的按钮(row/col/text/url/type)摘要；同 group/message/peer 的历史空摘要只回填该安全字段
   -> 控制事件：先检查 admin / 已绑定 peer / active explicit-or-follow policy peer，来源不可信则零状态写入
      可信 peer 还必须通过精确控制提示识别（公开 t.me 引用 + 指令，或同源确认 callback）；普通推广/广告仅审计、不归属、不改状态
-     仅可信且已识别的控制来源才按账号身份归属；不唯一只影响该可信 prompt，绝不批量污染 waiting admission
+     仅可信且已识别的控制来源才按账号身份归属；带明确收件人时必须匹配 username/display，不匹配不得退化为 unique_waiting；不唯一只影响该可信 prompt，绝不批量污染 waiting admission
      bot 控制消息持久化为 is_bot 审计上下文，不进 AI/学习/引用候选
   -> 再为每个 observing admission 写 GroupBotAdmissionObservation
      有效窗口必须覆盖 join_start_cursor；最新 N 条未覆盖基线 -> cursor_gap / observation_stale

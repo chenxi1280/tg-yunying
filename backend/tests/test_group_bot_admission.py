@@ -61,6 +61,14 @@ def test_attribute_prompt_unique_waiting_and_unattributed():
     )
     assert account_id is None
     assert reason == "unattributed"
+    account_id, reason = attribute_prompt_to_account(
+        text="🐨霏霏吖.😌 Ray，您需要关注我们的频道才能发言。",
+        waiting_account_ids=[8],
+        account_usernames={8: "moonlight_rest"},
+        account_display_names={8: "橘白"},
+    )
+    assert account_id is None
+    assert reason == "explicit_recipient_unmatched"
 
 
 def test_joined_account_waits_until_observation_and_policy():

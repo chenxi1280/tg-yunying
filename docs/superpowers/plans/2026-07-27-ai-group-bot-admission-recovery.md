@@ -28,6 +28,7 @@
 9. 频道关注 Action 的存储类型固定为 `group_bot_channel_follow`，必须不超过生产 `actions.action_type` 的 30 字符限制；语义事实表 `group_bot_required_channel_follows` 不能充当 Action type。
 10. 可信 peer 只决定消息能否进入控制提示分类；公开频道 URL、普通 `@username` 或唯一 waiting account 均不足以单独触发 state 迁移。频道 follow 必须同时有精确 URL 与确定性控制指令或同源确认 callback。
 11. `required_channel_refs` 是当前 admission 世代的有效集合。`group_bot_control_prompt_unverified` 暂停保留旧 follow/action 审计，绝不把它们写成成功；只有 explicit restart 后由不同 `source_message_id` 的新有效控制提示，才可重新排队同一频道，旧集合不得阻塞当前 follow 或 confirmation。
+12. 含“`<收件人>，您需要关注…`”一类明确收件人的控制提示，必须精确匹配 waiting account 的 username 或展示名；不匹配时不创建 Action、不改 admission，不能用 unique waiting 兜底。
 
 ## File plan
 
