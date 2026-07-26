@@ -43,7 +43,7 @@ from app.services.task_center.daily_coverage_planning import coverage_plan_total
 from app.services.task_center.daily_fulfillment import summarize_daily_fulfillment
 from app.services.task_center.executors import group_ai_chat
 from app.services.task_center import service as task_service
-from app.timezone import beijing_now
+from app.timezone import BEIJING_TZ, beijing_now
 
 
 pytestmark = pytest.mark.no_postgres
@@ -251,6 +251,32 @@ def test_daily_fulfillment_marks_overdue_reserved_action_unknown_instead_of_feas
     assert summary.valid_future_open_cover_count == 0
     assert summary.unknown_hold_count == 1
     assert summary.daily_outcome == "at_risk"
+
+
+def test_daily_fulfillment_normalizes_aware_action_time_from_postgres(session: Session) -> None:
+    task, _group = _seed(session)
+    row = session.get(TaskAccountDailyCoverage, "coverage-1")
+    timestamp = beijing_now().replace(hour=21, minute=0, second=0, microsecond=0)
+    action = Action(
+        id="aware-overdue-coverage-action",
+        tenant_id=task.tenant_id,
+        task_id=task.id,
+        task_type=task.type,
+        action_type="send_message",
+        account_id=row.account_id,
+        status="pending",
+        scheduled_at=(timestamp - timedelta(minutes=5)).replace(tzinfo=BEIJING_TZ),
+        payload={"coverage_ledger_id": row.id},
+    )
+    row.state = "reserved"
+    row.reserved_action_id = action.id
+    session.add(action)
+    session.flush()
+
+    summary = summarize_daily_fulfillment(session, task, now=timestamp)
+
+    assert row.state == "unknown"
+    assert summary.overdue_open_count == 1
 
 
 def test_planner_backlog_records_daily_fulfillment_risk_and_recheck(session: Session, monkeypatch: pytest.MonkeyPatch) -> None:

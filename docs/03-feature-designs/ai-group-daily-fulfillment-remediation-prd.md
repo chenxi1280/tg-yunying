@@ -268,7 +268,7 @@ hard_hourly_planning_required = hard_hourly_required_new > 0
 
 ### 9.1 当前 release 实现映射
 
-- `daily_fulfillment.py` 将 overdue open 覆盖行转为 `unknown + coverage_action_overdue`，不再抵扣 `required_new`；详情投影 `overdue_open_count`。
+- `daily_fulfillment.py` 将 overdue open 覆盖行转为 `unknown + coverage_action_overdue`，不再抵扣 `required_new`；所有 Action 与统计时钟的比较统一归一到任务统计时区，详情投影 `overdue_open_count`。
 - `group_ai_chat.py` 先以 `reservation_token` CAS reservation，再持久化 `action_id=null` 的 `AiCoverageVariationIntent`，随后创建并 flush Action，最后绑定两个真实 Action 外键；重复 variation intent 明确释放同一 token reservation。迁移 `0123_coverage_reservation_binding.py` 提供该临时 token。
 - 全局 Planner 无槽位时，`service.py` 对当日 ready debt 写 `planner_capacity_insufficient`、`next_decision_at` 和追加式 `TaskDailyFulfillmentDecision`，日履约不再静默显示 feasible。
 - 迁移 `0121_daily_fulfillment_contracts.py` 持久化覆盖扩展列、variation intent、每日决定和 generation contract audit；自动化回归覆盖 intent 顺序、重复拒绝、overdue 与 backlog。

@@ -9,6 +9,8 @@ from sqlalchemy.orm import Session
 from app.models import AiGenerationContractAudit, Action, Task, TaskAccountDailyCoverage, TaskDailyFulfillmentDecision
 from app.services._common import _now
 
+from .datetime_compat import is_after_or_equal, is_before
+
 
 OPEN_ACTION_STATUSES = frozenset({"pending", "claiming", "executing"})
 DECISION_RECHECK_SECONDS = 120
@@ -304,11 +306,11 @@ def _summary_from_counts(
 
 
 def _is_valid_future_open(action: Action | None, timestamp: datetime) -> bool:
-    return bool(action and action.status in OPEN_ACTION_STATUSES and action.scheduled_at >= timestamp)
+    return bool(action and action.status in OPEN_ACTION_STATUSES and is_after_or_equal(action.scheduled_at, timestamp))
 
 
 def _is_overdue_open(action: Action | None, timestamp: datetime) -> bool:
-    return bool(action and action.status in OPEN_ACTION_STATUSES and action.scheduled_at < timestamp)
+    return bool(action and action.status in OPEN_ACTION_STATUSES and is_before(action.scheduled_at, timestamp))
 
 
 def _next_decision_at(rows: list[TaskAccountDailyCoverage], timestamp: datetime, ready_count: int) -> datetime | None:

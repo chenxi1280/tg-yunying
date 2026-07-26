@@ -155,6 +155,31 @@ def test_cross_window_claims_keep_executing_scope_capacity_reserved(monkeypatch)
         assert len(dispatcher.claim_actions(session, limit=1, worker_id="released-window")) == 1
 
 
+def test_terminal_claim_without_finalizer_is_reconciled_before_window_reallocation(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    settings = _settings(dispatcher_concurrency=1)
+    now_value = _now().replace(second=0, microsecond=0)
+    monkeypatch.setattr(dispatcher, "get_settings", lambda: settings)
+    monkeypatch.setattr(dispatcher, "_now", lambda: now_value)
+
+    with Session(engine) as session:
+        _seed_strict_actions(session, now_value)
+        first = dispatcher.claim_actions(session, limit=1, worker_id="stale-terminal")
+        assert len(first) == 1
+        first[0].status = "skipped"
+        session.commit()
+
+        second = dispatcher.claim_actions(session, limit=1, worker_id="reallocated")
+
+        assert len(second) == 1
+        assert second[0].id != first[0].id
+        window = session.scalar(select(DispatchClaimWindow))
+        allocation = session.scalar(select(DispatchClaimShardAllocation))
+        assert window is not None and window.active_claim_count == 1
+        assert allocation is not None and allocation.active_claim_count == 1
+
+
 def _seed_strict_actions(session: Session, now_value) -> None:
     session.add(Tenant(id=1, name="tenant"))
     session.add_all(

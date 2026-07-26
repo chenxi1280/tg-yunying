@@ -23,6 +23,7 @@ from .dispatch_claim_ledger import (
     release_dispatch_claim,
     scope_for_update,
     sync_scope_capacity,
+    sync_window_capacity,
     task_dispatch_claim_snapshot,
     window_allocations,
     window_for_update,
@@ -51,11 +52,12 @@ def plan_dispatch_claims(
     scope_name = dispatcher_scope(settings)
     capacity = dispatcher_claim_capacity(settings, len(actions))
     scope = scope_for_update(session, scope_name, capacity)
-    reconcile_scope_active(session, scope)
+    active_actions = reconcile_scope_active(session, scope)
     sync_scope_capacity(scope, capacity)
     window = window_for_update(session, scope_name, now, capacity)
     allocations = window_allocations(session, window.id)
-    reconcile_window_active(window, allocations)
+    reconcile_window_active(window, allocations, active_actions)
+    sync_window_capacity(window, capacity)
     if window.unclaimed_allocated_count == 0:
         allocate_window(session, scope, window, allocations, demands)
     reservations = window_reservations(session, window.id)

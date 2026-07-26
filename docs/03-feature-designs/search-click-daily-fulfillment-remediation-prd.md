@@ -139,7 +139,7 @@ daily_click_target_count 只由 target_click_observed 与 target_found_at 统计
 | --- | --- | --- |
 | DispatchClaimScope | dispatcher_scope、claim_capacity、active_claim_count、version | 一个真实共享 worker/队列/数据库 claim 域唯一一行；每次规划先按所有 `executing + dispatch_claim_active` Action reconcile，跨 bucket 的 active claim 始终占用全局容量 |
 | DispatchClaimWindow | dispatcher_scope、bucket_start、bucket_end | 唯一定位真实共享 worker/队列/数据库 claim 域的一个窗口；唯一约束为 `(dispatcher_scope, bucket_start, bucket_end)` |
-| DispatchClaimWindow | claim_capacity、active_claim_count、unclaimed_allocated_count、allocation_epoch、version | `claim_capacity` 是该 scope 的有效 claim_limit / 并发总额，不得由 Action 数量推测；全局不变量为 `active_claim_count + unclaimed_allocated_count <= claim_capacity` |
+| DispatchClaimWindow | claim_capacity、active_claim_count、unclaimed_allocated_count、allocation_epoch、version | 每次 Allocation 前按真实 `executing + dispatch_claim_active` Action reconcile 当前 Window；`claim_capacity` 是该 scope 的有效 claim_limit / 并发总额，不得由历史计数或 Action 数量推测；全局不变量为 `active_claim_count + unclaimed_allocated_count <= claim_capacity` |
 | DispatchClaimShardAllocation | dispatch_claim_window_id、account_shard_total、account_shard_index | 一个 Window 对一个账号 shard 的已授予份额；唯一约束为 `(window, shard_total, shard_index)`，不能让每个 shard 各自拥有完整全局 capacity |
 | DispatchClaimShardAllocation | required_claims、active_claim_count、unclaimed_allocated_count、reason、version | 记录 shard 实际可领取候选造成的需求和获配；其 active / unclaimed 总和必须与全局 Window 账一致 |
 | DispatchClaimReservation | dispatch_claim_shard_allocation_id、tenant_id、task_id、claim_class、bucket_start | Reservation 只能附属于一个 shard allocation；唯一约束为 `(shard_allocation, tenant, task, class)` |
@@ -340,5 +340,5 @@ daily_outcome_preview
 
 - `search_join_daily_capacity.py` 用当前/后续小时 source 占用和行为决策扣减严格容量；`search_join_pacing.py` 查询 carry、claim、Gateway source 占用。
 - `executors/search_join_group.py` 以剩余目标和剩余可执行小时追赶，严格模式不再受普通 `actions_per_round` 上限截断；不足时把 `daily_target_capacity_insufficient` 及容量证明写入 `stats.search_join_stats.daily_fulfillment`。
-- `dispatch_claim_*.py` 以 `DispatchClaimScope` 把跨 Window 的 active claim 纳入容量账本，详情同时显示当前 Window 与全局 scope 数值。
+- `dispatch_claim_*.py` 以 `DispatchClaimScope` 把跨 Window 的 active claim 纳入容量账本，并在每次 Allocation 前从真实 executing Action 回写 Window/shard active 计数，详情同时显示当前 Window 与全局 scope 数值。
 - 迁移 `0122_dispatch_claims_protocol_trace.py` 创建 scope/window/shard/reservation 与极搜协议 trace；自动化回归覆盖跨 Window 容量、严格 carry 扣减、种子一致性和 slot 去重。

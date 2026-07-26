@@ -38,11 +38,13 @@ def scope_for_update(session: Session, scope: str, capacity: int) -> DispatchCla
     return _create_scope(session, scope, capacity)
 
 
-def reconcile_scope_active(session: Session, scope: DispatchClaimScope) -> None:
-    active_count = _scope_active_claim_count(session, scope.dispatcher_scope)
+def reconcile_scope_active(session: Session, scope: DispatchClaimScope) -> list[Action]:
+    active_actions = _scope_active_claims(session, scope.dispatcher_scope)
+    active_count = len(active_actions)
     if scope.active_claim_count != active_count:
         scope.active_claim_count = active_count
         scope.version += 1
+    return active_actions
 
 
 def sync_scope_capacity(scope: DispatchClaimScope, capacity: int) -> None:
@@ -62,8 +64,6 @@ def window_for_update(session: Session, scope: str, now: datetime, capacity: int
     window = session.scalar(for_update(session, statement))
     if window is None:
         return _create_window(session, scope, bucket_start, bucket_end, capacity)
-    occupied = int(window.active_claim_count) + int(window.unclaimed_allocated_count)
-    window.claim_capacity = max(occupied, capacity)
     return window
 
 
@@ -86,10 +86,29 @@ def window_reservations(
     return {reservation_key(reservation, allocation): reservation for reservation, allocation in rows}
 
 
-def reconcile_window_active(window: DispatchClaimWindow, allocations: list[DispatchClaimShardAllocation]) -> None:
-    active = sum(max(0, int(allocation.active_claim_count or 0)) for allocation in allocations)
+def reconcile_window_active(
+    window: DispatchClaimWindow,
+    allocations: list[DispatchClaimShardAllocation],
+    active_actions: list[Action],
+) -> None:
+    active_counts = _active_claim_counts_by_allocation(window, active_actions)
+    active = 0
+    for allocation in allocations:
+        expected = active_counts.get(allocation.id, 0)
+        if allocation.active_claim_count != expected:
+            allocation.active_claim_count = expected
+            allocation.version += 1
+        active += expected
     if window.active_claim_count != active:
         window.active_claim_count = active
+        window.version += 1
+
+
+def sync_window_capacity(window: DispatchClaimWindow, capacity: int) -> None:
+    occupied = int(window.active_claim_count) + int(window.unclaimed_allocated_count)
+    expected = max(occupied, capacity)
+    if window.claim_capacity != expected:
+        window.claim_capacity = expected
         window.version += 1
 
 
@@ -206,15 +225,33 @@ def _create_scope(session: Session, scope: str, capacity: int) -> DispatchClaimS
     raise RuntimeError("unable to create dispatch claim scope")
 
 
-def _scope_active_claim_count(session: Session, scope: str) -> int:
+def _scope_active_claims(session: Session, scope: str) -> list[Action]:
     actions = session.scalars(select(Action).where(Action.status == "executing"))
-    return sum(
-        1
+    return [
+        action
         for action in actions
-        if isinstance(action.result, dict)
-        and action.result.get("dispatch_claim_active")
-        and action.result.get("dispatch_claim_scope") == scope
-    )
+        if _active_claim_result(action).get("dispatch_claim_scope") == scope
+    ]
+
+
+def _active_claim_counts_by_allocation(
+    window: DispatchClaimWindow,
+    active_actions: list[Action],
+) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for action in active_actions:
+        result = _active_claim_result(action)
+        if result.get("dispatch_claim_window_id") != window.id:
+            continue
+        allocation_id = str(result.get("dispatch_claim_shard_allocation_id") or "")
+        if allocation_id:
+            counts[allocation_id] = counts.get(allocation_id, 0) + 1
+    return counts
+
+
+def _active_claim_result(action: Action) -> dict:
+    result = action.result if isinstance(action.result, dict) else {}
+    return result if result.get("dispatch_claim_active") else {}
 
 
 def _create_window(
