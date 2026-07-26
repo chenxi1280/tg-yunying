@@ -6,7 +6,7 @@
 | --- | --- |
 | 需求级别 | L2 产品能力升级（上线后影响生产 AI 活群 / 频道评论行为） |
 | 设计状态 | `complete`（2026-07-27 生产控制按钮与并发准入修订） |
-| 修订说明 | 2026-07-25 评审修补合订 + **continuity 交叉 P0/P1 合订**：① 待可见性核验计入 `unknown_after_send_hold_count`；② `admission_abandoned` 释放永久不可准入硬小时 debt；③ `pending_visibility_credit` 延后真实 credit；④ follow/观察 action 复用 `target_admission_retry` 档且限 tenant+task+account；⑤ 定义 `admission_version`；⑥ C1/C2 action 边界与存量 unknown 走 continuity 裁决。2026-07-27 首次补齐：入群前基线游标、每轮 listener observation 落库、控制事件优先后闭合、存量无基线显式重启观察，以及成功终态压过历史临时错误展示。**同日生产复核再补齐：来源信任必须早于归属；群管频道与确认动作可仅存在于 Telegram 内联按钮；已审计的目标级 bot peer 可作为 unknown role 的受限信任根；同群新入群 admission 必须串行，避免并发提示无法归属；历史已入库的同一 bot 消息重新被监听到按钮时，只回填安全按钮摘要以支持精确恢复。** |
+| 修订说明 | 2026-07-25 评审修补合订 + **continuity 交叉 P0/P1 合订**：① 待可见性核验计入 `unknown_after_send_hold_count`；② `admission_abandoned` 释放永久不可准入硬小时 debt；③ `pending_visibility_credit` 延后真实 credit；④ follow/观察 action 复用 `target_admission_retry` 档且限 tenant+task+account；⑤ 定义 `admission_version`；⑥ C1/C2 action 边界与存量 unknown 走 continuity 裁决。2026-07-27 首次补齐：入群前基线游标、每轮 listener observation 落库、控制事件优先后闭合、存量无基线显式重启观察，以及成功终态压过历史临时错误展示。**同日生产复核再补齐：来源信任必须早于归属；群管频道与确认动作可仅存在于 Telegram 内联按钮；已审计的目标级 bot peer 可作为 unknown role 的受限信任根；同群新入群 admission 必须串行，避免并发提示无法归属；历史已入库的同一 bot 消息重新被监听到按钮时，只回填安全按钮摘要以支持精确恢复；频道 follow 的持久 Action 类型固定为 `group_bot_channel_follow`，必须适配 `actions.action_type` 的 30 字符上限。** |
 | 产品范围 | 真人化：`group_ai_chat` + `channel_comment`；群管机器人准入：仅 `group_ai_chat` |
 | 统计时区 | 任务配置时区；未配置时沿用平台 `Asia/Shanghai` |
 | 上位文档 | `docs/01-product/tg-ops-platform-prd.md` |
@@ -45,7 +45,7 @@
 | **P0-1** | 「待可见性核验」是否进 `planning_reservation` | `pending_visibility` **计入** `unknown_after_send_hold_count`（与 unknown 同语义占位 1）；**不**新增公式第三项；`planning_reservation = eligible_open + unknown_hold` **不变** | §5.8.1；continuity §4.3 / §7.3.1 |
 | **P0-2** | `post_send_intercepted` 后账号永久不可 ready 时 debt 怎么办 | 长期 waiting **不**自动释放；仅运营 **`admission_abandoned`**（preview+理由+证据+version）后：该账号该目标 epoch 未关闭硬小时义务从 `durable_debt` **排除**；日覆盖分母保留 `blocked/admission_abandoned` | §5.8.2；continuity durable_debt 排除 |
 | **P0-3** | Attempt success+remote id 是否立即 hard-hourly credit | **否**（需可见性核验时）：先 `pending_visibility_credit`（不涨 `success_count`），`visible_confirmed` 后同一短事务落正式 `TaskHardHourlyDeliveryCredit`；无需核验的消息仍按 continuity 直接正式 credit | §5.8.3；continuity §7.2 增量 |
-| **P1-4** | `group_bot_required_channel_follow` 的 ClaimClass 档位 | **复用 `target_admission_retry` 档**；就绪集限制 `tenant_id+task_id+account_id`（+目标群），禁止跨任务饿死 `search_join_*` | §8.3；continuity §7.4 注 |
+| **P1-4** | `group_bot_channel_follow` 的 ClaimClass 档位 | **复用 `target_admission_retry` 档**；就绪集限制 `tenant_id+task_id+account_id`（+目标群），禁止跨任务饿死 `search_join_*` | §8.3；continuity §7.4 注 |
 | **P1-5** | `admission_version` 未定义 | 行字段，从 1 起；rejoin / trusted bot peer / 绑定 policy 结论变化 / 新规则集 / intercepted 后重入观察时 `+1`；**≠** `Task.config_revision` | §5.1.1 |
 | **P1-6** | C1 存量新建 action 是否受 admission 拦截 | **否**：C1 存量新建 = legacy 路径 + `legacy_send_until_reviewed`；C2 复核完成**只影响之后**新建 action，不回溯已发/open | §10.2.1 |
 | **P1-7** | C2 发现的存量 unknown 走哪条路 | **只走 continuity 核验/裁决**；不进 admission 状态机；裁决成功不自动 admission ready | §10.2.2 |
@@ -220,7 +220,8 @@ else:
 
 ### 5.4 频道关注子动作
 
-- 每个可信提示中的真实频道引用 → 一条 `group_bot_required_channel_follow`，幂等键 `(admission_id, channel_ref)`。频道引用可来自正文，也可来自同一原始消息的 URL 内联按钮；两者均必须保留其 `source_message_id`。
+- 每个可信提示中的真实频道引用 → 一条 `group_bot_channel_follow`，幂等键 `(admission_id, channel_ref)`。频道引用可来自正文，也可来自同一原始消息的 URL 内联按钮；两者均必须保留其 `source_message_id`。
+- `group_bot_channel_follow` 是 `actions.action_type` 的唯一持久类型，必须保持在该字段的 30 字符上限内；`group_bot_required_channel_follows` 仅是频道关注事实表名，不能写入 Action type。该约束必须有自动化长度回归。
 - listener 快照必须保存无敏感 callback data 的不可变按钮摘要：`row`、`col`、展示文本、公开 URL、动作类型（`url` / `callback` / `other`）。bot 控制消息必须持久化为审计上下文且 `is_bot=true`，不得进入 AI 提示词、学习样本或引用候选；原始 callback bytes 不得写数据库、日志或前端。
 - 对发布前已持久化、`control_buttons=[]` 的 bot 控制消息，listener 重读到**同一 group + message ID + bot peer**且获得安全按钮摘要时，只更新该审计行的 `control_buttons`。该回填本身不得迁移 admission state、修改正文或写 callback data；后续 follow/callback 仍必须走同一原消息的精确 Gateway 校验。
 - Gateway 前必须按原始精确 URL 解析并验证为**原提示所指广播频道**；私有邀请须在加入前验证实体。URL 只允许单段公开 `t.me/<username>` 频道引用；群组、跳转实体变化、私链/多段链接、无法解析或不在快照按钮/正文引用集合中的地址均为 `required_channel_ref_invalid`。
@@ -470,12 +471,12 @@ target_admission_retry
 
 | Action 类型 | ClaimClass 档位 | 作用域 | 禁止 |
 | --- | --- | --- | --- |
-| 群管控制观察、`group_bot_required_channel_follow`、精确确认按钮类准入子动作 | **复用 `target_admission_retry` 档（最高档）** | 仅当该 action 用于解除**同一 `tenant_id + task_id + account_id`**（及同一目标群）上已存在的 `group_bot_admission_wait` / 未完成 admission 时，才享受本档优先于该账号的 hard-hourly/ordinary `send_message` | **禁止**跨任务、跨账号、跨租户用本档抢占；**禁止**把无 admission 关联的普通入群/搜索动作塞进本解释而插到 `search_join_*` 之前 |
+| 群管控制观察、`group_bot_channel_follow`、精确确认按钮类准入子动作 | **复用 `target_admission_retry` 档（最高档）** | 仅当该 action 用于解除**同一 `tenant_id + task_id + account_id`**（及同一目标群）上已存在的 `group_bot_admission_wait` / 未完成 admission 时，才享受本档优先于该账号的 hard-hourly/ordinary `send_message` | **禁止**跨任务、跨账号、跨租户用本档抢占；**禁止**把无 admission 关联的普通入群/搜索动作塞进本解释而插到 `search_join_*` 之前 |
 | 与 admission 无关的 `ensure_target_membership` 等 | 维持既有相对 hard-hourly 的顺序（continuity / 日覆盖既有口径） | — | 不得借群管名义整体抬到 search 之前 |
 
 可测含义：
 
-1. 同 task+account 存在到期 `group_bot_required_channel_follow` 与同账号 hard-hourly `send_message` 时，一次 claim 类别选择必须先取 follow/观察，避免 send 反复 wait。
+1. 同 task+account 存在到期 `group_bot_channel_follow` 与同账号 hard-hourly `send_message` 时，一次 claim 类别选择必须先取 follow/观察，避免 send 反复 wait。
 2. 存在到期严格 `search_join` / `search_join_membership` 时，不得因为任意群管 follow 全局插队而饿死搜索日目标（follow 仅在 **本档内** 与 `target_admission_retry` 同类竞争，且受 tenant+task+account 作用域过滤后的就绪集合约束）。
 3. 「一轮」公平定义仍以 continuity §7.4 为准。
 

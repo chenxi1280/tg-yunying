@@ -356,7 +356,7 @@ target_admission_retry
 -> ordinary
 ```
 
-**群管准入子动作（2026-07-25）：** `group_bot_required_channel_follow`、控制观察与精确确认类 action **复用 `target_admission_retry` 档**，但就绪集合必须限制在 **同一 `tenant_id + task_id + account_id`（及对应目标群）** 且用于解除该账号 `group_bot_admission_wait` 时；不得跨任务/跨账号把群管 follow 做成全局插队，从而饿死 `search_join_*`。详见真人化专项 §8.3。
+**群管准入子动作（2026-07-25）：** `group_bot_channel_follow`、控制观察与精确确认类 action **复用 `target_admission_retry` 档**，但就绪集合必须限制在 **同一 `tenant_id + task_id + account_id`（及对应目标群）** 且用于解除该账号 `group_bot_admission_wait` 时；不得跨任务/跨账号把群管 follow 做成全局插队，从而饿死 `search_join_*`。详见真人化专项 §8.3。
 
 **“一轮”的可测定义：** 在 Dispatcher 的**一次 claim 类别选择**（一次持久化 cursor 决策）中，若本次选择了 AI hard-hourly，且当时存在已到期的 ordinary 动作、且无更高优先级项，则**下一次** claim 类别选择在同样前提下必须选择 ordinary。不得用“一个 worker 进程内碰巧夹杂”或“批次里碰巧有一条 ordinary”冒充公平。
 

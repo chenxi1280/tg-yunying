@@ -2141,7 +2141,7 @@ AI 活跃群仍然以当前任务的目标群上下文为事实来源，画像�
 - 首次通过群管准入后的正文，以及 `admission_version` 递增后的首条正文，都必须做无正文远端可见性核验（默认窗口 90s）。Action 进入 `pending_visibility`：**与** `unknown_after_send` **共用** `unknown_after_send_hold_count` 占位 1，`planning_reservation` 公式不变，禁止对同一义务再规划替代发送。需核验消息在 `visible_confirmed` 前**不得**落正式 hard-hourly credit / 覆盖确认，须先 `pending_visibility_credit`（不涨 success_count）。可信机器人删除/拒绝写 `post_send_intercepted`、撤回群管 ready、停止后续未进 Gateway action 且不计正式 credit；账号永久不再履约仅当运营 `targets.manage` 显式 `admission_abandoned` 后才从硬小时 `durable_debt` 排除（覆盖分母保留 blocked）。超时不得当成功。
 - 已入群的存量账号不得把旧 `can_send=true` 直接当作新群管准入通过，也不得批量改写该 Telegram 权限字段。迁移分 canary：C1 仅新入群 enforce，存量新建 action 仍可发送但打 `legacy_send_until_reviewed`；C2 复核完成只影响之后新 action，存量 unknown 只走终态/continuity 裁决；全量 enforce 前不得一夜抽空 ready 池。
 - 无替代账号且无真人打断时写 `speaker_rotation_wait`，预检对 `rotatable_ready_account_count < 2` 给产能 warning；不得为 hard-hourly/日覆盖静默同号连发。`签到` 为唯一确定性文本兜底，并受会话 30 分钟与任务小时配额约束；历史 `emoji_react` 与同账号 `consecutive_message_*` 连发不得用于新实现。
-- `group_bot_required_channel_follow` / 控制观察 action 在 Dispatcher 复用 `target_admission_retry` 档，但仅限同一 `tenant+task+account` 解除 admission wait，不得跨任务饿死严格搜索。
+- `group_bot_channel_follow` / 控制观察 action 在 Dispatcher 复用 `target_admission_retry` 档，但仅限同一 `tenant+task+account` 解除 admission wait，不得跨任务饿死严格搜索；该 Action type 必须适配 `actions.action_type` 的 30 字符存储上限。
 - 目标终态、引用 revision、unknown 占位与硬小时计划桶 credit 仍以 `ai-group-send-continuity-and-terminal-targets-prd.md` 为准，并以真人化专项 §1.2 / §5.8 交叉条款解释可见性与 abandoned；群管模块不得把 `qdsfxy` 等引用失败写成“群里已被解散”。
 
 交互入口：
@@ -2586,7 +2586,7 @@ AI 活跃群不得再通过 `曲线强度 / 100` 同时压低轮数和参与账�
   -> 检查是否已加入目标群 / 已关注频道
   -> 未加入目标群：执行入群
   -> AI 活群：取得同群 admission 串行窗口，记录入群前控制游标并执行群管机器人控制观察
-  -> 可信群管机器人要求先关注频道：从正文/内联按钮按精确引用创建广播频道关注 action
+  -> 可信群管机器人要求先关注频道：从正文/内联按钮按精确引用创建 `group_bot_channel_follow` 广播频道关注 action
   -> 全部关注后：仅对同一原消息、同一 bot peer 的精确 callback 做重读校验并 click；等待可信确认事件
   -> 必要时执行同一机器人给出的精确确认按钮，并等待明确放行或目标级审计的 `follow_sufficient` 协议
   -> 入群后检查是否需要验证

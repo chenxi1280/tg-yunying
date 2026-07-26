@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Mapping
 
+from .payloads import GROUP_BOT_CHANNEL_FOLLOW_ACTION_TYPE
+
 
 CLAIM_WINDOW_SECONDS = 60
 DEFAULT_DISPATCHER_SCOPE = "task_center_dispatch"
@@ -13,7 +15,7 @@ HARD_HOURLY_CLAIM_CLASS = "hard_hourly"
 TARGET_ADMISSION_RETRY_TASK_TYPE = "target_admission_retry"
 GROUP_BOT_ADMISSION_ACTION_TYPES = frozenset(
     {
-        "group_bot_required_channel_follow",
+        GROUP_BOT_CHANNEL_FOLLOW_ACTION_TYPE,
         "group_bot_control_observation",
         "group_bot_confirmation_button",
     }

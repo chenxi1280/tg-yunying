@@ -12,6 +12,8 @@ from sqlalchemy.orm import Session
 from app.models import DispatchFairnessCursor
 from app.services._common import _now
 
+from .payloads import GROUP_BOT_CHANNEL_FOLLOW_ACTION_TYPE
+
 
 ClaimClass = Literal[
     "target_admission_retry",
@@ -141,7 +143,7 @@ def classify_action_payload(action_type: str, payload: dict | None, task_type: s
     if action_type == "target_admission_retry":
         return "target_admission_retry"
     if action_type in {
-        "group_bot_required_channel_follow",
+        GROUP_BOT_CHANNEL_FOLLOW_ACTION_TYPE,
         "group_bot_control_observation",
         "group_bot_confirmation_button",
     }:

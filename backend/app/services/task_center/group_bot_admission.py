@@ -508,7 +508,7 @@ def plan_required_channel_follow_actions(
     control_buttons: tuple[object, ...] | list[object] = (),
     prompt_text: str = "",
 ) -> list[Any]:
-    """Create bound group_bot_required_channel_follow Actions for pending refs."""
+    """Create bound group_bot_channel_follow Actions for pending refs."""
     from app.models import Task
     from app.services._common import _now
     from app.services.task_center.payloads import (

@@ -148,7 +148,7 @@ group_ai_chat 账号入群
             -> reconcile 未进 Gateway 的 admission
        存量无基线 -> targets.manage restart-observation(expected version + reason + evidence)
             -> 从 GroupContextMessage 当前 waterline 重置新观察世代 + AuditLog
-  -> 每个正文或同源 URL 按钮的原始频道引用 -> group_bot_required_channel_follow（Gateway 重解析并验广播频道）
+  -> 每个正文或同源 URL 按钮的原始频道引用 -> group_bot_channel_follow（`actions.action_type` 30 字符内；Gateway 重解析并验广播频道）
   -> 全部 follow 后，精确 callback action 重读 source_message_id 并校验 peer/row/col/text/type -> Telegram click
      click 成功仍等待同 peer 的完成事件；不得直接 ready
   -> 完成事件识别器（精确按钮后的 bot 回执 / 版本化确认模板）或 follow_sufficient

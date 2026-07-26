@@ -13,7 +13,7 @@ from app.services.task_center.group_bot_admission import (
     plan_required_channel_follow_actions,
 )
 from app.services.task_center.dispatcher import _dispatch_group_bot_required_channel_follow, recover_pending_visibility_credits
-from app.services.task_center.payloads import GroupBotRequiredChannelFollowPayload
+from app.services.task_center.payloads import GROUP_BOT_CHANNEL_FOLLOW_ACTION_TYPE, GroupBotRequiredChannelFollowPayload
 
 pytestmark = pytest.mark.no_postgres
 
@@ -61,7 +61,7 @@ def test_plan_required_channel_follow_actions_writes_admission_bound_fields():
             session.scalars(
                 select(Action).where(
                     Action.task_id == task.id,
-                    Action.action_type == "group_bot_required_channel_follow",
+                    Action.action_type == GROUP_BOT_CHANNEL_FOLLOW_ACTION_TYPE,
                 )
             )
         )
@@ -111,7 +111,7 @@ def test_dispatch_group_bot_required_channel_follow_marks_admission():
             bound_task_id=task.id,
         )
         action = session.scalar(
-            select(Action).where(Action.action_type == "group_bot_required_channel_follow")
+            select(Action).where(Action.action_type == GROUP_BOT_CHANNEL_FOLLOW_ACTION_TYPE)
         )
         assert action is not None
         payload = GroupBotRequiredChannelFollowPayload.model_validate(action.payload)
@@ -154,7 +154,7 @@ def test_text_only_channel_reference_never_plans_a_guess_follow_action():
             bound_task_id=task.id,
         )
 
-        assert session.scalar(select(Action).where(Action.action_type == "group_bot_required_channel_follow")) is None
+        assert session.scalar(select(Action).where(Action.action_type == GROUP_BOT_CHANNEL_FOLLOW_ACTION_TYPE)) is None
         follow = session.scalar(select(GroupBotRequiredChannelFollow))
         assert follow is not None
         assert follow.failure_code == "required_channel_source_missing"

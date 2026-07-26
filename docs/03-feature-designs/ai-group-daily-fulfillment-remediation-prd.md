@@ -6,7 +6,7 @@
 | --- | --- |
 | 需求级别 | L3 生产问题修复 |
 | 设计状态 | complete（2026-07-27 群管控制按钮、可信来源与并发准入交叉修订） |
-| 变更状态 | 先前 release 已完成基线/观察与成功事实的发布；本次将继续按 Release Gate 发布“按钮协议、来源信任前置、单群 admission 串行化”修复。真实 Telegram 结果与完整自然日验收仍须以 Action + Attempt + remote_message_id 和日账本证明。群管机器人准入完整细节以 `ai-conversation-humanization-and-group-bot-admission-prd.md` §5.3–§5.7.1 为准。 |
+| 变更状态 | 先前 release 已完成基线/观察与成功事实的发布；本次将继续按 Release Gate 发布“按钮协议、来源信任前置、单群 admission 串行化、`group_bot_channel_follow` 适配 `actions.action_type` 30 字符上限”修复。真实 Telegram 结果与完整自然日验收仍须以 Action + Attempt + remote_message_id 和日账本证明。群管机器人准入完整细节以 `ai-conversation-humanization-and-group-bot-admission-prd.md` §5.3–§5.7.1 为准。 |
 | 适用任务 | account_coverage_mode=all_accounts_daily 的 group_ai_chat |
 | 统计时区 | Asia/Shanghai |
 | 关联线上证据 | 2026-07-25 完整日账本与 2026-07-26 生产只读取证 |

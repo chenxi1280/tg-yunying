@@ -81,7 +81,23 @@ from .executors.channel_comment_budget import (
 )
 from .group_rescue import GROUP_RESCUE_FAILURE_THRESHOLD, infer_rescue_admin_rate_limit, permission_failure_count_for_send_action, refresh_group_rescue_action, trigger_group_rescue
 from .group_send_limits import GroupSendSlotBlock, group_send_slot_block
-from .payloads import DeprecatedGroupRescuePayload, DeleteMessagePayload, EnsureChannelMembershipPayload, InviteGroupAccountPayload, LikeMessagePayload, PostCommentPayload, SearchJoinMembershipPayload, SearchJoinPayload, SearchRankDeboostPayload, SendMessagePayload, ViewMessagePayload, create_membership_action, payload_error_message, validate_action_payload
+from .payloads import (
+    GROUP_BOT_CHANNEL_FOLLOW_ACTION_TYPE,
+    DeprecatedGroupRescuePayload,
+    DeleteMessagePayload,
+    EnsureChannelMembershipPayload,
+    InviteGroupAccountPayload,
+    LikeMessagePayload,
+    PostCommentPayload,
+    SearchJoinMembershipPayload,
+    SearchJoinPayload,
+    SearchRankDeboostPayload,
+    SendMessagePayload,
+    ViewMessagePayload,
+    create_membership_action,
+    payload_error_message,
+    validate_action_payload,
+)
 from .pacing import quiet_hours_active
 from .policies import validate_group_send_policy
 from .review import has_pending_review
@@ -109,7 +125,7 @@ _IN_FLIGHT_ACCOUNTS = _runtime_resources._IN_FLIGHT_ACCOUNTS
 _redis_client = _runtime_resources._redis_client
 MEMBERSHIP_ACTION_TYPES = ("ensure_channel_membership", "ensure_target_membership")
 GROUP_BOT_ADMISSION_ACTION_TYPES = (
-    "group_bot_required_channel_follow",
+    GROUP_BOT_CHANNEL_FOLLOW_ACTION_TYPE,
     "group_bot_control_observation",
     "group_bot_confirmation_button",
 )
@@ -568,7 +584,7 @@ def _dispatch_credentialed_action(
             CommentDispatchContext(context.account, credentials, context.payload),
             generation_dependencies=context.comment_generation_dependencies,
         )
-    if action.action_type == "group_bot_required_channel_follow":
+    if action.action_type == GROUP_BOT_CHANNEL_FOLLOW_ACTION_TYPE:
         return _dispatch_group_bot_required_channel_follow(
             session, action, context.account, credentials, context.payload
         )

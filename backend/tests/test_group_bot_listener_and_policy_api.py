@@ -10,6 +10,7 @@ from app.database import Base
 from app.models import GroupBotAdmission, GroupContextMessage, Tenant, TgAccount, TgGroup
 from app.services.group_listener_context_writer import insert_context_snapshots
 from app.services.task_center.group_bot_admission import ensure_admission_after_join, READY_STATE
+from app.services.task_center.payloads import GROUP_BOT_CHANNEL_FOLLOW_ACTION_TYPE
 
 pytestmark = pytest.mark.no_postgres
 
@@ -87,14 +88,14 @@ def test_dispatch_fairness_classifies_group_bot_follow_as_admission_retry():
     from app.services.task_center.dispatch_fairness import classify_action_payload
 
     # Unbound follow actions stay ordinary so they cannot starve search_join globally.
-    assert classify_action_payload("group_bot_required_channel_follow", {}, "group_ai_chat") == "ordinary"
+    assert classify_action_payload(GROUP_BOT_CHANNEL_FOLLOW_ACTION_TYPE, {}, "group_ai_chat") == "ordinary"
     # Bound to same tenant+task+account admission → target_admission_retry tier (PRD §8.3).
     bound = {
         "admission_bound_task_id": "task-1",
         "admission_bound_account_id": 11,
     }
     assert (
-        classify_action_payload("group_bot_required_channel_follow", bound, "group_ai_chat")
+        classify_action_payload(GROUP_BOT_CHANNEL_FOLLOW_ACTION_TYPE, bound, "group_ai_chat")
         == "target_admission_retry"
     )
     assert (

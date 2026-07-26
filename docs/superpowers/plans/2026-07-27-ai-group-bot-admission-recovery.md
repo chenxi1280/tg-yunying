@@ -2,7 +2,7 @@
 
 > **For Codex:** Required skill: use `executing-plans` to implement this plan task-by-task.
 
-**Goal:** 修复 AI 活群的四条已证实故障链路：成功发送仍展示“需关注频道”的陈旧错误、入群观察没有可验证游标、普通 bot 消息在信任校验前污染并发等待账号、以及真实群管协议仅存在于内联频道/确认按钮但监听未采集。上线后任务只依据真实 Telegram 成功事实计完成，群管规则没有证据时显式进入待策略/观察失效，不再伪装成“关注频道”。
+**Goal:** 修复 AI 活群的五条已证实故障链路：成功发送仍展示“需关注频道”的陈旧错误、入群观察没有可验证游标、普通 bot 消息在信任校验前污染并发等待账号、真实群管协议仅存在于内联频道/确认按钮但监听未采集，以及频道 follow Action 类型超过生产字段长度而回滚。上线后任务只依据真实 Telegram 成功事实计完成，群管规则没有证据时显式进入待策略/观察失效，不再伪装成“关注频道”。
 
 **Architecture:** 发送终态在 Dispatcher 写入 `success + remote_message_id` 时清理一次性准入错误；Task Center 读模型和前端也以终态成功优先，兼容历史脏结果而不篡改审计原文。群监听每次成功拉取后先对控制消息做来源信任，再做账号归属；`GroupMessageSnapshot` / `GroupContextMessage` 保存没有 callback bytes 的按钮摘要，以原消息 ID、bot peer、行列、文案和类型创建精确 follow/callback action。入群前以群行锁取得 admission window，禁止多个账号同时 join 后争夺同一条 bot 提示；已有窗口的 action 在 Gateway 前显式 defer。入群前仍由既有 listener 读取游标；无基线进入 `observation_stale`，存量只能带版本/审计 restart 后重新观察。
 
@@ -25,6 +25,7 @@
 6. 非可信 bot 消息在来源过滤阶段即停止，不能读取/修改 waiting admissions；unknown role 只有目标级 explicit/follow policy 绑定的 peer 才能作为受限可信来源。
 7. 内联按钮的 URL/callback 是协议事实：频道 follow 仅使用同一消息的精确广播频道 URL；确认 click 必须重读同一 source message 并逐项校验 peer、坐标、文本和 callback 类型，click 本身不 ready。历史同一 bot message 若先前只保存空摘要，重新监听到同 peer 的按钮时只回填安全摘要，不改写 admission 或正文。
 8. 每群同一时刻只有一个 new admission window；第二个 membership action 必须在 Gateway 前写 `group_bot_admission_window_busy` 并等待当前 admission 收口，不能发送试探正文或批量重置历史状态。
+9. 频道关注 Action 的存储类型固定为 `group_bot_channel_follow`，必须不超过生产 `actions.action_type` 的 30 字符限制；语义事实表 `group_bot_required_channel_follows` 不能充当 Action type。
 
 ## File plan
 
@@ -54,7 +55,7 @@
 **Steps:**
 1. 证明非可信 bot 在来源过滤阶段不读取、不修改多个 waiting admissions；该用例在旧实现中必须失败为 `group_bot_rule_unattributed`。
 2. 证明已审计 policy 同 peer 的 unknown-role bot 能从 URL 按钮提取精确频道，控制消息被持久化为非 AI 审计上下文；无 policy 的同一消息仍无状态写入。
-3. 证明确认 action 缺少/篡改 source peer、消息 ID、行列、文本或 callback 类型时不调用 click；完全匹配时 click 成功仍保持 `awaiting_group_bot_confirmation`。
+3. 证明确认 action 缺少/篡改 source peer、消息 ID、行列、文本或 callback 类型时不调用 click；完全匹配时 click 成功仍保持 `awaiting_group_bot_confirmation`；频道 follow Action type 必须通过数据库列长度回归。
 4. 证明同群第二个 membership action 在 Gateway 前 defer，且第一个 admission ready/blocked 后才可继续；证明历史 `group_bot_rule_unattributed` 可单账号 restart 而不形成永久窗口锁。
 5. 运行新增用例，确认当前实现至少有一条失败，再开始生产代码。
 
@@ -78,7 +79,7 @@
 1. 保持已实现的基线/观察/成功事实合同；在 membership Gateway 调用前新增行锁 admission window 的 reserve/defer/release，未知 Gateway 结果必须保持明确窗口状态。
 2. 将 `GroupMessageSnapshot` 扩展为安全按钮摘要，listener 把 bot 控制消息持久化到 `GroupContextMessage.control_buttons`；若历史同 group/message/peer 行为空摘要，重复监听只回填该安全字段；迁移只加可回滚 JSON 列。
 3. 将来源资格判断移动到 `attribute_prompt_to_account` 之前；显式 policy peer 支持 unknown role，但 `explicit_bot_confirmation`/`follow_sufficient` 都必须有 trusted peer，`not_required` 不可授权来源。
-4. 从正文和同源 URL 按钮提取精确公共频道，计划 follow action；全部 follow 后计划精确 confirmation action，Gateway 重读并校验 source message 后 click，click 不直接 ready。
+4. 从正文和同源 URL 按钮提取精确公共频道，创建持久类型为 `group_bot_channel_follow` 的 follow action；全部 follow 后计划精确 confirmation action，Gateway 重读并校验 source message 后 click，click 不直接 ready。
 5. 将 `group_bot_rule_unattributed` 纳入单账号 restart 恢复范围，不创建批量自动恢复或 `not_required`。
 
 ### Task 4: 定向与构建验证

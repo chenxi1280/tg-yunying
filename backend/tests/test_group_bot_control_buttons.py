@@ -12,7 +12,7 @@ from app.models import Action, AccountStatus, GroupBotAdmission, GroupContextMes
 from app.services.group_listener_context_writer import insert_context_snapshots
 from app.services.task_center import dispatcher
 from app.services.task_center.group_bot_admission import create_policy, ensure_admission_after_join
-from app.services.task_center.payloads import EnsureChannelMembershipPayload
+from app.services.task_center.payloads import GROUP_BOT_CHANNEL_FOLLOW_ACTION_TYPE, EnsureChannelMembershipPayload
 
 
 pytestmark = pytest.mark.no_postgres
@@ -115,6 +115,14 @@ def _serialized_membership_setup(session: Session):
     return first_admission, action, payload, second
 
 
+def test_group_bot_action_types_fit_action_storage_limit() -> None:
+    storage_limit = Action.__table__.c.action_type.type.length
+
+    assert GROUP_BOT_CHANNEL_FOLLOW_ACTION_TYPE == "group_bot_channel_follow"
+    assert len(GROUP_BOT_CHANNEL_FOLLOW_ACTION_TYPE) <= storage_limit
+    assert len("group_bot_confirmation_button") <= storage_limit
+
+
 def test_untrusted_bot_does_not_mutate_concurrent_waiting_admissions() -> None:
     with _session() as session:
         group = _group()
@@ -202,8 +210,8 @@ def test_policy_trusted_replayed_button_prompt_updates_legacy_context_and_plans_
         assert controls.control_buttons == buttons
         assert admission.required_channel_refs == ["channel_alpha"]
         assert [action.action_type for action in actions] == [
+            GROUP_BOT_CHANNEL_FOLLOW_ACTION_TYPE,
             "group_bot_confirmation_button",
-            "group_bot_required_channel_follow",
         ]
 
 

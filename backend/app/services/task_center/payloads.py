@@ -357,6 +357,9 @@ def _missing_client_metadata(metadata: dict[str, str]) -> bool:
     return any(not str(metadata.get(key) or "").strip() for key in required)
 
 
+GROUP_BOT_CHANNEL_FOLLOW_ACTION_TYPE = "group_bot_channel_follow"
+
+
 PAYLOAD_MODELS = {
     "ensure_channel_membership": EnsureChannelMembershipPayload,
     "ensure_target_membership": EnsureChannelMembershipPayload,
@@ -370,7 +373,7 @@ PAYLOAD_MODELS = {
     "search_join": SearchJoinPayload,
     "search_join_membership": SearchJoinMembershipPayload,
     "search_rank_deboost": SearchRankDeboostPayload,
-    "group_bot_required_channel_follow": GroupBotRequiredChannelFollowPayload,
+    GROUP_BOT_CHANNEL_FOLLOW_ACTION_TYPE: GroupBotRequiredChannelFollowPayload,
     "group_bot_control_observation": GroupBotControlObservationPayload,
     "group_bot_confirmation_button": GroupBotConfirmationButtonPayload,
 }
@@ -540,7 +543,7 @@ def create_group_bot_required_channel_follow_action(
     return _create_action(
         session,
         task,
-        "group_bot_required_channel_follow",
+        GROUP_BOT_CHANNEL_FOLLOW_ACTION_TYPE,
         account_id,
         scheduled_at,
         payload,
@@ -606,6 +609,7 @@ def payload_error_message(exc: ValidationError | ValueError) -> str:
 
 __all__ = [
     "EnsureChannelMembershipPayload",
+    "GROUP_BOT_CHANNEL_FOLLOW_ACTION_TYPE",
     "GroupBotRequiredChannelFollowPayload",
     "GroupBotControlObservationPayload",
     "GroupBotConfirmationButtonPayload",
