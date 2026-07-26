@@ -134,7 +134,8 @@ group_ai_chat 账号入群
      无基线 / 读取失败 -> observation_stale(join_start_cursor_missing)，不得从 0 推断
   -> listener 每轮 fetch_group_messages 后：快照保留 bot peer + 无 callback data 的按钮(row/col/text/url/type)摘要；同 group/message/peer 的历史空摘要只回填该安全字段
   -> 控制事件：先检查 admin / 已绑定 peer / active explicit-or-follow policy peer，来源不可信则零状态写入
-     仅可信来源才按账号身份归属；不唯一只影响该可信 prompt，绝不批量污染 waiting admission
+     可信 peer 还必须通过精确控制提示识别（公开 t.me 引用 + 指令，或同源确认 callback）；普通推广/广告仅审计、不归属、不改状态
+     仅可信且已识别的控制来源才按账号身份归属；不唯一只影响该可信 prompt，绝不批量污染 waiting admission
      bot 控制消息持久化为 is_bot 审计上下文，不进 AI/学习/引用候选
   -> 再为每个 observing admission 写 GroupBotAdmissionObservation
      有效窗口必须覆盖 join_start_cursor；最新 N 条未覆盖基线 -> cursor_gap / observation_stale
@@ -149,6 +150,8 @@ group_ai_chat 账号入群
        存量无基线 -> targets.manage restart-observation(expected version + reason + evidence)
             -> 从 GroupContextMessage 当前 waterline 重置新观察世代 + AuditLog
   -> 每个正文或同源 URL 按钮的原始频道引用 -> group_bot_channel_follow（`actions.action_type` 30 字符内；Gateway 重解析并验广播频道）
+     `required_channel_refs` 仅为当前 admission 世代的有效集合；历史 rejected-prompt follow 保留审计且不参与当前完成判断
+     `group_bot_control_prompt_unverified` 暂停后，必须 explicit restart + 不同 source_message_id 的新有效提示才可 rearm 同一频道
   -> 全部 follow 后，精确 callback action 重读 source_message_id 并校验 peer/row/col/text/type -> Telegram click
      click 成功仍等待同 peer 的完成事件；不得直接 ready
   -> 完成事件识别器（精确按钮后的 bot 回执 / 版本化确认模板）或 follow_sufficient

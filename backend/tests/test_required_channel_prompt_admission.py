@@ -99,7 +99,7 @@ def test_listener_prompt_downgrades_send_permission_and_queues_membership(monkey
                 remote_message_id="required-channel-1",
                 sender_peer_id="college-bot",
                 sender_name="学院助手",
-                content="蕉大等风来 Clementine，您需要关注我们的频道 @college_news 才能发言。",
+                content="蕉大等风来 Clementine，您需要关注我们的频道 https://t.me/college_news 才能发言。",
                 sent_at=NOW,
                 is_bot=True,
                 sender_role="admin",

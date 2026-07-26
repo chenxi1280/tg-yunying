@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.integrations.telegram import OperationResult
-from app.models import Action, AccountStatus, GroupBotAdmission, GroupContextMessage, OperationTarget, Task, Tenant, TgAccount, TgGroup
+from app.models import Action, AccountStatus, GroupBotAdmission, GroupBotRequiredChannelFollow, GroupContextMessage, OperationTarget, Task, Tenant, TgAccount, TgGroup
 from app.services.group_listener_context_writer import insert_context_snapshots
 from app.services.task_center import dispatcher
 from app.services.task_center.group_bot_admission import create_policy, ensure_admission_after_join
@@ -213,6 +213,52 @@ def test_policy_trusted_replayed_button_prompt_updates_legacy_context_and_plans_
             GROUP_BOT_CHANNEL_FOLLOW_ACTION_TYPE,
             "group_bot_confirmation_button",
         ]
+
+
+def test_policy_trusted_promotion_without_control_signal_does_not_mutate_admission() -> None:
+    with _session() as session:
+        group, account = _group(), _account(11, "账号甲")
+        task = Task(id="task-ai-1", tenant_id=1, name="ai", type="group_ai_chat", status="running", type_config={"target_group_id": group.id})
+        session.add_all([Tenant(id=1, name="t"), group, account, task])
+        admission = ensure_admission_after_join(
+            session,
+            tenant_id=1,
+            group_id=group.id,
+            account_id=account.id,
+            membership_action_id="join-11",
+            join_start_cursor="100",
+        )
+        create_policy(
+            session,
+            tenant_id=1,
+            group_id=group.id,
+            completion_policy="explicit_bot_confirmation",
+            trusted_bot_peer_id="trusted-bot",
+            reason="production prompt evidence",
+            evidence_ref="message:control-1",
+            created_by="operator",
+        )
+        _insert_snapshot(
+            session,
+            group,
+            account,
+            _bot_snapshot(
+                content="#推广 联系方式: @promo_contact",
+                peer_id="trusted-bot",
+                buttons=[
+                    {"row": 0, "col": 0, "text": "推广相册", "url": "https://t.me/promo_album", "action_type": "url"},
+                    {"row": 0, "col": 1, "text": "推广直连", "url": "https://t.me/promo_contact", "action_type": "url"},
+                ],
+            ),
+        )
+
+        assert session.scalar(select(GroupContextMessage)) is not None
+        assert admission.state == "awaiting_group_bot_rule"
+        assert admission.trusted_bot_peer_id == ""
+        assert admission.source_message_id == ""
+        assert admission.required_channel_refs == []
+        assert session.scalar(select(Action).where(Action.task_id == task.id)) is None
+        assert session.scalar(select(GroupBotRequiredChannelFollow)) is None
 
 
 def test_confirmation_action_calls_exact_gateway_operation_without_marking_ready(monkeypatch) -> None:

@@ -2,7 +2,7 @@
 
 > **For Codex:** Required skill: use `executing-plans` to implement this plan task-by-task.
 
-**Goal:** 修复 AI 活群的五条已证实故障链路：成功发送仍展示“需关注频道”的陈旧错误、入群观察没有可验证游标、普通 bot 消息在信任校验前污染并发等待账号、真实群管协议仅存在于内联频道/确认按钮但监听未采集，以及频道 follow Action 类型超过生产字段长度而回滚。上线后任务只依据真实 Telegram 成功事实计完成，群管规则没有证据时显式进入待策略/观察失效，不再伪装成“关注频道”。
+**Goal:** 修复 AI 活群的六条已证实故障链路：成功发送仍展示“需关注频道”的陈旧错误、入群观察没有可验证游标、普通 bot 消息在信任校验前污染并发等待账号、真实群管协议仅存在于内联频道/确认按钮但监听未采集、频道 follow Action 类型超过生产字段长度而回滚，以及可信 bot peer 的普通推广被错误当成控制提示。上线后任务只依据真实 Telegram 成功事实计完成，群管规则没有证据时显式进入待策略/观察失效，不再伪装成“关注频道”。
 
 **Architecture:** 发送终态在 Dispatcher 写入 `success + remote_message_id` 时清理一次性准入错误；Task Center 读模型和前端也以终态成功优先，兼容历史脏结果而不篡改审计原文。群监听每次成功拉取后先对控制消息做来源信任，再做账号归属；`GroupMessageSnapshot` / `GroupContextMessage` 保存没有 callback bytes 的按钮摘要，以原消息 ID、bot peer、行列、文案和类型创建精确 follow/callback action。入群前以群行锁取得 admission window，禁止多个账号同时 join 后争夺同一条 bot 提示；已有窗口的 action 在 Gateway 前显式 defer。入群前仍由既有 listener 读取游标；无基线进入 `observation_stale`，存量只能带版本/审计 restart 后重新观察。
 
@@ -26,6 +26,8 @@
 7. 内联按钮的 URL/callback 是协议事实：频道 follow 仅使用同一消息的精确广播频道 URL；确认 click 必须重读同一 source message 并逐项校验 peer、坐标、文本和 callback 类型，click 本身不 ready。历史同一 bot message 若先前只保存空摘要，重新监听到同 peer 的按钮时只回填安全摘要，不改写 admission 或正文。
 8. 每群同一时刻只有一个 new admission window；第二个 membership action 必须在 Gateway 前写 `group_bot_admission_window_busy` 并等待当前 admission 收口，不能发送试探正文或批量重置历史状态。
 9. 频道关注 Action 的存储类型固定为 `group_bot_channel_follow`，必须不超过生产 `actions.action_type` 的 30 字符限制；语义事实表 `group_bot_required_channel_follows` 不能充当 Action type。
+10. 可信 peer 只决定消息能否进入控制提示分类；公开频道 URL、普通 `@username` 或唯一 waiting account 均不足以单独触发 state 迁移。频道 follow 必须同时有精确 URL 与确定性控制指令或同源确认 callback。
+11. `required_channel_refs` 是当前 admission 世代的有效集合。`group_bot_control_prompt_unverified` 暂停保留旧 follow/action 审计，绝不把它们写成成功；只有 explicit restart 后由不同 `source_message_id` 的新有效控制提示，才可重新排队同一频道，旧集合不得阻塞当前 follow 或 confirmation。
 
 ## File plan
 

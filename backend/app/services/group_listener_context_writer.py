@@ -97,7 +97,11 @@ def _refresh_existing_control_buttons(session: Session, group: TgGroup, snapshot
 
 
 def _process_group_bot_control_event(session: Session, group: TgGroup, snapshot) -> None:
-    from app.services.task_center.group_bot_admission import is_trusted_group_bot_source
+    from app.services.task_center.group_bot_admission import (
+        is_group_bot_control_prompt,
+        is_group_bot_completion_event,
+        is_trusted_group_bot_source,
+    )
 
     event = _bot_control_event(snapshot)
     if event is None:
@@ -109,6 +113,13 @@ def _process_group_bot_control_event(session: Session, group: TgGroup, snapshot)
         group_id=group.id,
         bot_peer_id=bot_peer,
         is_admin_bot=is_admin_bot,
+    ):
+        return
+    controls = _control_button_summaries(snapshot)
+    button_confirmed = bool(getattr(snapshot, "button_confirmed", False))
+    if not (
+        is_group_bot_control_prompt(content, controls)
+        or is_group_bot_completion_event(content, button_confirmed=button_confirmed)
     ):
         return
     waiting = _waiting_group_bot_admissions(session, group)
@@ -125,6 +136,8 @@ def _process_group_bot_control_event(session: Session, group: TgGroup, snapshot)
         content=content,
         bot_peer=bot_peer,
         is_admin_bot=is_admin_bot,
+        control_buttons=controls,
+        button_confirmed=button_confirmed,
     )
 
 
@@ -150,11 +163,14 @@ def _apply_trusted_group_bot_control(
     content: str,
     bot_peer: str,
     is_admin_bot: bool,
+    control_buttons: list[dict[str, object]],
+    button_confirmed: bool,
 ) -> None:
     from app.services.task_center.group_bot_admission import (
         apply_confirmation_event,
         get_admission,
         ingest_trusted_bot_prompt,
+        is_group_bot_completion_event,
         resolve_bound_task_id_for_group,
     )
 
@@ -166,15 +182,18 @@ def _apply_trusted_group_bot_control(
     )
     if admission is None:
         return
-    if admission.state in {"awaiting_group_bot_confirmation", "following_required_channel", "required_channel_follow_pending"}:
+    if is_group_bot_completion_event(content, button_confirmed=button_confirmed):
         apply_confirmation_event(
             session,
             admission=admission,
             message_id=remote_id,
             text=content,
             bot_peer_id=bot_peer,
-            button_confirmed=bool(getattr(snapshot, "button_confirmed", False)),
+            button_confirmed=button_confirmed,
         )
+        admission.evidence_ref = f"attr:{attribution_reason};msg:{remote_id}"
+        session.flush()
+        return
     ingest_trusted_bot_prompt(
         session,
         admission=admission,
@@ -183,7 +202,7 @@ def _apply_trusted_group_bot_control(
         bot_peer_id=bot_peer,
         is_admin_bot=is_admin_bot,
         is_trusted_source=True,
-        control_buttons=_control_button_summaries(snapshot),
+        control_buttons=control_buttons,
         bound_task_id=resolve_bound_task_id_for_group(session, tenant_id=group.tenant_id, group_id=int(group.id)),
     )
     admission.evidence_ref = f"attr:{attribution_reason};msg:{remote_id}"

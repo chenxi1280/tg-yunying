@@ -43,7 +43,7 @@ def test_listener_control_event_ingests_trusted_bot_before_context():
             join_start_cursor="10",
         )
         snapshot = SimpleNamespace(
-            content="@clementine 请先关注 @school_news",
+            content="@clementine 请先关注 https://t.me/school_news",
             remote_message_id="99",
             sender_peer_id="900",
             sender_name="gatebot",

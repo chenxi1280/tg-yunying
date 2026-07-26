@@ -5,8 +5,8 @@
 | 项目 | 内容 |
 | --- | --- |
 | 需求级别 | L2 产品能力升级（上线后影响生产 AI 活群 / 频道评论行为） |
-| 设计状态 | `complete`（2026-07-27 生产控制按钮与并发准入修订） |
-| 修订说明 | 2026-07-25 评审修补合订 + **continuity 交叉 P0/P1 合订**：① 待可见性核验计入 `unknown_after_send_hold_count`；② `admission_abandoned` 释放永久不可准入硬小时 debt；③ `pending_visibility_credit` 延后真实 credit；④ follow/观察 action 复用 `target_admission_retry` 档且限 tenant+task+account；⑤ 定义 `admission_version`；⑥ C1/C2 action 边界与存量 unknown 走 continuity 裁决。2026-07-27 首次补齐：入群前基线游标、每轮 listener observation 落库、控制事件优先后闭合、存量无基线显式重启观察，以及成功终态压过历史临时错误展示。**同日生产复核再补齐：来源信任必须早于归属；群管频道与确认动作可仅存在于 Telegram 内联按钮；已审计的目标级 bot peer 可作为 unknown role 的受限信任根；同群新入群 admission 必须串行，避免并发提示无法归属；历史已入库的同一 bot 消息重新被监听到按钮时，只回填安全按钮摘要以支持精确恢复；频道 follow 的持久 Action 类型固定为 `group_bot_channel_follow`，必须适配 `actions.action_type` 的 30 字符上限。** |
+| 设计状态 | `complete`（2026-07-27 控制提示分类与受控恢复修订） |
+| 修订说明 | 2026-07-25 评审修补合订 + **continuity 交叉 P0/P1 合订**：① 待可见性核验计入 `unknown_after_send_hold_count`；② `admission_abandoned` 释放永久不可准入硬小时 debt；③ `pending_visibility_credit` 延后真实 credit；④ follow/观察 action 复用 `target_admission_retry` 档且限 tenant+task+account；⑤ 定义 `admission_version`；⑥ C1/C2 action 边界与存量 unknown 走 continuity 裁决。2026-07-27 首次补齐：入群前基线游标、每轮 listener observation 落库、控制事件优先后闭合、存量无基线显式重启观察，以及成功终态压过历史临时错误展示。**同日生产复核再补齐：来源信任必须早于归属；可信 peer 只是候选来源而不是“每条消息都是控制指令”；频道与确认动作可仅存在于 Telegram 内联按钮；已审计的目标级 bot peer 可作为 unknown role 的受限信任根；同群新入群 admission 必须串行，避免并发提示无法归属；历史已入库的同一 bot 消息重新被监听到按钮时，只回填安全按钮摘要以支持精确恢复；频道 follow 的持久 Action 类型固定为 `group_bot_channel_follow`，必须适配 `actions.action_type` 的 30 字符上限；`required_channel_refs` 只代表当前世代，误判提示暂停后必须由 explicit restart 与不同 source 的新有效控制提示受控 rearm。** |
 | 产品范围 | 真人化：`group_ai_chat` + `channel_comment`；群管机器人准入：仅 `group_ai_chat` |
 | 统计时区 | 任务配置时区；未配置时沿用平台 `Asia/Shanghai` |
 | 上位文档 | `docs/01-product/tg-ops-platform-prd.md` |
@@ -214,14 +214,18 @@ else:
 1. **首次自动信任**只接受 `is_bot=true` 且发送者为群管理员/群主，记录 `trusted_bot_peer_id`。
 2. 已有 admission 后，同一 `trusted_bot_peer_id` 的后续规则、关注完成和确认事件可继续被接受。
 3. 当 Telegram 无法取得 bot 的管理员角色（`sender_role=unknown`）时，只有 active 的、目标级且审计完整的 `explicit_bot_confirmation` 或 `follow_sufficient` policy 绑定**同一 group + 同一 peer**，才可把该 peer 作为受限信任根；`not_required` 绝不能建立 bot 信任。policy 不是“消息看起来像群管”的猜测，必须由 `targets.manage` 根据原始控制消息、按钮布局和 peer 证据创建。
-4. 非 bot、未知 peer、普通成员转发、私聊提示，以及未命中上述任一信任条件的 bot：只可留只读审计/指标，**不得**改变任何 admission 的 state、failure_code、trusted peer、频道子动作或 ready 结论。
-5. **多 bot**：另一可信 admin/policy bot 在 admission 未 ready 前发出规则，且当前尚无 trusted peer → 采用该 bot；已绑定 peer 且新 peer 不同 → 仅该 account 写 `group_bot_multi_bot_conflict`（`blocked`），不批量关注，等待运营指定 peer 或撤销后重建观察。
-6. 仅在来源已经可信后，才按 `@ / username / 展示名 → 回复关系 / 入群服务事件 → 同观察窗口内唯一等待账号` 归属。仍不能唯一归属时，只写该可信消息关联的 admission `group_bot_rule_unattributed`；绝不因一条普通 bot 消息污染一批等待账号。
+4. 可信 peer 只表示该 sender **可以进入控制提示识别器**，绝不表示该 peer 的每条发言都是控制事件。可信 peer 的普通推广、内容发布、联系人/频道广告，即使恰好能归属到唯一 waiting account，也只可留只读上下文审计，**不得**改变 admission 的 state、failure_code、trusted peer、source message、频道子动作或 ready 结论。
+5. 非 bot、未知 peer、普通成员转发、私聊提示，以及未命中上述任一信任条件的 bot：只可留只读审计/指标，**不得**改变任何 admission 的 state、failure_code、trusted peer、频道子动作或 ready 结论。
+6. **多 bot**：另一可信 admin/policy bot 在 admission 未 ready 前发出规则，且当前尚无 trusted peer → 采用该 bot；已绑定 peer 且新 peer 不同 → 仅该 account 写 `group_bot_multi_bot_conflict`（`blocked`），不批量关注，等待运营指定 peer 或撤销后重建观察。
+7. 仅在来源已经可信**且消息已通过控制提示识别**后，才按 `@ / username / 展示名 → 回复关系 / 入群服务事件 → 同观察窗口内唯一等待账号` 归属。仍不能唯一归属时，只写该可信控制消息关联的 admission `group_bot_rule_unattributed`；绝不因一条普通 bot 消息污染一批等待账号。
 
 ### 5.4 频道关注子动作
 
-- 每个可信提示中的真实频道引用 → 一条 `group_bot_channel_follow`，幂等键 `(admission_id, channel_ref)`。频道引用可来自正文，也可来自同一原始消息的 URL 内联按钮；两者均必须保留其 `source_message_id`。
+- 每个可信提示中的真实频道引用 → 一条 `group_bot_channel_follow`，幂等键 `(admission_id, channel_ref)`。`GroupBotAdmission.required_channel_refs` 是**当前 admission 世代的有效集合**；同一 admission 历史上被拒绝的推广/旧提示 follow 行保留审计，但不得阻塞当前集合的 follow 完成或 confirmation callback。频道引用可来自正文，也可来自同一原始消息的 URL 内联按钮；两者均必须保留其 `source_message_id`。
 - `group_bot_channel_follow` 是 `actions.action_type` 的唯一持久类型，必须保持在该字段的 30 字符上限内；`group_bot_required_channel_follows` 仅是频道关注事实表名，不能写入 Action type。该约束必须有自动化长度回归。
+- 频道引用只接受正文中的精确公开 `https://t.me/<username>` 或同源 URL 按钮；纯 `@username`、展示名、联系人广告或任意 URL 都不足以创建 follow row / Action。可信来源还必须同时具有确定性控制信号：同一消息的精确确认 callback，或正文中可解析的“请/需/先关注、订阅、加入频道/群、验证后发言”等指令。来源可信而控制信号不成立时，只写审计上下文。
+- 运营因 `group_bot_control_prompt_unverified` 暂停某 admission 时，既有 follow 行和未进 Gateway Action 必须保留为 blocked/skipped 审计事实，不能批量重置或标成已关注。只有运营显式 restart observation 后，监听到**不同 `source_message_id` 的新、可信且通过本节分类的控制提示**时，才可把该提示中同一 `channel_ref` 的此类 blocked 行清空执行绑定并重新置为 pending；同一历史消息重放、普通推广或其他失败码均不得 rearm。
+- `awaiting_group_bot_confirmation` 的完成回执走独立的精确确认模板 / callback 识别；普通内容不得因为来自同一 peer 而先被当成完成回执、再被重新解析为新的频道提示。
 - listener 快照必须保存无敏感 callback data 的不可变按钮摘要：`row`、`col`、展示文本、公开 URL、动作类型（`url` / `callback` / `other`）。bot 控制消息必须持久化为审计上下文且 `is_bot=true`，不得进入 AI 提示词、学习样本或引用候选；原始 callback bytes 不得写数据库、日志或前端。
 - 对发布前已持久化、`control_buttons=[]` 的 bot 控制消息，listener 重读到**同一 group + message ID + bot peer**且获得安全按钮摘要时，只更新该审计行的 `control_buttons`。该回填本身不得迁移 admission state、修改正文或写 callback data；后续 follow/callback 仍必须走同一原消息的精确 Gateway 校验。
 - Gateway 前必须按原始精确 URL 解析并验证为**原提示所指广播频道**；私有邀请须在加入前验证实体。URL 只允许单段公开 `t.me/<username>` 频道引用；群组、跳转实体变化、私链/多段链接、无法解析或不在快照按钮/正文引用集合中的地址均为 `required_channel_ref_invalid`。

@@ -18,6 +18,7 @@ from app.services.task_center.group_bot_admission import (
     ensure_admission_after_join,
     evaluate_send_gate,
     ingest_trusted_bot_prompt,
+    is_group_bot_control_prompt,
     mark_channel_follow_completed,
     parse_channel_refs,
     record_probe_observation,
@@ -34,9 +35,13 @@ def _session() -> Session:
     return Session(engine)
 
 
-def test_parse_channel_refs_extracts_usernames_and_tme_links():
+def test_parse_channel_refs_accepts_only_exact_tme_links():
     refs = parse_channel_refs("请先关注 @school_news 和 https://t.me/school_notice 后发言 @helperbot")
-    assert refs == ["school_news", "school_notice"]
+    assert refs == ["school_notice"]
+
+
+def test_confirmation_callback_is_a_control_prompt_without_channel_url():
+    assert is_group_bot_control_prompt("", [{"text": "我已加入", "action_type": "callback"}]) is True
 
 
 def test_attribute_prompt_unique_waiting_and_unattributed():
@@ -111,7 +116,7 @@ def test_probe_ok_cannot_promote_ready():
             session,
             admission=admission,
             message_id="bot-1",
-            text="请先关注 @school_news 后发言",
+            text="请先关注 https://t.me/school_news 后发言",
             bot_peer_id="900",
             is_admin_bot=True,
         )
@@ -139,7 +144,7 @@ def test_follow_sufficient_policy_ready_after_channels():
             session,
             admission=admission,
             message_id="bot-1",
-            text="请关注 @school_news",
+            text="请关注 https://t.me/school_news",
             bot_peer_id="900",
             is_admin_bot=True,
         )

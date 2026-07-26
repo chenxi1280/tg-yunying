@@ -6624,15 +6624,10 @@ def _group_bot_confirmation_admission(session: Session, action: Action, account:
 
 
 def _confirmation_waits_for_required_channels(session: Session, action: Action, admission) -> bool:
-    from app.models import GroupBotRequiredChannelFollow
+    from app.services.task_center.group_bot_admission import has_pending_required_channel_follows
 
     with session.no_autoflush:
-        pending = session.scalar(
-            select(GroupBotRequiredChannelFollow.id).where(
-                GroupBotRequiredChannelFollow.admission_id == admission.id,
-                GroupBotRequiredChannelFollow.status != "success",
-            ).limit(1)
-        )
+        pending = has_pending_required_channel_follows(session, admission=admission)
     if not pending:
         return False
     _defer(

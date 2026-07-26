@@ -51,6 +51,15 @@ SOURCE_BOUND_POLICY_TYPES = {"follow_sufficient", "explicit_bot_confirmation"}
 CONFIRMATION_BUTTON_MARKERS = ("我已加入", "我已关注", "已关注", "完成验证", "完成关注", "确认")
 PUBLIC_CHANNEL_URL_RE = re.compile(r"^https?://t\.me/([A-Za-z][A-Za-z0-9_]{3,})/?$", re.I)
 PUBLIC_CHANNEL_URL_IN_TEXT_RE = re.compile(r"https?://t\.me/([A-Za-z][A-Za-z0-9_]{3,})/?", re.I)
+CONTROL_PROMPT_MAX_GAP = 12
+CONTROL_PROMPT_PATTERNS = (
+    re.compile(rf"(?:请|需|需要|先).{{0,{CONTROL_PROMPT_MAX_GAP}}}(?:关注|订阅|加入|入群)", re.I),
+    re.compile(rf"(?:关注|订阅|加入|入群).{{0,{CONTROL_PROMPT_MAX_GAP}}}(?:频道|群|channel|group)", re.I),
+    re.compile(rf"(?:频道|群|channel|group).{{0,{CONTROL_PROMPT_MAX_GAP}}}(?:关注|订阅|加入|入群)", re.I),
+    re.compile(r"(?:完成验证|验证后|解除禁言|可以发言|发言权限)", re.I),
+)
+CONTROL_PROMPT_UNVERIFIED_CODE = "group_bot_control_prompt_unverified"
+REARMABLE_FOLLOW_STATES = {"awaiting_group_bot_rule", "observation_open"}
 
 
 @dataclass(frozen=True)
@@ -320,14 +329,9 @@ def parse_channel_refs(text: str, control_buttons: tuple[object, ...] | list[obj
 
 def _text_channel_refs(text: str) -> list[str]:
     refs: list[str] = []
-    for match in re.finditer(r"@([A-Za-z][A-Za-z0-9_]{3,})", text or ""):
+    for match in PUBLIC_CHANNEL_URL_IN_TEXT_RE.finditer(text or ""):
         username = match.group(1)
-        if username.lower().endswith("bot"):
-            continue
-        refs.append(username)
-    for match in re.finditer(r"(?:https?://)?t\.me/([A-Za-z][A-Za-z0-9_]{3,})", text or "", flags=re.I):
-        username = match.group(1)
-        if username.lower() in {"joinchat", "addstickers"}:
+        if username.lower() in {"joinchat", "addstickers"} or username.lower().endswith("bot"):
             continue
         refs.append(username)
     return refs
@@ -374,6 +378,21 @@ def confirmation_button(control_buttons: tuple[object, ...] | list[object]) -> d
                 "action_type": "callback",
             }
     return None
+
+
+def is_group_bot_control_prompt(
+    text: str,
+    control_buttons: tuple[object, ...] | list[object] = (),
+) -> bool:
+    if confirmation_button(control_buttons) is not None:
+        return True
+    if not parse_channel_refs(text, control_buttons):
+        return False
+    return any(pattern.search(text or "") for pattern in CONTROL_PROMPT_PATTERNS)
+
+
+def is_group_bot_completion_event(text: str, *, button_confirmed: bool = False) -> bool:
+    return bool(button_confirmed) or any(token in (text or "") for token in CONFIRMATION_TEMPLATES)
 
 
 def source_channel_url_for_ref(
@@ -433,6 +452,8 @@ def ingest_trusted_bot_prompt(
     bound_task_id: str = "",
 ) -> GroupBotAdmission:
     if not (is_admin_bot or is_trusted_source):
+        return admission
+    if not is_group_bot_control_prompt(text, control_buttons):
         return admission
     peer = str(bot_peer_id or "").strip()
     if not _record_trusted_prompt(admission, peer, message_id):
@@ -497,6 +518,50 @@ def _record_required_channel_rows(
                     status="pending",
                 )
             )
+            continue
+        _rearm_follow_after_verified_restart(existing, admission, message_id)
+
+
+def _rearm_follow_after_verified_restart(
+    follow: GroupBotRequiredChannelFollow,
+    admission: GroupBotAdmission,
+    message_id: str,
+) -> None:
+    new_source = str(message_id or "")
+    if (
+        follow.status != "blocked"
+        or follow.failure_code != CONTROL_PROMPT_UNVERIFIED_CODE
+        or admission.state not in REARMABLE_FOLLOW_STATES
+        or not new_source
+        or follow.source_message_id == new_source
+    ):
+        return
+    follow.source_message_id = new_source
+    follow.action_id = ""
+    follow.resolved_peer_id = ""
+    follow.resolved_type = ""
+    follow.status = "pending"
+    follow.failure_code = ""
+    follow.completed_at = None
+
+
+def current_required_channel_refs(admission: GroupBotAdmission) -> tuple[str, ...]:
+    return tuple(str(ref) for ref in (admission.required_channel_refs or []) if str(ref).strip())
+
+
+def has_pending_required_channel_follows(session: Session, *, admission: GroupBotAdmission) -> bool:
+    refs = current_required_channel_refs(admission)
+    if not refs:
+        return False
+    return session.scalar(
+        select(GroupBotRequiredChannelFollow.id)
+        .where(
+            GroupBotRequiredChannelFollow.admission_id == admission.id,
+            GroupBotRequiredChannelFollow.channel_ref.in_(refs),
+            GroupBotRequiredChannelFollow.status != "success",
+        )
+        .limit(1)
+    ) is not None
 
 
 def plan_required_channel_follow_actions(
@@ -519,9 +584,13 @@ def plan_required_channel_follow_actions(
     task = session.get(Task, task_id)
     if task is None or task.tenant_id != admission.tenant_id:
         return []
+    refs = current_required_channel_refs(admission)
+    if not refs:
+        return []
     pending_refs = session.scalars(
         select(GroupBotRequiredChannelFollow).where(
             GroupBotRequiredChannelFollow.admission_id == admission.id,
+            GroupBotRequiredChannelFollow.channel_ref.in_(refs),
             GroupBotRequiredChannelFollow.status == "pending",
         )
     ).all()
@@ -650,6 +719,9 @@ def mark_channel_follow_completed(
     resolved_type: str = "broadcast",
     action_id: str = "",
 ) -> GroupBotAdmission:
+    active_refs = current_required_channel_refs(admission)
+    if channel_ref not in active_refs:
+        raise ValueError("required_channel_ref_not_active")
     row = session.scalar(
         select(GroupBotRequiredChannelFollow).where(
             GroupBotRequiredChannelFollow.admission_id == admission.id,
@@ -664,13 +736,7 @@ def mark_channel_follow_completed(
     row.action_id = str(action_id or row.action_id or "")
     row.completed_at = model_now()
     session.flush()
-    pending = session.scalars(
-        select(GroupBotRequiredChannelFollow).where(
-            GroupBotRequiredChannelFollow.admission_id == admission.id,
-            GroupBotRequiredChannelFollow.status != "success",
-        )
-    ).all()
-    if pending:
+    if has_pending_required_channel_follows(session, admission=admission):
         admission.state = "following_required_channel"
         session.flush()
         return admission
@@ -710,8 +776,7 @@ def apply_confirmation_event(
         admission.state = "blocked"
         session.flush()
         return admission
-    text_ok = any(token in (text or "") for token in CONFIRMATION_TEMPLATES)
-    if not (button_confirmed or text_ok):
+    if not is_group_bot_completion_event(text, button_confirmed=button_confirmed):
         return admission
     admission.confirmation_message_id = str(message_id or "")
     admission.state = READY_STATE
@@ -922,6 +987,10 @@ __all__ = [
     "record_observation_batch",
     "close_observation_if_due",
     "parse_channel_refs",
+    "is_group_bot_control_prompt",
+    "is_group_bot_completion_event",
+    "current_required_channel_refs",
+    "has_pending_required_channel_follows",
     "attribute_prompt_to_account",
     "ingest_trusted_bot_prompt",
     "plan_required_channel_follow_actions",
