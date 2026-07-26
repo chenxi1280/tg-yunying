@@ -3725,7 +3725,7 @@ def test_precheck_reports_hard_hourly_capacity_without_blocking_on_max_actions(m
 
 
 @pytest.mark.no_postgres
-def test_precheck_blocks_hard_hourly_target_above_group_cooldown_capacity(monkeypatch):
+def test_precheck_warns_for_group_ai_runtime_capacity_blockers(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     risk_result = {
@@ -3752,7 +3752,7 @@ def test_precheck_blocks_hard_hourly_target_above_group_cooldown_capacity(monkey
             auth_status="已授权运营",
             can_send=True,
             active_window="00:00-23:59",
-            daily_limit=675,
+            daily_limit=1,
             group_cooldown_seconds=60,
         ))
         for account_id in [101, 102, 103]:
@@ -3794,8 +3794,11 @@ def test_precheck_blocks_hard_hourly_target_above_group_cooldown_capacity(monkey
         )
 
     hard_target = result["hard_hourly_target"]
-    assert result["decision"] == "block"
-    assert "hard_hourly_group_cooldown_insufficient" in result["blockers"]
+    assert result["decision"] == "warn"
+    assert "daily_coverage_capacity_insufficient" not in result["blockers"]
+    assert "hard_hourly_group_cooldown_insufficient" not in result["blockers"]
+    assert "daily_coverage_capacity_insufficient" in result["warnings"]
+    assert "hard_hourly_group_cooldown_insufficient" in result["warnings"]
     assert hard_target["capacity_gap"] == 0
     assert hard_target["group_cooldown_blocked"] is True
     assert hard_target["group_cooldown_capacity"]["group_cooldown_hourly_capacity"] == 60

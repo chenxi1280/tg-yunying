@@ -32,6 +32,10 @@ ValidateTypeConfig = Callable[[str, dict[str, Any]], dict[str, Any]]
 ValidateRuleBinding = Callable[[Session, int, dict[str, Any]], None]
 
 ACCOUNT_HEALTH_WARNING_REASONS = {"account_blocked", "account_limited", "account_limit", "account_login_required"}
+GROUP_AI_CAPACITY_WARNING_BLOCKERS = frozenset({
+    "daily_coverage_capacity_insufficient",
+    HARD_HOURLY_GROUP_COOLDOWN_BLOCKER_CODE,
+})
 
 
 def run_precheck_task_creation(
@@ -170,6 +174,10 @@ def run_precheck_task_creation(
         warnings.extend(_as_str_list(risk.get("decision_reasons")))
     if not candidates:
         blockers.append("没有匹配账号")
+    if task_type == "group_ai_chat" and create_payload is not None:
+        capacity_blockers = [item for item in blockers if item in GROUP_AI_CAPACITY_WARNING_BLOCKERS]
+        warnings.extend(capacity_blockers)
+        blockers = [item for item in blockers if item not in GROUP_AI_CAPACITY_WARNING_BLOCKERS]
     decision = "block" if blockers else "warn" if warnings or risk_hits or capacity_shortfall else "allow"
     return {
         "task_type": task_type,

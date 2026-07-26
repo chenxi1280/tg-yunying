@@ -74,6 +74,8 @@ AI 活群冻结日覆盖账本
 
 AI 的内容重复、批量 slot 映射与权限阻塞以 ai-group-daily-fulfillment-remediation-prd.md 为准；搜索的容量、份额、极搜协议和双目标事实以 search-click-daily-fulfillment-remediation-prd.md 为准。冻结分母、pending、unknown、申请待审批、source 尝试容量和 worker 心跳均不是完成事实。
 
+> **DF-187 AI 活群容量预检与执行门禁解耦（2026-07-27）**：字段、目标引用和规则绑定合法的 `group_ai_chat` 先经 `POST /api/tasks/precheck` 计算容量事实；`daily_coverage_capacity_insufficient` 与 `hard_hourly_group_cooldown_insufficient` 作为 warning 返回，`POST /api/tasks/group-ai-chat/create-and-start` 必须持久化 `Task(running)`，不得因这两类容量事实拒绝创建。随后 Planner 仅在可履约时创建 Action，Dispatcher 仍在 Gateway 前执行群冷却、日上限、账号、准入、质量和风控门禁；warning 不代表目标可达，也不允许提高任何限制或伪造完成。字段、目标、规则、账号、准入和其他风控 blocker 仍保持原有拒绝语义。回归入口：`test_ai_group_hard_hourly_target.py`。
+
 ### AI 活群连续性与终态目标契约（2026-07-24）
 
 专项真相源：`docs/03-feature-designs/ai-group-send-continuity-and-terminal-targets-prd.md`；总 PRD 摘要：`docs/01-product/tg-ops-platform-prd.md` §8.4。以下是待实现后的规范数据流，不能把它误读为当前线上已完成。

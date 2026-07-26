@@ -88,6 +88,8 @@ const PRECHECK_REASON_LABELS: Record<string, string> = {
   account_login_required: '账号需要重新登录',
   account_missing: '账号不存在或不可见',
   no_available_account: '没有可用账号',
+  daily_coverage_capacity_insufficient: '全账号日覆盖容量不足（任务仍可创建）',
+  hard_hourly_group_cooldown_insufficient: '硬小时目标超过群冷却容量（任务仍可创建）',
   target_warning: '目标权限或授权存在风险',
   content_warning: '内容命中风控提示',
   proxy_missing: '代理未配置',
