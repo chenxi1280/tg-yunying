@@ -59,12 +59,13 @@ from ..coverage_capacity import (
 from ..datetime_compat import parse_zone, to_zone
 from ..daily_coverage import (
     backfill_daily_coverage_confirmations,
+    bind_coverage_reservation,
     block_coverage_accounts,
     daily_coverage_due_debt,
     ensure_task_daily_coverage,
     ready_coverage_rows,
-    release_coverage_reservation,
-    reserve_coverage_for_action,
+    release_planned_coverage_reservation,
+    reserve_coverage_for_planned_action,
 )
 from ..daily_coverage_planning import (
     SENDABLE_COVERAGE_STATES,
@@ -1155,26 +1156,39 @@ def _create_reserved_action(session: Session, task: Task, slot: SlotSnapshot) ->
     coverage_id = str(payload.coverage_ledger_id or "")
     if not coverage_id:
         return create_send_action(session, task, slot.account_id, slot.planned_at, payload)
-    action_id = str(uuid4())
-    if not reserve_coverage_for_action(session, coverage_id, action_id, now=_now()):
+    reservation_token = str(uuid4())
+    if not _reserve_coverage_before_action(session, coverage_id, reservation_token):
         return None
-    intent = _create_coverage_variation_intent(session, task, payload, action_id)
+    intent = _create_coverage_variation_intent(session, task, payload)
     if intent is None:
-        _release_variation_conflict(session, coverage_id, action_id)
+        _release_variation_conflict(session, coverage_id, reservation_token)
         return None
+    action_id = str(uuid4())
     action = create_send_action(session, task, slot.account_id, slot.planned_at, payload, action_id=action_id)
     if action.id != action_id:
         intent.outcome = "action_deduplicated"
-        _release_variation_conflict(session, coverage_id, action_id)
+        _release_variation_conflict(session, coverage_id, reservation_token)
         return None
+    intent.action_id = action.id
+    if not bind_coverage_reservation(session, coverage_id, reservation_token, action.id):
+        raise RuntimeError("daily coverage reservation lost before action binding")
+    session.flush()
     return action
+
+
+def _reserve_coverage_before_action(session: Session, coverage_id: str, reservation_token: str) -> bool:
+    return reserve_coverage_for_planned_action(
+        session,
+        coverage_id,
+        reservation_token,
+        now=_now(),
+    )
 
 
 def _create_coverage_variation_intent(
     session: Session,
     task: Task,
     payload: SendMessagePayload,
-    action_id: str,
 ) -> AiCoverageVariationIntent | None:
     variation_key = str(payload.content_variation_key or "")
     coverage_id = str(payload.coverage_ledger_id or "")
@@ -1184,7 +1198,7 @@ def _create_coverage_variation_intent(
     intent = AiCoverageVariationIntent(
         tenant_id=task.tenant_id,
         coverage_ledger_id=coverage_id,
-        action_id=action_id,
+        action_id=None,
         content_variation_key=variation_key,
         context_version=str(payload.content_context_version or ""),
         intent_snapshot_hash=hashlib.sha256(snapshot).hexdigest(),
@@ -1211,11 +1225,11 @@ def _variation_intent_snapshot(payload: SendMessagePayload) -> bytes:
     return json.dumps(source, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
 
 
-def _release_variation_conflict(session: Session, coverage_id: str, action_id: str) -> None:
-    release_coverage_reservation(
+def _release_variation_conflict(session: Session, coverage_id: str, reservation_token: str) -> None:
+    release_planned_coverage_reservation(
         session,
         coverage_id,
-        action_id,
+        reservation_token,
         blocker_code="content_variation_key_conflict",
         blocker_detail="当前覆盖义务已使用相同内容变体，等待新的上下文版本",
     )

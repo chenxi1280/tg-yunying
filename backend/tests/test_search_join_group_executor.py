@@ -367,6 +367,11 @@ def test_search_join_blocks_legacy_protocol_payload_before_gateway(session: Sess
         called = True
         return {"success": True}
 
+    monkeypatch.setattr(
+        dispatcher,
+        "_search_join_runtime_authorization",
+        lambda *_args: SimpleNamespace(session_ciphertext="search-session", credentials={}),
+    )
     monkeypatch.setattr(dispatcher.gateway, "execute_search_join", gateway_call, raising=False)
 
     assert dispatcher._dispatch_search_join(

@@ -12,6 +12,7 @@ from sqlalchemy import Column, Integer, MetaData, String, Table, create_engine, 
 pytestmark = pytest.mark.no_postgres
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MIGRATION_PATH = PROJECT_ROOT / "backend/migrations/versions/0088_ai_group_daily_coverage.py"
+RESERVATION_BINDING_MIGRATION_PATH = PROJECT_ROOT / "backend/migrations/versions/0123_coverage_reservation_binding.py"
 
 
 def _models():
@@ -29,6 +30,18 @@ def _migration_module():
     return module
 
 
+def _reservation_binding_migration_module():
+    spec = importlib.util.spec_from_file_location(
+        "coverage_reservation_binding_0123",
+        RESERVATION_BINDING_MIGRATION_PATH,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("reservation binding migration module could not be loaded")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_daily_coverage_model_declares_auditable_completion_fields() -> None:
     _, coverage_model = _models()
     columns = set(coverage_model.__table__.c.keys())
@@ -37,6 +50,7 @@ def test_daily_coverage_model_declares_auditable_completion_fields() -> None:
         "id", "tenant_id", "task_id", "group_id", "account_id", "membership_item_id",
         "coverage_date", "target_count", "confirmed_count", "state", "reserved_action_id",
         "last_success_action_id", "last_remote_message_id", "blocker_code", "blocker_detail",
+        "blocker_stage", "recovery_path", "next_decision_at", "last_action_id", "reservation_token",
         "next_eligible_at", "targeted_at", "completed_at", "created_at", "updated_at",
     } == columns
 
@@ -99,3 +113,23 @@ def test_coverage_migration_upgrades_and_downgrades_sqlite() -> None:
     assert {"attempt_count", "next_attempt_at"}.issubset(event_columns)
     assert "task_account_daily_coverage" not in downgraded_tables
     assert "account_eligibility_events" not in downgraded_tables
+
+
+def test_coverage_reservation_binding_migration_adds_token() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    metadata = MetaData()
+    Table("task_account_daily_coverage", metadata, Column("id", String(36), primary_key=True))
+    metadata.create_all(engine)
+    migration = _reservation_binding_migration_module()
+
+    assert migration.down_revision == "0122_claim_protocol_trace"
+    with engine.begin() as connection:
+        migration.op = Operations(MigrationContext.configure(connection))
+        migration.upgrade()
+        upgraded_columns = {column["name"] for column in inspect(connection).get_columns("task_account_daily_coverage")}
+        migration.op = Operations(MigrationContext.configure(connection))
+        migration.downgrade()
+        downgraded_columns = {column["name"] for column in inspect(connection).get_columns("task_account_daily_coverage")}
+
+    assert "reservation_token" in upgraded_columns
+    assert "reservation_token" not in downgraded_columns

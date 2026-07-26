@@ -104,6 +104,7 @@ daily_outcome 是任务当日履约状态，不替代 Task 生命周期。Task �
 | blocker_stage | admission、planning、generation_contract、quality、gateway、remote_reconcile |
 | next_decision_at | 允许 Planner 再次决定该义务的最早时间；不是伪造成功或强制重发时间 |
 | last_action_id | 最近关联 Action，无 Action 时必须显式为空 |
+| reservation_token | 仅限同一 Planner 短事务中“已 CAS 预约、Action 尚未插入”的临时所有权 token；不得伪装为 Action ID，Action flush 后必须绑定 `reserved_action_id` 并清空 token |
 | recovery_path | replan_with_new_variation、generation_contract_repair、permission_recheck、manual_approval、remote_reconcile、target_reference_repair 之一 |
 
 completed 仍只在同一覆盖行关联成功 Action、成功 ExecutionAttempt 和非空 remote_message_id 后写入。
@@ -114,12 +115,12 @@ completed 仍只在同一覆盖行关联成功 Action、成功 ExecutionAttempt 
 
 | 结构 | 最小字段与约束 | 用途 |
 | --- | --- | --- |
-| `TaskAccountDailyCoverage` 扩展列 | `blocker_stage`、`next_decision_at`、`recovery_path`、`last_action_id` | 当前覆盖义务的可查询状态；`last_success_action_id` 和 `reserved_action_id` 不替代最近处理 Action |
+| `TaskAccountDailyCoverage` 扩展列 | `blocker_stage`、`next_decision_at`、`recovery_path`、`last_action_id`、`reservation_token` | 当前覆盖义务的可查询状态；`last_success_action_id` 和 `reserved_action_id` 不替代最近处理 Action；未插入 Action 的预约只可由 token 表示 |
 | `AiCoverageVariationIntent` | `tenant_id`、`coverage_ledger_id`、`action_id`、`content_variation_key`、`context_version`、`intent_snapshot_hash`、`outcome`；唯一约束 `(coverage_ledger_id, content_variation_key)` | 保证同一覆盖义务不会再次使用相同变体，并保留质量拒绝的变体摘要 |
 | `TaskDailyFulfillmentDecision` | `tenant_id`、`task_id`、`coverage_date`、`decided_at`、`full_shortfall_count`、`valid_future_open_cover_count`、`unknown_hold_count`、`ready_to_plan_count`、`blocked_shortfall_count`、`required_new`、`reason`、`next_decision_at` | 追加式记录每一次规划或跳过决定；任务 stats 只能缓存最新摘要 |
 | `AiGenerationContractAudit` | `generation_attempt_id`、`request_id`、`provider_id`、`model_id`、`prompt_contract_version`、`parser_version`、`expected_slot_count`、`received_slot_count`、slot/sequence 摘要、`error_code`、受限响应摘要 | 一批一次的生成合同审计；敏感原始响应加密并按受限权限读取 |
 
-`content_variation_key` 是不可变意图标识，不等价于“生成文本一定不重复”。Planner 只有在新的 `AiCoverageVariationIntent` 成功落库后才可创建 Action；质量门仍以真实文本指纹和语义簇作最终判断。所有写入均以 coverage 行和 Action 的 compare-and-swap 条件保护，不能由后到的重试覆盖先前审计。
+`content_variation_key` 是不可变意图标识，不等价于“生成文本一定不重复”。Planner 先以 `reservation_token` CAS 锁定 coverage 行，再持久化 `action_id=null` 的 `AiCoverageVariationIntent`；随后插入并 flush Action，才在同一短事务把 intent.action_id 与 coverage.reserved_action_id 绑定到该真实 Action 并清空 token。任一步重复或失败都只释放同一 token 的预约。质量门仍以真实文本指纹和语义簇作最终判断。所有写入均以 coverage 行和 Action 的 compare-and-swap 条件保护，不能由后到的重试覆盖先前审计。
 
 ## 5. 修复设计
 
@@ -220,7 +221,7 @@ hard_hourly_planning_required = hard_hourly_required_new > 0
   -> 覆盖 confirmed 与 daily_fulfillment 投影
 ~~~
 
-- Planner 只做数据库读写和 slot 编排，不调用 AI 或 Telegram。TaskDailyFulfillmentDecision、AiCoverageVariationIntent 与 coverage reservation 必须先落库，才能创建对应 Action。
+- Planner 只做数据库读写和 slot 编排，不调用 AI 或 Telegram。TaskDailyFulfillmentDecision、token 化 coverage reservation 与 `action_id=null` 的 AiCoverageVariationIntent 必须先落库；Action flush 成功后才允许绑定两个 Action 外键。
 - Dispatcher 的外部 AI 与 Telegram 调用均在数据库事务外；预约、质量写入、释放和最终 credit 均用短事务加 compare-and-swap。
 - 同一 coverage 行只能有一个有效 reservation；批次契约失败与质量失败必须按 action_id 幂等释放，重复消费不能释放其他 Action 的预约。
 - 同一 generation contract batch 只允许有一条 AiGenerationContractAudit；合同失败不会生成新的 variation intent。需要恢复时必须由已审计的 contract revision 或受限人工决定创建新的 Action。
@@ -268,6 +269,6 @@ hard_hourly_planning_required = hard_hourly_required_new > 0
 ### 9.1 当前 release 实现映射
 
 - `daily_fulfillment.py` 将 overdue open 覆盖行转为 `unknown + coverage_action_overdue`，不再抵扣 `required_new`；详情投影 `overdue_open_count`。
-- `group_ai_chat.py` 在 coverage CAS reservation 成功后先持久化 `AiCoverageVariationIntent`，再创建同一 `action_id` 的 Action；重复 variation intent 明确释放 reservation。
+- `group_ai_chat.py` 先以 `reservation_token` CAS reservation，再持久化 `action_id=null` 的 `AiCoverageVariationIntent`，随后创建并 flush Action，最后绑定两个真实 Action 外键；重复 variation intent 明确释放同一 token reservation。迁移 `0123_coverage_reservation_binding.py` 提供该临时 token。
 - 全局 Planner 无槽位时，`service.py` 对当日 ready debt 写 `planner_capacity_insufficient`、`next_decision_at` 和追加式 `TaskDailyFulfillmentDecision`，日履约不再静默显示 feasible。
 - 迁移 `0121_daily_fulfillment_contracts.py` 持久化覆盖扩展列、variation intent、每日决定和 generation contract audit；自动化回归覆盖 intent 顺序、重复拒绝、overdue 与 backlog。

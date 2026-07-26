@@ -147,6 +147,7 @@ def reserve_coverage_for_action(
         .values(
             state="reserved",
             reserved_action_id=action_id,
+            reservation_token=None,
             last_action_id=action_id,
             blocker_code="",
             blocker_stage="",
@@ -154,6 +155,94 @@ def reserve_coverage_for_action(
             recovery_path="",
             next_decision_at=None,
             updated_at=now or _now(),
+        )
+    )
+    return result.rowcount == 1
+
+
+def reserve_coverage_for_planned_action(
+    session: Session,
+    coverage_id: str,
+    reservation_token: str,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    result = session.execute(
+        update(TaskAccountDailyCoverage)
+        .where(
+            TaskAccountDailyCoverage.id == coverage_id,
+            TaskAccountDailyCoverage.state == "ready",
+            TaskAccountDailyCoverage.reserved_action_id.is_(None),
+            TaskAccountDailyCoverage.reservation_token.is_(None),
+            TaskAccountDailyCoverage.confirmed_count < TaskAccountDailyCoverage.target_count,
+        )
+        .values(
+            state="reserved",
+            reservation_token=reservation_token,
+            last_action_id=None,
+            blocker_code="",
+            blocker_stage="",
+            blocker_detail="",
+            recovery_path="",
+            next_decision_at=None,
+            updated_at=now or _now(),
+        )
+    )
+    return result.rowcount == 1
+
+
+def bind_coverage_reservation(
+    session: Session,
+    coverage_id: str,
+    reservation_token: str,
+    action_id: str,
+) -> bool:
+    result = session.execute(
+        update(TaskAccountDailyCoverage)
+        .where(
+            TaskAccountDailyCoverage.id == coverage_id,
+            TaskAccountDailyCoverage.state == "reserved",
+            TaskAccountDailyCoverage.reserved_action_id.is_(None),
+            TaskAccountDailyCoverage.reservation_token == reservation_token,
+        )
+        .values(
+            reserved_action_id=action_id,
+            reservation_token=None,
+            last_action_id=action_id,
+            updated_at=_now(),
+        )
+    )
+    return result.rowcount == 1
+
+
+def release_planned_coverage_reservation(
+    session: Session,
+    coverage_id: str,
+    reservation_token: str,
+    *,
+    blocker_code: str,
+    blocker_detail: str = "",
+) -> bool:
+    blocker_stage, recovery_path = _recovery_for_blocker(blocker_code)
+    result = session.execute(
+        update(TaskAccountDailyCoverage)
+        .where(
+            TaskAccountDailyCoverage.id == coverage_id,
+            TaskAccountDailyCoverage.state == "reserved",
+            TaskAccountDailyCoverage.reserved_action_id.is_(None),
+            TaskAccountDailyCoverage.reservation_token == reservation_token,
+        )
+        .values(
+            state="ready",
+            reservation_token=None,
+            last_action_id=None,
+            blocker_code=blocker_code,
+            blocker_stage=blocker_stage,
+            blocker_detail=blocker_detail,
+            recovery_path=recovery_path,
+            next_eligible_at=None,
+            next_decision_at=None,
+            updated_at=_now(),
         )
     )
     return result.rowcount == 1
@@ -179,6 +268,7 @@ def release_coverage_reservation(
         .values(
             state="ready",
             reserved_action_id=None,
+            reservation_token=None,
             last_action_id=action_id,
             blocker_code=blocker_code,
             blocker_stage=blocker_stage,
@@ -210,6 +300,7 @@ def block_generation_contract_coverage(
         .values(
             state="blocked",
             reserved_action_id=None,
+            reservation_token=None,
             last_action_id=action_id,
             blocker_code=blocker_code,
             blocker_stage="generation_contract",
@@ -247,6 +338,7 @@ def confirm_coverage_from_attempt(
     row.last_action_id = action_id
     row.last_remote_message_id = str(attempt.remote_message_id)
     row.reserved_action_id = None
+    row.reservation_token = None
     row.blocker_code = ""
     row.blocker_stage = ""
     row.blocker_detail = ""
@@ -278,6 +370,7 @@ def mark_coverage_unknown(
         )
         .values(
             state="unknown",
+            reservation_token=None,
             last_action_id=action_id,
             blocker_code=blocker_code,
             blocker_stage="remote_reconcile",
@@ -470,6 +563,7 @@ def _apply_backfilled_successes(
         row.state = "confirmed"
         row.completed_at = executed_at
         row.reserved_action_id = None
+        row.reservation_token = None
         row.blocker_code = ""
         row.blocker_detail = ""
     row.updated_at = _now()
@@ -604,6 +698,7 @@ def _window_end(active_window: str) -> tuple[int, int]:
 
 __all__ = [
     "backfill_daily_coverage_confirmations",
+    "bind_coverage_reservation",
     "block_generation_contract_coverage",
     "block_coverage_accounts",
     "DailyCoverageSyncResult",
@@ -620,6 +715,8 @@ __all__ = [
     "release_online_coverage_blockers",
     "release_generation_contract_blocker",
     "release_coverage_reservation",
+    "release_planned_coverage_reservation",
     "release_terminal_coverage_reservations",
     "reserve_coverage_for_action",
+    "reserve_coverage_for_planned_action",
 ]

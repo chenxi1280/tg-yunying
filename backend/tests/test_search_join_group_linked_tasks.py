@@ -36,6 +36,29 @@ from app.services.task_center.search_join_linking import create_linked_dispatch_
 SEARCH_JOIN_KEYWORD_HASH = hashlib.sha256("上海 留学".encode("utf-8")).hexdigest()
 
 
+def _approved_jisou_protocol_profile() -> dict:
+    return {
+        "page_fingerprints": [
+            {"page_phase": "verification_page", "text_enums": ["human_verification"]},
+            {"page_phase": "hot_list_page", "text_enums": ["hot_list"]},
+            {
+                "page_phase": "search_category_page",
+                "button_text_enums_any": ["jisou_group_category", "jisou_channel_category"],
+                "selector_rules": [
+                    {
+                        "row": 0,
+                        "col": 0,
+                        "button_type": "callback_data",
+                        "effect": "unknown",
+                        "normalized_text": "jisou_group_category",
+                    }
+                ],
+            },
+            {"page_phase": "group_result_page", "button_effects_any": ["join_candidate", "navigate_only"]},
+        ]
+    }
+
+
 @pytest.fixture
 def session() -> Session:
     engine = create_engine("sqlite:///:memory:", future=True)
@@ -169,7 +192,11 @@ def test_search_join_dispatch_fails_closed_without_gateway_support(session: Sess
 @pytest.mark.no_postgres
 def test_search_join_dispatch_calls_gateway_with_session_credentials_and_keyword(monkeypatch, session: Session) -> None:
     _task, action = _persist_task_and_action(session)
-    action.payload = {**action.payload, "runtime_environment": _verified_runtime()}
+    action.payload = {
+        **action.payload,
+        "runtime_environment": _verified_runtime(),
+        "approved_protocol_profile": _approved_jisou_protocol_profile(),
+    }
     calls: list[dict] = []
 
     def execute_search_join(account_id, payload, session_ciphertext, credentials, keyword_text):
@@ -308,7 +335,11 @@ def test_search_join_dispatch_uses_environment_proxy_not_authorization_proxy(mon
     session.add(AccountProxy(id=99, tenant_id=1, name="节点B", protocol="socks5", host="127.0.0.2", port=1099, status="healthy", alert_status="normal"))
     authorization = session.get(TgAccountAuthorization, 201)
     authorization.proxy_id = 99
-    action.payload = {**action.payload, "runtime_environment": _verified_runtime()}
+    action.payload = {
+        **action.payload,
+        "runtime_environment": _verified_runtime(),
+        "approved_protocol_profile": _approved_jisou_protocol_profile(),
+    }
     calls: list[int | None] = []
 
     def execute_search_join(_account_id, _payload, _session_ciphertext, credentials, _keyword_text):
@@ -411,9 +442,17 @@ def test_search_join_dispatch_blocks_incomplete_environment_proxy_config(monkeyp
 @pytest.mark.no_postgres
 def test_search_join_dispatch_records_proxy_failover_after_gateway_proxy_failure(monkeypatch, session: Session) -> None:
     task, action = _persist_task_and_action(session)
-    action.payload = {**action.payload, "runtime_environment": _verified_runtime()}
+    action.payload = {
+        **action.payload,
+        "runtime_environment": _verified_runtime(),
+        "approved_protocol_profile": _approved_jisou_protocol_profile(),
+    }
     pending = _action(task)
-    pending.payload = {**pending.payload, "runtime_environment": _verified_runtime()}
+    pending.payload = {
+        **pending.payload,
+        "runtime_environment": _verified_runtime(),
+        "approved_protocol_profile": _approved_jisou_protocol_profile(),
+    }
     session.add(pending)
     session.flush()
     primary = ProxyAirportSubscription(
@@ -489,7 +528,11 @@ def test_search_join_dispatch_records_proxy_failover_after_gateway_proxy_failure
 @pytest.mark.no_postgres
 def test_search_join_dispatch_records_admin_notice_when_runtime_failover_has_no_candidate(monkeypatch, session: Session) -> None:
     _task, action = _persist_task_and_action(session)
-    action.payload = {**action.payload, "runtime_environment": _verified_runtime()}
+    action.payload = {
+        **action.payload,
+        "runtime_environment": _verified_runtime(),
+        "approved_protocol_profile": _approved_jisou_protocol_profile(),
+    }
     primary = ProxyAirportSubscription(
         tenant_id=1,
         name="primary",
@@ -540,6 +583,7 @@ def test_search_join_dispatch_creates_linked_records_after_membership_observed(m
     action.payload = {
         **action.payload,
         "runtime_environment": _verified_runtime(),
+        "approved_protocol_profile": _approved_jisou_protocol_profile(),
         "linked_task_policy": [{"linked_task_id": "ai-task-1", "cooldown_minutes": 30}],
     }
 
@@ -562,6 +606,7 @@ def test_search_join_dispatch_keeps_task_running_when_real_last_page_misses_targ
         **action.payload,
         "max_pages": 70,
         "runtime_environment": _verified_runtime(),
+        "approved_protocol_profile": _approved_jisou_protocol_profile(),
     }
     pending = _action(task)
     pending.payload = dict(action.payload)

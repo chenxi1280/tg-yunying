@@ -35,7 +35,7 @@ def test_alembic_versions_have_single_head():
 
     assert all(len(revision) <= 32 for revision in revisions)
     heads = sorted(set(revisions) - referenced)
-    assert heads == ["0122_claim_protocol_trace"]
+    assert heads == ["0123_coverage_reservation"]
 
 
 def test_backend_test_names_are_unique_per_file():

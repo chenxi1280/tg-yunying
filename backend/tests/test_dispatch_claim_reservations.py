@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -11,9 +11,11 @@ from app.database import Base
 from app.models import Action, DispatchClaimReservation, DispatchClaimScope, DispatchClaimShardAllocation, DispatchClaimWindow, Task, Tenant, TgAccount
 from app.services._common import _now
 from app.services.task_center import dispatcher
+from app.services.task_center.dispatch_claim_selection import build_demands
 from app.services.task_center import account_pool
 from app.services.task_center.dispatch_reservations import task_dispatch_claim_snapshot
 from app.services.task_center.service import get_task_detail
+from app.timezone import BEIJING_TZ
 
 
 pytestmark = pytest.mark.no_postgres
@@ -61,6 +63,28 @@ def test_strict_search_and_hard_hourly_receive_persisted_claim_reservations(monk
         session.flush()
         assert window.active_claim_count == 0
         assert sum(row.active_claim_count for row in allocations) == 0
+
+
+def test_dispatch_claim_urgency_normalizes_persisted_timezone() -> None:
+    scheduled_at = datetime(2026, 7, 26, 9, 0, tzinfo=BEIJING_TZ)
+    task = Task(id="timezone-task", tenant_id=1, name="时区", type="group_relay", status="running")
+    action = Action(
+        id="timezone-action",
+        tenant_id=1,
+        task_id=task.id,
+        task_type=task.type,
+        action_type="send_message",
+        account_id=11,
+        status="pending",
+        scheduled_at=scheduled_at,
+        created_at=scheduled_at,
+        payload={},
+    )
+
+    demands = build_demands([action], {task.id: task}, 1, datetime(2026, 7, 26, 9, 5))
+
+    assert len(demands) == 1
+    assert demands[0].urgency_score == 400
 
 
 def test_unserved_strict_demand_is_explicit_when_window_capacity_is_exhausted(monkeypatch) -> None:

@@ -49,6 +49,7 @@ class TaskAccountDailyCoverage(Base):
     confirmed_count: Mapped[int] = mapped_column(Integer, default=0)
     state: Mapped[str] = mapped_column(String(40), default="pending_admission")
     reserved_action_id: Mapped[str | None] = mapped_column(ForeignKey("actions.id"), nullable=True)
+    reservation_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
     last_success_action_id: Mapped[str | None] = mapped_column(ForeignKey("actions.id"), nullable=True)
     last_action_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     last_remote_message_id: Mapped[str] = mapped_column(String(160), default="")

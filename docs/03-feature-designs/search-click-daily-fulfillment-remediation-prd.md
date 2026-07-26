@@ -245,7 +245,7 @@ dispatch_unserved_strict_classes
 
 `normalized_text` 只能取受控枚举 `human_verification`、`hot_list`、`jisou_group_category`、`jisou_channel_category`；运行时只在内存中以对应受控文案比对，落库只保留 hash、长度与 `approved_sample_match`。`selector_rules` 必须固定 row、col、callback 类型、effect 和 `jisou_group_category` 枚举；不能按包含关系、未知 callback 或动态原文猜测 selector。`group_result_page` 可使用已批准的 `join_candidate` / `navigate_only` effect 变体，但只允许点击被当前指纹命中的目标或分页位置。
 
-Planner 必须把校验后的 profile 与 `protocol_sample_version` 一起冻结进 source payload；Dispatcher 对旧 Action 或缺 profile 的极搜 payload 在 Gateway 前写 `protocol_sample_invalid` 并结束 Attempt，不得回退到硬编码猜测。旧样本需要由人工基于真实、脱敏采集重新审核和版本化；系统不得自动把旧 `buttons` 摘要升级为已审批指纹。
+Planner 必须把校验后的 profile 与 `protocol_sample_version` 一起冻结进 source payload；Dispatcher 对旧 Action 或缺 profile 的极搜 payload 在 Gateway 前写 `protocol_sample_invalid` 并结束 Attempt，不得回退到硬编码猜测。最后一道顺序固定为：先复核任务仍 running、截止与静默窗口、授权/代理环境，再校验 profile，最后才写 `gateway_call_started_at` 并调用 Gateway；缺 profile 不得遮蔽 `task_not_active`、`scheduled_end_reached`、`quiet_hours_active` 或授权环境原始错误。旧样本需要由人工基于真实、脱敏采集重新审核和版本化；系统不得自动把旧 `buttons` 摘要升级为已审批指纹。
 
 ## 7. ExecutionAttempt 与事实观测
 

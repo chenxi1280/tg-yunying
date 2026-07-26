@@ -5095,6 +5095,13 @@ def _dispatch_search_join(session: Session, action: Action, account: TgAccount, 
     if ready is None:
         return True
     search_join, runtime_authorization, keyword_text = ready
+    if not _search_click_gateway_call_allowed(session, action):
+        _finish_search_join_before_gateway(session, action, attempt, "search_join_gateway_not_allowed")
+        return True
+    failure = _search_join_protocol_profile_failure(action, payload)
+    if failure:
+        _finish_search_join_before_gateway(session, action, attempt, failure)
+        return True
     if not _mark_search_join_gateway_call_started(session, action, attempt):
         _finish_search_join_before_gateway(session, action, attempt, "search_join_gateway_not_allowed")
         return True
@@ -5195,9 +5202,6 @@ def _search_join_pre_gateway_failure(action: Action, payload: SearchJoinPayload)
     if not _search_join_client_metadata_verified(payload):
         _fail(action, "client_metadata_missing", "搜索入群缺少已绑定客户端 metadata，禁止使用默认 MTProto 指纹", validation_stage="search_join_client_metadata")
         return "client_metadata_missing"
-    if is_jisou_bot(payload.bot_username) and not protocol_profile_is_approved(payload.approved_protocol_profile):
-        _fail(action, "protocol_sample_invalid", "极搜缺少已审核的页面相位与 selector 指纹，禁止调用 Gateway", validation_stage="search_join_protocol")
-        return "protocol_sample_invalid"
     keyword_text = decrypt_secret(payload.keyword_text_ciphertext) or ""
     if not keyword_text.strip():
         _fail(action, "keyword_text_missing", "搜索入群缺少可执行关键词密文", validation_stage="search_join_payload")
@@ -5206,6 +5210,13 @@ def _search_join_pre_gateway_failure(action: Action, payload: SearchJoinPayload)
         _fail(action, "keyword_hash_mismatch", "搜索入群关键词密文与审计哈希不一致", validation_stage="search_join_payload")
         return "keyword_hash_mismatch"
     return ""
+
+
+def _search_join_protocol_profile_failure(action: Action, payload: SearchJoinPayload) -> str:
+    if not is_jisou_bot(payload.bot_username) or protocol_profile_is_approved(payload.approved_protocol_profile):
+        return ""
+    _fail(action, "protocol_sample_invalid", "极搜缺少已审核的页面相位与 selector 指纹，禁止调用 Gateway", validation_stage="search_join_protocol")
+    return "protocol_sample_invalid"
 
 
 def _dispatch_search_join_membership(

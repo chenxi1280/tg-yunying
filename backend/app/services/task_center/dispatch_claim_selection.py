@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Action, DispatchClaimReservation, DispatchClaimWindow, Task
+from app.timezone import as_beijing_aware
 
 from .dispatch_claim_allocation import normal_demands, rotated_demands, rotation_value, strict_non_priority_demands
 from .dispatch_claim_ledger import reservation_available
@@ -125,7 +126,8 @@ def _urgency_score(task: Task, actions: list[Action], claim_class: str, now: dat
         return 1_000_000
     if claim_class == SEARCH_MEMBERSHIP_CLAIM_CLASS:
         return 500_000
-    overdue_seconds = max(0, int((now - min(action.scheduled_at for action in actions)).total_seconds()))
+    earliest_scheduled_at = min(action.scheduled_at for action in actions)
+    overdue_seconds = max(0, int((as_beijing_aware(now) - as_beijing_aware(earliest_scheduled_at)).total_seconds()))
     return len(actions) * 100 + _task_target_weight(task, claim_class) + overdue_seconds
 
 

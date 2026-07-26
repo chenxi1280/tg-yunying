@@ -153,17 +153,17 @@ def test_postgres_planner_phase_a_rolls_back_actions_coverage_and_cursor(monkeyp
     _cleanup()
     timestamp = _now().replace(hour=23, minute=30, second=0, microsecond=0)
     monkeypatch.setattr(group_ai_chat, "_now", lambda: timestamp)
-    original_reserve = group_ai_chat._reserve_action_coverage
+    original_reserve = group_ai_chat._reserve_coverage_before_action
     calls = 0
 
-    def fail_second_reservation(session, action, payload):
+    def fail_second_reservation(session, coverage_id, reservation_token):
         nonlocal calls
         calls += 1
         if calls == 2:
             raise RuntimeError("phase-a-reservation-injected-failure")
-        return original_reserve(session, action, payload)
+        return original_reserve(session, coverage_id, reservation_token)
 
-    monkeypatch.setattr(group_ai_chat, "_reserve_action_coverage", fail_second_reservation)
+    monkeypatch.setattr(group_ai_chat, "_reserve_coverage_before_action", fail_second_reservation)
     try:
         _seed_real_planner_scope(10, timestamp)
         with pytest.raises(RuntimeError, match="phase-a-reservation-injected-failure"):

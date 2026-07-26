@@ -279,7 +279,10 @@ def test_planner_backlog_records_daily_fulfillment_risk_and_recheck(session: Ses
     assert task.stats["daily_fulfillment"]["blocker_counts"]["planner_capacity_insufficient"] == 1
 
 
-def test_daily_coverage_persists_variation_intent_before_creating_action(session: Session) -> None:
+def test_daily_coverage_persists_variation_intent_before_creating_action(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     task, _group = _seed(session)
     row = session.get(TaskAccountDailyCoverage, "coverage-1")
     payload = SendMessagePayload(
@@ -296,6 +299,21 @@ def test_daily_coverage_persists_variation_intent_before_creating_action(session
         [group_ai_chat.SlotSnapshot(account_id=row.account_id, planned_at=beijing_now(), payload=payload)],
         {},
     )
+    create_send_action = group_ai_chat.create_send_action
+
+    def assert_intent_precedes_action(*args, **kwargs):
+        intent = session.scalar(select(AiCoverageVariationIntent).where(
+            AiCoverageVariationIntent.coverage_ledger_id == row.id,
+        ))
+        session.refresh(row)
+        assert intent is not None
+        assert intent.action_id is None
+        assert row.state == "reserved"
+        assert row.reserved_action_id is None
+        assert row.reservation_token
+        return create_send_action(*args, **kwargs)
+
+    monkeypatch.setattr(group_ai_chat, "create_send_action", assert_intent_precedes_action)
 
     assert group_ai_chat._create_reserved_actions(session, task, blueprint=blueprint, prepared=prepared) == 1
 
@@ -306,6 +324,7 @@ def test_daily_coverage_persists_variation_intent_before_creating_action(session
     assert intent.action_id == action.id
     assert intent.outcome == "reserved"
     assert row.reserved_action_id == action.id
+    assert row.reservation_token is None
 
     row.state = "ready"
     row.reserved_action_id = None
