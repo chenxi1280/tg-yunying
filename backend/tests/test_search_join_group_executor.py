@@ -1537,6 +1537,32 @@ def test_search_join_pacing_window_uses_task_timezone() -> None:
 
 
 @pytest.mark.no_postgres
+def test_search_join_hourly_occupancy_normalizes_aware_database_timestamp() -> None:
+    task = _task(timezone="Asia/Shanghai")
+    now_value = datetime(2026, 7, 26, 10, 24, tzinfo=timezone.utc)
+    action = Action(
+        tenant_id=1,
+        task_id="search-occupancy-timezone",
+        task_type="search_join_group",
+        action_type="search_join",
+        status="pending",
+        scheduled_at=datetime(2026, 7, 26, 10, tzinfo=timezone.utc),
+        payload={},
+        result={},
+    )
+    session = SimpleNamespace(scalars=lambda _query: [action])
+
+    counts = search_join_pacing.hourly_source_occupancy(
+        session,
+        task,
+        pacing_window(task, now_value),
+        now_value=now_value,
+    )
+
+    assert counts == {18: 1}
+
+
+@pytest.mark.no_postgres
 def test_search_join_daily_cap_counts_actions_by_task_timezone(session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
     fixed_now = _now().replace(year=2026, month=7, day=4, hour=1, minute=30, second=0, microsecond=0)
     monkeypatch.setattr(search_join_executor, "_now", lambda: fixed_now)

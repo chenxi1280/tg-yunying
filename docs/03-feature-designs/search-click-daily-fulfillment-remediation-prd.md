@@ -85,6 +85,8 @@ strict_planning_capacity =
 - 账号日限额、全局冷却、next slot、授权槽位、代理、分片资格和协议样本均处于可执行状态；
 - 当前 bucket 已存在的 source carry、claim 或 Gateway 尝试已从该 bucket 和账号槽位扣除。
 
+PostgreSQL 读取到的 `Action.scheduled_at` / `executed_at` 可能带 offset；计算 carry 是否已经到期及所属小时桶前，必须与当前时间一并转换到 `Task.timezone` 的 aware datetime 后比较。不得将数据库 aware 时间与本地 naive 时间直接比较而中断 Planner。
+
 运行时必须显式返回 `occupied_source_count`、`current_hour_source_occupied` 与 `current_hour_available`。当前严格 slot 的行为跳过键固定为 `strict_capacity_action_key(timezone, effective_date, hour, slot)`；创建 Action 时将相同 key 写入 `planning_slot_key`，使创建/编辑预检、日切重算与运行 Planner 使用同一 task ID 与同一确定性种子。
 
 `normal_curve_capacity` 只展示普通节奏，`strict_hour_ceiling` 是不考虑行为跳过时的小时硬上界，`strict_planning_capacity` 才是 strict Planner 可以实际排入的 source 数。严格模式不得静默忽略 `daily/hourly/action skip_probability`、整窗口跳过或其他行为节奏决策：预检和运行规划必须使用同一确定性调度种子，已判定 skip 的窗口或 Action 直接从 `strict_planning_capacity` 扣除，并持久化原因。若需要更高容量，只能由受控编辑修改节奏配置，不能由 strict Planner 私自绕过。

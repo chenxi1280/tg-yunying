@@ -61,6 +61,7 @@ AI 活群冻结日覆盖账本
   -> 创建/编辑/日切容量计算
      normal_curve_capacity + strict_hour_ceiling + account_source_capacity + day budget
      + 按小时扣除 carry / claim / Gateway source 与行为节奏 = max_source_attempts / strict_planning_capacity
+     + Action source 时刻与当前时刻先归一到 Task.timezone，再判断 carry 是否已到期和所属小时，禁止 naive/aware 比较中断 Planner
   -> 当天部分日或首个完整日的 daily_target_capacity_insufficient / at_risk / 严格追赶计划
   -> strict_capacity_action_key + planning_slot_key 保证预检 / 运行同一 slot 的确定性与幂等
   -> DispatchClaimScope(跨 Window active ledger) -> DispatchClaimWindow -> DispatchClaimShardAllocation(account shard) -> DispatchClaimReservation

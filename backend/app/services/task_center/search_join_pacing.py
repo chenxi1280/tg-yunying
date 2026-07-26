@@ -256,20 +256,20 @@ def hourly_source_occupancy(
             ),
         )
     )
-    now_source = _source_naive(_task_local_datetime(task, now_value))
+    now_local = _task_local_datetime(task, now_value)
     counts: dict[int, int] = {}
     for action in actions:
-        hour = _occupied_source_hour(task, action, now_source, window.hour_start.hour)
+        hour = _occupied_source_hour(task, action, now_local, window.hour_start.hour)
         counts[hour] = int(counts.get(hour, 0)) + 1
     return counts
 
 
-def _occupied_source_hour(task: Task, action: Action, now_source: datetime, current_hour: int) -> int:
+def _occupied_source_hour(task: Task, action: Action, now_local: datetime, current_hour: int) -> int:
     if (
         action.status in PENDING_CARRYOVER_STATUSES
         and action.executed_at is None
         and action.scheduled_at is not None
-        and action.scheduled_at <= now_source
+        and _task_local_datetime(task, action.scheduled_at) <= now_local
     ):
         return current_hour
     source_time = action.executed_at or action.scheduled_at
