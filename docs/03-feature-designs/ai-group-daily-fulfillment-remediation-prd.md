@@ -5,8 +5,8 @@
 | 项目 | 内容 |
 | --- | --- |
 | 需求级别 | L3 生产问题修复 |
-| 设计状态 | complete（2026-07-27 群管观察与成功事实交叉修订） |
-| 变更状态 | 开发实现与本地回归已纳入当前 `release`；部署、真实 Telegram 结果与完整自然日验收仍待 Release Gate 证明。群管机器人准入的基线/观察/策略细节以 `ai-conversation-humanization-and-group-bot-admission-prd.md` §5.2.2.1–§5.2.2.2 为准。 |
+| 设计状态 | complete（2026-07-27 群管控制按钮、可信来源与并发准入交叉修订） |
+| 变更状态 | 先前 release 已完成基线/观察与成功事实的发布；本次将继续按 Release Gate 发布“按钮协议、来源信任前置、单群 admission 串行化”修复。真实 Telegram 结果与完整自然日验收仍须以 Action + Attempt + remote_message_id 和日账本证明。群管机器人准入完整细节以 `ai-conversation-humanization-and-group-bot-admission-prd.md` §5.3–§5.7.1 为准。 |
 | 适用任务 | account_coverage_mode=all_accounts_daily 的 group_ai_chat |
 | 统计时区 | Asia/Shanghai |
 | 关联线上证据 | 2026-07-25 完整日账本与 2026-07-26 生产只读取证 |
@@ -51,6 +51,7 @@
 5. 日覆盖 debt 必须独立于 hard_hourly deficit 计算。硬小时达标不能成为忽略当日未完成覆盖的理由。
 6. 操作人员可以定位账号权限、入群审批、质量拒绝、生成契约、调度未建单五类问题，并看到正确处理入口。
 7. 群管机器人无频道引用、观察未闭合和策略未决必须分别显示；它们不能被笼统写成“需要关注频道”，也不能因 UI/历史 result 的陈旧错误字段掩盖已远端成功的覆盖事实。
+8. 当群管频道/“我已加入”只存在于内联按钮时，日覆盖链路必须以原消息、可信 peer、精确按钮和真实回执为准；普通 bot 消息不得批量把等待账号写成未归属，且同群新 admission 必须串行，避免把一条面向单账号的提示误套用给当天多个覆盖账号。
 
 ### 3.2 非目标
 
@@ -128,7 +129,8 @@ completed 仍只在同一覆盖行关联成功 Action、成功 ExecutionAttempt 
 ### 5.1 权限和准入阻塞：保留分母、给出可执行处理路径
 
 1. cannot_send、membership_permission_denied、join_request_pending、target_ref_invalid 与群管准入未完成必须保留在冻结分母中。
-   - `required_channel_follow_pending` 只表示已由可信 bot 记录精确频道引用；`group_bot_policy_unresolved` 表示观察到期但没有可用的 `not_required` policy；`observation_stale` 表示缺少或截断观察证据。三者均不能计确认完成，也不能互相替换文案。
+   - `required_channel_follow_pending` 只表示已由可信 bot 从正文或同一消息的精确 URL 按钮记录广播频道引用；`group_bot_policy_unresolved` 表示观察到期但没有可用的 `not_required` policy；`observation_stale` 表示缺少或截断观察证据。三者均不能计确认完成，也不能互相替换文案。callback click 成功仍只是等待 bot confirmation，不能写 confirmed。
+   - `group_bot_admission_window_busy` 是 admission 串行化的可恢复计划等待，不是 Telegram 发送成功、也不是 permission blocker；它不改变冻结分母。该群已有 ready 账号仍可继续补当日欠额。
    - 观察中的账号不能阻止同一日其他 `can_send=true` 且 admission ready 账号继续规划；全量分母、欠额和 blocker 仍完整保留。
 2. can_send=false 的覆盖行不得创建正文 send_message；系统只允许创建对应的准入、权限复检或运营可见的人工处理动作。
 3. membership_permission_denied 与等待审批必须显示等待审批后才能发言，不能把申请已提交写成 membership_observed 或覆盖成功。

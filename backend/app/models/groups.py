@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -83,6 +83,7 @@ class GroupContextMessage(Base):
     content: Mapped[str] = mapped_column(Text)
     message_type: Mapped[str] = mapped_column(String(40), default="text")
     remote_message_id: Mapped[str] = mapped_column(String(160))
+    control_buttons: Mapped[list] = mapped_column(JSON, default=list)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     used_for_ai: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)

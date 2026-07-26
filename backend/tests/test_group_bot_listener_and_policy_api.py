@@ -7,7 +7,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import GroupBotAdmission, Tenant, TgAccount, TgGroup
+from app.models import GroupBotAdmission, GroupContextMessage, Tenant, TgAccount, TgGroup
 from app.services.group_listener_context_writer import insert_context_snapshots
 from app.services.task_center.group_bot_admission import ensure_admission_after_join, READY_STATE
 
@@ -61,8 +61,11 @@ def test_listener_control_event_ingests_trusted_bot_before_context():
             create_source_media=False,
             learning_scene=None,
         )
-        # Control bot rule text must not enter AI context.
-        assert inserted == 0
+        # Control bot rules are persisted only as bot audit context; AI readers filter is_bot.
+        assert inserted == 1
+        context = session.get(GroupContextMessage, 1)
+        assert context is not None
+        assert context.is_bot is True
         admission = session.scalar(
             select_admission(session, group_id=7, account_id=11)
         )

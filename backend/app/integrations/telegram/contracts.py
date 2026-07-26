@@ -151,6 +151,17 @@ class ArchivedMessageSnapshot:
 
 
 @dataclass(frozen=True)
+class GroupControlButtonSnapshot:
+    """Safe inline-control summary; callback bytes never leave the gateway."""
+
+    row: int
+    col: int
+    text: str
+    url: str = ""
+    action_type: str = "other"
+
+
+@dataclass(frozen=True)
 class GroupMessageSnapshot:
     remote_message_id: str
     sender_name: str
@@ -168,6 +179,7 @@ class GroupMessageSnapshot:
     media_group_id: str = ""
     media_group_index: int = 0
     media_group_total: int = 1
+    control_buttons: tuple[GroupControlButtonSnapshot, ...] = ()
 
 
 @dataclass(frozen=True)

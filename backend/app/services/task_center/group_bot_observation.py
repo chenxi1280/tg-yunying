@@ -15,7 +15,7 @@ from app.models.enums import now as model_now
 CONTEXT_CURSOR_SCAN_LIMIT = 500
 DEFAULT_OBSERVATION_WINDOW_SECONDS = 120
 OBSERVING_STATES = ("awaiting_group_bot_rule", "observation_open")
-RESTARTABLE_STATES = (*OBSERVING_STATES, "observation_stale", "group_bot_policy_unresolved")
+RESTARTABLE_STATES = (*OBSERVING_STATES, "observation_stale", "group_bot_policy_unresolved", "group_bot_rule_unattributed")
 
 
 def numeric_cursor(value: object) -> int | None:

@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from sqlalchemy import select
@@ -206,6 +206,7 @@ class GroupBotRequiredChannelFollowPayload(BaseModel):
     admission_version: int = Field(default=1, ge=1)
     channel_ref: str = Field(min_length=1, max_length=255)
     source_message_id: str = ""
+    source_channel_url: str = ""
     # Claim-class binding (PRD §8.3): only bound actions get target_admission_retry tier.
     admission_bound_task_id: str = Field(min_length=1)
     admission_bound_account_id: int = Field(ge=1)
@@ -228,8 +229,12 @@ class GroupBotConfirmationButtonPayload(BaseModel):
     group_id: int = Field(ge=1)
     admission_id: int = Field(ge=1)
     admission_version: int = Field(default=1, ge=1)
-    source_message_id: str = ""
-    button_data: str = ""
+    source_message_id: str = Field(min_length=1, max_length=160)
+    trusted_bot_peer_id: str = Field(min_length=1, max_length=80)
+    button_row: int = Field(ge=0)
+    button_col: int = Field(ge=0)
+    button_text: str = Field(min_length=1, max_length=255)
+    button_type: Literal["callback"] = "callback"
     admission_bound_task_id: str = Field(min_length=1)
     admission_bound_account_id: int = Field(ge=1)
 
@@ -543,6 +548,26 @@ def create_group_bot_required_channel_follow_action(
     )
 
 
+def create_group_bot_confirmation_button_action(
+    session: Session,
+    task: Task,
+    account_id: int,
+    scheduled_at: datetime,
+    payload: GroupBotConfirmationButtonPayload,
+    *,
+    flush: bool = True,
+) -> Action:
+    return _create_action(
+        session,
+        task,
+        "group_bot_confirmation_button",
+        account_id,
+        scheduled_at,
+        payload,
+        flush=flush,
+    )
+
+
 def create_view_action(session: Session, task: Task, account_id: int | None, scheduled_at: datetime, payload: ViewMessagePayload) -> Action:
     return _create_action(session, task, "view_message", account_id, scheduled_at, payload)
 
@@ -584,6 +609,7 @@ __all__ = [
     "GroupBotRequiredChannelFollowPayload",
     "GroupBotControlObservationPayload",
     "GroupBotConfirmationButtonPayload",
+    "create_group_bot_confirmation_button_action",
     "create_group_bot_required_channel_follow_action",
     "LikeMessagePayload",
     "PostCommentPayload",

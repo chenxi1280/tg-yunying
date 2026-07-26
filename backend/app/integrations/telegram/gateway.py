@@ -55,6 +55,7 @@ VERIFICATION_CONTEXT_PREVIEW_LIMIT = 500
 GROUP_PERMISSION_DETAIL = "群无权限或账号不可发言"
 TARGET_PERMISSION_DETAIL = "缓存频道不可访问 / 账号无权限"
 VERIFICATION_CONFIRM_BUTTON_MARKERS = ("我已加入", "我已关注", "已关注", "完成验证", "完成关注", "确认")
+PUBLIC_CHANNEL_URL_RE = re.compile(r"^https?://t\.me/([A-Za-z][A-Za-z0-9_]{3,})/?$", re.I)
 ACCOUNT_HEALTH_DISCONNECT_TIMEOUT_SECONDS = 5.0
 ACCOUNT_HEALTH_RUN_GRACE_SECONDS = 1.0
 logger = logging.getLogger(__name__)
@@ -101,6 +102,26 @@ def _button_url(button: Any) -> str:
         if url:
             return url
     return ""
+
+
+def _is_callback_button(button: Any) -> bool:
+    if _button_url(button):
+        return False
+    return any(bool(getattr(candidate, "data", None)) for candidate in (button, getattr(button, "button", None)))
+
+
+def _group_bot_channel_username(channel_ref: str, source_channel_url: str) -> str:
+    match = PUBLIC_CHANNEL_URL_RE.match(str(source_channel_url or "").strip())
+    if not match or match.group(1).lower() != str(channel_ref or "").strip().lstrip("@").lower():
+        return ""
+    return match.group(1)
+
+
+def _button_at(message: Any, row: int, col: int) -> Any | None:
+    rows = getattr(message, "buttons", None) or []
+    if row < 0 or col < 0 or row >= len(rows) or col >= len(rows[row]):
+        return None
+    return rows[row][col]
 
 
 def _search_join_client_metadata(payload: dict[str, Any]) -> dict[str, str]:
@@ -1480,6 +1501,125 @@ class TelethonTelegramGateway(TelegramGateway):
         invite_link: str = "",
     ) -> ChannelMembershipResult:
         return self._run(self._ensure_channel_membership_async(session_ciphertext, channel_peer_id, self._usable_credentials(credentials), invite_link))
+
+    async def _follow_group_bot_required_channel_async(
+        self,
+        session_ciphertext: str | None,
+        channel_ref: str,
+        source_channel_url: str,
+        credentials: DeveloperAppCredentials,
+    ) -> ChannelMembershipResult:
+        username = _group_bot_channel_username(channel_ref, source_channel_url)
+        if not username:
+            return ChannelMembershipResult(False, "失败", FailureType.PEER_INVALID.value, "group_bot_channel_source_mismatch", "failed")
+        raw_session = decrypt_session(session_ciphertext)
+        if not raw_session:
+            return ChannelMembershipResult(False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value, "账号没有可用 session", "failed")
+        client = await self._get_or_create_client(credentials, raw_session)
+        if not await client.is_user_authorized():
+            return ChannelMembershipResult(False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value, "session 已失效", "failed")
+        try:
+            from telethon import functions
+            from telethon.errors import UserAlreadyParticipantError
+
+            entity = await client.get_entity(username)
+            if not bool(getattr(entity, "broadcast", False)) or bool(getattr(entity, "megagroup", False)):
+                return ChannelMembershipResult(False, "失败", FailureType.PEER_INVALID.value, "required_channel_ref_invalid: not broadcast channel", "failed")
+            try:
+                await client(functions.channels.JoinChannelRequest(entity))
+                status = "joined"
+            except UserAlreadyParticipantError:
+                status = "already_joined"
+            return ChannelMembershipResult(True, detail=f"broadcast:{getattr(entity, 'id', '')}", membership_status=status)
+        except Exception as exc:
+            mapped = self._map_send_error(exc)
+            return ChannelMembershipResult(False, "失败", mapped.failure_type or FailureType.PEER_INVALID.value, mapped.detail or str(exc), "failed")
+
+    def follow_group_bot_required_channel(
+        self,
+        account_id: int,
+        channel_ref: str,
+        source_channel_url: str,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> ChannelMembershipResult:
+        return self._run(
+            self._follow_group_bot_required_channel_async(
+                session_ciphertext,
+                channel_ref,
+                source_channel_url,
+                self._usable_credentials(credentials),
+            )
+        )
+
+    async def _source_message_from_iter(self, client, target, source_message_id: str):
+        try:
+            message_id = int(source_message_id)
+        except (TypeError, ValueError):
+            return None
+        async for message in client.iter_messages(target, min_id=message_id - 1, max_id=message_id + 1, limit=2):
+            if int(getattr(message, "id", 0) or 0) == message_id:
+                return message
+        return None
+
+    async def _click_group_bot_confirmation_button_async(
+        self,
+        session_ciphertext: str | None,
+        group_peer_id: str,
+        source_message_id: str,
+        trusted_bot_peer_id: str,
+        row: int,
+        col: int,
+        text: str,
+        credentials: DeveloperAppCredentials,
+    ) -> OperationResult:
+        raw_session = decrypt_session(session_ciphertext)
+        if not raw_session:
+            return OperationResult(False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value, "账号没有可用 session")
+        client = await self._get_or_create_client(credentials, raw_session)
+        if not await client.is_user_authorized():
+            return OperationResult(False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value, "session 已失效")
+        try:
+            target = await resolve_telethon_target(client, group_peer_id, group_id=1)
+            message = await self._source_message_from_iter(client, target, source_message_id)
+            if message is None:
+                return OperationResult(False, "失败", FailureType.PEER_INVALID.value, "group_bot_confirmation_button_mismatch")
+            sender = await message.get_sender() if hasattr(message, "get_sender") else None
+            if str(getattr(sender, "id", "") or "") != str(trusted_bot_peer_id or ""):
+                return OperationResult(False, "失败", FailureType.PEER_INVALID.value, "group_bot_confirmation_peer_mismatch")
+            button = _button_at(message, row, col)
+            if button is None or _button_text(button) != text or not _is_callback_button(button):
+                return OperationResult(False, "失败", FailureType.PEER_INVALID.value, "group_bot_confirmation_button_mismatch")
+            await message.click(row, col)
+            return OperationResult(True, detail=f"group_bot_confirmation_clicked:{source_message_id}")
+        except Exception as exc:
+            mapped = self._map_send_error(exc)
+            return OperationResult(False, "失败", mapped.failure_type or FailureType.UNKNOWN.value, mapped.detail or str(exc))
+
+    def click_group_bot_confirmation_button(
+        self,
+        account_id: int,
+        group_peer_id: str,
+        source_message_id: str,
+        trusted_bot_peer_id: str,
+        row: int,
+        col: int,
+        text: str,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> OperationResult:
+        return self._run(
+            self._click_group_bot_confirmation_button_async(
+                session_ciphertext,
+                group_peer_id,
+                source_message_id,
+                trusted_bot_peer_id,
+                row,
+                col,
+                text,
+                self._usable_credentials(credentials),
+            )
+        )
 
     async def _export_group_invite_link_async(
         self,

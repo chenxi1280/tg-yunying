@@ -11,6 +11,7 @@ from .contracts import (
     ArchivedMessageSnapshot,
     ChannelCommentSnapshot,
     ChannelMessageSnapshot,
+    GroupControlButtonSnapshot,
     GroupMessageSnapshot,
     SendResult,
 )
@@ -47,6 +48,20 @@ def _sender_peer_type(sender) -> str:
     if "user" in type_name:
         return "user"
     return type_name
+
+
+def _control_buttons(message) -> tuple[GroupControlButtonSnapshot, ...]:
+    controls: list[GroupControlButtonSnapshot] = []
+    for row_index, row in enumerate(getattr(message, "buttons", None) or []):
+        for col_index, button in enumerate(row or []):
+            raw = getattr(button, "button", button)
+            text = str(getattr(raw, "text", "") or getattr(button, "text", "") or "").strip()
+            url = str(getattr(raw, "url", "") or getattr(button, "url", "") or "").strip()
+            has_callback = bool(getattr(raw, "data", None) or getattr(button, "data", None))
+            action_type = "url" if url else "callback" if has_callback else "other"
+            if text or url:
+                controls.append(GroupControlButtonSnapshot(row_index, col_index, text, url, action_type))
+    return tuple(controls)
 
 
 async def fetch_group_archive(client, peer_id: str) -> ArchiveSnapshot:
@@ -110,7 +125,8 @@ async def fetch_group_messages(client, peer_id: str, limit: int) -> list[GroupMe
     sender_role_cache: dict[str, str] = {}
     for message in list(messages_resp or []):
         text = getattr(message, "message", "") or ""
-        if not text and not getattr(message, "media", None):
+        controls = _control_buttons(message)
+        if not text and not getattr(message, "media", None) and not controls:
             continue
         sender = await message.get_sender() if hasattr(message, "get_sender") else None
         sender_peer_id = str(getattr(sender, "id", "") or "")
@@ -140,7 +156,7 @@ async def fetch_group_messages(client, peer_id: str, limit: int) -> list[GroupMe
                 sender_name=sender_name,
                 sender_username=sender_username,
                 sender_peer_type=sender_peer_type,
-                content=text or "[media]",
+                content=text or ("[media]" if media else ""),
                 message_type="media" if media else "text",
                 sent_at=getattr(message, "date", None),
                 is_bot=bool(getattr(sender, "bot", False)),
@@ -151,6 +167,7 @@ async def fetch_group_messages(client, peer_id: str, limit: int) -> list[GroupMe
                 media_group_id=group_id,
                 media_group_index=grouped_seen.get(group_id, 0) if group_id else 0,
                 media_group_total=grouped_totals.get(group_id, 1) if group_id else 1,
+                control_buttons=controls,
             )
         )
     return snapshots

@@ -113,6 +113,15 @@ GROUP_BOT_ADMISSION_ACTION_TYPES = (
     "group_bot_control_observation",
     "group_bot_confirmation_button",
 )
+GROUP_BOT_ADMISSION_WINDOW_STATES = (
+    "awaiting_group_bot_rule",
+    "observation_open",
+    "group_bot_policy_unresolved",
+    "required_channel_follow_pending",
+    "following_required_channel",
+    "awaiting_group_bot_confirmation",
+    "observation_stale",
+)
 HARD_HOURLY_ADMISSION_BLOCKED_SEND_ERROR_CODES = (
     "required_channel_admission_pending",
     "group_bot_admission_wait",
@@ -563,8 +572,11 @@ def _dispatch_credentialed_action(
         return _dispatch_group_bot_required_channel_follow(
             session, action, context.account, credentials, context.payload
         )
-    if action.action_type in {"group_bot_control_observation", "group_bot_confirmation_button"}:
-        # Observation/confirmation are primarily listener-driven; mark success if still pending.
+    if action.action_type == "group_bot_confirmation_button":
+        return _dispatch_group_bot_confirmation_button(
+            session, action, context.account, credentials, context.payload
+        )
+    if action.action_type == "group_bot_control_observation":
         _skip(action, "listener_driven", "由监听控制事件推进，无需 Gateway 正文")
         return True
     _fail(action, FailureType.UNKNOWN.value, f"未知 action_type: {action.action_type}")
@@ -2733,6 +2745,8 @@ def _dispatch_channel_membership(session: Session, action: Action, account: TgAc
         )
         if existing_link and _dispatch_existing_membership(session, action, account, credentials, payload, existing_link):
             return True
+    if _reserve_group_bot_admission_window(session, action, payload):
+        return True
     attempt = _reserve_channel_membership_attempt(session, action, account, payload)
     if attempt is None:
         return True
@@ -2743,13 +2757,16 @@ def _dispatch_channel_membership(session: Session, action: Action, account: TgAc
     if result.ok:
         probe_result = _probe_joined_group_send_permission(session, action, account, credentials, payload)
         if probe_result is not None and not probe_result.ok:
+            _clear_group_bot_admission_window(action)
             return _handle_group_send_permission_denied(runtime_ctx, probe_result, membership_status="joined", skip_on_failure=False)
         _mark_membership_joined(session, action, account, payload)
     elif result.failure_type == FailureType.GROUP_PERMISSION_DENIED.value:
+        _clear_group_bot_admission_window(action)
         return _handle_group_send_permission_denied(runtime_ctx, result, membership_status="joined", skip_on_failure=True)
     elif _membership_requires_admin_rescue(result):
         rescued = _try_admin_lift_restriction_and_join(runtime_ctx, _membership_result_detail(result))
         if rescued.ok:
+            _clear_group_bot_admission_window(action)
             _apply_operation_result(action, account, True, "", rescued.detail or "admin_rescue_joined", attempt=attempt)
             action.result = {**(action.result or {}), "membership_status": "joined", "admin_restriction_lifted": True}
             return True
@@ -2758,11 +2775,100 @@ def _dispatch_channel_membership(session: Session, action: Action, account: TgAc
     if result.failure_type == FailureType.FLOOD_WAIT.value:
         _maybe_trigger_membership_rate_limit_rescue(runtime_ctx, result_detail)
     failure_type = _classify_membership_failure(result.failure_type, result_detail)
+    _clear_group_bot_admission_window(action)
     _apply_operation_result(action, account, result.ok, failure_type, result_detail, attempt=attempt)
     if result.ok:
         membership_status = getattr(result, "membership_status", "") or "joined"
         action.result = {**(action.result or {}), "membership_status": membership_status}
     return True
+
+
+def _reserve_group_bot_admission_window(session: Session, action: Action, payload: EnsureChannelMembershipPayload) -> bool:
+    group = _group_bot_admission_window_group(session, action, payload)
+    if group is None:
+        return False
+    locked_group = session.scalar(select(TgGroup).where(TgGroup.id == group.id).with_for_update())
+    if locked_group is None:
+        return False
+    if _group_bot_admission_window_busy(session, action, locked_group.id):
+        _defer_group_bot_admission_window(action, locked_group.id)
+        session.commit()
+        return True
+    _record_group_bot_admission_window(action, locked_group.id)
+    session.commit()
+    return False
+
+
+def _group_bot_admission_window_group(
+    session: Session,
+    action: Action,
+    payload: EnsureChannelMembershipPayload,
+) -> TgGroup | None:
+    if payload.target_type != "group" or not payload.require_send:
+        return None
+    task = session.get(Task, action.task_id) if action.task_id else None
+    config = task.type_config if task and isinstance(task.type_config, dict) else {}
+    if task is None or task.type != "group_ai_chat" or config.get("group_bot_admission_required") is False:
+        return None
+    target = session.get(OperationTarget, payload.channel_target_id)
+    if target is None or target.tenant_id != action.tenant_id:
+        return None
+    return _membership_group_for_payload(session, target, payload, create=True)
+
+
+def _group_bot_admission_window_busy(session: Session, action: Action, group_id: int) -> bool:
+    from app.models import GroupBotAdmission
+
+    active = session.scalar(
+        select(GroupBotAdmission.id).where(
+            GroupBotAdmission.tenant_id == action.tenant_id,
+            GroupBotAdmission.group_id == group_id,
+            GroupBotAdmission.state.in_(GROUP_BOT_ADMISSION_WINDOW_STATES),
+        ).limit(1)
+    )
+    return bool(active or _has_reserved_group_bot_membership(session, action, group_id))
+
+
+def _has_reserved_group_bot_membership(session: Session, action: Action, group_id: int) -> bool:
+    rows = session.scalars(
+        select(Action).where(
+            Action.tenant_id == action.tenant_id,
+            Action.action_type.in_(MEMBERSHIP_ACTION_TYPES),
+            Action.status.in_(("pending", "executing", "unknown_after_send")),
+            Action.id != action.id,
+        )
+    )
+    return any(
+        int((row.result or {}).get("group_bot_admission_window_group_id", 0) or 0) == group_id
+        and (row.result or {}).get("group_bot_admission_window_state") == "reserved"
+        for row in rows
+    )
+
+
+def _defer_group_bot_admission_window(action: Action, group_id: int) -> None:
+    retry_at = _now() + timedelta(seconds=REQUIRED_CHANNEL_ADMISSION_RETRY_SECONDS)
+    _defer(action, retry_at, "group_bot_admission_window_busy", "同群已有未收口的群管机器人准入窗口")
+    action.result = {
+        **(action.result or {}),
+        "group_bot_admission_window_group_id": group_id,
+        "group_bot_admission_window_state": "waiting",
+        "next_retry_at": retry_at.isoformat(),
+    }
+
+
+def _record_group_bot_admission_window(action: Action, group_id: int) -> None:
+    action.result = {
+        **(action.result or {}),
+        "group_bot_admission_window_group_id": group_id,
+        "group_bot_admission_window_state": "reserved",
+    }
+
+
+def _clear_group_bot_admission_window(action: Action) -> None:
+    result = dict(action.result or {})
+    result.pop("group_bot_admission_window_group_id", None)
+    result.pop("group_bot_admission_window_state", None)
+    action.result = result
 
 
 def _membership_existing_group_for_account(ctx: MembershipDispatchContext) -> tuple[EnsureChannelMembershipPayload, TgGroup | None]:
@@ -3823,6 +3929,7 @@ def _maybe_start_group_bot_admission_after_join(
         membership_action_id=str(action.id),
         join_start_cursor=join_cursor,
     )
+    _clear_group_bot_admission_window(action)
     action.result = {
         **(action.result or {}),
         "group_bot_admission_id": admission.id,
@@ -6340,70 +6447,101 @@ def _dispatch_group_bot_required_channel_follow(
     credentials,
     payload,
 ) -> bool:
-    """Execute exact required-channel follow for group-bot admission."""
+    admission = _group_bot_follow_admission(session, action, account, payload=payload)
+    if admission is None:
+        return True
+    channel_ref = str(getattr(payload, "channel_ref", "") or "").strip().lstrip("@")
+    source_url = str(getattr(payload, "source_channel_url", "") or "").strip()
+    if not channel_ref or not source_url:
+        _group_bot_follow_failure(
+            action,
+            code="required_channel_source_missing",
+            detail="缺少同源频道 URL",
+            channel_ref=channel_ref,
+        )
+        return True
+    result = gateway.follow_group_bot_required_channel(
+        account.id,
+        channel_ref,
+        source_url,
+        account.session_ciphertext,
+        credentials,
+    )
+    _finish_group_bot_required_channel_follow(
+        session,
+        action,
+        account,
+        admission=admission,
+        channel_ref=channel_ref,
+        result=result,
+    )
+    return True
+
+
+def _group_bot_follow_admission(session: Session, action: Action, account: TgAccount, *, payload):
     from app.models import GroupBotAdmission
-    from app.services.task_center.group_bot_admission import mark_channel_follow_completed
 
     admission_id = int(getattr(payload, "admission_id", 0) or 0)
     group_id = int(getattr(payload, "group_id", 0) or 0)
-    channel_ref = str(getattr(payload, "channel_ref", "") or "").strip()
-    if not admission_id or not group_id or not channel_ref:
+    if not admission_id or not group_id:
         _fail(action, FailureType.UNKNOWN.value, "group_bot_required_channel_follow payload incomplete")
-        return True
+        return None
     admission = session.scalar(
-        select(GroupBotAdmission).where(
-            GroupBotAdmission.id == admission_id,
-            GroupBotAdmission.tenant_id == action.tenant_id,
-        )
+        select(GroupBotAdmission).where(GroupBotAdmission.id == admission_id, GroupBotAdmission.tenant_id == action.tenant_id)
     )
     if admission is None:
         _fail(action, FailureType.UNKNOWN.value, "admission not found")
-        return True
-    if int(admission.account_id) != int(account.id):
-        _fail(action, FailureType.ACCOUNT_UNAVAILABLE.value, "admission account mismatch")
-        return True
+        return None
+    if int(admission.group_id) != group_id or int(admission.account_id) != int(account.id):
+        _fail(action, FailureType.ACCOUNT_UNAVAILABLE.value, "admission target mismatch")
+        return None
     if int(admission.admission_version or 1) != int(getattr(payload, "admission_version", 1) or 1):
         _skip(action, "admission_version_stale", "admission_version 已变化，跳过旧 follow action")
-        return True
+        return None
+    return admission
 
-    is_link = "t.me/" in channel_ref or channel_ref.startswith("http")
-    channel_peer = channel_ref if is_link or channel_ref.startswith("@") else f"@{channel_ref.lstrip('@')}"
-    result = gateway.ensure_channel_membership(
-        account.id,
-        "" if is_link else channel_peer,
-        account.session_ciphertext,
-        credentials,
-        invite_link=channel_ref if is_link else "",
-    )
+
+def _group_bot_follow_failure(
+    action: Action,
+    *,
+    code: str,
+    detail: str,
+    channel_ref: str,
+    failure_type: str = FailureType.PEER_INVALID.value,
+) -> None:
+    _fail(action, failure_type, detail)
+    action.result = {**(action.result or {}), "error_code": code, "channel_ref": channel_ref}
+
+
+def _finish_group_bot_required_channel_follow(
+    session: Session,
+    action: Action,
+    account: TgAccount,
+    *,
+    admission,
+    channel_ref: str,
+    result,
+) -> None:
+    from app.services.task_center.group_bot_admission import mark_channel_follow_completed
+
     if not result.ok:
-        failure = result.failure_type or FailureType.PEER_INVALID.value
-        _fail(action, failure, result.detail or "required channel follow failed")
-        action.result = {
-            **(action.result or {}),
-            "error_code": "required_channel_follow_failed",
-            "channel_ref": channel_ref,
-        }
-        return True
-
-    detail = str(result.detail or "")
-    if "megagroup" in detail.lower() or "supergroup" in detail.lower():
-        _fail(action, FailureType.PEER_INVALID.value, "required_channel_ref_invalid: not broadcast channel")
-        action.result = {
-            **(action.result or {}),
-            "error_code": "required_channel_ref_invalid",
-            "channel_ref": channel_ref,
-        }
-        return True
-
+        _group_bot_follow_failure(
+            action,
+            code="required_channel_follow_failed",
+            detail=result.detail or "required channel follow failed",
+            channel_ref=channel_ref,
+            failure_type=result.failure_type or FailureType.PEER_INVALID.value,
+        )
+        return
     mark_channel_follow_completed(
         session,
         admission=admission,
-        channel_ref=channel_ref.lstrip("@") if not is_link else channel_ref,
-        resolved_peer_id=channel_peer,
+        channel_ref=channel_ref,
+        resolved_peer_id=channel_ref,
         resolved_type="broadcast",
         action_id=str(action.id),
     )
-    _apply_operation_result(action, account, True, "", detail or "required_channel_followed")
+    _apply_operation_result(action, account, True, "", result.detail or "required_channel_followed")
     action.result = {
         **(action.result or {}),
         "success": True,
@@ -6411,7 +6549,117 @@ def _dispatch_group_bot_required_channel_follow(
         "group_bot_admission_id": admission.id,
         "group_bot_admission_state": admission.state,
     }
+
+
+def _dispatch_group_bot_confirmation_button(
+    session: Session,
+    action: Action,
+    account: TgAccount,
+    credentials,
+    payload,
+) -> bool:
+    admission = _group_bot_confirmation_admission(session, action, account, payload=payload)
+    if admission is None:
+        return True
+    if _confirmation_waits_for_required_channels(session, action, admission):
+        return True
+    group = session.get(TgGroup, int(getattr(payload, "group_id", 0) or 0))
+    if group is None or group.tenant_id != action.tenant_id:
+        _fail(action, FailureType.PEER_INVALID.value, "group_bot_confirmation group not found")
+        return True
+    if not _persisted_confirmation_button_matches(session, group.id, payload):
+        _fail(action, FailureType.PEER_INVALID.value, "group_bot_confirmation_button_mismatch")
+        return True
+    result = gateway.click_group_bot_confirmation_button(
+        account.id,
+        group.tg_peer_id,
+        str(getattr(payload, "source_message_id", "") or ""),
+        str(getattr(payload, "trusted_bot_peer_id", "") or ""),
+        int(getattr(payload, "button_row", -1)),
+        int(getattr(payload, "button_col", -1)),
+        str(getattr(payload, "button_text", "") or ""),
+        account.session_ciphertext,
+        credentials,
+    )
+    _finish_group_bot_confirmation_button(action, account, admission=admission, result=result)
     return True
+
+
+def _group_bot_confirmation_admission(session: Session, action: Action, account: TgAccount, *, payload):
+    from app.models import GroupBotAdmission
+
+    if str(getattr(payload, "button_type", "") or "") != "callback":
+        _fail(action, FailureType.PEER_INVALID.value, "group_bot_confirmation_button_type_invalid")
+        return None
+    admission = session.get(GroupBotAdmission, int(getattr(payload, "admission_id", 0) or 0))
+    if admission is None or admission.tenant_id != action.tenant_id:
+        _fail(action, FailureType.UNKNOWN.value, "admission not found")
+        return None
+    if int(admission.group_id) != int(getattr(payload, "group_id", 0) or 0) or int(admission.account_id) != int(account.id):
+        _fail(action, FailureType.ACCOUNT_UNAVAILABLE.value, "admission target mismatch")
+        return None
+    if int(admission.admission_version or 1) != int(getattr(payload, "admission_version", 1) or 1):
+        _skip(action, "admission_version_stale", "admission_version 已变化，跳过旧 confirmation action")
+        return None
+    if admission.trusted_bot_peer_id != str(getattr(payload, "trusted_bot_peer_id", "") or ""):
+        _fail(action, FailureType.PEER_INVALID.value, "group_bot_confirmation_peer_mismatch")
+        return None
+    return admission
+
+
+def _confirmation_waits_for_required_channels(session: Session, action: Action, admission) -> bool:
+    from app.models import GroupBotRequiredChannelFollow
+
+    with session.no_autoflush:
+        pending = session.scalar(
+            select(GroupBotRequiredChannelFollow.id).where(
+                GroupBotRequiredChannelFollow.admission_id == admission.id,
+                GroupBotRequiredChannelFollow.status != "success",
+            ).limit(1)
+        )
+    if not pending:
+        return False
+    _defer(
+        action,
+        _now() + timedelta(seconds=REQUIRED_CHANNEL_ADMISSION_RETRY_SECONDS),
+        "required_channel_follow_pending",
+        "群管机器人要求的频道关注尚未完成",
+    )
+    return True
+
+
+def _persisted_confirmation_button_matches(session: Session, group_id: int, payload) -> bool:
+    with session.no_autoflush:
+        source = session.scalar(
+            select(GroupContextMessage).where(
+                GroupContextMessage.group_id == group_id,
+                GroupContextMessage.remote_message_id == str(getattr(payload, "source_message_id", "") or ""),
+            )
+        )
+    if source is None:
+        return True
+    if source.sender_peer_id != str(getattr(payload, "trusted_bot_peer_id", "") or ""):
+        return False
+    expected = (int(getattr(payload, "button_row", -1)), int(getattr(payload, "button_col", -1)), str(getattr(payload, "button_text", "") or ""))
+    return any(
+        (int(button.get("row", -1)), int(button.get("col", -1)), str(button.get("text", ""))) == expected
+        and button.get("action_type") == "callback"
+        for button in (source.control_buttons or [])
+    )
+
+
+def _finish_group_bot_confirmation_button(action: Action, account: TgAccount, *, admission, result) -> None:
+    if not result.ok:
+        _apply_operation_result(action, account, False, result.failure_type or FailureType.UNKNOWN.value, result.detail)
+        action.result = {**(action.result or {}), "error_code": "group_bot_confirmation_button_failed"}
+        return
+    _apply_operation_result(action, account, True, "", result.detail or "group_bot_confirmation_button_clicked")
+    action.result = {
+        **(action.result or {}),
+        "group_bot_admission_id": admission.id,
+        "group_bot_admission_state": admission.state,
+        "confirmation_click": "accepted_waiting_bot_confirmation",
+    }
 
 
 def _maybe_hold_pending_visibility(

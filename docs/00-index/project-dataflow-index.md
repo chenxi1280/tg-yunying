@@ -121,16 +121,22 @@ group_ai_chat 硬小时
 
 Phase A 目标生命周期门禁覆盖 AI 活群、转发监听自动回复、`message_tasks`、Campaign / 旧任务兼容发送和人工发送；Phase B 硬小时账本仅覆盖 `group_ai_chat`。公平 cursor 先短事务持久化本次类别选择并提交，再锁 Action；新建 hard-hourly membership Action 直接按 claim 顺序近期排程；仅 Recovery 对存量 future Action 做 ≤50 行、仅锁 `actions` 的 fast-track，提交释放 Action 锁后才另写任务统计。发布前置：时区基线与 dead-lock 收敛。首次发布所有群保持 `legacy_group_slot`（默认不解除多账号互挡），只有显式 canary 才能切换 `account_only` 类策略。专项：`docs/03-feature-designs/ai-group-send-continuity-and-terminal-targets-prd.md`。计划测试入口：`test_target_lifecycle.py`、`test_outbound_target_gate.py`、`test_hard_hourly_ledger.py`、`test_task_center_capacity_dispatch.py`、各历史发送入口的数据流回归。
 
-### DF-183 AI 活群/频道评论真人化与群管机器人准入（2026-07-27 观察链路与成功事实修补）
+### DF-183 AI 活群/频道评论真人化与群管机器人准入（2026-07-27 控制按钮、可信来源与并发窗口修补）
 
 专项真相源：`docs/03-feature-designs/ai-conversation-humanization-and-group-bot-admission-prd.md`（design_status=complete）。本节描述 2026-07-27 的实现数据流；本地测试通过不代表生产 Telegram 已恢复或自然日目标已达成。与 DF 目标终态 / hard-hourly credit / unknown 占位的交叉口径以 continuity 专项为准。
 
 ```text
 group_ai_chat 账号入群
-  -> join Gateway 前以同群既有 listener 读取最大数值消息 ID
+  -> join Gateway 前锁定同群 admission window
+     已有 joining/观察/follow/确认窗口 -> membership Action pending(group_bot_admission_window_busy)，无 Gateway/无正文
+  -> 以同群既有 listener 读取最大数值消息 ID
   -> 写 membership Action.join_start_cursor，创建 GroupBotAdmission(awaiting_group_bot_rule)
      无基线 / 读取失败 -> observation_stale(join_start_cursor_missing)，不得从 0 推断
-  -> listener 每轮 fetch_group_messages 后：先处理控制事件，再为每个 observing admission 写 GroupBotAdmissionObservation
+  -> listener 每轮 fetch_group_messages 后：快照保留 bot peer + 无 callback data 的按钮(row/col/text/url/type)摘要
+  -> 控制事件：先检查 admin / 已绑定 peer / active explicit-or-follow policy peer，来源不可信则零状态写入
+     仅可信来源才按账号身份归属；不唯一只影响该可信 prompt，绝不批量污染 waiting admission
+     bot 控制消息持久化为 is_bot 审计上下文，不进 AI/学习/引用候选
+  -> 再为每个 observing admission 写 GroupBotAdmissionObservation
      有效窗口必须覆盖 join_start_cursor；最新 N 条未覆盖基线 -> cursor_gap / observation_stale
      fetch 异常 -> worker rollback 后单独持久化 listener_fetch_failed + listener_last_error
   -> 观察闭合窗口（默认 120s）只决定何时结束观察，绝不自动放行
@@ -142,8 +148,10 @@ group_ai_chat 账号入群
             -> reconcile 未进 Gateway 的 admission
        存量无基线 -> targets.manage restart-observation(expected version + reason + evidence)
             -> 从 GroupContextMessage 当前 waterline 重置新观察世代 + AuditLog
-  -> 每个原始频道引用 -> group_bot_required_channel_follow（Gateway 验广播频道）
-  -> 完成事件识别器（精确按钮 / 版本化确认模板）或 follow_sufficient
+  -> 每个正文或同源 URL 按钮的原始频道引用 -> group_bot_required_channel_follow（Gateway 重解析并验广播频道）
+  -> 全部 follow 后，精确 callback action 重读 source_message_id 并校验 peer/row/col/text/type -> Telegram click
+     click 成功仍等待同 peer 的完成事件；不得直接 ready
+  -> 完成事件识别器（精确按钮后的 bot 回执 / 版本化确认模板）或 follow_sufficient
   -> can_send 复检 + challenge 相位投影；test_message 仅 admission ready 之后
   -> GroupBotAdmission.ready ∧ can_send 才进正文池
   -> Planner/claim/rebind/AI/Gateway 同一门禁；未 ready -> group_bot_admission_wait（无 Attempt）
@@ -164,7 +172,7 @@ group_ai_chat / channel_comment 正文
   -> OutboundTargetGate + 轮换 + 群管 + can_send + 出站策略
 ```
 
-迁移 canary：C0 inventory → C1 仅新入群 enforce → C2 存量复核（legacy_send_until_reviewed）→ C3 全量。supersede：hard-hourly 发送后重发、日覆盖 `emoji_react`、`consecutive_message_*`。回归入口：`test_group_bot_admission.py`、`test_group_bot_admission_observation_recovery.py`、`test_task_center_success_fact.py`、`test_conversation_speaker_rotation.py`、`test_conversation_content_quality.py`、`test_group_ai_dispatch_generation.py`、`test_channel_comment_generation_postgres.py`。
+迁移 canary：C0 inventory → C1 仅新入群 enforce → C2 存量复核（legacy_send_until_reviewed）→ C3 全量。supersede：hard-hourly 发送后重发、日覆盖 `emoji_react`、`consecutive_message_*`。回归入口：`test_group_bot_admission.py`、`test_group_bot_admission_observation_recovery.py`、`test_group_bot_follow_actions.py`、`test_group_bot_control_buttons.py`、`test_task_center_success_fact.py`、`test_conversation_speaker_rotation.py`、`test_conversation_content_quality.py`、`test_group_ai_dispatch_generation.py`、`test_channel_comment_generation_postgres.py`。
 
 ## 3. 业务域流转总览
 

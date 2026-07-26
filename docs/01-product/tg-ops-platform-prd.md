@@ -2136,7 +2136,7 @@ AI 活跃群仍然以当前任务的目标群上下文为事实来源，画像�
 - 群聊和频道评论都优先使用 Telegram 原生 `reply_to_message_id`；有合格候选时每批至少一条引用回复，候选不足只记录 `reply_target_shortfall`，不得把“回复某人”伪装进普通正文。
 - 非引用内容在生成与真人化质量门均不能得到合格候选时，唯一允许的确定性兜底为精确文本 `签到`，并写入 `content_source=check_in_fallback` 与原因；引用动作不能降级为未引用的 `签到`，也不能连续发送两个 `签到`。
 - 群聊和评论必须在发送前执行统一真人化质量门：拒绝模板壳、重复起句、无事实锚点、错误引用、语义复读和不符合账号口吻的候选；质量门只能给出可审计拒绝，不能静默改写正文。
-- 新入群的 AI 活群账号必须先完成群管机器人准入。`TgGroupAccount.can_send` 只表示 Telegram 传输权限，`GroupBotAdmission.state` 单独表示群管机器人规则；两者不得相互伪造。可信群管机器人提示中的每个频道引用都创建独立关注 action，Gateway 必须验证目标是广播频道。关注成功和 Telegram 无正文能力探测都不能单独证明群管机器人放行；需要同一可信机器人**可解析完成事件**（精确确认按钮或版本化确认模板表），或运营明确配置并审计的 `follow_sufficient` 协议。该协议必须写入按“目标群 + 可信机器人 peer”生效的 `GroupBotAdmissionPolicy`，带证据、版本、操作者和撤销事实，不能做成任务 JSON 或租户全局开关。任何未 ready 状态均不得调用 AI、test_message 或 Telegram 正文发送。专项完整口径见 `docs/03-feature-designs/ai-conversation-humanization-and-group-bot-admission-prd.md`。
+- 新入群的 AI 活群账号必须先完成群管机器人准入。`TgGroupAccount.can_send` 只表示 Telegram 传输权限，`GroupBotAdmission.state` 单独表示群管机器人规则；两者不得相互伪造。**来源信任必须早于账号归属和状态写入**：普通 bot、未绑定 peer 或 unknown role bot 不得污染等待账号；只有管理员 bot、admission 已绑定的同 peer，或 `targets.manage` 以原始消息/按钮证据审计绑定的目标级 explicit/follow policy peer，才能处理控制事件。频道引用可仅存在于内联 URL 按钮，快照仅持久化按钮坐标、文本、公开 URL 和类型，绝不保存 callback data；Gateway 必须验证原消息、bot peer、按钮坐标/文本/类型，并只关注原提示的广播频道。关注成功和 Telegram 无正文能力探测都不能单独证明群管机器人放行；精确 callback click 本身也不能 ready，仍需要同一可信机器人**可解析完成事件**（后续确认或版本化确认模板表），或运营明确配置并审计的 `follow_sufficient` 协议。该协议必须写入按“目标群 + 可信机器人 peer”生效的 `GroupBotAdmissionPolicy`，带证据、版本、操作者和撤销事实，不能做成任务 JSON 或租户全局开关。每个群同时仅允许一个新 admission 处于 join/观察/follow/确认窗口；后续 membership action 必须在 Gateway 前显式 defer，不能并发入群后把群管提示误归属。任何未 ready 状态均不得调用 AI、test_message 或 Telegram 正文发送。专项完整口径见 `docs/03-feature-designs/ai-conversation-humanization-and-group-bot-admission-prd.md`。
 - 群管控制观察必须从本次入群前记录的 `join_start_cursor` 严格增量读取至可审计的 `observed_end_cursor`。观察**闭合窗口**（默认 120s，仅决定何时结束观察）与**放行**分离：窗口到期且游标连续、无可信规则时，有 active `not_required` 才写 clear，否则写 `group_bot_policy_unresolved` 并支持运营一键/批量审计创建策略；不得靠固定等待自动 ready。最新 N 条普通上下文、私聊提示、普通成员转发文本或 `probe.ok` 均不是放行证据。
 - 首次通过群管准入后的正文，以及 `admission_version` 递增后的首条正文，都必须做无正文远端可见性核验（默认窗口 90s）。Action 进入 `pending_visibility`：**与** `unknown_after_send` **共用** `unknown_after_send_hold_count` 占位 1，`planning_reservation` 公式不变，禁止对同一义务再规划替代发送。需核验消息在 `visible_confirmed` 前**不得**落正式 hard-hourly credit / 覆盖确认，须先 `pending_visibility_credit`（不涨 success_count）。可信机器人删除/拒绝写 `post_send_intercepted`、撤回群管 ready、停止后续未进 Gateway action 且不计正式 credit；账号永久不再履约仅当运营 `targets.manage` 显式 `admission_abandoned` 后才从硬小时 `durable_debt` 排除（覆盖分母保留 blocked）。超时不得当成功。
 - 已入群的存量账号不得把旧 `can_send=true` 直接当作新群管准入通过，也不得批量改写该 Telegram 权限字段。迁移分 canary：C1 仅新入群 enforce，存量新建 action 仍可发送但打 `legacy_send_until_reviewed`；C2 复核完成只影响之后新 action，存量 unknown 只走终态/continuity 裁决；全量 enforce 前不得一夜抽空 ready 池。
@@ -2585,8 +2585,9 @@ AI 活跃群不得再通过 `曲线强度 / 100` 同时压低轮数和参与账�
 账号范围
   -> 检查是否已加入目标群 / 已关注频道
   -> 未加入目标群：执行入群
-  -> AI 活群：记录入群前控制游标并执行群管机器人控制观察
-  -> 可信群管机器人要求先关注频道：按精确引用创建频道关注 action
+  -> AI 活群：取得同群 admission 串行窗口，记录入群前控制游标并执行群管机器人控制观察
+  -> 可信群管机器人要求先关注频道：从正文/内联按钮按精确引用创建广播频道关注 action
+  -> 全部关注后：仅对同一原消息、同一 bot peer 的精确 callback 做重读校验并 click；等待可信确认事件
   -> 必要时执行同一机器人给出的精确确认按钮，并等待明确放行或目标级审计的 `follow_sufficient` 协议
   -> 入群后检查是否需要验证
   -> 执行按钮 / 文本问答 / 算数题 / 多模态视觉图片验证码识别
@@ -3636,8 +3637,8 @@ AI 与提示词 Tab 维护 AI 底座，不承载素材日常管理。
 | `conversation_speaker_turns`（专项设计待开发） | `tenant_id`、`surface`、`conversation_key`、`remote_message_id`、`remote_cursor`、`sender_kind`、`account_id`、`outcome`、`content_source`、`action_id`、`observed_at` | 群聊/频道讨论区真实消息顺序；真人消息才可打断同账号连续发言，群管机器人/系统服务消息不打断。`unknown_after_send` 和待可见性核验消息保守保留占位，不能因本地 Planner 排序覆盖。 |
 | `tg_groups` | `tg_peer_id`、`group_type`、`auth_status`、`can_send` | 账号同步得到的群/频道资产 |
 | `tg_group_accounts` | `group_id`、`account_id`、`can_send`、`is_listener` | 账号和群/频道的 Telegram 传输能力关系；`can_send` 只表达 Telegram 权限，不能承担 AI 活群群管机器人准入。 |
-| `group_bot_admission_policies`（专项设计待开发） | `tenant_id`、`group_id`、`trusted_bot_peer_id`、`completion_policy`、`evidence_ref`、`reason`、`policy_version`、`status`、`created_by`、`revoked_by`、`effective_at`、`revoked_at` | 目标级群管完成协议审计。`follow_sufficient` 必须绑定目标群和已观察到的可信机器人 peer；`not_required` 必须引用连续控制观察。数据库保证每目标群一个 active `not_required`、每目标群+机器人 peer 一个 active `follow_sufficient`。写入/撤销需 `targets.manage`、版本并发校验和审计。 |
-| `group_bot_admissions`（专项设计待开发） | `tenant_id`、`group_id`、`account_id`、`membership_action_id`、`state`、`completion_policy`、`policy_version`、`trusted_bot_peer_id`、`join_start_cursor`、`observed_end_cursor`、`source_message_id`、`confirmation_message_id`、`transport_observation`、`post_send_visibility_state`、`failure_code`、`updated_at` | AI 活群账号的群管机器人准入事实；独立于 `can_send`，保存可信来源、连续控制游标、完成协议与发送后可见性。`probe.ok` 不可推进 ready。 |
+| `group_bot_admission_policies`（专项设计待开发） | `tenant_id`、`group_id`、`trusted_bot_peer_id`、`completion_policy`、`evidence_ref`、`reason`、`policy_version`、`status`、`created_by`、`revoked_by`、`effective_at`、`revoked_at` | 目标级群管完成协议审计。`follow_sufficient` 与 `explicit_bot_confirmation` 必须绑定目标群和已观察到、已审计的可信机器人 peer；该 peer 才能在 Telegram role 为 unknown 时成为受限控制来源。`not_required` 必须引用连续控制观察，不能建立 bot 信任。写入/撤销需 `targets.manage`、版本并发校验和审计。 |
+| `group_bot_admissions`（专项设计待开发） | `tenant_id`、`group_id`、`account_id`、`membership_action_id`、`state`、`completion_policy`、`policy_version`、`trusted_bot_peer_id`、`join_start_cursor`、`observed_end_cursor`、`source_message_id`、`confirmation_message_id`、`transport_observation`、`post_send_visibility_state`、`failure_code`、`updated_at` | AI 活群账号的群管机器人准入事实；独立于 `can_send`，保存可信来源、连续控制游标、来源消息、按钮摘要绑定、完成协议与发送后可见性。`probe.ok` 或 callback click 都不可单独推进 ready。 |
 | `group_bot_required_channel_follows`（专项设计待开发） | `admission_id`、`channel_ref`、`source_message_id`、`action_id`、`resolved_peer_id`、`resolved_type`、`status`、`failure_code`、`completed_at` | 每个可信提示里的精确频道引用对应一条独立关注 action；执行前必须验证为广播频道，不能根据文案或跳转猜测任意目标。 |
 | `tg_account_online_state` | `tenant_id`、`account_id`、`desired_online`、`desired_sources`、`online_status`、`session_kind`、`session_id`、`proxy_id`、`last_seen_at`、`last_probe_at`、`last_keepalive_at`、`stale_after_at`、`failure_type`、`failure_detail`、`recovery_status`、`next_probe_at`、`active_task_count`、`reconciled_at`、`updated_at` | 账号在线保活事实源；全局保活和 AI 活跃群、转发、监听任务要求账号持续在线时写入 `desired_online=true`，保活 worker 分批探测和 warm，Planner / Dispatcher 只使用在线就绪账号；掉线、需重登、session 失效、代理异常、stale 状态和需求来源必须可见；任务暂停 / 停止 / 删除或账号范围变更后必须 reconcile 清理来源 |
 | `tasks` | `type`、`status`、`account_config`、`pacing_config`、`failure_policy`、`type_config`、`stats` | 新版任务中心任务 |
@@ -4077,7 +4078,7 @@ operation_targets
 - 准入候选来自任务账号配置选中的全部在线账号，例如全部可用账号、指定账号分组或手动选择账号；只有账号本体离线、不可用、无 session、被明确排除或账号级安全阻塞时才剔除。
 - `max_concurrent`、每轮发言数、账号冷却、健康权重和发送容量只影响主互动规划与发送节奏，不得截断关注 / 入群 / 可发言能力准备。
 - 对转发目标群，准入完成条件是已加入且 Telegram 可发言；对 AI 活跃群，除已加入和 Telegram `can_send=True` 外，还必须满足独立的群管机器人准入 ready。权限探测必须区分“缺字段 / 未知”“账号不在群”“默认禁言”“单账号被禁言”“发送 API 明确失败”；不能把缺少 `send_messages` 字段直接判定为 `can_send=False`，也不能把 Telegram 探测成功当成群管机器人放行。
-- 群管机器人准入的控制观察必须有入群前 listener 基线和每轮 listener 拉取的持久化 observation 证据；没有基线、读取失败或最新窗口未覆盖基线时显式为 `observation_stale`，不得靠等待时间、`can_send=True`、历史发言或最新 N 条快照自动 ready。无可信频道规则且无目标级 policy 时为 `group_bot_policy_unresolved`，不能展示成“需要关注频道”。线上存量无基线只能由 `targets.manage` 带版本、理由、证据重启观察。
+- 群管机器人准入的控制观察必须有入群前 listener 基线和每轮 listener 拉取的持久化 observation 证据；没有基线、读取失败或最新窗口未覆盖基线时显式为 `observation_stale`，不得靠等待时间、`can_send=True`、历史发言或最新 N 条快照自动 ready。控制消息必须先通过来源信任，再参与归属；内联 URL/callback 按钮必须随消息持久化为无 callback data 的摘要，并由 Gateway 对原消息做精确重读校验。无可信频道规则且无目标级 policy 时为 `group_bot_policy_unresolved`，不能展示成“需要关注频道”。线上存量无基线或被历史错误归属的 admission 只能由 `targets.manage` 带版本、理由、证据单账号重启观察；不得批量 reset 或隐式 ready。
 - 对频道点赞，准入完成条件是账号已关注 / 已加入目标频道。Planner 阶段不得把没有账号-频道关系的账号直接安排点赞；Dispatcher 运行时如果发现账号未关注 / 未加入，应补齐准入动作并延后当前点赞，而不是把该 action 终态失败或直接调用 Telegram 点赞接口。
 - 对频道评论 / 回复，准入完成条件是账号已关注 / 已加入频道并能访问对应讨论区。Planner 阶段不得把没有账号-频道关系的账号直接安排评论；Dispatcher 运行时如果发现账号未关注 / 未加入，应补齐准入动作并延后当前评论，而不是把该 action 终态失败或跳过。
 - 群机器人、图形验证码和入群问题只在当前证据仍存在时展示。目标群已经没有对应机器人或验证消息时，账号详情和任务详情必须刷新为最新目标能力，不得沿用旧文案。

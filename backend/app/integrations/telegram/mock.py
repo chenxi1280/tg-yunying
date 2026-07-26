@@ -257,6 +257,38 @@ class TelegramGateway:
             return ChannelMembershipResult(False, "失败", FailureType.PEER_INVALID.value, "频道不可访问", "failed")
         return ChannelMembershipResult(True, detail=f"joined:{target}:{account_id}", membership_status="joined")
 
+    def follow_group_bot_required_channel(
+        self,
+        account_id: int,
+        channel_ref: str,
+        source_channel_url: str,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> ChannelMembershipResult:
+        expected = f"https://t.me/{channel_ref.lstrip('@')}"
+        if source_channel_url.rstrip("/").lower() != expected.lower():
+            return ChannelMembershipResult(False, "失败", FailureType.PEER_INVALID.value, "group_bot_channel_source_mismatch", "failed")
+        return self.ensure_channel_membership(account_id, f"@{channel_ref.lstrip('@')}", session_ciphertext, credentials)
+
+    def click_group_bot_confirmation_button(
+        self,
+        account_id: int,
+        group_peer_id: str,
+        source_message_id: str,
+        trusted_bot_peer_id: str,
+        row: int,
+        col: int,
+        text: str,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> OperationResult:
+        return OperationResult(
+            False,
+            "失败",
+            FailureType.UNKNOWN.value,
+            "group_bot_confirmation_button requires Telethon production gateway",
+        )
+
     def probe_message_visible(
         self,
         account_id: int,

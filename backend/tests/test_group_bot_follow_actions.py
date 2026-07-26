@@ -52,6 +52,9 @@ def test_plan_required_channel_follow_actions_writes_admission_bound_fields():
             text="请关注 @school_news",
             bot_peer_id="900",
             is_admin_bot=True,
+            control_buttons=[
+                {"row": 0, "col": 0, "text": "关注频道", "url": "https://t.me/school_news", "action_type": "url"}
+            ],
             bound_task_id=task.id,
         )
         actions = list(
@@ -67,6 +70,7 @@ def test_plan_required_channel_follow_actions_writes_admission_bound_fields():
         assert payload["admission_bound_task_id"] == task.id
         assert int(payload["admission_bound_account_id"]) == 11
         assert payload["channel_ref"] == "school_news"
+        assert payload["source_channel_url"] == "https://t.me/school_news"
         follow = session.scalar(select(GroupBotRequiredChannelFollow).where(GroupBotRequiredChannelFollow.admission_id == admission.id))
         assert follow is not None
         assert follow.action_id == actions[0].id
@@ -101,6 +105,9 @@ def test_dispatch_group_bot_required_channel_follow_marks_admission():
             text="请关注 @school_news",
             bot_peer_id="900",
             is_admin_bot=True,
+            control_buttons=[
+                {"row": 0, "col": 0, "text": "关注频道", "url": "https://t.me/school_news", "action_type": "url"}
+            ],
             bound_task_id=task.id,
         )
         action = session.scalar(
@@ -115,6 +122,42 @@ def test_dispatch_group_bot_required_channel_follow_marks_admission():
         follow = session.scalar(select(GroupBotRequiredChannelFollow))
         assert follow is not None
         assert follow.status == "success"
+
+
+def test_text_only_channel_reference_never_plans_a_guess_follow_action():
+    with _session() as session:
+        task = Task(
+            id="task-ai-1",
+            tenant_id=1,
+            name="ai",
+            type="group_ai_chat",
+            status="running",
+            type_config={"target_group_id": 7},
+        )
+        session.add_all([Tenant(id=1, name="t"), task])
+        admission = ensure_admission_after_join(
+            session,
+            tenant_id=1,
+            group_id=7,
+            account_id=11,
+            membership_action_id="join-1",
+            join_start_cursor="100",
+        )
+
+        ingest_trusted_bot_prompt(
+            session,
+            admission=admission,
+            message_id="bot-1",
+            text="请关注 @school_news",
+            bot_peer_id="900",
+            is_admin_bot=True,
+            bound_task_id=task.id,
+        )
+
+        assert session.scalar(select(Action).where(Action.action_type == "group_bot_required_channel_follow")) is None
+        follow = session.scalar(select(GroupBotRequiredChannelFollow))
+        assert follow is not None
+        assert follow.failure_code == "required_channel_source_missing"
 
 
 def test_probe_message_visible_mock_paths():

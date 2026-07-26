@@ -270,6 +270,41 @@ def test_restart_observation_uses_persisted_listener_waterline() -> None:
         assert admission.failure_code == ""
 
 
+def test_legacy_unattributed_admission_can_restart_individually() -> None:
+    with _session() as session:
+        session.add(Tenant(id=1, name="t"))
+        group = _group(session)
+        listener = TgAccount(id=21, tenant_id=1, display_name="listener", phone_masked="+100")
+        session.add_all([listener, GroupContextMessage(
+            tenant_id=1,
+            group_id=group.id,
+            listener_account_id=listener.id,
+            remote_message_id="301",
+            content="latest listener context",
+        )])
+        admission = ensure_admission_after_join(
+            session,
+            tenant_id=1,
+            group_id=group.id,
+            account_id=11,
+            membership_action_id="join-1",
+            join_start_cursor="100",
+        )
+        admission.state = "group_bot_rule_unattributed"
+        admission.failure_code = "group_bot_rule_unattributed"
+
+        restart_admission_observation(
+            session,
+            admission=admission,
+            expected_admission_version=1,
+            reason="restart only this legacy admission",
+            evidence_ref="incident:2026-07-27",
+        )
+
+        assert admission.state == "awaiting_group_bot_rule"
+        assert admission.join_start_cursor == "301"
+
+
 def test_expired_legacy_wait_without_baseline_becomes_stale_at_send_gate() -> None:
     with _session() as session:
         session.add(Tenant(id=1, name="t"))
