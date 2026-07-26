@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from uuid import uuid4
 
 from sqlalchemy import case, func, or_, select, tuple_
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from app.models import Task, TaskAccountDailyCoverage, TaskDailyCoveragePlanCursor
@@ -130,8 +133,22 @@ def _locked_cursor(
     task: Task,
     timestamp: datetime,
 ) -> TaskDailyCoveragePlanCursor:
-    _lock_task(session, task.id)
-    cursor = session.scalar(
+    cursor = _existing_locked_cursor(session, task, timestamp)
+    if cursor is not None:
+        return cursor
+    _insert_cursor_if_missing(session, task, timestamp)
+    cursor = _existing_locked_cursor(session, task, timestamp)
+    if cursor is not None:
+        return cursor
+    raise RuntimeError(f"daily coverage cursor was not created: task_id={task.id}")
+
+
+def _existing_locked_cursor(
+    session: Session,
+    task: Task,
+    timestamp: datetime,
+) -> TaskDailyCoveragePlanCursor | None:
+    return session.scalar(
         select(TaskDailyCoveragePlanCursor)
         .where(
             TaskDailyCoveragePlanCursor.tenant_id == task.tenant_id,
@@ -140,20 +157,26 @@ def _locked_cursor(
         )
         .with_for_update()
     )
-    if cursor is not None:
-        return cursor
-    cursor = TaskDailyCoveragePlanCursor(
-        tenant_id=task.tenant_id,
-        task_id=task.id,
-        coverage_date=timestamp.date(),
+
+
+def _insert_cursor_if_missing(session: Session, task: Task, timestamp: datetime) -> None:
+    dialect = session.bind.dialect.name if session.bind else ""
+    insert_factory = {"postgresql": postgresql_insert, "sqlite": sqlite_insert}.get(dialect)
+    if insert_factory is None:
+        raise RuntimeError(f"unsupported daily coverage cursor dialect: {dialect or 'unbound'}")
+    table = TaskDailyCoveragePlanCursor.__table__
+    session.execute(
+        insert_factory(table)
+        .values(
+            id=str(uuid4()),
+            tenant_id=task.tenant_id,
+            task_id=task.id,
+            coverage_date=timestamp.date(),
+        )
+        .on_conflict_do_nothing(
+            index_elements=[table.c.tenant_id, table.c.task_id, table.c.coverage_date],
+        )
     )
-    session.add(cursor)
-    session.flush()
-    return cursor
-
-
-def _lock_task(session: Session, task_id: str) -> None:
-    session.execute(select(Task.id).where(Task.id == task_id).with_for_update()).scalar_one()
 
 
 def _ready_rows_after_cursor(

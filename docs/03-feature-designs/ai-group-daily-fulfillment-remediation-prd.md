@@ -227,6 +227,7 @@ hard_hourly_planning_required = hard_hourly_required_new > 0
 - 同一 generation contract batch 只允许有一条 AiGenerationContractAudit；合同失败不会生成新的 variation intent。需要恢复时必须由已审计的 contract revision 或受限人工决定创建新的 Action。
 - 每个 Action 的 variation 与 generation attempt 只可追加审计，不能用后来的重试覆盖先前失败事实。
 - target_reference_revision、tenant、task、group、account 和 coverage_ledger_id 必须在 Planner、生成落库、Gateway 前和 finalization 四个边界一致；任一不一致不得发送。
+- `TaskDailyCoveragePlanCursor` 是 `(tenant_id, task_id, coverage_date)` 的唯一 Planner 串行点。已有游标只能锁定该游标行；首次创建必须以该唯一键 `INSERT ... ON CONFLICT DO NOTHING` 后重新锁定游标行。Planner 不能在已持有 Action 或 coverage 写入时再锁 `tasks` 行，因为 Dispatcher 会先处理 Action 再回写 Task 统计，反向锁序必须显式消除；并发创建竞争者必须重新读取同一游标，不能丢弃本轮 coverage 决策。
 
 ## 7. QA 验收
 
@@ -240,6 +241,7 @@ hard_hourly_planning_required = hard_hourly_required_new > 0
 | hard_hourly 已达标且仍有日覆盖 debt | required_new 仍触发规划决策；有足够容量时新建缺失 Action |
 | 有 future_open 与 overdue_open | 两者分开计数；过期 open 不可伪装抵扣当前缺口 |
 | Planner 全局 backlog | 不绕过 pending 上限；写 planner_capacity_insufficient 与下一检查时间，daily_outcome 不得显示 feasible |
+| 已有覆盖游标与 Dispatcher 并发 | Planner 只锁 `TaskDailyCoveragePlanCursor`，不再锁 `tasks` 行；PostgreSQL 不得出现 Planner/Dispatcher 的反向锁序或丢弃 coverage 决策 |
 | cannot_send | 留在冻结分母、daily_outcome=blocked、无正文 Gateway 调用 |
 | 入群申请待审批 | 不计 membership 或覆盖成功，显示 membership_permission_denied 或 join_request_pending 的真实原文 |
 | unknown_after_send | 保持占位、不重发、不计成功，直到远端核验 |
@@ -272,3 +274,4 @@ hard_hourly_planning_required = hard_hourly_required_new > 0
 - `group_ai_chat.py` 先以 `reservation_token` CAS reservation，再持久化 `action_id=null` 的 `AiCoverageVariationIntent`，随后创建并 flush Action，最后绑定两个真实 Action 外键；重复 variation intent 明确释放同一 token reservation。迁移 `0123_coverage_reservation_binding.py` 提供该临时 token。
 - 全局 Planner 无槽位时，`service.py` 对当日 ready debt 写 `planner_capacity_insufficient`、`next_decision_at` 和追加式 `TaskDailyFulfillmentDecision`，日履约不再静默显示 feasible。
 - 迁移 `0121_daily_fulfillment_contracts.py` 持久化覆盖扩展列、variation intent、每日决定和 generation contract audit；自动化回归覆盖 intent 顺序、重复拒绝、overdue 与 backlog。
+- `daily_coverage_planning.py` 对已有 `TaskDailyCoveragePlanCursor` 只执行游标行锁；首次创建通过唯一键冲突收敛后再锁定同一游标，消除 Planner 在 Action 处理之后反向锁 `tasks` 行造成的生产死锁。
