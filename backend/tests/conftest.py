@@ -38,18 +38,21 @@ RULE_BINDING_REQUIRED_TEST_TASK_TYPES = frozenset({"group_relay", "group_ai_chat
 TEST_RULE_SET_ID_BASE = 900_000_000
 TEST_RULE_VERSION_ID_BASE = 901_000_000
 AUTO_BOUND_TASKS_SESSION_KEY = "auto_bound_rule_tasks"
+ACTIVE_WINDOW_BEHAVIOR_TESTS = frozenset({"test_group_ai_send_waits_for_configured_active_window"})
 
 
 @pytest.fixture(autouse=True)
-def keep_default_group_send_tests_inside_active_window(monkeypatch):
+def keep_default_group_send_tests_inside_active_window(monkeypatch, request):
+    if request.node.name in ACTIVE_WINDOW_BEHAVIOR_TESTS:
+        return
+    from app.services import outbound_target_gate
     from app.services.task_center import group_send_limits
 
-    current_now = group_send_limits._now
-    monkeypatch.setattr(
-        group_send_limits,
-        "_now",
-        lambda: current_now().replace(hour=12, minute=0, second=0, microsecond=0),
-    )
+    def allow_active_window(_group, _now=None):
+        return None
+
+    monkeypatch.setattr(group_send_limits, "active_window_block", allow_active_window)
+    monkeypatch.setattr(outbound_target_gate, "active_window_block", allow_active_window)
 
 
 def _normalize_postgres_url(raw_url: str) -> str:
