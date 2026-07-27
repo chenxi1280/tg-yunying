@@ -790,7 +790,7 @@ def test_dispatch_membership_floodwait_creates_rescue_action(monkeypatch) -> Non
         assert rescue_actions[0].payload["trigger_reason"] == "FloodWait 40802 秒"
 
 
-def test_dispatch_membership_global_cooldown_creates_rescue_action(monkeypatch) -> None:
+def test_dispatch_membership_global_cooldown_waits_without_rescue_action(monkeypatch) -> None:
     with _session() as session:
         _seed_rescue_target(session)
         task = session.get(Task, "task-rescue")
@@ -809,12 +809,8 @@ def test_dispatch_membership_global_cooldown_creates_rescue_action(monkeypatch) 
         rescue_actions = session.scalars(select(Action).where(Action.action_type == "invite_group_account")).all()
         assert action.status == "pending"
         assert action.result["error_code"] == "global_account_policy"
-        assert action.result["group_rescue_status"] == "pending"
-        assert len(rescue_actions) == 1
-        assert rescue_actions[0].account_id == 99
-        assert rescue_actions[0].payload["target_account_id"] == 11
-        assert rescue_actions[0].payload["target_account_ref"] == "@normal_user"
-        assert rescue_actions[0].payload["trigger_reason"] == "账号全局冷却中"
+        assert "group_rescue_status" not in action.result
+        assert rescue_actions == []
 
 
 def test_dispatch_membership_private_group_lifts_restriction_and_joins(monkeypatch) -> None:

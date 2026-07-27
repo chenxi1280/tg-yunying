@@ -1831,7 +1831,6 @@ def _apply_claim_account_policy(session: Session, action: Action) -> bool:
         "global_account_policy",
         detail,
     )
-    _maybe_trigger_deferred_membership_rescue(session, action, account, detail)
     return False
 
 
@@ -4070,19 +4069,6 @@ def _maybe_trigger_membership_permission_rescue(ctx: MembershipDispatchContext, 
 def _maybe_trigger_membership_rate_limit_rescue(ctx: MembershipDispatchContext, detail: str) -> None:
     if ctx.payload.target_type != "group":
         return
-    _trigger_membership_group_rescue(ctx, detail)
-
-
-def _maybe_trigger_deferred_membership_rescue(session: Session, action: Action, account: TgAccount, detail: str) -> None:
-    if not _is_membership_action(action):
-        return
-    try:
-        payload = validate_action_payload(action.action_type, action.payload or {})
-    except ValidationError:
-        return
-    if not isinstance(payload, EnsureChannelMembershipPayload) or payload.target_type != "group":
-        return
-    ctx = MembershipDispatchContext(session, action, account, object(), payload, None)
     _trigger_membership_group_rescue(ctx, detail)
 
 
@@ -6408,7 +6394,6 @@ def _account_after_global_policy(session: Session, action: Action, account: TgAc
         "global_account_policy",
         detail,
     )
-    _maybe_trigger_deferred_membership_rescue(session, action, account, detail)
     return None
 
 
