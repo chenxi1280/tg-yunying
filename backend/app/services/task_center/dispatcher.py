@@ -80,6 +80,11 @@ from .executors.channel_comment_budget import (
     total_comment_action_count as _total_comment_action_count,
 )
 from .group_rescue import GROUP_RESCUE_FAILURE_THRESHOLD, infer_rescue_admin_rate_limit, permission_failure_count_for_send_action, refresh_group_rescue_action, trigger_group_rescue
+from .group_bot_confirmation_refresh import (
+    LiveConfirmationRefreshContext,
+    LiveConfirmationSourceFetchError,
+    refresh_live_confirmation_source,
+)
 from .group_send_claim_slots import filter_ready_group_send_actions, lock_eligible_group_send_actions
 from .group_send_limits import GroupSendSlotBlock, group_send_slot_block, reserve_group_send_slot, settle_group_send_slot
 from .payloads import (
@@ -269,6 +274,7 @@ class SearchJoinMembershipDispatchContext:
 RECENT_REQUIRED_CHANNEL_PROMPT_LIMIT = 25
 RECENT_REQUIRED_CHANNEL_PROMPT_LOOKBACK_HOURS = 6
 REQUIRED_CHANNEL_ADMISSION_RETRY_SECONDS = 300
+GROUP_BOT_CONFIRMATION_SOURCE_RETRY_SECONDS = 15
 VERIFICATION_READER_CANDIDATE_LIMIT = 5
 GROUP_RESCUE_INFLIGHT_CONFLICT_BACKOFF_SECONDS = 30
 _ACCOUNT_SESSION_FAILURE_MARKERS = (
@@ -6686,9 +6692,80 @@ def _dispatch_group_bot_confirmation_button(
     if group is None or group.tenant_id != action.tenant_id:
         _fail(action, FailureType.PEER_INVALID.value, "group_bot_confirmation group not found")
         return True
+    refreshed_payload = _refresh_group_bot_confirmation_payload(
+        session,
+        action=action,
+        admission=admission,
+        group=group,
+        account=account,
+        credentials=credentials,
+        payload=payload,
+    )
+    if refreshed_payload is None:
+        return True
+    if not _group_bot_confirmation_action_can_dispatch(session, action, admission):
+        return True
+    _click_refreshed_group_bot_confirmation(
+        session,
+        action=action,
+        admission=admission,
+        group=group,
+        account=account,
+        credentials=credentials,
+        payload=refreshed_payload,
+    )
+    return True
+
+
+def _refresh_group_bot_confirmation_payload(
+    session: Session,
+    *,
+    action: Action,
+    admission,
+    group: TgGroup,
+    account: TgAccount,
+    credentials,
+    payload,
+):
+    try:
+        refreshed_payload = refresh_live_confirmation_source(
+            session,
+            LiveConfirmationRefreshContext(
+                action=action,
+                admission=admission,
+                group=group,
+                account=account,
+                credentials=credentials,
+                gateway_client=gateway,
+                payload=payload,
+            ),
+        )
+    except LiveConfirmationSourceFetchError as exc:
+        _defer_group_bot_confirmation_source(action, "group_bot_confirmation_live_fetch_failed", str(exc))
+        return None
+    if refreshed_payload is None:
+        _defer_group_bot_confirmation_source(
+            action,
+            "group_bot_confirmation_source_stale",
+            "实时读取未发现匹配当前频道规则的可信群管确认按钮",
+        )
+        return None
+    return refreshed_payload
+
+
+def _click_refreshed_group_bot_confirmation(
+    session: Session,
+    *,
+    action: Action,
+    admission,
+    group: TgGroup,
+    account: TgAccount,
+    credentials,
+    payload,
+) -> None:
     if not _persisted_confirmation_button_matches(session, group.id, payload):
         _fail(action, FailureType.PEER_INVALID.value, "group_bot_confirmation_button_mismatch")
-        return True
+        return
     result = gateway.click_group_bot_confirmation_button(
         account.id,
         group.tg_peer_id,
@@ -6700,8 +6777,25 @@ def _dispatch_group_bot_confirmation_button(
         account.session_ciphertext,
         credentials,
     )
+    if not result.ok and "group_bot_confirmation_button_mismatch" in (result.detail or ""):
+        _defer_group_bot_confirmation_source(
+            action,
+            "group_bot_confirmation_source_stale",
+            "实时确认按钮在 Telegram 侧已变化，未执行旧 callback",
+        )
+        return
     _finish_group_bot_confirmation_button(action, account, admission=admission, result=result)
-    return True
+
+
+def _defer_group_bot_confirmation_source(action: Action, code: str, detail: str) -> None:
+    retry_at = _now() + timedelta(seconds=GROUP_BOT_CONFIRMATION_SOURCE_RETRY_SECONDS)
+    _defer(action, retry_at, code, detail)
+    action.result = {
+        **(action.result or {}),
+        "validation_stage": "group_bot_confirmation_live",
+        "retry_after_seconds": GROUP_BOT_CONFIRMATION_SOURCE_RETRY_SECONDS,
+        "next_retry_at": retry_at.isoformat(),
+    }
 
 
 def _group_bot_confirmation_action_can_dispatch(session: Session, action: Action, admission) -> bool:
@@ -6728,7 +6822,11 @@ def _group_bot_confirmation_admission(session: Session, action: Action, account:
     if str(getattr(payload, "button_type", "") or "") != "callback":
         _fail(action, FailureType.PEER_INVALID.value, "group_bot_confirmation_button_type_invalid")
         return None
-    admission = session.get(GroupBotAdmission, int(getattr(payload, "admission_id", 0) or 0))
+    admission = session.scalar(
+        select(GroupBotAdmission)
+        .where(GroupBotAdmission.id == int(getattr(payload, "admission_id", 0) or 0))
+        .with_for_update()
+    )
     if admission is None or admission.tenant_id != action.tenant_id:
         _fail(action, FailureType.UNKNOWN.value, "admission not found")
         return None

@@ -5,8 +5,8 @@
 | 项目 | 内容 |
 | --- | --- |
 | 需求级别 | L3 生产问题修复 |
-| 设计状态 | complete（2026-07-27 日覆盖、同群发送领取槽位与群管频道规则交叉修订） |
-| 变更状态 | 先前 release 已完成群管控制提示分类、恢复与并发准入修复；本次按 Release Gate 修复五条已由生产证据确认的日履约链路：未进入 Telegram Gateway 的 overdue Action 被误标为远端未知、跨 Window claim 账本计数漂移使 Recovery 因 `dispatch claim ledger underflow` 回滚、Dispatcher 加锁取行时用通用静态时间排序覆盖已分配的 `DispatchClaimPlan` 同优先级候选顺序、多个 worker 在 Gateway 前同时领取同一 `legacy_group_slot` 群的正文 Action，以及已审计可信的全群频道规则因没有单一账号归属而未创建 pre-send follow。既有 target admission、硬小时、搜索 membership/source、任务优先级、频道评论和公平优先级仍是计划的必需前缀。真实 Telegram 结果与完整自然日验收仍须以 Action + Attempt + remote_message_id 和日账本证明；不得以 worker 存活、Action 创建或 ledger 释放代替。 |
+| 设计状态 | complete（2026-07-27 日覆盖、同群发送领取槽位、群管频道规则与实时确认按钮来源交叉修订） |
+| 变更状态 | 先前 release 已完成群管控制提示分类、恢复与并发准入修复；本次按 Release Gate 修复六条已由生产证据确认的日履约链路：未进入 Telegram Gateway 的 overdue Action 被误标为远端未知、跨 Window claim 账本计数漂移使 Recovery 因 `dispatch claim ledger underflow` 回滚、Dispatcher 加锁取行时用通用静态时间排序覆盖已分配的 `DispatchClaimPlan` 同优先级候选顺序、多个 worker 在 Gateway 前同时领取同一 `legacy_group_slot` 群的正文 Action、已审计可信的全群频道规则因没有单一账号归属而未创建 pre-send follow，以及 listener 入库的当前 confirmation callback 已在 Telegram 侧变更。既有 target admission、硬小时、搜索 membership/source、任务优先级、频道评论和公平优先级仍是计划的必需前缀。真实 Telegram 结果与完整自然日验收仍须以 Action + Attempt + remote_message_id 和日账本证明；不得以 worker 存活、Action 创建或 ledger 释放代替。 |
 | 适用任务 | account_coverage_mode=all_accounts_daily 的 group_ai_chat |
 | 统计时区 | Asia/Shanghai |
 | 关联线上证据 | 2026-07-25 完整日账本与 2026-07-26 生产只读取证 |
@@ -42,6 +42,7 @@
 7. 第一轮修复发布后，pre-Gateway overdue 与 ledger underflow 已能收口，且存在带 `remote_message_id` 的新成功发送；但 `DispatchClaimPlan` 已按 reservation、allocation epoch 和公平 cursor 选出候选，`_locked_claim_plan_candidates` 却再次按通用 `claim_action_ordering` 的旧 `scheduled_at` / `created_at` 队列排序。历史大积压使同优先级的旧同群 Action 反复先被领取、随后命中真实 `GroupSendSlotBlock` 的群慢速模式并延后，已分配但未领取的 shard 份额无法转给计划中的其他目标。根因修复必须保留既有类别、任务和公平优先级，再以计划位置取代旧时间排序；发布后抽样实际间隔仍约 35–104 秒，未达到 120 条/小时所需的约 30 秒一条。该问题不能通过放宽群冷却或切换 `send_limit_mode` 掩盖。
 8. 计划顺序修复后，多个 Dispatcher worker 仍可在同一事务窗口领取同一 `legacy_group_slot` 群的多个 pending `send_message`；群行锁和 `GroupSendSlotBlock` 只在内容已准备、Gateway 即将调用时才取得。首条进入 Gateway 后，其余已领取 Action 才被群冷却延后，造成生成、worker 和 claim 份额浪费，实测远端间隔仍高于 120 条/小时所需的约 30 秒。该问题不是群冷却过严，而是同群“在途发送”和下一合法发送时刻没有进入领取边界。
 9. 生产群管控制上下文已出现带精确公开频道 URL 和 confirmation callback 的广播提示，但 bot 的 Telegram 角色为 `unknown`。现有安全合同因此正确拒绝其自动信任；即使运营随后为同一 peer 建立审计 policy，当前 listener 在多个 waiting admission 且无收件人时直接返回，不能在正文前为每个任务账号创建频道 follow。结果是已有正文在群管处被拦截，或 admission 保持 `group_bot_rule_unattributed`。根因不是“频道无需关注”，而是缺少“已审计可信、无明确收件人的全群规则”的逐账号展开路径。
+10. 2026-07-27 生产抽样中，`GroupContextMessage` 的控制消息在 Telegram 发送后才由 listener 写入；例如远端发送于 14:05:20、上下文入库于 14:05:33，而 callback 在 14:06 后执行时已返回 `group_bot_confirmation_button_mismatch`。`GroupBotAdmission.source_message_id` 的历史 source/version 校验能淘汰旧 backlog，却不能保证 listener 快照仍等于同一账号即将点击的远端按钮。根因是 click 边界缺少同账号的实时可信来源复核，不是收件人显示名或频道规则归属错误。
 
 因此，本需求不是提高一个统计数字，而是确保每个覆盖义务都有可解释、可恢复且不越过安全门的下一步。
 
@@ -63,6 +64,7 @@
 12. 修复调度顺序不得改变 `legacy_group_slot` 的群日限额、15 秒群冷却、账号容量、准入、内容质量或 `unknown_after_send` 规则；`account_only` 仍只能由运营显式 canary 切换，不能作为本问题的默认处理。
 13. 同一 `legacy_group_slot` 群在 Dispatcher 层同一时刻至多允许一条正文 Action 处于 `claiming/executing`；Gateway 首次取得真实发送槽位时必须持久记录该群下一合法领取时刻。其他目标和 `account_only` 群不得被这一群的冷却或在途 Action 挤占。
 14. 广播式“先关注频道才能发言”只可在 exact bot peer 已是管理员、或由 `targets.manage` 对同群同 peer 建立 active `explicit_bot_confirmation` / `follow_sufficient` policy 后，按当前任务 scope 的既有 admission 逐账号创建精确 follow/callback Action。带明确但不匹配收件人的提示默认仍不得展开；仅 active policy 后同 peer 的两条不同来源提示重复给出完全相同的频道集合和确认 callback 形态时，可作为标准化规则展开。未知 peer、普通推广和历史无来源消息仍不得批量展开。
+15. 每次群管 confirmation callback 在 Telegram click 前，必须使用该 Action 绑定账号实时读取当前群消息，只接受同一 trusted bot peer、当前 admission 的精确频道集合和 callback 形态均匹配的控制消息；将安全按钮摘要写入 `GroupContextMessage` 审计后，只原子换绑该 Action 与该 admission 的 source/row/col/text 再点击。实时读取失败、没有匹配来源或 Telegram 在读取后再次变更按钮时，Action 必须显式写 `group_bot_confirmation_live_fetch_failed` 或 `group_bot_confirmation_source_stale` 并在 15 秒后重试；不得调用旧 callback、终态失败或伪造确认成功。
 
 ### 3.2 非目标
 
@@ -159,7 +161,7 @@ maximum_confirmable_count = frozen_denominator_count - terminal_permission_block
 
 1. listener 在来源过滤、精确控制提示识别后，若文本没有明确收件人、含精确公开频道 URL 且多个 waiting admission 无法归属，只能在来源为管理员 bot 或存在同 group + peer 的 active source-bound policy 时进入全群规则路径。明确收件人不匹配时，只有同 peer 已在当前 listener 上下文中提供另一条不同 source message、且两条消息的精确频道集合与确认 callback 形态相同，才可作为标准化规则进入该路径。
 2. 候选限于运行中 `group_ai_chat` 的持久账号 scope 内、同群且未终态的现有 `GroupBotAdmission`；不同 trusted peer、没有运行任务绑定、`blocked`、`abandoned` 的 admission 一律跳过。不得仅因账户在 `TgGroupAccount` 中存在而伪造 admission 或扩大任务分母。
-3. 每个候选创建自己的 `group_bot_channel_follow`、必要时的精确 callback Action，并携带同一 source message、peer、按钮 URL/坐标、admission/version 与绑定 task/account。唯一保留的 callback 必须精确匹配 `GroupBotAdmission.source_message_id` 当前指向的控制消息，不能仅按最早创建时间保留；同 peer 的有效新提示更新该 source 后，Planner 必须把旧 source 的 pending callback 标记 `group_bot_confirmation_superseded` 并创建新 source 的精确 Action。Dispatcher 的 claim 确认和 Gateway 前复检也必须先执行这一 source/version 判定，再执行账号 usage/capacity/shard policy；旧 source 不得因 `global_account_policy` 延后而遗留为开放 Action、不得领取运行资源或调用 Gateway。follow 和 callback 成功都不直接写 ready；正文 `send_message` 仍在 admission gate 之后。
+3. 每个候选创建自己的 `group_bot_channel_follow`、必要时的精确 callback Action，并携带同一 source message、peer、按钮 URL/坐标、admission/version 与绑定 task/account。唯一保留的 callback 必须精确匹配 `GroupBotAdmission.source_message_id` 当前指向的控制消息，不能仅按最早创建时间保留；同 peer 的有效新提示更新该 source 后，Planner 必须把旧 source 的 pending callback 标记 `group_bot_confirmation_superseded` 并创建新 source 的精确 Action。Dispatcher 的 claim 确认和 Gateway 前复检也必须先执行这一 source/version 判定，再执行账号 usage/capacity/shard policy；旧 source 不得因 `global_account_policy` 延后而遗留为开放 Action、不得领取运行资源或调用 Gateway。完成 follow 后，Dispatcher 还必须以该 callback 的绑定账号实时读取群消息，复核 exact trusted peer、当前 required_channel_refs 和 callback 按钮；将实时安全摘要持久化后，只换绑该 Action 与 admission 的当前 source/按钮再调用 Telegram。读取不到匹配按钮或 Gateway 报 `group_bot_confirmation_button_mismatch` 时，写明确 stale/fetch blocker 并在 15 秒后重试，不调用旧 callback，也不终态化为 `group_bot_confirmation_button_failed`。follow 和 callback 成功都不直接写 ready；正文 `send_message` 仍在 admission gate 之后。
 4. policy 只是受限信任根，不是历史消息重放开关。策略生效后必须由 listener 再观察到同 peer 的有效控制事件；没有新证据时保留 blocker，并在任务详情显示 `group_bot_policy_unresolved` / `group_bot_rule_unattributed` 的真实区别。
 5. 存量 `group_bot_control_prompt_unverified` follow 只可在本路径收到不同 source message 且 channel_ref 仍在当前精确集合时原地 rearm；旧 Action 保留审计，其他 blocked follow 不得批量复活。
 
@@ -308,7 +310,7 @@ hard_hourly_planning_required = hard_hourly_required_new > 0
 | 已知 Gateway 失败后的同群槽位 | 账号受限、权限等已知失败只释放本 Action 持有的临时预约，不得清除后续 Action 槽位；FloodWait / SlowMode 以 Telegram 返回秒数覆盖预约。随后可发送账号可继续领取，未知结果仍保持槽位且不重发 |
 | account_only 群 | 不读取或写入 legacy 的 group claim slot；原账号级并发和可选群日上限保持不变 |
 | unknown-role bot 的广播频道规则 | 无 source-bound policy 时不创建 follow、不变更 admission；有同 group+peer 审计 policy 且 listener 再观察到有效、无收件人提示时，仅为运行中 scope 的既有 admission 创建逐账号 exact follow/callback，绝不创建正文或直接 ready |
-| 上线前遗留或机器人重发的 confirmation callback | 唯一 callback 必须匹配当前 admission 的 `source_message_id`；旧 source 在 claim 和 Gateway 前写 `group_bot_confirmation_superseded`，新 source 重建精确按钮。即使账号处于全局冷却，旧项也不得延后、占用 dispatcher 领取资源或触发 Telegram callback |
+| 上线前遗留、listener 滞后或机器人重发的 confirmation callback | 唯一 callback 必须先匹配当前 admission 的 `source_message_id`；旧 source 在 claim 和 Gateway 前写 `group_bot_confirmation_superseded`，新 source 重建精确按钮。通过该检查后，点击前必须用同一账号实时读取 trusted peer + exact channel refs + callback，持久化安全摘要并只换绑该 Action/admission；未读到或 Gateway 再报 mismatch 时写 `group_bot_confirmation_source_stale`，15 秒后重试且不调用旧 callback。即使账号处于全局冷却，旧项也不得延后、占用 dispatcher 领取资源或触发 Telegram callback |
 | Planner 全局 backlog | 不绕过 pending 上限；写 planner_capacity_insufficient 与下一检查时间，daily_outcome 不得显示 feasible |
 | 已有覆盖游标与 Dispatcher 并发 | Planner 只锁 `TaskDailyCoveragePlanCursor`，不再锁 `tasks` 行；PostgreSQL 不得出现 Planner/Dispatcher 的反向锁序或丢弃 coverage 决策 |
 | cannot_send | 留在冻结分母、daily_outcome=blocked、无正文 Gateway 调用 |
@@ -319,9 +321,9 @@ hard_hourly_planning_required = hard_hourly_required_new > 0
 ## 8. 发布门与生产验收
 
 1. 先完成数据库迁移、回归测试、前端类型检查和 docs/index 一致性检查。
-2. 以 canary 任务验证内容重复、批量映射失败、权限阻塞、pre/post-Gateway overdue、stale claim recovery、claim 计划顺序、同群 claim slot、已审计群管频道规则八类链路；canary 不得降低质量、权限或群冷却门。
+2. 以 canary 任务验证内容重复、批量映射失败、权限阻塞、pre/post-Gateway overdue、stale claim recovery、claim 计划顺序、同群 claim slot、已审计群管频道规则和实时 confirmation 来源复核九类链路；canary 不得降低质量、权限或群冷却门。
 3. 发布必须走 master -> release -> GitHub Actions Deploy Production。
-4. 生产验收必须覆盖一个完整 Asia/Shanghai 自然日。每个任务导出冻结分母、覆盖账本、Action、ExecutionAttempt 和 remote_message_id 链路，并同时证明 stale executing/active claim 不再挤占 scope、同优先级计划候选未被历史同群 Action 的旧时间排序抢占、同群没有并发 `claiming/executing` 正文以及已审计频道 follow 在正文前完成。部署后的短窗口只能证明修复生效：连续可发送目标的远端确认间隔应达到每小时 120 条所需的约 30 秒一条；完整自然日才可证明任务按目标完成或显示真实外部 blocker。
+4. 生产验收必须覆盖一个完整 Asia/Shanghai 自然日。每个任务导出冻结分母、覆盖账本、Action、ExecutionAttempt 和 remote_message_id 链路，并同时证明 stale executing/active claim 不再挤占 scope、同优先级计划候选未被历史同群 Action 的旧时间排序抢占、同群没有并发 `claiming/executing` 正文、已审计频道 follow 在正文前完成，以及 callback 点击审计来自实时同账号读取的可信精确按钮。部署后的短窗口只能证明修复生效：应观察到 source refresh 或显式 stale retry，且不存在该窗口新增的 `group_bot_confirmation_button_failed` mismatch；连续可发送目标的远端确认间隔应达到每小时 120 条所需的约 30 秒一条；完整自然日才可证明任务按目标完成或显示真实外部 blocker。
 5. 只有 full denominator=confirmed 且无 unknown 时，任务日可写 met。若存在真实外部阻塞，结论只能是 production_blocked；若缺少远端证据，结论只能是 production_unproven。
 
 ## 9. Product Design Complete 自检
@@ -342,7 +344,7 @@ hard_hourly_planning_required = hard_hourly_required_new > 0
 - `daily_fulfillment.py` 必须按 ExecutionAttempt Gateway 边界区分 overdue：未进入 Gateway 的 Action 维持 `reserved + dispatcher_lag`，已进入 Gateway 的才为 `unknown + coverage_action_overdue`；所有 Action 与统计时钟的比较统一归一到任务统计时区，详情投影 `overdue_open_count` 与 blocker_counts。
 - `dispatch_claim_ledger.py` 在终态释放时按仍为 `executing + dispatch_claim_active` 的 Action 重算 exact Scope/Window/Allocation counter；发现跨 Window 漂移时写 Action 审计而非抛 underflow。`service._recover_claimed_stale_action` 完成终态后同步 coverage，迁移替换覆盖 terminal unknown 的 Recovery 索引。
 - `dispatcher._locked_claim_plan_candidates` 必须按既有 claim 优先级、再按 `DispatchClaimPlan.candidate_action_ids` 锁取 Action；`scheduled_at` / `created_at` 不能覆盖已获份额的同优先级计划。回归测试必须构造“计划优先 Action 的排期较晚”场景，并保留频道评论、硬小时和 membership 的既有优先级，证明旧 backlog 不会反超。
-- `group_bot_admission.plan_confirmation_button_action` 以 `GroupBotAdmission.source_message_id` 作为 callback 的唯一来源：新有效控制消息到达时替换旧 source 的 pending Action；`dispatcher._confirm_action_claim_candidate` 和 Gateway 前复检同样先核对该 source/version，再执行账号 usage、shard 与容量 policy。因此旧按钮不会被 `global_account_policy` 无限延后或误点，当前精确按钮才可进入 Telegram。
+- `group_bot_admission.plan_confirmation_button_action` 以 `GroupBotAdmission.source_message_id` 作为 callback 的唯一来源：新有效控制消息到达时替换旧 source 的 pending Action；`dispatcher._confirm_action_claim_candidate` 和 Gateway 前复检同样先核对该 source/version，再执行账号 usage、shard 与容量 policy。`group_bot_confirmation_refresh.py` 在 click 边界用绑定账号实时拉取可信控制消息，校验 peer、当前频道集合和 callback 形态，写 `GroupContextMessage` 安全摘要并只换绑该 Action/admission；读取失败或 Telegram 再变更时显式 stale retry。因此旧按钮不会被 `global_account_policy` 无限延后或误点，当前实时精确按钮才可进入 Telegram。
 - `group_ai_chat.py` 先以 `reservation_token` CAS reservation，再持久化 `action_id=null` 的 `AiCoverageVariationIntent`，随后创建并 flush Action，最后绑定两个真实 Action 外键；重复 variation intent 明确释放同一 token reservation。迁移 `0123_coverage_reservation_binding.py` 提供该临时 token。
 - 全局 Planner 无槽位时，`service.py` 对当日 ready debt 写 `planner_capacity_insufficient`、`next_decision_at` 和追加式 `TaskDailyFulfillmentDecision`，日履约不再静默显示 feasible。
 - 迁移 `0121_daily_fulfillment_contracts.py` 持久化覆盖扩展列、variation intent、每日决定和 generation contract audit；自动化回归覆盖 intent 顺序、重复拒绝、overdue 与 backlog。
