@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -8,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.integrations.telegram import GroupControlButtonSnapshot, GroupMessageSnapshot, OperationResult
+from app.integrations.telegram.telethon_content import _group_message_snapshots
 from app.models import Action, AccountStatus, GroupBotAdmission, GroupBotRequiredChannelFollow, GroupContextMessage, OperationTarget, Task, Tenant, TgAccount, TgGroup
 from app.services.group_listener_context_writer import insert_context_snapshots
 from app.services.task_center import dispatcher
@@ -426,6 +428,63 @@ def test_confirmation_action_rebinds_to_live_trusted_button_before_gateway(monke
         assert session.scalar(select(GroupContextMessage.remote_message_id).where(GroupContextMessage.remote_message_id == "fresh-message")) == "fresh-message"
 
 
+def test_confirmation_action_matches_fresh_prompt_by_viewer_peer_id(monkeypatch) -> None:
+    with _session() as session:
+        _group_value, account, _admission, payload, action = _confirmation_action_fixture(
+            session,
+            action_id="confirm-viewer-peer",
+            source_message_id="deleted-message",
+        )
+        fresh = _live_confirmation_snapshot(
+            "fresh-peer-message",
+            content="7405756184，\n需要订阅频道才能发言！",
+            viewer_peer_id="7405756184",
+        )
+        calls: list[str] = []
+        monkeypatch.setattr(dispatcher.gateway, "fetch_group_message", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(dispatcher.gateway, "fetch_group_messages", lambda *_args, **_kwargs: [fresh])
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "click_group_bot_confirmation_button",
+            lambda _account_id, _peer_id, source_message_id, *_args: calls.append(source_message_id)
+            or OperationResult(True),
+        )
+
+        context = dispatcher.ActionDispatchContext(account, payload, None, None)
+
+        assert dispatcher._dispatch_credentialed_action(
+            session, action, context, credentials=object()
+        ) is True
+        assert calls == ["fresh-peer-message"]
+        assert action.status == "success"
+
+
+def test_telegram_group_snapshot_records_viewer_peer_id() -> None:
+    class FakeClient:
+        async def get_me(self):
+            return SimpleNamespace(id=7405756184)
+
+        async def get_permissions(self, _target, _sender):
+            return SimpleNamespace(is_creator=False, is_admin=False, participant=None)
+
+    sender = SimpleNamespace(id=8487582707, username="trusted_bot", bot=True)
+    message = SimpleNamespace(
+        id=4102255,
+        message="需要订阅频道才能发言",
+        media=None,
+        grouped_id=None,
+        date=None,
+        buttons=[],
+        get_sender=lambda: asyncio.sleep(0, result=sender),
+    )
+
+    snapshots = asyncio.run(
+        _group_message_snapshots(FakeClient(), object(), "-1007", [message])
+    )
+
+    assert snapshots[0].viewer_peer_id == "7405756184"
+
+
 def test_confirmation_action_uses_exact_source_when_current_window_is_truncated(monkeypatch) -> None:
     with _session() as session:
         group, account, _admission, payload, action = _confirmation_action_fixture(
@@ -547,12 +606,18 @@ def test_confirmation_action_retries_when_telegram_button_changes_after_live_fet
         assert action.result["validation_stage"] == "group_bot_confirmation_live"
 
 
-def _live_confirmation_snapshot(message_id: str, *, content: str = "请先关注频道后发言") -> GroupMessageSnapshot:
+def _live_confirmation_snapshot(
+    message_id: str,
+    *,
+    content: str = "请先关注频道后发言",
+    viewer_peer_id: str = "",
+) -> GroupMessageSnapshot:
     return GroupMessageSnapshot(
         remote_message_id=message_id,
         sender_peer_id="trusted-bot",
         sender_name="群管机器人",
         content=content,
+        viewer_peer_id=viewer_peer_id,
         is_bot=True,
         control_buttons=(
             GroupControlButtonSnapshot(0, 0, "频道", "https://t.me/channel_alpha", "url"),

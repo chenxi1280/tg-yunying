@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import tempfile
 from uuid import uuid4
 from typing import Callable
@@ -128,6 +129,8 @@ async def fetch_group_message(client, peer_id: str, message_id: str) -> GroupMes
 
 
 async def _group_message_snapshots(client, target, peer_id: str, messages: list[object]) -> list[GroupMessageSnapshot]:
+    viewer = await client.get_me()
+    viewer_peer_id = str(getattr(viewer, "id", "") or "")
     grouped_totals = _grouped_media_totals(messages)
     grouped_seen: dict[str, int] = {}
     sender_role_cache: dict[str, str] = {}
@@ -143,7 +146,7 @@ async def _group_message_snapshots(client, target, peer_id: str, messages: list[
             sender_role_cache,
         )
         if snapshot is not None:
-            snapshots.append(snapshot)
+            snapshots.append(replace(snapshot, viewer_peer_id=viewer_peer_id))
     return snapshots
 
 

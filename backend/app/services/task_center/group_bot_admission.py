@@ -70,7 +70,7 @@ CONTROL_PROMPT_PATTERNS = (
     re.compile(r"(?:完成验证|验证后|解除禁言|可以发言|发言权限)", re.I),
 )
 EXPLICIT_RECIPIENT_PREFIX_RE = re.compile(
-    r"^\s*(?P<recipient>[^,，\r\n]{1,80})[,，]\s*(?:您|你)(?:需要|需|请|先)",
+    r"^\s*(?P<recipient>[^,，\r\n]{1,80})[,，]\s*(?:您|你)?(?:需要|需|请|先)",
     re.I,
 )
 CONTROL_PROMPT_UNVERIFIED_CODE = "group_bot_control_prompt_unverified"
@@ -434,6 +434,7 @@ def attribute_prompt_to_account(
     waiting_account_ids: list[int],
     account_usernames: dict[int, str],
     account_display_names: dict[int, str],
+    account_peer_ids: dict[int, str] | None = None,
     explicit_account_id: int | None = None,
 ) -> tuple[int | None, str]:
     if explicit_account_id and explicit_account_id in waiting_account_ids:
@@ -443,8 +444,12 @@ def attribute_prompt_to_account(
     match_text = recipient.lower() if recipient else text_l
     hits: list[int] = []
     for account_id in waiting_account_ids:
+        peer_id = str((account_peer_ids or {}).get(account_id) or "").strip()
         username = str(account_usernames.get(account_id) or "").strip().lstrip("@").lower()
         display = str(account_display_names.get(account_id) or "").strip().lower()
+        if recipient and peer_id and recipient == peer_id:
+            hits.append(account_id)
+            continue
         if username and (f"@{username}" in match_text or username in match_text):
             hits.append(account_id)
             continue

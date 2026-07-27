@@ -129,6 +129,9 @@ def _snapshot_belongs_to_bound_account(
         waiting_account_ids=[int(context.account.id)],
         account_usernames={int(context.account.id): str(context.account.username or "")},
         account_display_names={int(context.account.id): str(context.account.display_name or "")},
+        account_peer_ids={
+            int(context.account.id): str(getattr(snapshot, "viewer_peer_id", "") or "")
+        },
     )
     return account_id == int(context.account.id) and attribution == "explicit_recipient_match"
 

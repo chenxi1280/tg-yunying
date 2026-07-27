@@ -166,6 +166,7 @@ class GroupMessageSnapshot:
     remote_message_id: str
     sender_name: str
     content: str
+    viewer_peer_id: str = ""
     sender_peer_id: str = ""
     sender_username: str = ""
     sender_peer_type: str = ""
