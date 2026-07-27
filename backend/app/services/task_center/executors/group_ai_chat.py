@@ -10,7 +10,7 @@ import re
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -2110,14 +2110,29 @@ def _coverage_plan_state(
 
 
 def _valid_open_daily_send_count(session: Session, task: Task) -> int:
-    return int(session.scalar(
-        select(func.count(Action.id)).where(
-            Action.tenant_id == task.tenant_id,
-            Action.task_id == task.id,
-            Action.action_type == "send_message",
-            Action.status.in_(("pending", "claiming", "executing", "unknown_after_send")),
+    statement = select(func.count(Action.id)).where(
+        Action.tenant_id == task.tenant_id,
+        Action.task_id == task.id,
+        Action.action_type == "send_message",
+        Action.status.in_(("pending", "claiming", "executing", "unknown_after_send")),
+    )
+    config = task.type_config if isinstance(task.type_config, dict) else {}
+    required = config.get("group_bot_admission_required")
+    group_id = int(config.get("target_group_id") or 0)
+    if required is not False and group_id:
+        statement = statement.outerjoin(
+            GroupBotAdmission,
+            and_(
+                GroupBotAdmission.tenant_id == Action.tenant_id,
+                GroupBotAdmission.group_id == group_id,
+                GroupBotAdmission.account_id == Action.account_id,
+            ),
         )
-    ) or 0)
+        ready = GroupBotAdmission.state.in_(GROUP_BOT_PLANNABLE_STATES)
+        statement = statement.where(
+            ready if required is True else or_(GroupBotAdmission.id.is_(None), ready),
+        )
+    return int(session.scalar(statement) or 0)
 
 
 def requires_planning_with_open_actions(session: Session, task: Task) -> bool:

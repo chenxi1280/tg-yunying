@@ -391,3 +391,41 @@ def test_daily_planner_prefers_admitted_volume_but_keeps_admission_driver(
     )
 
     assert [account.id for account in state.accounts] == expected_ids
+
+
+def test_open_volume_counts_only_group_bot_plannable_actions(session: Session) -> None:
+    task, group = _seed(session, configured=3, account_count=3)
+    task.type_config = {
+        **task.type_config,
+        "group_bot_admission_required": True,
+    }
+    session.add_all([
+        GroupBotAdmission(
+            tenant_id=1,
+            group_id=group.id,
+            account_id=1,
+            state="group_bot_admission_ready",
+        ),
+        GroupBotAdmission(
+            tenant_id=1,
+            group_id=group.id,
+            account_id=2,
+            state="group_bot_policy_unresolved",
+        ),
+        *[
+            Action(
+                id=f"open-{account_id}",
+                tenant_id=1,
+                task_id=task.id,
+                task_type="group_ai_chat",
+                action_type="send_message",
+                account_id=account_id,
+                status="pending",
+                payload={"group_id": group.id},
+            )
+            for account_id in (1, 2, 3)
+        ],
+    ])
+    session.flush()
+
+    assert group_ai_chat._valid_open_daily_send_count(session, task) == 1
