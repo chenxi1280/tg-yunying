@@ -37,6 +37,8 @@ Repository variables:
 
 正式自动部署只监听 `release` 分支，也保留 `workflow_dispatch` 手动触发。
 
+发布质量门不减少测试：`backend-checks` 用两个独立 runner 分别执行 `-m no_postgres` 与 `-m "not no_postgres"`，两者是完整测试集合的互补分区；`frontend-checks` 独立并行执行 `npm ci` 和正式构建。`build-images` 必须等待两个后端分区和前端全部成功，`deploy` 还必须等待镜像完成。任何分区失败都阻止生产发布，不能通过删测试、增加 skip 或让某一分区 `continue-on-error` 缩短时长。
+
 `workflow_dispatch` 常用诊断开关：
 
 - `run_production_diagnostics`: 部署后探测 planner drain 和 AI 硬小时任务量。

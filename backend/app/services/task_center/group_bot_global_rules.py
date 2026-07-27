@@ -11,6 +11,7 @@ from .group_bot_admission import (
     SOURCE_BOUND_POLICY_TYPES,
     active_policy,
     confirmation_button,
+    discard_repeatable_recipient_confirmation,
     ingest_trusted_bot_prompt,
     is_group_bot_control_prompt,
     parse_channel_refs,
@@ -49,10 +50,13 @@ def apply_trusted_global_group_rule(
     if not is_group_bot_control_prompt(text, control_buttons) or not channel_refs:
         return []
     applied: list[GroupBotAdmission] = []
+    follow_only = evidence_kind == "trusted_repeatable_recipient_rule"
     for admission in _candidate_admissions(session, tenant_id, group_id, bot_peer_id):
         task_id = _bound_running_task_id(session, admission)
         if not task_id:
             continue
+        if follow_only and admission.evidence_ref.startswith("attr:trusted_repeatable_recipient_rule;"):
+            discard_repeatable_recipient_confirmation(session, admission=admission, task_id=task_id)
         _rearm_unverified_current_follows(session, admission, message_id, channel_refs)
         ingest_trusted_bot_prompt(
             session,
@@ -64,9 +68,11 @@ def apply_trusted_global_group_rule(
             is_trusted_source=True,
             control_buttons=control_buttons,
             bound_task_id=task_id,
+            bind_confirmation_source=not follow_only,
         )
         admission.failure_code = ""
-        admission.evidence_ref = f"attr:{evidence_kind};msg:{message_id}"
+        if not follow_only or not admission.source_message_id:
+            admission.evidence_ref = f"attr:{evidence_kind};msg:{message_id}"
         applied.append(admission)
     session.flush()
     return applied

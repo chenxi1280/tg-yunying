@@ -465,13 +465,19 @@ def ingest_trusted_bot_prompt(
     is_trusted_source: bool = False,
     control_buttons: tuple[object, ...] | list[object] = (),
     bound_task_id: str = "",
+    bind_confirmation_source: bool = True,
 ) -> GroupBotAdmission:
     if not (is_admin_bot or is_trusted_source):
         return admission
     if not is_group_bot_control_prompt(text, control_buttons):
         return admission
     peer = str(bot_peer_id or "").strip()
-    if not _record_trusted_prompt(admission, peer, message_id):
+    trusted = (
+        _record_trusted_prompt(admission, peer, message_id)
+        if bind_confirmation_source
+        else _record_trusted_peer(admission, peer)
+    )
+    if not trusted:
         session.flush()
         return admission
     refs = parse_channel_refs(text, control_buttons)
@@ -489,17 +495,25 @@ def ingest_trusted_bot_prompt(
             control_buttons=control_buttons,
             prompt_text=text,
         )
-        plan_confirmation_button_action(
-            session,
-            admission=admission,
-            task_id=str(bound_task_id),
-            source_message_id=str(message_id or ""),
-            control_buttons=control_buttons,
-        )
+        if bind_confirmation_source:
+            plan_confirmation_button_action(
+                session,
+                admission=admission,
+                task_id=str(bound_task_id),
+                source_message_id=str(message_id or ""),
+                control_buttons=control_buttons,
+            )
     return admission
 
 
 def _record_trusted_prompt(admission: GroupBotAdmission, peer: str, message_id: str) -> bool:
+    if not _record_trusted_peer(admission, peer):
+        return False
+    admission.source_message_id = str(message_id or "")
+    return True
+
+
+def _record_trusted_peer(admission: GroupBotAdmission, peer: str) -> bool:
     if not peer:
         return False
     if admission.trusted_bot_peer_id and admission.trusted_bot_peer_id != peer:
@@ -507,7 +521,6 @@ def _record_trusted_prompt(admission: GroupBotAdmission, peer: str, message_id: 
         admission.failure_code = "group_bot_multi_bot_conflict"
         return False
     admission.trusted_bot_peer_id = peer
-    admission.source_message_id = str(message_id or "")
     return True
 
 
@@ -747,18 +760,34 @@ def confirmation_action_can_dispatch(
     if not any(str(candidate.id) == str(action.id) for candidate in actions):
         actions.append(action)
     current_source_message_id = _current_confirmation_source_message_id(session, admission_id)
-    if current_source_message_id:
-        if _confirmation_action_source_message_id(action) != current_source_message_id:
-            return False
-        actions = [
-            candidate
-            for candidate in actions
-            if _confirmation_action_source_message_id(candidate) == current_source_message_id
-        ]
+    if not current_source_message_id or _confirmation_action_source_message_id(action) != current_source_message_id:
+        return False
+    actions = [
+        candidate
+        for candidate in actions
+        if _confirmation_action_source_message_id(candidate) == current_source_message_id
+    ]
     if any(candidate.status == "success" and str(candidate.id) != str(action.id) for candidate in actions):
         return False
     open_actions = [candidate for candidate in actions if candidate.status in OPEN_CONFIRMATION_ACTION_STATUSES]
     return not open_actions or str(open_actions[0].id) == str(action.id)
+
+
+def discard_repeatable_recipient_confirmation(
+    session: Session,
+    *,
+    admission: GroupBotAdmission,
+    task_id: str,
+) -> None:
+    admission.source_message_id = ""
+    _reconcile_open_confirmation_actions(
+        session,
+        task_id,
+        admission.id,
+        int(admission.admission_version or 1),
+        "",
+        model_now(),
+    )
 
 
 def _current_confirmation_source_message_id(session: Session, admission_id: int) -> str:
@@ -1117,6 +1146,7 @@ __all__ = [
     "attribute_prompt_to_account",
     "ingest_trusted_bot_prompt",
     "plan_required_channel_follow_actions",
+    "discard_repeatable_recipient_confirmation",
     "resolve_bound_task_id_for_group",
     "mark_channel_follow_completed",
     "apply_confirmation_event",

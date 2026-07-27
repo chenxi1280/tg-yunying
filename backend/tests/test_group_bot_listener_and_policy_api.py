@@ -130,7 +130,6 @@ def test_audited_unknown_bot_global_prompt_creates_exact_follow_for_each_scoped_
             create_source_media=False,
             learning_scene=None,
         )
-
         follows = list(
             session.query(Action)
             .filter(Action.action_type == GROUP_BOT_CHANNEL_FOLLOW_ACTION_TYPE)
@@ -202,6 +201,26 @@ def test_audited_repeated_unmatched_recipient_prompt_fans_out_standard_rule():
             create_source_media=False,
             learning_scene=None,
         )
+        for admission in session.query(GroupBotAdmission).all():
+            admission.source_message_id = "historical-wrong-source"
+            admission.evidence_ref = "attr:trusted_repeatable_recipient_rule;msg:historical-wrong-source"
+            session.add(
+                Action(
+                    id=f"historical-confirm-{admission.account_id}",
+                    tenant_id=1,
+                    task_id="task-ai",
+                    task_type="group_ai_chat",
+                    action_type="group_bot_confirmation_button",
+                    account_id=admission.account_id,
+                    status="pending",
+                    payload={
+                        "admission_id": admission.id,
+                        "admission_version": 1,
+                        "source_message_id": "historical-wrong-source",
+                    },
+                )
+            )
+        session.flush()
 
         second = _global_rule_snapshot()
         second.content = "unrelated-two，您需要关注我们的频道才能发言。"
@@ -223,7 +242,11 @@ def test_audited_repeated_unmatched_recipient_prompt_fans_out_standard_rule():
         )
         assert [action.account_id for action in follows] == [11, 12]
         assert all(action.payload["source_message_id"] == "101" for action in follows)
-        assert session.get(GroupBotAdmission, 1).evidence_ref == "attr:trusted_repeatable_recipient_rule;msg:101"
+        confirmations = list(session.query(Action).filter(Action.action_type == "group_bot_confirmation_button"))
+        assert all(action.status == "skipped" for action in confirmations)
+        assert all(action.result["error_code"] == "group_bot_confirmation_superseded" for action in confirmations)
+        assert session.get(GroupBotAdmission, 1).source_message_id == ""
+        assert session.get(GroupBotAdmission, 2).source_message_id == ""
 
 
 def test_unmatched_recipient_prompt_with_different_confirmation_shape_does_not_fan_out():
@@ -271,7 +294,7 @@ def test_unmatched_recipient_prompt_with_different_confirmation_shape_does_not_f
         assert session.get(GroupBotAdmission, 1).state == "group_bot_rule_unattributed"
 
 
-def test_repeated_standard_rule_keeps_one_open_confirmation_per_admission():
+def test_repeated_standard_rule_preserves_only_account_owned_confirmation():
     with _session() as session:
         group, accounts = _seed_global_rule_scope(session)
         _seed_waiting_admissions(session, group.id, accounts)
@@ -284,6 +307,18 @@ def test_repeated_standard_rule_keeps_one_open_confirmation_per_admission():
             reason="reviewed repeated group bot control",
             evidence_ref="group-context:100",
             created_by="operator",
+        )
+        owned = _global_rule_snapshot()
+        owned.content = "first，您需要关注我们的频道才能发言。"
+        owned.remote_message_id = "90"
+        insert_context_snapshots(
+            session,
+            group,
+            accounts[0],
+            [owned],
+            ignored_sender=lambda _snapshot: False,
+            create_source_media=False,
+            learning_scene=None,
         )
         for message_id, recipient in (("100", "unrelated-one"), ("101", "unrelated-two")):
             snapshot = _global_rule_snapshot()
@@ -299,36 +334,10 @@ def test_repeated_standard_rule_keeps_one_open_confirmation_per_admission():
                 learning_scene=None,
             )
 
-        _duplicate_pending_confirmation_actions(
-            session,
-            list(session.query(Action).filter(Action.action_type == "group_bot_confirmation_button")),
-        )
-        third = _global_rule_snapshot()
-        third.content = "unrelated-three，您需要关注我们的频道才能发言。"
-        third.remote_message_id = "102"
-        insert_context_snapshots(
-            session,
-            group,
-            accounts[0],
-            [third],
-            ignored_sender=lambda _snapshot: False,
-            create_source_media=False,
-            learning_scene=None,
-        )
-
         confirmations = list(session.query(Action).filter(Action.action_type == "group_bot_confirmation_button"))
-        assert sum(action.status == "pending" for action in confirmations) == 2
-        assert sum(action.status == "skipped" for action in confirmations) == 4
-        assert all(
-            action.payload["source_message_id"] == "102"
-            for action in confirmations
-            if action.status == "pending"
-        )
-        assert all(
-            action.result.get("error_code") == "group_bot_confirmation_superseded"
-            for action in confirmations
-            if action.status == "skipped"
-        )
+        assert [(action.account_id, action.payload["source_message_id"]) for action in confirmations] == [(11, "90")]
+        assert session.get(GroupBotAdmission, 1).source_message_id == "90"
+        assert session.get(GroupBotAdmission, 2).source_message_id == ""
 
 
 def test_standard_rule_rearms_current_follow_from_policy_unresolved_state():
@@ -517,23 +526,6 @@ def _global_rule_snapshot() -> SimpleNamespace:
             {"row": 1, "col": 0, "text": "我已加入", "action_type": "callback"},
         ],
     )
-
-
-def _duplicate_pending_confirmation_actions(session: Session, actions: list[Action]) -> None:
-    for action in actions:
-        session.add(
-            Action(
-                id=f"duplicate-{action.account_id}",
-                tenant_id=action.tenant_id,
-                task_id=action.task_id,
-                task_type=action.task_type,
-                action_type=action.action_type,
-                account_id=action.account_id,
-                status="pending",
-                payload={**(action.payload or {}), "source_message_id": "duplicate-source"},
-            )
-        )
-    session.flush()
 
 
 def select_admission(session: Session, *, group_id: int, account_id: int):

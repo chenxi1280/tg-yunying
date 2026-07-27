@@ -146,8 +146,14 @@ env:
   TGYUNYING_FRONTEND_IMAGE_NAME: tg-yunying-frontend
 
 jobs:
-  checks:
+  backend-checks:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pytest_marker:
+          - no_postgres
+          - not no_postgres
 
     services:
       postgres:
@@ -200,7 +206,13 @@ jobs:
           python -m pip install -e '.[dev]'
           python -m compileall -q app
           python -m compileall -q ../.github/scripts
-          python -m pytest -q
+          python -m pytest -q -m "${{ matrix.pytest_marker }}"
+
+  frontend-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -220,7 +232,9 @@ jobs:
 
   build-images:
     runs-on: ubuntu-latest
-    needs: checks
+    needs:
+      - backend-checks
+      - frontend-checks
 
     steps:
       - name: Checkout
@@ -261,7 +275,8 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     needs:
-      - checks
+      - backend-checks
+      - frontend-checks
       - build-images
     environment: production-silicon-valley
 
