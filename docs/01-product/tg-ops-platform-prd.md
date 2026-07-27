@@ -2148,6 +2148,7 @@ AI 活跃群仍然以当前任务的目标群上下文为事实来源，画像�
 - 已入群的存量账号不得把旧 `can_send=true` 直接当作新群管准入通过，也不得批量改写该 Telegram 权限字段。迁移分 canary：C1 仅新入群 enforce，存量新建 action 仍可发送但打 `legacy_send_until_reviewed`；C2 复核完成只影响之后新 action，存量 unknown 只走终态/continuity 裁决；全量 enforce 前不得一夜抽空 ready 池。
 - 无替代账号且无真人打断时写 `speaker_rotation_wait`，预检对 `rotatable_ready_account_count < 2` 给产能 warning；不得为 hard-hourly/日覆盖静默同号连发。`签到` 为唯一确定性文本兜底，并受会话 30 分钟与任务小时配额约束；历史 `emoji_react` 与同账号 `consecutive_message_*` 连发不得用于新实现。
 - `group_bot_channel_follow` / 控制观察 action 在 Dispatcher 复用 `target_admission_retry` 档，但仅限同一 `tenant+task+account` 解除 admission wait，不得跨任务饿死严格搜索；该 Action type 必须适配 `actions.action_type` 的 30 字符存储上限。
+- AI 活群任务显式停止时，未执行的频道关注和精确确认动作保留为 `skipped(task_stopped)`；同一任务再次启动时必须基于旧动作的 admission/version/source/账号绑定创建新的 pending 动作，并重新绑定未完成 follow，禁止复活旧动作或重复建单。
 - 目标终态、引用 revision、unknown 占位与硬小时计划桶 credit 仍以 `ai-group-send-continuity-and-terminal-targets-prd.md` 为准，并以真人化专项 §1.2 / §5.8 交叉条款解释可见性与 abandoned；群管模块不得把 `qdsfxy` 等引用失败写成“群里已被解散”。
 
 交互入口：

@@ -236,6 +236,7 @@ else:
 
 - 每个可信提示中的真实频道引用 → 一条 `group_bot_channel_follow`，幂等键 `(admission_id, channel_ref)`。`GroupBotAdmission.required_channel_refs` 是**当前 admission 世代的有效集合**；同一 admission 历史上被拒绝的推广/旧提示 follow 行保留审计，但不得阻塞当前集合的 follow 完成或 confirmation callback。频道引用可来自正文，也可来自同一原始消息的 URL 内联按钮；两者均必须保留其 `source_message_id`。
 - `group_bot_channel_follow` 是 `actions.action_type` 的唯一持久类型，必须保持在该字段的 30 字符上限内；`group_bot_required_channel_follows` 仅是频道关注事实表名，不能写入 Action type。该约束必须有自动化长度回归。
+- 任务被显式停止时，尚未执行的 follow / confirmation Action 按通用任务合同保留为 `skipped(task_stopped)` 审计事实；同一任务再次启动时，必须从旧 Action 的完整绑定 payload 重建新的 pending 准入子动作，并把未完成 follow 行改绑到新 Action。旧 Action 不得复活或覆盖，新动作创建必须幂等，重复启动不能产生重复 follow / callback。
 - 频道引用只接受正文中的精确公开 `https://t.me/<username>` 或同源 URL 按钮；纯 `@username`、展示名、联系人广告或任意 URL 都不足以创建 follow row / Action。可信来源还必须同时具有确定性控制信号：同一消息的精确确认 callback，或正文中可解析的“请/需/先关注、订阅、加入频道/群、验证后发言”等指令。来源可信而控制信号不成立时，只写审计上下文。
 - 运营因 `group_bot_control_prompt_unverified` 暂停某 admission 时，既有 follow 行和未进 Gateway Action 必须保留为 blocked/skipped 审计事实，不能批量重置或标成已关注。只有运营显式 restart observation，或 active policy 后 listener 新观察到通过 §5.3.1 广播/重复标准模板分类的**不同 `source_message_id`** 时，才可把该提示中同一 `channel_ref` 的此类 blocked 行清空执行绑定并重新置为 pending；同一历史消息重放、普通推广或其他失败码均不得 rearm。
 - `awaiting_group_bot_confirmation` 的完成回执走独立的精确确认模板 / callback 识别；普通内容不得因为来自同一 peer 而先被当成完成回执、再被重新解析为新的频道提示。

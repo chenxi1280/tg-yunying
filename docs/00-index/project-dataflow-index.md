@@ -169,6 +169,7 @@ group_ai_chat 账号入群
      `required_channel_refs` 仅为当前 admission 世代的有效集合；历史 rejected-prompt follow 保留审计且不参与当前完成判断
      `group_bot_control_prompt_unverified` 暂停后，必须 explicit restart + 不同 source_message_id 的新有效提示才可 rearm 同一频道
   -> 全部 follow 后，claim 确认先按 admission/version 和当前 GroupBotAdmission.source_message_id 归并 callback；旧 source 直接 skipped(group_bot_confirmation_superseded)，不经过账号 usage/capacity/shard policy、不占运行资源
+  -> 任务显式 stop 时未执行 follow/callback 留存 skipped(task_stopped)；同一任务 start 时按旧 payload 重建并改绑新 Action，旧审计不复活，重复 start 不重复创建
      listener 新观察到有效 prompt 时，用其 source_message_id 重建唯一精确 callback；Gateway 前同一账号先按 source ID 精确读取、再读取当前窗口的 trusted peer + exact required_channel_refs + callback，窗口内更晚来源优先，精确来源避免 20 条窗口截断；持久化安全摘要并只换绑该 Action/admission 的 peer/row/col/text/source -> Telegram click
      两个实时读取失败、没有匹配提示或读取后 Telegram 报按钮 mismatch -> pending(group_bot_confirmation_live_fetch_failed|group_bot_confirmation_source_stale)，15 秒后重试；不点击旧 callback、不写成功或 ready
      click 成功仍等待同 peer 的完成事件；不得直接 ready

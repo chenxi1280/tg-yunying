@@ -569,7 +569,7 @@ def _create_and_start_task(session: Session, tenant_id: int, task_type: str, pay
     _assert_precheck_allows_start(session, tenant_id, task_type, payload.model_dump(mode="json"))
     task = _new_task(session, tenant_id, task_type, payload)
     audit(session, tenant_id=tenant_id, actor=actor, action="创建任务中心任务", target_type="task", target_id=task.id, detail=task.type)
-    _mark_task_started(task)
+    _mark_task_started(session, task)
     audit(session, tenant_id=tenant_id, actor=actor, action="启动任务中心任务", target_type="task", target_id=task.id)
     session.commit()
     session.refresh(task)
@@ -2042,7 +2042,7 @@ def start_task(
             raise
     else:
         _assert_precheck_allows_start(session, tenant_id, task.type, _task_create_payload_for_precheck(task))
-    _mark_task_started(task)
+    _mark_task_started(session, task)
     audit(session, tenant_id=tenant_id, actor=actor, action="启动任务中心任务", target_type="task", target_id=task.id)
     session.commit()
     session.refresh(task)
@@ -4145,7 +4145,11 @@ def _check_stop_conditions(session: Session, task: Task) -> bool:
     return False
 
 
-def _mark_task_started(task: Task) -> None:
+def _mark_task_started(session: Session, task: Task) -> None:
+    if task.type == "group_ai_chat":
+        from .group_bot_task_restart import rearm_stopped_admission_actions
+
+        rearm_stopped_admission_actions(session, task=task)
     now = _now()
     scheduled_start = _naive_datetime(task.scheduled_start)
     task.status = "pending" if scheduled_start and scheduled_start > now else "running"
