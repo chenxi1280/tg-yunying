@@ -19,7 +19,7 @@ def record_search_join_protocol_trace(
     result: dict,
     attempt: ExecutionAttempt,
 ) -> SearchJoinProtocolTrace:
-    recovery_kind = str(payload.get("jisou_recovery_kind") or INITIAL_TRACE_KIND)
+    recovery_kind = str(result.get("jisou_recovery_kind") or payload.get("jisou_recovery_kind") or INITIAL_TRACE_KIND)
     trace = _trace_for_update(session, action.id, recovery_kind)
     phase = str(result.get("jisou_page_phase") or "unknown_page")
     if trace is None:

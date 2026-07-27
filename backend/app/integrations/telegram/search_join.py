@@ -147,89 +147,140 @@ async def _execute_search_pages(
     *,
     image_verification_solver: ImageVerificationSolver | None = None,
 ) -> dict[str, Any]:
-    decoys: list[dict[str, Any]] = []
-    total_results = 0
-    page_no = 0
     bot = bot_username.strip().lstrip("@")
-    jisou = is_jisou_bot(bot)
     protocol_profile = payload.get("approved_protocol_profile")
     async with client.conversation(bot, timeout=60) as conv:
-        await conv.send_message("/start")
-        await conv.get_response()
-        await conv.send_message(keyword_text)
-        page = await conv.get_response()
-        page, selector_error, group_selector, selector_buttons = await _select_jisou_group_results_page(
+        page, recovery = await _initial_search_page(
+            conv,
+            keyword_text,
+            jisou=is_jisou_bot(bot),
+            protocol_profile=protocol_profile,
+        )
+        result = await _execute_search_result_pages(
             client,
             page,
             bot,
-            protocol_profile,
+            payload,
+            target,
+            protocol_profile=protocol_profile,
             image_verification_solver=image_verification_solver,
         )
-        if selector_error is not None:
-            return selector_error
-        while True:
-            page_no += 1
-            buttons = _parse_buttons(page)
-            classification = _jisou_page_classification(jisou, protocol_profile, page, buttons)
-            if jisou and classification.page_phase == VERIFICATION_IMAGE_PAGE:
-                handled = await _handle_jisou_image_verification(
-                    client,
-                    bot,
-                    page,
-                    buttons,
-                    classification,
-                    image_verification_solver,
-                    protocol_profile=protocol_profile,
-                    recursion_depth=0,
-                )
-                if handled.error is not None:
-                    return _with_search_protocol_trace(
-                        handled.error,
-                        buttons,
-                        group_selector,
-                        selector_buttons,
-                        classification.approved_button_positions,
-                        enabled=jisou,
-                    )
-                page = handled.page
-                buttons = _parse_buttons(page)
-                classification = _jisou_page_classification(jisou, protocol_profile, page, buttons)
-            if jisou and classification.page_phase != "group_result_page":
-                return _jisou_result_page_error(classification, buttons, group_selector, selector_buttons)
-            if not jisou and _human_verification_required(page):
-                return _protocol_phase_error(
-                    "bot_human_verification_required",
-                    "搜索机器人要求人机验证，当前账号不能自动执行",
-                    ProtocolPageClassification("verification_page", frozenset(), frozenset()),
-                    buttons,
-                )
-            total_results += len(buttons)
-            approved_positions = classification.approved_button_positions if jisou else None
-            await _click_page_decoys(page, buttons, payload, target, decoys, approved_positions=approved_positions)
-            text_match = _find_target_in_text(page, target)
-            if text_match:
-                result = await _execute_text_target_join(client, payload, target, text_match, decoys, page_no, total_results)
-                traced = _with_search_protocol_trace(result, buttons, group_selector, selector_buttons, approved_positions, enabled=jisou)
-                return _with_jisou_result_phase(traced, jisou)
-            target_button = _find_target_button(buttons, target, approved_positions=approved_positions)
-            if target_button:
-                result = await _execute_target_join(client, page, payload, target, target_button, decoys, page_no, total_results)
-                traced = _with_search_protocol_trace(result, buttons, group_selector, selector_buttons, approved_positions, enabled=jisou)
-                return _with_jisou_result_phase(traced, jisou)
-            next_button = _find_next_button(buttons, approved_positions=approved_positions)
-            if next_button is None:
-                result = _target_not_found(
-                    total_results,
-                    decoys,
-                    page_no,
+    return {**result, **recovery}
+
+
+async def _initial_search_page(
+    conversation: Any,
+    keyword_text: str,
+    *,
+    jisou: bool,
+    protocol_profile: object,
+) -> tuple[Any, dict[str, Any]]:
+    await conversation.send_message("/start")
+    await conversation.get_response()
+    await conversation.send_message(keyword_text)
+    page = await conversation.get_response()
+    classification = _jisou_page_classification(jisou, protocol_profile, page, _parse_buttons(page))
+    if not jisou or classification.page_phase != "hot_list_page":
+        return page, {}
+    await conversation.send_message("/cancel")
+    await conversation.get_response()
+    await conversation.send_message("/start")
+    await conversation.get_response()
+    await conversation.send_message(keyword_text)
+    recovered_page = await conversation.get_response()
+    return recovered_page, {
+        "jisou_recovery_kind": "hot_list_reset",
+        "jisou_pre_reset_page_phase": "hot_list_page",
+        "protocol_event_type": "post_reset_page_classified",
+    }
+
+
+async def _execute_search_result_pages(
+    client: Any,
+    page: Any,
+    bot: str,
+    payload: dict[str, Any],
+    target: dict[str, Any],
+    *,
+    protocol_profile: object,
+    image_verification_solver: ImageVerificationSolver | None,
+) -> dict[str, Any]:
+    decoys: list[dict[str, Any]] = []
+    total_results = 0
+    page_no = 0
+    jisou = is_jisou_bot(bot)
+    page, selector_error, group_selector, selector_buttons = await _select_jisou_group_results_page(
+        client,
+        page,
+        bot,
+        protocol_profile,
+        image_verification_solver=image_verification_solver,
+    )
+    if selector_error is not None:
+        return selector_error
+    while True:
+        page_no += 1
+        buttons = _parse_buttons(page)
+        classification = _jisou_page_classification(jisou, protocol_profile, page, buttons)
+        if jisou and classification.page_phase == VERIFICATION_IMAGE_PAGE:
+            handled = await _handle_jisou_image_verification(
+                client,
+                bot,
+                page,
+                buttons,
+                classification,
+                image_verification_solver,
+                protocol_profile=protocol_profile,
+                recursion_depth=0,
+            )
+            if handled.error is not None:
+                return _with_search_protocol_trace(
+                    handled.error,
                     buttons,
                     group_selector,
                     selector_buttons,
-                    approved_positions,
-                    jisou,
+                    classification.approved_button_positions,
+                    enabled=jisou,
                 )
-                return _with_jisou_result_phase(result, jisou)
-            page = await _click_and_get_edited_page(client, bot, page, next_button)
+            page = handled.page
+            buttons = _parse_buttons(page)
+            classification = _jisou_page_classification(jisou, protocol_profile, page, buttons)
+        if jisou and classification.page_phase != "group_result_page":
+            return _jisou_result_page_error(classification, buttons, group_selector, selector_buttons)
+        if not jisou and _human_verification_required(page):
+            return _protocol_phase_error(
+                "bot_human_verification_required",
+                "搜索机器人要求人机验证，当前账号不能自动执行",
+                ProtocolPageClassification("verification_page", frozenset(), frozenset()),
+                buttons,
+            )
+        total_results += len(buttons)
+        approved_positions = classification.approved_button_positions if jisou else None
+        await _click_page_decoys(page, buttons, payload, target, decoys, approved_positions=approved_positions)
+        text_match = _find_target_in_text(page, target)
+        if text_match:
+            result = await _execute_text_target_join(client, payload, target, text_match, decoys, page_no, total_results)
+            traced = _with_search_protocol_trace(result, buttons, group_selector, selector_buttons, approved_positions, enabled=jisou)
+            return _with_jisou_result_phase(traced, jisou)
+        target_button = _find_target_button(buttons, target, approved_positions=approved_positions)
+        if target_button:
+            result = await _execute_target_join(client, page, payload, target, target_button, decoys, page_no, total_results)
+            traced = _with_search_protocol_trace(result, buttons, group_selector, selector_buttons, approved_positions, enabled=jisou)
+            return _with_jisou_result_phase(traced, jisou)
+        next_button = _find_next_button(buttons, approved_positions=approved_positions)
+        if next_button is None:
+            result = _target_not_found(
+                total_results,
+                decoys,
+                page_no,
+                buttons,
+                group_selector,
+                selector_buttons,
+                approved_positions,
+                jisou,
+            )
+            return _with_jisou_result_phase(result, jisou)
+        page = await _click_and_get_edited_page(client, bot, page, next_button)
 
 
 def _with_jisou_result_phase(result: dict[str, Any], jisou: bool) -> dict[str, Any]:

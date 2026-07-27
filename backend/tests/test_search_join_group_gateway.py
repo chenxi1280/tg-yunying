@@ -344,20 +344,58 @@ def test_execute_search_join_accepts_jisou_group_results_page_without_category_s
 
 
 @pytest.mark.no_postgres
-def test_execute_search_join_reports_hot_list_as_session_state_not_selector_missing() -> None:
+def test_execute_search_join_resets_hot_list_session_once_before_searching() -> None:
     hot_list_page = FakeMessage(
         101,
         [[FakeButton("未知入口", data=b"unknown")]],
         raw_text="热搜排行榜",
     )
-    client = FakeSearchJoinClient([FakeMessage(100, []), hot_list_page])
+    result_page = FakeMessage(105, [[FakeButton("目标群", url="https://t.me/target_group")]])
+    client = FakeSearchJoinClient(
+        [
+            FakeMessage(100, []),
+            hot_list_page,
+            FakeMessage(102, [], raw_text="已取消"),
+            FakeMessage(103, [], raw_text="欢迎"),
+            result_page,
+        ]
+    )
+
+    result = asyncio.run(execute_search_join_with_client(client, _payload(bot_username="jisou"), keyword_text="郑州"))
+
+    assert result["success"] is True
+    assert result["jisou_recovery_kind"] == "hot_list_reset"
+    assert result["jisou_pre_reset_page_phase"] == "hot_list_page"
+    assert client.sent == [
+        ("jisou", "/start"),
+        ("jisou", "郑州"),
+        ("jisou", "/cancel"),
+        ("jisou", "/start"),
+        ("jisou", "郑州"),
+    ]
+    assert hot_list_page.clicked == []
+
+
+@pytest.mark.no_postgres
+def test_execute_search_join_blocks_when_hot_list_reset_still_deviates() -> None:
+    hot_list_page = FakeMessage(101, [], raw_text="热搜排行榜")
+    deviated_page = FakeMessage(105, [], raw_text="未知页面")
+    client = FakeSearchJoinClient(
+        [
+            FakeMessage(100, []),
+            hot_list_page,
+            FakeMessage(102, [], raw_text="已取消"),
+            FakeMessage(103, [], raw_text="欢迎"),
+            deviated_page,
+        ]
+    )
 
     result = asyncio.run(execute_search_join_with_client(client, _payload(bot_username="jisou"), keyword_text="郑州"))
 
     assert result["success"] is False
     assert result["error_code"] == "jisou_session_state_deviated"
-    assert result["jisou_page_phase"] == "hot_list_page"
-    assert hot_list_page.clicked == []
+    assert result["jisou_recovery_kind"] == "hot_list_reset"
+    assert result["jisou_page_phase"] == "unknown_page"
 
 
 @pytest.mark.no_postgres

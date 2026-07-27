@@ -431,8 +431,10 @@ def test_search_join_gateway_exception_becomes_unknown_on_same_attempt(session: 
 
 
 @pytest.mark.no_postgres
-def test_search_join_hot_list_page_fails_immediately_without_reset(session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
-    """PRD §2.19: hot_list_page 直接写 jisou_session_state_deviated 终态失败，不尝试重置（线上验证不可行）。"""
+def test_search_join_hot_list_reset_result_is_recorded_in_protocol_trace(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     task = _task()
     session.add(task)
     session.flush()
@@ -460,8 +462,9 @@ def test_search_join_hot_list_page_fails_immediately_without_reset(session: Sess
         lambda *_args: {
             "success": False,
             "error_code": "jisou_session_state_deviated",
-            "jisou_page_phase": "hot_list_page",
-            "search_protocol_trace": {"page_phase": "hot_list_page", "page": {"button_count": 0, "button_layout": []}},
+            "jisou_page_phase": "unknown_page",
+            "jisou_recovery_kind": "hot_list_reset",
+            "search_protocol_trace": {"page_phase": "unknown_page", "page": {"button_count": 0, "button_layout": []}},
         },
         raising=False,
     )
@@ -470,17 +473,15 @@ def test_search_join_hot_list_page_fails_immediately_without_reset(session: Sess
 
     assert action.status == "failed"
     assert action.result["error_code"] == "jisou_session_state_deviated"
-    assert action.result["jisou_page_phase"] == "hot_list_page"
-    # PRD §2.19: 禁止热搜页重置，payload 不应被改写为 hot_list_reset
-    assert "jisou_recovery_kind" not in action.payload or action.payload.get("jisou_recovery_kind") != "hot_list_reset"
+    assert action.result["jisou_page_phase"] == "unknown_page"
     trace = session.scalar(select(SearchJoinProtocolTrace).where(
         SearchJoinProtocolTrace.action_id == action.id,
     ))
     assert trace is not None
-    assert trace.recovery_kind == "initial"
-    assert trace.page_phase == "hot_list_page"
+    assert trace.recovery_kind == "hot_list_reset"
+    assert trace.page_phase == "unknown_page"
     protocol = get_task_detail(session, 1, task.id)["task"]["stats"]["search_join_protocol"]
-    assert protocol["latest_page_phase"] == "hot_list_page"
+    assert protocol["latest_page_phase"] == "unknown_page"
 
 
 @pytest.mark.no_postgres
