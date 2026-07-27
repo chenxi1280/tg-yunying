@@ -322,6 +322,39 @@ def test_daily_coverage_cleanup_keeps_current_mask_contract() -> None:
         assert action.status == "pending"
 
 
+def test_daily_coverage_cleanup_keeps_non_coverage_open_action() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        task = Task(
+            id="task-non-coverage-open-action",
+            tenant_id=1,
+            name="非覆盖执行积压",
+            type="group_ai_chat",
+            status="running",
+        )
+        action = Action(
+            id="action-non-coverage-open-action",
+            tenant_id=1,
+            task_id=task.id,
+            task_type="group_ai_chat",
+            action_type="send_message",
+            account_id=11,
+            status="pending",
+            scheduled_at=_now(),
+            payload={},
+        )
+        session.add_all([task, action])
+        session.commit()
+
+        cleanup = import_module(
+            "app.services.task_center.legacy_anchor_rewrite"
+        ).expire_incomplete_daily_contract_actions
+
+        assert cleanup(session, task) == 0
+        assert action.status == "pending"
+
+
 def test_dispatcher_rejects_legacy_rewrite_before_other_send_gates(monkeypatch) -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

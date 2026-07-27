@@ -79,6 +79,8 @@ def expire_incomplete_daily_contract_actions(session: Session, task: Task) -> in
 
 def _has_current_daily_content_contract(action: Action) -> bool:
     payload = action.payload if isinstance(action.payload, dict) else {}
+    if not str(payload.get("coverage_ledger_id") or "").strip():
+        return True
     if not str(payload.get("daily_group_target_id") or "").strip():
         return False
     source = str(payload.get("content_source") or "").strip()
