@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine
@@ -11,6 +12,7 @@ from app.models import (
     Action,
     AiGroupMessageMemory,
     ExecutionAttempt,
+    GroupBotAdmission,
     OperationTarget,
     Task,
     TaskAccountDailyCoverage,
@@ -19,6 +21,7 @@ from app.models import (
     TgAccount,
     TgGroup,
 )
+from app.services.task_center.executors import group_ai_chat
 from app.services.task_center.daily_group_target import (
     daily_group_due_message_count,
     ensure_task_group_daily_target,
@@ -232,3 +235,98 @@ def test_daily_target_counts_only_success_attempt_with_remote_id(session: Sessio
     )
 
     assert target.confirmed_message_count == 1
+
+
+def test_planner_keeps_only_group_bot_ready_accounts_when_gate_is_required(
+    session: Session,
+) -> None:
+    task, group = _seed(session, configured=3, account_count=3)
+    task.type_config = {
+        **task.type_config,
+        "group_bot_admission_required": True,
+    }
+    session.add_all([
+        GroupBotAdmission(
+            tenant_id=1,
+            group_id=group.id,
+            account_id=1,
+            state="group_bot_admission_ready",
+        ),
+        GroupBotAdmission(
+            tenant_id=1,
+            group_id=group.id,
+            account_id=2,
+            state="awaiting_group_bot_confirmation",
+        ),
+        GroupBotAdmission(
+            tenant_id=1,
+            group_id=group.id,
+            account_id=3,
+            state="post_follow_visibility_probe",
+        ),
+    ])
+    session.flush()
+    accounts = [SimpleNamespace(id=account_id) for account_id in (1, 2, 3)]
+
+    selected = group_ai_chat._group_bot_ready_accounts_for_plan(
+        session,
+        task,
+        group,
+        accounts,
+    )
+
+    assert [account.id for account in selected] == [1, 3]
+
+
+def test_group_volume_candidates_scan_past_uncovered_admission_debt(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task, group = _seed(session, configured=3, account_count=3)
+    accounts = [SimpleNamespace(id=account_id) for account_id in (1, 2, 3)]
+    captured: dict[str, object] = {}
+
+    def select_accounts(*_args, **kwargs):
+        captured.update(kwargs)
+        return accounts
+
+    monkeypatch.setattr(group_ai_chat, "select_task_accounts", select_accounts)
+    monkeypatch.setattr(
+        group_ai_chat,
+        "_online_ready_accounts",
+        lambda _session, _task, candidates, _progress: candidates,
+    )
+    monkeypatch.setattr(
+        group_ai_chat,
+        "_group_bot_ready_accounts_for_plan",
+        lambda _session, _task, _group, candidates: candidates,
+    )
+    monkeypatch.setattr(
+        group_ai_chat,
+        "voice_profile_prompt_details",
+        lambda *_args, **_kwargs: {
+            account.id: {"version": 1, "summary": f"面具{account.id}"}
+            for account in accounts
+        },
+    )
+    monkeypatch.setattr(
+        group_ai_chat,
+        "_daily_success_counts",
+        lambda *_args: {1: 2, 2: 0, 3: 1},
+    )
+    facts = SimpleNamespace(
+        config=task.type_config,
+        group=group,
+        coverage=SimpleNamespace(volume_need_now=2),
+    )
+
+    selected = group_ai_chat._daily_group_extra_accounts(
+        session,
+        task,
+        facts,
+        selected=[],
+        account_limit=2,
+    )
+
+    assert captured["scan_all_candidates"] is True
+    assert [account.id for account in selected] == [2, 3]

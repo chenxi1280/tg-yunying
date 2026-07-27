@@ -19,6 +19,7 @@ from app.models import (
     Action,
     AiCoverageVariationIntent,
     AiGroupMessageMemory,
+    GroupBotAdmission,
     OperationTarget,
     RuleSet,
     Task,
@@ -118,6 +119,10 @@ DAILY_COVERAGE_DEBT_RECHECK_SECONDS = 120
 GROUP_CHAT_SCENE = "group_chat"
 ALL_ACCOUNT_COVERAGE_CAPACITY_BLOCKED_MESSAGE = "全部账号每日覆盖容量不足，已停止创建发送 Action"
 SENDABLE_COVERAGE_CAPACITY_BLOCKED_MESSAGE = "当前可发账号每日覆盖容量不足，已停止创建发送 Action"
+GROUP_BOT_PLANNABLE_STATES = frozenset({
+    "group_bot_admission_ready",
+    "post_follow_visibility_probe",
+})
 
 
 @dataclass(frozen=True)
@@ -470,6 +475,9 @@ def _load_daily_coverage_plan_accounts(
             session, task, facts.group, facts.hard_progress, facts.config, coverage_rows=rows,
         )
         accounts = _online_ready_accounts(session, task, accounts, facts.hard_progress)
+        accounts = _group_bot_ready_accounts_for_plan(
+            session, task, facts.group, accounts,
+        )
         remaining = max(0, account_limit - len(selected))
         selected.extend(accounts[:remaining])
     selected.extend(
@@ -500,18 +508,20 @@ def _daily_group_extra_accounts(
     remaining = min(needed, max(0, account_limit - len(selected)))
     if remaining <= 0:
         return []
-    config = {**facts.config, "_daily_coverage_enforced": False}
-    candidates = _select_accounts_for_plan(
+    candidates = select_task_accounts(
         session,
-        task,
-        facts.group,
-        {},
-        config,
-        coverage_rows=None,
+        task.tenant_id,
+        task.account_config or {},
+        target_group_id=facts.group.id,
+        enforce_max_concurrent=False,
+        scan_all_candidates=True,
     )
     selected_ids = {account.id for account in selected}
     candidates = [account for account in candidates if account.id not in selected_ids]
     candidates = _online_ready_accounts(session, task, candidates, {})
+    candidates = _group_bot_ready_accounts_for_plan(
+        session, task, facts.group, candidates,
+    )
     profiles = voice_profile_prompt_details(
         session,
         tenant_id=task.tenant_id,
@@ -520,6 +530,34 @@ def _daily_group_extra_accounts(
     masked = [account for account in candidates if _voice_profile_ready(profiles.get(account.id))]
     counts = _daily_success_counts(session, task)
     return sorted(masked, key=lambda account: (counts.get(account.id, 0), account.id))[:remaining]
+
+
+def _group_bot_ready_accounts_for_plan(
+    session: Session,
+    task: Task,
+    group: TgGroup,
+    accounts: list,
+) -> list:
+    if not accounts:
+        return []
+    config = task.type_config if isinstance(task.type_config, dict) else {}
+    required = config.get("group_bot_admission_required")
+    if required is False:
+        return accounts
+    admissions = session.scalars(select(GroupBotAdmission).where(
+        GroupBotAdmission.tenant_id == task.tenant_id,
+        GroupBotAdmission.group_id == group.id,
+        GroupBotAdmission.account_id.in_([account.id for account in accounts]),
+    ))
+    state_by_account = {
+        int(admission.account_id): str(admission.state or "")
+        for admission in admissions
+    }
+    return [
+        account for account in accounts
+        if state_by_account.get(int(account.id)) in GROUP_BOT_PLANNABLE_STATES
+        or (required is not True and int(account.id) not in state_by_account)
+    ]
 
 
 def _daily_success_counts(session: Session, task: Task) -> dict[int, int]:
