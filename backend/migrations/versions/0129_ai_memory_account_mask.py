@@ -1,6 +1,6 @@
 """bind AI message memory to account mask evidence
 
-Revision ID: 0129_ai_message_memory_account_mask
+Revision ID: 0129_ai_memory_account_mask
 Revises: 0128_ai_group_daily_targets
 Create Date: 2026-07-28
 """
@@ -11,7 +11,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0129_ai_message_memory_account_mask"
+revision = "0129_ai_memory_account_mask"
 down_revision = "0128_ai_group_daily_targets"
 branch_labels = None
 depends_on = None
