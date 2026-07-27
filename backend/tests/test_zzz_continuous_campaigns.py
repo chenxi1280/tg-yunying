@@ -67,7 +67,9 @@ def test_ai_activity_campaign_auto_approves_and_queues_tasks():
         assert campaign.json()["status"] == TaskStatus.RUNNING.value
 
         with SessionLocal() as session:
-            assert process_continuous_campaign(session, campaign.json()["id"]) >= 1
+            queued = process_continuous_campaign(session, campaign.json()["id"])
+            db_campaign = session.get(Campaign, campaign.json()["id"])
+            assert queued >= 1, db_campaign.last_error
 
         with SessionLocal() as session:
             db_campaign = session.get(Campaign, campaign.json()["id"])

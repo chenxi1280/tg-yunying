@@ -3949,7 +3949,7 @@ def test_task_center_group_ai_chat_runs_from_worker_loop(monkeypatch):
         make_task_send_actions_due(task_id)
         worker.run_worker(limit=1000, interval_seconds=0.1, max_iterations=2)
 
-        detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
+        detail = task_detail_after_metrics(client, headers, task_id)
         assert detail["task"]["status"] == "running"
         actions = task_detail_actions(client, headers, task_id, action_type="send_message")
         deferred_actions = [
@@ -4048,6 +4048,7 @@ def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(monkeypatch):
                 "participation_jitter": 0,
                 "messages_per_round_mode": "manual",
                 "messages_per_round": 1,
+                "daily_message_target": 2,
             },
         )
         assert created.status_code == 200, created.text

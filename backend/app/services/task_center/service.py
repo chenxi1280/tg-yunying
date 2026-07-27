@@ -7,7 +7,7 @@ import re
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import and_, delete, func, or_, select, tuple_
+from sqlalchemy import and_, delete, func, or_, select, tuple_, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, object_session
 
@@ -4470,11 +4470,31 @@ def _clear_unfinished_plan(session: Session, task: Task) -> None:
         _skip_attempted_pending_actions(session, pending_actions, attempted_action_ids)
         deletable_action_ids = [action_id for action_id in pending_action_ids if action_id not in attempted_action_ids]
         if deletable_action_ids:
+            _release_deleted_action_coverage(session, deletable_action_ids)
             session.execute(delete(SearchRankDeboostClickReservation).where(SearchRankDeboostClickReservation.action_id.in_(deletable_action_ids)))
             session.execute(delete(Action).where(Action.id.in_(deletable_action_ids)))
     _supersede_active_plan_actions(session, task)
     _clear_orphaned_search_join_pacing_decisions(session, task)
     session.execute(delete(ReviewQueue).where(ReviewQueue.task_id == task.id, ReviewQueue.status == "pending"))
+
+
+def _release_deleted_action_coverage(session: Session, action_ids: list[str]) -> None:
+    session.execute(
+        update(TaskAccountDailyCoverage)
+        .where(TaskAccountDailyCoverage.reserved_action_id.in_(action_ids))
+        .values(
+            state="ready",
+            reserved_action_id=None,
+            reservation_token=None,
+            blocker_code="",
+            blocker_stage="",
+            blocker_detail="",
+            recovery_path="",
+            next_eligible_at=None,
+            next_decision_at=None,
+            updated_at=_now(),
+        )
+    )
 
 
 def _clear_hard_hourly_checkpoint(task: Task) -> None:

@@ -865,7 +865,7 @@ def test_coverage_plan_cursor_rolls_back_with_failed_batch(session: Session) -> 
     assert [item.id for item in retried.rows] == ["coverage-1"]
 
 
-def test_daily_coverage_open_action_gate_uses_debt_after_reserved(monkeypatch, session: Session) -> None:
+def test_daily_coverage_open_action_gate_keeps_volume_due_without_bound_actions(monkeypatch, session: Session) -> None:
     task, group = _seed(session)
     group.active_window = "00:00-23:59"
     now_value = datetime.combine(beijing_now().date(), time(23, 59))
@@ -876,7 +876,7 @@ def test_daily_coverage_open_action_gate_uses_debt_after_reserved(monkeypatch, s
     session.get(TaskAccountDailyCoverage, "coverage-1").state = "reserved"
     session.get(TaskAccountDailyCoverage, "coverage-3").state = "reserved"
 
-    assert requires_planning_with_open_actions(session, task) is False
+    assert requires_planning_with_open_actions(session, task) is True
 
 
 def test_send_message_payload_carries_coverage_ledger_identity() -> None:
