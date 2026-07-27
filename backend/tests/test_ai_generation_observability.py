@@ -69,6 +69,8 @@ def test_phase_c_generation_attempt_does_not_update_task_stats_hot_row() -> None
         session.flush()
 
         assert action.payload["ai_generation_status"] == "ready"
+        assert action.payload["voice_profile_contract_version"] == "style_only_v2"
+        assert action.result["voice_profile_contract_version"] == "style_only_v2"
         assert action.result["voice_profile_anchor_rewritten"] is True
         assert task.stats == {}
         assert not any(statement.startswith("update tasks ") for statement in statements)

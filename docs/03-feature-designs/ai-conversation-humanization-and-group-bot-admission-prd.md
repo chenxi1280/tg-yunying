@@ -445,7 +445,9 @@ durable_debt 排除：
 
 账号面具只约束语气、句长、表情习惯、表达偏好与短期立场；任务话题和真实上下文决定正文主题。不得因为面具摘要含“男客、夜场、价格、位置”等词，就要求每个 slot 必须出现价格/位置/服务锚点，更不得把 AI 原文截断后拼接固定问句。面具不匹配只能拒绝该 slot 并进入既有有界补位生成。
 
-历史 `voice_profile_anchor_rewritten=true` 仅作为旧债事实保留。仍处于 `pending/claiming/executing/retryable_failed` 且尚未进入 Telegram Gateway 的旧 Action 必须在 Planner 或发送前转为 `skipped/voice_profile_anchor_replan`，关联消息记忆转 `expired_before_send`，覆盖预约释放后重新规划。
+AI 活群只消费既有 active 面具，不得修改面具生成、启用、版本或回滚逻辑。每条通过 style-only 面具门的 Provider 正文必须在 payload / result 固化 `voice_profile_contract_version=style_only_v2`。历史 `voice_profile_anchor_rewritten=true`，以及已有正文、`ai_generation_status=ready` 但缺少当前合同版本的非 `direct_check_in` Action，均作为旧消费者债务；仍处于 `pending/claiming/executing/retryable_failed` 且尚未进入 Telegram Gateway 时，必须在 Planner 或发送前转为 `skipped/voice_profile_anchor_replan`，关联消息记忆转 `expired_before_send`，覆盖预约释放后重新规划。未生成正文的蓝图不因缺版本误杀；`direct_check_in` 不消费面具且保留自己的明确来源审计。
+
+生产验收必须同时证明：active/superseded 面具数量与版本未被本功能改写；发布后新 Provider Action 的合同版本全部为 `style_only_v2`；开放队列不存在缺版本的旧已生成正文；新成功消息不再出现系统固定尾句注入。任务被人工停止时只能写 `unproven`，不得用容器健康或历史消息代替真实发送验收。
 
 ### 7.2 `签到` 规则
 

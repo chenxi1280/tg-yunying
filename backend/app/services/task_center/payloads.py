@@ -43,6 +43,7 @@ class SendMessagePayload(BaseModel):
     account_mask_summary: str = ""
     account_mask_match_score: int = 100
     account_mask_match_reason: str = ""
+    voice_profile_contract_version: str = ""
     stance_summary: str = ""
     ai_message_memory_id: str = ""
     rewrite_attempts: int = 0

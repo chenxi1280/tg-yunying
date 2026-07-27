@@ -11,8 +11,10 @@ from .daily_coverage import release_coverage_reservation
 
 
 LEGACY_ANCHOR_REPLAN_CODE = "voice_profile_anchor_replan"
-LEGACY_ANCHOR_REPLAN_MESSAGE = "历史账号面具强制改写正文已过期，等待重新生成"
+LEGACY_ANCHOR_REPLAN_MESSAGE = "历史账号面具消费者合同正文已过期，等待重新生成"
 LEGACY_ANCHOR_OPEN_STATUSES = ("pending", "claiming", "retryable_failed")
+VOICE_PROFILE_CONTRACT_VERSION = "style_only_v2"
+DIRECT_CHECK_IN_GENERATION_SOURCE = "direct_check_in"
 
 
 def expire_legacy_anchor_rewritten_actions(session: Session, task: Task) -> int:
@@ -27,7 +29,7 @@ def expire_legacy_anchor_rewritten_actions(session: Session, task: Task) -> int:
     )
     expired = 0
     for action in actions:
-        if not _was_anchor_rewritten(action):
+        if not _requires_contract_replan(action):
             continue
         _expire_action(session, action)
         expired += 1
@@ -43,7 +45,7 @@ def reject_legacy_anchor_rewrite_before_send(
     session: Session,
     action: Action,
 ) -> bool:
-    if not _was_anchor_rewritten(action):
+    if not _requires_contract_replan(action):
         return False
     _expire_action(session, action)
     return True
@@ -52,6 +54,19 @@ def reject_legacy_anchor_rewrite_before_send(
 def _was_anchor_rewritten(action: Action) -> bool:
     result = action.result if isinstance(action.result, dict) else {}
     return result.get("voice_profile_anchor_rewritten") is True
+
+
+def _requires_contract_replan(action: Action) -> bool:
+    if _was_anchor_rewritten(action):
+        return True
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    if payload.get("generation_source") == DIRECT_CHECK_IN_GENERATION_SOURCE:
+        return False
+    generated = (
+        payload.get("ai_generation_status") == "ready"
+        and bool(str(payload.get("message_text") or "").strip())
+    )
+    return generated and payload.get("voice_profile_contract_version") != VOICE_PROFILE_CONTRACT_VERSION
 
 
 def _expire_action(session: Session, action: Action) -> None:
@@ -99,6 +114,7 @@ def _release_coverage(session: Session, action: Action, payload: dict) -> None:
 
 
 __all__ = [
+    "VOICE_PROFILE_CONTRACT_VERSION",
     "expire_legacy_anchor_rewritten_actions",
     "reject_legacy_anchor_rewrite_before_send",
 ]

@@ -14,6 +14,7 @@ from .ai_generation_state import (
     mark_attempt_outcome,
     validate_generation_mapping,
 )
+from .legacy_anchor_rewrite import VOICE_PROFILE_CONTRACT_VERSION
 
 
 def persist_generation_results(
@@ -48,6 +49,7 @@ def persist_generation_results(
             data["ai_generation_status"] = "ready"
             data["ai_generation_tokens"] = int(tokens or 0) if index == 0 else 0
             data["ai_generation_result_cache"] = {}
+            data["voice_profile_contract_version"] = VOICE_PROFILE_CONTRACT_VERSION
             quality_fallback = result.quality_fallback or str(
                 getattr(result.content, "quality_fallback", "") or ""
             )
@@ -77,6 +79,7 @@ def persist_generation_results(
                 "generation_outcome": "ready",
                 "ai_generation_attempt_id": request.attempt_id,
                 "voice_profile_anchor_rewritten": result.voice_profile_anchor_rewritten,
+                "voice_profile_contract_version": VOICE_PROFILE_CONTRACT_VERSION,
             }
             commit_generation_action(session, request, action)
 
