@@ -748,9 +748,11 @@ def _remaining_strict_daily_capacity(
         return None
     task_daily_capacity(session, task, pacing_window(task, now_value), 1_000_000, pacing_stats)
     base_budget = int(config.get("max_actions_per_day") or 0)
-    remaining_budget = max(0, base_budget - pacing_stats.task_daily_action_count) if base_budget else None
+    effective_budget = pacing_stats.task_daily_effective_budget or base_budget
+    remaining_budget = max(0, effective_budget - pacing_stats.task_daily_action_count) if base_budget else None
+    capacity_config = {**config, "max_actions_per_day": effective_budget}
     account_capacity = configured_account_source_capacity(
-        config,
+        capacity_config,
         candidate_account_count=len(accounts),
         allow_repeat=bool((task.type_config or {}).get("allow_same_account_repeat_application")),
         keyword_count=len(config.get("keyword_hashes") or []),

@@ -1719,7 +1719,7 @@ def test_search_join_daily_limits_count_failed_and_claiming_real_actions(session
 
 
 @pytest.mark.no_postgres
-def test_strict_daily_click_target_does_not_expand_source_budget_after_terminal_miss(
+def test_strict_daily_click_target_replaces_terminal_unconfirmed_sources(
     session: Session,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1767,15 +1767,15 @@ def test_strict_daily_click_target_does_not_expand_source_budget_after_terminal_
     ])
     session.commit()
 
-    assert build_task_plan(session, task) == 0
+    assert build_task_plan(session, task) == 2
     limits = task.stats["search_join_stats"]["pacing_limits"]
 
-    assert session.query(Action).filter_by(task_id=task.id, action_type="search_join").count() == 2
+    assert session.query(Action).filter_by(task_id=task.id, action_type="search_join").count() == 4
     assert limits["task_daily_action_count"] == 2
     assert limits["task_daily_base_budget"] == 2
     assert limits["terminal_unconfirmed_click_count"] == 2
-    assert limits["task_daily_effective_budget"] == 2
-    assert limits["task_daily_remaining"] == 0
+    assert limits["task_daily_effective_budget"] == 4
+    assert limits["task_daily_remaining"] == 2
 
 
 @pytest.mark.no_postgres

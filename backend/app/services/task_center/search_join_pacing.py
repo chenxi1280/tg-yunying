@@ -184,7 +184,7 @@ def task_daily_capacity(session: Session, task: Task, window: PacingWindow, requ
         stats.task_daily_remaining = requested
         return requested
     replacement_count = _strict_daily_click_replacement_count(session, task, window.local_date)
-    effective_budget = base_budget if _strict_daily_source_ceiling(task) else base_budget + replacement_count
+    effective_budget = base_budget + replacement_count
     stats.terminal_unconfirmed_click_count = replacement_count
     stats.task_daily_effective_budget = effective_budget
     remaining = max(0, effective_budget - count)
@@ -193,11 +193,6 @@ def task_daily_capacity(session: Session, task: Task, window: PacingWindow, requ
         stats.task_daily_limit_reached = 1
         stats.last_limit_reason = "task_daily_limit_reached"
     return min(requested, remaining)
-
-
-def _strict_daily_source_ceiling(task: Task) -> bool:
-    config = task.type_config or {}
-    return bool(config.get("strict_daily_target") and config.get("daily_click_target_count") is not None)
 
 
 def _strict_daily_click_replacement_count(session: Session, task: Task, local_date: date) -> int:
