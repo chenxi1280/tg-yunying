@@ -159,7 +159,7 @@ maximum_confirmable_count = frozen_denominator_count - terminal_permission_block
 
 1. listener 在来源过滤、精确控制提示识别后，若文本没有明确收件人、含精确公开频道 URL 且多个 waiting admission 无法归属，只能在来源为管理员 bot 或存在同 group + peer 的 active source-bound policy 时进入全群规则路径。明确收件人不匹配时，只有同 peer 已在当前 listener 上下文中提供另一条不同 source message、且两条消息的精确频道集合与确认 callback 形态相同，才可作为标准化规则进入该路径。
 2. 候选限于运行中 `group_ai_chat` 的持久账号 scope 内、同群且未终态的现有 `GroupBotAdmission`；不同 trusted peer、没有运行任务绑定、`blocked`、`abandoned` 的 admission 一律跳过。不得仅因账户在 `TgGroupAccount` 中存在而伪造 admission 或扩大任务分母。
-3. 每个候选创建自己的 `group_bot_channel_follow`、必要时的精确 callback Action，并携带同一 source message、peer、按钮 URL/坐标、admission/version 与绑定 task/account。Planner 与 Dispatcher 都保证同一 admission/version 的开放 confirmation Action 只有一条；重复标准提示产生的额外 pending callback（含上线前遗留项）必须在 Gateway 前标记 `group_bot_confirmation_superseded`，不允许多次点击。follow 和 callback 成功都不直接写 ready；正文 `send_message` 仍在 admission gate 之后。
+3. 每个候选创建自己的 `group_bot_channel_follow`、必要时的精确 callback Action，并携带同一 source message、peer、按钮 URL/坐标、admission/version 与绑定 task/account。Planner 与 Dispatcher 都保证同一 admission/version 的开放 confirmation Action 只有一条；重复标准提示产生的额外 pending callback（含上线前遗留项）必须在 Dispatcher 的 claim 确认阶段、账号 usage/capacity/shard policy 之前标记 `group_bot_confirmation_superseded`，不得因为 `global_account_policy` 延后而遗留为开放 Action。被标记的 Action 不得领取运行资源、不得调用 Gateway；仅保留唯一的同 admission/version callback 继续等待其精确频道 follow。follow 和 callback 成功都不直接写 ready；正文 `send_message` 仍在 admission gate 之后。
 4. policy 只是受限信任根，不是历史消息重放开关。策略生效后必须由 listener 再观察到同 peer 的有效控制事件；没有新证据时保留 blocker，并在任务详情显示 `group_bot_policy_unresolved` / `group_bot_rule_unattributed` 的真实区别。
 5. 存量 `group_bot_control_prompt_unverified` follow 只可在本路径收到不同 source message 且 channel_ref 仍在当前精确集合时原地 rearm；旧 Action 保留审计，其他 blocked follow 不得批量复活。
 
@@ -308,6 +308,7 @@ hard_hourly_planning_required = hard_hourly_required_new > 0
 | 已知 Gateway 失败后的同群槽位 | 账号受限、权限等已知失败只释放本 Action 持有的临时预约，不得清除后续 Action 槽位；FloodWait / SlowMode 以 Telegram 返回秒数覆盖预约。随后可发送账号可继续领取，未知结果仍保持槽位且不重发 |
 | account_only 群 | 不读取或写入 legacy 的 group claim slot；原账号级并发和可选群日上限保持不变 |
 | unknown-role bot 的广播频道规则 | 无 source-bound policy 时不创建 follow、不变更 admission；有同 group+peer 审计 policy 且 listener 再观察到有效、无收件人提示时，仅为运行中 scope 的既有 admission 创建逐账号 exact follow/callback，绝不创建正文或直接 ready |
+| 上线前遗留的重复 confirmation callback | claim 确认先按 admission/version 去重，重复项写 `group_bot_confirmation_superseded`；即使账号处于全局冷却，也不得延后、占用 dispatcher 领取资源或触发 Telegram callback |
 | Planner 全局 backlog | 不绕过 pending 上限；写 planner_capacity_insufficient 与下一检查时间，daily_outcome 不得显示 feasible |
 | 已有覆盖游标与 Dispatcher 并发 | Planner 只锁 `TaskDailyCoveragePlanCursor`，不再锁 `tasks` 行；PostgreSQL 不得出现 Planner/Dispatcher 的反向锁序或丢弃 coverage 决策 |
 | cannot_send | 留在冻结分母、daily_outcome=blocked、无正文 Gateway 调用 |
@@ -341,6 +342,7 @@ hard_hourly_planning_required = hard_hourly_required_new > 0
 - `daily_fulfillment.py` 必须按 ExecutionAttempt Gateway 边界区分 overdue：未进入 Gateway 的 Action 维持 `reserved + dispatcher_lag`，已进入 Gateway 的才为 `unknown + coverage_action_overdue`；所有 Action 与统计时钟的比较统一归一到任务统计时区，详情投影 `overdue_open_count` 与 blocker_counts。
 - `dispatch_claim_ledger.py` 在终态释放时按仍为 `executing + dispatch_claim_active` 的 Action 重算 exact Scope/Window/Allocation counter；发现跨 Window 漂移时写 Action 审计而非抛 underflow。`service._recover_claimed_stale_action` 完成终态后同步 coverage，迁移替换覆盖 terminal unknown 的 Recovery 索引。
 - `dispatcher._locked_claim_plan_candidates` 必须按既有 claim 优先级、再按 `DispatchClaimPlan.candidate_action_ids` 锁取 Action；`scheduled_at` / `created_at` 不能覆盖已获份额的同优先级计划。回归测试必须构造“计划优先 Action 的排期较晚”场景，并保留频道评论、硬小时和 membership 的既有优先级，证明旧 backlog 不会反超。
+- `dispatcher._confirm_action_claim_candidate` 对 `group_bot_confirmation_button` 先依据 admission/version 清理上线前遗留的重复 callback，再执行账号 usage、shard 与容量 policy；因此旧重复项不会被 `global_account_policy` 无限延后，也不会获得运行资源或调用 Telegram。
 - `group_ai_chat.py` 先以 `reservation_token` CAS reservation，再持久化 `action_id=null` 的 `AiCoverageVariationIntent`，随后创建并 flush Action，最后绑定两个真实 Action 外键；重复 variation intent 明确释放同一 token reservation。迁移 `0123_coverage_reservation_binding.py` 提供该临时 token。
 - 全局 Planner 无槽位时，`service.py` 对当日 ready debt 写 `planner_capacity_insufficient`、`next_decision_at` 和追加式 `TaskDailyFulfillmentDecision`，日履约不再静默显示 feasible。
 - 迁移 `0121_daily_fulfillment_contracts.py` 持久化覆盖扩展列、variation intent、每日决定和 generation contract audit；自动化回归覆盖 intent 顺序、重复拒绝、overdue 与 backlog。

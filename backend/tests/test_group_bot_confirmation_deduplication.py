@@ -110,3 +110,30 @@ def test_confirmation_action_rejects_later_open_duplicate() -> None:
             admission_id=payload.admission_id,
             admission_version=payload.admission_version,
         )
+
+
+def test_claim_skips_legacy_duplicate_before_global_account_policy(monkeypatch) -> None:
+    with _session() as session:
+        _, _ = _duplicate_confirmation_setup(session, first_status="pending")
+        duplicate = session.get(Action, "confirm-duplicate")
+        assert duplicate is not None
+        duplicate.status = "claiming"
+        duplicate.claim_owner = "dispatcher-1"
+        duplicate.claim_token = "claim-token"
+        session.commit()
+
+        monkeypatch.setattr(
+            dispatcher,
+            "_apply_claim_account_policy",
+            lambda *_args: pytest.fail("duplicate must be skipped before account policy"),
+        )
+        batch = dispatcher.ActionClaimBatch(
+            action_ids=(duplicate.id,),
+            owner="dispatcher-1",
+            token="claim-token",
+            reservation_bindings={},
+        )
+
+        assert not dispatcher._confirm_action_claim_candidate(session, duplicate.id, batch)
+        assert duplicate.status == "skipped"
+        assert duplicate.result["error_code"] == "group_bot_confirmation_superseded"

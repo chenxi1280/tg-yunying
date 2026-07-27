@@ -1050,6 +1050,9 @@ def _confirm_action_claim_candidate(
         return False
     if action.action_type == "search_join":
         _rebind_search_join_source_action_to_authorization_account(session, action)
+    if _skip_superseded_group_bot_confirmation_claim(session, action):
+        session.commit()
+        return False
     if not _apply_claim_account_policy(session, action):
         session.commit()
         return False
@@ -1070,6 +1073,34 @@ def _confirm_action_claim_candidate(
     except IntegrityError:
         _release_conflicting_action_claim(session, action_id, batch, action)
     return False
+
+
+def _skip_superseded_group_bot_confirmation_claim(session: Session, action: Action) -> bool:
+    if action.action_type != "group_bot_confirmation_button":
+        return False
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    try:
+        admission_id = int(payload.get("admission_id") or 0)
+        admission_version = int(payload.get("admission_version") or 0)
+    except (TypeError, ValueError):
+        return False
+    if admission_id <= 0 or admission_version <= 0:
+        return False
+    from app.services.task_center.group_bot_admission import confirmation_action_can_dispatch
+
+    if confirmation_action_can_dispatch(
+        session,
+        action=action,
+        admission_id=admission_id,
+        admission_version=admission_version,
+    ):
+        return False
+    _skip(
+        action,
+        "group_bot_confirmation_superseded",
+        "同一群管准入已存在更早的确认动作，跳过重复 callback",
+    )
+    return True
 
 
 def _release_failed_claim_confirmation(session: Session, action_id: str, batch: ActionClaimBatch) -> None:
