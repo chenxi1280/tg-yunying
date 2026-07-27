@@ -41,15 +41,20 @@ AUTO_BOUND_TASKS_SESSION_KEY = "auto_bound_rule_tasks"
 
 
 @pytest.fixture(autouse=True)
-def keep_default_group_send_tests_inside_active_window(monkeypatch):
+def keep_default_group_send_tests_inside_active_window(monkeypatch, request):
+    if request.node.path.name != "test_workflow.py":
+        return
+    from app.services import outbound_target_gate
     from app.services.task_center import group_send_limits
 
-    current_now = group_send_limits._now
-    monkeypatch.setattr(
-        group_send_limits,
-        "_now",
-        lambda: current_now().replace(hour=12, minute=0, second=0, microsecond=0),
-    )
+    active_window_block = group_send_limits.active_window_block
+
+    def active_window_block_at_noon(group, _now=None):
+        noon = group_send_limits._now().replace(hour=12, minute=0, second=0, microsecond=0)
+        return active_window_block(group, noon)
+
+    monkeypatch.setattr(group_send_limits, "active_window_block", active_window_block_at_noon)
+    monkeypatch.setattr(outbound_target_gate, "active_window_block", active_window_block_at_noon)
 
 
 def _normalize_postgres_url(raw_url: str) -> str:
