@@ -107,19 +107,32 @@ def _process_group_bot_control_event(session: Session, group: TgGroup, snapshot)
     if event is None:
         return
     remote_id, content, bot_peer, is_admin_bot = event
-    if not is_trusted_group_bot_source(
-        session,
-        tenant_id=group.tenant_id,
-        group_id=group.id,
-        bot_peer_id=bot_peer,
-        is_admin_bot=is_admin_bot,
-    ):
-        return
     controls = _control_button_summaries(snapshot)
     button_confirmed = bool(getattr(snapshot, "button_confirmed", False))
     is_prompt = is_group_bot_control_prompt(content, controls)
     is_completion = is_group_bot_completion_event(content, button_confirmed=button_confirmed)
     if not (is_prompt or is_completion):
+        return
+    trusted_source = is_trusted_group_bot_source(
+        session,
+        tenant_id=group.tenant_id,
+        group_id=group.id,
+        bot_peer_id=bot_peer,
+        is_admin_bot=is_admin_bot,
+    )
+    if not trusted_source:
+        from app.services.task_center.group_bot_post_send_rules import apply_correlated_post_send_rule
+
+        if not is_prompt or not apply_correlated_post_send_rule(
+            session,
+            group,
+            remote_id=remote_id,
+            content=content,
+            bot_peer=bot_peer,
+            is_admin_bot=is_admin_bot,
+            controls=controls,
+        ):
+            return
         return
     waiting = _waiting_group_bot_admissions(session, group)
     target_id, reason = _attributed_waiting_account(session, waiting, content)

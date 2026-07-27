@@ -6,7 +6,7 @@
 | --- | --- |
 | 需求级别 | L2 产品能力升级（上线后影响生产 AI 活群 / 频道评论行为） |
 | 设计状态 | `complete`（2026-07-27 控制提示分类与受控恢复修订） |
-| 修订说明 | 2026-07-25 评审修补合订 + **continuity 交叉 P0/P1 合订**：① 待可见性核验计入 `unknown_after_send_hold_count`；② `admission_abandoned` 释放永久不可准入硬小时 debt；③ `pending_visibility_credit` 延后真实 credit；④ follow/观察 action 复用 `target_admission_retry` 档且限 tenant+task+account；⑤ 定义 `admission_version`；⑥ C1/C2 action 边界与存量 unknown 走 continuity 裁决。2026-07-27 首次补齐：入群前基线游标、每轮 listener observation 落库、控制事件优先后闭合、存量无基线显式重启观察，以及成功终态压过历史临时错误展示。**同日生产复核再补齐：来源信任必须早于归属；可信 peer 只是候选来源而不是“每条消息都是控制指令”；频道与确认动作可仅存在于 Telegram 内联按钮；已审计的目标级 bot peer 可作为 unknown role 的受限信任根；同群新入群 admission 必须串行，避免并发提示无法归属；历史已入库的同一 bot 消息重新被监听到按钮时，只回填安全按钮摘要以支持精确恢复；频道 follow 的持久 Action 类型固定为 `group_bot_channel_follow`，必须适配 `actions.action_type` 的 30 字符上限；`required_channel_refs` 只代表当前世代，误判提示暂停后必须由 explicit restart 与不同 source 的新有效控制提示受控 rearm；带明确收件人的控制提示必须精确归属，不能被唯一 waiting account 兜底错配。** |
+| 修订说明 | 2026-07-25 评审修补合订 + **continuity 交叉 P0/P1 合订**：① 待可见性核验计入 `unknown_after_send_hold_count`；② `admission_abandoned` 释放永久不可准入硬小时 debt；③ `pending_visibility_credit` 延后真实 credit；④ follow/观察 action 复用 `target_admission_retry` 档且限 tenant+task+account；⑤ 定义 `admission_version`；⑥ C1/C2 action 边界与存量 unknown 走 continuity 裁决。2026-07-27 首次补齐：入群前基线游标、每轮 listener observation 落库、控制事件优先后闭合、存量无基线显式重启观察，以及成功终态压过历史临时错误展示。**同日生产复核再补齐：来源信任必须早于归属；可信 peer 只是候选来源而不是“每条消息都是控制指令”；频道与确认动作可仅存在于 Telegram 内联按钮；已审计的目标级 bot peer 可作为 unknown role 的受限信任根；同群新入群 admission 必须串行，避免并发提示无法归属；历史已入库的同一 bot 消息重新被监听到按钮时，只回填安全按钮摘要以支持精确恢复；频道 follow 的持久 Action 类型固定为 `group_bot_channel_follow`，必须适配 `actions.action_type` 的 30 字符上限；`required_channel_refs` 只代表当前世代，误判提示暂停后必须由 explicit restart 与不同 source 的新有效控制提示受控 rearm；带明确收件人的控制提示必须精确归属，不能被唯一 waiting account 兜底错配。生产 E4 再次发现“空 admission 放行后 Telegram 先返回 message id、机器人稍后删除并提示订阅”后补齐：空/无证据 admission 的首条正文必须进入完整可见性窗口，窗口结束前不得以瞬时可见确认成功；unknown-role bot 只有在同 peer 重复出现相同精确频道+callback 规则，且与同群开放的 `pending_visibility` 远端消息顺序和时间窗相关时，才可作为 `post_send_intercept_rule` 受限信任根展开逐账号准入。** |
 | 产品范围 | 真人化：`group_ai_chat` + `channel_comment`；群管机器人准入：仅 `group_ai_chat` |
 | 统计时区 | 任务配置时区；未配置时沿用平台 `Asia/Shanghai` |
 | 上位文档 | `docs/01-product/tg-ops-platform-prd.md` |
@@ -315,17 +315,19 @@ not_joined -> joining
 
 ### 5.8 发送后可见性核验
 
-适用：① 账号首次进入 `group_bot_admission_ready` 后的首条正文；② `admission_version` 递增后的首条正文。
+适用：① 账号首次进入 `group_bot_admission_ready` 后的首条正文；② `admission_version` 递增后的首条正文；③ 为避免旧 C1 账号被全量 admission 门禁抽空而继续放行、但已存在空/无证据 admission 的账号首条正文。第③类是“先发送一条、延后确认业务成功”的兼容探针，不得直接计覆盖。
 
 | 项 | 口径 |
 | --- | --- |
 | 开始条件 | Gateway 返回非空 `remote_message_id`；Attempt 可先记调用边界成功，但 Action 进入 **`pending_visibility`（待可见性核验）** 子态，**不算**已确认业务成功 |
 | 手段 | 无正文：同群增量监听或按 message id 查询；禁止再发第二条试探 |
-| 成功 | `visible_confirmed` → 才允许覆盖确认与 **正式** hard-hourly credit（见 §5.8.1 / §5.8.3） |
+| 成功 | 到达完整核验窗口后按精确 message id 仍可见，才写 `visible_confirmed`，并允许覆盖确认与 **正式** hard-hourly credit（见 §5.8.1 / §5.8.3）；窗口内瞬时可见不得提前成功 |
 | 拦截 | 可信 bot 删除/拒绝，或可靠证明不存在 → `post_send_intercepted`：撤回 ready、停止该账号后续未进 Gateway action、覆盖/硬小时**不计**成功、**不**自动关注重发；该 Action **明确失败**，不占 `planning_reservation`；可在准入重新 ready 后由下一 tick 受控重建**新** Action；若永久无法 ready 见 §5.8.2 |
 | 未知 | 核验窗口内无法判定 → 保持 / 转入 `unknown_after_send`，占位语义见 §5.8.1 |
 | 核验窗口 | 默认 `post_send_visibility_window_seconds=90`（60–180 可目标覆盖）；窗口结束仍未知 → 保持 unknown + 告警，走 continuity 人工/只读裁决，**无**超时当成功/失败 |
 | 人工/只读核验 | 与 continuity unknown 裁决入口复用：确认可见则落正式 credit；确认未发送/已删则按证据记失败或 `post_send_intercepted` |
+
+空/无证据 admission 的兼容探针一旦确认不可见，必须把该账号 admission 写为 `post_send_intercepted`，后续正文进入准入门禁，不得继续逐条试发。listener 若同时观察到 unknown-role bot 的频道要求，只能在以下证据全部成立时把它提升为受限的 `post_send_intercept_rule`：同一 bot peer 至少两条不同 source message；频道 URL 集合和 callback 位置/文本签名完全相同；正文是明确“关注/订阅后发言”控制语义；当前同群存在尚未关闭的 `pending_visibility`，且 bot 消息 ID 在被观察正文之后、创建时间不超过该任务最大 180 秒核验窗口。该信任只用于当前 group 的运行中 membership scope，必须保留 bot peer、两条 source message 与 pending Action/remote id 证据；普通推广、单条提示、无 callback、无开放 hold 或顺序不成立时仍只审计。
 
 #### 5.8.1 「待可见性核验」与 `planning_reservation`（P0，强制）
 
@@ -604,6 +606,7 @@ target_admission_retry
 | 存量无基线 | 显式 restart observation 写审计和新 version；无 listener waterline 明确失败，不批量 ready |
 | 历史成功带旧准入错误 | API/页面显示远端成功，不把旧 `required_channel_admission_pending` 显示为当前失败 |
 | 可信 bot 要关注 | 仅归属账号建精确 follow；`can_send` 不被业务改写 |
+| 空 admission 的未知受控群 | 首条正文先 `pending_visibility`；窗口内不提前计成功；精确 message id 被删除后 action 失败、覆盖不增加；同 peer 重复频道+callback 提示与开放 hold 相关后，逐账号创建精确 follow |
 | 双账号同时等 | 无 @ 不批量 follow → unattributed |
 | 普通 bot 消息 | 来源不可信时不读取/不污染 waiting admission；不能批量写 `group_bot_rule_unattributed` |
 | unknown role 的已审计 peer | 仅 active explicit/follow policy 绑定的相同 peer 可解析控制消息；policy 外 unknown bot 无状态变化 |
@@ -628,6 +631,8 @@ target_admission_retry
 | 单账号无真人 | 仅 rotation wait；任务不 completed；产能 warning |
 | AI 生成中 admission 降级 | 不进 Gateway；释放预约 |
 | 可见性窗口结束仍未知 | 保持 unknown 占位，不超时当成功 |
+| 可见性窗口内瞬时可见 | 仍保持 `pending_visibility`；必须等完整窗口结束再确认 |
+| unknown-role 单条/无关联频道提示 | 不建立 bot 信任、不批量 follow；只有重复精确规则 + 同群开放 hold + 远端顺序/时间窗同时成立才可展开 |
 | 待可见性 vs 规划 | `pending_visibility` 计入 `unknown_after_send_hold_count`，不重复规划同一义务 |
 | 正式 credit 时序 | 需核验消息先有 `pending_visibility_credit`，`visible_confirmed` 才正式 credit |
 | post_send 后永不可 ready | 仅 `admission_abandoned` 排除 durable_debt；覆盖分母 blocked |

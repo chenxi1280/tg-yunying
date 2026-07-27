@@ -4,14 +4,17 @@ import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
+from app.services.task_center import dispatcher
 from app.database import Base
 from app.models import (
     Action,
+    ExecutionAttempt,
     GroupBotAdmission,
     GroupContextMessage,
     OperationTarget,
     PendingVisibilityCredit,
     Task,
+    TaskAccountDailyCoverage,
     TaskMembershipAdmissionItem,
     Tenant,
     TgAccount,
@@ -70,6 +73,9 @@ def test_gateway_gate_keeps_membership_only_group_outside_admission_flow() -> No
 
         assert allowed is True
         assert session.query(GroupBotAdmission).count() == 1
+        assert _action_needs_pending_visibility(session, action, remote_id="600") is True
+        mark_visible_confirmed(session, admission=session.query(GroupBotAdmission).one())
+        assert _action_needs_pending_visibility(session, action, remote_id="601") is False
 
 
 def test_gateway_gate_expands_audited_group_bot_scope_to_membership_account() -> None:
@@ -98,6 +104,31 @@ def test_gateway_gate_expands_audited_group_bot_scope_to_membership_account() ->
         assert allowed is False
         assert admission is not None
         assert action.result["group_bot_admission_backfilled"] is True
+
+
+def test_gateway_gate_blocks_account_after_post_send_intercept() -> None:
+    with _session() as session:
+        _seed_scope(session)
+        task = session.get(Task, "task-ai")
+        task.type_config = {"target_group_id": 7}
+        session.add(
+            GroupBotAdmission(
+                tenant_id=1,
+                group_id=7,
+                account_id=11,
+                state="post_send_intercepted",
+            )
+        )
+        session.flush()
+        action = session.get(Action, "send-1")
+
+        assert _group_bot_admission_gate_pass(
+            session,
+            action,
+            group_id=7,
+            account_id=11,
+        ) is False
+        assert action.result["error_code"] == "group_bot_admission_wait"
 
 
 def test_post_follow_probe_is_held_until_remote_visibility_confirms() -> None:
@@ -156,6 +187,83 @@ def test_pending_visibility_recovery_normalizes_aware_created_at() -> None:
 
         assert recover_pending_visibility_credits(session) == 0
         assert action.result["pending_visibility_age_seconds"] >= 500
+
+
+def test_pending_visibility_does_not_confirm_before_full_window(monkeypatch) -> None:
+    with _session() as session:
+        _seed_scope(session)
+        action = session.get(Action, "send-1")
+        action.status = "unknown_after_send"
+        session.add(
+            PendingVisibilityCredit(
+                tenant_id=1,
+                action_id=action.id,
+                remote_message_id="600",
+            )
+        )
+        session.flush()
+        calls: list[str] = []
+        monkeypatch.setattr(
+            dispatcher,
+            "_probe_post_send_visibility",
+            lambda *_args, **_kwargs: calls.append("probe") or "visible_confirmed",
+        )
+
+        assert recover_pending_visibility_credits(session) == 0
+        assert calls == []
+        assert action.status == "unknown_after_send"
+
+
+def test_pending_visibility_confirms_after_full_window(monkeypatch) -> None:
+    with _session() as session:
+        _seed_scope(session)
+        action = session.get(Action, "send-1")
+        action.status = "unknown_after_send"
+        action.payload = {**action.payload, "coverage_ledger_id": "coverage-11"}
+        session.add(
+            TaskAccountDailyCoverage(
+                id="coverage-11",
+                tenant_id=1,
+                task_id=action.task_id,
+                group_id=7,
+                account_id=11,
+                coverage_date=datetime.now(timezone.utc).date(),
+                state="unknown",
+                reserved_action_id=action.id,
+                last_action_id=action.id,
+            )
+        )
+        session.add(
+            ExecutionAttempt(
+                id="attempt-600",
+                tenant_id=1,
+                action_id=action.id,
+                account_id=11,
+                status="success",
+                remote_message_id="600",
+                gateway_call_started_at=datetime.now(timezone.utc),
+            )
+        )
+        hold = PendingVisibilityCredit(
+            tenant_id=1,
+            action_id=action.id,
+            remote_message_id="600",
+        )
+        session.add(hold)
+        session.flush()
+        hold.created_at = datetime.now(timezone.utc) - timedelta(seconds=100)
+        monkeypatch.setattr(
+            dispatcher,
+            "_probe_post_send_visibility",
+            lambda *_args, **_kwargs: "visible_confirmed",
+        )
+
+        assert recover_pending_visibility_credits(session) == 1
+        assert action.status == "success"
+        assert action.result["visibility_status"] == "visible_confirmed"
+        coverage = session.get(TaskAccountDailyCoverage, "coverage-11")
+        assert coverage.state == "confirmed"
+        assert coverage.confirmed_count == 1
 
 
 def _session() -> Session:

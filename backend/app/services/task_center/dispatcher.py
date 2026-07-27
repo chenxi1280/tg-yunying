@@ -1522,8 +1522,12 @@ def recover_pending_visibility_credits(session: Session, limit: int = 100) -> in
             if group_id and account_id
             else None
         )
-        # Best-effort live probe when no explicit visibility flag yet.
-        if not visibility and remote_id and group_id and account_id:
+        created_at = as_beijing(hold.created_at)
+        age_seconds = int((_now() - created_at).total_seconds()) if created_at else 0
+        window = _post_send_visibility_window_seconds(session, action)
+        # A bot can accept the send and delete it seconds later. Only a complete
+        # observation window can establish durable visibility.
+        if not visibility and age_seconds >= window and remote_id and group_id and account_id:
             probed = _probe_post_send_visibility(
                 session,
                 action=action,
@@ -1546,6 +1550,7 @@ def recover_pending_visibility_credits(session: Session, limit: int = 100) -> in
                 "hold_reason": "",
                 "visibility_status": "visible_confirmed",
             }
+            _sync_action_coverage_state(session, action)
             if continuity_enabled(session, action.tenant_id) and _is_hard_hourly_send_action(action):
                 outcome = credit_success_once(
                     session,
@@ -1569,12 +1574,10 @@ def recover_pending_visibility_credits(session: Session, limit: int = 100) -> in
                 "pending_visibility": False,
                 "visibility_status": visibility,
             }
+            _sync_action_coverage_state(session, action)
             closed += 1
             continue
         # No evidence yet: leave open (unknown hold semantics). Optionally stamp age for ops.
-        created_at = as_beijing(hold.created_at)
-        age_seconds = int((_now() - created_at).total_seconds()) if created_at else 0
-        window = _post_send_visibility_window_seconds(session, action)
         if age_seconds >= window:
             action.result = {
                 **result,
@@ -6441,14 +6444,17 @@ def _group_bot_admission_required(
         group_id=group_id,
         account_id=account_id,
     )
-    if existing is not None and any(
-        (
-            str(existing.trusted_bot_peer_id or ""),
-            str(existing.source_message_id or ""),
-            str(existing.evidence_ref or ""),
-        )
-    ):
-        return True
+    if existing is not None:
+        if existing.state == "post_send_intercepted":
+            return True
+        if any(
+            (
+                str(existing.trusted_bot_peer_id or ""),
+                str(existing.source_message_id or ""),
+                str(existing.evidence_ref or ""),
+            )
+        ):
+            return True
     membership_id = session.scalar(
         select(TaskMembershipAdmissionItem.id).where(
             TaskMembershipAdmissionItem.task_id == action.task_id,

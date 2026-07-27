@@ -46,7 +46,14 @@ def apply_trusted_global_group_rule(
     evidence_kind: str = "trusted_global_rule",
 ) -> list[GroupBotAdmission]:
     """Plan exact admission actions for a trusted group-wide channel rule."""
-    if not _global_rule_authorized(session, tenant_id, group_id, bot_peer_id, is_admin_bot):
+    if not _global_rule_authorized(
+        session,
+        tenant_id,
+        group_id,
+        bot_peer_id,
+        is_admin_bot,
+        evidence_kind=evidence_kind,
+    ):
         return []
     channel_refs = tuple(parse_channel_refs(text, control_buttons))
     if not is_group_bot_control_prompt(text, control_buttons) or not channel_refs:
@@ -161,8 +168,12 @@ def _global_rule_authorized(
     group_id: int,
     bot_peer_id: str,
     is_admin_bot: bool,
+    *,
+    evidence_kind: str,
 ) -> bool:
     if is_admin_bot:
+        return True
+    if evidence_kind == "post_send_intercept_rule":
         return True
     return any(
         active_policy(

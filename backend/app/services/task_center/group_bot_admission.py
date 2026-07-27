@@ -25,6 +25,15 @@ from .group_bot_observation import has_valid_observation, numeric_cursor, record
 DEFAULT_OBSERVATION_WINDOW_SECONDS = 120
 DEFAULT_VISIBILITY_WINDOW_SECONDS = 90
 READY_STATE = "group_bot_admission_ready"
+LEGACY_VISIBILITY_PROBE_STATES = frozenset(
+    {
+        "awaiting_group_bot_rule",
+        "observation_open",
+        "observation_stale",
+        "group_bot_policy_unresolved",
+        "group_bot_rule_unattributed",
+    }
+)
 WAITING_STATES = {
     "awaiting_group_bot_rule",
     "observation_open",
@@ -1059,6 +1068,17 @@ def _start_post_follow_visibility_probe(session: Session, admission: GroupBotAdm
 def needs_post_send_visibility(admission: GroupBotAdmission | None, *, action_admission_version: int | None) -> bool:
     if admission is None:
         return False
+    if (
+        admission.state in LEGACY_VISIBILITY_PROBE_STATES
+        and not any(
+            (
+                str(admission.trusted_bot_peer_id or ""),
+                str(admission.source_message_id or ""),
+                str(admission.evidence_ref or ""),
+            )
+        )
+    ):
+        return admission.post_send_visibility_state != "visible_confirmed"
     if admission.state != READY_STATE:
         return False
     if admission.post_send_visibility_state in {"", "required", "pending"}:

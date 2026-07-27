@@ -13,6 +13,7 @@ from app.models import (
     GroupBotRequiredChannelFollow,
     GroupContextMessage,
     OperationTarget,
+    PendingVisibilityCredit,
     Task,
     TaskMembershipAdmissionItem,
     Tenant,
@@ -104,6 +105,61 @@ def test_unknown_bot_global_prompt_does_not_create_follow_actions_without_policy
         assert inserted == 1
         assert session.query(Action).filter(Action.action_type == GROUP_BOT_CHANNEL_FOLLOW_ACTION_TYPE).count() == 0
         assert session.get(GroupBotAdmission, 1).state == "group_bot_rule_unattributed"
+
+
+def test_repeated_unknown_bot_rule_correlated_to_pending_visibility_creates_follows():
+    with _session() as session:
+        group, accounts = _seed_global_rule_scope(session)
+        _seed_waiting_admissions(session, group.id, accounts)
+        send = Action(
+            id="visibility-send",
+            tenant_id=1,
+            task_id="task-ai",
+            task_type="group_ai_chat",
+            action_type="send_message",
+            account_id=accounts[0].id,
+            status="unknown_after_send",
+            payload={"group_id": group.id},
+            result={"telegram_msg_id": "90", "pending_visibility": True},
+        )
+        session.add(send)
+        session.flush()
+        session.add(
+            PendingVisibilityCredit(
+                tenant_id=1,
+                action_id=send.id,
+                remote_message_id="90",
+                status="open",
+            )
+        )
+        first = _global_rule_snapshot()
+        first.content = "8026300037，需要订阅频道才能发言！"
+        first.remote_message_id = "99"
+        second = _global_rule_snapshot()
+        second.content = "8686249080，需要订阅频道才能发言！"
+        second.remote_message_id = "100"
+
+        for snapshot in (first, second):
+            insert_context_snapshots(
+                session,
+                group,
+                accounts[0],
+                [snapshot],
+                ignored_sender=lambda _snapshot: False,
+                create_source_media=False,
+                learning_scene=None,
+            )
+
+        follows = list(
+            session.query(Action)
+            .filter(Action.action_type == GROUP_BOT_CHANNEL_FOLLOW_ACTION_TYPE)
+            .order_by(Action.account_id)
+        )
+        assert [action.account_id for action in follows] == [11, 12]
+        assert all(
+            admission.evidence_ref.startswith("attr:post_send_intercept_rule;")
+            for admission in session.query(GroupBotAdmission)
+        )
 
 
 def test_audited_unknown_bot_global_prompt_creates_exact_follow_for_each_scoped_admission():

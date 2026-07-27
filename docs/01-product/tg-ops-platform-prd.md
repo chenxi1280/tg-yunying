@@ -4086,6 +4086,7 @@ operation_targets
 - `max_concurrent`、每轮发言数、账号冷却、健康权重和发送容量只影响主互动规划与发送节奏，不得截断关注 / 入群 / 可发言能力准备。
 - 对转发目标群，准入完成条件是已加入且 Telegram 可发言；对 AI 活跃群，除已加入和 Telegram `can_send=True` 外，还必须满足独立的群管机器人准入 ready。权限探测必须区分“缺字段 / 未知”“账号不在群”“默认禁言”“单账号被禁言”“发送 API 明确失败”；不能把缺少 `send_messages` 字段直接判定为 `can_send=False`，也不能把 Telegram 探测成功当成群管机器人放行。
 - 群管机器人准入的控制观察必须有入群前 listener 基线和每轮 listener 拉取的持久化 observation 证据；没有基线、读取失败或最新窗口未覆盖基线时显式为 `observation_stale`，不得靠等待时间、`can_send=True`、历史发言或最新 N 条快照自动 ready。控制消息必须先通过来源信任，再参与归属；内联 URL/callback 按钮必须随消息持久化为无 callback data 的摘要，并由 Gateway 对原消息做精确重读校验。无可信频道规则且无目标级 policy 时为 `group_bot_policy_unresolved`，不能展示成“需要关注频道”。线上存量无基线或被历史错误归属的 admission 只能由 `targets.manage` 带版本、理由、证据单账号重启观察；不得批量 reset 或隐式 ready。
+- 为兼容存量账号而不启用全量准入硬门禁时，空/无证据 admission 的首条正文也必须进入 `pending_visibility`，完整观察窗口结束前不得因 Telegram 瞬时返回 message id 或短时可读而计覆盖/硬小时成功。精确 message id 在窗口后不可见时写 `post_send_intercepted` 并停止该账号后续正文。unknown-role bot 只有在同 peer 重复给出相同精确频道 URL 集合与 callback 签名，且 bot 消息与同群开放 `pending_visibility` 的远端消息满足后继顺序和不超过 180 秒的相关窗口时，才可作为当前群的 `post_send_intercept_rule` 受限信任证据；单条提示、普通推广、无 callback 或无开放 hold 均不得批量展开关注。
 - 对频道点赞，准入完成条件是账号已关注 / 已加入目标频道。Planner 阶段不得把没有账号-频道关系的账号直接安排点赞；Dispatcher 运行时如果发现账号未关注 / 未加入，应补齐准入动作并延后当前点赞，而不是把该 action 终态失败或直接调用 Telegram 点赞接口。
 - 对频道评论 / 回复，准入完成条件是账号已关注 / 已加入频道并能访问对应讨论区。Planner 阶段不得把没有账号-频道关系的账号直接安排评论；Dispatcher 运行时如果发现账号未关注 / 未加入，应补齐准入动作并延后当前评论，而不是把该 action 终态失败或跳过。
 - 群机器人、图形验证码和入群问题只在当前证据仍存在时展示。目标群已经没有对应机器人或验证消息时，账号详情和任务详情必须刷新为最新目标能力，不得沿用旧文案。
