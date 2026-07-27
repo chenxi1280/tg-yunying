@@ -3352,7 +3352,7 @@ AI 活跃群和频道评论 / 回复的创建向导必须使用“小时总预�
 - 抖动只作用于数量浮动、发送时间和账号选择排序，不得突破任务每小时上限、账号每小时上限或全局风控。
 - 前端必须在字段旁展示口径说明和推荐值来源，例如“按当前可发言账号数推荐”“小时上限控制总量”“参与比例按多轮统计”。
 - 任务中心列表和详情必须展示 AI 活跃群、频道浏览、频道点赞、频道评论 / 回复的今日账号参与覆盖，格式至少包含已参与账号数、当前任务账号范围总数和百分比；AI Cycle 和频道消息分组明细必须展示本组唯一参与账号数 / 动作数。
-- AI 活跃群选择“全部可用账号”时默认启用 `全账号日覆盖模式`。系统必须为所有 active、normal、Session 可用且未被安全边界排除的账号建立持久化任务关系和北京时间每日覆盖账本，并推动其完成目标准入；账号未准入、不可发言、离线、受限或结果未知时仍保留在当日分母并展示阻塞。已绑定 coverage 的非引用日覆盖 Action 直接发送精确文本 `签到`，不调用 AI Provider，也不依赖账号面具；引用 Action 和非日覆盖普通讨论仍使用既有 AI 内容管线。只有成功 `send_message`、成功 `ExecutionAttempt`、非空 Telegram 远端消息 ID 且通过必要的群管后可见性核验时才算完成。专项口径以 `docs/03-feature-designs/ai-group-all-accounts-daily-coverage-prd.md` 为准。
+- AI 活跃群选择“全部可用账号”时默认启用 `全账号日覆盖模式`。系统必须为所有 active、normal、Session 可用且未被安全边界排除的账号建立持久化任务关系和北京时间每日覆盖账本，并推动其完成目标准入；账号未准入、不可发言、离线、受限或结果未知时仍保留在当日分母并展示阻塞。已绑定 coverage 的非引用日覆盖 Action 直接发送精确文本 `签到`，不调用 AI Provider，也不依赖账号面具；引用 Action 和非日覆盖普通讨论仍使用既有 AI 内容管线。直接签到内容准备不得覆盖 admission gate 在同一 Action 新写入的 `group_bot_post_follow_visibility_probe`、`group_bot_admission_id` 或 `admission_version`；这些字段必须进入 Gateway 后可见性账本。只有成功 `send_message`、成功 `ExecutionAttempt`、非空 Telegram 远端消息 ID 且通过必要的群管后可见性核验时才算完成。专项口径以 `docs/03-feature-designs/ai-group-all-accounts-daily-coverage-prd.md` 为准。
 - 带 `coverage_ledger_id` 的发送 Action 必须由该账本行绑定的同一账号执行，群权限丢失、账号容量不足或其他运行时策略均不得把它静默转派给另一账号；原账号暂不可发言时应终结该 Action、释放原义务并在准入或容量恢复后重新规划。覆盖确认必须再次校验 `TaskAccountDailyCoverage.account_id = Action.account_id = ExecutionAttempt.account_id`，不一致时不得计入完成。
 - 同一 AI Cycle 内引用回复因上下文过期被跳过时，只能清理仍依赖该上下文或引用锚点的动作；不带 `reply_to_message_id` 的硬目标普通补量动作继续走 Dispatcher 延迟 AI 生成和原质量门，不能因同轮引用过期被批量误杀。
 - 全账号每日覆盖存在到期债务且本轮没有引用回复目标时，普通补量文案应在 Dispatcher 临近发送时按最新真人上下文批量生成，继续携带 Planner 已确定的账号面具、话题、讨论老师和行为类型并通过原质量门；未来尚未生成的覆盖动作不能因规划时旧快照过期被整轮删除。配置要求引用回复时不得改成普通补量。

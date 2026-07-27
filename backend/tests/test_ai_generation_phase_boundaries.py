@@ -314,6 +314,33 @@ def test_daily_coverage_sends_exact_check_in_without_ai_provider(monkeypatch) ->
         assert observed == {"provider_calls": 0, "gateway_calls": 1}
 
 
+def test_direct_check_in_preserves_admission_probe_fields_written_after_payload_validation() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        actions, _coverages = seed_reserved_normal_batch(session, _now())
+        action = actions[0]
+        stale_payload = SendMessagePayload.model_validate(action.payload)
+        action.payload = {
+            **action.payload,
+            "group_bot_post_follow_visibility_probe": True,
+            "group_bot_admission_id": 51,
+            "admission_version": 1,
+        }
+
+        ai_generation_dispatch.ensure_send_message_content(
+            session,
+            action,
+            session.get(TgAccount, action.account_id),
+            payload=stale_payload,
+            dependencies=generation_dependencies(),
+        )
+
+        assert action.payload["group_bot_post_follow_visibility_probe"] is True
+        assert action.payload["group_bot_admission_id"] == 51
+        assert action.payload["admission_version"] == 1
+
+
 def test_daily_coverage_replaces_unsent_ai_content_with_direct_check_in(monkeypatch) -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

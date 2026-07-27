@@ -172,10 +172,11 @@ maximum_confirmable_count = frozen_denominator_count - terminal_permission_block
 1. `group_bot_admission_required=true` 的运行中 `group_ai_chat`，其持久任务 scope 内账号在任何正文进入生成或 Telegram Gateway 前都必须存在同 tenant + group + account 的 `GroupBotAdmission`。缺行时 Dispatcher 只能从当前 Action 的 task/account/group 和持久 membership item 创建 admission，并把正文延后；不得继续返回 `legacy_send_until_reviewed`，不得把 Telegram 返回 message_id 直接计入日覆盖。
 2. admission 补齐使用当前 listener cursor 作为观察基线，不伪造已确认；随后由 listener 的新控制事件或仍在当前窗口的已审计规则创建频道 follow。准入 scope 由显式 `group_bot_admission_required=true`、该账号既有且带可信 bot peer/source/evidence 的 `GroupBotAdmission`，或“该账号有持久 membership item 且同群已有可信 bot peer/source/evidence 或 active policy”确认；只有 membership item、或只有无证据空 admission 的历史任务继续原发送校验，避免无群管的群被无关 observation 阻断。自动补建但尚无 bot 证据的空 admission 本身不得反向扩大账号或群 scope；`group_bot_admission_required=false` 始终退出本路径。
 3. 显式确认策略下，精确频道 follow 全部成功但没有账号级 callback source 时，允许该 admission/version 恰好一条正文进入 `post_follow_visibility_probe`。该正文必须创建 `PendingVisibilityCredit`，Action 先写 `unknown_after_send`，不得先计 hard-hourly 或 daily success；同 admission 的其他正文保持 pending。
-4. probe 的真实 message_id 在可见性窗口后仍可由同账号读取时，才把 admission 写 `group_bot_admission_ready`、`post_send_visibility_state=visible_confirmed` 并按原账本幂等计成功。消息不可见、群管拦截或 Gateway 明确权限失败时写 `post_send_intercepted`，不计成功；listener 若取得该账号明确提示，可继续走账号级 callback。
-5. 标准化显式收件人规则重复观测时，若当前频道 follow 已全部成功，不得把 admission 从 `awaiting_group_bot_confirmation` / `post_follow_visibility_probe` 重置为 `required_channel_follow_pending`；它只更新群级频道证据。
-6. `GroupBotAdmission.observation_closes_at` 与 `PendingVisibilityCredit.created_at` 从 SQLite、PostgreSQL 或生产连接返回时，准入门禁和恢复扫描都必须先归一到统一的北京时间墙上时钟再比较或计算 hold age；禁止 naive/aware 直接比较中断 Dispatcher 或全部任务的 recovery cycle，也不得因时区转换把超时 hold 当成功。
-7. `TaskAccountDailyCoverage.next_decision_at` / `next_eligible_at` 在汇总最早决策时间前同样必须归一为北京时间墙上时钟。数据库返回的 aware 值与历史 naive 值可同时存在，Planner 不得因 Python `min()` 直接比较而中断全部任务循环。
+4. 若该正文是全账号日覆盖 `direct_check_in`，内容准备必须以 Action 当前持久 payload 为基底，仅覆盖签到内容字段；不得用 admission gate 之前校验的旧 payload 覆盖 `group_bot_post_follow_visibility_probe`、`group_bot_admission_id` 或 `admission_version`。否则 Telegram 成功也必须视为未完成可见性核验，不能计 hard-hourly 或 daily success。
+5. probe 的真实 message_id 在可见性窗口后仍可由同账号读取时，才把 admission 写 `group_bot_admission_ready`、`post_send_visibility_state=visible_confirmed` 并按原账本幂等计成功。消息不可见、群管拦截或 Gateway 明确权限失败时写 `post_send_intercepted`，不计成功；listener 若取得该账号明确提示，可继续走账号级 callback。
+6. 标准化显式收件人规则重复观测时，若当前频道 follow 已全部成功，不得把 admission 从 `awaiting_group_bot_confirmation` / `post_follow_visibility_probe` 重置为 `required_channel_follow_pending`；它只更新群级频道证据。
+7. `GroupBotAdmission.observation_closes_at` 与 `PendingVisibilityCredit.created_at` 从 SQLite、PostgreSQL 或生产连接返回时，准入门禁和恢复扫描都必须先归一到统一的北京时间墙上时钟再比较或计算 hold age；禁止 naive/aware 直接比较中断 Dispatcher 或全部任务的 recovery cycle，也不得因时区转换把超时 hold 当成功。
+8. `TaskAccountDailyCoverage.next_decision_at` / `next_eligible_at` 在汇总最早决策时间前同样必须归一为北京时间墙上时钟。数据库返回的 aware 值与历史 naive 值可同时存在，Planner 不得因 Python `min()` 直接比较而中断全部任务循环。
 
 ### 5.2 内容多样性和重复质量失败
 

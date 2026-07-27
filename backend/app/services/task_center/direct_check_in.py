@@ -32,7 +32,7 @@ def prepare_direct_check_in(
     _supersede_old_memory(session, payload)
     memory = _reserve_memory(session, action, payload, coverage)
     data = {
-        **payload.model_dump(mode="json"),
+        **dict(action.payload),
         "message_text": DIRECT_CHECK_IN_TEXT,
         "act_type": "check_in",
         "ai_generation_status": "ready",

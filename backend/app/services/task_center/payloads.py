@@ -150,6 +150,7 @@ class SendMessagePayload(BaseModel):
     admission_version: int | None = None
     group_bot_admission_id: int | None = None
     group_bot_admission_state: str = ""
+    group_bot_post_follow_visibility_probe: bool = False
 
     @model_validator(mode="after")
     def require_destination(self) -> "SendMessagePayload":
