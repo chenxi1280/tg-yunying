@@ -491,9 +491,7 @@ def _load_daily_coverage_plan_accounts(
     account_limit: int,
 ) -> AccountPlanState | PlanAbort:
     selected: list = []
-    profiles: dict[int, dict[str, str | int]] = {}
     seen_account_ids: set[int] = set()
-    missing_account_ids: list[int] = []
     page_limit = _daily_coverage_scan_page_limit()
     while len(selected) < account_limit:
         rows = ready_coverage_plan_batch(
@@ -511,24 +509,11 @@ def _load_daily_coverage_plan_accounts(
             session, task, facts.group, facts.hard_progress, facts.config, coverage_rows=rows,
         )
         accounts = _online_ready_accounts(session, task, accounts, facts.hard_progress)
-        ready, page_profiles, missing_ids = _daily_voice_profile_page(session, task, accounts)
-        profiles.update(page_profiles)
-        if missing_ids:
-            _queue_missing_voice_profile_recovery(session, task, facts.config, missing_ids)
-            _record_missing_voice_profiles(session, task, missing_ids)
-            missing_account_ids.extend(missing_ids)
         remaining = max(0, account_limit - len(selected))
-        selected.extend(ready[:remaining])
-    _record_voice_profile_refill(task, account_limit, len(seen_account_ids))
-    _expire_open_profileless_actions(session, task, profiles.keys())
-    _record_daily_voice_profile_capacity(task, len(selected))
+        selected.extend(accounts[:remaining])
+    _record_direct_check_in_capacity(task, len(selected))
     if selected:
         return AccountPlanState(selected)
-    if missing_account_ids:
-        task.last_error = VOICE_PROFILE_MISSING_MESSAGE
-        if facts.hard_progress:
-            _mark_hard_blocked(task, facts.hard_progress, "voice_profile_missing")
-        return PlanAbort()
     _mark_account_shortage(session, task, facts)
     return PlanAbort()
 
@@ -547,23 +532,9 @@ def _include_daily_coverage_rows(
     coverage.rows_by_account.update({int(row.account_id): row for row in rows})
 
 
-def _daily_voice_profile_page(
-    session: Session,
-    task: Task,
-    accounts: list,
-) -> tuple[list, dict[int, dict[str, str | int]], list[int]]:
-    profiles = voice_profile_prompt_details(
-        session,
-        tenant_id=task.tenant_id,
-        account_ids=[account.id for account in accounts],
-    )
-    ready, missing = _accounts_with_ready_voice_profiles(accounts, profiles)
-    return ready, profiles, missing
-
-
-def _record_daily_voice_profile_capacity(task: Task, ready_count: int) -> None:
+def _record_direct_check_in_capacity(task: Task, ready_count: int) -> None:
     stats = dict(task.stats or {})
-    stats["voice_profile_ready_account_count"] = ready_count
+    stats["direct_check_in_ready_account_count"] = ready_count
     task.stats = stats
 
 
@@ -1438,12 +1409,14 @@ def prepare_open_actions_for_planning(session: Session, task: Task) -> int:
     accounts = _online_ready_accounts(session, task, accounts, hard_progress)
     if not accounts:
         return legacy_replanned
+    skipped = _skip_skewed_hard_hourly_open_actions_for_replan(session, task, len(accounts))
+    if _all_accounts_daily_coverage(config):
+        return legacy_replanned + skipped
     ready_voice_profiles = voice_profile_prompt_details(
         session,
         tenant_id=task.tenant_id,
         account_ids=[account.id for account in accounts],
     )
-    skipped = _skip_skewed_hard_hourly_open_actions_for_replan(session, task, len(accounts))
     return legacy_replanned + skipped + _expire_open_profileless_actions(session, task, ready_voice_profiles.keys())
 
 

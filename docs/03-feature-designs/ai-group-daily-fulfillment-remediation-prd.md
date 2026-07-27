@@ -186,8 +186,9 @@ maximum_confirmable_count = frozen_denominator_count - terminal_permission_block
 2. 出现 duplicate_message 时，当前 Action 以终态质量失败收口，写入原始原因、重复窗口、内容指纹摘要、语义簇、content_variation_key 和质量阶段；释放自身 coverage reservation。
 3. 同一 Action 不得原地改写文本或再次调用 AI。下一次只能由 Planner 创建新的 Action，且新 Action 的 content_variation_key 必须不同，并使用更晚的上下文版本或不同的已配置话题、老师、行为类型组合。
 4. 质量拒绝后的覆盖行回到 ready，blocker_code 保留 duplicate_message，recovery_path=replan_with_new_variation。若没有新的合法 variation 或可用上下文，则保持 at_risk 并记录原因，不制造模板补量。
-5. 签到仍是既有三层生成全部失败后的唯一确定性兜底，但它必须通过同一重复、签到配额、轮换、准入和出站门。若签到命中 duplicate_message 或 check_in_repeat，当前 Action 失败并释放预约；不得再次用签到重试或将其计为成功。
-6. 任务详情必须按 1h_similar、7d_semantic、semantic_cluster、check_in_repeat 分开展示质量拒绝数、受影响覆盖义务数、最近 variation 摘要和下一次可决策时间。
+5. 已绑定当日 coverage 的非引用 Action 以精确 `签到` 作为主路径正文，Dispatcher 不调用任何 AI Provider，不执行 prompt 改写、账号面具补尾句或普通 AI 文本相似度判断。每个 coverage 义务使用独立消息记忆预约，因此不同账号的日覆盖 `签到` 不触发 `duplicate_message` / `check_in_repeat`；同一 coverage 义务仍必须保持 Action、账号和预约一一绑定。
+6. 日覆盖直发仍必须通过轮换、准入、群节奏、出站和 Gateway 门；只有成功 ExecutionAttempt 与非空 `remote_message_id` 才能确认覆盖。非日覆盖普通 Action 的 `签到` 仍按既有三层失败兜底、重复和配额规则执行。
+7. 任务详情必须按 1h_similar、7d_semantic、semantic_cluster、check_in_repeat 分开展示普通 AI / fallback 质量拒绝数，并单独展示 `direct_check_in` 成功、失败和远端确认数。
 
 ### 5.3 批量 AI 输出契约失败
 

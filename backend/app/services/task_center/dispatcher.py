@@ -67,6 +67,7 @@ from .coverage_capacity import (
     hard_hourly_group_cooldown_proof,
 )
 from .daily_coverage import confirm_coverage_from_attempt, ensure_task_daily_coverage, mark_coverage_unknown, release_coverage_reservation
+from .direct_check_in import DIRECT_CHECK_IN_SOURCE, direct_check_in_memory_is_valid
 from .dispatch_reservations import (
     DispatchClaimBinding,
     confirm_dispatch_claim,
@@ -2577,6 +2578,17 @@ def _group_ai_message_memory_sendable(session: Session, action: Action, payload:
             validation_stage="ai_message_memory",
         )
         action.result = {**(action.result or {}), **result}
+        return False
+    if payload.content_source == DIRECT_CHECK_IN_SOURCE:
+        if direct_check_in_memory_is_valid(session, action, payload):
+            return True
+        _fail(
+            action,
+            "direct_check_in_memory_invalid",
+            "日覆盖签到消息记忆与账号、群或 Action 绑定不一致",
+            auto_check="拦截",
+            validation_stage="ai_message_memory",
+        )
         return False
     try:
         ensure_group_ai_message_sendable(session, payload.ai_message_memory_id)
@@ -7099,8 +7111,9 @@ def _credit_hard_hourly_success(
         executed_at=action.executed_at or _now(),
     )
     _apply_hard_hourly_credit_outcome(action, outcome)
-    if str(payload.get("content_source") or "") == "check_in_fallback" or str(payload.get("message_text") or "").strip() == "签到":
-        action.result = {**(action.result or {}), "content_source": "check_in_fallback"}
+    if str(payload.get("message_text") or "").strip() == "签到":
+        source = str(payload.get("content_source") or "check_in_fallback")
+        action.result = {**(action.result or {}), "content_source": source}
 
 
 def _apply_hard_hourly_credit_outcome(action: Action, outcome) -> None:

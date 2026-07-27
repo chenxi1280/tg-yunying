@@ -22,6 +22,7 @@ from .ai_generation_recovery import persist_generation_unknown
 from .ai_generation_pipeline import SlotGenerationResult, generate_quality_results
 from .ai_generator import AI_GENERATION_UNAVAILABLE_MESSAGE, AiGenerationUnavailable
 from .ai_generation_quality import fail_generation_action, fail_generation_batch
+from .direct_check_in import prepare_direct_check_in, requires_direct_check_in
 from .payloads import SendMessagePayload
 
 
@@ -69,6 +70,10 @@ def ensure_send_message_content(
     credentials=None,
     dependencies: GenerationDependencies,
 ) -> SendMessagePayload:
+    if requires_direct_check_in(payload):
+        prepared = prepare_direct_check_in(session, action, payload)
+        session.commit()
+        return prepared
     if payload.message_text.strip():
         return payload
     if payload.ai_generation_status not in {"pending", "ai_result_persist_unknown"}:

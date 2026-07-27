@@ -434,7 +434,7 @@ durable_debt 排除：
 - 显式单条 `comment_mode=reply` 快捷入口缺目标时失败，不降级。
 - 日覆盖债务场景：可引用数不足时，按日覆盖 PRD 转为覆盖回补 Cycle（普通发言），**不得**用假引用凑数；兜底改为 `签到` 规则而非 `emoji_react`。
 
-## 7. 内容质量与 `签到` 兜底
+## 7. 内容质量与 `签到`
 
 ### 7.1 质量门
 
@@ -447,15 +447,15 @@ durable_debt 排除：
 | 项 | 口径 |
 | --- | --- |
 | 正文 | 精确 `签到` 两字 |
-| 开关 | 租户显式 `static_safe_fallback` / 既有 `ai_group_static_fallback_enabled` 语义收敛到同一开关展示 |
-| 适用 | 仅非引用 action；三层生成/质量均失败后 |
-| 禁止 | 引用降级为签到；相邻平台消息已是签到；绕过轮换/准入/OutboundTargetGate |
-| 审计 | `generation_source=static_safe_fallback`、`content_source=check_in_fallback`、`fallback_reason`、质量拒绝原因 |
-| **会话配额** | 同一 `conversation_key` 在滚动 30 分钟内最多 **3** 条平台 `签到`；超额 → skip / 延期，`check_in_quota_exceeded`，**不算**质量成功 |
-| **任务小时配额** | 同一 task 同一自然小时 `签到` 成功数 ≤ `max(1, floor(hourly_min_messages * 0.2))`（无硬小时则 ≤ 3）；超额 skip |
-| 与覆盖 | 签到若真实远端成功且过可见性（若需要），**可以**确认日覆盖/硬小时义务，但**不计**高质量 AI 文本指标 |
+| 日覆盖主路径 | 已绑定 `coverage_ledger_id` 的非引用全账号日覆盖 Action 直接使用 `签到`；不得调用 M3、M2.5、Grok，不得进入 prompt 改写、账号面具补尾句或普通 AI 文本相似度处理 |
+| 普通任务兜底 | 非日覆盖的非引用普通 Action 仍仅在三层生成/质量均失败后，按租户 `static_safe_fallback` 开关使用 `签到` |
+| 禁止 | 引用降级为签到；绕过轮换、准入、OutboundTargetGate、群节奏、账号与 coverage 绑定或远端成功证明 |
+| 日覆盖审计 | `act_type=check_in`、`generation_source=direct_check_in`、`content_source=check_in_direct`、`human_quality_decision=direct_check_in`、`ai_generation_tokens=0` |
+| 普通兜底审计 | `generation_source=static_safe_fallback`、`content_source=check_in_fallback`、`fallback_reason`、质量拒绝原因 |
+| 重复规则 | 日覆盖 `签到` 是每个账号当日独立履约正文，不受普通 AI 文本相似度、相邻签到和 fallback 配额拦截；同一 coverage 义务仍只能绑定一个可发送 Action |
+| 与覆盖 | 仅真实远端成功、成功 ExecutionAttempt 且非空 `remote_message_id` 才确认日覆盖/硬小时义务；`签到` 不计高质量 AI 文本指标 |
 
-关闭开关或不满足门禁：action 可见失败/延期，不产生替代文本，不 mock 成功。
+普通兜底关闭开关或不满足门禁：Action 可见失败/延期，不产生替代文本，不 mock 成功。日覆盖直发不受普通兜底开关控制。
 
 ## 8. 覆盖、硬小时与调度交叉
 

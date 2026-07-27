@@ -9,7 +9,6 @@ from app.integrations.telegram import SendResult
 from app.models import (
     Action,
     Task,
-    TaskAccountDailyCoverage,
     Tenant,
     TgAccount,
     TgAccountOnlineState,
@@ -194,12 +193,8 @@ def seed_duplicate_generation_scope(session, now_value):
     )
     action = _duplicate_action(task.id, now_value)
     session.add(action)
-    session.flush()
-    coverage = _duplicate_coverage(task.id, action.id, now_value)
-    session.add(coverage)
-    action.payload = {**action.payload, "coverage_ledger_id": coverage.id, "account_coverage_mode": "all_accounts_daily"}
     session.commit()
-    return action, coverage
+    return action
 
 
 def _duplicate_action(task_id: str, now_value) -> Action:
@@ -225,20 +220,6 @@ def _duplicate_action(task_id: str, now_value) -> Action:
             "slot_id": f"{cycle_id}:turn:1",
             "ai_generation_history": "真人: 今天怎么安排",
         },
-    )
-
-
-def _duplicate_coverage(task_id: str, action_id: str, now_value) -> TaskAccountDailyCoverage:
-    return TaskAccountDailyCoverage(
-        id="coverage-hard-hourly-ai-dup",
-        tenant_id=1,
-        task_id=task_id,
-        group_id=7,
-        account_id=11,
-        coverage_date=now_value.date(),
-        state="reserved",
-        reserved_action_id=action_id,
-        targeted_at=now_value,
     )
 
 

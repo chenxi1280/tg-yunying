@@ -9,10 +9,11 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import AiCoverageVariationIntent, AiGenerationContractAudit
+from app.models import Action, AiGenerationContractAudit, TgAccount
 from app.services._common import _now
 from app.services.task_center import ai_generation_dispatch, ai_generation_pipeline, dispatcher
 from app.services.task_center.ai_generator import GeneratedContent
+from app.services.task_center.payloads import SendMessagePayload
 from tests.ai_generation_phase_test_support import (
     account_content_generator,
     barrier_generator,
@@ -152,7 +153,7 @@ def test_invalid_normal_batch_mapping_fails_all_slots_without_gateway(monkeypatc
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     with Session(engine) as session:
-        actions, coverages = seed_reserved_normal_batch(session, _now())
+        actions, _coverages = seed_reserved_normal_batch(session, _now(), bind_coverage=False)
         monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args, **_kwargs: object())
         monkeypatch.setattr(dispatcher.gateway, "send_message", forbidden_external)
 
@@ -166,10 +167,6 @@ def test_invalid_normal_batch_mapping_fails_all_slots_without_gateway(monkeypatc
 
         assert [action.status for action in actions] == ["failed", "failed"]
         assert all(action.result["error_code"].startswith("ai_generation_output_") for action in actions)
-        assert [coverage.state for coverage in coverages] == ["blocked", "blocked"]
-        assert all(coverage.reserved_action_id is None for coverage in coverages)
-        assert all(coverage.blocker_stage == "generation_contract" for coverage in coverages)
-        assert all(coverage.recovery_path == "generation_contract_repair" for coverage in coverages)
         audit = session.query(AiGenerationContractAudit).one()
         assert audit.expected_slot_count == 2
         assert audit.error_code.startswith("ai_generation_output_")
@@ -185,7 +182,7 @@ def test_normal_batch_rejects_swapped_slot_ids_despite_correct_sequences(monkeyp
     outputs[0].slot_id = "cycle-normal:turn:2"
     outputs[1].slot_id = "cycle-normal:turn:1"
     with Session(engine) as session:
-        actions, coverages = seed_reserved_normal_batch(session, _now())
+        actions, _coverages = seed_reserved_normal_batch(session, _now(), bind_coverage=False)
         monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args, **_kwargs: object())
         monkeypatch.setattr(dispatcher.gateway, "send_message", forbidden_external)
 
@@ -202,7 +199,6 @@ def test_normal_batch_rejects_swapped_slot_ids_despite_correct_sequences(monkeyp
             action.result["error_code"] == "ai_generation_slot_mapping_mismatch"
             for action in actions
         )
-        assert [coverage.state for coverage in coverages] == ["blocked", "blocked"]
         assert session.query(AiGenerationContractAudit).count() == 1
 
 
@@ -229,7 +225,7 @@ def test_normal_batch_rejects_tampered_fixed_slot_binding(
         GeneratedContent("二号", slot_id="cycle-normal:turn:2", sequence_index=2),
     ]
     with Session(engine) as session:
-        actions, coverages = seed_reserved_normal_batch(session, _now())
+        actions, _coverages = seed_reserved_normal_batch(session, _now(), bind_coverage=False)
         monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args, **_kwargs: object())
         monkeypatch.setattr(dispatcher.gateway, "send_message", forbidden_external)
 
@@ -246,20 +242,15 @@ def test_normal_batch_rejects_tampered_fixed_slot_binding(
             action.result["error_code"] == "ai_generation_slot_mapping_mismatch"
             for action in actions
         )
-        assert [coverage.state for coverage in coverages] == ["blocked", "blocked"]
         assert session.query(AiGenerationContractAudit).count() == 1
 
 
-def test_voice_profile_rejection_uses_explicit_daily_coverage_fallback(monkeypatch) -> None:
+def test_daily_coverage_repeats_exact_check_in_per_coverage_without_dedupe(monkeypatch) -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     observed = {"provider_calls": 0, "gateway_calls": 0}
     with Session(engine) as session:
         actions, coverages = seed_reserved_normal_batch(session, _now())
-        second_payload = dict(actions[1].payload or {})
-        second_payload["account_profile"] = "少表情，避免连续 emoji"
-        actions[1].payload = second_payload
-        session.commit()
         monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args, **_kwargs: object())
         monkeypatch.setattr(dispatcher.gateway, "send_message", profile_sender(session, observed))
 
@@ -272,19 +263,12 @@ def test_voice_profile_rejection_uses_explicit_daily_coverage_fallback(monkeypat
         ) is True
 
         assert actions[0].status == "success", actions[0].result.get("error_code")
-        assert actions[1].status == "executing"
-        assert actions[1].payload["ai_generation_status"] == "ready"
-        # Daily-coverage static fallback superseded to 签到 (check_in_fallback).
-        assert actions[1].payload["quality_fallback"] == "check_in_fallback"
-        assert actions[1].payload["human_quality_decision"] in {
-            "check_in_fallback",
-            "explicit_static_quality_fallback",
-        }
+        assert actions[0].payload["message_text"] == "签到"
+        assert actions[0].payload["content_source"] == "check_in_direct"
         assert coverages[0].state == "confirmed"
         assert coverages[1].state == "reserved"
         assert coverages[1].reserved_action_id == actions[1].id
-        # Grok fallback is off by default: primary_m3 + fallback_m25 only.
-        assert observed == {"provider_calls": 2, "gateway_calls": 1}
+        assert observed == {"provider_calls": 0, "gateway_calls": 1}
 
         assert dispatcher.dispatch_action(
             session,
@@ -294,16 +278,141 @@ def test_voice_profile_rejection_uses_explicit_daily_coverage_fallback(monkeypat
             ),
         ) is True
         assert actions[1].status == "success"
+        assert actions[1].payload["message_text"] == "签到"
+        assert actions[1].payload["content_source"] == "check_in_direct"
+        assert actions[0].payload["ai_message_memory_id"] != actions[1].payload["ai_message_memory_id"]
         assert coverages[1].state == "confirmed"
-        assert observed == {"provider_calls": 2, "gateway_calls": 2}
+        assert observed == {"provider_calls": 0, "gateway_calls": 2}
 
 
-def test_content_policy_rejection_terminates_only_its_slot_and_releases_coverage(monkeypatch) -> None:
+def test_daily_coverage_sends_exact_check_in_without_ai_provider(monkeypatch) -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     observed = {"provider_calls": 0, "gateway_calls": 0}
     with Session(engine) as session:
         actions, coverages = seed_reserved_normal_batch(session, _now())
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args, **_kwargs: object())
+        monkeypatch.setattr(dispatcher.gateway, "send_message", profile_sender(session, observed))
+
+        assert dispatcher.dispatch_action(
+            session,
+            actions[0],
+            generation_dependencies=generation_dependencies(
+                normal_generator=profile_generator(session, observed),
+            ),
+        ) is True
+
+        assert actions[0].status == "success", actions[0].result
+        assert actions[0].payload["message_text"] == "签到"
+        assert actions[0].payload["act_type"] == "check_in"
+        assert actions[0].payload["generation_source"] == "direct_check_in"
+        assert actions[0].payload["content_source"] == "check_in_direct"
+        assert actions[0].payload["human_quality_decision"] == "direct_check_in"
+        assert actions[0].payload["ai_generation_tokens"] == 0
+        assert actions[0].payload["ai_message_memory_id"]
+        assert coverages[0].state == "confirmed"
+        assert observed == {"provider_calls": 0, "gateway_calls": 1}
+
+
+def test_daily_coverage_replaces_unsent_ai_content_with_direct_check_in(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    observed = {"provider_calls": 0, "gateway_calls": 0}
+    with Session(engine) as session:
+        actions, coverages = seed_reserved_normal_batch(session, _now())
+        from app.services.task_center.ai_message_memory import reserve_group_ai_message
+
+        old_memory = reserve_group_ai_message(
+            session,
+            tenant_id=1,
+            group_id=7,
+            task_id=actions[0].task_id,
+            account_id=actions[0].account_id,
+            raw_text="晚上好啊 今天有空哈 价格咋说",
+        )
+        old_payload = dict(actions[0].payload or {})
+        old_payload.update({
+            "message_text": "晚上好啊 今天有空哈 价格咋说",
+            "ai_generation_status": "ready",
+            "ai_generation_tokens": 37,
+            "generation_source": "ai_provider",
+            "ai_message_memory_id": old_memory.id,
+        })
+        actions[0].payload = old_payload
+        session.commit()
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args, **_kwargs: object())
+        monkeypatch.setattr(dispatcher.gateway, "send_message", profile_sender(session, observed))
+
+        assert dispatcher.dispatch_action(
+            session,
+            actions[0],
+            generation_dependencies=generation_dependencies(
+                normal_generator=profile_generator(session, observed),
+            ),
+        ) is True
+
+        assert actions[0].status == "success", actions[0].result
+        assert actions[0].payload["message_text"] == "签到"
+        assert actions[0].payload["generation_source"] == "direct_check_in"
+        assert actions[0].payload["ai_generation_tokens"] == 0
+        assert old_memory.status == "expired_before_send"
+        assert old_memory.quality_decision == "superseded_by_direct_check_in"
+        assert coverages[0].state == "confirmed"
+        assert observed == {"provider_calls": 0, "gateway_calls": 1}
+
+
+def test_daily_coverage_replan_reserves_new_direct_check_in_memory() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        actions, coverages = seed_reserved_normal_batch(session, _now())
+        first = ai_generation_dispatch.ensure_send_message_content(
+            session,
+            actions[0],
+            session.get(TgAccount, actions[0].account_id),
+            payload=SendMessagePayload.model_validate(actions[0].payload),
+            dependencies=generation_dependencies(),
+        )
+        first_memory_id = first.ai_message_memory_id
+        actions[0].status = "failed"
+        second = Action(
+            id="action-normal-generation-replan",
+            tenant_id=1,
+            task_id=actions[0].task_id,
+            task_type="group_ai_chat",
+            action_type="send_message",
+            account_id=actions[0].account_id,
+            status="executing",
+            scheduled_at=_now(),
+            payload={
+                **dict(actions[0].payload or {}),
+                "message_text": "",
+                "ai_message_memory_id": "",
+                "ai_generation_status": "pending",
+            },
+        )
+        coverages[0].reserved_action_id = second.id
+        session.add(second)
+        session.commit()
+
+        replanned = ai_generation_dispatch.ensure_send_message_content(
+            session,
+            second,
+            session.get(TgAccount, second.account_id),
+            payload=SendMessagePayload.model_validate(second.payload),
+            dependencies=generation_dependencies(),
+        )
+
+    assert replanned.message_text == "签到"
+    assert replanned.ai_message_memory_id != first_memory_id
+
+
+def test_content_policy_rejection_terminates_only_its_generated_slot(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    observed = {"provider_calls": 0, "gateway_calls": 0}
+    with Session(engine) as session:
+        actions, _coverages = seed_reserved_normal_batch(session, _now(), bind_coverage=False)
         monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args, **_kwargs: object())
         monkeypatch.setattr(dispatcher.gateway, "send_message", profile_sender(session, observed))
 
@@ -322,28 +431,15 @@ def test_content_policy_rejection_terminates_only_its_slot_and_releases_coverage
         assert actions[0].status == "success", actions[0].result
         assert actions[1].status == "failed"
         assert actions[1].result["error_code"] == "content_rejected"
-        assert coverages[0].state == "confirmed"
-        assert coverages[1].state == "ready"
-        assert coverages[1].reserved_action_id is None
         assert observed == {"provider_calls": 1, "gateway_calls": 1}
 
 
-def test_db_duplicate_rejection_terminates_only_its_slot_and_releases_coverage(monkeypatch) -> None:
+def test_db_duplicate_rejection_terminates_only_its_generated_slot(monkeypatch) -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     observed = {"provider_calls": 0, "gateway_calls": 0}
     with Session(engine) as session:
-        actions, coverages = seed_reserved_normal_batch(session, _now())
-        variation = AiCoverageVariationIntent(
-            tenant_id=1,
-            coverage_ledger_id=coverages[1].id,
-            action_id=actions[1].id,
-            content_variation_key="duplicate-variation",
-            context_version="context-v1",
-            intent_snapshot_hash="a" * 64,
-            outcome="reserved",
-        )
-        session.add(variation)
+        actions, _coverages = seed_reserved_normal_batch(session, _now(), bind_coverage=False)
         from app.services.task_center.ai_message_memory import reserve_group_ai_message
 
         reserve_group_ai_message(
@@ -373,8 +469,4 @@ def test_db_duplicate_rejection_terminates_only_its_slot_and_releases_coverage(m
         assert actions[0].status == "success", actions[0].result
         assert actions[1].status == "failed"
         assert actions[1].result["error_code"] == "duplicate_message"
-        assert coverages[0].state == "confirmed"
-        assert coverages[1].state == "ready"
-        assert coverages[1].reserved_action_id is None
-        assert variation.outcome == "quality_rejected"
         assert observed == {"provider_calls": 1, "gateway_calls": 1}

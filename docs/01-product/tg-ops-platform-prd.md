@@ -3349,7 +3349,7 @@ AI 活跃群和频道评论 / 回复的创建向导必须使用“小时总预�
 - 抖动只作用于数量浮动、发送时间和账号选择排序，不得突破任务每小时上限、账号每小时上限或全局风控。
 - 前端必须在字段旁展示口径说明和推荐值来源，例如“按当前可发言账号数推荐”“小时上限控制总量”“参与比例按多轮统计”。
 - 任务中心列表和详情必须展示 AI 活跃群、频道浏览、频道点赞、频道评论 / 回复的今日账号参与覆盖，格式至少包含已参与账号数、当前任务账号范围总数和百分比；AI Cycle 和频道消息分组明细必须展示本组唯一参与账号数 / 动作数。
-- AI 活跃群选择“全部可用账号”时默认启用 `全账号日覆盖模式`。系统必须为所有 active、normal、Session 可用且未被安全边界排除的账号建立持久化任务关系和北京时间每日覆盖账本，并推动其完成目标准入；账号未准入、不可发言、离线、受限或结果未知时仍保留在当日分母并展示阻塞。只有成功 `send_message`、成功 `ExecutionAttempt`、非空 Telegram 远端消息 ID且通过必要的群管后可见性核验时才算完成。覆盖调度只决定下一段自然对话优先使用哪些未完成账号，不得改变 AI 活群的话题、上下文、账号面具、引用关系、会话轮换和内容质量门，也不得使用模板、通用短句或表情强行补量；仅非引用 action 可在所有门禁通过时使用精确文本 `签到`。专项口径以 `docs/03-feature-designs/ai-group-all-accounts-daily-coverage-prd.md` 为准。
+- AI 活跃群选择“全部可用账号”时默认启用 `全账号日覆盖模式`。系统必须为所有 active、normal、Session 可用且未被安全边界排除的账号建立持久化任务关系和北京时间每日覆盖账本，并推动其完成目标准入；账号未准入、不可发言、离线、受限或结果未知时仍保留在当日分母并展示阻塞。已绑定 coverage 的非引用日覆盖 Action 直接发送精确文本 `签到`，不调用 AI Provider，也不依赖账号面具；引用 Action 和非日覆盖普通讨论仍使用既有 AI 内容管线。只有成功 `send_message`、成功 `ExecutionAttempt`、非空 Telegram 远端消息 ID 且通过必要的群管后可见性核验时才算完成。专项口径以 `docs/03-feature-designs/ai-group-all-accounts-daily-coverage-prd.md` 为准。
 - 带 `coverage_ledger_id` 的发送 Action 必须由该账本行绑定的同一账号执行，群权限丢失、账号容量不足或其他运行时策略均不得把它静默转派给另一账号；原账号暂不可发言时应终结该 Action、释放原义务并在准入或容量恢复后重新规划。覆盖确认必须再次校验 `TaskAccountDailyCoverage.account_id = Action.account_id = ExecutionAttempt.account_id`，不一致时不得计入完成。
 - 同一 AI Cycle 内引用回复因上下文过期被跳过时，只能清理仍依赖该上下文或引用锚点的动作；不带 `reply_to_message_id` 的硬目标普通补量动作继续走 Dispatcher 延迟 AI 生成和原质量门，不能因同轮引用过期被批量误杀。
 - 全账号每日覆盖存在到期债务且本轮没有引用回复目标时，普通补量文案应在 Dispatcher 临近发送时按最新真人上下文批量生成，继续携带 Planner 已确定的账号面具、话题、讨论老师和行为类型并通过原质量门；未来尚未生成的覆盖动作不能因规划时旧快照过期被整轮删除。配置要求引用回复时不得改成普通补量。
@@ -4216,7 +4216,7 @@ AI 活跃群的默认策略是“接话为主、低频暖场为辅”：
 - Planner 对完整候选账号池执行账号冷却、小时上限和日上限判断时，必须按租户、候选集合和时间窗批量读取 Action / MessageTask 占用事实并在本轮复用；不得对每个账号分别执行 `min/max/count` 容量 SQL。取消 `max_concurrent` 等账号数量截断不得退化为随账号数线性增长的查询风暴，也不得用恢复隐藏上限来规避性能问题。
 - Planner 读取目标群最近上下文必须同时按 `tenant_id + group_id` 过滤，并由 `(tenant_id, group_id, sent_at DESC, id DESC)` 或等价索引直接取得有界最新记录；不得先按全租户/全表时间排序再过滤目标群，也不得因上下文历史增长让单轮 Planner 超过 60 秒。
 - 每个北京时间自然日必须为目标账号建立冻结的“任务 × 群 × 账号”覆盖账本。账号在当日活跃窗口内满足 active、normal、Session 可用且未被安全边界排除时加入当日目标；一旦加入，即使随后离线、受限、Session 失效、未入群或不可发言，当日也不能从分母移除。活跃窗口结束后才满足条件的账号从下一自然日开始履约。
-- Planner 只从当日账本中选择未完成且当前可执行账号，并在 AI 生成前固定账号 slot、账号面具、行为类型、话题和引用对象。覆盖调度只改变账号优先级，不改变现有 AI 活群内容管线；内容重复、质量失败或上下文过期时释放预约并保留覆盖义务，下一次使用最新上下文重新编排，不能立即发送模板、表情或其他非 `签到` 正文补量。
+- Planner 只从当日账本中选择未完成且当前可执行账号，并固定账号 slot、coverage 义务和引用对象。非引用日覆盖 slot 直接进入 `签到` 主路径，不加载 AI 生成合同；引用 slot 保留既有账号面具、行为类型、话题、上下文和 AI 内容管线。发送失败或上下文过期时释放预约并保留覆盖义务，不得把 Action 创建当作完成。
 - 覆盖完成必须同时存在成功 `send_message` Action、成功 `ExecutionAttempt` 和非空 Telegram `remote_message_id`。`pending`、`failed`、`skipped`、`unknown_after_send`、未准入、不可发言、风控受限和内容生成失败均不计完成。详情页完成率固定使用“远端确认完成账号数 / 当日全部目标账号数”，并展示准入、权限、在线、Session、内容、容量、发送和未知结果的账号级阻塞。发送型 `unknown_after_send` 只有在远端按账号、目标、时间窗和原文确认消息不存在后，才允许释放原 Action 的覆盖预约并重新规划；未完成远端核验时不得释放或自动重发。
 - 群管准入、重复内容、容量和远端核验是独立 blocker。修复其中一项不得缩小日覆盖分母、停止其他可发送账号的规划，或把剩余 blocker 伪装为任务已完成；任务是否按目标完成仍以当天覆盖账本和远端成功事实验收。
 - Dispatcher 对账号进程内占用和 Redis 占用的释放必须以 `dispatch_action` 的统一 `finally` 为最终兜底，成功、失败、跳过、生成异常和准入改道均不得遗留本地账号占用；数据库已无 executing Action 时不得持续返回 `account_inflight_conflict`。
@@ -4225,7 +4225,7 @@ AI 活跃群的默认策略是“接话为主、低频暖场为辅”：
 
 AI 活跃群质量管线必须先做确定性约束，再做 AI 生成，最后做发送前复查：
 
-- Planner 启动本轮前先读取 ready pool、`tg_account_online_state`、账号面具、账号群内短期立场、最近真人上下文、同任务历史成功消息和 `ai_group_message_memory`。任一账号在线状态为 `stale`、`offline`、`login_required`、`session_invalid`、`proxy_failed` 时，不得进入文本生成候选；任一账号缺少 active 账号面具或面具短摘要时，也不得进入 AI 活群生成候选，必须记录 `mask_missing` / 兼容旧名 `voice_profile_missing` 并等待面具初始化 / 重建完成。单账号恢复可以生成该账号独立的轻量面具以降低输出复杂度，但不得复用其他账号面具、空摘要或绕过准入；缺失账号保留在当日覆盖分母。
+- Planner 启动本轮前先读取 ready pool 和 `tg_account_online_state`。任一账号在线状态为 `stale`、`offline`、`login_required`、`session_invalid`、`proxy_failed` 时，不得进入发送候选。非引用日覆盖 `签到` 不使用账号面具，因此缺少 active 面具或面具短摘要不能阻塞该 coverage 义务；引用或非日覆盖 AI 讨论仍必须读取账号面具、账号群内短期立场、最近真人上下文、同任务历史成功消息和 `ai_group_message_memory`，缺面具时记录 `mask_missing` / 兼容旧名 `voice_profile_missing` 并等待初始化或重建。
 - `all_accounts_daily` 选号必须按显式覆盖扫描页读取 ready 候选并批量判定实时在线状态，再从在线子集按本轮消息预算取账号；候选扫描页大小不能被单轮 Action 预算或当前 `due_debt` 缩成 1，也不得先按 `max_concurrent` / 小时缺口截断、再过滤在线状态，否则靠前离线账号会遮蔽后续在线账号并形成虚假的“账号在线状态不可用”。扫描页只用于候选资格判定，离线页会显式标阻塞并由后续页继续，不改变单轮消息预算、欠账数量、容量、冷却或风控规则，也不构成服务上线账号总量限制。
 - 当同一 `all_accounts_daily` 任务启用硬小时目标时，Planner 必须以当前 `planning_deficit` 与日覆盖 `due_debt` 的较大值作为待规划欠账，再受本轮 ready 且在线账号数和单轮 Action 限额约束。这样自然节奏 `due_debt=0` 不会压掉真实硬小时缺口，当前小时硬目标已完成也不会反向清零更大的每日全账号欠账。
 - 当硬小时目标因 `hard_hourly_group_cooldown_insufficient` 无法在当前群冷却内履约、但全账号日覆盖容量证明仍为 `sufficient` 时，硬小时链路必须保持 `blocked`，不得把不可达目标降级为成功；但该阻塞只能停止带 `hard_hourly_target=true` 的 Action。Planner 仍必须按 `daily_coverage_due_debt` 创建不带硬小时 bucket / deficit 标记的日覆盖 Action，并让它们走正常群冷却、日上限、账号容量、AI 质量和远端确认链路。任务详情必须并列显示“硬小时阻塞”与“日覆盖进度”，不能因前者把后者停掉。
@@ -4947,11 +4947,12 @@ action / attempt 写入完成
 - 同一账号在同一目标群内的短期立场必须连续；缺少新上下文时，不能在 24 小时窗口内从观望、质疑突然切换为强肯定。
 - 账号面具和账号群内短期立场必须以数据库为事实源；Redis 缓存清空、过期或不可用时，系统必须从数据库恢复短摘要和立场，不得随机重建或静默降级为统一口气。
 - “账号面具”一级菜单必须提供账号面具管理入口，至少支持搜索、查看、编辑、重建、停用、版本回滚和审计查看；同一账号的面具修改必须影响该账号参与的所有 AI 活跃群任务。
-- 账号初始化必须批量生成账号面具；缺面具账号在“账号面具”一级菜单中必须可筛选并可批量补齐 / 批量重建。缺面具账号即使在线且具备目标发言权限，也不能参与 AI 活群文本生成或 `签到` 兜底，避免新增账号退化成统一口气。
+- 账号初始化必须批量生成账号面具；缺面具账号在“账号面具”一级菜单中必须可筛选并可批量补齐 / 批量重建。缺面具账号不能参与引用或非日覆盖 AI 活群文本生成，也不能使用普通 `check_in_fallback`；已绑定 coverage 的非引用 `direct_check_in` 不依赖面具，不得因此阻塞。
 - 账号面具初始化提示词必须输出结构化字段、可执行表达原则和禁用表达；生成协议采用每账号一行紧凑 JSONL，服务端保留旧 pipe 行解析兼容；批量结构化输出格式错误时拆成单账号继续请求真实 AI，单账号仍不合格则暴露失败；禁止只生成“自然、随意、真实”等泛化描述；同批面具差异度不足时不得启用。批量补齐 / 批量重建必须返回逐账号结果明细，包含生成状态、版本、差异度、跳过原因和失败原因；批量重建已有 active 面具时必须创建新版本并将旧版本置为 superseded，不能覆盖旧版本或撞唯一约束。
 - 面具编辑下一轮规划生效；已生成且带面具版本的 action 必须固化旧面具版本，不受后续编辑影响。缺面具时期生成、尚未发送且没有面具版本的 open action 在账号面具补齐后必须重排，不能继续按统一口气发送。
-- 第三轮生成后仍不合格时，只有非引用普通发言 slot 才能显式降级为精确文本 `签到`，并记录 `quality_fallback=check_in_fallback`；该兜底不得计为高质量 AI 文本。`签到` 仍必须通过账号面具、轮换、群管准入、出站、消息记忆去重与“上一条平台消息不是签到”门禁；不满足任一条件时保持可见失败/等待。
-- Dispatcher 仅对已由正常 Planner 创建、非引用的普通群聊或频道评论 slot 执行该显式兜底；不得为补量单独创建 `签到` Action。M3、M2.5、Grok 三层均不可用或均被质量闸门拒绝后，写入 `quality_fallback=check_in_fallback`、`human_quality_decision=check_in_fallback`、`generation_source/fallback_stage=static_safe_fallback`、`content_source=check_in_fallback` 和原始拒绝原因。群聊 Action 已绑定覆盖账本时必须保留原 `coverage_ledger_id`，频道评论必须保留原频道消息/讨论区上下文；内容仍须通过出站规则、租户级消息记忆去重、账号轮换、群管准入和 Telegram 发送门禁；租户关闭 `static_safe_fallback` 时保持可见失败。
+- 已绑定 `coverage_ledger_id` 的非引用全账号日覆盖发言不进入 AI 生成：Dispatcher 直接使用精确文本 `签到`，不得调用 M3、M2.5、Grok，不得执行 prompt 改写或账号面具补尾句；写入 `act_type=check_in`、`generation_source=direct_check_in`、`content_source=check_in_direct`、`human_quality_decision=direct_check_in`、`ai_generation_tokens=0`。不同账号的日覆盖签到按 coverage 义务独立预约，不受普通 AI 文本相似度、相邻签到和 fallback 配额拦截；同一义务仍只能绑定一个可发送 Action。
+- 非日覆盖普通 Action 在第三轮生成后仍不合格时，只有非引用普通发言 slot 才能显式降级为精确文本 `签到`，并记录 `quality_fallback=check_in_fallback`；该兜底不得计为高质量 AI 文本，仍受账号面具、轮换、群管准入、出站、消息记忆去重与“上一条平台消息不是签到”门禁。
+- Dispatcher 仅对已由正常 Planner 创建、非引用且未绑定日覆盖账本的普通群聊或频道评论 slot 执行显式兜底；不得为补量单独创建兜底 `签到` Action。M3、M2.5、Grok 三层均不可用或均被质量闸门拒绝后，写入 `quality_fallback=check_in_fallback`、`human_quality_decision=check_in_fallback`、`generation_source/fallback_stage=static_safe_fallback`、`content_source=check_in_fallback` 和原始拒绝原因。频道评论必须保留原频道消息/讨论区上下文；内容仍须通过出站规则、租户级消息记忆去重、账号轮换、群管准入和 Telegram 发送门禁；租户关闭 `static_safe_fallback` 时保持可见失败。
 - `ai_group_message_memory` 保留期不得低于 30 天，清理任务不能破坏 7 天语义去重和 30 天模板壳句限频。
 - Listener 压力不拖慢发送 action。
 - AI prompt 拼装必须分层传入实时事实、任务配置、全站画像、账号画像和规则约束；全站画像不得作为具体事实来源。

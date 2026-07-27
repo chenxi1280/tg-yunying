@@ -171,7 +171,7 @@ def seed_reserved_reply_action(session: Session, now_value):
     return action, coverage
 
 
-def seed_reserved_normal_batch(session: Session, now_value):
+def seed_reserved_normal_batch(session: Session, now_value, *, bind_coverage: bool = True):
     first = seed_reply_action(session, now_value)
     session.add(TgAccount(
         id=12,
@@ -207,8 +207,9 @@ def seed_reserved_normal_batch(session: Session, now_value):
         payload=_normal_payload(2),
     )
     coverages = [_normal_coverage(index, account_id, now_value) for index, account_id in enumerate((11, 12), 1)]
-    first.payload = {**first.payload, "coverage_ledger_id": coverages[0].id}
-    second.payload = {**second.payload, "coverage_ledger_id": coverages[1].id}
+    if bind_coverage:
+        first.payload = {**first.payload, "coverage_ledger_id": coverages[0].id}
+        second.payload = {**second.payload, "coverage_ledger_id": coverages[1].id}
     session.add_all([second, *coverages])
     session.commit()
     return [first, second], coverages

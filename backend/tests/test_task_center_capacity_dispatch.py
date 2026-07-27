@@ -954,7 +954,7 @@ def test_dispatch_hard_hourly_pending_ai_duplicate_is_blocked(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     with Session(engine) as session:
-        action, coverage = seed_duplicate_generation_scope(session, _now())
+        action = seed_duplicate_generation_scope(session, _now())
         dependencies = configure_duplicate_generation(monkeypatch)
         [claimed] = claim_actions(session, limit=1, worker_id="worker-test")
         assert dispatcher.dispatch_action(
@@ -967,8 +967,6 @@ def test_dispatch_hard_hourly_pending_ai_duplicate_is_blocked(monkeypatch):
         assert action.result["error_code"] == "duplicate_message"
         assert action.result["validation_stage"] == "ai_message_memory"
         assert action.payload["quality_skip_reason"] == "duplicate_message"
-        assert coverage.state == "ready"
-        assert coverage.reserved_action_id is None
 
 
 @pytest.mark.no_postgres
@@ -5135,7 +5133,7 @@ def test_group_ai_build_plan_blocks_missing_voice_profile(monkeypatch):
             name="缺面具校验",
             type="group_ai_chat",
             status="running",
-            account_config={"selection_mode": "all", "max_concurrent": 1, "cooldown_per_account_minutes": 0},
+            account_config={"selection_mode": "manual", "account_ids": [11], "max_concurrent": 1, "cooldown_per_account_minutes": 0},
             pacing_config={"max_actions_per_hour": 120},
             type_config={
                 "target_group_id": 7,
@@ -5163,7 +5161,7 @@ def test_group_ai_build_plan_blocks_missing_voice_profile(monkeypatch):
 
 
 @pytest.mark.no_postgres
-def test_all_accounts_daily_isolates_missing_mask_and_plans_other_accounts(monkeypatch):
+def test_all_accounts_daily_plans_accounts_without_ai_masks(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = _now()
@@ -5235,15 +5233,15 @@ def test_all_accounts_daily_isolates_missing_mask_and_plans_other_accounts(monke
         session.refresh(task)
 
     assert isinstance(state, group_ai_chat.AccountPlanState)
-    assert [account.id for account in state.accounts] == [12]
-    assert missing_row is not None and missing_row.state == "blocked"
-    assert missing_row.blocker_code == "voice_profile_missing"
-    assert generation_item is not None and generation_item.status == "queued"
+    assert [account.id for account in state.accounts] == [11, 12]
+    assert missing_row is not None and missing_row.state == "ready"
+    assert missing_row.blocker_code == ""
+    assert generation_item is None
     assert task.last_error == ""
 
 
 @pytest.mark.no_postgres
-def test_all_accounts_daily_scans_later_page_after_missing_masks(monkeypatch):
+def test_all_accounts_daily_does_not_skip_earlier_account_without_mask(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = _now()
@@ -5301,10 +5299,10 @@ def test_all_accounts_daily_scans_later_page_after_missing_masks(monkeypatch):
         session.refresh(task)
 
     assert isinstance(state, group_ai_chat.AccountPlanState)
-    assert [account.id for account in state.accounts] == [13]
-    assert [row.account_id for row in blocked] == [11, 12]
-    assert task.stats["voice_profile_missing_account_count"] == 2
-    assert task.stats["voice_profile_refill_account_count"] == 2
+    assert [account.id for account in state.accounts] == [11]
+    assert blocked == []
+    assert int(task.stats.get("voice_profile_missing_account_count") or 0) == 0
+    assert int(task.stats.get("voice_profile_refill_account_count") or 0) == 0
 
 
 @pytest.mark.no_postgres
