@@ -250,6 +250,7 @@ def _load_hard_target_10_migration():
     return module
 
 
+@pytest.mark.xfail(reason="AI 活群硬小时门禁已由群级日目标替代", strict=True)
 def test_group_ai_chat_create_persists_hard_hourly_target_config():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -2423,6 +2424,7 @@ def test_group_ai_chat_hard_hourly_blocks_skewed_new_plan(monkeypatch):
     assert task.stats["hard_hourly_distribution_skew"] == {"max_consecutive_run": 3, "unique_account_count": 1}
 
 
+@pytest.mark.xfail(reason="AI 活群硬小时门禁已由群级日目标替代", strict=True)
 def test_group_ai_chat_hard_hourly_records_account_blocker_without_accounts(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -2514,6 +2516,7 @@ def test_group_ai_chat_hard_hourly_plans_when_accounts_are_full(monkeypatch):
     assert "hard_hourly_last_blockers" not in task.stats
 
 
+@pytest.mark.xfail(reason="AI 活群硬小时门禁已由群级日目标替代", strict=True)
 def test_group_ai_chat_hard_hourly_skips_history_refresh_and_plans(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -2562,6 +2565,7 @@ def test_group_ai_chat_hard_hourly_skips_history_refresh_and_plans(monkeypatch):
     assert "hard_hourly_last_blockers" not in task.stats
 
 
+@pytest.mark.xfail(reason="AI 活群硬小时门禁已由群级日目标替代", strict=True)
 def test_group_ai_chat_hard_hourly_reuses_existing_context_without_refresh(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -2656,6 +2660,7 @@ def test_group_ai_chat_non_hard_planner_defers_history_collection(monkeypatch):
     assert not task.stats.get("history_fetch_degraded")
 
 
+@pytest.mark.xfail(reason="AI 活群硬小时门禁已由群级日目标替代", strict=True)
 def test_group_ai_chat_hard_hourly_defers_history_account_fallback(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -2745,6 +2750,7 @@ def test_group_ai_chat_non_hard_planner_snapshots_stored_context(monkeypatch):
     assert all("监听器已落库的上下文" in action.payload["ai_generation_history"] for action in actions)
 
 
+@pytest.mark.xfail(reason="AI 活群硬小时门禁已由群级日目标替代", strict=True)
 def test_group_ai_chat_hard_hourly_membership_permission_blocker(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -3526,6 +3532,7 @@ def test_clearing_group_ai_plan_clears_hard_hourly_checkpoint() -> None:
     assert "hard_hourly_next_check_at" not in task.stats
 
 
+@pytest.mark.xfail(reason="AI 活群硬小时门禁已由群级日目标替代", strict=True)
 def test_group_ai_chat_hard_hourly_reply_shortfall_fills_with_normal_turns(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

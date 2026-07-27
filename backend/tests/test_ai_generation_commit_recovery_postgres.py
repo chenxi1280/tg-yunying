@@ -14,6 +14,7 @@ from app.database import Base, SessionLocal, engine
 from app.integrations.telegram import OperationResult, SendResult
 from app.models import (
     Action,
+    AiAccountVoiceProfile,
     AiGroupMessageMemory,
     GroupContextMessage,
     SchedulingSetting,
@@ -32,6 +33,10 @@ from app.services.task_center.ai_generation_commit import load_generation_batch
 from app.services.task_center.ai_generation_dependencies import GenerationDependencies
 from app.services.task_center.ai_generation_pipeline import SlotGenerationResult
 from app.services.task_center.ai_generator import GeneratedContent
+from app.services.task_center.account_voice_profile_cache import (
+    VOICE_PROFILE_CONTRACT_VERSION,
+    voice_profile_snapshot_hash,
+)
 from app.services.task_center.payloads import SendMessagePayload
 from tests.ai_generation_commit_recovery_test_support import (
     assert_cas_fence_preserved,
@@ -271,6 +276,7 @@ def _cleanup_scope(scope: RecoveryScope) -> None:
         session.execute(delete(TaskAccountDailyCoverage).where(TaskAccountDailyCoverage.tenant_id == scope.tenant_id))
         session.execute(delete(Action).where(Action.tenant_id == scope.tenant_id))
         session.execute(delete(GroupContextMessage).where(GroupContextMessage.tenant_id == scope.tenant_id))
+        session.execute(delete(AiAccountVoiceProfile).where(AiAccountVoiceProfile.tenant_id == scope.tenant_id))
         session.execute(delete(TgAccountOnlineState).where(TgAccountOnlineState.tenant_id == scope.tenant_id))
         session.execute(delete(TgGroupAccount).where(TgGroupAccount.tenant_id == scope.tenant_id))
         session.execute(delete(Task).where(Task.tenant_id == scope.tenant_id))
@@ -340,6 +346,7 @@ def _seed_scope(session, timestamp, scope: RecoveryScope) -> None:
             status="在线",
             session_ciphertext="session-a",
         ),
+        _test_mask(scope),
         TgGroup(
             id=scope.group_id,
             tenant_id=scope.tenant_id,
@@ -410,6 +417,31 @@ def _reply_payload(context_id: int, scope: RecoveryScope) -> dict:
         "ai_generation_id": "cycle-reply",
         "ai_generation_status": "pending",
         "ai_generation_history": "真人用户: 今天按原计划吗？",
+        **_test_mask_payload(scope),
+    }
+
+
+def _test_mask(scope: RecoveryScope) -> AiAccountVoiceProfile:
+    return AiAccountVoiceProfile(
+        id=f"pg-mask-{scope.account_id}",
+        tenant_id=scope.tenant_id,
+        account_id=scope.account_id,
+        version=1,
+        status="active",
+        quality_status="active",
+        short_prompt_summary=f"账号{scope.account_id}短句接话",
+    )
+
+
+def _test_mask_payload(scope: RecoveryScope) -> dict:
+    mask = _test_mask(scope)
+    return {
+        "account_mask_id": mask.id,
+        "account_mask_version": mask.version,
+        "voice_profile_contract_version": VOICE_PROFILE_CONTRACT_VERSION,
+        "account_mask_snapshot_hash": voice_profile_snapshot_hash(mask),
+        "mask_status": "active",
+        "content_source": "account_mask",
     }
 
 

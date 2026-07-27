@@ -9,7 +9,7 @@ from sqlalchemy.engine import Row
 from sqlalchemy.orm import Session
 
 from app.database import Base, SessionLocal, engine
-from app.models import Action, AiGroupMessageMemory, Task, Tenant
+from app.models import Action, AiGroupMessageMemory, Task, Tenant, TgAccount
 from app.services._common import _now
 from app.services.task_center.ai_message_memory import (
     DuplicateMessageReservation,
@@ -34,8 +34,9 @@ SIMILARITY_THRESHOLD = 0.99
 LARGE_RESULT_TEXT = "message-memory-history" * 64
 GROUP_ID_BASE = 10_000
 GROUP_COUNT = 4
-TARGET_GROUP_ID = 999
-WINDOW_DAYS = 7
+TEST_ACCOUNT_ID = 913_715
+CONCURRENT_ACCOUNT_ID = 913_716
+WINDOW_DAYS = 10
 WINDOW_SECONDS = int(timedelta(days=WINDOW_DAYS).total_seconds())
 CANDIDATE_TEXT = "完全不相似的唯一候选文本"
 EXPECTED_ROW_KEYS = {"id", "normalized_text", "raw_text", "planned_at", "status"}
@@ -54,6 +55,7 @@ def _cleanup_memory_rows() -> None:
         session.execute(
             delete(AiGroupMessageMemory).where(AiGroupMessageMemory.tenant_id == TEST_TENANT_ID)
         )
+        session.execute(delete(TgAccount).where(TgAccount.tenant_id == TEST_TENANT_ID))
         session.execute(delete(Tenant).where(Tenant.id == TEST_TENANT_ID))
         session.commit()
 
@@ -63,6 +65,7 @@ def _memory_rows(now_value: datetime, start: int, stop: int) -> list[dict]:
         {
             "id": f"pg-ai-memory-{index:05d}",
             "tenant_id": TEST_TENANT_ID,
+            "account_id": TEST_ACCOUNT_ID,
             "group_id": GROUP_ID_BASE + index % GROUP_COUNT,
             "raw_text": f"历史活群消息{index:05d}",
             "normalized_text": f"历史活群消息{index:05d}",
@@ -85,7 +88,16 @@ def _seed_action_id(index: int) -> str:
 
 def _seed_memory_rows(now_value: datetime) -> None:
     with SessionLocal() as session:
-        session.add(Tenant(id=TEST_TENANT_ID, name="AI message memory postgres scale"))
+        session.add_all([
+            Tenant(id=TEST_TENANT_ID, name="AI message memory postgres scale"),
+            TgAccount(
+                id=TEST_ACCOUNT_ID,
+                tenant_id=TEST_TENANT_ID,
+                display_name="memory-scale",
+                phone_masked="scale",
+                status="在线",
+            ),
+        ])
         session.commit()
         for start in range(0, ROW_COUNT, BATCH_SIZE):
             stop = min(start + BATCH_SIZE, ROW_COUNT)
@@ -138,7 +150,7 @@ def _measure_window(session: Session, now_value: datetime) -> tuple[list[Row], f
     rows = _window_memories(
         session,
         tenant_id=TEST_TENANT_ID,
-        group_id=TARGET_GROUP_ID,
+        account_id=TEST_ACCOUNT_ID,
         cutoff=now_value - timedelta(days=WINDOW_DAYS),
     )
     return rows, perf_counter() - started_at
@@ -258,7 +270,16 @@ def test_duplicate_batch_refresh_sees_concurrent_postgres_commit() -> None:
     _cleanup_concurrent_test_rows()
     now_value = _now()
     with SessionLocal() as setup:
-        setup.add(Tenant(id=CONCURRENT_TEST_TENANT_ID, name="AI memory concurrent refresh"))
+        setup.add_all([
+            Tenant(id=CONCURRENT_TEST_TENANT_ID, name="AI memory concurrent refresh"),
+            TgAccount(
+                id=CONCURRENT_ACCOUNT_ID,
+                tenant_id=CONCURRENT_TEST_TENANT_ID,
+                display_name="memory-concurrent",
+                phone_masked="concurrent",
+                status="在线",
+            ),
+        ])
         setup.commit()
 
     try:
@@ -271,7 +292,7 @@ def test_duplicate_batch_refresh_sees_concurrent_postgres_commit() -> None:
             with pytest.raises(DuplicateMessageReservation) as exc_info:
                 _reserve_concurrent_test(first, batch, 3, "并发提交的语义消息呢")
 
-        assert exc_info.value.duplicate_window in {"1h_similar", "7d_semantic"}
+        assert exc_info.value.duplicate_window in {"10d_exact", "10d_similar", "10d_semantic"}
     finally:
         _cleanup_concurrent_test_rows()
 
@@ -287,7 +308,7 @@ def _reserve_concurrent_test(
         tenant_id=CONCURRENT_TEST_TENANT_ID,
         group_id=20 + account_id,
         task_id="pg-concurrent-memory",
-        account_id=None,
+        account_id=CONCURRENT_ACCOUNT_ID,
         raw_text=content,
         duplicate_batch=batch,
     )
@@ -297,6 +318,9 @@ def _cleanup_concurrent_test_rows() -> None:
     with SessionLocal() as session:
         session.execute(delete(AiGroupMessageMemory).where(
             AiGroupMessageMemory.tenant_id == CONCURRENT_TEST_TENANT_ID,
+        ))
+        session.execute(delete(TgAccount).where(
+            TgAccount.tenant_id == CONCURRENT_TEST_TENANT_ID,
         ))
         session.execute(delete(Tenant).where(Tenant.id == CONCURRENT_TEST_TENANT_ID))
         session.commit()

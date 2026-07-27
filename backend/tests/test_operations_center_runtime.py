@@ -5352,7 +5352,7 @@ def _assert_unanchored_idle_result(generated: list[str], action_count: int, acti
     assert rejected_result["error_code"] == "hallucination_risk", rejected_result
 
 
-def test_group_ai_chat_semantic_clusters_drop_repeated_experience_templates(monkeypatch):
+def test_group_ai_chat_semantic_clusters_are_scoped_to_each_account(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
 
@@ -5390,10 +5390,11 @@ def test_group_ai_chat_semantic_clusters_drop_repeated_experience_templates(monk
     assert created == 4
     assert [action.payload["message_text"] for action in succeeded] == [
         "照片准是重点 上次真人没差",
+        "照片准是重点 上次真人没差",
         "态度稳点真省心",
         "这个价格还是得自己问清楚",
     ]
-    assert [action.result["error_code"] for action in failed] == ["duplicate_message"]
+    assert failed == []
 
 
 @pytest.mark.no_postgres

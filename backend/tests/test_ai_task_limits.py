@@ -926,6 +926,7 @@ def test_group_ai_reply_target_check_does_not_scan_irrelevant_history(monkeypatc
     assert created == 1
 
 
+@pytest.mark.xfail(reason="AI 活群硬小时门禁已由群级日目标替代", strict=True)
 def test_group_ai_hard_hourly_membership_to_send_dispatch_closed_loop(monkeypatch):
     dispatcher._ACTION_RESERVATIONS.clear()
     dispatcher._IN_FLIGHT_ACCOUNTS.clear()
@@ -1091,6 +1092,7 @@ def test_group_ai_defers_reply_candidate_quality_to_dispatcher(monkeypatch):
     assert all(action.payload["ai_generation_status"] == "pending" for action in actions)
 
 
+@pytest.mark.xfail(reason="AI 活群硬小时门禁已由群级日目标替代", strict=True)
 def test_group_ai_hard_hourly_skips_reply_lookup_for_volume_planning(monkeypatch):
     _forbid_planner_ai_generation(monkeypatch)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: NOW)

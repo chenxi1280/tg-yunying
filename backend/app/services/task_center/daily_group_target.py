@@ -159,7 +159,6 @@ def _confirmed_message_count(
 ) -> int:
     actions = list(session.scalars(
         select(Action)
-        .join(ExecutionAttempt, ExecutionAttempt.action_id == Action.id)
         .where(
             Action.tenant_id == target.tenant_id,
             Action.task_id == target.task_id,
@@ -167,11 +166,13 @@ def _confirmed_message_count(
             Action.status == "success",
             Action.executed_at >= start,
             Action.executed_at < end,
-            ExecutionAttempt.status == "success",
-            ExecutionAttempt.remote_message_id != "",
-            ExecutionAttempt.account_id == Action.account_id,
+            select(ExecutionAttempt.id).where(
+                ExecutionAttempt.action_id == Action.id,
+                ExecutionAttempt.status == "success",
+                ExecutionAttempt.remote_message_id != "",
+                ExecutionAttempt.account_id == Action.account_id,
+            ).exists(),
         )
-        .distinct()
     ))
     memory_ids = {
         str((action.payload or {}).get("ai_message_memory_id") or "")

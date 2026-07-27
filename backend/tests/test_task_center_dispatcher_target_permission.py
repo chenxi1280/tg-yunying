@@ -7,9 +7,13 @@ from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.integrations.telegram import OperationResult, SendResult
-from app.models import Action, AiGroupMessageMemory, GroupContextMessage, OperationTarget, Task, Tenant, TgAccount, TgAccountOnlineState, TgGroup, TgGroupAccount
+from app.models import Action, AiAccountVoiceProfile, AiGroupMessageMemory, GroupContextMessage, OperationTarget, Task, Tenant, TgAccount, TgAccountOnlineState, TgGroup, TgGroupAccount
 from app.services._common import _now
 from app.services.task_center import dispatcher
+from app.services.task_center.account_voice_profile_cache import (
+    VOICE_PROFILE_CONTRACT_VERSION,
+    voice_profile_snapshot_hash,
+)
 from app.services.task_center.dispatcher import claim_actions
 
 
@@ -32,6 +36,18 @@ def _add_group_ai_gate_payload(
             stale_after_at=now_value + timedelta(minutes=5),
         )
     )
+    mask = AiAccountVoiceProfile(
+        id=f"test-mask-{account_id}",
+        tenant_id=1,
+        account_id=account_id,
+        version=1,
+        status="active",
+        quality_status="active",
+        short_prompt_summary=f"账号{account_id}短句接话",
+    )
+    session.add(mask)
+    session.flush()
+    snapshot_hash = voice_profile_snapshot_hash(mask)
     memory_id = f"memory-{action_id}"
     session.add(
         AiGroupMessageMemory(
@@ -43,11 +59,26 @@ def _add_group_ai_gate_payload(
             raw_text=text,
             normalized_text=text,
             text_fingerprint=memory_id,
+            account_mask_id=mask.id,
+            account_mask_version=mask.version,
+            mask_contract_version=VOICE_PROFILE_CONTRACT_VERSION,
+            mask_snapshot_hash=snapshot_hash,
+            mask_status="active",
+            content_source="account_mask",
             status="reserved",
             planned_at=now_value,
         )
     )
-    return {"slot_id": f"{task_id}:cycle:test:turn:{action_id}", "ai_message_memory_id": memory_id}
+    return {
+        "slot_id": f"{task_id}:cycle:test:turn:{action_id}",
+        "ai_message_memory_id": memory_id,
+        "account_mask_id": mask.id,
+        "account_mask_version": mask.version,
+        "voice_profile_contract_version": VOICE_PROFILE_CONTRACT_VERSION,
+        "account_mask_snapshot_hash": snapshot_hash,
+        "mask_status": "active",
+        "content_source": "account_mask",
+    }
 
 
 def test_peer_invalid_marks_group_account_not_sendable(monkeypatch):
