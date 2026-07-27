@@ -873,13 +873,22 @@ def _dispatch_claim_window_actions(
         .where(*filters, _strict_dispatch_claim_condition())
         .order_by(Action.scheduled_at.asc(), Action.created_at.asc(), Action.id.asc())
     )
-    ordinary_statement = (
-        select(Action)
+    ordinary_ranked = (
+        select(
+            Action.id.label("action_id"),
+            func.row_number().over(
+                partition_by=(Action.tenant_id, Action.task_id),
+                order_by=claim_action_ordering(force_ordinary_tenants, now_value),
+            ).label("task_rank"),
+        )
         .join(Task, Task.id == Action.task_id)
-        .where(*filters)
-        .order_by(*claim_action_ordering(force_ordinary_tenants, now_value))
-        .limit(capacity)
+        .where(*filters, func.coalesce(_strict_dispatch_claim_condition(), False).is_(False))
+        .subquery()
     )
+    ordinary_statement = select(Action).join(
+        ordinary_ranked,
+        ordinary_ranked.c.action_id == Action.id,
+    ).where(ordinary_ranked.c.task_rank <= capacity)
     rows = list(session.scalars(strict_statement)) + list(session.scalars(ordinary_statement))
     return list({action.id: action for action in rows}.values())
 

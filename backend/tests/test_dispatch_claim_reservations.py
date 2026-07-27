@@ -150,6 +150,57 @@ def test_unserved_strict_demand_is_explicit_when_window_capacity_is_exhausted(mo
         assert claimed[0].result["dispatch_unserved_strict_classes"]
 
 
+def test_ordinary_candidate_scan_keeps_each_due_task_visible(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    settings = _settings(dispatcher_concurrency=2)
+    now_value = _now()
+    monkeypatch.setattr(dispatcher, "get_settings", lambda: settings)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="t"))
+        session.add_all([
+            Task(id="blocked-task", tenant_id=1, name="阻塞任务", type="group_ai_chat", status="running", priority=1),
+            Task(id="ready-task", tenant_id=1, name="可执行任务", type="group_ai_chat", status="running", priority=9),
+        ])
+        session.add_all([
+            Action(
+                id=f"blocked-{index}",
+                tenant_id=1,
+                task_id="blocked-task",
+                task_type="group_ai_chat",
+                action_type="send_message",
+                account_id=10 + index,
+                status="pending",
+                scheduled_at=now_value - timedelta(minutes=2),
+                payload={},
+            )
+            for index in range(3)
+        ])
+        session.add(Action(
+            id="ready",
+            tenant_id=1,
+            task_id="ready-task",
+            task_type="group_ai_chat",
+            action_type="send_message",
+            account_id=20,
+            status="pending",
+            scheduled_at=now_value - timedelta(minutes=1),
+            payload={},
+        ))
+        session.flush()
+
+        rows = dispatcher._dispatch_claim_window_actions(
+            session,
+            [Action.status == "pending", Action.scheduled_at <= now_value],
+            settings=settings,
+            now_value=now_value,
+            force_ordinary_tenants=set(),
+        )
+
+        assert "ready" in {action.id for action in rows}
+
+
 def test_two_shards_consume_one_shared_window_without_overallocation(monkeypatch) -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
