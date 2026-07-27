@@ -6357,9 +6357,10 @@ def _is_hard_hourly_send_action(action: Action) -> bool:
 def _group_bot_admission_gate_pass(session: Session, action: Action, *, group_id: int, account_id: int) -> bool:
     if action.task_type != "group_ai_chat" or action.action_type != "send_message":
         return True
-    payload = action.payload if isinstance(action.payload, dict) else {}
-    if bool(payload.get("legacy_send_until_reviewed")):
+    if not _group_bot_admission_required(session, action, group_id):
         return True
+    _ensure_scoped_group_bot_admission(session, action, group_id=group_id, account_id=account_id)
+    payload = action.payload if isinstance(action.payload, dict) else {}
     from app.services.task_center.group_bot_admission import evaluate_send_gate
 
     decision = evaluate_send_gate(
@@ -6370,26 +6371,37 @@ def _group_bot_admission_gate_pass(session: Session, action: Action, *, group_id
         enforce=True,
     )
     if decision.allowed:
-        if decision.admission_version is not None:
-            frozen_version = payload.get("admission_version")
-            if frozen_version is not None and int(frozen_version) != int(decision.admission_version):
-                # PRD §5.1.1: version mismatch → must re-verify, not carry old payload into Gateway.
-                action.status = "pending"
-                action.result = {
-                    **(action.result or {}),
-                    "error_code": "admission_version_stale",
-                    "frozen_admission_version": frozen_version,
-                    "current_admission_version": decision.admission_version,
-                }
-                action.scheduled_at = _now() + timedelta(seconds=30)
-                _release_runtime_resources(action)
-                return False
-            action.payload = {
-                **payload,
-                "group_bot_admission_id": decision.admission_id,
-                "admission_version": decision.admission_version,
-            }
+        return _apply_allowed_group_bot_admission(action, payload, decision)
+    _defer_for_group_bot_admission(action, decision)
+    return False
+
+
+def _apply_allowed_group_bot_admission(action: Action, payload: dict, decision) -> bool:
+    if decision.code == "post_follow_visibility_probe":
+        payload = {**payload, "group_bot_post_follow_visibility_probe": True}
+    if decision.admission_version is None:
         return True
+    frozen_version = payload.get("admission_version")
+    if frozen_version is not None and int(frozen_version) != int(decision.admission_version):
+        action.status = "pending"
+        action.result = {
+            **(action.result or {}),
+            "error_code": "admission_version_stale",
+            "frozen_admission_version": frozen_version,
+            "current_admission_version": decision.admission_version,
+        }
+        action.scheduled_at = _now() + timedelta(seconds=30)
+        _release_runtime_resources(action)
+        return False
+    action.payload = {
+        **payload,
+        "group_bot_admission_id": decision.admission_id,
+        "admission_version": decision.admission_version,
+    }
+    return True
+
+
+def _defer_for_group_bot_admission(action: Action, decision) -> None:
     action.status = "pending"
     action.result = {
         **(action.result or {}),
@@ -6402,7 +6414,60 @@ def _group_bot_admission_gate_pass(session: Session, action: Action, *, group_id
     }
     action.scheduled_at = _now() + timedelta(seconds=30)
     _release_runtime_resources(action)
-    return False
+
+
+def _group_bot_admission_required(session: Session, action: Action, group_id: int) -> bool:
+    task = session.get(Task, action.task_id) if action.task_id else None
+    if task is None or task.type != "group_ai_chat":
+        return False
+    config = task.type_config if isinstance(task.type_config, dict) else {}
+    configured_group_id = int(config.get("target_group_id") or 0)
+    return config.get("group_bot_admission_required") is not False and (
+        configured_group_id in (0, int(group_id))
+    )
+
+
+def _ensure_scoped_group_bot_admission(
+    session: Session,
+    action: Action,
+    *,
+    group_id: int,
+    account_id: int,
+) -> None:
+    from app.services.task_center.group_bot_admission import ensure_admission_after_join, get_admission
+
+    if get_admission(session, tenant_id=action.tenant_id, group_id=group_id, account_id=account_id):
+        return
+    membership = session.scalar(
+        select(TaskMembershipAdmissionItem).where(
+            TaskMembershipAdmissionItem.task_id == action.task_id,
+            TaskMembershipAdmissionItem.account_id == account_id,
+        )
+    )
+    if membership is None:
+        return
+    cursor = session.scalar(
+        select(GroupContextMessage.remote_message_id)
+        .where(
+            GroupContextMessage.tenant_id == action.tenant_id,
+            GroupContextMessage.group_id == group_id,
+        )
+        .order_by(GroupContextMessage.id.desc())
+        .limit(1)
+    )
+    admission = ensure_admission_after_join(
+        session,
+        tenant_id=action.tenant_id,
+        group_id=group_id,
+        account_id=account_id,
+        membership_action_id=str(membership.membership_action_id or ""),
+        join_start_cursor=str(cursor or ""),
+    )
+    action.result = {
+        **(action.result or {}),
+        "group_bot_admission_backfilled": True,
+        "group_bot_admission_id": admission.id,
+    }
 
 
 def _group_bot_admission_wait_message(state: str) -> str:
@@ -6419,7 +6484,11 @@ def _speaker_rotation_gate_pass(session: Session, action: Action, *, group_id: i
     )
 
     coverage_bound = bool(payload.get("coverage_ledger_id"))
-    candidates = _speaker_rotation_candidates(session, action, group_id=group_id, account_id=account_id)
+    candidates = (
+        [account_id]
+        if bool(payload.get("group_bot_post_follow_visibility_probe"))
+        else _speaker_rotation_candidates(session, action, group_id=group_id, account_id=account_id)
+    )
     decision = reserve_speaker_turn(
         session,
         action=action,
@@ -6498,8 +6567,6 @@ def _action_needs_pending_visibility(session: Session, action: Action, *, remote
     if action.task_type != "group_ai_chat" or not remote_id:
         return False
     payload = action.payload if isinstance(action.payload, dict) else {}
-    if bool(payload.get("legacy_send_until_reviewed")):
-        return False
     group_id = int(payload.get("group_id") or 0)
     account_id = int(action.account_id or 0)
     if not group_id or not account_id:
@@ -6513,6 +6580,13 @@ def _action_needs_pending_visibility(session: Session, action: Action, *, remote
         account_id=account_id,
     )
     action_version = payload.get("admission_version")
+    if bool(payload.get("group_bot_post_follow_visibility_probe")):
+        return (
+            admission is not None
+            and admission.state == "post_follow_visibility_probe"
+            and action_version is not None
+            and int(action_version) == int(admission.admission_version or 1)
+        )
     return needs_post_send_visibility(
         admission,
         action_admission_version=int(action_version) if action_version is not None else None,

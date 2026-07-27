@@ -20,6 +20,7 @@ from app.services.task_center.group_bot_admission import (
     ingest_trusted_bot_prompt,
     is_group_bot_control_prompt,
     mark_channel_follow_completed,
+    mark_visible_confirmed,
     parse_channel_refs,
     record_probe_observation,
     record_observation_batch,
@@ -112,6 +113,63 @@ def test_joined_account_waits_until_observation_and_policy():
         gate = evaluate_send_gate(session, tenant_id=1, group_id=7, account_id=11, enforce=True)
         assert gate.allowed is True
         assert gate.state == READY_STATE
+
+
+def test_missing_admission_cannot_use_legacy_send_path() -> None:
+    with _session() as session:
+        gate = evaluate_send_gate(session, tenant_id=1, group_id=7, account_id=11, enforce=True)
+
+        assert gate.allowed is False
+        assert gate.code == "group_bot_admission_missing"
+
+
+def test_followed_account_without_owned_callback_gets_one_visibility_probe() -> None:
+    with _session() as session:
+        session.add(Tenant(id=1, name="t"))
+        admission = ensure_admission_after_join(
+            session, tenant_id=1, group_id=7, account_id=11, membership_action_id="join-1"
+        )
+        ingest_trusted_bot_prompt(
+            session,
+            admission=admission,
+            message_id="bot-1",
+            text="请关注 https://t.me/school_news",
+            bot_peer_id="900",
+            is_admin_bot=True,
+        )
+        create_policy(
+            session,
+            tenant_id=1,
+            group_id=7,
+            completion_policy="explicit_bot_confirmation",
+            trusted_bot_peer_id="900",
+            reason="bot confirmation or visible probe",
+            evidence_ref="msg:bot-1",
+            created_by="operator",
+        )
+        mark_channel_follow_completed(session, admission=admission, channel_ref="school_news")
+        admission.source_message_id = ""
+
+        first = evaluate_send_gate(session, tenant_id=1, group_id=7, account_id=11, enforce=True)
+        second = evaluate_send_gate(session, tenant_id=1, group_id=7, account_id=11, enforce=True)
+
+        assert first.allowed is True
+        assert first.code == "post_follow_visibility_probe"
+        assert second.allowed is False
+        assert admission.state == "post_follow_visibility_probe"
+        ingest_trusted_bot_prompt(
+            session,
+            admission=admission,
+            message_id="other-account-prompt",
+            text="请关注 https://t.me/school_news",
+            bot_peer_id="900",
+            is_admin_bot=False,
+            is_trusted_source=True,
+            bind_confirmation_source=False,
+        )
+        assert admission.state == "post_follow_visibility_probe"
+        mark_visible_confirmed(session, admission=admission)
+        assert admission.state == READY_STATE
 
 
 def test_probe_ok_cannot_promote_ready():

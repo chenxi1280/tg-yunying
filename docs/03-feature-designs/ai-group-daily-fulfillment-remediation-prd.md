@@ -167,6 +167,14 @@ maximum_confirmable_count = frozen_denominator_count - terminal_permission_block
 6. policy 只是受限信任根，不是历史消息重放开关。策略生效后必须由 listener 再观察到同 peer 的有效控制事件；没有新证据时保留 blocker，并在任务详情显示 `group_bot_policy_unresolved` / `group_bot_rule_unattributed` 的真实区别。
 7. 存量 `group_bot_control_prompt_unverified` follow 只可在本路径收到不同 source message 且 channel_ref 仍在当前精确集合时原地 rearm；旧 Action 保留审计，其他 blocked follow 不得批量复活。
 
+### 5.1.2 存量任务账号准入补齐与关注后真实可见性探测
+
+1. `group_bot_admission_required=true` 的运行中 `group_ai_chat`，其持久任务 scope 内账号在任何正文进入生成或 Telegram Gateway 前都必须存在同 tenant + group + account 的 `GroupBotAdmission`。缺行时 Dispatcher 只能从当前 Action 的 task/account/group 和持久 membership item 创建 admission，并把正文延后；不得继续返回 `legacy_send_until_reviewed`，不得把 Telegram 返回 message_id 直接计入日覆盖。
+2. admission 补齐使用当前 listener cursor 作为观察基线，不伪造已确认；随后由 listener 的新控制事件或仍在当前窗口的已审计规则创建频道 follow。无运行任务绑定、非 scope 账号或 `group_bot_admission_required=false` 不在本自动补齐路径。
+3. 显式确认策略下，精确频道 follow 全部成功但没有账号级 callback source 时，允许该 admission/version 恰好一条正文进入 `post_follow_visibility_probe`。该正文必须创建 `PendingVisibilityCredit`，Action 先写 `unknown_after_send`，不得先计 hard-hourly 或 daily success；同 admission 的其他正文保持 pending。
+4. probe 的真实 message_id 在可见性窗口后仍可由同账号读取时，才把 admission 写 `group_bot_admission_ready`、`post_send_visibility_state=visible_confirmed` 并按原账本幂等计成功。消息不可见、群管拦截或 Gateway 明确权限失败时写 `post_send_intercepted`，不计成功；listener 若取得该账号明确提示，可继续走账号级 callback。
+5. 标准化显式收件人规则重复观测时，若当前频道 follow 已全部成功，不得把 admission 从 `awaiting_group_bot_confirmation` / `post_follow_visibility_probe` 重置为 `required_channel_follow_pending`；它只更新群级频道证据。
+
 ### 5.2 内容多样性和重复质量失败
 
 每一个待生成的非引用或引用 slot 必须拥有不可变 content_variation_key。它由任务、目标引用 epoch、北京时间日期、账号、Cycle、话题方向、讨论老师、行为类型、引用身份和一个新鲜上下文版本派生；只保存摘要或哈希，不把完整敏感上下文写入公共 stats。
@@ -313,6 +321,8 @@ hard_hourly_planning_required = hard_hourly_required_new > 0
 | account_only 群 | 不读取或写入 legacy 的 group claim slot；原账号级并发和可选群日上限保持不变 |
 | unknown-role bot 的广播频道规则 | 无 source-bound policy 时不创建 follow、不变更 admission；有同 group+peer 审计 policy 且 listener 再观察到有效、无收件人提示时，仅为运行中 scope 的既有 admission 创建逐账号 exact follow/callback，绝不创建正文或直接 ready |
 | 两条不同显式收件人提示形成标准化频道规则 | 只批量展开 required-channel follow；不得覆盖其他账号的 admission source 或创建 callback。已有账号级 source/callback 保留，历史标准化污染 callback 写 superseded 并等待本账号提示 |
+| 运行中任务正文账号缺少 GroupBotAdmission | Gateway 前按 task scope 补建 admission 并延后正文；不得走 legacy 放行、不得生成正文或计日覆盖成功 |
+| 频道 follow 全成功但账号级 callback source 缺失 | 同 admission/version 只放行一条 post-follow visibility probe；远端可见才 ready/计成功，被拦截则保持真实 blocker |
 | 上线前遗留、listener 滞后、窗口截断或机器人重发的 confirmation callback | 唯一 callback 必须先匹配当前 admission 的 `source_message_id`；旧 source 在 claim 和 Gateway 前写 `group_bot_confirmation_superseded`，新 source 重建精确按钮。通过该检查后，点击前必须同一账号先按 source ID 精确读取、再读取最新窗口的 trusted peer + exact channel refs + callback；窗口若有更晚有效来源则优先，精确读取不受监听窗口截断影响。持久化安全摘要并只换绑该 Action/admission；两个读取均未匹配或 Gateway 再报 mismatch 时写 `group_bot_confirmation_source_stale`，15 秒后重试且不调用旧 callback。即使账号处于全局冷却，旧项也不得延后、占用 dispatcher 领取资源或触发 Telegram callback |
 | Planner 全局 backlog | 不绕过 pending 上限；写 planner_capacity_insufficient 与下一检查时间，daily_outcome 不得显示 feasible |
 | 已有覆盖游标与 Dispatcher 并发 | Planner 只锁 `TaskDailyCoveragePlanCursor`，不再锁 `tasks` 行；PostgreSQL 不得出现 Planner/Dispatcher 的反向锁序或丢弃 coverage 决策 |

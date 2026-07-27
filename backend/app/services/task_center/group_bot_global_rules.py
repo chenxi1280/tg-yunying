@@ -27,6 +27,8 @@ GLOBAL_RULE_STATES = (
     "required_channel_follow_pending",
     "following_required_channel",
     "awaiting_group_bot_confirmation",
+    "post_follow_visibility_probe",
+    "post_send_intercepted",
 )
 REPEATABLE_RECIPIENT_RULE_CONTEXT_LIMIT = 100
 

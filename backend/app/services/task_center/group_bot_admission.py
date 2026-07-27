@@ -31,6 +31,7 @@ WAITING_STATES = {
     "required_channel_follow_pending",
     "following_required_channel",
     "awaiting_group_bot_confirmation",
+    "post_follow_visibility_probe",
     "group_bot_rule_unattributed",
     "blocked",
     "observation_stale",
@@ -471,6 +472,7 @@ def ingest_trusted_bot_prompt(
         return admission
     if not is_group_bot_control_prompt(text, control_buttons):
         return admission
+    previous_state = admission.state
     peer = str(bot_peer_id or "").strip()
     trusted = (
         _record_trusted_prompt(admission, peer, message_id)
@@ -483,27 +485,67 @@ def ingest_trusted_bot_prompt(
     refs = parse_channel_refs(text, control_buttons)
     admission.required_channel_refs = refs
     _record_required_channel_rows(session, admission, refs, message_id)
-    admission.state = "required_channel_follow_pending" if refs else "awaiting_group_bot_confirmation"
+    admission.state = _channel_requirement_state(
+        session,
+        admission,
+        previous_state=previous_state,
+        bind_confirmation_source=bind_confirmation_source,
+    )
     admission.completion_policy = admission.completion_policy or "explicit_bot_confirmation"
     session.flush()
     if bound_task_id:
-        plan_required_channel_follow_actions(
+        _plan_trusted_prompt_actions(
             session,
             admission=admission,
             task_id=str(bound_task_id),
+            message_id=message_id,
+            text=text,
+            control_buttons=control_buttons,
+            bind_confirmation_source=bind_confirmation_source,
+        )
+    return admission
+
+
+def _plan_trusted_prompt_actions(
+    session: Session,
+    *,
+    admission: GroupBotAdmission,
+    task_id: str,
+    message_id: str,
+    text: str,
+    control_buttons: tuple[object, ...] | list[object],
+    bind_confirmation_source: bool,
+) -> None:
+    plan_required_channel_follow_actions(
+        session,
+        admission=admission,
+        task_id=task_id,
+        source_message_id=str(message_id or ""),
+        control_buttons=control_buttons,
+        prompt_text=text,
+    )
+    if bind_confirmation_source:
+        plan_confirmation_button_action(
+            session,
+            admission=admission,
+            task_id=task_id,
             source_message_id=str(message_id or ""),
             control_buttons=control_buttons,
-            prompt_text=text,
         )
-        if bind_confirmation_source:
-            plan_confirmation_button_action(
-                session,
-                admission=admission,
-                task_id=str(bound_task_id),
-                source_message_id=str(message_id or ""),
-                control_buttons=control_buttons,
-            )
-    return admission
+
+
+def _channel_requirement_state(
+    session: Session,
+    admission: GroupBotAdmission,
+    *,
+    previous_state: str,
+    bind_confirmation_source: bool,
+) -> str:
+    if has_pending_required_channel_follows(session, admission=admission):
+        return "required_channel_follow_pending"
+    if not bind_confirmation_source and previous_state == "post_follow_visibility_probe":
+        return previous_state
+    return "awaiting_group_bot_confirmation"
 
 
 def _record_trusted_prompt(admission: GroupBotAdmission, peer: str, message_id: str) -> bool:
@@ -954,36 +996,63 @@ def evaluate_send_gate(
     account_id: int,
     enforce: bool = True,
 ) -> AdmissionGateDecision:
-    admission = get_admission(session, tenant_id=tenant_id, group_id=group_id, account_id=account_id)
+    admission = session.scalar(
+        select(GroupBotAdmission)
+        .where(
+            GroupBotAdmission.tenant_id == tenant_id,
+            GroupBotAdmission.group_id == group_id,
+            GroupBotAdmission.account_id == account_id,
+        )
+        .with_for_update()
+    )
     if not enforce:
         return AdmissionGateDecision(True, code="legacy_send_until_reviewed", state=admission.state if admission else "")
     if admission is None:
-        # C1 canary: stock accounts without admission rows keep legacy send path.
-        return AdmissionGateDecision(True, code="legacy_send_until_reviewed", state="missing")
+        return AdmissionGateDecision(False, code="group_bot_admission_missing", state="missing")
     close_observation_if_due(session, admission=admission)
     if admission.state == "abandoned":
-        return AdmissionGateDecision(
-            False,
-            code="admission_abandoned",
-            admission_id=admission.id,
-            admission_version=int(admission.admission_version or 1),
-            state=admission.state,
-        )
+        return _admission_gate_decision(admission, allowed=False, code="admission_abandoned")
+    if _start_post_follow_visibility_probe(session, admission):
+        return _admission_gate_decision(admission, allowed=True, code="post_follow_visibility_probe")
     if admission.state != READY_STATE:
-        return AdmissionGateDecision(
-            False,
-            code="group_bot_admission_wait",
-            admission_id=admission.id,
-            admission_version=int(admission.admission_version or 1),
-            state=admission.state,
-        )
+        return _admission_gate_decision(admission, allowed=False, code="group_bot_admission_wait")
+    return _admission_gate_decision(admission, allowed=True, code="ready")
+
+
+def _admission_gate_decision(
+    admission: GroupBotAdmission,
+    *,
+    allowed: bool,
+    code: str,
+) -> AdmissionGateDecision:
     return AdmissionGateDecision(
-        True,
-        code="ready",
+        allowed,
+        code=code,
         admission_id=admission.id,
         admission_version=int(admission.admission_version or 1),
         state=admission.state,
     )
+
+
+def _start_post_follow_visibility_probe(session: Session, admission: GroupBotAdmission) -> bool:
+    if admission.state != "awaiting_group_bot_confirmation" or admission.source_message_id:
+        return False
+    if not current_required_channel_refs(admission):
+        return False
+    if has_pending_required_channel_follows(session, admission=admission):
+        return False
+    if active_policy(
+        session,
+        tenant_id=admission.tenant_id,
+        group_id=admission.group_id,
+        completion_policy="explicit_bot_confirmation",
+        trusted_bot_peer_id=admission.trusted_bot_peer_id,
+    ) is None:
+        return False
+    admission.state = "post_follow_visibility_probe"
+    admission.post_send_visibility_state = "pending"
+    session.flush()
+    return True
 
 
 def needs_post_send_visibility(admission: GroupBotAdmission | None, *, action_admission_version: int | None) -> bool:
@@ -1050,6 +1119,10 @@ def mark_post_send_intercepted(session: Session, *, admission: GroupBotAdmission
 
 def mark_visible_confirmed(session: Session, *, admission: GroupBotAdmission) -> None:
     admission.post_send_visibility_state = "visible_confirmed"
+    if admission.state == "post_follow_visibility_probe":
+        admission.state = READY_STATE
+        admission.completion_policy = "post_follow_visibility_confirmed"
+        admission.failure_code = ""
     session.flush()
 
 

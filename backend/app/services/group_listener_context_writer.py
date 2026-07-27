@@ -276,6 +276,8 @@ def _waiting_group_bot_admissions(session: Session, group: TgGroup) -> list[Grou
         "required_channel_follow_pending",
         "following_required_channel",
         "awaiting_group_bot_confirmation",
+        "post_follow_visibility_probe",
+        "post_send_intercepted",
     )
     return list(
         session.scalars(
