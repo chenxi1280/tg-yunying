@@ -4022,6 +4022,17 @@ def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(monkeypatch):
         headers = auth_headers(client)
         account, group = ensure_test_workspace(client, headers)
         group = make_isolated_ai_group(account["id"], "pytest AI 持续监听")
+        with SessionLocal() as session:
+            session.add(AiAccountVoiceProfile(
+                id=f"continuous-mask-{account['id']}",
+                tenant_id=1,
+                account_id=account["id"],
+                version=1,
+                status="active",
+                quality_status="active",
+                short_prompt_summary="自然短句接话，结合真人上下文偶尔追问",
+            ))
+            session.commit()
         provider = client.post(
             "/api/ai-providers",
             headers=headers,
