@@ -548,7 +548,7 @@ def _group_bot_ready_accounts_for_plan(
     if not accounts:
         return []
     config = task.type_config if isinstance(task.type_config, dict) else {}
-    required = config.get("group_bot_admission_required")
+    required = _group_bot_admission_requirement(config)
     if required is False:
         return accounts
     admissions = session.scalars(select(GroupBotAdmission).where(
@@ -2117,7 +2117,7 @@ def _valid_open_daily_send_count(session: Session, task: Task) -> int:
         Action.status.in_(("pending", "claiming", "executing", "unknown_after_send")),
     )
     config = task.type_config if isinstance(task.type_config, dict) else {}
-    required = config.get("group_bot_admission_required")
+    required = _group_bot_admission_requirement(config)
     group_id = int(config.get("target_group_id") or 0)
     if required is not False and group_id:
         statement = statement.outerjoin(
@@ -2133,6 +2133,15 @@ def _valid_open_daily_send_count(session: Session, task: Task) -> int:
             ready if required is True else or_(GroupBotAdmission.id.is_(None), ready),
         )
     return int(session.scalar(statement) or 0)
+
+
+def _group_bot_admission_requirement(config: dict) -> bool | None:
+    configured = config.get("group_bot_admission_required")
+    if configured is not None:
+        return bool(configured)
+    if _all_accounts_daily_coverage(config):
+        return True
+    return None
 
 
 def requires_planning_with_open_actions(session: Session, task: Task) -> bool:
