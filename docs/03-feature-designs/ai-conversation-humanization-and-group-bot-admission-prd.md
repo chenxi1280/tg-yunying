@@ -443,6 +443,10 @@ durable_debt 排除：
 
 拒绝码至少：`template_shell`、`repeated_opening`、`semantic_duplicate`、`missing_context_anchor`、`reply_target_mismatch`、`voice_profile_mismatch`、`check_in_repeat`、`check_in_quota_exceeded`。
 
+账号面具只约束语气、句长、表情习惯、表达偏好与短期立场；任务话题和真实上下文决定正文主题。不得因为面具摘要含“男客、夜场、价格、位置”等词，就要求每个 slot 必须出现价格/位置/服务锚点，更不得把 AI 原文截断后拼接固定问句。面具不匹配只能拒绝该 slot 并进入既有有界补位生成。
+
+历史 `voice_profile_anchor_rewritten=true` 仅作为旧债事实保留。仍处于 `pending/claiming/executing/retryable_failed` 且尚未进入 Telegram Gateway 的旧 Action 必须在 Planner 或发送前转为 `skipped/voice_profile_anchor_replan`，关联消息记忆转 `expired_before_send`，覆盖预约释放后重新规划。
+
 ### 7.2 `签到` 规则
 
 | 项 | 口径 |

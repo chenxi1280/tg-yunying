@@ -4351,7 +4351,7 @@ def _assert_mimo_provider_result(result: SimpleNamespace) -> None:
 
 
 @pytest.mark.no_postgres
-def test_group_ai_chat_prompt_adds_mask_theme_anchor_guidance(monkeypatch):
+def test_group_ai_chat_prompt_does_not_expose_mask_transaction_preferences(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     captured: dict[str, object] = {}
@@ -4411,7 +4411,7 @@ def _mask_voice_profiles(_session, *, tenant_id: int, account_ids: list[int]):  
 
 
 @pytest.mark.no_postgres
-def test_group_ai_chat_repairs_mask_theme_candidate_before_voice_gate(monkeypatch):
+def test_group_ai_chat_keeps_mask_theme_candidate_without_rewrite(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
 
@@ -4455,8 +4455,8 @@ def test_group_ai_chat_repairs_mask_theme_candidate_before_voice_gate(monkeypatc
     assert planned == 1
     assert created == 1, action.result
     assert action is not None
-    assert "价格" in action.payload["message_text"]
-    assert task.stats["voice_profile_anchor_rewrite_count"] == 1
+    assert action.payload["message_text"] == "快进效率跟得上哈哈"
+    assert task.stats["voice_profile_anchor_rewrite_count"] == 0
 
 
 @pytest.mark.no_postgres
@@ -5472,14 +5472,13 @@ def test_group_ai_chat_drops_repeated_fixed_shell_phrases(monkeypatch):
 
 
 @pytest.mark.no_postgres
-def test_group_ai_chat_rejects_mask_profile_message_without_theme_anchor():
+def test_group_ai_chat_does_not_require_mask_transaction_theme_anchor():
     decision = _voice_profile_match_decision(
         "快进效率跟得上哈哈",
         {"summary": "本地男性短句寻欢客重点问位置时间和避坑"},
     )
 
-    assert decision["score"] == 0
-    assert decision["reason"] == "账号面具要求夜场主题锚点"
+    assert decision["score"] == 100
 
 
 @pytest.mark.no_postgres

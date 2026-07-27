@@ -425,18 +425,12 @@ def _filter_slot(request, index: int, content: str, *, baseline: list[str]) -> S
 
     snapshot = request.quality_snapshots[index]
     quality_item = {"slot": request.config["generation_slots"][index]}
-    repaired = group_ai_chat._voice_profile_anchor_repaired_content(
-        str(content),
-        {"summary": snapshot["account_profile"]},
-        quality_item,
-    )
-    anchor_rewritten = repaired != str(content)
-    mapped = _copy_generated_content_metadata(repaired, content)
+    mapped = _copy_generated_content_metadata(str(content), content)
     mapped.sequence_index = index + 1
     if request.config["generation_slots"][index].get("reply_to_message_id"):
         mapped.reply_to_sequence_index = index + 1
     decision = group_ai_chat._voice_profile_match_decision_for_item(
-        repaired,
+        str(content),
         {"summary": snapshot["account_profile"]},
         quality_item,
     )
@@ -445,12 +439,12 @@ def _filter_slot(request, index: int, content: str, *, baseline: list[str]) -> S
             mapped,
             "voice_profile_mismatch",
             str(decision["reason"]),
-            anchor_rewritten,
+            False,
         )
-    if reason := group_ai_chat._stance_conflict_reason(repaired, snapshot["stance_summary"]):
-        return SlotGenerationResult(mapped, "stance_conflict", reason, anchor_rewritten)
+    if reason := group_ai_chat._stance_conflict_reason(str(content), snapshot["stance_summary"]):
+        return SlotGenerationResult(mapped, "stance_conflict", reason)
     quality, stats = group_ai_chat._quality_filter_ai_messages(
-        [repaired],
+        [str(content)],
         baseline,
         chat_mode=request.chat_mode,
         anchor_message_ids=request.context_message_ids,
@@ -460,11 +454,8 @@ def _filter_slot(request, index: int, content: str, *, baseline: list[str]) -> S
     )
     if not quality:
         code = str(stats.get("skip_reason") or "quality_rejected")
-        return SlotGenerationResult(mapped, code, code, anchor_rewritten)
-    return SlotGenerationResult(
-        mapped,
-        voice_profile_anchor_rewritten=anchor_rewritten,
-    )
+        return SlotGenerationResult(mapped, code, code)
+    return SlotGenerationResult(mapped)
 
 
 def _ordered_results(request, accepted: dict, rejected: dict) -> list[SlotGenerationResult]:

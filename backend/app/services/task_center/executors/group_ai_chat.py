@@ -88,6 +88,7 @@ from ..hard_hourly import (
     planning_rate as hard_hourly_planning_rate,
     requires_planning as hard_hourly_requires_planning,
 )
+from ..legacy_anchor_rewrite import expire_legacy_anchor_rewritten_actions
 from ..pacing import current_hour_rounds, operation_intensity, schedule_times
 from ..payloads import SendMessagePayload, create_send_action
 from ..targets import group_from_reference
@@ -183,47 +184,6 @@ VAGUE_AI_FILLER_DETAIL_MARKERS = (
     "上榜",
     "药",
 )
-MASK_THEME_PROFILE_MARKERS = (
-    "男性",
-    "男客",
-    "老哥",
-    "夜场",
-    "寻欢",
-    "消费",
-    "楼凤",
-    "价位",
-    "包夜",
-    "技师",
-    "场子",
-)
-MASK_THEME_CONTENT_ANCHORS = (
-    "价格",
-    "成本",
-    "位置",
-    "在哪",
-    "反馈",
-    "真假",
-    "真实",
-    "真人",
-    "踩坑",
-    "照片",
-    "服务",
-    "体验",
-    "时间",
-    "今晚",
-    "老师",
-    "身材",
-    "榜",
-    "熟客",
-    "推荐",
-    "口味",
-    "温柔",
-    "别跑空",
-)
-MASK_THEME_REWRITE_SUFFIXES = ("价格咋说", "位置方便吗", "时间怎么排", "真假有反馈吗", "服务稳不稳", "体验有人试过吗")
-MASK_THEME_REWRITE_MAX_BASE_CHARS = 12
-
-
 @dataclass(frozen=True)
 class PlanAbort:
     created: int = 0
@@ -1393,7 +1353,8 @@ def _advance_reserved_coverage_cursor(
 def prepare_open_actions_for_planning(session: Session, task: Task) -> int:
     config = {**(task.type_config or {}), "pacing_config": task.pacing_config or {}}
     config = _canonicalized_task_config(session, task, config)
-    legacy_replanned = _skip_legacy_hard_hourly_open_actions_for_daily_coverage_replan(session, task, config)
+    legacy_replanned = expire_legacy_anchor_rewritten_actions(session, task)
+    legacy_replanned += _skip_legacy_hard_hourly_open_actions_for_daily_coverage_replan(session, task, config)
     group = group_from_reference(
         session,
         task.tenant_id,
@@ -2347,20 +2308,11 @@ def _generation_slot(
         "reply_to_message_id": _reply_target_message_id(quality_item),
         "reply_to_content": content,
     }
-    guidance = _mask_theme_anchor_guidance(profile)
-    if guidance:
-        slot["content_guidance"] = guidance
     if topic_direction:
         slot["topic_direction"] = dict(topic_direction)
     if teacher_target:
         slot["teacher_target"] = dict(teacher_target)
     return slot
-
-
-def _mask_theme_anchor_guidance(profile: str) -> str:
-    if not _profile_requires_mask_theme(_normalize_for_similarity(profile)):
-        return ""
-    return "夜场主题锚点：本 slot 至少落到价格/位置/时间/真假/服务/体验中的一个具体点"
 
 
 def _conversation_target_sequence(
@@ -3970,25 +3922,6 @@ def _voice_profile_match_decision_for_item(content: str, voice_profile: dict, qu
     return _voice_profile_match_decision(content, voice_profile)
 
 
-def _voice_profile_anchor_repaired_content(content: str, voice_profile: dict, quality_item: dict) -> str:
-    normalized = _normalize_for_similarity(content)
-    if not normalized or _has_mask_theme_anchor(normalized):
-        return content
-    summary = _normalize_for_similarity(str(voice_profile.get("summary") or ""))
-    if not _profile_requires_mask_theme(summary):
-        return content
-    suffix = _mask_theme_rewrite_suffix(quality_item)
-    base = str(content or "").strip().rstrip("。.!！?？，,、 ")
-    prefix = base[:MASK_THEME_REWRITE_MAX_BASE_CHARS].strip()
-    return f"{prefix} {suffix}".strip() if prefix else suffix
-
-
-def _mask_theme_rewrite_suffix(quality_item: dict) -> str:
-    slot = _quality_slot(quality_item)
-    sequence_index = int(slot.get("sequence_index") or quality_item.get("sequence_index") or 1)
-    return MASK_THEME_REWRITE_SUFFIXES[(sequence_index - 1) % len(MASK_THEME_REWRITE_SUFFIXES)]
-
-
 def _voice_profile_match_decision(content: str, voice_profile: dict) -> dict[str, object]:
     summary = str(voice_profile.get("summary") or "")
     if not summary.strip():
@@ -4000,8 +3933,6 @@ def _voice_profile_match_decision(content: str, voice_profile: dict) -> dict[str
         return {"score": VOICE_PROFILE_MISMATCH_SCORE, "reason": "账号面具要求少表情"}
     if "短句" in normalized_summary and len(normalized_content) > VOICE_PROFILE_LONG_SHORT_SENTENCE_LIMIT:
         return {"score": VOICE_PROFILE_MISMATCH_SCORE, "reason": "账号面具要求短句"}
-    if _profile_requires_mask_theme(normalized_summary) and not _has_mask_theme_anchor(normalized_content):
-        return {"score": VOICE_PROFILE_MISMATCH_SCORE, "reason": "账号面具要求夜场主题锚点"}
     return {"score": VOICE_PROFILE_MATCH_SCORE, "reason": summary[:80]}
 
 
@@ -4022,14 +3953,6 @@ def _has_marker(normalized_text: str, markers: tuple[str, ...]) -> bool:
 def _profile_rejects_emoji(normalized_summary: str) -> bool:
     markers = ("少表情", "不发表情", "不用表情", "不连续发表情", "少emoji", "不用emoji")
     return any(marker in normalized_summary for marker in markers)
-
-
-def _profile_requires_mask_theme(normalized_summary: str) -> bool:
-    return _has_marker(normalized_summary, MASK_THEME_PROFILE_MARKERS)
-
-
-def _has_mask_theme_anchor(normalized_content: str) -> bool:
-    return _has_marker(normalized_content, MASK_THEME_CONTENT_ANCHORS)
 
 
 def _is_emoji_only_message(content: str) -> bool:

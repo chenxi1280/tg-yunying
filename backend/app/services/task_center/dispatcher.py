@@ -88,6 +88,7 @@ from .group_bot_confirmation_refresh import (
 )
 from .group_send_claim_slots import filter_ready_group_send_actions, lock_eligible_group_send_actions
 from .group_send_limits import GroupSendSlotBlock, group_send_slot_block, reserve_group_send_slot, settle_group_send_slot
+from .legacy_anchor_rewrite import reject_legacy_anchor_rewrite_before_send
 from .payloads import (
     GROUP_BOT_CHANNEL_FOLLOW_ACTION_TYPE,
     DeprecatedGroupRescuePayload,
@@ -2072,6 +2073,8 @@ def _group_send_preconditions_pass(
     action: Action,
     context: GroupSendGatewayContext,
 ) -> bool:
+    if reject_legacy_anchor_rewrite_before_send(session, action):
+        return False
     prompt_context = PreSendRequiredChannelContext(
         session,
         action,

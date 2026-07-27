@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.services.task_center.ai_generator import AiGenerationUnavailable, GeneratedContent
 from app.services.task_center.ai_generation_dependencies import GenerationDependencies
 from app.services.task_center.ai_generation_pipeline import _static_emoji_text, generate_quality_results
+from app.services.task_center.executors import group_ai_chat
 
 
 pytestmark = pytest.mark.no_postgres
@@ -57,7 +58,7 @@ def test_cached_result_reenters_pure_quality_gates(content, request_updates, exp
     assert results[0].rejection_code == expected_code
 
 
-def test_voice_profile_anchor_is_rewritten_before_match() -> None:
+def test_voice_profile_never_rewrites_generated_content() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     request = _request("今天先聊聊", account_profile="男性老哥夜场表达")
     with Session(engine) as session:
@@ -68,8 +69,20 @@ def test_voice_profile_anchor_is_rewritten_before_match() -> None:
         )
 
     assert results[0].rejection_code == ""
-    assert "价格咋说" in results[0].content
-    assert results[0].voice_profile_anchor_rewritten is True
+    assert results[0].content == "今天先聊聊"
+    assert results[0].voice_profile_anchor_rewritten is False
+
+
+def test_mask_profile_does_not_force_transaction_topic_guidance() -> None:
+    slot = group_ai_chat._generation_slot(
+        "cycle-1",
+        0,
+        SimpleNamespace(id=11),
+        None,
+        {"11": "本地男性短句寻欢客重点问位置时间和避坑"},
+    )
+
+    assert "content_guidance" not in slot
 
 
 def test_daily_coverage_uses_distinct_explicit_static_fallback_after_all_models_reject() -> None:
