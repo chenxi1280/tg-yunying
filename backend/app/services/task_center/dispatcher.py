@@ -6905,10 +6905,11 @@ def _refresh_group_bot_confirmation_payload(
         _defer_group_bot_confirmation_source(action, "group_bot_confirmation_live_fetch_failed", str(exc))
         return None
     if refreshed_payload is None:
-        _defer_group_bot_confirmation_source(
+        _retire_stale_group_bot_confirmation_source(
             action,
-            "group_bot_confirmation_source_stale",
-            "实时读取未发现匹配当前频道规则的可信群管确认按钮",
+            admission=admission,
+            payload=payload,
+            detail="实时读取未发现匹配当前频道规则的可信群管确认按钮",
         )
         return None
     return refreshed_payload
@@ -6939,10 +6940,11 @@ def _click_refreshed_group_bot_confirmation(
         credentials,
     )
     if not result.ok and "group_bot_confirmation_button_mismatch" in (result.detail or ""):
-        _defer_group_bot_confirmation_source(
+        _retire_stale_group_bot_confirmation_source(
             action,
-            "group_bot_confirmation_source_stale",
-            "实时确认按钮在 Telegram 侧已变化，未执行旧 callback",
+            admission=admission,
+            payload=payload,
+            detail="实时确认按钮在 Telegram 侧已变化，未执行旧 callback",
         )
         return
     _finish_group_bot_confirmation_button(action, account, admission=admission, result=result)
@@ -6956,6 +6958,18 @@ def _defer_group_bot_confirmation_source(action: Action, code: str, detail: str)
         "validation_stage": "group_bot_confirmation_live",
         "retry_after_seconds": GROUP_BOT_CONFIRMATION_SOURCE_RETRY_SECONDS,
         "next_retry_at": retry_at.isoformat(),
+    }
+
+
+def _retire_stale_group_bot_confirmation_source(action: Action, *, admission, payload, detail: str) -> None:
+    stale_source = str(getattr(payload, "source_message_id", "") or "")
+    if str(admission.source_message_id or "") == stale_source:
+        admission.source_message_id = ""
+    _skip(action, "group_bot_confirmation_superseded", detail)
+    action.result = {
+        **(action.result or {}),
+        "validation_stage": "group_bot_confirmation_live",
+        "stale_source_message_id": stale_source,
     }
 
 

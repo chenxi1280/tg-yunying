@@ -527,9 +527,9 @@ def test_confirmation_action_uses_exact_source_when_current_window_is_truncated(
         assert action.result["group_bot_confirmation_live_source"]["lookup"] == "exact_source"
 
 
-def test_confirmation_action_defers_when_live_source_is_unavailable(monkeypatch) -> None:
+def test_confirmation_action_retires_deleted_live_source(monkeypatch) -> None:
     with _session() as session:
-        group, account, _admission, payload, action = _confirmation_action_fixture(
+        group, account, admission, payload, action = _confirmation_action_fixture(
             session,
             action_id="confirm-no-live-source",
             source_message_id="stale-message",
@@ -550,8 +550,10 @@ def test_confirmation_action_defers_when_live_source_is_unavailable(monkeypatch)
         context = dispatcher.ActionDispatchContext(account, payload, None, None)
 
         assert dispatcher._dispatch_credentialed_action(session, action, context, credentials=object()) is True
-        assert action.status == "pending"
-        assert action.result["error_code"] == "group_bot_confirmation_source_stale"
+        assert action.status == "skipped"
+        assert action.result["error_code"] == "group_bot_confirmation_superseded"
+        assert action.result["stale_source_message_id"] == "stale-message"
+        assert admission.source_message_id == ""
 
 
 def test_confirmation_action_defers_when_live_source_fetch_fails(monkeypatch) -> None:
@@ -585,9 +587,9 @@ def test_confirmation_action_defers_when_live_source_fetch_fails(monkeypatch) ->
         assert action.result["error_code"] == "group_bot_confirmation_live_fetch_failed"
 
 
-def test_confirmation_action_retries_when_telegram_button_changes_after_live_fetch(monkeypatch) -> None:
+def test_confirmation_action_retires_source_changed_after_live_fetch(monkeypatch) -> None:
     with _session() as session:
-        group, account, _admission, payload, action = _confirmation_action_fixture(
+        group, account, admission, payload, action = _confirmation_action_fixture(
             session,
             action_id="confirm-remote-race",
             source_message_id="fresh-message",
@@ -608,9 +610,10 @@ def test_confirmation_action_retries_when_telegram_button_changes_after_live_fet
         context = dispatcher.ActionDispatchContext(account, payload, None, None)
 
         assert dispatcher._dispatch_credentialed_action(session, action, context, credentials=object()) is True
-        assert action.status == "pending"
-        assert action.result["error_code"] == "group_bot_confirmation_source_stale"
+        assert action.status == "skipped"
+        assert action.result["error_code"] == "group_bot_confirmation_superseded"
         assert action.result["validation_stage"] == "group_bot_confirmation_live"
+        assert admission.source_message_id == ""
 
 
 def _live_confirmation_snapshot(
