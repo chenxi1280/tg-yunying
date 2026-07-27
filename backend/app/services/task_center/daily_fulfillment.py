@@ -429,11 +429,19 @@ def _next_decision_at(rows: list[TaskAccountDailyCoverage], timestamp: datetime,
         if row.state == "ready" and row.next_decision_at is not None
     ]
     if ready_values:
-        return min(ready_values)
+        return _minimum_decision_time(ready_values)
     if ready_count > 0:
         return timestamp + timedelta(seconds=DECISION_RECHECK_SECONDS)
     values = [row.next_decision_at or row.next_eligible_at for row in rows if row.next_decision_at or row.next_eligible_at]
-    return min(values) if values else None
+    return _minimum_decision_time(values) if values else None
+
+
+def _minimum_decision_time(values: list[datetime]) -> datetime:
+    normalized = [
+        value.astimezone(SOURCE_TIMEZONE).replace(tzinfo=None) if value.tzinfo else value
+        for value in values
+    ]
+    return min(normalized)
 
 
 def _daily_outcome(full_shortfall: int, blocked: int, unknown: int, ready: int, overdue: int) -> str:

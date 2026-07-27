@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from datetime import datetime, time, timedelta
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine, select
@@ -40,7 +41,7 @@ from app.services.task_center import daily_coverage
 from app.services.task_center import coverage_capacity
 from app.services.task_center.daily_coverage_readiness import refresh_rows
 from app.services.task_center.daily_coverage_planning import coverage_plan_totals
-from app.services.task_center.daily_fulfillment import summarize_daily_fulfillment
+from app.services.task_center.daily_fulfillment import _next_decision_at, summarize_daily_fulfillment
 from app.services.task_center.executors import group_ai_chat
 from app.services.task_center import service as task_service
 from app.timezone import BEIJING_TZ, beijing_now
@@ -312,6 +313,24 @@ def test_daily_fulfillment_normalizes_aware_action_time_from_postgres(session: S
     assert row.state == "reserved"
     assert row.blocker_code == "dispatcher_lag"
     assert summary.overdue_open_count == 1
+
+
+def test_daily_fulfillment_normalizes_mixed_next_decision_times(session: Session) -> None:
+    timestamp = beijing_now().replace(hour=21, minute=0, second=0, microsecond=0)
+    rows = [
+        SimpleNamespace(
+            state="ready",
+            next_decision_at=(timestamp + timedelta(minutes=1)).replace(tzinfo=None),
+            next_eligible_at=None,
+        ),
+        SimpleNamespace(
+            state="ready",
+            next_decision_at=(timestamp + timedelta(minutes=2)).replace(tzinfo=BEIJING_TZ),
+            next_eligible_at=None,
+        ),
+    ]
+
+    assert _next_decision_at(rows, timestamp, ready_count=2) == timestamp + timedelta(minutes=1)
 
 
 def test_daily_fulfillment_marks_gateway_started_overdue_action_unknown(session: Session) -> None:

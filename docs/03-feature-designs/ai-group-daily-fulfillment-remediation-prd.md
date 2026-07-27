@@ -175,6 +175,7 @@ maximum_confirmable_count = frozen_denominator_count - terminal_permission_block
 4. probe 的真实 message_id 在可见性窗口后仍可由同账号读取时，才把 admission 写 `group_bot_admission_ready`、`post_send_visibility_state=visible_confirmed` 并按原账本幂等计成功。消息不可见、群管拦截或 Gateway 明确权限失败时写 `post_send_intercepted`，不计成功；listener 若取得该账号明确提示，可继续走账号级 callback。
 5. 标准化显式收件人规则重复观测时，若当前频道 follow 已全部成功，不得把 admission 从 `awaiting_group_bot_confirmation` / `post_follow_visibility_probe` 重置为 `required_channel_follow_pending`；它只更新群级频道证据。
 6. `GroupBotAdmission.observation_closes_at` 与 `PendingVisibilityCredit.created_at` 从 SQLite、PostgreSQL 或生产连接返回时，准入门禁和恢复扫描都必须先归一到统一的北京时间墙上时钟再比较或计算 hold age；禁止 naive/aware 直接比较中断 Dispatcher 或全部任务的 recovery cycle，也不得因时区转换把超时 hold 当成功。
+7. `TaskAccountDailyCoverage.next_decision_at` / `next_eligible_at` 在汇总最早决策时间前同样必须归一为北京时间墙上时钟。数据库返回的 aware 值与历史 naive 值可同时存在，Planner 不得因 Python `min()` 直接比较而中断全部任务循环。
 
 ### 5.2 内容多样性和重复质量失败
 
@@ -356,7 +357,7 @@ hard_hourly_planning_required = hard_hourly_required_new > 0
 
 ### 9.1 当前 release 实现映射
 
-- `daily_fulfillment.py` 必须按 ExecutionAttempt Gateway 边界区分 overdue：未进入 Gateway 的 Action 维持 `reserved + dispatcher_lag`，已进入 Gateway 的才为 `unknown + coverage_action_overdue`；所有 Action 与统计时钟的比较统一归一到任务统计时区，详情投影 `overdue_open_count` 与 blocker_counts。
+- `daily_fulfillment.py` 必须按 ExecutionAttempt Gateway 边界区分 overdue：未进入 Gateway 的 Action 维持 `reserved + dispatcher_lag`，已进入 Gateway 的才为 `unknown + coverage_action_overdue`；所有 Action 与统计时钟的比较，以及 `next_decision_at` / `next_eligible_at` 最早值聚合，都统一归一到北京时间墙上时钟，详情投影 `overdue_open_count` 与 blocker_counts。
 - `dispatch_claim_ledger.py` 在终态释放时按仍为 `executing + dispatch_claim_active` 的 Action 重算 exact Scope/Window/Allocation counter；发现跨 Window 漂移时写 Action 审计而非抛 underflow。`service._recover_claimed_stale_action` 完成终态后同步 coverage，迁移替换覆盖 terminal unknown 的 Recovery 索引。
 - `dispatcher._locked_claim_plan_candidates` 必须按既有 claim 优先级、再按 `DispatchClaimPlan.candidate_action_ids` 锁取 Action；`scheduled_at` / `created_at` 不能覆盖已获份额的同优先级计划。回归测试必须构造“计划优先 Action 的排期较晚”场景，并保留频道评论、硬小时和 membership 的既有优先级，证明旧 backlog 不会反超。
 - `group_bot_global_rules.py` 将标准化显式收件人提示限制为 follow-only：只传播频道集合和 URL，不传播个人 callback source；清理历史标准化污染 source/callback 时保留账号自己已归属的 source。`group_bot_admission.plan_confirmation_button_action` 继续以 `GroupBotAdmission.source_message_id` 作为 callback 的唯一来源：新有效账号级控制消息到达时替换旧 source 的 pending Action；`dispatcher._confirm_action_claim_candidate` 和 Gateway 前复检同样先核对该 source/version，再执行账号 usage、shard 与容量 policy。`group_bot_confirmation_refresh.py` 在 click 边界先按 source ID 精确拉取、再以绑定账号拉取当前窗口的可信控制消息，校验 peer、当前频道集合和 callback 形态；窗口中存在更晚来源时换绑，窗口截断时仍可用精确来源，写 `GroupContextMessage` 安全摘要并只换绑该 Action/admission。实时读取异常保持可见重试；精确 source 与窗口匹配均为空或 Gateway 再报 mismatch 时，Dispatcher 原子清空仍指向该 source 的 admission 绑定并 supersede 旧 Action，使既有 post-follow visibility probe 可重新触发当前账号提示。因此旧按钮不会被 `global_account_policy` 无限延后或误点，当前实时精确按钮才可进入 Telegram。

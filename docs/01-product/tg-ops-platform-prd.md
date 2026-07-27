@@ -569,6 +569,8 @@ Planner 闸门顺序固定为：账号 / 授权槽位环境栈 -> 协议样本 -
 
 生产证据确认，AI 日覆盖 overdue 不能一概视为 Telegram 远端未知。`ExecutionAttempt.gateway_call_started_at` 是唯一边界：为空时覆盖行保持 `reserved + dispatcher_lag + dispatcher_recheck`，仍占自身 reservation、不能生成第二条 Action；非空时才进入 `unknown + coverage_action_overdue + remote_reconcile`，不得重发。历史被误标为 unknown 但无 Gateway 事实、且原 Action 已明确 terminal 的行，必须按真实终态释放 reservation 后重新规划。
 
+日履约汇总读取 `next_decision_at` / `next_eligible_at` 时，必须先归一为北京时间墙上时钟再求最早值；PostgreSQL aware 时间与历史 naive 时间混存不得中断整个 Planner drain，也不得用捕获异常或跳过任务掩盖该失败。
+
 `DispatchClaimScope`、`DispatchClaimWindow`、`DispatchClaimShardAllocation` 的 active count 是可由 `executing + dispatch_claim_active` Action 重算的投影。跨 Window stale Recovery 释放 Action 时必须按原 binding 重算 Scope/Window/Allocation；如果计数漂移，Action.result 记录 before/after 审计后继续释放，不能因某个旧 Window 的零值抛 underflow 并让 Recovery 回滚。binding 缺失仍应显式失败。该修订不放宽群冷却、质量、账号、准入、风险或 unknown_after_send 的安全门。
 
 ### 2.19 极搜会话状态偏离与图片验证码识别设计（RC-5a/5b/5c/8）
