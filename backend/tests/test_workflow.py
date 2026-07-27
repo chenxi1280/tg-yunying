@@ -3942,7 +3942,7 @@ def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(monkeypatch):
                 sender_peer_id="pytest-real-user",
                 sender_name="真人用户",
                 content=content,
-                sent_at=datetime.now(UTC).replace(tzinfo=None),
+                sent_at=_now().replace(tzinfo=None),
             )
             for remote_id, content in messages
         ]
@@ -4030,7 +4030,7 @@ def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(monkeypatch):
                 )
             ):
                 action.status = "skipped"
-                action.executed_at = datetime.now(UTC).replace(tzinfo=None)
+                action.executed_at = _now().replace(tzinfo=None)
                 action.result = {"success": False, "error_code": "test_cycle_boundary", "error_message": "test cycle boundary"}
             session.commit()
         first_context_send_count = len(sends)
@@ -4055,7 +4055,7 @@ def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(monkeypatch):
                 [task_id],
                 group["id"],
                 inserted,
-                datetime.now(UTC).replace(tzinfo=None),
+                _now().replace(tzinfo=None),
             )
             session.commit()
         assert inserted >= 1
@@ -5346,7 +5346,7 @@ def test_task_center_group_relay_continues_for_new_source_messages(monkeypatch):
                     sender_name="pytest",
                     content="第一条转发监听消息",
                     remote_message_id=f"relay-src-{uuid4().hex[:8]}",
-                    sent_at=datetime.now(UTC),
+                    sent_at=_now(),
                 )
             )
             session.commit()
@@ -5383,7 +5383,7 @@ def test_task_center_group_relay_continues_for_new_source_messages(monkeypatch):
                     sender_name="pytest",
                     content="第二条转发监听消息",
                     remote_message_id=f"relay-src-{uuid4().hex[:8]}",
-                    sent_at=datetime.now(UTC),
+                    sent_at=_now(),
                 )
             )
             task = session.get(Task, task_id)
