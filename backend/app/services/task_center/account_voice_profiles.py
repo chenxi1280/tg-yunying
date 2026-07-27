@@ -19,7 +19,9 @@ from app.services.task_center.account_voice_profile_cache import (
     voice_profile_snapshot_hash,
 )
 from app.services.task_center.account_voice_profile_generation import (
+    VOICE_PROFILE_INITIAL_MAX_TOKENS,
     _generate_voice_profile_payloads,
+    _parse_voice_profile_payloads,
     _valid_summary,
     _validate_generated_profile,
     _validate_summary,

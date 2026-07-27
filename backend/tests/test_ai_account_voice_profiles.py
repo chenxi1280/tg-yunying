@@ -234,7 +234,8 @@ def test_voice_profile_prompt_details_backfills_redis_cache(monkeypatch):
     _enable_voice_profile_redis(monkeypatch, fake_redis)
     with _session() as session:
         _account(session, 101, "花花号")
-        session.add(_profile(101, "青年短句，先问价格再看反馈", version=3))
+        profile = _profile(101, "青年短句，先问价格再看反馈", version=3)
+        session.add(profile)
         session.commit()
 
         details = voice_profile_prompt_details(session, tenant_id=1, account_ids=[101])
@@ -246,6 +247,7 @@ def test_voice_profile_prompt_details_backfills_redis_cache(monkeypatch):
         assert fake_redis.mget_calls == [["ai_group:voice_profile:1:101"]]
         assert fake_redis.setex_calls
         assert json.loads(fake_redis.setex_calls[0][2]) == {
+            "id": profile.id,
             "account_id": 101,
             "version": 3,
             "summary": "青年短句，先问价格再看反馈",
@@ -253,6 +255,8 @@ def test_voice_profile_prompt_details_backfills_redis_cache(monkeypatch):
             "audience_archetype": "偏年轻的普通男客",
             "identity_frame": "男大，预算不高，喜欢先看反馈",
             "preference_tags": ["黑丝", "年轻", "别跑空"],
+            "contract_version": "style_only_v2",
+            "snapshot_hash": account_voice_profile_cache.voice_profile_snapshot_hash(profile),
         }
 
 
@@ -280,7 +284,7 @@ def test_voice_profile_patch_refreshes_redis_cache(monkeypatch):
         session.add(_profile(101, "青年短句，先问价格再看反馈", version=1))
         session.commit()
 
-        patch_voice_profile(
+        profile = patch_voice_profile(
             session,
             tenant_id=1,
             account_id=101,
@@ -291,6 +295,7 @@ def test_voice_profile_patch_refreshes_redis_cache(monkeypatch):
         assert fake_redis.setex_calls
         refreshed = json.loads(fake_redis.setex_calls[-1][2])
         assert refreshed == {
+            "id": profile.id,
             "account_id": 101,
             "version": 2,
             "summary": "中年中句，先看反馈再轻吐槽",
@@ -298,6 +303,8 @@ def test_voice_profile_patch_refreshes_redis_cache(monkeypatch):
             "audience_archetype": "偏年轻的普通男客",
             "identity_frame": "男大，预算不高，喜欢先看反馈",
             "preference_tags": ["黑丝", "年轻", "别跑空"],
+            "contract_version": "style_only_v2",
+            "snapshot_hash": account_voice_profile_cache.voice_profile_snapshot_hash(profile),
         }
 
 
