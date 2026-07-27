@@ -3842,7 +3842,7 @@ AI 活跃群 Planner 需要额外满足：
 - action payload / result / stats / worker 日志不得保存关键词明文，统一使用 `keyword_hash` 和必要的加密展示字段。
 - search_join 的强度解释独立于 AI 活跃群小时轮数和频道动作预算，默认受单账号每日、单授权槽位每日、单关键词每日、单 IP 每日和跨账号同关键词并发限制共同约束。
 
-> **2026-07-26 每日履约覆盖规则：** Dispatcher 的通用 claim、执行和回写流程同时服务 AI 活群与严格搜索任务时，必须先读取真实 dispatcher scope 的全局 `DispatchClaimScope`，按全部 `executing + dispatch_claim_active` Action reconcile active ledger，再读取对应当前 `DispatchClaimWindow`、`DispatchClaimShardAllocation` 和其中的 `DispatchClaimReservation`。已绑定的 target admission 先处理；search_join_membership child 优先于新的严格 source；严格 source 与 AI hard_hourly 只领取各自在当前 epoch 尚未消耗的份额。scope capacity 由有效并发和跨 Window active claims 决定，任一 worker 或 shard 都不得重复预留；无法满足总需求时必须写 shared_dispatch_capacity_insufficient。`DispatchClaimPlan.candidate_action_ids` 是 allocation 与公平 cursor 之后的领取顺序，锁行只能在该序列内以 `SKIP LOCKED` 跳过不可领取项，禁止再用静态 `Task.priority`、`scheduled_at` 或通用 claim 排序重排、补位。不得用 Action 的静态排序、worker 心跳或 claim 成功替代远端业务成功。
+> **2026-07-26 每日履约覆盖规则：** Dispatcher 的通用 claim、执行和回写流程同时服务 AI 活群与严格搜索任务时，必须先读取真实 dispatcher scope 的全局 `DispatchClaimScope`，按全部 `executing + dispatch_claim_active` Action reconcile active ledger，再读取对应当前 `DispatchClaimWindow`、`DispatchClaimShardAllocation` 和其中的 `DispatchClaimReservation`。已绑定的 target admission 先处理；search_join_membership child 优先于新的严格 source；严格 source 与 AI hard_hourly 只领取各自在当前 epoch 尚未消耗的份额。scope capacity 由有效并发和跨 Window active claims 决定，任一 worker 或 shard 都不得重复预留；无法满足总需求时必须写 shared_dispatch_capacity_insufficient。锁行必须保留现有类别、任务和公平优先级，`DispatchClaimPlan.candidate_action_ids` 则是 allocation 与公平 cursor 后的同优先级领取顺序；`SKIP LOCKED` 只能跳过不可领取项，禁止再按静态 `scheduled_at` / `created_at` backlog 年龄重排、补位。不得用 Action 的静态排序、worker 心跳或 claim 成功替代远端业务成功。
 
 ### 5.3 Dispatcher 执行要求
 
@@ -3875,7 +3875,7 @@ DB 短事务确认执行
 - Dispatcher 单轮预领取量不得大于该 worker 的实际执行并发，避免批次尾部在资源确认前超过 `claim_expires_at`；worker 命令的 drain limit 大于实际并发时，只表示后续轮次继续处理，不得一次占住全部 action。
 - 同一次 claim 中共用 AI generation claim token 的 normal pending `send_message` 属于一个共享生成批次。该 claim 批次必须由单一入口按领取顺序推进批量生成、Phase C 和后续 sibling 发送，不能把每个空文本 sibling 同时交给线程池并发加载、更新重叠 Action 集合；这个串行边界只消除同批生成写冲突，不得截断最终应处理 Action，也不得成为账号或任务准入上限。不共享生成批次的 Action 继续按 Dispatcher 实际并发执行。
 - AI 活跃群每小时硬目标、严格搜索 source 与已点击 `search_join_membership` child 的容量仲裁以 `DispatchClaimScope` 跨 Window active ledger + 当前 `DispatchClaimWindow` / shard Allocation / Reservation 为准，不再以“硬小时永远最高”的固定排序决定领取。`target_admission_retry` 与已点击 child 保留不可替代优先级；严格 source 和 hard-hourly 均须有可审计份额，普通批量、`channel_comment` 的既有任务优先级只在严格份额后的剩余容量中生效。所有 Action 仍必须通过原账号、授权槽位、账号限流、权限和 Telegram Gateway 校验。
-- `plan_dispatch_claims` 产生候选后，行锁查询必须保留 `candidate_action_ids` 的相对顺序；被锁、已终态或不再 due 的候选只从该序列中缺席，`claim_limit` 继续取同一计划中的后续项。不得在加锁阶段再次按历史排期重排，否则旧同群 backlog 会反复触发慢速模式并挤占其他已分配目标。该规则不改变 `legacy_group_slot`、群冷却、账号容量或 `account_only` 的显式 canary 边界。
+- `plan_dispatch_claims` 产生候选后，行锁查询必须保留既有类别、任务和公平优先级，并以 `candidate_action_ids` 作为同一优先级内的相对顺序；被锁、已终态或不再 due 的候选只从该序列中缺席，`claim_limit` 继续取同一计划中的后续项。不得在加锁阶段再次按历史 `scheduled_at` / `created_at` 重排，否则旧同群 backlog 会反复触发慢速模式并挤占其他已分配目标。该规则不改变 `legacy_group_slot`、群冷却、账号容量或 `account_only` 的显式 canary 边界。
 - 进入 Gateway 调用边界后结果未知，必须标记 `unknown_after_send`，不能自动重发。
 - FloodWait、SlowMode、账号受限、代理异常、目标权限不足和内容拦截必须分类。
 - Dispatcher 不负责选择引用对象，也不负责把普通消息升级为引用回复。它只读取 action payload 中的 `reply_to_message_id`，并把该值传给 Telegram Gateway 的原生 `reply_to` / 评论回复参数。
@@ -5087,7 +5087,7 @@ required_new = min(planning_rate,
 
 `unknown_after_send` 不计成功、不自动重发、没有静默超时释放；每个 unknown 只占 1 个规划名额，**禁止**对同一 Action 替代重发，但**不得**因存在任意 unknown 就整目标停止全部硬小时规划。活动窗外或账号打满时欠账只累计不发送。未进入 Gateway 的跨小时 Action 可继续调度，禁止新增 `hard_hourly_bucket_expired`。
 
-严格搜索日目标仍优先于 AI 硬小时。在 Dispatcher **一次 claim 类别选择**中若选了 hard-hourly，且存在到期 ordinary、无更高优先级，则**下一次**类别选择必须服务 ordinary；cursor 和 reason 必须先以独立短事务持久化、提交后再锁 Action。`DispatchClaimPlan` 将该类别选择、reservation 和 allocation 汇成有序 `candidate_action_ids`；随后 `FOR UPDATE SKIP LOCKED` 只能保留该序列的相对顺序，不能重新按旧 `scheduled_at` 排序。新建 hard-hourly membership Action 直接按 claim 顺序近期排程；仅 Recovery 可对既有 future Action 做 ≤50 行、仅锁 `actions` 的 fast-track，提交释放锁后再单独写统计，Planner 不得批量改写旧 Action。
+严格搜索日目标仍优先于 AI 硬小时。在 Dispatcher **一次 claim 类别选择**中若选了 hard-hourly，且存在到期 ordinary、无更高优先级，则**下一次**类别选择必须服务 ordinary；cursor 和 reason 必须先以独立短事务持久化、提交后再锁 Action。`DispatchClaimPlan` 将该类别选择、reservation 和 allocation 汇成有序 `candidate_action_ids`；随后 `FOR UPDATE SKIP LOCKED` 保留既有类别、任务和公平优先级，并仅以该序列处理同优先级候选，不能重新按旧 `scheduled_at` / `created_at` 排序。新建 hard-hourly membership Action 直接按 claim 顺序近期排程；仅 Recovery 可对既有 future Action 做 ≤50 行、仅锁 `actions` 的 fast-track，提交释放锁后再单独写统计，Planner 不得批量改写旧 Action。
 
 #### 8.4.6 发布、观测和验收
 

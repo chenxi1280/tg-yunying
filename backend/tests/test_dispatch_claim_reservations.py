@@ -336,9 +336,64 @@ def test_locked_claim_plan_candidates_preserve_planned_order_over_old_backlog() 
             SimpleNamespace(candidate_action_ids=("planned-first", "old-backlog")),
             1,
             now_value,
+            set(),
         )
 
         assert [row.id for row in rows] == ["planned-first"]
+
+
+def test_locked_claim_plan_candidates_keep_claim_priority_before_plan_order() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="tenant"))
+        session.add_all(
+            [
+                Task(id="hard-task", tenant_id=1, name="硬小时", type="group_ai_chat", status="running", priority=3),
+                Task(
+                    id="search-task",
+                    tenant_id=1,
+                    name="严格搜索",
+                    type="search_join_group",
+                    status="running",
+                    priority=3,
+                    type_config={"strict_daily_target": True},
+                ),
+                Action(
+                    id="source-first-in-plan",
+                    tenant_id=1,
+                    task_id="search-task",
+                    task_type="search_join_group",
+                    action_type="search_join",
+                    status="pending",
+                    scheduled_at=now_value - timedelta(days=1),
+                    payload={},
+                ),
+                Action(
+                    id="hard-second-in-plan",
+                    tenant_id=1,
+                    task_id="hard-task",
+                    task_type="group_ai_chat",
+                    action_type="send_message",
+                    status="pending",
+                    scheduled_at=now_value - timedelta(seconds=1),
+                    payload={"hard_hourly_target": True},
+                ),
+            ]
+        )
+        session.commit()
+
+        rows = dispatcher._locked_claim_plan_candidates(
+            session,
+            SimpleNamespace(candidate_action_ids=("source-first-in-plan", "hard-second-in-plan")),
+            1,
+            now_value,
+            set(),
+        )
+
+        assert [row.id for row in rows] == ["hard-second-in-plan"]
 
 
 def _seed_strict_actions(session: Session, now_value) -> None:

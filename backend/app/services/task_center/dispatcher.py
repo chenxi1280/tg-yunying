@@ -780,7 +780,7 @@ def _select_claim_candidates(
         shard_index=shard_index,
         fairness_decisions=fairness,
     )
-    candidates = _claimable_candidates(_locked_claim_plan_candidates(session, plan, claim_limit, now_value))
+    candidates = _claimable_candidates(_locked_claim_plan_candidates(session, plan, claim_limit, now_value, forced))
     _annotate_dispatch_fairness(session, candidates, fairness, defer_action_ids=set(plan.bindings_by_action_id))
     bindings = {action.id: plan.bindings_by_action_id[action.id] for action in candidates if action.id in plan.bindings_by_action_id}
     return candidates, fairness, bindings
@@ -875,6 +875,7 @@ def _locked_claim_plan_candidates(
     claim_plan,
     claim_limit: int,
     now_value: datetime,
+    force_ordinary_tenants: set[int],
 ) -> list[Action]:
     action_ids = tuple(claim_plan.candidate_action_ids)
     if not action_ids:
@@ -893,7 +894,11 @@ def _locked_claim_plan_candidates(
             Task.status == "running",
             Task.deleted_at.is_(None),
         )
-        .order_by(plan_order, Action.id.asc())
+        .order_by(
+            *_claim_action_priority_ordering(force_ordinary_tenants, now_value),
+            plan_order,
+            Action.id.asc(),
+        )
     )
     if session.bind and session.bind.dialect.name != "sqlite":
         statement = statement.with_for_update(of=Action, skip_locked=True)
@@ -1345,12 +1350,7 @@ def _fairness_demoted_hard_rank(force_ordinary_tenants: set[int], now_value: dat
     )
 
 
-def claim_action_ordering(force_ordinary_tenants: set[int], now_value: datetime):
-    """Return the canonical Action row-lock order used by Dispatcher claims.
-
-    Mirrors production hard-AI-before-search ordering, then task priority and
-    comment rank. Fairness only reorders non-overdue hard sends vs ordinary.
-    """
+def _claim_action_priority_ordering(force_ordinary_tenants: set[int], now_value: datetime):
     return (
         _target_admission_retry_claim_rank(),
         _hard_hourly_claim_rank_for_ordering(force_ordinary_tenants, now_value),
@@ -1359,6 +1359,13 @@ def claim_action_ordering(force_ordinary_tenants: set[int], now_value: datetime)
         Task.priority.asc(),
         _channel_comment_claim_rank(),
         _fairness_demoted_hard_rank(force_ordinary_tenants, now_value),
+    )
+
+
+def claim_action_ordering(force_ordinary_tenants: set[int], now_value: datetime):
+    """Return the canonical Action row-lock order used by Dispatcher claims."""
+    return (
+        *_claim_action_priority_ordering(force_ordinary_tenants, now_value),
         Action.scheduled_at.asc(),
         Action.created_at.asc(),
         Action.id.asc(),
