@@ -6,9 +6,13 @@ from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.integrations.telegram import OperationResult
-from app.models import AccountStatus, Action, Task, Tenant, TgAccount, TgGroup
+from app.models import AccountStatus, Action, GroupBotAdmission, Task, Tenant, TgAccount, TgGroup
 from app.services.task_center import dispatcher
-from app.services.task_center.group_bot_admission import confirmation_action_can_dispatch, ensure_admission_after_join
+from app.services.task_center.group_bot_admission import (
+    confirmation_action_can_dispatch,
+    ensure_admission_after_join,
+    plan_confirmation_button_action,
+)
 from app.services.task_center.payloads import GroupBotConfirmationButtonPayload
 
 
@@ -126,6 +130,67 @@ def test_claim_skips_legacy_duplicate_before_global_account_policy(monkeypatch) 
             dispatcher,
             "_apply_claim_account_policy",
             lambda *_args: pytest.fail("duplicate must be skipped before account policy"),
+        )
+        batch = dispatcher.ActionClaimBatch(
+            action_ids=(duplicate.id,),
+            owner="dispatcher-1",
+            token="claim-token",
+            reservation_bindings={},
+        )
+
+        assert not dispatcher._confirm_action_claim_candidate(session, duplicate.id, batch)
+        assert duplicate.status == "skipped"
+        assert duplicate.result["error_code"] == "group_bot_confirmation_superseded"
+
+
+def test_planner_replaces_pending_callback_with_current_admission_source() -> None:
+    with _session() as session:
+        _, payload = _duplicate_confirmation_setup(session, first_status="pending")
+        admission = session.get(GroupBotAdmission, payload.admission_id)
+        first = session.get(Action, "confirm-first")
+        duplicate = session.get(Action, "confirm-duplicate")
+        assert admission is not None and first is not None and duplicate is not None
+        admission.source_message_id = "bot-message-2"
+        duplicate.status = "skipped"
+        session.flush()
+
+        replacement = plan_confirmation_button_action(
+            session,
+            admission=admission,
+            task_id="task-ai-1",
+            source_message_id="bot-message-2",
+            control_buttons=(
+                {
+                    "row": 1,
+                    "col": 0,
+                    "text": "我已加入",
+                    "action_type": "callback",
+                },
+            ),
+        )
+
+        assert replacement is not None
+        assert first.status == "skipped"
+        assert first.result["error_code"] == "group_bot_confirmation_superseded"
+        assert replacement.payload["source_message_id"] == "bot-message-2"
+
+
+def test_claim_skips_stale_confirmation_source_before_global_account_policy(monkeypatch) -> None:
+    with _session() as session:
+        _, payload = _duplicate_confirmation_setup(session, first_status="skipped")
+        admission = session.get(GroupBotAdmission, payload.admission_id)
+        duplicate = session.get(Action, "confirm-duplicate")
+        assert admission is not None and duplicate is not None
+        admission.source_message_id = "bot-message-2"
+        duplicate.status = "claiming"
+        duplicate.claim_owner = "dispatcher-1"
+        duplicate.claim_token = "claim-token"
+        session.commit()
+
+        monkeypatch.setattr(
+            dispatcher,
+            "_apply_claim_account_policy",
+            lambda *_args: pytest.fail("stale source must be skipped before account policy"),
         )
         batch = dispatcher.ActionClaimBatch(
             action_ids=(duplicate.id,),

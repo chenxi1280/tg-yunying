@@ -164,8 +164,8 @@ group_ai_chat 账号入群
   -> 每个正文或同源 URL 按钮的原始频道引用 -> group_bot_channel_follow（`actions.action_type` 30 字符内；Gateway 重解析并验广播频道）
      `required_channel_refs` 仅为当前 admission 世代的有效集合；历史 rejected-prompt follow 保留审计且不参与当前完成判断
      `group_bot_control_prompt_unverified` 暂停后，必须 explicit restart + 不同 source_message_id 的新有效提示才可 rearm 同一频道
-  -> 全部 follow 后，claim 确认先按 admission/version 归并全部开放 callback；遗留重复项直接 skipped(group_bot_confirmation_superseded)，不经过账号 usage/capacity/shard policy、不占运行资源
-     唯一保留的精确 callback action 再重读 source_message_id 并校验 peer/row/col/text/type -> Telegram click
+  -> 全部 follow 后，claim 确认先按 admission/version 和当前 GroupBotAdmission.source_message_id 归并 callback；旧 source 直接 skipped(group_bot_confirmation_superseded)，不经过账号 usage/capacity/shard policy、不占运行资源
+     listener 新观察到有效 prompt 时，用其 source_message_id 重建唯一精确 callback；Gateway 前再次校验 peer/row/col/text/type -> Telegram click
      click 成功仍等待同 peer 的完成事件；不得直接 ready
   -> 完成事件识别器（精确按钮后的 bot 回执 / 版本化确认模板）或 follow_sufficient
   -> can_send 复检 + challenge 相位投影；test_message 仅 admission ready 之后

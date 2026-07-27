@@ -671,11 +671,15 @@ def plan_confirmation_button_action(
     ) is not None:
         return None
     now = _now()
+    current_source_message_id = str(source_message_id or "")
+    if not current_source_message_id or current_source_message_id != str(admission.source_message_id or ""):
+        return None
     if _reconcile_open_confirmation_actions(
         session,
         task.id,
         admission.id,
         int(admission.admission_version or 1),
+        current_source_message_id,
         now,
     ):
         return None
@@ -702,6 +706,7 @@ def _reconcile_open_confirmation_actions(
     task_id: str,
     admission_id: int,
     admission_version: int,
+    current_source_message_id: str,
     now: datetime,
 ) -> bool:
     actions = _matching_confirmation_actions(session, task_id, admission_id, admission_version)
@@ -710,10 +715,25 @@ def _reconcile_open_confirmation_actions(
         for action in actions
         if action.status in OPEN_CONFIRMATION_ACTION_STATUSES
     ]
-    for action in open_actions[1:]:
+    current_source_actions = [
+        action
+        for action in open_actions
+        if _confirmation_action_source_message_id(action) == current_source_message_id
+    ]
+    stale_source_actions = [
+        action
+        for action in open_actions
+        if _confirmation_action_source_message_id(action) != current_source_message_id
+    ]
+    for action in stale_source_actions:
         if action.status == "pending":
             _skip_superseded_confirmation_action(action, now)
-    return bool(open_actions)
+    if any(action.status in {"claiming", "executing"} for action in stale_source_actions):
+        return True
+    for action in current_source_actions[1:]:
+        if action.status == "pending":
+            _skip_superseded_confirmation_action(action, now)
+    return bool(current_source_actions)
 
 
 def confirmation_action_can_dispatch(
@@ -726,10 +746,29 @@ def confirmation_action_can_dispatch(
     actions = _matching_confirmation_actions(session, action.task_id, admission_id, admission_version)
     if not any(str(candidate.id) == str(action.id) for candidate in actions):
         actions.append(action)
+    current_source_message_id = _current_confirmation_source_message_id(session, admission_id)
+    if current_source_message_id:
+        if _confirmation_action_source_message_id(action) != current_source_message_id:
+            return False
+        actions = [
+            candidate
+            for candidate in actions
+            if _confirmation_action_source_message_id(candidate) == current_source_message_id
+        ]
     if any(candidate.status == "success" and str(candidate.id) != str(action.id) for candidate in actions):
         return False
     open_actions = [candidate for candidate in actions if candidate.status in OPEN_CONFIRMATION_ACTION_STATUSES]
     return not open_actions or str(open_actions[0].id) == str(action.id)
+
+
+def _current_confirmation_source_message_id(session: Session, admission_id: int) -> str:
+    admission = session.get(GroupBotAdmission, admission_id)
+    return str(admission.source_message_id or "") if admission is not None else ""
+
+
+def _confirmation_action_source_message_id(action: Any) -> str:
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    return str(payload.get("source_message_id") or "")
 
 
 def _matching_confirmation_actions(

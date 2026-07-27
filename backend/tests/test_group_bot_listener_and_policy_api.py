@@ -318,7 +318,12 @@ def test_repeated_standard_rule_keeps_one_open_confirmation_per_admission():
 
         confirmations = list(session.query(Action).filter(Action.action_type == "group_bot_confirmation_button"))
         assert sum(action.status == "pending" for action in confirmations) == 2
-        assert sum(action.status == "skipped" for action in confirmations) == 2
+        assert sum(action.status == "skipped" for action in confirmations) == 4
+        assert all(
+            action.payload["source_message_id"] == "102"
+            for action in confirmations
+            if action.status == "pending"
+        )
         assert all(
             action.result.get("error_code") == "group_bot_confirmation_superseded"
             for action in confirmations
