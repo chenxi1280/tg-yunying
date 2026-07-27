@@ -10,7 +10,7 @@ from app.auth import get_challenge_target
 from app.database import SessionLocal
 from app.main import app
 from app.integrations.telegram import ChannelCommentSnapshot, ChannelMessageSnapshot, DeveloperAppCredentials, GroupMessageSnapshot, GroupSnapshot, OperationResult, SendResult, VerificationCodeSnapshot
-from app.models import AccountStatus, Action, AiDraft, AiGroupMessageMemory, AiUsageLedger, AuditLog, Campaign, DeveloperAppHealthStatus, FailureType, GroupContextMessage, ListenerSourceState, ManualOperationRecord, Material, MessageFingerprint, MessageTask, OperationTarget, OperationTaskAttempt, ReviewQueue, RuntimeMetricSnapshot, SchedulingSetting, SourceMediaAsset, TargetRuntimeSummary, Task, TaskRuntimeSummary, TaskStatus, TelegramDeveloperApp, Tenant, TgAccount, TgAccountOnlineState, TgAccountProfileSyncRecord, TgAccountSyncRecord, TgGroup, TgGroupAccount, TgLoginFlow, VerificationTask
+from app.models import AccountStatus, Action, AiDraft, AiGroupMessageMemory, AiUsageLedger, AuditLog, Campaign, DeveloperAppHealthStatus, FailureType, GroupBotAdmission, GroupContextMessage, ListenerSourceState, ManualOperationRecord, Material, MessageFingerprint, MessageTask, OperationTarget, OperationTaskAttempt, ReviewQueue, RuntimeMetricSnapshot, SchedulingSetting, SourceMediaAsset, TargetRuntimeSummary, Task, TaskRuntimeSummary, TaskStatus, TelegramDeveloperApp, Tenant, TgAccount, TgAccountOnlineState, TgAccountProfileSyncRecord, TgAccountSyncRecord, TgGroup, TgGroupAccount, TgLoginFlow, VerificationTask
 from app.services._common import _now
 from app.services.notifications import NotificationResult
 from app.services.task_center.listener_runtime import reset_listener_runtime_cache
@@ -46,6 +46,21 @@ def workflow_ai_active_pacing() -> dict:
             "manual_override": True,
         },
     }
+
+
+def mark_group_bot_admission_ready(group_id: int, account_id: int) -> None:
+    with SessionLocal() as session:
+        session.add(
+            GroupBotAdmission(
+                tenant_id=1,
+                group_id=group_id,
+                account_id=account_id,
+                state="group_bot_admission_ready",
+                completion_policy="explicit_bot_confirmation",
+                evidence_ref="pytest:admission-ready",
+            )
+        )
+        session.commit()
 
 
 def _ai_group_memory_payload(
@@ -3833,6 +3848,7 @@ def test_task_center_group_ai_chat_creates_and_dispatches_actions(monkeypatch):
         started = client.post(f"/api/tasks/{task['id']}/start", headers=headers)
         assert started.status_code == 200, started.text
         assert started.json()["status"] == "running"
+        mark_group_bot_admission_ready(group["id"], account["id"])
 
         drained = client.post("/api/worker/drain-once", headers=headers, json={"reason": "测试手动 drain"}).json()
         assert drained["processed"] >= 1
@@ -3987,6 +4003,7 @@ def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(monkeypatch):
         )
         assert created.status_code == 200, created.text
         task_id = created.json()["id"]
+        mark_group_bot_admission_ready(group["id"], account["id"])
 
         from app.services.task_center.service import drain_task_center
 
