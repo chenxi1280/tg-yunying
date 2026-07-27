@@ -91,7 +91,10 @@ from ..hard_hourly import (
     mark_plan_result,
     planning_rate as hard_hourly_planning_rate,
 )
-from ..legacy_anchor_rewrite import expire_legacy_anchor_rewritten_actions
+from ..legacy_anchor_rewrite import (
+    expire_incomplete_daily_contract_actions,
+    expire_legacy_anchor_rewritten_actions,
+)
 from ..pacing import current_hour_rounds, operation_intensity, schedule_times
 from ..payloads import SendMessagePayload, create_send_action
 from ..targets import group_from_reference
@@ -1450,6 +1453,8 @@ def prepare_open_actions_for_planning(session: Session, task: Task) -> int:
     config = {**(task.type_config or {}), "pacing_config": task.pacing_config or {}}
     config = _canonicalized_task_config(session, task, config)
     legacy_replanned = expire_legacy_anchor_rewritten_actions(session, task)
+    if _daily_coverage_enforced(config):
+        legacy_replanned += expire_incomplete_daily_contract_actions(session, task)
     legacy_replanned += _skip_legacy_hard_hourly_open_actions_for_daily_coverage_replan(session, task, config)
     group = group_from_reference(
         session,

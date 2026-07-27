@@ -225,6 +225,103 @@ def test_planner_keeps_ungenerated_blueprint_and_direct_check_in() -> None:
         assert current_provider.status == "pending"
 
 
+def test_daily_coverage_cleanup_replans_incomplete_mask_contract() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    with Session(engine) as session:
+        task = Task(
+            id="task-incomplete-daily-contract",
+            tenant_id=1,
+            name="日覆盖旧规划",
+            type="group_ai_chat",
+            status="running",
+        )
+        action = Action(
+            id="action-incomplete-daily-contract",
+            tenant_id=1,
+            task_id=task.id,
+            task_type="group_ai_chat",
+            action_type="send_message",
+            account_id=11,
+            status="pending",
+            scheduled_at=now_value,
+            payload={
+                "group_id": 7,
+                "coverage_ledger_id": "coverage-incomplete-daily-contract",
+                "account_mask_version": 1,
+                "account_mask_id": "",
+                "account_mask_snapshot_hash": "",
+                "content_source": "",
+            },
+        )
+        coverage = TaskAccountDailyCoverage(
+            id="coverage-incomplete-daily-contract",
+            tenant_id=1,
+            task_id=task.id,
+            group_id=7,
+            account_id=11,
+            coverage_date=now_value.date(),
+            state="reserved",
+            reserved_action_id=action.id,
+            targeted_at=now_value,
+        )
+        session.add_all([task, action, coverage])
+        session.commit()
+
+        cleanup = import_module(
+            "app.services.task_center.legacy_anchor_rewrite"
+        ).expire_incomplete_daily_contract_actions
+
+        assert cleanup(session, task) == 1
+        assert action.status == "skipped"
+        assert action.result["error_code"] == "daily_content_contract_replan"
+        assert coverage.state == "ready"
+        assert coverage.reserved_action_id is None
+
+
+def test_daily_coverage_cleanup_keeps_current_mask_contract() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        task = Task(
+            id="task-current-daily-contract",
+            tenant_id=1,
+            name="日覆盖当前规划",
+            type="group_ai_chat",
+            status="running",
+        )
+        action = Action(
+            id="action-current-daily-contract",
+            tenant_id=1,
+            task_id=task.id,
+            task_type="group_ai_chat",
+            action_type="send_message",
+            account_id=11,
+            status="pending",
+            scheduled_at=_now(),
+            payload={
+                "group_id": 7,
+                "coverage_ledger_id": "coverage-current-daily-contract",
+                "daily_group_target_id": "daily-target-current",
+                "account_mask_version": 1,
+                "account_mask_id": "mask-current",
+                "account_mask_snapshot_hash": "hash-current",
+                "content_source": "account_mask",
+                "mask_status": "active",
+            },
+        )
+        session.add_all([task, action])
+        session.commit()
+
+        cleanup = import_module(
+            "app.services.task_center.legacy_anchor_rewrite"
+        ).expire_incomplete_daily_contract_actions
+
+        assert cleanup(session, task) == 0
+        assert action.status == "pending"
+
+
 def test_dispatcher_rejects_legacy_rewrite_before_other_send_gates(monkeypatch) -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
