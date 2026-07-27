@@ -4111,7 +4111,10 @@ def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(monkeypatch):
         detail = task_detail_after_metrics(client, headers, task_id)
         if len(sends) <= first_context_send_count:
             make_task_send_actions_due(task_id)
-            assert dispatch_pending_task_actions(task_id) >= 1, workflow_runtime_debug(task_id)
+            dispatched = dispatch_pending_task_actions(task_id)
+            if dispatched < 1:
+                print("WORKFLOW_RUNTIME_DEBUG=" + json.dumps(workflow_runtime_debug(task_id), default=str))
+            assert dispatched >= 1
             detail = task_detail_after_metrics(client, headers, task_id)
         assert len(sends) > first_context_send_count
         second_cycle_sends = sends[first_context_send_count:]
@@ -5441,7 +5444,9 @@ def test_task_center_group_relay_continues_for_new_source_messages(monkeypatch):
         drain_task_center(SessionLocal, 1000)
         drain_task_center(SessionLocal, 1000)
         detail = task_detail_after_metrics(client, headers, task_id)
-        assert sends == ["第一条转发监听消息", "第二条转发监听消息"], workflow_runtime_debug(task_id)
+        if sends != ["第一条转发监听消息", "第二条转发监听消息"]:
+            print("WORKFLOW_RUNTIME_DEBUG=" + json.dumps(workflow_runtime_debug(task_id), default=str))
+        assert sends == ["第一条转发监听消息", "第二条转发监听消息"]
         assert detail["task"]["status"] == "running"
         assert detail["task"]["stats"]["success_count"] == 2
 
