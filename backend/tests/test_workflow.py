@@ -238,6 +238,52 @@ def compact_action_debug(actions: list[dict]) -> list[dict]:
     ]
 
 
+def workflow_runtime_debug(task_id: str) -> dict:
+    from app.services.task_center.planner_backlog import planner_backlog_snapshot
+
+    with SessionLocal() as session:
+        task = session.get(Task, task_id)
+        if task is None:
+            return {"task": None}
+        actions = list(
+            session.scalars(
+                select(Action)
+                .where(Action.task_id == task_id)
+                .order_by(Action.created_at.asc())
+            )
+        )
+        group_id = int((task.type_config or {}).get("target_group_id") or 0)
+        contexts = list(
+            session.scalars(
+                select(GroupContextMessage)
+                .where(GroupContextMessage.group_id == group_id)
+                .order_by(GroupContextMessage.id.asc())
+            )
+        ) if group_id else []
+        return {
+            "task": {
+                "status": task.status,
+                "next_run_at": str(task.next_run_at),
+                "last_error": task.last_error,
+                "stats": task.stats,
+            },
+            "backlog": planner_backlog_snapshot(session, task),
+            "actions": [
+                {
+                    "type": action.action_type,
+                    "status": action.status,
+                    "scheduled_at": str(action.scheduled_at),
+                    "result": action.result,
+                }
+                for action in actions
+            ],
+            "contexts": [
+                {"id": row.id, "content": row.content, "sent_at": str(row.sent_at)}
+                for row in contexts
+            ],
+        }
+
+
 AI_TERMINAL_QUALITY_ERRORS = {"duplicate_message", "ai_message_memory_missing"}
 AI_TERMINAL_GENERATION_STATUSES = {"duplicate_rejected"}
 
@@ -4065,7 +4111,7 @@ def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(monkeypatch):
         detail = task_detail_after_metrics(client, headers, task_id)
         if len(sends) <= first_context_send_count:
             make_task_send_actions_due(task_id)
-            assert dispatch_pending_task_actions(task_id) >= 1
+            assert dispatch_pending_task_actions(task_id) >= 1, workflow_runtime_debug(task_id)
             detail = task_detail_after_metrics(client, headers, task_id)
         assert len(sends) > first_context_send_count
         second_cycle_sends = sends[first_context_send_count:]
@@ -5395,7 +5441,7 @@ def test_task_center_group_relay_continues_for_new_source_messages(monkeypatch):
         drain_task_center(SessionLocal, 1000)
         drain_task_center(SessionLocal, 1000)
         detail = task_detail_after_metrics(client, headers, task_id)
-        assert sends == ["第一条转发监听消息", "第二条转发监听消息"]
+        assert sends == ["第一条转发监听消息", "第二条转发监听消息"], workflow_runtime_debug(task_id)
         assert detail["task"]["status"] == "running"
         assert detail["task"]["stats"]["success_count"] == 2
 
