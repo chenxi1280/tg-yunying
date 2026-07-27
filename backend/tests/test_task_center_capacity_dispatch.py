@@ -6062,6 +6062,39 @@ def test_planner_backlog_ignores_expired_hard_hourly_pending_actions():
 
 
 @pytest.mark.no_postgres
+def test_planner_backlog_excludes_open_actions_from_inactive_tasks():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        active = Task(id="task-active-backlog", tenant_id=1, name="active", type="group_relay", status="running")
+        completed = Task(id="task-completed-backlog", tenant_id=1, name="completed", type="group_relay", status="completed")
+        deleted = Task(
+            id="task-deleted-backlog",
+            tenant_id=1,
+            name="deleted",
+            type="group_relay",
+            status="running",
+            deleted_at=now_value,
+        )
+        session.add_all([Tenant(id=1, name="default"), active, completed, deleted])
+        session.add_all(
+            [
+                Action(id="active-open", tenant_id=1, task_id=active.id, task_type=active.type, action_type="send_message", status="pending", scheduled_at=now_value, payload={}),
+                Action(id="completed-open", tenant_id=1, task_id=completed.id, task_type=completed.type, action_type="send_message", status="pending", scheduled_at=now_value, payload={}),
+                Action(id="deleted-open", tenant_id=1, task_id=deleted.id, task_type=deleted.type, action_type="send_message", status="pending", scheduled_at=now_value, payload={}),
+            ]
+        )
+        session.commit()
+
+        snapshot = planner_backlog_snapshot(session, active)
+
+    assert snapshot["global_pending"] == 1
+    assert snapshot["task_pending"] == 1
+
+
+@pytest.mark.no_postgres
 def test_planner_backlog_does_not_materialize_open_actions():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

@@ -49,7 +49,8 @@ AI 活群冻结日覆盖账本
   -> daily_fulfillment 投影（confirmed / ready / reserved / dispatcher_lag / unknown / blocked）
   -> full_shortfall / valid_future_open_cover / overdue_open / unknown_hold / blocked_shortfall / required_new 决策审计
   -> CAS coverage reservation -> 持久化 AiCoverageVariationIntent -> 创建同 action_id 的 Action
-  -> Planner backlog：planner_capacity_insufficient + next_decision_at（保留 ready debt）
+  -> Planner backlog：仅聚合 running + 未删除父任务的 open Action；终态/暂停/删除任务遗留 Action 不占 max_pending_global
+  -> planner_capacity_insufficient + next_decision_at（保留 ready debt）
   -> 批量 generation contract audit
       -> 契约失败：terminal Action + release reservation + generation_contract blocker
       -> 经批准的 provider / prompt-contract / parser 版本修复后才重新 ready

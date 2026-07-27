@@ -58,10 +58,14 @@ def _active_backlog_metrics(session: Session, filters: list[Any], now_value: dat
     hard_target = Action.payload["hard_hourly_target"].as_boolean().is_(True)
     hard_filter = (Action.action_type == "send_message") & hard_target
     normal_count, normal_oldest = session.execute(
-        select(func.count(Action.id), func.min(Action.scheduled_at)).where(*filters, ~hard_filter)
+        select(func.count(Action.id), func.min(Action.scheduled_at))
+        .join(Task, Task.id == Action.task_id)
+        .where(*filters, Task.status == "running", Task.deleted_at.is_(None), ~hard_filter)
     ).one()
     hard_rows = session.execute(
-        select(Action.scheduled_at, Action.payload).where(*filters, hard_filter)
+        select(Action.scheduled_at, Action.payload)
+        .join(Task, Task.id == Action.task_id)
+        .where(*filters, Task.status == "running", Task.deleted_at.is_(None), hard_filter)
     ).all()
     active_hard_times = [
         scheduled_at
