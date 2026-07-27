@@ -13,11 +13,19 @@ from .search_join_facts import has_confirmed_click_fact
 
 
 JISOU_USERNAME = "jisou"
-SELECTOR_MISSING_ERROR_CODE = "jisou_group_selector_missing"
 SOURCE_ACTION_TYPE = "search_join"
 LOOKBACK_WINDOW = timedelta(hours=24)
-SELECTOR_MISSING_OUTCOME = "selector_missing"
 TARGET_CLICK_OUTCOME = "target_click"
+
+# PRD §2.19.3 24h 排除规则：以下错误码触发后账号 24h 排除，
+# jisou_group_selector_missing 不自动排除（单独评估协议样本是否过期）。
+EXCLUSION_ERROR_CODES = frozenset(
+    {
+        "jisou_session_state_deviated",
+        "jisou_image_verification_required",
+        "jisou_image_verification_failed",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -39,7 +47,7 @@ def select_jisou_selector_candidates(
     outcomes = _latest_account_outcomes(session, task, now_value)
     excluded_ids = {
         account_id for account_id, outcome in outcomes.items()
-        if outcome == SELECTOR_MISSING_OUTCOME
+        if outcome != TARGET_CLICK_OUTCOME and _outcome_excluded(outcome)
     }
     eligible = tuple(account for account in accounts if account.id not in excluded_ids)
     verified_ids = {
@@ -48,6 +56,10 @@ def select_jisou_selector_candidates(
     }
     ordered = tuple(sorted(eligible, key=lambda account: account.id not in verified_ids))
     return JisouSelectorCandidates(ordered, len(accounts) - len(eligible))
+
+
+def _outcome_excluded(outcome: str) -> bool:
+    return outcome in EXCLUSION_ERROR_CODES
 
 
 def _latest_account_outcomes(session: Session, task: Task, now_value: datetime) -> dict[int, str]:
@@ -76,8 +88,9 @@ def _action_outcome(action: Action) -> str:
     result = action.result if isinstance(action.result, dict) else {}
     if has_confirmed_click_fact(result):
         return TARGET_CLICK_OUTCOME
-    if result.get("error_code") == SELECTOR_MISSING_ERROR_CODE:
-        return SELECTOR_MISSING_OUTCOME
+    error_code = str(result.get("error_code") or "")
+    if error_code in EXCLUSION_ERROR_CODES or error_code == "jisou_group_selector_missing":
+        return error_code
     return ""
 
 

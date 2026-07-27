@@ -1917,3 +1917,11 @@ AI 活跃群联动 126 个账号待冷却 / 64 个已进入 ready pool
 |2026-07-23|v0.34|Codex（严格日目标反饥饿）|线上证实 AI 硬小时队列可把到期 source 推到数百位之后，故领取顺序调整为：目标准入重试、search membership child、严格 source、AI 硬小时、普通批量；不改变任何 Telegram 风控或日预算边界。|
 |2026-07-24|v0.35|Codex（极搜账号 selector 能力分层）|当同一任务的极搜账号呈现不同 selector 回复结构时，按最近 24 小时的真实 source 回执分层：最新回执为 `jisou_group_selector_missing` 的账号不再参与新 source 排程，最新已确认目标点击的账号优先，未验证账号其次；没有可用账号时显式阻断，不回退到综合结果或已失败账号。|
 |2026-07-24|v0.36|Codex（严格日目标可执行小时加权）|每日点击目标的曲线分母只统计截止时间前且未被静默窗口完全覆盖的剩余本地小时；边界小时存在可执行片段时保留其权重。不会以截止后或静默小时稀释补量，也不会因此突破既有时间、容量或 Gateway 硬门禁。|
+|2026-07-27|v0.37|Codex（搜索点击可靠性修复）|同步视觉模型调用移出 Telethon 共享 event loop；membership UAS 补偿确认复用 RecoveryClaim 并遵守 next_probe_at；严格日产能使用 24h 排除后的真实候选并应用 captcha_trigger_rate；任务 pacing_config 承载账号小时上限。|
+
+## 运行时可靠性补充（2026-07-27）
+
+- 图片算式验证码的同步视觉模型调用必须移出 Telethon 持久化共享 event loop，避免单次模型超时阻塞其他账号。
+- `search_join_membership` 的 `unknown_after_send` 补偿确认必须使用 RecoveryClaim 原子领取，并遵守 `unknown_membership_reprobe_next_at`。
+- 严格日产能在 `jisou_selector_accounts` 24h 排除后计算，并应用 `captcha_trigger_rate` 折损。
+- 账号小时上限由任务 `pacing_config.per_account_hourly_action_limit` 配置，只统计当前任务时区小时窗口。

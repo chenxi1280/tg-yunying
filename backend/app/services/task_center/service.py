@@ -93,10 +93,13 @@ from .search_rank_deboost_reservations import (
     reservation_for_action,
     reserve_click,
 )
-from .payloads import SearchRankDeboostPayload
+from .payloads import SearchRankDeboostPayload, SearchJoinMembershipPayload
 from .search_join_membership import (
     MEMBERSHIP_ACTION_TYPE as SEARCH_JOIN_MEMBERSHIP_ACTION_TYPE,
+    mark_source_membership_failed,
+    mark_source_membership_observed,
     rebind_membership_action_to_source_account,
+    source_action_for_membership,
 )
 from .search_join_daily_capacity import (
     configured_capacity_window,
@@ -1269,6 +1272,7 @@ def _validate_strict_search_join_daily_capacity(
         candidate_account_count=len(candidates),
         allow_repeat=bool(type_config.get("allow_same_account_repeat_application")),
         keyword_count=len(type_config.get("keyword_hashes") or []),
+        captcha_trigger_rate=float(config.get("captcha_trigger_rate") or 0.0),
     )
     capacity = strict_daily_capacity(
         task_id,
@@ -3314,6 +3318,7 @@ def _recover_stale_executing_actions(session: Session, *, timeout_minutes: int =
         for claim in claims
     )
     recovered += _recover_existing_unknown_membership_actions(session, now, limit=_membership_reprobe_limit(limit))
+    recovered += _recover_existing_unknown_search_join_membership_actions(session, now, limit=_membership_reprobe_limit(limit))
     return recovered
 
 
@@ -3628,6 +3633,220 @@ def _recover_existing_unknown_membership_actions(session: Session, now: datetime
         _recover_claimed_unknown_action(session, claim, now=now, reprobed_identities=reprobed_identities)
         for claim in claims
     )
+
+
+def _recover_existing_unknown_search_join_membership_actions(
+    session: Session,
+    now: datetime,
+    *,
+    limit: int,
+) -> int:
+    """PRD §2.20.2 RC-3: search_join_membership UAS 补偿确认 + 10 分钟终态关闭。
+
+    search_join_membership 不在 MEMBERSHIP_ACTION_TYPES 中（那两个是 ensure_target_membership
+    和 ensure_channel_membership），需要独立的补偿确认路径：
+    1. 超过 confirmation_timeout（默认 10 分钟）未确认 → 写 membership_confirmation_timeout 终态关闭。
+    2. 否则调用 gateway.probe_search_join_membership 重新查询：
+       - 成功 (membership_observed) → mark source membership_observed，action.status=success。
+       - 失败 → mark source membership_failed，action.status=failed。
+       - pending → 不处理，等待下一轮 reprobe。
+    """
+    claims = claim_recovery_actions(
+        session,
+        conditions=(
+            Action.status == "unknown_after_send",
+            Action.action_type == SEARCH_JOIN_MEMBERSHIP_ACTION_TYPE,
+            _search_join_membership_reprobe_due_clause(now),
+        ),
+        order_by=(Action.executed_at.asc().nullsfirst(), Action.scheduled_at.asc(), Action.id.asc()),
+        now=now,
+        limit=_recovery_batch_limit(limit),
+    )
+    return sum(
+        _recover_claimed_search_join_membership_action(session, claim, now=now)
+        for claim in claims
+    )
+
+
+def _search_join_membership_reprobe_due_clause(now: datetime):
+    next_at = Action.result["unknown_membership_reprobe_next_at"].as_string()
+    return or_(next_at.is_(None), next_at <= now.isoformat())
+
+
+def _recover_claimed_search_join_membership_action(
+    session: Session,
+    claim: RecoveryClaim,
+    *,
+    now: datetime,
+) -> int:
+    action = session.get(Action, claim.action_id)
+    if not recovery_claim_owned(action, claim):
+        session.rollback()
+        return 0
+    recovered = _recover_search_join_membership_action(session, action, now=now)
+    if not recovery_claim_owned(action, claim):
+        session.rollback()
+        return 0
+    release_recovery_claim(action, claim)
+    session.commit()
+    return recovered
+
+
+def _recover_search_join_membership_action(session: Session, action: Action, *, now: datetime) -> int:
+    try:
+        payload = SearchJoinMembershipPayload.model_validate(action.payload or {})
+    except ValueError:
+        _finalize_search_join_membership_confirmation_timeout(session, action, now, reason="payload_invalid")
+        session.commit()
+        return 1
+    source = source_action_for_membership(session, action, payload)
+    if source is None:
+        _finalize_search_join_membership_confirmation_timeout(session, action, now, reason="source_action_invalid")
+        session.commit()
+        return 1
+    if _search_join_membership_confirmation_overdue(action, now):
+        _finalize_search_join_membership_confirmation_timeout(session, action, now, reason="confirmation_timeout")
+        _propagate_search_join_membership_timeout_to_source(source, action, now)
+        session.commit()
+        return 1
+    account = session.get(TgAccount, action.account_id) if action.account_id else None
+    if account is None or account.deleted_at is not None:
+        _finalize_search_join_membership_confirmation_timeout(session, action, now, reason="account_unavailable")
+        _propagate_search_join_membership_timeout_to_source(source, action, now)
+        session.commit()
+        return 1
+    probe = getattr(gateway, "probe_search_join_membership", None)
+    if not callable(probe):
+        return 0
+    credentials = credentials_for_account(session, account)
+    try:
+        result = probe(
+            account.id,
+            payload.model_dump(mode="json"),
+            account.session_ciphertext,
+            credentials,
+        )
+    except (TimeoutError, ConnectionError) as exc:
+        _defer_search_join_membership_reprobe(action, now, error=str(exc) or exc.__class__.__name__)
+        session.commit()
+        return 0
+    if not isinstance(result, dict):
+        _defer_search_join_membership_reprobe(action, now, error="probe_result_invalid")
+        session.commit()
+        return 0
+    action.result = {**(action.result or {}), **result}
+    if result.get("success") and result.get("join_status") == "membership_observed":
+        _finalize_search_join_membership_observed(session, action, source, result, now)
+        session.commit()
+        return 1
+    if result.get("join_status") in {"join_request_pending", "membership_pending"}:
+        _defer_search_join_membership_reprobe(action, now)
+        session.commit()
+        return 0
+    _finalize_search_join_membership_failed(session, action, source, result, now)
+    session.commit()
+    return 1
+
+
+def _search_join_membership_confirmation_overdue(action: Action, now: datetime) -> bool:
+    settings = get_settings()
+    timeout_seconds = int(getattr(settings, "search_join_membership_confirmation_timeout_seconds", 600) or 600)
+    reference = action.executed_at or action.scheduled_at or action.created_at
+    if reference is None:
+        return False
+    try:
+        elapsed = (as_beijing(now) - as_beijing(reference)).total_seconds()
+    except (TypeError, ValueError):
+        return False
+    return elapsed >= timeout_seconds
+
+
+def _finalize_search_join_membership_confirmation_timeout(
+    session: Session,
+    action: Action,
+    now: datetime,
+    *,
+    reason: str,
+) -> None:
+    """PRD §2.20.2: UAS 补偿确认超时终态关闭，写 membership_confirmation_timeout。"""
+    action.status = "failed"
+    action.executed_at = now
+    action.lease_owner = ""
+    action.lease_expires_at = None
+    action.result = {
+        **dict(action.result or {}),
+        "success": False,
+        "error_code": "membership_confirmation_timeout",
+        "error_message": f"search_join_membership UAS 补偿确认超时（{reason}），已终态关闭",
+        "membership_confirmation_timeout": True,
+        "membership_confirmation_timeout_reason": reason,
+        "membership_confirmation_timeout_at": now.isoformat(),
+    }
+
+
+def _propagate_search_join_membership_timeout_to_source(
+    source: Action,
+    action: Action,
+    now: datetime,
+) -> None:
+    source_result = dict(source.result or {})
+    source_result.update(
+        {
+            "success": False,
+            "join_status": "membership_confirmation_timeout",
+            "membership_action_id": action.id,
+            "membership_failed_at": now.isoformat(),
+            "error_code": "membership_confirmation_timeout",
+            "error_message": "搜索目标群准入补偿确认超时，已终态关闭",
+        }
+    )
+    source.status = "failed"
+    source.executed_at = now
+    source.result = source_result
+
+
+def _finalize_search_join_membership_observed(
+    session: Session,
+    action: Action,
+    source: Action,
+    result: dict,
+    now: datetime,
+) -> None:
+    action.status = "success"
+    action.executed_at = now
+    action.lease_owner = ""
+    action.lease_expires_at = None
+    mark_source_membership_observed(source, action, result, observed_at=now)
+
+
+def _finalize_search_join_membership_failed(
+    session: Session,
+    action: Action,
+    source: Action,
+    result: dict,
+    now: datetime,
+) -> None:
+    action.status = "failed"
+    action.executed_at = now
+    action.lease_owner = ""
+    action.lease_expires_at = None
+    mark_source_membership_failed(source, action, result, observed_at=now)
+
+
+def _defer_search_join_membership_reprobe(action: Action, now: datetime, *, error: str = "") -> None:
+    """PRD §2.20.2: pending 状态或临时错误时延后下一轮 reprobe，避免长期挂起。"""
+    settings = get_settings()
+    cooldown_seconds = int(getattr(settings, "search_join_membership_confirmation_timeout_seconds", 600) or 600)
+    next_probe_at = now + timedelta(seconds=min(cooldown_seconds, 120))
+    deferred = {
+        **dict(action.result or {}),
+        "unknown_membership_reprobe_status": "timeout" if error else "pending",
+        "unknown_membership_reprobe_at": now.isoformat(),
+        "unknown_membership_reprobe_next_at": next_probe_at.isoformat(),
+    }
+    if error:
+        deferred["unknown_membership_reprobe_error"] = error
+    action.result = deferred
 
 
 def _recover_claimed_unknown_action(

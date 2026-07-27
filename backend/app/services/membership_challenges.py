@@ -4,7 +4,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -27,6 +27,13 @@ CN_NUMBER_CHARS = "零〇一二两三四五六七八九十"
 ARITHMETIC_PATTERN = re.compile(rf"(?P<left>\d{{1,3}}|[{CN_NUMBER_CHARS}]{{1,4}})\s*(?P<op>[+\-＋－]|加|减)\s*(?P<right>\d{{1,3}}|[{CN_NUMBER_CHARS}]{{1,4}})")
 CODE_PATTERN = re.compile(r"(?:验证码|code|captcha|请输入)[^\d]{0,16}(?P<code>\d{3,8})", re.IGNORECASE)
 CN_DIGITS = {"零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+
+# PRD §2.19.2: 极搜图片算式验证码识别的固定 prompt。
+SEARCH_JOIN_IMAGE_VERIFICATION_PROMPT = (
+    "识别图片中的算式并计算结果，输出 JSON：{\"answer\":数字,\"confidence\":0到1}。"
+    "answer 必须是算式计算后的正整数。只输出紧凑 JSON，不要解释。"
+)
+SearchJoinImageVerificationSolver = Callable[[bytes, str, list[str]], "tuple[str, float] | None"]
 
 
 @dataclass(frozen=True)
@@ -481,3 +488,37 @@ def _image_verification_failure(
 def _question_hash(task: VerificationTask, image_message: dict[str, Any]) -> str:
     raw = "|".join([str(task.id), task.detected_reason or "", str(image_message.get("media_fingerprint") or "")])
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def build_search_join_image_verification_solver(
+    session: Session,
+) -> SearchJoinImageVerificationSolver | None:
+    """PRD §2.19.2: 构造极搜图片算式验证码识别 solver。
+
+    在 dispatcher 服务层预解析 provider + credentials，返回一个无 DB 依赖的 callable，
+    供 search_join 集成层在 telethon 会话内调用。provider 全部不可用时返回 None，
+    由调用方写 jisou_image_verification_failed。
+    """
+    provider = _image_verification_provider(session)
+    if provider is None:
+        return None
+    credentials = ai_provider_credentials(provider)
+
+    def solver(image_bytes: bytes, mime_type: str, candidate_answers: list[str]) -> tuple[str, float] | None:
+        if not image_bytes:
+            return None
+        try:
+            result = ai_gateway.solve_image_verification(
+                credentials,
+                image_bytes,
+                mime_type or "image/png",
+                prompt=SEARCH_JOIN_IMAGE_VERIFICATION_PROMPT,
+            )
+        except Exception:  # noqa: BLE001 - minimax 抛错或返回空都视为 None，由调用方重试或写 failed。
+            return None
+        answer = str(result.answer or "").strip()
+        if not answer:
+            return None
+        return answer, float(result.confidence or 0.0)
+
+    return solver

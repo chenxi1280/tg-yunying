@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import unicodedata
 from dataclasses import dataclass
 from typing import Any, Iterable
@@ -21,6 +22,12 @@ CONTROLLED_TEXT_ENUMS = {
 }
 ALLOWED_BUTTON_TYPES = frozenset({"callback_data", "telegram_url", "external_http_url", "unknown"})
 ALLOWED_BUTTON_EFFECTS = frozenset({"unknown", "navigate_only", "join_candidate", "external"})
+
+# PRD §2.19.1: verification_image_page 是独立相位，需 MessageMediaPhoto + 人机验证文本 + ≥8 个 callback_data 数字按钮。
+VERIFICATION_IMAGE_PAGE = "verification_image_page"
+VERIFICATION_IMAGE_MIN_DIGIT_BUTTONS = 8
+VERIFICATION_IMAGE_TEXT_MARKERS = ("人机验证", "计算结果", "captcha")
+_DIGIT_BUTTON_TEXT_PATTERN = re.compile(r"^\d+$")
 
 
 @dataclass(frozen=True)
@@ -70,6 +77,45 @@ def classify_jisou_page(
             if classification is not None:
                 return classification
     return _unknown_page()
+
+
+def classify_jisou_page_with_media(
+    *,
+    profile: object,
+    message_text: str,
+    buttons: Iterable[Any],
+    has_photo: bool = False,
+) -> ProtocolPageClassification:
+    """PRD §2.19.1: 先检测 verification_image_page（需 MessageMediaPhoto + 人机验证文本 + ≥8 数字按钮），
+    命中则走图片验证码识别分支；否则回落到基于协议指纹的 classify_jisou_page。"""
+    button_list = list(buttons)
+    if has_photo and _is_verification_image_page(message_text, button_list):
+        digit_positions = frozenset(
+            _button_position(button)
+            for button in button_list
+            if _is_digit_callback_button(button)
+        )
+        return ProtocolPageClassification(
+            page_phase=VERIFICATION_IMAGE_PAGE,
+            approved_button_positions=digit_positions,
+            selector_positions=frozenset(),
+        )
+    return classify_jisou_page(profile=profile, message_text=message_text, buttons=button_list)
+
+
+def _is_verification_image_page(message_text: str, buttons: list[Any]) -> bool:
+    normalized = normalize_visible_text(message_text)
+    if not any(normalize_visible_text(marker) in normalized for marker in VERIFICATION_IMAGE_TEXT_MARKERS):
+        return False
+    digit_count = sum(1 for button in buttons if _is_digit_callback_button(button))
+    return digit_count >= VERIFICATION_IMAGE_MIN_DIGIT_BUTTONS
+
+
+def _is_digit_callback_button(button: Any) -> bool:
+    if _button_value(button, "button_type") != "callback_data":
+        return False
+    text = str(_button_value(button, "text") or "").strip()
+    return bool(text) and bool(_DIGIT_BUTTON_TEXT_PATTERN.match(text))
 
 
 def normalize_visible_text(value: object) -> str:
@@ -270,8 +316,11 @@ def _unknown_page() -> ProtocolPageClassification:
 
 __all__ = [
     "ProtocolPageClassification",
+    "VERIFICATION_IMAGE_PAGE",
+    "VERIFICATION_IMAGE_MIN_DIGIT_BUTTONS",
     "approved_protocol_profile",
     "classify_jisou_page",
+    "classify_jisou_page_with_media",
     "is_jisou_bot",
     "normalize_visible_text",
     "protocol_profile_is_approved",

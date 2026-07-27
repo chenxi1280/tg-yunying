@@ -184,26 +184,24 @@ dispatch_unserved_strict_classes
 | --- | --- |
 | search_category_page | 允许按当前批准的群聊 selector 进入群聊结果页 |
 | group_result_page | 允许精确目标匹配、分页和目标点击 |
-| hot_list_page | 进入一次受控同机器人会话重置，不得直接查找群聊 selector |
-| verification_page | 写 bot_human_verification_required，停止 Action 并告警 |
-| unknown_page | 写 jisou_protocol_page_unknown，不点击任何未知 button |
+| hot_list_page | PRD §2.19: 直接写 jisou_session_state_deviated，账号 24h 排除，不尝试重置 |
+| verification_page | 写 bot_human_verification_required，停止 Action 并告警；PRD §2.19.2 区分图片算式验证码（verification_image_page）走 minimax 识别 |
+| unknown_page | 写 jisou_session_state_deviated，账号 24h 排除，不点击任何未知 button |
 
-### 6.2 受控会话重置
+### 6.2 热搜页处置（PRD §2.19 已更新）
 
-当 `page_phase=hot_list_page` 时，同一 source Action 只允许执行一次以下同机器人重置序列：
+当 `page_phase=hot_list_page` 时，PRD §2.19 已禁止受控会话重置（`/start` + 重发关键词线上验证不可行，极搜把关键词当文本回显不执行搜索）。当前处置：
 
-~~~text
-发送 /start
-  -> 等待响应
-  -> 发送原关键词
-  -> 再次分类 page_phase
-~~~
+- 直接写 `jisou_session_state_deviated`，账号 24h 排除；
+- 不得点击 热搜排行榜 页面中的外部 URL、未知 callback 或 群组导航 外跳链接；
+- 不得将该结果写成 `jisou_group_selector_missing`；
+- 不得发送 `/start` 或重发关键词作为恢复手段。
 
-执行重置前必须以 `action_id + recovery_kind=hot_list_reset` 在 `SearchJoinProtocolTrace`（或等价恢复账本）中原子创建唯一记录并 CAS 标记 `reset_started`；该记录必须携带批准的 protocol sample version。重复投递、worker 重启、超时恢复或同一 Action 的重试看到既有记录后，不得再次发送 `/start`，只可读取已有恢复结果或收口为 `jisou_session_state_deviated`。没有匹配的已批准样本版本时，重置不得执行，写 `jisou_protocol_page_unknown`。
+只有已经确认是 search_category_page，且没有协议样本批准的群聊 selector 时，才写 jisou_group_selector_missing。该错误不触发账号 24 小时排除，只用于协议样本复核；`jisou_session_state_deviated`、`jisou_image_verification_required` 和 `jisou_image_verification_failed` 按主 PRD §2.19.3 触发账号 24 小时排除。
 
-重置后仍不是 `search_category_page` 或 `group_result_page` 时，Action 终态为 `jisou_session_state_deviated`。不得点击 热搜排行榜 页面中的外部 URL、未知 callback 或 群组导航 外跳链接；不得将该结果写成 `jisou_group_selector_missing`。
+账号级小时频控由任务 `pacing_config.per_account_hourly_action_limit` 配置，`0` 表示不限制。小时计数只统计当前任务时区小时窗口内的 search_join source Action，不得让更早窗口遗留的 pending Action 永久占用当前小时额度。
 
-只有已经确认是 search_category_page，且没有协议样本批准的群聊 selector 时，才写 jisou_group_selector_missing。该错误才进入当前账号的 selector_missing 可用性排除；jisou_session_state_deviated 只按正常账号冷却和后续协议复核处理，不能误伤为 24 小时 selector 不可用。
+严格日产能必须在极搜 24 小时账号排除后计算，公式中的有效账号数使用本轮真实 selector 候选数；账号 source capacity 还必须乘以 `1 - captcha_trigger_rate`。`daily_fulfillment.effective_account_count` 必须记录真实候选数，不能从静态配置回填。
 
 ### 6.3 协议样本与审计
 
@@ -312,7 +310,7 @@ daily_outcome_preview
 | 旧 Window Reservation 对应 Action 已终态、暂停、删除或延后 | Allocation 前只回收无“运行中任务 + 到期 pending Action”的未领取槽位，写 unclaimed_action_no_longer_due；仍有效的严格 Reservation 保留，新到期任务可以获得回收后的份额 |
 | 同时存在严格搜索与 AI hard_hourly | 二者均有持久 Window / Reservation；无长期 pending 饥饿；容量不足时双方收到 shared_dispatch_capacity_insufficient |
 | 已点击 child 与新 source | child 先获得自己的严格份额，且不改变 source 的授权槽位 |
-| 热搜排行榜页重复投递或恢复 | hot_list_reset 账本唯一，最多发送一次 /start；仍偏离时写 jisou_session_state_deviated，零未知 button 点击 |
+| 热搜排行榜页重复投递或恢复 | PRD §2.19 已禁止热搜页重置（线上验证不可行）；hot_list_page 直接写 jisou_session_state_deviated，账号 24h 排除，零未知 button 点击 |
 | 正确分类页无 selector | 才写 jisou_group_selector_missing；未知文本不以原文持久化 |
 | 验证页面 | 写 bot_human_verification_required，不误报 selector 缺失 |
 | 待审批 | 仍为 membership_pending，不增加 membership_observed |

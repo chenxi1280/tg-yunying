@@ -122,7 +122,24 @@ def build_plan(session: Session, task: Task) -> int:
         enforce_capacity=False,
         scan_all_candidates=True,
     )
-    strict_capacity = _remaining_strict_daily_capacity(session, task, config, accounts, now_value, pacing_stats)
+    configured_account_count = len(accounts)
+    selector_candidates = select_jisou_selector_candidates(
+        session,
+        task,
+        accounts,
+        bot_username=bot_username,
+        now_value=now_value,
+    )
+    effective_accounts = list(selector_candidates.accounts)
+    _record_planner_account_selection_warning(task, configured_account_count, len(effective_accounts))
+    strict_capacity = _remaining_strict_daily_capacity(
+        session,
+        task,
+        config,
+        effective_accounts,
+        now_value,
+        pacing_stats,
+    )
     _record_strict_capacity_snapshot(task, target_progress, strict_capacity)
     if _strict_daily_target_is_impossible(task, target_progress, strict_capacity):
         return _record_strict_capacity_blocked(task, target_progress, strict_capacity, pacing_stats)
@@ -178,16 +195,9 @@ def build_plan(session: Session, task: Task) -> int:
     )
     created = 0
     blockers: dict[str, int] = {}
-    selector_candidates = select_jisou_selector_candidates(
-        session,
-        task,
-        accounts,
-        bot_username=bot_username,
-        now_value=now_value,
-    )
     if selector_candidates.excluded_count:
         blockers["jisou_group_selector_account_excluded"] = selector_candidates.excluded_count
-    accounts = list(selector_candidates.accounts)
+    accounts = effective_accounts
     if not accounts:
         task.last_error = "极搜群聊 selector 在候选账号上均不可用"
         return _record_hourly(
@@ -744,6 +754,7 @@ def _remaining_strict_daily_capacity(
         candidate_account_count=len(accounts),
         allow_repeat=bool((task.type_config or {}).get("allow_same_account_repeat_application")),
         keyword_count=len(config.get("keyword_hashes") or []),
+        captcha_trigger_rate=float(config.get("captcha_trigger_rate") or 0.0),
     )
     remaining_account_capacity = max(0, account_capacity - pacing_stats.task_daily_action_count)
     timezone = ZoneInfo(task.timezone or "Asia/Shanghai")
@@ -824,6 +835,10 @@ def _record_strict_capacity_snapshot(
     daily_outcome = "met" if target > 0 and confirmed >= target else "blocked" if blocked else "at_risk"
     stats = dict(task.stats or {})
     search_stats = dict(stats.get("search_join_stats") or {})
+    # PRD §2.20.3 RC-6: 产能预判扩展字段，写入 per_account_daily_action_limit、验证码触发率预估、
+    # 有效账号数，便于任务详情显示和 blocker 审计。验证码触发率由产品在 pacing_config 配置。
+    config = _runtime_config(task)
+    per_account_daily_action_limit = int(config.get("per_account_daily_action_limit") or 0)
     search_stats["daily_fulfillment"] = {
         **capacity.as_dict(),
         "daily_click_target_count": target,
@@ -832,12 +847,36 @@ def _record_strict_capacity_snapshot(
         "remaining_click_slots": int(getattr(target_progress, "remaining_slot_count", 0) or 0),
         "capacity_feasible": capacity_feasible,
         "daily_outcome": daily_outcome,
+        "per_account_daily_action_limit": per_account_daily_action_limit,
+        "captcha_trigger_rate": capacity.captcha_trigger_rate,
+        "effective_account_count": capacity.effective_account_count,
         **({"blocker_code": "daily_target_capacity_insufficient"} if blocked else {}),
     }
     stats["search_join_stats"] = search_stats
     task.stats = stats
     if not blocked and task.last_error == "daily_target_capacity_insufficient":
         task.last_error = ""
+
+
+def _record_planner_account_selection_warning(
+    task: Task,
+    configured_account_count: int,
+    effective_account_count: int,
+) -> None:
+    """PRD §2.20.3 RC-6: 实际候选账号数 < 配置候选账号数 50% 时写 planner_account_selection_narrow 告警。"""
+    if configured_account_count <= 0:
+        return
+    narrow = effective_account_count < configured_account_count * 0.5
+    stats = dict(task.stats or {})
+    search_stats = dict(stats.get("search_join_stats") or {})
+    account_selection = {
+        "configured_account_count": configured_account_count,
+        "effective_account_count": effective_account_count,
+        "planner_account_selection_narrow": bool(narrow),
+    }
+    search_stats["account_selection"] = account_selection
+    stats["search_join_stats"] = search_stats
+    task.stats = stats
 
 
 def _block(task: Task, code: str, message: str) -> int:
