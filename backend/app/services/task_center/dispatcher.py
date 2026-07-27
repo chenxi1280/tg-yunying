@@ -2211,7 +2211,7 @@ def _reserve_group_send_attempt(
         _defer_group_send_for_limit(action, block)
         session.commit()
         return None
-    reserve_group_send_slot(group, _now())
+    reserve_group_send_slot(group)
     attempt = _begin_execution_attempt(session, action, context.account)
     _mark_executing(action)
     _mark_gateway_call_started(session, attempt, commit=False)

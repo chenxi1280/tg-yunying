@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 from sqlalchemy import create_engine
@@ -444,9 +444,9 @@ def test_dual_read_records_action_diagnostic_and_audit_without_blocking():
 def test_group_attempt_marks_gateway_started_before_releasing_target_lock(monkeypatch):
     from app.services.task_center import group_send_limits
 
-    now_value = datetime(2026, 7, 24, 12, 0, 0)
-    monkeypatch.setattr(dispatcher, "_now", lambda: now_value)
-    monkeypatch.setattr(group_send_limits, "_now", lambda: now_value)
+    policy_now = datetime(2026, 7, 24, 12, 0, 0)
+    monkeypatch.setattr(dispatcher, "_now", lambda: policy_now + timedelta(minutes=5))
+    monkeypatch.setattr(group_send_limits, "_now", lambda: policy_now)
     with _session() as session:
         session.add(Tenant(id=1, name="t"))
         account = TgAccount(id=5, tenant_id=1, display_name="发送号", phone_masked="+861***0005", status="在线")
@@ -460,7 +460,7 @@ def test_group_attempt_marks_gateway_started_before_releasing_target_lock(monkey
             action_type="send_message",
             account_id=5,
             status="pending",
-            scheduled_at=datetime(2026, 7, 24, 12, 0, 0),
+            scheduled_at=policy_now,
             payload={
                 "group_id": 5,
                 "target_operation_target_id": 5,
@@ -491,7 +491,7 @@ def test_group_attempt_marks_gateway_started_before_releasing_target_lock(monkey
         assert stored.status == "gateway_call_started"
         assert stored.gateway_call_started_at is not None
         assert session.get(Action, action.id).status == "executing"
-        assert session.get(TgGroup, group.id).next_group_send_slot_at == datetime(2026, 7, 24, 12, 1, 0)
+        assert session.get(TgGroup, group.id).next_group_send_slot_at == policy_now + timedelta(minutes=1)
 
 
 def test_manual_send_rejects_cross_tenant_target_before_gateway():
