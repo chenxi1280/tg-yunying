@@ -10,10 +10,14 @@ from app.auth import get_challenge_target
 from app.database import SessionLocal
 from app.main import app
 from app.integrations.telegram import ChannelCommentSnapshot, ChannelMessageSnapshot, DeveloperAppCredentials, GroupMessageSnapshot, GroupSnapshot, OperationResult, SendResult, VerificationCodeSnapshot
-from app.models import AccountStatus, Action, AiDraft, AiGroupMessageMemory, AiUsageLedger, AuditLog, Campaign, DeveloperAppHealthStatus, FailureType, GroupBotAdmission, GroupContextMessage, ListenerSourceState, ManualOperationRecord, Material, MessageFingerprint, MessageTask, OperationTarget, OperationTaskAttempt, ReviewQueue, RuntimeMetricSnapshot, SchedulingSetting, SourceMediaAsset, TargetRuntimeSummary, Task, TaskRuntimeSummary, TaskStatus, TelegramDeveloperApp, Tenant, TgAccount, TgAccountOnlineState, TgAccountProfileSyncRecord, TgAccountSyncRecord, TgGroup, TgGroupAccount, TgLoginFlow, VerificationTask
+from app.models import AccountStatus, Action, AiAccountVoiceProfile, AiDraft, AiGroupMessageMemory, AiUsageLedger, AuditLog, Campaign, DeveloperAppHealthStatus, FailureType, GroupBotAdmission, GroupContextMessage, ListenerSourceState, ManualOperationRecord, Material, MessageFingerprint, MessageTask, OperationTarget, OperationTaskAttempt, ReviewQueue, RuntimeMetricSnapshot, SchedulingSetting, SourceMediaAsset, TargetRuntimeSummary, Task, TaskRuntimeSummary, TaskStatus, TelegramDeveloperApp, Tenant, TgAccount, TgAccountOnlineState, TgAccountProfileSyncRecord, TgAccountSyncRecord, TgGroup, TgGroupAccount, TgLoginFlow, VerificationTask
 from app.services._common import _now
 from app.services.notifications import NotificationResult
 from app.services.task_center.listener_runtime import reset_listener_runtime_cache
+from app.services.task_center.account_voice_profile_cache import (
+    VOICE_PROFILE_CONTRACT_VERSION,
+    voice_profile_snapshot_hash,
+)
 from app.services.task_center.service import drain_task_center
 from fastapi.testclient import TestClient
 import pytest
@@ -83,6 +87,25 @@ def _ai_group_memory_payload(
     text: str,
 ) -> dict:
     memory_id = f"memory-{action_id}"
+    mask = AiAccountVoiceProfile(
+        id=f"workflow-mask-{account_id}",
+        tenant_id=1,
+        account_id=account_id,
+        version=1,
+        mask_name="",
+        audience_archetype="",
+        identity_frame="",
+        preference_tags=[],
+        status="active",
+        quality_status="active",
+        short_prompt_summary="自然短句群聊",
+    )
+    existing_mask = session.get(AiAccountVoiceProfile, mask.id)
+    if existing_mask is None:
+        session.add(mask)
+    else:
+        mask = existing_mask
+    snapshot_hash = voice_profile_snapshot_hash(mask)
     session.add(
         AiGroupMessageMemory(
             id=memory_id,
@@ -95,9 +118,24 @@ def _ai_group_memory_payload(
             text_fingerprint=memory_id,
             status="reserved",
             planned_at=_now(),
+            account_mask_id=mask.id,
+            account_mask_version=mask.version,
+            mask_contract_version=VOICE_PROFILE_CONTRACT_VERSION,
+            mask_snapshot_hash=snapshot_hash,
+            mask_status="active",
+            content_source="account_mask",
         )
     )
-    return {"slot_id": f"{task_id}:cycle:test:turn:{action_id}", "ai_message_memory_id": memory_id}
+    return {
+        "slot_id": f"{task_id}:cycle:test:turn:{action_id}",
+        "ai_message_memory_id": memory_id,
+        "account_mask_id": mask.id,
+        "account_mask_version": mask.version,
+        "voice_profile_contract_version": VOICE_PROFILE_CONTRACT_VERSION,
+        "account_mask_snapshot_hash": snapshot_hash,
+        "mask_status": "active",
+        "content_source": "account_mask",
+    }
 
 
 def _workflow_ai_token(index: int) -> str:

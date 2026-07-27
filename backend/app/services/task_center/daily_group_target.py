@@ -62,7 +62,7 @@ def daily_group_due_message_count(
     day_start = datetime.combine(target.target_date, time.min)
     day_end = day_start + timedelta(days=1)
     start = max(day_start, _wall_time(target.scope_frozen_at))
-    if timestamp <= start:
+    if timestamp < start:
         return 0
     if timestamp >= day_end:
         return target.effective_message_target
@@ -71,10 +71,10 @@ def daily_group_due_message_count(
         1.0,
         _weighted_seconds(start, day_end, curve),
     )
-    return min(
+    return max(1, min(
         target.effective_message_target,
         math.floor(target.effective_message_target * ratio),
-    )
+    ))
 
 
 def _locked_target(

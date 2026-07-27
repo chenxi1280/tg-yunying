@@ -153,7 +153,7 @@ def test_unchanged_health_check_does_not_emit_scope_event(session: Session, monk
     assert session.scalar(select(AccountEligibilityEvent)) is None
 
 
-def test_initial_scope_snapshot_creates_only_all_account_task_relations(session: Session) -> None:
+def test_initial_scope_snapshot_freezes_all_or_manually_selected_accounts(session: Session) -> None:
     _seed_scope_base(session)
     session.add_all([_account(1, 10), _account(2, 10), _task("all-task"), _task("manual-task", selection_mode="manual")])
     session.commit()
@@ -162,12 +162,18 @@ def test_initial_scope_snapshot_creates_only_all_account_task_relations(session:
     manual_result = initialize_all_account_task_scope(session, session.get(Task, "manual-task"), now=datetime(2026, 7, 10, 10))
     session.commit()
 
-    relations = list(session.scalars(select(TaskMembershipAdmissionItem).order_by(TaskMembershipAdmissionItem.account_id)))
+    relations = list(session.scalars(
+        select(TaskMembershipAdmissionItem).order_by(
+            TaskMembershipAdmissionItem.task_id,
+            TaskMembershipAdmissionItem.account_id,
+        )
+    ))
     assert all_result.created_relations == 2
-    assert manual_result.created_relations == 0
+    assert manual_result.created_relations == 1
     assert [(item.task_id, item.account_id, item.target_id) for item in relations] == [
         ("all-task", 1, 31),
         ("all-task", 2, 31),
+        ("manual-task", 1, 31),
     ]
 
 
@@ -369,10 +375,9 @@ def test_new_account_event_reaches_online_daily_target_planner(session: Session,
 
     assert state.online_status == "online"
     assert coverage.blocker_code == ""
-    assert created == 0
-    assert pending == []
-    assert task.last_error == "群日目标按计划推进中，等待下一发送时点"
-    assert task.stats["skip_reason"] == "daily_target_pacing"
+    assert created == 1
+    assert len(pending) == 1
+    assert pending[0].payload["coverage_ledger_id"] == coverage.id
 
 
 def test_failed_scope_event_is_delayed_without_starving_new_events(session: Session, monkeypatch) -> None:

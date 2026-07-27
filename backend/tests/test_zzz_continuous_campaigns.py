@@ -10,10 +10,11 @@ from fastapi.testclient import TestClient
 from app.database import SessionLocal
 from app.integrations.telegram import GroupMessageSnapshot
 from app.main import app
-from app.models import AiDraft, AiUsageLedger, Campaign, CampaignProcessedMessage, ContentKeywordRule, GroupContextMessage, MessageTask, TaskStatus, TgGroup
+from app.models import AiDraft, AiUsageLedger, AppUser, Campaign, CampaignProcessedMessage, ContentKeywordRule, GroupContextMessage, MessageTask, TaskStatus, TgGroup
 from app.services.campaign_runs import build_participation_plan, light_rewrite_message, process_continuous_campaign
 from app.services.content_filters import filter_outbound_content
 from app.models.enums import now
+from sqlalchemy import select
 from tests.test_workflow import auth_headers, ensure_test_workspace
 
 
@@ -103,10 +104,12 @@ def test_ai_activity_campaign_stops_when_token_limit_is_reached():
         ).json()
 
         with SessionLocal() as session:
+            user_id = session.scalar(select(AppUser.id).order_by(AppUser.id).limit(1))
+            assert user_id is not None
             session.add(
                 AiUsageLedger(
                     tenant_id=1,
-                    user_id=0,
+                    user_id=user_id,
                     campaign_id=campaign["id"],
                     group_id=group["id"],
                     total_tokens=10,

@@ -38,13 +38,17 @@ SCOPE_EVENT_RETRY_DELAY = timedelta(minutes=5)
 
 def is_all_accounts_task(task: Task) -> bool:
     selection_mode = str((task.account_config or {}).get("selection_mode") or "all")
+    return selection_mode == "all" and _is_daily_coverage_task(task)
+
+
+def _is_daily_coverage_task(task: Task) -> bool:
     effective_config = apply_group_ai_account_coverage_defaults(
         task.type,
         task.type_config or {},
         task.account_config or {},
     )
     coverage_mode = str(effective_config.get("account_coverage_mode") or "")
-    return task.type == "group_ai_chat" and selection_mode == "all" and coverage_mode == "all_accounts_daily"
+    return task.type == "group_ai_chat" and coverage_mode == "all_accounts_daily"
 
 
 def eligible_account_ids(session: Session, tenant_id: int) -> list[int]:
@@ -73,10 +77,11 @@ def initialize_all_account_task_scope(
     *,
     now: datetime | None = None,
 ) -> ScopeSyncResult:
-    if not is_all_accounts_task(task):
+    if not _is_daily_coverage_task(task):
         return ScopeSyncResult()
-    _normalize_all_account_config(task)
-    account_ids = eligible_account_ids(session, task.tenant_id)
+    if is_all_accounts_task(task):
+        _normalize_all_account_config(task)
+    account_ids = _scope_account_ids(session, task)
     created = _sync_task_relations(session, task, account_ids)
     _ensure_daily_coverage(session, task, account_ids, now=now, incremental=False)
     return ScopeSyncResult(task_count=1, created_relations=created, eligible_accounts=len(account_ids))
@@ -88,9 +93,21 @@ def bootstrap_missing_all_account_task_scope(
     *,
     now: datetime | None = None,
 ) -> ScopeSyncResult:
-    if not is_all_accounts_task(task) or _scope_exists(session, task):
+    if not _is_daily_coverage_task(task) or _scope_exists(session, task):
         return ScopeSyncResult()
     return initialize_all_account_task_scope(session, task, now=now)
+
+
+def _scope_account_ids(session: Session, task: Task) -> list[int]:
+    eligible_ids = eligible_account_ids(session, task.tenant_id)
+    if is_all_accounts_task(task):
+        return eligible_ids
+    configured_ids = {
+        int(account_id)
+        for account_id in (task.account_config or {}).get("account_ids", [])
+        if str(account_id).isdigit()
+    }
+    return [account_id for account_id in eligible_ids if account_id in configured_ids]
 
 
 def scoped_account_ids(session: Session, task: Task) -> list[int]:

@@ -19,7 +19,10 @@ from app.models import (
     TgAccount,
     TgGroup,
 )
-from app.services.task_center.daily_group_target import ensure_task_group_daily_target
+from app.services.task_center.daily_group_target import (
+    daily_group_due_message_count,
+    ensure_task_group_daily_target,
+)
 
 
 pytestmark = pytest.mark.no_postgres
@@ -128,6 +131,21 @@ def test_midday_start_is_warming_until_next_natural_day(session: Session) -> Non
 
     assert target.daily_fulfillment_phase == "admission_warming"
     assert target.full_day_committed_at == datetime(2026, 7, 29)
+
+
+def test_midday_start_makes_first_message_due_immediately(session: Session) -> None:
+    task, group = _seed(session, configured=3, account_count=3)
+    timestamp = datetime(2026, 7, 28, 12)
+    task.scheduled_start = timestamp
+    target = ensure_task_group_daily_target(
+        session,
+        task,
+        group,
+        timestamp.date(),
+        now=timestamp,
+    )
+
+    assert daily_group_due_message_count(target, {}, now=timestamp) == 1
 
 
 def test_account_coverage_target_is_always_one(session: Session) -> None:
