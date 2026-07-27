@@ -50,8 +50,15 @@ def workflow_ai_active_pacing() -> dict:
 
 def mark_group_bot_admission_ready(group_id: int, account_id: int) -> None:
     with SessionLocal() as session:
-        session.add(
-            GroupBotAdmission(
+        admission = session.scalar(
+            select(GroupBotAdmission).where(
+                GroupBotAdmission.tenant_id == 1,
+                GroupBotAdmission.group_id == group_id,
+                GroupBotAdmission.account_id == account_id,
+            )
+        )
+        if admission is None:
+            admission = GroupBotAdmission(
                 tenant_id=1,
                 group_id=group_id,
                 account_id=account_id,
@@ -59,7 +66,10 @@ def mark_group_bot_admission_ready(group_id: int, account_id: int) -> None:
                 completion_policy="explicit_bot_confirmation",
                 evidence_ref="pytest:admission-ready",
             )
-        )
+            session.add(admission)
+        admission.state = "group_bot_admission_ready"
+        admission.post_send_visibility_state = "visible_confirmed"
+        admission.failure_code = ""
         session.commit()
 
 
@@ -3848,10 +3858,9 @@ def test_task_center_group_ai_chat_creates_and_dispatches_actions(monkeypatch):
         started = client.post(f"/api/tasks/{task['id']}/start", headers=headers)
         assert started.status_code == 200, started.text
         assert started.json()["status"] == "running"
-        mark_group_bot_admission_ready(group["id"], account["id"])
-
         drained = client.post("/api/worker/drain-once", headers=headers, json={"reason": "测试手动 drain"}).json()
         assert drained["processed"] >= 1
+        mark_group_bot_admission_ready(group["id"], account["id"])
         make_task_send_actions_due(task["id"])
         drained = client.post("/api/worker/drain-once?role=dispatcher", headers=headers, json={"reason": "测试发送 drain"}).json()
         assert drained["processed"] >= 1
@@ -3897,6 +3906,7 @@ def test_task_center_group_ai_chat_runs_from_worker_loop(monkeypatch):
         assert started.status_code == 200, started.text
 
         worker.run_worker(limit=1000, interval_seconds=0.1, max_iterations=1)
+        mark_group_bot_admission_ready(group["id"], account["id"])
         make_task_send_actions_due(task_id)
         worker.run_worker(limit=1000, interval_seconds=0.1, max_iterations=2)
 
@@ -4003,11 +4013,11 @@ def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(monkeypatch):
         )
         assert created.status_code == 200, created.text
         task_id = created.json()["id"]
-        mark_group_bot_admission_ready(group["id"], account["id"])
 
         from app.services.task_center.service import drain_task_center
 
         drain_task_center(SessionLocal, 10)
+        mark_group_bot_admission_ready(group["id"], account["id"])
         if not sends:
             assert make_task_send_actions_due(task_id) >= 1
             assert dispatch_pending_task_actions(task_id) >= 1

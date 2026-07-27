@@ -1572,7 +1572,8 @@ def recover_pending_visibility_credits(session: Session, limit: int = 100) -> in
             closed += 1
             continue
         # No evidence yet: leave open (unknown hold semantics). Optionally stamp age for ops.
-        age_seconds = int((_now() - (hold.created_at or _now())).total_seconds()) if hold.created_at else 0
+        created_at = as_beijing(hold.created_at)
+        age_seconds = int((_now() - created_at).total_seconds()) if created_at else 0
         window = _post_send_visibility_window_seconds(session, action)
         if age_seconds >= window:
             action.result = {

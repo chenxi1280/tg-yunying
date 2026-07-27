@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import create_engine
@@ -10,6 +10,7 @@ from app.models import (
     GroupBotAdmission,
     GroupContextMessage,
     OperationTarget,
+    PendingVisibilityCredit,
     Task,
     TaskMembershipAdmissionItem,
     Tenant,
@@ -19,6 +20,7 @@ from app.models import (
 from app.services.task_center.dispatcher import (
     _action_needs_pending_visibility,
     _group_bot_admission_gate_pass,
+    recover_pending_visibility_credits,
 )
 from app.services.task_center.group_bot_admission import (
     READY_STATE,
@@ -100,6 +102,24 @@ def test_post_follow_probe_is_held_until_remote_visibility_confirms() -> None:
         assert _action_needs_pending_visibility(session, action, remote_id="600") is True
         mark_visible_confirmed(session, admission=admission)
         assert admission.state == READY_STATE
+
+
+def test_pending_visibility_recovery_normalizes_aware_created_at() -> None:
+    with _session() as session:
+        _seed_scope(session)
+        action = session.get(Action, "send-1")
+        action.status = "unknown_after_send"
+        hold = PendingVisibilityCredit(
+            tenant_id=1,
+            action_id=action.id,
+            remote_message_id="",
+        )
+        session.add(hold)
+        session.flush()
+        hold.created_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+
+        assert recover_pending_visibility_credits(session) == 0
+        assert action.result["pending_visibility_age_seconds"] >= 500
 
 
 def _session() -> Session:
