@@ -134,6 +134,7 @@ _ACTION_RESERVATIONS = _runtime_resources._ACTION_RESERVATIONS
 _IN_FLIGHT_ACCOUNTS = _runtime_resources._IN_FLIGHT_ACCOUNTS
 _redis_client = _runtime_resources._redis_client
 MEMBERSHIP_ACTION_TYPES = ("ensure_channel_membership", "ensure_target_membership")
+GROUP_AI_ADMISSION_ACTION_TYPES = (*MEMBERSHIP_ACTION_TYPES, "invite_group_account")
 GROUP_BOT_ADMISSION_ACTION_TYPES = (
     GROUP_BOT_CHANNEL_FOLLOW_ACTION_TYPE,
     "group_bot_control_observation",
@@ -1291,7 +1292,15 @@ def _target_admission_retry_claim_condition():
         & (bound_task_id != "")
         & bound_account_id.is_not(None)
     )
-    return (Task.type == TARGET_ADMISSION_RETRY_TASK_TYPE) | bound_group_bot
+    group_ai_admission = (
+        (Task.type == "group_ai_chat")
+        & Action.action_type.in_(GROUP_AI_ADMISSION_ACTION_TYPES)
+    )
+    return (
+        (Task.type == TARGET_ADMISSION_RETRY_TASK_TYPE)
+        | group_ai_admission
+        | bound_group_bot
+    )
 
 
 def _search_join_membership_claim_condition():

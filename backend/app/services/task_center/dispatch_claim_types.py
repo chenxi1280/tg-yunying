@@ -13,6 +13,13 @@ SEARCH_MEMBERSHIP_CLAIM_CLASS = "search_join_membership"
 SEARCH_SOURCE_CLAIM_CLASS = "search_join"
 HARD_HOURLY_CLAIM_CLASS = "hard_hourly"
 TARGET_ADMISSION_RETRY_TASK_TYPE = "target_admission_retry"
+GROUP_AI_ADMISSION_ACTION_TYPES = frozenset(
+    {
+        "ensure_target_membership",
+        "ensure_channel_membership",
+        "invite_group_account",
+    }
+)
 GROUP_BOT_ADMISSION_ACTION_TYPES = frozenset(
     {
         GROUP_BOT_CHANNEL_FOLLOW_ACTION_TYPE,

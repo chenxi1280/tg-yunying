@@ -10,6 +10,7 @@ from app.models import Action, DispatchClaimReservation, DispatchClaimShardAlloc
 
 from .dispatch_claim_ledger import reservation_available
 from .dispatch_claim_types import (
+    GROUP_AI_ADMISSION_ACTION_TYPES,
     GROUP_BOT_ADMISSION_ACTION_TYPES,
     SEARCH_MEMBERSHIP_CLAIM_CLASS,
     TARGET_ADMISSION_CLAIM_CLASS,
@@ -34,6 +35,8 @@ def reconcile_window_unclaimed(
 def claim_class_for_action(task: Task, action: Action) -> str:
     payload = action.payload if isinstance(action.payload, dict) else {}
     if task.type == TARGET_ADMISSION_RETRY_TASK_TYPE:
+        return TARGET_ADMISSION_CLAIM_CLASS
+    if task.type == "group_ai_chat" and action.action_type in GROUP_AI_ADMISSION_ACTION_TYPES:
         return TARGET_ADMISSION_CLAIM_CLASS
     if action.action_type in GROUP_BOT_ADMISSION_ACTION_TYPES and _bound_admission_payload(payload):
         return TARGET_ADMISSION_CLAIM_CLASS

@@ -246,6 +246,65 @@ def test_ordinary_candidate_scan_keeps_each_due_task_visible(monkeypatch) -> Non
         assert "ready" in {action.id for action in rows}
 
 
+def test_group_ai_membership_backlog_keeps_send_candidate_visible(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    settings = _settings(dispatcher_concurrency=2)
+    now_value = _now()
+    monkeypatch.setattr(dispatcher, "get_settings", lambda: settings)
+
+    with Session(engine) as session:
+        task = Task(
+            id="ai-membership-backlog",
+            tenant_id=1,
+            name="准入与发送并行",
+            type="group_ai_chat",
+            status="running",
+        )
+        session.add_all([Tenant(id=1, name="t"), task])
+        session.add_all([
+            Action(
+                id=f"membership-{index}",
+                tenant_id=1,
+                task_id=task.id,
+                task_type=task.type,
+                action_type="ensure_target_membership",
+                account_id=100 + index,
+                status="pending",
+                scheduled_at=now_value - timedelta(minutes=2),
+                payload={},
+            )
+            for index in range(5)
+        ])
+        session.add(Action(
+            id="send-ready",
+            tenant_id=1,
+            task_id=task.id,
+            task_type=task.type,
+            action_type="send_message",
+            account_id=200,
+            status="pending",
+            scheduled_at=now_value - timedelta(minutes=1),
+            payload={},
+        ))
+        session.flush()
+
+        rows = dispatcher._dispatch_claim_window_actions(
+            session,
+            [Action.status == "pending", Action.scheduled_at <= now_value],
+            settings=settings,
+            now_value=now_value,
+            force_ordinary_tenants=set(),
+        )
+        demands = build_demands(rows, {task.id: task}, 1, now_value)
+
+        assert "send-ready" in {action.id for action in rows}
+        assert {demand.claim_class for demand in demands} == {
+            "target_admission_retry",
+            "ordinary",
+        }
+
+
 def test_two_shards_consume_one_shared_window_without_overallocation(monkeypatch) -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
