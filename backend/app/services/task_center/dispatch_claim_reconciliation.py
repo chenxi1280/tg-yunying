@@ -36,7 +36,7 @@ def claim_class_for_action(task: Task, action: Action) -> str:
     payload = action.payload if isinstance(action.payload, dict) else {}
     if task.type == TARGET_ADMISSION_RETRY_TASK_TYPE:
         return TARGET_ADMISSION_CLAIM_CLASS
-    if task.type == "group_ai_chat" and action.action_type in GROUP_AI_ADMISSION_ACTION_TYPES:
+    if _is_daily_group_ai_admission(task, action):
         return TARGET_ADMISSION_CLAIM_CLASS
     if action.action_type in GROUP_BOT_ADMISSION_ACTION_TYPES and _bound_admission_payload(payload):
         return TARGET_ADMISSION_CLAIM_CLASS
@@ -48,6 +48,15 @@ def claim_class_for_action(task: Task, action: Action) -> str:
 def account_shard_for_action(action: Action, shard_total: int) -> int:
     account_id = int(action.account_id or 0)
     return account_id % shard_total if account_id else 0
+
+
+def _is_daily_group_ai_admission(task: Task, action: Action) -> bool:
+    config = task.type_config if isinstance(task.type_config, dict) else {}
+    return bool(
+        task.type == "group_ai_chat"
+        and not config.get("hard_hourly_target_enabled")
+        and action.action_type in GROUP_AI_ADMISSION_ACTION_TYPES
+    )
 
 
 def _due_reservation_action_counts(

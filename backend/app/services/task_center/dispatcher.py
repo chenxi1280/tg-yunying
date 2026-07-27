@@ -1294,6 +1294,10 @@ def _target_admission_retry_claim_condition():
     )
     group_ai_admission = (
         (Task.type == "group_ai_chat")
+        & func.coalesce(
+            Task.type_config["hard_hourly_target_enabled"].as_boolean(),
+            False,
+        ).is_(False)
         & Action.action_type.in_(GROUP_AI_ADMISSION_ACTION_TYPES)
     )
     return (

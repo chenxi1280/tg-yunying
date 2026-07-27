@@ -12,7 +12,6 @@ from sqlalchemy.orm import Session
 from app.models import DispatchFairnessCursor
 from app.services._common import _now
 
-from .dispatch_claim_types import GROUP_AI_ADMISSION_ACTION_TYPES
 from .payloads import GROUP_BOT_CHANNEL_FOLLOW_ACTION_TYPE
 
 
@@ -155,11 +154,7 @@ def classify_action_payload(action_type: str, payload: dict | None, task_type: s
     if action_type in {"ensure_target_membership", "ensure_channel_membership"}:
         if task_type == "search_join_group" or payload.get("search_join_membership"):
             return "search_join_membership"
-        if task_type == "group_ai_chat":
-            return "target_admission_retry"
         return "ordinary"
-    if action_type in GROUP_AI_ADMISSION_ACTION_TYPES and task_type == "group_ai_chat":
-        return "target_admission_retry"
     if action_type == "search_join":
         return "search_join"
     if action_type == "send_message" and payload.get("hard_hourly_target"):
