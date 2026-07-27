@@ -5,11 +5,12 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import GroupBotAdmission, GroupBotRequiredChannelFollow, Task, TaskMembershipAdmissionItem
+from app.models import GroupBotAdmission, GroupBotRequiredChannelFollow, GroupContextMessage, Task, TaskMembershipAdmissionItem
 
 from .group_bot_admission import (
     SOURCE_BOUND_POLICY_TYPES,
     active_policy,
+    confirmation_button,
     ingest_trusted_bot_prompt,
     is_group_bot_control_prompt,
     parse_channel_refs,
@@ -26,6 +27,7 @@ GLOBAL_RULE_STATES = (
     "following_required_channel",
     "awaiting_group_bot_confirmation",
 )
+REPEATABLE_RECIPIENT_RULE_CONTEXT_LIMIT = 100
 
 
 def apply_trusted_global_group_rule(
@@ -38,8 +40,9 @@ def apply_trusted_global_group_rule(
     bot_peer_id: str,
     is_admin_bot: bool,
     control_buttons: list[dict[str, object]],
+    evidence_kind: str = "trusted_global_rule",
 ) -> list[GroupBotAdmission]:
-    """Plan exact admission actions for a trusted, recipient-free group-wide prompt."""
+    """Plan exact admission actions for a trusted group-wide channel rule."""
     if not _global_rule_authorized(session, tenant_id, group_id, bot_peer_id, is_admin_bot):
         return []
     channel_refs = tuple(parse_channel_refs(text, control_buttons))
@@ -63,10 +66,57 @@ def apply_trusted_global_group_rule(
             bound_task_id=task_id,
         )
         admission.failure_code = ""
-        admission.evidence_ref = f"attr:trusted_global_rule;msg:{message_id}"
+        admission.evidence_ref = f"attr:{evidence_kind};msg:{message_id}"
         applied.append(admission)
     session.flush()
     return applied
+
+
+def is_repeatable_recipient_channel_rule(
+    session: Session,
+    *,
+    tenant_id: int,
+    group_id: int,
+    message_id: str,
+    bot_peer_id: str,
+    text: str,
+    control_buttons: list[dict[str, object]],
+) -> bool:
+    signature = _channel_requirement_signature(text, control_buttons)
+    if signature is None:
+        return False
+    prior_messages = session.scalars(
+        select(GroupContextMessage)
+        .where(
+            GroupContextMessage.tenant_id == tenant_id,
+            GroupContextMessage.group_id == group_id,
+            GroupContextMessage.is_bot.is_(True),
+            GroupContextMessage.sender_peer_id == bot_peer_id,
+            GroupContextMessage.remote_message_id != message_id,
+        )
+        .order_by(GroupContextMessage.id.desc())
+        .limit(REPEATABLE_RECIPIENT_RULE_CONTEXT_LIMIT)
+    )
+    return any(
+        _channel_requirement_signature(message.content, list(message.control_buttons or [])) == signature
+        for message in prior_messages
+    )
+
+
+def _channel_requirement_signature(
+    text: str,
+    control_buttons: list[dict[str, object]],
+) -> tuple[tuple[str, ...], tuple[int, int, str]] | None:
+    channel_refs = tuple(sorted(ref.casefold() for ref in parse_channel_refs(text, control_buttons)))
+    if not channel_refs:
+        return None
+    confirmation = confirmation_button(control_buttons)
+    confirmation_shape = (
+        int((confirmation or {}).get("row") or 0),
+        int((confirmation or {}).get("col") or 0),
+        str((confirmation or {}).get("text") or "").casefold(),
+    )
+    return channel_refs, confirmation_shape
 
 
 def _rearm_unverified_current_follows(

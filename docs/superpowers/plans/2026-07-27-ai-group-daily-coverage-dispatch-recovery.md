@@ -20,7 +20,7 @@
 4. 添加迁移，原子替换 terminal recovery 部分索引，使其覆盖 `reserved/sending/unknown`。
 5. 用 SQL `CASE` 或等价数据库顺序表达 `candidate_action_ids`，保留既有 claim 优先级后仅在同优先级序列内做 `FOR UPDATE SKIP LOCKED`；不扩大候选集合、不放宽群冷却。
 6. 新增 `TgGroup.next_group_send_slot_at` 迁移；claim plan 前过滤未来 legacy 槽位，Action 行锁后取得 `TgGroup FOR UPDATE SKIP LOCKED` 并只保留每群计划最靠前的一条。Gateway 最终校验通过后与 `ExecutionAttempt.gateway_call_started` 同事务推进下一槽位。
-7. 在 listener 的来源过滤和精确提示识别之后，只有管理员 bot 或同 group+peer 的 active source-bound policy 才能对无明确收件人的广播规则做 scope 内逐账号展开；follow/callback 必须保留原 source message、peer、URL/按钮和 admission/version。历史 `group_bot_control_prompt_unverified` follow 只在新的 exact source message 和当前 channel_ref 一致时清空绑定重排，旧 Action 证据保留。
+7. 在 listener 的来源过滤和精确提示识别之后，只有管理员 bot 或同 group+peer 的 active source-bound policy 才能对无明确收件人的广播规则做 scope 内逐账号展开；明确收件人不匹配时，还必须由同 peer 两条不同 source message 的相同频道集合与确认 callback 形态证明为标准模板。follow/callback 必须保留原 source message、peer、URL/按钮和 admission/version。历史 `group_bot_control_prompt_unverified` follow 只在新的 exact source message 和当前 channel_ref 一致时清空绑定重排，旧 Action 证据保留。
 8. 运行定向测试、迁移可逆测试、编译和 diff 检查；只提交本计划涉及文件。
 9. 推送 `release`，等待 Deploy Production 成功，确认部署 SHA；采样 Recovery 日志、executing/claim scope、计划份额、同群并发领取、群慢速模式 churn、频道 follow/confirmation 和新远端发送事实。
 

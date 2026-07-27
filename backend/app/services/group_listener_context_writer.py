@@ -124,19 +124,17 @@ def _process_group_bot_control_event(session: Session, group: TgGroup, snapshot)
     waiting = _waiting_group_bot_admissions(session, group)
     target_id, reason = _attributed_waiting_account(session, waiting, content)
     if target_id is None:
-        if reason == "unattributed" and is_prompt:
-            from app.services.task_center.group_bot_global_rules import apply_trusted_global_group_rule
-
-            apply_trusted_global_group_rule(
-                session,
-                tenant_id=group.tenant_id,
-                group_id=int(group.id),
-                message_id=remote_id,
-                text=content,
-                bot_peer_id=bot_peer,
-                is_admin_bot=is_admin_bot,
-                control_buttons=controls,
-            )
+        _apply_unattributed_group_bot_rule(
+            session,
+            group,
+            reason=reason,
+            is_prompt=is_prompt,
+            remote_id=remote_id,
+            content=content,
+            bot_peer=bot_peer,
+            is_admin_bot=is_admin_bot,
+            controls=controls,
+        )
         return
     _apply_trusted_group_bot_control(
         session,
@@ -150,6 +148,53 @@ def _process_group_bot_control_event(session: Session, group: TgGroup, snapshot)
         is_admin_bot=is_admin_bot,
         control_buttons=controls,
         button_confirmed=button_confirmed,
+    )
+
+
+def _apply_unattributed_group_bot_rule(
+    session: Session,
+    group: TgGroup,
+    *,
+    reason: str,
+    is_prompt: bool,
+    remote_id: str,
+    content: str,
+    bot_peer: str,
+    is_admin_bot: bool,
+    controls: list[dict[str, object]],
+) -> None:
+    if not is_prompt:
+        return
+    from app.services.task_center.group_bot_global_rules import (
+        apply_trusted_global_group_rule,
+        is_repeatable_recipient_channel_rule,
+    )
+
+    evidence_kind = "trusted_global_rule"
+    if reason == "explicit_recipient_unmatched":
+        if not is_repeatable_recipient_channel_rule(
+            session,
+            tenant_id=group.tenant_id,
+            group_id=int(group.id),
+            message_id=remote_id,
+            bot_peer_id=bot_peer,
+            text=content,
+            control_buttons=controls,
+        ):
+            return
+        evidence_kind = "trusted_repeatable_recipient_rule"
+    elif reason != "unattributed":
+        return
+    apply_trusted_global_group_rule(
+        session,
+        tenant_id=group.tenant_id,
+        group_id=int(group.id),
+        message_id=remote_id,
+        text=content,
+        bot_peer_id=bot_peer,
+        is_admin_bot=is_admin_bot,
+        control_buttons=controls,
+        evidence_kind=evidence_kind,
     )
 
 

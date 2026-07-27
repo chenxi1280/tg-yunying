@@ -225,19 +225,19 @@ else:
 
 1. 消息已通过本节的精确控制提示识别，且必须含同一原消息中的精确公开频道 URL；如有 confirmation callback，它也必须来自该原消息；
 2. 来源是 Telegram 已确认的管理员 bot，**或** `targets.manage` 已为同一 `group_id + bot_peer_id` 创建 active `explicit_bot_confirmation` / `follow_sufficient` policy；仅某一历史 admission 曾信任该 peer 不足以授权全群展开；
-3. 文本没有明确收件人；`explicit_recipient_unmatched`、`explicit_recipient_ambiguous`、普通推广和完成回执都不得进入本路径；
+3. 文本没有明确收件人；`explicit_recipient_unmatched`、`explicit_recipient_ambiguous`、普通推广和完成回执都不得进入本路径。唯一例外是 active source-bound policy 已生效后，同一可信 peer 在当前 listener 上下文中出现至少两条**不同** `source_message_id` 的逐账号提示，且每条的精确频道引用集合和确认 callback 形态完全一致；这证明是可复用的标准化频道准入规则，才可进入本路径。单条不匹配收件人提示仍不得展开；
 4. 候选仅限该群现存、未终态的 `GroupBotAdmission`，且账号属于运行中 `group_ai_chat` 的持久 `TaskMembershipAdmissionItem` scope；已绑定另一可信 peer、`blocked`、`abandoned` 或没有运行任务绑定的 admission 必须跳过并保留原事实；
 5. 每个候选都复用同一 `source_message_id`、peer、URL/按钮摘要、admission/version，创建其自己的 `group_bot_channel_follow` 与必要的精确 confirmation action。不得创建正文 `send_message`、不得改写 `can_send`、不得直接 ready。
 6. 若该 admission 的当前频道引用已有 `status=blocked + failure_code=group_bot_control_prompt_unverified` 的历史 follow，只有本路径再次观察到**不同** `source_message_id`、且该 channel_ref 仍在新消息的精确引用集合中时，才可清空其 Action 绑定并重置为 pending；旧 Action/follow 证据必须保留。相同 source、非当前引用、未知来源或没有 active scope 时一律不得 rearm。
 
-该规则解决“群管向所有成员广播关注频道要求”不能归属单一账号的真实协议，不是未知 bot 的放行捷径。策略生效后的 listener 必须再次观察到该 exact peer 的有效控制事件才可展开；不得静默重放无审计来源、私聊消息或历史普通上下文。频道 follow 成功后的 ready 仍完全遵守 §5.5 的 confirmation / `follow_sufficient` 规则。
+该规则解决“群管向所有成员广播关注频道要求”以及“bot 对不同成员重复展示同一频道准入模板”不能归属单一账号的真实协议，不是未知 bot 的放行捷径。策略生效后的 listener 必须再次观察到该 exact peer 的有效控制事件才可展开；逐账号模板例外还必须保留当前消息及至少一条同签名消息的审计上下文。不得静默重放无审计来源、私聊消息或历史普通上下文。频道 follow 成功后的 ready 仍完全遵守 §5.5 的 confirmation / `follow_sufficient` 规则。
 
 ### 5.4 频道关注子动作
 
 - 每个可信提示中的真实频道引用 → 一条 `group_bot_channel_follow`，幂等键 `(admission_id, channel_ref)`。`GroupBotAdmission.required_channel_refs` 是**当前 admission 世代的有效集合**；同一 admission 历史上被拒绝的推广/旧提示 follow 行保留审计，但不得阻塞当前集合的 follow 完成或 confirmation callback。频道引用可来自正文，也可来自同一原始消息的 URL 内联按钮；两者均必须保留其 `source_message_id`。
 - `group_bot_channel_follow` 是 `actions.action_type` 的唯一持久类型，必须保持在该字段的 30 字符上限内；`group_bot_required_channel_follows` 仅是频道关注事实表名，不能写入 Action type。该约束必须有自动化长度回归。
 - 频道引用只接受正文中的精确公开 `https://t.me/<username>` 或同源 URL 按钮；纯 `@username`、展示名、联系人广告或任意 URL 都不足以创建 follow row / Action。可信来源还必须同时具有确定性控制信号：同一消息的精确确认 callback，或正文中可解析的“请/需/先关注、订阅、加入频道/群、验证后发言”等指令。来源可信而控制信号不成立时，只写审计上下文。
-- 运营因 `group_bot_control_prompt_unverified` 暂停某 admission 时，既有 follow 行和未进 Gateway Action 必须保留为 blocked/skipped 审计事实，不能批量重置或标成已关注。只有运营显式 restart observation 后，监听到**不同 `source_message_id` 的新、可信且通过本节分类的控制提示**时，才可把该提示中同一 `channel_ref` 的此类 blocked 行清空执行绑定并重新置为 pending；同一历史消息重放、普通推广或其他失败码均不得 rearm。
+- 运营因 `group_bot_control_prompt_unverified` 暂停某 admission 时，既有 follow 行和未进 Gateway Action 必须保留为 blocked/skipped 审计事实，不能批量重置或标成已关注。只有运营显式 restart observation，或 active policy 后 listener 新观察到通过 §5.3.1 广播/重复标准模板分类的**不同 `source_message_id`** 时，才可把该提示中同一 `channel_ref` 的此类 blocked 行清空执行绑定并重新置为 pending；同一历史消息重放、普通推广或其他失败码均不得 rearm。
 - `awaiting_group_bot_confirmation` 的完成回执走独立的精确确认模板 / callback 识别；普通内容不得因为来自同一 peer 而先被当成完成回执、再被重新解析为新的频道提示。
 - listener 快照必须保存无敏感 callback data 的不可变按钮摘要：`row`、`col`、展示文本、公开 URL、动作类型（`url` / `callback` / `other`）。bot 控制消息必须持久化为审计上下文且 `is_bot=true`，不得进入 AI 提示词、学习样本或引用候选；原始 callback bytes 不得写数据库、日志或前端。
 - 对发布前已持久化、`control_buttons=[]` 的 bot 控制消息，listener 重读到**同一 group + message ID + bot peer**且获得安全按钮摘要时，只更新该审计行的 `control_buttons`。该回填本身不得迁移 admission state、修改正文或写 callback data；后续 follow/callback 仍必须走同一原消息的精确 Gateway 校验。
