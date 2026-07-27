@@ -933,8 +933,8 @@ def test_dispatch_global_policy_excludes_current_executing_hard_hourly_action(mo
 
 
 @pytest.mark.no_postgres
-@pytest.mark.parametrize(("claim_limit", "expected_generation_count"), [(1, 1), (2, 1)])
-def test_dispatch_hard_hourly_serializes_pending_generation_per_legacy_group(
+@pytest.mark.parametrize(("claim_limit", "expected_generation_count"), [(1, 1), (2, 2)])
+def test_dispatch_ai_generation_ignores_legacy_group_slot(
     monkeypatch,
     claim_limit: int,
     expected_generation_count: int,

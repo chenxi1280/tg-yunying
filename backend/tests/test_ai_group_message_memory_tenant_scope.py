@@ -23,7 +23,7 @@ def _session() -> Session:
     return Session(engine)
 
 
-def test_group_ai_message_memory_blocks_exact_duplicate_across_groups():
+def test_group_ai_message_memory_blocks_exact_duplicate_for_same_account_across_groups():
     now = _now()
     with _session() as session:
         first = reserve_group_ai_message(
@@ -43,16 +43,16 @@ def test_group_ai_message_memory_blocks_exact_duplicate_across_groups():
                 tenant_id=1,
                 group_id=33,
                 task_id="task-2",
-                account_id=102,
+                account_id=101,
                 raw_text="嫩是真嫩 就是不知道稳不稳",
                 now=now + timedelta(minutes=1),
             )
 
         assert exc.value.reference_id == first.id
-        assert exc.value.duplicate_window == "5m_exact"
+        assert exc.value.duplicate_window == "10d_exact"
 
 
-def test_group_ai_message_memory_blocks_semantic_duplicate_across_groups():
+def test_group_ai_message_memory_blocks_semantic_duplicate_for_same_account_across_groups():
     now = _now()
     with _session() as session:
         first = reserve_group_ai_message(
@@ -72,10 +72,10 @@ def test_group_ai_message_memory_blocks_semantic_duplicate_across_groups():
                 tenant_id=1,
                 group_id=33,
                 task_id="task-2",
-                account_id=102,
+                account_id=101,
                 raw_text="花花老师服务身材挺好",
                 now=now + timedelta(days=1),
             )
 
         assert exc.value.reference_id == first.id
-        assert exc.value.duplicate_window == "7d_semantic"
+        assert exc.value.duplicate_window == "10d_similar"

@@ -368,7 +368,7 @@ def test_postgres_index_ddl_failure_propagates(monkeypatch: pytest.MonkeyPatch, 
     assert exc_info.value is failure
 
 
-def test_window_memories_projects_only_similarity_columns_across_groups() -> None:
+def test_window_memories_projects_only_similarity_columns_for_account() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     statements: list[str] = []
@@ -383,6 +383,7 @@ def test_window_memories_projects_only_similarity_columns_across_groups() -> Non
             AiGroupMessageMemory(
                 tenant_id=1,
                 group_id=22,
+                account_id=101,
                 status="success",
                 planned_at=now,
                 normalized_text="跨群语义",
@@ -394,7 +395,7 @@ def test_window_memories_projects_only_similarity_columns_across_groups() -> Non
         event.listen(engine, "before_cursor_execute", capture_select)
         try:
             rows = _window_memories(
-                session, tenant_id=1, group_id=999, cutoff=now - timedelta(days=7),
+                session, tenant_id=1, account_id=101, cutoff=now - timedelta(days=10),
             )
         finally:
             event.remove(engine, "before_cursor_execute", capture_select)
@@ -424,7 +425,7 @@ def test_window_memories_propagates_database_errors() -> None:
 
     with pytest.raises(RuntimeError, match="^database unavailable$"):
         _window_memories(
-            UnavailableSession(), tenant_id=1, group_id=999, cutoff=_now() - timedelta(days=7),
+            UnavailableSession(), tenant_id=1, account_id=101, cutoff=_now() - timedelta(days=10),
         )
 
 

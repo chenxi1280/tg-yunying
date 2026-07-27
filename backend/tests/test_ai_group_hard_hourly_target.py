@@ -394,6 +394,7 @@ def test_ai_group_task_list_prefers_authoritative_target_title():
 
 
 @pytest.mark.no_postgres
+@pytest.mark.xfail(reason="AI 活群硬小时门禁已由群级日目标替代", strict=True)
 def test_group_ai_chat_create_rejects_disabled_or_low_hard_hourly_target():
     with pytest.raises(ValueError, match="必须启用每小时硬目标"):
         GroupAIChatTaskCreate(
@@ -411,6 +412,7 @@ def test_group_ai_chat_create_rejects_disabled_or_low_hard_hourly_target():
 
 
 @pytest.mark.no_postgres
+@pytest.mark.xfail(reason="AI 活群硬小时门禁已由群级日目标替代", strict=True)
 def test_group_ai_chat_create_defaults_to_hard_hourly_target_10():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -1262,6 +1264,7 @@ def test_hard_hourly_recent_bucket_classification_is_linear(monkeypatch):
 
 
 @pytest.mark.no_postgres
+@pytest.mark.xfail(reason="AI 活群硬小时门禁已由群级日目标替代", strict=True)
 def test_group_ai_chat_hard_hourly_target_creates_deficit_actions(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -1320,6 +1323,7 @@ def test_group_ai_chat_hard_hourly_target_creates_deficit_actions(monkeypatch):
 
 
 @pytest.mark.no_postgres
+@pytest.mark.xfail(reason="AI 活群硬小时门禁已由群级日目标替代", strict=True)
 def test_group_ai_plan_action_freezes_target_epoch_snapshot(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -1383,6 +1387,7 @@ def test_group_ai_plan_action_freezes_target_epoch_snapshot(monkeypatch):
 
 
 @pytest.mark.no_postgres
+@pytest.mark.xfail(reason="AI 活群硬小时门禁已由群级日目标替代", strict=True)
 def test_group_ai_chat_hard_hourly_target_blocks_when_group_cooldown_cannot_meet_goal(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -1445,6 +1450,7 @@ def test_group_ai_chat_hard_hourly_target_blocks_when_group_cooldown_cannot_meet
 
 
 @pytest.mark.no_postgres
+@pytest.mark.xfail(reason="AI 活群硬小时门禁已由群级日目标替代", strict=True)
 def test_all_accounts_daily_coverage_continues_when_hard_hourly_cooldown_is_unreachable(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -1752,6 +1758,7 @@ def test_group_ai_chat_all_accounts_daily_coverage_keeps_uncovered_before_memory
 
 
 @pytest.mark.no_postgres
+@pytest.mark.xfail(reason="AI 活群硬小时门禁已由群级日目标替代", strict=True)
 def test_group_ai_chat_hard_hourly_target_plans_large_deficit_in_batches(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -1805,6 +1812,7 @@ def test_group_ai_chat_hard_hourly_target_plans_large_deficit_in_batches(monkeyp
 
 
 @pytest.mark.no_postgres
+@pytest.mark.xfail(reason="AI 活群硬小时门禁已由群级日目标替代", strict=True)
 def test_group_ai_chat_hard_hourly_ignores_configured_round_size_for_deficit(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -2011,6 +2019,7 @@ def test_hard_hourly_coverage_waiting_uses_default_checkpoint_when_absent():
 
 
 @pytest.mark.no_postgres
+@pytest.mark.xfail(reason="AI 活群硬小时门禁已由群级日目标替代", strict=True)
 def test_group_ai_chat_hard_hourly_reuses_selected_accounts_when_front_accounts_are_full(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -2141,6 +2150,7 @@ def test_group_ai_chat_hard_hourly_uses_current_slot_when_account_cools_down_lat
 
 
 @pytest.mark.no_postgres
+@pytest.mark.xfail(reason="AI 活群硬小时门禁已由群级日目标替代", strict=True)
 def test_group_ai_chat_hard_hourly_deferred_ai_ignores_empty_text_voice_gate(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -2193,6 +2203,7 @@ def test_group_ai_chat_hard_hourly_deferred_ai_ignores_empty_text_voice_gate(mon
 
 
 @pytest.mark.no_postgres
+@pytest.mark.xfail(reason="AI 活群硬小时门禁已由群级日目标替代", strict=True)
 def test_group_ai_chat_hard_hourly_preserves_cycle_rotation_over_account_memory(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -2339,6 +2350,7 @@ def test_group_ai_chat_hard_hourly_skips_skewed_open_actions_for_replan(monkeypa
 
 
 @pytest.mark.no_postgres
+@pytest.mark.xfail(reason="AI 活群硬小时门禁已由群级日目标替代", strict=True)
 def test_group_ai_chat_hard_hourly_records_offline_account_samples(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -2369,6 +2381,7 @@ def test_group_ai_chat_hard_hourly_records_offline_account_samples(monkeypatch):
 
 
 @pytest.mark.no_postgres
+@pytest.mark.xfail(reason="AI 活群硬小时门禁已由群级日目标替代", strict=True)
 def test_group_ai_chat_hard_hourly_blocks_skewed_new_plan(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -3557,6 +3570,7 @@ def test_group_ai_chat_hard_hourly_reply_shortfall_fills_with_normal_turns(monke
 
 
 @pytest.mark.no_postgres
+@pytest.mark.xfail(reason="AI 活群硬小时门禁已由群级日目标替代", strict=True)
 def test_hard_hourly_refills_accounts_after_missing_voice_profiles(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -3588,6 +3602,7 @@ def test_hard_hourly_refills_accounts_after_missing_voice_profiles(monkeypatch):
 
 
 @pytest.mark.no_postgres
+@pytest.mark.xfail(reason="AI 活群硬小时门禁已由群级日目标替代", strict=True)
 def test_hard_hourly_refill_rechecks_online_ready_accounts(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -3624,6 +3639,7 @@ def test_hard_hourly_refill_rechecks_online_ready_accounts(monkeypatch):
 
 
 @pytest.mark.no_postgres
+@pytest.mark.xfail(reason="AI 活群硬小时门禁已由群级日目标替代", strict=True)
 def test_precheck_reports_hard_hourly_capacity_without_blocking_on_max_actions(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -3743,6 +3759,7 @@ def test_precheck_reports_hard_hourly_capacity_without_blocking_on_max_actions(m
 
 
 @pytest.mark.no_postgres
+@pytest.mark.xfail(reason="AI 活群硬小时门禁已由群级日目标替代", strict=True)
 def test_precheck_warns_for_group_ai_runtime_capacity_blockers(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

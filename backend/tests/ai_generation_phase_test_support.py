@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.integrations.telegram import OperationResult, SendResult
 from app.models import (
     Action,
+    AiAccountVoiceProfile,
     GroupContextMessage,
     Task,
     TaskAccountDailyCoverage,
@@ -21,6 +22,7 @@ from app.models import (
 )
 from app.services.task_center.ai_generation_dependencies import GenerationDependencies
 from app.services.task_center.ai_generator import GeneratedContent
+from app.services.task_center.account_voice_profile_cache import voice_profile_snapshot_hash
 
 
 def normal_generator(session: Session, outputs: list[GeneratedContent]):
@@ -135,6 +137,7 @@ def _seed_reply_scope(session: Session, now_value) -> GroupContextMessage:
         group_cooldown_seconds=0,
     ))
     session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True))
+    session.add(_test_mask(11)[0])
     context = GroupContextMessage(
         tenant_id=1,
         group_id=7,
@@ -171,8 +174,16 @@ def seed_reserved_reply_action(session: Session, now_value):
     return action, coverage
 
 
-def seed_reserved_normal_batch(session: Session, now_value, *, bind_coverage: bool = True):
+def seed_reserved_normal_batch(
+    session: Session,
+    now_value,
+    *,
+    bind_coverage: bool = True,
+    with_masks: bool = True,
+):
     first = seed_reply_action(session, now_value)
+    if not with_masks:
+        session.delete(session.get(AiAccountVoiceProfile, "phase-mask-11"))
     session.add(TgAccount(
         id=12,
         tenant_id=1,
@@ -190,7 +201,9 @@ def seed_reserved_normal_batch(session: Session, now_value, *, bind_coverage: bo
         stale_after_at=now_value + timedelta(minutes=10),
     ))
     session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=12, can_send=True))
-    first.payload = _normal_payload(1)
+    if with_masks:
+        session.add(_test_mask(12)[0])
+    first.payload = _normal_payload(1, now_value=now_value, with_mask=with_masks)
     first.claim_owner = "worker-a"
     first.claim_token = "claim-normal"
     second = Action(
@@ -204,7 +217,7 @@ def seed_reserved_normal_batch(session: Session, now_value, *, bind_coverage: bo
         claim_owner="worker-a",
         claim_token="claim-normal",
         scheduled_at=now_value,
-        payload=_normal_payload(2),
+        payload=_normal_payload(2, now_value=now_value, with_mask=with_masks),
     )
     coverages = [_normal_coverage(index, account_id, now_value) for index, account_id in enumerate((11, 12), 1)]
     if bind_coverage:
@@ -215,8 +228,9 @@ def seed_reserved_normal_batch(session: Session, now_value, *, bind_coverage: bo
     return [first, second], coverages
 
 
-def _normal_payload(index: int) -> dict:
-    return {
+def _normal_payload(index: int, *, now_value, with_mask: bool) -> dict:
+    account_id = 10 + index
+    payload = {
         "group_id": 7,
         "target_display": "运营群",
         "message_text": "",
@@ -229,6 +243,17 @@ def _normal_payload(index: int) -> dict:
         "ai_generation_claim_owner": "worker-a",
         "ai_generation_claim_token": "claim-normal",
         "ai_generation_history": "真人用户: 今天按原计划吗？",
+    }
+    if with_mask:
+        return {**payload, **_test_mask(account_id)[1]}
+    return {
+        **payload,
+        "content_source": "mask_missing_check_in",
+        "mask_status": "missing",
+        "fallback_obligation_key": (
+            f"task-reply-generation:7:{account_id}:"
+            f"{now_value.date().isoformat()}:mask_missing_check_in"
+        ),
     }
 
 
@@ -305,6 +330,31 @@ def _reply_payload(context_id: int) -> dict:
         "ai_generation_id": "cycle-reply",
         "ai_generation_status": "pending",
         "ai_generation_history": "真人用户: 今天按原计划吗？",
+        **_test_mask(11)[1],
+    }
+
+
+def _test_mask(account_id: int) -> tuple[AiAccountVoiceProfile, dict]:
+    profile = AiAccountVoiceProfile(
+        id=f"phase-mask-{account_id}",
+        tenant_id=1,
+        account_id=account_id,
+        version=1,
+        mask_name="",
+        audience_archetype="",
+        identity_frame="",
+        preference_tags=[],
+        status="active",
+        quality_status="active",
+        short_prompt_summary=f"账号{account_id}短句",
+    )
+    return profile, {
+        "account_mask_id": profile.id,
+        "account_mask_version": profile.version,
+        "voice_profile_contract_version": "style_only_v2",
+        "account_mask_snapshot_hash": voice_profile_snapshot_hash(profile),
+        "mask_status": "active",
+        "content_source": "account_mask",
     }
 
 

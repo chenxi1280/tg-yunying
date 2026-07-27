@@ -250,7 +250,7 @@ def test_daily_coverage_repeats_exact_check_in_per_coverage_without_dedupe(monke
     Base.metadata.create_all(engine)
     observed = {"provider_calls": 0, "gateway_calls": 0}
     with Session(engine) as session:
-        actions, coverages = seed_reserved_normal_batch(session, _now())
+        actions, coverages = seed_reserved_normal_batch(session, _now(), with_masks=False)
         monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args, **_kwargs: object())
         monkeypatch.setattr(dispatcher.gateway, "send_message", profile_sender(session, observed))
 
@@ -264,7 +264,7 @@ def test_daily_coverage_repeats_exact_check_in_per_coverage_without_dedupe(monke
 
         assert actions[0].status == "success", actions[0].result.get("error_code")
         assert actions[0].payload["message_text"] == "签到"
-        assert actions[0].payload["content_source"] == "check_in_direct"
+        assert actions[0].payload["content_source"] == "mask_missing_check_in"
         assert coverages[0].state == "confirmed"
         assert coverages[1].state == "reserved"
         assert coverages[1].reserved_action_id == actions[1].id
@@ -279,7 +279,7 @@ def test_daily_coverage_repeats_exact_check_in_per_coverage_without_dedupe(monke
         ) is True
         assert actions[1].status == "success"
         assert actions[1].payload["message_text"] == "签到"
-        assert actions[1].payload["content_source"] == "check_in_direct"
+        assert actions[1].payload["content_source"] == "mask_missing_check_in"
         assert actions[0].payload["ai_message_memory_id"] != actions[1].payload["ai_message_memory_id"]
         assert coverages[1].state == "confirmed"
         assert observed == {"provider_calls": 0, "gateway_calls": 2}
@@ -290,7 +290,7 @@ def test_daily_coverage_sends_exact_check_in_without_ai_provider(monkeypatch) ->
     Base.metadata.create_all(engine)
     observed = {"provider_calls": 0, "gateway_calls": 0}
     with Session(engine) as session:
-        actions, coverages = seed_reserved_normal_batch(session, _now())
+        actions, coverages = seed_reserved_normal_batch(session, _now(), with_masks=False)
         monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args, **_kwargs: object())
         monkeypatch.setattr(dispatcher.gateway, "send_message", profile_sender(session, observed))
 
@@ -305,9 +305,9 @@ def test_daily_coverage_sends_exact_check_in_without_ai_provider(monkeypatch) ->
         assert actions[0].status == "success", actions[0].result
         assert actions[0].payload["message_text"] == "签到"
         assert actions[0].payload["act_type"] == "check_in"
-        assert actions[0].payload["generation_source"] == "direct_check_in"
-        assert actions[0].payload["content_source"] == "check_in_direct"
-        assert actions[0].payload["human_quality_decision"] == "direct_check_in"
+        assert actions[0].payload["generation_source"] == "mask_missing_check_in"
+        assert actions[0].payload["content_source"] == "mask_missing_check_in"
+        assert actions[0].payload["human_quality_decision"] == "mask_missing_check_in"
         assert actions[0].payload["ai_generation_tokens"] == 0
         assert actions[0].payload["ai_message_memory_id"]
         assert coverages[0].state == "confirmed"
@@ -318,7 +318,7 @@ def test_direct_check_in_preserves_admission_probe_fields_written_after_payload_
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     with Session(engine) as session:
-        actions, _coverages = seed_reserved_normal_batch(session, _now())
+        actions, _coverages = seed_reserved_normal_batch(session, _now(), with_masks=False)
         action = actions[0]
         stale_payload = SendMessagePayload.model_validate(action.payload)
         action.payload = {
@@ -346,7 +346,7 @@ def test_daily_coverage_replaces_unsent_ai_content_with_direct_check_in(monkeypa
     Base.metadata.create_all(engine)
     observed = {"provider_calls": 0, "gateway_calls": 0}
     with Session(engine) as session:
-        actions, coverages = seed_reserved_normal_batch(session, _now())
+        actions, coverages = seed_reserved_normal_batch(session, _now(), with_masks=False)
         from app.services.task_center.ai_message_memory import reserve_group_ai_message
 
         old_memory = reserve_group_ai_message(
@@ -380,7 +380,7 @@ def test_daily_coverage_replaces_unsent_ai_content_with_direct_check_in(monkeypa
 
         assert actions[0].status == "success", actions[0].result
         assert actions[0].payload["message_text"] == "签到"
-        assert actions[0].payload["generation_source"] == "direct_check_in"
+        assert actions[0].payload["generation_source"] == "mask_missing_check_in"
         assert actions[0].payload["ai_generation_tokens"] == 0
         assert old_memory.status == "expired_before_send"
         assert old_memory.quality_decision == "superseded_by_direct_check_in"
@@ -392,7 +392,7 @@ def test_daily_coverage_replan_reserves_new_direct_check_in_memory() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     with Session(engine) as session:
-        actions, coverages = seed_reserved_normal_batch(session, _now())
+        actions, coverages = seed_reserved_normal_batch(session, _now(), with_masks=False)
         first = ai_generation_dispatch.ensure_send_message_content(
             session,
             actions[0],
@@ -474,7 +474,7 @@ def test_db_duplicate_rejection_terminates_only_its_generated_slot(monkeypatch) 
             tenant_id=1,
             group_id=7,
             task_id=actions[0].task_id,
-            account_id=99,
+            account_id=12,
             raw_text="这句以前发过",
         )
         session.commit()

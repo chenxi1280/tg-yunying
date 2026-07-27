@@ -50,10 +50,10 @@ def test_teacher_name_variants_block_same_shell_days_later():
                 tenant_id=1,
                 group_id=22,
                 task_id="task-1",
-                account_id=102,
+                account_id=101,
                 raw_text="小雪老师身材服务真好",
                 now=now + timedelta(days=2),
             )
 
         assert exc.value.reference_id == first.id
-        assert exc.value.duplicate_window == "7d_semantic"
+        assert exc.value.duplicate_window == "10d_exact"

@@ -13,7 +13,7 @@ from app.config import Settings
 from app.database import Base
 from app.integrations.telegram import OperationResult, SendResult, _resolve_telethon_target, _telethon_send_target
 from app.integrations.telegram.gateway import TelethonTelegramGateway
-from app.models import AccountPool, AccountStatus, Action, AiGroupMessageMemory, AiProvider, AiUsageLedger, AuditLog, ChannelMessage, ChannelMessageComment, ContentKeywordRule, FailureType, GroupArchive, GroupContextMessage, ListenerSourceState, MessageFingerprint, MessageTask, MessageTaskAttempt, OperationIssue, OperationIssueAccount, OperationIssueSource, OperationTarget, PromptTemplate, ReviewQueue, RuleSet, RuleSetVersion, SchedulingSetting, TargetRuntimeSummary, Task, TaskRuntimeSummary, TaskStatus, Tenant, TenantAiSetting, TgAccount, TgAccountAuthorization, TgAccountOnlineState, TgAccountSecurityBatch, TgAccountSecurityBatchItem, TgAccountSyncRecord, TgGroup, TgGroupAccount, TgLoginFlow, VerificationTask, WorkerHeartbeat
+from app.models import AccountPool, AccountStatus, Action, AiAccountVoiceProfile, AiGroupMessageMemory, AiProvider, AiUsageLedger, AuditLog, ChannelMessage, ChannelMessageComment, ContentKeywordRule, FailureType, GroupArchive, GroupContextMessage, ListenerSourceState, MessageFingerprint, MessageTask, MessageTaskAttempt, OperationIssue, OperationIssueAccount, OperationIssueSource, OperationTarget, PromptTemplate, ReviewQueue, RuleSet, RuleSetVersion, SchedulingSetting, TargetRuntimeSummary, Task, TaskRuntimeSummary, TaskStatus, Tenant, TenantAiSetting, TgAccount, TgAccountAuthorization, TgAccountOnlineState, TgAccountSecurityBatch, TgAccountSecurityBatchItem, TgAccountSyncRecord, TgGroup, TgGroupAccount, TgLoginFlow, VerificationTask, WorkerHeartbeat
 from app.schemas import ArchiveCreate, ChannelCommentTaskCreate, ChannelLikeTaskCreate, ChannelViewTaskCreate, GroupAIChatTaskCreate, GroupRelayTaskCreate, MaterialCreate, MaterialUpdate, MessageSendTaskCreate, OperationTargetAccountUpdate, OperationTargetAdmissionRetryRequest, OperationTargetUpdate, PromptTemplateCreate, PromptTemplateUpdate, SchedulingSettingUpdate, TaskPrecheckRequest, TaskSettingsUpdate, TaskSourceFilterOverrideRequest
 from app.schemas.operations_center import RuleSetVersionCreate
 from app.schemas.risk_control import RiskControlGlobalPolicyUpdate
@@ -30,6 +30,10 @@ from app.services.operations import filter_operation_targets, operation_target_d
 from app.services.verification import resolve_group_restriction_batch
 from app.services.task_center.executors.group_ai_chat import _choose_turn_account, _topic_relevant_context_rows, _voice_profile_match_decision, ai_cycle_mode, build_plan as build_group_ai_chat_plan
 from app.services.task_center.ai_generation_dependencies import GenerationDependencies
+from app.services.task_center.account_voice_profile_cache import (
+    VOICE_PROFILE_CONTRACT_VERSION,
+    voice_profile_snapshot_hash,
+)
 from app.services.task_center import ai_generator
 from app.services.task_center.ai_generator import AiGenerationUnavailable, GeneratedContent, _humanize_group_chat_punctuation
 from app.services.operations_center import _is_stale_heartbeat, listener_summary, list_listener_errors, list_listener_events, list_rule_sets, operation_metrics_summary, relay_attribution_csv, relay_attribution_report, reset_listener_watermark, rule_center_summary, switch_listener_account, test_rules as preview_rules, update_rule_set_config
@@ -99,6 +103,24 @@ def _ai_group_send_gate_payload(
 ) -> dict:
     if not session.scalar(select(TgAccountOnlineState).where(TgAccountOnlineState.tenant_id == 1, TgAccountOnlineState.account_id == account_id)):
         session.add(_online_state(account_id, now))
+    mask = session.scalar(select(AiAccountVoiceProfile).where(
+        AiAccountVoiceProfile.tenant_id == 1,
+        AiAccountVoiceProfile.account_id == account_id,
+        AiAccountVoiceProfile.status == "active",
+    ))
+    if mask is None:
+        mask = AiAccountVoiceProfile(
+            id=f"test-mask-{account_id}",
+            tenant_id=1,
+            account_id=account_id,
+            version=1,
+            status="active",
+            quality_status="active",
+            short_prompt_summary=f"账号{account_id}接话，偶尔追问",
+        )
+        session.add(mask)
+        session.flush()
+    snapshot_hash = voice_profile_snapshot_hash(mask)
     memory_id = f"memory-{action_id}"
     session.add(
         AiGroupMessageMemory(
@@ -110,11 +132,26 @@ def _ai_group_send_gate_payload(
             raw_text=text,
             normalized_text=text,
             text_fingerprint=memory_id,
+            account_mask_id=mask.id,
+            account_mask_version=mask.version,
+            mask_contract_version=VOICE_PROFILE_CONTRACT_VERSION,
+            mask_snapshot_hash=snapshot_hash,
+            mask_status="active",
+            content_source="account_mask",
             status="reserved",
             planned_at=now,
         )
     )
-    return {"slot_id": f"{task_id}:cycle:test:turn:{action_id}", "ai_message_memory_id": memory_id}
+    return {
+        "slot_id": f"{task_id}:cycle:test:turn:{action_id}",
+        "ai_message_memory_id": memory_id,
+        "account_mask_id": mask.id,
+        "account_mask_version": mask.version,
+        "voice_profile_contract_version": VOICE_PROFILE_CONTRACT_VERSION,
+        "account_mask_snapshot_hash": snapshot_hash,
+        "mask_status": "active",
+        "content_source": "account_mask",
+    }
 
 
 def _dispatch_deferred_ai_actions(
@@ -1831,7 +1868,6 @@ def test_task_center_dispatch_applies_default_failure_policy(monkeypatch):
         session.get(TgAccount, 11).status = "在线"
         session.commit()
         before = _now()
-        policy_before = group_send_limits._now()
         monkeypatch.setattr(dispatcher.gateway, "send_message", lambda *args, **kwargs: SendResult(False, failure_type=FailureType.FLOOD_WAIT.value, detail="FloodWait 120 秒"))
         flood_action = session.get(Action, "action-flood-wait")
         assert dispatcher.dispatch_action(session, flood_action) is True
@@ -1841,10 +1877,7 @@ def test_task_center_dispatch_applies_default_failure_policy(monkeypatch):
         assert flood_action.scheduled_at >= before + timedelta(seconds=120)
         assert flood_action.result["validation_stage"] == "failure_policy"
         assert flood_action.result["retry_after_seconds"] == 120
-        assert session.get(TgGroup, 7).next_group_send_slot_at >= policy_before + timedelta(seconds=120)
-
-        # Content-rewrite policy is a separate case, not a retry during the FloodWait window.
-        session.get(TgGroup, 7).next_group_send_slot_at = None
+        assert session.get(TgGroup, 7).next_group_send_slot_at is None
 
         setting = session.scalar(select(SchedulingSetting).where(SchedulingSetting.tenant_id == 1))
         setting.default_on_content_rejected = "rewrite_and_retry"
@@ -4398,15 +4431,23 @@ def test_group_ai_chat_prompt_does_not_expose_mask_transaction_preferences(monke
 
 
 def _mask_voice_profiles(_session, *, tenant_id: int, account_ids: list[int]):  # noqa: ARG001
+    from app.services.task_center.account_voice_profiles import voice_profile_prompt_details
+
+    details = voice_profile_prompt_details(
+        _session,
+        tenant_id=tenant_id,
+        account_ids=account_ids,
+    )
     return {
-        101: {
-            "version": 1,
+        account_id: {
+            **detail,
             "summary": "本地男性短句寻欢客重点问位置时间和避坑",
             "mask_name": "本地男客",
             "audience_archetype": "老哥",
             "identity_frame": "本地男性寻欢客",
             "preference_tags": ["避坑", "价格", "别跑空"],
         }
+        for account_id, detail in details.items()
     }
 
 
@@ -5423,7 +5464,7 @@ def _run_pending_dedup_scenario(session: Session, monkeypatch, generator) -> Sim
 
 
 @pytest.mark.no_postgres
-def test_group_ai_chat_drops_repeated_fixed_shell_phrases(monkeypatch):
+def test_group_ai_chat_allows_similar_shell_phrases_for_different_accounts(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = datetime(2026, 5, 13, 11, 0, 0)
@@ -5467,8 +5508,8 @@ def test_group_ai_chat_drops_repeated_fixed_shell_phrases(monkeypatch):
         successful_messages = [action.payload["message_text"] for action in succeeded]
 
     assert created == 3
-    assert successful_messages == ["这点加分", "最近榜单更新挺快"]
-    assert failed_codes == ["duplicate_message"]
+    assert successful_messages == ["这点加分", "这点加分", "最近榜单更新挺快"]
+    assert failed_codes == []
 
 
 @pytest.mark.no_postgres

@@ -491,7 +491,7 @@ def test_group_attempt_marks_gateway_started_before_releasing_target_lock(monkey
         assert stored.status == "gateway_call_started"
         assert stored.gateway_call_started_at is not None
         assert session.get(Action, action.id).status == "executing"
-        assert session.get(TgGroup, group.id).next_group_send_slot_at == policy_now + timedelta(minutes=1)
+        assert session.get(TgGroup, group.id).next_group_send_slot_at is None
 
 
 def test_manual_send_rejects_cross_tenant_target_before_gateway():

@@ -172,7 +172,7 @@ def test_daily_coverage_does_not_replan_while_hard_hourly_dispatch_is_lagging(
     assert requires_planning_with_open_actions(session, task) is True
 
 
-def test_daily_coverage_requires_planning_after_hard_hourly_target_is_met(
+def test_daily_coverage_ignores_legacy_hard_hourly_config(
     session: Session,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -188,8 +188,6 @@ def test_daily_coverage_requires_planning_after_hard_hourly_target_is_met(
         "_now",
         lambda: beijing_now().replace(hour=22, minute=50, second=0, microsecond=0),
     )
-    monkeypatch.setattr(group_ai_chat, "hard_hourly_requires_planning", lambda *_args, **_kwargs: False)
-
     assert requires_planning_with_open_actions(session, task) is True
 
 

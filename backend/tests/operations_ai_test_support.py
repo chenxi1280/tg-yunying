@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.models import (
     AccountPool,
     AccountStatus,
+    AiAccountVoiceProfile,
     AiProvider,
     Task,
     Tenant,
@@ -49,6 +50,14 @@ def seed_group_accounts(
         )
         session.add_all([account, TgGroupAccount(
             tenant_id=1, group_id=group_id, account_id=account_id, can_send=True,
+        ), AiAccountVoiceProfile(
+            id=f"test-mask-{account_id}",
+            tenant_id=1,
+            account_id=account_id,
+            version=1,
+            status="active",
+            quality_status="active",
+            short_prompt_summary=f"账号{account_id}接话，偶尔追问",
         )])
         if online_at is not None:
             session.add(_online_state(account_id, online_at))

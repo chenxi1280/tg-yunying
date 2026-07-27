@@ -14,7 +14,10 @@ LEGACY_ANCHOR_REPLAN_CODE = "voice_profile_anchor_replan"
 LEGACY_ANCHOR_REPLAN_MESSAGE = "历史账号面具消费者合同正文已过期，等待重新生成"
 LEGACY_ANCHOR_OPEN_STATUSES = ("pending", "claiming", "retryable_failed")
 VOICE_PROFILE_CONTRACT_VERSION = "style_only_v2"
-DIRECT_CHECK_IN_GENERATION_SOURCE = "direct_check_in"
+DIRECT_CHECK_IN_GENERATION_SOURCES = frozenset({
+    "direct_check_in",
+    "mask_missing_check_in",
+})
 
 
 def expire_legacy_anchor_rewritten_actions(session: Session, task: Task) -> int:
@@ -60,7 +63,7 @@ def _requires_contract_replan(action: Action) -> bool:
     if _was_anchor_rewritten(action):
         return True
     payload = action.payload if isinstance(action.payload, dict) else {}
-    if payload.get("generation_source") == DIRECT_CHECK_IN_GENERATION_SOURCE:
+    if payload.get("generation_source") in DIRECT_CHECK_IN_GENERATION_SOURCES:
         return False
     generated = (
         payload.get("ai_generation_status") == "ready"

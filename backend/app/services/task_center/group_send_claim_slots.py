@@ -59,7 +59,7 @@ def _group_ids(actions: list[Action]) -> set[int]:
 
 
 def _group_id(action: Action) -> int | None:
-    if action.action_type != "send_message":
+    if action.action_type != "send_message" or action.task_type == "group_ai_chat":
         return None
     value = (action.payload or {}).get("group_id")
     return int(value) if isinstance(value, int) or (isinstance(value, str) and value.isdigit()) else None

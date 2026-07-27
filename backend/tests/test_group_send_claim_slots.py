@@ -88,7 +88,7 @@ def _seed_groups(session: Session, now_value: datetime) -> list[Action]:
     return actions
 
 
-def test_future_legacy_slot_is_filtered_without_blocking_account_only_group() -> None:
+def test_ai_actions_ignore_future_legacy_group_slot() -> None:
     now_value = datetime(2026, 7, 27, 12, 0)
     with _session() as session:
         actions = _seed_groups(session, now_value)
@@ -96,20 +96,20 @@ def test_future_legacy_slot_is_filtered_without_blocking_account_only_group() ->
 
         selected = filter_ready_group_send_actions(session, actions, now_value)
 
-        assert [action.id for action in selected] == ["account-only"]
+        assert [action.id for action in selected] == ["legacy-first", "legacy-second", "account-only"]
 
 
-def test_group_lock_keeps_only_first_legacy_action_in_claim_batch() -> None:
+def test_ai_actions_ignore_legacy_group_claim_lock() -> None:
     now_value = datetime(2026, 7, 27, 12, 0)
     with _session() as session:
         actions = _seed_groups(session, now_value)
 
         selected = lock_eligible_group_send_actions(session, actions, now_value)
 
-        assert [action.id for action in selected] == ["legacy-first", "account-only"]
+        assert [action.id for action in selected] == ["legacy-first", "legacy-second", "account-only"]
 
 
-def test_inflight_legacy_action_blocks_only_its_group() -> None:
+def test_ai_actions_ignore_inflight_legacy_group_slot() -> None:
     now_value = datetime(2026, 7, 27, 12, 0)
     with _session() as session:
         actions = _seed_groups(session, now_value)
@@ -128,10 +128,10 @@ def test_inflight_legacy_action_blocks_only_its_group() -> None:
 
         selected = lock_eligible_group_send_actions(session, actions, now_value)
 
-        assert [action.id for action in selected] == ["account-only"]
+        assert [action.id for action in selected] == ["legacy-first", "legacy-second", "account-only"]
 
 
-def test_dispatcher_claims_only_first_due_legacy_group_action(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_dispatcher_claims_all_due_ai_actions(monkeypatch: pytest.MonkeyPatch) -> None:
     now_value = datetime(2026, 7, 27, 12, 0)
     monkeypatch.setattr(dispatcher, "_now", lambda: now_value)
     monkeypatch.setattr(
@@ -155,8 +155,8 @@ def test_dispatcher_claims_only_first_due_legacy_group_action(monkeypatch: pytes
 
         claimed = dispatcher.claim_actions(session, limit=3, worker_id="group-slot-test")
 
-        assert [action.id for action in claimed] == ["legacy-first", "account-only"]
-        assert session.get(Action, "legacy-second").status == "pending"
+        assert [action.id for action in claimed] == ["legacy-first", "legacy-second", "account-only"]
+        assert session.get(Action, "legacy-second").status == "executing"
 
 
 def test_gateway_slot_reservation_advances_only_legacy_group() -> None:
@@ -173,7 +173,7 @@ def test_gateway_slot_reservation_advances_only_legacy_group() -> None:
         assert account_only.next_group_send_slot_at is None
 
 
-def test_gateway_rechecks_persisted_legacy_slot(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ai_gateway_ignores_persisted_legacy_slot(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.services.task_center import group_send_limits
 
     now_value = datetime(2026, 7, 27, 12, 0)
@@ -185,8 +185,7 @@ def test_gateway_rechecks_persisted_legacy_slot(monkeypatch: pytest.MonkeyPatch)
 
         block = group_send_slot_block(session, action=actions[0], group=group)
 
-        assert block is not None
-        assert block.retry_after_seconds == 15
+        assert block is None
 
 
 def test_known_gateway_failure_releases_only_its_slot_reservation(monkeypatch: pytest.MonkeyPatch) -> None:

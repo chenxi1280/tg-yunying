@@ -320,7 +320,7 @@ def _seed_new_account_e2e(session: Session) -> Task:
             account_id=1,
             version=1,
             status="active",
-            short_prompt_summary="自然短句",
+            short_prompt_summary="账号1短句",
         ),
     ])
     session.commit()
@@ -329,8 +329,12 @@ def _seed_new_account_e2e(session: Session) -> Task:
     return task
 
 
-def test_new_account_event_reaches_online_probe_and_planner_action(session: Session, monkeypatch) -> None:
-    now = datetime(2026, 7, 13, 22, 30)
+def test_new_account_event_reaches_online_daily_target_planner(session: Session, monkeypatch) -> None:
+    now = datetime(2026, 7, 13, 4, 30)
+    monkeypatch.setattr(
+        "app.services.task_center.account_voice_profiles.cached_voice_profile_prompt_details",
+        lambda _tenant_id, account_ids: ({}, account_ids),
+    )
     task = _seed_new_account_e2e(session)
 
     assert process_account_eligibility_events(session, limit=10, now=now) == 1
@@ -356,15 +360,19 @@ def test_new_account_event_reaches_online_probe_and_planner_action(session: Sess
         "app.services.account_online_probe.gateway.check_account_health",
         lambda *_args: AccountHealth(status=AccountStatus.ACTIVE.value, health_score=96, detail="ok"),
     )
-    assert probe_due_online_states(session, limit=10, now=now) == 1
+    recovered_at = datetime(2026, 7, 13, 4, 31)
+    monkeypatch.setattr(group_ai_chat, "_now", lambda: recovered_at)
+    monkeypatch.setattr("app.services.task_center.daily_coverage._now", lambda: recovered_at)
+    assert probe_due_online_states(session, limit=10, now=recovered_at) == 1
     created = group_ai_chat.build_plan(session, task)
     pending = list(session.scalars(select(Action).where(Action.task_id == task.id, Action.status == "pending")))
 
     assert state.online_status == "online"
     assert coverage.blocker_code == ""
-    assert created == 1
-    assert len(pending) == 1
-    assert pending[0].payload["ai_generation_status"] == "pending"
+    assert created == 0
+    assert pending == []
+    assert task.last_error == "群日目标按计划推进中，等待下一发送时点"
+    assert task.stats["skip_reason"] == "daily_target_pacing"
 
 
 def test_failed_scope_event_is_delayed_without_starving_new_events(session: Session, monkeypatch) -> None:

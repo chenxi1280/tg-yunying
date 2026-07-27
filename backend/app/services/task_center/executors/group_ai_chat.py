@@ -647,7 +647,7 @@ def _load_turn_plan(
     *,
     accounts: list[Any],
     context: ContextPlanState,
-) -> TurnPlanState:
+) -> TurnPlanState | PlanAbort:
     cycle_index = _next_cycle_index(session, task)
     round_config = _coverage_round_config(
         _hard_hourly_round_config(facts.config, facts.hard_progress),
@@ -665,6 +665,12 @@ def _load_turn_plan(
             session, task, facts, accounts=accounts,
         ),
     )
+    if not selected or turn_count <= 0:
+        stats = dict(task.stats or {})
+        stats["skip_reason"] = "daily_target_pacing"
+        task.stats = stats
+        task.last_error = "群日目标按计划推进中，等待下一发送时点"
+        return PlanAbort()
     deferred = _daily_coverage_generation_is_deferred(
         session,
         task,
