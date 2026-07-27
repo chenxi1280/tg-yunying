@@ -1565,7 +1565,7 @@ def recover_pending_visibility_credits(session: Session, limit: int = 100) -> in
         if visibility in {"post_send_intercepted", "not_visible"}:
             if admission is not None:
                 mark_post_send_intercepted(session, admission=admission)
-            close_pending_visibility_credit(session, action_id=action.id, status="post_send_intercepted")
+            close_pending_visibility_credit(session, action_id=action.id, status="intercepted")
             action.status = "failed"
             action.result = {
                 **result,

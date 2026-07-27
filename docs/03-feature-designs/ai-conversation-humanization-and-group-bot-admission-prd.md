@@ -379,7 +379,7 @@ durable_debt 排除：
 | Gateway 回执 remote id，且本条**需要**可见性核验 | Attempt 可记 gateway 边界成功；Action=`pending_visibility` | **不**插入正式 `TaskHardHourlyDeliveryCredit`；插入 **`pending_visibility_credit`** 占位（`UNIQUE(action_id)`，关联 plan bucket，**不**增加 bucket.`success_count`） | **不**确认完成；行保持 sending/unknown 类占用 |
 | Gateway 回执且本条**不需要**可见性核验 | 沿用 continuity：可直接正式 credit | 正式 credit + success_count | 可确认完成 |
 | `visible_confirmed` | Action 业务 success | **同一短事务**：删除/关闭 pending 占位 → 插入正式 `TaskHardHourlyDeliveryCredit` → bucket.`success_count`+1（仍 `UNIQUE(action_id)`，与 continuity 精确一次语义一致） | 确认完成 |
-| `post_send_intercepted` / 确认失败 | 失败终态 | 关闭 pending 占位，**无**正式 credit；不占 reservation | 不完成 |
+| `post_send_intercepted` / 确认失败 | 失败终态 | 关闭 pending 占位，hold 存储状态固定为字段长度安全的 `intercepted`；Action/admission 仍写 `post_send_intercepted`；**无**正式 credit，不占 reservation | 不完成 |
 | 窗口结束仍未知 | Action=`unknown_after_send`（hold_reason 可保留 pending_visibility 痕迹） | pending 占位**保留**（仍算 `unknown_after_send_hold_count`）；走 continuity 人工/只读裁决；裁决可见才转正式 credit | 同左 |
 
 规则：

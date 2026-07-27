@@ -266,6 +266,41 @@ def test_pending_visibility_confirms_after_full_window(monkeypatch) -> None:
         assert coverage.confirmed_count == 1
 
 
+def test_pending_visibility_intercept_uses_storage_safe_hold_status(monkeypatch) -> None:
+    with _session() as session:
+        _seed_scope(session)
+        action = session.get(Action, "send-1")
+        action.status = "unknown_after_send"
+        admission = ensure_admission_after_join(
+            session,
+            tenant_id=1,
+            group_id=7,
+            account_id=11,
+            membership_action_id="join-1",
+            join_start_cursor="500",
+        )
+        hold = PendingVisibilityCredit(
+            tenant_id=1,
+            action_id=action.id,
+            remote_message_id="600",
+        )
+        session.add(hold)
+        session.flush()
+        hold.created_at = datetime.now(timezone.utc) - timedelta(seconds=100)
+        monkeypatch.setattr(
+            dispatcher,
+            "_probe_post_send_visibility",
+            lambda *_args, **_kwargs: "not_visible",
+        )
+
+        assert recover_pending_visibility_credits(session) == 1
+        assert hold.status == "intercepted"
+        assert len(hold.status) <= PendingVisibilityCredit.__table__.c.status.type.length
+        assert action.status == "failed"
+        assert action.result["error_code"] == "post_send_intercepted"
+        assert admission.state == "post_send_intercepted"
+
+
 def _session() -> Session:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
