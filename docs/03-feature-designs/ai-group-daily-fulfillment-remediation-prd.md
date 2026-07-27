@@ -56,7 +56,7 @@
 5. 日覆盖 debt 必须独立于 hard_hourly deficit 计算。硬小时达标不能成为忽略当日未完成覆盖的理由。
 6. 操作人员可以定位账号权限、入群审批、质量拒绝、生成契约、调度未建单五类问题，并看到正确处理入口。
 7. 群管机器人无频道引用、观察未闭合和策略未决必须分别显示；它们不能被笼统写成“需要关注频道”，也不能因 UI/历史 result 的陈旧错误字段掩盖已远端成功的覆盖事实。
-8. 当群管频道/“我已加入”只存在于内联按钮时，日覆盖链路必须以原消息、可信 peer、精确按钮和真实回执为准；历史已入库提示重新观测到同一 peer 的按钮时只补齐安全摘要；可信 peer 的普通推广内容也不得进入控制状态机、创建频道 follow 或把等待账号写成未归属，且同群新 admission 必须串行，避免把一条面向单账号的提示误套用给当天多个覆盖账号。带明确收件人但不匹配当前账号的群管提示不得降级归属给唯一 waiting account。因 `group_bot_control_prompt_unverified` 暂停的旧 follow 事实不阻塞新世代的有效频道集合；只有显式 restart 后的新 source message 才能重建同一频道 Action，日覆盖分母和未完成 blocker 不得因此缩小。
+8. 当群管频道/“我已加入”只存在于内联按钮时，日覆盖链路必须以原消息、可信 peer、精确按钮和真实回执为准；历史已入库提示重新观测到同一 peer 的按钮时只补齐安全摘要；可信 peer 的普通推广内容也不得进入控制状态机、创建频道 follow 或把等待账号写成未归属，且同群新 admission 必须串行，避免把一条面向单账号的提示误套用给当天多个覆盖账号。带明确收件人但不匹配当前账号的群管提示不得降级归属给唯一 waiting account。因 `group_bot_control_prompt_unverified` 暂停的旧 follow 事实不阻塞新世代的有效频道集合；只有显式 restart，或已审计全群规则重新观察到不同 source message 且当前频道引用仍一致时，才能重建同一频道 Action，日覆盖分母和未完成 blocker 不得因此缩小。
 9. `ExecutionAttempt.gateway_call_started_at` 是唯一的 Telegram 远端不确定性边界：它为空的 overdue Action 必须显示为 Dispatcher 积压并保留 reservation；它非空的 overdue Action 才可进入 `unknown + remote_reconcile`，两者都不得自动重复建单。
 10. Dispatcher Scope、Window、Allocation 的 active counter 是可重算投影，不是独立事实源。任何终态释放必须以同 scope 内仍为 `executing + dispatch_claim_active` 的 Action 重新核对 exact binding；计数漂移必须留审计证据，但不得让单条旧 Action 阻塞整批 Recovery。
 11. `DispatchClaimPlan.candidate_action_ids` 是当前 Window 已获 allocation 和公平仲裁后的同优先级领取顺序。行锁阶段必须先保留既有 target admission、硬小时、搜索 membership/source、任务优先级、频道评论和公平优先级，再在同一优先级内按该序列跳过已不符合条件或被其他 worker 锁住的行；不得再用旧 `scheduled_at` / `created_at` 队列改写顺序。
@@ -161,6 +161,7 @@ maximum_confirmable_count = frozen_denominator_count - terminal_permission_block
 2. 候选限于运行中 `group_ai_chat` 的持久账号 scope 内、同群且未终态的现有 `GroupBotAdmission`；不同 trusted peer、没有运行任务绑定、`blocked`、`abandoned` 的 admission 一律跳过。不得仅因账户在 `TgGroupAccount` 中存在而伪造 admission 或扩大任务分母。
 3. 每个候选创建自己的 `group_bot_channel_follow`、必要时的精确 callback Action，并携带同一 source message、peer、按钮 URL/坐标、admission/version 与绑定 task/account。follow 和 callback 成功都不直接写 ready；正文 `send_message` 仍在 admission gate 之后。
 4. policy 只是受限信任根，不是历史消息重放开关。策略生效后必须由 listener 再观察到同 peer 的有效控制事件；没有新证据时保留 blocker，并在任务详情显示 `group_bot_policy_unresolved` / `group_bot_rule_unattributed` 的真实区别。
+5. 存量 `group_bot_control_prompt_unverified` follow 只可在本路径收到不同 source message 且 channel_ref 仍在当前精确集合时原地 rearm；旧 Action 保留审计，其他 blocked follow 不得批量复活。
 
 ### 5.2 内容多样性和重复质量失败
 

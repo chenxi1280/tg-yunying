@@ -10,6 +10,7 @@ from app.database import Base
 from app.models import (
     Action,
     GroupBotAdmission,
+    GroupBotRequiredChannelFollow,
     GroupContextMessage,
     OperationTarget,
     Task,
@@ -206,6 +207,51 @@ def test_audited_global_callback_without_channel_reference_does_not_fan_out():
 
         assert session.query(Action).filter(Action.action_type == GROUP_BOT_CHANNEL_FOLLOW_ACTION_TYPE).count() == 0
         assert session.get(GroupBotAdmission, 1).state == "group_bot_rule_unattributed"
+
+
+def test_audited_global_prompt_rearms_old_unverified_current_channel_follow():
+    with _session() as session:
+        group, accounts = _seed_global_rule_scope(session)
+        _seed_waiting_admissions(session, group.id, accounts)
+        first = session.get(GroupBotAdmission, 1)
+        session.add(
+            GroupBotRequiredChannelFollow(
+                admission_id=first.id,
+                channel_ref="school_news",
+                source_message_id="old-control",
+                action_id="old-follow-action",
+                status="blocked",
+                failure_code="group_bot_control_prompt_unverified",
+            )
+        )
+        create_policy(
+            session,
+            tenant_id=1,
+            group_id=group.id,
+            completion_policy="explicit_bot_confirmation",
+            trusted_bot_peer_id="900",
+            reason="reviewed new group bot control",
+            evidence_ref="group-context:99",
+            created_by="operator",
+        )
+
+        insert_context_snapshots(
+            session,
+            group,
+            accounts[0],
+            [_global_rule_snapshot()],
+            ignored_sender=lambda _snapshot: False,
+            create_source_media=False,
+            learning_scene=None,
+        )
+
+        follow = session.query(GroupBotRequiredChannelFollow).filter_by(admission_id=first.id, channel_ref="school_news").one()
+        assert follow.status == "pending"
+        assert follow.failure_code == ""
+        assert follow.source_message_id == "99"
+        assert follow.action_id != "old-follow-action"
+        follows = list(session.query(Action).filter(Action.action_type == GROUP_BOT_CHANNEL_FOLLOW_ACTION_TYPE))
+        assert {action.account_id for action in follows} == {11, 12}
 
 
 def _seed_global_rule_scope(session: Session) -> tuple[TgGroup, list[TgAccount]]:

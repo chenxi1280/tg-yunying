@@ -5,7 +5,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import GroupBotAdmission, Task, TaskMembershipAdmissionItem
+from app.models import GroupBotAdmission, GroupBotRequiredChannelFollow, Task, TaskMembershipAdmissionItem
 
 from .group_bot_admission import (
     SOURCE_BOUND_POLICY_TYPES,
@@ -42,13 +42,15 @@ def apply_trusted_global_group_rule(
     """Plan exact admission actions for a trusted, recipient-free group-wide prompt."""
     if not _global_rule_authorized(session, tenant_id, group_id, bot_peer_id, is_admin_bot):
         return []
-    if not is_group_bot_control_prompt(text, control_buttons) or not parse_channel_refs(text, control_buttons):
+    channel_refs = tuple(parse_channel_refs(text, control_buttons))
+    if not is_group_bot_control_prompt(text, control_buttons) or not channel_refs:
         return []
     applied: list[GroupBotAdmission] = []
     for admission in _candidate_admissions(session, tenant_id, group_id, bot_peer_id):
         task_id = _bound_running_task_id(session, admission)
         if not task_id:
             continue
+        _rearm_unverified_current_follows(session, admission, message_id, channel_refs)
         ingest_trusted_bot_prompt(
             session,
             admission=admission,
@@ -65,6 +67,34 @@ def apply_trusted_global_group_rule(
         applied.append(admission)
     session.flush()
     return applied
+
+
+def _rearm_unverified_current_follows(
+    session: Session,
+    admission: GroupBotAdmission,
+    message_id: str,
+    channel_refs: tuple[str, ...],
+) -> None:
+    if admission.state != "group_bot_rule_unattributed" or not message_id:
+        return
+    follows = session.scalars(
+        select(GroupBotRequiredChannelFollow).where(
+            GroupBotRequiredChannelFollow.admission_id == admission.id,
+            GroupBotRequiredChannelFollow.channel_ref.in_(channel_refs),
+            GroupBotRequiredChannelFollow.status == "blocked",
+            GroupBotRequiredChannelFollow.failure_code == "group_bot_control_prompt_unverified",
+        )
+    )
+    for follow in follows:
+        if follow.source_message_id == message_id:
+            continue
+        follow.source_message_id = message_id
+        follow.action_id = ""
+        follow.resolved_peer_id = ""
+        follow.resolved_type = ""
+        follow.status = "pending"
+        follow.failure_code = ""
+        follow.completed_at = None
 
 
 def _global_rule_authorized(

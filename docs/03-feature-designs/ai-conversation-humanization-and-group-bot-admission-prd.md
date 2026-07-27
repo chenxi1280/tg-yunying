@@ -228,6 +228,7 @@ else:
 3. 文本没有明确收件人；`explicit_recipient_unmatched`、`explicit_recipient_ambiguous`、普通推广和完成回执都不得进入本路径；
 4. 候选仅限该群现存、未终态的 `GroupBotAdmission`，且账号属于运行中 `group_ai_chat` 的持久 `TaskMembershipAdmissionItem` scope；已绑定另一可信 peer、`blocked`、`abandoned` 或没有运行任务绑定的 admission 必须跳过并保留原事实；
 5. 每个候选都复用同一 `source_message_id`、peer、URL/按钮摘要、admission/version，创建其自己的 `group_bot_channel_follow` 与必要的精确 confirmation action。不得创建正文 `send_message`、不得改写 `can_send`、不得直接 ready。
+6. 若该 admission 的当前频道引用已有 `status=blocked + failure_code=group_bot_control_prompt_unverified` 的历史 follow，只有本路径再次观察到**不同** `source_message_id`、且该 channel_ref 仍在新消息的精确引用集合中时，才可清空其 Action 绑定并重置为 pending；旧 Action/follow 证据必须保留。相同 source、非当前引用、未知来源或没有 active scope 时一律不得 rearm。
 
 该规则解决“群管向所有成员广播关注频道要求”不能归属单一账号的真实协议，不是未知 bot 的放行捷径。策略生效后的 listener 必须再次观察到该 exact peer 的有效控制事件才可展开；不得静默重放无审计来源、私聊消息或历史普通上下文。频道 follow 成功后的 ready 仍完全遵守 §5.5 的 confirmation / `follow_sufficient` 规则。
 
