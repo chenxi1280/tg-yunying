@@ -26,6 +26,7 @@ from app.models import (
 )
 from app.security import encrypt_secret
 from app.services.task_center import dispatcher
+from app.services.task_center import service as task_service
 from app.services.task_center.dispatcher import dispatch_action
 from app.services.task_center.payloads import SearchJoinMembershipPayload, SearchJoinPayload
 from app.schemas.task_center import TaskRetryRequest
@@ -135,6 +136,118 @@ def _source_action(session: Session) -> tuple[Task, Action]:
 
 def _target_found_result() -> dict:
     return {"success": True, "join_status": "target_found", "search_end_reason": "target_found", "target_group_id": 17}
+
+
+def _unknown_membership_child(session: Session, now: datetime) -> Action:
+    _task, source = _source_action(session)
+    source.status = "success"
+    source.result = {
+        "success": True,
+        "join_status": "membership_pending",
+        "target_click_observed": True,
+    }
+    child = dispatcher.create_membership_child(
+        session,
+        source,
+        SearchJoinPayload.model_validate(_source_payload()),
+        now,
+    )
+    child.status = "unknown_after_send"
+    child.executed_at = now
+    session.commit()
+    return child
+
+
+@pytest.mark.no_postgres
+def test_unknown_search_join_membership_recovery_respects_next_probe_at(
+    monkeypatch,
+    session: Session,
+) -> None:
+    now = datetime(2026, 7, 27, 12, 0)
+    child = _unknown_membership_child(session, now)
+    child.result = {
+        "unknown_membership_reprobe_status": "pending",
+        "unknown_membership_reprobe_next_at": "2026-07-27T12:02:00",
+    }
+    session.commit()
+    calls: list[int] = []
+    monkeypatch.setattr(
+        task_service.gateway,
+        "probe_search_join_membership",
+        lambda account_id, *_args: calls.append(account_id)
+        or {"success": False, "join_status": "membership_pending"},
+        raising=False,
+    )
+
+    recovered = task_service._recover_existing_unknown_search_join_membership_actions(
+        session,
+        now,
+        limit=10,
+    )
+
+    assert recovered == 0
+    assert calls == []
+
+
+@pytest.mark.no_postgres
+def test_unknown_search_join_membership_recovery_skips_active_claim(
+    monkeypatch,
+    session: Session,
+) -> None:
+    now = datetime(2026, 7, 27, 12, 0)
+    child = _unknown_membership_child(session, now)
+    child.claim_owner = "recovery:other-worker"
+    child.claim_token = "other-token"
+    child.claim_expires_at = datetime(2026, 7, 27, 12, 5)
+    session.commit()
+    calls: list[int] = []
+    monkeypatch.setattr(
+        task_service.gateway,
+        "probe_search_join_membership",
+        lambda account_id, *_args: calls.append(account_id)
+        or {"success": False, "join_status": "membership_pending"},
+        raising=False,
+    )
+
+    recovered = task_service._recover_existing_unknown_search_join_membership_actions(
+        session,
+        now,
+        limit=10,
+    )
+
+    assert recovered == 0
+    assert calls == []
+    assert child.claim_token == "other-token"
+
+
+@pytest.mark.no_postgres
+def test_unknown_search_join_membership_recovery_releases_claim_after_probe(
+    monkeypatch,
+    session: Session,
+) -> None:
+    now = datetime(2026, 7, 27, 12, 0)
+    child = _unknown_membership_child(session, now)
+    calls: list[int] = []
+    monkeypatch.setattr(
+        task_service.gateway,
+        "probe_search_join_membership",
+        lambda account_id, *_args: calls.append(account_id)
+        or {"success": False, "join_status": "membership_pending"},
+        raising=False,
+    )
+
+    recovered = task_service._recover_existing_unknown_search_join_membership_actions(
+        session,
+        now,
+        limit=10,
+    )
+
+    assert recovered == 0
+    assert calls == [101]
+    assert child.claim_owner == ""
+    assert child.claim_token == ""
+    assert child.claim_expires_at is None
+    assert child.result["unknown_membership_reprobe_next_at"] == "2026-07-27T12:02:00"
 
 
 @pytest.mark.no_postgres

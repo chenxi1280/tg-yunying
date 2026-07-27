@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import Action, ExecutionAttempt, SearchJoinProtocolTrace
-from app.services._common import _now
 
 
 HOT_LIST_RESET_KIND = "hot_list_reset"
@@ -43,58 +41,6 @@ def record_search_join_protocol_trace(
         return trace
     _update_reset_trace(trace, phase, result)
     return trace
-
-
-def begin_hot_list_reset(
-    session: Session,
-    action: Action,
-    *,
-    payload: dict,
-    result: dict,
-    attempt: ExecutionAttempt,
-) -> bool:
-    if _trace_for_update(session, action.id, HOT_LIST_RESET_KIND) is not None:
-        return False
-    trace = SearchJoinProtocolTrace(
-        tenant_id=action.tenant_id,
-        task_id=action.task_id,
-        action_id=action.id,
-        bot_username=str(payload.get("bot_username") or "").lstrip("@"),
-        protocol_sample_version=str(payload.get("protocol_sample_version") or ""),
-        recovery_kind=HOT_LIST_RESET_KIND,
-        attempt_no=attempt.attempt_no,
-        event_type="hot_list_reset_started",
-        page_phase=str(result.get("jisou_page_phase") or "hot_list_page"),
-        status="reset_started",
-        trace_summary=_safe_trace_summary(result),
-    )
-    try:
-        with session.begin_nested():
-            session.add(trace)
-            session.flush()
-        return True
-    except IntegrityError:
-        return False
-
-
-def schedule_hot_list_reset(action: Action, result: dict) -> None:
-    payload = dict(action.payload or {})
-    payload["jisou_recovery_kind"] = HOT_LIST_RESET_KIND
-    action.payload = payload
-    action.status = "pending"
-    action.executed_at = None
-    action.lease_owner = ""
-    action.lease_expires_at = None
-    action.claim_owner = ""
-    action.claim_token = ""
-    action.claim_expires_at = None
-    action.scheduled_at = _now()
-    action.result = {
-        **(action.result or {}),
-        **result,
-        "jisou_hot_list_reset_status": "scheduled",
-        "jisou_hot_list_reset_count": 1,
-    }
 
 
 def task_search_join_protocol_snapshot(session: Session, task_id: str) -> dict:
@@ -170,8 +116,6 @@ def _safe_layout(value: object) -> dict:
 
 __all__ = [
     "HOT_LIST_RESET_KIND",
-    "begin_hot_list_reset",
     "record_search_join_protocol_trace",
-    "schedule_hot_list_reset",
     "task_search_join_protocol_snapshot",
 ]

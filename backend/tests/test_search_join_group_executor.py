@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import create_engine, event, select
+from sqlalchemy import create_engine, event, func, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
@@ -431,7 +431,8 @@ def test_search_join_gateway_exception_becomes_unknown_on_same_attempt(session: 
 
 
 @pytest.mark.no_postgres
-def test_search_join_hot_list_gets_one_persisted_reset_then_session_deviation(session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_search_join_hot_list_page_fails_immediately_without_reset(session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    """PRD §2.19: hot_list_page 直接写 jisou_session_state_deviated 终态失败，不尝试重置（线上验证不可行）。"""
     task = _task()
     session.add(task)
     session.flush()
@@ -458,7 +459,7 @@ def test_search_join_hot_list_gets_one_persisted_reset_then_session_deviation(se
         "execute_search_join",
         lambda *_args: {
             "success": False,
-            "error_code": "jisou_hot_list_page",
+            "error_code": "jisou_session_state_deviated",
             "jisou_page_phase": "hot_list_page",
             "search_protocol_trace": {"page_phase": "hot_list_page", "page": {"button_count": 0, "button_layout": []}},
         },
@@ -466,25 +467,20 @@ def test_search_join_hot_list_gets_one_persisted_reset_then_session_deviation(se
     )
 
     assert dispatcher._dispatch_search_join(session, action, session.get(TgAccount, 101), payload) is True
-    assert action.status == "pending"
-    assert action.payload["jisou_recovery_kind"] == "hot_list_reset"
-    assert session.query(SearchJoinProtocolTrace).filter_by(action_id=action.id).count() == 2
-
-    reset_payload = SearchJoinPayload.model_validate(action.payload)
-    assert dispatcher._dispatch_search_join(session, action, session.get(TgAccount, 101), reset_payload) is True
 
     assert action.status == "failed"
     assert action.result["error_code"] == "jisou_session_state_deviated"
-    reset_trace = session.scalar(select(SearchJoinProtocolTrace).where(
+    assert action.result["jisou_page_phase"] == "hot_list_page"
+    # PRD §2.19: 禁止热搜页重置，payload 不应被改写为 hot_list_reset
+    assert "jisou_recovery_kind" not in action.payload or action.payload.get("jisou_recovery_kind") != "hot_list_reset"
+    trace = session.scalar(select(SearchJoinProtocolTrace).where(
         SearchJoinProtocolTrace.action_id == action.id,
-        SearchJoinProtocolTrace.recovery_kind == "hot_list_reset",
     ))
-    assert reset_trace is not None
-    assert reset_trace.status == "reset_deviated"
-    assert reset_trace.event_type == "post_reset_page_classified"
+    assert trace is not None
+    assert trace.recovery_kind == "initial"
+    assert trace.page_phase == "hot_list_page"
     protocol = get_task_detail(session, 1, task.id)["task"]["stats"]["search_join_protocol"]
     assert protocol["latest_page_phase"] == "hot_list_page"
-    assert protocol["recent_traces"][0]["event_type"] == "post_reset_page_classified"
 
 
 @pytest.mark.no_postgres
@@ -545,13 +541,14 @@ def test_search_join_planner_blocks_legacy_jisou_sample_without_page_fingerprint
 
 
 @pytest.mark.no_postgres
-def test_search_join_planner_excludes_selector_failed_jisou_accounts_and_prefers_verified_accounts(
+def test_search_join_planner_keeps_selector_failed_jisou_accounts_and_excludes_session_deviation(
     session: Session,
 ) -> None:
+    """PRD §2.19.3: jisou_group_selector_missing 不再 24h 排除；jisou_session_state_deviated 才排除。"""
     _bind_search_join_environment(session, [101, 102, 103])
     task = _task(
         account_config={"selection_mode": "manual", "account_ids": [101, 102, 103], "max_concurrent": 3},
-        type_config={"actions_per_round": 2, "hourly_min_successful_joins": 3},
+        type_config={"actions_per_round": 2, "hourly_min_successful_joins": 3, "max_actions_per_hour": 6},
     )
     session.add(task)
     session.flush()
@@ -569,6 +566,12 @@ def test_search_join_planner_excludes_selector_failed_jisou_accounts_and_prefers
             executed_at=observed_at,
             result={"target_click_observed": True, "target_found_at": observed_at.isoformat()},
         ),
+        _search_join_source_action(
+            task, 103,
+            status="failed",
+            executed_at=observed_at,
+            result={"error_code": "jisou_session_state_deviated", "jisou_page_phase": "hot_list_page"},
+        ),
     ])
     session.commit()
 
@@ -579,7 +582,9 @@ def test_search_join_planner_excludes_selector_failed_jisou_accounts_and_prefers
         bot_username="jisou",
         now_value=observed_at,
     )
-    assert [account.id for account in candidates.accounts] == [102, 103]
+    # 103 被 24h 排除；101 (selector_missing) 保留；102 (verified) 排序在前
+    assert [account.id for account in candidates.accounts] == [102, 101]
+    assert candidates.excluded_count == 1
 
     assert build_task_plan(session, task) == 2
 
@@ -588,7 +593,7 @@ def test_search_join_planner_excludes_selector_failed_jisou_accounts_and_prefers
         .where(Action.task_id == task.id, Action.status == "pending")
         .order_by(Action.id)
     ))
-    assert {action.account_id for action in actions} == {102, 103}
+    assert {action.account_id for action in actions} == {101, 102}
     assert task.stats["search_join_stats"]["hourly_execution"]["last_blockers"] == {
         "jisou_group_selector_account_excluded": 1
     }
@@ -620,7 +625,8 @@ def test_jisou_selector_candidates_ignore_other_bot_outcomes(session: Session) -
 
 
 @pytest.mark.no_postgres
-def test_search_join_planner_fails_closed_when_all_jisou_accounts_lack_group_selector(session: Session) -> None:
+def test_search_join_planner_fails_closed_when_all_jisou_accounts_session_deviated(session: Session) -> None:
+    """PRD §2.19.3: 全部账号 jisou_session_state_deviated 时 24h 排除，planner fails closed。"""
     _bind_search_join_environment(session, [101, 102])
     task = _task(account_config={"selection_mode": "manual", "account_ids": [101, 102], "max_concurrent": 2})
     session.add(task)
@@ -631,7 +637,7 @@ def test_search_join_planner_fails_closed_when_all_jisou_accounts_lack_group_sel
             task, account_id,
             status="failed",
             executed_at=observed_at,
-            result={"error_code": "jisou_group_selector_missing"},
+            result={"error_code": "jisou_session_state_deviated", "jisou_page_phase": "hot_list_page"},
         ))
     session.commit()
 
@@ -1203,6 +1209,84 @@ def test_search_join_planner_scans_past_daily_limited_accounts(session: Session,
     assert action is not None
     assert action.account_id == 104
     assert task.stats["search_join_stats"]["pacing_limits"]["per_account_daily_limit_reached"] == 3
+
+
+@pytest.mark.no_postgres
+def test_search_join_per_account_hourly_limit_uses_task_pacing_config(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixed_now = datetime(2026, 7, 27, 10, 0)
+    monkeypatch.setattr(search_join_executor, "_now", lambda: fixed_now)
+    monkeypatch.setattr(search_click_progress, "beijing_now", lambda: fixed_now)
+    _bind_search_join_environment(session, [101, 102])
+    task = _task(
+        account_config={"selection_mode": "manual", "account_ids": [101, 102], "max_concurrent": 2},
+        type_config={"actions_per_round": 1, "hourly_min_successful_joins": 1},
+        pacing_config={"per_account_hourly_action_limit": 1},
+    )
+    session.add(task)
+    session.flush()
+    session.add(
+        _search_join_source_action(
+            task,
+            101,
+            status="failed",
+            executed_at=fixed_now,
+            result={"error_code": "target_not_in_results"},
+        )
+    )
+    session.commit()
+
+    assert build_task_plan(session, task) == 1
+    pending = session.scalar(
+        select(Action).where(Action.task_id == task.id, Action.status == "pending")
+    )
+    assert pending is not None
+    assert pending.account_id == 102
+    limits = task.stats["search_join_stats"]["pacing_limits"]
+    assert limits["per_account_hourly_limit_reached"] == 1
+
+
+@pytest.mark.no_postgres
+def test_search_join_per_account_hourly_limit_ignores_older_pending(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixed_now = datetime(2026, 7, 27, 10, 0)
+    monkeypatch.setattr(search_join_executor, "_now", lambda: fixed_now)
+    monkeypatch.setattr(search_click_progress, "beijing_now", lambda: fixed_now)
+    _bind_search_join_environment(session, [101])
+    task = _task(
+        account_config={"selection_mode": "manual", "account_ids": [101], "max_concurrent": 1},
+        type_config={"actions_per_round": 1, "hourly_min_successful_joins": 1},
+        pacing_config={"per_account_hourly_action_limit": 1},
+    )
+    session.add(task)
+    session.flush()
+    session.add(
+        Action(
+            tenant_id=1,
+            task_id=task.id,
+            task_type=task.type,
+            action_type="search_join",
+            account_id=101,
+            status="pending",
+            scheduled_at=fixed_now - timedelta(hours=2),
+            payload={"keyword_hash": "a" * 64},
+            result={},
+        )
+    )
+    session.commit()
+
+    assert build_task_plan(session, task) == 1
+    pending_count = session.scalar(
+        select(func.count(Action.id)).where(
+            Action.task_id == task.id,
+            Action.status == "pending",
+        )
+    )
+    assert pending_count == 2
 
 
 @pytest.mark.no_postgres
@@ -2011,6 +2095,93 @@ def test_strict_daily_target_stops_new_sources_when_remaining_capacity_is_imposs
     assert daily["daily_outcome"] == "blocked"
     assert daily["blocker_code"] == "daily_target_capacity_insufficient"
     assert session.query(Action).filter_by(task_id=task.id, action_type="search_join").count() == 0
+
+
+@pytest.mark.no_postgres
+def test_strict_capacity_uses_selector_eligible_accounts(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixed_now = datetime(2026, 7, 27, 9, 0)
+    monkeypatch.setattr(search_join_executor, "_now", lambda: fixed_now)
+    monkeypatch.setattr(search_click_progress, "beijing_now", lambda: fixed_now)
+    _bind_search_join_environment(session, [101, 102, 103])
+    task = _task(
+        account_config={"selection_mode": "manual", "account_ids": [101, 102, 103], "max_concurrent": 3},
+        type_config={
+            "daily_click_target_count": 25,
+            "strict_daily_target": True,
+            "hourly_round_curve": [1] * 24,
+            "actions_per_round": 10,
+            "max_actions_per_hour": 30,
+            "hourly_min_successful_joins": 10,
+        },
+        pacing_config={
+            "max_actions_per_day": 30,
+            "per_account_daily_action_limit": 10,
+            "hourly_jitter_percent": 0,
+            "daily_jitter_percent": 0,
+        },
+    )
+    session.add(task)
+    session.flush()
+    session.add(
+        _search_join_source_action(
+            task,
+            103,
+            status="failed",
+            executed_at=fixed_now,
+            result={"error_code": "jisou_session_state_deviated"},
+        )
+    )
+    session.commit()
+
+    assert build_task_plan(session, task) == 0
+    daily = task.stats["search_join_stats"]["daily_fulfillment"]
+    assert daily["blocker_code"] == "daily_target_capacity_insufficient"
+    assert daily["effective_account_count"] == 2
+    assert daily["account_source_capacity"] == 19
+    assert daily["per_account_daily_action_limit"] == 10
+
+
+@pytest.mark.no_postgres
+def test_captcha_trigger_rate_reduces_strict_account_capacity(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixed_now = datetime(2026, 7, 27, 9, 0)
+    monkeypatch.setattr(search_join_executor, "_now", lambda: fixed_now)
+    _bind_search_join_environment(session, [101, 102])
+    task = _task(
+        account_config={"selection_mode": "manual", "account_ids": [101, 102], "max_concurrent": 2},
+        type_config={
+            "daily_click_target_count": 15,
+            "strict_daily_target": True,
+            "hourly_round_curve": [1] * 24,
+            "actions_per_round": 10,
+            "max_actions_per_hour": 20,
+        },
+        pacing_config={
+            "max_actions_per_day": 20,
+            "per_account_daily_action_limit": 10,
+            "captcha_trigger_rate": 0.5,
+        },
+    )
+    session.add(task)
+    session.commit()
+
+    capacity = search_join_executor._remaining_strict_daily_capacity(
+        session,
+        task,
+        search_join_executor._runtime_config(task),
+        [session.get(TgAccount, 101), session.get(TgAccount, 102)],
+        fixed_now,
+        search_join_executor.PacingStats(),
+    )
+
+    assert capacity is not None
+    assert capacity.account_source_capacity == 10
+    assert capacity.strict_planning_capacity == 10
 
 
 @pytest.mark.no_postgres

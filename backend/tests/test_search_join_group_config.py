@@ -102,6 +102,22 @@ def _simple_payload(**overrides) -> SearchJoinGroupSimpleTaskCreate:
 
 
 @pytest.mark.no_postgres
+def test_search_join_pacing_accepts_hourly_limit_and_captcha_rate(session: Session) -> None:
+    payload = _payload(
+        pacing_config={
+            "mode": "template",
+            "per_account_hourly_action_limit": 2,
+            "captcha_trigger_rate": 0.5,
+        }
+    )
+
+    task = create_search_join_group_task(session, 1, payload, "tester")
+
+    assert task.pacing_config["per_account_hourly_action_limit"] == 2
+    assert task.pacing_config["captcha_trigger_rate"] == 0.5
+
+
+@pytest.mark.no_postgres
 def test_simple_search_join_create_resolves_public_link_without_exposing_target_id(session: Session) -> None:
     task = create_simple_search_join_group_task(
         session,

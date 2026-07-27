@@ -1232,6 +1232,7 @@ class TelethonTelegramGateway(TelegramGateway):
         credentials: DeveloperAppCredentials,
         payload: dict[str, Any],
         keyword_text: str,
+        image_verification_solver: Any = None,
     ) -> dict[str, Any]:
         raw_session = decrypt_session(session_ciphertext)
         if not raw_session:
@@ -1239,7 +1240,12 @@ class TelethonTelegramGateway(TelegramGateway):
         client = await self._get_or_create_client(credentials, raw_session, _search_join_client_metadata(payload))
         if not await client.is_user_authorized():
             return {"success": False, "error_code": FailureType.ACCOUNT_UNAVAILABLE.value, "detail": "session 已失效"}
-        return await execute_search_join_with_client(client, payload, keyword_text=keyword_text)
+        return await execute_search_join_with_client(
+            client,
+            payload,
+            keyword_text=keyword_text,
+            image_verification_solver=image_verification_solver,
+        )
 
     def execute_search_join(
         self,
@@ -1248,9 +1254,16 @@ class TelethonTelegramGateway(TelegramGateway):
         session_ciphertext: str | None = None,
         credentials: DeveloperAppCredentials | None = None,
         keyword_text: str = "",
+        image_verification_solver: Any = None,
     ) -> dict[str, Any]:
         return self._run(
-            self._execute_search_join_async(session_ciphertext, self._usable_credentials(credentials), payload, keyword_text)
+            self._execute_search_join_async(
+                session_ciphertext,
+                self._usable_credentials(credentials),
+                payload,
+                keyword_text,
+                image_verification_solver,
+            )
         )
 
     async def _ensure_search_join_membership_async(

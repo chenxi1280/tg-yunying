@@ -146,8 +146,6 @@ class Settings:
     search_join_membership_lease_seconds: int = int(os.getenv("SEARCH_JOIN_MEMBERSHIP_LEASE_SECONDS", "180"))
     # PRD §2.20.2 RC-3: UAS 补偿确认终态关闭超时（秒），默认 10 分钟。
     search_join_membership_confirmation_timeout_seconds: int = int(os.getenv("SEARCH_JOIN_MEMBERSHIP_CONFIRMATION_TIMEOUT_SECONDS", "600"))
-    # PRD §2.19.5 频率控制：账号级搜索频率冷却，单账号 1 小时内最多 N 次搜索，0 表示不限制。
-    search_join_per_account_hourly_limit: int = int(os.getenv("SEARCH_JOIN_PER_ACCOUNT_HOURLY_LIMIT", "0"))
     dispatcher_concurrency: int = int(os.getenv("DISPATCHER_CONCURRENCY", "20"))
     daily_coverage_plan_batch_limit: int = int(os.getenv("DAILY_COVERAGE_PLAN_BATCH_LIMIT", "20"))
     account_shard_total: int = int(os.getenv("ACCOUNT_SHARD_TOTAL", "1"))

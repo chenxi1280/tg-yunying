@@ -565,6 +565,8 @@ Planner 闸门顺序固定为：账号 / 授权槽位环境栈 -> 协议样本 -
 
 专项真相源为 docs/03-feature-designs/ai-group-daily-fulfillment-remediation-prd.md 与 docs/03-feature-designs/search-click-daily-fulfillment-remediation-prd.md。两份文档只代表设计完成，代码、迁移、发布与完整自然日生产证据仍须分别验收。
 
+> **2026-07-27 AI 活群目标模型 supersede：** `docs/03-feature-designs/ai-group-daily-group-target-redesign-prd.md` 生效后，`group_ai_chat` 改为“单群自然日总发送量 + 冻结范围内每账号至少 1 条”的唯一履约合同。删除日覆盖容量不足整批停止、硬小时目标和 AI 活群活动时段禁发；静默期只降量。AI 活群不再使用本地群日上限/群冷却阻断，但继续保留目标准入、账号登录/可发事实、账号安全策略、内容质量和 Telegram 真实 FloodWait/权限结果。旧硬小时与每账号 1-2 条配置只用于存量迁移，不得继续作为新任务运营字段或完成口径。
+
 #### 2.18.1 2026-07-27 AI 日覆盖 pre-Gateway 与 claim recovery 修订
 
 生产证据确认，AI 日覆盖 overdue 不能一概视为 Telegram 远端未知。`ExecutionAttempt.gateway_call_started_at` 是唯一边界：为空时覆盖行保持 `reserved + dispatcher_lag + dispatcher_recheck`，仍占自身 reservation、不能生成第二条 Action；非空时才进入 `unknown + coverage_action_overdue + remote_reconcile`，不得重发。历史被误标为 unknown 但无 Gateway 事实、且原 Action 已明确 terminal 的行，必须按真实终态释放 reservation 后重新规划。
@@ -624,7 +626,7 @@ Planner 闸门顺序固定为：账号 / 授权槽位环境栈 -> 协议样本 -
 
 #### 2.19.5 频率控制与 LLM 边界
 
-- **频率控制**：账号级搜索频率冷却（单账号 1 小时内最多 N 次搜索，N 由产品配置），作为前置减压避免高频触发验证码。触发 `jisou_image_verification_required` 的账号 24h 排除。
+- **频率控制**：账号级搜索频率冷却（单账号 1 小时内最多 N 次搜索，N 由任务 `pacing_config.per_account_hourly_action_limit` 配置，`0` 表示不限制），作为前置减压避免高频触发验证码。小时计数只统计当前任务时区小时窗口内的 source Action，不让旧窗口遗留 pending 永久占用当前小时额度。触发 `jisou_image_verification_required` 的账号 24h 排除。
 - **LLM 边界**：minimax/mimo 仅用于图片算式识别（OCR + 答案匹配），不用于实时 pacing、random decision、账号是否执行、目标是否点击等决策（PRD §2.8.3 LLM 边界不变）。
 
 #### 2.19.6 验收口径
@@ -677,7 +679,7 @@ design_status=complete。dev 实现时需同步更新 `docs/03-feature-designs/s
 
 1. **planner 账号选择全覆盖**：planner 规划 search_join action 时，账号候选集必须覆盖任务 `account_config` 指定范围内全部 `status=在线` + `health_score >= 55` + 未被 `jisou_selector_accounts` 24h 排除的账号。禁止只用 7/67。账号选择范围窄（实际候选 < 配置候选 50%）时写 `planner_account_selection_narrow` 告警。
 2. **per_account_daily_action_limit 调整**：当前默认 2 无法支撑 1000 日目标。产品决策：若日目标 1000 不可降，`per_account_daily_action_limit` 提升至 N（N = ceil(1000 / 有效账号数 × 安全系数)，安全系数 1.5）。67 在线账号时 N ≈ 23。该值由产品在 `pacing_config` 配置，dev 不擅自改默认值。
-3. **产能预判**：planner 在每日规划前必须预判「有效账号数 × per_account_daily_action_limit × (1 - 验证码触发率)」是否 ≥ 日目标。不足时写 `daily_target_capacity_insufficient` blocker，任务详情可见，禁止 silent 用不足产能冲目标。
+3. **产能预判**：planner 在每日规划前必须先应用 `jisou_selector_accounts` 24h 排除，再以「本轮真实有效账号数 × per_account_daily_action_limit × (1 - captcha_trigger_rate)」预判是否 ≥ 日目标。不足时写 `daily_target_capacity_insufficient` blocker，任务详情可见；`effective_account_count` 必须来自本轮候选集，禁止从静态配置回填或 silent 用不足产能冲目标。
 4. **禁止**：silent 用 7 个账号冲 1000 目标；为冲量取消 per_account_daily_action_limit 且无产品确认；planner 账号选择范围窄但不告警。
 
 #### 2.20.4 RC-1 静默窗口（设计约束，非 bug）
@@ -3350,7 +3352,7 @@ AI 活跃群和频道评论 / 回复的创建向导必须使用“小时总预�
 - 抖动只作用于数量浮动、发送时间和账号选择排序，不得突破任务每小时上限、账号每小时上限或全局风控。
 - 前端必须在字段旁展示口径说明和推荐值来源，例如“按当前可发言账号数推荐”“小时上限控制总量”“参与比例按多轮统计”。
 - 任务中心列表和详情必须展示 AI 活跃群、频道浏览、频道点赞、频道评论 / 回复的今日账号参与覆盖，格式至少包含已参与账号数、当前任务账号范围总数和百分比；AI Cycle 和频道消息分组明细必须展示本组唯一参与账号数 / 动作数。
-- AI 活跃群选择“全部可用账号”时默认启用 `全账号日覆盖模式`。系统必须为所有 active、normal、Session 可用且未被安全边界排除的账号建立持久化任务关系和北京时间每日覆盖账本，并推动其完成目标准入；账号未准入、不可发言、离线、受限或结果未知时仍保留在当日分母并展示阻塞。只有成功 `send_message`、成功 `ExecutionAttempt`、非空 Telegram 远端消息 ID且通过必要的群管后可见性核验时才算完成。覆盖调度只决定下一段自然对话优先使用哪些未完成账号，不得改变 AI 活群的话题、上下文、账号面具、引用关系、会话轮换和内容质量门，也不得使用模板、通用短句或表情强行补量；仅非引用 action 可在所有门禁通过时使用精确文本 `签到`。专项口径以 `docs/03-feature-designs/ai-group-all-accounts-daily-coverage-prd.md` 为准。
+- AI 活跃群选择“全部可用账号”时默认启用 `全账号日覆盖模式`。系统必须为所有 active、normal、Session 可用且未被安全边界排除的账号建立持久化任务关系和北京时间每日覆盖账本，并推动其完成目标准入；账号未准入、不可发言、离线、受限或结果未知时仍保留在当日分母并展示阻塞。每个群由运营配置 `daily_message_target`，当天实际最低目标为 `max(daily_message_target, frozen_account_count)`，每个冻结账号至少真实成功发送 1 条。只有成功 `send_message`、成功 `ExecutionAttempt`、非空 Telegram 远端消息 ID且通过必要的群管后可见性核验时才算完成。覆盖调度只决定下一段自然对话优先使用哪些未完成账号，不得改变 AI 活群的话题、上下文、账号面具、引用关系、会话轮换和内容质量门，也不得使用模板、通用短句或表情强行补量；仅非引用 action 可在所有门禁通过时使用精确文本 `签到`。当前目标合同以 `docs/03-feature-designs/ai-group-daily-group-target-redesign-prd.md` 为准。
 - 带 `coverage_ledger_id` 的发送 Action 必须由该账本行绑定的同一账号执行，群权限丢失、账号容量不足或其他运行时策略均不得把它静默转派给另一账号；原账号暂不可发言时应终结该 Action、释放原义务并在准入或容量恢复后重新规划。覆盖确认必须再次校验 `TaskAccountDailyCoverage.account_id = Action.account_id = ExecutionAttempt.account_id`，不一致时不得计入完成。
 - 同一 AI Cycle 内引用回复因上下文过期被跳过时，只能清理仍依赖该上下文或引用锚点的动作；不带 `reply_to_message_id` 的硬目标普通补量动作继续走 Dispatcher 延迟 AI 生成和原质量门，不能因同轮引用过期被批量误杀。
 - 全账号每日覆盖存在到期债务且本轮没有引用回复目标时，普通补量文案应在 Dispatcher 临近发送时按最新真人上下文批量生成，继续携带 Planner 已确定的账号面具、话题、讨论老师和行为类型并通过原质量门；未来尚未生成的覆盖动作不能因规划时旧快照过期被整轮删除。配置要求引用回复时不得改成普通补量。

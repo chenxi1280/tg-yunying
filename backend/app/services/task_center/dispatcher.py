@@ -29,7 +29,7 @@ from app.services.account_capacity import account_capacity_decision
 from app.services.content_filters import filter_outbound_content, rewrite_rejected_content
 from app.services.developer_apps import credentials_for_account, credentials_for_developer_app
 from app.services.ai_config import get_scheduling_setting
-from app.services.membership_challenges import auto_resolve_image_verification, auto_resolve_text_verification, read_challenge_context_with_fallback, record_challenge_attempt
+from app.services.membership_challenges import auto_resolve_image_verification, auto_resolve_text_verification, build_search_join_image_verification_solver, read_challenge_context_with_fallback, record_challenge_attempt
 from app.services.notifications import NotificationResult, send_telegram_bot_message
 from app.services.proxy_airport_subscription import failover_proxy_airport_node_binding
 from app.services.required_channel_prompts import (
@@ -108,7 +108,7 @@ from .pacing import quiet_hours_active
 from .policies import validate_group_send_policy
 from .review import has_pending_review
 from .search_join_linking import create_linked_dispatch_if_membership_observed
-from .search_join_protocol import begin_hot_list_reset, record_search_join_protocol_trace, schedule_hot_list_reset
+from .search_join_protocol import record_search_join_protocol_trace
 from .search_join_membership import (
     MEMBERSHIP_ACTION_TYPE as SEARCH_JOIN_MEMBERSHIP_ACTION_TYPE,
     create_membership_child,
@@ -1707,10 +1707,19 @@ def _confirm_claim(
     if reservation_binding is not None and not confirm_dispatch_claim(session, action, reservation_binding):
         return False
     _snapshot_ai_generation_claim(action)
-    _mark_executing(action, lease_seconds=_setting(get_settings(), "action_lease_seconds", 1800))
+    lease_seconds = _action_lease_seconds(action)
+    _mark_executing(action, lease_seconds=lease_seconds)
     action.result = {**(action.result or {}), "claim_confirmed_at": _now().isoformat()}
     session.flush()
     return True
+
+
+def _action_lease_seconds(action: Action) -> int:
+    """PRD §2.20.2 RC-3: search_join_membership 子动作使用独立的 lease_timeout（默认 180s）。"""
+    settings = get_settings()
+    if action.action_type == "search_join_membership":
+        return _setting(settings, "search_join_membership_lease_seconds", 180)
+    return _setting(settings, "action_lease_seconds", 1800)
 
 
 def _snapshot_ai_generation_claim(action: Action) -> None:
@@ -5415,11 +5424,19 @@ def _dispatch_search_join(session: Session, action: Action, account: TgAccount, 
     if not _mark_search_join_gateway_call_started(session, action, attempt):
         _finish_search_join_before_gateway(session, action, attempt, "search_join_gateway_not_allowed")
         return True
-    result = search_join(account.id, payload.model_dump(mode="json"), runtime_authorization.session_ciphertext, runtime_authorization.credentials, keyword_text)
+    image_solver = build_search_join_image_verification_solver(session)
+    search_join_kwargs: dict[str, Any] = {}
+    if image_solver is not None:
+        search_join_kwargs["image_verification_solver"] = image_solver
+    result = search_join(
+        account.id,
+        payload.model_dump(mode="json"),
+        runtime_authorization.session_ciphertext,
+        runtime_authorization.credentials,
+        keyword_text,
+        **search_join_kwargs,
+    )
     _record_search_join_protocol_result(session, action, payload, result, attempt)
-    if _schedule_jisou_hot_list_reset(session, action, payload, result, attempt):
-        return True
-    result = _terminal_jisou_result(result)
     action.status = "success" if result.get("success") else "failed"
     action.result = {**(action.result or {}), **result}
     _record_search_join_proxy_failover(session, action, payload, result)
@@ -5447,36 +5464,6 @@ def _record_search_join_protocol_result(
         result=result,
         attempt=attempt,
     )
-
-
-def _schedule_jisou_hot_list_reset(
-    session: Session,
-    action: Action,
-    payload: SearchJoinPayload,
-    result: dict,
-    attempt: ExecutionAttempt,
-) -> bool:
-    if str(result.get("error_code") or "") != "jisou_hot_list_page":
-        return False
-    if not begin_hot_list_reset(session, action, payload=payload.model_dump(mode="json"), result=result, attempt=attempt):
-        return False
-    schedule_hot_list_reset(action, result)
-    _finish_search_join_attempt(attempt, action, result)
-    attempt.status = "hot_list_reset_scheduled"
-    attempt.result_snapshot = dict(action.result or {})
-    session.commit()
-    return True
-
-
-def _terminal_jisou_result(result: dict) -> dict:
-    if str(result.get("error_code") or "") != "jisou_hot_list_page":
-        return result
-    return {
-        **result,
-        "error_code": "jisou_session_state_deviated",
-        "detail": "极搜热搜页受控会话重置已执行，响应仍偏离搜索协议",
-        "jisou_hot_list_reset_status": "deviated",
-    }
 
 
 def _search_join_gateway_prerequisites(

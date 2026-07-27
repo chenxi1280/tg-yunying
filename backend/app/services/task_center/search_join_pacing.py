@@ -38,6 +38,7 @@ class PacingStats:
     per_account_total_limit_reached: int = 0
     per_account_cooldown_days_active: int = 0
     per_keyword_account_daily_limit_reached: int = 0
+    per_account_hourly_limit_reached: int = 0
     join_request_pending: int = 0
     task_daily_limit_reached: int = 0
     hourly_skipped_by_pacing: int = 0
@@ -58,6 +59,7 @@ class PacingStats:
             "per_account_total_limit_reached": self.per_account_total_limit_reached,
             "per_account_cooldown_days_active": self.per_account_cooldown_days_active,
             "per_keyword_account_daily_limit_reached": self.per_keyword_account_daily_limit_reached,
+            "per_account_hourly_limit_reached": self.per_account_hourly_limit_reached,
             "join_request_pending": self.join_request_pending,
             "task_daily_limit_reached": self.task_daily_limit_reached,
             "hourly_skipped_by_pacing": self.hourly_skipped_by_pacing,
@@ -150,6 +152,10 @@ def account_base_allowed(session: Session, task: Task, account_id: int, window: 
         allowed = _block_account(stats, account_id, "per_account_cooldown_days_active")
     if not repeat_applications_allowed and _daily_count(session, task, account_id, window.local_date) >= int(pacing.get("per_account_daily_action_limit") or 0) > 0:
         allowed = _block_account(stats, account_id, "per_account_daily_limit_reached")
+    # PRD §2.19.5: 账号级小时搜索频率冷却，前置减压避免高频触发验证码。0 表示不限制。
+    hourly_limit = _search_join_per_account_hourly_limit(task)
+    if hourly_limit > 0 and _hourly_count(session, task, account_id, window.hour_start) >= hourly_limit:
+        allowed = _block_account(stats, account_id, "per_account_hourly_limit_reached")
     return allowed
 
 
@@ -385,6 +391,29 @@ def _total_count(session: Session, task: Task, account_id: int) -> int:
 
 def _daily_count(session: Session, task: Task, account_id: int, local_date: date, *, keyword_hash: str = "") -> int:
     return _count_for_local_date(session, task, local_date, account_id=account_id, keyword_hash=keyword_hash)
+
+
+def _hourly_count(session: Session, task: Task, account_id: int, hour_start: datetime) -> int:
+    """PRD §2.19.5: 统计账号在指定小时窗口内的 search_join 真实动作数。"""
+    start_at, end_at = _local_hour_bounds_source(task.timezone or "Asia/Shanghai", hour_start)
+    action_at = func.coalesce(Action.executed_at, Action.scheduled_at)
+    current_count = session.scalar(
+        select(func.count(Action.id)).where(
+            Action.task_id == task.id,
+            Action.action_type == "search_join",
+            Action.account_id == account_id,
+            Action.status.in_(REAL_ACTION_STATUSES),
+            action_at >= start_at,
+            action_at < end_at,
+        )
+    ) or 0
+    return int(current_count)
+
+
+def _search_join_per_account_hourly_limit(task: Task) -> int:
+    """PRD §2.19.5: 任务级账号小时搜索上限，0 表示不限制。"""
+    pacing = task.pacing_config if isinstance(task.pacing_config, dict) else {}
+    return int(pacing.get("per_account_hourly_action_limit") or 0)
 
 
 def _task_daily_count(session: Session, task: Task, local_date: date) -> int:

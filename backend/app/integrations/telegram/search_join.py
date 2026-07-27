@@ -1,18 +1,36 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import re
 import unicodedata
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlparse
 
-from app.search_join_protocol import ProtocolPageClassification, classify_jisou_page, is_jisou_bot, normalize_visible_text
+from app.search_join_protocol import (
+    VERIFICATION_IMAGE_PAGE,
+    ProtocolPageClassification,
+    classify_jisou_page,
+    classify_jisou_page_with_media,
+    is_jisou_bot,
+    normalize_visible_text,
+)
 
 
 TELEGRAM_HOSTS = {"t.me", "telegram.me", "www.t.me", "www.telegram.me"}
 NAVIGATION_MARKERS = ("下一页", "上一页", "next", "prev", "page", "页")
 HUMAN_VERIFICATION_MARKERS = ("人机验证", "计算结果", "captcha")
+
+# PRD §2.19.2 图片算式验证码识别相关常量。
+IMAGE_VERIFICATION_MIN_CONFIDENCE = 0.70
+IMAGE_VERIFICATION_MAX_RECURSION = 2
+IMAGE_VERIFICATION_MINIMAX_RETRY = 2
+IMAGE_VERIFICATION_PROMPT = (
+    "识别图片中的算式并计算结果，输出 JSON：{\"answer\":数字,\"confidence\":0到1}。"
+    "answer 必须是算式计算后的正整数。只输出紧凑 JSON，不要解释。"
+)
+ImageVerificationSolver = Callable[[bytes, str, list[str]], "tuple[str, float] | None"]
 PAGINATION_SYMBOL_NAMES = {
     ">": "greater_than",
     "▶": "right_triangle",
@@ -64,7 +82,13 @@ class _MembershipNotObservedError(Exception):
     pass
 
 
-async def execute_search_join_with_client(client: Any, payload: dict[str, Any], *, keyword_text: str) -> dict[str, Any]:
+async def execute_search_join_with_client(
+    client: Any,
+    payload: dict[str, Any],
+    *,
+    keyword_text: str,
+    image_verification_solver: ImageVerificationSolver | None = None,
+) -> dict[str, Any]:
     bot_username = _bot_username(payload)
     if not keyword_text.strip():
         return _failed("keyword_text_missing", "搜索关键词缺失")
@@ -72,7 +96,14 @@ async def execute_search_join_with_client(client: Any, payload: dict[str, Any], 
     if not str(target.get("username") or "").strip():
         return _failed("target_identity_missing", "搜索入群目标缺少可验证 username")
     try:
-        return await _execute_search_pages(client, bot_username, keyword_text.strip(), payload, target)
+        return await _execute_search_pages(
+            client,
+            bot_username,
+            keyword_text.strip(),
+            payload,
+            target,
+            image_verification_solver=image_verification_solver,
+        )
     except Exception as exc:  # Telethon RPC errors are mapped at this adapter boundary.
         return _failed("search_join_execution_failed", str(exc) or exc.__class__.__name__)
 
@@ -107,7 +138,15 @@ async def probe_search_join_membership_with_client(client: Any, payload: dict[st
     return _membership_observed_result(payload)
 
 
-async def _execute_search_pages(client: Any, bot_username: str, keyword_text: str, payload: dict[str, Any], target: dict[str, Any]) -> dict[str, Any]:
+async def _execute_search_pages(
+    client: Any,
+    bot_username: str,
+    keyword_text: str,
+    payload: dict[str, Any],
+    target: dict[str, Any],
+    *,
+    image_verification_solver: ImageVerificationSolver | None = None,
+) -> dict[str, Any]:
     decoys: list[dict[str, Any]] = []
     total_results = 0
     page_no = 0
@@ -124,6 +163,7 @@ async def _execute_search_pages(client: Any, bot_username: str, keyword_text: st
             page,
             bot,
             protocol_profile,
+            image_verification_solver=image_verification_solver,
         )
         if selector_error is not None:
             return selector_error
@@ -131,6 +171,29 @@ async def _execute_search_pages(client: Any, bot_username: str, keyword_text: st
             page_no += 1
             buttons = _parse_buttons(page)
             classification = _jisou_page_classification(jisou, protocol_profile, page, buttons)
+            if jisou and classification.page_phase == VERIFICATION_IMAGE_PAGE:
+                handled = await _handle_jisou_image_verification(
+                    client,
+                    bot,
+                    page,
+                    buttons,
+                    classification,
+                    image_verification_solver,
+                    protocol_profile=protocol_profile,
+                    recursion_depth=0,
+                )
+                if handled.error is not None:
+                    return _with_search_protocol_trace(
+                        handled.error,
+                        buttons,
+                        group_selector,
+                        selector_buttons,
+                        classification.approved_button_positions,
+                        enabled=jisou,
+                    )
+                page = handled.page
+                buttons = _parse_buttons(page)
+                classification = _jisou_page_classification(jisou, protocol_profile, page, buttons)
             if jisou and classification.page_phase != "group_result_page":
                 return _jisou_result_page_error(classification, buttons, group_selector, selector_buttons)
             if not jisou and _human_verification_required(page):
@@ -184,16 +247,41 @@ async def _select_jisou_group_results_page(
     page: Any,
     bot_username: str,
     protocol_profile: object,
+    *,
+    image_verification_solver: ImageVerificationSolver | None = None,
 ) -> tuple[Any, dict[str, Any] | None, SearchJoinButton | None, list[SearchJoinButton]]:
     if not is_jisou_bot(bot_username):
         return page, None, None, []
     selector_buttons = _parse_buttons(page)
-    classification = classify_jisou_page(
+    classification = classify_jisou_page_with_media(
         profile=protocol_profile,
         message_text=_message_text(page),
         buttons=selector_buttons,
+        has_photo=_has_photo_media(page),
     )
     phase = classification.page_phase
+    if phase == VERIFICATION_IMAGE_PAGE:
+        handled = await _handle_jisou_image_verification(
+            client,
+            bot_username,
+            page,
+            selector_buttons,
+            classification,
+            image_verification_solver,
+            protocol_profile=protocol_profile,
+            recursion_depth=0,
+        )
+        if handled.error is not None:
+            return page, handled.error, None, selector_buttons
+        page = handled.page
+        selector_buttons = _parse_buttons(page)
+        classification = classify_jisou_page_with_media(
+            profile=protocol_profile,
+            message_text=_message_text(page),
+            buttons=selector_buttons,
+            has_photo=_has_photo_media(page),
+        )
+        phase = classification.page_phase
     if phase == "verification_page":
         return page, _protocol_phase_error(
             "bot_human_verification_required",
@@ -203,8 +291,8 @@ async def _select_jisou_group_results_page(
         ), None, selector_buttons
     if phase == "hot_list_page":
         return page, _protocol_phase_error(
-            "jisou_hot_list_page",
-            "极搜关键词响应为热搜排行榜页，需受控会话重置",
+            "jisou_session_state_deviated",
+            "极搜关键词响应为热搜排行榜页，账号会话状态偏离，24h 排除",
             classification,
             selector_buttons,
         ), None, selector_buttons
@@ -212,8 +300,8 @@ async def _select_jisou_group_results_page(
         return page, None, None, selector_buttons
     if phase != "search_category_page":
         return page, _protocol_phase_error(
-            "jisou_protocol_page_unknown",
-            "极搜关键词响应未匹配已知协议页面，未点击任何按钮",
+            "jisou_session_state_deviated",
+            "极搜关键词响应未匹配已知协议页面，账号会话状态偏离，24h 排除",
             classification,
             selector_buttons,
         ), None, selector_buttons
@@ -222,11 +310,33 @@ async def _select_jisou_group_results_page(
         return page, _selector_missing(selector_buttons, classification), None, selector_buttons
     result_page = await _click_and_get_edited_page(client, bot_username, page, group_button)
     result_buttons = _parse_buttons(result_page)
-    result_classification = classify_jisou_page(
+    result_classification = classify_jisou_page_with_media(
         profile=protocol_profile,
         message_text=_message_text(result_page),
         buttons=result_buttons,
+        has_photo=_has_photo_media(result_page),
     )
+    if result_classification.page_phase == VERIFICATION_IMAGE_PAGE:
+        handled = await _handle_jisou_image_verification(
+            client,
+            bot_username,
+            result_page,
+            result_buttons,
+            result_classification,
+            image_verification_solver,
+            protocol_profile=protocol_profile,
+            recursion_depth=0,
+        )
+        if handled.error is not None:
+            return result_page, handled.error, group_button, selector_buttons
+        result_page = handled.page
+        result_buttons = _parse_buttons(result_page)
+        result_classification = classify_jisou_page_with_media(
+            profile=protocol_profile,
+            message_text=_message_text(result_page),
+            buttons=result_buttons,
+            has_photo=_has_photo_media(result_page),
+        )
     if result_classification.page_phase != "group_result_page":
         return result_page, _jisou_result_page_error(result_classification, result_buttons, group_button, selector_buttons), group_button, selector_buttons
     return result_page, None, group_button, selector_buttons
@@ -270,7 +380,158 @@ def _jisou_page_classification(
 ) -> ProtocolPageClassification:
     if not jisou:
         return ProtocolPageClassification("", frozenset(), frozenset())
-    return classify_jisou_page(profile=protocol_profile, message_text=_message_text(page), buttons=buttons)
+    return classify_jisou_page_with_media(
+        profile=protocol_profile,
+        message_text=_message_text(page),
+        buttons=buttons,
+        has_photo=_has_photo_media(page),
+    )
+
+
+def _has_photo_media(message: Any) -> bool:
+    """PRD §2.19.1: 检测 telethon message 是否含 MessageMediaPhoto。"""
+    media = getattr(message, "media", None)
+    if media is None:
+        return False
+    return type(media).__name__ == "MessageMediaPhoto" or getattr(media, "photo", None) is not None
+
+
+@dataclass(frozen=True)
+class _ImageVerificationHandleResult:
+    page: Any
+    error: dict[str, Any] | None
+
+
+async def _handle_jisou_image_verification(
+    client: Any,
+    bot_username: str,
+    page: Any,
+    buttons: list[SearchJoinButton],
+    classification: ProtocolPageClassification,
+    solver: ImageVerificationSolver | None,
+    *,
+    protocol_profile: object,
+    recursion_depth: int,
+) -> _ImageVerificationHandleResult:
+    """PRD §2.19.2: 图片算式验证码识别 6 步流程 + 递归上限 2 次。"""
+    digit_buttons = [button for button in buttons if _is_digit_callback_button(button)]
+    candidate_answers = [button.text.strip() for button in digit_buttons]
+    if solver is None or not candidate_answers:
+        return _image_verification_failed_result(classification, buttons, "minimax solver unavailable or no digit buttons")
+    image_bytes = await _download_verification_image(client, page)
+    if not image_bytes:
+        return _image_verification_failed_result(classification, buttons, "verification image download empty")
+    mime_type = _message_media_mime_type(page)
+    solved = await asyncio.to_thread(
+        _invoke_image_solver_with_retry,
+        solver,
+        image_bytes,
+        mime_type,
+        candidate_answers,
+    )
+    if solved is None:
+        return _image_verification_failed_result(classification, buttons, "minimax returned empty after retry")
+    answer, confidence = solved
+    if confidence < IMAGE_VERIFICATION_MIN_CONFIDENCE:
+        return _image_verification_failed_result(
+            classification, buttons, f"confidence {confidence:.2f} below threshold {IMAGE_VERIFICATION_MIN_CONFIDENCE}",
+            answer=answer, confidence=confidence,
+        )
+    target_button = next((button for button in digit_buttons if button.text.strip() == answer), None)
+    if target_button is None:
+        return _image_verification_failed_result(
+            classification, buttons, f"answer {answer} not in button matrix",
+            answer=answer, confidence=confidence,
+        )
+    clicked_page = await _click_and_get_edited_page(client, bot_username, page, target_button)
+    clicked_buttons = _parse_buttons(clicked_page)
+    clicked_classification = classify_jisou_page_with_media(
+        profile=protocol_profile,
+        message_text=_message_text(clicked_page),
+        buttons=clicked_buttons,
+        has_photo=_has_photo_media(clicked_page),
+    )
+    if clicked_classification.page_phase == VERIFICATION_IMAGE_PAGE:
+        if recursion_depth + 1 >= IMAGE_VERIFICATION_MAX_RECURSION:
+            return _image_verification_failed_result(
+                clicked_classification, clicked_buttons,
+                f"verification image page recursion limit {IMAGE_VERIFICATION_MAX_RECURSION} reached",
+            )
+        return await _handle_jisou_image_verification(
+            client,
+            bot_username,
+            clicked_page,
+            clicked_buttons,
+            clicked_classification,
+            solver,
+            protocol_profile=protocol_profile,
+            recursion_depth=recursion_depth + 1,
+        )
+    return _ImageVerificationHandleResult(page=clicked_page, error=None)
+
+
+def _invoke_image_solver_with_retry(
+    solver: ImageVerificationSolver,
+    image_bytes: bytes,
+    mime_type: str,
+    candidate_answers: list[str],
+) -> tuple[str, float] | None:
+    """PRD §2.19.2 第 2 步：minimax 返回空时重试 1-2 次。"""
+    for _ in range(IMAGE_VERIFICATION_MINIMAX_RETRY + 1):
+        try:
+            result = solver(image_bytes, mime_type, candidate_answers)
+        except Exception:  # noqa: BLE001 - solver 故障视为返回空，由调用方写 failed。
+            return None
+        if result is not None:
+            return result
+    return None
+
+
+async def _download_verification_image(client: Any, page: Any) -> bytes:
+    try:
+        data = await client.download_media(page, file=bytes)
+    except Exception:  # noqa: BLE001 - 下载失败按空字节处理，由调用方写 failed。
+        return b""
+    return bytes(data) if data else b""
+
+
+def _message_media_mime_type(message: Any) -> str:
+    media = getattr(message, "media", None)
+    for candidate in [media, getattr(media, "document", None), getattr(media, "photo", None)]:
+        mime_type = getattr(candidate, "mime_type", None)
+        if mime_type:
+            return str(mime_type)
+    return "image/png"
+
+
+def _is_digit_callback_button(button: SearchJoinButton) -> bool:
+    if button.button_type != "callback_data":
+        return False
+    text = button.text.strip()
+    return bool(text) and text.isdigit()
+
+
+def _image_verification_failed_result(
+    classification: ProtocolPageClassification,
+    buttons: list[SearchJoinButton],
+    detail: str,
+    *,
+    answer: str = "",
+    confidence: float = 0.0,
+) -> _ImageVerificationHandleResult:
+    """PRD §2.19.2 第 5 步：识别失败、置信度不足、answer 不在矩阵、重试仍空都写 jisou_image_verification_failed。"""
+    error = {
+        **_failed("jisou_image_verification_failed", f"极搜图片算式验证码识别失败：{detail}"),
+        "jisou_page_phase": VERIFICATION_IMAGE_PAGE,
+        "protocol_event_type": "image_verification_failed",
+        "image_verification_answer": answer,
+        "image_verification_confidence": confidence,
+        "search_protocol_trace": {
+            "page_phase": VERIFICATION_IMAGE_PAGE,
+            "page": _page_layout(buttons, classification.approved_button_positions),
+        },
+    }
+    return _ImageVerificationHandleResult(page=None, error=error)
 
 
 def _jisou_result_page_error(
@@ -358,6 +619,11 @@ def _button_layout(button: SearchJoinButton, approved_positions: frozenset[int])
         "col": button.col,
         "button_type": button.button_type,
         "effect": button.effect,
+        # PRD §2.19.4 观测盲点修复：把已计算的 normalized_text 写入 trace，
+        # 便于失败回放（脱敏后的归一化文案，不持久化机器人原文）。
+        "normalized_text": normalized,
+        "url": button.url,
+        "position": button.position,
         "text_length": len(button.text),
         "contains_page_marker": any(marker in normalized for marker in NAVIGATION_MARKERS),
         "navigation_symbols": [name for symbol, name in PAGINATION_SYMBOL_NAMES.items() if symbol in button.text],
@@ -772,4 +1038,8 @@ def _text_hash(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-__all__ = ["SearchJoinButton", "execute_search_join_with_client"]
+__all__ = [
+    "ImageVerificationSolver",
+    "SearchJoinButton",
+    "execute_search_join_with_client",
+]

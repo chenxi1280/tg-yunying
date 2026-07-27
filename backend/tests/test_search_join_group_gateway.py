@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import threading
 from dataclasses import dataclass
 
 import pytest
@@ -28,12 +29,14 @@ class FakeMessage:
         buttons: list[list[FakeButton]],
         click_results: dict[tuple[int, int], object] | None = None,
         raw_text: str = "",
+        media: object | None = None,
     ) -> None:
         self.id = message_id
         self.buttons = buttons
         self.clicked: list[tuple[int, int]] = []
         self.click_results = click_results or {}
         self.raw_text = raw_text
+        self.media = media
 
     async def click(self, row: int, col: int):
         self.clicked.append((row, col))
@@ -65,6 +68,7 @@ class FakeSearchJoinClient:
         join_error: Exception | None = None,
         membership_probe_error: Exception | None = None,
         edits: list[FakeMessage] | None = None,
+        download_media_result: bytes = b"\x89PNG fake image",
     ) -> None:
         self.responses = responses
         self.join_error = join_error
@@ -75,6 +79,10 @@ class FakeSearchJoinClient:
         self.joined: list[str] = []
         self.imported_invites: list[str] = []
         self.read_targets: list[str] = []
+        self.download_media_result = download_media_result
+
+    async def download_media(self, _message: object, *, file: type = bytes) -> bytes:
+        return self.download_media_result
 
     def conversation(self, bot: str, timeout: int):
         assert timeout == 60
@@ -200,7 +208,7 @@ def test_execute_search_join_rejects_jisou_without_approved_profile() -> None:
     )
 
     assert result["success"] is False
-    assert result["error_code"] == "jisou_protocol_page_unknown"
+    assert result["error_code"] == "jisou_session_state_deviated"
     assert result["jisou_page_phase"] == "unknown_page"
     assert category_page.clicked == []
 
@@ -347,7 +355,7 @@ def test_execute_search_join_reports_hot_list_as_session_state_not_selector_miss
     result = asyncio.run(execute_search_join_with_client(client, _payload(bot_username="jisou"), keyword_text="郑州"))
 
     assert result["success"] is False
-    assert result["error_code"] == "jisou_hot_list_page"
+    assert result["error_code"] == "jisou_session_state_deviated"
     assert result["jisou_page_phase"] == "hot_list_page"
     assert hot_list_page.clicked == []
 
@@ -683,3 +691,185 @@ def test_execute_search_join_records_sanitized_jisou_page_structure_when_no_next
     assert [item["approved_sample_match"] for item in trace["selector_page"]["button_layout"]] == [True, False]
     assert [item["approved_sample_match"] for item in trace["result_page"]["button_layout"]] == [True, False]
     assert "text" not in trace["jisou_group_selector"]
+
+
+class _FakeMediaPhoto:
+    """PRD §2.19.1: 模拟 telethon MessageMediaPhoto，用于 verification_image_page 检测。"""
+
+    photo = object()
+
+
+def _verification_image_page(*, digit_answers: list[str], raw_text: str = "人机验证 请计算结果") -> FakeMessage:
+    """构造一个 verification_image_page：含 photo + 人机验证文本 + ≥8 个数字 callback_data 按钮。"""
+    buttons = [[FakeButton(text=ans, data=ans.encode()) for ans in digit_answers]]
+    return FakeMessage(
+        101,
+        buttons,
+        raw_text=raw_text,
+        media=_FakeMediaPhoto(),
+    )
+
+
+def _solver_returning(answer: str, confidence: float):
+    """构造一个总是返回 (answer, confidence) 的 solver callable。"""
+    def _solver(_image_bytes: bytes, _mime_type: str, _candidates: list[str]) -> tuple[str, float] | None:
+        return answer, confidence
+    return _solver
+
+
+@pytest.mark.no_postgres
+def test_jisou_image_verification_succeeds_when_answer_in_button_matrix() -> None:
+    """PRD §2.19.2: 验证码识别成功——置信度 ≥0.70 且 answer 在按钮矩阵中，点击后进入 group_result_page。"""
+    digit_answers = ["7", "8", "9", "10", "11", "12", "13", "14"]
+    verification_page = _verification_image_page(digit_answers=digit_answers)
+    # 点击后编辑为 group_result_page（含目标群）
+    target_page = FakeMessage(102, [[FakeButton("目标群", url="https://t.me/target_group")]])
+    client = FakeSearchJoinClient(
+        [FakeMessage(100, []), verification_page],
+        edits=[target_page],
+    )
+    solver = _solver_returning("9", 0.95)
+
+    result = asyncio.run(
+        execute_search_join_with_client(
+            client,
+            _payload(bot_username="jisou"),
+            keyword_text="郑州",
+            image_verification_solver=solver,
+        )
+    )
+
+    assert result["success"] is True
+    assert result["join_status"] == "target_found"
+
+
+@pytest.mark.no_postgres
+def test_jisou_image_solver_does_not_block_event_loop() -> None:
+    digit_answers = ["7", "8", "9", "10", "11", "12", "13", "14"]
+    verification_page = _verification_image_page(digit_answers=digit_answers)
+    target_page = FakeMessage(102, [[FakeButton("目标群", url="https://t.me/target_group")]])
+    client = FakeSearchJoinClient(
+        [FakeMessage(100, []), verification_page],
+        edits=[target_page],
+    )
+    solver_started = threading.Event()
+    release_solver = threading.Event()
+
+    def solver(_image_bytes: bytes, _mime_type: str, _candidates: list[str]) -> tuple[str, float] | None:
+        solver_started.set()
+        return ("9", 0.95) if release_solver.wait(timeout=0.2) else None
+
+    async def execute_with_event_loop_release() -> dict:
+        execution = asyncio.create_task(
+            execute_search_join_with_client(
+                client,
+                _payload(bot_username="jisou"),
+                keyword_text="郑州",
+                image_verification_solver=solver,
+            )
+        )
+        while not solver_started.is_set():
+            await asyncio.sleep(0)
+        release_solver.set()
+        return await execution
+
+    result = asyncio.run(execute_with_event_loop_release())
+
+    assert result["success"] is True
+    assert result["join_status"] == "target_found"
+
+
+@pytest.mark.no_postgres
+def test_jisou_image_verification_fails_when_answer_not_in_button_matrix() -> None:
+    """PRD §2.19.2 第 3 步 round 7 场景：高置信度但 answer 不在按钮矩阵，禁止点击，写 jisou_image_verification_failed。"""
+    digit_answers = ["8", "9", "10", "11", "12", "13", "14", "15"]
+    verification_page = _verification_image_page(digit_answers=digit_answers)
+    client = FakeSearchJoinClient([FakeMessage(100, []), verification_page])
+    solver = _solver_returning("7", 0.95)  # answer=7 不在按钮矩阵中
+
+    result = asyncio.run(
+        execute_search_join_with_client(
+            client,
+            _payload(bot_username="jisou"),
+            keyword_text="郑州",
+            image_verification_solver=solver,
+        )
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "jisou_image_verification_failed"
+    assert result["jisou_page_phase"] == "verification_image_page"
+    assert verification_page.clicked == []  # 禁止点击
+
+
+@pytest.mark.no_postgres
+def test_jisou_image_verification_fails_when_confidence_below_threshold() -> None:
+    """PRD §2.19.2 第 3 步：置信度 <0.70 写 jisou_image_verification_failed。"""
+    digit_answers = ["8", "9", "10", "11", "12", "13", "14", "15"]
+    verification_page = _verification_image_page(digit_answers=digit_answers)
+    client = FakeSearchJoinClient([FakeMessage(100, []), verification_page])
+    solver = _solver_returning("9", 0.50)  # 置信度不足
+
+    result = asyncio.run(
+        execute_search_join_with_client(
+            client,
+            _payload(bot_username="jisou"),
+            keyword_text="郑州",
+            image_verification_solver=solver,
+        )
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "jisou_image_verification_failed"
+    assert verification_page.clicked == []
+
+
+@pytest.mark.no_postgres
+def test_jisou_image_verification_fails_when_solver_returns_empty_after_retry() -> None:
+    """PRD §2.19.2 第 2 步：minimax 返回空重试 1-2 次仍空，写 jisou_image_verification_failed。"""
+    digit_answers = ["8", "9", "10", "11", "12", "13", "14", "15"]
+    verification_page = _verification_image_page(digit_answers=digit_answers)
+    client = FakeSearchJoinClient([FakeMessage(100, []), verification_page])
+
+    call_count = 0
+
+    def _solver(_image_bytes: bytes, _mime_type: str, _candidates: list[str]) -> tuple[str, float] | None:
+        nonlocal call_count
+        call_count += 1
+        return None  # 始终返回空
+
+    result = asyncio.run(
+        execute_search_join_with_client(
+            client,
+            _payload(bot_username="jisou"),
+            keyword_text="郑州",
+            image_verification_solver=_solver,
+        )
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "jisou_image_verification_failed"
+    # PRD §2.19.2: 返回空时重试 1-2 次（初始 1 次 + 重试）
+    assert call_count >= 2
+    assert verification_page.clicked == []
+
+
+@pytest.mark.no_postgres
+def test_jisou_image_verification_fails_when_solver_unavailable() -> None:
+    """PRD §2.19.2 第 5 步：solver 未注入（minimax provider 全部不可用），写 jisou_image_verification_failed。"""
+    digit_answers = ["8", "9", "10", "11", "12", "13", "14", "15"]
+    verification_page = _verification_image_page(digit_answers=digit_answers)
+    client = FakeSearchJoinClient([FakeMessage(100, []), verification_page])
+
+    result = asyncio.run(
+        execute_search_join_with_client(
+            client,
+            _payload(bot_username="jisou"),
+            keyword_text="郑州",
+            image_verification_solver=None,
+        )
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "jisou_image_verification_failed"
+    assert verification_page.clicked == []

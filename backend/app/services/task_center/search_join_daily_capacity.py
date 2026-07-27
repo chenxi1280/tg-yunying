@@ -12,6 +12,8 @@ from zoneinfo import ZoneInfo
 class SearchJoinDailyCapacity:
     effective_date: str
     capacity_day_kind: str
+    effective_account_count: int
+    captcha_trigger_rate: float
     normal_curve_capacity: int
     strict_hour_ceiling: int
     account_source_capacity: int
@@ -135,6 +137,8 @@ def strict_daily_capacity(
     return SearchJoinDailyCapacity(
         effective_date=effective_date.isoformat(),
         capacity_day_kind=capacity_day_kind,
+        effective_account_count=max(0, int(candidate_account_count)),
+        captcha_trigger_rate=_captcha_trigger_rate(config),
         normal_curve_capacity=min(normal_capacity, bounded_daily_budget, bounded_accounts),
         strict_hour_ceiling=strict_ceiling,
         account_source_capacity=bounded_accounts,
@@ -155,6 +159,7 @@ def configured_account_source_capacity(
     candidate_account_count: int,
     allow_repeat: bool,
     keyword_count: int,
+    captcha_trigger_rate: float = 0.0,
 ) -> int:
     daily_budget = int(config.get("max_actions_per_day") or 0)
     if daily_budget <= 0:
@@ -165,7 +170,19 @@ def configured_account_source_capacity(
     keyword_limit = int(config.get("per_keyword_account_daily_limit") or 0)
     limits = [limit for limit in (account_limit, keyword_limit * max(1, keyword_count)) if limit > 0]
     per_account = min(limits) if limits else daily_budget
-    return min(daily_budget, max(0, int(candidate_account_count)) * per_account)
+    source_capacity = min(daily_budget, max(0, int(candidate_account_count)) * per_account)
+    rate = _validated_captcha_trigger_rate(captcha_trigger_rate)
+    return int(source_capacity * (1.0 - rate))
+
+
+def _captcha_trigger_rate(config: dict[str, Any]) -> float:
+    return _validated_captcha_trigger_rate(float(config.get("captcha_trigger_rate") or 0.0))
+
+
+def _validated_captcha_trigger_rate(value: float) -> float:
+    if not 0.0 <= value <= 1.0:
+        raise ValueError("captcha_trigger_rate must be between 0 and 1")
+    return value
 
 
 def _window_capacities(
