@@ -17,6 +17,7 @@ from app.models import (
     PendingVisibilityCredit,
 )
 from app.models.enums import now as model_now
+from app.timezone import as_beijing
 
 from .group_bot_observation import has_valid_observation, numeric_cursor, record_observation_batch
 
@@ -291,8 +292,8 @@ def close_observation_if_due(
         return admission
     if admission.state == "observation_stale":
         return admission
-    current = now or model_now()
-    closes_at = admission.observation_closes_at
+    current = as_beijing(now or model_now()) or model_now()
+    closes_at = as_beijing(admission.observation_closes_at)
     if closes_at is not None and current < closes_at:
         if has_valid_observation(session, admission=admission):
             admission.state = "observation_open"

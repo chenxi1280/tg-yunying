@@ -174,7 +174,7 @@ maximum_confirmable_count = frozen_denominator_count - terminal_permission_block
 3. 显式确认策略下，精确频道 follow 全部成功但没有账号级 callback source 时，允许该 admission/version 恰好一条正文进入 `post_follow_visibility_probe`。该正文必须创建 `PendingVisibilityCredit`，Action 先写 `unknown_after_send`，不得先计 hard-hourly 或 daily success；同 admission 的其他正文保持 pending。
 4. probe 的真实 message_id 在可见性窗口后仍可由同账号读取时，才把 admission 写 `group_bot_admission_ready`、`post_send_visibility_state=visible_confirmed` 并按原账本幂等计成功。消息不可见、群管拦截或 Gateway 明确权限失败时写 `post_send_intercepted`，不计成功；listener 若取得该账号明确提示，可继续走账号级 callback。
 5. 标准化显式收件人规则重复观测时，若当前频道 follow 已全部成功，不得把 admission 从 `awaiting_group_bot_confirmation` / `post_follow_visibility_probe` 重置为 `required_channel_follow_pending`；它只更新群级频道证据。
-6. `PendingVisibilityCredit.created_at` 从 SQLite、PostgreSQL 或生产连接返回时，恢复扫描必须先归一到统一的北京时间墙上时钟再计算 hold age；禁止 naive/aware 直接相减中断全部任务的 recovery cycle，也不得因时区转换把超时 hold 当成功。
+6. `GroupBotAdmission.observation_closes_at` 与 `PendingVisibilityCredit.created_at` 从 SQLite、PostgreSQL 或生产连接返回时，准入门禁和恢复扫描都必须先归一到统一的北京时间墙上时钟再比较或计算 hold age；禁止 naive/aware 直接比较中断 Dispatcher 或全部任务的 recovery cycle，也不得因时区转换把超时 hold 当成功。
 
 ### 5.2 内容多样性和重复质量失败
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import create_engine
@@ -113,6 +113,24 @@ def test_joined_account_waits_until_observation_and_policy():
         gate = evaluate_send_gate(session, tenant_id=1, group_id=7, account_id=11, enforce=True)
         assert gate.allowed is True
         assert gate.state == READY_STATE
+
+
+def test_observation_close_normalizes_postgres_aware_timestamp() -> None:
+    with _session() as session:
+        session.add(Tenant(id=1, name="t"))
+        admission = ensure_admission_after_join(
+            session,
+            tenant_id=1,
+            group_id=7,
+            account_id=11,
+            membership_action_id="join-1",
+            join_start_cursor="100",
+        )
+        admission.observation_closes_at = datetime.now(timezone.utc) + timedelta(minutes=1)
+
+        close_observation_if_due(session, admission=admission, now=model_now())
+
+        assert admission.state == "awaiting_group_bot_rule"
 
 
 def test_missing_admission_cannot_use_legacy_send_path() -> None:
