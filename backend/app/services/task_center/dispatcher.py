@@ -6441,7 +6441,13 @@ def _group_bot_admission_required(
         group_id=group_id,
         account_id=account_id,
     )
-    if existing is not None:
+    if existing is not None and any(
+        (
+            str(existing.trusted_bot_peer_id or ""),
+            str(existing.source_message_id or ""),
+            str(existing.evidence_ref or ""),
+        )
+    ):
         return True
     membership_id = session.scalar(
         select(TaskMembershipAdmissionItem.id).where(

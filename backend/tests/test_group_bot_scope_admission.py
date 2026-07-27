@@ -55,12 +55,21 @@ def test_gateway_gate_keeps_membership_only_group_outside_admission_flow() -> No
         _seed_scope(session)
         task = session.get(Task, "task-ai")
         task.type_config = {"target_group_id": 7}
+        session.add(
+            GroupBotAdmission(
+                tenant_id=1,
+                group_id=7,
+                account_id=11,
+                state="observation_stale",
+            )
+        )
+        session.flush()
         action = session.get(Action, "send-1")
 
         allowed = _group_bot_admission_gate_pass(session, action, group_id=7, account_id=11)
 
         assert allowed is True
-        assert session.query(GroupBotAdmission).count() == 0
+        assert session.query(GroupBotAdmission).count() == 1
 
 
 def test_gateway_gate_expands_audited_group_bot_scope_to_membership_account() -> None:
