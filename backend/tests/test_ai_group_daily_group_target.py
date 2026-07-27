@@ -330,3 +330,64 @@ def test_group_volume_candidates_scan_past_uncovered_admission_debt(
 
     assert captured["scan_all_candidates"] is True
     assert [account.id for account in selected] == [2, 3]
+
+
+@pytest.mark.parametrize(("extra_account_id", "expected_ids"), [(3, [3]), (None, [1])])
+def test_daily_planner_prefers_admitted_volume_but_keeps_admission_driver(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    extra_account_id: int | None,
+    expected_ids: list[int],
+) -> None:
+    task, group = _seed(session, configured=3, account_count=3)
+    waiting_account = SimpleNamespace(id=1)
+    row = SimpleNamespace(id="coverage-1", account_id=1)
+    coverage = group_ai_chat.CoveragePlanState(
+        rows=[],
+        rows_by_account={},
+        due_debt=1,
+        volume_need_now=1,
+    )
+    facts = SimpleNamespace(
+        config=task.type_config,
+        group=group,
+        hard_progress={},
+        coverage=coverage,
+    )
+    monkeypatch.setattr(
+        group_ai_chat,
+        "ready_coverage_plan_batch",
+        lambda *_args, exclude_account_ids=None, **_kwargs: SimpleNamespace(
+            rows=[] if exclude_account_ids else [row],
+        ),
+    )
+    monkeypatch.setattr(
+        group_ai_chat,
+        "_select_accounts_for_plan",
+        lambda *_args, **_kwargs: [waiting_account],
+    )
+    monkeypatch.setattr(
+        group_ai_chat,
+        "_online_ready_accounts",
+        lambda _session, _task, accounts, _progress: accounts,
+    )
+    monkeypatch.setattr(
+        group_ai_chat,
+        "_group_bot_ready_accounts_for_plan",
+        lambda *_args: [],
+    )
+    extras = [SimpleNamespace(id=extra_account_id)] if extra_account_id else []
+    monkeypatch.setattr(
+        group_ai_chat,
+        "_daily_group_extra_accounts",
+        lambda *_args, **_kwargs: extras,
+    )
+
+    state = group_ai_chat._load_daily_coverage_plan_accounts(
+        session,
+        task,
+        facts,
+        account_limit=1,
+    )
+
+    assert [account.id for account in state.accounts] == expected_ids

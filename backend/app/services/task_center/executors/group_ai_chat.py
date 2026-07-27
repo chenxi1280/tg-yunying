@@ -457,6 +457,7 @@ def _load_daily_coverage_plan_accounts(
     account_limit: int,
 ) -> AccountPlanState | PlanAbort:
     selected: list = []
+    admission_waiting: list = []
     seen_account_ids: set[int] = set()
     page_limit = _daily_coverage_scan_page_limit()
     while len(selected) < account_limit:
@@ -475,11 +476,15 @@ def _load_daily_coverage_plan_accounts(
             session, task, facts.group, facts.hard_progress, facts.config, coverage_rows=rows,
         )
         accounts = _online_ready_accounts(session, task, accounts, facts.hard_progress)
-        accounts = _group_bot_ready_accounts_for_plan(
+        ready_accounts = _group_bot_ready_accounts_for_plan(
             session, task, facts.group, accounts,
         )
+        ready_ids = {account.id for account in ready_accounts}
+        admission_waiting.extend(
+            account for account in accounts if account.id not in ready_ids
+        )
         remaining = max(0, account_limit - len(selected))
-        selected.extend(accounts[:remaining])
+        selected.extend(ready_accounts[:remaining])
     selected.extend(
         _daily_group_extra_accounts(
             session,
@@ -489,6 +494,8 @@ def _load_daily_coverage_plan_accounts(
             account_limit=account_limit,
         )
     )
+    if not selected:
+        selected.extend(admission_waiting[:account_limit])
     _record_direct_check_in_capacity(task, len(selected))
     if selected:
         return AccountPlanState(selected)
