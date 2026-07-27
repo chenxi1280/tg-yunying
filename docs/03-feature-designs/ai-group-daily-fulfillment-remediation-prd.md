@@ -170,7 +170,7 @@ maximum_confirmable_count = frozen_denominator_count - terminal_permission_block
 ### 5.1.2 存量任务账号准入补齐与关注后真实可见性探测
 
 1. `group_bot_admission_required=true` 的运行中 `group_ai_chat`，其持久任务 scope 内账号在任何正文进入生成或 Telegram Gateway 前都必须存在同 tenant + group + account 的 `GroupBotAdmission`。缺行时 Dispatcher 只能从当前 Action 的 task/account/group 和持久 membership item 创建 admission，并把正文延后；不得继续返回 `legacy_send_until_reviewed`，不得把 Telegram 返回 message_id 直接计入日覆盖。
-2. admission 补齐使用当前 listener cursor 作为观察基线，不伪造已确认；随后由 listener 的新控制事件或仍在当前窗口的已审计规则创建频道 follow。无运行任务绑定、非 scope 账号或 `group_bot_admission_required=false` 不在本自动补齐路径。
+2. admission 补齐使用当前 listener cursor 作为观察基线，不伪造已确认；随后由 listener 的新控制事件或仍在当前窗口的已审计规则创建频道 follow。准入 scope 由显式 `group_bot_admission_required=true`、该账号的持久 membership item 或既有 `GroupBotAdmission` 任一事实确认；无运行任务绑定、无上述持久 scope 事实或 `group_bot_admission_required=false` 不在本自动补齐路径，避免历史裸配置测试/任务被无关门禁抢占原业务校验。
 3. 显式确认策略下，精确频道 follow 全部成功但没有账号级 callback source 时，允许该 admission/version 恰好一条正文进入 `post_follow_visibility_probe`。该正文必须创建 `PendingVisibilityCredit`，Action 先写 `unknown_after_send`，不得先计 hard-hourly 或 daily success；同 admission 的其他正文保持 pending。
 4. probe 的真实 message_id 在可见性窗口后仍可由同账号读取时，才把 admission 写 `group_bot_admission_ready`、`post_send_visibility_state=visible_confirmed` 并按原账本幂等计成功。消息不可见、群管拦截或 Gateway 明确权限失败时写 `post_send_intercepted`，不计成功；listener 若取得该账号明确提示，可继续走账号级 callback。
 5. 标准化显式收件人规则重复观测时，若当前频道 follow 已全部成功，不得把 admission 从 `awaiting_group_bot_confirmation` / `post_follow_visibility_probe` 重置为 `required_channel_follow_pending`；它只更新群级频道证据。

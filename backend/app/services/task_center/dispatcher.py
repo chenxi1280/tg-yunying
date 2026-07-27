@@ -6357,7 +6357,7 @@ def _is_hard_hourly_send_action(action: Action) -> bool:
 def _group_bot_admission_gate_pass(session: Session, action: Action, *, group_id: int, account_id: int) -> bool:
     if action.task_type != "group_ai_chat" or action.action_type != "send_message":
         return True
-    if not _group_bot_admission_required(session, action, group_id):
+    if not _group_bot_admission_required(session, action, group_id=group_id, account_id=account_id):
         return True
     _ensure_scoped_group_bot_admission(session, action, group_id=group_id, account_id=account_id)
     payload = action.payload if isinstance(action.payload, dict) else {}
@@ -6416,15 +6416,39 @@ def _defer_for_group_bot_admission(action: Action, decision) -> None:
     _release_runtime_resources(action)
 
 
-def _group_bot_admission_required(session: Session, action: Action, group_id: int) -> bool:
+def _group_bot_admission_required(
+    session: Session,
+    action: Action,
+    *,
+    group_id: int,
+    account_id: int,
+) -> bool:
     task = session.get(Task, action.task_id) if action.task_id else None
     if task is None or task.type != "group_ai_chat":
         return False
     config = task.type_config if isinstance(task.type_config, dict) else {}
     configured_group_id = int(config.get("target_group_id") or 0)
-    return config.get("group_bot_admission_required") is not False and (
-        configured_group_id in (0, int(group_id))
+    if config.get("group_bot_admission_required") is False or configured_group_id not in (0, int(group_id)):
+        return False
+    if config.get("group_bot_admission_required") is True:
+        return True
+    from app.services.task_center.group_bot_admission import get_admission
+
+    existing = get_admission(
+        session,
+        tenant_id=action.tenant_id,
+        group_id=group_id,
+        account_id=account_id,
     )
+    if existing is not None:
+        return True
+    membership_id = session.scalar(
+        select(TaskMembershipAdmissionItem.id).where(
+            TaskMembershipAdmissionItem.task_id == action.task_id,
+            TaskMembershipAdmissionItem.account_id == account_id,
+        ).limit(1)
+    )
+    return membership_id is not None
 
 
 def _ensure_scoped_group_bot_admission(

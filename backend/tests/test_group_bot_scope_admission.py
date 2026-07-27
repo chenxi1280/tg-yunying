@@ -48,6 +48,20 @@ def test_gateway_gate_backfills_missing_scoped_admission_and_defers_body() -> No
         assert action.result["error_code"] == "group_bot_admission_wait"
 
 
+def test_gateway_gate_keeps_legacy_unscoped_task_outside_admission_flow() -> None:
+    with _session() as session:
+        _seed_scope(session)
+        task = session.get(Task, "task-ai")
+        task.type_config = {"target_group_id": 7}
+        session.query(TaskMembershipAdmissionItem).delete()
+        action = session.get(Action, "send-1")
+
+        allowed = _group_bot_admission_gate_pass(session, action, group_id=7, account_id=11)
+
+        assert allowed is True
+        assert session.query(GroupBotAdmission).count() == 0
+
+
 def test_post_follow_probe_is_held_until_remote_visibility_confirms() -> None:
     with _session() as session:
         _seed_scope(session)
