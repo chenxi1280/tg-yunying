@@ -1,11 +1,11 @@
 import React from 'react';
 import { Alert, Button, Descriptions, Input, Select, Space, Table, Tabs, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import type { HardHourlyRecentBucket, SearchRankDeboostExemptGroup, TaskAccountCoverageItem, TaskCenterAction, TaskCenterDetail, TaskCenterTask, TenantBotSettings } from '../types';
+import type { SearchRankDeboostExemptGroup, TaskAccountCoverageItem, TaskCenterAction, TaskCenterDetail, TaskCenterTask, TenantBotSettings } from '../types';
 import { DetailModal, StatusBadge } from '../components/shared';
 import { parseBeijingDate } from '../time';
 import { API_ORIGIN, api } from '../../shared/api/client';
-import { TYPE_LABEL, accountCoverageLabel, errorMessage, formatDateTime, formatHardHourlyBlockers, formatHardHourlyPipeline, hardHourlyStats, hardHourlyStatusColor, hardHourlyStatusLabel, runtimeStage, statusLabel } from './taskCenterViewModel';
+import { TYPE_LABEL, accountCoverageLabel, errorMessage, formatDateTime, runtimeStage, statusLabel } from './taskCenterViewModel';
 import { TaskAccountOnlineSummaryPanel } from './TaskAccountOnlineSummaryPanel';
 import { TaskAIQualityFunnelPanel } from './TaskAIQualityFunnelPanel';
 import { TaskMembershipPanel } from './TaskMembershipPanel';
@@ -292,91 +292,19 @@ function mediaUrl(value?: string | null) {
   return value.startsWith('http') ? value : `${API_ORIGIN}${value}`;
 }
 
-function HardHourlyExecutionPanel({ detail }: { detail: TaskCenterDetail }) {
-  const stats = hardHourlyStats(detail.task);
-  if (!stats) return null;
-  const goal = Number(stats.hard_hourly_goal ?? detail.task.type_config?.hourly_min_messages ?? 0);
-  const success = Number(stats.hard_hourly_success_count ?? 0);
-  const futureOpen = Number(stats.hard_hourly_open_count ?? 0);
-  const overdueOpen = Number(stats.hard_hourly_overdue_open_count ?? 0);
-  const deficit = Number(stats.hard_hourly_deficit ?? Math.max(0, goal - success - futureOpen));
-  const recentBuckets = stats.hard_hourly_recent_buckets ?? [];
-  const recentColumns: ColumnsType<HardHourlyRecentBucket> = [
-    { title: '小时桶', dataIndex: 'bucket', width: 180, render: (value) => formatDateTime(value) },
-    { title: '成功/目标', key: 'goal', width: 110, render: (_, item) => `${item.success_count ?? 0}/${item.goal ?? 0}` },
-    { title: '未来待执行', key: 'future', width: 110, render: (_, item) => item.future_open_count ?? item.open_count ?? 0 },
-    { title: '执行滞后', dataIndex: 'overdue_open_count', width: 100 },
-    { title: '缺口', dataIndex: 'deficit', width: 80 },
-    { title: '状态', dataIndex: 'status', width: 100, render: (value) => <Tag color={hardHourlyStatusColor(value)}>{hardHourlyStatusLabel(value)}</Tag> },
-    { title: '阻塞原因', key: 'blockers', ellipsis: true, render: (_, item) => formatHardHourlyBlockers(item.blockers) },
-  ];
-  const durableDebt = Number(stats.hard_hourly_durable_debt ?? 0);
-  const unknownHold = Number(stats.hard_hourly_unknown_after_send_hold_count ?? 0);
-  const eligibleOpen = Number(stats.hard_hourly_eligible_open_count ?? futureOpen + overdueOpen);
-  const planningRate = Number(stats.hard_hourly_planning_rate ?? 0);
-  const requiredNew = Number(stats.hard_hourly_required_new ?? 0);
-  const targetRevision = Number(stats.hard_hourly_target_reference_revision ?? 0);
-  const configRevision = Number(stats.hard_hourly_task_config_revision ?? 0);
+function DailyGroupTargetPanel({ detail }: { detail: TaskCenterDetail }) {
+  if (detail.task.type !== 'group_ai_chat') return null;
+  const stats = detail.task.stats || {};
+  const configured = Number(detail.task.type_config?.daily_message_target || 0);
   return (
-    <Space direction="vertical" size={8} style={{ width: '100%' }}>
-      {overdueOpen > 0 && (
-        <Alert
-          type="warning"
-          showIcon
-          message={`当前小时有 ${overdueOpen} 条执行滞后`}
-          description="跨小时未进入 Gateway 的动作会继续执行，不再因小时结束跳过；滞后项仍计入开放预约。"
-        />
-      )}
-      {unknownHold > 0 && (
-        <Alert
-          type="warning"
-          showIcon
-          message={`有 ${unknownHold} 条 Gateway 后待核验`}
-          description="unknown_after_send 不计成功、不替代重发，仅占规划名额；其余缺口仍可按 planning_rate 补齐。"
-        />
-      )}
-      {durableDebt > 0 && (
-        <Alert
-          type="info"
-          showIcon
-          message={`历史持久欠账 ${durableDebt}`}
-          description="欠账按目标 epoch 累计，不因 24 小时展示窗口消失；活动窗外只累计不发送。"
-        />
-      )}
-      <Descriptions
-        bordered
-        size="small"
-        column={4}
-        title="硬目标执行（连续性）"
-        items={[
-          { key: 'bucket', label: '计划小时桶', children: formatDateTime(stats.hard_hourly_bucket) },
-          { key: 'status', label: '状态', children: <Tag color={hardHourlyStatusColor(stats.hard_hourly_status)}>{hardHourlyStatusLabel(stats.hard_hourly_status)}</Tag> },
-          { key: 'success', label: '本小时成功 / 目标', children: `${success} / ${goal || '-'}` },
-          { key: 'deficit', label: '本小时缺口', children: deficit },
-          { key: 'durable-debt', label: '历史欠账', children: durableDebt },
-          { key: 'eligible-open', label: '可抵扣开放动作', children: eligibleOpen },
-          { key: 'unknown-hold', label: '待核验占位', children: unknownHold },
-          { key: 'required-new', label: '本轮可新建', children: planningRate > 0 ? `${requiredNew} / rate ${planningRate}` : requiredNew },
-          { key: 'future-open', label: '未来待执行', children: futureOpen },
-          { key: 'overdue-open', label: '执行滞后', children: overdueOpen },
-          { key: 'target-rev', label: '目标 revision', children: targetRevision || '-' },
-          { key: 'config-rev', label: '任务 config revision', children: configRevision || '-' },
-          { key: 'pipeline', label: '端到端阶段', children: formatHardHourlyPipeline(stats.hard_hourly_pipeline) },
-          { key: 'last-plan', label: '最近强推', children: stats.hard_hourly_last_check_at ? `${formatDateTime(stats.hard_hourly_last_check_at)} / 创建 ${stats.hard_hourly_last_planned_count ?? 0} 条` : '-' },
-          { key: 'blockers', label: '阻塞原因', span: 2, children: formatHardHourlyBlockers(stats.hard_hourly_last_blockers) },
-        ]}
-      />
-      {recentBuckets.length > 0 && (
-        <Table
-          rowKey={(item) => item.bucket}
-          columns={recentColumns}
-          dataSource={recentBuckets.slice(-6).reverse()}
-          pagination={false}
-          size="small"
-          scroll={{ x: 900 }}
-        />
-      )}
-    </Space>
+    <Descriptions bordered size="small" column={3} title="今日群发送目标" items={[
+      { key: 'configured', label: '配置总量', children: configured || '-' },
+      { key: 'effective', label: '有效目标', children: (stats.daily_group_effective_target ?? configured) || '-' },
+      { key: 'success', label: '已确认成功', children: stats.daily_group_confirmed_success_count ?? 0 },
+      { key: 'accounts', label: '冻结账号数', children: stats.daily_group_frozen_account_count ?? 0 },
+      { key: 'covered', label: '已覆盖账号', children: stats.daily_group_covered_account_count ?? 0 },
+      { key: 'due', label: '当前应完成量', children: stats.daily_group_due_message_count ?? 0 },
+    ]} />
   );
 }
 
@@ -859,8 +787,8 @@ export function TaskCenterDetailModal({
               { key: 'group_bot_admission', label: '群管准入', children: detail.task.type_config?.group_bot_admission_required === false ? '异常关闭' : '必须' },
               { key: 'reply_min_per_round', label: '每轮最少引用', children: detail.task.type_config?.reply_min_per_round ?? 1 },
               { key: 'coverage_mode', label: '全账号日覆盖', children: (accountCoverage?.mode ?? detail.task.type_config?.account_coverage_mode) === 'all_accounts_daily' ? '开启' : '关闭' },
-              { key: 'coverage_window', label: '覆盖窗口', children: `${detail.task.type_config?.coverage_window_hours ?? 24} 小时` },
-              { key: 'coverage_range', label: '每账号消息数', children: `${detail.task.type_config?.per_account_daily_min_messages ?? 1}-${detail.task.type_config?.per_account_daily_max_messages ?? 2}` },
+              { key: 'daily_target', label: '该群每天发送总量', children: detail.task.type_config?.daily_message_target ?? '-' },
+              { key: 'coverage_range', label: '账号覆盖', children: '所有账号每天至少成功 1 条' },
               { key: 'coverage_progress', label: '今日覆盖', children: accountCoverage ? accountCoverageLabel(detail.task) : '-' },
               { key: 'coverage_remaining', label: '剩余覆盖账号', children: accountCoverage ? Number(accountCoverage.remaining_count ?? 0) : '-' },
               { key: 'coverage_target_accounts', label: '覆盖目标账号', children: accountCoverage ? Number(accountCoverage.target_account_count ?? accountCoverage.eligible_count ?? 0) : '-' },
@@ -1190,7 +1118,7 @@ export function TaskCenterDetailModal({
                 { key: 'error', label: '错误', span: 3, children: detail.task.last_error || '无' },
               ]}
             />
-            <HardHourlyExecutionPanel detail={detail} />
+            <DailyGroupTargetPanel detail={detail} />
             <Tabs className="tabs-row" items={detailTabs} />
           </Space>
         )}

@@ -1,5 +1,7 @@
 # AI 活跃群每小时硬目标 PRD
 
+> **文档状态：retired（2026-07-28）。** `group_ai_chat` 不再提供、创建、统计或调度硬小时目标。本文件只用于解释历史字段、Action、账本和迁移审计，不得作为新实现、任务配置、运行门禁或验收口径。当前目标、节奏和完成合同统一见 `ai-group-daily-group-target-redesign-prd.md`：单群自然日总量、全账号至少 1 条、24 小时非零权重累计 `due_by_now`，无小时义务。存量 `hard_hourly_*` 只允许由迁移脚本转换/终结并保留历史事实。
+
 > **2026-07-24 VNext 优先级说明（评审修订版）：** `docs/03-feature-designs/ai-group-send-continuity-and-terminal-targets-prd.md` 对目标生命周期、引用版本、跨小时 Action、持久化小时桶、成功 credit、`unknown_after_send`、调度公平性和群发送策略具有优先级。启用 `ai_group_send_continuity_v1` 后的不可变口径：
 >
 > 1. 成功 credit **关闭计划桶义务**；`executed_at` 仅审计，禁止“实际小时入账 + 计划桶永久欠债”。

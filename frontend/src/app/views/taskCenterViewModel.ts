@@ -44,7 +44,6 @@ export const CREATE_AND_START_ENDPOINT: Record<TaskCenterTaskType, string> = {
 
 export const WIZARD_STEPS = ['基础信息', '目标来源', '任务配置', '账号与节奏', '预检确认'];
 export const SIMPLE_SEARCH_CLICK_WIZARD_STEPS = ['任务类型', '目标群', '关键词与目标次数', '执行范围与节奏', '确认'];
-export const GROUP_AI_HARD_HOURLY_MIN_MESSAGES = 10;
 export const CHANNEL_COUNT_JITTER_DEFAULT = 0.2;
 const DEFAULT_SEARCH_CLICK_DAILY_ACTIONS = 10;
 const DEFAULT_SEARCH_CLICK_DURATION_HOURS = 24;
@@ -495,12 +494,7 @@ export function typeInitialValues(type: TaskCenterTaskType, setting?: Scheduling
       reply_min_per_round: 1,
       group_bot_admission_required: true,
       account_coverage_mode: 'all_accounts_daily',
-      per_account_daily_min_messages: 1,
-      per_account_daily_max_messages: 2,
-      coverage_window_hours: 24,
-      hard_hourly_target_enabled: true,
-      hourly_min_messages: GROUP_AI_HARD_HOURLY_MIN_MESSAGES,
-      hard_hourly_strategy: 'force_planning',
+      daily_message_target: 1,
       auto_join_target: true,
       auto_resolve_verification: true,
       ai_assisted_verification: true,
@@ -707,12 +701,7 @@ export function fieldsForSubmit(taskType: TaskCenterTaskType, messageScope: stri
       'reply_min_per_round',
       'group_bot_admission_required',
       'account_coverage_mode',
-      'per_account_daily_min_messages',
-      'per_account_daily_max_messages',
-      'coverage_window_hours',
-      'hard_hourly_target_enabled',
-      'hourly_min_messages',
-      'hard_hourly_strategy',
+      'daily_message_target',
       'auto_join_target',
       'auto_resolve_verification',
       'ai_assisted_verification',
@@ -792,12 +781,7 @@ export function editFieldsForSubmit(taskType: TaskCenterTaskType, accountMode: s
       'reply_min_per_round',
       'group_bot_admission_required',
       'account_coverage_mode',
-      'per_account_daily_min_messages',
-      'per_account_daily_max_messages',
-      'coverage_window_hours',
-      'hard_hourly_target_enabled',
-      'hourly_min_messages',
-      'hard_hourly_strategy',
+      'daily_message_target',
       'history_fetch_account_id',
       'auto_join_target',
       'auto_resolve_verification',

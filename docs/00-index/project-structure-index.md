@@ -2,7 +2,8 @@
 
 > 生成口径：2026-06-27，基于当前工作区 `/Users/xida/PycharmProjects/tg-yunying` 扫描。本文是代码维护入口，PRD 仍以 `docs/01-product/tg-ops-platform-prd.md` 及专项 PRD 为产品源头。
 
-> **2026-07-27 AI 活群重构设计入口：** `docs/03-feature-designs/ai-group-daily-group-target-redesign-prd.md` 定义“群日目标 + 全账号至少 1 条”的新合同。实施将移除 `group_ai_chat` 的日容量 PlanAbort、硬小时模块依赖和活动时段/本地群槽位阻断，新增群日目标快照，并把前端硬小时/每账号 1-2 条配置替换为 `daily_message_target`。其他任务类型的窗口与限额边界不变。
+> **2026-07-28 AI 活群重构实现：** `docs/03-feature-designs/ai-group-daily-group-target-redesign-prd.md` 定义“群日目标 + 全账号至少 1 条”的新合同。`task_group_daily_targets` / `daily_group_target.py` 持久化单群自然日配置值、冻结账号数、有效目标、应完成量和真实成功数；`group_ai_chat.py` 按覆盖债务与群总量债务持续建单，`dispatcher.py` 校验账号面具证据，`direct_check_in.py` 只允许缺面具且绑定当日 coverage 的精确 `签到`；`ai_message_memory.py` 改为同账号滚动 10 天硬去重。前端创建、编辑、预览和详情统一使用 `daily_message_target`，旧每账号条数与硬小时字段仅用于迁移输入，不再产生新运行合同。其他任务类型的窗口与限额边界不变。
+> **对应迁移与诊断：** `0128_ai_group_daily_targets.py`、`0129_ai_message_memory_account_mask.py` 建表/补面具证据字段；`scripts/migrate_ai_group_daily_targets.py` 提供 dry-run 与 `--apply` 的逐任务迁移；`.github/scripts/ai_group_quality_diagnostics.py` 的发布门改为完整自然日群总量、全账号覆盖、Action/Attempt/remote id/面具证据一致性以及“不得新增 hard-hourly Action”。
 
 ## 1. 总体架构
 

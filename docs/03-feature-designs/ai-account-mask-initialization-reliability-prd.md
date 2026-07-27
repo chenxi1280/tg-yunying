@@ -14,6 +14,8 @@
 
 本文是账号面具初始化、生成失败恢复和 AI 活跃群面具准入的专项真相源。总 PRD、全账号日覆盖 PRD 与本文冲突时，以本文对“初始化状态、失败补偿、任务影响范围和恢复唤醒”的定义为准。
 
+> **2026-07-28 缺面具日覆盖兜底 supersede：** 面具初始化与恢复状态机仍以本文为准，但 AI 活群发送影响改为：缺面具账号不得生成普通正文或群总量额外消息；若该账号当天 coverage 未完成且准入、在线、安全条件满足，允许一条 `mask_missing_check_in` 精确 `签到` 完成最低覆盖。该兜底不进入普通 10 天内容去重，由任务+群+账号+日期+来源唯一键防重，也不停止面具恢复。
+
 ## 2. 背景与生产事实
 
 2026-07-26 生产复查确认：
@@ -45,7 +47,7 @@ Expecting property name enclosed in double quotes: line 1 column 96 (char 95)
 
 1. 新账号登录成功后，面具初始化不能依赖一次同步 AI 调用的偶然成功。
 2. AI 非法 JSON、内容校验失败、供应商超时或配置错误必须形成可恢复、可观察的持久事实。
-3. 单个账号缺面具只能阻塞该账号使用，不能停止其他账号的自然聊天、每日覆盖或硬小时履约。
+3. 单个账号缺面具只能阻止该账号生成普通正文；该账号每日覆盖走受限 `签到`，其他账号继续。
 4. 面具补齐后，相关任务和覆盖账本必须自动回流，不依赖运营手工暂停、恢复或重置任务。
 5. 页面和诊断必须展示“缺失账号数”和“失败观察次数”的不同含义，不能把同一账号的重复扫描累计成大面积故障。
 
@@ -61,7 +63,7 @@ Expecting property name enclosed in double quotes: line 1 column 96 (char 95)
 ### 3.3 非目标
 
 - 不允许使用 mock、模板面具或空摘要让账号伪装为 ready。
-- 不允许缺面具账号绕过质量门直接生成或发送 AI 活群正文。
+- 不允许缺面具账号生成普通 AI 活群正文；唯一例外是本 PRD 定义的 coverage 专用精确 `签到`。
 - 不把 AI 供应商故障包装成 Telegram 发送失败。
 - 不因为修补初始化链路而改变接码专用、搜索降权专用或其他隔离账号的用途边界。
 - 不在数据库迁移过程中同步批量调用外部 AI。
@@ -233,9 +235,9 @@ Telegram 登录成功
 
 - 创建/启动预检必须返回目标账号总数、可用面具账号数、`queued/retry_wait/manual_required/disabled` 数及样例；该只读预检不得把未提交的生成 Job 伪装成已创建。
 - 任务创建或启动后的首个 Planner tick 自动幂等入队缺面具账号，但预检不得假装已经可用。
-- 对全账号日覆盖任务，缺面具账号保留在覆盖分母并写账号级 blocker。
+- 对全账号日覆盖任务，缺面具账号保留在覆盖分母并标记 `mask_missing_check_in` 资格；面具生成状态仍独立展示。
 - 如果仍有其他面具可用账号，任务可以继续规划这些账号。
-- 如果所有可执行账号都缺面具，任务显示结构化阻塞，但生成任务仍由独立 worker 推进，不能靠 Planner 高频扫描触发 AI。
+- 如果所有可执行账号都缺面具，当前未完成 coverage 仍可各创建一条受限签到；完成 coverage 后没有 active 面具可供额外补量时，群总量显示 `mask_capacity_waiting`，生成 worker 独立推进。
 
 ### 6.3 定时一致性核对
 
@@ -333,30 +335,30 @@ Planner 读取账号时必须把面具状态作为账号级准入：
   -> 继续在线、容量、权限和内容规划
 
 无可用面具
-  -> 当前账号不创建发送 Action
-  -> 覆盖行 blocked/voice_profile_missing
+  -> 未完成 coverage 时创建唯一 mask_missing_check_in
+  -> 已完成 coverage 后不创建额外发送 Action
   -> 关联或创建持久生成项
-  -> next_eligible_at 对齐生成项 next_retry_at
   -> 推进 keyset 游标并继续扫描后续页
 ```
 
-Planner 必须按显式页大小循环扫描，直到填满本轮 Action 预算或当前候选源耗尽；不能先按 `account_limit` 截断账号、再因截断集合全部缺面具而返回空。本轮候选源耗尽但硬小时仍有缺口时，允许继续从“已确认过当日覆盖、当前面具 active、其他准入通过、未超过账号日上限”的账号池补位；该补位只履行硬小时消息目标，不改变全账号覆盖分母或伪造新的覆盖完成。补位账号的 credit 口径、`account_daily_limit_exceeded` 处置和唤醒时机由 `ai-group-hard-hourly-target-prd.md` 2026-07-26 面具 supersede 段定义，本节不重复。禁止从“本轮选中的账号全部缺面具”直接推导“整个任务永久阻塞”。任务级状态必须由当前不同 blocker 的账号聚合事实计算。
+Planner 必须按显式页大小循环扫描，直到填满本轮 Action 预算或当前候选源耗尽；不能先按 `account_limit` 截断后误判整个任务无候选。缺面具且 coverage 未完成的账号进入受限签到候选；已完成 coverage 的缺面具账号不得参与额外补量。硬小时已退役，不再存在面具账号的硬小时补位。
 
-**与硬小时 PRD 双向 supersede：** 本节定义面具侧的账号级隔离与补位资格判定，`ai-group-hard-hourly-target-prd.md` 2026-07-26 面具 supersede 段定义硬小时侧的 credit 口径与 `account_daily_limit_exceeded`；两份 PRD 冲突时，面具侧状态机以本节为准，硬小时侧 credit 与补位上限以硬小时 PRD 为准。
+兜底资格只包含 `missing/queued/generating/retry_wait/manual_required` 且 `account_usage=normal`。`disabled/unusable/identity_invalid/code_receiver/rank_deboost/mismatch` 不得放行。已有 active 面具但重建中的账号继续使用旧 active 版本，不属于缺面具。
 
 ### 8.2 覆盖账本
 
 - 缺面具账号仍在当日覆盖分母中。
-- blocker 至少记录 `voice_profile_missing`、生成项状态、`next_retry_at` 和最后错误码。
+- 状态至少记录 `voice_profile_missing`、`mask_missing_check_in` 资格、生成项状态、`next_retry_at` 和最后错误码。
 - 同一账号 blocker 状态没有变化时只更新最后观察时间，不增加当前缺失账号数；状态转换计数按唯一 `coverage_row + blocker_revision` 记录。
 - 面具生成成功后，系统按 `account_id` 增量刷新所有相关任务的当日覆盖行。
-- 只有其他准入条件也满足时，覆盖行才从 `blocked` 回到 `ready`。
+- 其他准入条件满足时，缺面具覆盖行可为 `ready/mask_missing_check_in`；面具恢复后转普通 `ready`。
 - 回到 `ready` 时必须重写 `targeted_at`，确保已推进的 keyset 游标能够再次选中该账号。
-- 恢复事件必须唤醒任务 `next_run_at`、日覆盖检查和硬小时检查。
+- 恢复事件必须唤醒任务 `next_run_at` 和群日覆盖检查。
 
 ### 8.3 已有 Action
 
-- 缺面具账号不得创建新的 AI 活群发送 Action。
+- 缺面具账号不得创建普通 AI 活群正文或额外补量 Action，只可创建 coverage 唯一绑定的精确 `签到`。
+- 缺面具签到以 coverage 兜底义务防并发；明确安全失败可递增 attempt 重试，`unknown_after_send` 保持占位且禁止替代发送。
 - 历史 `pending/claiming` Action 没有固化面具版本时，面具补齐后不得直接发送旧文案；必须显式写 `voice_profile_replan`，释放覆盖预约和消息记忆，再用新版本重建。
 - 普通编辑、重建或版本回滚后，已经固化有效面具版本且尚未进入 Gateway 的 Action 继续使用该版本，不被后台新版本改写。
 - 运营显式 `disabled` 或质量状态降为 unusable 属于安全撤销：所有尚未写 `gateway_started_at` 的 open Action 必须转为 `skipped/voice_profile_disabled` 或 `skipped/voice_profile_unusable`，释放覆盖预约并清除 Redis；已经进入 Gateway 的 Action 保持真实 success/failed/unknown 结果，不能伪装成 skipped。
@@ -510,12 +512,12 @@ Planner 必须按显式页大小循环扫描，直到填满本轮 Action 预算�
 
 ### 13.3 Planner 与覆盖
 
-- 600 个可用账号加 1 个缺面具账号时，Planner 跳过缺失账号并继续规划其他账号。
+- 600 个可用账号加 1 个缺面具账号时，Planner 为前者生成面具正文，为缺失账号创建 coverage 专用签到。
 - 前一页全部缺面具、后一页存在可用账号时，Planner 继续分页并填满本轮预算。
-- **所有可执行账号都缺面具时**：任务显示结构化阻塞（`last_error` 来自聚合 blocker，非空），不创建发送 Action；面具生成 worker 仍按独立节奏推进，Planner 不得高频重试 AI、不得空转热循环；任务 `next_run_at` 对齐最早 `next_retry_at`。
-- 当日覆盖 ready 行耗尽但硬小时仍欠量时，只从已完成覆盖且未超账号日上限的 active 面具账号补位；不得增加覆盖完成数。
+- **所有可执行账号都缺面具时**：每个未完成 coverage 账号最多创建一条受限签到；这些 coverage 远端确认后若群总量仍欠缺，任务显示 `mask_capacity_waiting`，不得继续用签到补量；面具生成 worker 仍独立推进。
+- 群日总量仍欠量时，只从已完成覆盖且未超账号日上限的 active 面具账号补位；缺面具账号不得补额外消息。
 - **补位账号超过账号日上限时**：写 `skipped/account_daily_limit_exceeded`，不伪装成功，不从 `durable_debt` 排除义务；继续扫描其他未超上限账号。
-- 缺面具账号覆盖行保持在分母，状态为 `blocked/voice_profile_missing`。
+- 缺面具账号覆盖行保持在分母；其他条件 ready 时状态进入 `ready/mask_missing_check_in`，若准入、在线或权限同时失败则显示对应真实 blocker。
 - 面具成功后覆盖行按其他准入事实回到 `ready`，重写 `targeted_at` 并唤醒任务。
 - 未固化面具版本的旧 Action 写 `voice_profile_replan`，不得直接进入 Gateway。
 - 当前缺失账号数按去重账号统计；重复 Planner tick 不增加该数。
@@ -561,7 +563,7 @@ Planner 必须按显式页大小循环扫描，直到填满本轮 Action 预算�
 - 任务详情当前缺失账号数与数据库去重查询一致，不再出现“一个账号累计数千次”等误导。
 - 生产连续至少 3 个完整小时没有因单账号缺面具阻断其他可用账号规划。
 
-本节只证明“面具不再阻断活群”。完整活群 `production_fixed` 仍必须按硬小时、全账号日覆盖、目标有效性、账号容量和真实远端消息 ID 的专项 E4 验收，不能由本文替代。
+本节只证明面具恢复和缺面具覆盖兜底。完整活群 `production_fixed` 仍必须按群日目标、全账号覆盖、目标有效性和真实远端消息 ID 验收，不能由本文替代。
 
 ### 14.4 本修补可写 `production_fixed` 的条件
 
@@ -582,7 +584,7 @@ Planner 必须按显式页大小循环扫描，直到填满本轮 Action 预算�
 | 迁移、回滚和生产修复 | 已覆盖 |
 | QA 与 E4 验收 | 已覆盖 |
 
-第二轮自检已补齐登录事务原子性、独立状态机、单层 attempt、Planner 跨页与硬小时补位、旧 API 兼容、停用 / 质量降级 Action 处置、租户幂等、灰度回滚和分层 E4，`design_status=complete`。进入开发前仍需输出 Product Handoff；dev 按本文固定的模型名和 `voice-profile` worker role 落地迁移与代码，并将最终迁移号和代码入口同步到项目结构索引。
+第二轮自检已补齐登录事务原子性、独立状态机、单层 attempt、Planner 跨页、缺面具 coverage 签到、旧 API 兼容、停用 / 质量降级 Action 处置、租户幂等、灰度回滚和分层 E4，`design_status=complete`。
 
 第三轮修补（2026-07-26）已补齐 7 个 dev 阻塞 / 一致性缺口：
 
@@ -591,7 +593,7 @@ Planner 必须按显式页大小循环扫描，直到填满本轮 Action 预算�
 | `account_mask_init` 用途判定真相源 | §4.1.1（`account_identity` + `pool_purpose` 双字段，DEDICATED 集合 = `{code_receiver, rank_deboost}`） |
 | Provider 限流与 AI 活群独立 | §7.2.1（独立限流键、独立并发与 token 预算） |
 | `voice_profile_replan` 状态语义 | §8.3.1（`Action.status=skipped + error_code=voice_profile_replan`，与代码现状对齐） |
-| 与硬小时 PRD 双向 supersede | §8.1 末段 + `ai-group-hard-hourly-target-prd.md` 2026-07-26 面具 supersede 段 |
+| 与群日目标合同对齐 | §8.1 缺面具 coverage 签到 + `ai-group-daily-group-target-redesign-prd.md` §7.4 |
 | 工单 1 RC-A / D1 / D2 / E4 口径同步 | `docs/04-ops/tickets/2026-07-25-p0-ai-group-hard-hourly-blockers.md` RC-A 改为单账号放大 + 计数口径错误，D1 改为验证去重值，E4 引用面具 PRD §14 |
 | QA 测试场景补齐 | §13.3 / §13.3.1（所有账号缺面具、补位超日上限、登录事务失败、4 路并发幂等） |
 | 回滚期间新登录 fallback | §11.1（旧同步 rebuild 路径作为 fallback，与兼容发布周期边界对齐） |

@@ -27,6 +27,25 @@ from .config_fields import (
 from .utils import as_int as _as_int, as_int_list as _as_int_list
 
 
+def normalize_ai_daily_target(config: dict[str, Any], *, frozen_account_count: int) -> dict[str, Any]:
+    normalized = dict(config or {})
+    configured = _as_int(normalized.get("daily_message_target"))
+    normalized["daily_message_target"] = max(1, configured or int(frozen_account_count or 0))
+    normalized["account_coverage_mode"] = "all_accounts_daily"
+    for field in LEGACY_AI_TARGET_FIELDS:
+        normalized.pop(field, None)
+    return normalized
+
+
+LEGACY_AI_TARGET_FIELDS = frozenset({
+    "per_account_daily_min_messages",
+    "per_account_daily_max_messages",
+    "hard_hourly_target_enabled",
+    "hourly_min_messages",
+    "hard_hourly_strategy",
+})
+
+
 def normalize_operation_target_references(session: Session, tenant_id: int, task_type: str, config: dict[str, Any]) -> dict[str, Any]:
     next_config = dict(config)
     if task_type == "group_ai_chat":

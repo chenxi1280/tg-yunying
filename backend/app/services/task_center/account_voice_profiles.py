@@ -12,14 +12,14 @@ from app.services._common import _now
 from app.services.ai_config import ai_provider_credentials
 from app.services.task_center.account_stance_memory import group_stance_summaries, upsert_group_stance_memory
 from app.services.task_center.account_voice_profile_cache import (
+    VOICE_PROFILE_CONTRACT_VERSION,
     cached_voice_profile_prompt_details,
     refresh_voice_profile_cache,
     refresh_voice_profile_cache_many,
+    voice_profile_snapshot_hash,
 )
 from app.services.task_center.account_voice_profile_generation import (
-    VOICE_PROFILE_INITIAL_MAX_TOKENS,
     _generate_voice_profile_payloads,
-    _parse_voice_profile_payloads,
     _valid_summary,
     _validate_generated_profile,
     _validate_summary,
@@ -218,12 +218,15 @@ def voice_profile_prompt_details(
 
 def _voice_profile_prompt_detail(row: AiAccountVoiceProfile) -> dict[str, Any]:
     return {
+        "id": row.id,
         "version": int(row.version or 0),
         "summary": row.short_prompt_summary,
         "mask_name": row.mask_name,
         "audience_archetype": row.audience_archetype,
         "identity_frame": row.identity_frame,
         "preference_tags": row.preference_tags or [],
+        "contract_version": VOICE_PROFILE_CONTRACT_VERSION,
+        "snapshot_hash": voice_profile_snapshot_hash(row),
     }
 
 

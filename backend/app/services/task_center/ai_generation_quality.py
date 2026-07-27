@@ -201,9 +201,15 @@ def _attach_message_memory(
             raw_text=str(data.get("message_text") or ""),
             topic_direction=str(payload.topic_direction.get("title") or ""),
             teacher_target=str(payload.teacher_target.get("name") or ""),
-            profile_version=payload.profile_version or None,
-            profile_match_score=payload.profile_match_score or None,
-            profile_match_reason=payload.profile_match_reason,
+            profile_version=payload.account_mask_version or None,
+            profile_match_score=payload.account_mask_match_score or None,
+            profile_match_reason=payload.account_mask_match_reason,
+            account_mask_id=payload.account_mask_id,
+            account_mask_version=payload.account_mask_version or None,
+            mask_contract_version=payload.voice_profile_contract_version,
+            mask_snapshot_hash=payload.account_mask_snapshot_hash,
+            mask_status=payload.mask_status or "active",
+            content_source=str(data.get("content_source") or payload.content_source or "account_mask"),
             duplicate_batch=duplicate_batch,
         )
     except DuplicateMessageReservation as exc:

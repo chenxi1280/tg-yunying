@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.models import Action, AiGroupMessageMemory
 from app.services._common import _now
 from app.services.task_center.ai_message_memory_queries import (
-    HISTORICAL_BACKFILL_STATUSES,
+    HISTORICAL_BACKFILL_STATUSES as HISTORICAL_BACKFILL_STATUSES,
     THIRTY_DAY_WINDOW,
     _historical_group_ai_actions,
     _memory_exists_for_action,
@@ -36,11 +36,10 @@ from app.services.task_center.ai_message_memory_text import (
 DEDUP_STATUSES = {"pending", "reserved", "claiming", "executing", "unknown_after_send", "success"}
 DEFAULT_RESERVATION_TTL = timedelta(minutes=30)
 FIVE_MINUTE_WINDOW = timedelta(minutes=5)
-ONE_HOUR_WINDOW = timedelta(hours=1)
-SEVEN_DAY_WINDOW = timedelta(days=7)
+TEN_DAY_WINDOW = timedelta(days=10)
 HIGH_SIMILARITY_THRESHOLD = 0.78
 SEMANTIC_SIMILARITY_THRESHOLD = 0.80
-@dataclass(frozen=True)
+@dataclass
 class DuplicateMessageReservation(Exception):
     reference_id: str
     duplicate_window: str
@@ -52,12 +51,17 @@ def reserve_group_ai_message(
     topic_direction: str = "", teacher_target: str = "", profile_version: int | None = None,
     profile_match_score: int | None = None, profile_match_reason: str = "",
     duplicate_batch: DuplicateMemoryBatch | None = None,
+    account_mask_id: str = "", account_mask_version: int | None = None,
+    mask_contract_version: str = "", mask_snapshot_hash: str = "",
+    mask_status: str = "active",
+    content_source: str = "account_mask",
 ) -> AiGroupMessageMemory:
     current_time = now or (duplicate_batch.now if duplicate_batch else _now())
     normalized, fingerprint, semantic_cluster_value, template_shell = message_identity(raw_text)
     duplicate, duplicate_window = _find_duplicate(
         session,
         tenant_id=tenant_id,
+        account_id=account_id,
         group_id=group_id,
         fingerprint=fingerprint,
         normalized=normalized,
@@ -69,9 +73,9 @@ def reserve_group_ai_message(
         raise DuplicateMessageReservation(reference_id=duplicate.id, duplicate_window=duplicate_window)
     memory = _new_reserved_memory(
         tenant_id=tenant_id,
+        account_id=account_id,
         group_id=group_id,
         task_id=task_id,
-        account_id=account_id,
         raw_text=raw_text,
         normalized=normalized,
         fingerprint=fingerprint,
@@ -84,6 +88,12 @@ def reserve_group_ai_message(
         profile_version=profile_version,
         profile_match_score=profile_match_score,
         profile_match_reason=profile_match_reason,
+        account_mask_id=account_mask_id,
+        account_mask_version=account_mask_version,
+        mask_contract_version=mask_contract_version,
+        mask_snapshot_hash=mask_snapshot_hash,
+        mask_status=mask_status,
+        content_source=content_source,
     )
     _persist_reserved_memory(
         session,
@@ -112,7 +122,13 @@ def _persist_reserved_memory(
             session.add(memory)
             session.flush()
     except IntegrityError as exc:
-        duplicate = _find_exact_duplicate(session, tenant_id, group_id, fingerprint, current_time)
+        duplicate = _find_exact_duplicate(
+            session,
+            tenant_id,
+            memory.account_id,
+            fingerprint,
+            current_time,
+        )
         if duplicate:
             raise DuplicateMessageReservation(
                 reference_id=duplicate.id, duplicate_window="5m_exact",
@@ -139,6 +155,12 @@ def _new_reserved_memory(
     profile_version: int | None,
     profile_match_score: int | None,
     profile_match_reason: str,
+    account_mask_id: str,
+    account_mask_version: int | None,
+    mask_contract_version: str,
+    mask_snapshot_hash: str,
+    mask_status: str,
+    content_source: str,
 ) -> AiGroupMessageMemory:
     return AiGroupMessageMemory(
         tenant_id=tenant_id,
@@ -152,7 +174,7 @@ def _new_reserved_memory(
         text_fingerprint=fingerprint,
         semantic_cluster=semantic_cluster,
         template_shell_key=template_shell_key,
-        reservation_key=reservation_key(tenant_id, fingerprint, current_time, FIVE_MINUTE_WINDOW),
+        reservation_key=f"{account_id}:{reservation_key(tenant_id, fingerprint, current_time, FIVE_MINUTE_WINDOW)}",
         status="reserved",
         planned_at=current_time,
         expires_at=current_time + reservation_ttl,
@@ -161,6 +183,12 @@ def _new_reserved_memory(
         profile_version=profile_version,
         profile_match_score=profile_match_score,
         profile_match_reason=profile_match_reason,
+        account_mask_id=account_mask_id,
+        account_mask_version=account_mask_version,
+        mask_contract_version=mask_contract_version,
+        mask_snapshot_hash=mask_snapshot_hash,
+        mask_status=mask_status,
+        content_source=content_source,
     )
 
 
@@ -200,6 +228,7 @@ def ensure_group_ai_message_sendable(
     duplicate, duplicate_window = _find_duplicate(
         session,
         tenant_id=memory.tenant_id,
+        account_id=memory.account_id,
         group_id=memory.group_id,
         fingerprint=memory.text_fingerprint,
         normalized=memory.normalized_text or normalize_group_ai_text(memory.raw_text),
@@ -308,16 +337,19 @@ def _as_optional_int(value: object) -> int | None:
 def _find_exact_duplicate(
     session: Session,
     tenant_id: int,
-    group_id: int,
+    account_id: int | None,
     fingerprint: str,
     now: datetime,
     exclude_id: str = "",
 ) -> AiGroupMessageMemory | None:
-    cutoff = now - FIVE_MINUTE_WINDOW
+    if account_id is None:
+        return None
+    cutoff = now - TEN_DAY_WINDOW
     return session.scalar(
         select(AiGroupMessageMemory)
         .where(
             AiGroupMessageMemory.tenant_id == tenant_id,
+            AiGroupMessageMemory.account_id == account_id,
             AiGroupMessageMemory.text_fingerprint == fingerprint,
             AiGroupMessageMemory.status.in_(DEDUP_STATUSES),
             AiGroupMessageMemory.planned_at >= cutoff,
@@ -332,6 +364,7 @@ def _find_duplicate(
     session: Session,
     *,
     tenant_id: int,
+    account_id: int | None,
     group_id: int,
     fingerprint: str,
     normalized: str,
@@ -340,41 +373,41 @@ def _find_duplicate(
     exclude_id: str = "",
     duplicate_batch: DuplicateMemoryBatch | None = None,
 ) -> tuple[AiGroupMessageMemory | Row | None, str]:
-    exact = _find_exact_duplicate(session, tenant_id, group_id, fingerprint, now, exclude_id)
+    exact = _find_exact_duplicate(session, tenant_id, account_id, fingerprint, now, exclude_id)
     if exact:
-        return exact, "5m_exact"
-    if duplicate_batch is not None and not exclude_id:
+        return exact, "10d_exact"
+    if duplicate_batch is not None and not exclude_id and account_id is not None:
         refresh_duplicate_memory_batch(
             session,
             duplicate_batch,
             tenant_id=tenant_id,
-            group_id=group_id,
+            account_id=account_id,
             statuses=DEDUP_STATUSES,
-            window=SEVEN_DAY_WINDOW,
+            window=TEN_DAY_WINDOW,
             window_loader=_window_memories,
         )
     similar = _find_similar_duplicate(
-        session, tenant_id, group_id, normalized, now, exclude_id, duplicate_batch,
+        session, tenant_id, account_id, normalized, now, exclude_id, duplicate_batch,
     )
     if similar:
-        return similar, "1h_similar"
+        return similar, "10d_similar"
     semantic = _find_semantic_duplicate(
-        session, tenant_id, group_id, normalized, now, exclude_id, duplicate_batch,
+        session, tenant_id, account_id, normalized, now, exclude_id, duplicate_batch,
     )
     if semantic:
-        return semantic, "7d_semantic"
+        return semantic, "10d_semantic"
     template = _find_template_shell_duplicate(
-        session, tenant_id, group_id, template_shell_key, now, exclude_id,
+        session, tenant_id, account_id, template_shell_key, now, exclude_id,
     )
     if template:
-        return template, "30d_template_shell"
+        return template, "10d_template_shell"
     return None, ""
 
 
 def _find_similar_duplicate(
     session: Session,
     tenant_id: int,
-    group_id: int,
+    account_id: int | None,
     normalized: str,
     now: datetime,
     exclude_id: str = "",
@@ -382,8 +415,12 @@ def _find_similar_duplicate(
 ) -> MemorySimilarityRow | None:
     return _first_similar_memory(
         _similarity_window_memories(
-            session, tenant_id=tenant_id, group_id=group_id, cutoff=now - ONE_HOUR_WINDOW,
-            exclude_id=exclude_id, duplicate_batch=duplicate_batch,
+            session,
+            tenant_id=tenant_id,
+            account_id=account_id,
+            cutoff=now - TEN_DAY_WINDOW,
+            exclude_id=exclude_id,
+            duplicate_batch=duplicate_batch,
         ),
         normalized,
         HIGH_SIMILARITY_THRESHOLD,
@@ -393,7 +430,7 @@ def _find_similar_duplicate(
 def _find_semantic_duplicate(
     session: Session,
     tenant_id: int,
-    group_id: int,
+    account_id: int | None,
     normalized: str,
     now: datetime,
     exclude_id: str = "",
@@ -401,8 +438,12 @@ def _find_semantic_duplicate(
 ) -> MemorySimilarityRow | None:
     return _first_similar_memory(
         _similarity_window_memories(
-            session, tenant_id=tenant_id, group_id=group_id, cutoff=now - SEVEN_DAY_WINDOW,
-            exclude_id=exclude_id, duplicate_batch=duplicate_batch,
+            session,
+            tenant_id=tenant_id,
+            account_id=account_id,
+            cutoff=now - TEN_DAY_WINDOW,
+            exclude_id=exclude_id,
+            duplicate_batch=duplicate_batch,
         ),
         normalized,
         SEMANTIC_SIMILARITY_THRESHOLD,
@@ -412,20 +453,21 @@ def _find_semantic_duplicate(
 def _find_template_shell_duplicate(
     session: Session,
     tenant_id: int,
-    group_id: int,
+    account_id: int | None,
     template_shell_key: str,
     now: datetime,
     exclude_id: str = "",
 ) -> AiGroupMessageMemory | None:
-    if not template_shell_key:
+    if not template_shell_key or account_id is None:
         return None
     return session.scalar(
         select(AiGroupMessageMemory)
         .where(
             AiGroupMessageMemory.tenant_id == tenant_id,
+            AiGroupMessageMemory.account_id == account_id,
             AiGroupMessageMemory.template_shell_key == template_shell_key,
             AiGroupMessageMemory.status.in_(DEDUP_STATUSES),
-            AiGroupMessageMemory.planned_at >= now - THIRTY_DAY_WINDOW,
+            AiGroupMessageMemory.planned_at >= now - TEN_DAY_WINDOW,
             AiGroupMessageMemory.id != exclude_id,
         )
         .order_by(AiGroupMessageMemory.planned_at.desc())
@@ -434,8 +476,15 @@ def _find_template_shell_duplicate(
 
 
 def _window_memories(
-    session: Session, *, tenant_id: int, group_id: int, cutoff: datetime, exclude_id: str = "",
+    session: Session,
+    *,
+    tenant_id: int,
+    account_id: int | None,
+    cutoff: datetime,
+    exclude_id: str = "",
 ) -> list[Row]:
+    if account_id is None:
+        return []
     return list(
         session.execute(
             select(
@@ -447,6 +496,7 @@ def _window_memories(
             )
             .where(
                 AiGroupMessageMemory.tenant_id == tenant_id,
+                AiGroupMessageMemory.account_id == account_id,
                 AiGroupMessageMemory.status.in_(DEDUP_STATUSES),
                 AiGroupMessageMemory.planned_at >= cutoff,
                 AiGroupMessageMemory.id != exclude_id,
@@ -460,16 +510,25 @@ def _similarity_window_memories(
     session: Session,
     *,
     tenant_id: int,
-    group_id: int,
+    account_id: int | None,
     cutoff: datetime,
     exclude_id: str,
     duplicate_batch: DuplicateMemoryBatch | None,
 ) -> list[MemorySimilarityRow]:
-    if duplicate_batch is None or exclude_id:
-        return _window_memories(
-            session, tenant_id=tenant_id, group_id=group_id, cutoff=cutoff, exclude_id=exclude_id,
+    if duplicate_batch is not None and not exclude_id and account_id is not None:
+        return cached_similarity_rows(
+            duplicate_batch,
+            tenant_id=tenant_id,
+            account_id=account_id,
+            cutoff=cutoff,
         )
-    return cached_similarity_rows(duplicate_batch, tenant_id=tenant_id, cutoff=cutoff)
+    return _window_memories(
+        session,
+        tenant_id=tenant_id,
+        account_id=account_id,
+        cutoff=cutoff,
+        exclude_id=exclude_id,
+    )
 
 
 def _first_similar_memory(

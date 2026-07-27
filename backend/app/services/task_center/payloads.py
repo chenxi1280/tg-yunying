@@ -40,6 +40,8 @@ class SendMessagePayload(BaseModel):
     account_voice_profile_match_score: int = 100
     account_voice_profile_match_reason: str = ""
     account_mask_version: int = 0
+    account_mask_id: str = ""
+    account_mask_snapshot_hash: str = ""
     account_mask_summary: str = ""
     account_mask_match_score: int = 100
     account_mask_match_reason: str = ""
@@ -61,6 +63,10 @@ class SendMessagePayload(BaseModel):
     coverage_account_remaining_before_action: int = 0
     coverage_reason: str = ""
     coverage_ledger_id: str = ""
+    daily_group_target_id: str = ""
+    mask_status: str = ""
+    fallback_obligation_key: str = ""
+    fallback_attempt_no: int = 0
     content_variation_key: str = ""
     content_context_version: str = ""
     topic_thread: str = ""
@@ -101,10 +107,10 @@ class SendMessagePayload(BaseModel):
     ai_generation_history: str = ""
     ai_generation_tokens: int = 0
     ai_generation_count: int = 0
-    hard_hourly_target: bool = False
-    hard_hourly_bucket: str = ""
-    hard_hourly_goal_at_plan: int = 0
-    hard_hourly_deficit_at_plan: int = 0
+    hard_hourly_target: bool = Field(default=False, exclude=True)
+    hard_hourly_bucket: str = Field(default="", exclude=True)
+    hard_hourly_goal_at_plan: int = Field(default=0, exclude=True)
+    hard_hourly_deficit_at_plan: int = Field(default=0, exclude=True)
     ai_generation_context_count: int = 0
     ai_generation_memory_count: int = 0
     profile_scene: str = ""

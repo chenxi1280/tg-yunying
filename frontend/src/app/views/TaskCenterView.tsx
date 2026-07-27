@@ -9,7 +9,6 @@ import { fromBeijingDateTimeLocalValue } from '../time';
 import {
   CREATE_AND_START_ENDPOINT,
   CREATE_ENDPOINT,
-  GROUP_AI_HARD_HOURLY_MIN_MESSAGES,
   CHANNEL_COUNT_JITTER_DEFAULT,
   TASK_TYPES,
   TYPE_LABEL,
@@ -34,9 +33,6 @@ import {
   formatChatTargetLines,
   formatPrecheckReasons,
   formatTopicDirectionLines,
-  hardHourlyStats,
-  hardHourlyStatusColor,
-  hardHourlyStatusLabel,
   initialValuesForType,
   isSimpleSearchClickTask,
   normalizePromptTemplateType,
@@ -90,26 +86,15 @@ function localAccountCoverageLabel(actions: Array<{ account_id: number | null }>
   return expected > 0 ? `${covered}/${expected}` : '-';
 }
 
-function HardHourlyTaskSummary({ task }: { task: TaskCenterVisibleTask }) {
-  const stats = hardHourlyStats(task);
-  if (!stats) return null;
-  const configuredGoal = 'type_config' in task ? task.type_config?.hourly_min_messages : 0;
-  const goal = Number(stats.hard_hourly_goal ?? configuredGoal ?? 0);
-  const success = Number(stats.hard_hourly_success_count ?? 0);
-  const deficit = Number(stats.hard_hourly_deficit ?? Math.max(0, goal - success));
-  const durableDebt = Number(stats.hard_hourly_durable_debt ?? 0);
-  const unknownHold = Number(stats.hard_hourly_unknown_after_send_hold_count ?? 0);
-  return (
-    <Space direction="vertical" size={0}>
-      <Typography.Text type="secondary">本小时硬目标 {success} / {goal || '-'}</Typography.Text>
-      <Space size={6} wrap>
-        <Typography.Text type="secondary">缺口 {deficit}</Typography.Text>
-        {durableDebt > 0 && <Typography.Text type="secondary">历史欠账 {durableDebt}</Typography.Text>}
-        {unknownHold > 0 && <Typography.Text style={{ color: '#d48806' }}>待核验 {unknownHold}</Typography.Text>}
-        <Tag color={hardHourlyStatusColor(stats.hard_hourly_status)}>{hardHourlyStatusLabel(stats.hard_hourly_status)}</Tag>
-      </Space>
-    </Space>
-  );
+function DailyGroupTargetSummary({ task }: { task: TaskCenterVisibleTask }) {
+  if (task.type !== 'group_ai_chat') return null;
+  const stats = task.stats || {};
+  const configured = 'type_config' in task ? Number(task.type_config?.daily_message_target || 0) : 0;
+  const target = Number(stats.daily_group_effective_target ?? configured);
+  const success = Number(stats.daily_group_confirmed_success_count ?? 0);
+  const covered = Number(stats.daily_group_covered_account_count ?? 0);
+  const accounts = Number(stats.daily_group_frozen_account_count ?? 0);
+  return <Typography.Text type="secondary">今日群总量 {success}/{target || '-'}，账号覆盖 {covered}/{accounts || '-'}</Typography.Text>;
 }
 
 function rankDeboostSaveWarning(task: TaskCenterTask): string {
@@ -135,18 +120,6 @@ function MembershipTaskSummary({ task }: { task: TaskCenterVisibleTask }) {
   );
 }
 
-function hardHourlyEditValues(config: Record<string, any>): Record<string, any> {
-  const configured = Number(config.hourly_min_messages);
-  const hourlyMin = Number.isFinite(configured)
-    ? Math.max(GROUP_AI_HARD_HOURLY_MIN_MESSAGES, configured)
-    : GROUP_AI_HARD_HOURLY_MIN_MESSAGES;
-  return {
-    hard_hourly_target_enabled: true,
-    hourly_min_messages: hourlyMin,
-    hard_hourly_strategy: 'force_planning',
-  };
-}
-
 function taskListTitle(task: TaskCenterVisibleTask): string {
   if (task.type !== 'group_ai_chat') return task.name;
   return task.target_summary || task.name;
@@ -161,7 +134,7 @@ function failureDiagnosis(action: TaskCenterAction) {
 function actionReplyTarget(action: TaskCenterAction) {
   const payload = action.payload ?? {};
   const isCommentAction = action.task_type === 'channel_comment' || action.action_type === 'post_comment';
-  if (payload.content_source === 'check_in_fallback' || payload.quality_fallback === 'check_in_fallback') {
+  if (payload.content_source === 'mask_missing_check_in' || payload.quality_fallback === 'check_in_fallback') {
     return <Tag color="orange">签到</Tag>;
   }
   if (!payload.reply_to_message_id) return <Tag>{isCommentAction ? '普通评论' : '普通发言'}</Tag>;
@@ -340,6 +313,14 @@ export default function TaskCenterView({
   }, []);
   const slangTemplates = taskPromptTemplates.filter((template) => normalizePromptTemplateType(template.template_type) === 'AI黑话词表' && template.is_active);
   const defaultSlangTemplateId = slangTemplates[0]?.id ?? null;
+  function taskTypeInitialValues(type: TaskCenterTaskType) {
+    const values = initialValuesForType(type, schedulingSetting);
+    if (type !== 'group_ai_chat') return values;
+    const normalAccountCount = taskAccounts.filter(
+      (account) => account.account_identity === 'normal' && !account.deleted_at,
+    ).length;
+    return { ...values, daily_message_target: Math.max(1, normalAccountCount) };
+  }
 
   React.useEffect(() => {
     if (accounts.length) setTaskAccounts(accounts);
@@ -598,7 +579,7 @@ export default function TaskCenterView({
 
     const nextType = prefill.taskType;
     const nextValues: Record<string, any> = {
-      ...initialValuesForType(nextType, schedulingSetting),
+      ...taskTypeInitialValues(nextType),
       name: `${prefill.target.title} ${TYPE_LABEL[nextType] ?? '任务'}`,
     };
     if (prefill.target.target_type === 'group') {
@@ -940,7 +921,7 @@ export default function TaskCenterView({
     setPrecheck(null);
     setTaskType('group_ai_chat');
     form.resetFields();
-    form.setFieldsValue(initialValuesForType('group_ai_chat', schedulingSetting));
+    form.setFieldsValue(taskTypeInitialValues('group_ai_chat'));
     if (defaultSlangTemplateId) form.setFieldsValue({ slang_prompt_template_id: defaultSlangTemplateId });
     setWizardStep(0);
     setModalOpen(true);
@@ -985,14 +966,13 @@ export default function TaskCenterView({
     const operationTemplateId = operationProfile.template_id ?? 'natural_full_day';
     const operationCurve = curveNumbers(operationProfile.hourly_activity_curve ?? operationTemplate(operationTemplateId).curve);
     return {
-      ...initialValuesForType(task.type as TaskCenterTaskType, schedulingSetting),
+      ...taskTypeInitialValues(task.type as TaskCenterTaskType),
       name: task.name,
       priority: task.priority,
       timezone: task.timezone,
       scheduled_start: toDateTimeLocal(task.scheduled_start),
       scheduled_end: toDateTimeLocal(task.scheduled_end),
       ...config,
-      ...(task.type === 'group_ai_chat' ? hardHourlyEditValues(config) : {}),
       selection_mode: account.selection_mode ?? 'all',
       account_group_id: account.account_group_id ?? null,
       account_ids: account.account_ids ?? [],
@@ -1305,16 +1285,6 @@ export default function TaskCenterView({
     };
   }
 
-  function hardHourlyTargetPayload(values: any) {
-    const requested = Number(values.hourly_min_messages);
-    const hourlyMin = Number.isFinite(requested) ? requested : GROUP_AI_HARD_HOURLY_MIN_MESSAGES;
-    return {
-      hard_hourly_target_enabled: true,
-      hourly_min_messages: Math.max(GROUP_AI_HARD_HOURLY_MIN_MESSAGES, hourlyMin),
-      hard_hourly_strategy: 'force_planning',
-    };
-  }
-
   function createPayload(values: any): Record<string, any> {
     if (isSimpleSearchClickTask(taskType)) return simpleSearchClickPayload(values);
     const base = commonPayload(values);
@@ -1370,10 +1340,7 @@ export default function TaskCenterView({
         messages_per_round: values.messages_per_round ?? 1,
         reply_min_per_round: values.reply_min_per_round ?? 1,
         account_coverage_mode: values.account_coverage_mode ?? 'all_accounts_daily',
-        per_account_daily_min_messages: values.per_account_daily_min_messages ?? 1,
-        per_account_daily_max_messages: values.per_account_daily_max_messages ?? 2,
-        coverage_window_hours: 24,
-        ...hardHourlyTargetPayload(values),
+        daily_message_target: values.daily_message_target ?? 1,
         history_fetch_account_id: values.history_fetch_account_id ?? null,
         ...membershipStrategyPayload(values),
         context_expire_after_messages: values.context_expire_after_messages ?? 10,
@@ -1456,10 +1423,7 @@ export default function TaskCenterView({
         messages_per_round: values.messages_per_round ?? 1,
         reply_min_per_round: values.reply_min_per_round ?? 1,
         account_coverage_mode: values.account_coverage_mode ?? 'all_accounts_daily',
-        per_account_daily_min_messages: values.per_account_daily_min_messages ?? 1,
-        per_account_daily_max_messages: values.per_account_daily_max_messages ?? 2,
-        coverage_window_hours: 24,
-        ...hardHourlyTargetPayload(values),
+        daily_message_target: values.daily_message_target ?? 1,
         history_fetch_account_id: values.history_fetch_account_id ?? null,
         ...membershipStrategyPayload(values),
         idle_continuation_enabled: values.idle_continuation_enabled ?? true,
@@ -1581,7 +1545,7 @@ export default function TaskCenterView({
       form.resetFields();
       setPrecheck(null);
       setTaskType('group_ai_chat');
-      form.setFieldsValue(initialValuesForType('group_ai_chat', schedulingSetting));
+      form.setFieldsValue(taskTypeInitialValues('group_ai_chat'));
       setWizardStep(0);
       setModalOpen(false);
       await refreshTaskListAfterAction(shouldStartNow ? '任务创建并启动' : '任务创建');
@@ -1865,7 +1829,7 @@ export default function TaskCenterView({
     setTaskType(nextType);
     setPrecheck(null);
     form.resetFields();
-    form.setFieldsValue(initialValuesForType(nextType, schedulingSetting));
+    form.setFieldsValue(taskTypeInitialValues(nextType));
     if (nextType === 'group_ai_chat' && defaultSlangTemplateId) form.setFieldsValue({ slang_prompt_template_id: defaultSlangTemplateId });
     setWizardStep(0);
     const requestSeq = beginTaskFormSupportRequest();
@@ -1921,7 +1885,7 @@ export default function TaskCenterView({
         <Space direction="vertical" size={0}>
           <Typography.Text>{task.stats?.success_count ?? 0}/{task.stats?.total_actions ?? 0} 成功，{task.stats?.failure_count ?? 0} 失败</Typography.Text>
           <Typography.Text type="secondary">{accountCoverageLabel(task)}</Typography.Text>
-          <HardHourlyTaskSummary task={task} />
+          <DailyGroupTargetSummary task={task} />
           <MembershipTaskSummary task={task} />
         </Space>
       ),
@@ -2235,7 +2199,7 @@ export default function TaskCenterView({
         {actionError && <Alert className="form-alert" type="error" showIcon message={actionError} />}
         {actionWarning && <Alert className="form-alert" type="warning" showIcon message={actionWarning} />}
         <Steps className="wizard-steps" current={wizardStep} items={wizardSteps.map((title) => ({ title }))} />
-        <Form form={form} layout="vertical" preserve initialValues={initialValuesForType(taskType, schedulingSetting)}>
+        <Form form={form} layout="vertical" preserve initialValues={taskTypeInitialValues(taskType)}>
           {wizardStep === 0 && <WizardBasics taskType={taskType} onTypeChange={resetTypeFields} />}
           {wizardStep === 1 && <WizardTarget taskType={taskType} messages={messages} messageScope={messageScope} targetChannelId={targetChannelId} onTargetChannelChange={() => form.setFieldsValue({ message_ids: [] })} onTargetsLoaded={mergeLoadedTargets} simpleSearchCreation={simpleSearchClickTask} />}
           {wizardStep === 2 && <WizardTypeConfig taskType={taskType} ruleSets={ruleSets} slangTemplates={slangTemplates} comments={comments} relaySourceOptions={[]} targetChannelId={targetChannelId} messageScope={messageScope} messageIds={messageIds} simpleSearchCreation={simpleSearchClickTask} />}

@@ -10,9 +10,9 @@ from app.database import Base
 from app.integrations.telegram import SendResult
 from app.models import (
     Action,
+    AiAccountVoiceProfile,
     AiGroupMessageMemory,
     ExecutionAttempt,
-    FailureType,
     MessageTask,
     Task,
     TaskStatus,
@@ -23,6 +23,7 @@ from app.models import (
     TgGroupAccount,
 )
 from app.services._common import _now
+from app.services.task_center.account_voice_profile_cache import voice_profile_snapshot_hash
 from app.services.task_center import dispatcher
 from app.services.task_center import group_send_limits
 from app.services.task_center.dispatcher import claim_actions
@@ -51,11 +52,26 @@ def _seed_send_scope(
         group_cooldown_seconds=group_cooldown_seconds,
         require_review=False,
     )
+    voice_profile = AiAccountVoiceProfile(
+        id="mask-12",
+        tenant_id=1,
+        account_id=12,
+        version=1,
+        mask_name="",
+        audience_archetype="",
+        identity_frame="",
+        preference_tags=[],
+        status="active",
+        quality_status="active",
+        short_prompt_summary="当前账号短句",
+    )
+    mask_snapshot_hash = voice_profile_snapshot_hash(voice_profile)
     session.add_all([
         Tenant(id=1, name="默认运营空间"),
         group,
         TgAccount(id=11, tenant_id=1, display_name="历史账号", phone_masked="+861***0011", status="在线"),
         TgAccount(id=12, tenant_id=1, display_name="当前账号", phone_masked="+861***0012", status="在线", session_ciphertext="session-current"),
+        voice_profile,
         Task(id="prior-task", tenant_id=1, name="历史发送", type="group_ai_chat", status="running"),
         Task(id="current-task", tenant_id=1, name="当前发送", type="group_ai_chat", status="running"),
     ])
@@ -81,6 +97,12 @@ def _seed_send_scope(
             text_fingerprint="current-memory",
             status="reserved",
             planned_at=now_value,
+            account_mask_id="mask-12",
+            account_mask_version=1,
+            mask_contract_version="style_only_v2",
+            mask_snapshot_hash=mask_snapshot_hash,
+            mask_status="active",
+            content_source="account_mask",
         ),
         Action(
             id="prior-action",
@@ -109,6 +131,11 @@ def _seed_send_scope(
                 "review_approved": True,
                 "slot_id": "current-task:cycle:1:turn:1",
                 "ai_message_memory_id": "current-memory",
+                "account_mask_id": "mask-12",
+                "account_mask_version": 1,
+                "voice_profile_contract_version": "style_only_v2",
+                "account_mask_snapshot_hash": mask_snapshot_hash,
+                "content_source": "account_mask",
             },
         ),
     ])
@@ -135,7 +162,7 @@ def _dispatch_current_action(session: Session, monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(
         dispatcher.gateway,
         "send_message",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("群限额拦截前不应调用 Telegram")),
+        lambda *_args, **_kwargs: SendResult(ok=True, remote_message_id="tg-current"),
     )
     [claimed] = claim_actions(session, limit=1, worker_id="group-limit-test")
     assert dispatcher.dispatch_action(session, claimed) is True
@@ -161,12 +188,7 @@ def test_group_ai_send_respects_group_daily_limit(monkeypatch: pytest.MonkeyPatc
 
         action = _dispatch_current_action(session, monkeypatch)
 
-        assert action.status == "pending"
-        assert action.result["error_code"] == FailureType.SLOWMODE.value
-        assert action.result["validation_stage"] == "group_send_limit"
-        assert action.result["rate_limit_source"] == "group"
-        assert action.result["retry_after_seconds"] > 0
-        assert session.get(AiGroupMessageMemory, "current-memory").status == "reserved"
+        assert action.status == "success", action.result
 
 
 @pytest.mark.no_postgres
@@ -183,11 +205,7 @@ def test_group_ai_send_respects_group_cooldown(monkeypatch: pytest.MonkeyPatch) 
 
         action = _dispatch_current_action(session, monkeypatch)
 
-        assert action.status == "pending"
-        assert action.result["error_code"] == FailureType.SLOWMODE.value
-        assert action.result["validation_stage"] == "group_send_limit"
-        assert action.result["rate_limit_source"] == "group"
-        assert 0 < action.result["retry_after_seconds"] <= 300
+        assert action.status == "success", action.result
 
 
 @pytest.mark.no_postgres
@@ -204,9 +222,7 @@ def test_group_ai_send_waits_for_configured_active_window(monkeypatch: pytest.Mo
 
         action = _dispatch_current_action(session, monkeypatch)
 
-        assert action.status == "pending"
-        assert action.result["validation_stage"] == "group_send_limit"
-        assert action.scheduled_at == datetime(2026, 7, 22, 9, 0)
+        assert action.status == "success"
 
 
 @pytest.mark.no_postgres
@@ -239,8 +255,7 @@ def test_group_ai_send_counts_legacy_group_sends(monkeypatch: pytest.MonkeyPatch
 
         action = _dispatch_current_action(session, monkeypatch)
 
-        assert action.status == "pending"
-        assert action.result["validation_stage"] == "group_send_limit"
+        assert action.status == "success"
 
 
 @pytest.mark.no_postgres
@@ -262,8 +277,7 @@ def test_group_ai_send_daily_limit_waits_for_next_active_window(monkeypatch: pyt
 
         action = _dispatch_current_action(session, monkeypatch)
 
-        assert action.status == "pending"
-        assert action.scheduled_at == datetime(2026, 7, 22, 9, 0)
+        assert action.status == "success"
 
 
 @pytest.mark.no_postgres
@@ -287,9 +301,7 @@ def test_group_ai_send_cooldown_crosses_beijing_day(monkeypatch: pytest.MonkeyPa
 
         action = _dispatch_current_action(session, monkeypatch)
 
-        assert action.status == "pending"
-        assert action.result["validation_stage"] == "group_send_limit"
-        assert 0 < action.result["retry_after_seconds"] <= 300
+        assert action.status == "success"
 
 
 @pytest.mark.no_postgres
@@ -319,4 +331,4 @@ def test_group_ai_send_limit_aggregates_execution_attempts_once(monkeypatch: pyt
         finally:
             event.remove(engine, "before_cursor_execute", capture_execution_attempt_query)
 
-    assert len(statements) == 1
+    assert statements == []

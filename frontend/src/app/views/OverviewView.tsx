@@ -10,7 +10,6 @@ import { useOverviewOperationData } from '../hooks/useOverviewOperationData';
 import { riskTone } from '../utils';
 import { formatBeijingDateTime } from '../time';
 import { api, ApiError } from '../../shared/api/client';
-import { GROUP_AI_HARD_HOURLY_MIN_MESSAGES } from './taskCenterViewModel';
 
 type ActivityPoint = NonNullable<Overview['activity_24h']>[number];
 type MetricKey = 'sent_messages' | 'likes' | 'comments' | 'success_rate' | 'failure_rate';
@@ -1049,9 +1048,8 @@ function defaultBlueprints(target: OperationTarget): Array<Record<string, any>> 
         target_operation_target_id: target.id,
         target_group_name: target.title,
         target_type: 'group',
-        hard_hourly_target_enabled: true,
-        hourly_min_messages: GROUP_AI_HARD_HOURLY_MIN_MESSAGES,
-        hard_hourly_strategy: 'force_planning',
+        daily_message_target: 1,
+        account_coverage_mode: 'all_accounts_daily',
       },
     },
   ];

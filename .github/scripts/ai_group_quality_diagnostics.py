@@ -15,7 +15,9 @@ from app.models import (
     Action,
     AiAccountVoiceProfile,
     AiGroupMessageMemory,
+    ExecutionAttempt,
     Task,
+    TaskGroupDailyTarget,
     TgAccount,
     TgAccountOnlineState,
     WorkerHeartbeat,
@@ -23,6 +25,7 @@ from app.models import (
 from app.services.account_online_projection import task_account_online_summary
 from app.services._common import _now
 from app.services.task_center import service as task_service
+from app.services.task_center.daily_group_target import refresh_task_group_daily_target
 from app.services.task_center.hard_hourly import enabled as hard_hourly_enabled, hard_hourly_stats
 from app.timezone import as_beijing
 
@@ -318,6 +321,122 @@ def diagnostic_task_stats(session, task: Task) -> dict[str, Any]:
 
 def task_snapshots(session, since: datetime) -> list[dict[str, Any]]:
     return [task_snapshot(session, task, since) for task in active_group_tasks(session)]
+
+
+def daily_group_target_snapshots(session, captured_at: datetime) -> list[dict[str, Any]]:
+    target_date = as_beijing(captured_at).date()
+    targets = list(session.scalars(
+        select(TaskGroupDailyTarget)
+        .join(Task, Task.id == TaskGroupDailyTarget.task_id)
+        .where(
+            TaskGroupDailyTarget.target_date == target_date,
+            TaskGroupDailyTarget.daily_fulfillment_phase == "full_day_committed",
+            Task.status == "running",
+            Task.deleted_at.is_(None),
+        )
+        .order_by(TaskGroupDailyTarget.task_id, TaskGroupDailyTarget.group_id)
+    ))
+    snapshots = [_daily_group_target_snapshot(session, target) for target in targets]
+    target_task_ids = {target.task_id for target in targets}
+    for task in active_group_tasks(session):
+        if task.id in target_task_ids:
+            continue
+        snapshots.append({
+            "task_id": task.id,
+            "target_date": target_date.isoformat(),
+            "missing_daily_target_ledger": True,
+        })
+    return snapshots
+
+
+def _daily_group_target_snapshot(session, target: TaskGroupDailyTarget) -> dict[str, Any]:
+    refresh_task_group_daily_target(session, target)
+    day_start = datetime.combine(target.target_date, datetime.min.time())
+    day_end = day_start + timedelta(days=1)
+    actions = list(session.scalars(select(Action).where(
+        Action.task_id == target.task_id,
+        Action.action_type == "send_message",
+        Action.status == "success",
+        Action.executed_at >= day_start,
+        Action.executed_at < day_end,
+    )))
+    invalid = [_invalid_success_fact(session, action) for action in actions]
+    invalid = [item for item in invalid if item]
+    return {
+        "task_id": target.task_id,
+        "group_id": target.group_id,
+        "target_date": target.target_date.isoformat(),
+        "configured_message_target": target.configured_message_target,
+        "effective_message_target": target.effective_message_target,
+        "confirmed_message_count": target.confirmed_message_count,
+        "frozen_account_count": target.frozen_account_count,
+        "coverage_confirmed_account_count": target.coverage_confirmed_account_count,
+        "strict_fact_mismatch_count": len(invalid),
+        "strict_fact_mismatch_samples": invalid[:QUALITY_PAYLOAD_BLOCKER_LIMIT],
+        "new_hard_hourly_action_count": _legacy_hard_action_count(session, target.task_id),
+    }
+
+
+def _invalid_success_fact(session, action: Action) -> dict[str, Any] | None:
+    attempt = session.scalar(select(ExecutionAttempt).where(
+        ExecutionAttempt.action_id == action.id,
+        ExecutionAttempt.status == "success",
+        ExecutionAttempt.account_id == action.account_id,
+        ExecutionAttempt.remote_message_id != "",
+    ).limit(1))
+    payload = action.payload or {}
+    memory = session.get(AiGroupMessageMemory, str(payload.get("ai_message_memory_id") or ""))
+    source = str(payload.get("content_source") or "")
+    fallback_valid = bool(
+        source == "mask_missing_check_in"
+        and payload.get("coverage_ledger_id")
+        and memory
+        and memory.action_id == action.id
+        and memory.account_id == action.account_id
+        and memory.content_source == source
+        and memory.mask_status == "missing"
+    )
+    mask_valid = bool(
+        source != "mask_missing_check_in"
+        and payload.get("account_mask_id")
+        and int(payload.get("account_mask_version") or 0) > 0
+        and memory
+        and memory.action_id == action.id
+        and memory.account_id == action.account_id
+        and memory.mask_status == "active"
+        and memory.account_mask_id == payload.get("account_mask_id")
+        and int(memory.account_mask_version or 0) == int(payload.get("account_mask_version") or 0)
+        and memory.mask_contract_version == payload.get("voice_profile_contract_version")
+        and memory.mask_snapshot_hash == payload.get("account_mask_snapshot_hash")
+    )
+    if attempt and (fallback_valid or mask_valid):
+        return None
+    return {"action_id": action.id, "account_id": action.account_id, "content_source": source}
+
+
+def _legacy_hard_action_count(session, task_id: str) -> int:
+    actions = session.scalars(select(Action).where(
+        Action.task_id == task_id,
+        Action.action_type == "send_message",
+    ))
+    return sum(1 for action in actions if (action.payload or {}).get("hard_hourly_target"))
+
+
+def daily_group_gate_blockers(snapshots: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    blockers = []
+    for snapshot in snapshots:
+        failed = (
+            bool(snapshot.get("missing_daily_target_ledger"))
+            or int(snapshot.get("confirmed_message_count") or 0)
+            < int(snapshot.get("effective_message_target") or 0)
+            or int(snapshot.get("coverage_confirmed_account_count") or 0)
+            < int(snapshot.get("frozen_account_count") or 0)
+            or int(snapshot.get("strict_fact_mismatch_count") or 0) > 0
+            or int(snapshot.get("new_hard_hourly_action_count") or 0) > 0
+        )
+        if failed:
+            blockers.append(snapshot)
+    return blockers
 
 
 def hard_hourly_gate_blockers(snapshots: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1034,18 +1153,16 @@ def main() -> None:
         pre_online_snapshots = task_snapshots(session, since)
         json_line("AI_GROUP_REALISM_AUDIT_PRE_ONLINE", realism_audit_summary(pre_online_snapshots))
         snapshots = wait_for_online_gate(session, since)
-        json_line("AI_GROUP_QUALITY_HARD_HOURLY_DRAIN", drain_hard_hourly_planner(session))
-        session.expire_all()
-        snapshots = task_snapshots(session, since)
-        snapshots = settle_hard_hourly_gate(session, since, snapshots)
         for snapshot in snapshots:
             json_line("AI_GROUP_QUALITY_TASK", snapshot)
         json_line("AI_GROUP_REALISM_AUDIT", realism_audit_summary(snapshots))
-        hard_hourly_blockers = hard_hourly_gate_blockers(snapshots)
-        if hard_hourly_blockers:
-            payload = {"blocker_count": len(hard_hourly_blockers), "blockers": hard_hourly_blockers}
-            json_line("AI_GROUP_QUALITY_HARD_HOURLY_GATE_FAILED", payload)
-            raise SystemExit("AI group hard hourly quality gate failed")
+        daily_targets = daily_group_target_snapshots(session, captured_at)
+        json_line("AI_GROUP_DAILY_TARGETS", {"targets": daily_targets})
+        daily_blockers = daily_group_gate_blockers(daily_targets)
+        if daily_blockers:
+            payload = {"blocker_count": len(daily_blockers), "blockers": daily_blockers}
+            json_line("AI_GROUP_DAILY_TARGET_GATE_FAILED", payload)
+            raise SystemExit("AI group daily target quality gate failed")
         json_line("AI_GROUP_QUALITY_DONE", {"captured_at": iso(captured_at), "window_hours": WINDOW_HOURS})
 
 

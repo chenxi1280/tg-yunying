@@ -55,13 +55,13 @@ def test_reserved_message_blocks_same_fingerprint_inside_five_minutes():
                 tenant_id=1,
                 group_id=22,
                 task_id="task-1",
-                account_id=102,
+                account_id=101,
                 raw_text=" 花花老师 身材真好！！！",
                 now=now + timedelta(minutes=1),
             )
 
         assert exc.value.reference_id == first.id
-        assert exc.value.duplicate_window == "5m_exact"
+        assert exc.value.duplicate_window == "10d_exact"
 
 
 def test_unknown_after_send_and_success_participate_in_duplicate_check():
@@ -89,14 +89,14 @@ def test_unknown_after_send_and_success_participate_in_duplicate_check():
         mark_group_ai_message_result(session, success.id, status="success", action_id="action-2")
         session.commit()
 
-        for text in ["主任最近约新妹子了", "鸡排哥的药"]:
+        for account_id, text in [(101, "主任最近约新妹子了"), (102, "鸡排哥的药")]:
             with pytest.raises(DuplicateMessageReservation):
                 reserve_group_ai_message(
                     session,
                     tenant_id=1,
                     group_id=22,
                     task_id="task-1",
-                    account_id=103,
+                    account_id=account_id,
                     raw_text=text,
                     now=now + timedelta(minutes=2),
                 )
@@ -181,13 +181,13 @@ def test_one_hour_high_similarity_duplicate_blocks_rephrased_message():
                 tenant_id=1,
                 group_id=22,
                 task_id="task-1",
-                account_id=102,
+                account_id=101,
                 raw_text="花花老师服务身材挺好",
                 now=now + timedelta(minutes=40),
             )
 
         assert exc.value.reference_id == first.id
-        assert exc.value.duplicate_window == "1h_similar"
+        assert exc.value.duplicate_window == "10d_similar"
 
 
 def test_seven_day_semantic_duplicate_blocks_later_rephrased_message():
@@ -211,16 +211,16 @@ def test_seven_day_semantic_duplicate_blocks_later_rephrased_message():
                 tenant_id=1,
                 group_id=22,
                 task_id="task-1",
-                account_id=102,
+                account_id=101,
                 raw_text="主任价格这个先问一下可以",
                 now=now + timedelta(days=2),
             )
 
         assert exc.value.reference_id == first.id
-        assert exc.value.duplicate_window == "7d_semantic"
+        assert exc.value.duplicate_window in {"10d_similar", "10d_semantic"}
 
 
-def test_thirty_day_template_shell_limits_vague_summary_phrase():
+def test_ten_day_template_shell_limits_vague_summary_phrase():
     now = _now()
     with _session() as session:
         first = reserve_group_ai_message(
@@ -241,13 +241,13 @@ def test_thirty_day_template_shell_limits_vague_summary_phrase():
                 tenant_id=1,
                 group_id=22,
                 task_id="task-1",
-                account_id=102,
+                account_id=101,
                 raw_text="确实挺不错的",
-                now=now + timedelta(days=20),
+                now=now + timedelta(days=9),
             )
 
         assert exc.value.reference_id == first.id
-        assert exc.value.duplicate_window == "30d_template_shell"
+        assert exc.value.duplicate_window == "10d_template_shell"
 
 
 def test_final_sendable_check_excludes_self_but_blocks_other_duplicate_memory():
@@ -267,7 +267,7 @@ def test_final_sendable_check_excludes_self_but_blocks_other_duplicate_memory():
             tenant_id=1,
             group_id=22,
             task_id="other-task",
-            account_id=102,
+            account_id=101,
             raw_text="花花老师服务身材真好",
             normalized_text=normalize_group_ai_text("花花老师服务身材真好"),
             text_fingerprint="manual-conflict",
@@ -283,7 +283,7 @@ def test_final_sendable_check_excludes_self_but_blocks_other_duplicate_memory():
             ensure_group_ai_message_sendable(session, current.id, now=now + timedelta(minutes=1))
 
         assert exc.value.reference_id == conflict.id
-        assert exc.value.duplicate_window == "1h_similar"
+        assert exc.value.duplicate_window == "10d_similar"
 
 
 def test_backfill_group_ai_message_memory_from_success_and_unknown_actions():
@@ -356,13 +356,13 @@ def test_backfill_group_ai_message_memory_from_success_and_unknown_actions():
                 tenant_id=1,
                 group_id=22,
                 task_id="task-new",
-                account_id=104,
+                account_id=101,
                 raw_text="花花老师服务身材挺好",
                 now=now,
             )
 
         assert exc.value.reference_id == rows[0].id
-        assert exc.value.duplicate_window == "7d_semantic"
+        assert exc.value.duplicate_window in {"10d_similar", "10d_semantic"}
 
 
 def test_backfill_group_ai_message_memory_is_idempotent_by_action_id():

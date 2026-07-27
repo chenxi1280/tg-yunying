@@ -1325,20 +1325,25 @@ def test_task_center_ai_chat_account_distribution_controls_are_visible():
     assert 'label="允许账号重复发言"' in source
     assert 'label="每轮总发言数"' in source
     assert '<InputNumber min={1} max={10}' not in source
-    assert "小时上限控制总量" in source
-    assert "当天未参与账号会优先补齐" in source
+    assert "发送目标按单个群的当天总量计算" in source
+    assert "当天所有可发账号都必须至少成功发送 1 条" in source
     assert "function markMessagesPerRoundManual" in source
     assert "setFieldValue('messages_per_round_mode', 'manual')" in source
     assert "onChange={markMessagesPerRoundManual}" in source
     assert "准入策略" in source
     assert 'name="account_coverage_mode"' in source
-    assert 'label="全账号日覆盖模式"' in source
-    assert 'name="per_account_daily_min_messages"' in source
-    assert 'name="per_account_daily_max_messages"' in source
+    assert 'name="daily_message_target"' in source
+    assert 'label="该群每天发送总量"' in source
+    assert 'name="per_account_daily_min_messages"' not in source
+    assert 'name="per_account_daily_max_messages"' not in source
+    assert 'name="hard_hourly_target_enabled"' not in source
     assert "account_coverage_mode: values.account_coverage_mode ?? 'all_accounts_daily'" in view
+    assert "daily_message_target: values.daily_message_target ?? 1" in view
+    assert "daily_message_target: Math.max(1, normalAccountCount)" in view
     assert "'account_coverage_mode'" in view_model
-    assert "'per_account_daily_min_messages'" in view_model
-    assert "'per_account_daily_max_messages'" in view_model
+    assert "'daily_message_target'" in view_model
+    assert "'per_account_daily_min_messages'" not in view_model
+    assert "'per_account_daily_max_messages'" not in view_model
     assert "target_account_count" in types
     assert "blocked_reasons" in types
     assert "estimated_completion_window" in types
@@ -2250,7 +2255,8 @@ def test_production_ai_hourly_probe_reports_membership_failures():
     assert "AI_GROUP_REALISM_AUDIT_AFTER_RELEASE" in quality_diagnostics
     assert "AI_GROUP_QUALITY_PAYLOAD_GATE_FAILED" in quality_diagnostics
     assert "AI_GROUP_QUALITY_ONLINE_WAIT" in quality_diagnostics
-    assert "AI_GROUP_QUALITY_HARD_HOURLY_DRAIN" in quality_diagnostics
+    assert "AI_GROUP_DAILY_TARGETS" in quality_diagnostics
+    assert "AI_GROUP_DAILY_TARGET_GATE_FAILED" in quality_diagnostics
     assert "AI_GROUP_QUALITY_ONLINE_GATE_FAILED" in quality_diagnostics
     assert "AI_GROUP_QUALITY_TASK" in quality_diagnostics
 

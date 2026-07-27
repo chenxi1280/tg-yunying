@@ -8,6 +8,7 @@
 | [account-standby-auto-authorization-prd.md](account-standby-auto-authorization-prd.md) | 备用授权自动补齐专项 PRD |
 | [ai-group-all-accounts-daily-coverage-prd.md](ai-group-all-accounts-daily-coverage-prd.md) | AI 活跃群“全部账号”每日真实发言履约、增量账号同步、日账本、容量证明和生产验收专项 PRD |
 | [ai-group-daily-fulfillment-remediation-prd.md](ai-group-daily-fulfillment-remediation-prd.md) | AI 活群当前日目标未完成的收口修复：内容重复、权限 blocker、批量映射失败和日覆盖漏规划 |
+| [ai-group-daily-group-target-redesign-prd.md](ai-group-daily-group-target-redesign-prd.md) | AI 活群新合同：按群配置每日总量、全账号每天至少 1 条；正常正文按账号及面具滚动 10 天去重，缺面具 coverage 用唯一 `签到` 兜底；删除容量/硬小时/活动时段阻断 |
 | [ai-group-hard-hourly-target-prd.md](ai-group-hard-hourly-target-prd.md) | AI 活跃群每小时硬目标专项 PRD |
 | [ai-conversation-humanization-and-group-bot-admission-prd.md](ai-conversation-humanization-and-group-bot-admission-prd.md) | AI 群聊/频道评论真人化与群管机器人频道准入专项 PRD（2026-07-25 评审修补 complete；supersede 连发、emoji 兜底、发送后自动重发） |
 | [channel-membership-precondition-design.md](channel-membership-precondition-design.md) | 频道 / 群聊任务准入前置阶段 |

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 from typing import Any
 
@@ -12,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 VOICE_PROFILE_CACHE_PREFIX = "ai_group:voice_profile"
 VOICE_PROFILE_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
+VOICE_PROFILE_CONTRACT_VERSION = "style_only_v2"
 
 
 def cached_voice_profile_prompt_details(
@@ -85,12 +87,15 @@ def _cache_payload(row: AiAccountVoiceProfile) -> str:
     return json.dumps(
         {
             "account_id": row.account_id,
+            "id": row.id,
             "version": int(row.version or 0),
             "summary": row.short_prompt_summary,
             "mask_name": row.mask_name,
             "audience_archetype": row.audience_archetype,
             "identity_frame": row.identity_frame,
             "preference_tags": row.preference_tags or [],
+            "contract_version": VOICE_PROFILE_CONTRACT_VERSION,
+            "snapshot_hash": voice_profile_snapshot_hash(row),
         },
         ensure_ascii=False,
     )
@@ -112,16 +117,45 @@ def _parse_cached_detail(value: Any) -> dict[str, Any] | None:
         return None
     return {
         "version": int(version or 0),
+        "id": str(payload.get("id") or ""),
         "summary": summary,
         "mask_name": str(payload.get("mask_name") or ""),
         "audience_archetype": str(payload.get("audience_archetype") or ""),
         "identity_frame": str(payload.get("identity_frame") or ""),
         "preference_tags": _string_list(payload.get("preference_tags")),
+        "contract_version": str(payload.get("contract_version") or ""),
+        "snapshot_hash": str(payload.get("snapshot_hash") or ""),
     }
 
 
 def _has_mask_payload(payload: dict[str, Any]) -> bool:
-    return all(key in payload for key in ("mask_name", "audience_archetype", "identity_frame", "preference_tags"))
+    return all(
+        key in payload
+        for key in (
+            "id",
+            "mask_name",
+            "audience_archetype",
+            "identity_frame",
+            "preference_tags",
+            "contract_version",
+            "snapshot_hash",
+        )
+    )
+
+
+def voice_profile_snapshot_hash(row: AiAccountVoiceProfile) -> str:
+    snapshot = {
+        "id": row.id,
+        "account_id": row.account_id,
+        "version": int(row.version or 0),
+        "summary": row.short_prompt_summary,
+        "mask_name": row.mask_name,
+        "audience_archetype": row.audience_archetype,
+        "identity_frame": row.identity_frame,
+        "preference_tags": row.preference_tags or [],
+    }
+    encoded = json.dumps(snapshot, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _string_list(value: Any) -> list[str]:
@@ -147,4 +181,6 @@ __all__ = [
     "delete_voice_profile_cache",
     "refresh_voice_profile_cache",
     "refresh_voice_profile_cache_many",
+    "voice_profile_snapshot_hash",
+    "VOICE_PROFILE_CONTRACT_VERSION",
 ]

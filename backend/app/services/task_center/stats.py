@@ -10,12 +10,14 @@ from app.models import Action, Task
 from app.services._common import _now
 
 from .config_fields import CHANNEL_DYNAMIC_TASK_TYPES
+from .daily_group_target import daily_group_due_message_count, ensure_task_group_daily_target
 from .datetime_compat import parse_zone, to_zone
 from .hard_hourly import enabled as hard_hourly_enabled, hard_hourly_stats
 from .pacing import ai_next_run_after, next_run_after
-from .planner_backlog import hard_hourly_payload_expired, planner_backlog_snapshot
+from .planner_backlog import planner_backlog_snapshot
 from app.services.runtime_action_queries import task_action_status_counts_statement
 from .hourly_stats import search_join_hourly_execution, search_rank_deboost_hourly_execution
+from .targets import group_from_reference
 
 ARCHIVED_SKIP_ERROR_CODES = {"context_expired"}
 DEFAULT_AUTO_RETRY_STATUSES = ("failed", "retryable_failed")
@@ -116,6 +118,7 @@ def refresh_task_stats(
         }
     )
     stats = _ai_generation_stats(session, task, stats)
+    stats = _daily_group_target_stats(session, task, stats)
     if include_hard_hourly:
         stats = hard_hourly_stats(session, task, _now(), stats)
     stats = _search_join_stats(session, task, stats)
@@ -123,6 +126,40 @@ def refresh_task_stats(
     task.stats = stats
     _refresh_runtime_summary(session, task, include_configured_accounts=include_configured_accounts)
     return stats
+
+
+def _daily_group_target_stats(
+    session: Session,
+    task: Task,
+    stats: dict[str, Any],
+) -> dict[str, Any]:
+    if task.type != "group_ai_chat":
+        return stats
+    config = task.type_config or {}
+    group = group_from_reference(
+        session,
+        task.tenant_id,
+        group_id=int(config.get("target_group_id") or 0) or None,
+        operation_target_id=int(config.get("target_operation_target_id") or 0) or None,
+        require_authorized=False,
+    )
+    if group is None:
+        return stats
+    timestamp = to_zone(_now(), parse_zone(task.timezone))
+    target = ensure_task_group_daily_target(session, task, group, timestamp.date(), now=timestamp)
+    due = daily_group_due_message_count(target, task.pacing_config or {}, now=timestamp)
+    target.due_message_count = due
+    updated = dict(stats)
+    updated.update({
+        "daily_group_target_id": target.id,
+        "daily_group_configured_target": target.configured_message_target,
+        "daily_group_effective_target": target.effective_message_target,
+        "daily_group_due_message_count": due,
+        "daily_group_confirmed_success_count": target.confirmed_message_count,
+        "daily_group_frozen_account_count": target.frozen_account_count,
+        "daily_group_covered_account_count": target.coverage_confirmed_account_count,
+    })
+    return updated
 
 
 def _refresh_runtime_summary(session: Session, task: Task, *, include_configured_accounts: bool) -> None:

@@ -49,7 +49,7 @@ def test_generation_batch_loads_history_once_and_uses_incremental_refresh() -> N
             batch = DuplicateMemoryBatch(now=now)
             _reserve_distinct_batch(session, batch)
             with pytest.raises(DuplicateMessageReservation) as exc_info:
-                _reserve(session, batch, 99, "甲方今天讨论课程呢")
+                _reserve(session, batch, 1, "甲方今天讨论课程呢")
         finally:
             event.remove(engine, "before_cursor_execute", capture_select)
 
@@ -57,7 +57,7 @@ def test_generation_batch_loads_history_once_and_uses_incremental_refresh() -> N
     incremental_scans = [sql for sql in semantic_selects if "updated_at" in sql]
     assert len(full_scans) == 1
     assert len(incremental_scans) == 3
-    assert exc_info.value.duplicate_window in {"1h_similar", "7d_semantic"}
+    assert exc_info.value.duplicate_window in {"10d_similar", "10d_semantic"}
 
 
 def test_batch_refresh_observes_memory_committed_after_initial_snapshot() -> None:
@@ -68,12 +68,12 @@ def test_batch_refresh_observes_memory_committed_after_initial_snapshot() -> Non
         _reserve(first, batch, 1, "第一条无关消息")
         first.commit()
         with Session(engine) as concurrent:
-            _reserve(concurrent, None, 2, "并发提交的语义消息")
+            _reserve(concurrent, None, 1, "并发提交的语义消息")
             concurrent.commit()
         with pytest.raises(DuplicateMessageReservation) as exc_info:
-            _reserve(first, batch, 3, "并发提交的语义消息呢")
+            _reserve(first, batch, 1, "并发提交的语义消息呢")
 
-    assert exc_info.value.duplicate_window in {"1h_similar", "7d_semantic"}
+    assert exc_info.value.duplicate_window in {"10d_similar", "10d_semantic"}
 
 
 def test_batch_refresh_removes_memory_changed_to_inactive_status() -> None:
@@ -83,16 +83,19 @@ def test_batch_refresh_removes_memory_changed_to_inactive_status() -> None:
         _reserve(first, None, 1, "这条历史消息随后会失效")
         first.commit()
         batch = DuplicateMemoryBatch(now=_now())
-        _reserve(first, batch, 2, "周末一起去公园放风筝")
+        _reserve(first, batch, 1, "周末一起去公园放风筝")
         first.commit()
         with Session(engine) as concurrent:
-            memory = concurrent.query(AiGroupMessageMemory).filter_by(account_id=1).one()
+            memory = concurrent.query(AiGroupMessageMemory).filter_by(
+                account_id=1,
+                raw_text="这条历史消息随后会失效",
+            ).one()
             inactive_memory_id = str(memory.id)
             memory.status = "failed"
             concurrent.commit()
-        _reserve(first, batch, 3, "这条历史消息随后会失效呢")
+        _reserve(first, batch, 1, "这条历史消息随后会失效呢")
 
-    cached_ids = {str(row.id) for row in batch.rows_by_tenant[1]}
+    cached_ids = {str(row.id) for row in batch.rows_by_account[(1, 1)]}
     assert inactive_memory_id not in cached_ids
 
 
@@ -103,9 +106,14 @@ def test_cached_rows_compare_postgres_aware_datetimes_with_naive_cutoff() -> Non
         normalized_text="时区记录", raw_text="时区记录",
         planned_at=now.replace(tzinfo=timezone(timedelta(hours=8))),
     )
-    batch = DuplicateMemoryBatch(now=now, rows_by_tenant={1: [memory]})
+    batch = DuplicateMemoryBatch(now=now, rows_by_account={(1, 1): [memory]})
 
-    assert cached_similarity_rows(batch, tenant_id=1, cutoff=now - timedelta(minutes=1)) == [memory]
+    assert cached_similarity_rows(
+        batch,
+        tenant_id=1,
+        account_id=1,
+        cutoff=now - timedelta(minutes=1),
+    ) == [memory]
 
 
 def test_exact_duplicate_short_circuits_semantic_window_scan() -> None:
@@ -129,13 +137,13 @@ def test_exact_duplicate_short_circuits_semantic_window_scan() -> None:
         try:
             with pytest.raises(DuplicateMessageReservation) as exc_info:
                 reserve_group_ai_message(
-                    session, tenant_id=1, group_id=33, task_id="task-exact", account_id=2,
+                    session, tenant_id=1, group_id=33, task_id="task-exact", account_id=1,
                     raw_text="完全相同的消息", now=now,
                 )
         finally:
             event.remove(engine, "before_cursor_execute", capture_select)
 
-    assert exc_info.value.duplicate_window == "5m_exact"
+    assert exc_info.value.duplicate_window == "10d_exact"
     assert semantic_selects == []
 
 
@@ -185,10 +193,8 @@ def _seed_history(session: Session, now) -> None:
 
 
 def _reserve_distinct_batch(session: Session, batch: DuplicateMemoryBatch) -> None:
-    for account_id, content in enumerate(
-        ("甲方今天讨论课程", "乙方明天安排聚会", "丙方周末准备出游"), 1,
-    ):
-        _reserve(session, batch, account_id, content)
+    for content in ("甲方今天讨论课程", "乙方明天安排聚会", "丙方周末准备出游"):
+        _reserve(session, batch, 1, content)
 
 
 def _reserve(

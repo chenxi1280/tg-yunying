@@ -13,11 +13,48 @@ from app.database import Base
 from app.models import OperationTarget, RuleSet, RuleSetVersion, Tenant
 from app.schemas.task_center import GroupAIChatTaskConfigUpdate, GroupAIChatTaskCreate
 from app.services.task_center.config_normalization import normalize_operation_target_references
+from app.services.task_center.config_normalization import normalize_ai_daily_target
 from app.services.task_center.payloads import SendMessagePayload
 from app.services.task_center.service import create_group_ai_chat_task, update_group_ai_chat_config
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.mark.no_postgres
+def test_group_ai_config_uses_one_daily_group_target() -> None:
+    payload = GroupAIChatTaskCreate(
+        name="AI 活群",
+        target_group_id=7,
+        daily_message_target=797,
+    )
+
+    data = payload.model_dump(mode="json")
+
+    assert data["daily_message_target"] == 797
+    assert data["account_coverage_mode"] == "all_accounts_daily"
+    assert "per_account_daily_min_messages" not in data
+    assert "per_account_daily_max_messages" not in data
+    assert "hard_hourly_target_enabled" not in data
+    assert "hourly_min_messages" not in data
+
+
+@pytest.mark.no_postgres
+def test_legacy_group_ai_target_migrates_without_per_account_multiplication() -> None:
+    normalized = normalize_ai_daily_target(
+        {
+            "per_account_daily_min_messages": 2,
+            "per_account_daily_max_messages": 2,
+            "hard_hourly_target_enabled": True,
+            "hourly_min_messages": 300,
+        },
+        frozen_account_count=797,
+    )
+
+    assert normalized["daily_message_target"] == 797
+    assert normalized["account_coverage_mode"] == "all_accounts_daily"
+    assert "per_account_daily_min_messages" not in normalized
+    assert "hourly_min_messages" not in normalized
 
 
 def _load_required_rule_binding_migration():
@@ -215,17 +252,14 @@ def test_group_ai_config_accepts_all_accounts_daily_coverage_settings() -> None:
         name="AI 活群",
         target_group_id=7,
         account_coverage_mode="all_accounts_daily",
-        per_account_daily_min_messages=1,
-        per_account_daily_max_messages=2,
+        daily_message_target=20,
         coverage_window_hours=24,
-        hourly_min_messages=10,
     )
 
     data = payload.model_dump(mode="json")
 
     assert data["account_coverage_mode"] == "all_accounts_daily"
-    assert data["per_account_daily_min_messages"] == 1
-    assert data["per_account_daily_max_messages"] == 2
+    assert data["daily_message_target"] == 20
     assert data["coverage_window_hours"] == 24
 
 
@@ -235,11 +269,7 @@ def test_group_ai_config_rejects_invalid_all_accounts_daily_coverage_settings() 
         GroupAIChatTaskCreate(
             name="AI 活群",
             target_group_id=7,
-            account_coverage_mode="all_accounts_daily",
-            per_account_daily_min_messages=2,
-            per_account_daily_max_messages=1,
-            coverage_window_hours=24,
-            hourly_min_messages=10,
+            daily_message_target=0,
         )
 
     with pytest.raises(ValidationError):
@@ -247,10 +277,7 @@ def test_group_ai_config_rejects_invalid_all_accounts_daily_coverage_settings() 
             name="AI 活群",
             target_group_id=7,
             account_coverage_mode="all_accounts_daily",
-            per_account_daily_min_messages=1,
-            per_account_daily_max_messages=2,
             coverage_window_hours=12,
-            hourly_min_messages=10,
         )
 
 
@@ -409,7 +436,7 @@ def test_send_message_payload_carries_frozen_target_epoch_and_snapshot() -> None
 
 
 @pytest.mark.no_postgres
-def test_group_ai_hard_hourly_config_change_increments_server_revision() -> None:
+def test_group_ai_daily_target_change_increments_server_revision() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
 
@@ -432,7 +459,7 @@ def test_group_ai_hard_hourly_config_change_increments_server_revision() -> None
             GroupAIChatTaskCreate(
                 name="配置版本 AI 活群",
                 target_operation_target_id=91,
-                hourly_min_messages=10,
+                daily_message_target=10,
             ),
             actor="tester",
         )
@@ -444,7 +471,7 @@ def test_group_ai_hard_hourly_config_change_increments_server_revision() -> None
             task.id,
             GroupAIChatTaskConfigUpdate(
                 target_operation_target_id=91,
-                hourly_min_messages=11,
+                daily_message_target=11,
             ),
             actor="tester",
         )

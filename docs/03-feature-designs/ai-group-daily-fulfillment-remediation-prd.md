@@ -11,6 +11,8 @@
 | 统计时区 | Asia/Shanghai |
 | 关联线上证据 | 2026-07-25 完整日账本与 2026-07-26 生产只读取证 |
 
+> **2026-07-28 群日目标与账号面具内容记忆 supersede：** 本文保留历史事故事实和失败审计价值；新的完成目标、迁移、规划节奏和内容质量合同以 `ai-group-daily-group-target-redesign-prd.md` 为准。旧 1 小时/7 天租户级跨账号硬去重、30 天模板壳句硬限频、无条件日覆盖固定 `签到`、硬小时和容量停止口径不再用于新实现。正常正文按同账号滚动 10 天并固化面具；缺面具 coverage 以受限 `mask_missing_check_in` 兜底。
+
 本专项细化并补正以下文档的当前缺口：
 
 - ai-group-all-accounts-daily-coverage-prd.md 的每日账本、失败回补、容量和验收口径；
@@ -172,7 +174,7 @@ maximum_confirmable_count = frozen_denominator_count - terminal_permission_block
 1. `group_bot_admission_required=true` 的运行中 `group_ai_chat`，其持久任务 scope 内账号在任何正文进入生成或 Telegram Gateway 前都必须存在同 tenant + group + account 的 `GroupBotAdmission`。缺行时 Dispatcher 只能从当前 Action 的 task/account/group 和持久 membership item 创建 admission，并把正文延后；不得继续返回 `legacy_send_until_reviewed`，不得把 Telegram 返回 message_id 直接计入日覆盖。
 2. admission 补齐使用当前 listener cursor 作为观察基线，不伪造已确认；随后由 listener 的新控制事件或仍在当前窗口的已审计规则创建频道 follow。准入 scope 由显式 `group_bot_admission_required=true`、该账号既有且带可信 bot peer/source/evidence 的 `GroupBotAdmission`，或“该账号有持久 membership item 且同群已有可信 bot peer/source/evidence 或 active policy”确认；只有 membership item、或只有无证据空 admission 的历史任务继续原发送校验，避免无群管的群被无关 observation 阻断。自动补建但尚无 bot 证据的空 admission 本身不得反向扩大账号或群 scope；`group_bot_admission_required=false` 始终退出本路径。
 3. 显式确认策略下，精确频道 follow 全部成功但没有账号级 callback source 时，允许该 admission/version 恰好一条正文进入 `post_follow_visibility_probe`。该正文必须创建 `PendingVisibilityCredit`，Action 先写 `unknown_after_send`，不得先计 hard-hourly 或 daily success；同 admission 的其他正文保持 pending。
-4. 若该正文是全账号日覆盖 `direct_check_in`，内容准备必须以 Action 当前持久 payload 为基底，仅覆盖签到内容字段；不得用 admission gate 之前校验的旧 payload 覆盖 `group_bot_post_follow_visibility_probe`、`group_bot_admission_id` 或 `admission_version`。否则 Telegram 成功也必须视为未完成可见性核验，不能计 hard-hourly 或 daily success。
+4. 若该正文承担全账号日覆盖，内容准备必须以 Action 当前持久 payload 为基底，保留固化账号面具、`group_bot_post_follow_visibility_probe`、`group_bot_admission_id` 和 `admission_version`；不得用 admission gate 之前校验的旧 payload 覆盖。否则 Telegram 成功也不能计入 daily success。
 5. probe 的真实 message_id 在可见性窗口后仍可由同账号读取时，才把 admission 写 `group_bot_admission_ready`、`post_send_visibility_state=visible_confirmed` 并按原账本幂等计成功。消息不可见、群管拦截或 Gateway 明确权限失败时写 `post_send_intercepted`，不计成功；listener 若取得该账号明确提示，可继续走账号级 callback。
 6. 标准化显式收件人规则重复观测时，若当前频道 follow 已全部成功，不得把 admission 从 `awaiting_group_bot_confirmation` / `post_follow_visibility_probe` 重置为 `required_channel_follow_pending`；它只更新群级频道证据。
 7. `GroupBotAdmission.observation_closes_at` 与 `PendingVisibilityCredit.created_at` 从 SQLite、PostgreSQL 或生产连接返回时，准入门禁和恢复扫描都必须先归一到统一的北京时间墙上时钟再比较或计算 hold age；禁止 naive/aware 直接比较中断 Dispatcher 或全部任务的 recovery cycle，也不得因时区转换把超时 hold 当成功。
@@ -184,13 +186,13 @@ maximum_confirmable_count = frozen_denominator_count - terminal_permission_block
 
 生成和质量处理规则：
 
-1. Dispatcher 生成前读取该目标在 1 小时和 7 天窗口内已接受文本的指纹、语义簇，以及本任务当天已被质量拒绝的 variation 摘要。
-2. 出现 duplicate_message 时，当前 Action 以终态质量失败收口，写入原始原因、重复窗口、内容指纹摘要、语义簇、content_variation_key 和质量阶段；释放自身 coverage reservation。
+1. Dispatcher 生成前读取发送账号滚动 10 天内已接受文本的指纹、语义簇、模板、事实观点、所用面具版本，以及本任务当天已被质量拒绝的 variation 摘要。其他账号历史只作多样性软提示。
+2. 出现 duplicate_message 时，当前 Action 以终态质量失败收口，写入原始原因、10 天窗口、账号、面具版本、内容指纹摘要、语义簇、content_variation_key 和同账号重复参照；释放自身 coverage reservation。
 3. 同一 Action 不得原地改写文本或再次调用 AI。下一次只能由 Planner 创建新的 Action，且新 Action 的 content_variation_key 必须不同，并使用更晚的上下文版本或不同的已配置话题、老师、行为类型组合。
 4. 质量拒绝后的覆盖行回到 ready，blocker_code 保留 duplicate_message，recovery_path=replan_with_new_variation。若没有新的合法 variation 或可用上下文，则保持 at_risk 并记录原因，不制造模板补量。
-5. 已绑定当日 coverage 的非引用 Action 以精确 `签到` 作为主路径正文，Dispatcher 不调用任何 AI Provider，不执行 prompt 改写、账号面具补尾句或普通 AI 文本相似度判断。每个 coverage 义务使用独立消息记忆预约，因此不同账号的日覆盖 `签到` 不触发 `duplicate_message` / `check_in_repeat`；同一 coverage 义务仍必须保持 Action、账号和预约一一绑定。
-6. 日覆盖直发仍必须通过轮换、准入、群节奏、出站和 Gateway 门；只有成功 ExecutionAttempt 与非空 `remote_message_id` 才能确认覆盖。非日覆盖普通 Action 的 `签到` 仍按既有三层失败兜底、重复和配额规则执行。
-7. 任务详情必须按 1h_similar、7d_semantic、semantic_cluster、check_in_repeat 分开展示普通 AI / fallback 质量拒绝数，并单独展示 `direct_check_in` 成功、失败和远端确认数。
+5. 已绑定当日 coverage 且面具可用的非引用 Action 使用固化 active 面具、当前安全上下文和新 variation 生成自然短句，并通过该账号滚动 10 天硬去重。不同账号历史不产生硬阻断。
+6. 缺面具 coverage 只可创建 `mask_missing_check_in` 精确 `签到`，以任务、群、账号、日期、来源唯一；不进入普通 10 天去重、不用于额外补量。两种路径都必须通过轮换、准入、在线、出站和 Gateway；只有成功 ExecutionAttempt 与非空 `remote_message_id` 才确认覆盖。
+7. 任务详情必须展示 `same_account_duplicate_10d`、`semantic_cluster`、`mask_mismatch`、`quality_acceptance_rate` 和 `cross_account_advisory_count`，并下钻账号、面具版本和同账号重复参照。
 
 ### 5.3 批量 AI 输出契约失败
 
@@ -205,31 +207,28 @@ maximum_confirmable_count = frozen_denominator_count - terminal_permission_block
 5. 不能证明 slot 归属的任何候选文本不得写入消息记忆、不得关联账号、不得作为后续重复判断基线。
 6. 原始 provider 响应只允许加密保存并受单独权限与保留期控制；页面、普通日志和 `Action.result` 只能展示脱敏摘要。
 
-### 5.4 日覆盖债务与硬小时的独立规划
+### 5.4 群日累计进度与账号覆盖债务
 
-当前问题来自把 hard_hourly 是否仍需规划作为 all_accounts_daily 是否允许绕过 open Action 门禁的前提。新规则如下：
+`hard_hourly` 已被删除。新规划只计算群日累计进度和账号覆盖：
 
 ~~~text
 full_shortfall = frozen_denominator_count - confirmed_count
 valid_future_open_cover = state=reserved / sending 且同一 coverage 行关联有效 future Action 的数量
 unknown_hold = state=unknown 的未确认覆盖行数量
 blocked_shortfall = state=blocked 的未确认覆盖行数量
-ready_to_plan = state=ready 且通过当前准入、权限、时间与账号容量门的覆盖行数量
-required_new = ready_to_plan
-
-daily_planning_required = required_new > 0
-hard_hourly_planning_required = hard_hourly_required_new > 0
+due_by_now = floor(effective_daily_target × elapsed_cumulative_weight / full_day_total_weight)
+volume_need_now = max(0, due_by_now - confirmed_message_count - valid_open_send_count)
+coverage_need_now = 当前进度到期、state=ready、准入/在线/面具可用且无有效开放 Action 的账号数
+required_new = max(volume_need_now, coverage_need_now)
 ~~~
 
 `ready`、`reserved/sending`、`unknown` 和 `blocked` 是互斥状态。`valid_future_open_cover` 只能来自 `reserved/sending` 行，绝不能再从 `ready_to_plan` 扣减；若查询到 ready 行仍关联有效 future Action，必须先在短事务把该行纠正为 reserved/sending 或记录数据不一致 blocker，不能用算术抵消掩盖双状态。`full_shortfall` 用于履约结论；`required_new` 只用于新建可发送的覆盖 Action，二者不得互相替代。
 
-1. daily_planning_required 不得依赖 hard_hourly_planning_required。
-2. 同任务存在 open Action 时，Planner 必须分别计算 future_open、overdue_open、valid_future_open_cover、unknown_hold、blocked_shortfall 与 required_new。`gateway_call_started_at is null` 的 overdue open 维持 `reserved + dispatcher_lag + dispatcher_recheck`，不抵扣 future_open、不得新建重复 Action，也不得伪装为 remote unknown；只有已跨越 Gateway 边界的 overdue open 才进入 `unknown + coverage_action_overdue + remote_reconcile`。
-3. hard_hourly 已经达标、缺口为零或下一小时检查未到，都不能让 required_new 被跳过。
-4. 全局 pending 上限、任务 pending 上限或 Planner 无可用处理槽时，不得静默跳过 daily debt，也不得绕过既有容量门。必须写 `planner_capacity_insufficient`、当前 backlog 快照和 next_decision_at；该状态使 daily_outcome 至少为 at_risk，不能显示 feasible。
-5. 每次规划或未建单必须追加 `TaskDailyFulfillmentDecision`，至少含 full_shortfall、valid_future_open_cover、unknown_hold、blocked_shortfall、ready_to_plan、required_new、hard_hourly_required_new、选择或跳过原因、next_decision_at。不能只靠 last_error 推测。
-6. required_new 大于零且可发账号存在时，next_decision_at 必须是 daily_coverage_next_check_at；若容量、权限、质量、生成合同、Planner backlog 或未知结果阻塞，也必须写明确 blocker 和重新检查条件。
-7. 该规则只允许为 `state=ready` 的义务创建新 Action；已处于 reserved/sending/unknown 的义务禁止再建单，不能因为日债务存在无限堆积 Action。
+1. 同任务存在 open Action 时，Planner 分别计算 future_open、overdue_open、valid_future_open_cover、unknown_hold、blocked_shortfall 与 required_new。
+2. `gateway_call_started_at is null` 的 overdue open 维持 `reserved + dispatcher_lag + dispatcher_recheck`，不得伪装为 remote unknown；已跨越 Gateway 边界的 overdue open 才进入 `unknown + remote_reconcile`。
+3. Planner 队列已满时只写当前 backlog 和 `next_decision_at`，这是有界背压，不是“全天容量不足”，不得停止后续 tick。
+4. 每次决策至少记录 full_shortfall、due_by_now、valid_future_open_cover、unknown_hold、blocked_shortfall、volume_need_now、coverage_need_now、required_new、选择/跳过原因和 next_decision_at。
+5. 只为 `state=ready` 的义务创建新 Action；reserved/sending/unknown 禁止重复建单。
 
 ### 5.4.1 Dispatcher claim 账本与 stale Recovery 收口
 
@@ -241,16 +240,15 @@ hard_hourly_planning_required = hard_hourly_required_new > 0
 
 ### 5.4.2 Dispatcher claim 计划顺序
 
-1. `plan_dispatch_claims` 先基于 Scope、Window、Shard Allocation、Reservation、allocation epoch 和公平 cursor 生成有界的 `candidate_action_ids`。锁行查询的排序固定为：既有 target admission、硬小时、搜索 membership/source、任务优先级、频道评论和公平优先级，随后才是这个序列的位置；同一优先级内必须保留该相对顺序。
+1. `plan_dispatch_claims` 先基于 Scope、Window、Shard Allocation、Reservation、allocation epoch 和公平 cursor 生成有界的 `candidate_action_ids`。目标准入继续优先；到期 AI 群日债务、严格搜索 membership/source 和其他任务按当期需求获得可审计份额，不再存在 AI hard-hourly 类别。
 2. PostgreSQL 的 `FOR UPDATE SKIP LOCKED`、状态变化、到期时间或任务停止只允许使对应候选行缺席；`claim_limit` 取剩余候选中的前 N 条。不得从未获本轮 reservation 的 Action 补位，也不得以 `scheduled_at`、`created_at` 或历史 backlog 年龄替代计划位置。
-3. 计划顺序不重写既有类别或任务优先级，但它是同优先级内唯一的公平 tie-break。这样每个 shard 已分配的份额会首先服务其计划目标，而不是被历史同群 backlog 反复抢占。
-4. `GroupSendSlotBlock` 仍在 Telegram Gateway 前按原 `legacy_group_slot` 校验并保留真实慢速模式延后事实；本修复只避免错误领取顺序制造无谓 slow-mode churn，不改变安全门或允许并发越过群冷却。
+3. 同一优先级内以计划序列作为公平 tie-break；验收必须证明 AI 群日债务在搜索和准入负载同时存在时仍持续推进。
 
-### 5.4.3 同群发送领取槽位
+### 5.4.3 AI 活群本地群槽位退役
 
-1. `TgGroup.next_group_send_slot_at` 是 `legacy_group_slot` 的持久投影：仅当群行锁内的 active-window、目标身份、群日上限与冷却校验全部通过，且 ExecutionAttempt 即将写入 `before_call/gateway_call_started` 时，才以与校验相同的北京时间 policy clock 写为 `now + group_cooldown_seconds` 并与 attempt 同事务提交。该值在 Gateway 返回前只是当前 Action 的临时槽位预约，必须在 Action.result 留预约时刻以防清除后来 Action 的槽位：成功或 `unknown_after_send` 保留正常冷却；Gateway 返回已知失败时，`FloodWait` / `SlowMode` 用 Telegram 明确秒数改写为精确重试槽位，其他已知失败只清除自己的预约。它不替代 ExecutionAttempt，也不把未进入 Gateway 的 Action 计为已发送。
-2. Dispatcher 在生成 claim plan 前排除 `next_group_send_slot_at > now` 的 legacy 群正文；在锁定候选 Action 后，必须再以 `TgGroup FOR UPDATE SKIP LOCKED` 取得同群锁、复查该时刻和同群 `claiming/executing` Action，并在一个 claim batch 中只保留计划顺序最靠前的一条同群正文。未获群锁或仍在途的候选保持 pending，不能被标为成功、unknown 或 slow-mode。
-3. `account_only` 与 `account_only_with_group_daily_limit` 不使用同群领取槽位；它们继续沿各自群日上限和账号安全边界执行。Gateway 的 `group_send_slot_block` 始终保留为最终竞争条件和历史 Action 兼容保护。
+1. `group_ai_chat` 不读取或预留 `TgGroup.next_group_send_slot_at`，不受本地 `active_window`、群日上限或群冷却阻断。
+2. 其他任务类型继续使用原群槽位规则，不能因本重构被全局删除。
+3. Telegram 返回的真实 SlowMode、FloodWait、账号/群权限和 `unknown_after_send` 仍按事实处理；它们不是本地群槽位。
 4. 群槽位阻塞只能释放该群的 claim 候选；同一 Window 内其余已分配目标仍按 `DispatchClaimPlan` 顺序可被领取。不得因一个群的冷却把整个 shard 或 Dispatcher Scope 置为等待。
 
 ### 5.5 任务中心、接口和审计

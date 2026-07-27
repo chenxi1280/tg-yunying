@@ -62,10 +62,9 @@ from ..daily_coverage import (
     backfill_daily_coverage_confirmations,
     bind_coverage_reservation,
     block_coverage_accounts,
-    block_voice_profile_coverage,
-    daily_coverage_due_debt,
     ensure_task_daily_coverage,
     ready_coverage_rows,
+    release_voice_profile_coverage_for_check_in,
     release_planned_coverage_reservation,
     reserve_coverage_for_planned_action,
     VOICE_PROFILE_MISSING_BLOCKER_CODE,
@@ -78,6 +77,11 @@ from ..daily_coverage_planning import (
     coverage_plan_totals,
     ready_coverage_plan_batch,
 )
+from ..daily_group_target import (
+    daily_group_due_message_count,
+    ensure_task_group_daily_target,
+)
+from ..direct_check_in import MASK_MISSING_CHECK_IN_SOURCE
 from ..daily_fulfillment import record_daily_fulfillment_decision
 from ..fingerprints import fingerprint_exists, remember_fingerprint
 from ..hard_hourly import (
@@ -86,7 +90,6 @@ from ..hard_hourly import (
     hard_schedule_times,
     mark_plan_result,
     planning_rate as hard_hourly_planning_rate,
-    requires_planning as hard_hourly_requires_planning,
 )
 from ..legacy_anchor_rewrite import expire_legacy_anchor_rewritten_actions
 from ..pacing import current_hour_rounds, operation_intensity, schedule_times
@@ -127,6 +130,11 @@ class CoveragePlanState:
     sendable_confirmed_count: int = 0
     sendable_reserved_count: int = 0
     required_new: int = 0
+    daily_group_target_id: str = ""
+    effective_daily_target: int = 0
+    due_message_count: int = 0
+    confirmed_message_count: int = 0
+    volume_need_now: int = 0
 
 
 @dataclass(frozen=True)
@@ -192,6 +200,7 @@ class PlanAbort:
 @dataclass(frozen=True)
 class PlanFacts:
     config: dict
+    task_id: str
     task_config_revision: int
     hard_progress: dict
     rule_version: Any
@@ -288,8 +297,7 @@ class PreparedActionPlan:
 def _load_plan_facts(session: Session, task: Task) -> PlanFacts | PlanAbort:
     config = {**(task.type_config or {}), "pacing_config": task.pacing_config or {}}
     config = _canonicalized_task_config(session, task, config)
-    progress = current_progress(session, task, _now()) if hard_hourly_enabled(task) else {}
-    progress = progress if int(progress.get("deficit") or 0) > 0 else {}
+    progress: dict = {}
     rule_version = bound_rule_version(session, task)
     if not rule_version:
         if progress:
@@ -307,23 +315,13 @@ def _load_plan_facts(session: Session, task: Task) -> PlanFacts | PlanAbort:
     gate_abort = _plan_outbound_target_abort(session, task, target, group, progress)
     if gate_abort:
         return gate_abort
-    if _hard_hourly_group_cooldown_blocker(task, group, progress):
-        if not _all_accounts_daily_coverage(config):
-            return PlanAbort()
-        # Keep the unreachable hard target visible, but do not tag daily coverage as hard-hourly work.
-        progress = {}
     coverage = _coverage_plan_state(session, task, group, config, progress)
     _record_daily_coverage_next_check(task, coverage.required_new > 0)
-    if _coverage_capacity_blocker(
-        session, task, group, config, coverage_rows=coverage.rows, coverage_state=coverage,
-    ):
-        if progress:
-            _mark_hard_blocked(task, progress, "daily_coverage_capacity_insufficient")
-        return PlanAbort()
     label = target.title if target and target.tenant_id == task.tenant_id else group.title
     active_config = _with_active_conversation_targets(session, task, config, group)
     return PlanFacts(
         config=active_config,
+        task_id=task.id,
         task_config_revision=int(task.config_revision or 1),
         hard_progress=progress,
         rule_version=rule_version,
@@ -471,11 +469,71 @@ def _load_daily_coverage_plan_accounts(
         accounts = _online_ready_accounts(session, task, accounts, facts.hard_progress)
         remaining = max(0, account_limit - len(selected))
         selected.extend(accounts[:remaining])
+    selected.extend(
+        _daily_group_extra_accounts(
+            session,
+            task,
+            facts,
+            selected=selected,
+            account_limit=account_limit,
+        )
+    )
     _record_direct_check_in_capacity(task, len(selected))
     if selected:
         return AccountPlanState(selected)
     _mark_account_shortage(session, task, facts)
     return PlanAbort()
+
+
+def _daily_group_extra_accounts(
+    session: Session,
+    task: Task,
+    facts: PlanFacts,
+    *,
+    selected: list,
+    account_limit: int,
+) -> list:
+    needed = max(0, facts.coverage.volume_need_now - len(selected))
+    remaining = min(needed, max(0, account_limit - len(selected)))
+    if remaining <= 0:
+        return []
+    config = {**facts.config, "_daily_coverage_enforced": False}
+    candidates = _select_accounts_for_plan(
+        session,
+        task,
+        facts.group,
+        {},
+        config,
+        coverage_rows=None,
+    )
+    selected_ids = {account.id for account in selected}
+    candidates = [account for account in candidates if account.id not in selected_ids]
+    candidates = _online_ready_accounts(session, task, candidates, {})
+    profiles = voice_profile_prompt_details(
+        session,
+        tenant_id=task.tenant_id,
+        account_ids=[account.id for account in candidates],
+    )
+    masked = [account for account in candidates if _voice_profile_ready(profiles.get(account.id))]
+    counts = _daily_success_counts(session, task)
+    return sorted(masked, key=lambda account: (counts.get(account.id, 0), account.id))[:remaining]
+
+
+def _daily_success_counts(session: Session, task: Task) -> dict[int, int]:
+    start = datetime.combine(_now().date(), time.min)
+    rows = session.execute(
+        select(Action.account_id, func.count(Action.id))
+        .where(
+            Action.tenant_id == task.tenant_id,
+            Action.task_id == task.id,
+            Action.action_type == "send_message",
+            Action.status == "success",
+            Action.executed_at >= start,
+            Action.account_id.is_not(None),
+        )
+        .group_by(Action.account_id)
+    )
+    return {int(account_id): int(count) for account_id, count in rows}
 
 
 def _daily_coverage_scan_page_limit() -> int:
@@ -885,6 +943,7 @@ def _build_slot_snapshot(slot: SlotBuildInput) -> SlotSnapshot:
             blueprint.profile.coverage_rows,
         ),
     )
+    _apply_mask_content_contract(payload_data, slot)
     payload = _with_content_variation_key(SendMessagePayload(**payload_data), slot)
     return SlotSnapshot(
         account_id=slot.account.id,
@@ -960,15 +1019,21 @@ def _slot_profile_payload(slot: SlotBuildInput) -> dict[str, Any]:
     voice = profile.voice_profiles.get(slot.account.id, {})
     summary = str(voice.get("summary") or "")
     version = int(voice.get("version") or 0)
+    mask_id = str(voice.get("id") or "")
+    snapshot_hash = str(voice.get("snapshot_hash") or "")
+    contract_version = str(voice.get("contract_version") or "")
     return {
         "account_voice_profile_version": version,
         "account_voice_profile_summary": summary,
         "account_voice_profile_match_score": VOICE_PROFILE_MATCH_SCORE,
         "account_voice_profile_match_reason": "deferred_ai_generation",
         "account_mask_version": version,
+        "account_mask_id": mask_id,
+        "account_mask_snapshot_hash": snapshot_hash,
         "account_mask_summary": summary,
         "account_mask_match_score": VOICE_PROFILE_MATCH_SCORE,
         "account_mask_match_reason": "deferred_ai_generation",
+        "voice_profile_contract_version": contract_version,
         "stance_summary": profile.stance_summaries.get(slot.account.id, ""),
         "ai_message_memory_id": "",
         "rewrite_attempts": int(item.get("rewrite_attempts") or 0),
@@ -977,6 +1042,36 @@ def _slot_profile_payload(slot: SlotBuildInput) -> dict[str, Any]:
         "topic_direction": _quality_topic_direction(item, slot.blueprint.facts.config),
         "teacher_target": _quality_teacher_target(item, slot.blueprint.facts.config),
     }
+
+
+def _apply_mask_content_contract(payload: dict[str, Any], slot: SlotBuildInput) -> None:
+    mask_id = str(payload.get("account_mask_id") or "")
+    mask_version = int(payload.get("account_mask_version") or 0)
+    snapshot_hash = str(payload.get("account_mask_snapshot_hash") or "")
+    coverage_id = str(payload.get("coverage_ledger_id") or "")
+    payload["daily_group_target_id"] = slot.blueprint.facts.coverage.daily_group_target_id
+    if mask_id and mask_version > 0 and snapshot_hash:
+        payload["content_source"] = "account_mask"
+        payload["mask_status"] = "active"
+        return
+    payload["mask_status"] = "missing"
+    if not coverage_id:
+        payload["content_source"] = ""
+        return
+    payload["content_source"] = MASK_MISSING_CHECK_IN_SOURCE
+    payload["reply_to_message_id"] = None
+    payload["reply_target_label"] = ""
+    payload["reply_target_author"] = ""
+    payload["reply_target_preview"] = ""
+    payload["reply_target_source"] = ""
+    payload["act_type"] = "check_in"
+    coverage = slot.blueprint.profile.coverage_rows.get(slot.account.id)
+    target_date = coverage.coverage_date.isoformat() if coverage else _now().date().isoformat()
+    payload["fallback_obligation_key"] = (
+        f"{slot.blueprint.facts.task_id}:"
+        f"{slot.blueprint.facts.group.id}:{slot.account.id}:"
+        f"{target_date}:{MASK_MISSING_CHECK_IN_SOURCE}"
+    )
 
 
 def _slot_conversation_payload(slot: SlotBuildInput) -> dict[str, Any]:
@@ -1004,7 +1099,6 @@ def _slot_conversation_payload(slot: SlotBuildInput) -> dict[str, Any]:
 
 def _slot_generation_payload(slot: SlotBuildInput) -> dict[str, Any]:
     blueprint = slot.blueprint
-    facts = blueprint.facts
     profile = blueprint.profile
     generation = blueprint.generation
     preview = profile.profile_preview
@@ -1016,10 +1110,6 @@ def _slot_generation_payload(slot: SlotBuildInput) -> dict[str, Any]:
         "ai_generation_history": _deferred_ai_history(blueprint.turn.history),
         "ai_generation_tokens": 0,
         "ai_generation_count": len(generation.quality_items),
-        "hard_hourly_target": bool(facts.hard_progress),
-        "hard_hourly_bucket": str(facts.hard_progress.get("bucket") or ""),
-        "hard_hourly_goal_at_plan": int(facts.hard_progress.get("goal") or 0),
-        "hard_hourly_deficit_at_plan": int(hard_hourly_planning_rate(facts.hard_progress) if facts.hard_progress else 0),
         "ai_generation_context_count": len(generation.context_message_ids),
         "ai_generation_memory_count": len(profile.account_memories),
         "profile_scene": str(preview.get("profile_scene") or GROUP_CHAT_SCENE),
@@ -1697,7 +1787,15 @@ def _daily_coverage_uncovered_count(
         uncovered = daily_uncovered_account_count(session, task.id, ("send_message",), accounts)
         return min(uncovered, max(0, int(progress.get("deficit") or 0))) if progress else uncovered
     hard_deficit = max(0, int(progress.get("deficit") or 0)) if progress else 0
-    daily_debt = max(0, int(coverage_state.due_debt or 0)) if coverage_state else 0
+    daily_debt = (
+        max(
+            0,
+            int(coverage_state.due_debt or 0),
+            int(coverage_state.volume_need_now or 0),
+        )
+        if coverage_state
+        else 0
+    )
     return min(len(accounts), max(hard_deficit, daily_debt))
 
 
@@ -1899,13 +1997,33 @@ def _coverage_plan_state(
     timestamp = _now()
     bootstrap_missing_all_account_task_scope(session, task, now=timestamp)
     ensure_task_daily_coverage(session, task, now=timestamp)
+    release_voice_profile_coverage_for_check_in(session, task, now=timestamp)
     backfill_daily_coverage_confirmations(session, task, timestamp.date())
     totals = coverage_plan_totals(session, task, group, now=timestamp)
-    summary = record_daily_fulfillment_decision(
+    target = ensure_task_group_daily_target(
+        session,
+        task,
+        group,
+        timestamp.date(),
+        now=timestamp,
+    )
+    due_message_count = daily_group_due_message_count(
+        target,
+        task.pacing_config or {},
+        now=timestamp,
+    )
+    target.due_message_count = due_message_count
+    volume_need = max(
+        0,
+        due_message_count
+        - target.confirmed_message_count
+        - _valid_open_daily_send_count(session, task),
+    )
+    record_daily_fulfillment_decision(
         session,
         task,
         reason="planner_evaluated",
-        hard_hourly_required_new=int(_progress.get("deficit") or 0),
+        hard_hourly_required_new=0,
         now=timestamp,
     )
     configured_limit = int(getattr(get_settings(), "daily_coverage_plan_batch_limit", 20) or 20)
@@ -1926,8 +2044,24 @@ def _coverage_plan_state(
         sendable_account_count=totals.sendable_account_count,
         sendable_confirmed_count=totals.sendable_confirmed_count,
         sendable_reserved_count=totals.sendable_reserved_count,
-        required_new=summary.ready_to_plan_count,
+        required_new=max(totals.due_debt, volume_need),
+        daily_group_target_id=target.id,
+        effective_daily_target=target.effective_message_target,
+        due_message_count=due_message_count,
+        confirmed_message_count=target.confirmed_message_count,
+        volume_need_now=volume_need,
     )
+
+
+def _valid_open_daily_send_count(session: Session, task: Task) -> int:
+    return int(session.scalar(
+        select(func.count(Action.id)).where(
+            Action.tenant_id == task.tenant_id,
+            Action.task_id == task.id,
+            Action.action_type == "send_message",
+            Action.status.in_(("pending", "claiming", "executing", "unknown_after_send")),
+        )
+    ) or 0)
 
 
 def requires_planning_with_open_actions(session: Session, task: Task) -> bool:
@@ -1944,7 +2078,19 @@ def requires_planning_with_open_actions(session: Session, task: Task) -> bool:
     if not group:
         return False
     summary = record_daily_fulfillment_decision(session, task, reason="open_actions_gate", now=_now())
-    return summary.ready_to_plan_count > 0
+    target = ensure_task_group_daily_target(
+        session,
+        task,
+        group,
+        _now().date(),
+        now=_now(),
+    )
+    due = daily_group_due_message_count(target, task.pacing_config or {}, now=_now())
+    volume_need = max(
+        0,
+        due - target.confirmed_message_count - _valid_open_daily_send_count(session, task),
+    )
+    return summary.ready_to_plan_count > 0 or volume_need > 0
 
 
 def _record_daily_coverage_next_check(task: Task, has_debt: bool) -> None:
@@ -2131,19 +2277,6 @@ def _queue_missing_voice_profile_recovery(
         actor="task-planner",
         reason="AI 活跃群发现账号面具待恢复",
     )
-    if _all_accounts_daily_coverage(config):
-        block_voice_profile_coverage(
-            session,
-            task=task,
-            account_ids=list(
-                result.created_account_ids
-                + result.existing_account_ids
-                + result.manual_required_account_ids
-            ),
-            next_retry_at=result.next_retry_at,
-            detail="账号面具待恢复，已创建或关联自动重建任务",
-            now=_now(),
-        )
     if result.next_retry_at is not None:
         task.next_run_at = result.next_retry_at
 

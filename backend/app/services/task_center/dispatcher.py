@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from typing import Any
 import os
 import re
 import socket
@@ -16,7 +17,7 @@ from pydantic import ValidationError
 from app.admin_chats import send_admin_chat_broadcast
 from app.integrations.telegram import DeveloperAppCredentials, OperationResult, OutboundSegment
 from app.config import get_settings
-from app.models import AccountStatus, Action, ChannelMessage, ExecutionAttempt, FailureType, GroupAuthStatus, GroupContextMessage, OperationTarget, ReviewQueue, Task, TaskAccountDailyCoverage, TaskMembershipAdmissionItem, Tenant, TgAccount, TgGroup, TgGroupAccount, VerificationTask
+from app.models import AccountStatus, Action, AiAccountVoiceProfile, AiGroupMessageMemory, ChannelMessage, ExecutionAttempt, FailureType, GroupAuthStatus, GroupContextMessage, OperationTarget, ReviewQueue, Task, TaskAccountDailyCoverage, TaskMembershipAdmissionItem, Tenant, TgAccount, TgGroup, TgGroupAccount, VerificationTask
 from app.models import AccountEnvironmentBinding, AccountProxy, AccountProxyBinding, TelegramDeveloperApp, TgAccountAuthorization
 from app.search_keywords import normalized_keyword_hash
 from app.security import decrypt_secret
@@ -40,11 +41,12 @@ from app.services.required_channel_prompts import (
     required_channel_references,
 )
 from app.services.verification import create_verification_task
-from app.timezone import BEIJING_TZ, as_beijing
+from app.timezone import as_beijing
 
 from .account_pool import account_matches_current_shard, current_account_shard, select_task_accounts
 from .account_scope import is_all_accounts_task
 from .account_voice_profiles import upsert_group_stance_memory
+from .account_voice_profile_cache import VOICE_PROFILE_CONTRACT_VERSION, voice_profile_snapshot_hash
 from . import ai_generation_dispatch as _ai_generation_dispatch
 from .ai_generation_composition import PRODUCTION_GENERATION_DEPENDENCIES
 from .ai_generation_dependencies import GenerationDependencies
@@ -67,7 +69,7 @@ from .coverage_capacity import (
     hard_hourly_group_cooldown_proof,
 )
 from .daily_coverage import confirm_coverage_from_attempt, ensure_task_daily_coverage, mark_coverage_unknown, release_coverage_reservation
-from .direct_check_in import DIRECT_CHECK_IN_SOURCE, direct_check_in_memory_is_valid
+from .direct_check_in import MASK_MISSING_CHECK_IN_SOURCE, direct_check_in_memory_is_valid
 from .dispatch_reservations import (
     DispatchClaimBinding,
     confirm_dispatch_claim,
@@ -1488,7 +1490,7 @@ def recover_pending_visibility_credits(session: Session, limit: int = 100) -> in
     - post_send_intercepted / not_visible -> fail, revoke admission ready
     - no evidence after window -> keep unknown hold (never timeout-as-success)
     """
-    from app.models import PendingVisibilityCredit, TgGroup
+    from app.models import PendingVisibilityCredit
     from app.services.task_center.group_bot_admission import (
         close_pending_visibility_credit,
         get_admission,
@@ -2242,6 +2244,7 @@ def _reserve_group_send_attempt(
         target=target,
         group=group,
         require_identity=_action_declares_target_identity(action),
+        include_group_policy=action.task_type != "group_ai_chat",
     )
     if gate_block is not None:
         if gate_block.code in {
@@ -2265,7 +2268,7 @@ def _reserve_group_send_attempt(
         _defer_group_send_for_limit(action, block)
         session.commit()
         return None
-    reserved_until = reserve_group_send_slot(group)
+    reserved_until = None if action.task_type == "group_ai_chat" else reserve_group_send_slot(group)
     if reserved_until is not None:
         action.result = {
             **(action.result or {}),
@@ -2591,7 +2594,19 @@ def _group_ai_message_memory_sendable(session: Session, action: Action, payload:
         )
         action.result = {**(action.result or {}), **result}
         return False
-    if payload.content_source == DIRECT_CHECK_IN_SOURCE:
+    if (
+        payload.content_source != MASK_MISSING_CHECK_IN_SOURCE
+        and not _normal_mask_evidence_complete(session, action, payload)
+    ):
+        _fail(
+            action,
+            "account_mask_evidence_missing",
+            "AI 活群发言缺少发送账号的冻结面具证据",
+            auto_check="拦截",
+            validation_stage="account_mask",
+        )
+        return False
+    if payload.content_source == MASK_MISSING_CHECK_IN_SOURCE:
         if direct_check_in_memory_is_valid(session, action, payload):
             return True
         _fail(
@@ -2603,7 +2618,7 @@ def _group_ai_message_memory_sendable(session: Session, action: Action, payload:
         )
         return False
     try:
-        ensure_group_ai_message_sendable(session, payload.ai_message_memory_id)
+        memory = ensure_group_ai_message_sendable(session, payload.ai_message_memory_id)
     except DuplicateMessageReservation as exc:
         result = {
             "error_code": "duplicate_message",
@@ -2621,7 +2636,57 @@ def _group_ai_message_memory_sendable(session: Session, action: Action, payload:
             result=result,
         )
         return False
+    if not _message_memory_matches_mask(memory, action, payload):
+        _fail(
+            action,
+            "account_mask_memory_mismatch",
+            "消息记忆与 Action 的账号面具证据不一致",
+            auto_check="拦截",
+            validation_stage="account_mask",
+        )
+        return False
     return True
+
+
+def _normal_mask_evidence_complete(
+    session: Session,
+    action: Action,
+    payload: SendMessagePayload,
+) -> bool:
+    if not (
+        payload.account_mask_id
+        and payload.account_mask_version > 0
+        and payload.voice_profile_contract_version
+        and payload.account_mask_snapshot_hash
+    ):
+        return False
+    mask = session.get(AiAccountVoiceProfile, payload.account_mask_id)
+    return bool(
+        mask
+        and mask.tenant_id == action.tenant_id
+        and mask.account_id == action.account_id
+        and mask.version == payload.account_mask_version
+        and mask.status == "active"
+        and mask.quality_status == "active"
+        and mask.short_prompt_summary
+        and payload.voice_profile_contract_version == VOICE_PROFILE_CONTRACT_VERSION
+        and payload.account_mask_snapshot_hash == voice_profile_snapshot_hash(mask)
+    )
+
+
+def _message_memory_matches_mask(
+    memory: AiGroupMessageMemory,
+    action: Action,
+    payload: SendMessagePayload,
+) -> bool:
+    return bool(
+        memory.account_id == action.account_id
+        and memory.mask_status == "active"
+        and memory.account_mask_id == payload.account_mask_id
+        and int(memory.account_mask_version or 0) == payload.account_mask_version
+        and memory.mask_contract_version == payload.voice_profile_contract_version
+        and memory.mask_snapshot_hash == payload.account_mask_snapshot_hash
+    )
 
 
 def _fail_group_ai_send_before_gateway(

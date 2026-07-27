@@ -5,15 +5,15 @@
 | 项目 | 内容 |
 | --- | --- |
 | 需求级别 | L3 生产可靠性与目标处置优化 |
-| 设计状态 | `complete` |
+| 设计状态 | `complete`；Phase B 硬小时部分已于 2026-07-28 retired |
 | 修订说明 | 2026-07-24 评审修订合订：义务归属 credit、unknown 占位、planning_rate / 公平调度、Phase A 身份灰度、多目标粒度、canary 体感；§5.5 青岛 `qdsfxy` 预置 `target_ref_invalid`（非解散）；§5.1/§5.4 补 invalid 任务·Action·覆盖处置与自动写入门槛；§7.3.4 明确失败 Action 再规划；§7.5 死锁 / §9.0 时区为前置基线；§9 发布插队顺序；总 PRD / 实现计划 / 数据流同步同一口径。**2026-07-25 交叉：** 与 `ai-conversation-humanization-and-group-bot-admission-prd.md` 对齐——`pending_visibility` 计入 `unknown_after_send_hold_count`；需群管可见性核验的消息先 `pending_visibility_credit` 再正式 credit；`admission_abandoned` 可排除 durable_debt；群管 follow 复用 `target_admission_retry` 档且限作用域（见 §4.3 / §7.2 / §7.3 / §7.4 增量注） |
-| 产品范围 | Phase A 覆盖所有 Telegram 出站入口的终态目标拦截；Phase B 覆盖 `group_ai_chat` 的每小时硬目标连续履约 |
+| 产品范围 | Phase A 目标生命周期与引用终态继续有效；Phase B 硬小时只保留历史迁移审计 |
 | 统计时区 | 任务配置时区；未配置时沿用平台 `Asia/Shanghai` 口径 |
 | 上位文档 | `docs/01-product/tg-ops-platform-prd.md` §8.4 |
 | 关联文档 | `ai-group-all-accounts-daily-coverage-prd.md`、`ai-group-hard-hourly-target-prd.md`、`ai-conversation-humanization-and-group-bot-admission-prd.md`（群管准入 / 轮换 / 签到 / 可见性与 credit 交叉）、`docs/00-index/project-dataflow-index.md` |
 | 实现计划 | `docs/superpowers/plans/2026-07-24-ai-group-send-continuity-terminal-targets.md` |
 
-本文对“目标生命周期、引用版本、跨小时硬目标、未知发送、群发送策略、灰度发布”具有专项优先级。关联专项 PRD 中与本文冲突的旧口径，仅在未启用本能力的历史运行路径下保留为历史说明，不得用于新实现。
+本文对目标生命周期、引用版本、未知发送和目标终态仍具有专项优先级。Phase B 跨小时硬目标、小时桶、credit、活动窗口和群槽位 canary 已由 `ai-group-daily-group-target-redesign-prd.md` 退役，只作为历史说明；新实现不得引用。
 
 ## 2. 背景与问题
 

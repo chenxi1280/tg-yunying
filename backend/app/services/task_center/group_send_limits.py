@@ -39,6 +39,8 @@ def group_send_slot_block(
     group: TgGroup,
 ) -> GroupSendSlotBlock | None:
     """Backward-compatible entry: active window + group policy for the group's mode."""
+    if action.task_type == "group_ai_chat":
+        return None
     now_value = _beijing_now()
     window = active_window_block(group, now_value)
     if window is not None:

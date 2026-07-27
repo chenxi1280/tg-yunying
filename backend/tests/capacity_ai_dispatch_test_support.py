@@ -8,6 +8,7 @@ from sqlalchemy import select
 from app.integrations.telegram import SendResult
 from app.models import (
     Action,
+    AiAccountVoiceProfile,
     Task,
     Tenant,
     TgAccount,
@@ -20,6 +21,7 @@ from app.services.task_center import payloads as task_payloads
 from app.services.task_center.ai_generation_dependencies import GenerationDependencies
 from app.services.task_center.ai_generator import GeneratedContent
 from app.services.task_center.ai_message_memory import reserve_group_ai_message
+from app.services.task_center.account_voice_profile_cache import voice_profile_snapshot_hash
 
 
 def seed_pending_generation_scope(session, now_value, claim_limit: int) -> None:
@@ -89,6 +91,33 @@ def _add_pending_base_rows(session, now_value) -> None:
             can_send=True,
             permission_label="可发言",
         ))
+        profile, _evidence = _test_mask(account_id)
+        session.add(profile)
+
+
+def _test_mask(account_id: int) -> tuple[AiAccountVoiceProfile, dict]:
+    profile = AiAccountVoiceProfile(
+        id=f"mask-{account_id}",
+        tenant_id=1,
+        account_id=account_id,
+        version=1,
+        mask_name="",
+        audience_archetype="",
+        identity_frame="",
+        preference_tags=[],
+        status="active",
+        quality_status="active",
+        short_prompt_summary=f"账号{account_id}短句",
+    )
+    evidence = {
+        "account_mask_id": profile.id,
+        "account_mask_version": profile.version,
+        "voice_profile_contract_version": "style_only_v2",
+        "account_mask_snapshot_hash": voice_profile_snapshot_hash(profile),
+        "mask_status": "active",
+        "content_source": "account_mask",
+    }
+    return profile, evidence
 
 
 def _hard_hourly_action(action_id, account_id, scheduled_at, *, turn_index, account_role) -> Action:
@@ -115,6 +144,7 @@ def _hard_hourly_action(action_id, account_id, scheduled_at, *, turn_index, acco
             "ai_generation_history": "真人: 今天怎么安排",
             "account_role": account_role,
             "reply_to_message_id": None,
+            **_test_mask(account_id)[1],
         },
     )
 
@@ -187,7 +217,7 @@ def seed_duplicate_generation_scope(session, now_value):
         tenant_id=1,
         group_id=7,
         task_id="old-ai",
-        account_id=99,
+        account_id=11,
         raw_text="今天先看看群公告",
         now=now_value - timedelta(minutes=1),
     )
@@ -219,6 +249,7 @@ def _duplicate_action(task_id: str, now_value) -> Action:
             "cycle_id": cycle_id,
             "slot_id": f"{cycle_id}:turn:1",
             "ai_generation_history": "真人: 今天怎么安排",
+            **_test_mask(11)[1],
         },
     )
 

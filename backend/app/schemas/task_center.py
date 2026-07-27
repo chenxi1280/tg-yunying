@@ -284,13 +284,14 @@ class GroupAIChatConfig(BaseModel):
     messages_per_round_mode: Literal["auto", "manual"] = "auto"
     messages_per_round: int = Field(default=1, ge=1)
     reply_min_per_round: int = Field(default=1, ge=0)
-    account_coverage_mode: Literal["natural", "all_accounts_daily"] = "natural"
-    per_account_daily_min_messages: int = Field(default=1, ge=1, le=2)
-    per_account_daily_max_messages: int = Field(default=2, ge=1, le=2)
+    daily_message_target: int = Field(default=1, ge=1, le=100_000)
+    account_coverage_mode: Literal["all_accounts_daily"] = "all_accounts_daily"
     coverage_window_hours: Literal[24] = 24
-    hard_hourly_target_enabled: bool = True
-    hourly_min_messages: int | None = Field(default=GROUP_AI_HARD_HOURLY_MIN_MESSAGES, ge=1)
-    hard_hourly_strategy: Literal["force_planning"] = "force_planning"
+    per_account_daily_min_messages: int | None = Field(default=None, exclude=True)
+    per_account_daily_max_messages: int | None = Field(default=None, exclude=True)
+    hard_hourly_target_enabled: bool | None = Field(default=None, exclude=True)
+    hourly_min_messages: int | None = Field(default=None, exclude=True)
+    hard_hourly_strategy: str | None = Field(default=None, exclude=True)
     history_fetch_account_id: int | None = None
     auto_join_target: bool = True
     group_bot_admission_required: bool = True
@@ -330,14 +331,6 @@ class GroupAIChatConfig(BaseModel):
             raise ValueError("reply_min_per_round 不能大于 messages_per_round")
         if not self.group_bot_admission_required:
             raise ValueError("AI 活跃群必须启用群管机器人准入")
-        if self.per_account_daily_min_messages > self.per_account_daily_max_messages:
-            raise ValueError("per_account_daily_min_messages 不能大于 per_account_daily_max_messages")
-        if not self.hard_hourly_target_enabled:
-            raise ValueError("AI 活跃群必须启用每小时硬目标")
-        if not self.hourly_min_messages:
-            raise ValueError("AI 活跃群必须填写每小时最低发送量")
-        if self.hourly_min_messages < GROUP_AI_HARD_HOURLY_MIN_MESSAGES:
-            raise ValueError(f"AI 活跃群每小时最低发送量不能低于 {GROUP_AI_HARD_HOURLY_MIN_MESSAGES}")
         return self
 
 

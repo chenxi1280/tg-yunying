@@ -437,6 +437,13 @@ class AiGroupMessageMemory(Base):
         Index("ix_ai_group_message_memory_task", "tenant_id", "task_id", "planned_at"),
         Index("ix_ai_group_message_memory_action_id", "action_id"),
         Index(
+            "ix_ai_group_message_memory_account_window",
+            "tenant_id",
+            "account_id",
+            "status",
+            "planned_at",
+        ),
+        Index(
             "ix_ai_group_message_memory_tenant_status_planned",
             "tenant_id",
             "status",
@@ -468,6 +475,12 @@ class AiGroupMessageMemory(Base):
     profile_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     profile_match_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
     profile_match_reason: Mapped[str] = mapped_column(Text, default="")
+    account_mask_id: Mapped[str] = mapped_column(String(36), default="")
+    account_mask_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    mask_contract_version: Mapped[str] = mapped_column(String(40), default="")
+    mask_snapshot_hash: Mapped[str] = mapped_column(String(64), default="")
+    mask_status: Mapped[str] = mapped_column(String(30), default="")
+    content_source: Mapped[str] = mapped_column(String(40), default="")
     result: Mapped[dict] = mapped_column(JSON, default=dict)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 

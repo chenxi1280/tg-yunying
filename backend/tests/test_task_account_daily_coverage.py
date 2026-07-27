@@ -469,7 +469,7 @@ def test_ready_coverage_rows_is_indexed_read_without_implicit_scope_refresh(sess
     assert [row.account_id for row in rows] == [1]
 
 
-def test_daily_coverage_due_debt_uses_elapsed_active_window(session: Session) -> None:
+def test_daily_coverage_due_debt_uses_full_day_nonzero_pacing(session: Session) -> None:
     task = _seed(session)
     group = session.get(TgGroup, 21)
     rows = [
@@ -484,10 +484,10 @@ def test_daily_coverage_due_debt_uses_elapsed_active_window(session: Session) ->
         for account_id in range(1, 15)
     ]
 
-    assert daily_coverage_due_debt(task, group, rows, now=datetime(2026, 7, 10, 8, 59)) == 0
-    assert daily_coverage_due_debt(task, group, rows, now=datetime(2026, 7, 10, 10, 0)) == 1
-    assert daily_coverage_due_debt(task, group, rows, now=datetime(2026, 7, 10, 16, 0)) == 7
-    assert daily_coverage_due_debt(task, group, rows, now=datetime(2026, 7, 10, 23, 0)) == 14
+    assert daily_coverage_due_debt(task, group, rows, now=datetime(2026, 7, 10, 8, 59)) == 5
+    assert daily_coverage_due_debt(task, group, rows, now=datetime(2026, 7, 10, 10, 0)) == 5
+    assert daily_coverage_due_debt(task, group, rows, now=datetime(2026, 7, 10, 16, 0)) == 9
+    assert daily_coverage_due_debt(task, group, rows, now=datetime(2026, 7, 10, 23, 0)) == 13
 
 
 def test_daily_coverage_due_debt_accepts_beijing_aware_now(session: Session) -> None:
@@ -506,7 +506,7 @@ def test_daily_coverage_due_debt_accepts_beijing_aware_now(session: Session) -> 
     ]
     now = datetime(2026, 7, 10, 16, 0, tzinfo=timezone(timedelta(hours=8)))
 
-    assert daily_coverage_due_debt(task, group, rows, now=now) == 7
+    assert daily_coverage_due_debt(task, group, rows, now=now) == 9
 
 
 def test_blocked_coverage_refresh_accepts_mixed_timezone_values() -> None:
@@ -553,4 +553,4 @@ def test_daily_coverage_due_debt_subtracts_confirmed_and_reserved(session: Sessi
         ],
     ]
 
-    assert daily_coverage_due_debt(task, group, rows, now=datetime(2026, 7, 10, 11, 0)) == 0
+    assert daily_coverage_due_debt(task, group, rows, now=datetime(2026, 7, 10, 11, 0)) == 4

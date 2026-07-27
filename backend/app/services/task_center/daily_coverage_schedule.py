@@ -51,7 +51,8 @@ def _cumulative_due(
     required: int,
     now: datetime,
 ) -> int:
-    start, end = active_window_bounds(group.active_window, coverage_date)
+    start = datetime.combine(coverage_date, time.min)
+    end = start + timedelta(days=1)
     now = _wall_time(now)
     if now <= start:
         return 0
@@ -93,7 +94,7 @@ def _hourly_curve(pacing_config: dict) -> list[int]:
     if not isinstance(raw, list) or len(raw) != 24:
         return []
     try:
-        curve = [max(0, int(value)) for value in raw]
+        curve = [max(1, int(value)) for value in raw]
     except (TypeError, ValueError):
         return []
     return curve if sum(curve) > 0 else []

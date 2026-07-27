@@ -5,10 +5,9 @@ export type TaskCenterAnyTaskType = TaskCenterTaskType | TaskCenterSystemTaskTyp
 export type HardHourlyStrategy = 'force_planning';
 export type HardHourlyStatus = 'disabled' | 'met' | 'catching_up' | 'blocked' | 'missed' | 'awaiting_confirmation';
 
-export type GroupAIChatHardHourlyConfig = {
-  hard_hourly_target_enabled?: boolean;
-  hourly_min_messages?: number | null;
-  hard_hourly_strategy?: HardHourlyStrategy;
+export type GroupAIChatDailyTargetConfig = {
+  daily_message_target?: number | null;
+  account_coverage_mode?: 'all_accounts_daily';
 };
 
 export type HardHourlyBlockers = Record<string, number>;
@@ -215,7 +214,7 @@ export type TaskCenterTask = {
   account_config: Record<string, any>;
   pacing_config: Record<string, any>;
   failure_policy: Record<string, any>;
-  type_config: Record<string, any> & Partial<GroupAIChatHardHourlyConfig>;
+  type_config: Record<string, any> & Partial<GroupAIChatDailyTargetConfig>;
   stats: TaskCenterStats;
   runtime_stage?: Record<string, any>;
   target_summary?: string;

@@ -437,6 +437,8 @@ durable_debt 排除：
 
 ## 7. 内容质量与 `签到`
 
+> **2026-07-28 账号面具内容记忆 supersede：** 对 `group_ai_chat`，`ai-group-daily-group-target-redesign-prd.md` 取代本节原有无条件日覆盖直发签到和租户级跨账号重复口径。正常正文绑定发送账号和固化面具版本，按该账号滚动 10 天去重；缺面具账号仅可用 coverage 唯一绑定的 `mask_missing_check_in` 精确 `签到` 完成最低覆盖，不用于额外补量。
+
 ### 7.1 质量门
 
 在生成入库与 Gateway 前执行；只返回允许/拒绝+原因，**禁止**静默改写正文。
@@ -445,7 +447,7 @@ durable_debt 排除：
 
 账号面具只约束语气、句长、表情习惯、表达偏好与短期立场；任务话题和真实上下文决定正文主题。不得因为面具摘要含“男客、夜场、价格、位置”等词，就要求每个 slot 必须出现价格/位置/服务锚点，更不得把 AI 原文截断后拼接固定问句。面具不匹配只能拒绝该 slot 并进入既有有界补位生成。
 
-AI 活群只消费既有 active 面具，不得修改面具生成、启用、版本或回滚逻辑。每条通过 style-only 面具门的 Provider 正文必须在 payload / result 固化 `voice_profile_contract_version=style_only_v2`。历史 `voice_profile_anchor_rewritten=true`，以及已有正文、`ai_generation_status=ready` 但缺少当前合同版本的非 `direct_check_in` Action，均作为旧消费者债务；仍处于 `pending/claiming/executing/retryable_failed` 且尚未进入 Telegram Gateway 时，必须在 Planner 或发送前转为 `skipped/voice_profile_anchor_replan`，关联消息记忆转 `expired_before_send`，覆盖预约释放后重新规划。未生成正文的蓝图不因缺版本误杀；`direct_check_in` 不消费面具且保留自己的明确来源审计。
+AI 活群只消费既有 active 面具，不得修改面具生成、启用、版本或回滚逻辑。正常正文必须固化 `account_mask_id/account_mask_version/mask_snapshot_hash` 和 `voice_profile_contract_version=style_only_v2`。唯一例外是 `mask_missing_check_in`，必须固化 `mask_status=missing + coverage_ledger_id`。历史已有普通正文但缺少合同或面具证据的 Action 在 Gateway 前转 `skipped/voice_profile_anchor_replan`；未生成正文的蓝图有 active 面具时进入新生成链路，无面具且承担未完成 coverage 时转受限签到。
 
 生产验收必须同时证明：active/superseded 面具数量与版本未被本功能改写；发布后新 Provider Action 的合同版本全部为 `style_only_v2`；开放队列不存在缺版本的旧已生成正文；新成功消息不再出现系统固定尾句注入。任务被人工停止时只能写 `unproven`，不得用容器健康或历史消息代替真实发送验收。
 
@@ -460,15 +462,15 @@ AI 活群只消费既有 active 面具，不得修改面具生成、启用、版
 | 项 | 口径 |
 | --- | --- |
 | 正文 | 精确 `签到` 两字 |
-| 日覆盖主路径 | 已绑定 `coverage_ledger_id` 的非引用全账号日覆盖 Action 直接使用 `签到`；不得调用 M3、M2.5、Grok，不得进入 prompt 改写、账号面具补尾句或普通 AI 文本相似度处理 |
-| 普通任务兜底 | 非日覆盖的非引用普通 Action 仍仅在三层生成/质量均失败后，按租户 `static_safe_fallback` 开关使用 `签到` |
+| 日覆盖主路径 | 面具可用账号按固化面具、当前上下文和新 variation 生成自然短句；缺面具账号固定 `mask_missing_check_in` 精确 `签到` |
+| 普通任务兜底 | 非引用普通 Action 仅在生成/质量均失败后，按租户 `static_safe_fallback` 开关尝试 `签到`；仍需面具可用且同账号 10 天内未使用 |
 | 禁止 | 引用降级为签到；绕过轮换、准入、OutboundTargetGate、群节奏、账号与 coverage 绑定或远端成功证明 |
-| 日覆盖审计 | `act_type=check_in`、`generation_source=direct_check_in`、`content_source=check_in_direct`、`human_quality_decision=direct_check_in`、`ai_generation_tokens=0` |
+| 日覆盖审计 | 正常正文固化面具证据；缺面具签到固化 `account_id/coverage_ledger_id/mask_status=missing/content_source=mask_missing_check_in` |
 | 普通兜底审计 | `generation_source=static_safe_fallback`、`content_source=check_in_fallback`、`fallback_reason`、质量拒绝原因 |
-| 重复规则 | 日覆盖 `签到` 是每个账号当日独立履约正文，不受普通 AI 文本相似度、相邻签到和 fallback 配额拦截；同一 coverage 义务仍只能绑定一个可发送 Action |
+| 重复规则 | `check_in_fallback` 进入同账号 10 天去重；`mask_missing_check_in` 由每日 coverage 唯一键防重，不进入普通 10 天门禁 |
 | 与覆盖 | 仅真实远端成功、成功 ExecutionAttempt 且非空 `remote_message_id` 才确认日覆盖/硬小时义务；`签到` 不计高质量 AI 文本指标 |
 
-普通兜底关闭开关或不满足门禁：Action 可见失败/延期，不产生替代文本，不 mock 成功。日覆盖直发不受普通兜底开关控制。
+普通兜底关闭开关或不满足门禁：Action 可见失败并以新 variation 重新规划，不产生替代文本，不 mock 成功。
 
 ## 8. 覆盖、硬小时与调度交叉
 

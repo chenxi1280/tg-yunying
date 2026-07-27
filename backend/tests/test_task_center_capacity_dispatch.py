@@ -42,6 +42,7 @@ from app.services.task_center import dispatcher
 from app.services.task_center.ai_generation_dependencies import GenerationDependencies
 from app.services.task_center.ai_generator import GeneratedContent
 from app.services.task_center import payloads as task_payloads
+from app.services.task_center.account_voice_profile_cache import voice_profile_snapshot_hash
 from app.services.task_center.executors import group_ai_chat
 from app.services.task_center import service as task_service
 from app.services.task_center import account_pool
@@ -150,6 +151,39 @@ def _voice_profile(account_id: int, summary: str = "青年短句，少总结，�
         quality_status="active",
         short_prompt_summary=summary,
     )
+
+
+def _active_mask_evidence(session: Session, account_id: int) -> dict:
+    profile = session.scalar(
+        select(AiAccountVoiceProfile).where(
+            AiAccountVoiceProfile.tenant_id == 1,
+            AiAccountVoiceProfile.account_id == account_id,
+            AiAccountVoiceProfile.status == "active",
+        )
+    )
+    if profile is None:
+        profile = _voice_profile(account_id)
+        profile.id = f"mask-{account_id}"
+        session.add(profile)
+        session.flush()
+    return {
+        "account_mask_id": profile.id,
+        "account_mask_version": profile.version,
+        "voice_profile_contract_version": "style_only_v2",
+        "account_mask_snapshot_hash": voice_profile_snapshot_hash(profile),
+        "content_source": "account_mask",
+    }
+
+
+def _memory_mask_evidence(evidence: dict) -> dict:
+    return {
+        "account_mask_id": evidence["account_mask_id"],
+        "account_mask_version": evidence["account_mask_version"],
+        "mask_contract_version": evidence["voice_profile_contract_version"],
+        "mask_snapshot_hash": evidence["account_mask_snapshot_hash"],
+        "mask_status": "active",
+        "content_source": evidence["content_source"],
+    }
 
 
 def _forbid_planner_ai_generation(monkeypatch) -> None:
@@ -1122,6 +1156,9 @@ def _add_cycle_skip_basics(session: Session, now_value: datetime) -> None:
         )
     )
     session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True))
+    profile = _voice_profile(11)
+    profile.id = "mask-11"
+    session.add(profile)
 
 
 def _add_cycle_contexts(session: Session, now_value: datetime) -> tuple[GroupContextMessage, GroupContextMessage]:
@@ -1183,6 +1220,7 @@ def _add_cycle_ai_send_gate_state(
     memory_id: str,
     text: str,
 ) -> dict:
+    mask_evidence = _active_mask_evidence(session, 11)
     session.add(
         TgAccountOnlineState(
             tenant_id=1,
@@ -1204,11 +1242,13 @@ def _add_cycle_ai_send_gate_state(
             text_fingerprint=memory_id,
             status="reserved",
             planned_at=now_value,
+            **_memory_mask_evidence(mask_evidence),
         )
     )
     return {
         "slot_id": f"task-cycle-skip:cycle:1:turn:{memory_id}",
         "ai_message_memory_id": memory_id,
+        **mask_evidence,
     }
 
 
@@ -1232,6 +1272,7 @@ def _add_group_ai_send_gate_payload(
                 stale_after_at=now_value + timedelta(minutes=5),
             )
         )
+    mask_evidence = _active_mask_evidence(session, account_id)
     memory_id = f"memory-{action_id}"
     session.add(
         AiGroupMessageMemory(
@@ -1245,9 +1286,14 @@ def _add_group_ai_send_gate_payload(
             text_fingerprint=memory_id,
             status="reserved",
             planned_at=now_value,
+            **_memory_mask_evidence(mask_evidence),
         )
     )
-    return {"slot_id": f"{task_id}:cycle:test:turn:{action_id}", "ai_message_memory_id": memory_id}
+    return {
+        "slot_id": f"{task_id}:cycle:test:turn:{action_id}",
+        "ai_message_memory_id": memory_id,
+        **mask_evidence,
+    }
 
 
 def _add_group_ai_send_action_with_online_state(
@@ -1853,6 +1899,8 @@ def test_group_ai_send_rechecks_message_memory_before_gateway(monkeypatch):
 
     with Session(engine) as session:
         _add_cycle_skip_basics(session, now_value)
+        session.flush()
+        mask_evidence = _active_mask_evidence(session, 11)
         session.add(
             TgAccountOnlineState(
                 tenant_id=1,
@@ -1872,16 +1920,17 @@ def test_group_ai_send_rechecks_message_memory_before_gateway(monkeypatch):
                     account_id=11,
                     raw_text="花花老师身材服务真好",
                     normalized_text="花花老师身材服务真好",
-                    text_fingerprint="current-send",
-                    status="reserved",
-                    planned_at=now_value,
+                        text_fingerprint="current-send",
+                        status="reserved",
+                        planned_at=now_value,
+                        **_memory_mask_evidence(mask_evidence),
                 ),
                 AiGroupMessageMemory(
                     id="memory-conflict-send",
                     tenant_id=1,
                     group_id=7,
                     task_id="other-task",
-                    account_id=12,
+                        account_id=11,
                     raw_text="花花老师服务身材真好",
                     normalized_text="花花老师服务身材真好",
                     text_fingerprint="conflict-send",
@@ -1898,8 +1947,9 @@ def test_group_ai_send_rechecks_message_memory_before_gateway(monkeypatch):
                     "group_id": 7,
                     "message_text": "花花老师身材服务真好",
                     "review_approved": True,
-                    "slot_id": "task-cycle-skip:cycle:1:turn:1",
-                    "ai_message_memory_id": "memory-current-send",
+                        "slot_id": "task-cycle-skip:cycle:1:turn:1",
+                        "ai_message_memory_id": "memory-current-send",
+                        **mask_evidence,
                 },
             )
         )
@@ -1931,6 +1981,7 @@ def test_group_ai_send_success_updates_account_stance_memory(monkeypatch):
 
     with Session(engine) as session:
         _add_cycle_skip_basics(session, now_value)
+        mask_evidence = _active_mask_evidence(session, 11)
         session.add(
             TgAccountOnlineState(
                 tenant_id=1,
@@ -1952,6 +2003,7 @@ def test_group_ai_send_success_updates_account_stance_memory(monkeypatch):
                 text_fingerprint="stance-send",
                 status="reserved",
                 planned_at=now_value,
+                **_memory_mask_evidence(mask_evidence),
             )
         )
         session.add(
@@ -1968,6 +2020,7 @@ def test_group_ai_send_success_updates_account_stance_memory(monkeypatch):
                     "teacher_target": {"name": "花花老师"},
                     "act_type": "追问",
                     "semantic_cluster": "teacher_price_question",
+                    **mask_evidence,
                 },
             )
         )
@@ -2166,6 +2219,7 @@ def test_group_ai_gateway_unknown_updates_memory_and_stance(monkeypatch):
 
     with Session(engine) as session:
         _add_cycle_skip_basics(session, now_value)
+        mask_evidence = _active_mask_evidence(session, 11)
         session.add(
             TgAccountOnlineState(
                 tenant_id=1,
@@ -2187,6 +2241,7 @@ def test_group_ai_gateway_unknown_updates_memory_and_stance(monkeypatch):
                 text_fingerprint="unknown-send",
                 status="reserved",
                 planned_at=now_value,
+                **_memory_mask_evidence(mask_evidence),
             )
         )
         session.add(
@@ -2202,6 +2257,7 @@ def test_group_ai_gateway_unknown_updates_memory_and_stance(monkeypatch):
                     "topic_direction": {"title": "精品榜"},
                     "teacher_target": {"name": "主任"},
                     "act_type": "追问",
+                    **mask_evidence,
                 },
             )
         )

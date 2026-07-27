@@ -111,6 +111,33 @@ def test_ai_group_quality_diagnostics_accepts_fully_online_state():
     assert blockers == []
 
 
+def test_ai_group_daily_target_gate_requires_total_coverage_and_strict_facts():
+    module = load_quality_diagnostics_module()
+    base = {
+        "task_id": "task-ai",
+        "effective_message_target": 10,
+        "confirmed_message_count": 10,
+        "frozen_account_count": 10,
+        "coverage_confirmed_account_count": 10,
+        "strict_fact_mismatch_count": 0,
+        "new_hard_hourly_action_count": 0,
+    }
+
+    assert module.daily_group_gate_blockers([base]) == []
+    assert module.daily_group_gate_blockers([
+        {**base, "confirmed_message_count": 9},
+        {**base, "strict_fact_mismatch_count": 1},
+        {**base, "new_hard_hourly_action_count": 1},
+    ]) == [
+        {**base, "confirmed_message_count": 9},
+        {**base, "strict_fact_mismatch_count": 1},
+        {**base, "new_hard_hourly_action_count": 1},
+    ]
+    assert module.daily_group_gate_blockers([
+        {"task_id": "missing-ledger", "missing_daily_target_ledger": True},
+    ]) == [{"task_id": "missing-ledger", "missing_daily_target_ledger": True}]
+
+
 def test_ai_group_quality_diagnostics_waits_for_full_active_probe_window():
     module = load_quality_diagnostics_module()
 

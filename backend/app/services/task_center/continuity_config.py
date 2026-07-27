@@ -1,4 +1,4 @@
-"""Server-owned revisioning for AI group hard-hourly obligations."""
+"""Server-owned revisioning for AI group daily obligations."""
 
 from __future__ import annotations
 
@@ -12,9 +12,7 @@ EPOCH_CONFIG_FIELDS = frozenset(
         "target_operation_target_id",
         "target_reference_revision",
         "target_group_id",
-        "hard_hourly_target_enabled",
-        "hourly_min_messages",
-        "hard_hourly_strategy",
+        "daily_message_target",
     }
 )
 
@@ -25,7 +23,7 @@ def increment_revision_for_continuity_change(
     previous_config: dict[str, Any],
     previous_timezone: str,
 ) -> bool:
-    """Advance only when an AI hard-hourly obligation definition changed."""
+    """Advance only when an AI daily obligation definition changed."""
     if task.type != "group_ai_chat":
         return False
     current_config = task.type_config or {}

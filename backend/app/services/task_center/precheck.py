@@ -22,7 +22,6 @@ from .coverage_capacity import (
     HARD_HOURLY_GROUP_COOLDOWN_BLOCKER_CODE,
     coverage_capacity_proof,
     daily_task_schedule_capacity,
-    hard_hourly_group_cooldown_proof,
 )
 from .pacing import current_hour_rounds
 from .utils import as_int as _as_int, as_int_list as _as_int_list, as_str_list as _as_str_list
@@ -134,9 +133,10 @@ def run_precheck_task_creation(
         type_config=type_config,
     )
     if daily_coverage_capacity:
-        capacity_summary["daily_coverage"] = daily_coverage_capacity
-        if not daily_coverage_capacity.get("sufficient"):
-            blockers.append(str(daily_coverage_capacity.get("blocker_code") or "daily_coverage_capacity_insufficient"))
+        capacity_summary["daily_coverage"] = {
+            **daily_coverage_capacity,
+            "enforcement": "diagnostic_only",
+        }
     reply_reference_summary = _precheck_reply_reference_summary(session, tenant_id, task_type, type_config)
     if reply_reference_summary:
         capacity_summary["reply_reference_summary"] = reply_reference_summary
@@ -151,9 +151,6 @@ def run_precheck_task_creation(
         ai_round_summary,
         type_config,
     )
-    warnings.extend(_as_str_list(hard_hourly_target.get("warnings") if hard_hourly_target else []))
-    if hard_hourly_target.get("group_cooldown_blocked"):
-        blockers.append(HARD_HOURLY_GROUP_COOLDOWN_BLOCKER_CODE)
     capacity_summary["recommended_limits"] = recommend_ai_limits(
         task_type,
         _precheck_ready_account_count(task_type, membership_summary, available_count),
@@ -310,47 +307,15 @@ def _precheck_hard_hourly_target(
 ) -> dict[str, Any]:
     if task_type != "group_ai_chat" or not create_payload:
         return {}
-    enabled = bool(getattr(create_payload, "hard_hourly_target_enabled", False))
-    minimum = int(getattr(create_payload, "hourly_min_messages", 0) or 0)
     capacity = int(ai_round_summary.get("estimated_hourly_capacity") or 0)
-    gap = max(0, minimum - capacity) if enabled else 0
-    warnings = ["硬目标高于当前账号容量，可能持续未达标"] if gap else []
-    result = {
-        "enabled": enabled,
-        "hourly_min_messages": minimum,
-        "estimated_hourly_capacity": capacity,
-        "capacity_gap": gap,
-        "hard_target_over_capacity": gap > 0,
-        "warnings": warnings,
-    }
-    group = _precheck_hard_hourly_group(session, tenant_id, type_config)
-    if not enabled or group is None:
-        return result
-    cooldown_proof = hard_hourly_group_cooldown_proof(group=group, hourly_target=minimum)
-    cooldown_blocked = not bool(cooldown_proof["sufficient"])
-    if cooldown_blocked:
-        warnings.append("硬目标高于群冷却小时容量，无法在任一小时完成")
     return {
-        **result,
-        "hard_target_over_capacity": bool(result["hard_target_over_capacity"] or cooldown_blocked),
-        "group_cooldown_capacity": cooldown_proof,
-        "group_cooldown_blocked": cooldown_blocked,
+        "enabled": False,
+        "hourly_min_messages": None,
+        "estimated_hourly_capacity": capacity,
+        "capacity_gap": 0,
+        "hard_target_over_capacity": False,
+        "warnings": [],
     }
-
-
-def _precheck_hard_hourly_group(session: Session, tenant_id: int, type_config: dict[str, Any]) -> TgGroup | None:
-    group_id = _as_int(type_config.get("target_group_id"))
-    group = session.get(TgGroup, group_id) if group_id else None
-    if group and group.tenant_id == tenant_id:
-        return group
-    target_id = _as_int(type_config.get("target_operation_target_id"))
-    target = session.get(OperationTarget, target_id) if target_id else None
-    if not target or target.tenant_id != tenant_id:
-        return None
-    return session.scalar(select(TgGroup).where(
-        TgGroup.tenant_id == tenant_id,
-        TgGroup.tg_peer_id == target.tg_peer_id,
-    ))
 
 
 def _precheck_capacity_summary(

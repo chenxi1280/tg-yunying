@@ -472,6 +472,36 @@ def block_voice_profile_coverage(
     return int(result.rowcount or 0)
 
 
+def release_voice_profile_coverage_for_check_in(
+    session: Session,
+    task: Task,
+    *,
+    now: datetime | None = None,
+) -> int:
+    timestamp = now or _now()
+    result = session.execute(
+        update(TaskAccountDailyCoverage)
+        .where(
+            TaskAccountDailyCoverage.task_id == task.id,
+            TaskAccountDailyCoverage.coverage_date == timestamp.date(),
+            TaskAccountDailyCoverage.state == "blocked",
+            TaskAccountDailyCoverage.blocker_code == VOICE_PROFILE_MISSING_BLOCKER_CODE,
+            TaskAccountDailyCoverage.confirmed_count < TaskAccountDailyCoverage.target_count,
+        )
+        .values(
+            state="ready",
+            blocker_code="",
+            blocker_stage="",
+            blocker_detail="",
+            recovery_path="mask_missing_check_in",
+            next_eligible_at=timestamp,
+            next_decision_at=timestamp,
+            updated_at=timestamp,
+        )
+    )
+    return int(result.rowcount or 0)
+
+
 def release_voice_profile_coverage(
     session: Session,
     *,
@@ -817,7 +847,6 @@ def _new_coverage(
     coverage_date: date,
     timestamp: datetime,
 ) -> TaskAccountDailyCoverage:
-    target_count = max(1, int((task.type_config or {}).get("per_account_daily_min_messages") or 1))
     return TaskAccountDailyCoverage(
         tenant_id=task.tenant_id,
         task_id=task.id,
@@ -825,7 +854,7 @@ def _new_coverage(
         account_id=item.account_id,
         membership_item_id=item.id,
         coverage_date=coverage_date,
-        target_count=target_count,
+        target_count=1,
         targeted_at=timestamp,
     )
 
@@ -866,6 +895,7 @@ __all__ = [
     "recover_terminal_coverage_reservations",
     "release_online_coverage_blockers",
     "release_voice_profile_coverage",
+    "release_voice_profile_coverage_for_check_in",
     "release_generation_contract_blocker",
     "release_coverage_reservation",
     "release_planned_coverage_reservation",

@@ -20,8 +20,8 @@ INCREMENTAL_REFRESH_OVERLAP = timedelta(minutes=5)
 @dataclass
 class DuplicateMemoryBatch:
     now: datetime
-    rows_by_tenant: dict[int, list[MemorySimilarityRow]] = field(default_factory=dict)
-    refreshed_at_by_tenant: dict[int, datetime] = field(default_factory=dict)
+    rows_by_account: dict[tuple[int, int], list[MemorySimilarityRow]] = field(default_factory=dict)
+    refreshed_at_by_account: dict[tuple[int, int], datetime] = field(default_factory=dict)
 
 
 def refresh_duplicate_memory_batch(
@@ -29,38 +29,41 @@ def refresh_duplicate_memory_batch(
     batch: DuplicateMemoryBatch,
     *,
     tenant_id: int,
-    group_id: int,
+    account_id: int,
     statuses: set[str],
     window_loader: WindowLoader,
     window: timedelta,
 ) -> None:
-    refreshed_at = batch.refreshed_at_by_tenant.get(tenant_id)
+    key = (tenant_id, account_id)
+    refreshed_at = batch.refreshed_at_by_account.get(key)
     observed_at = _now()
     if refreshed_at is None:
         rows = window_loader(
-            session, tenant_id=tenant_id, group_id=group_id, cutoff=batch.now - window,
+            session, tenant_id=tenant_id, account_id=account_id, cutoff=batch.now - window,
         )
     else:
         rows = _updated_window_rows(
             session,
             tenant_id=tenant_id,
+            account_id=account_id,
             cutoff=batch.now - window,
             updated_after=refreshed_at - INCREMENTAL_REFRESH_OVERLAP,
         )
-    batch.rows_by_tenant[tenant_id] = _merge_rows(
-        batch.rows_by_tenant.get(tenant_id, []), rows, statuses=statuses,
+    batch.rows_by_account[key] = _merge_rows(
+        batch.rows_by_account.get(key, []), rows, statuses=statuses,
     )
-    batch.refreshed_at_by_tenant[tenant_id] = observed_at
+    batch.refreshed_at_by_account[key] = observed_at
 
 
 def cached_similarity_rows(
     batch: DuplicateMemoryBatch,
     *,
     tenant_id: int,
+    account_id: int,
     cutoff: datetime,
 ) -> list[MemorySimilarityRow]:
     return [
-        row for row in batch.rows_by_tenant.get(tenant_id, [])
+        row for row in batch.rows_by_account.get((tenant_id, account_id), [])
         if _naive_datetime(row.planned_at) >= _naive_datetime(cutoff)
     ]
 
@@ -75,7 +78,9 @@ def remember_duplicate_batch_memory(
 ) -> None:
     if batch is None:
         return
-    rows = batch.rows_by_tenant.get(memory.tenant_id)
+    if memory.account_id is None:
+        return
+    rows = batch.rows_by_account.get((memory.tenant_id, int(memory.account_id)))
     if rows is not None:
         rows.insert(0, memory)
 
@@ -84,6 +89,7 @@ def _updated_window_rows(
     session: Session,
     *,
     tenant_id: int,
+    account_id: int,
     cutoff: datetime,
     updated_after: datetime,
 ) -> list[Row]:
@@ -96,6 +102,7 @@ def _updated_window_rows(
             AiGroupMessageMemory.status,
         ).where(
             AiGroupMessageMemory.tenant_id == tenant_id,
+            AiGroupMessageMemory.account_id == account_id,
             AiGroupMessageMemory.planned_at >= cutoff,
             AiGroupMessageMemory.updated_at >= updated_after,
         ).order_by(AiGroupMessageMemory.updated_at.desc())

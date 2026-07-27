@@ -2,7 +2,7 @@ import React from 'react';
 import { Alert, Checkbox, Collapse, Descriptions, Form, Input, InputNumber, Select, Space, Typography } from 'antd';
 import type { Account, AccountPool, ChannelMessageComment, OperationTarget, PromptTemplate, RuleSet, TaskCenterTaskType, TaskPrecheck } from '../types';
 import { ChannelCommentTypeConfig, ChannelLikeTypeConfig, ChannelViewTypeConfig } from './TaskCenterChannelConfigSections';
-import { GROUP_AI_HARD_HOURLY_MIN_MESSAGES, TASK_TYPES, TYPE_LABEL, OPERATION_PROFILE_TEMPLATES, type OperationProfileTemplateId, accountPrecheck, curveNumbers, curveText, currentOperationProfile, formatDateTime, formatPrecheckReasons, operationProfileSummary, operationTemplate, precheckReasonLabel, ruleSummary, targetName, words } from './taskCenterViewModel';
+import { TASK_TYPES, TYPE_LABEL, OPERATION_PROFILE_TEMPLATES, type OperationProfileTemplateId, accountPrecheck, curveNumbers, curveText, currentOperationProfile, formatDateTime, formatPrecheckReasons, operationProfileSummary, operationTemplate, precheckReasonLabel, ruleSummary, targetName, words } from './taskCenterViewModel';
 
 const targetSelectProps = {
   showSearch: true,
@@ -274,26 +274,6 @@ export function WizardTypeConfig({
       },
     }),
   ];
-  const hardHourlyRules = [
-    ({ getFieldValue }: any) => ({
-      validator(_: unknown, value: number | null) {
-        if (!getFieldValue('hard_hourly_target_enabled')) return Promise.resolve();
-        if (Number.isInteger(Number(value)) && Number(value) >= GROUP_AI_HARD_HOURLY_MIN_MESSAGES) return Promise.resolve();
-        return Promise.reject(new Error(`开启后必须填写不小于 ${GROUP_AI_HARD_HOURLY_MIN_MESSAGES} 的整数`));
-      },
-    }),
-  ];
-  const accountCoverageMaxRules = [
-    ({ getFieldValue }: any) => ({
-      validator(_: unknown, value: number | null) {
-        const minValue = Number(getFieldValue('per_account_daily_min_messages') || 0);
-        if (value == null || !Number.isInteger(Number(value))) return Promise.reject(new Error('必须填写整数'));
-        if (Number(value) >= minValue) return Promise.resolve();
-        return Promise.reject(new Error('不能小于每账号最少消息数'));
-      },
-    }),
-  ];
-
   const versionOptions = ruleSets.flatMap((ruleSet) => ruleSet.versions.filter((version) => version.status === 'published').map((version) => ({
     value: version.id,
     label: `${ruleSet.name} / v${version.version} / ${version.status === 'published' ? '已发布' : '历史版本'}`,
@@ -316,7 +296,7 @@ export function WizardTypeConfig({
     return (
       <Space direction="vertical" style={{ width: '100%' }}>
         <Alert type="info" showIcon message="AI 回复会按绑定规则集先过滤输入上下文，再逐条校验候选回复。" />
-        <Alert type="info" showIcon message="小时上限控制总量；当天未参与账号会优先补齐，并在预算内抬高本轮下限。" />
+        <Alert type="info" showIcon message="发送目标按单个群的当天总量计算；当天所有可发账号都必须至少成功发送 1 条。" />
         {ruleFields}
         <div className="form-grid">
           <Form.Item name="topic_directions" label="话题方向（每行一个）">
@@ -339,50 +319,17 @@ export function WizardTypeConfig({
             <Input value="必须" disabled />
           </Form.Item>
           <Form.Item name="group_bot_admission_required" hidden><Input /></Form.Item>
-          <Form.Item name="account_coverage_mode" label="全账号日覆盖模式">
-            <Select options={[{ value: 'natural', label: '关闭' }, { value: 'all_accounts_daily', label: '开启' }]} />
+          <Form.Item name="daily_message_target" label="该群每天发送总量" rules={[{ required: true, message: '请填写该群每天发送总量' }]}>
+            <InputNumber min={1} precision={0} />
           </Form.Item>
-          <Form.Item name="per_account_daily_min_messages" label="每账号最少消息数"><InputNumber min={1} max={2} precision={0} /></Form.Item>
-          <Form.Item name="per_account_daily_max_messages" label="每账号最多消息数" dependencies={['per_account_daily_min_messages']} rules={accountCoverageMaxRules}>
-            <InputNumber min={1} max={2} precision={0} />
-          </Form.Item>
-          <Form.Item name="coverage_window_hours" hidden><InputNumber /></Form.Item>
-          <Form.Item noStyle shouldUpdate={(prev, next) => prev.account_coverage_mode !== next.account_coverage_mode}>
-            {({ getFieldValue }) => getFieldValue('account_coverage_mode') === 'all_accounts_daily' ? (
-              <div style={{ gridColumn: '1 / -1' }}>
-                <Alert
-                  type="info"
-                  showIcon
-                  message="系统会在 24 小时内优先补齐每个可发言账号的 1-2 条成功发言；仍受准入、账号容量、风控、AI 候选质量和小时硬上限约束。"
-                />
-              </div>
-            ) : null}
-          </Form.Item>
-          <Form.Item name="hard_hourly_strategy" hidden><Input /></Form.Item>
-          <Form.Item name="hard_hourly_target_enabled" valuePropName="checked">
-            <Checkbox onChange={(event) => {
-              if (event.target.checked) form.setFieldValue('hard_hourly_strategy', 'force_planning');
-            }} disabled>启用每小时硬目标</Checkbox>
-          </Form.Item>
-          <Form.Item noStyle shouldUpdate={(prev, next) => prev.hard_hourly_target_enabled !== next.hard_hourly_target_enabled}>
-            {({ getFieldValue }) => getFieldValue('hard_hourly_target_enabled') ? (
-              <>
-                <Form.Item name="hourly_min_messages" label="每小时最低发送量" dependencies={['hard_hourly_target_enabled']} rules={hardHourlyRules}>
-                  <InputNumber min={GROUP_AI_HARD_HOURLY_MIN_MESSAGES} precision={0} />
-                </Form.Item>
-                <Form.Item label="未达标处理">
-                  <Input readOnly value="强推规划" />
-                </Form.Item>
-                <div style={{ gridColumn: '1 / -1' }}>
-                  <Alert
-                    type="warning"
-                    showIcon
-                    message="系统会自动提高规划强度以追赶本小时最低发送量；真实执行仍受账号容量、目标权限、TG 限制、AI 质量和风控限制约束，未达标原因会在任务详情中展示。"
-                  />
-                </div>
-              </>
-            ) : null}
-          </Form.Item>
+          <Form.Item name="account_coverage_mode" hidden><Input /></Form.Item>
+          <div style={{ gridColumn: '1 / -1' }}>
+            <Alert
+              type="info"
+              showIcon
+              message="每天总量不是每账号数量；有效目标会取配置总量与当天冻结账号数的较大值，确保所有账号都发送。"
+            />
+          </div>
         </div>
         <Collapse
           ghost
@@ -746,7 +693,6 @@ export function WizardReview({ taskType, values, accounts, accountPools, targets
   const replyReferenceText = replyReference
     ? `；可引用 ${replyReference.available_reference_count ?? 0}，缺口 ${replyReference.shortfall_count ?? 0}`
     : '';
-  const hardTarget = precheck?.hard_hourly_target;
   const voiceProfile = precheck?.voice_profile_summary;
   const voiceProfileSummary = taskType === 'group_ai_chat' && voiceProfile
     ? [
@@ -759,14 +705,6 @@ export function WizardReview({ taskType, values, accounts, accountPools, targets
       `未入队 ${voiceProfile.missing_account_count ?? 0}`,
     ].join('，')
     : '仅 AI 活群任务使用';
-  const hardTargetSummary = values.hard_hourly_target_enabled
-    ? [
-      `目标 ${values.hourly_min_messages || hardTarget?.hourly_min_messages || '-'} 条/小时`,
-      hardTarget?.estimated_hourly_capacity != null ? `估算容量 ${hardTarget.estimated_hourly_capacity}` : '',
-      hardTarget?.capacity_gap != null ? `容量缺口 ${hardTarget.capacity_gap}` : '',
-      hardTarget?.warnings?.length ? hardTarget.warnings.join('；') : '',
-    ].filter(Boolean).join('；')
-    : '未启用';
   const resolutionItems = [...(resolution?.sources || []), ...(resolution?.targets || [])];
   const resolutionSummary = resolutionItems.length
     ? resolutionItems.map((item: any) => `${item.role === 'listen_source' ? '源' : '目标'} ${item.status || 'resolved'} / #${item.target_id || '-'} / ${item.title || item.tg_peer_id || item.target_input || '-'}`).join('；')
@@ -795,7 +733,7 @@ export function WizardReview({ taskType, values, accounts, accountPools, targets
       { key: 'targetAbility', label: '目标能力', children: precheck?.target_ability?.length ? precheck.target_ability.map((item) => `${item.title || item.target_id} / ${item.can_task ? '可创建任务' : item.auth_status || '不可用'}`).join('；') : displayTarget },
       { key: 'estimate', label: '预计动作量', children: precheck ? `预计 ${precheck.estimated_actions} 条，容量缺口 ${precheck.capacity_shortfall}` : '等待预检' },
       { key: 'reply', label: '引用回复配置', children: `${replySummary}${replyReferenceText}` },
-      { key: 'hard-hourly', label: '每小时硬目标', children: hardTargetSummary },
+      { key: 'daily-target', label: '该群每天发送总量', children: `${values.daily_message_target || '-'} 条；所有账号每天至少成功 1 条` },
       { key: 'recommend', label: '推荐数量', children: precheck?.round_capacity_explanation ?? recommendedSummary },
       { key: 'capacity', label: '容量口径', children: precheck?.capacity_summary ? `目标每条 ${precheck.capacity_summary.target_per_message ?? 0}，有效账号 ${precheck.capacity_summary.effective_account_count ?? 0}，最大并发 ${precheck.capacity_summary.max_concurrent ?? 0}，缺口 ${precheck.capacity_summary.capacity_shortfall ?? 0}。${precheck.capacity_summary.limit_note ?? ''}` : '等待预检' },
       { key: 'pacing', label: '曲线摘要', children: `${operationProfileSummary(values)}；当前 ${String(profile.hour).padStart(2, '0')}:00 ${profile.intensity} ${profileUnit}，${profile.mode}运行` },
