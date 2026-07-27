@@ -11,6 +11,7 @@ from app.models import Action, GroupBotAdmission, GroupContextMessage, TgAccount
 from app.services.group_context_messages import try_insert_context_message
 
 from .group_bot_admission import (
+    attribute_prompt_to_account,
     confirmation_button,
     current_required_channel_refs,
     is_group_bot_control_prompt,
@@ -55,7 +56,10 @@ def refresh_live_confirmation_source(
 
 def _latest_matching_snapshot(context: LiveConfirmationRefreshContext) -> tuple[object, str] | None:
     for snapshot, lookup in _fetch_live_snapshots(context):
-        if _matches_trusted_confirmation_prompt(context, snapshot):
+        if (
+            _matches_trusted_confirmation_prompt(context, snapshot)
+            and _snapshot_belongs_to_bound_account(context, snapshot, lookup)
+        ):
             return snapshot, lookup
     return None
 
@@ -110,6 +114,23 @@ def _matches_trusted_confirmation_prompt(context: LiveConfirmationRefreshContext
         for item in parse_channel_refs(str(getattr(snapshot, "content", "") or ""), controls)
     }
     return expected_refs == observed_refs and confirmation_button(controls) is not None
+
+
+def _snapshot_belongs_to_bound_account(
+    context: LiveConfirmationRefreshContext,
+    snapshot: object,
+    lookup: str,
+) -> bool:
+    source_message_id = str(getattr(snapshot, "remote_message_id", "") or "")
+    if lookup == "exact_source" or source_message_id == str(context.payload.source_message_id or ""):
+        return True
+    account_id, attribution = attribute_prompt_to_account(
+        text=str(getattr(snapshot, "content", "") or ""),
+        waiting_account_ids=[int(context.account.id)],
+        account_usernames={int(context.account.id): str(context.account.username or "")},
+        account_display_names={int(context.account.id): str(context.account.display_name or "")},
+    )
+    return account_id == int(context.account.id) and attribution == "explicit_recipient_match"
 
 
 def _record_live_snapshot(

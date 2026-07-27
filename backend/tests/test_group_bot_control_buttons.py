@@ -406,7 +406,7 @@ def test_confirmation_action_rebinds_to_live_trusted_button_before_gateway(monke
         monkeypatch.setattr(
             dispatcher.gateway,
             "fetch_group_messages",
-            lambda *_args, **_kwargs: [_live_confirmation_snapshot("fresh-message")],
+            lambda *_args, **_kwargs: [_live_confirmation_snapshot("fresh-message", content="账号甲，您需要关注频道后发言")],
             raising=False,
         )
         monkeypatch.setattr(
@@ -547,12 +547,12 @@ def test_confirmation_action_retries_when_telegram_button_changes_after_live_fet
         assert action.result["validation_stage"] == "group_bot_confirmation_live"
 
 
-def _live_confirmation_snapshot(message_id: str) -> GroupMessageSnapshot:
+def _live_confirmation_snapshot(message_id: str, *, content: str = "请先关注频道后发言") -> GroupMessageSnapshot:
     return GroupMessageSnapshot(
         remote_message_id=message_id,
         sender_peer_id="trusted-bot",
         sender_name="群管机器人",
-        content="请先关注频道后发言",
+        content=content,
         is_bot=True,
         control_buttons=(
             GroupControlButtonSnapshot(0, 0, "频道", "https://t.me/channel_alpha", "url"),
