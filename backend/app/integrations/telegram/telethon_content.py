@@ -113,10 +113,19 @@ async def fetch_group_archive(client, peer_id: str) -> ArchiveSnapshot:
     )
 
 
-async def fetch_group_messages(client, peer_id: str, limit: int) -> list[GroupMessageSnapshot]:
+async def fetch_group_messages(
+    client,
+    peer_id: str,
+    limit: int,
+    *,
+    control_only: bool = False,
+) -> list[GroupMessageSnapshot]:
     target = await resolve_telethon_target(client, peer_id, group_id=1)
     messages_resp = await client.get_messages(target, limit=limit)
-    return await _group_message_snapshots(client, target, peer_id, list(messages_resp or []))
+    messages = list(messages_resp or [])
+    if control_only:
+        messages = [message for message in messages if _control_buttons(message)]
+    return await _group_message_snapshots(client, target, peer_id, messages)
 
 
 async def fetch_group_message(client, peer_id: str, message_id: str) -> GroupMessageSnapshot | None:

@@ -696,9 +696,11 @@ class TelegramGateway:
         session_ciphertext: str | None = None,
         credentials: DeveloperAppCredentials | None = None,
         limit: int = 20,
+        *,
+        control_only: bool = False,
     ) -> list[GroupMessageSnapshot]:
         now_value = beijing_now()
-        return [
+        snapshots = [
             GroupMessageSnapshot(
                 remote_message_id=f"mock:{peer_id}:real-user-context",
                 sender_peer_id="mock-real-user",
@@ -707,6 +709,7 @@ class TelegramGateway:
                 sent_at=now_value,
             )
         ][:limit]
+        return [] if control_only else snapshots
 
     def fetch_group_message(
         self,

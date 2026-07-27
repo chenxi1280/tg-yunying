@@ -441,8 +441,14 @@ def test_confirmation_action_matches_fresh_prompt_by_viewer_peer_id(monkeypatch)
             viewer_peer_id="7405756184",
         )
         calls: list[str] = []
+        fetch_options: dict[str, object] = {}
         monkeypatch.setattr(dispatcher.gateway, "fetch_group_message", lambda *_args, **_kwargs: None)
-        monkeypatch.setattr(dispatcher.gateway, "fetch_group_messages", lambda *_args, **_kwargs: [fresh])
+
+        def fetch_window(*_args, **kwargs):
+            fetch_options.update(kwargs)
+            return [fresh]
+
+        monkeypatch.setattr(dispatcher.gateway, "fetch_group_messages", fetch_window)
         monkeypatch.setattr(
             dispatcher.gateway,
             "click_group_bot_confirmation_button",
@@ -457,6 +463,7 @@ def test_confirmation_action_matches_fresh_prompt_by_viewer_peer_id(monkeypatch)
         ) is True
         assert calls == ["fresh-peer-message"]
         assert action.status == "success"
+        assert fetch_options == {"limit": 300, "control_only": True}
 
 
 def test_telegram_group_snapshot_records_viewer_peer_id() -> None:

@@ -21,6 +21,7 @@ from .payloads import GroupBotConfirmationButtonPayload
 
 
 MAX_CONTEXT_CONTENT_LENGTH = 4000
+GROUP_BOT_CONFIRMATION_LIVE_FETCH_LIMIT = 300
 
 
 @dataclass(frozen=True)
@@ -71,10 +72,11 @@ def _fetch_live_snapshots(context: LiveConfirmationRefreshContext) -> list[tuple
             context.gateway_client.fetch_group_messages(
                 context.account.id,
                 context.group.tg_peer_id,
-                context.account.session_ciphertext,
-                context.credentials,
-                limit=int(context.group.listener_context_limit),
-            )
+            context.account.session_ciphertext,
+            context.credentials,
+            limit=GROUP_BOT_CONFIRMATION_LIVE_FETCH_LIMIT,
+            control_only=True,
+        )
         )
     except Exception as exc:  # noqa: BLE001 - caller records the Telegram source refresh failure explicitly.
         raise LiveConfirmationSourceFetchError(str(exc) or "group bot live source fetch failed") from exc
