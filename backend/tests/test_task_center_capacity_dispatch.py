@@ -4809,7 +4809,7 @@ def test_group_ai_build_plan_canonicalizes_duplicate_username_target_before_memb
 def test_group_ai_build_plan_does_not_reconcile_missing_online_state(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
-    now_value = _now()
+    now_value = _now().replace(hour=20, minute=0, second=0, microsecond=0)
     monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
 
     with Session(engine) as session:
