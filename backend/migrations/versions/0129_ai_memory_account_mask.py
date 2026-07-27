@@ -21,20 +21,41 @@ INDEX = "ix_ai_group_message_memory_account_window"
 
 
 def upgrade() -> None:
-    op.add_column(TABLE, sa.Column("account_mask_id", sa.String(36), nullable=False, server_default=""))
-    op.add_column(TABLE, sa.Column("account_mask_version", sa.Integer(), nullable=True))
-    op.add_column(TABLE, sa.Column("mask_contract_version", sa.String(40), nullable=False, server_default=""))
-    op.add_column(TABLE, sa.Column("mask_snapshot_hash", sa.String(64), nullable=False, server_default=""))
-    op.add_column(TABLE, sa.Column("mask_status", sa.String(30), nullable=False, server_default=""))
-    op.add_column(TABLE, sa.Column("content_source", sa.String(40), nullable=False, server_default=""))
-    op.create_index(INDEX, TABLE, ["tenant_id", "account_id", "status", "planned_at"])
+    for column in _mask_columns():
+        if not _has_column(TABLE, column.name):
+            op.add_column(TABLE, column)
+    if not _has_index(TABLE, INDEX):
+        op.create_index(INDEX, TABLE, ["tenant_id", "account_id", "status", "planned_at"])
 
 
 def downgrade() -> None:
-    op.drop_index(INDEX, table_name=TABLE)
-    op.drop_column(TABLE, "content_source")
-    op.drop_column(TABLE, "mask_status")
-    op.drop_column(TABLE, "mask_snapshot_hash")
-    op.drop_column(TABLE, "mask_contract_version")
-    op.drop_column(TABLE, "account_mask_version")
-    op.drop_column(TABLE, "account_mask_id")
+    if _has_index(TABLE, INDEX):
+        op.drop_index(INDEX, table_name=TABLE)
+    for column in reversed(_mask_columns()):
+        if _has_column(TABLE, column.name):
+            op.drop_column(TABLE, column.name)
+
+
+def _mask_columns() -> tuple[sa.Column, ...]:
+    return (
+        sa.Column("account_mask_id", sa.String(36), nullable=False, server_default=""),
+        sa.Column("account_mask_version", sa.Integer(), nullable=True),
+        sa.Column("mask_contract_version", sa.String(40), nullable=False, server_default=""),
+        sa.Column("mask_snapshot_hash", sa.String(64), nullable=False, server_default=""),
+        sa.Column("mask_status", sa.String(30), nullable=False, server_default=""),
+        sa.Column("content_source", sa.String(40), nullable=False, server_default=""),
+    )
+
+
+def _has_column(table_name: str, column_name: str) -> bool:
+    inspector = sa.inspect(op.get_bind())
+    if table_name not in inspector.get_table_names():
+        return False
+    return any(column["name"] == column_name for column in inspector.get_columns(table_name))
+
+
+def _has_index(table_name: str, index_name: str) -> bool:
+    inspector = sa.inspect(op.get_bind())
+    if table_name not in inspector.get_table_names():
+        return False
+    return any(index["name"] == index_name for index in inspector.get_indexes(table_name))

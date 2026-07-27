@@ -13,6 +13,7 @@ from scripts.migrate_ai_group_daily_targets import migrated_open_payload, normal
 
 pytestmark = pytest.mark.no_postgres
 MIGRATION_PATH = Path(__file__).resolve().parents[1] / "migrations/versions/0128_ai_group_daily_targets.py"
+MEMORY_MIGRATION_PATH = Path(__file__).resolve().parents[1] / "migrations/versions/0129_ai_memory_account_mask.py"
 
 
 def test_legacy_per_account_two_migrates_to_frozen_account_count() -> None:
@@ -65,7 +66,7 @@ def test_unbound_hard_action_is_not_reused_for_daily_volume() -> None:
 
 
 def test_daily_target_migration_accepts_current_model_bootstrap_and_repeats() -> None:
-    migration = _migration_module()
+    migration = _migration_module(MIGRATION_PATH, "ai_group_daily_target_migration")
     engine = create_engine("sqlite:///:memory:")
     with engine.begin() as connection:
         _create_parent_tables(connection)
@@ -81,14 +82,48 @@ def test_daily_target_migration_accepts_current_model_bootstrap_and_repeats() ->
         )
 
 
+def test_memory_mask_migration_accepts_current_model_bootstrap_and_repeats() -> None:
+    migration = _migration_module(MEMORY_MIGRATION_PATH, "ai_memory_account_mask_migration")
+    engine = create_engine("sqlite:///:memory:")
+    with engine.begin() as connection:
+        _create_bootstrapped_memory_table(connection)
+        migration.op = Operations(MigrationContext.configure(connection))
+
+        migration.upgrade()
+        migration.upgrade()
+
+        assert migration._has_column(migration.TABLE, "account_mask_id")
+        assert migration._has_index(migration.TABLE, migration.INDEX)
+
+
 def _create_parent_tables(connection) -> None:
     connection.execute(text("CREATE TABLE tenants (id INTEGER PRIMARY KEY)"))
     connection.execute(text("CREATE TABLE tasks (id VARCHAR(36) PRIMARY KEY)"))
     connection.execute(text("CREATE TABLE tg_groups (id INTEGER PRIMARY KEY)"))
 
 
-def _migration_module():
-    spec = importlib.util.spec_from_file_location("ai_group_daily_target_migration", MIGRATION_PATH)
+def _create_bootstrapped_memory_table(connection) -> None:
+    connection.execute(text(
+        """
+        CREATE TABLE ai_group_message_memory (
+            id VARCHAR(36) PRIMARY KEY,
+            tenant_id INTEGER NOT NULL,
+            account_id INTEGER,
+            status VARCHAR(40) NOT NULL,
+            planned_at DATETIME NOT NULL,
+            account_mask_id VARCHAR(36) NOT NULL DEFAULT '',
+            account_mask_version INTEGER,
+            mask_contract_version VARCHAR(40) NOT NULL DEFAULT '',
+            mask_snapshot_hash VARCHAR(64) NOT NULL DEFAULT '',
+            mask_status VARCHAR(30) NOT NULL DEFAULT '',
+            content_source VARCHAR(40) NOT NULL DEFAULT ''
+        )
+        """
+    ))
+
+
+def _migration_module(path: Path, name: str):
+    spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
         raise RuntimeError("migration module could not be loaded")
     module = importlib.util.module_from_spec(spec)
