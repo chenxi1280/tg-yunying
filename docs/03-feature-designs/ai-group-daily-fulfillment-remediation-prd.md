@@ -159,7 +159,7 @@ maximum_confirmable_count = frozen_denominator_count - terminal_permission_block
 
 1. listener 在来源过滤、精确控制提示识别后，若文本没有明确收件人、含精确公开频道 URL 且多个 waiting admission 无法归属，只能在来源为管理员 bot 或存在同 group + peer 的 active source-bound policy 时进入全群规则路径。明确收件人不匹配时，只有同 peer 已在当前 listener 上下文中提供另一条不同 source message、且两条消息的精确频道集合与确认 callback 形态相同，才可作为标准化规则进入该路径。
 2. 候选限于运行中 `group_ai_chat` 的持久账号 scope 内、同群且未终态的现有 `GroupBotAdmission`；不同 trusted peer、没有运行任务绑定、`blocked`、`abandoned` 的 admission 一律跳过。不得仅因账户在 `TgGroupAccount` 中存在而伪造 admission 或扩大任务分母。
-3. 每个候选创建自己的 `group_bot_channel_follow`、必要时的精确 callback Action，并携带同一 source message、peer、按钮 URL/坐标、admission/version 与绑定 task/account。follow 和 callback 成功都不直接写 ready；正文 `send_message` 仍在 admission gate 之后。
+3. 每个候选创建自己的 `group_bot_channel_follow`、必要时的精确 callback Action，并携带同一 source message、peer、按钮 URL/坐标、admission/version 与绑定 task/account。Planner 与 Dispatcher 都保证同一 admission/version 的开放 confirmation Action 只有一条；重复标准提示产生的额外 pending callback（含上线前遗留项）必须在 Gateway 前标记 `group_bot_confirmation_superseded`，不允许多次点击。follow 和 callback 成功都不直接写 ready；正文 `send_message` 仍在 admission gate 之后。
 4. policy 只是受限信任根，不是历史消息重放开关。策略生效后必须由 listener 再观察到同 peer 的有效控制事件；没有新证据时保留 blocker，并在任务详情显示 `group_bot_policy_unresolved` / `group_bot_rule_unattributed` 的真实区别。
 5. 存量 `group_bot_control_prompt_unverified` follow 只可在本路径收到不同 source message 且 channel_ref 仍在当前精确集合时原地 rearm；旧 Action 保留审计，其他 blocked follow 不得批量复活。
 

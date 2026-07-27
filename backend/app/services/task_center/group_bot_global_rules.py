@@ -125,7 +125,7 @@ def _rearm_unverified_current_follows(
     message_id: str,
     channel_refs: tuple[str, ...],
 ) -> None:
-    if admission.state != "group_bot_rule_unattributed" or not message_id:
+    if not message_id:
         return
     follows = session.scalars(
         select(GroupBotRequiredChannelFollow).where(

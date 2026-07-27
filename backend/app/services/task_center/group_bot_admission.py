@@ -64,6 +64,8 @@ EXPLICIT_RECIPIENT_PREFIX_RE = re.compile(
 )
 CONTROL_PROMPT_UNVERIFIED_CODE = "group_bot_control_prompt_unverified"
 REARMABLE_FOLLOW_STATES = {"awaiting_group_bot_rule", "observation_open"}
+OPEN_CONFIRMATION_ACTION_STATUSES = frozenset({"pending", "claiming", "executing"})
+GROUP_BOT_CONFIRMATION_SUPERSEDED_CODE = "group_bot_confirmation_superseded"
 
 
 @dataclass(frozen=True)
@@ -668,7 +670,14 @@ def plan_confirmation_button_action(
         trusted_bot_peer_id=admission.trusted_bot_peer_id,
     ) is not None:
         return None
-    if _has_planned_confirmation_action(session, task.id, admission.id, str(source_message_id)):
+    now = _now()
+    if _reconcile_open_confirmation_actions(
+        session,
+        task.id,
+        admission.id,
+        int(admission.admission_version or 1),
+        now,
+    ):
         return None
     payload = GroupBotConfirmationButtonPayload(
         group_id=int(admission.group_id),
@@ -684,24 +693,86 @@ def plan_confirmation_button_action(
         admission_bound_account_id=int(admission.account_id),
     )
     return create_group_bot_confirmation_button_action(
-        session, task, int(admission.account_id), _now(), payload, flush=True
+        session, task, int(admission.account_id), now, payload, flush=True
     )
 
 
-def _has_planned_confirmation_action(session: Session, task_id: str, admission_id: int, source_message_id: str) -> bool:
+def _reconcile_open_confirmation_actions(
+    session: Session,
+    task_id: str,
+    admission_id: int,
+    admission_version: int,
+    now: datetime,
+) -> bool:
+    actions = _matching_confirmation_actions(session, task_id, admission_id, admission_version)
+    open_actions = [
+        action
+        for action in actions
+        if action.status in OPEN_CONFIRMATION_ACTION_STATUSES
+    ]
+    for action in open_actions[1:]:
+        if action.status == "pending":
+            _skip_superseded_confirmation_action(action, now)
+    return bool(open_actions)
+
+
+def confirmation_action_can_dispatch(
+    session: Session,
+    *,
+    action: Any,
+    admission_id: int,
+    admission_version: int,
+) -> bool:
+    actions = _matching_confirmation_actions(session, action.task_id, admission_id, admission_version)
+    if not any(str(candidate.id) == str(action.id) for candidate in actions):
+        actions.append(action)
+    if any(candidate.status == "success" and str(candidate.id) != str(action.id) for candidate in actions):
+        return False
+    open_actions = [candidate for candidate in actions if candidate.status in OPEN_CONFIRMATION_ACTION_STATUSES]
+    return not open_actions or str(open_actions[0].id) == str(action.id)
+
+
+def _matching_confirmation_actions(
+    session: Session,
+    task_id: str,
+    admission_id: int,
+    admission_version: int,
+) -> list[Any]:
     from app.models import Action
 
-    actions = session.scalars(
-        select(Action).where(
-            Action.task_id == task_id,
-            Action.action_type == "group_bot_confirmation_button",
+    with session.no_autoflush:
+        actions = list(
+            session.scalars(
+                select(Action)
+                .where(
+                    Action.task_id == task_id,
+                    Action.action_type == "group_bot_confirmation_button",
+                )
+                .order_by(Action.created_at.asc(), Action.id.asc())
+            )
         )
-    )
-    return any(
-        int((action.payload or {}).get("admission_id", 0) or 0) == admission_id
-        and str((action.payload or {}).get("source_message_id") or "") == source_message_id
+    return [
+        action
         for action in actions
-    )
+        if int((action.payload or {}).get("admission_id", 0) or 0) == admission_id
+        and int((action.payload or {}).get("admission_version", 0) or 0) == admission_version
+    ]
+
+
+def _skip_superseded_confirmation_action(action: Any, now: datetime) -> None:
+    action.status = "skipped"
+    action.executed_at = now
+    action.lease_owner = ""
+    action.lease_expires_at = None
+    action.claim_owner = ""
+    action.claim_token = ""
+    action.claim_expires_at = None
+    action.result = {
+        **(action.result or {}),
+        "success": False,
+        "error_code": GROUP_BOT_CONFIRMATION_SUPERSEDED_CODE,
+        "error_message": "同一群管准入已存在待执行确认动作",
+    }
 
 
 def resolve_bound_task_id_for_group(session: Session, *, tenant_id: int, group_id: int) -> str:

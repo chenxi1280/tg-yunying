@@ -6601,6 +6601,8 @@ def _dispatch_group_bot_confirmation_button(
     admission = _group_bot_confirmation_admission(session, action, account, payload=payload)
     if admission is None:
         return True
+    if not _group_bot_confirmation_action_can_dispatch(session, action, admission):
+        return True
     if _confirmation_waits_for_required_channels(session, action, admission):
         return True
     group = session.get(TgGroup, int(getattr(payload, "group_id", 0) or 0))
@@ -6623,6 +6625,24 @@ def _dispatch_group_bot_confirmation_button(
     )
     _finish_group_bot_confirmation_button(action, account, admission=admission, result=result)
     return True
+
+
+def _group_bot_confirmation_action_can_dispatch(session: Session, action: Action, admission) -> bool:
+    from app.services.task_center.group_bot_admission import confirmation_action_can_dispatch
+
+    if confirmation_action_can_dispatch(
+        session,
+        action=action,
+        admission_id=int(admission.id),
+        admission_version=int(admission.admission_version or 1),
+    ):
+        return True
+    _skip(
+        action,
+        "group_bot_confirmation_superseded",
+        "同一群管准入已存在更早的确认动作，跳过重复 callback",
+    )
+    return False
 
 
 def _group_bot_confirmation_admission(session: Session, action: Action, account: TgAccount, *, payload):
