@@ -780,7 +780,7 @@ def _select_claim_candidates(
         shard_index=shard_index,
         fairness_decisions=fairness,
     )
-    candidates = _claimable_candidates(_locked_claim_plan_candidates(session, plan, claim_limit, now_value, forced))
+    candidates = _claimable_candidates(_locked_claim_plan_candidates(session, plan, claim_limit, now_value))
     _annotate_dispatch_fairness(session, candidates, fairness, defer_action_ids=set(plan.bindings_by_action_id))
     bindings = {action.id: plan.bindings_by_action_id[action.id] for action in candidates if action.id in plan.bindings_by_action_id}
     return candidates, fairness, bindings
@@ -875,11 +875,14 @@ def _locked_claim_plan_candidates(
     claim_plan,
     claim_limit: int,
     now_value: datetime,
-    force_ordinary_tenants: set[int],
 ) -> list[Action]:
     action_ids = tuple(claim_plan.candidate_action_ids)
     if not action_ids:
         return []
+    plan_order = case(
+        {action_id: index for index, action_id in enumerate(action_ids)},
+        value=Action.id,
+    )
     statement = (
         select(Action)
         .join(Task, Task.id == Action.task_id)
@@ -890,7 +893,7 @@ def _locked_claim_plan_candidates(
             Task.status == "running",
             Task.deleted_at.is_(None),
         )
-        .order_by(*claim_action_ordering(force_ordinary_tenants, now_value))
+        .order_by(plan_order, Action.id.asc())
     )
     if session.bind and session.bind.dialect.name != "sqlite":
         statement = statement.with_for_update(of=Action, skip_locked=True)

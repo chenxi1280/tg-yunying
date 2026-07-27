@@ -297,6 +297,50 @@ def test_stale_unclaimed_reservation_is_released_for_new_due_action(monkeypatch)
         assert any(row.reason == "unclaimed_action_no_longer_due" for row in stale)
 
 
+def test_locked_claim_plan_candidates_preserve_planned_order_over_old_backlog() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="tenant"))
+        session.add(Task(id="plan-task", tenant_id=1, name="计划顺序", type="group_relay", status="running"))
+        session.add_all(
+            [
+                Action(
+                    id="planned-first",
+                    tenant_id=1,
+                    task_id="plan-task",
+                    task_type="group_relay",
+                    action_type="send_message",
+                    status="pending",
+                    scheduled_at=now_value - timedelta(seconds=1),
+                    payload={"message_text": "计划优先"},
+                ),
+                Action(
+                    id="old-backlog",
+                    tenant_id=1,
+                    task_id="plan-task",
+                    task_type="group_relay",
+                    action_type="send_message",
+                    status="pending",
+                    scheduled_at=now_value - timedelta(days=1),
+                    payload={"message_text": "历史积压"},
+                ),
+            ]
+        )
+        session.commit()
+
+        rows = dispatcher._locked_claim_plan_candidates(
+            session,
+            SimpleNamespace(candidate_action_ids=("planned-first", "old-backlog")),
+            1,
+            now_value,
+        )
+
+        assert [row.id for row in rows] == ["planned-first"]
+
+
 def _seed_strict_actions(session: Session, now_value) -> None:
     session.add(Tenant(id=1, name="tenant"))
     session.add_all(
