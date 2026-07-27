@@ -3969,6 +3969,10 @@ def test_task_center_group_ai_chat_runs_from_worker_loop(monkeypatch):
 def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(monkeypatch):
     context_suffix = uuid4().hex[:8]
     second_context_marker = f"second-cycle-{context_suffix}"
+    monkeypatch.setattr(
+        "app.services.task_center.executors.group_ai_chat.daily_group_due_message_count",
+        lambda target, _pacing, **_kwargs: target.effective_message_target,
+    )
     messages = [
         (f"ai-context-1-{context_suffix}", f"第一条真人上下文 {context_suffix}"),
     ]

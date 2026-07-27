@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session, object_session
 
 from app.config import get_settings
 from app.integrations.telegram import OperationResult
-from app.models import AccountPool, AccountStatus, Action, ChannelMessage, ExecutionAttempt, FailureType, MessageFingerprint, OperationIssue, OperationPlanTaskLink, OperationTarget, ReviewQueue, RuleSet, RuleSetVersion, SearchJoinPacingDecision, Task, TaskAccountDailyCoverage, TaskRuntimeSummary, TgAccount, TgGroup, WorkerHeartbeat
+from app.models import AccountPool, AccountStatus, Action, AiCoverageVariationIntent, ChannelMessage, ExecutionAttempt, FailureType, MessageFingerprint, OperationIssue, OperationPlanTaskLink, OperationTarget, ReviewQueue, RuleSet, RuleSetVersion, SearchJoinPacingDecision, Task, TaskAccountDailyCoverage, TaskRuntimeSummary, TgAccount, TgGroup, WorkerHeartbeat
 from app.models.search_rank_deboost import AccountGroupProxyBinding, SearchRankDeboostClickReservation, SearchRankDeboostExemptGroup
 from app.search_keywords import normalized_keyword_hash, repair_legacy_keyword_materials
 from app.schemas.task_center import (
@@ -4479,6 +4479,11 @@ def _clear_unfinished_plan(session: Session, task: Task) -> None:
 
 
 def _release_deleted_action_coverage(session: Session, action_ids: list[str]) -> None:
+    session.execute(
+        update(AiCoverageVariationIntent)
+        .where(AiCoverageVariationIntent.action_id.in_(action_ids))
+        .values(action_id=None, outcome="cancelled_by_task_reset", updated_at=_now())
+    )
     session.execute(
         update(TaskAccountDailyCoverage)
         .where(TaskAccountDailyCoverage.reserved_action_id.in_(action_ids))

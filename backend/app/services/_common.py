@@ -8,7 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.ai_gateway import create_ai_gateway
-from app.auth import CurrentUser, admin_user_payload, normalize_phone
+from app.auth import CurrentUser, normalize_phone, serialize_user
 from app.integrations.telegram import create_gateway
 from app.models import (
     AuditLog,
@@ -18,6 +18,7 @@ from app.models import (
     Tenant,
     TenantAiSetting,
     AiProvider,
+    AppUser,
     SchedulingSetting,
     TgAccount,
 )
@@ -62,9 +63,18 @@ def normalize_list_filter(value: str | None) -> str | None:
 
 
 def system_user_for_tenant(session: Session, tenant_id: int, *, service_name: str, missing_message: str) -> CurrentUser:
-    data = admin_user_payload()
-    data["name"] = service_name
-    return CurrentUser(**data)
+    users = session.scalars(
+        select(AppUser)
+        .where(AppUser.tenant_id == tenant_id, AppUser.is_active.is_(True))
+        .order_by(AppUser.id.asc())
+    )
+    for user in users:
+        data = serialize_user(session, user)
+        if not data["can_use_core_features"]:
+            continue
+        data["name"] = service_name
+        return CurrentUser(**data)
+    raise ValueError(missing_message)
 
 
 def require_system_user_core_features(session: Session, tenant_id: int, *, service_name: str, missing_message: str) -> CurrentUser:
