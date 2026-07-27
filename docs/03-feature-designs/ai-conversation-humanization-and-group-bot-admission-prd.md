@@ -449,6 +449,8 @@ AI 活群只消费既有 active 面具，不得修改面具生成、启用、版
 
 生产验收必须同时证明：active/superseded 面具数量与版本未被本功能改写；发布后新 Provider Action 的合同版本全部为 `style_only_v2`；开放队列不存在缺版本的旧已生成正文；新成功消息不再出现系统固定尾句注入。任务被人工停止时只能写 `unproven`，不得用容器健康或历史消息代替真实发送验收。
 
+人工停止后的历史 AI 活群任务必须可按当前合同重新启动。启动预检在构造当前 `GroupAIChatTaskCreate` 前先调用统一 legacy config normalization，删除已废弃的 `consecutive_message_*` 与 `auto_follow_required_channel`，并补齐 `group_bot_admission_required=true`；归一化只作用于预检输入，不改面具数据，也不恢复已移除的连续发言行为。
+
 ### 7.2 `签到` 规则
 
 | 项 | 口径 |

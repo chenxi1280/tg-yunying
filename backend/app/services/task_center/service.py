@@ -2782,6 +2782,9 @@ def _prepare_pending_rank_deboost_exempt_group(session: Session, task: Task, act
 
 
 def _task_create_payload_for_precheck(task: Task) -> dict[str, Any]:
+    type_config = dict(task.type_config or {})
+    if task.type == "group_ai_chat":
+        type_config = validated_type_config(task.type, type_config)
     return {
         "name": task.name,
         "priority": task.priority,
@@ -2792,7 +2795,7 @@ def _task_create_payload_for_precheck(task: Task) -> dict[str, Any]:
         "account_config": task.account_config or {},
         "pacing_config": task.pacing_config or {},
         "failure_policy": task.failure_policy or {},
-        **(task.type_config or {}),
+        **type_config,
     }
 def drain_task_center(session_factory, limit: int = 100) -> int:
     processed = 0
