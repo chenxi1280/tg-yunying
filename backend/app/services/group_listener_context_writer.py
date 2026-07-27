@@ -117,14 +117,26 @@ def _process_group_bot_control_event(session: Session, group: TgGroup, snapshot)
         return
     controls = _control_button_summaries(snapshot)
     button_confirmed = bool(getattr(snapshot, "button_confirmed", False))
-    if not (
-        is_group_bot_control_prompt(content, controls)
-        or is_group_bot_completion_event(content, button_confirmed=button_confirmed)
-    ):
+    is_prompt = is_group_bot_control_prompt(content, controls)
+    is_completion = is_group_bot_completion_event(content, button_confirmed=button_confirmed)
+    if not (is_prompt or is_completion):
         return
     waiting = _waiting_group_bot_admissions(session, group)
     target_id, reason = _attributed_waiting_account(session, waiting, content)
     if target_id is None:
+        if reason == "unattributed" and is_prompt:
+            from app.services.task_center.group_bot_global_rules import apply_trusted_global_group_rule
+
+            apply_trusted_global_group_rule(
+                session,
+                tenant_id=group.tenant_id,
+                group_id=int(group.id),
+                message_id=remote_id,
+                text=content,
+                bot_peer_id=bot_peer,
+                is_admin_bot=is_admin_bot,
+                control_buttons=controls,
+            )
         return
     _apply_trusted_group_bot_control(
         session,
@@ -214,6 +226,8 @@ def _waiting_group_bot_admissions(session: Session, group: TgGroup) -> list[Grou
         "awaiting_group_bot_rule",
         "observation_open",
         "group_bot_policy_unresolved",
+        "group_bot_rule_unattributed",
+        "observation_stale",
         "required_channel_follow_pending",
         "following_required_channel",
         "awaiting_group_bot_confirmation",

@@ -27,6 +27,7 @@ class TgGroup(Base):
     account_cooldown_seconds: Mapped[int] = mapped_column(Integer, default=180)
     group_cooldown_seconds: Mapped[int] = mapped_column(Integer, default=60)
     send_limit_mode: Mapped[str] = mapped_column(String(60), default="legacy_group_slot")
+    next_group_send_slot_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     topic_direction: Mapped[str] = mapped_column(String(200), default="日常讨论、活动答疑")
     banned_words: Mapped[str] = mapped_column(Text, default="")
     link_whitelist: Mapped[str] = mapped_column(Text, default="")

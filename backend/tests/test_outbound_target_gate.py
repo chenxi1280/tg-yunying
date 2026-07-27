@@ -441,7 +441,12 @@ def test_dual_read_records_action_diagnostic_and_audit_without_blocking():
         assert "mode=dual_read" in (audits[0].detail or "")
 
 
-def test_group_attempt_marks_gateway_started_before_releasing_target_lock():
+def test_group_attempt_marks_gateway_started_before_releasing_target_lock(monkeypatch):
+    from app.services.task_center import group_send_limits
+
+    now_value = datetime(2026, 7, 24, 12, 0, 0)
+    monkeypatch.setattr(dispatcher, "_now", lambda: now_value)
+    monkeypatch.setattr(group_send_limits, "_now", lambda: now_value)
     with _session() as session:
         session.add(Tenant(id=1, name="t"))
         account = TgAccount(id=5, tenant_id=1, display_name="发送号", phone_masked="+861***0005", status="在线")
@@ -486,6 +491,7 @@ def test_group_attempt_marks_gateway_started_before_releasing_target_lock():
         assert stored.status == "gateway_call_started"
         assert stored.gateway_call_started_at is not None
         assert session.get(Action, action.id).status == "executing"
+        assert session.get(TgGroup, group.id).next_group_send_slot_at == datetime(2026, 7, 24, 12, 1, 0)
 
 
 def test_manual_send_rejects_cross_tenant_target_before_gateway():

@@ -80,7 +80,8 @@ from .executors.channel_comment_budget import (
     total_comment_action_count as _total_comment_action_count,
 )
 from .group_rescue import GROUP_RESCUE_FAILURE_THRESHOLD, infer_rescue_admin_rate_limit, permission_failure_count_for_send_action, refresh_group_rescue_action, trigger_group_rescue
-from .group_send_limits import GroupSendSlotBlock, group_send_slot_block
+from .group_send_claim_slots import filter_ready_group_send_actions, lock_eligible_group_send_actions
+from .group_send_limits import GroupSendSlotBlock, group_send_slot_block, reserve_group_send_slot
 from .payloads import (
     GROUP_BOT_CHANNEL_FOLLOW_ACTION_TYPE,
     DeprecatedGroupRescuePayload,
@@ -771,16 +772,28 @@ def _select_claim_candidates(
     shard_total, shard_index = current_account_shard()
     fairness = _claim_fairness_decisions(session, _claim_shard_filters(base_filters, shard_total, shard_index), now_value)
     forced = {tenant_id for tenant_id, decision in fairness.items() if decision.preferred_class == "ordinary"}
-    plan = plan_dispatch_claims(
+    window_actions = filter_ready_group_send_actions(
         session,
         _dispatch_claim_window_actions(session, base_filters, settings=settings, now_value=now_value, force_ordinary_tenants=forced),
+        now_value,
+    )
+    plan = plan_dispatch_claims(
+        session,
+        window_actions,
         settings=settings,
         now=now_value,
         shard_total=shard_total,
         shard_index=shard_index,
         fairness_decisions=fairness,
     )
-    candidates = _claimable_candidates(_locked_claim_plan_candidates(session, plan, claim_limit, now_value, forced))
+    locked_candidates = _locked_claim_plan_candidates(
+        session,
+        plan,
+        len(plan.candidate_action_ids),
+        now_value,
+        forced,
+    )
+    candidates = _claimable_candidates(lock_eligible_group_send_actions(session, locked_candidates, now_value))[:claim_limit]
     _annotate_dispatch_fairness(session, candidates, fairness, defer_action_ids=set(plan.bindings_by_action_id))
     bindings = {action.id: plan.bindings_by_action_id[action.id] for action in candidates if action.id in plan.bindings_by_action_id}
     return candidates, fairness, bindings
@@ -2198,6 +2211,7 @@ def _reserve_group_send_attempt(
         _defer_group_send_for_limit(action, block)
         session.commit()
         return None
+    reserve_group_send_slot(group, _now())
     attempt = _begin_execution_attempt(session, action, context.account)
     _mark_executing(action)
     _mark_gateway_call_started(session, attempt, commit=False)

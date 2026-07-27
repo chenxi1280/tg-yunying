@@ -217,7 +217,19 @@ else:
 4. 可信 peer 只表示该 sender **可以进入控制提示识别器**，绝不表示该 peer 的每条发言都是控制事件。可信 peer 的普通推广、内容发布、联系人/频道广告，即使恰好能归属到唯一 waiting account，也只可留只读上下文审计，**不得**改变 admission 的 state、failure_code、trusted peer、source message、频道子动作或 ready 结论。
 5. 非 bot、未知 peer、普通成员转发、私聊提示，以及未命中上述任一信任条件的 bot：只可留只读审计/指标，**不得**改变任何 admission 的 state、failure_code、trusted peer、频道子动作或 ready 结论。
 6. **多 bot**：另一可信 admin/policy bot 在 admission 未 ready 前发出规则，且当前尚无 trusted peer → 采用该 bot；已绑定 peer 且新 peer 不同 → 仅该 account 写 `group_bot_multi_bot_conflict`（`blocked`），不批量关注，等待运营指定 peer 或撤销后重建观察。
-7. 仅在来源已经可信**且消息已通过控制提示识别**后，才按 `@ / username / 展示名 → 回复关系 / 入群服务事件 → 同观察窗口内唯一等待账号` 归属。若控制文本含确定的收件人前缀（例如“`Ray，您需要关注…`”），该收件人必须匹配 waiting account 的 Telegram username 或展示名；不匹配或存在多个匹配时必须拒绝归属，**不得**降级为唯一 waiting account。唯一等待兜底仅适用于不含明确收件人的通用控制提示。仍不能唯一归属时，只写该可信控制消息关联的 admission `group_bot_rule_unattributed`；绝不因一条普通 bot 消息污染一批等待账号。
+7. 仅在来源已经可信**且消息已通过控制提示识别**后，才按 `@ / username / 展示名 → 回复关系 / 入群服务事件 → 同观察窗口内唯一等待账号` 归属。若控制文本含确定的收件人前缀（例如“`Ray，您需要关注…`”），该收件人必须匹配 waiting account 的 Telegram username 或展示名；不匹配或存在多个匹配时必须拒绝归属，**不得**降级为唯一 waiting account。唯一等待兜底仅适用于不含明确收件人的通用控制提示。
+
+#### 5.3.1 已审计可信的全群频道规则
+
+不含明确收件人的通用控制提示在多个 waiting admission 中无法归属时，默认仍不得批量写入 `group_bot_rule_unattributed` 或创建 follow。只有同时满足下列全部条件，才可按“全群规则”逐账号展开：
+
+1. 消息已通过本节的精确控制提示识别，且必须含同一原消息中的精确公开频道 URL；如有 confirmation callback，它也必须来自该原消息；
+2. 来源是 Telegram 已确认的管理员 bot，**或** `targets.manage` 已为同一 `group_id + bot_peer_id` 创建 active `explicit_bot_confirmation` / `follow_sufficient` policy；仅某一历史 admission 曾信任该 peer 不足以授权全群展开；
+3. 文本没有明确收件人；`explicit_recipient_unmatched`、`explicit_recipient_ambiguous`、普通推广和完成回执都不得进入本路径；
+4. 候选仅限该群现存、未终态的 `GroupBotAdmission`，且账号属于运行中 `group_ai_chat` 的持久 `TaskMembershipAdmissionItem` scope；已绑定另一可信 peer、`blocked`、`abandoned` 或没有运行任务绑定的 admission 必须跳过并保留原事实；
+5. 每个候选都复用同一 `source_message_id`、peer、URL/按钮摘要、admission/version，创建其自己的 `group_bot_channel_follow` 与必要的精确 confirmation action。不得创建正文 `send_message`、不得改写 `can_send`、不得直接 ready。
+
+该规则解决“群管向所有成员广播关注频道要求”不能归属单一账号的真实协议，不是未知 bot 的放行捷径。策略生效后的 listener 必须再次观察到该 exact peer 的有效控制事件才可展开；不得静默重放无审计来源、私聊消息或历史普通上下文。频道 follow 成功后的 ready 仍完全遵守 §5.5 的 confirmation / `follow_sufficient` 规则。
 
 ### 5.4 频道关注子动作
 

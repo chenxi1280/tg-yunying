@@ -78,6 +78,9 @@ def group_policy_block(
         SEND_LIMIT_MODE_ACCOUNT_ONLY_WITH_GROUP_DAILY_LIMIT,
     }
     enforce_cooldown = mode == SEND_LIMIT_MODE_LEGACY_GROUP_SLOT
+    reserved_slot = _reserved_group_slot_block(group, now_local) if enforce_cooldown else None
+    if reserved_slot is not None:
+        return reserved_slot
     attempt_summary = _group_attempt_summary(session, action=action, group=group, now_value=now_local)
     legacy_summary = _legacy_group_send_summary(session, action=action, group=group, now_value=now_local)
     if enforce_daily:
@@ -101,6 +104,27 @@ def group_policy_block(
                     retry_after,
                 )
     return None
+
+
+def reserve_group_send_slot(group: TgGroup, now: datetime | None = None) -> None:
+    """Persist the next legacy-group send slot immediately before Gateway entry."""
+    if str(getattr(group, "send_limit_mode", "") or SEND_LIMIT_MODE_LEGACY_GROUP_SLOT) != SEND_LIMIT_MODE_LEGACY_GROUP_SLOT:
+        return
+    now_value = as_beijing(now) if now is not None else _beijing_now()
+    cooldown = max(0, int(group.group_cooldown_seconds or 0))
+    group.next_group_send_slot_at = now_value + timedelta(seconds=cooldown)
+
+
+def _reserved_group_slot_block(group: TgGroup, now_value: datetime) -> GroupSendSlotBlock | None:
+    next_slot = as_beijing(getattr(group, "next_group_send_slot_at", None))
+    if next_slot is None or next_slot <= now_value:
+        return None
+    retry_after = max(1, int((next_slot - now_value).total_seconds()))
+    return GroupSendSlotBlock(
+        FailureType.SLOWMODE.value,
+        f"群发送槽位已预约，还需等待 {retry_after} 秒",
+        retry_after,
+    )
 
 
 def _group_attempt_summary(
@@ -200,4 +224,5 @@ __all__ = [
     "active_window_block",
     "group_policy_block",
     "group_send_slot_block",
+    "reserve_group_send_slot",
 ]
