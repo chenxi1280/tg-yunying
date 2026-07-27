@@ -110,6 +110,51 @@ def test_no_search_join_demands_skips_reserved_allocation() -> None:
     assert total == 10, f"all capacity should go to hard_hourly, got total={total}"
 
 
+def test_target_admission_backlog_preserves_one_claim_per_ordinary_demand() -> None:
+    from app.services.task_center.dispatch_claim_allocation import _allocate_demands, DispatchClaimDemand
+
+    admission = DispatchClaimDemand(
+        tenant_id=1, task_id="admission-task", claim_class="target_admission_retry",
+        shard_total=1, shard_index=0, action_ids=("a1",), required_claims=100, is_strict=True, urgency_score=1_000_000,
+    )
+    ordinary = [
+        DispatchClaimDemand(
+            tenant_id=1, task_id=f"ai-task-{index}", claim_class="ordinary",
+            shard_total=1, shard_index=0, action_ids=(f"o{index}",), required_claims=10,
+            is_strict=False, urgency_score=100,
+        )
+        for index in range(3)
+    ]
+
+    grants = _allocate_demands([admission, *ordinary], available=20, epoch=1, scope_capacity=20)
+
+    assert grants[admission.key] == 17
+    assert all(grants[demand.key] >= 1 for demand in ordinary)
+    assert sum(grants.values()) == 20
+
+
+def test_priority_admission_and_search_membership_share_capacity() -> None:
+    from app.services.task_center.dispatch_claim_allocation import _allocate_demands, DispatchClaimDemand
+
+    demands = [
+        DispatchClaimDemand(
+            tenant_id=1, task_id="admission-task", claim_class="target_admission_retry",
+            shard_total=1, shard_index=0, action_ids=("a1",), required_claims=10,
+            is_strict=True, urgency_score=1_000_000,
+        ),
+        DispatchClaimDemand(
+            tenant_id=1, task_id="search-task", claim_class="search_join_membership",
+            shard_total=1, shard_index=0, action_ids=("m1",), required_claims=10,
+            is_strict=True, urgency_score=500_000,
+        ),
+    ]
+
+    grants = _allocate_demands(demands, available=4, epoch=1, scope_capacity=4)
+
+    assert all(grants[demand.key] >= 1 for demand in demands)
+    assert sum(grants.values()) == 4
+
+
 def test_dispatch_claim_urgency_normalizes_persisted_timezone() -> None:
     scheduled_at = datetime(2026, 7, 26, 9, 0, tzinfo=BEIJING_TZ)
     task = Task(id="timezone-task", tenant_id=1, name="时区", type="group_relay", status="running")

@@ -16,6 +16,7 @@ from .dispatch_claim_types import DispatchClaimDemand, PRIORITY_CLAIM_CLASSES, S
 # PRD §2.20.1 RC-4 claim 公平性：strict search_join 最小保留份额比例
 SEARCH_JOIN_CLAIM_CLASS = "search_join"
 MIN_RESERVED_CAPACITY_RATIO = 0.30
+MIN_PRIORITY_CLAIM_SLOTS = 1
 
 
 def allocate_window(
@@ -75,11 +76,22 @@ def _allocate_demands(
     scope_capacity: int = 0,
 ) -> dict[tuple[int, str, str, int, int], int]:
     grants = {demand.key: 0 for demand in demands}
-    remaining = _allocate_priority_demands(demands, grants, available, epoch)
+    ordinary = normal_demands(demands)
+    ordinary_reserve = _ordinary_first_share_reserve(ordinary, available)
+    remaining = available - ordinary_reserve
     remaining = _allocate_strict_search_join_reserved(demands, grants, remaining, epoch, scope_capacity)
+    remaining = _allocate_priority_demands(demands, grants, remaining, epoch)
     remaining = _allocate_balanced_demands(strict_non_priority_demands(demands), grants, remaining, epoch)
-    _allocate_balanced_demands(normal_demands(demands), grants, remaining, epoch)
+    _allocate_balanced_demands(ordinary, grants, remaining + ordinary_reserve, epoch)
     return grants
+
+
+def _ordinary_first_share_reserve(
+    demands: list[DispatchClaimDemand],
+    available: int,
+) -> int:
+    required = sum(1 for demand in demands if demand.required_claims > 0)
+    return min(required, max(0, available - MIN_PRIORITY_CLAIM_SLOTS))
 
 
 def _allocate_strict_search_join_reserved(
@@ -109,11 +121,12 @@ def _allocate_priority_demands(
     available: int,
     epoch: int,
 ) -> int:
-    remaining = available
-    for claim_class in PRIORITY_CLAIM_CLASSES:
-        rows = [demand for demand in demands if demand.claim_class == claim_class and demand.is_strict]
-        remaining = _allocate_in_order(rows, grants, remaining, epoch)
-    return remaining
+    rows = [
+        demand
+        for demand in demands
+        if demand.claim_class in PRIORITY_CLAIM_CLASSES and demand.is_strict
+    ]
+    return _allocate_balanced_demands(rows, grants, available, epoch)
 
 
 def _allocate_in_order(
