@@ -81,7 +81,7 @@ from .executors.channel_comment_budget import (
 )
 from .group_rescue import GROUP_RESCUE_FAILURE_THRESHOLD, infer_rescue_admin_rate_limit, permission_failure_count_for_send_action, refresh_group_rescue_action, trigger_group_rescue
 from .group_send_claim_slots import filter_ready_group_send_actions, lock_eligible_group_send_actions
-from .group_send_limits import GroupSendSlotBlock, group_send_slot_block, reserve_group_send_slot
+from .group_send_limits import GroupSendSlotBlock, group_send_slot_block, reserve_group_send_slot, settle_group_send_slot
 from .payloads import (
     GROUP_BOT_CHANNEL_FOLLOW_ACTION_TYPE,
     DeprecatedGroupRescuePayload,
@@ -2211,7 +2211,12 @@ def _reserve_group_send_attempt(
         _defer_group_send_for_limit(action, block)
         session.commit()
         return None
-    reserve_group_send_slot(group)
+    reserved_until = reserve_group_send_slot(group)
+    if reserved_until is not None:
+        action.result = {
+            **(action.result or {}),
+            "group_send_slot_reservation_until": reserved_until.isoformat(),
+        }
     attempt = _begin_execution_attempt(session, action, context.account)
     _mark_executing(action)
     _mark_gateway_call_started(session, attempt, commit=False)
@@ -2375,6 +2380,8 @@ def _finalize_group_send(
         result.detail or "",
         attempt=attempt,
     )
+    if not result.ok:
+        _settle_failed_group_send_slot(session, action, context.group.id, result.failure_type or "", result.detail or "")
     _mark_ai_message_memory_result(
         session,
         context.payload,
@@ -2392,6 +2399,45 @@ def _finalize_group_send(
             result.remote_message_id or "",
         )
         context.link.last_sent_at = _now()
+
+
+def _settle_failed_group_send_slot(
+    session: Session,
+    action: Action,
+    group_id: int,
+    failure_type: str,
+    detail: str,
+) -> None:
+    retry_after = _known_group_send_failure_retry_after(failure_type, detail)
+    reserved_until = _group_send_slot_reservation_until(action)
+    if retry_after is None or reserved_until is None:
+        return
+    group = session.scalar(select(TgGroup).where(TgGroup.id == group_id).with_for_update())
+    if group is None or not settle_group_send_slot(group, reserved_until=reserved_until, retry_after_seconds=retry_after):
+        return
+    action.result = {
+        **(action.result or {}),
+        "group_send_slot_settlement": "retry" if retry_after else "released",
+        "group_send_slot_retry_after_seconds": retry_after,
+    }
+
+
+def _known_group_send_failure_retry_after(failure_type: str, detail: str) -> int | None:
+    if failure_type == FailureType.UNKNOWN.value:
+        return None
+    if failure_type in {FailureType.FLOOD_WAIT.value, FailureType.SLOWMODE.value}:
+        return _retry_after_seconds(detail)
+    return 0
+
+
+def _group_send_slot_reservation_until(action: Action) -> datetime | None:
+    raw = str((action.result or {}).get("group_send_slot_reservation_until") or "")
+    if not raw:
+        return None
+    try:
+        return as_beijing(datetime.fromisoformat(raw))
+    except ValueError:
+        return None
 
 
 def _handle_ai_generation_failure(

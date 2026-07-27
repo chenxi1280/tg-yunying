@@ -232,7 +232,7 @@ hard_hourly_planning_required = hard_hourly_required_new > 0
 
 ### 5.4.3 同群发送领取槽位
 
-1. `TgGroup.next_group_send_slot_at` 是 `legacy_group_slot` 的持久投影：仅当群行锁内的 active-window、目标身份、群日上限与冷却校验全部通过，且 ExecutionAttempt 即将写入 `before_call/gateway_call_started` 时，才写为 `now + group_cooldown_seconds` 并与 attempt 同事务提交。它不替代 ExecutionAttempt，也不把未进入 Gateway 的 Action 计为已发送。
+1. `TgGroup.next_group_send_slot_at` 是 `legacy_group_slot` 的持久投影：仅当群行锁内的 active-window、目标身份、群日上限与冷却校验全部通过，且 ExecutionAttempt 即将写入 `before_call/gateway_call_started` 时，才以与校验相同的北京时间 policy clock 写为 `now + group_cooldown_seconds` 并与 attempt 同事务提交。该值在 Gateway 返回前只是当前 Action 的临时槽位预约，必须在 Action.result 留预约时刻以防清除后来 Action 的槽位：成功或 `unknown_after_send` 保留正常冷却；Gateway 返回已知失败时，`FloodWait` / `SlowMode` 用 Telegram 明确秒数改写为精确重试槽位，其他已知失败只清除自己的预约。它不替代 ExecutionAttempt，也不把未进入 Gateway 的 Action 计为已发送。
 2. Dispatcher 在生成 claim plan 前排除 `next_group_send_slot_at > now` 的 legacy 群正文；在锁定候选 Action 后，必须再以 `TgGroup FOR UPDATE SKIP LOCKED` 取得同群锁、复查该时刻和同群 `claiming/executing` Action，并在一个 claim batch 中只保留计划顺序最靠前的一条同群正文。未获群锁或仍在途的候选保持 pending，不能被标为成功、unknown 或 slow-mode。
 3. `account_only` 与 `account_only_with_group_daily_limit` 不使用同群领取槽位；它们继续沿各自群日上限和账号安全边界执行。Gateway 的 `group_send_slot_block` 始终保留为最终竞争条件和历史 Action 兼容保护。
 4. 群槽位阻塞只能释放该群的 claim 候选；同一 Window 内其余已分配目标仍按 `DispatchClaimPlan` 顺序可被领取。不得因一个群的冷却把整个 shard 或 Dispatcher Scope 置为等待。
@@ -267,7 +267,8 @@ hard_hourly_planning_required = hard_hourly_required_new > 0
   -> Dispatcher 批量输出完整性校验
   -> generation_contract blocker，或内容质量门
   -> pre-Gateway overdue：reserved + dispatcher_lag，等待 Recovery / Dispatcher，不重发
-  -> Telegram Gateway boundary：群行锁内写 next_group_send_slot_at 与 ExecutionAttempt.gateway_call_started_at
+  -> Telegram Gateway boundary：群行锁内写 Action-owned next_group_send_slot_at 与 ExecutionAttempt.gateway_call_started_at
+  -> 成功/unknown 保留槽位；已知失败按精确 Telegram retry 重写或仅释放自己的临时槽位
   -> post-Gateway overdue：unknown + remote_reconcile，不重发
   -> ExecutionAttempt + remote_message_id
   -> 覆盖 confirmed 与 daily_fulfillment 投影
@@ -304,6 +305,7 @@ hard_hourly_planning_required = hard_hourly_required_new > 0
 | 计划内一条 Action 已被其他 worker 锁住 | `SKIP LOCKED` 后只从同一计划、同一优先级的剩余候选继续领取；不得改按未分配 Action 或旧时间排序补位 |
 | legacy 群冷却仍启用 | 计划顺序修复不改变 `GroupSendSlotBlock`；真实慢速模式仍延后并可审计，连续可发送目标的远端发送间隔才可作为吞吐验收依据 |
 | 同一 legacy 群多个 due Action、多个 worker | 同一 claim batch 只领取计划最靠前的一条；并发 worker 未取得 `TgGroup` 锁的候选保持 pending；首条 Gateway 槽位提交后 `next_group_send_slot_at` 阻止后续 Action 进入生成/Gateway，其他群仍可领取 |
+| 已知 Gateway 失败后的同群槽位 | 账号受限、权限等已知失败只释放本 Action 持有的临时预约，不得清除后续 Action 槽位；FloodWait / SlowMode 以 Telegram 返回秒数覆盖预约。随后可发送账号可继续领取，未知结果仍保持槽位且不重发 |
 | account_only 群 | 不读取或写入 legacy 的 group claim slot；原账号级并发和可选群日上限保持不变 |
 | unknown-role bot 的广播频道规则 | 无 source-bound policy 时不创建 follow、不变更 admission；有同 group+peer 审计 policy 且 listener 再观察到有效、无收件人提示时，仅为运行中 scope 的既有 admission 创建逐账号 exact follow/callback，绝不创建正文或直接 ready |
 | Planner 全局 backlog | 不绕过 pending 上限；写 planner_capacity_insufficient 与下一检查时间，daily_outcome 不得显示 feasible |

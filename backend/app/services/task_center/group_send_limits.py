@@ -106,13 +106,31 @@ def group_policy_block(
     return None
 
 
-def reserve_group_send_slot(group: TgGroup, now: datetime | None = None) -> None:
+def reserve_group_send_slot(group: TgGroup, now: datetime | None = None) -> datetime | None:
     """Persist the next legacy-group send slot immediately before Gateway entry."""
     if str(getattr(group, "send_limit_mode", "") or SEND_LIMIT_MODE_LEGACY_GROUP_SLOT) != SEND_LIMIT_MODE_LEGACY_GROUP_SLOT:
-        return
+        return None
     now_value = as_beijing(now) if now is not None else _beijing_now()
     cooldown = max(0, int(group.group_cooldown_seconds or 0))
     group.next_group_send_slot_at = now_value + timedelta(seconds=cooldown)
+    return group.next_group_send_slot_at
+
+
+def settle_group_send_slot(
+    group: TgGroup,
+    *,
+    reserved_until: datetime,
+    retry_after_seconds: int = 0,
+) -> bool:
+    """Release or extend only the legacy slot reserved by the completed Gateway call."""
+    if str(getattr(group, "send_limit_mode", "") or SEND_LIMIT_MODE_LEGACY_GROUP_SLOT) != SEND_LIMIT_MODE_LEGACY_GROUP_SLOT:
+        return False
+    expected_slot = as_beijing(reserved_until)
+    if expected_slot is None or as_beijing(group.next_group_send_slot_at) != expected_slot:
+        return False
+    retry_after = max(0, int(retry_after_seconds))
+    group.next_group_send_slot_at = _beijing_now() + timedelta(seconds=retry_after) if retry_after else None
+    return True
 
 
 def _reserved_group_slot_block(group: TgGroup, now_value: datetime) -> GroupSendSlotBlock | None:
@@ -225,4 +243,5 @@ __all__ = [
     "group_policy_block",
     "group_send_slot_block",
     "reserve_group_send_slot",
+    "settle_group_send_slot",
 ]

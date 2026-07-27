@@ -1753,8 +1753,9 @@ def test_task_center_dispatch_defers_by_global_account_policy(monkeypatch):
         assert action.result["validation_stage"] == "account_policy"
 
 
+@pytest.mark.no_postgres
 def test_task_center_dispatch_applies_default_failure_policy(monkeypatch):
-    from app.services.task_center import dispatcher
+    from app.services.task_center import dispatcher, group_send_limits
 
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -1801,6 +1802,7 @@ def test_task_center_dispatch_applies_default_failure_policy(monkeypatch):
         assert task.stats["last_failure_policy"] == "pause_task"
         assert session.get(TgAccount, 11).status == AccountStatus.LIMITED.value
         assert action.result["error_message"] == "账号受限"
+        assert session.get(TgGroup, 7).next_group_send_slot_at is None
 
         task.status = "running"
         task.next_run_at = None
@@ -1829,6 +1831,7 @@ def test_task_center_dispatch_applies_default_failure_policy(monkeypatch):
         session.get(TgAccount, 11).status = "在线"
         session.commit()
         before = _now()
+        policy_before = group_send_limits._now()
         monkeypatch.setattr(dispatcher.gateway, "send_message", lambda *args, **kwargs: SendResult(False, failure_type=FailureType.FLOOD_WAIT.value, detail="FloodWait 120 秒"))
         flood_action = session.get(Action, "action-flood-wait")
         assert dispatcher.dispatch_action(session, flood_action) is True
@@ -1838,6 +1841,10 @@ def test_task_center_dispatch_applies_default_failure_policy(monkeypatch):
         assert flood_action.scheduled_at >= before + timedelta(seconds=120)
         assert flood_action.result["validation_stage"] == "failure_policy"
         assert flood_action.result["retry_after_seconds"] == 120
+        assert session.get(TgGroup, 7).next_group_send_slot_at >= policy_before + timedelta(seconds=120)
+
+        # Content-rewrite policy is a separate case, not a retry during the FloodWait window.
+        session.get(TgGroup, 7).next_group_send_slot_at = None
 
         setting = session.scalar(select(SchedulingSetting).where(SchedulingSetting.tenant_id == 1))
         setting.default_on_content_rejected = "rewrite_and_retry"

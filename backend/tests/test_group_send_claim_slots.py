@@ -17,6 +17,7 @@ from app.services.task_center.group_send_limits import (
     SEND_LIMIT_MODE_ACCOUNT_ONLY,
     group_send_slot_block,
     reserve_group_send_slot,
+    settle_group_send_slot,
 )
 from app.services.task_center import dispatcher
 
@@ -186,3 +187,39 @@ def test_gateway_rechecks_persisted_legacy_slot(monkeypatch: pytest.MonkeyPatch)
 
         assert block is not None
         assert block.retry_after_seconds == 15
+
+
+def test_known_gateway_failure_releases_only_its_slot_reservation(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services.task_center import group_send_limits
+
+    now_value = datetime(2026, 7, 27, 12, 0)
+    monkeypatch.setattr(group_send_limits, "_now", lambda: now_value)
+    with _session() as session:
+        _seed_groups(session, now_value)
+        group = session.get(TgGroup, 7)
+
+        reserved_until = reserve_group_send_slot(group)
+        assert reserved_until == now_value + timedelta(seconds=15)
+        assert settle_group_send_slot(group, reserved_until=reserved_until)
+        assert group.next_group_send_slot_at is None
+
+        newer_reservation = reserve_group_send_slot(group)
+        group.next_group_send_slot_at = newer_reservation + timedelta(seconds=15)
+
+        assert not settle_group_send_slot(group, reserved_until=newer_reservation)
+        assert group.next_group_send_slot_at == now_value + timedelta(seconds=30)
+
+
+def test_rate_limited_gateway_failure_uses_explicit_retry_slot(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services.task_center import group_send_limits
+
+    now_value = datetime(2026, 7, 27, 12, 0)
+    monkeypatch.setattr(group_send_limits, "_now", lambda: now_value)
+    with _session() as session:
+        _seed_groups(session, now_value)
+        group = session.get(TgGroup, 7)
+
+        reserved_until = reserve_group_send_slot(group)
+
+        assert settle_group_send_slot(group, reserved_until=reserved_until, retry_after_seconds=120)
+        assert group.next_group_send_slot_at == now_value + timedelta(seconds=120)
