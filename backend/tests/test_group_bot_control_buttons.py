@@ -22,6 +22,16 @@ from app.services.task_center.payloads import (
 pytestmark = pytest.mark.no_postgres
 
 
+@pytest.fixture(autouse=True)
+def _default_exact_confirmation_source(monkeypatch) -> None:
+    monkeypatch.setattr(
+        dispatcher.gateway,
+        "fetch_group_message",
+        lambda *_args, **_kwargs: None,
+        raising=False,
+    )
+
+
 def _session() -> Session:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -389,6 +399,12 @@ def test_confirmation_action_rebinds_to_live_trusted_button_before_gateway(monke
         calls: list[str] = []
         monkeypatch.setattr(
             dispatcher.gateway,
+            "fetch_group_message",
+            lambda *_args, **_kwargs: _live_confirmation_snapshot("stale-message"),
+            raising=False,
+        )
+        monkeypatch.setattr(
+            dispatcher.gateway,
             "fetch_group_messages",
             lambda *_args, **_kwargs: [_live_confirmation_snapshot("fresh-message")],
             raising=False,
@@ -408,6 +424,41 @@ def test_confirmation_action_rebinds_to_live_trusted_button_before_gateway(monke
         assert admission.source_message_id == "fresh-message"
         assert action.result["group_bot_confirmation_source_refresh"]["from"] == "stale-message"
         assert session.scalar(select(GroupContextMessage.remote_message_id).where(GroupContextMessage.remote_message_id == "fresh-message")) == "fresh-message"
+
+
+def test_confirmation_action_uses_exact_source_when_current_window_is_truncated(monkeypatch) -> None:
+    with _session() as session:
+        group, account, _admission, payload, action = _confirmation_action_fixture(
+            session,
+            action_id="confirm-exact-source",
+            source_message_id="exact-message",
+        )
+        calls: list[str] = []
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "fetch_group_message",
+            lambda *_args, **_kwargs: _live_confirmation_snapshot("exact-message"),
+            raising=False,
+        )
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "fetch_group_messages",
+            lambda *_args, **_kwargs: [_non_control_snapshot()],
+            raising=False,
+        )
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "click_group_bot_confirmation_button",
+            lambda _account_id, _peer_id, source_message_id, *_args: calls.append(source_message_id) or OperationResult(True),
+            raising=False,
+        )
+
+        context = dispatcher.ActionDispatchContext(account, payload, None, None)
+
+        assert dispatcher._dispatch_credentialed_action(session, action, context, credentials=object()) is True
+        assert calls == ["exact-message"]
+        assert action.status == "success"
+        assert action.result["group_bot_confirmation_live_source"]["lookup"] == "exact_source"
 
 
 def test_confirmation_action_defers_when_live_source_is_unavailable(monkeypatch) -> None:
@@ -507,6 +558,16 @@ def _live_confirmation_snapshot(message_id: str) -> GroupMessageSnapshot:
             GroupControlButtonSnapshot(0, 0, "频道", "https://t.me/channel_alpha", "url"),
             GroupControlButtonSnapshot(1, 0, "我已加入", "", "callback"),
         ),
+    )
+
+
+def _non_control_snapshot() -> GroupMessageSnapshot:
+    return GroupMessageSnapshot(
+        remote_message_id="noise-message",
+        sender_peer_id="ordinary-member",
+        sender_name="普通成员",
+        content="群里消息很多",
+        is_bot=False,
     )
 
 

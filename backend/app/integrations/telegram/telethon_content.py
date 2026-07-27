@@ -115,62 +115,102 @@ async def fetch_group_archive(client, peer_id: str) -> ArchiveSnapshot:
 async def fetch_group_messages(client, peer_id: str, limit: int) -> list[GroupMessageSnapshot]:
     target = await resolve_telethon_target(client, peer_id, group_id=1)
     messages_resp = await client.get_messages(target, limit=limit)
-    grouped_totals: dict[str, int] = {}
+    return await _group_message_snapshots(client, target, peer_id, list(messages_resp or []))
+
+
+async def fetch_group_message(client, peer_id: str, message_id: str) -> GroupMessageSnapshot | None:
+    target = await resolve_telethon_target(client, peer_id, group_id=1)
+    message = await client.get_messages(target, ids=int(message_id))
+    if message is None:
+        return None
+    snapshots = await _group_message_snapshots(client, target, peer_id, [message])
+    return snapshots[0] if snapshots else None
+
+
+async def _group_message_snapshots(client, target, peer_id: str, messages: list[object]) -> list[GroupMessageSnapshot]:
+    grouped_totals = _grouped_media_totals(messages)
     grouped_seen: dict[str, int] = {}
-    for message in list(messages_resp or []):
+    sender_role_cache: dict[str, str] = {}
+    snapshots: list[GroupMessageSnapshot] = []
+    for message in messages:
+        snapshot = await _group_message_snapshot(
+            client,
+            target,
+            peer_id,
+            message,
+            grouped_totals,
+            grouped_seen,
+            sender_role_cache,
+        )
+        if snapshot is not None:
+            snapshots.append(snapshot)
+    return snapshots
+
+
+def _grouped_media_totals(messages: list[object]) -> dict[str, int]:
+    grouped_totals: dict[str, int] = {}
+    for message in messages:
         group_id = str(getattr(message, "grouped_id", "") or "")
         if group_id:
             grouped_totals[group_id] = grouped_totals.get(group_id, 0) + 1
-    snapshots: list[GroupMessageSnapshot] = []
-    sender_role_cache: dict[str, str] = {}
-    for message in list(messages_resp or []):
-        text = getattr(message, "message", "") or ""
-        controls = _control_buttons(message)
-        if not text and not getattr(message, "media", None) and not controls:
-            continue
-        sender = await message.get_sender() if hasattr(message, "get_sender") else None
-        sender_peer_id = str(getattr(sender, "id", "") or "")
-        sender_username = str(getattr(sender, "username", "") or "")
-        sender_peer_type = _sender_peer_type(sender)
-        sender_name = (
-            getattr(sender, "first_name", "")
-            or getattr(sender, "title", "")
-            or getattr(sender, "username", None)
-            or sender_peer_id
-            or "未知成员"
-        )
-        role_cache_key = sender_peer_id or f"anonymous:{sender_name}"
-        if role_cache_key not in sender_role_cache:
-            sender_role_cache[role_cache_key] = await _sender_role(client, target, sender)
-        sender_role = sender_role_cache[role_cache_key]
-        group_id = str(getattr(message, "grouped_id", "") or "")
-        if group_id:
-            grouped_seen[group_id] = grouped_seen.get(group_id, 0) + 1
-        media = getattr(message, "media", None)
-        media_type = type(media).__name__ if media else ""
-        remote_id = str(getattr(message, "id", uuid4().hex))
-        snapshots.append(
-            GroupMessageSnapshot(
-                remote_message_id=remote_id,
-                sender_peer_id=sender_peer_id,
-                sender_name=sender_name,
-                sender_username=sender_username,
-                sender_peer_type=sender_peer_type,
-                content=text or ("[media]" if media else ""),
-                message_type="media" if media else "text",
-                sent_at=getattr(message, "date", None),
-                is_bot=bool(getattr(sender, "bot", False)),
-                sender_role=sender_role,
-                caption=text,
-                media_type=media_type,
-                media_fingerprint=source_media_hint(peer_id, remote_id, group_id, media_type),
-                media_group_id=group_id,
-                media_group_index=grouped_seen.get(group_id, 0) if group_id else 0,
-                media_group_total=grouped_totals.get(group_id, 1) if group_id else 1,
-                control_buttons=controls,
-            )
-        )
-    return snapshots
+    return grouped_totals
+
+
+async def _group_message_snapshot(
+    client,
+    target,
+    peer_id: str,
+    message: object,
+    grouped_totals: dict[str, int],
+    grouped_seen: dict[str, int],
+    sender_role_cache: dict[str, str],
+) -> GroupMessageSnapshot | None:
+    text = getattr(message, "message", "") or ""
+    controls = _control_buttons(message)
+    media = getattr(message, "media", None)
+    if not text and not media and not controls:
+        return None
+    sender = await message.get_sender() if hasattr(message, "get_sender") else None
+    sender_peer_id = str(getattr(sender, "id", "") or "")
+    sender_username = str(getattr(sender, "username", "") or "")
+    sender_name = _sender_name(sender, sender_peer_id)
+    role_cache_key = sender_peer_id or f"anonymous:{sender_name}"
+    if role_cache_key not in sender_role_cache:
+        sender_role_cache[role_cache_key] = await _sender_role(client, target, sender)
+    group_id = str(getattr(message, "grouped_id", "") or "")
+    if group_id:
+        grouped_seen[group_id] = grouped_seen.get(group_id, 0) + 1
+    media_type = type(media).__name__ if media else ""
+    remote_id = str(getattr(message, "id", uuid4().hex))
+    return GroupMessageSnapshot(
+        remote_message_id=remote_id,
+        sender_peer_id=sender_peer_id,
+        sender_name=sender_name,
+        sender_username=sender_username,
+        sender_peer_type=_sender_peer_type(sender),
+        content=text or ("[media]" if media else ""),
+        message_type="media" if media else "text",
+        sent_at=getattr(message, "date", None),
+        is_bot=bool(getattr(sender, "bot", False)),
+        sender_role=sender_role_cache[role_cache_key],
+        caption=text,
+        media_type=media_type,
+        media_fingerprint=source_media_hint(peer_id, remote_id, group_id, media_type),
+        media_group_id=group_id,
+        media_group_index=grouped_seen.get(group_id, 0) if group_id else 0,
+        media_group_total=grouped_totals.get(group_id, 1) if group_id else 1,
+        control_buttons=controls,
+    )
+
+
+def _sender_name(sender: object, sender_peer_id: str) -> str:
+    return str(
+        getattr(sender, "first_name", "")
+        or getattr(sender, "title", "")
+        or getattr(sender, "username", None)
+        or sender_peer_id
+        or "未知成员"
+    )
 
 
 async def cache_source_media(client, source_peer_id: str, source_message_id: str, cache_peer_id: str, map_send_error: Callable[[Exception], SendResult]) -> SendResult:

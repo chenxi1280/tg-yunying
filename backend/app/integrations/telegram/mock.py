@@ -708,6 +708,16 @@ class TelegramGateway:
             )
         ][:limit]
 
+    def fetch_group_message(
+        self,
+        account_id: int,
+        peer_id: str,
+        source_message_id: str,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> GroupMessageSnapshot | None:
+        return None
+
     def cache_source_media(
         self,
         account_id: int,

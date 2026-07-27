@@ -41,28 +41,29 @@ def refresh_live_confirmation_source(
     session: Session,
     context: LiveConfirmationRefreshContext,
 ) -> GroupBotConfirmationButtonPayload | None:
-    snapshot = _latest_matching_snapshot(context)
-    if snapshot is None:
+    match = _latest_matching_snapshot(context)
+    if match is None:
         return None
+    snapshot, lookup = match
     controls = list(getattr(snapshot, "control_buttons", ()) or ())
     button = confirmation_button(controls)
     if button is None:
         return None
     _record_live_snapshot(session, context, snapshot, controls)
-    return _apply_live_source(context, snapshot, button)
+    return _apply_live_source(context, snapshot, button, lookup=lookup)
 
 
-def _latest_matching_snapshot(context: LiveConfirmationRefreshContext):
-    snapshots = _fetch_live_snapshots(context)
-    for snapshot in snapshots:
+def _latest_matching_snapshot(context: LiveConfirmationRefreshContext) -> tuple[object, str] | None:
+    for snapshot, lookup in _fetch_live_snapshots(context):
         if _matches_trusted_confirmation_prompt(context, snapshot):
-            return snapshot
+            return snapshot, lookup
     return None
 
 
-def _fetch_live_snapshots(context: LiveConfirmationRefreshContext) -> list[object]:
+def _fetch_live_snapshots(context: LiveConfirmationRefreshContext) -> list[tuple[object, str]]:
     try:
-        return list(
+        exact = _fetch_exact_source(context)
+        window = list(
             context.gateway_client.fetch_group_messages(
                 context.account.id,
                 context.group.tg_peer_id,
@@ -73,6 +74,24 @@ def _fetch_live_snapshots(context: LiveConfirmationRefreshContext) -> list[objec
         )
     except Exception as exc:  # noqa: BLE001 - caller records the Telegram source refresh failure explicitly.
         raise LiveConfirmationSourceFetchError(str(exc) or "group bot live source fetch failed") from exc
+    snapshots = [(item, "current_window") for item in window]
+    exact_id = str(getattr(exact, "remote_message_id", "") or "")
+    if exact is not None and all(str(getattr(item, "remote_message_id", "") or "") != exact_id for item in window):
+        snapshots.append((exact, "exact_source"))
+    return snapshots
+
+
+def _fetch_exact_source(context: LiveConfirmationRefreshContext) -> object | None:
+    source_message_id = str(context.payload.source_message_id or "")
+    if not source_message_id:
+        return None
+    return context.gateway_client.fetch_group_message(
+        context.account.id,
+        context.group.tg_peer_id,
+        source_message_id,
+        context.account.session_ciphertext,
+        context.credentials,
+    )
 
 
 def _matches_trusted_confirmation_prompt(context: LiveConfirmationRefreshContext, snapshot: object) -> bool:
@@ -155,6 +174,8 @@ def _apply_live_source(
     context: LiveConfirmationRefreshContext,
     snapshot: object,
     button: dict[str, object],
+    *,
+    lookup: str,
 ) -> GroupBotConfirmationButtonPayload:
     source_message_id = str(getattr(snapshot, "remote_message_id", "") or "")
     refreshed_data = {
@@ -168,16 +189,21 @@ def _apply_live_source(
     changed = context.action.payload != refreshed_data
     context.action.payload = refreshed_data
     context.admission.source_message_id = source_message_id
+    result = {
+        **(context.action.result or {}),
+        "group_bot_confirmation_live_source": {
+            "lookup": lookup,
+            "source_message_id": source_message_id,
+        },
+    }
     if changed:
-        context.action.result = {
-            **(context.action.result or {}),
-            "group_bot_confirmation_source_refresh": {
-                "from": context.payload.source_message_id,
-                "to": source_message_id,
-                "button": {"row": refreshed.button_row, "col": refreshed.button_col, "text": refreshed.button_text},
-                "source": "live_group_fetch",
-            },
+        result["group_bot_confirmation_source_refresh"] = {
+            "from": context.payload.source_message_id,
+            "to": source_message_id,
+            "button": {"row": refreshed.button_row, "col": refreshed.button_col, "text": refreshed.button_text},
+            "source": lookup,
         }
+    context.action.result = result
     return refreshed
 
 

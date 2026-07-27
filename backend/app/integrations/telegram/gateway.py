@@ -2552,6 +2552,16 @@ class TelethonTelegramGateway(TelegramGateway):
         client = await self._authorized_client(session_ciphertext, credentials, error_message="listener fetch requires a valid session")
         return await telethon_content.fetch_group_messages(client, peer_id, limit)
 
+    async def _fetch_group_message_async(
+        self,
+        peer_id: str,
+        source_message_id: str,
+        session_ciphertext: str | None,
+        credentials: DeveloperAppCredentials,
+    ) -> GroupMessageSnapshot | None:
+        client = await self._authorized_client(session_ciphertext, credentials, error_message="group source fetch requires a valid session")
+        return await telethon_content.fetch_group_message(client, peer_id, source_message_id)
+
     def fetch_group_messages(
         self,
         account_id: int,
@@ -2565,6 +2575,23 @@ class TelethonTelegramGateway(TelegramGateway):
             session_ciphertext,
             self._usable_credentials(credentials),
             limit,
+        )
+        timeout = max(1.0, float(self.settings.listener_fetch_timeout_seconds or 30))
+        return self._run(asyncio.wait_for(operation, timeout=timeout))
+
+    def fetch_group_message(
+        self,
+        account_id: int,
+        peer_id: str,
+        source_message_id: str,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> GroupMessageSnapshot | None:
+        operation = self._fetch_group_message_async(
+            peer_id,
+            source_message_id,
+            session_ciphertext,
+            self._usable_credentials(credentials),
         )
         timeout = max(1.0, float(self.settings.listener_fetch_timeout_seconds or 30))
         return self._run(asyncio.wait_for(operation, timeout=timeout))
