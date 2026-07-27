@@ -6449,7 +6449,42 @@ def _group_bot_admission_required(
             TaskMembershipAdmissionItem.account_id == account_id,
         ).limit(1)
     )
-    return membership_id is not None
+    return membership_id is not None and _group_has_bot_admission_evidence(
+        session,
+        tenant_id=action.tenant_id,
+        group_id=group_id,
+    )
+
+
+def _group_has_bot_admission_evidence(
+    session: Session,
+    *,
+    tenant_id: int,
+    group_id: int,
+) -> bool:
+    from app.models import GroupBotAdmission, GroupBotAdmissionPolicy
+
+    admission_id = session.scalar(
+        select(GroupBotAdmission.id).where(
+            GroupBotAdmission.tenant_id == tenant_id,
+            GroupBotAdmission.group_id == group_id,
+            or_(
+                GroupBotAdmission.trusted_bot_peer_id != "",
+                GroupBotAdmission.source_message_id != "",
+                GroupBotAdmission.evidence_ref != "",
+            ),
+        ).limit(1)
+    )
+    if admission_id is not None:
+        return True
+    policy_id = session.scalar(
+        select(GroupBotAdmissionPolicy.id).where(
+            GroupBotAdmissionPolicy.tenant_id == tenant_id,
+            GroupBotAdmissionPolicy.group_id == group_id,
+            GroupBotAdmissionPolicy.status == "active",
+        ).limit(1)
+    )
+    return policy_id is not None
 
 
 def _ensure_scoped_group_bot_admission(

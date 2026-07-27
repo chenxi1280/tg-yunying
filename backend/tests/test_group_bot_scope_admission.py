@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
@@ -50,18 +50,45 @@ def test_gateway_gate_backfills_missing_scoped_admission_and_defers_body() -> No
         assert action.result["error_code"] == "group_bot_admission_wait"
 
 
-def test_gateway_gate_keeps_legacy_unscoped_task_outside_admission_flow() -> None:
+def test_gateway_gate_keeps_membership_only_group_outside_admission_flow() -> None:
     with _session() as session:
         _seed_scope(session)
         task = session.get(Task, "task-ai")
         task.type_config = {"target_group_id": 7}
-        session.query(TaskMembershipAdmissionItem).delete()
         action = session.get(Action, "send-1")
 
         allowed = _group_bot_admission_gate_pass(session, action, group_id=7, account_id=11)
 
         assert allowed is True
         assert session.query(GroupBotAdmission).count() == 0
+
+
+def test_gateway_gate_expands_audited_group_bot_scope_to_membership_account() -> None:
+    with _session() as session:
+        _seed_scope(session)
+        task = session.get(Task, "task-ai")
+        task.type_config = {"target_group_id": 7}
+        session.add(
+            GroupBotAdmission(
+                tenant_id=1,
+                group_id=7,
+                account_id=12,
+                state="required_channel_follow_pending",
+                trusted_bot_peer_id="900",
+                evidence_ref="msg:bot-rule",
+            )
+        )
+        session.flush()
+        action = session.get(Action, "send-1")
+
+        allowed = _group_bot_admission_gate_pass(session, action, group_id=7, account_id=11)
+
+        admission = session.scalar(
+            select(GroupBotAdmission).where(GroupBotAdmission.account_id == 11)
+        )
+        assert allowed is False
+        assert admission is not None
+        assert action.result["group_bot_admission_backfilled"] is True
 
 
 def test_post_follow_probe_is_held_until_remote_visibility_confirms() -> None:
