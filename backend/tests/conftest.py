@@ -85,6 +85,13 @@ def _reset_test_database(database_url: str) -> None:
     engine.dispose()
 
 
+def _migrate_test_database() -> None:
+    from app.database import engine, run_migrations
+
+    engine.dispose()
+    run_migrations()
+
+
 def _selected_tests_require_postgres(items: list[pytest.Item]) -> bool:
     return any(item.get_closest_marker("no_postgres") is None for item in items)
 
@@ -226,6 +233,7 @@ def pytest_collection_modifyitems(session, config, items):
         return
     try:
         _reset_test_database(_postgres_test_database_url())
+        _migrate_test_database()
     except (RuntimeError, SQLAlchemyError) as exc:
         raise pytest.UsageError(
             "PostgreSQL test database is required for the selected tests, "
