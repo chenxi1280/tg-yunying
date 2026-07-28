@@ -17,6 +17,14 @@ def new_uuid() -> str:
 
 class Task(Base):
     __tablename__ = "tasks"
+    __table_args__ = (
+        UniqueConstraint(
+            "created_by_user_id",
+            "create_task_type",
+            "client_request_id",
+            name="uq_tasks_create_idempotency",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), default=1)
@@ -37,6 +45,15 @@ class Task(Base):
     type_config: Mapped[dict] = mapped_column(JSON, default=dict)
     stats: Mapped[dict] = mapped_column(JSON, default=dict)
     config_revision: Mapped[int] = mapped_column(Integer, default=1)
+    created_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("app_users.id"),
+        nullable=True,
+    )
+    create_task_type: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    client_request_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    request_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    request_field_hashes: Mapped[dict] = mapped_column(JSON, default=dict)
+    idempotency_legacy_unproven: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
