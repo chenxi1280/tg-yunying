@@ -156,8 +156,10 @@ def _enum_list(source: dict[str, Any], key: str, allowed: object) -> list[str] |
         return []
     values = source.get(key)
     allowed_values = set(allowed)
-    if not isinstance(values, list) or not values:
+    if not isinstance(values, list):
         return None
+    if not values:
+        return []
     normalized = [str(value) for value in values]
     if any(value not in allowed_values for value in normalized):
         return None
@@ -167,8 +169,10 @@ def _enum_list(source: dict[str, Any], key: str, allowed: object) -> list[str] |
 def _button_rules(value: object, *, require_position: bool) -> list[dict[str, Any]] | None:
     if value is None:
         return []
-    if not isinstance(value, list) or not value:
+    if not isinstance(value, list):
         return None
+    if not value:
+        return []
     rules = [_button_rule(item, require_position=require_position) for item in value]
     return None if any(rule is None for rule in rules) else [rule for rule in rules if rule is not None]
 

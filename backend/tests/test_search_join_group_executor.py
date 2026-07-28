@@ -31,6 +31,7 @@ from app.models import (
 )
 from app.security import encrypt_secret
 from app.search_keywords import normalized_keyword_hash
+from app.search_join_protocol import approved_protocol_profile, protocol_profile_is_approved
 from app.schemas.account_environment import ProxyAirportSubscriptionCreate
 from app.services._common import _now
 from app.services.proxy_airport_subscription import create_proxy_airport_subscription, sync_proxy_airport_subscription_by_id
@@ -72,6 +73,14 @@ def _approved_jisou_protocol_profile() -> dict:
             {"page_phase": "group_result_page", "button_effects_any": ["join_candidate", "navigate_only"]},
         ]
     }
+
+
+@pytest.mark.no_postgres
+def test_approved_jisou_protocol_profile_remains_approved_after_serialization() -> None:
+    approved = approved_protocol_profile(_approved_jisou_protocol_profile())
+
+    assert approved is not None
+    assert protocol_profile_is_approved(approved) is True
 
 
 @pytest.fixture
