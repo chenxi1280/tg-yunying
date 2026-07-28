@@ -39,6 +39,10 @@ class TaskAccountDailyCoverage(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
     task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"))
+    task_day_ledger_id: Mapped[str | None] = mapped_column(
+        ForeignKey("task_day_ledgers.id", ondelete="CASCADE"),
+        nullable=True,
+    )
     group_id: Mapped[int] = mapped_column(ForeignKey("tg_groups.id"))
     account_id: Mapped[int] = mapped_column(ForeignKey("tg_accounts.id"))
     membership_item_id: Mapped[int | None] = mapped_column(

@@ -16,6 +16,8 @@ from app.models import (
     OperationTarget,
     Task,
     TaskAccountDailyCoverage,
+    TaskDayLedger,
+    TaskGroupDailyMessageSlot,
     TaskMembershipAdmissionItem,
     Tenant,
     TgAccount,
@@ -26,6 +28,7 @@ from app.services.task_center.daily_group_target import (
     daily_group_due_message_count,
     ensure_task_group_daily_target,
 )
+from app.services.task_center.daily_ledgers import ensure_task_day_ledger
 
 
 pytestmark = pytest.mark.no_postgres
@@ -151,6 +154,30 @@ def test_midday_start_makes_first_message_due_immediately(session: Session) -> N
     assert daily_group_due_message_count(target, {}, now=timestamp) == 1
 
 
+def test_zero_quiet_curve_weight_reduces_volume_without_blocking(session: Session) -> None:
+    task, group = _seed(session, configured=24, account_count=1)
+    target = ensure_task_group_daily_target(
+        session,
+        task,
+        group,
+        date(2026, 7, 28),
+        now=datetime(2026, 7, 28),
+    )
+    pacing = {
+        "operation_profile": {
+            "hourly_activity_curve": [0] * 23 + [60],
+        },
+    }
+
+    due = daily_group_due_message_count(
+        target,
+        pacing,
+        now=datetime(2026, 7, 28, 12),
+    )
+
+    assert due > 0
+
+
 def test_account_coverage_target_is_always_one(session: Session) -> None:
     task, group = _seed(session, configured=10, account_count=1)
     item = session.get(TaskMembershipAdmissionItem, 1)
@@ -167,6 +194,56 @@ def test_account_coverage_target_is_always_one(session: Session) -> None:
     session.flush()
 
     assert row.target_count == 1
+
+
+def test_day_ledger_materializes_one_coverage_slot_per_frozen_account(
+    session: Session,
+) -> None:
+    task, _group = _seed(session, configured=5, account_count=3)
+    timestamp = datetime(2026, 7, 28, 12)
+    task.scheduled_start = timestamp
+
+    ledger = ensure_task_day_ledger(session, task, now=timestamp)
+    slots = session.query(TaskGroupDailyMessageSlot).filter_by(
+        task_day_ledger_id=ledger.id,
+    ).order_by(TaskGroupDailyMessageSlot.slot_ordinal).all()
+
+    assert ledger.obligation_local_date == date(2026, 7, 28)
+    assert ledger.day_phase == "partial_start"
+    assert len(slots) == 5
+    assert [slot.slot_kind for slot in slots] == [
+        "account_coverage",
+        "account_coverage",
+        "account_coverage",
+        "extra_volume",
+        "extra_volume",
+    ]
+    assert all(slot.task_account_daily_coverage_id for slot in slots[:3])
+    assert all(slot.task_account_daily_coverage_id is None for slot in slots[3:])
+
+
+def test_day_ledger_snapshots_timezone_and_reuses_same_natural_day(
+    session: Session,
+) -> None:
+    task, _group = _seed(session, configured=3, account_count=3)
+    task.timezone = "Asia/Shanghai"
+
+    first = ensure_task_day_ledger(
+        session,
+        task,
+        now=datetime(2026, 7, 28, 8),
+    )
+    second = ensure_task_day_ledger(
+        session,
+        task,
+        now=datetime(2026, 7, 28, 20),
+    )
+
+    assert second.id == first.id
+    assert first.timezone_snapshot == "Asia/Shanghai"
+    assert first.timezone_revision == task.config_revision
+    assert first.deadline_at > first.period_start_at
+    assert session.query(TaskDayLedger).count() == 1
 
 
 def test_daily_target_counts_only_success_attempt_with_remote_id(session: Session) -> None:

@@ -287,11 +287,6 @@ class GroupAIChatConfig(BaseModel):
     daily_message_target: int = Field(default=1, ge=1, le=100_000)
     account_coverage_mode: Literal["all_accounts_daily"] = "all_accounts_daily"
     coverage_window_hours: Literal[24] = 24
-    per_account_daily_min_messages: int | None = Field(default=None, exclude=True)
-    per_account_daily_max_messages: int | None = Field(default=None, exclude=True)
-    hard_hourly_target_enabled: bool | None = Field(default=None, exclude=True)
-    hourly_min_messages: int | None = Field(default=None, exclude=True)
-    hard_hourly_strategy: str | None = Field(default=None, exclude=True)
     history_fetch_account_id: int | None = None
     auto_join_target: bool = True
     group_bot_admission_required: bool = True
@@ -1017,13 +1012,8 @@ class TaskSettingsUpdate(TaskUpdate):
     messages_per_round_mode: Literal["auto", "manual"] | None = None
     messages_per_round: int | None = Field(default=None, ge=1)
     reply_min_per_round: int | None = Field(default=None, ge=0)
-    account_coverage_mode: Literal["natural", "all_accounts_daily"] | None = None
-    per_account_daily_min_messages: int | None = Field(default=None, ge=1, le=2)
-    per_account_daily_max_messages: int | None = Field(default=None, ge=1, le=2)
+    account_coverage_mode: Literal["all_accounts_daily"] | None = None
     coverage_window_hours: Literal[24] | None = None
-    hard_hourly_target_enabled: bool | None = None
-    hourly_min_messages: int | None = Field(default=None, ge=1)
-    hard_hourly_strategy: Literal["force_planning"] | None = None
     history_fetch_account_id: int | None = None
     auto_join_target: bool | None = None
     group_bot_admission_required: bool | None = None

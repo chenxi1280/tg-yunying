@@ -33,8 +33,8 @@ PLANNER_PROGRESS_SESSION_KEY = "task_center.hard_hourly_planner_progress"
 
 
 def enabled(task_or_config: Task | dict[str, Any]) -> bool:
-    config = task_or_config.type_config if isinstance(task_or_config, Task) else task_or_config
-    return bool((config or {}).get("hard_hourly_target_enabled")) and goal(config or {}) > 0
+    del task_or_config
+    return False
 
 
 def goal(config: dict[str, Any]) -> int:
