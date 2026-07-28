@@ -26,10 +26,14 @@ def reconcile_window_unclaimed(
     allocations: list[DispatchClaimShardAllocation],
     reservations: Mapping[tuple[int, str, str, int, int], DispatchClaimReservation],
     now: datetime,
-) -> None:
+) -> int:
     due_counts = _due_reservation_action_counts(session, reservations, now)
-    _release_stale_unclaimed_reservations(reservations, due_counts)
+    released_count = _release_stale_unclaimed_reservations(
+        reservations,
+        due_counts,
+    )
     _sync_window_unclaimed_counts(window, allocations, reservations)
+    return released_count
 
 
 def claim_class_for_action(task: Task, action: Action) -> str:
@@ -99,14 +103,18 @@ def _due_reservation_key(
 def _release_stale_unclaimed_reservations(
     reservations: Mapping[tuple[int, str, str, int, int], DispatchClaimReservation],
     due_counts: Mapping[tuple[int, str, str, int, int], int],
-) -> None:
+) -> int:
+    released_count = 0
     for key, reservation in reservations.items():
         available = reservation_available(reservation)
         retained = min(available, int(due_counts.get(key, 0)))
         if available > retained:
-            reservation.reserved_claims -= available - retained
+            released = available - retained
+            reservation.reserved_claims -= released
             reservation.reason = "unclaimed_action_no_longer_due"
             reservation.version += 1
+            released_count += released
+    return released_count
 
 
 def _sync_window_unclaimed_counts(

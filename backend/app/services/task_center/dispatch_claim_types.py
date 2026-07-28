@@ -63,7 +63,13 @@ class DispatchClaimDemand:
     required_claims: int
     urgency_score: int
     is_strict: bool
+    allocation_business_task_id: str | None = None
+    lane_business_kind: str = "fulfillment"
 
     @property
     def key(self) -> tuple[int, str, str, int, int]:
         return (self.tenant_id, self.task_id, self.claim_class, self.shard_total, self.shard_index)
+
+    @property
+    def business_task_id(self) -> str:
+        return self.allocation_business_task_id or self.task_id

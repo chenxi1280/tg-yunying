@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.models import Action, DispatchClaimReservation, DispatchClaimWindow, Task
 from app.timezone import as_beijing_aware
 
-from .dispatch_claim_allocation import normal_demands, rotated_demands, rotation_value, strict_non_priority_demands
+from .dispatch_claim_allocation import rotation_value
 from .dispatch_claim_ledger import reservation_available
 from .dispatch_claim_reconciliation import account_shard_for_action, claim_class_for_action
 from .dispatch_claim_types import (
@@ -18,10 +18,8 @@ from .dispatch_claim_types import (
     DispatchClaimDemand,
     DispatchClaimPlan,
     HARD_HOURLY_CLAIM_CLASS,
-    PRIORITY_CLAIM_CLASSES,
     SEARCH_MEMBERSHIP_CLAIM_CLASS,
     SEARCH_SOURCE_CLAIM_CLASS,
-    SHARED_CAPACITY_ERROR,
     TARGET_ADMISSION_CLAIM_CLASS,
 )
 
@@ -60,7 +58,6 @@ def plan_from_reservations(
     fairness_decisions: Mapping[int, object],
 ) -> DispatchClaimPlan:
     unserved = _unserved_classes(demands, reservations)
-    _write_unserved_task_stats(tasks, demands, reservations, window, unserved)
     selected = _selected_actions(demands, reservations, shard_total, shard_index)
     ordered = _order_selected_actions(selected, demands, reservations, window.allocation_epoch)
     ordered = _apply_fairness_preference(ordered, selected, fairness_decisions)
@@ -75,6 +72,7 @@ def _demand_from_group(
     now: datetime,
 ) -> DispatchClaimDemand:
     tenant_id, task_id, claim_class, shard_total, shard_index = key
+    business_task_id = _allocation_business_task_id(task_id, actions)
     return DispatchClaimDemand(
         tenant_id=tenant_id,
         task_id=task_id,
@@ -85,7 +83,28 @@ def _demand_from_group(
         required_claims=len(actions),
         urgency_score=_urgency_score(task, actions, claim_class, now),
         is_strict=_is_strict_claim(task, claim_class),
+        allocation_business_task_id=business_task_id,
+        lane_business_kind=_lane_business_kind(claim_class),
     )
+
+
+def _allocation_business_task_id(
+    task_id: str,
+    actions: list[Action],
+) -> str:
+    for action in actions:
+        payload = action.payload if isinstance(action.payload, dict) else {}
+        sponsor = payload.get("admission_execution_sponsor_task_id")
+        parent = payload.get("parent_task_id")
+        if sponsor or parent:
+            return str(sponsor or parent)
+    return task_id
+
+
+def _lane_business_kind(claim_class: str) -> str:
+    if claim_class == TARGET_ADMISSION_CLAIM_CLASS:
+        return "membership_admission"
+    return "fulfillment"
 
 
 def _is_strict_claim(task: Task, claim_class: str) -> bool:
@@ -130,45 +149,6 @@ def _unserved_classes(
     return {key: tuple(sorted(classes)) for key, classes in values.items()}
 
 
-def _write_unserved_task_stats(
-    tasks: Mapping[str, Task],
-    demands: list[DispatchClaimDemand],
-    reservations: Mapping[tuple[int, str, str, int, int], DispatchClaimReservation],
-    window: DispatchClaimWindow,
-    unserved: Mapping[tuple[int, int], tuple[str, ...]],
-) -> None:
-    for demand in demands:
-        available = reservation_available(reservations.get(demand.key))
-        if demand.is_strict and available < demand.required_claims:
-            task = tasks.get(demand.task_id)
-            if task is not None:
-                _set_shared_capacity_block(task, demand, window, available, unserved)
-
-
-def _set_shared_capacity_block(
-    task: Task,
-    demand: DispatchClaimDemand,
-    window: DispatchClaimWindow,
-    available: int,
-    unserved: Mapping[tuple[int, int], tuple[str, ...]],
-) -> None:
-    shard = (demand.shard_total, demand.shard_index)
-    task.stats = {
-        **(task.stats or {}),
-        "dispatch_claim": {
-            "status": SHARED_CAPACITY_ERROR,
-            "dispatcher_scope": window.dispatcher_scope,
-            "shard_total": demand.shard_total,
-            "shard_index": demand.shard_index,
-            "allocation_epoch": window.allocation_epoch,
-            "required_claims": demand.required_claims,
-            "available_claims": available,
-            "unserved_strict_classes": list(unserved.get(shard, ())),
-        },
-    }
-    task.last_error = SHARED_CAPACITY_ERROR
-
-
 def _selected_actions(
     demands: list[DispatchClaimDemand],
     reservations: Mapping[tuple[int, str, str, int, int], DispatchClaimReservation],
@@ -190,10 +170,12 @@ def _order_selected_actions(
     epoch: int,
 ) -> list[str]:
     action_ids = _action_ids_by_demand(selected)
-    priority = _take_priority_actions(action_ids, demands, epoch)
-    strict = _take_balanced_actions(action_ids, strict_non_priority_demands(demands), reservations, epoch)
-    ordinary = _take_balanced_actions(action_ids, normal_demands(demands), reservations, epoch)
-    return priority + strict + ordinary
+    return _take_balanced_actions(
+        action_ids,
+        demands,
+        reservations,
+        epoch,
+    )
 
 
 def _action_ids_by_demand(
@@ -203,19 +185,6 @@ def _action_ids_by_demand(
     for action_id, demand in selected.items():
         values[demand.key].append(action_id)
     return values
-
-
-def _take_priority_actions(
-    action_ids: dict[tuple[int, str, str, int, int], list[str]],
-    demands: list[DispatchClaimDemand],
-    epoch: int,
-) -> list[str]:
-    result: list[str] = []
-    for claim_class in PRIORITY_CLAIM_CLASSES:
-        rows = [demand for demand in demands if demand.claim_class == claim_class and demand.is_strict]
-        for demand in rotated_demands(rows, epoch):
-            result.extend(action_ids.pop(demand.key, []))
-    return result
 
 
 def _take_balanced_actions(
@@ -246,35 +215,8 @@ def _apply_fairness_preference(
     selected: Mapping[str, DispatchClaimDemand],
     fairness_decisions: Mapping[int, object],
 ) -> list[str]:
-    result = list(ordered)
-    for tenant_id, decision in fairness_decisions.items():
-        if getattr(decision, "preferred_class", None) == "ordinary":
-            _promote_tenant_ordinary(result, selected, int(tenant_id))
-    return result
-
-
-def _promote_tenant_ordinary(
-    ordered: list[str],
-    selected: Mapping[str, DispatchClaimDemand],
-    tenant_id: int,
-) -> None:
-    hard_index = _first_index(ordered, selected, tenant_id, HARD_HOURLY_CLAIM_CLASS)
-    ordinary_index = _first_index(ordered, selected, tenant_id, "ordinary")
-    if hard_index is not None and ordinary_index is not None and ordinary_index > hard_index:
-        ordered.insert(hard_index, ordered.pop(ordinary_index))
-
-
-def _first_index(
-    ordered: list[str],
-    selected: Mapping[str, DispatchClaimDemand],
-    tenant_id: int,
-    claim_class: str,
-) -> int | None:
-    for index, action_id in enumerate(ordered):
-        demand = selected[action_id]
-        if demand.tenant_id == tenant_id and demand.claim_class == claim_class:
-            return index
-    return None
+    del selected, fairness_decisions
+    return ordered
 
 
 def _bindings_for_actions(
