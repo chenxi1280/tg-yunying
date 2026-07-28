@@ -409,13 +409,17 @@ def _missing_image_detail(context: dict[str, Any]) -> str:
 
 
 def _image_verification_provider(session: Session) -> AiProvider | None:
+    return next(iter(_image_verification_providers(session)), None)
+
+
+def _image_verification_providers(session: Session) -> list[AiProvider]:
     providers = session.scalars(
         select(AiProvider).where(
             AiProvider.is_active.is_(True),
             AiProvider.health_status == AiProviderHealthStatus.HEALTHY.value,
-        )
+        ).order_by(AiProvider.id.asc())
     )
-    return next((provider for provider in providers if _image_verification_provider_source(provider)), None)
+    return [provider for provider in providers if _image_verification_provider_source(provider)]
 
 
 def _image_verification_provider_source(provider: AiProvider) -> str:
@@ -495,30 +499,49 @@ def build_search_join_image_verification_solver(
 ) -> SearchJoinImageVerificationSolver | None:
     """PRD §2.19.2: 构造极搜图片算式验证码识别 solver。
 
-    在 dispatcher 服务层预解析 provider + credentials，返回一个无 DB 依赖的 callable，
-    供 search_join 集成层在 telethon 会话内调用。provider 全部不可用时返回 None，
-    由调用方写 jisou_image_verification_failed。
+    在 dispatcher 服务层预解析全部健康视觉 provider 的 credentials，返回一个无 DB 依赖
+    的 callable，按稳定顺序寻找首个安全候选。全部不可用时返回 None。
     """
-    provider = _image_verification_provider(session)
-    if provider is None:
+    providers = _image_verification_providers(session)
+    if not providers:
         return None
-    credentials = ai_provider_credentials(provider)
+    credentials = [ai_provider_credentials(provider) for provider in providers]
 
     def solver(image_bytes: bytes, mime_type: str, candidate_answers: list[str]) -> tuple[str, float] | None:
         if not image_bytes:
             return None
-        try:
-            result = ai_gateway.solve_image_verification(
-                credentials,
+        allowed_answers = frozenset(answer.strip() for answer in candidate_answers)
+        for provider_credentials in credentials:
+            result = _solve_search_join_image(
+                provider_credentials,
                 image_bytes,
-                mime_type or "image/png",
-                prompt=SEARCH_JOIN_IMAGE_VERIFICATION_PROMPT,
+                mime_type,
             )
-        except Exception:  # noqa: BLE001 - minimax 抛错或返回空都视为 None，由调用方重试或写 failed。
-            return None
-        answer = str(result.answer or "").strip()
-        if not answer:
-            return None
-        return answer, float(result.confidence or 0.0)
+            if result is None:
+                continue
+            answer, confidence = result
+            if confidence >= MIN_IMAGE_VERIFICATION_CONFIDENCE and answer in allowed_answers:
+                return result
+        return None
 
     return solver
+
+
+def _solve_search_join_image(
+    credentials: Any,
+    image_bytes: bytes,
+    mime_type: str,
+) -> tuple[str, float] | None:
+    try:
+        result = ai_gateway.solve_image_verification(
+            credentials,
+            image_bytes,
+            mime_type or "image/png",
+            prompt=SEARCH_JOIN_IMAGE_VERIFICATION_PROMPT,
+        )
+    except Exception:  # noqa: BLE001 - try the next configured healthy vision provider.
+        return None
+    answer = str(result.answer or "").strip()
+    if not answer:
+        return None
+    return answer, float(result.confidence or 0.0)

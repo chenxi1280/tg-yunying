@@ -25,7 +25,6 @@ HUMAN_VERIFICATION_MARKERS = ("人机验证", "计算结果", "captcha")
 # PRD §2.19.2 图片算式验证码识别相关常量。
 IMAGE_VERIFICATION_MIN_CONFIDENCE = 0.70
 IMAGE_VERIFICATION_MAX_RECURSION = 2
-IMAGE_VERIFICATION_MINIMAX_RETRY = 2
 IMAGE_VERIFICATION_PROMPT = (
     "识别图片中的算式并计算结果，输出 JSON：{\"answer\":数字,\"confidence\":0到1}。"
     "answer 必须是算式计算后的正整数。只输出紧凑 JSON，不要解释。"
@@ -473,15 +472,9 @@ async def _handle_jisou_image_verification(
     if not image_bytes:
         return _image_verification_failed_result(classification, buttons, "verification image download empty")
     mime_type = _message_media_mime_type(page)
-    solved = await asyncio.to_thread(
-        _invoke_image_solver_with_retry,
-        solver,
-        image_bytes,
-        mime_type,
-        candidate_answers,
-    )
+    solved = await asyncio.to_thread(solver, image_bytes, mime_type, candidate_answers)
     if solved is None:
-        return _image_verification_failed_result(classification, buttons, "minimax returned empty after retry")
+        return _image_verification_failed_result(classification, buttons, "no healthy provider returned a safe answer")
     answer, confidence = solved
     if confidence < IMAGE_VERIFICATION_MIN_CONFIDENCE:
         return _image_verification_failed_result(
@@ -519,23 +512,6 @@ async def _handle_jisou_image_verification(
             recursion_depth=recursion_depth + 1,
         )
     return _ImageVerificationHandleResult(page=clicked_page, error=None)
-
-
-def _invoke_image_solver_with_retry(
-    solver: ImageVerificationSolver,
-    image_bytes: bytes,
-    mime_type: str,
-    candidate_answers: list[str],
-) -> tuple[str, float] | None:
-    """PRD §2.19.2 第 2 步：minimax 返回空时重试 1-2 次。"""
-    for _ in range(IMAGE_VERIFICATION_MINIMAX_RETRY + 1):
-        try:
-            result = solver(image_bytes, mime_type, candidate_answers)
-        except Exception:  # noqa: BLE001 - solver 故障视为返回空，由调用方写 failed。
-            return None
-        if result is not None:
-            return result
-    return None
 
 
 async def _download_verification_image(client: Any, page: Any) -> bytes:

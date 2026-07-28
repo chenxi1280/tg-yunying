@@ -863,8 +863,8 @@ def test_jisou_image_verification_fails_when_confidence_below_threshold() -> Non
 
 
 @pytest.mark.no_postgres
-def test_jisou_image_verification_fails_when_solver_returns_empty_after_retry() -> None:
-    """PRD §2.19.2 第 2 步：minimax 返回空重试 1-2 次仍空，写 jisou_image_verification_failed。"""
+def test_jisou_image_verification_fails_when_all_providers_return_no_safe_answer() -> None:
+    """所有健康 provider 都没有安全答案时，写 jisou_image_verification_failed。"""
     digit_answers = ["8", "9", "10", "11", "12", "13", "14", "15"]
     verification_page = _verification_image_page(digit_answers=digit_answers)
     client = FakeSearchJoinClient([FakeMessage(100, []), verification_page])
@@ -887,8 +887,7 @@ def test_jisou_image_verification_fails_when_solver_returns_empty_after_retry() 
 
     assert result["success"] is False
     assert result["error_code"] == "jisou_image_verification_failed"
-    # PRD §2.19.2: 返回空时重试 1-2 次（初始 1 次 + 重试）
-    assert call_count >= 2
+    assert call_count == 1
     assert verification_page.clicked == []
 
 
