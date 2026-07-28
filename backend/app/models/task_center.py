@@ -81,6 +81,11 @@ class Action(Base):
     __tablename__ = "actions"
     __table_args__ = (
         UniqueConstraint("tenant_id", "action_dedupe_key", name="uq_actions_action_dedupe_key"),
+        UniqueConstraint(
+            "content_mix_cycle_slot_id",
+            "content_mix_slot_attempt",
+            name="uq_actions_content_mix_slot_attempt",
+        ),
         Index("ix_actions_due_claim", "status", "scheduled_at", "created_at"),
         Index("ix_actions_claim_expiry", "status", "claim_expires_at"),
         Index("ix_actions_lease_recovery", "lease_owner", "lease_expires_at"),
@@ -197,6 +202,18 @@ class Action(Base):
     claim_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     plan_batch_key: Mapped[str | None] = mapped_column(String(160), nullable=True)
     action_dedupe_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    primary_quantity_slot_id: Mapped[str | None] = mapped_column(
+        ForeignKey("task_group_daily_message_slots.id"),
+        nullable=True,
+    )
+    content_mix_cycle_slot_id: Mapped[str | None] = mapped_column(
+        ForeignKey("content_mix_cycle_slots.id"),
+        nullable=True,
+    )
+    content_mix_slot_attempt: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
     payload: Mapped[dict] = mapped_column(JSON, default=dict)
     result: Mapped[dict] = mapped_column(JSON, default=dict)
     retry_count: Mapped[int] = mapped_column(Integer, default=0)

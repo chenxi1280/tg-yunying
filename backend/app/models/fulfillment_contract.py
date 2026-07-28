@@ -200,10 +200,12 @@ class ContentMixObligation(Base):
     __tablename__ = "content_mix_obligations"
     __table_args__ = (
         UniqueConstraint(
-            "content_mix_contract_id",
+            "tenant_id",
+            "content_mix_scope_key",
             "obligation_source",
             "obligation_kind",
-            name="uq_content_mix_obligation_contract_kind",
+            "obligation_ordinal",
+            name="uq_content_mix_obligation_scope_kind_ordinal",
         ),
         Index(
             "ix_content_mix_obligations_status",
@@ -217,12 +219,19 @@ class ContentMixObligation(Base):
     content_mix_contract_id: Mapped[str] = mapped_column(
         ForeignKey("content_mix_contracts.id", ondelete="CASCADE")
     )
+    content_mix_scope_key: Mapped[str] = mapped_column(String(255))
     obligation_source: Mapped[str] = mapped_column(String(24))
     obligation_kind: Mapped[str] = mapped_column(String(32))
+    obligation_ordinal: Mapped[int] = mapped_column(Integer)
     assigned_cycle_slot_id: Mapped[str | None] = mapped_column(
         ForeignKey("content_mix_cycle_slots.id"),
         nullable=True,
     )
+    assigned_action_id: Mapped[str | None] = mapped_column(
+        ForeignKey("actions.id"),
+        nullable=True,
+    )
+    assignment_version: Mapped[int] = mapped_column(Integer, default=1)
     required_count: Mapped[int] = mapped_column(Integer)
     planned_count: Mapped[int] = mapped_column(Integer, default=0)
     success_count: Mapped[int] = mapped_column(Integer, default=0)

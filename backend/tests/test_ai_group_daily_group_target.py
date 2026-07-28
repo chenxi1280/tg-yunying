@@ -11,6 +11,8 @@ from app.database import Base
 from app.models import (
     Action,
     AiGroupMessageMemory,
+    ContentMixCycle,
+    ContentMixCycleSlot,
     ExecutionAttempt,
     GroupBotAdmission,
     OperationTarget,
@@ -246,6 +248,68 @@ def test_day_ledger_snapshots_timezone_and_reuses_same_natural_day(
     assert session.query(TaskDayLedger).count() == 1
 
 
+def test_planner_freezes_relation_slots_against_daily_quantity_slots(
+    session: Session,
+) -> None:
+    task, group = _seed(session, configured=3, account_count=3)
+    ledger = ensure_task_day_ledger(
+        session,
+        task,
+        now=datetime(2026, 7, 28, 12),
+    )
+    target = ensure_task_group_daily_target(
+        session,
+        task,
+        group,
+        date(2026, 7, 28),
+        now=datetime(2026, 7, 28, 12),
+    )
+    coverages = {
+        row.account_id: row
+        for row in session.query(TaskAccountDailyCoverage).filter_by(
+            task_day_ledger_id=ledger.id,
+        )
+    }
+    items = [
+        {
+            "slot": {"slot_id": "logical-1", "account_id": 1},
+            "reply_target": {"message_id": 501},
+        },
+        {"slot": {"slot_id": "logical-2", "account_id": 2}},
+        {"slot": {"slot_id": "logical-3", "account_id": 3}},
+    ]
+    blueprint = SimpleNamespace(
+        facts=SimpleNamespace(
+            target=session.get(OperationTarget, 31),
+                config={**task.type_config, "reply_min_per_round": 1},
+                coverage=SimpleNamespace(daily_group_target_id=target.id),
+                task_config_revision=task.config_revision,
+                rule_version=SimpleNamespace(rule_set_id=7, version=2),
+                group=group,
+            ),
+        turn=SimpleNamespace(cycle_index=1),
+        profile=SimpleNamespace(
+            cycle_id=f"{task.id}:cycle:1",
+            coverage_rows=coverages,
+        ),
+        generation=SimpleNamespace(quality_items=items),
+    )
+
+    frozen = group_ai_chat._freeze_content_mix_cycle(
+        session,
+        task,
+        blueprint,
+    )
+    slots = session.query(ContentMixCycleSlot).filter_by(
+        cycle_id=frozen.cycle.id,
+    ).order_by(ContentMixCycleSlot.slot_index).all()
+
+    assert session.query(ContentMixCycle).count() == 1
+    assert [slot.relation_kind for slot in slots] == ["reply", "direct", "direct"]
+    assert slots[0].initial_reply_to_message_id == "501"
+    assert len({slot.primary_quantity_slot_id for slot in slots}) == 3
+
+
 def test_daily_target_counts_only_success_attempt_with_remote_id(session: Session) -> None:
     task, group = _seed(session, configured=2, account_count=1)
     executed_at = datetime(2026, 7, 28, 12)
@@ -381,10 +445,7 @@ def test_group_volume_candidates_scan_past_uncovered_admission_debt(
     monkeypatch.setattr(
         group_ai_chat,
         "voice_profile_prompt_details",
-        lambda *_args, **_kwargs: {
-            account.id: {"version": 1, "summary": f"面具{account.id}"}
-            for account in accounts
-        },
+        lambda *_args, **_kwargs: {},
     )
     monkeypatch.setattr(
         group_ai_chat,

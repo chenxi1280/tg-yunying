@@ -181,7 +181,16 @@ def test_released_comment_actions_are_replenished_with_monotonic_slots(monkeypat
     assert len(all_actions) == 4
     assert len({action.action_dedupe_key for action in all_actions}) == 4
     assert sorted(action.payload["slot_id"] for action in first_actions) == ["channel-comment:41:0", "channel-comment:41:1"]
-    assert sorted(action.payload["slot_id"] for action in new_actions) == ["channel-comment:41:2", "channel-comment:41:3"]
+    assert sorted(action.payload["slot_id"] for action in new_actions) == ["channel-comment:41:0", "channel-comment:41:1"]
+    assert {action.payload["comment_action_attempt_no"] for action in first_actions} == {1}
+    assert {action.payload["comment_action_attempt_no"] for action in new_actions} == {2}
+    assert {
+        action.payload["comment_fulfillment_obligation_id"]
+        for action in first_actions
+    } == {
+        action.payload["comment_fulfillment_obligation_id"]
+        for action in new_actions
+    }
     assert all(action.status == status for action in first_actions)
     assert all(action.status == "pending" for action in new_actions)
     assert len({action.account_id for action in new_actions}) == 2

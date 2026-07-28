@@ -29,6 +29,16 @@ class SendMessagePayload(BaseModel):
     original_text: str = ""
     review_approved: bool = False
     cycle_id: str = ""
+    content_mix_cycle_id: str = ""
+    content_mix_cycle_slot_id: str = ""
+    primary_quantity_slot_id: str = ""
+    content_mix_contract_version: int = 0
+    relation_kind: Literal["", "direct", "reply"] = ""
+    slot_attempt: int = 0
+    planned_material_kind: Literal[
+        "unresolved", "none", "image", "sticker", "custom_emoji"
+    ] = "unresolved"
+    planned_normal_text_emoji: Literal["unresolved", "yes", "no"] = "unresolved"
     turn_index: int | None = None
     account_role: str = ""
     account_memory: str = ""
@@ -414,6 +424,8 @@ POST_COMMENT_DEDUPE_FIELDS = frozenset(
         "comment_mode",
         "reply_to_message_id",
         "slot_id",
+        "comment_fulfillment_obligation_id",
+        "comment_action_attempt_no",
     }
 )
 

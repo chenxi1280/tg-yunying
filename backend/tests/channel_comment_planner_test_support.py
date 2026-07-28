@@ -9,6 +9,7 @@ from app.database import Base
 from app.models import (
     AccountStatus,
     Action,
+    AiAccountVoiceProfile,
     ChannelMessage,
     ChannelMessageComment,
     OperationTarget,
@@ -80,6 +81,18 @@ def _seed_comment_accounts(session: Session) -> None:
                 status=AccountStatus.ACTIVE.value,
                 health_score=100,
                 session_ciphertext=f"session-{account_id}",
+            )
+        )
+        session.add(
+            AiAccountVoiceProfile(
+                id=f"comment-mask-{account_id}",
+                tenant_id=1,
+                account_id=account_id,
+                version=1,
+                mask_name=f"评论面具{account_id}",
+                short_prompt_summary="自然追问具体信息",
+                status="active",
+                quality_status="active",
             )
         )
 

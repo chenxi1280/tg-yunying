@@ -1,9 +1,20 @@
 from __future__ import annotations
 
-from sqlalchemy import select
+import re
+
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import Action, AiCoverageVariationIntent, AiGenerationContractAudit, AiGroupMessageMemory, TgGroup
+from app.models import (
+    Action,
+    AiCoverageVariationIntent,
+    AiGenerationContractAudit,
+    AiGroupMessageMemory,
+    ContentMixContract,
+    ContentMixCycle,
+    ContentMixObligation,
+    TgGroup,
+)
 from app.services._common import _now
 from app.services.content_filters import filter_outbound_content
 from app.services.material_rules import MaterialRuleResult, select_material_for_policy
@@ -155,6 +166,7 @@ def _apply_material_policy(
     )
     data["rule_trace"] = _material_rule_trace(payload.rule_trace, result)
     data["media_segments"] = [result.segment] if result.ok and result.segment else []
+    _freeze_selector_plan(session, action, data=data, result=result)
     if not result.failure_reason or result.fallback != "skip":
         return True
     action.payload = data
@@ -165,6 +177,103 @@ def _apply_material_policy(
         stage="material_policy",
     )
     return False
+
+
+def _freeze_selector_plan(
+    session: Session,
+    action: Action,
+    *,
+    data: dict,
+    result: MaterialRuleResult,
+) -> None:
+    material_kind = _selected_material_kind(result)
+    normal_emoji = _normal_text_contains_emoji(data, material_kind)
+    data["planned_material_kind"] = material_kind
+    data["planned_normal_text_emoji"] = "yes" if normal_emoji else "no"
+    if material_kind != "none":
+        _ensure_selector_obligation(session, action, material_kind)
+    if normal_emoji:
+        _ensure_selector_obligation(session, action, "normal_text_emoji")
+
+
+def _selected_material_kind(result: MaterialRuleResult) -> str:
+    if not result.ok or not result.segment:
+        return "none"
+    asset_kind = str(result.segment.get("emoji_asset_kind") or "")
+    material_type = str(result.segment.get("segment_type") or "")
+    if asset_kind == "custom_emoji":
+        return "custom_emoji"
+    if asset_kind == "sticker" or material_type == "贴纸":
+        return "sticker"
+    return "image"
+
+
+def _normal_text_contains_emoji(data: dict, material_kind: str) -> bool:
+    if material_kind != "none":
+        return False
+    if str(data.get("content_source") or "normal") != "normal":
+        return False
+    return bool(re.search(r"[\U0001F300-\U0001FAFF\u2600-\u27BF]", str(data.get("message_text") or "")))
+
+
+def _ensure_selector_obligation(
+    session: Session,
+    action: Action,
+    obligation_kind: str,
+) -> None:
+    contract = _content_mix_contract_for_action(session, action)
+    if contract is None or not action.content_mix_cycle_slot_id:
+        return
+    existing = session.scalar(select(ContentMixObligation).where(
+        ContentMixObligation.content_mix_contract_id == contract.id,
+        ContentMixObligation.obligation_kind == obligation_kind,
+        ContentMixObligation.assigned_cycle_slot_id == action.content_mix_cycle_slot_id,
+    ))
+    if existing is not None:
+        if not existing.assigned_action_id:
+            existing.assigned_action_id = action.id
+        return
+    ordinal = int(session.scalar(select(func.max(ContentMixObligation.obligation_ordinal)).where(
+        ContentMixObligation.content_mix_contract_id == contract.id,
+        ContentMixObligation.obligation_source == "selector_plan",
+        ContentMixObligation.obligation_kind == obligation_kind,
+    )) or 0) + 1
+    session.add(ContentMixObligation(
+        tenant_id=action.tenant_id,
+        content_mix_contract_id=contract.id,
+        content_mix_scope_key=contract.content_mix_scope_key,
+        obligation_source="selector_plan",
+        obligation_kind=obligation_kind,
+        obligation_ordinal=ordinal,
+        assigned_cycle_slot_id=action.content_mix_cycle_slot_id,
+        assigned_action_id=action.id,
+        assignment_version=1,
+        required_count=1,
+        planned_count=1,
+    ))
+
+
+def _content_mix_contract_for_action(
+    session: Session,
+    action: Action,
+) -> ContentMixContract | None:
+    cycle_slot_id = action.content_mix_cycle_slot_id
+    if not cycle_slot_id:
+        return None
+    from app.models import ContentMixCycleSlot
+
+    cycle_slot = session.get(ContentMixCycleSlot, cycle_slot_id)
+    cycle = session.get(ContentMixCycle, cycle_slot.cycle_id) if cycle_slot else None
+    if cycle is None:
+        return None
+    scope_key = (
+        f"ai:{cycle.task_id}:{cycle.target_operation_target_id}:"
+        f"{cycle.id}:{cycle.config_revision}"
+    )
+    return session.scalar(select(ContentMixContract).where(
+        ContentMixContract.content_mix_scope_key == scope_key,
+        ContentMixContract.content_contract_version == cycle.config_revision,
+    ))
 
 
 def _material_rule_trace(source: dict, result: MaterialRuleResult) -> dict:

@@ -82,6 +82,47 @@ def evaluate_comment_generation_quality(
     )
 
 
+def evaluate_comment_fallback_quality(
+    session: Session,
+    action: Action,
+    *,
+    payload: PostCommentPayload,
+    content: str,
+) -> CommentQualityDecision:
+    if not _lock_channel_message(session, action, payload):
+        return _unavailable_comment_decision()
+    version, error = _fixed_rule_version(session, action, payload)
+    if error:
+        return error
+    policy = apply_output_policy(
+        content,
+        version.output_checks or {},
+        version.transforms or {},
+    )
+    audit = {
+        "rule_set_version_id": version.id,
+        "rule_output_action": policy.action,
+        "rule_output_transformed": policy.transformed,
+        "rule_output_hits": list(policy.hits),
+        "fallback_quality_contract": "emoji_text_safety_only",
+    }
+    if not policy.allowed:
+        return CommentQualityDecision(
+            False,
+            "",
+            "fallback_outbound_policy_blocked",
+            policy.reason or "固定规则版本拒绝评论兜底",
+            audit,
+        )
+    return _outbound_decision(
+        session,
+        action,
+        payload=payload,
+        content=policy.content,
+        audit=audit,
+    )
+
+
 def _unavailable_comment_decision() -> CommentQualityDecision:
     return CommentQualityDecision(
         False,
@@ -215,4 +256,8 @@ def _outbound_decision(
     return CommentQualityDecision(True, filtered.content, audit=audit)
 
 
-__all__ = ["CommentQualityDecision", "evaluate_comment_generation_quality"]
+__all__ = [
+    "CommentQualityDecision",
+    "evaluate_comment_fallback_quality",
+    "evaluate_comment_generation_quality",
+]

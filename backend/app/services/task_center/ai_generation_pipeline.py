@@ -1,18 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import timedelta
-from hashlib import sha256
 
-from sqlalchemy import func, select
 from sqlalchemy.orm import Session
-
-from app.models import Action, ConversationSpeakerTurn
-from app.services._common import _now
 
 from .ai_generation_dependencies import GenerationDependencies
 from .ai_generator import AiGenerationUnavailable, GeneratedContent, _copy_generated_content_metadata
 from .ai_generation_state import validate_output_sequences, validate_output_slot_ids
+
+AI_GROUP_GENERATION_ATTEMPTS_PER_MODEL = 3
 
 
 @dataclass(frozen=True)
@@ -110,89 +106,19 @@ def _apply_static_coverage_fallback(
 ) -> None:
     if not _static_fallback_enabled(request):
         return
-    from app.services.task_center.conversation_content_quality import resolve_content_fallback
-    from app.services.task_center.conversation_speaker_rotation import (
-        conversation_key_for_group,
-        last_platform_content_source,
-        last_platform_text,
-    )
-
     slots = list(request.config.get("generation_slots") or [])
-    used_contents = {str(result.content) for result in accepted.values()}
-    tenant_id = int(getattr(request, "tenant_id", 0) or 0)
-    task_id = str(getattr(request, "task_id", "") or "")
-    is_reply = bool(getattr(request, "is_reply", False))
-    group_id = int(getattr(request, "group_id", 0) or 0)
-    surface = str(getattr(request, "surface", "") or "group_ai_chat")
-    conversation_key = (
-        conversation_key_for_group(group_id=group_id)
-        if group_id > 0
-        else str(getattr(request, "conversation_key", "") or "")
-    )
-    last_source = ""
-    last_text = ""
-    session_30m_count = 0
-    if conversation_key and tenant_id:
-        last_source = last_platform_content_source(
-            session,
-            tenant_id=tenant_id,
-            surface=surface,
-            conversation_key=conversation_key,
-        )
-        last_text = last_platform_text(
-            session,
-            tenant_id=tenant_id,
-            surface=surface,
-            conversation_key=conversation_key,
-        )
-        session_30m_count = _session_check_in_count_30m(
-            session,
-            tenant_id=tenant_id,
-            surface=surface,
-            conversation_key=conversation_key,
-        )
-    task_hour_limit = _task_hour_check_in_limit(request.config)
-    task_hour_count = 0
-    if tenant_id and task_id:
-        task_hour_count = _task_hour_check_in_count(
-            session,
-            tenant_id=tenant_id,
-            task_id=task_id,
-        )
+    del session
     for index in pending:
         slot = slots[index]
         if not str(slot.get("coverage_ledger_id") or "").strip():
             continue
         reason = (rejected.get(index) or SlotGenerationResult("")).rejection_code or "all_model_stages_rejected"
-        decision = resolve_content_fallback(
-            is_reply=is_reply,
-            static_fallback_enabled=True,
-            last_platform_content_source=last_source,
-            last_platform_text=last_text,
-            session_check_in_count_30m=session_30m_count,
-            task_hour_check_in_count=task_hour_count,
-            task_hour_check_in_limit=task_hour_limit,
-            fallback_reason=reason,
-        )
-        if not decision.allowed:
-            rejected[index] = SlotGenerationResult(
-                "",
-                decision.code or "check_in_fallback_blocked",
-                decision.fallback_reason or reason,
-            )
-            continue
         content = _check_in_fallback_content(slot, index, reason)
-        text = str(content)
-        if text in used_contents:
-            continue
         accepted[index] = SlotGenerationResult(
             content,
             quality_fallback="check_in_fallback",
             fallback_reason=reason,
         )
-        used_contents.add(text)
-        session_30m_count += 1
-        task_hour_count += 1
         rejected.pop(index, None)
 
 
@@ -202,64 +128,12 @@ def _static_fallback_enabled(request) -> bool:
     # enter the multi-stage default static fallback chain.
     if str(config.get("ai_model") or "").strip():
         return False
-    is_reply = bool(getattr(request, "is_reply", False))
-    return bool(
-        not is_reply
-        and not config.get("require_mimo_draft")
-        and config.get("_ai_group_static_fallback_enabled", True)
+    slots = list(config.get("generation_slots") or [])
+    has_coverage_slot = any(
+        str(slot.get("coverage_ledger_id") or "").strip()
+        for slot in slots
     )
-
-
-def _task_hour_check_in_limit(config: dict) -> int:
-    """PRD §7.2: max(1, floor(hourly_min_messages * 0.2)); no hard-hourly → ≤ 3."""
-    hourly_min = int(
-        config.get("hourly_min_messages")
-        or config.get("hourly_min")
-        or config.get("hard_hourly_min")
-        or 0
-    )
-    if hourly_min <= 0:
-        return 3
-    return max(1, hourly_min * 2 // 10)
-
-
-def _session_check_in_count_30m(
-    session: Session,
-    *,
-    tenant_id: int,
-    surface: str,
-    conversation_key: str,
-) -> int:
-    cutoff = _now() - timedelta(minutes=30)
-    return int(
-        session.scalar(
-            select(func.count(ConversationSpeakerTurn.id)).where(
-                ConversationSpeakerTurn.tenant_id == tenant_id,
-                ConversationSpeakerTurn.surface == surface,
-                ConversationSpeakerTurn.conversation_key == conversation_key,
-                ConversationSpeakerTurn.content_source == "check_in_fallback",
-                ConversationSpeakerTurn.observed_at >= cutoff,
-            )
-        )
-        or 0
-    )
-
-
-def _task_hour_check_in_count(session: Session, *, tenant_id: int, task_id: str) -> int:
-    now = _now()
-    hour_start = now.replace(minute=0, second=0, microsecond=0)
-    return int(
-        session.scalar(
-            select(func.count(Action.id)).where(
-                Action.tenant_id == tenant_id,
-                Action.task_id == task_id,
-                Action.status == "success",
-                Action.payload["content_source"].as_string() == "check_in_fallback",
-                Action.executed_at >= hour_start,
-            )
-        )
-        or 0
-    )
+    return has_coverage_slot and not str(config.get("ai_model") or "").strip()
 
 
 def _check_in_fallback_content(slot: dict, index: int, reason: str) -> GeneratedContent:
@@ -273,71 +147,10 @@ def _check_in_fallback_content(slot: dict, index: int, reason: str) -> Generated
         fallback_reason=reason,
         slot_id=str(slot.get("slot_id") or ""),
         sequence_index=index + 1,
+        reply_to_sequence_index=(
+            index + 1 if slot.get("reply_to_message_id") else None
+        ),
     )
-
-
-def _unique_static_emoji_content(
-    slot: dict,
-    index: int,
-    reason: str,
-    used_contents: set[str],
-) -> GeneratedContent:
-    # Backward-compatible alias; humanization path uses exact 签到.
-    return _check_in_fallback_content(slot, index, reason)
-
-
-def _static_emoji_content(slot: dict, index: int, reason: str, *, salt: int = 0) -> GeneratedContent:
-    return _check_in_fallback_content(slot, index, reason)
-
-
-def _static_emoji_text(slot: dict, *, salt: int = 0) -> str:
-    from math import comb
-
-    pool = _STATIC_EMOJI_POOL
-    capacity = comb(len(pool), 4)
-    rank = int.from_bytes(sha256(_static_emoji_seed(slot, salt).encode()).digest()[:8], "big")
-    distributed_rank = (
-        rank * STATIC_EMOJI_PERMUTATION_FACTOR + STATIC_EMOJI_PERMUTATION_OFFSET
-    ) % capacity
-    indexes = _unrank_combination(len(pool), 4, distributed_rank)
-    return "".join(pool[index] for index in indexes)
-
-
-def _static_emoji_seed(slot: dict, salt: int) -> str:
-    keys = (
-        "coverage_window_date",
-        "group_id",
-        "account_id",
-        "coverage_ledger_id",
-        "coverage_account_completed_before_action",
-        "slot_id",
-    )
-    return "|".join([*(str(slot.get(key) or "") for key in keys), str(salt)])
-
-
-def _unrank_combination(size: int, choose: int, rank: int) -> tuple[int, ...]:
-    from math import comb
-
-    indexes: list[int] = []
-    candidate = 0
-    for remaining in range(choose, 0, -1):
-        while rank >= comb(size - candidate - 1, remaining - 1):
-            rank -= comb(size - candidate - 1, remaining - 1)
-            candidate += 1
-        indexes.append(candidate)
-        candidate += 1
-    return tuple(indexes)
-
-
-_STATIC_EMOJI_POOL = tuple(
-    "😀 😃 😄 😁 😆 😅 😂 🙂 🙃 😉 😊 🥰 😍 🤩 😋 😜 🤪 🤗 🤭 🤫 🤔 🫡 🤓 😎 🥳 🙌 👏 👍 🤝 👋 🤚 ✋ 👌 🤌 🫶 🤟 🤘 ✌ 🫰 💪 🧠 👀 💡 ✨ 🌟 ⭐ 🌈 ☀ ⛅ ☁ ❄ 🌊 🌿 🌱 🌵 🌴 🌻 🌼 🌸 🌹 🌷 🍀 🍁 🍂 🍃 🍎 🍊 🍉 🍇 🍓 🫐 ☕ 🧃 🎯 🎵 "
-    "🐶 🐱 🐭 🐹 🐰 🦊 🐻 🐼 🐨 🐯 🦁 🐮 🐷 🐸 🐵 🐔 🐧 🐦 🐤 🦄 🐝 🦋 🐌 🐞 🐢 🐟 🐠 🐬 🐳 🦭 🐘 🦒 🦘 🐎 🦜 🦢 🦩 🕊 "
-    "🍒 🍑 🥭 🍍 🥝 🍅 🥑 🥦 🥕 🌽 🥐 🍞 🥨 🧀 🥚 🍳 🥞 🧇 🍔 🍟 🍕 🥪 🌮 🍜 🍚 🍙 🍦 🍪 🍩 🍰 🍯 "
-    "⚽ 🏀 🏈 ⚾ 🥎 🎾 🏐 🏉 🥏 🎱 🏓 🏸 🥅 ⛳ 🪁"
-    .split()
-)
-STATIC_EMOJI_PERMUTATION_FACTOR = 104729
-STATIC_EMOJI_PERMUTATION_OFFSET = 7919
 
 
 def _generate_stage(
@@ -395,11 +208,11 @@ def _fallback_stages(config: dict) -> tuple[str, ...]:
         return ("direct_mimo",)
     if str(config.get("ai_model") or "").strip():
         return ("direct_configured_model",)
-    stages = ["primary_m3"]
+    stages = ["primary_m3"] * AI_GROUP_GENERATION_ATTEMPTS_PER_MODEL
     if bool(config.get("_ai_group_model_fallback_enabled", True)):
-        stages.append("fallback_m25")
-    if bool(config.get("_ai_group_grok_fallback_enabled", False)):
-        stages.append("fallback_grok")
+        stages.extend(
+            ["fallback_m25"] * AI_GROUP_GENERATION_ATTEMPTS_PER_MODEL
+        )
     return tuple(stages)
 
 

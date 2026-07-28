@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.services.task_center.ai_generator import AiGenerationUnavailable, GeneratedContent
 from app.services.task_center.ai_generation_dependencies import GenerationDependencies
-from app.services.task_center.ai_generation_pipeline import _static_emoji_text, generate_quality_results
+from app.services.task_center.ai_generation_pipeline import generate_quality_results
 from app.services.task_center.executors import group_ai_chat
 
 
@@ -27,7 +27,7 @@ def test_quality_pipeline_runs_m3_m25_without_open_transactions() -> None:
             _dependencies(normal_generator=_stage_generator(session, observed)),
         )
 
-    assert observed == ["primary_m3", "fallback_m25"]
+    assert observed == ["primary_m3"] * 3 + ["fallback_m25"] * 3
     assert results[0].rejection_code == "voice_profile_mismatch"
 
 
@@ -112,19 +112,19 @@ def test_daily_coverage_uses_distinct_explicit_static_fallback_after_all_models_
             _dependencies(normal_generator=_stage_generator(session, observed)),
         )
 
-    assert observed == ["primary_m3", "fallback_m25"]
-    # 签到 is the only static fallback and must not be consecutive; only one slot can accept it.
+    assert observed == ["primary_m3"] * 3 + ["fallback_m25"] * 3
     fallbacks = [result for result in results if result.quality_fallback == "check_in_fallback"]
     rejected = [result for result in results if result.rejection_code]
-    assert len(fallbacks) == 1
-    assert str(fallbacks[0].content).strip() == "签到"
-    assert len(rejected) == 1
-    assert rejected[0].rejection_code == "voice_profile_mismatch"
-    assert getattr(fallbacks[0].content, "fallback_stage", "") == "static_safe_fallback"
-    assert getattr(fallbacks[0].content, "generation_source", "") == "static_safe_fallback"
+    assert len(fallbacks) == 2
+    assert {str(item.content).strip() for item in fallbacks} == {"签到"}
+    assert rejected == []
+    assert all(
+        getattr(item.content, "fallback_stage", "") == "static_safe_fallback"
+        for item in fallbacks
+    )
 
 
-def test_static_fallback_switch_off_keeps_quality_rejection_visible() -> None:
+def test_completion_fallback_cannot_be_disabled_for_coverage_slot() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     request = _request(
         "😂😂",
@@ -142,8 +142,8 @@ def test_static_fallback_switch_off_keeps_quality_rejection_visible() -> None:
             _dependencies(normal_generator=_stage_generator(session, [])),
         )
 
-    assert results[0].rejection_code == "voice_profile_mismatch"
-    assert results[0].quality_fallback == ""
+    assert results[0].rejection_code == ""
+    assert results[0].quality_fallback == "check_in_fallback"
 
 
 def test_daily_coverage_static_fallback_handles_provider_unavailability() -> None:
@@ -236,15 +236,64 @@ def test_cached_static_fallback_keeps_explicit_audit_without_profile_rejection()
     request.config["_ai_group_static_fallback_enabled"] = False
     with Session(engine) as session:
         disabled_results, _tokens = generate_quality_results(session, request, _dependencies())
-    assert disabled_results[0].rejection_code == "static_fallback_disabled"
+    assert disabled_results[0].quality_fallback == "check_in_fallback"
 
 
-def test_static_fallback_is_distinct_for_second_daily_target() -> None:
-    first = _coverage_slot("slot-1", 11)
-    first.update({"group_id": 201, "account_id": 9001})
-    second = {**first, "slot_id": "slot-2", "coverage_account_completed_before_action": 1}
+def test_primary_third_attempt_can_complete_without_backup() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    observed: list[str] = []
 
-    assert _static_emoji_text(first) != _static_emoji_text(second)
+    def generator(_session, _tenant_id, config, **_kwargs):
+        stage = str(config.get("_ai_fallback_stage") or "")
+        observed.append(stage)
+        content = "今天先聊聊" if len(observed) == 3 else "😂😂"
+        slot = config["generation_slots"][0]
+        return [GeneratedContent(content, slot_id=slot["slot_id"], sequence_index=1)], 1
+
+    request = _request(
+        "",
+        account_profile="少表情，避免连续 emoji",
+        cached=False,
+        config={"generation_slots": [_coverage_slot("slot-1", 11)]},
+    )
+    with Session(engine) as session:
+        results, _tokens = generate_quality_results(
+            session,
+            request,
+            _dependencies(normal_generator=generator),
+        )
+
+    assert observed == ["primary_m3"] * 3
+    assert results[0].content == "今天先聊聊"
+
+
+def test_reply_coverage_fallback_preserves_reply_slot() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    slot = {
+        **_coverage_slot("slot-reply", 11),
+        "reply_to_message_id": "991",
+    }
+    request = _request(
+        "",
+        account_profile="少表情，避免连续 emoji",
+        cached=False,
+        is_reply=True,
+        reply_targets=[{"message_id": "991"}],
+        config={"generation_slots": [slot]},
+    )
+    with Session(engine) as session:
+        results, _tokens = generate_quality_results(
+            session,
+            request,
+            _dependencies(
+                normal_generator=_forbidden_generator,
+                reply_generator=_stage_generator(session, []),
+            ),
+        )
+
+    content = results[0].content
+    assert str(content) == "签到"
+    assert content.reply_to_sequence_index == 1
 
 
 def _request(
@@ -314,10 +363,14 @@ def _unavailable_generator(*_args, **_kwargs):
     raise AiGenerationUnavailable("provider unavailable")
 
 
-def _dependencies(*, normal_generator=_forbidden_generator) -> GenerationDependencies:
+def _dependencies(
+    *,
+    normal_generator=_forbidden_generator,
+    reply_generator=_forbidden_generator,
+) -> GenerationDependencies:
     return GenerationDependencies(
         normal_generator=normal_generator,
-        reply_generator=_forbidden_generator,
+        reply_generator=reply_generator,
         reply_target_probe=_forbidden_generator,
         reply_messages_fetcher=_forbidden_generator,
     )

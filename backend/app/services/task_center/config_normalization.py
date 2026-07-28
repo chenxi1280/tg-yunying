@@ -120,7 +120,8 @@ def apply_default_rule_binding(session: Session, tenant_id: int, *, task_type: s
 
 
 def apply_group_ai_account_coverage_defaults(task_type: str, config: dict[str, Any], account_config: dict[str, Any] | None) -> dict[str, Any]:
-    if task_type != "group_ai_chat" or not _uses_all_account_selection(account_config):
+    del account_config
+    if task_type != "group_ai_chat":
         return config
     if config.get("account_coverage_mode") == "all_accounts_daily":
         return config

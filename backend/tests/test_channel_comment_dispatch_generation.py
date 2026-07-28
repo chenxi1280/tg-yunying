@@ -8,6 +8,7 @@ from app.models import (
     Action,
     AiProvider,
     ChannelMessageComment,
+    CommentFulfillmentObligation,
     RuleSet,
     RuleSetVersion,
     Task,
@@ -51,6 +52,12 @@ def test_comment_generation_and_gateway_run_without_database_transaction(monkeyp
         assert action.status == "success", action.result
         assert action.payload["ai_generation_status"] == "ready"
         assert action.payload["comment_text"] == ("引用真实回复" if reply else "真实读者评论")
+        obligation = session.get(
+            CommentFulfillmentObligation,
+            "comment-obligation-1",
+        )
+        assert obligation.status == "confirmed"
+        assert obligation.remote_comment_id == "9901"
         assert observed == {"provider": 1, "gateway": 1}
 
 
@@ -142,6 +149,7 @@ def test_phase_c_applies_fixed_rule_transform_before_ready(monkeypatch) -> None:
 
 
 def test_phase_c_fixed_rule_rejection_never_enters_gateway(monkeypatch) -> None:
+    observed = {"gateway": 0}
     with comment_dispatch_session() as session:
         action = seed_dispatch_scope(session)
         _bind_rule_version(
@@ -151,7 +159,7 @@ def test_phase_c_fixed_rule_rejection_never_enters_gateway(monkeypatch) -> None:
             transforms={},
         )
         monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args: object())
-        monkeypatch.setattr(dispatcher.gateway, "reply_channel_message", _forbidden_gateway)
+        monkeypatch.setattr(dispatcher.gateway, "reply_channel_message", _gateway_sender(session, observed))
 
         assert dispatcher.dispatch_action(
             session,
@@ -162,13 +170,16 @@ def test_phase_c_fixed_rule_rejection_never_enters_gateway(monkeypatch) -> None:
             ),
         ) is True
 
-        assert action.status == "failed"
-        assert action.payload["ai_generation_status"] == "rule_output_rejected"
-        assert action.result["error_code"] == "rule_output_rejected"
+        assert action.status == "success"
+        assert action.payload["comment_fallback_kind"] == "emoji_text"
+        assert action.payload["comment_text"] in {"👍", "🙂", "👏"}
+        assert len(action.payload["comment_generation_attempts"]) == 6
+        assert observed["gateway"] == 1
 
 
 @pytest.mark.parametrize("history_source", ["managed", "remote"])
 def test_phase_c_rejects_same_message_historical_comment_duplicate(monkeypatch, history_source: str) -> None:
+    observed = {"gateway": 0}
     with comment_dispatch_session() as session:
         action = seed_dispatch_scope(session)
         duplicate = "河东区这个位置方便吗"
@@ -178,7 +189,7 @@ def test_phase_c_rejects_same_message_historical_comment_duplicate(monkeypatch, 
             session.get(ChannelMessageComment, 51).content_preview = duplicate
         session.commit()
         monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args: object())
-        monkeypatch.setattr(dispatcher.gateway, "reply_channel_message", _forbidden_gateway)
+        monkeypatch.setattr(dispatcher.gateway, "reply_channel_message", _gateway_sender(session, observed))
 
         assert dispatcher.dispatch_action(
             session,
@@ -189,9 +200,10 @@ def test_phase_c_rejects_same_message_historical_comment_duplicate(monkeypatch, 
             ),
         ) is True
 
-        assert action.status == "failed"
-        assert action.payload["ai_generation_status"] == "duplicate_rejected"
-        assert action.result["error_code"] == "duplicate_rejected"
+        assert action.status == "success"
+        assert action.payload["comment_fallback_kind"] == "emoji_text"
+        assert len(action.payload["comment_generation_attempts"]) == 6
+        assert observed["gateway"] == 1
 
 
 def test_invalid_reply_target_skips_generation_and_gateway_without_direct_downgrade(monkeypatch) -> None:
@@ -237,10 +249,11 @@ def test_stale_reply_target_skips_generation_and_gateway(monkeypatch) -> None:
 
 
 def test_generation_failure_is_explicit_and_never_enters_gateway(monkeypatch) -> None:
+    observed = {"gateway": 0}
     with comment_dispatch_session() as session:
         action = seed_dispatch_scope(session)
         monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args: object())
-        monkeypatch.setattr(dispatcher.gateway, "reply_channel_message", _forbidden_gateway)
+        monkeypatch.setattr(dispatcher.gateway, "reply_channel_message", _gateway_sender(session, observed))
 
         assert dispatcher.dispatch_action(
             session,
@@ -251,18 +264,107 @@ def test_generation_failure_is_explicit_and_never_enters_gateway(monkeypatch) ->
             ),
         ) is True
 
-        assert action.status == "failed"
-        assert action.payload["ai_generation_status"] == "generation_failed"
-        assert action.result["error_code"] == "generation_failed"
+        assert action.status == "success"
+        assert action.payload["comment_fallback_kind"] == "emoji_text"
+        assert action.payload["content_source"] == "comment_emoji_fallback"
+        assert len(action.payload["comment_generation_attempts"]) == 6
+        assert observed["gateway"] == 1
+
+
+def test_comment_primary_third_attempt_succeeds_without_backup(monkeypatch) -> None:
+    observed = {"gateway": 0, "provider": 0}
+    with comment_dispatch_session() as session:
+        action = seed_dispatch_scope(session)
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args: object())
+        monkeypatch.setattr(dispatcher.gateway, "reply_channel_message", _gateway_sender(session, observed))
+
+        def generate(*_args, **_kwargs):
+            observed["provider"] += 1
+            if observed["provider"] < 3:
+                raise AiGenerationUnavailable("primary unavailable")
+            return ["第三轮生成的真实评论"], 3
+
+        assert dispatcher.dispatch_action(
+            session,
+            action,
+            comment_generation_dependencies=CommentGenerationDependencies(
+                direct_generator=generate,
+                reply_generator=_forbidden_generation,
+            ),
+        ) is True
+
+        assert action.status == "success"
+        assert action.payload["comment_text"] == "第三轮生成的真实评论"
+        assert action.payload["comment_fallback_kind"] == ""
+        assert observed == {"gateway": 1, "provider": 3}
+
+
+def test_comment_reply_emoji_fallback_preserves_reply_binding(monkeypatch) -> None:
+    observed = {"gateway": 0}
+    with comment_dispatch_session() as session:
+        action = seed_dispatch_scope(session, reply=True)
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args: object())
+        monkeypatch.setattr(dispatcher.gateway, "reply_channel_message", _gateway_sender(session, observed))
+
+        assert dispatcher.dispatch_action(
+            session,
+            action,
+            comment_generation_dependencies=CommentGenerationDependencies(
+                direct_generator=_failed_generation,
+                reply_generator=_failed_generation,
+            ),
+        ) is True
+
+        assert action.status == "success"
+        assert action.payload["comment_mode"] == "reply"
+        assert action.payload["reply_to_message_id"] == 8101
+        assert action.payload["comment_fallback_kind"] == "emoji_text"
+        assert observed["gateway"] == 1
+
+
+def test_comment_missing_mask_uses_emoji_without_ai(monkeypatch) -> None:
+    observed = {"gateway": 0}
+    with comment_dispatch_session() as session:
+        action = seed_dispatch_scope(session)
+        action.payload = {
+            **action.payload,
+            "account_mask_id": "",
+            "account_mask_version": 0,
+            "account_mask_snapshot_hash": "",
+            "mask_status": "missing",
+        }
+        session.commit()
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args: object())
+        monkeypatch.setattr(dispatcher.gateway, "reply_channel_message", _gateway_sender(session, observed))
+
+        assert dispatcher.dispatch_action(
+            session,
+            action,
+            comment_generation_dependencies=CommentGenerationDependencies(
+                direct_generator=_forbidden_generation,
+                reply_generator=_forbidden_generation,
+            ),
+        ) is True
+
+        assert action.status == "success"
+        assert action.payload["comment_fallback_kind"] == "emoji_text"
+        assert action.payload["fallback_reason"] == "mask_missing"
+        assert action.payload["comment_generation_attempts"] == [{
+            "stage": "phase_a",
+            "outcome": "deterministic_fallback",
+            "reason": "mask_missing",
+        }]
+        assert observed["gateway"] == 1
 
 
 def test_generated_comment_reuses_outbound_filter_before_gateway(monkeypatch) -> None:
+    observed = {"gateway": 0}
     with comment_dispatch_session() as session:
         action = seed_dispatch_scope(session)
         session.get(TgGroup, 71).banned_words = "禁止词"
         session.commit()
         monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args: object())
-        monkeypatch.setattr(dispatcher.gateway, "reply_channel_message", _forbidden_gateway)
+        monkeypatch.setattr(dispatcher.gateway, "reply_channel_message", _gateway_sender(session, observed))
 
         assert dispatcher.dispatch_action(
             session,
@@ -273,9 +375,10 @@ def test_generated_comment_reuses_outbound_filter_before_gateway(monkeypatch) ->
             ),
         ) is True
 
-        assert action.status == "failed"
-        assert action.payload["ai_generation_status"] == "content_rejected"
-        assert action.result["error_code"] == "content_rejected"
+        assert action.status == "success"
+        assert action.payload["comment_fallback_kind"] == "emoji_text"
+        assert action.payload["comment_text"] in {"👍", "🙂", "👏"}
+        assert observed["gateway"] == 1
 
 
 def test_phase_c_commit_failure_is_generation_unknown_and_skips_gateway(monkeypatch) -> None:

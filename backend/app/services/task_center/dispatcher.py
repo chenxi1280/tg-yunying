@@ -17,7 +17,7 @@ from pydantic import ValidationError
 from app.admin_chats import send_admin_chat_broadcast
 from app.integrations.telegram import DeveloperAppCredentials, OperationResult, OutboundSegment
 from app.config import get_settings
-from app.models import AccountStatus, Action, AiAccountVoiceProfile, AiGroupMessageMemory, ChannelMessage, ExecutionAttempt, FailureType, GroupAuthStatus, GroupContextMessage, OperationTarget, ReviewQueue, Task, TaskAccountDailyCoverage, TaskMembershipAdmissionItem, Tenant, TgAccount, TgGroup, TgGroupAccount, VerificationTask
+from app.models import AccountStatus, Action, AiAccountVoiceProfile, AiGroupMessageMemory, ChannelMessage, CommentFulfillmentObligation, ContentMixCycle, ContentMixCycleSlot, ContentMixObligation, ExecutionAttempt, FailureType, GroupAuthStatus, GroupContextMessage, OperationTarget, ReviewQueue, Task, TaskAccountDailyCoverage, TaskGroupDailyMessageSlot, TaskMembershipAdmissionItem, Tenant, TgAccount, TgGroup, TgGroupAccount, VerificationTask
 from app.models import AccountEnvironmentBinding, AccountProxy, AccountProxyBinding, TelegramDeveloperApp, TgAccountAuthorization
 from app.search_keywords import normalized_keyword_hash
 from app.security import decrypt_secret
@@ -57,6 +57,7 @@ from .comment_generation_dispatch import (
     PRODUCTION_COMMENT_GENERATION_DEPENDENCIES,
     ensure_post_comment_content,
 )
+from .content_mix_cycles import reconcile_content_mix_cycle
 from .ai_generator import (
     AI_GENERATION_UNAVAILABLE_MESSAGE,
     AiGenerationUnavailable,
@@ -443,6 +444,8 @@ def dispatch_action(
         _release_runtime_resources(action)
         release_dispatch_claim(session, action)
         _sync_action_coverage_state(session, action)
+        _sync_action_content_mix_state(session, action)
+        _sync_comment_fulfillment_state(session, action)
         _sync_all_account_membership_state(session, action)
         _sync_search_click_target_progress(session, action)
 
@@ -453,6 +456,38 @@ def _sync_search_click_target_progress(session: Session, action: Action) -> None
     task = session.get(Task, action.task_id)
     if task is not None:
         reconcile_search_click_target_progress(session, task)
+
+
+def _sync_comment_fulfillment_state(
+    session: Session,
+    action: Action,
+) -> None:
+    if action.action_type != "post_comment":
+        return
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    obligation_id = str(payload.get("comment_fulfillment_obligation_id") or "")
+    if not obligation_id:
+        return
+    obligation = session.get(CommentFulfillmentObligation, obligation_id)
+    if obligation is None or obligation.current_action_id != action.id:
+        return
+    if action.status == "success":
+        attempt = _latest_execution_attempt(session, action.id)
+        remote_id = str(attempt.remote_message_id or "") if attempt else ""
+        if attempt and attempt.status == "success" and remote_id:
+            obligation.status = "confirmed"
+            obligation.telegram_discussion_peer_id = str(payload.get("channel_id") or "")
+            obligation.remote_comment_id = remote_id
+            obligation.remote_confirmed_at = attempt.after_call_at or _now()
+            return
+        obligation.status = "unknown"
+        return
+    if action.status == "unknown_after_send":
+        obligation.status = "unknown"
+        return
+    if action.status in {"failed", "skipped", "retryable_failed"}:
+        obligation.status = "replan_required"
+        obligation.current_action_id = None
 
 
 def _dispatch_action(
@@ -1577,6 +1612,7 @@ def recover_pending_visibility_credits(session: Session, limit: int = 100) -> in
                 "visibility_status": "visible_confirmed",
             }
             _sync_action_coverage_state(session, action)
+            _sync_action_content_mix_state(session, action)
             if continuity_enabled(session, action.tenant_id) and _is_hard_hourly_send_action(action):
                 outcome = credit_success_once(
                     session,
@@ -1601,6 +1637,7 @@ def recover_pending_visibility_credits(session: Session, limit: int = 100) -> in
                 "visibility_status": visibility,
             }
             _sync_action_coverage_state(session, action)
+            _sync_action_content_mix_state(session, action)
             closed += 1
             continue
         # No evidence yet: leave open (unknown hold semantics). Optionally stamp age for ops.
@@ -5268,8 +5305,32 @@ def _recover_account_proxy_after_failure(action: Action, account: TgAccount, rea
         "proxy_recovered": True,
         "recovered_proxy_id": recovered.id,
     }
+    _apply_proxy_switch_content_fallback(action)
     action.status = "pending"
     action.executed_at = None
+
+
+def _apply_proxy_switch_content_fallback(action: Action) -> None:
+    payload = dict(action.payload or {})
+    if action.task_type == "group_ai_chat" and action.action_type == "send_message":
+        payload.update({
+            "message_text": "",
+            "ai_generation_status": "pending",
+            "content_source": MASK_MISSING_CHECK_IN_SOURCE,
+            "quality_fallback": "check_in_fallback",
+            "fallback_reason": "verified_proxy_route_switched",
+        })
+        action.payload = payload
+        return
+    if action.action_type != "post_comment":
+        return
+    payload.update({
+        "comment_text": "",
+        "ai_generation_status": "pending",
+        "comment_fallback_kind": "",
+        "deterministic_fallback_reason": "verified_proxy_route_switched",
+    })
+    action.payload = payload
 
 
 def _recover_account_session_after_failure(action: Action, account: TgAccount, reason: str) -> None:
@@ -7715,6 +7776,7 @@ def _skip_context_expired_cycle(session: Session, current: Action, payload: Send
             continue
         _skip(action, "context_expired", "上下文已过期，跳过本轮剩余发言")
         _sync_action_coverage_state(session, action)
+        _sync_action_content_mix_state(session, action)
     task = session.get(Task, current.task_id)
     if task:
         task.next_run_at = _now()
@@ -7762,6 +7824,114 @@ def _sync_action_coverage_state(session: Session, action: Action) -> None:
         if action.status == "retryable_failed":
             action.status = "failed"
             action.result = {**result, "coverage_replan_required": True}
+
+
+def _sync_action_content_mix_state(session: Session, action: Action) -> None:
+    cycle_slot_id = str(action.content_mix_cycle_slot_id or "")
+    quantity_slot_id = str(action.primary_quantity_slot_id or "")
+    if not cycle_slot_id or not quantity_slot_id:
+        return
+    cycle_slot = session.get(ContentMixCycleSlot, cycle_slot_id)
+    quantity_slot = session.get(TaskGroupDailyMessageSlot, quantity_slot_id)
+    if cycle_slot is None or quantity_slot is None:
+        raise RuntimeError("content_mix_binding_missing")
+    if cycle_slot.current_action_id != action.id:
+        return
+    if action.status == "success" and _action_has_remote_success(session, action):
+        cycle_slot.slot_state = "confirmed"
+        quantity_slot.state = "confirmed"
+        _confirm_action_content_obligations(session, action, cycle_slot)
+        _reconcile_content_mix_for_slot(session, cycle_slot)
+        return
+    if action.status == "unknown_after_send":
+        cycle_slot.slot_state = "unknown"
+        quantity_slot.state = "unknown"
+        return
+    if action.status in {"failed", "skipped", "retryable_failed"}:
+        cycle_slot.terminal_reason = _action_terminal_reason(action)
+        if _action_gateway_started(session, action):
+            cycle_slot.slot_state = "terminal"
+            quantity_slot.state = "terminal"
+            _shortfall_action_content_obligations(session, action, cycle_slot)
+            _reconcile_content_mix_for_slot(session, cycle_slot)
+            return
+        cycle_slot.slot_state = "replan_required"
+        quantity_slot.state = "open"
+
+
+def _reconcile_content_mix_for_slot(
+    session: Session,
+    cycle_slot: ContentMixCycleSlot,
+) -> None:
+    cycle = session.get(ContentMixCycle, cycle_slot.cycle_id)
+    if cycle is not None:
+        reconcile_content_mix_cycle(session, cycle)
+
+
+def _confirm_action_content_obligations(
+    session: Session,
+    action: Action,
+    cycle_slot: ContentMixCycleSlot,
+) -> None:
+    obligations = session.scalars(select(ContentMixObligation).where(
+        ContentMixObligation.assigned_cycle_slot_id == cycle_slot.id,
+        ContentMixObligation.assigned_action_id == action.id,
+        ContentMixObligation.status == "pending",
+    ))
+    for obligation in obligations:
+        if not _action_fulfills_content_kind(action, obligation.obligation_kind):
+            continue
+        obligation.success_count = obligation.required_count
+        obligation.shortfall_count = 0
+        obligation.status = "met"
+
+
+def _action_fulfills_content_kind(action: Action, kind: str) -> bool:
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    if kind == "reply":
+        return (
+            payload.get("relation_kind") == "reply"
+            and bool(payload.get("reply_to_message_id"))
+        )
+    if kind == "normal_text_emoji":
+        return payload.get("planned_normal_text_emoji") == "yes"
+    return payload.get("planned_material_kind") == kind
+
+
+def _action_has_remote_success(session: Session, action: Action) -> bool:
+    attempt = _latest_execution_attempt(session, action.id)
+    return bool(
+        attempt
+        and attempt.status == "success"
+        and str(attempt.remote_message_id or "").strip()
+    )
+
+
+def _action_gateway_started(session: Session, action: Action) -> bool:
+    return bool(session.scalar(select(ExecutionAttempt.id).where(
+        ExecutionAttempt.action_id == action.id,
+        ExecutionAttempt.gateway_call_started_at.is_not(None),
+    ).limit(1)))
+
+
+def _shortfall_action_content_obligations(
+    session: Session,
+    action: Action,
+    cycle_slot: ContentMixCycleSlot,
+) -> None:
+    obligations = session.scalars(select(ContentMixObligation).where(
+        ContentMixObligation.assigned_cycle_slot_id == cycle_slot.id,
+        ContentMixObligation.assigned_action_id == action.id,
+        ContentMixObligation.status == "pending",
+    ))
+    for obligation in obligations:
+        obligation.shortfall_count = obligation.required_count
+        obligation.status = "shortfall"
+
+
+def _action_terminal_reason(action: Action) -> str:
+    result = action.result if isinstance(action.result, dict) else {}
+    return str(result.get("error_code") or action.status)[:80]
 
 
 def _release_mismatched_coverage_attempt(

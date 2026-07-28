@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from app.database import Base
 from app.config import get_settings
 from app.integrations.telegram import DeveloperAppCredentials, GroupMessageSnapshot, SendResult, TelethonTelegramGateway
-from app.models import AccountStatus, Action, AuditLog, ChannelMessage, ContentKeywordRule, FailureType, GroupContextMessage, Material, MaterialAssetVersion, MaterialTgRefVersion, MessageTask, OperationPlanTemplate, OperationTarget, RuleSetVersion, SourceMediaAsset, Task, Tenant, TgAccount, TgAccountSecurityBatchItem, TgGroup, TgGroupAccount
+from app.models import AccountStatus, Action, AuditLog, ChannelMessage, ContentKeywordRule, ContentMixCycleSlot, ContentMixObligation, FailureType, GroupContextMessage, Material, MaterialAssetVersion, MaterialTgRefVersion, MessageTask, OperationPlanTemplate, OperationTarget, RuleSetVersion, SourceMediaAsset, Task, TaskGroupDailyMessageSlot, Tenant, TgAccount, TgAccountOnlineState, TgAccountSecurityBatchItem, TgGroup, TgGroupAccount
 from app.schemas.operations_center import RuleSetCreate, RuleSetVersionCreate
 from app.schemas.ai_config import MaterialCreate, MaterialUpdate
 from app.services import ai_config as ai_config_service
@@ -173,14 +173,74 @@ def test_rule_material_policy_selects_ready_material_for_preview_and_ai_action(m
         ) is True
         session.refresh(action)
         action_payload = action.payload
+        cycle_slot = session.get(
+            ContentMixCycleSlot,
+            action.content_mix_cycle_slot_id,
+        )
+        quantity_slot = session.get(
+            TaskGroupDailyMessageSlot,
+            action.primary_quantity_slot_id,
+        )
+        selector_obligation = session.scalar(select(ContentMixObligation).where(
+            ContentMixObligation.assigned_action_id == action.id,
+            ContentMixObligation.obligation_source == "selector_plan",
+        ))
 
     assert preview.material_candidate_count == 1
     assert preview.material_selected_id == 9301
     assert action_payload["media_segments"][0]["material_id"] == 9301
     assert action_payload["media_segments"][0]["source"] == "tg-cache://cache-peer/9301"
     assert action_payload["ai_generation_status"] == "ready"
+    assert cycle_slot.slot_state == "confirmed"
+    assert quantity_slot.state == "confirmed"
+    assert selector_obligation.obligation_kind == "image"
+    assert selector_obligation.status == "met"
     assert action_payload["rule_trace"]["material_id"] == 9301
     assert action_payload["rule_trace"]["material_policy"]["required_tags"] == ["围观"]
+
+
+@pytest.mark.no_postgres
+def test_pre_gateway_failure_rebuilds_same_content_mix_slot(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(dispatcher, "_group_ai_account_online_ready", lambda *_args, **_kwargs: False)
+
+    with Session(engine) as session:
+        _seed_ready_material_target(session)
+        rule_set = _create_material_rule(session, required_tags=["围观"])
+        task = _material_rule_task("ai-content-replan", rule_set.active_version_id)
+        session.add(task)
+        session.commit()
+
+        assert build_ai_chat_plan(session, task) == 1
+        [first] = claim_actions(session, limit=1, worker_id="replan-first")
+        assert dispatcher.dispatch_action(
+            session,
+            first,
+            generation_dependencies=_material_generation_dependencies(),
+        ) is True
+        session.refresh(first)
+        assert first.status == "failed"
+        first_slot_id = first.content_mix_cycle_slot_id
+        first_quantity_id = first.primary_quantity_slot_id
+
+        monkeypatch.setattr(dispatcher, "_group_ai_account_online_ready", lambda *_args, **_kwargs: True)
+        task.next_run_at = _now()
+        assert build_ai_chat_plan(session, task) == 1
+        actions = session.scalars(
+            select(Action)
+            .where(
+                Action.task_id == task.id,
+                Action.action_type == "send_message",
+            )
+            .order_by(Action.content_mix_slot_attempt)
+        ).all()
+
+    assert [action.content_mix_slot_attempt for action in actions] == [1, 2]
+    assert {action.content_mix_cycle_slot_id for action in actions} == {first_slot_id}
+    assert {action.primary_quantity_slot_id for action in actions} == {first_quantity_id}
+    assert actions[1].payload["relation_kind"] == actions[0].payload["relation_kind"]
 
 
 def _material_generation_dependencies() -> GenerationDependencies:
@@ -205,7 +265,17 @@ def _seed_ready_material_target(session: Session) -> None:
     session.add(Tenant(id=1, name="默认运营空间"))
     account = TgAccount(id=101, tenant_id=1, display_name="AI号", phone_masked="101", status=AccountStatus.ACTIVE.value, session_ciphertext="session")
     group = TgGroup(id=201, tenant_id=1, tg_peer_id="-100201", title="素材群", auth_status="已授权运营", can_send=True, listener_interval_seconds=0)
-    session.add_all([account, group, TgGroupAccount(tenant_id=1, group_id=201, account_id=101, can_send=True)])
+    session.add_all([
+        account,
+        group,
+        TgGroupAccount(tenant_id=1, group_id=201, account_id=101, can_send=True),
+        TgAccountOnlineState(
+            tenant_id=1,
+            account_id=101,
+            desired_online=True,
+            online_status="online",
+        ),
+    ])
     session.add_all([
         Material(id=9301, tenant_id=1, title="围观表情", material_type="表情包", content="https://trusted.example.com/watch.webp", tags="围观,表情包", emoji_asset_kind="image_meme", cache_ready_status="ready", tg_cache_peer_id="cache-peer", tg_cache_message_id="9301", asset_fingerprint="fp-9301"),
         Material(id=9302, tenant_id=1, title="欢迎表情", material_type="表情包", content="https://trusted.example.com/welcome.webp", tags="欢迎,表情包", emoji_asset_kind="image_meme", cache_ready_status="ready", tg_cache_peer_id="cache-peer", tg_cache_message_id="9302", asset_fingerprint="fp-9302"),

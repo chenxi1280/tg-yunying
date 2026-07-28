@@ -11,10 +11,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import (
+    Action,
     GroupBotAdmission,
     GroupBotAdmissionPolicy,
     GroupBotRequiredChannelFollow,
     PendingVisibilityCredit,
+    TaskGroupDailyMessageSlot,
 )
 from app.models.enums import now as model_now
 from app.timezone import as_beijing
@@ -1106,12 +1108,20 @@ def open_pending_visibility_credit(
     existing = session.scalar(select(PendingVisibilityCredit).where(PendingVisibilityCredit.action_id == action_id))
     if existing is not None:
         return existing
+    action = session.get(Action, action_id)
+    payload = action.payload if action and isinstance(action.payload, dict) else {}
+    quantity_slot_id = str(action.primary_quantity_slot_id or "") if action else ""
+    quantity_slot = session.get(TaskGroupDailyMessageSlot, quantity_slot_id) if quantity_slot_id else None
     row = PendingVisibilityCredit(
         tenant_id=tenant_id,
         action_id=action_id,
         bucket_id=bucket_id,
+        task_day_ledger_id=quantity_slot.task_day_ledger_id if quantity_slot else None,
+        primary_quantity_slot_id=quantity_slot_id or None,
+        task_account_daily_coverage_id=str(payload.get("coverage_ledger_id") or "") or None,
         execution_attempt_id=execution_attempt_id,
         remote_message_id=str(remote_message_id or ""),
+        admission_version=int(payload.get("group_bot_admission_version") or 0) or None,
         hold_reason="pending_visibility",
         status="open",
     )

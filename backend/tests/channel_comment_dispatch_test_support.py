@@ -9,8 +9,11 @@ from app.database import Base
 from app.models import (
     AccountStatus,
     Action,
+    AiAccountVoiceProfile,
     ChannelMessage,
     ChannelMessageComment,
+    CommentFulfillmentObligation,
+    ContentMixContract,
     OperationTarget,
     RuleSet,
     RuleSetVersion,
@@ -21,6 +24,10 @@ from app.models import (
     TgGroupAccount,
 )
 from app.services._common import _now
+from app.services.task_center.account_voice_profile_cache import (
+    VOICE_PROFILE_CONTRACT_VERSION,
+    voice_profile_snapshot_hash,
+)
 
 
 def comment_dispatch_session() -> Session:
@@ -34,11 +41,42 @@ def seed_dispatch_scope(session: Session, *, reply: bool = False) -> Action:
     _seed_rules(session)
     _seed_channel_and_group(session)
     _seed_account(session)
+    session.flush()
+    mask = session.get(AiAccountVoiceProfile, "comment-mask-101")
     task = _comment_task()
     session.add(task)
     session.flush()
-    action = _comment_action(task, reply=reply)
+    action = _comment_action(task, mask, reply=reply)
     session.add(action)
+    session.add(
+        ContentMixContract(
+            id="comment-contract-1",
+            tenant_id=1,
+            content_mix_scope_key=f"comment:{task.id}:41:1",
+            content_contract_version=1,
+            scope_total_slots=1,
+            allocation_seed=f"{task.id}:41:1",
+            reply_min_required_count=1 if reply else 0,
+            reply_planned_count=1 if reply else 0,
+            direct_planned_count=0 if reply else 1,
+        )
+    )
+    session.add(
+        CommentFulfillmentObligation(
+            id="comment-obligation-1",
+            tenant_id=1,
+            task_id=task.id,
+            channel_message_id=41,
+            comment_plan_revision=1,
+            target_ordinal=1,
+            content_mix_contract_id="comment-contract-1",
+            relation_kind="reply" if reply else "direct",
+            reply_to_message_id=8101 if reply else None,
+            current_action_id=action.id,
+            action_attempt_no=1,
+            status="pending",
+        )
+    )
     session.commit()
     return action
 
@@ -118,6 +156,20 @@ def _seed_account(session: Session) -> None:
         account_id=101,
         can_send=True,
     ))
+    session.add(_comment_mask())
+
+
+def _comment_mask() -> AiAccountVoiceProfile:
+    return AiAccountVoiceProfile(
+        id="comment-mask-101",
+        tenant_id=1,
+        account_id=101,
+        version=1,
+        mask_name="评论读者",
+        short_prompt_summary="自然追问具体信息",
+        status="active",
+        quality_status="active",
+    )
 
 
 def _comment_task() -> Task:
@@ -141,7 +193,12 @@ def _comment_task() -> Task:
     )
 
 
-def _comment_action(task: Task, *, reply: bool) -> Action:
+def _comment_action(
+    task: Task,
+    mask: AiAccountVoiceProfile,
+    *,
+    reply: bool,
+) -> Action:
     reply_payload = {
         "comment_mode": "reply",
         "reply_to_message_id": 8101,
@@ -169,6 +226,11 @@ def _comment_action(task: Task, *, reply: bool) -> Action:
             "message_content": "频道消息正文",
             "comment_text": "",
             "slot_id": "channel-comment:41:0",
+            "comment_fulfillment_obligation_id": "comment-obligation-1",
+            "comment_plan_revision": 1,
+            "target_ordinal": 1,
+            "comment_action_attempt_no": 1,
+            "content_mix_contract_id": "comment-contract-1",
             "ai_generation_id": f"{task.id}:channel-comment:41:0",
             "ai_generation_status": "pending",
             "ai_generation_attempt_id": "",
@@ -176,6 +238,12 @@ def _comment_action(task: Task, *, reply: bool) -> Action:
             "ai_generation_claim_owner": "dispatcher-1",
             "ai_generation_claim_token": "claim-1",
             "ai_generation_attempt_history": [],
+            "account_mask_id": "comment-mask-101",
+            "account_mask_version": 1,
+            "account_mask_snapshot_hash": voice_profile_snapshot_hash(mask),
+            "account_mask_summary": "自然追问具体信息",
+            "voice_profile_contract_version": VOICE_PROFILE_CONTRACT_VERSION,
+            "mask_status": "active",
             "rule_set_id": 61,
             "rule_set_version_id": 62,
             "resolved_rule_set_version_id": 62,

@@ -29,7 +29,6 @@ DIRECT_MEMORY_RETENTION = timedelta(days=30)
 def requires_direct_check_in(payload: SendMessagePayload) -> bool:
     return bool(
         payload.coverage_ledger_id
-        and not payload.reply_to_message_id
         and payload.content_source == MASK_MISSING_CHECK_IN_SOURCE
         and payload.mask_status in {
             "missing",

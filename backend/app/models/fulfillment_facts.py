@@ -9,6 +9,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    JSON,
     String,
     Text,
     UniqueConstraint,
@@ -50,6 +51,13 @@ class CommentFulfillmentObligation(Base):
     )
     comment_plan_revision: Mapped[int] = mapped_column(Integer)
     target_ordinal: Mapped[int] = mapped_column(Integer)
+    content_mix_contract_id: Mapped[str | None] = mapped_column(
+        ForeignKey("content_mix_contracts.id"),
+        nullable=True,
+    )
+    relation_kind: Mapped[str] = mapped_column(String(16), default="direct")
+    reply_to_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    reply_target_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
     current_action_id: Mapped[str | None] = mapped_column(
         ForeignKey("actions.id"),
         nullable=True,

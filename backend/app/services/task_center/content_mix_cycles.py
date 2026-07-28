@@ -55,6 +55,9 @@ class ContentMixCycleSpec:
     sticker_max_count: int = 0
     custom_emoji_required_count: int = 0
     custom_emoji_max_count: int = 0
+    material_policy_rule_set_id: str | None = None
+    material_policy_rule_set_version: int | None = None
+    target_resolution_trace: str = ""
 
 
 def _validate_spec(spec: ContentMixCycleSpec) -> None:
@@ -123,6 +126,9 @@ def _new_contract(
         sticker_max_count=spec.sticker_max_count,
         custom_emoji_required_count=spec.custom_emoji_required_count,
         custom_emoji_max_count=spec.custom_emoji_max_count,
+        material_policy_rule_set_id=spec.material_policy_rule_set_id,
+        material_policy_rule_set_version=spec.material_policy_rule_set_version,
+        target_resolution_trace=spec.target_resolution_trace,
     )
 
 
@@ -164,21 +170,44 @@ def _policy_minimums(spec: ContentMixCycleSpec) -> tuple[tuple[str, int], ...]:
 def _add_obligations(
     session: Session,
     spec: ContentMixCycleSpec,
+    cycle: ContentMixCycle,
     contract: ContentMixContract,
 ) -> None:
-    session.add_all(
-        [
-            ContentMixObligation(
-                tenant_id=spec.tenant_id,
-                content_mix_contract_id=contract.id,
-                obligation_source="policy_min",
-                obligation_kind=kind,
-                required_count=count,
-                planned_count=count,
+    scope_key = contract.content_mix_scope_key
+    cycle_slots = list(session.scalars(
+        select(ContentMixCycleSlot)
+        .where(ContentMixCycleSlot.cycle_id == cycle.id)
+        .order_by(ContentMixCycleSlot.slot_index)
+    ))
+    obligations: list[ContentMixObligation] = []
+    for kind, count in _policy_minimums(spec):
+        candidates = _obligation_candidate_slots(kind, cycle_slots)
+        for ordinal in range(1, count + 1):
+            assigned = candidates[(ordinal - 1) % len(candidates)]
+            obligations.append(
+                ContentMixObligation(
+                    tenant_id=spec.tenant_id,
+                    content_mix_contract_id=contract.id,
+                    content_mix_scope_key=scope_key,
+                    obligation_source="policy_min",
+                    obligation_kind=kind,
+                    obligation_ordinal=ordinal,
+                    assigned_cycle_slot_id=assigned.id,
+                    required_count=1,
+                    planned_count=1,
+                )
             )
-            for kind, count in _policy_minimums(spec)
-        ]
-    )
+    session.add_all(obligations)
+
+
+def _obligation_candidate_slots(
+    kind: str,
+    slots: list[ContentMixCycleSlot],
+) -> list[ContentMixCycleSlot]:
+    if kind != "reply":
+        return slots
+    reply_slots = [slot for slot in slots if slot.relation_kind == "reply"]
+    return reply_slots or slots
 
 
 def create_content_mix_cycle(
@@ -194,7 +223,8 @@ def create_content_mix_cycle(
         session.add(contract)
         session.flush()
         _add_slots(session, spec, cycle)
-        _add_obligations(session, spec, contract)
+        session.flush()
+        _add_obligations(session, spec, cycle, contract)
         session.flush()
     return cycle
 
@@ -204,11 +234,23 @@ def mark_cycle_slot_materialized(
     slot: ContentMixCycleSlot,
     *,
     action_id: str | None,
+    slot_attempt: int | None = None,
 ) -> None:
-    if slot.slot_state == "unmaterialized":
+    if slot.slot_state in {"unmaterialized", "replan_required"}:
         slot.slot_state = "pending"
-        slot.slot_attempt = max(slot.slot_attempt, 1)
+        slot.slot_attempt = max(slot.slot_attempt, slot_attempt or 1)
         slot.current_action_id = action_id
+    if action_id:
+        obligations = session.scalars(select(ContentMixObligation).where(
+            ContentMixObligation.assigned_cycle_slot_id == slot.id,
+            ContentMixObligation.status == "pending",
+        ))
+        for obligation in obligations:
+            if obligation.assigned_action_id == action_id:
+                continue
+            if obligation.assigned_action_id:
+                obligation.assignment_version += 1
+            obligation.assigned_action_id = action_id
     session.flush()
     cycle = session.get(ContentMixCycle, slot.cycle_id)
     if cycle is None:

@@ -218,7 +218,22 @@ def _target_id(
     )
     if target:
         return int(target.id)
-    raise ValueError("group_ai_chat operation target not found")
+    target = OperationTarget(
+        tenant_id=task.tenant_id,
+        target_type="group",
+        tg_peer_id=group.tg_peer_id,
+        title=group.title,
+        member_count=group.member_count,
+        can_send=group.can_send,
+        auth_status=group.auth_status,
+    )
+    session.add(target)
+    session.flush()
+    task.type_config = {
+        **(task.type_config or {}),
+        "target_operation_target_id": target.id,
+    }
+    return int(target.id)
 
 
 __all__ = ["ensure_task_day_ledger"]
