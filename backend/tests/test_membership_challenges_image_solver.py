@@ -20,6 +20,7 @@ def test_search_join_image_solver_uses_next_provider_until_candidate_is_safe(mon
         SimpleNamespace(answer="10", confidence=0.92),
     ]
     calls: list[int] = []
+    prompts: list[str] = []
 
     monkeypatch.setattr(
         membership_challenges,
@@ -28,8 +29,9 @@ def test_search_join_image_solver_uses_next_provider_until_candidate_is_safe(mon
     )
     monkeypatch.setattr(membership_challenges, "ai_provider_credentials", lambda provider: provider)
 
-    def solve(provider, *_args, **_kwargs):
+    def solve(provider, *_args, **kwargs):
         calls.append(provider.id)
+        prompts.append(kwargs["prompt"])
         result = results[provider.id - 1]
         if isinstance(result, Exception):
             raise result
@@ -42,3 +44,4 @@ def test_search_join_image_solver_uses_next_provider_until_candidate_is_safe(mon
     assert solver is not None
     assert solver(b"image", "image/png", ["8", "9", "10", "11"]) == ("10", 0.92)
     assert calls == [1, 2, 3, 4]
+    assert all("8、9、10、11" in prompt for prompt in prompts)

@@ -511,11 +511,13 @@ def build_search_join_image_verification_solver(
         if not image_bytes:
             return None
         allowed_answers = frozenset(answer.strip() for answer in candidate_answers)
+        prompt = _search_join_image_prompt(candidate_answers)
         for provider_credentials in credentials:
             result = _solve_search_join_image(
                 provider_credentials,
                 image_bytes,
                 mime_type,
+                prompt=prompt,
             )
             if result is None:
                 continue
@@ -531,13 +533,15 @@ def _solve_search_join_image(
     credentials: Any,
     image_bytes: bytes,
     mime_type: str,
+    *,
+    prompt: str,
 ) -> tuple[str, float] | None:
     try:
         result = ai_gateway.solve_image_verification(
             credentials,
             image_bytes,
             mime_type or "image/png",
-            prompt=SEARCH_JOIN_IMAGE_VERIFICATION_PROMPT,
+            prompt=prompt,
         )
     except Exception:  # noqa: BLE001 - try the next configured healthy vision provider.
         return None
@@ -545,3 +549,11 @@ def _solve_search_join_image(
     if not answer:
         return None
     return answer, float(result.confidence or 0.0)
+
+
+def _search_join_image_prompt(candidate_answers: list[str]) -> str:
+    choices = "、".join(answer.strip() for answer in candidate_answers)
+    return (
+        f"{SEARCH_JOIN_IMAGE_VERIFICATION_PROMPT}"
+        f"当前可点击答案候选只有：{choices}。answer 必须严格从这些候选中选择。"
+    )
