@@ -1429,7 +1429,7 @@ def _channel_like_action(action_id: str, account_id: int, scheduled_at: datetime
     )
 
 
-def test_channel_like_reaction_unavailable_skips_message_siblings(monkeypatch):
+def test_channel_like_reaction_unavailable_keeps_message_siblings_open(monkeypatch):
     from app.services.task_center import dispatcher
 
     engine = create_engine("sqlite:///:memory:", future=True)
@@ -1463,17 +1463,14 @@ def test_channel_like_reaction_unavailable_skips_message_siblings(monkeypatch):
         sibling = session.get(Action, "action-like-sibling")
         assert action.status == "skipped"
         assert action.result["error_code"] == "reaction_unavailable_message"
-        assert sibling.status == "skipped"
-        assert sibling.result["error_code"] == "reaction_unavailable_sibling"
+        assert sibling.status == "pending"
+        assert sibling.result == {}
         obligations = session.scalars(
             select(ReactionFulfillmentObligation).where(
                 ReactionFulfillmentObligation.task_id == "task-like-unavailable"
             )
         ).all()
-        assert [item.status for item in obligations] == [
-            "unavailable",
-            "unavailable",
-        ]
+        assert [item.status for item in obligations] == ["unavailable"]
         task = session.get(Task, "task-like-unavailable")
         assert task.last_error == "频道消息不可点赞或消息ID无效"
 
