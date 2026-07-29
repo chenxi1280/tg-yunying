@@ -57,7 +57,12 @@ def plan_dispatch_claims(
 ) -> DispatchClaimPlan:
     if not actions:
         return DispatchClaimPlan((), {})
-    prebound = plan_prebound_search_claims(session, actions)
+    prebound = plan_prebound_search_claims(
+        session,
+        actions,
+        shard_total=shard_total,
+        shard_index=shard_index,
+    )
     remaining = _unbound_actions(actions, prebound)
     if not remaining:
         return prebound

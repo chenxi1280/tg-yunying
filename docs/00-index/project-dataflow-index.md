@@ -599,6 +599,8 @@ group_ai_chat / channel_comment 正文
 >
 > release 事务在 batch item、unit exclusion、计数和 rebuild wave 写入后必须显式 flush，再读取 exclusion 计算 release/outcome hash；`autoflush=false` 是生产与 QA 的共同事务基线。
 >
+> 预绑定 plan 按原 ShardAllocation 的 total/index 只路由到归属 Dispatcher；其他 worker 仅从自身 candidate 排除，不产生 release。归属 worker 锁后发现绑定 shard 已失效才进入 release/rebuild。
+>
 > **DF-178C owner/outcome/exclusion 补充：** 上段“owner lease 丢失”仅指进程失联、fencing token 失效或明确丢失续租所有权；健康 owner 跨租约周期持续续租，耗时本身不是 solver deadline。`solver_input_hash` 的规范化输入包含 `solver_contract_version`、carrier epoch、全部候选 ordinal/路径、相关资源与中央份额版本及公平输入，排除 worker/lease、时间和随机值；contract version 只属于 hash payload。finalized outcome hash 必须绑定 carrier identity、原 `solver_input_hash`、matched identity/version、精确 release set 与实际 wave epoch/input version，错绑保持 `release_fact_incomplete`。exclusion 仅在 reason-scoped 相关额度、授权、代理、协议/CAPTCHA、Gateway 或对应 `solver_problem_component_hash` 变化时 superseded；完整 input hash、无关 Task/shard、worker/lease 或扫描时间变化保持 active。
 >
 > **DF-178C problem hash P0 确认：** epoch 另存 carrier-independent `solver_problem_hash`，outcome hash 同时覆盖 problem/input；`no_feasible_search_path|search_solver_abandoned` 的 unit exclusion 只绑定本连通分量 `solver_problem_component_hash`。新 dispatch/search epoch、Reservation/ordinal/worker 或 carrier 派生份额变化不得使其失效，只有相关业务义务、候选、资源、公平输入或 contract version 变化才 supersede。

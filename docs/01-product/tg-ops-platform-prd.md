@@ -3989,6 +3989,8 @@ AI 活跃群 Planner 需要额外满足：
 > **2026-07-30 预绑定不可延后复用补充：** `dispatch_prebound=true` 的纯搜索 Action 只属于原 Reservation/Window，绝不能在 Window 结束后回落到通用 claim 或绑定新 Reservation。账号全局安全策略、账号 shard、运行资源或 confirm CAS 令本次 Window 无法执行时，直接通过唯一 release batch 终结 Action、释放原 unit 并触发新分片权重；不把原 Action 延后到旧 Window 外重试。
 >
 > release batch、batch item、unit exclusion、计数与 rebuild wave 必须在同一事务显式 flush 后再生成和校验 release/outcome hash；生产 `autoflush=false` 时不得依赖查询触发隐式 flush，否则本轮必须失败并回滚，不能留下半套释放事实。
+>
+> 预绑定 Action 的 worker 归属以原 `DispatchClaimShardAllocation.account_shard_total/index` 为准；plan 阶段只有同 shard Dispatcher 可将其放入 candidate，其他 Dispatcher 只跳过，不得把正常跨 shard 路由判成资源失败并释放 unit。claim 后再发现 shard 身份不一致属于绑定失效，才按 release/rebuild 收口。
 
 - 搜索任务结构合法即直接创建成功；创建接口不建立 ledger、不证明容量、不返回需要确认的风险。创建并启动或后续启动时才建立当前 `task_day_ledger_id`，根据实时 Telegram、账号、代理、授权槽位和协议事实分别计算不扣 held/unknown 的 `remaining_click_count`、用于防重建单的 `planning_click_deficit`、`hard_safe_attempt_capacity` 与 `catch_up_required`。运行期容量不足只写可解释 blocker，任务保持 `running` 并在事实变化后自动重算。
 - 当前未结束且同时包含 click 与 membership/admission 的旧任务必须幂等接管为 `search_click + click_only`：只从原 `daily_click_target_count` 建立新 click 合同，移除成员目标，终结未进 Gateway 的旧 source/membership Action；Gateway-started/success/unknown 与全部历史事实保持原绑定。缺少可证明 click 目标等结构字段时显式报 `legacy_search_click_contract_invalid`，不得从旧成员目标猜测；completed/deleted 只读。
