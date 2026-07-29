@@ -21,6 +21,7 @@
 3. 本文 supersede 旧“评论与群聊共用签到兜底”、搜索点击混入 membership/admission，以及 AI 3 轮失败后沉默/失败的合同；“搜索点击加入”仅登记为后续独立模式，本轮不设计、不实现。
 4. 本文 supersede 主 PRD 中频道评论 `max_total_comments` 单独触发 `completed`、reaction unavailable 关闭整帖、浏览任务级上限可以小于逐消息当日目标、频道任务自定义账号小时/日上限、重复搜索绕过账号/关键词日限额的旧表述；AI 活群/评论/点赞/浏览/纯搜索点击的通用小时软上限，以及评论/点赞/浏览/纯搜索点击的任务级与任务内账号级履约软上限，统一归一为 `1_000_000`，只作系统异常门禁，不作目标或完成条件。Telegram、账号全局、授权、代理、协议和内容安全硬边界不属于此软门禁。
 5. `Task.status` 与当日/当消息履约状态分离；本文不新增一种 Task 主状态。
+6. 本文 supersede 旧 AI 群管准入的“同群一次只允许一个新账号”窗口；互斥范围固定为 `target_group_id + account_id + admission_generation`，同群其他账号不得因某账号仍在观察/follow/confirm 而等待。
 
 ## 2. 当前生产事实与结论
 
@@ -179,7 +180,7 @@ calculated_at
 
 这些是类型专用唯一键/事实表，不新增 `primary_quantity_slot_id` 或通用数量槽。远端事实发生时间早于 Task/ledger 义务起点时只能作为历史状态，不得倒灌为本义务成功；所有权冲突进入受影响对象的 `consistency_quarantine|remote_fact_owned_elsewhere`，其他独立义务继续。
 
-发布接管必须把未结束评论/点赞/浏览 Task 的存量 `success` Action 回填为上述义务与唯一远端事实，把仍在 Gateway 前且有稳定天然义务键的 Action 绑定到当前义务并补齐 payload 中的 obligation/ledger ID。重复 lifetime source 只保留首个事实所有权，后续重复不计第二个完成量；新 Planner 完成数只读取远端事实，pending/current 义务只占规划额度。接管脚本提供 preview/apply，逐 Task 事务失败显式返回。Dispatcher 在任一旧 Action 进入 Gateway 前先锁 Task 并幂等执行接管：评论/点赞/浏览完成绑定；未绑定新义务且未进 Gateway 的旧 AI `send_message`、旧 search source/membership child 显式终结并由新合同重排，不能出现部署启动后先执行旧合同的竞态。
+发布接管必须把未结束评论/点赞/浏览 Task 的存量 `success` Action 回填为上述义务与唯一远端事实，把仍在 Gateway 前且有稳定天然义务键的 Action 绑定到当前义务并补齐 payload 中的 obligation/ledger ID。重复 lifetime source 只保留首个事实所有权，后续重复不计第二个完成量；新 Planner 完成数只读取远端事实，pending/current 义务只占规划额度。接管脚本提供 preview/apply，逐 Task 事务执行；部署先停止全部 Planner/Dispatcher/Listener/Recovery 等 worker，在仅 backend 可写且任何旧 Action 都不能进入 Gateway 的窗口中完成 preview 与 apply，再恢复 worker。结构非法只暂停对应 Task、写入 `task_contract_invalid` blocker 并继续接管其他 Task；非预期脚本/数据库失败才中止发布且不得恢复 worker。运行期 Dispatcher 不得临时改写整个 Task 合同；新建 Task 直接带新合同，显式启动时再幂等接管单 Task。
 
 评论/点赞不是自然日任务时不得虚构 `task_day_ledger_id`；浏览与 click 的任务日身份则必须保留。Planner 在锁定对应业务账本后按 `planning_deficit_count` 原子取得有限义务：评论/点赞/浏览创建 Action，click 只冻结稳定 ordinal，当前 Claim Window commit 才在中央份额内创建 assignment/Action。目标满足后终结 pre-Gateway excess。membership、`GroupBotAdmission.ready` 等可共享前置事实可以被多任务复检，但不能替代各任务自己的发送/click/admission 完成义务。
 

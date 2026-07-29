@@ -960,10 +960,10 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 
 | 文件 | 职责 | 当前状态 |
 | --- | --- | --- |
-| `backend/app/services/task_center/fulfillment_takeover.py`、`dispatcher.py` | 五类未结束 Task 的幂等合同接管、旧混合搜索转纯 click、AI 旧数量/硬小时字段清除、任务与任务内账号软上限归一；Planner/start/reconcile 先接管，Dispatcher 在每条旧 Action 的 Gateway 前再次锁 Task 复检；未绑定新义务且未进 Gateway 的 AI/search legacy Action 显式终结并重排 | implemented；待 release/E4 |
+| `backend/app/services/task_center/fulfillment_takeover.py`、`service.py` | 五类未结束 Task 的幂等合同接管、旧混合搜索转纯 click、AI 旧数量/硬小时字段清除、任务与任务内账号软上限归一；新建直接带新合同，显式启动幂等接管单 Task；未绑定新义务且未进 Gateway 的 AI/search legacy Action 显式终结并重排 | implemented；待 release/E4 |
 | `backend/app/services/task_center/channel_fulfillment.py`、`channel_fulfillment_queries.py`、`channel_fulfillment_takeover.py` | 点赞/浏览自然义务、Action 绑定、confirmed/unknown 查询、租户内跨 Task source 排除、账号在途锁内二次校验、存量 success/unknown 回填和 pending 接管 | implemented；待 release/E4 |
 | `backend/app/services/task_center/comment_fulfillment.py`、`comment_fulfillment_takeover.py`、`executors/channel_comment_budget.py` | 评论自然义务、存量 Action/远端评论事实迁移、失败释放同一 ordinal 重领、Planner 按义务而非历史 Action 计数；不改变 direct/reply 与内容素材占比 | implemented；待 release/E4 |
-| `backend/scripts/takeover_all_task_fulfillment.py`、`.github/workflows/deploy-production.yml` | 生产 preview/apply 命令，逐 Task 输出 before/after/reason/count 并支持重复 apply 零新增；Deploy 完成后自动先 preview、再 apply，任一 Task 结构失败使工作流失败 | implemented；待 release/E4 |
+| `backend/scripts/takeover_all_task_fulfillment.py`、`deploy/compose-up.sh`、`.github/workflows/deploy-production.yml` | 生产 preview/apply 命令，逐 Task 输出 before/after/reason/count并支持重复 apply；发布停止全部 worker，在仅 backend 可写窗口完成接管后才恢复；结构非法只暂停对应 Task，非预期失败阻断恢复 | implemented；待 release/E4 |
 | `backend/app/services/task_center/dispatch_reservations.py`、`dispatch_claim_allocation.py` | 保持 ready epoch 稳定，只在非空释放或已消费完份额后重建；部分获配不误报整任务容量不足 | implemented；待 release/E4 |
 | `backend/app/services/task_center/dispatcher.py` | AI 群管准入改为账号级互斥；评论/点赞/浏览 Gateway 前强制绑定义务、成功后确认远端事实 | implemented；待 release/E4 |
 | `backend/app/integrations/telegram/search_join.py`、`backend/app/services/task_center/jisou_selector_accounts.py` | hot-list 直接失败、零 reset、账号—协议路径 12 小时排除 | implemented；待 release/E4 |
