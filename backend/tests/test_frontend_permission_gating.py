@@ -1804,6 +1804,30 @@ def test_admin_permission_modal_exposes_usage_export_permission():
     assert "'usage.export'" in source[source.index("'运营管理员'"):source.index("'账号添加专员'")]
 
 
+def test_search_click_create_permission_is_assignable_and_gates_only_pure_click():
+    modals = (PROJECT_ROOT / "frontend/src/app/AppModals.tsx").read_text()
+    shell = (PROJECT_ROOT / "frontend/src/app/AppShell.tsx").read_text()
+    task_center = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
+    wizard = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterWizardSections.tsx").read_text()
+
+    assert "['tasks.create.search_click', '创建纯搜索点击']" in modals
+    operator_template = modals[modals.index("'运营管理员'"):modals.index("'账号添加专员'")]
+    assert "'tasks.create.search_click'" in operator_template
+    assert "canCreateSearchClick={hasPermission(currentUser, 'tasks.create.search_click')}" in shell
+    assert "canCreateSearchClick = false" in task_center
+    assert "canCreateSearchClick?: boolean;" in task_center
+    assert "if (taskType === 'search_click' && !canCreateSearchClick)" in task_center
+    assert "canCreateSearchClick={canCreateSearchClick}" in task_center
+    assert "disabled: item.value === 'search_click' && !canCreateSearchClick" in wizard
+    for permission in (
+        "tasks.create.group_ai_chat",
+        "tasks.create.channel_comment",
+        "tasks.create.channel_like",
+        "tasks.create.channel_view",
+    ):
+        assert permission not in modals
+
+
 def test_usage_reports_show_account_pool_login_drop_rates():
     source = (PROJECT_ROOT / "frontend/src/app/views/UsageReportsView.tsx").read_text()
     types = (PROJECT_ROOT / "frontend/src/app/types/operations.ts").read_text()

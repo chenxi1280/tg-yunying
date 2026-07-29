@@ -25,13 +25,25 @@ export function EditBasics() {
   );
 }
 
-export function WizardBasics({ taskType, onTypeChange }: { taskType: TaskCenterTaskType; onTypeChange: (type: TaskCenterTaskType) => void }) {
+export function WizardBasics({
+  taskType,
+  onTypeChange,
+  canCreateSearchClick = false,
+}: {
+  taskType: TaskCenterTaskType;
+  onTypeChange: (type: TaskCenterTaskType) => void;
+  canCreateSearchClick?: boolean;
+}) {
   const simpleSearchClickTask = ['search_click', 'search_join_group', 'search_rank_deboost'].includes(taskType);
+  const taskTypeOptions = TASK_TYPES.map((item) => ({
+    ...item,
+    disabled: item.value === 'search_click' && !canCreateSearchClick,
+  }));
   return (
     <Space direction="vertical" style={{ width: '100%' }}>
       <div className="form-grid">
         <Form.Item label="任务类型">
-          <Select options={TASK_TYPES} value={taskType} onChange={onTypeChange} />
+          <Select options={taskTypeOptions} value={taskType} onChange={onTypeChange} />
         </Form.Item>
         {!simpleSearchClickTask && <Form.Item name="name" label="任务名称" rules={[{ required: true }]}><Input /></Form.Item>}
         {taskType === 'group_membership_admission' && <Form.Item name="scheduled_start" label="开始时间" rules={[{ required: true }]}><Input type="datetime-local" /></Form.Item>}

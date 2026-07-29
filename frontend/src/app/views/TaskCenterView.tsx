@@ -216,6 +216,7 @@ export default function TaskCenterView({
   focusTask,
   onFocusTaskConsumed,
   canManageTasks = false,
+  canCreateSearchClick = false,
   canDispatchControl = false,
   onOpenAccountDetail,
   telegramBotSettings,
@@ -227,6 +228,7 @@ export default function TaskCenterView({
   focusTask?: { taskId: string; nonce: number } | null;
   onFocusTaskConsumed?: () => void;
   canManageTasks?: boolean;
+  canCreateSearchClick?: boolean;
   canDispatchControl?: boolean;
   onOpenAccountDetail?: (accountId: number, tab?: string) => void | Promise<void>;
   telegramBotSettings?: TenantBotSettings | null;
@@ -1531,6 +1533,14 @@ export default function TaskCenterView({
     const start = options.start ?? true;
     setActionError('');
     setActionWarning('');
+    if (!canManageTasks) {
+      setActionError('缺少任务管理权限');
+      return;
+    }
+    if (taskType === 'search_click' && !canCreateSearchClick) {
+      setActionError('缺少创建纯搜索点击任务权限');
+      return;
+    }
     try {
       await form.validateFields(fieldsForSubmit(taskType, messageScope, accountMode, pacingMode));
       const values = form.getFieldsValue(true);
@@ -2208,7 +2218,7 @@ export default function TaskCenterView({
         {actionWarning && <Alert className="form-alert" type="warning" showIcon message={actionWarning} />}
         <Steps className="wizard-steps" current={wizardStep} items={wizardSteps.map((title) => ({ title }))} />
         <Form form={form} layout="vertical" preserve initialValues={taskTypeInitialValues(taskType)}>
-          {wizardStep === 0 && <WizardBasics taskType={taskType} onTypeChange={resetTypeFields} />}
+          {wizardStep === 0 && <WizardBasics taskType={taskType} onTypeChange={resetTypeFields} canCreateSearchClick={canCreateSearchClick} />}
           {wizardStep === 1 && <WizardTarget taskType={taskType} messages={messages} messageScope={messageScope} targetChannelId={targetChannelId} onTargetChannelChange={() => form.setFieldsValue({ message_ids: [] })} onTargetsLoaded={mergeLoadedTargets} simpleSearchCreation={simpleSearchClickTask} />}
           {wizardStep === 2 && <WizardTypeConfig taskType={taskType} ruleSets={ruleSets} slangTemplates={slangTemplates} comments={comments} relaySourceOptions={[]} targetChannelId={targetChannelId} messageScope={messageScope} messageIds={messageIds} simpleSearchCreation={simpleSearchClickTask} />}
           {simpleSearchClickTask && wizardStep === 3 && <SearchClickExecutionConfig taskType={taskType} accountPools={taskAccountPools} />}

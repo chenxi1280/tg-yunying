@@ -57,8 +57,8 @@ PostgreSQL 并发测试在已配置 `TEST_DATABASE_URL` 的 CI/测试环境运�
 | 4 | `backend/tests/test_ai_group_daily_group_target.py`、`backend/tests/test_ai_group_daily_coverage_planner.py`、`backend/tests/test_task_account_daily_coverage.py` | 群日目标、冻结账号全覆盖、coverage/extra 分槽、静默非零权重、时区 ledger 连续 |
 | 5 | `backend/tests/test_ai_generation_phase_boundaries.py`、`backend/tests/test_ai_generation_quality_pipeline.py`、`backend/tests/test_ai_generation_material_policy.py`、新增 `backend/tests/test_ai_post_send_visibility.py` | 主 3/备用 3/签到、reply attempt 不改写、Gateway 前素材兼容/转派、素材义务不被兜底吞掉、共享 AdmissionLease 单执行；intercepted/unknown/visible-confirmed 与 abandon 权限、占位、分母、重入边界 |
 | 6 | `backend/tests/test_channel_comment_dispatch_generation.py`、`backend/tests/test_channel_comment_planner_boundaries.py`、`backend/tests/test_channel_comment_rule_snapshots.py` | 逐消息目标不被 lifetime cap 截断、active 面具快照、评论单表情、reply/素材合同不回归 |
-| 7 | `backend/tests/test_search_join_completion_first.py`、`backend/tests/test_search_join_opportunity_assignments.py`、`backend/tests/test_search_join_group_config.py`、新增 `backend/tests/test_search_click_only_contract.py`、`backend/tests/test_search_legacy_mode_isolation.py`、`backend/tests/test_jisou_no_reset.py` | 固定 `task_type=search_click + click_only`、拒绝 admission 字段、稳定 click ordinal、两类 solver/epoch 边界、首次 outcome 与 post-finalize `DispatchAllocationReleaseBatch`、unit-level 永久 exclusion、单 pending rebuild wave、完整 rebuild hash、rehash-to-commit 竞态、contract version 禁止新旧 Dispatcher 混跑、已结束 Window 不重建、carrier 联合保留、权重原子发布、验证码 required/solved/failed 实际状态、完整 click 证据、点击后无 child、系统账号排序、hot-list/unknown 零 reset、legacy mixed 不被改写 |
-| 8 | `backend/tests/test_task_center_view_dataflow.py`、`backend/tests/test_frontend_permission_gating.py`，随后 `npm --prefix frontend run build` | 创建页无容量确认；详情分列 quantity/content/admission/catch-up；TypeScript 与 Vite 构建通过 |
+| 7 | `backend/tests/test_search_join_completion_first.py`、`backend/tests/test_search_join_opportunity_assignments.py`、`backend/tests/test_search_join_group_config.py`、`backend/tests/test_permission_vocabulary.py`、新增 `backend/tests/test_search_click_only_contract.py`、`backend/tests/test_search_legacy_mode_isolation.py`、`backend/tests/test_jisou_no_reset.py` | 固定 `task_type=search_click + click_only`、拒绝 admission 字段、`tasks.manage + tasks.create.search_click` 双权限、稳定 click ordinal、两类 solver/epoch 边界、首次 outcome 与 post-finalize `DispatchAllocationReleaseBatch`、unit-level 永久 exclusion、单 pending rebuild wave、完整 rebuild hash、rehash-to-commit 竞态、contract version 禁止新旧 Dispatcher 混跑、已结束 Window 不重建、carrier 联合保留、权重原子发布、验证码 required/solved/failed 实际状态、完整 click 证据、点击后无 child、系统账号排序、hot-list/unknown 零 reset、legacy mixed 不被改写 |
+| 8 | `backend/tests/test_task_center_view_dataflow.py`、`backend/tests/test_frontend_permission_gating.py`，随后 `npm --prefix frontend run build` | 创建页无容量确认；权限编辑器可配置纯搜索点击专项权限；无专项权限时其他四类仍可创建且纯搜索点击不可选；详情分列 quantity/content/admission/catch-up；TypeScript 与 Vite 构建通过 |
 | 9 | `backend/tests/test_ai_group_daily_target_migration.py`、`backend/tests/test_channel_comment_history_migration.py`、新增专项 migration tests | dry-run 逐项审计；旧事实不改绑；存量 click+membership 仅标记 `legacy_mixed_search_join`，不自动迁为纯点击或未来加入模式；时区区间连续；历史 reset/unknown/success 只读 |
 | 10 | Task 1-9 全部定向测试、PostgreSQL 并发套件、完整后端回归、前端测试/构建、Alembic upgrade/downgrade 检查 | 文档/schema/API/迁移/UI/runtime 状态一致；不得用 SQLite 跳过并发，不得用部分绿测替代自动化闸门 |
 | 11 | GitHub Actions `Deploy Production`、runtime health、生产 ledger/Action/Attempt/remote fact 查询和完整自然日 E4 | release、worker、真实 Telegram 五类任务目标与内容构成同时满足；任一证据缺失保持 blocked/unproven |
@@ -368,6 +368,8 @@ daily_click_target_count: int
 
 - `backend/app/schemas/task_center.py`
 - `backend/app/api/routers/task_center.py`
+- `backend/app/auth.py`
+- `backend/app/permission_middleware.py`
 - `backend/app/models/task_center.py`
 - `backend/app/services/task_center/search_join_daily_capacity.py`
 - `backend/app/services/task_center/search_join_opportunity_assignments.py`
@@ -377,6 +379,7 @@ daily_click_target_count: int
 - `backend/app/services/task_center/search_join_facts.py`
 - `backend/app/services/task_center/search_join_protocol.py`
 - `backend/app/integrations/telegram/search_join.py`
+- `backend/tests/test_permission_vocabulary.py`
 
 - [ ] 新建搜索任务只通过 `POST /api/tasks/search-click[/create-and-start]` 固定持久化 `task_type=search_click`、`search_execution_mode=click_only` 和 `daily_click_target_count`；模式不可编辑。请求出现 `join_target_group_after_click`、`daily_admission_target_count`、成员目标或其他 admission 字段时返回 `422 field_not_allowed_for_click_only`。旧 `/search-join-group` 创建请求固定返回 `410 legacy_search_join_create_retired` 且零 Task 写入；旧 `search_join_*` 只作存量读取、迁移识别/物理兼容，不得成为当前业务身份或隐藏创建入口。
 - [ ] 创建接口只校验调用者同时具备 `tasks.manage + tasks.create.search_click`、同用户可见目标/账号组引用、纯点击字段与数值范围；缺任一权限返回 403，不可见引用返回不泄露存在性的 404，结构合法即返回已创建 Task。创建并启动先提交 Task，再建立 ledger 和运行 blocker，不读取 Telegram/账号/代理/协议/容量，不执行 preflight 或 warning confirm。
@@ -444,6 +447,7 @@ daily_click_target_count: int
 - [ ] deadline 前/后 click 确认、时区修改和新日新 click 均有确定性回归。
 - [ ] 存量混合任务只显示 `legacy_mixed_search_join`，历史事实不变，不能从纯点击入口编辑；未来 `click_and_join` 不得出现在可创建模式、API schema、迁移目标或本次 QA/release gate 中。
 - [ ] 日目标超出实时安全容量时不伪造 Action 或成功。
+- [ ] 权限词表包含 `tasks.create.search_click` 且运营角色模板按产品口径授予；`POST /api/tasks/search-click[/create-and-start]` 同时要求 `tasks.manage + tasks.create.search_click`，只具备前者时返回 403。AI 活群、评论、点赞、浏览的新建入口只要求 `tasks.manage`，不得发明或校验四类专项权限；旧 `tasks.create.search_join_group` 不得授权任何新建任务，旧创建路由继续固定返回 410。
 
 ## 6. 前端与可观测实现包
 
@@ -454,6 +458,11 @@ daily_click_target_count: int
 - `frontend/src/app/views/TaskCenterWizardSections.tsx`
 - `frontend/src/app/views/TaskCenterDetailModal.tsx`
 - `frontend/src/app/views/taskCenterViewModel.ts`
+- `frontend/src/app/AppModals.tsx`
+- `frontend/src/app/AppShell.tsx`
+- `frontend/src/app/views/TaskCenterView.tsx`
+- `backend/tests/test_frontend_permission_gating.py`
+- `docs/00-index/project-structure-index.md`
 
 - [ ] AI 只配置每群每日发送量；移除硬小时、活动窗口和容量 gate 字段。
 - [ ] 创建确认页只展示输入摘要与结构错误；结构合法直接创建，不展示必须确认的容量/准入/传输 warning。运行事实统一在创建后的详情页展示。
@@ -461,6 +470,7 @@ daily_click_target_count: int
 - [ ] 静默时间明确显示“降量发送，不停发”。
 - [ ] 展示配置群日目标、冻结账号数和有效目标。
 - [ ] 搜索创建页固定展示“搜索点击”与每日 click 目标，不展示入群开关、入群日目标或 `click_and_join` 选项；提交体固定 `search_execution_mode=click_only`。
+- [ ] 权限管理页可独立配置 `tasks.create.search_click`，前后端“运营管理员”模板在该权限上保持一致。无 `tasks.manage` 时不显示创建入口；仅有 `tasks.manage` 时仍可创建 AI 活群、评论、点赞、浏览，但纯搜索点击类型禁用且提交前再次拒绝；同时具备 `tasks.manage + tasks.create.search_click` 时才允许选择并提交纯搜索点击。
 - [ ] 搜索不展示账号容量或账号优先级配置；详情只读展示系统选择原因、`remaining_click_count/planning_click_deficit/hard_safe_attempt_capacity/catch_up_required`、click 事实链和 blocker，不展示 admission 阶段。
 - [ ] AI 详情把逻辑状态显示为“待群内可见确认（`pending_visibility_hold`）”，不得沿用物理表名中的 credit 暗示已成功；pending visibility 和 unknown 分列原因，但总计只进入一次 unknown 占位。
 - [ ] 搜索诊断只读展示 `dispatch_allocation_epoch/search_click_assignment_epoch/solver_input_hash/solver_result`、两类求解器结果、Reservation 的 bound/claimed/released 计数及当前 Window unit-level exclusion；不得展示 solver attempt，也不得把 exclusion 显示成永久禁用或运营可配置项。

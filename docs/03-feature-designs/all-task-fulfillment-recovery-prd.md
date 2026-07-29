@@ -62,7 +62,7 @@
 1. 五类任务使用统一、可下钻的目标、真实确认、在途、未知、失败、欠额、截止时间和容量状态。
 2. 任何完成结论都可追到同一任务粒度的 Action、ExecutionAttempt 和 Telegram 远端事实。
 3. Planner 只为 deadline 前可执行且未被有效 Action 占位的欠额形成有限执行义务；评论/点赞/浏览可直接建 Action，搜索只冻结 ordinal 与只读候选，必须等当前 Claim Window commit 取得中央份额后才建可执行 Action。
-4. 创建接口只执行请求结构校验：必填字段、调用者 `tasks.manage` 授权、对应任务类型的专项创建权限、同用户可见引用、引用类型与任务声明用途的静态兼容性，以及数量/内容合同能否形成唯一义务；这一步不得命名或实现为“任务预检”。纯搜索点击必须同时具备 `tasks.manage + tasks.create.search_click`，并持久化 `task_type=search_click`。调用者缺少任一必需权限直接返回 403，不持久化 Task；Telegram 运行权限、账号在线、准入、代理、Provider、协议和容量一律不在创建前读取。不执行容量预检、不要求风险确认；外部资源不足不阻止创建或启动，运行后由 Planner 持续显示真实 blocker、自动排序并追赶目标。
+4. 创建接口只执行请求结构校验：必填字段、调用者授权、同用户可见引用、引用类型与任务声明用途的静态兼容性，以及数量/内容合同能否形成唯一义务；这一步不得命名或实现为“任务预检”。五类任务的授权矩阵固定为：AI 活群、评论、点赞、浏览只要求 `tasks.manage`；纯搜索点击必须同时具备 `tasks.manage + tasks.create.search_click`，并持久化 `task_type=search_click`。本次不新增其余四类任务的专项创建权限。调用者缺少任一必需权限直接返回 403，不持久化 Task；Telegram 运行权限、账号在线、准入、代理、Provider、协议和容量一律不在创建前读取。不执行容量预检、不要求风险确认；外部资源不足不阻止创建或启动，运行后由 Planner 持续显示真实 blocker、自动排序并追赶目标。
 5. 任务生命周期、当日履约和逐消息履约分离，任何 task-level cap 都不能替代 per-account/per-message 目标。
 6. 存量修复默认 dry-run，精确到 task，保留审计且不自动启动任务。
 
@@ -90,7 +90,7 @@
 | `DispatchAllocationExclusion` | 精确且跨状态永久绑定 `(dispatch_claim_reservation_id, fulfillment_lane_claim_ordinal)` 的一个已释放中央份额事实，只影响来源 Window 的重新获配 | 不是账号/任务永久黑名单，不跨 Window，不减少业务欠额，也不等于极搜 `jisou_selector_accounts` 的 24h 协议安全 eligibility 排除 |
 | `membership_admission` | 账号为目标群完成 membership probe、join、可信群管频道关注、精确确认/验证、membership 与 can-send 复检的业务前置链 | 不表示 API 权限、搜索 target match、一般 eligibility 或纯搜索点击；纯搜索点击固定 `admission_lane_claims=0` |
 
-`AdmissionExecutionLease` 只为已经设计的 `membership_admission` 去重真实 join/follow/confirm 执行；接口权限继续使用 `tasks.manage`、`tasks.create.*`、`targets.manage` 等 permission 名称，搜索路径是否当前可执行继续使用 `eligibility`。未来“搜索点击加入”在独立 PRD 完成前不得引用 admission lane、lease 或状态机。
+`AdmissionExecutionLease` 只为已经设计的 `membership_admission` 去重真实 join/follow/confirm 执行；本次五类任务的接口授权只使用 `tasks.manage` 与纯搜索点击专用的 `tasks.create.search_click`：AI 活群、评论、点赞、浏览不设置专项创建权限。`tasks.create.search_join_group` 只作存量兼容，不能授权任何新建任务；`targets.manage` 等其他业务权限保持其既有边界。搜索路径是否当前可执行继续使用 `eligibility`。未来“搜索点击加入”在独立 PRD 完成前不得引用 admission lane、lease 或状态机。
 
 现有数据库/内部枚举中的 `lane=admission` 和 `admission_lane_claims` 是 `membership_admission` 执行份额的兼容物理名，不是第三种 admission 定义；新 API、日志和页面必须展示 `lane_business_kind=membership_admission`。它不得承载 API 授权、搜索 eligibility、纯 click 或尚未设计的“搜索点击加入”。
 
@@ -268,7 +268,7 @@ planning_reservation =
 
 | 类型 | 例子 | 处置 |
 | --- | --- | --- |
-| API 调用者无权 | 缺少 `tasks.manage`、对应任务类型的专项创建权限，或请求引用不属于当前用户且不可见；纯搜索点击的专项权限为 `tasks.create.search_click` | 返回 403/不泄露对象存在性的 404，不创建 Task；它是 API 边界，不进入任务 blocker，也不是容量预检 |
+| API 调用者无权 | AI 活群、评论、点赞、浏览缺少 `tasks.manage`；纯搜索点击缺少 `tasks.manage` 或 `tasks.create.search_click`；或请求引用不属于当前用户且不可见 | 返回 403/不泄露对象存在性的 404，不创建 Task；它是 API 边界，不进入任务 blocker，也不是容量预检 |
 | 结构性配置冲突 | 必填目标/账号范围缺失；引用类型与任务声明用途静态不兼容；finite comment cap 小于逐消息目标总和；view daily cap 小于已知消息当日目标总和；内容规则 `required>max` 或版本不可解析 | 返回 422，指出字段和冲突；这是请求本身无法形成确定义务，不是容量预检 |
 | AI 账号范围为空 | 请求没有账号范围引用 | 创建时 `account_scope_reference_missing` 422；若账号组/全部账号范围引用合法但启动时暂时解析为 0 个普通运营账号，则 Task 已创建并保持 running，显示 `account_scope_empty_runtime`，账号进入范围后自动继续 |
 | AI 活群日容量预测不足 | 理论日容量低于群日目标、部分账号尚未准入 | 仅提示 `completion_risk`，不拒绝、不暂停、不产生 `PlanAbort`；按 `due_by_now` 和未占位欠额持续建单 |
@@ -808,7 +808,7 @@ requested_at / updated_at
 ### 7.3 权限
 
 - 查看汇总需要 `tasks.view`；查看账号、协议 trace 和远端证据继续受目标/账号明细权限限制。
-- 创建任务需要 `tasks.manage` 与对应任务类型的专项创建权限同时满足；纯搜索点击还要求 `tasks.create.search_click`，缺任一权限返回 403。正式业务接口为 `POST /api/tasks/search-click[/create-and-start]`；旧 `search-join-group` 路由/权限只作存量读取与迁移识别，创建请求固定返回 410且不能授权或代建新任务。
+- AI 活群、评论、点赞、浏览的创建与创建并启动只要求 `tasks.manage`，不设置或隐含任何专项创建权限；纯搜索点击同时要求 `tasks.manage + tasks.create.search_click`，缺任一权限返回 403。正式业务接口为 `POST /api/tasks/search-click[/create-and-start]`；旧 `search-join-group` 路由/权限只作存量读取与迁移识别，创建请求固定返回 410且不能授权或代建新任务。
 - 修改配置、apply 存量修复、启停任务需要 `tasks.manage` 并写一批一条审计。
 - 不提供“强制成功”“忽略安全限额”“批量启动全部 stopped 任务”入口。
 
@@ -844,7 +844,7 @@ apply 不得修改 success、unknown_after_send、Gateway-started，不得补 re
 | Planner 与 4 Dispatcher 并发 | PostgreSQL 并发回归无 deadlock；通用入口严格使用 `Scope -> Window -> TaskAllocation -> ShardAllocation -> Reservation -> Action`，搜索入口在 Reservation 后固定追加 `carrier（如有） -> assignment -> consumptive 子预留 -> Action`，缺失层只跳过不换序；claim 热事务无 `UPDATE tasks` |
 | 容量参数 | batch limit、worker concurrency、scope capacity 分离；配置不一致 fail closed |
 | 合法任务直接创建 | 缺少可用账号、即时容量、代理路线、AI provider、搜索审批样本或准入 sponsor 时，结构合法的任务仍返回创建成功；启动后才建立 ledger/Cycle，并把对应运行态原因投影为 `at_risk|waiting_*|blocked` |
-| 创建权限、结构与运行态分层 | 缺 `tasks.manage` 或对应任务类型的专项创建权限返回 403；纯搜索点击缺 `tasks.create.search_click` 同样返回 403；不可见跨用户引用不泄露对象；当前用户可见但静态合同非法返回 422；inline 公开目标可本地 upsert pending 引用但创建事务不得调用 Telegram resolve/probe；账号在线、Telegram 权限、代理、准入、Provider、协议和容量不得在创建前读取或改变创建结果 |
+| 创建权限、结构与运行态分层 | AI 活群、评论、点赞、浏览缺 `tasks.manage` 返回 403，具备 `tasks.manage` 时不得再要求不存在的专项创建权限；纯搜索点击缺 `tasks.manage` 或 `tasks.create.search_click` 返回 403；不可见跨用户引用不泄露对象；当前用户可见但静态合同非法返回 422；inline 公开目标可本地 upsert pending 引用但创建事务不得调用 Telegram resolve/probe；账号在线、Telegram 权限、代理、准入、Provider、协议和容量不得在创建前读取或改变创建结果 |
 | 创建并启动状态分层 | 资源暂不可用时 `start_status=started`、Task=running、`runtime_state=waiting`；事务 B 真失败才 `start_status=start_failed` 且 Task=draft。same/new start key 并发均最多建立一份 ledger：每轮真实重试推进当前 `operation_version`，新 key 必须以 `replaces_start_operation_id/version` CAS 当前行，后请求看到 started 时回读成功，撞到 processing 时返回 `start_in_progress` |
 | create-and-start 幂等与部分成功 | 相同 `client_request_id + request_fingerprint` 的超时重试只产生一个 Task；同键不同 fingerprint 返回 409 且不覆盖 Task 配置；事务 A 创建成功、事务 B 注入失败时 HTTP 201 仍带原 `task_id/start_failed` 且 B 无残留 ledger。失败后 same key 覆盖并推进 version；new key 只有 replace CAS 当前 ID/version 成功才覆盖。成功后只保留 started，不产生历史行，迟到旧请求无法覆盖当前 identity/version |
 | 存量 Task 无 start operation | 存量 running/paused Task 返回 started + legacy_untracked，operation ID/version 为空且启动调用数为 0；paused resume 只恢复原 ledger、不写 operation；存量 draft/stopped 不回填历史，首次真实 start 才创建唯一 version 1 当前行 |

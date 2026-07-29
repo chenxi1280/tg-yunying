@@ -151,7 +151,7 @@ TG 运营管理平台面向 Telegram 运营团队，用一个后台统一管理�
 | `accounts.sensitive.read` | 查看完整 session 相关敏感状态、托管密码状态、代理绑定细节 | 必须输入原因，禁止默认导出明文秘密 |
 | `accounts.codes.read` | 查看 / 复制 TG 官方验证码、轮询验证码任务 | 二次确认，写查看原因、账号、trace_id |
 | `message_sending.manage` | 发送预检、保存草稿、提交发送、取消、重试、派发 | 发送、取消和重试必须写发送批次审计 |
-| `tasks.manage` | 创建、编辑、启动、暂停、继续、停止、重试、删除任务 | 删除、停止必须二次确认并填写原因 |
+| `tasks.manage` | 创建、编辑、启动、暂停、继续、停止、重试、删除任务 | 删除、停止必须二次确认并填写原因；本次五类履约任务中，AI 活群、评论、点赞、浏览的创建与创建并启动只需要本权限，不新增四类任务的专项创建权限 |
 | `tasks.create.search_click` | 创建和启动纯搜索点击任务 | 只对 `task_type=search_click + search_execution_mode=click_only` 生效；创建只校验同用户目标/账号组引用、字段与静态合同。授权槽位、代理、环境栈、decoy、健康和灰度账号事实在 Task 启动成功后进入运行投影，不阻止创建或把 start 误报失败。旧 `tasks.create.search_join_group` 仅作存量读取/迁移识别兼容，旧创建路由固定 410，不能授权或代建新任务 |
 | `tasks.create.search_rank_deboost` | 创建和启动搜索排名观察任务 | 只对 `search_rank_deboost` 生效；创建只校验静态合同。账号用途、分组、持久代理绑定、当前出口、随机豁免群、Gateway contract、协议样本和逐点击配额在启动后评估；缺失时 Task running 且 `runtime_state=waiting` |
 | `tasks.membership.manage` | 准入子任务暂停 / 继续、账号级重试准入、重新检测可发言、跳过账号、标记人工处理 | 账号级操作必须写原因、父任务、子任务、目标、账号、来源页面和 trace_id |
