@@ -26,6 +26,7 @@ from app.models import (
     TgAccount,
 )
 from app.services._common import _now
+from app.services.task_center import prebound_search_claim
 from app.services.task_center.prebound_search_claim import (
     confirm_prebound_search_claim,
     plan_prebound_search_claims,
@@ -76,6 +77,44 @@ def test_prebound_assignment_accepts_postgres_aware_window(
     action.status = "claiming"
 
     assert confirm_prebound_search_claim(session, action, binding)
+
+
+def test_prebound_confirm_uses_central_claim_lock_order(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    action = session.get(Action, "action-1")
+    binding = plan_prebound_search_claims(
+        session,
+        [action],
+    ).bindings_by_action_id[action.id]
+    action.status = "claiming"
+    order: list[str] = []
+    original_locked = prebound_search_claim._locked
+    original_assignment = prebound_search_claim._locked_assignment
+
+    def track_locked(current, model, row_id):
+        order.append(model.__name__)
+        return original_locked(current, model, row_id)
+
+    def track_assignment(current, current_action):
+        order.append("SearchClickOpportunityAssignment")
+        return original_assignment(current, current_action)
+
+    monkeypatch.setattr(prebound_search_claim, "_locked", track_locked)
+    monkeypatch.setattr(
+        prebound_search_claim,
+        "_locked_assignment",
+        track_assignment,
+    )
+
+    assert confirm_prebound_search_claim(session, action, binding)
+    assert order == [
+        "DispatchClaimWindow",
+        "DispatchClaimShardAllocation",
+        "DispatchClaimReservation",
+        "SearchClickOpportunityAssignment",
+    ]
 
 
 def test_pre_gateway_release_is_idempotent_and_opens_one_rebuild_wave(
