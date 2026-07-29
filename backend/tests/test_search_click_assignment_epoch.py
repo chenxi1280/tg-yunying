@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import timedelta
 from types import SimpleNamespace
 
@@ -10,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.models import (
+    Action,
     DispatchClaimReservation,
     DispatchClaimScope,
     DispatchClaimShardAllocation,
@@ -97,6 +99,67 @@ def test_epoch_persists_snapshot_before_binding_action(
     assert assignment.state == "action_bound"
     assert assignment.action_id is not None
     assert reservation.bound_count == 1
+
+
+def test_each_matched_ordinal_gets_distinct_bound_action(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger = session.get(TaskDayLedger, "ledger-1")
+    session.add(SearchClickFulfillmentObligation(
+        id="obligation-2",
+        tenant_id=1,
+        task_day_ledger_id=ledger.id,
+        target_id=1,
+        click_obligation_ordinal=2,
+    ))
+    window = session.get(DispatchClaimWindow, "window-1")
+    allocation = session.get(DispatchClaimShardAllocation, "allocation-1")
+    reservation = session.get(DispatchClaimReservation, "reservation-1")
+    window.claim_capacity = 2
+    window.unclaimed_allocated_count = 2
+    allocation.required_claims = 2
+    allocation.unclaimed_allocated_count = 2
+    reservation.required_claims = 2
+    reservation.reserved_claims = 2
+    session.commit()
+    units = tuple(
+        SearchClickFulfillmentUnit(
+            obligation_id=f"obligation-{ordinal}",
+            task_id="task-1",
+            reservation_id="reservation-1",
+            window_id="window-1",
+            dispatch_allocation_epoch=1,
+            fulfillment_lane_claim_ordinal=ordinal,
+        )
+        for ordinal in (1, 2)
+    )
+    path = _path_context(session)
+    candidate = replace(
+        path.candidate,
+        hard_safe_remaining_capacity=2,
+        eligible_obligation_ids=("obligation-1", "obligation-2"),
+    )
+    path = replace(path, candidate=candidate)
+    monkeypatch.setattr(
+        search_click,
+        "prepare_search_click_fulfillment_units",
+        lambda *_args, **_kwargs: units,
+    )
+    monkeypatch.setattr(
+        search_click,
+        "candidate_paths",
+        lambda *_args, **_kwargs: {candidate.key: path},
+    )
+
+    assert search_click.build_plan(session, session.get(Task, "task-1")) == 2
+    session.commit()
+
+    assignments = list(session.scalars(select(SearchClickOpportunityAssignment)))
+    actions = list(session.scalars(select(Action)))
+    assert len(assignments) == 2
+    assert len(actions) == 2
+    assert len({row.action_id for row in assignments}) == 2
 
 
 def test_build_plan_finalizes_orphaned_open_epoch_before_current_window(

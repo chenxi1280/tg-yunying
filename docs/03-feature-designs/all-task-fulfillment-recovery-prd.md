@@ -965,7 +965,7 @@ apply 不得修改 success、unknown_after_send、Gateway-started，不得补 re
 - A：连续 30 分钟并跨完整 Planner/Dispatcher drain，deadlock=0，reservation 守恒。
 - B：AI 每账号 coverage、群日总量及已配置引用/素材占比可追到 Action、Attempt、remote ID；需可见性核验的消息还须追到 `pending_visibility_hold -> visible_confirmed`。同一主槽只有一个 post-Gateway 未确认占位，拦截/abandon 不缩冻结分母，可见确认无部分提交；总量与内容账本分别相等且 content mix shortfall/overflow/策略违规均为 0。
 - C：受控真实消息分别取得评论、reaction、view 的逐消息目标；评论已配置引用/素材 content mix 违规为 0，单表情兜底未混入正常文本 emoji 或素材成功数。
-- D：只验 `search_execution_mode=click_only`：先接管运行中旧混合搜索并 canary，再放量；每个完成 ordinal 都有完整 click evidence、无新增 membership 副作用、无 admission lane/lease/child。`dispatch_allocation_epoch`、`search_click_assignment_epoch`、首次 search Reservation 独占期、`DispatchAllocationReleaseBatch`、逐 candidate 的 `DispatchAllocationReleaseBatchItem`、永久 unit `DispatchAllocationExclusion` 与对象级 `consistency_quarantine` 均可审计，且每个来源 Reservation 首次 outcome 后满足 `bound_count + claimed_count + released_count = reserved_claims`；旧 membership 历史事实保持原绑定。“搜索点击加入”不进入本轮 E4。
+- D：只验 `search_execution_mode=click_only`：先接管运行中旧混合搜索并 canary，再放量；每个完成 ordinal 都有独立 assignment/Action 一对一绑定及完整 click evidence，Action 去重身份在首次 flush 前已包含 obligation、assignment、中央 Reservation 与 lane ordinal，无新增 membership 副作用、无 admission lane/lease/child。`dispatch_allocation_epoch`、`search_click_assignment_epoch`、首次 search Reservation 独占期、`DispatchAllocationReleaseBatch`、逐 candidate 的 `DispatchAllocationReleaseBatchItem`、永久 unit `DispatchAllocationExclusion` 与对象级 `consistency_quarantine` 均可审计，且每个来源 Reservation 首次 outcome 后满足 `bound_count + claimed_count + released_count = reserved_claims`；旧 membership 历史事实保持原绑定。“搜索点击加入”不进入本轮 E4。
 - E：在任务时区完成一个完整自然日；五类均达到各自目标才可写 `production_fixed`。
 
 若代码已部署但搜索账号容量仍不足，结论必须为 `production_blocked: insufficient_safe_capacity`，不能写修复完成。

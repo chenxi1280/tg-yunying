@@ -368,21 +368,20 @@ def _create_bound_action(
     task = session.get(Task, context.unit.task_id)
     if task is None:
         raise RuntimeError("search_click_assignment_task_missing")
-    action = create_search_join_action(
-        session,
-        task,
-        context.path.candidate.account_id,
-        context.now,
-        _payload(context.path.payload_input),
-    )
-    action.payload = {
-        **(action.payload or {}),
+    payload = _payload(context.path.payload_input).model_copy(update={
         "search_click_obligation_id": context.obligation.id,
         "search_click_assignment_id": context.assignment.id,
         "dispatch_reservation_id": context.reservation.id,
         "fulfillment_lane_claim_ordinal":
             context.unit.fulfillment_lane_claim_ordinal,
-    }
+    })
+    action = create_search_join_action(
+        session,
+        task,
+        context.path.candidate.account_id,
+        context.now,
+        payload,
+    )
     action.result = {
         "search_click_assignment_id": context.assignment.id,
         "dispatch_prebound": True,

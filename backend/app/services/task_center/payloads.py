@@ -315,6 +315,10 @@ class SearchJoinPayload(BaseModel):
     approved_protocol_profile: dict[str, Any] = Field(default_factory=dict)
     planning_slot_key: str = ""
     jisou_recovery_kind: str = Field(default="", max_length=40)
+    search_click_obligation_id: str = Field(default="", max_length=36)
+    search_click_assignment_id: str = Field(default="", max_length=36)
+    dispatch_reservation_id: str = Field(default="", max_length=36)
+    fulfillment_lane_claim_ordinal: int = Field(default=0, ge=0)
 
     @model_validator(mode="after")
     def validate_safe_navigation(self) -> "SearchJoinPayload":
