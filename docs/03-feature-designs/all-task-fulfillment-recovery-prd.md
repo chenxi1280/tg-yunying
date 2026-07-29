@@ -182,6 +182,8 @@ calculated_at
 
 发布接管必须把未结束评论/点赞/浏览 Task 的存量 `success` Action 回填为上述义务与唯一远端事实，把仍在 Gateway 前且有稳定天然义务键的 Action 绑定到当前义务并补齐 payload 中的 obligation/ledger ID。重复 lifetime source 只保留首个事实所有权，后续重复不计第二个完成量；新 Planner 完成数只读取远端事实，pending/current 义务只占规划额度。接管脚本提供 preview/apply，逐 Task 事务执行；部署先停止全部 Planner/Dispatcher/Listener/Recovery 等 worker，在仅 backend 可写且任何旧 Action 都不能进入 Gateway 的窗口中完成 preview 与 apply，再恢复 worker。结构非法只暂停对应 Task、写入 `task_contract_invalid` blocker 并继续接管其他 Task；非预期脚本/数据库失败才中止发布且不得恢复 worker。运行期 Dispatcher 不得临时改写整个 Task 合同；新建 Task 直接带新合同，显式启动时再幂等接管单 Task。
 
+点赞和浏览义务把 `account_id` 作为远端副作用身份的一部分；payload 已带 `reaction_fulfillment_obligation_id|view_fulfillment_obligation_id` 的 Action 在 claim 时禁止改派账号。历史 Action 若已被错误改派，payload 当前绑定与原义务不一致时必须先原子释放原义务，再允许其用原账号重建；已成功但尚待远端事实 finalize、且 payload 仍绑定同一义务的 Action 继续占位，不能被当成终态失败重建。不得让一个 Action 同时占住两个账号义务。
+
 评论/点赞不是自然日任务时不得虚构 `task_day_ledger_id`；浏览与 click 的任务日身份则必须保留。Planner 在锁定对应业务账本后按 `planning_deficit_count` 原子取得有限义务：评论/点赞/浏览创建 Action，click 只冻结稳定 ordinal，当前 Claim Window commit 才在中央份额内创建 assignment/Action。目标满足后终结 pre-Gateway excess。membership、`GroupBotAdmission.ready` 等可共享前置事实可以被多任务复检，但不能替代各任务自己的发送/click/admission 完成义务。
 
 按时归属必须使用 `remote_confirmed_at`：优先 Telegram/协议返回的远端事件时间，其次是同一 ExecutionAttempt 在 Gateway 成功回执时原子记录的确认时间；普通 `Action.updated_at`、reconcile 执行时间或页面读取时间不得替代。无法证明事实发生在 deadline 内时进入 `confirmation_time_unproven`/unknown，不能猜测计入 `confirmed_count`。
@@ -293,6 +295,8 @@ planning_reservation =
 创建期与运行期的账号边界必须分开：调用者无权访问账号范围时在 API 边界返回 403/不泄露存在性的 404；当前用户可见但引用不存在、类型错误或与任务声明用途静态不兼容时，属于请求级 `task_contract_invalid` 并返回 422。引用本身合法，但具体账号在启动后或运行中被删除、用途状态变化、授权资产漂移或身份失效时，属于账号级 `account_identity_invalid`。后者不得回滚 Task、缩小已冻结分母或阻塞其他账号，也不得被新增为另一种创建预检。
 
 数据库唯一键冲突、远端事实已绑定另一个义务、Action payload 损坏或历史归属无法立即判定时，进入 `consistency_quarantine` 并告警/reconcile；不得猜测计数、不得复用该事实，也不得把系统数据问题扩展成第 7 类产品门禁。只有受影响对象暂停，其他独立义务继续。
+
+Planner 以父 Task 为最小异常隔离单元：单个 Task 的代码异常或对象一致性异常必须回滚该 Task 当前规划事务，记录包含错误类型、摘要和时间的 `planner_runtime_error` 并保留异常日志，随后继续规划同轮其他 Task；故障 Task 延迟 30 秒后重试，成功规划时清除该诊断。该机制只隔离系统故障，不能把失败 Action、义务或远端事实写成成功，也不能据此缩小目标或完成 Task。
 
 运行中 Task 在接管/Planner 首次物化时命中 `task_contract_invalid`，必须写入 `fulfillment_takeover_status=blocked`、具体错误和检查时间，将该 Task 显式置为 `paused`，不得让异常退出 Planner worker，也不得继续每轮忙重试；修正配置并由用户恢复后重新执行接管。对象级一致性问题仍按上一段隔离，不能借此暂停整个 Task。
 

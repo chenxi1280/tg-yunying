@@ -5301,6 +5301,8 @@ AI 群管准入只按 `(target_group_id, account_id, admission_generation)` 串�
 
 五类 `all_task_v2` 任务不再使用旧 Planner backlog 数量门禁；存量接管清除 `planner_backlog_*` 陈旧状态并立即唤醒运行中任务。任务内履约软上限统一为 `1_000_000`：除五类通用 `max_actions_per_hour` 外，还包括浏览任务/账号日上限、点赞账号小时上限、评论任务/账号小时上限，以及纯搜索点击的任务日、账号日、账号小时和账号关键词日上限；搜索 task-local skip 概率和账号冷却归零。账号全局安全、Telegram、授权、代理、协议、内容质量与 unknown 防重仍是硬边界。
 
+点赞/浏览的账号是天然履约义务键，绑定新义务的 Action 禁止在 Dispatcher claim 时改派账号。历史错误改派造成的双重绑定按 payload 当前义务释放原义务；同义务成功待 finalize 的 Action 继续占位。Planner 的一个 Task 规划异常只回滚该 Task、写入 `planner_runtime_error` 并在 30 秒后重试，同轮其他 Task 必须继续，不能因一个浏览/点赞一致性故障阻断纯搜索点击或其他类别。
+
 #### 8.4.6 发布、观测和验收
 
 - 部署顺序：终态/引用边界保留 → 接管 preview → 群日/内容合同/公平 Window schema 与迁移 → 自动化 QA → release → 幂等 apply 运行中五类任务接管 → canary → 完整任务日 E4。
