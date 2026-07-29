@@ -75,6 +75,7 @@ def build_plan(session: Session, task: Task) -> int:
     if task.type != "search_click":
         raise ValueError("search_click_executor_task_type_invalid")
     now_value = _now()
+    _finalize_orphaned_epochs(session, now_value)
     units = prepare_search_click_fulfillment_units(session, now=now_value)
     if not units:
         return 0
@@ -117,6 +118,20 @@ def build_plan(session: Session, task: Task) -> int:
         _FinalizeContext(epoch, units, paths, result, now_value),
     )
     return created_by_task.get(task.id, 0)
+
+
+def _finalize_orphaned_epochs(
+    session: Session,
+    now_value: datetime,
+) -> None:
+    epochs = list(session.scalars(
+        select(SearchClickAssignmentEpoch)
+        .where(SearchClickAssignmentEpoch.finalize_status == "open")
+        .order_by(SearchClickAssignmentEpoch.created_at)
+        .with_for_update(skip_locked=True)
+    ))
+    for epoch in epochs:
+        _handle_existing_epoch(session, epoch, now_value)
 
 
 def _existing_epoch(

@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
 from app.services.task_center.ai_generator import AiGenerationUnavailable, GeneratedContent
@@ -166,6 +166,32 @@ def test_daily_coverage_static_fallback_handles_provider_unavailability() -> Non
     assert results[0].rejection_code == ""
     assert results[0].quality_fallback == "check_in_fallback"
     assert results[0].fallback_reason == "all_model_stages_rejected"
+
+
+def test_provider_unavailability_closes_read_transaction_before_next_stage() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    observed: list[str] = []
+
+    def unavailable_after_lookup(session, _tenant_id, config, **_kwargs):
+        session.execute(text("SELECT 1"))
+        observed.append(str(config.get("_ai_fallback_stage") or ""))
+        raise AiGenerationUnavailable("configured model unavailable")
+
+    request = _request(
+        "",
+        cached=False,
+        config={"generation_slots": [_coverage_slot("slot-1", 11)]},
+    )
+    with Session(engine) as session:
+        results, _tokens = generate_quality_results(
+            session,
+            request,
+            _dependencies(normal_generator=unavailable_after_lookup),
+        )
+
+    assert observed == ["primary_m3"] * 3 + ["fallback_m25"] * 3
+    assert results[0].quality_fallback == "check_in_fallback"
+    assert results[0].content == "签到"
 
 
 def test_cached_rejection_reenters_daily_coverage_static_fallback() -> None:

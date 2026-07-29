@@ -528,7 +528,7 @@ dispatch_unserved_strict_classes
 1. `click_effect=target_open_only|navigate_only` 只表示批准的目标按钮调用或 Telegram 内部目标预览/resolve；`membership_side_effect` 必须独立为 `none`。
 2. `membership_side_effect=join|request_to_join|follow|unknown` 的路径不能进入 `click_only` eligibility；该账号/协议路径写 `click_only_membership_effect_not_allowed`，其他合法路径继续。
 3. Gateway 对 `click_only` 禁止调用 `JoinChannelRequest`、`ImportChatInviteRequest`、申请入群、关注频道、群管确认和 can-send 复检；调用前审计必须为 `membership_mutating_rpc_invoked=false`。
-4. 旧样本只有 `join_candidate` 或没有 `membership_side_effect` 时，必须写 `click_only_membership_effect_unproven` 并等待人工基于真实脱敏样本重新分类；不得自动升级、不得用已有 membership 状态证明“无副作用”。
+4. 任意旧样本只有 `join_candidate` 或没有 `membership_side_effect` 时，默认写 `click_only_membership_effect_unproven` 并等待人工基于真实脱敏样本重新分类；不得用已有 membership 状态证明“无副作用”。纯 click profile 的 group result 必须至少包含一个 `target_open_only`，只有 `navigate_only` 不能进入 eligibility。唯一可自动迁移的闭集例外是历史解析器自身生成的 `jisou-v2-2026-07-28`：该解析器把所有 Telegram 内部 URL 统一标成 `join_candidate`，但纯点击 Executor 对该控件只调用目标 URL、从不调用 join/request/follow/confirm/can-send RPC。发布接管必须把精确匹配“已脱敏 active 样本 + group result effects 仅为 `join_candidate|navigate_only` + 未声明成员副作用”的旧行保留为 inactive 历史，并创建 `jisou-click-only-v3-2026-07-29` replacement，将 Telegram 内部 URL 固化为 `target_open_only`、声明 `membership_side_effects_allowed=[none]`、写审计。结构、版本或 effect 集合任一不匹配仍禁止自动迁移。
 5. 该阻塞只在 Task 启动后形成运行路径 blocker，不影响结构合法 Task 创建，也不得触发未来 `click_and_join` 模式。
 
 Planner 必须把校验后的 profile 与 `protocol_sample_version` 一起冻结进 source payload；Dispatcher 对旧 Action 或缺 profile 的极搜 payload 在 Gateway 前写 `protocol_sample_invalid` 并结束 Attempt，不得回退到硬编码猜测。最后一道顺序固定为：先复核任务仍 running、scheduled_end、账号安全和授权/代理环境，再校验 profile，最后才写 `gateway_call_started_at` 并调用 Gateway。quiet-hours 是 Planner 的非零低权重，不是 Gateway 硬门禁，不得再写 `quiet_hours_active` 终态；缺 profile 也不得遮蔽 `task_not_active`、`scheduled_end_reached` 或授权环境原始错误。旧样本需要由人工基于真实、脱敏采集重新审核和版本化；系统不得自动把旧 `buttons` 摘要升级为已审批指纹。
@@ -616,7 +616,7 @@ daily_click_target_count
 | 幂等键被不同配置复用 | 同一 client_request_id 携带不同目标、click 数或 start mode 返回 `409 idempotency_key_reused`，原 Task 不被覆盖 |
 | 纯点击字段边界 | 携带 join switch、admission 目标或成员目标返回 `422 field_not_allowed_for_click_only`，不创建 child |
 | 旧搜索创建路由 | `/api/tasks/search-join-group` 的新建请求返回 `410 legacy_search_join_create_retired` 且不创建 Task；旧路由/权限只读存量与迁移识别，不能代建 `search_click` |
-| 存量混合任务 | 标记 `legacy_mixed_search_join`；不自动迁移、不删除历史 child/远端事实、不允许从纯点击编辑入口改写 |
+| 存量混合任务 | 发布 takeover 把未结束 Task 幂等迁移为 `search_click + click_only`，终结未进 Gateway 的 membership child；已进 Gateway child、历史远端事实和原绑定只读保留，不从纯点击编辑入口改写 |
 | 20 个可执行小时、20 次每小时、1000 点击目标 | 任务保持 running，显示硬安全容量缺口并在允许速率内持续追赶；不伪造 Action/成功、不因风险停止任务 |
 | 普通曲线低于目标 | 自动进入 catch-up；在硬安全上限内压缩软 pacing，不继续按一轮一条慢速节奏 |
 | 0 click confirmed、1000 个 held/unknown source | `remaining_click_count` 仍为 1000；只有 `planning_click_deficit` 因防重暂为 0，任务不得显示完成 |
@@ -626,7 +626,7 @@ daily_click_target_count
 | 今日仅剩部分窗口、明日可完整执行 | 分别展示当前部分日和首个完整日；今天 blocked 不粘连到明天 |
 | 存量任务日中变得不可达 | `daily_outcome=blocked` 只表示当前证据下的履约风险/结论，Task 仍 running；已有 Gateway source 正常收口，其他合法路径继续重算和追赶，不把 blocked 当停止 Planner 的终态，也不假装严格目标可达 |
 | 只找到目标或按钮、尚无可证点击结果 | 不增加 `target_click_observed`；证据完整才 confirmed，调用后结果不可辨时进入 unknown |
-| 旧 `join_candidate` 或成员副作用未知 | 不进入纯 click eligibility，写 `click_only_membership_effect_unproven|not_allowed`；不得调用任何 join/request/follow/confirm/can-send RPC，其他合法账号路径继续 |
+| 旧 `join_candidate` 或成员副作用未知 | 除上文精确 `jisou-v2` 解析语义迁移外，不进入纯 click eligibility，写 `click_only_membership_effect_unproven|not_allowed`；不得调用任何 join/request/follow/confirm/can-send RPC，其他合法账号路径继续 |
 | click evidence 跨 Task 复用 | 同一非空 evidence hash 只能绑定一个 Attempt/ordinal；事实早于 ledger 起点不得倒灌，冲突 ordinal quarantine 而其他 ordinal 继续 |
 | 目标群未出现在结果中 | source 明确失败且不增加 target_click_observed；释放 assignment 后允许同一 click ordinal 在硬安全约束内 replacement，open/unknown 不重复 |
 | 共享资源笛卡尔积 | 一个账号额度对应多个 keyword/授权/代理组合时，projection 只按共享资源约束精确匹配且标记未预留；当前执行机会只按绑定中央 Reservation 的 committed assignment 统计，不能把候选组合数相加 |

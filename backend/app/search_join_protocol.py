@@ -25,6 +25,8 @@ ALLOWED_BUTTON_EFFECTS = frozenset({"unknown", "navigate_only", "target_open_onl
 ALLOWED_MEMBERSHIP_SIDE_EFFECTS = frozenset(
     {"none", "join", "request_to_join", "follow", "unknown"}
 )
+LEGACY_JISOU_CLICK_PROFILE_VERSION = "jisou-v2-2026-07-28"
+PURE_CLICK_JISOU_PROFILE_VERSION = "jisou-click-only-v3-2026-07-29"
 
 # PRD §2.19.1: verification_image_page 是独立相位，需 MessageMediaPhoto + 人机验证文本 + ≥8 个 callback_data 数字按钮。
 VERIFICATION_IMAGE_PAGE = "verification_image_page"
@@ -73,11 +75,45 @@ def pure_click_protocol_profile_is_approved(profile: object) -> bool:
     ]
     return bool(result_pages) and all(
         set(item["membership_side_effects_allowed"]) == {"none"}
+        and "target_open_only" in set(item["button_effects_any"])
         and set(item["button_effects_any"]).issubset(
             {"navigate_only", "target_open_only"}
         )
         for item in result_pages
     )
+
+
+def upgraded_legacy_pure_click_profile(
+    profile: object,
+    *,
+    schema_version: str,
+) -> dict[str, Any] | None:
+    if schema_version != LEGACY_JISOU_CLICK_PROFILE_VERSION:
+        return None
+    approved = approved_protocol_profile(profile)
+    if approved is None:
+        return None
+    result_pages = [
+        item
+        for item in approved["page_fingerprints"]
+        if item["page_phase"] == "group_result_page"
+    ]
+    if len(result_pages) != 1:
+        return None
+    result_page = result_pages[0]
+    effects = set(result_page["button_effects_any"])
+    if result_page["membership_side_effects_allowed"]:
+        return None
+    if "join_candidate" not in effects or not effects.issubset(
+        {"join_candidate", "navigate_only"}
+    ):
+        return None
+    result_page["button_effects_any"] = [
+        "target_open_only" if effect == "join_candidate" else effect
+        for effect in result_page["button_effects_any"]
+    ]
+    result_page["membership_side_effects_allowed"] = ["none"]
+    return approved
 
 
 def classify_jisou_page(
@@ -306,7 +342,14 @@ def _matches_controlled_button_text(text: object, enum: str) -> bool:
 def _matching_effect_positions(buttons: list[Any], effects: list[str]) -> set[int]:
     if not effects:
         return set()
-    return {_button_position(button) for button in buttons if _button_value(button, "effect") in effects}
+    compatible_effects = set(effects)
+    if "join_candidate" in compatible_effects:
+        compatible_effects.add("target_open_only")
+    return {
+        _button_position(button)
+        for button in buttons
+        if _button_value(button, "effect") in compatible_effects
+    }
 
 
 def _required_button_positions(buttons: list[Any], rules: list[dict[str, Any]]) -> set[int] | None:
@@ -361,5 +404,8 @@ __all__ = [
     "classify_jisou_page_with_media",
     "is_jisou_bot",
     "normalize_visible_text",
+    "pure_click_protocol_profile_is_approved",
+    "PURE_CLICK_JISOU_PROFILE_VERSION",
     "protocol_profile_is_approved",
+    "upgraded_legacy_pure_click_profile",
 ]

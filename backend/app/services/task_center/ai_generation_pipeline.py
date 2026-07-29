@@ -45,6 +45,7 @@ def generate_quality_results(
                 dependencies=dependencies,
             )
         except AiGenerationUnavailable as exc:
+            _close_failed_stage_transaction(session)
             last_error = exc
             continue
         total_tokens += tokens
@@ -62,6 +63,11 @@ def generate_quality_results(
     if remaining and last_error and not last_rejections:
         raise last_error
     return _ordered_results(request, accepted, last_rejections), total_tokens
+
+
+def _close_failed_stage_transaction(session: Session) -> None:
+    if session.in_transaction():
+        session.rollback()
 
 
 def _cached_quality_results(session: Session, request) -> list[SlotGenerationResult]:

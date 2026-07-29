@@ -264,7 +264,6 @@ def test_pure_search_click_records_complete_fact_without_joining() -> None:
         [[FakeButton(
             "目标群",
             url="https://t.me/target_group",
-            effect="target_open_only",
         )]],
     )
     client = FakeSearchJoinClient([
