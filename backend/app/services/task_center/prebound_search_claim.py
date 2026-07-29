@@ -22,13 +22,33 @@ from .dispatch_claim_types import DispatchClaimBinding, DispatchClaimPlan
 def plan_prebound_search_claims(
     session: Session,
     actions: list[Action],
+    *,
+    shard_total: int | None = None,
+    shard_index: int | None = None,
 ) -> DispatchClaimPlan:
     bindings: dict[str, DispatchClaimBinding] = {}
     for action in actions:
         binding = _prebound_binding(session, action)
-        if binding is not None:
+        if binding is not None and _binding_matches_shard(
+            binding,
+            shard_total,
+            shard_index,
+        ):
             bindings[action.id] = binding
     return DispatchClaimPlan(tuple(bindings), bindings)
+
+
+def _binding_matches_shard(
+    binding: DispatchClaimBinding,
+    shard_total: int | None,
+    shard_index: int | None,
+) -> bool:
+    if shard_total is None or shard_index is None:
+        return True
+    return (
+        binding.shard_total == shard_total
+        and binding.shard_index == shard_index
+    )
 
 
 def confirm_prebound_search_claim(

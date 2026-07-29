@@ -13,6 +13,7 @@ from app.models import (
     ConsistencyQuarantine,
     DispatchAllocationExclusion,
     DispatchClaimReservation,
+    DispatchClaimShardAllocation,
     DispatchClaimWindow,
     ExecutionAttempt,
     SearchClickOpportunityAssignment,
@@ -75,6 +76,31 @@ def test_prebound_assignment_accepts_postgres_aware_window(
     action.status = "claiming"
 
     assert confirm_prebound_search_claim(session, action, binding)
+
+
+def test_prebound_plan_only_routes_to_assignment_shard(
+    session: Session,
+) -> None:
+    action = session.get(Action, "action-1")
+    allocation = session.get(DispatchClaimShardAllocation, "shard-1")
+    allocation.account_shard_total = 4
+    allocation.account_shard_index = 1
+
+    wrong = plan_prebound_search_claims(
+        session,
+        [action],
+        shard_total=4,
+        shard_index=0,
+    )
+    matching = plan_prebound_search_claims(
+        session,
+        [action],
+        shard_total=4,
+        shard_index=1,
+    )
+
+    assert not wrong.candidate_action_ids
+    assert matching.candidate_action_ids == (action.id,)
 
 
 def test_prebound_confirm_uses_central_claim_lock_order(
