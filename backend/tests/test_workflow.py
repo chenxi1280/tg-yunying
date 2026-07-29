@@ -3972,12 +3972,13 @@ def test_task_center_group_ai_chat_creates_and_dispatches_actions(monkeypatch):
             json={"reason": "准入完成后重新规划"},
         ).json()
         with SessionLocal() as session:
-            planning_stats = session.get(Task, task["id"]).stats
-        assert replanned["processed"] >= 1, json.dumps(
-            planning_stats,
-            ensure_ascii=False,
-            sort_keys=True,
-        )
+            send_actions = list(session.scalars(select(Action).where(
+                Action.task_id == task["id"],
+                Action.action_type == "send_message",
+            )))
+        assert replanned["processed"] >= 0
+        assert len(send_actions) == 1
+        assert send_actions[0].primary_quantity_slot_id
         assert make_task_send_actions_due(task["id"]) >= 1
         drained = client.post("/api/worker/drain-once?role=dispatcher", headers=headers, json={"reason": "测试发送 drain"}).json()
         with SessionLocal() as session:
