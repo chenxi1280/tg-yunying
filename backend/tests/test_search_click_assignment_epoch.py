@@ -30,6 +30,7 @@ from app.security import encrypt_secret
 from app.services._common import _now
 from app.services.task_center.executors import search_click
 from app.services.task_center.heartbeat import worker_identity
+from app.timezone import BEIJING_TZ
 from app.services.task_center.executors.search_click_candidates import (
     SearchClickPathContext,
 )
@@ -103,7 +104,7 @@ def test_build_plan_finalizes_orphaned_open_epoch_before_current_window(
 ) -> None:
     now_value = _now()
     window = session.get(DispatchClaimWindow, "window-1")
-    window.bucket_end = now_value - timedelta(minutes=1)
+    window.bucket_end = now_value.replace(tzinfo=BEIJING_TZ) - timedelta(minutes=1)
     epoch = _add_orphaned_epoch(session, now_value)
     session.commit()
     monkeypatch.setattr(

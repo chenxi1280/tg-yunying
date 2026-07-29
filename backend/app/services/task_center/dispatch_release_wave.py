@@ -6,6 +6,8 @@ from sqlalchemy.orm import Session
 
 from app.models import DispatchClaimWindow
 
+from .datetime_compat import is_after_or_equal
+
 
 def start_or_join_dispatch_rebuild_wave(
     session: Session,
@@ -24,7 +26,7 @@ def start_or_join_dispatch_rebuild_wave(
         window.unclaimed_allocated_count -= released_count
         if window.unclaimed_allocated_count < 0:
             raise RuntimeError("dispatch_release_window_unclaimed_negative")
-    if window.bucket_end <= now_value:
+    if is_after_or_equal(now_value, window.bucket_end):
         return None
     if window.allocation_state == "ready":
         window.allocation_epoch += 1
