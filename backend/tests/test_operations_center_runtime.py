@@ -5078,7 +5078,8 @@ def test_group_ai_chat_waits_when_no_new_real_context(monkeypatch):
 
     assert len(generated) == first_generation_call_count + 1
     assert action_count == planned + 1
-    assert task.last_error == "当日覆盖账本暂无可执行账号，等待阻塞恢复或冷却到期"
+    assert task.last_error == "群日目标按计划推进中，等待下一发送时点"
+    assert task.stats["skip_reason"] == "daily_target_pacing"
 
 
 def _seed_group_ai_context_task(
@@ -6317,11 +6318,11 @@ def test_planning_backlog_ignores_unrelated_old_pending_actions(monkeypatch):
         snapshot = planner_backlog_snapshot(session, ai_task)
         blocked = _planning_backlog_blocked(session, ai_task)
 
-    assert snapshot["blocked"] is True
+    assert snapshot["blocked"] is False
     assert snapshot["global_pending"] == 1
-    assert snapshot["task_pending"] == 1
-    assert snapshot["oldest_age_seconds"] >= 2 * 60 * 60
-    assert blocked is True
+    assert snapshot["task_pending"] == 0
+    assert snapshot["oldest_age_seconds"] == 0
+    assert blocked is False
 
 
 def test_planning_backlog_ignores_same_task_old_membership_actions(monkeypatch):
