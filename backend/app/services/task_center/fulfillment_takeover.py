@@ -16,6 +16,7 @@ from .channel_fulfillment_takeover import (
 )
 from .comment_fulfillment_takeover import migrate_comment_fulfillment
 from .fulfillment_takeover_actions import (
+    restore_terminal_search_attempts,
     retire_legacy_membership_actions,
     retire_unbound_legacy_actions,
 )
@@ -100,6 +101,7 @@ def takeover_task(
     )
     retired = _takeover_legacy_search(session, task)
     retired += retire_unbound_legacy_actions(session, task)
+    retired += restore_terminal_search_attempts(session, task)
     updates = _apply_contract_updates(
         task, contract_changed=contract_changed, now=now,
     )

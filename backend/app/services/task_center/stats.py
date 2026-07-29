@@ -13,9 +13,9 @@ from .config_fields import CHANNEL_DYNAMIC_TASK_TYPES
 from .daily_group_target import daily_group_due_message_count, ensure_task_group_daily_target
 from .datetime_compat import parse_zone, to_zone
 from .fulfillment_takeover import (
-    FULFILLMENT_CONTRACT_VERSION,
     FULFILLMENT_TASK_TYPES,
 )
+from .fulfillment_retry import retry_failed_actions as _retry_failed_actions
 from .hard_hourly import enabled as hard_hourly_enabled, hard_hourly_stats
 from .pacing import (
     ai_next_run_after,
@@ -28,10 +28,6 @@ from .hourly_stats import search_join_hourly_execution, search_rank_deboost_hour
 from .targets import group_from_reference
 
 ARCHIVED_SKIP_ERROR_CODES = {"context_expired"}
-DEFAULT_AUTO_RETRY_STATUSES = ("failed", "retryable_failed")
-TARGET_ADMISSION_AUTO_RETRY_STATUSES = ("failed", "retryable_failed")
-TARGET_ADMISSION_DEFAULT_MAX_RETRIES = 1
-TARGET_ADMISSION_DEFAULT_RETRY_DELAY_SECONDS = 30
 BUSINESS_MEMBERSHIP_ACTION_TYPES = ["ensure_channel_membership", "ensure_target_membership"]
 PLANNER_BACKLOG_STAT_KEYS = (
     "planner_backlog_blocked",
@@ -42,8 +38,6 @@ PLANNER_BACKLOG_STAT_KEYS = (
 )
 HARD_HOURLY_EXPIRED_ERROR_CODE = "hard_hourly_bucket_expired"
 HARD_HOURLY_EXPIRED_ERROR_MESSAGE = "硬目标小时窗口已结束，过期补量已跳过"
-AI_GROUP_TERMINAL_QUALITY_ERRORS = frozenset({"duplicate_message", "ai_message_memory_missing"})
-AI_GROUP_TERMINAL_GENERATION_STATUSES = frozenset({"duplicate_rejected"})
 AI_GENERATION_CLOSED_STATUSES = ("pending", "generating", "ready", "ai_result_persist_unknown")
 SEARCH_CLICK_TASK_TYPES = {"search_join_group", "search_rank_deboost"}
 AI_GENERATION_QUALITY_CODES = frozenset({
@@ -366,111 +360,18 @@ def _archived_skipped_count(session: Session, task: Task, business_filter) -> in
     return int(count or 0)
 
 
-def retry_failed_actions(session: Session, task: Task, *, limit: int = 100) -> int:
-    policy = task.failure_policy or {}
-    max_retries = _max_retries_for_task(task, policy)
-    if max_retries <= 0:
-        return 0
-    retry_delay = _retry_delay_seconds_for_task(task, policy)
-    backoff = policy.get("retry_backoff") or "none"
-    count = 0
-    query = select(Action).where(
-        Action.tenant_id == task.tenant_id,
-        Action.task_id == task.id,
-        Action.status.in_(_auto_retry_statuses(task)),
-        Action.retry_count < max_retries,
-    ).order_by(Action.scheduled_at.asc(), Action.id.asc()).limit(max(1, int(limit)))
-    for action in session.scalars(query):
-        if _is_unbound_legacy_fulfillment_action(task, action):
-            continue
-        previous_result = dict(action.result or {})
-        if _is_terminal_ai_quality_failure(action, previous_result):
-            continue
-        now_value = _now()
-        if _skip_expired_hard_hourly_retry(action, previous_result, now_value):
-            count += 1
-            continue
-        action.retry_count += 1
-        delay = retry_delay
-        if backoff == "linear":
-            delay *= action.retry_count
-        elif backoff == "exponential":
-            delay *= 2 ** max(0, action.retry_count - 1)
-        action.status = "pending"
-        action.scheduled_at = now_value + timedelta(seconds=delay)
-        action.executed_at = None
-        action.lease_owner = ""
-        action.lease_expires_at = None
-        action.result = {
-            "retry_scheduled": True,
-            "retry_count": int(action.retry_count or 0),
-            "retry_after_seconds": max(0, int(delay)),
-            "last_failure": previous_result,
-        }
-        count += 1
-    return count
-
-
-def _is_unbound_legacy_fulfillment_action(task: Task, action: Action) -> bool:
-    if (
-        (task.stats or {}).get("fulfillment_contract_version")
-        != FULFILLMENT_CONTRACT_VERSION
-    ):
-        return False
-    if task.type == "group_ai_chat" and action.action_type == "send_message":
-        return not action.primary_quantity_slot_id
-    if task.type != "search_click" or action.action_type != "search_join":
-        return False
-    payload = action.payload if isinstance(action.payload, dict) else {}
-    return not str(payload.get("search_click_obligation_id") or "")
-
-
-def _is_terminal_ai_quality_failure(action: Action, previous_result: dict[str, Any]) -> bool:
-    if action.task_type != "group_ai_chat" or action.action_type != "send_message":
-        return False
-    payload = action.payload if isinstance(action.payload, dict) else {}
-    error_code = str(previous_result.get("error_code") or previous_result.get("failure_type") or "")
-    generation_status = str(payload.get("ai_generation_status") or "")
-    quality_reason = str(payload.get("quality_skip_reason") or previous_result.get("quality_skip_reason") or "")
-    return (
-        error_code in AI_GROUP_TERMINAL_QUALITY_ERRORS
-        or generation_status in AI_GROUP_TERMINAL_GENERATION_STATUSES
-        or quality_reason in AI_GROUP_TERMINAL_QUALITY_ERRORS
+def retry_failed_actions(
+    session: Session,
+    task: Task,
+    *,
+    limit: int = 100,
+) -> int:
+    return _retry_failed_actions(
+        session,
+        task,
+        limit=limit,
+        now_value=_now(),
     )
-
-
-def _auto_retry_statuses(task: Task) -> tuple[str, ...]:
-    if task.type == "target_admission_retry":
-        return TARGET_ADMISSION_AUTO_RETRY_STATUSES
-    return DEFAULT_AUTO_RETRY_STATUSES
-
-
-def _max_retries_for_task(task: Task, policy: dict[str, Any]) -> int:
-    if policy.get("max_retries") is not None:
-        return int(policy.get("max_retries") or 0)
-    if task.type == "target_admission_retry":
-        return TARGET_ADMISSION_DEFAULT_MAX_RETRIES
-    return 0
-
-
-def _retry_delay_seconds_for_task(task: Task, policy: dict[str, Any]) -> int:
-    if policy.get("retry_delay_seconds") is not None:
-        return int(policy["retry_delay_seconds"])
-    if task.type == "target_admission_retry":
-        return TARGET_ADMISSION_DEFAULT_RETRY_DELAY_SECONDS
-    return 60
-
-
-def _skip_expired_hard_hourly_retry(action: Action, previous_result: dict[str, Any], now_value: datetime) -> bool:
-    """Continuity PRD: do not skip retries for hard_hourly_bucket_expired; allow replan path."""
-    _ = action, previous_result, now_value
-    return False
-
-
-def _hard_hourly_bucket_expired(action: Action, now_value: datetime) -> bool:
-    """Legacy helper: always False under continuity rules."""
-    _ = action, now_value
-    return False
 
 
 def empty_stats() -> dict[str, Any]:
