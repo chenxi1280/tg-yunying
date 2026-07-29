@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine, select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from app.database import Base
@@ -212,6 +213,147 @@ def test_build_plan_leaves_active_open_epoch_owned(
     assert epoch.finalize_status == "open"
     assert epoch.outcome == "open"
     assert session.scalar(select(DispatchAllocationExclusion)) is None
+
+
+def test_finalize_locks_allocation_before_owner_and_snapshot_reads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    context = SimpleNamespace(
+        epoch=SimpleNamespace(dispatch_claim_window_id="window-1"),
+        now=_now(),
+        units=(),
+    )
+    monkeypatch.setattr(
+        search_click,
+        "_restart_serializable_finalize_transaction",
+        lambda _session: events.append("restart"),
+    )
+    monkeypatch.setattr(
+        search_click,
+        "lock_search_finalize_inputs",
+        lambda *_args: events.append("lock") or SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        search_click,
+        "solver_owner_is_active",
+        lambda *_args: events.append("owner") or False,
+    )
+    monkeypatch.setattr(
+        search_click,
+        "_abandon_epoch",
+        lambda *_args: events.append("abandon") or {},
+    )
+
+    assert search_click._finalize_epoch(SimpleNamespace(), context) == {}
+    assert events == ["restart", "lock", "owner", "abandon"]
+
+
+def test_serialization_failure_abandons_epoch_without_rerunning_solver(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    failure = OperationalError("commit", {}, _SerializationFailure())
+    session = _CommitFailureSession(failure, events)
+    context = SimpleNamespace(
+        epoch=SimpleNamespace(
+            id="epoch-1",
+            dispatch_claim_window_id="window-1",
+        ),
+        units=(),
+        now=_now(),
+    )
+    monkeypatch.setattr(
+        search_click,
+        "_finalize_epoch",
+        lambda *_args: events.append("finalize") or {"task-1": 1},
+    )
+    monkeypatch.setattr(
+        search_click,
+        "_abandon_serialization_failed_epoch",
+        lambda *_args, **_kwargs: events.append("abandon"),
+    )
+
+    assert search_click._commit_finalize_or_abandon(session, context) == {}
+    assert events == ["finalize", "commit", "rollback", "abandon", "commit"]
+
+
+def test_serialization_failure_during_finalize_also_abandons_epoch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    session = _CommitFailureSession(None, events)
+    context = SimpleNamespace(
+        epoch=SimpleNamespace(
+            id="epoch-1",
+            dispatch_claim_window_id="window-1",
+        ),
+        units=(),
+        now=_now(),
+    )
+    failure = OperationalError("lock", {}, _SerializationFailure())
+    monkeypatch.setattr(
+        search_click,
+        "_finalize_epoch",
+        lambda *_args: events.append("finalize") or (_ for _ in ()).throw(failure),
+    )
+    monkeypatch.setattr(
+        search_click,
+        "_abandon_serialization_failed_epoch",
+        lambda *_args, **_kwargs: events.append("abandon"),
+    )
+
+    assert search_click._commit_finalize_or_abandon(session, context) == {}
+    assert events == ["finalize", "rollback", "abandon", "commit"]
+
+
+def test_non_serialization_database_error_is_not_silently_abandoned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    failure = OperationalError("commit", {}, _NonSerializationFailure())
+    session = _CommitFailureSession(failure, events)
+    context = SimpleNamespace(
+        epoch=SimpleNamespace(
+            id="epoch-1",
+            dispatch_claim_window_id="window-1",
+        ),
+        units=(),
+        now=_now(),
+    )
+    monkeypatch.setattr(
+        search_click,
+        "_finalize_epoch",
+        lambda *_args: events.append("finalize") or {},
+    )
+
+    with pytest.raises(OperationalError):
+        search_click._commit_finalize_or_abandon(session, context)
+    assert events == ["finalize", "commit"]
+
+
+class _SerializationFailure(Exception):
+    sqlstate = "40001"
+
+
+class _NonSerializationFailure(Exception):
+    sqlstate = "23505"
+
+
+class _CommitFailureSession:
+    def __init__(self, failure, events) -> None:
+        self.failure = failure
+        self.events = events
+
+    def commit(self) -> None:
+        self.events.append("commit")
+        if self.failure is not None:
+            failure = self.failure
+            self.failure = None
+            raise failure
+
+    def rollback(self) -> None:
+        self.events.append("rollback")
 
 
 def _seed(session: Session) -> None:
