@@ -21,7 +21,7 @@ from app.services.task_center.channel_fulfillment import (
     view_account_ids_for_messages,
     view_daily_counts,
 )
-from app.services.task_center import dispatcher
+from app.services.task_center import dispatcher, service
 from app.services.task_center.comment_fulfillment_takeover import (
     ensure_comment_action_contract,
 )
@@ -55,6 +55,123 @@ def test_fulfillment_hourly_limit_is_a_system_gate(task_type: str) -> None:
     assert pacing["max_actions_per_hour"] == UNIFIED_TASK_GATE_LIMIT
     if task_type == "search_click":
         assert pacing["max_actions_per_day"] == UNIFIED_TASK_GATE_LIMIT
+        assert pacing["per_account_daily_action_limit"] == UNIFIED_TASK_GATE_LIMIT
+        assert pacing["per_account_hourly_action_limit"] == UNIFIED_TASK_GATE_LIMIT
+        assert pacing["per_keyword_account_daily_limit"] == UNIFIED_TASK_GATE_LIMIT
+        assert pacing["skip_probability_per_action"] == 0
+        assert pacing["hourly_skip_probability"] == 0
+        assert pacing["daily_skip_probability"] == 0
+
+
+@pytest.mark.parametrize(
+    "task_type",
+    [
+        "group_ai_chat",
+        "channel_comment",
+        "channel_like",
+        "channel_view",
+        "search_click",
+    ],
+)
+def test_new_fulfillment_contract_uses_dispatcher_instead_of_backlog_gate(
+    monkeypatch: pytest.MonkeyPatch,
+    task_type: str,
+) -> None:
+    task = Task(
+        id=f"{task_type}-dispatch-gate",
+        tenant_id=1,
+        name="新履约任务",
+        type=task_type,
+        status="running",
+        stats={
+            "fulfillment_contract_version": FULFILLMENT_CONTRACT_VERSION,
+            "planner_backlog_blocked": True,
+        },
+    )
+
+    monkeypatch.setattr(
+        service,
+        "planner_backlog_snapshot",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("新履约任务不应再进入旧 backlog 数量门禁")
+        ),
+    )
+
+    assert service._planning_backlog_blocked(object(), task) is False
+    assert "planner_backlog_blocked" not in task.stats
+
+
+def test_takeover_clears_obsolete_capacity_blockers_and_search_limits(
+    session: Session,
+) -> None:
+    task = Task(
+        id="legacy-search-capacity-blocker",
+        tenant_id=1,
+        name="旧搜索容量阻塞",
+        type="search_click",
+        status="stopped",
+        pacing_config={
+            "per_account_daily_action_limit": 2,
+            "per_account_hourly_action_limit": 1,
+            "per_keyword_account_daily_limit": 2,
+            "skip_probability_per_action": 0.5,
+        },
+        stats={
+            "search_join_stats": {"daily_fulfillment": {"status": "blocked"}},
+            "planner_backlog_blocked": True,
+        },
+        last_error="daily_target_capacity_insufficient",
+    )
+    session.add(task)
+    session.flush()
+
+    takeover_task(session, task, now=_now())
+
+    assert task.last_error == ""
+    assert "search_join_stats" not in task.stats
+    assert "planner_backlog_blocked" not in task.stats
+    assert task.pacing_config["per_account_daily_action_limit"] == UNIFIED_TASK_GATE_LIMIT
+    assert task.pacing_config["per_account_hourly_action_limit"] == UNIFIED_TASK_GATE_LIMIT
+    assert task.pacing_config["per_keyword_account_daily_limit"] == UNIFIED_TASK_GATE_LIMIT
+    assert task.pacing_config["skip_probability_per_action"] == 0
+
+
+def test_takeover_clears_obsolete_view_cap_error(session: Session) -> None:
+    task = Task(
+        id="legacy-view-capacity-blocker",
+        tenant_id=1,
+        name="旧浏览容量阻塞",
+        type="channel_view",
+        status="stopped",
+        last_error="任务今日浏览安全上限已用完，等待下一日继续规划",
+    )
+    session.add(task)
+    session.flush()
+
+    takeover_task(session, task, now=_now())
+
+    assert task.last_error == ""
+    assert task.type_config["task_daily_view_safety_cap"] == UNIFIED_TASK_GATE_LIMIT
+
+
+def test_takeover_clears_obsolete_shared_dispatch_error(session: Session) -> None:
+    task = Task(
+        id="legacy-shared-dispatch-blocker",
+        tenant_id=1,
+        name="旧共享容量错误",
+        type="channel_like",
+        status="stopped",
+        stats={"planner_backlog_blocked": True},
+        last_error="shared_dispatch_capacity_insufficient",
+    )
+    session.add(task)
+    session.flush()
+
+    result = takeover_task(session, task, now=_now())
+
+    assert result.changed is True
+    assert task.last_error == ""
+    assert "planner_backlog_blocked" not in task.stats
 
 
 @pytest.fixture

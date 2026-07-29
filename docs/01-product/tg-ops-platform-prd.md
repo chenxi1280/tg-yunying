@@ -3981,7 +3981,7 @@ AI 活跃群 Planner 需要额外满足：
 - 本节此前出现的“AI 硬目标在严格 source 之前”的历史固定排序，以当前 Claim Window 合同为准覆盖；历史描述仅说明旧版本行为，不得用于实现或验收。Dispatcher 先在真实共享 scope 中 reconcile active claim，再按父业务任务最低轮转与剩余需求最大余数法分配 Reservation；当前只有一个业务租户，因此不增加 tenant 级调度。容量不足写 `shared_dispatch_capacity_insufficient`，不能让任一类别静默吞掉全部 slot。
 - 点击目标未完成时，系统自动优先选择当前 ledger 尚未成功点击、具备安全账号/授权/代理/协议条件且最久未获得机会的账号；明确未命中的 source 才释放为 replacement，open/unknown 继续占原义务。`strict_daily_target` 仅保留为兼容字段，不再启用小时容量证明门禁。曲线、`actions_per_round`、skip、jitter 和静默是软节奏；预计按软节奏无法按日完成时进入 catch-up，压缩抖动、忽略行为 skip、提高当期计划量，静默时段仍以非零低权重执行。账号/关键词日限额、授权身份、代理、协议/CAPTCHA 安全、Gateway 防重、任务状态和 deadline 不得被追赶绕过。
 - 纯搜索点击在最大 click、最大受服务任务和任务公平最优值固定后，严格按 `hard_safe_remaining_capacity DESC -> confirmed_click_count_today ASC -> last_click_opportunity_at ASC -> persistent_account_cursor ASC` 自动排序；运营不配置账号容量或账号优先级。click 确认后不得进入 membership/admission 状态机。
-- Planner 全局 backlog 只统计父任务仍为 `running` 且未删除的 open Action；已完成、暂停、停止或已删除任务遗留的 `pending/claiming/executing` Action 不得继续占用 `max_pending_global` 并阻断搜索点击或其他运行中任务规划。遗留 Action 的终态收口仍由 Recovery/任务生命周期负责，不能通过扩大全局阈值掩盖。
+- Planner 全局 backlog 只统计父任务仍为 `running` 且未删除的 open Action；已完成、暂停、停止或已删除任务遗留的 `pending/claiming/executing` Action 不得继续占用 `max_pending_global`。该旧门禁只作用于未迁移任务；盖章 `fulfillment_contract_version=all_task_v2` 的 AI 活群、评论、点赞、浏览、纯搜索点击不再以 `max_pending_global|max_pending_per_task|oldest_pending_age_seconds` 阻断规划，而由义务唯一性、中央 Reservation 与 Dispatcher scope 在途容量控制重复和瞬时负载。遗留 Action 的终态收口仍由 Recovery/任务生命周期负责。
 - `search_rank_deboost` 继续接收生命周期 `target_count`：它是任务生命周期的已确认成功数，达到目标后写 `completed + target_count_reached`；其 `max_actions_per_day` 仍是自然日 action 预算。未结束的 `search_join_group` 不再保留运行语义，统一按上一条接管为纯 click；completed/deleted 仅作为历史记录读取。普通搜索只能选择启用的普通账号组；搜索排名观察只能选择启用的 `pool_purpose=rank_deboost` 黑账号组。代理、机器人、授权环境、单账号安全上限、停留、重试和风险参数继续由系统托管，调用方传入这些系统字段必须显式拒绝。
 - `scheduled_end` 是真实停止边界：到期后任务停止规划和派发；尚未进入 Gateway 的当前、pending 或 claiming action 写 `scheduled_end_reached`，黑搜索同时释放 `reserved` reservation；Gateway 已开始的 action 保留真实结果状态，绝不伪造成功。任务状态也是 Gateway 前硬约束：任务在执行过程中变为非 `running`（包括暂停、停止、草稿、完成或已删除）时，最终守卫必须写 `task_not_active` 并禁止真实 Telegram 调用，黑搜索同时释放尚未进入 Gateway 的 reservation。`quiet_hours` 只降低该任务时区内的计划权重，不能令 Planner、Dispatcher 或 Gateway 返回 `quiet_hours_active` 或整段停发；日/小时抖动只改变合法执行顺序，并在 catch-up 时允许压缩。任何软节奏都不能突破账号/关键词安全额度、授权槽位、代理、协议安全、任务状态、截止时间或 unknown 防重。
 
@@ -5298,6 +5298,8 @@ AI、评论、点赞、浏览、纯搜索点击、AI 准入和 ordinary 统一�
 同一 `ready` Claim Window 的 Action 状态变化不再触发整窗 allocation epoch 重建；有未领取 Reservation 时继续消费原不可变分配，只有明确非空 release set，或本 epoch 份额全部消费后又出现到期债务时才进入唯一 pending rebuild wave。取得部分非零份额的任务状态为 allocated，不得整体写 `shared_dispatch_capacity_insufficient`。
 
 AI 群管准入只按 `(target_group_id, account_id, admission_generation)` 串行；同群其他账号的 unresolved/stale/waiting 不得形成群级窗口锁。发布后 Planner 在 backlog/open Action 早退判断之前，对运行中的五类任务幂等执行履约合同接管；paused/stopped 只升级合同不启动，completed/deleted 历史不改。
+
+五类 `all_task_v2` 任务不再使用旧 Planner backlog 数量门禁；存量接管清除 `planner_backlog_*` 陈旧状态并立即唤醒运行中任务。任务内履约软上限统一为 `1_000_000`：除五类通用 `max_actions_per_hour` 外，还包括浏览任务/账号日上限、点赞账号小时上限、评论任务/账号小时上限，以及纯搜索点击的任务日、账号日、账号小时和账号关键词日上限；搜索 task-local skip 概率和账号冷却归零。账号全局安全、Telegram、授权、代理、协议、内容质量与 unknown 防重仍是硬边界。
 
 #### 8.4.6 发布、观测和验收
 

@@ -3433,6 +3433,13 @@ def _record_dispatch_db_error(session_factory, action_id: str, exc: SQLAlchemyEr
 
 
 def _planning_backlog_blocked(session: Session, task: Task) -> bool:
+    stats = dict(task.stats or {})
+    if (
+        task.type in FULFILLMENT_TASK_TYPES
+        and stats.get("fulfillment_contract_version") == FULFILLMENT_CONTRACT_VERSION
+    ):
+        task.stats = clear_planner_backlog_stats(stats)
+        return False
     now_value = _now()
     snapshot = planner_backlog_snapshot(
         session,
