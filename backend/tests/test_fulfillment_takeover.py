@@ -22,6 +22,7 @@ from app.models import (
     Tenant,
     TgAccount,
     ViewFulfillmentObligation,
+    ViewRemoteFact,
 )
 from app.services._common import _now
 from app.services.task_center.fulfillment_takeover import (
@@ -468,6 +469,67 @@ def test_like_takeover_does_not_preserve_legacy_sibling_closure(
         (101, "unavailable")
     ]
     assert "reaction_unavailable_message_ids" not in task.stats
+
+
+def test_view_takeover_deduplicates_successes_pending_in_same_transaction(
+    session: Session,
+) -> None:
+    now_value = _now()
+    channel = OperationTarget(
+        id=41,
+        tenant_id=1,
+        target_type="channel",
+        tg_peer_id="-10041",
+        title="频道",
+    )
+    message = ChannelMessage(
+        id=51,
+        tenant_id=1,
+        channel_target_id=channel.id,
+        message_id=901,
+    )
+    account = TgAccount(
+        id=101,
+        tenant_id=1,
+        display_name="浏览账号",
+        phone_masked="101",
+    )
+    task = Task(
+        id="duplicate-view-task",
+        tenant_id=1,
+        name="历史重复浏览",
+        type="channel_view",
+        status="running",
+    )
+    payload = {
+        "channel_id": channel.tg_peer_id,
+        "channel_target_id": channel.id,
+        "channel_message_id": message.id,
+        "message_id": message.message_id,
+    }
+    actions = [
+        Action(
+            id=f"duplicate-view-{index}",
+            tenant_id=1,
+            task_id=task.id,
+            task_type=task.type,
+            action_type="view_message",
+            account_id=account.id,
+            status="success",
+            executed_at=now_value + timedelta(minutes=index),
+            payload=payload,
+        )
+        for index in range(2)
+    ]
+    session.add_all([channel, message, account, task, *actions])
+    session.flush()
+
+    result = takeover_task(session, task, now=now_value)
+    session.flush()
+
+    assert result.backfilled_fact_count == 1
+    assert result.duplicate_action_count == 1
+    assert session.scalar(select(func.count(ViewRemoteFact.id))) == 1
 
 
 def test_running_comment_actions_are_migrated_to_remote_fact_obligations(
