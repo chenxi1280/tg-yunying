@@ -36,20 +36,20 @@ def confirm_prebound_search_claim(
     action: Action,
     binding: DispatchClaimBinding,
 ) -> bool:
-    assignment = _locked_assignment(session, action)
-    reservation = _locked(session, DispatchClaimReservation, binding.reservation_id)
-    allocation = _locked(
-        session,
-        DispatchClaimShardAllocation,
-        binding.shard_allocation_id,
-    )
-    window = _locked(session, DispatchClaimWindow, binding.window_id)
     scope = session.scalar(for_update(
         session,
         select(DispatchClaimScope).where(
             DispatchClaimScope.dispatcher_scope == binding.dispatcher_scope
         ),
     ))
+    window = _locked(session, DispatchClaimWindow, binding.window_id)
+    allocation = _locked(
+        session,
+        DispatchClaimShardAllocation,
+        binding.shard_allocation_id,
+    )
+    reservation = _locked(session, DispatchClaimReservation, binding.reservation_id)
+    assignment = _locked_assignment(session, action)
     rows = (assignment, reservation, allocation, window, scope)
     if any(row is None for row in rows):
         return False
@@ -200,6 +200,7 @@ def _prebound_claim_available(
     return bool(
         action.status == "claiming"
         and assignment.action_id == action.id
+        and assignment.dispatch_claim_reservation_id == reservation.id
         and assignment.state == "action_bound"
         and reservation.bound_count > 0
         and _window_open(window)
