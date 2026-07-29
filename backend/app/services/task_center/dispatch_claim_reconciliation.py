@@ -6,13 +6,20 @@ from typing import Mapping
 from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
-from app.models import Action, DispatchClaimReservation, DispatchClaimShardAllocation, DispatchClaimWindow, Task
+from app.models import (
+    Action,
+    DispatchClaimReservation,
+    DispatchClaimShardAllocation,
+    DispatchClaimWindow,
+    Task,
+)
 
 from .dispatch_claim_ledger import reservation_available
 from .dispatch_claim_types import (
     GROUP_AI_ADMISSION_ACTION_TYPES,
     GROUP_BOT_ADMISSION_ACTION_TYPES,
     SEARCH_MEMBERSHIP_CLAIM_CLASS,
+    SEARCH_SOURCE_CLAIM_CLASS,
     TARGET_ADMISSION_CLAIM_CLASS,
     TARGET_ADMISSION_RETRY_TASK_TYPE,
 )
@@ -89,7 +96,43 @@ def _due_reservation_action_counts(
         key = _due_reservation_key(action, task, reservations)
         if key is not None:
             counts[key] = counts.get(key, 0) + 1
+    _protect_pure_search_reservations(
+        session,
+        reservations=reservations,
+        counts=counts,
+    )
     return counts
+
+
+def _protect_pure_search_reservations(
+    session: Session,
+    *,
+    reservations: Mapping[
+        tuple[int, str, str, int, int],
+        DispatchClaimReservation,
+    ],
+    counts: dict[tuple[int, str, str, int, int], int],
+) -> None:
+    search_keys = {
+        key for key, reservation in reservations.items()
+        if reservation.claim_class == SEARCH_SOURCE_CLAIM_CLASS
+    }
+    if not search_keys:
+        return
+    pure_search_tasks = {
+        (tenant_id, task_id)
+        for tenant_id, task_id in session.execute(
+            select(Task.tenant_id, Task.id).where(
+                Task.id.in_({key[1] for key in search_keys}),
+                Task.type == "search_click",
+            )
+        )
+    }
+    for key in search_keys:
+        if key[:2] not in pure_search_tasks:
+            continue
+        available = reservation_available(reservations[key])
+        counts[key] = max(counts.get(key, 0), available)
 
 
 def _due_reservation_key(

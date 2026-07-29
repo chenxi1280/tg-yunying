@@ -55,7 +55,8 @@ def prepare_search_click_fulfillment_units(
     reconcile_scope_active(session, scope)
     sync_scope_capacity(scope, capacity)
     window = window_for_update(session, scope_name, now, capacity)
-    demands = _all_demands(session, now)
+    shard_total = max(1, int(settings.account_shard_total or 1))
+    demands = _all_demands(session, now, shard_total=shard_total)
     sync_window_capacity(window, capacity)
     if window.allocation_state != "ready":
         allocate_window(
@@ -71,6 +72,8 @@ def prepare_search_click_fulfillment_units(
 def _all_demands(
     session: Session,
     now: datetime,
+    *,
+    shard_total: int,
 ) -> list[DispatchClaimDemand]:
     actions = list(session.scalars(
         select(Action)
@@ -84,13 +87,13 @@ def _all_demands(
         .order_by(Action.scheduled_at, Action.created_at, Action.id)
     ))
     tasks = tasks_by_id(session, actions)
-    demands = build_demands(actions, tasks, 1, now)
-    search_demands = _search_demands(session, now)
+    demands = build_demands(actions, tasks, shard_total, now)
+    search_demands = open_search_click_dispatch_demands(session, now)
     keys = {demand.key for demand in search_demands}
     return [demand for demand in demands if demand.key not in keys] + search_demands
 
 
-def _search_demands(
+def open_search_click_dispatch_demands(
     session: Session,
     now: datetime,
 ) -> list[DispatchClaimDemand]:
@@ -224,4 +227,8 @@ def _unoccupied_ordinals(
     ]
 
 
-__all__ = ["SearchClickFulfillmentUnit", "prepare_search_click_fulfillment_units"]
+__all__ = [
+    "SearchClickFulfillmentUnit",
+    "open_search_click_dispatch_demands",
+    "prepare_search_click_fulfillment_units",
+]

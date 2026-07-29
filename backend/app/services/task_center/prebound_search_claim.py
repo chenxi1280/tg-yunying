@@ -29,8 +29,8 @@ def plan_prebound_search_claims(
     bindings: dict[str, DispatchClaimBinding] = {}
     for action in actions:
         binding = _prebound_binding(session, action)
-        if binding is not None and _binding_matches_shard(
-            binding,
+        if binding is not None and _action_matches_shard(
+            action,
             shard_total,
             shard_index,
         ):
@@ -38,16 +38,18 @@ def plan_prebound_search_claims(
     return DispatchClaimPlan(tuple(bindings), bindings)
 
 
-def _binding_matches_shard(
-    binding: DispatchClaimBinding,
+def _action_matches_shard(
+    action: Action,
     shard_total: int | None,
     shard_index: int | None,
 ) -> bool:
     if shard_total is None or shard_index is None:
         return True
-    return (
-        binding.shard_total == shard_total
-        and binding.shard_index == shard_index
+    account_id = int(action.account_id or 0)
+    return bool(
+        account_id > 0
+        and shard_total > 0
+        and account_id % shard_total == shard_index
     )
 
 
