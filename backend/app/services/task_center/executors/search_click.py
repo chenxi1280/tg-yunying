@@ -192,7 +192,7 @@ def _handle_existing_epoch(
 def _finalize_epoch(
     session: Session, context: _FinalizeContext,
 ) -> dict[str, int]:
-    _begin_serializable_transaction(session)
+    _restart_serializable_finalize_transaction(session)
     if not solver_owner_is_active(session, context.epoch):
         return _abandon_epoch(session, context, "search_solver_owner_lost")
     if not _snapshot_still_matches(session, context):
@@ -240,7 +240,8 @@ def _finalize_epoch(
     return created_by_task
 
 
-def _begin_serializable_transaction(session: Session) -> None:
+def _restart_serializable_finalize_transaction(session: Session) -> None:
+    session.rollback()
     if session.bind is not None and session.bind.dialect.name == "postgresql":
         session.execute(text("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE"))
 

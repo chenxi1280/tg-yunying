@@ -966,6 +966,8 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 | `backend/scripts/takeover_all_task_fulfillment.py`、`deploy/compose-up.sh`、`.github/workflows/deploy-production.yml` | 生产 preview/apply 命令，逐 Task 输出 before/after/reason/count并支持重复 apply；发布停止全部 worker，在仅 backend 可写窗口完成接管后才恢复；结构非法只暂停对应 Task，非预期失败阻断恢复 | implemented；待 release/E4 |
 | `backend/app/services/task_center/dispatch_reservations.py`、`dispatch_claim_allocation.py` | 保持 ready epoch 稳定，只在非空释放或已消费完份额后重建；部分获配不误报整任务容量不足 | implemented；待 release/E4 |
 | `backend/app/services/task_center/dispatcher.py` | AI 群管准入改为账号级互斥；评论/点赞/浏览 Gateway 前强制绑定义务、成功后确认远端事实；已绑定点赞/浏览义务的账号动作禁止 claim-time 改派 | implemented；待 release/E4 |
+| `backend/app/services/task_center/executors/search_click.py` | search solver 读事务结束后重启事务，并在任何查询前设置 PostgreSQL `SERIALIZABLE` 再 finalize epoch | implemented；待 release/E4 |
+| `backend/app/services/task_center/executors/group_ai_chat.py` | `replan_required` 从旧失败 Action 只读取并校验合同元数据，与新 payload 合并后再做完整发送校验；允许 `reply_target_stale` 空正文重建 | implemented；待 release/E4 |
 | `backend/app/integrations/telegram/search_join.py`、`backend/app/services/task_center/jisou_selector_accounts.py` | hot-list 直接失败、零 reset、账号—协议路径 12 小时排除 | implemented；待 release/E4 |
 | `backend/app/services/task_center/pacing.py`、频道 executors | pacing 窗口和自然日 deadline 收口，排期不得跨截止时间；频道软上限固定系统门禁 | implemented；待 release/E4 |
 | `backend/tests/test_fulfillment_takeover.py` 及相邻合同测试 | 先红后绿覆盖存量接管幂等、自然义务/远端事实、门禁、epoch、准入、hot-list 和 deadline | implemented；自动化 QA 进行中 |
