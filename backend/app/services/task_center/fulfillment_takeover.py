@@ -51,6 +51,15 @@ RETIRED_AI_QUANTITY_GATE_FIELDS = frozenset(
         "hard_hourly_strategy",
     }
 )
+PLANNER_BACKLOG_STATS_FIELDS = frozenset(
+    {
+        "planner_backlog_blocked",
+        "planner_backlog_blocked_at",
+        "planner_backlog_global_pending",
+        "planner_backlog_task_pending",
+        "planner_backlog_oldest_age_seconds",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -86,8 +95,9 @@ def takeover_task(
     if contract_changed or was_legacy_search:
         retired += _retire_unbound_legacy_actions(session, task)
     _normalize_task_gate_limits(task)
+    obsolete_runtime_state_cleared = _clear_obsolete_runtime_state(task)
     _stamp_contract(task)
-    if contract_changed and task.status == "running":
+    if (contract_changed or obsolete_runtime_state_cleared) and task.status == "running":
         task.next_run_at = now or _now()
     ledger_id, ledger_created = _ensure_running_ledger(session, task, now)
     channel_summary = _migrate_channel_actions(
@@ -100,6 +110,7 @@ def takeover_task(
         before != _task_snapshot(task)
         or retired > 0
         or ledger_created
+        or obsolete_runtime_state_cleared
         or channel_summary != ChannelTakeoverSummary()
     )
     if changed and write_audit:
@@ -305,7 +316,35 @@ def normalize_fulfillment_pacing(task_type: str, pacing: dict) -> dict:
     normalized["max_actions_per_hour"] = UNIFIED_TASK_GATE_LIMIT
     if task_type == "search_click":
         normalized["max_actions_per_day"] = UNIFIED_TASK_GATE_LIMIT
+        normalized["per_account_total_action_limit"] = 0
+        normalized["per_account_daily_action_limit"] = UNIFIED_TASK_GATE_LIMIT
+        normalized["per_account_hourly_action_limit"] = UNIFIED_TASK_GATE_LIMIT
+        normalized["per_account_cooldown_days"] = 0
+        normalized["per_keyword_account_daily_limit"] = UNIFIED_TASK_GATE_LIMIT
+        normalized["skip_probability_per_action"] = 0
+        normalized["hourly_skip_probability"] = 0
+        normalized["daily_skip_probability"] = 0
     return normalized
+
+
+def _clear_obsolete_runtime_state(task: Task) -> bool:
+    stats = dict(task.stats or {})
+    before = (task.last_error, dict(stats))
+    for field in PLANNER_BACKLOG_STATS_FIELDS:
+        stats.pop(field, None)
+    if task.last_error == "shared_dispatch_capacity_insufficient":
+        task.last_error = ""
+    if task.type == "search_click":
+        stats.pop("search_join_stats", None)
+        if task.last_error == "daily_target_capacity_insufficient":
+            task.last_error = ""
+    if (
+        task.type == "channel_view"
+        and task.last_error == "任务今日浏览安全上限已用完，等待下一日继续规划"
+    ):
+        task.last_error = ""
+    task.stats = stats
+    return before != (task.last_error, stats)
 
 
 def _stamp_contract(task: Task) -> None:

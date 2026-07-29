@@ -69,7 +69,7 @@
 
 ### 3.2 非目标
 
-- 不降低业务配置目标，不自动提高账号日限额、账号小时限额、Telegram 风险门禁或绕过 unknown 防重；`1_000_000` 只替换会截断业务目标的任务级履约软上限。
+- 不降低业务配置目标；任务内的账号日/小时/账号关键词日次数等履约软上限统一归一为 `1_000_000`，旧搜索 skip 概率和任务内账号冷却归零。账号全局安全、Telegram 风险、授权、代理、协议和 unknown 防重硬门禁保持不变，不能借统一软门禁绕过。
 - 不把 `pending/claiming/executing/unknown_after_send/skipped` 计为成功。
 - 不使用 mock、未记录的静默 fallback、未知按钮模糊点击或未审批协议样本；本文明确的签到/表情确定性兜底必须留下原失败原因和远端事实。
 - 不把 worker/container/health 绿色、claim 成功、Action 创建或本地测试写成 `production_fixed`。
@@ -464,6 +464,8 @@ scope capacity
 生产不能直接把当前 `ACTION_CLAIM_LIMIT=100` 当作 scope capacity。所有共享 worker 对同一 scope 必须读取相同的配置版本；不一致时停止新增 claim 并显示 `dispatcher_scope_capacity_mismatch`。
 
 同一 `ready` Window 的 Action 新增、claim、executing、success/failed 状态变化不得触发整窗重建。当前 epoch 尚有未领取 Reservation 时继续消费原不可变分配；只有明确释放形成非空 release set，或原 epoch 的全部可领取 Reservation 已消费且仍有新到期需求时，才开启唯一 pending rebuild wave。任务只要取得大于 0 的份额即为 `allocated`，不得因“部分小于 required”把整个任务标成 `shared_dispatch_capacity_insufficient`。
+
+盖章 `fulfillment_contract_version=all_task_v2` 的五类任务不再读取旧 `max_pending_global|max_pending_per_task|oldest_pending_age_seconds` 作为 Planner 数量门禁。旧 backlog 只服务未迁移任务；新模型由不可变义务、同义务单 open/unknown Action、中央 Reservation 和 scope in-flight capacity 防止重复与过载。接管必须清除五类任务遗留 `planner_backlog_*` 和陈旧 `shared_dispatch_capacity_insufficient`，搜索同时清除 `search_join_stats/daily_target_capacity_insufficient`，浏览清除旧 `task_daily_view_safety_cap` 命中错误，并把运行中任务的 `next_run_at` 推到当前时刻重新规划。`DISPATCHER_SCOPE_CAPACITY` 只限制同一时刻真实在途量，不得减少总目标、形成任务终态或阻止后续 Window 继续履约。
 
 ### 5.2 锁顺序与事务边界
 
@@ -928,7 +930,7 @@ apply 不得修改 success、unknown_after_send、Gateway-started，不得补 re
 | 搜索 CAPTCHA | `required` 不排除账号；AI 调用/批准重试不占 click 限额或目标且无业务固定 AI 轮数/递归次数，供应商/传输暂不可用保持 required；同 fingerprint 的单次批准提交只有取得明确远端通过回执或已审批搜索分类/结果页才 `solved` 并继续，离开原页/新 fingerprint/hot-list/unknown 均不算；识别链确实无安全答案或同 fingerprint 被远端明确拒绝才 `failed` 并排除账号—协议路径；禁止概率折损容量 |
 | 极搜会话偏移 | `hot_list_page` 直接记录 `jisou_hot_list_page` 失败并排除当前账号—协议路径 12 小时；其他非预期页记录 `jisou_session_state_deviated`。均不得发送 `/cancel`、`/start`、重发关键词、点击未知 callback 或执行外部导航，新的 Action 默认 `reset_executed=false` 且历史 reset 字段只读 |
 | 存量新履约接管 | 部署后运行中五类 Task 在 Planner 扫描 open/backlog 之前幂等建立当前合同；paused/stopped 只升级合同不启动；重复 reconcile 的 ledger/slot/obligation/Action 增量均为 0 |
-| 统一任务门禁上限 | 新建、编辑、启动与存量接管后的五类 `pacing_config.max_actions_per_hour`，以及 `task_daily_view_safety_cap|max_total_comments|search_click max_actions_per_day` 均为 `1_000_000`；低值不能截断目标或触发 completed，账号/Telegram/unknown 硬门禁保持原值 |
+| 统一任务门禁上限 | 新建、编辑、启动与存量接管后的五类 `pacing_config.max_actions_per_hour`，以及 `task_daily_view_safety_cap|max_views_per_account_per_day|max_likes_per_account_per_hour|max_total_comments|max_comments_per_account_per_hour|search_click max_actions_per_day|per_account_daily_action_limit|per_account_hourly_action_limit|per_keyword_account_daily_limit` 均为 `1_000_000`；搜索 task-local skip 概率与账号冷却归零，旧 backlog 数量门禁不再作用于 `all_task_v2`。低值和陈旧 blocker 不能截断目标或触发 completed，账号全局安全、Telegram/授权/代理/协议/unknown 硬门禁保持原值 |
 | 搜索点击完成 | 完整 evidence 写 `target_click_observed` 后 ordinal 结束，无 membership/admission/can-send 后续动作 |
 | 搜索点击加入模式 | 仅确认是后续独立模式；本轮不得实现或拿旧开关代替专项设计 |
 | AI 任务时区变更 | 当前 ledger 继续使用旧 timezone；其 deadline 起建立新时区 `timezone_transition` ledger，UTC 区间首尾相接、无重复/遗漏冻结账号；过渡日不混入完整日 SLA |
