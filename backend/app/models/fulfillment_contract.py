@@ -79,7 +79,10 @@ class TaskGroupDailyMessageSlot(Base):
         ForeignKey("operation_targets.id")
     )
     task_account_daily_coverage_id: Mapped[str | None] = mapped_column(
-        ForeignKey("task_account_daily_coverage.id"),
+        ForeignKey(
+            "task_account_daily_coverage.id",
+            name="fk_group_message_slot_account_coverage",
+        ),
         nullable=True,
     )
     slot_kind: Mapped[str] = mapped_column(String(24))
@@ -188,7 +191,7 @@ class ContentMixCycleSlot(Base):
     initial_reply_to_message_id: Mapped[str] = mapped_column(String(160), default="")
     slot_attempt: Mapped[int] = mapped_column(Integer, default=0)
     current_action_id: Mapped[str | None] = mapped_column(
-        ForeignKey("actions.id"),
+        ForeignKey("actions.id", name="fk_content_mix_slot_current_action"),
         nullable=True,
     )
     slot_state: Mapped[str] = mapped_column(String(32), default="unmaterialized")

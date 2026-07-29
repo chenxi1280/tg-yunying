@@ -119,7 +119,7 @@ def refresh_task_stats(
     )
     stats = _ai_generation_stats(session, task, stats)
     stats = _daily_group_target_stats(session, task, stats)
-    if include_hard_hourly:
+    if task.type == "group_ai_chat":
         stats = hard_hourly_stats(session, task, _now(), stats)
     stats = _search_join_stats(session, task, stats)
     stats = _search_rank_deboost_stats(session, task, stats)

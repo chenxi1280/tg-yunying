@@ -12,7 +12,6 @@ from app.integrations.telegram import OperationResult
 from app.models import Action, ExecutionAttempt, OperationTarget, TaskAccountDailyCoverage, Tenant, TgAccount, TgGroup, Task, WorkerHeartbeat
 from app.services._common import _now
 from app.services.task_center import service as task_service
-from app.services.task_center.membership_fast_track import FastTrackResult
 from app.services.task_center.service import _recover_stale_executing_actions, drain_task_recovery
 
 
@@ -285,17 +284,12 @@ def test_recovery_drain_separates_action_and_task_repair_transactions(monkeypatc
         task_service._drain_task_recovery(SessionFactory, limit=10, process_type=None)
 
 
-def test_recovery_fast_tracks_pending_memberships_once(monkeypatch) -> None:
+def test_recovery_does_not_run_removed_hard_hourly_stages(monkeypatch) -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     SessionFactory = sessionmaker(bind=engine, future=True)
-    calls: list[int] = []
-
     for name in [
         "recover_expired_claims",
-        "recover_expired_hard_hourly_actions",
-        "recover_hard_hourly_delivery_credits",
-        "recover_missing_hard_hourly_memberships",
         "recover_terminal_coverage_reservations",
         "_recover_continuous_task_states",
         "_recover_stale_executing_actions",
@@ -304,15 +298,8 @@ def test_recovery_fast_tracks_pending_memberships_once(monkeypatch) -> None:
     ]:
         monkeypatch.setattr(task_service, name, lambda *_args, **_kwargs: 0)
     monkeypatch.setattr(task_service, "get_settings", lambda: SimpleNamespace(enable_runtime_retention_cleanup=False))
-    monkeypatch.setattr(
-        task_service,
-        "fast_track_pending_hard_hourly_memberships",
-        lambda *_args, **kwargs: calls.append(kwargs["limit"]) or FastTrackResult(processed=0, task_counts={}),
-    )
 
     task_service._drain_task_recovery(SessionFactory, limit=10, process_type=None)
-
-    assert calls == [task_service._hard_hourly_recovery_limit(10)]
 
 
 @pytest.mark.allow_missing_rule_binding

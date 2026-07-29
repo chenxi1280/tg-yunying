@@ -15,7 +15,7 @@ from app.services.task_center.membership_recovery_gate import recover_missing_ha
 pytestmark = pytest.mark.no_postgres
 
 
-def test_recovery_creates_missing_hard_hourly_membership_actions() -> None:
+def test_removed_hard_hourly_recovery_does_not_create_membership_actions() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
 
@@ -75,9 +75,8 @@ def test_recovery_creates_missing_hard_hourly_membership_actions() -> None:
             .all()
         )
 
-    assert recovered == 2
-    assert {action.account_id for action in actions} == {51, 52}
-    assert all(action.status == "pending" for action in actions)
+    assert recovered == 0
+    assert actions == []
 
 
 def test_recovery_skips_future_hard_hourly_membership_checkpoint(monkeypatch) -> None:
@@ -124,7 +123,7 @@ def test_recovery_skips_future_hard_hourly_membership_checkpoint(monkeypatch) ->
         assert recover_missing_hard_hourly_memberships(session, limit=10) == 0
 
 
-def test_recovery_rechecks_task_when_some_membership_actions_are_open() -> None:
+def test_removed_hard_hourly_recovery_does_not_recheck_open_memberships() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = _now()
@@ -217,15 +216,14 @@ def test_recovery_rechecks_task_when_some_membership_actions_are_open() -> None:
             .all()
         )
 
-    assert recovered == 1
+    assert recovered == 0
     assert [(action.account_id, action.status) for action in actions] == [
         (61, "pending"),
         (62, "skipped"),
-        (62, "pending"),
     ]
 
 
-def test_recovery_retries_auto_verification_failures_when_no_membership_gap_remains() -> None:
+def test_removed_hard_hourly_recovery_does_not_retry_verification_failures() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     old_value = _now() - timedelta(minutes=10)
@@ -287,6 +285,5 @@ def test_recovery_retries_auto_verification_failures_when_no_membership_gap_rema
         actions = session.query(Action).filter(Action.task_id == task.id, Action.action_type == "ensure_target_membership").order_by(Action.created_at.asc()).all()
         retry_actions = [action for action in actions if action.account_id == failed.id and action.status == "pending"]
 
-    assert recovered == 1
-    assert len(retry_actions) == 1
-    assert retry_actions[0].result["reactivated_reason"] == "hard_hourly_auto_verification_retry"
+    assert recovered == 0
+    assert retry_actions == []

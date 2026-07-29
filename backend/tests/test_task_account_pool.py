@@ -549,7 +549,7 @@ def test_select_task_accounts_prioritizes_uncovered_daily_task_accounts():
     assert selected_ids == [3, 4]
 
 
-def test_task_account_coverage_counts_same_day_unique_task_accounts():
+def test_task_account_coverage_does_not_count_unbound_legacy_actions():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
 
@@ -626,9 +626,10 @@ def test_task_account_coverage_counts_same_day_unique_task_accounts():
 
         coverage = task_account_coverage(session, task)
 
-    assert coverage["covered_count"] == 2
-    assert coverage["eligible_count"] == 6
-    assert coverage["coverage_percent"] == 33
+    assert coverage["coverage_status"] == "scope_uninitialized"
+    assert coverage["covered_count"] == 0
+    assert coverage["eligible_count"] == 0
+    assert coverage["coverage_percent"] == 0
     assert coverage["action_types"] == ["send_message"]
 
 

@@ -47,7 +47,7 @@ def test_daily_coverage_model_declares_auditable_completion_fields() -> None:
     columns = set(coverage_model.__table__.c.keys())
 
     assert {
-        "id", "tenant_id", "task_id", "group_id", "account_id", "membership_item_id",
+        "id", "tenant_id", "task_id", "task_day_ledger_id", "group_id", "account_id", "membership_item_id",
         "coverage_date", "target_count", "confirmed_count", "state", "reserved_action_id",
         "last_success_action_id", "last_remote_message_id", "blocker_code", "blocker_detail",
         "blocker_stage", "recovery_path", "next_decision_at", "last_action_id", "reservation_token",

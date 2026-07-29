@@ -68,6 +68,8 @@ def seed_planner_progress_snapshot(session: Session, task: Task, progress: dict[
 
 
 def _current_progress(session: Session, task: Task, now: datetime) -> dict[str, Any]:
+    if not enabled(task):
+        return _disabled_progress(task, now)
     stats = hard_hourly_stats(session, task, now, task.stats or {})
     now_local = normalize(task, now)
     delivery_deficit = int(stats.get("hard_hourly_deficit") or 0)
@@ -106,6 +108,25 @@ def _current_progress(session: Session, task: Task, now: datetime) -> dict[str, 
         target_reference_revision=int(config.get("target_reference_revision") or 0),
         create_bucket=False,
     )
+
+
+def _disabled_progress(task: Task, now: datetime) -> dict[str, Any]:
+    now_local = normalize(task, now)
+    return {
+        "enabled": False,
+        "goal": 0,
+        "bucket": "",
+        "deficit": 0,
+        "delivery_deficit": 0,
+        "backfill_debt": 0,
+        "backfill_planning_deficit": 0,
+        "backfill_delivery_deficit": 0,
+        "future_open_count": 0,
+        "overdue_open_count": 0,
+        "planning_blocked": False,
+        "hour_end": hour_bounds(task, now)[1],
+        "now": now_local,
+    }
 
 
 def next_check_for_progress(task: Task, progress: dict[str, Any], now: datetime) -> datetime:

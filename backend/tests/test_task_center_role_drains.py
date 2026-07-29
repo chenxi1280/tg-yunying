@@ -258,7 +258,7 @@ def test_metrics_drain_reconciles_missing_task_runtime_summary(monkeypatch) -> N
 
 
 @pytest.mark.no_postgres
-def test_metrics_drain_refreshes_running_hard_hourly_history() -> None:
+def test_metrics_drain_disables_removed_hard_hourly_history() -> None:
     SessionFactory = _session_factory()
     now_value = _now()
     with SessionFactory() as session:
@@ -293,7 +293,8 @@ def test_metrics_drain_refreshes_running_hard_hourly_history() -> None:
 
     with SessionFactory() as session:
         task = session.get(Task, "hard-hourly-metrics-summary")
-        assert task.stats["hard_hourly_success_count"] == 1
+        assert task.stats["hard_hourly_target_enabled"] is False
+        assert task.stats["hard_hourly_status"] == "disabled"
 
 
 @pytest.mark.no_postgres

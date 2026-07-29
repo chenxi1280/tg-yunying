@@ -200,11 +200,17 @@ class Action(Base):
     plan_batch_key: Mapped[str | None] = mapped_column(String(160), nullable=True)
     action_dedupe_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
     primary_quantity_slot_id: Mapped[str | None] = mapped_column(
-        ForeignKey("task_group_daily_message_slots.id"),
+        ForeignKey(
+            "task_group_daily_message_slots.id",
+            name="fk_actions_primary_quantity_slot",
+        ),
         nullable=True,
     )
     content_mix_cycle_slot_id: Mapped[str | None] = mapped_column(
-        ForeignKey("content_mix_cycle_slots.id"),
+        ForeignKey(
+            "content_mix_cycle_slots.id",
+            name="fk_actions_content_mix_cycle_slot",
+        ),
         nullable=True,
     )
     content_mix_slot_attempt: Mapped[int | None] = mapped_column(
@@ -381,9 +387,18 @@ class TaskMembershipAdmissionItem(Base):
     account_id: Mapped[int] = mapped_column(ForeignKey("tg_accounts.id"))
     target_id: Mapped[int] = mapped_column(ForeignKey("operation_targets.id"))
     phase: Mapped[str] = mapped_column(String(40), default="pending")
-    membership_action_id: Mapped[str | None] = mapped_column(ForeignKey("actions.id"), nullable=True)
-    test_message_action_id: Mapped[str | None] = mapped_column(ForeignKey("actions.id"), nullable=True)
-    delete_action_id: Mapped[str | None] = mapped_column(ForeignKey("actions.id"), nullable=True)
+    membership_action_id: Mapped[str | None] = mapped_column(
+        ForeignKey("actions.id", name="fk_membership_admission_membership_action"),
+        nullable=True,
+    )
+    test_message_action_id: Mapped[str | None] = mapped_column(
+        ForeignKey("actions.id", name="fk_membership_admission_test_action"),
+        nullable=True,
+    )
+    delete_action_id: Mapped[str | None] = mapped_column(
+        ForeignKey("actions.id", name="fk_membership_admission_delete_action"),
+        nullable=True,
+    )
     test_message_text: Mapped[str] = mapped_column(Text, default="")
     test_message_id: Mapped[str] = mapped_column(String(160), default="")
     delete_after_send: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -392,7 +407,10 @@ class TaskMembershipAdmissionItem(Base):
     failure_detail: Mapped[str] = mapped_column(Text, default="")
     manual_required: Mapped[bool] = mapped_column(Boolean, default=False)
     permission_failure_count: Mapped[int] = mapped_column(Integer, default=0)
-    rescue_action_id: Mapped[str | None] = mapped_column(ForeignKey("actions.id"), nullable=True)
+    rescue_action_id: Mapped[str | None] = mapped_column(
+        ForeignKey("actions.id", name="fk_membership_admission_rescue_action"),
+        nullable=True,
+    )
     rescue_status: Mapped[str] = mapped_column(String(40), default="")
     rescue_failure_detail: Mapped[str] = mapped_column(Text, default="")
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

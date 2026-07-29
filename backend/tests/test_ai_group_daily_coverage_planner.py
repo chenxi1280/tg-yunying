@@ -14,9 +14,14 @@ from app.models import (
     AccountPool,
     AiCoverageVariationIntent,
     ExecutionAttempt,
+    ContentMixCycle,
+    ContentMixCycleSlot,
+    OperationTarget,
     Task,
     TaskAccountDailyCoverage,
+    TaskDayLedger,
     TaskDailyFulfillmentDecision,
+    TaskGroupDailyMessageSlot,
     TaskMembershipAdmissionItem,
     Tenant,
     TgAccount,
@@ -402,13 +407,76 @@ def test_daily_coverage_persists_variation_intent_before_creating_action(
 ) -> None:
     task, _group = _seed(session)
     row = session.get(TaskAccountDailyCoverage, "coverage-1")
+    now_value = beijing_now()
+    ledger = TaskDayLedger(
+        id="day-ledger-coverage-1",
+        tenant_id=1,
+        task_id=task.id,
+        timezone_snapshot="Asia/Shanghai",
+        timezone_revision=1,
+        obligation_local_date=now_value.date(),
+        period_start_at=now_value,
+        deadline_at=now_value + timedelta(days=1),
+        day_phase="active",
+        planning_anchor_at=now_value,
+    )
+    quantity_slot = TaskGroupDailyMessageSlot(
+        id="quantity-slot-coverage-1",
+        tenant_id=1,
+        task_id=task.id,
+        task_day_ledger_id=ledger.id,
+        target_operation_target_id=31,
+        task_account_daily_coverage_id=row.id,
+        slot_kind="account_daily_minimum",
+        slot_ordinal=1,
+    )
+    cycle = ContentMixCycle(
+        id="content-cycle-coverage-1",
+        tenant_id=1,
+        task_id=task.id,
+        target_operation_target_id=31,
+        task_day_ledger_id=ledger.id,
+        cycle_seq=1,
+        config_revision=1,
+        scope_total_slots=1,
+        allocation_seed="coverage-1",
+        allocation_closed_at=now_value,
+    )
+    cycle_slot = ContentMixCycleSlot(
+        id="content-cycle-slot-coverage-1",
+        tenant_id=1,
+        cycle_id=cycle.id,
+        slot_index=1,
+        primary_quantity_slot_id=quantity_slot.id,
+        relation_kind="direct",
+    )
+    row.task_day_ledger_id = ledger.id
+    session.add_all([
+        OperationTarget(
+            id=31,
+            tenant_id=1,
+            target_type="group",
+            tg_peer_id="-10021",
+            title="目标群",
+            auth_status="已授权运营",
+            can_send=True,
+        ),
+        ledger,
+        quantity_slot,
+        cycle,
+        cycle_slot,
+    ])
+    session.flush()
     payload = SendMessagePayload(
         group_id=21,
+        target_operation_target_id=31,
         account_coverage_mode="all_accounts_daily",
         coverage_ledger_id=row.id,
         coverage_window_date=row.coverage_date.isoformat(),
         content_variation_key="variation-coverage-1-v1",
         content_context_version="context-v1",
+        primary_quantity_slot_id=quantity_slot.id,
+        content_mix_cycle_slot_id=cycle_slot.id,
         ai_generation_status="pending",
     )
     blueprint = type("Blueprint", (), {"profile": type("Profile", (), {"coverage_rows": {row.account_id: row}})()})()

@@ -150,7 +150,7 @@ def test_task_center_frontend_supports_search_join_group_contract():
     grouping = (PROJECT_ROOT / "frontend/src/app/views/taskCenterListGrouping.ts").read_text()
 
     assert "'search_join_group'" in types
-    assert "搜索目标群点击任务" in view_model
+    assert "历史搜索点击加入任务" in view_model
     assert "search_join_group: '/tasks/search-join-group'" in view_model
     assert "search_join_group: '/tasks/search-join-group/create-and-start'" in view_model
     for field in ["search_bots", "keyword_hashes", "pre_join_decoy_click_max"]:
@@ -2643,15 +2643,13 @@ def test_task_center_create_refreshes_after_long_timeout_and_capacity_summary_ty
     assert "最大并发" in wizard
 
 
-def test_task_center_create_reuses_review_precheck_before_submit():
+def test_task_center_creation_does_not_require_precheck_before_submit():
     source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
 
     create_task = source[source.index("async function createTask"):source.index("\n\n  async function saveTaskSettings")]
-    assert "const precheckSignature = taskPrecheckPayloadSignature(taskType, payload);" in create_task
-    assert "const requiresFreshPrecheck = taskType !== 'group_membership_admission' && !isSimpleSearchClickTask(taskType) && !options.skipCapacityCheck;" in create_task
-    assert "precheck && precheckPayloadSignature === precheckSignature" in create_task
-    assert "await runTaskPrecheck(values)" in create_task
-    assert "if (!result && requiresFreshPrecheck) return;" in create_task
+    assert "createPayload(submitValues)" in create_task
+    assert "await runTaskPrecheck" not in create_task
+    assert "requiresFreshPrecheck" not in create_task
 
 
 def test_search_rank_deboost_create_exposes_draft_only_action():
@@ -2659,8 +2657,8 @@ def test_search_rank_deboost_create_exposes_draft_only_action():
     create_task = source[source.index("async function createTask"):source.index("\n\n  async function saveTaskSettings")]
 
     assert "const shouldStartNow = taskType === 'search_rank_deboost' ? false : start;" in create_task
-    assert "if (shouldStartNow && result?.decision === 'block')" in create_task
     assert "(shouldStartNow ? CREATE_AND_START_ENDPOINT : CREATE_ENDPOINT)[taskType]" in create_task
+    assert "result?.decision" not in create_task
     assert "refreshTaskListAfterAction(shouldStartNow ? '任务创建并启动' : '任务创建')" in create_task
     assert "搜索排名观察任务已创建为草稿" not in create_task
     assert "taskType === 'search_rank_deboost' ? (" in source

@@ -2389,10 +2389,11 @@ def _coverage_plan_state(
     _progress: dict[str, object],
 ) -> CoveragePlanState:
     timestamp = _now()
-    ensure_task_day_ledger(session, task, now=timestamp)
     if not _all_accounts_daily_coverage(config):
+        ensure_task_day_ledger(session, task, now=timestamp)
         return CoveragePlanState(rows=[], rows_by_account={}, due_debt=0)
     bootstrap_missing_all_account_task_scope(session, task, now=timestamp)
+    ensure_task_day_ledger(session, task, now=timestamp)
     ensure_task_daily_coverage(
         session,
         task,

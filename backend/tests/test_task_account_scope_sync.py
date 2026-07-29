@@ -242,13 +242,22 @@ def test_hard_deleting_task_cascades_daily_scope_rows() -> None:
             coverage_date=datetime(2026, 7, 10).date(),
         ))
         session.commit()
+        task_id = task.id
+        session.close()
 
-        session.execute(delete(Task).where(Task.id == task.id))
-        session.commit()
+    with engine.begin() as connection:
+        connection.execute(delete(Task).where(Task.id == task_id))
 
-        assert session.scalar(select(TaskMembershipAdmissionItem)) is None
-        assert session.scalar(select(TaskAccountDailyCoverage)) is None
-        assert session.scalar(select(TaskDailyCoveragePlanCursor)) is None
+    with Session(engine) as session:
+        assert session.scalar(select(TaskMembershipAdmissionItem).where(
+            TaskMembershipAdmissionItem.task_id == task_id
+        )) is None
+        assert session.scalar(select(TaskAccountDailyCoverage).where(
+            TaskAccountDailyCoverage.task_id == task_id
+        )) is None
+        assert session.scalar(select(TaskDailyCoveragePlanCursor).where(
+            TaskDailyCoveragePlanCursor.task_id == task_id
+        )) is None
 
 
 def test_daily_scope_reconcile_runs_at_new_day_before_interval_elapses(session: Session) -> None:

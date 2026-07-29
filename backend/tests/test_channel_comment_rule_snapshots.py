@@ -120,6 +120,7 @@ def test_phase_c_rechecks_comment_available_after_provider(monkeypatch) -> None:
 
 def test_empty_pending_blueprints_do_not_hide_older_success_duplicate(monkeypatch) -> None:
     duplicate = "河东区这个位置方便吗"
+    observed: list[str] = []
     with comment_dispatch_session() as session:
         action = seed_dispatch_scope(session)
         task = session.get(Task, action.task_id)
@@ -127,7 +128,7 @@ def test_empty_pending_blueprints_do_not_hide_older_success_duplicate(monkeypatc
         session.add(_historical_success(action, duplicate))
         session.add_all(_empty_pending_blueprint(action, index) for index in range(50))
         session.commit()
-        _configure_forbidden_gateway(monkeypatch)
+        _configure_gateway(monkeypatch, observed)
 
         assert dispatcher.dispatch_action(
             session,
@@ -135,19 +136,21 @@ def test_empty_pending_blueprints_do_not_hide_older_success_duplicate(monkeypatc
             comment_generation_dependencies=_dependencies(duplicate),
         ) is True
 
-        assert action.status == "failed"
-        assert action.result["error_code"] == "duplicate_rejected"
+        assert action.status == "success"
+        assert action.payload["comment_fallback_kind"] == "emoji_text"
+        assert observed == [action.payload["comment_text"]]
 
 
 def test_legacy_message_id_history_still_rejects_duplicate(monkeypatch) -> None:
     duplicate = "河东区这个位置方便吗"
+    observed: list[str] = []
     with comment_dispatch_session() as session:
         action = seed_dispatch_scope(session)
         historical = _historical_success(action, duplicate)
         historical.payload = {key: value for key, value in historical.payload.items() if key != "channel_message_id"}
         session.add(historical)
         session.commit()
-        _configure_forbidden_gateway(monkeypatch)
+        _configure_gateway(monkeypatch, observed)
 
         assert dispatcher.dispatch_action(
             session,
@@ -155,8 +158,9 @@ def test_legacy_message_id_history_still_rejects_duplicate(monkeypatch) -> None:
             comment_generation_dependencies=_dependencies(duplicate),
         ) is True
 
-        assert action.status == "failed"
-        assert action.result["error_code"] == "duplicate_rejected"
+        assert action.status == "success"
+        assert action.payload["comment_fallback_kind"] == "emoji_text"
+        assert observed == [action.payload["comment_text"]]
 
 
 def _published_replacement_version() -> RuleSetVersion:

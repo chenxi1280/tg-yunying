@@ -138,14 +138,18 @@ def test_explicit_start_does_not_call_capacity_precheck(
     assert hard_hourly_enabled(started) is False
 
 
-def test_hard_hourly_fields_are_not_valid_update_contract() -> None:
-    with pytest.raises(ValueError):
-        GroupAIChatTaskConfigUpdate(
-            target_group_id=7,
-            hard_hourly_target_enabled=True,
-            hourly_min_messages=20,
-            hard_hourly_strategy="force_planning",
-        )
+def test_hard_hourly_fields_are_accepted_but_removed_from_update_contract() -> None:
+    payload = GroupAIChatTaskConfigUpdate(
+        target_group_id=7,
+        hard_hourly_target_enabled=True,
+        hourly_min_messages=20,
+        hard_hourly_strategy="force_planning",
+    )
+
+    data = payload.model_dump(mode="json")
+    assert "hard_hourly_target_enabled" not in data
+    assert "hourly_min_messages" not in data
+    assert "hard_hourly_strategy" not in data
 
 
 def test_create_and_start_contract_replays_same_task_and_start(

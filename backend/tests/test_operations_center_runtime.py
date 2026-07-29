@@ -4534,7 +4534,10 @@ def test_group_ai_chat_keeps_partial_normal_candidates(monkeypatch):
         )
         actions = list(session.scalars(select(Action).where(Action.task_id == "ai-partial-normal")))
 
-    assert planned == 2
+        assert planned == 2, {
+            "last_error": session.get(Task, "ai-partial-normal").last_error,
+            "stats": session.get(Task, "ai-partial-normal").stats,
+        }
     assert all(action.status == "failed" for action in actions)
     assert all(action.result["error_code"] == "ai_generation_output_count_mismatch" for action in actions)
 
@@ -5042,16 +5045,36 @@ def test_group_ai_chat_waits_when_no_new_real_context(monkeypatch):
                 normal_generator=fake_generate_group_messages,
                 actions=[action],
             )
+        assert all(action.status == "success" for action in pending), [
+            (action.status, action.result) for action in pending
+        ]
+        session.commit()
         first_generation_call_count = len(generated)
+        assert build_group_ai_chat_plan(session, session.get(Task, "ai-wait-new")) == 1
+        next_action = session.scalar(
+            select(Action)
+            .where(Action.task_id == "ai-wait-new", Action.status == "pending")
+            .order_by(Action.created_at.desc())
+        )
+        _dispatch_deferred_ai_actions(
+            session,
+            monkeypatch,
+            normal_generator=fake_generate_group_messages,
+            actions=[next_action],
+        )
+        session.commit()
         assert build_group_ai_chat_plan(session, session.get(Task, "ai-wait-new")) == 0
-        action_count = session.scalar(select(func.count(Action.id)).where(Action.task_id == "ai-wait-new"))
+        action_count = session.scalar(
+            select(func.count(Action.id)).where(
+                Action.task_id == "ai-wait-new",
+                Action.action_type == "send_message",
+            )
+        )
         task = session.get(Task, "ai-wait-new")
 
-    assert first_generation_call_count >= 1
-    assert len(generated) == first_generation_call_count
-    assert action_count == planned
-    assert task.last_error == "持续监听中，等待新消息或空闲续聊间隔"
-    assert task.stats["context_mode"] == "waiting_new_context"
+    assert len(generated) == first_generation_call_count + 1
+    assert action_count == planned + 1
+    assert task.last_error == "当日覆盖账本暂无可执行账号，等待阻塞恢复或冷却到期"
 
 
 def _seed_group_ai_context_task(
@@ -6352,7 +6375,7 @@ def test_planning_backlog_ignores_same_task_old_membership_actions(monkeypatch):
 
 
 @pytest.mark.no_postgres
-def test_planning_backlog_allows_due_hard_hourly_deficit(monkeypatch):
+def test_planning_backlog_is_not_bypassed_by_removed_hard_hourly_fields(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
 
@@ -6397,8 +6420,8 @@ def test_planning_backlog_allows_due_hard_hourly_deficit(monkeypatch):
         blocked = _planning_backlog_blocked(session, task)
 
     assert snapshot["blocked"] is True
-    assert blocked is False
-    assert "planner_backlog_blocked" not in task.stats
+    assert blocked is True
+    assert task.stats["planner_backlog_blocked"] is True
 
 
 def test_refresh_task_stats_clears_recovered_backlog_marker(monkeypatch):
@@ -6587,7 +6610,7 @@ def test_list_tasks_uses_cached_stats_without_live_stats_queries(monkeypatch):
 
 
 @pytest.mark.no_postgres
-def test_group_ai_hard_hourly_stats_are_live_on_detail_and_cached_on_list(monkeypatch):
+def test_removed_hard_hourly_stats_are_not_recomputed_on_read(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = datetime(2026, 6, 7, 20, 30)
@@ -6648,15 +6671,15 @@ def test_group_ai_hard_hourly_stats_are_live_on_detail_and_cached_on_list(monkey
         refreshed = refresh_task_detail_stats(session, 1, task.id)
 
     expected = {
-        "hard_hourly_success_count": 1,
-        "hard_hourly_open_count": 1,
-        "hard_hourly_deficit": 4,
-        "hard_hourly_planning_deficit": 3,
-        "hard_hourly_status": "catching_up",
+        "hard_hourly_success_count": 0,
+        "hard_hourly_deficit": 5,
+        "hard_hourly_status": "disabled",
+        "hard_hourly_target_enabled": False,
     }
     assert listed["hard_hourly_success_count"] == 0
     assert listed["hard_hourly_deficit"] == 5
-    assert listed["hard_hourly_status"] == "catching_up"
+    assert listed["hard_hourly_status"] == "disabled"
+    assert listed["hard_hourly_target_enabled"] is False
     for stats in (detail["stats"], detail["task"]["stats"], refreshed):
         for key, value in expected.items():
             assert stats[key] == value

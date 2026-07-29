@@ -290,6 +290,9 @@ class GroupAIChatConfig(BaseModel):
     messages_per_round: int = Field(default=1, ge=1)
     reply_min_per_round: int = Field(default=1, ge=0)
     daily_message_target: int = Field(default=1, ge=1, le=100_000)
+    hard_hourly_target_enabled: bool | None = Field(default=None, exclude=True)
+    hourly_min_messages: int | None = Field(default=None, ge=1, exclude=True)
+    hard_hourly_strategy: str | None = Field(default=None, exclude=True)
     account_coverage_mode: Literal["all_accounts_daily"] = "all_accounts_daily"
     coverage_window_hours: Literal[24] = 24
     history_fetch_account_id: int | None = None
