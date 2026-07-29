@@ -129,6 +129,7 @@ assignment 不再计算 `latest_safe_start_at`，也不使用协议耗时预算�
 
 - 安全容量充足时按原配置分散；
 - 任何小时权重不得为 0，静默时段只使用较低非零权重；
+- `next_run_at` 与 Action `scheduled_at` 不得调用“跳到 quiet end/下一非零曲线小时”的旧硬门禁；运行时先移除 quiet 跳转语义并把曲线 0 归一为最小权重 1。接管发布必须一次性唤醒仍被旧静默结束时间推迟的 running 纯点击任务，使失主 open epoch 与当日欠额立即进入下一 Planner cycle，之后按正常软节奏计算且重复接管不覆盖；
 - 软 skip 不创建 `skipped_by_behavior_pacing` 终态，不扣减日目标；
 - `catch_up_required=true` 时忽略软 skip、压缩 jitter，并在硬安全上限内提升到最大合法速率；
 - 软节奏恢复只影响未来 Action，不改写已进入 Gateway 或 unknown 的事实。

@@ -20,11 +20,13 @@ from app.search_keywords import normalized_keyword_hash
 from app.security import encrypt_secret
 from app.schemas.task_center import SearchClickTaskConfigUpdate, SearchClickTaskCreate
 from app.services.task_center.daily_ledgers import ensure_task_day_ledger
+from app.services.task_center import pacing
 from app.services.task_center.fulfillment_takeover import (
     FULFILLMENT_CONTRACT_VERSION,
     UNIFIED_TASK_GATE_LIMIT,
 )
 from app.services.task_center.search_click_target_progress import search_click_target_progress
+from app.services.task_center.stats import next_run_after_task
 from app.services.task_center.service import (
     create_search_click_task,
     update_search_click_config,
@@ -86,6 +88,21 @@ def test_search_click_create_schema_is_click_only() -> None:
     assert "daily_target_count" not in dumped
     assert "join_target_group_after_click" not in dumped
     assert "max_actions_per_day" not in dumped
+
+
+@pytest.mark.no_postgres
+def test_pure_search_next_run_does_not_wait_for_quiet_end(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now_value = datetime(2026, 7, 30, 3)
+    monkeypatch.setattr(pacing, "_now", lambda: now_value)
+    task = _task(1)
+    task.pacing_config = {
+        "quiet_hours": {"start": "03:00", "end": "07:38"},
+        "operation_profile": {"hourly_activity_curve": [0] * 24},
+    }
+
+    assert next_run_after_task(task) == now_value + timedelta(minutes=5)
 
 
 @pytest.mark.no_postgres

@@ -12,8 +12,13 @@ from app.services._common import _now
 from .config_fields import CHANNEL_DYNAMIC_TASK_TYPES
 from .daily_group_target import daily_group_due_message_count, ensure_task_group_daily_target
 from .datetime_compat import parse_zone, to_zone
+from .fulfillment_takeover import FULFILLMENT_TASK_TYPES
 from .hard_hourly import enabled as hard_hourly_enabled, hard_hourly_stats
-from .pacing import ai_next_run_after, next_run_after
+from .pacing import (
+    ai_next_run_after,
+    fulfillment_pacing_config,
+    next_run_after,
+)
 from .planner_backlog import planner_backlog_snapshot
 from app.services.runtime_action_queries import task_action_status_counts_statement
 from .hourly_stats import search_join_hourly_execution, search_rank_deboost_hourly_execution
@@ -52,6 +57,12 @@ AI_GENERATION_QUALITY_CODES = frozenset({
 
 def next_run_after_task(task: Task):
     config = task.type_config or {}
+    raw_pacing = task.pacing_config or {}
+    fulfillment_pacing = (
+        fulfillment_pacing_config(raw_pacing)
+        if task.type in FULFILLMENT_TASK_TYPES
+        else raw_pacing
+    )
     if task.type == "group_ai_chat":
         hard_next = _hard_hourly_next_check_at(task)
         coverage_next = _stats_datetime(task, "daily_coverage_next_check_at")
@@ -65,12 +76,17 @@ def next_run_after_task(task: Task):
         waiting_until = _stats_datetime(task, "idle_continuation_next_run_at")
         if waiting_until:
             return waiting_until
-        return ai_next_run_after(task.pacing_config or {})
+        return ai_next_run_after(fulfillment_pacing)
     if task.type in CHANNEL_DYNAMIC_TASK_TYPES and (config.get("message_scope") or "latest_n") == "dynamic_new":
         interval = int(config.get("listener_interval_seconds") or 30)
         return _now() + timedelta(seconds=max(1, interval))
     timezone_name = task.timezone if task.type in SEARCH_CLICK_TASK_TYPES else None
-    return next_run_after(task.pacing_config or {}, timezone_name=timezone_name)
+    pacing = (
+        fulfillment_pacing
+        if task.type in FULFILLMENT_TASK_TYPES
+        else raw_pacing
+    )
+    return next_run_after(pacing, timezone_name=timezone_name)
 
 
 def refresh_task_stats(
