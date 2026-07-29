@@ -538,39 +538,6 @@ def _sync_channel_fulfillment_state(
         obligation.current_action_id = None
 
 
-def _ensure_task_fulfillment_contract(
-    session: Session,
-    action: Action,
-) -> bool:
-    from .fulfillment_takeover import (
-        FULFILLMENT_CONTRACT_VERSION,
-        takeover_task,
-    )
-
-    task = session.get(Task, action.task_id)
-    if task is None:
-        return True
-    contract_version = str(
-        (task.stats or {}).get("fulfillment_contract_version") or ""
-    )
-    if contract_version == FULFILLMENT_CONTRACT_VERSION:
-        return True
-    locked_task = session.scalar(
-        select(Task).where(Task.id == task.id).with_for_update()
-    )
-    if locked_task is None:
-        return True
-    try:
-        with session.begin_nested():
-            takeover_task(session, locked_task, now=_now())
-            session.flush()
-    except ValueError as exc:
-        _record_fulfillment_takeover_blocker(locked_task, action, exc)
-        return False
-    session.flush()
-    return action.status not in {"failed", "skipped", "success", "unknown_after_send"}
-
-
 def _record_fulfillment_takeover_blocker(
     task: Task,
     action: Action,
@@ -619,8 +586,6 @@ def _dispatch_action(
     generation_dependencies: GenerationDependencies,
     comment_generation_dependencies: CommentGenerationDependencies,
 ) -> bool:
-    if not _ensure_task_fulfillment_contract(session, action):
-        return True
     if _legacy_review_enabled() and has_pending_review(session, action.id):
         return False
     if _skip_search_click_action_after_deadline(session, action):

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 from sqlalchemy import create_engine
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.models import (
@@ -14,7 +14,6 @@ from app.models import (
     TaskDayLedger,
     Tenant,
     TgAccount,
-    TgGroup,
     ViewFulfillmentObligation,
 )
 from app.services._common import _now
@@ -22,7 +21,7 @@ from app.services.task_center.channel_fulfillment import (
     view_account_ids_for_messages,
     view_daily_counts,
 )
-from app.services.task_center import dispatcher, service
+from app.services.task_center import dispatcher
 from app.services.task_center.comment_fulfillment_takeover import (
     ensure_comment_action_contract,
 )
@@ -66,105 +65,6 @@ def session() -> Session:
         current.add(Tenant(id=1, name="单用户"))
         current.commit()
         yield current
-
-
-def test_dispatcher_takes_over_legacy_task_before_gateway(session: Session) -> None:
-    session.add(TgGroup(id=32, tenant_id=1, tg_peer_id="-10032", title="接管群"))
-    task = Task(
-        id="dispatch-takeover",
-        tenant_id=1,
-        name="部署瞬间接管",
-        type="group_ai_chat",
-        status="running",
-        type_config={"daily_message_target": 1, "target_group_id": 32},
-    )
-    old_action = Action(
-        id="dispatch-old-action",
-        tenant_id=1,
-        task_id=task.id,
-        task_type=task.type,
-        action_type="send_message",
-        status="executing",
-        payload={"message": "旧计划"},
-    )
-    session.add_all([task, old_action])
-    session.flush()
-
-    processed = _dispatch(session, old_action)
-
-    assert processed is True
-    assert old_action.status == "skipped"
-    assert old_action.result["error_code"] == (
-        "legacy_action_retired_by_fulfillment_takeover"
-    )
-    assert task.stats["fulfillment_contract_version"] == (
-        FULFILLMENT_CONTRACT_VERSION
-    )
-
-
-def test_dispatcher_records_structural_takeover_blocker(session: Session) -> None:
-    task = Task(
-        id="invalid-contract-task",
-        tenant_id=1,
-        name="缺目标的任务",
-        type="group_ai_chat",
-        status="running",
-    )
-    action = Action(
-        id="invalid-contract-action",
-        tenant_id=1,
-        task_id=task.id,
-        task_type=task.type,
-        action_type="send_message",
-        status="executing",
-    )
-    session.add_all([task, action])
-    session.flush()
-
-    processed = _dispatch(session, action)
-
-    assert processed is True
-    assert action.status == "failed"
-    assert action.result["error_code"] == "task_fulfillment_contract_invalid"
-    assert task.stats["fulfillment_takeover_status"] == "blocked"
-    assert "target group not found" in task.stats["fulfillment_takeover_error"]
-
-
-def test_planner_pauses_only_the_task_with_invalid_contract(
-    session: Session,
-) -> None:
-    task = Task(
-        id="invalid-planner-contract",
-        tenant_id=1,
-        name="Planner 缺目标",
-        type="group_ai_chat",
-        status="running",
-    )
-    session.add(task)
-    session.commit()
-    factory = sessionmaker(
-        bind=session.get_bind(),
-        autoflush=False,
-        autocommit=False,
-        future=True,
-    )
-
-    processed, planned, future_open, _pending = service._plan_due_task_batch(
-        factory,
-        task.id,
-        None,
-        limit=10,
-        plan_limit=1,
-        global_pending=0,
-    )
-    session.refresh(task)
-
-    assert (processed, planned, future_open) == (1, 0, False)
-    assert task.status == "paused"
-    assert task.stats["fulfillment_takeover_blocker_code"] == (
-        "task_contract_invalid"
-    )
-    assert "target group not found" in task.last_error
 
 
 def test_dispatcher_records_invalid_comment_contract_without_crashing(

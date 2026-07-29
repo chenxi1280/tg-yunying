@@ -485,13 +485,10 @@ def test_running_comment_actions_are_migrated_to_remote_fact_obligations(
     assert pending.payload["comment_fulfillment_obligation_id"] == obligations[1].id
 
 
-def test_release_workflow_applies_fulfillment_takeover_after_deploy() -> None:
-    workflow = (
-        PROJECT_ROOT / ".github/workflows/deploy-production.yml"
-    ).read_text()
-
-    deploy_index = workflow.index("- name: Deploy via SSH release script")
-    takeover_index = workflow.index("- name: Apply all-task fulfillment takeover")
-    assert takeover_index > deploy_index
-    assert "scripts.takeover_all_task_fulfillment" in workflow
-    assert "--apply" in workflow[takeover_index:]
+def test_release_fences_workers_during_fulfillment_takeover() -> None:
+    script = (PROJECT_ROOT / "deploy/compose-up.sh").read_text()
+    stop_index = script.index('compose stop "${WORKER_SERVICES[@]}"')
+    takeover_index = script.index("scripts.takeover_all_task_fulfillment")
+    start_index = script.index('compose up -d --no-build --remove-orphans "${WORKER_SERVICES[@]}"')
+    assert stop_index < takeover_index < start_index
+    assert "--apply" in script[takeover_index:start_index]

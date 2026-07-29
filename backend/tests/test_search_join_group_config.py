@@ -876,12 +876,16 @@ def test_search_join_group_rejects_conflicting_legacy_jitter() -> None:
 
 
 @pytest.mark.no_postgres
-def test_search_join_group_create_and_start_runs_precheck_and_starts(session: Session) -> None:
-    task = create_and_start_search_join_group_task(session, 1, _payload(), actor="tester")
-
-    assert task.status == "running"
-    assert task.stats["started_at"]
-    assert task.type_config["search_visibility_attribution"]["organic_search_join"] is True
+def test_legacy_search_join_cannot_start_without_pure_click_contract(
+    session: Session,
+) -> None:
+    with pytest.raises(ValueError, match="legacy_search_click_contract_invalid"):
+        create_and_start_search_join_group_task(
+            session,
+            1,
+            _payload(),
+            actor="tester",
+        )
 
 
 @pytest.mark.no_postgres

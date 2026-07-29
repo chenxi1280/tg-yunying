@@ -2304,6 +2304,9 @@ def start_task_in_transaction(
     actor: str,
 ) -> StartExecutionResult:
     tenant_id = task.tenant_id
+    if task.type in {"search_click", "search_join_group", "search_rank_deboost"}:
+        if _check_stop_conditions(session, task) or _search_click_task_completed_on_start(session, task):
+            return _start_execution_result(session, task)
     takeover_task(session, task)
     if task.type == "channel_comment":
         channel_comment.reconcile_lifetime_cap(session, task)
@@ -2317,9 +2320,6 @@ def start_task_in_transaction(
                 target_id=task.id,
                 detail="评论任务已达到生命周期总上限",
             )
-            return _start_execution_result(session, task)
-    if task.type in {"search_click", "search_join_group", "search_rank_deboost"}:
-        if _check_stop_conditions(session, task) or _search_click_task_completed_on_start(session, task):
             return _start_execution_result(session, task)
     if task.type == "search_rank_deboost":
         if task.status in {"running", "pending"}:
@@ -3260,12 +3260,6 @@ def _plan_due_task_batch(
         task = session.get(Task, task_id)
         if not task or task.status != "running":
             return 0, 0, False, current_global_pending
-        try:
-            takeover_task(session, task)
-        except ValueError as exc:
-            _block_invalid_fulfillment_task(task, exc)
-            session.commit()
-            return 1, 0, False, current_global_pending
         if _check_stop_conditions(session, task):
             session.commit()
             return 0, 0, False, current_global_pending
@@ -3292,20 +3286,6 @@ def _plan_due_task_batch(
             task.next_run_at = next_run_after_task(task)
         session.commit()
         return processed, planned, False, current_global_pending
-
-
-def _block_invalid_fulfillment_task(task: Task, exc: ValueError) -> None:
-    detail = str(exc)
-    task.status = "paused"
-    task.next_run_at = None
-    task.last_error = f"任务结构阻塞：{detail}"
-    task.stats = {
-        **(task.stats or {}),
-        "fulfillment_takeover_status": "blocked",
-        "fulfillment_takeover_blocker_code": "task_contract_invalid",
-        "fulfillment_takeover_error": detail,
-        "fulfillment_takeover_checked_at": _now().isoformat(),
-    }
 
 
 def _coverage_round_goal(session_factory, task_id: str) -> int:

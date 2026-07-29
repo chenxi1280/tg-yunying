@@ -5919,7 +5919,7 @@ def test_task_center_group_send_policy_ignores_legacy_message_cooldown():
             assert (failure_type, failure_detail) == (None, None)
 
 
-def test_task_center_channel_failed_action_retries_before_task_failed(monkeypatch):
+def test_task_center_channel_failure_replans_same_obligation_before_task_failed(monkeypatch):
     calls: list[str] = []
 
     def flaky_like(*args, **kwargs):
@@ -5990,16 +5990,31 @@ def test_task_center_channel_failed_action_retries_before_task_failed(monkeypatc
 
         drain_task_runtime_and_metrics(task_id)
         with SessionLocal() as session:
+            replacement = session.scalar(
+                select(Action).where(
+                    Action.task_id == task_id,
+                    Action.status == "pending",
+                )
+            )
+            assert replacement is not None
+            replacement.scheduled_at = _now()
+            session.commit()
+        drain_task_runtime_and_metrics(task_id)
+        with SessionLocal() as session:
             task = session.get(Task, task_id)
-            action = session.query(Action).filter(Action.task_id == task_id).one()
-            assert task.status == "running", {"task_status": task.status, "action_status": action.status, "retry_count": action.retry_count, "result": action.result}
-            assert action.status == "success"
-            assert action.retry_count == 1
+            actions = list(
+                session.query(Action).filter(Action.task_id == task_id)
+            )
+            assert task.status == "running"
+            assert sorted(action.status for action in actions) == [
+                "skipped",
+                "success",
+            ]
             assert task.stats["success_count"] == 1
         assert calls == ["like", "like"]
 
 
-def test_task_center_channel_like_respects_per_account_hour_limit(monkeypatch):
+def test_task_center_channel_like_normalizes_account_hour_limit_to_system_gate(monkeypatch):
     monkeypatch.setattr(
         "app.services.task_center.dispatcher.gateway.send_channel_reaction",
         lambda *args, **kwargs: OperationResult(True, detail="liked"),
@@ -6054,11 +6069,12 @@ def test_task_center_channel_like_respects_per_account_hour_limit(monkeypatch):
         client.post(f"/api/tasks/{task_id}/start", headers=headers)
         client.post("/api/worker/drain-once", headers=headers, json={"reason": "测试手动 drain"})
         with SessionLocal() as session:
+            task = session.get(Task, task_id)
             rows = list(session.query(Action).filter(Action.task_id == task_id).order_by(Action.scheduled_at.asc(), Action.id.asc()))
+        assert task.type_config["max_likes_per_account_per_hour"] == 1_000_000
         assert len(rows) == 3
         scheduled_hours = [row.scheduled_at.replace(minute=0, second=0, microsecond=0) for row in rows]
-        assert scheduled_hours[1] > scheduled_hours[0]
-        assert scheduled_hours[2] > scheduled_hours[1]
+        assert len(set(scheduled_hours)) == 1
 
 
 def test_task_center_max_duration_does_not_stop_continuous_tasks():

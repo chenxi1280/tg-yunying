@@ -135,38 +135,20 @@ def test_task_center_row_actions_bind_busy_state_to_action_key():
 
 def test_task_center_creation_does_not_wait_for_precheck():
     source = _source()
-    run_precheck = _function_body(source, "runTaskPrecheck")
     run_recommendation = _function_body(source, "runEditAiLimitRecommendation")
     create_task = _function_body(source, "createTask")
 
-    assert "const [precheckPayloadSignature, setPrecheckPayloadSignature] = React.useState('');" in source
-    assert "const activeTaskPrecheckRequestRef = React.useRef({ seq: 0, signature: '' });" in source
     assert "const activeEditRecommendationRequestRef = React.useRef({ seq: 0, signature: '' });" in source
     assert "function taskPrecheckPayloadSignature(type: TaskCenterTaskType, payload: Record<string, any>)" in source
-    assert "function beginTaskPrecheckRequest(signature: string)" in source
-    assert "function currentTaskPrecheckPayloadSignature()" in source
-    assert "function isActiveTaskPrecheckRequest(requestSeq: number, signature: string)" in source
-    assert "function isCurrentTaskPrecheckRequest(requestSeq: number)" in source
     assert "function beginEditRecommendationRequest(signature: string)" in source
     assert "function currentEditRecommendationPayloadSignature()" in source
     assert "function isActiveEditRecommendationRequest(requestSeq: number, signature: string)" in source
     assert "function isCurrentEditRecommendationRequest(requestSeq: number)" in source
-    assert "currentTaskPrecheckPayloadSignature() === signature" in source
     assert "currentEditRecommendationPayloadSignature() === signature" in source
 
-    assert "const payload = createPayload(values);" in run_precheck
-    assert "const payloadSignature = taskPrecheckPayloadSignature(taskType, payload);" in run_precheck
-    assert "const requestSeq = beginTaskPrecheckRequest(payloadSignature);" in run_precheck
-    assert "body: JSON.stringify({ task_type: taskType, payload })," in run_precheck
-    stale_precheck_guard = "if (!isActiveTaskPrecheckRequest(requestSeq, payloadSignature)) return null;"
-    assert stale_precheck_guard in run_precheck
-    assert run_precheck.index(stale_precheck_guard) < run_precheck.index("setPrecheck(result);")
-    assert "setPrecheckPayloadSignature(payloadSignature);" in run_precheck
-    assert "if (isCurrentTaskPrecheckRequest(requestSeq)) setPrecheckLoading(false);" in run_precheck
-
     assert "body: JSON.stringify(createPayload(submitValues))" in create_task
-    assert "await runTaskPrecheck(values)" not in create_task
-    assert "requiresFreshPrecheck" not in create_task
+    assert "/tasks/precheck" not in create_task
+    assert "runTaskPrecheck" not in source
 
     assert "const payload = settingsPayload(editableType, editForm.getFieldsValue(true));" in run_recommendation
     assert "payloadSignature = taskPrecheckPayloadSignature(editableType, payload);" in run_recommendation
@@ -182,15 +164,14 @@ def test_task_center_creation_does_not_wait_for_precheck():
     assert "if (!requestSeq || isCurrentEditRecommendationRequest(requestSeq)) setEditRecommendationLoading(false);" in run_recommendation
 
 
-def test_task_wizard_exposes_voice_profile_coverage_precheck():
+def test_task_wizard_defers_voice_profile_coverage_until_start():
     types = (PROJECT_ROOT / "frontend/src/app/types/taskCenter.ts").read_text()
     wizard = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterWizardSections.tsx").read_text()
 
     assert "voice_profile_summary:" in types
-    assert "const voiceProfile = precheck?.voice_profile_summary;" in wizard
-    assert "{ key: 'voice-profile', label: '账号面具覆盖'" in wizard
-    assert "待生成 ${voiceProfile.queued_account_count ?? 0}" in wizard
-    assert "待人工 ${voiceProfile.manual_required_account_count ?? 0}" in wizard
+    assert "{ key: 'voice-profile', label: '账号面具覆盖', children: taskType === 'group_ai_chat' ? '启动后按冻结账号范围检查；缺面具按签到兜底'" in wizard
+    assert "{ key: 'capacity', label: '容量口径', children: '创建阶段不做容量门禁；启动后持续重算并展示，不阻止合法任务创建'" in wizard
+    assert "precheck?.voice_profile_summary" not in wizard
 
 
 def test_task_center_save_settings_binds_payload_signature_and_edit_session():
@@ -226,14 +207,14 @@ def test_task_center_save_settings_binds_payload_signature_and_edit_session():
     assert "if (!requestSeq || isCurrentTaskSettingsSaveRequest(requestSeq)) setEditSaving(false);" in save_settings
 
 
-def test_search_click_task_settings_use_the_three_field_special_contract():
+def test_search_click_task_settings_use_the_pure_click_contract():
     source = _source()
-    settings_payload = source[source.index("function settingsPayload"):source.index("\n\n  async function runTaskPrecheck")]
+    settings_payload = source[source.index("function settingsPayload"):source.index("\n\n  function applyEditAiLimitRecommendations")]
     save_settings = _function_body(source, "saveTaskSettings")
 
     assert "if (isSimpleSearchClickTask(type)) return simpleSearchClickPayload(values, true, type);" in settings_payload
-    assert "editableType === 'search_join_group'" in save_settings
-    assert "`/tasks/${taskId}/search-join-group`" in save_settings
+    assert "editableType === 'search_click'" in save_settings
+    assert "`/tasks/${taskId}/search-click`" in save_settings
     assert "`/tasks/${taskId}/search_rank_deboost_config`" in save_settings
 
 

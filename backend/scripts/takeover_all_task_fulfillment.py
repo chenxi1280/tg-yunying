@@ -10,13 +10,24 @@ from app.models import Task
 from app.services.task_center.fulfillment_takeover import (
     ACTIVE_TAKEOVER_STATUSES,
     TAKEOVER_TASK_TYPES,
+    block_invalid_fulfillment_task,
     takeover_task,
+)
+
+
+STRUCTURAL_BLOCKER_PREFIXES = (
+    "channel_fulfillment_",
+    "comment_",
+    "group_ai_chat target group not found",
+    "legacy_search_click_contract_invalid:",
+    "search_click_runtime_contract_invalid",
 )
 
 
 def run_takeover(*, apply: bool, tenant_id: int | None = None) -> dict:
     task_ids = _task_ids(tenant_id)
     rows: list[dict] = []
+    blockers: list[dict] = []
     failures: list[dict] = []
     for task_id in task_ids:
         with SessionLocal() as session:
@@ -31,20 +42,59 @@ def run_takeover(*, apply: bool, tenant_id: int | None = None) -> dict:
                 )
                 rows.append(result.__dict__)
                 session.commit() if apply else session.rollback()
+            except ValueError as exc:
+                session.rollback()
+                if _is_structural_blocker(exc):
+                    blockers.append(_record_structural_blocker(
+                        session,
+                        task_id,
+                        exc,
+                        apply=apply,
+                    ))
+                else:
+                    failures.append(_failure(task_id, exc))
             except Exception as exc:
                 session.rollback()
-                failures.append(
-                    {
-                        "task_id": task_id,
-                        "error": f"{type(exc).__name__}:{exc}",
-                    }
-                )
+                failures.append(_failure(task_id, exc))
     return {
         "mode": "apply" if apply else "preview",
         "scanned": len(task_ids),
         "changed": sum(bool(row["changed"]) for row in rows),
         "tasks": rows,
+        "blockers": blockers,
         "failures": failures,
+    }
+
+
+def _is_structural_blocker(exc: ValueError) -> bool:
+    return str(exc).startswith(STRUCTURAL_BLOCKER_PREFIXES)
+
+
+def _failure(task_id: str, exc: Exception) -> dict:
+    return {
+        "task_id": task_id,
+        "error": f"{type(exc).__name__}:{exc}",
+    }
+
+
+def _record_structural_blocker(
+    session,
+    task_id: str,
+    exc: ValueError,
+    *,
+    apply: bool,
+) -> dict:
+    detail = str(exc)
+    if apply:
+        task = session.get(Task, task_id)
+        if task is not None:
+            block_invalid_fulfillment_task(task, exc)
+            session.commit()
+    return {
+        "task_id": task_id,
+        "blocker_code": "task_contract_invalid",
+        "error": detail,
+        "persisted": apply,
     }
 
 
