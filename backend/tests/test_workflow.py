@@ -4023,6 +4023,7 @@ def test_task_center_group_ai_chat_runs_from_worker_loop(monkeypatch):
                 "participation_rate": 1,
                 "participation_jitter": 0,
                 "messages_per_round": 1,
+                "reply_min_per_round": 0,
             },
         )
         assert created.status_code == 201, created.text
@@ -5680,7 +5681,7 @@ def test_task_center_channel_specific_scope_requires_message_ids():
         assert "message_ids" in response.text
 
 
-def test_task_center_create_and_start_rolls_back_when_start_fails(monkeypatch):
+def test_task_center_create_and_start_keeps_created_task_when_start_fails(monkeypatch):
     import app.services.task_center.service as task_center_service
 
     def fail_start(*args, **kwargs):
@@ -5717,9 +5718,14 @@ def test_task_center_create_and_start_rolls_back_when_start_fails(monkeypatch):
                 "like_count_jitter": 0,
             },
         )
-        assert response.status_code == 400
+        assert response.status_code == 201
+        body = response.json()
+        assert body["status"] == "draft"
+        assert body["create_status"] == "created"
+        assert body["start_status"] == "start_failed"
+        assert body["start_failure_code"] == "启动失败"
         with SessionLocal() as session:
-            assert session.query(Task).filter(Task.name == "pytest atomic create rollback").count() == 0
+            assert session.query(Task).filter(Task.name == "pytest atomic create rollback").count() == 1
 
 
 def test_task_center_type_specific_create_rejects_unrelated_fields():
