@@ -21,8 +21,8 @@ from app.models import (
     SearchClickOpportunityAssignment,
 )
 
-from .dispatch_claim_ledger import for_update
 from .dispatch_release_wave import start_or_join_dispatch_rebuild_wave
+from .search_click_release_locking import locked_release_assignment
 from .search_click_release_reconciler import reconcile_complete_release
 from .search_click_release_quarantine import write_release_quarantine
 
@@ -87,7 +87,7 @@ def _release_search_click_assignment(
 ) -> DispatchAllocationReleaseBatch:
     if reason_code not in ALLOWED_RELEASE_REASONS:
         raise ValueError("search_click_release_reason_invalid")
-    assignment = _locked_assignment(session, assignment_id)
+    assignment = locked_release_assignment(session, assignment_id)
     if assignment is None:
         raise ValueError("search_click_assignment_not_found")
     candidate_hash = _candidate_hash(assignment)
@@ -119,18 +119,6 @@ def _release_search_click_assignment(
     _finalize_batch(batch, assignment=assignment,
                     classification=classification, now_value=now_value)
     return batch
-
-
-def _locked_assignment(
-    session: Session,
-    assignment_id: str,
-) -> SearchClickOpportunityAssignment | None:
-    return session.scalar(for_update(
-        session,
-        select(SearchClickOpportunityAssignment).where(
-            SearchClickOpportunityAssignment.id == assignment_id
-        ),
-    ))
 
 
 def _existing_batch(

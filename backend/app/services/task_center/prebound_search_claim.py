@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session, object_session
+from sqlalchemy.orm import Session
 
 from app.models import (
     Action,
@@ -52,6 +52,8 @@ def confirm_prebound_search_claim(
     assignment = _locked_assignment(session, action)
     rows = (assignment, reservation, allocation, window, scope)
     if any(row is None for row in rows):
+        return False
+    if _unit_exclusion(session, assignment):
         return False
     if not _prebound_claim_available(
         action,
@@ -139,21 +141,13 @@ def _binding_rows_valid(
 ) -> bool:
     if reservation is None or window is None:
         return False
-    if action.status != "pending" or assignment.action_id != action.id:
-        return False
-    if int(reservation.bound_count) <= 0 or not _window_open(window):
-        return False
-    exclusion = _unit_exclusion(action, assignment)
-    return exclusion is None
+    return action.status == "pending" and assignment.action_id == action.id
 
 
 def _unit_exclusion(
-    action: Action,
+    session: Session,
     assignment: SearchClickOpportunityAssignment,
 ):
-    session = object_session(action)
-    if session is None:
-        return "session_missing"
     return session.scalar(select(DispatchAllocationExclusion.id).where(
         DispatchAllocationExclusion.dispatch_claim_reservation_id
         == assignment.dispatch_claim_reservation_id,

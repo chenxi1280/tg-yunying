@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine, func, select
@@ -12,21 +13,17 @@ from app.models import (
     ConsistencyQuarantine,
     DispatchAllocationExclusion,
     DispatchClaimReservation,
-    DispatchClaimScope,
-    DispatchClaimShardAllocation,
     DispatchClaimWindow,
     ExecutionAttempt,
-    OperationTarget,
-    SearchClickAssignmentEpoch,
-    SearchClickFulfillmentObligation,
     SearchClickOpportunityAssignment,
-    Task,
-    TaskDayLedger,
-    Tenant,
-    TgAccount,
 )
 from app.services._common import _now
-from app.services.task_center import prebound_search_claim
+from app.services.task_center import (
+    dispatch_reservations,
+    dispatcher,
+    prebound_search_claim,
+    search_click_release_locking,
+)
 from app.services.task_center.prebound_search_claim import (
     confirm_prebound_search_claim,
     plan_prebound_search_claims,
@@ -35,6 +32,7 @@ from app.services.task_center.search_click_assignment_release import (
     release_search_click_assignment,
 )
 from app.timezone import BEIJING_TZ
+from search_click_assignment_test_support import seed_assignment
 
 
 pytestmark = pytest.mark.no_postgres
@@ -45,7 +43,7 @@ def session() -> Session:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     with Session(engine) as db:
-        _seed_assignment(db)
+        seed_assignment(db)
         yield db
 
 
@@ -115,6 +113,182 @@ def test_prebound_confirm_uses_central_claim_lock_order(
         "DispatchClaimReservation",
         "SearchClickOpportunityAssignment",
     ]
+
+
+def test_expired_prebound_assignment_releases_instead_of_rebinding(
+    session: Session,
+) -> None:
+    action = session.get(Action, "action-1")
+    window = session.get(DispatchClaimWindow, "window-1")
+    window.bucket_end = _now() - timedelta(seconds=1)
+
+    plan = plan_prebound_search_claims(session, [action])
+    binding = plan.bindings_by_action_id[action.id]
+    action.status = "claiming"
+    action.claim_owner = "worker-1"
+    action.claim_token = "token-1"
+    batch = dispatcher.ActionClaimBatch(
+        (action.id,),
+        "worker-1",
+        "token-1",
+        {action.id: binding},
+    )
+
+    assert not confirm_prebound_search_claim(session, action, binding)
+    dispatcher._release_failed_claim_confirmation(
+        session,
+        action.id,
+        batch,
+    )
+
+    assignment = session.get(SearchClickOpportunityAssignment, "assignment-1")
+    reservation = session.get(DispatchClaimReservation, "reservation-1")
+    assert action.status == "skipped"
+    assert assignment.state == "released"
+    assert assignment.release_reason == "search_assignment_expired"
+    assert reservation.bound_count == 0
+    assert reservation.released_count == 1
+
+
+def test_assignment_release_uses_central_claim_lock_order(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    order: list[str] = []
+    _track_release_lock_order(monkeypatch, order)
+
+    release_search_click_assignment(
+        session,
+        "assignment-1",
+        trigger_key="release:lock-order",
+        reason_code="search_assignment_expired",
+        now_value=_now(),
+    )
+
+    assert order == [
+        "DispatchClaimScope",
+        "DispatchClaimWindow",
+        "DispatchClaimShardAllocation",
+        "DispatchClaimReservation",
+        "SearchClickOpportunityAssignment",
+    ]
+
+
+def _track_release_lock_order(
+    monkeypatch: pytest.MonkeyPatch,
+    order: list[str],
+) -> None:
+    original_scope = search_click_release_locking.locked_release_scope
+    original_row = search_click_release_locking.locked_release_row
+    original_assignment = search_click_release_locking.locked_assignment
+
+    def track_scope(current, scope_name):
+        order.append("DispatchClaimScope")
+        return original_scope(current, scope_name)
+
+    def track_row(current, model, row_id):
+        order.append(model.__name__)
+        return original_row(current, model, row_id)
+
+    def track_assignment(current, assignment_id):
+        order.append("SearchClickOpportunityAssignment")
+        return original_assignment(current, assignment_id)
+
+    monkeypatch.setattr(
+        search_click_release_locking,
+        "locked_release_scope",
+        track_scope,
+    )
+    monkeypatch.setattr(
+        search_click_release_locking,
+        "locked_release_row",
+        track_row,
+    )
+    monkeypatch.setattr(
+        search_click_release_locking,
+        "locked_assignment",
+        track_assignment,
+    )
+
+
+def test_prebound_account_policy_failure_releases_current_unit(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    action = session.get(Action, "action-1")
+    action.status = "claiming"
+    monkeypatch.setattr(
+        dispatcher,
+        "account_capacity_decision",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            available=False,
+            reason="账号全局冷却中",
+            defer_until=_now() + timedelta(minutes=5),
+        ),
+    )
+
+    assert not dispatcher._apply_claim_account_policy(session, action)
+
+    assignment = session.get(SearchClickOpportunityAssignment, "assignment-1")
+    reservation = session.get(DispatchClaimReservation, "reservation-1")
+    assert action.status == "skipped"
+    assert assignment.state == "released"
+    assert assignment.release_reason == "search_resource_saturated"
+    assert reservation.bound_count == 0
+    assert reservation.released_count == 1
+
+
+def test_invalid_prebound_action_never_falls_back_to_unbound_allocation(
+    session: Session,
+) -> None:
+    action = session.get(Action, "action-1")
+    action.result = {
+        **action.result,
+        "search_click_assignment_id": "missing-assignment",
+    }
+    plan = plan_prebound_search_claims(session, [action])
+
+    assert not plan.bindings_by_action_id
+    assert dispatch_reservations._unbound_actions([action], plan) == []
+
+
+def test_counter_conflict_keeps_prebound_identity_for_exact_release(
+    session: Session,
+) -> None:
+    action = session.get(Action, "action-1")
+    reservation = session.get(DispatchClaimReservation, "reservation-1")
+    reservation.bound_count = 0
+
+    plan = plan_prebound_search_claims(session, [action])
+
+    assert action.id in plan.bindings_by_action_id
+
+
+def test_prebound_integrity_conflict_releases_current_unit(
+    session: Session,
+) -> None:
+    action = session.get(Action, "action-1")
+    action.status = "claiming"
+    action.claim_owner = "worker-1"
+    action.claim_token = "token-1"
+    session.commit()
+    batch = dispatcher.ActionClaimBatch(
+        (action.id,),
+        "worker-1",
+        "token-1",
+        {},
+    )
+
+    dispatcher._release_conflicting_action_claim(
+        session,
+        batch,
+        action,
+    )
+
+    assignment = session.get(SearchClickOpportunityAssignment, "assignment-1")
+    assert action.status == "skipped"
+    assert assignment.state == "released"
+    assert assignment.release_reason == "search_reservation_cas_abandoned"
 
 
 def test_pre_gateway_release_is_idempotent_and_opens_one_rebuild_wave(
@@ -281,145 +455,3 @@ def test_complete_release_facts_realign_pre_gateway_state(
     assert reservation.bound_count == 0
     assert reservation.released_count == 1
     assert action.status == "skipped"
-
-
-def _seed_assignment(session: Session) -> None:
-    now_value = _now()
-    session.add(Tenant(id=1, name="tenant"))
-    session.add(TgAccount(
-        id=1,
-        tenant_id=1,
-        display_name="account",
-        phone_masked="+861***0001",
-        status="在线",
-    ))
-    target = OperationTarget(
-        id=1,
-        tenant_id=1,
-        target_type="group",
-        tg_peer_id="target_group",
-        username="target_group",
-        title="target",
-    )
-    session.add(target)
-    task = Task(
-        id="task-1",
-        tenant_id=1,
-        name="click",
-        type="search_click",
-        status="running",
-    )
-    session.add(task)
-    ledger = TaskDayLedger(
-        id="ledger-1",
-        tenant_id=1,
-        task_id=task.id,
-        timezone_snapshot="Asia/Shanghai",
-        timezone_revision=1,
-        obligation_local_date=now_value.date(),
-        period_start_at=now_value,
-        deadline_at=now_value + timedelta(days=1),
-        day_phase="full_day",
-        planning_anchor_at=now_value,
-    )
-    session.add(ledger)
-    obligation = SearchClickFulfillmentObligation(
-        id="obligation-1",
-        tenant_id=1,
-        task_day_ledger_id=ledger.id,
-        target_id=target.id,
-        click_obligation_ordinal=1,
-        status="action_bound",
-        source_action_id="action-1",
-    )
-    session.add(obligation)
-    _seed_dispatch_rows(session, now_value)
-    epoch = SearchClickAssignmentEpoch(
-        id="epoch-1",
-        dispatch_claim_window_id="window-1",
-        dispatch_allocation_epoch=1,
-        solver_owner_lease_id="worker-1",
-        solver_fencing_token="token-1",
-        solver_claimed_at=now_value,
-        solver_problem_hash="a" * 64,
-        solver_input_hash="b" * 64,
-        outcome="optimal",
-        finalize_status="finalized",
-    )
-    session.add(epoch)
-    action = Action(
-        id="action-1",
-        tenant_id=1,
-        task_id=task.id,
-        task_type="search_click",
-        action_type="search_join",
-        account_id=1,
-        status="pending",
-        scheduled_at=now_value,
-        payload={
-            "search_click_assignment_id": "assignment-1",
-            "search_click_obligation_id": obligation.id,
-        },
-        result={
-            "dispatch_prebound": True,
-            "search_click_assignment_id": "assignment-1",
-        },
-    )
-    session.add(action)
-    session.add(SearchClickOpportunityAssignment(
-        id="assignment-1",
-        tenant_id=1,
-        task_id=task.id,
-        task_day_ledger_id=ledger.id,
-        obligation_id=obligation.id,
-        search_click_assignment_epoch_id=epoch.id,
-        dispatch_claim_reservation_id="reservation-1",
-        fulfillment_lane_claim_ordinal=1,
-        account_id=1,
-        authorization_id=1,
-        keyword_hash="c" * 64,
-        proxy_route_id="proxy-1",
-        protocol_sample_version="v1",
-        resource_snapshot_hash="d" * 64,
-        action_id=action.id,
-        state="action_bound",
-    ))
-    session.commit()
-
-
-def _seed_dispatch_rows(session: Session, now_value) -> None:
-    session.add(DispatchClaimScope(
-        id="scope-1",
-        dispatcher_scope="task_center_dispatch",
-        claim_capacity=1,
-    ))
-    session.add(DispatchClaimWindow(
-        id="window-1",
-        dispatcher_scope="task_center_dispatch",
-        bucket_start=now_value - timedelta(seconds=1),
-        bucket_end=now_value + timedelta(minutes=1),
-        claim_capacity=1,
-        unclaimed_allocated_count=1,
-        allocation_epoch=1,
-        allocation_state="ready",
-    ))
-    session.add(DispatchClaimShardAllocation(
-        id="shard-1",
-        dispatch_claim_window_id="window-1",
-        dispatch_allocation_epoch=1,
-        account_shard_total=1,
-        account_shard_index=0,
-        unclaimed_allocated_count=1,
-    ))
-    session.add(DispatchClaimReservation(
-        id="reservation-1",
-        dispatch_claim_shard_allocation_id="shard-1",
-        dispatch_allocation_epoch=1,
-        tenant_id=1,
-        task_id="task-1",
-        claim_class="search_join",
-        bucket_start=now_value,
-        required_claims=1,
-        reserved_claims=1,
-        bound_count=1,
-    ))

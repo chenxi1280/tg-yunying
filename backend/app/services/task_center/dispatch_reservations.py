@@ -58,17 +58,41 @@ def plan_dispatch_claims(
     if not actions:
         return DispatchClaimPlan((), {})
     prebound = plan_prebound_search_claims(session, actions)
-    remaining = [
-        action
-        for action in actions
-        if action.id not in prebound.bindings_by_action_id
-    ]
+    remaining = _unbound_actions(actions, prebound)
     if not remaining:
         return prebound
     tasks = tasks_by_id(session, remaining)
     demands = build_demands(remaining, tasks, shard_total, now)
     if not demands:
         return DispatchClaimPlan((), {})
+    scope, window, all_allocations = _prepare_dispatch_window(
+        session,
+        actions,
+        demands,
+        settings=settings,
+        now=now,
+    )
+    reservations = window_reservations(session, window.id)
+    allocated = plan_from_reservations(
+        tasks,
+        demands,
+        reservations,
+        window,
+        shard_total,
+        shard_index,
+        fairness_decisions,
+    )
+    return _combine_claim_plans(prebound, allocated)
+
+
+def _prepare_dispatch_window(
+    session: Session,
+    actions: list[Action],
+    demands,
+    *,
+    settings,
+    now: datetime,
+):
     scope_name = dispatcher_scope(settings)
     capacity = dispatcher_claim_capacity(settings, len(actions))
     scope = scope_for_update(session, scope_name, capacity)
@@ -81,25 +105,37 @@ def plan_dispatch_claims(
         - int(scope.active_claim_count),
     )
     all_allocations = window_allocations(session, window.id)
-    active_release_count = reconcile_window_active(
-        window,
-        all_allocations,
-        active_actions,
-    )
-    allocations = current_window_allocations(session, window)
-    reservations = window_reservations(session, window.id)
-    released_count = reconcile_window_unclaimed(
+    released_count, reservations = _reconciled_release_count(
         session,
-        window,
-        allocations=allocations,
-        reservations=reservations,
+        window=window,
+        all_allocations=all_allocations,
+        active_actions=active_actions,
         now=now,
     )
-    released_count += active_release_count
     released_count += scope_release_count
-    released_count += int(window.pending_rebuild_release_count or 0)
     if window.unclaimed_allocated_count > 0 and reservations:
         released_count = 0
+    _request_rebuild_if_needed(
+        scope=scope,
+        window=window,
+        demands=demands,
+        reservations=reservations,
+        released_count=released_count,
+    )
+    sync_window_capacity(window, capacity)
+    if window.allocation_state != "ready":
+        allocate_window(session, scope, window, all_allocations, demands)
+    return scope, window, all_allocations
+
+
+def _request_rebuild_if_needed(
+    *,
+    scope,
+    window,
+    demands,
+    reservations,
+    released_count: int,
+) -> None:
     demand_hash = dispatch_demand_hash(demands)
     demand_without_reservation = any(
         reservation_available(reservations.get(demand.key)) <= 0
@@ -122,20 +158,45 @@ def plan_dispatch_claims(
             ),
             input_changed=input_changed,
         )
-    sync_window_capacity(window, capacity)
-    if window.allocation_state != "ready":
-        allocate_window(session, scope, window, all_allocations, demands)
-    reservations = window_reservations(session, window.id)
-    allocated = plan_from_reservations(
-        tasks,
-        demands,
-        reservations,
+
+
+def _reconciled_release_count(
+    session: Session,
+    *,
+    window,
+    all_allocations,
+    active_actions,
+    now: datetime,
+):
+    active_release_count = reconcile_window_active(
         window,
-        shard_total,
-        shard_index,
-        fairness_decisions,
+        all_allocations,
+        active_actions,
     )
-    return _combine_claim_plans(prebound, allocated)
+    allocations = current_window_allocations(session, window)
+    reservations = window_reservations(session, window.id)
+    released_count = reconcile_window_unclaimed(
+        session,
+        window,
+        allocations=allocations,
+        reservations=reservations,
+        now=now,
+    )
+    released_count += active_release_count
+    released_count += int(window.pending_rebuild_release_count or 0)
+    return released_count, reservations
+
+
+def _unbound_actions(
+    actions: list[Action],
+    prebound: DispatchClaimPlan,
+) -> list[Action]:
+    return [
+        action
+        for action in actions
+        if action.id not in prebound.bindings_by_action_id
+        and not (action.result or {}).get("dispatch_prebound")
+    ]
 
 
 def _input_change_requires_rebuild(
