@@ -215,6 +215,19 @@ def _reaction_fact(
     payload,
     action: Action,
 ) -> ReactionRemoteFact | None:
+    pending = next(
+        (
+            fact
+            for fact in session.new
+            if isinstance(fact, ReactionRemoteFact)
+            and fact.target_peer_id == payload.channel_id
+            and fact.channel_message_id == payload.channel_message_id
+            and fact.account_id == action.account_id
+        ),
+        None,
+    )
+    if pending is not None:
+        return pending
     return session.scalar(
         select(ReactionRemoteFact).where(
             ReactionRemoteFact.target_peer_id == payload.channel_id,
@@ -225,6 +238,19 @@ def _reaction_fact(
 
 
 def _view_fact(session: Session, payload, action: Action) -> ViewRemoteFact | None:
+    pending = next(
+        (
+            fact
+            for fact in session.new
+            if isinstance(fact, ViewRemoteFact)
+            and fact.target_peer_id == payload.channel_id
+            and fact.channel_message_id == payload.channel_message_id
+            and fact.account_id == action.account_id
+        ),
+        None,
+    )
+    if pending is not None:
+        return pending
     return session.scalar(
         select(ViewRemoteFact).where(
             ViewRemoteFact.target_peer_id == payload.channel_id,
