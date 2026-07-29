@@ -522,6 +522,9 @@ def _load_daily_coverage_plan_accounts(
     _record_direct_check_in_capacity(task, len(selected))
     if selected:
         return AccountPlanState(selected)
+    if facts.coverage.required_new <= 0:
+        _mark_daily_target_pacing(task)
+        return PlanAbort()
     _mark_account_shortage(session, task, facts)
     return PlanAbort()
 
@@ -734,10 +737,7 @@ def _load_turn_plan(
         ),
     )
     if not selected or turn_count <= 0:
-        stats = dict(task.stats or {})
-        stats["skip_reason"] = "daily_target_pacing"
-        task.stats = stats
-        task.last_error = "群日目标按计划推进中，等待下一发送时点"
+        _mark_daily_target_pacing(task)
         return PlanAbort()
     deferred = _daily_coverage_generation_is_deferred(
         session,
@@ -762,6 +762,13 @@ def _load_turn_plan(
     selected = selected[: max(1, min(len(selected), turn_count))]
     history = _context_plan_history(facts, context)
     return TurnPlanState(cycle_index, round_config, selected, turn_count, history)
+
+
+def _mark_daily_target_pacing(task: Task) -> None:
+    stats = dict(task.stats or {})
+    stats["skip_reason"] = "daily_target_pacing"
+    task.stats = stats
+    task.last_error = "群日目标按计划推进中，等待下一发送时点"
 
 
 def _turn_daily_uncovered_count(
@@ -1902,7 +1909,6 @@ def _reply_targets_for_plan(
         stats_inc(task, "reply_target_shortfall_count")
         if daily_coverage_debt:
             stats_inc(task, "coverage_reply_shortfall_cycle_count")
-            return []
         task.last_error = "可引用消息不足，等待监听到可回复消息后继续执行"
         return None
     return reply_target_pool[:reply_min]

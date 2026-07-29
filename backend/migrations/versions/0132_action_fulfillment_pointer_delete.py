@@ -43,6 +43,19 @@ def upgrade() -> None:
         ["id"],
         ondelete="SET NULL",
     )
+    op.drop_constraint(
+        "content_mix_obligations_assigned_cycle_slot_id_fkey",
+        "content_mix_obligations",
+        type_="foreignkey",
+    )
+    op.create_foreign_key(
+        "content_mix_obligations_assigned_cycle_slot_id_fkey",
+        "content_mix_obligations",
+        "content_mix_cycle_slots",
+        ["assigned_cycle_slot_id"],
+        ["id"],
+        ondelete="SET NULL",
+    )
 
 
 def downgrade() -> None:

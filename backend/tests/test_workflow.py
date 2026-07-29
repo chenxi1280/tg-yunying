@@ -4055,13 +4055,14 @@ def test_task_center_group_ai_chat_runs_from_worker_loop(monkeypatch):
 
 def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(monkeypatch):
     context_suffix = uuid4().hex[:8]
+    context_message_id = int(uuid4().int % 1_000_000_000) + 1
     second_context_marker = f"second-cycle-{context_suffix}"
     monkeypatch.setattr(
         "app.services.task_center.executors.group_ai_chat.daily_group_due_message_count",
         lambda target, _pacing, **_kwargs: target.effective_message_target,
     )
     messages = [
-        (f"ai-context-1-{context_suffix}", f"第一条真人上下文 {context_suffix}"),
+        (str(context_message_id), f"第一条真人上下文 {context_suffix}"),
     ]
     sends: list[str] = []
 
@@ -4101,6 +4102,10 @@ def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(monkeypatch):
 
     monkeypatch.setattr("app.services.group_listeners.gateway.fetch_group_messages", fake_fetch_group_messages)
     monkeypatch.setattr("app.services.task_center.ai_generator.ai_gateway.generate_drafts", fake_generate_drafts)
+    monkeypatch.setattr(
+        "app.services.task_center.ai_generation_dispatch._validate_remote_reply_target",
+        lambda *_args, **_kwargs: None,
+    )
     monkeypatch.setattr(
         "app.services.task_center.dispatcher.gateway.send_message",
         lambda *args, **kwargs: sends.append(args[2]) or SendResult(True, remote_message_id=f"ai-continuous-{len(sends)}"),
@@ -4157,9 +4162,16 @@ def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(monkeypatch):
         task_id = created.json()["id"]
 
         from app.services.task_center.service import drain_task_center
+        from app.services.group_listeners import collect_group_context
 
         drain_task_center(SessionLocal, 10)
         mark_group_bot_admission_ready(group["id"], account["id"])
+        with SessionLocal() as session:
+            db_group = session.get(TgGroup, group["id"])
+            assert db_group is not None
+            collect_group_context(session, db_group, [account["id"]])
+            session.commit()
+        drain_task_center(SessionLocal, 10)
         if not sends:
             assert make_task_send_actions_due(task_id) >= 1
             assert dispatch_pending_task_actions(task_id) >= 1
@@ -4184,8 +4196,7 @@ def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(monkeypatch):
             "sends": sends,
         }
 
-        messages.append((f"ai-context-2-{context_suffix}", f"第二条真人上下文 {context_suffix}"))
-        from app.services.group_listeners import collect_group_context
+        messages.append((str(context_message_id + 1), f"第二条真人上下文 {context_suffix}"))
         from app.services.task_center.listener_runtime import _mark_listener_runtime_success
 
         with SessionLocal() as session:
@@ -5763,7 +5774,7 @@ def test_task_center_common_patch_rejects_type_config_and_typed_patch_checks_tas
                 "target_group_id": group["id"],
             },
         )
-        assert task.status_code == 200, task.text
+        assert task.status_code == 201, task.text
         task_id = task.json()["id"]
 
         generic = client.patch(f"/api/tasks/{task_id}", headers=headers, json={"type_config": {"target_likes_per_message": 1}})

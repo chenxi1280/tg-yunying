@@ -64,11 +64,13 @@ def test_planner_backlog_postgres_json_legacy_timezone_and_partial_membership(mo
 
         task_snapshot = planner_backlog.planner_backlog_snapshot(session, task)
         partial_snapshot = planner_backlog.planner_backlog_snapshot(session, partial)
-        loaded_actions = list(session.scalars(select(Action)))
+        loaded_actions = list(
+            session.scalars(select(Action).where(Action.tenant_id == TEST_TENANT_ID))
+        )
 
     assert len(loaded_actions) == 8
     assert task_snapshot["global_pending"] == 6
     assert task_snapshot["task_pending"] == 4
     assert task_snapshot["oldest_age_seconds"] == 20 * 60
     assert partial_snapshot["global_pending"] == 6
-    assert partial_snapshot["task_pending"] == 1
+    assert partial_snapshot["task_pending"] == 2

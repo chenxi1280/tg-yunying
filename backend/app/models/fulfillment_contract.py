@@ -232,7 +232,11 @@ class ContentMixObligation(Base):
     obligation_kind: Mapped[str] = mapped_column(String(32))
     obligation_ordinal: Mapped[int] = mapped_column(Integer)
     assigned_cycle_slot_id: Mapped[str | None] = mapped_column(
-        ForeignKey("content_mix_cycle_slots.id"),
+        ForeignKey(
+            "content_mix_cycle_slots.id",
+            ondelete="SET NULL",
+            name="content_mix_obligations_assigned_cycle_slot_id_fkey",
+        ),
         nullable=True,
     )
     assigned_action_id: Mapped[str | None] = mapped_column(

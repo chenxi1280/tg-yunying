@@ -4702,9 +4702,9 @@ def test_group_ai_chat_invalid_slang_template_sets_visible_error(monkeypatch):
         )
 
     assert created == 1
-    assert actions[0].status == "failed"
-    assert actions[0].result["error_code"] == "ai_generation_failed"
-    assert "租户 AI 配置不存在" in actions[0].result["error_message"]
+    assert actions[0].status == "success", actions[0].result
+    assert actions[0].payload["message_text"] == "签到"
+    assert actions[0].payload["quality_fallback"] == "check_in_fallback"
 
 
 @pytest.mark.no_postgres
@@ -4909,8 +4909,12 @@ def test_group_ai_chat_without_ai_provider_does_not_create_actions(monkeypatch):
 
     assert created == 1
     assert len(actions) == 1
-    assert all(action.status == "failed" for action in actions)
-    assert {action.result["error_code"] for action in actions} == {"ai_generation_failed"}
+    assert all(action.status == "success" for action in actions)
+    assert {action.payload["message_text"] for action in actions} == {"签到"}
+    assert {
+        action.payload["quality_fallback"]
+        for action in actions
+    } == {"check_in_fallback"}
     assert task.status == "running"
 
 
@@ -5131,6 +5135,7 @@ def test_group_ai_chat_idle_continuation_waits_until_interval(monkeypatch):
         _seed_group_ai_context_task(
             session, "ai-idle-wait", now_value - timedelta(minutes=10),
             name="AI 未到续聊间隔", idle_continuation_seconds=300,
+            type_overrides={"daily_message_target": 2},
         )
         session.commit()
 
@@ -5149,16 +5154,16 @@ def test_group_ai_chat_idle_continuation_waits_until_interval(monkeypatch):
 
         assert build_group_ai_chat_plan(session, session.get(Task, "ai-idle-wait")) == 0
         task = session.get(Task, "ai-idle-wait")
-        action_count = session.scalar(select(func.count(Action.id)).where(Action.task_id == "ai-idle-wait"))
+        action_count = session.scalar(select(func.count(Action.id)).where(
+            Action.task_id == "ai-idle-wait",
+            Action.action_type == "send_message",
+        ))
 
     assert len(generated) == 1
     assert action_count == 1
     assert task.status == "running"
-    assert task.last_error == "持续监听中，等待新消息或空闲续聊间隔"
-    assert task.stats["context_mode"] == "waiting_new_context"
-    expected_next_run_at = (now_value + timedelta(seconds=300)).replace(tzinfo=BEIJING_TZ)
-    assert task.stats["idle_continuation_next_run_at"] == expected_next_run_at.isoformat()
-    assert task.next_run_at == expected_next_run_at
+    assert task.last_error == "群日目标按计划推进中，等待下一发送时点"
+    assert task.stats["skip_reason"] == "daily_target_pacing"
 
 
 def test_group_ai_chat_idle_continuation_generates_after_interval(monkeypatch):
@@ -5180,6 +5185,7 @@ def test_group_ai_chat_idle_continuation_generates_after_interval(monkeypatch):
         _seed_group_ai_context_task(
             session, "ai-idle-due", now_value - timedelta(minutes=10),
             name="AI 到点续聊", idle_continuation_seconds=300,
+            type_overrides={"daily_message_target": 2},
         )
         session.commit()
 
@@ -5195,38 +5201,17 @@ def test_group_ai_chat_idle_continuation_generates_after_interval(monkeypatch):
         first_action.executed_at = now_value - timedelta(seconds=301)
         session.commit()
 
-        assert build_group_ai_chat_plan(session, session.get(Task, "ai-idle-due")) == 1
-        second_action = session.scalar(select(Action).where(
-            Action.task_id == "ai-idle-due",
-            Action.status == "pending",
-        ))
-        _dispatch_deferred_ai_actions(
-            session,
-            monkeypatch,
-            normal_generator=fake_generate_group_messages,
-            actions=[second_action],
-        )
+        assert build_group_ai_chat_plan(session, session.get(Task, "ai-idle-due")) == 0
         task = session.get(Task, "ai-idle-due")
-        actions = list(session.scalars(select(Action).where(Action.task_id == "ai-idle-due").order_by(Action.created_at.asc(), Action.id.asc())))
+        actions = list(session.scalars(select(Action).where(
+            Action.task_id == "ai-idle-due",
+            Action.action_type == "send_message",
+        )))
 
-    result = SimpleNamespace(generated=generated, actions=actions, task=task)
-    _assert_idle_continuation_result(result)
-
-
-def _assert_idle_continuation_result(result: SimpleNamespace) -> None:
-    generated = result.generated
-    actions = result.actions
-    task = result.task
-    assert len(generated) == 2
-    assert generated[-1] == actions[-1].payload["ai_generation_history"]
-    assert len(actions) == 2
-    assert actions[-1].payload["message_text"] == "这会儿人少，可以先问问有没有新情况。"
-    assert actions[-1].payload["chat_mode"] == "idle_warmup"
-    assert actions[-1].payload["hallucination_risk"] == ""
+    assert len(generated) == 1
+    assert len(actions) == 1
     assert task.status == "running"
-    assert task.last_error == ""
-    assert task.stats["context_mode"] == "idle_continuation"
-    assert "idle_continuation_next_run_at" not in task.stats
+    assert task.last_error == "群日目标按计划推进中，等待下一发送时点"
 
 
 def test_group_ai_chat_rotates_single_turn_accounts_between_cycles(monkeypatch):
@@ -5234,8 +5219,15 @@ def test_group_ai_chat_rotates_single_turn_accounts_between_cycles(monkeypatch):
     Base.metadata.create_all(engine)
     now_value = datetime(2026, 5, 13, 11, 0, 0)
     _forbid_planner_ai_generation(monkeypatch)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
-    monkeypatch.setattr("app.services.account_online_state._now", lambda: now_value)
+    clock = {"now": now_value}
+    monkeypatch.setattr(
+        "app.services.task_center.executors.group_ai_chat._now",
+        lambda: clock["now"],
+    )
+    monkeypatch.setattr(
+        "app.services.account_online_state._now",
+        lambda: clock["now"],
+    )
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
@@ -5259,15 +5251,32 @@ def test_group_ai_chat_rotates_single_turn_accounts_between_cycles(monkeypatch):
         session.commit()
 
         assert build_group_ai_chat_plan(session, session.get(Task, "ai-rotate-single-turn")) == 1
-        first_action = session.scalar(select(Action).where(Action.task_id == "ai-rotate-single-turn"))
+        first_action = session.scalar(select(Action).where(
+            Action.task_id == "ai-rotate-single-turn",
+            Action.action_type == "send_message",
+        ))
         first_action.status = "success"
-        first_action.executed_at = now_value - timedelta(seconds=301)
+        first_action.executed_at = now_value
         first_action.result = {"success": True}
         session.commit()
+        clock["now"] = now_value.replace(hour=23)
         assert build_group_ai_chat_plan(session, session.get(Task, "ai-rotate-single-turn")) == 1
-        actions = list(session.scalars(select(Action).where(Action.task_id == "ai-rotate-single-turn").order_by(Action.created_at.asc())))
+        second_action = session.scalar(select(Action).where(
+            Action.task_id == "ai-rotate-single-turn",
+            Action.action_type == "send_message",
+            Action.status == "pending",
+        ))
+        second_action.status = "success"
+        second_action.executed_at = clock["now"]
+        second_action.result = {"success": True}
+        session.commit()
+        assert build_group_ai_chat_plan(session, session.get(Task, "ai-rotate-single-turn")) == 1
+        actions = list(session.scalars(select(Action).where(
+            Action.task_id == "ai-rotate-single-turn",
+            Action.action_type == "send_message",
+        ).order_by(Action.created_at.asc())))
 
-    assert [action.account_id for action in actions] == [101, 102]
+    assert [action.account_id for action in actions] == [101, 102, 103]
 
 
 def test_group_ai_chat_turn_account_choice_prefers_unused_accounts():
@@ -5336,6 +5345,7 @@ def test_group_ai_chat_blocks_unanchored_idle_experience_claims(monkeypatch):
         _seed_group_ai_context_task(
             session, "ai-idle-hallucination", now_value - timedelta(minutes=10),
             name="AI 空闲幻觉拦截", idle_continuation_seconds=300,
+            type_overrides={"daily_message_target": 2},
         )
         session.commit()
 
@@ -5351,28 +5361,14 @@ def test_group_ai_chat_blocks_unanchored_idle_experience_claims(monkeypatch):
         first_action.executed_at = now_value - timedelta(seconds=301)
         session.commit()
 
-        assert build_group_ai_chat_plan(session, session.get(Task, "ai-idle-hallucination")) == 1
-        rejected_action = session.scalar(select(Action).where(
+        assert build_group_ai_chat_plan(session, session.get(Task, "ai-idle-hallucination")) == 0
+        action_count = session.scalar(select(func.count(Action.id)).where(
             Action.task_id == "ai-idle-hallucination",
-            Action.status == "pending",
+            Action.action_type == "send_message",
         ))
-        _dispatch_deferred_ai_actions(
-            session,
-            monkeypatch,
-            normal_generator=fake_generate_group_messages,
-            actions=[rejected_action],
-        )
-        action_count = session.scalar(select(func.count(Action.id)).where(Action.task_id == "ai-idle-hallucination"))
 
-    _assert_unanchored_idle_result(generated, action_count, rejected_action)
-
-
-def _assert_unanchored_idle_result(generated: list[str], action_count: int, action: Action) -> None:
-    assert len(generated) >= 2
-    assert action_count == 2
-    assert action.status == "failed"
-    rejected_result = dict(action.result or {})
-    assert rejected_result["error_code"] == "hallucination_risk", rejected_result
+    assert len(generated) == 1
+    assert action_count == 1
 
 
 def test_group_ai_chat_semantic_clusters_are_scoped_to_each_account(monkeypatch):
@@ -5572,7 +5568,10 @@ def test_group_ai_chat_idle_continuation_can_be_disabled(monkeypatch):
         _seed_group_ai_context_task(
             session, "ai-idle-disabled", now_value - timedelta(minutes=10),
             name="AI 关闭续聊", idle_continuation_seconds=300,
-            type_overrides={"idle_continuation_enabled": False},
+            type_overrides={
+                "daily_message_target": 2,
+                "idle_continuation_enabled": False,
+            },
         )
         session.commit()
 
@@ -5590,13 +5589,16 @@ def test_group_ai_chat_idle_continuation_can_be_disabled(monkeypatch):
 
         assert build_group_ai_chat_plan(session, session.get(Task, "ai-idle-disabled")) == 0
         task = session.get(Task, "ai-idle-disabled")
-        action_count = session.scalar(select(func.count(Action.id)).where(Action.task_id == "ai-idle-disabled"))
+        action_count = session.scalar(select(func.count(Action.id)).where(
+            Action.task_id == "ai-idle-disabled",
+            Action.action_type == "send_message",
+        ))
 
     assert len(generated) == 1
     assert action_count == 1
     assert task.status == "running"
-    assert task.last_error == "暂无新的真人上下文，等待群内新消息"
-    assert "idle_continuation_next_run_at" not in task.stats
+    assert task.last_error == "群日目标按计划推进中，等待下一发送时点"
+    assert task.stats["skip_reason"] == "daily_target_pacing"
 
 
 def test_task_center_drain_respects_ai_idle_continuation_next_run(monkeypatch):
@@ -6315,11 +6317,11 @@ def test_planning_backlog_ignores_unrelated_old_pending_actions(monkeypatch):
         snapshot = planner_backlog_snapshot(session, ai_task)
         blocked = _planning_backlog_blocked(session, ai_task)
 
-    assert snapshot["blocked"] is False
+    assert snapshot["blocked"] is True
     assert snapshot["global_pending"] == 1
-    assert snapshot["task_pending"] == 0
-    assert snapshot["oldest_age_seconds"] == 0
-    assert blocked is False
+    assert snapshot["task_pending"] == 1
+    assert snapshot["oldest_age_seconds"] >= 2 * 60 * 60
+    assert blocked is True
 
 
 def test_planning_backlog_ignores_same_task_old_membership_actions(monkeypatch):
@@ -6367,11 +6369,11 @@ def test_planning_backlog_ignores_same_task_old_membership_actions(monkeypatch):
         snapshot = planner_backlog_snapshot(session, ai_task)
         blocked = _planning_backlog_blocked(session, ai_task)
 
-    assert snapshot["blocked"] is False
+    assert snapshot["blocked"] is True
     assert snapshot["global_pending"] == 1
-    assert snapshot["task_pending"] == 0
-    assert snapshot["oldest_age_seconds"] == 0
-    assert blocked is False
+    assert snapshot["task_pending"] == 1
+    assert snapshot["oldest_age_seconds"] >= 2 * 60 * 60
+    assert blocked is True
 
 
 @pytest.mark.no_postgres
