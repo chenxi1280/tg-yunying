@@ -14,6 +14,7 @@ from app.models import (
     CommentFulfillmentObligation,
     ExecutionAttempt,
     OperationTarget,
+    ReactionFulfillmentObligation,
     ReactionRemoteFact,
     SearchClickFulfillmentObligation,
     Task,
@@ -385,6 +386,88 @@ def test_running_like_and_view_actions_are_bound_during_takeover(
     view_obligation = session.scalar(select(ViewFulfillmentObligation))
     assert view_obligation is not None
     assert view_obligation.current_action_id == view_action.id
+
+
+def test_like_takeover_does_not_preserve_legacy_sibling_closure(
+    session: Session,
+) -> None:
+    now_value = _now()
+    channel = OperationTarget(
+        id=41,
+        tenant_id=1,
+        target_type="channel",
+        tg_peer_id="-10041",
+        title="频道",
+    )
+    message = ChannelMessage(
+        id=51,
+        tenant_id=1,
+        channel_target_id=channel.id,
+        message_id=901,
+    )
+    task = Task(
+        id="legacy-like-task",
+        tenant_id=1,
+        name="历史点赞",
+        type="channel_like",
+        status="running",
+    )
+    actions = [
+        Action(
+            id="like-unavailable",
+            tenant_id=1,
+            task_id=task.id,
+            task_type=task.type,
+            action_type="like_message",
+            account_id=101,
+            status="skipped",
+            scheduled_at=now_value,
+            payload={
+                "channel_id": channel.tg_peer_id,
+                "channel_target_id": channel.id,
+                "channel_message_id": message.id,
+                "message_id": message.message_id,
+                "reaction_emoji": "👍",
+            },
+            result={
+                "error_code": "reaction_unavailable_message",
+                "error_message": "该账号不可点赞",
+            },
+        ),
+        Action(
+            id="like-legacy-sibling",
+            tenant_id=1,
+            task_id=task.id,
+            task_type=task.type,
+            action_type="like_message",
+            account_id=102,
+            status="skipped",
+            scheduled_at=now_value,
+            payload={
+                "channel_id": channel.tg_peer_id,
+                "channel_target_id": channel.id,
+                "channel_message_id": message.id,
+                "message_id": message.message_id,
+                "reaction_emoji": "👍",
+            },
+            result={"error_code": "reaction_unavailable_sibling"},
+        ),
+    ]
+    session.add_all([channel, message, task, *actions])
+    session.flush()
+
+    takeover_task(session, task, now=now_value)
+    session.flush()
+
+    obligations = session.scalars(
+        select(ReactionFulfillmentObligation).where(
+            ReactionFulfillmentObligation.task_id == task.id
+        )
+    ).all()
+    assert [(item.account_id, item.status) for item in obligations] == [
+        (101, "unavailable")
+    ]
+    assert "reaction_unavailable_message_ids" not in task.stats
 
 
 def test_running_comment_actions_are_migrated_to_remote_fact_obligations(

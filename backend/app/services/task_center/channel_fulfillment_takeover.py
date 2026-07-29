@@ -36,9 +36,7 @@ MIGRATABLE_ACTION_STATUSES = frozenset(
         "unknown_after_send",
     }
 )
-REACTION_UNAVAILABLE_CODES = frozenset(
-    {"reaction_unavailable_message", "reaction_unavailable_sibling"}
-)
+REACTION_UNAVAILABLE_CODES = frozenset({"reaction_unavailable_message"})
 
 
 @dataclass(frozen=True)
@@ -98,7 +96,7 @@ def _migrate_like_action(
     payload = LikeMessagePayload(**(action.payload or {}))
     message = _message(session, task, action, payload.channel_message_id)
     if action.status == "skipped":
-        _record_reaction_unavailable(task, action, message.id)
+        _record_reaction_unavailable(task, action)
     existing_fact = _reaction_fact(session, payload, action)
     if existing_fact is not None:
         existing_obligation = session.get(
@@ -282,16 +280,7 @@ def _migratable_statuses(task_type: str) -> frozenset[str]:
 def _record_reaction_unavailable(
     task: Task,
     action: Action,
-    channel_message_id: int,
 ) -> None:
-    stats = dict(task.stats or {})
-    unavailable_ids = {
-        int(value)
-        for value in stats.get("reaction_unavailable_message_ids", [])
-    }
-    unavailable_ids.add(channel_message_id)
-    stats["reaction_unavailable_message_ids"] = sorted(unavailable_ids)
-    task.stats = stats
     task.last_error = str(
         (action.result or {}).get("error_message")
         or "频道消息当前不可点赞"
