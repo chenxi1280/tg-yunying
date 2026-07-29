@@ -42,7 +42,7 @@ pytestmark = pytest.mark.no_postgres
 def session() -> Session:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
-    with Session(engine) as db:
+    with Session(engine, autoflush=False) as db:
         seed_assignment(db)
         yield db
 

@@ -110,6 +110,7 @@ def _release_search_click_assignment(
     if classification == "released":
         _apply_release(session, batch, assignment=assignment,
                        reason_code=reason_code, now_value=now_value)
+    session.flush()
     batch.release_unit_set_hash = _release_hash(
         session,
         assignment,
