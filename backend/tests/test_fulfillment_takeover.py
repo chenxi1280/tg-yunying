@@ -188,6 +188,53 @@ def test_partially_stamped_legacy_search_still_retires_old_source(
     )
 
 
+def test_stamped_search_retires_unbound_failed_gateway_action(
+    session: Session,
+) -> None:
+    now_value = _now()
+    task = Task(
+        id="stamped-search-with-legacy-retry",
+        tenant_id=1,
+        name="已接管纯搜索",
+        type="search_click",
+        status="paused",
+        stats={"fulfillment_contract_version": FULFILLMENT_CONTRACT_VERSION},
+        type_config={
+            "daily_click_target_count": 1,
+            "target_operation_target_id": 31,
+        },
+    )
+    action = Action(
+        id="legacy-retry-source",
+        tenant_id=1,
+        task_id=task.id,
+        task_type=task.type,
+        action_type="search_join",
+        status="pending",
+        payload={},
+    )
+    session.add_all([task, action])
+    session.flush()
+    session.add(ExecutionAttempt(
+        tenant_id=1,
+        action_id=action.id,
+        attempt_no=2,
+        status="failed",
+        gateway_call_started_at=now_value - timedelta(seconds=2),
+        after_call_at=now_value,
+        failure_detail="remote failed",
+    ))
+    session.flush()
+
+    result = takeover_task(session, task, now=now_value)
+
+    assert result.changed is True
+    assert action.status == "failed"
+    assert action.result["error_code"] == "legacy_action_retired_after_gateway_failed"
+    assert action.claim_owner == ""
+    assert action.claim_token == ""
+
+
 def test_task_gate_limits_are_normalized_without_starting_paused_tasks(
     session: Session,
 ) -> None:
@@ -279,6 +326,11 @@ def test_ai_takeover_removes_retired_quantity_and_hour_gates(
         stats={
             "hard_hourly_deficit": 9,
             "hard_hourly_last_blockers": {"account_capacity": 3},
+            "coverage_capacity_status": "blocked",
+            "coverage_capacity_proof": {
+                "blocker_code": "daily_coverage_capacity_insufficient",
+            },
+            "sendable_coverage_capacity_proof": {"sufficient": False},
         },
     )
     old_action = Action(
@@ -317,10 +369,16 @@ def test_ai_takeover_removes_retired_quantity_and_hour_gates(
     assert task.pacing_config["max_actions_per_hour"] == UNIFIED_TASK_GATE_LIMIT
     assert "hard_hourly_deficit" not in task.stats
     assert "hard_hourly_last_blockers" not in task.stats
+    assert "coverage_capacity_status" not in task.stats
+    assert "coverage_capacity_proof" not in task.stats
+    assert "sendable_coverage_capacity_proof" not in task.stats
     assert task.hard_hourly_next_check_at is None
     assert old_action.status == "skipped"
     assert old_action.result["error_code"] == "legacy_action_retired_by_fulfillment_takeover"
-    assert started_action.status == "executing"
+    assert started_action.status == "unknown_after_send"
+    assert started_action.result["error_code"] == (
+        "legacy_action_retired_after_gateway_unknown"
+    )
 
 
 def test_running_like_and_view_actions_are_bound_during_takeover(
