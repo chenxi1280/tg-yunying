@@ -12,7 +12,10 @@ from app.services._common import _now
 from .config_fields import CHANNEL_DYNAMIC_TASK_TYPES
 from .daily_group_target import daily_group_due_message_count, ensure_task_group_daily_target
 from .datetime_compat import parse_zone, to_zone
-from .fulfillment_takeover import FULFILLMENT_TASK_TYPES
+from .fulfillment_takeover import (
+    FULFILLMENT_CONTRACT_VERSION,
+    FULFILLMENT_TASK_TYPES,
+)
 from .hard_hourly import enabled as hard_hourly_enabled, hard_hourly_stats
 from .pacing import (
     ai_next_run_after,
@@ -378,6 +381,8 @@ def retry_failed_actions(session: Session, task: Task, *, limit: int = 100) -> i
         Action.retry_count < max_retries,
     ).order_by(Action.scheduled_at.asc(), Action.id.asc()).limit(max(1, int(limit)))
     for action in session.scalars(query):
+        if _is_unbound_legacy_fulfillment_action(task, action):
+            continue
         previous_result = dict(action.result or {})
         if _is_terminal_ai_quality_failure(action, previous_result):
             continue
@@ -404,6 +409,20 @@ def retry_failed_actions(session: Session, task: Task, *, limit: int = 100) -> i
         }
         count += 1
     return count
+
+
+def _is_unbound_legacy_fulfillment_action(task: Task, action: Action) -> bool:
+    if (
+        (task.stats or {}).get("fulfillment_contract_version")
+        != FULFILLMENT_CONTRACT_VERSION
+    ):
+        return False
+    if task.type == "group_ai_chat" and action.action_type == "send_message":
+        return not action.primary_quantity_slot_id
+    if task.type != "search_click" or action.action_type != "search_join":
+        return False
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    return not str(payload.get("search_click_obligation_id") or "")
 
 
 def _is_terminal_ai_quality_failure(action: Action, previous_result: dict[str, Any]) -> bool:
