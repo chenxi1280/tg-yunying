@@ -38,10 +38,17 @@ from .dispatch_claim_ledger import (
 )
 from .dispatch_claim_reconciliation import reconcile_window_unclaimed
 from .dispatch_claim_selection import build_demands, plan_from_reservations, tasks_by_id
-from .dispatch_claim_types import DispatchClaimBinding, DispatchClaimPlan
+from .dispatch_claim_types import (
+    DispatchClaimBinding,
+    DispatchClaimDemand,
+    DispatchClaimPlan,
+)
 from .prebound_search_claim import (
     confirm_prebound_search_claim,
     plan_prebound_search_claims,
+)
+from .search_click_dispatch_allocation import (
+    open_search_click_dispatch_demands,
 )
 
 
@@ -98,6 +105,7 @@ def _prepare_dispatch_window(
     settings,
     now: datetime,
 ):
+    demands = _scope_demands(session, demands, now)
     scope_name = dispatcher_scope(settings)
     capacity = dispatcher_claim_capacity(settings, len(actions))
     scope = scope_for_update(session, scope_name, capacity)
@@ -131,6 +139,19 @@ def _prepare_dispatch_window(
     if window.allocation_state != "ready":
         allocate_window(session, scope, window, all_allocations, demands)
     return scope, window, all_allocations
+
+
+def _scope_demands(
+    session: Session,
+    demands: list[DispatchClaimDemand],
+    now: datetime,
+) -> list[DispatchClaimDemand]:
+    search_demands = open_search_click_dispatch_demands(session, now)
+    search_keys = {demand.key for demand in search_demands}
+    return [
+        demand for demand in demands
+        if demand.key not in search_keys
+    ] + search_demands
 
 
 def _request_rebuild_if_needed(

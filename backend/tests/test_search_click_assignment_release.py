@@ -78,13 +78,12 @@ def test_prebound_assignment_accepts_postgres_aware_window(
     assert confirm_prebound_search_claim(session, action, binding)
 
 
-def test_prebound_plan_only_routes_to_assignment_shard(
+def test_prebound_plan_routes_virtual_reservation_by_assignment_account(
     session: Session,
 ) -> None:
     action = session.get(Action, "action-1")
     allocation = session.get(DispatchClaimShardAllocation, "shard-1")
-    allocation.account_shard_total = 4
-    allocation.account_shard_index = 1
+    assert (allocation.account_shard_total, allocation.account_shard_index) == (1, 0)
 
     wrong = plan_prebound_search_claims(
         session,
