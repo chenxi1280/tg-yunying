@@ -3,6 +3,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime, timedelta
 import hashlib
+import logging
 import re
 from typing import Any
 from uuid import uuid4
@@ -177,6 +178,8 @@ from app.services.runtime_summary import clear_task_runtime_artifacts
 _empty_stats = empty_stats
 _next_run_after_task = next_run_after_task
 _retry_failed_actions = retry_failed_actions
+logger = logging.getLogger(__name__)
+PLANNER_RUNTIME_ERROR_RETRY_SECONDS = 30
 PLANNER_GLOBAL_PENDING_SESSION_KEY = "planner_global_pending"
 CHANNEL_COMMENT_SCENE = "channel_comment"
 GROUP_CHAT_SCENE = "group_chat"
@@ -3202,17 +3205,53 @@ def _drain_task_planner(session_factory, *, limit: int, process_type: str | None
         session.commit()
     future_open_action_task_ids: set[str] = set()
     for task_id in task_ids:
-        task_processed, future_open, global_pending = _plan_due_task(
-            session_factory,
-            task_id,
-            process_type,
-            limit=limit,
-            global_pending=global_pending,
-        )
+        try:
+            task_processed, future_open, global_pending = _plan_due_task(
+                session_factory,
+                task_id,
+                process_type,
+                limit=limit,
+                global_pending=global_pending,
+            )
+        except Exception as exc:
+            logger.exception("planner_task_failed task_id=%s", task_id)
+            _record_planner_runtime_error(session_factory, task_id, exc)
+            continue
         processed += task_processed
         if future_open:
             future_open_action_task_ids.add(task_id)
     return processed, future_open_action_task_ids
+
+
+def _record_planner_runtime_error(
+    session_factory,
+    task_id: str,
+    exc: Exception,
+) -> None:
+    with session_factory() as session:
+        task = session.get(Task, task_id)
+        if task is None:
+            return
+        stats = dict(task.stats or {})
+        stats["planner_runtime_error"] = {
+            "error_type": type(exc).__name__,
+            "message": str(exc)[:500],
+            "recorded_at": _now().isoformat(),
+        }
+        task.stats = stats
+        if task.status == "running":
+            task.next_run_at = _now() + timedelta(
+                seconds=PLANNER_RUNTIME_ERROR_RETRY_SECONDS,
+            )
+        session.commit()
+
+
+def _clear_planner_runtime_error(task: Task) -> None:
+    stats = dict(task.stats or {})
+    if "planner_runtime_error" not in stats:
+        return
+    stats.pop("planner_runtime_error")
+    task.stats = stats
 
 
 def _plan_due_task(
@@ -3280,6 +3319,7 @@ def _plan_due_task_batch(
             session.commit()
             return processed, 0, False, current_global_pending
         planned = build_task_plan(session, task)
+        _clear_planner_runtime_error(task)
         processed += planned
         current_global_pending += max(0, int(planned))
         if task.status == "running":

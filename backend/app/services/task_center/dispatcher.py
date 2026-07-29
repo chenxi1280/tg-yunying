@@ -758,7 +758,20 @@ def _action_can_reassign(action: Action) -> bool:
         and action.action_type not in {"invite_group_bot", "invite_group_account"}
         and action.action_type not in GROUP_BOT_ADMISSION_ACTION_TYPES
         and not bool(payload.get("coverage_ledger_id"))
+        and not _account_bound_channel_fulfillment(action, payload)
     )
+
+
+def _account_bound_channel_fulfillment(
+    action: Action,
+    payload: dict,
+) -> bool:
+    binding_keys = {
+        "view_message": "view_fulfillment_obligation_id",
+        "like_message": "reaction_fulfillment_obligation_id",
+    }
+    binding_key = binding_keys.get(action.action_type)
+    return bool(binding_key and payload.get(binding_key))
 
 
 def _is_reserved_rescue_admin_action(session: Session, action: Action, account: TgAccount) -> bool:

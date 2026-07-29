@@ -20,6 +20,7 @@ from app.models import (
 ACTIVE_FULFILLMENT_ACTION_STATUSES = frozenset(
     {"pending", "claiming", "executing", "retryable_failed"}
 )
+TERMINAL_REPLAN_ACTION_STATUSES = frozenset({"failed", "skipped", "cancelled"})
 
 
 @dataclass(frozen=True)
@@ -58,6 +59,8 @@ def reaction_account_ids_for_messages(
             _reaction_held_or_active(
                 ReactionFulfillmentObligation.status,
                 Action.status,
+                Action.payload,
+                ReactionFulfillmentObligation.id,
             ),
         )
     )
@@ -93,7 +96,12 @@ def view_account_ids_for_messages(
         .where(
             ViewFulfillmentObligation.tenant_id == task.tenant_id,
             ViewFulfillmentObligation.channel_message_id.in_(message_ids),
-            _held_or_active(ViewFulfillmentObligation.status, Action.status),
+            _held_or_active(
+                ViewFulfillmentObligation.status,
+                Action.status,
+                Action.payload,
+                ViewFulfillmentObligation.id,
+            ),
         )
     )
     _merge_account_rows(result, [*confirmed, *pending])
@@ -116,6 +124,8 @@ def reaction_source_held_by_other_action(
             _reaction_held_or_active(
                 ReactionFulfillmentObligation.status,
                 Action.status,
+                Action.payload,
+                ReactionFulfillmentObligation.id,
             ),
         )
         .limit(1)
@@ -136,7 +146,12 @@ def view_source_held_by_other_action(
             ViewFulfillmentObligation.channel_message_id == channel_message_id,
             ViewFulfillmentObligation.account_id == action.account_id,
             ViewFulfillmentObligation.current_action_id != action.id,
-            _held_or_active(ViewFulfillmentObligation.status, Action.status),
+            _held_or_active(
+                ViewFulfillmentObligation.status,
+                Action.status,
+                Action.payload,
+                ViewFulfillmentObligation.id,
+            ),
         )
         .limit(1)
     )
@@ -184,7 +199,12 @@ def view_daily_counts(
         .join(Action, Action.id == ViewFulfillmentObligation.current_action_id)
         .where(
             ViewFulfillmentObligation.task_day_ledger_id == ledger.id,
-            _held_or_active(ViewFulfillmentObligation.status, Action.status),
+            _held_or_active(
+                ViewFulfillmentObligation.status,
+                Action.status,
+                Action.payload,
+                ViewFulfillmentObligation.id,
+            ),
         )
     )
     rows = {
@@ -197,22 +217,42 @@ def view_daily_counts(
     return FulfillmentDailyCounts(total=len(rows), by_account=by_account)
 
 
-def _held_or_active(obligation_status, action_status):
+def _held_or_active(
+    obligation_status,
+    action_status,
+    action_payload,
+    obligation_id,
+):
     return or_(
         obligation_status == "unknown",
         and_(
             obligation_status == "pending",
-            action_status.in_(ACTIVE_FULFILLMENT_ACTION_STATUSES),
+            action_status.notin_(TERMINAL_REPLAN_ACTION_STATUSES),
+            or_(
+                action_status.in_(ACTIVE_FULFILLMENT_ACTION_STATUSES),
+                action_payload["view_fulfillment_obligation_id"].as_string()
+                == obligation_id,
+            ),
         ),
     )
 
 
-def _reaction_held_or_active(obligation_status, action_status):
+def _reaction_held_or_active(
+    obligation_status,
+    action_status,
+    action_payload,
+    obligation_id,
+):
     return or_(
         obligation_status.in_(("unknown", "unavailable")),
         and_(
             obligation_status == "pending",
-            action_status.in_(ACTIVE_FULFILLMENT_ACTION_STATUSES),
+            action_status.notin_(TERMINAL_REPLAN_ACTION_STATUSES),
+            or_(
+                action_status.in_(ACTIVE_FULFILLMENT_ACTION_STATUSES),
+                action_payload["reaction_fulfillment_obligation_id"].as_string()
+                == obligation_id,
+            ),
         ),
     )
 
