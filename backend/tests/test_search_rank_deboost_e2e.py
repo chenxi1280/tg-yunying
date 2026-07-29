@@ -301,12 +301,10 @@ def test_e2e_start_rejects_pending_real_search_exempt_group(monkeypatch) -> None
         task = create_search_rank_deboost_task(session, 1, payload, operator="tester")
         assert task.status == "draft"
 
-        with pytest.raises(ValueError, match="真实搜索候选源"):
-            start_task(session, 1, task.id, actor="tester")
+        start_task(session, 1, task.id, actor="tester")
 
         session.refresh(task)
-        assert task.status == "draft"
-        assert task.next_run_at is None
+        assert task.status == "running"
         readiness = task.stats["rank_deboost_readiness"]
         assert readiness["status"] == "blocked"
         assert readiness["blocker"] == "搜索排名观察真实搜索候选源返回格式无效"
@@ -386,16 +384,14 @@ def test_e2e_start_records_candidate_gateway_exception_as_readiness_blocker(monk
         monkeypatch.setattr(_common.gateway, "search_rank_deboost_candidates", raise_transport_error)
         monkeypatch.setattr(_common.gateway, "supports_rank_deboost_observation", True)
 
-        with pytest.raises(ValueError, match="真实候选搜索失败"):
-            start_task(session, 1, task.id, actor="tester")
+        start_task(session, 1, task.id, actor="tester")
 
         session.refresh(task)
-        assert task.status == "draft"
+        assert task.status == "running"
         assert task.stats["rank_deboost_readiness"]["blocker"] == "搜索排名观察真实候选搜索失败：RuntimeError"
 
 
-def test_e2e_create_and_start_rolls_back_pending_real_search_failure(monkeypatch) -> None:
-    """创建并启动失败时不能留下草稿、豁免群、动作、reservation 或分组绑定。"""
+def test_e2e_create_and_start_keeps_waiting_task_on_runtime_failure(monkeypatch) -> None:
     engine = _build_engine()
     with Session(engine) as session:
         _seed_base(session, account_ids=[100], with_binding=False)
@@ -424,12 +420,14 @@ def test_e2e_create_and_start_rolls_back_pending_real_search_failure(monkeypatch
             account_pool_id=10,
             proxy_airport_node_id=20,
         )
-        with pytest.raises(ValueError, match="真实搜索候选源"):
-            create_and_start_search_rank_deboost_task(session, 1, payload, operator="tester")
+        task = create_and_start_search_rank_deboost_task(
+            session, 1, payload, operator="tester"
+        )
 
-        assert session.query(Task).filter_by(name="原子启动失败任务").count() == 0
-        assert session.query(SearchRankDeboostExemptGroup).count() == 0
-        assert session.query(AccountGroupProxyBinding).count() == 0
+        assert task.status == "running"
+        assert task.stats["rank_deboost_readiness"]["status"] == "blocked"
+        assert session.query(Task).filter_by(name="原子启动失败任务").count() == 1
+        assert session.query(SearchRankDeboostExemptGroup).count() == 1
         assert session.query(Action).count() == 0
         assert session.query(SearchRankDeboostClickReservation).count() == 0
 
@@ -483,8 +481,9 @@ def test_e2e_start_rejects_when_rank_observation_gateway_missing() -> None:
         exempt.exempt_group_title = "真实豁免群"
         session.commit()
 
-        with pytest.raises(ValueError, match="gateway"):
-            start_task(session, 1, task.id, actor="tester")
+        started = start_task(session, 1, task.id, actor="tester")
+        assert started.status == "running"
+        assert "gateway" in started.stats["rank_deboost_readiness"]["blocker"]
 
 
 def test_e2e_start_rejects_unresolvable_target_identity_before_gateway_check() -> None:

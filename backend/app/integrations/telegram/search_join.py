@@ -24,7 +24,6 @@ HUMAN_VERIFICATION_MARKERS = ("人机验证", "计算结果", "captcha")
 
 # PRD §2.19.2 图片算式验证码识别相关常量。
 IMAGE_VERIFICATION_MIN_CONFIDENCE = 0.70
-IMAGE_VERIFICATION_MAX_RECURSION = 2
 IMAGE_VERIFICATION_PROMPT = (
     "识别图片中的算式并计算结果，输出 JSON：{\"answer\":数字,\"confidence\":0到1}。"
     "answer 必须是算式计算后的正整数。只输出紧凑 JSON，不要解释。"
@@ -179,18 +178,10 @@ async def _initial_search_page(
     await conversation.send_message(keyword_text)
     page = await conversation.get_response()
     classification = _jisou_page_classification(jisou, protocol_profile, page, _parse_buttons(page))
-    if not jisou or classification.page_phase != "hot_list_page":
-        return page, {}
-    await conversation.send_message("/cancel")
-    await conversation.get_response()
-    await conversation.send_message("/start")
-    await conversation.get_response()
-    await conversation.send_message(keyword_text)
-    recovered_page = await conversation.get_response()
-    return recovered_page, {
-        "jisou_recovery_kind": "hot_list_reset",
-        "jisou_pre_reset_page_phase": "hot_list_page",
-        "protocol_event_type": "post_reset_page_classified",
+    return page, {
+        "jisou_recovery_kind": "not_applicable",
+        "reset_executed": False,
+        "jisou_initial_page_phase": classification.page_phase,
     }
 
 
@@ -230,7 +221,6 @@ async def _execute_search_result_pages(
                 classification,
                 image_verification_solver,
                 protocol_profile=protocol_profile,
-                recursion_depth=0,
             )
             if handled.error is not None:
                 return _with_search_protocol_trace(
@@ -258,6 +248,11 @@ async def _execute_search_result_pages(
         await _click_page_decoys(page, buttons, payload, target, decoys, approved_positions=approved_positions)
         text_match = _find_target_in_text(page, target)
         if text_match:
+            if payload.get("search_execution_mode") == "click_only":
+                return _failed(
+                    "target_click_control_missing",
+                    "目标仅以文本出现，没有可批准的纯点击控件",
+                )
             result = await _execute_text_target_join(client, payload, target, text_match, decoys, page_no, total_results)
             traced = _with_search_protocol_trace(result, buttons, group_selector, selector_buttons, approved_positions, enabled=jisou)
             return _with_jisou_result_phase(traced, jisou)
@@ -319,7 +314,6 @@ async def _select_jisou_group_results_page(
             classification,
             image_verification_solver,
             protocol_profile=protocol_profile,
-            recursion_depth=0,
         )
         if handled.error is not None:
             return page, handled.error, None, selector_buttons
@@ -375,7 +369,6 @@ async def _select_jisou_group_results_page(
             result_classification,
             image_verification_solver,
             protocol_profile=protocol_profile,
-            recursion_depth=0,
         )
         if handled.error is not None:
             return result_page, handled.error, group_button, selector_buttons
@@ -461,31 +454,40 @@ async def _handle_jisou_image_verification(
     solver: ImageVerificationSolver | None,
     *,
     protocol_profile: object,
-    recursion_depth: int,
 ) -> _ImageVerificationHandleResult:
-    """PRD §2.19.2: 图片算式验证码识别 6 步流程 + 递归上限 2 次。"""
+    """Handle one immutable challenge fingerprint and one approved submit."""
     digit_buttons = [button for button in buttons if _is_digit_callback_button(button)]
     candidate_answers = [button.text.strip() for button in digit_buttons]
+    fingerprint = _image_verification_fingerprint(page, buttons)
     if solver is None or not candidate_answers:
-        return _image_verification_failed_result(classification, buttons, "minimax solver unavailable or no digit buttons")
+        return _image_verification_required_result(
+            classification, buttons, fingerprint, "verification_ai_unavailable"
+        )
     image_bytes = await _download_verification_image(client, page)
     if not image_bytes:
-        return _image_verification_failed_result(classification, buttons, "verification image download empty")
+        return _image_verification_required_result(
+            classification, buttons, fingerprint, "verification_transport_unavailable"
+        )
     mime_type = _message_media_mime_type(page)
     solved = await asyncio.to_thread(solver, image_bytes, mime_type, candidate_answers)
     if solved is None:
-        return _image_verification_failed_result(classification, buttons, "no healthy provider returned a safe answer")
+        return _image_verification_failed_result(
+            classification,
+            buttons,
+            "no healthy provider returned a safe answer",
+            fingerprint=fingerprint,
+        )
     answer, confidence = solved
     if confidence < IMAGE_VERIFICATION_MIN_CONFIDENCE:
         return _image_verification_failed_result(
             classification, buttons, f"confidence {confidence:.2f} below threshold {IMAGE_VERIFICATION_MIN_CONFIDENCE}",
-            answer=answer, confidence=confidence,
+            answer=answer, confidence=confidence, fingerprint=fingerprint,
         )
     target_button = next((button for button in digit_buttons if button.text.strip() == answer), None)
     if target_button is None:
         return _image_verification_failed_result(
             classification, buttons, f"answer {answer} not in button matrix",
-            answer=answer, confidence=confidence,
+            answer=answer, confidence=confidence, fingerprint=fingerprint,
         )
     clicked_page = await _click_and_get_edited_page(client, bot_username, page, target_button)
     clicked_buttons = _parse_buttons(clicked_page)
@@ -496,22 +498,36 @@ async def _handle_jisou_image_verification(
         has_photo=_has_photo_media(clicked_page),
     )
     if clicked_classification.page_phase == VERIFICATION_IMAGE_PAGE:
-        if recursion_depth + 1 >= IMAGE_VERIFICATION_MAX_RECURSION:
+        next_fingerprint = _image_verification_fingerprint(clicked_page, clicked_buttons)
+        if next_fingerprint == fingerprint:
             return _image_verification_failed_result(
-                clicked_classification, clicked_buttons,
-                f"verification image page recursion limit {IMAGE_VERIFICATION_MAX_RECURSION} reached",
+                clicked_classification,
+                clicked_buttons,
+                "remote explicitly rejected approved answer",
+                answer=answer,
+                confidence=confidence,
+                fingerprint=fingerprint,
             )
-        return await _handle_jisou_image_verification(
-            client,
-            bot_username,
-            clicked_page,
-            clicked_buttons,
+        return _image_verification_required_result(
             clicked_classification,
-            solver,
-            protocol_profile=protocol_profile,
-            recursion_depth=recursion_depth + 1,
+            clicked_buttons,
+            next_fingerprint,
+            "new_challenge_fingerprint",
         )
     return _ImageVerificationHandleResult(page=clicked_page, error=None)
+
+
+def _image_verification_fingerprint(
+    page: Any,
+    buttons: list[SearchJoinButton],
+) -> str:
+    message_id = str(getattr(page, "id", "") or "")
+    callback_fingerprint = [
+        (button.row, button.col, button.text, button.button_type)
+        for button in buttons
+    ]
+    value = repr((message_id, callback_fingerprint)).encode()
+    return hashlib.sha256(value).hexdigest()
 
 
 async def _download_verification_image(client: Any, page: Any) -> bytes:
@@ -545,6 +561,7 @@ def _image_verification_failed_result(
     *,
     answer: str = "",
     confidence: float = 0.0,
+    fingerprint: str = "",
 ) -> _ImageVerificationHandleResult:
     """PRD §2.19.2 第 5 步：识别失败、置信度不足、answer 不在矩阵、重试仍空都写 jisou_image_verification_failed。"""
     error = {
@@ -553,6 +570,29 @@ def _image_verification_failed_result(
         "protocol_event_type": "image_verification_failed",
         "image_verification_answer": answer,
         "image_verification_confidence": confidence,
+        "image_verification_status": "failed",
+        "challenge_fingerprint_hash": fingerprint,
+        "search_protocol_trace": {
+            "page_phase": VERIFICATION_IMAGE_PAGE,
+            "page": _page_layout(buttons, classification.approved_button_positions),
+        },
+    }
+    return _ImageVerificationHandleResult(page=None, error=error)
+
+
+def _image_verification_required_result(
+    classification: ProtocolPageClassification,
+    buttons: list[SearchJoinButton],
+    fingerprint: str,
+    reason: str,
+) -> _ImageVerificationHandleResult:
+    error = {
+        **_failed("jisou_image_verification_required", "极搜图片验证码等待安全识别结果"),
+        "jisou_page_phase": VERIFICATION_IMAGE_PAGE,
+        "protocol_event_type": "image_verification_required",
+        "image_verification_status": "required",
+        "image_verification_reason": reason,
+        "challenge_fingerprint_hash": fingerprint,
         "search_protocol_trace": {
             "page_phase": VERIFICATION_IMAGE_PAGE,
             "page": _page_layout(buttons, classification.approved_button_positions),
@@ -686,8 +726,21 @@ async def _execute_target_join(
 ) -> dict[str, Any]:
     if button.button_type == "external_http_url":
         return _external_blocked(button, total, decoys)
+    if (
+        payload.get("search_execution_mode") == "click_only"
+        and button.effect not in {"navigate_only", "target_open_only"}
+    ):
+        return _failed(
+            "membership_side_effect_not_allowed",
+            "纯搜索点击禁止执行可能改变成员关系的控件",
+        )
     await _click_button(page, button)
-    return _success(payload, button, total, decoys, page_no)
+    return {
+        **_success(payload, button, total, decoys, page_no),
+        "target_message_id": str(getattr(page, "id", "") or ""),
+        "target_username": str(target.get("username") or ""),
+        "bot_username": _bot_username(payload),
+    }
 
 
 async def _execute_text_target_join(
@@ -901,7 +954,7 @@ def _external_blocked(button: SearchJoinButton, total: int, decoys: list[dict[st
 
 
 def _success(payload: dict[str, Any], button: SearchJoinButton | None, total: int, decoys: list[dict[str, Any]], page_no: int) -> dict[str, Any]:
-    return {
+    result = {
         "success": True,
         "join_status": "target_found",
         "target_position": button.position if button else 0,
@@ -916,6 +969,18 @@ def _success(payload: dict[str, Any], button: SearchJoinButton | None, total: in
         "post_join_policy": payload.get("post_join_policy") or "stay_joined",
         "keyword_hash": payload.get("keyword_hash"),
     }
+    if payload.get("search_execution_mode") == "click_only" and button is not None:
+        result.update({
+            "target_click_observed": True,
+            "membership_side_effect": "none",
+            "membership_mutating_rpc_invoked": False,
+            "target_button_type": button.button_type,
+            "target_button_effect": button.effect,
+            "target_button_row": button.row,
+            "target_button_col": button.col,
+            "target_button_fingerprint": _button_hash(button),
+        })
+    return result
 
 
 def _membership_observed_result(payload: dict[str, Any]) -> dict[str, Any]:

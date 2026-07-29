@@ -940,7 +940,7 @@ export default function TaskCenterView({
         keywords: keywordTexts,
         target_title: config.target_title ?? '',
         target_link: config.target_link ?? config.target_input ?? '',
-        daily_click_target_count: task.type === 'search_join_group' ? config.daily_click_target_count ?? null : undefined,
+        daily_click_target_count: ['search_click', 'search_join_group'].includes(task.type) ? config.daily_click_target_count ?? null : undefined,
         daily_target_count: task.type === 'search_join_group' ? config.daily_target_count ?? config.target_count : undefined,
         allow_same_account_repeat_application: task.type === 'search_join_group' ? Boolean(config.allow_same_account_repeat_application) : undefined,
         target_count: task.type === 'search_rank_deboost' ? config.target_count : undefined,
@@ -1101,6 +1101,7 @@ export default function TaskCenterView({
 
   function commonPayload(values: any) {
     return {
+      client_request_id: values.client_request_id,
       name: values.name,
       priority: 3,
       timezone: values.timezone ?? 'Asia/Shanghai',
@@ -1192,7 +1193,9 @@ export default function TaskCenterView({
     const quietHours = quietStart && quietEnd ? { start: quietStart, end: quietEnd, timezone: 'Asia/Shanghai' } : editing ? null : undefined;
     const execution = {
       account_group_id: values.account_group_id,
-      max_actions_per_day: values.max_actions_per_day,
+      ...(searchTaskType !== 'search_click' ? {
+        max_actions_per_day: values.max_actions_per_day,
+      } : {}),
       ...searchJoinExecutionPayload(values, editing, searchTaskType),
       ...(editing && searchTaskType === 'search_join_group' && values.enable_strict_daily_target ? { enable_strict_daily_target: true } : {}),
       scheduled_end: fromBeijingDateTimeLocalValue(values.scheduled_end),
@@ -1204,7 +1207,9 @@ export default function TaskCenterView({
       target_title: values.target_title?.trim(),
       target_link: values.target_link?.trim(),
     };
-    const targetCount = searchTaskType === 'search_join_group'
+    const targetCount = searchTaskType === 'search_click'
+      ? { daily_click_target_count: values.daily_click_target_count }
+      : searchTaskType === 'search_join_group'
       ? {
         daily_click_target_count: values.daily_click_target_count,
         daily_target_count: values.daily_target_count,
@@ -1214,7 +1219,11 @@ export default function TaskCenterView({
       return {
         ...(target.target_title && target.target_link ? target : {}),
         ...(keywords.length ? { keywords } : {}),
-        ...(searchTaskType === 'search_join_group'
+        ...(searchTaskType === 'search_click'
+          ? values.daily_click_target_count != null
+            ? { daily_click_target_count: values.daily_click_target_count }
+            : {}
+          : searchTaskType === 'search_join_group'
           ? {
             ...(values.daily_click_target_count != null ? { daily_click_target_count: values.daily_click_target_count } : {}),
             ...(values.daily_target_count != null ? { daily_target_count: values.daily_target_count } : {}),
@@ -1224,6 +1233,7 @@ export default function TaskCenterView({
       };
     }
     return {
+      client_request_id: values.client_request_id,
       ...target,
       keywords,
       ...targetCount,
@@ -1524,18 +1534,7 @@ export default function TaskCenterView({
     try {
       await form.validateFields(fieldsForSubmit(taskType, messageScope, accountMode, pacingMode));
       const values = form.getFieldsValue(true);
-      const payload = createPayload(values);
-      const precheckSignature = taskPrecheckPayloadSignature(taskType, payload);
       const shouldStartNow = taskType === 'search_rank_deboost' ? false : start;
-      const requiresFreshPrecheck = taskType !== 'group_membership_admission' && !isSimpleSearchClickTask(taskType) && !options.skipCapacityCheck;
-      const result = requiresFreshPrecheck
-        ? precheck && precheckPayloadSignature === precheckSignature ? precheck : await runTaskPrecheck(values)
-        : precheck;
-      if (!result && requiresFreshPrecheck) return;
-      if (shouldStartNow && result?.decision === 'block') {
-        setActionError(`预检未通过：${formatPrecheckReasons(result.blockers) || '存在阻塞项'}`);
-        return;
-      }
       const submitValues = form.getFieldsValue(true);
       await api<TaskCenterTask>((shouldStartNow ? CREATE_AND_START_ENDPOINT : CREATE_ENDPOINT)[taskType], {
         method: 'POST',
@@ -1573,7 +1572,9 @@ export default function TaskCenterView({
       const payload = settingsPayload(editableType, values);
       payloadSignature = taskSettingsSavePayloadSignature(taskId, editableType, payload);
       requestSeq = beginTaskSettingsSaveRequest(taskId, payloadSignature);
-      const settingsEndpoint = editableType === 'search_join_group'
+      const settingsEndpoint = editableType === 'search_click'
+        ? `/tasks/${taskId}/search-click`
+        : editableType === 'search_join_group'
         ? `/tasks/${taskId}/search-join-group`
         : editableType === 'search_rank_deboost'
           ? `/tasks/${taskId}/search_rank_deboost_config`
@@ -1601,7 +1602,14 @@ export default function TaskCenterView({
     beginTaskAction(actionKey);
     setActionError('');
     try {
-      const body = name === 'retry'
+      const startStorageKey = `task-start-operation:${task.id}`;
+      const startOperationId = name === 'start'
+        ? localStorage.getItem(startStorageKey) || crypto.randomUUID()
+        : '';
+      if (name === 'start') localStorage.setItem(startStorageKey, startOperationId);
+      const body = name === 'start'
+        ? JSON.stringify({ start_operation_id: startOperationId })
+        : name === 'retry'
         ? JSON.stringify({ failed_only: true })
         : ['stop', 'reset'].includes(name)
           ? JSON.stringify({ reason: (reason ?? '').trim() })
@@ -2253,7 +2261,7 @@ export default function TaskCenterView({
         <Form form={editForm} layout="vertical">
           {!isSimpleSearchClickTask(editableTaskType) && <EditBasics />}
           {isSimpleSearchClickTask(editableTaskType) && <Alert className="form-alert" type="info" showIcon message="可修改目标群、搜索关键词、目标次数、账号组与执行节奏；代理、机器人、账号资格与风控仍由系统托管。" />}
-          {detail && !isSystemTask(detail.task) && ['group_ai_chat', 'group_relay', 'search_join_group', 'search_rank_deboost'].includes(detail.task.type) && (
+          {detail && !isSystemTask(detail.task) && ['group_ai_chat', 'group_relay', 'search_click', 'search_join_group', 'search_rank_deboost'].includes(detail.task.type) && (
             <>
               <Typography.Title level={5}>目标来源</Typography.Title>
               <WizardTarget taskType={detail.task.type as TaskCenterTaskType} messages={messages} messageScope={editMessageScope} targetChannelId={editTargetChannelId} onTargetChannelChange={() => editForm.setFieldsValue({ message_ids: [] })} onTargetsLoaded={mergeLoadedTargets} allowInlineTarget={false} simpleSearchCreation={isSimpleSearchClickTask(editableTaskType)} />

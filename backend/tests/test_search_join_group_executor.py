@@ -2312,6 +2312,23 @@ def test_click_daily_target_uses_only_deadline_and_quiet_eligible_curve_weight(s
 
 
 @pytest.mark.no_postgres
+def test_click_target_is_not_met_while_consistency_is_unresolved() -> None:
+    progress = search_click_progress.SearchClickTargetProgress(
+        target_count=3,
+        confirmed_count=3,
+        held_count=1,
+        remaining_slot_count=0,
+        scope="daily",
+        local_date="2026-07-24",
+        committed_attempt_count=1,
+        active_quarantine_count=1,
+        detailed_fulfillment=True,
+    )
+
+    assert progress.state == "waiting_consistency"
+
+
+@pytest.mark.no_postgres
 def test_search_join_daily_limit_counts_unknown_after_gateway(session: Session) -> None:
     _bind_search_join_environment(session, [101])
     task = _task(pacing_config={"max_actions_per_day": 1})

@@ -68,6 +68,46 @@ def has_confirmed_click_fact(result: object) -> bool:
     )
 
 
+def has_complete_pure_click_fact(result: object) -> bool:
+    if not isinstance(result, dict):
+        return False
+    required_text = (
+        "target_username",
+        "bot_username",
+        "keyword_hash",
+        "target_message_id",
+        "target_button_type",
+        "target_button_effect",
+        "target_button_fingerprint",
+        "target_click_observed_at",
+    )
+    return bool(
+        result.get("target_click_observed") is True
+        and result.get("membership_side_effect") == "none"
+        and result.get("membership_mutating_rpc_invoked") is False
+        and all(str(result.get(field) or "").strip() for field in required_text)
+        and _positive_int(result.get("target_position"))
+        and _non_negative_int(result.get("target_button_row"))
+        and _non_negative_int(result.get("target_button_col"))
+        and result.get("target_button_effect")
+        in {"navigate_only", "target_open_only"}
+    )
+
+
+def _non_negative_int(value: object) -> bool:
+    try:
+        return int(value) >= 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _positive_int(value: object) -> bool:
+    try:
+        return int(value) > 0
+    except (TypeError, ValueError):
+        return False
+
+
 def has_confirmed_membership_fact(result: object) -> bool:
     if not isinstance(result, dict):
         return False
@@ -125,6 +165,7 @@ def _source_naive(value: datetime) -> datetime:
 
 __all__ = [
     "has_confirmed_click_fact",
+    "has_complete_pure_click_fact",
     "has_confirmed_membership_fact",
     "has_pending_membership",
     "membership_observed_at",

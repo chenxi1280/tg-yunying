@@ -48,7 +48,7 @@ export function targetGroupLabel(task: TaskCenterTask): string {
   if (task.type === 'group_relay') {
     return firstText([task.target_summary, config.target_group_name, multiIdLabel(config.target_operation_target_ids, '运营目标')]) || UNKNOWN_TARGET_GROUP;
   }
-  if (task.type === 'search_join_group') {
+  if (task.type === 'search_click' || task.type === 'search_join_group') {
     return firstText([task.target_summary, config.target_title, idLabel(config.target_operation_target_id, '运营目标'), idLabel(config.target_group_id, '群')]) || UNKNOWN_TARGET_GROUP;
   }
   if (task.type === 'search_rank_deboost') {

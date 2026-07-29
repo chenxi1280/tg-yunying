@@ -17,6 +17,7 @@ from app.models import (
     DispatchClaimTaskAllocation,
     DispatchClaimWindow,
 )
+from .dispatch_rebuild_snapshot import dispatch_rebuild_snapshot_hash
 
 from .dispatch_claim_ledger import for_update
 from .dispatch_claim_types import (
@@ -37,13 +38,13 @@ def allocate_window(
         return
     epoch = _next_allocation_epoch(window, allocations)
     opportunity_cursor = int(scope.opportunity_cursor) + 1
-    if not window.rebuild_input_hash:
-        window.rebuild_input_hash = dispatch_rebuild_input_hash(
-            scope,
-            window,
-            demands,
-            released_count=0,
-        )
+    window.rebuild_input_hash = dispatch_rebuild_snapshot_hash(
+        session,
+        scope,
+        window,
+        demands,
+        allocations,
+    )
     available = max(0, int(scope.claim_capacity) - int(scope.active_claim_count))
     grants = _allocate_demands(demands, available, opportunity_cursor)
     _persist_allocations(
@@ -58,6 +59,7 @@ def allocate_window(
     scope.opportunity_cursor = opportunity_cursor
     scope.version += 1
     window.allocation_state = "ready"
+    window.ready_rebuild_snapshot_hash = window.rebuild_input_hash
     window.pending_rebuild_release_count = 0
     window.allocation_scope_version = scope.version
     window.allocation_scope_active_count = scope.active_claim_count
@@ -138,7 +140,10 @@ def rotation_value(demand: DispatchClaimDemand, epoch: int) -> int:
 
 
 def _next_allocation_epoch(window: DispatchClaimWindow, allocations: list[DispatchClaimShardAllocation]) -> int:
-    if not allocations:
+    if not any(
+        row.dispatch_allocation_epoch == window.allocation_epoch
+        for row in allocations
+    ):
         return window.allocation_epoch
     window.allocation_epoch += 1
     window.version += 1
@@ -307,6 +312,7 @@ def _task_allocation_for_demand(
         lane_business_kind=demand.lane_business_kind,
         opportunity_cursor_snapshot=opportunity_cursor,
         rebuild_input_hash=window.rebuild_input_hash,
+        dispatch_rebuild_snapshot_hash=window.rebuild_input_hash,
     )
     session.add(allocation)
     session.flush()
@@ -329,6 +335,7 @@ def _allocation_for_demand(
         dispatch_claim_window_id=window.id,
         dispatch_allocation_epoch=epoch,
         rebuild_input_hash=window.rebuild_input_hash,
+        dispatch_rebuild_snapshot_hash=window.rebuild_input_hash,
         account_shard_total=demand.shard_total,
         account_shard_index=demand.shard_index,
     )
@@ -360,6 +367,7 @@ def _reservation_for_demand(
         dispatch_claim_task_allocation_id=task_allocation.id,
         dispatch_allocation_epoch=epoch,
         rebuild_input_hash=task_allocation.rebuild_input_hash,
+        dispatch_rebuild_snapshot_hash=task_allocation.dispatch_rebuild_snapshot_hash,
         tenant_id=demand.tenant_id,
         task_id=demand.task_id,
         claim_class=demand.claim_class,
@@ -376,7 +384,12 @@ def _write_reservation(
     grant: int,
 ) -> None:
     reservation.required_claims = demand.required_claims
-    reservation.reserved_claims = reservation.claimed_count + grant
+    reservation.reserved_claims = (
+        reservation.claimed_count
+        + reservation.bound_count
+        + reservation.released_count
+        + grant
+    )
     reservation.urgency_score = demand.urgency_score
     reservation.reason = "allocated" if grant >= demand.required_claims else SHARED_CAPACITY_ERROR
     reservation.version += 1
@@ -418,6 +431,10 @@ def _write_allocation_totals(
         allocation.unclaimed_allocated_count = sum(int(grants[demand.key]) for demand in rows)
         allocation.reason = "allocated" if allocation.unclaimed_allocated_count else SHARED_CAPACITY_ERROR
         allocation.version += 1
-    window.unclaimed_allocated_count = sum(row.unclaimed_allocated_count for row in allocations.values())
+    window.unclaimed_allocated_count = sum(
+        row.unclaimed_allocated_count
+        for row in allocations.values()
+        if row.dispatch_allocation_epoch == epoch
+    )
     window.allocation_epoch = epoch
     window.version += 1

@@ -13,6 +13,8 @@ from app.models import (
     TaskGroupDailyMessageSlot,
     TaskGroupDailyTarget,
     TaskMembershipAdmissionItem,
+    TaskDayLedgerLifecycleEvent,
+    SearchClickFulfillmentObligation,
     OperationTarget,
     TgGroup,
 )
@@ -20,6 +22,8 @@ from app.services._common import _now
 
 from .daily_coverage import ensure_task_daily_coverage
 from .daily_group_target import ensure_task_group_daily_target
+from .search_click_revisions import apply_pending_search_click_revision
+from .search_click_target_progress import _active_click_quarantine_count
 
 
 def ensure_task_day_ledger(
@@ -32,12 +36,63 @@ def ensure_task_day_ledger(
     local_now, period_start, deadline = _day_bounds(timestamp, task.timezone)
     ledger = _find_ledger(session, task.id, period_start)
     if ledger is None:
+        _close_expired_ledgers(session, task, period_start)
+        if task.type == "search_click":
+            apply_pending_search_click_revision(task, period_start=period_start)
         ledger = _new_ledger(task, local_now, period_start, deadline)
         session.add(ledger)
         session.flush()
     if task.type == "group_ai_chat":
         _materialize_group_slots(session, task, ledger, local_now)
+    if task.type == "search_click":
+        _materialize_search_click_obligations(session, task, ledger)
     return ledger
+
+
+def _close_expired_ledgers(
+    session: Session,
+    task: Task,
+    period_start: datetime,
+) -> None:
+    ledgers = session.scalars(
+        select(TaskDayLedger).where(
+            TaskDayLedger.task_id == task.id,
+            TaskDayLedger.lifecycle_status == "open",
+            TaskDayLedger.deadline_at <= period_start,
+        )
+    )
+    for ledger in ledgers:
+        outcome = _ledger_deadline_outcome(session, task, ledger)
+        ledger.lifecycle_status = f"closed_{outcome}"
+        session.add(TaskDayLedgerLifecycleEvent(
+            tenant_id=task.tenant_id,
+            task_day_ledger_id=ledger.id,
+            event_type=f"deadline_{outcome}",
+            occurred_at=ledger.deadline_at,
+            task_revision=task.config_revision,
+        ))
+
+
+def _ledger_deadline_outcome(
+    session: Session,
+    task: Task,
+    ledger: TaskDayLedger,
+) -> str:
+    if task.type != "search_click":
+        return "closed"
+    obligations = list(session.scalars(
+        select(SearchClickFulfillmentObligation).where(
+            SearchClickFulfillmentObligation.task_day_ledger_id == ledger.id
+        )
+    ))
+    fully_confirmed = bool(obligations) and all(
+        row.status == "confirmed"
+        and row.target_click_observed
+        and bool(row.click_evidence_hash)
+        for row in obligations
+    )
+    quarantined = _active_click_quarantine_count(session, obligations) > 0
+    return "met" if fully_confirmed and not quarantined else "missed"
 
 
 def _day_bounds(
@@ -132,6 +187,32 @@ def _slots_exist(session: Session, ledger_id: str) -> bool:
         .where(TaskGroupDailyMessageSlot.task_day_ledger_id == ledger_id)
         .limit(1)
     ) is not None
+
+
+def _materialize_search_click_obligations(
+    session: Session,
+    task: Task,
+    ledger: TaskDayLedger,
+) -> None:
+    if session.scalar(
+        select(SearchClickFulfillmentObligation.id)
+        .where(SearchClickFulfillmentObligation.task_day_ledger_id == ledger.id)
+        .limit(1)
+    ):
+        return
+    config = task.type_config or {}
+    target_id = int(config.get("target_operation_target_id") or 0)
+    target_count = int(config.get("daily_click_target_count") or 0)
+    if target_id <= 0 or target_count <= 0:
+        raise ValueError("search_click_runtime_contract_invalid")
+    for ordinal in range(1, target_count + 1):
+        session.add(SearchClickFulfillmentObligation(
+            tenant_id=task.tenant_id,
+            task_day_ledger_id=ledger.id,
+            target_id=target_id,
+            click_obligation_ordinal=ordinal,
+        ))
+    session.flush()
 
 
 def _task_group(session: Session, task: Task) -> TgGroup:

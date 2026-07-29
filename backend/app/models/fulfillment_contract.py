@@ -255,7 +255,7 @@ class TaskStartOperation(Base):
     )
     start_operation_id: Mapped[str] = mapped_column(String(120))
     operation_version: Mapped[int] = mapped_column(Integer)
-    requested_by_user_id: Mapped[int] = mapped_column(ForeignKey("app_users.id"))
+    requested_by_user_id: Mapped[int] = mapped_column(Integer)
     source: Mapped[str] = mapped_column(String(24))
     status: Mapped[str] = mapped_column(String(16))
     task_day_ledger_id: Mapped[str | None] = mapped_column(

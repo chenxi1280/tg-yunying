@@ -19,7 +19,7 @@ from .dispatch_claim_allocation import (
     request_window_rebuild,
 )
 from .dispatch_claim_ledger import (
-    confirm_dispatch_claim,
+    confirm_dispatch_claim as _confirm_dispatch_claim,
     current_window_allocations,
     dispatcher_claim_capacity,
     dispatcher_scope,
@@ -37,6 +37,10 @@ from .dispatch_claim_ledger import (
 from .dispatch_claim_reconciliation import reconcile_window_unclaimed
 from .dispatch_claim_selection import build_demands, plan_from_reservations, tasks_by_id
 from .dispatch_claim_types import DispatchClaimBinding, DispatchClaimPlan
+from .prebound_search_claim import (
+    confirm_prebound_search_claim,
+    plan_prebound_search_claims,
+)
 
 
 def plan_dispatch_claims(
@@ -51,8 +55,16 @@ def plan_dispatch_claims(
 ) -> DispatchClaimPlan:
     if not actions:
         return DispatchClaimPlan((), {})
-    tasks = tasks_by_id(session, actions)
-    demands = build_demands(actions, tasks, shard_total, now)
+    prebound = plan_prebound_search_claims(session, actions)
+    remaining = [
+        action
+        for action in actions
+        if action.id not in prebound.bindings_by_action_id
+    ]
+    if not remaining:
+        return prebound
+    tasks = tasks_by_id(session, remaining)
+    demands = build_demands(remaining, tasks, shard_total, now)
     if not demands:
         return DispatchClaimPlan((), {})
     scope_name = dispatcher_scope(settings)
@@ -101,7 +113,7 @@ def plan_dispatch_claims(
     if window.allocation_state != "ready":
         allocate_window(session, scope, window, all_allocations, demands)
     reservations = window_reservations(session, window.id)
-    return plan_from_reservations(
+    allocated = plan_from_reservations(
         tasks,
         demands,
         reservations,
@@ -110,6 +122,32 @@ def plan_dispatch_claims(
         shard_index,
         fairness_decisions,
     )
+    return _combine_claim_plans(prebound, allocated)
+
+
+def _combine_claim_plans(
+    prebound: DispatchClaimPlan,
+    allocated: DispatchClaimPlan,
+) -> DispatchClaimPlan:
+    action_ids = tuple(dict.fromkeys(
+        (*prebound.candidate_action_ids, *allocated.candidate_action_ids)
+    ))
+    bindings = {
+        **allocated.bindings_by_action_id,
+        **prebound.bindings_by_action_id,
+    }
+    return DispatchClaimPlan(action_ids, bindings)
+
+
+def confirm_dispatch_claim(
+    session: Session,
+    action: Action,
+    binding: DispatchClaimBinding,
+) -> bool:
+    result = action.result if isinstance(action.result, dict) else {}
+    if result.get("dispatch_prebound"):
+        return confirm_prebound_search_claim(session, action, binding)
+    return _confirm_dispatch_claim(session, action, binding)
 
 
 __all__ = [

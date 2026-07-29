@@ -156,7 +156,16 @@ def test_epoch_is_published_atomically_and_old_rows_are_immutable(
     assert window.allocation_state == "ready"
     assert window.allocation_epoch == 2
     assert scope.opportunity_cursor == 2
-    assert window.rebuild_input_hash == "complete-input-v2"
+    assert window.rebuild_input_hash != "complete-input-v2"
+    assert window.ready_rebuild_snapshot_hash == window.rebuild_input_hash
+    assert all(
+        row.dispatch_rebuild_snapshot_hash == window.rebuild_input_hash
+        for row in session.scalars(
+            select(DispatchClaimTaskAllocation).where(
+                DispatchClaimTaskAllocation.dispatch_allocation_epoch == 2
+            )
+        )
+    )
     assert {row.dispatch_allocation_epoch for row in all_task_rows} == {1, 2}
     assert {row.opportunity_cursor_snapshot for row in all_task_rows} == {1, 2}
     assert all(row.rebuild_input_hash for row in all_task_rows)

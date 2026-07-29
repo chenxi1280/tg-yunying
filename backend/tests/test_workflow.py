@@ -35,6 +35,38 @@ def assume_group_ai_voice_profiles_for_workflow_tests(monkeypatch):
     assume_default_ai_group_voice_profiles(monkeypatch)
 
 
+@pytest.fixture(autouse=True)
+def attach_task_creation_idempotency_keys(monkeypatch):
+    creation_routes = {
+        "/api/tasks/group-ai-chat",
+        "/api/tasks/group-ai-chat/create-and-start",
+        "/api/tasks/group-relay",
+        "/api/tasks/group-relay/create-and-start",
+        "/api/tasks/group-membership-admission",
+        "/api/tasks/group-membership-admission/create-and-start",
+        "/api/tasks/channel-view",
+        "/api/tasks/channel-view/create-and-start",
+        "/api/tasks/channel-like",
+        "/api/tasks/channel-like/create-and-start",
+        "/api/tasks/channel-comment",
+        "/api/tasks/channel-comment/create-and-start",
+        "/api/tasks/search-click",
+        "/api/tasks/search-click/create-and-start",
+        "/api/tasks/search-rank-deboost",
+        "/api/tasks/search-rank-deboost/create-and-start",
+    }
+    original_post = TestClient.post
+
+    def post_with_creation_key(client, url, *args, **kwargs):
+        if url in creation_routes and isinstance(kwargs.get("json"), dict):
+            payload = dict(kwargs["json"])
+            payload.setdefault("client_request_id", f"workflow-{uuid4()}")
+            kwargs["json"] = payload
+        return original_post(client, url, *args, **kwargs)
+
+    monkeypatch.setattr(TestClient, "post", post_with_creation_key)
+
+
 def workflow_ai_active_pacing() -> dict:
     return {
         "mode": "fixed",
@@ -74,6 +106,20 @@ def mark_group_bot_admission_ready(group_id: int, account_id: int) -> None:
         admission.state = "group_bot_admission_ready"
         admission.post_send_visibility_state = "visible_confirmed"
         admission.failure_code = ""
+        link = session.scalar(select(TgGroupAccount).where(
+            TgGroupAccount.group_id == group_id,
+            TgGroupAccount.account_id == account_id,
+        ))
+        if link is None:
+            link = TgGroupAccount(group_id=group_id, account_id=account_id)
+            session.add(link)
+        link.can_send = True
+        for task in session.scalars(select(Task).where(
+            Task.type == "group_ai_chat",
+            Task.status == "running",
+        )):
+            if int((task.type_config or {}).get("target_group_id") or 0) == group_id:
+                task.next_run_at = None
         session.commit()
 
 
@@ -1693,6 +1739,18 @@ def test_approve_all_retry_and_archive_detail_flow():
         with SessionLocal() as session:
             db_account = session.get(TgAccount, account["id"])
             db_account.status = AccountStatus.ACTIVE.value
+            for index in range(3):
+                session.add(GroupContextMessage(
+                    tenant_id=1,
+                    group_id=group["id"],
+                    listener_account_id=account["id"],
+                    sender_peer_id=f"workflow-sender-{index}",
+                    sender_name=f"群成员{index}",
+                    content=f"今天群里讨论测试话题 {index}",
+                    message_type="text",
+                    remote_message_id=str(9_000_000 + index),
+                    sent_at=_now(),
+                ))
             session.commit()
         campaign = client.post(
             "/api/campaigns",
@@ -3886,11 +3944,12 @@ def test_task_center_group_ai_chat_creates_and_dispatches_actions(monkeypatch):
                 "topic_directions": [{"title": "测试话题", "weight": 1}],
                 "participation_rate": 1,
                 "participation_jitter": 0,
-                "messages_per_round_mode": "manual",
-                "messages_per_round": 1,
-            },
-        )
-        assert created.status_code == 200, created.text
+                    "messages_per_round_mode": "manual",
+                    "messages_per_round": 1,
+                    "reply_min_per_round": 0,
+                },
+            )
+        assert created.status_code == 201, created.text
         task = created.json()
         assert task["status"] == "draft"
 
@@ -3900,9 +3959,35 @@ def test_task_center_group_ai_chat_creates_and_dispatches_actions(monkeypatch):
         drained = client.post("/api/worker/drain-once", headers=headers, json={"reason": "测试手动 drain"}).json()
         assert drained["processed"] >= 1
         mark_group_bot_admission_ready(group["id"], account["id"])
-        make_task_send_actions_due(task["id"])
+        with SessionLocal() as session:
+            db_task = session.get(Task, task["id"])
+            assert db_task.status == "running", (db_task.status, db_task.stats)
+            assert db_task.next_run_at is None, (
+                db_task.next_run_at,
+                db_task.type_config,
+            )
+        replanned = client.post(
+            "/api/worker/drain-once?role=planner",
+            headers=headers,
+            json={"reason": "准入完成后重新规划"},
+        ).json()
+        with SessionLocal() as session:
+            planning_stats = session.get(Task, task["id"]).stats
+        assert replanned["processed"] >= 1, json.dumps(
+            planning_stats,
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        assert make_task_send_actions_due(task["id"]) >= 1
         drained = client.post("/api/worker/drain-once?role=dispatcher", headers=headers, json={"reason": "测试发送 drain"}).json()
-        assert drained["processed"] >= 1
+        with SessionLocal() as session:
+            action_states = [
+                (row.status, row.payload, row.result)
+                for row in session.scalars(select(Action).where(
+                    Action.task_id == task["id"]
+                ))
+            ]
+        assert drained["processed"] >= 1, action_states
         detail = task_detail_after_metrics(client, headers, task["id"])
         assert detail["task"]["stats"]["total_actions"] >= 1
         assert detail["task"]["stats"]["success_count"] >= 1
@@ -3939,7 +4024,7 @@ def test_task_center_group_ai_chat_runs_from_worker_loop(monkeypatch):
                 "messages_per_round": 1,
             },
         )
-        assert created.status_code == 200, created.text
+        assert created.status_code == 201, created.text
         task_id = created.json()["id"]
         started = client.post(f"/api/tasks/{task_id}/start", headers=headers)
         assert started.status_code == 200, started.text
@@ -4066,7 +4151,7 @@ def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(monkeypatch):
                 "daily_message_target": 2,
             },
         )
-        assert created.status_code == 200, created.text
+        assert created.status_code == 201, created.text
         task_id = created.json()["id"]
 
         from app.services.task_center.service import drain_task_center
@@ -4267,7 +4352,7 @@ def test_task_center_channel_view_like_comment_execute(monkeypatch):
                     **extra_config,
                 },
             )
-            assert created.status_code == 200, created.text
+            assert created.status_code == 201, created.text
             task_ids.append(created.json()["id"])
             client.post(f"/api/tasks/{task_ids[-1]}/start", headers=headers)
 
@@ -4417,7 +4502,7 @@ def test_task_center_channel_like_and_view_cap_per_message_by_unique_accounts(mo
                     **extra_config,
                 },
             )
-            assert created.status_code == 200, created.text
+            assert created.status_code == 201, created.text
             task_id = created.json()["id"]
             task_ids.append(task_id)
             client.post(f"/api/tasks/{task_id}/start", headers=headers)
@@ -4511,7 +4596,7 @@ def test_task_center_channel_comment_allows_multiple_replies_per_account(monkeyp
                 "max_comments_per_account_per_hour": 500,
             },
         )
-        assert created.status_code == 200, created.text
+        assert created.status_code == 201, created.text
         task_id = created.json()["id"]
         client.post(f"/api/tasks/{task_id}/start", headers=headers)
         from app.services.task_center.service import drain_task_center
@@ -4576,7 +4661,7 @@ def test_task_center_channel_like_auto_collects_dynamic_new_messages(monkeypatch
                 "max_likes_per_account_per_hour": 999,
             },
         )
-        assert created.status_code == 200, created.text
+        assert created.status_code == 201, created.text
         task_id = created.json()["id"]
         started = client.post(f"/api/tasks/{task_id}/start", headers=headers)
         assert started.status_code == 200, started.text
@@ -4681,7 +4766,7 @@ def test_task_center_channel_view_and_comment_default_dynamic_new_keep_collectin
                 **payload_extra,
             },
         )
-        assert created.status_code == 200, created.text
+        assert created.status_code == 201, created.text
         task_id = created.json()["id"]
         prepare_test_comment_message(client, headers, channel_target, account_ids=[account["id"]], message_id=fetched_ids[-1]) if action_type == "post_comment" else None
 
@@ -4765,7 +4850,7 @@ def test_task_center_reset_channel_like_rebuilds_from_latest_messages(monkeypatc
                 "max_likes_per_account_per_hour": 999,
             },
         )
-        assert created.status_code == 200, created.text
+        assert created.status_code == 201, created.text
         task_id = created.json()["id"]
         client.post(f"/api/tasks/{task_id}/start", headers=headers)
         from app.services.task_center.service import drain_task_center
@@ -4861,7 +4946,7 @@ def test_task_center_reset_channel_view_rebuilds_from_latest_messages(monkeypatc
                 "view_count_jitter": 0,
             },
         )
-        assert created.status_code == 200, created.text
+        assert created.status_code == 201, created.text
         task_id = created.json()["id"]
         client.post(f"/api/tasks/{task_id}/start", headers=headers)
         from app.services.task_center.service import drain_task_center
@@ -4941,7 +5026,7 @@ def test_task_center_reset_channel_comment_rebuilds_auto_plan(monkeypatch):
                 "require_review": True,
             },
         )
-        assert created.status_code == 200, created.text
+        assert created.status_code == 201, created.text
         task_id = created.json()["id"]
         client.post(f"/api/tasks/{task_id}/start", headers=headers)
         from app.services.task_center.service import drain_task_center
@@ -5021,7 +5106,7 @@ def test_task_center_reset_group_ai_chat_respects_idle_window(monkeypatch):
                 "messages_per_round": 1,
             },
         )
-        assert created.status_code == 200, created.text
+        assert created.status_code == 201, created.text
         task_id = created.json()["id"]
         started = client.post(f"/api/tasks/{task_id}/start", headers=headers)
         assert started.status_code == 200, started.text
@@ -5112,7 +5197,7 @@ def test_task_center_reset_group_relay_clears_source_fingerprints():
                 "dedup_window_minutes": 60,
             },
         )
-        assert created.status_code == 200, created.text
+        assert created.status_code == 201, created.text
         task_id = created.json()["id"]
         with SessionLocal() as session:
             task = session.get(Task, task_id)
@@ -5158,7 +5243,7 @@ def test_task_center_channel_task_reports_no_collect_account():
                 "like_count_jitter": 0,
             },
         )
-        assert created.status_code == 200, created.text
+        assert created.status_code == 201, created.text
         task_id = created.json()["id"]
         client.post(f"/api/tasks/{task_id}/start", headers=headers)
         from app.services.task_center.service import drain_task_center
@@ -5239,7 +5324,7 @@ def test_task_center_group_relay_auto_executes_and_dedupes(monkeypatch):
                 "require_review": True,
             },
         )
-        assert created.status_code == 200, created.text
+        assert created.status_code == 201, created.text
         task_id = created.json()["id"]
         client.post(f"/api/tasks/{task_id}/start", headers=headers)
 
@@ -5328,7 +5413,7 @@ def test_group_relay_waits_for_source_media_cache_and_preserves_album_order(monk
                 "dedup_window_minutes": 60,
             },
         )
-        assert created.status_code == 200, created.text
+        assert created.status_code == 201, created.text
         task_id = created.json()["id"]
         client.post(f"/api/tasks/{task_id}/start", headers=headers)
 
@@ -5419,7 +5504,7 @@ def test_task_center_group_relay_continues_for_new_source_messages(monkeypatch):
                 "dedup_window_minutes": 60,
             },
         )
-        assert created.status_code == 200, created.text
+        assert created.status_code == 201, created.text
         task_id = created.json()["id"]
 
         from app.services.task_center.service import drain_task_center
@@ -5869,7 +5954,7 @@ def test_task_center_channel_failed_action_retries_before_task_failed(monkeypatc
                 "max_likes_per_account_per_hour": 999,
             },
         )
-        assert created.status_code == 200, created.text
+        assert created.status_code == 201, created.text
         task_id = created.json()["id"]
         client.post(f"/api/tasks/{task_id}/start", headers=headers)
 
@@ -5946,7 +6031,7 @@ def test_task_center_channel_like_respects_per_account_hour_limit(monkeypatch):
                 "max_likes_per_account_per_hour": 1,
             },
         )
-        assert created.status_code == 200, created.text
+        assert created.status_code == 201, created.text
         task_id = created.json()["id"]
         client.post(f"/api/tasks/{task_id}/start", headers=headers)
         client.post("/api/worker/drain-once", headers=headers, json={"reason": "测试手动 drain"})
@@ -6058,7 +6143,7 @@ def test_task_center_no_available_accounts_warns_without_failing():
                 "like_count_jitter": 0,
             },
         )
-        assert created.status_code == 200, created.text
+        assert created.status_code == 201, created.text
         task_id = created.json()["id"]
         with SessionLocal() as session:
             session.get(TgAccount, account["id"]).status = AccountStatus.NEED_RELOGIN.value
@@ -6179,7 +6264,7 @@ def test_task_center_settings_accepts_target_scope_refresh():
                 "target_group_id": group["id"],
             },
         )
-        assert created.status_code == 200, created.text
+        assert created.status_code == 201, created.text
         task_id = created.json()["id"]
         response = client.patch(f"/api/tasks/{task_id}/settings", headers=headers, json={"target_group_id": group["id"]})
         assert response.status_code == 200, response.text

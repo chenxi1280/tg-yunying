@@ -2393,7 +2393,13 @@ def _coverage_plan_state(
     if not _all_accounts_daily_coverage(config):
         return CoveragePlanState(rows=[], rows_by_account={}, due_debt=0)
     bootstrap_missing_all_account_task_scope(session, task, now=timestamp)
-    ensure_task_daily_coverage(session, task, now=timestamp)
+    ensure_task_daily_coverage(
+        session,
+        task,
+        now=timestamp,
+        target_group=group,
+        refresh_existing=True,
+    )
     release_voice_profile_coverage_for_check_in(session, task, now=timestamp)
     backfill_daily_coverage_confirmations(session, task, timestamp.date())
     totals = coverage_plan_totals(session, task, group, now=timestamp)

@@ -26,7 +26,7 @@ export function EditBasics() {
 }
 
 export function WizardBasics({ taskType, onTypeChange }: { taskType: TaskCenterTaskType; onTypeChange: (type: TaskCenterTaskType) => void }) {
-  const simpleSearchClickTask = taskType === 'search_join_group' || taskType === 'search_rank_deboost';
+  const simpleSearchClickTask = ['search_click', 'search_join_group', 'search_rank_deboost'].includes(taskType);
   return (
     <Space direction="vertical" style={{ width: '100%' }}>
       <div className="form-grid">
@@ -52,6 +52,7 @@ function SimpleSearchClickConfig({
   allowUncappedTargetCount?: boolean;
 }) {
   const isRankDeboost = taskType === 'search_rank_deboost';
+  const isPureClick = taskType === 'search_click';
   const targetField = 'target_count';
   const targetLabel = '目标次数';
   const keywordRequired = !editing || isRankDeboost;
@@ -66,7 +67,9 @@ function SimpleSearchClickConfig({
         message={isRankDeboost ? '系统负责账号资格、代理、机器人和风险闸门；启动时仍会检查黑账号组的真实执行条件。' : '系统负责账号资格、代理、机器人和风险闸门；账号组与执行节奏在下一步配置。'}
         description={isRankDeboost
           ? '目标次数只统计已确认的目标点击；待执行或结果未知的动作会占用额度，避免重复点击。'
-          : '目标点击与成员关系分开统计：命中目标即计点击，只有观察到 membership_observed 才计加入。当天点击达标后任务继续运行，次日按新自然日重新计算。'}
+          : isPureClick
+            ? '本任务只执行搜索和目标点击；只有完整远端点击事实才完成当日 ordinal，不加入群聊、不创建成员关系或准入子任务。'
+            : '这是历史混合任务：目标点击与成员关系分开统计，仅保留存量编辑。'}
       />
       <div className="form-grid">
         <Form.Item name="keywords" label={editing && !isRankDeboost ? '搜索关键词（留空不变）' : '搜索关键词'} rules={keywordRequired ? [{ required: true, message: '请填写至少一个搜索关键词' }] : []}>
@@ -74,6 +77,10 @@ function SimpleSearchClickConfig({
         </Form.Item>
         {isRankDeboost ? (
           <Form.Item name={targetField} label={allowUncappedTargetCount ? `${targetLabel}（留空保持历史不封顶）` : targetLabel} rules={allowUncappedTargetCount ? [] : [{ required: true, message: `请填写${targetLabel}` }]}>
+            <InputNumber min={1} precision={0} style={{ width: '100%' }} />
+          </Form.Item>
+        ) : isPureClick ? (
+          <Form.Item name="daily_click_target_count" label="每日目标点击次数" rules={normalTargetRules}>
             <InputNumber min={1} precision={0} style={{ width: '100%' }} />
           </Form.Item>
         ) : (
@@ -141,6 +148,7 @@ export function SearchClickExecutionConfig({
   showStrictDailyTargetOptIn?: boolean;
 }) {
   const isRankDeboost = taskType === 'search_rank_deboost';
+  const isPureClick = taskType === 'search_click';
   const requiredPurpose = isRankDeboost ? 'rank_deboost' : 'normal';
   const poolOptions = accountPools
     .filter((pool) => pool.pool_purpose === requiredPurpose && pool.is_enabled)
@@ -156,7 +164,7 @@ export function SearchClickExecutionConfig({
         <Form.Item name="account_group_id" label="执行账号组" rules={[{ required: true, message: '请选择执行账号组' }]}>
           <Select options={poolOptions} placeholder={isRankDeboost ? '请选择黑搜索账号组' : '请选择普通账号组'} />
         </Form.Item>
-        <Form.Item
+        {!isPureClick && <Form.Item
           name="max_actions_per_day"
           label="每天 action 上限"
           rules={[
@@ -171,8 +179,8 @@ export function SearchClickExecutionConfig({
           ]}
         >
           <InputNumber min={1} precision={0} style={{ width: '100%' }} />
-        </Form.Item>
-        {!isRankDeboost && (
+        </Form.Item>}
+        {!isRankDeboost && !isPureClick && (
           <Form.Item
             name="per_account_daily_action_limit"
             label="单账号每日上限"
@@ -182,7 +190,7 @@ export function SearchClickExecutionConfig({
             <InputNumber min={0} max={1000} precision={0} style={{ width: '100%' }} />
           </Form.Item>
         )}
-        {!isRankDeboost && (
+        {!isRankDeboost && !isPureClick && (
           <Form.Item
             name="allow_same_account_repeat_application"
             label="同账号重复申请"
@@ -192,7 +200,7 @@ export function SearchClickExecutionConfig({
             <Checkbox>允许同账号当天重复申请</Checkbox>
           </Form.Item>
         )}
-        {editing && !isRankDeboost && (
+        {editing && !isRankDeboost && !isPureClick && (
           <>
             <Form.Item name="actions_per_round" label="每轮计划点击数" rules={[{ required: true, message: '请填写每轮计划点击数' }]}>
               <InputNumber min={1} max={20} precision={0} style={{ width: '100%' }} />
@@ -205,7 +213,7 @@ export function SearchClickExecutionConfig({
             </Form.Item>
           </>
         )}
-        {!isRankDeboost && <StrictDailyTargetOptIn enabled={strictDailyTargetEnabled} visible={showStrictDailyTargetOptIn} />}
+        {!isRankDeboost && !isPureClick && <StrictDailyTargetOptIn enabled={strictDailyTargetEnabled} visible={showStrictDailyTargetOptIn} />}
         <Form.Item name="scheduled_end" label="完成截止时间" rules={[{ required: true, message: '请选择完成截止时间' }]}>
           <Input type="datetime-local" />
         </Form.Item>
@@ -624,6 +632,7 @@ export function WizardAccounts({ accountMode, accounts, accountPools, taskType }
 function SimpleSearchClickReview({ taskType, values, targets, accountPools }: Pick<Parameters<typeof WizardReview>[0], 'taskType' | 'values' | 'targets' | 'accountPools'>) {
   const displayTarget = targetName(values, targets);
   const isRankDeboost = taskType === 'search_rank_deboost';
+  const isPureClick = taskType === 'search_click';
   const targetCount = values.target_count;
   const accountPool = accountPools.find((pool) => pool.id === values.account_group_id);
   const quietHours = values.quiet_start && values.quiet_end ? `${values.quiet_start} - ${values.quiet_end}` : '未设置';
@@ -638,17 +647,19 @@ function SimpleSearchClickReview({ taskType, values, targets, accountPools }: Pi
         { key: 'type', label: '任务类型', children: TYPE_LABEL[taskType] },
         { key: 'target', label: '目标群', children: displayTarget },
         { key: 'keywords', label: '搜索关键词', children: words(values.keywords).join('、') || '-' },
-        ...(isRankDeboost ? [{ key: 'target-count', label: '目标次数', children: `${targetCount || '-'} 次（以已确认目标点击计）` }] : [
+        ...(isRankDeboost ? [{ key: 'target-count', label: '目标次数', children: `${targetCount || '-'} 次（以已确认目标点击计）` }] : isPureClick ? [
+          { key: 'click-target-count', label: '每日目标点击', children: `${values.daily_click_target_count || '-'} 次/日（仅完整远端点击事实计入）` },
+        ] : [
           { key: 'click-target-count', label: '每日目标点击', children: `${values.daily_click_target_count || '-'} 次/日（命中目标即计）` },
           { key: 'membership-target-count', label: '每日成员关系观察目标', children: `${values.daily_target_count || '-'} 次/日（仅 membership_observed 计入）` },
           { key: 'repeat-application', label: '同账号重复申请', children: values.allow_same_account_repeat_application ? '允许' : '不允许' },
         ]),
         { key: 'account-group', label: '执行账号组', children: accountPool ? `${accountPool.name}（${accountPool.account_count} 个账号）` : '-' },
-        { key: 'daily-limit', label: '每天 action 上限', children: `${values.max_actions_per_day || '-'} 次` },
+        ...(!isPureClick ? [{ key: 'daily-limit', label: '每天 action 上限', children: `${values.max_actions_per_day || '-'} 次` }] : []),
         { key: 'end', label: '完成截止时间', children: values.scheduled_end ? formatDateTime(values.scheduled_end) : '-' },
         { key: 'jitter', label: '抖动', children: `日 ${values.daily_jitter_percent ?? 0}% / 每小时 ${values.hourly_jitter_percent ?? 0}%` },
         { key: 'quiet', label: '静默时间', children: quietHours },
-        { key: 'policy', label: '系统托管', children: '代理、机器人、账号资格、真实结果与风控由系统管理' },
+        { key: 'policy', label: '系统托管', children: isPureClick ? '账号容量、顺序、授权、代理、协议与分配由系统启动后计算' : '代理、机器人、账号资格、真实结果与风控由系统管理' },
         { key: 'start', label: '创建说明', children: taskType === 'search_rank_deboost' ? '创建为草稿；启动准备时系统检查可用资源和执行条件。' : '创建并启动后由系统按可用资源执行。' },
       ]} />
     </Space>
@@ -656,7 +667,7 @@ function SimpleSearchClickReview({ taskType, values, targets, accountPools }: Pi
 }
 
 export function WizardReview({ taskType, values, accounts, accountPools, targets, ruleSets, slangTemplates, precheck, loading }: { taskType: TaskCenterTaskType; values: Record<string, any>; accounts: Account[]; accountPools: AccountPool[]; targets: OperationTarget[]; ruleSets: RuleSet[]; slangTemplates: PromptTemplate[]; precheck: TaskPrecheck | null; loading: boolean }) {
-  if (taskType === 'search_join_group' || taskType === 'search_rank_deboost') {
+  if (['search_click', 'search_join_group', 'search_rank_deboost'].includes(taskType)) {
     return <SimpleSearchClickReview taskType={taskType} values={values} targets={targets} accountPools={accountPools} />;
   }
   const account = accountPrecheck(values, accounts, accountPools, taskType);

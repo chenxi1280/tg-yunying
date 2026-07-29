@@ -21,7 +21,10 @@ CONTROLLED_TEXT_ENUMS = {
     "jisou_channel_category": ("📢", "频道", "频道列表", "channels", "channel"),
 }
 ALLOWED_BUTTON_TYPES = frozenset({"callback_data", "telegram_url", "external_http_url", "unknown"})
-ALLOWED_BUTTON_EFFECTS = frozenset({"unknown", "navigate_only", "join_candidate", "external"})
+ALLOWED_BUTTON_EFFECTS = frozenset({"unknown", "navigate_only", "target_open_only", "join_candidate", "external"})
+ALLOWED_MEMBERSHIP_SIDE_EFFECTS = frozenset(
+    {"none", "join", "request_to_join", "follow", "unknown"}
+)
 
 # PRD §2.19.1: verification_image_page 是独立相位，需 MessageMediaPhoto + 人机验证文本 + ≥8 个 callback_data 数字按钮。
 VERIFICATION_IMAGE_PAGE = "verification_image_page"
@@ -57,6 +60,24 @@ def approved_protocol_profile(structure_json: object) -> dict[str, Any] | None:
 
 def protocol_profile_is_approved(profile: object) -> bool:
     return approved_protocol_profile(profile) is not None
+
+
+def pure_click_protocol_profile_is_approved(profile: object) -> bool:
+    approved = approved_protocol_profile(profile)
+    if approved is None:
+        return False
+    result_pages = [
+        item
+        for item in approved["page_fingerprints"]
+        if item["page_phase"] == "group_result_page"
+    ]
+    return bool(result_pages) and all(
+        set(item["membership_side_effects_allowed"]) == {"none"}
+        and set(item["button_effects_any"]).issubset(
+            {"navigate_only", "target_open_only"}
+        )
+        for item in result_pages
+    )
 
 
 def classify_jisou_page(
@@ -131,9 +152,21 @@ def _sanitize_fingerprint(value: object) -> dict[str, Any] | None:
     text_enums = _enum_list(source, "text_enums", CONTROLLED_TEXT_ENUMS)
     button_text_enums = _enum_list(source, "button_text_enums_any", CONTROLLED_TEXT_ENUMS)
     button_effects = _enum_list(source, "button_effects_any", ALLOWED_BUTTON_EFFECTS)
+    membership_effects = _enum_list(
+        source,
+        "membership_side_effects_allowed",
+        ALLOWED_MEMBERSHIP_SIDE_EFFECTS,
+    )
     required_buttons = _button_rules(source.get("required_buttons"), require_position=False)
     selector_rules = _selector_rules(source.get("selector_rules"))
-    if None in (text_enums, button_text_enums, button_effects, required_buttons, selector_rules):
+    if None in (
+        text_enums,
+        button_text_enums,
+        button_effects,
+        membership_effects,
+        required_buttons,
+        selector_rules,
+    ):
         return None
     if phase == "search_category_page" and not selector_rules:
         return None
@@ -146,6 +179,7 @@ def _sanitize_fingerprint(value: object) -> dict[str, Any] | None:
         "text_enums": text_enums,
         "button_text_enums_any": button_text_enums,
         "button_effects_any": button_effects,
+        "membership_side_effects_allowed": membership_effects,
         "required_buttons": required_buttons,
         "selector_rules": selector_rules,
     }

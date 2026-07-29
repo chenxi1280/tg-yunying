@@ -292,6 +292,7 @@ class SearchJoinPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     execution_mode: str = "mtproto_userbot"
+    search_execution_mode: str = "legacy_mixed_search_join"
     bot_username: str = Field(min_length=1, max_length=80)
     max_pages: int = Field(default=70, ge=1, le=70, exclude=True)
     keyword_hash: str = Field(min_length=64, max_length=64)
@@ -329,6 +330,11 @@ class SearchJoinPayload(BaseModel):
             raise ValueError("search_join requires session_role")
         if _missing_client_metadata(self.client_metadata):
             raise ValueError("search_join requires complete client_metadata")
+        if self.search_execution_mode not in {
+            "click_only",
+            "legacy_mixed_search_join",
+        }:
+            raise ValueError("search_join search_execution_mode invalid")
         return self
 
 

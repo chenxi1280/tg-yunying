@@ -10,7 +10,7 @@ export const TASK_TYPES: Array<{ value: TaskCenterTaskType; label: string }> = [
   { value: 'channel_view', label: '频道消息浏览' },
   { value: 'channel_like', label: '频道消息点赞' },
   { value: 'channel_comment', label: '频道消息评论/回复' },
-  { value: 'search_join_group', label: '搜索目标群点击任务' },
+  { value: 'search_click', label: '搜索点击任务' },
   { value: 'search_rank_deboost', label: '搜索排名观察任务' },
 ];
 
@@ -19,6 +19,7 @@ TYPE_LABEL.account_profile_init = '资料初始化批次';
 TYPE_LABEL.account_device_cleanup = '清理登录设备批次';
 TYPE_LABEL.account_2fa_setup = '设置二步密码批次';
 TYPE_LABEL.account_standby_session_provision = '备用 session 补齐批次';
+TYPE_LABEL.search_join_group = '历史搜索点击加入任务';
 
 export const CREATE_ENDPOINT: Record<TaskCenterTaskType, string> = {
   group_ai_chat: '/tasks/group-ai-chat',
@@ -27,6 +28,7 @@ export const CREATE_ENDPOINT: Record<TaskCenterTaskType, string> = {
   channel_view: '/tasks/channel-view',
   channel_like: '/tasks/channel-like',
   channel_comment: '/tasks/channel-comment',
+  search_click: '/tasks/search-click',
   search_join_group: '/tasks/search-join-group',
   search_rank_deboost: '/tasks/search_rank_deboost',
 };
@@ -38,11 +40,12 @@ export const CREATE_AND_START_ENDPOINT: Record<TaskCenterTaskType, string> = {
   channel_view: '/tasks/channel-view/create-and-start',
   channel_like: '/tasks/channel-like/create-and-start',
   channel_comment: '/tasks/channel-comment/create-and-start',
+  search_click: '/tasks/search-click/create-and-start',
   search_join_group: '/tasks/search-join-group/create-and-start',
   search_rank_deboost: '/tasks/search_rank_deboost/create_and_start',
 };
 
-export const WIZARD_STEPS = ['基础信息', '目标来源', '任务配置', '账号与节奏', '预检确认'];
+export const WIZARD_STEPS = ['基础信息', '目标来源', '任务配置', '账号与节奏', '确认创建'];
 export const SIMPLE_SEARCH_CLICK_WIZARD_STEPS = ['任务类型', '目标群', '关键词与目标次数', '执行范围与节奏', '确认'];
 export const CHANNEL_COUNT_JITTER_DEFAULT = 0.2;
 const DEFAULT_SEARCH_CLICK_DAILY_ACTIONS = 10;
@@ -51,11 +54,13 @@ const DEFAULT_SEARCH_CLICK_DAILY_JITTER_PERCENT = 20;
 const DEFAULT_SEARCH_CLICK_HOURLY_JITTER_PERCENT = 30;
 
 export function isSimpleSearchClickTask(taskType: TaskCenterTaskType) {
-  return taskType === 'search_join_group' || taskType === 'search_rank_deboost';
+  return ['search_click', 'search_join_group', 'search_rank_deboost'].includes(taskType);
 }
 
 export function simpleSearchTargetField(taskType: TaskCenterTaskType) {
-  return taskType === 'search_join_group' ? 'daily_target_count' : 'target_count';
+  return taskType === 'search_click' ? 'daily_click_target_count'
+    : taskType === 'search_join_group' ? 'daily_target_count'
+    : 'target_count';
 }
 
 export function wizardStepsForTask(taskType: TaskCenterTaskType) {
@@ -458,6 +463,7 @@ export function isPlannedAction(action: TaskCenterAction): boolean {
 export function commonInitialValues(setting?: SchedulingSetting | null) {
   const template = operationTemplate('natural_full_day');
   return {
+    client_request_id: crypto.randomUUID(),
     priority: 3,
     timezone: 'Asia/Shanghai',
     selection_mode: 'all',
@@ -532,6 +538,9 @@ export function typeInitialValues(type: TaskCenterTaskType, setting?: Scheduling
       delete_after_send: false,
     };
   }
+  if (type === 'search_click') {
+    return searchClickInitialValues('daily_click_target_count');
+  }
   if (type === 'search_join_group') {
     return searchClickInitialValues('daily_target_count');
   }
@@ -576,14 +585,17 @@ export function typeInitialValues(type: TaskCenterTaskType, setting?: Scheduling
   };
 }
 
-function searchClickInitialValues(targetField: 'daily_target_count' | 'target_count') {
+function searchClickInitialValues(targetField: 'daily_click_target_count' | 'daily_target_count' | 'target_count') {
   return {
+    client_request_id: crypto.randomUUID(),
     target_title: '',
     target_link: '',
     keywords: '',
     [targetField]: null,
     account_group_id: null,
-    max_actions_per_day: DEFAULT_SEARCH_CLICK_DAILY_ACTIONS,
+    ...(targetField !== 'daily_click_target_count' ? {
+      max_actions_per_day: DEFAULT_SEARCH_CLICK_DAILY_ACTIONS,
+    } : {}),
     ...(targetField === 'daily_target_count' ? {
       daily_click_target_count: null,
       allow_same_account_repeat_application: false,
@@ -600,7 +612,7 @@ function searchClickInitialValues(targetField: 'daily_target_count' | 'target_co
 function simpleSearchExecutionFields(taskType: TaskCenterTaskType, editing = false): string[] {
   return [
     'account_group_id',
-    'max_actions_per_day',
+    ...(taskType !== 'search_click' ? ['max_actions_per_day'] : []),
     ...(taskType === 'search_join_group' ? ['per_account_daily_action_limit', 'allow_same_account_repeat_application'] : []),
     ...(editing && taskType === 'search_join_group' ? ['actions_per_round', 'max_actions_per_hour', 'hourly_min_successful_joins'] : []),
     'scheduled_end',
@@ -612,7 +624,9 @@ function simpleSearchExecutionFields(taskType: TaskCenterTaskType, editing = fal
 }
 
 function simpleSearchTargetFields(taskType: TaskCenterTaskType): string[] {
-  return taskType === 'search_join_group'
+  return taskType === 'search_click'
+    ? ['daily_click_target_count']
+    : taskType === 'search_join_group'
     ? ['daily_click_target_count', 'daily_target_count']
     : [simpleSearchTargetField(taskType)];
 }
@@ -646,7 +660,9 @@ export function fieldsForStep(step: number, taskType: TaskCenterTaskType, messag
     return fields;
   }
   if (step === 2 && isSimpleSearchClickTask(taskType)) {
-    return taskType === 'search_join_group'
+    return taskType === 'search_click'
+      ? ['keywords', 'daily_click_target_count']
+      : taskType === 'search_join_group'
       ? ['keywords', 'daily_click_target_count', 'daily_target_count']
       : ['keywords', simpleSearchTargetField(taskType)];
   }

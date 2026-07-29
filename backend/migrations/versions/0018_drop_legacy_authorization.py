@@ -55,6 +55,8 @@ def _drop_index_if_exists(table: str, index_name: str) -> None:
 
 def upgrade() -> None:
     _drop_fks_to("ai_usage_ledgers", "app_users")
+    _drop_fks_to("tasks", "app_users")
+    _drop_fks_to("task_start_operations", "app_users")
     if _table_exists("ai_usage_ledgers") and _column_exists("ai_usage_ledgers", "user_id"):
         try:
             op.alter_column("ai_usage_ledgers", "user_id", existing_type=sa.Integer(), nullable=True)

@@ -13,6 +13,8 @@ from app.schemas.task_center import (
     GroupMembershipAdmissionTaskCreate,
     GroupRelayConfig,
     GroupRelayTaskCreate,
+    SearchClickConfig,
+    SearchClickInternalTaskCreate,
     SearchJoinGroupConfig,
     SearchJoinGroupTaskCreate,
 )
@@ -24,6 +26,7 @@ TYPE_CONFIG_MODELS = {
     "channel_view": ChannelViewConfig,
     "channel_like": ChannelLikeConfig,
     "channel_comment": ChannelCommentConfig,
+    "search_click": SearchClickConfig,
     "search_join_group": SearchJoinGroupConfig,
 }
 TASK_CREATE_MODELS = {
@@ -33,11 +36,13 @@ TASK_CREATE_MODELS = {
     "channel_view": ChannelViewTaskCreate,
     "channel_like": ChannelLikeTaskCreate,
     "channel_comment": ChannelCommentTaskCreate,
+    "search_click": SearchClickInternalTaskCreate,
     "search_join_group": SearchJoinGroupTaskCreate,
 }
 CHANNEL_DYNAMIC_TASK_TYPES = {"channel_view", "channel_like", "channel_comment"}
 
 COMMON_CREATE_FIELDS = {
+    "client_request_id",
     "name",
     "priority",
     "timezone",

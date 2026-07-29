@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from typing import Any
+import hashlib
+import json
 import os
 import re
 import socket
@@ -17,7 +19,7 @@ from pydantic import ValidationError
 from app.admin_chats import send_admin_chat_broadcast
 from app.integrations.telegram import DeveloperAppCredentials, OperationResult, OutboundSegment
 from app.config import get_settings
-from app.models import AccountStatus, Action, AiAccountVoiceProfile, AiGroupMessageMemory, ChannelMessage, CommentFulfillmentObligation, ContentMixCycle, ContentMixCycleSlot, ContentMixObligation, ExecutionAttempt, FailureType, GroupAuthStatus, GroupContextMessage, OperationTarget, ReviewQueue, Task, TaskAccountDailyCoverage, TaskGroupDailyMessageSlot, TaskMembershipAdmissionItem, Tenant, TgAccount, TgGroup, TgGroupAccount, VerificationTask
+from app.models import AccountStatus, Action, AiAccountVoiceProfile, AiGroupMessageMemory, ChannelMessage, CommentFulfillmentObligation, ConsistencyQuarantine, ContentMixCycle, ContentMixCycleSlot, ContentMixObligation, ExecutionAttempt, FailureType, GroupAuthStatus, GroupContextMessage, OperationTarget, ReviewQueue, SearchClickFulfillmentObligation, SearchClickOpportunityAssignment, Task, TaskAccountDailyCoverage, TaskDayLedger, TaskGroupDailyMessageSlot, TaskMembershipAdmissionItem, Tenant, TgAccount, TgGroup, TgGroupAccount, VerificationTask
 from app.models import AccountEnvironmentBinding, AccountProxy, AccountProxyBinding, TelegramDeveloperApp, TgAccountAuthorization
 from app.search_keywords import normalized_keyword_hash
 from app.security import decrypt_secret
@@ -124,6 +126,8 @@ from .search_join_membership import (
     source_action_for_membership,
 )
 from .search_click_target_progress import reconcile_search_click_target_progress
+from .search_click_assignment_release import release_search_click_assignment
+from .search_join_facts import has_complete_pure_click_fact
 from .search_rank_deboost_reservations import (
     gateway_reservation_blocker,
     mark_reserved_reservation_unknown,
@@ -5585,18 +5589,169 @@ def _dispatch_search_join(session: Session, action: Action, account: TgAccount, 
         keyword_text,
         **search_join_kwargs,
     )
+    result = _normalize_pure_search_click_result(payload, result)
     _record_search_join_protocol_result(session, action, payload, result, attempt)
     action.status = "success" if result.get("success") else "failed"
     action.result = {**(action.result or {}), **result}
     _record_search_join_proxy_failover(session, action, payload, result)
     action.executed_at = _now()
     _finish_search_join_attempt(attempt, action, result)
+    if payload.search_execution_mode == "click_only":
+        _settle_pure_search_click_obligation(session, action, attempt)
+        return True
     if action.status == "success" and result.get("join_status") == "target_found":
         child = create_membership_child(session, action, payload, _now())
         mark_source_membership_pending(action, child, timestamp=_now())
         return True
     _create_search_join_linked_dispatches(session, action, payload)
     return True
+
+
+def _normalize_pure_search_click_result(
+    payload: SearchJoinPayload,
+    result: dict,
+) -> dict:
+    if payload.search_execution_mode != "click_only" or not result.get("success"):
+        return result
+    normalized = {
+        **result,
+        "target_click_observed_at": _now().isoformat(),
+    }
+    if has_complete_pure_click_fact(normalized):
+        return normalized
+    return {
+        **normalized,
+        "success": False,
+        "error_code": "pure_click_fact_incomplete",
+        "detail": "纯搜索点击缺少完整远端证据，当前 ordinal 不计完成",
+    }
+
+
+def _settle_pure_search_click_obligation(
+    session: Session,
+    action: Action,
+    attempt: ExecutionAttempt,
+) -> None:
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    obligation_id = str(payload.get("search_click_obligation_id") or "")
+    obligation = session.get(SearchClickFulfillmentObligation, obligation_id)
+    if obligation is None or obligation.source_action_id != action.id:
+        action.status = "failed"
+        action.result = {
+            **(action.result or {}),
+            "success": False,
+            "error_code": "search_click_obligation_binding_invalid",
+        }
+        return
+    obligation.execution_attempt_id = attempt.id
+    assignment_id = str(payload.get("search_click_assignment_id") or "")
+    assignment = session.get(SearchClickOpportunityAssignment, assignment_id)
+    if assignment is not None and attempt.gateway_call_started_at is not None:
+        assignment.state = "consumed"
+        assignment.version += 1
+    if action.status != "success" or not has_complete_pure_click_fact(action.result):
+        obligation.status = (
+            "unknown_after_send"
+            if action.status == "unknown_after_send"
+            else "open"
+        )
+        return
+    evidence_hash = _pure_click_evidence_hash(action.result, attempt.id)
+    duplicate_id = session.scalar(
+        select(SearchClickFulfillmentObligation.id).where(
+            SearchClickFulfillmentObligation.click_evidence_hash == evidence_hash,
+            SearchClickFulfillmentObligation.id != obligation.id,
+        )
+    )
+    if duplicate_id:
+        obligation.status = "open"
+        action.status = "failed"
+        action.result = {
+            **(action.result or {}),
+            "success": False,
+            "error_code": "duplicate_click_evidence",
+        }
+        _quarantine_duplicate_click_fact(
+            session,
+            obligation,
+            duplicate_id=duplicate_id,
+            evidence_hash=evidence_hash,
+        )
+        return
+    ledger = session.get(TaskDayLedger, obligation.task_day_ledger_id)
+    confirmed_at = action.executed_at or _now()
+    if (
+        ledger is None
+        or confirmed_at < ledger.period_start_at
+        or confirmed_at >= ledger.deadline_at
+    ):
+        obligation.status = "open"
+        action.status = "failed"
+        action.result = {
+            **(action.result or {}),
+            "success": False,
+            "error_code": "click_fact_outside_ledger_period",
+        }
+        return
+    obligation.status = "confirmed"
+    obligation.target_click_observed = True
+    obligation.click_evidence_hash = evidence_hash
+    obligation.remote_confirmed_at = confirmed_at
+
+
+def _pure_click_evidence_hash(result: dict, execution_attempt_id: str) -> str:
+    fields = (
+        "target_username",
+        "bot_username",
+        "keyword_hash",
+        "target_message_id",
+        "target_position",
+        "target_button_row",
+        "target_button_col",
+        "target_button_type",
+        "target_button_effect",
+        "target_button_fingerprint",
+        "membership_side_effect",
+        "membership_mutating_rpc_invoked",
+    )
+    value = {
+        "execution_attempt_id": execution_attempt_id,
+        **{field: result.get(field) for field in fields},
+    }
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _quarantine_duplicate_click_fact(
+    session: Session,
+    obligation: SearchClickFulfillmentObligation,
+    *,
+    duplicate_id: str,
+    evidence_hash: str,
+) -> None:
+    scope_id = obligation.id
+    fingerprint = hashlib.sha256(
+        f"{scope_id}:{duplicate_id}:{evidence_hash}".encode()
+    ).hexdigest()
+    existing = session.scalar(select(ConsistencyQuarantine.id).where(
+        ConsistencyQuarantine.scope_type == "search_click_obligation",
+        ConsistencyQuarantine.scope_id == scope_id,
+        ConsistencyQuarantine.issue_fingerprint == fingerprint,
+    ))
+    if existing is not None:
+        return
+    session.add(ConsistencyQuarantine(
+        tenant_id=obligation.tenant_id,
+        scope_type="search_click_obligation",
+        scope_id=scope_id,
+        reason_code="remote_fact_owned_elsewhere",
+        issue_fingerprint=fingerprint,
+        observed_state=json.dumps({
+            "owner_obligation_id": duplicate_id,
+            "evidence_hash": evidence_hash,
+        }, sort_keys=True),
+        trigger="pure_click_settlement",
+    ))
 
 
 def _record_search_join_protocol_result(
@@ -6280,7 +6435,29 @@ def _skip(action: Action, code: str, detail: str) -> None:
     action.result = {**(action.result or {}), "success": False, "error_code": code, "error_message": detail, "auto_check": "跳过", "validation_stage": "context"}
     action.executed_at = _now()
     _release_rank_deboost_reservation_before_gateway(action)
+    _release_pure_search_assignment_before_gateway(action, code)
     _release_runtime_resources(action)
+
+
+def _release_pure_search_assignment_before_gateway(
+    action: Action,
+    reason_code: str,
+) -> None:
+    if action.task_type != "search_click":
+        return
+    session = object_session(action)
+    assignment_id = str(
+        (action.payload or {}).get("search_click_assignment_id") or ""
+    )
+    if session is None or not assignment_id or _gateway_call_started(session, action):
+        return
+    release_search_click_assignment(
+        session,
+        assignment_id,
+        trigger_key=f"action_terminal:{action.id}:{reason_code}",
+        reason_code="search_assignment_pre_gateway_terminal",
+        now_value=_now(),
+    )
 
 
 def _skip_stale_channel_daily_actions(session: Session, *, today: date) -> int:
@@ -6357,6 +6534,8 @@ def _skip_search_click_action_during_quiet_hours(session: Session, action: Actio
         return False
     task = session.get(Task, action.task_id)
     if task is None:
+        return False
+    if task.type == "search_click":
         return False
     config = {**dict(task.type_config or {}), **dict(task.pacing_config or {})}
     if not quiet_hours_active(_now(), config, timezone_name=task.timezone):
@@ -7523,6 +7702,17 @@ def _finish_search_join_before_gateway(
     attempt.failure_type = failure_type
     attempt.failure_detail = str((action.result or {}).get("error_message") or failure_type)
     attempt.result_snapshot = dict(action.result or {})
+    assignment_id = str(
+        (action.payload or {}).get("search_click_assignment_id") or ""
+    )
+    if action.task_type == "search_click" and assignment_id:
+        release_search_click_assignment(
+            session,
+            assignment_id,
+            trigger_key=f"pre_gateway:{action.id}:{failure_type}",
+            reason_code="search_assignment_pre_gateway_terminal",
+            now_value=_now(),
+        )
     session.commit()
 
 

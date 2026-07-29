@@ -9,7 +9,8 @@ from app.models import AccountPool
 from app.services.account_usage_policy import pool_markers_consistent
 
 
-NORMAL_SEARCH_CLICK_TASK = "search_join_group"
+NORMAL_SEARCH_CLICK_TASK = "search_click"
+LEGACY_SEARCH_CLICK_TASK = "search_join_group"
 RANK_SEARCH_CLICK_TASK = "search_rank_deboost"
 DAILY_TARGET_ACTION_SKIP_PROBABILITY = 0.0
 
@@ -53,13 +54,14 @@ def search_click_pacing_config(payload: Any) -> dict[str, Any]:
 
 
 def _account_group_error(task_type: str) -> str:
-    if task_type == NORMAL_SEARCH_CLICK_TASK:
+    if task_type in {NORMAL_SEARCH_CLICK_TASK, LEGACY_SEARCH_CLICK_TASK}:
         return "普通搜索点击任务只能使用普通账号组"
     return "黑搜索点击任务只能使用可用黑账号组"
 
 
 __all__ = [
     "NORMAL_SEARCH_CLICK_TASK",
+    "LEGACY_SEARCH_CLICK_TASK",
     "RANK_SEARCH_CLICK_TASK",
     "DAILY_TARGET_ACTION_SKIP_PROBABILITY",
     "require_search_click_account_group",

@@ -22,7 +22,6 @@ TARGET_CLICK_OUTCOME = "target_click"
 EXCLUSION_ERROR_CODES = frozenset(
     {
         "jisou_session_state_deviated",
-        "jisou_image_verification_required",
         "jisou_image_verification_failed",
     }
 )

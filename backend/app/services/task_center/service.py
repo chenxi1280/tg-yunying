@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session, object_session
 
 from app.config import get_settings
 from app.integrations.telegram import OperationResult
-from app.models import AccountPool, AccountStatus, Action, AiCoverageVariationIntent, ChannelMessage, ExecutionAttempt, FailureType, MessageFingerprint, OperationIssue, OperationPlanTaskLink, OperationTarget, ReviewQueue, RuleSet, RuleSetVersion, SearchJoinPacingDecision, Task, TaskAccountDailyCoverage, TaskMembershipAdmissionItem, TaskRuntimeSummary, TgAccount, TgGroup, WorkerHeartbeat
+from app.models import AccountPool, AccountStatus, Action, AiCoverageVariationIntent, ChannelMessage, ExecutionAttempt, FailureType, MessageFingerprint, OperationIssue, OperationPlanTaskLink, OperationTarget, ReviewQueue, RuleSet, RuleSetVersion, SearchClickOpportunityAssignment, SearchJoinPacingDecision, Task, TaskAccountDailyCoverage, TaskDayLedger, TaskMembershipAdmissionItem, TaskRuntimeSummary, TgAccount, TgGroup, WorkerHeartbeat
 from app.models.search_rank_deboost import AccountGroupProxyBinding, SearchRankDeboostClickReservation, SearchRankDeboostExemptGroup
 from app.search_keywords import normalized_keyword_hash, repair_legacy_keyword_materials
 from app.schemas.task_center import (
@@ -39,6 +39,10 @@ from app.schemas.task_center import (
     GroupRelayTaskCreate,
     GroupRelayTaskConfigUpdate,
     RecommendTaskAccountsRequest,
+    SearchClickInternalTaskCreate,
+    SearchClickPacingConfig,
+    SearchClickTaskConfigUpdate,
+    SearchClickTaskCreate,
     SearchJoinGroupTaskCreate,
     SearchJoinGroupTaskConfigUpdate,
     SearchJoinGroupSimpleTaskCreate,
@@ -225,8 +229,10 @@ from .search_rank_deboost import (
     validate_rank_deboost_protocol_samples,
 )
 from .search_click_target_progress import reconcile_search_click_target_progress, search_click_target_progress
+from .search_click_assignment_release import release_search_click_assignment
 from .search_click_controls import (
     DAILY_TARGET_ACTION_SKIP_PROBABILITY,
+    LEGACY_SEARCH_CLICK_TASK,
     NORMAL_SEARCH_CLICK_TASK,
     RANK_SEARCH_CLICK_TASK,
     require_search_click_account_group,
@@ -248,6 +254,11 @@ from .config_normalization import (
     validated_type_config,
 )
 from .continuity_config import increment_revision_for_continuity_change
+from .creation_operations import StartExecutionResult
+from .search_click_revisions import (
+    pending_search_click_revision,
+    store_pending_search_click_revision,
+)
 
 
 def create_group_ai_chat_task(session: Session, tenant_id: int, payload: GroupAIChatTaskCreate, actor: str) -> Task:
@@ -276,6 +287,16 @@ def create_channel_comment_task(session: Session, tenant_id: int, payload: Chann
 
 def create_search_join_group_task(session: Session, tenant_id: int, payload: SearchJoinGroupTaskCreate, actor: str) -> Task:
     return _create_task(session, tenant_id, "search_join_group", payload, actor)
+
+
+def create_search_click_task(
+    session: Session,
+    tenant_id: int,
+    payload: SearchClickTaskCreate,
+    actor: str,
+) -> Task:
+    internal = _search_click_internal_payload(session, tenant_id, payload)
+    return _create_task(session, tenant_id, "search_click", internal, actor)
 
 
 def create_simple_search_join_group_task(
@@ -320,6 +341,16 @@ def create_and_start_search_join_group_task(session: Session, tenant_id: int, pa
     return _create_and_start_task(session, tenant_id, "search_join_group", payload, actor)
 
 
+def create_and_start_search_click_task(
+    session: Session,
+    tenant_id: int,
+    payload: SearchClickTaskCreate,
+    actor: str,
+) -> Task:
+    task = create_search_click_task(session, tenant_id, payload, actor)
+    return start_task(session, tenant_id, task.id, actor)
+
+
 def create_and_start_simple_search_join_group_task(
     session: Session,
     tenant_id: int,
@@ -344,9 +375,9 @@ def _new_task(session: Session, tenant_id: int, task_type: str, payload) -> Task
     type_config = validated_type_config(task_type, raw_type_config)
     validate_rule_binding(session, tenant_id, type_config)
     pacing_config = pacing_config_payload(payload.pacing_config)
-    if task_type == NORMAL_SEARCH_CLICK_TASK and type_config.get("strict_daily_target"):
+    if task_type == LEGACY_SEARCH_CLICK_TASK and type_config.get("strict_daily_target"):
         pacing_config["skip_probability_per_action"] = DAILY_TARGET_ACTION_SKIP_PROBABILITY
-    if task_type == NORMAL_SEARCH_CLICK_TASK:
+    if task_type == LEGACY_SEARCH_CLICK_TASK:
         _validate_strict_search_join_daily_capacity(
             session,
             tenant_id,
@@ -396,6 +427,51 @@ def _simple_search_click_target(session: Session, tenant_id: int, target_id: int
     if not PUBLIC_TELEGRAM_USERNAME_RE.fullmatch(username):
         raise ValueError("搜索点击目标群必须配置合法公开 username")
     return target
+
+
+def _search_click_internal_payload(
+    session: Session,
+    tenant_id: int,
+    payload: SearchClickTaskCreate,
+) -> SearchClickInternalTaskCreate:
+    _require_future_search_click_deadline(payload.scheduled_end)
+    require_search_click_account_group(
+        session, tenant_id, NORMAL_SEARCH_CLICK_TASK, payload.account_group_id
+    )
+    target, canonical_link = _simple_search_click_target_from_input(
+        session, tenant_id, payload.target_title, payload.target_link
+    )
+    hashes = [normalized_keyword_hash(value) for value in payload.keywords]
+    ciphertexts = [encrypt_secret(value) for value in payload.keywords]
+    pacing = SearchClickPacingConfig(
+        mode="template",
+        jitter_percent=payload.hourly_jitter_percent,
+        daily_jitter_percent=payload.daily_jitter_percent,
+        hourly_jitter_percent=payload.hourly_jitter_percent,
+        quiet_hours=payload.quiet_hours,
+    )
+    return SearchClickInternalTaskCreate(
+        client_request_id=payload.client_request_id,
+        name=_simple_search_click_name(
+            target,
+            "搜索点击",
+            payload.daily_click_target_count,
+            payload.target_title,
+            daily_target=True,
+        ),
+        search_execution_mode="click_only",
+        target_operation_target_id=target.id,
+        target_input=canonical_link,
+        target_title=payload.target_title,
+        target_link=canonical_link,
+        daily_click_target_count=payload.daily_click_target_count,
+        search_bots=[{"username": "jisou", "display_name": "极搜"}],
+        keyword_hashes=hashes,
+        keyword_text_ciphertexts=ciphertexts,
+        account_config=AccountConfig(**search_click_account_config(payload.account_group_id)),
+        pacing_config=pacing,
+        scheduled_end=as_beijing(payload.scheduled_end),
+    )
 
 
 def _simple_search_join_group_payload(
@@ -520,8 +596,9 @@ def _refresh_simple_search_click_name(session: Session, task: Task, *, task_labe
             target_id = target_group_ids[0]
     if target_id is None:
         return
-    daily_click_target = task.type == NORMAL_SEARCH_CLICK_TASK and config.get("daily_click_target_count") is not None
-    daily_target = task.type == NORMAL_SEARCH_CLICK_TASK and config.get("daily_target_count") is not None
+    is_legacy_search = task.type == LEGACY_SEARCH_CLICK_TASK
+    daily_click_target = is_legacy_search and config.get("daily_click_target_count") is not None
+    daily_target = is_legacy_search and config.get("daily_target_count") is not None
     target_count = int(
         config.get("daily_click_target_count") if daily_click_target
         else config.get("daily_target_count") if daily_target
@@ -1000,6 +1077,193 @@ def update_search_join_group_config(session: Session, tenant_id: int, task_id: s
     return task
 
 
+def update_search_click_config(
+    session: Session,
+    tenant_id: int,
+    task_id: str,
+    payload: SearchClickTaskConfigUpdate,
+    actor: str,
+) -> Task:
+    task = _get_task(session, tenant_id, task_id)
+    if task.type != NORMAL_SEARCH_CLICK_TASK:
+        raise ValueError(f"任务类型不匹配，当前任务是 {task.type}")
+    values = payload.model_dump(exclude_unset=True)
+    revision_fields = {
+        key: values.pop(key)
+        for key in tuple(values)
+        if key in {
+            "target_title",
+            "target_link",
+            "keywords",
+            "daily_click_target_count",
+            "account_group_id",
+        }
+    }
+    _apply_search_click_runtime_update(session, task, values)
+    if revision_fields:
+        _apply_or_queue_search_click_revision(
+            session,
+            task,
+            revision_fields,
+        )
+    task.updated_at = _now()
+    audit(
+        session,
+        tenant_id=tenant_id,
+        actor=actor,
+        action="更新纯搜索点击任务",
+        target_type="task",
+        target_id=task.id,
+        detail="future_assignment_revision",
+    )
+    session.commit()
+    session.refresh(task)
+    return task
+
+
+def _apply_or_queue_search_click_revision(
+    session: Session,
+    task: Task,
+    values: dict[str, Any],
+) -> None:
+    ledger = session.scalar(
+        select(TaskDayLedger)
+        .where(
+            TaskDayLedger.task_id == task.id,
+            TaskDayLedger.lifecycle_status == "open",
+        )
+        .order_by(TaskDayLedger.deadline_at.desc())
+        .limit(1)
+    )
+    if task.status != "running" or ledger is None:
+        _apply_search_click_target_update(session, task, values)
+        _apply_search_click_runtime_update(session, task, values)
+        task.config_revision += 1
+        _refresh_simple_search_click_name(session, task, task_label="搜索点击")
+        return
+    _queue_search_click_revision(session, task, ledger, values=values)
+
+
+def _queue_search_click_revision(
+    session: Session,
+    task: Task,
+    ledger: TaskDayLedger,
+    *,
+    values: dict[str, Any],
+) -> None:
+    pending = pending_search_click_revision(task)
+    original = (task.type_config, task.account_config, task.name)
+    if pending:
+        task.type_config = dict(pending["type_config"])
+        task.account_config = dict(pending["account_config"])
+        task.name = str(pending["name"])
+    _apply_search_click_target_update(session, task, dict(values))
+    _apply_search_click_runtime_update(session, task, dict(values))
+    _refresh_simple_search_click_name(session, task, task_label="搜索点击")
+    next_values = (dict(task.type_config), dict(task.account_config), task.name)
+    task.type_config, task.account_config, task.name = original
+    store_pending_search_click_revision(
+        task,
+        effective_at=ledger.deadline_at,
+        type_config=next_values[0],
+        account_config=next_values[1],
+        name=next_values[2],
+    )
+
+
+def _apply_search_click_target_update(
+    session: Session,
+    task: Task,
+    values: dict[str, Any],
+) -> None:
+    config = dict(task.type_config or {})
+    target_title = values.pop("target_title", None)
+    target_link = values.pop("target_link", None)
+    if target_title is not None and target_link is not None:
+        target, canonical_link = _simple_search_click_target_from_input(
+            session,
+            task.tenant_id,
+            target_title,
+            target_link,
+        )
+        config.update({
+            "target_operation_target_id": target.id,
+            "target_input": canonical_link,
+            "target_title": target_title,
+            "target_link": canonical_link,
+        })
+    keywords = values.pop("keywords", None)
+    if keywords is not None:
+        normalized = [item.strip() for item in keywords if item.strip()]
+        config["keyword_hashes"] = [
+            normalized_keyword_hash(item) for item in normalized
+        ]
+        config["keyword_text_ciphertexts"] = [
+            encrypt_secret(item) for item in normalized
+        ]
+    if "daily_click_target_count" in values:
+        config["daily_click_target_count"] = values.pop(
+            "daily_click_target_count"
+        )
+    task.type_config = validated_type_config(task.type, config)
+
+
+def _apply_search_click_runtime_update(
+    session: Session,
+    task: Task,
+    values: dict[str, Any],
+) -> None:
+    account_group_id = values.pop("account_group_id", None)
+    if account_group_id is not None:
+        require_search_click_account_group(
+            session,
+            task.tenant_id,
+            task.type,
+            account_group_id,
+        )
+        task.account_config = search_click_account_config(account_group_id)
+    scheduled_end = values.pop("scheduled_end", None)
+    if scheduled_end is not None:
+        _require_future_search_click_deadline(scheduled_end)
+        task.scheduled_end = as_beijing(scheduled_end)
+    pacing = dict(task.pacing_config or {})
+    for field in ("daily_jitter_percent", "hourly_jitter_percent"):
+        if field in values:
+            pacing[field] = values.pop(field)
+    if "quiet_hours" in values:
+        quiet = values.pop("quiet_hours")
+        if quiet is None:
+            pacing.pop("quiet_hours", None)
+        else:
+            pacing["quiet_hours"] = quiet.model_dump(mode="json")
+    task.pacing_config = pacing_config_payload(pacing)
+
+
+def _release_search_click_plan_for_revision(
+    session: Session,
+    task: Task,
+) -> None:
+    assignments = list(session.scalars(
+        select(SearchClickOpportunityAssignment).where(
+            SearchClickOpportunityAssignment.task_id == task.id,
+            SearchClickOpportunityAssignment.state.in_(
+                ("reserved", "action_bound", "claimed")
+            ),
+        )
+    ))
+    now_value = _now()
+    for assignment in assignments:
+        release_search_click_assignment(
+            session,
+            assignment.id,
+            trigger_key=(
+                f"config_revision:{task.id}:{assignment.id}:{assignment.version}"
+            ),
+            reason_code="unclaimed_action_no_longer_due",
+            now_value=now_value,
+        )
+
+
 def _search_join_update_values(
     session: Session,
     tenant_id: int,
@@ -1034,7 +1298,11 @@ SEARCH_JOIN_OPERATOR_CONTROL_FIELDS = (
     "per_account_daily_action_limit",
     "enable_strict_daily_target",
 )
-SEARCH_CLICK_TASK_TYPES = {NORMAL_SEARCH_CLICK_TASK, RANK_SEARCH_CLICK_TASK}
+SEARCH_CLICK_TASK_TYPES = {
+    NORMAL_SEARCH_CLICK_TASK,
+    LEGACY_SEARCH_CLICK_TASK,
+    RANK_SEARCH_CLICK_TASK,
+}
 SEARCH_JOIN_OPERATOR_EDIT_FIELDS = {
     "target_title",
     "target_link",
@@ -1063,14 +1331,22 @@ def _require_search_click_dedicated_update(task: Task, raw_data: dict[str, Any])
 
 
 def _require_search_click_operator_fields(payload: Any, task_type: str) -> None:
-    allowed = SEARCH_JOIN_OPERATOR_EDIT_FIELDS if task_type == NORMAL_SEARCH_CLICK_TASK else SEARCH_RANK_OPERATOR_EDIT_FIELDS
+    allowed = (
+        SEARCH_JOIN_OPERATOR_EDIT_FIELDS
+        if task_type == LEGACY_SEARCH_CLICK_TASK
+        else SEARCH_RANK_OPERATOR_EDIT_FIELDS
+    )
     forbidden = sorted(payload.model_fields_set - allowed)
     if forbidden:
         raise ValueError(f"搜索点击任务的系统托管字段不能通过运营编辑接口修改: {', '.join(forbidden)}")
 
 
 def _search_click_operator_controls(payload: Any, task_type: str) -> dict[str, Any]:
-    fields = SEARCH_JOIN_OPERATOR_CONTROL_FIELDS if task_type == NORMAL_SEARCH_CLICK_TASK else SEARCH_CLICK_OPERATOR_CONTROL_FIELDS
+    fields = (
+        SEARCH_JOIN_OPERATOR_CONTROL_FIELDS
+        if task_type == LEGACY_SEARCH_CLICK_TASK
+        else SEARCH_CLICK_OPERATOR_CONTROL_FIELDS
+    )
     return {
         field: getattr(payload, field)
         for field in fields
@@ -1509,6 +1785,21 @@ def create_simple_search_rank_deboost_task(
     payload: SearchRankDeboostSimpleTaskCreate,
     operator: str,
 ) -> Task:
+    internal = _simple_search_rank_deboost_payload(session, tenant_id, payload)
+    return create_search_rank_deboost_task(
+        session,
+        tenant_id,
+        internal,
+        operator,
+        defer_readiness=True,
+    )
+
+
+def _simple_search_rank_deboost_payload(
+    session: Session,
+    tenant_id: int,
+    payload: SearchRankDeboostSimpleTaskCreate,
+) -> SearchRankDeboostTaskCreate:
     _require_future_search_click_deadline(payload.scheduled_end)
     require_search_click_account_group(
         session, tenant_id, RANK_SEARCH_CLICK_TASK, payload.account_group_id
@@ -1516,10 +1807,7 @@ def create_simple_search_rank_deboost_task(
     target, canonical_link = _simple_search_click_target_from_input(
         session, tenant_id, payload.target_title, payload.target_link
     )
-    return create_search_rank_deboost_task(
-        session,
-        tenant_id,
-        SearchRankDeboostTaskCreate(
+    return SearchRankDeboostTaskCreate(
             name=_simple_search_click_name(target, "搜索排名观察", payload.target_count, payload.target_title),
             search_bots=["jisou"],
             keywords=[{"text": keyword} for keyword in payload.keywords],
@@ -1534,10 +1822,7 @@ def create_simple_search_rank_deboost_task(
                 "target_title": payload.target_title,
                 "target_link": canonical_link,
             },
-        ),
-        operator,
-        defer_readiness=True,
-    )
+        )
 
 
 def create_and_start_search_rank_deboost_task(
@@ -1989,6 +2274,18 @@ def start_task(
     persist_rank_readiness_failure: bool = True,
 ) -> Task:
     task = _get_task(session, tenant_id, task_id)
+    start_task_in_transaction(session, task, actor)
+    session.commit()
+    session.refresh(task)
+    return task
+
+
+def start_task_in_transaction(
+    session: Session,
+    task: Task,
+    actor: str,
+) -> StartExecutionResult:
+    tenant_id = task.tenant_id
     if task.type == "channel_comment":
         channel_comment.reconcile_lifetime_cap(session, task)
         if task.status == "completed":
@@ -2001,32 +2298,51 @@ def start_task(
                 target_id=task.id,
                 detail="评论任务已达到生命周期总上限",
             )
-            session.commit()
-            session.refresh(task)
-            return task
-    if task.type in {"search_join_group", "search_rank_deboost"}:
+            return _start_execution_result(session, task)
+    if task.type in {"search_click", "search_join_group", "search_rank_deboost"}:
         if _check_stop_conditions(session, task) or _search_click_task_completed_on_start(session, task):
-            session.commit()
-            session.refresh(task)
-            return task
+            return _start_execution_result(session, task)
     if task.type == "search_rank_deboost":
         if task.status in {"running", "pending"}:
-            return task
+            return _start_execution_result(session, task)
+        _assert_rank_deboost_target_contract(session, task)
         try:
             _prepare_rank_deboost_start(session, tenant_id, task, actor)
         except ValueError as exc:
             _record_rank_deboost_readiness_blocker(task, exc)
-            if persist_rank_readiness_failure:
-                session.commit()
-                session.refresh(task)
-            raise
     _mark_task_started(session, task)
     _initialize_runtime_contracts(session, task)
     _set_runtime_projection(session, task)
     audit(session, tenant_id=tenant_id, actor=actor, action="启动任务中心任务", target_type="task", target_id=task.id)
-    session.commit()
-    session.refresh(task)
-    return task
+    return _start_execution_result(session, task)
+
+
+def _assert_rank_deboost_target_contract(
+    session: Session,
+    task: Task,
+) -> None:
+    config = dict(task.type_config or {})
+    require_rank_deboost_target_group_refs(
+        session,
+        task.tenant_id,
+        list(config.get("target_group_ids") or []),
+        reference_type=_rank_deboost_target_reference_type(config),
+    )
+
+
+def _start_execution_result(session: Session, task: Task) -> StartExecutionResult:
+    ledger_id = session.scalar(
+        select(TaskDayLedger.id)
+        .where(TaskDayLedger.task_id == task.id)
+        .order_by(TaskDayLedger.period_start_at.desc())
+        .limit(1)
+    )
+    stats = task.stats or {}
+    return StartExecutionResult(
+        task_day_ledger_id=ledger_id,
+        runtime_state=str(stats.get("runtime_state") or "runnable"),
+        runtime_blocker_codes=tuple(stats.get("runtime_blocker_codes") or ()),
+    )
 
 
 def pause_task(session: Session, tenant_id: int, task_id: str, actor: str) -> Task:
@@ -2083,7 +2399,7 @@ def delete_task(session: Session, tenant_id: int, task_id: str, actor: str, reas
 def retry_task(session: Session, tenant_id: int, task_id: str, payload: TaskRetryRequest, actor: str) -> Task:
     task = _get_task(session, tenant_id, task_id)
     retry_slots: int | None = None
-    if task.type in {"search_join_group", "search_rank_deboost"}:
+    if task.type in {"search_click", "search_join_group", "search_rank_deboost"}:
         if task.type == "search_rank_deboost":
             lock_rank_deboost_quota_scope(session, task)
         session.execute(select(Task.id).where(Task.id == task.id).with_for_update()).scalar_one()
@@ -3155,7 +3471,7 @@ def _strict_search_daily_target_can_plan(
     now_value: datetime,
 ) -> bool:
     config = task.type_config if isinstance(task.type_config, dict) else {}
-    if task.type != NORMAL_SEARCH_CLICK_TASK or not config.get("strict_daily_target"):
+    if task.type != LEGACY_SEARCH_CLICK_TASK or not config.get("strict_daily_target"):
         return False
     settings = get_settings()
     max_global = int(settings.max_pending_global or 0)
@@ -4163,6 +4479,9 @@ def _set_runtime_projection(session: Session, task: Task) -> None:
         blockers.append("scheduled_start_pending")
     if task.type == "group_ai_chat" and _frozen_ai_account_count(session, task) == 0:
         blockers.append("no_frozen_accounts")
+    readiness = dict(stats.get("rank_deboost_readiness") or {})
+    if task.type == "search_rank_deboost" and readiness.get("status") == "blocked":
+        blockers.append("rank_deboost_runtime_not_ready")
     stats["runtime_state"] = "waiting" if blockers else "runnable"
     stats["runtime_blocker_codes"] = blockers
     stats["warning_requires_confirmation"] = False
@@ -4737,6 +5056,7 @@ __all__ = [
     "create_and_start_group_ai_chat_task",
     "create_and_start_group_membership_admission_task",
     "create_and_start_group_relay_task",
+    "create_and_start_search_click_task",
     "create_and_start_search_join_group_task",
     "create_and_start_simple_search_join_group_task",
     "create_and_start_search_rank_deboost_task",
@@ -4747,6 +5067,7 @@ __all__ = [
     "create_group_ai_chat_task",
     "create_group_membership_admission_task",
     "create_group_relay_task",
+    "create_search_click_task",
     "create_search_join_group_task",
     "create_simple_search_join_group_task",
     "create_search_rank_deboost_task",
@@ -4795,6 +5116,7 @@ __all__ = [
     "update_group_ai_chat_config",
     "update_group_relay_config",
     "update_search_join_group_config",
+    "update_search_click_config",
     "update_search_rank_deboost_config",
     "update_task_settings",
     "update_task",

@@ -486,6 +486,9 @@ def _payload(payload_input: PayloadInput) -> SearchJoinPayload:
     target = payload_input.plan.target
     return SearchJoinPayload(
         execution_mode="mtproto_userbot",
+        search_execution_mode=str(
+            config.get("search_execution_mode") or "legacy_mixed_search_join"
+        ),
         bot_username=payload_input.plan.bot_username,
         keyword_hash=keyword_hash,
         keyword_text_ciphertext=keyword_text_ciphertext,

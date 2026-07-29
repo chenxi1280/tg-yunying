@@ -10,6 +10,9 @@ from app.database import Base
 from app.models import OperationTarget, Task, TaskDayLedger, Tenant, TgGroup
 from app.schemas import GroupAIChatTaskConfigUpdate, GroupAIChatTaskCreate
 from app.services.task_center import service
+from app.services.task_center.task_creation_contract import (
+    execute_task_creation_contract,
+)
 from app.services.task_center.hard_hourly import enabled as hard_hourly_enabled
 
 
@@ -143,3 +146,37 @@ def test_hard_hourly_fields_are_not_valid_update_contract() -> None:
             hourly_min_messages=20,
             hard_hourly_strategy="force_planning",
         )
+
+
+def test_create_and_start_contract_replays_same_task_and_start(
+    session: Session,
+) -> None:
+    payload = _payload("幂等创建").model_copy(
+        update={"client_request_id": "request-stable-001"}
+    )
+
+    first = execute_task_creation_contract(
+        session,
+        tenant_id=1,
+        user_id=7,
+        actor="运营",
+        task_type="group_ai_chat",
+        payload=payload,
+        start_requested=True,
+    )
+    replay = execute_task_creation_contract(
+        session,
+        tenant_id=1,
+        user_id=7,
+        actor="运营",
+        task_type="group_ai_chat",
+        payload=payload,
+        start_requested=True,
+    )
+
+    assert first.task.id == replay.task.id
+    assert first.create.create_status == "created"
+    assert replay.create.create_status == "existing_idempotent"
+    assert replay.start is not None
+    assert replay.start.start_status == "started"
+    assert session.query(TaskDayLedger).filter_by(task_id=first.task.id).count() == 1

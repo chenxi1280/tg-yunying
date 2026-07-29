@@ -55,11 +55,17 @@ def ensure_task_daily_coverage(
     account_ids: list[int] | None = None,
     incremental: bool = False,
     target_group: TgGroup | None = None,
+    refresh_existing: bool = False,
 ) -> DailyCoverageSyncResult:
     timestamp = now or _now()
     if account_ids is None and not incremental:
         release_terminal_coverage_reservations(session, task, timestamp.date())
-        return DailyCoverageSyncResult(coverage_date=timestamp.date(), created=0, refreshed=0)
+        if not refresh_existing:
+            return DailyCoverageSyncResult(
+                coverage_date=timestamp.date(),
+                created=0,
+                refreshed=0,
+            )
     items = _scope_items(session, task, account_ids)
     if not items:
         return DailyCoverageSyncResult(coverage_date=timestamp.date(), created=0, refreshed=0)

@@ -45,10 +45,7 @@ class Task(Base):
     type_config: Mapped[dict] = mapped_column(JSON, default=dict)
     stats: Mapped[dict] = mapped_column(JSON, default=dict)
     config_revision: Mapped[int] = mapped_column(Integer, default=1)
-    created_by_user_id: Mapped[int | None] = mapped_column(
-        ForeignKey("app_users.id"),
-        nullable=True,
-    )
+    created_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     create_task_type: Mapped[str | None] = mapped_column(String(30), nullable=True)
     client_request_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
     request_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)

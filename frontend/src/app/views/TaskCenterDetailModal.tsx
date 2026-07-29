@@ -69,9 +69,11 @@ const coverageStateColor = (state?: string | null) => {
 function searchClickTargetProgress(task: TaskCenterTask) {
   const progress = task.stats?.search_click_target;
   const hasDualTarget = task.type === 'search_join_group' && task.type_config?.daily_click_target_count != null;
-  const isDailyTarget = task.type === 'search_join_group'
+  const isDailyTarget = ['search_click', 'search_join_group'].includes(task.type)
     && (progress?.scope === 'daily' || task.type_config?.daily_click_target_count != null || task.type_config?.daily_target_count != null);
-  const configuredTarget = isDailyTarget
+  const configuredTarget = task.type === 'search_click'
+    ? task.type_config?.daily_click_target_count
+    : isDailyTarget
     ? hasDualTarget ? task.type_config?.daily_click_target_count : task.type_config?.daily_target_count
     : task.type_config?.target_count;
   const targetCount = Number(progress?.target_count ?? configuredTarget);
@@ -731,7 +733,7 @@ export function TaskCenterDetailModal({
   ];
   const admissionTotal = Number(detail?.membership_admission_phase?.snapshot_total ?? admissionItemPagination.total ?? 0);
   const showAiTab = detail?.task.type === 'group_ai_chat';
-  const showSearchJoinTab = detail?.task.type === 'search_join_group';
+  const showSearchJoinTab = ['search_click', 'search_join_group'].includes(detail?.task.type || '');
   const showSearchRankDeboostTab = detail?.task.type === 'search_rank_deboost';
   const botMissingReasons = botAvailabilityReasons(telegramBotSettings);
   const showTargetTab = detail ? ['group_relay', 'channel_view', 'channel_like', 'channel_comment'].includes(detail.task.type) : false;

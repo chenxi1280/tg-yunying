@@ -271,7 +271,13 @@ def task_dispatch_claim_snapshot(session: Session, task: Task) -> dict[str, obje
 def reservation_available(reservation: DispatchClaimReservation | None) -> int:
     if reservation is None:
         return 0
-    return max(0, int(reservation.reserved_claims) - int(reservation.claimed_count))
+    return max(
+        0,
+        int(reservation.reserved_claims)
+        - int(reservation.claimed_count)
+        - int(reservation.bound_count)
+        - int(reservation.released_count),
+    )
 
 
 def for_update(session: Session, statement):

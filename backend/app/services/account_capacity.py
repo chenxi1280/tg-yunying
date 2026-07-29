@@ -137,6 +137,47 @@ def available_accounts_by_capacity(
     return available
 
 
+def account_hard_safe_remaining_capacity(
+    session: Session,
+    *,
+    tenant_id: int,
+    account_id: int,
+    scheduled_at: datetime,
+    max_needed: int,
+) -> int:
+    setting = capacity_setting(session, tenant_id, None)
+    at = _naive(scheduled_at)
+    remaining = max(0, max_needed)
+    windows = (
+        (
+            int(setting.default_account_hour_limit or 0),
+            at.replace(minute=0, second=0, microsecond=0),
+            at.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1),
+        ),
+        (
+            int(setting.default_account_day_limit or 0),
+            at.replace(hour=0, minute=0, second=0, microsecond=0),
+            at.replace(hour=0, minute=0, second=0, microsecond=0)
+            + timedelta(days=1),
+        ),
+    )
+    for limit, start_at, end_at in windows:
+        if limit <= 0:
+            continue
+        occupied = _occupied_count(
+            session,
+            tenant_id,
+            account_id,
+            start_at,
+            end_at,
+            set(),
+            None,
+            None,
+        )
+        remaining = min(remaining, max(0, limit - occupied))
+    return remaining
+
+
 def next_capacity_window(
     session: Session,
     *,
