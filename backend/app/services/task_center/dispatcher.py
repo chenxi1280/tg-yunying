@@ -182,7 +182,6 @@ _COMMENT_THREAD_UNAVAILABLE_FAILURES = {FailureType.COMMENT_UNAVAILABLE.value}
 _COMMENT_THREAD_SKIP_CODES = {
     FailureType.COMMENT_UNAVAILABLE.value: "comment_unavailable_sibling",
 }
-_REACTION_UNAVAILABLE_SKIP_CODE = "reaction_unavailable_sibling"
 _COMMENT_MEMBERSHIP_RETRY_DELAY = timedelta(minutes=5)
 DISPATCHER_DB_ERROR_RETRY_DELAY_SECONDS = 10
 CHANNEL_DAILY_ACTION_TYPES = {"view_message"}
@@ -5685,29 +5684,11 @@ def _close_unavailable_reaction(action: Action, detail: str) -> None:
     session = object_session(action)
     if not session:
         return
-    payload = action.payload if isinstance(action.payload, dict) else {}
-    channel_target_id = int(payload.get("channel_target_id") or 0)
-    channel_message_id = int(payload.get("channel_message_id") or 0)
-    if not channel_target_id or not channel_message_id:
-        return
     _skip_like_unavailable_message(action, detail)
     _mark_reaction_obligation_unavailable(session, action)
-    siblings = _unavailable_reaction_siblings(session, action, channel_target_id, channel_message_id)
-    for sibling in siblings:
-        _skip(sibling, _REACTION_UNAVAILABLE_SKIP_CODE, f"频道消息不可点赞，已跳过同帖待执行点赞：{detail}")
-        sibling.result = {**(sibling.result or {}), "validation_stage": "channel_like_runtime"}
-        _mark_reaction_obligation_unavailable(session, sibling)
     task = session.get(Task, action.task_id)
     if task is not None:
         task.last_error = detail
-        stats = dict(task.stats or {})
-        unavailable_ids = {
-            int(value)
-            for value in stats.get("reaction_unavailable_message_ids", [])
-        }
-        unavailable_ids.add(channel_message_id)
-        stats["reaction_unavailable_message_ids"] = sorted(unavailable_ids)
-        task.stats = stats
 
 
 def _mark_reaction_obligation_unavailable(
@@ -5724,20 +5705,6 @@ def _mark_reaction_obligation_unavailable(
     if obligation is None or obligation.current_action_id != action.id:
         return
     obligation.status = "unavailable"
-
-
-def _unavailable_reaction_siblings(session: Session, action: Action, channel_target_id: int, channel_message_id: int):
-    return session.scalars(
-        select(Action).where(
-            Action.tenant_id == action.tenant_id,
-            Action.task_id == action.task_id,
-            Action.id != action.id,
-            Action.action_type == "like_message",
-            Action.status.in_(["pending", "claiming", "retryable_failed"]),
-            Action.payload["channel_target_id"].as_integer() == channel_target_id,
-            Action.payload["channel_message_id"].as_integer() == channel_message_id,
-        )
-    )
 
 
 def _skip_like_unavailable_message(action: Action, detail: str) -> None:
