@@ -667,7 +667,7 @@ Planner 顺序固定为：真实 remaining 与防重 planning deficit -> 账号 
 | `jisou_image_verification_failed` | 全部当前健康已审批供应商均无安全答案，或同一 fingerprint 的单次提交被远端明确拒绝 | 是 | 单个候选校验失败、供应商/传输暂不可用或新 fingerprint 均不算最终失败 |
 | `jisou_group_selector_missing` | search_category_page 缺已审批 selector | 否 | 单独评估是否协议样本过期，不自动排除 |
 
-`jisou_selector_accounts` 排除逻辑（`backend/app/services/task_center/jisou_selector_accounts.py`）对 `hot_list_page` 直接写 `jisou_hot_list_page` 失败，并从失败事实起写账号—协议路径 12 小时 eligibility 排除；该事实按当前单用户 scope 在全部搜索任务间共享，避免同一账号立即被另一任务复用同一极搜协议路径。明确 `jisou_image_verification_failed` 使用相同 12 小时有效期。`required|solved|group_selector_missing` 不排除。hot-list 不 reset、不点击未知按钮，其他账号—协议路径继续完成同一 click 欠额。
+`jisou_selector_accounts` 排除逻辑（`backend/app/services/task_center/jisou_selector_accounts.py`）对 `hot_list_page` 直接写 `jisou_hot_list_page` 失败，并从失败事实起写账号—协议路径 12 小时 eligibility 排除；该事实按当前单用户 scope 在全部搜索任务间共享，避免同一账号立即被另一任务复用同一极搜协议路径。明确 `jisou_image_verification_failed` 使用相同 12 小时有效期。`required|solved|group_selector_missing` 不排除。hot-list 不 reset、不点击未知按钮，其他账号—协议路径继续完成同一 click 欠额。纯搜索点击 Action 一旦进入 Gateway 并取得明确失败回执，该 Action、Attempt 和 assignment 即按原结果终结；通用失败自动重试不得把同一 Action 改回 `pending`、覆盖 `jisou_hot_list_page` 或复用原 assignment。缺口只把原 obligation 回流 `open`，下一 Window 重新求解未排除路径并创建全新的 assignment/Action。
 
 #### 2.19.4 观测盲点修复（RC-5c）
 

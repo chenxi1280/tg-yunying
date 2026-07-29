@@ -973,7 +973,7 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 | `backend/app/services/task_center/executors/search_click.py`、`search_click_epoch_ownership.py`、`search_click_outcome_identity.py` | search solver 读事务结束后重启事务，在任何业务查询前设置 PostgreSQL `SERIALIZABLE`，随后先按中央锁序锁定，再核对 owner、重建输入并 finalize；`40001` 后不重跑 solver，使用原 epoch/window/unit 快照在新事务 abandoned/release/rebuild；每轮规划先跨 Window 回收失主 open epoch，epoch 查询与 outcome/path hash 分别归属 ownership/identity 叶模块；matched Action 在首次 flush 前把 obligation/assignment/Reservation/lane ordinal 写入 payload 与去重身份，保证 assignment:Action 一对一 | implemented；待 release/E4 |
 | `backend/app/services/task_center/executors/group_ai_chat.py` | `replan_required` 从旧失败 Action 只读取并校验合同元数据，与新 payload 合并后再做完整发送校验；允许 `reply_target_stale` 空正文重建 | implemented；待 release/E4 |
 | `backend/app/integrations/telegram/search_join.py`、`backend/app/services/task_center/jisou_selector_accounts.py` | hot-list 直接失败、零 reset、账号—协议路径 12 小时排除 | implemented；待 release/E4 |
-| `backend/app/services/task_center/pacing.py`、`stats.py`、频道 executors | pacing 窗口和自然日 deadline 收口，排期不得跨截止时间；五类新履约任务统一把 quiet 跳转转换为低权重、把 0 曲线归一为 1，`scheduled_at/next_run_at` 均不停发；频道软上限固定系统门禁 | implemented；待 release/E4 |
+| `backend/app/services/task_center/pacing.py`、`stats.py`、`fulfillment_retry.py`、频道 executors | pacing 窗口和自然日 deadline 收口，排期不得跨截止时间；五类新履约任务统一把 quiet 跳转转换为低权重、把 0 曲线归一为 1，`scheduled_at/next_run_at` 均不停发；频道软上限固定系统门禁。`fulfillment_retry.retry_failed_actions` 排除新履约纯 click 的 obligation/assignment 绑定 Action，明确 Gateway 失败保留终态并由新 Window 重建，禁止复用 consumed assignment或覆盖极搜协议错误；`stats.py` 兼容重导出该入口 | implemented；待 release/E4 |
 | `backend/tests/test_fulfillment_takeover.py` 及相邻合同测试 | 先红后绿覆盖存量接管幂等、自然义务/远端事实、门禁、epoch、准入、hot-list 和 deadline | implemented；自动化 QA 进行中 |
 
 ### 部署脚本

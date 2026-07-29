@@ -9,6 +9,7 @@ from app.models import (
     Action,
     ChannelMessage,
     CommentFulfillmentObligation,
+    ExecutionAttempt,
     OperationTarget,
     Task,
     TaskDayLedger,
@@ -30,6 +31,9 @@ from app.services.task_center.fulfillment_takeover import (
     UNIFIED_TASK_GATE_LIMIT,
     normalize_fulfillment_pacing,
     takeover_task,
+)
+from app.services.task_center.fulfillment_takeover_actions import (
+    restore_terminal_search_attempts,
 )
 from app.services.task_center.stats import retry_failed_actions
 
@@ -218,6 +222,102 @@ def test_planner_takeover_precedes_retry_and_backlog(
     assert pending.status == "skipped"
     assert retry_failed_actions(session, task) == 0
     assert failed.status == "failed"
+
+
+def test_bound_search_click_failure_is_rebuilt_instead_of_retried(
+    session: Session,
+) -> None:
+    task = Task(
+        id="search-click-terminal-attempt",
+        tenant_id=1,
+        name="热搜页换路径重建",
+        type="search_click",
+        status="running",
+        failure_policy={"max_retries": 3},
+        stats={"fulfillment_contract_version": FULFILLMENT_CONTRACT_VERSION},
+    )
+    action = Action(
+        id="search-click-hot-list-action",
+        tenant_id=1,
+        task_id=task.id,
+        task_type=task.type,
+        action_type="search_join",
+        status="failed",
+        retry_count=0,
+        payload={
+            "search_execution_mode": "click_only",
+            "search_click_obligation_id": "click-obligation-1",
+            "search_click_assignment_id": "click-assignment-1",
+        },
+        result={
+            "success": False,
+            "error_code": "jisou_hot_list_page",
+            "gateway_call_state": "started",
+        },
+    )
+    session.add_all([task, action])
+    session.flush()
+
+    assert retry_failed_actions(session, task) == 0
+    assert action.status == "failed"
+    assert action.retry_count == 0
+    assert action.result["error_code"] == "jisou_hot_list_page"
+
+
+@pytest.mark.parametrize(
+    ("action_status", "action_error"),
+    [
+        ("pending", "global_account_policy"),
+        ("failed", "search_click_obligation_binding_invalid"),
+    ],
+)
+def test_takeover_restores_search_failure_overwritten_by_old_retry(
+    session: Session,
+    action_status: str,
+    action_error: str,
+) -> None:
+    task = Task(
+        id="search-click-overwritten-failure",
+        tenant_id=1,
+        name="恢复被覆盖的极搜失败",
+        type="search_click",
+        status="running",
+    )
+    action = Action(
+        id=f"search-click-overwritten-action-{action_status}",
+        tenant_id=1,
+        task_id=task.id,
+        task_type=task.type,
+        action_type="search_join",
+        status=action_status,
+        payload={
+            "search_click_obligation_id": "click-obligation-2",
+            "search_click_assignment_id": "click-assignment-2",
+        },
+        result={"error_code": action_error},
+    )
+    attempt = ExecutionAttempt(
+        id=f"search-click-hot-list-attempt-{action_status}",
+        tenant_id=1,
+        action_id=action.id,
+        account_id=151,
+        status="failed",
+        gateway_call_started_at=_now(),
+        after_call_at=_now(),
+        failure_type="jisou_hot_list_page",
+        result_snapshot={
+            "success": False,
+            "error_code": "jisou_hot_list_page",
+        },
+    )
+    session.add_all([task, action, attempt])
+    session.flush()
+
+    assert restore_terminal_search_attempts(session, task) == 1
+    assert action.status == "failed"
+    assert action.executed_at == attempt.after_call_at
+    assert action.result["error_code"] == "jisou_hot_list_page"
+    assert restore_terminal_search_attempts(session, task) == 0
 
 
 @pytest.fixture
