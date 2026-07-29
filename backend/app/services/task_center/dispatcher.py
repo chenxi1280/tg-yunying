@@ -135,6 +135,7 @@ from .search_join_membership import (
 )
 from .search_click_target_progress import reconcile_search_click_target_progress
 from .search_click_assignment_release import release_search_click_assignment
+from .prebound_search_claim import prebound_search_epoch_action_ids
 from .search_join_facts import has_complete_pure_click_fact
 from .search_rank_deboost_reservations import (
     gateway_reservation_blocker,
@@ -6940,6 +6941,14 @@ def _account_after_global_policy(session: Session, action: Action, account: TgAc
 
 def _capacity_excluded_action_ids(session: Session, action: Action, account_id: int) -> set[str]:
     excluded = {action.id}
+    prebound_cohort = prebound_search_epoch_action_ids(
+        session,
+        action,
+        account_id,
+    )
+    if prebound_cohort:
+        excluded.update(prebound_cohort)
+        return excluded
     if not _is_hard_hourly_send_action(action):
         return excluded
     rows = session.scalars(
