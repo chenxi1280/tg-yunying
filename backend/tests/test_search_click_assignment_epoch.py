@@ -13,19 +13,23 @@ from app.models import (
     DispatchClaimScope,
     DispatchClaimShardAllocation,
     DispatchClaimWindow,
+    DispatchAllocationExclusion,
     OperationTarget,
     SearchClickAssignmentEpoch,
     SearchClickFulfillmentObligation,
     SearchClickOpportunityAssignment,
     SearchClickSolverCarrierUnitBinding,
+    SearchClickSolverProblemSnapshot,
     Task,
     TaskDayLedger,
     Tenant,
     TgAccount,
+    WorkerHeartbeat,
 )
 from app.security import encrypt_secret
 from app.services._common import _now
 from app.services.task_center.executors import search_click
+from app.services.task_center.heartbeat import worker_identity
 from app.services.task_center.executors.search_click_candidates import (
     SearchClickPathContext,
 )
@@ -91,6 +95,122 @@ def test_epoch_persists_snapshot_before_binding_action(
     assert assignment.state == "action_bound"
     assert assignment.action_id is not None
     assert reservation.bound_count == 1
+
+
+def test_build_plan_finalizes_orphaned_open_epoch_before_current_window(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now_value = _now()
+    window = session.get(DispatchClaimWindow, "window-1")
+    window.bucket_end = now_value - timedelta(minutes=1)
+    epoch = _add_orphaned_epoch(session, now_value)
+    session.commit()
+    monkeypatch.setattr(
+        search_click,
+        "prepare_search_click_fulfillment_units",
+        lambda *_args, **_kwargs: (),
+    )
+
+    created = search_click.build_plan(session, session.get(Task, "task-1"))
+    session.commit()
+
+    session.refresh(epoch)
+    reservation = session.get(DispatchClaimReservation, "reservation-1")
+    exclusion = session.scalar(select(DispatchAllocationExclusion))
+    assert created == 0
+    assert epoch.finalize_status == "finalized"
+    assert epoch.outcome == "abandoned"
+    assert epoch.finalized_at is not None
+    assert reservation.released_count == 1
+    assert exclusion.carrier_id == epoch.id
+
+
+def _add_orphaned_epoch(
+    session: Session,
+    now_value,
+) -> SearchClickAssignmentEpoch:
+    session.add(WorkerHeartbeat(
+        id="worker-1",
+        worker_id="old-host:1:search_click_solver",
+        process_type="search_click_solver",
+        hostname="old-host",
+        pid=1,
+        heartbeat_metadata={"search_solver_fencing_token": "new-token"},
+        last_seen_at=now_value,
+    ))
+    epoch = SearchClickAssignmentEpoch(
+        id="epoch-1",
+        dispatch_claim_window_id="window-1",
+        dispatch_allocation_epoch=1,
+        solver_owner_lease_id="worker-1",
+        solver_fencing_token="old-token",
+        solver_claimed_at=now_value,
+        solver_problem_hash="a" * 64,
+        solver_input_hash="b" * 64,
+    )
+    session.add(epoch)
+    snapshot = SearchClickSolverProblemSnapshot(
+        id="snapshot-1",
+        search_click_assignment_epoch_id=epoch.id,
+        solver_contract_version="v1",
+        canonical_problem_payload={},
+        canonical_carrier_payload={},
+        solver_problem_hash=epoch.solver_problem_hash,
+        solver_input_hash=epoch.solver_input_hash,
+    )
+    session.add(snapshot)
+    session.add(SearchClickSolverCarrierUnitBinding(
+        search_click_solver_snapshot_id=snapshot.id,
+        dispatch_claim_reservation_id="reservation-1",
+        fulfillment_lane_claim_ordinal=1,
+        obligation_id="obligation-1",
+        task_id="task-1",
+        stable_component_key="component-1",
+        solver_problem_component_hash="c" * 64,
+        canonical_binding_payload={},
+    ))
+    return epoch
+
+
+def test_build_plan_leaves_active_open_epoch_owned(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now_value = _now()
+    worker_id, hostname, pid = worker_identity("search_click_solver")
+    session.add(WorkerHeartbeat(
+        id="worker-1",
+        worker_id=worker_id,
+        process_type="search_click_solver",
+        hostname=hostname,
+        pid=pid,
+        heartbeat_metadata={"search_solver_fencing_token": "token-1"},
+        last_seen_at=now_value,
+    ))
+    epoch = SearchClickAssignmentEpoch(
+        id="epoch-1",
+        dispatch_claim_window_id="window-1",
+        dispatch_allocation_epoch=1,
+        solver_owner_lease_id="worker-1",
+        solver_fencing_token="token-1",
+        solver_claimed_at=now_value,
+        solver_problem_hash="a" * 64,
+        solver_input_hash="b" * 64,
+    )
+    session.add(epoch)
+    session.commit()
+    monkeypatch.setattr(
+        search_click,
+        "prepare_search_click_fulfillment_units",
+        lambda *_args, **_kwargs: (),
+    )
+
+    assert search_click.build_plan(session, session.get(Task, "task-1")) == 0
+
+    assert epoch.finalize_status == "open"
+    assert epoch.outcome == "open"
+    assert session.scalar(select(DispatchAllocationExclusion)) is None
 
 
 def _seed(session: Session) -> None:

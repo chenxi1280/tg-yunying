@@ -134,6 +134,7 @@ def _run_generation_stages(
         except GenerationAttemptStale:
             raise
         except Exception as exc:
+            _close_failed_stage_transaction(session)
             attempts.append(_provider_failure(stage, exc))
             continue
         total_tokens += int(tokens or 0)
@@ -164,6 +165,11 @@ def _run_generation_stages(
         attempts=attempts,
         action_loader=action_loader,
     )
+
+
+def _close_failed_stage_transaction(session: Session) -> None:
+    if session.in_transaction():
+        session.rollback()
 
 
 def _comment_mask_fallback_reason(

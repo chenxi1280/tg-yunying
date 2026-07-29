@@ -816,7 +816,7 @@ def _button_effect(button: Any, text: str, url: str) -> str:
     if url and (urlparse(url).netloc or "").lower() not in TELEGRAM_HOSTS:
         return "external"
     if url:
-        return "join_candidate"
+        return "target_open_only"
     return "unknown"
 
 
