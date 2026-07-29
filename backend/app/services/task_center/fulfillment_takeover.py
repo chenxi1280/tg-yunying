@@ -6,7 +6,7 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Action, ExecutionAttempt, Task, TaskDayLedger
+from app.models import Task, TaskDayLedger
 from app.services._common import _now, audit
 
 from .daily_ledgers import ensure_task_day_ledger
@@ -15,6 +15,10 @@ from .channel_fulfillment_takeover import (
     migrate_channel_fulfillment,
 )
 from .comment_fulfillment_takeover import migrate_comment_fulfillment
+from .fulfillment_takeover_actions import (
+    retire_legacy_membership_actions,
+    retire_unbound_legacy_actions,
+)
 from .pacing import FULFILLMENT_SOFT_PACING_VERSION
 
 
@@ -33,16 +37,6 @@ TAKEOVER_TASK_TYPES = frozenset(
     {*FULFILLMENT_TASK_TYPES, "search_join_group"}
 )
 ACTIVE_TAKEOVER_STATUSES = frozenset({"draft", "pending", "running", "paused", "stopped"})
-LEGACY_MEMBERSHIP_ACTION_TYPES = frozenset(
-    {
-        "search_join_membership",
-        "ensure_channel_membership",
-        "ensure_target_membership",
-    }
-)
-PRE_GATEWAY_ACTION_STATUSES = frozenset(
-    {"pending", "claiming", "executing", "retryable_failed"}
-)
 RETIRED_AI_QUANTITY_GATE_FIELDS = frozenset(
     {
         "per_account_daily_min_messages",
@@ -59,6 +53,19 @@ PLANNER_BACKLOG_STATS_FIELDS = frozenset(
         "planner_backlog_global_pending",
         "planner_backlog_task_pending",
         "planner_backlog_oldest_age_seconds",
+    }
+)
+RETIRED_CAPACITY_STATS_FIELDS = frozenset(
+    {
+        "coverage_capacity_status",
+        "coverage_capacity_proof",
+        "sendable_coverage_capacity_proof",
+    }
+)
+RETIRED_CAPACITY_BLOCK_MESSAGES = frozenset(
+    {
+        "全部账号每日覆盖容量不足，已停止创建发送 Action",
+        "当前可发账号每日覆盖容量不足，已停止创建发送 Action",
     }
 )
 
@@ -92,8 +99,7 @@ def takeover_task(
         != FULFILLMENT_CONTRACT_VERSION
     )
     retired = _takeover_legacy_search(session, task)
-    if contract_changed or previous_type == "search_join_group":
-        retired += _retire_unbound_legacy_actions(session, task)
+    retired += retire_unbound_legacy_actions(session, task)
     updates = _apply_contract_updates(
         task, contract_changed=contract_changed, now=now,
     )
@@ -186,7 +192,7 @@ def _takeover_legacy_search(session: Session, task: Task) -> int:
     pacing["max_actions_per_day"] = UNIFIED_TASK_GATE_LIMIT
     task.pacing_config = pacing
     task.type = "search_click"
-    return _retire_legacy_membership_actions(session, task)
+    return retire_legacy_membership_actions(session, task)
 
 
 def _pure_click_config(config: dict) -> dict:
@@ -211,91 +217,6 @@ def _pure_click_config(config: dict) -> dict:
         "execution_mode": "mtproto_userbot",
         "max_pages": int(config.get("max_pages") or 5),
     }
-
-
-def _retire_legacy_membership_actions(session: Session, task: Task) -> int:
-    actions = list(session.scalars(
-        select(Action).where(
-            Action.task_id == task.id,
-            Action.action_type.in_(LEGACY_MEMBERSHIP_ACTION_TYPES),
-            Action.status.in_(PRE_GATEWAY_ACTION_STATUSES),
-        )
-    ))
-    started_ids = _gateway_started_action_ids(session, actions)
-    retired = [action for action in actions if action.id not in started_ids]
-    for action in retired:
-        action.status = "skipped"
-        action.result = {
-            **(action.result or {}),
-            "error_code": "legacy_membership_retired_by_click_takeover",
-            "error_message": "存量混合搜索已切换为纯搜索点击",
-        }
-        action.claim_owner = ""
-        action.claim_token = ""
-        action.claim_expires_at = None
-        action.lease_owner = ""
-        action.lease_expires_at = None
-    return len(retired)
-
-
-def _retire_unbound_legacy_actions(session: Session, task: Task) -> int:
-    action_type = {
-        "group_ai_chat": "send_message",
-        "search_click": "search_join",
-    }.get(task.type)
-    if action_type is None:
-        return 0
-    actions = list(session.scalars(
-        select(Action).where(
-            Action.task_id == task.id,
-            Action.action_type == action_type,
-            Action.status.in_(PRE_GATEWAY_ACTION_STATUSES),
-        )
-    ))
-    started_ids = _gateway_started_action_ids(session, actions)
-    retired = [
-        action
-        for action in actions
-        if action.id not in started_ids and _legacy_action_unbound(task, action)
-    ]
-    for action in retired:
-        _retire_legacy_action(action)
-    return len(retired)
-
-
-def _gateway_started_action_ids(
-    session: Session,
-    actions: list[Action],
-) -> set[str]:
-    if not actions:
-        return set()
-    return set(session.scalars(
-        select(ExecutionAttempt.action_id).where(
-            ExecutionAttempt.action_id.in_([action.id for action in actions]),
-            ExecutionAttempt.gateway_call_started_at.is_not(None),
-        )
-    ))
-
-
-def _legacy_action_unbound(task: Task, action: Action) -> bool:
-    if task.type == "group_ai_chat":
-        return not action.primary_quantity_slot_id
-    payload = action.payload if isinstance(action.payload, dict) else {}
-    return not str(payload.get("search_click_obligation_id") or "")
-
-
-def _retire_legacy_action(action: Action) -> None:
-    action.status = "skipped"
-    action.result = {
-        **(action.result or {}),
-        "error_code": "legacy_action_retired_by_fulfillment_takeover",
-        "error_message": "旧履约 Action 已在 Gateway 前终结，由新义务模型重新规划",
-    }
-    action.claim_owner = ""
-    action.claim_token = ""
-    action.claim_expires_at = None
-    action.lease_owner = ""
-    action.lease_expires_at = None
 
 
 def _normalize_task_gate_limits(task: Task) -> None:
@@ -348,7 +269,7 @@ def normalize_fulfillment_pacing(task_type: str, pacing: dict) -> dict:
 def _clear_obsolete_runtime_state(task: Task) -> bool:
     stats = dict(task.stats or {})
     before = (task.last_error, dict(stats))
-    for field in PLANNER_BACKLOG_STATS_FIELDS:
+    for field in PLANNER_BACKLOG_STATS_FIELDS | RETIRED_CAPACITY_STATS_FIELDS:
         stats.pop(field, None)
     if task.last_error == "shared_dispatch_capacity_insufficient":
         task.last_error = ""
@@ -360,6 +281,8 @@ def _clear_obsolete_runtime_state(task: Task) -> bool:
         task.type == "channel_view"
         and task.last_error == "任务今日浏览安全上限已用完，等待下一日继续规划"
     ):
+        task.last_error = ""
+    if task.last_error in RETIRED_CAPACITY_BLOCK_MESSAGES:
         task.last_error = ""
     task.stats = stats
     return before != (task.last_error, stats)
