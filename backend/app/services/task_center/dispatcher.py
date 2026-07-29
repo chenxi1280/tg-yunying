@@ -19,7 +19,7 @@ from pydantic import ValidationError
 from app.admin_chats import send_admin_chat_broadcast
 from app.integrations.telegram import DeveloperAppCredentials, OperationResult, OutboundSegment
 from app.config import get_settings
-from app.models import AccountStatus, Action, AiAccountVoiceProfile, AiGroupMessageMemory, ChannelMessage, CommentFulfillmentObligation, ConsistencyQuarantine, ContentMixCycle, ContentMixCycleSlot, ContentMixObligation, ExecutionAttempt, FailureType, GroupAuthStatus, GroupContextMessage, OperationTarget, ReviewQueue, SearchClickFulfillmentObligation, SearchClickOpportunityAssignment, Task, TaskAccountDailyCoverage, TaskDayLedger, TaskGroupDailyMessageSlot, TaskMembershipAdmissionItem, Tenant, TgAccount, TgGroup, TgGroupAccount, VerificationTask
+from app.models import AccountStatus, Action, AiAccountVoiceProfile, AiGroupMessageMemory, ChannelMessage, CommentFulfillmentObligation, ConsistencyQuarantine, ContentMixCycle, ContentMixCycleSlot, ContentMixObligation, DispatchClaimReservation, DispatchClaimShardAllocation, DispatchClaimWindow, ExecutionAttempt, FailureType, GroupAuthStatus, GroupContextMessage, OperationTarget, ReviewQueue, SearchClickFulfillmentObligation, SearchClickOpportunityAssignment, Task, TaskAccountDailyCoverage, TaskDayLedger, TaskGroupDailyMessageSlot, TaskMembershipAdmissionItem, Tenant, TgAccount, TgGroup, TgGroupAccount, VerificationTask
 from app.models import AccountEnvironmentBinding, AccountProxy, AccountProxyBinding, TelegramDeveloperApp, TgAccountAuthorization
 from app.search_keywords import normalized_keyword_hash
 from app.security import decrypt_secret
@@ -121,6 +121,7 @@ from .payloads import (
 from .pacing import quiet_hours_active
 from .policies import validate_group_send_policy
 from .review import has_pending_review
+from .datetime_compat import is_before
 from .search_join_linking import create_linked_dispatch_if_membership_observed
 from .search_join_protocol import record_search_join_protocol_trace
 from .search_join_membership import (
@@ -1229,7 +1230,7 @@ def _confirm_action_claim_candidate(
         session.rollback()
         _release_failed_claim_confirmation(session, action_id, batch)
     except IntegrityError:
-        _release_conflicting_action_claim(session, action_id, batch, action)
+        _release_conflicting_action_claim(session, batch, action)
     return False
 
 
@@ -1264,12 +1265,29 @@ def _skip_superseded_group_bot_confirmation_claim(session: Session, action: Acti
 def _release_failed_claim_confirmation(session: Session, action_id: str, batch: ActionClaimBatch) -> None:
     current = session.get(Action, action_id)
     if _action_claim_matches(current, batch):
+        reason = _prebound_claim_failure_reason(session, current)
+        if _release_prebound_search_claim(
+            session,
+            current,
+            reason_code=reason,
+            trigger_kind="claim_confirmation",
+        ):
+            session.commit()
+            return
         _release_claim(current, delay_seconds=1, reason="dispatch_claim_confirmation_unavailable")
         session.commit()
 
 
 def _release_unconfirmed_action_claim(session: Session, action: Action) -> None:
     result = action.result or {}
+    if _release_prebound_search_claim(
+        session,
+        action,
+        reason_code="search_resource_saturated",
+        trigger_kind="runtime_resource",
+    ):
+        session.commit()
+        return
     _release_claim(
         action,
         delay_seconds=_runtime_resource_retry_delay(action, result),
@@ -1280,14 +1298,21 @@ def _release_unconfirmed_action_claim(session: Session, action: Action) -> None:
 
 def _release_conflicting_action_claim(
     session: Session,
-    action_id: str,
     batch: ActionClaimBatch,
     action: Action,
 ) -> None:
     session.rollback()
     _release_runtime_resources(action)
-    current = session.get(Action, action_id)
+    current = session.get(Action, action.id)
     if _action_claim_matches(current, batch):
+        if _release_prebound_search_claim(
+            session,
+            current,
+            reason_code="search_reservation_cas_abandoned",
+            trigger_kind="integrity_conflict",
+        ):
+            session.commit()
+            return
         _release_claim(current, delay_seconds=1, reason="account_inflight_conflict")
         session.commit()
 
@@ -1914,34 +1939,69 @@ def _apply_claim_account_policy(session: Session, action: Action) -> bool:
         return False
     if not _apply_claim_account_usage_policy(session, action, account):
         return False
-    if not account_matches_current_shard(account.id):
-        _release_claim(action, delay_seconds=30, reason="account_shard_mismatch")
-        action.result = {
-            **(action.result or {}),
-            "runtime_resource_reason": "account_shard_mismatch",
-            "shard_total": current_account_shard()[0],
-            "shard_index": current_account_shard()[1],
-        }
+    if not _claim_account_matches_shard(session, action, account):
         return False
-    replacement = _replacement_for_lost_group_send_permission(session, action, account)
-    if replacement:
-        action.result = {
-            **(action.result or {}),
-            "auto_check": "转派",
-            "validation_stage": "account_target_permission",
-            "account_policy_action": "reassigned",
-            "account_policy_reason": "account_target_permission_unavailable",
-            "original_account_id": account.id,
-            "reassigned_account_id": replacement.id,
-        }
-        action.account_id = replacement.id
+    if _reassign_lost_group_permission(session, action, account):
         return True
     if _is_group_rescue_action(action):
         _record_group_rescue_capacity_override(action)
         return True
     if _is_hard_hourly_membership_action(session, action):
         return True
-    # Continuity PRD: hard-hourly sends use the same claim-time account capacity gate.
+    return _apply_claim_account_capacity(session, action, account)
+
+
+def _claim_account_matches_shard(
+    session: Session,
+    action: Action,
+    account: TgAccount,
+) -> bool:
+    if account_matches_current_shard(account.id):
+        return True
+    if _release_prebound_search_claim(
+        session,
+        action,
+        reason_code="search_resource_saturated",
+        trigger_kind="account_shard",
+    ):
+        return False
+    _release_claim(action, delay_seconds=30, reason="account_shard_mismatch")
+    shard_total, shard_index = current_account_shard()
+    action.result = {
+        **(action.result or {}),
+        "runtime_resource_reason": "account_shard_mismatch",
+        "shard_total": shard_total,
+        "shard_index": shard_index,
+    }
+    return False
+
+
+def _reassign_lost_group_permission(
+    session: Session,
+    action: Action,
+    account: TgAccount,
+) -> bool:
+    replacement = _replacement_for_lost_group_send_permission(session, action, account)
+    if replacement is None:
+        return False
+    action.result = {
+        **(action.result or {}),
+        "auto_check": "转派",
+        "validation_stage": "account_target_permission",
+        "account_policy_action": "reassigned",
+        "account_policy_reason": "account_target_permission_unavailable",
+        "original_account_id": account.id,
+        "reassigned_account_id": replacement.id,
+    }
+    action.account_id = replacement.id
+    return True
+
+
+def _apply_claim_account_capacity(
+    session: Session,
+    action: Action,
+    account: TgAccount,
+) -> bool:
     decision = account_capacity_decision(
         session,
         tenant_id=action.tenant_id,
@@ -1965,6 +2025,13 @@ def _apply_claim_account_policy(session: Session, action: Action) -> bool:
         action.account_id = replacement.id
         return True
     detail = decision.reason or "账号全局限额或冷却中，已延后执行"
+    if _release_prebound_search_claim(
+        session,
+        action,
+        reason_code="search_resource_saturated",
+        trigger_kind="account_policy",
+    ):
+        return False
     _defer(
         action,
         decision.defer_until or (_now() + timedelta(seconds=60)),
@@ -6538,6 +6605,7 @@ def _fail(action: Action, failure_type: str, detail: str, *, auto_check: str = "
     }
     action.executed_at = _now()
     _release_rank_deboost_reservation_before_gateway(action)
+    _release_pure_search_assignment_before_gateway(action, failure_type)
     _release_runtime_resources(action)
 
 
@@ -6623,6 +6691,74 @@ def _release_pure_search_assignment_before_gateway(
         reason_code="search_assignment_pre_gateway_terminal",
         now_value=_now(),
     )
+
+
+def _prebound_claim_failure_reason(
+    session: Session,
+    action: Action,
+) -> str:
+    window = _prebound_claim_window(session, action)
+    if window is not None and not is_before(_now(), window.bucket_end):
+        return "search_assignment_expired"
+    return "search_reservation_cas_abandoned"
+
+
+def _prebound_claim_window(
+    session: Session,
+    action: Action,
+) -> DispatchClaimWindow | None:
+    result = action.result if isinstance(action.result, dict) else {}
+    window_id = str(result.get("dispatch_claim_window_id") or "")
+    if window_id:
+        return session.get(DispatchClaimWindow, window_id)
+    assignment_id = str(
+        (action.payload or {}).get("search_click_assignment_id")
+        or result.get("search_click_assignment_id")
+        or ""
+    )
+    assignment = session.get(
+        SearchClickOpportunityAssignment,
+        assignment_id,
+    ) if assignment_id else None
+    reservation = session.get(
+        DispatchClaimReservation,
+        assignment.dispatch_claim_reservation_id,
+    ) if assignment else None
+    allocation = session.get(
+        DispatchClaimShardAllocation,
+        reservation.dispatch_claim_shard_allocation_id,
+    ) if reservation else None
+    return session.get(
+        DispatchClaimWindow,
+        allocation.dispatch_claim_window_id,
+    ) if allocation else None
+
+
+def _release_prebound_search_claim(
+    session: Session,
+    action: Action,
+    *,
+    reason_code: str,
+    trigger_kind: str,
+) -> bool:
+    result = action.result if isinstance(action.result, dict) else {}
+    if action.task_type != "search_click" or not result.get("dispatch_prebound"):
+        return False
+    assignment_id = str(
+        (action.payload or {}).get("search_click_assignment_id")
+        or result.get("search_click_assignment_id")
+        or ""
+    )
+    if not assignment_id or _gateway_call_started(session, action):
+        return False
+    release_search_click_assignment(
+        session,
+        assignment_id,
+        trigger_key=f"{trigger_kind}:{action.id}:{action.retry_count}",
+        reason_code=reason_code,
+        now_value=_now(),
+    )
+    return True
 
 
 def _skip_stale_channel_daily_actions(session: Session, *, today: date) -> int:
