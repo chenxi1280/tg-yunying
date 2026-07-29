@@ -94,6 +94,7 @@ from .fulfillment_takeover import (
     normalize_fulfillment_pacing,
     takeover_task,
 )
+from .fulfillment_takeover_actions import retire_unbound_legacy_actions
 from .search_rank_deboost_pacing import DeboostPacingStats, account_click_allowed, deboost_pacing_window, lock_rank_deboost_quota_scope
 from .search_rank_deboost_reservations import (
     mark_reserved_reservation_unknown,
@@ -3302,6 +3303,11 @@ def _plan_due_task_batch(
         if _check_stop_conditions(session, task):
             session.commit()
             return 0, 0, False, current_global_pending
+        current_global_pending = _takeover_before_retry(
+            session,
+            task,
+            current_global_pending=current_global_pending,
+        )
         retried = retry_failed_actions(session, task, limit=max(1, limit))
         processed = retried
         current_global_pending += max(0, int(retried))
@@ -3326,6 +3332,32 @@ def _plan_due_task_batch(
             task.next_run_at = next_run_after_task(task)
         session.commit()
         return processed, planned, False, current_global_pending
+
+
+def _takeover_before_retry(
+    session: Session,
+    task: Task,
+    *,
+    current_global_pending: int,
+) -> int:
+    if (
+        task.type not in FULFILLMENT_TASK_TYPES
+        or (task.stats or {}).get("fulfillment_contract_version")
+        != FULFILLMENT_CONTRACT_VERSION
+    ):
+        return current_global_pending
+    before = _task_open_action_count(session, task)
+    retire_unbound_legacy_actions(session, task)
+    after = _task_open_action_count(session, task)
+    return max(0, current_global_pending - max(0, before - after))
+
+
+def _task_open_action_count(session: Session, task: Task) -> int:
+    count = session.scalar(select(func.count(Action.id)).where(
+        Action.task_id == task.id,
+        Action.status.in_(("pending", "claiming", "executing")),
+    ))
+    return int(count or 0)
 
 
 def _coverage_round_goal(session_factory, task_id: str) -> int:

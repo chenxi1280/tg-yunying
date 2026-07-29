@@ -31,6 +31,7 @@ from app.services.task_center.fulfillment_takeover import (
     normalize_fulfillment_pacing,
     takeover_task,
 )
+from app.services.task_center.stats import retry_failed_actions
 
 
 pytestmark = pytest.mark.no_postgres
@@ -172,6 +173,51 @@ def test_takeover_clears_obsolete_shared_dispatch_error(session: Session) -> Non
     assert result.changed is True
     assert task.last_error == ""
     assert "planner_backlog_blocked" not in task.stats
+
+
+def test_planner_takeover_precedes_retry_and_backlog(
+    session: Session,
+) -> None:
+    task = Task(
+        id="planner-takeover-search",
+        tenant_id=1,
+        name="旧搜索重试清退",
+        type="search_click",
+        status="running",
+        failure_policy={"max_retries": 3},
+        stats={"fulfillment_contract_version": FULFILLMENT_CONTRACT_VERSION},
+    )
+    pending = Action(
+        id="legacy-search-pending",
+        tenant_id=1,
+        task_id=task.id,
+        task_type=task.type,
+        action_type="search_join",
+        status="pending",
+        payload={},
+    )
+    failed = Action(
+        id="legacy-search-failed",
+        tenant_id=1,
+        task_id=task.id,
+        task_type=task.type,
+        action_type="search_join",
+        status="failed",
+        payload={},
+    )
+    session.add_all([task, pending, failed])
+    session.flush()
+
+    remaining = service._takeover_before_retry(
+        session,
+        task,
+        current_global_pending=1,
+    )
+
+    assert remaining == 0
+    assert pending.status == "skipped"
+    assert retry_failed_actions(session, task) == 0
+    assert failed.status == "failed"
 
 
 @pytest.fixture
