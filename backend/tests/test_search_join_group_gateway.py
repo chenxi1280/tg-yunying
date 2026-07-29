@@ -68,12 +68,14 @@ class FakeSearchJoinClient:
         join_error: Exception | None = None,
         membership_probe_error: Exception | None = None,
         edits: list[FakeMessage] | None = None,
+        latest_messages: list[FakeMessage] | None = None,
         download_media_result: bytes = b"\x89PNG fake image",
     ) -> None:
         self.responses = responses
         self.join_error = join_error
         self.membership_probe_error = membership_probe_error
         self.edits = edits or []
+        self.latest_messages = latest_messages or []
         self.updated_message_ids: list[int] = []
         self.sent: list[tuple[str, str]] = []
         self.joined: list[str] = []
@@ -88,11 +90,19 @@ class FakeSearchJoinClient:
         assert timeout == 60
         return FakeConversation(self, bot)
 
-    async def get_messages(self, _bot: str, ids: int) -> FakeMessage:
+    async def get_messages(
+        self,
+        _bot: str,
+        ids: int | None = None,
+        limit: int | None = None,
+    ) -> FakeMessage | list[FakeMessage] | None:
+        if limit is not None:
+            return self.latest_messages[:limit]
+        assert ids is not None
         self.updated_message_ids.append(ids)
         if self.edits:
             return self.edits.pop(0)
-        return self.responses.pop(0)
+        return self.responses.pop(0) if self.responses else None
 
     async def get_entity(self, target: str):
         return target
@@ -774,6 +784,30 @@ def test_jisou_image_verification_succeeds_when_answer_in_button_matrix() -> Non
             _payload(bot_username="jisou"),
             keyword_text="郑州",
             image_verification_solver=solver,
+        )
+    )
+
+    assert result["success"] is True
+    assert result["join_status"] == "target_found"
+
+
+@pytest.mark.no_postgres
+def test_jisou_image_verification_accepts_newer_bot_message_after_callback() -> None:
+    verification_page = _verification_image_page(
+        digit_answers=["7", "8", "9", "10", "11", "12", "13", "14"]
+    )
+    target_page = FakeMessage(102, [[FakeButton("目标群", url="https://t.me/target_group")]])
+    client = FakeSearchJoinClient(
+        [FakeMessage(100, []), verification_page],
+        latest_messages=[target_page],
+    )
+
+    result = asyncio.run(
+        execute_search_join_with_client(
+            client,
+            _payload(bot_username="jisou"),
+            keyword_text="郑州",
+            image_verification_solver=_solver_returning("9", 0.95),
         )
     )
 

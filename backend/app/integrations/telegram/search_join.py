@@ -848,9 +848,22 @@ async def _click_button(message: Any, button: SearchJoinButton) -> Any:
 async def _click_and_get_edited_page(client: Any, bot_username: str, message: Any, button: SearchJoinButton) -> Any:
     await _click_button(message, button)
     edited_page = await client.get_messages(bot_username, ids=message.id)
-    if edited_page is None:
+    if edited_page is not None:
+        return edited_page
+    newer_page = await _latest_newer_bot_message(client, bot_username, message)
+    if newer_page is None:
         raise RuntimeError("callback edited message unavailable")
-    return edited_page
+    return newer_page
+
+
+async def _latest_newer_bot_message(client: Any, bot_username: str, message: Any) -> Any | None:
+    latest = await client.get_messages(bot_username, limit=1)
+    candidate = latest[0] if isinstance(latest, (list, tuple)) and latest else latest
+    if candidate is None:
+        return None
+    current_id = int(getattr(message, "id", 0) or 0)
+    candidate_id = int(getattr(candidate, "id", 0) or 0)
+    return candidate if current_id > 0 and candidate_id > current_id else None
 
 
 async def _join_channel(client: Any, entity: Any) -> None:
