@@ -649,9 +649,9 @@ def test_rank_account_group_update_rechecks_binding_without_gateway_recheck(monk
             lambda *_args, **_kwargs: pytest.fail("换黑账号组只应复验新分组绑定"),
         )
 
-        with pytest.raises(ValueError, match="缺少 active runtime 代理绑定"):
-            task_service.start_task(session, 1, updated.id, "tester")
+        started = task_service.start_task(session, 1, updated.id, "tester")
 
+        assert started.status == "running"
         assert updated.stats["rank_deboost_readiness"]["status"] == "blocked"
         assert updated.stats["rank_deboost_readiness"]["required_check"] == "account_group_binding"
 

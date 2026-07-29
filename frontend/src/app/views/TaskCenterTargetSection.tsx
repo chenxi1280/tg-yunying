@@ -92,7 +92,8 @@ function ChannelTargetFields(props: WizardTargetProps) {
 
 export function WizardTarget(props: WizardTargetProps) {
   const normalizedProps = { ...props, allowInlineTarget: props.allowInlineTarget ?? true };
-  const simpleSearchClickTarget = props.taskType === 'search_join_group'
+  const simpleSearchClickTarget = props.taskType === 'search_click'
+    || props.taskType === 'search_join_group'
     || (props.taskType === 'search_rank_deboost' && props.simpleSearchCreation);
   if (simpleSearchClickTarget) {
     return <SimpleSearchClickTargetFields />;

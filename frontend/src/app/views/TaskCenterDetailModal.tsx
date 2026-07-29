@@ -69,9 +69,11 @@ const coverageStateColor = (state?: string | null) => {
 function searchClickTargetProgress(task: TaskCenterTask) {
   const progress = task.stats?.search_click_target;
   const hasDualTarget = task.type === 'search_join_group' && task.type_config?.daily_click_target_count != null;
-  const isDailyTarget = task.type === 'search_join_group'
+  const isDailyTarget = ['search_click', 'search_join_group'].includes(task.type)
     && (progress?.scope === 'daily' || task.type_config?.daily_click_target_count != null || task.type_config?.daily_target_count != null);
-  const configuredTarget = isDailyTarget
+  const configuredTarget = task.type === 'search_click'
+    ? task.type_config?.daily_click_target_count
+    : isDailyTarget
     ? hasDualTarget ? task.type_config?.daily_click_target_count : task.type_config?.daily_target_count
     : task.type_config?.target_count;
   const targetCount = Number(progress?.target_count ?? configuredTarget);
@@ -731,7 +733,7 @@ export function TaskCenterDetailModal({
   ];
   const admissionTotal = Number(detail?.membership_admission_phase?.snapshot_total ?? admissionItemPagination.total ?? 0);
   const showAiTab = detail?.task.type === 'group_ai_chat';
-  const showSearchJoinTab = detail?.task.type === 'search_join_group';
+  const showSearchJoinTab = ['search_click', 'search_join_group'].includes(detail?.task.type || '');
   const showSearchRankDeboostTab = detail?.task.type === 'search_rank_deboost';
   const botMissingReasons = botAvailabilityReasons(telegramBotSettings);
   const showTargetTab = detail ? ['group_relay', 'channel_view', 'channel_like', 'channel_comment'].includes(detail.task.type) : false;
@@ -812,9 +814,9 @@ export function TaskCenterDetailModal({
               },
               {
                 key: 'coverage_capacity',
-                label: '容量证明',
+                label: '容量诊断（不阻塞）',
                 children: accountCoverage?.capacity_proof
-                  ? `${accountCoverage.capacity_status === 'blocked' ? '阻塞' : '可履约'}，目标 ${Number(accountCoverage.required_daily_messages ?? 0)}，理论容量 ${Number(accountCoverage.capacity_proof.effective_daily_capacity ?? 0)}，差额 ${Number(accountCoverage.capacity_proof.capacity_gap ?? 0)}`
+                  ? `${accountCoverage.capacity_status === 'diagnostic_insufficient' ? '当前估算不足' : '当前估算充足'}，目标 ${Number(accountCoverage.required_daily_messages ?? 0)}，理论容量 ${Number(accountCoverage.capacity_proof.effective_daily_capacity ?? 0)}，差额 ${Number(accountCoverage.capacity_proof.capacity_gap ?? 0)}`
                   : '-',
               },
               { key: 'coverage_hourly_rate', label: '最低小时成功率', children: accountCoverage ? `${Number(accountCoverage.required_hourly_rate ?? 0)} 条/小时` : '-' },

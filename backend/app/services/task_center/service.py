@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session, object_session
 
 from app.config import get_settings
 from app.integrations.telegram import OperationResult
-from app.models import AccountPool, AccountStatus, Action, AiCoverageVariationIntent, ChannelMessage, ExecutionAttempt, FailureType, MessageFingerprint, OperationIssue, OperationPlanTaskLink, OperationTarget, ReviewQueue, RuleSet, RuleSetVersion, SearchJoinPacingDecision, Task, TaskAccountDailyCoverage, TaskRuntimeSummary, TgAccount, TgGroup, WorkerHeartbeat
+from app.models import AccountPool, AccountStatus, Action, AiCoverageVariationIntent, ChannelMessage, ExecutionAttempt, FailureType, MessageFingerprint, OperationIssue, OperationPlanTaskLink, OperationTarget, ReviewQueue, RuleSet, RuleSetVersion, SearchClickOpportunityAssignment, SearchJoinPacingDecision, Task, TaskAccountDailyCoverage, TaskDayLedger, TaskMembershipAdmissionItem, TaskRuntimeSummary, TgAccount, TgGroup, WorkerHeartbeat
 from app.models.search_rank_deboost import AccountGroupProxyBinding, SearchRankDeboostClickReservation, SearchRankDeboostExemptGroup
 from app.search_keywords import normalized_keyword_hash, repair_legacy_keyword_materials
 from app.schemas.task_center import (
@@ -39,6 +39,10 @@ from app.schemas.task_center import (
     GroupRelayTaskCreate,
     GroupRelayTaskConfigUpdate,
     RecommendTaskAccountsRequest,
+    SearchClickInternalTaskCreate,
+    SearchClickPacingConfig,
+    SearchClickTaskConfigUpdate,
+    SearchClickTaskCreate,
     SearchJoinGroupTaskCreate,
     SearchJoinGroupTaskConfigUpdate,
     SearchJoinGroupSimpleTaskCreate,
@@ -77,14 +81,18 @@ from .dispatcher import (
     mark_dispatcher_db_error,
     release_dispatch_claim,
     recover_expired_claims,
-    recover_expired_hard_hourly_actions,
-    recover_hard_hourly_delivery_credits,
     recover_pending_visibility_credits,
-    recover_unreachable_hard_hourly_actions,
 )
 from .daily_coverage import recover_terminal_coverage_reservations
 from .daily_fulfillment import record_daily_fulfillment_decision
 from .executors import build_task_plan, channel_comment, prepare_open_actions_for_planning, requires_planning_with_open_actions
+from .fulfillment_takeover import (
+    FULFILLMENT_CONTRACT_VERSION,
+    FULFILLMENT_TASK_TYPES,
+    UNIFIED_TASK_GATE_LIMIT,
+    normalize_fulfillment_pacing,
+    takeover_task,
+)
 from .search_rank_deboost_pacing import DeboostPacingStats, account_click_allowed, deboost_pacing_window, lock_rank_deboost_quota_scope
 from .search_rank_deboost_reservations import (
     mark_reserved_reservation_unknown,
@@ -135,7 +143,6 @@ from .details import (
 from .fingerprints import content_fingerprint
 from .heartbeat import record_worker_heartbeat
 from .listener_runtime import drain_listener_runtime, invalidate_listener_collect
-from .membership_fast_track import fast_track_pending_hard_hourly_memberships, record_fast_track_task_counts
 from .membership_admission import (
     list_membership_admission_items_page,
     mark_membership_admission_manual_handled,
@@ -145,7 +152,6 @@ from .membership_admission import (
     retry_membership_admission_item,
     retry_membership_admission_rescue,
 )
-from .membership_recovery_gate import recover_missing_hard_hourly_memberships
 from .review import expire_reviews
 from .reviews import ReviewStateError, approve_review, list_reviews, reject_review
 from .precheck import run_precheck_task_creation
@@ -172,7 +178,6 @@ _empty_stats = empty_stats
 _next_run_after_task = next_run_after_task
 _retry_failed_actions = retry_failed_actions
 PLANNER_GLOBAL_PENDING_SESSION_KEY = "planner_global_pending"
-HARD_HOURLY_WAKE_PROGRESS_SESSION_KEY = "task_center.hard_hourly_wake_progress"
 CHANNEL_COMMENT_SCENE = "channel_comment"
 GROUP_CHAT_SCENE = "group_chat"
 GROUP_PREVIEW_CANDIDATE_SHORTFALL_MESSAGE = "AI 普通发言候选不足，无法生成完整预览"
@@ -202,9 +207,6 @@ COMMENT_UNAVAILABLE_MARKERS = (
 )
 ACCOUNT_AUTH_MARKERS = ("session", "auth key", "auth_key", "unauthorized", "重新登录", "账号没有可用 session", "session 已失效")
 RATE_LIMIT_MARKERS = ("floodwait", "too many requests", "slowmode", "慢速模式", "冷却")
-HARD_HOURLY_WAKE_MIN_SCAN = 20
-HARD_HOURLY_RECOVERY_MIN_BATCH = 1000
-HARD_HOURLY_RECOVERY_LIMIT_MULTIPLIER = 20
 DEFAULT_RECOVERY_BATCH_LIMIT = 100
 UNKNOWN_MEMBERSHIP_REPROBE_PER_DRAIN_LIMIT = 10
 UNKNOWN_MEMBERSHIP_REPROBE_COOLDOWN = timedelta(minutes=30)
@@ -234,8 +236,10 @@ from .search_rank_deboost import (
     validate_rank_deboost_protocol_samples,
 )
 from .search_click_target_progress import reconcile_search_click_target_progress, search_click_target_progress
+from .search_click_assignment_release import release_search_click_assignment
 from .search_click_controls import (
     DAILY_TARGET_ACTION_SKIP_PROBABILITY,
+    LEGACY_SEARCH_CLICK_TASK,
     NORMAL_SEARCH_CLICK_TASK,
     RANK_SEARCH_CLICK_TASK,
     require_search_click_account_group,
@@ -247,14 +251,6 @@ from .search_rank_deboost_targets import (
     rank_deboost_target_group_refs,
     require_rank_deboost_target_group_refs,
 )
-from .hard_hourly import (
-    current_progress as hard_hourly_current_progress,
-    enabled as hard_hourly_enabled,
-    next_check_for_progress as hard_hourly_next_check_for_progress,
-    planner_progress_snapshot as hard_hourly_planner_progress_snapshot,
-    requires_planning as hard_hourly_requires_planning,
-    seed_planner_progress_snapshot as seed_hard_hourly_planner_progress_snapshot,
-)
 from .config_normalization import (
     apply_default_rule_binding,
     apply_default_slang_config,
@@ -265,7 +261,11 @@ from .config_normalization import (
     validated_type_config,
 )
 from .continuity_config import increment_revision_for_continuity_change
-from .datetime_compat import parse_zone, to_zone
+from .creation_operations import StartExecutionResult
+from .search_click_revisions import (
+    pending_search_click_revision,
+    store_pending_search_click_revision,
+)
 
 
 def create_group_ai_chat_task(session: Session, tenant_id: int, payload: GroupAIChatTaskCreate, actor: str) -> Task:
@@ -294,6 +294,16 @@ def create_channel_comment_task(session: Session, tenant_id: int, payload: Chann
 
 def create_search_join_group_task(session: Session, tenant_id: int, payload: SearchJoinGroupTaskCreate, actor: str) -> Task:
     return _create_task(session, tenant_id, "search_join_group", payload, actor)
+
+
+def create_search_click_task(
+    session: Session,
+    tenant_id: int,
+    payload: SearchClickTaskCreate,
+    actor: str,
+) -> Task:
+    internal = _search_click_internal_payload(session, tenant_id, payload)
+    return _create_task(session, tenant_id, "search_click", internal, actor)
 
 
 def create_simple_search_join_group_task(
@@ -338,6 +348,16 @@ def create_and_start_search_join_group_task(session: Session, tenant_id: int, pa
     return _create_and_start_task(session, tenant_id, "search_join_group", payload, actor)
 
 
+def create_and_start_search_click_task(
+    session: Session,
+    tenant_id: int,
+    payload: SearchClickTaskCreate,
+    actor: str,
+) -> Task:
+    task = create_search_click_task(session, tenant_id, payload, actor)
+    return start_task(session, tenant_id, task.id, actor)
+
+
 def create_and_start_simple_search_join_group_task(
     session: Session,
     tenant_id: int,
@@ -361,10 +381,13 @@ def _new_task(session: Session, tenant_id: int, task_type: str, payload) -> Task
     raw_type_config = apply_group_ai_account_coverage_defaults(task_type, raw_type_config, payload.account_config.model_dump(mode="json"))
     type_config = validated_type_config(task_type, raw_type_config)
     validate_rule_binding(session, tenant_id, type_config)
-    pacing_config = pacing_config_payload(payload.pacing_config)
-    if task_type == NORMAL_SEARCH_CLICK_TASK and type_config.get("strict_daily_target"):
+    pacing_config = normalize_fulfillment_pacing(
+        task_type,
+        pacing_config_payload(payload.pacing_config),
+    )
+    if task_type == LEGACY_SEARCH_CLICK_TASK and type_config.get("strict_daily_target"):
         pacing_config["skip_probability_per_action"] = DAILY_TARGET_ACTION_SKIP_PROBABILITY
-    if task_type == NORMAL_SEARCH_CLICK_TASK:
+    if task_type == LEGACY_SEARCH_CLICK_TASK:
         _validate_strict_search_join_daily_capacity(
             session,
             tenant_id,
@@ -391,7 +414,14 @@ def _new_task(session: Session, tenant_id: int, task_type: str, payload) -> Task
         pacing_config=pacing_config,
         failure_policy=payload.failure_policy.model_dump(mode="json"),
         type_config=type_config,
-        stats=empty_stats(),
+        stats={
+            **empty_stats(),
+            **(
+                {"fulfillment_contract_version": FULFILLMENT_CONTRACT_VERSION}
+                if task_type in FULFILLMENT_TASK_TYPES
+                else {}
+            ),
+        },
     )
     session.add(task)
     session.flush()
@@ -414,6 +444,52 @@ def _simple_search_click_target(session: Session, tenant_id: int, target_id: int
     if not PUBLIC_TELEGRAM_USERNAME_RE.fullmatch(username):
         raise ValueError("搜索点击目标群必须配置合法公开 username")
     return target
+
+
+def _search_click_internal_payload(
+    session: Session,
+    tenant_id: int,
+    payload: SearchClickTaskCreate,
+) -> SearchClickInternalTaskCreate:
+    _require_future_search_click_deadline(payload.scheduled_end)
+    require_search_click_account_group(
+        session, tenant_id, NORMAL_SEARCH_CLICK_TASK, payload.account_group_id
+    )
+    target, canonical_link = _simple_search_click_target_from_input(
+        session, tenant_id, payload.target_title, payload.target_link
+    )
+    hashes = [normalized_keyword_hash(value) for value in payload.keywords]
+    ciphertexts = [encrypt_secret(value) for value in payload.keywords]
+    pacing = SearchClickPacingConfig(
+        mode="template",
+        jitter_percent=payload.hourly_jitter_percent,
+        daily_jitter_percent=payload.daily_jitter_percent,
+        hourly_jitter_percent=payload.hourly_jitter_percent,
+        quiet_hours=payload.quiet_hours,
+        max_actions_per_day=UNIFIED_TASK_GATE_LIMIT,
+    )
+    return SearchClickInternalTaskCreate(
+        client_request_id=payload.client_request_id,
+        name=_simple_search_click_name(
+            target,
+            "搜索点击",
+            payload.daily_click_target_count,
+            payload.target_title,
+            daily_target=True,
+        ),
+        search_execution_mode="click_only",
+        target_operation_target_id=target.id,
+        target_input=canonical_link,
+        target_title=payload.target_title,
+        target_link=canonical_link,
+        daily_click_target_count=payload.daily_click_target_count,
+        search_bots=[{"username": "jisou", "display_name": "极搜"}],
+        keyword_hashes=hashes,
+        keyword_text_ciphertexts=ciphertexts,
+        account_config=AccountConfig(**search_click_account_config(payload.account_group_id)),
+        pacing_config=pacing,
+        scheduled_end=as_beijing(payload.scheduled_end),
+    )
 
 
 def _simple_search_join_group_payload(
@@ -538,8 +614,9 @@ def _refresh_simple_search_click_name(session: Session, task: Task, *, task_labe
             target_id = target_group_ids[0]
     if target_id is None:
         return
-    daily_click_target = task.type == NORMAL_SEARCH_CLICK_TASK and config.get("daily_click_target_count") is not None
-    daily_target = task.type == NORMAL_SEARCH_CLICK_TASK and config.get("daily_target_count") is not None
+    is_legacy_search = task.type == LEGACY_SEARCH_CLICK_TASK
+    daily_click_target = is_legacy_search and config.get("daily_click_target_count") is not None
+    daily_target = is_legacy_search and config.get("daily_target_count") is not None
     target_count = int(
         config.get("daily_click_target_count") if daily_click_target
         else config.get("daily_target_count") if daily_target
@@ -569,14 +646,8 @@ def _create_task(session: Session, tenant_id: int, task_type: str, payload, acto
 
 
 def _create_and_start_task(session: Session, tenant_id: int, task_type: str, payload, actor: str) -> Task:
-    _assert_precheck_allows_start(session, tenant_id, task_type, payload.model_dump(mode="json"))
-    task = _new_task(session, tenant_id, task_type, payload)
-    audit(session, tenant_id=tenant_id, actor=actor, action="创建任务中心任务", target_type="task", target_id=task.id, detail=task.type)
-    _mark_task_started(session, task)
-    audit(session, tenant_id=tenant_id, actor=actor, action="启动任务中心任务", target_type="task", target_id=task.id)
-    session.commit()
-    session.refresh(task)
-    return task
+    task = _create_task(session, tenant_id, task_type, payload, actor)
+    return start_task(session, tenant_id, task.id, actor)
 
 
 def _task_payload_with_runtime_summary(
@@ -1024,6 +1095,193 @@ def update_search_join_group_config(session: Session, tenant_id: int, task_id: s
     return task
 
 
+def update_search_click_config(
+    session: Session,
+    tenant_id: int,
+    task_id: str,
+    payload: SearchClickTaskConfigUpdate,
+    actor: str,
+) -> Task:
+    task = _get_task(session, tenant_id, task_id)
+    if task.type != NORMAL_SEARCH_CLICK_TASK:
+        raise ValueError(f"任务类型不匹配，当前任务是 {task.type}")
+    values = payload.model_dump(exclude_unset=True)
+    revision_fields = {
+        key: values.pop(key)
+        for key in tuple(values)
+        if key in {
+            "target_title",
+            "target_link",
+            "keywords",
+            "daily_click_target_count",
+            "account_group_id",
+        }
+    }
+    _apply_search_click_runtime_update(session, task, values)
+    if revision_fields:
+        _apply_or_queue_search_click_revision(
+            session,
+            task,
+            revision_fields,
+        )
+    task.updated_at = _now()
+    audit(
+        session,
+        tenant_id=tenant_id,
+        actor=actor,
+        action="更新纯搜索点击任务",
+        target_type="task",
+        target_id=task.id,
+        detail="future_assignment_revision",
+    )
+    session.commit()
+    session.refresh(task)
+    return task
+
+
+def _apply_or_queue_search_click_revision(
+    session: Session,
+    task: Task,
+    values: dict[str, Any],
+) -> None:
+    ledger = session.scalar(
+        select(TaskDayLedger)
+        .where(
+            TaskDayLedger.task_id == task.id,
+            TaskDayLedger.lifecycle_status == "open",
+        )
+        .order_by(TaskDayLedger.deadline_at.desc())
+        .limit(1)
+    )
+    if task.status != "running" or ledger is None:
+        _apply_search_click_target_update(session, task, values)
+        _apply_search_click_runtime_update(session, task, values)
+        task.config_revision += 1
+        _refresh_simple_search_click_name(session, task, task_label="搜索点击")
+        return
+    _queue_search_click_revision(session, task, ledger, values=values)
+
+
+def _queue_search_click_revision(
+    session: Session,
+    task: Task,
+    ledger: TaskDayLedger,
+    *,
+    values: dict[str, Any],
+) -> None:
+    pending = pending_search_click_revision(task)
+    original = (task.type_config, task.account_config, task.name)
+    if pending:
+        task.type_config = dict(pending["type_config"])
+        task.account_config = dict(pending["account_config"])
+        task.name = str(pending["name"])
+    _apply_search_click_target_update(session, task, dict(values))
+    _apply_search_click_runtime_update(session, task, dict(values))
+    _refresh_simple_search_click_name(session, task, task_label="搜索点击")
+    next_values = (dict(task.type_config), dict(task.account_config), task.name)
+    task.type_config, task.account_config, task.name = original
+    store_pending_search_click_revision(
+        task,
+        effective_at=ledger.deadline_at,
+        type_config=next_values[0],
+        account_config=next_values[1],
+        name=next_values[2],
+    )
+
+
+def _apply_search_click_target_update(
+    session: Session,
+    task: Task,
+    values: dict[str, Any],
+) -> None:
+    config = dict(task.type_config or {})
+    target_title = values.pop("target_title", None)
+    target_link = values.pop("target_link", None)
+    if target_title is not None and target_link is not None:
+        target, canonical_link = _simple_search_click_target_from_input(
+            session,
+            task.tenant_id,
+            target_title,
+            target_link,
+        )
+        config.update({
+            "target_operation_target_id": target.id,
+            "target_input": canonical_link,
+            "target_title": target_title,
+            "target_link": canonical_link,
+        })
+    keywords = values.pop("keywords", None)
+    if keywords is not None:
+        normalized = [item.strip() for item in keywords if item.strip()]
+        config["keyword_hashes"] = [
+            normalized_keyword_hash(item) for item in normalized
+        ]
+        config["keyword_text_ciphertexts"] = [
+            encrypt_secret(item) for item in normalized
+        ]
+    if "daily_click_target_count" in values:
+        config["daily_click_target_count"] = values.pop(
+            "daily_click_target_count"
+        )
+    task.type_config = validated_type_config(task.type, config)
+
+
+def _apply_search_click_runtime_update(
+    session: Session,
+    task: Task,
+    values: dict[str, Any],
+) -> None:
+    account_group_id = values.pop("account_group_id", None)
+    if account_group_id is not None:
+        require_search_click_account_group(
+            session,
+            task.tenant_id,
+            task.type,
+            account_group_id,
+        )
+        task.account_config = search_click_account_config(account_group_id)
+    scheduled_end = values.pop("scheduled_end", None)
+    if scheduled_end is not None:
+        _require_future_search_click_deadline(scheduled_end)
+        task.scheduled_end = as_beijing(scheduled_end)
+    pacing = dict(task.pacing_config or {})
+    for field in ("daily_jitter_percent", "hourly_jitter_percent"):
+        if field in values:
+            pacing[field] = values.pop(field)
+    if "quiet_hours" in values:
+        quiet = values.pop("quiet_hours")
+        if quiet is None:
+            pacing.pop("quiet_hours", None)
+        else:
+            pacing["quiet_hours"] = quiet.model_dump(mode="json")
+    task.pacing_config = pacing_config_payload(pacing)
+
+
+def _release_search_click_plan_for_revision(
+    session: Session,
+    task: Task,
+) -> None:
+    assignments = list(session.scalars(
+        select(SearchClickOpportunityAssignment).where(
+            SearchClickOpportunityAssignment.task_id == task.id,
+            SearchClickOpportunityAssignment.state.in_(
+                ("reserved", "action_bound", "claimed")
+            ),
+        )
+    ))
+    now_value = _now()
+    for assignment in assignments:
+        release_search_click_assignment(
+            session,
+            assignment.id,
+            trigger_key=(
+                f"config_revision:{task.id}:{assignment.id}:{assignment.version}"
+            ),
+            reason_code="unclaimed_action_no_longer_due",
+            now_value=now_value,
+        )
+
+
 def _search_join_update_values(
     session: Session,
     tenant_id: int,
@@ -1058,7 +1316,11 @@ SEARCH_JOIN_OPERATOR_CONTROL_FIELDS = (
     "per_account_daily_action_limit",
     "enable_strict_daily_target",
 )
-SEARCH_CLICK_TASK_TYPES = {NORMAL_SEARCH_CLICK_TASK, RANK_SEARCH_CLICK_TASK}
+SEARCH_CLICK_TASK_TYPES = {
+    NORMAL_SEARCH_CLICK_TASK,
+    LEGACY_SEARCH_CLICK_TASK,
+    RANK_SEARCH_CLICK_TASK,
+}
 SEARCH_JOIN_OPERATOR_EDIT_FIELDS = {
     "target_title",
     "target_link",
@@ -1087,14 +1349,22 @@ def _require_search_click_dedicated_update(task: Task, raw_data: dict[str, Any])
 
 
 def _require_search_click_operator_fields(payload: Any, task_type: str) -> None:
-    allowed = SEARCH_JOIN_OPERATOR_EDIT_FIELDS if task_type == NORMAL_SEARCH_CLICK_TASK else SEARCH_RANK_OPERATOR_EDIT_FIELDS
+    allowed = (
+        SEARCH_JOIN_OPERATOR_EDIT_FIELDS
+        if task_type == LEGACY_SEARCH_CLICK_TASK
+        else SEARCH_RANK_OPERATOR_EDIT_FIELDS
+    )
     forbidden = sorted(payload.model_fields_set - allowed)
     if forbidden:
         raise ValueError(f"搜索点击任务的系统托管字段不能通过运营编辑接口修改: {', '.join(forbidden)}")
 
 
 def _search_click_operator_controls(payload: Any, task_type: str) -> dict[str, Any]:
-    fields = SEARCH_JOIN_OPERATOR_CONTROL_FIELDS if task_type == NORMAL_SEARCH_CLICK_TASK else SEARCH_CLICK_OPERATOR_CONTROL_FIELDS
+    fields = (
+        SEARCH_JOIN_OPERATOR_CONTROL_FIELDS
+        if task_type == LEGACY_SEARCH_CLICK_TASK
+        else SEARCH_CLICK_OPERATOR_CONTROL_FIELDS
+    )
     return {
         field: getattr(payload, field)
         for field in fields
@@ -1533,6 +1803,21 @@ def create_simple_search_rank_deboost_task(
     payload: SearchRankDeboostSimpleTaskCreate,
     operator: str,
 ) -> Task:
+    internal = _simple_search_rank_deboost_payload(session, tenant_id, payload)
+    return create_search_rank_deboost_task(
+        session,
+        tenant_id,
+        internal,
+        operator,
+        defer_readiness=True,
+    )
+
+
+def _simple_search_rank_deboost_payload(
+    session: Session,
+    tenant_id: int,
+    payload: SearchRankDeboostSimpleTaskCreate,
+) -> SearchRankDeboostTaskCreate:
     _require_future_search_click_deadline(payload.scheduled_end)
     require_search_click_account_group(
         session, tenant_id, RANK_SEARCH_CLICK_TASK, payload.account_group_id
@@ -1540,10 +1825,7 @@ def create_simple_search_rank_deboost_task(
     target, canonical_link = _simple_search_click_target_from_input(
         session, tenant_id, payload.target_title, payload.target_link
     )
-    return create_search_rank_deboost_task(
-        session,
-        tenant_id,
-        SearchRankDeboostTaskCreate(
+    return SearchRankDeboostTaskCreate(
             name=_simple_search_click_name(target, "搜索排名观察", payload.target_count, payload.target_title),
             search_bots=["jisou"],
             keywords=[{"text": keyword} for keyword in payload.keywords],
@@ -1558,10 +1840,7 @@ def create_simple_search_rank_deboost_task(
                 "target_title": payload.target_title,
                 "target_link": canonical_link,
             },
-        ),
-        operator,
-        defer_readiness=True,
-    )
+        )
 
 
 def create_and_start_search_rank_deboost_task(
@@ -2013,6 +2292,19 @@ def start_task(
     persist_rank_readiness_failure: bool = True,
 ) -> Task:
     task = _get_task(session, tenant_id, task_id)
+    start_task_in_transaction(session, task, actor)
+    session.commit()
+    session.refresh(task)
+    return task
+
+
+def start_task_in_transaction(
+    session: Session,
+    task: Task,
+    actor: str,
+) -> StartExecutionResult:
+    tenant_id = task.tenant_id
+    takeover_task(session, task)
     if task.type == "channel_comment":
         channel_comment.reconcile_lifetime_cap(session, task)
         if task.status == "completed":
@@ -2025,32 +2317,51 @@ def start_task(
                 target_id=task.id,
                 detail="评论任务已达到生命周期总上限",
             )
-            session.commit()
-            session.refresh(task)
-            return task
-    if task.type in {"search_join_group", "search_rank_deboost"}:
+            return _start_execution_result(session, task)
+    if task.type in {"search_click", "search_join_group", "search_rank_deboost"}:
         if _check_stop_conditions(session, task) or _search_click_task_completed_on_start(session, task):
-            session.commit()
-            session.refresh(task)
-            return task
+            return _start_execution_result(session, task)
     if task.type == "search_rank_deboost":
         if task.status in {"running", "pending"}:
-            return task
+            return _start_execution_result(session, task)
+        _assert_rank_deboost_target_contract(session, task)
         try:
             _prepare_rank_deboost_start(session, tenant_id, task, actor)
         except ValueError as exc:
             _record_rank_deboost_readiness_blocker(task, exc)
-            if persist_rank_readiness_failure:
-                session.commit()
-                session.refresh(task)
-            raise
-    else:
-        _assert_precheck_allows_start(session, tenant_id, task.type, _task_create_payload_for_precheck(task))
     _mark_task_started(session, task)
+    _initialize_runtime_contracts(session, task)
+    _set_runtime_projection(session, task)
     audit(session, tenant_id=tenant_id, actor=actor, action="启动任务中心任务", target_type="task", target_id=task.id)
-    session.commit()
-    session.refresh(task)
-    return task
+    return _start_execution_result(session, task)
+
+
+def _assert_rank_deboost_target_contract(
+    session: Session,
+    task: Task,
+) -> None:
+    config = dict(task.type_config or {})
+    require_rank_deboost_target_group_refs(
+        session,
+        task.tenant_id,
+        list(config.get("target_group_ids") or []),
+        reference_type=_rank_deboost_target_reference_type(config),
+    )
+
+
+def _start_execution_result(session: Session, task: Task) -> StartExecutionResult:
+    ledger_id = session.scalar(
+        select(TaskDayLedger.id)
+        .where(TaskDayLedger.task_id == task.id)
+        .order_by(TaskDayLedger.period_start_at.desc())
+        .limit(1)
+    )
+    stats = task.stats or {}
+    return StartExecutionResult(
+        task_day_ledger_id=ledger_id,
+        runtime_state=str(stats.get("runtime_state") or "runnable"),
+        runtime_blocker_codes=tuple(stats.get("runtime_blocker_codes") or ()),
+    )
 
 
 def pause_task(session: Session, tenant_id: int, task_id: str, actor: str) -> Task:
@@ -2071,9 +2382,6 @@ def stop_task(session: Session, tenant_id: int, task_id: str, actor: str, reason
     task = _get_task(session, tenant_id, task_id)
     task.status = "stopped"
     task.next_run_at = None
-    from .hard_hourly_ledger import terminalize_task_buckets
-
-    terminalize_task_buckets(session, task=task, blocker_code="task_stopped")
     for action in session.scalars(select(Action).where(Action.task_id == task.id, Action.status == "pending")):
         action.status = "skipped"
         action.result = {"success": False, "error_code": "task_stopped", "error_message": "任务已停止"}
@@ -2091,9 +2399,6 @@ def delete_task(session: Session, tenant_id: int, task_id: str, actor: str, reas
         return
     task = _get_task(session, tenant_id, task_id)
     now = _now()
-    from .hard_hourly_ledger import terminalize_task_buckets
-
-    terminalize_task_buckets(session, task=task, blocker_code="task_deleted")
     for action in session.scalars(select(Action).where(Action.task_id == task.id, Action.status.in_(["pending", "executing"]))):
         action.status = "skipped"
         action.result = {"success": False, "error_code": "task_deleted", "error_message": "任务已删除"}
@@ -2113,7 +2418,7 @@ def delete_task(session: Session, tenant_id: int, task_id: str, actor: str, reas
 def retry_task(session: Session, tenant_id: int, task_id: str, payload: TaskRetryRequest, actor: str) -> Task:
     task = _get_task(session, tenant_id, task_id)
     retry_slots: int | None = None
-    if task.type in {"search_join_group", "search_rank_deboost"}:
+    if task.type in {"search_click", "search_join_group", "search_rank_deboost"}:
         if task.type == "search_rank_deboost":
             lock_rank_deboost_quota_scope(session, task)
         session.execute(select(Task.id).where(Task.id == task.id).with_for_update()).scalar_one()
@@ -2844,22 +3149,11 @@ def _drain_task_recovery(session_factory, *, limit: int, process_type: str | Non
         if process_type:
             record_worker_heartbeat(session, process_type=process_type, metadata={"limit": limit})
         processed += recover_expired_claims(session)
-        processed += recover_unreachable_hard_hourly_actions(session, limit=_hard_hourly_recovery_limit(limit))
-        processed += recover_expired_hard_hourly_actions(session, limit=_hard_hourly_recovery_limit(limit))
-        processed += recover_hard_hourly_delivery_credits(session, limit=_hard_hourly_recovery_limit(limit))
-        processed += recover_pending_visibility_credits(session, limit=_hard_hourly_recovery_limit(limit))
-        session.commit()
-        # Fast-track locks and updates only Action rows.  Release those locks
-        # before separately persisting Task-level observability counters.
-        fast_track_result = fast_track_pending_hard_hourly_memberships(
+        processed += recover_pending_visibility_credits(
             session,
-            limit=_hard_hourly_recovery_limit(limit),
+            limit=max(1, int(limit or 0)),
         )
-        processed += fast_track_result.processed
         session.commit()
-        record_fast_track_task_counts(session, fast_track_result.task_counts)
-        session.commit()
-        processed += recover_missing_hard_hourly_memberships(session, limit=_hard_hourly_recovery_limit(limit))
         processed += recover_terminal_coverage_reservations(session, limit=limit)
         session.commit()
         processed += _recover_continuous_task_states(session)
@@ -2889,10 +3183,6 @@ def _drain_task_recovery(session_factory, *, limit: int, process_type: str | Non
     return processed, touched_tenant_ids
 
 
-def _hard_hourly_recovery_limit(limit: int) -> int:
-    return max(HARD_HOURLY_RECOVERY_MIN_BATCH, int(limit or 0) * HARD_HOURLY_RECOVERY_LIMIT_MULTIPLIER)
-
-
 def drain_task_planner(session_factory, limit: int = 100) -> int:
     processed, _ = _drain_task_planner(session_factory, limit=limit, process_type="planner")
     return processed
@@ -2900,7 +3190,6 @@ def drain_task_planner(session_factory, limit: int = 100) -> int:
 
 def _drain_task_planner(session_factory, *, limit: int, process_type: str | None) -> tuple[int, set[str]]:
     processed = 0
-    hard_hourly_progress_by_task: dict[str, dict[str, Any]] = {}
     with session_factory() as session:
         if process_type:
             record_worker_heartbeat(session, process_type=process_type, metadata={"limit": limit})
@@ -2908,10 +3197,7 @@ def _drain_task_planner(session_factory, *, limit: int, process_type: str | None
         processed += reconcile_all_account_scopes_if_due(session)
         _activate_pending_tasks(session)
         now = _now()
-        hard_hourly_task_ids = _wake_hard_hourly_tasks(session, limit=limit, now=now)
-        hard_hourly_progress_by_task = session.info.pop(HARD_HOURLY_WAKE_PROGRESS_SESSION_KEY, {})
         task_ids = _normal_planner_task_ids(session, limit=limit, now=now)
-        task_ids = _merge_planner_task_ids(hard_hourly_task_ids, task_ids, limit)
         global_pending = planner_global_pending(session) if task_ids else 0
         session.commit()
     future_open_action_task_ids: set[str] = set()
@@ -2922,7 +3208,6 @@ def _drain_task_planner(session_factory, *, limit: int, process_type: str | None
             process_type,
             limit=limit,
             global_pending=global_pending,
-            round_hard_progress=hard_hourly_progress_by_task.get(task_id),
         )
         processed += task_processed
         if future_open:
@@ -2937,12 +3222,8 @@ def _plan_due_task(
     *,
     limit: int,
     global_pending: int | None = None,
-    round_hard_progress: dict[str, Any] | None = None,
 ) -> tuple[int, bool, int]:
     round_goal = _coverage_round_goal(session_factory, task_id)
-    if round_hard_progress is None:
-        round_hard_progress = _hard_hourly_round_progress(session_factory, task_id)
-    round_goal = _hard_hourly_round_goal(round_goal, round_hard_progress)
     processed = 0
     planned = 0
     future_open = False
@@ -2955,26 +3236,12 @@ def _plan_due_task(
             limit=limit,
             plan_limit=plan_limit,
             global_pending=global_pending,
-            round_hard_progress=round_hard_progress,
         )
         processed += batch_processed
         planned += batch_planned
         if batch_planned <= 0 or round_goal == 1:
             break
     return processed, future_open, global_pending
-
-
-def _hard_hourly_round_progress(session_factory, task_id: str) -> dict[str, Any] | None:
-    with session_factory() as session:
-        task = session.get(Task, task_id)
-        if not task or not hard_hourly_enabled(task):
-            return None
-        return hard_hourly_planner_progress_snapshot(session, task, _now())
-
-
-def _hard_hourly_round_goal(round_goal: int, progress: dict[str, Any] | None) -> int:
-    deficit = int((progress or {}).get("deficit") or 0)
-    return min(round_goal, deficit) if deficit > 0 else round_goal
 
 
 def _plan_due_task_batch(
@@ -2985,7 +3252,6 @@ def _plan_due_task_batch(
     limit: int,
     plan_limit: int,
     global_pending: int | None = None,
-    round_hard_progress: dict[str, Any] | None = None,
 ) -> tuple[int, int, bool, int]:
     with session_factory() as session:
         current_global_pending = global_pending if global_pending is not None else planner_global_pending(session)
@@ -2994,13 +3260,18 @@ def _plan_due_task_batch(
         task = session.get(Task, task_id)
         if not task or task.status != "running":
             return 0, 0, False, current_global_pending
+        try:
+            takeover_task(session, task)
+        except ValueError as exc:
+            _block_invalid_fulfillment_task(task, exc)
+            session.commit()
+            return 1, 0, False, current_global_pending
         if _check_stop_conditions(session, task):
             session.commit()
             return 0, 0, False, current_global_pending
         retried = retry_failed_actions(session, task, limit=max(1, limit))
         processed = retried
         current_global_pending += max(0, int(retried))
-        hard_progress = _hard_hourly_batch_progress(session, task, round_hard_progress)
         has_open_actions, open_actions_are_future = _open_actions_state(session, task)
         if has_open_actions:
             processed += prepare_open_actions_for_planning(session, task)
@@ -3018,18 +3289,23 @@ def _plan_due_task_batch(
         processed += planned
         current_global_pending += max(0, int(planned))
         if task.status == "running":
-            _ensure_hard_hourly_checkpoint(task, hard_progress, _now())
             task.next_run_at = next_run_after_task(task)
         session.commit()
         return processed, planned, False, current_global_pending
 
 
-def _hard_hourly_batch_progress(session: Session, task: Task, progress: dict[str, Any] | None) -> dict[str, Any]:
-    if not hard_hourly_enabled(task):
-        return {}
-    if progress is None:
-        return hard_hourly_planner_progress_snapshot(session, task, _now())
-    return seed_hard_hourly_planner_progress_snapshot(session, task, progress)
+def _block_invalid_fulfillment_task(task: Task, exc: ValueError) -> None:
+    detail = str(exc)
+    task.status = "paused"
+    task.next_run_at = None
+    task.last_error = f"任务结构阻塞：{detail}"
+    task.stats = {
+        **(task.stats or {}),
+        "fulfillment_takeover_status": "blocked",
+        "fulfillment_takeover_blocker_code": "task_contract_invalid",
+        "fulfillment_takeover_error": detail,
+        "fulfillment_takeover_checked_at": _now().isoformat(),
+    }
 
 
 def _coverage_round_goal(session_factory, task_id: str) -> int:
@@ -3046,10 +3322,10 @@ def _coverage_round_goal(session_factory, task_id: str) -> int:
 
 
 def _skip_open_ai_plan(session: Session, task: Task, has_open_actions: bool, *, allow_planning: bool) -> bool:
+    del session
     return (
         task.type == "group_ai_chat"
         and has_open_actions
-        and not hard_hourly_requires_planning(session, task, _now(), fresh=True)
         and not allow_planning
     )
 
@@ -3178,9 +3454,6 @@ def _record_dispatch_db_error(session_factory, action_id: str, exc: SQLAlchemyEr
 
 def _planning_backlog_blocked(session: Session, task: Task) -> bool:
     now_value = _now()
-    if _hard_hourly_deficit_bypasses_backlog(session, task, now_value):
-        task.stats = clear_planner_backlog_stats(dict(task.stats or {}))
-        return False
     snapshot = planner_backlog_snapshot(
         session,
         task,
@@ -3230,11 +3503,6 @@ def _record_planner_backlog_daily_fulfillment(session: Session, task: Task) -> N
     )
 
 
-def _hard_hourly_deficit_bypasses_backlog(session: Session, task: Task, now_value: datetime) -> bool:
-    progress = hard_hourly_current_progress(session, task, now_value)
-    return bool(progress.get("enabled")) and int(progress.get("deficit") or 0) > 0
-
-
 def _strict_search_daily_target_can_plan(
     session: Session,
     task: Task,
@@ -3242,7 +3510,7 @@ def _strict_search_daily_target_can_plan(
     now_value: datetime,
 ) -> bool:
     config = task.type_config if isinstance(task.type_config, dict) else {}
-    if task.type != NORMAL_SEARCH_CLICK_TASK or not config.get("strict_daily_target"):
+    if task.type != LEGACY_SEARCH_CLICK_TASK or not config.get("strict_daily_target"):
         return False
     settings = get_settings()
     max_global = int(settings.max_pending_global or 0)
@@ -4198,20 +4466,6 @@ def _activate_pending_tasks(session: Session) -> None:
         task.next_run_at = _now()
 
 
-def _merge_planner_task_ids(primary: list[str], secondary: list[str], limit: int) -> list[str]:
-    merged: list[str] = []
-    seen: set[str] = set()
-    target_count = max(max(1, limit), len(primary))
-    for task_id in [*primary, *secondary]:
-        if task_id in seen:
-            continue
-        merged.append(task_id)
-        seen.add(task_id)
-        if len(merged) >= target_count:
-            break
-    return merged
-
-
 def _normal_planner_task_ids(session: Session, *, limit: int, now: datetime) -> list[str]:
     target_count = max(1, limit)
     task_ids: list[str] = []
@@ -4221,137 +4475,10 @@ def _normal_planner_task_ids(session: Session, *, limit: int, now: datetime) -> 
         .order_by(Task.priority.asc(), Task.next_run_at.asc().nullsfirst(), Task.created_at.asc())
     )
     for task in session.scalars(query).yield_per(target_count):
-        if _hard_hourly_recheck_is_pending(task, now):
-            continue
         task_ids.append(task.id)
         if len(task_ids) >= target_count:
             break
     return task_ids
-
-
-def _wake_hard_hourly_tasks(session: Session, *, limit: int, now: datetime | None = None) -> list[str]:
-    now = now or _now()
-    query_now = to_zone(now)
-    target_count = max(HARD_HOURLY_WAKE_MIN_SCAN, max(1, limit))
-    candidates = sorted(
-        (
-            candidate
-            for task in session.scalars(_hard_hourly_wake_query(query_now))
-            if (candidate := _hard_hourly_due_candidate(session, task, now)) is not None
-        ),
-        key=lambda candidate: candidate[0],
-    )
-    selected_candidates = candidates[:target_count]
-    session.info[HARD_HOURLY_WAKE_PROGRESS_SESSION_KEY] = {
-        task.id: dict(progress) for _sort_key, task, progress in selected_candidates
-    }
-    selected = [task for _sort_key, task, _progress in selected_candidates]
-    for task in selected:
-        next_run_at = task.next_run_at
-        if next_run_at is None or _hard_hourly_time_after(task, next_run_at, now):
-            task.next_run_at = now
-    return [task.id for task in selected]
-
-
-def _hard_hourly_wake_query(now: datetime):
-    return (
-        select(Task)
-        .where(
-            Task.status == "running",
-            Task.type == "group_ai_chat",
-            Task.deleted_at.is_(None),
-            or_(
-                Task.type_config["hard_hourly_target_enabled"].as_boolean().is_(True),
-                Task.type_config["hard_hourly_target_enabled"].as_string() == "true",
-            ),
-            or_(Task.hard_hourly_next_check_at.is_(None), Task.hard_hourly_next_check_at <= now),
-        )
-        .order_by(Task.hard_hourly_next_check_at.asc().nullsfirst(), Task.priority.asc(), Task.next_run_at.asc().nullsfirst(), Task.created_at.asc())
-    )
-
-
-def _hard_hourly_due_for_planner(session: Session, task: Task, now: datetime) -> bool:
-    return _hard_hourly_due_candidate(session, task, now) is not None
-
-
-def _hard_hourly_due_candidate(session: Session, task: Task, now: datetime):
-    if not hard_hourly_enabled(task):
-        return None
-    next_check_at = _hard_hourly_next_check_at(task)
-    if next_check_at is not None and _hard_hourly_time_after(task, next_check_at, now):
-        return None
-    progress = hard_hourly_current_progress(session, task, now)
-    _record_hard_hourly_checkpoint(task, progress, now)
-    if int(progress.get("deficit") or 0) <= 0:
-        return None
-    return (_hard_hourly_due_sort_key(task, progress, next_check_at), task, progress)
-
-
-def _record_hard_hourly_checkpoint(task: Task, progress: dict[str, Any], now: datetime) -> None:
-    stats = dict(task.stats or {})
-    next_check_at = hard_hourly_next_check_for_progress(task, progress, now)
-    stats["hard_hourly_next_check_at"] = next_check_at.isoformat()
-    task.hard_hourly_next_check_at = next_check_at
-    task.stats = stats
-
-
-def _ensure_hard_hourly_checkpoint(task: Task, progress: dict[str, Any], now: datetime) -> None:
-    if not hard_hourly_enabled(task) or not progress or _hard_hourly_next_check_at(task) is not None:
-        return
-    _record_hard_hourly_checkpoint(task, progress, now)
-
-
-def _hard_hourly_due_sort_key(task: Task, progress: dict[str, Any], next_check_at: datetime | None):
-    return (
-        _hard_hourly_sort_timestamp(next_check_at),
-        -int(progress.get("deficit") or 0),
-        int(task.priority or 0),
-        _hard_hourly_sort_timestamp(task.next_run_at),
-        _hard_hourly_sort_timestamp(task.created_at),
-    )
-
-
-def _hard_hourly_next_check_at(task: Task) -> datetime | None:
-    checkpoint = _hard_hourly_task_time(task, task.hard_hourly_next_check_at)
-    if checkpoint is not None:
-        return checkpoint
-    checkpoint = _task_stats_datetime(task, "hard_hourly_next_check_at")
-    if checkpoint is not None:
-        task.hard_hourly_next_check_at = checkpoint
-    return checkpoint
-
-
-def _hard_hourly_recheck_is_pending(task: Task, now: datetime) -> bool:
-    hard_next_check = _hard_hourly_next_check_at(task)
-    if not hard_hourly_enabled(task) or hard_next_check is None or not _hard_hourly_time_after(task, hard_next_check, now):
-        return False
-    coverage_next_check = _task_stats_datetime(task, "daily_coverage_next_check_at")
-    return coverage_next_check is None or _hard_hourly_time_after(task, coverage_next_check, now)
-
-
-def _task_stats_datetime(task: Task, key: str) -> datetime | None:
-    stats = task.stats if isinstance(task.stats, dict) else {}
-    value = stats.get(key)
-    if not value:
-        return None
-    try:
-        return _hard_hourly_task_time(task, datetime.fromisoformat(str(value)))
-    except ValueError:
-        return None
-
-
-def _hard_hourly_task_time(task: Task, value: datetime | None) -> datetime | None:
-    if value is None:
-        return None
-    return to_zone(value, parse_zone(task.timezone))
-
-
-def _hard_hourly_time_after(task: Task, left: datetime, right: datetime) -> bool:
-    return _hard_hourly_task_time(task, left) > _hard_hourly_task_time(task, right)
-
-
-def _hard_hourly_sort_timestamp(value: datetime | None) -> float:
-    return to_zone(value).timestamp() if value is not None else float("-inf")
 
 
 def _check_stop_conditions(session: Session, task: Task) -> bool:
@@ -4382,6 +4509,44 @@ def _mark_task_started(session: Session, task: Task) -> None:
         stats["force_bootstrap_once"] = True
     task.stats = stats
     task.last_error = ""
+
+
+def _set_runtime_projection(session: Session, task: Task) -> None:
+    stats = dict(task.stats or empty_stats())
+    blockers: list[str] = []
+    if task.status == "pending":
+        blockers.append("scheduled_start_pending")
+    if task.type == "group_ai_chat" and _frozen_ai_account_count(session, task) == 0:
+        blockers.append("no_frozen_accounts")
+    readiness = dict(stats.get("rank_deboost_readiness") or {})
+    if task.type == "search_rank_deboost" and readiness.get("status") == "blocked":
+        blockers.append("rank_deboost_runtime_not_ready")
+    stats["runtime_state"] = "waiting" if blockers else "runnable"
+    stats["runtime_blocker_codes"] = blockers
+    stats["warning_requires_confirmation"] = False
+    if blockers:
+        stats["capacity_status"] = "completion_risk"
+    task.stats = stats
+
+
+def _initialize_runtime_contracts(session: Session, task: Task) -> None:
+    if task.status != "running":
+        return
+    from .daily_ledgers import ensure_task_day_ledger
+
+    ensure_task_day_ledger(session, task, now=_now())
+
+
+def _frozen_ai_account_count(session: Session, task: Task) -> int:
+    return int(
+        session.scalar(
+            select(func.count(TaskMembershipAdmissionItem.id)).where(
+                TaskMembershipAdmissionItem.tenant_id == task.tenant_id,
+                TaskMembershipAdmissionItem.task_id == task.id,
+            )
+        )
+        or 0
+    )
 
 
 def _update_type_config(session: Session, tenant_id: int, task_id: str, expected_type: str, payload, actor: str) -> Task:
@@ -4445,7 +4610,10 @@ def _pacing_payload_for_task(task: Task, pacing_config: Any) -> dict[str, Any]:
             raw_data.pop("hourly_jitter_percent", None)
         if (SEARCH_JOIN_PACING_FIELDS - {"max_actions_per_day"}).intersection(raw_data or {}):
             raise ValueError("search_join_group 专属 pacing 字段不能用于其他任务类型")
-        return pacing_config_payload(PacingConfig.model_validate(raw_data))
+        return normalize_fulfillment_pacing(
+            task.type,
+            pacing_config_payload(PacingConfig.model_validate(raw_data)),
+        )
     return pacing_config_payload(pacing_config)
 
 
@@ -4930,6 +5098,7 @@ __all__ = [
     "create_and_start_group_ai_chat_task",
     "create_and_start_group_membership_admission_task",
     "create_and_start_group_relay_task",
+    "create_and_start_search_click_task",
     "create_and_start_search_join_group_task",
     "create_and_start_simple_search_join_group_task",
     "create_and_start_search_rank_deboost_task",
@@ -4940,6 +5109,7 @@ __all__ = [
     "create_group_ai_chat_task",
     "create_group_membership_admission_task",
     "create_group_relay_task",
+    "create_search_click_task",
     "create_search_join_group_task",
     "create_simple_search_join_group_task",
     "create_search_rank_deboost_task",
@@ -4988,6 +5158,7 @@ __all__ = [
     "update_group_ai_chat_config",
     "update_group_relay_config",
     "update_search_join_group_config",
+    "update_search_click_config",
     "update_search_rank_deboost_config",
     "update_task_settings",
     "update_task",

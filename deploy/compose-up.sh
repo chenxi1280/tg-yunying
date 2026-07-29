@@ -162,6 +162,9 @@ docker_login_ghcr
 
 BACKEND_SERVICES=(
   backend
+)
+
+WORKER_SERVICES=(
   worker-planner
   worker-dispatcher-1
   worker-dispatcher-2
@@ -176,19 +179,30 @@ BACKEND_SERVICES=(
   worker-metrics
 )
 
+RUNTIME_SERVICES=(
+  "${BACKEND_SERVICES[@]}"
+  "${WORKER_SERVICES[@]}"
+)
+
 prune_docker_pull_cache
 
 echo "==> Pulling backend image"
-compose pull "${BACKEND_SERVICES[@]}"
+compose pull "${RUNTIME_SERVICES[@]}"
 
 echo "==> Pulling frontend static image"
 docker pull "$TGYUNYING_FRONTEND_IMAGE"
 
 publish_frontend_static "$TGYUNYING_FRONTEND_IMAGE"
 
-echo "==> Starting backend and workers"
+echo "==> Fencing old workers before migration and contract-version switch"
+compose stop "${WORKER_SERVICES[@]}"
+
+echo "==> Starting backend and applying migrations"
 compose up -d --no-build --remove-orphans "${BACKEND_SERVICES[@]}"
 wait_for_container_ready tgyunying-backend "${TGYUNYING_BACKEND_READY_TIMEOUT_SECONDS:-180}"
+
+echo "==> Starting workers after backend migration is healthy"
+compose up -d --no-build --remove-orphans "${WORKER_SERVICES[@]}"
 
 echo "==> Container status"
 compose ps

@@ -10,6 +10,7 @@ from app.models import (
     AccountStatus,
     AiAccountVoiceProfile,
     AiProvider,
+    GroupBotAdmission,
     Task,
     Tenant,
     TenantAiSetting,
@@ -18,7 +19,7 @@ from app.models import (
     TgGroup,
     TgGroupAccount,
 )
-from app.security import encrypt_secret
+from app.security import encrypt_secret, encrypt_session
 
 
 def seed_group_accounts(
@@ -46,10 +47,18 @@ def seed_group_accounts(
             account_identity="normal",
             display_name=f"账号{account_id}", phone_masked=str(account_id),
             status=AccountStatus.ACTIVE.value, health_score=90,
-            session_ciphertext=f"session-{account_id}",
+            session_ciphertext=encrypt_session(f"session-{account_id}"),
         )
         session.add_all([account, TgGroupAccount(
             tenant_id=1, group_id=group_id, account_id=account_id, can_send=True,
+        ), GroupBotAdmission(
+            tenant_id=1,
+            group_id=group_id,
+            account_id=account_id,
+            state="group_bot_admission_ready",
+            completion_policy="explicit_bot_confirmation",
+            evidence_ref="pytest:admission-ready",
+            post_send_visibility_state="visible_confirmed",
         ), AiAccountVoiceProfile(
             id=f"test-mask-{account_id}",
             tenant_id=1,

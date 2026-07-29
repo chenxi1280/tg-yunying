@@ -65,11 +65,9 @@ def test_strict_search_and_hard_hourly_receive_persisted_claim_reservations(monk
         assert sum(row.active_claim_count for row in allocations) == 0
 
 
-def test_strict_search_join_receives_min_reserved_capacity_against_hard_hourly(monkeypatch) -> None:
-    """PRD §2.20.1 RC-4: strict search_join 在 hard_hourly 高需求时仍能拿到 min_reserved_capacity。"""
+def test_no_task_type_has_a_fixed_global_reserved_share() -> None:
     from app.services.task_center.dispatch_claim_allocation import _allocate_demands, DispatchClaimDemand
 
-    # 构造 1 个 strict search_join demand + 10 个 strict hard_hourly demand
     search_demand = DispatchClaimDemand(
         tenant_id=1, task_id="search-task", claim_class="search_join",
         shard_total=1, shard_index=0, action_ids=("s1",), required_claims=5, is_strict=True, urgency_score=10,
@@ -82,16 +80,17 @@ def test_strict_search_join_receives_min_reserved_capacity_against_hard_hourly(m
         for i in range(10)
     ]
     demands = [search_demand, *hard_demands]
-    # scope_capacity=10, available=10, min_reserved=max(1, int(10*0.30))=3
-    grants = _allocate_demands(demands, available=10, epoch=1, scope_capacity=10)
-    search_grant = grants[search_demand.key]
-    # search_join 至少拿到 3（30% of 10）
-    assert search_grant >= 3, f"search_join should get min_reserved_capacity=3, got {search_grant}"
-    # hard_hourly 总和不超过 7
-    hard_total = sum(grants[d.key] for d in hard_demands)
-    assert hard_total <= 7, f"hard_hourly total should be <= 7, got {hard_total}"
-    # 总分配不超过 available
-    assert search_grant + hard_total == 10
+    served_tasks: set[str] = set()
+
+    for epoch in range(1, 61):
+        grants = _allocate_demands(demands, available=10, epoch=epoch)
+        assert sum(grants.values()) == 10
+        assert all(grant <= 1 for grant in grants.values())
+        served_tasks.update(
+            demand.task_id for demand in demands if grants[demand.key] > 0
+        )
+
+    assert served_tasks == {demand.task_id for demand in demands}
 
 
 def test_no_search_join_demands_skips_reserved_allocation() -> None:
@@ -128,7 +127,7 @@ def test_target_admission_backlog_preserves_one_claim_per_ordinary_demand() -> N
 
     grants = _allocate_demands([admission, *ordinary], available=20, epoch=1, scope_capacity=20)
 
-    assert grants[admission.key] == 17
+    assert grants[admission.key] < 17
     assert all(grants[demand.key] >= 1 for demand in ordinary)
     assert sum(grants.values()) == 20
 
@@ -189,10 +188,29 @@ def test_unserved_strict_demand_is_explicit_when_window_capacity_is_exhausted(mo
 
         assert len(claimed) == 1
         tasks = [session.get(Task, "search-task"), session.get(Task, "hard-task")]
-        blocked = [task for task in tasks if task and task.stats.get("dispatch_claim", {}).get("status")]
-        assert blocked
-        assert all(task.stats["dispatch_claim"]["status"] == "shared_dispatch_capacity_insufficient" for task in blocked)
+        assert all(
+            not (task and task.stats.get("dispatch_claim"))
+            for task in tasks
+        )
         assert claimed[0].result["dispatch_unserved_strict_classes"]
+
+
+def test_ready_window_keeps_epoch_while_reservations_remain() -> None:
+    from app.services.task_center.dispatch_reservations import (
+        _input_change_requires_rebuild,
+    )
+
+    window = SimpleNamespace(
+        allocation_state="ready",
+        unclaimed_allocated_count=1,
+        ready_rebuild_snapshot_hash="old-hash",
+    )
+
+    assert _input_change_requires_rebuild(
+        window,
+        demand_hash="new-hash",
+        demand_without_reservation=True,
+    ) is False
 
 
 def test_ordinary_candidate_scan_keeps_each_due_task_visible(monkeypatch) -> None:
@@ -366,7 +384,12 @@ def test_release_reconciles_drifted_old_window_counters(monkeypatch) -> None:
         action = dispatcher.claim_actions(session, limit=1, worker_id="old-window")[0]
         scope = session.scalar(select(DispatchClaimScope))
         window = session.scalar(select(DispatchClaimWindow))
-        allocation = session.scalar(select(DispatchClaimShardAllocation))
+        allocation = session.scalar(
+            select(DispatchClaimShardAllocation).where(
+                DispatchClaimShardAllocation.dispatch_allocation_epoch
+                == window.allocation_epoch
+            )
+        )
         assert scope is not None and window is not None and allocation is not None
         action.status = "pending"
         window.active_claim_count = 0
@@ -405,9 +428,38 @@ def test_terminal_claim_without_finalizer_is_reconciled_before_window_reallocati
         assert len(second) == 1
         assert second[0].id != first[0].id
         window = session.scalar(select(DispatchClaimWindow))
-        allocation = session.scalar(select(DispatchClaimShardAllocation))
+        allocation = session.scalar(
+            select(DispatchClaimShardAllocation).where(
+                DispatchClaimShardAllocation.dispatch_allocation_epoch
+                == window.allocation_epoch
+            )
+        )
         assert window is not None and window.active_claim_count == 1
         assert allocation is not None and allocation.active_claim_count == 1
+
+
+def test_retry_keeps_epoch_when_another_reservation_is_available(
+    monkeypatch,
+) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    settings = _settings(dispatcher_concurrency=2)
+    now_value = _now().replace(second=0, microsecond=0)
+    monkeypatch.setattr(dispatcher, "get_settings", lambda: settings)
+    monkeypatch.setattr(dispatcher, "_now", lambda: now_value)
+
+    with Session(engine) as session:
+        _seed_strict_actions(session, now_value)
+        first = dispatcher.claim_actions(session, limit=1, worker_id="first-attempt")[0]
+        first.status = "pending"
+        dispatcher._release_runtime_resources(first)
+        assert dispatcher.release_dispatch_claim(session, first) is True
+        initial_epoch = session.scalar(select(DispatchClaimWindow)).allocation_epoch
+
+        retry = dispatcher.claim_actions(session, limit=1, worker_id="retry-attempt")
+
+        assert len(retry) == 1
+        assert session.scalar(select(DispatchClaimWindow)).allocation_epoch == initial_epoch
 
 
 def test_stale_unclaimed_reservation_is_released_for_new_due_action(monkeypatch) -> None:

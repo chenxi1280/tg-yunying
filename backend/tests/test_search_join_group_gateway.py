@@ -185,6 +185,17 @@ def _jisou_protocol_profile() -> dict:
     }
 
 
+def _pure_click_protocol_profile() -> dict:
+    profile = _jisou_protocol_profile()
+    result_page = profile["page_fingerprints"][-1]
+    result_page["button_effects_any"] = [
+        "navigate_only",
+        "target_open_only",
+    ]
+    result_page["membership_side_effects_allowed"] = ["none"]
+    return profile
+
+
 @pytest.mark.no_postgres
 def test_execute_search_join_sends_keyword_clicks_safe_navigation_and_marks_target_found() -> None:
     safe = FakeButton("看看介绍", data=b"safe", effect="navigate_only")
@@ -240,6 +251,43 @@ def test_execute_search_join_marks_buttons_matched_to_the_approved_profile() -> 
     assert result["success"] is True
     assert result["search_protocol_trace"]["selector_page"]["button_layout"][0]["approved_sample_match"] is True
     assert result["search_protocol_trace"]["result_page"]["button_layout"][0]["approved_sample_match"] is True
+
+
+@pytest.mark.no_postgres
+def test_pure_search_click_records_complete_fact_without_joining() -> None:
+    category_page = FakeMessage(
+        101,
+        [[FakeButton("👥", data=b"group-category")]],
+    )
+    target_page = FakeMessage(
+        102,
+        [[FakeButton(
+            "目标群",
+            url="https://t.me/target_group",
+            effect="target_open_only",
+        )]],
+    )
+    client = FakeSearchJoinClient([
+        FakeMessage(100, []),
+        category_page,
+        target_page,
+    ])
+    payload = _payload(
+        bot_username="jisou",
+        search_execution_mode="click_only",
+        approved_protocol_profile=_pure_click_protocol_profile(),
+    )
+
+    result = asyncio.run(
+        execute_search_join_with_client(client, payload, keyword_text="郑州")
+    )
+
+    assert result["success"] is True
+    assert result["target_click_observed"] is True
+    assert result["target_button_effect"] == "target_open_only"
+    assert result["membership_side_effect"] == "none"
+    assert result["membership_mutating_rpc_invoked"] is False
+    assert client.joined == []
 
 
 @pytest.mark.no_postgres
@@ -354,32 +402,26 @@ def test_execute_search_join_accepts_jisou_group_results_page_without_category_s
 
 
 @pytest.mark.no_postgres
-def test_execute_search_join_resets_hot_list_session_once_before_searching() -> None:
+def test_execute_search_join_does_not_reset_hot_list_session() -> None:
     hot_list_page = FakeMessage(
         101,
         [[FakeButton("未知入口", data=b"unknown")]],
         raw_text="热搜排行榜",
     )
-    result_page = FakeMessage(105, [[FakeButton("目标群", url="https://t.me/target_group")]])
     client = FakeSearchJoinClient(
         [
             FakeMessage(100, []),
             hot_list_page,
-            FakeMessage(102, [], raw_text="已取消"),
-            FakeMessage(103, [], raw_text="欢迎"),
-            result_page,
         ]
     )
 
     result = asyncio.run(execute_search_join_with_client(client, _payload(bot_username="jisou"), keyword_text="郑州"))
 
-    assert result["success"] is True
-    assert result["jisou_recovery_kind"] == "hot_list_reset"
-    assert result["jisou_pre_reset_page_phase"] == "hot_list_page"
+    assert result["success"] is False
+    assert result["error_code"] == "jisou_hot_list_page"
+    assert result["jisou_recovery_kind"] == "not_applicable"
+    assert result["reset_executed"] is False
     assert client.sent == [
-        ("jisou", "/start"),
-        ("jisou", "郑州"),
-        ("jisou", "/cancel"),
         ("jisou", "/start"),
         ("jisou", "郑州"),
     ]
@@ -403,9 +445,10 @@ def test_execute_search_join_blocks_when_hot_list_reset_still_deviates() -> None
     result = asyncio.run(execute_search_join_with_client(client, _payload(bot_username="jisou"), keyword_text="郑州"))
 
     assert result["success"] is False
-    assert result["error_code"] == "jisou_session_state_deviated"
-    assert result["jisou_recovery_kind"] == "hot_list_reset"
-    assert result["jisou_page_phase"] == "unknown_page"
+    assert result["error_code"] == "jisou_hot_list_page"
+    assert result["jisou_recovery_kind"] == "not_applicable"
+    assert result["reset_executed"] is False
+    assert result["jisou_page_phase"] == "hot_list_page"
 
 
 @pytest.mark.no_postgres
@@ -926,8 +969,7 @@ def test_jisou_image_verification_fails_when_all_providers_return_no_safe_answer
 
 
 @pytest.mark.no_postgres
-def test_jisou_image_verification_fails_when_solver_unavailable() -> None:
-    """PRD §2.19.2 第 5 步：solver 未注入（minimax provider 全部不可用），写 jisou_image_verification_failed。"""
+def test_jisou_image_verification_stays_required_when_solver_unavailable() -> None:
     digit_answers = ["8", "9", "10", "11", "12", "13", "14", "15"]
     verification_page = _verification_image_page(digit_answers=digit_answers)
     client = FakeSearchJoinClient([FakeMessage(100, []), verification_page])
@@ -942,5 +984,7 @@ def test_jisou_image_verification_fails_when_solver_unavailable() -> None:
     )
 
     assert result["success"] is False
-    assert result["error_code"] == "jisou_image_verification_failed"
+    assert result["error_code"] == "jisou_image_verification_required"
+    assert result["image_verification_status"] == "required"
+    assert result["image_verification_reason"] == "verification_ai_unavailable"
     assert verification_page.clicked == []

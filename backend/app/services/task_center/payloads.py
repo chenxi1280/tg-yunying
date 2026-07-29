@@ -29,6 +29,16 @@ class SendMessagePayload(BaseModel):
     original_text: str = ""
     review_approved: bool = False
     cycle_id: str = ""
+    content_mix_cycle_id: str = ""
+    content_mix_cycle_slot_id: str = ""
+    primary_quantity_slot_id: str = ""
+    content_mix_contract_version: int = 0
+    relation_kind: Literal["", "direct", "reply"] = ""
+    slot_attempt: int = 0
+    planned_material_kind: Literal[
+        "unresolved", "none", "image", "sticker", "custom_emoji"
+    ] = "unresolved"
+    planned_normal_text_emoji: Literal["unresolved", "yes", "no"] = "unresolved"
     turn_index: int | None = None
     account_role: str = ""
     account_memory: str = ""
@@ -282,6 +292,7 @@ class SearchJoinPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     execution_mode: str = "mtproto_userbot"
+    search_execution_mode: str = "legacy_mixed_search_join"
     bot_username: str = Field(min_length=1, max_length=80)
     max_pages: int = Field(default=70, ge=1, le=70, exclude=True)
     keyword_hash: str = Field(min_length=64, max_length=64)
@@ -319,6 +330,11 @@ class SearchJoinPayload(BaseModel):
             raise ValueError("search_join requires session_role")
         if _missing_client_metadata(self.client_metadata):
             raise ValueError("search_join requires complete client_metadata")
+        if self.search_execution_mode not in {
+            "click_only",
+            "legacy_mixed_search_join",
+        }:
+            raise ValueError("search_join search_execution_mode invalid")
         return self
 
 
@@ -414,6 +430,8 @@ POST_COMMENT_DEDUPE_FIELDS = frozenset(
         "comment_mode",
         "reply_to_message_id",
         "slot_id",
+        "comment_fulfillment_obligation_id",
+        "comment_action_attempt_no",
     }
 )
 

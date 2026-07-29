@@ -31,7 +31,6 @@ import {
   formatDateTime,
   formatKeyValueMap,
   formatChatTargetLines,
-  formatPrecheckReasons,
   formatTopicDirectionLines,
   initialValuesForType,
   isSimpleSearchClickTask,
@@ -145,7 +144,7 @@ function actionReplyTarget(action: TaskCenterAction) {
 type DangerousTaskAction = 'stop' | 'reset' | 'delete';
 type TaskTypeFilter = TaskCenterAnyTaskType | 'all';
 type AiLimitRecommendation = NonNullable<TaskPrecheck['capacity_summary']['recommended_limits']>;
-type AiLimitRecommendationField = 'max_actions_per_hour' | 'messages_per_round' | 'target_comments_per_message' | 'max_comments_per_account_per_hour' | 'current_hour_rounds' | 'estimated_hourly_capacity';
+type AiLimitRecommendationField = 'messages_per_round' | 'target_comments_per_message' | 'current_hour_rounds' | 'estimated_hourly_capacity';
 type AiLimitTaskType = Extract<TaskCenterTaskType, 'group_ai_chat' | 'channel_comment'>;
 type MembershipPageState = { current: number; pageSize: number; total: number; loading: boolean };
 type MembershipFilters = { phase: string; manualRequired: string };
@@ -164,8 +163,8 @@ const DEFAULT_MEMBERSHIP_FILTERS: MembershipFilters = { phase: 'all', manualRequ
 const DEFAULT_ACTION_PAGE: ActionPageState = { current: 1, pageSize: ACTION_PAGE_SIZE, total: 0, loading: false };
 const DEFAULT_DETAIL_SECTION_PAGE: ActionPageState = { current: 1, pageSize: DETAIL_SECTION_PAGE_SIZE, total: 0, loading: false };
 const DEFAULT_ACCOUNT_COVERAGE_FILTERS: AccountCoverageFilters = { date: '', state: '', blockerCode: '' };
-const GROUP_AI_RECOMMENDATION_FIELDS: AiLimitRecommendationField[] = ['max_actions_per_hour', 'messages_per_round'];
-const COMMENT_AI_RECOMMENDATION_FIELDS: AiLimitRecommendationField[] = ['max_actions_per_hour', 'target_comments_per_message', 'max_comments_per_account_per_hour'];
+const GROUP_AI_RECOMMENDATION_FIELDS: AiLimitRecommendationField[] = ['messages_per_round'];
+const COMMENT_AI_RECOMMENDATION_FIELDS: AiLimitRecommendationField[] = ['target_comments_per_message'];
 
 const TASK_TYPE_FILTER_OPTIONS: Array<{ value: TaskTypeFilter; label: string }> = [
   { value: 'all', label: '全部类型' },
@@ -187,10 +186,8 @@ function aiLimitRecommendationFields(type: AiLimitTaskType) {
 function recommendedLimitSummary(recommendations?: AiLimitRecommendation | null) {
   if (!recommendations) return '暂无推荐数量';
   const labels: Record<AiLimitRecommendationField, string> = {
-    max_actions_per_hour: '每小时',
     messages_per_round: '每轮',
     target_comments_per_message: '每条累计',
-    max_comments_per_account_per_hour: '每号每小时',
     current_hour_rounds: '当前轮数',
     estimated_hourly_capacity: '理论小时容量',
   };
@@ -216,6 +213,7 @@ export default function TaskCenterView({
   focusTask,
   onFocusTaskConsumed,
   canManageTasks = false,
+  canCreateSearchClick = false,
   canDispatchControl = false,
   onOpenAccountDetail,
   telegramBotSettings,
@@ -227,6 +225,7 @@ export default function TaskCenterView({
   focusTask?: { taskId: string; nonce: number } | null;
   onFocusTaskConsumed?: () => void;
   canManageTasks?: boolean;
+  canCreateSearchClick?: boolean;
   canDispatchControl?: boolean;
   onOpenAccountDetail?: (accountId: number, tab?: string) => void | Promise<void>;
   telegramBotSettings?: TenantBotSettings | null;
@@ -265,9 +264,6 @@ export default function TaskCenterView({
   const [admissionItemPage, setAdmissionItemPage] = React.useState<ActionPageState>(DEFAULT_DETAIL_SECTION_PAGE);
   const [accountCoveragePage, setAccountCoveragePage] = React.useState<ActionPageState>(DEFAULT_DETAIL_SECTION_PAGE);
   const [accountCoverageFilters, setAccountCoverageFilters] = React.useState<AccountCoverageFilters>(DEFAULT_ACCOUNT_COVERAGE_FILTERS);
-  const [precheck, setPrecheck] = React.useState<TaskPrecheck | null>(null);
-  const [precheckPayloadSignature, setPrecheckPayloadSignature] = React.useState('');
-  const [precheckLoading, setPrecheckLoading] = React.useState(false);
   const [editRecommendation, setEditRecommendation] = React.useState<AiLimitRecommendation | null>(null);
   const [editRecommendationLoading, setEditRecommendationLoading] = React.useState(false);
   const [membershipPage, setMembershipPage] = React.useState<MembershipPageState>({ current: 1, pageSize: MEMBERSHIP_PAGE_SIZE, total: 0, loading: false });
@@ -282,7 +278,6 @@ export default function TaskCenterView({
   const appliedFocusNonce = React.useRef<number | null>(null);
   const activeTaskFormSupportRequestSeq = React.useRef(0);
   const activeTaskActionKey = React.useRef('');
-  const activeTaskPrecheckRequestRef = React.useRef({ seq: 0, signature: '' });
   const activeEditRecommendationRequestRef = React.useRef({ seq: 0, signature: '' });
   const activeEditSaveRequestRef = React.useRef({ seq: 0, taskId: '', signature: '' });
   const activeDetailTaskId = React.useRef('');
@@ -364,30 +359,6 @@ export default function TaskCenterView({
 
   function taskSettingsSavePayloadSignature(taskId: string, type: TaskCenterTaskType, payload: Record<string, any>) {
     return JSON.stringify({ task_id: taskId, task_type: type, payload });
-  }
-
-  function beginTaskPrecheckRequest(signature: string) {
-    const requestSeq = activeTaskPrecheckRequestRef.current.seq + 1;
-    activeTaskPrecheckRequestRef.current = { seq: requestSeq, signature };
-    return requestSeq;
-  }
-
-  function currentTaskPrecheckPayloadSignature() {
-    try {
-      return taskPrecheckPayloadSignature(taskType, createPayload(form.getFieldsValue(true)));
-    } catch {
-      return '';
-    }
-  }
-
-  function isCurrentTaskPrecheckRequest(requestSeq: number) {
-    return activeTaskPrecheckRequestRef.current.seq === requestSeq;
-  }
-
-  function isActiveTaskPrecheckRequest(requestSeq: number, signature: string) {
-    return isCurrentTaskPrecheckRequest(requestSeq)
-      && activeTaskPrecheckRequestRef.current.signature === signature
-      && currentTaskPrecheckPayloadSignature() === signature;
   }
 
   function beginEditRecommendationRequest(signature: string) {
@@ -918,7 +889,6 @@ export default function TaskCenterView({
   async function openCreateTask() {
     setActionError('');
     setActionWarning('');
-    setPrecheck(null);
     setTaskType('group_ai_chat');
     form.resetFields();
     form.setFieldsValue(taskTypeInitialValues('group_ai_chat'));
@@ -940,7 +910,7 @@ export default function TaskCenterView({
         keywords: keywordTexts,
         target_title: config.target_title ?? '',
         target_link: config.target_link ?? config.target_input ?? '',
-        daily_click_target_count: task.type === 'search_join_group' ? config.daily_click_target_count ?? null : undefined,
+        daily_click_target_count: ['search_click', 'search_join_group'].includes(task.type) ? config.daily_click_target_count ?? null : undefined,
         daily_target_count: task.type === 'search_join_group' ? config.daily_target_count ?? config.target_count : undefined,
         allow_same_account_repeat_application: task.type === 'search_join_group' ? Boolean(config.allow_same_account_repeat_application) : undefined,
         target_count: task.type === 'search_rank_deboost' ? config.target_count : undefined,
@@ -1054,10 +1024,11 @@ export default function TaskCenterView({
   }
 
   function pacingConfig(values: any, type: TaskCenterTaskType = taskType) {
+    const systemFulfillmentGate = ['group_ai_chat', 'channel_comment', 'channel_like', 'channel_view'].includes(type);
     const config: Record<string, any> = {
       mode: values.pacing_mode ?? 'template',
       operation_profile: operationProfileFromValues(values),
-      max_actions_per_hour: values.max_actions_per_hour ?? null,
+      max_actions_per_hour: systemFulfillmentGate ? 1000000 : values.max_actions_per_hour ?? null,
     };
     if (type === 'search_join_group') {
       config.max_actions_per_day = values.max_actions_per_day ?? 100;
@@ -1087,20 +1058,9 @@ export default function TaskCenterView({
     };
   }
 
-  function applyAiLimitRecommendations(result: TaskPrecheck) {
-    const recommendations = result.capacity_summary?.recommended_limits;
-    if (!recommendations || !isAiLimitTaskType(taskType)) return;
-    const fields = aiLimitRecommendationFields(taskType);
-    const nextValues: Record<string, number> = {};
-    fields.forEach((field) => {
-      const value = recommendations[field as keyof typeof recommendations];
-      if (typeof value === 'number' && !form.isFieldTouched(field)) nextValues[field] = value;
-    });
-    if (Object.keys(nextValues).length) form.setFieldsValue(nextValues);
-  }
-
   function commonPayload(values: any) {
     return {
+      client_request_id: values.client_request_id,
       name: values.name,
       priority: 3,
       timezone: values.timezone ?? 'Asia/Shanghai',
@@ -1138,8 +1098,8 @@ export default function TaskCenterView({
       per_message_daily_view_target: dailyTarget,
       per_message_total_view_target: values.per_message_total_view_target ?? Math.max(300, dailyTarget),
       message_active_days: values.message_active_days ?? 3,
-      task_daily_view_safety_cap: values.task_daily_view_safety_cap ?? 500,
-      max_views_per_account_per_day: values.max_views_per_account_per_day ?? 20,
+      task_daily_view_safety_cap: 1000000,
+      max_views_per_account_per_day: 1000000,
       view_count_jitter: values.view_count_jitter ?? CHANNEL_COUNT_JITTER_DEFAULT,
       target_views_per_message: dailyTarget,
       execution_mode: values.execution_mode ?? 'distribute',
@@ -1164,9 +1124,9 @@ export default function TaskCenterView({
       require_review: false,
     };
     if (values.target_comments_per_message != null) payload.target_comments_per_message = values.target_comments_per_message;
-    if (values.max_total_comments != null) payload.max_total_comments = values.max_total_comments;
-    if (values.max_total_comments_jitter != null) payload.max_total_comments_jitter = values.max_total_comments_jitter;
-    if (values.max_comments_per_account_per_hour != null) payload.max_comments_per_account_per_hour = values.max_comments_per_account_per_hour;
+    payload.max_total_comments = 1000000;
+    payload.max_total_comments_jitter = 0;
+    payload.max_comments_per_account_per_hour = 1000000;
     return payload;
   }
 
@@ -1192,7 +1152,9 @@ export default function TaskCenterView({
     const quietHours = quietStart && quietEnd ? { start: quietStart, end: quietEnd, timezone: 'Asia/Shanghai' } : editing ? null : undefined;
     const execution = {
       account_group_id: values.account_group_id,
-      max_actions_per_day: values.max_actions_per_day,
+      ...(searchTaskType !== 'search_click' ? {
+        max_actions_per_day: values.max_actions_per_day,
+      } : {}),
       ...searchJoinExecutionPayload(values, editing, searchTaskType),
       ...(editing && searchTaskType === 'search_join_group' && values.enable_strict_daily_target ? { enable_strict_daily_target: true } : {}),
       scheduled_end: fromBeijingDateTimeLocalValue(values.scheduled_end),
@@ -1204,7 +1166,9 @@ export default function TaskCenterView({
       target_title: values.target_title?.trim(),
       target_link: values.target_link?.trim(),
     };
-    const targetCount = searchTaskType === 'search_join_group'
+    const targetCount = searchTaskType === 'search_click'
+      ? { daily_click_target_count: values.daily_click_target_count }
+      : searchTaskType === 'search_join_group'
       ? {
         daily_click_target_count: values.daily_click_target_count,
         daily_target_count: values.daily_target_count,
@@ -1214,7 +1178,11 @@ export default function TaskCenterView({
       return {
         ...(target.target_title && target.target_link ? target : {}),
         ...(keywords.length ? { keywords } : {}),
-        ...(searchTaskType === 'search_join_group'
+        ...(searchTaskType === 'search_click'
+          ? values.daily_click_target_count != null
+            ? { daily_click_target_count: values.daily_click_target_count }
+            : {}
+          : searchTaskType === 'search_join_group'
           ? {
             ...(values.daily_click_target_count != null ? { daily_click_target_count: values.daily_click_target_count } : {}),
             ...(values.daily_target_count != null ? { daily_target_count: values.daily_target_count } : {}),
@@ -1224,6 +1192,7 @@ export default function TaskCenterView({
       };
     }
     return {
+      client_request_id: values.client_request_id,
       ...target,
       keywords,
       ...targetCount,
@@ -1378,7 +1347,7 @@ export default function TaskCenterView({
       return { ...base, ...channelScopePayload(values), ...channelViewProductionPayload(values) };
     }
     if (taskType === 'channel_like') {
-      return { ...base, ...channelScopePayload(values), target_likes_per_message: values.target_likes_per_message ?? 50, like_count_jitter: values.like_count_jitter ?? CHANNEL_COUNT_JITTER_DEFAULT, reaction_type: values.reaction_type ?? 'random', allowed_reactions: words(values.allowed_reactions || '👍'), max_likes_per_account_per_hour: values.max_likes_per_account_per_hour ?? 10 };
+      return { ...base, ...channelScopePayload(values), target_likes_per_message: values.target_likes_per_message ?? 50, like_count_jitter: values.like_count_jitter ?? CHANNEL_COUNT_JITTER_DEFAULT, reaction_type: values.reaction_type ?? 'random', allowed_reactions: words(values.allowed_reactions || '👍'), max_likes_per_account_per_hour: 1000000 };
     }
     return channelCommentPayload(values, base, true);
   }
@@ -1444,37 +1413,9 @@ export default function TaskCenterView({
       return { ...base, ...channelViewProductionPayload(values) };
     }
     if (type === 'channel_like') {
-      return { ...base, target_likes_per_message: values.target_likes_per_message ?? 50, like_count_jitter: values.like_count_jitter ?? CHANNEL_COUNT_JITTER_DEFAULT, reaction_type: values.reaction_type ?? 'random', allowed_reactions: words(values.allowed_reactions || '👍'), max_likes_per_account_per_hour: values.max_likes_per_account_per_hour ?? 10 };
+      return { ...base, target_likes_per_message: values.target_likes_per_message ?? 50, like_count_jitter: values.like_count_jitter ?? CHANNEL_COUNT_JITTER_DEFAULT, reaction_type: values.reaction_type ?? 'random', allowed_reactions: words(values.allowed_reactions || '👍'), max_likes_per_account_per_hour: 1000000 };
     }
     return channelCommentPayload(values, base, false);
-  }
-
-  async function runTaskPrecheck(values: any) {
-    const payload = createPayload(values);
-    const payloadSignature = taskPrecheckPayloadSignature(taskType, payload);
-    const requestSeq = beginTaskPrecheckRequest(payloadSignature);
-    setPrecheckLoading(true);
-    try {
-      const result = await api<TaskPrecheck>('/tasks/precheck', {
-        method: 'POST',
-        body: JSON.stringify({ task_type: taskType, payload }),
-        timeoutMs: TASK_CREATE_TIMEOUT_MS,
-      });
-      if (!isActiveTaskPrecheckRequest(requestSeq, payloadSignature)) return null;
-      setPrecheck(result);
-      setPrecheckPayloadSignature(payloadSignature);
-      applyAiLimitRecommendations(result);
-      if (result.decision === 'block') {
-        setActionWarning(`预检发现阻塞项：${formatPrecheckReasons(result.blockers) || '请检查账号、目标和风控配置'}`);
-      } else if (result.decision === 'warn') {
-        setActionWarning(`预检有风险提示：${formatPrecheckReasons([...result.warnings, ...result.risk_hits], 3) || '建议确认后再启动'}`);
-      } else {
-        setActionWarning('');
-      }
-      return result;
-    } finally {
-      if (isCurrentTaskPrecheckRequest(requestSeq)) setPrecheckLoading(false);
-    }
   }
 
   function applyEditAiLimitRecommendations() {
@@ -1521,21 +1462,17 @@ export default function TaskCenterView({
     const start = options.start ?? true;
     setActionError('');
     setActionWarning('');
+    if (!canManageTasks) {
+      setActionError('缺少任务管理权限');
+      return;
+    }
+    if (taskType === 'search_click' && !canCreateSearchClick) {
+      setActionError('缺少创建纯搜索点击任务权限');
+      return;
+    }
     try {
       await form.validateFields(fieldsForSubmit(taskType, messageScope, accountMode, pacingMode));
-      const values = form.getFieldsValue(true);
-      const payload = createPayload(values);
-      const precheckSignature = taskPrecheckPayloadSignature(taskType, payload);
       const shouldStartNow = taskType === 'search_rank_deboost' ? false : start;
-      const requiresFreshPrecheck = taskType !== 'group_membership_admission' && !isSimpleSearchClickTask(taskType) && !options.skipCapacityCheck;
-      const result = requiresFreshPrecheck
-        ? precheck && precheckPayloadSignature === precheckSignature ? precheck : await runTaskPrecheck(values)
-        : precheck;
-      if (!result && requiresFreshPrecheck) return;
-      if (shouldStartNow && result?.decision === 'block') {
-        setActionError(`预检未通过：${formatPrecheckReasons(result.blockers) || '存在阻塞项'}`);
-        return;
-      }
       const submitValues = form.getFieldsValue(true);
       await api<TaskCenterTask>((shouldStartNow ? CREATE_AND_START_ENDPOINT : CREATE_ENDPOINT)[taskType], {
         method: 'POST',
@@ -1543,7 +1480,6 @@ export default function TaskCenterView({
         timeoutMs: TASK_CREATE_TIMEOUT_MS,
       });
       form.resetFields();
-      setPrecheck(null);
       setTaskType('group_ai_chat');
       form.setFieldsValue(taskTypeInitialValues('group_ai_chat'));
       setWizardStep(0);
@@ -1573,7 +1509,9 @@ export default function TaskCenterView({
       const payload = settingsPayload(editableType, values);
       payloadSignature = taskSettingsSavePayloadSignature(taskId, editableType, payload);
       requestSeq = beginTaskSettingsSaveRequest(taskId, payloadSignature);
-      const settingsEndpoint = editableType === 'search_join_group'
+      const settingsEndpoint = editableType === 'search_click'
+        ? `/tasks/${taskId}/search-click`
+        : editableType === 'search_join_group'
         ? `/tasks/${taskId}/search-join-group`
         : editableType === 'search_rank_deboost'
           ? `/tasks/${taskId}/search_rank_deboost_config`
@@ -1601,7 +1539,14 @@ export default function TaskCenterView({
     beginTaskAction(actionKey);
     setActionError('');
     try {
-      const body = name === 'retry'
+      const startStorageKey = `task-start-operation:${task.id}`;
+      const startOperationId = name === 'start'
+        ? localStorage.getItem(startStorageKey) || crypto.randomUUID()
+        : '';
+      if (name === 'start') localStorage.setItem(startStorageKey, startOperationId);
+      const body = name === 'start'
+        ? JSON.stringify({ start_operation_id: startOperationId })
+        : name === 'retry'
         ? JSON.stringify({ failed_only: true })
         : ['stop', 'reset'].includes(name)
           ? JSON.stringify({ reason: (reason ?? '').trim() })
@@ -1816,9 +1761,6 @@ export default function TaskCenterView({
             setActionError(`读取任务表单支撑数据失败：${errorMessage(error)}`);
           });
       }
-      if (!simpleSearchClickTask && wizardStep === 3) {
-        if (taskType !== 'group_membership_admission') await runTaskPrecheck(form.getFieldsValue(true));
-      }
       setWizardStep((value) => Math.min(value + 1, wizardSteps.length - 1));
     } catch (error) {
       setActionError(errorMessage(error));
@@ -1827,7 +1769,6 @@ export default function TaskCenterView({
 
   function resetTypeFields(nextType: TaskCenterTaskType) {
     setTaskType(nextType);
-    setPrecheck(null);
     form.resetFields();
     form.setFieldsValue(taskTypeInitialValues(nextType));
     if (nextType === 'group_ai_chat' && defaultSlangTemplateId) form.setFieldsValue({ slang_prompt_template_id: defaultSlangTemplateId });
@@ -2200,7 +2141,7 @@ export default function TaskCenterView({
         {actionWarning && <Alert className="form-alert" type="warning" showIcon message={actionWarning} />}
         <Steps className="wizard-steps" current={wizardStep} items={wizardSteps.map((title) => ({ title }))} />
         <Form form={form} layout="vertical" preserve initialValues={taskTypeInitialValues(taskType)}>
-          {wizardStep === 0 && <WizardBasics taskType={taskType} onTypeChange={resetTypeFields} />}
+          {wizardStep === 0 && <WizardBasics taskType={taskType} onTypeChange={resetTypeFields} canCreateSearchClick={canCreateSearchClick} />}
           {wizardStep === 1 && <WizardTarget taskType={taskType} messages={messages} messageScope={messageScope} targetChannelId={targetChannelId} onTargetChannelChange={() => form.setFieldsValue({ message_ids: [] })} onTargetsLoaded={mergeLoadedTargets} simpleSearchCreation={simpleSearchClickTask} />}
           {wizardStep === 2 && <WizardTypeConfig taskType={taskType} ruleSets={ruleSets} slangTemplates={slangTemplates} comments={comments} relaySourceOptions={[]} targetChannelId={targetChannelId} messageScope={messageScope} messageIds={messageIds} simpleSearchCreation={simpleSearchClickTask} />}
           {simpleSearchClickTask && wizardStep === 3 && <SearchClickExecutionConfig taskType={taskType} accountPools={taskAccountPools} />}
@@ -2226,7 +2167,7 @@ export default function TaskCenterView({
               />
             </Space>
           )}
-          {wizardStep === wizardSteps.length - 1 && <WizardReview taskType={taskType} values={form.getFieldsValue(true)} accounts={taskAccounts} accountPools={taskAccountPools} targets={targets} ruleSets={ruleSets} slangTemplates={slangTemplates} precheck={precheck} loading={precheckLoading} />}
+          {wizardStep === wizardSteps.length - 1 && <WizardReview taskType={taskType} values={form.getFieldsValue(true)} accounts={taskAccounts} accountPools={taskAccountPools} targets={targets} ruleSets={ruleSets} slangTemplates={slangTemplates} />}
           <Space className="modal-actions">
             <Button onClick={() => setModalOpen(false)}>取消</Button>
             <Button disabled={wizardStep === 0} onClick={() => setWizardStep((value) => Math.max(value - 1, 0))}>上一步</Button>
@@ -2253,7 +2194,7 @@ export default function TaskCenterView({
         <Form form={editForm} layout="vertical">
           {!isSimpleSearchClickTask(editableTaskType) && <EditBasics />}
           {isSimpleSearchClickTask(editableTaskType) && <Alert className="form-alert" type="info" showIcon message="可修改目标群、搜索关键词、目标次数、账号组与执行节奏；代理、机器人、账号资格与风控仍由系统托管。" />}
-          {detail && !isSystemTask(detail.task) && ['group_ai_chat', 'group_relay', 'search_join_group', 'search_rank_deboost'].includes(detail.task.type) && (
+          {detail && !isSystemTask(detail.task) && ['group_ai_chat', 'group_relay', 'search_click', 'search_join_group', 'search_rank_deboost'].includes(detail.task.type) && (
             <>
               <Typography.Title level={5}>目标来源</Typography.Title>
               <WizardTarget taskType={detail.task.type as TaskCenterTaskType} messages={messages} messageScope={editMessageScope} targetChannelId={editTargetChannelId} onTargetChannelChange={() => editForm.setFieldsValue({ message_ids: [] })} onTargetsLoaded={mergeLoadedTargets} allowInlineTarget={false} simpleSearchCreation={isSimpleSearchClickTask(editableTaskType)} />

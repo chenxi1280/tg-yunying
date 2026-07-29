@@ -1,8 +1,8 @@
 import React from 'react';
 import { Alert, Checkbox, Collapse, Descriptions, Form, Input, InputNumber, Select, Space, Typography } from 'antd';
-import type { Account, AccountPool, ChannelMessageComment, OperationTarget, PromptTemplate, RuleSet, TaskCenterTaskType, TaskPrecheck } from '../types';
+import type { Account, AccountPool, ChannelMessageComment, OperationTarget, PromptTemplate, RuleSet, TaskCenterTaskType } from '../types';
 import { ChannelCommentTypeConfig, ChannelLikeTypeConfig, ChannelViewTypeConfig } from './TaskCenterChannelConfigSections';
-import { TASK_TYPES, TYPE_LABEL, OPERATION_PROFILE_TEMPLATES, type OperationProfileTemplateId, accountPrecheck, curveNumbers, curveText, currentOperationProfile, formatDateTime, formatPrecheckReasons, operationProfileSummary, operationTemplate, precheckReasonLabel, ruleSummary, targetName, words } from './taskCenterViewModel';
+import { TASK_TYPES, TYPE_LABEL, OPERATION_PROFILE_TEMPLATES, type OperationProfileTemplateId, accountPrecheck, curveNumbers, curveText, currentOperationProfile, formatDateTime, operationProfileSummary, operationTemplate, ruleSummary, targetName, words } from './taskCenterViewModel';
 
 const targetSelectProps = {
   showSearch: true,
@@ -25,13 +25,25 @@ export function EditBasics() {
   );
 }
 
-export function WizardBasics({ taskType, onTypeChange }: { taskType: TaskCenterTaskType; onTypeChange: (type: TaskCenterTaskType) => void }) {
-  const simpleSearchClickTask = taskType === 'search_join_group' || taskType === 'search_rank_deboost';
+export function WizardBasics({
+  taskType,
+  onTypeChange,
+  canCreateSearchClick = false,
+}: {
+  taskType: TaskCenterTaskType;
+  onTypeChange: (type: TaskCenterTaskType) => void;
+  canCreateSearchClick?: boolean;
+}) {
+  const simpleSearchClickTask = ['search_click', 'search_join_group', 'search_rank_deboost'].includes(taskType);
+  const taskTypeOptions = TASK_TYPES.map((item) => ({
+    ...item,
+    disabled: item.value === 'search_click' && !canCreateSearchClick,
+  }));
   return (
     <Space direction="vertical" style={{ width: '100%' }}>
       <div className="form-grid">
         <Form.Item label="任务类型">
-          <Select options={TASK_TYPES} value={taskType} onChange={onTypeChange} />
+          <Select options={taskTypeOptions} value={taskType} onChange={onTypeChange} />
         </Form.Item>
         {!simpleSearchClickTask && <Form.Item name="name" label="任务名称" rules={[{ required: true }]}><Input /></Form.Item>}
         {taskType === 'group_membership_admission' && <Form.Item name="scheduled_start" label="开始时间" rules={[{ required: true }]}><Input type="datetime-local" /></Form.Item>}
@@ -52,6 +64,7 @@ function SimpleSearchClickConfig({
   allowUncappedTargetCount?: boolean;
 }) {
   const isRankDeboost = taskType === 'search_rank_deboost';
+  const isPureClick = taskType === 'search_click';
   const targetField = 'target_count';
   const targetLabel = '目标次数';
   const keywordRequired = !editing || isRankDeboost;
@@ -66,7 +79,9 @@ function SimpleSearchClickConfig({
         message={isRankDeboost ? '系统负责账号资格、代理、机器人和风险闸门；启动时仍会检查黑账号组的真实执行条件。' : '系统负责账号资格、代理、机器人和风险闸门；账号组与执行节奏在下一步配置。'}
         description={isRankDeboost
           ? '目标次数只统计已确认的目标点击；待执行或结果未知的动作会占用额度，避免重复点击。'
-          : '目标点击与成员关系分开统计：命中目标即计点击，只有观察到 membership_observed 才计加入。当天点击达标后任务继续运行，次日按新自然日重新计算。'}
+          : isPureClick
+            ? '本任务只执行搜索和目标点击；只有完整远端点击事实才完成当日 ordinal，不加入群聊、不创建成员关系或准入子任务。'
+            : '这是历史混合任务：目标点击与成员关系分开统计，仅保留存量编辑。'}
       />
       <div className="form-grid">
         <Form.Item name="keywords" label={editing && !isRankDeboost ? '搜索关键词（留空不变）' : '搜索关键词'} rules={keywordRequired ? [{ required: true, message: '请填写至少一个搜索关键词' }] : []}>
@@ -74,6 +89,10 @@ function SimpleSearchClickConfig({
         </Form.Item>
         {isRankDeboost ? (
           <Form.Item name={targetField} label={allowUncappedTargetCount ? `${targetLabel}（留空保持历史不封顶）` : targetLabel} rules={allowUncappedTargetCount ? [] : [{ required: true, message: `请填写${targetLabel}` }]}>
+            <InputNumber min={1} precision={0} style={{ width: '100%' }} />
+          </Form.Item>
+        ) : isPureClick ? (
+          <Form.Item name="daily_click_target_count" label="每日目标点击次数" rules={normalTargetRules}>
             <InputNumber min={1} precision={0} style={{ width: '100%' }} />
           </Form.Item>
         ) : (
@@ -141,6 +160,7 @@ export function SearchClickExecutionConfig({
   showStrictDailyTargetOptIn?: boolean;
 }) {
   const isRankDeboost = taskType === 'search_rank_deboost';
+  const isPureClick = taskType === 'search_click';
   const requiredPurpose = isRankDeboost ? 'rank_deboost' : 'normal';
   const poolOptions = accountPools
     .filter((pool) => pool.pool_purpose === requiredPurpose && pool.is_enabled)
@@ -156,7 +176,7 @@ export function SearchClickExecutionConfig({
         <Form.Item name="account_group_id" label="执行账号组" rules={[{ required: true, message: '请选择执行账号组' }]}>
           <Select options={poolOptions} placeholder={isRankDeboost ? '请选择黑搜索账号组' : '请选择普通账号组'} />
         </Form.Item>
-        <Form.Item
+        {!isPureClick && <Form.Item
           name="max_actions_per_day"
           label="每天 action 上限"
           rules={[
@@ -171,8 +191,8 @@ export function SearchClickExecutionConfig({
           ]}
         >
           <InputNumber min={1} precision={0} style={{ width: '100%' }} />
-        </Form.Item>
-        {!isRankDeboost && (
+        </Form.Item>}
+        {!isRankDeboost && !isPureClick && (
           <Form.Item
             name="per_account_daily_action_limit"
             label="单账号每日上限"
@@ -182,7 +202,7 @@ export function SearchClickExecutionConfig({
             <InputNumber min={0} max={1000} precision={0} style={{ width: '100%' }} />
           </Form.Item>
         )}
-        {!isRankDeboost && (
+        {!isRankDeboost && !isPureClick && (
           <Form.Item
             name="allow_same_account_repeat_application"
             label="同账号重复申请"
@@ -192,7 +212,7 @@ export function SearchClickExecutionConfig({
             <Checkbox>允许同账号当天重复申请</Checkbox>
           </Form.Item>
         )}
-        {editing && !isRankDeboost && (
+        {editing && !isRankDeboost && !isPureClick && (
           <>
             <Form.Item name="actions_per_round" label="每轮计划点击数" rules={[{ required: true, message: '请填写每轮计划点击数' }]}>
               <InputNumber min={1} max={20} precision={0} style={{ width: '100%' }} />
@@ -205,7 +225,7 @@ export function SearchClickExecutionConfig({
             </Form.Item>
           </>
         )}
-        {!isRankDeboost && <StrictDailyTargetOptIn enabled={strictDailyTargetEnabled} visible={showStrictDailyTargetOptIn} />}
+        {!isRankDeboost && !isPureClick && <StrictDailyTargetOptIn enabled={strictDailyTargetEnabled} visible={showStrictDailyTargetOptIn} />}
         <Form.Item name="scheduled_end" label="完成截止时间" rules={[{ required: true, message: '请选择完成截止时间' }]}>
           <Input type="datetime-local" />
         </Form.Item>
@@ -581,12 +601,13 @@ export function WizardOperationProfile({ form, values, taskType }: { form: any; 
 
 export function TaskRuntimeAdvancedFields({ taskType }: { taskType?: TaskCenterTaskType }) {
   const searchJoinTask = taskType === 'search_join_group';
+  const operatorHourlyLimit = ['group_relay', 'group_membership_admission'].includes(taskType || '');
   return (
     <>
       <Form.Item name="max_concurrent" label="账号并发上限（账号数）"><InputNumber min={1} max={500} /></Form.Item>
       <Form.Item name="cooldown_per_account_minutes" label="账号冷却分钟"><InputNumber min={0} /></Form.Item>
       <Form.Item name="ban_policy" label="异常账号处理"><Select options={[{ value: 'skip', label: '跳过账号' }, { value: 'pause_task', label: '暂停任务' }, { value: 'alert', label: '只告警' }]} /></Form.Item>
-      <Form.Item name="max_actions_per_hour" label={searchJoinTask ? '每小时最大搜索点击数' : '每小时最大发送量'}><InputNumber min={searchJoinTask ? 0 : 1} placeholder="预检后按账号数推荐" /></Form.Item>
+      {operatorHourlyLimit && <Form.Item name="max_actions_per_hour" label={searchJoinTask ? '每小时最大搜索点击数' : '每小时最大发送量'}><InputNumber min={searchJoinTask ? 0 : 1} /></Form.Item>}
       <Form.Item name="max_retries" label="失败重试次数"><InputNumber min={0} max={10} /></Form.Item>
     </>
   );
@@ -624,6 +645,7 @@ export function WizardAccounts({ accountMode, accounts, accountPools, taskType }
 function SimpleSearchClickReview({ taskType, values, targets, accountPools }: Pick<Parameters<typeof WizardReview>[0], 'taskType' | 'values' | 'targets' | 'accountPools'>) {
   const displayTarget = targetName(values, targets);
   const isRankDeboost = taskType === 'search_rank_deboost';
+  const isPureClick = taskType === 'search_click';
   const targetCount = values.target_count;
   const accountPool = accountPools.find((pool) => pool.id === values.account_group_id);
   const quietHours = values.quiet_start && values.quiet_end ? `${values.quiet_start} - ${values.quiet_end}` : '未设置';
@@ -638,110 +660,91 @@ function SimpleSearchClickReview({ taskType, values, targets, accountPools }: Pi
         { key: 'type', label: '任务类型', children: TYPE_LABEL[taskType] },
         { key: 'target', label: '目标群', children: displayTarget },
         { key: 'keywords', label: '搜索关键词', children: words(values.keywords).join('、') || '-' },
-        ...(isRankDeboost ? [{ key: 'target-count', label: '目标次数', children: `${targetCount || '-'} 次（以已确认目标点击计）` }] : [
+        ...(isRankDeboost ? [{ key: 'target-count', label: '目标次数', children: `${targetCount || '-'} 次（以已确认目标点击计）` }] : isPureClick ? [
+          { key: 'click-target-count', label: '每日目标点击', children: `${values.daily_click_target_count || '-'} 次/日（仅完整远端点击事实计入）` },
+        ] : [
           { key: 'click-target-count', label: '每日目标点击', children: `${values.daily_click_target_count || '-'} 次/日（命中目标即计）` },
           { key: 'membership-target-count', label: '每日成员关系观察目标', children: `${values.daily_target_count || '-'} 次/日（仅 membership_observed 计入）` },
           { key: 'repeat-application', label: '同账号重复申请', children: values.allow_same_account_repeat_application ? '允许' : '不允许' },
         ]),
         { key: 'account-group', label: '执行账号组', children: accountPool ? `${accountPool.name}（${accountPool.account_count} 个账号）` : '-' },
-        { key: 'daily-limit', label: '每天 action 上限', children: `${values.max_actions_per_day || '-'} 次` },
+        ...(!isPureClick ? [{ key: 'daily-limit', label: '每天 action 上限', children: `${values.max_actions_per_day || '-'} 次` }] : []),
         { key: 'end', label: '完成截止时间', children: values.scheduled_end ? formatDateTime(values.scheduled_end) : '-' },
         { key: 'jitter', label: '抖动', children: `日 ${values.daily_jitter_percent ?? 0}% / 每小时 ${values.hourly_jitter_percent ?? 0}%` },
         { key: 'quiet', label: '静默时间', children: quietHours },
-        { key: 'policy', label: '系统托管', children: '代理、机器人、账号资格、真实结果与风控由系统管理' },
+        { key: 'policy', label: '系统托管', children: isPureClick ? '账号容量、顺序、授权、代理、协议与分配由系统启动后计算' : '代理、机器人、账号资格、真实结果与风控由系统管理' },
         { key: 'start', label: '创建说明', children: taskType === 'search_rank_deboost' ? '创建为草稿；启动准备时系统检查可用资源和执行条件。' : '创建并启动后由系统按可用资源执行。' },
       ]} />
     </Space>
   );
 }
 
-export function WizardReview({ taskType, values, accounts, accountPools, targets, ruleSets, slangTemplates, precheck, loading }: { taskType: TaskCenterTaskType; values: Record<string, any>; accounts: Account[]; accountPools: AccountPool[]; targets: OperationTarget[]; ruleSets: RuleSet[]; slangTemplates: PromptTemplate[]; precheck: TaskPrecheck | null; loading: boolean }) {
-  if (taskType === 'search_join_group' || taskType === 'search_rank_deboost') {
+type WizardReviewProps = {
+  taskType: TaskCenterTaskType;
+  values: Record<string, any>;
+  accounts: Account[];
+  accountPools: AccountPool[];
+  targets: OperationTarget[];
+  ruleSets: RuleSet[];
+  slangTemplates: PromptTemplate[];
+};
+
+function reviewTargetSummary(taskType: TaskCenterTaskType, values: Record<string, any>) {
+  if (taskType === 'group_relay') {
+    const extraTargets = values.target_operation_target_ids?.length || 0;
+    return `运营目标 #${values.target_operation_target_id || '-'}${extraTargets ? ` + ${extraTargets} 个附加目标` : ''}`;
+  }
+  if (values.target_operation_target_id) return `运营目标 #${values.target_operation_target_id}`;
+  if (values.target_channel_id) return `频道 #${values.target_channel_id}`;
+  return '-';
+}
+
+function configuredQuantitySummary(taskType: TaskCenterTaskType, values: Record<string, any>) {
+  if (taskType === 'group_ai_chat') return `${values.daily_message_target || '-'} 条/群/日，并覆盖全部账号`;
+  if (taskType === 'channel_comment') return `${values.target_comments_per_message || '-'} 条/消息`;
+  if (taskType === 'channel_like') return `${values.target_likes_per_message || '-'} 次/消息`;
+  if (taskType === 'channel_view') return `${values.per_message_daily_view_target || values.target_views_per_message || '-'} 次/消息/日`;
+  return '按任务配置';
+}
+
+export function WizardReview({ taskType, values, accounts, accountPools, targets, ruleSets, slangTemplates }: WizardReviewProps) {
+  if (['search_click', 'search_join_group', 'search_rank_deboost'].includes(taskType)) {
     return <SimpleSearchClickReview taskType={taskType} values={values} targets={targets} accountPools={accountPools} />;
   }
   const account = accountPrecheck(values, accounts, accountPools, taskType);
   const profile = currentOperationProfile(values);
   const selectedSlang = slangTemplates.find((template) => template.id === values.slang_prompt_template_id);
   const displayTarget = targetName(values, targets);
-  const targetSummary = taskType === 'group_relay'
-    ? values.target_operation_target_ids?.length
-      ? `运营目标 #${values.target_operation_target_id || '-'} + ${values.target_operation_target_ids.length} 个附加目标`
-      : `运营目标 #${values.target_operation_target_id || '-'}`
-    : values.target_operation_target_id
-      ? `运营目标 #${values.target_operation_target_id}`
-      : values.target_channel_id
-        ? `频道 #${values.target_channel_id}`
-        : '-';
-  const precheckStatus = loading ? '预检中' : precheck ? precheck.decision === 'allow' ? '通过' : precheck.decision === 'warn' ? '有风险' : '阻塞' : '未执行';
-  const recommended = precheck?.capacity_summary?.recommended_limits;
-  const replyReference = precheck?.capacity_summary?.reply_reference_summary;
+  const targetSummary = reviewTargetSummary(taskType, values);
   const profileUnit = taskType === 'group_ai_chat' ? '轮/小时' : '权重';
-  const recommendedSummary = recommended ? [
-    recommended.current_hour_rounds ? `当前轮数 ${recommended.current_hour_rounds}` : '',
-    recommended.max_actions_per_hour ? `每小时 ${recommended.max_actions_per_hour}` : '',
-    recommended.messages_per_round ? `每轮 ${recommended.messages_per_round}` : '',
-    recommended.estimated_hourly_capacity ? `理论小时容量 ${recommended.estimated_hourly_capacity}` : '',
-    recommended.target_comments_per_message ? `每条 ${recommended.target_comments_per_message}` : '',
-    recommended.max_comments_per_account_per_hour ? `每号每小时 ${recommended.max_comments_per_account_per_hour}` : '',
-  ].filter(Boolean).join('；') : '等待预检';
-  const resolution = precheck?.target_resolution;
   const replySummary = taskType === 'group_ai_chat'
     ? `每轮总发言 ${values.messages_per_round || 1}，最少引用回复 ${values.reply_min_per_round || 0}`
     : taskType === 'channel_comment'
       ? `每条目标 ${values.target_comments_per_message || 1}，最少引用回复 ${values.reply_min_per_message || 0}`
       : '-';
-  const replyReferenceText = replyReference
-    ? `；可引用 ${replyReference.available_reference_count ?? 0}，缺口 ${replyReference.shortfall_count ?? 0}`
-    : '';
-  const voiceProfile = precheck?.voice_profile_summary;
-  const voiceProfileSummary = taskType === 'group_ai_chat' && voiceProfile
-    ? [
-      `目标 ${voiceProfile.target_account_count ?? 0}`,
-      `可用 ${voiceProfile.usable_account_count ?? 0}`,
-      `待生成 ${voiceProfile.queued_account_count ?? 0}`,
-      `等待重试 ${voiceProfile.retry_wait_account_count ?? 0}`,
-      `待人工 ${voiceProfile.manual_required_account_count ?? 0}`,
-      `已停用 ${voiceProfile.disabled_account_count ?? 0}`,
-      `未入队 ${voiceProfile.missing_account_count ?? 0}`,
-    ].join('，')
-    : '仅 AI 活群任务使用';
-  const resolutionItems = [...(resolution?.sources || []), ...(resolution?.targets || [])];
-  const resolutionSummary = resolutionItems.length
-    ? resolutionItems.map((item: any) => `${item.role === 'listen_source' ? '源' : '目标'} ${item.status || 'resolved'} / #${item.target_id || '-'} / ${item.title || item.tg_peer_id || item.target_input || '-'}`).join('；')
-    : resolution?.target_id
-      ? `${resolution.status || 'resolved'} / #${resolution.target_id} / ${resolution.title || resolution.tg_peer_id || '-'}`
-      : values.target_input || values.source_target_input || '使用已有目标';
   return (
     <Space direction="vertical" style={{ width: '100%' }}>
-      {precheck && (
-        <Alert
-          type={precheck.decision === 'block' ? 'error' : precheck.decision === 'warn' ? 'warning' : 'success'}
-          showIcon
-          message={`创建前预检：${precheckStatus}`}
-          description={formatPrecheckReasons([...precheck.blockers, ...precheck.warnings, ...precheck.risk_hits]) || '账号、目标、规则和风控检查通过'}
-        />
-      )}
       <Descriptions bordered column={2} size="small" items={[
       { key: 'type', label: '任务类型', children: TYPE_LABEL[taskType] },
       { key: 'name', label: '任务名称', children: values.name || '-' },
       { key: 'end', label: '结束时间', children: values.scheduled_end ? formatDateTime(values.scheduled_end) : '不限制' },
       { key: 'target', label: '任务目标', children: displayTarget === '-' ? targetSummary : displayTarget },
-      { key: 'targetResolution', label: '目标解析', children: resolutionSummary },
-      { key: 'account', label: '账号摘要', children: precheck ? `候选 ${precheck.candidate_account_count} 个，可用 ${precheck.available_account_count} 个，受限 ${precheck.limited_account_count} 个，阻塞 ${precheck.blocked_account_count} 个` : `${account.label}，候选 ${account.total} 个，当前在线 ${account.online} 个，受限/离线 ${account.limited} 个` },
-      { key: 'voice-profile', label: '账号面具覆盖', children: voiceProfileSummary },
-      { key: 'membership', label: '准入前置', children: precheck?.membership_subtask_preview?.subtask_type ? `已满足 ${precheck.ready_account_count} 个，待准备 ${precheck.preparable_account_count} 个，预计准入动作 ${precheck.estimated_membership_actions} 个，进度 ${precheck.membership_subtask_preview.progress_percent ?? 0}%` : '无额外准入动作' },
-      { key: 'targetAbility', label: '目标能力', children: precheck?.target_ability?.length ? precheck.target_ability.map((item) => `${item.title || item.target_id} / ${item.can_task ? '可创建任务' : item.auth_status || '不可用'}`).join('；') : displayTarget },
-      { key: 'estimate', label: '预计动作量', children: precheck ? `预计 ${precheck.estimated_actions} 条，容量缺口 ${precheck.capacity_shortfall}` : '等待预检' },
-      { key: 'reply', label: '引用回复配置', children: `${replySummary}${replyReferenceText}` },
-      { key: 'daily-target', label: '该群每天发送总量', children: `${values.daily_message_target || '-'} 条；所有账号每天至少成功 1 条` },
-      { key: 'recommend', label: '推荐数量', children: precheck?.round_capacity_explanation ?? recommendedSummary },
-      { key: 'capacity', label: '容量口径', children: precheck?.capacity_summary ? `目标每条 ${precheck.capacity_summary.target_per_message ?? 0}，有效账号 ${precheck.capacity_summary.effective_account_count ?? 0}，最大并发 ${precheck.capacity_summary.max_concurrent ?? 0}，缺口 ${precheck.capacity_summary.capacity_shortfall ?? 0}。${precheck.capacity_summary.limit_note ?? ''}` : '等待预检' },
+      { key: 'targetResolution', label: '目标解析', children: values.target_input || values.source_target_input || targetSummary },
+      { key: 'account', label: '账号摘要', children: `${account.label}，候选 ${account.total} 个，当前在线 ${account.online} 个，受限/离线 ${account.limited} 个` },
+      { key: 'voice-profile', label: '账号面具覆盖', children: taskType === 'group_ai_chat' ? '启动后按冻结账号范围检查；缺面具按签到兜底' : '仅 AI 活群任务使用' },
+      { key: 'membership', label: '准入前置', children: taskType === 'group_ai_chat' ? '启动后逐账号执行入群、群管机器人关注频道与 can_send 复检' : '启动后按目标实时复检' },
+      { key: 'targetAbility', label: '目标能力', children: '创建阶段仅校验引用结构；能力在启动后复检' },
+      { key: 'estimate', label: '预计动作量', children: '启动后按义务欠额生成，不以预测量阻止创建' },
+      { key: 'reply', label: '引用回复配置', children: replySummary },
+      { key: 'daily-target', label: '该群每天发送总量', children: taskType === 'group_ai_chat' ? `${values.daily_message_target || '-'} 条；所有账号每天至少成功 1 条` : '不适用' },
+      { key: 'quantity', label: '数量配置', children: configuredQuantitySummary(taskType, values) },
+      { key: 'capacity', label: '容量口径', children: '创建阶段不做容量门禁；启动后持续重算并展示，不阻止合法任务创建' },
       { key: 'pacing', label: '曲线摘要', children: `${operationProfileSummary(values)}；当前 ${String(profile.hour).padStart(2, '0')}:00 ${profile.intensity} ${profileUnit}，${profile.mode}运行` },
-      { key: 'rule', label: '规则版本', children: precheck?.rule_version ? `规则集 #${precheck.rule_version.rule_set_id} / v${precheck.rule_version.version} / ${precheck.rule_version.status}` : ['group_relay', 'group_ai_chat', 'channel_comment'].includes(taskType) ? ruleSummary(values, ruleSets) : '平台默认规则' },
-      { key: 'ai', label: 'AI 摘要', children: taskType === 'group_ai_chat' ? `语气 ${values.tone || 'auto'}，黑话集 ${selectedSlang ? `${selectedSlang.name} / v${selectedSlang.version}` : '系统默认语气'}` : taskType === 'channel_comment' ? `评论方向 ${values.comment_style || 'mixed'}，主题 ${values.topic_hint || '按消息内容'}` : '-' },
-      { key: 'risk', label: '风控命中', children: precheck?.risk_hits?.length ? precheck.risk_hits.map(precheckReasonLabel).join('；') : `每小时最大发送量 ${values.max_actions_per_hour || '按系统默认'}，失败重试 ${values.max_retries ?? 3} 次` },
-      { key: 'blockers', label: '阻塞项', children: precheck?.blockers?.length ? precheck.blockers.map(precheckReasonLabel).join('；') : '无' },
-      { key: 'mode', label: '启动说明', children: precheck?.decision === 'block' ? '当前预检存在阻塞项，需处理后再启动。' : account.online > 0 ? '创建后 worker 会再次校验账号、目标、规则和风控，再按曲线执行。' : '当前账号范围没有在线账号，创建后会等待账号恢复。' },
+      { key: 'rule', label: '规则版本', children: ['group_relay', 'group_ai_chat', 'channel_comment'].includes(taskType) ? ruleSummary(values, ruleSets) : '平台默认规则' },
+      { key: 'ai', label: '内容结构', children: taskType === 'group_ai_chat' ? `语气 ${values.tone || 'auto'}，黑话集 ${selectedSlang ? `${selectedSlang.name} / v${selectedSlang.version}` : '系统默认语气'}；引用、图片、表情占比保持配置` : taskType === 'channel_comment' ? `评论方向 ${values.comment_style || 'mixed'}，主题 ${values.topic_hint || '按消息内容'}；引用、图片、表情占比保持配置` : '-' },
+      { key: 'risk', label: '运行校验', children: '启动后按账号身份、代理、目标能力与 Telegram 安全边界实时校验' },
+      { key: 'blockers', label: '结构阻塞', children: '创建阶段仅结构错误会阻止保存' },
+      { key: 'mode', label: '启动说明', children: '任务先创建成功；启动后评估运行条件，可等待并自动恢复' },
     ]} />
     </Space>
   );

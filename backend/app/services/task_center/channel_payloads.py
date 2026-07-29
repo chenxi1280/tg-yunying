@@ -19,10 +19,14 @@ class ViewMessagePayload(BaseModel):
     execution_date: str = ""
     daily_view_target: int | None = None
     total_view_target: int | None = None
+    task_day_ledger_id: str = ""
+    view_fulfillment_obligation_id: str = ""
 
 
 class LikeMessagePayload(ViewMessagePayload):
     reaction_emoji: str = Field(default="👍", min_length=1, max_length=32)
+    reaction_contract_version: int = 0
+    reaction_fulfillment_obligation_id: str = ""
 
 
 class PostCommentPayload(ViewMessagePayload):
@@ -36,6 +40,11 @@ class PostCommentPayload(ViewMessagePayload):
     reply_target_source: str = ""
     review_approved: bool = False
     slot_id: str = ""
+    comment_fulfillment_obligation_id: str = ""
+    comment_plan_revision: int = 0
+    target_ordinal: int = 0
+    comment_action_attempt_no: int = 0
+    content_mix_contract_id: str = ""
     ai_generation_id: str = ""
     ai_generation_status: str = ""
     ai_generation_attempt_id: str = ""
@@ -43,6 +52,7 @@ class PostCommentPayload(ViewMessagePayload):
     ai_generation_claim_owner: str = ""
     ai_generation_claim_token: str = ""
     ai_generation_attempt_history: list[dict[str, Any]] = Field(default_factory=list)
+    comment_generation_attempts: list[dict[str, Any]] = Field(default_factory=list)
     ai_generation_result_cache: dict[str, Any] = Field(default_factory=dict)
     ai_generation_tokens: int = 0
     rule_set_id: int | None = None
@@ -55,6 +65,12 @@ class PostCommentPayload(ViewMessagePayload):
     profile_version: int = 0
     profile_hit_summary: str = ""
     profile_unavailable_reason: str = ""
+    account_mask_id: str = ""
+    account_mask_version: int = 0
+    account_mask_snapshot_hash: str = ""
+    account_mask_summary: str = ""
+    voice_profile_contract_version: str = ""
+    mask_status: str = ""
     # Humanized interaction / speaker rotation audit fields
     conversation_surface: str = ""
     conversation_key: str = ""
@@ -62,6 +78,9 @@ class PostCommentPayload(ViewMessagePayload):
     content_source: str = ""
     quality_fallback: str = ""
     fallback_reason: str = ""
+    deterministic_fallback_reason: str = ""
+    comment_fallback_kind: str = ""
+    planned_normal_text_emoji: str = "unresolved"
     human_quality_decision: str = ""
 
     @model_validator(mode="after")

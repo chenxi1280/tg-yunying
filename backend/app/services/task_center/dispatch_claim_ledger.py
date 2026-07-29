@@ -25,6 +25,9 @@ def dispatcher_scope(settings) -> str:
 
 def dispatcher_claim_capacity(settings, requested_limit: int) -> int:
     configured_limit = max(1, int(getattr(settings, "action_claim_limit", requested_limit) or requested_limit))
+    scope_capacity = int(getattr(settings, "dispatcher_scope_capacity", 0) or 0)
+    if scope_capacity > 0:
+        return min(configured_limit, scope_capacity)
     configured_concurrency = max(1, int(getattr(settings, "dispatcher_concurrency", configured_limit) or configured_limit))
     return min(configured_limit, configured_concurrency)
 
@@ -73,14 +76,33 @@ def window_allocations(session: Session, window_id: str) -> list[DispatchClaimSh
     return list(session.scalars(for_update(session, statement)))
 
 
+def current_window_allocations(
+    session: Session,
+    window: DispatchClaimWindow,
+) -> list[DispatchClaimShardAllocation]:
+    statement = select(DispatchClaimShardAllocation).where(
+        DispatchClaimShardAllocation.dispatch_claim_window_id == window.id,
+        DispatchClaimShardAllocation.dispatch_allocation_epoch
+        == window.allocation_epoch,
+    )
+    return list(session.scalars(for_update(session, statement)))
+
+
 def window_reservations(
     session: Session,
     window_id: str,
 ) -> dict[tuple[int, str, str, int, int], DispatchClaimReservation]:
+    window = session.get(DispatchClaimWindow, window_id)
+    if window is None:
+        return {}
     statement = select(DispatchClaimReservation, DispatchClaimShardAllocation).join(
         DispatchClaimShardAllocation,
         DispatchClaimShardAllocation.id == DispatchClaimReservation.dispatch_claim_shard_allocation_id,
-    ).where(DispatchClaimShardAllocation.dispatch_claim_window_id == window_id)
+    ).where(
+        DispatchClaimShardAllocation.dispatch_claim_window_id == window_id,
+        DispatchClaimShardAllocation.dispatch_allocation_epoch
+        == window.allocation_epoch,
+    )
     rows = session.execute(for_update(session, statement)).all()
     return {reservation_key(reservation, allocation): reservation for reservation, allocation in rows}
 
@@ -89,7 +111,8 @@ def reconcile_window_active(
     window: DispatchClaimWindow,
     allocations: list[DispatchClaimShardAllocation],
     active_actions: list[Action],
-) -> None:
+) -> int:
+    previous_active = int(window.active_claim_count)
     active_counts = _active_claim_counts_by_allocation(window, active_actions)
     active = 0
     for allocation in allocations:
@@ -101,6 +124,7 @@ def reconcile_window_active(
     if window.active_claim_count != active:
         window.active_claim_count = active
         window.version += 1
+    return max(0, previous_active - active)
 
 
 def sync_window_capacity(window: DispatchClaimWindow, capacity: int) -> None:
@@ -238,7 +262,7 @@ def task_dispatch_claim_snapshot(session: Session, task: Task) -> dict[str, obje
         "global_claim_capacity": scope.claim_capacity if scope else window.claim_capacity,
         "global_active_claim_count": scope.active_claim_count if scope else window.active_claim_count,
         "unclaimed_allocated_count": window.unclaimed_allocated_count,
-        "allocation_epoch": window.allocation_epoch,
+        "dispatch_allocation_epoch": window.allocation_epoch,
         "invariant_ok": bool(
             window.active_claim_count + window.unclaimed_allocated_count <= window.claim_capacity
             and (scope is None or scope.active_claim_count <= scope.claim_capacity)
@@ -250,7 +274,13 @@ def task_dispatch_claim_snapshot(session: Session, task: Task) -> dict[str, obje
 def reservation_available(reservation: DispatchClaimReservation | None) -> int:
     if reservation is None:
         return 0
-    return max(0, int(reservation.reserved_claims) - int(reservation.claimed_count))
+    return max(
+        0,
+        int(reservation.reserved_claims)
+        - int(reservation.claimed_count)
+        - int(reservation.bound_count)
+        - int(reservation.released_count),
+    )
 
 
 def for_update(session: Session, statement):
@@ -385,11 +415,16 @@ def _task_window_reservations(
     task: Task,
     window_id: str,
 ) -> list[tuple[DispatchClaimReservation, DispatchClaimShardAllocation]]:
+    window = session.get(DispatchClaimWindow, window_id)
+    if window is None:
+        return []
     statement = select(DispatchClaimReservation, DispatchClaimShardAllocation).join(
         DispatchClaimShardAllocation,
         DispatchClaimShardAllocation.id == DispatchClaimReservation.dispatch_claim_shard_allocation_id,
     ).where(
         DispatchClaimShardAllocation.dispatch_claim_window_id == window_id,
+        DispatchClaimShardAllocation.dispatch_allocation_epoch
+        == window.allocation_epoch,
         DispatchClaimReservation.tenant_id == task.tenant_id,
         DispatchClaimReservation.task_id == task.id,
     ).order_by(DispatchClaimReservation.claim_class.asc(), DispatchClaimReservation.id.asc())
@@ -403,6 +438,7 @@ def _reservation_snapshot(
     return {
         "id": reservation.id,
         "claim_class": reservation.claim_class,
+        "dispatch_allocation_epoch": reservation.dispatch_allocation_epoch,
         "account_shard_total": allocation.account_shard_total,
         "account_shard_index": allocation.account_shard_index,
         "required_claims": reservation.required_claims,

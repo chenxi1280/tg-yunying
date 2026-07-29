@@ -13,14 +13,21 @@ from sqlalchemy.orm import Session
 
 from app.models import Action
 
-from .dispatch_claim_allocation import allocate_window
+from .dispatch_claim_allocation import (
+    allocate_window,
+    dispatch_demand_hash,
+    dispatch_rebuild_input_hash,
+    request_window_rebuild,
+)
 from .dispatch_claim_ledger import (
-    confirm_dispatch_claim,
+    confirm_dispatch_claim as _confirm_dispatch_claim,
+    current_window_allocations,
     dispatcher_claim_capacity,
     dispatcher_scope,
     reconcile_scope_active,
     reconcile_window_active,
     release_dispatch_claim,
+    reservation_available,
     scope_for_update,
     sync_scope_capacity,
     sync_window_capacity,
@@ -32,6 +39,10 @@ from .dispatch_claim_ledger import (
 from .dispatch_claim_reconciliation import reconcile_window_unclaimed
 from .dispatch_claim_selection import build_demands, plan_from_reservations, tasks_by_id
 from .dispatch_claim_types import DispatchClaimBinding, DispatchClaimPlan
+from .prebound_search_claim import (
+    confirm_prebound_search_claim,
+    plan_prebound_search_claims,
+)
 
 
 def plan_dispatch_claims(
@@ -46,8 +57,16 @@ def plan_dispatch_claims(
 ) -> DispatchClaimPlan:
     if not actions:
         return DispatchClaimPlan((), {})
-    tasks = tasks_by_id(session, actions)
-    demands = build_demands(actions, tasks, shard_total, now)
+    prebound = plan_prebound_search_claims(session, actions)
+    remaining = [
+        action
+        for action in actions
+        if action.id not in prebound.bindings_by_action_id
+    ]
+    if not remaining:
+        return prebound
+    tasks = tasks_by_id(session, remaining)
+    demands = build_demands(remaining, tasks, shard_total, now)
     if not demands:
         return DispatchClaimPlan((), {})
     scope_name = dispatcher_scope(settings)
@@ -56,21 +75,58 @@ def plan_dispatch_claims(
     active_actions = reconcile_scope_active(session, scope)
     sync_scope_capacity(scope, capacity)
     window = window_for_update(session, scope_name, now, capacity)
-    allocations = window_allocations(session, window.id)
-    reconcile_window_active(window, allocations, active_actions)
+    scope_release_count = max(
+        0,
+        int(window.allocation_scope_active_count or 0)
+        - int(scope.active_claim_count),
+    )
+    all_allocations = window_allocations(session, window.id)
+    active_release_count = reconcile_window_active(
+        window,
+        all_allocations,
+        active_actions,
+    )
+    allocations = current_window_allocations(session, window)
     reservations = window_reservations(session, window.id)
-    reconcile_window_unclaimed(
+    released_count = reconcile_window_unclaimed(
         session,
         window,
         allocations=allocations,
         reservations=reservations,
         now=now,
     )
+    released_count += active_release_count
+    released_count += scope_release_count
+    released_count += int(window.pending_rebuild_release_count or 0)
+    if window.unclaimed_allocated_count > 0 and reservations:
+        released_count = 0
+    demand_hash = dispatch_demand_hash(demands)
+    demand_without_reservation = any(
+        reservation_available(reservations.get(demand.key)) <= 0
+        for demand in demands
+    )
+    input_changed = _input_change_requires_rebuild(
+        window,
+        demand_hash=demand_hash,
+        demand_without_reservation=demand_without_reservation,
+    )
+    if released_count or input_changed:
+        request_window_rebuild(
+            window,
+            released_count=released_count,
+            rebuild_input_hash=dispatch_rebuild_input_hash(
+                scope,
+                window,
+                demands,
+                released_count=released_count,
+            ),
+            input_changed=input_changed,
+        )
     sync_window_capacity(window, capacity)
-    if window.unclaimed_allocated_count == 0:
-        allocate_window(session, scope, window, allocations, demands)
+    if window.allocation_state != "ready":
+        allocate_window(session, scope, window, all_allocations, demands)
     reservations = window_reservations(session, window.id)
-    return plan_from_reservations(
+    allocated = plan_from_reservations(
         tasks,
         demands,
         reservations,
@@ -79,6 +135,48 @@ def plan_dispatch_claims(
         shard_index,
         fairness_decisions,
     )
+    return _combine_claim_plans(prebound, allocated)
+
+
+def _input_change_requires_rebuild(
+    window,
+    *,
+    demand_hash: str,
+    demand_without_reservation: bool,
+) -> bool:
+    if window.allocation_state != "ready":
+        return False
+    if int(window.unclaimed_allocated_count or 0) > 0:
+        return False
+    return (
+        window.ready_rebuild_snapshot_hash != demand_hash
+        or demand_without_reservation
+    )
+
+
+def _combine_claim_plans(
+    prebound: DispatchClaimPlan,
+    allocated: DispatchClaimPlan,
+) -> DispatchClaimPlan:
+    action_ids = tuple(dict.fromkeys(
+        (*prebound.candidate_action_ids, *allocated.candidate_action_ids)
+    ))
+    bindings = {
+        **allocated.bindings_by_action_id,
+        **prebound.bindings_by_action_id,
+    }
+    return DispatchClaimPlan(action_ids, bindings)
+
+
+def confirm_dispatch_claim(
+    session: Session,
+    action: Action,
+    binding: DispatchClaimBinding,
+) -> bool:
+    result = action.result if isinstance(action.result, dict) else {}
+    if result.get("dispatch_prebound"):
+        return confirm_prebound_search_claim(session, action, binding)
+    return _confirm_dispatch_claim(session, action, binding)
 
 
 __all__ = [

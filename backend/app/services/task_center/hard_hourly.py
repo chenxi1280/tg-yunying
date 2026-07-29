@@ -33,8 +33,8 @@ PLANNER_PROGRESS_SESSION_KEY = "task_center.hard_hourly_planner_progress"
 
 
 def enabled(task_or_config: Task | dict[str, Any]) -> bool:
-    config = task_or_config.type_config if isinstance(task_or_config, Task) else task_or_config
-    return bool((config or {}).get("hard_hourly_target_enabled")) and goal(config or {}) > 0
+    del task_or_config
+    return False
 
 
 def goal(config: dict[str, Any]) -> int:
@@ -68,6 +68,8 @@ def seed_planner_progress_snapshot(session: Session, task: Task, progress: dict[
 
 
 def _current_progress(session: Session, task: Task, now: datetime) -> dict[str, Any]:
+    if not enabled(task):
+        return _disabled_progress(task, now)
     stats = hard_hourly_stats(session, task, now, task.stats or {})
     now_local = normalize(task, now)
     delivery_deficit = int(stats.get("hard_hourly_deficit") or 0)
@@ -108,6 +110,25 @@ def _current_progress(session: Session, task: Task, now: datetime) -> dict[str, 
     )
 
 
+def _disabled_progress(task: Task, now: datetime) -> dict[str, Any]:
+    now_local = normalize(task, now)
+    return {
+        "enabled": False,
+        "goal": 0,
+        "bucket": "",
+        "deficit": 0,
+        "delivery_deficit": 0,
+        "backfill_debt": 0,
+        "backfill_planning_deficit": 0,
+        "backfill_delivery_deficit": 0,
+        "future_open_count": 0,
+        "overdue_open_count": 0,
+        "planning_blocked": False,
+        "hour_end": hour_bounds(task, now)[1],
+        "now": now_local,
+    }
+
+
 def next_check_for_progress(task: Task, progress: dict[str, Any], now: datetime) -> datetime:
     if planning_blocked_by_dispatcher_lag(progress):
         return _next_check_at(
@@ -135,7 +156,7 @@ def planning_blocked_by_dispatcher_lag(progress: dict[str, Any]) -> bool:
 
 def hard_hourly_stats(session: Session, task: Task, now: datetime, current_stats: dict[str, Any]) -> dict[str, Any]:
     if task.type != "group_ai_chat" or not enabled(task):
-        return _disabled_stats(current_stats)
+        return disabled_stats(current_stats)
     now_local = normalize(task, now)
     bucket_start, bucket_end = hour_bounds(task, now)
     buckets = _recent_buckets(session, task, now_local, bucket_start)
@@ -269,7 +290,7 @@ def hour_bounds(task: Task, value: datetime) -> tuple[datetime, datetime]:
 def bucket_iso(task: Task, bucket_start: datetime) -> str:
     return normalize(task, bucket_start).isoformat()
 
-def _disabled_stats(stats: dict[str, Any]) -> dict[str, Any]:
+def disabled_stats(stats: dict[str, Any]) -> dict[str, Any]:
     return {**stats, "hard_hourly_target_enabled": False, "hard_hourly_status": "disabled"}
 
 

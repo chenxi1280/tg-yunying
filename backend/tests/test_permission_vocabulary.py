@@ -133,6 +133,49 @@ def test_system_and_legacy_task_write_routes_have_backend_permission_rules():
     assert permission_check_result(("overview.view", "operation_issues.manage"), {"overview.view"}) == []
 
 
+def test_fulfillment_task_creation_permissions_are_explicit():
+    permissions = all_permissions()
+    operator_permissions = ROLE_TEMPLATE_PERMISSIONS["运营管理员"]
+
+    assert "tasks.create.search_click" in permissions
+    assert "tasks.create.search_click" in operator_permissions
+    assert required_permission("POST", "/api/tasks/search-click") == (
+        "tasks.manage",
+        "tasks.create.search_click",
+    )
+    assert required_permission("POST", "/api/tasks/search-click/create-and-start") == (
+        "tasks.manage",
+        "tasks.create.search_click",
+    )
+    assert permission_check_result(
+        ("tasks.manage", "tasks.create.search_click"),
+        {"tasks.manage"},
+    ) == ["tasks.create.search_click"]
+    assert permission_check_result(
+        ("tasks.manage", "tasks.create.search_click"),
+        {"tasks.manage", "tasks.create.search_click"},
+    ) == []
+    assert permission_check_result(
+        ("tasks.manage", "tasks.create.search_click"),
+        {"tasks.manage", "tasks.create.search_join_group"},
+    ) == ["tasks.create.search_click"]
+
+    for task_path in ("group-ai-chat", "channel-comment", "channel-like", "channel-view"):
+        assert required_permission("POST", f"/api/tasks/{task_path}") == ("tasks.manage",)
+        assert required_permission(
+            "POST",
+            f"/api/tasks/{task_path}/create-and-start",
+        ) == ("tasks.manage",)
+
+    for permission in (
+        "tasks.create.group_ai_chat",
+        "tasks.create.channel_comment",
+        "tasks.create.channel_like",
+        "tasks.create.channel_view",
+    ):
+        assert permission not in permissions
+
+
 def test_legacy_campaign_routes_use_message_sending_permissions():
     assert required_permission("GET", "/api/campaigns") == ("message_sending.view",)
     assert required_permission("GET", "/api/campaigns/123/detail") == ("message_sending.view",)

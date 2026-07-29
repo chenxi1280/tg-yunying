@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -134,14 +134,34 @@ class PendingVisibilityCredit(Base):
     __table_args__ = (
         UniqueConstraint("action_id", name="uq_pending_visibility_credit_action"),
         Index("ix_pending_visibility_credit_bucket", "bucket_id", "created_at"),
+        Index(
+            "uq_pending_visibility_credit_open_slot",
+            "primary_quantity_slot_id",
+            unique=True,
+            sqlite_where=text("status IN ('open', 'unknown')"),
+            postgresql_where=text("status IN ('open', 'unknown')"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), default=1)
     bucket_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     action_id: Mapped[str] = mapped_column(String(36), ForeignKey("actions.id", ondelete="CASCADE"))
+    task_day_ledger_id: Mapped[str | None] = mapped_column(
+        ForeignKey("task_day_ledgers.id"),
+        nullable=True,
+    )
+    primary_quantity_slot_id: Mapped[str | None] = mapped_column(
+        ForeignKey("task_group_daily_message_slots.id"),
+        nullable=True,
+    )
+    task_account_daily_coverage_id: Mapped[str | None] = mapped_column(
+        ForeignKey("task_account_daily_coverage.id"),
+        nullable=True,
+    )
     execution_attempt_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     remote_message_id: Mapped[str] = mapped_column(String(160), default="")
+    admission_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     hold_reason: Mapped[str] = mapped_column(String(40), default="pending_visibility")
     status: Mapped[str] = mapped_column(String(20), default="open")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)

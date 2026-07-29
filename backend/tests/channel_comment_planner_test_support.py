@@ -9,8 +9,10 @@ from app.database import Base
 from app.models import (
     AccountStatus,
     Action,
+    AiAccountVoiceProfile,
     ChannelMessage,
     ChannelMessageComment,
+    CommentFulfillmentObligation,
     OperationTarget,
     Task,
     Tenant,
@@ -80,6 +82,18 @@ def _seed_comment_accounts(session: Session) -> None:
                 status=AccountStatus.ACTIVE.value,
                 health_score=100,
                 session_ciphertext=f"session-{account_id}",
+            )
+        )
+        session.add(
+            AiAccountVoiceProfile(
+                id=f"comment-mask-{account_id}",
+                tenant_id=1,
+                account_id=account_id,
+                version=1,
+                mask_name=f"评论面具{account_id}",
+                short_prompt_summary="自然追问具体信息",
+                status="active",
+                quality_status="active",
             )
         )
 
@@ -178,22 +192,40 @@ def forbid_planner_external_boundaries(monkeypatch) -> None:
 
 
 def add_existing_comment_action(session: Session, task: Task, status: str) -> None:
+    action = Action(
+        id=f"existing-{status}",
+        tenant_id=task.tenant_id,
+        task_id=task.id,
+        task_type="channel_comment",
+        action_type="post_comment",
+        account_id=101,
+        status=status,
+        payload={
+            "channel_target_id": 31,
+            "channel_message_id": 41,
+            "message_id": 9001,
+            "slot_id": "channel-comment:41:0",
+            "comment_text": "existing",
+        },
+    )
+    session.add(action)
+    session.flush()
     session.add(
-        Action(
-            id=f"existing-{status}",
+        CommentFulfillmentObligation(
             tenant_id=task.tenant_id,
             task_id=task.id,
-            task_type="channel_comment",
-            action_type="post_comment",
-            account_id=101,
-            status=status,
-            payload={
-                "channel_target_id": 31,
-                "channel_message_id": 41,
-                "message_id": 9001,
-                "slot_id": "channel-comment:41:0",
-                "comment_text": "existing",
-            },
+            channel_message_id=41,
+            comment_plan_revision=1,
+            target_ordinal=1,
+            current_action_id=action.id,
+            action_attempt_no=1,
+            status=(
+                "confirmed"
+                if status == "success"
+                else "unknown"
+                if status == "unknown_after_send"
+                else "pending"
+            ),
         )
     )
     session.commit()

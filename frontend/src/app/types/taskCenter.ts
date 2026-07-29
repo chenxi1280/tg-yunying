@@ -1,4 +1,4 @@
-export type TaskCenterTaskType = 'group_ai_chat' | 'group_relay' | 'group_membership_admission' | 'channel_view' | 'channel_like' | 'channel_comment' | 'search_join_group' | 'search_rank_deboost';
+export type TaskCenterTaskType = 'group_ai_chat' | 'group_relay' | 'group_membership_admission' | 'channel_view' | 'channel_like' | 'channel_comment' | 'search_click' | 'search_join_group' | 'search_rank_deboost';
 export type TaskCenterSystemTaskType = 'account_profile_init' | 'account_device_cleanup' | 'account_2fa_setup' | 'account_standby_session_provision';
 export type TaskCenterAnyTaskType = TaskCenterTaskType | TaskCenterSystemTaskType;
 
@@ -112,7 +112,7 @@ export type TaskAccountCoverage = {
   blocked_reasons?: Array<{ reason: string; count?: number; message?: string }>;
   estimated_completion_window?: { status: string; estimated_min_hours?: number | null; label: string };
   capacity_proof?: Record<string, any>;
-  capacity_status?: 'sufficient' | 'blocked';
+  capacity_status?: 'diagnostic_sufficient' | 'diagnostic_insufficient' | 'diagnostic_unproven';
   required_daily_messages?: number;
   required_hourly_rate?: number;
   pending_accounts?: Array<{ account_id: number; display_name?: string; completed_count: number; target_count: number; remaining_count: number; reason: string }>;

@@ -25,6 +25,7 @@ from .config_fields import (
     TYPE_CONFIG_MODELS,
 )
 from .utils import as_int as _as_int, as_int_list as _as_int_list
+from .fulfillment_takeover import UNIFIED_TASK_GATE_LIMIT
 
 
 def normalize_ai_daily_target(config: dict[str, Any], *, frozen_account_count: int) -> dict[str, Any]:
@@ -120,7 +121,8 @@ def apply_default_rule_binding(session: Session, tenant_id: int, *, task_type: s
 
 
 def apply_group_ai_account_coverage_defaults(task_type: str, config: dict[str, Any], account_config: dict[str, Any] | None) -> dict[str, Any]:
-    if task_type != "group_ai_chat" or not _uses_all_account_selection(account_config):
+    del account_config
+    if task_type != "group_ai_chat":
         return config
     if config.get("account_coverage_mode") == "all_accounts_daily":
         return config
@@ -141,6 +143,15 @@ def validated_type_config(task_type: str, data: dict[str, Any]) -> dict[str, Any
     if task_type == "group_ai_chat":
         for field in GROUP_AI_LEGACY_RUNTIME_FIELDS:
             normalized.pop(field, None)
+    if task_type == "channel_view":
+        normalized["task_daily_view_safety_cap"] = UNIFIED_TASK_GATE_LIMIT
+        normalized["max_views_per_account_per_day"] = UNIFIED_TASK_GATE_LIMIT
+    if task_type == "channel_like":
+        normalized["max_likes_per_account_per_hour"] = UNIFIED_TASK_GATE_LIMIT
+    if task_type == "channel_comment":
+        normalized["max_total_comments"] = UNIFIED_TASK_GATE_LIMIT
+        normalized["max_total_comments_jitter"] = 0
+        normalized["max_comments_per_account_per_hour"] = UNIFIED_TASK_GATE_LIMIT
     for field in CHANNEL_JITTER_FIELDS.get(task_type, set()):
         normalized.pop(field, None)
     if task_type in {"group_relay", "channel_comment"}:

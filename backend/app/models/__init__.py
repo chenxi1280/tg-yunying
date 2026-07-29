@@ -30,3 +30,6 @@ from .task_group_daily_target import *  # noqa: F401,F403
 from .hard_hourly_ledger import *  # noqa: F401,F403
 from .conversation_speaker import *  # noqa: F401,F403
 from .group_bot_admission import *  # noqa: F401,F403
+from .fulfillment_contract import *  # noqa: F401,F403
+from .fulfillment_facts import *  # noqa: F401,F403
+from .search_click_assignment import *  # noqa: F401,F403

@@ -86,7 +86,10 @@ def test_terminal_generation_failures_finish_attempt_history(
     with comment_dispatch_session() as session:
         action = seed_dispatch_scope(session, reply=scenario == "reply_missing")
         dependencies = _terminal_failure_scenario(session, action, scenario)
-        _configure_no_gateway(monkeypatch)
+        if scenario == "reply_missing":
+            _configure_no_gateway(monkeypatch)
+        else:
+            _configure_success_gateway(monkeypatch)
 
         assert dispatcher.dispatch_action(
             session,
@@ -94,10 +97,17 @@ def test_terminal_generation_failures_finish_attempt_history(
             comment_generation_dependencies=dependencies,
         ) is True
 
-        attempt = action.payload["ai_generation_attempt_history"][-1]
-        assert action.status == "failed"
-        assert attempt["outcome"] == expected_outcome
-        assert attempt["finished_at"]
+        attempts = action.payload["ai_generation_attempt_history"]
+        attempt = attempts[-1]
+        assert action.status == ("failed" if scenario == "reply_missing" else "success")
+        if scenario == "reply_missing":
+            assert attempt["outcome"] == expected_outcome
+            assert attempt["finished_at"]
+        else:
+            assert attempt["outcome"] == "ready"
+            assert attempt["finished_at"]
+            assert action.payload["comment_fallback_kind"] == "emoji_text"
+            assert len(action.payload["comment_generation_attempts"]) == 6
 
 
 def test_new_attempt_replaces_stale_provider_marker_with_current_attempt(monkeypatch) -> None:

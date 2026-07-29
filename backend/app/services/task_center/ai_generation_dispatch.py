@@ -70,7 +70,18 @@ def ensure_send_message_content(
     credentials=None,
     dependencies: GenerationDependencies,
 ) -> SendMessagePayload:
+    task = session.get(Task, action.task_id) if action.task_id else None
+    if not task:
+        raise AiGenerationUnavailable("AI 生成缺少任务配置")
     if requires_direct_check_in(payload):
+        if payload.reply_to_message_id:
+            _validate_local_reply_target(
+                session,
+                task,
+                action,
+                payload=payload,
+                account_id=account.id,
+            )
         prepared = prepare_direct_check_in(session, action, payload)
         session.commit()
         return prepared
@@ -78,9 +89,6 @@ def ensure_send_message_content(
         return payload
     if payload.ai_generation_status not in {"pending", "ai_result_persist_unknown"}:
         raise AiGenerationUnavailable("send_message action 缺少可发送文案")
-    task = session.get(Task, action.task_id) if action.task_id else None
-    if not task:
-        raise AiGenerationUnavailable("AI 生成缺少任务配置")
     batch = _pending_generation_batch(session, action, payload)
     batch = _refresh_normal_context(session, task, batch)
     request = _prepare_generation_request(

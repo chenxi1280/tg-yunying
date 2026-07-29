@@ -6,12 +6,28 @@ import hashlib
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import ChannelMessage, OperationTarget, RuleSet, Task
+from app.models import (
+    ChannelMessage,
+    CommentFulfillmentObligation,
+    OperationTarget,
+    RuleSet,
+    Task,
+)
+from app.services._common import _now
 
 from app.services.rule_engine import bound_rule_version, evaluate_input_filter
+from ..account_voice_profiles import voice_profile_prompt_details
 from ..account_pool import daily_uncovered_account_count, select_task_accounts
 from ..channel_membership import channel_member_accounts, gate_channel_membership
-from ..pacing import schedule_times
+from ..comment_account_profiles import (
+    comment_account_profile_ready,
+    config_with_comment_profile as _config_with_comment_profile,
+)
+from ..comment_fulfillment import (
+    bind_comment_obligation,
+    freeze_comment_obligations,
+)
+from ..pacing import next_local_day_deadline, schedule_times
 from ..payloads import PostCommentPayload, create_comment_action
 from app.services.target_learning_audit import audit_learning_profile_use
 from app.services.tenant_target_profile import tenant_learning_profile_preview
@@ -40,7 +56,6 @@ from .common import (
 )
 
 CHANNEL_COMMENT_SCENE = "channel_comment"
-PROFILE_SYNCED_STATUS = "已同步"
 COMMENT_ACCOUNT_PROFILE_ERROR = "评论账号资料未初始化，请先在账号中心批量初始化中文昵称、username 和头像"
 POSTGRES_ADVISORY_LOCK_MASK = (1 << 63) - 1
 
@@ -55,6 +70,7 @@ class CommentPlanContext:
     messages: list[ChannelMessage]
     profile_preview: dict
     accounts: list
+    voice_profiles: dict
 
 
 @dataclass(frozen=True)
@@ -68,6 +84,7 @@ class CommentPlanSlot:
     message: ChannelMessage
     reply_target: dict | None
     slot_index: int
+    obligation: CommentFulfillmentObligation
 
 
 def build_plan(session: Session, task: Task) -> int:
@@ -87,7 +104,11 @@ def build_plan(session: Session, task: Task) -> int:
     target_per_message = int(context.config.get("target_comments_per_message") or 1)
     record_channel_capacity_warning(task, "回复", target_per_message, len(context.accounts))
     prepared = _prepare_comment_actions(session, task, context, slots)
-    reply_count = sum(1 for _account_id, _planned_at, payload in prepared if payload.reply_to_message_id)
+    reply_count = sum(
+        1
+        for _account_id, _planned_at, payload, _obligation in prepared
+        if payload.reply_to_message_id
+    )
     stats = dict(task.stats or {})
     stats["reply_planned_count"] = reply_count
     task.stats = stats
@@ -108,11 +129,25 @@ def _refresh_locked_comment_budget(
 def _create_prepared_actions(
     session: Session,
     task: Task,
-    prepared: list[tuple[int, object, PostCommentPayload]],
+    prepared: list[
+        tuple[
+            int,
+            object,
+            PostCommentPayload,
+            CommentFulfillmentObligation,
+        ]
+    ],
 ) -> int:
     count_before = _total_comment_action_count(session, task)
-    for account_id, planned_at, payload in prepared:
-        create_comment_action(session, task, account_id, planned_at, payload)
+    for account_id, planned_at, payload, obligation in prepared:
+        action = create_comment_action(
+            session,
+            task,
+            account_id,
+            planned_at,
+            payload,
+        )
+        bind_comment_obligation(session, obligation, action)
     count_after = _total_comment_action_count(session, task)
     return max(0, count_after - count_before)
 
@@ -161,6 +196,11 @@ def _comment_plan_setup(session: Session, task: Task) -> CommentPlanSetup:
     accounts = _planning_accounts(session, task, channel, config)
     if not accounts:
         return CommentPlanSetup(None)
+    voices = voice_profile_prompt_details(
+        session,
+        tenant_id=task.tenant_id,
+        account_ids=[account.id for account in accounts],
+    )
     return CommentPlanSetup(
         CommentPlanContext(
             config=config,
@@ -171,6 +211,7 @@ def _comment_plan_setup(session: Session, task: Task) -> CommentPlanSetup:
             messages=messages,
             profile_preview=profile_preview,
             accounts=accounts,
+            voice_profiles=voices,
         )
     )
 
@@ -261,8 +302,28 @@ def _comment_plan_slots(
         targets = _comment_slot_targets(session, task, context, message, quantity, reply_targets)
         if targets is None:
             return None
-        offset = message_states[message.id].next_slot_index
-        slots.extend(CommentPlanSlot(message, target, offset + index) for index, target in enumerate(targets))
+        obligations = freeze_comment_obligations(
+            session,
+            task,
+            message,
+            targets,
+            rule_version=context.rule_version,
+            reply_min_required=_reply_minimum_for_mode(
+                context.config.get("comment_mode") or "comment",
+                quantity,
+                context.config,
+            ),
+            first_ordinal=message_states[message.id].next_slot_index + 1,
+        )
+        slots.extend(
+            CommentPlanSlot(
+                message,
+                item.reply_target_snapshot if item.relation_kind == "reply" else None,
+                item.target_ordinal - 1,
+                item,
+            )
+            for item in obligations
+        )
     return slots
 
 
@@ -321,9 +382,19 @@ def _prepare_comment_actions(
     task: Task,
     context: CommentPlanContext,
     slots: list[CommentPlanSlot],
-) -> list[tuple[int, object, PostCommentPayload]]:
-    times = schedule_times(len(slots), task.pacing_config or {})
-    prepared: list[tuple[int, object, PostCommentPayload]] = []
+) -> list[
+    tuple[int, object, PostCommentPayload, CommentFulfillmentObligation]
+]:
+    now_value = _now()
+    times = schedule_times(
+        len(slots),
+        task.pacing_config or {},
+        start_at=now_value,
+        deadline_at=next_local_day_deadline(now_value, task.timezone),
+    )
+    prepared: list[
+        tuple[int, object, PostCommentPayload, CommentFulfillmentObligation]
+    ] = []
     for index, slot in enumerate(slots):
         planned_at = times[index]
         account = pick_channel_account(
@@ -346,7 +417,17 @@ def _prepare_comment_actions(
             planned_at,
             context.config,
         )
-        prepared.append((account.id, planned_at, _comment_payload(task, context, slot)))
+        prepared.append((
+            account.id,
+            planned_at,
+            _comment_payload(
+                task,
+                context,
+                slot,
+                account_id=account.id,
+            ),
+            slot.obligation,
+        ))
     return prepared
 
 
@@ -356,11 +437,18 @@ def _reply_minimum_for_mode(comment_mode: str, quantity: int, config: dict) -> i
     return min(quantity, int(config.get("reply_min_per_message") or 0))
 
 
-def _comment_payload(task: Task, context: CommentPlanContext, slot: CommentPlanSlot) -> PostCommentPayload:
+def _comment_payload(
+    task: Task,
+    context: CommentPlanContext,
+    slot: CommentPlanSlot,
+    *,
+    account_id: int,
+) -> PostCommentPayload:
     reply_target = slot.reply_target
     slot_id = f"channel-comment:{slot.message.id}:{slot.slot_index}"
     rule_version = context.rule_version
     profile = context.profile_preview
+    mask = context.voice_profiles.get(account_id, {})
     return PostCommentPayload(
         **channel_message_payload(context.channel, slot.message),
         comment_text="",
@@ -372,6 +460,11 @@ def _comment_payload(task: Task, context: CommentPlanContext, slot: CommentPlanS
         reply_target_source=_reply_target_text(reply_target, "source"),
         review_approved=False,
         slot_id=slot_id,
+        comment_fulfillment_obligation_id=slot.obligation.id,
+        comment_plan_revision=slot.obligation.comment_plan_revision,
+        target_ordinal=slot.obligation.target_ordinal,
+        comment_action_attempt_no=slot.obligation.action_attempt_no + 1,
+        content_mix_contract_id=slot.obligation.content_mix_contract_id or "",
         ai_generation_id=f"{task.id}:{slot_id}",
         ai_generation_status="pending",
         rule_set_id=rule_version.rule_set_id,
@@ -384,11 +477,17 @@ def _comment_payload(task: Task, context: CommentPlanContext, slot: CommentPlanS
         profile_version=int(profile.get("profile_version") or 0),
         profile_hit_summary=str(profile.get("profile_hit_summary") or ""),
         profile_unavailable_reason=str(profile.get("profile_unavailable_reason") or ""),
+        account_mask_id=str(mask.get("id") or ""),
+        account_mask_version=int(mask.get("version") or 0),
+        account_mask_snapshot_hash=str(mask.get("snapshot_hash") or ""),
+        account_mask_summary=str(mask.get("summary") or ""),
+        voice_profile_contract_version=str(mask.get("contract_version") or ""),
+        mask_status="active" if mask.get("id") else "missing",
     )
 
 
 def _comment_ready_accounts(task: Task, accounts: list) -> list:
-    ready = [account for account in accounts if _comment_account_profile_ready(account)]
+    ready = [account for account in accounts if comment_account_profile_ready(account)]
     blocked_count = len(accounts) - len(ready)
     stats = dict(task.stats or {})
     if blocked_count:
@@ -401,28 +500,6 @@ def _comment_ready_accounts(task: Task, accounts: list) -> list:
         task.last_error = ""
     task.stats = stats
     return ready
-
-
-def _comment_account_profile_ready(account) -> bool:
-    return all(
-        [
-            _has_chinese_text(account.tg_first_name),
-            bool(str(account.username or "").strip()),
-            bool(str(account.avatar_object_key or "").strip()),
-            str(account.profile_sync_status or "").strip() == PROFILE_SYNCED_STATUS,
-        ]
-    )
-
-
-def _has_chinese_text(value: str | None) -> bool:
-    return any("\u4e00" <= char <= "\u9fff" for char in str(value or ""))
-
-
-def _config_with_comment_profile(config: dict, profile_preview: dict) -> dict:
-    summary = str(profile_preview.get("profile_hit_summary") or "").strip()
-    if not summary:
-        return dict(config)
-    return {**config, "target_comment_profile": summary}
 
 
 __all__ = ["_resolved_total_comment_limit", "_total_comment_action_count", "build_plan"]

@@ -418,7 +418,7 @@ def test_durable_debt_excludes_future_and_terminal_buckets():
     assert debt == 7
 
 
-def test_explicit_task_stop_closes_open_hard_hourly_obligations():
+def test_explicit_task_stop_does_not_mutate_removed_hard_hourly_obligations():
     with _session() as session:
         session.add(Tenant(id=1, name="t"))
         task = Task(
@@ -442,7 +442,7 @@ def test_explicit_task_stop_closes_open_hard_hourly_obligations():
 
         stop_task(session, 1, task.id, "ops", "operator stop")
 
-        assert bucket.terminal_blocker_code == "task_stopped"
+        assert bucket.terminal_blocker_code == ""
 
 
 def test_dispatch_result_finishes_attempt_before_hard_hourly_credit():

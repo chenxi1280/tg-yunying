@@ -13,6 +13,7 @@ from app.models import Action, AiGenerationContractAudit, TgAccount
 from app.services._common import _now
 from app.services.task_center import ai_generation_dispatch, ai_generation_pipeline, dispatcher
 from app.services.task_center.ai_generator import GeneratedContent
+from app.services.task_center.direct_check_in import requires_direct_check_in
 from app.services.task_center.payloads import SendMessagePayload
 from tests.ai_generation_phase_test_support import (
     account_content_generator,
@@ -36,6 +37,21 @@ from tests.ai_generation_phase_test_support import (
 
 
 pytestmark = pytest.mark.no_postgres
+
+
+def test_missing_mask_check_in_keeps_valid_reply_binding() -> None:
+    payload = SendMessagePayload(
+        chat_id="-1007",
+        group_id=7,
+        message_text="",
+        ai_generation_status="pending",
+        coverage_ledger_id="coverage-1",
+        content_source="mask_missing_check_in",
+        mask_status="missing",
+        reply_to_message_id=991,
+    )
+
+    assert requires_direct_check_in(payload) is True
 
 
 def test_generation_dependencies_are_isolated_between_concurrent_pipelines() -> None:

@@ -67,6 +67,9 @@ def test_planner_creates_stable_pending_comment_blueprints_without_ai(
     assert all(action.payload["profile_scene"] == "channel_comment" for action in actions)
     assert all(action.payload["profile_version"] == 7 for action in actions)
     assert all(action.payload["profile_hit_summary"] == "读者偏好追问具体细节" for action in actions)
+    assert all(action.payload["mask_status"] == "active" for action in actions)
+    assert all(action.payload["account_mask_id"] for action in actions)
+    assert all(action.payload["account_mask_snapshot_hash"] for action in actions)
     assert all(action.payload["rule_set_version_id"] == task.type_config["rule_set_version_id"] for action in actions)
     assert all(action.payload["resolved_rule_set_version_id"] == task.type_config["rule_set_version_id"] for action in actions)
     assert [action.payload["reply_to_message_id"] for action in actions if action.payload["reply_to_message_id"]] == expected_reply_ids

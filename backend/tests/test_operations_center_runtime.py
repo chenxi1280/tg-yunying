@@ -14,6 +14,7 @@ from app.database import Base
 from app.integrations.telegram import OperationResult, SendResult, _resolve_telethon_target, _telethon_send_target
 from app.integrations.telegram.gateway import TelethonTelegramGateway
 from app.models import AccountPool, AccountStatus, Action, AiAccountVoiceProfile, AiGroupMessageMemory, AiProvider, AiUsageLedger, AuditLog, ChannelMessage, ChannelMessageComment, ContentKeywordRule, FailureType, GroupArchive, GroupContextMessage, ListenerSourceState, MessageFingerprint, MessageTask, MessageTaskAttempt, OperationIssue, OperationIssueAccount, OperationIssueSource, OperationTarget, PromptTemplate, ReviewQueue, RuleSet, RuleSetVersion, SchedulingSetting, TargetRuntimeSummary, Task, TaskRuntimeSummary, TaskStatus, Tenant, TenantAiSetting, TgAccount, TgAccountAuthorization, TgAccountOnlineState, TgAccountSecurityBatch, TgAccountSecurityBatchItem, TgAccountSyncRecord, TgGroup, TgGroupAccount, TgLoginFlow, VerificationTask, WorkerHeartbeat
+from app.models import ReactionFulfillmentObligation
 from app.schemas import ArchiveCreate, ChannelCommentTaskCreate, ChannelLikeTaskCreate, ChannelViewTaskCreate, GroupAIChatTaskCreate, GroupRelayTaskCreate, MaterialCreate, MaterialUpdate, MessageSendTaskCreate, OperationTargetAccountUpdate, OperationTargetAdmissionRetryRequest, OperationTargetUpdate, PromptTemplateCreate, PromptTemplateUpdate, SchedulingSettingUpdate, TaskPrecheckRequest, TaskSettingsUpdate, TaskSourceFilterOverrideRequest
 from app.schemas.operations_center import RuleSetVersionCreate
 from app.schemas.risk_control import RiskControlGlobalPolicyUpdate
@@ -44,6 +45,7 @@ from app.services.task_center.pacing import schedule_times
 from app.services.group_listeners import process_group_listener
 from app.services.task_center.listener_runtime import drain_listener_runtime, reset_listener_runtime_cache, should_collect_listener
 from app.services.task_center.fingerprints import content_fingerprint
+from app.services.task_center.fulfillment_takeover import takeover_task
 from app.services.task_center.policies import validate_group_send_policy
 from app.services.task_center.service import _action_payload, _channel_subtask_status, _planning_backlog_blocked, _recover_stale_executing_actions, _retry_failed_actions, add_task_source_filter_override, create_group_ai_chat_task, create_group_relay_task, delete_task, drain_task_center, get_task_detail, list_actions_page, list_ai_cycles_page, list_message_groups_page, list_relay_batches_page, list_tasks, precheck_task_creation, refresh_task_detail_stats, reset_task, stop_task, update_task_settings
 from app.services.task_center.executors.channel_comment import build_plan as build_channel_comment_plan
@@ -1292,7 +1294,16 @@ def test_task_center_dispatch_reassigns_when_account_limit_reached(monkeypatch):
                 TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True, daily_limit=999),
                 TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True),
                 TgGroupAccount(tenant_id=1, group_id=7, account_id=12, can_send=True),
-                Task(id="task-reassign", tenant_id=1, name="转派", type="group_ai_chat", status="running", account_config={"selection_mode": "all", "max_concurrent": 2, "cooldown_per_account_minutes": 0}),
+                Task(
+                    id="task-reassign",
+                    tenant_id=1,
+                    name="转派",
+                    type="group_ai_chat",
+                    status="running",
+                    account_config={"selection_mode": "all", "max_concurrent": 2, "cooldown_per_account_minutes": 0},
+                    type_config={"target_group_id": 7, "daily_message_target": 1},
+                    stats={"fulfillment_contract_version": "all_task_v2"},
+                ),
                 Action(id="action-used", tenant_id=1, task_id="task-reassign", task_type="group_ai_chat", action_type="send_message", account_id=11, status="success", scheduled_at=now_value, executed_at=now_value),
             ]
         )
@@ -1381,6 +1392,8 @@ def test_channel_comment_pre_send_validation_blocks_ai_meta_text(monkeypatch):
         session.add(OperationTarget(id=31, tenant_id=1, target_type="channel", tg_peer_id="-10031", title="频道目标", can_send=True, auth_status="已授权运营"))
         session.add(TgGroup(id=31, tenant_id=1, tg_peer_id="-10031", title="频道目标", auth_status="已授权运营", can_send=True))
         session.add(TgGroupAccount(tenant_id=1, group_id=31, account_id=11, can_send=True))
+        session.add(ChannelMessage(id=41, tenant_id=1, channel_target_id=31, message_id=7301, content_preview="招生信息", comment_available=True))
+        session.add(Task(id="task-comment-permission", tenant_id=1, name="频道评论", type="channel_comment", status="running"))
         session.add(_channel_comment_action("action-ai-meta-comment", "让我分析这个频道内容", now_value))
         session.commit()
 
@@ -1452,6 +1465,17 @@ def test_channel_like_reaction_unavailable_skips_message_siblings(monkeypatch):
         assert action.result["error_code"] == "reaction_unavailable_message"
         assert sibling.status == "skipped"
         assert sibling.result["error_code"] == "reaction_unavailable_sibling"
+        obligations = session.scalars(
+            select(ReactionFulfillmentObligation).where(
+                ReactionFulfillmentObligation.task_id == "task-like-unavailable"
+            )
+        ).all()
+        assert [item.status for item in obligations] == [
+            "unavailable",
+            "unavailable",
+        ]
+        task = session.get(Task, "task-like-unavailable")
+        assert task.last_error == "频道消息不可点赞或消息ID无效"
 
 
 def test_post_comment_permission_denied_blocks_account_and_skips_account_siblings(monkeypatch):
@@ -1749,7 +1773,15 @@ def test_task_center_dispatch_defers_by_global_account_policy(monkeypatch):
         session.add(TgAccount(id=11, tenant_id=1, display_name="发送号", phone_masked="+861***0011", status="在线"))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1001", title="运营群", auth_status="已授权运营", can_send=True))
         session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True))
-        session.add(Task(id="task-policy", tenant_id=1, name="账号策略", type="group_ai_chat", status="running"))
+        session.add(Task(
+            id="task-policy",
+            tenant_id=1,
+            name="账号策略",
+            type="group_ai_chat",
+            status="running",
+            type_config={"target_group_id": 7, "daily_message_target": 1},
+            stats={"fulfillment_contract_version": "all_task_v2"},
+        ))
         session.add(
             Action(
                 id="action-success",
@@ -1803,7 +1835,15 @@ def test_task_center_dispatch_applies_default_failure_policy(monkeypatch):
         session.add(TgAccount(id=11, tenant_id=1, display_name="发送号", phone_masked="+861***0011", status="在线"))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1001", title="运营群", auth_status="已授权运营", can_send=True, daily_limit=999))
         session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True))
-        session.add(Task(id="task-failure-policy", tenant_id=1, name="失败策略", type="group_ai_chat", status="running"))
+        session.add(Task(
+            id="task-failure-policy",
+            tenant_id=1,
+            name="失败策略",
+                type="group_ai_chat",
+                status="running",
+                type_config={"target_group_id": 7, "daily_message_target": 1},
+                stats={"fulfillment_contract_version": "all_task_v2"},
+        ))
         limited_gate_payload = _ai_group_send_gate_payload(
             session,
             _now(),
@@ -3767,6 +3807,7 @@ def test_channel_like_jitter_uses_available_accounts_without_false_capacity(monk
         ]
         channel = OperationTarget(id=21, tenant_id=1, target_type="channel", tg_peer_id="-10021", title="容量频道", username="capacity_channel", can_send=True, auth_status="已授权运营")
         message = ChannelMessage(id=31, tenant_id=1, channel_target_id=21, message_id=6101, message_url="https://t.me/capacity_channel/6101", content_preview="容量测试")
+        lower_message = ChannelMessage(id=32, tenant_id=1, channel_target_id=21, message_id=6102, message_url="https://t.me/capacity_channel/6102", content_preview="容量下限测试")
 
         def make_task(task_id: str) -> Task:
             return Task(
@@ -3791,7 +3832,11 @@ def test_channel_like_jitter_uses_available_accounts_without_false_capacity(monk
 
         upper_task = make_task("channel-like-jitter-capacity-upper")
         lower_task = make_task("channel-like-jitter-capacity-lower")
-        session.add_all([*accounts, channel, message, upper_task, lower_task])
+        lower_task.type_config = {
+            **lower_task.type_config,
+            "message_ids": [lower_message.id],
+        }
+        session.add_all([*accounts, channel, message, lower_message, upper_task, lower_task])
         session.commit()
 
         monkeypatch.setattr("app.services.task_center.executors.common.random.randint", lambda _lower, upper: upper)
@@ -3993,6 +4038,7 @@ def test_channel_comment_planner_defers_same_message_text_dedupe():
         task = _seed_channel_comment_history_window(session, base_time)
         session.commit()
 
+        takeover_task(session, task, now=base_time)
         assert build_channel_comment_plan(session, task) == 1
         pending = session.scalars(select(Action).where(Action.task_id == task.id, Action.status == "pending")).all()
 
@@ -4070,6 +4116,23 @@ def test_operation_profile_drives_schedule_and_ai_cycle_mode():
     assert ai_cycle_mode({"pacing_config": pacing_config}, now=datetime(2026, 5, 11, 1, 30)) == ("休眠期", 0.0)
     assert ai_cycle_mode({"pacing_config": pacing_config}, now=datetime(2026, 5, 11, 6, 30)) == ("低频期", 0.05)
     assert ai_cycle_mode({"pacing_config": pacing_config}, now=datetime(2026, 5, 11, 11, 30)) == ("高峰期", 0.1)
+
+
+@pytest.mark.no_postgres
+def test_schedule_times_never_crosses_business_deadline():
+    start = datetime(2026, 7, 29, 22, 0)
+    deadline = datetime(2026, 7, 29, 23, 59, 59)
+
+    times = schedule_times(
+        100,
+        {"mode": "template", "template": "moderate_6h"},
+        start_at=start,
+        deadline_at=deadline,
+    )
+
+    assert len(times) == 100
+    assert min(times) >= start
+    assert max(times) < deadline
 
 
 def test_group_ai_chat_round_uses_near_term_schedule_with_operation_curve(monkeypatch):
@@ -4534,7 +4597,10 @@ def test_group_ai_chat_keeps_partial_normal_candidates(monkeypatch):
         )
         actions = list(session.scalars(select(Action).where(Action.task_id == "ai-partial-normal")))
 
-    assert planned == 2
+        assert planned == 2, {
+            "last_error": session.get(Task, "ai-partial-normal").last_error,
+            "stats": session.get(Task, "ai-partial-normal").stats,
+        }
     assert all(action.status == "failed" for action in actions)
     assert all(action.result["error_code"] == "ai_generation_output_count_mismatch" for action in actions)
 
@@ -4699,9 +4765,9 @@ def test_group_ai_chat_invalid_slang_template_sets_visible_error(monkeypatch):
         )
 
     assert created == 1
-    assert actions[0].status == "failed"
-    assert actions[0].result["error_code"] == "ai_generation_failed"
-    assert "租户 AI 配置不存在" in actions[0].result["error_message"]
+    assert actions[0].status == "success", actions[0].result
+    assert actions[0].payload["message_text"] == "签到"
+    assert actions[0].payload["quality_fallback"] == "check_in_fallback"
 
 
 @pytest.mark.no_postgres
@@ -4906,8 +4972,12 @@ def test_group_ai_chat_without_ai_provider_does_not_create_actions(monkeypatch):
 
     assert created == 1
     assert len(actions) == 1
-    assert all(action.status == "failed" for action in actions)
-    assert {action.result["error_code"] for action in actions} == {"ai_generation_failed"}
+    assert all(action.status == "success" for action in actions)
+    assert {action.payload["message_text"] for action in actions} == {"签到"}
+    assert {
+        action.payload["quality_fallback"]
+        for action in actions
+    } == {"check_in_fallback"}
     assert task.status == "running"
 
 
@@ -5042,16 +5112,37 @@ def test_group_ai_chat_waits_when_no_new_real_context(monkeypatch):
                 normal_generator=fake_generate_group_messages,
                 actions=[action],
             )
+        assert all(action.status == "success" for action in pending), [
+            (action.status, action.result) for action in pending
+        ]
+        session.commit()
         first_generation_call_count = len(generated)
+        assert build_group_ai_chat_plan(session, session.get(Task, "ai-wait-new")) == 1
+        next_action = session.scalar(
+            select(Action)
+            .where(Action.task_id == "ai-wait-new", Action.status == "pending")
+            .order_by(Action.created_at.desc())
+        )
+        _dispatch_deferred_ai_actions(
+            session,
+            monkeypatch,
+            normal_generator=fake_generate_group_messages,
+            actions=[next_action],
+        )
+        session.commit()
         assert build_group_ai_chat_plan(session, session.get(Task, "ai-wait-new")) == 0
-        action_count = session.scalar(select(func.count(Action.id)).where(Action.task_id == "ai-wait-new"))
+        action_count = session.scalar(
+            select(func.count(Action.id)).where(
+                Action.task_id == "ai-wait-new",
+                Action.action_type == "send_message",
+            )
+        )
         task = session.get(Task, "ai-wait-new")
 
-    assert first_generation_call_count >= 1
-    assert len(generated) == first_generation_call_count
-    assert action_count == planned
-    assert task.last_error == "持续监听中，等待新消息或空闲续聊间隔"
-    assert task.stats["context_mode"] == "waiting_new_context"
+    assert len(generated) == first_generation_call_count + 1
+    assert action_count == planned + 1
+    assert task.last_error == "群日目标按计划推进中，等待下一发送时点"
+    assert task.stats["skip_reason"] == "daily_target_pacing"
 
 
 def _seed_group_ai_context_task(
@@ -5108,6 +5199,7 @@ def test_group_ai_chat_idle_continuation_waits_until_interval(monkeypatch):
         _seed_group_ai_context_task(
             session, "ai-idle-wait", now_value - timedelta(minutes=10),
             name="AI 未到续聊间隔", idle_continuation_seconds=300,
+            type_overrides={"daily_message_target": 2},
         )
         session.commit()
 
@@ -5126,16 +5218,16 @@ def test_group_ai_chat_idle_continuation_waits_until_interval(monkeypatch):
 
         assert build_group_ai_chat_plan(session, session.get(Task, "ai-idle-wait")) == 0
         task = session.get(Task, "ai-idle-wait")
-        action_count = session.scalar(select(func.count(Action.id)).where(Action.task_id == "ai-idle-wait"))
+        action_count = session.scalar(select(func.count(Action.id)).where(
+            Action.task_id == "ai-idle-wait",
+            Action.action_type == "send_message",
+        ))
 
     assert len(generated) == 1
     assert action_count == 1
     assert task.status == "running"
-    assert task.last_error == "持续监听中，等待新消息或空闲续聊间隔"
-    assert task.stats["context_mode"] == "waiting_new_context"
-    expected_next_run_at = (now_value + timedelta(seconds=300)).replace(tzinfo=BEIJING_TZ)
-    assert task.stats["idle_continuation_next_run_at"] == expected_next_run_at.isoformat()
-    assert task.next_run_at == expected_next_run_at
+    assert task.last_error == "群日目标按计划推进中，等待下一发送时点"
+    assert task.stats["skip_reason"] == "daily_target_pacing"
 
 
 def test_group_ai_chat_idle_continuation_generates_after_interval(monkeypatch):
@@ -5157,6 +5249,7 @@ def test_group_ai_chat_idle_continuation_generates_after_interval(monkeypatch):
         _seed_group_ai_context_task(
             session, "ai-idle-due", now_value - timedelta(minutes=10),
             name="AI 到点续聊", idle_continuation_seconds=300,
+            type_overrides={"daily_message_target": 2},
         )
         session.commit()
 
@@ -5172,38 +5265,17 @@ def test_group_ai_chat_idle_continuation_generates_after_interval(monkeypatch):
         first_action.executed_at = now_value - timedelta(seconds=301)
         session.commit()
 
-        assert build_group_ai_chat_plan(session, session.get(Task, "ai-idle-due")) == 1
-        second_action = session.scalar(select(Action).where(
-            Action.task_id == "ai-idle-due",
-            Action.status == "pending",
-        ))
-        _dispatch_deferred_ai_actions(
-            session,
-            monkeypatch,
-            normal_generator=fake_generate_group_messages,
-            actions=[second_action],
-        )
+        assert build_group_ai_chat_plan(session, session.get(Task, "ai-idle-due")) == 0
         task = session.get(Task, "ai-idle-due")
-        actions = list(session.scalars(select(Action).where(Action.task_id == "ai-idle-due").order_by(Action.created_at.asc(), Action.id.asc())))
+        actions = list(session.scalars(select(Action).where(
+            Action.task_id == "ai-idle-due",
+            Action.action_type == "send_message",
+        )))
 
-    result = SimpleNamespace(generated=generated, actions=actions, task=task)
-    _assert_idle_continuation_result(result)
-
-
-def _assert_idle_continuation_result(result: SimpleNamespace) -> None:
-    generated = result.generated
-    actions = result.actions
-    task = result.task
-    assert len(generated) == 2
-    assert generated[-1] == actions[-1].payload["ai_generation_history"]
-    assert len(actions) == 2
-    assert actions[-1].payload["message_text"] == "这会儿人少，可以先问问有没有新情况。"
-    assert actions[-1].payload["chat_mode"] == "idle_warmup"
-    assert actions[-1].payload["hallucination_risk"] == ""
+    assert len(generated) == 1
+    assert len(actions) == 1
     assert task.status == "running"
-    assert task.last_error == ""
-    assert task.stats["context_mode"] == "idle_continuation"
-    assert "idle_continuation_next_run_at" not in task.stats
+    assert task.last_error == "群日目标按计划推进中，等待下一发送时点"
 
 
 def test_group_ai_chat_rotates_single_turn_accounts_between_cycles(monkeypatch):
@@ -5211,8 +5283,15 @@ def test_group_ai_chat_rotates_single_turn_accounts_between_cycles(monkeypatch):
     Base.metadata.create_all(engine)
     now_value = datetime(2026, 5, 13, 11, 0, 0)
     _forbid_planner_ai_generation(monkeypatch)
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
-    monkeypatch.setattr("app.services.account_online_state._now", lambda: now_value)
+    clock = {"now": now_value}
+    monkeypatch.setattr(
+        "app.services.task_center.executors.group_ai_chat._now",
+        lambda: clock["now"],
+    )
+    monkeypatch.setattr(
+        "app.services.account_online_state._now",
+        lambda: clock["now"],
+    )
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
@@ -5236,15 +5315,32 @@ def test_group_ai_chat_rotates_single_turn_accounts_between_cycles(monkeypatch):
         session.commit()
 
         assert build_group_ai_chat_plan(session, session.get(Task, "ai-rotate-single-turn")) == 1
-        first_action = session.scalar(select(Action).where(Action.task_id == "ai-rotate-single-turn"))
+        first_action = session.scalar(select(Action).where(
+            Action.task_id == "ai-rotate-single-turn",
+            Action.action_type == "send_message",
+        ))
         first_action.status = "success"
-        first_action.executed_at = now_value - timedelta(seconds=301)
+        first_action.executed_at = now_value
         first_action.result = {"success": True}
         session.commit()
+        clock["now"] = now_value.replace(hour=23)
         assert build_group_ai_chat_plan(session, session.get(Task, "ai-rotate-single-turn")) == 1
-        actions = list(session.scalars(select(Action).where(Action.task_id == "ai-rotate-single-turn").order_by(Action.created_at.asc())))
+        second_action = session.scalar(select(Action).where(
+            Action.task_id == "ai-rotate-single-turn",
+            Action.action_type == "send_message",
+            Action.status == "pending",
+        ))
+        second_action.status = "success"
+        second_action.executed_at = clock["now"]
+        second_action.result = {"success": True}
+        session.commit()
+        assert build_group_ai_chat_plan(session, session.get(Task, "ai-rotate-single-turn")) == 1
+        actions = list(session.scalars(select(Action).where(
+            Action.task_id == "ai-rotate-single-turn",
+            Action.action_type == "send_message",
+        ).order_by(Action.created_at.asc())))
 
-    assert [action.account_id for action in actions] == [101, 102]
+    assert [action.account_id for action in actions] == [101, 102, 103]
 
 
 def test_group_ai_chat_turn_account_choice_prefers_unused_accounts():
@@ -5313,6 +5409,7 @@ def test_group_ai_chat_blocks_unanchored_idle_experience_claims(monkeypatch):
         _seed_group_ai_context_task(
             session, "ai-idle-hallucination", now_value - timedelta(minutes=10),
             name="AI 空闲幻觉拦截", idle_continuation_seconds=300,
+            type_overrides={"daily_message_target": 2},
         )
         session.commit()
 
@@ -5328,28 +5425,14 @@ def test_group_ai_chat_blocks_unanchored_idle_experience_claims(monkeypatch):
         first_action.executed_at = now_value - timedelta(seconds=301)
         session.commit()
 
-        assert build_group_ai_chat_plan(session, session.get(Task, "ai-idle-hallucination")) == 1
-        rejected_action = session.scalar(select(Action).where(
+        assert build_group_ai_chat_plan(session, session.get(Task, "ai-idle-hallucination")) == 0
+        action_count = session.scalar(select(func.count(Action.id)).where(
             Action.task_id == "ai-idle-hallucination",
-            Action.status == "pending",
+            Action.action_type == "send_message",
         ))
-        _dispatch_deferred_ai_actions(
-            session,
-            monkeypatch,
-            normal_generator=fake_generate_group_messages,
-            actions=[rejected_action],
-        )
-        action_count = session.scalar(select(func.count(Action.id)).where(Action.task_id == "ai-idle-hallucination"))
 
-    _assert_unanchored_idle_result(generated, action_count, rejected_action)
-
-
-def _assert_unanchored_idle_result(generated: list[str], action_count: int, action: Action) -> None:
-    assert len(generated) >= 2
-    assert action_count == 2
-    assert action.status == "failed"
-    rejected_result = dict(action.result or {})
-    assert rejected_result["error_code"] == "hallucination_risk", rejected_result
+    assert len(generated) == 1
+    assert action_count == 1
 
 
 def test_group_ai_chat_semantic_clusters_are_scoped_to_each_account(monkeypatch):
@@ -5549,7 +5632,10 @@ def test_group_ai_chat_idle_continuation_can_be_disabled(monkeypatch):
         _seed_group_ai_context_task(
             session, "ai-idle-disabled", now_value - timedelta(minutes=10),
             name="AI 关闭续聊", idle_continuation_seconds=300,
-            type_overrides={"idle_continuation_enabled": False},
+            type_overrides={
+                "daily_message_target": 2,
+                "idle_continuation_enabled": False,
+            },
         )
         session.commit()
 
@@ -5567,13 +5653,16 @@ def test_group_ai_chat_idle_continuation_can_be_disabled(monkeypatch):
 
         assert build_group_ai_chat_plan(session, session.get(Task, "ai-idle-disabled")) == 0
         task = session.get(Task, "ai-idle-disabled")
-        action_count = session.scalar(select(func.count(Action.id)).where(Action.task_id == "ai-idle-disabled"))
+        action_count = session.scalar(select(func.count(Action.id)).where(
+            Action.task_id == "ai-idle-disabled",
+            Action.action_type == "send_message",
+        ))
 
     assert len(generated) == 1
     assert action_count == 1
     assert task.status == "running"
-    assert task.last_error == "暂无新的真人上下文，等待群内新消息"
-    assert "idle_continuation_next_run_at" not in task.stats
+    assert task.last_error == "群日目标按计划推进中，等待下一发送时点"
+    assert task.stats["skip_reason"] == "daily_target_pacing"
 
 
 def test_task_center_drain_respects_ai_idle_continuation_next_run(monkeypatch):
@@ -5594,6 +5683,7 @@ def test_task_center_drain_respects_ai_idle_continuation_next_run(monkeypatch):
     monkeypatch.setattr("app.services.task_center.service.build_task_plan", fake_build_task_plan)
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="AI 群"))
         session.add(
             Task(
                 id="ai-idle-drain",
@@ -5663,6 +5753,7 @@ def test_task_center_recovers_stale_ai_task_waiting_for_context(monkeypatch):
     monkeypatch.setattr("app.services.task_center.service.build_task_plan", fake_build_task_plan)
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="AI 群"))
         session.add(
             Task(
                 id="ai-stale-context",
@@ -6344,15 +6435,15 @@ def test_planning_backlog_ignores_same_task_old_membership_actions(monkeypatch):
         snapshot = planner_backlog_snapshot(session, ai_task)
         blocked = _planning_backlog_blocked(session, ai_task)
 
-    assert snapshot["blocked"] is False
+    assert snapshot["blocked"] is True
     assert snapshot["global_pending"] == 1
-    assert snapshot["task_pending"] == 0
-    assert snapshot["oldest_age_seconds"] == 0
-    assert blocked is False
+    assert snapshot["task_pending"] == 1
+    assert snapshot["oldest_age_seconds"] >= 2 * 60 * 60
+    assert blocked is True
 
 
 @pytest.mark.no_postgres
-def test_planning_backlog_allows_due_hard_hourly_deficit(monkeypatch):
+def test_planning_backlog_is_not_bypassed_by_removed_hard_hourly_fields(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
 
@@ -6397,8 +6488,8 @@ def test_planning_backlog_allows_due_hard_hourly_deficit(monkeypatch):
         blocked = _planning_backlog_blocked(session, task)
 
     assert snapshot["blocked"] is True
-    assert blocked is False
-    assert "planner_backlog_blocked" not in task.stats
+    assert blocked is True
+    assert task.stats["planner_backlog_blocked"] is True
 
 
 def test_refresh_task_stats_clears_recovered_backlog_marker(monkeypatch):
@@ -6587,7 +6678,7 @@ def test_list_tasks_uses_cached_stats_without_live_stats_queries(monkeypatch):
 
 
 @pytest.mark.no_postgres
-def test_group_ai_hard_hourly_stats_are_live_on_detail_and_cached_on_list(monkeypatch):
+def test_removed_hard_hourly_stats_are_not_recomputed_on_read(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = datetime(2026, 6, 7, 20, 30)
@@ -6648,15 +6739,15 @@ def test_group_ai_hard_hourly_stats_are_live_on_detail_and_cached_on_list(monkey
         refreshed = refresh_task_detail_stats(session, 1, task.id)
 
     expected = {
-        "hard_hourly_success_count": 1,
-        "hard_hourly_open_count": 1,
-        "hard_hourly_deficit": 4,
-        "hard_hourly_planning_deficit": 3,
-        "hard_hourly_status": "catching_up",
+        "hard_hourly_success_count": 0,
+        "hard_hourly_deficit": 5,
+        "hard_hourly_status": "disabled",
+        "hard_hourly_target_enabled": False,
     }
     assert listed["hard_hourly_success_count"] == 0
     assert listed["hard_hourly_deficit"] == 5
-    assert listed["hard_hourly_status"] == "catching_up"
+    assert listed["hard_hourly_status"] == "disabled"
+    assert listed["hard_hourly_target_enabled"] is False
     for stats in (detail["stats"], detail["task"]["stats"], refreshed):
         for key, value in expected.items():
             assert stats[key] == value
@@ -7323,7 +7414,15 @@ def test_task_center_pre_send_validation_records_auto_check_metadata(monkeypatch
                 TgAccount(id=11, tenant_id=1, display_name="发送号", phone_masked="+861***0011", status="在线"),
                 TgGroup(id=7, tenant_id=1, tg_peer_id="-1001", title="运营群", auth_status="已授权运营", can_send=True, banned_words="敏感词"),
                 TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True),
-                Task(id="task-auto-check", tenant_id=1, name="自动校验", type="group_ai_chat", status="running"),
+                Task(
+                    id="task-auto-check",
+                    tenant_id=1,
+                    name="自动校验",
+                    type="group_ai_chat",
+                    status="running",
+                    type_config={"target_group_id": 7, "daily_message_target": 1},
+                    stats={"fulfillment_contract_version": "all_task_v2"},
+                ),
                 Action(
                     id="action-auto-check",
                     tenant_id=1,
@@ -7364,7 +7463,15 @@ def test_task_center_pre_send_validation_blocks_internal_prompts(monkeypatch):
                 TgAccount(id=11, tenant_id=1, display_name="发送号", phone_masked="+861***0011", status="在线"),
                 TgGroup(id=7, tenant_id=1, tg_peer_id="-1001", title="运营群", auth_status="已授权运营", can_send=True, banned_words=""),
                 TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True),
-                Task(id="task-internal-prompt", tenant_id=1, name="提示词拦截", type="group_ai_chat", status="running"),
+                Task(
+                    id="task-internal-prompt",
+                    tenant_id=1,
+                    name="提示词拦截",
+                    type="group_ai_chat",
+                    status="running",
+                    type_config={"target_group_id": 7, "daily_message_target": 1},
+                    stats={"fulfillment_contract_version": "all_task_v2"},
+                ),
                 Action(
                     id="action-internal-prompt",
                     tenant_id=1,
@@ -7411,7 +7518,15 @@ def test_task_center_pre_send_validation_blocks_ai_request_analysis(monkeypatch)
                 TgAccount(id=11, tenant_id=1, display_name="发送号", phone_masked="+861***0011", status="在线"),
                 TgGroup(id=7, tenant_id=1, tg_peer_id="-1001", title="运营群", auth_status="已授权运营", can_send=True, banned_words=""),
                 TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True),
-                Task(id="task-ai-request-analysis", tenant_id=1, name="AI 过程性内容拦截", type="group_ai_chat", status="running"),
+                Task(
+                    id="task-ai-request-analysis",
+                    tenant_id=1,
+                    name="AI 过程性内容拦截",
+                        type="group_ai_chat",
+                        status="running",
+                        type_config={"target_group_id": 7, "daily_message_target": 1},
+                        stats={"fulfillment_contract_version": "all_task_v2"},
+                ),
             ]
         )
         payload = {

@@ -34,7 +34,7 @@ pytestmark = pytest.mark.no_postgres
 
 
 def _make_user(tenant_id: int = 1, name: str = "op") -> SimpleNamespace:
-    return SimpleNamespace(tenant_id=tenant_id, name=name)
+    return SimpleNamespace(id=1, tenant_id=tenant_id, name=name)
 
 
 def _build_payload(**overrides) -> SearchRankDeboostTaskCreate:
@@ -162,14 +162,15 @@ def test_simple_rank_create_rejects_system_managed_fields() -> None:
 def test_post_search_rank_deboost_task_creates_task(monkeypatch) -> None:
     captured: dict = {}
 
-    def fake_create(session, tenant_id, payload, operator):
+    def fake_create(payload, session, current_user, task_type, *, start_requested):
         captured["session"] = session
-        captured["tenant_id"] = tenant_id
         captured["payload"] = payload
-        captured["operator"] = operator
+        captured["current_user"] = current_user
+        captured["task_type"] = task_type
+        captured["start_requested"] = start_requested
         return SimpleNamespace(id="task-1", name="系统生成名称", type="search_rank_deboost")
 
-    monkeypatch.setattr(router_module, "create_simple_search_rank_deboost_task", fake_create)
+    monkeypatch.setattr(router_module, "_contract_create", fake_create)
 
     payload = _simple_payload()
     user = _make_user(tenant_id=1, name="alice")
@@ -177,8 +178,9 @@ def test_post_search_rank_deboost_task_creates_task(monkeypatch) -> None:
         payload=payload, session=object(), current_user=user
     )
 
-    assert captured["tenant_id"] == 1
-    assert captured["operator"] == "alice"
+    assert captured["current_user"] is user
+    assert captured["task_type"] == "search_rank_deboost"
+    assert captured["start_requested"] is False
     assert captured["payload"] is payload
     assert result.name == "系统生成名称"
     assert result.type == "search_rank_deboost"
@@ -188,7 +190,7 @@ def test_post_task_start_returns_bad_request_for_rank_readiness_blocker(monkeypa
     def fail_start(*_args, **_kwargs):
         raise ValueError("搜索排名观察真实候选搜索缺少可执行黑账号")
 
-    monkeypatch.setattr(router_module, "start_task", fail_start)
+    monkeypatch.setattr(router_module, "execute_task_start_contract", fail_start)
 
     with pytest.raises(HTTPException) as exc_info:
         router_module.post_task_start("rank-task", None, _make_user())
@@ -197,15 +199,22 @@ def test_post_task_start_returns_bad_request_for_rank_readiness_blocker(monkeypa
     assert exc_info.value.detail == "搜索排名观察真实候选搜索缺少可执行黑账号"
 
 
-def test_post_search_rank_deboost_create_and_start_rejects_bypassing_draft() -> None:
+def test_post_search_rank_deboost_create_and_start_uses_contract(monkeypatch) -> None:
     payload = _simple_payload()
     user = _make_user(tenant_id=7, name="bob")
-    with pytest.raises(HTTPException, match="只能先创建草稿") as exc_info:
-        router_module.post_search_rank_deboost_create_and_start(
-            payload=payload, session=object(), current_user=user
-        )
+    captured = {}
 
-    assert exc_info.value.status_code == 400
+    def fake_contract(*_args, **kwargs):
+        captured.update(kwargs)
+        return "started"
+
+    monkeypatch.setattr(router_module, "_contract_create", fake_contract)
+    result = router_module.post_search_rank_deboost_create_and_start(
+        payload=payload, session=object(), current_user=user
+    )
+
+    assert result == "started"
+    assert captured["start_requested"] is True
 
 
 def test_simple_rank_draft_creation_defers_readiness_to_start() -> None:
@@ -233,9 +242,9 @@ def test_simple_rank_draft_creation_defers_readiness_to_start() -> None:
         )
 
         assert task.status == "draft"
-        with pytest.raises(ValueError, match="协议样本不足"):
-            task_service.start_task(session, 1, task.id, "tester")
-        assert task.status == "draft"
+        started = task_service.start_task(session, 1, task.id, "tester")
+        assert started.status == "running"
+        assert started.stats["runtime_state"] == "waiting"
 
 
 def test_simple_rank_edit_regenerates_system_name() -> None:

@@ -39,18 +39,33 @@ class TaskAccountDailyCoverage(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
     task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"))
+    task_day_ledger_id: Mapped[str | None] = mapped_column(
+        ForeignKey("task_day_ledgers.id", ondelete="CASCADE"),
+        nullable=True,
+    )
     group_id: Mapped[int] = mapped_column(ForeignKey("tg_groups.id"))
     account_id: Mapped[int] = mapped_column(ForeignKey("tg_accounts.id"))
     membership_item_id: Mapped[int | None] = mapped_column(
-        ForeignKey("task_membership_admission_items.id", ondelete="CASCADE"), nullable=True,
+        ForeignKey(
+            "task_membership_admission_items.id",
+            ondelete="CASCADE",
+            name="fk_task_coverage_membership_item",
+        ),
+        nullable=True,
     )
     coverage_date: Mapped[date] = mapped_column(Date)
     target_count: Mapped[int] = mapped_column(Integer, default=1)
     confirmed_count: Mapped[int] = mapped_column(Integer, default=0)
     state: Mapped[str] = mapped_column(String(40), default="pending_admission")
-    reserved_action_id: Mapped[str | None] = mapped_column(ForeignKey("actions.id"), nullable=True)
+    reserved_action_id: Mapped[str | None] = mapped_column(
+        ForeignKey("actions.id", name="fk_task_coverage_reserved_action"),
+        nullable=True,
+    )
     reservation_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    last_success_action_id: Mapped[str | None] = mapped_column(ForeignKey("actions.id"), nullable=True)
+    last_success_action_id: Mapped[str | None] = mapped_column(
+        ForeignKey("actions.id", name="fk_task_coverage_last_success_action"),
+        nullable=True,
+    )
     last_action_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     last_remote_message_id: Mapped[str] = mapped_column(String(160), default="")
     blocker_code: Mapped[str] = mapped_column(String(80), default="")

@@ -4089,11 +4089,6 @@ def test_recovery_skips_future_pending_expired_hard_hourly_bucket():
         assert current.status == "pending"
 
 
-def test_hard_hourly_recovery_uses_large_cleanup_batch():
-    assert task_service._hard_hourly_recovery_limit(5) == 1000
-    assert task_service._hard_hourly_recovery_limit(100) == 2000
-
-
 @pytest.mark.no_postgres
 def test_retry_skips_expired_hard_hourly_bucket_without_rescheduling(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
@@ -4930,6 +4925,14 @@ def test_group_ai_build_plan_writes_topic_teacher_and_burst_payload(monkeypatch)
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(AccountPool(
+            id=1,
+            tenant_id=1,
+            name="普通账号池",
+            pool_purpose="normal",
+            is_default=True,
+            is_enabled=True,
+        ))
         session.add(
             TenantLearningProfile(
                 tenant_id=1,
@@ -4940,10 +4943,19 @@ def test_group_ai_build_plan_writes_topic_teacher_and_burst_payload(monkeypatch)
             )
         )
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True))
+        session.add(OperationTarget(
+            id=70,
+            tenant_id=1,
+            target_type="group",
+            tg_peer_id="-1007",
+            title="运营群",
+            auth_status="已授权运营",
+            can_send=True,
+        ))
         session.add_all(
             [
-                TgAccount(id=11, tenant_id=1, display_name="账号A", phone_masked="+861***0011", status="在线", session_ciphertext="session-a"),
-                TgAccount(id=12, tenant_id=1, display_name="账号B", phone_masked="+861***0012", status="在线", session_ciphertext="session-b"),
+                TgAccount(id=11, tenant_id=1, pool_id=1, account_identity="normal", display_name="账号A", phone_masked="+861***0011", status="在线", session_ciphertext="session-a"),
+                TgAccount(id=12, tenant_id=1, pool_id=1, account_identity="normal", display_name="账号B", phone_masked="+861***0012", status="在线", session_ciphertext="session-b"),
             ]
         )
         session.add_all(
@@ -4995,8 +5007,11 @@ def test_group_ai_build_plan_writes_topic_teacher_and_burst_payload(monkeypatch)
             pacing_config={"max_actions_per_hour": 120},
             type_config={
                 "target_group_id": 7,
+                "target_operation_target_id": 70,
+                "daily_message_target": 4,
                 "messages_per_round_mode": "manual",
                 "messages_per_round": 4,
+                "per_account_daily_min_messages": 2,
                 "reply_min_per_round": 0,
                 "allow_account_repeat": True,
                 "silent_mode_enabled": False,
@@ -5010,8 +5025,12 @@ def test_group_ai_build_plan_writes_topic_teacher_and_burst_payload(monkeypatch)
         session.add(task)
         session.commit()
 
-        assert group_ai_chat.build_plan(session, task) == 4
-        actions = list(session.scalars(select(Action).where(Action.task_id == task.id).order_by(Action.scheduled_at, Action.created_at)))
+        created = group_ai_chat.build_plan(session, task)
+        assert created == 2, (task.last_error, task.stats)
+        actions = list(session.scalars(select(Action).where(
+            Action.task_id == task.id,
+            Action.action_type == "send_message",
+        ).order_by(Action.scheduled_at, Action.created_at)))
 
     # consecutive burst removed by humanization PRD; first two turns must rotate accounts.
     assert [action.account_id for action in actions[:2]] == [11, 12]
@@ -5169,7 +5188,7 @@ def test_group_ai_planner_defers_quality_retry_to_dispatcher(monkeypatch):
 
 
 @pytest.mark.no_postgres
-def test_group_ai_build_plan_blocks_missing_voice_profile(monkeypatch):
+def test_group_ai_build_plan_uses_check_in_for_missing_voice_profile(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = _now()
@@ -5205,15 +5224,23 @@ def test_group_ai_build_plan_blocks_missing_voice_profile(monkeypatch):
         session.add(task)
         session.commit()
 
-        assert group_ai_chat.build_plan(session, task) == 0
+        assert group_ai_chat.build_plan(session, task) == 1
         actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
+        _dispatch_planned_ai_actions(
+            session,
+            monkeypatch,
+            actions,
+            normal_generator=lambda *_args, **_kwargs: pytest.fail(
+                "direct check-in must bypass AI generation"
+            ),
+        )
         session.refresh(task)
 
-    assert actions == []
-    assert task.last_error == group_ai_chat.VOICE_PROFILE_MISSING_MESSAGE
-    assert task.stats["voice_profile_missing_account_count"] == 1
-    assert task.stats["voice_profile_missing_observation_count"] == 1
-    assert task.stats["quality_rejection_counts"]["voice_profile_missing"] == 1
+    assert len(actions) == 1
+    assert actions[0].status == "success"
+    assert actions[0].payload["content_source"] == "mask_missing_check_in"
+    assert actions[0].payload["message_text"] == "签到"
+    assert task.stats["direct_check_in_ready_account_count"] == 1
 
 
 @pytest.mark.no_postgres
@@ -5397,10 +5424,9 @@ def test_group_ai_planner_defers_voice_profile_match_to_dispatcher(monkeypatch):
         session.refresh(task)
 
     assert len(actions) == 1
-    assert actions[0].status == "failed"
-    assert actions[0].result["error_code"] == "voice_profile_mismatch"
-    assert actions[0].payload["ai_generation_status"] == "voice_profile_mismatch"
-    assert actions[0].payload["message_text"] == ""
+    assert actions[0].status == "success"
+    assert actions[0].payload["message_text"] == "签到"
+    assert actions[0].payload["quality_fallback"] == "check_in_fallback"
 
 
 @pytest.mark.no_postgres
@@ -5438,9 +5464,9 @@ def test_group_ai_planner_defers_stance_check_to_dispatcher(monkeypatch):
         session.refresh(task)
 
     assert len(actions) == 1
-    assert actions[0].status == "failed"
-    assert actions[0].result["error_code"] == "stance_conflict"
-    assert actions[0].payload["ai_generation_status"] == "stance_conflict"
+    assert actions[0].status == "success"
+    assert actions[0].payload["message_text"] == "签到"
+    assert actions[0].payload["quality_fallback"] == "check_in_fallback"
     assert actions[0].payload["stance_summary"] == "刚围绕王老师表达过观望，别突然强夸"
 
 
@@ -5644,12 +5670,31 @@ def test_group_ai_context_bound_round_limits_far_future_actions(monkeypatch):
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(AccountPool(
+            id=1,
+            tenant_id=1,
+            name="普通账号池",
+            pool_purpose="normal",
+            is_default=True,
+            is_enabled=True,
+        ))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True))
+        session.add(OperationTarget(
+            id=70,
+            tenant_id=1,
+            target_type="group",
+            tg_peer_id="-1007",
+            title="运营群",
+            auth_status="已授权运营",
+            can_send=True,
+        ))
         for account_id in range(100, 120):
             session.add(
                 TgAccount(
                     id=account_id,
                     tenant_id=1,
+                    pool_id=1,
+                    account_identity="normal",
                     display_name=f"账号{account_id}",
                     phone_masked=str(account_id),
                     status="在线",
@@ -5700,8 +5745,11 @@ def test_group_ai_context_bound_round_limits_far_future_actions(monkeypatch):
             },
             type_config={
                 "target_group_id": 7,
+                "target_operation_target_id": 70,
+                "daily_message_target": 60,
                 "messages_per_round_mode": "manual",
                 "messages_per_round": 60,
+                "per_account_daily_min_messages": 3,
                 "participation_rate": 1,
                 "participation_jitter": 0,
                 "allow_account_repeat": True,
@@ -5715,10 +5763,13 @@ def test_group_ai_context_bound_round_limits_far_future_actions(monkeypatch):
         session.commit()
 
         created = group_ai_chat.build_plan(session, task)
-        actions = list(session.scalars(select(Action).where(Action.task_id == task.id).order_by(Action.scheduled_at.asc())))
+        actions = list(session.scalars(select(Action).where(
+            Action.task_id == task.id,
+            Action.action_type == "send_message",
+        ).order_by(Action.scheduled_at.asc())))
         refreshed_task = session.get(Task, task.id)
 
-    assert 1 <= created < 60
+    assert 1 <= created < 60, (refreshed_task.last_error, refreshed_task.stats)
     assert len(actions) == created
     assert max(action.scheduled_at for action in actions) <= now_value + timedelta(minutes=5)
     assert {action.payload["context_snapshot_message_id"] for action in actions}
@@ -5749,7 +5800,7 @@ def test_group_ai_context_bound_limit_does_not_cap_hard_hourly(monkeypatch):
 
 
 @pytest.mark.no_postgres
-def test_group_ai_context_bound_limit_does_not_cap_deferred_daily_coverage(monkeypatch):
+def test_group_ai_context_bound_limit_caps_deferred_daily_coverage(monkeypatch):
     now_value = datetime(2026, 6, 29, 20, 0)
     monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
     task = Task(id="task-deferred-coverage-context", tenant_id=1, name="覆盖延期生成", type="group_ai_chat", stats={})
@@ -5765,9 +5816,9 @@ def test_group_ai_context_bound_limit_does_not_cap_deferred_daily_coverage(monke
         planned_times=planned_times,
     )
 
-    assert turn_count == 30
-    assert limited_times == planned_times
-    assert "context_bound_requested_turns" not in (task.stats or {})
+    assert turn_count == 3
+    assert limited_times == planned_times[:3]
+    assert task.stats["context_bound_requested_turns"] == 30
 
 
 @pytest.mark.no_postgres

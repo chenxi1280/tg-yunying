@@ -13,7 +13,7 @@ from .api import ApiModel
 from .operation_plans import OperationPlanTaskLinkOut
 from .runtime_summary import TaskRuntimeSummaryOut
 
-TaskTypeValue = Literal["group_ai_chat", "group_relay", "group_membership_admission", "channel_view", "channel_like", "channel_comment", "search_join_group"]
+TaskTypeValue = Literal["group_ai_chat", "group_relay", "group_membership_admission", "channel_view", "channel_like", "channel_comment", "search_click", "search_join_group"]
 TaskStatusValue = Literal["draft", "pending", "running", "paused", "target_reached", "wrapping_up", "completed", "stopped", "failed", "deleted"]
 ActionStatusValue = Literal["pending", "executing", "success", "failed", "skipped"]
 ReviewStatusValue = Literal["pending", "approved", "rejected", "expired"]
@@ -159,6 +159,11 @@ class SearchJoinPacingConfig(PacingConfig):
         return next_data
 
 
+class SearchClickPacingConfig(PacingConfig):
+    daily_jitter_percent: int = Field(default=30, ge=0, le=100)
+    hourly_jitter_percent: int = Field(default=30, ge=0, le=100)
+
+
 class SearchRankDeboostPacingConfig(PacingConfig):
     max_actions_per_day: int | None = Field(default=None, ge=1)
     hourly_jitter_percent: int = Field(default=0, ge=0, le=100)
@@ -285,13 +290,11 @@ class GroupAIChatConfig(BaseModel):
     messages_per_round: int = Field(default=1, ge=1)
     reply_min_per_round: int = Field(default=1, ge=0)
     daily_message_target: int = Field(default=1, ge=1, le=100_000)
+    hard_hourly_target_enabled: bool | None = Field(default=None, exclude=True)
+    hourly_min_messages: int | None = Field(default=None, ge=1, exclude=True)
+    hard_hourly_strategy: str | None = Field(default=None, exclude=True)
     account_coverage_mode: Literal["all_accounts_daily"] = "all_accounts_daily"
     coverage_window_hours: Literal[24] = 24
-    per_account_daily_min_messages: int | None = Field(default=None, exclude=True)
-    per_account_daily_max_messages: int | None = Field(default=None, exclude=True)
-    hard_hourly_target_enabled: bool | None = Field(default=None, exclude=True)
-    hourly_min_messages: int | None = Field(default=None, exclude=True)
-    hard_hourly_strategy: str | None = Field(default=None, exclude=True)
     history_fetch_account_id: int | None = None
     auto_join_target: bool = True
     group_bot_admission_required: bool = True
@@ -408,8 +411,8 @@ class ChannelViewConfig(ChannelMessageScopeConfig):
     per_message_daily_view_target: int | None = Field(default=None, ge=1, le=10000)
     per_message_total_view_target: int | None = Field(default=None, ge=1, le=100000)
     message_active_days: int = Field(default=3, ge=1, le=365)
-    task_daily_view_safety_cap: int | None = Field(default=None, ge=1, le=100000)
-    max_views_per_account_per_day: int | None = Field(default=None, ge=1, le=10000)
+    task_daily_view_safety_cap: int | None = Field(default=1_000_000, ge=1, le=1_000_000)
+    max_views_per_account_per_day: int | None = Field(default=1_000_000, ge=1, le=1_000_000)
     target_views_per_message: int | None = Field(default=None, ge=1, le=10000)
     view_count_jitter: float = Field(default=CHANNEL_COUNT_JITTER_DEFAULT, ge=0, le=1)
     execution_mode: Literal["distribute", "burst"] = "distribute"
@@ -444,15 +447,15 @@ class ChannelLikeConfig(ChannelMessageScopeConfig):
     like_count_jitter: float = Field(default=CHANNEL_COUNT_JITTER_DEFAULT, ge=0, le=1)
     reaction_type: Literal["random", "specific"] = "random"
     allowed_reactions: list[str] = Field(default_factory=lambda: ["👍"])
-    max_likes_per_account_per_hour: int = Field(default=10, ge=1, le=1000)
+    max_likes_per_account_per_hour: int = Field(default=1_000_000, ge=1, le=1_000_000)
 
 
 class ChannelCommentConfig(ChannelMessageScopeConfig):
     message_scope: Literal["all", "latest_n", "date_range", "specific", "dynamic_new"] = "dynamic_new"
     target_comments_per_message: int = Field(default=10, ge=1, le=1000)
     comment_count_jitter: float = Field(default=0.3, ge=0, le=1)
-    max_total_comments: int = Field(default=80, ge=1, le=100000)
-    max_total_comments_jitter: float = Field(default=0.2, ge=0, le=MAX_TOTAL_COMMENT_JITTER)
+    max_total_comments: int = Field(default=1_000_000, ge=1, le=1_000_000)
+    max_total_comments_jitter: float = Field(default=0, ge=0, le=MAX_TOTAL_COMMENT_JITTER)
     comment_mode: Literal["comment", "reply", "mixed"] = "mixed"
     reply_to_message_ids: list[int] = Field(default_factory=list)
     reply_min_per_message: int = Field(default=1, ge=0)
@@ -464,7 +467,7 @@ class ChannelCommentConfig(ChannelMessageScopeConfig):
     system_prompt_override: str | None = None
     language: str = "zh-CN"
     max_comment_length: int | None = Field(default=None, ge=1)
-    max_comments_per_account_per_hour: int = Field(default=3, ge=1, le=500)
+    max_comments_per_account_per_hour: int = Field(default=1_000_000, ge=1, le=1_000_000)
     require_review: bool = False
 
     @model_validator(mode="after")
@@ -612,6 +615,34 @@ class SearchJoinGroupConfig(BaseModel):
         return self
 
 
+class SearchClickConfig(BaseModel):
+    """Pure search-click contract; membership fields are intentionally absent."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    search_execution_mode: Literal["click_only"] = "click_only"
+    target_operation_target_id: int = Field(gt=0)
+    target_input: str = Field(min_length=1, max_length=300)
+    target_title: str = Field(min_length=1, max_length=180)
+    target_link: str = Field(min_length=1, max_length=300)
+    daily_click_target_count: int = Field(ge=1)
+    search_bots: list[SearchJoinBotConfig] = Field(min_length=1)
+    keyword_hashes: list[str] = Field(min_length=1)
+    keyword_text_ciphertexts: list[str] = Field(min_length=1)
+    execution_mode: Literal["mtproto_userbot"] = "mtproto_userbot"
+    max_pages: int = Field(default=MAX_SEARCH_JOIN_PAGES, ge=1, le=MAX_SEARCH_JOIN_PAGES)
+
+    @model_validator(mode="after")
+    def validate_keyword_materials(self) -> "SearchClickConfig":
+        _existing_keyword_materials(
+            self.keyword_hashes,
+            self.keyword_text_ciphertexts,
+        )
+        if any(not KEYWORD_HASH_RE.fullmatch(item) for item in self.keyword_hashes):
+            raise ValueError("keyword_hashes 必须是 64 位小写 hex")
+        return self
+
+
 def _keyword_materials(
     keywords: list[str],
     existing_hashes: list[str],
@@ -640,6 +671,7 @@ def _existing_keyword_materials(
 class TaskCreateCommon(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    client_request_id: str | None = Field(default=None, min_length=8, max_length=120)
     name: str = Field(min_length=1, max_length=200)
     priority: int = Field(default=3, ge=1, le=5)
     timezone: str = "Asia/Shanghai"
@@ -662,6 +694,7 @@ class SearchClickSimpleTaskCreate(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    client_request_id: str | None = Field(default=None, min_length=8, max_length=120)
     target_title: str = Field(min_length=1, max_length=180)
     target_link: str = Field(min_length=1, max_length=300)
     keywords: list[str] = Field(min_length=1)
@@ -713,6 +746,34 @@ class SearchJoinGroupSimpleTaskCreate(SearchClickSimpleTaskCreate):
         return self
 
 
+class SearchClickTaskCreate(BaseModel):
+    """Dedicated operator input for a pure search-click task."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    client_request_id: str | None = Field(default=None, min_length=8, max_length=120)
+    search_execution_mode: Literal["click_only"] = "click_only"
+    target_title: str = Field(min_length=1, max_length=180)
+    target_link: str = Field(min_length=1, max_length=300)
+    keywords: list[str] = Field(min_length=1)
+    daily_click_target_count: int = Field(ge=1)
+    account_group_id: int = Field(gt=0)
+    scheduled_end: datetime
+    daily_jitter_percent: int = Field(default=20, ge=0, le=100)
+    hourly_jitter_percent: int = Field(default=30, ge=0, le=100)
+    quiet_hours: QuietHours | None = None
+
+    @field_validator("target_title", "target_link")
+    @classmethod
+    def normalize_target_text(cls, value: str) -> str:
+        return SearchClickSimpleTaskCreate.normalize_target_text(value)
+
+    @field_validator("keywords")
+    @classmethod
+    def normalize_keywords(cls, values: list[str]) -> list[str]:
+        return SearchClickSimpleTaskCreate.normalize_keywords(values)
+
+
 class SearchRankDeboostSimpleTaskCreate(SearchClickSimpleTaskCreate):
     target_count: int = Field(ge=1)
 
@@ -752,6 +813,32 @@ class SearchJoinGroupTaskCreate(TaskCreateCommon, SearchJoinGroupConfig):
         max_actions_per_day = self.pacing_config.max_actions_per_day
         if max_actions_per_day is None or max_actions_per_day < source_target:
             raise ValueError("max_actions_per_day 不能小于每日点击目标")
+        return self
+
+
+class SearchClickInternalTaskCreate(TaskCreateCommon, SearchClickConfig):
+    pacing_config: SearchClickPacingConfig = Field(
+        default_factory=SearchClickPacingConfig
+    )
+
+
+class SearchClickTaskConfigUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target_title: str | None = Field(default=None, min_length=1, max_length=180)
+    target_link: str | None = Field(default=None, min_length=1, max_length=300)
+    keywords: list[str] | None = Field(default=None, min_length=1, max_length=50)
+    daily_click_target_count: int | None = Field(default=None, ge=1)
+    account_group_id: int | None = Field(default=None, gt=0)
+    scheduled_end: datetime | None = None
+    daily_jitter_percent: int | None = Field(default=None, ge=0, le=100)
+    hourly_jitter_percent: int | None = Field(default=None, ge=0, le=100)
+    quiet_hours: QuietHours | None = None
+
+    @model_validator(mode="after")
+    def validate_target_pair(self) -> "SearchClickTaskConfigUpdate":
+        if (self.target_title is None) != (self.target_link is None):
+            raise ValueError("target_title 与 target_link 必须同时修改")
         return self
 
 
@@ -1017,13 +1104,8 @@ class TaskSettingsUpdate(TaskUpdate):
     messages_per_round_mode: Literal["auto", "manual"] | None = None
     messages_per_round: int | None = Field(default=None, ge=1)
     reply_min_per_round: int | None = Field(default=None, ge=0)
-    account_coverage_mode: Literal["natural", "all_accounts_daily"] | None = None
-    per_account_daily_min_messages: int | None = Field(default=None, ge=1, le=2)
-    per_account_daily_max_messages: int | None = Field(default=None, ge=1, le=2)
+    account_coverage_mode: Literal["all_accounts_daily"] | None = None
     coverage_window_hours: Literal[24] | None = None
-    hard_hourly_target_enabled: bool | None = None
-    hourly_min_messages: int | None = Field(default=None, ge=1)
-    hard_hourly_strategy: Literal["force_planning"] | None = None
     history_fetch_account_id: int | None = None
     auto_join_target: bool | None = None
     group_bot_admission_required: bool | None = None
@@ -1068,8 +1150,8 @@ class TaskSettingsUpdate(TaskUpdate):
     per_message_daily_view_target: int | None = Field(default=None, ge=1, le=10000)
     per_message_total_view_target: int | None = Field(default=None, ge=1, le=100000)
     message_active_days: int | None = Field(default=None, ge=1, le=365)
-    task_daily_view_safety_cap: int | None = Field(default=None, ge=1, le=100000)
-    max_views_per_account_per_day: int | None = Field(default=None, ge=1, le=10000)
+    task_daily_view_safety_cap: int | None = Field(default=1_000_000, ge=1, le=1_000_000)
+    max_views_per_account_per_day: int | None = Field(default=1_000_000, ge=1, le=1_000_000)
     view_count_jitter: float | None = Field(default=None, ge=0, le=1)
     execution_mode: Literal["distribute", "burst"] | None = None
 
@@ -1077,11 +1159,11 @@ class TaskSettingsUpdate(TaskUpdate):
     like_count_jitter: float | None = Field(default=None, ge=0, le=1)
     reaction_type: Literal["random", "specific"] | None = None
     allowed_reactions: list[str] | None = None
-    max_likes_per_account_per_hour: int | None = Field(default=None, ge=1, le=1000)
+    max_likes_per_account_per_hour: int | None = Field(default=1_000_000, ge=1, le=1_000_000)
 
     target_comments_per_message: int | None = Field(default=None, ge=1, le=1000)
     comment_count_jitter: float | None = Field(default=None, ge=0, le=1)
-    max_total_comments: int | None = Field(default=None, ge=1, le=100000)
+    max_total_comments: int | None = Field(default=1_000_000, ge=1, le=1_000_000)
     max_total_comments_jitter: float | None = Field(default=None, ge=0, le=MAX_TOTAL_COMMENT_JITTER)
     comment_mode: Literal["comment", "reply", "mixed"] | None = None
     reply_to_message_ids: list[int] | None = None
@@ -1094,19 +1176,7 @@ class TaskSettingsUpdate(TaskUpdate):
     system_prompt_override: str | None = None
     language: str | None = None
     max_comment_length: int | None = Field(default=None, ge=1)
-    max_comments_per_account_per_hour: int | None = Field(default=None, ge=1, le=500)
-
-
-
-    @model_validator(mode="after")
-    def validate_account_coverage_window(self) -> "TaskSettingsUpdate":
-        if self.per_account_daily_min_messages is None or self.per_account_daily_max_messages is None:
-            return self
-        if self.per_account_daily_min_messages > self.per_account_daily_max_messages:
-            raise ValueError("per_account_daily_min_messages 不能大于 per_account_daily_max_messages")
-        return self
-
-
+    max_comments_per_account_per_hour: int | None = Field(default=1_000_000, ge=1, le=1_000_000)
 class TaskSourceFilterOverrideRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1200,6 +1270,14 @@ class TaskOut(ApiModel):
     runtime_stage: dict[str, Any] = Field(default_factory=dict)
     target_summary: str = ""
     search_text: str = ""
+    create_status: str = "existing"
+    start_status: str = "not_requested"
+    start_failure_code: str = ""
+    runtime_state: str = "runnable"
+    runtime_blocker_codes: list[str] = Field(default_factory=list)
+    start_operation_id: str | None = None
+    start_operation_version: int | None = None
+    start_operation_legacy_untracked: bool = False
     created_at: datetime
     updated_at: datetime
 
@@ -1518,6 +1596,26 @@ class TaskRetryRequest(BaseModel):
     failed_only: bool = True
 
 
+class TaskStartRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    start_operation_id: str = Field(min_length=8, max_length=120)
+    replaces_start_operation_id: str | None = Field(
+        default=None, min_length=8, max_length=120
+    )
+    replaces_start_operation_version: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def validate_replace_tuple(self) -> "TaskStartRequest":
+        values = (
+            self.replaces_start_operation_id,
+            self.replaces_start_operation_version,
+        )
+        if (values[0] is None) != (values[1] is None):
+            raise ValueError("replace_start_operation_tuple_incomplete")
+        return self
+
+
 class TaskActionReasonRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1695,6 +1793,8 @@ __all__ = [
     "SearchRankDeboostTaskConfigUpdate",
     "SearchRankDeboostTaskCreate",
     "SearchClickSimpleTaskCreate",
+    "SearchClickTaskConfigUpdate",
+    "SearchClickTaskCreate",
     "TaskCreateCommon",
     "TaskAIAccountProfileOut",
     "TaskAICycleOut",
@@ -1715,6 +1815,7 @@ __all__ = [
     "TaskPrecheckOut",
     "TaskPrecheckRequest",
     "TaskRetryRequest",
+    "TaskStartRequest",
     "TaskActionReasonRequest",
     "TaskSettingsUpdate",
     "TaskSourceFilterOverrideRequest",

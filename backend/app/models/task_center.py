@@ -17,6 +17,14 @@ def new_uuid() -> str:
 
 class Task(Base):
     __tablename__ = "tasks"
+    __table_args__ = (
+        UniqueConstraint(
+            "created_by_user_id",
+            "create_task_type",
+            "client_request_id",
+            name="uq_tasks_create_idempotency",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), default=1)
@@ -37,6 +45,12 @@ class Task(Base):
     type_config: Mapped[dict] = mapped_column(JSON, default=dict)
     stats: Mapped[dict] = mapped_column(JSON, default=dict)
     config_revision: Mapped[int] = mapped_column(Integer, default=1)
+    created_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    create_task_type: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    client_request_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    request_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    request_field_hashes: Mapped[dict] = mapped_column(JSON, default=dict)
+    idempotency_legacy_unproven: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -64,6 +78,11 @@ class Action(Base):
     __tablename__ = "actions"
     __table_args__ = (
         UniqueConstraint("tenant_id", "action_dedupe_key", name="uq_actions_action_dedupe_key"),
+        UniqueConstraint(
+            "content_mix_cycle_slot_id",
+            "content_mix_slot_attempt",
+            name="uq_actions_content_mix_slot_attempt",
+        ),
         Index("ix_actions_due_claim", "status", "scheduled_at", "created_at"),
         Index("ix_actions_claim_expiry", "status", "claim_expires_at"),
         Index("ix_actions_lease_recovery", "lease_owner", "lease_expires_at"),
@@ -180,6 +199,26 @@ class Action(Base):
     claim_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     plan_batch_key: Mapped[str | None] = mapped_column(String(160), nullable=True)
     action_dedupe_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    primary_quantity_slot_id: Mapped[str | None] = mapped_column(
+        ForeignKey(
+            "task_group_daily_message_slots.id",
+            ondelete="SET NULL",
+            name="fk_actions_primary_quantity_slot",
+        ),
+        nullable=True,
+    )
+    content_mix_cycle_slot_id: Mapped[str | None] = mapped_column(
+        ForeignKey(
+            "content_mix_cycle_slots.id",
+            ondelete="SET NULL",
+            name="fk_actions_content_mix_cycle_slot",
+        ),
+        nullable=True,
+    )
+    content_mix_slot_attempt: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
     payload: Mapped[dict] = mapped_column(JSON, default=dict)
     result: Mapped[dict] = mapped_column(JSON, default=dict)
     retry_count: Mapped[int] = mapped_column(Integer, default=0)
@@ -350,9 +389,18 @@ class TaskMembershipAdmissionItem(Base):
     account_id: Mapped[int] = mapped_column(ForeignKey("tg_accounts.id"))
     target_id: Mapped[int] = mapped_column(ForeignKey("operation_targets.id"))
     phase: Mapped[str] = mapped_column(String(40), default="pending")
-    membership_action_id: Mapped[str | None] = mapped_column(ForeignKey("actions.id"), nullable=True)
-    test_message_action_id: Mapped[str | None] = mapped_column(ForeignKey("actions.id"), nullable=True)
-    delete_action_id: Mapped[str | None] = mapped_column(ForeignKey("actions.id"), nullable=True)
+    membership_action_id: Mapped[str | None] = mapped_column(
+        ForeignKey("actions.id", name="fk_membership_admission_membership_action"),
+        nullable=True,
+    )
+    test_message_action_id: Mapped[str | None] = mapped_column(
+        ForeignKey("actions.id", name="fk_membership_admission_test_action"),
+        nullable=True,
+    )
+    delete_action_id: Mapped[str | None] = mapped_column(
+        ForeignKey("actions.id", name="fk_membership_admission_delete_action"),
+        nullable=True,
+    )
     test_message_text: Mapped[str] = mapped_column(Text, default="")
     test_message_id: Mapped[str] = mapped_column(String(160), default="")
     delete_after_send: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -361,7 +409,10 @@ class TaskMembershipAdmissionItem(Base):
     failure_detail: Mapped[str] = mapped_column(Text, default="")
     manual_required: Mapped[bool] = mapped_column(Boolean, default=False)
     permission_failure_count: Mapped[int] = mapped_column(Integer, default=0)
-    rescue_action_id: Mapped[str | None] = mapped_column(ForeignKey("actions.id"), nullable=True)
+    rescue_action_id: Mapped[str | None] = mapped_column(
+        ForeignKey("actions.id", name="fk_membership_admission_rescue_action"),
+        nullable=True,
+    )
     rescue_status: Mapped[str] = mapped_column(String(40), default="")
     rescue_failure_detail: Mapped[str] = mapped_column(Text, default="")
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

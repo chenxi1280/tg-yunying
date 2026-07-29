@@ -26,7 +26,7 @@ def test_hard_hourly_normalizes_all_comparisons_to_an_aware_task_zone():
     assert from_utc == from_naive
 
 
-def test_stats_refresh_does_not_create_empty_current_hour_bucket():
+def test_stats_refresh_reports_removed_hard_hourly_gate_as_disabled():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = datetime(2026, 7, 24, 15, 10, 0)
@@ -56,11 +56,11 @@ def test_stats_refresh_does_not_create_empty_current_hour_bucket():
 
         count = session.scalar(select(func.count()).select_from(TaskHardHourlyBucket)) or 0
         assert count == 0
-        assert stats["hard_hourly_success_count"] == 0
-        assert stats["hard_hourly_goal"] == 10
+        assert stats["hard_hourly_target_enabled"] is False
+        assert stats["hard_hourly_status"] == "disabled"
 
 
-def test_hard_hourly_stats_exposes_durable_debt_and_unknown_hold():
+def test_removed_hard_hourly_stats_ignore_legacy_debt_and_unknown_hold():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = datetime(2026, 7, 24, 15, 10, 0)
@@ -112,17 +112,13 @@ def test_hard_hourly_stats_exposes_durable_debt_and_unknown_hold():
         session.commit()
 
         stats = hard_hourly_stats(session, task, now_value, {})
-        assert stats["hard_hourly_target_enabled"] is True
-        assert stats["hard_hourly_durable_debt"] == 6
-        assert stats["hard_hourly_unknown_after_send_hold_count"] == 1
-        assert stats["hard_hourly_target_reference_revision"] == 2
-        assert stats["hard_hourly_task_config_revision"] == 3
-        assert stats["hard_hourly_awaiting_confirmation"] is True
-        assert stats["hard_hourly_status"] == "awaiting_confirmation"
-        assert stats["hard_hourly_planning_rate"] >= 10
+        assert stats["hard_hourly_target_enabled"] is False
+        assert stats["hard_hourly_status"] == "disabled"
+        assert "hard_hourly_durable_debt" not in stats
+        assert "hard_hourly_unknown_after_send_hold_count" not in stats
 
 
-def test_current_progress_uses_ledger_debt_and_does_not_block_on_dispatcher_lag():
+def test_current_progress_does_not_reactivate_removed_hard_hourly_gate():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = datetime(2026, 7, 24, 15, 10, 0)
@@ -183,15 +179,17 @@ def test_current_progress_uses_ledger_debt_and_does_not_block_on_dispatcher_lag(
 
         progress = current_progress(session, task, now_value)
         stats = hard_hourly_stats(session, task, now_value, {})
+        planning_required = requires_planning(session, task, now_value)
 
-    assert progress["backfill_debt"] == 6
+    assert progress["enabled"] is False
+    assert progress["deficit"] == 0
     assert progress["planning_blocked"] is False
-    assert requires_planning(session, task, now_value) is True
-    assert stats["hard_hourly_backfill_debt"] == 6
-    assert stats["hard_hourly_overdue_open_count"] == 0
+    assert planning_required is False
+    assert stats["hard_hourly_target_enabled"] is False
+    assert stats["hard_hourly_status"] == "disabled"
 
 
-def test_recent_buckets_keep_success_on_the_immutable_plan_bucket():
+def test_removed_hard_hourly_stats_do_not_publish_legacy_recent_buckets():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = datetime(2026, 7, 24, 15, 10, 0)
@@ -244,6 +242,6 @@ def test_recent_buckets_keep_success_on_the_immutable_plan_bucket():
 
         stats = hard_hourly_stats(session, task, now_value, {})
 
-    buckets = {row["bucket"]: row for row in stats["hard_hourly_recent_buckets"]}
-    assert buckets["2026-07-24T14:00:00+08:00"]["success_count"] == 1
-    assert buckets["2026-07-24T15:00:00+08:00"]["success_count"] == 0
+    assert stats["hard_hourly_target_enabled"] is False
+    assert stats["hard_hourly_status"] == "disabled"
+    assert "hard_hourly_recent_buckets" not in stats

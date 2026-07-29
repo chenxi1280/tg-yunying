@@ -19,11 +19,15 @@ from app.models import (
     Action,
     AiCoverageVariationIntent,
     AiGroupMessageMemory,
+    ContentMixCycle,
+    ContentMixCycleSlot,
     GroupBotAdmission,
     OperationTarget,
     RuleSet,
     Task,
     TaskAccountDailyCoverage,
+    TaskGroupDailyMessageSlot,
+    TaskGroupDailyTarget,
     TgGroup,
 )
 from app.services._common import _now
@@ -52,11 +56,15 @@ from ..config_normalization import (
     apply_group_ai_account_coverage_defaults,
     normalize_operation_target_references,
 )
+from ..content_mix_cycles import (
+    ContentMixCycleSpec,
+    ContentMixSlotSpec,
+    create_content_mix_cycle,
+    mark_cycle_slot_materialized,
+)
 from ..coverage_capacity import (
     HARD_HOURLY_GROUP_COOLDOWN_BLOCKED_MESSAGE,
     hard_hourly_group_cooldown_proof,
-    reserved_coverage_message_count,
-    task_coverage_capacity_proof,
 )
 from ..datetime_compat import parse_zone, to_zone
 from ..daily_coverage import (
@@ -73,11 +81,11 @@ from ..daily_coverage import (
 )
 from ..daily_coverage_planning import (
     MAX_DAILY_COVERAGE_PLAN_BATCH,
-    SENDABLE_COVERAGE_STATES,
     advance_coverage_plan_cursor,
     coverage_plan_totals,
     ready_coverage_plan_batch,
 )
+from ..daily_ledgers import ensure_task_day_ledger
 from ..daily_group_target import (
     daily_group_due_message_count,
     ensure_task_group_daily_target,
@@ -144,13 +152,6 @@ class CoveragePlanState:
     confirmed_message_count: int = 0
     volume_need_now: int = 0
 
-
-@dataclass(frozen=True)
-class CoverageCapacityScope:
-    account_count: int
-    target_per_account: int
-    confirmed_count: int
-    reserved_count: int
 
 CHAT_MODE_REPLY = "reply"
 CHAT_MODE_IDLE_WARMUP = "idle_warmup"
@@ -300,6 +301,18 @@ class SlotSnapshot:
 class PreparedActionPlan:
     slots: list[SlotSnapshot]
     hard_blockers: dict[str, int]
+
+
+@dataclass(frozen=True)
+class FrozenContentMix:
+    cycle: ContentMixCycle
+    slots_by_logical_id: dict[str, ContentMixCycleSlot]
+
+
+@dataclass(frozen=True)
+class ContentMixReplanResult:
+    found: bool
+    created: int = 0
 
 
 def _load_plan_facts(session: Session, task: Task) -> PlanFacts | PlanAbort:
@@ -499,6 +512,9 @@ def _load_daily_coverage_plan_accounts(
     _record_direct_check_in_capacity(task, len(selected))
     if selected:
         return AccountPlanState(selected)
+    if facts.coverage.required_new <= 0:
+        _mark_daily_target_pacing(task)
+        return PlanAbort()
     _mark_account_shortage(session, task, facts)
     return PlanAbort()
 
@@ -529,14 +545,11 @@ def _daily_group_extra_accounts(
     candidates = _group_bot_ready_accounts_for_plan(
         session, task, facts.group, candidates,
     )
-    profiles = voice_profile_prompt_details(
-        session,
-        tenant_id=task.tenant_id,
-        account_ids=[account.id for account in candidates],
-    )
-    masked = [account for account in candidates if _voice_profile_ready(profiles.get(account.id))]
     counts = _daily_success_counts(session, task)
-    return sorted(masked, key=lambda account: (counts.get(account.id, 0), account.id))[:remaining]
+    return sorted(
+        candidates,
+        key=lambda account: (counts.get(account.id, 0), account.id),
+    )[:remaining]
 
 
 def _group_bot_ready_accounts_for_plan(
@@ -714,10 +727,7 @@ def _load_turn_plan(
         ),
     )
     if not selected or turn_count <= 0:
-        stats = dict(task.stats or {})
-        stats["skip_reason"] = "daily_target_pacing"
-        task.stats = stats
-        task.last_error = "群日目标按计划推进中，等待下一发送时点"
+        _mark_daily_target_pacing(task)
         return PlanAbort()
     deferred = _daily_coverage_generation_is_deferred(
         session,
@@ -742,6 +752,13 @@ def _load_turn_plan(
     selected = selected[: max(1, min(len(selected), turn_count))]
     history = _context_plan_history(facts, context)
     return TurnPlanState(cycle_index, round_config, selected, turn_count, history)
+
+
+def _mark_daily_target_pacing(task: Task) -> None:
+    stats = dict(task.stats or {})
+    stats["skip_reason"] = "daily_target_pacing"
+    task.stats = stats
+    task.last_error = "群日目标按计划推进中，等待下一发送时点"
 
 
 def _turn_daily_uncovered_count(
@@ -1113,11 +1130,6 @@ def _apply_mask_content_contract(payload: dict[str, Any], slot: SlotBuildInput) 
         payload["content_source"] = ""
         return
     payload["content_source"] = MASK_MISSING_CHECK_IN_SOURCE
-    payload["reply_to_message_id"] = None
-    payload["reply_target_label"] = ""
-    payload["reply_target_author"] = ""
-    payload["reply_target_preview"] = ""
-    payload["reply_target_source"] = ""
     payload["act_type"] = "check_in"
     coverage = slot.blueprint.profile.coverage_rows.get(slot.account.id)
     target_date = coverage.coverage_date.isoformat() if coverage else _now().date().isoformat()
@@ -1204,8 +1216,183 @@ def _slot_rule_payload(slot: SlotBuildInput) -> dict[str, Any]:
     }
 
 
+def _freeze_content_mix_cycle(
+    session: Session,
+    task: Task,
+    blueprint: PlanBlueprint,
+) -> FrozenContentMix:
+    target = session.get(
+        TaskGroupDailyTarget,
+        blueprint.facts.coverage.daily_group_target_id,
+    )
+    if target is None or not target.task_day_ledger_id:
+        raise ValueError("task_day_ledger_missing")
+    items = blueprint.generation.quality_items
+    quantity_slots = _quantity_slots_for_content_mix(
+        session,
+        task,
+        blueprint,
+        target.task_day_ledger_id,
+    )
+    if len(quantity_slots) != len(items):
+        raise ValueError("quantity_slots_unavailable")
+    cycle = _existing_or_new_content_mix_cycle(
+        session,
+        task,
+        blueprint,
+        target.task_day_ledger_id,
+        quantity_slots,
+    )
+    persisted = _content_mix_cycle_slots(session, cycle.id)
+    logical_ids = [_quality_slot_id(item) for item in items]
+    return FrozenContentMix(
+        cycle,
+        dict(zip(logical_ids, persisted, strict=True)),
+    )
+
+
+def _quantity_slots_for_content_mix(
+    session: Session,
+    task: Task,
+    blueprint: PlanBlueprint,
+    ledger_id: str,
+) -> list[TaskGroupDailyMessageSlot]:
+    bound = select(ContentMixCycleSlot.primary_quantity_slot_id)
+    available = list(session.scalars(
+        select(TaskGroupDailyMessageSlot).where(
+            TaskGroupDailyMessageSlot.task_id == task.id,
+            TaskGroupDailyMessageSlot.task_day_ledger_id == ledger_id,
+            TaskGroupDailyMessageSlot.state == "open",
+            TaskGroupDailyMessageSlot.id.not_in(bound),
+        ).order_by(TaskGroupDailyMessageSlot.slot_ordinal.asc())
+    ))
+    return _align_quantity_slots(blueprint, available)
+
+
+def _align_quantity_slots(
+    blueprint: PlanBlueprint,
+    available: list[TaskGroupDailyMessageSlot],
+) -> list[TaskGroupDailyMessageSlot]:
+    remaining = list(available)
+    selected: list[TaskGroupDailyMessageSlot] = []
+    for item in blueprint.generation.quality_items:
+        account_id = _quality_slot_account_id(item)
+        coverage = blueprint.profile.coverage_rows.get(account_id)
+        matched = next(
+            (
+                slot
+                for slot in remaining
+                if coverage
+                and slot.task_account_daily_coverage_id == coverage.id
+            ),
+            None,
+        )
+        chosen = matched or (remaining[0] if remaining else None)
+        if chosen is None:
+            break
+        selected.append(chosen)
+        remaining.remove(chosen)
+    return selected
+
+
+def _existing_or_new_content_mix_cycle(
+    session: Session,
+    task: Task,
+    blueprint: PlanBlueprint,
+    ledger_id: str,
+    quantity_slots: list[TaskGroupDailyMessageSlot],
+) -> ContentMixCycle:
+    target_id = _content_mix_target_id(blueprint, quantity_slots)
+    existing = session.scalar(select(ContentMixCycle).where(
+        ContentMixCycle.task_id == task.id,
+        ContentMixCycle.target_operation_target_id == target_id,
+        ContentMixCycle.task_day_ledger_id == ledger_id,
+        ContentMixCycle.cycle_seq == blueprint.turn.cycle_index,
+    ))
+    if existing:
+        return existing
+    return create_content_mix_cycle(
+        session,
+        _content_mix_spec(task, blueprint, ledger_id, target_id, quantity_slots),
+    )
+
+
+def _content_mix_spec(
+    task: Task,
+    blueprint: PlanBlueprint,
+    ledger_id: str,
+    target_id: int,
+    quantity_slots: list[TaskGroupDailyMessageSlot],
+) -> ContentMixCycleSpec:
+    items = blueprint.generation.quality_items
+    slots = tuple(
+        ContentMixSlotSpec(
+            primary_quantity_slot_id=quantity.id,
+            relation_kind="reply" if _reply_target_message_id(item) else "direct",
+            reply_requirement_key=_quality_slot_id(item) if _reply_target_message_id(item) else "",
+            initial_reply_to_message_id=str(_reply_target_message_id(item) or ""),
+        )
+        for item, quantity in zip(items, quantity_slots, strict=True)
+    )
+    return ContentMixCycleSpec(
+        tenant_id=task.tenant_id,
+        task_id=task.id,
+        target_operation_target_id=target_id,
+        task_day_ledger_id=ledger_id,
+        cycle_seq=blueprint.turn.cycle_index,
+        config_revision=blueprint.facts.task_config_revision,
+        allocation_seed=blueprint.profile.cycle_id,
+        slots=slots,
+        reply_min_required_count=min(
+            len(slots),
+            int(blueprint.facts.config.get("reply_min_per_round") or 0),
+        ),
+        material_policy_rule_set_id=str(blueprint.facts.rule_version.rule_set_id),
+        material_policy_rule_set_version=int(blueprint.facts.rule_version.version),
+        target_resolution_trace=json.dumps(
+            {
+                "operation_target_id": target_id,
+                "group_id": blueprint.facts.group.id,
+                "group_peer_id": blueprint.facts.group.tg_peer_id,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+    )
+
+
+def _content_mix_target_id(
+    blueprint: PlanBlueprint,
+    quantity_slots: list[TaskGroupDailyMessageSlot],
+) -> int:
+    target = blueprint.facts.target
+    target_id = int(
+        target.id if target
+        else blueprint.facts.config.get("target_operation_target_id") or 0
+    )
+    if target_id <= 0 and quantity_slots:
+        target_id = int(quantity_slots[0].target_operation_target_id)
+    if target_id <= 0:
+        raise ValueError("content_mix_target_missing")
+    return target_id
+
+
+def _content_mix_cycle_slots(
+    session: Session,
+    cycle_id: str,
+) -> list[ContentMixCycleSlot]:
+    return list(session.scalars(
+        select(ContentMixCycleSlot)
+        .where(ContentMixCycleSlot.cycle_id == cycle_id)
+        .order_by(ContentMixCycleSlot.slot_index.asc())
+    ))
+
+
 def _prepare_action_slots(
-    session: Session, task: Task, blueprint: PlanBlueprint,
+    session: Session,
+    task: Task,
+    blueprint: PlanBlueprint,
+    frozen_mix: FrozenContentMix,
 ) -> PreparedActionPlan:
     generation = blueprint.generation
     progress = blueprint.facts.hard_progress
@@ -1239,11 +1426,10 @@ def _prepare_action_slots(
         if generation.burst_plan and index == min(generation.burst_plan):
             burst_account = account
         used_ids.add(account.id)
-        slots.append(
-            _build_slot_snapshot(
-                SlotBuildInput(blueprint, account, index, item, planned_at),
-            ),
+        snapshot = _build_slot_snapshot(
+            SlotBuildInput(blueprint, account, index, item, planned_at),
         )
+        slots.append(_with_frozen_content_mix(snapshot, item, frozen_mix))
         _increment_coverage_count(
             blueprint.turn.round_config,
             account.id,
@@ -1253,6 +1439,24 @@ def _prepare_action_slots(
             AccountCapacityReservation(account_id=account.id, scheduled_at=planned_at),
         )
     return PreparedActionPlan(slots, blockers)
+
+
+def _with_frozen_content_mix(
+    snapshot: SlotSnapshot,
+    item: dict,
+    frozen: FrozenContentMix,
+) -> SlotSnapshot:
+    logical_id = _quality_slot_id(item)
+    cycle_slot = frozen.slots_by_logical_id[logical_id]
+    payload = snapshot.payload.model_copy(update={
+        "content_mix_cycle_id": frozen.cycle.id,
+        "content_mix_cycle_slot_id": cycle_slot.id,
+        "primary_quantity_slot_id": cycle_slot.primary_quantity_slot_id,
+        "content_mix_contract_version": frozen.cycle.config_revision,
+        "relation_kind": cycle_slot.relation_kind,
+        "slot_attempt": max(1, cycle_slot.slot_attempt or 1),
+    })
+    return SlotSnapshot(snapshot.account_id, snapshot.planned_at, payload)
 
 
 def _slot_candidate_accounts(
@@ -1320,7 +1524,15 @@ def _create_reserved_action(session: Session, task: Task, slot: SlotSnapshot) ->
     payload = slot.payload
     coverage_id = str(payload.coverage_ledger_id or "")
     if not coverage_id:
-        return create_send_action(session, task, slot.account_id, slot.planned_at, payload)
+        action = create_send_action(
+            session,
+            task,
+            slot.account_id,
+            slot.planned_at,
+            payload,
+        )
+        _bind_content_mix_action(session, action, payload)
+        return action
     reservation_token = str(uuid4())
     if not _reserve_coverage_before_action(session, coverage_id, reservation_token):
         return None
@@ -1337,8 +1549,28 @@ def _create_reserved_action(session: Session, task: Task, slot: SlotSnapshot) ->
     intent.action_id = action.id
     if not bind_coverage_reservation(session, coverage_id, reservation_token, action.id):
         raise RuntimeError("daily coverage reservation lost before action binding")
+    _bind_content_mix_action(session, action, payload)
     session.flush()
     return action
+
+
+def _bind_content_mix_action(
+    session: Session,
+    action: Action,
+    payload: SendMessagePayload,
+) -> None:
+    cycle_slot = session.get(ContentMixCycleSlot, payload.content_mix_cycle_slot_id)
+    if cycle_slot is None:
+        raise RuntimeError("content_mix_cycle_slot_not_found")
+    action.primary_quantity_slot_id = payload.primary_quantity_slot_id
+    action.content_mix_cycle_slot_id = cycle_slot.id
+    action.content_mix_slot_attempt = max(1, payload.slot_attempt)
+    mark_cycle_slot_materialized(
+        session,
+        cycle_slot,
+        action_id=action.id,
+        slot_attempt=action.content_mix_slot_attempt,
+    )
 
 
 def _reserve_coverage_before_action(session: Session, coverage_id: str, reservation_token: str) -> bool:
@@ -1447,7 +1679,15 @@ def build_plan(session: Session, task: Task) -> int:
     blueprint = _prepare_plan_blueprint(session, task)
     if isinstance(blueprint, PlanAbort):
         return blueprint.created
-    prepared = _prepare_action_slots(session, task, blueprint)
+    replan = _replan_content_mix_slots(session, task, blueprint)
+    if replan.found:
+        return replan.created
+    try:
+        frozen_mix = _freeze_content_mix_cycle(session, task, blueprint)
+    except ValueError as exc:
+        task.last_error = str(exc)
+        return 0
+    prepared = _prepare_action_slots(session, task, blueprint, frozen_mix)
     prepared_reply_count = sum(
         1 for slot in prepared.slots if slot.payload.reply_to_message_id
     )
@@ -1467,6 +1707,103 @@ def build_plan(session: Session, task: Task) -> int:
         created=created,
     )
     return created
+
+
+def _replan_content_mix_slots(
+    session: Session,
+    task: Task,
+    blueprint: PlanBlueprint,
+) -> ContentMixReplanResult:
+    rows = list(session.execute(
+        select(ContentMixCycleSlot, Action)
+        .join(ContentMixCycle, ContentMixCycle.id == ContentMixCycleSlot.cycle_id)
+        .join(Action, Action.id == ContentMixCycleSlot.current_action_id)
+        .where(
+            ContentMixCycle.task_id == task.id,
+            ContentMixCycleSlot.slot_state == "replan_required",
+        )
+        .order_by(ContentMixCycle.cycle_seq, ContentMixCycleSlot.slot_index)
+        .limit(MAX_DAILY_COVERAGE_PLAN_BATCH)
+    ))
+    if not rows:
+        return ContentMixReplanResult(False)
+    account_by_id = {item.id: item for item in blueprint.profile.selected}
+    created = 0
+    for cycle_slot, previous in rows:
+        account = account_by_id.get(previous.account_id)
+        item_index = _replan_generation_item_index(
+            blueprint.generation.quality_items,
+            relation_kind=cycle_slot.relation_kind,
+        )
+        if account is None or item_index is None:
+            continue
+        snapshot = _replan_slot_snapshot(
+            blueprint,
+            account,
+            item_index,
+            cycle_slot,
+            previous,
+        )
+        if _create_reserved_action(session, task, snapshot) is not None:
+            created += 1
+    if created == 0:
+        task.last_error = "内容合同槽位等待可用账号或合法引用对象后重建"
+        task.next_run_at = _now() + timedelta(seconds=DAILY_COVERAGE_DEBT_RECHECK_SECONDS)
+    return ContentMixReplanResult(True, created)
+
+
+def _replan_generation_item_index(
+    items: list[dict],
+    *,
+    relation_kind: str,
+) -> int | None:
+    for index, item in enumerate(items):
+        has_reply = bool(_reply_target_message_id(item))
+        if has_reply == (relation_kind == "reply"):
+            return index
+    return None
+
+
+def _replan_slot_snapshot(
+    blueprint: PlanBlueprint,
+    account: Any,
+    item_index: int,
+    cycle_slot: ContentMixCycleSlot,
+    previous: Action,
+) -> SlotSnapshot:
+    planned_at = blueprint.generation.times[
+        min(item_index, len(blueprint.generation.times) - 1)
+    ]
+    fresh = _build_slot_snapshot(
+        SlotBuildInput(
+            blueprint,
+            account,
+            item_index,
+            blueprint.generation.quality_items[item_index],
+            planned_at,
+        )
+    )
+    old = SendMessagePayload.model_validate(previous.payload or {})
+    payload = fresh.payload.model_copy(update={
+        "cycle_id": old.cycle_id,
+        "slot_id": old.slot_id,
+        "content_mix_cycle_id": cycle_slot.cycle_id,
+        "content_mix_cycle_slot_id": cycle_slot.id,
+        "primary_quantity_slot_id": cycle_slot.primary_quantity_slot_id,
+        "content_mix_contract_version": old.content_mix_contract_version,
+        "relation_kind": cycle_slot.relation_kind,
+        "slot_attempt": cycle_slot.slot_attempt + 1,
+        "planned_material_kind": "unresolved",
+        "planned_normal_text_emoji": "unresolved",
+        "rule_set_id": old.rule_set_id,
+        "rule_set_version_id": old.rule_set_version_id,
+        "resolved_rule_set_version_id": old.resolved_rule_set_version_id,
+        "rule_set_version": old.rule_set_version,
+        "rule_trace": old.rule_trace,
+        "material_intent": old.material_intent,
+        "allow_material": old.allow_material,
+    })
+    return SlotSnapshot(account.id, planned_at, payload)
 
 
 def _remember_reserved_coverage_row(
@@ -1562,7 +1899,6 @@ def _reply_targets_for_plan(
         stats_inc(task, "reply_target_shortfall_count")
         if daily_coverage_debt:
             stats_inc(task, "coverage_reply_shortfall_cycle_count")
-            return []
         task.last_error = "可引用消息不足，等待监听到可回复消息后继续执行"
         return None
     return reply_target_pool[:reply_min]
@@ -1917,118 +2253,7 @@ def _coverage_capacity_blocker(
     coverage_rows: list[TaskAccountDailyCoverage] | None = None,
     coverage_state: CoveragePlanState | None = None,
 ) -> dict[str, object]:
-    if not _all_accounts_daily_coverage(config):
-        return {}
-    rows = coverage_rows if coverage_rows is not None else _load_coverage_rows(session, task)
-    if not rows:
-        return {}
-    full_proof = _coverage_capacity_proof(
-        session, task, group, _coverage_capacity_scope(rows, coverage_state),
-    )
-    if full_proof.get("sufficient"):
-        _clear_coverage_capacity_blocker(task)
-        return {}
-    sendable_scope = _sendable_coverage_capacity_scope(rows, coverage_state)
-    if sendable_scope.account_count == 0:
-        return _record_coverage_capacity_blocker(task, full_proof)
-    sendable_proof = _coverage_capacity_proof(session, task, group, sendable_scope)
-    if not sendable_proof.get("sufficient"):
-        return _record_coverage_capacity_blocker(task, sendable_proof)
-    _record_partial_coverage_capacity(task, full_proof, sendable_proof)
-    return {}
-
-
-def _coverage_capacity_scope(
-    rows: list[TaskAccountDailyCoverage],
-    coverage_state: CoveragePlanState | None,
-) -> CoverageCapacityScope:
-    if coverage_state:
-        return CoverageCapacityScope(
-            account_count=coverage_state.account_count,
-            target_per_account=coverage_state.target_per_account,
-            confirmed_count=coverage_state.confirmed_count,
-            reserved_count=coverage_state.reserved_count,
-        )
-    return _coverage_capacity_scope_from_rows(rows)
-
-
-def _sendable_coverage_capacity_scope(
-    rows: list[TaskAccountDailyCoverage],
-    coverage_state: CoveragePlanState | None,
-) -> CoverageCapacityScope:
-    if coverage_state:
-        return CoverageCapacityScope(
-            account_count=coverage_state.sendable_account_count,
-            target_per_account=coverage_state.target_per_account,
-            confirmed_count=coverage_state.sendable_confirmed_count,
-            reserved_count=coverage_state.sendable_reserved_count,
-        )
-    return _coverage_capacity_scope_from_rows([
-        row for row in rows if row.state in SENDABLE_COVERAGE_STATES
-    ])
-
-
-def _coverage_capacity_scope_from_rows(
-    rows: list[TaskAccountDailyCoverage],
-) -> CoverageCapacityScope:
-    if not rows:
-        return CoverageCapacityScope(0, 1, 0, 0)
-    return CoverageCapacityScope(
-        account_count=len(rows),
-        target_per_account=max(row.target_count for row in rows),
-        confirmed_count=sum(row.confirmed_count for row in rows),
-        reserved_count=reserved_coverage_message_count(rows),
-    )
-
-
-def _coverage_capacity_proof(
-    session: Session,
-    task: Task,
-    group: TgGroup,
-    scope: CoverageCapacityScope,
-) -> dict[str, object]:
-    return task_coverage_capacity_proof(
-        session,
-        task,
-        group,
-        target_account_count=scope.account_count,
-        target_per_account=scope.target_per_account,
-        confirmed_message_count=scope.confirmed_count,
-        reserved_message_count=scope.reserved_count,
-        now=_now(),
-    )
-
-
-def _record_coverage_capacity_blocker(task: Task, proof: dict[str, object]) -> dict[str, object]:
-    task.stats = {
-        **(task.stats or {}),
-        "coverage_capacity_status": "blocked",
-        "coverage_capacity_proof": proof,
-    }
-    task.stats.pop("sendable_coverage_capacity_proof", None)
-    task.last_error = SENDABLE_COVERAGE_CAPACITY_BLOCKED_MESSAGE
-    return proof
-
-
-def _record_partial_coverage_capacity(
-    task: Task,
-    full_proof: dict[str, object],
-    sendable_proof: dict[str, object],
-) -> None:
-    task.stats = {
-        **(task.stats or {}),
-        "coverage_capacity_status": "partial",
-        "coverage_capacity_proof": full_proof,
-        "sendable_coverage_capacity_proof": sendable_proof,
-    }
-    if task.last_error in {
-        ALL_ACCOUNT_COVERAGE_CAPACITY_BLOCKED_MESSAGE,
-        SENDABLE_COVERAGE_CAPACITY_BLOCKED_MESSAGE,
-    }:
-        task.last_error = ""
-
-
-def _clear_coverage_capacity_blocker(task: Task) -> None:
+    del session, group, config, coverage_rows, coverage_state
     stats = dict(task.stats or {})
     stats.pop("coverage_capacity_status", None)
     stats.pop("coverage_capacity_proof", None)
@@ -2039,6 +2264,7 @@ def _clear_coverage_capacity_blocker(task: Task) -> None:
         SENDABLE_COVERAGE_CAPACITY_BLOCKED_MESSAGE,
     }:
         task.last_error = ""
+    return {}
 
 
 def _coverage_plan_state(
@@ -2048,11 +2274,19 @@ def _coverage_plan_state(
     config: dict,
     _progress: dict[str, object],
 ) -> CoveragePlanState:
-    if not _all_accounts_daily_coverage(config):
-        return CoveragePlanState(rows=[], rows_by_account={}, due_debt=0)
     timestamp = _now()
+    if not _all_accounts_daily_coverage(config):
+        ensure_task_day_ledger(session, task, now=timestamp)
+        return CoveragePlanState(rows=[], rows_by_account={}, due_debt=0)
     bootstrap_missing_all_account_task_scope(session, task, now=timestamp)
-    ensure_task_daily_coverage(session, task, now=timestamp)
+    ensure_task_day_ledger(session, task, now=timestamp)
+    ensure_task_daily_coverage(
+        session,
+        task,
+        now=timestamp,
+        target_group=group,
+        refresh_existing=True,
+    )
     release_voice_profile_coverage_for_check_in(session, task, now=timestamp)
     backfill_daily_coverage_confirmations(session, task, timestamp.date())
     totals = coverage_plan_totals(session, task, group, now=timestamp)
@@ -2914,7 +3148,10 @@ def _limit_context_bound_turns(
     allowed_count = len([time_item for time_item in planned_times if _task_datetime(task, time_item) <= cutoff])
     limited_count = max(1, min(int(turn_count or 1), allowed_count))
     _record_context_bound_limit_stats(task, turn_count, limited_count, window_seconds)
-    return limited_count, planned_times[:limited_count]
+    limited_times = planned_times[:limited_count]
+    if allowed_count == 0 and limited_times:
+        limited_times[0] = cutoff
+    return limited_count, limited_times
 
 
 def _limit_context_bound_quality_schedule(
@@ -2932,14 +3169,17 @@ def _limit_context_bound_quality_schedule(
     window_seconds = _context_bound_schedule_window_seconds(config)
     cutoff = _task_datetime(task, _now()) + timedelta(seconds=window_seconds)
     allowed_count = len([item for item in planned_times if _task_datetime(task, item) <= cutoff])
-    limited_count = min(len(quality_items), allowed_count)
+    limited_count = max(1, min(len(quality_items), allowed_count)) if quality_items else 0
     _record_context_bound_limit_stats(
         task,
         int((task.stats or {}).get("context_bound_requested_turns") or len(quality_items)),
         limited_count,
         window_seconds,
     )
-    return quality_items[:limited_count], planned_times[:limited_count]
+    limited_times = planned_times[:limited_count]
+    if allowed_count == 0 and limited_times:
+        limited_times[0] = cutoff
+    return quality_items[:limited_count], limited_times
 
 
 def _requires_context_bound_window(
@@ -2951,7 +3191,6 @@ def _requires_context_bound_window(
     return (
         bool(has_context)
         and not progress
-        and not deferred_generation
         and int(config.get("context_expire_after_messages") or 0) > 0
     )
 
@@ -4245,7 +4484,12 @@ def _similarity(left: str, right: str) -> float:
 
 
 def _next_cycle_index(session: Session, task: Task) -> int:
-    max_index = 0
+    persisted_max = session.scalar(
+        select(func.max(ContentMixCycle.cycle_seq)).where(
+            ContentMixCycle.task_id == task.id,
+        )
+    )
+    max_index = int(persisted_max or 0)
     rows = session.scalars(
         select(Action.payload["cycle_id"].as_string())
         .where(

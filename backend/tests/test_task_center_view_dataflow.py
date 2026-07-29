@@ -133,7 +133,7 @@ def test_task_center_row_actions_bind_busy_state_to_action_key():
         assert "setBusyId('');" not in body
 
 
-def test_task_center_precheck_and_recommendation_bind_payload_signature():
+def test_task_center_creation_does_not_wait_for_precheck():
     source = _source()
     run_precheck = _function_body(source, "runTaskPrecheck")
     run_recommendation = _function_body(source, "runEditAiLimitRecommendation")
@@ -164,12 +164,9 @@ def test_task_center_precheck_and_recommendation_bind_payload_signature():
     assert "setPrecheckPayloadSignature(payloadSignature);" in run_precheck
     assert "if (isCurrentTaskPrecheckRequest(requestSeq)) setPrecheckLoading(false);" in run_precheck
 
-    assert "const payload = createPayload(values);" in create_task
-    assert "const precheckSignature = taskPrecheckPayloadSignature(taskType, payload);" in create_task
-    assert "const requiresFreshPrecheck = taskType !== 'group_membership_admission' && !isSimpleSearchClickTask(taskType) && !options.skipCapacityCheck;" in create_task
-    assert "precheck && precheckPayloadSignature === precheckSignature" in create_task
-    assert "await runTaskPrecheck(values)" in create_task
-    assert "if (!result && requiresFreshPrecheck) return;" in create_task
+    assert "body: JSON.stringify(createPayload(submitValues))" in create_task
+    assert "await runTaskPrecheck(values)" not in create_task
+    assert "requiresFreshPrecheck" not in create_task
 
     assert "const payload = settingsPayload(editableType, editForm.getFieldsValue(true));" in run_recommendation
     assert "payloadSignature = taskPrecheckPayloadSignature(editableType, payload);" in run_recommendation

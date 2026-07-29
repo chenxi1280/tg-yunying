@@ -158,6 +158,7 @@ PERMISSION_RULES: list[PermissionRule] = [
     _compile("POST", r"^/api/operation-metrics/export$", "usage.export"),
     _compile("POST", r"^/api/operation-tasks(?:/.*)?$", "tasks.manage"),
     _compile("POST", r"^/api/review/[^/]+/(?:approve|reject)$", "tasks.manage"),
+    _compile("POST", r"^/api/tasks/search-click(?:/create-and-start)?$", ("tasks.manage", "tasks.create.search_click")),
     _compile("POST", r"^/api/tasks/search-join-group(?:/create-and-start)?$", ("tasks.manage", "tasks.create.search_join_group")),
     _compile("POST", r"^/api/tasks/search_rank_deboost(?:/create_and_start)?$", ("tasks.manage", "tasks.create.search_rank_deboost")),
     _compile("PATCH", r"^/api/tasks/[^/]+/search_rank_deboost_config$", "tasks.manage.search_rank_deboost"),

@@ -1,53 +1,34 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime
-from typing import Callable
 from uuid import uuid4
 
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session, attributes
 
-from app.models import Action, ChannelMessage, ChannelMessageComment, Task
+from app.models import (
+    Action,
+    ChannelMessage,
+    ChannelMessageComment,
+    Task,
+)
 from app.services._common import _now
 
-from .ai_generator import (
-    AiGenerationUnavailable,
-    clean_channel_comment_contents,
-    generate_channel_comments,
-    generate_channel_reply_comments,
-)
+from .ai_generator import AiGenerationUnavailable
 from .ai_generation_state import GenerationAttemptStale, mark_attempt_outcome
 from .channel_payloads import PostCommentPayload
-from .comment_generation_quality import evaluate_comment_generation_quality
+from .comment_generation_pipeline import (
+    CommentGenerationBlocked,
+    CommentGenerationDependencies,
+    CommentGenerationRequest,
+    GeneratedCommentResult,
+    generate_comment_result,
+)
+from .comment_generation_result import (
+    evaluate_legacy_generated_comment,
+    generated_comment_decision,
+)
 from .runtime_resources import _release_runtime_resources
-
-
-def _commit_session(session: Session) -> None:
-    session.commit()
-
-
-@dataclass(frozen=True)
-class CommentGenerationDependencies:
-    direct_generator: Callable = generate_channel_comments
-    reply_generator: Callable = generate_channel_reply_comments
-    phase_c_commit: Callable[[Session], None] = _commit_session
-
-
-@dataclass(frozen=True)
-class CommentGenerationRequest:
-    action_id: str
-    tenant_id: int
-    task_id: str
-    account_id: int
-    payload: PostCommentPayload
-    config: dict
-    attempt_id: str
-    request_id: str
-    claim_owner: str
-    claim_token: str
-    cached_content: str
-    cached_tokens: int
 
 
 PRODUCTION_COMMENT_GENERATION_DEPENDENCIES = CommentGenerationDependencies()
@@ -73,23 +54,37 @@ def ensure_post_comment_content(
     try:
         if not request.cached_content:
             _mark_provider_call_started(session, request)
-        content, tokens = _generate_comment(session, request, dependencies)
+        generated = generate_comment_result(
+            session,
+            request,
+            dependencies,
+            action_loader=_load_attempt_action,
+        )
     except GenerationAttemptStale:
         session.rollback()
         raise
+    except CommentGenerationBlocked as exc:
+        session.rollback()
+        _persist_generation_failure(
+            session,
+            request,
+            exc.detail,
+            code=exc.code,
+        )
+        raise AiGenerationUnavailable(exc.code) from exc
     except Exception as exc:
         session.rollback()
         _persist_generation_failure(session, request, str(exc))
         raise AiGenerationUnavailable("generation_failed") from exc
     try:
-        persist_comment_generation_result(session, request, content, tokens=tokens)
+        persist_comment_generation_result(session, request, generated)
         dependencies.phase_c_commit(session)
     except GenerationAttemptStale:
         session.rollback()
         raise
     except Exception as exc:
         session.rollback()
-        _persist_generation_unknown(session, request, content, tokens=tokens, detail=str(exc))
+        _persist_generation_unknown(session, request, generated, detail=str(exc))
         raise AiGenerationUnavailable("ai_result_persist_unknown") from exc
     refreshed = session.get(Action, action.id)
     if refreshed.status == "failed":
@@ -124,6 +119,9 @@ def prepare_comment_generation_request(
         claim_token=str(data.get("ai_generation_claim_token") or ""),
         cached_content=str(cached.get("content") or "").strip(),
         cached_tokens=int(cached.get("tokens") or 0),
+        cached_fallback_kind=str(cached.get("fallback_kind") or ""),
+        cached_fallback_reason=str(cached.get("fallback_reason") or ""),
+        cached_attempts=tuple(cached.get("attempts") or ()),
     )
     session.commit()
     _validate_comment_target(session, action, request=request)
@@ -137,6 +135,8 @@ def _generation_config(task: Task, payload: PostCommentPayload) -> dict:
     summary = str(payload.profile_hit_summary or "").strip()
     if summary:
         config["target_comment_profile"] = summary
+    if payload.account_mask_summary:
+        config["account_mask_summary"] = payload.account_mask_summary
     config["_close_db_transaction_before_ai"] = True
     return config
 
@@ -247,43 +247,6 @@ def _mark_generating(action: Action, data: dict, *, attempt_id: str, request_id:
     }
 
 
-def _generate_comment(
-    session: Session,
-    request: CommentGenerationRequest,
-    dependencies: CommentGenerationDependencies,
-) -> tuple[str, int]:
-    if request.cached_content:
-        return request.cached_content, request.cached_tokens
-    if session.in_transaction():
-        raise RuntimeError("comment generation transaction boundary is open")
-    payload = request.payload
-    common = {
-        "count": 1,
-        "message_content": payload.message_content,
-        "target_label": payload.target_display,
-    }
-    if payload.reply_to_message_id:
-        contents, tokens = dependencies.reply_generator(
-            session,
-            request.tenant_id,
-            request.config,
-            reply_targets=[_reply_target(payload)],
-            message_content=payload.message_content,
-            target_label=payload.target_display,
-        )
-    else:
-        contents, tokens = dependencies.direct_generator(
-            session,
-            request.tenant_id,
-            request.config,
-            **common,
-        )
-    cleaned = clean_channel_comment_contents(list(contents or []), limit=1)
-    if len(cleaned) != 1:
-        raise AiGenerationUnavailable("AI 评论候选质量不达标")
-    return str(cleaned[0]).strip(), int(tokens or 0)
-
-
 def _mark_provider_call_started(session: Session, request: CommentGenerationRequest) -> None:
     action = _load_attempt_action(session, request)
     action.result = {
@@ -308,17 +271,23 @@ def _reply_target(payload: PostCommentPayload) -> dict:
 def persist_comment_generation_result(
     session: Session,
     request: CommentGenerationRequest,
-    content: str,
+    generated: GeneratedCommentResult | str,
     *,
-    tokens: int,
+    tokens: int = 0,
 ) -> None:
     action = _load_attempt_action(session, request)
-    decision = evaluate_comment_generation_quality(
-        session,
-        action,
-        payload=request.payload,
-        content=content,
+    result = (
+        generated
+        if isinstance(generated, GeneratedCommentResult)
+        else evaluate_legacy_generated_comment(
+            session,
+            action,
+            payload=request.payload,
+            content=generated,
+            tokens=tokens,
+        )
     )
+    decision = generated_comment_decision(result)
     if not decision.allowed:
         _fail_before_generation(
             action,
@@ -331,9 +300,25 @@ def persist_comment_generation_result(
         return
     data = dict(action.payload or {})
     data.update({
-        "comment_text": decision.content,
+        "comment_text": result.content,
         "ai_generation_status": "ready",
-        "ai_generation_tokens": max(0, int(tokens or 0)),
+        "ai_generation_tokens": max(0, int(result.tokens or 0)),
+        "comment_generation_attempts": list(result.attempts),
+        "comment_fallback_kind": result.fallback_kind,
+        "content_source": (
+            "comment_emoji_fallback"
+            if result.fallback_kind == "emoji_text"
+            else "normal"
+        ),
+        "quality_fallback": (
+            "comment_emoji_fallback"
+            if result.fallback_kind == "emoji_text"
+            else ""
+        ),
+        "fallback_reason": result.fallback_reason,
+        "planned_normal_text_emoji": (
+            "no" if result.fallback_kind == "emoji_text" else "unresolved"
+        ),
         "ai_generation_result_cache": {},
     })
     mark_attempt_outcome(data, request.attempt_id, "ready", timestamp=_now())
@@ -343,14 +328,20 @@ def persist_comment_generation_result(
         "generation_stage": "generation_ready",
         "generation_outcome": "ready",
         "ai_generation_attempt_id": request.attempt_id,
-        "comment_quality_audit": decision.audit or {},
+        "comment_quality_audit": result.quality_audit or {},
     }
     _cas_write_action(session, request, action)
 
 
-def _persist_generation_failure(session: Session, request: CommentGenerationRequest, detail: str) -> None:
+def _persist_generation_failure(
+    session: Session,
+    request: CommentGenerationRequest,
+    detail: str,
+    *,
+    code: str = "generation_failed",
+) -> None:
     action = _load_attempt_action(session, request)
-    _fail_before_generation(action, "generation_failed", detail or "AI 评论生成失败")
+    _fail_before_generation(action, code, detail or "AI 评论生成失败")
     _cas_write_action(session, request, action)
     session.commit()
     _release_runtime_resources(action)
@@ -359,9 +350,8 @@ def _persist_generation_failure(session: Session, request: CommentGenerationRequ
 def _persist_generation_unknown(
     session: Session,
     request: CommentGenerationRequest,
-    content: str,
+    generated: GeneratedCommentResult,
     *,
-    tokens: int,
     detail: str,
 ) -> None:
     action = _load_attempt_action(session, request)
@@ -369,8 +359,11 @@ def _persist_generation_unknown(
     data.update({
         "ai_generation_status": "ai_result_persist_unknown",
         "ai_generation_result_cache": {
-            "content": str(content or "").strip(),
-            "tokens": max(0, int(tokens or 0)),
+            "content": generated.content,
+            "tokens": max(0, int(generated.tokens or 0)),
+            "fallback_kind": generated.fallback_kind,
+            "fallback_reason": generated.fallback_reason,
+            "attempts": list(generated.attempts),
             "attempt_id": request.attempt_id,
         },
     })

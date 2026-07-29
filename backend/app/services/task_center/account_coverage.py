@@ -87,7 +87,7 @@ def _uninitialized_ledger_summary(task: Task) -> dict[str, object]:
             "count": 1,
             "message": message,
         }],
-        "capacity_status": "blocked",
+        "capacity_status": "diagnostic_unproven",
         "estimated_completion_window": {
             "status": "unproven",
             "estimated_min_hours": None,
@@ -199,9 +199,13 @@ def _ledger_summary_payload(
         "coverage_percent": round(rate * 100),
         "action_types": ["send_message"],
         "statuses": ["confirmed"],
-        "blocked_reasons": _ledger_blocked_reasons(task, reason_counts, len(rows) - covered, capacity),
+        "blocked_reasons": _ledger_blocked_reasons(task, reason_counts, len(rows) - covered),
         "capacity_proof": capacity,
-        "capacity_status": "sufficient" if capacity.get("sufficient") else "blocked",
+        "capacity_status": (
+            "diagnostic_sufficient"
+            if capacity.get("sufficient")
+            else "diagnostic_insufficient"
+        ),
         "required_daily_messages": target_messages,
         "required_hourly_rate": (remaining_messages + active_hours - 1) // active_hours,
         "estimated_completion_window": _coverage_estimated_window(task, remaining_messages),
@@ -227,7 +231,6 @@ def _ledger_blocked_reasons(
     task: Task,
     counts: dict[str, int],
     remaining_count: int,
-    capacity: dict[str, object],
 ) -> list[dict[str, object]]:
     reasons = [
         {"reason": reason, "count": count, "message": _blocker_message(reason)}
@@ -235,12 +238,6 @@ def _ledger_blocked_reasons(
     ]
     if remaining_count and not reasons:
         reasons.append({"reason": "coverage_remaining", "count": remaining_count, "message": "仍有账号未达今日覆盖目标"})
-    if capacity and not capacity.get("sufficient"):
-        reasons.append({
-            "reason": "daily_coverage_capacity_insufficient",
-            "count": int(capacity.get("capacity_gap") or 0),
-            "message": "任务当前容量无法在活跃窗口内完成全部账号覆盖",
-        })
     if task.last_error:
         reasons.append({"reason": "last_error", "count": 1, "message": task.last_error})
     return reasons

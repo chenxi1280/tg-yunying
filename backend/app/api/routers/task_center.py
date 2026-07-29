@@ -5,6 +5,8 @@ from datetime import date
 from io import StringIO
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from app.auth import CurrentUser, get_current_user
@@ -38,6 +40,8 @@ from app.schemas import (
     ReviewRejectRequest,
     SearchJoinGroupTaskConfigUpdate,
     SearchJoinGroupSimpleTaskCreate,
+    SearchClickTaskCreate,
+    SearchClickTaskConfigUpdate,
     SearchRankDeboostExemptGroupResponse,
     SearchRankDeboostTaskConfigUpdate,
     SearchRankDeboostSimpleTaskCreate,
@@ -53,6 +57,7 @@ from app.schemas import (
     TaskPrecheckOut,
     TaskPrecheckRequest,
     TaskRetryRequest,
+    TaskStartRequest,
     TaskSettingsUpdate,
     TaskSourceFilterOverrideRequest,
     TaskUpdate,
@@ -68,6 +73,7 @@ from app.services.task_center import (
     create_and_start_group_membership_admission_task,
     create_and_start_group_relay_task,
     create_and_start_search_join_group_task,
+    create_and_start_search_click_task,
     create_and_start_simple_search_join_group_task,
     create_and_start_simple_search_rank_deboost_task,
     create_channel_comment_task,
@@ -77,6 +83,7 @@ from app.services.task_center import (
     create_group_membership_admission_task,
     create_group_relay_task,
     create_simple_search_join_group_task,
+    create_search_click_task,
     create_simple_search_rank_deboost_task,
     delete_task,
     generate_channel_comment_preview,
@@ -117,8 +124,19 @@ from app.services.task_center import (
     update_group_ai_chat_config,
     update_group_relay_config,
     update_search_join_group_config,
+    update_search_click_config,
     update_search_rank_deboost_config,
     update_task_settings,
+)
+from app.services.task_center.creation_operations import (
+    IdempotencyKeyReused,
+    StartOperationConflict,
+)
+from app.services.task_center.task_creation_contract import (
+    execute_task_creation_contract,
+    execute_task_start_contract,
+    task_creation_response,
+    task_start_response,
 )
 from app.services.task_center.daily_fulfillment import daily_fulfillment_detail
 
@@ -132,132 +150,134 @@ def _set_page_headers(response: Response, total: int, page: int, page_size: int)
     response.headers["X-Page-Size"] = str(page_size)
 
 
+def _contract_create(
+    payload,
+    session: Session,
+    current_user: CurrentUser,
+    task_type: str,
+    *,
+    start_requested: bool,
+):
+    try:
+        result = execute_task_creation_contract(
+            session,
+            tenant_id=current_user.tenant_id or 1,
+            user_id=current_user.id,
+            actor=current_user.name,
+            task_type=task_type,
+            payload=payload,
+            start_requested=start_requested,
+        )
+    except IdempotencyKeyReused as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": exc.code,
+                "task_id": exc.task_id,
+                "conflict_fields": list(exc.conflict_fields),
+            },
+        ) from exc
+    except StartOperationConflict as exc:
+        raise HTTPException(status_code=409, detail=exc.code) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    status_code = 201 if result.create.create_status == "created" else 200
+    return JSONResponse(
+        status_code=status_code,
+        content=jsonable_encoder(task_creation_response(result)),
+    )
+
+
 @router.post("/api/tasks/group-ai-chat", response_model=TaskOut)
 def post_group_ai_chat_task(payload: GroupAIChatTaskCreate, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
-    try:
-        return create_group_ai_chat_task(session, current_user.tenant_id or 1, payload, current_user.name)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _contract_create(payload, session, current_user, "group_ai_chat", start_requested=False)
 
 
 @router.post("/api/tasks/group-ai-chat/create-and-start", response_model=TaskOut)
 def post_group_ai_chat_create_and_start(payload: GroupAIChatTaskCreate, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
-    try:
-        return create_and_start_group_ai_chat_task(session, current_user.tenant_id or 1, payload, current_user.name)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _contract_create(payload, session, current_user, "group_ai_chat", start_requested=True)
 
 
 @router.post("/api/tasks/group-relay", response_model=TaskOut)
 def post_group_relay_task(payload: GroupRelayTaskCreate, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
-    try:
-        return create_group_relay_task(session, current_user.tenant_id or 1, payload, current_user.name)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _contract_create(payload, session, current_user, "group_relay", start_requested=False)
 
 
 @router.post("/api/tasks/group-relay/create-and-start", response_model=TaskOut)
 def post_group_relay_create_and_start(payload: GroupRelayTaskCreate, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
-    try:
-        return create_and_start_group_relay_task(session, current_user.tenant_id or 1, payload, current_user.name)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _contract_create(payload, session, current_user, "group_relay", start_requested=True)
 
 
 @router.post("/api/tasks/group-membership-admission", response_model=TaskOut)
 def post_group_membership_admission_task(payload: GroupMembershipAdmissionTaskCreate, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
-    try:
-        return create_group_membership_admission_task(session, current_user.tenant_id or 1, payload, current_user.name)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _contract_create(payload, session, current_user, "group_membership_admission", start_requested=False)
 
 
 @router.post("/api/tasks/group-membership-admission/create-and-start", response_model=TaskOut)
 def post_group_membership_admission_create_and_start(payload: GroupMembershipAdmissionTaskCreate, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
-    try:
-        return create_and_start_group_membership_admission_task(session, current_user.tenant_id or 1, payload, current_user.name)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _contract_create(payload, session, current_user, "group_membership_admission", start_requested=True)
 
 
 @router.post("/api/tasks/channel-view", response_model=TaskOut)
 def post_channel_view_task(payload: ChannelViewTaskCreate, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
-    try:
-        return create_channel_view_task(session, current_user.tenant_id or 1, payload, current_user.name)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _contract_create(payload, session, current_user, "channel_view", start_requested=False)
 
 
 @router.post("/api/tasks/channel-view/create-and-start", response_model=TaskOut)
 def post_channel_view_create_and_start(payload: ChannelViewTaskCreate, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
-    try:
-        return create_and_start_channel_view_task(session, current_user.tenant_id or 1, payload, current_user.name)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _contract_create(payload, session, current_user, "channel_view", start_requested=True)
 
 
 @router.post("/api/tasks/channel-like", response_model=TaskOut)
 def post_channel_like_task(payload: ChannelLikeTaskCreate, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
-    try:
-        return create_channel_like_task(session, current_user.tenant_id or 1, payload, current_user.name)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _contract_create(payload, session, current_user, "channel_like", start_requested=False)
 
 
 @router.post("/api/tasks/channel-like/create-and-start", response_model=TaskOut)
 def post_channel_like_create_and_start(payload: ChannelLikeTaskCreate, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
-    try:
-        return create_and_start_channel_like_task(session, current_user.tenant_id or 1, payload, current_user.name)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _contract_create(payload, session, current_user, "channel_like", start_requested=True)
 
 
 @router.post("/api/tasks/channel-comment", response_model=TaskOut)
 def post_channel_comment_task(payload: ChannelCommentTaskCreate, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
-    try:
-        return create_channel_comment_task(session, current_user.tenant_id or 1, payload, current_user.name)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _contract_create(payload, session, current_user, "channel_comment", start_requested=False)
 
 
 @router.post("/api/tasks/channel-comment/create-and-start", response_model=TaskOut)
 def post_channel_comment_create_and_start(payload: ChannelCommentTaskCreate, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
-    try:
-        return create_and_start_channel_comment_task(session, current_user.tenant_id or 1, payload, current_user.name)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _contract_create(payload, session, current_user, "channel_comment", start_requested=True)
 
 
 @router.post("/api/tasks/search-join-group", response_model=TaskOut)
-def post_search_join_group_task(payload: SearchJoinGroupSimpleTaskCreate, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
-    try:
-        return create_simple_search_join_group_task(session, current_user.tenant_id or 1, payload, current_user.name)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+def post_search_join_group_task(payload: dict, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
+    del payload, session, current_user
+    raise HTTPException(status_code=410, detail="legacy_search_join_create_retired")
 
 
 @router.post("/api/tasks/search-join-group/create-and-start", response_model=TaskOut)
-def post_search_join_group_create_and_start(payload: SearchJoinGroupSimpleTaskCreate, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
-    try:
-        return create_and_start_simple_search_join_group_task(session, current_user.tenant_id or 1, payload, current_user.name)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+def post_search_join_group_create_and_start(payload: dict, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
+    del payload, session, current_user
+    raise HTTPException(status_code=410, detail="legacy_search_join_create_retired")
+
+
+@router.post("/api/tasks/search-click", response_model=TaskOut)
+def post_search_click_task(payload: SearchClickTaskCreate, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
+    return _contract_create(payload, session, current_user, "search_click", start_requested=False)
+
+
+@router.post("/api/tasks/search-click/create-and-start", response_model=TaskOut)
+def post_search_click_create_and_start(payload: SearchClickTaskCreate, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
+    return _contract_create(payload, session, current_user, "search_click", start_requested=True)
 
 
 @router.post("/api/tasks/search_rank_deboost", response_model=TaskOut)
 def post_search_rank_deboost_task(payload: SearchRankDeboostSimpleTaskCreate, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
-    try:
-        return create_simple_search_rank_deboost_task(session, current_user.tenant_id or 1, payload, current_user.name)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _contract_create(payload, session, current_user, "search_rank_deboost", start_requested=False)
 
 
 @router.post("/api/tasks/search_rank_deboost/create_and_start", response_model=TaskOut)
 def post_search_rank_deboost_create_and_start(payload: SearchRankDeboostSimpleTaskCreate, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
-    try:
-        return create_and_start_simple_search_rank_deboost_task(session, current_user.tenant_id or 1, payload, current_user.name)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _contract_create(payload, session, current_user, "search_rank_deboost", start_requested=True)
 
 
 @router.get("/api/tasks", response_model=list[TaskOut])
@@ -399,6 +419,20 @@ def patch_search_join_group_config(task_id: str, payload: SearchJoinGroupTaskCon
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@router.patch("/api/tasks/{task_id}/search-click", response_model=TaskOut)
+def patch_search_click_config(task_id: str, payload: SearchClickTaskConfigUpdate, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
+    try:
+        return update_search_click_config(
+            session,
+            current_user.tenant_id or 1,
+            task_id,
+            payload,
+            current_user.name,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @router.patch("/api/tasks/{task_id}/search_rank_deboost_config", response_model=TaskOut)
 def patch_search_rank_deboost_config(task_id: str, payload: SearchRankDeboostTaskConfigUpdate, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
     try:
@@ -416,9 +450,19 @@ def post_search_rank_deboost_reroll_exempt_group(task_id: str, session: Session 
 
 
 @router.post("/api/tasks/{task_id}/start", response_model=TaskOut)
-def post_task_start(task_id: str, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
+def post_task_start(task_id: str, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user), payload: TaskStartRequest | None = None):
     try:
-        return start_task(session, current_user.tenant_id or 1, task_id, current_user.name)
+        result = execute_task_start_contract(
+            session,
+            tenant_id=current_user.tenant_id or 1,
+            user_id=current_user.id,
+            actor=current_user.name,
+            task_id=task_id,
+            payload=payload,
+        )
+        return task_start_response(result)
+    except StartOperationConflict as exc:
+        raise HTTPException(status_code=409, detail=exc.code) from exc
     except ValueError as exc:
         if str(exc) == "task not found":
             raise not_found(str(exc)) from exc

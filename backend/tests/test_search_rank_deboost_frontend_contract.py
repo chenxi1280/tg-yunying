@@ -24,7 +24,7 @@ def test_frontend_keeps_rank_deboost_as_a_system_managed_task_type() -> None:
 
     assert "pool_purpose: 'normal' | 'code_receiver' | 'rank_deboost' | string;" in accounts
     assert "export function isSimpleSearchClickTask(taskType: TaskCenterTaskType)" in view_model
-    assert "return taskType === 'search_join_group' || taskType === 'search_rank_deboost';" in view_model
+    assert "['search_click', 'search_join_group', 'search_rank_deboost'].includes(taskType)" in view_model
     assert "SIMPLE_SEARCH_CLICK_WIZARD_STEPS" in view_model
 
 

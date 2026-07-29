@@ -10,6 +10,7 @@ from app.models import (
     Action,
     ChannelMessage,
     ChannelMessageComment,
+    CommentFulfillmentObligation,
     ExecutionAttempt,
     GroupContextMessage,
     OperationTarget,
@@ -34,6 +35,10 @@ from app.services.task_center.executors import channel_comment, channel_comment_
 from app.services.task_center.ai_generator import AiGenerationUnavailable, generate_group_reply_messages
 from app.services.task_center.channel_membership import gate_channel_membership
 from app.services.task_center.dispatcher import claim_actions, dispatch_action
+from app.services.task_center.fulfillment_takeover import (
+    UNIFIED_TASK_GATE_LIMIT,
+    takeover_task,
+)
 from app.services.task_center.executors.channel_comment import build_plan as build_channel_comment_plan
 from app.services.task_center.executors.group_ai_chat import build_plan as build_group_ai_chat_plan
 from app.services.task_center.service import precheck_task_creation, reset_task, resume_task, start_task, update_group_ai_chat_config
@@ -302,8 +307,8 @@ def test_reply_minimum_schema_fields_are_explicit_and_bounded():
 def test_channel_comment_schema_defaults_task_total_limit_with_jitter():
     payload = ChannelCommentTaskCreate(name="默认总上限评论", target_channel_id=31)
 
-    assert payload.max_total_comments == 80
-    assert payload.max_total_comments_jitter == 0.2
+    assert payload.max_total_comments == UNIFIED_TASK_GATE_LIMIT
+    assert payload.max_total_comments_jitter == 0
 
 
 def test_channel_comment_total_limit_jitter_is_capped_at_thirty_percent():
@@ -410,6 +415,21 @@ def test_channel_comment_lifetime_cap_completes_after_open_actions_clear():
         session.add_all([success, unknown])
         session.flush()
         session.add(ExecutionAttempt(action_id=success.id, status="success", remote_message_id="9001"))
+        session.add(
+            CommentFulfillmentObligation(
+                tenant_id=1,
+                task_id=task.id,
+                channel_message_id=41,
+                comment_plan_revision=1,
+                target_ordinal=1,
+                current_action_id=success.id,
+                action_attempt_no=1,
+                status="confirmed",
+                telegram_discussion_peer_id="-10031",
+                remote_comment_id="9001",
+                remote_confirmed_at=NOW,
+            )
+        )
 
         assert build_channel_comment_plan(session, task) == 0
 
@@ -451,71 +471,39 @@ def test_channel_comment_lifetime_cap_waits_for_open_actions():
         assert task.stats["lifetime_cap_open_count"] == 1
 
 
-def test_channel_comment_resume_checks_lifetime_cap_before_precheck():
+def test_channel_comment_resume_replaces_legacy_low_cap_with_system_gate():
     with _session() as session:
         _add_tenant(session)
         task = _add_comment_task(session)
         task.status = "paused"
         task.type_config = {**task.type_config, "max_total_comments": 1, "max_total_comments_jitter": 0}
-        session.add(
-            Action(
-                id="comment-resume-cap-success",
-                tenant_id=1,
-                task_id=task.id,
-                task_type=task.type,
-                action_type="post_comment",
-                status="success",
-                scheduled_at=NOW,
-                executed_at=NOW,
-                payload={},
-            )
-        )
         session.commit()
 
         resumed = resume_task(session, 1, task.id, "tester")
 
-        assert resumed.status == "completed"
-        assert resumed.next_run_at is None
-        assert resumed.stats["completion_reason"] == "lifetime_cap_reached"
+        assert resumed.status == "running"
+        assert resumed.type_config["max_total_comments"] == UNIFIED_TASK_GATE_LIMIT
+        assert resumed.stats["max_total_comments_resolved"] == UNIFIED_TASK_GATE_LIMIT
 
 
 @pytest.mark.parametrize("starter", [start_task, resume_task], ids=["start_task", "resume_task"])
 @pytest.mark.no_postgres
-def test_channel_comment_cap_completion_is_idempotent_through_public_start_entrypoints(monkeypatch, starter):
-    monkeypatch.setattr(channel_comment_budget, "_now", lambda: NOW)
+def test_channel_comment_public_start_idempotently_applies_system_gate(starter):
     with _session() as session:
         _add_tenant(session)
         task = _add_comment_task(session)
         task.status = "paused"
-        task.next_run_at = NOW
         task.type_config = {**task.type_config, "max_total_comments": 2, "max_total_comments_jitter": 0}
-        success = Action(
-            id="comment-public-start-success", tenant_id=1, task_id=task.id,
-            task_type=task.type, action_type="post_comment", status="success",
-            scheduled_at=NOW, executed_at=NOW, payload={},
-        )
-        unknown = Action(
-            id="comment-public-start-unknown", tenant_id=1, task_id=task.id,
-            task_type=task.type, action_type="post_comment", status="unknown_after_send",
-            scheduled_at=NOW, executed_at=NOW, payload={},
-        )
-        session.add_all([success, unknown])
-        session.flush()
-        session.add(ExecutionAttempt(action_id=success.id, status="success", remote_message_id="9001"))
         session.commit()
 
         first = starter(session, 1, task.id, "tester")
         first_stats = dict(first.stats)
-        monkeypatch.setattr(channel_comment_budget, "_now", lambda: NOW + timedelta(days=1))
         second = starter(session, 1, task.id, "tester")
 
-    assert second.status == "completed"
-    assert second.next_run_at is None
+    assert second.status == "running"
     assert second.stats == first_stats
-    assert second.stats["completed_at"] == NOW.isoformat()
-    assert second.stats["remote_success_count"] == 1
-    assert second.stats["unknown_after_send_count"] == 1
-    assert second.stats["max_total_comments_resolved"] == 2
+    assert second.type_config["max_total_comments"] == UNIFIED_TASK_GATE_LIMIT
+    assert second.stats["max_total_comments_resolved"] == UNIFIED_TASK_GATE_LIMIT
 
 
 def test_channel_comment_failed_open_action_releases_lifetime_budget():
@@ -597,7 +585,14 @@ def test_reply_payload_config_error_is_visible_in_task_stats():
     with _session() as session:
         _add_tenant(session)
         session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status=AccountStatus.ACTIVE.value))
-        task = Task(id="reply-payload-error-task", tenant_id=1, name="引用 payload 错误", type="group_ai_chat", status="running", stats={})
+        task = Task(
+            id="reply-payload-error-task",
+            tenant_id=1,
+            name="引用 payload 错误",
+            type="group_ai_chat",
+            status="running",
+            stats={"fulfillment_contract_version": "all_task_v2"},
+        )
         action = Action(
             id="reply-payload-error-action",
             tenant_id=1,
@@ -1150,13 +1145,14 @@ def test_group_ai_defers_reply_content_filtering_to_dispatcher(monkeypatch):
     assert all(action.payload["ai_generation_status"] == "pending" for action in actions)
 
 
-def test_channel_comment_planner_respects_current_hour_budget():
+def test_channel_comment_takeover_replaces_operator_hour_budget_with_system_gate():
     with _session() as session:
         _add_tenant(session)
         _add_channel(session, message_count=2, account_count=20)
         task = _add_comment_task(session)
         session.commit()
 
+        takeover_task(session, task, now=NOW)
         created = build_channel_comment_plan(session, task)
         total_actions = session.scalar(select(func.count(Action.id)).where(Action.task_id == task.id))
         per_message = [
@@ -1164,12 +1160,12 @@ def test_channel_comment_planner_respects_current_hour_budget():
             for message_id in [41, 42]
         ]
 
-    assert created == 5
-    assert total_actions == 5
-    assert sorted(per_message) == [2, 3]
+    assert created == 8
+    assert total_actions == 8
+    assert sorted(per_message) == [4, 4]
 
 
-def test_channel_comment_planner_uses_remaining_current_hour_budget(monkeypatch):
+def test_channel_comment_takeover_does_not_preserve_operator_hour_consumption(monkeypatch):
     now_value = NOW + timedelta(minutes=30)
     monkeypatch.setattr("app.services.task_center.executors.channel_comment_budget._now", lambda: now_value)
     with _session() as session:
@@ -1202,11 +1198,12 @@ def test_channel_comment_planner_uses_remaining_current_hour_budget(monkeypatch)
         session.add_all(existing_actions)
         session.commit()
 
+        takeover_task(session, task, now=NOW)
         created = build_channel_comment_plan(session, task)
         total_actions = session.scalar(select(func.count(Action.id)).where(Action.task_id == task.id))
 
-    assert created == 4
-    assert total_actions == 100
+    assert created == 8
+    assert total_actions == 104
 
 
 def test_channel_comment_planner_stops_when_collected_comments_reach_target():
@@ -1366,6 +1363,7 @@ def test_channel_comment_excludes_already_used_reply_targets_across_rounds():
         )
         session.commit()
 
+        takeover_task(session, task, now=NOW)
         created = build_channel_comment_plan(session, task)
         actions = session.scalars(select(Action).where(Action.task_id == task.id, Action.id != "used-channel-reply-action")).all()
 
@@ -1420,6 +1418,7 @@ def test_channel_comment_finds_unused_reply_target_beyond_initial_window():
             )
         session.commit()
 
+        takeover_task(session, task, now=NOW)
         created = build_channel_comment_plan(session, task)
         actions = session.scalars(select(Action).where(Action.task_id == task.id, Action.id.not_like("used-channel-reply-action-%"))).all()
 
@@ -1554,6 +1553,6 @@ def test_precheck_returns_dynamic_ai_limit_recommendations():
         )
 
     recommendations = result["capacity_summary"]["recommended_limits"]
-    assert recommendations["max_actions_per_hour"] == 60
+    assert "max_actions_per_hour" not in recommendations
     assert recommendations["messages_per_round"] > 1
     assert recommendations["basis"]["ready_account_count"] == 10

@@ -100,10 +100,10 @@ def test_dispatcher_runtime_uses_tenant_fallback_switches() -> None:
 @pytest.mark.parametrize(
     ("config", "expected"),
     [
-        ({}, ("primary_m3", "fallback_m25")),
-        ({"_ai_group_model_fallback_enabled": False}, ("primary_m3",)),
-        ({"_ai_group_grok_fallback_enabled": True}, ("primary_m3", "fallback_m25", "fallback_grok")),
-        ({"_ai_group_grok_fallback_enabled": False}, ("primary_m3", "fallback_m25")),
+        ({}, ("primary_m3",) * 3 + ("fallback_m25",) * 3),
+        ({"_ai_group_model_fallback_enabled": False}, ("primary_m3",) * 3),
+        ({"_ai_group_grok_fallback_enabled": True}, ("primary_m3",) * 3 + ("fallback_m25",) * 3),
+        ({"_ai_group_grok_fallback_enabled": False}, ("primary_m3",) * 3 + ("fallback_m25",) * 3),
     ],
 )
 def test_ai_group_fallback_stages_follow_explicit_switches(config, expected):
@@ -137,7 +137,7 @@ def test_ai_group_fallback_continues_after_stage_error(monkeypatch):
             _generation_dependencies(normal_generator=fake_generate),
         )
 
-    assert visited == ["primary_m3", "fallback_m25"]
+    assert visited == ["primary_m3"] * 3 + ["fallback_m25"]
     assert [item.content for item in items] == ["老师今天高跟鞋挺好看"]
     assert tokens == 7
 
@@ -164,7 +164,7 @@ def test_ai_group_quality_rejection_is_visible_to_next_stage(monkeypatch):
         )
 
     assert items[0].content == "老师今天高跟鞋挺好看"
-    assert visited == ["primary_m3", "fallback_m25"]
+    assert visited == ["primary_m3"] * 3 + ["fallback_m25"]
 
 
 def test_ai_group_fallback_retries_the_same_reply_target(monkeypatch):
@@ -189,7 +189,7 @@ def test_ai_group_fallback_retries_the_same_reply_target(monkeypatch):
             _generation_dependencies(reply_generator=fake_reply),
         )
 
-    assert visited == [("primary_m3", 88), ("fallback_m25", 88)]
+    assert visited == [("primary_m3", 88)] * 3 + [("fallback_m25", 88)]
     assert items[0].content == "这双高跟鞋确实很搭"
 
 

@@ -14,9 +14,14 @@ from app.models import (
     AccountPool,
     AiCoverageVariationIntent,
     ExecutionAttempt,
+    ContentMixCycle,
+    ContentMixCycleSlot,
+    OperationTarget,
     Task,
     TaskAccountDailyCoverage,
+    TaskDayLedger,
     TaskDailyFulfillmentDecision,
+    TaskGroupDailyMessageSlot,
     TaskMembershipAdmissionItem,
     Tenant,
     TgAccount,
@@ -402,13 +407,76 @@ def test_daily_coverage_persists_variation_intent_before_creating_action(
 ) -> None:
     task, _group = _seed(session)
     row = session.get(TaskAccountDailyCoverage, "coverage-1")
+    now_value = beijing_now()
+    ledger = TaskDayLedger(
+        id="day-ledger-coverage-1",
+        tenant_id=1,
+        task_id=task.id,
+        timezone_snapshot="Asia/Shanghai",
+        timezone_revision=1,
+        obligation_local_date=now_value.date(),
+        period_start_at=now_value,
+        deadline_at=now_value + timedelta(days=1),
+        day_phase="active",
+        planning_anchor_at=now_value,
+    )
+    quantity_slot = TaskGroupDailyMessageSlot(
+        id="quantity-slot-coverage-1",
+        tenant_id=1,
+        task_id=task.id,
+        task_day_ledger_id=ledger.id,
+        target_operation_target_id=31,
+        task_account_daily_coverage_id=row.id,
+        slot_kind="account_daily_minimum",
+        slot_ordinal=1,
+    )
+    cycle = ContentMixCycle(
+        id="content-cycle-coverage-1",
+        tenant_id=1,
+        task_id=task.id,
+        target_operation_target_id=31,
+        task_day_ledger_id=ledger.id,
+        cycle_seq=1,
+        config_revision=1,
+        scope_total_slots=1,
+        allocation_seed="coverage-1",
+        allocation_closed_at=now_value,
+    )
+    cycle_slot = ContentMixCycleSlot(
+        id="content-cycle-slot-coverage-1",
+        tenant_id=1,
+        cycle_id=cycle.id,
+        slot_index=1,
+        primary_quantity_slot_id=quantity_slot.id,
+        relation_kind="direct",
+    )
+    row.task_day_ledger_id = ledger.id
+    session.add_all([
+        OperationTarget(
+            id=31,
+            tenant_id=1,
+            target_type="group",
+            tg_peer_id="-10021",
+            title="目标群",
+            auth_status="已授权运营",
+            can_send=True,
+        ),
+        ledger,
+        quantity_slot,
+        cycle,
+        cycle_slot,
+    ])
+    session.flush()
     payload = SendMessagePayload(
         group_id=21,
+        target_operation_target_id=31,
         account_coverage_mode="all_accounts_daily",
         coverage_ledger_id=row.id,
         coverage_window_date=row.coverage_date.isoformat(),
         content_variation_key="variation-coverage-1-v1",
         content_context_version="context-v1",
+        primary_quantity_slot_id=quantity_slot.id,
+        content_mix_cycle_slot_id=cycle_slot.id,
         ai_generation_status="pending",
     )
     blueprint = type("Blueprint", (), {"profile": type("Profile", (), {"coverage_rows": {row.account_id: row}})()})()
@@ -450,7 +518,7 @@ def test_daily_coverage_persists_variation_intent_before_creating_action(
     assert row.blocker_code == "content_variation_key_conflict"
 
 
-def test_running_all_account_task_blocks_when_daily_capacity_is_insufficient(
+def test_running_all_account_task_ignores_retired_daily_capacity_gate(
     session: Session,
     stable_capacity_clock: None,
 ) -> None:
@@ -463,9 +531,8 @@ def test_running_all_account_task_blocks_when_daily_capacity_is_insufficient(
 
     blocker = _coverage_capacity_blocker(session, task, group, task.type_config)
 
-    assert blocker["blocker_code"] == "daily_coverage_capacity_insufficient"
-    assert blocker["capacity_gap"] == 1
-    assert task.stats["coverage_capacity_status"] == "blocked"
+    assert blocker == {}
+    assert "coverage_capacity_status" not in task.stats
 
 
 def test_pending_admission_capacity_gap_does_not_stop_ready_accounts(
@@ -484,9 +551,8 @@ def test_pending_admission_capacity_gap_does_not_stop_ready_accounts(
     blocker = _coverage_capacity_blocker(session, task, group, task.type_config)
 
     assert blocker == {}
-    assert task.stats["coverage_capacity_status"] == "partial"
-    assert task.stats["coverage_capacity_proof"]["sufficient"] is False
-    assert task.stats["sendable_coverage_capacity_proof"]["sufficient"] is True
+    assert "coverage_capacity_status" not in task.stats
+    assert "coverage_capacity_proof" not in task.stats
 
 
 def test_coverage_totals_exclude_pending_admission_from_sendable_capacity(

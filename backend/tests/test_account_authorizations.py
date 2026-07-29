@@ -728,6 +728,8 @@ def test_task_dispatch_proxy_failure_switches_proxy_before_standby() -> None:
         assert account.developer_app_id == 31
         assert action.status == "pending"
         assert action.result["proxy_recovered"] is True
+        assert action.payload["content_source"] == "mask_missing_check_in"
+        assert action.payload["fallback_reason"] == "verified_proxy_route_switched"
         assert "account_recovered" not in action.result
 
 
