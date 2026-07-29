@@ -420,6 +420,30 @@ def test_terminal_claim_without_finalizer_is_reconciled_before_window_reallocati
         assert allocation is not None and allocation.active_claim_count == 1
 
 
+def test_retry_rebuilds_when_its_reservation_is_exhausted_but_another_is_available(
+    monkeypatch,
+) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    settings = _settings(dispatcher_concurrency=2)
+    now_value = _now().replace(second=0, microsecond=0)
+    monkeypatch.setattr(dispatcher, "get_settings", lambda: settings)
+    monkeypatch.setattr(dispatcher, "_now", lambda: now_value)
+
+    with Session(engine) as session:
+        _seed_strict_actions(session, now_value)
+        first = dispatcher.claim_actions(session, limit=1, worker_id="first-attempt")[0]
+        first.status = "pending"
+        dispatcher._release_runtime_resources(first)
+        assert dispatcher.release_dispatch_claim(session, first) is True
+        initial_epoch = session.scalar(select(DispatchClaimWindow)).allocation_epoch
+
+        retry = dispatcher.claim_actions(session, limit=1, worker_id="retry-attempt")
+
+        assert len(retry) == 1
+        assert session.scalar(select(DispatchClaimWindow)).allocation_epoch > initial_epoch
+
+
 def test_stale_unclaimed_reservation_is_released_for_new_due_action(monkeypatch) -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

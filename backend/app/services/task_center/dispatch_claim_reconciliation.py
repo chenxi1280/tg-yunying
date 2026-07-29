@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Mapping
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import Action, DispatchClaimReservation, DispatchClaimShardAllocation, DispatchClaimWindow, Task
@@ -73,7 +73,13 @@ def _due_reservation_action_counts(
         return {}
     statement = select(Action, Task).join(Task, Task.id == Action.task_id).where(
         Action.task_id.in_(task_ids),
-        Action.status == "pending",
+        or_(
+            Action.status == "pending",
+            and_(
+                Action.status == "claiming",
+                Action.claim_expires_at > now,
+            ),
+        ),
         Action.scheduled_at <= now,
         Task.status == "running",
         Task.deleted_at.is_(None),

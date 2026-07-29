@@ -9,6 +9,7 @@ from app.integrations.telegram import SendResult
 from app.models import (
     AccountStatus,
     Action,
+    AiAccountVoiceProfile,
     ChannelMessage,
     ChannelMessageComment,
     ExecutionAttempt,
@@ -23,14 +24,15 @@ from app.models import (
     TgGroupAccount,
 )
 from app.services._common import _now
+from app.services.task_center.account_voice_profile_cache import (
+    VOICE_PROFILE_CONTRACT_VERSION,
+    voice_profile_snapshot_hash,
+)
 from app.services.task_center import comment_generation_dispatch, dispatcher
 from app.services.task_center.comment_generation_dispatch import (
     CommentGenerationDependencies,
     GenerationAttemptStale,
 )
-from app.services.task_center.comment_generation_quality import CommentQualityDecision
-
-
 TENANT_ID = 915_715
 TASK_ID = "pg-channel-comment-dispatch"
 ACTION_ID = "pg-channel-comment-dispatch-action"
@@ -77,7 +79,7 @@ def test_postgres_two_dispatchers_claim_and_generate_comment_once(monkeypatch) -
         with SessionLocal() as session:
             action = session.get(Action, ACTION_ID)
             assert sorted(claimed_counts) == [0, 1]
-            assert calls == {"provider": 1, "gateway": 1}
+            assert calls == {"provider": 1, "gateway": 1}, action.payload
             assert action.status == "success"
             assert action.payload["ai_generation_status"] == "ready"
             assert action.payload["comment_text"] == "PG 真实评论"
@@ -106,7 +108,11 @@ def test_postgres_comment_generation_cas_rejects_worker_losing_token_after_quali
                 session.get(Task, TASK_ID),
             )
 
-            def lose_token(*_args, **_kwargs):
+            original_evaluator = (
+                comment_generation_dispatch.evaluate_legacy_generated_comment
+            )
+
+            def lose_token(*args, **kwargs):
                 with SessionLocal() as contender:
                     current = contender.get(Action, ACTION_ID)
                     current.payload = {
@@ -114,9 +120,13 @@ def test_postgres_comment_generation_cas_rejects_worker_losing_token_after_quali
                         "ai_generation_claim_token": "claim-new",
                     }
                     contender.commit()
-                return CommentQualityDecision(True, "PG CAS 评论")
+                return original_evaluator(*args, **kwargs)
 
-            monkeypatch.setattr(comment_generation_dispatch, "evaluate_comment_generation_quality", lose_token)
+            monkeypatch.setattr(
+                comment_generation_dispatch,
+                "evaluate_legacy_generated_comment",
+                lose_token,
+            )
 
             with pytest.raises(GenerationAttemptStale):
                 comment_generation_dispatch.persist_comment_generation_result(
@@ -285,6 +295,8 @@ def _seed_scope() -> None:
         ))
         session.add(_account())
         session.flush()
+        mask = _mask()
+        session.add(mask)
         session.add(TgGroupAccount(
             tenant_id=TENANT_ID,
             group_id=GROUP_ID,
@@ -293,7 +305,7 @@ def _seed_scope() -> None:
         ))
         session.add(_task())
         session.flush()
-        session.add(_action())
+        session.add(_action(mask))
         session.commit()
 
 
@@ -375,6 +387,19 @@ def _account() -> TgAccount:
     )
 
 
+def _mask() -> AiAccountVoiceProfile:
+    return AiAccountVoiceProfile(
+        id=f"pg-comment-mask-{ACCOUNT_ID}",
+        tenant_id=TENANT_ID,
+        account_id=ACCOUNT_ID,
+        version=1,
+        mask_name="评论读者",
+        short_prompt_summary="自然追问具体信息",
+        status="active",
+        quality_status="active",
+    )
+
+
 def _task() -> Task:
     return Task(
         id=TASK_ID,
@@ -395,7 +420,7 @@ def _task() -> Task:
     )
 
 
-def _action() -> Action:
+def _action(mask: AiAccountVoiceProfile) -> Action:
     return Action(
         id=ACTION_ID,
         tenant_id=TENANT_ID,
@@ -417,6 +442,12 @@ def _action() -> Action:
             "slot_id": f"channel-comment:{MESSAGE_ID}:0",
             "ai_generation_id": f"{TASK_ID}:channel-comment:{MESSAGE_ID}:0",
             "ai_generation_status": "pending",
+            "account_mask_id": mask.id,
+            "account_mask_version": mask.version,
+            "account_mask_snapshot_hash": voice_profile_snapshot_hash(mask),
+            "account_mask_summary": mask.short_prompt_summary,
+            "voice_profile_contract_version": VOICE_PROFILE_CONTRACT_VERSION,
+            "mask_status": "active",
             "rule_set_id": RULE_SET_ID,
             "rule_set_version_id": RULE_VERSION_ID,
             "resolved_rule_set_version_id": RULE_VERSION_ID,
@@ -435,6 +466,9 @@ def _cleanup() -> None:
         session.execute(delete(ChannelMessage).where(ChannelMessage.tenant_id == TENANT_ID))
         session.execute(delete(OperationTarget).where(OperationTarget.tenant_id == TENANT_ID))
         session.execute(delete(TgGroup).where(TgGroup.tenant_id == TENANT_ID))
+        session.execute(delete(AiAccountVoiceProfile).where(
+            AiAccountVoiceProfile.tenant_id == TENANT_ID
+        ))
         session.execute(delete(TgAccount).where(TgAccount.tenant_id == TENANT_ID))
         session.execute(delete(SchedulingSetting).where(SchedulingSetting.tenant_id == TENANT_ID))
         session.execute(delete(RuleSetVersion).where(RuleSetVersion.tenant_id == TENANT_ID))

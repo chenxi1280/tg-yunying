@@ -170,7 +170,7 @@ class SearchClickOpportunityAssignment(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
-    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
     task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"))
     task_day_ledger_id: Mapped[str] = mapped_column(
         ForeignKey("task_day_ledgers.id", ondelete="CASCADE")
@@ -185,7 +185,7 @@ class SearchClickOpportunityAssignment(Base):
         ForeignKey("dispatch_claim_reservations.id", ondelete="CASCADE")
     )
     fulfillment_lane_claim_ordinal: Mapped[int] = mapped_column(Integer)
-    account_id: Mapped[int] = mapped_column(ForeignKey("tg_accounts.id"))
+    account_id: Mapped[int] = mapped_column(ForeignKey("tg_accounts.id", ondelete="CASCADE"))
     authorization_id: Mapped[int] = mapped_column(
         ForeignKey("tg_account_authorizations.id")
     )
@@ -194,7 +194,7 @@ class SearchClickOpportunityAssignment(Base):
     protocol_sample_version: Mapped[str] = mapped_column(String(80))
     resource_snapshot_hash: Mapped[str] = mapped_column(String(64))
     action_id: Mapped[str | None] = mapped_column(
-        ForeignKey("actions.id"), nullable=True
+        ForeignKey("actions.id", ondelete="SET NULL"), nullable=True
     )
     state: Mapped[str] = mapped_column(String(24), default="reserved")
     version: Mapped[int] = mapped_column(Integer, default=1)

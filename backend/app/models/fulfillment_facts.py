@@ -44,10 +44,10 @@ class CommentFulfillmentObligation(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
-    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
     task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"))
     channel_message_id: Mapped[int] = mapped_column(
-        ForeignKey("channel_messages.id")
+        ForeignKey("channel_messages.id", ondelete="CASCADE")
     )
     comment_plan_revision: Mapped[int] = mapped_column(Integer)
     target_ordinal: Mapped[int] = mapped_column(Integer)
@@ -59,7 +59,11 @@ class CommentFulfillmentObligation(Base):
     reply_to_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     reply_target_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
     current_action_id: Mapped[str | None] = mapped_column(
-        ForeignKey("actions.id"),
+        ForeignKey(
+            "actions.id",
+            ondelete="SET NULL",
+            name="fk_comment_fulfillment_current_action",
+        ),
         nullable=True,
     )
     action_attempt_no: Mapped[int] = mapped_column(Integer, default=0)
@@ -93,15 +97,19 @@ class ReactionFulfillmentObligation(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
-    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
     task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"))
     channel_message_id: Mapped[int] = mapped_column(
-        ForeignKey("channel_messages.id")
+        ForeignKey("channel_messages.id", ondelete="CASCADE")
     )
-    account_id: Mapped[int] = mapped_column(ForeignKey("tg_accounts.id"))
+    account_id: Mapped[int] = mapped_column(ForeignKey("tg_accounts.id", ondelete="CASCADE"))
     reaction_contract_version: Mapped[int] = mapped_column(Integer)
     current_action_id: Mapped[str | None] = mapped_column(
-        ForeignKey("actions.id"),
+        ForeignKey(
+            "actions.id",
+            ondelete="SET NULL",
+            name="fk_reaction_fulfillment_current_action",
+        ),
         nullable=True,
     )
     action_attempt_no: Mapped[int] = mapped_column(Integer, default=0)
@@ -126,13 +134,13 @@ class ReactionRemoteFact(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
-    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
     obligation_id: Mapped[str] = mapped_column(
-        ForeignKey("reaction_fulfillment_obligations.id")
+        ForeignKey("reaction_fulfillment_obligations.id", ondelete="CASCADE")
     )
     target_peer_id: Mapped[str] = mapped_column(String(120))
     channel_message_id: Mapped[int] = mapped_column(Integer)
-    account_id: Mapped[int] = mapped_column(ForeignKey("tg_accounts.id"))
+    account_id: Mapped[int] = mapped_column(ForeignKey("tg_accounts.id", ondelete="CASCADE"))
     reaction_state_revision: Mapped[str] = mapped_column(String(120))
     reaction_evidence_hash: Mapped[str] = mapped_column(String(64))
     remote_confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
@@ -152,16 +160,20 @@ class ViewFulfillmentObligation(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
-    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
     task_day_ledger_id: Mapped[str] = mapped_column(
         ForeignKey("task_day_ledgers.id", ondelete="CASCADE")
     )
     channel_message_id: Mapped[int] = mapped_column(
-        ForeignKey("channel_messages.id")
+        ForeignKey("channel_messages.id", ondelete="CASCADE")
     )
-    account_id: Mapped[int] = mapped_column(ForeignKey("tg_accounts.id"))
+    account_id: Mapped[int] = mapped_column(ForeignKey("tg_accounts.id", ondelete="CASCADE"))
     current_action_id: Mapped[str | None] = mapped_column(
-        ForeignKey("actions.id"),
+        ForeignKey(
+            "actions.id",
+            ondelete="SET NULL",
+            name="fk_view_fulfillment_current_action",
+        ),
         nullable=True,
     )
     action_attempt_no: Mapped[int] = mapped_column(Integer, default=0)
@@ -181,13 +193,13 @@ class ViewRemoteFact(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
-    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
     obligation_id: Mapped[str] = mapped_column(
-        ForeignKey("view_fulfillment_obligations.id")
+        ForeignKey("view_fulfillment_obligations.id", ondelete="CASCADE")
     )
     target_peer_id: Mapped[str] = mapped_column(String(120))
     channel_message_id: Mapped[int] = mapped_column(Integer)
-    account_id: Mapped[int] = mapped_column(ForeignKey("tg_accounts.id"))
+    account_id: Mapped[int] = mapped_column(ForeignKey("tg_accounts.id", ondelete="CASCADE"))
     remote_confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
@@ -213,14 +225,18 @@ class SearchClickFulfillmentObligation(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
-    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
     task_day_ledger_id: Mapped[str] = mapped_column(
         ForeignKey("task_day_ledgers.id", ondelete="CASCADE")
     )
-    target_id: Mapped[int] = mapped_column(ForeignKey("operation_targets.id"))
+    target_id: Mapped[int] = mapped_column(ForeignKey("operation_targets.id", ondelete="CASCADE"))
     click_obligation_ordinal: Mapped[int] = mapped_column(Integer)
     source_action_id: Mapped[str | None] = mapped_column(
-        ForeignKey("actions.id"),
+        ForeignKey(
+            "actions.id",
+            ondelete="SET NULL",
+            name="fk_search_click_fulfillment_source_action",
+        ),
         nullable=True,
     )
     execution_attempt_id: Mapped[str | None] = mapped_column(
@@ -254,7 +270,7 @@ class ConsistencyQuarantine(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
-    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
     scope_type: Mapped[str] = mapped_column(String(40))
     scope_id: Mapped[str] = mapped_column(String(120))
     reason_code: Mapped[str] = mapped_column(String(80))
@@ -280,7 +296,7 @@ class TaskDayLedgerLifecycleEvent(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
-    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
     task_day_ledger_id: Mapped[str] = mapped_column(
         ForeignKey("task_day_ledgers.id", ondelete="CASCADE")
     )

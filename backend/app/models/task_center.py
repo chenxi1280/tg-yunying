@@ -202,6 +202,7 @@ class Action(Base):
     primary_quantity_slot_id: Mapped[str | None] = mapped_column(
         ForeignKey(
             "task_group_daily_message_slots.id",
+            ondelete="SET NULL",
             name="fk_actions_primary_quantity_slot",
         ),
         nullable=True,
@@ -209,6 +210,7 @@ class Action(Base):
     content_mix_cycle_slot_id: Mapped[str | None] = mapped_column(
         ForeignKey(
             "content_mix_cycle_slots.id",
+            ondelete="SET NULL",
             name="fk_actions_content_mix_cycle_slot",
         ),
         nullable=True,

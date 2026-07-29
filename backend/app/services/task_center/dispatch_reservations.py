@@ -15,6 +15,7 @@ from app.models import Action
 
 from .dispatch_claim_allocation import (
     allocate_window,
+    dispatch_demand_hash,
     dispatch_rebuild_input_hash,
     request_window_rebuild,
 )
@@ -26,6 +27,7 @@ from .dispatch_claim_ledger import (
     reconcile_scope_active,
     reconcile_window_active,
     release_dispatch_claim,
+    reservation_available,
     scope_for_update,
     sync_scope_capacity,
     sync_window_capacity,
@@ -96,9 +98,21 @@ def plan_dispatch_claims(
     released_count += active_release_count
     released_count += scope_release_count
     released_count += int(window.pending_rebuild_release_count or 0)
-    if window.unclaimed_allocated_count > 0:
+    if window.unclaimed_allocated_count > 0 and reservations:
         released_count = 0
-    if released_count:
+    demand_hash = dispatch_demand_hash(demands)
+    demand_without_reservation = any(
+        reservation_available(reservations.get(demand.key)) <= 0
+        for demand in demands
+    )
+    input_changed = (
+        window.allocation_state == "ready"
+        and (
+            window.ready_rebuild_snapshot_hash != demand_hash
+            or demand_without_reservation
+        )
+    )
+    if released_count or input_changed:
         request_window_rebuild(
             window,
             released_count=released_count,
@@ -108,6 +122,7 @@ def plan_dispatch_claims(
                 demands,
                 released_count=released_count,
             ),
+            input_changed=input_changed,
         )
     sync_window_capacity(window, capacity)
     if window.allocation_state != "ready":

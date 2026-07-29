@@ -35,7 +35,7 @@ class TaskDayLedger(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
-    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
     task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"))
     timezone_snapshot: Mapped[str] = mapped_column(String(50))
     timezone_revision: Mapped[int] = mapped_column(Integer)
@@ -70,17 +70,18 @@ class TaskGroupDailyMessageSlot(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
-    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
     task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"))
     task_day_ledger_id: Mapped[str] = mapped_column(
         ForeignKey("task_day_ledgers.id", ondelete="CASCADE")
     )
     target_operation_target_id: Mapped[int] = mapped_column(
-        ForeignKey("operation_targets.id")
+        ForeignKey("operation_targets.id", ondelete="CASCADE")
     )
     task_account_daily_coverage_id: Mapped[str | None] = mapped_column(
         ForeignKey(
             "task_account_daily_coverage.id",
+            ondelete="SET NULL",
             name="fk_group_message_slot_account_coverage",
         ),
         nullable=True,
@@ -102,7 +103,7 @@ class ContentMixContract(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
-    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
     content_mix_scope_key: Mapped[str] = mapped_column(String(255))
     content_contract_version: Mapped[int] = mapped_column(Integer)
     scope_total_slots: Mapped[int] = mapped_column(Integer)
@@ -143,10 +144,10 @@ class ContentMixCycle(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
-    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
     task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"))
     target_operation_target_id: Mapped[int] = mapped_column(
-        ForeignKey("operation_targets.id")
+        ForeignKey("operation_targets.id", ondelete="CASCADE")
     )
     task_day_ledger_id: Mapped[str] = mapped_column(
         ForeignKey("task_day_ledgers.id", ondelete="CASCADE")
@@ -178,20 +179,24 @@ class ContentMixCycleSlot(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
-    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
     cycle_id: Mapped[str] = mapped_column(
         ForeignKey("content_mix_cycles.id", ondelete="CASCADE")
     )
     slot_index: Mapped[int] = mapped_column(Integer)
     primary_quantity_slot_id: Mapped[str] = mapped_column(
-        ForeignKey("task_group_daily_message_slots.id")
+        ForeignKey("task_group_daily_message_slots.id", ondelete="CASCADE")
     )
     relation_kind: Mapped[str] = mapped_column(String(16))
     reply_requirement_key: Mapped[str] = mapped_column(String(120), default="")
     initial_reply_to_message_id: Mapped[str] = mapped_column(String(160), default="")
     slot_attempt: Mapped[int] = mapped_column(Integer, default=0)
     current_action_id: Mapped[str | None] = mapped_column(
-        ForeignKey("actions.id", name="fk_content_mix_slot_current_action"),
+        ForeignKey(
+            "actions.id",
+            ondelete="SET NULL",
+            name="fk_content_mix_slot_current_action",
+        ),
         nullable=True,
     )
     slot_state: Mapped[str] = mapped_column(String(32), default="unmaterialized")
@@ -218,7 +223,7 @@ class ContentMixObligation(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
-    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
     content_mix_contract_id: Mapped[str] = mapped_column(
         ForeignKey("content_mix_contracts.id", ondelete="CASCADE")
     )
@@ -231,7 +236,11 @@ class ContentMixObligation(Base):
         nullable=True,
     )
     assigned_action_id: Mapped[str | None] = mapped_column(
-        ForeignKey("actions.id"),
+        ForeignKey(
+            "actions.id",
+            ondelete="SET NULL",
+            name="fk_content_mix_obligation_assigned_action",
+        ),
         nullable=True,
     )
     assignment_version: Mapped[int] = mapped_column(Integer, default=1)

@@ -156,7 +156,7 @@ def planning_blocked_by_dispatcher_lag(progress: dict[str, Any]) -> bool:
 
 def hard_hourly_stats(session: Session, task: Task, now: datetime, current_stats: dict[str, Any]) -> dict[str, Any]:
     if task.type != "group_ai_chat" or not enabled(task):
-        return _disabled_stats(current_stats)
+        return disabled_stats(current_stats)
     now_local = normalize(task, now)
     bucket_start, bucket_end = hour_bounds(task, now)
     buckets = _recent_buckets(session, task, now_local, bucket_start)
@@ -290,7 +290,7 @@ def hour_bounds(task: Task, value: datetime) -> tuple[datetime, datetime]:
 def bucket_iso(task: Task, bucket_start: datetime) -> str:
     return normalize(task, bucket_start).isoformat()
 
-def _disabled_stats(stats: dict[str, Any]) -> dict[str, Any]:
+def disabled_stats(stats: dict[str, Any]) -> dict[str, Any]:
     return {**stats, "hard_hourly_target_enabled": False, "hard_hourly_status": "disabled"}
 
 

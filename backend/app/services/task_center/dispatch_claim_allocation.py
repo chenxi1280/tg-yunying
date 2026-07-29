@@ -59,7 +59,7 @@ def allocate_window(
     scope.opportunity_cursor = opportunity_cursor
     scope.version += 1
     window.allocation_state = "ready"
-    window.ready_rebuild_snapshot_hash = window.rebuild_input_hash
+    window.ready_rebuild_snapshot_hash = dispatch_demand_hash(demands)
     window.pending_rebuild_release_count = 0
     window.allocation_scope_version = scope.version
     window.allocation_scope_active_count = scope.active_claim_count
@@ -70,8 +70,9 @@ def request_window_rebuild(
     *,
     released_count: int,
     rebuild_input_hash: str,
+    input_changed: bool = False,
 ) -> bool:
-    if released_count <= 0:
+    if released_count <= 0 and not input_changed:
         return False
     window.allocation_state = "rebuild_required"
     window.rebuild_input_hash = rebuild_input_hash
@@ -81,6 +82,23 @@ def request_window_rebuild(
     )
     window.version += 1
     return True
+
+
+def dispatch_demand_hash(demands: list[DispatchClaimDemand]) -> str:
+    payload = [
+        {
+            "key": demand.key,
+            "business_task_id": demand.business_task_id,
+            "lane_business_kind": demand.lane_business_kind,
+            "action_ids": demand.action_ids,
+            "required_claims": demand.required_claims,
+            "urgency_score": demand.urgency_score,
+            "strict": demand.is_strict,
+        }
+        for demand in sorted(demands, key=lambda item: item.key)
+    ]
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def dispatch_rebuild_input_hash(

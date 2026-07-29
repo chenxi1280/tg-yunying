@@ -3262,7 +3262,10 @@ def _limit_context_bound_turns(
     allowed_count = len([time_item for time_item in planned_times if _task_datetime(task, time_item) <= cutoff])
     limited_count = max(1, min(int(turn_count or 1), allowed_count))
     _record_context_bound_limit_stats(task, turn_count, limited_count, window_seconds)
-    return limited_count, planned_times[:limited_count]
+    limited_times = planned_times[:limited_count]
+    if allowed_count == 0 and limited_times:
+        limited_times[0] = cutoff
+    return limited_count, limited_times
 
 
 def _limit_context_bound_quality_schedule(
@@ -3280,14 +3283,17 @@ def _limit_context_bound_quality_schedule(
     window_seconds = _context_bound_schedule_window_seconds(config)
     cutoff = _task_datetime(task, _now()) + timedelta(seconds=window_seconds)
     allowed_count = len([item for item in planned_times if _task_datetime(task, item) <= cutoff])
-    limited_count = min(len(quality_items), allowed_count)
+    limited_count = max(1, min(len(quality_items), allowed_count)) if quality_items else 0
     _record_context_bound_limit_stats(
         task,
         int((task.stats or {}).get("context_bound_requested_turns") or len(quality_items)),
         limited_count,
         window_seconds,
     )
-    return quality_items[:limited_count], planned_times[:limited_count]
+    limited_times = planned_times[:limited_count]
+    if allowed_count == 0 and limited_times:
+        limited_times[0] = cutoff
+    return quality_items[:limited_count], limited_times
 
 
 def _requires_context_bound_window(
@@ -3299,7 +3305,6 @@ def _requires_context_bound_window(
     return (
         bool(has_context)
         and not progress
-        and not deferred_generation
         and int(config.get("context_expire_after_messages") or 0) > 0
     )
 

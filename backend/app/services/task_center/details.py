@@ -13,7 +13,7 @@ from .executors.common import quantity_jitter_bounds
 from .executors.group_ai_chat import account_profile_summaries
 from .executors.group_relay import relay_source_filter_reason
 from .fingerprints import content_fingerprint
-from .hard_hourly import hard_hourly_stats
+from .hard_hourly import disabled_stats as disabled_hard_hourly_stats, hard_hourly_stats
 from .ai_act_types import canonical_ai_group_act_type
 from .membership_recovery import classify_membership_recovery
 from .account_coverage import task_account_coverage
@@ -41,7 +41,7 @@ def _task_payload(
     target_summary = _target_summary(session, task, list_context)
     stats = _stats_with_account_coverage(session, task, task.stats or {}) if include_live_stats else dict(task.stats or {})
     if not include_live_stats and task.type == "group_ai_chat":
-        stats = hard_hourly_stats(session, task, _now(), stats)
+        stats = disabled_hard_hourly_stats(stats)
     if not include_detail_search:
         stats = _with_dispatch_claim_snapshot(session, task, stats)
     search_parts = [
