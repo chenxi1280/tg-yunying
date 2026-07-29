@@ -277,6 +277,8 @@ source Action 在当前 Claim Window 的 commit 事务末尾绑定其任务日 l
 
 `dispatch_prebound=true` 的 Action 只可使用原 assignment/Reservation/Window。plan 即使发现 Window 已结束，也必须保留该预绑定身份进入原子 confirm 的精确释放分支，禁止加入普通 Action 的新 allocation。账号全局安全策略、账号 shard、运行资源或 confirm CAS 使本 Window 无法执行时，不延后复用旧 Action；按 `search_resource_saturated|search_reservation_cas_abandoned|search_assignment_expired` 中的真实原因创建唯一 release batch，终结 Action、释放 unit 并加入同一 rebuild wave。release 自身同样按 `Scope → Window → ShardAllocation → Reservation → Assignment` 加锁。
 
+release 的 batch、item、exclusion、Reservation/Window 计数与 rebuild wave 是一个原子事务。实现必须在读取 exclusion 生成 `release_unit_set_hash`、再生成 outcome hash前显式 flush，不得依赖 SQLAlchemy autoflush；生产 `SessionLocal(autoflush=false)` 和 QA 会话必须得到相同结果。flush、hash 或最终校验任一步失败都整体回滚。
+
 任务时区中途修改时，当前 ledger、source 和 Attempt 继续使用旧 `timezone_snapshot/deadline_at`；配置先进入 `pending_timezone`，在旧 deadline 建立新时区 ledger。若该时刻不是新时区 00:00，先建立 `timezone_transition` 过渡 ledger，随后才进入完整日；相邻 UTC 区间必须首尾相接。过渡 ledger 尽力完成但不纳入完整日 SLA。
 
 点击只由同一 ExecutionAttempt 内完整的远端点击事实统计：
