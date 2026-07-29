@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -24,6 +26,8 @@ from app.services.task_center.channel_fulfillment_queries import (
     view_account_ids_for_messages,
 )
 from app.services.task_center.fulfillment_takeover import takeover_task
+from app.services.task_center.executors import group_ai_chat, search_click
+from app.services.task_center.payloads import SendMessagePayload
 
 
 pytestmark = pytest.mark.no_postgres
@@ -255,6 +259,81 @@ def test_planner_records_one_task_error_and_continues_other_tasks(
         error = broken.stats["planner_runtime_error"]
         assert error["error_type"] == "ValueError"
         assert error["message"] == "fulfillment_obligation_already_bound"
+
+
+def test_content_mix_replan_reads_metadata_from_failed_empty_action(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    planned_at = _now()
+    fresh = group_ai_chat.SlotSnapshot(
+        account_id=1,
+        planned_at=planned_at,
+        payload=SendMessagePayload(
+            group_id=1,
+            ai_generation_status="pending",
+        ),
+    )
+    monkeypatch.setattr(
+        group_ai_chat,
+        "_build_slot_snapshot",
+        lambda *_args, **_kwargs: fresh,
+    )
+    blueprint = SimpleNamespace(
+        generation=SimpleNamespace(times=[planned_at], quality_items=[{}]),
+    )
+    cycle_slot = SimpleNamespace(
+        id="slot-1",
+        cycle_id="cycle-1",
+        relation_kind="direct",
+        primary_quantity_slot_id="quantity-1",
+        slot_attempt=1,
+    )
+    previous = Action(
+        id="failed-reply-action",
+        tenant_id=1,
+        task_id="task-ai",
+        task_type="group_ai_chat",
+        action_type="send_message",
+        status="failed",
+        payload={
+            "chat_id": "https://t.me/example",
+            "message_text": "",
+            "ai_generation_status": "reply_target_stale",
+            "cycle_id": "legacy-cycle",
+            "slot_id": "legacy-slot",
+            "content_mix_contract_version": 1,
+            "rule_set_id": 7,
+        },
+    )
+
+    snapshot = group_ai_chat._replan_slot_snapshot(
+        blueprint,
+        SimpleNamespace(id=1),
+        0,
+        cycle_slot,
+        previous,
+    )
+
+    assert snapshot.payload.ai_generation_status == "pending"
+    assert snapshot.payload.content_mix_cycle_slot_id == "slot-1"
+    assert snapshot.payload.cycle_id == "legacy-cycle"
+    assert snapshot.payload.rule_set_id == 7
+
+
+def test_search_click_finalize_restarts_before_setting_serializable() -> None:
+    events: list[str] = []
+    session = SimpleNamespace(
+        bind=SimpleNamespace(dialect=SimpleNamespace(name="postgresql")),
+        rollback=lambda: events.append("rollback"),
+        execute=lambda statement: events.append(str(statement)),
+    )
+
+    search_click._restart_serializable_finalize_transaction(session)
+
+    assert events == [
+        "rollback",
+        "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE",
+    ]
 
 
 def _session_factory():

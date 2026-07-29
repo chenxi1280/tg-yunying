@@ -131,6 +131,18 @@ GROUP_BOT_PLANNABLE_STATES = frozenset({
     "group_bot_admission_ready",
     "post_follow_visibility_probe",
 })
+CONTENT_MIX_REPLAN_PRESERVED_FIELDS = (
+    "cycle_id",
+    "slot_id",
+    "content_mix_contract_version",
+    "rule_set_id",
+    "rule_set_version_id",
+    "resolved_rule_set_version_id",
+    "rule_set_version",
+    "rule_trace",
+    "material_intent",
+    "allow_material",
+)
 
 
 @dataclass(frozen=True)
@@ -1783,27 +1795,33 @@ def _replan_slot_snapshot(
             planned_at,
         )
     )
-    old = SendMessagePayload.model_validate(previous.payload or {})
-    payload = fresh.payload.model_copy(update={
-        "cycle_id": old.cycle_id,
-        "slot_id": old.slot_id,
+    payload = _replan_slot_payload(
+        fresh.payload,
+        previous.payload,
+        cycle_slot,
+    )
+    return SlotSnapshot(account.id, planned_at, payload)
+
+
+def _replan_slot_payload(
+    fresh: SendMessagePayload,
+    previous_payload: dict,
+    cycle_slot: ContentMixCycleSlot,
+) -> SendMessagePayload:
+    old = previous_payload if isinstance(previous_payload, dict) else {}
+    payload_data = fresh.model_dump(mode="python")
+    for field in CONTENT_MIX_REPLAN_PRESERVED_FIELDS:
+        payload_data[field] = old.get(field, getattr(fresh, field))
+    payload_data.update({
         "content_mix_cycle_id": cycle_slot.cycle_id,
         "content_mix_cycle_slot_id": cycle_slot.id,
         "primary_quantity_slot_id": cycle_slot.primary_quantity_slot_id,
-        "content_mix_contract_version": old.content_mix_contract_version,
         "relation_kind": cycle_slot.relation_kind,
         "slot_attempt": cycle_slot.slot_attempt + 1,
         "planned_material_kind": "unresolved",
         "planned_normal_text_emoji": "unresolved",
-        "rule_set_id": old.rule_set_id,
-        "rule_set_version_id": old.rule_set_version_id,
-        "resolved_rule_set_version_id": old.resolved_rule_set_version_id,
-        "rule_set_version": old.rule_set_version,
-        "rule_trace": old.rule_trace,
-        "material_intent": old.material_intent,
-        "allow_material": old.allow_material,
     })
-    return SlotSnapshot(account.id, planned_at, payload)
+    return SendMessagePayload.model_validate(payload_data)
 
 
 def _remember_reserved_coverage_row(
