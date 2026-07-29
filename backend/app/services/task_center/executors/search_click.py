@@ -2,10 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-import hashlib
 from uuid import uuid4
 
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -23,15 +22,20 @@ from app.models import (
 from app.services._common import _now
 
 from ..heartbeat import record_worker_heartbeat
-from ..search_click_epoch_ownership import solver_owner_is_active, units_from_solver_snapshot
 from ..dispatch_release_wave import start_or_join_dispatch_rebuild_wave
+from ..datetime_compat import is_after_or_equal
 from ..payloads import create_search_join_action
-from ..search_click_assignment_solver import SearchClickCandidatePath, solve_search_click_assignments
+from ..search_click_assignment_solver import solve_search_click_assignments
 from ..search_click_dispatch_allocation import (
     SearchClickFulfillmentUnit,
     prepare_search_click_fulfillment_units,
 )
 from ..search_click_demands import record_task_opportunities, search_click_demands
+from ..search_click_epoch_ownership import (
+    existing_search_epoch,
+    solver_owner_is_active,
+    units_from_solver_snapshot,
+)
 from ..search_click_solver_snapshot import (
     SearchSolverSnapshot,
     assemble_search_solver_snapshot,
@@ -42,8 +46,14 @@ from ..search_click_outcome_identity import (
     finalize_search_outcome_hash,
     release_unit_set_hash,
     search_outcome_hash,
+    search_path_snapshot_hash,
 )
 from ..search_click_solver_lease import SolverLeaseRenewal
+from ..search_click_finalize_locking import (
+    lock_search_finalize_inputs,
+    restart_serializable_finalize_transaction as _restart_serializable_finalize_transaction,
+    run_serializable_finalize,
+)
 from .search_click_candidates import (
     SearchClickPathContext,
     candidate_paths,
@@ -81,7 +91,7 @@ def build_plan(session: Session, task: Task) -> int:
         return 0
     window_id = units[0].window_id
     allocation_epoch = units[0].dispatch_allocation_epoch
-    existing = _existing_epoch(session, window_id, allocation_epoch)
+    existing = existing_search_epoch(session, window_id, allocation_epoch)
     if existing is not None:
         return _handle_existing_epoch(session, existing, now_value)
     paths = candidate_paths(session, units, now_value)
@@ -100,7 +110,7 @@ def build_plan(session: Session, task: Task) -> int:
         now_value=now_value,
     )
     if epoch is None:
-        existing = _existing_epoch(session, window_id, allocation_epoch)
+        existing = existing_search_epoch(session, window_id, allocation_epoch)
         return _handle_existing_epoch(session, existing, now_value)
     with SolverLeaseRenewal(
         session.get_bind(),
@@ -113,7 +123,7 @@ def build_plan(session: Session, task: Task) -> int:
             solver_problem_hash=snapshot.problem_hash,
             solver_input_hash=snapshot.input_hash,
         )
-    created_by_task = _finalize_epoch(
+    created_by_task = _commit_finalize_or_abandon(
         session,
         _FinalizeContext(epoch, units, paths, result, now_value),
     )
@@ -132,17 +142,6 @@ def _finalize_orphaned_epochs(
     ))
     for epoch in epochs:
         _handle_existing_epoch(session, epoch, now_value)
-
-
-def _existing_epoch(
-    session: Session,
-    window_id: str,
-    allocation_epoch: int,
-) -> SearchClickAssignmentEpoch | None:
-    return session.scalar(select(SearchClickAssignmentEpoch).where(
-        SearchClickAssignmentEpoch.dispatch_claim_window_id == window_id,
-        SearchClickAssignmentEpoch.dispatch_allocation_epoch == allocation_epoch,
-    ))
 
 
 def _create_open_epoch(
@@ -207,13 +206,14 @@ def _handle_existing_epoch(
 def _finalize_epoch(
     session: Session, context: _FinalizeContext,
 ) -> dict[str, int]:
+    window_id = context.epoch.dispatch_claim_window_id
     _restart_serializable_finalize_transaction(session)
+    window = lock_search_finalize_inputs(session, window_id, context.units)
     if not solver_owner_is_active(session, context.epoch):
         return _abandon_epoch(session, context, "search_solver_owner_lost")
     if not _snapshot_still_matches(session, context):
         return _abandon_epoch(session, context, "search_solver_input_changed")
-    window = _lock_finalize_inputs(session, context)
-    if window is None or window.bucket_end <= context.now:
+    if window is None or is_after_or_equal(context.now, window.bucket_end):
         return _abandon_epoch(session, context, "search_solver_window_expired")
     if (window.allocation_state != "ready"
             or window.allocation_epoch != context.epoch.dispatch_allocation_epoch):
@@ -255,36 +255,50 @@ def _finalize_epoch(
     return created_by_task
 
 
-def _restart_serializable_finalize_transaction(session: Session) -> None:
-    session.rollback()
-    if session.bind is not None and session.bind.dialect.name == "postgresql":
-        session.execute(text("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE"))
-
-
-def _lock_finalize_inputs(
+def _commit_finalize_or_abandon(
     session: Session,
     context: _FinalizeContext,
-) -> DispatchClaimWindow | None:
-    window = session.scalar(
-        select(DispatchClaimWindow)
-        .where(DispatchClaimWindow.id == context.epoch.dispatch_claim_window_id)
-        .with_for_update()
+) -> dict[str, int]:
+    epoch_id = context.epoch.id
+    window_id = context.epoch.dispatch_claim_window_id
+    created_by_task = run_serializable_finalize(
+        session,
+        lambda: _finalize_epoch(session, context),
+        lambda: _abandon_serialization_failed_epoch(
+            session,
+            epoch_id=epoch_id,
+            window_id=window_id,
+            units=context.units,
+            now_value=context.now,
+        ),
     )
-    reservation_ids = sorted({unit.reservation_id for unit in context.units})
-    obligation_ids = sorted({unit.obligation_id for unit in context.units})
-    list(session.scalars(
-        select(DispatchClaimReservation)
-        .where(DispatchClaimReservation.id.in_(reservation_ids))
-        .order_by(DispatchClaimReservation.id)
+    return created_by_task or {}
+
+
+def _abandon_serialization_failed_epoch(
+    session: Session,
+    *,
+    epoch_id: str,
+    window_id: str,
+    units: tuple[SearchClickFulfillmentUnit, ...],
+    now_value: datetime,
+) -> None:
+    lock_search_finalize_inputs(session, window_id, units)
+    epoch = session.scalar(
+        select(SearchClickAssignmentEpoch)
+        .where(SearchClickAssignmentEpoch.id == epoch_id)
         .with_for_update()
-    ))
-    list(session.scalars(
-        select(SearchClickFulfillmentObligation)
-        .where(SearchClickFulfillmentObligation.id.in_(obligation_ids))
-        .order_by(SearchClickFulfillmentObligation.id)
-        .with_for_update()
-    ))
-    return window
+        .execution_options(populate_existing=True)
+    )
+    if epoch is None or epoch.finalize_status == "finalized":
+        return
+    _abandon_units(
+        session,
+        epoch,
+        units=units,
+        now_value=now_value,
+        reason="search_solver_serialization_failure",
+    )
 
 
 def _snapshot_still_matches(
@@ -317,7 +331,7 @@ def _bind_assignment_action(
     reservation = session.get(DispatchClaimReservation, unit.reservation_id)
     if obligation is None or reservation is None or obligation.status != "open":
         raise RuntimeError("search_click_assignment_precondition_lost")
-    snapshot_hash = _path_snapshot_hash(path.candidate)
+    snapshot_hash = search_path_snapshot_hash(path.candidate)
     assignment = SearchClickOpportunityAssignment(
         tenant_id=path.payload_input.account.tenant_id,
         task_id=unit.task_id,
@@ -482,8 +496,4 @@ def _abandon_units(
     )
     epoch.finalize_status = "finalized"
     epoch.finalized_at = now_value
-
-
-def _path_snapshot_hash(candidate: SearchClickCandidatePath) -> str:
-    return hashlib.sha256(repr(candidate).encode()).hexdigest()
 __all__ = ["build_plan"]

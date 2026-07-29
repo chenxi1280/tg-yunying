@@ -18,6 +18,17 @@ from .search_click_dispatch_allocation import SearchClickFulfillmentUnit
 SOLVER_OWNER_STALE_SECONDS = 120
 
 
+def existing_search_epoch(
+    session: Session,
+    window_id: str,
+    allocation_epoch: int,
+) -> SearchClickAssignmentEpoch | None:
+    return session.scalar(select(SearchClickAssignmentEpoch).where(
+        SearchClickAssignmentEpoch.dispatch_claim_window_id == window_id,
+        SearchClickAssignmentEpoch.dispatch_allocation_epoch == allocation_epoch,
+    ))
+
+
 def solver_owner_is_active(
     session: Session,
     epoch: SearchClickAssignmentEpoch,
@@ -82,4 +93,8 @@ def units_from_solver_snapshot(
     )
 
 
-__all__ = ["solver_owner_is_active", "units_from_solver_snapshot"]
+__all__ = [
+    "existing_search_epoch",
+    "solver_owner_is_active",
+    "units_from_solver_snapshot",
+]

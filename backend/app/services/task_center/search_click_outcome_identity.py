@@ -21,6 +21,10 @@ def release_unit_set_hash(release_facts: list[dict]) -> str:
     return _hash(values)
 
 
+def search_path_snapshot_hash(candidate: object) -> str:
+    return hashlib.sha256(repr(candidate).encode()).hexdigest()
+
+
 def finalize_search_outcome_hash(
     session: Session,
     epoch: SearchClickAssignmentEpoch,
@@ -95,4 +99,5 @@ __all__ = [
     "finalize_search_outcome_hash",
     "release_unit_set_hash",
     "search_outcome_hash",
+    "search_path_snapshot_hash",
 ]
