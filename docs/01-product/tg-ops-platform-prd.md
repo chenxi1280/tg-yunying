@@ -3980,6 +3980,8 @@ AI 活跃群 Planner 需要额外满足：
 
 > **2026-07-30 存量 Action 终态补充：** “保留 Gateway 历史”不等于允许未绑定新义务的旧 Action 回到 pending 并领取新 Reservation。接管每次幂等执行都要收口未绑定 `primary_quantity_slot_id/search_click_obligation_id` 的旧 AI/search Action：无 Gateway Attempt 的 skipped，最后 Attempt 已明确 success/failed 的保持对应历史终态，Gateway 已开始但结果不确定的固定为 unknown；历史 Attempt 不删除，也不计入新合同。AI 旧 `coverage_capacity_status/proof`、sendable proof 及“容量不足已停止创建”错误同时清除，避免已取消的群日/小时门禁继续显示 blocked。
 
+> **2026-07-30 搜索预绑定时间语义补充：** `SearchClickOpportunityAssignment` 已绑定 Action 后，Dispatcher 在 plan 与原子 confirm 两处判断 Claim Window 是否仍开放时，必须把 PostgreSQL 返回的 aware `bucket_end` 与业务当前时间统一为 `Asia/Shanghai` aware 时间后比较。时间对象表示差异不得抛出异常、不得阻断同一 Dispatcher drain 中的 AI/评论/点赞/浏览，也不得把已绑定搜索 Action 重新交给通用未绑定 claim。
+
 - 搜索任务结构合法即直接创建成功；创建接口不建立 ledger、不证明容量、不返回需要确认的风险。创建并启动或后续启动时才建立当前 `task_day_ledger_id`，根据实时 Telegram、账号、代理、授权槽位和协议事实分别计算不扣 held/unknown 的 `remaining_click_count`、用于防重建单的 `planning_click_deficit`、`hard_safe_attempt_capacity` 与 `catch_up_required`。运行期容量不足只写可解释 blocker，任务保持 `running` 并在事实变化后自动重算。
 - 当前未结束且同时包含 click 与 membership/admission 的旧任务必须幂等接管为 `search_click + click_only`：只从原 `daily_click_target_count` 建立新 click 合同，移除成员目标，终结未进 Gateway 的旧 source/membership Action；Gateway-started/success/unknown 与全部历史事实保持原绑定。缺少可证明 click 目标等结构字段时显式报 `legacy_search_click_contract_invalid`，不得从旧成员目标猜测；completed/deleted 只读。
 - 本节此前出现的“AI 硬目标在严格 source 之前”的历史固定排序，以当前 Claim Window 合同为准覆盖；历史描述仅说明旧版本行为，不得用于实现或验收。Dispatcher 先在真实共享 scope 中 reconcile active claim，再按父业务任务最低轮转与剩余需求最大余数法分配 Reservation；当前只有一个业务租户，因此不增加 tenant 级调度。容量不足写 `shared_dispatch_capacity_insufficient`，不能让任一类别静默吞掉全部 slot。

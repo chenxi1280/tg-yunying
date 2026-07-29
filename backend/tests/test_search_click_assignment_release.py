@@ -33,6 +33,7 @@ from app.services.task_center.prebound_search_claim import (
 from app.services.task_center.search_click_assignment_release import (
     release_search_click_assignment,
 )
+from app.timezone import BEIJING_TZ
 
 
 pytestmark = pytest.mark.no_postgres
@@ -61,6 +62,20 @@ def test_prebound_assignment_claim_consumes_bound_counter(session: Session) -> N
     assert reservation.claimed_count == 1
     assert assignment.state == "claimed"
     assert action.result["dispatch_claim_active"] is True
+
+
+def test_prebound_assignment_accepts_postgres_aware_window(
+    session: Session,
+) -> None:
+    action = session.get(Action, "action-1")
+    window = session.get(DispatchClaimWindow, "window-1")
+    window.bucket_end = _now().replace(tzinfo=BEIJING_TZ) + timedelta(minutes=1)
+
+    plan = plan_prebound_search_claims(session, [action])
+    binding = plan.bindings_by_action_id[action.id]
+    action.status = "claiming"
+
+    assert confirm_prebound_search_claim(session, action, binding)
 
 
 def test_pre_gateway_release_is_idempotent_and_opens_one_rebuild_wave(

@@ -14,6 +14,7 @@ from app.models import (
 )
 from app.services._common import _now
 
+from .datetime_compat import is_before
 from .dispatch_claim_ledger import binding_metadata, for_update
 from .dispatch_claim_types import DispatchClaimBinding, DispatchClaimPlan
 
@@ -140,7 +141,7 @@ def _binding_rows_valid(
         return False
     if action.status != "pending" or assignment.action_id != action.id:
         return False
-    if int(reservation.bound_count) <= 0 or window.bucket_end <= _now():
+    if int(reservation.bound_count) <= 0 or not _window_open(window):
         return False
     exclusion = _unit_exclusion(action, assignment)
     return exclusion is None
@@ -201,8 +202,12 @@ def _prebound_claim_available(
         and assignment.action_id == action.id
         and assignment.state == "action_bound"
         and reservation.bound_count > 0
-        and window.bucket_end > _now()
+        and _window_open(window)
     )
+
+
+def _window_open(window: DispatchClaimWindow) -> bool:
+    return is_before(_now(), window.bucket_end)
 
 
 __all__ = ["confirm_prebound_search_claim", "plan_prebound_search_claims"]
