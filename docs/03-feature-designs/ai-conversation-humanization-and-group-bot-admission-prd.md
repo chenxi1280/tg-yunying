@@ -298,14 +298,14 @@ not_joined -> joining
   -> 此后才允许 membership test_message（若任务仍配置）
 ```
 
-#### 5.7.1 同群 admission 串行窗口（2026-07-27）
+#### 5.7.1 同账号 admission 串行窗口（2026-07-29 supersede）
 
-在新 join/rejoin 的 Telegram Gateway 调用前，系统必须取得目标群行锁并创建/复用一个可审计的 admission window。一个群在下列任一状态期间只允许一个新账号进入该窗口：`joining`、观察中、频道 follow 中、等待 bot confirmation。
+在新 join/rejoin 的 Telegram Gateway 调用前，系统必须取得目标群行锁并创建/复用一个可审计的 admission window。互斥键固定为 `target_group_id + account_id + admission_generation`；同一账号在 `joining`、观察中、频道 follow 中、等待 bot confirmation 期间只允许一个执行窗口，同群不同账号可以并行。
 
-- 已有窗口时，后续 membership Action 必须在 **Gateway 前** 回到 `pending`，写 `group_bot_admission_window_busy`、占用账号/状态和下一次检查时刻；不得假装已经 join、不得改写 `can_send`、不得发试探正文。
+- 同一账号/世代已有窗口时，后续 membership Action 必须在 **Gateway 前** 回到 `pending`，写 `group_bot_admission_window_busy`、占用账号/状态和下一次检查时刻；不得假装已经 join、不得改写 `can_send`、不得发试探正文。
 - window 的正常释放点是对应 admission 进入 ready、明确 blocked/abandoned，或对应 join 在 Gateway 前失败；若 Gateway 结果未知，窗口保持明确的 unknown/人工恢复状态，不能用固定超时偷偷放行。
 - legacy 的 `group_bot_rule_unattributed` 不能作为新窗口永久锁；它只能经单账号、带版本和证据的 restart observation 重启，禁止批量 reset。
-- 此串行化只保护同一群的群管身份归属，不减少日覆盖分母；其他已 `can_send=true ∧ group_bot_admission_ready` 账号仍可正常规划和发送。
+- 此串行化只防止同一账号/世代重复执行准入，不减少日覆盖分母；同群其他账号必须继续入群、观察、follow、confirm 或发送，不得形成群级 busy。
 
 规则：
 

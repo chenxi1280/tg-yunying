@@ -121,6 +121,20 @@ def takeover_task(
     )
 
 
+def block_invalid_fulfillment_task(task: Task, exc: ValueError) -> None:
+    detail = str(exc)
+    task.status = "paused"
+    task.next_run_at = None
+    task.last_error = f"任务结构阻塞：{detail}"
+    task.stats = {
+        **(task.stats or {}),
+        "fulfillment_takeover_status": "blocked",
+        "fulfillment_takeover_blocker_code": "task_contract_invalid",
+        "fulfillment_takeover_error": detail,
+        "fulfillment_takeover_checked_at": _now().isoformat(),
+    }
+
+
 def _eligible(task: Task) -> bool:
     return (
         task.deleted_at is None
@@ -394,6 +408,7 @@ __all__ = [
     "FULFILLMENT_TASK_TYPES",
     "TaskTakeoverResult",
     "UNIFIED_TASK_GATE_LIMIT",
+    "block_invalid_fulfillment_task",
     "normalize_fulfillment_pacing",
     "takeover_task",
 ]

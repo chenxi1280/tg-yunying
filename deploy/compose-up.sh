@@ -201,6 +201,12 @@ echo "==> Starting backend and applying migrations"
 compose up -d --no-build --remove-orphans "${BACKEND_SERVICES[@]}"
 wait_for_container_ready tgyunying-backend "${TGYUNYING_BACKEND_READY_TIMEOUT_SECONDS:-180}"
 
+echo "==> Taking over active tasks while all workers are fenced"
+docker exec -i tgyunying-backend \
+  python -m scripts.takeover_all_task_fulfillment
+docker exec -i tgyunying-backend \
+  python -m scripts.takeover_all_task_fulfillment --apply
+
 echo "==> Starting workers after backend migration is healthy"
 compose up -d --no-build --remove-orphans "${WORKER_SERVICES[@]}"
 

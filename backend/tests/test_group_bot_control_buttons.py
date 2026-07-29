@@ -646,7 +646,7 @@ def _non_control_snapshot() -> GroupMessageSnapshot:
     )
 
 
-def test_second_group_membership_defers_before_gateway_while_admission_is_open(monkeypatch) -> None:
+def test_same_account_membership_defers_while_admission_is_open(monkeypatch) -> None:
     with _session() as session:
         group, account = _group(), _account(11, "账号甲")
         task = Task(
@@ -663,7 +663,7 @@ def test_second_group_membership_defers_before_gateway_while_admission_is_open(m
             session,
             tenant_id=1,
             group_id=group.id,
-            account_id=99,
+            account_id=account.id,
             membership_action_id="join-existing",
             join_start_cursor="100",
         )
@@ -698,7 +698,7 @@ def test_second_group_membership_defers_before_gateway_while_admission_is_open(m
         assert action.result["error_code"] == "group_bot_admission_window_busy"
 
 
-def test_deferred_group_membership_runs_after_previous_admission_is_ready(monkeypatch) -> None:
+def test_distinct_account_membership_runs_while_previous_admission_is_open(monkeypatch) -> None:
     with _session() as session:
         first_admission, action, payload, second = _serialized_membership_setup(session)
         calls: list[int] = []
@@ -714,10 +714,6 @@ def test_deferred_group_membership_runs_after_previous_admission_is_ready(monkey
         )
 
         assert dispatcher._dispatch_channel_membership(session, action, second, object(), payload) is True
-        assert calls == []
-        first_admission.state = "group_bot_admission_ready"
-        action.status = "executing"
-
-        assert dispatcher._dispatch_channel_membership(session, action, second, object(), payload) is True
         assert calls == [1]
         assert action.status == "success"
+        assert first_admission.state != "group_bot_admission_ready"
