@@ -42,7 +42,7 @@ def reconcile_complete_release(
     if reservation is None:
         raise RuntimeError("release_fact_incomplete")
     _recount_reservation(session, reservation)
-    _recount_allocation(session, reservation)
+    recount_dispatch_unclaimed(session, reservation)
     return exclusion.carrier_type, batch.id
 
 
@@ -175,7 +175,7 @@ def _recount_reservation(
     reservation.version += 1
 
 
-def _recount_allocation(
+def recount_dispatch_unclaimed(
     session: Session,
     reservation: DispatchClaimReservation,
 ) -> None:
@@ -190,7 +190,7 @@ def _recount_allocation(
         == allocation.id
     ))
     allocation.unclaimed_allocated_count = sum(
-        max(0, row.reserved_claims - row.claimed_count - row.released_count)
+        _reservation_unclaimed_count(row)
         for row in reservations
     )
     allocation.version += 1
@@ -212,4 +212,17 @@ def _recount_window(session: Session, window_id: str) -> None:
     window.version += 1
 
 
-__all__ = ["reconcile_complete_release"]
+def _reservation_unclaimed_count(
+    reservation: DispatchClaimReservation,
+) -> int:
+    unclaimed = (
+        int(reservation.reserved_claims)
+        - int(reservation.claimed_count)
+        - int(reservation.released_count)
+    )
+    if unclaimed < int(reservation.bound_count):
+        raise RuntimeError("release_fact_incomplete")
+    return unclaimed
+
+
+__all__ = ["reconcile_complete_release", "recount_dispatch_unclaimed"]

@@ -16,6 +16,8 @@ from app.models import (
 )
 from app.services._common import _now
 
+from .search_click_release_reconciler import recount_dispatch_unclaimed
+
 
 def write_release_quarantine(
     bind, *, assignment_id: str, reason_code: str, trigger_key: str,
@@ -115,6 +117,7 @@ def _repair_pre_gateway_counter(
         return False
     reservation.bound_count = bound
     reservation.version += 1
+    recount_dispatch_unclaimed(session, reservation)
     quarantine.status = "resolved"
     quarantine.resolved_at = _now()
     return True

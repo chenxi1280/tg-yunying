@@ -53,6 +53,37 @@ def _action_matches_shard(
     )
 
 
+def prebound_search_epoch_action_ids(
+    session: Session,
+    action: Action,
+    account_id: int,
+) -> set[str]:
+    result = action.result if isinstance(action.result, dict) else {}
+    if action.task_type != "search_click" or not result.get("dispatch_prebound"):
+        return set()
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    assignment_id = str(
+        payload.get("search_click_assignment_id")
+        or result.get("search_click_assignment_id")
+        or ""
+    )
+    assignment = session.get(
+        SearchClickOpportunityAssignment,
+        assignment_id,
+    ) if assignment_id else None
+    if assignment is None or int(assignment.account_id) != int(account_id):
+        return set()
+    action_ids = session.scalars(select(
+        SearchClickOpportunityAssignment.action_id,
+    ).where(
+        SearchClickOpportunityAssignment.search_click_assignment_epoch_id
+        == assignment.search_click_assignment_epoch_id,
+        SearchClickOpportunityAssignment.account_id == account_id,
+        SearchClickOpportunityAssignment.action_id.is_not(None),
+    ))
+    return {str(action_id) for action_id in action_ids if action_id}
+
+
 def confirm_prebound_search_claim(
     session: Session,
     action: Action,
@@ -227,4 +258,8 @@ def _window_open(window: DispatchClaimWindow) -> bool:
     return is_before(_now(), window.bucket_end)
 
 
-__all__ = ["confirm_prebound_search_claim", "plan_prebound_search_claims"]
+__all__ = [
+    "confirm_prebound_search_claim",
+    "plan_prebound_search_claims",
+    "prebound_search_epoch_action_ids",
+]

@@ -5314,6 +5314,10 @@ AI、评论、点赞、浏览、纯搜索点击、AI 准入和 ordinary 统一�
 
 同一 `ready` Claim Window 的 Action 状态变化不再触发整窗 allocation epoch 重建；有未领取 Reservation 时继续消费原不可变分配，只有明确非空 release set，或本 epoch 份额全部消费后又出现到期债务时才进入唯一 pending rebuild wave。取得部分非零份额的任务状态为 allocated，不得整体写 `shared_dispatch_capacity_insufficient`。
 
+纯搜索点击预绑定计数必须区分“尚未绑定的 available”和“已经绑定但尚未 claim 的 bound”：Reservation available 不含 bound，ShardAllocation/Window unclaimed 必须包含 bound。assignment 绑定不减少 unclaimed，claim 或 bound release 才各减少 1；通用 reconciliation 必须按 `reserved - claimed - released` 重算 ShardAllocation/Window unclaimed，禁止按 `reserved - bound - claimed - released` 把待领取 Action 清零。否则精确释放会因中央计数被提前扣除而失败，任务持续 claim 超时且无法进入 Gateway。
+
+同一搜索 assignment epoch 已按 `hard_safe_remaining_capacity` 为某账号承诺的 prebound Action，在 claim-time 账号全局容量/冷却复检中按 cohort 排除，避免同批 Action 把彼此误算成已占用容量；随后仍由账号进程内/Redis in-flight 互斥一次只放行一个真实执行。其他 epoch、其他任务与既有发送/互动继续进入账号全局硬安全门禁，不能借 cohort 排除绕过。
+
 AI 群管准入只按 `(target_group_id, account_id, admission_generation)` 串行；同群其他账号的 unresolved/stale/waiting 不得形成群级窗口锁。发布后 Planner 在 backlog/open Action 早退判断之前，对运行中的五类任务幂等执行履约合同接管；paused/stopped 只升级合同不启动，completed/deleted 历史不改。
 
 五类 `all_task_v2` 任务不再使用旧 Planner backlog 数量门禁；存量接管清除 `planner_backlog_*` 陈旧状态并立即唤醒运行中任务。任务内履约软上限统一为 `1_000_000`：除五类通用 `max_actions_per_hour` 外，还包括浏览任务/账号日上限、点赞账号小时上限、评论任务/账号小时上限，以及纯搜索点击的任务日、账号日、账号小时和账号关键词日上限；搜索 task-local skip 概率和账号冷却归零。账号全局安全、Telegram、授权、代理、协议、内容质量与 unknown 防重仍是硬边界。

@@ -175,7 +175,7 @@ def _sync_window_unclaimed_counts(
     for reservation in reservations.values():
         counts[reservation.dispatch_claim_shard_allocation_id] = counts.get(
             reservation.dispatch_claim_shard_allocation_id, 0,
-        ) + reservation_available(reservation)
+        ) + _reservation_unclaimed_count(reservation)
     for allocation in allocations:
         expected = counts[allocation.id]
         if allocation.unclaimed_allocated_count != expected:
@@ -185,6 +185,19 @@ def _sync_window_unclaimed_counts(
     if window.unclaimed_allocated_count != expected:
         window.unclaimed_allocated_count = expected
         window.version += 1
+
+
+def _reservation_unclaimed_count(
+    reservation: DispatchClaimReservation,
+) -> int:
+    unclaimed = (
+        int(reservation.reserved_claims)
+        - int(reservation.claimed_count)
+        - int(reservation.released_count)
+    )
+    if unclaimed < int(reservation.bound_count):
+        raise RuntimeError("dispatch_reconciliation_counter_invariant")
+    return unclaimed
 
 
 def _bound_admission_payload(payload: Mapping[str, object]) -> bool:
