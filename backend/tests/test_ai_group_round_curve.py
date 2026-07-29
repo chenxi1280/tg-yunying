@@ -6,7 +6,12 @@ from types import SimpleNamespace
 import pytest
 
 from app.schemas.task_center import OperationProfile
-from app.services.task_center.pacing import ai_next_run_after
+from app.services.task_center.pacing import (
+    FULFILLMENT_SOFT_PACING_VERSION,
+    ai_next_run_after,
+    fulfillment_pacing_config,
+    schedule_times,
+)
 from app.services.task_center.executors import group_ai_chat
 
 
@@ -110,7 +115,39 @@ def test_ai_next_run_after_uses_hourly_round_interval() -> None:
     assert ai_next_run_after(pacing_config, datetime(2026, 6, 3, 20, 0, 0)) == datetime(2026, 6, 3, 20, 10, 0)
 
 
-def test_ai_next_run_after_skips_sleep_hours() -> None:
+def test_ai_next_run_after_keeps_default_frequency_without_curve() -> None:
+    assert ai_next_run_after({}, datetime(2026, 6, 3, 20, 0, 0)) == datetime(2026, 6, 3, 20, 5, 0)
+
+
+def test_ai_next_run_after_keeps_low_nonzero_sleep_hour() -> None:
     pacing_config = {"operation_profile": {"hourly_activity_curve": _curve(20, 6)}}
 
-    assert ai_next_run_after(pacing_config, datetime(2026, 6, 3, 19, 30, 0)) == datetime(2026, 6, 3, 20, 0, 0)
+    assert ai_next_run_after(pacing_config, datetime(2026, 6, 3, 19, 30, 0)) == datetime(2026, 6, 3, 20, 30, 0)
+
+
+def test_fulfillment_pacing_converts_quiet_gate_to_low_nonzero_curve() -> None:
+    config = {
+        "quiet_hours": {"start": "03:00", "end": "07:38"},
+        "operation_profile": {
+            "quiet_threshold": 2,
+            "hourly_activity_curve": [10] * 24,
+        },
+    }
+
+    normalized = fulfillment_pacing_config(config)
+
+    assert "quiet_hours" not in normalized
+    curve = normalized["operation_profile"]["hourly_activity_curve"]
+    assert min(curve) == 2
+    assert curve[2] == 10
+    assert curve[3:8] == [2, 2, 2, 2, 2]
+
+
+def test_fulfillment_schedule_does_not_jump_to_quiet_end() -> None:
+    start = datetime(2026, 7, 30, 3)
+    config = {
+        "fulfillment_soft_pacing_version": FULFILLMENT_SOFT_PACING_VERSION,
+        "quiet_hours": {"start": "03:00", "end": "07:38"},
+    }
+
+    assert schedule_times(1, config, start_at=start) == [start]

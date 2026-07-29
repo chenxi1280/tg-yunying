@@ -568,6 +568,8 @@ AI 准入积压不得阻止 `admission_ready` 账号的 `ai_group_daily`。纯�
 
 先确定业务窗口，再把 operation curve 归一到窗口内。`moderate_6h` 的所有 planned time 必须在 6 小时内；自然日任务不得排到下一自然日。AI 活群例外为 24 个小时均可执行，静默小时只有较低非零权重，不得返回 `quiet_hours_active` 或活动窗口跳过；其容量预测只作风险提示。其他任务若当前安全速率无法在 deadline 前完成，返回 `pacing_capacity_insufficient`，不能延长 deadline。
 
+五类新履约任务在计算 `scheduled_at/next_run_at` 前必须把 `quiet_hours` 从“跳到静默结束时间”的硬门禁转换为低权重，并把 `hourly_activity_curve` 的 0 归一为最小权重 1；静默配置仍可降低排序权重，但任何 running 任务都不能因此把下一轮整体推迟到静默结束。接管发布时，缺少当前软节奏合同版本的 running 任务必须一次性把遗留未来 `next_run_at` 唤醒为当前时间并写版本标记；重复接管不得反复覆盖正常下一轮时间。纯搜索点击的失主 open epoch 回收同样不能等待旧静默结束。
+
 ## 6. 分任务修复合同
 
 ### 6.1 AI 活群

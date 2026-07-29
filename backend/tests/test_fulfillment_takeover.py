@@ -226,6 +226,38 @@ def test_task_gate_limits_are_normalized_without_starting_paused_tasks(
     assert session.scalar(select(func.count(TaskDayLedger.id))) == 0
 
 
+def test_takeover_wakes_running_task_once_for_soft_pacing_contract(
+    session: Session,
+) -> None:
+    now_value = datetime(2026, 7, 30, 3)
+    task = Task(
+        id="soft-pacing-search",
+        tenant_id=1,
+        name="纯搜索点击",
+        type="search_click",
+        status="running",
+        next_run_at=now_value + timedelta(hours=4),
+        stats={"fulfillment_contract_version": FULFILLMENT_CONTRACT_VERSION},
+        type_config={
+            "daily_click_target_count": 1,
+            "target_operation_target_id": 31,
+        },
+    )
+    session.add(task)
+    session.flush()
+
+    first = takeover_task(session, task, now=now_value)
+    session.commit()
+    task.next_run_at = now_value + timedelta(minutes=5)
+    session.commit()
+    second = takeover_task(session, task, now=now_value)
+
+    assert first.changed is True
+    assert task.stats["fulfillment_soft_pacing_version"] == "nonzero_v1"
+    assert second.changed is False
+    assert task.next_run_at == now_value + timedelta(minutes=5)
+
+
 def test_ai_takeover_removes_retired_quantity_and_hour_gates(
     session: Session,
 ) -> None:

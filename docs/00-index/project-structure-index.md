@@ -961,7 +961,7 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 
 | 文件 | 职责 | 当前状态 |
 | --- | --- | --- |
-| `backend/app/services/task_center/fulfillment_takeover.py`、`service.py` | 五类未结束 Task 的幂等合同接管、旧混合搜索转纯 click、AI 旧数量/硬小时字段清除、任务与任务内账号软上限归一；清除旧 blocker 并立即重排；`all_task_v2` 跳过旧 backlog 数量门禁。Planner 按 Task 隔离异常并持久化 `planner_runtime_error`，成功规划后清除 | implemented；待 release/E4 |
+| `backend/app/services/task_center/fulfillment_takeover.py`、`service.py` | 五类未结束 Task 的幂等合同接管、旧混合搜索转纯 click、AI 旧数量/硬小时字段清除、任务与任务内账号软上限归一；`fulfillment_soft_pacing_version=nonzero_v1` 首次接管一次性唤醒被旧 quiet end 推迟的 running 任务，重复接管不覆盖正常下一轮；清除旧 blocker 并立即重排；`all_task_v2` 跳过旧 backlog 数量门禁。Planner 按 Task 隔离异常并持久化 `planner_runtime_error`，成功规划后清除 | implemented；待 release/E4 |
 | `backend/app/services/task_center/channel_fulfillment.py`、`channel_fulfillment_queries.py`、`channel_fulfillment_takeover.py` | 点赞/浏览自然义务、Action 绑定、confirmed/unknown 查询、租户内跨 Task source 排除、账号在途锁内二次校验、存量 success/unknown 回填和 pending 接管；识别历史改派绑定并释放原义务，成功待 finalize 的同义务 Action 继续占位 | implemented；待 release/E4 |
 | `backend/app/services/task_center/comment_fulfillment.py`、`comment_fulfillment_takeover.py`、`executors/channel_comment_budget.py` | 评论自然义务、存量 Action/远端评论事实迁移、失败释放同一 ordinal 重领、Planner 按义务而非历史 Action 计数；不改变 direct/reply 与内容素材占比 | implemented；待 release/E4 |
 | `backend/scripts/takeover_all_task_fulfillment.py`、`deploy/compose-up.sh`、`.github/workflows/deploy-production.yml` | 生产 preview/apply 命令，逐 Task 输出 before/after/reason/count并支持重复 apply；发布停止全部 worker，在仅 backend 可写窗口完成接管后才恢复；同一窗口内还对精确匹配的旧 Jisou search-result 样本做停用旧行、生成纯点击新版本与审计；结构非法只暂停对应 Task，非预期失败阻断恢复 | implemented；待 release/E4 |
@@ -971,7 +971,7 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 | `backend/app/services/task_center/executors/search_click.py`、`search_click_epoch_ownership.py`、`search_click_outcome_identity.py` | search solver 读事务结束后重启事务，在任何业务查询前设置 PostgreSQL `SERIALIZABLE`，随后先按中央锁序锁定，再核对 owner、重建输入并 finalize；`40001` 后不重跑 solver，使用原 epoch/window/unit 快照在新事务 abandoned/release/rebuild；每轮规划先跨 Window 回收失主 open epoch，epoch 查询与 outcome/path hash 分别归属 ownership/identity 叶模块 | implemented；待 release/E4 |
 | `backend/app/services/task_center/executors/group_ai_chat.py` | `replan_required` 从旧失败 Action 只读取并校验合同元数据，与新 payload 合并后再做完整发送校验；允许 `reply_target_stale` 空正文重建 | implemented；待 release/E4 |
 | `backend/app/integrations/telegram/search_join.py`、`backend/app/services/task_center/jisou_selector_accounts.py` | hot-list 直接失败、零 reset、账号—协议路径 12 小时排除 | implemented；待 release/E4 |
-| `backend/app/services/task_center/pacing.py`、频道 executors | pacing 窗口和自然日 deadline 收口，排期不得跨截止时间；频道软上限固定系统门禁 | implemented；待 release/E4 |
+| `backend/app/services/task_center/pacing.py`、`stats.py`、频道 executors | pacing 窗口和自然日 deadline 收口，排期不得跨截止时间；五类新履约任务统一把 quiet 跳转转换为低权重、把 0 曲线归一为 1，`scheduled_at/next_run_at` 均不停发；频道软上限固定系统门禁 | implemented；待 release/E4 |
 | `backend/tests/test_fulfillment_takeover.py` 及相邻合同测试 | 先红后绿覆盖存量接管幂等、自然义务/远端事实、门禁、epoch、准入、hot-list 和 deadline | implemented；自动化 QA 进行中 |
 
 ### 部署脚本

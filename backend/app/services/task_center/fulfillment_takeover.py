@@ -15,6 +15,7 @@ from .channel_fulfillment_takeover import (
     migrate_channel_fulfillment,
 )
 from .comment_fulfillment_takeover import migrate_comment_fulfillment
+from .pacing import FULFILLMENT_SOFT_PACING_VERSION
 
 
 UNIFIED_TASK_GATE_LIMIT = 1_000_000
@@ -85,20 +86,18 @@ def takeover_task(
     previous_type = task.type
     if not _eligible(task):
         return _result(task, previous_type, False, 0, None)
-    was_legacy_search = task.type == "search_join_group"
     before = _task_snapshot(task)
     contract_changed = (
         (task.stats or {}).get("fulfillment_contract_version")
         != FULFILLMENT_CONTRACT_VERSION
     )
     retired = _takeover_legacy_search(session, task)
-    if contract_changed or was_legacy_search:
+    if contract_changed or previous_type == "search_join_group":
         retired += _retire_unbound_legacy_actions(session, task)
-    _normalize_task_gate_limits(task)
-    obsolete_runtime_state_cleared = _clear_obsolete_runtime_state(task)
-    _stamp_contract(task)
-    if (contract_changed or obsolete_runtime_state_cleared) and task.status == "running":
-        task.next_run_at = now or _now()
+    updates = _apply_contract_updates(
+        task, contract_changed=contract_changed, now=now,
+    )
+    obsolete_runtime_state_cleared, soft_pacing_changed = updates
     ledger_id, ledger_created = _ensure_running_ledger(session, task, now)
     channel_summary = _migrate_channel_actions(
         session,
@@ -106,13 +105,10 @@ def takeover_task(
         now=now,
         contract_changed=contract_changed,
     )
-    changed = (
-        before != _task_snapshot(task)
-        or retired > 0
-        or ledger_created
-        or obsolete_runtime_state_cleared
-        or channel_summary != ChannelTakeoverSummary()
-    )
+    changed = before != _task_snapshot(task) or any((
+        retired > 0, ledger_created, obsolete_runtime_state_cleared,
+        soft_pacing_changed, channel_summary != ChannelTakeoverSummary(),
+    ))
     if changed and write_audit:
         _write_takeover_audit(
             session,
@@ -144,6 +140,25 @@ def block_invalid_fulfillment_task(task: Task, exc: ValueError) -> None:
         "fulfillment_takeover_error": detail,
         "fulfillment_takeover_checked_at": _now().isoformat(),
     }
+
+
+def _apply_contract_updates(
+    task: Task,
+    *,
+    contract_changed: bool,
+    now: datetime | None,
+) -> tuple[bool, bool]:
+    _normalize_task_gate_limits(task)
+    obsolete_cleared = _clear_obsolete_runtime_state(task)
+    soft_pacing_changed = _stamp_soft_pacing_contract(task)
+    _stamp_contract(task)
+    if (
+        contract_changed
+        or obsolete_cleared
+        or soft_pacing_changed
+    ) and task.status == "running":
+        task.next_run_at = now or _now()
+    return obsolete_cleared, soft_pacing_changed
 
 
 def _eligible(task: Task) -> bool:
@@ -313,6 +328,9 @@ def normalize_fulfillment_pacing(task_type: str, pacing: dict) -> dict:
     normalized = dict(pacing or {})
     if task_type not in FULFILLMENT_TASK_TYPES:
         return normalized
+    normalized["fulfillment_soft_pacing_version"] = (
+        FULFILLMENT_SOFT_PACING_VERSION
+    )
     normalized["max_actions_per_hour"] = UNIFIED_TASK_GATE_LIMIT
     if task_type == "search_click":
         normalized["max_actions_per_day"] = UNIFIED_TASK_GATE_LIMIT
@@ -358,6 +376,15 @@ def _stamp_contract(task: Task) -> None:
         "fulfillment_contract_version": FULFILLMENT_CONTRACT_VERSION,
     }
     task.hard_hourly_next_check_at = None
+
+
+def _stamp_soft_pacing_contract(task: Task) -> bool:
+    stats = dict(task.stats or {})
+    if stats.get("fulfillment_soft_pacing_version") == FULFILLMENT_SOFT_PACING_VERSION:
+        return False
+    stats["fulfillment_soft_pacing_version"] = FULFILLMENT_SOFT_PACING_VERSION
+    task.stats = stats
+    return True
 
 
 def _ensure_running_ledger(
@@ -444,6 +471,7 @@ def _result(
 
 __all__ = [
     "FULFILLMENT_CONTRACT_VERSION",
+    "FULFILLMENT_SOFT_PACING_VERSION",
     "FULFILLMENT_TASK_TYPES",
     "TaskTakeoverResult",
     "UNIFIED_TASK_GATE_LIMIT",

@@ -14,6 +14,8 @@ TEMPLATES = {
     "gentle_24h": (86400, 900, 2400, 25),
     "burst_30min": (1800, 15, 45, 50),
 }
+FULFILLMENT_SOFT_PACING_VERSION = "nonzero_v1"
+DEFAULT_AI_ROUNDS_PER_HOUR = 12
 
 
 def _operation_curve(config: dict) -> list[int]:
@@ -192,6 +194,37 @@ def _quiet_hours_window(quiet: dict) -> tuple[time, time]:
     return start, end
 
 
+def fulfillment_pacing_config(config: dict) -> dict:
+    normalized = dict(config or {})
+    quiet = normalized.pop("quiet_hours", None)
+    curve = _operation_curve(normalized)
+    if not curve:
+        return normalized
+    profile = dict(normalized.get("operation_profile") or {})
+    curve = [max(1, value) for value in curve]
+    if quiet:
+        start, end = _quiet_hours_window(quiet)
+        quiet_weight = max(1, int(profile.get("quiet_threshold") or 2))
+        curve = [
+            min(value, quiet_weight) if _hour_is_quiet(hour, start, end) else value
+            for hour, value in enumerate(curve)
+        ]
+    profile["hourly_activity_curve"] = curve
+    normalized["operation_profile"] = profile
+    return normalized
+
+
+def _hour_is_quiet(hour: int, start: time, end: time) -> bool:
+    current = time(hour=hour)
+    return start <= current < end if start < end else current >= start or current < end
+
+
+def _effective_fulfillment_config(config: dict) -> dict:
+    if config.get("fulfillment_soft_pacing_version") == FULFILLMENT_SOFT_PACING_VERSION:
+        return fulfillment_pacing_config(config)
+    return config
+
+
 def schedule_times(
     total_actions: int,
     config: dict,
@@ -201,6 +234,7 @@ def schedule_times(
 ) -> list[datetime]:
     if total_actions <= 0:
         return []
+    config = _effective_fulfillment_config(config)
     now = start_at or _now()
     mode = config.get("mode") or "template"
     if mode == "fixed" and _fixed_interval_is_immediate(config):
@@ -282,6 +316,7 @@ def _fixed_interval_is_immediate(config: dict) -> bool:
 
 
 def next_run_after(config: dict, *, timezone_name: str | None = None) -> datetime:
+    config = _effective_fulfillment_config(config)
     if (config.get("mode") or "template") == "fixed":
         raw_interval = config.get("interval_seconds_min")
         if raw_interval is None:
@@ -293,16 +328,23 @@ def next_run_after(config: dict, *, timezone_name: str | None = None) -> datetim
 
 def ai_next_run_after(config: dict, value: datetime | None = None) -> datetime:
     current = value or _now()
-    rounds = current_hour_rounds(config, current)
-    if rounds <= 0:
-        return _next_active_time(current, config)
+    effective = fulfillment_pacing_config(config)
+    rounds = (
+        current_hour_rounds(effective, current)
+        or DEFAULT_AI_ROUNDS_PER_HOUR
+    )
     interval_seconds = max(60, 3600 // max(1, rounds))
-    return _next_active_time(current + timedelta(seconds=interval_seconds), config)
+    return _next_active_time(
+        current + timedelta(seconds=interval_seconds),
+        effective,
+    )
 
 
 __all__ = [
     "ai_next_run_after",
     "current_hour_rounds",
+    "FULFILLMENT_SOFT_PACING_VERSION",
+    "fulfillment_pacing_config",
     "next_local_day_deadline",
     "next_run_after",
     "operation_intensity",
