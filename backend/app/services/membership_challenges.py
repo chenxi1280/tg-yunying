@@ -23,6 +23,7 @@ from .ai_config import ai_provider_credentials
 
 MIN_IMAGE_VERIFICATION_CONFIDENCE = 0.70
 IMAGE_VERIFICATION_PROVIDER_SOURCES = ("mimo", "minimax")
+MINIMAX_M3_MODEL_MARKERS = ("minimax-m3", "minimax m3")
 CN_NUMBER_CHARS = "零〇一二两三四五六七八九十"
 ARITHMETIC_PATTERN = re.compile(rf"(?P<left>\d{{1,3}}|[{CN_NUMBER_CHARS}]{{1,4}})\s*(?P<op>[+\-＋－]|加|减)\s*(?P<right>\d{{1,3}}|[{CN_NUMBER_CHARS}]{{1,4}})")
 CODE_PATTERN = re.compile(r"(?:验证码|code|captcha|请输入)[^\d]{0,16}(?P<code>\d{3,8})", re.IGNORECASE)
@@ -502,7 +503,7 @@ def build_search_join_image_verification_solver(
     在 dispatcher 服务层预解析全部健康视觉 provider 的 credentials，返回一个无 DB 依赖
     的 callable，按稳定顺序寻找首个安全候选。全部不可用时返回 None。
     """
-    providers = _image_verification_providers(session)
+    providers = sorted(_image_verification_providers(session), key=_image_verification_provider_priority)
     if not providers:
         return None
     credentials = [ai_provider_credentials(provider) for provider in providers]
@@ -525,6 +526,12 @@ def build_search_join_image_verification_solver(
         return None
 
     return solver
+
+
+def _image_verification_provider_priority(provider: AiProvider) -> tuple[int, int]:
+    model = str(getattr(provider, "model_name", "") or "").strip().lower()
+    priority = 0 if any(marker in model for marker in MINIMAX_M3_MODEL_MARKERS) else 1
+    return priority, int(provider.id)
 
 
 def _solve_search_join_image(

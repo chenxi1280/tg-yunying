@@ -42,3 +42,30 @@ def test_search_join_image_solver_uses_next_provider_until_candidate_is_safe(mon
     assert solver is not None
     assert solver(b"image", "image/png", ["8", "9", "10", "11"]) == ("10", 0.92)
     assert calls == [1, 2, 3, 4]
+
+
+@pytest.mark.no_postgres
+def test_search_join_image_solver_prefers_minimax_m3_over_m25(monkeypatch) -> None:
+    m25 = SimpleNamespace(id=4, provider_name="MiniMax", model_name="MiniMax-M2.5")
+    m3 = SimpleNamespace(id=5, provider_name="MiniMax", model_name="MiniMax-M3")
+    calls: list[int] = []
+
+    monkeypatch.setattr(
+        membership_challenges,
+        "_image_verification_providers",
+        lambda _session: [m25, m3],
+    )
+    monkeypatch.setattr(membership_challenges, "ai_provider_credentials", lambda provider: provider)
+
+    def solve(provider, *_args, **_kwargs):
+        calls.append(provider.id)
+        answer = "9" if provider.id == m25.id else "10"
+        return SimpleNamespace(answer=answer, confidence=0.95)
+
+    monkeypatch.setattr(membership_challenges.ai_gateway, "solve_image_verification", solve)
+
+    solver = membership_challenges.build_search_join_image_verification_solver(object())
+
+    assert solver is not None
+    assert solver(b"image", "image/png", ["9", "10"]) == ("10", 0.95)
+    assert calls == [5]
