@@ -493,5 +493,5 @@ def test_release_workflow_applies_fulfillment_takeover_after_deploy() -> None:
     deploy_index = workflow.index("- name: Deploy via SSH release script")
     takeover_index = workflow.index("- name: Apply all-task fulfillment takeover")
     assert takeover_index > deploy_index
-    assert "scripts/takeover_all_task_fulfillment.py" in workflow
+    assert "scripts.takeover_all_task_fulfillment" in workflow
     assert "--apply" in workflow[takeover_index:]
