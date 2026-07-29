@@ -14,13 +14,16 @@ from app.models import (
     OperationTarget,
     SearchClickFulfillmentObligation,
     Task,
-    TaskDayLedger,
     Tenant,
 )
 from app.search_keywords import normalized_keyword_hash
 from app.security import encrypt_secret
 from app.schemas.task_center import SearchClickTaskConfigUpdate, SearchClickTaskCreate
 from app.services.task_center.daily_ledgers import ensure_task_day_ledger
+from app.services.task_center.fulfillment_takeover import (
+    FULFILLMENT_CONTRACT_VERSION,
+    UNIFIED_TASK_GATE_LIMIT,
+)
 from app.services.task_center.search_click_target_progress import search_click_target_progress
 from app.services.task_center.service import (
     create_search_click_task,
@@ -129,6 +132,9 @@ def test_search_click_creation_does_not_read_runtime_capacity(
     assert task.status == "draft"
     assert task.type == "search_click"
     assert task.type_config["daily_click_target_count"] == 500
+    assert task.pacing_config["max_actions_per_day"] == UNIFIED_TASK_GATE_LIMIT
+    assert task.pacing_config["max_actions_per_hour"] == UNIFIED_TASK_GATE_LIMIT
+    assert task.stats["fulfillment_contract_version"] == FULFILLMENT_CONTRACT_VERSION
 
 
 @pytest.mark.no_postgres

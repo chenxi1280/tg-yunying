@@ -7,8 +7,6 @@ type ChannelCommentTypeConfigProps = {
   ruleFields: React.ReactNode;
 };
 
-const MAX_TOTAL_COMMENT_JITTER = 0.3;
-
 export function ChannelViewTypeConfig() {
   return (
     <Space direction="vertical" style={{ width: '100%' }}>
@@ -52,7 +50,7 @@ export function ChannelCommentTypeConfig({ replyMinPerMessageRules, ruleFields }
       </div>
       <div className="form-grid">
         <div style={{ gridColumn: '1 / -1' }}>{ruleFields}</div>
-        <Form.Item name="max_total_comments" label="任务总评论上限"><InputNumber min={1} max={100000} /></Form.Item>
+        <Form.Item name="max_total_comments" label="系统任务门禁（固定）"><InputNumber min={1000000} max={1000000} disabled /></Form.Item>
         <Form.Item name="target_comments_per_message" label="预计每条评论/回复"><InputNumber min={1} /></Form.Item>
         <Form.Item name="reply_min_per_message" label="每条最少引用回复数" dependencies={['target_comments_per_message']} rules={replyMinPerMessageRules}><InputNumber min={0} /></Form.Item>
         <Form.Item name="comment_style" label="评论方向"><Select options={[{ value: 'mixed', label: '混合' }, { value: 'relevant', label: '相关' }, { value: 'question', label: '提问' }, { value: 'praise', label: '正向' }, { value: 'discussion', label: '讨论' }]} /></Form.Item>
@@ -70,8 +68,8 @@ function ChannelViewAdvancedFields() {
   return (
     <div className="form-grid">
       <Form.Item name="message_active_days" label="帖子有效期（天）"><InputNumber min={1} max={365} /></Form.Item>
-      <Form.Item name="task_daily_view_safety_cap" label="任务每日安全上限"><InputNumber min={1} max={100000} /></Form.Item>
-      <Form.Item name="max_views_per_account_per_day" label="每号每日浏览上限"><InputNumber min={1} max={10000} /></Form.Item>
+      <Form.Item name="task_daily_view_safety_cap" label="系统任务门禁（固定）"><InputNumber min={1000000} max={1000000} disabled /></Form.Item>
+      <Form.Item name="max_views_per_account_per_day" label="系统账号门禁（固定）"><InputNumber min={1000000} max={1000000} disabled /></Form.Item>
       <Form.Item name="view_count_jitter" label="浏览量随机抖动"><InputNumber min={0} max={1} step={0.01} /></Form.Item>
       <Form.Item name="execution_mode" label="执行模式"><Select options={[{ value: 'distribute', label: '均匀分配' }, { value: 'burst', label: '尽快完成' }]} /></Form.Item>
     </div>
@@ -81,7 +79,7 @@ function ChannelViewAdvancedFields() {
 function ChannelLikeAdvancedFields() {
   return (
     <div className="form-grid">
-      <Form.Item name="max_likes_per_account_per_hour" label="每号每小时点赞上限"><InputNumber min={1} /></Form.Item>
+      <Form.Item name="max_likes_per_account_per_hour" label="系统账号门禁（固定）"><InputNumber min={1000000} max={1000000} disabled /></Form.Item>
       <Form.Item name="like_count_jitter" label="点赞量随机抖动"><InputNumber min={0} max={1} step={0.01} /></Form.Item>
     </div>
   );
@@ -90,8 +88,8 @@ function ChannelLikeAdvancedFields() {
 function ChannelCommentAdvancedFields() {
   return (
     <div className="form-grid">
-      <Form.Item name="max_comments_per_account_per_hour" label="每号每小时评论上限"><InputNumber min={1} /></Form.Item>
-      <Form.Item name="max_total_comments_jitter" label="总评论上限随机抖动"><InputNumber min={0} max={MAX_TOTAL_COMMENT_JITTER} step={0.01} /></Form.Item>
+      <Form.Item name="max_comments_per_account_per_hour" label="系统账号门禁（固定）"><InputNumber min={1000000} max={1000000} disabled /></Form.Item>
+      <Form.Item name="max_total_comments_jitter" label="任务门禁抖动（固定）"><InputNumber min={0} max={0} disabled /></Form.Item>
       <Form.Item name="system_prompt_override" label="System Prompt 覆盖"><Input.TextArea rows={3} /></Form.Item>
       <Form.Item name="max_comment_length" label="最大评论长度"><InputNumber min={1} /></Form.Item>
     </div>

@@ -553,8 +553,8 @@ export function typeInitialValues(type: TaskCenterTaskType, setting?: Scheduling
       per_message_daily_view_target: 50,
       per_message_total_view_target: 300,
       message_active_days: 3,
-      task_daily_view_safety_cap: 500,
-      max_views_per_account_per_day: 20,
+      task_daily_view_safety_cap: 1000000,
+      max_views_per_account_per_day: 1000000,
       view_count_jitter: CHANNEL_COUNT_JITTER_DEFAULT,
       execution_mode: 'distribute',
     };
@@ -567,7 +567,7 @@ export function typeInitialValues(type: TaskCenterTaskType, setting?: Scheduling
       like_count_jitter: CHANNEL_COUNT_JITTER_DEFAULT,
       reaction_type: 'random',
       allowed_reactions: '👍,❤️,🔥',
-      max_likes_per_account_per_hour: 10,
+      max_likes_per_account_per_hour: 1000000,
     };
   }
   if (type === 'search_rank_deboost') {
@@ -576,8 +576,9 @@ export function typeInitialValues(type: TaskCenterTaskType, setting?: Scheduling
   return {
     message_scope: 'dynamic_new',
     message_count: 10,
-    max_total_comments: 80,
-    max_total_comments_jitter: 0.2,
+    max_total_comments: 1000000,
+    max_total_comments_jitter: 0,
+    max_comments_per_account_per_hour: 1000000,
     comment_mode: 'mixed',
     reply_min_per_message: 1,
     language: 'zh-CN',
@@ -698,7 +699,8 @@ export function fieldsForSubmit(taskType: TaskCenterTaskType, messageScope: stri
   void pacingMode;
   if (isSimpleSearchClickTask(taskType)) return ['target_title', 'target_link', 'keywords', ...simpleSearchTargetFields(taskType), ...simpleSearchExecutionFields(taskType)];
   const commonFields = ['name', 'scheduled_end', 'operation_template_id', 'hourly_activity_curve', 'quiet_threshold', 'peak_threshold'];
-  const baseFields = [...commonFields, ...accountSelectionFields(accountMode), 'max_concurrent', 'cooldown_per_account_minutes', 'ban_policy', 'max_actions_per_hour', 'max_retries'];
+  const hourlyFields = ['group_relay', 'group_membership_admission'].includes(taskType) ? ['max_actions_per_hour'] : [];
+  const baseFields = [...commonFields, ...accountSelectionFields(accountMode), 'max_concurrent', 'cooldown_per_account_minutes', 'ban_policy', ...hourlyFields, 'max_retries'];
   if (taskType === 'group_ai_chat') {
     return [
       ...baseFields,
@@ -770,7 +772,8 @@ export function fieldsForSubmit(taskType: TaskCenterTaskType, messageScope: stri
 export function editFieldsForSubmit(taskType: TaskCenterTaskType, accountMode: string, pacingMode: string): string[] {
   void pacingMode;
   if (isSimpleSearchClickTask(taskType)) return ['target_title', 'target_link', 'keywords', ...simpleSearchTargetFields(taskType), ...simpleSearchExecutionFields(taskType, true)];
-  const baseFields = ['name', 'scheduled_end', 'operation_template_id', 'hourly_activity_curve', 'quiet_threshold', 'peak_threshold', ...accountFields(accountMode), 'max_actions_per_hour', 'max_retries'];
+  const hourlyFields = ['group_relay', 'group_membership_admission'].includes(taskType) ? ['max_actions_per_hour'] : [];
+  const baseFields = ['name', 'scheduled_end', 'operation_template_id', 'hourly_activity_curve', 'quiet_threshold', 'peak_threshold', ...accountFields(accountMode), ...hourlyFields, 'max_retries'];
   if (taskType === 'group_ai_chat') {
     return [
       ...baseFields,

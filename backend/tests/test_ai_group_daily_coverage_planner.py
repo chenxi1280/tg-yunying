@@ -518,7 +518,7 @@ def test_daily_coverage_persists_variation_intent_before_creating_action(
     assert row.blocker_code == "content_variation_key_conflict"
 
 
-def test_running_all_account_task_blocks_when_daily_capacity_is_insufficient(
+def test_running_all_account_task_ignores_retired_daily_capacity_gate(
     session: Session,
     stable_capacity_clock: None,
 ) -> None:
@@ -531,9 +531,8 @@ def test_running_all_account_task_blocks_when_daily_capacity_is_insufficient(
 
     blocker = _coverage_capacity_blocker(session, task, group, task.type_config)
 
-    assert blocker["blocker_code"] == "daily_coverage_capacity_insufficient"
-    assert blocker["capacity_gap"] == 1
-    assert task.stats["coverage_capacity_status"] == "blocked"
+    assert blocker == {}
+    assert "coverage_capacity_status" not in task.stats
 
 
 def test_pending_admission_capacity_gap_does_not_stop_ready_accounts(
@@ -552,9 +551,8 @@ def test_pending_admission_capacity_gap_does_not_stop_ready_accounts(
     blocker = _coverage_capacity_blocker(session, task, group, task.type_config)
 
     assert blocker == {}
-    assert task.stats["coverage_capacity_status"] == "partial"
-    assert task.stats["coverage_capacity_proof"]["sufficient"] is False
-    assert task.stats["sendable_coverage_capacity_proof"]["sufficient"] is True
+    assert "coverage_capacity_status" not in task.stats
+    assert "coverage_capacity_proof" not in task.stats
 
 
 def test_coverage_totals_exclude_pending_admission_from_sendable_capacity(

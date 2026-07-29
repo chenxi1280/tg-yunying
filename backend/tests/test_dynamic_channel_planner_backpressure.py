@@ -16,6 +16,7 @@ from app.services.task_center.executors import common
 from app.services.task_center.executors.channel_like import build_plan as build_channel_like_plan
 from app.services.task_center.executors import channel_view
 from app.services.task_center.executors.channel_action_history import channel_message_success_counts, channel_view_daily_action_counts
+from app.services.task_center.fulfillment_takeover import takeover_task
 
 
 pytestmark = pytest.mark.no_postgres
@@ -131,13 +132,16 @@ def test_channel_message_account_ids_are_loaded_once_for_all_messages() -> None:
     assert " OR " not in statements[0][0]
 
 
-def test_channel_like_planner_reads_message_history_once() -> None:
+def test_channel_like_planner_reads_fulfillment_facts_in_batches() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     statements: list[tuple[str, object]] = []
 
     def record_statement(_connection, _cursor, statement, _parameters, _context, _executemany) -> None:
-        if "SELECT actions.account_id, JSON_EXTRACT(actions.payload" in statement:
+        if (
+            "FROM reaction_fulfillment_obligations" in statement
+            or "FROM reaction_remote_facts" in statement
+        ):
             statements.append((statement, _parameters))
 
     event.listen(engine, "before_cursor_execute", record_statement)
@@ -194,7 +198,13 @@ def test_channel_like_planner_reads_message_history_once() -> None:
                 action_type="like_message",
                 account_id=account.id,
                 status="success",
-                payload={"channel_message_id": first.id},
+                payload={
+                    "channel_id": channel.tg_peer_id,
+                    "channel_target_id": channel.id,
+                    "channel_message_id": first.id,
+                    "message_id": first.message_id,
+                    "reaction_emoji": "👍",
+                },
             ),
             Action(
                 id="like-second",
@@ -204,17 +214,24 @@ def test_channel_like_planner_reads_message_history_once() -> None:
                 action_type="like_message",
                 account_id=account.id,
                 status="success",
-                payload={"channel_message_id": second.id},
+                payload={
+                    "channel_id": channel.tg_peer_id,
+                    "channel_target_id": channel.id,
+                    "channel_message_id": second.id,
+                    "message_id": second.message_id,
+                    "reaction_emoji": "👍",
+                },
             ),
         ])
+        session.commit()
+        takeover_task(session, task, now=_now(), write_audit=False)
         session.commit()
         statements.clear()
 
         assert build_channel_like_plan(session, task) == 0
 
-    assert len(statements) == 1
-    assert "channel_message_id" in repr(statements[0])
-    assert "UNION ALL" in statements[0][0]
+    assert len(statements) == 2
+    assert all("channel_message_id" in statement for statement, _ in statements)
 
 
 def test_channel_view_planner_creates_actions_with_batched_history(monkeypatch) -> None:

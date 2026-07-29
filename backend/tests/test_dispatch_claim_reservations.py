@@ -195,6 +195,24 @@ def test_unserved_strict_demand_is_explicit_when_window_capacity_is_exhausted(mo
         assert claimed[0].result["dispatch_unserved_strict_classes"]
 
 
+def test_ready_window_keeps_epoch_while_reservations_remain() -> None:
+    from app.services.task_center.dispatch_reservations import (
+        _input_change_requires_rebuild,
+    )
+
+    window = SimpleNamespace(
+        allocation_state="ready",
+        unclaimed_allocated_count=1,
+        ready_rebuild_snapshot_hash="old-hash",
+    )
+
+    assert _input_change_requires_rebuild(
+        window,
+        demand_hash="new-hash",
+        demand_without_reservation=True,
+    ) is False
+
+
 def test_ordinary_candidate_scan_keeps_each_due_task_visible(monkeypatch) -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -420,7 +438,7 @@ def test_terminal_claim_without_finalizer_is_reconciled_before_window_reallocati
         assert allocation is not None and allocation.active_claim_count == 1
 
 
-def test_retry_rebuilds_when_its_reservation_is_exhausted_but_another_is_available(
+def test_retry_keeps_epoch_when_another_reservation_is_available(
     monkeypatch,
 ) -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
@@ -441,7 +459,7 @@ def test_retry_rebuilds_when_its_reservation_is_exhausted_but_another_is_availab
         retry = dispatcher.claim_actions(session, limit=1, worker_id="retry-attempt")
 
         assert len(retry) == 1
-        assert session.scalar(select(DispatchClaimWindow)).allocation_epoch > initial_epoch
+        assert session.scalar(select(DispatchClaimWindow)).allocation_epoch == initial_epoch
 
 
 def test_stale_unclaimed_reservation_is_released_for_new_due_action(monkeypatch) -> None:

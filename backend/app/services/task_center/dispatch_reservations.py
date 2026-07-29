@@ -105,12 +105,10 @@ def plan_dispatch_claims(
         reservation_available(reservations.get(demand.key)) <= 0
         for demand in demands
     )
-    input_changed = (
-        window.allocation_state == "ready"
-        and (
-            window.ready_rebuild_snapshot_hash != demand_hash
-            or demand_without_reservation
-        )
+    input_changed = _input_change_requires_rebuild(
+        window,
+        demand_hash=demand_hash,
+        demand_without_reservation=demand_without_reservation,
     )
     if released_count or input_changed:
         request_window_rebuild(
@@ -138,6 +136,22 @@ def plan_dispatch_claims(
         fairness_decisions,
     )
     return _combine_claim_plans(prebound, allocated)
+
+
+def _input_change_requires_rebuild(
+    window,
+    *,
+    demand_hash: str,
+    demand_without_reservation: bool,
+) -> bool:
+    if window.allocation_state != "ready":
+        return False
+    if int(window.unclaimed_allocated_count or 0) > 0:
+        return False
+    return (
+        window.ready_rebuild_snapshot_hash != demand_hash
+        or demand_without_reservation
+    )
 
 
 def _combine_claim_plans(

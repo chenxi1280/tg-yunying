@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -31,12 +31,14 @@ def freeze_comment_obligations(
     existing = _message_obligations(session, task, message.id)
     if existing:
         _release_terminal_bindings(session, existing)
-        return [
+        available = [
             item
             for item in existing
             if item.status in OPEN_OBLIGATION_STATUSES
             and item.current_action_id is None
         ]
+        if available:
+            return available
     revision = int(task.config_revision or 1)
     contract = _create_comment_contract(
         session,
@@ -120,10 +122,11 @@ def _create_comment_contract(
     reply_min_required: int,
 ) -> ContentMixContract:
     reply_count = sum(target is not None for target in targets)
+    scope_key = f"comment:{task.id}:{message.id}:{revision}"
     contract = ContentMixContract(
         tenant_id=task.tenant_id,
-        content_mix_scope_key=f"comment:{task.id}:{message.id}:{revision}",
-        content_contract_version=revision,
+        content_mix_scope_key=scope_key,
+        content_contract_version=_next_contract_version(session, scope_key),
         scope_total_slots=len(targets),
         allocation_seed=f"{task.id}:{message.id}:{revision}",
         reply_min_required_count=min(reply_min_required, len(targets)),
@@ -143,6 +146,15 @@ def _create_comment_contract(
     session.add(contract)
     session.flush()
     return contract
+
+
+def _next_contract_version(session: Session, scope_key: str) -> int:
+    current = session.scalar(
+        select(func.max(ContentMixContract.content_contract_version)).where(
+            ContentMixContract.content_mix_scope_key == scope_key
+        )
+    )
+    return int(current or 0) + 1
 
 
 def _new_obligation(

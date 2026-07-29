@@ -19,10 +19,14 @@ class ViewMessagePayload(BaseModel):
     execution_date: str = ""
     daily_view_target: int | None = None
     total_view_target: int | None = None
+    task_day_ledger_id: str = ""
+    view_fulfillment_obligation_id: str = ""
 
 
 class LikeMessagePayload(ViewMessagePayload):
     reaction_emoji: str = Field(default="👍", min_length=1, max_length=32)
+    reaction_contract_version: int = 0
+    reaction_fulfillment_obligation_id: str = ""
 
 
 class PostCommentPayload(ViewMessagePayload):

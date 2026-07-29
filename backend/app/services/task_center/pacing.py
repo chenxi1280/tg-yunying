@@ -192,7 +192,13 @@ def _quiet_hours_window(quiet: dict) -> tuple[time, time]:
     return start, end
 
 
-def schedule_times(total_actions: int, config: dict, *, start_at: datetime | None = None) -> list[datetime]:
+def schedule_times(
+    total_actions: int,
+    config: dict,
+    *,
+    start_at: datetime | None = None,
+    deadline_at: datetime | None = None,
+) -> list[datetime]:
     if total_actions <= 0:
         return []
     now = start_at or _now()
@@ -201,7 +207,7 @@ def schedule_times(total_actions: int, config: dict, *, start_at: datetime | Non
         return [now for _ in range(total_actions)]
     curve_times = [] if mode == "fixed" else _curve_schedule_times(total_actions, config, now)
     if curve_times:
-        return curve_times
+        return _fit_before_deadline(curve_times, now, deadline_at)
     duration, lo, hi, jitter = _duration_and_interval(config, total_actions)
     times: list[datetime] = []
     if mode == "curve":
@@ -233,7 +239,40 @@ def schedule_times(total_actions: int, config: dict, *, start_at: datetime | Non
             floor = times[index - 1] + timedelta(seconds=min_gap)
             if times[index] < floor:
                 times[index] = floor
-    return [_apply_quiet_hours(item, config) for item in sorted(times)]
+    adjusted = [_apply_quiet_hours(item, config) for item in sorted(times)]
+    return _fit_before_deadline(adjusted, now, deadline_at)
+
+
+def _fit_before_deadline(
+    times: list[datetime],
+    start_at: datetime,
+    deadline_at: datetime | None,
+) -> list[datetime]:
+    if not times or deadline_at is None or max(times) <= deadline_at:
+        return times
+    if deadline_at <= start_at:
+        return []
+    if len(times) == 1:
+        return [start_at]
+    count = len(times)
+    duration = (deadline_at - start_at).total_seconds()
+    return [
+        start_at + timedelta(seconds=duration * index / count)
+        for index in range(count)
+    ]
+
+
+def next_local_day_deadline(
+    value: datetime,
+    timezone_name: str,
+) -> datetime:
+    local_value = _task_local_datetime(value, timezone_name)
+    local_deadline = (
+        local_value.replace(hour=0, minute=0, second=0, microsecond=0)
+        + timedelta(days=1)
+        - timedelta(microseconds=1)
+    )
+    return _from_task_local_datetime(local_deadline, value, timezone_name)
 
 
 def _fixed_interval_is_immediate(config: dict) -> bool:
@@ -261,4 +300,12 @@ def ai_next_run_after(config: dict, value: datetime | None = None) -> datetime:
     return _next_active_time(current + timedelta(seconds=interval_seconds), config)
 
 
-__all__ = ["ai_next_run_after", "current_hour_rounds", "next_run_after", "operation_intensity", "quiet_hours_active", "schedule_times"]
+__all__ = [
+    "ai_next_run_after",
+    "current_hour_rounds",
+    "next_local_day_deadline",
+    "next_run_after",
+    "operation_intensity",
+    "quiet_hours_active",
+    "schedule_times",
+]

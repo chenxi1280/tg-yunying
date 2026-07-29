@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import Action, Task, TgAccount
@@ -14,14 +14,15 @@ from .search_join_facts import has_confirmed_click_fact
 
 JISOU_USERNAME = "jisou"
 SOURCE_ACTION_TYPE = "search_join"
-LOOKBACK_WINDOW = timedelta(hours=24)
+LOOKBACK_WINDOW = timedelta(hours=12)
 TARGET_CLICK_OUTCOME = "target_click"
 
-# PRD §2.19.3 24h 排除规则：以下错误码触发后账号 24h 排除，
+# PRD §2.19.3 12 小时排除规则：以下错误码触发后账号 12 小时排除，
 # jisou_group_selector_missing 不自动排除（单独评估协议样本是否过期）。
 EXCLUSION_ERROR_CODES = frozenset(
     {
         "jisou_session_state_deviated",
+        "jisou_hot_list_page",
         "jisou_image_verification_failed",
     }
 )
@@ -65,8 +66,23 @@ def _latest_account_outcomes(session: Session, task: Task, now_value: datetime) 
     cutoff = now_value - LOOKBACK_WINDOW
     actions = session.scalars(
         select(Action)
-        .where(Action.task_id == task.id, Action.action_type == SOURCE_ACTION_TYPE)
-        .order_by(Action.executed_at.asc(), Action.id.asc())
+        .where(
+            Action.tenant_id == task.tenant_id,
+            Action.action_type == SOURCE_ACTION_TYPE,
+            or_(
+                Action.executed_at >= cutoff,
+                Action.scheduled_at >= cutoff,
+                Action.created_at >= cutoff,
+            ),
+        )
+        .order_by(
+            func.coalesce(
+                Action.executed_at,
+                Action.scheduled_at,
+                Action.created_at,
+            ).asc(),
+            Action.id.asc(),
+        )
     )
     outcomes: dict[int, str] = {}
     for action in actions:
