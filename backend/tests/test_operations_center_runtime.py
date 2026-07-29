@@ -14,6 +14,7 @@ from app.database import Base
 from app.integrations.telegram import OperationResult, SendResult, _resolve_telethon_target, _telethon_send_target
 from app.integrations.telegram.gateway import TelethonTelegramGateway
 from app.models import AccountPool, AccountStatus, Action, AiAccountVoiceProfile, AiGroupMessageMemory, AiProvider, AiUsageLedger, AuditLog, ChannelMessage, ChannelMessageComment, ContentKeywordRule, FailureType, GroupArchive, GroupContextMessage, ListenerSourceState, MessageFingerprint, MessageTask, MessageTaskAttempt, OperationIssue, OperationIssueAccount, OperationIssueSource, OperationTarget, PromptTemplate, ReviewQueue, RuleSet, RuleSetVersion, SchedulingSetting, TargetRuntimeSummary, Task, TaskRuntimeSummary, TaskStatus, Tenant, TenantAiSetting, TgAccount, TgAccountAuthorization, TgAccountOnlineState, TgAccountSecurityBatch, TgAccountSecurityBatchItem, TgAccountSyncRecord, TgGroup, TgGroupAccount, TgLoginFlow, VerificationTask, WorkerHeartbeat
+from app.models import ReactionFulfillmentObligation
 from app.schemas import ArchiveCreate, ChannelCommentTaskCreate, ChannelLikeTaskCreate, ChannelViewTaskCreate, GroupAIChatTaskCreate, GroupRelayTaskCreate, MaterialCreate, MaterialUpdate, MessageSendTaskCreate, OperationTargetAccountUpdate, OperationTargetAdmissionRetryRequest, OperationTargetUpdate, PromptTemplateCreate, PromptTemplateUpdate, SchedulingSettingUpdate, TaskPrecheckRequest, TaskSettingsUpdate, TaskSourceFilterOverrideRequest
 from app.schemas.operations_center import RuleSetVersionCreate
 from app.schemas.risk_control import RiskControlGlobalPolicyUpdate
@@ -44,6 +45,7 @@ from app.services.task_center.pacing import schedule_times
 from app.services.group_listeners import process_group_listener
 from app.services.task_center.listener_runtime import drain_listener_runtime, reset_listener_runtime_cache, should_collect_listener
 from app.services.task_center.fingerprints import content_fingerprint
+from app.services.task_center.fulfillment_takeover import takeover_task
 from app.services.task_center.policies import validate_group_send_policy
 from app.services.task_center.service import _action_payload, _channel_subtask_status, _planning_backlog_blocked, _recover_stale_executing_actions, _retry_failed_actions, add_task_source_filter_override, create_group_ai_chat_task, create_group_relay_task, delete_task, drain_task_center, get_task_detail, list_actions_page, list_ai_cycles_page, list_message_groups_page, list_relay_batches_page, list_tasks, precheck_task_creation, refresh_task_detail_stats, reset_task, stop_task, update_task_settings
 from app.services.task_center.executors.channel_comment import build_plan as build_channel_comment_plan
@@ -1292,7 +1294,16 @@ def test_task_center_dispatch_reassigns_when_account_limit_reached(monkeypatch):
                 TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True, daily_limit=999),
                 TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True),
                 TgGroupAccount(tenant_id=1, group_id=7, account_id=12, can_send=True),
-                Task(id="task-reassign", tenant_id=1, name="转派", type="group_ai_chat", status="running", account_config={"selection_mode": "all", "max_concurrent": 2, "cooldown_per_account_minutes": 0}),
+                Task(
+                    id="task-reassign",
+                    tenant_id=1,
+                    name="转派",
+                    type="group_ai_chat",
+                    status="running",
+                    account_config={"selection_mode": "all", "max_concurrent": 2, "cooldown_per_account_minutes": 0},
+                    type_config={"target_group_id": 7, "daily_message_target": 1},
+                    stats={"fulfillment_contract_version": "all_task_v2"},
+                ),
                 Action(id="action-used", tenant_id=1, task_id="task-reassign", task_type="group_ai_chat", action_type="send_message", account_id=11, status="success", scheduled_at=now_value, executed_at=now_value),
             ]
         )
@@ -1381,6 +1392,8 @@ def test_channel_comment_pre_send_validation_blocks_ai_meta_text(monkeypatch):
         session.add(OperationTarget(id=31, tenant_id=1, target_type="channel", tg_peer_id="-10031", title="频道目标", can_send=True, auth_status="已授权运营"))
         session.add(TgGroup(id=31, tenant_id=1, tg_peer_id="-10031", title="频道目标", auth_status="已授权运营", can_send=True))
         session.add(TgGroupAccount(tenant_id=1, group_id=31, account_id=11, can_send=True))
+        session.add(ChannelMessage(id=41, tenant_id=1, channel_target_id=31, message_id=7301, content_preview="招生信息", comment_available=True))
+        session.add(Task(id="task-comment-permission", tenant_id=1, name="频道评论", type="channel_comment", status="running"))
         session.add(_channel_comment_action("action-ai-meta-comment", "让我分析这个频道内容", now_value))
         session.commit()
 
@@ -1452,6 +1465,17 @@ def test_channel_like_reaction_unavailable_skips_message_siblings(monkeypatch):
         assert action.result["error_code"] == "reaction_unavailable_message"
         assert sibling.status == "skipped"
         assert sibling.result["error_code"] == "reaction_unavailable_sibling"
+        obligations = session.scalars(
+            select(ReactionFulfillmentObligation).where(
+                ReactionFulfillmentObligation.task_id == "task-like-unavailable"
+            )
+        ).all()
+        assert [item.status for item in obligations] == [
+            "unavailable",
+            "unavailable",
+        ]
+        task = session.get(Task, "task-like-unavailable")
+        assert task.last_error == "频道消息不可点赞或消息ID无效"
 
 
 def test_post_comment_permission_denied_blocks_account_and_skips_account_siblings(monkeypatch):
@@ -1749,7 +1773,15 @@ def test_task_center_dispatch_defers_by_global_account_policy(monkeypatch):
         session.add(TgAccount(id=11, tenant_id=1, display_name="发送号", phone_masked="+861***0011", status="在线"))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1001", title="运营群", auth_status="已授权运营", can_send=True))
         session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True))
-        session.add(Task(id="task-policy", tenant_id=1, name="账号策略", type="group_ai_chat", status="running"))
+        session.add(Task(
+            id="task-policy",
+            tenant_id=1,
+            name="账号策略",
+            type="group_ai_chat",
+            status="running",
+            type_config={"target_group_id": 7, "daily_message_target": 1},
+            stats={"fulfillment_contract_version": "all_task_v2"},
+        ))
         session.add(
             Action(
                 id="action-success",
@@ -1803,7 +1835,15 @@ def test_task_center_dispatch_applies_default_failure_policy(monkeypatch):
         session.add(TgAccount(id=11, tenant_id=1, display_name="发送号", phone_masked="+861***0011", status="在线"))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1001", title="运营群", auth_status="已授权运营", can_send=True, daily_limit=999))
         session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True))
-        session.add(Task(id="task-failure-policy", tenant_id=1, name="失败策略", type="group_ai_chat", status="running"))
+        session.add(Task(
+            id="task-failure-policy",
+            tenant_id=1,
+            name="失败策略",
+                type="group_ai_chat",
+                status="running",
+                type_config={"target_group_id": 7, "daily_message_target": 1},
+                stats={"fulfillment_contract_version": "all_task_v2"},
+        ))
         limited_gate_payload = _ai_group_send_gate_payload(
             session,
             _now(),
@@ -3767,6 +3807,7 @@ def test_channel_like_jitter_uses_available_accounts_without_false_capacity(monk
         ]
         channel = OperationTarget(id=21, tenant_id=1, target_type="channel", tg_peer_id="-10021", title="容量频道", username="capacity_channel", can_send=True, auth_status="已授权运营")
         message = ChannelMessage(id=31, tenant_id=1, channel_target_id=21, message_id=6101, message_url="https://t.me/capacity_channel/6101", content_preview="容量测试")
+        lower_message = ChannelMessage(id=32, tenant_id=1, channel_target_id=21, message_id=6102, message_url="https://t.me/capacity_channel/6102", content_preview="容量下限测试")
 
         def make_task(task_id: str) -> Task:
             return Task(
@@ -3791,7 +3832,11 @@ def test_channel_like_jitter_uses_available_accounts_without_false_capacity(monk
 
         upper_task = make_task("channel-like-jitter-capacity-upper")
         lower_task = make_task("channel-like-jitter-capacity-lower")
-        session.add_all([*accounts, channel, message, upper_task, lower_task])
+        lower_task.type_config = {
+            **lower_task.type_config,
+            "message_ids": [lower_message.id],
+        }
+        session.add_all([*accounts, channel, message, lower_message, upper_task, lower_task])
         session.commit()
 
         monkeypatch.setattr("app.services.task_center.executors.common.random.randint", lambda _lower, upper: upper)
@@ -3993,6 +4038,7 @@ def test_channel_comment_planner_defers_same_message_text_dedupe():
         task = _seed_channel_comment_history_window(session, base_time)
         session.commit()
 
+        takeover_task(session, task, now=base_time)
         assert build_channel_comment_plan(session, task) == 1
         pending = session.scalars(select(Action).where(Action.task_id == task.id, Action.status == "pending")).all()
 
@@ -4070,6 +4116,23 @@ def test_operation_profile_drives_schedule_and_ai_cycle_mode():
     assert ai_cycle_mode({"pacing_config": pacing_config}, now=datetime(2026, 5, 11, 1, 30)) == ("休眠期", 0.0)
     assert ai_cycle_mode({"pacing_config": pacing_config}, now=datetime(2026, 5, 11, 6, 30)) == ("低频期", 0.05)
     assert ai_cycle_mode({"pacing_config": pacing_config}, now=datetime(2026, 5, 11, 11, 30)) == ("高峰期", 0.1)
+
+
+@pytest.mark.no_postgres
+def test_schedule_times_never_crosses_business_deadline():
+    start = datetime(2026, 7, 29, 22, 0)
+    deadline = datetime(2026, 7, 29, 23, 59, 59)
+
+    times = schedule_times(
+        100,
+        {"mode": "template", "template": "moderate_6h"},
+        start_at=start,
+        deadline_at=deadline,
+    )
+
+    assert len(times) == 100
+    assert min(times) >= start
+    assert max(times) < deadline
 
 
 def test_group_ai_chat_round_uses_near_term_schedule_with_operation_curve(monkeypatch):
@@ -5620,6 +5683,7 @@ def test_task_center_drain_respects_ai_idle_continuation_next_run(monkeypatch):
     monkeypatch.setattr("app.services.task_center.service.build_task_plan", fake_build_task_plan)
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="AI 群"))
         session.add(
             Task(
                 id="ai-idle-drain",
@@ -5689,6 +5753,7 @@ def test_task_center_recovers_stale_ai_task_waiting_for_context(monkeypatch):
     monkeypatch.setattr("app.services.task_center.service.build_task_plan", fake_build_task_plan)
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="AI 群"))
         session.add(
             Task(
                 id="ai-stale-context",
@@ -7349,7 +7414,15 @@ def test_task_center_pre_send_validation_records_auto_check_metadata(monkeypatch
                 TgAccount(id=11, tenant_id=1, display_name="发送号", phone_masked="+861***0011", status="在线"),
                 TgGroup(id=7, tenant_id=1, tg_peer_id="-1001", title="运营群", auth_status="已授权运营", can_send=True, banned_words="敏感词"),
                 TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True),
-                Task(id="task-auto-check", tenant_id=1, name="自动校验", type="group_ai_chat", status="running"),
+                Task(
+                    id="task-auto-check",
+                    tenant_id=1,
+                    name="自动校验",
+                    type="group_ai_chat",
+                    status="running",
+                    type_config={"target_group_id": 7, "daily_message_target": 1},
+                    stats={"fulfillment_contract_version": "all_task_v2"},
+                ),
                 Action(
                     id="action-auto-check",
                     tenant_id=1,
@@ -7390,7 +7463,15 @@ def test_task_center_pre_send_validation_blocks_internal_prompts(monkeypatch):
                 TgAccount(id=11, tenant_id=1, display_name="发送号", phone_masked="+861***0011", status="在线"),
                 TgGroup(id=7, tenant_id=1, tg_peer_id="-1001", title="运营群", auth_status="已授权运营", can_send=True, banned_words=""),
                 TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True),
-                Task(id="task-internal-prompt", tenant_id=1, name="提示词拦截", type="group_ai_chat", status="running"),
+                Task(
+                    id="task-internal-prompt",
+                    tenant_id=1,
+                    name="提示词拦截",
+                    type="group_ai_chat",
+                    status="running",
+                    type_config={"target_group_id": 7, "daily_message_target": 1},
+                    stats={"fulfillment_contract_version": "all_task_v2"},
+                ),
                 Action(
                     id="action-internal-prompt",
                     tenant_id=1,
@@ -7437,7 +7518,15 @@ def test_task_center_pre_send_validation_blocks_ai_request_analysis(monkeypatch)
                 TgAccount(id=11, tenant_id=1, display_name="发送号", phone_masked="+861***0011", status="在线"),
                 TgGroup(id=7, tenant_id=1, tg_peer_id="-1001", title="运营群", auth_status="已授权运营", can_send=True, banned_words=""),
                 TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True),
-                Task(id="task-ai-request-analysis", tenant_id=1, name="AI 过程性内容拦截", type="group_ai_chat", status="running"),
+                Task(
+                    id="task-ai-request-analysis",
+                    tenant_id=1,
+                    name="AI 过程性内容拦截",
+                        type="group_ai_chat",
+                        status="running",
+                        type_config={"target_group_id": 7, "daily_message_target": 1},
+                        stats={"fulfillment_contract_version": "all_task_v2"},
+                ),
             ]
         )
         payload = {

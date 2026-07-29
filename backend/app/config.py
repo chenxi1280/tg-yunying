@@ -140,6 +140,7 @@ class Settings:
     action_claim_limit: int = int(os.getenv("ACTION_CLAIM_LIMIT", "100"))
     action_claim_seconds: int = int(os.getenv("ACTION_CLAIM_SECONDS", "60"))
     dispatcher_claim_scope: str = os.getenv("DISPATCHER_CLAIM_SCOPE", "task_center_dispatch")
+    dispatcher_scope_capacity: int = int(os.getenv("DISPATCHER_SCOPE_CAPACITY", "52"))
     action_lease_seconds: int = int(os.getenv("ACTION_LEASE_SECONDS", "1800"))
     # PRD §2.20.2 RC-3: search_join_membership 子动作的 lease_timeout 默认 180s，
     # 覆盖 join 请求发送 → TG 服务端处理 → membership 事件回推的全链路。

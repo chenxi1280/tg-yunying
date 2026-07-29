@@ -86,6 +86,13 @@ from .dispatcher import (
 from .daily_coverage import recover_terminal_coverage_reservations
 from .daily_fulfillment import record_daily_fulfillment_decision
 from .executors import build_task_plan, channel_comment, prepare_open_actions_for_planning, requires_planning_with_open_actions
+from .fulfillment_takeover import (
+    FULFILLMENT_CONTRACT_VERSION,
+    FULFILLMENT_TASK_TYPES,
+    UNIFIED_TASK_GATE_LIMIT,
+    normalize_fulfillment_pacing,
+    takeover_task,
+)
 from .search_rank_deboost_pacing import DeboostPacingStats, account_click_allowed, deboost_pacing_window, lock_rank_deboost_quota_scope
 from .search_rank_deboost_reservations import (
     mark_reserved_reservation_unknown,
@@ -374,7 +381,10 @@ def _new_task(session: Session, tenant_id: int, task_type: str, payload) -> Task
     raw_type_config = apply_group_ai_account_coverage_defaults(task_type, raw_type_config, payload.account_config.model_dump(mode="json"))
     type_config = validated_type_config(task_type, raw_type_config)
     validate_rule_binding(session, tenant_id, type_config)
-    pacing_config = pacing_config_payload(payload.pacing_config)
+    pacing_config = normalize_fulfillment_pacing(
+        task_type,
+        pacing_config_payload(payload.pacing_config),
+    )
     if task_type == LEGACY_SEARCH_CLICK_TASK and type_config.get("strict_daily_target"):
         pacing_config["skip_probability_per_action"] = DAILY_TARGET_ACTION_SKIP_PROBABILITY
     if task_type == LEGACY_SEARCH_CLICK_TASK:
@@ -404,7 +414,14 @@ def _new_task(session: Session, tenant_id: int, task_type: str, payload) -> Task
         pacing_config=pacing_config,
         failure_policy=payload.failure_policy.model_dump(mode="json"),
         type_config=type_config,
-        stats=empty_stats(),
+        stats={
+            **empty_stats(),
+            **(
+                {"fulfillment_contract_version": FULFILLMENT_CONTRACT_VERSION}
+                if task_type in FULFILLMENT_TASK_TYPES
+                else {}
+            ),
+        },
     )
     session.add(task)
     session.flush()
@@ -449,6 +466,7 @@ def _search_click_internal_payload(
         daily_jitter_percent=payload.daily_jitter_percent,
         hourly_jitter_percent=payload.hourly_jitter_percent,
         quiet_hours=payload.quiet_hours,
+        max_actions_per_day=UNIFIED_TASK_GATE_LIMIT,
     )
     return SearchClickInternalTaskCreate(
         client_request_id=payload.client_request_id,
@@ -2286,6 +2304,7 @@ def start_task_in_transaction(
     actor: str,
 ) -> StartExecutionResult:
     tenant_id = task.tenant_id
+    takeover_task(session, task)
     if task.type == "channel_comment":
         channel_comment.reconcile_lifetime_cap(session, task)
         if task.status == "completed":
@@ -3241,6 +3260,12 @@ def _plan_due_task_batch(
         task = session.get(Task, task_id)
         if not task or task.status != "running":
             return 0, 0, False, current_global_pending
+        try:
+            takeover_task(session, task)
+        except ValueError as exc:
+            _block_invalid_fulfillment_task(task, exc)
+            session.commit()
+            return 1, 0, False, current_global_pending
         if _check_stop_conditions(session, task):
             session.commit()
             return 0, 0, False, current_global_pending
@@ -3267,6 +3292,20 @@ def _plan_due_task_batch(
             task.next_run_at = next_run_after_task(task)
         session.commit()
         return processed, planned, False, current_global_pending
+
+
+def _block_invalid_fulfillment_task(task: Task, exc: ValueError) -> None:
+    detail = str(exc)
+    task.status = "paused"
+    task.next_run_at = None
+    task.last_error = f"任务结构阻塞：{detail}"
+    task.stats = {
+        **(task.stats or {}),
+        "fulfillment_takeover_status": "blocked",
+        "fulfillment_takeover_blocker_code": "task_contract_invalid",
+        "fulfillment_takeover_error": detail,
+        "fulfillment_takeover_checked_at": _now().isoformat(),
+    }
 
 
 def _coverage_round_goal(session_factory, task_id: str) -> int:
@@ -4571,7 +4610,10 @@ def _pacing_payload_for_task(task: Task, pacing_config: Any) -> dict[str, Any]:
             raw_data.pop("hourly_jitter_percent", None)
         if (SEARCH_JOIN_PACING_FIELDS - {"max_actions_per_day"}).intersection(raw_data or {}):
             raise ValueError("search_join_group 专属 pacing 字段不能用于其他任务类型")
-        return pacing_config_payload(PacingConfig.model_validate(raw_data))
+        return normalize_fulfillment_pacing(
+            task.type,
+            pacing_config_payload(PacingConfig.model_validate(raw_data)),
+        )
     return pacing_config_payload(pacing_config)
 
 

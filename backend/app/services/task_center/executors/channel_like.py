@@ -5,15 +5,19 @@ import random
 from sqlalchemy.orm import Session
 
 from app.models import ChannelMessage, OperationTarget, Task
+from app.services._common import _now
 
 from ..account_pool import daily_uncovered_account_count, select_task_accounts
+from ..channel_fulfillment import (
+    bind_obligation_action,
+    ensure_reaction_obligation,
+    reaction_account_ids_for_messages,
+)
 from ..channel_membership import channel_member_accounts, gate_channel_membership
-from ..pacing import schedule_times
+from ..pacing import next_local_day_deadline, schedule_times
 from ..payloads import LikeMessagePayload, create_like_action
-from .channel_action_history import channel_message_account_ids_for_messages
 from .common import adjust_for_account_hour_limit, channel_message_payload, channel_scope, quantity_jitter_bounds, quantity_with_jitter, record_channel_capacity_warning
 
-LIKE_UNAVAILABLE_SKIP_CODES = {"reaction_unavailable_message", "reaction_unavailable_sibling"}
 PRIMARY_REACTION_RATIO = 0.7
 EXTRA_REACTION_RATIO = 0.1
 MIN_EXTRA_REACTION_QUANTITY = 10
@@ -54,39 +58,58 @@ def build_plan(session: Session, task: Task) -> int:
         task.last_error = "没有可用账号，等待账号恢复后继续执行"
         return 0
     record_channel_capacity_warning(task, "点赞", target_per_message, len(accounts))
-    account_ids_by_message = channel_message_account_ids_for_messages(
+    account_ids_by_message = reaction_account_ids_for_messages(
         session,
         task,
-        "like_message",
         messages,
-        include_skipped_codes=LIKE_UNAVAILABLE_SKIP_CODES,
     )
     actions = _like_actions_for_messages(session, task, config, messages, accounts, reactions, target_per_message, account_ids_by_message)
     if not actions:
         task.last_error = _empty_like_plan_message(task, messages, target_per_message, account_ids_by_message)
         return 0
-    return _create_like_actions(session, task, channel, config, actions)
+    return _create_like_actions(
+        session,
+        task,
+        channel=channel,
+        config=config,
+        actions=actions,
+    )
 
 
 def _create_like_actions(
     session: Session,
     task: Task,
+    *,
     channel: OperationTarget,
     config: dict,
     actions: list[tuple[ChannelMessage, int, str]],
 ) -> int:
-    times = schedule_times(len(actions), task.pacing_config or {})
+    now_value = _now()
+    times = schedule_times(
+        len(actions),
+        task.pacing_config or {},
+        start_at=now_value,
+        deadline_at=next_local_day_deadline(now_value, task.timezone),
+    )
     created = 0
     for index, (message, account_id, reaction) in enumerate(actions):
         planned_at = times[index]
         planned_at = adjust_for_account_hour_limit(session, task, account_id, "like_message", planned_at, config)
-        create_like_action(
+        obligation = ensure_reaction_obligation(session, task, message, account_id)
+        payload = LikeMessagePayload(
+            **channel_message_payload(channel, message),
+            reaction_emoji=reaction,
+            reaction_contract_version=obligation.reaction_contract_version,
+            reaction_fulfillment_obligation_id=obligation.id,
+        )
+        action = create_like_action(
             session,
             task,
             account_id,
             planned_at,
-            LikeMessagePayload(**channel_message_payload(channel, message), reaction_emoji=reaction),
+            payload,
         )
+        bind_obligation_action(obligation, action)
         created += 1
     return created
 
@@ -121,6 +144,15 @@ def _empty_like_plan_message(
     target_per_message: int,
     account_ids_by_message: dict[int, set[int]],
 ) -> str:
+    unavailable_ids = {
+        int(value)
+        for value in (task.stats or {}).get(
+            "reaction_unavailable_message_ids",
+            [],
+        )
+    }
+    if any(message.id in unavailable_ids for message in messages):
+        return task.last_error or "频道消息当前不可点赞"
     if _all_like_targets_reached(messages, target_per_message, account_ids_by_message):
         return ""
     return task.last_error or "没有可新增的有效点赞账号"

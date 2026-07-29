@@ -25,6 +25,9 @@ def dispatcher_scope(settings) -> str:
 
 def dispatcher_claim_capacity(settings, requested_limit: int) -> int:
     configured_limit = max(1, int(getattr(settings, "action_claim_limit", requested_limit) or requested_limit))
+    scope_capacity = int(getattr(settings, "dispatcher_scope_capacity", 0) or 0)
+    if scope_capacity > 0:
+        return min(configured_limit, scope_capacity)
     configured_concurrency = max(1, int(getattr(settings, "dispatcher_concurrency", configured_limit) or configured_limit))
     return min(configured_limit, configured_concurrency)
 

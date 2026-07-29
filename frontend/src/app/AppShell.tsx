@@ -813,6 +813,7 @@ function AppShell() {
               focusTask={taskCenterFocus}
               onFocusTaskConsumed={() => setTaskCenterFocus(null)}
               canManageTasks={hasPermission(currentUser, 'tasks.manage')}
+              canCreateSearchClick={hasPermission(currentUser, 'tasks.create.search_click')}
               canDispatchControl={hasPermission(currentUser, 'tasks.dispatch_control')}
               onOpenAccountDetail={openAccountDetailFromOperation}
               telegramBotSettings={currentUser?.tenant_id ? tenantBotSettings[currentUser.tenant_id] ?? null : null}

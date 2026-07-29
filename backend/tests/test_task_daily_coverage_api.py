@@ -299,10 +299,10 @@ def test_coverage_summary_uses_frozen_ledger_denominator(session: Session) -> No
     assert summary["remaining_count"] == 3
     assert summary["coverage_percent"] == 25
     assert summary["capacity_proof"]["sufficient"] is False
-    assert summary["capacity_status"] == "blocked"
+    assert summary["capacity_status"] == "diagnostic_insufficient"
     assert summary["required_daily_messages"] == 4
     assert any(item["reason"] == "cannot_send" and item["count"] == 1 for item in summary["blocked_reasons"])
-    assert any(item["reason"] == "daily_coverage_capacity_insufficient" for item in summary["blocked_reasons"])
+    assert not any(item["reason"] == "daily_coverage_capacity_insufficient" for item in summary["blocked_reasons"])
 
 
 def test_missing_all_account_ledger_never_falls_back_to_dynamic_percentage(session: Session) -> None:
@@ -324,6 +324,7 @@ def test_missing_all_account_ledger_never_falls_back_to_dynamic_percentage(sessi
 
     assert summary["mode"] == "all_accounts_daily"
     assert summary["coverage_status"] == "scope_uninitialized"
+    assert summary["capacity_status"] == "diagnostic_unproven"
     assert summary["coverage_percent"] == 0
     assert any(item["reason"] == "coverage_scope_uninitialized" for item in summary["blocked_reasons"])
 

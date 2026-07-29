@@ -10,6 +10,7 @@ from app.models import AccountStatus, Action, ChannelMessage, OperationTarget, T
 from app.services._common import _now
 from app.services.task_center.executors.channel_like import _reaction_plan, build_plan as build_channel_like_plan
 from app.services.task_center.executors.channel_view import build_plan as build_channel_view_plan
+from app.services.task_center.fulfillment_takeover import takeover_task
 
 pytestmark = pytest.mark.no_postgres
 
@@ -152,9 +153,17 @@ def test_channel_like_clears_account_error_when_targets_are_already_reached():
                 action_type="like_message",
                 account_id=account.id,
                 status="success",
-                payload={"channel_message_id": message.id},
+                payload={
+                    "channel_id": channel.tg_peer_id,
+                    "channel_target_id": channel.id,
+                    "channel_message_id": message.id,
+                    "message_id": message.message_id,
+                    "reaction_emoji": "👍",
+                },
             )
         )
+        session.commit()
+        takeover_task(session, task, now=_now(), write_audit=False)
         session.commit()
 
         assert build_channel_like_plan(session, task) == 0

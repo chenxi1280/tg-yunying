@@ -39,6 +39,7 @@ from app.services.task_center import pacing
 from app.services.task_center import search_join_pacing
 from app.services.task_center import hourly_stats
 from app.services.task_center.jisou_selector_accounts import select_jisou_selector_candidates
+from app.services.task_center.fulfillment_takeover import FULFILLMENT_CONTRACT_VERSION
 from app.services.task_center import search_click_target_progress as search_click_progress
 from app.services.task_center.search_join_pacing import pacing_window
 from app.services.task_center.executors import build_task_plan
@@ -402,6 +403,8 @@ def test_search_join_blocks_legacy_protocol_payload_before_gateway(session: Sess
 @pytest.mark.no_postgres
 def test_search_join_gateway_exception_becomes_unknown_on_same_attempt(session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
     task = _task()
+    task.type = "search_click"
+    task.stats = {"fulfillment_contract_version": FULFILLMENT_CONTRACT_VERSION}
     session.add(task)
     session.flush()
     payload = _search_join_dispatch_payload()
@@ -580,7 +583,7 @@ def test_search_join_planner_keeps_selector_failed_jisou_accounts_and_excludes_s
             task, 103,
             status="failed",
             executed_at=observed_at,
-            result={"error_code": "jisou_session_state_deviated", "jisou_page_phase": "hot_list_page"},
+            result={"error_code": "jisou_hot_list_page", "jisou_page_phase": "hot_list_page"},
         ),
     ])
     session.commit()
@@ -592,7 +595,7 @@ def test_search_join_planner_keeps_selector_failed_jisou_accounts_and_excludes_s
         bot_username="jisou",
         now_value=observed_at,
     )
-    # 103 被 24h 排除；101 (selector_missing) 保留；102 (verified) 排序在前
+    # 103 被 12 小时排除；101 (selector_missing) 保留；102 (verified) 排序在前
     assert [account.id for account in candidates.accounts] == [102, 101]
     assert candidates.excluded_count == 1
 
@@ -635,8 +638,38 @@ def test_jisou_selector_candidates_ignore_other_bot_outcomes(session: Session) -
 
 
 @pytest.mark.no_postgres
+def test_jisou_hot_list_exclusion_is_shared_across_search_tasks(
+    session: Session,
+) -> None:
+    first_task = _task()
+    second_task = _task()
+    session.add_all([first_task, second_task])
+    session.flush()
+    observed_at = _now()
+    session.add(_search_join_source_action(
+        first_task,
+        101,
+        status="failed",
+        executed_at=observed_at,
+        result={"error_code": "jisou_hot_list_page"},
+    ))
+    session.commit()
+
+    candidates = select_jisou_selector_candidates(
+        session,
+        second_task,
+        [session.get(TgAccount, 101)],
+        bot_username="jisou",
+        now_value=observed_at,
+    )
+
+    assert candidates.accounts == ()
+    assert candidates.excluded_count == 1
+
+
+@pytest.mark.no_postgres
 def test_search_join_planner_fails_closed_when_all_jisou_accounts_session_deviated(session: Session) -> None:
-    """PRD §2.19.3: 全部账号 jisou_session_state_deviated 时 24h 排除，planner fails closed。"""
+    """PRD §2.19.3: 全部账号处于极搜热搜页时 12h 排除，planner fails closed。"""
     _bind_search_join_environment(session, [101, 102])
     task = _task(account_config={"selection_mode": "manual", "account_ids": [101, 102], "max_concurrent": 2})
     session.add(task)
@@ -647,7 +680,7 @@ def test_search_join_planner_fails_closed_when_all_jisou_accounts_session_deviat
             task, account_id,
             status="failed",
             executed_at=observed_at,
-            result={"error_code": "jisou_session_state_deviated", "jisou_page_phase": "hot_list_page"},
+            result={"error_code": "jisou_hot_list_page", "jisou_page_phase": "hot_list_page"},
         ))
     session.commit()
 
@@ -657,6 +690,35 @@ def test_search_join_planner_fails_closed_when_all_jisou_accounts_session_deviat
     assert task.stats["search_join_stats"]["hourly_execution"]["last_blockers"] == {
         "jisou_group_selector_account_unavailable": 2
     }
+
+
+@pytest.mark.no_postgres
+def test_jisou_hot_list_exclusion_expires_after_twelve_hours(
+    session: Session,
+) -> None:
+    task = _task()
+    session.add(task)
+    session.flush()
+    observed_at = _now()
+    session.add(_search_join_source_action(
+        task,
+        101,
+        status="failed",
+        executed_at=observed_at - timedelta(hours=12, seconds=1),
+        result={"error_code": "jisou_hot_list_page"},
+    ))
+    session.commit()
+
+    candidates = select_jisou_selector_candidates(
+        session,
+        task,
+        [session.get(TgAccount, 101)],
+        bot_username="jisou",
+        now_value=observed_at,
+    )
+
+    assert [account.id for account in candidates.accounts] == [101]
+    assert candidates.excluded_count == 0
 
 
 @pytest.mark.no_postgres

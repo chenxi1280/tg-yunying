@@ -5,14 +5,21 @@ from datetime import timedelta
 
 from sqlalchemy.orm import Session
 
-from app.models import ChannelMessage, OperationTarget, Task
+from app.models import ChannelMessage, OperationTarget, Task, TaskDayLedger
 from app.services._common import _now
 
 from ..account_pool import daily_uncovered_account_count, select_task_accounts
+from ..channel_fulfillment import (
+    bind_obligation_action,
+    ensure_view_obligation,
+    view_account_ids_for_messages,
+    view_confirmed_counts,
+    view_daily_counts,
+)
 from ..channel_membership import channel_member_accounts, gate_channel_membership
-from ..pacing import schedule_times
+from ..daily_ledgers import ensure_task_day_ledger
+from ..pacing import next_local_day_deadline, schedule_times
 from ..payloads import ViewMessagePayload, create_view_action
-from .channel_action_history import ChannelViewDailyCounts, channel_message_account_ids_for_messages, channel_message_success_counts, channel_view_daily_action_counts
 from .common import adjust_for_account_hour_limit, channel_message_payload, channel_scope, quantity_jitter_bounds, quantity_with_jitter, record_channel_capacity_warning
 
 
@@ -37,20 +44,20 @@ def build_plan(session: Session, task: Task) -> int:
         task.last_error = "没有可用账号，等待账号恢复后继续执行"
         return 0
     record_channel_capacity_warning(task, "浏览", daily_target, len(accounts))
-    execution_date = _now().date().isoformat()
-    daily_counts = _view_daily_counts(session, task, execution_date, effective_daily_cap, config)
+    ledger = ensure_task_day_ledger(session, task, now=_now())
+    execution_date = ledger.obligation_local_date.isoformat()
+    daily_counts = view_daily_counts(session, ledger)
     task_remaining_today = _remaining_task_daily_capacity(effective_daily_cap, daily_counts.total)
     if task_remaining_today <= 0:
         task.last_error = "任务今日浏览安全上限已用完，等待下一日继续规划"
         return 0
-    account_ids_by_message = channel_message_account_ids_for_messages(
+    account_ids_by_message = view_account_ids_for_messages(
         session,
         task,
-        "view_message",
+        ledger,
         messages,
-        execution_date=execution_date,
     )
-    completed_counts = channel_message_success_counts(session, task, "view_message", messages)
+    completed_counts = view_confirmed_counts(session, task, messages)
     actions = _view_actions_for_messages(
         session,
         task,
@@ -70,7 +77,15 @@ def build_plan(session: Session, task: Task) -> int:
     if not actions:
         task.last_error = _empty_view_plan_message(task, config, messages, total_target, completed_counts)
         return 0
-    return _create_view_actions(session, task, channel, config, actions, execution_date, daily_target, total_target)
+    context = ViewCreationContext(
+        channel=channel,
+        config=config,
+        execution_date=execution_date,
+        daily_target=daily_target,
+        total_target=total_target,
+        ledger=ledger,
+    )
+    return _create_view_actions(session, task, actions=actions, context=context)
 
 
 def _view_accounts(session: Session, task: Task, channel: OperationTarget, config: dict) -> list:
@@ -101,26 +116,61 @@ def _view_accounts(session: Session, task: Task, channel: OperationTarget, confi
 def _create_view_actions(
     session: Session,
     task: Task,
-    channel: OperationTarget,
-    config: dict,
+    *,
     actions: list[tuple[ChannelMessage, int]],
-    execution_date: str,
-    daily_target: int,
-    total_target: int,
+    context: "ViewCreationContext",
 ) -> int:
-    times = schedule_times(len(actions), task.pacing_config or {})
+    now_value = _now()
+    times = schedule_times(
+        len(actions),
+        task.pacing_config or {},
+        start_at=now_value,
+        deadline_at=next_local_day_deadline(now_value, task.timezone),
+    )
     created = 0
     for index, (message, account_id) in enumerate(actions):
-        planned_at = adjust_for_account_hour_limit(session, task, account_id, "view_message", times[index], config)
+        planned_at = adjust_for_account_hour_limit(
+            session,
+            task,
+            account_id,
+            "view_message",
+            times[index],
+            context.config,
+        )
+        obligation = ensure_view_obligation(
+            session,
+            context.ledger,
+            message,
+            account_id,
+        )
         payload = {
-            **channel_message_payload(channel, message),
-            "execution_date": execution_date,
-            "daily_view_target": daily_target,
-            "total_view_target": total_target,
+            **channel_message_payload(context.channel, message),
+            "execution_date": context.execution_date,
+            "daily_view_target": context.daily_target,
+            "total_view_target": context.total_target,
+            "task_day_ledger_id": context.ledger.id,
+            "view_fulfillment_obligation_id": obligation.id,
         }
-        create_view_action(session, task, account_id, planned_at, ViewMessagePayload(**payload))
+        action = create_view_action(
+            session,
+            task,
+            account_id,
+            planned_at,
+            ViewMessagePayload(**payload),
+        )
+        bind_obligation_action(obligation, action)
         created += 1
     return created
+
+
+@dataclass(frozen=True)
+class ViewCreationContext:
+    channel: OperationTarget
+    config: dict
+    execution_date: str
+    daily_target: int
+    total_target: int
+    ledger: TaskDayLedger
 
 
 def _view_actions_for_messages(
@@ -175,18 +225,6 @@ def _view_quantity_for_message(
         return 0
     used_count = len(account_ids_by_message[message.id])
     return max(0, min(max(base, coverage_remaining), inputs.total_target - completed_count) - used_count)
-
-
-def _view_daily_counts(
-    session: Session,
-    task: Task,
-    execution_date: str,
-    daily_cap: int | None,
-    config: dict,
-) -> ChannelViewDailyCounts:
-    if daily_cap is None and int(config.get("max_views_per_account_per_day") or 0) <= 0:
-        return ChannelViewDailyCounts(total=0, by_account={})
-    return channel_view_daily_action_counts(session, task, execution_date)
 
 
 def _remaining_task_daily_capacity(daily_cap: int | None, planned_today: int) -> int:

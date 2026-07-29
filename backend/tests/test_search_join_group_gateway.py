@@ -418,7 +418,7 @@ def test_execute_search_join_does_not_reset_hot_list_session() -> None:
     result = asyncio.run(execute_search_join_with_client(client, _payload(bot_username="jisou"), keyword_text="郑州"))
 
     assert result["success"] is False
-    assert result["error_code"] == "jisou_session_state_deviated"
+    assert result["error_code"] == "jisou_hot_list_page"
     assert result["jisou_recovery_kind"] == "not_applicable"
     assert result["reset_executed"] is False
     assert client.sent == [
@@ -445,7 +445,7 @@ def test_execute_search_join_blocks_when_hot_list_reset_still_deviates() -> None
     result = asyncio.run(execute_search_join_with_client(client, _payload(bot_username="jisou"), keyword_text="郑州"))
 
     assert result["success"] is False
-    assert result["error_code"] == "jisou_session_state_deviated"
+    assert result["error_code"] == "jisou_hot_list_page"
     assert result["jisou_recovery_kind"] == "not_applicable"
     assert result["reset_executed"] is False
     assert result["jisou_page_phase"] == "hot_list_page"

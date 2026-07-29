@@ -8,8 +8,8 @@
 | 需求级别 | L3：生产任务长期无法按时按量完成 |
 | 适用任务 | `group_ai_chat`、`channel_comment`、`channel_like`、`channel_view`、纯搜索点击 `task_type=search_click + search_execution_mode=click_only` |
 | 设计状态 | `complete` |
-| 设计复核 | 2026-07-28 已闭合 AI 发送后可见性三个 P0、两类求解器/epoch、search Reservation 首次独占、持久 problem/component/unit 快照与提交前全输入重验、逐 unit release item 守恒、重叠释放/claim 竞态、`precondition_lost` 禁止 Gateway 后倒退、回滚后独立 quarantine 与 `membership_admission` 术语边界；同时闭合 CAPTCHA 明确远端通过事实、非 AI 天然义务所有权、纯 `search_click` 唯一新建入口/projection/commit 与失败即重建分片、统一锁序、ContentMix 兜底兼容、创建 fingerprint/start 幂等和账号静态/运行边界 |
-| 开发交接 | `dev_handoff_ready=true`；2026-07-28 完成优先合同要求现有实现先 `resync`，再按 A/B/C/D 发布包顺序实现 |
+| 设计复核 | 2026-07-29 已补齐生产运行中任务自动接管、旧混合搜索转纯点击、热搜失败 12 小时路径排除、任务级软上限统一归一化、Dispatcher 稳定 Window、AI 准入账号级并行及自然日 deadline 收口；发送门禁修复不改变 AI 活群/评论的引用、图片、表情与普通 emoji 内容占比 |
+| 开发交接 | `dev_handoff_ready=true`；2026-07-29 最新完成优先合同 supersede “存量只审计不接管”和“小任务级上限可截断履约”，必须按本文完成代码、存量数据接管和生产 E4 |
 | 生产状态 | `production_unproven`；容器健康、Action 创建或本地测试均不代表恢复 |
 | 统计时区 | 默认 `Asia/Shanghai`，实际以 `Task.timezone` 为准 |
 | 证据基线 | 2026-07-28 生产只读取证与当前 `release` 实现审查 |
@@ -19,7 +19,7 @@
 1. AI 群日目标、全账号覆盖、账号面具和内容记忆以 `ai-group-daily-group-target-redesign-prd.md` 为准。
 2. 搜索协议细节以 `search-click-daily-fulfillment-remediation-prd.md` 为准；本文修订其容量、重复执行和生产放量口径。
 3. 本文 supersede 旧“评论与群聊共用签到兜底”、搜索点击混入 membership/admission，以及 AI 3 轮失败后沉默/失败的合同；“搜索点击加入”仅登记为后续独立模式，本轮不设计、不实现。
-4. 本文 supersede 主 PRD 中频道评论 `max_total_comments` 单独触发 `completed`、reaction unavailable 关闭整帖、浏览任务级上限可以小于逐消息当日目标、重复搜索绕过账号/关键词日限额的旧表述。
+4. 本文 supersede 主 PRD 中频道评论 `max_total_comments` 单独触发 `completed`、reaction unavailable 关闭整帖、浏览任务级上限可以小于逐消息当日目标、频道任务自定义账号小时/日上限、重复搜索绕过账号/关键词日限额的旧表述；AI 活群/评论/点赞/浏览/纯搜索点击的通用小时软上限，以及评论/点赞/浏览/纯搜索点击的任务级与任务内账号级履约软上限，统一归一为 `1_000_000`，只作系统异常门禁，不作目标或完成条件。Telegram、账号全局、授权、代理、协议和内容安全硬边界不属于此软门禁。
 5. `Task.status` 与当日/当消息履约状态分离；本文不新增一种 Task 主状态。
 
 ## 2. 当前生产事实与结论
@@ -29,12 +29,12 @@
 | 范围 | 生产事实 | 当前结论 |
 | --- | --- | --- |
 | Planner/Dispatcher | 发布后出现 1 次 Planner、3 次 Dispatcher PostgreSQL deadlock | 热事务交叉更新 `tasks`、覆盖账本和 claim 投影，吞吐不可持续 |
-| Dispatcher claim | 4 个 Dispatcher 共用一个 scope；代码把 `ACTION_CLAIM_LIMIT=100` 与单 worker `DISPATCHER_CONCURRENCY=20` 取最小，scope 只有 20 | 查询批量、单 worker 执行并发和全局 scope 容量语义混淆 |
-| AI 活群 | 3 个 running、5 个 stopped；运行任务目标 797/日；快照确认数为 0、0、43；存在 99 条带远端成功的 `check_in_direct` 尚未完成新合同审计 | 需修复账本和调度；停止任务不得自动启动；99 条必须按 coverage、账号、自然日、面具状态和远端证据逐条判定，不能按来源名批量补成功 |
+| Dispatcher claim | 4 个 Dispatcher 共用一个 scope；代码把 `ACTION_CLAIM_LIMIT=100` 与单 worker `DISPATCHER_CONCURRENCY=20` 取最小，scope 只有 20，且一个 60 秒 Window 内因 Action 状态变化反复重建 12-18 个 epoch，仍有 9-17 个份额空置 | 查询批量、单 worker 执行并发和全局 scope 容量语义混淆；运行态需求变化错误触发全 Window 重建 |
+| AI 活群 | 3 个 running、5 个 stopped；运行任务部署新代码后仍没有当前 `TaskDayLedger/TaskGroupDailyMessageSlot`；共享群管准入把同群任一 unresolved/stale 账号扩成全群 busy | 新合同只在显式 start 建账，存量 running 被遗漏；准入必须只阻塞对应账号，其他账号并行继续 |
 | 评论 | 单消息目标 80；任务 lifetime cap 解析为 65/80，旧任务在 79/86 附近完成 | 任务级生命周期 cap 错误截断逐消息目标 |
 | 点赞 | 950 条 open，仅 2 条当天到期；`moderate_6h` 被 24 小时曲线扩展；58 次 reaction unavailable 被计入已用账号 | deadline 失效，失败事实占用成功目标 |
 | 浏览 | 两条消息当日目标合计 2,000，任务日安全上限 500；快照为 78 success + 424 open | 配置自相矛盾，任何调度算法都无法在上限内完成 |
-| 搜索点击 | 当日 661 actions、0 success、34 failed、6 unknown、621 open；click=0、membership=0 | Action 规模不等于目标事实，协议尚未打通 |
+| 搜索点击 | 生产只有一条运行中 `legacy_mixed_search_join`，新 `search_click` 账本/义务均为 0；发布后 0 click success，hot-list、验证码和 session deviation 持续失败 | 必须把存量当前执行合同切为纯点击并建立 ledger/ordinal；Action 规模不等于目标事实 |
 | 搜索容量 | 63 个候选账号，账号日限额 2；57 个账号已超过 2，平均 10.49、最大 20 | repeat 模式绕过安全限额；63×2 只能证明原账号池最多提供 126 次原始合法尝试，不能称为 126 次可确认点击；CAPTCHA 只有实际 solved 后才可继续，目标点击仍只认远端事实 |
 
 ### 2.2 方案可解决边界
@@ -59,16 +59,16 @@
 
 ### 3.1 产品目标
 
-1. 五类任务使用统一、可下钻的目标、真实确认、在途、未知、失败、欠额、截止时间和容量状态。
+1. 五类任务全部使用统一、可下钻的新履约模型；部署后自动接管运行中任务，不要求人工 stop/start。
 2. 任何完成结论都可追到同一任务粒度的 Action、ExecutionAttempt 和 Telegram 远端事实。
 3. Planner 只为 deadline 前可执行且未被有效 Action 占位的欠额形成有限执行义务；评论/点赞/浏览可直接建 Action，搜索只冻结 ordinal 与只读候选，必须等当前 Claim Window commit 取得中央份额后才建可执行 Action。
-4. 创建接口只执行请求结构校验：必填字段、调用者 `tasks.manage` 授权、对应任务类型的专项创建权限、同用户可见引用、引用类型与任务声明用途的静态兼容性，以及数量/内容合同能否形成唯一义务；这一步不得命名或实现为“任务预检”。纯搜索点击必须同时具备 `tasks.manage + tasks.create.search_click`，并持久化 `task_type=search_click`。调用者缺少任一必需权限直接返回 403，不持久化 Task；Telegram 运行权限、账号在线、准入、代理、Provider、协议和容量一律不在创建前读取。不执行容量预检、不要求风险确认；外部资源不足不阻止创建或启动，运行后由 Planner 持续显示真实 blocker、自动排序并追赶目标。
+4. 创建接口只执行请求结构校验：必填字段、调用者授权、同用户可见引用、引用类型与任务声明用途的静态兼容性，以及数量/内容合同能否形成唯一义务；这一步不得命名或实现为“任务预检”。五类任务的授权矩阵固定为：AI 活群、评论、点赞、浏览只要求 `tasks.manage`；纯搜索点击必须同时具备 `tasks.manage + tasks.create.search_click`，并持久化 `task_type=search_click`。本次不新增其余四类任务的专项创建权限。调用者缺少任一必需权限直接返回 403，不持久化 Task；Telegram 运行权限、账号在线、准入、代理、Provider、协议和容量一律不在创建前读取。不执行容量预检、不要求风险确认；外部资源不足不阻止创建或启动，运行后由 Planner 持续显示真实 blocker、自动排序并追赶目标。
 5. 任务生命周期、当日履约和逐消息履约分离，任何 task-level cap 都不能替代 per-account/per-message 目标。
-6. 存量修复默认 dry-run，精确到 task，保留审计且不自动启动任务。
+6. 存量接管先生成逐 task 审计预览，再在同一发布流程幂等 apply：运行中任务立即接管并续跑；paused/stopped 只升级合同、不自动启动；completed/deleted 历史不改。接管重复执行不得重复 ledger、slot、obligation 或 Action。
 
 ### 3.2 非目标
 
-- 不降低业务配置目标，不自动提高账号日限额、账号小时限额或 Telegram 风险门禁。
+- 不降低业务配置目标，不自动提高账号日限额、账号小时限额、Telegram 风险门禁或绕过 unknown 防重；`1_000_000` 只替换会截断业务目标的任务级履约软上限。
 - 不把 `pending/claiming/executing/unknown_after_send/skipped` 计为成功。
 - 不使用 mock、未记录的静默 fallback、未知按钮模糊点击或未审批协议样本；本文明确的签到/表情确定性兜底必须留下原失败原因和远端事实。
 - 不把 worker/container/health 绿色、claim 成功、Action 创建或本地测试写成 `production_fixed`。
@@ -87,14 +87,14 @@
 | `dispatch_rebuild_snapshot_hash` | pending epoch 分片重建的规范化输入身份；覆盖 due/eligibility、active exclusion、有效旧 Reservation、scope/shard 容量及影响分配的配置当前值/版本，提交前重算；成功后 Window 以 `ready_rebuild_snapshot_hash` 保存同值，三类新 allocation 行各保存 `dispatch_rebuild_snapshot_hash` | 不用 worker/lease、时间、进程或随机值凑版本；不能用 `rebuild_input_version` 单独替代，也不等于搜索 `solver_input_hash` 或 exclusion `resource_snapshot_hash` |
 | `search_click_assignment_epoch` | 绑定 `(dispatch_claim_window_id, dispatch_allocation_epoch)` 的一次搜索候选与资源版本快照；一个 epoch 只求解和提交一次，首次 outcome 直接释放未领取 unit | 不在原中央份额上重试；不得承载该 epoch finalize 后的 assignment 释放，也不得继续命名为 `search_click_allocation_epoch` |
 | `DispatchAllocationReleaseBatch` | search epoch 已 finalize 后，以稳定 trigger 处理一个或多个候选中央 unit 的持久载体；锁内分类 effective/already-released/precondition-lost，全部 effective unit、状态、exclusion、计数与 rebuild wave 原子提交，空 effective set 也以 no-op 收口 trigger | 不使用随机 batch/worker/扫描时间作幂等键，不改写原 search outcome，不把重叠 trigger 的永久唯一键冲突变成重试 |
-| `DispatchAllocationExclusion` | 精确且跨状态永久绑定 `(dispatch_claim_reservation_id, fulfillment_lane_claim_ordinal)` 的一个已释放中央份额事实，只影响来源 Window 的重新获配 | 不是账号/任务永久黑名单，不跨 Window，不减少业务欠额，也不等于极搜 `jisou_selector_accounts` 的 24h 协议安全 eligibility 排除 |
+| `DispatchAllocationExclusion` | 精确且跨状态永久绑定 `(dispatch_claim_reservation_id, fulfillment_lane_claim_ordinal)` 的一个已释放中央份额事实，只影响来源 Window 的重新获配 | 不是账号/任务永久黑名单，不跨 Window，不减少业务欠额，也不等于极搜 `jisou_selector_accounts` 的 12 小时协议安全 eligibility 排除 |
 | `membership_admission` | 账号为目标群完成 membership probe、join、可信群管频道关注、精确确认/验证、membership 与 can-send 复检的业务前置链 | 不表示 API 权限、搜索 target match、一般 eligibility 或纯搜索点击；纯搜索点击固定 `admission_lane_claims=0` |
 
-`AdmissionExecutionLease` 只为已经设计的 `membership_admission` 去重真实 join/follow/confirm 执行；接口权限继续使用 `tasks.manage`、`tasks.create.*`、`targets.manage` 等 permission 名称，搜索路径是否当前可执行继续使用 `eligibility`。未来“搜索点击加入”在独立 PRD 完成前不得引用 admission lane、lease 或状态机。
+`AdmissionExecutionLease` 只为已经设计的 `membership_admission` 去重真实 join/follow/confirm 执行；本次五类任务的接口授权只使用 `tasks.manage` 与纯搜索点击专用的 `tasks.create.search_click`：AI 活群、评论、点赞、浏览不设置专项创建权限。`tasks.create.search_join_group` 只作存量兼容，不能授权任何新建任务；`targets.manage` 等其他业务权限保持其既有边界。搜索路径是否当前可执行继续使用 `eligibility`。未来“搜索点击加入”在独立 PRD 完成前不得引用 admission lane、lease 或状态机。
 
 现有数据库/内部枚举中的 `lane=admission` 和 `admission_lane_claims` 是 `membership_admission` 执行份额的兼容物理名，不是第三种 admission 定义；新 API、日志和页面必须展示 `lane_business_kind=membership_admission`。它不得承载 API 授权、搜索 eligibility、纯 click 或尚未设计的“搜索点击加入”。
 
-极搜 `jisou_selector_accounts` 的 24h 排除是带 `reason_code/expires_at` 的账号—协议路径安全资格事实，只令该路径在有效期内 `eligibility=false`；它不减少 click 欠额、不停止其他账号/路径，也不能单独触发中央份额重分配。`jisou_image_verification_required` 不进入该排除。图片算式验证码按 `bot_peer + message_id + image_hash + ordered_callback_fingerprint` 冻结 challenge；只有同一 fingerprint 的单次批准答案提交取得明确远端通过回执，或进入已审批搜索分类/结果页，才可写真实 `solved` 并继续。仅离开原页、超时、hot-list、unknown 或出现新 fingerprint 均不能冒充通过；新 fingerprint 重新进入 required。识别不设置业务固定 AI 轮数或递归次数，单个供应商候选不合格只继续下一健康已审批供应商，供应商/传输暂不可用保持 required；只有全部当前健康已审批供应商确实返回无安全答案，或同 fingerprint 的单次提交被远端明确拒绝，才写最终 `failed` 并排除。AI 识别调用和批准重试不占 click 限额，也不计入 AI 活群/评论的主 AI 三轮、备用 AI 三轮或业务 AI 生成次数；当前 Action 复用既有账号 session ownership，challenge 收口前不得由另一搜索 Action 并发改写同一账号—协议会话。搜索求解、候选或 CAS 无法完成时，才按未领取 Reservation unit 另写 `DispatchAllocationExclusion`；仅非空 release set 重建分片权重。
+极搜 `jisou_selector_accounts` 的 12 小时排除是带 `reason_code/expires_at` 的账号—协议路径安全资格事实，在当前单用户 scope 的全部搜索任务间共享，只令该路径在有效期内 `eligibility=false`；它不减少 click 欠额、不停止其他账号/路径，也不能单独触发中央份额重分配。识别为 `hot_list_page` 时当前尝试直接失败并写 `jisou_hot_list_page`，同一账号—协议路径从失败事实时间起排除 12 小时；不执行 reset、不点击未知按钮、不在当前尝试继续搜索。`jisou_image_verification_required` 不进入该排除。图片算式验证码按 `bot_peer + message_id + image_hash + ordered_callback_fingerprint` 冻结 challenge；只有同一 fingerprint 的单次批准答案提交取得明确远端通过回执，或进入已审批搜索分类/结果页，才可写真实 `solved` 并继续。仅离开原页、超时、hot-list、unknown 或出现新 fingerprint 均不能冒充通过；新 fingerprint 重新进入 required。识别不设置业务固定 AI 轮数或递归次数，单个供应商候选不合格只继续下一健康已审批供应商，供应商/传输暂不可用保持 required；只有全部当前健康已审批供应商确实返回无安全答案，或同 fingerprint 的单次提交被远端明确拒绝，才写最终 `failed` 并排除。AI 识别调用和批准重试不占 click 限额，也不计入 AI 活群/评论的主 AI 三轮、备用 AI 三轮或业务 AI 生成次数；当前 Action 复用既有账号 session ownership，challenge 收口前不得由另一搜索 Action 并发改写同一账号—协议会话。搜索求解、候选或 CAS 无法完成时，才按未领取 Reservation unit 另写 `DispatchAllocationExclusion`；仅非空 release set 重建分片权重。
 
 ## 4. 统一履约合同
 
@@ -178,6 +178,8 @@ calculated_at
 - click：非空 `click_evidence_hash` 与同一 `ExecutionAttempt` 唯一绑定一个 click ordinal；同一 evidence 不得被另一 Task/ordinal 复用。新的 click 必须是新的合法 Attempt 和新的完整协议证据。
 
 这些是类型专用唯一键/事实表，不新增 `primary_quantity_slot_id` 或通用数量槽。远端事实发生时间早于 Task/ledger 义务起点时只能作为历史状态，不得倒灌为本义务成功；所有权冲突进入受影响对象的 `consistency_quarantine|remote_fact_owned_elsewhere`，其他独立义务继续。
+
+发布接管必须把未结束评论/点赞/浏览 Task 的存量 `success` Action 回填为上述义务与唯一远端事实，把仍在 Gateway 前且有稳定天然义务键的 Action 绑定到当前义务并补齐 payload 中的 obligation/ledger ID。重复 lifetime source 只保留首个事实所有权，后续重复不计第二个完成量；新 Planner 完成数只读取远端事实，pending/current 义务只占规划额度。接管脚本提供 preview/apply，逐 Task 事务失败显式返回。Dispatcher 在任一旧 Action 进入 Gateway 前先锁 Task 并幂等执行接管：评论/点赞/浏览完成绑定；未绑定新义务且未进 Gateway 的旧 AI `send_message`、旧 search source/membership child 显式终结并由新合同重排，不能出现部署启动后先执行旧合同的竞态。
 
 评论/点赞不是自然日任务时不得虚构 `task_day_ledger_id`；浏览与 click 的任务日身份则必须保留。Planner 在锁定对应业务账本后按 `planning_deficit_count` 原子取得有限义务：评论/点赞/浏览创建 Action，click 只冻结稳定 ordinal，当前 Claim Window commit 才在中央份额内创建 assignment/Action。目标满足后终结 pre-Gateway excess。membership、`GroupBotAdmission.ready` 等可共享前置事实可以被多任务复检，但不能替代各任务自己的发送/click/admission 完成义务。
 
@@ -268,8 +270,8 @@ planning_reservation =
 
 | 类型 | 例子 | 处置 |
 | --- | --- | --- |
-| API 调用者无权 | 缺少 `tasks.manage`、对应任务类型的专项创建权限，或请求引用不属于当前用户且不可见；纯搜索点击的专项权限为 `tasks.create.search_click` | 返回 403/不泄露对象存在性的 404，不创建 Task；它是 API 边界，不进入任务 blocker，也不是容量预检 |
-| 结构性配置冲突 | 必填目标/账号范围缺失；引用类型与任务声明用途静态不兼容；finite comment cap 小于逐消息目标总和；view daily cap 小于已知消息当日目标总和；内容规则 `required>max` 或版本不可解析 | 返回 422，指出字段和冲突；这是请求本身无法形成确定义务，不是容量预检 |
+| API 调用者无权 | AI 活群、评论、点赞、浏览缺少 `tasks.manage`；纯搜索点击缺少 `tasks.manage` 或 `tasks.create.search_click`；或请求引用不属于当前用户且不可见 | 返回 403/不泄露对象存在性的 404，不创建 Task；它是 API 边界，不进入任务 blocker，也不是容量预检 |
+| 结构性配置冲突 | 必填目标/账号范围缺失；引用类型与任务声明用途静态不兼容；内容规则 `required>max` 或版本不可解析 | 返回 422，指出字段和冲突；评论/浏览低任务级软上限不再由请求决定，系统直接归一为 `1_000_000` |
 | AI 账号范围为空 | 请求没有账号范围引用 | 创建时 `account_scope_reference_missing` 422；若账号组/全部账号范围引用合法但启动时暂时解析为 0 个普通运营账号，则 Task 已创建并保持 running，显示 `account_scope_empty_runtime`，账号进入范围后自动继续 |
 | AI 活群日容量预测不足 | 理论日容量低于群日目标、部分账号尚未准入 | 仅提示 `completion_risk`，不拒绝、不暂停、不产生 `PlanAbort`；按 `due_by_now` 和未占位欠额持续建单 |
 | 其他任务外部容量不足 | 搜索账号池不足、动态新消息使当日需求增加 | 允许创建/启动；只在运行详情显示 `blocked/at_risk`，按所有当前合法容量持续追赶 |
@@ -290,6 +292,8 @@ planning_reservation =
 创建期与运行期的账号边界必须分开：调用者无权访问账号范围时在 API 边界返回 403/不泄露存在性的 404；当前用户可见但引用不存在、类型错误或与任务声明用途静态不兼容时，属于请求级 `task_contract_invalid` 并返回 422。引用本身合法，但具体账号在启动后或运行中被删除、用途状态变化、授权资产漂移或身份失效时，属于账号级 `account_identity_invalid`。后者不得回滚 Task、缩小已冻结分母或阻塞其他账号，也不得被新增为另一种创建预检。
 
 数据库唯一键冲突、远端事实已绑定另一个义务、Action payload 损坏或历史归属无法立即判定时，进入 `consistency_quarantine` 并告警/reconcile；不得猜测计数、不得复用该事实，也不得把系统数据问题扩展成第 7 类产品门禁。只有受影响对象暂停，其他独立义务继续。
+
+运行中 Task 在接管/Planner 首次物化时命中 `task_contract_invalid`，必须写入 `fulfillment_takeover_status=blocked`、具体错误和检查时间，将该 Task 显式置为 `paused`，不得让异常退出 Planner worker，也不得继续每轮忙重试；修正配置并由用户恢复后重新执行接管。对象级一致性问题仍按上一段隔离，不能借此暂停整个 Task。
 
 ### 4.5 内容编排非回归合同
 
@@ -458,6 +462,8 @@ scope capacity
 
 生产不能直接把当前 `ACTION_CLAIM_LIMIT=100` 当作 scope capacity。所有共享 worker 对同一 scope 必须读取相同的配置版本；不一致时停止新增 claim 并显示 `dispatcher_scope_capacity_mismatch`。
 
+同一 `ready` Window 的 Action 新增、claim、executing、success/failed 状态变化不得触发整窗重建。当前 epoch 尚有未领取 Reservation 时继续消费原不可变分配；只有明确释放形成非空 release set，或原 epoch 的全部可领取 Reservation 已消费且仍有新到期需求时，才开启唯一 pending rebuild wave。任务只要取得大于 0 的份额即为 `allocated`，不得因“部分小于 required”把整个任务标成 `shared_dispatch_capacity_insufficient`。
+
 ### 5.2 锁顺序与事务边界
 
 claim 事务锁顺序固定：
@@ -517,6 +523,7 @@ last_claimed_window
 2. sponsor 从当前 running、确实被该 admission 阻塞的父任务中按最旧 sponsor opportunity、scope cursor、task id 稳定选择；其他父任务只引用该 lease，不创建重复 Telegram Action 或额外 Reservation；
 3. pre-Gateway sponsor 停止、Action 终态或失去资格时可 CAS 转给下一父任务并写审计；Gateway-started/unknown 不得转 sponsor 或重复执行；
 4. admission ready 后共享事实 fan-out 只触发各 AI 父任务重新复检 membership/can_send。它本身不确认 AI 发送或 search click；纯搜索点击不读取该事实，存量 search membership 只作 `legacy_mixed_search_join` 历史审计，未来“搜索点击加入”尚无日目标合同。
+5. admission 执行锁的最小作用域是 `(target_group_id, account_id, admission_generation)`；同群其他账号的 `unresolved|stale|waiting` 不得形成群级 busy。相同账号/世代仍由唯一 `AdmissionExecutionLease` 串行，运行配置的 admission 并发只限制真实在途数，不减少任何账号义务。
 
 lease 选 sponsor/换 sponsor 使用独立短事务，只锁 admission lease 与等待者索引，必须在 Dispatch allocation 事务之前提交；禁止同时持有 lease 锁与 Scope/Window/Action 锁。TaskAllocation/Reservation 固化 `admission_execution_lease_id/version`，claim 与 Gateway 前复核版本；版本不符时释放未消费 Reservation并等待下一 `dispatch_allocation_epoch`，不能在 claim 热事务内现场换 sponsor。
 
@@ -575,7 +582,8 @@ AI 准入积压不得阻止 `admission_ready` 账号的 `ai_group_daily`。纯�
 
 1. `completion_mode=continuous`：`dynamic_new` 默认，持续监听，不存在 lifetime 自动完成。
 2. `completion_mode=finite_batch`：`specific/date_range/latest_n` 使用；全部已解析消息逐条达到固化目标后才完成。
-3. `max_total_comments` 只允许作为 finite batch 的显式安全上限，且不得小于固化逐消息目标总和；它不能单独触发完成。
+3. `max_total_comments` 不再是运营可调的完成或规划上限；创建、编辑、启动和存量接管统一写 `1_000_000`。详情只把达到该值展示为 `task_gate_limit_reached` 异常门禁，不能单独触发完成或降低逐消息目标。
+   `max_comments_per_account_per_hour` 同步固定为 `1_000_000`；账号选择与发送顺序由系统按账号全局硬安全容量排序，任务内低值不得延期或吞掉评论义务。
 4. `unknown_after_send` 只占防重复 hold；不得与 success 相加后触发 `completed`。
 5. 正常评论先由主 AI 最多生成并校验 3 轮；全部失败后切换到不同的备用 AI，再最多生成并校验 3 轮。缺面具、已验证授权代理路线发生切换或主/备用六轮均无可用候选时，原 `post_comment` Action 使用一个审核白名单中的 Unicode 表情文本兜底，写 `comment_fallback_kind=emoji_text` 和原始原因。它不是 reaction/点赞，不改变原数量 ordinal 或 direct/reply 槽位；已有内容义务先按 §4.5 兼容矩阵共载或 Gateway 前 CAS 转派，纯文本表情不能消费正常文本 emoji、图片、表情包或 custom emoji 配额。
    固定白名单为 `👍 / 🙂 / 👏`，按发送义务键稳定轮换且正文只能包含一个表情；该白名单不提供关闭开关。
@@ -591,12 +599,14 @@ AI 准入积压不得阻止 `admission_ready` 账号的 `ai_group_daily`。纯�
 3. `REACTION_INVALID/EMPTY/NOT_AVAILABLE` 不占成功目标。该账号/消息的 attempt 保留；仍有其他合格账号或允许 reaction 时继续补欠额。
 4. 所有允许 reaction 对该消息均不可用时，消息为 `reaction_capability_unavailable`，不能关闭整任务或伪造完成。
 5. success 与 `unknown_after_send` 防止同账号同消息立即重复；明确失败只有在安全重试条件满足时重新选择。
+6. `max_likes_per_account_per_hour` 在创建、编辑、启动和存量接管固定为 `1_000_000`；reaction unavailable、failed、skipped 不占有效账号成功额度。系统仍按账号全局硬安全容量排序。
 
 ### 6.4 频道浏览
 
-1. 每消息每日目标和累计目标独立；任务日安全上限只约束规划，不是完成目标。
-2. 已知消息范围保存时，`task_daily_view_safety_cap` 若小于当日逐消息目标总和则 422。
-3. dynamic_new 每轮按当日 active message 欠额重算；新增消息导致 cap 不足时显示 `task_daily_cap_below_message_targets`，按最早 deadline 与欠额比例公平分配，不隐藏未服务消息。
+1. 每消息每日目标和累计目标独立；任务级门禁不能替代、缩减或完成逐消息目标。
+2. `task_daily_view_safety_cap` 在创建、编辑、启动和存量接管统一写 `1_000_000`，不再接受更小值；当前生产的 `500` 必须随发布直接归一。该值是异常门禁，不是日目标、逐消息目标或完成条件。
+   `max_views_per_account_per_day` 同步固定为 `1_000_000`；同一账号/消息的 lifetime view 远端事实唯一性继续生效，不能用更小的任务内账号上限截断任务。
+3. dynamic_new 每轮按当日 active message 欠额重算；只有真实规划量触及 `1_000_000` 才显示 `task_gate_limit_reached`，不自动关闭已完成帖子，也不缩减新增消息义务。
 4. 每日消息只统计 distinct successful remote view facts；open/unknown/failed 分列。
 5. 当天未达标在日切写 `missed`；次日创建新 daily ledger，累计总目标继续保留真实欠额。
 6. 每消息每日浏览义务绑定 `task_day_ledger_id`，唯一键至少包含 `(task_day_ledger_id, channel_message_id)`；本地日期不作唯一身份。时区切换按 §4.2.1 创建连续 ledger，旧日成功数不搬到 transition ledger，累计总目标事实仍连续保留。
@@ -733,10 +743,11 @@ AI 准入积压不得阻止 `admission_ready` 账号的 `ai_group_daily`。纯�
    候选生成只枚举真实存在且已通过 eligibility 的账号—授权槽—当前代理绑定—关键词路径，并按完整资源向量去重；不得先构造全部理论笛卡尔积再依靠固定 top-N 截断，否则可能把实际可行路径排除并违反完成优先。
 
    本 PRD 不设置求解器技术 deadline、性能预算、图规模基线、p99 指标，也不为这些指标设计 retry 或降级路径。实现可选择等价的数据结构，但不得抽样、batch 截断、固定 top-N 或提交不可验证的部分解；当前 epoch 无法一次完成时按 `abandoned` 释放全部未领取 unit。尚可领取 Window 的非空 release set 加入唯一 pending rebuild wave；已结束 Window 只收口事实，由下一 Window 重新分配。
-5. 每个协议版本先通过受控 canary；图片验证码继续使用已批准流程。`hot_list_page`、`verification_image_page`、`search_category_page`、`group_result_page`、`unknown_page` 分开记录；禁止通过 reset、未知按钮或外链恢复。
+5. 每个协议版本先通过受控 canary；图片验证码继续使用已批准流程。`hot_list_page`、`verification_image_page`、`search_category_page`、`group_result_page`、`unknown_page` 分开记录；`hot_list_page` 直接失败并排除当前账号—协议路径 12 小时，禁止通过 reset、未知按钮或外链恢复。
 6. 只有完整 click evidence 才写 `target_click_observed`；证据必须包含已审批 `click_effect`、`membership_side_effect=none` 和 `membership_mutating_rpc_invoked=false`。旧 `join_candidate`、成员副作用未知或任何 join/request/follow/confirm/can-send RPC 均不得进入纯 click eligibility；确认后该 ordinal 结束，不创建 membership/admission/can-send 子 Action。
 7. Planner 先为 source 义务冻结不可变 `task_day_ledger_id`；当前 Window commit 创建 executable source Action 时继承该 ledger，并冻结 `obligation_local_date/timezone_snapshot/timezone_revision/period_start_at/deadline_at`。Gateway 不得在该 ledger 的 deadline 后开始。
-8. “搜索点击加入”只登记为后续独立任务模式，`design_status=not_started`；本 PRD 不定义其字段、准入流程、存量迁移、QA 或发布。存量混合 click+membership 任务标记 `legacy_mixed_search_join` 并保持原事实，不允许通过纯搜索点击入口改写。
+8. “搜索点击加入”只登记为后续独立任务模式，`design_status=not_started`；本 PRD 不定义其字段、准入流程或 QA。当前未结束的存量混合 click+membership Task 在接管时转为 `task_type=search_click + search_execution_mode=click_only`：以后只履约原 click 目标，移除运行配置中的 join/admission 目标，终结未进入 Gateway 的 membership child；既有 Task 审计、Action、Attempt、unknown、membership 与远端事实保持只读历史，不改绑、不删除、不计 click 成功。
+9. 运行中五类任务切换采用明确的合同分界：已经绑定新类型义务的 Action 原位续跑；未绑定新义务且未进入 Gateway 的旧 AI `send_message`、旧 search source 与 membership child 显式 `skipped + legacy_action_retired_by_fulfillment_takeover`，释放 claim/lease 后由新 ledger/义务重新规划。Gateway 已开始、success、unknown 的旧 AI/混合搜索 Action 保留历史，不猜测映射到新合同，也不计新合同完成；因此新 AI ContentMix 仍按完整新目标冻结引用/图片/表情占比，纯 click 仍只认满足无成员副作用合同的完整证据。评论、点赞、浏览因存在稳定天然义务键，可证明 remote ID/state/source 的旧成功回填类型专用事实，开放 Action 绑定原义务；证据缺失的旧成功进入 unknown，不伪造成 confirmed。
 
 ## 7. 前端、接口与权限
 
@@ -808,7 +819,7 @@ requested_at / updated_at
 ### 7.3 权限
 
 - 查看汇总需要 `tasks.view`；查看账号、协议 trace 和远端证据继续受目标/账号明细权限限制。
-- 创建任务需要 `tasks.manage` 与对应任务类型的专项创建权限同时满足；纯搜索点击还要求 `tasks.create.search_click`，缺任一权限返回 403。正式业务接口为 `POST /api/tasks/search-click[/create-and-start]`；旧 `search-join-group` 路由/权限只作存量读取与迁移识别，创建请求固定返回 410且不能授权或代建新任务。
+- AI 活群、评论、点赞、浏览的创建与创建并启动只要求 `tasks.manage`，不设置或隐含任何专项创建权限；纯搜索点击同时要求 `tasks.manage + tasks.create.search_click`，缺任一权限返回 403。正式业务接口为 `POST /api/tasks/search-click[/create-and-start]`；旧 `search-join-group` 路由/权限只作存量读取与迁移识别，创建请求固定返回 410且不能授权或代建新任务。
 - 修改配置、apply 存量修复、启停任务需要 `tasks.manage` 并写一批一条审计。
 - 不提供“强制成功”“忽略安全限额”“批量启动全部 stopped 任务”入口。
 
@@ -844,7 +855,7 @@ apply 不得修改 success、unknown_after_send、Gateway-started，不得补 re
 | Planner 与 4 Dispatcher 并发 | PostgreSQL 并发回归无 deadlock；通用入口严格使用 `Scope -> Window -> TaskAllocation -> ShardAllocation -> Reservation -> Action`，搜索入口在 Reservation 后固定追加 `carrier（如有） -> assignment -> consumptive 子预留 -> Action`，缺失层只跳过不换序；claim 热事务无 `UPDATE tasks` |
 | 容量参数 | batch limit、worker concurrency、scope capacity 分离；配置不一致 fail closed |
 | 合法任务直接创建 | 缺少可用账号、即时容量、代理路线、AI provider、搜索审批样本或准入 sponsor 时，结构合法的任务仍返回创建成功；启动后才建立 ledger/Cycle，并把对应运行态原因投影为 `at_risk|waiting_*|blocked` |
-| 创建权限、结构与运行态分层 | 缺 `tasks.manage` 或对应任务类型的专项创建权限返回 403；纯搜索点击缺 `tasks.create.search_click` 同样返回 403；不可见跨用户引用不泄露对象；当前用户可见但静态合同非法返回 422；inline 公开目标可本地 upsert pending 引用但创建事务不得调用 Telegram resolve/probe；账号在线、Telegram 权限、代理、准入、Provider、协议和容量不得在创建前读取或改变创建结果 |
+| 创建权限、结构与运行态分层 | AI 活群、评论、点赞、浏览缺 `tasks.manage` 返回 403，具备 `tasks.manage` 时不得再要求不存在的专项创建权限；纯搜索点击缺 `tasks.manage` 或 `tasks.create.search_click` 返回 403；不可见跨用户引用不泄露对象；当前用户可见但静态合同非法返回 422；inline 公开目标可本地 upsert pending 引用但创建事务不得调用 Telegram resolve/probe；账号在线、Telegram 权限、代理、准入、Provider、协议和容量不得在创建前读取或改变创建结果 |
 | 创建并启动状态分层 | 资源暂不可用时 `start_status=started`、Task=running、`runtime_state=waiting`；事务 B 真失败才 `start_status=start_failed` 且 Task=draft。same/new start key 并发均最多建立一份 ledger：每轮真实重试推进当前 `operation_version`，新 key 必须以 `replaces_start_operation_id/version` CAS 当前行，后请求看到 started 时回读成功，撞到 processing 时返回 `start_in_progress` |
 | create-and-start 幂等与部分成功 | 相同 `client_request_id + request_fingerprint` 的超时重试只产生一个 Task；同键不同 fingerprint 返回 409 且不覆盖 Task 配置；事务 A 创建成功、事务 B 注入失败时 HTTP 201 仍带原 `task_id/start_failed` 且 B 无残留 ledger。失败后 same key 覆盖并推进 version；new key 只有 replace CAS 当前 ID/version 成功才覆盖。成功后只保留 started，不产生历史行，迟到旧请求无法覆盖当前 identity/version |
 | 存量 Task 无 start operation | 存量 running/paused Task 返回 started + legacy_untracked，operation ID/version 为空且启动调用数为 0；paused resume 只恢复原 ledger、不写 operation；存量 draft/stopped 不回填历史，首次真实 start 才创建唯一 version 1 当前行 |
@@ -887,7 +898,8 @@ apply 不得修改 success、unknown_after_send、Gateway-started，不得补 re
 | click 远端事实完整性 | 只有同一 Attempt 同时具备 Gateway 开始、目标身份、批准按钮指纹、click 调用、批准协议 outcome、确认时间和 evidence hash 才确认 ordinal；仅找到目标/按钮、调用超时或 outcome 不可分类进入失败/unknown，不得写 `target_click_observed=true` |
 | 纯 click 无成员副作用 | 只有 `membership_side_effect=none` 且 `membership_mutating_rpc_invoked=false` 才可确认 click；旧 `join_candidate` 或副作用未知形成运行路径 blocker，不调用 join/request/follow/confirm/can-send，其他合法路径继续 |
 | `moderate_6h` | 所有 Action 在 6 小时 deadline 内；容量不足显式 blocked |
-| 两条浏览消息各 1000、cap 500 | 新配置 422；存量任务显示结构 blocker |
+| 两条浏览消息各 1000、cap 500 | 创建/编辑直接成功并规范化任务门禁与任务内账号门禁为 `1_000_000`；存量接管同样改写为 `1_000_000`，继续补足两条消息各自欠额 |
+| 运行中五类任务接管 | 已绑定新义务的 Action 原位续跑；未绑定且未进 Gateway 的旧 AI/search Action 显式终结并由新模型重排；评论/点赞/浏览按稳定天然键迁移；Gateway-started/success/unknown 历史不改绑、不猜测计入新合同 |
 | 系统选择合法 search repeat | 账号/关键词日限额仍生效；新纯点击 API 不接收 `allow_same_account_repeat_application` |
 | 搜索 63 账号×2、目标 1000 | 原始合法尝试上界仅 126，因此可证明容量缺口；页面不得把 126 展示为预测确认量，且任务不超安全额度建单 |
 | 搜索共享硬额度匹配 | 同一账号额度可与多个 keyword/授权/代理组合时，原始笛卡尔积不得作为容量；只读 projection 必须对共享资源做精确去重并标记未预留，当前 Window 只有全部搜索专属子预留 CAS 成功且绑定中央 Reservation 的 `SearchClickOpportunityAssignment` 才计 committed opportunity，双 Task 不能重复使用同一资源单位 |
@@ -909,11 +921,13 @@ apply 不得修改 success、unknown_after_send、Gateway-started，不得补 re
 | 搜索纯点击边界 | 创建只接受 `click_only + daily_click_target_count`；join switch、admission 目标或成员目标返回 422；click 确认后不创建 child |
 | 搜索 CAPTCHA 实际通过 | 每个 challenge fingerprint 最多一次 Telegram 提交；只有同 fingerprint 的明确远端通过回执或已审批搜索分类/结果页才 solved。仅离开原页、新 fingerprint、hot-list、unknown 不算通过；单供应商候选不合格继续下一健康已审批供应商，供应商/传输暂不可用保持 required。识别调用/批准重试的 click、Dispatcher 份额和业务 AI 轮次增量均为 0，challenge 收口前同一账号—协议会话不能被另一搜索 Action 并发改写 |
 | 搜索旧创建入口 | 旧 `/search-join-group` 新建请求固定 410 且零 Task 写入；只允许旧任务读取/审计/迁移识别，不得静默规范化成当前纯 click |
-| 搜索存量混合任务 | 标记 `legacy_mixed_search_join`，不自动迁移、不删除历史 child/事实、不允许从纯点击编辑入口改写 |
+| 搜索存量混合任务 | 未结束 Task 幂等转为纯 `search_click`，后续 admission child=0；pre-Gateway membership child 终结，Gateway-started/success/unknown 和全部历史事实不改绑；completed/deleted 只读 |
 | 搜索完成优先自动排序 | 不要求运营配置账号容量或账号优先级；合法 repeat 可补 click 但不得绕过安全额度；系统在纯 click 最优值相同的路径中严格按 `hard_safe_remaining_capacity DESC -> confirmed_click_count_today ASC -> last_click_opportunity_at ASC -> persistent_account_cursor ASC` 决胜 |
 | 搜索软节奏追赶 | 曲线、轮次、skip、jitter 和静默降量仅影响排序与批量；欠额或落后时自动压缩 jitter、取消软 skip 并提高安全范围内的 dispatch 密度，静默期仍保留非零发送；不得产生 `skipped_by_behavior_pacing` 终态 |
 | 搜索 CAPTCHA | `required` 不排除账号；AI 调用/批准重试不占 click 限额或目标且无业务固定 AI 轮数/递归次数，供应商/传输暂不可用保持 required；同 fingerprint 的单次批准提交只有取得明确远端通过回执或已审批搜索分类/结果页才 `solved` 并继续，离开原页/新 fingerprint/hot-list/unknown 均不算；识别链确实无安全答案或同 fingerprint 被远端明确拒绝才 `failed` 并排除账号—协议路径；禁止概率折损容量 |
-| 极搜会话偏移 | 页面不是预期搜索结果时记录 `jisou_session_state_deviated` 并退出当前尝试；不得发送 `/cancel`、`/start`、重发关键词、点击未知 callback 或执行外部导航，新的 Action 默认 `reset_executed=false` 且历史 reset 字段只读 |
+| 极搜会话偏移 | `hot_list_page` 直接记录 `jisou_hot_list_page` 失败并排除当前账号—协议路径 12 小时；其他非预期页记录 `jisou_session_state_deviated`。均不得发送 `/cancel`、`/start`、重发关键词、点击未知 callback 或执行外部导航，新的 Action 默认 `reset_executed=false` 且历史 reset 字段只读 |
+| 存量新履约接管 | 部署后运行中五类 Task 在 Planner 扫描 open/backlog 之前幂等建立当前合同；paused/stopped 只升级合同不启动；重复 reconcile 的 ledger/slot/obligation/Action 增量均为 0 |
+| 统一任务门禁上限 | 新建、编辑、启动与存量接管后的五类 `pacing_config.max_actions_per_hour`，以及 `task_daily_view_safety_cap|max_total_comments|search_click max_actions_per_day` 均为 `1_000_000`；低值不能截断目标或触发 completed，账号/Telegram/unknown 硬门禁保持原值 |
 | 搜索点击完成 | 完整 evidence 写 `target_click_observed` 后 ordinal 结束，无 membership/admission/can-send 后续动作 |
 | 搜索点击加入模式 | 仅确认是后续独立模式；本轮不得实现或拿旧开关代替专项设计 |
 | AI 任务时区变更 | 当前 ledger 继续使用旧 timezone；其 deadline 起建立新时区 `timezone_transition` ledger，UTC 区间首尾相接、无重复/遗漏冻结账号；过渡日不混入完整日 SLA |
@@ -942,7 +956,7 @@ apply 不得修改 success、unknown_after_send、Gateway-started，不得补 re
 - A：连续 30 分钟并跨完整 Planner/Dispatcher drain，deadlock=0，reservation 守恒。
 - B：AI 每账号 coverage、群日总量及已配置引用/素材占比可追到 Action、Attempt、remote ID；需可见性核验的消息还须追到 `pending_visibility_hold -> visible_confirmed`。同一主槽只有一个 post-Gateway 未确认占位，拦截/abandon 不缩冻结分母，可见确认无部分提交；总量与内容账本分别相等且 content mix shortfall/overflow/策略违规均为 0。
 - C：受控真实消息分别取得评论、reaction、view 的逐消息目标；评论已配置引用/素材 content mix 违规为 0，单表情兜底未混入正常文本 emoji 或素材成功数。
-- D：只验 `search_execution_mode=click_only`：先 canary，再放量；每个完成 ordinal 都有完整 click evidence、无 membership 副作用、无 admission lane/lease/child。`dispatch_allocation_epoch`、`search_click_assignment_epoch`、首次 search Reservation 独占期、`DispatchAllocationReleaseBatch`、逐 candidate 的 `DispatchAllocationReleaseBatchItem`、永久 unit `DispatchAllocationExclusion` 与对象级 `consistency_quarantine` 均可审计，且每个来源 Reservation 首次 outcome 后满足 `bound_count + claimed_count + released_count = reserved_claims`；存量 `legacy_mixed_search_join` 只验证历史事实未改写。“搜索点击加入”不进入本轮 E4。
+- D：只验 `search_execution_mode=click_only`：先接管运行中旧混合搜索并 canary，再放量；每个完成 ordinal 都有完整 click evidence、无新增 membership 副作用、无 admission lane/lease/child。`dispatch_allocation_epoch`、`search_click_assignment_epoch`、首次 search Reservation 独占期、`DispatchAllocationReleaseBatch`、逐 candidate 的 `DispatchAllocationReleaseBatchItem`、永久 unit `DispatchAllocationExclusion` 与对象级 `consistency_quarantine` 均可审计，且每个来源 Reservation 首次 outcome 后满足 `bound_count + claimed_count + released_count = reserved_claims`；旧 membership 历史事实保持原绑定。“搜索点击加入”不进入本轮 E4。
 - E：在任务时区完成一个完整自然日；五类均达到各自目标才可写 `production_fixed`。
 
 若代码已部署但搜索账号容量仍不足，结论必须为 `production_blocked: insufficient_safe_capacity`，不能写修复完成。

@@ -66,6 +66,13 @@ from .ai_generator import (
 )
 from .ai_message_memory import DuplicateMessageReservation, ensure_group_ai_message_sendable, mark_group_ai_message_result
 from .channel_membership import account_satisfies_authorized_target, linked_channel_group, mark_channel_membership_joined
+from .channel_fulfillment import (
+    RemoteFactAlreadyFulfilled,
+    confirm_reaction_action,
+    confirm_view_action,
+    ensure_reaction_action_contract,
+    ensure_view_action_contract,
+)
 from .coverage_capacity import (
     HARD_HOURLY_GROUP_COOLDOWN_BLOCKED_MESSAGE,
     HARD_HOURLY_GROUP_COOLDOWN_BLOCKER_CODE,
@@ -450,6 +457,7 @@ def dispatch_action(
         _sync_action_coverage_state(session, action)
         _sync_action_content_mix_state(session, action)
         _sync_comment_fulfillment_state(session, action)
+        _sync_channel_fulfillment_state(session, action)
         _sync_all_account_membership_state(session, action)
         _sync_search_click_target_progress(session, action)
 
@@ -494,6 +502,116 @@ def _sync_comment_fulfillment_state(
         obligation.current_action_id = None
 
 
+def _sync_channel_fulfillment_state(
+    session: Session,
+    action: Action,
+) -> None:
+    from app.models import (
+        ReactionFulfillmentObligation,
+        ViewFulfillmentObligation,
+    )
+
+    contract = {
+        "like_message": (
+            ReactionFulfillmentObligation,
+            "reaction_fulfillment_obligation_id",
+        ),
+        "view_message": (
+            ViewFulfillmentObligation,
+            "view_fulfillment_obligation_id",
+        ),
+    }.get(action.action_type)
+    if contract is None:
+        return
+    model, payload_key = contract
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    obligation = session.get(model, str(payload.get(payload_key) or ""))
+    if obligation is None or obligation.current_action_id != action.id:
+        return
+    if action.status == "unknown_after_send":
+        obligation.status = "unknown"
+    if (
+        action.status in {"failed", "skipped", "cancelled"}
+        and obligation.status != "unavailable"
+    ):
+        obligation.status = "open"
+        obligation.current_action_id = None
+
+
+def _ensure_task_fulfillment_contract(
+    session: Session,
+    action: Action,
+) -> bool:
+    from .fulfillment_takeover import (
+        FULFILLMENT_CONTRACT_VERSION,
+        takeover_task,
+    )
+
+    task = session.get(Task, action.task_id)
+    if task is None:
+        return True
+    contract_version = str(
+        (task.stats or {}).get("fulfillment_contract_version") or ""
+    )
+    if contract_version == FULFILLMENT_CONTRACT_VERSION:
+        return True
+    locked_task = session.scalar(
+        select(Task).where(Task.id == task.id).with_for_update()
+    )
+    if locked_task is None:
+        return True
+    try:
+        with session.begin_nested():
+            takeover_task(session, locked_task, now=_now())
+            session.flush()
+    except ValueError as exc:
+        _record_fulfillment_takeover_blocker(locked_task, action, exc)
+        return False
+    session.flush()
+    return action.status not in {"failed", "skipped", "success", "unknown_after_send"}
+
+
+def _record_fulfillment_takeover_blocker(
+    task: Task,
+    action: Action,
+    exc: ValueError,
+) -> None:
+    detail = str(exc)
+    task.stats = {
+        **(task.stats or {}),
+        "fulfillment_takeover_status": "blocked",
+        "fulfillment_takeover_error": detail,
+        "fulfillment_takeover_checked_at": _now().isoformat(),
+    }
+    _fail(
+        action,
+        "task_fulfillment_contract_invalid",
+        detail,
+        auto_check="拦截",
+        validation_stage="task_contract",
+    )
+
+
+def _ensure_comment_fulfillment_contract(
+    session: Session,
+    action: Action,
+) -> bool:
+    if action.action_type != "post_comment":
+        return True
+    from .comment_fulfillment_takeover import ensure_comment_action_contract
+
+    try:
+        ensure_comment_action_contract(session, action, now=_now())
+    except ValueError as exc:
+        task = session.get(Task, action.task_id)
+        if task is not None:
+            _record_fulfillment_takeover_blocker(task, action, exc)
+        else:
+            _fail(action, "task_fulfillment_contract_invalid", str(exc))
+        return False
+    return True
+
+
 def _dispatch_action(
     session: Session,
     action: Action,
@@ -501,6 +619,8 @@ def _dispatch_action(
     generation_dependencies: GenerationDependencies,
     comment_generation_dependencies: CommentGenerationDependencies,
 ) -> bool:
+    if not _ensure_task_fulfillment_contract(session, action):
+        return True
     if _legacy_review_enabled() and has_pending_review(session, action.id):
         return False
     if _skip_search_click_action_after_deadline(session, action):
@@ -517,6 +637,8 @@ def _dispatch_action(
         _rebind_search_join_source_action_to_authorization_account(session, action)
     if action.action_type == SEARCH_JOIN_MEMBERSHIP_ACTION_TYPE:
         rebind_membership_action_to_source_account(session, action)
+    if not _ensure_comment_fulfillment_contract(session, action):
+        return True
     account = _dispatch_account(session, action)
     if account is None:
         return True
@@ -3101,6 +3223,7 @@ def _group_bot_admission_window_busy(session: Session, action: Action, group_id:
         select(GroupBotAdmission.id).where(
             GroupBotAdmission.tenant_id == action.tenant_id,
             GroupBotAdmission.group_id == group_id,
+            GroupBotAdmission.account_id == action.account_id,
             GroupBotAdmission.state.in_(GROUP_BOT_ADMISSION_WINDOW_STATES),
         ).limit(1)
     )
@@ -3118,6 +3241,7 @@ def _has_reserved_group_bot_membership(session: Session, action: Action, group_i
     )
     return any(
         int((row.result or {}).get("group_bot_admission_window_group_id", 0) or 0) == group_id
+        and row.account_id == action.account_id
         and (row.result or {}).get("group_bot_admission_window_state") == "reserved"
         for row in rows
     )
@@ -4771,10 +4895,26 @@ def _dispatch_view(action: Action, account: TgAccount, credentials, session: Ses
     session_ciphertext = account.session_ciphertext
     channel_peer = payload.channel_id
     message_id = payload.message_id
+    if payload.channel_message_id and not _prepare_view_fulfillment(
+        session,
+        action,
+        payload,
+    ):
+        return True
     attempt = _reserve_channel_action_attempt(session, action, account, payload)
     if attempt is None:
         return True
+    if not payload.view_fulfillment_obligation_id:
+        ensure_view_action_contract(session, action, payload, now=_now())
     result = gateway.view_channel_message(account_id, channel_peer, message_id, session_ciphertext, credentials)
+    if result.ok:
+        confirm_view_action(
+            session,
+            payload.view_fulfillment_obligation_id,
+            action.id,
+            target_peer_id=channel_peer,
+            confirmed_at=_now(),
+        )
     _apply_operation_result(action, account, result.ok, result.failure_type, result.detail, attempt=attempt)
     return True
 
@@ -4787,12 +4927,63 @@ def _dispatch_like(action: Action, account: TgAccount, credentials, session: Ses
     channel_peer = payload.channel_id
     message_id = payload.message_id
     reaction = payload.reaction_emoji
+    if payload.channel_message_id and not _prepare_reaction_fulfillment(
+        session,
+        action,
+        payload,
+    ):
+        return True
     attempt = _reserve_channel_action_attempt(session, action, account, payload)
     if attempt is None:
         return True
+    if not payload.reaction_fulfillment_obligation_id:
+        ensure_reaction_action_contract(session, action, payload)
     result = gateway.send_channel_reaction(account_id, channel_peer, message_id, reaction, session_ciphertext, credentials)
+    if result.ok:
+        confirm_reaction_action(
+            session,
+            payload.reaction_fulfillment_obligation_id,
+            action.id,
+            target_peer_id=channel_peer,
+            reaction_emoji=reaction,
+            confirmed_at=_now(),
+        )
     _apply_operation_result(action, account, result.ok, result.failure_type, result.detail, attempt=attempt)
     return True
+
+
+def _prepare_view_fulfillment(
+    session: Session,
+    action: Action,
+    payload: ViewMessagePayload,
+) -> bool:
+    try:
+        ensure_view_action_contract(session, action, payload, now=_now())
+        return True
+    except RemoteFactAlreadyFulfilled:
+        _skip(
+            action,
+            "remote_fact_already_fulfilled",
+            "该账号已产生同一浏览远端事实，重新选择其他账号",
+        )
+        return False
+
+
+def _prepare_reaction_fulfillment(
+    session: Session,
+    action: Action,
+    payload: LikeMessagePayload,
+) -> bool:
+    try:
+        ensure_reaction_action_contract(session, action, payload)
+        return True
+    except RemoteFactAlreadyFulfilled:
+        _skip(
+            action,
+            "remote_fact_already_fulfilled",
+            "该账号已产生同一点赞远端事实，重新选择其他账号",
+        )
+        return False
 
 
 def _dispatch_comment(
@@ -5535,10 +5726,39 @@ def _close_unavailable_reaction(action: Action, detail: str) -> None:
     if not channel_target_id or not channel_message_id:
         return
     _skip_like_unavailable_message(action, detail)
+    _mark_reaction_obligation_unavailable(session, action)
     siblings = _unavailable_reaction_siblings(session, action, channel_target_id, channel_message_id)
     for sibling in siblings:
         _skip(sibling, _REACTION_UNAVAILABLE_SKIP_CODE, f"频道消息不可点赞，已跳过同帖待执行点赞：{detail}")
         sibling.result = {**(sibling.result or {}), "validation_stage": "channel_like_runtime"}
+        _mark_reaction_obligation_unavailable(session, sibling)
+    task = session.get(Task, action.task_id)
+    if task is not None:
+        task.last_error = detail
+        stats = dict(task.stats or {})
+        unavailable_ids = {
+            int(value)
+            for value in stats.get("reaction_unavailable_message_ids", [])
+        }
+        unavailable_ids.add(channel_message_id)
+        stats["reaction_unavailable_message_ids"] = sorted(unavailable_ids)
+        task.stats = stats
+
+
+def _mark_reaction_obligation_unavailable(
+    session: Session,
+    action: Action,
+) -> None:
+    from app.models import ReactionFulfillmentObligation
+
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    obligation_id = str(
+        payload.get("reaction_fulfillment_obligation_id") or ""
+    )
+    obligation = session.get(ReactionFulfillmentObligation, obligation_id)
+    if obligation is None or obligation.current_action_id != action.id:
+        return
+    obligation.status = "unavailable"
 
 
 def _unavailable_reaction_siblings(session: Session, action: Action, channel_target_id: int, channel_message_id: int):

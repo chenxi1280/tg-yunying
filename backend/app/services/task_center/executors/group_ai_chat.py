@@ -65,8 +65,6 @@ from ..content_mix_cycles import (
 from ..coverage_capacity import (
     HARD_HOURLY_GROUP_COOLDOWN_BLOCKED_MESSAGE,
     hard_hourly_group_cooldown_proof,
-    reserved_coverage_message_count,
-    task_coverage_capacity_proof,
 )
 from ..datetime_compat import parse_zone, to_zone
 from ..daily_coverage import (
@@ -83,7 +81,6 @@ from ..daily_coverage import (
 )
 from ..daily_coverage_planning import (
     MAX_DAILY_COVERAGE_PLAN_BATCH,
-    SENDABLE_COVERAGE_STATES,
     advance_coverage_plan_cursor,
     coverage_plan_totals,
     ready_coverage_plan_batch,
@@ -155,13 +152,6 @@ class CoveragePlanState:
     confirmed_message_count: int = 0
     volume_need_now: int = 0
 
-
-@dataclass(frozen=True)
-class CoverageCapacityScope:
-    account_count: int
-    target_per_account: int
-    confirmed_count: int
-    reserved_count: int
 
 CHAT_MODE_REPLY = "reply"
 CHAT_MODE_IDLE_WARMUP = "idle_warmup"
@@ -2263,118 +2253,7 @@ def _coverage_capacity_blocker(
     coverage_rows: list[TaskAccountDailyCoverage] | None = None,
     coverage_state: CoveragePlanState | None = None,
 ) -> dict[str, object]:
-    if not _all_accounts_daily_coverage(config):
-        return {}
-    rows = coverage_rows if coverage_rows is not None else _load_coverage_rows(session, task)
-    if not rows:
-        return {}
-    full_proof = _coverage_capacity_proof(
-        session, task, group, _coverage_capacity_scope(rows, coverage_state),
-    )
-    if full_proof.get("sufficient"):
-        _clear_coverage_capacity_blocker(task)
-        return {}
-    sendable_scope = _sendable_coverage_capacity_scope(rows, coverage_state)
-    if sendable_scope.account_count == 0:
-        return _record_coverage_capacity_blocker(task, full_proof)
-    sendable_proof = _coverage_capacity_proof(session, task, group, sendable_scope)
-    if not sendable_proof.get("sufficient"):
-        return _record_coverage_capacity_blocker(task, sendable_proof)
-    _record_partial_coverage_capacity(task, full_proof, sendable_proof)
-    return {}
-
-
-def _coverage_capacity_scope(
-    rows: list[TaskAccountDailyCoverage],
-    coverage_state: CoveragePlanState | None,
-) -> CoverageCapacityScope:
-    if coverage_state:
-        return CoverageCapacityScope(
-            account_count=coverage_state.account_count,
-            target_per_account=coverage_state.target_per_account,
-            confirmed_count=coverage_state.confirmed_count,
-            reserved_count=coverage_state.reserved_count,
-        )
-    return _coverage_capacity_scope_from_rows(rows)
-
-
-def _sendable_coverage_capacity_scope(
-    rows: list[TaskAccountDailyCoverage],
-    coverage_state: CoveragePlanState | None,
-) -> CoverageCapacityScope:
-    if coverage_state:
-        return CoverageCapacityScope(
-            account_count=coverage_state.sendable_account_count,
-            target_per_account=coverage_state.target_per_account,
-            confirmed_count=coverage_state.sendable_confirmed_count,
-            reserved_count=coverage_state.sendable_reserved_count,
-        )
-    return _coverage_capacity_scope_from_rows([
-        row for row in rows if row.state in SENDABLE_COVERAGE_STATES
-    ])
-
-
-def _coverage_capacity_scope_from_rows(
-    rows: list[TaskAccountDailyCoverage],
-) -> CoverageCapacityScope:
-    if not rows:
-        return CoverageCapacityScope(0, 1, 0, 0)
-    return CoverageCapacityScope(
-        account_count=len(rows),
-        target_per_account=max(row.target_count for row in rows),
-        confirmed_count=sum(row.confirmed_count for row in rows),
-        reserved_count=reserved_coverage_message_count(rows),
-    )
-
-
-def _coverage_capacity_proof(
-    session: Session,
-    task: Task,
-    group: TgGroup,
-    scope: CoverageCapacityScope,
-) -> dict[str, object]:
-    return task_coverage_capacity_proof(
-        session,
-        task,
-        group,
-        target_account_count=scope.account_count,
-        target_per_account=scope.target_per_account,
-        confirmed_message_count=scope.confirmed_count,
-        reserved_message_count=scope.reserved_count,
-        now=_now(),
-    )
-
-
-def _record_coverage_capacity_blocker(task: Task, proof: dict[str, object]) -> dict[str, object]:
-    task.stats = {
-        **(task.stats or {}),
-        "coverage_capacity_status": "blocked",
-        "coverage_capacity_proof": proof,
-    }
-    task.stats.pop("sendable_coverage_capacity_proof", None)
-    task.last_error = SENDABLE_COVERAGE_CAPACITY_BLOCKED_MESSAGE
-    return proof
-
-
-def _record_partial_coverage_capacity(
-    task: Task,
-    full_proof: dict[str, object],
-    sendable_proof: dict[str, object],
-) -> None:
-    task.stats = {
-        **(task.stats or {}),
-        "coverage_capacity_status": "partial",
-        "coverage_capacity_proof": full_proof,
-        "sendable_coverage_capacity_proof": sendable_proof,
-    }
-    if task.last_error in {
-        ALL_ACCOUNT_COVERAGE_CAPACITY_BLOCKED_MESSAGE,
-        SENDABLE_COVERAGE_CAPACITY_BLOCKED_MESSAGE,
-    }:
-        task.last_error = ""
-
-
-def _clear_coverage_capacity_blocker(task: Task) -> None:
+    del session, group, config, coverage_rows, coverage_state
     stats = dict(task.stats or {})
     stats.pop("coverage_capacity_status", None)
     stats.pop("coverage_capacity_proof", None)
@@ -2385,6 +2264,7 @@ def _clear_coverage_capacity_blocker(task: Task) -> None:
         SENDABLE_COVERAGE_CAPACITY_BLOCKED_MESSAGE,
     }:
         task.last_error = ""
+    return {}
 
 
 def _coverage_plan_state(

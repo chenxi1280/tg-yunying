@@ -13,6 +13,7 @@ from app.models import (
     RuleSet,
     Task,
 )
+from app.services._common import _now
 
 from app.services.rule_engine import bound_rule_version, evaluate_input_filter
 from ..account_voice_profiles import voice_profile_prompt_details
@@ -26,7 +27,7 @@ from ..comment_fulfillment import (
     bind_comment_obligation,
     freeze_comment_obligations,
 )
-from ..pacing import schedule_times
+from ..pacing import next_local_day_deadline, schedule_times
 from ..payloads import PostCommentPayload, create_comment_action
 from app.services.target_learning_audit import audit_learning_profile_use
 from app.services.tenant_target_profile import tenant_learning_profile_preview
@@ -384,7 +385,13 @@ def _prepare_comment_actions(
 ) -> list[
     tuple[int, object, PostCommentPayload, CommentFulfillmentObligation]
 ]:
-    times = schedule_times(len(slots), task.pacing_config or {})
+    now_value = _now()
+    times = schedule_times(
+        len(slots),
+        task.pacing_config or {},
+        start_at=now_value,
+        deadline_at=next_local_day_deadline(now_value, task.timezone),
+    )
     prepared: list[
         tuple[int, object, PostCommentPayload, CommentFulfillmentObligation]
     ] = []

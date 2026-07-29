@@ -1,7 +1,15 @@
 import pytest
 from sqlalchemy import event, select
 
-from app.models import Action, ChannelMessage, ChannelMessageComment, Task, Tenant, TgAccount
+from app.models import (
+    Action,
+    ChannelMessage,
+    ChannelMessageComment,
+    CommentFulfillmentObligation,
+    Task,
+    Tenant,
+    TgAccount,
+)
 from app.services.task_center.executors import channel_comment, channel_comment_budget
 from channel_comment_planner_test_support import (
     add_existing_comment_action,
@@ -126,6 +134,30 @@ def _seed_batched_message_state(session, task: Task) -> set[str]:
     session.add(Task(id="other-comment-task", tenant_id=1, name="其他任务", type="channel_comment", stats={}))
     actions = _batched_state_actions(task)
     session.add_all(actions)
+    session.flush()
+    session.add_all(
+        [
+            CommentFulfillmentObligation(
+                tenant_id=1,
+                task_id=task.id,
+                channel_message_id=41,
+                comment_plan_revision=1,
+                target_ordinal=1,
+                current_action_id="state-current",
+                action_attempt_no=1,
+                status="pending",
+            ),
+            CommentFulfillmentObligation(
+                tenant_id=1,
+                task_id=task.id,
+                channel_message_id=42,
+                comment_plan_revision=1,
+                target_ordinal=6,
+                action_attempt_no=1,
+                status="replan_required",
+            ),
+        ]
+    )
     session.add_all(_batched_managed_comments())
     session.get(TgAccount, 101).username = " @COMMENT_101 "
     task.type_config = {**task.type_config, "message_ids": [41, 42, 43, 44], "target_comments_per_message": 1}
@@ -321,6 +353,6 @@ def test_planner_batches_message_state_with_legacy_and_tenant_isolation(monkeypa
     assert (states[44].reservation_count, states[44].next_slot_index, states[44].managed_collected_count) == (0, 0, 0)
     assert created == 2
     assert sorted(action.payload["slot_id"] for action in new_actions) == [
-        "channel-comment:42:6",
+        "channel-comment:42:5",
         "channel-comment:44:0",
     ]

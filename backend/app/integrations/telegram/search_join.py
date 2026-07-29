@@ -11,7 +11,6 @@ from urllib.parse import urlparse
 from app.search_join_protocol import (
     VERIFICATION_IMAGE_PAGE,
     ProtocolPageClassification,
-    classify_jisou_page,
     classify_jisou_page_with_media,
     is_jisou_bot,
     normalize_visible_text,
@@ -335,8 +334,8 @@ async def _select_jisou_group_results_page(
         ), None, selector_buttons
     if phase == "hot_list_page":
         return page, _protocol_phase_error(
-            "jisou_session_state_deviated",
-            "极搜关键词响应为热搜排行榜页，账号会话状态偏离，24h 排除",
+            "jisou_hot_list_page",
+            "极搜关键词响应为热搜排行榜页，当前尝试失败并排除账号协议路径 12 小时",
             classification,
             selector_buttons,
         ), None, selector_buttons
@@ -345,7 +344,7 @@ async def _select_jisou_group_results_page(
     if phase != "search_category_page":
         return page, _protocol_phase_error(
             "jisou_session_state_deviated",
-            "极搜关键词响应未匹配已知协议页面，账号会话状态偏离，24h 排除",
+            "极搜关键词响应未匹配已知协议页面，账号会话状态偏离，排除 12 小时",
             classification,
             selector_buttons,
         ), None, selector_buttons

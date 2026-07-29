@@ -1488,25 +1488,18 @@ def test_task_center_ai_group_rows_prefer_target_summary_title():
     assert "<Typography.Text strong>{taskListTitle(task)}</Typography.Text>" in source
 
 
-def test_task_center_applies_ai_limit_recommendations_without_overwriting_manual_fields():
+def test_task_center_creation_does_not_apply_precheck_recommendations():
     source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
-    types = (PROJECT_ROOT / "frontend/src/app/types/taskCenter.ts").read_text()
     wizard = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterWizardSections.tsx").read_text()
     channel_config = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterChannelConfigSections.tsx").read_text()
 
-    assert "recommended_limits" in types
-    assert "applyAiLimitRecommendations(result)" in source
-    assert "form.isFieldTouched(field)" in source
-    assert "max_actions_per_hour" in source
-    assert "messages_per_round" in source
-    assert "target_comments_per_message" in source
-    assert "max_total_comments" in source
-    assert "max_total_comments_jitter" in source
-    assert "const MAX_TOTAL_COMMENT_JITTER = 0.3;" in channel_config
-    assert "max={MAX_TOTAL_COMMENT_JITTER}" in channel_config
-    assert "max_comments_per_account_per_hour" in source
-    assert "推荐数量" in wizard
-    assert "recommended_limits" in wizard
+    assert "applyAiLimitRecommendations" not in source
+    assert "runTaskPrecheck" not in source
+    assert 'label="任务门禁抖动（固定）"' in channel_config
+    assert 'label="系统账号门禁（固定）"' in channel_config
+    assert "数量配置" in wizard
+    assert "推荐数量" not in wizard
+    assert "recommended_limits" not in wizard
 
 
 def test_task_center_edit_ai_limits_can_calculate_and_apply_recommendations():
@@ -1804,6 +1797,30 @@ def test_admin_permission_modal_exposes_usage_export_permission():
     assert "'usage.export'" in source[source.index("'运营管理员'"):source.index("'账号添加专员'")]
 
 
+def test_search_click_create_permission_is_assignable_and_gates_only_pure_click():
+    modals = (PROJECT_ROOT / "frontend/src/app/AppModals.tsx").read_text()
+    shell = (PROJECT_ROOT / "frontend/src/app/AppShell.tsx").read_text()
+    task_center = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
+    wizard = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterWizardSections.tsx").read_text()
+
+    assert "['tasks.create.search_click', '创建纯搜索点击']" in modals
+    operator_template = modals[modals.index("'运营管理员'"):modals.index("'账号添加专员'")]
+    assert "'tasks.create.search_click'" in operator_template
+    assert "canCreateSearchClick={hasPermission(currentUser, 'tasks.create.search_click')}" in shell
+    assert "canCreateSearchClick = false" in task_center
+    assert "canCreateSearchClick?: boolean;" in task_center
+    assert "if (taskType === 'search_click' && !canCreateSearchClick)" in task_center
+    assert "canCreateSearchClick={canCreateSearchClick}" in task_center
+    assert "disabled: item.value === 'search_click' && !canCreateSearchClick" in wizard
+    for permission in (
+        "tasks.create.group_ai_chat",
+        "tasks.create.channel_comment",
+        "tasks.create.channel_like",
+        "tasks.create.channel_view",
+    ):
+        assert permission not in modals
+
+
 def test_usage_reports_show_account_pool_login_drop_rates():
     source = (PROJECT_ROOT / "frontend/src/app/views/UsageReportsView.tsx").read_text()
     types = (PROJECT_ROOT / "frontend/src/app/types/operations.ts").read_text()
@@ -2038,19 +2055,17 @@ def test_auth_expired_api_errors_force_relogin_without_failure_modal():
     assert "return;" in modal_state
 
 
-def test_task_center_precheck_uses_long_timeout_and_capacity_summary_labels():
+def test_task_center_creation_review_does_not_run_or_render_precheck():
     source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
     wizard = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterWizardSections.tsx").read_text()
-    view_model = (PROJECT_ROOT / "frontend/src/app/views/taskCenterViewModel.ts").read_text()
 
     assert "TASK_CREATE_TIMEOUT_MS" in source
     assert "timeoutMs: TASK_CREATE_TIMEOUT_MS" in source
-    assert "capacity_summary" in wizard
-    assert "目标每条" in wizard
-    assert "最大并发" in wizard
-    assert "precheckReasonLabel" in view_model
-    assert "formatPrecheckReasons" in source
-    assert "formatPrecheckReasons" in wizard
+    assert "async function runTaskPrecheck" not in source
+    assert "创建前预检" not in wizard
+    assert "等待预检" not in wizard
+    assert "创建阶段不做容量门禁" in wizard
+    assert "任务先创建成功；启动后评估运行条件" in wizard
 
 
 def test_group_ai_topic_and_chat_targets_use_plain_line_inputs():
@@ -2110,6 +2125,20 @@ def test_task_center_runtime_form_exposes_search_click_hourly_controls_only_when
     assert 'name="hourly_min_successful_joins"' in execution_config
     assert 'name="max_actions_per_day"' in execution_config
     assert "simpleSearchTargetField(taskType)" in view_model
+
+
+def test_fulfillment_tasks_do_not_expose_operator_hourly_caps():
+    wizard = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterWizardSections.tsx").read_text()
+    view_model = (PROJECT_ROOT / "frontend/src/app/views/taskCenterViewModel.ts").read_text()
+    view = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
+
+    runtime = wizard[wizard.index("export function TaskRuntimeAdvancedFields"):wizard.index("\nfunction accountPoolSelectOptions")]
+    assert "['group_relay', 'group_membership_admission']" in runtime
+    assert "operatorHourlyLimit &&" in runtime
+    assert "['group_relay', 'group_membership_admission'].includes(taskType)" in view_model
+    assert "systemFulfillmentGate ? 1000000" in view
+    assert "const GROUP_AI_RECOMMENDATION_FIELDS: AiLimitRecommendationField[] = ['messages_per_round'];" in view
+    assert "const COMMENT_AI_RECOMMENDATION_FIELDS: AiLimitRecommendationField[] = ['target_comments_per_message'];" in view
 
 
 def test_target_profile_is_top_level_page_not_target_detail_governance():
@@ -2617,7 +2646,8 @@ def test_search_click_creation_uses_operator_scope_controls_and_system_managed_p
     assert 'name="max_actions_per_day"' in execution_config
     assert "创建为草稿；启动准备时系统检查可用资源和执行条件。" in wizard
     assert "simpleSearchCreation" in target
-    assert "!simpleSearchClickTask && wizardStep === 3" in view
+    next_step = view[view.index("async function nextStep"):view.index("\n\n  function resetTypeFields")]
+    assert "runTaskPrecheck" not in next_step
     assert "simpleSearchClickTask ? (" in view
     assert "创建并启动" in view
 
@@ -2645,11 +2675,14 @@ def test_task_center_create_refreshes_after_long_timeout_and_capacity_summary_ty
 
 def test_task_center_creation_does_not_require_precheck_before_submit():
     source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
+    wizard = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterWizardSections.tsx").read_text()
 
     create_task = source[source.index("async function createTask"):source.index("\n\n  async function saveTaskSettings")]
     assert "createPayload(submitValues)" in create_task
     assert "await runTaskPrecheck" not in create_task
     assert "requiresFreshPrecheck" not in create_task
+    assert "runTaskPrecheck" not in source
+    assert "创建阶段仅结构错误会阻止保存" in wizard
 
 
 def test_search_rank_deboost_create_exposes_draft_only_action():

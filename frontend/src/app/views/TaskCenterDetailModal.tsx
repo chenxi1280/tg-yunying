@@ -814,9 +814,9 @@ export function TaskCenterDetailModal({
               },
               {
                 key: 'coverage_capacity',
-                label: '容量证明',
+                label: '容量诊断（不阻塞）',
                 children: accountCoverage?.capacity_proof
-                  ? `${accountCoverage.capacity_status === 'blocked' ? '阻塞' : '可履约'}，目标 ${Number(accountCoverage.required_daily_messages ?? 0)}，理论容量 ${Number(accountCoverage.capacity_proof.effective_daily_capacity ?? 0)}，差额 ${Number(accountCoverage.capacity_proof.capacity_gap ?? 0)}`
+                  ? `${accountCoverage.capacity_status === 'diagnostic_insufficient' ? '当前估算不足' : '当前估算充足'}，目标 ${Number(accountCoverage.required_daily_messages ?? 0)}，理论容量 ${Number(accountCoverage.capacity_proof.effective_daily_capacity ?? 0)}，差额 ${Number(accountCoverage.capacity_proof.capacity_gap ?? 0)}`
                   : '-',
               },
               { key: 'coverage_hourly_rate', label: '最低小时成功率', children: accountCoverage ? `${Number(accountCoverage.required_hourly_rate ?? 0)} 条/小时` : '-' },

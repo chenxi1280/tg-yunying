@@ -6,7 +6,14 @@ from datetime import timedelta
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
-from app.models import Action, ChannelMessage, ChannelMessageComment, ExecutionAttempt, Task, TgAccount
+from app.models import (
+    Action,
+    ChannelMessage,
+    ChannelMessageComment,
+    CommentFulfillmentObligation,
+    Task,
+    TgAccount,
+)
 from app.services._common import _now
 
 from ..ai_limits import allocate_message_budget
@@ -105,11 +112,14 @@ def load_message_comment_plan_states(
 ) -> dict[int, MessageCommentPlanState]:
     if not messages:
         return {}
-    action_states = _action_message_plan_states(session, task, messages)
+    obligation_states = _obligation_message_plan_states(session, task, messages)
     managed_counts = _managed_collected_comment_counts(session, task, messages)
     states: dict[int, MessageCommentPlanState] = {}
     for message in messages:
-        reserved, historical_count, max_slot_index = action_states.get(message.id, (0, 0, -1))
+        reserved, historical_count, max_slot_index = obligation_states.get(
+            message.id,
+            (0, 0, -1),
+        )
         states[message.id] = MessageCommentPlanState(
             reservation_count=reserved,
             next_slot_index=max(historical_count, max_slot_index + 1),
@@ -118,60 +128,53 @@ def load_message_comment_plan_states(
     return states
 
 
-def _action_message_plan_states(
+def _obligation_message_plan_states(
     session: Session,
     task: Task,
     messages: list[ChannelMessage],
 ) -> dict[int, tuple[int, int, int]]:
-    by_database_id = {message.id: message for message in messages}
-    by_message_id = {message.message_id: message for message in messages}
+    message_ids = [message.id for message in messages]
     states: dict[int, tuple[int, int, int]] = {}
     rows = session.execute(
-        select(Action.status, Action.payload).where(
-            Action.tenant_id == task.tenant_id,
-            Action.task_id == task.id,
-            Action.task_type == "channel_comment",
-            Action.action_type == "post_comment",
+        select(
+            CommentFulfillmentObligation.channel_message_id,
+            CommentFulfillmentObligation.target_ordinal,
+            CommentFulfillmentObligation.status,
+            Action.status,
+        )
+        .outerjoin(
+            Action,
+            Action.id == CommentFulfillmentObligation.current_action_id,
+        )
+        .where(
+            CommentFulfillmentObligation.tenant_id == task.tenant_id,
+            CommentFulfillmentObligation.task_id == task.id,
+            CommentFulfillmentObligation.channel_message_id.in_(message_ids),
         )
     )
-    for status, payload in rows:
-        message = _payload_message(payload, by_database_id, by_message_id)
-        if not message:
-            continue
-        reserved, historical_count, max_slot_index = states.get(message.id, (0, 0, -1))
-        slot_index = _payload_slot_index(payload, message.id)
-        states[message.id] = (
-            reserved + int(status in COMMENT_RESERVATION_STATUSES),
+    for message_id, ordinal, obligation_status, action_status in rows:
+        reserved, historical_count, max_slot_index = states.get(
+            int(message_id),
+            (0, 0, -1),
+        )
+        states[int(message_id)] = (
+            reserved + int(_obligation_reserves(obligation_status, action_status)),
             historical_count + 1,
-            max(max_slot_index, slot_index),
+            max(max_slot_index, int(ordinal) - 1),
         )
     return states
 
 
-def _payload_message(
-    payload: dict | None,
-    by_database_id: dict[int, ChannelMessage],
-    by_message_id: dict[int, ChannelMessage],
-) -> ChannelMessage | None:
-    if not isinstance(payload, dict):
-        return None
-    database_id = _payload_int(payload, "channel_message_id")
-    message_id = _payload_int(payload, "message_id")
-    return by_database_id.get(database_id) or by_message_id.get(message_id)
-
-
-def _payload_int(payload: dict, key: str) -> int:
-    raw = str(payload.get(key) or "").strip()
-    return int(raw) if raw.isdigit() else 0
-
-
-def _payload_slot_index(payload: dict | None, channel_message_id: int) -> int:
-    if not isinstance(payload, dict):
-        return -1
-    slot_prefix = f"channel-comment:{channel_message_id}:"
-    slot_id = str(payload.get("slot_id") or "")
-    raw_index = slot_id.removeprefix(slot_prefix) if slot_id.startswith(slot_prefix) else ""
-    return int(raw_index) if raw_index.isdigit() else -1
+def _obligation_reserves(
+    obligation_status: str,
+    action_status: str | None,
+) -> bool:
+    if obligation_status in {"confirmed", "unknown"}:
+        return True
+    return (
+        obligation_status == "pending"
+        and action_status in COMMENT_RESERVATION_STATUSES
+    )
 
 
 def _managed_collected_comment_counts(
@@ -260,15 +263,13 @@ def _complete_lifetime_cap(session: Session, task: Task, limit: int, counts: dic
 def _remote_comment_success_count(session: Session, task: Task) -> int:
     return int(
         session.scalar(
-            select(func.count(func.distinct(Action.id)))
-            .join(ExecutionAttempt, ExecutionAttempt.action_id == Action.id)
+            select(func.count(CommentFulfillmentObligation.id))
             .where(
-                Action.tenant_id == task.tenant_id,
-                Action.task_id == task.id,
-                Action.action_type == "post_comment",
-                Action.status == "success",
-                ExecutionAttempt.status == "success",
-                ExecutionAttempt.remote_message_id != "",
+                CommentFulfillmentObligation.tenant_id == task.tenant_id,
+                CommentFulfillmentObligation.task_id == task.id,
+                CommentFulfillmentObligation.status == "confirmed",
+                CommentFulfillmentObligation.remote_comment_id.is_not(None),
+                CommentFulfillmentObligation.remote_comment_id != "",
             )
         )
         or 0

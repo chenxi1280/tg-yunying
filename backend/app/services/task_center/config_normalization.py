@@ -25,6 +25,7 @@ from .config_fields import (
     TYPE_CONFIG_MODELS,
 )
 from .utils import as_int as _as_int, as_int_list as _as_int_list
+from .fulfillment_takeover import UNIFIED_TASK_GATE_LIMIT
 
 
 def normalize_ai_daily_target(config: dict[str, Any], *, frozen_account_count: int) -> dict[str, Any]:
@@ -142,6 +143,15 @@ def validated_type_config(task_type: str, data: dict[str, Any]) -> dict[str, Any
     if task_type == "group_ai_chat":
         for field in GROUP_AI_LEGACY_RUNTIME_FIELDS:
             normalized.pop(field, None)
+    if task_type == "channel_view":
+        normalized["task_daily_view_safety_cap"] = UNIFIED_TASK_GATE_LIMIT
+        normalized["max_views_per_account_per_day"] = UNIFIED_TASK_GATE_LIMIT
+    if task_type == "channel_like":
+        normalized["max_likes_per_account_per_hour"] = UNIFIED_TASK_GATE_LIMIT
+    if task_type == "channel_comment":
+        normalized["max_total_comments"] = UNIFIED_TASK_GATE_LIMIT
+        normalized["max_total_comments_jitter"] = 0
+        normalized["max_comments_per_account_per_hour"] = UNIFIED_TASK_GATE_LIMIT
     for field in CHANNEL_JITTER_FIELDS.get(task_type, set()):
         normalized.pop(field, None)
     if task_type in {"group_relay", "channel_comment"}:

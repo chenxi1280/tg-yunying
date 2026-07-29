@@ -409,7 +409,7 @@ def _write_reservation(
         + grant
     )
     reservation.urgency_score = demand.urgency_score
-    reservation.reason = "allocated" if grant >= demand.required_claims else SHARED_CAPACITY_ERROR
+    reservation.reason = "allocated" if grant > 0 else SHARED_CAPACITY_ERROR
     reservation.version += 1
 
 
