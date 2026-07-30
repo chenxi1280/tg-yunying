@@ -128,6 +128,7 @@ backend_status="$(docker inspect tgyunying-backend --format '{{.State.Status}}' 
 backend_health="$(docker inspect tgyunying-backend --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' 2>/dev/null || true)"
 worker_containers=(
   tgyunying-worker-planner
+  tgyunying-worker-ai-generation
   tgyunying-worker-dispatcher-1
   tgyunying-worker-dispatcher-2
   tgyunying-worker-dispatcher-3

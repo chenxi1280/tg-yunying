@@ -50,6 +50,7 @@ from app.services.material_rules import select_material_for_policy
 from app.services.task_center import dispatcher
 from app.services.task_center.ai_generation_dependencies import GenerationDependencies
 from app.services.task_center.ai_generator import GeneratedContent
+from app.services.task_center.ai_generation_worker import drain_ai_generation
 from app.services.task_center.dispatcher import claim_actions
 from app.services.temp_files import TEMP_FILE_TTL_SECONDS, cleanup_temp_files, temp_dir
 from tests.ai_group_voice_profile_fixtures import assume_default_ai_group_voice_profiles
@@ -148,6 +149,10 @@ def test_rule_tester_simulates_material_cache_edges():
 
 @pytest.mark.no_postgres
 def test_rule_material_policy_selects_ready_material_for_preview_and_ai_action(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.task_center.ai_generation_worker.credentials_for_account",
+        lambda *_args, **_kwargs: object(),
+    )
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args, **_kwargs: object())
@@ -167,6 +172,11 @@ def test_rule_material_policy_selects_ready_material_for_preview_and_ai_action(m
         session.commit()
 
         assert build_ai_chat_plan(session, task) == 1
+        assert drain_ai_generation(
+            lambda: Session(engine),
+            limit=1,
+            dependencies=dependencies,
+        ) == 1
         [action] = claim_actions(session, limit=1, worker_id="material-test")
         assert dispatcher.dispatch_action(
             session, action, generation_dependencies=dependencies,
@@ -201,6 +211,10 @@ def test_rule_material_policy_selects_ready_material_for_preview_and_ai_action(m
 
 @pytest.mark.no_postgres
 def test_pre_gateway_failure_rebuilds_same_content_mix_slot(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.task_center.ai_generation_worker.credentials_for_account",
+        lambda *_args, **_kwargs: object(),
+    )
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args, **_kwargs: object())
@@ -214,6 +228,11 @@ def test_pre_gateway_failure_rebuilds_same_content_mix_slot(monkeypatch):
         session.commit()
 
         assert build_ai_chat_plan(session, task) == 1
+        assert drain_ai_generation(
+            lambda: Session(engine),
+            limit=1,
+            dependencies=_material_generation_dependencies(),
+        ) == 1
         [first] = claim_actions(session, limit=1, worker_id="replan-first")
         assert dispatcher.dispatch_action(
             session,

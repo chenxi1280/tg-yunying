@@ -71,6 +71,7 @@ class FakeSearchJoinClient:
         membership_probe_error: Exception | None = None,
         edits: list[FakeMessage] | None = None,
         latest_messages: list[FakeMessage] | None = None,
+        history_messages: list[FakeMessage] | None = None,
         download_media_result: bytes = b"\x89PNG fake image",
     ) -> None:
         self.responses = responses
@@ -78,6 +79,7 @@ class FakeSearchJoinClient:
         self.membership_probe_error = membership_probe_error
         self.edits = edits or []
         self.latest_messages = latest_messages or []
+        self.history_messages = history_messages or []
         self.updated_message_ids: list[int] = []
         self.sent: list[tuple[str, str]] = []
         self.joined: list[str] = []
@@ -99,6 +101,8 @@ class FakeSearchJoinClient:
         limit: int | None = None,
     ) -> FakeMessage | list[FakeMessage] | None:
         if limit is not None:
+            if not self.sent:
+                return self.history_messages[:limit]
             return self.latest_messages[:limit]
         assert ids is not None
         self.updated_message_ids.append(ids)
@@ -400,6 +404,61 @@ def test_execute_search_join_accepts_jisou_group_results_page_without_category_s
 
     assert result["success"] is True
     assert result_page.clicked == [(0, 0)]
+
+
+@pytest.mark.no_postgres
+def test_jisou_bootstrap_skips_start_for_existing_conversation() -> None:
+    category_page = FakeMessage(
+        101,
+        [[FakeButton("👥", data=b"group-category")]],
+    )
+    result_page = FakeMessage(
+        102,
+        [[FakeButton("目标群", url="https://t.me/target_group")]],
+    )
+    client = FakeSearchJoinClient(
+        [category_page, result_page],
+        history_messages=[FakeMessage(99, [], raw_text="历史会话")],
+    )
+
+    result = asyncio.run(
+        execute_search_join_with_client(
+            client,
+            _payload(bot_username="jisou"),
+            keyword_text="郑州",
+        )
+    )
+
+    assert result["success"] is True
+    assert result["jisou_bootstrap_kind"] == "existing_conversation"
+    assert client.sent == [("jisou", "郑州")]
+
+
+@pytest.mark.no_postgres
+def test_jisou_bootstrap_starts_only_first_conversation() -> None:
+    category_page = FakeMessage(
+        101,
+        [[FakeButton("👥", data=b"group-category")]],
+    )
+    result_page = FakeMessage(
+        102,
+        [[FakeButton("目标群", url="https://t.me/target_group")]],
+    )
+    client = FakeSearchJoinClient(
+        [FakeMessage(100, [], raw_text="欢迎"), category_page, result_page],
+    )
+
+    result = asyncio.run(
+        execute_search_join_with_client(
+            client,
+            _payload(bot_username="jisou"),
+            keyword_text="郑州",
+        )
+    )
+
+    assert result["success"] is True
+    assert result["jisou_bootstrap_kind"] == "first_conversation"
+    assert client.sent == [("jisou", "/start"), ("jisou", "郑州")]
 
 
 @pytest.mark.no_postgres

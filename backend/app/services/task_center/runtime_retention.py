@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta
-from typing import Any
-
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -24,6 +22,7 @@ from app.services._common import _now
 
 RUNTIME_DETAIL_CLEANUP_KIND = "runtime_details"
 RUNTIME_METRIC_CLEANUP_KIND = "runtime_metric_snapshots"
+TERMINAL_ACTION_STATUSES = ("success", "failed", "skipped")
 
 
 def cleanup_runtime_details(
@@ -116,16 +115,37 @@ def cleanup_runtime_details_if_due(
     return deleted
 
 
-def _runtime_detail_batch(session: Session, cutoff_dt: datetime, batch_size: int) -> list[Action]:
+def _runtime_detail_batch(session: Session, cutoff_dt: datetime, batch_size: int) -> list:
     age = func.coalesce(Action.executed_at, Action.scheduled_at, Action.created_at)
+    target_dimension = func.coalesce(
+        Action.payload["operation_target_id"].as_string(),
+        Action.payload["target_operation_target_id"].as_string(),
+        Action.payload["group_id"].as_string(),
+        Action.payload["channel_target_id"].as_string(),
+        Action.payload["chat_id"].as_string(),
+        "",
+    ).label("target_dimension")
     statement = (
-        select(Action)
-        .where(age < cutoff_dt)
+        select(
+            Action.id,
+            Action.task_id,
+            Action.account_id,
+            Action.task_type,
+            Action.status,
+            Action.executed_at,
+            Action.scheduled_at,
+            Action.created_at,
+            target_dimension,
+        )
+        .where(
+            age < cutoff_dt,
+            Action.status.in_(TERMINAL_ACTION_STATUSES),
+        )
         .order_by(age.asc(), Action.created_at.asc(), Action.id.asc())
         .limit(batch_size)
         .with_for_update(of=Action, skip_locked=True)
     )
-    return list(session.scalars(statement))
+    return list(session.execute(statement))
 
 
 def _remove_action_references(session: Session, action_ids: list[str]) -> dict[str, int]:
@@ -223,7 +243,7 @@ def _elapsed_seconds(start: datetime, end: datetime) -> float:
     return (end - start).total_seconds()
 
 
-def _summarize_actions(actions: list[Action]) -> dict[tuple[date, str, str, str], int]:
+def _summarize_actions(actions: list) -> dict[tuple[date, str, str, str], int]:
     stats: dict[tuple[date, str, str, str], int] = defaultdict(int)
     for action in actions:
         stat_date = _action_date(action)
@@ -238,7 +258,7 @@ def _summarize_actions(actions: list[Action]) -> dict[tuple[date, str, str, str]
         if action.task_type:
             _add(stats, stat_date, "task_type", action.task_type, "total", 1)
             _add(stats, stat_date, "task_type", action.task_type, f"status.{status}", 1)
-        target_id = _target_dimension(action.payload or {})
+        target_id = str(action.target_dimension or "")
         if target_id:
             _add(stats, stat_date, "target", target_id, "total", 1)
             _add(stats, stat_date, "target", target_id, f"status.{status}", 1)
@@ -286,17 +306,9 @@ def _daily_stat_insert(session: Session):
     raise RuntimeError(f"unsupported runtime retention dialect: {dialect}")
 
 
-def _action_date(action: Action) -> date:
+def _action_date(action) -> date:
     value = action.executed_at or action.scheduled_at or action.created_at or _now()
     return value.date()
-
-
-def _target_dimension(payload: dict[str, Any]) -> str:
-    for key in ("operation_target_id", "target_operation_target_id", "group_id", "channel_target_id", "chat_id"):
-        value = payload.get(key)
-        if value:
-            return str(value)
-    return ""
 
 
 __all__ = ["cleanup_runtime_details", "cleanup_runtime_details_if_due"]

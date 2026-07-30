@@ -166,6 +166,7 @@ BACKEND_SERVICES=(
 
 WORKER_SERVICES=(
   worker-planner
+  worker-ai-generation
   worker-dispatcher-1
   worker-dispatcher-2
   worker-dispatcher-3

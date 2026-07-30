@@ -6322,7 +6322,8 @@ def test_bulk_capacity_cache_preserves_hour_limit_decisions():
     assert [account.id for account in cached] == [102]
 
 
-def test_runtime_cleanup_summarizes_then_deletes_all_window_out_details():
+@pytest.mark.no_postgres
+def test_runtime_cleanup_summarizes_and_deletes_terminal_details_only():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     today = datetime(2026, 5, 15).date()
@@ -6344,16 +6345,22 @@ def test_runtime_cleanup_summarizes_then_deletes_all_window_out_details():
         deleted = cleanup_runtime_details(session, retention_days=5, today=today)
         session.commit()
 
-        assert deleted == 4
+        assert deleted == 1
         assert session.get(Action, "old-success") is None
-        assert session.get(Action, "old-unknown") is None
-        assert session.get(ExecutionAttempt, "old-attempt") is None
-        assert session.get(ReviewQueue, "old-review") is None
+        assert session.get(Action, "old-unknown") is not None
+        assert session.get(ExecutionAttempt, "old-attempt") is not None
+        assert session.get(ReviewQueue, "old-review") is not None
         assert session.query(RuntimeCleanupAudit).count() == 1
-        global_unknown = session.query(DailyRuntimeStat).filter_by(stat_date=old_at.date(), dimension_type="global", dimension_id="all", metric_name="status.unknown_after_send").one()
-        assert global_unknown.metric_value == 1
+        global_success = session.query(DailyRuntimeStat).filter_by(
+            stat_date=old_at.date(),
+            dimension_type="global",
+            dimension_id="all",
+            metric_name="status.success",
+        ).one()
+        assert global_success.metric_value == 1
 
 
+@pytest.mark.no_postgres
 def test_runtime_cleanup_batches_details_and_accumulates_totals():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

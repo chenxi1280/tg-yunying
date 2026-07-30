@@ -3171,7 +3171,11 @@ def _drain_task_recovery(session_factory, *, limit: int, process_type: str | Non
             processed += cleanup_runtime_details_if_due(
                 session,
                 retention_days=settings.runtime_detail_retention_days,
-                batch_size=limit,
+                batch_size=getattr(
+                    settings,
+                    "runtime_detail_retention_batch_size",
+                    2000,
+                ),
                 interval_seconds=settings.runtime_detail_cleanup_interval_seconds,
             )
             processed += cleanup_runtime_metric_snapshots_if_due(

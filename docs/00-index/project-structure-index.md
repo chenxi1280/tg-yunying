@@ -2,6 +2,8 @@
 
 > 生成口径：2026-06-27，基于当前工作区 `/Users/xida/PycharmProjects/tg-yunying` 扫描。本文是代码维护入口，PRD 仍以 `docs/01-product/tg-ops-platform-prd.md` 及专项 PRD 为产品源头。
 
+> **2026-07-30 生产吞吐恢复：** `ai_backlog_abandonment.py` 与 `scripts/abandon_ai_historical_backlog.py` 提供 AI 活群 pre-Gateway 历史积压的 preview/apply 原子放弃；`ai_generation_worker.py` 以独立 `ai-generation` role 在 Dispatcher 前完成 AI 文案生成，Dispatcher 只 claim 已有正文的 AI Action；`dispatcher.py` 按 due Task 分段有界取候选，禁止全表 WindowAgg 排名；`runtime_retention.py` 只投影并清理终态 Action，批量和周期由生产配置控制；`integrations/telegram/search_join.py` 只在极搜首次会话发送 `/start`，已有历史会话直接发送关键词。对应部署入口为 `docker-compose.server.yml`、`deploy/compose-up.sh` 与 `deploy/check-web.sh`。
+
 > **2026-07-28 AI 活群重构目标：** `ai-group-daily-group-target-redesign-prd.md` 定义“群日目标 + 全账号至少 1 条”。`daily_group_target.py` 目标为按 24 小时非零权重持续规划，不调用日容量、硬小时、活动窗口或群本地冷却 gate；`group_bot_admission.py` 提供 join → 群管频道关注/确认 → can_send 复检；`dispatcher.py` 目标链为主 AI 最多 3 轮 → 不同备用 AI 最多 3 轮 → 同义务精确 `签到`。缺面具或已验证代理路线切换直接签到，无路线则 `waiting_transport`。前端只使用 `daily_message_target`；未完成实现/QA/release/E4 的部分继续标记 resync。
 > **对应迁移与诊断：** `0128_ai_group_daily_targets.py`、`0129_ai_memory_account_mask.py` 建表/补面具证据字段；`scripts/migrate_ai_group_daily_targets.py` 提供 dry-run 与 `--apply` 的逐任务迁移；`.github/scripts/ai_group_quality_diagnostics.py` 的发布门目标改为完整自然日群总量、全账号覆盖、Action/Attempt/remote id/面具证据一致性以及“不得新增 hard-hourly Action”。
 
