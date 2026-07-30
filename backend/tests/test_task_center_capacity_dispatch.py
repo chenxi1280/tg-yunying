@@ -305,7 +305,7 @@ def test_claim_actions_uses_claiming_then_confirms_executing_with_account_lock()
 def test_claim_actions_takes_one_group_rescue_invite_per_admin_batch():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
-    now_value = _now()
+    now_value = datetime(2026, 7, 30, 10, 30)
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间", group_rescue_enabled=True, group_rescue_admin_account_id=515))

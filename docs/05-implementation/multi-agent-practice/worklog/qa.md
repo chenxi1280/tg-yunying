@@ -421,3 +421,10 @@
 - evidence: 第五次 run `30567325211` 未部署；no-PostgreSQL 为 `1 failed / 2331 passed`，失败是内容合同测试夹具缺少新增字段；真 PostgreSQL 为 `2 failed / 779 passed / 14 skipped`，其一是最低批次 3 的期望误写为 1，其二是工作流测试直接改 Action.status 而未收口数量槽、内容槽和 coverage。测试现改为显式非回补夹具、验证 3 条 direct Action，并通过 `abandon_ai_historical_backlog` 的完整事务关闭测试 Cycle。
 - decision: 失败均为测试合同未同步，不绕过业务门禁；定向 no-PostgreSQL `17 passed`，进入第六次 Release Checks。
 - unresolved: 第六次 CI 全绿与生产 E4。
+
+## 2026-07-31 日覆盖回补内容合同二次 Release Checks re-QA
+
+- message_id: `2026-07-31-ai-coverage-reply-contract-release-qa-007`
+- evidence: 第六次 run `30568064405` 未部署；no-PostgreSQL 为 `1 failed / 2342 passed`，唯一失败的容量策略用例使用真实墙钟，本机单用例连续 5 次、全文件 84 条和并行搜索组合 62 条均通过，现固定业务时间消除时钟波动；真 PostgreSQL 为 `1 failed / 780 passed / 14 skipped`，完整 backlog 清理在无遗留 open Action 时合法返回 0，测试移除错误的“必须删除至少一条”前置条件，后续仍以第二上下文远端发送增长验收。
+- decision: 仅收敛测试确定性和可选清理断言，不修改生产容量、内容合同或发送逻辑；进入第七次 Release Checks。
+- unresolved: 第七次 CI 全绿、部署与生产 E4。
