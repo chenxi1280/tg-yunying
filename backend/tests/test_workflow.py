@@ -4065,14 +4065,16 @@ def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(monkeypatch):
     context_suffix = uuid4().hex[:8]
     context_message_id = int(uuid4().int % 1_000_000_000) + 1
     second_context_marker = f"second-cycle-{context_suffix}"
+    due_message_count = 1
     monkeypatch.setattr(
         "app.services.task_center.executors.group_ai_chat.daily_group_due_message_count",
-        lambda target, _pacing, **_kwargs: target.effective_message_target,
+        lambda _target, _pacing, **_kwargs: due_message_count,
     )
     messages = [
         (str(context_message_id), f"第一条真人上下文 {context_suffix}"),
     ]
     sends: list[str] = []
+    draft_sequence = 0
 
     def fake_fetch_group_messages(*args, **kwargs):
         return [
@@ -4087,20 +4089,26 @@ def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(monkeypatch):
         ]
 
     def fake_generate_drafts(_credentials, prompt, **_kwargs):
+        nonlocal draft_sequence
         if f"第二条真人上下文 {context_suffix}" in prompt:
             base_candidates = [
-                ("自然群友", f"第二条真人上下文 {context_suffix} {second_context_marker} 这个信息可以往具体案例上聊。"),
-                ("补充群友", f"这个新内容 {context_suffix} {second_context_marker} 更适合先问问实际发生了什么。"),
+                ("自然群友", f"{second_context_marker} 我刚到地铁口，雨比预想的大。"),
+                ("补充群友", f"{second_context_marker} 午饭换了个窗口，番茄味有点酸。"),
+                ("路过群友", f"{second_context_marker} 快递柜排队的人少了，取件挺快。"),
+                ("随聊群友", f"{second_context_marker} 晚上风有点大，出门还是得加件外套。"),
             ]
         else:
             base_candidates = [
-                ("自然群友", f"第一条真人上下文 {context_suffix} 可以先从实际体验聊起。"),
-                ("补充群友", f"我觉得第一条真人上下文 {context_suffix} 这里要看具体情况。"),
+                ("自然群友", "早上路口施工，绕了一大圈。"),
+                ("补充群友", "新开的窗口出餐挺快，分量也够。"),
+                ("路过群友", "手机快没电了，刚好找到空插座。"),
+                ("随聊群友", "下午太阳挺晒，树荫下面舒服些。"),
             ]
         count, slot_ids = int(_kwargs.get("count") or len(base_candidates)), _workflow_generation_slot_ids(prompt)
         candidates = []
         for index in range(count):
-            persona, content = base_candidates[index % len(base_candidates)]
+            persona, content = base_candidates[draft_sequence % len(base_candidates)]
+            draft_sequence += 1
             token = _workflow_ai_token(index)
             candidates.append(AiDraftCandidate(persona=persona, content=f"pytest-{token} {content}", slot_id=slot_ids[index], sequence_index=index + 1))
         return AiGenerationResult(
@@ -4183,20 +4191,6 @@ def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(monkeypatch):
         if not sends:
             assert make_task_send_actions_due(task_id) >= 1
             assert dispatch_pending_task_actions(task_id) >= 1
-        from app.services.task_center.ai_backlog_abandonment import (
-            abandon_ai_historical_backlog,
-        )
-
-        with SessionLocal() as session:
-            result = abandon_ai_historical_backlog(
-                session,
-                cutoff=datetime.now(UTC).replace(tzinfo=None) + timedelta(days=1),
-                apply=True,
-                actor="pytest-cycle-boundary",
-                task_ids={task_id},
-            )
-            session.commit()
-        assert result["mode"] == "apply"
         first_context_send_count = len(sends)
         actions = task_detail_actions(client, headers, task_id, action_type="send_message")
         detail = task_detail_after_metrics(client, headers, task_id)
@@ -4206,6 +4200,7 @@ def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(monkeypatch):
             "sends": sends,
         }
 
+        due_message_count = 2
         messages.append((str(context_message_id + 1), f"第二条真人上下文 {context_suffix}"))
         from app.services.task_center.listener_runtime import _mark_listener_runtime_success
 
