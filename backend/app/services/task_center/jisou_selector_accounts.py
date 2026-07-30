@@ -16,6 +16,7 @@ JISOU_USERNAME = "jisou"
 SOURCE_ACTION_TYPE = "search_join"
 LOOKBACK_WINDOW = timedelta(hours=12)
 TARGET_CLICK_OUTCOME = "target_click"
+JISOU_FLOW_CONTRACT_VERSION = "jisou_search_click_v2"
 
 # PRD §2.19.3 12 小时排除规则：以下错误码触发后账号 12 小时排除，
 # jisou_group_selector_missing 不自动排除（单独评估协议样本是否过期）。
@@ -103,6 +104,8 @@ def _action_outcome(action: Action) -> str:
     result = action.result if isinstance(action.result, dict) else {}
     if has_confirmed_click_fact(result):
         return TARGET_CLICK_OUTCOME
+    if _action_contract_version(action) != JISOU_FLOW_CONTRACT_VERSION:
+        return ""
     error_code = str(result.get("error_code") or "")
     if (
         error_code == "jisou_hot_list_page"
@@ -123,4 +126,13 @@ def _action_bot_username(action: Action) -> str:
     return _normalized_bot_username(str(payload.get("bot_username") or ""))
 
 
-__all__ = ["JisouSelectorCandidates", "select_jisou_selector_candidates"]
+def _action_contract_version(action: Action) -> str:
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    return str(payload.get("jisou_flow_contract_version") or "").strip()
+
+
+__all__ = [
+    "JISOU_FLOW_CONTRACT_VERSION",
+    "JisouSelectorCandidates",
+    "select_jisou_selector_candidates",
+]

@@ -1043,3 +1043,4 @@ apply 不得修改 success、unknown_after_send、Gateway-started，不得补 re
 | 边界场景 | 静态引用冲突与运行账号身份失效分离、结构阻塞闭集、同键不同 fingerprint、启动响应丢失、同/不同 start key 并发、启动状态与 runtime waiting 分离、对象级一致性隔离与跨 Task 事实所有权、日切、DST、歧义日期查询、暂停/跨日恢复、legacy mixed search 隔离、任务时区变更、动态消息、目标并发收口与 overflow、共享资源不重复投影、精确求解失败不提交部分结果、完整重建 input 漂移、rehash-to-commit update/phantom、contract version 切换、极搜会话偏移 no-reset、Cycle deadline/结算、兜底素材不兼容、配置冲突、外部容量、并发和回滚已覆盖 |
 | QA | 自动化、canary、整日 E4 和 blocked/unproven 结论已定义 |
 | design_status | `complete` |
+极搜 12 小时排除必须携带 `jisou_flow_contract_version`，并只在当前单用户 scope 的同一执行合同版本内跨搜索任务共享。执行合同升级后，旧 Action 缺少或持有其他合同版本的失败事实保留审计，但不得阻断新合同首次尝试；新合同产生的真实失败仍按既有 12 小时规则排除。

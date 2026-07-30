@@ -962,3 +962,4 @@ group_ai_chat / channel_comment 正文
 - `daily_fulfillment.summarize_daily_fulfillment` 只读关联 Coverage 与开放
   Action；状态修复由明确的 Planner/Recovery 写路径负责，详情汇总不再批量
   更新 Coverage。
+> **DF-186A 极搜执行合同版本排除（2026-07-31）**：Planner 将当前 `jisou_flow_contract_version` 冻结进 `SearchJoinPayload`。12 小时账号—协议路径排除只读取同一执行合同版本产生的失败；旧合同失败保留审计但不阻断新合同首次尝试，新合同产生的真实失败继续按既有规则排除。
