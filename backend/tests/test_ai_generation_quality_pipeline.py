@@ -6,16 +6,19 @@ import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
+from app.models import Action
+from app.services.task_center import ai_generation_dispatch
 from app.services.task_center.ai_generator import AiGenerationUnavailable, GeneratedContent
 from app.services.task_center.ai_generation_dependencies import GenerationDependencies
 from app.services.task_center.ai_generation_pipeline import generate_quality_results
 from app.services.task_center.executors import group_ai_chat
+from app.services.task_center.payloads import SendMessagePayload
 
 
 pytestmark = pytest.mark.no_postgres
 
 
-def test_quality_pipeline_runs_m3_m25_without_open_transactions() -> None:
+def test_quality_pipeline_runs_primary_and_backup_without_open_transactions() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     observed: list[str] = []
     with Session(engine) as session:
@@ -27,7 +30,7 @@ def test_quality_pipeline_runs_m3_m25_without_open_transactions() -> None:
             _dependencies(normal_generator=_stage_generator(session, observed)),
         )
 
-    assert observed == ["primary_m3"] * 3 + ["fallback_m25"] * 3
+    assert observed == ["primary_default"] * 3 + ["fallback_m25"] * 3
     assert results[0].rejection_code == "voice_profile_mismatch"
 
 
@@ -112,7 +115,7 @@ def test_daily_coverage_uses_distinct_explicit_static_fallback_after_all_models_
             _dependencies(normal_generator=_stage_generator(session, observed)),
         )
 
-    assert observed == ["primary_m3"] * 3 + ["fallback_m25"] * 3
+    assert observed == ["primary_default"] * 3 + ["fallback_m25"] * 3
     fallbacks = [result for result in results if result.quality_fallback == "check_in_fallback"]
     rejected = [result for result in results if result.rejection_code]
     assert len(fallbacks) == 2
@@ -168,6 +171,48 @@ def test_daily_coverage_static_fallback_handles_provider_unavailability() -> Non
     assert results[0].fallback_reason == "all_model_stages_rejected"
 
 
+def test_extra_volume_quantity_slot_uses_check_in_when_all_providers_unavailable() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    request = _request(
+        "",
+        cached=False,
+        config={
+            "generation_slots": [{
+                "slot_id": "slot-extra-1",
+                "account_id": 11,
+                "group_id": 2,
+                "primary_quantity_slot_id": "quantity-extra-1",
+                "coverage_ledger_id": "",
+            }],
+        },
+    )
+    with Session(engine) as session:
+        results, _tokens = generate_quality_results(
+            session,
+            request,
+            _dependencies(normal_generator=_unavailable_generator),
+        )
+
+    assert results[0].rejection_code == ""
+    assert results[0].quality_fallback == "check_in_fallback"
+    assert results[0].fallback_reason == "all_model_stages_rejected"
+    assert str(results[0].content) == "签到"
+
+
+def test_runtime_generation_slot_carries_primary_quantity_slot_id() -> None:
+    action = Action(account_id=11, primary_quantity_slot_id="quantity-extra-1")
+    payload = SendMessagePayload(
+        slot_id="slot-extra-1",
+        group_id=2,
+        primary_quantity_slot_id="quantity-extra-1",
+        ai_generation_status="pending",
+    )
+
+    slot = ai_generation_dispatch._generation_slot(action, payload, 1)
+
+    assert slot["primary_quantity_slot_id"] == "quantity-extra-1"
+
+
 def test_provider_unavailability_closes_read_transaction_before_next_stage() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     observed: list[str] = []
@@ -189,7 +234,7 @@ def test_provider_unavailability_closes_read_transaction_before_next_stage() -> 
             _dependencies(normal_generator=unavailable_after_lookup),
         )
 
-    assert observed == ["primary_m3"] * 3 + ["fallback_m25"] * 3
+    assert observed == ["primary_default"] * 3 + ["fallback_m25"] * 3
     assert results[0].quality_fallback == "check_in_fallback"
     assert results[0].content == "签到"
 
@@ -289,7 +334,7 @@ def test_primary_third_attempt_can_complete_without_backup() -> None:
             _dependencies(normal_generator=generator),
         )
 
-    assert observed == ["primary_m3"] * 3
+    assert observed == ["primary_default"] * 3
     assert results[0].content == "今天先聊聊"
 
 

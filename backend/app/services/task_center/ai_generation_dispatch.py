@@ -20,6 +20,8 @@ from .ai_generation_state import (
 )
 from .ai_generation_recovery import persist_generation_unknown
 from .ai_generation_pipeline import SlotGenerationResult, generate_quality_results
+from .ai_generation_slots import generation_slot as _generation_slot
+from .ai_generation_slots import reply_targets as _reply_targets
 from .ai_generator import AI_GENERATION_UNAVAILABLE_MESSAGE, AiGenerationUnavailable
 from .ai_generation_quality import fail_generation_action, fail_generation_batch
 from .direct_check_in import prepare_direct_check_in, requires_direct_check_in
@@ -479,35 +481,6 @@ def _payload_map(batch: list[tuple[Action, SendMessagePayload]], attr: str) -> d
         for action, payload in batch
         if action.account_id and (value := str(getattr(payload, attr) or "").strip())
     }
-
-
-def _generation_slot(action: Action, payload: SendMessagePayload, index: int) -> dict:
-    return {
-        "slot_id": payload.slot_id,
-        "sequence_index": index,
-        "cycle_turn_index": int(payload.turn_index or index),
-        "account_id": action.account_id,
-        "group_id": payload.group_id,
-        "coverage_ledger_id": payload.coverage_ledger_id,
-        "coverage_window_date": payload.coverage_window_date,
-        "coverage_account_completed_before_action": payload.coverage_account_completed_before_action,
-        "act_type": payload.act_type,
-        "account_profile": payload.account_profile,
-        "reply_to_message_id": payload.reply_to_message_id,
-        "reply_to_content": payload.reply_target_preview,
-        "reply_to_sequence_index": index if payload.reply_to_message_id else None,
-        "topic_direction": dict(payload.topic_direction),
-        "teacher_target": dict(payload.teacher_target),
-    }
-
-
-def _reply_targets(batch: list[tuple[Action, SendMessagePayload]]) -> list[dict]:
-    return [{
-        "message_id": int(payload.reply_to_message_id or 0),
-        "author": payload.reply_target_author,
-        "preview": payload.reply_target_preview,
-        "source": payload.reply_target_source,
-    } for _action, payload in batch]
 
 
 def _quality_snapshot(payload: SendMessagePayload) -> dict:

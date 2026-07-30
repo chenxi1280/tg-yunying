@@ -344,9 +344,9 @@ def _mark_generation_claims(session) -> None:
 
 def assert_quality_retry_states(generated_configs: list[dict], action_states: list[tuple]) -> None:
     assert [config["_ai_fallback_stage"] for config in generated_configs] == [
-        "primary_m3",
-        "primary_m3",
-        "primary_m3",
+        "primary_default",
+        "primary_default",
+        "primary_default",
     ]
     assert [state[0] for state in action_states] == [11, 12]
     assert [state[2]["slot_id"] for state in action_states] == [
