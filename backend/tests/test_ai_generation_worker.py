@@ -70,6 +70,55 @@ def test_generation_worker_does_not_prepare_far_future_actions() -> None:
     assert processed == 0
 
 
+def test_generation_worker_claims_sibling_outside_window_in_later_batch() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    _seed_actions(engine)
+    with Session(engine) as session:
+        session.add(TgAccount(
+            id=12,
+            tenant_id=1,
+            display_name="AI账号2",
+            phone_masked="+861***0012",
+            status="在线",
+        ))
+        first = session.get(Action, "pending-generation")
+        first.payload = {**dict(first.payload or {}), "ai_generation_id": "shared"}
+        future = _action(
+            "pending-generation-future",
+            _now() + timedelta(minutes=5),
+            "",
+            "pending",
+        )
+        future.account_id = 12
+        future.payload = {**dict(future.payload or {}), "ai_generation_id": "shared"}
+        session.add(future)
+        session.commit()
+
+    generated: list[str] = []
+
+    def generate(session: Session, action: Action, _account: TgAccount) -> None:
+        generated.append(action.id)
+        action.payload = {
+            **dict(action.payload or {}),
+            "message_text": "当前窗口生成完成",
+            "ai_generation_status": "ready",
+        }
+        session.commit()
+
+    assert drain_ai_generation(
+        lambda: Session(engine),
+        limit=10,
+        generate_action=generate,
+    ) == 2
+    assert generated == ["pending-generation", "pending-generation-future"]
+    with Session(engine) as session:
+        future = session.get(Action, "pending-generation-future")
+        assert future.status == "pending"
+        assert future.claim_owner == ""
+        assert future.payload["message_text"] == "当前窗口生成完成"
+
+
 def test_generation_worker_continues_after_explicit_business_failure() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

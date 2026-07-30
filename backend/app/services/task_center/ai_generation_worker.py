@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import socket
 from collections.abc import Callable
-from datetime import timedelta
+from datetime import datetime, timedelta
 from uuid import uuid4
 
 from sqlalchemy import func, or_, select
@@ -14,7 +14,7 @@ from app.services.developer_apps import credentials_for_account
 
 from .ai_generation_composition import PRODUCTION_GENERATION_DEPENDENCIES
 from .ai_generation_dependencies import GenerationDependencies
-from .ai_generation_dispatch import ensure_send_message_content
+from .ai_generation_dispatch import GENERATION_LOOKAHEAD_SECONDS, ensure_send_message_content
 from .ai_generator import AiGenerationUnavailable
 from .payloads import SendMessagePayload
 
@@ -109,10 +109,14 @@ def _generation_siblings(
     generation_id = str(payload.get("ai_generation_id") or "")
     if limit <= 0 or not generation_id or payload.get("reply_to_message_id"):
         return []
+    cutoff = max(_naive(first.scheduled_at), _naive(_now())) + timedelta(
+        seconds=GENERATION_LOOKAHEAD_SECONDS,
+    )
     filters = (
         *_generation_filters(),
         Action.id != first.id,
         Action.task_id == first.task_id,
+        Action.scheduled_at <= cutoff,
         Action.payload["ai_generation_id"].as_string() == generation_id,
         or_(
             Action.payload["reply_to_message_id"].as_integer().is_(None),
@@ -120,6 +124,10 @@ def _generation_siblings(
         ),
     )
     return list(session.scalars(_claim_statement(session, filters).limit(limit)))
+
+
+def _naive(value: datetime) -> datetime:
+    return value.replace(tzinfo=None) if value.tzinfo is not None else value
 
 
 def _generation_filters() -> tuple:
