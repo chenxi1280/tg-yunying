@@ -105,7 +105,12 @@ def test_phase_c_commit_failure_recovers_cached_ai_result_without_second_generat
             claim_token=old_claim_token,
             attempt_id=action.payload["ai_generation_attempt_id"],
         )
-        [action] = dispatcher.claim_actions(session, limit=1, worker_id="recovery-worker")
+        [action] = dispatcher.claim_actions(
+            session,
+            limit=1,
+            worker_id="recovery-worker",
+            allow_inline_ai_generation=True,
+        )
         assert action.payload["ai_generation_claim_owner"] == "recovery-worker"
         assert action.payload["ai_generation_claim_token"] != old_claim_token
         with pytest.raises(ai_generation_dispatch.GenerationAttemptStale):
@@ -127,7 +132,12 @@ def test_stale_pre_gateway_generation_reclaims_same_action_slot_and_coverage(mon
         action, coverage = _seed_reserved_reply_action(session, STALE_SCOPE)
         action.status = "pending"
         session.commit()
-        [action] = dispatcher.claim_actions(session, limit=1, worker_id="stale-worker")
+        [action] = dispatcher.claim_actions(
+            session,
+            limit=1,
+            worker_id="stale-worker",
+            allow_inline_ai_generation=True,
+        )
         old_claim_token = action.payload["ai_generation_claim_token"]
         old_request = ai_generation_dispatch._prepare_generation_request(
             session,
@@ -151,7 +161,12 @@ def test_stale_pre_gateway_generation_reclaims_same_action_slot_and_coverage(mon
         assert action.result.get("error_code") not in {"execution_timeout", "unknown_after_send"}
         assert coverage.state == "reserved"
         assert coverage.reserved_action_id == action.id
-        [action] = dispatcher.claim_actions(session, limit=1, worker_id="new-worker")
+        [action] = dispatcher.claim_actions(
+            session,
+            limit=1,
+            worker_id="new-worker",
+            allow_inline_ai_generation=True,
+        )
         assert action.id == STALE_SCOPE.action_id
         assert action.payload["ai_generation_claim_owner"] == "new-worker"
         assert action.payload["ai_generation_claim_token"] != old_claim_token
@@ -176,7 +191,12 @@ def test_phase_c_rejects_old_worker_after_second_session_replaces_fence(monkeypa
         action, _coverage = _seed_reserved_reply_action(session, CAS_SCOPE)
         action.status = "pending"
         session.commit()
-        [action] = dispatcher.claim_actions(session, limit=1, worker_id="old-worker")
+        [action] = dispatcher.claim_actions(
+            session,
+            limit=1,
+            worker_id="old-worker",
+            allow_inline_ai_generation=True,
+        )
         request = ai_generation_dispatch._prepare_generation_request(
             session,
             session.get(Task, CAS_SCOPE.task_id),
@@ -227,7 +247,12 @@ def test_stale_generation_started_provider_recovers_as_persist_unknown(request: 
         action, coverage = _seed_reserved_reply_action(session, STARTED_SCOPE)
         action.status = "pending"
         session.commit()
-        [action] = dispatcher.claim_actions(session, limit=1, worker_id="started-worker")
+        [action] = dispatcher.claim_actions(
+            session,
+            limit=1,
+            worker_id="started-worker",
+            allow_inline_ai_generation=True,
+        )
         request = ai_generation_dispatch._prepare_generation_request(
             session,
             session.get(Task, STARTED_SCOPE.task_id),
@@ -261,7 +286,12 @@ def _concurrent_claim_ids() -> tuple[list[list[str]], list[float]]:
         with SessionLocal() as session:
             barrier.wait()
             started_at = monotonic()
-            actions = dispatcher.claim_actions(session, limit=1, worker_id=worker_id)
+            actions = dispatcher.claim_actions(
+                session,
+                limit=1,
+                worker_id=worker_id,
+                allow_inline_ai_generation=True,
+            )
             return [action.id for action in actions], monotonic() - started_at
 
     with ThreadPoolExecutor(max_workers=2) as executor:

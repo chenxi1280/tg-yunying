@@ -1078,7 +1078,14 @@ def due_actions(session: Session, limit: int = 100, *, exclude_task_ids: set[str
     )
 
 
-def claim_actions(session: Session, limit: int = 100, *, exclude_task_ids: set[str] | None = None, worker_id: str | None = None) -> list[Action]:
+def claim_actions(
+    session: Session,
+    limit: int = 100,
+    *,
+    exclude_task_ids: set[str] | None = None,
+    worker_id: str | None = None,
+    allow_inline_ai_generation: bool = False,
+) -> list[Action]:
     """Claim actions in two short database stages."""
     settings = get_settings()
     owner = worker_id or _lease_owner()
@@ -1088,7 +1095,12 @@ def claim_actions(session: Session, limit: int = 100, *, exclude_task_ids: set[s
         session.commit()
     claim_limit = _claim_limit(settings, limit)
     candidates, fairness_decisions, bindings = _select_claim_candidates(
-        session, settings, claim_limit, now_value, exclude_task_ids,
+        session,
+        settings,
+        claim_limit,
+        now_value,
+        exclude_task_ids,
+        allow_inline_ai_generation=allow_inline_ai_generation,
     )
     _mark_claiming_candidates(session, candidates, owner, token, settings, now_value)
     batch = ActionClaimBatch(tuple(action.id for action in candidates), owner, token, bindings)
@@ -1106,8 +1118,14 @@ def _select_claim_candidates(
     claim_limit: int,
     now_value: datetime,
     exclude_task_ids: set[str] | None,
+    *,
+    allow_inline_ai_generation: bool = False,
 ) -> tuple[list[Action], dict[int, object], Mapping[str, DispatchClaimBinding]]:
-    base_filters = _claim_base_filters(now_value, exclude_task_ids)
+    base_filters = _claim_base_filters(
+        now_value,
+        exclude_task_ids,
+        allow_inline_ai_generation=allow_inline_ai_generation,
+    )
     shard_total, shard_index = current_account_shard()
     lock_dispatch_claim_selection(session, settings, claim_limit)
     fairness = _claim_fairness_decisions(session, _claim_shard_filters(base_filters, shard_total, shard_index), now_value)
@@ -1139,14 +1157,20 @@ def _select_claim_candidates(
     return candidates, fairness, bindings
 
 
-def _claim_base_filters(now_value: datetime, exclude_task_ids: set[str] | None) -> list:
+def _claim_base_filters(
+    now_value: datetime,
+    exclude_task_ids: set[str] | None,
+    *,
+    allow_inline_ai_generation: bool = False,
+) -> list:
     filters = [
         Action.status == "pending",
         Action.scheduled_at <= now_value,
         Task.status == "running",
         Task.deleted_at.is_(None),
-        _ai_send_content_is_ready(),
     ]
+    if not allow_inline_ai_generation:
+        filters.append(_ai_send_content_is_ready())
     if exclude_task_ids:
         filters.append(Action.task_id.not_in(exclude_task_ids))
     if _legacy_review_enabled():

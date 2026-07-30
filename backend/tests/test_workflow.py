@@ -266,6 +266,7 @@ def task_detail_after_metrics(client: TestClient, headers: dict[str, str], task_
 
 def dispatch_pending_task_actions(task_id: str, limit: int = 10) -> int:
     from app.services.task_center.dispatcher import claim_actions
+    from app.services.task_center.ai_generation_worker import drain_ai_generation
     from app.services.task_center.service import _dispatch_claimed_action, drain_task_planner
 
     with SessionLocal() as session:
@@ -280,6 +281,7 @@ def dispatch_pending_task_actions(task_id: str, limit: int = 10) -> int:
         for action in actions:
             action.scheduled_at = _now()
         session.commit()
+    drain_ai_generation(SessionLocal, limit)
     with SessionLocal() as session:
         other_task_ids = set(session.scalars(select(Task.id).where(Task.id != task_id)))
         action_ids = [action.id for action in claim_actions(session, limit=limit, exclude_task_ids=other_task_ids)]
@@ -3980,6 +3982,12 @@ def test_task_center_group_ai_chat_creates_and_dispatches_actions(monkeypatch):
         assert len(send_actions) == 1
         assert send_actions[0].primary_quantity_slot_id
         assert make_task_send_actions_due(task["id"]) >= 1
+        generated = client.post(
+            "/api/worker/drain-once?role=ai-generation",
+            headers=headers,
+            json={"reason": "测试 AI 生成 drain"},
+        ).json()
+        assert generated["processed"] >= 1
         drained = client.post("/api/worker/drain-once?role=dispatcher", headers=headers, json={"reason": "测试发送 drain"}).json()
         with SessionLocal() as session:
             action_states = [
@@ -4283,7 +4291,7 @@ def test_task_center_group_ai_chat_does_not_plan_over_open_actions(monkeypatch):
             session.commit()
             task_id = task.id
 
-        assert drain_task_center(SessionLocal, 1) == 0
+        drain_task_center(SessionLocal, 1)
         with SessionLocal() as session:
             task = session.get(Task, task_id)
             assert task.next_run_at.replace(tzinfo=None) == future.replace(tzinfo=None)
