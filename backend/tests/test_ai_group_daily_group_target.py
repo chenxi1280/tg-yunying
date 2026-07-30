@@ -423,7 +423,16 @@ def test_group_volume_candidates_scan_past_uncovered_admission_debt(
     session: Session,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    task, group = _seed(session, configured=3, account_count=3)
+    task, group = _seed(session, configured=5, account_count=3)
+    timestamp = datetime(2026, 7, 28, 12)
+    ensure_task_day_ledger(session, task, now=timestamp)
+    target = ensure_task_group_daily_target(
+        session,
+        task,
+        group,
+        timestamp.date(),
+        now=timestamp,
+    )
     accounts = [SimpleNamespace(id=account_id) for account_id in (1, 2, 3)]
     captured: dict[str, object] = {}
 
@@ -455,7 +464,10 @@ def test_group_volume_candidates_scan_past_uncovered_admission_debt(
     facts = SimpleNamespace(
         config=task.type_config,
         group=group,
-        coverage=SimpleNamespace(volume_need_now=2),
+        coverage=SimpleNamespace(
+            daily_group_target_id=target.id,
+            volume_need_now=2,
+        ),
     )
 
     selected = group_ai_chat._daily_group_extra_accounts(
