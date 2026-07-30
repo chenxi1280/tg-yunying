@@ -134,6 +134,16 @@ def _search_join_client_metadata(payload: dict[str, Any]) -> dict[str, str]:
     return {key: str(value) for key, value in metadata.items()}
 
 
+def _search_transport_unavailable(exc: Exception) -> dict[str, Any]:
+    return {
+        "success": False,
+        "error_code": "search_transport_unavailable",
+        "detail": _exception_detail(exc),
+        "search_transport_phase": "connect_or_authorize",
+        "remote_mutation_started": False,
+    }
+
+
 def _rank_deboost_client_metadata(payload: dict[str, Any]) -> dict[str, str]:
     metadata = payload.get("client_metadata") if isinstance(payload, dict) else None
     if not isinstance(metadata, dict):
@@ -1237,8 +1247,16 @@ class TelethonTelegramGateway(TelegramGateway):
         raw_session = decrypt_session(session_ciphertext)
         if not raw_session:
             return {"success": False, "error_code": FailureType.ACCOUNT_UNAVAILABLE.value, "detail": "账号没有可用 session"}
-        client = await self._get_or_create_client(credentials, raw_session, _search_join_client_metadata(payload))
-        if not await client.is_user_authorized():
+        try:
+            client = await self._get_or_create_client(
+                credentials,
+                raw_session,
+                _search_join_client_metadata(payload),
+            )
+            authorized = await client.is_user_authorized()
+        except Exception as exc:
+            return _search_transport_unavailable(exc)
+        if not authorized:
             return {"success": False, "error_code": FailureType.ACCOUNT_UNAVAILABLE.value, "detail": "session 已失效"}
         return await execute_search_join_with_client(
             client,
