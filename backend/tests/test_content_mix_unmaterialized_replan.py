@@ -78,10 +78,17 @@ def test_build_plan_continues_when_waiting_replan_creates_nothing(
         status="running",
     )
     blueprint = SimpleNamespace()
+    independent_blueprint = SimpleNamespace()
     frozen = SimpleNamespace()
     prepared = SimpleNamespace(slots=[])
+    prepared_blueprints = []
+
+    def prepare(*_args, include_replan_accounts=True):
+        prepared_blueprints.append(include_replan_accounts)
+        return blueprint if include_replan_accounts else independent_blueprint
+
     monkeypatch.setattr(
-        group_ai_chat, "_prepare_plan_blueprint", lambda *_args: blueprint,
+        group_ai_chat, "_prepare_plan_blueprint", prepare,
     )
     monkeypatch.setattr(
         group_ai_chat,
@@ -89,7 +96,11 @@ def test_build_plan_continues_when_waiting_replan_creates_nothing(
         lambda *_args: group_ai_chat.ContentMixReplanResult(True, 0),
     )
     monkeypatch.setattr(
-        group_ai_chat, "_freeze_content_mix_cycle", lambda *_args: frozen,
+        group_ai_chat,
+        "_freeze_content_mix_cycle",
+        lambda _session, _task, current: (
+            frozen if current is independent_blueprint else None
+        ),
     )
     monkeypatch.setattr(
         group_ai_chat, "_prepare_action_slots", lambda *_args: prepared,
@@ -105,6 +116,7 @@ def test_build_plan_continues_when_waiting_replan_creates_nothing(
     )
 
     assert group_ai_chat.build_plan(session, task) == 2
+    assert prepared_blueprints == [True, False]
 
 
 def test_replan_coverage_is_loaded_before_normal_keyset(

@@ -432,7 +432,11 @@ def _resolve_plan_group(
 
 
 def _load_plan_accounts(
-    session: Session, task: Task, facts: PlanFacts,
+    session: Session,
+    task: Task,
+    facts: PlanFacts,
+    *,
+    include_replan_accounts: bool = True,
 ) -> AccountPlanState | PlanAbort:
     account_limit = _plan_account_limit(
         task,
@@ -440,7 +444,19 @@ def _load_plan_accounts(
         planning_limit=session.info.get("daily_coverage_plan_limit"),
     )
     if _all_accounts_daily_coverage(facts.config):
-        return _load_daily_coverage_plan_accounts(session, task, facts, account_limit)
+        return _load_daily_coverage_plan_accounts(
+            session, task, facts, account_limit,
+            include_replan_accounts=include_replan_accounts,
+        )
+    return _load_regular_plan_accounts(session, task, facts, account_limit)
+
+
+def _load_regular_plan_accounts(
+    session: Session,
+    task: Task,
+    facts: PlanFacts,
+    account_limit: int,
+) -> AccountPlanState | PlanAbort:
     accounts = _select_accounts_for_plan(
         session,
         task,
@@ -480,19 +496,18 @@ def _load_daily_coverage_plan_accounts(
     task: Task,
     facts: PlanFacts,
     account_limit: int,
+    *,
+    include_replan_accounts: bool,
 ) -> AccountPlanState | PlanAbort:
-    selected, admission_waiting, seen_account_ids = (
-        _initial_replan_daily_accounts(
-            session, task, facts, account_limit=account_limit,
-        )
+    selected, admission_waiting, seen_account_ids = _initial_replan_daily_accounts(
+        session, task, facts,
+        account_limit=account_limit,
+        include_replan_accounts=include_replan_accounts,
     )
     page_limit = _daily_coverage_scan_page_limit()
     while len(selected) < account_limit:
         rows = ready_coverage_plan_batch(
-            session,
-            task,
-            now=_now(),
-            limit=page_limit,
+            session, task, now=_now(), limit=page_limit,
             exclude_account_ids=seen_account_ids,
         ).rows
         if not rows:
@@ -531,14 +546,17 @@ def _initial_replan_daily_accounts(
     facts: PlanFacts,
     *,
     account_limit: int,
+    include_replan_accounts: bool,
 ) -> tuple[list, list, set[int]]:
     rows = _replan_coverage_rows_for_plan(session, task, facts)
     if not rows:
         return [], [], set()
+    seen = {int(row.account_id) for row in rows}
+    if not include_replan_accounts:
+        return [], [], seen
     ready, waiting = _daily_accounts_for_coverage_rows(
         session, task, facts, rows,
     )
-    seen = {int(row.account_id) for row in rows}
     return ready[:account_limit], waiting, seen
 
 
@@ -1101,11 +1119,21 @@ def _mark_empty_generation_plan(
         mark_plan_result(task, facts.hard_progress, 0, {"quality_filter": deficit})
 
 
-def _prepare_plan_blueprint(session: Session, task: Task) -> PlanBlueprint | PlanAbort:
+def _prepare_plan_blueprint(
+    session: Session,
+    task: Task,
+    *,
+    include_replan_accounts: bool = True,
+) -> PlanBlueprint | PlanAbort:
     facts = _load_plan_facts(session, task)
     if isinstance(facts, PlanAbort):
         return facts
-    account_state = _load_plan_accounts(session, task, facts)
+    account_state = _load_plan_accounts(
+        session,
+        task,
+        facts,
+        include_replan_accounts=include_replan_accounts,
+    )
     if isinstance(account_state, PlanAbort):
         return account_state
     context = _load_context_plan(session, task, facts)
@@ -1833,6 +1861,14 @@ def build_plan(session: Session, task: Task) -> int:
     replan = _replan_content_mix_slots(session, task, blueprint)
     if replan.created > 0:
         return replan.created
+    if replan.found:
+        blueprint = _prepare_plan_blueprint(
+            session,
+            task,
+            include_replan_accounts=False,
+        )
+        if isinstance(blueprint, PlanAbort):
+            return blueprint.created
     try:
         frozen_mix = _freeze_content_mix_cycle(session, task, blueprint)
     except ValueError as exc:

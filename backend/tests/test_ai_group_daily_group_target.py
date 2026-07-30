@@ -538,6 +538,7 @@ def test_daily_planner_prefers_admitted_volume_but_keeps_admission_driver(
         task,
         facts,
         account_limit=1,
+        include_replan_accounts=True,
     )
 
     assert [account.id for account in state.accounts] == expected_ids
