@@ -963,3 +963,5 @@ group_ai_chat / channel_comment 正文
   Action；状态修复由明确的 Planner/Recovery 写路径负责，详情汇总不再批量
   更新 Coverage。
 > **DF-186A 极搜执行合同版本排除（2026-07-31）**：Planner 将当前 `jisou_flow_contract_version` 冻结进 `SearchJoinPayload`。12 小时账号—协议路径排除只读取同一执行合同版本产生的失败；旧合同失败保留审计但不阻断新合同首次尝试，新合同产生的真实失败继续按既有规则排除。
+
+> **DF-186B 纯搜索点击账本时间结算（2026-07-31）**：Gateway 返回完整 click evidence 后，Dispatcher 使用统一 `Asia/Shanghai` aware 比较判断 `confirmed_at` 是否落在冻结 ledger 的 `[period_start_at, deadline_at)`。数据库驱动返回 naive ledger 时间而 Action 为 aware 时间时不得抛异常或转成 `unknown_after_send`；区间外事实仍显式失败为 `click_fact_outside_ledger_period`。

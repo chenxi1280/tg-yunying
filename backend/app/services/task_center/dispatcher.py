@@ -124,7 +124,7 @@ from .payloads import (
 from .pacing import quiet_hours_active
 from .policies import validate_group_send_policy
 from .review import has_pending_review
-from .datetime_compat import is_before
+from .datetime_compat import is_after_or_equal, is_before
 from .search_join_linking import create_linked_dispatch_if_membership_observed
 from .search_join_protocol import record_search_join_protocol_trace
 from .search_join_membership import (
@@ -6255,8 +6255,8 @@ def _settle_pure_search_click_obligation(
     confirmed_at = action.executed_at or _now()
     if (
         ledger is None
-        or confirmed_at < ledger.period_start_at
-        or confirmed_at >= ledger.deadline_at
+        or is_before(confirmed_at, ledger.period_start_at)
+        or is_after_or_equal(confirmed_at, ledger.deadline_at)
     ):
         obligation.status = "open"
         action.status = "failed"
