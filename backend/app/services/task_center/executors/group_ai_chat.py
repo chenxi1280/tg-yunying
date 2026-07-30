@@ -1294,16 +1294,18 @@ def _align_quantity_slots(
             (
                 slot
                 for slot in remaining
-                if coverage
-                and slot.task_account_daily_coverage_id == coverage.id
+                if (
+                    slot.task_account_daily_coverage_id == coverage.id
+                    if coverage
+                    else slot.task_account_daily_coverage_id is None
+                )
             ),
             None,
         )
-        chosen = matched or (remaining[0] if remaining else None)
-        if chosen is None:
+        if matched is None:
             break
-        selected.append(chosen)
-        remaining.remove(chosen)
+        selected.append(matched)
+        remaining.remove(matched)
     return selected
 
 
@@ -1726,29 +1728,23 @@ def _replan_content_mix_slots(
     task: Task,
     blueprint: PlanBlueprint,
 ) -> ContentMixReplanResult:
-    rows = list(session.execute(
-        select(ContentMixCycleSlot, Action)
-        .join(ContentMixCycle, ContentMixCycle.id == ContentMixCycleSlot.cycle_id)
-        .join(Action, Action.id == ContentMixCycleSlot.current_action_id)
-        .where(
-            ContentMixCycle.task_id == task.id,
-            ContentMixCycleSlot.slot_state == "replan_required",
-        )
-        .order_by(ContentMixCycle.cycle_seq, ContentMixCycleSlot.slot_index)
-        .limit(MAX_DAILY_COVERAGE_PLAN_BATCH)
-    ))
+    ledger_id = _content_mix_replan_ledger_id(session, blueprint)
+    rows = _content_mix_replan_rows(session, task, ledger_id)
     if not rows:
         return ContentMixReplanResult(False)
     account_by_id = {item.id: item for item in blueprint.profile.selected}
     created = 0
-    for cycle_slot, previous in rows:
-        account = account_by_id.get(previous.account_id)
-        item_index = _replan_generation_item_index(
-            blueprint.generation.quality_items,
-            relation_kind=cycle_slot.relation_kind,
+    for cycle_slot, previous, coverage in rows:
+        resolved = _replan_slot_account_and_item(
+            blueprint,
+            account_by_id,
+            cycle_slot,
+            previous=previous,
+            coverage=coverage,
         )
-        if account is None or item_index is None:
+        if resolved is None:
             continue
+        account, item_index = resolved
         snapshot = _replan_slot_snapshot(
             blueprint,
             account,
@@ -1764,16 +1760,97 @@ def _replan_content_mix_slots(
     return ContentMixReplanResult(True, created)
 
 
+def _content_mix_replan_rows(
+    session: Session,
+    task: Task,
+    ledger_id: str,
+) -> list[tuple[ContentMixCycleSlot, Action | None, TaskAccountDailyCoverage | None]]:
+    if not ledger_id:
+        return []
+    return list(session.execute(
+        select(ContentMixCycleSlot, Action)
+        .join(ContentMixCycle, ContentMixCycle.id == ContentMixCycleSlot.cycle_id)
+        .join(
+            TaskGroupDailyMessageSlot,
+            TaskGroupDailyMessageSlot.id
+            == ContentMixCycleSlot.primary_quantity_slot_id,
+        )
+        .outerjoin(Action, Action.id == ContentMixCycleSlot.current_action_id)
+        .outerjoin(
+            TaskAccountDailyCoverage,
+            TaskAccountDailyCoverage.id
+            == TaskGroupDailyMessageSlot.task_account_daily_coverage_id,
+        )
+        .add_columns(TaskAccountDailyCoverage)
+        .where(
+            ContentMixCycle.task_id == task.id,
+            ContentMixCycle.task_day_ledger_id == ledger_id,
+            ContentMixCycleSlot.slot_state.in_(
+                {"unmaterialized", "replan_required"},
+            ),
+        )
+        .order_by(ContentMixCycle.cycle_seq, ContentMixCycleSlot.slot_index)
+        .limit(MAX_DAILY_COVERAGE_PLAN_BATCH)
+        .with_for_update(of=ContentMixCycleSlot, skip_locked=True)
+    ))
+
+
+def _content_mix_replan_ledger_id(
+    session: Session,
+    blueprint: PlanBlueprint,
+) -> str:
+    target_id = str(blueprint.facts.coverage.daily_group_target_id or "")
+    target = session.get(TaskGroupDailyTarget, target_id) if target_id else None
+    if target is not None and target.task_day_ledger_id:
+        return str(target.task_day_ledger_id)
+    rows = blueprint.profile.coverage_rows.values()
+    first = next(iter(rows), None)
+    return str(first.task_day_ledger_id or "") if first is not None else ""
+
+
+def _replan_slot_account_and_item(
+    blueprint: PlanBlueprint,
+    account_by_id: dict[int, Any],
+    cycle_slot: ContentMixCycleSlot,
+    *,
+    previous: Action | None,
+    coverage: TaskAccountDailyCoverage | None,
+) -> tuple[Any, int] | None:
+    account_id = int(
+        coverage.account_id if coverage
+        else previous.account_id if previous and previous.account_id
+        else 0
+    )
+    item_index = _replan_generation_item_index(
+        blueprint.generation.quality_items,
+        relation_kind=cycle_slot.relation_kind,
+        account_id=account_id,
+    )
+    if item_index is None:
+        return None
+    if not account_id:
+        item = blueprint.generation.quality_items[item_index]
+        account_id = _quality_slot_account_id(item)
+    account = account_by_id.get(account_id)
+    return (account, item_index) if account is not None else None
+
+
 def _replan_generation_item_index(
     items: list[dict],
     *,
     relation_kind: str,
+    account_id: int = 0,
 ) -> int | None:
+    fallback: int | None = None
     for index, item in enumerate(items):
         has_reply = bool(_reply_target_message_id(item))
-        if has_reply == (relation_kind == "reply"):
+        if has_reply != (relation_kind == "reply"):
+            continue
+        if fallback is None:
+            fallback = index
+        if account_id and _quality_slot_account_id(item) == account_id:
             return index
-    return None
+    return fallback
 
 
 def _replan_slot_snapshot(
@@ -1781,7 +1858,7 @@ def _replan_slot_snapshot(
     account: Any,
     item_index: int,
     cycle_slot: ContentMixCycleSlot,
-    previous: Action,
+    previous: Action | None,
 ) -> SlotSnapshot:
     planned_at = blueprint.generation.times[
         min(item_index, len(blueprint.generation.times) - 1)
@@ -1797,7 +1874,7 @@ def _replan_slot_snapshot(
     )
     payload = _replan_slot_payload(
         fresh.payload,
-        previous.payload,
+        previous.payload if previous is not None else {},
         cycle_slot,
     )
     return SlotSnapshot(account.id, planned_at, payload)
