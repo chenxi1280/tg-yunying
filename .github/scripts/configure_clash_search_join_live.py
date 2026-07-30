@@ -485,6 +485,20 @@ def bind_airport_nodes_to_environment_bindings(
             updated += 1
     return {"airport_node_scoped_binding_count": updated}
 
+def finalize_account_environment_bindings(
+    session,
+    accounts: list[TgAccount],
+    account_nodes: dict[int, ProxyAirportNode],
+    account_proxies: dict[int, AccountProxy],
+) -> dict[str, Any]:
+    scoped_summary = bind_airport_nodes_to_environment_bindings(
+        session,
+        account_nodes,
+        account_proxies,
+    )
+    environment_summary = bind_account_environments(session, accounts)
+    return {**scoped_summary, **environment_summary}
+
 def ensure_scoped_airport_binding(
     session,
     environment: AccountEnvironmentBinding,
@@ -620,8 +634,12 @@ def apply_database(nodes: list[ProxyNode]) -> dict[str, Any]:
             account_proxies[account.id] = proxy
             bind_account(session, account, proxy, airport_nodes[node.index])
         legacy_summary = backfill_legacy_primary_authorizations(session, accounts)
-        environment_summary = bind_account_environments(session, accounts)
-        airport_binding_summary = bind_airport_nodes_to_environment_bindings(session, account_nodes, account_proxies)
+        environment_summary = finalize_account_environment_bindings(
+            session,
+            accounts,
+            account_nodes,
+            account_proxies,
+        )
         task = create_zhengzhou_task(session, accounts) if create_smoke_task_enabled() else None
         session.commit()
         return summary_payload(
@@ -633,7 +651,6 @@ def apply_database(nodes: list[ProxyNode]) -> dict[str, Any]:
                 environment_summary={
                     **legacy_summary,
                     **environment_summary,
-                    **airport_binding_summary,
                 },
             ),
         )
