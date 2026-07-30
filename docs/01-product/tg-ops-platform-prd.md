@@ -643,13 +643,13 @@ Planner 顺序固定为：真实 remaining 与防重 planning deficit -> 账号 
 检测到 `verification_image_page` 时执行：
 
 1. **记录过程状态并下载图片**：以 `bot_peer + message_id + image_hash + ordered_callback_fingerprint` 生成不可变 `challenge_fingerprint_hash`，写 `jisou_image_verification_required`，但不终结当前 Action、不触发账号排除；`client.download_media(message, file=bytes)` 获取验证码图片字节。当前 Action 继续持有既有账号 in-flight/session ownership，在该 fingerprint 收口前不得让同一账号—协议会话被另一条搜索 Action 并发改写；这只是会话互斥，不消费新的 click 配额、任务目标或 Dispatcher/Gateway 份额。
-2. **视觉识别**：调用 `ai_gateway.solve_image_verification`，按当前健康且已审批的多模态供应商稳定顺序识别；当前生产已验证顺序固定为 `MiMo mimo-v2.5 → MiniMax-M3 → 其他健康已审批模型`，不得把健康可用的 MiMo v2.5 排在 MiniMax-M3 之后或误判为不可用。页面正文含「计算结果/数学题/算式」时，模型 prompt 使用“这是数学题，都是全数字，你来给出答案”；其他图片验证码使用“这是是一段数字+字符的字符串你来告诉我结果”。两类 prompt 只补对应的最终答案和紧凑 JSON 输出约束，不枚举运算符范围，也不把按钮候选值发送给模型。每个供应商对同一 immutable challenge 必须并行独立调用 2 次，只有两次 `answer` 完全一致才进入第 3 步；任一次结构非法、空答案或两次不一致都拒绝该供应商结果并继续尚未调用的健康已审批供应商。输出固定为紧凑 JSON `{"answer":"最终答案","confidence":0到1}`。有序候选矩阵只留在服务端执行第 3 步精确匹配，不得进入模型 prompt，也不得被写入 Provider 健康状态；供应商/传输暂不可用时保持 `jisou_image_verification_required` 并显示 `verification_ai_unavailable`，不写 failed、不触发 12 小时排除。
+2. **视觉识别**：调用 `ai_gateway.solve_image_verification`，只选择当前健康且已审批供应商稳定顺序中的第一个模型；当前生产已验证顺序固定为 `MiMo mimo-v2.5 → MiniMax-M3 → 其他健康已审批模型`，不得把健康可用的 MiMo v2.5 排在 MiniMax-M3 之后或误判为不可用。页面正文含「计算结果/数学题/算式」时，模型 prompt 使用“这是数学题，都是全数字，你来给出答案”；其他图片验证码使用“这是是一段数字+字符的字符串你来告诉我结果”。两类 prompt 只补对应的最终答案和紧凑 JSON 输出约束，不枚举运算符范围，也不把按钮候选值发送给模型。每个 immutable challenge 只向该模型发起一次识别请求；取得安全答案后立即进入第 3 步，不发起同模型第二次调用，也不等待或串行调用其余模型。输出固定为紧凑 JSON `{"answer":"最终答案","confidence":0到1}`。有序候选矩阵只留在服务端执行第 3 步精确匹配，不得进入模型 prompt，也不得被写入 Provider 健康状态；所选模型的 HTTP/超时/传输异常保持 `jisou_image_verification_required` 并显示 `verification_ai_unavailable`，不写 failed、不触发 12 小时排除；所选模型真实响应但无法形成安全答案时写 `failed`。健康检查只负责选出本次唯一模型，不能用未调用模型的推测结果覆盖本次调用事实。
 3. **双重校验（硬约束）**：
    - 置信度 ≥ 0.70（必要条件）；
    - **answer 必须在按钮矩阵 callback_data 数字或 ASCII 字母数字答案按钮的 `text` 集合中**（充分条件，最后一道安全门）。
-   - 任一不满足只拒绝该供应商候选并继续尚未调用的健康已审批供应商，禁止点击，也不得提前写 `failed` 或触发 12 小时排除。线上历史样本 #7 曾出现高置信错答（answer=7 conf=0.95 但按钮矩阵无 7），该编号不是重试轮次或上限；按钮矩阵匹配不可省略。
+   - 任一不满足即拒绝本次唯一模型的候选，禁止点击并写 `failed`；不再调用或等待其他模型。线上历史样本 #7 曾出现高置信错答（answer=7 conf=0.95 但按钮矩阵无 7），该编号不是重试轮次或上限；按钮矩阵匹配不可省略。
 4. **点击匹配按钮并确认远端通过**：在按钮矩阵找 `button_type=callback_data` 且 `text=answer` 的按钮，对同一 fingerprint 只允许一次 CAS 提交。只有该提交关联的后续机器人回执明确表示验证通过，或返回含审批 `👥` selector 的 `hot_list_page`、`search_category_page|group_result_page`，才能写 `jisou_image_verification_solved` 并继续同一 source；仅仅不再显示原图、消息消失、超时或进入缺 selector 的 `hot_list_page|unknown` 都不能证明通过。批准提交后禁止重放关键词；含审批 `👥` selector 时直接进入群分类。
-5. **失败处置**：只有当前健康已审批供应商均已返回、却都无法给出通过双重校验的安全答案，或提交后远端以同一验证码 fingerprint 明确拒绝，才写 `jisou_image_verification_failed` 并把账号—协议路径排除 12 小时（复用 `jisou_selector_accounts` 机制）。供应商/传输暂不可用、读取失败或结果未知时，验证码状态仍为 `jisou_image_verification_required`，另写 `verification_ai_unavailable|verification_result_unknown` 原因；不得新增第四种验证码状态、冒充 failed 或概率成功。
+5. **失败处置**：本次唯一模型真实返回却无法给出通过双重校验的安全答案，或提交后远端以同一验证码 fingerprint 明确拒绝，才写 `jisou_image_verification_failed` 并把账号—协议路径排除 12 小时（复用 `jisou_selector_accounts` 机制）。所选模型的供应商/传输暂不可用、读取失败或结果未知时，验证码状态仍为 `jisou_image_verification_required`，另写 `verification_ai_unavailable|verification_result_unknown` 原因；不得新增第四种验证码状态、冒充 failed 或概率成功。
 6. **提交后分流**：仍是同一 fingerprint 且远端明确拒绝时写 `failed`；若远端给出新的消息/图片 fingerprint，则旧 fingerprint 只记已提交，新 fingerprint 重新进入 `required`，不得把“换题”记成旧题 `solved`；批准提交后返回含审批 `👥` selector 的 `hot_list_page` 时直接点击 selector，缺 selector 的 `hot_list_page|unknown` 才按会话偏离处理且不写 `solved`。同一 search Action 不设置业务递归次数上限，但每个 fingerprint 仍只允许一次 Telegram 提交，禁止对同一按钮重复点击，也禁止关键词重放循环。
 
 线上历史样本曾出现 4/8 按钮匹配成功，但该比例只作识别质量观测，禁止进入任务容量、账号容量、预计确认量或完成计算。当前无需验证码，或本次已真实写入 `jisou_image_verification_solved`，才允许继续；`required|failed` 以及 required 下的 unavailable/unknown 原因都不能被概率折算成可确认 click。
@@ -670,7 +670,7 @@ Planner 顺序固定为：真实 remaining 与防重 planning deficit -> 账号 
 | `jisou_session_state_deviated` | unknown 相位 | 是 | 账号级会话状态偏离，重置不可行 |
 | `jisou_image_verification_required` | 检测到 verification_image_page | 否 | 当前 Action 正在识别的过程状态 |
 | `jisou_image_verification_solved` | 同一 fingerprint 的单次批准答案提交获得明确远端通过回执，或进入已审批搜索分类/结果页 | 否 | 当前 source 可继续；不是 click 成功；仅离开原页面不算 |
-| `jisou_image_verification_failed` | 全部当前健康已审批供应商均无安全答案，或同一 fingerprint 的单次提交被远端明确拒绝 | 是 | 单个候选校验失败、供应商/传输暂不可用或新 fingerprint 均不算最终失败 |
+| `jisou_image_verification_failed` | 所选唯一模型真实响应但无安全答案，或同一 fingerprint 的单次提交被远端明确拒绝 | 是 | 供应商/传输暂不可用或新 fingerprint 均不算最终失败 |
 | `jisou_group_selector_missing` | search_category_page 缺已审批 selector | 否 | 单独评估是否协议样本过期，不自动排除 |
 
 `jisou_selector_accounts` 排除逻辑（`backend/app/services/task_center/jisou_selector_accounts.py`）对 `hot_list_page` 直接写 `jisou_hot_list_page` 失败，并从失败事实起写账号—协议路径 12 小时 eligibility 排除；该事实按当前单用户 scope 在全部搜索任务间共享，避免同一账号立即被另一任务复用同一极搜协议路径。明确 `jisou_image_verification_failed` 使用相同 12 小时有效期。`required|solved|group_selector_missing` 不排除。hot-list 不 reset、不点击未知按钮，其他账号—协议路径继续完成同一 click 欠额。纯搜索点击 Action 一旦进入 Gateway 并取得明确失败回执，该 Action、Attempt 和 assignment 即按原结果终结；通用失败自动重试不得把同一 Action 改回 `pending`、覆盖 `jisou_hot_list_page` 或复用原 assignment。缺口只把原 obligation 回流 `open`，下一 Window 重新求解未排除路径并创建全新的 assignment/Action。
@@ -857,9 +857,9 @@ historical_design_status=complete，`contract_status=historical_do_not_implement
 
 关键发现：
 - **双重校验有效拦截高置信错答**：3 次高置信但 answer 不在按钮矩阵（165r7 conf=0.85 answer=40、221r1 conf=0.75 answer=26、221r5 conf=0.7 answer=7），全部被矩阵匹配拦截，验证 PRD §2.19.2 第 3 步「answer 必须在按钮矩阵」是必要安全门。若单靠 confidence ≥ 0.70 阈值，这 3 次会误点击错误按钮。
-- **历史空返回观测**：2 次返回空（165r4、221r8），占 12.5%。该样本不证明固定重试次数，也不能预测重试后的成功率；当前按健康已审批供应商序列处理，供应商/传输暂不可用保持 `required`。
+- **历史空返回观测**：2 次返回空（165r4、221r8），占 12.5%。该样本不证明固定重试次数，也不能预测重试后的成功率；当前每个 challenge 只调用首个健康已审批模型一次，供应商/传输暂不可用保持 `required`。
 - **历史按钮匹配率约 44%**：7/16 候选答案通过按钮矩阵校验，与之前账号 165 单测的 4/8 (50%) 接近。该比例不是验证码通过率，更不能折算账号产能或预测确认量；只有同 fingerprint 的批准提交取得明确远端通过回执后才允许继续。
-- **不存在递归上限验证**：所有轮次都是独立搜索，不是同一次 search action 内的递归。该样本不能支持实现固定递归次数；当前合同明确不设置业务固定 AI 轮数或递归次数。
+- **不存在递归上限验证**：所有轮次都是独立搜索，不是同一次 search action 内的递归。当前合同明确每个 immutable challenge 只调用首个健康已审批模型一次，新的 fingerprint 才能开启新的识别。
 
 **测试 3：minimax provider 状态确认（§2.21.4-3）**
 
@@ -870,8 +870,8 @@ historical_design_status=complete，`contract_status=historical_do_not_implement
 | 5 | MiniMax MiniMax-M3 | MiniMax-M3 | True | 健康 |
 
 - **minimax provider 可用**：id=4/5 两个 provider 健康，PRD §2.19.2 调用 `ai_gateway.solve_image_verification` 可行。
-- **历史降级观测**：测试 2 中 2 次 minimax 返回空（`AiEmptyFinalContentError`），只证明当时代码直接报错；旧“重试 1–2 次后 failed”结论已失效。当前合同是不设置业务固定 AI 轮数，当前供应商候选失败继续其他健康已审批供应商，供应商/传输暂不可用则保持 required。
-- **provider 全部不可用场景**：历史未实测。当前验收预期固定为 `required + verification_ai_unavailable`、12 小时排除增量为 0；只有全部当前健康已审批供应商确实返回无安全答案，或同 fingerprint 的单次提交被远端明确拒绝，才是最终 `failed`。
+- **历史降级观测**：测试 2 中 2 次 minimax 返回空（`AiEmptyFinalContentError`），只证明当时代码直接报错；旧“重试 1–2 次后 failed”结论已失效。当前合同是只调用首个健康已审批模型一次，不等待其他模型；供应商/传输暂不可用则保持 required。
+- **所选 provider 不可用场景**：历史未实测。当前验收预期固定为 `required + verification_ai_unavailable`、12 小时排除增量为 0；所选模型真实响应但无安全答案，或同 fingerprint 的单次提交被远端明确拒绝，才是最终 `failed`。
 
 **测试 4：§2.20 线上状态复查（RC-4/3/6）+ §2.19.4 protocol_traces**
 
@@ -888,7 +888,7 @@ PRD §2.19 + §2.20 方案**整体可行**，线上测试已验证核心设计�
 
 1. **§2.19.1 五相位分类可行**：`verification_image_page` 判定条件（`has_photo=True` + 10 个 callback_data 数字按钮）100% 命中所有验证码页。`hot_list_page` 和 `verification_image_page` 是当前线上主要相位（`search_category_page` / `group_result_page` 因极搜强制验证码未出现，但代码路径已存在）。
 2. **§2.19.2 验证码识别双重校验可行且必要**：按钮矩阵匹配拦截了 3 次高置信错答（18.8%），证明单靠 confidence 阈值不足。成功率约 44%，需 §2.20.3 账号产能补齐。
-3. **§2.19.2 minimax 重试设计必要**：12.5% 返回空，重试 1-2 次可降低失败率。
+3. **§2.19.2 单模型快速返回设计**：每个 challenge 只调用首个健康模型一次，不因等待第二次或其他模型拉长搜索点击链路。
 4. **§2.20 三个根因设计全部必要且可行**：RC-4 仍饿死（search_join claimed=0）、RC-3 仍 UAS、RC-6 仍 10.4% 覆盖率，PRD 设计直接对应线上问题。
 5. **§2.19.4 protocol_traces 表空是 §2.20 连锁反应**，不需单独修复。
 
