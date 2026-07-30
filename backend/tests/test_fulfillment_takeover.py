@@ -134,6 +134,7 @@ def test_running_legacy_search_is_taken_over_as_pure_click_idempotently(
     assert task.type == "search_click"
     assert task.type_config["search_execution_mode"] == "click_only"
     assert "daily_target_count" not in task.type_config
+    assert task.account_config["cooldown_per_account_minutes"] == 0
     assert task.pacing_config["max_actions_per_day"] == UNIFIED_TASK_GATE_LIMIT
     assert task.next_run_at == now_value
     assert child.status == "skipped"
@@ -311,6 +312,35 @@ def test_task_gate_limits_are_normalized_without_starting_paused_tasks(
     assert view.status == "paused"
     assert comment.status == "stopped"
     assert session.scalar(select(func.count(TaskDayLedger.id))) == 0
+
+
+def test_search_takeover_clears_legacy_task_local_cooldown_idempotently(
+    session: Session,
+) -> None:
+    task = Task(
+        id="search-with-local-cooldown",
+        tenant_id=1,
+        name="纯搜索点击",
+        type="search_click",
+        status="paused",
+        account_config={
+            "selection_mode": "group",
+            "account_group_id": 3,
+            "cooldown_per_account_minutes": 5,
+        },
+        stats={"fulfillment_contract_version": FULFILLMENT_CONTRACT_VERSION},
+        type_config={"daily_click_target_count": 1000},
+    )
+    session.add(task)
+    session.flush()
+
+    first = takeover_task(session, task)
+    session.flush()
+    second = takeover_task(session, task)
+
+    assert first.changed is True
+    assert second.changed is False
+    assert task.account_config["cooldown_per_account_minutes"] == 0
 
 
 def test_takeover_wakes_running_task_once_for_soft_pacing_contract(
