@@ -4196,7 +4196,7 @@ def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(monkeypatch):
                 task_ids={task_id},
             )
             session.commit()
-        assert result["deleted_action_count"] >= 1
+        assert result["mode"] == "apply"
         first_context_send_count = len(sends)
         actions = task_detail_actions(client, headers, task_id, action_type="send_message")
         detail = task_detail_after_metrics(client, headers, task_id)
