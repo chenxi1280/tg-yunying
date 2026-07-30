@@ -507,3 +507,12 @@
 - evidence: 新增债务/普通双分支测试；AI 群日目标、覆盖、数据流和生成组合 `82 passed`。
 - decision: `development_complete=true`；进入第四次 Release Gate。
 - unresolved: CI 与郑州师范生产远端增长。
+
+## 2026-07-31 日覆盖回补内容合同收口 Development Complete
+
+- message_id: `2026-07-31-ai-coverage-reply-contract-dev-005`
+- root_cause: 第四次 Release Checks 证明 Planner 已生成 direct slots，但冻结 `ContentMixContract` 时仍使用任务级 `reply_min_per_round`，因此 direct-only 回补 Cycle 被 `content_mix_policy_invalid` 阻断。
+- output: `GenerationPlanState` 显式携带本轮 coverage reply shortfall；仅该回补 Cycle 的合同把 `reply_min_required_count` 冻结为 0，任务配置和后续普通 Cycle 不变。
+- evidence: 定向 no-PostgreSQL 回归 `79 passed / 9 deselected`，compileall 与 diff-check 通过；两条原 PostgreSQL 失败用例改为验证真实 direct Action 与回补统计。
+- decision: `development_complete=true`；进入第五次 Release Gate。
+- unresolved: CI 真 PostgreSQL、部署和三个任务远端持续增长。

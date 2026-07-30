@@ -407,3 +407,10 @@
 - evidence: 日覆盖债务在 reply_min 不足时得到 direct slots，普通轮次继续等待；相关 AI 群日目标、覆盖、Planner 和生成组合 `82 passed`。
 - decision: 定向 `qa_pass=true`；没有降低普通引用要求，也未绕过准入、质量或发送门禁。
 - unresolved: 第四次 CI/发布和郑州师范远端证据。
+
+## 2026-07-31 日覆盖回补内容合同 re-QA
+
+- message_id: `2026-07-31-ai-coverage-reply-contract-qa-005`
+- evidence: 第四次 run `30566460536` 在部署前由真 PostgreSQL 闸门拦截，线上未部署失败版本；修复后 direct 回补单元、日覆盖、内容合同、角色 drain、Listener 锁序和 retention 组合为 `79 passed / 9 deselected`，compileall 与 diff-check 通过。
+- decision: 本地定向 `qa_pass=true`；失败版本没有进入生产，真 PostgreSQL 仍由第五次 Release Checks 判定。
+- unresolved: 第五次 CI 全绿、生产 image、deadlock/FK 零增量和三个任务 E4。

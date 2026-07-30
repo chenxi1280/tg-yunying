@@ -278,6 +278,7 @@ class GenerationPlanState:
     quality_items: list[dict]
     times: list[datetime]
     requested_reply_count: int
+    coverage_reply_shortfall: bool
     burst_plan: dict
     chat_mode: str
     context_message_ids: list[int]
@@ -869,7 +870,7 @@ def _load_generation_plan(
     turn: TurnPlanState,
     profile: ProfilePlanState,
 ) -> GenerationPlanState | PlanAbort:
-    reply_targets = _reply_targets_for_plan(
+    reply_targets, coverage_reply_shortfall = _reply_targets_for_plan(
         session,
         task,
         facts.group,
@@ -905,7 +906,14 @@ def _load_generation_plan(
     message_ids = [int(row.id) for row in context.usable_rows[-context.history_depth:]]
     source = _generation_source(context.usable_rows, context.idle_continuation)
     return GenerationPlanState(
-        quality_items, times, len(reply_targets), burst_plan, chat_mode, message_ids, source,
+        quality_items,
+        times,
+        len(reply_targets),
+        coverage_reply_shortfall,
+        burst_plan,
+        chat_mode,
+        message_ids,
+        source,
     )
 
 
@@ -1362,9 +1370,13 @@ def _content_mix_spec(
         config_revision=blueprint.facts.task_config_revision,
         allocation_seed=blueprint.profile.cycle_id,
         slots=slots,
-        reply_min_required_count=min(
-            len(slots),
-            int(blueprint.facts.config.get("reply_min_per_round") or 0),
+        reply_min_required_count=(
+            0
+            if blueprint.generation.coverage_reply_shortfall
+            else min(
+                len(slots),
+                int(blueprint.facts.config.get("reply_min_per_round") or 0),
+            )
         ),
         material_policy_rule_set_id=str(blueprint.facts.rule_version.rule_set_id),
         material_policy_rule_set_version=int(blueprint.facts.rule_version.version),
@@ -1988,21 +2000,21 @@ def _reply_targets_for_plan(
     hard_progress: dict[str, object],
     *,
     daily_coverage_debt: bool = False,
-) -> list[dict] | None:
+) -> tuple[list[dict] | None, bool]:
     if hard_progress:
-        return []
+        return [], False
     reply_min = min(turn_count, int(config.get("reply_min_per_round") or 0))
     if reply_min <= 0:
-        return []
+        return [], False
     reply_target_pool = _group_reply_target_pool(session, task, group, usable_context_rows)
     if reply_min > len(reply_target_pool):
         stats_inc(task, "reply_target_shortfall_count")
         if daily_coverage_debt:
             stats_inc(task, "coverage_reply_shortfall_cycle_count")
-            return []
+            return [], True
         task.last_error = "可引用消息不足，等待监听到可回复消息后继续执行"
-        return None
-    return reply_target_pool[:reply_min]
+        return None, False
+    return reply_target_pool[:reply_min], False
 
 
 def _daily_coverage_generation_is_deferred(

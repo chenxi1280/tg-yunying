@@ -207,7 +207,7 @@ maximum_confirmable_count = frozen_denominator_count - terminal_permission_block
 
 1. Dispatcher 生成前读取发送账号滚动 10 天内已接受文本的指纹、语义簇、模板、事实观点、所用面具版本，以及本任务当天已被质量拒绝的 variation 摘要。其他账号历史只作多样性软提示。
 2. 出现 duplicate_message 时，当前 Action 以终态质量失败收口，写入原始原因、10 天窗口、账号、面具版本、内容指纹摘要、语义簇、content_variation_key 和同账号重复参照；释放自身 coverage reservation。
-3. 配置 `reply_min_per_round` 但当前真人引用池不足时，普通聊天轮次继续等待，不得静默降低产品配置；如果存在已到期的全账号日覆盖债务，则本轮必须转成 direct coverage 回补槽并继续创建 Action，记录 `coverage_reply_shortfall_cycle_count`，不得让引用不足阻断覆盖债务。
+3. 配置 `reply_min_per_round` 但当前真人引用池不足时，普通聊天轮次继续等待，不得静默降低产品配置；如果存在已到期的全账号日覆盖债务，则本轮必须转成 direct coverage 回补槽并继续创建 Action，记录 `coverage_reply_shortfall_cycle_count`。该回补 Cycle 的不可变 `ContentMixContract.reply_min_required_count=0`，但任务配置本身保持不变，后续有合格引用对象的新 Cycle 仍按原 `reply_min_per_round` 执行，不得让引用不足阻断覆盖债务或永久取消引用口径。
 3. 同一 Action 不得原地改写文本或再次调用 AI。下一次只能由 Planner 创建新的 Action，且新 Action 的 content_variation_key 必须不同，并使用更晚的上下文版本或不同的已配置话题、老师、行为类型组合。
 4. 质量拒绝后的覆盖行回到 ready，blocker_code 保留 duplicate_message，recovery_path=replan_with_new_variation。若没有新的合法 variation 或可用上下文，则保持 at_risk 并记录原因，不制造模板补量。
 5. 已绑定当日 coverage 且面具可用的非引用 Action 使用固化 active 面具、当前安全上下文和新 variation 生成自然短句，并通过该账号滚动 10 天硬去重。不同账号历史不产生硬阻断。
