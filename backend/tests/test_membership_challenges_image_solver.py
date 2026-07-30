@@ -73,6 +73,41 @@ def test_search_join_image_solver_prefers_minimax_m3_over_m25(monkeypatch) -> No
 
 
 @pytest.mark.no_postgres
+def test_search_join_image_solver_prefers_healthy_mimo_v25_over_minimax_m3(
+    monkeypatch,
+) -> None:
+    mimo = SimpleNamespace(id=1, provider_name="MiMo", model_name="mimo-v2.5")
+    m3 = SimpleNamespace(id=5, provider_name="MiniMax", model_name="MiniMax-M3")
+    calls: list[int] = []
+    monkeypatch.setattr(
+        membership_challenges,
+        "_image_verification_providers",
+        lambda _session: [m3, mimo],
+    )
+    monkeypatch.setattr(
+        membership_challenges,
+        "ai_provider_credentials",
+        lambda provider: provider,
+    )
+
+    def solve(provider, *_args, **_kwargs):
+        calls.append(provider.id)
+        return SimpleNamespace(answer="19", confidence=0.95)
+
+    monkeypatch.setattr(
+        membership_challenges.ai_gateway,
+        "solve_image_verification",
+        solve,
+    )
+    solver = membership_challenges.build_search_join_image_verification_solver(
+        object(),
+    )
+
+    assert solver(b"image", "image/png", ["19"]) == ("19", 0.95)
+    assert calls == [1]
+
+
+@pytest.mark.no_postgres
 def test_search_join_image_solver_exposes_all_provider_transport_failures(
     monkeypatch,
 ) -> None:
@@ -106,3 +141,42 @@ def test_search_join_image_solver_exposes_all_provider_transport_failures(
         match="MiMo",
     ):
         solver(b"image", "image/png", ["9", "10"])
+
+
+@pytest.mark.no_postgres
+def test_search_join_image_solver_exposes_each_unsafe_provider_outcome(
+    monkeypatch,
+) -> None:
+    providers = [
+        SimpleNamespace(id=1, provider_name="MiMo", model_name="mimo-v2.5"),
+        SimpleNamespace(id=5, provider_name="MiniMax", model_name="MiniMax-M3"),
+    ]
+    monkeypatch.setattr(
+        membership_challenges,
+        "_image_verification_providers",
+        lambda _session: providers,
+    )
+    monkeypatch.setattr(
+        membership_challenges,
+        "ai_provider_credentials",
+        lambda provider: provider,
+    )
+    monkeypatch.setattr(
+        membership_challenges.ai_gateway,
+        "solve_image_verification",
+        lambda provider, *_args, **_kwargs: SimpleNamespace(
+            answer="19" if provider.id == 1 else "18",
+            confidence=0.95,
+        ),
+    )
+
+    solver = membership_challenges.build_search_join_image_verification_solver(
+        object(),
+    )
+
+    with pytest.raises(
+        search_join.ImageVerificationNoSafeAnswerError,
+    ) as raised:
+        solver(b"image", "image/png", ["17"])
+    assert "MiMo(mimo-v2.5)" in str(raised.value)
+    assert "MiniMax(MiniMax-M3)" in str(raised.value)

@@ -440,7 +440,36 @@ def test_search_join_dispatch_blocks_incomplete_environment_proxy_config(monkeyp
 
 
 @pytest.mark.no_postgres
-def test_search_join_dispatch_records_proxy_failover_after_gateway_proxy_failure(monkeypatch, session: Session) -> None:
+@pytest.mark.parametrize(
+    ("failure_result", "expected_reason", "expected_error"),
+    [
+        (
+            {
+                "success": False,
+                "error_code": "proxy_node_unreachable",
+                "error_message": "connect_timeout",
+            },
+            "proxy_node_unreachable",
+            "connect_timeout",
+        ),
+        (
+            {
+                "success": False,
+                "error_code": "search_transport_unavailable",
+                "detail": "TimeoutError",
+            },
+            "search_transport_unavailable",
+            "TimeoutError",
+        ),
+    ],
+)
+def test_search_join_dispatch_records_proxy_failover_after_gateway_proxy_failure(
+    monkeypatch,
+    session: Session,
+    failure_result: dict,
+    expected_reason: str,
+    expected_error: str,
+) -> None:
     task, action = _persist_task_and_action(session)
     action.payload = {
         **action.payload,
@@ -494,11 +523,7 @@ def test_search_join_dispatch_records_proxy_failover_after_gateway_proxy_failure
     session.get(AccountProxyBinding, 301).proxy_airport_node_id = old_node.id
 
     def execute_search_join(*args, **kwargs):
-        return {
-            "success": False,
-            "error_code": "proxy_node_unreachable",
-            "error_message": "connect_timeout",
-        }
+        return failure_result
 
     monkeypatch.setattr(dispatcher.gateway, "execute_search_join", execute_search_join, raising=False)
 
@@ -519,8 +544,8 @@ def test_search_join_dispatch_records_proxy_failover_after_gateway_proxy_failure
     assert pending.payload["runtime_environment"]["proxy_binding_id"] == str(new_binding.id)
     assert pending.payload["runtime_environment"]["proxy_id"] == str(new_binding.proxy_id)
     assert new_binding.binding_generation == 2
-    assert event.reason == "proxy_node_unreachable"
-    assert event.observed_error == "connect_timeout"
+    assert event.reason == expected_reason
+    assert event.observed_error == expected_error
     assert warmup.proxy_binding_id == new_binding.id
     assert warmup.stage == "pending_warmup"
 

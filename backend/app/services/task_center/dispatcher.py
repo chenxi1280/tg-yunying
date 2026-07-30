@@ -212,6 +212,7 @@ _SEARCH_JOIN_PROXY_FAILURE_CODES = {
     "proxy_connection_failed",
     "proxy_egress_guard_failed",
     "proxy_node_unreachable",
+    "search_transport_unavailable",
 }
 _GROUP_SEND_LINKED_CHANNEL_REQUIRED_MARKERS = (
     "未关注",
@@ -6324,7 +6325,12 @@ def _record_search_join_proxy_failover(
     if proxy_binding_id <= 0:
         return
     reason = str(result.get("error_code") or result.get("failure_type") or "proxy_node_unreachable")
-    observed_error = str(result.get("error_message") or result.get("failure_detail") or "")
+    observed_error = str(
+        result.get("error_message")
+        or result.get("failure_detail")
+        or result.get("detail")
+        or ""
+    )
     try:
         binding = failover_proxy_airport_node_binding(
             session,
