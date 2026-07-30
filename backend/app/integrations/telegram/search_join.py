@@ -80,9 +80,36 @@ class ImageVerificationRequest:
     challenge_text: str
 
 
+@dataclass(frozen=True)
+class ImageVerificationVote:
+    source: str
+    status: str
+    answer: str = ""
+    confidence: float = 0.0
+    in_candidates: bool = False
+    detail: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "source": self.source,
+            "status": self.status,
+            "answer": self.answer,
+            "confidence": round(self.confidence, 4),
+            "in_candidates": self.in_candidates,
+            "detail": self.detail,
+        }
+
+
+@dataclass(frozen=True)
+class ImageVerificationDecision:
+    answer: str
+    confidence: float
+    votes: tuple[ImageVerificationVote, ...]
+
+
 ImageVerificationSolver = Callable[
     [ImageVerificationRequest],
-    "tuple[str, float] | None",
+    "ImageVerificationDecision | None",
 ]
 
 
@@ -107,6 +134,12 @@ class ImageVerificationProviderUnavailableError(RuntimeError):
 
 class ImageVerificationNoSafeAnswerError(RuntimeError):
     pass
+
+
+class ImageVerificationConsensusUnavailableError(RuntimeError):
+    def __init__(self, detail: str, votes: tuple[ImageVerificationVote, ...]):
+        super().__init__(detail)
+        self.votes = votes
 
 
 async def execute_search_join_with_client(
@@ -245,7 +278,7 @@ async def _execute_search_result_pages(
     total_results = 0
     page_no = 0
     jisou = is_jisou_bot(bot)
-    page, selector_error, group_selector, selector_buttons = await _select_jisou_group_results_page(
+    page, selector_error, group_selector, selector_buttons, verification_attempts = await _select_jisou_group_results_page(
         client,
         page,
         bot,
@@ -268,8 +301,10 @@ async def _execute_search_result_pages(
                 image_verification_solver,
                 protocol_profile=protocol_profile,
             )
+            if handled.audit is not None:
+                verification_attempts.append(handled.audit)
             if handled.error is not None:
-                return _with_search_protocol_trace(
+                traced_error = _with_search_protocol_trace(
                     handled.error,
                     buttons,
                     group_selector,
@@ -277,11 +312,19 @@ async def _execute_search_result_pages(
                     classification.approved_button_positions,
                     enabled=jisou,
                 )
+                return _with_image_verification_attempts(
+                    traced_error, verification_attempts
+                )
             page = handled.page
             buttons = _parse_buttons(page)
             classification = _jisou_page_classification(jisou, protocol_profile, page, buttons)
         if jisou and classification.page_phase != "group_result_page":
-            return _jisou_result_page_error(classification, buttons, group_selector, selector_buttons)
+            return _with_image_verification_attempts(
+                _jisou_result_page_error(
+                    classification, buttons, group_selector, selector_buttons
+                ),
+                verification_attempts,
+            )
         if not jisou and _human_verification_required(page):
             return _protocol_phase_error(
                 "bot_human_verification_required",
@@ -327,24 +370,33 @@ async def _execute_search_result_pages(
                 enabled=jisou,
             )
             return _with_jisou_result_phase(
-                traced,
+                _with_image_verification_attempts(traced, verification_attempts),
                 jisou,
             )
         text_match = _find_target_in_text(page, target)
         if text_match:
             if payload.get("search_execution_mode") == "click_only":
-                return _failed(
-                    "target_click_control_missing",
-                    "目标仅以文本出现，没有可批准的纯点击控件",
+                return _with_image_verification_attempts(
+                    _failed(
+                        "target_click_control_missing",
+                        "目标仅以文本出现，没有可批准的纯点击控件",
+                    ),
+                    verification_attempts,
                 )
             result = await _execute_text_target_join(client, payload, target, text_match, decoys, page_no, total_results)
             traced = _with_search_protocol_trace(result, buttons, group_selector, selector_buttons, approved_positions, enabled=jisou)
-            return _with_jisou_result_phase(traced, jisou)
+            return _with_jisou_result_phase(
+                _with_image_verification_attempts(traced, verification_attempts),
+                jisou,
+            )
         target_button = _find_target_button(buttons, target, approved_positions=approved_positions)
         if target_button:
             result = await _execute_target_join(client, page, payload, target, target_button, decoys, page_no, total_results)
             traced = _with_search_protocol_trace(result, buttons, group_selector, selector_buttons, approved_positions, enabled=jisou)
-            return _with_jisou_result_phase(traced, jisou)
+            return _with_jisou_result_phase(
+                _with_image_verification_attempts(traced, verification_attempts),
+                jisou,
+            )
         next_button = _find_next_button(buttons, approved_positions=approved_positions)
         if next_button is None:
             result = _target_not_found(
@@ -357,7 +409,10 @@ async def _execute_search_result_pages(
                 approved_positions,
                 jisou,
             )
-            return _with_jisou_result_phase(result, jisou)
+            return _with_jisou_result_phase(
+                _with_image_verification_attempts(result, verification_attempts),
+                jisou,
+            )
         page = await _click_and_get_edited_page(client, bot, page, next_button)
 
 
@@ -391,9 +446,9 @@ async def _select_jisou_group_results_page(
     *,
     protocol_profile: object,
     image_verification_solver: ImageVerificationSolver | None = None,
-) -> tuple[Any, dict[str, Any] | None, SearchJoinButton | None, list[SearchJoinButton]]:
+) -> tuple[Any, dict[str, Any] | None, SearchJoinButton | None, list[SearchJoinButton], list[dict[str, Any]]]:
     if not is_jisou_bot(bot_username):
-        return page, None, None, []
+        return page, None, None, [], []
     context = _JisouNavigationContext(
         client=client,
         bot_username=bot_username,
@@ -414,9 +469,16 @@ class _JisouNavigationContext:
 async def _navigate_jisou_to_group_results(
     context: _JisouNavigationContext,
     page: Any,
-) -> tuple[Any, dict[str, Any] | None, SearchJoinButton | None, list[SearchJoinButton]]:
+) -> tuple[
+    Any,
+    dict[str, Any] | None,
+    SearchJoinButton | None,
+    list[SearchJoinButton],
+    list[dict[str, Any]],
+]:
     group_selector: SearchJoinButton | None = None
     selector_buttons: list[SearchJoinButton] = []
+    verification_attempts: list[dict[str, Any]] = []
     while True:
         buttons, classification = _classify_jisou_navigation_page(
             page, context.protocol_profile
@@ -428,16 +490,32 @@ async def _navigate_jisou_to_group_results(
             handled = await _handle_navigation_verification(
                 context, page, buttons, classification
             )
+            if handled.audit is not None:
+                verification_attempts.append(handled.audit)
             next_challenge = _new_verification_challenge_page(handled)
             if next_challenge is not None:
                 page = next_challenge
                 continue
             if handled.error is not None:
-                return page, handled.error, group_selector, selector_buttons
+                return (
+                    page,
+                    _with_image_verification_attempts(
+                        handled.error, verification_attempts
+                    ),
+                    group_selector,
+                    selector_buttons,
+                    verification_attempts,
+                )
             page = handled.page
             continue
         if phase == "group_result_page":
-            return page, None, group_selector, selector_buttons
+            return (
+                page,
+                None,
+                group_selector,
+                selector_buttons,
+                verification_attempts,
+            )
         group_selector = _navigation_group_selector(
             classification,
             buttons,
@@ -453,9 +531,15 @@ async def _navigate_jisou_to_group_results(
             continue
         error = _jisou_navigation_phase_error(classification, buttons)
         if error is not None:
-            return page, error, group_selector, selector_buttons
+            return page, error, group_selector, selector_buttons, verification_attempts
         if group_selector is None:
-            return page, _selector_missing(buttons, classification), None, buttons
+            return (
+                page,
+                _selector_missing(buttons, classification),
+                None,
+                buttons,
+                verification_attempts,
+            )
 
 
 async def _handle_navigation_verification(
@@ -619,6 +703,7 @@ def _has_photo_media(message: Any) -> bool:
 class _ImageVerificationHandleResult:
     page: Any
     error: dict[str, Any] | None
+    audit: dict[str, Any] | None = None
 
 
 async def _handle_jisou_image_verification(
@@ -664,6 +749,15 @@ async def _handle_jisou_image_verification(
                 challenge_text=_message_text(page),
             ),
         )
+    except ImageVerificationConsensusUnavailableError as exc:
+        return _image_verification_required_result(
+            classification,
+            buttons,
+            fingerprint,
+            "verification_consensus_unavailable",
+            detail=str(exc),
+            votes=exc.votes,
+        )
     except ImageVerificationProviderUnavailableError as exc:
         return _image_verification_required_result(
             classification,
@@ -680,18 +774,16 @@ async def _handle_jisou_image_verification(
             fingerprint=fingerprint,
         )
     if solved is None:
-        return _image_verification_failed_result(
+        return _image_verification_required_result(
             classification,
             buttons,
-            "no healthy provider returned a safe answer",
-            fingerprint=fingerprint,
+            fingerprint,
+            "verification_consensus_unavailable",
+            detail="recognition returned no consensus decision",
         )
-    answer, confidence = solved
-    if confidence < IMAGE_VERIFICATION_MIN_CONFIDENCE:
-        return _image_verification_failed_result(
-            classification, buttons, f"confidence {confidence:.2f} below threshold {IMAGE_VERIFICATION_MIN_CONFIDENCE}",
-            answer=answer, confidence=confidence, fingerprint=fingerprint,
-        )
+    answer = solved.answer
+    confidence = solved.confidence
+    audit = _image_verification_audit(solved, fingerprint)
     target_button = next(
         (
             button for button in answer_buttons
@@ -740,6 +832,7 @@ async def _handle_jisou_image_verification(
                 answer=answer,
                 confidence=confidence,
                 fingerprint=fingerprint,
+                votes=solved.votes,
             )
         return _image_verification_required_result(
             clicked_classification,
@@ -747,8 +840,13 @@ async def _handle_jisou_image_verification(
             next_fingerprint,
             "new_challenge_fingerprint",
             page=clicked_page,
+            votes=solved.votes,
         )
-    return _ImageVerificationHandleResult(page=clicked_page, error=None)
+    return _ImageVerificationHandleResult(
+        page=clicked_page,
+        error=None,
+        audit=audit,
+    )
 
 
 def _image_verification_fingerprint(
@@ -802,6 +900,7 @@ def _image_verification_failed_result(
     answer: str = "",
     confidence: float = 0.0,
     fingerprint: str = "",
+    votes: tuple[ImageVerificationVote, ...] = (),
 ) -> _ImageVerificationHandleResult:
     """PRD §2.19.2 第 5 步：识别失败、置信度不足、answer 不在矩阵、重试仍空都写 jisou_image_verification_failed。"""
     error = {
@@ -812,6 +911,7 @@ def _image_verification_failed_result(
         "image_verification_confidence": confidence,
         "image_verification_status": "failed",
         "image_verification_detail": detail,
+        "image_verification_votes": [vote.as_dict() for vote in votes],
         "challenge_fingerprint_hash": fingerprint,
         "search_protocol_trace": {
             "page_phase": VERIFICATION_IMAGE_PAGE,
@@ -829,6 +929,7 @@ def _image_verification_required_result(
     *,
     detail: str = "",
     page: Any = None,
+    votes: tuple[ImageVerificationVote, ...] = (),
 ) -> _ImageVerificationHandleResult:
     error = {
         **_failed("jisou_image_verification_required", "极搜图片验证码等待安全识别结果"),
@@ -837,13 +938,50 @@ def _image_verification_required_result(
         "image_verification_status": "required",
         "image_verification_reason": reason,
         "image_verification_detail": detail,
+        "image_verification_votes": [vote.as_dict() for vote in votes],
         "challenge_fingerprint_hash": fingerprint,
         "search_protocol_trace": {
             "page_phase": VERIFICATION_IMAGE_PAGE,
             "page": _page_layout(buttons, classification.approved_button_positions),
         },
     }
-    return _ImageVerificationHandleResult(page=page, error=error)
+    audit = None
+    if votes:
+        audit = {
+            "status": reason,
+            "challenge_fingerprint_hash": fingerprint,
+            "votes": [vote.as_dict() for vote in votes],
+        }
+    return _ImageVerificationHandleResult(
+        page=page,
+        error=error,
+        audit=audit,
+    )
+
+
+def _image_verification_audit(
+    decision: ImageVerificationDecision,
+    fingerprint: str,
+) -> dict[str, Any]:
+    return {
+        "status": "consensus_submitted",
+        "answer": decision.answer,
+        "confidence": round(decision.confidence, 4),
+        "challenge_fingerprint_hash": fingerprint,
+        "votes": [vote.as_dict() for vote in decision.votes],
+    }
+
+
+def _with_image_verification_attempts(
+    result: dict[str, Any],
+    attempts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if not attempts:
+        return result
+    return {
+        **result,
+        "image_verification_attempts": attempts,
+    }
 
 
 def _jisou_result_page_error(
@@ -1534,10 +1672,13 @@ def _text_hash(value: str) -> str:
 
 
 __all__ = [
+    "ImageVerificationConsensusUnavailableError",
+    "ImageVerificationDecision",
     "ImageVerificationNoSafeAnswerError",
     "ImageVerificationProviderUnavailableError",
     "ImageVerificationRequest",
     "ImageVerificationSolver",
+    "ImageVerificationVote",
     "SearchJoinButton",
     "execute_search_join_with_client",
 ]

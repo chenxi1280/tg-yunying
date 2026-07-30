@@ -7,6 +7,8 @@ from types import SimpleNamespace
 import pytest
 
 from app.integrations.telegram.search_join import (
+    ImageVerificationDecision,
+    ImageVerificationVote,
     execute_search_join_with_client,
 )
 from app.integrations.telegram.search_join_entity_results import (
@@ -322,7 +324,21 @@ def test_verification_success_selects_group_without_keyword_replay() -> None:
             client,
             _payload(),
             keyword_text="郑州",
-            image_verification_solver=lambda _request: ("0", 0.95),
+            image_verification_solver=lambda _request: ImageVerificationDecision(
+                "0",
+                0.95,
+                (
+                    ImageVerificationVote(
+                        "model", "accepted", "0", 0.95, True
+                    ),
+                    ImageVerificationVote(
+                        "tesseract", "accepted", "0", 0.80, True
+                    ),
+                    ImageVerificationVote(
+                        "rapidocr", "unsafe", "", 0.0, False
+                    ),
+                ),
+            ),
         )
     )
 

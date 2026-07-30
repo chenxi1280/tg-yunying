@@ -8,8 +8,11 @@ from dataclasses import dataclass
 import pytest
 
 from app.integrations.telegram.search_join import (
+    ImageVerificationConsensusUnavailableError,
+    ImageVerificationDecision,
     ImageVerificationNoSafeAnswerError,
     ImageVerificationProviderUnavailableError,
+    ImageVerificationVote,
     ensure_search_join_membership_with_client,
     execute_search_join_with_client,
     probe_search_join_membership_with_client,
@@ -867,10 +870,22 @@ def _verification_image_page(
 
 
 def _solver_returning(answer: str, confidence: float):
-    """构造一个总是返回 (answer, confidence) 的 solver callable。"""
-    def _solver(_request) -> tuple[str, float] | None:
-        return answer, confidence
+    """构造一个总是返回三路共识决定的 solver callable。"""
+    def _solver(_request) -> ImageVerificationDecision:
+        return _verification_decision(answer, confidence)
     return _solver
+
+
+def _verification_decision(
+    answer: str,
+    confidence: float,
+) -> ImageVerificationDecision:
+    votes = (
+        ImageVerificationVote("model", "accepted", answer, 0.95, True),
+        ImageVerificationVote("tesseract", "accepted", answer, 0.80, True),
+        ImageVerificationVote("rapidocr", "unsafe", "", 0.0, False),
+    )
+    return ImageVerificationDecision(answer, confidence, votes)
 
 
 @pytest.mark.no_postgres
@@ -928,7 +943,7 @@ def test_jisou_string_verification_passes_text_and_alphanumeric_candidates() -> 
 
     def solver(request):
         requests.append(request)
-        return "A7B9", 0.95
+        return _verification_decision("A7B9", 0.95)
 
     result = asyncio.run(
         execute_search_join_with_client(
@@ -1039,6 +1054,17 @@ def test_jisou_continues_with_new_challenge_fingerprint_in_same_action() -> None
     assert result["success"] is True
     assert result["join_status"] == "target_found"
     assert client.sent == [("jisou", "郑州")]
+    assert [
+        attempt["status"]
+        for attempt in result["image_verification_attempts"]
+    ] == [
+        "new_challenge_fingerprint",
+        "consensus_submitted",
+    ]
+    assert all(
+        len(attempt["votes"]) == 3
+        for attempt in result["image_verification_attempts"]
+    )
 
 
 @pytest.mark.no_postgres
@@ -1109,9 +1135,11 @@ def test_jisou_image_solver_does_not_block_event_loop() -> None:
     solver_started = threading.Event()
     release_solver = threading.Event()
 
-    def solver(_request) -> tuple[str, float] | None:
+    def solver(_request) -> ImageVerificationDecision | None:
         solver_started.set()
-        return ("9", 0.95) if release_solver.wait(timeout=0.2) else None
+        if not release_solver.wait(timeout=0.2):
+            return None
+        return _verification_decision("9", 0.95)
 
     async def execute_with_event_loop_release() -> dict:
         execution = asyncio.create_task(
@@ -1157,12 +1185,27 @@ def test_jisou_image_verification_fails_when_answer_not_in_button_matrix() -> No
 
 
 @pytest.mark.no_postgres
-def test_jisou_image_verification_fails_when_confidence_below_threshold() -> None:
-    """PRD §2.19.2 第 3 步：置信度 <0.70 写 jisou_image_verification_failed。"""
+def test_jisou_image_verification_stays_required_without_two_safe_votes() -> None:
     digit_answers = ["8", "9", "10", "11", "12", "13", "14", "15"]
     verification_page = _verification_image_page(digit_answers=digit_answers)
     client = FakeSearchJoinClient([FakeMessage(100, []), verification_page])
-    solver = _solver_returning("9", 0.50)  # 置信度不足
+    votes = (
+        ImageVerificationVote(
+            "model", "low_confidence", "9", 0.50, True
+        ),
+        ImageVerificationVote(
+            "tesseract", "unsafe", "10", 0.80, True
+        ),
+        ImageVerificationVote(
+            "rapidocr", "unsafe", "11", 0.80, True
+        ),
+    )
+
+    def solver(_request):
+        raise ImageVerificationConsensusUnavailableError(
+            "three sources did not reach two votes",
+            votes,
+        )
 
     result = asyncio.run(
         execute_search_join_with_client(
@@ -1174,20 +1217,23 @@ def test_jisou_image_verification_fails_when_confidence_below_threshold() -> Non
     )
 
     assert result["success"] is False
-    assert result["error_code"] == "jisou_image_verification_failed"
+    assert result["error_code"] == "jisou_image_verification_required"
+    assert result["image_verification_reason"] == (
+        "verification_consensus_unavailable"
+    )
+    assert len(result["image_verification_votes"]) == 3
     assert verification_page.clicked == []
 
 
 @pytest.mark.no_postgres
-def test_jisou_image_verification_fails_when_all_providers_return_no_safe_answer() -> None:
-    """所有健康 provider 都没有安全答案时，写 jisou_image_verification_failed。"""
+def test_jisou_image_verification_stays_required_when_solver_returns_none() -> None:
     digit_answers = ["8", "9", "10", "11", "12", "13", "14", "15"]
     verification_page = _verification_image_page(digit_answers=digit_answers)
     client = FakeSearchJoinClient([FakeMessage(100, []), verification_page])
 
     call_count = 0
 
-    def _solver(_request) -> tuple[str, float] | None:
+    def _solver(_request) -> ImageVerificationDecision | None:
         nonlocal call_count
         call_count += 1
         return None  # 始终返回空
@@ -1202,7 +1248,10 @@ def test_jisou_image_verification_fails_when_all_providers_return_no_safe_answer
     )
 
     assert result["success"] is False
-    assert result["error_code"] == "jisou_image_verification_failed"
+    assert result["error_code"] == "jisou_image_verification_required"
+    assert result["image_verification_reason"] == (
+        "verification_consensus_unavailable"
+    )
     assert call_count == 1
     assert verification_page.clicked == []
 
