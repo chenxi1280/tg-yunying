@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.integrations.telegram import OperationResult
 from app.integrations.telegram.search_join import (
+    ImageVerificationNoSafeAnswerError,
     ImageVerificationProviderUnavailableError,
 )
 from app.models import (
@@ -26,6 +27,7 @@ from .ai_config import ai_provider_credentials
 
 MIN_IMAGE_VERIFICATION_CONFIDENCE = 0.70
 IMAGE_VERIFICATION_PROVIDER_SOURCES = ("mimo", "minimax")
+MIMO_V25_MODEL_MARKERS = ("mimo-v2.5", "mino-v2.5")
 MINIMAX_M3_MODEL_MARKERS = ("minimax-m3", "minimax m3")
 CN_NUMBER_CHARS = "零〇一二两三四五六七八九十"
 ARITHMETIC_PATTERN = re.compile(rf"(?P<left>\d{{1,3}}|[{CN_NUMBER_CHARS}]{{1,4}})\s*(?P<op>[+\-＋－]|加|减)\s*(?P<right>\d{{1,3}}|[{CN_NUMBER_CHARS}]{{1,4}})")
@@ -514,41 +516,71 @@ def build_search_join_image_verification_solver(
     def solver(image_bytes: bytes, mime_type: str, candidate_answers: list[str]) -> tuple[str, float] | None:
         if not image_bytes:
             return None
-        allowed_answers = frozenset(answer.strip() for answer in candidate_answers)
-        provider_failures: list[str] = []
-        provider_responded = False
-        for provider_credentials in credentials:
-            try:
-                result = _solve_search_join_image(
-                    provider_credentials,
-                    image_bytes,
-                    mime_type,
-                )
-            except Exception as exc:  # noqa: BLE001 - classify each approved provider outcome.
-                provider_responded |= _provider_returned_unsafe_answer(exc)
-                provider_failures.append(
-                    _image_provider_failure_detail(provider_credentials, exc),
-                )
-                continue
-            provider_responded = True
-            if result is None:
-                continue
-            answer, confidence = result
-            if confidence >= MIN_IMAGE_VERIFICATION_CONFIDENCE and answer in allowed_answers:
-                return result
-        if not provider_responded:
-            raise ImageVerificationProviderUnavailableError(
-                "; ".join(provider_failures)
-                or "all approved image providers unavailable",
-            )
-        return None
+        return _solve_search_join_image_candidates(
+            credentials,
+            image_bytes=image_bytes,
+            mime_type=mime_type,
+            allowed_answers=frozenset(
+                answer.strip() for answer in candidate_answers
+            ),
+        )
 
     return solver
 
 
+def _solve_search_join_image_candidates(
+    credentials: list[Any],
+    *,
+    image_bytes: bytes,
+    mime_type: str,
+    allowed_answers: frozenset[str],
+) -> tuple[str, float]:
+    failures: list[str] = []
+    outcomes: list[str] = []
+    responded = False
+    for provider in credentials:
+        try:
+            result = _solve_search_join_image(provider, image_bytes, mime_type)
+        except Exception as exc:  # noqa: BLE001 - classify approved provider outcome.
+            if _provider_returned_unsafe_answer(exc):
+                responded = True
+                outcomes.append(
+                    _image_provider_unsafe_response_detail(provider, exc)
+                )
+            else:
+                failures.append(_image_provider_failure_detail(provider, exc))
+            continue
+        responded = True
+        if result is None:
+            outcomes.append(_image_provider_unsafe_result_detail(
+                provider, answer="", confidence=0.0, allowed=False))
+            continue
+        answer, confidence = result
+        if (
+            confidence >= MIN_IMAGE_VERIFICATION_CONFIDENCE
+            and answer in allowed_answers
+        ):
+            return result
+        outcomes.append(_image_provider_unsafe_result_detail(
+            provider,
+            answer=answer,
+            confidence=confidence,
+            allowed=answer in allowed_answers,
+        ))
+    if not responded:
+        raise ImageVerificationProviderUnavailableError(
+            "; ".join(failures) or "all approved image providers unavailable")
+    raise ImageVerificationNoSafeAnswerError("; ".join(outcomes + failures))
+
+
 def _image_verification_provider_priority(provider: AiProvider) -> tuple[int, int]:
     model = str(getattr(provider, "model_name", "") or "").strip().lower()
-    priority = 0 if any(marker in model for marker in MINIMAX_M3_MODEL_MARKERS) else 1
+    if any(marker in model for marker in MIMO_V25_MODEL_MARKERS):
+        priority = 0
+    elif any(marker in model for marker in MINIMAX_M3_MODEL_MARKERS):
+        priority = 1
+    else:
+        priority = 2
     return priority, int(provider.id)
 
 
@@ -587,3 +619,31 @@ def _image_provider_failure_detail(
     model = str(getattr(credentials, "model_name", "") or "unknown")
     detail = (str(exc) or exc.__class__.__name__)[:240]
     return f"{provider}({model}): {detail}"
+
+
+def _image_provider_unsafe_response_detail(
+    credentials: Any,
+    exc: Exception,
+) -> str:
+    label = _image_provider_label(credentials)
+    return f"{label}: unsafe_response={type(exc).__name__}"
+
+
+def _image_provider_unsafe_result_detail(
+    credentials: Any,
+    *,
+    answer: str,
+    confidence: float,
+    allowed: bool,
+) -> str:
+    label = _image_provider_label(credentials)
+    return (
+        f"{label}: answer_present={str(bool(answer)).lower()}, "
+        f"confidence={confidence:.2f}, in_candidates={str(allowed).lower()}"
+    )
+
+
+def _image_provider_label(credentials: Any) -> str:
+    provider = str(getattr(credentials, "provider_name", "") or "AI")
+    model = str(getattr(credentials, "model_name", "") or "unknown")
+    return f"{provider}({model})"

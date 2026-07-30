@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import pytest
 
 from app.integrations.telegram.search_join import (
+    ImageVerificationNoSafeAnswerError,
     ImageVerificationProviderUnavailableError,
     ensure_search_join_membership_with_client,
     execute_search_join_with_client,
@@ -1013,5 +1014,31 @@ def test_jisou_image_verification_stays_required_on_provider_transport_error() -
 
     assert result["error_code"] == "jisou_image_verification_required"
     assert result["image_verification_reason"] == "verification_ai_unavailable"
+    assert "MiMo(mimo-v2.5)" in result["image_verification_detail"]
+    assert verification_page.clicked == []
+
+
+@pytest.mark.no_postgres
+def test_jisou_image_verification_keeps_unsafe_provider_diagnostics() -> None:
+    verification_page = _verification_image_page(
+        digit_answers=["8", "9", "10", "11", "12", "13", "14", "15"],
+    )
+    client = FakeSearchJoinClient([FakeMessage(100, []), verification_page])
+
+    def unsafe_solver(*_args):
+        raise ImageVerificationNoSafeAnswerError(
+            "MiMo(mimo-v2.5): confidence=0.95, in_candidates=false",
+        )
+
+    result = asyncio.run(
+        execute_search_join_with_client(
+            client,
+            _payload(bot_username="jisou"),
+            keyword_text="郑州",
+            image_verification_solver=unsafe_solver,
+        )
+    )
+
+    assert result["error_code"] == "jisou_image_verification_failed"
     assert "MiMo(mimo-v2.5)" in result["image_verification_detail"]
     assert verification_page.clicked == []

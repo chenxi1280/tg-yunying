@@ -83,6 +83,10 @@ class ImageVerificationProviderUnavailableError(RuntimeError):
     pass
 
 
+class ImageVerificationNoSafeAnswerError(RuntimeError):
+    pass
+
+
 async def execute_search_join_with_client(
     client: Any,
     payload: dict[str, Any],
@@ -487,6 +491,13 @@ async def _handle_jisou_image_verification(
             "verification_ai_unavailable",
             detail=str(exc),
         )
+    except ImageVerificationNoSafeAnswerError as exc:
+        return _image_verification_failed_result(
+            classification,
+            buttons,
+            str(exc),
+            fingerprint=fingerprint,
+        )
     if solved is None:
         return _image_verification_failed_result(
             classification,
@@ -588,6 +599,7 @@ def _image_verification_failed_result(
         "image_verification_answer": answer,
         "image_verification_confidence": confidence,
         "image_verification_status": "failed",
+        "image_verification_detail": detail,
         "challenge_fingerprint_hash": fingerprint,
         "search_protocol_trace": {
             "page_phase": VERIFICATION_IMAGE_PAGE,
@@ -1164,6 +1176,7 @@ def _text_hash(value: str) -> str:
 
 
 __all__ = [
+    "ImageVerificationNoSafeAnswerError",
     "ImageVerificationProviderUnavailableError",
     "ImageVerificationSolver",
     "SearchJoinButton",
