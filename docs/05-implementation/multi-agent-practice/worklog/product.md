@@ -531,3 +531,11 @@
 - evidence: 生产约束与索引对照确认 7 个缺口；迁移和相关回归 `128 passed`。
 - decision: `product_accepted=true`（仅 E2）；Release Gate ready。
 - unresolved: 发布及真实业务 E4。
+
+## 2026-07-31 郑州 AI 活群恢复 Product Acceptance
+
+- message_id: `2026-07-31-zhengzhou-ai-fulfillment-product-accepted-001`
+- acceptance: 共享调度只对已物化 Action 分配通用份额；日覆盖引用不足只让有到期债务的 Cycle 转 direct，冻结内容合同同步为 direct-only；normal ready 正文在 Gateway 前遇到更新真人上下文必须过期旧记忆并在原 Action/slot 上重生成。reply、准入、账号面具、内容质量、Telegram Gateway 和远端确认门禁均保留。
+- evidence: 定向 no-PostgreSQL `126 passed / 83 deselected`；真 PostgreSQL 连续上下文回归通过并证明旧记忆过期、新正文绑定第二上下文；前序锁序、retention 外键和 reply shortfall 定向 QA 均已通过。
+- decision: `product_accepted=true`（E2）；允许进入第八次 Release Gate，生产恢复仍只由发布后真实 Telegram 与数据库稳定性证据判定。
+- unresolved: CI、生产镜像、三个任务持续远端增长和完整北京时间自然日分母。

@@ -516,3 +516,12 @@
 - evidence: 定向 no-PostgreSQL 回归 `79 passed / 9 deselected`，compileall 与 diff-check 通过；两条原 PostgreSQL 失败用例改为验证真实 direct Action 与回补统计。
 - decision: `development_complete=true`；进入第五次 Release Gate。
 - unresolved: CI 真 PostgreSQL、部署和三个任务远端持续增长。
+
+## 2026-07-31 Gateway 前 normal 上下文失效收口 Development Complete
+
+- message_id: `2026-07-31-ai-normal-context-superseded-dev-006`
+- root_cause: normal Action 可在新真人消息入库前完成 Phase C 并持久化 ready 正文，随后才进入 Gateway；发送执行器对 ready 正文直接返回，导致临发送时已存在的新上下文不触发重新生成。
+- output: Gateway 前仅对 `ai_generation_status=ready` 且非 reply 的生成正文比较最新真人上下文与冻结快照；新上下文更晚时显式过期旧消息记忆，保持同一 Action/slot/coverage，清空旧正文和缓存并创建新 generation attempt。reply 仍保持冻结引用；非 AI 历史正文、硬小时兼容正文和倒序补录旧消息不进入该路径。
+- evidence: 真 PostgreSQL 持续监听工作流证明第一、第二上下文对应两个远端发送，第二 Action 的旧记忆为 `expired_before_send/generation_context_superseded`，最终正文包含第二上下文；生成、Dispatcher、覆盖与上下文回归 `126 passed / 83 deselected`。
+- decision: `development_complete=true`；进入第八次 Release Gate。
+- unresolved: GitHub Actions、部署与三个生产任务持续远端增长。

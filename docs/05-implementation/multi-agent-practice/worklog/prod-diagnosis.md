@@ -306,3 +306,11 @@
 - root: `_reply_targets_for_plan` 在 `reply_min_per_round` 不足时，即使 `daily_coverage_debt=true` 也返回 PlanAbort；代码只累计 `coverage_reply_shortfall_cycle_count`，没有按既有产品合同转换为 direct coverage 回补轮次。
 - decision: 保留无债务普通轮次的 reply_min 门禁；仅对已到期日覆盖债务返回 direct slots，继续完整准入、质量和 Gateway 链路。
 - unresolved: 第四次 Release Gate 和郑州师范新 send Action/remote_message_id。
+
+## 2026-07-31 normal ready 正文使用旧上下文
+
+- message_id: `2026-07-31-ai-normal-context-superseded-prod-006`
+- evidence: 真 PostgreSQL 工作流复现第二个 normal Action 在第一条真人上下文后已生成 ready 正文、第二条真人消息随后入库、Action 再进入 Gateway；原实现仍发送第一条上下文正文。GroupContextMessage 已完整采集，故障不在 Listener。
+- root: `ensure_send_message_content` 对非空 ready 正文提前返回，绕过 `_refresh_normal_context`；Phase B 的“生成时最新”不足以保证排队后的“Gateway 前最新”。
+- decision: 保持 reply 冻结；normal ready Action 在 Gateway 前只对时间顺序更晚的真人上下文失效旧记忆并原槽重生成。倒序补录旧消息、非 AI 兼容正文不触发。
+- unresolved: 第八次 Release Gate 和生产新镜像行为证据。

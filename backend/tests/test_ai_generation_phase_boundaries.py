@@ -6,11 +6,11 @@ from threading import Barrier
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import Action, AiGenerationContractAudit, TgAccount
+from app.models import Action, AiGenerationContractAudit, AiGroupMessageMemory, GroupContextMessage, Task, TgAccount
 from app.services._common import _now
 from app.services.task_center import ai_generation_dispatch, ai_generation_pipeline, dispatcher
 from app.services.task_center.ai_generator import GeneratedContent
@@ -487,6 +487,64 @@ def test_daily_coverage_replan_reserves_new_direct_check_in_memory() -> None:
 
     assert replanned.message_text == "签到"
     assert replanned.ai_message_memory_id != first_memory_id
+
+
+def test_ready_normal_generation_expires_when_new_context_arrives() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    with Session(engine) as session:
+        actions, _coverages = seed_reserved_normal_batch(session, now_value)
+        old_context = session.scalar(
+            select(GroupContextMessage).where(GroupContextMessage.group_id == 7)
+        )
+        memory = AiGroupMessageMemory(
+            id="memory-superseded-context",
+            tenant_id=1,
+            group_id=7,
+            task_id=actions[0].task_id,
+            action_id=actions[0].id,
+            account_id=actions[0].account_id,
+            raw_text="旧上下文正文",
+            normalized_text="旧上下文正文",
+            text_fingerprint="memory-superseded-context",
+            status="reserved",
+            planned_at=now_value,
+        )
+        new_context = GroupContextMessage(
+            tenant_id=1,
+            group_id=7,
+            listener_account_id=11,
+            sender_name="真人用户",
+            content="更新真人上下文",
+            remote_message_id="9002",
+            sent_at=now_value + timedelta(seconds=1),
+        )
+        session.add_all([memory, new_context])
+        payload = {
+            **(actions[0].payload or {}),
+            "message_text": "旧上下文正文",
+            "ai_generation_status": "ready",
+            "ai_message_memory_id": memory.id,
+            "context_snapshot_message_id": old_context.id,
+            "context_message_ids": [old_context.id],
+        }
+        actions[0].payload = payload
+        session.commit()
+
+        refreshed = ai_generation_dispatch._invalidate_superseded_normal_generation(
+            session,
+            session.get(Task, actions[0].task_id),
+            actions[0],
+            SendMessagePayload.model_validate(payload),
+        )
+
+        assert actions[0].id == "action-reply-generation"
+        assert refreshed.ai_generation_status == "pending"
+        assert refreshed.message_text == ""
+        assert refreshed.ai_message_memory_id == ""
+        assert memory.status == "expired_before_send"
+        assert memory.result["error_code"] == "generation_context_superseded"
 
 
 def test_content_policy_rejection_terminates_only_its_generated_slot(monkeypatch) -> None:
