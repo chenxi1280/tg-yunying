@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.models import (
     Action,
+    ExecutionAttempt,
     GroupBotAdmission,
     GroupBotAdmissionPolicy,
     GroupBotRequiredChannelFollow,
@@ -78,6 +79,8 @@ EXPLICIT_RECIPIENT_PREFIX_RE = re.compile(
 CONTROL_PROMPT_UNVERIFIED_CODE = "group_bot_control_prompt_unverified"
 REARMABLE_FOLLOW_STATES = {"awaiting_group_bot_rule", "observation_open"}
 OPEN_CONFIRMATION_ACTION_STATUSES = frozenset({"pending", "claiming", "executing"})
+PRE_GATEWAY_TERMINAL_ACTION_STATUSES = frozenset({"failed", "skipped"})
+POST_FOLLOW_PROBE_ACTION_KEY = "post_follow_probe_action_id"
 GROUP_BOT_CONFIRMATION_SUPERSEDED_CODE = "group_bot_confirmation_superseded"
 
 
@@ -867,23 +870,24 @@ def _matching_confirmation_actions(
 ) -> list[Any]:
     from app.models import Action
 
+    admission = session.get(GroupBotAdmission, admission_id)
+    if admission is None:
+        return []
     with session.no_autoflush:
         actions = list(
             session.scalars(
                 select(Action)
                 .where(
+                    Action.tenant_id == admission.tenant_id,
                     Action.task_id == task_id,
                     Action.action_type == "group_bot_confirmation_button",
+                    Action.payload["admission_id"].as_integer() == admission_id,
+                    Action.payload["admission_version"].as_integer() == admission_version,
                 )
                 .order_by(Action.created_at.asc(), Action.id.asc())
             )
         )
-    return [
-        action
-        for action in actions
-        if int((action.payload or {}).get("admission_id", 0) or 0) == admission_id
-        and int((action.payload or {}).get("admission_version", 0) or 0) == admission_version
-    ]
+    return actions
 
 
 def _skip_superseded_confirmation_action(action: Any, now: datetime) -> None:
@@ -1012,6 +1016,7 @@ def evaluate_send_gate(
     group_id: int,
     account_id: int,
     enforce: bool = True,
+    action_id: str = "",
 ) -> AdmissionGateDecision:
     admission = session.scalar(
         select(GroupBotAdmission)
@@ -1029,7 +1034,9 @@ def evaluate_send_gate(
     close_observation_if_due(session, admission=admission)
     if admission.state == "abandoned":
         return _admission_gate_decision(admission, allowed=False, code="admission_abandoned")
-    if _start_post_follow_visibility_probe(session, admission):
+    if _start_post_follow_visibility_probe(session, admission, action_id=action_id):
+        return _admission_gate_decision(admission, allowed=True, code="post_follow_visibility_probe")
+    if _resume_post_follow_visibility_probe(session, admission, action_id=action_id):
         return _admission_gate_decision(admission, allowed=True, code="post_follow_visibility_probe")
     if admission.state != READY_STATE:
         return _admission_gate_decision(admission, allowed=False, code="group_bot_admission_wait")
@@ -1051,7 +1058,12 @@ def _admission_gate_decision(
     )
 
 
-def _start_post_follow_visibility_probe(session: Session, admission: GroupBotAdmission) -> bool:
+def _start_post_follow_visibility_probe(
+    session: Session,
+    admission: GroupBotAdmission,
+    *,
+    action_id: str,
+) -> bool:
     if admission.state != "awaiting_group_bot_confirmation" or admission.source_message_id:
         return False
     if not current_required_channel_refs(admission):
@@ -1068,8 +1080,52 @@ def _start_post_follow_visibility_probe(session: Session, admission: GroupBotAdm
         return False
     admission.state = "post_follow_visibility_probe"
     admission.post_send_visibility_state = "pending"
+    _bind_post_follow_probe_action(admission, action_id)
     session.flush()
     return True
+
+
+def _resume_post_follow_visibility_probe(
+    session: Session,
+    admission: GroupBotAdmission,
+    *,
+    action_id: str,
+) -> bool:
+    if admission.state != "post_follow_visibility_probe" or not action_id:
+        return False
+    observation = dict(admission.transport_observation or {})
+    bound_action_id = str(observation.get(POST_FOLLOW_PROBE_ACTION_KEY) or "")
+    if bound_action_id and bound_action_id != action_id:
+        if not _pre_gateway_probe_binding_reclaimable(session, bound_action_id):
+            return False
+    _bind_post_follow_probe_action(admission, action_id)
+    session.flush()
+    return True
+
+
+def _bind_post_follow_probe_action(admission: GroupBotAdmission, action_id: str) -> None:
+    if not action_id:
+        return
+    observation = dict(admission.transport_observation or {})
+    observation[POST_FOLLOW_PROBE_ACTION_KEY] = str(action_id)
+    admission.transport_observation = observation
+
+
+def _pre_gateway_probe_binding_reclaimable(session: Session, action_id: str) -> bool:
+    action = session.get(Action, action_id)
+    if action is None:
+        return True
+    if action.status not in PRE_GATEWAY_TERMINAL_ACTION_STATUSES:
+        return False
+    gateway_started = session.scalar(
+        select(ExecutionAttempt.id)
+        .where(
+            ExecutionAttempt.action_id == action_id,
+            ExecutionAttempt.gateway_call_started_at.is_not(None),
+        )
+        .limit(1)
+    )
+    return gateway_started is None
 
 
 def needs_post_send_visibility(admission: GroupBotAdmission | None, *, action_admission_version: int | None) -> bool:

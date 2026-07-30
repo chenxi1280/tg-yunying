@@ -181,6 +181,102 @@ def test_post_follow_probe_is_held_until_remote_visibility_confirms() -> None:
         assert admission.state == READY_STATE
 
 
+def test_existing_unbound_post_follow_probe_recovers_same_action() -> None:
+    with _session() as session:
+        _seed_scope(session)
+        action = session.get(Action, "send-1")
+        admission = ensure_admission_after_join(
+            session,
+            tenant_id=1,
+            group_id=7,
+            account_id=11,
+            membership_action_id="join-1",
+        )
+        admission.state = "post_follow_visibility_probe"
+        admission.post_send_visibility_state = "pending"
+
+        assert _group_bot_admission_gate_pass(session, action, group_id=7, account_id=11) is True
+        assert action.payload["group_bot_post_follow_visibility_probe"] is True
+        assert action.payload["group_bot_admission_id"] == admission.id
+        assert admission.transport_observation["post_follow_probe_action_id"] == action.id
+
+        session.commit()
+        action = session.get(Action, action.id)
+        assert _group_bot_admission_gate_pass(session, action, group_id=7, account_id=11) is True
+
+
+def test_post_follow_probe_rebinds_only_after_pre_gateway_terminal() -> None:
+    with _session() as session:
+        _seed_scope(session)
+        first = session.get(Action, "send-1")
+        second = Action(
+            id="send-2",
+            tenant_id=1,
+            task_id="task-ai",
+            task_type="group_ai_chat",
+            action_type="send_message",
+            account_id=11,
+            status="pending",
+            payload={"group_id": 7},
+        )
+        session.add(second)
+        admission = ensure_admission_after_join(
+            session,
+            tenant_id=1,
+            group_id=7,
+            account_id=11,
+            membership_action_id="join-1",
+        )
+        admission.state = "post_follow_visibility_probe"
+
+        assert _group_bot_admission_gate_pass(session, first, group_id=7, account_id=11) is True
+        assert _group_bot_admission_gate_pass(session, second, group_id=7, account_id=11) is False
+
+        first.status = "failed"
+        assert _group_bot_admission_gate_pass(session, second, group_id=7, account_id=11) is True
+        assert admission.transport_observation["post_follow_probe_action_id"] == second.id
+
+
+def test_post_follow_probe_never_rebinds_after_gateway_started() -> None:
+    with _session() as session:
+        _seed_scope(session)
+        first = session.get(Action, "send-1")
+        second = Action(
+            id="send-2",
+            tenant_id=1,
+            task_id="task-ai",
+            task_type="group_ai_chat",
+            action_type="send_message",
+            account_id=11,
+            status="pending",
+            payload={"group_id": 7},
+        )
+        session.add(second)
+        admission = ensure_admission_after_join(
+            session,
+            tenant_id=1,
+            group_id=7,
+            account_id=11,
+            membership_action_id="join-1",
+        )
+        admission.state = "post_follow_visibility_probe"
+        assert _group_bot_admission_gate_pass(session, first, group_id=7, account_id=11) is True
+        first.status = "failed"
+        session.add(
+            ExecutionAttempt(
+                tenant_id=1,
+                action_id=first.id,
+                attempt_no=1,
+                status="failed",
+                gateway_call_started_at=datetime.now(timezone.utc),
+            )
+        )
+        session.flush()
+
+        assert _group_bot_admission_gate_pass(session, second, group_id=7, account_id=11) is False
+        assert admission.transport_observation["post_follow_probe_action_id"] == first.id
+
+
 def test_pending_visibility_recovery_normalizes_aware_created_at() -> None:
     with _session() as session:
         _seed_scope(session)

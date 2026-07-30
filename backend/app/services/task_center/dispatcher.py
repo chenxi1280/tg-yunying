@@ -7003,6 +7003,7 @@ def _group_bot_admission_gate_pass(session: Session, action: Action, *, group_id
         group_id=group_id,
         account_id=account_id,
         enforce=True,
+        action_id=str(action.id),
     )
     if decision.allowed:
         return _apply_allowed_group_bot_admission(action, payload, decision)

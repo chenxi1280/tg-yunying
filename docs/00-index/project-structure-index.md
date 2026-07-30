@@ -1050,4 +1050,5 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 - `backend/app/services/task_center/fulfillment_takeover.py`：除 Task 合同与任务级 `1_000_000` 数量软门禁外，负责当前单用户 `SchedulingSetting` 账号小时/日履约数量上限归一。
 - `backend/app/services/task_center/group_bot_claim_priority.py`：提供 AI send 群管准入 ready/probe 优先的相关子查询排序表达式，防止 waiting 正文形成队首阻塞。
 - `backend/app/services/task_center/dispatcher.py`：在父任务内部 claim 顺序应用群管准入 ready/probe 排序；所有 send gate 退回 pending 的路径统一清 execution lease、claim 与 dispatch binding。
+- `backend/app/services/task_center/group_bot_admission.py`：send gate 以 admission 行锁原子绑定/恢复唯一 post-follow probe Action；同一绑定 Action 可跨 claim 继续，明确 pre-Gateway terminal 后才允许换绑。confirmation Action 查询按 tenant/task/type/admission/version 下推数据库，避免 listener 写 admission 后全量装载 Action。
 - `backend/app/services/task_center/ai_generator.py`：未显式指定模型时解析当前健康主 Provider，不能把禁用的 MiniMax 默认值变成对健康 MiMo v2.5 的遮蔽。

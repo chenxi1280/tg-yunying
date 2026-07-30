@@ -913,4 +913,6 @@ group_ai_chat / channel_comment 正文
 
 - 五类任务接管除归一 Task `type_config/pacing_config` 外，同时归一当前单用户 `SchedulingSetting.default_account_hour_limit/default_account_day_limit=1_000_000`；该写入与 Task 接管在 worker fencing 期间执行，值变化时写一条 `scheduling_setting` 审计，再次执行零写入、零新增审计。
 - AI fulfillment 候选在中央份额求解前按群管准入发送资格排序：`group_bot_admission_ready`、`post_follow_visibility_probe`、可当次切入 probe 的账号先于 waiting/unresolved/stale。waiting 正文不消费 fulfillment Reservation，继续由 admission lane 推动 join/follow/confirm；send gate 退回 pending 时清 Action lease/claim 并释放 dispatch binding。
+- `post_follow_visibility_probe` 进入时把唯一 probe Action 绑定写入 admission transport observation，并把 probe/admission 字段写回 Action；相同 Action 可跨 claim 恢复，其他 Action 等待。存量无绑定 state 由首个 Action 补绑，只有明确 pre-Gateway terminal 且无 Gateway/unknown/visibility hold 才可换绑。
+- listener 的群管 confirmation Action 查找固定为数据库内 `task_id + action_type + payload.admission_id + payload.admission_version` 过滤；禁止写 admission 后全量装载同任务 Action 再由 Python 筛选，禁止 Telegram 网络阶段持有 listener 写事务。
 - AI 生成仅在目标准入通过后执行。任务未指定模型时从任务/租户健康 Provider 解析主模型；禁用默认 Provider 不得遮蔽健康 MiMo v2.5。生产证据链为 `Admission ready/probe -> Dispatch Reservation/claim -> actual_model -> ExecutionAttempt.gateway_call_started_at -> remote_message_id`。
