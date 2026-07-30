@@ -1287,18 +1287,21 @@ def _align_quantity_slots(
 ) -> list[TaskGroupDailyMessageSlot]:
     remaining = list(available)
     selected: list[TaskGroupDailyMessageSlot] = []
+    assigned_coverage_ids: set[str] = set()
     for item in blueprint.generation.quality_items:
         account_id = _quality_slot_account_id(item)
         coverage = blueprint.profile.coverage_rows.get(account_id)
+        coverage_id = str(coverage.id) if coverage else ""
+        expected_coverage_id = (
+            None
+            if not coverage_id or coverage_id in assigned_coverage_ids
+            else coverage_id
+        )
         matched = next(
             (
                 slot
                 for slot in remaining
-                if (
-                    slot.task_account_daily_coverage_id == coverage.id
-                    if coverage
-                    else slot.task_account_daily_coverage_id is None
-                )
+                if slot.task_account_daily_coverage_id == expected_coverage_id
             ),
             None,
         )
@@ -1306,6 +1309,8 @@ def _align_quantity_slots(
             break
         selected.append(matched)
         remaining.remove(matched)
+        if expected_coverage_id:
+            assigned_coverage_ids.add(expected_coverage_id)
     return selected
 
 
