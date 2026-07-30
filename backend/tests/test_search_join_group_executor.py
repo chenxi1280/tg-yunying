@@ -597,7 +597,11 @@ def test_search_join_planner_keeps_selector_failed_jisou_accounts_and_excludes_s
             task, 103,
             status="failed",
             executed_at=observed_at,
-            result={"error_code": "jisou_hot_list_page", "jisou_page_phase": "hot_list_page"},
+            result={
+                "error_code": "jisou_hot_list_page",
+                "jisou_page_phase": "hot_list_page",
+                "jisou_bootstrap_kind": "existing_conversation",
+            },
         ),
     ])
     session.commit()
@@ -665,7 +669,10 @@ def test_jisou_hot_list_exclusion_is_shared_across_search_tasks(
         101,
         status="failed",
         executed_at=observed_at,
-        result={"error_code": "jisou_hot_list_page"},
+        result={
+            "error_code": "jisou_hot_list_page",
+            "jisou_bootstrap_kind": "existing_conversation",
+        },
     ))
     session.commit()
 
@@ -694,7 +701,11 @@ def test_search_join_planner_fails_closed_when_all_jisou_accounts_session_deviat
             task, account_id,
             status="failed",
             executed_at=observed_at,
-            result={"error_code": "jisou_hot_list_page", "jisou_page_phase": "hot_list_page"},
+            result={
+                "error_code": "jisou_hot_list_page",
+                "jisou_page_phase": "hot_list_page",
+                "jisou_bootstrap_kind": "existing_conversation",
+            },
         ))
     session.commit()
 
@@ -719,6 +730,38 @@ def test_jisou_hot_list_exclusion_expires_after_twelve_hours(
         101,
         status="failed",
         executed_at=observed_at - timedelta(hours=12, seconds=1),
+        result={
+            "error_code": "jisou_hot_list_page",
+            "jisou_bootstrap_kind": "existing_conversation",
+        },
+    ))
+    session.commit()
+
+    candidates = select_jisou_selector_candidates(
+        session,
+        task,
+        [session.get(TgAccount, 101)],
+        bot_username="jisou",
+        now_value=observed_at,
+    )
+
+    assert [account.id for account in candidates.accounts] == [101]
+    assert candidates.excluded_count == 0
+
+
+@pytest.mark.no_postgres
+def test_legacy_hot_list_outcome_is_superseded_after_bootstrap_fix(
+    session: Session,
+) -> None:
+    task = _task()
+    session.add(task)
+    session.flush()
+    observed_at = _now()
+    session.add(_search_join_source_action(
+        task,
+        101,
+        status="failed",
+        executed_at=observed_at,
         result={"error_code": "jisou_hot_list_page"},
     ))
     session.commit()

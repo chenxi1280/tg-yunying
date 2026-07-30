@@ -64,7 +64,7 @@
 2. **runtime retention。** 过期 runtime 只清理 terminal Action，禁止把仍承载未完成业务义务的 open Action 当作空间回收对象。候选查询只投影汇总、引用清理和删除所需列，不水合 payload/result；独立配置 batch size 与 interval，不能继续复用 Recovery 的通用 `limit=100`。生产默认每分钟处理最多 2,000 个 terminal Action，每批独立提交并保留 `RuntimeCleanupAudit`。
 3. **Dispatcher 有界候选读取。** Scope 锁后先读取具有 due Action 的 running Task ID，再按每个 Task、每个 strict/ordinary 类别最多 `scope capacity` 条读取候选。SQL 禁止对整张 due actions 集执行 `row_number/window sort/Gather Merge`；任一 Task 在本轮最多需要 scope capacity 条候选，因此该有界读取不改变中央公平、Reservation 或最终 claim 结果。
 4. **AI 生成与发送解耦。** `ai-generation` worker 独占领取 `group_ai_chat` 中正文为空且 `ai_generation_status=pending|ai_result_persist_unknown` 的 pre-Gateway Action，执行现有 Phase A/B/C 生成和持久化。Dispatcher 只领取 `message_text` 已持久化或确定性 check-in 已准备完成的发送 Action，禁止在 Dispatcher 线程调用 AI Provider。生成 worker 失败必须显式写原有生成错误或签到结果；不得让未生成 Action 回落到 Dispatcher 同步生成。
-5. **极搜首次会话启动。** 每个搜索 Attempt 发送关键词前先只读检查与极搜是否已有会话历史；仅从未交互的账号发送一次 `/start`。已有会话直接发送关键词，禁止每个 Attempt 重复 `/start` 把会话推回 hot-list。响应仍按审批 profile 分类；hot-list、未知页、验证码失败继续显式失败并进入既有 12 小时安全排除，不执行 reset、不点击未知按钮。
+5. **极搜首次会话启动。** 每个搜索 Attempt 发送关键词前先只读检查与极搜是否已有会话历史；仅从未交互的账号发送一次 `/start`。已有会话直接发送关键词，禁止每个 Attempt 重复 `/start` 把会话推回 hot-list。响应必须写入 `jisou_bootstrap_kind=first_conversation|existing_conversation` 并继续按审批 profile 分类；新合同下的 hot-list、未知页、验证码失败继续显式失败并进入既有 12 小时安全排除，不执行 reset、不点击未知按钮。缺少 `jisou_bootstrap_kind` 的历史 `jisou_hot_list_page` 属于旧重复 `/start` 合同产生的已知错误，发布后不再排除账号；历史事实原样保留，不改写为成功。
 
 上述补正的生产验收相互独立：AI backlog apply 成功不代表代码修复完成；代码发布成功不代表 view/AI/search 真实履约恢复。只有 Action、ExecutionAttempt、远端 ID/click evidence 和生产负载共同满足时才可写 `production_fixed`。
 
