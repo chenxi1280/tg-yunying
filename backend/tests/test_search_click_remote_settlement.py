@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 from sqlalchemy import create_engine
@@ -164,3 +165,26 @@ def test_entity_open_fact_settles_without_fake_button_coordinates() -> None:
         assert obligation.status == "confirmed"
         assert obligation.target_click_observed is True
         assert obligation.click_evidence_hash
+
+
+def test_click_fact_settlement_accepts_aware_action_time_with_naive_ledger() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        obligation, action, attempt = _facts(
+            session,
+            executed_at=datetime(
+                2026,
+                7,
+                29,
+                10,
+                tzinfo=ZoneInfo("Asia/Shanghai"),
+            ),
+        )
+        action.result = _complete_entity_result()
+
+        _settle_pure_search_click_obligation(session, action, attempt)
+
+        assert obligation.status == "confirmed"
+        assert action.status == "success"
+        assert obligation.remote_confirmed_at == action.executed_at
