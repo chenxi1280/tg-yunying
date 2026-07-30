@@ -6284,6 +6284,11 @@ def _pure_click_evidence_hash(result: dict, execution_attempt_id: str) -> str:
         "target_button_type",
         "target_button_effect",
         "target_button_fingerprint",
+        "target_entity_url_hash",
+        "target_entity_id",
+        "target_entity_username",
+        "target_entity_title_hash",
+        "target_open_rpc",
         "membership_side_effect",
         "membership_mutating_rpc_invoked",
     )

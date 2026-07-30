@@ -630,29 +630,35 @@ Planner 顺序固定为：真实 remaining 与防重 planning deficit -> 账号 
 
 | 相位 | 判定条件 | 处置 |
 | --- | --- | --- |
-| `hot_list_page` | 文本含「热搜排行榜/近期热搜/热门搜索」 | 直接失败并写 `jisou_hot_list_page`，账号—协议路径排除 12 小时，不尝试重置 |
-| `verification_image_page` | `MessageMediaPhoto` + 文本含「人机验证/计算结果」 + ≥8 个 callback_data 数字按钮 | 走 §2.19.2 验证码识别流程 |
+| `hot_list_page` | 文本含「热搜排行榜/近期热搜/热门搜索」 | 若 row=0/col=0 存在 callback_data `👥`，该页是关键词结果的分类入口，直接点击群分类；缺少该审批 selector 才写 `jisou_hot_list_page` 并排除 12 小时 |
+| `verification_image_page` | `MessageMediaPhoto` + 文本含「人机验证/计算结果/captcha」 + ≥8 个 callback_data ASCII 数字或字母数字答案按钮 | 走 §2.19.2 验证码识别流程 |
 | `search_category_page` | 含 `👥` callback_data 群分类按钮 | 走原有 `_select_jisou_group_results_page` 流程 |
-| `group_result_page` | 含「下一页/next」导航按钮 | 走原有目标群匹配流程 |
+| `group_result_page` | 正文含 Telegram `MessageEntityTextUrl` 群链接，首个 callback_data 为 `🔄`；翻页控件可能为「下一页」或 `➡️` | 按正文实体的规范化 username 精确匹配目标；仅使用审批的 callback_data 导航控件翻页 |
 | `unknown` | 以上都不匹配 | 写 `jisou_session_state_deviated`，账号—协议路径排除 12 小时 |
 
-普通热搜页重置（`/cancel` + `/start` + 重发关键词）已在线上验证**不可行**（极搜把关键词当文本回显，不执行搜索），禁止再尝试。2026-07-30 新生产证据确认另一条窄路径：图片验证码的批准答案提交后，极搜会返回默认热搜页并丢失提交验证码前的关键词；这不是普通热搜 reset。仅此路径允许在同一 conversation 内重放一次原关键词，必须记录 `jisou_post_verification_keyword_replayed=true`，不发送 `/cancel|/start`，不点击热搜页按钮，也不形成循环。禁止点击 `👥群组导航` 等 telegram_url 外链进入子页面（PRD §2.18 外链禁令）。
+普通热搜页重置（`/cancel` + `/start` + 重发关键词）已在线上验证**不可行**，禁止再尝试。2026-07-30 的 10 账号完整流程证据进一步确认：验证码批准答案返回的 `hot_list_page` 已经保留原关键词结果，并提供 row=0/col=0 的 callback_data `👥` 分类控件；再次发送关键词只会重新触发验证码并形成循环。无论本次是否出现验证码，都必须直接点击该 `👥` 控件进入群结果，`jisou_post_verification_keyword_replayed` 固定为 `false`。这里只批准 callback_data 群分类，不放宽未知 callback 或 telegram_url 外链禁令。
 
 #### 2.19.2 图片算式验证码识别流程
 
 检测到 `verification_image_page` 时执行：
 
 1. **记录过程状态并下载图片**：以 `bot_peer + message_id + image_hash + ordered_callback_fingerprint` 生成不可变 `challenge_fingerprint_hash`，写 `jisou_image_verification_required`，但不终结当前 Action、不触发账号排除；`client.download_media(message, file=bytes)` 获取验证码图片字节。当前 Action 继续持有既有账号 in-flight/session ownership，在该 fingerprint 收口前不得让同一账号—协议会话被另一条搜索 Action 并发改写；这只是会话互斥，不消费新的 click 配额、任务目标或 Dispatcher/Gateway 份额。
-2. **视觉识别**：调用 `ai_gateway.solve_image_verification`，按当前健康且已审批的多模态供应商稳定顺序识别；当前生产已验证顺序固定为 `MiMo mimo-v2.5 → MiniMax-M3 → 其他健康已审批模型`，不得把健康可用的 MiMo v2.5 排在 MiniMax-M3 之后或误判为不可用。每个供应商的 prompt 必须同时携带当前 immutable challenge 的有序数字按钮候选值，并要求模型先独立识别/计算、只有计算结果精确等于某个候选值时才返回该值；不能强迫模型从候选中猜选。输出仍固定为紧凑 JSON `{"answer":数字,"confidence":0到1}`。候选矩阵只帮助消歧，不替代第 3 步服务端双重校验，也不得被写入 Provider 健康状态。不设置“1–2 次”等业务固定 AI 轮数：空内容、结构非法或安全校验不通过时继续使用尚未调用的健康已审批供应商；仅供应商/传输暂不可用时保持 `jisou_image_verification_required` 并显示 `verification_ai_unavailable`，不写 failed、不触发 12 小时排除。
+2. **视觉识别**：调用 `ai_gateway.solve_image_verification`，按当前健康且已审批的多模态供应商稳定顺序识别；当前生产已验证顺序固定为 `MiMo mimo-v2.5 → MiniMax-M3 → 其他健康已审批模型`，不得把健康可用的 MiMo v2.5 排在 MiniMax-M3 之后或误判为不可用。页面正文含「计算结果/数学题/算式」时，模型 prompt 使用“这是数学题，都是全数字，你来给出答案”；其他图片验证码使用“这是是一段数字+字符的字符串你来告诉我结果”。两类 prompt 只补对应的最终答案和紧凑 JSON 输出约束，不枚举运算符范围，也不把按钮候选值发送给模型。每个供应商对同一 immutable challenge 必须并行独立调用 2 次，只有两次 `answer` 完全一致才进入第 3 步；任一次结构非法、空答案或两次不一致都拒绝该供应商结果并继续尚未调用的健康已审批供应商。输出固定为紧凑 JSON `{"answer":"最终答案","confidence":0到1}`。有序候选矩阵只留在服务端执行第 3 步精确匹配，不得进入模型 prompt，也不得被写入 Provider 健康状态；供应商/传输暂不可用时保持 `jisou_image_verification_required` 并显示 `verification_ai_unavailable`，不写 failed、不触发 12 小时排除。
 3. **双重校验（硬约束）**：
    - 置信度 ≥ 0.70（必要条件）；
-   - **answer 必须在按钮矩阵 callback_data 数字按钮的 `text` 集合中**（充分条件，最后一道安全门）。
+   - **answer 必须在按钮矩阵 callback_data 数字或 ASCII 字母数字答案按钮的 `text` 集合中**（充分条件，最后一道安全门）。
    - 任一不满足只拒绝该供应商候选并继续尚未调用的健康已审批供应商，禁止点击，也不得提前写 `failed` 或触发 12 小时排除。线上历史样本 #7 曾出现高置信错答（answer=7 conf=0.95 但按钮矩阵无 7），该编号不是重试轮次或上限；按钮矩阵匹配不可省略。
-4. **点击匹配按钮并确认远端通过**：在按钮矩阵找 `button_type=callback_data` 且 `text=answer` 的按钮，对同一 fingerprint 只允许一次 CAS 提交。只有该提交关联的后续机器人回执明确表示验证通过，或页面被分类为已审批的 `search_category_page|group_result_page`，才能写 `jisou_image_verification_solved` 并继续同一 source；仅仅不再显示原图、消息消失、超时或进入 `hot_list_page|unknown` 都不能证明通过。若批准提交后第一张页面恰为 `hot_list_page`，只允许按 §2.19.1 的窄例外重放一次原关键词；重放结果进入已审批搜索分类/结果页才构成通过，否则失败。
+4. **点击匹配按钮并确认远端通过**：在按钮矩阵找 `button_type=callback_data` 且 `text=answer` 的按钮，对同一 fingerprint 只允许一次 CAS 提交。只有该提交关联的后续机器人回执明确表示验证通过，或返回含审批 `👥` selector 的 `hot_list_page`、`search_category_page|group_result_page`，才能写 `jisou_image_verification_solved` 并继续同一 source；仅仅不再显示原图、消息消失、超时或进入缺 selector 的 `hot_list_page|unknown` 都不能证明通过。批准提交后禁止重放关键词；含审批 `👥` selector 时直接进入群分类。
 5. **失败处置**：只有当前健康已审批供应商均已返回、却都无法给出通过双重校验的安全答案，或提交后远端以同一验证码 fingerprint 明确拒绝，才写 `jisou_image_verification_failed` 并把账号—协议路径排除 12 小时（复用 `jisou_selector_accounts` 机制）。供应商/传输暂不可用、读取失败或结果未知时，验证码状态仍为 `jisou_image_verification_required`，另写 `verification_ai_unavailable|verification_result_unknown` 原因；不得新增第四种验证码状态、冒充 failed 或概率成功。
-6. **提交后分流**：仍是同一 fingerprint 且远端明确拒绝时写 `failed`；若远端给出新的消息/图片 fingerprint，则旧 fingerprint 只记已提交，新 fingerprint 重新进入 `required`，不得把“换题”记成旧题 `solved`；批准提交后首次 `hot_list_page` 只执行一次原关键词重放，重放后仍为 `hot_list_page|unknown` 才按会话偏离处理且不写 `solved`。同一 search Action 不设置业务递归次数上限，但每个 fingerprint 仍只允许一次 Telegram 提交，禁止对同一按钮重复点击，关键词重放也不得循环。
+6. **提交后分流**：仍是同一 fingerprint 且远端明确拒绝时写 `failed`；若远端给出新的消息/图片 fingerprint，则旧 fingerprint 只记已提交，新 fingerprint 重新进入 `required`，不得把“换题”记成旧题 `solved`；批准提交后返回含审批 `👥` selector 的 `hot_list_page` 时直接点击 selector，缺 selector 的 `hot_list_page|unknown` 才按会话偏离处理且不写 `solved`。同一 search Action 不设置业务递归次数上限，但每个 fingerprint 仍只允许一次 Telegram 提交，禁止对同一按钮重复点击，也禁止关键词重放循环。
 
 线上历史样本曾出现 4/8 按钮匹配成功，但该比例只作识别质量观测，禁止进入任务容量、账号容量、预计确认量或完成计算。当前无需验证码，或本次已真实写入 `jisou_image_verification_solved`，才允许继续；`required|failed` 以及 required 下的 unavailable/unknown 原因都不能被概率折算成可确认 click。
+
+2026-07-30 同图 A/B 补充证据：真实样本 `4-4=?` 的正确候选为 `0`，旧 prompt 因“答案必须是正整数”返回空答案，而不携带候选的数学题 prompt 返回 `0`（confidence `0.95`）；另一个真实样本出现 `0*6=?`，证明只枚举 `+|-` 仍会遗漏题型。用户短语义 prompt 在 `8-4=?` 上连续两次返回 `4`（confidence `0.95`），但在 `6-2=?` 上也曾连续两次错答 `3`，因此自报置信度和重复一致均不能替代候选精确匹配。生产受控 canary 使用同一短语义 prompt 并行识别两次后，对 message `11363` 提交候选 `7`、对 message `11384` 提交候选 `6`，均取得新的 `search_category_page` 机器人回执（message `11365`、`11386`）；这是两次真实通过，不代表所有题型自动可靠。通用 Tesseract 5.5.1、`pytesseract`、`pyocr`、RapidOCR 和 EasyOCR 在变形字体样本上均未稳定解析完整算式，因此本轮不把任一通用 OCR 包装器作为主识别链或成功兜底。
+
+2026-07-30 追加 10 个不同生产账号 canary（账号 99、167、168、160、229、236、169、244、179、161）：10/10 均出现数学图片验证码，未观察到字符串题型；MiMo v2.5 对每张图并行调用 2 次。账号 99、244 的两次答案分别一致为 `13`、`37`，但不在各自按钮候选中，服务端未点击；其余 8 个账号的双次答案一致且命中候选，每个 fingerprint 只提交一次。账号 167、168 提交后只观察到 `hot_list_page`，没有通过证据；账号 160、229、236、169、179、161 提交后先到 `hot_list_page`，重放一次关键词又得到新的 `verification_image_page`，仍不构成通过。该批最终为 `0/10` 远端确认通过，说明“双次一致 + 高置信 + 候选命中”仍不能证明识图正确，唯一成功判据继续是远端回执或已审批分类/结果页。
+
+2026-07-30 随后按完整点击目标另取 10 个不同生产账号（99、183、220、167、254、168、169、152、248、231）执行临时脚本 canary：账号 99、169 覆盖验证码后 `hot_list_page -> 👥` 分支，其余 8 个账号覆盖无验证码 `hot_list_page -> 👥` 分支；10/10 均进入正文 `MessageEntityTextUrl` 群结果，使用 callback_data 下一页控件翻至第 4 个结果页，精确命中 `https://t.me/zzxshxc`，并由该账号执行 `channels.GetFullChannelRequest` 得到实体 `id=3298633687 / title=河南郑州学生会 / username=zzxshxc`。10/10 均未调用 join/request-to-join 等成员关系变更 RPC。该 canary 证明执行逻辑，不直接写生产 Task/Action/obligation 账本；正式 click 仍须由同一 ExecutionAttempt 保存实体指纹、目标详情 RPC 和无成员副作用证据后结算。
 
 图片算式验证码的 AI 调用及上述批准重试不计入账号/关键词 click 限额、任务 click 目标、source 小时/日限额或额外 Dispatcher/Gateway click 份额，也不计入 AI 活群/评论的主 AI 三轮、备用 AI 三轮或业务 AI 生成次数；它只复用当前 source Action 已占用的在途位置。验证通过本身也不完成 click，最终仍必须取得 `target_click_observed`。
 
@@ -660,7 +666,7 @@ Planner 顺序固定为：真实 remaining 与防重 planning deficit -> 账号 
 
 | 错误码 | 触发条件 | 12 小时排除 | 说明 |
 | --- | --- | --- | --- |
-| `jisou_hot_list_page` | 普通 hot_list_page，或验证码提交后的单次关键词重放仍返回 hot_list_page | 是 | 当前尝试直接失败；账号—协议路径临时不可用，重置不可行 |
+| `jisou_hot_list_page` | hot_list_page 缺少 row=0/col=0 的审批 callback_data `👥` selector | 是 | 当前尝试直接失败；账号—协议路径临时不可用，重置和关键词重放均不可行 |
 | `jisou_session_state_deviated` | unknown 相位 | 是 | 账号级会话状态偏离，重置不可行 |
 | `jisou_image_verification_required` | 检测到 verification_image_page | 否 | 当前 Action 正在识别的过程状态 |
 | `jisou_image_verification_solved` | 同一 fingerprint 的单次批准答案提交获得明确远端通过回执，或进入已审批搜索分类/结果页 | 否 | 当前 source 可继续；不是 click 成功；仅离开原页面不算 |
@@ -834,7 +840,7 @@ historical_design_status=complete，`contract_status=historical_do_not_implement
 | 221 | 8 | 0 | 8 | 0 | 0 | 0 |
 
 关键发现：
-- **账号 99 行为变化**：首次进入 `hot_list_page`（1 次），后续 4 次全部进入 `verification_image_page`。说明热搜页偏离账号在首次搜索后会被极搜强制进入验证码流程；当前合同要求 `hot_list_page -> jisou_hot_list_page` 直接失败并排除该账号—协议路径 12 小时，避免当前尝试继续触发验证码。
+- **账号 99 行为变化（历史诊断，已由 §2.19 新证据修订）**：首次进入 `hot_list_page`（1 次），后续 4 次全部进入 `verification_image_page`。当时把 hot-list 当作偏离页并重发关键词，因而持续触发验证码；当前合同改为仅在缺少审批 callback_data `👥` 时写 `jisou_hot_list_page`，存在 selector 时直接进入群分类，禁止关键词重放。
 - **验证码高频确认**：3 个账号 21 轮搜索中，20 轮触发验证码页（95.2%），仅账号 99 首轮是 hot_list_page。**极搜已对所有测试账号强制验证码**，PRD §2.19.2 验证码识别流程是必须的，不是可选的。
 - **`verification_image_page` 判定条件验证**：所有验证码页都是 `has_photo=True` + `button_count=10` + `digit_btns=10`（10 个 callback_data 数字按钮），完全符合 PRD §2.19.1 判定条件（`MessageMediaPhoto` + 文本含「人机验证/计算结果」+ ≥8 个 callback_data 数字按钮）。
 - **`search_category_page` 和 `group_result_page` 未出现**：3 个账号 21 轮全部没进入正常搜索分类页或群结果页。说明极搜当前对所有账号强制验证码，PRD §2.19.1 的 `search_category_page` / `group_result_page` 分支在当前环境无法实测，但代码路径已存在（`classify_jisou_page` 已有分类），dev 实现后回归测试即可。
@@ -4018,7 +4024,7 @@ AI 活跃群 Planner 需要额外满足：
 - `search_rank_deboost` 继续接收生命周期 `target_count`：它是任务生命周期的已确认成功数，达到目标后写 `completed + target_count_reached`；其 `max_actions_per_day` 仍是自然日 action 预算。未结束的 `search_join_group` 不再保留运行语义，统一按上一条接管为纯 click；completed/deleted 仅作为历史记录读取。普通搜索只能选择启用的普通账号组；搜索排名观察只能选择启用的 `pool_purpose=rank_deboost` 黑账号组。代理、机器人、授权环境、单账号安全上限、停留、重试和风险参数继续由系统托管，调用方传入这些系统字段必须显式拒绝。
 - `scheduled_end` 是真实停止边界：到期后任务停止规划和派发；尚未进入 Gateway 的当前、pending 或 claiming action 写 `scheduled_end_reached`，黑搜索同时释放 `reserved` reservation；Gateway 已开始的 action 保留真实结果状态，绝不伪造成功。任务状态也是 Gateway 前硬约束：任务在执行过程中变为非 `running`（包括暂停、停止、草稿、完成或已删除）时，最终守卫必须写 `task_not_active` 并禁止真实 Telegram 调用，黑搜索同时释放尚未进入 Gateway 的 reservation。`quiet_hours` 只降低该任务时区内的计划权重，不能令 Planner、Dispatcher 或 Gateway 返回 `quiet_hours_active` 或整段停发；日/小时抖动只改变合法执行顺序，并在 catch-up 时允许压缩。任何软节奏都不能突破账号/关键词安全额度、授权槽位、代理、协议安全、任务状态、截止时间或 unknown 防重。
 
-- 只处理 `task_type=search_click + search_execution_mode=click_only` 的纯搜索点击任务，按账号授权槽位、搜索机器人、关键词、目标群匹配策略生成 source；现存物理 `action_type=search_join` 仅作内部兼容别名，业务/API/日志必须投影为 `search_click`。只有同一 Attempt 具备完整批准点击证据、`membership_side_effect=none` 且 `membership_mutating_rpc_invoked=false` 后才写 `target_click_observed`；group result profile 必须至少包含一个 `target_open_only`，只有 `navigate_only` 不具备目标点击资格。旧 `join_candidate` 或成员副作用未知的协议样本默认不得进入 pure-click eligibility；仅历史解析器精确版本 `jisou-v2-2026-07-28` 可在发布接管中保留原行为样本为 inactive，并以审计化 replacement 把 Telegram 内部 URL 从误标的 `join_candidate` 重分类为 `target_open_only`、声明无成员副作用。其他版本、结构或 effect 不得自动升级。确认后 ordinal 结束，禁止创建 `search_join_membership` 或调用任何 join/request/follow/confirm/can-send 路径。
+- 只处理 `task_type=search_click + search_execution_mode=click_only` 的纯搜索点击任务，按账号授权槽位、搜索机器人、关键词、目标群匹配策略生成 source；现存物理 `action_type=search_join` 仅作内部兼容别名，业务/API/日志必须投影为 `search_click`。只有同一 Attempt 具备完整批准点击证据、`membership_side_effect=none` 且 `membership_mutating_rpc_invoked=false` 后才写 `target_click_observed`。inline keyboard 目标必须为 `target_open_only`；正文 `MessageEntityTextUrl` 目标必须同时保存消息 ID、实体序号、实体 URL 指纹、远端 `channels.GetFullChannelRequest`、精确 entity id/username 与 `target_open_only` effect，正文可见标题或 `get_entity` 本地缓存命中不能单独完成。键盘目标证据要求非负 row/col；正文实体目标没有伪造 row/col，改由实体序号和远端实体字段完成事实门。只有 `navigate_only` 不具备目标点击资格。旧 `join_candidate` 或成员副作用未知的协议样本默认不得进入 pure-click eligibility；仅历史解析器精确版本 `jisou-v2-2026-07-28` 可在发布接管中保留原行为样本为 inactive，并以审计化 replacement 把 Telegram 内部 URL 从误标的 `join_candidate` 重分类为 `target_open_only`、声明无成员副作用。其他版本、结构或 effect 不得自动升级。确认后 ordinal 结束，禁止创建 `search_join_membership` 或调用任何 join/request/follow/confirm/can-send 路径。
 - 创建 action 前必须实时校验真实协议样本、`execution_mode=mtproto_userbot`、授权槽位环境栈、授权槽位代理绑定、代理健康、observed exit IP、客户端元数据镜像绑定、关键词允许矩阵和 `(account_id, proxy_binding_id)` warmup 阶段。
 - 同账号 `primary / standby_1 / standby_2` 不得复用代理节点或客户端元数据组合；同一 `account_id` 同时只允许 1 个 `search_join` action 处于 claiming / executing；缺授权槽位代理、同槽位多 active 代理、多出口 IP、指纹复用或锁冲突时不得创建 / 执行 action。
 - 授权环境绑定的权威粒度是 `account_id + developer_app_id/api_id + authorization_id/session_role`。同一账号在不同 TG 开发者应用 `api_id/api_hash`、不同 session key 和主 / 备用授权槽位下可以绑定不同客户端元数据和不同代理节点；Planner 创建 action 前和 Executor 派发前都必须验证 payload 授权槽位属于 action 的 `account_id` 且 role 一致。Executor 必须使用授权槽位登录时绑定的同一 TG 开发者应用、指纹配置和代理配置，不能用另一个应用的指纹或代理配置代替，也不能回退本机直连。
