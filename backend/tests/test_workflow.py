@@ -4183,18 +4183,20 @@ def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(monkeypatch):
         if not sends:
             assert make_task_send_actions_due(task_id) >= 1
             assert dispatch_pending_task_actions(task_id) >= 1
+        from app.services.task_center.ai_backlog_abandonment import (
+            abandon_ai_historical_backlog,
+        )
+
         with SessionLocal() as session:
-            for action in session.scalars(
-                select(Action).where(
-                    Action.task_id == task_id,
-                    Action.action_type == "send_message",
-                    Action.status.in_(["pending", "claiming", "executing"]),
-                )
-            ):
-                action.status = "skipped"
-                action.executed_at = datetime.now(UTC).replace(tzinfo=None)
-                action.result = {"success": False, "error_code": "test_cycle_boundary", "error_message": "test cycle boundary"}
+            result = abandon_ai_historical_backlog(
+                session,
+                cutoff=datetime.now(UTC).replace(tzinfo=None) + timedelta(days=1),
+                apply=True,
+                actor="pytest-cycle-boundary",
+                task_ids={task_id},
+            )
             session.commit()
+        assert result["deleted_action_count"] >= 1
         first_context_send_count = len(sends)
         actions = task_detail_actions(client, headers, task_id, action_type="send_message")
         detail = task_detail_after_metrics(client, headers, task_id)

@@ -292,7 +292,10 @@ def test_planner_freezes_relation_slots_against_daily_quantity_slots(
             cycle_id=f"{task.id}:cycle:1",
             coverage_rows=coverages,
         ),
-        generation=SimpleNamespace(quality_items=items),
+        generation=SimpleNamespace(
+            quality_items=items,
+            coverage_reply_shortfall=False,
+        ),
     )
 
     frozen = group_ai_chat._freeze_content_mix_cycle(
