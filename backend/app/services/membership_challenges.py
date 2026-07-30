@@ -3,6 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import unicodedata
+from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -11,9 +14,10 @@ from sqlalchemy.orm import Session
 
 from app.integrations.telegram import OperationResult
 from app.integrations.telegram.search_join import (
+    ImageVerificationConsensusUnavailableError,
+    ImageVerificationDecision,
     ImageVerificationRequest,
-    ImageVerificationNoSafeAnswerError,
-    ImageVerificationProviderUnavailableError,
+    ImageVerificationVote,
 )
 from app.models import (
     AiProvider,
@@ -25,8 +29,11 @@ from app.models import (
 
 from ._common import _now, ai_gateway, gateway
 from .ai_config import ai_provider_credentials
+from . import image_verification_ocr
 
 MIN_IMAGE_VERIFICATION_CONFIDENCE = 0.70
+TESSERACT_MIN_CONFIDENCE = 0.40
+RAPIDOCR_MIN_CONFIDENCE = 0.50
 IMAGE_VERIFICATION_PROVIDER_SOURCES = ("mimo", "minimax")
 MIMO_V25_MODEL_MARKERS = ("mimo-v2.5", "mino-v2.5")
 MINIMAX_M3_MODEL_MARKERS = ("minimax-m3", "minimax m3")
@@ -47,9 +54,12 @@ SEARCH_JOIN_STRING_VERIFICATION_PROMPT = (
     "只输出紧凑 JSON：{\"answer\":\"结果字符串\",\"confidence\":0到1}，不要解释。"
 )
 MATH_CHALLENGE_TEXT_MARKERS = ("计算结果", "数学题", "算式")
+OCR_ARITHMETIC_PATTERN = re.compile(
+    r"(?P<left>-?\d{1,4})(?P<op>[+\-*/])(?P<right>-?\d{1,4})"
+)
 SearchJoinImageVerificationSolver = Callable[
     [ImageVerificationRequest],
-    "tuple[str, float] | None",
+    "ImageVerificationDecision | None",
 ]
 
 
@@ -514,11 +524,7 @@ def _question_hash(task: VerificationTask, image_message: dict[str, Any]) -> str
 def build_search_join_image_verification_solver(
     session: Session,
 ) -> SearchJoinImageVerificationSolver | None:
-    """PRD §2.19.2: 构造极搜图片算式验证码识别 solver。
-
-    在 dispatcher 服务层只预解析稳定顺序中的首个健康视觉 provider，返回一个无 DB
-    依赖的 callable。本次识别不等待其他 provider。
-    """
+    """构造一个模型加两个独立 OCR 引擎的 2/3 共识 solver。"""
     providers = sorted(_image_verification_providers(session), key=_image_verification_provider_priority)
     if not providers:
         return None
@@ -526,57 +532,141 @@ def build_search_join_image_verification_solver(
 
     def solver(
         request: ImageVerificationRequest,
-    ) -> tuple[str, float] | None:
+    ) -> ImageVerificationDecision | None:
         if not request.image_bytes:
             return None
-        return _solve_search_join_image_candidate(
-            credentials,
-            image_bytes=request.image_bytes,
-            mime_type=request.mime_type,
-            candidate_answers=tuple(
-                answer.strip() for answer in request.candidate_answers
-                if answer.strip()
-            ),
-            challenge_text=request.challenge_text,
-        )
+        votes = _collect_search_join_image_votes(credentials, request)
+        return _consensus_decision(votes)
 
     return solver
 
 
-def _solve_search_join_image_candidate(
+def _collect_search_join_image_votes(
     credentials: Any,
-    *,
-    image_bytes: bytes,
-    mime_type: str,
-    candidate_answers: tuple[str, ...],
-    challenge_text: str,
-) -> tuple[str, float]:
-    allowed_answers = frozenset(candidate_answers)
-    try:
-        answer, confidence = _solve_search_join_image(
-            credentials,
-            image_bytes,
-            mime_type,
-            challenge_text,
-        )
-    except Exception as exc:  # noqa: BLE001 - classify selected provider outcome.
-        if _provider_returned_unsafe_answer(exc):
-            detail = _image_provider_unsafe_response_detail(credentials, exc)
-            raise ImageVerificationNoSafeAnswerError(detail) from exc
-        detail = _image_provider_failure_detail(credentials, exc)
-        raise ImageVerificationProviderUnavailableError(detail) from exc
-    if (
-        confidence >= MIN_IMAGE_VERIFICATION_CONFIDENCE
-        and answer in allowed_answers
-    ):
-        return answer, confidence
-    detail = _image_provider_unsafe_result_detail(
-        credentials,
-        answer=answer,
-        confidence=confidence,
-        allowed=answer in allowed_answers,
+    request: ImageVerificationRequest,
+) -> tuple[ImageVerificationVote, ...]:
+    recognizers = (
+        (
+            _image_provider_label(credentials) if credentials else "multimodal",
+            lambda: _model_recognition(credentials, request),
+            MIN_IMAGE_VERIFICATION_CONFIDENCE,
+        ),
+        (
+            "tesseract",
+            lambda: image_verification_ocr.recognize_with_tesseract(request.image_bytes),
+            TESSERACT_MIN_CONFIDENCE,
+        ),
+        (
+            "rapidocr",
+            lambda: image_verification_ocr.recognize_with_rapidocr(request.image_bytes),
+            RAPIDOCR_MIN_CONFIDENCE,
+        ),
     )
-    raise ImageVerificationNoSafeAnswerError(detail)
+    with ThreadPoolExecutor(max_workers=len(recognizers)) as executor:
+        futures = [
+            executor.submit(_recognition_vote, source, recognize, threshold, request)
+            for source, recognize, threshold in recognizers
+        ]
+        return tuple(future.result() for future in futures)
+
+
+def _model_recognition(
+    credentials: Any,
+    request: ImageVerificationRequest,
+) -> tuple[str, float]:
+    if credentials is None:
+        raise RuntimeError("no healthy approved multimodal provider")
+    return _solve_search_join_image(
+        credentials,
+        request.image_bytes,
+        request.mime_type,
+        request.challenge_text,
+    )
+
+
+def _recognition_vote(
+    source: str,
+    recognize: Callable[[], tuple[str, float]],
+    confidence_threshold: float,
+    request: ImageVerificationRequest,
+) -> ImageVerificationVote:
+    try:
+        raw_answer, confidence = recognize()
+    except Exception as exc:  # noqa: BLE001 - each source must expose its own failure.
+        detail = exc.__class__.__name__
+        return ImageVerificationVote(source, "unavailable", detail=detail)
+    answer = _normalize_recognition_answer(raw_answer, request)
+    in_candidates = answer in frozenset(request.candidate_answers)
+    if confidence < confidence_threshold:
+        return ImageVerificationVote(
+            source, "low_confidence", answer, confidence, in_candidates
+        )
+    status = "accepted" if answer and in_candidates else "unsafe"
+    return ImageVerificationVote(
+        source, status, answer, confidence, in_candidates
+    )
+
+
+def _consensus_decision(
+    votes: tuple[ImageVerificationVote, ...],
+) -> ImageVerificationDecision:
+    accepted = [vote for vote in votes if vote.status == "accepted"]
+    counts = Counter(vote.answer for vote in accepted)
+    if counts:
+        answer, count = counts.most_common(1)[0]
+        if count >= 2:
+            return ImageVerificationDecision(
+                answer=answer,
+                confidence=count / len(votes),
+                votes=votes,
+            )
+    detail = "; ".join(
+        f"{vote.source}:{vote.status}:in_candidates={str(vote.in_candidates).lower()}"
+        for vote in votes
+    )
+    raise ImageVerificationConsensusUnavailableError(detail, votes)
+
+
+def _normalize_recognition_answer(
+    raw_answer: object,
+    request: ImageVerificationRequest,
+) -> str:
+    value = unicodedata.normalize("NFKC", str(raw_answer or ""))
+    if _is_math_challenge(request):
+        return _normalize_math_answer(value)
+    return "".join(char for char in value if char.isascii() and char.isalnum())
+
+
+def _is_math_challenge(request: ImageVerificationRequest) -> bool:
+    if any(marker in request.challenge_text for marker in MATH_CHALLENGE_TEXT_MARKERS):
+        return True
+    return bool(request.candidate_answers) and all(
+        answer.isdigit() for answer in request.candidate_answers
+    )
+
+
+def _normalize_math_answer(value: str) -> str:
+    compact = re.sub(r"\s+", "", value).replace("×", "*").replace("÷", "/")
+    compact = compact.replace("x", "*").replace("X", "*")
+    match = OCR_ARITHMETIC_PATTERN.search(compact)
+    if match is None:
+        direct = re.fullmatch(r"[=?]*(-?\d+)[=?]*", compact)
+        return direct.group(1) if direct else ""
+    left = int(match.group("left"))
+    right = int(match.group("right"))
+    return _calculate_integer(left, match.group("op"), right)
+
+
+def _calculate_integer(left: int, operation: str, right: int) -> str:
+    if operation == "+":
+        return str(left + right)
+    if operation == "-":
+        return str(left - right)
+    if operation == "*":
+        return str(left * right)
+    if right and left % right == 0:
+        return str(left // right)
+    return ""
 
 
 def _image_verification_provider_priority(provider: AiProvider) -> tuple[int, int]:
@@ -630,48 +720,6 @@ def _search_join_image_verification_prompt(challenge_text: str) -> str:
     ):
         return SEARCH_JOIN_IMAGE_VERIFICATION_PROMPT
     return SEARCH_JOIN_STRING_VERIFICATION_PROMPT
-
-
-def _provider_returned_unsafe_answer(exc: Exception) -> bool:
-    detail = str(exc).lower()
-    return any(marker in detail for marker in (
-        "returned malformed verification json",
-        "returned empty verification answer",
-        "returned no choices",
-        "returned empty final content",
-    ))
-
-
-def _image_provider_failure_detail(
-    credentials: Any,
-    exc: Exception,
-) -> str:
-    provider = str(getattr(credentials, "provider_name", "") or "AI")
-    model = str(getattr(credentials, "model_name", "") or "unknown")
-    detail = (str(exc) or exc.__class__.__name__)[:240]
-    return f"{provider}({model}): {detail}"
-
-
-def _image_provider_unsafe_response_detail(
-    credentials: Any,
-    exc: Exception,
-) -> str:
-    label = _image_provider_label(credentials)
-    return f"{label}: unsafe_response={type(exc).__name__}"
-
-
-def _image_provider_unsafe_result_detail(
-    credentials: Any,
-    *,
-    answer: str,
-    confidence: float,
-    allowed: bool,
-) -> str:
-    label = _image_provider_label(credentials)
-    return (
-        f"{label}: answer_present={str(bool(answer)).lower()}, "
-        f"confidence={confidence:.2f}, in_candidates={str(allowed).lower()}"
-    )
 
 
 def _image_provider_label(credentials: Any) -> str:

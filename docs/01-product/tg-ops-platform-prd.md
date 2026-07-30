@@ -4006,7 +4006,7 @@ AI 活跃群 Planner 需要额外满足：
 
 > **2026-07-30 搜索 finalize 当前时间补充：** `SearchClickAssignmentEpoch` 的锁内最终提交必须在取得 Window → TaskAllocation → ShardAllocation → Reservation 锁后重新读取 `finalize_now`。求解开始时间和 epoch 创建时间仅作历史证据，不能用于判断 Window、重新枚举 eligibility、创建 Action 的 `scheduled_at` 或写 `finalized_at`。锁内已满足 `finalize_now >= bucket_end` 时，只能将整轮写为 `abandoned` 并释放全部未领取 unit，严禁在已经结束的 Window 上创建 assignment/Action。
 
-> **2026-07-30 验证码供应商结果补充：** 线上 MiMo `mimo-v2.5` 已通过真实图片算式调用验证为健康可用且本次答案正确，验证码调用顺序固定为 `MiMo mimo-v2.5 → MiniMax-M3 → 其他健康已审批模型`。健康状态与单次图片请求结果必须分层记录。单次 HTTP/超时/传输异常保持验证码 `required`，在 Action 结果中保存脱敏 provider/model/error 且不排除账号路径；至少一个健康供应商真实响应后，全部响应均无法形成安全答案才允许写 `failed`。禁止把调用异常吞掉并统一伪装为“没有健康供应商返回安全答案”。
+> **2026-07-31 验证码三路共识覆盖：** 极搜图片验证码对同一 immutable challenge 并行调用且只调用一次首个健康已审批多模态模型、Tesseract OCR 和 RapidOCR；`pyocr` 与 `pytesseract` 同属 Tesseract 包装，不能重复计为两票。每路先独立规范化算式最终值或数字字母串，并独立通过 callback 候选精确校验；只有三路中至少两路给出相同安全候选时才允许提交。Action 结果必须保存三路来源、脱敏状态、候选命中与最终共识，不保存验证码图片。任一路不可用不得伪装成票；不足两票保持 `required`。线上验证页只有十个答案 callback、没有独立刷新 callback；错误答案后机器人会自动返回新图片和新 fingerprint，系统只对该新 challenge 重新三路识别，不点击未知按钮、不重发关键词，也不把换图当作 `solved`。同 fingerprint 明确拒绝仍写 `failed`。
 
 > **2026-07-30 搜索账号并发口径补充：** `hard_safe_remaining_capacity` 是账号日剩余安全容量和系统排序输入，不是单账号 session 的并发量。同一 Claim Window 的搜索精确匹配必须同时应用 `account_session_inflight=1`，同一 epoch 每个账号最多绑定 1 条 assignment，再按容量、已确认量、最久未获机会和持久 cursor 选择其他账号；禁止把整批 Action 集中到一个账号。
 >
