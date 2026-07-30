@@ -472,3 +472,11 @@
 - evidence: 相关 no-PostgreSQL 回归曾完成 `125 passed`，生成契约 retry 定向回归 `1 passed / 121 deselected`，compileall 与 diff-check 通过；最终提交前重新执行完整相关回归。
 - decision: `development_complete=true`；进入 Release Checks，生产发送热路径保持冻结。
 - unresolved: GitHub Actions、生产定向旧账清理、worker 恢复及三个任务真实 `remote_message_id` 增长 E4。
+
+## 2026-07-31 AI 群会话与准入锁序 Development Complete
+
+- message_id: `2026-07-31-ai-group-speaker-admission-lock-order-dev-001`
+- root_cause: 首次部署后 PostgreSQL 在 00:32:37 记录三方 deadlock；同一群发送的常规路径先更新 `group_bot_admissions` 再锁 `conversation_speaker_states`，账号轮换后的二次准入路径则可能反向持锁。
+- output: AI 群正文进入任何准入评估前先锁定或创建会话 speaker state；后续 speaker reservation 复用同一事务锁，准入与二次准入统一为 speaker -> admission。
+- evidence: 单元回归显式断言 `_prepare_group_send` 锁序；真 PostgreSQL 全量分区与生产 deadlock 增量待 release 验证。
+- decision: `development_complete=true`；作为首次生产恢复发现的 L3 后续修复进入相同 Release Gate。

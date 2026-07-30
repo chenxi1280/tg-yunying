@@ -190,6 +190,10 @@ maximum_confirmable_count = frozen_denominator_count - terminal_permission_block
    每 30 秒退回 pending 并长期占用份额。
 3. Coverage 回到 readiness 后由 Admission 事实决定
    `ready/pending_admission`，Admission 完成事件再触发新 Action。
+4. Dispatcher 处理同一 AI 群会话时，必须先锁
+   `conversation_speaker_states`，再评估或更新 `group_bot_admissions`；
+   账号轮换后的二次准入也沿用这一顺序，禁止形成 admission -> speaker
+   与 speaker -> admission 的反向锁序。
 
 ### 5.2 内容多样性和重复质量失败
 

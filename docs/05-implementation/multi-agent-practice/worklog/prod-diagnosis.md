@@ -274,3 +274,11 @@
 - task_evidence: 郑州大学 `d3365706-afe1-4166-9d0d-c2d6404bc8ad` 为 confirmed 174 / ready 47 / reserved 468；郑州师范 `84180c47-cf92-408e-bdd9-c68804f7de29` 为 confirmed 49 / ready 618 / reserved 6；郑州楼凤 `7805d8f2-dfef-4842-b11c-14cc1f434c94` 为 confirmed 130 / ready 125 / reserved 395。
 - decision: L3。已停止 planner、ai-generation、dispatcher-1、dispatcher-2、recovery，backend/listener/account-online 保持健康；冻结时 gateway inflight=0。用户明确旧规划残留无需备份，但只允许清理三个任务、pre-Gateway、无成功证据的数据。
 - unresolved: release 发布、定向预览/应用、worker 恢复、连续调度窗口与真实 Telegram E4。
+
+## 2026-07-31 首次恢复后的会话锁序死锁
+
+- message_id: `2026-07-31-ai-group-speaker-admission-deadlock-prod-002`
+- evidence: release `7e083970` 与 run `30560921085` 上线后，三个任务旧 Action 903 条已安全删除；郑州大学新日出现 4 confirmed / 6 个远端 message id。数据库 deadlocks 由恢复基线 24 增至 25。
+- root: PostgreSQL 00:32:37 显示 `UPDATE group_bot_admissions` 与两个 `SELECT conversation_speaker_states ... FOR UPDATE` 构成三方环；生产代码存在 admission -> speaker 和 speaker -> rotated admission 两种锁序。
+- decision: 不中断已恢复的发送事实，立即统一锁序并重新发布；首次部署不能写 `production_fixed`。
+- unresolved: 第二次 release、deadlock 零增量窗口、师范与楼凤真实远端成功。
