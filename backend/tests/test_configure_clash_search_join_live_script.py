@@ -123,3 +123,35 @@ def test_clash_infrastructure_repair_does_not_create_smoke_task_by_default(
     monkeypatch.setenv("CLASH_CREATE_SMOKE_TASK", "true")
 
     assert script.create_smoke_task_enabled() is True
+
+
+@pytest.mark.no_postgres
+def test_clash_rebinds_existing_environments_before_validating_missing_ones(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = _load_script()
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        script,
+        "bind_airport_nodes_to_environment_bindings",
+        lambda *_args: calls.append("rebind_existing") or {"airport_node_scoped_binding_count": 1},
+    )
+    monkeypatch.setattr(
+        script,
+        "bind_account_environments",
+        lambda *_args: calls.append("validate_missing") or {"environment_bound_account_count": 1},
+    )
+
+    summary = script.finalize_account_environment_bindings(
+        object(),
+        [object()],
+        {1: object()},
+        {1: object()},
+    )
+
+    assert calls == ["rebind_existing", "validate_missing"]
+    assert summary == {
+        "airport_node_scoped_binding_count": 1,
+        "environment_bound_account_count": 1,
+    }
