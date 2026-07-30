@@ -480,3 +480,21 @@
 - output: AI 群正文进入任何准入评估前先锁定或创建会话 speaker state；后续 speaker reservation 复用同一事务锁，准入与二次准入统一为 speaker -> admission。
 - evidence: 单元回归显式断言 `_prepare_group_send` 锁序；真 PostgreSQL 全量分区与生产 deadlock 增量待 release 验证。
 - decision: `development_complete=true`；作为首次生产恢复发现的 L3 后续修复进入相同 Release Gate。
+
+## 2026-07-31 Listener 快照批次锁序 Development Complete
+
+- message_id: `2026-07-31-ai-group-listener-batch-lock-order-dev-002`
+- root_cause: Dispatcher 锁序上线后仍出现一次相同表环；Listener 的单事务快照批次可先处理机器人准入事件、后处理真人 speaker event，形成 admission -> speaker。
+- output: `insert_context_snapshots` 在遍历快照前锁定或创建该群 speaker state；后续机器人准入和真人事件复用同一事务锁，Listener 与 Dispatcher 统一为 speaker -> admission。
+- evidence: 新单元回归断言整批 speaker lock 先于第一条 admission event；Listener/准入/轮换组合回归 `29 passed`。
+- decision: `development_complete=true`；进入第三次 Release Gate。
+- unresolved: GitHub Actions 真 PostgreSQL 与生产 deadlock 零增量窗口。
+
+## 2026-07-31 Runtime Retention Action 外键收口 Development Complete
+
+- message_id: `2026-07-31-runtime-retention-action-fk-dev-003`
+- root_cause: 生产 Recovery 约每 6 秒重复删除同一批过期 terminal Action，但 `task_hard_hourly_delivery_credits.action_id` 没有进入 retention 的从属清理清单，整批被外键拒绝；后续 `AiCoverageVariationIntent.action_id` 也需在 Action 删除前解除。
+- output: retention 删除 Action 前先置空 variation intent 的可空 Action 引用，并删除 hard-hourly delivery credit；删除数量进入 `RuntimeCleanupAudit`，不改变 5 天留存、候选范围或 open Action 安全边界。
+- evidence: no-PostgreSQL retention/capacity/recovery 组合 `109 passed`；真 PostgreSQL 外键矩阵补充 hard-hourly credit 与 variation intent，进入 CI。
+- decision: `development_complete=true`；与 Listener 锁序修复合并进入第三次 Release Gate。
+- unresolved: CI 真 PostgreSQL与生产 Recovery 成功 checkpoint。

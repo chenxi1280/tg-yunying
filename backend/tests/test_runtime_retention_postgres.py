@@ -10,6 +10,7 @@ from app.database import Base, SessionLocal, engine
 from app.models import (
     AccountPool,
     Action,
+    AiCoverageVariationIntent,
     DailyRuntimeStat,
     ExecutionAttempt,
     OperationTarget,
@@ -20,6 +21,8 @@ from app.models import (
     SearchRankDeboostClickReservation,
     Task,
     TaskAccountDailyCoverage,
+    TaskHardHourlyBucket,
+    TaskHardHourlyDeliveryCredit,
     TaskMembershipAdmissionItem,
     Tenant,
     TgAccount,
@@ -132,6 +135,32 @@ def _seed_referenced_action() -> None:
             reserved_action_id=action.id,
             last_success_action_id=action.id,
         ))
+        session.flush()
+        session.add(AiCoverageVariationIntent(
+            id="retention-variation",
+            tenant_id=TENANT_ID,
+            coverage_ledger_id="retention-coverage",
+            action_id=action.id,
+            content_variation_key="retention",
+        ))
+        session.add(TaskHardHourlyBucket(
+            id=TARGET_ID,
+            tenant_id=TENANT_ID,
+            task_id=TASK_ID,
+            operation_target_id=TARGET_ID,
+            target_reference_revision=1,
+            bucket_key="retention",
+            bucket_start=OLD_AT,
+            bucket_end=OLD_AT + timedelta(hours=1),
+        ))
+        session.flush()
+        session.add(TaskHardHourlyDeliveryCredit(
+            id=TARGET_ID,
+            bucket_id=TARGET_ID,
+            action_id=action.id,
+            executed_at=OLD_AT,
+            remote_message_id="retention-message",
+        ))
         session.add(TaskMembershipAdmissionItem(
             id=TARGET_ID,
             tenant_id=TENANT_ID,
@@ -196,6 +225,8 @@ def _assert_references_removed() -> None:
         assert admission.test_message_action_id is None
         assert admission.delete_action_id is None
         assert admission.rescue_action_id is None
+        assert session.get(AiCoverageVariationIntent, "retention-variation").action_id is None
+        assert session.get(TaskHardHourlyDeliveryCredit, TARGET_ID) is None
         assert session.get(SearchRankDeboostClickReservation, "retention-reservation") is None
 
 
@@ -204,6 +235,13 @@ def _cleanup() -> None:
         action_ids = select(Action.id).where(Action.tenant_id == TENANT_ID)
         session.execute(delete(SearchRankDeboostClickReservation).where(
             SearchRankDeboostClickReservation.tenant_id == TENANT_ID,
+        ))
+        session.execute(delete(TaskHardHourlyDeliveryCredit).where(
+            TaskHardHourlyDeliveryCredit.bucket_id == TARGET_ID,
+        ))
+        session.execute(delete(TaskHardHourlyBucket).where(TaskHardHourlyBucket.id == TARGET_ID))
+        session.execute(delete(AiCoverageVariationIntent).where(
+            AiCoverageVariationIntent.tenant_id == TENANT_ID,
         ))
         session.execute(delete(TaskAccountDailyCoverage).where(TaskAccountDailyCoverage.tenant_id == TENANT_ID))
         session.execute(delete(TaskMembershipAdmissionItem).where(TaskMembershipAdmissionItem.tenant_id == TENANT_ID))

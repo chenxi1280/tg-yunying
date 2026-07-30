@@ -23,6 +23,7 @@ def insert_context_snapshots(
     create_source_media: bool,
     learning_scene: str | None,
 ) -> int:
+    _lock_group_speaker_state(session, group)
     inserted = 0
     for snapshot in snapshots:
         # Control-event path runs before context dedupe / ignore / learning filters.
@@ -59,6 +60,20 @@ def insert_context_snapshots(
             _ensure_source_media(session, group, account, snapshot, message)
         inserted += 1
     return inserted
+
+
+def _lock_group_speaker_state(session: Session, group: TgGroup) -> None:
+    from app.services.task_center.conversation_speaker_rotation import (
+        conversation_key_for_group,
+        lock_or_create_state,
+    )
+
+    lock_or_create_state(
+        session,
+        tenant_id=group.tenant_id,
+        surface="group_ai_chat",
+        conversation_key=conversation_key_for_group(group_id=int(group.id)),
+    )
 
 
 def _maybe_apply_legacy_required_channel_prompt(session: Session, group: TgGroup, snapshot, has_admission: bool) -> None:

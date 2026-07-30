@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.models import (
     Action,
+    AiCoverageVariationIntent,
     DailyRuntimeStat,
     ExecutionAttempt,
     ReviewQueue,
@@ -16,6 +17,7 @@ from app.models import (
     RuntimeMetricSnapshot,
     SearchRankDeboostClickReservation,
     TaskAccountDailyCoverage,
+    TaskHardHourlyDeliveryCredit,
     TaskMembershipAdmissionItem,
 )
 from app.services._common import _now
@@ -157,6 +159,7 @@ def _remove_action_references(session: Session, action_ids: list[str]) -> dict[s
         (TaskMembershipAdmissionItem, TaskMembershipAdmissionItem.test_message_action_id),
         (TaskMembershipAdmissionItem, TaskMembershipAdmissionItem.delete_action_id),
         (TaskMembershipAdmissionItem, TaskMembershipAdmissionItem.rescue_action_id),
+        (AiCoverageVariationIntent, AiCoverageVariationIntent.action_id),
     )
     for model, field in nullable_fields:
         result = session.execute(update(model).where(field.in_(action_ids)).values({field.key: None}))
@@ -165,6 +168,10 @@ def _remove_action_references(session: Session, action_ids: list[str]) -> dict[s
         delete(SearchRankDeboostClickReservation).where(SearchRankDeboostClickReservation.action_id.in_(action_ids))
     )
     counts["search_rank_deboost_click_reservations"] = int(result.rowcount or 0)
+    result = session.execute(
+        delete(TaskHardHourlyDeliveryCredit).where(TaskHardHourlyDeliveryCredit.action_id.in_(action_ids))
+    )
+    counts["task_hard_hourly_delivery_credits"] = int(result.rowcount or 0)
     return counts
 
 

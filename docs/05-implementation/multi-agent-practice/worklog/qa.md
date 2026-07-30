@@ -386,3 +386,17 @@
 - evidence: `_prepare_group_send` 明确断言 speaker state lock 先于 admission gate；准入与会话轮换组合回归 `16 passed`。
 - decision: 定向 `qa_pass=true`；真 PostgreSQL 全量与生产零 deadlock 增量仍是 Release Gate。
 - unresolved: 第二次 CI/发布与连续生产窗口。
+
+## 2026-07-31 Listener 快照批次锁序定向 re-QA
+
+- message_id: `2026-07-31-ai-group-listener-batch-lock-order-qa-002`
+- evidence: 新回归证明 `insert_context_snapshots` 在处理任一 admission 控制事件前取得群 speaker state 锁；Listener、群管准入、正文准入与会话轮换组合 `29 passed`。
+- decision: 定向 `qa_pass=true`；未引入发送降级或绕过准入。
+- unresolved: 第三次 CI、部署后 PostgreSQL deadlock 零增量和真实 Telegram 持续增长。
+
+## 2026-07-31 Runtime Retention Action 外键收口定向 re-QA
+
+- message_id: `2026-07-31-runtime-retention-action-fk-qa-003`
+- evidence: retention、capacity、Recovery no-PostgreSQL 组合 `109 passed`；PostgreSQL 外键用例新增 `TaskHardHourlyDeliveryCredit` 删除和 `AiCoverageVariationIntent.action_id` 置空断言。
+- decision: 本地定向 `qa_pass=true`；不降低留存、不删除 coverage/intention 审计事实。
+- unresolved: GitHub Actions 真 PostgreSQL与生产重复外键错误归零。
