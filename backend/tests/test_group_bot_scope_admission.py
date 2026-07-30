@@ -42,6 +42,11 @@ def test_gateway_gate_backfills_missing_scoped_admission_and_defers_body() -> No
     with _session() as session:
         _seed_scope(session)
         action = session.get(Action, "send-1")
+        action.lease_owner = "old-worker:1"
+        action.lease_expires_at = datetime.now(timezone.utc) + timedelta(minutes=30)
+        action.claim_owner = "old-worker:1:dispatcher"
+        action.claim_token = "claim-token"
+        action.claim_expires_at = datetime.now(timezone.utc) + timedelta(minutes=1)
 
         allowed = _group_bot_admission_gate_pass(session, action, group_id=7, account_id=11)
 
@@ -51,6 +56,11 @@ def test_gateway_gate_backfills_missing_scoped_admission_and_defers_body() -> No
         assert admission.join_start_cursor == "500"
         assert action.status == "pending"
         assert action.result["error_code"] == "group_bot_admission_wait"
+        assert action.lease_owner == ""
+        assert action.lease_expires_at is None
+        assert action.claim_owner == ""
+        assert action.claim_token == ""
+        assert action.claim_expires_at is None
 
 
 def test_gateway_gate_keeps_membership_only_group_outside_admission_flow() -> None:

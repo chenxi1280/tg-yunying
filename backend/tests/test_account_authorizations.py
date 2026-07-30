@@ -717,6 +717,9 @@ def test_task_dispatch_proxy_failure_switches_proxy_before_standby() -> None:
             action_type="send_message",
             account_id=account.id,
             status="executing",
+            lease_owner="old-worker",
+            claim_owner="old-claim",
+            claim_token="old-token",
         )
         session.add(action)
         session.commit()
@@ -731,6 +734,9 @@ def test_task_dispatch_proxy_failure_switches_proxy_before_standby() -> None:
         assert action.payload["content_source"] == "mask_missing_check_in"
         assert action.payload["fallback_reason"] == "verified_proxy_route_switched"
         assert "account_recovered" not in action.result
+        assert action.lease_owner == ""
+        assert action.claim_owner == ""
+        assert action.claim_token == ""
 
 
 def test_task_dispatch_failure_switches_standby_for_auth_failure() -> None:
@@ -773,6 +779,9 @@ def test_task_dispatch_failure_switches_standby_for_auth_failure() -> None:
             action_type="send_message",
             account_id=account.id,
             status="executing",
+            lease_owner="old-worker",
+            claim_owner="old-claim",
+            claim_token="old-token",
         )
         session.add(action)
         session.commit()
@@ -784,6 +793,9 @@ def test_task_dispatch_failure_switches_standby_for_auth_failure() -> None:
         assert action.status == "pending"
         assert action.result["account_recovered"] is True
         assert action.result["recovered_authorization_id"]
+        assert action.lease_owner == ""
+        assert action.claim_owner == ""
+        assert action.claim_token == ""
 
 
 def test_standby_authorization_login_creates_flow_without_overwriting_primary_status(monkeypatch) -> None:

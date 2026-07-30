@@ -69,7 +69,7 @@
 
 ### 3.2 非目标
 
-- 不降低业务配置目标；任务内的账号日/小时/账号关键词日次数等履约软上限统一归一为 `1_000_000`，旧搜索 skip 概率和任务内账号冷却归零。账号全局安全、Telegram 风险、授权、代理、协议和 unknown 防重硬门禁保持不变，不能借统一软门禁绕过。
+- 不降低业务配置目标；任务内的账号日/小时/账号关键词日次数等履约软上限，以及单用户 `SchedulingSetting.default_account_hour_limit/default_account_day_limit` 两个通用履约数量上限，统一归一为 `1_000_000`，旧搜索 skip 概率和任务内账号冷却归零。通用账号冷却只作可继续追赶的短暂软节奏，不得把任务置为完成或永久 blocker；Telegram FloodWait/SlowMode、账号授权、代理、协议、目标准入和 unknown 防重硬门禁保持不变，不能借统一数量门禁绕过。
 - 不把 `pending/claiming/executing/unknown_after_send/skipped` 计为成功。
 - 不使用 mock、未记录的静默 fallback、未知按钮模糊点击或未审批协议样本；本文明确的签到/表情确定性兜底必须留下原失败原因和远端事实。
 - 不把 worker/container/health 绿色、claim 成功、Action 创建或本地测试写成 `production_fixed`。
@@ -568,7 +568,7 @@ precommit assembler、hash 比较、全部新 allocation/reservation 与 Window 
 
 父任务/lane 内选择 Action 时先按业务义务 deadline 最早、未满足比例最高、义务 cursor 最旧稳定排序，再应用账号/分片安全资格；同一频道消息或账号不得吞掉父任务全部份额。该内部顺序只分配已获父任务份额，不建立新的全局类别优先级。
 
-AI 准入积压不得阻止 `admission_ready` 账号的 `ai_group_daily`。纯搜索点击不进入 `membership_admission` 状态机；“搜索点击加入”待独立 PRD。一个频道消息的不可用 reaction 不得阻止其他消息；搜索 protocol 未通过 canary 时只阻止搜索批量 source。
+AI 准入积压不得阻止 `admission_ready` 账号的 `ai_group_daily`。同一 AI 父任务和 shard 内，`group_bot_admission_ready`、`post_follow_visibility_probe`，以及已满足 required-channel follow、可在本次 send gate 原子切换为 probe 的 Action，必须排在 `waiting/unresolved/stale` 发送 Action 前进入 fulfillment 候选；排序发生在 TaskAllocation 的 `due_claimable` 与 Reservation 映射之前。已有 ready/probe 候选时，等待准入的正文 Action 只能推动对应 admission lane 或以未占 fulfillment 份额的状态等待，不能每 30 秒重复领取 fulfillment Reservation、确认 claim 后再退回 pending，造成 ready 账号队首阻塞；当前 shard 完全没有 ready/probe 候选时，允许有界选取一个 waiting Action 进入 send gate，以完成 `awaiting -> post_follow_visibility_probe` 的原子状态推进。任何 claim 已确认后把 Action 退回 `pending` 的路径必须同时清空 `lease_owner/lease_expires_at`、claim 字段并释放 dispatch binding；遗留 pending lease 由 Recovery 批量清理，但不能把 lease 清理当作跳过准入。纯搜索点击不进入 `membership_admission` 状态机；“搜索点击加入”待独立 PRD。一个频道消息的不可用 reaction 不得阻止其他消息；搜索 protocol 未通过 canary 时只阻止搜索批量 source。
 
 ### 5.4 deadline-aware pacing
 
@@ -588,6 +588,7 @@ AI 准入积压不得阻止 `admission_ready` 账号的 `ai_group_daily`。纯�
 5. 没有任何可用授权/代理路线时写 `waiting_transport`，恢复后继续；不得直连或因选择签到伪造成功。admission backlog 只阻塞相应账号，其他 ready 账号继续。
 6. `check_in_direct` 历史记录不能仅凭 source 名计入。reconcile 必须验证 task、target、account、local date、原义务、Action success、Attempt success 和非空 remote ID；已进入 Gateway/历史 success 保留真实审计，不改写结果。
 7. coverage 确认数必须等于同账号/任务/日期可追溯的 distinct remote facts；不相等时显示 `coverage_reconciliation_required`。
+8. 生产 Provider 健康与任务发送资格分别验收：健康 MiMo v2.5 证明主 AI 可调用，不代表 Action 已越过目标准入。任务未显式指定模型时，生成阶段必须记录实际选中的健康 Provider/模型；若当前没有进入生成阶段，详情必须优先显示 `group_bot_admission_*`、账号软冷却或共享份额原因，不能误报“没有健康 AI 供应商”。
 8. 5 个 stopped 任务只进入审计清单，不自动启动。
 9. 每份群日目标使用不可变 `task_day_ledger_id`，冻结 `timezone_snapshot/timezone_revision/period_start_at/deadline_at/day_phase`；账号 coverage、Action 和 Attempt 必须绑定该 ID，不能只按 `target_date` 归属。时区中途修改严格执行 §4.2.1：当前 ledger 收口后从同一 UTC 边界建立新时区过渡 ledger，禁止重叠、缺口或按当前时区重解释历史事实。
 10. “所有账号”冻结范围固定为任务账号关系中同租户、未删除、`status=active`、普通运营用途且未被永久身份/安全边界排除的账号。在线、Session 暂不可用、代理、面具、membership、can_send 不作为冻结前排除条件，只形成账号 blocker；冻结后禁用、删除、用途变化、identity 失效或租户迁移也不缩小该 ledger 分母，保留 tombstone snapshot 并写 `account_scope_changed`。下一份 ledger 再按新事实建立范围。
@@ -942,7 +943,7 @@ apply 不得修改 success、unknown_after_send、Gateway-started，不得补 re
 | 搜索 CAPTCHA | `required` 不排除账号；AI 调用/批准重试不占 click 限额或目标且无业务固定 AI 轮数/递归次数，供应商/传输暂不可用保持 required；同 fingerprint 的单次批准提交只有取得明确远端通过回执或已审批搜索分类/结果页才 `solved` 并继续，离开原页/新 fingerprint/hot-list/unknown 均不算；识别链确实无安全答案或同 fingerprint 被远端明确拒绝才 `failed` 并排除账号—协议路径；禁止概率折损容量 |
 | 极搜会话偏移 | `hot_list_page` 直接记录 `jisou_hot_list_page` 失败并排除当前账号—协议路径 12 小时；其他非预期页记录 `jisou_session_state_deviated`。已进入 Gateway 的失败 Action 保持终态且原错误码不可被通用自动重试覆盖；原 ordinal 回流 obligation 后只能由新 Window、新 assignment、新 Action 换未排除路径重做。均不得发送 `/cancel`、`/start`、重发关键词、点击未知 callback 或执行外部导航，新的 Action 默认 `reset_executed=false` 且历史 reset 字段只读 |
 | 存量新履约接管 | 部署后运行中五类 Task 在 Planner 扫描 open/backlog 之前幂等建立当前合同；paused/stopped 只升级合同不启动；重复 reconcile 的 ledger/slot/obligation/Action 增量均为 0 |
-| 统一任务门禁上限 | 新建、编辑、启动与存量接管后的五类 `pacing_config.max_actions_per_hour`，以及 `task_daily_view_safety_cap|max_views_per_account_per_day|max_likes_per_account_per_hour|max_total_comments|max_comments_per_account_per_hour|search_click max_actions_per_day|per_account_daily_action_limit|per_account_hourly_action_limit|per_keyword_account_daily_limit` 均为 `1_000_000`；搜索 task-local skip 概率与账号冷却归零，旧 backlog 数量门禁不再作用于 `all_task_v2`。低值和陈旧 blocker 不能截断目标或触发 completed，账号全局安全、Telegram/授权/代理/协议/unknown 硬门禁保持原值 |
+| 统一任务门禁上限 | 新建、编辑、启动与存量接管后的五类 `pacing_config.max_actions_per_hour`，以及 `task_daily_view_safety_cap|max_views_per_account_per_day|max_likes_per_account_per_hour|max_total_comments|max_comments_per_account_per_hour|search_click max_actions_per_day|per_account_daily_action_limit|per_account_hourly_action_limit|per_keyword_account_daily_limit` 均为 `1_000_000`；当前单用户 `SchedulingSetting.default_account_hour_limit/default_account_day_limit` 同步归一为 `1_000_000`，配置 API 必须接受并回读该值，apply 只在值变化时写一条审计且再次执行零新增审计。搜索 task-local skip 概率与账号冷却归零，旧 backlog 数量门禁不再作用于 `all_task_v2`。低值和陈旧 blocker 不能截断目标或触发 completed；Telegram FloodWait/SlowMode、授权、代理、目标准入、协议、内容质量与 unknown 防重硬门禁保持原值 |
 | 搜索点击完成 | 完整 evidence 写 `target_click_observed` 后 ordinal 结束，无 membership/admission/can-send 后续动作 |
 | 搜索点击加入模式 | 仅确认是后续独立模式；本轮不得实现或拿旧开关代替专项设计 |
 | AI 任务时区变更 | 当前 ledger 继续使用旧 timezone；其 deadline 起建立新时区 `timezone_transition` ledger，UTC 区间首尾相接、无重复/遗漏冻结账号；过渡日不混入完整日 SLA |

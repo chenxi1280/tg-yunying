@@ -909,3 +909,8 @@ group_ai_chat / channel_comment 正文
 - 任务创建和类型配置更新必须先经过 `task_center.config_normalization.apply_default_rule_binding`：规则中心必绑任务如果没有显式 `rule_set_id/rule_set_version_id`，绑定同租户默认运营规则集并跟随当前发布版本；历史缺绑定任务由 Alembic `0072_required_rule_binding` 显式 backfill，清除 `rule_binding_missing` hard-hourly blocker 并触发 running 任务重跑。
 - 如果一条业务动作同时写主表、runtime summary、operation issue、audit log，记录中优先写主落点；细节以 service 和 migration 为准。
 - 静态扫描无法完全展开动态路径和深层 service 调用；遇到动态路径时以前端业务域入口和 router handler 为起点继续追踪。
+### 2026-07-30 完成优先运行态补充
+
+- 五类任务接管除归一 Task `type_config/pacing_config` 外，同时归一当前单用户 `SchedulingSetting.default_account_hour_limit/default_account_day_limit=1_000_000`；该写入与 Task 接管在 worker fencing 期间执行，值变化时写一条 `scheduling_setting` 审计，再次执行零写入、零新增审计。
+- AI fulfillment 候选在中央份额求解前按群管准入发送资格排序：`group_bot_admission_ready`、`post_follow_visibility_probe`、可当次切入 probe 的账号先于 waiting/unresolved/stale。waiting 正文不消费 fulfillment Reservation，继续由 admission lane 推动 join/follow/confirm；send gate 退回 pending 时清 Action lease/claim 并释放 dispatch binding。
+- AI 生成仅在目标准入通过后执行。任务未指定模型时从任务/租户健康 Provider 解析主模型；禁用默认 Provider 不得遮蔽健康 MiMo v2.5。生产证据链为 `Admission ready/probe -> Dispatch Reservation/claim -> actual_model -> ExecutionAttempt.gateway_call_started_at -> remote_message_id`。
