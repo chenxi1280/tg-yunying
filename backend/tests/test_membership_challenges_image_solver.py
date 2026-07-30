@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.services import membership_challenges
+from app.integrations.telegram import search_join
 
 
 @pytest.mark.no_postgres
@@ -69,3 +70,39 @@ def test_search_join_image_solver_prefers_minimax_m3_over_m25(monkeypatch) -> No
     assert solver is not None
     assert solver(b"image", "image/png", ["9", "10"]) == ("10", 0.95)
     assert calls == [5]
+
+
+@pytest.mark.no_postgres
+def test_search_join_image_solver_exposes_all_provider_transport_failures(
+    monkeypatch,
+) -> None:
+    providers = [
+        SimpleNamespace(id=1, provider_name="MiMo", model_name="mimo-v2.5"),
+    ]
+    monkeypatch.setattr(
+        membership_challenges,
+        "_image_verification_providers",
+        lambda _session: providers,
+    )
+    monkeypatch.setattr(
+        membership_challenges,
+        "ai_provider_credentials",
+        lambda provider: provider,
+    )
+    monkeypatch.setattr(
+        membership_challenges.ai_gateway,
+        "solve_image_verification",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("AI provider HTTP 503"),
+        ),
+    )
+
+    solver = membership_challenges.build_search_join_image_verification_solver(
+        object(),
+    )
+
+    with pytest.raises(
+        search_join.ImageVerificationProviderUnavailableError,
+        match="MiMo",
+    ):
+        solver(b"image", "image/png", ["9", "10"])

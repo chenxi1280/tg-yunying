@@ -79,6 +79,10 @@ class _MembershipNotObservedError(Exception):
     pass
 
 
+class ImageVerificationProviderUnavailableError(RuntimeError):
+    pass
+
+
 async def execute_search_join_with_client(
     client: Any,
     payload: dict[str, Any],
@@ -468,7 +472,21 @@ async def _handle_jisou_image_verification(
             classification, buttons, fingerprint, "verification_transport_unavailable"
         )
     mime_type = _message_media_mime_type(page)
-    solved = await asyncio.to_thread(solver, image_bytes, mime_type, candidate_answers)
+    try:
+        solved = await asyncio.to_thread(
+            solver,
+            image_bytes,
+            mime_type,
+            candidate_answers,
+        )
+    except ImageVerificationProviderUnavailableError as exc:
+        return _image_verification_required_result(
+            classification,
+            buttons,
+            fingerprint,
+            "verification_ai_unavailable",
+            detail=str(exc),
+        )
     if solved is None:
         return _image_verification_failed_result(
             classification,
@@ -584,6 +602,8 @@ def _image_verification_required_result(
     buttons: list[SearchJoinButton],
     fingerprint: str,
     reason: str,
+    *,
+    detail: str = "",
 ) -> _ImageVerificationHandleResult:
     error = {
         **_failed("jisou_image_verification_required", "极搜图片验证码等待安全识别结果"),
@@ -591,6 +611,7 @@ def _image_verification_required_result(
         "protocol_event_type": "image_verification_required",
         "image_verification_status": "required",
         "image_verification_reason": reason,
+        "image_verification_detail": detail,
         "challenge_fingerprint_hash": fingerprint,
         "search_protocol_trace": {
             "page_phase": VERIFICATION_IMAGE_PAGE,
@@ -1143,6 +1164,7 @@ def _text_hash(value: str) -> str:
 
 
 __all__ = [
+    "ImageVerificationProviderUnavailableError",
     "ImageVerificationSolver",
     "SearchJoinButton",
     "execute_search_join_with_client",

@@ -252,3 +252,46 @@ def test_solver_does_not_duplicate_shared_account_capacity_across_tasks() -> Non
     result = solve_search_click_assignments(demands, paths)
 
     assert len(result.matches) == 1
+
+
+@pytest.mark.no_postgres
+def test_solver_uses_each_account_session_once_per_claim_window() -> None:
+    demands = (
+        SearchClickDemand("o-1", "task-a"),
+        SearchClickDemand("o-2", "task-a"),
+        SearchClickDemand("o-3", "task-a"),
+    )
+    paths = (
+        SearchClickCandidatePath(
+            key="high-capacity-account",
+            account_id=1,
+            authorization_id=11,
+            keyword_hash="a" * 64,
+            proxy_route_id="proxy-1",
+            protocol_sample_version="v1",
+            hard_safe_remaining_capacity=100,
+            confirmed_click_count_today=0,
+            last_click_opportunity_at=None,
+            persistent_account_cursor=1,
+        ),
+        SearchClickCandidatePath(
+            key="second-account",
+            account_id=2,
+            authorization_id=22,
+            keyword_hash="b" * 64,
+            proxy_route_id="proxy-2",
+            protocol_sample_version="v1",
+            hard_safe_remaining_capacity=10,
+            confirmed_click_count_today=0,
+            last_click_opportunity_at=None,
+            persistent_account_cursor=2,
+        ),
+    )
+
+    result = solve_search_click_assignments(demands, paths)
+
+    assert len(result.matches) == 2
+    assert {item.candidate_key for item in result.matches} == {
+        "high-capacity-account",
+        "second-account",
+    }

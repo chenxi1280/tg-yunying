@@ -3989,6 +3989,12 @@ AI 活跃群 Planner 需要额外满足：
 > **2026-07-30 预绑定 claim 锁序补充：** 搜索预绑定 Action 的原子 confirm 必须与通用共享 claim 使用相同的 `DispatchClaimScope → DispatchClaimWindow → DispatchClaimShardAllocation → DispatchClaimReservation` 锁序，最后才锁 `SearchClickOpportunityAssignment`。禁止 assignment/reservation 反向锁回 Window/scope；四 Dispatcher 并发下 PostgreSQL deadlock 必须为 0。
 
 > **2026-07-30 预绑定不可延后复用补充：** `dispatch_prebound=true` 的纯搜索 Action 只属于原 Reservation/Window，绝不能在 Window 结束后回落到通用 claim 或绑定新 Reservation。账号全局安全策略、账号 shard、运行资源或 confirm CAS 令本次 Window 无法执行时，直接通过唯一 release batch 终结 Action、释放原 unit 并触发新分片权重；不把原 Action 延后到旧 Window 外重试。
+
+> **2026-07-30 搜索 finalize 当前时间补充：** `SearchClickAssignmentEpoch` 的锁内最终提交必须在取得 Window → TaskAllocation → ShardAllocation → Reservation 锁后重新读取 `finalize_now`。求解开始时间和 epoch 创建时间仅作历史证据，不能用于判断 Window、重新枚举 eligibility、创建 Action 的 `scheduled_at` 或写 `finalized_at`。锁内已满足 `finalize_now >= bucket_end` 时，只能将整轮写为 `abandoned` 并释放全部未领取 unit，严禁在已经结束的 Window 上创建 assignment/Action。
+
+> **2026-07-30 验证码供应商结果补充：** 线上 MiMo `mimo-v2.5` 的健康状态与单次图片请求结果必须分层记录。单次 HTTP/超时/传输异常保持验证码 `required`，在 Action 结果中保存脱敏 provider/model/error 且不排除账号路径；至少一个健康供应商真实响应后，全部响应均无法形成安全答案才允许写 `failed`。禁止把调用异常吞掉并统一伪装为“没有健康供应商返回安全答案”。
+
+> **2026-07-30 搜索账号并发口径补充：** `hard_safe_remaining_capacity` 是账号日剩余安全容量和系统排序输入，不是单账号 session 的并发量。同一 Claim Window 的搜索精确匹配必须同时应用 `account_session_inflight=1`，同一 epoch 每个账号最多绑定 1 条 assignment，再按容量、已确认量、最久未获机会和持久 cursor 选择其他账号；禁止把整批 Action 集中到一个账号。
 >
 > release batch、batch item、unit exclusion、计数与 rebuild wave 必须在同一事务显式 flush 后再生成和校验 release/outcome hash；生产 `autoflush=false` 时不得依赖查询触发隐式 flush，否则本轮必须失败并回滚，不能留下半套释放事实。
 >

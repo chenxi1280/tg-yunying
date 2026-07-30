@@ -141,6 +141,15 @@ def test_each_matched_ordinal_gets_distinct_bound_action(
         eligible_obligation_ids=("obligation-1", "obligation-2"),
     )
     path = replace(path, candidate=candidate)
+    second_candidate = replace(
+        candidate,
+        key="path-2",
+        account_id=2,
+        authorization_id=2,
+        proxy_route_id="proxy-2",
+        persistent_account_cursor=2,
+    )
+    second_path = replace(path, candidate=second_candidate)
     monkeypatch.setattr(
         search_click,
         "prepare_search_click_fulfillment_units",
@@ -149,7 +158,10 @@ def test_each_matched_ordinal_gets_distinct_bound_action(
     monkeypatch.setattr(
         search_click,
         "candidate_paths",
-        lambda *_args, **_kwargs: {candidate.key: path},
+        lambda *_args, **_kwargs: {
+            candidate.key: path,
+            second_candidate.key: second_path,
+        },
     )
 
     assert search_click.build_plan(session, session.get(Task, "task-1")) == 2
@@ -310,6 +322,46 @@ def test_finalize_locks_allocation_before_owner_and_snapshot_reads(
 
     assert search_click._finalize_epoch(SimpleNamespace(), context) == {}
     assert events == ["restart", "lock", "owner", "abandon"]
+
+
+def test_finalize_uses_fresh_time_and_never_binds_after_window_end(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started_at = _now()
+    finalize_at = started_at + timedelta(minutes=2)
+    context = SimpleNamespace(
+        epoch=SimpleNamespace(dispatch_claim_window_id="window-1"),
+        now=started_at,
+        units=(),
+    )
+    events: list[object] = []
+    monkeypatch.setattr(
+        search_click,
+        "_restart_serializable_finalize_transaction",
+        lambda _session: None,
+    )
+    monkeypatch.setattr(
+        search_click,
+        "lock_search_finalize_inputs",
+        lambda *_args: SimpleNamespace(
+            bucket_end=started_at + timedelta(minutes=1),
+        ),
+    )
+    monkeypatch.setattr(search_click, "solver_owner_is_active", lambda *_args: True)
+    monkeypatch.setattr(search_click, "_now", lambda: finalize_at)
+    monkeypatch.setattr(
+        search_click,
+        "_snapshot_still_matches",
+        lambda *_args, **_kwargs: events.append("snapshot") or True,
+    )
+    monkeypatch.setattr(
+        search_click,
+        "_abandon_epoch",
+        lambda *_args: events.append(_args[-1]) or {},
+    )
+
+    assert search_click._finalize_epoch(SimpleNamespace(), context) == {}
+    assert events == [finalize_at]
 
 
 def test_serialization_failure_abandons_epoch_without_rerunning_solver(

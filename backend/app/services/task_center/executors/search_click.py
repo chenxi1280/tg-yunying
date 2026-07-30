@@ -209,29 +209,25 @@ def _finalize_epoch(
     window_id = context.epoch.dispatch_claim_window_id
     _restart_serializable_finalize_transaction(session)
     window = lock_search_finalize_inputs(session, window_id, context.units)
-    if not solver_owner_is_active(session, context.epoch):
-        return _abandon_epoch(session, context, "search_solver_owner_lost")
-    if not _snapshot_still_matches(session, context):
-        return _abandon_epoch(session, context, "search_solver_input_changed")
-    if window is None or is_after_or_equal(context.now, window.bucket_end):
-        return _abandon_epoch(session, context, "search_solver_window_expired")
-    if (window.allocation_state != "ready"
-            or window.allocation_epoch != context.epoch.dispatch_allocation_epoch):
-        return _abandon_epoch(session, context, "search_solver_epoch_superseded")
+    finalize_now = _now()
+    abandon_reason = _finalize_abandon_reason(
+        session,
+        context,
+        window=window,
+        now_value=finalize_now,
+    )
+    if abandon_reason:
+        return _abandon_epoch(
+            session, context, abandon_reason, finalize_now)
     matches = {item.obligation_id: item for item in context.result.matches}
-    created_by_task: dict[str, int] = {}
-    released_units: list[SearchClickFulfillmentUnit] = []
-    for unit in context.units:
-        match = matches.get(unit.obligation_id)
-        path = context.paths.get(match.candidate_key) if match else None
-        if path is None:
-            released_units.append(unit)
-            continue
-        _bind_assignment_action(session, context.epoch, unit=unit,
-                                path=path, now_value=context.now)
-        created_by_task[unit.task_id] = created_by_task.get(unit.task_id, 0) + 1
+    created_by_task, released_units = _bind_search_matches(
+        session,
+        context,
+        matches=matches,
+        now_value=finalize_now,
+    )
     release_facts = _release_first_outcome_units(
-        session, context.epoch, units=released_units, now_value=context.now,
+        session, context.epoch, units=released_units, now_value=finalize_now,
         reason_code="no_feasible_search_path")
     context.epoch.outcome = context.result.outcome
     context.epoch.matched_unit_count = sum(created_by_task.values())
@@ -241,7 +237,7 @@ def _finalize_epoch(
         unit.task_id for unit in context.units
         if unit.obligation_id in matches
     ]
-    record_task_opportunities(session, matched_tasks, now_value=context.now)
+    record_task_opportunities(session, matched_tasks, now_value=finalize_now)
     context.epoch.outcome_hash = finalize_search_outcome_hash(
         session, context.epoch,
         solver_result={
@@ -251,8 +247,48 @@ def _finalize_epoch(
         },
     )
     context.epoch.finalize_status = "finalized"
-    context.epoch.finalized_at = context.now
+    context.epoch.finalized_at = finalize_now
     return created_by_task
+
+
+def _bind_search_matches(
+    session: Session,
+    context: _FinalizeContext,
+    *,
+    matches: dict,
+    now_value: datetime,
+) -> tuple[dict[str, int], list[SearchClickFulfillmentUnit]]:
+    created_by_task: dict[str, int] = {}
+    released_units: list[SearchClickFulfillmentUnit] = []
+    for unit in context.units:
+        match = matches.get(unit.obligation_id)
+        path = context.paths.get(match.candidate_key) if match else None
+        if path is None:
+            released_units.append(unit)
+            continue
+        _bind_assignment_action(
+            session, context.epoch, unit=unit, path=path, now_value=now_value)
+        created_by_task[unit.task_id] = created_by_task.get(unit.task_id, 0) + 1
+    return created_by_task, released_units
+
+
+def _finalize_abandon_reason(
+    session: Session,
+    context: _FinalizeContext,
+    *,
+    window: DispatchClaimWindow | None,
+    now_value: datetime,
+) -> str:
+    if not solver_owner_is_active(session, context.epoch):
+        return "search_solver_owner_lost"
+    if window is None or is_after_or_equal(now_value, window.bucket_end):
+        return "search_solver_window_expired"
+    if not _snapshot_still_matches(session, context, now_value=now_value):
+        return "search_solver_input_changed"
+    if (window.allocation_state != "ready"
+            or window.allocation_epoch != context.epoch.dispatch_allocation_epoch):
+        return "search_solver_epoch_superseded"
+    return ""
 
 
 def _commit_finalize_or_abandon(
@@ -304,8 +340,10 @@ def _abandon_serialization_failed_epoch(
 def _snapshot_still_matches(
     session: Session,
     context: _FinalizeContext,
+    *,
+    now_value: datetime,
 ) -> bool:
-    current_paths = candidate_paths(session, context.units, context.now)
+    current_paths = candidate_paths(session, context.units, now_value)
     demands = search_click_demands(session, context.units)
     current = assemble_search_solver_snapshot(
         session,
@@ -458,12 +496,13 @@ def _abandon_epoch(
     session: Session,
     context: _FinalizeContext,
     reason: str,
+    now_value: datetime,
 ) -> dict[str, int]:
     _abandon_units(
         session,
         context.epoch,
         units=context.units,
-        now_value=context.now,
+        now_value=now_value,
         reason=reason,
     )
     return {}
