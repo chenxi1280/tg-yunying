@@ -643,14 +643,11 @@ Planner 顺序固定为：真实 remaining 与防重 planning deficit -> 账号 
 检测到 `verification_image_page` 时执行：
 
 1. **记录过程状态并下载图片**：以 `bot_peer + message_id + image_hash + ordered_callback_fingerprint` 生成不可变 `challenge_fingerprint_hash`，写 `jisou_image_verification_required`，但不终结当前 Action、不触发账号排除；`client.download_media(message, file=bytes)` 获取验证码图片字节。当前 Action 继续持有既有账号 in-flight/session ownership，在该 fingerprint 收口前不得让同一账号—协议会话被另一条搜索 Action 并发改写；这只是会话互斥，不消费新的 click 配额、任务目标或 Dispatcher/Gateway 份额。
-2. **视觉识别**：调用 `ai_gateway.solve_image_verification`，只选择当前健康且已审批供应商稳定顺序中的第一个模型；当前生产已验证顺序固定为 `MiMo mimo-v2.5 → MiniMax-M3 → 其他健康已审批模型`，不得把健康可用的 MiMo v2.5 排在 MiniMax-M3 之后或误判为不可用。页面正文含「计算结果/数学题/算式」时，模型 prompt 使用“这是数学题，都是全数字，你来给出答案”；其他图片验证码使用“这是是一段数字+字符的字符串你来告诉我结果”。两类 prompt 只补对应的最终答案和紧凑 JSON 输出约束，不枚举运算符范围，也不把按钮候选值发送给模型。每个 immutable challenge 只向该模型发起一次识别请求；取得安全答案后立即进入第 3 步，不发起同模型第二次调用，也不等待或串行调用其余模型。输出固定为紧凑 JSON `{"answer":"最终答案","confidence":0到1}`。有序候选矩阵只留在服务端执行第 3 步精确匹配，不得进入模型 prompt，也不得被写入 Provider 健康状态；所选模型的 HTTP/超时/传输异常保持 `jisou_image_verification_required` 并显示 `verification_ai_unavailable`，不写 failed、不触发 12 小时排除；所选模型真实响应但无法形成安全答案时写 `failed`。健康检查只负责选出本次唯一模型，不能用未调用模型的推测结果覆盖本次调用事实。
-3. **双重校验（硬约束）**：
-   - 置信度 ≥ 0.70（必要条件）；
-   - **answer 必须在按钮矩阵 callback_data 数字或 ASCII 字母数字答案按钮的 `text` 集合中**（充分条件，最后一道安全门）。
-   - 任一不满足即拒绝本次唯一模型的候选，禁止点击并写 `failed`；不再调用或等待其他模型。线上历史样本 #7 曾出现高置信错答（answer=7 conf=0.95 但按钮矩阵无 7），该编号不是重试轮次或上限；按钮矩阵匹配不可省略。
-4. **点击匹配按钮并确认远端通过**：在按钮矩阵找 `button_type=callback_data` 且 `text=answer` 的按钮，对同一 fingerprint 只允许一次 CAS 提交。只有该提交关联的后续机器人回执明确表示验证通过，或返回含审批 `👥` selector 的 `hot_list_page`、`search_category_page|group_result_page`，才能写 `jisou_image_verification_solved` 并继续同一 source；仅仅不再显示原图、消息消失、超时或进入缺 selector 的 `hot_list_page|unknown` 都不能证明通过。批准提交后禁止重放关键词；含审批 `👥` selector 时直接进入群分类。
-5. **失败处置**：本次唯一模型真实返回却无法给出通过双重校验的安全答案，或提交后远端以同一验证码 fingerprint 明确拒绝，才写 `jisou_image_verification_failed` 并把账号—协议路径排除 12 小时（复用 `jisou_selector_accounts` 机制）。所选模型的供应商/传输暂不可用、读取失败或结果未知时，验证码状态仍为 `jisou_image_verification_required`，另写 `verification_ai_unavailable|verification_result_unknown` 原因；不得新增第四种验证码状态、冒充 failed 或概率成功。
-6. **提交后分流**：仍是同一 fingerprint 且远端明确拒绝时写 `failed`；若远端给出新的消息/图片 fingerprint，则旧 fingerprint 只记已提交，新 fingerprint 重新进入 `required`，不得把“换题”记成旧题 `solved`；批准提交后返回含审批 `👥` selector 的 `hot_list_page` 时直接点击 selector，缺 selector 的 `hot_list_page|unknown` 才按会话偏离处理且不写 `solved`。同一 search Action 不设置业务递归次数上限，但每个 fingerprint 仍只允许一次 Telegram 提交，禁止对同一按钮重复点击，也禁止关键词重放循环。
+2. **并行识别**：同一 immutable challenge 同时启动 RapidOCR、ddddOCR 和首个健康已审批多模态模型，模型稳定优先级以生产健康事实选择，当前为 `MiMo mimo-v2.5 → MiniMax-M3 → 其他健康已审批模型`。两路 OCR 先返回且形成相同安全候选时立即决策，不等待模型并记录 `model_waited=false/model_status=not_waited`；OCR 分歧时只等待已经启动的一个模型，禁止等待或串行调用多个模型。Tesseract 仅保留诊断能力、不参与生产投票；`pyocr`、`pytesseract` 与同一 OCR 引擎的多种预处理结果均不得重复计票。页面正文含「计算结果/数学题/算式」时，模型 prompt 固定使用“这是数学题，都是全数字，你来给出答案”；其他图片验证码使用“这是是一段数字+字符的字符串你来告诉我结果”。两类 prompt 只补最终答案和紧凑 JSON 输出约束，不把按钮候选发送给模型。
+3. **三路独立一票与候选约束（硬约束）**：每个引擎的原图和有限预处理变体先在引擎内部聚合为一个 vote，再进入跨源共识，禁止一个引擎多票。数学题仅在服务端按已验证的单数字操作数与 `+|-|*|/` 语法解析最终值，并以 callback 候选集合约束；字符串题只做数字字母串规范化，不应用算式推断。每路答案都必须精确命中 callback_data 候选；任意两路给出相同安全候选才允许提交。自报置信度、单路多变体一致或单个候选命中均不能替代 2/3 共识。
+4. **无共识换题**：本轮三路不能形成共识时禁止点击答案。只有当前页面仍被严格分类为 `verification_image_page`，Executor 才可在同一 Action、账号、session ownership 内重发本 Action 冻结的原关键词以获得新 challenge；不得发送 `/start`、`/cancel`、点击未知 callback，也不得在 `hot_list_page|unknown` 执行该动作。新 fingerprint 必须与旧值不同，否则明确收口为 required/failed 事实。整个 Action 的 challenge 总预算复用 `SchedulingSetting.default_max_retries`，包含无共识换题与错误答案后机器人自动换题，不另设隐藏上限。
+5. **点击并以远端事实判定**：在按钮矩阵找 `button_type=callback_data` 且 `text=consensus_answer` 的按钮，对同一 fingerprint 只允许一次 CAS 提交。只有该提交关联的后续机器人回执明确通过，或进入含审批 `👥` selector 的 `hot_list_page`、`search_category_page|group_result_page`，才能写 `jisou_image_verification_solved` 并继续；新 fingerprint 表示本题未通过而非 solved，预算尚余时按新 challenge 重新识别。含审批 `👥` selector 时直接进入群分类，禁止在答案提交成功后重放关键词。
+6. **失败与审计**：预算耗尽、同 fingerprint 明确拒绝或换题 fingerprint 不变时写清具体失败原因；供应商/传输异常而仍无两路安全共识时保持 `jisou_image_verification_required`，不得冒充成功。Action 保存每个 challenge 的 fingerprint、三个来源的单票结果、候选命中、`model_waited`、共识、换题触发与远端结果，不保存验证码图片。两路 OCR 即使同错也不能直接写 solved，机器人返回新 fingerprint 时必须记录 rejected 并继续；验证码前的 `search_join_execution_failed|search_transport_unavailable` 与识别失败分开统计。
 
 线上历史样本曾出现 4/8 按钮匹配成功，但该比例只作识别质量观测，禁止进入任务容量、账号容量、预计确认量或完成计算。当前无需验证码，或本次已真实写入 `jisou_image_verification_solved`，才允许继续；`required|failed` 以及 required 下的 unavailable/unknown 原因都不能被概率折算成可确认 click。
 
@@ -670,7 +667,7 @@ Planner 顺序固定为：真实 remaining 与防重 planning deficit -> 账号 
 | `jisou_session_state_deviated` | unknown 相位 | 是 | 账号级会话状态偏离，重置不可行 |
 | `jisou_image_verification_required` | 检测到 verification_image_page | 否 | 当前 Action 正在识别的过程状态 |
 | `jisou_image_verification_solved` | 同一 fingerprint 的单次批准答案提交获得明确远端通过回执，或进入已审批搜索分类/结果页 | 否 | 当前 source 可继续；不是 click 成功；仅离开原页面不算 |
-| `jisou_image_verification_failed` | 所选唯一模型真实响应但无安全答案，或同一 fingerprint 的单次提交被远端明确拒绝 | 是 | 供应商/传输暂不可用或新 fingerprint 均不算最终失败 |
+| `jisou_image_verification_failed` | challenge 预算耗尽、同一 fingerprint 明确拒绝，或换题后 fingerprint 未变化 | 是 | 单路供应商/传输暂不可用、新 fingerprint 或一次无共识均不算最终失败 |
 | `jisou_group_selector_missing` | search_category_page 缺已审批 selector | 否 | 单独评估是否协议样本过期，不自动排除 |
 
 `jisou_selector_accounts` 排除逻辑（`backend/app/services/task_center/jisou_selector_accounts.py`）对 `hot_list_page` 直接写 `jisou_hot_list_page` 失败，并从失败事实起写账号—协议路径 12 小时 eligibility 排除；该事实按当前单用户 scope 的同一 `jisou_flow_contract_version` 在全部搜索任务间共享，避免同一账号立即被另一任务复用同一极搜协议路径。执行合同升级后，旧 Action 缺少或持有其他合同版本的失败仍保留为历史事实，但不得继续阻断新合同的首次尝试；新合同产生的真实失败仍按 12 小时排除。明确 `jisou_image_verification_failed` 使用相同 12 小时有效期。`required|solved|group_selector_missing` 不排除。hot-list 不 reset、不点击未知按钮，其他账号—协议路径继续完成同一 click 欠额。纯搜索点击 Action 一旦进入 Gateway 并取得明确失败回执，该 Action、Attempt 和 assignment 即按原结果终结；通用失败自动重试不得把同一 Action 改回 `pending`、覆盖 `jisou_hot_list_page` 或复用原 assignment。缺口只把原 obligation 回流 `open`，下一 Window 重新求解未排除路径并创建全新的 assignment/Action。
@@ -688,7 +685,7 @@ Planner 顺序固定为：真实 remaining 与防重 planning deficit -> 账号 
 
 #### 2.19.6 验收口径
 
-- 单元测试：4 种相位分类、验证码识别双重校验（含历史样本 #7 的 answer 不在矩阵场景，该编号不表示轮次上限）、单供应商候选失败继续下一供应商、供应商/传输暂不可用保持 required、同 fingerprint 只提交一次、明确通过回执才 solved，以及“仅离开原页 / 新 fingerprint / hot-list / unknown 均不得误记 solved”。
+- 单元测试：4 种相位分类、两 OCR 同票不等待模型、OCR 分歧只等待一个模型、同引擎多变体仅一票、数学题候选推断与字符串题隔离、无共识验证码页换题、新 fingerprint 继续且总 challenge 不超过 `default_max_retries`、非验证码页禁止重放、同 fingerprint 只提交一次，以及只有明确通过回执才 solved。
 - QA 定向：`jisou_group_selector_missing` 日失败率显著下降；`jisou_session_state_deviated` 与 `jisou_image_verification_*` 可区分；`search_join_protocol_traces` 失败 trace 实际落表且含 normalized_text。
 - E4 / production_fixed：完整自然日内 `confirmed_click_count = daily_click_target_snapshot`，逐个 `click_obligation_ordinal` 均有唯一完整 click evidence，且 `held_count=unknown_count=terminal_shortfall=quantity_overflow_count=open_excess_count=0`、不存在影响该 ledger/ordinal 的 active `consistency_quarantine`。证据写入工单或 prod-diagnosis worklog；找到目标、验证码通过、assignment/Action 数达到目标或晚到 click 均不能替代该公式。
 
@@ -4006,7 +4003,7 @@ AI 活跃群 Planner 需要额外满足：
 
 > **2026-07-30 搜索 finalize 当前时间补充：** `SearchClickAssignmentEpoch` 的锁内最终提交必须在取得 Window → TaskAllocation → ShardAllocation → Reservation 锁后重新读取 `finalize_now`。求解开始时间和 epoch 创建时间仅作历史证据，不能用于判断 Window、重新枚举 eligibility、创建 Action 的 `scheduled_at` 或写 `finalized_at`。锁内已满足 `finalize_now >= bucket_end` 时，只能将整轮写为 `abandoned` 并释放全部未领取 unit，严禁在已经结束的 Window 上创建 assignment/Action。
 
-> **2026-07-31 验证码三路共识覆盖：** 极搜图片验证码对同一 immutable challenge 并行调用且只调用一次首个健康已审批多模态模型、Tesseract OCR 和 RapidOCR；`pyocr` 与 `pytesseract` 同属 Tesseract 包装，不能重复计为两票。每路先独立规范化算式最终值或数字字母串，并独立通过 callback 候选精确校验；只有三路中至少两路给出相同安全候选时才允许提交。Action 结果必须保存三路来源、脱敏状态、候选命中与最终共识，不保存验证码图片。任一路不可用不得伪装成票；不足两票保持 `required`。线上验证页只有十个答案 callback、没有独立刷新 callback；错误答案后机器人会自动返回新图片和新 fingerprint，系统只对该新 challenge 重新三路识别，不点击未知按钮、不重发关键词，也不把换图当作 `solved`。同 fingerprint 明确拒绝仍写 `failed`。
+> **2026-07-31 验证码在线脚本重设计覆盖：** 10 个不同生产账号已用独立脚本完成真实搜索、验证码、群分类、翻页、目标详情 RPC 和 `target_click_observed` 全流程；固定 10 图对比证明 Tesseract 不具备生产投票资格，生产三路改为首个健康多模态模型、RapidOCR、ddddOCR。两路 OCR 同票时立即提交并取消等待模型结果，分歧时只等待一个模型；同一引擎的多个图像变体只聚合成一票。无共识时仅在仍为 `verification_image_page` 的同一 Action/session 内重发冻结原关键词换取新 fingerprint，challenge 总预算复用 `SchedulingSetting.default_max_retries`。这是一条验证码页内换题协议，不放宽 hot-list、unknown 页禁止关键词重放的会话安全规则。只有远端通过或真实 `target_click_observed` 才能结算，脚本成功不替代正式 Action/Attempt 账本。
 
 > **2026-07-30 搜索账号并发口径补充：** `hard_safe_remaining_capacity` 是账号日剩余安全容量和系统排序输入，不是单账号 session 的并发量。同一 Claim Window 的搜索精确匹配必须同时应用 `account_session_inflight=1`，同一 epoch 每个账号最多绑定 1 条 assignment，再按容量、已确认量、最久未获机会和持久 cursor 选择其他账号；禁止把整批 Action 集中到一个账号。
 >

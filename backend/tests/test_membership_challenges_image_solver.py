@@ -1,5 +1,6 @@
 from types import SimpleNamespace
-from threading import Barrier
+from threading import Barrier, Event
+from time import monotonic
 
 import pytest
 
@@ -25,7 +26,7 @@ def _install_sources(
     *,
     model_answer: str = "10",
     model_confidence: float = 0.95,
-    tesseract_answer: str = "10",
+    ddddocr_answer: str = "10",
     rapidocr_answer: str = "9",
 ) -> list[int]:
     provider = SimpleNamespace(
@@ -59,19 +60,19 @@ def _install_sources(
     )
     monkeypatch.setattr(
         membership_challenges.image_verification_ocr,
-        "recognize_with_tesseract",
-        lambda _image: (tesseract_answer, 0.81),
+        "recognize_ddddocr_variants",
+        lambda _image: ((ddddocr_answer, 0.81),),
     )
     monkeypatch.setattr(
         membership_challenges.image_verification_ocr,
-        "recognize_with_rapidocr",
-        lambda _image: (rapidocr_answer, 0.88),
+        "recognize_rapidocr_variants",
+        lambda _image: ((rapidocr_answer, 0.88),),
     )
     return calls
 
 
 @pytest.mark.no_postgres
-def test_image_solver_accepts_model_and_tesseract_two_of_three(
+def test_image_solver_accepts_model_and_ddddocr_two_of_three(
     monkeypatch,
 ) -> None:
     calls = _install_sources(monkeypatch)
@@ -92,12 +93,12 @@ def test_image_solver_accepts_model_and_tesseract_two_of_three(
 
 
 @pytest.mark.no_postgres
-def test_image_solver_accepts_two_ocr_votes_when_model_is_unavailable(
+def test_image_solver_accepts_two_ocr_votes_without_waiting_model(
     monkeypatch,
 ) -> None:
     _install_sources(
         monkeypatch,
-        tesseract_answer="10",
+        ddddocr_answer="10",
         rapidocr_answer="10",
     )
     monkeypatch.setattr(
@@ -114,10 +115,11 @@ def test_image_solver_accepts_two_ocr_votes_when_model_is_unavailable(
     decision = solver(_request(["9", "10"]))
 
     assert decision.answer == "10"
-    assert decision.votes[0].status == "unavailable"
+    assert decision.model_waited is False
+    assert decision.votes[0].status == "not_waited"
     assert [vote.source for vote in decision.votes[1:]] == [
-        "tesseract",
         "rapidocr",
+        "ddddocr",
     ]
 
 
@@ -128,7 +130,7 @@ def test_image_solver_requires_consensus_instead_of_guessing(
     _install_sources(
         monkeypatch,
         model_answer="8",
-        tesseract_answer="9",
+        ddddocr_answer="9",
         rapidocr_answer="10",
     )
     solver = membership_challenges.build_search_join_image_verification_solver(
@@ -140,7 +142,7 @@ def test_image_solver_requires_consensus_instead_of_guessing(
     ) as raised:
         solver(_request(["8", "9", "10"]))
 
-    assert [vote.answer for vote in raised.value.votes] == ["8", "9", "10"]
+    assert [vote.answer for vote in raised.value.votes] == ["8", "10", "9"]
 
 
 @pytest.mark.no_postgres
@@ -150,7 +152,7 @@ def test_image_solver_rejects_two_matching_answers_outside_candidates(
     _install_sources(
         monkeypatch,
         model_answer="99",
-        tesseract_answer="99",
+        ddddocr_answer="99",
         rapidocr_answer="10",
     )
     solver = membership_challenges.build_search_join_image_verification_solver(
@@ -163,7 +165,7 @@ def test_image_solver_rejects_two_matching_answers_outside_candidates(
         solver(_request(["8", "9", "10"]))
 
     assert raised.value.votes[0].status == "unsafe"
-    assert raised.value.votes[1].status == "unsafe"
+    assert raised.value.votes[2].status == "unsafe"
 
 
 @pytest.mark.no_postgres
@@ -173,7 +175,7 @@ def test_image_solver_calculates_ocr_expression_before_consensus(
     _install_sources(
         monkeypatch,
         model_answer="19",
-        tesseract_answer="12 + 7 = ?",
+        ddddocr_answer="12 + 7 = ?",
         rapidocr_answer="12+7",
     )
     solver = membership_challenges.build_search_join_image_verification_solver(
@@ -183,7 +185,8 @@ def test_image_solver_calculates_ocr_expression_before_consensus(
     decision = solver(_request(["17", "18", "19"]))
 
     assert decision.answer == "19"
-    assert [vote.answer for vote in decision.votes] == ["19", "19", "19"]
+    assert [vote.answer for vote in decision.votes] == ["", "19", "19"]
+    assert decision.model_waited is False
 
 
 @pytest.mark.no_postgres
@@ -199,8 +202,8 @@ def test_image_solver_preserves_exact_string_prompt_and_value(
     _install_sources(
         monkeypatch,
         model_answer="A7B9",
-        tesseract_answer="A7 B9",
-        rapidocr_answer="A7B9",
+        ddddocr_answer="A7 B9",
+        rapidocr_answer="C3D1",
     )
 
     def solve(_provider, *_args, **kwargs):
@@ -233,7 +236,12 @@ def test_image_solver_uses_exact_math_prompt_without_candidates(
     monkeypatch,
 ) -> None:
     prompts: list[str] = []
-    _install_sources(monkeypatch, model_answer="0", tesseract_answer="0")
+    _install_sources(
+        monkeypatch,
+        model_answer="0",
+        ddddocr_answer="0",
+        rapidocr_answer="23",
+    )
 
     def solve(_provider, *_args, **kwargs):
         prompts.append(kwargs["prompt"])
@@ -285,13 +293,13 @@ def test_image_solver_uses_only_first_healthy_model(
     )
     monkeypatch.setattr(
         membership_challenges.image_verification_ocr,
-        "recognize_with_tesseract",
-        lambda _image: ("10", 0.8),
+        "recognize_ddddocr_variants",
+        lambda _image: (("10", 0.8),),
     )
     monkeypatch.setattr(
         membership_challenges.image_verification_ocr,
-        "recognize_with_rapidocr",
-        lambda _image: ("9", 0.8),
+        "recognize_rapidocr_variants",
+        lambda _image: (("9", 0.8),),
     )
     solver = membership_challenges.build_search_join_image_verification_solver(
         object(),
@@ -310,13 +318,13 @@ def test_image_solver_starts_three_sources_in_parallel(monkeypatch) -> None:
         barrier.wait()
         return SimpleNamespace(answer="10", confidence=0.95)
 
-    def tesseract(_image):
+    def ddddocr(_image):
         barrier.wait()
-        return "10", 0.80
+        return (("10", 0.80),)
 
     def rapidocr(_image):
         barrier.wait()
-        return "9", 0.80
+        return (("9", 0.80),)
 
     monkeypatch.setattr(
         membership_challenges.ai_gateway,
@@ -325,12 +333,12 @@ def test_image_solver_starts_three_sources_in_parallel(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         membership_challenges.image_verification_ocr,
-        "recognize_with_tesseract",
-        tesseract,
+        "recognize_ddddocr_variants",
+        ddddocr,
     )
     monkeypatch.setattr(
         membership_challenges.image_verification_ocr,
-        "recognize_with_rapidocr",
+        "recognize_rapidocr_variants",
         rapidocr,
     )
     solver = membership_challenges.build_search_join_image_verification_solver(
@@ -338,3 +346,51 @@ def test_image_solver_starts_three_sources_in_parallel(monkeypatch) -> None:
     )
 
     assert solver(_request(["9", "10"])).answer == "10"
+
+
+@pytest.mark.no_postgres
+def test_two_ocr_consensus_does_not_wait_for_model(monkeypatch) -> None:
+    _install_sources(
+        monkeypatch,
+        ddddocr_answer="10",
+        rapidocr_answer="10",
+    )
+    release_model = Event()
+
+    def slow_model(*_args, **_kwargs):
+        release_model.wait(timeout=1)
+        return SimpleNamespace(answer="9", confidence=0.95)
+
+    monkeypatch.setattr(
+        membership_challenges.ai_gateway,
+        "solve_image_verification",
+        slow_model,
+    )
+    solver = membership_challenges.build_search_join_image_verification_solver(
+        object(),
+    )
+
+    started = monotonic()
+    decision = solver(_request(["9", "10"]))
+    elapsed = monotonic() - started
+    release_model.set()
+
+    assert decision.answer == "10"
+    assert decision.model_waited is False
+    assert decision.votes[0].status == "not_waited"
+    assert elapsed < 0.5
+
+
+@pytest.mark.no_postgres
+def test_one_ocr_engine_variants_still_form_only_one_vote() -> None:
+    request = _request(["9", "10"])
+
+    vote = membership_challenges._ocr_vote(
+        "rapidocr",
+        lambda _image: (("10", 0.9), ("9", 0.9)),
+        0.5,
+        request,
+    )
+
+    assert vote.status == "unsafe"
+    assert vote.answer == ""

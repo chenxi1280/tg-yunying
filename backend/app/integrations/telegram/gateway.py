@@ -41,6 +41,7 @@ from app.telethon_lifecycle import TelethonClientLifecycle
 from .telethon_media import _parse_custom_emoji_source, _telegram_entity_length, send_media_segment
 from .telethon_utils import resolve_telethon_target, telethon_send_target
 from .search_join import (
+    DEFAULT_IMAGE_VERIFICATION_CHALLENGE_LIMIT,
     ensure_search_join_membership_with_client,
     execute_search_join_with_client,
     probe_search_join_membership_with_client,
@@ -1243,6 +1244,9 @@ class TelethonTelegramGateway(TelegramGateway):
         payload: dict[str, Any],
         keyword_text: str,
         image_verification_solver: Any = None,
+        image_verification_challenge_limit: int = (
+            DEFAULT_IMAGE_VERIFICATION_CHALLENGE_LIMIT
+        ),
     ) -> dict[str, Any]:
         raw_session = decrypt_session(session_ciphertext)
         if not raw_session:
@@ -1263,6 +1267,9 @@ class TelethonTelegramGateway(TelegramGateway):
             payload,
             keyword_text=keyword_text,
             image_verification_solver=image_verification_solver,
+            image_verification_challenge_limit=(
+                image_verification_challenge_limit
+            ),
         )
 
     def execute_search_join(
@@ -1273,6 +1280,9 @@ class TelethonTelegramGateway(TelegramGateway):
         credentials: DeveloperAppCredentials | None = None,
         keyword_text: str = "",
         image_verification_solver: Any = None,
+        image_verification_challenge_limit: int = (
+            DEFAULT_IMAGE_VERIFICATION_CHALLENGE_LIMIT
+        ),
     ) -> dict[str, Any]:
         return self._run(
             self._execute_search_join_async(
@@ -1281,6 +1291,7 @@ class TelethonTelegramGateway(TelegramGateway):
                 payload,
                 keyword_text,
                 image_verification_solver,
+                image_verification_challenge_limit,
             )
         )
 

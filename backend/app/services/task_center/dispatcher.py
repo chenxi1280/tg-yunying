@@ -6153,7 +6153,11 @@ def _dispatch_search_join(session: Session, action: Action, account: TgAccount, 
     image_solver = build_search_join_image_verification_solver(session)
     search_join_kwargs: dict[str, Any] = {}
     if image_solver is not None:
+        scheduling = get_scheduling_setting(session, action.tenant_id)
         search_join_kwargs["image_verification_solver"] = image_solver
+        search_join_kwargs["image_verification_challenge_limit"] = max(
+            1, scheduling.default_max_retries
+        )
     result = search_join(
         account.id,
         payload.model_dump(mode="json"),

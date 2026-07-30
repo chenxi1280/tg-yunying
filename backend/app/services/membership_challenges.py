@@ -32,8 +32,10 @@ from .ai_config import ai_provider_credentials
 from . import image_verification_ocr
 
 MIN_IMAGE_VERIFICATION_CONFIDENCE = 0.70
-TESSERACT_MIN_CONFIDENCE = 0.40
 RAPIDOCR_MIN_CONFIDENCE = 0.50
+DDDDOCR_MIN_CONFIDENCE = 0.50
+IMAGE_VERIFICATION_SOURCE_COUNT = 3
+IMAGE_VERIFICATION_CONSENSUS_COUNT = 2
 IMAGE_VERIFICATION_PROVIDER_SOURCES = ("mimo", "minimax")
 MIMO_V25_MODEL_MARKERS = ("mimo-v2.5", "mino-v2.5")
 MINIMAX_M3_MODEL_MARKERS = ("minimax-m3", "minimax m3")
@@ -524,7 +526,7 @@ def _question_hash(task: VerificationTask, image_message: dict[str, Any]) -> str
 def build_search_join_image_verification_solver(
     session: Session,
 ) -> SearchJoinImageVerificationSolver | None:
-    """构造一个模型加两个独立 OCR 引擎的 2/3 共识 solver。"""
+    """构造一个模型加 RapidOCR、ddddOCR 的 2/3 共识 solver。"""
     providers = sorted(_image_verification_providers(session), key=_image_verification_provider_priority)
     if not providers:
         return None
@@ -535,8 +537,7 @@ def build_search_join_image_verification_solver(
     ) -> ImageVerificationDecision | None:
         if not request.image_bytes:
             return None
-        votes = _collect_search_join_image_votes(credentials, request)
-        return _consensus_decision(votes)
+        return _collect_search_join_image_votes(credentials, request)
 
     return solver
 
@@ -544,30 +545,45 @@ def build_search_join_image_verification_solver(
 def _collect_search_join_image_votes(
     credentials: Any,
     request: ImageVerificationRequest,
-) -> tuple[ImageVerificationVote, ...]:
-    recognizers = (
-        (
-            _image_provider_label(credentials) if credentials else "multimodal",
-            lambda: _model_recognition(credentials, request),
-            MIN_IMAGE_VERIFICATION_CONFIDENCE,
-        ),
-        (
-            "tesseract",
-            lambda: image_verification_ocr.recognize_with_tesseract(request.image_bytes),
-            TESSERACT_MIN_CONFIDENCE,
-        ),
-        (
-            "rapidocr",
-            lambda: image_verification_ocr.recognize_with_rapidocr(request.image_bytes),
-            RAPIDOCR_MIN_CONFIDENCE,
-        ),
+) -> ImageVerificationDecision:
+    executor = ThreadPoolExecutor(
+        max_workers=IMAGE_VERIFICATION_SOURCE_COUNT
     )
-    with ThreadPoolExecutor(max_workers=len(recognizers)) as executor:
-        futures = [
-            executor.submit(_recognition_vote, source, recognize, threshold, request)
-            for source, recognize, threshold in recognizers
-        ]
-        return tuple(future.result() for future in futures)
+    model_source = _image_provider_label(credentials) if credentials else "multimodal"
+    model_future = executor.submit(
+        _recognition_vote,
+        model_source,
+        lambda: _model_recognition(credentials, request),
+        MIN_IMAGE_VERIFICATION_CONFIDENCE,
+        request,
+    )
+    rapid_future = executor.submit(
+        _ocr_vote,
+        "rapidocr",
+        image_verification_ocr.recognize_rapidocr_variants,
+        RAPIDOCR_MIN_CONFIDENCE,
+        request,
+    )
+    dddd_future = executor.submit(
+        _ocr_vote,
+        "ddddocr",
+        image_verification_ocr.recognize_ddddocr_variants,
+        DDDDOCR_MIN_CONFIDENCE,
+        request,
+    )
+    ocr_votes = (rapid_future.result(), dddd_future.result())
+    fast_decision = _consensus_or_none(ocr_votes)
+    if fast_decision is not None:
+        model_future.cancel()
+        executor.shutdown(wait=False, cancel_futures=True)
+        votes = (
+            ImageVerificationVote(model_source, "not_waited"),
+            *ocr_votes,
+        )
+        return _decision_with_votes(fast_decision.answer, votes, False)
+    model_vote = model_future.result()
+    executor.shutdown(wait=False, cancel_futures=True)
+    return _consensus_decision((model_vote, *ocr_votes))
 
 
 def _model_recognition(
@@ -607,24 +623,119 @@ def _recognition_vote(
     )
 
 
+def _ocr_vote(
+    source: str,
+    recognize: Callable[[bytes], tuple[tuple[str, float], ...]],
+    confidence_threshold: float,
+    request: ImageVerificationRequest,
+) -> ImageVerificationVote:
+    try:
+        results = recognize(request.image_bytes)
+    except Exception as exc:  # noqa: BLE001 - each source exposes its failure.
+        return ImageVerificationVote(
+            source, "unavailable", detail=exc.__class__.__name__
+        )
+    accepted = [
+        (answer, confidence)
+        for raw, confidence in results
+        if confidence >= confidence_threshold
+        for answer in [_normalized_ocr_candidate(raw, request)]
+        if answer
+    ]
+    answers = {answer for answer, _confidence in accepted}
+    if len(answers) != 1:
+        has_confident_result = any(
+            confidence >= confidence_threshold
+            for _raw, confidence in results
+        )
+        status = "unsafe" if has_confident_result else "low_confidence"
+        return ImageVerificationVote(source, status)
+    answer = answers.pop()
+    confidence = max(
+        score for candidate, score in accepted if candidate == answer
+    )
+    return ImageVerificationVote(
+        source, "accepted", answer, confidence, True
+    )
+
+
+def _normalized_ocr_candidate(
+    raw_answer: object,
+    request: ImageVerificationRequest,
+) -> str:
+    normalized = _normalize_recognition_answer(raw_answer, request)
+    if normalized in request.candidate_answers:
+        return normalized
+    if not _is_math_challenge(request):
+        return ""
+    return _candidate_constrained_math_answer(
+        str(raw_answer or ""),
+        request.candidate_answers,
+    )
+
+
+def _candidate_constrained_math_answer(
+    raw_answer: str,
+    candidate_answers: tuple[str, ...],
+) -> str:
+    digits = re.findall(r"\d", raw_answer)
+    if len(digits) < 2:
+        return ""
+    left, right = (int(value) for value in digits[:2])
+    possible = {
+        str(left + right),
+        str(left - right),
+        str(left * right),
+    }
+    if right and left % right == 0:
+        possible.add(str(left // right))
+    matches = possible.intersection(candidate_answers)
+    return next(iter(matches)) if len(matches) == 1 else ""
+
+
 def _consensus_decision(
     votes: tuple[ImageVerificationVote, ...],
 ) -> ImageVerificationDecision:
-    accepted = [vote for vote in votes if vote.status == "accepted"]
-    counts = Counter(vote.answer for vote in accepted)
-    if counts:
-        answer, count = counts.most_common(1)[0]
-        if count >= 2:
-            return ImageVerificationDecision(
-                answer=answer,
-                confidence=count / len(votes),
-                votes=votes,
-            )
+    decision = _consensus_or_none(votes)
+    if decision is not None:
+        return decision
     detail = "; ".join(
         f"{vote.source}:{vote.status}:in_candidates={str(vote.in_candidates).lower()}"
         for vote in votes
     )
     raise ImageVerificationConsensusUnavailableError(detail, votes)
+
+
+def _consensus_or_none(
+    votes: tuple[ImageVerificationVote, ...],
+) -> ImageVerificationDecision | None:
+    accepted = [vote for vote in votes if vote.status == "accepted"]
+    counts = Counter(vote.answer for vote in accepted)
+    if counts:
+        answer, count = counts.most_common(1)[0]
+        if count >= IMAGE_VERIFICATION_CONSENSUS_COUNT:
+            return ImageVerificationDecision(
+                answer=answer,
+                confidence=count / IMAGE_VERIFICATION_SOURCE_COUNT,
+                votes=votes,
+            )
+    return None
+
+
+def _decision_with_votes(
+    answer: str,
+    votes: tuple[ImageVerificationVote, ...],
+    model_waited: bool,
+) -> ImageVerificationDecision:
+    return ImageVerificationDecision(
+        answer=answer,
+        confidence=(
+            IMAGE_VERIFICATION_CONSENSUS_COUNT
+            / IMAGE_VERIFICATION_SOURCE_COUNT
+        ),
+        votes=votes,
+        model_waited=model_waited,
+    )
 
 
 def _normalize_recognition_answer(
