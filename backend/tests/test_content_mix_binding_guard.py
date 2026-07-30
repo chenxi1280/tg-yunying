@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.models import (
     Action,
@@ -117,6 +118,56 @@ def test_dispatch_finally_tolerates_missing_authoritative_quantity(
     assert action.result["error_code"] == "content_mix_binding_invalid"
 
 
+def test_dispatch_action_propagates_database_errors(monkeypatch) -> None:
+    action, session = _valid_binding()
+    finalizers: list[str] = []
+    monkeypatch.setattr(dispatcher, "_dispatch_account", lambda *_args: object())
+    monkeypatch.setattr(
+        dispatcher,
+        "validate_action_payload",
+        lambda *_args: (_ for _ in ()).throw(SQLAlchemyError("deadlock detected")),
+    )
+    monkeypatch.setattr(
+        dispatcher,
+        "_release_runtime_resources",
+        lambda *_args: finalizers.append("runtime"),
+    )
+    for function_name in _database_finalizers():
+        monkeypatch.setattr(
+            dispatcher,
+            function_name,
+            lambda *_args, current=function_name: finalizers.append(current),
+        )
+
+    with pytest.raises(SQLAlchemyError, match="deadlock detected"):
+        dispatcher.dispatch_action(
+            session,
+            action,
+            generation_dependencies=SimpleNamespace(),
+            comment_generation_dependencies=SimpleNamespace(),
+        )
+    assert finalizers == ["runtime"]
+
+
+def test_dispatch_action_releases_runtime_for_base_exception(monkeypatch) -> None:
+    action, session = _valid_binding()
+    released: list[str] = []
+    monkeypatch.setattr(
+        dispatcher,
+        "_dispatch_action",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(SystemExit()),
+    )
+    monkeypatch.setattr(
+        dispatcher,
+        "_release_runtime_resources",
+        lambda *_args: released.append("runtime"),
+    )
+
+    with pytest.raises(SystemExit):
+        dispatcher.dispatch_action(session, action)
+    assert released == ["runtime"]
+
+
 def test_content_mix_replan_locks_cycle_slots_for_concurrent_planners() -> None:
     session = SimpleNamespace(
         statement=None,
@@ -148,6 +199,18 @@ def _non_content_mix_finalizers() -> tuple[str, ...]:
         "_release_runtime_resources",
         "release_dispatch_claim",
         "_sync_action_coverage_state",
+        "_sync_comment_fulfillment_state",
+        "_sync_channel_fulfillment_state",
+        "_sync_all_account_membership_state",
+        "_sync_search_click_target_progress",
+    )
+
+
+def _database_finalizers() -> tuple[str, ...]:
+    return (
+        "release_dispatch_claim",
+        "_sync_action_coverage_state",
+        "_sync_action_content_mix_state",
         "_sync_comment_fulfillment_state",
         "_sync_channel_fulfillment_state",
         "_sync_all_account_membership_state",

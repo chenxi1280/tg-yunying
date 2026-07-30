@@ -94,7 +94,9 @@ from .fulfillment_takeover import (
     normalize_fulfillment_pacing,
     takeover_task,
 )
-from .fulfillment_takeover_actions import retire_unbound_legacy_actions
+from .fulfillment_takeover_actions import (
+    retire_unbound_legacy_actions_for_planner,
+)
 from .search_rank_deboost_pacing import DeboostPacingStats, account_click_allowed, deboost_pacing_window, lock_rank_deboost_quota_scope
 from .search_rank_deboost_reservations import (
     mark_reserved_reservation_unknown,
@@ -3311,10 +3313,12 @@ def _plan_due_task_batch(
         retried = retry_failed_actions(session, task, limit=max(1, limit))
         processed = retried
         current_global_pending += max(0, int(retried))
-        has_open_actions, open_actions_are_future = _open_actions_state(session, task)
-        if has_open_actions:
-            processed += prepare_open_actions_for_planning(session, task)
-            has_open_actions, open_actions_are_future = _open_actions_state(session, task)
+        task, prepared, has_open_actions, open_actions_are_future = (
+            _prepare_task_planning_transaction(session, task)
+        )
+        processed += prepared
+        if task is None:
+            return processed, 0, False, current_global_pending
         open_actions_allow_planning = has_open_actions and requires_planning_with_open_actions(session, task)
         if _skip_open_ai_plan(session, task, has_open_actions, allow_planning=open_actions_allow_planning):
             session.commit()
@@ -3334,6 +3338,26 @@ def _plan_due_task_batch(
         return processed, planned, False, current_global_pending
 
 
+def _prepare_task_planning_transaction(
+    session: Session,
+    task: Task,
+) -> tuple[Task | None, int, bool, bool]:
+    has_open_actions, open_actions_are_future = _open_actions_state(session, task)
+    prepared = 0
+    if has_open_actions:
+        prepared = prepare_open_actions_for_planning(session, task)
+        has_open_actions, open_actions_are_future = _open_actions_state(session, task)
+    if task.type != "group_ai_chat":
+        return task, prepared, has_open_actions, open_actions_are_future
+    task_id = task.id
+    session.commit()
+    reloaded = session.get(Task, task_id, populate_existing=True)
+    if reloaded is None or reloaded.status != "running":
+        return None, prepared, False, False
+    has_open_actions, open_actions_are_future = _open_actions_state(session, reloaded)
+    return reloaded, prepared, has_open_actions, open_actions_are_future
+
+
 def _takeover_before_retry(
     session: Session,
     task: Task,
@@ -3347,7 +3371,7 @@ def _takeover_before_retry(
     ):
         return current_global_pending
     before = _task_open_action_count(session, task)
-    retire_unbound_legacy_actions(session, task)
+    retire_unbound_legacy_actions_for_planner(session, task)
     after = _task_open_action_count(session, task)
     return max(0, current_global_pending - max(0, before - after))
 

@@ -12,7 +12,7 @@ from uuid import uuid4
 from datetime import date, datetime, timedelta
 
 from sqlalchemy import case, func, or_, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, aliased, object_session
 from pydantic import ValidationError
 
@@ -451,21 +451,28 @@ def dispatch_action(
     comment_generation_dependencies: CommentGenerationDependencies = PRODUCTION_COMMENT_GENERATION_DEPENDENCIES,
 ) -> bool:
     try:
-        return _dispatch_action(
+        dispatched = _dispatch_action(
             session,
             action,
             generation_dependencies=generation_dependencies,
             comment_generation_dependencies=comment_generation_dependencies,
         )
-    finally:
+    except BaseException:
         _release_runtime_resources(action)
-        release_dispatch_claim(session, action)
-        _sync_action_coverage_state(session, action)
-        _sync_action_content_mix_state(session, action)
-        _sync_comment_fulfillment_state(session, action)
-        _sync_channel_fulfillment_state(session, action)
-        _sync_all_account_membership_state(session, action)
-        _sync_search_click_target_progress(session, action)
+        raise
+    _finalize_dispatch_action(session, action)
+    return dispatched
+
+
+def _finalize_dispatch_action(session: Session, action: Action) -> None:
+    _release_runtime_resources(action)
+    release_dispatch_claim(session, action)
+    _sync_action_coverage_state(session, action)
+    _sync_action_content_mix_state(session, action)
+    _sync_comment_fulfillment_state(session, action)
+    _sync_channel_fulfillment_state(session, action)
+    _sync_all_account_membership_state(session, action)
+    _sync_search_click_target_progress(session, action)
 
 
 def _sync_search_click_target_progress(session: Session, action: Action) -> None:
@@ -777,6 +784,8 @@ def _dispatch_action(
         _update_reply_payload_error_stats(action)
         _fail(action, FailureType.UNKNOWN.value, payload_error_message(exc))
         return True
+    except SQLAlchemyError:
+        raise
     except Exception as exc:  # noqa: BLE001 - worker must keep draining.
         detail = str(exc).strip() or type(exc).__name__
         if _gateway_call_started(session, action):

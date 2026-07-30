@@ -192,7 +192,7 @@ RECENT_PLANNED_AI_STATUSES = ("pending", "claiming", "executing", "unknown_after
 RECENT_TARGET_USAGE_STATUSES = (*RECENT_PLANNED_AI_STATUSES, "success")
 RECENT_TARGET_USAGE_MEMORY_STATUSES = ("reserved", "success", "unknown_after_send")
 RECENT_TARGET_USAGE_SCAN_LIMIT = 120
-VOICE_PROFILE_REPLAN_OPEN_STATUSES = ("pending", "claiming", "retryable_failed")
+VOICE_PROFILE_REPLAN_OPEN_STATUSES = ("pending", "retryable_failed")
 ACTIVE_PROFILE_MATCH_SCORE = 100
 UNAVAILABLE_PROFILE_MATCH_SCORE = 0
 CAUTIOUS_STANCE_MARKERS = ("观望", "质疑", "别突然强夸", "保留", "再看看", "谨慎")
@@ -3986,7 +3986,7 @@ def _expire_open_profileless_actions(session: Session, task: Task, active_profil
                 Action.action_type == "send_message",
                 Action.status.in_(VOICE_PROFILE_REPLAN_OPEN_STATUSES),
                 Action.account_id.in_(account_ids),
-            )
+            ).with_for_update(skip_locked=True, of=Action)
         )
     )
     expired = 0
@@ -4062,6 +4062,7 @@ def _open_hard_hourly_actions_for_distribution_replan(session: Session, task: Ta
             Action.status.in_(VOICE_PROFILE_REPLAN_OPEN_STATUSES),
         )
         .order_by(Action.scheduled_at.asc().nullslast(), Action.id.asc())
+        .with_for_update(skip_locked=True, of=Action)
     )
     return [action for action in rows if _action_is_hard_hourly_target(action)]
 
