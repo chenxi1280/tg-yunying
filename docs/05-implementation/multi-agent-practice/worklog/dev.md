@@ -498,3 +498,12 @@
 - evidence: no-PostgreSQL retention/capacity/recovery 组合 `109 passed`；真 PostgreSQL 外键矩阵补充 hard-hourly credit 与 variation intent，进入 CI。
 - decision: `development_complete=true`；与 Listener 锁序修复合并进入第三次 Release Gate。
 - unresolved: CI 真 PostgreSQL与生产 Recovery 成功 checkpoint。
+
+## 2026-07-31 日覆盖引用短缺回补 Development Complete
+
+- message_id: `2026-07-31-ai-coverage-reply-shortfall-dev-004`
+- root_cause: 到期 all-accounts daily debt 与普通聊天共用 reply_min 短缺终止分支，导致郑州师范 298 条 ready coverage 无 send Action。
+- output: 引用池不足且存在日覆盖债务时返回空引用集合，由现有 slot 生成逻辑创建 direct coverage Action；普通无债务轮次仍返回 PlanAbort。
+- evidence: 新增债务/普通双分支测试；AI 群日目标、覆盖、数据流和生成组合 `82 passed`。
+- decision: `development_complete=true`；进入第四次 Release Gate。
+- unresolved: CI 与郑州师范生产远端增长。

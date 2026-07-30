@@ -400,3 +400,10 @@
 - evidence: retention、capacity、Recovery no-PostgreSQL 组合 `109 passed`；PostgreSQL 外键用例新增 `TaskHardHourlyDeliveryCredit` 删除和 `AiCoverageVariationIntent.action_id` 置空断言。
 - decision: 本地定向 `qa_pass=true`；不降低留存、不删除 coverage/intention 审计事实。
 - unresolved: GitHub Actions 真 PostgreSQL与生产重复外键错误归零。
+
+## 2026-07-31 日覆盖引用短缺回补定向 re-QA
+
+- message_id: `2026-07-31-ai-coverage-reply-shortfall-qa-004`
+- evidence: 日覆盖债务在 reply_min 不足时得到 direct slots，普通轮次继续等待；相关 AI 群日目标、覆盖、Planner 和生成组合 `82 passed`。
+- decision: 定向 `qa_pass=true`；没有降低普通引用要求，也未绕过准入、质量或发送门禁。
+- unresolved: 第四次 CI/发布和郑州师范远端证据。

@@ -1999,6 +1999,7 @@ def _reply_targets_for_plan(
         stats_inc(task, "reply_target_shortfall_count")
         if daily_coverage_debt:
             stats_inc(task, "coverage_reply_shortfall_cycle_count")
+            return []
         task.last_error = "可引用消息不足，等待监听到可回复消息后继续执行"
         return None
     return reply_target_pool[:reply_min]

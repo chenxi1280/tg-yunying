@@ -298,3 +298,11 @@
 - root: Action retention 已覆盖 Attempt、Review、Coverage、Membership 和搜索预约，但遗漏 hard-hourly delivery credit；整批回滚后没有 checkpoint，下一轮立即再次命中。
 - decision: 不关闭外键、不缩短留存、不删除 coverage 审计；补齐从属 credit 删除和 variation intent 可空引用解除后走 Release Gate。
 - unresolved: 第三次部署后外键错误归零、成功 cleanup audit/checkpoint。
+
+## 2026-07-31 郑州师范引用短缺阻断日覆盖
+
+- message_id: `2026-07-31-zhengzhou-teacher-reply-shortfall-prod-005`
+- evidence: 第三版上线后 deadlocks 维持 29、retention 连续成功，但郑州师范 confirmed=18、ready=298、最新远端成功停在 01:14；Task.last_error 为“可引用消息不足”，没有 open send_message，仅有 membership Action。
+- root: `_reply_targets_for_plan` 在 `reply_min_per_round` 不足时，即使 `daily_coverage_debt=true` 也返回 PlanAbort；代码只累计 `coverage_reply_shortfall_cycle_count`，没有按既有产品合同转换为 direct coverage 回补轮次。
+- decision: 保留无债务普通轮次的 reply_min 门禁；仅对已到期日覆盖债务返回 direct slots，继续完整准入、质量和 Gateway 链路。
+- unresolved: 第四次 Release Gate 和郑州师范新 send Action/remote_message_id。
