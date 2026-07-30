@@ -314,3 +314,11 @@
 - root: `ensure_send_message_content` 对非空 ready 正文提前返回，绕过 `_refresh_normal_context`；Phase B 的“生成时最新”不足以保证排队后的“Gateway 前最新”。
 - decision: 保持 reply 冻结；normal ready Action 在 Gateway 前只对时间顺序更晚的真人上下文失效旧记忆并原槽重生成。倒序补录旧消息、非 AI 兼容正文不触发。
 - unresolved: 第八次 Release Gate 和生产新镜像行为证据。
+
+## 2026-07-31 Dispatcher Window 跨 epoch 聚合漂移
+
+- message_id: `2026-07-31-dispatch-window-cross-epoch-prod-007`
+- evidence: release `9f97dfe1` 后五条 `dispatch_release_window_unclaimed_negative` 均被 quarantine/recount 成功 resolve，Dispatcher 无 traceback；但 03:34、03:38 Window 仍读到负 unclaimed，且当前 epoch shard sum 为正。郑州大学、师范已出现发布后真实 remote id，admission backlog 大幅恢复，故本条只阻断共享计数 E4。
+- root: Window rebuild totals 只含新 epoch，漏掉旧 epoch 仍有效的预绑定 Reservation；旧 Action 后续扣减造成负数和低占用假象。
+- decision: 首版不能写 `production_fixed`；进入跨 epoch totals rework 并走第二次 Release Gate。
+- unresolved: 新镜像上线后连续新 Window 非负、Window unclaimed 等于所有有效 allocation 汇总、同类 quarantine 零增量。

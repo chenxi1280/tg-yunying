@@ -535,3 +535,12 @@
 - evidence: 新增 5 条线上根因红测，修复前 `4 failed / 1 passed`；修复后综合 no-PostgreSQL 回归 `136 passed / 38 deselected`，compileall、diff-check 通过。
 - decision: `development_complete=true`；无 schema migration，进入 QA。
 - unresolved: GitHub Actions 真 PostgreSQL、生产镜像、当前日 generation-contract 人工批准恢复、Dispatcher 零异常增量和三个任务真实远端增长。
+
+## 2026-07-31 Dispatcher 跨 epoch Window 聚合 Development Rework
+
+- message_id: `2026-07-31-dispatch-window-cross-epoch-dev-002`
+- production_evidence: 首版 `9f97dfe1` 已恢复 admission 与真实发送，但新 Window 一度出现 `window unclaimed=-1`、当前 shard sum 为正；5 条 window-negative quarantine 均 resolved，证明 drain 不再崩溃但聚合根因未消除。
+- root_cause: rebuild 发布 totals 时只汇总新 epoch allocation，旧 epoch 仍可领取的 bound/unclaimed Reservation 被漏出 Window；旧预绑定 Action 随后 confirm/release 继续扣同一 Window。
+- output: rebuild 可分配容量先扣旧 epoch 保留 unclaimed；发布 totals 合并旧、新 allocation；每轮 current-epoch reservation reconciliation 后再次按所有 allocation 校准 Window 总量。
+- evidence: 生产形态红测修复前 `window=0` 而旧 allocation=5；修复后跨 epoch 保留为 5，Dispatcher/search release 组合 `48 passed`。
+- decision: `development_complete=true`；进入紧急 re-QA/Release Gate。

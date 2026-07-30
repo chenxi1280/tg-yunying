@@ -45,7 +45,12 @@ def allocate_window(
         demands,
         allocations,
     )
-    available = max(0, int(scope.claim_capacity) - int(scope.active_claim_count))
+    available = max(
+        0,
+        int(scope.claim_capacity)
+        - int(scope.active_claim_count)
+        - int(window.unclaimed_allocated_count),
+    )
     grants = _allocate_demands(demands, available, opportunity_cursor)
     _persist_allocations(
         session,
@@ -292,7 +297,14 @@ def _persist_allocations(
         )
         _write_reservation(reservation, demand, int(grants.get(demand.key, 0)))
     _write_task_allocation_totals(task_allocation_map, demands, grants)
-    _write_allocation_totals(window, allocation_map, demands, grants, epoch)
+    _write_allocation_totals(
+        window,
+        allocation_map,
+        allocations,
+        demands,
+        grants,
+        epoch,
+    )
 
 
 def _allocation_map(
@@ -436,6 +448,7 @@ def _write_task_allocation_totals(
 def _write_allocation_totals(
     window: DispatchClaimWindow,
     allocations: Mapping[tuple[int, int], DispatchClaimShardAllocation],
+    prior_allocations: list[DispatchClaimShardAllocation],
     demands: list[DispatchClaimDemand],
     grants: Mapping[tuple[int, str, str, int, int], int],
     epoch: int,
@@ -449,10 +462,10 @@ def _write_allocation_totals(
         allocation.unclaimed_allocated_count = sum(int(grants[demand.key]) for demand in rows)
         allocation.reason = "allocated" if allocation.unclaimed_allocated_count else SHARED_CAPACITY_ERROR
         allocation.version += 1
+    all_allocations = {row.id: row for row in prior_allocations}
+    all_allocations.update({row.id: row for row in allocations.values()})
     window.unclaimed_allocated_count = sum(
-        row.unclaimed_allocated_count
-        for row in allocations.values()
-        if row.dispatch_allocation_epoch == epoch
+        row.unclaimed_allocated_count for row in all_allocations.values()
     )
     window.allocation_epoch = epoch
     window.version += 1

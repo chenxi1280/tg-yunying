@@ -11,6 +11,7 @@ from app.database import Base
 from app.models import Action, DispatchClaimReservation, DispatchClaimScope, DispatchClaimShardAllocation, DispatchClaimWindow, GroupBotAdmission, Task, Tenant, TgAccount
 from app.services._common import _now
 from app.services.task_center import dispatcher
+from app.services.task_center.dispatch_claim_allocation import allocate_window
 from app.services.task_center.dispatch_claim_selection import build_demands
 from app.services.task_center.dispatch_claim_types import DispatchActionCandidate
 from app.services.task_center import account_pool
@@ -64,6 +65,44 @@ def test_strict_search_and_hard_hourly_receive_persisted_claim_reservations(monk
         session.flush()
         assert window.active_claim_count == 0
         assert sum(row.active_claim_count for row in allocations) == 0
+
+
+def test_rebuild_preserves_unclaimed_reservations_from_prior_epoch() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now().replace(second=0, microsecond=0)
+
+    with Session(engine) as session:
+        scope = DispatchClaimScope(
+            dispatcher_scope="task_center_dispatch",
+            claim_capacity=52,
+        )
+        window = DispatchClaimWindow(
+            dispatcher_scope="task_center_dispatch",
+            bucket_start=now_value,
+            bucket_end=now_value + timedelta(minutes=1),
+            claim_capacity=52,
+            allocation_epoch=1,
+            allocation_state="rebuild_required",
+            unclaimed_allocated_count=5,
+        )
+        session.add_all([scope, window])
+        session.flush()
+        allocation = DispatchClaimShardAllocation(
+            dispatch_claim_window_id=window.id,
+            dispatch_allocation_epoch=1,
+            account_shard_total=1,
+            account_shard_index=0,
+            unclaimed_allocated_count=5,
+        )
+        session.add(allocation)
+        session.flush()
+
+        allocate_window(session, scope, window, [allocation], [])
+
+        assert window.allocation_epoch == 2
+        assert window.unclaimed_allocated_count == 5
+        assert allocation.unclaimed_allocated_count == 5
 
 
 def test_no_task_type_has_a_fixed_global_reserved_share() -> None:

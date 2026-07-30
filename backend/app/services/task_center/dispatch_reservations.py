@@ -36,7 +36,10 @@ from .dispatch_claim_ledger import (
     window_for_update,
     window_reservations,
 )
-from .dispatch_claim_reconciliation import reconcile_window_unclaimed
+from .dispatch_claim_reconciliation import (
+    reconcile_window_unclaimed,
+    sync_window_unclaimed_total,
+)
 from .dispatch_claim_selection import build_demands, plan_from_reservations, tasks_by_id
 from .dispatch_claim_types import (
     DispatchClaimBinding,
@@ -209,6 +212,7 @@ def _reconciled_release_count(
         reservations=reservations,
         now=now,
     )
+    sync_window_unclaimed_total(window, all_allocations)
     released_count += active_release_count
     released_count += int(window.pending_rebuild_release_count or 0)
     return released_count, reservations
