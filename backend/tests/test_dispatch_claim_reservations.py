@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import create_engine, inspect, select
+from sqlalchemy import create_engine, event, inspect, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
@@ -351,6 +351,87 @@ def test_ordinary_candidate_scan_keeps_each_due_task_visible(monkeypatch) -> Non
         )
 
         assert "ready" in {action.id for action in rows}
+
+
+def test_bounded_candidate_scan_does_not_rank_entire_due_action_set(
+    monkeypatch,
+) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    settings = _settings(dispatcher_concurrency=2)
+    statements: list[str] = []
+    monkeypatch.setattr(dispatcher, "get_settings", lambda: settings)
+    event.listen(
+        engine,
+        "before_cursor_execute",
+        lambda _conn, _cursor, statement, _parameters, _context, _many: (
+            statements.append(statement)
+        ),
+    )
+
+    with Session(engine) as session:
+        _seed_strict_actions(session, _now())
+        dispatcher._dispatch_claim_window_actions(
+            session,
+            [Action.status == "pending", Action.scheduled_at <= _now()],
+            settings=settings,
+            now_value=_now(),
+            force_ordinary_tenants=set(),
+        )
+
+    candidate_sql = " ".join(statement.lower() for statement in statements)
+    assert "actions" in candidate_sql
+    assert "row_number" not in candidate_sql
+
+
+def test_dispatcher_claim_filters_out_unprepared_ai_generation() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    with Session(engine) as session:
+        session.add_all([
+            Tenant(id=1, name="tenant"),
+            Task(
+                id="ai-generation-task",
+                tenant_id=1,
+                name="AI生成前置",
+                type="group_ai_chat",
+                status="running",
+            ),
+        ])
+        session.add_all([
+            Action(
+                id="generation-pending",
+                tenant_id=1,
+                task_id="ai-generation-task",
+                task_type="group_ai_chat",
+                action_type="send_message",
+                account_id=11,
+                status="pending",
+                scheduled_at=now_value,
+                payload={"message_text": "", "ai_generation_status": "pending"},
+            ),
+            Action(
+                id="generation-ready",
+                tenant_id=1,
+                task_id="ai-generation-task",
+                task_type="group_ai_chat",
+                action_type="send_message",
+                account_id=12,
+                status="pending",
+                scheduled_at=now_value,
+                payload={"message_text": "已生成", "ai_generation_status": "ready"},
+            ),
+        ])
+        session.flush()
+
+        rows = list(session.scalars(
+            select(Action)
+            .join(Task, Task.id == Action.task_id)
+            .where(*dispatcher._claim_base_filters(now_value, None))
+        ))
+
+    assert [row.id for row in rows] == ["generation-ready"]
 
 
 def test_group_ai_membership_backlog_keeps_send_candidate_visible(monkeypatch) -> None:

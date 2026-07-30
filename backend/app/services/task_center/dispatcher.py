@@ -1140,13 +1140,30 @@ def _select_claim_candidates(
 
 
 def _claim_base_filters(now_value: datetime, exclude_task_ids: set[str] | None) -> list:
-    filters = [Action.status == "pending", Action.scheduled_at <= now_value, Task.status == "running", Task.deleted_at.is_(None)]
+    filters = [
+        Action.status == "pending",
+        Action.scheduled_at <= now_value,
+        Task.status == "running",
+        Task.deleted_at.is_(None),
+        _ai_send_content_is_ready(),
+    ]
     if exclude_task_ids:
         filters.append(Action.task_id.not_in(exclude_task_ids))
     if _legacy_review_enabled():
         pending_review = select(ReviewQueue.id).where(ReviewQueue.action_id == Action.id, ReviewQueue.status == "pending").exists()
         filters.append(~pending_review)
     return filters
+
+
+def _ai_send_content_is_ready():
+    message_text = Action.payload["message_text"].as_string()
+    generation_status = Action.payload["ai_generation_status"].as_string()
+    return or_(
+        Action.task_type != "group_ai_chat",
+        Action.action_type != "send_message",
+        func.coalesce(message_text, "") != "",
+        func.coalesce(generation_status, "") == "",
+    )
 
 
 def _claim_shard_filters(base_filters: list, shard_total: int, shard_index: int) -> list:
@@ -1198,33 +1215,73 @@ def _dispatch_claim_window_actions(
 ) -> list[DispatchActionCandidate]:
     capacity = dispatcher_claim_capacity(settings, _setting(settings, "action_claim_limit", 100))
     projection = _dispatch_claim_window_projection()
-    strict_statement = (
+    rows: list[DispatchActionCandidate] = []
+    for task_id in _due_claim_task_ids(session, filters):
+        rows.extend(_projected_claim_window_actions(
+            session,
+            _bounded_task_claim_statement(
+                projection,
+                filters,
+                task_id=task_id,
+                capacity=capacity,
+                strict=True,
+                force_ordinary_tenants=force_ordinary_tenants,
+                now_value=now_value,
+            ),
+        ))
+        rows.extend(_projected_claim_window_actions(
+            session,
+            _bounded_task_claim_statement(
+                projection,
+                filters,
+                task_id=task_id,
+                capacity=capacity,
+                strict=False,
+                force_ordinary_tenants=force_ordinary_tenants,
+                now_value=now_value,
+            ),
+        ))
+    return list({action.id: action for action in rows}.values())
+
+
+def _due_claim_task_ids(session: Session, filters: list) -> list[str]:
+    return list(session.scalars(
+        select(Action.task_id)
+        .join(Task, Task.id == Action.task_id)
+        .where(*filters)
+        .distinct()
+        .order_by(Action.task_id)
+    ))
+
+
+def _bounded_task_claim_statement(
+    projection,
+    filters: list,
+    *,
+    task_id: str,
+    capacity: int,
+    strict: bool,
+    force_ordinary_tenants: set[int],
+    now_value: datetime,
+):
+    strict_condition = _strict_dispatch_claim_condition()
+    class_condition = (
+        strict_condition
+        if strict
+        else func.coalesce(strict_condition, False).is_(False)
+    )
+    ordering = (
+        (Action.scheduled_at.asc(), Action.created_at.asc(), Action.id.asc())
+        if strict
+        else claim_action_ordering(force_ordinary_tenants, now_value)
+    )
+    return (
         select(*projection)
         .join(Task, Task.id == Action.task_id)
-        .where(*filters, _strict_dispatch_claim_condition())
-        .order_by(Action.scheduled_at.asc(), Action.created_at.asc(), Action.id.asc())
+        .where(*filters, Action.task_id == task_id, class_condition)
+        .order_by(*ordering)
+        .limit(capacity)
     )
-    ordinary_ranked = (
-        select(
-            Action.id.label("action_id"),
-            func.row_number().over(
-                partition_by=(Action.tenant_id, Action.task_id),
-                order_by=claim_action_ordering(force_ordinary_tenants, now_value),
-            ).label("task_rank"),
-        )
-        .join(Task, Task.id == Action.task_id)
-        .where(*filters, func.coalesce(_strict_dispatch_claim_condition(), False).is_(False))
-        .subquery()
-    )
-    ordinary_statement = select(*projection).join(
-        ordinary_ranked,
-        ordinary_ranked.c.action_id == Action.id,
-    ).where(ordinary_ranked.c.task_rank <= capacity)
-    rows = _projected_claim_window_actions(
-        session,
-        strict_statement,
-    ) + _projected_claim_window_actions(session, ordinary_statement)
-    return list({action.id: action for action in rows}.values())
 
 
 def _dispatch_claim_window_projection():

@@ -8,11 +8,11 @@
 | 需求级别 | L3：生产任务长期无法按时按量完成 |
 | 适用任务 | `group_ai_chat`、`channel_comment`、`channel_like`、`channel_view`、纯搜索点击 `task_type=search_click + search_execution_mode=click_only` |
 | 设计状态 | `complete` |
-| 设计复核 | 2026-07-29 已补齐生产运行中任务自动接管、旧混合搜索转纯点击、热搜失败 12 小时路径排除、任务级软上限统一归一化、Dispatcher 稳定 Window、AI 准入账号级并行及自然日 deadline 收口；发送门禁修复不改变 AI 活群/评论的引用、图片、表情与普通 emoji 内容占比 |
+| 设计复核 | 2026-07-30 已补齐 AI 历史积压运营放弃、runtime retention 吞吐、Dispatcher 有界候选读取、AI 生成独立 worker、极搜非首次会话禁止重复 `/start`，并保留热搜/验证码安全排除 |
 | 开发交接 | `dev_handoff_ready=true`；2026-07-29 最新完成优先合同 supersede “存量只审计不接管”和“小任务级上限可截断履约”，必须按本文完成代码、存量数据接管和生产 E4 |
 | 生产状态 | `production_unproven`；容器健康、Action 创建或本地测试均不代表恢复 |
 | 统计时区 | 默认 `Asia/Shanghai`，实际以 `Task.timezone` 为准 |
-| 证据基线 | 2026-07-28 生产只读取证与当前 `release` 实现审查 |
+| 证据基线 | 2026-07-30 生产 SSH、PostgreSQL、py-spy、当前生产 SHA `1f7db0ca` 与 `origin/master` 实现审查 |
 
 本文是五类任务共同履约、调度、前端展示和生产验收的当前专项真相源。各任务原有安全、内容和协议专项继续有效，但冲突时按下列优先级解释：
 
@@ -55,6 +55,18 @@
 - Telegram 权限、管理员审批、SlowMode、FloodWait、目标不支持评论/reaction 或 CAPTCHA 识别失败。
 
 这些外部条件必须在运行态按影响范围显示为 `at_risk|waiting_*|blocked`，不能阻止合法任务创建，也不能通过放宽安全限额、伪造成功或无限建单掩盖。
+
+### 2.3 2026-07-30 生产过载补正
+
+本节 supersede 与以下五项冲突的旧实现口径：
+
+1. **AI 历史积压运营放弃。** 运营可对明确 cutoff 前、`task_type=group_ai_chat + action_type=send_message`、仍在 `pending|claiming|executing|retryable_failed` 且没有 `gateway_call_started_at` 的 Action 执行 `operator_abandoned_historical_backlog`。一次 apply 必须先冻结精确候选集，再在同一事务把对应 `TaskGroupDailyMessageSlot` 和 `ContentMixCycleSlot` 终结为 `terminal`、内容义务记为 `shortfall`、coverage 记为 `abandoned`，最后删除 Action 并写逐 Task 审计。已经进入 Gateway、`unknown_after_send`、成功事实和未来 Action 永不进入该操作。`abandoned` 不计成功、不重建、不补发，只影响本期 ledger；下一自然日仍按新 ledger 正常规划。
+2. **runtime retention。** 过期 runtime 只清理 terminal Action，禁止把仍承载未完成业务义务的 open Action 当作空间回收对象。候选查询只投影汇总、引用清理和删除所需列，不水合 payload/result；独立配置 batch size 与 interval，不能继续复用 Recovery 的通用 `limit=100`。生产默认每分钟处理最多 2,000 个 terminal Action，每批独立提交并保留 `RuntimeCleanupAudit`。
+3. **Dispatcher 有界候选读取。** Scope 锁后先读取具有 due Action 的 running Task ID，再按每个 Task、每个 strict/ordinary 类别最多 `scope capacity` 条读取候选。SQL 禁止对整张 due actions 集执行 `row_number/window sort/Gather Merge`；任一 Task 在本轮最多需要 scope capacity 条候选，因此该有界读取不改变中央公平、Reservation 或最终 claim 结果。
+4. **AI 生成与发送解耦。** `ai-generation` worker 独占领取 `group_ai_chat` 中正文为空且 `ai_generation_status=pending|ai_result_persist_unknown` 的 pre-Gateway Action，执行现有 Phase A/B/C 生成和持久化。Dispatcher 只领取 `message_text` 已持久化或确定性 check-in 已准备完成的发送 Action，禁止在 Dispatcher 线程调用 AI Provider。生成 worker 失败必须显式写原有生成错误或签到结果；不得让未生成 Action 回落到 Dispatcher 同步生成。
+5. **极搜首次会话启动。** 每个搜索 Attempt 发送关键词前先只读检查与极搜是否已有会话历史；仅从未交互的账号发送一次 `/start`。已有会话直接发送关键词，禁止每个 Attempt 重复 `/start` 把会话推回 hot-list。响应仍按审批 profile 分类；hot-list、未知页、验证码失败继续显式失败并进入既有 12 小时安全排除，不执行 reset、不点击未知按钮。
+
+上述补正的生产验收相互独立：AI backlog apply 成功不代表代码修复完成；代码发布成功不代表 view/AI/search 真实履约恢复。只有 Action、ExecutionAttempt、远端 ID/click evidence 和生产负载共同满足时才可写 `production_fixed`。
 
 ## 3. 产品目标与非目标
 

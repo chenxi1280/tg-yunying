@@ -154,11 +154,14 @@ async def _execute_search_pages(
 ) -> dict[str, Any]:
     bot = bot_username.strip().lstrip("@")
     protocol_profile = payload.get("approved_protocol_profile")
+    jisou = is_jisou_bot(bot)
+    bootstrap_required = not await _has_jisou_conversation_history(client, bot) if jisou else True
     async with client.conversation(bot, timeout=60) as conv:
         page, recovery = await _initial_search_page(
             conv,
             keyword_text,
-            jisou=is_jisou_bot(bot),
+            jisou=jisou,
+            bootstrap_required=bootstrap_required,
             protocol_profile=protocol_profile,
         )
         result = await _execute_search_result_pages(
@@ -178,10 +181,12 @@ async def _initial_search_page(
     keyword_text: str,
     *,
     jisou: bool,
+    bootstrap_required: bool,
     protocol_profile: object,
 ) -> tuple[Any, dict[str, Any]]:
-    await conversation.send_message("/start")
-    await conversation.get_response()
+    if bootstrap_required:
+        await conversation.send_message("/start")
+        await conversation.get_response()
     await conversation.send_message(keyword_text)
     page = await conversation.get_response()
     classification = _jisou_page_classification(jisou, protocol_profile, page, _parse_buttons(page))
@@ -189,7 +194,19 @@ async def _initial_search_page(
         "jisou_recovery_kind": "not_applicable",
         "reset_executed": False,
         "jisou_initial_page_phase": classification.page_phase,
+        "jisou_bootstrap_kind": _jisou_bootstrap_kind(jisou, bootstrap_required),
     }
+
+
+async def _has_jisou_conversation_history(client: Any, bot: str) -> bool:
+    messages = await client.get_messages(bot, limit=1)
+    return bool(messages)
+
+
+def _jisou_bootstrap_kind(jisou: bool, bootstrap_required: bool) -> str:
+    if not jisou:
+        return "not_applicable"
+    return "first_conversation" if bootstrap_required else "existing_conversation"
 
 
 async def _execute_search_result_pages(

@@ -31,6 +31,7 @@ def test_drain_once_dispatches_task_center_roles(monkeypatch):
     monkeypatch.setattr(worker, "drain_task_metrics", lambda _factory, limit: calls.append(("metrics", limit)) or 5)
     monkeypatch.setattr(worker, "drain_account_online_keepalive", lambda _factory, limit: calls.append(("account_online", limit)) or 11, raising=False)
     monkeypatch.setattr(worker, "drain_ai_message_memory_maintenance", lambda _factory, limit: calls.append(("ai_memory", limit)) or 13, raising=False)
+    monkeypatch.setattr(worker, "drain_ai_generation", lambda _factory, limit: calls.append(("ai_generation", limit)) or 15, raising=False)
     monkeypatch.setattr(worker, "drain_voice_profile_generation", lambda _factory, limit, **_kwargs: calls.append(("voice_profile", limit)) or 17, raising=False)
 
     assert worker.drain_once(7, role="planner") == 1
@@ -42,6 +43,7 @@ def test_drain_once_dispatches_task_center_roles(monkeypatch):
     assert worker.drain_once(7, role="metrics") == 5
     assert worker.drain_once(7, role="account-online") == 11
     assert worker.drain_once(7, role="ai-memory") == 13
+    assert worker.drain_once(7, role="ai-generation") == 15
     assert worker.drain_once(7, role="voice-profile") == 17
 
     assert calls == [
@@ -55,6 +57,7 @@ def test_drain_once_dispatches_task_center_roles(monkeypatch):
         ("metrics", 7),
         ("account_online", 7),
         ("ai_memory", 7),
+        ("ai_generation", 7),
         ("voice_profile", 7),
     ]
 
@@ -155,6 +158,23 @@ def test_server_compose_starts_voice_profile_worker():
     assert "  tgyunying-worker-voice-profile" in check_web
     assert "VOICE_PROFILE_WORKER_DRAIN_LIMIT=20" in env_example
     assert "VOICE_PROFILE_RECONCILE_INTERVAL_SECONDS=120" in env_example
+
+
+def test_server_compose_starts_ai_generation_worker():
+    root = Path(__file__).resolve().parents[2]
+    compose = (root / "docker-compose.server.yml").read_text()
+    compose_up = (root / "deploy/compose-up.sh").read_text()
+    check_web = (root / "deploy/check-web.sh").read_text()
+    env_example = (root / ".env.production.example").read_text()
+
+    assert "  worker-ai-generation:" in compose
+    assert "container_name: tgyunying-worker-ai-generation" in compose
+    assert 'WORKER_ROLE: ai-generation' in compose
+    assert "AI_GENERATION_WORKER_DRAIN_LIMIT" in compose
+    assert "AI_GENERATION_WORKER_INTERVAL_SECONDS" in compose
+    assert "  worker-ai-generation" in compose_up
+    assert "  tgyunying-worker-ai-generation" in check_web
+    assert "AI_GENERATION_WORKER_DRAIN_LIMIT=20" in env_example
 
 
 def test_worker_main_healthcheck_uses_role_heartbeat(monkeypatch):

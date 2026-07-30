@@ -24,6 +24,32 @@
   -> 前端 action/view 更新状态或展示错误
 ```
 
+### 生产吞吐恢复数据流（2026-07-30）
+
+```text
+AI planner -> pending group_ai_chat/send_message
+  -> ai-generation worker 短事务 claim 同 generation_id 批次
+  -> 关闭数据库事务后调用 AI Provider
+  -> 文案与质量事实落库 -> Action 归还 pending
+  -> Dispatcher 只扫描 due Task 的有界候选且只领取已有正文 Action
+  -> Telegram Gateway -> ExecutionAttempt / remote_message_id
+
+终态 Action
+  -> runtime retention 轻量字段投影
+  -> 聚合 RuntimeMetricSnapshot
+  -> success/failed/skipped 分批删除
+
+运营放弃历史 AI 积压
+  -> preview 锁定 cutoff 前且未进 Gateway 的 Action
+  -> 原子终结 quantity/content/coverage 义务并写 AuditLog
+  -> 删除对应 Action；已进 Gateway 或远端未知的 Action 不进入该路径
+
+极搜 search_click
+  -> 读取机器人会话历史
+  -> 首次会话发送 /start 后关键词；已有会话直接发送关键词
+  -> 继续按批准协议分类、验证码与纯点击路径执行
+```
+
 ### 全任务按时按量履约恢复数据流（2026-07-29 接管修订）
 
 当前专项真相源为 `docs/03-feature-designs/all-task-fulfillment-recovery-prd.md`。五类任务统一经过：

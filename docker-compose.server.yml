@@ -46,7 +46,8 @@ x-backend-env: &backend-env
   DB_POOL_TIMEOUT: ${DB_POOL_TIMEOUT:-30}
   DB_POOL_RECYCLE: ${DB_POOL_RECYCLE:-1800}
   RUNTIME_DETAIL_RETENTION_DAYS: ${RUNTIME_DETAIL_RETENTION_DAYS:-5}
-  RUNTIME_DETAIL_CLEANUP_INTERVAL_SECONDS: ${RUNTIME_DETAIL_CLEANUP_INTERVAL_SECONDS:-300}
+  RUNTIME_DETAIL_RETENTION_BATCH_SIZE: ${RUNTIME_DETAIL_RETENTION_BATCH_SIZE:-2000}
+  RUNTIME_DETAIL_CLEANUP_INTERVAL_SECONDS: ${RUNTIME_DETAIL_CLEANUP_INTERVAL_SECONDS:-60}
   RUNTIME_METRIC_RETENTION_DAYS: ${RUNTIME_METRIC_RETENTION_DAYS:-3}
   RUNTIME_METRIC_RETENTION_BATCH_SIZE: ${RUNTIME_METRIC_RETENTION_BATCH_SIZE:-20000}
   RUNTIME_METRIC_CLEANUP_INTERVAL_SECONDS: ${RUNTIME_METRIC_CLEANUP_INTERVAL_SECONDS:-300}
@@ -101,6 +102,24 @@ services:
     environment:
       <<: *backend-env
       WORKER_ROLE: planner
+    volumes:
+      - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
+      - "${GROK_CLI_HOME_DIR:-/root/.grok}:/root/.grok"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck: *worker-healthcheck
+    networks:
+      - infra_default
+
+  worker-ai-generation:
+    image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
+    container_name: tgyunying-worker-ai-generation
+    restart: unless-stopped
+    command: ["python", "-m", "app.worker", "--role", "ai-generation", "--limit", "${AI_GENERATION_WORKER_DRAIN_LIMIT:-20}", "--interval", "${AI_GENERATION_WORKER_INTERVAL_SECONDS:-2.0}"]
+    environment:
+      <<: *backend-env
+      WORKER_ROLE: ai-generation
     volumes:
       - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
       - "${GROK_CLI_HOME_DIR:-/root/.grok}:/root/.grok"

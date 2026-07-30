@@ -7,7 +7,14 @@ from subprocess import run
 import pytest
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
+from datetime import date, datetime
+
 from sqlalchemy import Column, DateTime, JSON, MetaData, String, Table, create_engine, text
+from sqlalchemy.orm import Session
+
+from app.database import Base
+from app.models import Action, Task, Tenant
+from app.services.task_center.runtime_retention import cleanup_runtime_details
 
 
 pytestmark = pytest.mark.no_postgres
@@ -66,15 +73,66 @@ def test_server_runtime_cleanup_defaults_and_legacy_upgrade_match() -> None:
     source = installer.read_text()
 
     for expected in (
-        "RUNTIME_DETAIL_CLEANUP_INTERVAL_SECONDS: ${RUNTIME_DETAIL_CLEANUP_INTERVAL_SECONDS:-300}",
+        "RUNTIME_DETAIL_RETENTION_BATCH_SIZE: ${RUNTIME_DETAIL_RETENTION_BATCH_SIZE:-2000}",
+        "RUNTIME_DETAIL_CLEANUP_INTERVAL_SECONDS: ${RUNTIME_DETAIL_CLEANUP_INTERVAL_SECONDS:-60}",
         "RUNTIME_METRIC_CLEANUP_INTERVAL_SECONDS: ${RUNTIME_METRIC_CLEANUP_INTERVAL_SECONDS:-300}",
     ):
         assert expected in compose
-    assert "RUNTIME_DETAIL_CLEANUP_INTERVAL_SECONDS=300" in env_example
+    assert "RUNTIME_DETAIL_RETENTION_BATCH_SIZE=2000" in env_example
+    assert "RUNTIME_DETAIL_CLEANUP_INTERVAL_SECONDS=60" in env_example
     assert "RUNTIME_METRIC_CLEANUP_INTERVAL_SECONDS=300" in env_example
     assert "upgrade_legacy_runtime_cleanup_interval" in source
     assert "RUNTIME_METRIC_CLEANUP_INTERVAL_SECONDS=60" in source
     run(["bash", "-n", str(installer)], check=True)
+
+
+def test_runtime_retention_preserves_open_actions() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    old_at = datetime(2000, 1, 1, 10, 0)
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="tenant"))
+        session.add(Task(
+            id="task",
+            tenant_id=1,
+            name="task",
+            type="group_relay",
+            status="running",
+        ))
+        session.add_all([
+            _retention_action("open", "pending", old_at),
+            _retention_action("terminal", "success", old_at),
+        ])
+        session.commit()
+
+        cleanup_runtime_details(
+            session,
+            retention_days=5,
+            today=date(2000, 1, 10),
+            batch_size=10,
+        )
+        session.commit()
+
+        assert session.get(Action, "open") is not None
+        assert session.get(Action, "terminal") is None
+
+
+def _retention_action(
+    action_id: str,
+    status: str,
+    timestamp: datetime,
+) -> Action:
+    return Action(
+        id=action_id,
+        tenant_id=1,
+        task_id="task",
+        task_type="group_relay",
+        action_type="send_message",
+        status=status,
+        scheduled_at=timestamp,
+        executed_at=timestamp if status == "success" else None,
+        created_at=timestamp,
+    )
 
 
 def _migration_module():

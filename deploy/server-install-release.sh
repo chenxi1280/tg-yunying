@@ -90,12 +90,19 @@ bootstrap_shared_env() {
 upgrade_legacy_runtime_cleanup_interval() {
   local shared_env="${SHARED_DIR}/.env"
 
-  if ! grep -qx 'RUNTIME_METRIC_CLEANUP_INTERVAL_SECONDS=60' "$shared_env"; then
-    return 0
+  if grep -qx 'RUNTIME_METRIC_CLEANUP_INTERVAL_SECONDS=60' "$shared_env"; then
+    sed -i 's/^RUNTIME_METRIC_CLEANUP_INTERVAL_SECONDS=60$/RUNTIME_METRIC_CLEANUP_INTERVAL_SECONDS=300/' "$shared_env"
+    echo "==> Upgraded RUNTIME_METRIC_CLEANUP_INTERVAL_SECONDS from legacy default 60 to 300"
   fi
 
-  sed -i 's/^RUNTIME_METRIC_CLEANUP_INTERVAL_SECONDS=60$/RUNTIME_METRIC_CLEANUP_INTERVAL_SECONDS=300/' "$shared_env"
-  echo "==> Upgraded RUNTIME_METRIC_CLEANUP_INTERVAL_SECONDS from legacy default 60 to 300"
+  if grep -qx 'RUNTIME_DETAIL_CLEANUP_INTERVAL_SECONDS=300' "$shared_env"; then
+    sed -i 's/^RUNTIME_DETAIL_CLEANUP_INTERVAL_SECONDS=300$/RUNTIME_DETAIL_CLEANUP_INTERVAL_SECONDS=60/' "$shared_env"
+    echo "==> Upgraded RUNTIME_DETAIL_CLEANUP_INTERVAL_SECONDS from 300 to 60"
+  fi
+
+  if ! grep -q '^RUNTIME_DETAIL_RETENTION_BATCH_SIZE=' "$shared_env"; then
+    echo 'RUNTIME_DETAIL_RETENTION_BATCH_SIZE=2000' >>"$shared_env"
+  fi
 }
 
 prune_old_releases() {
