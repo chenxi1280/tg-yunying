@@ -3,6 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 from io import BytesIO
 from statistics import mean
+from threading import Lock
 
 from PIL import Image, ImageChops, ImageEnhance, ImageOps
 
@@ -12,6 +13,8 @@ CAPTCHA_SCALE_FACTOR = 4
 BLUE_MASK_THRESHOLDS = (20, 30, 40)
 DDDDOCR_CROP_RATIOS = (1.0, 0.75, 0.65)
 DDDDOCR_CONFIDENCE = 0.80
+RAPIDOCR_INFERENCE_LOCK = Lock()
+DDDDOCR_INFERENCE_LOCK = Lock()
 TESSERACT_CONFIG = (
     "--oem 3 --psm 7 "
     "-c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -43,6 +46,11 @@ def recognize_with_tesseract(image_bytes: bytes) -> tuple[str, float]:
 
 
 def recognize_with_rapidocr(image_bytes: bytes) -> tuple[str, float]:
+    with RAPIDOCR_INFERENCE_LOCK:
+        return _recognize_with_rapidocr(image_bytes)
+
+
+def _recognize_with_rapidocr(image_bytes: bytes) -> tuple[str, float]:
     result = _rapidocr_engine()(image_bytes)
     texts = tuple(str(value).strip() for value in (result.txts or ()))
     scores = tuple(float(value) for value in (result.scores or ()))
@@ -56,20 +64,24 @@ def recognize_rapidocr_variants(
         _blue_mask(image_bytes, threshold)
         for threshold in BLUE_MASK_THRESHOLDS
     )
-    return tuple(recognize_with_rapidocr(image) for image in variants)
+    with RAPIDOCR_INFERENCE_LOCK:
+        return tuple(
+            _recognize_with_rapidocr(image) for image in variants
+        )
 
 
 def recognize_ddddocr_variants(
     image_bytes: bytes,
 ) -> tuple[tuple[str, float], ...]:
-    engine = _ddddocr_engine()
-    return tuple(
-        (
-            str(engine.classification(image) or ""),
-            DDDDOCR_CONFIDENCE,
+    with DDDDOCR_INFERENCE_LOCK:
+        engine = _ddddocr_engine()
+        return tuple(
+            (
+                str(engine.classification(image) or ""),
+                DDDDOCR_CONFIDENCE,
+            )
+            for image in _cropped_variants(image_bytes)
         )
-        for image in _cropped_variants(image_bytes)
-    )
 
 
 def _prepared_image(image_bytes: bytes) -> Image.Image:
