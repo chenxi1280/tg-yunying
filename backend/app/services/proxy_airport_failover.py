@@ -4,6 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import (
+    AccountProxy,
     AccountProxyBinding,
     AccountProxyWarmupState,
     AccountEnvironmentBinding,
@@ -31,10 +32,10 @@ def failover_proxy_airport_node_binding(
     to_node = _select_failover_node(session, tenant_id=tenant_id, from_node=from_node)
     if to_node is None:
         raise ValueError("airport_all_subscriptions_unavailable")
+    proxy = proxy_for_airport_node(session, to_node)
     now = _now()
     binding.status = "inactive"
     binding.unbound_at = now
-    proxy = proxy_for_airport_node(session, to_node)
     new_binding = _new_binding(binding, to_node, proxy, reason, now)
     session.add(new_binding)
     session.flush()

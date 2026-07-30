@@ -163,6 +163,38 @@ def test_proxy_airport_failover_fails_closed_when_no_healthy_candidate() -> None
             )
 
 
+def test_proxy_airport_failover_preserves_binding_when_candidate_not_executable() -> None:
+    with _session() as session:
+        primary = _add_subscription(session, name="primary", priority=10)
+        old_node = _add_node(
+            session, primary, "old-node", "unhealthy", "203.0.113.10"
+        )
+        next_node = _add_node(
+            session, primary, "next-node", "healthy", "203.0.113.11"
+        )
+        next_node.protocol = "vmess"
+        old_binding = _add_binding(session, old_node)
+        session.commit()
+
+        with pytest.raises(
+            ValueError,
+            match="proxy_airport_node has no executable runtime proxy",
+        ):
+            failover_proxy_airport_node_binding(
+                session,
+                tenant_id=1,
+                proxy_binding_id=old_binding.id,
+                reason="search_transport_unavailable",
+            )
+        session.commit()
+        session.refresh(old_binding)
+
+        assert old_binding.status == "active"
+        assert old_binding.unbound_at is None
+        assert session.query(AccountProxyBinding).count() == 1
+        assert session.query(ProxyNodeFailoverEvent).count() == 0
+
+
 def _same_subscription_values(
     old: AccountProxyBinding,
     new: AccountProxyBinding,
