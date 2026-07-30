@@ -520,8 +520,9 @@ def build_search_join_image_verification_solver(
             credentials,
             image_bytes=image_bytes,
             mime_type=mime_type,
-            allowed_answers=frozenset(
+            candidate_answers=tuple(
                 answer.strip() for answer in candidate_answers
+                if answer.strip()
             ),
         )
 
@@ -533,14 +534,20 @@ def _solve_search_join_image_candidates(
     *,
     image_bytes: bytes,
     mime_type: str,
-    allowed_answers: frozenset[str],
+    candidate_answers: tuple[str, ...],
 ) -> tuple[str, float]:
     failures: list[str] = []
     outcomes: list[str] = []
     responded = False
+    allowed_answers = frozenset(candidate_answers)
     for provider in credentials:
         try:
-            result = _solve_search_join_image(provider, image_bytes, mime_type)
+            result = _solve_search_join_image(
+                provider,
+                image_bytes,
+                mime_type,
+                candidate_answers=candidate_answers,
+            )
         except Exception as exc:  # noqa: BLE001 - classify approved provider outcome.
             if _provider_returned_unsafe_answer(exc):
                 responded = True
@@ -588,17 +595,31 @@ def _solve_search_join_image(
     credentials: Any,
     image_bytes: bytes,
     mime_type: str,
+    *,
+    candidate_answers: tuple[str, ...],
 ) -> tuple[str, float] | None:
     result = ai_gateway.solve_image_verification(
         credentials,
         image_bytes,
         mime_type or "image/png",
-        prompt=SEARCH_JOIN_IMAGE_VERIFICATION_PROMPT,
+        prompt=_search_join_image_verification_prompt(candidate_answers),
     )
     answer = str(result.answer or "").strip()
     if not answer:
         return None
     return answer, float(result.confidence or 0.0)
+
+
+def _search_join_image_verification_prompt(
+    candidate_answers: tuple[str, ...],
+) -> str:
+    candidates = json.dumps(candidate_answers, ensure_ascii=False)
+    return (
+        f"{SEARCH_JOIN_IMAGE_VERIFICATION_PROMPT}"
+        f"当前按钮候选值（按界面顺序）为：{candidates}。"
+        "请先独立识别并计算，只有独立计算结果精确命中候选时才返回；"
+        "不能为了命中候选而猜选。无法确认时返回空 answer 和 confidence=0。"
+    )
 
 
 def _provider_returned_unsafe_answer(exc: Exception) -> bool:
