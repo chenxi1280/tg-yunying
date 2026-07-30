@@ -38,7 +38,10 @@ from app.services.proxy_airport_subscription import create_proxy_airport_subscri
 from app.services.task_center import pacing
 from app.services.task_center import search_join_pacing
 from app.services.task_center import hourly_stats
-from app.services.task_center.jisou_selector_accounts import select_jisou_selector_candidates
+from app.services.task_center.jisou_selector_accounts import (
+    JISOU_FLOW_CONTRACT_VERSION,
+    select_jisou_selector_candidates,
+)
 from app.services.task_center.fulfillment_takeover import FULFILLMENT_CONTRACT_VERSION
 from app.services.task_center import search_click_target_progress as search_click_progress
 from app.services.task_center.search_join_pacing import pacing_window
@@ -149,6 +152,7 @@ def _search_join_source_action(
     result: dict,
     executed_at: datetime,
     bot_username: str = "jisou",
+    flow_contract_version: str = JISOU_FLOW_CONTRACT_VERSION,
 ) -> Action:
     return Action(
         tenant_id=task.tenant_id,
@@ -158,7 +162,10 @@ def _search_join_source_action(
         account_id=account_id,
         status=status,
         executed_at=executed_at,
-        payload={"bot_username": bot_username},
+        payload={
+            "bot_username": bot_username,
+            "jisou_flow_contract_version": flow_contract_version,
+        },
         result=result,
     )
 
@@ -537,6 +544,11 @@ def test_search_join_planner_creates_hash_only_search_join_actions(session: Sess
     assert {action.payload["runtime_environment"]["developer_app_api_id"] for action in actions} == {"2040"}
     assert all(action.payload["target_title"] == "上海群" for action in actions)
     assert all(action.payload["target_peer_id"] == "-10017" for action in actions)
+    assert all(
+        action.payload["jisou_flow_contract_version"]
+        == JISOU_FLOW_CONTRACT_VERSION
+        for action in actions
+    )
     assert all(action.payload["client_metadata"]["device_model"] for action in actions)
     assert all(action.payload["client_metadata"]["app_version"] for action in actions)
     assert session.query(AccountEnvironmentBinding).count() == 2
@@ -763,6 +775,39 @@ def test_legacy_hot_list_outcome_is_superseded_after_bootstrap_fix(
         status="failed",
         executed_at=observed_at,
         result={"error_code": "jisou_hot_list_page"},
+    ))
+    session.commit()
+
+    candidates = select_jisou_selector_candidates(
+        session,
+        task,
+        [session.get(TgAccount, 101)],
+        bot_username="jisou",
+        now_value=observed_at,
+    )
+
+    assert [account.id for account in candidates.accounts] == [101]
+    assert candidates.excluded_count == 0
+
+
+@pytest.mark.no_postgres
+def test_previous_flow_contract_failure_does_not_exclude_current_contract(
+    session: Session,
+) -> None:
+    task = _task()
+    session.add(task)
+    session.flush()
+    observed_at = _now()
+    session.add(_search_join_source_action(
+        task,
+        101,
+        status="failed",
+        executed_at=observed_at,
+        result={
+            "error_code": "jisou_hot_list_page",
+            "jisou_bootstrap_kind": "existing_conversation",
+        },
+        flow_contract_version="jisou_search_click_v1",
     ))
     session.commit()
 

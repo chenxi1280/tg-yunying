@@ -312,6 +312,7 @@ class SearchJoinPayload(BaseModel):
     linked_task_policy: list[dict[str, Any]] = Field(default_factory=list)
     runtime_environment: dict[str, Any] = Field(default_factory=dict)
     protocol_sample_version: str = Field(default="", max_length=40)
+    jisou_flow_contract_version: str = Field(default="", max_length=40)
     approved_protocol_profile: dict[str, Any] = Field(default_factory=dict)
     planning_slot_key: str = ""
     jisou_recovery_kind: str = Field(default="", max_length=40)

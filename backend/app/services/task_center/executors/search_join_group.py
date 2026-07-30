@@ -30,7 +30,10 @@ from app.services.proxy_airport_subscription import (
 from app.timezone import BEIJING_TZ, as_beijing
 
 from ..account_pool import select_task_accounts
-from ..jisou_selector_accounts import select_jisou_selector_candidates
+from ..jisou_selector_accounts import (
+    JISOU_FLOW_CONTRACT_VERSION,
+    select_jisou_selector_candidates,
+)
 from ..pacing import quiet_hours_active
 from ..payloads import SearchJoinPayload, create_search_join_action
 from ..search_click_target_progress import reconcile_search_click_target_progress
@@ -507,6 +510,7 @@ def _payload(payload_input: PayloadInput) -> SearchJoinPayload:
         linked_task_policy=list(config.get("post_join_task_links") or []),
         runtime_environment=_runtime_environment(payload_input.environment),
         protocol_sample_version=payload_input.plan.protocol_sample_version,
+        jisou_flow_contract_version=JISOU_FLOW_CONTRACT_VERSION,
         approved_protocol_profile=payload_input.plan.approved_protocol_profile,
     )
 
