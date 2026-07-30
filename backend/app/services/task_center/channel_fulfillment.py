@@ -106,6 +106,12 @@ def bind_obligation_action(
     obligation.status = "pending"
 
 
+def obligation_accepts_new_action(
+    obligation: ReactionFulfillmentObligation | ViewFulfillmentObligation,
+) -> bool:
+    return obligation.status == "open" and obligation.current_action_id is None
+
+
 def ensure_reaction_action_contract(
     session: Session,
     action: Action,
@@ -385,6 +391,7 @@ __all__ = [
     "ensure_reaction_obligation",
     "ensure_view_action_contract",
     "ensure_view_obligation",
+    "obligation_accepts_new_action",
     "RemoteFactAlreadyFulfilled",
     "reaction_account_ids_for_messages",
     "view_account_ids_for_messages",

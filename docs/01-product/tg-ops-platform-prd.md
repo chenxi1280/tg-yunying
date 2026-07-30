@@ -940,6 +940,8 @@ calculated_at
 
 保存时必须区分“结构配置冲突”和“外部容量不足”。AI 活群/评论/点赞/浏览/纯搜索点击的通用小时软上限，以及评论/点赞/浏览/纯搜索点击的任务级及任务内账号级软上限，不再由运营配置，系统统一持久化 `1_000_000`；账号池不足、部分账号未准入、动态消息增加等外部容量问题允许保存、创建和启动，只在启动后的任务详情/可选只读诊断显示 `blocked/at_risk`、真实容量缺口和处理入口，Planner 只按账号全局、授权、代理、协议、内容和 Telegram 硬安全容量建单并持续重算，不降低业务目标。
 
+浏览/点赞 Planner 的批量候选读取不是远端事实所有权承诺。若 Dispatcher 在候选读取后、单条 Action 创建前并发确认同一账号—消息源，或已有仍有效的 current Action，Planner 必须在创建 Action 前重新读取义务并只跳过该源，继续处理同 Task 的其他欠额；不得创建孤儿 Action，也不得让 `fulfilled_obligation_cannot_be_rebound|fulfillment_obligation_already_bound` 回滚整条 Task。
+
 Dispatcher 的三种容量语义固定为：
 
 ```text

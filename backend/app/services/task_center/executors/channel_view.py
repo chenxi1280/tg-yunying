@@ -12,6 +12,7 @@ from ..account_pool import daily_uncovered_account_count, select_task_accounts
 from ..channel_fulfillment import (
     bind_obligation_action,
     ensure_view_obligation,
+    obligation_accepts_new_action,
     view_account_ids_for_messages,
     view_confirmed_counts,
     view_daily_counts,
@@ -143,6 +144,8 @@ def _create_view_actions(
             message,
             account_id,
         )
+        if not obligation_accepts_new_action(obligation):
+            continue
         payload = {
             **channel_message_payload(context.channel, message),
             "execution_date": context.execution_date,

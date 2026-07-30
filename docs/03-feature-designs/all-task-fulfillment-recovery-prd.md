@@ -190,7 +190,7 @@ calculated_at
 
 点赞和浏览义务把 `account_id` 作为远端副作用身份的一部分；payload 已带 `reaction_fulfillment_obligation_id|view_fulfillment_obligation_id` 的 Action 在 claim 时禁止改派账号。历史 Action 若已被错误改派，payload 当前绑定与原义务不一致时必须先原子释放原义务，再允许其用原账号重建；已成功但尚待远端事实 finalize、且 payload 仍绑定同一义务的 Action 继续占位，不能被当成终态失败重建。不得让一个 Action 同时占住两个账号义务。
 
-评论/点赞不是自然日任务时不得虚构 `task_day_ledger_id`；浏览与 click 的任务日身份则必须保留。Planner 在锁定对应业务账本后按 `planning_deficit_count` 原子取得有限义务：评论/点赞/浏览创建 Action，click 只冻结稳定 ordinal，当前 Claim Window commit 才在中央份额内创建 assignment/Action。目标满足后终结 pre-Gateway excess。membership、`GroupBotAdmission.ready` 等可共享前置事实可以被多任务复检，但不能替代各任务自己的发送/click/admission 完成义务。
+评论/点赞不是自然日任务时不得虚构 `task_day_ledger_id`；浏览与 click 的任务日身份则必须保留。Planner 在锁定对应业务账本后按 `planning_deficit_count` 原子取得有限义务：评论/点赞/浏览创建 Action，click 只冻结稳定 ordinal，当前 Claim Window commit 才在中央份额内创建 assignment/Action。浏览/点赞从批量候选快照到单个义务绑定之间，Dispatcher 可能并发写入 confirmed 远端事实或当前 Action；Planner 必须在创建 Action 前重新读取义务所有权，发现 `confirmed|unknown|有效 current_action_id` 时只跳过该账号—消息源并继续本轮其他义务，禁止先创建孤儿 Action，也禁止以 `fulfilled_obligation_cannot_be_rebound|fulfillment_obligation_already_bound` 回滚整条 Task。目标满足后终结 pre-Gateway excess。membership、`GroupBotAdmission.ready` 等可共享前置事实可以被多任务复检，但不能替代各任务自己的发送/click/admission 完成义务。
 
 按时归属必须使用 `remote_confirmed_at`：优先 Telegram/协议返回的远端事件时间，其次是同一 ExecutionAttempt 在 Gateway 成功回执时原子记录的确认时间；普通 `Action.updated_at`、reconcile 执行时间或页面读取时间不得替代。无法证明事实发生在 deadline 内时进入 `confirmation_time_unproven`/unknown，不能猜测计入 `confirmed_count`。
 
