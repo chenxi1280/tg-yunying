@@ -12,6 +12,7 @@ from app.models import Action, DispatchClaimReservation, DispatchClaimScope, Dis
 from app.services._common import _now
 from app.services.task_center import dispatcher
 from app.services.task_center.dispatch_claim_selection import build_demands
+from app.services.task_center.dispatch_claim_types import DispatchActionCandidate
 from app.services.task_center import account_pool
 from app.services.task_center.dispatch_reservations import task_dispatch_claim_snapshot
 from app.services.task_center.service import get_task_detail
@@ -267,7 +268,38 @@ def test_dispatch_claim_window_scan_defers_full_result_payload(
         )
 
         assert rows
-        assert all("result" in inspect(action).unloaded for action in rows)
+        assert all(isinstance(action, DispatchActionCandidate) for action in rows)
+
+
+def test_locked_plan_candidate_reloads_deferred_result(
+    monkeypatch,
+) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    settings = _settings(dispatcher_concurrency=2)
+    now_value = _now()
+    monkeypatch.setattr(dispatcher, "get_settings", lambda: settings)
+
+    with Session(engine) as session:
+        _seed_strict_actions(session, now_value)
+        rows = dispatcher._dispatch_claim_window_actions(
+            session,
+            [Action.status == "pending", Action.scheduled_at <= now_value],
+            settings=settings,
+            now_value=now_value,
+            force_ordinary_tenants=set(),
+        )
+        locked = dispatcher._locked_claim_plan_candidates(
+            session,
+            SimpleNamespace(candidate_action_ids=(rows[0].id,)),
+            1,
+            now_value,
+            set(),
+        )
+
+        assert locked
+        assert isinstance(rows[0], DispatchActionCandidate)
+        assert "result" not in inspect(locked[0]).unloaded
 
 
 def test_ordinary_candidate_scan_keeps_each_due_task_visible(monkeypatch) -> None:
