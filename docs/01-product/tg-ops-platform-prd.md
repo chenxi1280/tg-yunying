@@ -3988,6 +3988,10 @@ AI 活跃群 Planner 需要额外满足：
 
 > **2026-07-30 预绑定 claim 锁序补充：** 搜索预绑定 Action 的原子 confirm 必须与通用共享 claim 使用相同的 `DispatchClaimScope → DispatchClaimWindow → DispatchClaimShardAllocation → DispatchClaimReservation` 锁序，最后才锁 `SearchClickOpportunityAssignment`。禁止 assignment/reservation 反向锁回 Window/scope；四 Dispatcher 并发下 PostgreSQL deadlock 必须为 0。
 
+> **2026-07-30 搜索 finalize 锁序补充：** `SearchClickAssignmentEpoch` finalize 在 `SERIALIZABLE` 事务中必须按 `DispatchClaimWindow → DispatchClaimTaskAllocation → DispatchClaimShardAllocation → DispatchClaimReservation → SearchClickFulfillmentObligation` 取锁。禁止先读取 Reservation 再反向派生 TaskAllocation/ShardAllocation ID；该预读会与并发 rebuild 写入形成序列化冲突，连续整轮 `abandoned`。父 allocation 行必须直接按当前 Window 与 `dispatch_allocation_epoch` 查询并锁定，最后才读取并锁定来源 Reservation。
+
+> **2026-07-30 搜索 Window 排程补充：** 纯搜索点击的 `next_run_at` 必须对齐到下一个 Dispatcher Claim Window 起点，不再使用通用模板的固定 5 分钟间隔。该对齐只保证 Planner 在新 Window 开始后尽快求解，不引入 `latest_safe_start_at`、p99、求解器 deadline 或其他性能预算；当前 Window 结束前未被 Dispatcher 领取的 assignment 仍按既有 release/rebuild 协议终结，下一 Window 重新取得份额和创建新 assignment。禁止在每个 1 分钟 Window 末尾才规划、导致“optimal 但全部 search_assignment_expired”持续空转。
+
 > **2026-07-30 预绑定不可延后复用补充：** `dispatch_prebound=true` 的纯搜索 Action 只属于原 Reservation/Window，绝不能在 Window 结束后回落到通用 claim 或绑定新 Reservation。账号全局安全策略、账号 shard、运行资源或 confirm CAS 令本次 Window 无法执行时，直接通过唯一 release batch 终结 Action、释放原 unit 并触发新分片权重；不把原 Action 延后到旧 Window 外重试。
 
 > **2026-07-30 搜索 finalize 当前时间补充：** `SearchClickAssignmentEpoch` 的锁内最终提交必须在取得 Window → TaskAllocation → ShardAllocation → Reservation 锁后重新读取 `finalize_now`。求解开始时间和 epoch 创建时间仅作历史证据，不能用于判断 Window、重新枚举 eligibility、创建 Action 的 `scheduled_at` 或写 `finalized_at`。锁内已满足 `finalize_now >= bucket_end` 时，只能将整轮写为 `abandoned` 并释放全部未领取 unit，严禁在已经结束的 Window 上创建 assignment/Action。

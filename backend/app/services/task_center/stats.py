@@ -12,6 +12,7 @@ from app.services._common import _now
 from .config_fields import CHANNEL_DYNAMIC_TASK_TYPES
 from .daily_group_target import daily_group_due_message_count, ensure_task_group_daily_target
 from .datetime_compat import parse_zone, to_zone
+from .dispatch_claim_types import CLAIM_WINDOW_SECONDS
 from .fulfillment_takeover import (
     FULFILLMENT_TASK_TYPES,
 )
@@ -74,6 +75,8 @@ def next_run_after_task(task: Task):
         if waiting_until:
             return waiting_until
         return ai_next_run_after(fulfillment_pacing)
+    if task.type == "search_click":
+        return _next_dispatch_claim_window_start(_now())
     if task.type in CHANNEL_DYNAMIC_TASK_TYPES and (config.get("message_scope") or "latest_n") == "dynamic_new":
         interval = int(config.get("listener_interval_seconds") or 30)
         return _now() + timedelta(seconds=max(1, interval))
@@ -84,6 +87,11 @@ def next_run_after_task(task: Task):
         else raw_pacing
     )
     return next_run_after(pacing, timezone_name=timezone_name)
+
+
+def _next_dispatch_claim_window_start(value: datetime) -> datetime:
+    current_window_start = value.replace(second=0, microsecond=0)
+    return current_window_start + timedelta(seconds=CLAIM_WINDOW_SECONDS)
 
 
 def refresh_task_stats(

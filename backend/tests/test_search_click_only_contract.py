@@ -91,18 +91,19 @@ def test_search_click_create_schema_is_click_only() -> None:
 
 
 @pytest.mark.no_postgres
-def test_pure_search_next_run_does_not_wait_for_quiet_end(
+def test_pure_search_next_run_aligns_to_next_claim_window(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    now_value = datetime(2026, 7, 30, 3)
+    now_value = datetime(2026, 7, 30, 3, 59, 42)
     monkeypatch.setattr(pacing, "_now", lambda: now_value)
+    monkeypatch.setattr("app.services.task_center.stats._now", lambda: now_value)
     task = _task(1)
     task.pacing_config = {
         "quiet_hours": {"start": "03:00", "end": "07:38"},
         "operation_profile": {"hourly_activity_curve": [0] * 24},
     }
 
-    assert next_run_after_task(task) == now_value + timedelta(minutes=5)
+    assert next_run_after_task(task) == datetime(2026, 7, 30, 4)
 
 
 @pytest.mark.no_postgres

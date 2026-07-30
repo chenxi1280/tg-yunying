@@ -54,13 +54,18 @@ def lock_search_finalize_inputs(
         .where(DispatchClaimWindow.id == window_id)
         .with_for_update()
     )
+    allocation_epochs = sorted({
+        unit.dispatch_allocation_epoch for unit in units
+    })
+    _lock_task_allocations(session, window_id, allocation_epochs)
+    _lock_shard_allocations(session, window_id, allocation_epochs)
     reservation_ids = sorted({unit.reservation_id for unit in units})
-    reservations = list(session.scalars(
+    list(session.scalars(
         select(DispatchClaimReservation)
         .where(DispatchClaimReservation.id.in_(reservation_ids))
         .order_by(DispatchClaimReservation.id)
+        .with_for_update()
     ))
-    _lock_allocation_rows(session, reservations, reservation_ids)
     obligation_ids = sorted({unit.obligation_id for unit in units})
     list(session.scalars(
         select(SearchClickFulfillmentObligation)
@@ -71,35 +76,38 @@ def lock_search_finalize_inputs(
     return window
 
 
-def _lock_allocation_rows(
+def _lock_task_allocations(
     session: Session,
-    reservations: list[DispatchClaimReservation],
-    reservation_ids: list[str],
+    window_id: str,
+    allocation_epochs: list[int],
 ) -> None:
-    task_allocation_ids = sorted({
-        row.dispatch_claim_task_allocation_id
-        for row in reservations
-        if row.dispatch_claim_task_allocation_id
-    })
-    shard_allocation_ids = sorted({
-        row.dispatch_claim_shard_allocation_id for row in reservations
-    })
     list(session.scalars(
         select(DispatchClaimTaskAllocation)
-        .where(DispatchClaimTaskAllocation.id.in_(task_allocation_ids))
+        .where(
+            DispatchClaimTaskAllocation.dispatch_claim_window_id == window_id,
+            DispatchClaimTaskAllocation.dispatch_allocation_epoch.in_(
+                allocation_epochs
+            ),
+        )
         .order_by(DispatchClaimTaskAllocation.id)
         .with_for_update()
     ))
+
+
+def _lock_shard_allocations(
+    session: Session,
+    window_id: str,
+    allocation_epochs: list[int],
+) -> None:
     list(session.scalars(
         select(DispatchClaimShardAllocation)
-        .where(DispatchClaimShardAllocation.id.in_(shard_allocation_ids))
+        .where(
+            DispatchClaimShardAllocation.dispatch_claim_window_id == window_id,
+            DispatchClaimShardAllocation.dispatch_allocation_epoch.in_(
+                allocation_epochs
+            ),
+        )
         .order_by(DispatchClaimShardAllocation.id)
-        .with_for_update()
-    ))
-    list(session.scalars(
-        select(DispatchClaimReservation)
-        .where(DispatchClaimReservation.id.in_(reservation_ids))
-        .order_by(DispatchClaimReservation.id)
         .with_for_update()
     ))
 
