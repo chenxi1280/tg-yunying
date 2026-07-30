@@ -50,6 +50,46 @@ def credentials() -> AiProviderCredentials:
     )
 
 
+@pytest.mark.no_postgres
+def test_search_join_connect_timeout_is_explicit_pre_mutation_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def connect_timeout(*_args, **_kwargs):
+        raise TimeoutError
+
+    gateway = TelethonTelegramGateway()
+    monkeypatch.setattr(gateway, "_get_or_create_client", connect_timeout)
+
+    result = gateway._run(
+        gateway._execute_search_join_async(
+            "raw-session",
+            DeveloperAppCredentials(
+                app_id=1,
+                api_id=123,
+                api_hash="hash",
+                credentials_version=1,
+            ),
+            {
+                "client_metadata": {
+                    "device_model": "test-device",
+                    "system_version": "test-system",
+                    "app_version": "test-app",
+                    "client_identity_key": "test-client",
+                }
+            },
+            "关键词",
+        )
+    )
+
+    assert result == {
+        "success": False,
+        "error_code": "search_transport_unavailable",
+        "detail": "TimeoutError",
+        "search_transport_phase": "connect_or_authorize",
+        "remote_mutation_started": False,
+    }
+
+
 def _add_ai_provider(session: Session) -> None:
     session.add(Tenant(id=1, name="默认运营空间"))
     session.add(

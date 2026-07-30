@@ -401,7 +401,19 @@ def test_search_join_blocks_legacy_protocol_payload_before_gateway(session: Sess
 
 
 @pytest.mark.no_postgres
-def test_search_join_gateway_exception_becomes_unknown_on_same_attempt(session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    ("gateway_exception", "expected_detail"),
+    [
+        (RuntimeError("gateway interrupted"), "gateway interrupted"),
+        (TimeoutError(), "TimeoutError"),
+    ],
+)
+def test_search_join_gateway_exception_becomes_unknown_on_same_attempt(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    gateway_exception: Exception,
+    expected_detail: str,
+) -> None:
     task = _task()
     task.type = "search_click"
     task.stats = {"fulfillment_contract_version": FULFILLMENT_CONTRACT_VERSION}
@@ -428,7 +440,7 @@ def test_search_join_gateway_exception_becomes_unknown_on_same_attempt(session: 
     monkeypatch.setattr(
         dispatcher.gateway,
         "execute_search_join",
-        lambda *_args: (_ for _ in ()).throw(RuntimeError("gateway interrupted")),
+        lambda *_args: (_ for _ in ()).throw(gateway_exception),
         raising=False,
     )
 
@@ -440,6 +452,8 @@ def test_search_join_gateway_exception_becomes_unknown_on_same_attempt(session: 
     assert attempt.status == "result_unknown"
     assert attempt.gateway_call_started_at is not None
     assert attempt.after_call_at is not None
+    assert action.result["error_message"] == expected_detail
+    assert attempt.failure_detail == expected_detail
 
 
 @pytest.mark.no_postgres

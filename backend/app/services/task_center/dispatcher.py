@@ -626,10 +626,11 @@ def _dispatch_action(
         _fail(action, FailureType.UNKNOWN.value, payload_error_message(exc))
         return True
     except Exception as exc:  # noqa: BLE001 - worker must keep draining.
+        detail = str(exc).strip() or type(exc).__name__
         if _gateway_call_started(session, action):
-            _mark_unknown_after_send(session, action, str(exc))
+            _mark_unknown_after_send(session, action, detail)
         else:
-            _fail(action, FailureType.UNKNOWN.value, str(exc))
+            _fail(action, FailureType.UNKNOWN.value, detail)
         return True
 
 
