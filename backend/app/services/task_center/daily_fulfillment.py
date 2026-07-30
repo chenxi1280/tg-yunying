@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from app.models import AiGenerationContractAudit, Action, ExecutionAttempt, Task, TaskAccountDailyCoverage, TaskDailyFulfillmentDecision
+from app.models import AiGenerationContractAudit, Action, Task, TaskAccountDailyCoverage, TaskDailyFulfillmentDecision
 from app.services._common import _now
 
 from .datetime_compat import is_after_or_equal, is_before
@@ -55,8 +55,7 @@ def summarize_daily_fulfillment(
 ) -> DailyFulfillmentSummary:
     timestamp = now or _now()
     rows = _current_rows(session, task, coverage_date or _task_coverage_date(task, timestamp))
-    _reconcile_open_coverage_rows(session, task, rows, timestamp)
-    actions = _actions_by_id(session, rows)
+    actions = _open_actions_by_coverage(session, task, rows)
     counts = _state_counts(rows, actions, timestamp)
     return _summary_from_counts(rows, counts, timestamp)
 
@@ -205,103 +204,6 @@ def _blocker_counts(rows: list[TaskAccountDailyCoverage], codes: set[str]) -> di
     return result
 
 
-def _reconcile_open_coverage_rows(
-    session: Session,
-    task: Task,
-    rows: list[TaskAccountDailyCoverage],
-    timestamp: datetime,
-) -> None:
-    actions = _open_actions_by_coverage(session, task, rows)
-    if not actions:
-        return
-    gateway_started_ids = _gateway_started_action_ids(session, actions)
-    for row in rows:
-        action = actions.get(row.id)
-        _reconcile_open_coverage_row(row, action, action.id in gateway_started_ids if action else False, timestamp)
-    session.flush()
-
-
-def _gateway_started_action_ids(session: Session, actions: dict[str, Action]) -> set[str]:
-    action_ids = [action.id for action in actions.values()]
-    if not action_ids:
-        return set()
-    return set(session.scalars(
-        select(ExecutionAttempt.action_id).where(
-            ExecutionAttempt.action_id.in_(action_ids),
-            ExecutionAttempt.gateway_call_started_at.is_not(None),
-        ).distinct()
-    ))
-
-
-def _reconcile_open_coverage_row(
-    row: TaskAccountDailyCoverage,
-    action: Action | None,
-    gateway_started: bool,
-    timestamp: datetime,
-) -> None:
-    if _is_valid_future_open(action, timestamp):
-        _mark_future_open_row(row, action, timestamp)
-    elif _is_overdue_open(action, timestamp):
-        _mark_overdue_open_row(row, action, gateway_started, timestamp)
-
-
-def _mark_future_open_row(row: TaskAccountDailyCoverage, action: Action, timestamp: datetime) -> None:
-    if row.state == "ready":
-        _reserve_ready_row(row, action, timestamp)
-    elif _holds_pre_gateway_overdue(row):
-        _reserve_pre_gateway_open_row(row, action, timestamp)
-
-
-def _reserve_ready_row(row: TaskAccountDailyCoverage, action: Action, timestamp: datetime) -> None:
-    row.state = "reserved"
-    row.reserved_action_id = action.id
-    row.last_action_id = action.id
-    row.next_decision_at = action.scheduled_at
-    row.updated_at = timestamp
-
-
-def _mark_overdue_open_row(
-    row: TaskAccountDailyCoverage,
-    action: Action,
-    gateway_started: bool,
-    timestamp: datetime,
-) -> None:
-    if not _can_reconcile_open_row(row):
-        return
-    if not gateway_started:
-        _reserve_pre_gateway_open_row(row, action, timestamp)
-        return
-    row.state = "unknown"
-    row.reserved_action_id = action.id
-    row.last_action_id = action.id
-    row.blocker_code = "coverage_action_overdue"
-    row.blocker_stage = "remote_reconcile"
-    row.blocker_detail = "覆盖 Action 已到期仍未进入终态，等待执行事实核验"
-    row.recovery_path = "remote_reconcile"
-    row.next_decision_at = None
-    row.updated_at = timestamp
-
-
-def _can_reconcile_open_row(row: TaskAccountDailyCoverage) -> bool:
-    return row.state in {"ready", "reserved", "sending"} or _holds_pre_gateway_overdue(row)
-
-
-def _holds_pre_gateway_overdue(row: TaskAccountDailyCoverage) -> bool:
-    return row.state == "unknown" and row.blocker_code == "coverage_action_overdue"
-
-
-def _reserve_pre_gateway_open_row(row: TaskAccountDailyCoverage, action: Action, timestamp: datetime) -> None:
-    row.state = "reserved"
-    row.reserved_action_id = action.id
-    row.last_action_id = action.id
-    row.blocker_code = "dispatcher_lag"
-    row.blocker_stage = "dispatcher"
-    row.blocker_detail = "覆盖 Action 已到期但尚未进入 Telegram Gateway，等待 Dispatcher 或 Recovery 收口"
-    row.recovery_path = "dispatcher_recheck"
-    row.next_decision_at = timestamp
-    row.updated_at = timestamp
-
-
 def _open_actions_by_coverage(
     session: Session,
     task: Task,
@@ -336,13 +238,6 @@ def _coverage_id_for_action(action: Action) -> str:
     return str(payload.get("coverage_ledger_id") or "")
 
 
-def _actions_by_id(session: Session, rows: list[TaskAccountDailyCoverage]) -> dict[str, Action]:
-    action_ids = [str(row.reserved_action_id) for row in rows if row.reserved_action_id]
-    if not action_ids:
-        return {}
-    return {action.id: action for action in session.scalars(select(Action).where(Action.id.in_(action_ids)))}
-
-
 def _state_counts(
     rows: list[TaskAccountDailyCoverage],
     actions: dict[str, Action],
@@ -357,7 +252,7 @@ def _state_counts(
         remaining = max(0, int(row.target_count or 1) - int(row.confirmed_count or 0))
         counts["frozen"] += int(row.target_count or 1)
         counts["confirmed"] += min(int(row.target_count or 1), int(row.confirmed_count or 0))
-        _count_row_state(counts, row, remaining, actions.get(row.reserved_action_id or ""), timestamp)
+        _count_row_state(counts, row, remaining, actions.get(row.id), timestamp)
     return counts
 
 
@@ -369,6 +264,15 @@ def _count_row_state(
     timestamp: datetime,
 ) -> None:
     if remaining <= 0:
+        return
+    if row.state == "ready" and _is_valid_future_open(action, timestamp):
+        counts["reserved"] += remaining
+        counts["valid_open"] += remaining
+        counts["sendable"] += remaining
+        return
+    if row.state == "ready" and _is_overdue_open(action, timestamp):
+        counts["reserved"] += remaining
+        counts["overdue_open"] += remaining
         return
     if row.state == "ready":
         counts["ready"] += remaining

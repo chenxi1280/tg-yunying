@@ -317,6 +317,64 @@ def test_production_generation_pipeline_returns_batch_to_pending_dispatch(
         assert all(action.payload["ai_generation_status"] == "ready" for action in actions)
 
 
+def test_generation_worker_keeps_recovery_status_in_same_normal_batch(
+    monkeypatch,
+) -> None:
+    from app.services.task_center import ai_generation_worker
+
+    monkeypatch.setattr(
+        ai_generation_worker,
+        "credentials_for_account",
+        lambda *_args, **_kwargs: object(),
+    )
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        actions, _coverages = seed_reserved_normal_batch(
+            session,
+            _now(),
+            bind_coverage=False,
+        )
+        for action in actions:
+            action.status = "pending"
+            action.claim_owner = ""
+            action.claim_token = ""
+        actions[1].payload = {
+            **dict(actions[1].payload or {}),
+            "ai_generation_status": "ai_result_persist_unknown",
+        }
+        session.commit()
+        dependencies = generation_dependencies(normal_generator=normal_generator(
+            session,
+            [
+                GeneratedContent(
+                    "恢复一号",
+                    slot_id="cycle-normal:turn:1",
+                    sequence_index=1,
+                ),
+                GeneratedContent(
+                    "恢复二号",
+                    slot_id="cycle-normal:turn:2",
+                    sequence_index=2,
+                ),
+            ],
+        ))
+
+    assert drain_ai_generation(
+        lambda: Session(engine),
+        limit=10,
+        dependencies=dependencies,
+    ) == 2
+
+    with Session(engine) as session:
+        actions = list(session.scalars(select(Action).order_by(Action.id)))
+        assert all(action.status == "pending" for action in actions)
+        assert all(
+            action.payload["ai_generation_status"] == "ready"
+            for action in actions
+        )
+
+
 def _seed_actions(engine) -> None:
     now_value = _now()
     with Session(engine) as session:

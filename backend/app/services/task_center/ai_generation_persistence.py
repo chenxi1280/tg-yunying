@@ -26,7 +26,11 @@ def persist_generation_results(
 ) -> None:
     batch = load_generation_batch(session, request)
     if len(results) != len(batch):
-        raise GenerationMappingError("ai_generation_output_count_mismatch")
+        raise GenerationMappingError(
+            "ai_generation_output_count_mismatch",
+            expected_slot_count=len(batch),
+            received_slot_count=len(results),
+        )
     validate_generation_mapping(
         batch,
         [result.content for result in results],

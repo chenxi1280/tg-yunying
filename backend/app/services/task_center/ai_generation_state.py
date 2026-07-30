@@ -27,7 +27,17 @@ GENERATION_AUDIT_FIELDS = (
 
 
 class GenerationMappingError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        code: str,
+        *,
+        expected_slot_count: int | None = None,
+        received_slot_count: int | None = None,
+    ) -> None:
+        super().__init__(code)
+        self.code = code
+        self.expected_slot_count = expected_slot_count
+        self.received_slot_count = received_slot_count
 
 
 class GenerationAttemptStale(AiGenerationUnavailable):
@@ -80,7 +90,11 @@ def validate_generation_mapping(
     if not all(slot_ids) or len(slot_ids) != len(set(slot_ids)):
         raise GenerationMappingError("ai_generation_slot_mapping_invalid")
     if len(contents) != len(batch):
-        raise GenerationMappingError("ai_generation_output_count_mismatch")
+        raise GenerationMappingError(
+            "ai_generation_output_count_mismatch",
+            expected_slot_count=len(batch),
+            received_slot_count=len(contents),
+        )
     validate_output_sequences(
         contents,
         len(batch),
@@ -99,7 +113,11 @@ def validate_output_sequences(
     is_reply: bool,
 ) -> None:
     if len(contents) != expected_count:
-        raise GenerationMappingError("ai_generation_output_count_mismatch")
+        raise GenerationMappingError(
+            "ai_generation_output_count_mismatch",
+            expected_slot_count=expected_count,
+            received_slot_count=len(contents),
+        )
     expected = list(range(1, expected_count + 1))
     actual = _output_sequence_indexes(contents)
     if len(actual) != len(set(actual)):

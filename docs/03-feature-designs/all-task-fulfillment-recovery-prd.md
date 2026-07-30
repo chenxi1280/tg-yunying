@@ -503,7 +503,7 @@ scope capacity
 
 同一 `ready` Window 的 Action 新增、claim、executing、success/failed 状态变化不得触发整窗重建。当前 epoch 尚有未领取 Reservation 时继续消费原不可变分配；只有明确释放形成非空 release set，或原 epoch 的全部可领取 Reservation 已消费且仍有新到期需求时，才开启唯一 pending rebuild wave。任务只要取得大于 0 的份额即为 `allocated`，不得因“部分小于 required”把整个任务标成 `shared_dispatch_capacity_insufficient`。
 
-每个新 Window 的首次分配输入必须覆盖整个 scope 的到期 Action 需求和纯搜索点击的 open obligation 需求，不能取决于哪个 Dispatcher 或搜索 Planner 先取得 Window 锁。普通 Dispatcher 先创建 Window 时也必须持久化 `search_click` 的 TaskAllocation/Reservation；搜索 Planner 先创建时则必须按生产 `runtime_account_shard_total` 保留所有普通 Action 的实际执行 shard，不能把普通 Action 一并降成搜索虚拟 `(1,0)`。随后各方只消费同一不可变 epoch 的份额。通用 unclaimed 回收器必须识别纯搜索 Reservation 的专属 carrier：open obligation 负责进入首次 allocation，获配后直到搜索首次 outcome 或稳定 release batch 前均由搜索物化流程独占；即使尚无 Action、任务随后停止或 due 消失，也不得写 `unclaimed_action_no_longer_due` 或清空 Reservation。
+通用 Dispatcher 的新 Window 分配输入只覆盖整个 scope 的到期 Action 需求，不能把尚未物化的纯搜索 open obligation 注入每次普通 claim。搜索 Planner 取得同一 Scope/Window 锁后，在自己的物化事务中同时纳入普通 Action demand 和纯搜索 obligation demand，并在提交前完成 assignment/Action 绑定或释放未匹配单元；不能把普通 Action 一并降成搜索虚拟 `(1,0)`。事务提交后，纯搜索 Reservation 只有 `bound_count` 对应单元受保护；`claimed=0、bound=0` 且没有到期 Action 的单元由通用 unclaimed 回收器写 `unclaimed_action_no_longer_due` 并释放。
 
 多个 Dispatcher 对同一 `dispatcher_scope` 构造上述全局输入时，必须先取得 `DispatchClaimScope` 行锁，再执行到期 Action 的全局排序、Window 分配和本批 claiming 持久化；不得让各 worker 在锁外并行重复相同的全局 Window 查询，随后才竞争 Scope 锁。该候选查询只投影需求分组、排序和后续 claim 所需的 Action 字段；搜索预绑定只允许提取 `result.dispatch_prebound/search_click_assignment_id` 两个标量，禁止在候选阶段水合完整 `result` 等与分配无关的大字段。完整 Action 只在 `DispatchClaimPlan.candidate_action_ids` 确定后按计划顺序锁取。Scope 锁是原中央分配事务的前移，不新增业务容量上限，也不改变跨 shard 需求、Reservation、公平顺序或 Gateway 门禁。
 
@@ -604,7 +604,7 @@ precommit assembler、hash 比较、全部新 allocation/reservation 与 Window 
 
 父任务/lane 内选择 Action 时先按业务义务 deadline 最早、未满足比例最高、义务 cursor 最旧稳定排序，再应用账号/分片安全资格；同一频道消息或账号不得吞掉父任务全部份额。该内部顺序只分配已获父任务份额，不建立新的全局类别优先级。
 
-AI 准入积压不得阻止 `admission_ready` 账号的 `ai_group_daily`。同一 AI 父任务和 shard 内，`group_bot_admission_ready`、`post_follow_visibility_probe`，以及已满足 required-channel follow、可在本次 send gate 原子切换为 probe 的 Action，必须排在 `waiting/unresolved/stale` 发送 Action 前进入 fulfillment 候选；排序发生在 TaskAllocation 的 `due_claimable` 与 Reservation 映射之前。已有 ready/probe 候选时，等待准入的正文 Action 只能推动对应 admission lane 或以未占 fulfillment 份额的状态等待，不能每 30 秒重复领取 fulfillment Reservation、确认 claim 后再退回 pending，造成 ready 账号队首阻塞；当前 shard 完全没有 ready/probe 候选时，允许有界选取一个 waiting Action 进入 send gate，以完成 `awaiting -> post_follow_visibility_probe` 的原子状态推进。任何 claim 已确认后把 Action 退回 `pending` 的路径必须同时清空 `lease_owner/lease_expires_at`、claim 字段并释放 dispatch binding；遗留 pending lease 由 Recovery 批量清理，但不能把 lease 清理当作跳过准入。纯搜索点击不进入 `membership_admission` 状态机；“搜索点击加入”待独立 PRD。一个频道消息的不可用 reaction 不得阻止其他消息；搜索 protocol 未通过 canary 时只阻止搜索批量 source。
+AI 准入积压不得阻止 `admission_ready` 账号的 `ai_group_daily`。同一 AI 父任务和 shard 内，`group_bot_admission_ready`、`post_follow_visibility_probe`，以及已满足 required-channel follow、可在本次 send gate 原子切换为 probe 的既有 Action，必须排在 `waiting/unresolved/stale` 发送 Action 前进入 fulfillment 候选；排序发生在 TaskAllocation 的 `due_claimable` 与 Reservation 映射之前。等待准入的正文 Action 只能推动对应 admission lane 或以未占 fulfillment 份额的状态等待，不能每 30 秒重复领取 fulfillment Reservation。既有 Action 若能原子切入唯一 probe 则继续；否则在 Gateway 前终态收口、清空 lease/claim/binding 并释放 Coverage/数量/内容槽，由 Admission 完成事件重新规划。纯搜索点击不进入 `membership_admission` 状态机；“搜索点击加入”待独立 PRD。一个频道消息的不可用 reaction 不得阻止其他消息；搜索 protocol 未通过 canary 时只阻止搜索批量 source。
 
 `post_follow_visibility_probe` 必须是可恢复的持久义务，不能只靠一次 send-gate 调用的内存返回值。gate 首次把 admission 切入该状态时，必须在同一事务把唯一 `probe_action_id` 绑定到当前 Action，并把 `group_bot_post_follow_visibility_probe=true`、admission id/version 写回同一 Action；进程退出、Action 退回 pending 或下次 claim 后，同一绑定 Action 必须继续获准进入内容生成和 Gateway，不能因为 admission 已经处于 probe 状态再次返回 `group_bot_admission_wait`。其他 Action 在绑定释放前不得并发探针；仅绑定 Action 已被确认是 pre-Gateway terminal 且不存在 Gateway-started/unknown/pending-visibility 事实时，才允许下一 Action 原子接管。存量只有 probe state、没有绑定的 admission，由首个符合条件的当前 Action 原子补绑。
 
@@ -676,7 +676,7 @@ listener 处理可信群管提示时，禁止在已修改 `group_bot_admissions`
 
    每个 `(dispatch_claim_window_id, dispatch_allocation_epoch)` 唯一对应一条持久 `SearchClickAssignmentEpoch`。创建 `state=open + solver_problem_hash + solver_input_hash` 的同一事务必须绑定当前有效 `solver_owner_lease_id/solver_claimed_at`；唯一键冲突的其他 worker 只回读，不得并发求解。只有仍持有该 lease 的 owner 可执行一次搜索求解和一次成功 outcome finalize。owner lease 只作存活 fencing，健康 owner 在求解期间持续续租，固定租约时长、心跳周期或续租次数不得成为隐藏的 solver deadline；只有进程失联、fencing token 失效或明确丢失续租所有权时，recovery 才直接按 `abandoned` finalize，不转移 ownership、不重跑搜索求解，也不新增 attempt/history。每次纯搜索点击规划必须先按创建时间扫描并锁定全部 `state=open` epoch，不得只查询当前 Window；活跃 owner 只回读并跳过，失去 owner 的历史 Window 在同一事务写全量 release/exclusion/outcome 后收口，随后当前 Window 才可建立新分片权重与新 epoch。release wave 判断 Window 是否结束前必须把 PostgreSQL aware 时间和业务 naive 北京时间统一到北京时间比较，不能让时区表示差异回滚整轮 recovery。正常 finalize 的短 `SERIALIZABLE` 事务第一批业务读取必须按 Window → TaskAllocation → ShardAllocation → Reservation 锁定中央分配事实，锁后再核对 owner并读取新的 `finalize_now`，再以该时间重建当前 solver 输入；求解开始时间/epoch 创建时间只作历史证据，禁止作为锁内 Window、eligibility、Action `scheduled_at` 或 `finalized_at` 的当前时间。若锁内 `finalize_now >= bucket_end`，整轮直接 `abandoned` 并释放全部未领取 unit，禁止创建 assignment/Action；先读取 owner/候选建立旧快照、再等待中央锁也属于非法顺序。结果闭集为 `no_candidate|optimal|abandoned`，并保存精确 `release_unit_set_hash/outcome_hash/next_dispatch_allocation_epoch(nullable)/rebuild_input_version_after(nullable)/finalized_at`。release hash 对稳定排序的 `(window,reservation,ordinal,reason_code,resource_snapshot_hash)` 计算，空集合也保存确定性 hash，不能只存 count；outcome hash 覆盖 carrier 的 Window/dispatch/search epoch 身份、`solver_problem_hash`、`solver_input_hash`、solver result、全部 matched assignment identity/version、release hash 和实际 wave epoch/input version。已 finalized 重放只回读同一 problem/input/release/outcome/wave 结果，任一字段不一致保持 `release_fact_incomplete`。即使没有 assignment，也由该行承载首次结果和 release set 幂等；它不得承载 finalize 后 assignment 的再次释放。`optimal` 原子提交全部可验证匹配并释放 unmatched，`no_candidate|abandoned` 释放全部未领取 unit。`optimal` finalize 必须同时验证 Window 仍可领取、`allocation_state=ready` 且当前 `dispatch_allocation_epoch` 与该 search epoch 完全一致；Window 正在 rebuild、已发布更高 epoch 后重新 ready，或已经结束时都只能改为 `abandoned`。释放分别加入现有 wave、从当前 ready 版本开启下一 wave，或仅收口事实。
 
-   当前 epoch 的 `claim_class=search_click` fulfillment Reservation 从中央 `ready` 发布到首次 search outcome finalize 前由搜索物化流程独占。通用 `unclaimed_action_no_longer_due`、无 Action Reservation 回收和普通 expiry reclaimer 必须跳过；assignment/Action 尚未创建是搜索求解前的正常状态，不是空占。Window 可领取且 epoch 行尚不存在时，首个有效 worker 创建 open 行并绑定自身 lease后执行一次求解；若 Window 已在建行前结束，recovery 在一个事务创建并直接 finalize abandoned，求解调用数为 0。任务暂停/停止/删除、due 消失或 Window 结束只使 optimal 前置失效，由该 epoch释放全部仍未领取 unit，不能另建通用 carrier。首次 outcome finalize 后，每个来源 search Reservation 必须满足 `bound_count + claimed_count + released_count = reserved_claims`；之后只有 bound assignment 进入 release batch，claimed unit继续收口。通用 reclaimer 若已触碰这些 unit，属于 `search_reservation_ownership_violation` 一致性隔离。
+   搜索 Planner 在同一物化事务内创建 `claim_class=search_click` fulfillment Reservation、search epoch、assignment/Action 或相应 release outcome；未绑定单元不得以“求解前正常状态”跨事务长期占用中央份额。事务提交后，通用 reclaimer 只跳过 `bound_count` 对应单元；`claimed=0、bound=0` 且无到期 Action 的 Reservation 可按 `unclaimed_action_no_longer_due` 回收。Window 已结束时 recovery 创建并直接 finalize abandoned，求解调用数为 0。首次 outcome finalize 后，每个来源 search Reservation 必须满足 `bound_count + claimed_count + released_count = reserved_claims`；之后只有 bound assignment 进入 release batch，claimed unit 继续收口。
 
    `allocation_state=ready` 只允许创建新中央版本和新 search epoch/assignment，不是旧 bound Action 的 claim 门禁。同一 optimal outcome 的 unmatched release 把 Window 置为 `rebuild_required` 后，matched assignment 只要来源 Reservation、assignment、搜索资源与 Action version 有效，且 Window/业务 deadline 未结束，就继续按来源 epoch `_confirm_claim -> Gateway`，不得读取未发布新权重或因状态不再 ready 被卡死。Window 已结束、Action 不再到期或 Gateway 前资格失效时才走稳定 release batch。未绑定的新 epoch份额仍须等待新权重与 `ready` 原子发布。
 
@@ -964,7 +964,7 @@ apply 不得修改 success、unknown_after_send、Gateway-started，不得补 re
 | 搜索 owner lease 与 finalized 重放 | 健康 owner 跨多个租约周期持续续租，耗时本身不触发 abandoned；仅进程失联/fencing 所有权丢失才 recovery abandoned。finalized outcome 由 carrier identity、原 solver input、matched identity/version、精确 release set 与实际 wave epoch/input version 唯一重算；同结果重放零写入，任一错绑保持 `release_fact_incomplete` |
 | 搜索持久输入快照 | open 前原子保存完整 problem snapshot、全部 component 与每个 Reservation/ordinal 唯一 binding；共享 resource/fairness key 不得跨 component，无候选 unit 有零边分量。owner 丢失 recovery 只用原 binding/component hash，重组旧图和 solver 额外查库均为 0；缺件、错绑或 payload/hash 不一致时零释放、零重建并对象级 quarantine。supersede 与 solver 输入复用同一 Assembler/canonicalization |
 | 搜索结果提交快照 | `stable_component_key` 可由稳定业务身份重算且不含随机/carrier/worker/时间；所有账号排序字段及 source version 可从 payload 反向枚举。冻结后新增/删除候选或改变额度、已确认 click 数、机会时间、cursor、eligibility、中央份额/version时，即使 Window epoch 未变，旧 `optimal|no_candidate` 也整轮 abandoned/release/rebuild且写入 0 条 assignment；serialization/CAS/驱动旧结果重放不得产生部分提交或第二次 solver 调用 |
-| 搜索首次 outcome 所有权 | ready search Reservation 尚无 Action/epoch 时，通用 no-Action/unclaimed reclaimer 必须跳过；首个 worker 创建唯一 epoch，Window 已结束则 recovery 建行并直接 abandoned且不调用 solver。任务停止/due 消失只能使原 epoch abandoned；finalize 后每个来源 Reservation 精确满足 `bound+claimed+released=reserved` |
+| 搜索首次 outcome 所有权 | Reservation、唯一 epoch、assignment/Action 或 release outcome 必须在搜索物化事务内一起提交；事务后 `bound=0/claimed=0` 且无到期 Action 的单元允许通用回收。Window 已结束则 recovery 建行并直接 abandoned且不调用 solver；finalize 后每个来源 Reservation 精确满足 `bound+claimed+released=reserved` |
 | search rebuild 与旧 bound claim | optimal 同时产生 matched/unmatched 时，unmatched 可触发 `rebuild_required`，但匹配成功的旧 epoch Action 在 Window/deadline/版本有效时仍须 claim/Gateway；不得等待新 ready、读取未发布权重或误释放 |
 | 搜索旧 epoch 防提交 | `optimal` finalize 同时校验 Window 尚可领取、ready 且当前 dispatch epoch 与 search epoch 完全一致；分别注入 Window 正在 rebuild、已在更高 epoch 回到 ready、已结束三种状态，都只能 abandoned，不能提交旧 matched |
 | 搜索 post-finalize 释放 | `optimal` 已 finalized 后注入 assignment Gateway 前失败、Action 不再到期和 Window expiry：不得改写 search outcome；同 trigger 同 candidate hash 只 finalize 一条 release batch。bound/released/unclaimed/assignment/exclusion 任一点失败整批回滚；两个 batch 在同一 pending wave 中只产生一个中央 epoch，第二批使旧 rebuild 快照失效 |
@@ -1017,6 +1017,18 @@ apply 不得修改 success、unknown_after_send、Gateway-started，不得补 re
 - E：在任务时区完成一个完整自然日；五类均达到各自目标才可写 `production_fixed`。
 
 若代码已部署但搜索账号容量仍不足，结论必须为 `production_blocked: insufficient_safe_capacity`，不能写修复完成。
+
+### 10.1 2026-07-30 共享调度占用事故修订
+
+1. 通用 Dispatcher 的 demand 只能来自本轮可领取 Action；未物化为
+   assignment/Action 的搜索 obligation 不得注入通用 Window。
+2. 搜索 fulfillment worker 可在自己的分配事务内以 obligation 求解中央份额，
+   但提交后只有 `bound_count` 对应的单元受保护；`claimed=0、bound=0` 的
+   search reservation 必须在通用 reconciliation 中释放。
+3. `summarize_daily_fulfillment` 是只读投影。它可按 Coverage 与开放 Action
+   计算有效状态，但不得修改 Coverage、Action 或 `next_decision_at`。
+4. 生产清理只允许删除指定 Task、指定 cutoff 前、尚未进入 Gateway 的 AI
+   正文 Action；成功、`unknown_after_send`、Gateway-started 和远端消息事实保留。
 
 ## 11. Product Design Complete 自检
 

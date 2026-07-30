@@ -463,3 +463,12 @@
 - output: 0095 使用并发 DDL 补齐 7 个外键索引并同步模型元数据；不调整清理批次、保留期和群/评论配置。
 - evidence: 迁移幂等/可逆及 PostgreSQL concurrent DDL `9 passed`；相关 retention/comment/coverage/recovery `128 passed`。
 - decision: `development_complete=true`；转 re-QA/Product 后发布。
+
+## 2026-07-31 三个郑州 AI 活群共享调度恢复 Development Complete
+
+- message_id: `2026-07-31-zhengzhou-ai-fulfillment-runtime-recovery-dev-001`
+- root_cause: generic Dispatcher 把尚未物化为 Action 的搜索点击义务写入共享 DispatchWindow，并在 post-transaction reconcile 中长期保护无绑定 reservation，导致 52 个共享槽位被虚占；AI 生成只扫描 `pending`，映射条数错误可被 retry 反复复活；群机器人等待 admission 的既有 Action 持续延期；汇总读路径还会触发 reservation reconcile 写入。
+- output: generic Dispatcher 只按已存在 Action 建需求，搜索规划器负责自身 reservation 的物化、绑定与释放；post-transaction 仅保护已绑定 search reservation。生成恢复覆盖 `ai_result_persist_unknown`，结构化记录 expected/received，并将生成契约错误设为终态。readiness 纳入 admission，非允许的群机器人 Action 终态跳过；汇总改为只读。历史清理脚本新增三个 task-id 定向范围，并保留 pre-Gateway 安全约束；同步 PRD、数据流和生产运行手册。
+- evidence: 相关 no-PostgreSQL 回归曾完成 `125 passed`，生成契约 retry 定向回归 `1 passed / 121 deselected`，compileall 与 diff-check 通过；最终提交前重新执行完整相关回归。
+- decision: `development_complete=true`；进入 Release Checks，生产发送热路径保持冻结。
+- unresolved: GitHub Actions、生产定向旧账清理、worker 恢复及三个任务真实 `remote_message_id` 增长 E4。

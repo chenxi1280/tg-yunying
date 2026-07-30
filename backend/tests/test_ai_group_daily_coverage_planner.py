@@ -196,7 +196,7 @@ def test_daily_coverage_ignores_legacy_hard_hourly_config(
     assert requires_planning_with_open_actions(session, task) is True
 
 
-def test_daily_fulfillment_repairs_ready_row_with_future_coverage_action(session: Session) -> None:
+def test_daily_fulfillment_reads_ready_row_with_future_coverage_action_without_mutation(session: Session) -> None:
     task, _group = _seed(session)
     row = session.get(TaskAccountDailyCoverage, "coverage-1")
     future_at = beijing_now().replace(hour=22, minute=0, second=0, microsecond=0)
@@ -217,13 +217,13 @@ def test_daily_fulfillment_repairs_ready_row_with_future_coverage_action(session
     summary = summarize_daily_fulfillment(session, task, now=future_at.replace(hour=21))
 
     session.refresh(row)
-    assert row.state == "reserved"
-    assert row.reserved_action_id == action.id
+    assert row.state == "ready"
+    assert row.reserved_action_id is None
     assert summary.ready_to_plan_count == 0
     assert summary.valid_future_open_cover_count == 1
 
 
-def test_daily_fulfillment_marks_overdue_pre_gateway_action_as_dispatcher_lag(session: Session) -> None:
+def test_daily_fulfillment_reads_overdue_pre_gateway_action_without_mutation(session: Session) -> None:
     task, _group = _seed(session)
     row = session.get(TaskAccountDailyCoverage, "coverage-1")
     blocked = session.get(TaskAccountDailyCoverage, "coverage-3")
@@ -251,15 +251,15 @@ def test_daily_fulfillment_marks_overdue_pre_gateway_action_as_dispatcher_lag(se
     session.refresh(row)
     assert row.state == "reserved"
     assert row.reserved_action_id == action.id
-    assert row.blocker_code == "dispatcher_lag"
-    assert row.blocker_stage == "dispatcher"
+    assert row.blocker_code == ""
+    assert row.blocker_stage == ""
     assert summary.valid_future_open_cover_count == 0
     assert summary.overdue_open_count == 1
     assert summary.unknown_hold_count == 0
     assert summary.daily_outcome == "at_risk"
 
 
-def test_daily_fulfillment_restores_legacy_pre_gateway_unknown_to_reserved(session: Session) -> None:
+def test_daily_fulfillment_reads_legacy_pre_gateway_unknown_without_mutation(session: Session) -> None:
     task, _group = _seed(session)
     row = session.get(TaskAccountDailyCoverage, "coverage-1")
     timestamp = beijing_now().replace(hour=21, minute=0, second=0, microsecond=0)
@@ -284,10 +284,10 @@ def test_daily_fulfillment_restores_legacy_pre_gateway_unknown_to_reserved(sessi
     summary = summarize_daily_fulfillment(session, task, now=timestamp)
 
     session.refresh(row)
-    assert row.state == "reserved"
-    assert row.blocker_code == "dispatcher_lag"
-    assert row.recovery_path == "dispatcher_recheck"
-    assert summary.unknown_hold_count == 0
+    assert row.state == "unknown"
+    assert row.blocker_code == "coverage_action_overdue"
+    assert row.recovery_path == ""
+    assert summary.unknown_hold_count == 1
     assert summary.overdue_open_count == 1
 
 
@@ -314,7 +314,7 @@ def test_daily_fulfillment_normalizes_aware_action_time_from_postgres(session: S
     summary = summarize_daily_fulfillment(session, task, now=timestamp)
 
     assert row.state == "reserved"
-    assert row.blocker_code == "dispatcher_lag"
+    assert row.blocker_code == ""
     assert summary.overdue_open_count == 1
 
 
@@ -336,7 +336,7 @@ def test_daily_fulfillment_normalizes_mixed_next_decision_times(session: Session
     assert _next_decision_at(rows, timestamp, ready_count=2) == timestamp + timedelta(minutes=1)
 
 
-def test_daily_fulfillment_marks_gateway_started_overdue_action_unknown(session: Session) -> None:
+def test_daily_fulfillment_reads_gateway_started_overdue_action_without_mutation(session: Session) -> None:
     task, _group = _seed(session)
     row = session.get(TaskAccountDailyCoverage, "coverage-1")
     timestamp = beijing_now().replace(hour=21, minute=0, second=0, microsecond=0)
@@ -369,9 +369,9 @@ def test_daily_fulfillment_marks_gateway_started_overdue_action_unknown(session:
     summary = summarize_daily_fulfillment(session, task, now=timestamp)
 
     session.refresh(row)
-    assert row.state == "unknown"
-    assert row.blocker_code == "coverage_action_overdue"
-    assert summary.unknown_hold_count == 1
+    assert row.state == "reserved"
+    assert row.blocker_code == ""
+    assert summary.unknown_hold_count == 0
     assert summary.overdue_open_count == 1
 
 

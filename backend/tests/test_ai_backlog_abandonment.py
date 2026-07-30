@@ -83,6 +83,25 @@ def test_apply_terminalizes_business_slots_before_deleting_action() -> None:
         assert repeated["candidate_count"] == 0
 
 
+def test_task_filter_limits_abandonment_scope() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    cutoff = datetime(2026, 7, 30, 18, 0)
+
+    with Session(engine) as session:
+        facts = _seed_backlog(session, cutoff)
+        result = abandon_ai_historical_backlog(
+            session,
+            cutoff=cutoff,
+            apply=True,
+            actor="test",
+            task_ids={"different-task"},
+        )
+
+        assert result["candidate_count"] == 0
+        assert session.get(Action, facts["action_id"]) is not None
+
+
 def _seed_backlog(session: Session, cutoff: datetime) -> dict[str, str]:
     session.add(Tenant(id=1, name="tenant"))
     session.add(Task(id="ai-task", tenant_id=1, name="AI", type="group_ai_chat", status="running"))

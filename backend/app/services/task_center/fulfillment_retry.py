@@ -18,6 +18,16 @@ AI_GROUP_TERMINAL_QUALITY_ERRORS = frozenset(
     {"duplicate_message", "ai_message_memory_missing"}
 )
 AI_GROUP_TERMINAL_GENERATION_STATUSES = frozenset({"duplicate_rejected"})
+AI_GROUP_TERMINAL_GENERATION_CONTRACT_ERRORS = frozenset({
+    "ai_generation_output_count_mismatch",
+    "ai_generation_slot_mapping_invalid",
+    "ai_generation_slot_mapping_mismatch",
+    "ai_generation_output_sequence_duplicate",
+    "ai_generation_output_sequence_mismatch",
+    "ai_generation_reply_sequence_mismatch",
+    "ai_generation_reply_sequence_unexpected",
+    "ai_generation_output_empty",
+})
 
 
 def retry_failed_actions(
@@ -167,7 +177,9 @@ def _is_terminal_ai_quality_failure(
     )
     return (
         error_code in AI_GROUP_TERMINAL_QUALITY_ERRORS
+        or error_code in AI_GROUP_TERMINAL_GENERATION_CONTRACT_ERRORS
         or generation_status in AI_GROUP_TERMINAL_GENERATION_STATUSES
+        or generation_status in AI_GROUP_TERMINAL_GENERATION_CONTRACT_ERRORS
         or quality_reason in AI_GROUP_TERMINAL_QUALITY_ERRORS
     )
 

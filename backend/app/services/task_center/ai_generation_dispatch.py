@@ -30,6 +30,7 @@ from .payloads import SendMessagePayload
 
 GENERATION_BATCH_SIZE = 10
 GENERATION_LOOKAHEAD_SECONDS = 120
+GENERATABLE_GENERATION_STATUSES = ("pending", "ai_result_persist_unknown")
 CONTEXT_HISTORY_LIMIT = 50
 CONTEXT_HISTORY_MAX_CHARS = 1000
 
@@ -380,7 +381,9 @@ def _normal_sibling_query(action: Action, payload: SendMessagePayload):
             Action.payload["ai_generation_claim_owner"].as_string() == payload.ai_generation_claim_owner,
             Action.payload["ai_generation_claim_token"].as_string() == payload.ai_generation_claim_token,
             Action.scheduled_at <= cutoff,
-            Action.payload["ai_generation_status"].as_string() == "pending",
+            Action.payload["ai_generation_status"].as_string().in_(
+                GENERATABLE_GENERATION_STATUSES
+            ),
             Action.payload["ai_generation_id"].as_string() == payload.ai_generation_id,
             or_(
                 Action.payload["reply_to_message_id"].as_integer().is_(None),

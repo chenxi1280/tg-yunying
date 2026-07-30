@@ -48,11 +48,6 @@ from .prebound_search_claim import (
     confirm_prebound_search_claim,
     plan_prebound_search_claims,
 )
-from .search_click_dispatch_allocation import (
-    open_search_click_dispatch_demands,
-)
-
-
 def plan_dispatch_claims(
     session: Session,
     actions: list[Action],
@@ -156,12 +151,8 @@ def _scope_demands(
     demands: list[DispatchClaimDemand],
     now: datetime,
 ) -> list[DispatchClaimDemand]:
-    search_demands = open_search_click_dispatch_demands(session, now)
-    search_keys = {demand.key for demand in search_demands}
-    return [
-        demand for demand in demands
-        if demand.key not in search_keys
-    ] + search_demands
+    del session, now
+    return demands
 
 
 def _request_rebuild_if_needed(

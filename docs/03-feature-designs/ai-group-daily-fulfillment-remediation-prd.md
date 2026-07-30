@@ -180,6 +180,17 @@ maximum_confirmable_count = frozen_denominator_count - terminal_permission_block
 7. `GroupBotAdmission.observation_closes_at` 与 `PendingVisibilityCredit.created_at` 从 SQLite、PostgreSQL 或生产连接返回时，准入门禁和恢复扫描都必须先归一到统一的北京时间墙上时钟再比较或计算 hold age；禁止 naive/aware 直接比较中断 Dispatcher 或全部任务的 recovery cycle，也不得因时区转换把超时 hold 当成功。
 8. `TaskAccountDailyCoverage.next_decision_at` / `next_eligible_at` 在汇总最早决策时间前同样必须归一为北京时间墙上时钟。数据库返回的 aware 值与历史 naive 值可同时存在，Planner 不得因 Python `min()` 直接比较而中断全部任务循环。
 
+### 5.1.1 群管准入与正文 Action 一致性
+
+1. Coverage readiness 同时要求账号、群发言权限和群管准入可发送；存在
+   `GroupBotAdmission` 时，只有 `group_bot_admission_ready` 或唯一绑定的
+   `post_follow_visibility_probe` 可进入正文规划。
+2. Dispatcher 发现正文 Action 的准入状态未完成时，必须在 Gateway 前将该
+   Action 终态收口并释放 Coverage、数量槽、内容槽和 dispatch binding；不得
+   每 30 秒退回 pending 并长期占用份额。
+3. Coverage 回到 readiness 后由 Admission 事实决定
+   `ready/pending_admission`，Admission 完成事件再触发新 Action。
+
 ### 5.2 内容多样性和重复质量失败
 
 每一个待生成的非引用或引用 slot 必须拥有不可变 content_variation_key。它由任务、目标引用 epoch、北京时间日期、账号、Cycle、话题方向、讨论老师、行为类型、引用身份和一个新鲜上下文版本派生；只保存摘要或哈希，不把完整敏感上下文写入公共 stats。
@@ -206,6 +217,10 @@ maximum_confirmable_count = frozen_denominator_count - terminal_permission_block
 4. 只有出现以下明确事件之一，覆盖行才可从该 blocker 回到 ready：已批准的 provider / prompt-contract / parser 版本变更，或运营人员在受限界面确认合同已修复并留下审计理由。不得用隐式模型降级、换话题、模板或签到绕过该 blocker。
 5. 不能证明 slot 归属的任何候选文本不得写入消息记忆、不得关联账号、不得作为后续重复判断基线。
 6. 原始 provider 响应只允许加密保存并受单独权限与保留期控制；页面、普通日志和 `Action.result` 只能展示脱敏摘要。
+7. `pending` 与 `ai_result_persist_unknown` 使用同一个批次领取和 sibling
+   谓词；不得领取十条后只生成其中一种状态。
+8. `GenerationMappingError` 必须携带 expected/received 数量；合同失败是
+   终态，通用失败重试器不得把它重新排为 pending。
 
 ### 5.4 群日累计进度与账号覆盖债务
 

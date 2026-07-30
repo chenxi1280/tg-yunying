@@ -5,7 +5,15 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import AccountStatus, TaskAccountDailyCoverage, TaskMembershipAdmissionItem, TgAccount, TgGroup, TgGroupAccount
+from app.models import (
+    AccountStatus,
+    GroupBotAdmission,
+    TaskAccountDailyCoverage,
+    TaskMembershipAdmissionItem,
+    TgAccount,
+    TgGroup,
+    TgGroupAccount,
+)
 from app.security import decrypt_session
 
 
@@ -16,7 +24,11 @@ def refresh_rows(
     timestamp: datetime,
 ) -> None:
     refreshable = [pair for pair in rows_and_items if _row_needs_refresh(pair[0], timestamp)]
-    readiness = _account_readiness_batch(session, [row.account_id for row, _item in refreshable], group.id)
+    readiness = _account_readiness_batch(
+        session,
+        [row.account_id for row, _item in refreshable],
+        group,
+    )
     for row, item in refreshable:
         state, code, detail = readiness[row.account_id]
         _apply_row_readiness(row, item, state, code, detail, timestamp)
@@ -61,19 +73,32 @@ def _apply_row_readiness(
 def _account_readiness_batch(
     session: Session,
     account_ids: list[int],
-    group_id: int,
+    group: TgGroup,
 ) -> dict[int, tuple[str, str, str]]:
     if not account_ids:
         return {}
     accounts = session.scalars(select(TgAccount).where(TgAccount.id.in_(account_ids)))
     links = session.scalars(select(TgGroupAccount).where(
-        TgGroupAccount.group_id == group_id,
+        TgGroupAccount.tenant_id == group.tenant_id,
+        TgGroupAccount.group_id == group.id,
         TgGroupAccount.account_id.in_(account_ids),
+    ))
+    admissions = session.scalars(select(GroupBotAdmission).where(
+        GroupBotAdmission.tenant_id == group.tenant_id,
+        GroupBotAdmission.group_id == group.id,
+        GroupBotAdmission.account_id.in_(account_ids),
     ))
     account_by_id = {account.id: account for account in accounts}
     link_by_account = {link.account_id: link for link in links}
+    admission_by_account = {
+        admission.account_id: admission for admission in admissions
+    }
     return {
-        account_id: _readiness_from_records(account_by_id.get(account_id), link_by_account.get(account_id))
+        account_id: _readiness_from_records(
+            account_by_id.get(account_id),
+            link_by_account.get(account_id),
+            admission_by_account.get(account_id),
+        )
         for account_id in account_ids
     }
 
@@ -81,6 +106,7 @@ def _account_readiness_batch(
 def _readiness_from_records(
     account: TgAccount | None,
     link: TgGroupAccount | None,
+    admission: GroupBotAdmission | None,
 ) -> tuple[str, str, str]:
     if account is None or account.deleted_at is not None:
         return "blocked", "account_deleted", "账号已删除"
@@ -96,6 +122,15 @@ def _readiness_from_records(
         return "pending_admission", "not_in_group", "账号尚未进入目标群"
     if not link.can_send:
         return "blocked", "cannot_send", "账号在目标群不可发言"
+    if admission is not None and admission.state not in {
+        "group_bot_admission_ready",
+        "post_follow_visibility_probe",
+    }:
+        return (
+            "pending_admission",
+            "group_bot_admission_wait",
+            f"群管机器人准入未完成：{admission.state}",
+        )
     return "ready", "", ""
 
 
