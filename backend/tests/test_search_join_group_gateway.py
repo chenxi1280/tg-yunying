@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import pytest
 
 from app.integrations.telegram.search_join import (
+    ImageVerificationProviderUnavailableError,
     ensure_search_join_membership_with_client,
     execute_search_join_with_client,
     probe_search_join_membership_with_client,
@@ -986,4 +987,31 @@ def test_jisou_image_verification_stays_required_when_solver_unavailable() -> No
     assert result["error_code"] == "jisou_image_verification_required"
     assert result["image_verification_status"] == "required"
     assert result["image_verification_reason"] == "verification_ai_unavailable"
+    assert verification_page.clicked == []
+
+
+@pytest.mark.no_postgres
+def test_jisou_image_verification_stays_required_on_provider_transport_error() -> None:
+    verification_page = _verification_image_page(
+        digit_answers=["8", "9", "10", "11", "12", "13", "14", "15"],
+    )
+    client = FakeSearchJoinClient([FakeMessage(100, []), verification_page])
+
+    def unavailable_solver(*_args):
+        raise ImageVerificationProviderUnavailableError(
+            "MiMo(mimo-v2.5): AI provider HTTP 503",
+        )
+
+    result = asyncio.run(
+        execute_search_join_with_client(
+            client,
+            _payload(bot_username="jisou"),
+            keyword_text="郑州",
+            image_verification_solver=unavailable_solver,
+        )
+    )
+
+    assert result["error_code"] == "jisou_image_verification_required"
+    assert result["image_verification_reason"] == "verification_ai_unavailable"
+    assert "MiMo(mimo-v2.5)" in result["image_verification_detail"]
     assert verification_page.clicked == []

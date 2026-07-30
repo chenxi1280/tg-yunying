@@ -19,6 +19,9 @@
 > **中央重建提交隔离：** precommit assembler、hash 比较、三类新 allocation 行和 Window ready/hash 必须在同一短 PostgreSQL `SERIALIZABLE` 事务，覆盖完整输入行与候选谓词；并发 update/phantom 导致 abort 后不得拿旧权重自动重放，只能由下一 drain 重新 assemble/solve。
 > **solver 契约版本发布栅栏：** `dispatch_rebuild_contract_version` 或搜索 `solver_contract_version` 变化时禁止新旧 Dispatcher 混跑。先阻止旧版本取得新 ownership并确认旧进程/可提交事务归零，再启动新版本；旧内存输出作废，pending rebuild 由新版本重建，旧 owner 的 open search epoch 在 fence 后直接 abandoned。无法证明旧版本已失去写资格时 Release Gate 失败。
 > **搜索旧 epoch 提交门：** `SearchClickAssignmentEpoch` 的 `optimal` finalize 不只检查 Window 是否 `ready`，还必须锁行确认 Window 尚可领取且当前 `dispatch_allocation_epoch` 与 search epoch 完全一致。Window 正在 rebuild、已经在更高 epoch 回到 ready 或已经结束，都只能 abandoned；不得把过期 matched 写入新中央版本。
+> **搜索 finalize 时钟：** `executors/search_click.py` 在锁定中央分配事实后读取新的 `finalize_now`，并统一用于 Window 结束判断、eligibility 重建、Action `scheduled_at` 与 `finalized_at`；`build_plan` 开始时刻只作历史证据。锁内 Window 已结束直接 abandoned，不得物化过期 assignment/Action。
+> **验证码 provider 可观测性：** `membership_challenges.py` 枚举健康 MiMo/MiniMax 时区分真实响应无安全答案与调用 unavailable；`integrations/telegram/search_join.py` 将全部 unavailable 固定映射为 `jisou_image_verification_required` 并保存脱敏 provider/model/error，不得写最终失败或路径排除。
+> **搜索账号 session 资源：** `search_click_assignment_solver.py` 的账号节点容量按 Claim Window 固定为 1，`hard_safe_remaining_capacity` 只负责资格和排序；solver contract 提升为 `search-click-assignment-v3`，防止旧图把同一账号重复匹配到整批 obligation。
 > **搜索 Reservation 所有权：** `claim_class=search_click` 的 fulfillment Reservation 在首次 search outcome finalize 前由唯一 epoch 物化流程独占，通用无 Action/unclaimed/expiry 回收入口必须跳过。Window 已结束但 epoch 行缺失时由 recovery 建行并直接 abandoned，不调用 solver。首次 finalize 后必须满足 `bound+claimed+released=reserved`；通用 reclaimer 抢先触碰属于 `search_reservation_ownership_violation`，不能另造 carrier。
 > **重建期间旧 bound claim：** `allocation_state=ready` 仅控制新版本/新 search epoch/assignment；optimal 的 unmatched 触发 `rebuild_required` 后，同批 matched 的旧 epoch Action 在来源版本、Window 与业务 deadline 有效时仍可 `_confirm_claim -> Gateway`，不得等待新 ready、读取未发布权重或误释放。
 

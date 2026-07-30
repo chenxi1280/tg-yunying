@@ -17,7 +17,7 @@ from app.models import (
 from .search_click_assignment_solver import SearchClickCandidatePath, SearchClickDemand
 from .search_click_dispatch_allocation import SearchClickFulfillmentUnit
 
-SOLVER_CONTRACT_VERSION = "search-click-assignment-v2"
+SOLVER_CONTRACT_VERSION = "search-click-assignment-v3"
 
 
 @dataclass(frozen=True)

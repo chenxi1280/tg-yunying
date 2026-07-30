@@ -374,7 +374,7 @@ def _account_capacities(
     for path in paths:
         capacities[path.account_id] = max(
             capacities.get(path.account_id, 0),
-            max(0, int(path.hard_safe_remaining_capacity)),
+            min(1, max(0, int(path.hard_safe_remaining_capacity))),
         )
     return capacities
 

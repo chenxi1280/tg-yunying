@@ -10,6 +10,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.integrations.telegram import OperationResult
+from app.integrations.telegram.search_join import (
+    ImageVerificationProviderUnavailableError,
+)
 from app.models import (
     AiProvider,
     AiProviderHealthStatus,
@@ -512,17 +515,32 @@ def build_search_join_image_verification_solver(
         if not image_bytes:
             return None
         allowed_answers = frozenset(answer.strip() for answer in candidate_answers)
+        provider_failures: list[str] = []
+        provider_responded = False
         for provider_credentials in credentials:
-            result = _solve_search_join_image(
-                provider_credentials,
-                image_bytes,
-                mime_type,
-            )
+            try:
+                result = _solve_search_join_image(
+                    provider_credentials,
+                    image_bytes,
+                    mime_type,
+                )
+            except Exception as exc:  # noqa: BLE001 - classify each approved provider outcome.
+                provider_responded |= _provider_returned_unsafe_answer(exc)
+                provider_failures.append(
+                    _image_provider_failure_detail(provider_credentials, exc),
+                )
+                continue
+            provider_responded = True
             if result is None:
                 continue
             answer, confidence = result
             if confidence >= MIN_IMAGE_VERIFICATION_CONFIDENCE and answer in allowed_answers:
                 return result
+        if not provider_responded:
+            raise ImageVerificationProviderUnavailableError(
+                "; ".join(provider_failures)
+                or "all approved image providers unavailable",
+            )
         return None
 
     return solver
@@ -539,16 +557,33 @@ def _solve_search_join_image(
     image_bytes: bytes,
     mime_type: str,
 ) -> tuple[str, float] | None:
-    try:
-        result = ai_gateway.solve_image_verification(
-            credentials,
-            image_bytes,
-            mime_type or "image/png",
-            prompt=SEARCH_JOIN_IMAGE_VERIFICATION_PROMPT,
-        )
-    except Exception:  # noqa: BLE001 - try the next configured healthy vision provider.
-        return None
+    result = ai_gateway.solve_image_verification(
+        credentials,
+        image_bytes,
+        mime_type or "image/png",
+        prompt=SEARCH_JOIN_IMAGE_VERIFICATION_PROMPT,
+    )
     answer = str(result.answer or "").strip()
     if not answer:
         return None
     return answer, float(result.confidence or 0.0)
+
+
+def _provider_returned_unsafe_answer(exc: Exception) -> bool:
+    detail = str(exc).lower()
+    return any(marker in detail for marker in (
+        "returned malformed verification json",
+        "returned empty verification answer",
+        "returned no choices",
+        "returned empty final content",
+    ))
+
+
+def _image_provider_failure_detail(
+    credentials: Any,
+    exc: Exception,
+) -> str:
+    provider = str(getattr(credentials, "provider_name", "") or "AI")
+    model = str(getattr(credentials, "model_name", "") or "unknown")
+    detail = (str(exc) or exc.__class__.__name__)[:240]
+    return f"{provider}({model}): {detail}"
