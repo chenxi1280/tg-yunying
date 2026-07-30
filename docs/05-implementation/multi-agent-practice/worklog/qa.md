@@ -435,3 +435,11 @@
 - evidence: no-PostgreSQL 生成、CAS、失败恢复、可观测性、worker、reply shortfall、任务限制和 Dispatcher 组合为 `126 passed / 83 deselected`；真 PostgreSQL 工作流 `1 passed`，数据库留下 1 条 `expired_before_send` 旧记忆和 2 条 success，第二条正文包含最新真人上下文；compileall 与 diff-check 通过。
 - decision: `qa_pass=true`；只让未进 Gateway 的 normal ready 正文在真实新上下文出现后重新生成，不更换 Action/slot/coverage、不改变 reply 目标，也不把倒序补录消息误判为更新。
 - unresolved: 第八次 CI 全绿、部署、deadlock/FK 零增量和三个任务 E4。
+
+## 2026-07-31 郑州 AI 活群未达标二次恢复定向 QA
+
+- message_id: `2026-07-31-zhengzhou-ai-fulfillment-second-recovery-qa-001`
+- scope: 搜索 release quarantine、群机器人 policy/follow/probe、coverage readiness、AI Planner 候选、membership Recovery 与 Gateway 边界。
+- evidence: 线上形态 `Shard unclaimed=1 / Window unclaimed=0` 可先回滚、写 resolved quarantine、重算并完成 release；安全 awaiting admission 同时进入 coverage ready 与 Planner，但状态在 send gate 前保持 awaiting；缺 refs 的 waiting 账号仍被排除；pre-Gateway execution timeout 创建带明确 reason 的新 Action，存在 `gateway_call_started_at` 的相同错误保持不动。综合 `136 passed / 38 deselected`，邻接准入/释放回归均通过；compileall、diff-check 通过。
+- decision: `qa_pass=true`（E2）；不接受批量把 admission 改 ready，不接受删除 unknown/Gateway-started 事实；允许回到 product 验收并进入 Release Gate。
+- unresolved: CI、生产部署、受控 DB 恢复和真实 Telegram E4。

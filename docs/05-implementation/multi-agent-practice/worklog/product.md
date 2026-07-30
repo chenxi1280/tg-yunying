@@ -539,3 +539,25 @@
 - evidence: 定向 no-PostgreSQL `126 passed / 83 deselected`；真 PostgreSQL 连续上下文回归通过并证明旧记忆过期、新正文绑定第二上下文；前序锁序、retention 外键和 reply shortfall 定向 QA 均已通过。
 - decision: `product_accepted=true`（E2）；允许进入第八次 Release Gate，生产恢复仍只由发布后真实 Telegram 与数据库稳定性证据判定。
 - unresolved: CI、生产镜像、三个任务持续远端增长和完整北京时间自然日分母。
+
+## 2026-07-31 郑州 AI 活群未达标二次恢复 Product Handoff
+
+- message_id: `2026-07-31-zhengzhou-ai-fulfillment-second-recovery-product-001`
+- level/lane: `L3 / prod-diagnosis -> product -> dev`。
+- production_evidence: 三个任务进程均为 running，当前小时到期量基本完成且共享窗口未满；但 Dispatcher 出现 `dispatch_release_window_unclaimed_negative` 并中止整轮 drain。郑州楼凤 580 个、郑州师范 363 个账号停在 `pending_admission`，其中大多数已完成必需频道关注、没有可绑定的历史确认按钮，却没有机会创建 send Action 进入既有 post-follow visibility probe；另有 34 个最新入群 Action 在任何 Gateway started 事实前被 `execution_timeout` 终态化且没有重建。
+- design_basis: 复用 `all-task-fulfillment-recovery-prd.md` 的既有合同：释放计数异常必须回滚、隔离、按 Reservation 重算并重试；无来源确认消息、必需关注完成且存在匹配的 active `explicit_bot_confirmation` 策略时，可由当前 send Action 原子切换为可见性探针；仅 pre-Gateway 失败允许安全重试。
+- dev_handoff: 1) 将 window 聚合负数纳入显式 release quarantine/recount；2) 提供 Planner/readiness/Gateway 共用的批量探针可规划判定，禁止只按 admission state 过滤；3) 仅对 `execution_timeout` 且不存在 `ExecutionAttempt.gateway_call_started_at` 的入群 Action 创建新 retry Action。
+- acceptance: shard=1/window=0 的释放漂移必须自动重算且不再中止 drain；安全候选进入 daily coverage ready 和 Planner 候选后，真实执行仍由 `evaluate_send_gate` 原子绑定探针；有 source、缺 refs、关注未完成、策略不匹配的账号保持等待；Gateway 已开始或 `unknown_after_send` 绝不自动重试/删除。发布后 Dispatcher 同类异常零增量，三个任务出现新 Action 和新 `remote_message_id`，且未知发送事实保持不变。
+- decision: `design_status=complete`，无新增产品语义或 schema；允许进入 dev。旧规划残留可按已批准的 task-id + pre-Gateway 条件清理，但本轮不删除成功、Gateway-started 或 unknown 事实。
+- next_agent: dev
+- unresolved: 红绿测试、Release Gate、生产部署、受控数据恢复以及 E4 远端增长尚未完成。
+
+## 2026-07-31 郑州 AI 活群未达标二次恢复 Product Acceptance
+
+- message_id: `2026-07-31-zhengzhou-ai-fulfillment-second-recovery-product-accepted-001`
+- input: `2026-07-31-zhengzhou-ai-fulfillment-second-recovery-qa-001`。
+- acceptance: 实现与既有 PRD 一致：共享 Dispatcher 的 Window 聚合漂移进入显式隔离重算；只有无 source、当前 refs 全部关注成功且命中 active explicit policy 的 awaiting admission 获得 Action 规划资格，最终 probe 仍由 send gate 原子绑定；只有无 Gateway-started Attempt 的 membership execution timeout 安全重试。
+- evidence: 5 条根因测试先红后绿；综合定向 `136 passed / 38 deselected`，compileall 与 diff-check 通过。
+- decision: `product_accepted=true`（E2）；允许进入 Release Gate。生产 E4 未完成，不能写 `production_fixed`。
+- next_agent: dev
+- unresolved: master/release、GitHub Actions、生产数据恢复、三个任务新 Action/remote_message_id 和 Dispatcher 同类错误零增量。

@@ -15,6 +15,8 @@ from app.models import (
     ContentMixCycleSlot,
     ExecutionAttempt,
     GroupBotAdmission,
+    GroupBotAdmissionPolicy,
+    GroupBotRequiredChannelFollow,
     OperationTarget,
     Task,
     TaskAccountDailyCoverage,
@@ -420,6 +422,51 @@ def test_planner_keeps_only_group_bot_ready_accounts_when_gate_is_required(
     )
 
     assert [account.id for account in selected] == [1, 3]
+
+
+def test_planner_includes_safe_post_follow_probe_candidate(
+    session: Session,
+) -> None:
+    task, group = _seed(session, configured=1, account_count=1)
+    task.type_config = {
+        **task.type_config,
+        "group_bot_admission_required": True,
+    }
+    admission = GroupBotAdmission(
+        tenant_id=1,
+        group_id=group.id,
+        account_id=1,
+        state="awaiting_group_bot_confirmation",
+        trusted_bot_peer_id="trusted-bot",
+        required_channel_refs=["@required"],
+    )
+    session.add(admission)
+    session.flush()
+    session.add_all([
+        GroupBotAdmissionPolicy(
+            tenant_id=1,
+            group_id=group.id,
+            trusted_bot_peer_id="trusted-bot",
+            completion_policy="explicit_bot_confirmation",
+            status="active",
+        ),
+        GroupBotRequiredChannelFollow(
+            admission_id=admission.id,
+            channel_ref="@required",
+            status="success",
+        ),
+    ])
+    session.flush()
+
+    selected = group_ai_chat._group_bot_ready_accounts_for_plan(
+        session,
+        task,
+        group,
+        [SimpleNamespace(id=1)],
+    )
+
+    assert [account.id for account in selected] == [1]
+    assert admission.state == "awaiting_group_bot_confirmation"
 
 
 def test_group_volume_candidates_scan_past_uncovered_admission_debt(

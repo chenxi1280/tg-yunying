@@ -16,6 +16,8 @@ from app.models import (
 )
 from app.security import decrypt_session
 
+from .group_bot_admission import plannable_admission_account_ids
+
 
 def refresh_rows(
     session: Session,
@@ -90,14 +92,15 @@ def _account_readiness_batch(
     ))
     account_by_id = {account.id: account for account in accounts}
     link_by_account = {link.account_id: link for link in links}
-    admission_by_account = {
-        admission.account_id: admission for admission in admissions
-    }
+    admission_rows = list(admissions)
+    admission_by_account = {row.account_id: row for row in admission_rows}
+    plannable_ids = plannable_admission_account_ids(session, admission_rows)
     return {
         account_id: _readiness_from_records(
             account_by_id.get(account_id),
             link_by_account.get(account_id),
             admission_by_account.get(account_id),
+            post_follow_probe_eligible=account_id in plannable_ids,
         )
         for account_id in account_ids
     }
@@ -107,6 +110,8 @@ def _readiness_from_records(
     account: TgAccount | None,
     link: TgGroupAccount | None,
     admission: GroupBotAdmission | None,
+    *,
+    post_follow_probe_eligible: bool,
 ) -> tuple[str, str, str]:
     if account is None or account.deleted_at is not None:
         return "blocked", "account_deleted", "账号已删除"
@@ -122,10 +127,7 @@ def _readiness_from_records(
         return "pending_admission", "not_in_group", "账号尚未进入目标群"
     if not link.can_send:
         return "blocked", "cannot_send", "账号在目标群不可发言"
-    if admission is not None and admission.state not in {
-        "group_bot_admission_ready",
-        "post_follow_visibility_probe",
-    }:
+    if admission is not None and not post_follow_probe_eligible:
         return (
             "pending_admission",
             "group_bot_admission_wait",

@@ -654,6 +654,75 @@ def has_pending_required_channel_follows(session: Session, *, admission: GroupBo
     ) is not None
 
 
+def plannable_admission_account_ids(
+    session: Session,
+    admissions: list[GroupBotAdmission],
+) -> set[int]:
+    plannable = {
+        int(row.account_id)
+        for row in admissions
+        if row.state in {READY_STATE, "post_follow_visibility_probe"}
+    }
+    candidates = [
+        row for row in admissions
+        if row.id
+        and row.state == "awaiting_group_bot_confirmation"
+        and not row.source_message_id
+        and current_required_channel_refs(row)
+    ]
+    if not candidates:
+        return plannable
+    policy_keys = _active_explicit_policy_keys(session, candidates)
+    eligible = [
+        row for row in candidates
+        if (row.tenant_id, row.group_id, row.trusted_bot_peer_id) in policy_keys
+    ]
+    refs_by_admission = {
+        int(row.id): current_required_channel_refs(row) for row in eligible
+    }
+    completed_ids = _completed_follow_admission_ids(session, refs_by_admission)
+    plannable.update(
+        int(row.account_id) for row in eligible if row.id in completed_ids
+    )
+    return plannable
+
+
+def _active_explicit_policy_keys(
+    session: Session,
+    admissions: list[GroupBotAdmission],
+) -> set[tuple[int, int, str]]:
+    rows = session.execute(
+        select(
+            GroupBotAdmissionPolicy.tenant_id,
+            GroupBotAdmissionPolicy.group_id,
+            GroupBotAdmissionPolicy.trusted_bot_peer_id,
+        ).where(
+            GroupBotAdmissionPolicy.tenant_id.in_({row.tenant_id for row in admissions}),
+            GroupBotAdmissionPolicy.group_id.in_({row.group_id for row in admissions}),
+            GroupBotAdmissionPolicy.completion_policy == "explicit_bot_confirmation",
+            GroupBotAdmissionPolicy.status == "active",
+        )
+    ).all()
+    return {(tenant_id, group_id, peer_id) for tenant_id, group_id, peer_id in rows}
+
+
+def _completed_follow_admission_ids(
+    session: Session,
+    refs_by_admission: dict[int, tuple[str, ...]],
+) -> set[int]:
+    follows = session.scalars(select(GroupBotRequiredChannelFollow).where(
+        GroupBotRequiredChannelFollow.admission_id.in_(refs_by_admission),
+    )).all()
+    successful_refs: dict[int, set[str]] = {}
+    for row in follows:
+        if row.status == "success":
+            successful_refs.setdefault(row.admission_id, set()).add(row.channel_ref)
+    return {
+        admission_id for admission_id, refs in refs_by_admission.items()
+        if set(refs).issubset(successful_refs.get(admission_id, set()))
+    }
+
+
 def plan_required_channel_follow_actions(
     session: Session,
     *,
@@ -1064,19 +1133,11 @@ def _start_post_follow_visibility_probe(
     *,
     action_id: str,
 ) -> bool:
-    if admission.state != "awaiting_group_bot_confirmation" or admission.source_message_id:
+    if admission.state != "awaiting_group_bot_confirmation":
         return False
-    if not current_required_channel_refs(admission):
-        return False
-    if has_pending_required_channel_follows(session, admission=admission):
-        return False
-    if active_policy(
-        session,
-        tenant_id=admission.tenant_id,
-        group_id=admission.group_id,
-        completion_policy="explicit_bot_confirmation",
-        trusted_bot_peer_id=admission.trusted_bot_peer_id,
-    ) is None:
+    if admission.account_id not in plannable_admission_account_ids(
+        session, [admission],
+    ):
         return False
     admission.state = "post_follow_visibility_probe"
     admission.post_send_visibility_state = "pending"
@@ -1308,6 +1369,7 @@ __all__ = [
     "is_group_bot_completion_event",
     "current_required_channel_refs",
     "has_pending_required_channel_follows",
+    "plannable_admission_account_ids",
     "attribute_prompt_to_account",
     "ingest_trusted_bot_prompt",
     "plan_required_channel_follow_actions",
