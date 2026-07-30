@@ -207,6 +207,7 @@ maximum_confirmable_count = frozen_denominator_count - terminal_permission_block
 
 1. Dispatcher 生成前读取发送账号滚动 10 天内已接受文本的指纹、语义簇、模板、事实观点、所用面具版本，以及本任务当天已被质量拒绝的 variation 摘要。其他账号历史只作多样性软提示。
 2. 出现 duplicate_message 时，当前 Action 以终态质量失败收口，写入原始原因、10 天窗口、账号、面具版本、内容指纹摘要、语义簇、content_variation_key 和同账号重复参照；释放自身 coverage reservation。
+3. 配置 `reply_min_per_round` 但当前真人引用池不足时，普通聊天轮次继续等待，不得静默降低产品配置；如果存在已到期的全账号日覆盖债务，则本轮必须转成 direct coverage 回补槽并继续创建 Action，记录 `coverage_reply_shortfall_cycle_count`，不得让引用不足阻断覆盖债务。
 3. 同一 Action 不得原地改写文本或再次调用 AI。下一次只能由 Planner 创建新的 Action，且新 Action 的 content_variation_key 必须不同，并使用更晚的上下文版本或不同的已配置话题、老师、行为类型组合。
 4. 质量拒绝后的覆盖行回到 ready，blocker_code 保留 duplicate_message，recovery_path=replan_with_new_variation。若没有新的合法 variation 或可用上下文，则保持 at_risk 并记录原因，不制造模板补量。
 5. 已绑定当日 coverage 且面具可用的非引用 Action 使用固化 active 面具、当前安全上下文和新 variation 生成自然短句，并通过该账号滚动 10 天硬去重。不同账号历史不产生硬阻断。
@@ -352,6 +353,7 @@ required_new = max(volume_need_now, coverage_need_now)
 | Planner 全局 backlog | 不绕过 pending 上限；写 planner_capacity_insufficient 与下一检查时间，daily_outcome 不得显示 feasible |
 | 已有覆盖游标与 Dispatcher 并发 | Planner 只锁 `TaskDailyCoveragePlanCursor`，不再锁 `tasks` 行；PostgreSQL 不得出现 Planner/Dispatcher 的反向锁序或丢弃 coverage 决策 |
 | Listener 同批含机器人准入事件和真人消息 | 整批第一项数据库写入前先锁该群 speaker state；与并发 Dispatcher 组合时不得出现 `conversation_speaker_states` / `group_bot_admissions` 死锁 |
+| reply_min 未满足且存在到期日覆盖债务 | 记录引用短缺并创建不计普通引用指标的 direct coverage Action；无日覆盖债务的普通轮次仍等待 |
 | cannot_send | 留在冻结分母、daily_outcome=blocked、无正文 Gateway 调用 |
 | 入群申请待审批 | 不计 membership 或覆盖成功，显示 membership_permission_denied 或 join_request_pending 的真实原文 |
 | unknown_after_send | 保持占位、不重发、不计成功，直到远端核验 |
