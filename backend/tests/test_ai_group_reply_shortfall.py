@@ -18,7 +18,7 @@ def test_daily_coverage_debt_falls_back_to_direct_slots_when_replies_are_short(
         lambda *_args, **_kwargs: [],
     )
 
-    targets = group_ai_chat._reply_targets_for_plan(
+    targets, coverage_shortfall = group_ai_chat._reply_targets_for_plan(
         SimpleNamespace(),
         task,
         SimpleNamespace(),
@@ -30,6 +30,7 @@ def test_daily_coverage_debt_falls_back_to_direct_slots_when_replies_are_short(
     )
 
     assert targets == []
+    assert coverage_shortfall is True
     assert task.stats["reply_target_shortfall_count"] == 1
     assert task.stats["coverage_reply_shortfall_cycle_count"] == 1
     assert task.last_error == ""
@@ -45,7 +46,7 @@ def test_ordinary_cycle_still_waits_when_required_replies_are_short(
         lambda *_args, **_kwargs: [],
     )
 
-    targets = group_ai_chat._reply_targets_for_plan(
+    targets, coverage_shortfall = group_ai_chat._reply_targets_for_plan(
         SimpleNamespace(),
         task,
         SimpleNamespace(),
@@ -57,5 +58,6 @@ def test_ordinary_cycle_still_waits_when_required_replies_are_short(
     )
 
     assert targets is None
+    assert coverage_shortfall is False
     assert task.stats["reply_target_shortfall_count"] == 1
     assert "可引用消息不足" in task.last_error

@@ -757,7 +757,7 @@ def test_group_ai_plans_reply_turns_with_bound_targets(monkeypatch):
     assert actions[2].payload["reply_to_message_id"] is None
 
 
-def test_group_ai_does_not_reuse_reply_targets_when_pool_is_short(monkeypatch):
+def test_group_ai_uses_direct_daily_coverage_when_reply_pool_is_short(monkeypatch):
     _forbid_planner_ai_generation(monkeypatch)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: NOW)
     with _session() as session:
@@ -777,14 +777,15 @@ def test_group_ai_does_not_reuse_reply_targets_when_pool_is_short(monkeypatch):
         session.commit()
 
         created = build_group_ai_chat_plan(session, task)
-        total_actions = session.scalar(select(func.count(Action.id)).where(Action.task_id == task.id))
+        actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
 
-    assert created == 0
-    assert total_actions == 0
-    assert "可引用消息不足" in task.last_error
+    assert created == 3
+    assert len(actions) == 3
+    assert all(action.payload["reply_to_message_id"] is None for action in actions)
+    assert task.stats["coverage_reply_shortfall_cycle_count"] == 1
 
 
-def test_group_ai_ignores_other_task_history_for_reply_targets(monkeypatch):
+def test_group_ai_uses_direct_daily_coverage_when_only_other_task_has_history(monkeypatch):
     _forbid_planner_ai_generation(monkeypatch)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: NOW)
     with _session() as session:
@@ -828,11 +829,12 @@ def test_group_ai_ignores_other_task_history_for_reply_targets(monkeypatch):
         session.commit()
 
         created = build_group_ai_chat_plan(session, task)
-        total_actions = session.scalar(select(func.count(Action.id)).where(Action.task_id == task.id))
+        actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
 
-    assert created == 0
-    assert total_actions == 0
-    assert "可引用消息不足" in task.last_error
+    assert created == 1
+    assert len(actions) == 1
+    assert actions[0].payload["reply_to_message_id"] is None
+    assert task.stats["coverage_reply_shortfall_cycle_count"] == 1
 
 
 def test_group_ai_excludes_already_used_reply_targets_across_rounds(monkeypatch):

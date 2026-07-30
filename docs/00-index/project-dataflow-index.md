@@ -951,7 +951,7 @@ group_ai_chat / channel_comment 正文
 - `post_follow_visibility_probe` 进入时把唯一 probe Action 绑定写入 admission transport observation，并把 probe/admission 字段写回 Action；相同 Action 可跨 claim 恢复，其他 Action 等待。存量无绑定 state 由首个 Action 补绑，只有明确 pre-Gateway terminal 且无 Gateway/unknown/visibility hold 才可换绑。
 - listener 的群管 confirmation Action 查找固定为数据库内 `task_id + action_type + payload.admission_id + payload.admission_version` 过滤；禁止写 admission 后全量装载同任务 Action 再由 Python 筛选，禁止 Telegram 网络阶段持有 listener 写事务。
 - AI 生成仅在目标准入通过后执行。任务未指定模型时从任务/租户健康 Provider 解析主模型；禁用默认 Provider 不得遮蔽健康 MiMo v2.5。生产证据链为 `Admission ready/probe -> Dispatch Reservation/claim -> actual_model -> ExecutionAttempt.gateway_call_started_at -> remote_message_id`。
-- AI 活群配置 `reply_min_per_round` 但引用池不足时，只有普通无债务轮次等待；存在到期 all-accounts daily debt 时，Planner 记录引用短缺并转成 direct coverage 回补槽，继续走延迟生成、准入、轮换和 Gateway，不把引用 KPI 变成日覆盖总阻断。
+- AI 活群配置 `reply_min_per_round` 但引用池不足时，只有普通无债务轮次等待；存在到期 all-accounts daily debt 时，Planner 记录引用短缺并转成 direct coverage 回补槽，把该 Cycle 冻结合同的 `reply_min_required_count` 显式记为 0，继续走延迟生成、准入、轮换和 Gateway。任务配置不改，后续 Cycle 仍按原引用最小值执行，不把引用 KPI 变成日覆盖总阻断。
 - 通用 Dispatcher 的共享 Window 只接受已物化 Action demand；搜索 obligation
   只在 search fulfillment 分配事务内求解，提交后仅保护已绑定单元，未绑定
   reservation 由 reconciliation 释放。
