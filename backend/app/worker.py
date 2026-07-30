@@ -18,6 +18,7 @@ from .models import MessageTask, TaskStatus, WorkerHeartbeat
 from .services._common import _as_utc, _now
 from .services.task_center.heartbeat import record_worker_heartbeat
 from .services.task_center.account_voice_profile_generation_worker import drain_voice_profile_generation
+from .services.task_center.ai_generation_worker import drain_ai_generation
 from .task_queue import get_task_queue
 from .services import (
     drain_account_sync_records,
