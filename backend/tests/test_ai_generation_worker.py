@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine, select
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.models import Action, Task, Tenant, TgAccount
 from app.services._common import _now
 from app.services.task_center.ai_generator import AiGenerationUnavailable, GeneratedContent
+from app.services.task_center.ai_generation_dispatch import _normal_sibling_query
 from app.services.task_center.ai_generation_quality import fail_generation_action
 from app.services.task_center.ai_generation_worker import drain_ai_generation
 from tests.ai_generation_phase_test_support import (
@@ -117,6 +120,27 @@ def test_generation_worker_claims_sibling_outside_window_in_later_batch() -> Non
         assert future.status == "pending"
         assert future.claim_owner == ""
         assert future.payload["message_text"] == "当前窗口生成完成"
+
+
+def test_generation_batch_does_not_skip_claimed_sibling_database_locks() -> None:
+    action = _action("claimed-generation", _now(), "", "pending")
+    action.payload = {
+        **dict(action.payload or {}),
+        "ai_generation_id": "shared",
+        "ai_generation_claim_owner": "generation-worker",
+        "ai_generation_claim_token": "claim-token",
+    }
+    payload = SimpleNamespace(
+        ai_generation_id="shared",
+        ai_generation_claim_owner="generation-worker",
+        ai_generation_claim_token="claim-token",
+    )
+
+    statement = _normal_sibling_query(action, payload)
+    compiled = str(statement.compile(dialect=postgresql.dialect()))
+
+    assert "FOR UPDATE" not in compiled
+    assert "SKIP LOCKED" not in compiled
 
 
 def test_generation_worker_continues_after_explicit_business_failure() -> None:

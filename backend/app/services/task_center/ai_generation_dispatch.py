@@ -390,8 +390,6 @@ def _normal_sibling_query(action: Action, payload: SendMessagePayload):
         .order_by(Action.scheduled_at.asc(), Action.created_at.asc())
         .limit(GENERATION_BATCH_SIZE - 1)
     )
-    if action._sa_instance_state.session.bind.dialect.name != "sqlite":
-        stmt = stmt.with_for_update(skip_locked=True, of=Action)
     return stmt
 
 

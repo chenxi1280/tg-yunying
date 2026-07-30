@@ -40,7 +40,7 @@ Phase A 每个数据库事务最多处理 20 个 coverage slot，并原子完成
 
 Dispatcher 先在短事务 claim Action，写入 lease token、`ai_generation_status=generating`、generation attempt id 和 request id，然后提交并关闭事务。reply 与 normal 分批，只有同任务、同 Cycle、同 generation mode、临近执行且规则版本一致的 sibling 可进入同一批；每批输出必须按 `slot_id` 一一映射，缺失、额外或重复 slot 都是显式失败。
 
-同一 worker 一次 claim 中，共用 `ai_generation_claim_token` 的 normal pending sibling 只能由最早 Action 作为当前生成批次入口。worker 发现 claim 批次包含这种共享生成批次时，必须按领取顺序串行推进该 claim 批次，先由入口 Action 完成批量生成和 Phase C，再让已得到 `ready` 文本的 sibling 进入发送；不得把每个 pending sibling 同时提交到线程池，使多个线程各自加载并更新重叠的 Action 集合。生成 worker 的 sibling 领取窗口必须与该入口实际加载的批量生成窗口完全一致；窗口外的同 generation Action 留给后续 claim，禁止提前占用后因无正文触发整轮失败。这个串行边界只约束同一 claim 内的共享 AI 生成事务，不减少应领取、应生成或应发送的 Action 总量，其他不共享生成批次的 Dispatcher Action 保持原并发执行。
+同一 worker 一次 claim 中，共用 `ai_generation_claim_token` 的 normal pending sibling 只能由最早 Action 作为当前生成批次入口。worker 发现 claim 批次包含这种共享生成批次时，必须按领取顺序串行推进该 claim 批次，先由入口 Action 完成批量生成和 Phase C，再让已得到 `ready` 文本的 sibling 进入发送；不得把每个 pending sibling 同时提交到线程池，使多个线程各自加载并更新重叠的 Action 集合。生成 worker 的 sibling 领取窗口必须与该入口实际加载的批量生成窗口完全一致；窗口外的同 generation Action 留给后续 claim，禁止提前占用后因无正文触发整轮失败。入口加载自己已经持有 generation claim token 的 sibling 时不得再次使用 `FOR UPDATE SKIP LOCKED` 静默漏行；claim token 和 generation attempt CAS 负责 fencing，发生竞争时必须显式等待或失败。这个串行边界只约束同一 claim 内的共享 AI 生成事务，不减少应领取、应生成或应发送的 Action 总量，其他不共享生成批次的 Dispatcher Action 保持原并发执行。
 
 提交 claim 后，在无数据库事务区间完成：
 
