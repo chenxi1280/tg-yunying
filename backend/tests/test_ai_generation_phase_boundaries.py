@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
 from threading import Barrier
 from types import SimpleNamespace
 
@@ -120,7 +121,6 @@ def test_dispatch_reply_generation_uses_reply_provider_without_db_transaction(mo
     ("invalidation", "expected_code"),
     [
         ("local_missing", "reply_target_missing"),
-        ("stale", "reply_target_stale"),
         ("permission", "reply_target_missing"),
         ("remote_missing", "reply_target_missing"),
     ],
@@ -150,6 +150,43 @@ def test_invalid_reply_target_skips_ai_and_gateway_and_releases_coverage(
         assert action.payload["ai_generation_status"] == expected_code
         assert coverage.state == "ready"
         assert coverage.reserved_action_id is None
+
+
+def test_reply_queue_age_does_not_invalidate_available_target(
+    monkeypatch,
+) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    observed: dict[str, object] = {}
+    with Session(engine) as session:
+        action = seed_reply_action(session, now_value)
+        action.created_at = now_value - timedelta(minutes=10)
+        session.commit()
+        monkeypatch.setattr(
+            dispatcher,
+            "credentials_for_account",
+            lambda *_args, **_kwargs: object(),
+        )
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "send_message",
+            reply_sender(session, observed),
+        )
+
+        assert dispatcher.dispatch_action(
+            session,
+            action,
+            generation_dependencies=generation_dependencies(
+                normal_generator=forbidden_normal_generation,
+                reply_generator=reply_generator(observed),
+                reply_target_probe=reply_probe(session),
+                reply_messages_fetcher=reply_fetch(session),
+            ),
+        ) is True
+
+        assert action.status == "success"
+        assert action.result["telegram_msg_id"] == "tg-reply-1"
 
 
 @pytest.mark.parametrize(

@@ -44,7 +44,7 @@ Dispatcher 先在短事务 claim Action，写入 lease token、`ai_generation_st
 
 提交 claim 后，在无数据库事务区间完成：
 
-- reply：重新确认目标消息仍存在、可引用且未超出 `context_bound_schedule_window_seconds`；随后使用 Phase A 固定的目标、slot、面具和规则生成。
+- reply：重新确认目标消息仍存在、账号当前可发且 Telegram 远端仍可引用；随后使用 Phase A 固定的目标、slot、面具和规则生成。`context_bound_schedule_window_seconds` 只约束 Phase A 的近端排期，不得把 `Action.created_at` 或生成队列等待时长当作 reply 目标 TTL。
 - normal：刷新目标群最新上下文，再使用 Phase A 固定的 slot、面具、话题、老师和行为类型生成。
 - 全部 provider-backed 生成、fallback、改写或质量判断，包括 MiniMax、显式模型和 Grok。
 - 频道评论 direct / reply：使用 Phase A 固定的频道消息、评论引用目标、账号和规则生成或重描述；整个生成链与 AI Provider 调用期间 `session.in_transaction()` 必须为 false。
@@ -72,6 +72,7 @@ Phase C 成功提交后才进入现有发送链：账号与权限最终检查短
 - AI 返回成功但 Phase C 落库失败时，群内没有可见副作用。恢复后重用同一 Action/slot/coverage，按 provider 能力复用 request id，否则创建新 generation attempt；重新生成结果仍须经过完整去重和质量门。不得创建第二个有效预约。
 - Phase C 已提交 `ai_generation_status=ready` 后，重复消费只读取已持久化文本，不再次调用 AI。
 - AI provider/fallback 最终失败或质量最终拒绝时，Action 以 `generation_failed` 或明确质量错误终结，并在同一事务释放自己的 coverage / 预算预约；后续由 Planner 为仍未完成义务创建新 Cycle，不把失败 Action 伪装为成功。
+- Phase C 已经写入显式业务终态的 `AiGenerationUnavailable` 必须清空当前生成 claim/lease，并只结束当前批次；AI generation worker 在同一 drain 中继续处理后续独立 Action。程序异常、数据库错误、claim fencing 丢失或没有持久化明确终态的失败继续使本轮 drain 失败并暴露，不得静默跳过。
 - Telegram Gateway 调用后结果不明继续使用 `unknown_after_send`，保留 coverage unknown 且禁止自动重发；AI 生成未知和 Telegram 发送未知必须分开统计。
 
 ## 6. 可观测状态

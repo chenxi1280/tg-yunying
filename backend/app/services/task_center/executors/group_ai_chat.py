@@ -481,9 +481,11 @@ def _load_daily_coverage_plan_accounts(
     facts: PlanFacts,
     account_limit: int,
 ) -> AccountPlanState | PlanAbort:
-    selected: list = []
-    admission_waiting: list = []
-    seen_account_ids: set[int] = set()
+    selected, admission_waiting, seen_account_ids = (
+        _initial_replan_daily_accounts(
+            session, task, facts, account_limit=account_limit,
+        )
+    )
     page_limit = _daily_coverage_scan_page_limit()
     while len(selected) < account_limit:
         rows = ready_coverage_plan_batch(
@@ -496,18 +498,10 @@ def _load_daily_coverage_plan_accounts(
         if not rows:
             break
         seen_account_ids.update(int(row.account_id) for row in rows)
-        _include_daily_coverage_rows(facts.coverage, rows)
-        accounts = _select_accounts_for_plan(
-            session, task, facts.group, facts.hard_progress, facts.config, coverage_rows=rows,
+        ready_accounts, waiting = _daily_accounts_for_coverage_rows(
+            session, task, facts, rows,
         )
-        accounts = _online_ready_accounts(session, task, accounts, facts.hard_progress)
-        ready_accounts = _group_bot_ready_accounts_for_plan(
-            session, task, facts.group, accounts,
-        )
-        ready_ids = {account.id for account in ready_accounts}
-        admission_waiting.extend(
-            account for account in accounts if account.id not in ready_ids
-        )
+        admission_waiting.extend(waiting)
         remaining = max(0, account_limit - len(selected))
         selected.extend(ready_accounts[:remaining])
     selected.extend(
@@ -531,6 +525,87 @@ def _load_daily_coverage_plan_accounts(
     return PlanAbort()
 
 
+def _initial_replan_daily_accounts(
+    session: Session,
+    task: Task,
+    facts: PlanFacts,
+    *,
+    account_limit: int,
+) -> tuple[list, list, set[int]]:
+    rows = _replan_coverage_rows_for_plan(session, task, facts)
+    if not rows:
+        return [], [], set()
+    ready, waiting = _daily_accounts_for_coverage_rows(
+        session, task, facts, rows,
+    )
+    seen = {int(row.account_id) for row in rows}
+    return ready[:account_limit], waiting, seen
+
+
+def _daily_accounts_for_coverage_rows(
+    session: Session,
+    task: Task,
+    facts: PlanFacts,
+    rows: list[TaskAccountDailyCoverage],
+) -> tuple[list, list]:
+    _include_daily_coverage_rows(facts.coverage, rows)
+    accounts = _select_accounts_for_plan(
+        session,
+        task,
+        facts.group,
+        facts.hard_progress,
+        facts.config,
+        coverage_rows=rows,
+    )
+    accounts = _online_ready_accounts(
+        session, task, accounts, facts.hard_progress,
+    )
+    ready = _group_bot_ready_accounts_for_plan(
+        session, task, facts.group, accounts,
+    )
+    ready_ids = {account.id for account in ready}
+    waiting = [account for account in accounts if account.id not in ready_ids]
+    return ready, waiting
+
+
+def _replan_coverage_rows_for_plan(
+    session: Session,
+    task: Task,
+    facts: PlanFacts,
+) -> list[TaskAccountDailyCoverage]:
+    target_id = str(facts.coverage.daily_group_target_id or "")
+    target = session.get(TaskGroupDailyTarget, target_id) if target_id else None
+    if target is None or not target.task_day_ledger_id:
+        return []
+    statement = (
+        select(TaskAccountDailyCoverage)
+        .join(
+            TaskGroupDailyMessageSlot,
+            TaskGroupDailyMessageSlot.task_account_daily_coverage_id
+            == TaskAccountDailyCoverage.id,
+        )
+        .join(
+            ContentMixCycleSlot,
+            ContentMixCycleSlot.primary_quantity_slot_id
+            == TaskGroupDailyMessageSlot.id,
+        )
+        .join(ContentMixCycle, ContentMixCycle.id == ContentMixCycleSlot.cycle_id)
+        .where(
+            ContentMixCycle.task_id == task.id,
+            ContentMixCycle.task_day_ledger_id == target.task_day_ledger_id,
+            ContentMixCycleSlot.slot_state.in_(
+                {"unmaterialized", "replan_required"},
+            ),
+            TaskAccountDailyCoverage.state == "ready",
+            TaskAccountDailyCoverage.confirmed_count
+            < TaskAccountDailyCoverage.target_count,
+        )
+        .order_by(ContentMixCycle.cycle_seq, ContentMixCycleSlot.slot_index)
+        .limit(MAX_DAILY_COVERAGE_PLAN_BATCH)
+    )
+    return list(session.scalars(statement))
+
+
 def _daily_group_extra_accounts(
     session: Session,
     task: Task,
@@ -539,8 +614,15 @@ def _daily_group_extra_accounts(
     selected: list,
     account_limit: int,
 ) -> list:
-    needed = max(0, facts.coverage.volume_need_now - len(selected))
-    remaining = min(needed, max(0, account_limit - len(selected)))
+    extra_slot_count = _available_extra_quantity_slot_count(
+        session, task, facts,
+    )
+    remaining = _daily_group_extra_account_limit(
+        facts,
+        selected_count=len(selected),
+        account_limit=account_limit,
+        extra_slot_count=extra_slot_count,
+    )
     if remaining <= 0:
         return []
     candidates = select_task_accounts(
@@ -562,6 +644,45 @@ def _daily_group_extra_accounts(
         candidates,
         key=lambda account: (counts.get(account.id, 0), account.id),
     )[:remaining]
+
+
+def _daily_group_extra_account_limit(
+    facts: PlanFacts,
+    *,
+    selected_count: int,
+    account_limit: int,
+    extra_slot_count: int,
+) -> int:
+    needed = max(0, facts.coverage.volume_need_now - selected_count)
+    return min(
+        needed,
+        max(0, account_limit - selected_count),
+        max(0, extra_slot_count),
+    )
+
+
+def _available_extra_quantity_slot_count(
+    session: Session,
+    task: Task,
+    facts: PlanFacts,
+) -> int:
+    target_id = str(facts.coverage.daily_group_target_id or "")
+    target = session.get(TaskGroupDailyTarget, target_id) if target_id else None
+    if target is None or not target.task_day_ledger_id:
+        return 0
+    bound_quantity_ids = select(
+        ContentMixCycleSlot.primary_quantity_slot_id
+    )
+    statement = select(func.count(TaskGroupDailyMessageSlot.id)).where(
+        TaskGroupDailyMessageSlot.task_id == task.id,
+        TaskGroupDailyMessageSlot.task_day_ledger_id
+        == target.task_day_ledger_id,
+        TaskGroupDailyMessageSlot.slot_kind == "extra_volume",
+        TaskGroupDailyMessageSlot.state == "open",
+        TaskGroupDailyMessageSlot.task_account_daily_coverage_id.is_(None),
+        TaskGroupDailyMessageSlot.id.not_in(bound_quantity_ids),
+    )
+    return int(session.scalar(statement) or 0)
 
 
 def _group_bot_ready_accounts_for_plan(
@@ -1291,7 +1412,7 @@ def _align_quantity_slots(
     for item in blueprint.generation.quality_items:
         account_id = _quality_slot_account_id(item)
         coverage = blueprint.profile.coverage_rows.get(account_id)
-        coverage_id = str(coverage.id) if coverage else ""
+        coverage_id = _incomplete_coverage_id(coverage)
         expected_coverage_id = (
             None
             if not coverage_id or coverage_id in assigned_coverage_ids
@@ -1312,6 +1433,17 @@ def _align_quantity_slots(
         if expected_coverage_id:
             assigned_coverage_ids.add(expected_coverage_id)
     return selected
+
+
+def _incomplete_coverage_id(
+    coverage: TaskAccountDailyCoverage | None,
+) -> str:
+    if coverage is None:
+        return ""
+    target = max(1, int(getattr(coverage, "target_count", 1) or 1))
+    if int(getattr(coverage, "confirmed_count", 0) or 0) >= target:
+        return ""
+    return str(coverage.id)
 
 
 def _existing_or_new_content_mix_cycle(
@@ -1699,7 +1831,7 @@ def build_plan(session: Session, task: Task) -> int:
     if isinstance(blueprint, PlanAbort):
         return blueprint.created
     replan = _replan_content_mix_slots(session, task, blueprint)
-    if replan.found:
+    if replan.created > 0:
         return replan.created
     try:
         frozen_mix = _freeze_content_mix_cycle(session, task, blueprint)

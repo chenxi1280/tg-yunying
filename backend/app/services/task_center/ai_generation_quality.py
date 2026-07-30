@@ -86,6 +86,11 @@ def fail_generation_action(
     action.payload = data
     action.status = "failed"
     action.executed_at = _now()
+    action.claim_owner = ""
+    action.claim_token = ""
+    action.claim_expires_at = None
+    action.lease_owner = ""
+    action.lease_expires_at = None
     action.result = {
         **(action.result or {}),
         "success": False,

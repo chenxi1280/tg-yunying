@@ -15,6 +15,7 @@ from app.services.developer_apps import credentials_for_account
 from .ai_generation_composition import PRODUCTION_GENERATION_DEPENDENCIES
 from .ai_generation_dependencies import GenerationDependencies
 from .ai_generation_dispatch import ensure_send_message_content
+from .ai_generator import AiGenerationUnavailable
 from .payloads import SendMessagePayload
 
 
@@ -43,7 +44,8 @@ def drain_ai_generation(
         )
         if claim is None:
             break
-        action_id, token = claim
+        action_id, token, claimed_count = claim
+        generation_failure: AiGenerationUnavailable | None = None
         with session_factory() as session:
             action = session.get(Action, action_id)
             if not _owns_generation_claim(action, owner, token):
@@ -51,7 +53,19 @@ def drain_ai_generation(
             account = session.get(TgAccount, action.account_id)
             if account is None:
                 raise RuntimeError(f"AI generation action {action.id} has no account")
-            processor(session, action, account)
+            try:
+                processor(session, action, account)
+            except AiGenerationUnavailable as exc:
+                session.rollback()
+                generation_failure = exc
+        if generation_failure is not None:
+            if not _persisted_generation_failure(
+                session_factory, action_id,
+            ):
+                raise generation_failure
+            _release_unprepared_batch(session_factory, owner, token)
+            processed += claimed_count
+            continue
         processed += _release_prepared_batch(session_factory, owner, token)
     return processed
 
@@ -61,7 +75,7 @@ def _claim_generation_batch(
     owner: str,
     *,
     max_batch_size: int,
-) -> tuple[str, str] | None:
+) -> tuple[str, str, int] | None:
     with session_factory() as session:
         first = session.scalar(_claim_statement(session, _generation_filters()).limit(1))
         if first is None:
@@ -71,7 +85,7 @@ def _claim_generation_batch(
         for action in batch:
             _mark_generation_claim(action, owner, token)
         session.commit()
-        return first.id, token
+        return first.id, token, len(batch)
 
 
 def _claim_statement(session: Session, filters: tuple):
@@ -163,6 +177,36 @@ def _release_prepared_batch(session_factory, owner: str, token: str) -> int:
             _release_generation_claim(action, payload)
         session.commit()
         return len(actions)
+
+
+def _release_unprepared_batch(
+    session_factory,
+    owner: str,
+    token: str,
+) -> None:
+    with session_factory() as session:
+        actions = list(session.scalars(select(Action).where(
+            Action.status == "executing",
+            Action.claim_owner == owner,
+            Action.claim_token == token,
+        )))
+        for action in actions:
+            _release_generation_claim(action, dict(action.payload or {}))
+        session.commit()
+
+
+def _persisted_generation_failure(
+    session_factory,
+    action_id: str,
+) -> bool:
+    with session_factory() as session:
+        action = session.get(Action, action_id)
+        result = action.result if action and isinstance(action.result, dict) else {}
+        return bool(
+            action
+            and action.status in {"failed", "skipped"}
+            and str(result.get("error_code") or "")
+        )
 
 
 def _release_generation_claim(action: Action, payload: dict) -> None:

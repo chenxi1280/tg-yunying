@@ -79,7 +79,6 @@ def ensure_send_message_content(
         if payload.reply_to_message_id:
             _validate_local_reply_target(
                 session,
-                task,
                 action,
                 payload=payload,
                 account_id=account.id,
@@ -181,7 +180,6 @@ def _prepare_generation_request(
     action, payload = batch[0]
     peer_id = _validate_local_reply_target(
         session,
-        task,
         action,
         payload=payload,
         account_id=account.id,
@@ -287,7 +285,6 @@ def _mark_provider_call_started(session: Session, request: GenerationRequest) ->
 
 def _validate_local_reply_target(
     session: Session,
-    task: Task,
     action: Action,
     *,
     payload: SendMessagePayload,
@@ -310,18 +307,15 @@ def _validate_local_reply_target(
         TgGroupAccount.account_id == account_id,
         TgGroupAccount.can_send.is_(True),
     ))
-    window = int((task.type_config or {}).get("context_bound_schedule_window_seconds") or 300)
-    stale = (_naive(_now()) - _naive(action.created_at)).total_seconds() > window
-    if group and target and link and not stale:
+    if group and target and link:
         return group.tg_peer_id
-    code = "reply_target_stale" if stale else "reply_target_missing"
     fail_generation_action(
         action,
-        code,
-        "引用目标已过期或当前账号不可引用",
+        "reply_target_missing",
+        "引用目标不存在或当前账号不可引用",
         stage="ai_reply_target",
     )
-    raise AiGenerationUnavailable(code)
+    raise AiGenerationUnavailable("reply_target_missing")
 
 
 def _validate_remote_reply_target(

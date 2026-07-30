@@ -16,6 +16,7 @@ from app.models import (
     TaskAccountDailyCoverage,
     TaskDayLedger,
     TaskGroupDailyMessageSlot,
+    TaskGroupDailyTarget,
     Tenant,
     TgAccount,
     TgGroup,
@@ -63,6 +64,80 @@ def test_replan_materializes_reply_slot_without_previous_action(
     assert created[0].payload.relation_kind == "reply"
     assert created[0].payload.reply_to_message_id == 777
     assert created[0].payload.slot_attempt == 1
+
+
+def test_build_plan_continues_when_waiting_replan_creates_nothing(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task = Task(
+        id="independent-cycle-task",
+        tenant_id=1,
+        name="独立周期继续规划",
+        type="group_ai_chat",
+        status="running",
+    )
+    blueprint = SimpleNamespace()
+    frozen = SimpleNamespace()
+    prepared = SimpleNamespace(slots=[])
+    monkeypatch.setattr(
+        group_ai_chat, "_prepare_plan_blueprint", lambda *_args: blueprint,
+    )
+    monkeypatch.setattr(
+        group_ai_chat,
+        "_replan_content_mix_slots",
+        lambda *_args: group_ai_chat.ContentMixReplanResult(True, 0),
+    )
+    monkeypatch.setattr(
+        group_ai_chat, "_freeze_content_mix_cycle", lambda *_args: frozen,
+    )
+    monkeypatch.setattr(
+        group_ai_chat, "_prepare_action_slots", lambda *_args: prepared,
+    )
+    monkeypatch.setattr(
+        group_ai_chat, "_prepared_plan_is_blocked", lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        group_ai_chat, "_create_reserved_actions", lambda *_args, **_kwargs: 2,
+    )
+    monkeypatch.setattr(
+        group_ai_chat, "_record_plan_completion", lambda *_args, **_kwargs: None,
+    )
+
+    assert group_ai_chat.build_plan(session, task) == 2
+
+
+def test_replan_coverage_is_loaded_before_normal_keyset(
+    session: Session,
+) -> None:
+    facts = _unmaterialized_reply_facts(session)
+    target = TaskGroupDailyTarget(
+        id="unmaterialized-daily-target",
+        tenant_id=1,
+        task_id=facts.task.id,
+        task_day_ledger_id=facts.quantity.task_day_ledger_id,
+        group_id=facts.group.id,
+        target_date=facts.planned_at.date(),
+        configured_message_target=1,
+        frozen_account_count=1,
+        effective_message_target=1,
+        daily_fulfillment_phase="full_day_committed",
+        scope_frozen_at=facts.planned_at,
+        full_day_committed_at=facts.planned_at,
+    )
+    session.add(target)
+    session.flush()
+    plan_facts = SimpleNamespace(
+        coverage=SimpleNamespace(daily_group_target_id=target.id),
+    )
+
+    rows = group_ai_chat._replan_coverage_rows_for_plan(
+        session,
+        facts.task,
+        plan_facts,
+    )
+
+    assert [row.id for row in rows] == [facts.coverage.id]
 
 
 def _install_unmaterialized_replan_stubs(
@@ -186,6 +261,53 @@ def test_extra_volume_alignment_uses_uncovered_quantity_slot() -> None:
     )
 
     assert selected == [extra_slot]
+
+
+def test_confirmed_coverage_slot_is_not_reused_as_open_coverage() -> None:
+    blueprint = SimpleNamespace(
+        profile=SimpleNamespace(
+            coverage_rows={
+                201: SimpleNamespace(
+                    id="coverage-confirmed",
+                    target_count=1,
+                    confirmed_count=1,
+                ),
+            },
+        ),
+        generation=SimpleNamespace(
+            quality_items=[{"slot_account_id": 201}],
+        ),
+    )
+    confirmed_slot = SimpleNamespace(
+        id="quantity-confirmed",
+        task_account_daily_coverage_id="coverage-confirmed",
+    )
+
+    selected = group_ai_chat._align_quantity_slots(
+        blueprint,
+        [confirmed_slot],
+    )
+
+    assert selected == []
+
+
+def test_extra_accounts_are_bounded_by_real_extra_volume_slots() -> None:
+    facts = SimpleNamespace(
+        coverage=SimpleNamespace(volume_need_now=20),
+    )
+
+    assert group_ai_chat._daily_group_extra_account_limit(
+        facts,
+        selected_count=4,
+        account_limit=20,
+        extra_slot_count=0,
+    ) == 0
+    assert group_ai_chat._daily_group_extra_account_limit(
+        facts,
+        selected_count=4,
+        account_limit=20,
+        extra_slot_count=3,
+    ) == 3
 
 
 def test_dispatch_releases_mismatched_quantity_coverage_binding(

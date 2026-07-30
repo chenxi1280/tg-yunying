@@ -68,6 +68,19 @@
 
 上述补正的生产验收相互独立：AI backlog apply 成功不代表代码修复完成；代码发布成功不代表 view/AI/search 真实履约恢复。只有 Action、ExecutionAttempt、远端 ID/click evidence 和生产负载共同满足时才可写 `production_fixed`。
 
+### 2.4 2026-07-30 AI 群日规划阻塞补正
+
+本节 supersede “只要发现旧 ContentMix 待重建槽，本轮就不得规划任何新 Cycle”、用 Action 创建时间判断 reply 目标过期，以及在没有 `extra_volume` 数量槽时仍用已完成账号补足 Turn 的旧实现：
+
+1. **旧槽重建不再形成任务级队头阻塞。** Planner 仍优先重建当前 ledger 的 `unmaterialized|replan_required` 槽，并且只能使用该槽冻结的 `primary_quantity_slot_id`、coverage 账号、relation 与内容义务。旧槽因账号、群管准入或合法引用对象暂不可用而本轮 `created=0` 时，只保留该旧槽等待；其他尚未被任何 Cycle 占用的 open 数量槽必须继续形成独立新 Cycle。禁止复用旧槽主数量位，也禁止因为一个旧槽等待就让数百个独立 ready coverage 停止建 Action。
+2. **重建账号从冻结数量槽恢复。** Planner 在普通 coverage keyset 页之前先读取待重建槽绑定的 coverage，并按现有在线、可发、群管准入和账号面具门禁把固定账号带入本轮生成蓝图；不得要求该账号碰巧再次出现在当前普通 keyset 页。固定账号当前不满足门禁时显式等待，不得换号或借用其他 coverage。
+3. **额外正文严格受 `extra_volume` 数量槽约束。** `_daily_group_extra_accounts` 只能为当前 ledger 中仍 open、coverage 为空且未被 ContentMix 占用的 `extra_volume` 主槽选账号；可选数量为 `min(volume_need, account_limit, available_extra_volume_slots)`。没有这类槽时不得加入已 confirmed 的 coverage 账号，不得让 `_align_quantity_slots` 把已完成 coverage 主槽当额外槽，任务也不得误报 `quantity_slots_unavailable`。
+4. **reply 有效性不使用 Action 排队年龄。** `context_bound_schedule_window_seconds` 只限制 Phase A 新建 reply Action 的近端排期，不是从 `Action.created_at` 开始的队列 TTL。AI generation 外呼前按同租户、同群、目标消息存在、账号当前可发以及 Telegram 远端仍可引用重新确认；Action 因生成队列等待超过 300 秒但目标仍真实可引用时必须继续生成。目标删除、不可访问或权限丢失才终结并回流原 reply 槽。
+5. **AI generation 逐 Action/批次隔离。** 已经由 Phase C 写明 `duplicate_message|reply_target_missing|generation_failed` 等显式终态的 `AiGenerationUnavailable` 只终结当前生成批次，清空该批 claim/lease，并继续 drain 后续独立 Action；不得让一个业务失败抛出到 worker 主循环并中止整轮。未写明终态的程序异常、数据库错误和 claim fencing 失败继续向上暴露，禁止吞错。
+6. **一次性生产遗留清理。** 经运营明确授权，可删除 deadline 已过且仍 open/replan 的 ContentMix Cycle、Contract、Slot 与内容义务，不制作备份；外键只能解除 Action 的规划指针，Action、ExecutionAttempt、Gateway 结果和非空 `remote_message_id` 必须在同一事务前后计数一致。当前日 open 主数量槽、coverage、unknown 和已进入 Gateway 的事实不属于遗留规划数据。
+
+验收必须同时覆盖：待重建槽 `created=0` 时独立数量槽仍建 Action；固定 coverage 账号不在普通 keyset 页也能按门禁重建；无 `extra_volume` 时不选择额外账号；旧 Action 仍可引用时不产生 `reply_target_stale`；同一 drain 中首个生成批次显式失败后后续 Action 继续进入 `ready`；生产遗留预览归零且远端事实数量不变。
+
 ## 3. 产品目标与非目标
 
 ### 3.1 产品目标

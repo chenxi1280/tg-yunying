@@ -9,7 +9,8 @@ from sqlalchemy.orm import Session
 from app.database import Base
 from app.models import Action, Task, Tenant, TgAccount
 from app.services._common import _now
-from app.services.task_center.ai_generator import GeneratedContent
+from app.services.task_center.ai_generator import AiGenerationUnavailable, GeneratedContent
+from app.services.task_center.ai_generation_quality import fail_generation_action
 from app.services.task_center.ai_generation_worker import drain_ai_generation
 from tests.ai_generation_phase_test_support import (
     generation_dependencies,
@@ -67,6 +68,74 @@ def test_generation_worker_does_not_prepare_far_future_actions() -> None:
     )
 
     assert processed == 0
+
+
+def test_generation_worker_continues_after_explicit_business_failure() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    _seed_actions(engine)
+    with Session(engine) as session:
+        session.add(
+            _action(
+                "pending-generation-2",
+                _now() + timedelta(seconds=1),
+                "",
+                "pending",
+            ),
+        )
+        session.commit()
+
+    def generate(session: Session, action: Action, _account: TgAccount) -> None:
+        if action.id == "pending-generation":
+            fail_generation_action(
+                action,
+                "duplicate_message",
+                "显式业务失败",
+                stage="ai_message_memory",
+            )
+            session.commit()
+            raise AiGenerationUnavailable("duplicate_message")
+        action.payload = {
+            **dict(action.payload or {}),
+            "message_text": "后续动作生成完成",
+            "ai_generation_status": "ready",
+        }
+        session.commit()
+
+    processed = drain_ai_generation(
+        lambda: Session(engine),
+        limit=2,
+        generate_action=generate,
+    )
+
+    assert processed == 2
+    with Session(engine) as session:
+        failed = session.get(Action, "pending-generation")
+        ready = session.get(Action, "pending-generation-2")
+        assert failed.status == "failed"
+        assert failed.claim_owner == ""
+        assert failed.lease_owner == ""
+        assert ready.status == "pending"
+        assert ready.payload["message_text"] == "后续动作生成完成"
+
+
+def test_generation_worker_exposes_unpersisted_generation_failure() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    _seed_actions(engine)
+
+    with pytest.raises(AiGenerationUnavailable, match="provider_transport"):
+        drain_ai_generation(
+            lambda: Session(engine),
+            limit=1,
+            generate_action=lambda *_args: (
+                _raise_generation_unavailable("provider_transport")
+            ),
+        )
+
+
+def _raise_generation_unavailable(code: str) -> None:
+    raise AiGenerationUnavailable(code)
 
 
 def test_production_generation_pipeline_returns_batch_to_pending_dispatch(

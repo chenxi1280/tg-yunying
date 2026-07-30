@@ -41,7 +41,7 @@ from app.services.account_capacity import AccountCapacityCache, available_accoun
 from app.services.task_center import dispatcher
 from app.services.task_center.ai_generation_dependencies import GenerationDependencies
 from app.services.task_center.ai_generation_worker import drain_ai_generation
-from app.services.task_center.ai_generator import AiGenerationUnavailable, GeneratedContent
+from app.services.task_center.ai_generator import GeneratedContent
 from app.services.task_center import payloads as task_payloads
 from app.services.task_center.account_voice_profile_cache import voice_profile_snapshot_hash
 from app.services.task_center.executors import group_ai_chat
@@ -995,12 +995,11 @@ def test_dispatch_hard_hourly_pending_ai_duplicate_is_blocked(monkeypatch):
     with Session(engine) as session:
         action = seed_duplicate_generation_scope(session, _now())
         dependencies = configure_duplicate_generation(monkeypatch)
-        with pytest.raises(AiGenerationUnavailable, match="duplicate_message"):
-            drain_ai_generation(
-                lambda: Session(engine),
-                limit=1,
-                dependencies=dependencies,
-            )
+        assert drain_ai_generation(
+            lambda: Session(engine),
+            limit=1,
+            dependencies=dependencies,
+        ) == 1
         session.refresh(action)
         assert action.status == "failed"
         assert action.result["error_code"] == "duplicate_message"
