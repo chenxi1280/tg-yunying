@@ -6,7 +6,7 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Task, TaskDayLedger
+from app.models import SchedulingSetting, Task, TaskDayLedger
 from app.services._common import _now, audit
 
 from .daily_ledgers import ensure_task_day_ledger
@@ -268,6 +268,51 @@ def normalize_fulfillment_pacing(task_type: str, pacing: dict) -> dict:
     return normalized
 
 
+def normalize_fulfillment_scheduling_settings(
+    session: Session,
+    *,
+    tenant_id: int | None = None,
+    write_audit: bool = False,
+) -> list[dict]:
+    statement = select(SchedulingSetting).order_by(SchedulingSetting.tenant_id)
+    if tenant_id is not None:
+        statement = statement.where(SchedulingSetting.tenant_id == tenant_id)
+    results: list[dict] = []
+    for setting in session.scalars(statement):
+        changed = any((
+            setting.default_account_hour_limit != UNIFIED_TASK_GATE_LIMIT,
+            setting.default_account_day_limit != UNIFIED_TASK_GATE_LIMIT,
+        ))
+        if changed:
+            setting.default_account_hour_limit = UNIFIED_TASK_GATE_LIMIT
+            setting.default_account_day_limit = UNIFIED_TASK_GATE_LIMIT
+            if write_audit:
+                _write_scheduling_setting_audit(session, setting)
+        results.append({
+            "tenant_id": int(setting.tenant_id or 0),
+            "changed": changed,
+        })
+    return results
+
+
+def _write_scheduling_setting_audit(
+    session: Session,
+    setting: SchedulingSetting,
+) -> None:
+    audit(
+        session,
+        tenant_id=setting.tenant_id,
+        actor="system:fulfillment_takeover",
+        action="归一单用户履约数量门禁",
+        target_type="scheduling_setting",
+        target_id=str(setting.id),
+        detail=(
+            f"account_hour_limit={UNIFIED_TASK_GATE_LIMIT}; "
+            f"account_day_limit={UNIFIED_TASK_GATE_LIMIT}"
+        ),
+    )
+
+
 def _clear_obsolete_runtime_state(task: Task) -> bool:
     stats = dict(task.stats or {})
     before = (task.last_error, dict(stats))
@@ -402,5 +447,6 @@ __all__ = [
     "UNIFIED_TASK_GATE_LIMIT",
     "block_invalid_fulfillment_task",
     "normalize_fulfillment_pacing",
+    "normalize_fulfillment_scheduling_settings",
     "takeover_task",
 ]

@@ -8,7 +8,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import Action, DispatchClaimReservation, DispatchClaimScope, DispatchClaimShardAllocation, DispatchClaimWindow, Task, Tenant, TgAccount
+from app.models import Action, DispatchClaimReservation, DispatchClaimScope, DispatchClaimShardAllocation, DispatchClaimWindow, GroupBotAdmission, Task, Tenant, TgAccount
 from app.services._common import _now
 from app.services.task_center import dispatcher
 from app.services.task_center.dispatch_claim_selection import build_demands
@@ -321,6 +321,82 @@ def test_group_ai_membership_backlog_keeps_send_candidate_visible(monkeypatch) -
             "target_admission_retry",
             "ordinary",
         }
+
+
+@pytest.mark.parametrize(
+    "claimable_state",
+    ("group_bot_admission_ready", "post_follow_visibility_probe"),
+)
+def test_group_ai_ready_admission_precedes_older_waiting_send(
+    monkeypatch,
+    claimable_state: str,
+) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    settings = _settings(dispatcher_concurrency=1)
+    now_value = _now()
+    monkeypatch.setattr(dispatcher, "get_settings", lambda: settings)
+
+    with Session(engine) as session:
+        task = Task(
+            id="ai-admission-priority",
+            tenant_id=1,
+            name="准入可发优先",
+            type="group_ai_chat",
+            status="running",
+            type_config={
+                "target_group_id": 7,
+                "group_bot_admission_required": True,
+            },
+        )
+        session.add_all([Tenant(id=1, name="t"), task])
+        session.add_all([
+            GroupBotAdmission(
+                tenant_id=1,
+                group_id=7,
+                account_id=11,
+                state="group_bot_policy_unresolved",
+            ),
+            GroupBotAdmission(
+                tenant_id=1,
+                group_id=7,
+                account_id=12,
+                state=claimable_state,
+            ),
+            Action(
+                id="waiting-send",
+                tenant_id=1,
+                task_id=task.id,
+                task_type=task.type,
+                action_type="send_message",
+                account_id=11,
+                status="pending",
+                scheduled_at=now_value - timedelta(hours=1),
+                payload={"group_id": 7},
+            ),
+            Action(
+                id="ready-send",
+                tenant_id=1,
+                task_id=task.id,
+                task_type=task.type,
+                action_type="send_message",
+                account_id=12,
+                status="pending",
+                scheduled_at=now_value - timedelta(minutes=1),
+                payload={"group_id": 7},
+            ),
+        ])
+        session.flush()
+
+        rows = dispatcher._dispatch_claim_window_actions(
+            session,
+            [Action.status == "pending", Action.scheduled_at <= now_value],
+            settings=settings,
+            now_value=now_value,
+            force_ordinary_tenants=set(),
+        )
+
+        assert [action.id for action in rows] == ["ready-send"]
 
 
 def test_two_shards_consume_one_shared_window_without_overallocation(monkeypatch) -> None:

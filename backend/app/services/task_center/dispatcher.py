@@ -98,6 +98,7 @@ from .group_bot_confirmation_refresh import (
     LiveConfirmationSourceFetchError,
     refresh_live_confirmation_source,
 )
+from .group_bot_claim_priority import group_bot_admission_claim_rank
 from .group_send_claim_slots import filter_ready_group_send_actions, lock_eligible_group_send_actions
 from .group_send_limits import GroupSendSlotBlock, group_send_slot_block, reserve_group_send_slot, settle_group_send_slot
 from .legacy_anchor_rewrite import reject_legacy_anchor_rewrite_before_send
@@ -1598,6 +1599,7 @@ def _claim_action_priority_ordering(force_ordinary_tenants: set[int], now_value:
         _strict_search_join_source_claim_rank(),
         Task.priority.asc(),
         _channel_comment_claim_rank(),
+        group_bot_admission_claim_rank(),
         _fairness_demoted_hard_rank(force_ordinary_tenants, now_value),
     )
 
@@ -5164,6 +5166,8 @@ def _channel_comment_speaker_rotation_gate_pass(
             "speaker_rotation_reason": decision.reason,
         }
         action.scheduled_at = _now() + timedelta(seconds=45)
+        action.executed_at = None
+        _clear_action_lease(action)
         _release_runtime_resources(action)
         return False
     return True
@@ -5548,6 +5552,7 @@ def _recover_account_proxy_after_failure(action: Action, account: TgAccount, rea
     _apply_proxy_switch_content_fallback(action)
     action.status = "pending"
     action.executed_at = None
+    _clear_action_lease(action)
 
 
 def _apply_proxy_switch_content_fallback(action: Action) -> None:
@@ -5591,6 +5596,7 @@ def _recover_account_session_after_failure(action: Action, account: TgAccount, r
     }
     action.status = "pending"
     action.executed_at = None
+    _clear_action_lease(action)
     _release_runtime_resources(action)
 
 
@@ -7019,6 +7025,7 @@ def _apply_allowed_group_bot_admission(action: Action, payload: dict, decision) 
             "current_admission_version": decision.admission_version,
         }
         action.scheduled_at = _now() + timedelta(seconds=30)
+        _clear_action_lease(action)
         _release_runtime_resources(action)
         return False
     action.payload = {
@@ -7041,6 +7048,8 @@ def _defer_for_group_bot_admission(action: Action, decision) -> None:
         "group_bot_admission_id": decision.admission_id,
     }
     action.scheduled_at = _now() + timedelta(seconds=30)
+    action.executed_at = None
+    _clear_action_lease(action)
     _release_runtime_resources(action)
 
 
@@ -7225,6 +7234,8 @@ def _speaker_rotation_gate_pass(session: Session, action: Action, *, group_id: i
             "speaker_rotation_reason": decision.reason,
         }
         action.scheduled_at = _now() + timedelta(seconds=45)
+        action.executed_at = None
+        _clear_action_lease(action)
         _release_runtime_resources(action)
         return False
     return True

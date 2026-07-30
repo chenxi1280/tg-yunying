@@ -1045,3 +1045,9 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 - 调整任务执行链路时，至少核对 `task_center/service.py`、`dispatcher.py`、对应 executor、`details.py`、runtime summary 和前端 `TaskCenter*` 文件。
 - 调整页面加载/错误提示时，同时核对 PRD 的“页面数据加载契约”和对应 `*_dataflow.py` 测试。
 - search_rank_deboost 已按 `docs/03-feature-designs/search-rank-deboost-hardening-design.md` 落地统一用途策略、多个黑账号组、生产 Gateway 方法、迁移 0087、分组 runtime proxy binding、逐点击 reservation 和前端账号选择契约；维护时仍需把 no-PostgreSQL、PostgreSQL 并发和生产 E4 证据分层记录，未取得真实生产证据前不得写 `production_fixed`。
+### 2026-07-30 完成优先运行态补充
+
+- `backend/app/services/task_center/fulfillment_takeover.py`：除 Task 合同与任务级 `1_000_000` 数量软门禁外，负责当前单用户 `SchedulingSetting` 账号小时/日履约数量上限归一。
+- `backend/app/services/task_center/group_bot_claim_priority.py`：提供 AI send 群管准入 ready/probe 优先的相关子查询排序表达式，防止 waiting 正文形成队首阻塞。
+- `backend/app/services/task_center/dispatcher.py`：在父任务内部 claim 顺序应用群管准入 ready/probe 排序；所有 send gate 退回 pending 的路径统一清 execution lease、claim 与 dispatch binding。
+- `backend/app/services/task_center/ai_generator.py`：未显式指定模型时解析当前健康主 Provider，不能把禁用的 MiniMax 默认值变成对健康 MiMo v2.5 的遮蔽。

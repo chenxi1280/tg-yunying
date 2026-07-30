@@ -16,6 +16,7 @@ from app.services.task_center.fulfillment_takeover import (
     ACTIVE_TAKEOVER_STATUSES,
     TAKEOVER_TASK_TYPES,
     block_invalid_fulfillment_task,
+    normalize_fulfillment_scheduling_settings,
     takeover_task,
 )
 
@@ -30,6 +31,10 @@ STRUCTURAL_BLOCKER_PREFIXES = (
 
 
 def run_takeover(*, apply: bool, tenant_id: int | None = None) -> dict:
+    scheduling_settings = _normalize_scheduling_settings(
+        apply=apply,
+        tenant_id=tenant_id,
+    )
     protocol_samples = _migrate_pure_click_protocol_samples(
         apply=apply,
         tenant_id=tenant_id,
@@ -73,7 +78,23 @@ def run_takeover(*, apply: bool, tenant_id: int | None = None) -> dict:
         "blockers": blockers,
         "failures": failures,
         "protocol_samples": protocol_samples,
+        "scheduling_settings": scheduling_settings,
     }
+
+
+def _normalize_scheduling_settings(
+    *,
+    apply: bool,
+    tenant_id: int | None,
+) -> list[dict]:
+    with SessionLocal() as session:
+        results = normalize_fulfillment_scheduling_settings(
+            session,
+            tenant_id=tenant_id,
+            write_audit=apply,
+        )
+        session.commit() if apply else session.rollback()
+    return results
 
 
 def _migrate_pure_click_protocol_samples(

@@ -7,6 +7,9 @@ from pydantic import BaseModel, Field
 from .api import ApiModel
 
 
+MAX_FULFILLMENT_QUANTITY_LIMIT = 1_000_000
+
+
 class RiskControlMetricOut(ApiModel):
     key: str
     label: str
@@ -58,8 +61,16 @@ class RiskControlGlobalPolicyUpdate(BaseModel):
     default_on_account_banned: str | None = None
     default_on_api_rate_limit: str | None = None
     default_on_content_rejected: str | None = None
-    default_account_hour_limit: int | None = Field(default=None, ge=0, le=100000)
-    default_account_day_limit: int | None = Field(default=None, ge=0, le=100000)
+    default_account_hour_limit: int | None = Field(
+        default=None,
+        ge=0,
+        le=MAX_FULFILLMENT_QUANTITY_LIMIT,
+    )
+    default_account_day_limit: int | None = Field(
+        default=None,
+        ge=0,
+        le=MAX_FULFILLMENT_QUANTITY_LIMIT,
+    )
     default_account_cooldown_seconds: int | None = Field(default=None, ge=0, le=86400)
 
 

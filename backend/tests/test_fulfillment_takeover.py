@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.database import Base
 from app.models import (
     Action,
+    AuditLog,
     ChannelMessage,
     CommentFulfillmentObligation,
     ExecutionAttempt,
@@ -17,6 +18,7 @@ from app.models import (
     ReactionFulfillmentObligation,
     ReactionRemoteFact,
     SearchClickFulfillmentObligation,
+    SchedulingSetting,
     Task,
     TaskDayLedger,
     Tenant,
@@ -29,6 +31,7 @@ from app.services.task_center.fulfillment_takeover import (
     FULFILLMENT_CONTRACT_VERSION,
     RETIRED_AI_QUANTITY_GATE_FIELDS,
     UNIFIED_TASK_GATE_LIMIT,
+    normalize_fulfillment_scheduling_settings,
     takeover_task,
 )
 
@@ -144,6 +147,43 @@ def test_running_legacy_search_is_taken_over_as_pure_click_idempotently(
         select(func.count(TaskDayLedger.id)).where(TaskDayLedger.task_id == task.id)
     ) == 1
     assert session.scalar(select(func.count(SearchClickFulfillmentObligation.id))) == 3
+
+
+def test_single_user_scheduling_quantity_limits_are_normalized_idempotently(
+    session: Session,
+) -> None:
+    setting = SchedulingSetting(
+        tenant_id=1,
+        default_account_hour_limit=50,
+        default_account_day_limit=500,
+        default_account_cooldown_seconds=30,
+    )
+    session.add(setting)
+    session.flush()
+
+    first = normalize_fulfillment_scheduling_settings(
+        session,
+        write_audit=True,
+    )
+    session.flush()
+    second = normalize_fulfillment_scheduling_settings(
+        session,
+        write_audit=True,
+    )
+
+    assert first == [{"tenant_id": 1, "changed": True}]
+    assert second == [{"tenant_id": 1, "changed": False}]
+    assert setting.default_account_hour_limit == UNIFIED_TASK_GATE_LIMIT
+    assert setting.default_account_day_limit == UNIFIED_TASK_GATE_LIMIT
+    assert setting.default_account_cooldown_seconds == 30
+    audits = list(session.scalars(
+        select(AuditLog).where(
+            AuditLog.target_type == "scheduling_setting",
+            AuditLog.target_id == str(setting.id),
+        )
+    ))
+    assert len(audits) == 1
+    assert audits[0].action == "归一单用户履约数量门禁"
 
 
 def test_partially_stamped_legacy_search_still_retires_old_source(

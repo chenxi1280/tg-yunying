@@ -88,6 +88,11 @@ def test_unexpected_value_error_fails_takeover(
     )
     monkeypatch.setattr(
         takeover_script,
+        "_normalize_scheduling_settings",
+        lambda **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        takeover_script,
         "SessionLocal",
         FakeSession,
     )
