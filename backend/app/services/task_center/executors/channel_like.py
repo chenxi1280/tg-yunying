@@ -11,6 +11,7 @@ from ..account_pool import daily_uncovered_account_count, select_task_accounts
 from ..channel_fulfillment import (
     bind_obligation_action,
     ensure_reaction_obligation,
+    obligation_accepts_new_action,
     reaction_account_ids_for_messages,
 )
 from ..channel_membership import channel_member_accounts, gate_channel_membership
@@ -96,6 +97,8 @@ def _create_like_actions(
         planned_at = times[index]
         planned_at = adjust_for_account_hour_limit(session, task, account_id, "like_message", planned_at, config)
         obligation = ensure_reaction_obligation(session, task, message, account_id)
+        if not obligation_accepts_new_action(obligation):
+            continue
         payload = LikeMessagePayload(
             **channel_message_payload(channel, message),
             reaction_emoji=reaction,
