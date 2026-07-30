@@ -282,3 +282,19 @@
 - root: PostgreSQL 00:32:37 显示 `UPDATE group_bot_admissions` 与两个 `SELECT conversation_speaker_states ... FOR UPDATE` 构成三方环；生产代码存在 admission -> speaker 和 speaker -> rotated admission 两种锁序。
 - decision: 不中断已恢复的发送事实，立即统一锁序并重新发布；首次部署不能写 `production_fixed`。
 - unresolved: 第二次 release、deadlock 零增量窗口、师范与楼凤真实远端成功。
+
+## 2026-07-31 第二次恢复后的 Listener 批次锁序死锁
+
+- message_id: `2026-07-31-ai-group-listener-batch-deadlock-prod-003`
+- evidence: release `1cb1422b` 上线后，三个任务均已产生新日真实成功，郑州大学/师范/楼凤 confirmed 分别达到 13/11/1；但数据库 deadlocks 在 00:56:35 由 27 增至 28。
+- root: 最新三方环仍是两个 `conversation_speaker_states ... FOR UPDATE` 与一个 `group_bot_admissions`；Dispatcher 已统一 speaker -> admission，剩余反向路径来自 Listener 在同一事务批次逐条处理快照：前一条机器人控制消息可先更新 admission，后一条真人消息才锁 speaker。
+- decision: 第二次部署不能写 `production_fixed`。Listener 必须在整批快照处理前先锁该群 speaker state，再进入任何 admission 控制事件；完成第三次 Release Gate 后重新观察死锁增量和三个任务远端事实。
+- unresolved: 第三次 CI/发布、连续生产窗口 deadlock 零增量与三个任务持续发送。
+
+## 2026-07-31 Runtime Retention 外键重试风暴
+
+- message_id: `2026-07-31-runtime-retention-action-fk-prod-004`
+- evidence: PostgreSQL 在 01:04 至 01:06 持续约每 6 秒记录一次 `DELETE FROM actions` 被 `task_hard_hourly_delivery_credits_action_id_fkey` 拒绝；同一 Recovery 会话重复处理失败批次。
+- root: Action retention 已覆盖 Attempt、Review、Coverage、Membership 和搜索预约，但遗漏 hard-hourly delivery credit；整批回滚后没有 checkpoint，下一轮立即再次命中。
+- decision: 不关闭外键、不缩短留存、不删除 coverage 审计；补齐从属 credit 删除和 variation intent 可空引用解除后走 Release Gate。
+- unresolved: 第三次部署后外键错误归零、成功 cleanup audit/checkpoint。

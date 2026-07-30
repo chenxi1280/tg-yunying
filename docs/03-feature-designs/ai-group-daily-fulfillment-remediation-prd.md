@@ -194,6 +194,10 @@ maximum_confirmable_count = frozen_denominator_count - terminal_permission_block
    `conversation_speaker_states`，再评估或更新 `group_bot_admissions`；
    账号轮换后的二次准入也沿用这一顺序，禁止形成 admission -> speaker
    与 speaker -> admission 的反向锁序。
+5. Listener 处理同一群的一批快照前也必须先锁该群的
+   `conversation_speaker_states`，再处理任何机器人准入事件。不能依赖单条
+   快照内排序，因为同一批前一条机器人消息可先更新 admission，后一条真人
+   消息才触发 speaker 锁，仍会与 Dispatcher 形成反向锁序。
 
 ### 5.2 内容多样性和重复质量失败
 
@@ -347,6 +351,7 @@ required_new = max(volume_need_now, coverage_need_now)
 | 上线前遗留、listener 滞后、窗口截断或机器人重发的 confirmation callback | 唯一 callback 必须先匹配当前 admission 的 `source_message_id`；旧 source 在 claim 和 Gateway 前写 `group_bot_confirmation_superseded`，新 source 重建精确按钮。通过该检查后，点击前必须同一账号先按 source ID 精确读取、再读取最新窗口的 trusted peer + exact channel refs + callback；窗口若有更晚有效来源则优先，精确读取不受监听窗口截断影响。持久化安全摘要并只换绑该 Action/admission；实时读取异常写 `group_bot_confirmation_live_fetch_failed` 并重试；确认 source 已删除或 Gateway 再报 mismatch 时写 `group_bot_confirmation_superseded`，清空仍指向该 source 的 admission 绑定并进入既有 post-follow probe，禁止继续点击旧 callback。即使账号处于全局冷却，旧项也不得延后、占用 dispatcher 领取资源或触发 Telegram callback |
 | Planner 全局 backlog | 不绕过 pending 上限；写 planner_capacity_insufficient 与下一检查时间，daily_outcome 不得显示 feasible |
 | 已有覆盖游标与 Dispatcher 并发 | Planner 只锁 `TaskDailyCoveragePlanCursor`，不再锁 `tasks` 行；PostgreSQL 不得出现 Planner/Dispatcher 的反向锁序或丢弃 coverage 决策 |
+| Listener 同批含机器人准入事件和真人消息 | 整批第一项数据库写入前先锁该群 speaker state；与并发 Dispatcher 组合时不得出现 `conversation_speaker_states` / `group_bot_admissions` 死锁 |
 | cannot_send | 留在冻结分母、daily_outcome=blocked、无正文 Gateway 调用 |
 | 入群申请待审批 | 不计 membership 或覆盖成功，显示 membership_permission_denied 或 join_request_pending 的真实原文 |
 | unknown_after_send | 保持占位、不重发、不计成功，直到远端核验 |
