@@ -64,6 +64,24 @@ def test_prebound_assignment_claim_consumes_bound_counter(session: Session) -> N
     assert action.result["dispatch_claim_active"] is True
 
 
+def test_projected_prebound_action_claims_original_reservation(
+    session: Session,
+) -> None:
+    claimed = dispatcher.claim_actions(
+        session,
+        limit=1,
+        worker_id="projected-prebound",
+    )
+
+    assert [action.id for action in claimed] == ["action-1"]
+    reservation = session.get(DispatchClaimReservation, "reservation-1")
+    assignment = session.get(SearchClickOpportunityAssignment, "assignment-1")
+    assert reservation.bound_count == 0
+    assert reservation.claimed_count == 1
+    assert assignment.state == "claimed"
+    assert claimed[0].result["dispatch_claim_active"] is True
+
+
 def test_prebound_assignment_accepts_postgres_aware_window(
     session: Session,
 ) -> None:

@@ -44,6 +44,7 @@ from .dispatch_claim_types import (
     DispatchClaimPlan,
 )
 from .prebound_search_claim import (
+    action_is_dispatch_prebound,
     confirm_prebound_search_claim,
     plan_prebound_search_claims,
 )
@@ -95,6 +96,15 @@ def plan_dispatch_claims(
         fairness_decisions,
     )
     return _combine_claim_plans(prebound, allocated)
+
+
+def lock_dispatch_claim_selection(
+    session: Session,
+    settings,
+    requested_limit: int,
+) -> None:
+    capacity = dispatcher_claim_capacity(settings, requested_limit)
+    scope_for_update(session, dispatcher_scope(settings), capacity)
 
 
 def _prepare_dispatch_window(
@@ -221,7 +231,7 @@ def _unbound_actions(
         action
         for action in actions
         if action.id not in prebound.bindings_by_action_id
-        and not (action.result or {}).get("dispatch_prebound")
+        and not action_is_dispatch_prebound(action)
     ]
 
 
@@ -272,6 +282,7 @@ __all__ = [
     "confirm_dispatch_claim",
     "dispatcher_claim_capacity",
     "dispatcher_scope",
+    "lock_dispatch_claim_selection",
     "plan_dispatch_claims",
     "release_dispatch_claim",
     "task_dispatch_claim_snapshot",

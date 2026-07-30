@@ -13,7 +13,7 @@ from datetime import date, datetime, timedelta
 
 from sqlalchemy import case, func, or_, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
-from sqlalchemy.orm import Session, aliased, object_session
+from sqlalchemy.orm import Session, aliased, load_only, object_session
 from pydantic import ValidationError
 
 from app.admin_chats import send_admin_chat_broadcast
@@ -84,6 +84,7 @@ from .dispatch_reservations import (
     DispatchClaimBinding,
     confirm_dispatch_claim,
     dispatcher_claim_capacity,
+    lock_dispatch_claim_selection,
     plan_dispatch_claims,
     release_dispatch_claim,
 )
@@ -93,6 +94,7 @@ from .executors.channel_comment_budget import (
     total_comment_action_count as _total_comment_action_count,
 )
 from .group_rescue import GROUP_RESCUE_FAILURE_THRESHOLD, infer_rescue_admin_rate_limit, permission_failure_count_for_send_action, refresh_group_rescue_action, trigger_group_rescue
+from .prebound_search_claim import annotate_prebound_projection
 from .group_bot_confirmation_refresh import (
     LiveConfirmationRefreshContext,
     LiveConfirmationSourceFetchError,
@@ -1107,6 +1109,7 @@ def _select_claim_candidates(
 ) -> tuple[list[Action], dict[int, object], Mapping[str, DispatchClaimBinding]]:
     base_filters = _claim_base_filters(now_value, exclude_task_ids)
     shard_total, shard_index = current_account_shard()
+    lock_dispatch_claim_selection(session, settings, claim_limit)
     fairness = _claim_fairness_decisions(session, _claim_shard_filters(base_filters, shard_total, shard_index), now_value)
     forced = {tenant_id for tenant_id, decision in fairness.items() if decision.preferred_class == "ordinary"}
     window_actions = filter_ready_group_send_actions(
@@ -1194,11 +1197,14 @@ def _dispatch_claim_window_actions(
     force_ordinary_tenants: set[int],
 ) -> list[Action]:
     capacity = dispatcher_claim_capacity(settings, _setting(settings, "action_claim_limit", 100))
+    projection = _dispatch_claim_window_projection()
+    load_options = _dispatch_claim_window_load_options()
     strict_statement = (
-        select(Action)
+        select(*projection)
         .join(Task, Task.id == Action.task_id)
         .where(*filters, _strict_dispatch_claim_condition())
         .order_by(Action.scheduled_at.asc(), Action.created_at.asc(), Action.id.asc())
+        .options(load_options)
     )
     ordinary_ranked = (
         select(
@@ -1212,12 +1218,55 @@ def _dispatch_claim_window_actions(
         .where(*filters, func.coalesce(_strict_dispatch_claim_condition(), False).is_(False))
         .subquery()
     )
-    ordinary_statement = select(Action).join(
+    ordinary_statement = select(*projection).join(
         ordinary_ranked,
         ordinary_ranked.c.action_id == Action.id,
-    ).where(ordinary_ranked.c.task_rank <= capacity)
-    rows = list(session.scalars(strict_statement)) + list(session.scalars(ordinary_statement))
+    ).where(ordinary_ranked.c.task_rank <= capacity).options(load_options)
+    rows = _projected_claim_window_actions(
+        session,
+        strict_statement,
+    ) + _projected_claim_window_actions(session, ordinary_statement)
     return list({action.id: action for action in rows}.values())
+
+
+def _dispatch_claim_window_projection():
+    return (
+        Action,
+        Action.result["dispatch_prebound"].as_boolean().label("dispatch_prebound"),
+        Action.result["search_click_assignment_id"].as_string().label(
+            "search_click_assignment_id",
+        ),
+    )
+
+
+def _dispatch_claim_window_load_options():
+    return load_only(
+        Action.id,
+        Action.tenant_id,
+        Action.task_id,
+        Action.task_type,
+        Action.action_type,
+        Action.account_id,
+        Action.scheduled_at,
+        Action.status,
+        Action.payload,
+        Action.created_at,
+    )
+
+
+def _projected_claim_window_actions(
+    session: Session,
+    statement,
+) -> list[Action]:
+    actions: list[Action] = []
+    for action, is_prebound, assignment_id in session.execute(statement):
+        annotate_prebound_projection(
+            action,
+            is_prebound=bool(is_prebound),
+            assignment_id=str(assignment_id or ""),
+        )
+        actions.append(action)
+    return actions
 
 
 def _strict_dispatch_claim_condition():
