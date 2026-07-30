@@ -442,7 +442,9 @@ def _record_generation_contract_audit(
         model_id=str(config.get("actual_model") or config.get("requested_model") or ""),
         prompt_contract_version=str(config.get("prompt_contract_version") or ""),
         parser_version=str(config.get("parser_version") or ""),
-        expected_slot_count=len(slots),
+        expected_slot_count=int(
+            getattr(mapping_error, "expected_slot_count", None) or len(slots)
+        ),
         received_slot_count=int(getattr(mapping_error, "received_slot_count", 0) or 0),
         slot_summary=_contract_slot_summary(slots),
         error_code=code,

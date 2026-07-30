@@ -945,7 +945,16 @@ group_ai_chat / channel_comment 正文
 ### 2026-07-30 完成优先运行态补充
 
 - 五类任务接管除归一 Task `type_config/pacing_config` 外，同时归一当前单用户 `SchedulingSetting.default_account_hour_limit/default_account_day_limit=1_000_000`；该写入与 Task 接管在 worker fencing 期间执行，值变化时写一条 `scheduling_setting` 审计，再次执行零写入、零新增审计。
-- AI fulfillment 候选在中央份额求解前按群管准入发送资格排序：`group_bot_admission_ready`、`post_follow_visibility_probe`、可当次切入 probe 的账号先于 waiting/unresolved/stale。waiting 正文不消费 fulfillment Reservation，继续由 admission lane 推动 join/follow/confirm；send gate 退回 pending 时清 Action lease/claim 并释放 dispatch binding。
+- AI fulfillment 候选在中央份额求解前按群管准入发送资格排序：`group_bot_admission_ready`、`post_follow_visibility_probe`、可当次切入 probe 的既有 Action 先于 waiting/unresolved/stale。waiting 正文不消费 fulfillment Reservation，继续由 admission lane 推动 join/follow/confirm；send gate 无法切入唯一 probe 时在 Gateway 前终态收口，并释放 Action lease/claim、dispatch binding、Coverage 和数量/内容槽。
 - `post_follow_visibility_probe` 进入时把唯一 probe Action 绑定写入 admission transport observation，并把 probe/admission 字段写回 Action；相同 Action 可跨 claim 恢复，其他 Action 等待。存量无绑定 state 由首个 Action 补绑，只有明确 pre-Gateway terminal 且无 Gateway/unknown/visibility hold 才可换绑。
 - listener 的群管 confirmation Action 查找固定为数据库内 `task_id + action_type + payload.admission_id + payload.admission_version` 过滤；禁止写 admission 后全量装载同任务 Action 再由 Python 筛选，禁止 Telegram 网络阶段持有 listener 写事务。
 - AI 生成仅在目标准入通过后执行。任务未指定模型时从任务/租户健康 Provider 解析主模型；禁用默认 Provider 不得遮蔽健康 MiMo v2.5。生产证据链为 `Admission ready/probe -> Dispatch Reservation/claim -> actual_model -> ExecutionAttempt.gateway_call_started_at -> remote_message_id`。
+- 通用 Dispatcher 的共享 Window 只接受已物化 Action demand；搜索 obligation
+  只在 search fulfillment 分配事务内求解，提交后仅保护已绑定单元，未绑定
+  reservation 由 reconciliation 释放。
+- AI Coverage readiness 读取 `TgAccount + TgGroupAccount +
+  GroupBotAdmission`；准入 waiting 的正文 Action 在 Gateway 前终态释放，
+  不再以 30 秒 pending 循环占用 Coverage 和 dispatch reservation。
+- `daily_fulfillment.summarize_daily_fulfillment` 只读关联 Coverage 与开放
+  Action；状态修复由明确的 Planner/Recovery 写路径负责，详情汇总不再批量
+  更新 Coverage。

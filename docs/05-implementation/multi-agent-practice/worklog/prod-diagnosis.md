@@ -266,3 +266,11 @@
 - root: 每任务在线来源全量 reconcile、逐账号 readiness / capacity、backlog ORM 全量加载和无 open preparation 叠加造成规模放大。
 - decision: L3；本地修复已 `qa_pass/product_accepted`，进入正常 release；生产不热补代码。
 - unresolved: 发布、worker 恢复、due debt 推进、2320 项完整自然日远端成功矩阵和评论任务运行状态。
+
+## 2026-07-30 三个郑州 AI 活群共享调度生产冻结
+
+- message_id: `2026-07-30-zhengzhou-ai-fulfillment-freeze-prod-001`
+- evidence: 生产容器无重启循环，Dispatcher 心跳正常；共享 DispatchWindow 一度仅实际占用 `2 / 52`，三个任务仍有数百 ready 账号，但 generic planner 未持续创建可发送 Action。搜索点击最新 reservation 为 33 且 claimed/bound 均为 0；数据库累计 deadlock 23、temp bytes 约 26.2GB。
+- task_evidence: 郑州大学 `d3365706-afe1-4166-9d0d-c2d6404bc8ad` 为 confirmed 174 / ready 47 / reserved 468；郑州师范 `84180c47-cf92-408e-bdd9-c68804f7de29` 为 confirmed 49 / ready 618 / reserved 6；郑州楼凤 `7805d8f2-dfef-4842-b11c-14cc1f434c94` 为 confirmed 130 / ready 125 / reserved 395。
+- decision: L3。已停止 planner、ai-generation、dispatcher-1、dispatcher-2、recovery，backend/listener/account-online 保持健康；冻结时 gateway inflight=0。用户明确旧规划残留无需备份，但只允许清理三个任务、pre-Gateway、无成功证据的数据。
+- unresolved: release 发布、定向预览/应用、worker 恢复、连续调度窗口与真实 Telegram E4。

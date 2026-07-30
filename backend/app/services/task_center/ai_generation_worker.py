@@ -6,7 +6,7 @@ from datetime import timedelta
 from uuid import uuid4
 
 from sqlalchemy import func, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from app.models import Action, Task, TgAccount
 from app.services._common import _now
@@ -111,6 +111,11 @@ def _generation_siblings(
 def _generation_filters() -> tuple:
     payload_status = Action.payload["ai_generation_status"].as_string()
     message_text = Action.payload["message_text"].as_string()
+    executing = aliased(Action)
+    account_is_free = ~select(executing.id).where(
+        executing.account_id == Action.account_id,
+        executing.status == "executing",
+    ).exists()
     return (
         Action.task_type == "group_ai_chat",
         Action.action_type == "send_message",
@@ -121,6 +126,7 @@ def _generation_filters() -> tuple:
         Task.deleted_at.is_(None),
         payload_status.in_(GENERATABLE_STATUSES),
         func.coalesce(message_text, "") == "",
+        account_is_free,
     )
 
 

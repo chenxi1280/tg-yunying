@@ -186,6 +186,8 @@ def test_invalid_normal_batch_mapping_fails_all_slots_without_gateway(monkeypatc
         audit = session.query(AiGenerationContractAudit).one()
         assert audit.expected_slot_count == 2
         assert audit.error_code.startswith("ai_generation_output_")
+        if len(outputs) != 2:
+            assert audit.received_slot_count == len(outputs)
 
 
 def test_normal_batch_rejects_swapped_slot_ids_despite_correct_sequences(monkeypatch) -> None:

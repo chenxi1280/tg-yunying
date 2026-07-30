@@ -42,7 +42,7 @@ pytestmark = pytest.mark.no_postgres
 SEARCH_RESERVATION_KEY = (1, "search-task", "search_join", 1, 0)
 
 
-def test_ordinary_dispatcher_allocates_and_retains_open_search_obligation() -> None:
+def test_ordinary_dispatcher_does_not_allocate_unmaterialized_search_obligation() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = _now()
@@ -63,18 +63,7 @@ def test_ordinary_dispatcher_allocates_and_retains_open_search_obligation() -> N
         )
         reservations = window_reservations(session, window.id)
 
-        assert reservations[SEARCH_RESERVATION_KEY].reserved_claims == 1
-        session.get(Task, "search-task").status = "stopped"
-        session.flush()
-        released = reconcile_window_unclaimed(
-            session,
-            window,
-            allocations=current_window_allocations(session, window),
-            reservations=reservations,
-            now=now_value,
-        )
-        assert released == 0
-        assert reservations[SEARCH_RESERVATION_KEY].reserved_claims == 1
+        assert SEARCH_RESERVATION_KEY not in reservations
 
 
 def test_search_planner_preserves_runtime_shards_for_ordinary_actions() -> None:
@@ -130,6 +119,35 @@ def test_reconciliation_preserves_bound_search_unit_until_exact_release() -> Non
             reason_code="search_resource_saturated",
             now_value=_now(),
         )
+        assert allocation.unclaimed_allocated_count == 0
+        assert window.unclaimed_allocated_count == 0
+
+
+def test_reconciliation_releases_unbound_search_reservation() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine, autoflush=False) as session:
+        seed_assignment(session)
+        window = session.get(DispatchClaimWindow, "window-1")
+        allocation = session.get(DispatchClaimShardAllocation, "shard-1")
+        reservation = session.get(DispatchClaimReservation, "reservation-1")
+        reservation.bound_count = 0
+        session.get(Action, "action-1").status = "skipped"
+        session.flush()
+        reservations = {
+            (1, "task-1", "search_join", 1, 0): reservation,
+        }
+
+        released = reconcile_window_unclaimed(
+            session,
+            window,
+            allocations=[allocation],
+            reservations=reservations,
+            now=_now(),
+        )
+
+        assert released == 1
+        assert reservation.reserved_claims == 0
         assert allocation.unclaimed_allocated_count == 0
         assert window.unclaimed_allocated_count == 0
 

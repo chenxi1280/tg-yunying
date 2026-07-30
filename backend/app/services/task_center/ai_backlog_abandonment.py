@@ -35,8 +35,14 @@ def abandon_ai_historical_backlog(
     cutoff: datetime,
     apply: bool,
     actor: str,
+    task_ids: set[str] | None = None,
 ) -> dict:
-    actions = _candidate_actions(session, cutoff=cutoff, lock=apply)
+    actions = _candidate_actions(
+        session,
+        cutoff=cutoff,
+        lock=apply,
+        task_ids=task_ids,
+    )
     result = _result(actions, cutoff=cutoff, apply=apply)
     if not apply or not actions:
         return result
@@ -60,6 +66,7 @@ def _candidate_actions(
     *,
     cutoff: datetime,
     lock: bool,
+    task_ids: set[str] | None,
 ) -> list[Action]:
     gateway_started = select(ExecutionAttempt.id).where(
         ExecutionAttempt.action_id == Action.id,
@@ -76,6 +83,8 @@ def _candidate_actions(
         ) == "",
         ~gateway_started,
     ).order_by(Action.scheduled_at, Action.created_at, Action.id)
+    if task_ids is not None:
+        statement = statement.where(Action.task_id.in_(task_ids))
     if lock and session.bind and session.bind.dialect.name != "sqlite":
         statement = statement.with_for_update(of=Action, skip_locked=True)
     return list(session.scalars(statement))

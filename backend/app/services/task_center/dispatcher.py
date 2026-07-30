@@ -7360,7 +7360,7 @@ def _apply_allowed_group_bot_admission(action: Action, payload: dict, decision) 
 
 
 def _defer_for_group_bot_admission(action: Action, decision) -> None:
-    action.status = "pending"
+    action.status = "skipped"
     action.result = {
         **(action.result or {}),
         "success": False,
@@ -7370,8 +7370,7 @@ def _defer_for_group_bot_admission(action: Action, decision) -> None:
         "group_bot_admission_state": decision.state,
         "group_bot_admission_id": decision.admission_id,
     }
-    action.scheduled_at = _now() + timedelta(seconds=30)
-    action.executed_at = None
+    action.executed_at = _now()
     _clear_action_lease(action)
     _release_runtime_resources(action)
 

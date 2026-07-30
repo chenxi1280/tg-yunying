@@ -4213,6 +4213,24 @@ def test_retry_failed_actions_keeps_ai_quality_gate_failures_terminal(monkeypatc
                     },
                     result={"error_code": "ai_message_memory_missing", "validation_stage": "ai_message_memory"},
                 ),
+                Action(
+                    id="action-generation-contract-terminal",
+                    tenant_id=1,
+                    task_id=task.id,
+                    task_type="group_ai_chat",
+                    action_type="send_message",
+                    status="failed",
+                    retry_count=0,
+                    scheduled_at=now_value,
+                    payload={
+                        "ai_generation_status": "ai_generation_output_count_mismatch",
+                        "message_text": "",
+                    },
+                    result={
+                        "error_code": "ai_generation_output_count_mismatch",
+                        "validation_stage": "generation_contract",
+                    },
+                ),
             ]
         )
         session.commit()
@@ -4221,12 +4239,22 @@ def test_retry_failed_actions_keeps_ai_quality_gate_failures_terminal(monkeypatc
 
         duplicate = session.get(Action, "action-duplicate-terminal")
         memory_missing = session.get(Action, "action-memory-missing-terminal")
+        contract_failure = session.get(
+            Action,
+            "action-generation-contract-terminal",
+        )
         assert duplicate.status == "failed"
         assert duplicate.retry_count == 0
         assert duplicate.result["error_code"] == "duplicate_message"
         assert memory_missing.status == "failed"
         assert memory_missing.retry_count == 0
         assert memory_missing.result["error_code"] == "ai_message_memory_missing"
+        assert contract_failure.status == "failed"
+        assert contract_failure.retry_count == 0
+        assert (
+            contract_failure.result["error_code"]
+            == "ai_generation_output_count_mismatch"
+        )
 
 
 @pytest.mark.no_postgres

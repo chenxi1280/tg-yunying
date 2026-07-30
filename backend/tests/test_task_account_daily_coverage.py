@@ -11,6 +11,7 @@ from app.models import (
     AccountPool,
     Action,
     ExecutionAttempt,
+    GroupBotAdmission,
     OperationTarget,
     Task,
     TaskAccountDailyCoverage,
@@ -95,6 +96,41 @@ def test_daily_ledger_keeps_ready_pending_and_blocked_accounts_in_denominator(se
         (3, "blocked", "cannot_send"),
     ]
     assert all(row.coverage_date == date(2026, 7, 10) for row in rows)
+
+
+def test_daily_ledger_keeps_group_bot_waiting_account_out_of_send_pool(
+    session: Session,
+) -> None:
+    task = _seed(session)
+    session.add(_account(1))
+    session.add(TgGroupAccount(
+        tenant_id=1,
+        group_id=21,
+        account_id=1,
+        can_send=True,
+    ))
+    session.add(GroupBotAdmission(
+        tenant_id=1,
+        group_id=21,
+        account_id=1,
+        state="awaiting_group_bot_confirmation",
+    ))
+    session.commit()
+
+    initialize_all_account_task_scope(
+        session,
+        task,
+        now=datetime(2026, 7, 10, 10),
+    )
+    ensure_task_daily_coverage(
+        session,
+        task,
+        now=datetime(2026, 7, 10, 10),
+    )
+
+    row = session.scalar(select(TaskAccountDailyCoverage))
+    assert row.state == "pending_admission"
+    assert row.blocker_code == "group_bot_admission_wait"
 
 
 def test_voice_profile_blocker_keeps_daily_obligation_and_wakes_task_after_recovery(session: Session) -> None:

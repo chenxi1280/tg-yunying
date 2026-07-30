@@ -372,3 +372,10 @@
 - evidence: run `29381873407` 为 `2 failed / 2214 passed / 14 skipped` 且未部署；同步 0095 head 断言，并把时间依赖的旧 AI unavailable 测试固定为 manual 1。原失败两项和相关组合 `130 passed`。
 - decision: `qa_pass=true`；只修测试确定性，不改变生产消息条数或调度。
 - unresolved: 重新发布和生产 E4。
+
+## 2026-07-31 三个郑州 AI 活群共享调度恢复 re-QA
+
+- message_id: `2026-07-31-zhengzhou-ai-fulfillment-runtime-recovery-qa-001`
+- evidence: 覆盖 generic/search reservation 分工、无绑定释放和已绑定保护、生成混合状态恢复、生成映射计数审计与终态 retry、账号 inflight 排除、群机器人 admission、日报只读、三 task-id 定向安全清理。相关 no-PostgreSQL 回归曾完成 `125 passed`，生成契约 retry 定向回归 `1 passed / 121 deselected`；本地 PostgreSQL 不可用，真 PostgreSQL 分区由 GitHub Actions 验证。
+- decision: 代码层定向 `qa_pass=true`；不以本地测试代替 Release Checks 或生产 E4。
+- unresolved: CI 全量真 PostgreSQL、部署后共享槽位释放、三个任务远端消息增长、数据库 deadlock 与 IO 稳定性。
