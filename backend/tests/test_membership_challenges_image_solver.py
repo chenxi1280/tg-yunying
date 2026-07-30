@@ -1,6 +1,7 @@
 from types import SimpleNamespace
+from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier, Event
-from time import monotonic
+from time import monotonic, sleep
 
 import pytest
 
@@ -394,3 +395,33 @@ def test_one_ocr_engine_variants_still_form_only_one_vote() -> None:
 
     assert vote.status == "unsafe"
     assert vote.answer == ""
+
+
+@pytest.mark.no_postgres
+def test_rapidocr_inference_is_serialized_per_worker(monkeypatch) -> None:
+    active = 0
+    maximum = 0
+
+    def recognition(_image):
+        nonlocal active, maximum
+        active += 1
+        maximum = max(maximum, active)
+        sleep(0.02)
+        active -= 1
+        return "10", 0.9
+
+    monkeypatch.setattr(
+        membership_challenges.image_verification_ocr,
+        "_recognize_with_rapidocr",
+        recognition,
+    )
+    recognize = (
+        membership_challenges.image_verification_ocr
+        .recognize_with_rapidocr
+    )
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        results = tuple(executor.map(recognize, [b"image"] * 4))
+
+    assert results == (("10", 0.9),) * 4
+    assert maximum == 1
