@@ -37,3 +37,11 @@ def test_live_clash_workflow_passes_explicit_skip_cert_verify_switch() -> None:
     assert "clash_skip_cert_verify:" in workflow
     assert "CLASH_SKIP_CERT_VERIFY: ${{ inputs.clash_skip_cert_verify }}" in workflow
     assert "-e CLASH_SKIP_CERT_VERIFY" in workflow
+
+
+def test_live_clash_workflow_defaults_to_infrastructure_only_repair() -> None:
+    workflow = WORKFLOW.read_text()
+
+    assert "clash_search_join_create_smoke_task:" in workflow
+    assert "CLASH_CREATE_SMOKE_TASK: ${{ inputs.clash_search_join_create_smoke_task }}" in workflow
+    assert "-e CLASH_CREATE_SMOKE_TASK" in workflow

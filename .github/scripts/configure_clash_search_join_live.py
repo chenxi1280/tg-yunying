@@ -56,6 +56,14 @@ class ProxyNode:
     @property
     def container_name(self) -> str:
         return f"{CONTAINER_PREFIX}-{self.index:03d}"
+
+@dataclass(frozen=True)
+class RepairSummaryInput:
+    accounts: list[TgAccount]
+    proxies: list[AccountProxy]
+    task: Task | None
+    environment_summary: dict[str, Any]
+
 def env_bool(name: str, default: bool = False) -> bool:
     value = os.getenv(name)
     if value is None:
@@ -614,9 +622,21 @@ def apply_database(nodes: list[ProxyNode]) -> dict[str, Any]:
         legacy_summary = backfill_legacy_primary_authorizations(session, accounts)
         environment_summary = bind_account_environments(session, accounts)
         airport_binding_summary = bind_airport_nodes_to_environment_bindings(session, account_nodes, account_proxies)
-        task = create_zhengzhou_task(session, accounts)
+        task = create_zhengzhou_task(session, accounts) if create_smoke_task_enabled() else None
         session.commit()
-        return summary_payload(accounts, proxies, task, session, {**legacy_summary, **environment_summary, **airport_binding_summary})
+        return summary_payload(
+            session,
+            RepairSummaryInput(
+                accounts=accounts,
+                proxies=proxies,
+                task=task,
+                environment_summary={
+                    **legacy_summary,
+                    **environment_summary,
+                    **airport_binding_summary,
+                },
+            ),
+        )
 
 def preflight_database(nodes: list[ProxyNode]) -> dict[str, Any]:
     healthy = set(healthy_indexes())
@@ -625,12 +645,20 @@ def preflight_database(nodes: list[ProxyNode]) -> dict[str, Any]:
         raise RuntimeError("no healthy proxy nodes selected")
     with SessionLocal() as session:
         accounts = active_accounts(session)
+        smoke_enabled = create_smoke_task_enabled()
+        result = {
+            "account_count": len(accounts),
+            "proxy_count": len(selected),
+            "create_smoke_task": smoke_enabled,
+        }
+        if not smoke_enabled:
+            return result
         count = test_account_count()
         if len(accounts) < count:
             raise RuntimeError(f"need exactly {count} test accounts, got {len(accounts)}")
         target = target_group(session, target_query())
         require_protocol_sample(session, search_bot_username())
-        return {"account_count": len(accounts), "proxy_count": len(selected), "target_id": target.id, "target_title": target.title}
+        return {**result, "target_id": target.id, "target_title": target.title}
 
 def create_zhengzhou_task(session, accounts: list[TgAccount]) -> Task:
     count = test_account_count()
@@ -688,6 +716,9 @@ def test_account_count() -> int:
         raise RuntimeError("CLASH_TEST_ACCOUNT_COUNT must be positive")
     return count
 
+def create_smoke_task_enabled() -> bool:
+    return env_bool("CLASH_CREATE_SMOKE_TASK", False)
+
 def target_query() -> str:
     return os.getenv("CLASH_TARGET_QUERY", DEFAULT_TARGET_QUERY).strip() or DEFAULT_TARGET_QUERY
 
@@ -733,18 +764,28 @@ def seed_protocol_sample(session, bot: str) -> None:
     sample.captured_at = _now()
     session.flush()
     audit(session, tenant_id=1, actor=actor(), action="补齐搜索机器人协议样本", target_type="bot_protocol_sample", target_id=bot)
-def summary_payload(accounts: list[TgAccount], proxies: list[AccountProxy], task: Task, session, environment_summary: dict[str, Any]) -> dict[str, Any]:
-    action_count = session.scalar(
-        select(func.count(Action.id)).where(Action.tenant_id == 1, Action.task_id == task.id, Action.action_type == "search_join")
-    )
+def summary_payload(
+    session,
+    value: RepairSummaryInput,
+) -> dict[str, Any]:
+    action_count = 0
+    if value.task is not None:
+        action_count = int(session.scalar(
+            select(func.count(Action.id)).where(
+                Action.tenant_id == 1,
+                Action.task_id == value.task.id,
+                Action.action_type == "search_join",
+            )
+        ) or 0)
     return {
-        "account_count": len(accounts),
-        "proxy_count": len(proxies),
-        "test_task_id": task.id,
-        "test_task_status": task.status,
-        "test_task_last_error": task.last_error,
-        "search_join_action_count": int(action_count or 0),
-        **environment_summary,
+        "account_count": len(value.accounts),
+        "proxy_count": len(value.proxies),
+        "smoke_task_created": value.task is not None,
+        "test_task_id": value.task.id if value.task is not None else None,
+        "test_task_status": value.task.status if value.task is not None else None,
+        "test_task_last_error": value.task.last_error if value.task is not None else "",
+        "search_join_action_count": action_count,
+        **value.environment_summary,
     }
 
 def phase_prepare() -> None:
