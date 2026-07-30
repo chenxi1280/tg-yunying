@@ -831,9 +831,9 @@ def test_group_ai_uses_direct_daily_coverage_when_only_other_task_has_history(mo
         created = build_group_ai_chat_plan(session, task)
         actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
 
-    assert created == 1
-    assert len(actions) == 1
-    assert actions[0].payload["reply_to_message_id"] is None
+    assert created == 3
+    assert len(actions) == 3
+    assert all(action.payload["reply_to_message_id"] is None for action in actions)
     assert task.stats["coverage_reply_shortfall_cycle_count"] == 1
 
 

@@ -414,3 +414,10 @@
 - evidence: 第四次 run `30566460536` 在部署前由真 PostgreSQL 闸门拦截，线上未部署失败版本；修复后 direct 回补单元、日覆盖、内容合同、角色 drain、Listener 锁序和 retention 组合为 `79 passed / 9 deselected`，compileall 与 diff-check 通过。
 - decision: 本地定向 `qa_pass=true`；失败版本没有进入生产，真 PostgreSQL 仍由第五次 Release Checks 判定。
 - unresolved: 第五次 CI 全绿、生产 image、deadlock/FK 零增量和三个任务 E4。
+
+## 2026-07-31 日覆盖回补内容合同 Release Checks re-QA
+
+- message_id: `2026-07-31-ai-coverage-reply-contract-release-qa-006`
+- evidence: 第五次 run `30567325211` 未部署；no-PostgreSQL 为 `1 failed / 2331 passed`，失败是内容合同测试夹具缺少新增字段；真 PostgreSQL 为 `2 failed / 779 passed / 14 skipped`，其一是最低批次 3 的期望误写为 1，其二是工作流测试直接改 Action.status 而未收口数量槽、内容槽和 coverage。测试现改为显式非回补夹具、验证 3 条 direct Action，并通过 `abandon_ai_historical_backlog` 的完整事务关闭测试 Cycle。
+- decision: 失败均为测试合同未同步，不绕过业务门禁；定向 no-PostgreSQL `17 passed`，进入第六次 Release Checks。
+- unresolved: 第六次 CI 全绿与生产 E4。
