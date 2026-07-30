@@ -159,6 +159,35 @@ def test_search_join_environment_rejects_inactive_proxy_binding() -> None:
         assert ensure_or_create_search_join_environment(session, account) is None
 
 
+def test_search_join_environment_uses_next_valid_authorization_slot() -> None:
+    with _session() as session:
+        _seed_environment(session)
+        account = session.get(TgAccount, 101)
+        primary_environment = ensure_or_create_search_join_environment(
+            session,
+            account,
+        )
+        primary_proxy_binding = session.get(
+            AccountProxyBinding,
+            primary_environment.proxy_binding_id,
+        )
+        primary_proxy_binding.status = "inactive"
+        session.commit()
+        _add_standby_authorization(session)
+        standby_environment = ensure_or_create_search_join_environment(
+            session,
+            account,
+        )
+
+        existing = ensure_search_join_environment(session, account)
+        ensured = ensure_or_create_search_join_environment(session, account)
+
+        assert existing is not None
+        assert ensured is not None
+        assert existing.authorization_id == standby_environment.authorization_id
+        assert ensured.authorization_id == standby_environment.authorization_id
+
+
 def test_account_environment_projection_compares_remote_authorization_snapshot() -> None:
     with _session() as session:
         _seed_environment(session)

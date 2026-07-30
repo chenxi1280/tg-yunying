@@ -69,7 +69,7 @@
 
 ### 3.2 非目标
 
-- 不降低业务配置目标；任务内的账号日/小时/账号关键词日次数等履约软上限，以及单用户 `SchedulingSetting.default_account_hour_limit/default_account_day_limit` 两个通用履约数量上限，统一归一为 `1_000_000`，旧搜索 skip 概率和任务内账号冷却归零。通用账号冷却只作可继续追赶的短暂软节奏，不得把任务置为完成或永久 blocker；Telegram FloodWait/SlowMode、账号授权、代理、协议、目标准入和 unknown 防重硬门禁保持不变，不能借统一数量门禁绕过。
+- 不降低业务配置目标；任务内的账号日/小时/账号关键词日次数等履约软上限，以及单用户 `SchedulingSetting.default_account_hour_limit/default_account_day_limit` 两个通用履约数量上限，统一归一为 `1_000_000`，旧搜索 skip 概率和任务内账号冷却归零。新建、编辑与存量接管都必须把纯搜索点击 `account_config.cooldown_per_account_minutes` 持久化为 `0`，不能只修改 `pacing_config` 后仍由账号池选择器提前过滤候选；接管的幂等变更检测必须包含 `account_config`。通用账号冷却只作可继续追赶的短暂软节奏，不得把任务置为完成或永久 blocker；Telegram FloodWait/SlowMode、账号授权、代理、协议、目标准入和 unknown 防重硬门禁保持不变，不能借统一数量门禁绕过。
 - 不把 `pending/claiming/executing/unknown_after_send/skipped` 计为成功。
 - 不使用 mock、未记录的静默 fallback、未知按钮模糊点击或未审批协议样本；本文明确的签到/表情确定性兜底必须留下原失败原因和远端事实。
 - 不把 worker/container/health 绿色、claim 成功、Action 创建或本地测试写成 `production_fixed`。
@@ -671,7 +671,7 @@ listener 处理可信群管提示时，禁止在已修改 `group_bot_admissions`
 
    `solver_problem_hash` 与 `solver_input_hash` 不得合并。前者是 carrier-independent 的业务问题图 hash：包含 `solver_contract_version`、稳定业务义务键、各连通分量候选路径、相关资源 key/value/version 和真正参与该分量公平目标的 due/remaining/cursor，排除 Window/dispatch/search epoch、TaskAllocation/Reservation/ordinal/assignment ID、carrier 派生份额、worker/lease、时间和随机值。后者在 problem hash 外加入本次 carrier epoch、精确 Reservation unit 集及中央份额/Reservation 版本，负责当前 outcome 幂等。字段集合或排序规则变化必须提升 `solver_contract_version`，版本进入两个 payload但不新增独立状态列。
 
-   所有会影响候选、约束、目标或 tie-break 的读取都必须入 hash，不能把排序字段当展示摘要。最低包括账号 `hard_safe_remaining_capacity`、同一冻结 `account_quota_key/capacity_window_key` 内的 `confirmed_click_count_today`、持久化 `last_click_opportunity_at`、`persistent_account_cursor` 及各自 source key/value/version；这里的 `today` 不读取服务器日期或提交时墙钟。新增影响输出的读取必须进入 canonical payload并提升 `solver_contract_version`。
+   所有会影响候选、约束、目标或 tie-break 的读取都必须入 hash，不能把排序字段当展示摘要。最低包括账号 `hard_safe_remaining_capacity`、同一冻结 `account_quota_key/capacity_window_key` 内的 `confirmed_click_count_today`、持久化 `last_click_opportunity_at`、`persistent_account_cursor` 及各自 source key/value/version；这里的 `today` 不读取服务器日期或提交时墙钟。新增影响输出的读取必须进入 canonical payload并提升 `solver_contract_version`。同一账号存在多个 active/standby 授权槽时，系统按 `is_current DESC -> role ASC -> id ASC` 遍历，选择首个“授权、环境绑定、代理绑定、健康代理均完整一致”的槽位；排序第一槽失效不得吞掉后续合法备用槽。没有任何完整槽位时才记录授权环境结构 blocker，且不得回退本机直连或复用失效代理绑定。
 
    两个 hash 及其分量/unit 映射只能由唯一 `SearchSolverSnapshotAssembler` 产生。Assembler 在一个一致性数据库快照中建立不可变 `SearchSolverProblemSnapshot`、全部 `SearchSolverProblemComponent(stable_component_key,canonical_nodes_edges_fairness,solver_problem_component_hash)` 和每个 `(reservation_id,ordinal)` 唯一的 `SearchSolverCarrierUnitBinding`；共享资源 key 或 `assignment_fairness_key` 必须合并到同一分量，无候选 unit 也保存实际 eligibility/resource 版本的零边分量。open epoch、完整 snapshot/component/binding、两个 hash 与 owner lease 同事务原子落库后才允许调用 solver。solver 只读该持久快照，禁止额外查库/读全局；owner 丢失 recovery 直接用原 binding/component hash 释放，不能重新组图。active exclusion 的 current component hash 也只能由同一 Assembler/canonicalization 重算，禁止两套 hash 逻辑。无法形成完整一致快照时不调用 solver、不保留半条 open epoch或部分 payload，显式失败或对象级 quarantine，不能冒充 `no_candidate|optimal`。
 

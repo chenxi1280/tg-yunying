@@ -94,27 +94,37 @@ class EnvironmentTarget:
 
 
 def ensure_search_join_environment(session: Session, account: TgAccount) -> SearchJoinEnvironment | None:
-    authorization = _active_authorization(session, account.id)
-    if authorization is None:
-        return None
-    binding = _existing_binding(session, account.id, authorization)
-    if binding is None:
-        return None
-    return _environment_for_existing_binding(session, binding, authorization)
+    for authorization in _active_authorizations(session, account.id):
+        binding = _existing_binding(session, account.id, authorization)
+        if binding is None:
+            continue
+        environment = _environment_for_existing_binding(
+            session,
+            binding,
+            authorization,
+        )
+        if environment is not None:
+            return environment
+    return None
 
 
 def ensure_or_create_search_join_environment(session: Session, account: TgAccount) -> SearchJoinEnvironment | None:
-    authorization = _active_authorization(session, account.id)
-    if authorization is None:
-        return None
-    binding = _existing_binding(session, account.id, authorization)
-    if binding is not None:
-        return _environment_for_existing_binding(session, binding, authorization)
-    proxy = _healthy_proxy(session, authorization.proxy_id or account.proxy_id)
-    if proxy is None:
-        return None
-    binding = _create_binding(session, EnvironmentTarget(account, authorization, proxy))
-    return _environment_from_binding(binding, proxy)
+    authorizations = _active_authorizations(session, account.id)
+    existing = ensure_search_join_environment(session, account)
+    if existing is not None:
+        return existing
+    for authorization in authorizations:
+        if _existing_binding(session, account.id, authorization) is not None:
+            continue
+        proxy = _healthy_proxy(session, authorization.proxy_id or account.proxy_id)
+        if proxy is None:
+            continue
+        binding = _create_binding(
+            session,
+            EnvironmentTarget(account, authorization, proxy),
+        )
+        return _environment_from_binding(binding, proxy)
+    return None
 
 
 def _environment_for_existing_binding(
@@ -153,7 +163,10 @@ def _proxy_binding_matches_environment(
     )
 
 
-def _active_authorization(session: Session, account_id: int) -> TgAccountAuthorization | None:
+def _active_authorizations(
+    session: Session,
+    account_id: int,
+) -> tuple[TgAccountAuthorization, ...]:
     stmt = (
         select(TgAccountAuthorization)
         .where(
@@ -165,7 +178,7 @@ def _active_authorization(session: Session, account_id: int) -> TgAccountAuthori
         )
         .order_by(TgAccountAuthorization.is_current.desc(), TgAccountAuthorization.role.asc(), TgAccountAuthorization.id.asc())
     )
-    return session.scalar(stmt.limit(1))
+    return tuple(session.scalars(stmt))
 
 
 def _healthy_proxy(session: Session, proxy_id: int | None) -> AccountProxy | None:

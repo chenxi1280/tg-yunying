@@ -36,7 +36,12 @@ def require_search_click_account_group(
 
 
 def search_click_account_config(account_group_id: int) -> dict[str, Any]:
-    return {"selection_mode": "group", "account_group_id": account_group_id, "account_ids": []}
+    return {
+        "selection_mode": "group",
+        "account_group_id": account_group_id,
+        "account_ids": [],
+        "cooldown_per_account_minutes": 0,
+    }
 
 
 def search_click_pacing_config(payload: Any) -> dict[str, Any]:

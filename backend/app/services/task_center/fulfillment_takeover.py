@@ -180,6 +180,7 @@ def _eligible(task: Task) -> bool:
 def _task_snapshot(task: Task) -> tuple:
     return (
         task.type,
+        dict(task.account_config or {}),
         dict(task.type_config or {}),
         dict(task.pacing_config or {}),
         str((task.stats or {}).get("fulfillment_contract_version") or ""),
@@ -239,6 +240,11 @@ def _normalize_task_gate_limits(task: Task) -> None:
         task.stats = {
             **(task.stats or {}),
             "max_total_comments_resolved": UNIFIED_TASK_GATE_LIMIT,
+        }
+    if task.type == "search_click":
+        task.account_config = {
+            **(task.account_config or {}),
+            "cooldown_per_account_minutes": 0,
         }
     task.type_config = config
     task.pacing_config = normalize_fulfillment_pacing(
