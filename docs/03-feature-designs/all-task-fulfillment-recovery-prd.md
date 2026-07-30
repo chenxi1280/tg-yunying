@@ -101,6 +101,8 @@
 
 纯搜索点击每轮完成后把 `next_run_at` 对齐到下一个 1 分钟 Claim Window 起点，不使用通用 5 分钟模板间隔；这不是新增性能 deadline。当前 Window 内来不及领取的 assignment 继续直接释放并重建，但下一轮必须从新 Window 起点尽快规划，不能长期在 Window 最后数秒才生成 Action、随后全部 `search_assignment_expired`。
 
+`search_transport_unavailable` 的代理 failover 必须先证明候选节点能够生成完整可执行 proxy，再原子切换旧/new proxy binding 与 environment binding。候选协议或端点不可执行时不得改写旧绑定。搜索候选枚举必须拒绝 inactive、已解绑或与环境 scope 不一致的 proxy binding，避免失败切换把同一坏路径带入后续 Window。
+
 ## 4. 统一履约合同
 
 ### 4.1 履约粒度

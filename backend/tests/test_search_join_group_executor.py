@@ -1011,8 +1011,18 @@ def test_search_join_environment_reuses_legacy_binding_after_app_scope_added(ses
         platform="ios",
         client_identity_key="legacy-identity-101",
     )
+    proxy_binding = AccountProxyBinding(
+        id=301,
+        tenant_id=1,
+        account_id=101,
+        developer_app_id=51,
+        developer_app_api_id_snapshot=2040,
+        authorization_id=authorization.id,
+        session_role="primary",
+        proxy_id=31,
+    )
     task = _task(type_config={"actions_per_round": 1, "hourly_min_successful_joins": 1})
-    session.add_all([legacy_binding, task])
+    session.add_all([legacy_binding, proxy_binding, task])
     session.commit()
 
     assert build_task_plan(session, task) == 1

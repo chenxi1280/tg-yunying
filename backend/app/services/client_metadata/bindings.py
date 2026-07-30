@@ -100,28 +100,57 @@ def ensure_search_join_environment(session: Session, account: TgAccount) -> Sear
     binding = _existing_binding(session, account.id, authorization)
     if binding is None:
         return None
+    return _environment_for_existing_binding(session, binding, authorization)
+
+
+def ensure_or_create_search_join_environment(session: Session, account: TgAccount) -> SearchJoinEnvironment | None:
+    authorization = _active_authorization(session, account.id)
+    if authorization is None:
+        return None
+    binding = _existing_binding(session, account.id, authorization)
+    if binding is not None:
+        return _environment_for_existing_binding(session, binding, authorization)
+    proxy = _healthy_proxy(session, authorization.proxy_id or account.proxy_id)
+    if proxy is None:
+        return None
+    binding = _create_binding(session, EnvironmentTarget(account, authorization, proxy))
+    return _environment_from_binding(binding, proxy)
+
+
+def _environment_for_existing_binding(
+    session: Session,
+    binding: AccountEnvironmentBinding,
+    authorization: TgAccountAuthorization,
+) -> SearchJoinEnvironment | None:
     _hydrate_binding_app_scope(binding, authorization)
+    if not _proxy_binding_matches_environment(session, binding):
+        return None
     proxy = _healthy_proxy(session, binding.proxy_id)
     if proxy is None:
         return None
     return _environment_from_binding(binding, proxy)
 
 
-def ensure_or_create_search_join_environment(session: Session, account: TgAccount) -> SearchJoinEnvironment | None:
-    environment = ensure_search_join_environment(session, account)
-    if environment is not None:
-        return environment
-    authorization = _active_authorization(session, account.id)
-    if authorization is None:
-        return None
-    proxy = _healthy_proxy(session, authorization.proxy_id or account.proxy_id)
-    if proxy is None:
-        return None
-    binding = _existing_binding(session, account.id, authorization)
-    if binding is None:
-        binding = _create_binding(session, EnvironmentTarget(account, authorization, proxy))
-    _hydrate_binding_app_scope(binding, authorization)
-    return _environment_from_binding(binding, proxy)
+def _proxy_binding_matches_environment(
+    session: Session,
+    binding: AccountEnvironmentBinding,
+) -> bool:
+    proxy_binding = session.get(
+        AccountProxyBinding,
+        int(binding.proxy_binding_id or 0),
+    )
+    if proxy_binding is None:
+        return False
+    return (
+        proxy_binding.status == "active"
+        and proxy_binding.unbound_at is None
+        and proxy_binding.tenant_id == binding.tenant_id
+        and proxy_binding.account_id == binding.account_id
+        and proxy_binding.developer_app_id == binding.developer_app_id
+        and proxy_binding.authorization_id == binding.authorization_id
+        and proxy_binding.session_role == binding.session_role
+        and proxy_binding.proxy_id == binding.proxy_id
+    )
 
 
 def _active_authorization(session: Session, account_id: int) -> TgAccountAuthorization | None:

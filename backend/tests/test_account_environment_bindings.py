@@ -22,7 +22,10 @@ from app.services.account_environment import (
     list_account_environment_bindings,
     patch_account_environment_binding,
 )
-from app.services.client_metadata import ensure_or_create_search_join_environment
+from app.services.client_metadata import (
+    ensure_or_create_search_join_environment,
+    ensure_search_join_environment,
+)
 
 
 pytestmark = pytest.mark.no_postgres
@@ -138,6 +141,22 @@ def test_search_join_environment_can_create_missing_client_metadata_binding() ->
         assert environment.client_metadata["client_identity_key"]
         assert session.scalar(select(AccountEnvironmentBinding).where(AccountEnvironmentBinding.account_id == 101)) is not None
         assert session.scalar(select(AccountProxyBinding).where(AccountProxyBinding.account_id == 101)) is not None
+
+
+def test_search_join_environment_rejects_inactive_proxy_binding() -> None:
+    with _session() as session:
+        _seed_environment(session)
+        account = session.get(TgAccount, 101)
+        environment = ensure_or_create_search_join_environment(session, account)
+        proxy_binding = session.get(
+            AccountProxyBinding,
+            environment.proxy_binding_id,
+        )
+        proxy_binding.status = "inactive"
+        session.commit()
+
+        assert ensure_search_join_environment(session, account) is None
+        assert ensure_or_create_search_join_environment(session, account) is None
 
 
 def test_account_environment_projection_compares_remote_authorization_snapshot() -> None:
