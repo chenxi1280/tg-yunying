@@ -125,7 +125,7 @@ Recovery 必须依次提交前序 Action 修复、连续 Task 状态修复，再
 
 发布后脚本会区分三层状态：
 
-1. 容器层：`tgyunying-backend` healthy，`tgyunying-worker-planner`、`tgyunying-worker-dispatcher-*`、`tgyunying-worker-listener`、`tgyunying-worker-recovery`、`tgyunying-worker-account-security`、`tgyunying-worker-metrics` healthy
+1. 容器层：`tgyunying-backend` healthy，`tgyunying-worker-planner`、`tgyunying-worker-dispatcher-1/2`、`tgyunying-worker-listener`、`tgyunying-worker-recovery`、`tgyunying-worker-account-security`、`tgyunying-worker-metrics` healthy；4 核生产机固定使用 2 个 dispatcher / 2 个账号分片，避免 4 个 claim worker 在共享 scope 与 actions 索引上形成 CPU、IO 和行锁争用
 2. 本机应用层：`http://127.0.0.1:18090/api/health`
 3. 宿主 Nginx / 公网入口：`https://<域名>/` 与 `https://<域名>/api/health`
 

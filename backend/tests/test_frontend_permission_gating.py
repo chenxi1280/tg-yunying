@@ -2218,12 +2218,12 @@ def test_production_deploy_passes_public_app_base_url_for_tenant_bot_webhook():
     assert "PUBLIC_APP_BASE_URL=${PUBLIC_APP_BASE_URL:-https://${TGYUNYING_WEB_HOST}}" in release
 
 
-def test_production_deploy_starts_four_dispatcher_workers():
+def test_production_deploy_starts_two_dispatcher_workers():
     compose = (PROJECT_ROOT / "docker-compose.server.yml").read_text()
     compose_up = (PROJECT_ROOT / "deploy/compose-up.sh").read_text()
     check_web = (PROJECT_ROOT / "deploy/check-web.sh").read_text()
 
-    for index in range(1, 5):
+    for index in range(1, 3):
         service_name = f"worker-dispatcher-{index}"
         container_name = f"tgyunying-worker-dispatcher-{index}"
         assert f"  {service_name}:" in compose
@@ -2231,7 +2231,9 @@ def test_production_deploy_starts_four_dispatcher_workers():
         assert f"ACCOUNT_SHARD_INDEX: \"{index - 1}\"" in compose
         assert f"  {service_name}" in compose_up
         assert f"  {container_name}" in check_web
-    assert compose.count('ACCOUNT_SHARD_TOTAL: "4"') == 4
+    assert "worker-dispatcher-3" not in compose
+    assert "worker-dispatcher-4" not in compose
+    assert compose.count('ACCOUNT_SHARD_TOTAL: "2"') == 2
 
 
 def test_production_ai_hourly_probe_reports_membership_failures():
