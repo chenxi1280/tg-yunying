@@ -42,6 +42,20 @@ def test_live_clash_workflow_passes_explicit_skip_cert_verify_switch() -> None:
 def test_live_clash_workflow_defaults_to_infrastructure_only_repair() -> None:
     workflow = WORKFLOW.read_text()
 
-    assert "clash_search_join_create_smoke_task:" in workflow
-    assert "CLASH_CREATE_SMOKE_TASK: ${{ inputs.clash_search_join_create_smoke_task }}" in workflow
+    assert "clash_search_join_create_smoke_task:" not in workflow
+    assert "CLASH_CREATE_SMOKE_TASK: false" in workflow
     assert "-e CLASH_CREATE_SMOKE_TASK" in workflow
+
+
+def test_workflow_dispatch_stays_within_github_input_limit() -> None:
+    workflow = WORKFLOW.read_text()
+    dispatch_inputs = workflow.split("    inputs:\n", 1)[1].split("  push:\n", 1)[0]
+    input_names = [
+        line.strip()[:-1]
+        for line in dispatch_inputs.splitlines()
+        if line.startswith("      ")
+        and not line.startswith("        ")
+        and line.strip().endswith(":")
+    ]
+
+    assert len(input_names) <= 25
