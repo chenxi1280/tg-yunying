@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -517,20 +516,20 @@ def build_search_join_image_verification_solver(
 ) -> SearchJoinImageVerificationSolver | None:
     """PRD §2.19.2: 构造极搜图片算式验证码识别 solver。
 
-    在 dispatcher 服务层预解析全部健康视觉 provider 的 credentials，返回一个无 DB 依赖
-    的 callable，按稳定顺序寻找首个安全候选。全部不可用时返回 None。
+    在 dispatcher 服务层只预解析稳定顺序中的首个健康视觉 provider，返回一个无 DB
+    依赖的 callable。本次识别不等待其他 provider。
     """
     providers = sorted(_image_verification_providers(session), key=_image_verification_provider_priority)
     if not providers:
         return None
-    credentials = [ai_provider_credentials(provider) for provider in providers]
+    credentials = ai_provider_credentials(providers[0])
 
     def solver(
         request: ImageVerificationRequest,
     ) -> tuple[str, float] | None:
         if not request.image_bytes:
             return None
-        return _solve_search_join_image_candidates(
+        return _solve_search_join_image_candidate(
             credentials,
             image_bytes=request.image_bytes,
             mime_type=request.mime_type,
@@ -544,56 +543,40 @@ def build_search_join_image_verification_solver(
     return solver
 
 
-def _solve_search_join_image_candidates(
-    credentials: list[Any],
+def _solve_search_join_image_candidate(
+    credentials: Any,
     *,
     image_bytes: bytes,
     mime_type: str,
     candidate_answers: tuple[str, ...],
     challenge_text: str,
 ) -> tuple[str, float]:
-    failures: list[str] = []
-    outcomes: list[str] = []
-    responded = False
     allowed_answers = frozenset(candidate_answers)
-    for provider in credentials:
-        try:
-            result = _solve_search_join_image(
-                provider,
-                image_bytes,
-                mime_type,
-                challenge_text,
-            )
-        except Exception as exc:  # noqa: BLE001 - classify approved provider outcome.
-            if _provider_returned_unsafe_answer(exc):
-                responded = True
-                outcomes.append(
-                    _image_provider_unsafe_response_detail(provider, exc)
-                )
-            else:
-                failures.append(_image_provider_failure_detail(provider, exc))
-            continue
-        responded = True
-        if result is None:
-            outcomes.append(_image_provider_unsafe_result_detail(
-                provider, answer="", confidence=0.0, allowed=False))
-            continue
-        answer, confidence = result
-        if (
-            confidence >= MIN_IMAGE_VERIFICATION_CONFIDENCE
-            and answer in allowed_answers
-        ):
-            return result
-        outcomes.append(_image_provider_unsafe_result_detail(
-            provider,
-            answer=answer,
-            confidence=confidence,
-            allowed=answer in allowed_answers,
-        ))
-    if not responded:
-        raise ImageVerificationProviderUnavailableError(
-            "; ".join(failures) or "all approved image providers unavailable")
-    raise ImageVerificationNoSafeAnswerError("; ".join(outcomes + failures))
+    try:
+        answer, confidence = _solve_search_join_image(
+            credentials,
+            image_bytes,
+            mime_type,
+            challenge_text,
+        )
+    except Exception as exc:  # noqa: BLE001 - classify selected provider outcome.
+        if _provider_returned_unsafe_answer(exc):
+            detail = _image_provider_unsafe_response_detail(credentials, exc)
+            raise ImageVerificationNoSafeAnswerError(detail) from exc
+        detail = _image_provider_failure_detail(credentials, exc)
+        raise ImageVerificationProviderUnavailableError(detail) from exc
+    if (
+        confidence >= MIN_IMAGE_VERIFICATION_CONFIDENCE
+        and answer in allowed_answers
+    ):
+        return answer, confidence
+    detail = _image_provider_unsafe_result_detail(
+        credentials,
+        answer=answer,
+        confidence=confidence,
+        allowed=answer in allowed_answers,
+    )
+    raise ImageVerificationNoSafeAnswerError(detail)
 
 
 def _image_verification_provider_priority(provider: AiProvider) -> tuple[int, int]:
@@ -612,23 +595,14 @@ def _solve_search_join_image(
     image_bytes: bytes,
     mime_type: str,
     challenge_text: str,
-) -> tuple[str, float] | None:
+) -> tuple[str, float]:
     prompt = _search_join_image_verification_prompt(challenge_text)
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        futures = [
-            executor.submit(
-                _solve_search_join_image_once,
-                credentials,
-                image_bytes,
-                mime_type,
-                prompt,
-            )
-            for _ in range(2)
-        ]
-        results = [future.result() for future in futures]
-    if results[0][0] != results[1][0]:
-        return None
-    return results[0][0], min(results[0][1], results[1][1])
+    return _solve_search_join_image_once(
+        credentials,
+        image_bytes,
+        mime_type,
+        prompt,
+    )
 
 
 def _solve_search_join_image_once(
