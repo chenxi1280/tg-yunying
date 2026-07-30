@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Mapping
 
 from .payloads import GROUP_BOT_CHANNEL_FOLLOW_ACTION_TYPE
@@ -50,6 +51,22 @@ class DispatchClaimBinding:
 class DispatchClaimPlan:
     candidate_action_ids: tuple[str, ...]
     bindings_by_action_id: Mapping[str, DispatchClaimBinding]
+
+
+@dataclass(frozen=True)
+class DispatchActionCandidate:
+    id: str
+    tenant_id: int
+    task_id: str
+    task_type: str
+    action_type: str
+    account_id: int | None
+    scheduled_at: datetime
+    status: str
+    payload: dict
+    created_at: datetime
+    dispatch_prebound: bool
+    search_click_assignment_id: str
 
 
 @dataclass(frozen=True)

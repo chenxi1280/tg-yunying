@@ -16,40 +16,34 @@ from app.services._common import _now
 
 from .datetime_compat import is_before
 from .dispatch_claim_ledger import binding_metadata, for_update
-from .dispatch_claim_types import DispatchClaimBinding, DispatchClaimPlan
+from .dispatch_claim_types import (
+    DispatchActionCandidate,
+    DispatchClaimBinding,
+    DispatchClaimPlan,
+)
 
 
-_PREBOUND_PROJECTION_ATTR = "_dispatch_prebound_projection"
-_ASSIGNMENT_PROJECTION_ATTR = "_dispatch_assignment_id_projection"
-
-
-def annotate_prebound_projection(
-    action: Action,
-    *,
-    is_prebound: bool,
-    assignment_id: str,
-) -> None:
-    setattr(action, _PREBOUND_PROJECTION_ATTR, is_prebound)
-    setattr(action, _ASSIGNMENT_PROJECTION_ATTR, assignment_id)
-
-
-def action_is_dispatch_prebound(action: Action) -> bool:
-    if hasattr(action, _PREBOUND_PROJECTION_ATTR):
-        return bool(getattr(action, _PREBOUND_PROJECTION_ATTR))
+def action_is_dispatch_prebound(
+    action: Action | DispatchActionCandidate,
+) -> bool:
+    if isinstance(action, DispatchActionCandidate):
+        return action.dispatch_prebound
     result = action.result if isinstance(action.result, dict) else {}
     return bool(result.get("dispatch_prebound"))
 
 
-def prebound_assignment_id(action: Action) -> str:
-    if hasattr(action, _ASSIGNMENT_PROJECTION_ATTR):
-        return str(getattr(action, _ASSIGNMENT_PROJECTION_ATTR) or "")
+def prebound_assignment_id(
+    action: Action | DispatchActionCandidate,
+) -> str:
+    if isinstance(action, DispatchActionCandidate):
+        return action.search_click_assignment_id
     result = action.result if isinstance(action.result, dict) else {}
     return str(result.get("search_click_assignment_id") or "")
 
 
 def plan_prebound_search_claims(
     session: Session,
-    actions: list[Action],
+    actions: list[Action | DispatchActionCandidate],
     *,
     shard_total: int | None = None,
     shard_index: int | None = None,
@@ -67,7 +61,7 @@ def plan_prebound_search_claims(
 
 
 def _action_matches_shard(
-    action: Action,
+    action: Action | DispatchActionCandidate,
     shard_total: int | None,
     shard_index: int | None,
 ) -> bool:
@@ -165,7 +159,7 @@ def confirm_prebound_search_claim(
 
 def _prebound_binding(
     session: Session,
-    action: Action,
+    action: Action | DispatchActionCandidate,
 ) -> DispatchClaimBinding | None:
     if not action_is_dispatch_prebound(action):
         return None
@@ -212,7 +206,7 @@ def _prebound_binding(
 
 
 def _binding_rows_valid(
-    action: Action,
+    action: Action | DispatchActionCandidate,
     *,
     assignment: SearchClickOpportunityAssignment,
     reservation: DispatchClaimReservation | None,
@@ -237,7 +231,7 @@ def _unit_exclusion(
 
 def _assignment(
     session: Session,
-    action: Action,
+    action: Action | DispatchActionCandidate,
 ) -> SearchClickOpportunityAssignment | None:
     assignment_id = prebound_assignment_id(action)
     return session.get(SearchClickOpportunityAssignment, assignment_id)
