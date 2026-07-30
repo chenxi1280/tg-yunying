@@ -549,15 +549,45 @@ def _initial_replan_daily_accounts(
     include_replan_accounts: bool,
 ) -> tuple[list, list, set[int]]:
     rows = _replan_coverage_rows_for_plan(session, task, facts)
+    seen = _bound_coverage_account_ids_for_plan(session, task, facts)
     if not rows:
-        return [], [], set()
-    seen = {int(row.account_id) for row in rows}
+        return [], [], seen
     if not include_replan_accounts:
         return [], [], seen
     ready, waiting = _daily_accounts_for_coverage_rows(
         session, task, facts, rows,
     )
     return ready[:account_limit], waiting, seen
+
+
+def _bound_coverage_account_ids_for_plan(
+    session: Session,
+    task: Task,
+    facts: PlanFacts,
+) -> set[int]:
+    target_id = str(facts.coverage.daily_group_target_id or "")
+    target = session.get(TaskGroupDailyTarget, target_id) if target_id else None
+    if target is None or not target.task_day_ledger_id:
+        return set()
+    statement = (
+        select(TaskAccountDailyCoverage.account_id)
+        .join(
+            TaskGroupDailyMessageSlot,
+            TaskGroupDailyMessageSlot.task_account_daily_coverage_id
+            == TaskAccountDailyCoverage.id,
+        )
+        .join(
+            ContentMixCycleSlot,
+            ContentMixCycleSlot.primary_quantity_slot_id
+            == TaskGroupDailyMessageSlot.id,
+        )
+        .join(ContentMixCycle, ContentMixCycle.id == ContentMixCycleSlot.cycle_id)
+        .where(
+            ContentMixCycle.task_id == task.id,
+            ContentMixCycle.task_day_ledger_id == target.task_day_ledger_id,
+        )
+    )
+    return {int(account_id) for account_id in session.scalars(statement)}
 
 
 def _daily_accounts_for_coverage_rows(

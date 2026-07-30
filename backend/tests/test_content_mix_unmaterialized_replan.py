@@ -152,6 +152,40 @@ def test_replan_coverage_is_loaded_before_normal_keyset(
     assert [row.id for row in rows] == [facts.coverage.id]
 
 
+def test_bound_pending_coverage_is_excluded_from_normal_keyset(
+    session: Session,
+) -> None:
+    facts = _unmaterialized_reply_facts(session)
+    facts.cycle_slot.slot_state = "pending"
+    target = TaskGroupDailyTarget(
+        id="pending-bound-daily-target",
+        tenant_id=1,
+        task_id=facts.task.id,
+        task_day_ledger_id=facts.quantity.task_day_ledger_id,
+        group_id=facts.group.id,
+        target_date=facts.planned_at.date(),
+        configured_message_target=1,
+        frozen_account_count=1,
+        effective_message_target=1,
+        daily_fulfillment_phase="full_day_committed",
+        scope_frozen_at=facts.planned_at,
+        full_day_committed_at=facts.planned_at,
+    )
+    session.add(target)
+    session.flush()
+    plan_facts = SimpleNamespace(
+        coverage=SimpleNamespace(daily_group_target_id=target.id),
+    )
+
+    excluded = group_ai_chat._bound_coverage_account_ids_for_plan(
+        session,
+        facts.task,
+        plan_facts,
+    )
+
+    assert excluded == {facts.account.id}
+
+
 def _install_unmaterialized_replan_stubs(
     facts: _UnmaterializedFacts,
     monkeypatch: pytest.MonkeyPatch,
