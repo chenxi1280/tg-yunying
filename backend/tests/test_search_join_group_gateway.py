@@ -895,6 +895,41 @@ def test_jisou_image_verification_succeeds_when_answer_in_button_matrix() -> Non
 
 
 @pytest.mark.no_postgres
+def test_jisou_replays_keyword_after_verification_returns_hot_list() -> None:
+    verification_page = _verification_image_page(
+        digit_answers=["7", "8", "9", "10", "11", "12", "13", "14"]
+    )
+    hot_list_page = FakeMessage(102, [], raw_text="热搜排行榜")
+    category_page = FakeMessage(
+        103,
+        [[FakeButton("👥", data=b"group-category")]],
+    )
+    target_page = FakeMessage(
+        104,
+        [[FakeButton("目标群", url="https://t.me/target_group")]],
+    )
+    client = FakeSearchJoinClient(
+        [verification_page, category_page],
+        edits=[hot_list_page, target_page],
+        history_messages=[FakeMessage(100, [])],
+    )
+
+    result = asyncio.run(
+        execute_search_join_with_client(
+            client,
+            _payload(bot_username="jisou"),
+            keyword_text="郑州",
+            image_verification_solver=_solver_returning("9", 0.95),
+        )
+    )
+
+    assert result["success"] is True
+    assert result["join_status"] == "target_found"
+    assert result["jisou_post_verification_keyword_replayed"] is True
+    assert client.sent == [("jisou", "郑州"), ("jisou", "郑州")]
+
+
+@pytest.mark.no_postgres
 def test_jisou_image_verification_accepts_newer_bot_message_after_callback() -> None:
     verification_page = _verification_image_page(
         digit_answers=["7", "8", "9", "10", "11", "12", "13", "14"]

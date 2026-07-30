@@ -470,12 +470,14 @@ dispatch_unserved_strict_classes
 
 ### 6.2 热搜页处置（PRD §2.19 已更新）
 
-当 `page_phase=hot_list_page` 时，PRD §2.19 已禁止受控会话重置（`/cancel`、`/start`、重发关键词线上验证不可行，极搜把关键词当文本回显不执行搜索）。当前处置：
+当关键词响应直接进入 `page_phase=hot_list_page` 时，PRD §2.19 已禁止受控会话重置（`/cancel`、`/start`、重发关键词线上验证不可行，极搜把关键词当文本回显不执行搜索）。当前处置：
 
 - 直接写 `jisou_session_state_deviated`，账号 24h 排除；
 - 不得点击 热搜排行榜 页面中的外部 URL、未知 callback 或 群组导航 外跳链接；
 - 不得将该结果写成 `jisou_group_selector_missing`；
 - 不得发送 `/cancel`、`/start` 或重发关键词作为恢复手段。
+
+2026-07-30 生产 trace 补充了一个不属于 reset 的验证码连续态：同一 Action 的批准验证码按钮提交后，远端会先返回默认热搜页并丢失原关键词。仅此连续态允许同一 conversation 重放一次原关键词，记录 `jisou_post_verification_keyword_replayed=true`；不发送 `/cancel|/start`、不点击热搜页按钮、不循环。重放后进入已审批搜索分类/结果页才记验证码 solved；仍为热搜或未知页时按上述失败与 12 小时排除收口。
 
 只有已经确认是 search_category_page，且没有协议样本批准的群聊 selector 时，才写 `jisou_group_selector_missing`。该错误不触发账号 24 小时排除，只用于协议样本复核。`jisou_image_verification_required` 只是当前 Action 的识别中状态；真实通过后写 `jisou_image_verification_solved` 并继续同一 source，最终失败才写 `jisou_image_verification_failed` 并按主 PRD §2.19.3 触发账号—协议路径 24 小时排除。`jisou_session_state_deviated` 继续触发 24 小时排除。
 

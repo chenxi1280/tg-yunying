@@ -300,7 +300,7 @@ Planner 顺序固定为：真实 remaining 与防重 planning deficit -> 账号 
 
 新建操作固定为“任务类型 → 目标群 → 关键词与目标次数 → 执行账号组与软节奏 → 确认”。纯搜索点击的业务数量只开放每日 click 目标，不显示入群开关、admission-ready 目标、账号容量或账号优先级。纯搜索点击使用“创建并启动”，`search_rank_deboost` 使用“创建草稿”；二者都不得要求运营补填代理、机器人、单账号策略或其他系统配置。创建接口只检查公开 username、账号组引用和字段结构；候选账号、代理/授权绑定、协议样本和安全额度由启动后的系统运行评估返回可读 blocker，并在任务详情持续更新。
 
-找不到目标群时，`@jisou` Executor 必须先以当前已审批、版本化的 `BotProtocolSample.page_fingerprints` 分类关键词响应，再选择协议确认的“群聊 / 群组”类型并持续翻页；固定页数不构成停止条件。分类优先级固定为验证页、热搜页、搜索分类页、群聊结果页、未知页。旧版只有 `buttons` 摘要的样本或 Action 缺冻结 profile 时，Planner / Dispatcher 必须写 `protocol_sample_invalid` 并在 Gateway 前停手；不得用硬编码文案猜测。热搜页已由 §2.19 真实验证为不可恢复，必须直接写 `jisou_hot_list_page` 并将账号—协议路径排除 12 小时；禁止 `/cancel`、`/start`、重发关键词或点击 `👥群组导航` 等 telegram_url 外链。Telegram client 建连或只读授权检查失败发生在任何机器人可见写操作之前，必须明确写 `search_transport_unavailable`、阶段和异常类名，当前 ordinal 回流、代理 binding 按已批准节点 failover 后由下一 Window 重新分片，不得误写 `unknown_after_send`、触发 12 小时排除或持续复用同一坏代理；只有机器人可见写操作开始后结果不可判定才进入 unknown 防重。图片验证码页写 `jisou_image_verification_required` 并进入实际识别流程；`required` 不触发排除，真实通过写 `jisou_image_verification_solved` 后继续同一 source，最终失败才写 `jisou_image_verification_failed` 并排除账号—协议路径 12 小时。验证码 AI 调用及批准重试不占账号/关键词 click 限额、任务 click 目标或额外 Dispatcher/Gateway 份额，容量计算禁止使用触发率或 AI 历史成功率。只有已确认搜索分类页缺少已审批 selector 才写 `jisou_group_selector_missing`，且不自动排除。结果 trace 只能保留 hash、长度、按钮类型/effect、审批匹配标记和版本，禁止持久化机器人正文、按钮原文、目标群名或目标行。精确公开 username 命中并产生真实目标点击即完成 click source；确认后该 ordinal 结束，禁止另建 membership/admission/can-send child。机器人真实没有“下一页”仍未命中时，action 写 `target_not_in_results`、`search_end_reason=no_next_page` 和实际 `searched_pages/last_result_page`，但任务保持 `running` 供后续计划重试。非目标安全浏览只允许当前样本批准的 `navigate_only`，总量默认不超过 3，不加入、不关注、不外跳。
+找不到目标群时，`@jisou` Executor 必须先以当前已审批、版本化的 `BotProtocolSample.page_fingerprints` 分类关键词响应，再选择协议确认的“群聊 / 群组”类型并持续翻页；固定页数不构成停止条件。分类优先级固定为验证页、热搜页、搜索分类页、群聊结果页、未知页。旧版只有 `buttons` 摘要的样本或 Action 缺冻结 profile 时，Planner / Dispatcher 必须写 `protocol_sample_invalid` 并在 Gateway 前停手；不得用硬编码文案猜测。普通热搜页已由 §2.19 真实验证为不可恢复，必须直接写 `jisou_hot_list_page` 并将账号—协议路径排除 12 小时；禁止 `/cancel`、`/start`、重发关键词或点击 `👥群组导航` 等 telegram_url 外链。唯一例外是同一 Action 刚完成一次经双重校验批准的图片验证码提交，远端随即返回默认热搜页：该页不证明验证码已通过，也不触发 reset；Executor 只允许重放一次原关键词，重放后只有进入已审批 `search_category_page|group_result_page` 才写 `jisou_image_verification_solved`，再次返回热搜或未知页仍按原失败合同收口。Telegram client 建连或只读授权检查失败发生在任何机器人可见写操作之前，必须明确写 `search_transport_unavailable`、阶段和异常类名，当前 ordinal 回流、代理 binding 按已批准节点 failover 后由下一 Window 重新分片，不得误写 `unknown_after_send`、触发 12 小时排除或持续复用同一坏代理；只有机器人可见写操作开始后结果不可判定才进入 unknown 防重。图片验证码页写 `jisou_image_verification_required` 并进入实际识别流程；`required` 不触发排除，真实通过写 `jisou_image_verification_solved` 后继续同一 source，最终失败才写 `jisou_image_verification_failed` 并排除账号—协议路径 12 小时。验证码 AI 调用及批准重试不占账号/关键词 click 限额、任务 click 目标或额外 Dispatcher/Gateway 份额，容量计算禁止使用触发率或 AI 历史成功率。只有已确认搜索分类页缺少已审批 selector 才写 `jisou_group_selector_missing`，且不自动排除。结果 trace 只能保留 hash、长度、按钮类型/effect、审批匹配标记和版本，禁止持久化机器人正文、按钮原文、目标群名或目标行。精确公开 username 命中并产生真实目标点击即完成 click source；确认后该 ordinal 结束，禁止另建 membership/admission/can-send child。机器人真实没有“下一页”仍未命中时，action 写 `target_not_in_results`、`search_end_reason=no_next_page` 和实际 `searched_pages/last_result_page`，但任务保持 `running` 供后续计划重试。非目标安全浏览只允许当前样本批准的 `navigate_only`，总量默认不超过 3，不加入、不关注、不外跳。
 
 2026-07-28 起，上段的 source 成功事实固定为精确目标命中并取得 `target_click_observed`；纯搜索点击不存在成员关系或 admission 后续合同。
 
@@ -636,7 +636,7 @@ Planner 顺序固定为：真实 remaining 与防重 planning deficit -> 账号 
 | `group_result_page` | 含「下一页/next」导航按钮 | 走原有目标群匹配流程 |
 | `unknown` | 以上都不匹配 | 写 `jisou_session_state_deviated`，账号—协议路径排除 12 小时 |
 
-热搜页重置（`/cancel` + `/start` + 重发关键词）已在线上验证**不可行**（极搜把关键词当文本回显，不执行搜索），禁止再尝试。禁止点击 `👥群组导航` 等 telegram_url 外链进入子页面（PRD §2.18 外链禁令）。
+普通热搜页重置（`/cancel` + `/start` + 重发关键词）已在线上验证**不可行**（极搜把关键词当文本回显，不执行搜索），禁止再尝试。2026-07-30 新生产证据确认另一条窄路径：图片验证码的批准答案提交后，极搜会返回默认热搜页并丢失提交验证码前的关键词；这不是普通热搜 reset。仅此路径允许在同一 conversation 内重放一次原关键词，必须记录 `jisou_post_verification_keyword_replayed=true`，不发送 `/cancel|/start`，不点击热搜页按钮，也不形成循环。禁止点击 `👥群组导航` 等 telegram_url 外链进入子页面（PRD §2.18 外链禁令）。
 
 #### 2.19.2 图片算式验证码识别流程
 
@@ -648,9 +648,9 @@ Planner 顺序固定为：真实 remaining 与防重 planning deficit -> 账号 
    - 置信度 ≥ 0.70（必要条件）；
    - **answer 必须在按钮矩阵 callback_data 数字按钮的 `text` 集合中**（充分条件，最后一道安全门）。
    - 任一不满足只拒绝该供应商候选并继续尚未调用的健康已审批供应商，禁止点击，也不得提前写 `failed` 或触发 12 小时排除。线上历史样本 #7 曾出现高置信错答（answer=7 conf=0.95 但按钮矩阵无 7），该编号不是重试轮次或上限；按钮矩阵匹配不可省略。
-4. **点击匹配按钮并确认远端通过**：在按钮矩阵找 `button_type=callback_data` 且 `text=answer` 的按钮，对同一 fingerprint 只允许一次 CAS 提交。只有该提交关联的后续机器人回执明确表示验证通过，或页面被分类为已审批的 `search_category_page|group_result_page`，才能写 `jisou_image_verification_solved` 并继续同一 source；仅仅不再显示原图、消息消失、超时或进入 `hot_list_page|unknown` 都不能证明通过。
+4. **点击匹配按钮并确认远端通过**：在按钮矩阵找 `button_type=callback_data` 且 `text=answer` 的按钮，对同一 fingerprint 只允许一次 CAS 提交。只有该提交关联的后续机器人回执明确表示验证通过，或页面被分类为已审批的 `search_category_page|group_result_page`，才能写 `jisou_image_verification_solved` 并继续同一 source；仅仅不再显示原图、消息消失、超时或进入 `hot_list_page|unknown` 都不能证明通过。若批准提交后第一张页面恰为 `hot_list_page`，只允许按 §2.19.1 的窄例外重放一次原关键词；重放结果进入已审批搜索分类/结果页才构成通过，否则失败。
 5. **失败处置**：只有当前健康已审批供应商均已返回、却都无法给出通过双重校验的安全答案，或提交后远端以同一验证码 fingerprint 明确拒绝，才写 `jisou_image_verification_failed` 并把账号—协议路径排除 12 小时（复用 `jisou_selector_accounts` 机制）。供应商/传输暂不可用、读取失败或结果未知时，验证码状态仍为 `jisou_image_verification_required`，另写 `verification_ai_unavailable|verification_result_unknown` 原因；不得新增第四种验证码状态、冒充 failed 或概率成功。
-6. **提交后分流**：仍是同一 fingerprint 且远端明确拒绝时写 `failed`；若远端给出新的消息/图片 fingerprint，则旧 fingerprint 只记已提交，新 fingerprint 重新进入 `required`，不得把“换题”记成旧题 `solved`；`hot_list_page|unknown` 按会话偏离处理且不写 `solved`。同一 search Action 不设置业务递归次数上限，但每个 fingerprint 仍只允许一次 Telegram 提交，禁止对同一按钮重复点击。
+6. **提交后分流**：仍是同一 fingerprint 且远端明确拒绝时写 `failed`；若远端给出新的消息/图片 fingerprint，则旧 fingerprint 只记已提交，新 fingerprint 重新进入 `required`，不得把“换题”记成旧题 `solved`；批准提交后首次 `hot_list_page` 只执行一次原关键词重放，重放后仍为 `hot_list_page|unknown` 才按会话偏离处理且不写 `solved`。同一 search Action 不设置业务递归次数上限，但每个 fingerprint 仍只允许一次 Telegram 提交，禁止对同一按钮重复点击，关键词重放也不得循环。
 
 线上历史样本曾出现 4/8 按钮匹配成功，但该比例只作识别质量观测，禁止进入任务容量、账号容量、预计确认量或完成计算。当前无需验证码，或本次已真实写入 `jisou_image_verification_solved`，才允许继续；`required|failed` 以及 required 下的 unavailable/unknown 原因都不能被概率折算成可确认 click。
 
@@ -660,7 +660,7 @@ Planner 顺序固定为：真实 remaining 与防重 planning deficit -> 账号 
 
 | 错误码 | 触发条件 | 12 小时排除 | 说明 |
 | --- | --- | --- | --- |
-| `jisou_hot_list_page` | hot_list_page | 是 | 当前尝试直接失败；账号—协议路径临时不可用，重置不可行 |
+| `jisou_hot_list_page` | 普通 hot_list_page，或验证码提交后的单次关键词重放仍返回 hot_list_page | 是 | 当前尝试直接失败；账号—协议路径临时不可用，重置不可行 |
 | `jisou_session_state_deviated` | unknown 相位 | 是 | 账号级会话状态偏离，重置不可行 |
 | `jisou_image_verification_required` | 检测到 verification_image_page | 否 | 当前 Action 正在识别的过程状态 |
 | `jisou_image_verification_solved` | 同一 fingerprint 的单次批准答案提交获得明确远端通过回执，或进入已审批搜索分类/结果页 | 否 | 当前 source 可继续；不是 click 成功；仅离开原页面不算 |
