@@ -9,7 +9,7 @@ from uuid import uuid4
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
-from app.models import AccountStatus, Action, GroupAuthStatus, OperationTarget, Task, TaskMembershipAdmissionItem, Tenant, TgAccount, TgGroup, TgGroupAccount, VerificationTask
+from app.models import AccountStatus, Action, ExecutionAttempt, GroupAuthStatus, OperationTarget, Task, TaskMembershipAdmissionItem, Tenant, TgAccount, TgGroup, TgGroupAccount, VerificationTask
 from app.security import decrypt_session
 from app.services._common import _now
 from app.services.account_usage_policy import apply_operational_account_filters
@@ -557,6 +557,9 @@ def _reactivate_auto_verification_memberships(
     verification_by_account = _auto_verification_tasks_by_account(
         session, task, group.id, [int(action.account_id) for action in recovery_actions]
     )
+    gateway_started_action_ids = _gateway_started_membership_action_ids(
+        session, recovery_actions,
+    )
     specs: list[tuple[Action, str, int | None]] = []
     for action in recovery_actions:
         account_id = int(action.account_id or 0)
@@ -569,6 +572,7 @@ def _reactivate_auto_verification_memberships(
             verification,
             now_value,
             target_reference_changed=_target_reference_changed(action, channel),
+            gateway_started=action.id in gateway_started_action_ids,
         )
         if not reason:
             continue
@@ -577,6 +581,18 @@ def _reactivate_auto_verification_memberships(
     if rows:
         session.bulk_insert_mappings(Action, rows)
     return len(rows)
+
+
+def _gateway_started_membership_action_ids(
+    session: Session,
+    actions: list[Action],
+) -> set[str]:
+    if not actions:
+        return set()
+    return set(session.scalars(select(ExecutionAttempt.action_id).where(
+        ExecutionAttempt.action_id.in_([action.id for action in actions]),
+        ExecutionAttempt.gateway_call_started_at.is_not(None),
+    )))
 
 
 def _membership_retry_action_rows(
@@ -622,6 +638,7 @@ def _membership_recovery_retry_reason(
     now_value,
     *,
     target_reference_changed: bool,
+    gateway_started: bool,
 ) -> str:
     result = action.result if isinstance(action.result, dict) else {}
     failure_type = str(result.get("error_code") or "")
@@ -640,6 +657,8 @@ def _membership_recovery_retry_reason(
         if target_reference_changed:
             return _reactivation_reason(task, "target_ref")
         return ""
+    if failure_type == "execution_timeout" and not gateway_started:
+        return _reactivation_reason(task, "pre_gateway_timeout")
     if _daily_permission_recheck_due(task, action, now_value, account=account):
         return _reactivation_reason(task, "daily_permission")
     if recovery.bucket == VERIFICATION_BUCKET and verification and _auto_verification_retry_due(task, action, verification, now_value):
@@ -661,6 +680,8 @@ def _reactivation_reason(task: Task, reason_type: str) -> str:
             return "hard_hourly_target_ref_retry"
         if reason_type == "daily_permission":
             return "hard_hourly_daily_permission_recheck"
+        if reason_type == "pre_gateway_timeout":
+            return "hard_hourly_pre_gateway_timeout_retry"
         return "hard_hourly_required_channel_retry"
     if reason_type == "auto_verification":
         return "membership_recovery_auto_verification"
@@ -668,6 +689,8 @@ def _reactivation_reason(task: Task, reason_type: str) -> str:
         return "membership_recovery_target_ref"
     if reason_type == "daily_permission":
         return "membership_recovery_daily_permission_recheck"
+    if reason_type == "pre_gateway_timeout":
+        return "membership_recovery_pre_gateway_timeout"
     return "membership_recovery_required_channel"
 
 

@@ -93,6 +93,7 @@ from ..daily_group_target import (
 from ..direct_check_in import MASK_MISSING_CHECK_IN_SOURCE
 from ..daily_fulfillment import record_daily_fulfillment_decision
 from ..fingerprints import fingerprint_exists, remember_fingerprint
+from ..group_bot_admission import plannable_admission_account_ids
 from ..hard_hourly import (
     current_progress,
     enabled as hard_hourly_enabled,
@@ -582,13 +583,15 @@ def _group_bot_ready_accounts_for_plan(
         GroupBotAdmission.group_id == group.id,
         GroupBotAdmission.account_id.in_([account.id for account in accounts]),
     ))
+    admission_rows = list(admissions)
     state_by_account = {
         int(admission.account_id): str(admission.state or "")
-        for admission in admissions
+        for admission in admission_rows
     }
+    plannable_ids = plannable_admission_account_ids(session, admission_rows)
     return [
         account for account in accounts
-        if state_by_account.get(int(account.id)) in GROUP_BOT_PLANNABLE_STATES
+        if int(account.id) in plannable_ids
         or (required is not True and int(account.id) not in state_by_account)
     ]
 

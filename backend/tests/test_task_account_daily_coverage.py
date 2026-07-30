@@ -12,6 +12,8 @@ from app.models import (
     Action,
     ExecutionAttempt,
     GroupBotAdmission,
+    GroupBotAdmissionPolicy,
+    GroupBotRequiredChannelFollow,
     OperationTarget,
     Task,
     TaskAccountDailyCoverage,
@@ -131,6 +133,64 @@ def test_daily_ledger_keeps_group_bot_waiting_account_out_of_send_pool(
     row = session.scalar(select(TaskAccountDailyCoverage))
     assert row.state == "pending_admission"
     assert row.blocker_code == "group_bot_admission_wait"
+
+
+def test_daily_ledger_allows_safe_post_follow_probe_candidate(
+    session: Session,
+) -> None:
+    task = _seed(session)
+    task.type_config = {
+        **task.type_config,
+        "group_bot_admission_required": True,
+    }
+    session.add(_account(1))
+    session.add(TgGroupAccount(
+        tenant_id=1,
+        group_id=21,
+        account_id=1,
+        can_send=True,
+    ))
+    admission = GroupBotAdmission(
+        tenant_id=1,
+        group_id=21,
+        account_id=1,
+        state="awaiting_group_bot_confirmation",
+        trusted_bot_peer_id="trusted-bot",
+        required_channel_refs=["@required"],
+    )
+    session.add(admission)
+    session.flush()
+    session.add_all([
+        GroupBotAdmissionPolicy(
+            tenant_id=1,
+            group_id=21,
+            trusted_bot_peer_id="trusted-bot",
+            completion_policy="explicit_bot_confirmation",
+            status="active",
+        ),
+        GroupBotRequiredChannelFollow(
+            admission_id=admission.id,
+            channel_ref="@required",
+            status="success",
+        ),
+    ])
+    session.commit()
+
+    initialize_all_account_task_scope(
+        session,
+        task,
+        now=datetime(2026, 7, 10, 10),
+    )
+    ensure_task_daily_coverage(
+        session,
+        task,
+        now=datetime(2026, 7, 10, 10),
+    )
+
+    row = session.scalar(select(TaskAccountDailyCoverage))
+    assert row.state == "ready"
+    assert row.blocker_code == ""
+    assert admission.state == "awaiting_group_bot_confirmation"
 
 
 def test_voice_profile_blocker_keeps_daily_obligation_and_wakes_task_after_recovery(session: Session) -> None:

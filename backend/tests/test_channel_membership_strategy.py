@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.database import Base
 from app.integrations.telegram import OperationResult
 from app.integrations.telegram.gateway import VERIFICATION_CONTEXT_DEFAULT_LIMIT
-from app.models import AccountStatus, Action, AiProvider, AiProviderHealthStatus, OperationTarget, Task, Tenant, TgAccount, TgGroup, TgGroupAccount, VerificationTask
+from app.models import AccountStatus, Action, AiProvider, AiProviderHealthStatus, ExecutionAttempt, OperationTarget, Task, Tenant, TgAccount, TgGroup, TgGroupAccount, VerificationTask
 from app.services._common import _now
 from app.services.membership_challenges import _image_verification_provider
 from app.services.task_center import dispatcher
@@ -310,6 +310,97 @@ def test_reactivate_memberships_does_not_retry_account_unavailable() -> None:
 
     assert created == 0
     assert retry_count == 0
+
+
+@pytest.mark.no_postgres
+def test_reactivate_membership_retries_pre_gateway_execution_timeout() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    old_value = _now() - timedelta(minutes=10)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        channel = OperationTarget(id=907, tenant_id=1, target_type="group", tg_peer_id="-100907", title="超时恢复群")
+        group = TgGroup(id=807, tenant_id=1, tg_peer_id="-100907", title="超时恢复群")
+        task = Task(id="task-pre-gateway-timeout", tenant_id=1, name="超时恢复", type="group_ai_chat", status="running")
+        account = TgAccount(id=17, tenant_id=1, display_name="账号17", phone_masked="17", status=AccountStatus.ACTIVE.value, session_ciphertext="session")
+        action = Action(
+            id="membership-pre-gateway-timeout",
+            tenant_id=1,
+            task_id=task.id,
+            task_type="group_ai_chat",
+            action_type="ensure_target_membership",
+            account_id=account.id,
+            status="failed",
+            scheduled_at=old_value,
+            executed_at=old_value,
+            payload={"channel_id": "-100907", "channel_target_id": channel.id, "target_type": "group", "target_display": channel.title, "require_send": True},
+            result={"error_code": "execution_timeout"},
+        )
+        session.add_all([channel, group, task, account, action])
+        session.commit()
+
+        created = _reactivate_auto_verification_memberships(
+            session, task, channel, [account], require_send=True,
+        )
+        retry = session.scalar(select(Action).where(
+            Action.task_id == task.id,
+            Action.status == "pending",
+        ))
+
+    assert created == 1
+    assert retry.result["reactivated_reason"] == "membership_recovery_pre_gateway_timeout"
+
+
+@pytest.mark.no_postgres
+def test_reactivate_membership_keeps_gateway_started_execution_timeout() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    old_value = _now() - timedelta(minutes=10)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        channel = OperationTarget(id=908, tenant_id=1, target_type="group", tg_peer_id="-100908", title="未知结果群")
+        group = TgGroup(id=808, tenant_id=1, tg_peer_id="-100908", title="未知结果群")
+        task = Task(id="task-gateway-started-timeout", tenant_id=1, name="未知结果保留", type="group_ai_chat", status="running")
+        account = TgAccount(id=18, tenant_id=1, display_name="账号18", phone_masked="18", status=AccountStatus.ACTIVE.value, session_ciphertext="session")
+        action = Action(
+            id="membership-gateway-started-timeout",
+            tenant_id=1,
+            task_id=task.id,
+            task_type="group_ai_chat",
+            action_type="ensure_target_membership",
+            account_id=account.id,
+            status="failed",
+            scheduled_at=old_value,
+            executed_at=old_value,
+            payload={"channel_id": "-100908", "channel_target_id": channel.id, "target_type": "group", "target_display": channel.title, "require_send": True},
+            result={"error_code": "execution_timeout"},
+        )
+        session.add_all([
+            channel,
+            group,
+            task,
+            account,
+            action,
+            ExecutionAttempt(
+                id="membership-gateway-started-attempt",
+                tenant_id=1,
+                action_id=action.id,
+                account_id=account.id,
+                worker_id="dispatcher",
+                attempt_no=1,
+                status="gateway_call_started",
+                gateway_call_started_at=old_value,
+            ),
+        ])
+        session.commit()
+
+        created = _reactivate_auto_verification_memberships(
+            session, task, channel, [account], require_send=True,
+        )
+
+    assert created == 0
 
 
 def test_hard_hourly_reactivation_repairs_auto_verification_failures_when_capacity_is_ready() -> None:

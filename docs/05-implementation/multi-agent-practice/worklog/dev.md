@@ -525,3 +525,13 @@
 - evidence: 真 PostgreSQL 持续监听工作流证明第一、第二上下文对应两个远端发送，第二 Action 的旧记忆为 `expired_before_send/generation_context_superseded`，最终正文包含第二上下文；生成、Dispatcher、覆盖与上下文回归 `126 passed / 83 deselected`。
 - decision: `development_complete=true`；进入第八次 Release Gate。
 - unresolved: GitHub Actions、部署与三个生产任务持续远端增长。
+
+## 2026-07-31 郑州 AI 活群未达标二次恢复 Development Complete
+
+- message_id: `2026-07-31-zhengzhou-ai-fulfillment-second-recovery-dev-001`
+- root_cause: 搜索预绑定释放遇到 Shard unclaimed=1、Window unclaimed=0 时抛出未被 quarantine writer 接管的 `dispatch_release_window_unclaimed_negative`，整轮共享 Dispatcher drain 退出；AI 群 coverage readiness 与 Planner 只接受 ready/probe 状态，导致已完成关注且可安全原子切换 probe 的 `awaiting_group_bot_confirmation` 永远没有 send Action；membership Recovery 又把未进入 Gateway 的 `execution_timeout` 当作不可自动恢复终态。
+- output: release 将 Window 聚合负数纳入既有独立 quarantine/recount/retry；`group_bot_admission.py` 新增批量可规划判定，要求无 source、refs 非空、每个当前 ref 都有 success follow、命中 active explicit policy，供 readiness、Planner 和 send gate 共用；membership 批量读取 Gateway-started Attempt，只有无远端边界的 execution timeout 创建新 retry Action。
+- safety: 不修改 coverage 分母、pacing、AI 内容和远端成功定义；Planner 资格不直接更新 admission，仍由 `evaluate_send_gate` 行锁内绑定唯一 probe；Gateway-started、unknown、成功和远端事实不删除、不重试。
+- evidence: 新增 5 条线上根因红测，修复前 `4 failed / 1 passed`；修复后综合 no-PostgreSQL 回归 `136 passed / 38 deselected`，compileall、diff-check 通过。
+- decision: `development_complete=true`；无 schema migration，进入 QA。
+- unresolved: GitHub Actions 真 PostgreSQL、生产镜像、当前日 generation-contract 人工批准恢复、Dispatcher 零异常增量和三个任务真实远端增长。

@@ -179,6 +179,33 @@ def test_release_quarantine_repairs_stale_bound_unclaimed_counters() -> None:
         assert window.unclaimed_allocated_count == 0
 
 
+def test_release_quarantine_repairs_window_only_unclaimed_counter_drift() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine, autoflush=False) as session:
+        seed_assignment(session)
+        window = session.get(DispatchClaimWindow, "window-1")
+        allocation = session.get(DispatchClaimShardAllocation, "shard-1")
+        window.unclaimed_allocated_count = 0
+        assert allocation.unclaimed_allocated_count == 1
+        session.commit()
+
+        batch = release_search_click_assignment(
+            session,
+            "assignment-1",
+            trigger_key="repair-window-only-unclaimed:action-1:0",
+            reason_code="search_resource_saturated",
+            now_value=_now(),
+        )
+
+        reservation = session.get(DispatchClaimReservation, "reservation-1")
+        assert batch.release_unit_count == 1
+        assert reservation.bound_count == 0
+        assert reservation.released_count == 1
+        assert allocation.unclaimed_allocated_count == 0
+        assert window.unclaimed_allocated_count == 0
+
+
 def _seed_rows(session: Session, now_value: datetime) -> Action:
     session.add(Tenant(id=1, name="t"))
     _add_target_and_tasks(session)

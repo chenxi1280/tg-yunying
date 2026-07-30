@@ -60,6 +60,7 @@ def release_search_click_assignment(
             "release_claim_fact_conflict",
             "dispatch_release_counter_invariant",
             "dispatch_release_active_counter_invariant",
+            "dispatch_release_window_unclaimed_negative",
         }:
             raise
         bind = session.get_bind()
