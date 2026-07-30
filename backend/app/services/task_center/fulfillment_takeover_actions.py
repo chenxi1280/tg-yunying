@@ -21,6 +21,9 @@ LEGACY_MEMBERSHIP_ACTION_TYPES = frozenset(
 PRE_GATEWAY_ACTION_STATUSES = frozenset(
     {"pending", "claiming", "executing", "retryable_failed"}
 )
+PLANNER_MAINTENANCE_ACTION_STATUSES = frozenset(
+    {"pending", "retryable_failed"}
+)
 RESTORABLE_SEARCH_ACTION_STATUSES = frozenset(
     {*PRE_GATEWAY_ACTION_STATUSES, "failed"}
 )
@@ -74,18 +77,48 @@ def retire_legacy_membership_actions(session: Session, task: Task) -> int:
 
 
 def retire_unbound_legacy_actions(session: Session, task: Task) -> int:
+    return _retire_unbound_legacy_actions(
+        session,
+        task,
+        statuses=PRE_GATEWAY_ACTION_STATUSES,
+        skip_locked=False,
+    )
+
+
+def retire_unbound_legacy_actions_for_planner(
+    session: Session,
+    task: Task,
+) -> int:
+    return _retire_unbound_legacy_actions(
+        session,
+        task,
+        statuses=PLANNER_MAINTENANCE_ACTION_STATUSES,
+        skip_locked=True,
+    )
+
+
+def _retire_unbound_legacy_actions(
+    session: Session,
+    task: Task,
+    *,
+    statuses: frozenset[str],
+    skip_locked: bool,
+) -> int:
     action_type = {
         "group_ai_chat": "send_message",
         "search_click": "search_join",
     }.get(task.type)
     if action_type is None:
         return 0
+    statement = select(Action).where(
+        Action.task_id == task.id,
+        Action.action_type == action_type,
+        Action.status.in_(statuses),
+    )
+    if skip_locked:
+        statement = statement.with_for_update(skip_locked=True, of=Action)
     actions = list(session.scalars(
-        select(Action).where(
-            Action.task_id == task.id,
-            Action.action_type == action_type,
-            Action.status.in_(PRE_GATEWAY_ACTION_STATUSES),
-        )
+        statement
     ))
     retired = [action for action in actions if _legacy_action_unbound(task, action)]
     attempts = _latest_attempts_by_action_id(session, retired)

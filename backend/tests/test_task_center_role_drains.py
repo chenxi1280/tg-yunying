@@ -955,6 +955,66 @@ def test_planner_prepares_open_ai_actions_before_skip(monkeypatch):
 
 
 @pytest.mark.no_postgres
+def test_group_ai_planner_commits_action_maintenance_before_build(monkeypatch):
+    SessionFactory = _session_factory()
+    maintenance = {"dirty": False, "committed": False}
+
+    def fake_prepare(session, _task):
+        session.get(Action, "action-ai-maintenance").status = "skipped"
+        maintenance["dirty"] = True
+        return 1
+
+    def after_commit(_session):
+        if maintenance["dirty"]:
+            maintenance["committed"] = True
+
+    def fake_build(_session, _task):
+        assert maintenance["committed"] is True
+        return 1
+
+    monkeypatch.setattr(service, "prepare_open_actions_for_planning", fake_prepare)
+    monkeypatch.setattr(service, "build_task_plan", fake_build)
+    _seed_group_ai_task_with_open_action(SessionFactory)
+    event.listen(SessionFactory.class_, "after_commit", after_commit)
+    try:
+        service._plan_due_task_batch(
+            SessionFactory,
+            "task-ai-maintenance",
+            None,
+            limit=1,
+            plan_limit=1,
+            global_pending=0,
+        )
+    finally:
+        event.remove(SessionFactory.class_, "after_commit", after_commit)
+    assert maintenance == {"dirty": True, "committed": True}
+
+
+def _seed_group_ai_task_with_open_action(SessionFactory) -> None:
+    with SessionFactory() as session:
+        session.add(Tenant(id=1, name="default"))
+        session.add(Task(
+            id="task-ai-maintenance",
+            tenant_id=1,
+            name="maintenance boundary",
+            type="group_ai_chat",
+            status="running",
+            next_run_at=_now() - timedelta(seconds=1),
+        ))
+        session.add(Action(
+            id="action-ai-maintenance",
+            tenant_id=1,
+            task_id="task-ai-maintenance",
+            task_type="group_ai_chat",
+            action_type="send_message",
+            status="pending",
+            scheduled_at=_now() + timedelta(minutes=1),
+            payload={"chat_id": "-1001", "message_text": "old"},
+        ))
+        session.commit()
+
+
+@pytest.mark.no_postgres
 def test_planner_skips_open_action_preparation_when_task_has_no_open_actions(monkeypatch):
     SessionFactory = _session_factory()
     now_value = _now()

@@ -12,7 +12,7 @@ from .daily_coverage import release_coverage_reservation
 
 LEGACY_ANCHOR_REPLAN_CODE = "voice_profile_anchor_replan"
 LEGACY_ANCHOR_REPLAN_MESSAGE = "历史账号面具消费者合同正文已过期，等待重新生成"
-LEGACY_ANCHOR_OPEN_STATUSES = ("pending", "claiming", "retryable_failed")
+LEGACY_ANCHOR_OPEN_STATUSES = ("pending", "retryable_failed")
 VOICE_PROFILE_CONTRACT_VERSION = "style_only_v2"
 DAILY_CONTENT_CONTRACT_REPLAN_CODE = "daily_content_contract_replan"
 DAILY_CONTENT_CONTRACT_REPLAN_MESSAGE = (
@@ -32,7 +32,7 @@ def expire_legacy_anchor_rewritten_actions(session: Session, task: Task) -> int:
             Action.task_type == "group_ai_chat",
             Action.action_type == "send_message",
             Action.status.in_(LEGACY_ANCHOR_OPEN_STATUSES),
-        )
+        ).with_for_update(skip_locked=True, of=Action)
     )
     expired = 0
     for action in actions:
@@ -56,7 +56,7 @@ def expire_incomplete_daily_contract_actions(session: Session, task: Task) -> in
             Action.task_type == "group_ai_chat",
             Action.action_type == "send_message",
             Action.status.in_(LEGACY_ANCHOR_OPEN_STATUSES),
-        )
+        ).with_for_update(skip_locked=True, of=Action)
     )
     expired = 0
     for action in actions:
