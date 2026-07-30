@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -11,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.integrations.telegram import OperationResult
 from app.integrations.telegram.search_join import (
+    ImageVerificationRequest,
     ImageVerificationNoSafeAnswerError,
     ImageVerificationProviderUnavailableError,
 )
@@ -34,12 +36,22 @@ ARITHMETIC_PATTERN = re.compile(rf"(?P<left>\d{{1,3}}|[{CN_NUMBER_CHARS}]{{1,4}}
 CODE_PATTERN = re.compile(r"(?:验证码|code|captcha|请输入)[^\d]{0,16}(?P<code>\d{3,8})", re.IGNORECASE)
 CN_DIGITS = {"零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
 
-# PRD §2.19.2: 极搜图片算式验证码识别的固定 prompt。
+# PRD §2.19.2: 候选只在服务端校验，不进入模型 prompt。
 SEARCH_JOIN_IMAGE_VERIFICATION_PROMPT = (
-    "识别图片中的算式并计算结果，输出 JSON：{\"answer\":数字,\"confidence\":0到1}。"
-    "answer 必须是算式计算后的正整数。只输出紧凑 JSON，不要解释。"
+    "这是数学题，都是全数字，你来给出答案。"
+    "answer 只能填写计算后的最终整数数字，不能填写算式、字母或其他字符。"
+    "只输出紧凑 JSON：{\"answer\":\"答案整数\",\"confidence\":0到1}，不要解释。"
 )
-SearchJoinImageVerificationSolver = Callable[[bytes, str, list[str]], "tuple[str, float] | None"]
+SEARCH_JOIN_STRING_VERIFICATION_PROMPT = (
+    "这是是一段数字+字符的字符串你来告诉我结果。"
+    "answer 只能填写图片中的最终数字+字符字符串，不能解释。"
+    "只输出紧凑 JSON：{\"answer\":\"结果字符串\",\"confidence\":0到1}，不要解释。"
+)
+MATH_CHALLENGE_TEXT_MARKERS = ("计算结果", "数学题", "算式")
+SearchJoinImageVerificationSolver = Callable[
+    [ImageVerificationRequest],
+    "tuple[str, float] | None",
+]
 
 
 @dataclass(frozen=True)
@@ -513,17 +525,20 @@ def build_search_join_image_verification_solver(
         return None
     credentials = [ai_provider_credentials(provider) for provider in providers]
 
-    def solver(image_bytes: bytes, mime_type: str, candidate_answers: list[str]) -> tuple[str, float] | None:
-        if not image_bytes:
+    def solver(
+        request: ImageVerificationRequest,
+    ) -> tuple[str, float] | None:
+        if not request.image_bytes:
             return None
         return _solve_search_join_image_candidates(
             credentials,
-            image_bytes=image_bytes,
-            mime_type=mime_type,
+            image_bytes=request.image_bytes,
+            mime_type=request.mime_type,
             candidate_answers=tuple(
-                answer.strip() for answer in candidate_answers
+                answer.strip() for answer in request.candidate_answers
                 if answer.strip()
             ),
+            challenge_text=request.challenge_text,
         )
 
     return solver
@@ -535,6 +550,7 @@ def _solve_search_join_image_candidates(
     image_bytes: bytes,
     mime_type: str,
     candidate_answers: tuple[str, ...],
+    challenge_text: str,
 ) -> tuple[str, float]:
     failures: list[str] = []
     outcomes: list[str] = []
@@ -546,7 +562,7 @@ def _solve_search_join_image_candidates(
                 provider,
                 image_bytes,
                 mime_type,
-                candidate_answers=candidate_answers,
+                challenge_text,
             )
         except Exception as exc:  # noqa: BLE001 - classify approved provider outcome.
             if _provider_returned_unsafe_answer(exc):
@@ -595,31 +611,51 @@ def _solve_search_join_image(
     credentials: Any,
     image_bytes: bytes,
     mime_type: str,
-    *,
-    candidate_answers: tuple[str, ...],
+    challenge_text: str,
 ) -> tuple[str, float] | None:
+    prompt = _search_join_image_verification_prompt(challenge_text)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(
+                _solve_search_join_image_once,
+                credentials,
+                image_bytes,
+                mime_type,
+                prompt,
+            )
+            for _ in range(2)
+        ]
+        results = [future.result() for future in futures]
+    if results[0][0] != results[1][0]:
+        return None
+    return results[0][0], min(results[0][1], results[1][1])
+
+
+def _solve_search_join_image_once(
+    credentials: Any,
+    image_bytes: bytes,
+    mime_type: str,
+    prompt: str,
+) -> tuple[str, float]:
     result = ai_gateway.solve_image_verification(
         credentials,
         image_bytes,
         mime_type or "image/png",
-        prompt=_search_join_image_verification_prompt(candidate_answers),
+        prompt=prompt,
     )
     answer = str(result.answer or "").strip()
     if not answer:
-        return None
+        return "", float(result.confidence or 0.0)
     return answer, float(result.confidence or 0.0)
 
 
-def _search_join_image_verification_prompt(
-    candidate_answers: tuple[str, ...],
-) -> str:
-    candidates = json.dumps(candidate_answers, ensure_ascii=False)
-    return (
-        f"{SEARCH_JOIN_IMAGE_VERIFICATION_PROMPT}"
-        f"当前按钮候选值（按界面顺序）为：{candidates}。"
-        "请先独立识别并计算，只有独立计算结果精确命中候选时才返回；"
-        "不能为了命中候选而猜选。无法确认时返回空 answer 和 confidence=0。"
-    )
+def _search_join_image_verification_prompt(challenge_text: str) -> str:
+    if any(
+        marker in challenge_text
+        for marker in MATH_CHALLENGE_TEXT_MARKERS
+    ):
+        return SEARCH_JOIN_IMAGE_VERIFICATION_PROMPT
+    return SEARCH_JOIN_STRING_VERIFICATION_PROMPT
 
 
 def _provider_returned_unsafe_answer(exc: Exception) -> bool:

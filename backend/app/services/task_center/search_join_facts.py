@@ -81,16 +81,45 @@ def has_complete_pure_click_fact(result: object) -> bool:
         "target_button_fingerprint",
         "target_click_observed_at",
     )
-    return bool(
+    common_complete = bool(
         result.get("target_click_observed") is True
         and result.get("membership_side_effect") == "none"
         and result.get("membership_mutating_rpc_invoked") is False
         and all(str(result.get(field) or "").strip() for field in required_text)
         and _positive_int(result.get("target_position"))
-        and _non_negative_int(result.get("target_button_row"))
-        and _non_negative_int(result.get("target_button_col"))
         and result.get("target_button_effect")
         in {"navigate_only", "target_open_only"}
+    )
+    if not common_complete:
+        return False
+    if result.get("target_button_type") == "message_entity_text_url":
+        return _complete_target_entity_open_fact(result)
+    return bool(
+        _non_negative_int(result.get("target_button_row"))
+        and _non_negative_int(result.get("target_button_col"))
+    )
+
+
+def _complete_target_entity_open_fact(result: dict) -> bool:
+    required = (
+        "target_entity_url_hash",
+        "target_entity_id",
+        "target_entity_username",
+        "target_entity_title_hash",
+        "target_open_rpc",
+    )
+    target_username = str(
+        result.get("target_username") or ""
+    ).lower().lstrip("@")
+    entity_username = str(
+        result.get("target_entity_username") or ""
+    ).lower().lstrip("@")
+    return bool(
+        all(str(result.get(field) or "").strip() for field in required)
+        and result.get("target_button_effect") == "target_open_only"
+        and result.get("target_open_rpc")
+        == "channels.GetFullChannelRequest"
+        and target_username == entity_username
     )
 
 

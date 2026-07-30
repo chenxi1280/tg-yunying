@@ -44,6 +44,21 @@ def _complete_result() -> dict:
     }
 
 
+def _complete_entity_result() -> dict:
+    result = _complete_result()
+    result.pop("target_button_row")
+    result.pop("target_button_col")
+    result.update({
+        "target_button_type": "message_entity_text_url",
+        "target_entity_url_hash": "url-hash",
+        "target_entity_id": "3298633687",
+        "target_entity_username": "target",
+        "target_entity_title_hash": "title-hash",
+        "target_open_rpc": "channels.GetFullChannelRequest",
+    })
+    return result
+
+
 def _facts(session: Session, *, executed_at: datetime):
     session.add(Tenant(id=1, name="单用户"))
     target = OperationTarget(
@@ -128,3 +143,24 @@ def test_click_fact_only_settles_inside_frozen_ledger_period(
             assert obligation.click_evidence_hash
         else:
             assert action.result["error_code"] == "click_fact_outside_ledger_period"
+
+
+def test_entity_open_fact_settles_without_fake_button_coordinates() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        obligation, action, attempt = _facts(
+            session,
+            executed_at=datetime(2026, 7, 29, 10),
+        )
+        action.result = _complete_entity_result()
+
+        _settle_pure_search_click_obligation(
+            session,
+            action,
+            attempt,
+        )
+
+        assert obligation.status == "confirmed"
+        assert obligation.target_click_observed is True
+        assert obligation.click_evidence_hash

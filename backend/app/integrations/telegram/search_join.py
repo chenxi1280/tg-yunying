@@ -16,18 +16,26 @@ from app.search_join_protocol import (
     normalize_visible_text,
 )
 
+from .search_join_entity_results import (
+    SearchResultEntityLink,
+    approved_navigation_positions,
+    find_target_entity_link,
+    is_group_result_entity_page,
+    open_target_entity,
+    search_result_entity_links,
+    target_entity_fingerprint,
+)
+
 
 TELEGRAM_HOSTS = {"t.me", "telegram.me", "www.t.me", "www.telegram.me"}
 NAVIGATION_MARKERS = ("下一页", "上一页", "next", "prev", "page", "页")
 HUMAN_VERIFICATION_MARKERS = ("人机验证", "计算结果", "captcha")
 
-# PRD §2.19.2 图片算式验证码识别相关常量。
+# PRD §2.19.2 图片验证码识别相关常量。
 IMAGE_VERIFICATION_MIN_CONFIDENCE = 0.70
-IMAGE_VERIFICATION_PROMPT = (
-    "识别图片中的算式并计算结果，输出 JSON：{\"answer\":数字,\"confidence\":0到1}。"
-    "answer 必须是算式计算后的正整数。只输出紧凑 JSON，不要解释。"
-)
-ImageVerificationSolver = Callable[[bytes, str, list[str]], "tuple[str, float] | None"]
+VERIFICATION_ANSWER_PATTERN = re.compile(r"^[A-Za-z0-9]+$")
+CALLBACK_PAGE_RESPONSE_TIMEOUT_SECONDS = 8.0
+CALLBACK_PAGE_POLL_INTERVAL_SECONDS = 0.5
 PAGINATION_SYMBOL_NAMES = {
     ">": "greater_than",
     "▶": "right_triangle",
@@ -62,6 +70,20 @@ class SearchJoinButton:
     position: int
     url: str = ""
     target_username: str = ""
+
+
+@dataclass(frozen=True)
+class ImageVerificationRequest:
+    image_bytes: bytes
+    mime_type: str
+    candidate_answers: tuple[str, ...]
+    challenge_text: str
+
+
+ImageVerificationSolver = Callable[
+    [ImageVerificationRequest],
+    "tuple[str, float] | None",
+]
 
 
 @dataclass(frozen=True)
@@ -170,8 +192,6 @@ async def _execute_search_pages(
             bot,
             payload,
             target,
-            conversation=conv,
-            keyword_text=keyword_text,
             protocol_profile=protocol_profile,
             image_verification_solver=image_verification_solver,
         )
@@ -218,8 +238,6 @@ async def _execute_search_result_pages(
     payload: dict[str, Any],
     target: dict[str, Any],
     *,
-    conversation: Any,
-    keyword_text: str,
     protocol_profile: object,
     image_verification_solver: ImageVerificationSolver | None,
 ) -> dict[str, Any]:
@@ -227,17 +245,15 @@ async def _execute_search_result_pages(
     total_results = 0
     page_no = 0
     jisou = is_jisou_bot(bot)
-    page, selector_error, group_selector, selector_buttons, keyword_replayed = await _select_jisou_group_results_page(
+    page, selector_error, group_selector, selector_buttons = await _select_jisou_group_results_page(
         client,
         page,
         bot,
-        conversation=conversation,
-        keyword_text=keyword_text,
         protocol_profile=protocol_profile,
         image_verification_solver=image_verification_solver,
     )
     if selector_error is not None:
-        return _with_post_verification_replay(selector_error, keyword_replayed)
+        return _with_no_post_verification_replay(selector_error)
     while True:
         page_no += 1
         buttons = _parse_buttons(page)
@@ -273,9 +289,47 @@ async def _execute_search_result_pages(
                 ProtocolPageClassification("verification_page", frozenset(), frozenset()),
                 buttons,
             )
-        total_results += len(buttons)
+        entity_links = search_result_entity_links(page)
+        total_results += len(entity_links) if entity_links else len(buttons)
         approved_positions = classification.approved_button_positions if jisou else None
-        await _click_page_decoys(page, buttons, payload, target, decoys, approved_positions=approved_positions)
+        if not entity_links:
+            await _click_page_decoys(
+                page,
+                buttons,
+                payload,
+                target,
+                decoys,
+                approved_positions=approved_positions,
+            )
+        entity_target = find_target_entity_link(
+            entity_links,
+            str(target.get("username") or ""),
+        )
+        if entity_target is not None:
+            result = await _execute_target_entity_open(
+                _TargetEntityOpenContext(
+                    client=client,
+                    page=page,
+                    payload=payload,
+                    target=target,
+                    decoys=decoys,
+                    page_no=page_no,
+                    total=total_results,
+                ),
+                entity_target,
+            )
+            traced = _with_search_protocol_trace(
+                result,
+                buttons,
+                group_selector,
+                selector_buttons,
+                approved_positions,
+                enabled=jisou,
+            )
+            return _with_jisou_result_phase(
+                traced,
+                jisou,
+            )
         text_match = _find_target_in_text(page, target)
         if text_match:
             if payload.get("search_execution_mode") == "click_only":
@@ -285,12 +339,12 @@ async def _execute_search_result_pages(
                 )
             result = await _execute_text_target_join(client, payload, target, text_match, decoys, page_no, total_results)
             traced = _with_search_protocol_trace(result, buttons, group_selector, selector_buttons, approved_positions, enabled=jisou)
-            return _with_jisou_result_phase(traced, jisou, keyword_replayed)
+            return _with_jisou_result_phase(traced, jisou)
         target_button = _find_target_button(buttons, target, approved_positions=approved_positions)
         if target_button:
             result = await _execute_target_join(client, page, payload, target, target_button, decoys, page_no, total_results)
             traced = _with_search_protocol_trace(result, buttons, group_selector, selector_buttons, approved_positions, enabled=jisou)
-            return _with_jisou_result_phase(traced, jisou, keyword_replayed)
+            return _with_jisou_result_phase(traced, jisou)
         next_button = _find_next_button(buttons, approved_positions=approved_positions)
         if next_button is None:
             result = _target_not_found(
@@ -303,14 +357,13 @@ async def _execute_search_result_pages(
                 approved_positions,
                 jisou,
             )
-            return _with_jisou_result_phase(result, jisou, keyword_replayed)
+            return _with_jisou_result_phase(result, jisou)
         page = await _click_and_get_edited_page(client, bot, page, next_button)
 
 
 def _with_jisou_result_phase(
     result: dict[str, Any],
     jisou: bool,
-    keyword_replayed: bool = False,
 ) -> dict[str, Any]:
     if not jisou:
         return result
@@ -318,14 +371,16 @@ def _with_jisou_result_phase(
         **result,
         "jisou_page_phase": str(result.get("jisou_page_phase") or "group_result_page"),
         "protocol_event_type": str(result.get("protocol_event_type") or "page_classified"),
-        "jisou_post_verification_keyword_replayed": keyword_replayed,
+        "jisou_post_verification_keyword_replayed": False,
     }
 
 
-def _with_post_verification_replay(result: dict[str, Any], keyword_replayed: bool) -> dict[str, Any]:
+def _with_no_post_verification_replay(
+    result: dict[str, Any],
+) -> dict[str, Any]:
     return {
         **result,
-        "jisou_post_verification_keyword_replayed": keyword_replayed,
+        "jisou_post_verification_keyword_replayed": False,
     }
 
 
@@ -334,114 +389,169 @@ async def _select_jisou_group_results_page(
     page: Any,
     bot_username: str,
     *,
-    conversation: Any,
-    keyword_text: str,
     protocol_profile: object,
     image_verification_solver: ImageVerificationSolver | None = None,
-) -> tuple[Any, dict[str, Any] | None, SearchJoinButton | None, list[SearchJoinButton], bool]:
+) -> tuple[Any, dict[str, Any] | None, SearchJoinButton | None, list[SearchJoinButton]]:
     if not is_jisou_bot(bot_username):
-        return page, None, None, [], False
-    verification_answer_submitted = False
-    keyword_replayed = False
-    selector_buttons = _parse_buttons(page)
-    classification = classify_jisou_page_with_media(
-        profile=protocol_profile,
-        message_text=_message_text(page),
-        buttons=selector_buttons,
-        has_photo=_has_photo_media(page),
+        return page, None, None, []
+    context = _JisouNavigationContext(
+        client=client,
+        bot_username=bot_username,
+        protocol_profile=protocol_profile,
+        image_verification_solver=image_verification_solver,
     )
-    phase = classification.page_phase
-    if phase == VERIFICATION_IMAGE_PAGE:
-        handled = await _handle_jisou_image_verification(
-            client,
-            bot_username,
-            page,
-            selector_buttons,
+    return await _navigate_jisou_to_group_results(context, page)
+
+
+@dataclass(frozen=True)
+class _JisouNavigationContext:
+    client: Any
+    bot_username: str
+    protocol_profile: object
+    image_verification_solver: ImageVerificationSolver | None
+
+
+async def _navigate_jisou_to_group_results(
+    context: _JisouNavigationContext,
+    page: Any,
+) -> tuple[Any, dict[str, Any] | None, SearchJoinButton | None, list[SearchJoinButton]]:
+    group_selector: SearchJoinButton | None = None
+    selector_buttons: list[SearchJoinButton] = []
+    while True:
+        buttons, classification = _classify_jisou_navigation_page(
+            page, context.protocol_profile
+        )
+        if group_selector is None:
+            selector_buttons = buttons
+        phase = classification.page_phase
+        if phase == VERIFICATION_IMAGE_PAGE:
+            handled = await _handle_navigation_verification(
+                context, page, buttons, classification
+            )
+            next_challenge = _new_verification_challenge_page(handled)
+            if next_challenge is not None:
+                page = next_challenge
+                continue
+            if handled.error is not None:
+                return page, handled.error, group_selector, selector_buttons
+            page = handled.page
+            continue
+        if phase == "group_result_page":
+            return page, None, group_selector, selector_buttons
+        group_selector = _navigation_group_selector(
             classification,
-            image_verification_solver,
-            protocol_profile=protocol_profile,
+            buttons,
         )
-        if handled.error is not None:
-            return page, handled.error, None, selector_buttons, keyword_replayed
-        verification_answer_submitted = True
-        page = handled.page
-        selector_buttons = _parse_buttons(page)
-        classification = classify_jisou_page_with_media(
-            profile=protocol_profile,
-            message_text=_message_text(page),
-            buttons=selector_buttons,
-            has_photo=_has_photo_media(page),
-        )
-        phase = classification.page_phase
-    if verification_answer_submitted and phase == "hot_list_page":
-        await conversation.send_message(keyword_text)
-        page = await conversation.get_response()
-        keyword_replayed = True
-        selector_buttons = _parse_buttons(page)
-        classification = classify_jisou_page_with_media(
-            profile=protocol_profile,
-            message_text=_message_text(page),
-            buttons=selector_buttons,
-            has_photo=_has_photo_media(page),
-        )
-        phase = classification.page_phase
-    if phase == "verification_page":
-        return page, _protocol_phase_error(
+        if group_selector is not None:
+            selector_buttons = buttons
+            page = await _click_and_get_edited_page(
+                context.client,
+                context.bot_username,
+                page,
+                group_selector,
+            )
+            continue
+        error = _jisou_navigation_phase_error(classification, buttons)
+        if error is not None:
+            return page, error, group_selector, selector_buttons
+        if group_selector is None:
+            return page, _selector_missing(buttons, classification), None, buttons
+
+
+async def _handle_navigation_verification(
+    context: _JisouNavigationContext,
+    page: Any,
+    buttons: list[SearchJoinButton],
+    classification: ProtocolPageClassification,
+) -> _ImageVerificationHandleResult:
+    return await _handle_jisou_image_verification(
+        context.client,
+        context.bot_username,
+        page,
+        buttons,
+        classification,
+        context.image_verification_solver,
+        protocol_profile=context.protocol_profile,
+    )
+
+
+def _new_verification_challenge_page(
+    handled: _ImageVerificationHandleResult,
+) -> Any | None:
+    error = handled.error or {}
+    if (
+        error.get("error_code") == "jisou_image_verification_required"
+        and error.get("image_verification_reason") == "new_challenge_fingerprint"
+    ):
+        return handled.page
+    return None
+
+
+def _classify_jisou_navigation_page(
+    page: Any,
+    protocol_profile: object,
+) -> tuple[list[SearchJoinButton], ProtocolPageClassification]:
+    buttons = _parse_buttons(page)
+    classification = _jisou_page_classification(
+        True,
+        protocol_profile,
+        page,
+        buttons,
+    )
+    return buttons, classification
+
+
+def _jisou_navigation_phase_error(
+    classification: ProtocolPageClassification,
+    buttons: list[SearchJoinButton],
+) -> dict[str, Any] | None:
+    if classification.page_phase == "verification_page":
+        return _protocol_phase_error(
             "bot_human_verification_required",
             "搜索机器人要求人机验证，当前账号不能自动执行",
             classification,
-            selector_buttons,
-        ), None, selector_buttons, keyword_replayed
-    if phase == "hot_list_page":
-        return page, _protocol_phase_error(
+            buttons,
+        )
+    if classification.page_phase == "hot_list_page":
+        return _protocol_phase_error(
             "jisou_hot_list_page",
             "极搜关键词响应为热搜排行榜页，当前尝试失败并排除账号协议路径 12 小时",
             classification,
-            selector_buttons,
-        ), None, selector_buttons, keyword_replayed
-    if phase == "group_result_page":
-        return page, None, None, selector_buttons, keyword_replayed
-    if phase != "search_category_page":
-        return page, _protocol_phase_error(
-            "jisou_session_state_deviated",
-            "极搜关键词响应未匹配已知协议页面，账号会话状态偏离，排除 12 小时",
-            classification,
-            selector_buttons,
-        ), None, selector_buttons, keyword_replayed
-    group_button = _find_button_by_position(selector_buttons, classification.selector_positions)
-    if group_button is None:
-        return page, _selector_missing(selector_buttons, classification), None, selector_buttons, keyword_replayed
-    result_page = await _click_and_get_edited_page(client, bot_username, page, group_button)
-    result_buttons = _parse_buttons(result_page)
-    result_classification = classify_jisou_page_with_media(
-        profile=protocol_profile,
-        message_text=_message_text(result_page),
-        buttons=result_buttons,
-        has_photo=_has_photo_media(result_page),
+            buttons,
+        )
+    if classification.page_phase in {"search_category_page", "group_result_page"}:
+        return None
+    return _protocol_phase_error(
+        "jisou_session_state_deviated",
+        "极搜关键词响应未匹配已知协议页面，账号会话状态偏离，排除 12 小时",
+        classification,
+        buttons,
     )
-    if result_classification.page_phase == VERIFICATION_IMAGE_PAGE:
-        handled = await _handle_jisou_image_verification(
-            client,
-            bot_username,
-            result_page,
-            result_buttons,
-            result_classification,
-            image_verification_solver,
-            protocol_profile=protocol_profile,
+
+
+def _navigation_group_selector(
+    classification: ProtocolPageClassification,
+    buttons: list[SearchJoinButton],
+) -> SearchJoinButton | None:
+    if classification.page_phase == "search_category_page":
+        return _find_button_by_position(
+            buttons,
+            classification.selector_positions,
         )
-        if handled.error is not None:
-            return result_page, handled.error, group_button, selector_buttons, keyword_replayed
-        result_page = handled.page
-        result_buttons = _parse_buttons(result_page)
-        result_classification = classify_jisou_page_with_media(
-            profile=protocol_profile,
-            message_text=_message_text(result_page),
-            buttons=result_buttons,
-            has_photo=_has_photo_media(result_page),
-        )
-    if result_classification.page_phase != "group_result_page":
-        return result_page, _jisou_result_page_error(result_classification, result_buttons, group_button, selector_buttons), group_button, selector_buttons, keyword_replayed
-    return result_page, None, group_button, selector_buttons, keyword_replayed
+    if classification.page_phase != "hot_list_page":
+        return None
+    return next(
+        (
+            button
+            for button in buttons
+            if button.row == 0
+            and button.col == 0
+            and button.button_type == "callback_data"
+            and _normalized_button_text(button.text)
+            == _normalized_button_text("👥")
+        ),
+        None,
+    )
 
 
 def _normalized_button_text(text: str) -> str:
@@ -482,6 +592,13 @@ def _jisou_page_classification(
 ) -> ProtocolPageClassification:
     if not jisou:
         return ProtocolPageClassification("", frozenset(), frozenset())
+    entity_links = search_result_entity_links(page)
+    if is_group_result_entity_page(entity_links, buttons):
+        return ProtocolPageClassification(
+            "group_result_page",
+            approved_navigation_positions(buttons),
+            frozenset(),
+        )
     return classify_jisou_page_with_media(
         profile=protocol_profile,
         message_text=_message_text(page),
@@ -515,25 +632,37 @@ async def _handle_jisou_image_verification(
     protocol_profile: object,
 ) -> _ImageVerificationHandleResult:
     """Handle one immutable challenge fingerprint and one approved submit."""
-    digit_buttons = [button for button in buttons if _is_digit_callback_button(button)]
-    candidate_answers = [button.text.strip() for button in digit_buttons]
-    fingerprint = _image_verification_fingerprint(page, buttons)
-    if solver is None or not candidate_answers:
-        return _image_verification_required_result(
-            classification, buttons, fingerprint, "verification_ai_unavailable"
-        )
+    answer_buttons = [
+        button for button in buttons
+        if _is_verification_answer_button(button)
+    ]
+    candidate_answers = tuple(
+        button.text.strip() for button in answer_buttons
+    )
     image_bytes = await _download_verification_image(client, page)
+    fingerprint = _image_verification_fingerprint(
+        page,
+        buttons,
+        image_bytes,
+    )
     if not image_bytes:
         return _image_verification_required_result(
             classification, buttons, fingerprint, "verification_transport_unavailable"
+        )
+    if solver is None or not candidate_answers:
+        return _image_verification_required_result(
+            classification, buttons, fingerprint, "verification_ai_unavailable"
         )
     mime_type = _message_media_mime_type(page)
     try:
         solved = await asyncio.to_thread(
             solver,
-            image_bytes,
-            mime_type,
-            candidate_answers,
+            ImageVerificationRequest(
+                image_bytes=image_bytes,
+                mime_type=mime_type,
+                candidate_answers=candidate_answers,
+                challenge_text=_message_text(page),
+            ),
         )
     except ImageVerificationProviderUnavailableError as exc:
         return _image_verification_required_result(
@@ -563,13 +692,21 @@ async def _handle_jisou_image_verification(
             classification, buttons, f"confidence {confidence:.2f} below threshold {IMAGE_VERIFICATION_MIN_CONFIDENCE}",
             answer=answer, confidence=confidence, fingerprint=fingerprint,
         )
-    target_button = next((button for button in digit_buttons if button.text.strip() == answer), None)
+    target_button = next(
+        (
+            button for button in answer_buttons
+            if button.text.strip() == answer
+        ),
+        None,
+    )
     if target_button is None:
         return _image_verification_failed_result(
             classification, buttons, f"answer {answer} not in button matrix",
             answer=answer, confidence=confidence, fingerprint=fingerprint,
         )
-    clicked_page = await _click_and_get_edited_page(client, bot_username, page, target_button)
+    clicked_page = await _click_verification_and_get_response(
+        client, bot_username, page, target_button
+    )
     clicked_buttons = _parse_buttons(clicked_page)
     clicked_classification = classify_jisou_page_with_media(
         profile=protocol_profile,
@@ -578,7 +715,23 @@ async def _handle_jisou_image_verification(
         has_photo=_has_photo_media(clicked_page),
     )
     if clicked_classification.page_phase == VERIFICATION_IMAGE_PAGE:
-        next_fingerprint = _image_verification_fingerprint(clicked_page, clicked_buttons)
+        next_image_bytes = await _download_verification_image(
+            client,
+            clicked_page,
+        )
+        next_fingerprint = _image_verification_fingerprint(
+            clicked_page,
+            clicked_buttons,
+            next_image_bytes,
+        )
+        if not next_image_bytes:
+            return _image_verification_required_result(
+                clicked_classification,
+                clicked_buttons,
+                next_fingerprint,
+                "verification_transport_unavailable",
+                page=clicked_page,
+            )
         if next_fingerprint == fingerprint:
             return _image_verification_failed_result(
                 clicked_classification,
@@ -593,6 +746,7 @@ async def _handle_jisou_image_verification(
             clicked_buttons,
             next_fingerprint,
             "new_challenge_fingerprint",
+            page=clicked_page,
         )
     return _ImageVerificationHandleResult(page=clicked_page, error=None)
 
@@ -600,13 +754,17 @@ async def _handle_jisou_image_verification(
 def _image_verification_fingerprint(
     page: Any,
     buttons: list[SearchJoinButton],
+    image_bytes: bytes,
 ) -> str:
     message_id = str(getattr(page, "id", "") or "")
     callback_fingerprint = [
         (button.row, button.col, button.text, button.button_type)
         for button in buttons
     ]
-    value = repr((message_id, callback_fingerprint)).encode()
+    image_hash = hashlib.sha256(image_bytes).hexdigest()
+    value = repr(
+        (message_id, image_hash, callback_fingerprint)
+    ).encode()
     return hashlib.sha256(value).hexdigest()
 
 
@@ -627,11 +785,13 @@ def _message_media_mime_type(message: Any) -> str:
     return "image/png"
 
 
-def _is_digit_callback_button(button: SearchJoinButton) -> bool:
+def _is_verification_answer_button(button: SearchJoinButton) -> bool:
     if button.button_type != "callback_data":
         return False
     text = button.text.strip()
-    return bool(text) and text.isdigit()
+    return bool(text) and bool(
+        VERIFICATION_ANSWER_PATTERN.fullmatch(text)
+    )
 
 
 def _image_verification_failed_result(
@@ -668,6 +828,7 @@ def _image_verification_required_result(
     reason: str,
     *,
     detail: str = "",
+    page: Any = None,
 ) -> _ImageVerificationHandleResult:
     error = {
         **_failed("jisou_image_verification_required", "极搜图片验证码等待安全识别结果"),
@@ -682,7 +843,7 @@ def _image_verification_required_result(
             "page": _page_layout(buttons, classification.approved_button_positions),
         },
     }
-    return _ImageVerificationHandleResult(page=None, error=error)
+    return _ImageVerificationHandleResult(page=page, error=error)
 
 
 def _jisou_result_page_error(
@@ -824,6 +985,68 @@ async def _execute_target_join(
         "target_message_id": str(getattr(page, "id", "") or ""),
         "target_username": str(target.get("username") or ""),
         "bot_username": _bot_username(payload),
+    }
+
+
+@dataclass(frozen=True)
+class _TargetEntityOpenContext:
+    client: Any
+    page: Any
+    payload: dict[str, Any]
+    target: dict[str, Any]
+    decoys: list[dict[str, Any]]
+    page_no: int
+    total: int
+
+
+async def _execute_target_entity_open(
+    context: _TargetEntityOpenContext,
+    link: SearchResultEntityLink,
+) -> dict[str, Any]:
+    target_username = str(context.target.get("username") or "")
+    opened = await open_target_entity(
+        context.client,
+        link,
+        target_username,
+    )
+    result = {
+        **_success(
+            context.payload,
+            None,
+            context.total,
+            context.decoys,
+            context.page_no,
+        ),
+        "target_position": link.position,
+        "target_match_source": "message_entity_text_url",
+        "target_message_id": str(
+            getattr(context.page, "id", "") or ""
+        ),
+        "target_username": target_username,
+        "bot_username": _bot_username(context.payload),
+    }
+    if (
+        context.payload.get("search_execution_mode")
+        != "click_only"
+    ):
+        return result
+    return {
+        **result,
+        "target_click_observed": True,
+        "membership_side_effect": "none",
+        "membership_mutating_rpc_invoked": False,
+        "target_button_type": "message_entity_text_url",
+        "target_button_effect": "target_open_only",
+        "target_button_fingerprint": target_entity_fingerprint(
+            link,
+            opened,
+        ),
+        "target_entity_url_hash": _text_hash(link.url.lower()),
+        "target_entity_id": opened.entity_id,
+        "target_entity_username": opened.username,
+        "target_entity_title_hash": _text_hash(opened.title),
+        "target_entity_title_length": len(opened.title),
+        "target_open_rpc": opened.rpc,
     }
 
 
@@ -983,14 +1206,97 @@ async def _click_button(message: Any, button: SearchJoinButton) -> Any:
 
 
 async def _click_and_get_edited_page(client: Any, bot_username: str, message: Any, button: SearchJoinButton) -> Any:
+    original_fingerprint = _page_revision_fingerprint(message)
     await _click_button(message, button)
-    edited_page = await client.get_messages(bot_username, ids=message.id)
-    if edited_page is not None:
-        return edited_page
-    newer_page = await _latest_newer_bot_message(client, bot_username, message)
-    if newer_page is None:
-        raise RuntimeError("callback edited message unavailable")
-    return newer_page
+    return await _wait_for_callback_page(
+        client,
+        bot_username,
+        message,
+        original_fingerprint=original_fingerprint,
+    )
+
+
+async def _click_verification_and_get_response(
+    client: Any,
+    bot_username: str,
+    message: Any,
+    button: SearchJoinButton,
+) -> Any:
+    original_fingerprint = _page_revision_fingerprint(message)
+    await _click_button(message, button)
+    return await _wait_for_callback_page(
+        client,
+        bot_username,
+        message,
+        original_fingerprint=original_fingerprint,
+    )
+
+
+async def _wait_for_callback_page(
+    client: Any,
+    bot_username: str,
+    message: Any,
+    *,
+    original_fingerprint: str,
+) -> Any:
+    loop = asyncio.get_running_loop()
+    deadline = (
+        loop.time() + CALLBACK_PAGE_RESPONSE_TIMEOUT_SECONDS
+    )
+    while loop.time() < deadline:
+        edited_page = await client.get_messages(
+            bot_username,
+            ids=message.id,
+        )
+        if (
+            edited_page is not None
+            and _page_revision_fingerprint(edited_page)
+            != original_fingerprint
+        ):
+            return edited_page
+        newer_page = await _latest_newer_bot_message(
+            client,
+            bot_username,
+            message,
+        )
+        if newer_page is not None:
+            return newer_page
+        await asyncio.sleep(CALLBACK_PAGE_POLL_INTERVAL_SECONDS)
+    raise RuntimeError("callback_page_response_unavailable")
+
+
+def _page_revision_fingerprint(message: Any) -> str:
+    buttons = [
+        (
+            button.row,
+            button.col,
+            button.text,
+            button.button_type,
+            button.effect,
+            button.url,
+        )
+        for button in _parse_buttons(message)
+    ]
+    entities = [
+        (
+            type(entity).__name__,
+            str(getattr(entity, "url", "") or ""),
+            int(getattr(entity, "offset", 0) or 0),
+            int(getattr(entity, "length", 0) or 0),
+        )
+        for entity in getattr(message, "entities", None) or []
+    ]
+    media = getattr(message, "media", None)
+    photo = getattr(media, "photo", None)
+    value = (
+        int(getattr(message, "id", 0) or 0),
+        _message_text(message),
+        buttons,
+        entities,
+        type(media).__name__,
+        str(getattr(photo, "id", "") or ""),
+    )
+    return hashlib.sha256(repr(value).encode()).hexdigest()
 
 
 async def _latest_newer_bot_message(client: Any, bot_username: str, message: Any) -> Any | None:
@@ -1230,6 +1536,7 @@ def _text_hash(value: str) -> str:
 __all__ = [
     "ImageVerificationNoSafeAnswerError",
     "ImageVerificationProviderUnavailableError",
+    "ImageVerificationRequest",
     "ImageVerificationSolver",
     "SearchJoinButton",
     "execute_search_join_with_client",
