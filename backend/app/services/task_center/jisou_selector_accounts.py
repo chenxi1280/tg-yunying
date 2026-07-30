@@ -104,6 +104,11 @@ def _action_outcome(action: Action) -> str:
     if has_confirmed_click_fact(result):
         return TARGET_CLICK_OUTCOME
     error_code = str(result.get("error_code") or "")
+    if (
+        error_code == "jisou_hot_list_page"
+        and not result.get("jisou_bootstrap_kind")
+    ):
+        return ""
     if error_code in EXCLUSION_ERROR_CODES or error_code == "jisou_group_selector_missing":
         return error_code
     return ""
