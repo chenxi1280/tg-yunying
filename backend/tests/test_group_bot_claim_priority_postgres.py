@@ -15,6 +15,7 @@ from app.services._common import _now
 from app.services.task_center.group_bot_claim_priority import (
     group_bot_admission_claim_rank,
 )
+from app.services.task_center.group_bot_admission import _matching_confirmation_actions
 
 
 def test_postgres_orders_probe_send_before_waiting_send() -> None:
@@ -67,6 +68,51 @@ def test_postgres_orders_probe_send_before_waiting_send() -> None:
         assert action_ids == ["probe-send", "waiting-send"]
 
 
+def test_postgres_filters_confirmation_actions_by_admission_in_database() -> None:
+    with SessionLocal() as session:
+        session.add(Tenant(id=902, name="PostgreSQL 群管确认"))
+        session.flush()
+        task = Task(
+            id="postgres-confirmation-filter",
+            tenant_id=902,
+            name="PostgreSQL 群管确认筛选",
+            type="group_ai_chat",
+            status="running",
+        )
+        session.add_all([task, _account(913, tenant_id=902)])
+        session.flush()
+        admission = GroupBotAdmission(
+            tenant_id=902,
+            group_id=908,
+            account_id=913,
+            state="awaiting_group_bot_confirmation",
+            admission_version=3,
+        )
+        session.add(admission)
+        session.flush()
+        session.add_all(
+            [
+                _confirmation_action(
+                    "matching-confirmation",
+                    task=task,
+                    admission_id=admission.id,
+                    admission_version=3,
+                ),
+                _confirmation_action(
+                    "other-confirmation",
+                    task=task,
+                    admission_id=admission.id + 1,
+                    admission_version=3,
+                ),
+            ]
+        )
+        session.flush()
+
+        actions = _matching_confirmation_actions(session, task.id, admission.id, 3)
+
+        assert [action.id for action in actions] == ["matching-confirmation"]
+
+
 def _send_action(action_id: str, task: Task, *, account_id: int) -> Action:
     return Action(
         id=action_id,
@@ -78,6 +124,28 @@ def _send_action(action_id: str, task: Task, *, account_id: int) -> Action:
         status="pending",
         scheduled_at=_now(),
         payload={"group_id": 907},
+    )
+
+
+def _confirmation_action(
+    action_id: str,
+    *,
+    task: Task,
+    admission_id: int,
+    admission_version: int,
+) -> Action:
+    return Action(
+        id=action_id,
+        tenant_id=task.tenant_id,
+        task_id=task.id,
+        task_type=task.type,
+        action_type="group_bot_confirmation_button",
+        status="pending",
+        scheduled_at=_now(),
+        payload={
+            "admission_id": admission_id,
+            "admission_version": admission_version,
+        },
     )
 
 

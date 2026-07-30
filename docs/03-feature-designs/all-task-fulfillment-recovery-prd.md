@@ -570,6 +570,10 @@ precommit assembler、hash 比较、全部新 allocation/reservation 与 Window 
 
 AI 准入积压不得阻止 `admission_ready` 账号的 `ai_group_daily`。同一 AI 父任务和 shard 内，`group_bot_admission_ready`、`post_follow_visibility_probe`，以及已满足 required-channel follow、可在本次 send gate 原子切换为 probe 的 Action，必须排在 `waiting/unresolved/stale` 发送 Action 前进入 fulfillment 候选；排序发生在 TaskAllocation 的 `due_claimable` 与 Reservation 映射之前。已有 ready/probe 候选时，等待准入的正文 Action 只能推动对应 admission lane 或以未占 fulfillment 份额的状态等待，不能每 30 秒重复领取 fulfillment Reservation、确认 claim 后再退回 pending，造成 ready 账号队首阻塞；当前 shard 完全没有 ready/probe 候选时，允许有界选取一个 waiting Action 进入 send gate，以完成 `awaiting -> post_follow_visibility_probe` 的原子状态推进。任何 claim 已确认后把 Action 退回 `pending` 的路径必须同时清空 `lease_owner/lease_expires_at`、claim 字段并释放 dispatch binding；遗留 pending lease 由 Recovery 批量清理，但不能把 lease 清理当作跳过准入。纯搜索点击不进入 `membership_admission` 状态机；“搜索点击加入”待独立 PRD。一个频道消息的不可用 reaction 不得阻止其他消息；搜索 protocol 未通过 canary 时只阻止搜索批量 source。
 
+`post_follow_visibility_probe` 必须是可恢复的持久义务，不能只靠一次 send-gate 调用的内存返回值。gate 首次把 admission 切入该状态时，必须在同一事务把唯一 `probe_action_id` 绑定到当前 Action，并把 `group_bot_post_follow_visibility_probe=true`、admission id/version 写回同一 Action；进程退出、Action 退回 pending 或下次 claim 后，同一绑定 Action 必须继续获准进入内容生成和 Gateway，不能因为 admission 已经处于 probe 状态再次返回 `group_bot_admission_wait`。其他 Action 在绑定释放前不得并发探针；仅绑定 Action 已被确认是 pre-Gateway terminal 且不存在 Gateway-started/unknown/pending-visibility 事实时，才允许下一 Action 原子接管。存量只有 probe state、没有绑定的 admission，由首个符合条件的当前 Action 原子补绑。
+
+listener 处理可信群管提示时，禁止在已修改 `group_bot_admissions` 后再把同一 task 的全部 Action 拉回 Python 过滤。确认 Action 的匹配必须把 `task_id + action_type + payload.admission_id + payload.admission_version` 全部下推数据库，并沿现有 task/action-type 索引读取；listener 的 Telegram 网络调用不得持有已写事务。生产门禁需连续观察不到 listener 作为 `transactionid` blocker，且 probe Action 能在健康 MiMo v2.5 调用前写出 `actual_model/provider_call_started_at`。
+
 ### 5.4 deadline-aware pacing
 
 先确定业务窗口，再把 operation curve 归一到窗口内。`moderate_6h` 的所有 planned time 必须在 6 小时内；自然日任务不得排到下一自然日。AI 活群例外为 24 个小时均可执行，静默小时只有较低非零权重，不得返回 `quiet_hours_active` 或活动窗口跳过；其容量预测只作风险提示。其他任务若当前安全速率无法在 deadline 前完成，返回 `pacing_capacity_insufficient`，不能延长 deadline。
