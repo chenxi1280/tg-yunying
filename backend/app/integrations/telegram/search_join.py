@@ -170,6 +170,8 @@ async def _execute_search_pages(
             bot,
             payload,
             target,
+            conversation=conv,
+            keyword_text=keyword_text,
             protocol_profile=protocol_profile,
             image_verification_solver=image_verification_solver,
         )
@@ -216,6 +218,8 @@ async def _execute_search_result_pages(
     payload: dict[str, Any],
     target: dict[str, Any],
     *,
+    conversation: Any,
+    keyword_text: str,
     protocol_profile: object,
     image_verification_solver: ImageVerificationSolver | None,
 ) -> dict[str, Any]:
@@ -223,15 +227,17 @@ async def _execute_search_result_pages(
     total_results = 0
     page_no = 0
     jisou = is_jisou_bot(bot)
-    page, selector_error, group_selector, selector_buttons = await _select_jisou_group_results_page(
+    page, selector_error, group_selector, selector_buttons, keyword_replayed = await _select_jisou_group_results_page(
         client,
         page,
         bot,
-        protocol_profile,
+        conversation=conversation,
+        keyword_text=keyword_text,
+        protocol_profile=protocol_profile,
         image_verification_solver=image_verification_solver,
     )
     if selector_error is not None:
-        return selector_error
+        return _with_post_verification_replay(selector_error, keyword_replayed)
     while True:
         page_no += 1
         buttons = _parse_buttons(page)
@@ -279,12 +285,12 @@ async def _execute_search_result_pages(
                 )
             result = await _execute_text_target_join(client, payload, target, text_match, decoys, page_no, total_results)
             traced = _with_search_protocol_trace(result, buttons, group_selector, selector_buttons, approved_positions, enabled=jisou)
-            return _with_jisou_result_phase(traced, jisou)
+            return _with_jisou_result_phase(traced, jisou, keyword_replayed)
         target_button = _find_target_button(buttons, target, approved_positions=approved_positions)
         if target_button:
             result = await _execute_target_join(client, page, payload, target, target_button, decoys, page_no, total_results)
             traced = _with_search_protocol_trace(result, buttons, group_selector, selector_buttons, approved_positions, enabled=jisou)
-            return _with_jisou_result_phase(traced, jisou)
+            return _with_jisou_result_phase(traced, jisou, keyword_replayed)
         next_button = _find_next_button(buttons, approved_positions=approved_positions)
         if next_button is None:
             result = _target_not_found(
@@ -297,17 +303,29 @@ async def _execute_search_result_pages(
                 approved_positions,
                 jisou,
             )
-            return _with_jisou_result_phase(result, jisou)
+            return _with_jisou_result_phase(result, jisou, keyword_replayed)
         page = await _click_and_get_edited_page(client, bot, page, next_button)
 
 
-def _with_jisou_result_phase(result: dict[str, Any], jisou: bool) -> dict[str, Any]:
+def _with_jisou_result_phase(
+    result: dict[str, Any],
+    jisou: bool,
+    keyword_replayed: bool = False,
+) -> dict[str, Any]:
     if not jisou:
         return result
     return {
         **result,
         "jisou_page_phase": str(result.get("jisou_page_phase") or "group_result_page"),
         "protocol_event_type": str(result.get("protocol_event_type") or "page_classified"),
+        "jisou_post_verification_keyword_replayed": keyword_replayed,
+    }
+
+
+def _with_post_verification_replay(result: dict[str, Any], keyword_replayed: bool) -> dict[str, Any]:
+    return {
+        **result,
+        "jisou_post_verification_keyword_replayed": keyword_replayed,
     }
 
 
@@ -315,12 +333,16 @@ async def _select_jisou_group_results_page(
     client: Any,
     page: Any,
     bot_username: str,
-    protocol_profile: object,
     *,
+    conversation: Any,
+    keyword_text: str,
+    protocol_profile: object,
     image_verification_solver: ImageVerificationSolver | None = None,
-) -> tuple[Any, dict[str, Any] | None, SearchJoinButton | None, list[SearchJoinButton]]:
+) -> tuple[Any, dict[str, Any] | None, SearchJoinButton | None, list[SearchJoinButton], bool]:
     if not is_jisou_bot(bot_username):
-        return page, None, None, []
+        return page, None, None, [], False
+    verification_answer_submitted = False
+    keyword_replayed = False
     selector_buttons = _parse_buttons(page)
     classification = classify_jisou_page_with_media(
         profile=protocol_profile,
@@ -340,8 +362,21 @@ async def _select_jisou_group_results_page(
             protocol_profile=protocol_profile,
         )
         if handled.error is not None:
-            return page, handled.error, None, selector_buttons
+            return page, handled.error, None, selector_buttons, keyword_replayed
+        verification_answer_submitted = True
         page = handled.page
+        selector_buttons = _parse_buttons(page)
+        classification = classify_jisou_page_with_media(
+            profile=protocol_profile,
+            message_text=_message_text(page),
+            buttons=selector_buttons,
+            has_photo=_has_photo_media(page),
+        )
+        phase = classification.page_phase
+    if verification_answer_submitted and phase == "hot_list_page":
+        await conversation.send_message(keyword_text)
+        page = await conversation.get_response()
+        keyword_replayed = True
         selector_buttons = _parse_buttons(page)
         classification = classify_jisou_page_with_media(
             profile=protocol_profile,
@@ -356,26 +391,26 @@ async def _select_jisou_group_results_page(
             "搜索机器人要求人机验证，当前账号不能自动执行",
             classification,
             selector_buttons,
-        ), None, selector_buttons
+        ), None, selector_buttons, keyword_replayed
     if phase == "hot_list_page":
         return page, _protocol_phase_error(
             "jisou_hot_list_page",
             "极搜关键词响应为热搜排行榜页，当前尝试失败并排除账号协议路径 12 小时",
             classification,
             selector_buttons,
-        ), None, selector_buttons
+        ), None, selector_buttons, keyword_replayed
     if phase == "group_result_page":
-        return page, None, None, selector_buttons
+        return page, None, None, selector_buttons, keyword_replayed
     if phase != "search_category_page":
         return page, _protocol_phase_error(
             "jisou_session_state_deviated",
             "极搜关键词响应未匹配已知协议页面，账号会话状态偏离，排除 12 小时",
             classification,
             selector_buttons,
-        ), None, selector_buttons
+        ), None, selector_buttons, keyword_replayed
     group_button = _find_button_by_position(selector_buttons, classification.selector_positions)
     if group_button is None:
-        return page, _selector_missing(selector_buttons, classification), None, selector_buttons
+        return page, _selector_missing(selector_buttons, classification), None, selector_buttons, keyword_replayed
     result_page = await _click_and_get_edited_page(client, bot_username, page, group_button)
     result_buttons = _parse_buttons(result_page)
     result_classification = classify_jisou_page_with_media(
@@ -395,7 +430,7 @@ async def _select_jisou_group_results_page(
             protocol_profile=protocol_profile,
         )
         if handled.error is not None:
-            return result_page, handled.error, group_button, selector_buttons
+            return result_page, handled.error, group_button, selector_buttons, keyword_replayed
         result_page = handled.page
         result_buttons = _parse_buttons(result_page)
         result_classification = classify_jisou_page_with_media(
@@ -405,8 +440,8 @@ async def _select_jisou_group_results_page(
             has_photo=_has_photo_media(result_page),
         )
     if result_classification.page_phase != "group_result_page":
-        return result_page, _jisou_result_page_error(result_classification, result_buttons, group_button, selector_buttons), group_button, selector_buttons
-    return result_page, None, group_button, selector_buttons
+        return result_page, _jisou_result_page_error(result_classification, result_buttons, group_button, selector_buttons), group_button, selector_buttons, keyword_replayed
+    return result_page, None, group_button, selector_buttons, keyword_replayed
 
 
 def _normalized_button_text(text: str) -> str:
