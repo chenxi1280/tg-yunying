@@ -161,7 +161,7 @@ AI 活群冻结日覆盖账本
 
 `GET /api/tasks/{task_id}/daily-fulfillment?date=` 按 `Task.timezone` 解析未指定日期：`group_ai_chat` 返回账号日覆盖账本和决策漏斗；当前 `search_click` 只返回 click target、confirmed/held/unknown/remaining、projection/committed opportunity、全局 dispatch claim 快照和脱敏协议轨迹，不返回成员观察目标或 admission 进度。接管前 legacy membership 字段只在历史下钻中标记 `contract_status=legacy_read_only`，不能进入纯点击完成判定。搜索任务不再伪装成 AI 覆盖账本，也不会把未记录日期的容量结论降级为全零事实。
 
-AI 的目标模型以 ai-group-daily-group-target-redesign-prd.md 为准：按群配置自然日总发送量、冻结范围内每账号至少 1 条，取消容量不足整批停止、硬小时目标和 AI 活群活动时段禁发，静默期只降量；正常正文按账号面具与同账号滚动 10 天质量管线，缺面具、授权代理路线切换，或主 AI 最多 3 轮加不同备用 AI 最多 3 轮均无候选时，原义务用精确 `签到` 兜底并可计账号覆盖和群日总量。纯搜索点击的容量、份额和极搜协议以 search-click-daily-fulfillment-remediation-prd.md 为准；搜索点击加入待独立设计。
+AI 的目标模型以 ai-group-daily-group-target-redesign-prd.md 为准：按群配置自然日总发送量、冻结范围内每账号至少 1 条，取消容量不足整批停止、硬小时目标和 AI 活群活动时段禁发，静默期只降量；正常正文按账号面具与同账号滚动 10 天质量管线，缺面具、授权代理路线切换，或主 AI 最多 3 轮加不同备用 AI 最多 3 轮均无候选时，原义务用精确 `签到` 兜底并可计账号覆盖和群日总量。未显式配置模型时主阶段通过任务/租户 Provider 选择器取得当前健康 Provider，不能把主阶段固定成 MiniMax-M3；`generation_slots` 必须携带 Action 的 `primary_quantity_slot_id`，coverage 与 extra-volume 均凭该绑定逐槽兜底，不能要求存在 `coverage_ledger_id`。纯搜索点击的容量、份额和极搜协议以 search-click-daily-fulfillment-remediation-prd.md 为准；搜索点击加入待独立设计。
 
 纯搜索 source 在规划时绑定 `task_day_ledger_id`，固化 `obligation_local_date`、时区 revision、UTC period、deadline 和 `click_obligation_ordinal`。完整 click evidence 确认后结束 ordinal；deadline 后才确认只记 late，不改写旧 ledger `missed`，也不产生 membership/admission 子义务。
 

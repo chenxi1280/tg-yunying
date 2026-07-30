@@ -968,6 +968,7 @@ def _generate_group_prompt_contents(
         stage=stage,
     )
     provider, setting = _require_group_generation_provider(provider, setting, config)
+    model_name = _resolved_group_model_name(provider, model_name, stage)
     result, started_at = _request_group_provider_candidates(
         session,
         provider,
@@ -1018,7 +1019,10 @@ def _request_group_provider_candidates(
         timeout=AI_CONTENT_REQUEST_TIMEOUT_SECONDS,
         model_name=model_name,
         required_model_family=_group_chat_required_model_family(config),
-        allow_quota_rotation=not config.get("ai_provider_id") and not stage,
+        allow_quota_rotation=(
+            not config.get("ai_provider_id")
+            and stage in {"", "primary_default"}
+        ),
         purpose=purpose,
         close_transaction_before_external=bool(config.get("_close_db_transaction_before_ai")),
     )
@@ -1095,6 +1099,14 @@ def _resolve_group_generation_provider(
     model_name: str,
     stage: str,
 ) -> tuple[AiProvider | None, TenantAiSetting | None]:
+    if stage == "primary_default":
+        return _provider(
+            session,
+            tenant_id,
+            config.get("ai_provider_id"),
+            model_name,
+            required_family=_group_chat_required_model_family(config),
+        )
     if stage:
         provider = (
             _provider_for_exact_model(session, model_name)
@@ -1109,6 +1121,16 @@ def _resolve_group_generation_provider(
         model_name,
         required_family=_group_chat_required_model_family(config),
     )
+
+
+def _resolved_group_model_name(
+    provider: AiProvider,
+    requested_model: str,
+    stage: str,
+) -> str:
+    if stage == "primary_default":
+        return str(provider.model_name or "").strip()
+    return requested_model
 
 
 def _generate_group_with_grok(
@@ -1174,10 +1196,14 @@ def _content_with_provider_metadata(
         allow_material=bool(getattr(candidate, "allow_material", False)),
         intent=getattr(candidate, "intent", ""),
         mood=getattr(candidate, "mood", ""),
-        requested_model="MiniMax-M3" if stage else model_name,
+        requested_model=model_name,
         actual_model=model_name,
         fallback_stage=stage or "direct",
-        fallback_reason="previous_stage_failed_or_rejected" if stage and stage != "primary_m3" else "",
+        fallback_reason=(
+            "previous_stage_failed_or_rejected"
+            if stage not in {"", "primary_default", "primary_m3"}
+            else ""
+        ),
         provider_duration_ms=duration_ms,
         generation_attempts=attempts,
         sequence_index=getattr(candidate, "sequence_index", 0),

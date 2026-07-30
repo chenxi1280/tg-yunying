@@ -58,7 +58,7 @@ def generate_quality_results(
                 continue
             accepted[item_index] = result
         pending = next_pending
-    _apply_static_coverage_fallback(session, request, pending, accepted, last_rejections)
+    _apply_static_quantity_fallback(session, request, pending, accepted, last_rejections)
     remaining = [index for index in pending if index not in accepted]
     if remaining and last_error and not last_rejections:
         raise last_error
@@ -86,7 +86,7 @@ def _cached_quality_results(session: Session, request) -> list[SlotGenerationRes
     results = _filter_stage_contents(request, plain_contents, indexes=plain_indexes)
     accepted.update({index: result for index, result in zip(plain_indexes, results) if not result.rejection_code})
     rejected.update({index: result for index, result in zip(plain_indexes, results) if result.rejection_code})
-    _apply_static_coverage_fallback(session, request, list(rejected), accepted, rejected)
+    _apply_static_quantity_fallback(session, request, list(rejected), accepted, rejected)
     return _ordered_results(request, accepted, rejected)
 
 
@@ -103,7 +103,7 @@ def _cached_static_fallbacks(contents: list[str]) -> dict[int, SlotGenerationRes
     }
 
 
-def _apply_static_coverage_fallback(
+def _apply_static_quantity_fallback(
     session: Session,
     request,
     pending: list[int],
@@ -116,7 +116,7 @@ def _apply_static_coverage_fallback(
     del session
     for index in pending:
         slot = slots[index]
-        if not str(slot.get("coverage_ledger_id") or "").strip():
+        if not _has_fallback_quantity_slot(slot):
             continue
         reason = (rejected.get(index) or SlotGenerationResult("")).rejection_code or "all_model_stages_rejected"
         content = _check_in_fallback_content(slot, index, reason)
@@ -135,11 +135,14 @@ def _static_fallback_enabled(request) -> bool:
     if str(config.get("ai_model") or "").strip():
         return False
     slots = list(config.get("generation_slots") or [])
-    has_coverage_slot = any(
-        str(slot.get("coverage_ledger_id") or "").strip()
-        for slot in slots
+    return any(_has_fallback_quantity_slot(slot) for slot in slots)
+
+
+def _has_fallback_quantity_slot(slot: dict) -> bool:
+    return bool(
+        str(slot.get("primary_quantity_slot_id") or "").strip()
+        or str(slot.get("coverage_ledger_id") or "").strip()
     )
-    return has_coverage_slot and not str(config.get("ai_model") or "").strip()
 
 
 def _check_in_fallback_content(slot: dict, index: int, reason: str) -> GeneratedContent:
@@ -214,7 +217,7 @@ def _fallback_stages(config: dict) -> tuple[str, ...]:
         return ("direct_mimo",)
     if str(config.get("ai_model") or "").strip():
         return ("direct_configured_model",)
-    stages = ["primary_m3"] * AI_GROUP_GENERATION_ATTEMPTS_PER_MODEL
+    stages = ["primary_default"] * AI_GROUP_GENERATION_ATTEMPTS_PER_MODEL
     if bool(config.get("_ai_group_model_fallback_enabled", True)):
         stages.extend(
             ["fallback_m25"] * AI_GROUP_GENERATION_ATTEMPTS_PER_MODEL

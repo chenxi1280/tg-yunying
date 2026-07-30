@@ -100,14 +100,65 @@ def test_dispatcher_runtime_uses_tenant_fallback_switches() -> None:
 @pytest.mark.parametrize(
     ("config", "expected"),
     [
-        ({}, ("primary_m3",) * 3 + ("fallback_m25",) * 3),
-        ({"_ai_group_model_fallback_enabled": False}, ("primary_m3",) * 3),
-        ({"_ai_group_grok_fallback_enabled": True}, ("primary_m3",) * 3 + ("fallback_m25",) * 3),
-        ({"_ai_group_grok_fallback_enabled": False}, ("primary_m3",) * 3 + ("fallback_m25",) * 3),
+        ({}, ("primary_default",) * 3 + ("fallback_m25",) * 3),
+        ({"_ai_group_model_fallback_enabled": False}, ("primary_default",) * 3),
+        ({"_ai_group_grok_fallback_enabled": True}, ("primary_default",) * 3 + ("fallback_m25",) * 3),
+        ({"_ai_group_grok_fallback_enabled": False}, ("primary_default",) * 3 + ("fallback_m25",) * 3),
     ],
 )
 def test_ai_group_fallback_stages_follow_explicit_switches(config, expected):
     assert ai_generation_pipeline._fallback_stages(config) == expected
+
+
+def test_unconfigured_primary_stage_uses_healthy_provider_when_default_is_disabled() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        session.add_all([
+            AiProvider(
+                id=1,
+                provider_name="xiaomi-mino",
+                base_url="https://api.xiaomimimo.com/v1",
+                model_name="mimo-v2.5",
+                api_key_ciphertext="test",
+                is_active=True,
+                health_status="健康",
+            ),
+            AiProvider(
+                id=5,
+                provider_name="MiniMax M3",
+                base_url="https://api.minimax.io/v1",
+                model_name="MiniMax-M3",
+                api_key_ciphertext="test",
+                is_active=False,
+                health_status="禁用",
+            ),
+            TenantAiSetting(
+                tenant_id=1,
+                default_provider_id=5,
+                ai_enabled=True,
+            ),
+        ])
+        session.commit()
+        setting = session.query(TenantAiSetting).filter_by(tenant_id=1).one()
+
+        provider, _setting = ai_generator._resolve_group_generation_provider(
+            session,
+            1,
+            {},
+            setting=setting,
+            model_name="",
+            stage="primary_default",
+        )
+
+    assert provider is not None
+    assert provider.id == 1
+    assert provider.model_name == "mimo-v2.5"
+    assert ai_generator._resolved_group_model_name(
+        provider,
+        "",
+        "primary_default",
+    ) == "mimo-v2.5"
 
 
 def test_explicit_mimo_requirement_does_not_enter_default_provider_chain():
@@ -137,7 +188,7 @@ def test_ai_group_fallback_continues_after_stage_error(monkeypatch):
             _generation_dependencies(normal_generator=fake_generate),
         )
 
-    assert visited == ["primary_m3"] * 3 + ["fallback_m25"]
+    assert visited == ["primary_default"] * 3 + ["fallback_m25"]
     assert [item.content for item in items] == ["老师今天高跟鞋挺好看"]
     assert tokens == 7
 
@@ -148,7 +199,7 @@ def test_ai_group_quality_rejection_is_visible_to_next_stage(monkeypatch):
     def fake_generate(_session, _tenant_id, config, *, count, target_label, history):
         stage = config["_ai_fallback_stage"]
         visited.append(stage)
-        content = "照片没p" if stage == "primary_m3" else "老师今天高跟鞋挺好看"
+        content = "照片没p" if stage == "primary_default" else "老师今天高跟鞋挺好看"
         return [GeneratedContent(
             content,
             slot_id=config["generation_slots"][0]["slot_id"],
@@ -164,7 +215,7 @@ def test_ai_group_quality_rejection_is_visible_to_next_stage(monkeypatch):
         )
 
     assert items[0].content == "老师今天高跟鞋挺好看"
-    assert visited == ["primary_m3"] * 3 + ["fallback_m25"]
+    assert visited == ["primary_default"] * 3 + ["fallback_m25"]
 
 
 def test_ai_group_fallback_retries_the_same_reply_target(monkeypatch):
@@ -172,7 +223,7 @@ def test_ai_group_fallback_retries_the_same_reply_target(monkeypatch):
 
     def fake_reply(_session, _tenant_id, config, *, reply_targets, target_label, history):
         visited.append((config["_ai_fallback_stage"], reply_targets[0]["message_id"]))
-        if config["_ai_fallback_stage"] == "primary_m3":
+        if config["_ai_fallback_stage"] == "primary_default":
             raise AiGenerationUnavailable("primary failed")
         return [GeneratedContent(
             "这双高跟鞋确实很搭",
@@ -189,7 +240,7 @@ def test_ai_group_fallback_retries_the_same_reply_target(monkeypatch):
             _generation_dependencies(reply_generator=fake_reply),
         )
 
-    assert visited == [("primary_m3", 88)] * 3 + [("fallback_m25", 88)]
+    assert visited == [("primary_default", 88)] * 3 + [("fallback_m25", 88)]
     assert items[0].content == "这双高跟鞋确实很搭"
 
 
@@ -280,6 +331,30 @@ def test_provider_generation_metadata_is_accepted_by_send_payload():
     assert payload.fallback_stage == "fallback_m25"
     assert payload.provider_duration_ms == 1234
     assert len(payload.generation_attempts) == 2
+
+
+def test_primary_default_metadata_records_selected_mimo_model() -> None:
+    content = ai_generator._content_with_provider_metadata(
+        SimpleNamespace(
+            content="今天先聊聊",
+            material_intent="",
+            allow_material=False,
+            intent="",
+            mood="",
+            sequence_index=1,
+            reply_to_sequence_index=None,
+            slot_id="slot-1",
+        ),
+        {},
+        model_name="mimo-v2.5",
+        stage="primary_default",
+        duration_ms=15,
+    )
+
+    assert content.requested_model == "mimo-v2.5"
+    assert content.actual_model == "mimo-v2.5"
+    assert content.fallback_stage == "primary_default"
+    assert content.fallback_reason == ""
 
 
 def test_grok_stage_uses_cli_bridge_and_preserves_stage_metadata(monkeypatch):

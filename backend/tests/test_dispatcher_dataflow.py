@@ -34,8 +34,8 @@ def test_dispatcher_runtime_config_preserves_deferred_generation_slots():
     second.topic_direction = {"title": "主任最近约新妹子了"}
     second.teacher_target = {"name": "新人榜单妹子"}
     batch = [
-        (SimpleNamespace(account_id=11), first),
-        (SimpleNamespace(account_id=12), second),
+        (SimpleNamespace(account_id=11, primary_quantity_slot_id=""), first),
+        (SimpleNamespace(account_id=12, primary_quantity_slot_id=""), second),
     ]
 
     config = ai_generation_dispatch._runtime_config(SimpleNamespace(type_config={}), batch)
@@ -57,7 +57,7 @@ def test_dispatcher_runtime_config_preserves_deferred_generation_slots():
 def test_dispatcher_runtime_config_does_not_force_mimo_for_hard_hourly_without_model():
     payload = _pending_send_payload()
     payload.hard_hourly_target = True
-    batch = [(SimpleNamespace(account_id=11), payload)]
+    batch = [(SimpleNamespace(account_id=11, primary_quantity_slot_id=""), payload)]
 
     config = ai_generation_dispatch._runtime_config(SimpleNamespace(type_config={}), batch)
 

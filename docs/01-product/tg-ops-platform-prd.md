@@ -4046,7 +4046,7 @@ DB 短事务确认执行
 
 - Telegram API 调用期间不能持有数据库事务。
 - AI 活跃群和频道评论的 AI 生成、fallback、重描述、provider-backed 质量判断期间不能持有数据库事务。Dispatcher 必须先用短事务 claim 并提交，再执行外部 AI，最后按 claim token / generation attempt 短事务 CAS 写入文本、生成审计和 `ai_generation_status=ready`。
-- 正常 AI 内容经过主 AI 3 轮、备用 AI 3 轮仍无候选时不得写最终 `generation_failed`，原义务必须进入 AI 签到或评论表情确定性兜底；只有封闭清单内不允许兜底的结构错误才显式失败。AI 已返回但结果落库不确定写 `ai_result_persist_unknown` 并恢复同一 Action；只有 Telegram Gateway 调用边界后结果不明才写 `unknown_after_send`，且不得自动重发。
+- 正常 AI 内容经过主 AI 3 轮、备用 AI 3 轮仍无候选时不得写最终 `generation_failed`，原义务必须进入 AI 签到或评论表情确定性兜底；AI 活群 coverage 与 extra-volume 的普通数量槽一律以非空 `primary_quantity_slot_id` 识别，不能再把 `coverage_ledger_id` 当作签到兜底的必要条件。只有封闭清单内不允许兜底的结构错误才显式失败。AI 已返回但结果落库不确定写 `ai_result_persist_unknown` 并恢复同一 Action；只有 Telegram Gateway 调用边界后结果不明才写 `unknown_after_send`，且不得自动重发。
 - 同一账号默认只能有一个 executing action。
 - Dispatcher 单轮预领取量不得大于该 worker 的实际执行并发，避免批次尾部在资源确认前超过 `claim_expires_at`；worker 命令的 drain limit 大于实际并发时，只表示后续轮次继续处理，不得一次占住全部 action。
 - 同一次 claim 中共用 AI generation claim token 的 normal pending `send_message` 属于一个共享生成批次。该 claim 批次必须由单一入口按领取顺序推进批量生成、Phase C 和后续 sibling 发送，不能把每个空文本 sibling 同时交给线程池并发加载、更新重叠 Action 集合；这个串行边界只消除同批生成写冲突，不得截断最终应处理 Action，也不得成为账号或任务准入上限。不共享生成批次的 Action 继续按 Dispatcher 实际并发执行。
