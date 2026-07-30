@@ -109,3 +109,17 @@ def test_protocol_sample_seed_flushes_for_autoflush_disabled_session(monkeypatch
     assert session.flushed is True
     assert session.sample.bot_username == "jisou"
     assert session.sample.is_active is True
+
+
+@pytest.mark.no_postgres
+def test_clash_infrastructure_repair_does_not_create_smoke_task_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = _load_script()
+    monkeypatch.delenv("CLASH_CREATE_SMOKE_TASK", raising=False)
+
+    assert script.create_smoke_task_enabled() is False
+
+    monkeypatch.setenv("CLASH_CREATE_SMOKE_TASK", "true")
+
+    assert script.create_smoke_task_enabled() is True

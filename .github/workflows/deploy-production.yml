@@ -94,12 +94,17 @@ name: Deploy Production
         default: false
         type: boolean
       configure_clash_search_join_live:
-        description: Configure production Mihomo/Clash proxies and create the Zhengzhou search-join smoke task
+        description: Configure production Mihomo/Clash proxy infrastructure
+        required: false
+        default: false
+        type: boolean
+      clash_search_join_create_smoke_task:
+        description: Explicitly create the legacy Zhengzhou search-join smoke task after proxy repair
         required: false
         default: false
         type: boolean
       clash_search_join_apply:
-        description: Apply DB proxy bindings and create the Zhengzhou smoke task after proxy egress passes
+        description: Apply DB proxy bindings after proxy egress passes
         required: false
         default: false
         type: boolean
@@ -604,6 +609,7 @@ jobs:
         env:
           CLASH_SUBSCRIPTION_URL: ${{ secrets.TGYUNYING_CLASH_SUBSCRIPTION_URL }}
           CLASH_LIVE_APPLY: ${{ inputs.clash_search_join_apply }}
+          CLASH_CREATE_SMOKE_TASK: ${{ inputs.clash_search_join_create_smoke_task }}
           CLASH_NODE_LIMIT: ${{ inputs.clash_search_join_node_limit }}
           CLASH_TEST_ACCOUNT_COUNT: ${{ inputs.clash_search_join_test_account_count }}
           CLASH_TARGET_QUERY: ${{ inputs.clash_search_join_target_query }}
@@ -616,6 +622,7 @@ jobs:
           {
             printf '%s\n' "$(printf '%s' "${CLASH_SUBSCRIPTION_URL}" | base64 | tr -d '\n')"
             printf '%s\n' "$(printf '%s' "${CLASH_LIVE_APPLY}" | base64 | tr -d '\n')"
+            printf '%s\n' "$(printf '%s' "${CLASH_CREATE_SMOKE_TASK}" | base64 | tr -d '\n')"
             printf '%s\n' "$(printf '%s' "${CLASH_NODE_LIMIT}" | base64 | tr -d '\n')"
             printf '%s\n' "$(printf '%s' "${CLASH_TEST_ACCOUNT_COUNT}" | base64 | tr -d '\n')"
             printf '%s\n' "$(printf '%s' "${CLASH_TARGET_QUERY}" | base64 | tr -d '\n')"
@@ -626,6 +633,7 @@ jobs:
           } | ssh silicon-valley-production-server 'set -euo pipefail
             read -r subscription_b64
             read -r apply_b64
+            read -r create_smoke_b64
             read -r node_limit_b64
             read -r test_count_b64
             read -r target_query_b64
@@ -635,6 +643,7 @@ jobs:
 
             export CLASH_SUBSCRIPTION_URL="$(printf "%s" "${subscription_b64}" | base64 -d)"
             export CLASH_LIVE_APPLY="$(printf "%s" "${apply_b64}" | base64 -d)"
+            export CLASH_CREATE_SMOKE_TASK="$(printf "%s" "${create_smoke_b64}" | base64 -d)"
             export CLASH_NODE_LIMIT="$(printf "%s" "${node_limit_b64}" | base64 -d)"
             export CLASH_TEST_ACCOUNT_COUNT="$(printf "%s" "${test_count_b64}" | base64 -d)"
             export CLASH_TARGET_QUERY="$(printf "%s" "${target_query_b64}" | base64 -d)"
@@ -703,6 +712,7 @@ jobs:
                 -e CLASH_SUBSCRIPTION_URL \
                 -e CLASH_NODE_LIMIT \
                 -e CLASH_TEST_ACCOUNT_COUNT \
+                -e CLASH_CREATE_SMOKE_TASK \
                 -e CLASH_TARGET_QUERY \
                 -e CLASH_SKIP_CERT_VERIFY \
                 -e CLASH_HEALTHY_INDEXES \
@@ -719,6 +729,7 @@ jobs:
                 -e CLASH_LIVE_APPLY \
                 -e CLASH_NODE_LIMIT \
                 -e CLASH_TEST_ACCOUNT_COUNT \
+                -e CLASH_CREATE_SMOKE_TASK \
                 -e CLASH_TARGET_QUERY \
                 -e CLASH_SKIP_CERT_VERIFY \
                 -e CLASH_HEALTHY_INDEXES \

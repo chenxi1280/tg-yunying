@@ -103,6 +103,8 @@
 
 `search_transport_unavailable` 的代理 failover 必须先证明候选节点能够生成完整可执行 proxy，再原子切换旧/new proxy binding 与 environment binding。候选协议或端点不可执行时不得改写旧绑定。搜索候选枚举必须拒绝 inactive、已解绑或与环境 scope 不一致的 proxy binding，避免失败切换把同一坏路径带入后续 Window。
 
+生产 Clash/Mihomo 修复必须支持“仅修复代理基础设施”模式：先为订阅节点生成隔离的本地 Mihomo 实例并完成真实出口探活，只有探活成功的实例才以 `socks5://<mihomo-container>:7890` 形式登记为可执行 `ProxyAirportNode/AccountProxy`，随后原子重绑账号、授权槽位和 `AccountEnvironmentBinding`。原始 `trojan/anytls/vmess` 订阅节点不能直接作为 Telegram runtime proxy，也不能因为数据库 `status=healthy` 被 failover 选中。基础设施修复不得创建任何搜索加入群、搜索点击加入或其他烟测任务；本轮只允许既有纯搜索点击任务在新 binding version 上重新求解。若需要独立烟测，必须由显式的单独开关创建，默认关闭。
+
 ## 4. 统一履约合同
 
 ### 4.1 履约粒度
