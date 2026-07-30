@@ -379,3 +379,10 @@
 - evidence: 覆盖 generic/search reservation 分工、无绑定释放和已绑定保护、生成混合状态恢复、生成映射计数审计与终态 retry、账号 inflight 排除、群机器人 admission、日报只读、三 task-id 定向安全清理。相关 no-PostgreSQL 回归曾完成 `125 passed`，生成契约 retry 定向回归 `1 passed / 121 deselected`；本地 PostgreSQL 不可用，真 PostgreSQL 分区由 GitHub Actions 验证。
 - decision: 代码层定向 `qa_pass=true`；不以本地测试代替 Release Checks 或生产 E4。
 - unresolved: CI 全量真 PostgreSQL、部署后共享槽位释放、三个任务远端消息增长、数据库 deadlock 与 IO 稳定性。
+
+## 2026-07-31 AI 群会话与准入锁序定向 re-QA
+
+- message_id: `2026-07-31-ai-group-speaker-admission-lock-order-qa-001`
+- evidence: `_prepare_group_send` 明确断言 speaker state lock 先于 admission gate；准入与会话轮换组合回归 `16 passed`。
+- decision: 定向 `qa_pass=true`；真 PostgreSQL 全量与生产零 deadlock 增量仍是 Release Gate。
+- unresolved: 第二次 CI/发布与连续生产窗口。

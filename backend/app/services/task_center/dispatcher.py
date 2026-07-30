@@ -2514,6 +2514,7 @@ def _prepare_group_send(
     if not group:
         _fail(action, FailureType.PEER_INVALID.value, "目标群不存在", auto_check="拦截", validation_stage="target")
         return None
+    _lock_group_ai_speaker_state(session, action, group_id=int(group.id))
     if not _group_bot_admission_gate_pass(session, action, group_id=int(group.id), account_id=int(context.account.id)):
         return None
     if not _speaker_rotation_gate_pass(session, action, group_id=int(group.id), account_id=int(context.account.id)):
@@ -2568,6 +2569,22 @@ def _prepare_group_send(
             validation_stage="account_target_permission",
         )
     return None
+
+
+def _lock_group_ai_speaker_state(session: Session, action: Action, *, group_id: int) -> None:
+    if action.task_type != "group_ai_chat" or action.action_type != "send_message":
+        return
+    from app.services.task_center.conversation_speaker_rotation import (
+        conversation_key_for_group,
+        lock_or_create_state,
+    )
+
+    lock_or_create_state(
+        session,
+        tenant_id=action.tenant_id,
+        surface="group_ai_chat",
+        conversation_key=conversation_key_for_group(group_id=group_id),
+    )
 
 
 def _group_send_link(

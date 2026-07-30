@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine, select
@@ -36,6 +37,38 @@ from app.services.task_center.group_bot_admission import (
 
 
 pytestmark = pytest.mark.no_postgres
+
+
+def test_group_send_locks_speaker_state_before_admission(monkeypatch) -> None:
+    with _session() as session:
+        _seed_scope(session)
+        action = session.get(Action, "send-1")
+        account = session.get(TgAccount, 11)
+        order: list[str] = []
+        monkeypatch.setattr(
+            dispatcher,
+            "_lock_group_ai_speaker_state",
+            lambda *_args, **_kwargs: order.append("speaker_state"),
+        )
+        monkeypatch.setattr(
+            dispatcher,
+            "_group_bot_admission_gate_pass",
+            lambda *_args, **_kwargs: order.append("admission") or False,
+        )
+
+        result = dispatcher._prepare_group_send(
+            session,
+            action,
+            dispatcher.SendMessageDispatchContext(
+                account=account,
+                credentials=object(),
+                payload=SimpleNamespace(group_id=7),
+            ),
+            generation_dependencies=SimpleNamespace(),
+        )
+
+        assert result is None
+        assert order == ["speaker_state", "admission"]
 
 
 def test_gateway_gate_backfills_missing_scoped_admission_and_defers_body() -> None:
