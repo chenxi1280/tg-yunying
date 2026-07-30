@@ -84,7 +84,16 @@ def test_production_image_keeps_runtime_deps_without_grok_cli_deploy_gate():
     workflow = (PROJECT_ROOT / ".github/workflows/deploy-production.yml").read_text()
     compose = (PROJECT_ROOT / "docker-compose.server.yml").read_text()
 
-    assert "curl ca-certificates git" in dockerfile
+    required_runtime_packages = (
+        "ca-certificates",
+        "curl",
+        "git",
+        "libgl1",
+        "libglib2.0-0",
+        "tesseract-ocr",
+    )
+    for package in required_runtime_packages:
+        assert package in dockerfile
     # Grok CLI is optional fallback only; deploy must not fail closed on CLI preflight.
     assert "Preflight production Grok CLI" not in workflow
     assert "Verify production Grok CLI bridge" not in workflow
