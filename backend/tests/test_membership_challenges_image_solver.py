@@ -108,6 +108,44 @@ def test_search_join_image_solver_prefers_healthy_mimo_v25_over_minimax_m3(
 
 
 @pytest.mark.no_postgres
+def test_search_join_image_solver_passes_ordered_candidates_to_provider(
+    monkeypatch,
+) -> None:
+    mimo = SimpleNamespace(id=1, provider_name="MiMo", model_name="mimo-v2.5")
+    prompts: list[str] = []
+    monkeypatch.setattr(
+        membership_challenges,
+        "_image_verification_providers",
+        lambda _session: [mimo],
+    )
+    monkeypatch.setattr(
+        membership_challenges,
+        "ai_provider_credentials",
+        lambda provider: provider,
+    )
+
+    def solve(_provider, *_args, **kwargs):
+        prompts.append(kwargs["prompt"])
+        return SimpleNamespace(answer="18", confidence=0.95)
+
+    monkeypatch.setattr(
+        membership_challenges.ai_gateway,
+        "solve_image_verification",
+        solve,
+    )
+    solver = membership_challenges.build_search_join_image_verification_solver(
+        object(),
+    )
+
+    assert solver(b"image", "image/png", ["23", "105", "18"]) == (
+        "18",
+        0.95,
+    )
+    assert '["23", "105", "18"]' in prompts[0]
+    assert "只有独立计算结果精确命中候选时才返回" in prompts[0]
+
+
+@pytest.mark.no_postgres
 def test_search_join_image_solver_exposes_all_provider_transport_failures(
     monkeypatch,
 ) -> None:

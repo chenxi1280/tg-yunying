@@ -54,12 +54,16 @@ def ensure_comment_action_contract(
     action: Action,
     *,
     now: datetime,
-) -> None:
+) -> bool:
     payload = dict(action.payload or {})
-    existing = _payload_obligation(session, _action_task(session, action), payload)
+    existing = _payload_obligation(
+        session,
+        _action_task(session, action),
+        payload,
+        lock=True,
+    )
     if existing is not None:
-        _restore_existing_action_binding(existing, action)
-        return
+        return _restore_existing_action_binding(session, existing, action)
     task = session.scalar(
         select(Task).where(Task.id == action.task_id).with_for_update()
     )
@@ -69,21 +73,31 @@ def ensure_comment_action_contract(
     obligation_id = str((action.payload or {}).get("comment_fulfillment_obligation_id") or "")
     if not obligation_id:
         raise ValueError(f"comment_takeover_obligation_missing:{action.id}")
+    return True
 
 
 def _restore_existing_action_binding(
+    session: Session,
     obligation: CommentFulfillmentObligation,
     action: Action,
-) -> None:
+) -> bool:
     if obligation.current_action_id == action.id:
-        return
+        return True
     if obligation.status == "confirmed":
-        raise ValueError(f"comment_obligation_already_confirmed:{action.id}")
+        return False
     if obligation.current_action_id:
-        raise ValueError(f"comment_obligation_already_bound:{action.id}")
+        current = session.get(Action, obligation.current_action_id)
+        if current is not None and current.status not in {
+            "cancelled",
+            "failed",
+            "skipped",
+            "retryable_failed",
+        }:
+            return False
     obligation.current_action_id = action.id
     obligation.action_attempt_no = int(obligation.action_attempt_no or 0) + 1
     obligation.status = "pending"
+    return True
 
 
 def _action_task(session: Session, action: Action) -> Task:
@@ -208,9 +222,18 @@ def _payload_obligation(
     session: Session,
     task: Task,
     payload: dict,
+    *,
+    lock: bool = False,
 ) -> CommentFulfillmentObligation | None:
     obligation_id = str(payload.get("comment_fulfillment_obligation_id") or "")
-    obligation = session.get(CommentFulfillmentObligation, obligation_id) if obligation_id else None
+    if not obligation_id:
+        return None
+    statement = select(CommentFulfillmentObligation).where(
+        CommentFulfillmentObligation.id == obligation_id
+    )
+    obligation = session.scalar(
+        statement.with_for_update() if lock else statement
+    )
     return obligation if obligation and obligation.task_id == task.id else None
 
 

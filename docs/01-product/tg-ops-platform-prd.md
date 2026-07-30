@@ -643,7 +643,7 @@ Planner 顺序固定为：真实 remaining 与防重 planning deficit -> 账号 
 检测到 `verification_image_page` 时执行：
 
 1. **记录过程状态并下载图片**：以 `bot_peer + message_id + image_hash + ordered_callback_fingerprint` 生成不可变 `challenge_fingerprint_hash`，写 `jisou_image_verification_required`，但不终结当前 Action、不触发账号排除；`client.download_media(message, file=bytes)` 获取验证码图片字节。当前 Action 继续持有既有账号 in-flight/session ownership，在该 fingerprint 收口前不得让同一账号—协议会话被另一条搜索 Action 并发改写；这只是会话互斥，不消费新的 click 配额、任务目标或 Dispatcher/Gateway 份额。
-2. **视觉识别**：调用 `ai_gateway.solve_image_verification`，按当前健康且已审批的多模态供应商稳定顺序识别；当前生产已验证顺序固定为 `MiMo mimo-v2.5 → MiniMax-M3 → 其他健康已审批模型`，不得把健康可用的 MiMo v2.5 排在 MiniMax-M3 之后或误判为不可用。prompt 固定为「识别图片中的算式并计算结果，输出 JSON：{"answer":数字,"confidence":0到1}。answer 必须是算式计算后的正整数。只输出紧凑 JSON，不要解释。」。不设置“1–2 次”等业务固定 AI 轮数：空内容、结构非法或安全校验不通过时继续使用尚未调用的健康已审批供应商；仅供应商/传输暂不可用时保持 `jisou_image_verification_required` 并显示 `verification_ai_unavailable`，不写 failed、不触发 12 小时排除。
+2. **视觉识别**：调用 `ai_gateway.solve_image_verification`，按当前健康且已审批的多模态供应商稳定顺序识别；当前生产已验证顺序固定为 `MiMo mimo-v2.5 → MiniMax-M3 → 其他健康已审批模型`，不得把健康可用的 MiMo v2.5 排在 MiniMax-M3 之后或误判为不可用。每个供应商的 prompt 必须同时携带当前 immutable challenge 的有序数字按钮候选值，并要求模型先独立识别/计算、只有计算结果精确等于某个候选值时才返回该值；不能强迫模型从候选中猜选。输出仍固定为紧凑 JSON `{"answer":数字,"confidence":0到1}`。候选矩阵只帮助消歧，不替代第 3 步服务端双重校验，也不得被写入 Provider 健康状态。不设置“1–2 次”等业务固定 AI 轮数：空内容、结构非法或安全校验不通过时继续使用尚未调用的健康已审批供应商；仅供应商/传输暂不可用时保持 `jisou_image_verification_required` 并显示 `verification_ai_unavailable`，不写 failed、不触发 12 小时排除。
 3. **双重校验（硬约束）**：
    - 置信度 ≥ 0.70（必要条件）；
    - **answer 必须在按钮矩阵 callback_data 数字按钮的 `text` 集合中**（充分条件，最后一道安全门）。

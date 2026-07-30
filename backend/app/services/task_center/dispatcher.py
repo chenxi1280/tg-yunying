@@ -185,6 +185,9 @@ _COMMENT_THREAD_UNAVAILABLE_FAILURES = {FailureType.COMMENT_UNAVAILABLE.value}
 _COMMENT_THREAD_SKIP_CODES = {
     FailureType.COMMENT_UNAVAILABLE.value: "comment_unavailable_sibling",
 }
+_COMMENT_REPLAN_GENERATION_STATUSES = frozenset(
+    {"reply_target_missing", "reply_target_stale"}
+)
 _COMMENT_MEMBERSHIP_RETRY_DELAY = timedelta(minutes=5)
 DISPATCHER_DB_ERROR_RETRY_DELAY_SECONDS = 10
 CHANNEL_DAILY_ACTION_TYPES = {"view_message"}
@@ -500,7 +503,7 @@ def _sync_comment_fulfillment_state(
     if action.status == "unknown_after_send":
         obligation.status = "unknown"
         return
-    if action.status in {"failed", "skipped", "retryable_failed"}:
+    if action.status in {"cancelled", "failed", "skipped", "retryable_failed"}:
         obligation.status = "replan_required"
         obligation.current_action_id = None
 
@@ -571,7 +574,7 @@ def _ensure_comment_fulfillment_contract(
     from .comment_fulfillment_takeover import ensure_comment_action_contract
 
     try:
-        ensure_comment_action_contract(session, action, now=_now())
+        accepted = ensure_comment_action_contract(session, action, now=_now())
     except ValueError as exc:
         task = session.get(Task, action.task_id)
         if task is not None:
@@ -579,7 +582,47 @@ def _ensure_comment_fulfillment_contract(
         else:
             _fail(action, "task_fulfillment_contract_invalid", str(exc))
         return False
+    if not accepted:
+        payload = action.payload if isinstance(action.payload, dict) else {}
+        obligation_id = str(
+            payload.get("comment_fulfillment_obligation_id") or ""
+        )
+        obligation = session.get(
+            CommentFulfillmentObligation,
+            obligation_id,
+        )
+        confirmed = obligation is not None and obligation.status == "confirmed"
+        _skip(
+            action,
+            (
+                "remote_fact_already_fulfilled"
+                if confirmed
+                else "comment_obligation_superseded"
+            ),
+            (
+                "评论义务已有远端确认事实"
+                if confirmed
+                else "评论义务已有当前 Action 接管"
+            ),
+        )
+        return False
+    replan_code = _comment_replan_generation_status(action)
+    if replan_code:
+        _skip(
+            action,
+            replan_code,
+            "评论引用目标已失效，保留原履约义务等待重建",
+        )
+        return False
     return True
+
+
+def _comment_replan_generation_status(action: Action) -> str:
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    if payload.get("comment_text"):
+        return ""
+    status = str(payload.get("ai_generation_status") or "")
+    return status if status in _COMMENT_REPLAN_GENERATION_STATUSES else ""
 
 
 def _dispatch_action(
