@@ -135,6 +135,35 @@ def test_quantity_alignment_does_not_borrow_other_coverage_slot() -> None:
     assert selected == []
 
 
+def test_repeated_account_uses_extra_after_own_coverage_slot() -> None:
+    blueprint = SimpleNamespace(
+        profile=SimpleNamespace(
+            coverage_rows={201: SimpleNamespace(id="coverage-own")},
+        ),
+        generation=SimpleNamespace(
+            quality_items=[
+                {"slot_account_id": 201},
+                {"slot_account_id": 201},
+            ],
+        ),
+    )
+    coverage_slot = SimpleNamespace(
+        id="quantity-coverage",
+        task_account_daily_coverage_id="coverage-own",
+    )
+    extra_slot = SimpleNamespace(
+        id="quantity-extra",
+        task_account_daily_coverage_id=None,
+    )
+
+    selected = group_ai_chat._align_quantity_slots(
+        blueprint,
+        [coverage_slot, extra_slot],
+    )
+
+    assert selected == [coverage_slot, extra_slot]
+
+
 def test_extra_volume_alignment_uses_uncovered_quantity_slot() -> None:
     coverage_slot = SimpleNamespace(
         id="quantity-coverage",
