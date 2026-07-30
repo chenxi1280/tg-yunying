@@ -443,3 +443,10 @@
 - evidence: 线上形态 `Shard unclaimed=1 / Window unclaimed=0` 可先回滚、写 resolved quarantine、重算并完成 release；安全 awaiting admission 同时进入 coverage ready 与 Planner，但状态在 send gate 前保持 awaiting；缺 refs 的 waiting 账号仍被排除；pre-Gateway execution timeout 创建带明确 reason 的新 Action，存在 `gateway_call_started_at` 的相同错误保持不动。综合 `136 passed / 38 deselected`，邻接准入/释放回归均通过；compileall、diff-check 通过。
 - decision: `qa_pass=true`（E2）；不接受批量把 admission 改 ready，不接受删除 unknown/Gateway-started 事实；允许回到 product 验收并进入 Release Gate。
 - unresolved: CI、生产部署、受控 DB 恢复和真实 Telegram E4。
+
+## 2026-07-31 Dispatcher 跨 epoch Window 聚合 re-QA
+
+- message_id: `2026-07-31-dispatch-window-cross-epoch-qa-002`
+- evidence: 新红测覆盖旧 epoch allocation unclaimed=5、Window rebuild 到 epoch=2 且无新 demand；修复后 Window 仍为 5，不重复授予容量。Dispatcher reservation、search release 与 window demand 组合 `48 passed`，diff-check/compileall 进入提交前复核。
+- decision: `qa_pass=true`（E2）；首版只恢复 drain 不足以关闭问题，必须重新发布并观察新 Window 非负且等于所有有效 shard allocation 汇总。
+- unresolved: 第二次 CI/部署和生产连续 Window E4。

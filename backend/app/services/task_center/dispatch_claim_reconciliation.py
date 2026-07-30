@@ -185,6 +185,16 @@ def _sync_window_unclaimed_counts(
         window.version += 1
 
 
+def sync_window_unclaimed_total(
+    window: DispatchClaimWindow,
+    allocations: list[DispatchClaimShardAllocation],
+) -> None:
+    expected = sum(int(row.unclaimed_allocated_count) for row in allocations)
+    if window.unclaimed_allocated_count != expected:
+        window.unclaimed_allocated_count = expected
+        window.version += 1
+
+
 def _reservation_unclaimed_count(
     reservation: DispatchClaimReservation,
 ) -> int:
