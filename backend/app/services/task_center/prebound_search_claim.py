@@ -19,6 +19,34 @@ from .dispatch_claim_ledger import binding_metadata, for_update
 from .dispatch_claim_types import DispatchClaimBinding, DispatchClaimPlan
 
 
+_PREBOUND_PROJECTION_ATTR = "_dispatch_prebound_projection"
+_ASSIGNMENT_PROJECTION_ATTR = "_dispatch_assignment_id_projection"
+
+
+def annotate_prebound_projection(
+    action: Action,
+    *,
+    is_prebound: bool,
+    assignment_id: str,
+) -> None:
+    setattr(action, _PREBOUND_PROJECTION_ATTR, is_prebound)
+    setattr(action, _ASSIGNMENT_PROJECTION_ATTR, assignment_id)
+
+
+def action_is_dispatch_prebound(action: Action) -> bool:
+    if hasattr(action, _PREBOUND_PROJECTION_ATTR):
+        return bool(getattr(action, _PREBOUND_PROJECTION_ATTR))
+    result = action.result if isinstance(action.result, dict) else {}
+    return bool(result.get("dispatch_prebound"))
+
+
+def prebound_assignment_id(action: Action) -> str:
+    if hasattr(action, _ASSIGNMENT_PROJECTION_ATTR):
+        return str(getattr(action, _ASSIGNMENT_PROJECTION_ATTR) or "")
+    result = action.result if isinstance(action.result, dict) else {}
+    return str(result.get("search_click_assignment_id") or "")
+
+
 def plan_prebound_search_claims(
     session: Session,
     actions: list[Action],
@@ -58,13 +86,12 @@ def prebound_search_epoch_action_ids(
     action: Action,
     account_id: int,
 ) -> set[str]:
-    result = action.result if isinstance(action.result, dict) else {}
-    if action.task_type != "search_click" or not result.get("dispatch_prebound"):
+    if action.task_type != "search_click" or not action_is_dispatch_prebound(action):
         return set()
     payload = action.payload if isinstance(action.payload, dict) else {}
     assignment_id = str(
         payload.get("search_click_assignment_id")
-        or result.get("search_click_assignment_id")
+        or prebound_assignment_id(action)
         or ""
     )
     assignment = session.get(
@@ -140,8 +167,7 @@ def _prebound_binding(
     session: Session,
     action: Action,
 ) -> DispatchClaimBinding | None:
-    result = action.result if isinstance(action.result, dict) else {}
-    if not result.get("dispatch_prebound"):
+    if not action_is_dispatch_prebound(action):
         return None
     assignment = _assignment(session, action)
     if assignment is None or assignment.state != "action_bound":
@@ -213,7 +239,7 @@ def _assignment(
     session: Session,
     action: Action,
 ) -> SearchClickOpportunityAssignment | None:
-    assignment_id = str((action.result or {}).get("search_click_assignment_id") or "")
+    assignment_id = prebound_assignment_id(action)
     return session.get(SearchClickOpportunityAssignment, assignment_id)
 
 
@@ -221,7 +247,7 @@ def _locked_assignment(
     session: Session,
     action: Action,
 ) -> SearchClickOpportunityAssignment | None:
-    assignment_id = str((action.result or {}).get("search_click_assignment_id") or "")
+    assignment_id = prebound_assignment_id(action)
     return session.scalar(for_update(
         session,
         select(SearchClickOpportunityAssignment).where(

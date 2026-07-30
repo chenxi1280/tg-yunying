@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, inspect, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
@@ -211,6 +211,63 @@ def test_ready_window_keeps_epoch_while_reservations_remain() -> None:
         demand_hash="new-hash",
         demand_without_reservation=True,
     ) is False
+
+
+def test_dispatch_claim_scope_locks_before_global_candidate_scan(
+    monkeypatch,
+) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    settings = _settings(dispatcher_concurrency=2)
+    events: list[str] = []
+    original_scan = dispatcher._dispatch_claim_window_actions
+
+    monkeypatch.setattr(dispatcher, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        dispatcher,
+        "lock_dispatch_claim_selection",
+        lambda *_args, **_kwargs: events.append("scope_lock"),
+        raising=False,
+    )
+
+    def record_scan(*args, **kwargs):
+        events.append("candidate_scan")
+        return original_scan(*args, **kwargs)
+
+    monkeypatch.setattr(
+        dispatcher,
+        "_dispatch_claim_window_actions",
+        record_scan,
+    )
+
+    with Session(engine) as session:
+        _seed_strict_actions(session, _now())
+        dispatcher.claim_actions(session, limit=1, worker_id="lock-order")
+
+    assert events[:2] == ["scope_lock", "candidate_scan"]
+
+
+def test_dispatch_claim_window_scan_defers_full_result_payload(
+    monkeypatch,
+) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    settings = _settings(dispatcher_concurrency=2)
+    now_value = _now()
+    monkeypatch.setattr(dispatcher, "get_settings", lambda: settings)
+
+    with Session(engine) as session:
+        _seed_strict_actions(session, now_value)
+        rows = dispatcher._dispatch_claim_window_actions(
+            session,
+            [Action.status == "pending", Action.scheduled_at <= now_value],
+            settings=settings,
+            now_value=now_value,
+            force_ordinary_tenants=set(),
+        )
+
+        assert rows
+        assert all("result" in inspect(action).unloaded for action in rows)
 
 
 def test_ordinary_candidate_scan_keeps_each_due_task_visible(monkeypatch) -> None:
