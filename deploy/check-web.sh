@@ -131,8 +131,6 @@ worker_containers=(
   tgyunying-worker-ai-generation
   tgyunying-worker-dispatcher-1
   tgyunying-worker-dispatcher-2
-  tgyunying-worker-dispatcher-3
-  tgyunying-worker-dispatcher-4
   tgyunying-worker-listener
   tgyunying-worker-recovery
   tgyunying-worker-account-security

@@ -997,7 +997,7 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 | --- | ---: | --- | --- |
 | `Dockerfile.backend` | 22 | Dockerfile.backend 镜像构建文件，定义对应服务镜像构建步骤。 | 构建阶段：python:3.12-slim |
 | `Dockerfile.frontend` | 15 | Dockerfile.frontend 镜像构建文件，定义对应服务镜像构建步骤。 | 构建阶段：node:22-alpine、nginx:1.27-alpine |
-| `docker-compose.server.yml` | 299 | docker-compose.server.yml compose 编排，定义本地或服务器服务、网络、环境变量和健康检查；运行时明细保留 5 天，detail/metrics cleanup 默认均为 300 秒；worker healthcheck 使用本地 heartbeat 文件时间戳，不启动 `python -m app.worker_health`。 | 服务：backend、worker-planner、worker-dispatcher-1、worker-dispatcher-2、worker-dispatcher-3、worker-dispatcher-4、worker-listener、worker-recovery、worker-account-security、worker-account-online、worker-ai-memory、worker-metrics、infra_default |
+| `docker-compose.server.yml` | 259 | docker-compose.server.yml compose 编排，定义本地或服务器服务、网络、环境变量和健康检查；4 核生产机固定 2 个 dispatcher / 2 个账号分片；运行时明细保留 5 天，detail cleanup 默认每批 2000、每 60 秒检查，metrics cleanup 默认 300 秒；worker healthcheck 使用本地 heartbeat 文件时间戳，不启动 `python -m app.worker_health`。 | 服务：backend、worker-planner、worker-ai-generation、worker-dispatcher-1、worker-dispatcher-2、worker-listener、worker-recovery、worker-account-security、worker-account-online、worker-ai-memory、worker-metrics、infra_default |
 | `docker-compose.yml` | 38 | docker-compose.yml compose 编排，定义本地或服务器服务、网络、环境变量和健康检查。 | 服务：postgres、redis、postgres_data、redis_data |
 
 ### 工程配置

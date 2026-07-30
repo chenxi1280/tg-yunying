@@ -169,8 +169,6 @@ WORKER_SERVICES=(
   worker-ai-generation
   worker-dispatcher-1
   worker-dispatcher-2
-  worker-dispatcher-3
-  worker-dispatcher-4
   worker-listener
   worker-recovery
   worker-account-security
