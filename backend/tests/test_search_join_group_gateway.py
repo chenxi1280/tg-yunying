@@ -1068,6 +1068,61 @@ def test_jisou_continues_with_new_challenge_fingerprint_in_same_action() -> None
 
 
 @pytest.mark.no_postgres
+def test_jisou_refreshes_keyword_after_no_consensus_then_succeeds() -> None:
+    first_verification = _verification_image_page(
+        digit_answers=["7", "8", "9", "10", "11", "12", "13", "14"],
+        message_id=101,
+    )
+    second_verification = _verification_image_page(
+        digit_answers=["7", "8", "9", "10", "11", "12", "13", "14"],
+        message_id=102,
+    )
+    category_page = FakeMessage(
+        103, [[FakeButton("👥", data=b"group-category")]]
+    )
+    target_page = FakeMessage(
+        104, [[FakeButton("目标群", url="https://t.me/target_group")]]
+    )
+    client = FakeSearchJoinClient(
+        [first_verification, second_verification],
+        edits=[category_page, target_page],
+        history_messages=[FakeMessage(100, [])],
+    )
+    calls = 0
+
+    def solver(_request):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            votes = (
+                ImageVerificationVote("model", "accepted", "7", 0.9, True),
+                ImageVerificationVote("rapidocr", "accepted", "8", 0.9, True),
+                ImageVerificationVote("ddddocr", "accepted", "9", 0.9, True),
+            )
+            raise ImageVerificationConsensusUnavailableError(
+                "no two sources agree",
+                votes,
+            )
+        return _verification_decision("9", 0.95)
+
+    result = asyncio.run(
+        execute_search_join_with_client(
+            client,
+            _payload(bot_username="jisou"),
+            keyword_text="郑州",
+            image_verification_solver=solver,
+            image_verification_challenge_limit=3,
+        )
+    )
+
+    assert result["success"] is True
+    assert result["join_status"] == "target_found"
+    assert client.sent == [("jisou", "郑州"), ("jisou", "郑州")]
+    assert result["image_verification_challenge_count"] == 2
+    assert result["image_verification_refresh_count"] == 1
+
+
+@pytest.mark.no_postgres
 def test_jisou_verification_prefers_newer_bot_response_over_stale_message_edit() -> None:
     verification_page = _verification_image_page(
         digit_answers=["7", "8", "9", "10", "11", "12", "13", "14"],
@@ -1185,7 +1240,7 @@ def test_jisou_image_verification_fails_when_answer_not_in_button_matrix() -> No
 
 
 @pytest.mark.no_postgres
-def test_jisou_image_verification_stays_required_without_two_safe_votes() -> None:
+def test_jisou_image_verification_fails_when_consensus_budget_exhausted() -> None:
     digit_answers = ["8", "9", "10", "11", "12", "13", "14", "15"]
     verification_page = _verification_image_page(digit_answers=digit_answers)
     client = FakeSearchJoinClient([FakeMessage(100, []), verification_page])
@@ -1213,20 +1268,18 @@ def test_jisou_image_verification_stays_required_without_two_safe_votes() -> Non
             _payload(bot_username="jisou"),
             keyword_text="郑州",
             image_verification_solver=solver,
+            image_verification_challenge_limit=1,
         )
     )
 
     assert result["success"] is False
-    assert result["error_code"] == "jisou_image_verification_required"
-    assert result["image_verification_reason"] == (
-        "verification_consensus_unavailable"
-    )
-    assert len(result["image_verification_votes"]) == 3
+    assert result["error_code"] == "jisou_image_verification_failed"
+    assert "challenge budget exhausted" in result["image_verification_detail"]
     assert verification_page.clicked == []
 
 
 @pytest.mark.no_postgres
-def test_jisou_image_verification_stays_required_when_solver_returns_none() -> None:
+def test_jisou_image_verification_none_fails_when_budget_exhausted() -> None:
     digit_answers = ["8", "9", "10", "11", "12", "13", "14", "15"]
     verification_page = _verification_image_page(digit_answers=digit_answers)
     client = FakeSearchJoinClient([FakeMessage(100, []), verification_page])
@@ -1244,14 +1297,12 @@ def test_jisou_image_verification_stays_required_when_solver_returns_none() -> N
             _payload(bot_username="jisou"),
             keyword_text="郑州",
             image_verification_solver=_solver,
+            image_verification_challenge_limit=1,
         )
     )
 
     assert result["success"] is False
-    assert result["error_code"] == "jisou_image_verification_required"
-    assert result["image_verification_reason"] == (
-        "verification_consensus_unavailable"
-    )
+    assert result["error_code"] == "jisou_image_verification_failed"
     assert call_count == 1
     assert verification_page.clicked == []
 

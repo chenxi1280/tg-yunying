@@ -36,6 +36,7 @@ IMAGE_VERIFICATION_MIN_CONFIDENCE = 0.70
 VERIFICATION_ANSWER_PATTERN = re.compile(r"^[A-Za-z0-9]+$")
 CALLBACK_PAGE_RESPONSE_TIMEOUT_SECONDS = 8.0
 CALLBACK_PAGE_POLL_INTERVAL_SECONDS = 0.5
+DEFAULT_IMAGE_VERIFICATION_CHALLENGE_LIMIT = 3
 PAGINATION_SYMBOL_NAMES = {
     ">": "greater_than",
     "▶": "right_triangle",
@@ -105,6 +106,7 @@ class ImageVerificationDecision:
     answer: str
     confidence: float
     votes: tuple[ImageVerificationVote, ...]
+    model_waited: bool = True
 
 
 ImageVerificationSolver = Callable[
@@ -148,6 +150,9 @@ async def execute_search_join_with_client(
     *,
     keyword_text: str,
     image_verification_solver: ImageVerificationSolver | None = None,
+    image_verification_challenge_limit: int = (
+        DEFAULT_IMAGE_VERIFICATION_CHALLENGE_LIMIT
+    ),
 ) -> dict[str, Any]:
     bot_username = _bot_username(payload)
     if not keyword_text.strip():
@@ -163,6 +168,9 @@ async def execute_search_join_with_client(
             payload,
             target,
             image_verification_solver=image_verification_solver,
+            image_verification_challenge_limit=(
+                image_verification_challenge_limit
+            ),
         )
     except Exception as exc:  # Telethon RPC errors are mapped at this adapter boundary.
         return _failed("search_join_execution_failed", str(exc) or exc.__class__.__name__)
@@ -206,6 +214,7 @@ async def _execute_search_pages(
     target: dict[str, Any],
     *,
     image_verification_solver: ImageVerificationSolver | None = None,
+    image_verification_challenge_limit: int,
 ) -> dict[str, Any]:
     bot = bot_username.strip().lstrip("@")
     protocol_profile = payload.get("approved_protocol_profile")
@@ -225,8 +234,13 @@ async def _execute_search_pages(
             bot,
             payload,
             target,
+            conversation=conv,
+            keyword_text=keyword_text,
             protocol_profile=protocol_profile,
             image_verification_solver=image_verification_solver,
+            verification_budget=_ImageVerificationBudget(
+                limit=max(1, image_verification_challenge_limit),
+            ),
         )
     return {**result, **recovery}
 
@@ -271,8 +285,11 @@ async def _execute_search_result_pages(
     payload: dict[str, Any],
     target: dict[str, Any],
     *,
+    conversation: Any,
+    keyword_text: str,
     protocol_profile: object,
     image_verification_solver: ImageVerificationSolver | None,
+    verification_budget: "_ImageVerificationBudget",
 ) -> dict[str, Any]:
     decoys: list[dict[str, Any]] = []
     total_results = 0
@@ -282,8 +299,11 @@ async def _execute_search_result_pages(
         client,
         page,
         bot,
+        conversation=conversation,
+        keyword_text=keyword_text,
         protocol_profile=protocol_profile,
         image_verification_solver=image_verification_solver,
+        verification_budget=verification_budget,
     )
     if selector_error is not None:
         return _with_no_post_verification_replay(selector_error)
@@ -292,6 +312,13 @@ async def _execute_search_result_pages(
         buttons = _parse_buttons(page)
         classification = _jisou_page_classification(jisou, protocol_profile, page, buttons)
         if jisou and classification.page_phase == VERIFICATION_IMAGE_PAGE:
+            if not verification_budget.consume():
+                return _with_image_verification_attempts(
+                    _image_verification_budget_exhausted(
+                        classification, buttons
+                    ).error,
+                    verification_attempts,
+                )
             handled = await _handle_jisou_image_verification(
                 client,
                 bot,
@@ -303,6 +330,27 @@ async def _execute_search_result_pages(
             )
             if handled.audit is not None:
                 verification_attempts.append(handled.audit)
+            refreshed = await _refresh_unresolved_verification(
+                _JisouNavigationContext(
+                    client=client,
+                    bot_username=bot,
+                    conversation=conversation,
+                    keyword_text=keyword_text,
+                    protocol_profile=protocol_profile,
+                    image_verification_solver=image_verification_solver,
+                    verification_budget=verification_budget,
+                ),
+                page,
+                handled,
+            )
+            if refreshed is not None:
+                if refreshed.audit is not None:
+                    verification_attempts.append(refreshed.audit)
+                handled = refreshed
+            next_challenge = _new_verification_challenge_page(handled)
+            if next_challenge is not None:
+                page = next_challenge
+                continue
             if handled.error is not None:
                 traced_error = _with_search_protocol_trace(
                     handled.error,
@@ -444,16 +492,22 @@ async def _select_jisou_group_results_page(
     page: Any,
     bot_username: str,
     *,
+    conversation: Any,
+    keyword_text: str,
     protocol_profile: object,
     image_verification_solver: ImageVerificationSolver | None = None,
+    verification_budget: "_ImageVerificationBudget",
 ) -> tuple[Any, dict[str, Any] | None, SearchJoinButton | None, list[SearchJoinButton], list[dict[str, Any]]]:
     if not is_jisou_bot(bot_username):
         return page, None, None, [], []
     context = _JisouNavigationContext(
         client=client,
         bot_username=bot_username,
+        conversation=conversation,
+        keyword_text=keyword_text,
         protocol_profile=protocol_profile,
         image_verification_solver=image_verification_solver,
+        verification_budget=verification_budget,
     )
     return await _navigate_jisou_to_group_results(context, page)
 
@@ -462,8 +516,24 @@ async def _select_jisou_group_results_page(
 class _JisouNavigationContext:
     client: Any
     bot_username: str
+    conversation: Any
+    keyword_text: str
     protocol_profile: object
     image_verification_solver: ImageVerificationSolver | None
+    verification_budget: "_ImageVerificationBudget"
+
+
+@dataclass
+class _ImageVerificationBudget:
+    limit: int
+    challenge_count: int = 0
+    refresh_count: int = 0
+
+    def consume(self) -> bool:
+        if self.challenge_count >= self.limit:
+            return False
+        self.challenge_count += 1
+        return True
 
 
 async def _navigate_jisou_to_group_results(
@@ -487,11 +557,33 @@ async def _navigate_jisou_to_group_results(
             selector_buttons = buttons
         phase = classification.page_phase
         if phase == VERIFICATION_IMAGE_PAGE:
+            if not context.verification_budget.consume():
+                exhausted = _image_verification_budget_exhausted(
+                    classification, buttons
+                )
+                return (
+                    page,
+                    _with_image_verification_attempts(
+                        exhausted.error or {}, verification_attempts
+                    ),
+                    group_selector,
+                    selector_buttons,
+                    verification_attempts,
+                )
             handled = await _handle_navigation_verification(
                 context, page, buttons, classification
             )
             if handled.audit is not None:
                 verification_attempts.append(handled.audit)
+            refreshed = await _refresh_unresolved_verification(
+                context,
+                page,
+                handled,
+            )
+            if refreshed is not None:
+                if refreshed.audit is not None:
+                    verification_attempts.append(refreshed.audit)
+                handled = refreshed
             next_challenge = _new_verification_challenge_page(handled)
             if next_challenge is not None:
                 page = next_challenge
@@ -556,6 +648,101 @@ async def _handle_navigation_verification(
         classification,
         context.image_verification_solver,
         protocol_profile=context.protocol_profile,
+    )
+
+
+async def _refresh_unresolved_verification(
+    context: _JisouNavigationContext,
+    page: Any,
+    handled: _ImageVerificationHandleResult,
+) -> _ImageVerificationHandleResult | None:
+    error = handled.error or {}
+    if error.get("image_verification_reason") != (
+        "verification_consensus_unavailable"
+    ):
+        return None
+    if context.verification_budget.challenge_count >= (
+        context.verification_budget.limit
+    ):
+        buttons, classification = _classify_jisou_navigation_page(
+            page, context.protocol_profile
+        )
+        return _image_verification_budget_exhausted(
+            classification, buttons
+        )
+    try:
+        await context.conversation.send_message(context.keyword_text)
+        refreshed_page = await context.conversation.get_response()
+    except Exception as exc:  # noqa: BLE001 - persisted as explicit protocol fact.
+        return _image_verification_required_result(
+            _classify_jisou_navigation_page(
+                page, context.protocol_profile
+            )[1],
+            _parse_buttons(page),
+            str(error.get("challenge_fingerprint_hash") or ""),
+            "verification_refresh_transport_unavailable",
+            detail=str(exc) or exc.__class__.__name__,
+        )
+    context.verification_budget.refresh_count += 1
+    return await _validate_refreshed_verification_page(
+        context,
+        refreshed_page,
+        str(error.get("challenge_fingerprint_hash") or ""),
+    )
+
+
+async def _validate_refreshed_verification_page(
+    context: _JisouNavigationContext,
+    page: Any,
+    previous_fingerprint: str,
+) -> _ImageVerificationHandleResult:
+    buttons, classification = _classify_jisou_navigation_page(
+        page, context.protocol_profile
+    )
+    if classification.page_phase != VERIFICATION_IMAGE_PAGE:
+        return _image_verification_required_result(
+            classification,
+            buttons,
+            previous_fingerprint,
+            "verification_refresh_unexpected_page",
+            page=page,
+        )
+    image_bytes = await _download_verification_image(context.client, page)
+    fingerprint = _image_verification_fingerprint(
+        page, buttons, image_bytes
+    )
+    if not image_bytes:
+        return _image_verification_required_result(
+            classification,
+            buttons,
+            fingerprint,
+            "verification_transport_unavailable",
+            page=page,
+        )
+    if fingerprint == previous_fingerprint:
+        return _image_verification_failed_result(
+            classification,
+            buttons,
+            "keyword refresh returned the same challenge fingerprint",
+            fingerprint=fingerprint,
+        )
+    audit = {
+        "status": "consensus_unavailable_keyword_refresh",
+        "challenge_fingerprint_hash": previous_fingerprint,
+        "next_challenge_fingerprint_hash": fingerprint,
+        "refresh_kind": "keyword_replay",
+    }
+    required = _image_verification_required_result(
+        classification,
+        buttons,
+        fingerprint,
+        "new_challenge_fingerprint",
+        page=page,
+    )
+    return _ImageVerificationHandleResult(
+        page=required.page,
+        error=required.error,
+        audit=audit,
     )
 
 
@@ -921,6 +1108,17 @@ def _image_verification_failed_result(
     return _ImageVerificationHandleResult(page=None, error=error)
 
 
+def _image_verification_budget_exhausted(
+    classification: ProtocolPageClassification,
+    buttons: list[SearchJoinButton],
+) -> _ImageVerificationHandleResult:
+    return _image_verification_failed_result(
+        classification,
+        buttons,
+        "image verification challenge budget exhausted",
+    )
+
+
 def _image_verification_required_result(
     classification: ProtocolPageClassification,
     buttons: list[SearchJoinButton],
@@ -967,6 +1165,7 @@ def _image_verification_audit(
         "status": "consensus_submitted",
         "answer": decision.answer,
         "confidence": round(decision.confidence, 4),
+        "model_waited": decision.model_waited,
         "challenge_fingerprint_hash": fingerprint,
         "votes": [vote.as_dict() for vote in decision.votes],
     }
@@ -981,6 +1180,18 @@ def _with_image_verification_attempts(
     return {
         **result,
         "image_verification_attempts": attempts,
+        "image_verification_challenge_count": len(
+            {
+                str(attempt.get("challenge_fingerprint_hash") or "")
+                for attempt in attempts
+                if attempt.get("challenge_fingerprint_hash")
+            }
+        ),
+        "image_verification_refresh_count": sum(
+            1
+            for attempt in attempts
+            if attempt.get("refresh_kind") == "keyword_replay"
+        ),
     }
 
 
