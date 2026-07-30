@@ -98,11 +98,6 @@ name: Deploy Production
         required: false
         default: false
         type: boolean
-      clash_search_join_create_smoke_task:
-        description: Explicitly create the legacy Zhengzhou search-join smoke task after proxy repair
-        required: false
-        default: false
-        type: boolean
       clash_search_join_apply:
         description: Apply DB proxy bindings after proxy egress passes
         required: false
@@ -609,7 +604,7 @@ jobs:
         env:
           CLASH_SUBSCRIPTION_URL: ${{ secrets.TGYUNYING_CLASH_SUBSCRIPTION_URL }}
           CLASH_LIVE_APPLY: ${{ inputs.clash_search_join_apply }}
-          CLASH_CREATE_SMOKE_TASK: ${{ inputs.clash_search_join_create_smoke_task }}
+          CLASH_CREATE_SMOKE_TASK: false
           CLASH_NODE_LIMIT: ${{ inputs.clash_search_join_node_limit }}
           CLASH_TEST_ACCOUNT_COUNT: ${{ inputs.clash_search_join_test_account_count }}
           CLASH_TARGET_QUERY: ${{ inputs.clash_search_join_target_query }}
