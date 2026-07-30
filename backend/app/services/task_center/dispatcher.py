@@ -625,6 +625,128 @@ def _comment_replan_generation_status(action: Action) -> str:
     return status if status in _COMMENT_REPLAN_GENERATION_STATUSES else ""
 
 
+def _ensure_ai_content_mix_binding(
+    session: Session,
+    action: Action,
+) -> bool:
+    if action.action_type != "send_message":
+        return True
+    error = _ai_content_mix_binding_error(session, action)
+    if error is None:
+        return True
+    error_code, error_message = error
+    _skip(
+        action,
+        error_code,
+        error_message,
+    )
+    return False
+
+
+def _ai_content_mix_binding_error(
+    session: Session,
+    action: Action,
+) -> tuple[str, str] | None:
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    binding_ids = _content_mix_binding_ids(action, payload)
+    if not any(binding_ids):
+        return None
+    invalid_message = "ContentMix 槽、数量槽、coverage 或账号归属不一致"
+    if _content_mix_binding_ids_invalid(binding_ids):
+        return "content_mix_binding_invalid", invalid_message
+    rows = _content_mix_binding_rows(session, action)
+    if rows is None or _content_mix_binding_ownership_invalid(action, rows):
+        return "content_mix_binding_invalid", invalid_message
+    _, quantity, _ = rows
+    return _content_mix_coverage_binding_error(session, action, quantity)
+
+
+def _content_mix_binding_ids(
+    action: Action,
+    payload: dict,
+) -> tuple[str, str, str, str]:
+    return (
+        str(action.content_mix_cycle_slot_id or ""),
+        str(action.primary_quantity_slot_id or ""),
+        str(payload.get("content_mix_cycle_slot_id") or ""),
+        str(payload.get("primary_quantity_slot_id") or ""),
+    )
+
+
+def _content_mix_binding_ids_invalid(
+    binding_ids: tuple[str, str, str, str],
+) -> bool:
+    cycle_slot_id, quantity_slot_id, payload_cycle_slot_id, payload_quantity_slot_id = binding_ids
+    return (
+        not all(binding_ids)
+        or cycle_slot_id != payload_cycle_slot_id
+        or quantity_slot_id != payload_quantity_slot_id
+    )
+
+
+def _content_mix_binding_rows(
+    session: Session,
+    action: Action,
+) -> tuple[ContentMixCycleSlot, TaskGroupDailyMessageSlot, ContentMixCycle] | None:
+    cycle_slot = session.get(
+        ContentMixCycleSlot,
+        str(action.content_mix_cycle_slot_id or ""),
+    )
+    quantity = session.get(
+        TaskGroupDailyMessageSlot,
+        str(action.primary_quantity_slot_id or ""),
+    )
+    if cycle_slot is None or quantity is None:
+        return None
+    cycle = session.get(ContentMixCycle, cycle_slot.cycle_id)
+    return (cycle_slot, quantity, cycle) if cycle is not None else None
+
+
+def _content_mix_binding_ownership_invalid(
+    action: Action,
+    rows: tuple[ContentMixCycleSlot, TaskGroupDailyMessageSlot, ContentMixCycle],
+) -> bool:
+    cycle_slot, quantity, cycle = rows
+    return (
+        cycle_slot.primary_quantity_slot_id != quantity.id
+        or getattr(cycle_slot, "current_action_id", action.id) != action.id
+        or quantity.task_id != action.task_id
+        or quantity.tenant_id != action.tenant_id
+        or cycle.task_id != action.task_id
+        or cycle.tenant_id != action.tenant_id
+        or cycle.task_day_ledger_id != quantity.task_day_ledger_id
+    )
+
+
+def _content_mix_coverage_binding_error(
+    session: Session,
+    action: Action,
+    quantity: TaskGroupDailyMessageSlot,
+) -> tuple[str, str] | None:
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    expected_coverage_id = str(quantity.task_account_daily_coverage_id or "")
+    actual_coverage_id = str(payload.get("coverage_ledger_id") or "")
+    if actual_coverage_id != expected_coverage_id:
+        return (
+            "content_mix_quantity_coverage_mismatch",
+            "Action coverage 与主发送槽绑定账号不一致，释放后按原槽重建",
+        )
+    if not expected_coverage_id:
+        return None
+    coverage = session.get(TaskAccountDailyCoverage, expected_coverage_id)
+    if coverage is None or (
+        coverage.account_id != action.account_id
+        or coverage.task_id != action.task_id
+        or coverage.tenant_id != action.tenant_id
+        or coverage.task_day_ledger_id != quantity.task_day_ledger_id
+    ):
+        return (
+            "content_mix_binding_invalid",
+            "ContentMix 槽、数量槽、coverage 或账号归属不一致",
+        )
+    return None
+
+
 def _dispatch_action(
     session: Session,
     action: Action,
@@ -634,21 +756,7 @@ def _dispatch_action(
 ) -> bool:
     if _legacy_review_enabled() and has_pending_review(session, action.id):
         return False
-    if _skip_search_click_action_after_deadline(session, action):
-        return True
-    if _skip_search_click_action_during_quiet_hours(session, action):
-        return True
-    if _skip_expired_hard_hourly_action(session, action):
-        return True
-    if action.action_type == "invite_group_bot" and not _migrate_deprecated_group_rescue_action(session, action):
-        return True
-    if action.action_type == "invite_group_account" and not _refresh_stale_invite_group_account_action(session, action):
-        return True
-    if action.action_type == "search_join":
-        _rebind_search_join_source_action_to_authorization_account(session, action)
-    if action.action_type == SEARCH_JOIN_MEMBERSHIP_ACTION_TYPE:
-        rebind_membership_action_to_source_account(session, action)
-    if not _ensure_comment_fulfillment_contract(session, action):
+    if _action_pre_dispatch_handled(session, action):
         return True
     account = _dispatch_account(session, action)
     if account is None:
@@ -676,6 +784,29 @@ def _dispatch_action(
         else:
             _fail(action, FailureType.UNKNOWN.value, detail)
         return True
+
+
+def _action_pre_dispatch_handled(
+    session: Session,
+    action: Action,
+) -> bool:
+    if _skip_search_click_action_after_deadline(session, action):
+        return True
+    if _skip_search_click_action_during_quiet_hours(session, action):
+        return True
+    if _skip_expired_hard_hourly_action(session, action):
+        return True
+    if action.action_type == "invite_group_bot" and not _migrate_deprecated_group_rescue_action(session, action):
+        return True
+    if action.action_type == "invite_group_account" and not _refresh_stale_invite_group_account_action(session, action):
+        return True
+    if action.action_type == "search_join":
+        _rebind_search_join_source_action_to_authorization_account(session, action)
+    if action.action_type == SEARCH_JOIN_MEMBERSHIP_ACTION_TYPE:
+        rebind_membership_action_to_source_account(session, action)
+    if not _ensure_comment_fulfillment_contract(session, action):
+        return True
+    return not _ensure_ai_content_mix_binding(session, action)
 
 
 def _dispatch_account(session: Session, action: Action) -> TgAccount | None:
@@ -8389,16 +8520,10 @@ def _sync_action_coverage_state(session: Session, action: Action) -> None:
 
 
 def _sync_action_content_mix_state(session: Session, action: Action) -> None:
-    cycle_slot_id = str(action.content_mix_cycle_slot_id or "")
-    quantity_slot_id = str(action.primary_quantity_slot_id or "")
-    if not cycle_slot_id or not quantity_slot_id:
+    rows = _authoritative_content_mix_rows(session, action)
+    if rows is None:
         return
-    cycle_slot = session.get(ContentMixCycleSlot, cycle_slot_id)
-    quantity_slot = session.get(TaskGroupDailyMessageSlot, quantity_slot_id)
-    if cycle_slot is None or quantity_slot is None:
-        raise RuntimeError("content_mix_binding_missing")
-    if cycle_slot.current_action_id != action.id:
-        return
+    cycle_slot, quantity_slot = rows
     if action.status == "success" and _action_has_remote_success(session, action):
         cycle_slot.slot_state = "confirmed"
         quantity_slot.state = "confirmed"
@@ -8419,6 +8544,34 @@ def _sync_action_content_mix_state(session: Session, action: Action) -> None:
             return
         cycle_slot.slot_state = "replan_required"
         quantity_slot.state = "open"
+
+
+def _authoritative_content_mix_rows(
+    session: Session,
+    action: Action,
+) -> tuple[ContentMixCycleSlot, TaskGroupDailyMessageSlot] | None:
+    cycle_slot_id = str(action.content_mix_cycle_slot_id or "")
+    if not cycle_slot_id:
+        return None
+    cycle_slot = session.get(ContentMixCycleSlot, cycle_slot_id)
+    if cycle_slot is None or cycle_slot.current_action_id != action.id:
+        return None
+    cycle = session.get(ContentMixCycle, cycle_slot.cycle_id)
+    quantity_slot = session.get(
+        TaskGroupDailyMessageSlot,
+        cycle_slot.primary_quantity_slot_id,
+    )
+    if cycle is None or quantity_slot is None:
+        return None
+    if (
+        cycle.task_id != action.task_id
+        or cycle.tenant_id != action.tenant_id
+        or quantity_slot.task_id != cycle.task_id
+        or quantity_slot.tenant_id != cycle.tenant_id
+        or quantity_slot.task_day_ledger_id != cycle.task_day_ledger_id
+    ):
+        return None
+    return cycle_slot, quantity_slot
 
 
 def _reconcile_content_mix_for_slot(
