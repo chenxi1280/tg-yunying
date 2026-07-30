@@ -40,7 +40,8 @@ from app.services._common import _now
 from app.services.account_capacity import AccountCapacityCache, available_accounts_by_capacity
 from app.services.task_center import dispatcher
 from app.services.task_center.ai_generation_dependencies import GenerationDependencies
-from app.services.task_center.ai_generator import GeneratedContent
+from app.services.task_center.ai_generation_worker import drain_ai_generation
+from app.services.task_center.ai_generator import AiGenerationUnavailable, GeneratedContent
 from app.services.task_center import payloads as task_payloads
 from app.services.task_center.account_voice_profile_cache import voice_profile_snapshot_hash
 from app.services.task_center.executors import group_ai_chat
@@ -57,7 +58,6 @@ from tests.capacity_ai_planner_test_support import (
     seed_sent_memory,
 )
 from tests.capacity_ai_dispatch_test_support import (
-    assert_claimed_generation_batch,
     assert_quality_retry_states,
     configure_duplicate_generation,
     configure_pending_generation,
@@ -947,8 +947,13 @@ def test_dispatch_ai_generation_ignores_legacy_group_slot(
     with Session(engine) as session:
         seed_pending_generation_scope(session, now_value, claim_limit)
         dependencies = configure_pending_generation(monkeypatch, generated, sent)
-        claimed = claim_actions(session, limit=claim_limit, worker_id="worker-test")
-        assert_claimed_generation_batch(session, claimed, expected_generation_count)
+        assert drain_ai_generation(
+            lambda: Session(engine),
+            limit=claim_limit,
+            dependencies=dependencies,
+        ) == expected_generation_count
+        claimed = claim_actions(session, limit=1, worker_id="worker-test")
+        assert len(claimed) == 1
         assert dispatcher.dispatch_action(
             session,
             claimed[0],
@@ -990,12 +995,12 @@ def test_dispatch_hard_hourly_pending_ai_duplicate_is_blocked(monkeypatch):
     with Session(engine) as session:
         action = seed_duplicate_generation_scope(session, _now())
         dependencies = configure_duplicate_generation(monkeypatch)
-        [claimed] = claim_actions(session, limit=1, worker_id="worker-test")
-        assert dispatcher.dispatch_action(
-            session,
-            claimed,
-            generation_dependencies=dependencies,
-        ) is True
+        with pytest.raises(AiGenerationUnavailable, match="duplicate_message"):
+            drain_ai_generation(
+                lambda: Session(engine),
+                limit=1,
+                dependencies=dependencies,
+            )
         session.refresh(action)
         assert action.status == "failed"
         assert action.result["error_code"] == "duplicate_message"

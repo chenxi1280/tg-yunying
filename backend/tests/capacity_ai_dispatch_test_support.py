@@ -151,6 +151,10 @@ def _hard_hourly_action(action_id, account_id, scheduled_at, *, turn_index, acco
 
 def configure_pending_generation(monkeypatch, generated: dict, sent: dict) -> GenerationDependencies:
     monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(
+        "app.services.task_center.ai_generation_worker.credentials_for_account",
+        lambda *_args, **_kwargs: object(),
+    )
 
     def fake_generate(_session, _tenant_id, config, *, count, target_label, history):
         assert _session.in_transaction() is False
@@ -256,6 +260,10 @@ def _duplicate_action(task_id: str, now_value) -> Action:
 
 def configure_duplicate_generation(monkeypatch) -> GenerationDependencies:
     monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(
+        "app.services.task_center.ai_generation_worker.credentials_for_account",
+        lambda *_args, **_kwargs: object(),
+    )
     monkeypatch.setattr(
         dispatcher.gateway,
         "send_message",
