@@ -24,6 +24,7 @@ from .ai_generation_slots import generation_slot as _generation_slot
 from .ai_generation_slots import reply_targets as _reply_targets
 from .ai_generator import AI_GENERATION_UNAVAILABLE_MESSAGE, AiGenerationUnavailable
 from .ai_generation_quality import fail_generation_action, fail_generation_batch
+from .ai_message_memory import mark_group_ai_message_result
 from .direct_check_in import prepare_direct_check_in, requires_direct_check_in
 from .payloads import SendMessagePayload
 
@@ -88,6 +89,7 @@ def ensure_send_message_content(
         prepared = prepare_direct_check_in(session, action, payload)
         session.commit()
         return prepared
+    payload = _invalidate_superseded_normal_generation(session, task, action, payload)
     if payload.message_text.strip():
         return payload
     if payload.ai_generation_status not in {"pending", "ai_result_persist_unknown"}:
@@ -115,6 +117,60 @@ def ensure_send_message_content(
     if not refreshed.message_text.strip():
         raise AiGenerationUnavailable(AI_GENERATION_UNAVAILABLE_MESSAGE)
     return refreshed
+
+
+def _invalidate_superseded_normal_generation(
+    session: Session,
+    task: Task,
+    action: Action,
+    payload: SendMessagePayload,
+) -> SendMessagePayload:
+    if (
+        payload.reply_to_message_id
+        or not payload.message_text.strip()
+        or payload.ai_generation_status != "ready"
+        or not payload.ai_generation_id
+    ):
+        return payload
+    rows = _latest_context_rows(session, payload, task)
+    if not rows:
+        return payload
+    snapshot = session.get(GroupContextMessage, payload.context_snapshot_message_id)
+    latest = max(rows, key=_context_order)
+    if not snapshot or _context_order(latest) <= _context_order(snapshot):
+        return payload
+    latest_context_id = int(latest.id)
+    if payload.ai_message_memory_id:
+        mark_group_ai_message_result(
+            session,
+            payload.ai_message_memory_id,
+            status="expired_before_send",
+            action_id=action.id,
+            result={
+                "error_code": "generation_context_superseded",
+                "latest_context_message_id": latest_context_id,
+            },
+        )
+    updated = payload.model_copy(update={
+        "message_text": "",
+        "original_text": "",
+        "ai_generation_status": "pending",
+        "ai_generation_result_cache": {},
+        "ai_generation_tokens": 0,
+        "ai_message_memory_id": "",
+        "semantic_cluster": "",
+    })
+    action.payload = updated.model_dump(mode="json")
+    action.result = {
+        **(action.result or {}),
+        "generation_stage": "context_superseded",
+        "generation_outcome": "pending",
+    }
+    return updated
+
+
+def _context_order(row: GroupContextMessage) -> tuple[datetime, int]:
+    return (_naive(row.sent_at or row.created_at), int(row.id))
 
 
 def _generate_request_results(

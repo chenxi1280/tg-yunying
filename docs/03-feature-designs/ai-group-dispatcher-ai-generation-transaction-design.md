@@ -49,6 +49,8 @@ Dispatcher 先在短事务 claim Action，写入 lease token、`ai_generation_st
 - 全部 provider-backed 生成、fallback、改写或质量判断，包括 MiniMax、显式模型和 Grok。
 - 频道评论 direct / reply：使用 Phase A 固定的频道消息、评论引用目标、账号和规则生成或重描述；整个生成链与 AI Provider 调用期间 `session.in_transaction()` 必须为 false。
 
+normal Action 即使已经在 Phase C 持久化为 `ai_generation_status=ready`，Gateway 前仍必须比较当前最新真人上下文 ID 与生成时的 `context_snapshot_message_id`。如果出现更新上下文，旧正文不得直接发送：同一 Action/slot/coverage 保持不变，旧消息记忆显式转为 `expired_before_send/generation_context_superseded`，清除旧正文和生成缓存，以新 generation attempt 重新进入 Phase B/C。reply Action 继续使用冻结引用目标，不因群内其他新消息改成 normal 或更换引用。
+
 reply 目标消息消失、被删除、不可访问或过期时，不得静默改成 normal，也不得伪造 reply 指标。Dispatcher 不调用 AI，进入 Phase C 将 Action 终结为 `reply_target_missing` / `reply_target_stale` 并释放 coverage；义务回到 `ready`，下一 Cycle 基于新上下文编排。
 
 ## 4. Phase C：短事务质量落库
@@ -70,7 +72,7 @@ Phase C 成功提交后才进入现有发送链：账号与权限最终检查短
 - Action id、dedupe key、cycle/slot 和 coverage reservation 在生成重试期间保持不变；generation attempt id 只标识一次真实 AI 外呼。
 - Phase B claim 已提交但未开始外呼时，可由 lease recovery 重领同一 Action；已进入外呼但未完成 Phase C 时，旧 attempt 标记 `ai_result_persist_unknown`，不得标记为 Telegram `unknown_after_send`。
 - AI 返回成功但 Phase C 落库失败时，群内没有可见副作用。恢复后重用同一 Action/slot/coverage，按 provider 能力复用 request id，否则创建新 generation attempt；重新生成结果仍须经过完整去重和质量门。不得创建第二个有效预约。
-- Phase C 已提交 `ai_generation_status=ready` 后，重复消费只读取已持久化文本，不再次调用 AI。
+- Phase C 已提交 `ai_generation_status=ready` 后，重复消费通常只读取已持久化文本；唯一重新生成条件是 normal Action 在 Gateway 前观察到更新的真人上下文，此时必须按第 3 节显式过期旧消息记忆并创建新 attempt。
 - AI provider/fallback 最终失败或质量最终拒绝时，Action 以 `generation_failed` 或明确质量错误终结，并在同一事务释放自己的 coverage / 预算预约；后续由 Planner 为仍未完成义务创建新 Cycle，不把失败 Action 伪装为成功。
 - Telegram Gateway 调用后结果不明继续使用 `unknown_after_send`，保留 coverage unknown 且禁止自动重发；AI 生成未知和 Telegram 发送未知必须分开统计。
 
@@ -86,7 +88,7 @@ Phase C 成功提交后才进入现有发送链：账号与权限最终检查短
 - 真 PostgreSQL 验证 10/30/60 `messages_per_round` 映射保持 10、20+10、20+20+20，580 条义务多批完整编排，分母不变且无重复 slot / reservation。
 - 注入 Phase A 任意 slot 创建、预约和 cursor CAS 失败，证明当前批 Action、coverage、cursor 全部回滚。
 - reply 目标在 Phase A 后删除、过期、权限丢失时不调用 AI/Telegram、不转 normal、Action 可见终结且 coverage 回到 ready；有效 reply 保持目标和引用指标。
-- normal 在 Phase B 使用最新上下文；同批 AI 输出缺失、额外、重复或错绑 slot 时不得串账号，错误 slot 不进入 Gateway。
+- normal 在 Phase B 使用最新上下文；已 ready 但尚未进入 Gateway 的 normal Action 遇到更新上下文时，真 PostgreSQL 回归必须证明旧消息记忆过期、同一 Action/slot 重新生成且发送正文包含新上下文；同批 AI 输出缺失、额外、重复或错绑 slot 时不得串账号，错误 slot 不进入 Gateway。
 - 内容重复、面具不符、内容政策和质量不足均在 Phase C 终结对应 Action 并释放 coverage；通过 slot 的文本、记忆和状态原子提交。
 - 在 AI 成功返回后注入 Phase C commit 失败，证明无 Telegram 调用、旧 attempt 可见为生成结果落库未知，恢复只重试同一 Action/slot且无第二个有效预约。
 - 两个 Dispatcher 并发 claim 不重复外呼同一 attempt；Phase B claim、Phase C、发送前检查和 finalize 每个数据库事务均 `<5s`，全部外部 AI / Telegram 调用期间无数据库事务。

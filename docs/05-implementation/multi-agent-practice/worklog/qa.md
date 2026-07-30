@@ -428,3 +428,10 @@
 - evidence: 第六次 run `30568064405` 未部署；no-PostgreSQL 为 `1 failed / 2342 passed`，唯一失败的容量策略用例使用真实墙钟，本机单用例连续 5 次、全文件 84 条和并行搜索组合 62 条均通过，现固定业务时间消除时钟波动；真 PostgreSQL 为 `1 failed / 780 passed / 14 skipped`，完整 backlog 清理在无遗留 open Action 时合法返回 0，测试移除错误的“必须删除至少一条”前置条件，后续仍以第二上下文远端发送增长验收。
 - decision: 仅收敛测试确定性和可选清理断言，不修改生产容量、内容合同或发送逻辑；进入第七次 Release Checks。
 - unresolved: 第七次 CI 全绿、部署与生产 E4。
+
+## 2026-07-31 Gateway 前 normal 上下文失效 re-QA
+
+- message_id: `2026-07-31-ai-normal-context-superseded-qa-008`
+- evidence: no-PostgreSQL 生成、CAS、失败恢复、可观测性、worker、reply shortfall、任务限制和 Dispatcher 组合为 `126 passed / 83 deselected`；真 PostgreSQL 工作流 `1 passed`，数据库留下 1 条 `expired_before_send` 旧记忆和 2 条 success，第二条正文包含最新真人上下文；compileall 与 diff-check 通过。
+- decision: `qa_pass=true`；只让未进 Gateway 的 normal ready 正文在真实新上下文出现后重新生成，不更换 Action/slot/coverage、不改变 reply 目标，也不把倒序补录消息误判为更新。
+- unresolved: 第八次 CI 全绿、部署、deadlock/FK 零增量和三个任务 E4。
