@@ -143,6 +143,52 @@ def test_generation_batch_does_not_skip_claimed_sibling_database_locks() -> None
     assert "SKIP LOCKED" not in compiled
 
 
+def test_generation_worker_skips_account_with_executing_action() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    _seed_actions(engine)
+    with Session(engine) as session:
+        session.add(TgAccount(
+            id=12,
+            tenant_id=1,
+            display_name="AI账号2",
+            phone_masked="+861***0012",
+            status="在线",
+        ))
+        occupied = _action("occupied-account", _now(), "正在发送", "ready")
+        occupied.status = "executing"
+        available = _action(
+            "available-account",
+            _now() + timedelta(seconds=1),
+            "",
+            "pending",
+        )
+        available.account_id = 12
+        session.add_all([occupied, available])
+        session.commit()
+    generated: list[str] = []
+
+    def generate(session: Session, action: Action, _account: TgAccount) -> None:
+        generated.append(action.id)
+        action.payload = {
+            **dict(action.payload or {}),
+            "message_text": "可用账号生成完成",
+            "ai_generation_status": "ready",
+        }
+        session.commit()
+
+    assert drain_ai_generation(
+        lambda: Session(engine),
+        limit=1,
+        generate_action=generate,
+    ) == 1
+    assert generated == ["available-account"]
+    with Session(engine) as session:
+        blocked = session.get(Action, "pending-generation")
+        assert blocked.status == "pending"
+        assert blocked.payload["message_text"] == ""
+
+
 def test_generation_worker_continues_after_explicit_business_failure() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
