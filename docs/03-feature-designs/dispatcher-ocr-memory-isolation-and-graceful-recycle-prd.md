@@ -10,11 +10,11 @@
 - `priority`: `P0 containment / P1 root_cause_removal`
 - `design_status`: `complete`
 - `scope_revision`: `minimal_p0_p1_2026-07-31`
-- `evidence_level`: `E4 incident / E2 local automated implementation proof`
+- `evidence_level`: `E4 incident / E3 production canary / E4 observing`
 - `handoff_delivery_status`: `dev_implemented_qa_targeted_pass`
-- `implementation_status`: `implemented_unreleased`
-- `production_status`: `unproven`
-- `captcha_latency_validation`: `page_visible_ge_70_42s / callback_acceptance_unproven`
+- `implementation_status`: `released_stage_b`
+- `production_status`: `observing_unproven`
+- `captcha_latency_validation`: `45s_contract / two_account_local_ocr_consensus_accepted / model_tail_unproven`
 - `created_at`: `2026-07-31`
 - `last_updated_at`: `2026-08-01`
 - `truth_sources`:
@@ -23,7 +23,15 @@
   - `docs/00-index/project-dataflow-index.md` DF-178C
   - `docs/04-ops/deployment/PRODUCTION_RUNTIME.md`
 
-> P0/P1 代码、测试与 Compose override 已在本地工作树实现，但尚未发布、未填写生产校准参数、未执行真实验证码 callback canary/内存 soak，事故仍不得写 `production_fixed`。只有完整 QA、Release Gate 和真实生产 E4 复核全部通过后才能改变 `production_status=unproven`。
+> P0/P1 已按 `master -> release -> GitHub Actions` 发布到硅谷 Stage B，并取得两个不同账号的真实本地 OCR 共识与后续搜索成功证据。完整自然日、1287 次真实图片验证、OCR+模型 tail 及 3 次安全回收周期仍未满足，因此事故仍不得写 `production_fixed`。
+
+### 0.2 2026-08-01 生产发布与 canary 证据
+
+- Stage A 根治版 `1ff176fa` 由 Actions run `30666436804` 发布；14 分钟真实流量内新建搜索 epoch 正常 finalized，搜索成功 50 次，AI 成功 7 次，PostgreSQL/Action 新死锁均为 0，历史损坏 epoch 只保留一个 active quarantine 且不再循环重试。
+- Stage B 使用同一代码由 Actions run `30667404412` 启用 `IMAGE_VERIFICATION_CONTRACT_ENABLED=true` 与 `IMAGE_VERIFICATION_OCR_BACKEND=remote`；线上 release 为 `20260731215058_1ff176fa`。两路 Dispatcher 均为 512 MiB/120 秒，OCR worker 为 768 MiB/90 秒；容器健康、restart=0、OOMKilled=false。
+- 账号 171 与 105 的真实 challenge 均在 45 秒 callback contract 内由 RapidOCR+ddddOCR 同票形成 `consensus_submitted`，`contract_version=image-verification-v1-20260801`、`consensus_source=local_ocr`、`model_started=false`，随后同一 Action 取得真实搜索目标点击成功。
+- 单实例 busy-fast-fail 按 §6.1 显式产生 `verification_local_ocr_busy`，未点击、未排除账号且 Planner 继续补机会；Stage B 前 15 分钟搜索成功 22 次。是否触发 §2.4 队列/HA 后置立项，必须等完整日容量 E4，不以瞬时 busy 比例直接改架构。
+- 当前仅可写 `E3 production canary pass / E4 observing`：尚无完整自然日、1287 次图片、OCR+模型 tail 双账号 callback accepted、3 次阈值安全回收和当日搜索完整 ledger 达标证据。
 
 ### 0.1 2026-07-31 实现记录
 
