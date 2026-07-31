@@ -87,7 +87,7 @@ def run_epoch_release_with_quarantine(
     epoch: SearchClickAssignmentEpoch,
     trigger_key: str,
     operation: Callable[[SearchClickAssignmentEpoch], ReleaseResult],
-) -> ReleaseResult:
+) -> ReleaseResult | None:
     epoch_id = epoch.id
     try:
         return operation(epoch)
@@ -103,7 +103,7 @@ def run_epoch_release_with_quarantine(
             trigger_key=trigger_key,
         )
         if not repaired:
-            raise
+            return None
         repaired_epoch = session.get(SearchClickAssignmentEpoch, epoch_id)
         if repaired_epoch is None:
             raise RuntimeError("search_click_assignment_epoch_missing")
@@ -127,11 +127,14 @@ def write_epoch_release_quarantine(
         if not units or len(reservations) != len(reservation_ids):
             return False
         observed = _epoch_observed_state(session, epoch, units, reservations)
+        quarantine_reason = reason_code
+        if not _reservation_capacity_covers_units(units, reservations):
+            quarantine_reason = "search_reservation_ownership_violation"
         quarantine = _get_or_add_epoch_quarantine(
             session,
             epoch=epoch,
             tenant_id=reservations[0].tenant_id,
-            reason_code=reason_code,
+            reason_code=quarantine_reason,
             trigger_key=trigger_key,
             observed=observed,
         )
@@ -142,6 +145,8 @@ def write_epoch_release_quarantine(
                     window_id=epoch.dispatch_claim_window_id,
                     reservation_ids=reservation_ids,
                 )
+                if not _epoch_release_replayable(session, units, reservations):
+                    raise RuntimeError("epoch_release_trigger_not_replayable")
         except RuntimeError:
             session.commit()
             return False
@@ -149,6 +154,60 @@ def write_epoch_release_quarantine(
         quarantine.resolved_at = _now()
         session.commit()
         return True
+
+
+def epoch_has_active_release_quarantine(
+    session: Session,
+    epoch_id: str,
+) -> bool:
+    return session.scalar(select(ConsistencyQuarantine.id).where(
+        ConsistencyQuarantine.scope_type == "search_click_assignment_epoch",
+        ConsistencyQuarantine.scope_id == epoch_id,
+        ConsistencyQuarantine.status == "active",
+    ).limit(1)) is not None
+
+
+def _epoch_release_replayable(session, units, reservations) -> bool:
+    assignments = set(session.execute(select(
+        SearchClickOpportunityAssignment.dispatch_claim_reservation_id,
+        SearchClickOpportunityAssignment.fulfillment_lane_claim_ordinal,
+    ).where(
+        SearchClickOpportunityAssignment.dispatch_claim_reservation_id.in_(
+            [row.id for row in reservations]
+        )
+    )).all())
+    exclusions = set(session.execute(select(
+        DispatchAllocationExclusion.dispatch_claim_reservation_id,
+        DispatchAllocationExclusion.fulfillment_lane_claim_ordinal,
+    ).where(
+        DispatchAllocationExclusion.dispatch_claim_reservation_id.in_(
+            [row.id for row in reservations]
+        )
+    )).all())
+    unit_keys = {(unit.reservation_id, unit.fulfillment_lane_claim_ordinal) for unit in units}
+    if unit_keys & (assignments | exclusions):
+        return False
+    return _reservation_capacity_covers_units(units, reservations)
+
+
+def _reservation_capacity_covers_units(units, reservations) -> bool:
+    counts: dict[str, int] = {}
+    for unit in units:
+        counts[unit.reservation_id] = counts.get(unit.reservation_id, 0) + 1
+    return all(
+        counts.get(row.id, 0) <= _reservation_available(row)
+        for row in reservations
+    )
+
+
+def _reservation_available(reservation: DispatchClaimReservation) -> int:
+    return max(
+        0,
+        int(reservation.reserved_claims)
+        - int(reservation.bound_count)
+        - int(reservation.claimed_count)
+        - int(reservation.released_count),
+    )
 
 
 def _epoch_reservations(
@@ -335,6 +394,7 @@ def _fingerprint(scope_id: str, reason_code: str, observed: dict) -> str:
 
 
 __all__ = [
+    "epoch_has_active_release_quarantine",
     "run_epoch_release_with_quarantine",
     "write_epoch_release_quarantine",
     "write_release_quarantine",

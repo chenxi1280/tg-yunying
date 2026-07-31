@@ -15,21 +15,8 @@ from app.models import (
 )
 from app.services._common import _now
 
-from .dispatch_claim_types import CLAIM_WINDOW_SECONDS, DEFAULT_DISPATCHER_SCOPE, DispatchClaimBinding
-
-
-def dispatcher_scope(settings) -> str:
-    value = str(getattr(settings, "dispatcher_claim_scope", DEFAULT_DISPATCHER_SCOPE) or "").strip()
-    return value or DEFAULT_DISPATCHER_SCOPE
-
-
-def dispatcher_claim_capacity(settings, requested_limit: int) -> int:
-    configured_limit = max(1, int(getattr(settings, "action_claim_limit", requested_limit) or requested_limit))
-    scope_capacity = int(getattr(settings, "dispatcher_scope_capacity", 0) or 0)
-    if scope_capacity > 0:
-        return min(configured_limit, scope_capacity)
-    configured_concurrency = max(1, int(getattr(settings, "dispatcher_concurrency", configured_limit) or configured_limit))
-    return min(configured_limit, configured_concurrency)
+from .dispatch_claim_contract import binding_metadata, dispatcher_claim_capacity, dispatcher_scope
+from .dispatch_claim_types import CLAIM_WINDOW_SECONDS, DispatchClaimBinding
 
 
 def scope_for_update(session: Session, scope: str, capacity: int) -> DispatchClaimScope:
@@ -136,10 +123,11 @@ def sync_window_capacity(window: DispatchClaimWindow, capacity: int) -> None:
 
 
 def confirm_dispatch_claim(session: Session, action: Action, binding: DispatchClaimBinding) -> bool:
-    scope = _locked_scope(session, binding.dispatcher_scope)
-    window = _locked_window(session, binding.window_id)
-    allocation = _locked_allocation(session, binding.shard_allocation_id)
-    reservation = _locked_reservation(session, binding.reservation_id)
+    with session.no_autoflush:
+        scope = _locked_scope(session, binding.dispatcher_scope)
+        window = _locked_window(session, binding.window_id)
+        allocation = _locked_allocation(session, binding.shard_allocation_id)
+        reservation = _locked_reservation(session, binding.reservation_id)
     if scope is None or window is None or allocation is None or reservation is None:
         return False
     if not _reservation_matches(reservation, action, binding) or not _claim_available(reservation, allocation, window, scope):
@@ -164,10 +152,17 @@ def _locked_release_ledger(
     action: Action,
     result: dict,
 ) -> tuple[DispatchClaimScope, DispatchClaimWindow, DispatchClaimShardAllocation]:
-    scope = _locked_scope(session, str(result.get("dispatch_claim_scope") or ""))
-    window = _locked_window(session, str(result.get("dispatch_claim_window_id") or ""))
-    allocation = _locked_allocation(session, str(result.get("dispatch_claim_shard_allocation_id") or ""))
-    reservation = _locked_reservation(session, str(result.get("dispatch_reservation_id") or ""))
+    with session.no_autoflush:
+        scope = _locked_scope(session, str(result.get("dispatch_claim_scope") or ""))
+        window = _locked_window(session, str(result.get("dispatch_claim_window_id") or ""))
+        allocation = _locked_allocation(
+            session,
+            str(result.get("dispatch_claim_shard_allocation_id") or ""),
+        )
+        reservation = _locked_reservation(
+            session,
+            str(result.get("dispatch_reservation_id") or ""),
+        )
     if scope is None or window is None or allocation is None or reservation is None:
         raise RuntimeError(f"dispatch claim ledger missing for action {action.id}")
     if not _release_binding_matches(scope, window, allocation, reservation):
@@ -298,21 +293,6 @@ def reservation_key(
         allocation.account_shard_total,
         allocation.account_shard_index,
     )
-
-
-def binding_metadata(binding: DispatchClaimBinding) -> dict[str, object]:
-    return {
-        "dispatch_claim_class": binding.claim_class,
-        "dispatch_reservation_id": binding.reservation_id,
-        "dispatch_claim_window_id": binding.window_id,
-        "dispatch_claim_shard_allocation_id": binding.shard_allocation_id,
-        "dispatch_claim_scope": binding.dispatcher_scope,
-        "dispatch_claim_shard": {"total": binding.shard_total, "index": binding.shard_index},
-        "dispatch_allocation_epoch": binding.allocation_epoch,
-        "dispatch_reservation_reason": binding.reservation_reason,
-        "dispatch_urgency_score": binding.urgency_score,
-        "dispatch_unserved_strict_classes": list(binding.unserved_strict_classes),
-    }
 
 
 def _create_scope(session: Session, scope: str, capacity: int) -> DispatchClaimScope:

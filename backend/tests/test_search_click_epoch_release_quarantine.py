@@ -65,6 +65,37 @@ def test_orphan_epoch_repairs_counter_before_release(
         assert exclusion.carrier_id == epoch.id
 
 
+def test_orphan_epoch_with_lost_reservation_capacity_stays_quarantined(
+    monkeypatch,
+) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine, autoflush=False) as session:
+        seed_assignment(session)
+        _prepare_orphaned_epoch_with_counter_drift(session, "none")
+        reservation = session.get(DispatchClaimReservation, "reservation-1")
+        reservation.reserved_claims = 0
+        session.commit()
+        monkeypatch.setattr(
+            search_click,
+            "prepare_search_click_fulfillment_units",
+            lambda *_args, **_kwargs: (),
+        )
+
+        assert search_click.build_plan(session, session.get(Task, "task-1")) == 0
+        session.commit()
+        assert search_click.build_plan(session, session.get(Task, "task-1")) == 0
+
+        epoch = session.get(SearchClickAssignmentEpoch, "epoch-1")
+        quarantine = session.scalar(select(ConsistencyQuarantine).where(
+            ConsistencyQuarantine.status == "active"
+        ))
+        assert epoch.finalize_status == "open"
+        assert quarantine is not None
+        assert quarantine.reason_code == "search_reservation_ownership_violation"
+        assert session.scalar(select(DispatchAllocationExclusion)) is None
+
+
 def _prepare_orphaned_epoch_with_counter_drift(
     session: Session,
     drift_target: str,
@@ -79,7 +110,7 @@ def _prepare_orphaned_epoch_with_counter_drift(
     allocation = session.get(DispatchClaimShardAllocation, "shard-1")
     if drift_target == "window":
         window.unclaimed_allocated_count = 0
-    else:
+    elif drift_target == "shard":
         allocation.unclaimed_allocated_count = 0
     epoch = session.get(SearchClickAssignmentEpoch, "epoch-1")
     epoch.outcome = "open"

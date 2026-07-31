@@ -11,6 +11,7 @@ from app.models import (
     DispatchClaimReservation,
     DispatchClaimShardAllocation,
     DispatchClaimWindow,
+    SearchClickAssignmentEpoch,
     Task,
 )
 
@@ -112,14 +113,16 @@ def _due_reservation_action_counts(
         key = _due_reservation_key(action, task, reservations)
         if key is not None:
             counts[key] = counts.get(key, 0) + 1
-    _protect_bound_search_reservations(
+    _protect_search_reservations(
+        session,
         reservations=reservations,
         counts=counts,
     )
     return counts
 
 
-def _protect_bound_search_reservations(
+def _protect_search_reservations(
+    session: Session,
     *,
     reservations: Mapping[
         tuple[int, str, str, int, int],
@@ -127,10 +130,70 @@ def _protect_bound_search_reservations(
     ],
     counts: dict[tuple[int, str, str, int, int], int],
 ) -> None:
+    fulfillment_ids = _search_fulfillment_reservation_ids(session, reservations)
+    finalized_ids = _finalized_search_reservation_ids(
+        session,
+        fulfillment_ids,
+    )
     for key, reservation in reservations.items():
-        if reservation.claim_class != SEARCH_SOURCE_CLAIM_CLASS:
+        if reservation.id not in fulfillment_ids:
             continue
-        counts[key] = max(counts.get(key, 0), int(reservation.bound_count or 0))
+        retained = int(reservation.bound_count or 0)
+        if reservation.id not in finalized_ids:
+            retained = reservation_available(reservation)
+        counts[key] = max(counts.get(key, 0), retained)
+
+
+def _finalized_search_reservation_ids(
+    session: Session,
+    reservation_ids: set[str],
+) -> set[str]:
+    if not reservation_ids:
+        return set()
+    return set(session.scalars(
+        select(DispatchClaimReservation.id)
+        .join(
+            DispatchClaimShardAllocation,
+            DispatchClaimShardAllocation.id
+            == DispatchClaimReservation.dispatch_claim_shard_allocation_id,
+        )
+        .join(
+            SearchClickAssignmentEpoch,
+            and_(
+                SearchClickAssignmentEpoch.dispatch_claim_window_id
+                == DispatchClaimShardAllocation.dispatch_claim_window_id,
+                SearchClickAssignmentEpoch.dispatch_allocation_epoch
+                == DispatchClaimReservation.dispatch_allocation_epoch,
+            ),
+        )
+        .where(
+            DispatchClaimReservation.id.in_(reservation_ids),
+            SearchClickAssignmentEpoch.finalize_status == "finalized",
+        )
+    ))
+
+
+def _search_fulfillment_reservation_ids(
+    session: Session,
+    reservations: Mapping[
+        tuple[int, str, str, int, int],
+        DispatchClaimReservation,
+    ],
+) -> set[str]:
+    source_ids = [
+        row.id for row in reservations.values()
+        if row.claim_class == SEARCH_SOURCE_CLAIM_CLASS
+    ]
+    if not source_ids:
+        return set()
+    return set(session.scalars(
+        select(DispatchClaimReservation.id)
+        .join(Task, Task.id == DispatchClaimReservation.task_id)
+        .where(
+            DispatchClaimReservation.id.in_(source_ids),
+            Task.type == "search_click",
+        )
+    ))
 
 
 def _due_reservation_key(

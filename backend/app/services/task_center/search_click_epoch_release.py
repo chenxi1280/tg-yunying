@@ -91,7 +91,18 @@ def _release_unit(
         DispatchClaimShardAllocation,
         reservation.dispatch_claim_shard_allocation_id,
     )
-    if allocation is None or allocation.unclaimed_allocated_count <= 0:
+    available = (
+        int(reservation.reserved_claims)
+        - int(reservation.bound_count)
+        - int(reservation.claimed_count)
+        - int(reservation.released_count)
+    )
+    if (
+        allocation is None
+        or allocation.unclaimed_allocated_count <= 0
+        or unit.fulfillment_lane_claim_ordinal > reservation.reserved_claims
+        or available <= 0
+    ):
         raise RuntimeError("dispatch_release_counter_invariant")
     component_hash = solver_component_hash_for_unit(
         session,

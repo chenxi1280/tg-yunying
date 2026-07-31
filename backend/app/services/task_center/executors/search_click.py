@@ -47,7 +47,10 @@ from ..search_click_outcome_identity import (
     release_unit_set_hash,
     search_path_snapshot_hash,
 )
-from ..search_click_release_quarantine import run_epoch_release_with_quarantine
+from ..search_click_release_quarantine import (
+    epoch_has_active_release_quarantine,
+    run_epoch_release_with_quarantine,
+)
 from ..search_click_solver_lease import SolverLeaseRenewal
 from ..search_click_finalize_locking import (
     lock_search_finalize_inputs,
@@ -188,6 +191,8 @@ def _handle_existing_epoch(
 ) -> int:
     if epoch is None or epoch.finalize_status == "finalized":
         return 0
+    if epoch_has_active_release_quarantine(session, epoch.id):
+        return 0
     if solver_owner_is_active(session, epoch):
         return 0
     def abandon(current_epoch: SearchClickAssignmentEpoch) -> int:
@@ -208,7 +213,7 @@ def _handle_existing_epoch(
         epoch=epoch,
         trigger_key=f"orphan_epoch:{epoch.id}:owner_lost",
         operation=abandon,
-    )
+    ) or 0
 
 
 def _finalize_epoch(

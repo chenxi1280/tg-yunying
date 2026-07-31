@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
@@ -14,6 +14,7 @@ from app.models import (
     DispatchClaimShardAllocation,
     DispatchClaimWindow,
     OperationTarget,
+    SearchClickAssignmentEpoch,
     SearchClickFulfillmentObligation,
     Task,
     TaskDayLedger,
@@ -150,6 +151,34 @@ def test_reconciliation_releases_unbound_search_reservation() -> None:
         assert reservation.reserved_claims == 0
         assert allocation.unclaimed_allocated_count == 0
         assert window.unclaimed_allocated_count == 0
+
+
+def test_reconciliation_preserves_search_reservation_before_epoch_outcome() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine, autoflush=False) as session:
+        seed_assignment(session)
+        epoch = session.scalar(select(SearchClickAssignmentEpoch))
+        epoch.finalize_status = "open"
+        window = session.get(DispatchClaimWindow, "window-1")
+        allocation = session.get(DispatchClaimShardAllocation, "shard-1")
+        reservation = session.get(DispatchClaimReservation, "reservation-1")
+        reservation.bound_count = 0
+        session.get(Action, "action-1").status = "skipped"
+        session.flush()
+        reservations = {(1, "task-1", "search_join", 1, 0): reservation}
+
+        released = reconcile_window_unclaimed(
+            session,
+            window,
+            allocations=[allocation],
+            reservations=reservations,
+            now=_now(),
+        )
+
+        assert released == 0
+        assert reservation.reserved_claims == 1
+        assert allocation.unclaimed_allocated_count == 1
 
 
 def test_release_quarantine_repairs_stale_bound_unclaimed_counters() -> None:
