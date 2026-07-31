@@ -12,6 +12,7 @@ from app.services.task_center.conversation_speaker_rotation import (
     human_has_broken_adjacency,
     lock_or_create_state,
     record_conversation_event,
+    release_group_ai_speaker_reservation,
     reserve_speaker_turn,
 )
 
@@ -73,6 +74,123 @@ def test_reserve_next_speaker_rotates_when_another_eligible_account_exists():
         assert decision.allowed is True
         assert decision.account_id == 102
         assert decision.reason == "rotated_from_last_speaker"
+
+
+def test_same_action_reuses_reserved_speaker_after_regeneration():
+    with _session() as session:
+        session.add(Tenant(id=1, name="t"))
+        first = _action(session, account_id=101, action_id="a-first")
+        key = conversation_key_for_group(group_id=7)
+        reserve_speaker_turn(
+            session,
+            action=first,
+            surface="group_ai_chat",
+            conversation_key=key,
+            candidate_account_ids=[101],
+        )
+        finalize_speaker_turn(
+            session,
+            action=first,
+            surface="group_ai_chat",
+            conversation_key=key,
+            outcome="success",
+            remote_message_id="m1",
+            account_id=101,
+        )
+        second = _action(session, account_id=101, action_id="a-second")
+        rebound = reserve_speaker_turn(
+            session,
+            action=second,
+            surface="group_ai_chat",
+            conversation_key=key,
+            candidate_account_ids=[101, 102],
+        )
+        assert rebound.account_id == 102
+        second.account_id = 102
+
+        resumed = reserve_speaker_turn(
+            session,
+            action=second,
+            surface="group_ai_chat",
+            conversation_key=key,
+            candidate_account_ids=[102, 101],
+        )
+
+        assert resumed.allowed is True
+        assert resumed.account_id == 102
+        assert resumed.reason == "existing_action_reservation"
+
+
+def test_terminal_action_releases_reserved_speaker_without_platform_turn():
+    with _session() as session:
+        session.add(Tenant(id=1, name="t"))
+        action = _action(session, account_id=102, action_id="a-failed")
+        key = conversation_key_for_group(group_id=7)
+        reserve_speaker_turn(
+            session,
+            action=action,
+            surface="group_ai_chat",
+            conversation_key=key,
+            candidate_account_ids=[102],
+        )
+        action.status = "failed"
+
+        release_group_ai_speaker_reservation(session, action)
+
+        state = lock_or_create_state(
+            session,
+            tenant_id=1,
+            surface="group_ai_chat",
+            conversation_key=key,
+        )
+        assert state.reserved_action_id is None
+        assert state.reserved_account_id is None
+        assert state.last_platform_action_id is None
+
+
+def test_next_action_recovers_terminal_holder_reservation_after_crash():
+    with _session() as session:
+        session.add(Tenant(id=1, name="t"))
+        sent = _action(session, account_id=101, action_id="a-sent")
+        key = conversation_key_for_group(group_id=7)
+        reserve_speaker_turn(
+            session,
+            action=sent,
+            surface="group_ai_chat",
+            conversation_key=key,
+            candidate_account_ids=[101],
+        )
+        finalize_speaker_turn(
+            session,
+            action=sent,
+            surface="group_ai_chat",
+            conversation_key=key,
+            outcome="success",
+            remote_message_id="m1",
+            account_id=101,
+        )
+        failed = _action(session, account_id=102, action_id="a-failed")
+        reserve_speaker_turn(
+            session,
+            action=failed,
+            surface="group_ai_chat",
+            conversation_key=key,
+            candidate_account_ids=[101, 102],
+        )
+        failed.status = "failed"
+        session.flush()
+        next_action = _action(session, account_id=102, action_id="a-next")
+
+        decision = reserve_speaker_turn(
+            session,
+            action=next_action,
+            surface="group_ai_chat",
+            conversation_key=key,
+            candidate_account_ids=[102],
+        )
+
+        assert decision.allowed is True
+        assert decision.account_id == 102
 
 
 def test_single_candidate_is_deferred_instead_of_silent_same_account_repeat():

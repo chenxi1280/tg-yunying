@@ -5,7 +5,7 @@
 | 项目 | 内容 |
 | --- | --- |
 | 需求级别 | L2 产品能力升级（上线后影响生产 AI 活群 / 频道评论行为） |
-| 设计状态 | `complete`（2026-07-27 控制提示分类与受控恢复修订） |
+| 设计状态 | 2026-07-27 群管准入/轮换既有范围 `complete`；2026-07-31 §14「优化 AI 活群真人话术待修复」`partial`，不得据此进入 dev |
 | 修订说明 | 2026-07-25 评审修补合订 + **continuity 交叉 P0/P1 合订**：① 待可见性核验计入 `unknown_after_send_hold_count`；② `admission_abandoned` 释放永久不可准入硬小时 debt；③ `pending_visibility_credit` 延后真实 credit；④ follow/观察 action 复用 `target_admission_retry` 档且限 tenant+task+account；⑤ 定义 `admission_version`；⑥ C1/C2 action 边界与存量 unknown 走 continuity 裁决。2026-07-27 首次补齐：入群前基线游标、每轮 listener observation 落库、控制事件优先后闭合、存量无基线显式重启观察，以及成功终态压过历史临时错误展示。**同日生产复核再补齐：来源信任必须早于归属；可信 peer 只是候选来源而不是“每条消息都是控制指令”；频道与确认动作可仅存在于 Telegram 内联按钮；已审计的目标级 bot peer 可作为 unknown role 的受限信任根；同群新入群 admission 必须串行，避免并发提示无法归属；历史已入库的同一 bot 消息重新被监听到按钮时，只回填安全按钮摘要以支持精确恢复；频道 follow 的持久 Action 类型固定为 `group_bot_channel_follow`，必须适配 `actions.action_type` 的 30 字符上限；`required_channel_refs` 只代表当前世代，误判提示暂停后必须由 explicit restart 与不同 source 的新有效控制提示受控 rearm；带明确收件人的控制提示必须精确归属，不能被唯一 waiting account 兜底错配。生产 E4 再次发现“空 admission 放行后 Telegram 先返回 message id、机器人稍后删除并提示订阅”后补齐：空/无证据 admission 的首条正文必须进入完整可见性窗口，窗口结束前不得以瞬时可见确认成功；unknown-role bot 只有在同 peer 重复出现相同精确频道+callback 规则，且与同群开放的 `pending_visibility` 远端消息顺序和时间窗相关时，才可作为 `post_send_intercept_rule` 受限信任根展开逐账号准入。** |
 | 产品范围 | 真人化：`group_ai_chat` + `channel_comment`；群管机器人准入：仅 `group_ai_chat` |
 | 统计时区 | 任务配置时区；未配置时沿用平台 `Asia/Shanghai` |
@@ -688,4 +688,192 @@ target_admission_retry
 | ClaimClass 档位 / admission_version / C1–C2 边界 | §5.1.1 §8.3 §10.2.1–§10.2.2 |
 | 开放问题 | 无阻塞项；确认模板表初值由实现按 §5.5 落地并可配置扩展 |
 
-**design_status=`complete`，可 handoff dev。** 实现必须以本文件 + continuity PRD 为准；二者冲突时以本节 P0 交叉条款修订 continuity 的 credit/debt 增量解释（见 continuity 文首关联说明）；plan 不得弱化闭合/canary/supersede/占位/credit 时序。
+**existing_scope_design_status=`complete`，仅 2026-07-27 既有范围可 handoff dev。** 实现必须以本文件 + continuity PRD 为准；二者冲突时以本节 P0 交叉条款修订 continuity 的 credit/debt 增量解释（见 continuity 文首关联说明）；plan 不得弱化闭合/canary/supersede/占位/credit 时序。2026-07-31 新增真人话术修复范围以 §14 的独立闸门为准，当前不得随既有 complete 状态进入开发。
+
+## 14. 优化 AI 活群真人话术待修复清单（2026-07-31）
+
+### 14.1 状态与证据边界
+
+本节承接生产只读真人化评估，只登记 Prompt/回复对以外的新缺口。测试边界固定为：PostgreSQL 只读事务、无 Action/Attempt 创建、无 Telegram Gateway；影子结果只能证明可行性，不能写 `production_fixed`。
+
+| ID | 修复方向 | 当前证据 | 分流状态 |
+| --- | --- | --- | --- |
+| H-01 | Planner → Dispatcher `chat_mode` 单一真相源 | 最新样本约 76.25%–77.5% 从 `reply` 被重算为 `idle_warmup`；最终 4,559 条消息重放均通过，但被拒 Provider 候选未持久化 | `online_shadow_blocked_by_production_ingress`；候选池测试完成前不改代码 |
+| H-02 | 会话级 should-speak / `wait|send + reason` | platform run P50=2、P90=5、P95=8；固定预算 1/2/3 仅保留 28.83%/44.82%/54.56% 发言，5 个观测任务全部受损 | 固定 cap `rejected`；价值调度进入 Product Design |
+| H-03 | 租户全局 persona 区分度与 AI self-history 消融 | 884 个 active profile 中 478 个摘要精确重复；当前只在 batch=2 内做相似度检查 | `online_shadow_blocked_by_production_ingress`；先做 no-send A/B |
+| H-04 | 真人校准的安全候选排序 | 最新 2,000 条中 1,997 条自动 accepted，但既有盲评没有稳定优势 | `blocked_by_human_gold_set`；先建人标基准集 |
+| H-05 | 真人 reply parent / addressee 数据 | 590 条学习样本没有 parent/reply relation；原生最近 200 条仅临时取得 4 对 | `blocked_by_schema`；先设计采集与隐私边界 |
+| H-06 | 随机静默 holdout / 因果 outcome | 原始 next-human 率 99.97%、P50 23 秒，被高活跃群饱和，不能归因于 AI | `blocked_by_live_traffic_authority`；未批准 canary 前不改真实发言流量 |
+| H-07 | 真人节奏指纹与长度相关输入时延 | 7 天成功 Action 的 schedule lag P50=127 秒、P90=1,145 秒；platform-to-platform P50=18 秒、23.55% 在 5 秒内，但真人 turn 时间被批量入库/秒级精度污染 | `online_inventory_partial_timestamp_precision_limit` |
+| H-08 | 实际成稿的跨账号风格趋同监测 | 平台账号实际成稿长度 P10/P50/P90=12.4/13.6/14.6 字，四字开头跨账号碰撞率 66.78%，账号间距离 P90=0.3482 | `online_inventory_pass_design_pending` |
+| H-09 | single-message late binding 与发送前上下文重校验 | 5,000 条成功 Action 中 61.16% 在 Gateway 调用前出现新真人消息，21.16% 超过已配置过期阈值；代码仍为 batch=10/单次上下文刷新/一次多 slot 输出 | `online_inventory_pass_provider_ab_pending` |
+| H-10 | 平台问句后的真人话轮保护 | 269 个平台问句中 166 个在 60 秒内被另一个平台账号接管，60 秒 floor violation=61.71% | `online_inventory_pass_design_pending` |
+| H-11 | A/B 群正文、上下文与生成输入零串群隔离 | 30 天结构错配和跨群 exact sent text 均为 0；但 2,696/7,488 条成功 Action 的 Prompt 明确携带跨任务原文，涉及 5 个群 | `failed_prompt_isolation_design_pending` |
+
+### 14.2 H-01 会话模式合同待修复
+
+1. `chat_mode` 必须由一个共享 resolver 产生并版本化；Planner 写入 Action 后，Dispatcher 禁止用 `reply_to_message_id/history` 另一套规则静默重算。
+2. Context refresh 若确实改变模式，必须调用同一 resolver，原子更新 `chat_mode + context_message_ids + anchor_message_ids + mode_reason + contract_version`；字段缺失或不一致显式记录错误，不能静默降为 `idle_warmup`。
+3. idle/bootstrap 的事实锚点质量门必须消费 `anchor_message_ids`。存在当前有效锚点时，复述锚点中的细节不能仅因命中“上次/位置/准时/回访”等词面而判 hallucination。
+4. 上线前先做同一候选池的 planned/derived 双重影子重放，输出 `mode_drift_count`、`decision_diff_count`、`anchored_false_reject_count`；不得发送消息。
+
+### 14.3 H-02 会话级发言价值调度待设计
+
+1. 新决策层位于任务义务确认之后、Provider 生成之前，只输出 `send|wait + reason + next_eligible_at`；`wait` 不得伪装为 success/skip，也不得释放群日主槽或 coverage 义务。
+2. 输入至少覆盖：最近真人/平台远端顺序、collective platform run、真人活跃变化、当前 reply/addressee 锚点、任务欠账与截止时间、账号/群发送门、候选内容价值信号。
+3. 禁止把固定连续条数 cap 作为正式方案；生产回放已经证明 cap=1/2/3 会分别丢失 71.17%/55.18%/45.44% 的现有平台发言。
+4. 首版必须先影子输出，不影响 Action/Gateway；验收同时看 platform run 分布、任务义务保留率和同群同时间的人类参与基线，不能只优化“少说话”。
+
+### 14.4 H-03 Persona 稳定层与动态层待修复
+
+1. Persona 拆为稳定层（mask、identity、audience、preference、稳定表达摘要）和动态层（群内 stance、当前上下文）；最近 AI 成功文案不得默认回灌稳定身份。
+2. Voice profile 生成后必须在同租户全部 active profile 范围做精确与语义碰撞检查，不能只比较当前两个账号；重复时保留显式冲突状态，不用随机改词伪造多样性。
+3. no-send A/B 只删除 `近期表达` self-history，其他 persona 与 stance 完全一致；用相同上下文、相同账号和位置交换盲评比较自然度、上下文贴合、模板感与账号可辨识度。
+4. 上线验收必须包含 author identification：盲测者在同上下文的多个账号输出中识别归属；画像非空、hash 不同或 similarity=100 均不能单独判通过。
+
+### 14.5 H-04～H-06 前置资产与授权
+
+- H-04：建立版本化真人 pairwise gold set，覆盖普通接话、原生 reply、不同活跃度、事实锚点、模板腔和拗口问句；至少双人独立标注并保留分歧，不得用当前 LLM Judge 自产标签自校准。
+- H-05：设计 `reply_to_remote_message_id / parent_sender_kind / parent_content_hash / addressee_account_id` 等关系字段、采集留存周期与脱敏；父正文原文是否持久化属于隐私/产品待决策项。
+- H-06：只有用户批准目标群、时间窗、最大影响量和回滚后才能创建随机静默 canary；主要指标必须使用同群同小时 control，显式 reply/reaction 优先于普通 next-human。
+
+### 14.6 H-07 真人节奏指纹待验证
+
+生产聚合已证明平台 burst 与长 schedule lag 存在；真人 turn 的同秒集中度受 listener 批量入库或时间精度污染，尚不能作为可学习的真人节奏分布。以下设计仍需补齐按群/小时分层及真实远端时间口径：
+
+1. 先以无正文聚合比较真人与平台消息的 `inter_message_gap`、整秒/固定间隔集中度、session burst 和 `scheduled_at -> executed_at` lag；必须按群、小时和活跃度分层，不能把全局平均当真人节奏。
+2. 若差异成立，调度只学习每个群/时段的经验分布，并按最终文案长度增加输入时延；不得用一个全局随机抖动或固定 sleep 伪装真人。
+3. 首版仅影子输出 `proposed_send_at + timing_reason + model_version`，不改变 Action、Claim、欠账或 Gateway；验收需同时观察节奏距离、义务保留率和过期率。
+
+### 14.7 H-08 实际成稿趋同待验证
+
+生产匿名聚合已证明实际发送文本存在窄长度带和跨账号开头趋同，H-08 从“待线上盘点”进入“设计待完成”；该结果是确定性分布证据，不等于真人主观偏好已通过。
+
+1. 评价对象必须是成功发送的实际正文，而不是 profile 是否非空；按账号统计句长、问句率、终止标点、emoji、语气词、开头前缀和 exact collision。
+2. 在同群同小时选取真人活跃 speaker 作为参照，比较账号内稳定性、账号间可辨识度和平台整体与真人分布距离；正文只输出匿名聚合，不在诊断结果落原文。
+3. 若实际成稿仍趋同，先消除 profile 全局碰撞和 AI self-history，再做真人 author-identification；禁止靠发送后随机替换同义词制造表面差异。
+
+### 14.8 H-09 单条临发送生成待验证
+
+生产只读统计已确认：最近样本中 61.16% 的已成功正文在 `gateway_call_started_at` 前被新真人消息越过，且 21.16% 已超过 payload 配置的消息数过期阈值；因此发送前重校验是已证明的正确性缺口。逐条 Provider 生成是否稳定提升真人感、吞吐和成本仍待 no-send A/B。
+
+1. 规划阶段可保留账号、话题、引用和数量槽，但普通正文只在单条 Action 即将执行时刷新一次最新上下文并生成；同一 Provider 请求不得预写未来多个账号的连续正文。
+2. Action 的 slot、幂等键、quantity/coverage 义务和 speaker reservation 不因 late binding 改变；上下文变化导致无法生成时必须显式等待或失败，不能复用旧批次正文。
+3. no-send A/B 使用同一生产冻结起点：baseline 一次生成多个 slots，实验组逐条生成并在两条间注入实际后续上下文；位置交换盲评比较剧本感、接话连续性、事实锚点与账号可辨识度。
+4. 当前已有上下文过期与批次编排的生产聚合证据，但尚无 production Provider A/B 赢家；在效果和吞吐/成本都通过前不得关闭 batch 路径。
+
+### 14.9 H-10 平台问句后的真人话轮保护待设计
+
+1. 诊断用 60 秒只为排除长时间间隔造成的假阳性，不得直接固化为全局生产 sleep 或连续发言 cap。
+2. 平台正文被识别为真实问句后，会话层必须记录 `awaiting_human_response + question_action_id + observed_at + reason`；后续平台 Action 先走与 H-02 共用的 value-aware `wait|send` 决策，不得用另一个账号立即自问自答。
+3. 真人新消息、明确指向平台账号的 reply/addressee、问题已被回答或任务截止压力可结束等待；结束原因必须可审计，等待不得释放群日主槽或 coverage 义务。
+4. 影子验收同时统计 60/300 秒问后平台接管率、真人首次回应率、任务义务保留率和超期率；只降低消息量不能判通过。
+
+### 14.10 H-11 跨群内容零容忍隔离待修复
+
+1. 隔离主键固定为 `tenant_id + group_id`。A 群真人上下文、reply/addressee、任务话题、老师、AI 历史正文、近期表达、stance、generation cache 和 message memory 原文只能进入 A 群 Prompt 与 A 群 Action；B 群同理。不得以同账号、同租户、同 persona 或“跨任务保持口吻”为由跨群读取正文原文。
+2. 可跨群共享的账号信息只限稳定身份/语气的非事实属性，例如句长档位、emoji 策略、语气强度和禁用表达；不得共享群名、任务名、话题、老师、地点、价格、经历、近期正文或可逆还原的内容摘要。跨群 exact/semantic 去重只能使用不可逆 fingerprint/embedding 做“拒绝重复”，不得把 reference raw text 回填 Prompt。
+3. `_recent_account_memories()` 和 `account_profile_summaries()` 必须移除其他 group 的正文原文；群内动态 memory 查询必须显式过滤 Action payload `group_id`，历史损坏或缺 group 的行不得参与生成。
+4. 每次 Provider 调用前与 Telegram Gateway 调用前必须执行同一 fail-closed 不变量：`Action.tenant_id == Task.tenant_id == TgGroup.tenant_id`、`Action.payload.group_id == Task.type_config.target_group_id == final TgGroup.id`，且所有 `context_message_ids`、snapshot、reply target、AI memory、stance、SpeakerTurn key、账号群链接均属于同一 tenant/group。任一缺失或不一致写 `cross_group_content_scope_mismatch`，终止当前 Action，不改投其他群、不使用签到或旧缓存降级。
+5. generation/cache key 必须至少包含 `tenant_id + group_id + task_id + action_id + generation_id + context_snapshot_message_id + scope_contract_version`；缓存读取必须重新校验 scope，不能只凭 generation id、claim token 或同 task 的上游约定。
+6. 可观测性只记录 id/hash 和不一致字段，不记录原文。生产持续指标包括 `prompt_cross_group_raw_reference_count`、`pre_provider_scope_reject_count`、`pre_gateway_scope_reject_count` 和 `sent_scope_mismatch_count`；最后一项阈值永久为 0。
+7. 上线红测至少覆盖：伪造其他群 context id/snapshot/reply id、memory id、Task/payload group、同 generation sibling、跨群 account history、损坏 tenant、旧 cache 和 SpeakerTurn key；所有用例必须在 Provider/Gateway 前失败，并断言 Telegram 调用次数为 0。
+8. 验收必须同时满足：测试矩阵全绿、生产影子扫描 0 mismatch、canary `sent_scope_mismatch_count=0`、无跨群 Prompt 原文；“最近 30 天历史错配为 0”只能作基线，不能单独证明未来绝对安全。
+
+### 14.11 新范围 Product Design Complete 闸门
+
+| 检查项 | 状态 |
+| --- | --- |
+| H-01 no-send 候选池误杀率 | `blocked_by_production_ingress` |
+| H-03 self-history 消融 A/B | `blocked_by_production_ingress` |
+| H-02 wait/send 状态机、欠账一致性、API/观测/回滚 | `partial` |
+| H-04 人标数据口径与验收阈值 | `blocked_by_human_gold_set` |
+| H-05 relation schema、隐私与迁移 | `blocked_by_schema_design` |
+| H-06 canary 授权、流量边界与因果指标 | `blocked_by_live_traffic_authority` |
+| H-07 timing 生产只读 inventory | `partial_timestamp_precision_limit` |
+| H-08 实际成稿区分度与匿名聚合口径 | `partial_online_evidence` |
+| H-09 late-binding Provider A/B、成本、幂等与回滚 | `partial_online_evidence_provider_ab_pending` |
+| H-10 question-floor 状态机、等待结束条件、欠账一致性与回滚 | `partial_online_evidence` |
+| H-11 跨群原文移除、scope 不变量、缓存键、错误码、红测与生产观测 | `partial_online_failure_evidence` |
+
+**humanization_speech_repair_design_status=`partial`，禁止进入 dev。** 只有线上只读项完成、阻塞项补齐产品决策，并同步总 PRD、数据流转索引、结构索引、QA 与回滚口径后，才能重新执行 Product Design Complete 自检。
+
+## 15. 2026-07-31 确定性正确性修复闭环
+
+### 15.1 Intake Card 与实施边界
+
+- 等级：`L3`。生产已证明存在跨群原文进入 Prompt、发送前上下文过期、规则缺失不可见和多份 fallback 合同冲突；其中跨群正文隔离是零容忍安全项。
+- 本轮进入 dev 的范围：H-11 全链 scope 不变量、H-09 单 Action late binding 与过期重生成、规则绑定错误可见、确定性签到边界、任务验收增加确定性会话质量维度。
+- H-02/H-10 先落可审计影子状态，不以固定连发 cap 或固定 sleep 改变真实流量；H-03/H-04/H-05/H-06/H-07/H-08 的真人金标、关系 schema、静默流量授权和时间精度仍是独立后续验收项，不阻断本轮确定性修复进入 dev，也不得被写成已解决。
+- 本轮不改变目标群、任务日目标、账号范围、Telegram 授权或生产启停；不在服务器直接补代码。
+
+### 15.2 单一运行合同
+
+1. 动态内容隔离键固定为 `tenant_id + group_id`，payload 必须携带 `content_scope_contract_version=group_content_scope_v1`、`content_scope_tenant_id`、`content_scope_group_id`、`content_scope_task_id`。四个字段全部为空的历史 pending Action 写精确 `scope_contract_missing`，终结旧 Action 后由既有结算链把原 `ContentMixCycleSlot` 置 `replan_required`、原主数量槽重新 `open`；不迁移旧正文、不新建替代槽、不改投其他群。任一字段部分缺失、值不一致或身份链不一致仍写 `cross_group_content_scope_mismatch` 并 fail closed。
+2. Provider 前和 Gateway 前复用同一 scope validator。它校验 Task、Action、TgGroup、payload target、chat peer、context/snapshot/reply target、message memory、账号群链接和 scope snapshot；失败统一写 `cross_group_content_scope_mismatch`，Telegram 调用次数必须为 0，且禁止签到、旧缓存或换群降级。
+3. 账号近期正文、任务名、topic、teacher、stance 与可逆摘要仅限当前群；跨群只允许独立 voice profile 中已审核的稳定 style scalar。当前 `_recent_account_memories()` 与 `account_profile_summaries()` 改为显式同群查询，不再读取其他任务/群正文。
+4. normal 生成改为单 Action late binding。CycleSlot、数量槽、账号与排期仍在 Planner 冻结；Dispatcher 每次只为即将发送的一条 Action 刷新当前群上下文并调用 Provider，不再用一个请求预写 sibling 正文。
+5. ready normal 在 Gateway 前发现更新真人上下文时，旧 memory 标记 `expired_before_send/generation_context_superseded`，同一 Action/slot 清空正文和 cache、回到 `ai_generation_status=pending`，保留数量与内容义务重新生成；不得跳过整 Cycle，也不得释放成伪成功。
+6. `chat_mode` 使用 payload 已冻结值；只有上下文刷新调用同一 resolver 并同时更新 mode、context、anchor 与 reason 时才允许变化。Dispatcher 不再用“是否有 history”静默推导另一份 mode。
+7. Provider 编排统一为主 Provider 最多 3 次、不同备用 Provider 最多 3 次。旧 M3→M2.5→Grok 每层一次的文字合同被本节 supersede；每次 attempt 的预算复用实际 AI 请求超时，slot 最晚安全发送时间取主数量槽所属 `TaskDayLedger.deadline_at`。下一次完整 attempt 无法在该时间前结束时写 `ai_generation_deadline_budget_exhausted`，把原 CycleSlot/主数量槽终结为 `terminal` 并把仍绑定的内容义务记为 `shortfall`，不得再回 `replan_required` 空转；被预算跳过的 attempt 不算六轮失败，不能据此进入签到。
+8. 确定性 `签到` 只允许三类来源：coverage 缺面具、已验证代理路线切换、主/备用六轮正常生成失败。缺面具必须绑定合法 `coverage_ledger_id`；其他原因必须有非空 `primary_quantity_slot_id`。全部路径都必须开启静态兜底、非 scope 错误且通过原账号 10 天签到去重。缺面具的 `extra_volume` 不发送；六轮失败的数量槽只有在其 `ContentMixCycleSlot` 不再绑定当前 Action 的任何 `pending` 内容义务时才可签到，不能只凭 payload 的 `material_intent` 为空推断已经转派。其他配置、规则、target、context、tenant/group 错误一律不得签到。
+
+### 15.3 should-speak、问句保护与履约一致性
+
+1. `should_speak` 位于数量/coverage/content-mix 义务冻结后、Provider 前，只输出 `send|wait`、reason、observed watermark 和 `next_eligible_at`。首版仅影子记录，不改变 Action/Gateway。
+2. 平台问句写 `awaiting_human_response` 影子状态；真人新消息、明确 reply/addressee 或已观测回答才能结束。60/300 秒只作指标窗，不是 sleep、TTL 或截止压力强制发言规则。
+3. `wait` 不计 success/skip，不释放 coverage、主数量槽、内容义务或 speaker reservation。影子阶段不得以它减少日量；转实发前必须先证明同群同小时 matched control 下真人接话提升且任务义务保留率不退化。
+4. 截止压力不能绕过 scope、target、授权、内容安全、上下文新鲜度和问句保护；因此某日可能诚实形成 shortfall，禁止用跨群内容、过期正文或未授权签到伪造达标。
+
+### 15.4 状态、API 与前端
+
+- AI 活群任务新增 `conversation_quality_status=not_applicable|evaluating|met|at_risk|blocked|missed`。确定性安全合同（scope、freshness、规则、reply、persona provenance）逐条计入；真人主观分数只作为 canary/release gate，不因样本不足伪造 `met`。
+- `acceptance_status` 对 AI 活群由 `quantity_status + content_mix_status + conversation_quality_status` 组合；其他任务保持现状。详情分列 `pre_provider_scope_reject_count`、`pre_gateway_scope_reject_count`、`context_superseded_requeue_count`、`rule_binding_missing_count`、`check_in_fallback_count` 和 `question_floor_shadow_violation_count`。
+- 前端只读展示三维状态与 blocker；不新增一键忽略 scope/freshness 的写入口，不展示跨群原文或完整 Prompt。未知人工项显示 owner、首次发现时间和 backlog age；不能只显示“执行中”。
+
+### 15.5 数据、并发、幂等与失败路径
+
+- 不新增第二套任务成功事实；scope snapshot 与影子观测写 Action payload/result，成功仍只由 Action + ExecutionAttempt + 非空 `remote_message_id` 确认。
+- 同一 Action 每次 late-binding attempt 使用新 attempt/request id；Action、CycleSlot、数量槽、coverage reservation 不变。旧 attempt 的 Provider 返回由 fencing 拒绝，不能覆盖新上下文结果。
+- listener watermark 缺失、断档或最后成功轮询早于生成快照时，normal 写 `context_freshness_unproven` 并等待；不得把数据库“暂无新消息”等同于远端无新消息。当前 `ListenerSourceState` 尚未形成普通群 listener 的连续 remote cursor 证据，在该采集合同补齐并迁移前，只能把“最后成功轮询不早于快照且无错误”视为最低门槛，不能宣称 cursor-gap 已达标；该缺口进入 Release Gate blocker。reply 仍须远端探活冻结目标。
+- scope mismatch、规则缺失、target 不一致是硬失败/重规划；Provider 不可用和新上下文到达是同槽可重试；Gateway 已开始后的 unknown 继续禁止自动重发。所有错误保留原 error code，不被 generic generation failure 覆盖。
+- 历史 pending Action 在发布前按 `scope_contract_missing` 转 `replan_required`；不迁移旧正文进入新 scope，不删除历史审计。
+
+### 15.6 QA、Release Gate 与回滚
+
+1. 单元红测覆盖 H-11 §14.10 的全部伪造场景；分别断言 Provider/Gateway 调用为 0、错误码精确、原任务/群不变、无签到降级。
+2. 真 PostgreSQL 并发测试覆盖两个 worker、旧 attempt 晚回、上下文在 Provider 后/Gateway 前更新、旧 Action scope 缺失、同 generation 不同群伪造 sibling；不得串 slot、串账号或释放数量义务。
+3. fallback 矩阵覆盖 coverage/extra-volume、缺面具/六轮失败/scope mismatch、开关、10 天去重、reply 与素材义务；只允许 §15.2 第 8 条组合进入精确 `签到`。
+4. E2 需通过定向与相关全量测试、真实 PostgreSQL、静态复杂度与文档/索引校验。E3 走 `master -> release -> GitHub Actions Deploy Production`，不得 SSH 改代码。
+5. E4 先做不发送影子扫描，再做已批准小流量 canary；`sent_scope_mismatch_count` 永久为 0，Prompt 跨群原文为 0，并连续 3 个完整任务日本地日窗口观察确定性质量、数量、content mix 与真人化指标。runtime healthy 不等于 E4。
+6. 回滚只回应用和开关，不恢复批量预写、不绕过 scope validator、不重新发送 unknown；必要时暂停 AI 活群发送，保留 Action/attempt/memory/ledger 审计。
+
+### 15.7 Product Design Complete
+
+原始问题、业务目标、前端状态、后端/worker、API 投影、数据流、权限与跨群安全、并发幂等、失败路径、迁移、QA、E2/E3/E4 和回滚已覆盖；与全任务达标、Provider fallback、generation transaction 的冲突由 §15.2 明确 supersede。
+
+`deterministic_humanization_repair_design_status=complete`，允许 H-11、H-09、规则可见性、fallback 边界和确定性质量状态进入 dev。依赖真人金标或真实流量授权的效果项继续保持 `partial/blocked`，不得并入本轮完成声明。
+
+### 15.8 2026-08-01 实现后补强合同
+
+1. Dispatcher 的 speaker rotation 若把 ready Action 从账号 A 攁绑到同群账号 B，必须先把 A 的 message memory 写 `expired_before_send/speaker_rebound`，清空正文、cache、attempt/request 与生成 claim，保留原 Task/group/CycleSlot/数量槽，Action 回 `pending` 并退出本次 Dispatcher；只能由 generation worker 按 B 的当前群画像重新生成。不得在 Dispatcher 调 Provider，也不得把 `ai_generation_not_ready` 记成失败。
+2. `context_expire_after_messages` 的正式默认值为 10。新建、更新、启动恢复和 Planner 读取存量配置都必须统一归一；历史缺字段写 10，只有用户显式保存 0 才表示关闭消息数阈值。迁移不得改任务目标、数量、账号或已有远端事实。
+3. Provider Prompt 必须实际消费当前群重建的短期 `account_memory`，并逐 slot 安全传入 `account_profile/topic_direction/teacher_target/material_intent/content_guidance`；所有自由文本继续经过同一安全净化，禁止因为恢复人设与内容义务重新引入跨群原文或不安全字段。测试必须断言最终 `GroupPromptBundle.input_payload`，不能只断言 runtime config 存在字段。
+4. conversation quality 的计数与 blocker 更新必须在同一 Task 行锁或等价原子 CAS 下读取最新 `Task.stats` 后合并；不同 Action/slot 的并发记录和清理不能互相覆盖。SQLite 只验证 stale-object 合并，Release Gate 保留真实 PostgreSQL 两事务回归。
+5. AI 活群详情统一投影 `quantity_status/content_mix_status/conversation_quality_status/acceptance_status`。quantity 只读当前任务日本地日期的 `TaskGroupDailyMessageSlot`：全部 confirmed 为 met，任一 terminal 为 missed，unknown 为 at_risk，其余 evaluating；content mix 只读同日 `ContentMixCycle.settlement_*`：全部 settled/met 为 met，shortfall/missed 为 missed，其余 evaluating。acceptance 仅三维全 met 时为 met；任一 missed 为 missed，任一 blocked 为 blocked，任一 at_risk 为 at_risk，否则 evaluating。
+6. 普通群 listener 持久化 `listener_remote_cursor + listener_cursor_status(unproven|contiguous|gap)`。首次成功数值窗口建立 bootstrap cursor；后续窗口必须覆盖旧 cursor，或从旧 cursor 的下一可见消息连续衔接，才能推进 contiguous。窗口截断、空窗口无法证明旧 cursor、非数值 cursor 或拉取失败都不能伪造 contiguous；gap/unproven 阻止 normal Provider。该状态只证明最近两次可见 Telegram 窗口连续，不把轮询时间当远端完整性，也不取代 Gateway 前 scope/context 二次校验。
+7. `ai_generation_dispatch.py` 按 guard/freshness、quality stats、request orchestration 分责拆分，每个文件不超过 500 行、函数不超过 50 行；保留旧公共导入的显式 re-export，避免 Dispatcher/测试形成第二套实现。
+
+`post_implementation_repair_design_status=complete`。QA 必须先出现 speaker rebind、旧配置、stale stats、Prompt dead input、三维 acceptance 和 listener gap 的红测，再实施代码；发布与 Telegram E4 继续独立取证。
+
+### 15.9 2026-08-01 任务履约回归补强
+
+1. speaker rotation 为当前 Action 选中账号 B 并写入 `ConversationSpeakerState.reserved_action_id/reserved_account_id` 后，同一 Action 从 generation worker 回到 Dispatcher 时必须幂等复用 B；不得把自己的 reservation 当成“上一个平台账号”再改绑回 A。只有不同 Action 或已结束 reservation 才重新执行账号轮换。
+2. Action 从账号 A 改绑到 B 并回 `pending` 前，必须释放本次 Dispatcher 为 A 持有的本地 inflight、Redis account lock 和 token reservation；speaker reservation 仍由当前 Action/B 持有，直到发送结算、失败或显式释放。禁止用新 reservation 覆盖旧 Action reservation 记录后遗留 A 的容量锁。
+3. QA 必须覆盖同一 Action 连续两次进入 speaker gate：第一次 A -> B 退回 generation worker，第二次 B 幂等通过且不回 A；同时断言 A 的 runtime/Redis reservation 已释放。该回归属于任务可完成 P0，不以 2395 条通用 no-PostgreSQL 绿测替代。
+4. conversation quality 获取 Task 行锁前不得 flush 基于旧快照修改的整块 `Task.stats`。实现必须先读取数据库最新 JSON，再只合并当前事务相对原快照的键级增删，之后写入本次质量计数/blocker；QA 同时保留“并发事务已提交字段”和“当前事务锁前本地字段”，真实 PostgreSQL 两事务仍作为 Release Gate。
+5. 普通 listener 有数值 `listener_remote_cursor` 后，下一轮必须从该 cursor 之后按远端正序读取最早未见窗口，禁止继续只拉最新 N 条。满页表示可能仍有积压：允许推进 cursor，但状态保持 `unproven`；未满页或空页才证明已追平并转 `contiguous`。非数值、窗口失败或 cursor 身份不一致继续 fail closed。多 listener 账号只能用单一可用账号的一次窗口证明 cursor，禁止合并重复窗口伪造页满或连续。该恢复路径必须让一次 `gap` 可自动追平，不能永久阻断任务，也不能在追平前放行 Provider。
+6. 已预留 speaker 的 Action 若在 generation worker 或 Dispatcher Gateway 前进入 `failed/skipped/retryable_failed`，必须释放该 Action 的 `ConversationSpeakerState` reservation；`pending` 的 speaker rebind/context requeue 必须保留 reservation 供同 Action 幂等续跑。禁止把“生成失败但未发送”的账号当成上一位平台发言者，也禁止失败 Action 让单账号任务永久 `speaker_rotation_wait`。
+7. 为覆盖“Action 终态已提交、reservation 释放事务未提交”之间的进程退出，下一次锁定同一会话 speaker state 时必须检查不同 `reserved_action_id` 的 holder；holder 不存在或已终态时先清 reservation，再依据真实 `last_platform_*` 选择账号。当前同一 pending/executing Action 的 reservation 不得被该恢复误清。
+
+`speaker_rebind_fulfillment_repair_design_status=complete`。本节只补账号改绑幂等和资源释放，不改变话术策略、数量义务、准入或 Gateway 安全门。

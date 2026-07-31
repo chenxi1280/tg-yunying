@@ -127,8 +127,23 @@ def _safe_target(value: object, label_key: str) -> dict[str, str]:
 def _safe_slots(value: object) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
-    allowed = ("sequence_index", "slot_id", "account_id", "act_type", "reply_to_sequence_index")
-    return [{key: slot.get(key) for key in allowed if key in slot} for slot in value if isinstance(slot, dict)]
+    return [_safe_slot(slot) for slot in value if isinstance(slot, dict)]
+
+
+def _safe_slot(slot: dict[str, Any]) -> dict[str, Any]:
+    exact = ("sequence_index", "slot_id", "account_id", "act_type", "reply_to_sequence_index")
+    result = {key: slot.get(key) for key in exact if key in slot}
+    for key in ("account_profile", "material_intent", "content_guidance"):
+        clauses = safe_clauses(slot.get(key))
+        if clauses:
+            result[key] = "；".join(clauses[:3])
+    topic = _safe_target(slot.get("topic_direction"), "title")
+    teacher = _safe_target(slot.get("teacher_target"), "name")
+    if topic:
+        result["topic_direction"] = topic
+    if teacher:
+        result["teacher_target"] = teacher
+    return result
 
 
 def _safe_reply_targets(value: object) -> list[dict[str, str]]:
@@ -179,6 +194,7 @@ def build_group_prompt(
     payload = {
         "group_label": _safe_group_label(target_label, config.get("target_group_id") or config.get("group_id")),
         "account_personas": _safe_map(config.get("account_personas")),
+        "account_memories": _safe_map(config.get("account_memories")),
         "account_profiles": _safe_map(config.get("account_profiles")),
         "active_topic": _safe_target(config.get("active_topic_direction"), "title"),
         "active_teacher": _safe_target(config.get("active_teacher_target"), "name"),

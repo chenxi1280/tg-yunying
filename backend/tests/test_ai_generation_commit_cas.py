@@ -84,16 +84,49 @@ def test_phase_c_copies_provider_audit_metadata() -> None:
     assert data["fallback_reason"] == "primary_rejected"
     assert data["provider_duration_ms"] == 321
     assert data["generation_attempts"] == [{"stage": "primary_m3", "outcome": "rejected"}]
-    cache = generation_result_cache(content, 9, "attempt-current")
     payload = SendMessagePayload(
         group_id=7,
         ai_generation_status="ai_result_persist_unknown",
-        ai_generation_result_cache=cache,
+        ai_generation_attempt_id="attempt-current",
+        content_scope_contract_version="group_content_scope_v1",
+        content_scope_tenant_id=1,
+        content_scope_group_id=7,
+        content_scope_task_id="task-1",
     )
+    cache = generation_result_cache(
+        content,
+        9,
+        "attempt-current",
+        payload=payload,
+    )
+    payload = payload.model_copy(update={"ai_generation_result_cache": cache})
     restored, tokens = cached_generation_result(payload)
     restored_data = apply_generated_content_metadata({}, restored)
     assert tokens == 9
     assert restored_data == data
+
+
+def test_cached_generation_rejects_scope_mismatch() -> None:
+    payload = SendMessagePayload(
+        group_id=8,
+        ai_generation_status="ai_result_persist_unknown",
+        ai_generation_attempt_id="attempt-current",
+        content_scope_contract_version="group_content_scope_v1",
+        content_scope_tenant_id=1,
+        content_scope_group_id=8,
+        content_scope_task_id="task-b",
+        ai_generation_result_cache={
+            "content": "A群旧缓存",
+            "tokens": 9,
+            "attempt_id": "attempt-current",
+            "content_scope_contract_version": "group_content_scope_v1",
+            "content_scope_tenant_id": 1,
+            "content_scope_group_id": 7,
+            "content_scope_task_id": "task-a",
+        },
+    )
+
+    assert cached_generation_result(payload) is None
 
 
 def _generation_session(tenant_id: int = 1) -> Session:

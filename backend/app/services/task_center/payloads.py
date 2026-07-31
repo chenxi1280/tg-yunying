@@ -147,6 +147,10 @@ class SendMessagePayload(BaseModel):
     source_media_asset_ids: list[str] = Field(default_factory=list)
     waiting_source_media_asset_ids: list[str] = Field(default_factory=list)
     waiting_source_media_versions: dict[str, int] = Field(default_factory=dict)
+    content_scope_contract_version: str = ""
+    content_scope_tenant_id: int | None = None
+    content_scope_group_id: int | None = None
+    content_scope_task_id: str = ""
     material_cache_wait_until: str = ""
     media_segments: list[dict[str, Any]] = Field(default_factory=list)
     album_segment_results: list[dict[str, Any]] = Field(default_factory=list)

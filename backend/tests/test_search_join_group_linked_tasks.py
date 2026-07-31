@@ -15,6 +15,8 @@ from app.models import (
     AccountProxyWarmupState,
     AccountStatus,
     Action,
+    AiAccountVoiceProfile,
+    AiGroupMessageMemory,
     ProxyAirportNode,
     ProxyAirportSubscription,
     ProxyNodeFailoverEvent,
@@ -24,11 +26,14 @@ from app.models import (
     Tenant,
     TgAccount,
     TgAccountAuthorization,
+    TgGroup,
+    TgGroupAccount,
 )
 from app.security import encrypt_secret
 from app.integrations.telegram import SendResult
 from app.services._common import _now
 from app.services.task_center import dispatcher
+from app.services.task_center.account_voice_profile_cache import voice_profile_snapshot_hash
 from app.services.task_center.dispatcher import dispatch_action
 from app.services.task_center.search_join_linking import create_linked_dispatch_if_membership_observed
 
@@ -356,7 +361,35 @@ def test_search_join_dispatch_uses_environment_proxy_not_authorization_proxy(mon
 def test_group_ai_dispatch_uses_direct_credentials_when_account_has_proxy(monkeypatch, session: Session) -> None:
     account = session.get(TgAccount, 101)
     account.proxy_id = 31
-    task = Task(id="task-ai-direct", tenant_id=1, name="活群", type="group_ai_chat", status="running", type_config={}, stats={})
+    task = Task(
+        id="task-ai-direct",
+        tenant_id=1,
+        name="活群",
+        type="group_ai_chat",
+        status="running",
+        type_config={"target_group_id": 7},
+        stats={},
+    )
+    group = TgGroup(
+        id=7,
+        tenant_id=1,
+        tg_peer_id="-1001",
+        title="活群目标",
+        auth_status="已授权运营",
+        can_send=True,
+    )
+    mask = AiAccountVoiceProfile(
+        id="mask-ai-direct",
+        tenant_id=1,
+        account_id=101,
+        version=1,
+        status="active",
+        quality_status="active",
+        short_prompt_summary="短句直接",
+    )
+    session.add(mask)
+    session.flush()
+    mask_hash = voice_profile_snapshot_hash(mask)
     action = Action(
         id="action-ai-direct",
         tenant_id=1,
@@ -365,17 +398,62 @@ def test_group_ai_dispatch_uses_direct_credentials_when_account_has_proxy(monkey
         action_type="send_message",
         account_id=101,
         status="pending",
-        payload={"chat_id": "-1001", "message_text": "hello"},
+        payload={
+            "chat_id": "-1001",
+            "group_id": 7,
+            "message_text": "hello",
+            "chat_mode": "bootstrap",
+            "ai_generation_status": "ready",
+            "voice_profile_contract_version": "style_only_v2",
+            "account_mask_id": mask.id,
+            "account_mask_version": mask.version,
+            "account_mask_snapshot_hash": mask_hash,
+            "mask_status": "active",
+            "content_source": "account_mask",
+            "ai_message_memory_id": "memory-ai-direct",
+            "context_expire_after_messages": 0,
+            "content_scope_contract_version": "group_content_scope_v1",
+            "content_scope_tenant_id": 1,
+            "content_scope_group_id": 7,
+            "content_scope_task_id": task.id,
+        },
     )
-    session.add_all([task, action])
+    session.add_all([
+        task,
+        group,
+        TgGroupAccount(tenant_id=1, group_id=7, account_id=101, can_send=True),
+        AiGroupMessageMemory(
+            id="memory-ai-direct",
+            tenant_id=1,
+            group_id=7,
+            task_id=task.id,
+            action_id=action.id,
+            account_id=101,
+            raw_text="hello",
+            normalized_text="hello",
+            text_fingerprint="memory-ai-direct",
+            account_mask_id=mask.id,
+            account_mask_version=mask.version,
+            mask_contract_version="style_only_v2",
+            mask_snapshot_hash=mask_hash,
+            mask_status="active",
+            content_source="account_mask",
+            status="reserved",
+            planned_at=_now(),
+        ),
+        action,
+    ])
     session.commit()
     calls: list[int | None] = []
 
-    def send_message_to_target(_account_id, _target_peer, _content, _target_type, _target_pk, _session_ciphertext, credentials):
+    def send_message(_account_id, _group_id, _content, _segments, _session_ciphertext, _group_peer, credentials):
         calls.append(credentials.proxy_id)
         return SendResult(ok=True, remote_message_id="123")
 
-    monkeypatch.setattr(dispatcher.gateway, "send_message_to_target", send_message_to_target)
+    monkeypatch.setattr(dispatcher, "_group_bot_admission_gate_pass", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(dispatcher, "_speaker_rotation_gate_pass", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(dispatcher, "_group_ai_account_online_ready", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(dispatcher.gateway, "send_message", send_message)
 
     assert dispatch_action(session, action) is True
     assert action.status == "success"

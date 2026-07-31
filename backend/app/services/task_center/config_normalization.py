@@ -263,6 +263,7 @@ def _normalize_legacy_group_ai_config(task_type: str, data: dict[str, Any]) -> d
         for field in _REMOVED_GROUP_AI_FIELDS:
             next_data.pop(field, None)
         next_data["group_bot_admission_required"] = True
+        next_data.setdefault("context_expire_after_messages", 10)
         if "messages_per_round_mode" not in next_data and "messages_per_round" in next_data:
             next_data["messages_per_round_mode"] = "manual"
         return next_data

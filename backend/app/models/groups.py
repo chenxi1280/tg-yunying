@@ -39,6 +39,8 @@ class TgGroup(Base):
     listener_last_polled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     listener_last_reply_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     listener_last_error: Mapped[str] = mapped_column(Text, default="")
+    listener_remote_cursor: Mapped[str] = mapped_column(String(160), default="")
+    listener_cursor_status: Mapped[str] = mapped_column(String(20), default="unproven")
 
     tenant: Mapped[Tenant] = relationship(back_populates="groups")
     accounts: Mapped[list[TgGroupAccount]] = relationship(back_populates="group")

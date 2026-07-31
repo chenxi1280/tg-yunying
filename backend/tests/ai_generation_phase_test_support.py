@@ -135,6 +135,10 @@ def _seed_reply_scope(session: Session, now_value) -> GroupContextMessage:
         can_send=True,
         require_review=False,
         group_cooldown_seconds=0,
+        listener_enabled=True,
+        listener_last_polled_at=now_value,
+        listener_remote_cursor="9001",
+        listener_cursor_status="contiguous",
     ))
     session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True))
     session.add(_test_mask(11)[0])
@@ -203,7 +207,13 @@ def seed_reserved_normal_batch(
     session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=12, can_send=True))
     if with_masks:
         session.add(_test_mask(12)[0])
-    first.payload = _normal_payload(1, now_value=now_value, with_mask=with_masks)
+    context_id = int((first.payload or {}).get("context_snapshot_message_id") or 0)
+    first.payload = _normal_payload(
+        1,
+        now_value=now_value,
+        with_mask=with_masks,
+        context_id=context_id,
+    )
     first.claim_owner = "worker-a"
     first.claim_token = "claim-normal"
     second = Action(
@@ -217,7 +227,12 @@ def seed_reserved_normal_batch(
         claim_owner="worker-a",
         claim_token="claim-normal",
         scheduled_at=now_value,
-        payload=_normal_payload(2, now_value=now_value, with_mask=with_masks),
+        payload=_normal_payload(
+            2,
+            now_value=now_value,
+            with_mask=with_masks,
+            context_id=context_id,
+        ),
     )
     coverages = [_normal_coverage(index, account_id, now_value) for index, account_id in enumerate((11, 12), 1)]
     if bind_coverage:
@@ -228,10 +243,11 @@ def seed_reserved_normal_batch(
     return [first, second], coverages
 
 
-def _normal_payload(index: int, *, now_value, with_mask: bool) -> dict:
+def _normal_payload(index: int, *, now_value, with_mask: bool, context_id: int) -> dict:
     account_id = 10 + index
     payload = {
         "group_id": 7,
+        "chat_id": "-1007",
         "target_display": "运营群",
         "message_text": "",
         "review_approved": True,
@@ -243,6 +259,13 @@ def _normal_payload(index: int, *, now_value, with_mask: bool) -> dict:
         "ai_generation_claim_owner": "worker-a",
         "ai_generation_claim_token": "claim-normal",
         "ai_generation_history": "真人用户: 今天按原计划吗？",
+        "chat_mode": "reply",
+        "context_snapshot_message_id": context_id,
+        "context_message_ids": [context_id],
+        "content_scope_contract_version": "group_content_scope_v1",
+        "content_scope_tenant_id": 1,
+        "content_scope_group_id": 7,
+        "content_scope_task_id": "task-reply-generation",
     }
     if with_mask:
         return {**payload, **_test_mask(account_id)[1]}
@@ -314,6 +337,7 @@ def generation_dependencies(
 
 def _reply_payload(context_id: int) -> dict:
     return {
+        "chat_id": "-1007",
         "group_id": 7,
         "target_display": "运营群",
         "message_text": "",
@@ -330,6 +354,11 @@ def _reply_payload(context_id: int) -> dict:
         "ai_generation_id": "cycle-reply",
         "ai_generation_status": "pending",
         "ai_generation_history": "真人用户: 今天按原计划吗？",
+        "chat_mode": "reply",
+        "content_scope_contract_version": "group_content_scope_v1",
+        "content_scope_tenant_id": 1,
+        "content_scope_group_id": 7,
+        "content_scope_task_id": "task-reply-generation",
         **_test_mask(11)[1],
     }
 

@@ -52,6 +52,7 @@ from .account_voice_profile_cache import VOICE_PROFILE_CONTRACT_VERSION, voice_p
 from . import ai_generation_dispatch as _ai_generation_dispatch
 from .ai_generation_composition import PRODUCTION_GENERATION_DEPENDENCIES
 from .ai_generation_dependencies import GenerationDependencies
+from .group_ai_scope import validate_group_ai_content_scope
 from .ai_generation_recovery import recover_stale_pre_gateway_generation
 from .comment_generation_dispatch import (
     CommentGenerationDependencies,
@@ -467,6 +468,9 @@ def dispatch_action(
 
 
 def _finalize_dispatch_action(session: Session, action: Action) -> None:
+    from .conversation_speaker_rotation import release_group_ai_speaker_reservation
+
+    release_group_ai_speaker_reservation(session, action)
     _release_runtime_resources(action)
     release_dispatch_claim(session, action)
     _sync_action_coverage_state(session, action)
@@ -2460,6 +2464,7 @@ def _ensure_send_message_content(
         payload=payload,
         credentials=credentials,
         dependencies=generation_dependencies,
+        allow_provider_call=False,
     )
 
 
@@ -2593,6 +2598,7 @@ def _group_send_link(
     account: TgAccount,
 ) -> TgGroupAccount | None:
     return session.scalar(select(TgGroupAccount).where(
+        TgGroupAccount.tenant_id == group.tenant_id,
         TgGroupAccount.group_id == group.id,
         TgGroupAccount.account_id == account.id,
     ))
@@ -2651,6 +2657,8 @@ def _group_send_preconditions_pass(
 ) -> bool:
     if reject_legacy_anchor_rewrite_before_send(session, action):
         return False
+    if not _group_send_scope_pass(session, action, context):
+        return False
     prompt_context = PreSendRequiredChannelContext(
         session,
         action,
@@ -2664,14 +2672,70 @@ def _group_send_preconditions_pass(
         return False
     if not _group_send_content_allowed(session, action, context):
         return False
-    if _context_expired(session, context.payload):
-        _skip_context_expired_cycle(session, action, context.payload)
-        _skip(action, "context_expired", "上下文已过期，跳过本轮剩余发言")
+    if not _group_send_context_fresh(session, action, context):
         return False
     if not _group_ai_account_online_ready(session, action, context.account, context.payload):
         _fail_offline_group_send(session, action, context.payload)
         return False
     return _group_ai_message_memory_sendable(session, action, context.payload)
+
+
+def _group_send_scope_pass(
+    session: Session,
+    action: Action,
+    context: GroupSendGatewayContext,
+) -> bool:
+    violation = validate_group_ai_content_scope(
+        session,
+        action,
+        payload=context.payload,
+        account_id=context.account.id,
+    )
+    if violation:
+        _record_conversation_quality_event(
+            session,
+            action,
+            "pre_gateway_scope_reject_count",
+            blocker=violation.code,
+        )
+        _fail_group_ai_send_before_gateway(
+            session,
+            action,
+            context.payload,
+            violation.code,
+            violation.detail,
+            auto_check="拦截",
+            validation_stage="content_scope",
+        )
+        return False
+    return True
+
+
+def _group_send_context_fresh(
+    session: Session,
+    action: Action,
+    context: GroupSendGatewayContext,
+) -> bool:
+    if not _context_expired(session, context.payload):
+        return True
+    task = session.get(Task, action.task_id)
+    if task and _ai_generation_dispatch.requeue_normal_generation_after_context_change(
+        session,
+        task,
+        action,
+        payload=context.payload,
+    ):
+        return False
+    _fail_group_ai_send_before_gateway(
+        session,
+        action,
+        context.payload,
+        "context_freshness_unproven",
+        "发送前上下文已变化，但当前 Action 无法安全重生成",
+        auto_check="拦截",
+        validation_stage="context_freshness",
+    )
+    return False
 
 
 def _group_send_content_allowed(
@@ -3013,6 +3077,7 @@ def _finalize_group_send(
         result=dict(action.result or {}),
     )
     if result.ok:
+        _clear_conversation_quality_blocker(session, action)
         _update_group_ai_stance_memory(
             session,
             action,
@@ -3021,6 +3086,34 @@ def _finalize_group_send(
             result.remote_message_id or "",
         )
         context.link.last_sent_at = _now()
+
+
+def _record_conversation_quality_event(
+    session: Session,
+    action: Action,
+    key: str,
+    *,
+    blocker: str,
+) -> None:
+    task = session.get(Task, action.task_id) if action.task_id else None
+    if task is None:
+        return
+    _ai_generation_dispatch._record_quality_event(
+        task,
+        action,
+        key,
+        blocker=blocker,
+    )
+
+
+def _clear_conversation_quality_blocker(session: Session, action: Action) -> None:
+    task = session.get(Task, action.task_id) if action.task_id else None
+    if task is None:
+        return
+    _ai_generation_dispatch._clear_quality_blocker(task, action)
+    stats = dict(task.stats or {})
+    stats["conversation_quality_last_success_at"] = _now().isoformat()
+    task.stats = stats
 
 
 def _settle_failed_group_send_slot(
@@ -3068,6 +3161,15 @@ def _handle_ai_generation_failure(
     context: AiGenerationFailureContext,
 ) -> bool:
     if isinstance(context.error, _ai_generation_dispatch.GenerationAttemptStale):
+        return True
+    if (
+        action.status == "pending"
+        and (
+            (action.result or {}).get("error_code") == "context_freshness_unproven"
+            or (action.result or {}).get("generation_stage") == "context_superseded_requeue"
+        )
+    ):
+        _release_runtime_resources(action)
         return True
     if action.status == "failed":
         _release_runtime_resources(action)
@@ -7552,41 +7654,57 @@ def _speaker_rotation_gate_pass(session: Session, action: Action, *, group_id: i
     )
     if decision.allowed:
         if decision.account_id and int(decision.account_id) != int(account_id) and not coverage_bound:
-            action.account_id = int(decision.account_id)
-            action.payload = {
-                **payload,
-                "account_id": int(decision.account_id),
-                "speaker_selection_reason": decision.reason,
-                "previous_speaker_account_id": account_id,
-                "conversation_surface": "group_ai_chat",
-                "conversation_key": conversation_key_for_group(group_id=group_id),
-            }
-            # Force content regeneration for rebound account.
-            data = dict(action.payload)
-            data.pop("message_text", None)
-            data["ai_generation_status"] = "pending"
-            action.payload = data
-        else:
-            action.payload = {
-                **payload,
-                "conversation_surface": "group_ai_chat",
-                "conversation_key": conversation_key_for_group(group_id=group_id),
-                "speaker_selection_reason": decision.reason,
-            }
+            _requeue_speaker_rebind(
+                session,
+                action,
+                group_id=group_id,
+                account_id=account_id,
+                decision=decision,
+            )
+            return False
+        action.payload = {
+            **payload,
+            "conversation_surface": "group_ai_chat",
+            "conversation_key": conversation_key_for_group(group_id=group_id),
+            "speaker_selection_reason": decision.reason,
+        }
         return True
     if decision.code == "speaker_rotation_wait":
-        action.status = "pending"
-        action.result = {
-            **(action.result or {}),
-            "error_code": "speaker_rotation_wait",
-            "speaker_rotation_reason": decision.reason,
-        }
-        action.scheduled_at = _now() + timedelta(seconds=45)
-        action.executed_at = None
-        _clear_action_lease(action)
-        _release_runtime_resources(action)
+        _defer_speaker_rotation(action, reason=decision.reason)
         return False
     return True
+
+
+def _requeue_speaker_rebind(session: Session, action: Action, *, group_id: int, account_id: int, decision) -> None:
+    from .ai_speaker_rebind import requeue_after_speaker_rebind
+    from .conversation_speaker_rotation import conversation_key_for_group
+
+    requeue_after_speaker_rebind(
+        session,
+        action,
+        account_id=int(decision.account_id),
+        previous_account_id=account_id,
+        reason=decision.reason,
+    )
+    _release_runtime_resources(action)
+    action.payload = {
+        **action.payload,
+        "conversation_surface": "group_ai_chat",
+        "conversation_key": conversation_key_for_group(group_id=group_id),
+    }
+
+
+def _defer_speaker_rotation(action: Action, *, reason: str) -> None:
+    action.status = "pending"
+    action.result = {
+        **(action.result or {}),
+        "error_code": "speaker_rotation_wait",
+        "speaker_rotation_reason": reason,
+    }
+    action.scheduled_at = _now() + timedelta(seconds=45)
+    action.executed_at = None
+    _clear_action_lease(action)
+    _release_runtime_resources(action)
 
 
 def _speaker_rotation_candidates(session: Session, action: Action, *, group_id: int, account_id: int) -> list[int]:
@@ -8582,7 +8700,7 @@ def _context_expiration_applies(payload: SendMessagePayload) -> bool:
         return False
     if _deferred_daily_coverage_payload(payload):
         return False
-    return not (payload.hard_hourly_target and not payload.reply_to_message_id)
+    return True
 
 
 def _deferred_daily_coverage_payload(payload: SendMessagePayload) -> bool:
@@ -8596,6 +8714,7 @@ def _deferred_daily_coverage_payload(payload: SendMessagePayload) -> bool:
 def _newer_context_count(session: Session, payload: SendMessagePayload) -> int:
     snapshot = session.get(GroupContextMessage, payload.context_snapshot_message_id)
     filters = [
+        GroupContextMessage.tenant_id == payload.content_scope_tenant_id,
         GroupContextMessage.group_id == payload.group_id,
         GroupContextMessage.is_bot.is_(False),
     ]
@@ -8610,43 +8729,6 @@ def _newer_context_count(session: Session, payload: SendMessagePayload) -> int:
         filters.append(GroupContextMessage.id > payload.context_snapshot_message_id)
     newer_count = session.scalar(select(func.count(GroupContextMessage.id)).where(*filters)) or 0
     return int(newer_count)
-
-
-def _skip_context_expired_cycle(session: Session, current: Action, payload: SendMessagePayload) -> None:
-    if not payload.cycle_id:
-        return
-    pending_actions = list(
-        session.scalars(
-            select(Action).where(
-                Action.id != current.id,
-                Action.tenant_id == current.tenant_id,
-                Action.task_id == current.task_id,
-                Action.action_type == "send_message",
-                Action.status == "pending",
-            )
-        )
-    )
-    for action in pending_actions:
-        action_payload = action.payload if isinstance(action.payload, dict) else {}
-        if not _same_context_cycle(action_payload, payload):
-            continue
-        sibling_payload = SendMessagePayload.model_validate(action_payload)
-        if not _context_expiration_applies(sibling_payload):
-            continue
-        _skip(action, "context_expired", "上下文已过期，跳过本轮剩余发言")
-        _sync_action_coverage_state(session, action)
-        _sync_action_content_mix_state(session, action)
-    task = session.get(Task, current.task_id)
-    if task:
-        task.next_run_at = _now()
-
-
-def _same_context_cycle(action_payload: dict, payload: SendMessagePayload) -> bool:
-    return (
-        action_payload.get("cycle_id") == payload.cycle_id
-        and action_payload.get("group_id") == payload.group_id
-        and action_payload.get("context_snapshot_message_id") == payload.context_snapshot_message_id
-    )
 
 
 def _sync_action_coverage_state(session: Session, action: Action) -> None:
@@ -8702,7 +8784,10 @@ def _sync_action_content_mix_state(session: Session, action: Action) -> None:
         return
     if action.status in {"failed", "skipped", "retryable_failed"}:
         cycle_slot.terminal_reason = _action_terminal_reason(action)
-        if _action_gateway_started(session, action):
+        if (
+            _action_gateway_started(session, action)
+            or _terminal_pre_gateway_content_mix_failure(action)
+        ):
             cycle_slot.slot_state = "terminal"
             quantity_slot.state = "terminal"
             _shortfall_action_content_obligations(session, action, cycle_slot)
@@ -8710,6 +8795,13 @@ def _sync_action_content_mix_state(session: Session, action: Action) -> None:
             return
         cycle_slot.slot_state = "replan_required"
         quantity_slot.state = "open"
+
+
+def _terminal_pre_gateway_content_mix_failure(action: Action) -> bool:
+    result = action.result if isinstance(action.result, dict) else {}
+    return str(result.get("error_code") or "") in {
+        "ai_generation_deadline_budget_exhausted",
+    }
 
 
 def _authoritative_content_mix_rows(

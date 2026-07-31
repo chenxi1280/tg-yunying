@@ -123,6 +123,11 @@ Recovery 必须依次提交前序 Action 修复、连续 Task 状态修复，再
 
 ## 发布验证
 
+当前生产相对稳定版本基线见
+[`2026-07-31-production-stable-baseline.md`](../../05-implementation/multi-agent-practice/runs/2026-07-31-production-stable-baseline.md)。
+该记录使用不可变 commit SHA、生产 release ID、Deploy Production run 和线上只读核对证据，
+作为下一版本开发及必要回退时的比较基点。
+
 发布后脚本会区分三层状态：
 
 1. 容器层：`tgyunying-backend` healthy，`tgyunying-worker-planner`、`tgyunying-worker-dispatcher-1/2`、`tgyunying-worker-listener`、`tgyunying-worker-recovery`、`tgyunying-worker-account-security`、`tgyunying-worker-metrics` healthy；4 核生产机固定使用 2 个 dispatcher / 2 个账号分片，避免 4 个 claim worker 在共享 scope 与 actions 索引上形成 CPU、IO 和行锁争用

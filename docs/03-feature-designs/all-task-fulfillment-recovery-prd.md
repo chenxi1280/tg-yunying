@@ -1,5 +1,7 @@
 # 全任务按时按量履约恢复 PRD
 
+> **2026-07-31 AI 活群真人化 resync：** AI 活群的跨群 scope、单 Action late binding、过期同槽重生成、会话质量状态和确定性签到边界，以 `ai-conversation-humanization-and-group-bot-admission-prd.md` §15 为准。本文原“缺面具覆盖 extra-volume”或缺少 scope/freshness 限制的签到表述不再适用。
+
 ## 1. 文档状态
 
 | 项目 | 内容 |
@@ -480,7 +482,7 @@ content_source = normal | check_in_fallback | comment_emoji_fallback
 | `blocked` | 尚未到 deadline，但已证无合法槽位可补齐，或已发生不可逆 overflow/cooldown/policy violation。 |
 | `missed` | 已过 deadline 且未满足 `met`。 |
 
-任务列表和详情同时返回 `quantity_status`、`content_mix_status` 与 `acceptance_status`。组合算法固定：已过 deadline 且任一适用维度非 `met` 时为 `missed`；未截止时任一适用维度为 `blocked` 则为 `blocked`，否则任一为 `at_risk` 则为 `at_risk`；只有所有适用维度均为 `met` 才为 `met`。其他没有内容构成合同的任务，`content_mix_status=not_applicable` 且 `acceptance_status=quantity_status`。兼容字段 `status` 在迁移期固定等于 `acceptance_status`，不得继续只投影数量状态；界面必须同时展示两个底层维度，不能用组合状态隐藏真实数量成功。
+任务列表和详情同时返回 `quantity_status`、`content_mix_status`、AI 活群适用的 `conversation_quality_status` 与 `acceptance_status`。组合算法固定：已过 deadline 且任一适用维度非 `met` 时为 `missed`；未截止时任一适用维度为 `blocked` 则为 `blocked`，否则任一为 `at_risk|evaluating` 则为 `at_risk`；只有所有适用维度均为 `met|not_applicable` 才为 `met`。非 AI 活群的 `conversation_quality_status=not_applicable`。兼容字段 `status` 在迁移期固定等于 `acceptance_status`；界面必须分列底层维度。
 
 ## 5. 共用调度与事务设计
 
@@ -926,7 +928,7 @@ apply 不得修改 success、unknown_after_send、Gateway-started，不得补 re
 | P0-3 可见性原子确认 | 需要核验的 Attempt 即使有 remote id 也只进入 `pending_visibility`；`visible_confirmed` 在一个事务内关闭 hold、完成 Action、群日主槽及可选 coverage。并发 finalize 只成功一次，注入任一 CAS/唯一键失败时全部回滚 |
 | AI admission 大积压 | ready 账号继续产生 content send |
 | AI blocked coverage 名额保留 | 当群日目标等于冻结账号数时，已覆盖账号不能用额外消息提前占满目标；blocked 账号恢复后仍有自己的主发送槽且不会造成超量 |
-| AI 三类特殊情况 | 缺面具、已验证代理路线切换直接生成精确签到；主 AI 3 轮与备用 AI 3 轮均无候选后生成精确签到；无传输路线保持 waiting，不伪造成功 |
+| AI 三类特殊情况 | 缺面具、已验证代理路线切换可按专项合同生成精确签到；主 AI 3 轮与备用 AI 3 轮全部真实执行且均无候选后，只有主数量槽对应 CycleSlot 已无 `pending` 内容义务才可签到；deadline budget 跳过的轮次不算失败；无传输路线保持 waiting，不伪造成功 |
 | 候选内容安全拒绝 | 主 AI 第 1/2 轮记录拒绝并重试同一主槽，第 3 轮切备用 AI；备用第 1/2 轮继续，备用第 3 轮才转安全签到/单表情；只有兜底自身被明确策略禁止才形成硬 blocker |
 | 内容编排非回归 | 相同配置、上下文和随机种子下，删除门禁前后的 direct/reply 槽位及既有图片/表情素材选择一致；只允许 scheduled time、claim 时机和 fallback 标记变化 |
 | 技术切批与静默降量 | 10/30/60 Turn、20 条数据库切批、多个 claim 和静默小批量均沿用原 mix scope；引用最小值和每轮素材计数不重置、不重复套用 |

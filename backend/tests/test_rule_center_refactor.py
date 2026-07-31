@@ -283,7 +283,19 @@ def _material_generation_dependencies() -> GenerationDependencies:
 def _seed_ready_material_target(session: Session) -> None:
     session.add(Tenant(id=1, name="默认运营空间"))
     account = TgAccount(id=101, tenant_id=1, display_name="AI号", phone_masked="101", status=AccountStatus.ACTIVE.value, session_ciphertext="session")
-    group = TgGroup(id=201, tenant_id=1, tg_peer_id="-100201", title="素材群", auth_status="已授权运营", can_send=True, listener_interval_seconds=0)
+    group = TgGroup(
+        id=201,
+        tenant_id=1,
+        tg_peer_id="-100201",
+        title="素材群",
+        auth_status="已授权运营",
+        can_send=True,
+        listener_interval_seconds=0,
+        listener_enabled=True,
+        listener_last_polled_at=_now(),
+        listener_remote_cursor="1",
+        listener_cursor_status="contiguous",
+    )
     session.add_all([
         account,
         group,
@@ -2014,6 +2026,8 @@ def test_ai_group_requires_rule_binding_before_target_resolution():
 
     assert created == 0
     assert task.last_error == "任务必须绑定已发布规则集版本"
+    assert task.stats["rule_binding_missing_count"] == 1
+    assert task.stats["last_plan_blocker"] == "rule_binding_missing"
 
 
 @pytest.mark.no_postgres

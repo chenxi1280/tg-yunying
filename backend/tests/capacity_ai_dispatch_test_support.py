@@ -9,6 +9,7 @@ from app.integrations.telegram import SendResult
 from app.models import (
     Action,
     AiAccountVoiceProfile,
+    GroupContextMessage,
     Task,
     Tenant,
     TgAccount,
@@ -66,6 +67,10 @@ def _add_pending_base_rows(session, now_value) -> None:
         auth_status="已授权运营",
         can_send=True,
         require_review=False,
+        listener_enabled=True,
+        listener_last_polled_at=now_value,
+        listener_remote_cursor="7001",
+        listener_cursor_status="contiguous",
     ))
     for account_id in (11, 12):
         session.add(TgAccount(
@@ -93,6 +98,16 @@ def _add_pending_base_rows(session, now_value) -> None:
         ))
         profile, _evidence = _test_mask(account_id)
         session.add(profile)
+    session.add(GroupContextMessage(
+        id=7001,
+        tenant_id=1,
+        group_id=7,
+        listener_account_id=11,
+        sender_name="真人",
+        content="今天怎么安排",
+        remote_message_id="context-7001",
+        sent_at=now_value - timedelta(seconds=1),
+    ))
 
 
 def _test_mask(account_id: int) -> tuple[AiAccountVoiceProfile, dict]:
@@ -132,6 +147,7 @@ def _hard_hourly_action(action_id, account_id, scheduled_at, *, turn_index, acco
         status="pending",
         scheduled_at=scheduled_at,
         payload={
+            "chat_id": "-1007",
             "group_id": 7,
             "target_display": "运营群",
             "message_text": "",
@@ -142,6 +158,14 @@ def _hard_hourly_action(action_id, account_id, scheduled_at, *, turn_index, acco
             "cycle_id": cycle_id,
             "slot_id": f"{cycle_id}:turn:{turn_index}",
             "ai_generation_history": "真人: 今天怎么安排",
+            "anchor_message_ids": [7001],
+            "context_message_ids": [7001],
+            "context_snapshot_message_id": 7001,
+            "chat_mode": "reply",
+            "content_scope_contract_version": "group_content_scope_v1",
+            "content_scope_tenant_id": 1,
+            "content_scope_group_id": 7,
+            "content_scope_task_id": "task-hard-hourly-ai",
             "account_role": account_role,
             "reply_to_message_id": None,
             **_test_mask(account_id)[1],
@@ -165,7 +189,12 @@ def configure_pending_generation(monkeypatch, generated: dict, sent: dict) -> Ge
             "history": history,
             "personas": config["account_personas"],
         })
-        texts = ["今天先看看群公告", "第二条我也等等看"][:count]
+        texts = [
+            "今天先看看群公告"
+            if int(slot["account_id"]) == 11
+            else "第二条我也等等看"
+            for slot in config["generation_slots"]
+        ]
         return [
             GeneratedContent(text, slot_id=slot["slot_id"], sequence_index=index)
             for index, (slot, text) in enumerate(zip(config["generation_slots"], texts, strict=True), 1)
@@ -191,14 +220,9 @@ def _normal_generation_dependencies(generator) -> GenerationDependencies:
 def assert_claimed_generation_batch(session, claimed, expected_generation_count: int) -> None:
     assert len(claimed) == expected_generation_count
     assert len({row.claim_token for row in claimed}) == 1
-    if expected_generation_count != 2:
-        return
     payload = task_payloads.SendMessagePayload.model_validate(claimed[0].payload or {})
     batch = dispatcher._ai_generation_dispatch._pending_generation_batch(session, claimed[0], payload)
-    assert [row.id for row, _payload in batch] == [
-        "action-hard-hourly-ai",
-        "action-hard-hourly-ai-sibling",
-    ], [
+    assert [row.id for row, _payload in batch] == [claimed[0].id], [
         (row.id, row.status, row.claim_owner, row.claim_token, row.payload)
         for row in session.scalars(select(Action).where(Action.task_id == "task-hard-hourly-ai"))
     ]
@@ -243,6 +267,7 @@ def _duplicate_action(task_id: str, now_value) -> Action:
         status="pending",
         scheduled_at=now_value,
         payload={
+            "chat_id": "-1007",
             "group_id": 7,
             "target_display": "运营群",
             "message_text": "",
@@ -253,6 +278,14 @@ def _duplicate_action(task_id: str, now_value) -> Action:
             "cycle_id": cycle_id,
             "slot_id": f"{cycle_id}:turn:1",
             "ai_generation_history": "真人: 今天怎么安排",
+            "anchor_message_ids": [7001],
+            "context_message_ids": [7001],
+            "context_snapshot_message_id": 7001,
+            "chat_mode": "reply",
+            "content_scope_contract_version": "group_content_scope_v1",
+            "content_scope_tenant_id": 1,
+            "content_scope_group_id": 7,
+            "content_scope_task_id": task_id,
             **_test_mask(11)[1],
         },
     )

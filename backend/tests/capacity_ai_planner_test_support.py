@@ -49,6 +49,10 @@ def seed_ai_planner_scope(session, now_value, scenario: AiPlannerScenario) -> Ta
         title="运营群",
         auth_status="已授权运营",
         can_send=True,
+        listener_enabled=True,
+        listener_last_polled_at=now_value,
+        listener_remote_cursor="1",
+        listener_cursor_status="contiguous",
     ))
     _add_accounts(session, now_value, scenario)
     _add_optional_memories(session, now_value, scenario)

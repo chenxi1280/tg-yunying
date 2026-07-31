@@ -233,8 +233,23 @@ def test_group_ai_prompt_includes_fixed_generation_slots(monkeypatch):
 
     payload = captured["bundle"].input_payload
     assert payload["generation_slots"] == [
-        {"sequence_index": 1, "slot_id": "task-1:cycle:1:turn:1", "account_id": 11, "act_type": "short_react"},
-        {"sequence_index": 2, "slot_id": "task-1:cycle:1:turn:2", "account_id": 12, "act_type": "light_question"},
+        {
+            "sequence_index": 1,
+            "slot_id": "task-1:cycle:1:turn:1",
+            "account_id": 11,
+            "act_type": "short_react",
+            "account_profile": "青年短句；少表情；爱接别人话",
+            "teacher_target": {"name": "花花老师"},
+        },
+        {
+            "sequence_index": 2,
+            "slot_id": "task-1:cycle:1:turn:2",
+            "account_id": 12,
+            "act_type": "light_question",
+            "account_profile": "中年谨慎",
+            "topic_direction": {"title": "主任最近约新妹子了"},
+            "teacher_target": {"name": "新人榜单妹子"},
+        },
     ]
     serialized = json.dumps(payload, ensure_ascii=False)
     assert "楼凤" not in serialized
@@ -277,7 +292,13 @@ def test_group_ai_reply_prompt_layers_target_profile_as_style_not_fact(monkeypat
     assert payload["reply_targets"] == [{"preview": "这位成年老师高跟鞋好看"}]
     assert payload["context_source"] == "safe_context"
     assert payload["generation_slots"] == [
-        {"sequence_index": 1, "slot_id": "task-1:cycle:1:turn:1", "account_id": 11, "act_type": "context_reply"}
+        {
+            "sequence_index": 1,
+            "slot_id": "task-1:cycle:1:turn:1",
+            "account_id": 11,
+            "act_type": "context_reply",
+            "account_profile": "只围绕引用短接一句",
+        }
     ]
     assert "装修预算" not in captured["bundle"].user_prompt
 

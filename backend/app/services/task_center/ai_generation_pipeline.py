@@ -1,14 +1,23 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 
 from sqlalchemy.orm import Session
 
+from app.services._common import _now
+
 from .ai_generation_dependencies import GenerationDependencies
-from .ai_generator import AiGenerationUnavailable, GeneratedContent, _copy_generated_content_metadata
+from .ai_generator import (
+    AI_CONTENT_REQUEST_TIMEOUT_SECONDS,
+    AiGenerationUnavailable,
+    GeneratedContent,
+    _copy_generated_content_metadata,
+)
 from .ai_generation_state import validate_output_sequences, validate_output_slot_ids
 
 AI_GROUP_GENERATION_ATTEMPTS_PER_MODEL = 3
+AI_GENERATION_DEADLINE_BUDGET_EXHAUSTED = "ai_generation_deadline_budget_exhausted"
 
 
 @dataclass(frozen=True)
@@ -36,6 +45,7 @@ def generate_quality_results(
     for stage in _fallback_stages(request.config):
         if not pending:
             break
+        _require_provider_attempt_budget(request)
         try:
             contents, tokens = _generate_stage(
                 session,
@@ -49,16 +59,20 @@ def generate_quality_results(
             last_error = exc
             continue
         total_tokens += tokens
-        results = _filter_stage_contents(request, contents, indexes=pending)
-        next_pending: list[int] = []
-        for item_index, result in zip(pending, results, strict=True):
-            if result.rejection_code:
-                last_rejections[item_index] = result
-                next_pending.append(item_index)
-                continue
-            accepted[item_index] = result
-        pending = next_pending
-    _apply_static_quantity_fallback(session, request, pending, accepted, last_rejections)
+        stage_accepted, stage_rejected, pending = _partition_stage_results(
+            request,
+            contents,
+            indexes=pending,
+        )
+        accepted.update(stage_accepted)
+        last_rejections.update(stage_rejected)
+    _apply_static_quantity_fallback(
+        session,
+        request,
+        pending=pending,
+        accepted=accepted,
+        rejected=last_rejections,
+    )
     remaining = [index for index in pending if index not in accepted]
     if remaining and last_error and not last_rejections:
         raise last_error
@@ -68,6 +82,25 @@ def generate_quality_results(
 def _close_failed_stage_transaction(session: Session) -> None:
     if session.in_transaction():
         session.rollback()
+
+
+def _partition_stage_results(
+    request,
+    contents: list[str],
+    *,
+    indexes: list[int],
+) -> tuple[dict[int, SlotGenerationResult], dict[int, SlotGenerationResult], list[int]]:
+    results = _filter_stage_contents(request, contents, indexes=indexes)
+    accepted: dict[int, SlotGenerationResult] = {}
+    rejected: dict[int, SlotGenerationResult] = {}
+    pending: list[int] = []
+    for item_index, result in zip(indexes, results, strict=True):
+        if result.rejection_code:
+            rejected[item_index] = result
+            pending.append(item_index)
+            continue
+        accepted[item_index] = result
+    return accepted, rejected, pending
 
 
 def _cached_quality_results(session: Session, request) -> list[SlotGenerationResult]:
@@ -86,7 +119,13 @@ def _cached_quality_results(session: Session, request) -> list[SlotGenerationRes
     results = _filter_stage_contents(request, plain_contents, indexes=plain_indexes)
     accepted.update({index: result for index, result in zip(plain_indexes, results) if not result.rejection_code})
     rejected.update({index: result for index, result in zip(plain_indexes, results) if result.rejection_code})
-    _apply_static_quantity_fallback(session, request, list(rejected), accepted, rejected)
+    _apply_static_quantity_fallback(
+        session,
+        request,
+        pending=list(rejected),
+        accepted=accepted,
+        rejected=rejected,
+    )
     return _ordered_results(request, accepted, rejected)
 
 
@@ -106,6 +145,7 @@ def _cached_static_fallbacks(contents: list[str]) -> dict[int, SlotGenerationRes
 def _apply_static_quantity_fallback(
     session: Session,
     request,
+    *,
     pending: list[int],
     accepted: dict[int, SlotGenerationResult],
     rejected: dict[int, SlotGenerationResult],
@@ -134,6 +174,8 @@ def _static_fallback_enabled(request) -> bool:
     # enter the multi-stage default static fallback chain.
     if str(config.get("ai_model") or "").strip():
         return False
+    if not bool(config.get("_ai_group_static_fallback_enabled", True)):
+        return False
     slots = list(config.get("generation_slots") or [])
     return any(_has_fallback_quantity_slot(slot) for slot in slots)
 
@@ -141,8 +183,32 @@ def _static_fallback_enabled(request) -> bool:
 def _has_fallback_quantity_slot(slot: dict) -> bool:
     return bool(
         str(slot.get("primary_quantity_slot_id") or "").strip()
-        or str(slot.get("coverage_ledger_id") or "").strip()
+        and slot.get("content_obligation_fallback_ready") is True
+        and not slot.get("reply_to_message_id")
+        and not str(slot.get("material_intent") or "").strip()
     )
+
+
+def _require_provider_attempt_budget(request) -> None:
+    raw_deadline = str(
+        (getattr(request, "config", {}) or {}).get(
+            "_ai_generation_latest_safe_send_at",
+        )
+        or ""
+    ).strip()
+    if not raw_deadline:
+        return
+    try:
+        deadline = datetime.fromisoformat(raw_deadline)
+    except ValueError as exc:
+        raise AiGenerationUnavailable("ai_generation_deadline_invalid") from exc
+    remaining = (_naive(deadline) - _naive(_now())).total_seconds()
+    if remaining < AI_CONTENT_REQUEST_TIMEOUT_SECONDS:
+        raise AiGenerationUnavailable(AI_GENERATION_DEADLINE_BUDGET_EXHAUSTED)
+
+
+def _naive(value: datetime) -> datetime:
+    return value.replace(tzinfo=None) if value.tzinfo else value
 
 
 def _check_in_fallback_content(slot: dict, index: int, reason: str) -> GeneratedContent:

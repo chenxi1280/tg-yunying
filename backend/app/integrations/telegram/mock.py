@@ -698,6 +698,7 @@ class TelegramGateway:
         limit: int = 20,
         *,
         control_only: bool = False,
+        after_message_id: int | None = None,
     ) -> list[GroupMessageSnapshot]:
         now_value = beijing_now()
         snapshots = [

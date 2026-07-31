@@ -25,6 +25,7 @@ from ._common import SUBSCRIPTION_INACTIVE_DETAIL, _now, audit, gateway, require
 from .account_usage_policy import assert_account_action_allowed
 from .campaigns import approve_all_drafts, create_campaign, generate_drafts
 from .group_listener_context_writer import insert_context_snapshots
+from .group_listener_cursor import listener_after_message_id, update_listener_cursor
 from .group_listener_admission import ListenerSnapshotFetchError, fetch_listener_snapshots, record_group_bot_observations
 from .developer_apps import credentials_for_account
 from .tenant_learning_samples import GROUP_CHAT_SCENE
@@ -280,6 +281,8 @@ def collect_group_context(
     invalid_listener_errors: list[str] = []
     usable_listener_count = 0
     inserted = 0
+    cursor_after = listener_after_message_id(group)
+    cursor_snapshots: list[object] | None = None
     for link in listener_links:
         account = session.get(TgAccount, link.account_id)
         policy_error = _listener_context_account_error(account)
@@ -291,6 +294,7 @@ def collect_group_context(
         usable_listener_count += 1
         credentials = credentials_for_account(session, account)
         snapshots = fetch_listener_snapshots(session, group=group, account=account, credentials=credentials)
+        cursor_snapshots = snapshots if cursor_snapshots is None else cursor_snapshots
         inserted += insert_context_snapshots(
             session,
             group,
@@ -304,6 +308,8 @@ def collect_group_context(
     if invalid_listener_errors and usable_listener_count == 0:
         group.listener_last_error = "监听账号用途不允许：" + "；".join(invalid_listener_errors[:3])
         raise ValueError(group.listener_last_error)
+    if usable_listener_count:
+        update_listener_cursor(group, cursor_snapshots or [], after_message_id=cursor_after, fetch_limit=group.listener_context_limit)
     return inserted
 
 

@@ -335,6 +335,13 @@ def _load_plan_facts(session: Session, task: Task) -> PlanFacts | PlanAbort:
     progress: dict = {}
     rule_version = bound_rule_version(session, task)
     if not rule_version:
+        task.last_error = task.last_error or "AI 活群任务缺少已发布规则绑定"
+        stats = dict(task.stats or {})
+        stats["rule_binding_missing_count"] = int(
+            stats.get("rule_binding_missing_count") or 0
+        ) + 1
+        stats["last_plan_blocker"] = "rule_binding_missing"
+        task.stats = stats
         if progress:
             _mark_hard_blocked(task, progress, "rule_binding_missing")
         return PlanAbort()
@@ -1006,9 +1013,15 @@ def _load_profile_plan(
         session,
         task,
         account_ids,
+        group_id=facts.group.id,
         depth=int(facts.config.get("account_memory_depth") or 3),
     )
-    account_profiles = account_profile_summaries(session, task, account_ids)
+    account_profiles = account_profile_summaries(
+        session,
+        task,
+        account_ids,
+        group_id=facts.group.id,
+    )
     voices = voice_profile_prompt_details(
         session, tenant_id=task.tenant_id, account_ids=account_ids,
     )
@@ -1273,6 +1286,10 @@ def _slot_identity_payload(slot: SlotBuildInput) -> dict[str, Any]:
         "target_reference_snapshot": target_snapshot,
         "task_config_revision": facts.task_config_revision,
         "target_display": facts.target_label,
+        "content_scope_contract_version": "group_content_scope_v1",
+        "content_scope_tenant_id": facts.group.tenant_id,
+        "content_scope_group_id": facts.group.id,
+        "content_scope_task_id": facts.task_id,
         "message_text": "",
         "media_segments": [],
         "review_approved": True,
@@ -1359,10 +1376,14 @@ def _slot_conversation_payload(slot: SlotBuildInput) -> dict[str, Any]:
         "quality_skip_reason": str(item.get("quality_skip_reason") or ""),
         "context_message_ids": message_ids,
         "context_snapshot_message_id": max(message_ids) if message_ids else None,
-        "context_expire_after_messages": int(
-            blueprint.facts.config.get("context_expire_after_messages") or 0,
-        ),
+        "context_expire_after_messages": _context_expire_after_messages(blueprint.facts.config),
     }
+
+
+def _context_expire_after_messages(config: dict[str, Any]) -> int:
+    if "context_expire_after_messages" not in config:
+        return 10
+    return max(0, int(config.get("context_expire_after_messages") or 0))
 
 
 def _slot_generation_payload(slot: SlotBuildInput) -> dict[str, Any]:
@@ -4336,7 +4357,14 @@ def _skip_open_action_for_replan(
         )
 
 
-def _recent_account_memories(session: Session, task: Task, account_ids: list[int], *, depth: int) -> dict[str, str]:
+def _recent_account_memories(
+    session: Session,
+    task: Task,
+    account_ids: list[int],
+    *,
+    group_id: int,
+    depth: int,
+) -> dict[str, str]:
     if depth <= 0 or not account_ids:
         return {}
     wanted = set(account_ids)
@@ -4350,6 +4378,7 @@ def _recent_account_memories(session: Session, task: Task, account_ids: list[int
             Action.action_type == "send_message",
             Action.status == "success",
             Action.account_id.in_(wanted),
+            Action.payload["group_id"].as_integer() == group_id,
         )
         .order_by(Action.executed_at.desc().nullslast(), Action.created_at.desc())
         .limit(max(len(wanted) * depth * 2, depth))
@@ -4358,28 +4387,6 @@ def _recent_account_memories(session: Session, task: Task, account_ids: list[int
         if action.account_id not in wanted or len(memories[action.account_id]) >= depth:
             continue
         _append_account_memory(memories, action, depth=depth)
-    if any(len(items) < depth for items in memories.values()):
-        cross_task_rows = session.execute(
-            select(Action, Task.name)
-            .join(Task, Task.id == Action.task_id)
-            .where(
-                Action.tenant_id == task.tenant_id,
-                Action.task_id != task.id,
-                Action.task_type == "group_ai_chat",
-                Action.action_type == "send_message",
-                Action.status == "success",
-                Action.account_id.in_(wanted),
-                Task.tenant_id == task.tenant_id,
-                Task.type == "group_ai_chat",
-                Task.deleted_at.is_(None),
-            )
-            .order_by(Action.executed_at.desc().nullslast(), Action.created_at.desc())
-            .limit(max(len(wanted) * depth * 3, depth))
-        )
-        for action, task_name in cross_task_rows:
-            if action.account_id not in wanted or len(memories[action.account_id]) >= depth:
-                continue
-            _append_account_memory(memories, action, depth=depth, source_label=f"跨任务 {task_name}")
     return {str(account_id): "；".join(reversed(items)) for account_id, items in memories.items() if items}
 
 
@@ -4396,32 +4403,69 @@ def _append_account_memory(memories: dict[int, list[str]], action: Action, *, de
     memories[action.account_id].append(f"{label}: {content[:80]}" if label else content[:80])
 
 
-def account_profile_summaries(session: Session, task: Task, account_ids: list[int], *, recent_limit: int = 5) -> dict[str, str]:
+def account_profile_summaries(
+    session: Session,
+    task: Task,
+    account_ids: list[int],
+    *,
+    group_id: int,
+    recent_limit: int = 5,
+) -> dict[str, str]:
     if not account_ids:
         return {}
     wanted = {int(account_id) for account_id in account_ids if account_id}
     if not wanted:
         return {}
-    totals = dict(
-        session.execute(
-            select(Action.account_id, func.count(Action.id))
-            .join(Task, Task.id == Action.task_id)
-            .where(
-                Action.tenant_id == task.tenant_id,
-                Action.task_type == "group_ai_chat",
-                Action.action_type == "send_message",
-                Action.status == "success",
-                Action.account_id.in_(wanted),
-                Task.tenant_id == task.tenant_id,
-                Task.type == "group_ai_chat",
-                Task.deleted_at.is_(None),
-            )
-            .group_by(Action.account_id)
-        ).all()
-    )
+    totals = _account_profile_totals(session, task, wanted, group_id=group_id)
     if not totals:
         return {}
+    rows = _account_profile_rows(
+        session,
+        task,
+        wanted,
+        group_id=group_id,
+        recent_limit=recent_limit,
+    )
+    profiles = _empty_account_profiles(wanted, totals)
+    _accumulate_account_profiles(profiles, rows, recent_limit=recent_limit)
+    return _render_account_profiles(profiles, totals)
+
+
+def _account_profile_totals(
+    session: Session,
+    task: Task,
+    wanted: set[int],
+    *,
+    group_id: int,
+) -> dict[int, int]:
     rows = session.execute(
+        select(Action.account_id, func.count(Action.id))
+        .join(Task, Task.id == Action.task_id)
+        .where(
+            Action.tenant_id == task.tenant_id,
+            Action.task_type == "group_ai_chat",
+            Action.action_type == "send_message",
+            Action.status == "success",
+            Action.account_id.in_(wanted),
+            Task.tenant_id == task.tenant_id,
+            Task.type == "group_ai_chat",
+            Task.deleted_at.is_(None),
+            Action.payload["group_id"].as_integer() == group_id,
+        )
+        .group_by(Action.account_id)
+    )
+    return {int(account_id): int(count) for account_id, count in rows}
+
+
+def _account_profile_rows(
+    session: Session,
+    task: Task,
+    wanted: set[int],
+    *,
+    group_id: int,
+    recent_limit: int,
+):
+    return list(session.execute(
         select(Action, Task.name)
         .join(Task, Task.id == Action.task_id)
         .where(
@@ -4433,15 +4477,30 @@ def account_profile_summaries(session: Session, task: Task, account_ids: list[in
             Task.tenant_id == task.tenant_id,
             Task.type == "group_ai_chat",
             Task.deleted_at.is_(None),
+            Action.payload["group_id"].as_integer() == group_id,
         )
         .order_by(Action.account_id.asc(), Action.executed_at.desc().nullslast(), Action.created_at.desc())
         .limit(max(len(wanted) * recent_limit * 3, recent_limit))
-    )
-    profiles: dict[int, dict[str, object]] = {
+    ))
+
+
+def _empty_account_profiles(
+    wanted: set[int],
+    totals: dict[int, int],
+) -> dict[int, dict[str, object]]:
+    return {
         account_id: {"roles": {}, "intents": {}, "tasks": set(), "messages": []}
         for account_id in wanted
         if int(totals.get(account_id) or 0) > 0
     }
+
+
+def _accumulate_account_profiles(
+    profiles: dict[int, dict[str, object]],
+    rows,
+    *,
+    recent_limit: int,
+) -> None:
     for action, task_name in rows:
         if action.account_id not in profiles:
             continue
@@ -4456,6 +4515,12 @@ def account_profile_summaries(session: Session, task: Task, account_ids: list[in
         content = str(payload.get("message_text") or "").strip()
         if isinstance(messages, list) and content and not _looks_like_internal_prompt(content) and len(messages) < recent_limit:
             messages.append(content[:60])
+
+
+def _render_account_profiles(
+    profiles: dict[int, dict[str, object]],
+    totals: dict[int, int],
+) -> dict[str, str]:
     result: dict[str, str] = {}
     for account_id, item in profiles.items():
         roles = _top_profile_values(item["roles"])
@@ -4612,11 +4677,12 @@ def _quality_filter_ai_messages(
 ) -> tuple[list[dict[str, str]], dict[str, object]]:
     accepted: list[dict[str, str]] = []
     accepted_clusters: set[str] = set()
-    previous_clusters = {_semantic_cluster(message) for message in previous_messages}
+    previous_clusters = {_message_dedupe_key(message) for message in previous_messages}
     previous_clusters.discard("")
     stats: dict[str, object] = {"ai_generation_candidate_count": len(contents)}
     for content in contents:
         cluster = _semantic_cluster(content)
+        dedupe_key = _message_dedupe_key(content)
         item = {
             "content": content,
             "semantic_cluster": cluster,
@@ -4628,7 +4694,7 @@ def _quality_filter_ai_messages(
             _record_quality_rejection(stats, "template_shell_limited", content, detail="vague_ai_filler")
             stats["skip_reason"] = stats.get("skip_reason") or "template_shell_limited"
             continue
-        if cluster and (cluster in accepted_clusters or cluster in previous_clusters):
+        if dedupe_key and (dedupe_key in accepted_clusters or dedupe_key in previous_clusters):
             _record_quality_rejection(stats, "duplicate_message", content, detail="semantic_cluster")
             stats["duplicate_risk"] = "semantic_cluster"
             stats["skip_reason"] = stats.get("skip_reason") or "duplicate_risk"
@@ -4644,11 +4710,19 @@ def _quality_filter_ai_messages(
             stats["skip_reason"] = "hallucination_risk"
             continue
         accepted.append(item)
-        if cluster:
-            accepted_clusters.add(cluster)
+        if dedupe_key:
+            accepted_clusters.add(dedupe_key)
         if len(accepted) >= max(1, int(limit or 1)):
             break
     return accepted, stats
+
+
+def _message_dedupe_key(content: str) -> str:
+    cluster = _semantic_cluster(content)
+    if cluster:
+        return cluster
+    normalized = _normalize_for_similarity(content)
+    return f"exact:{normalized}" if normalized else ""
 
 
 def _looks_like_vague_ai_filler(content: str) -> bool:

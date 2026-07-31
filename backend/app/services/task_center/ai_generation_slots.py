@@ -5,7 +5,13 @@ from app.models import Action
 from .payloads import SendMessagePayload
 
 
-def generation_slot(action: Action, payload: SendMessagePayload, index: int) -> dict:
+def generation_slot(
+    action: Action,
+    payload: SendMessagePayload,
+    index: int,
+    *,
+    content_obligation_fallback_ready: bool = False,
+) -> dict:
     return {
         "slot_id": payload.slot_id,
         "primary_quantity_slot_id": str(action.primary_quantity_slot_id or ""),
@@ -23,6 +29,8 @@ def generation_slot(action: Action, payload: SendMessagePayload, index: int) -> 
         "reply_to_sequence_index": index if payload.reply_to_message_id else None,
         "topic_direction": dict(payload.topic_direction),
         "teacher_target": dict(payload.teacher_target),
+        "material_intent": payload.material_intent,
+        "content_obligation_fallback_ready": content_obligation_fallback_ready,
     }
 
 

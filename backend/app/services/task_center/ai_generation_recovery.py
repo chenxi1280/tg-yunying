@@ -27,6 +27,7 @@ def persist_generation_unknown(
                 content,
                 int(tokens or 0) if index == 0 else 0,
                 attempt_id,
+                payload=payload,
             )
             mark_attempt_outcome(
                 data,

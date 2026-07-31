@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -7,7 +8,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
 from app.models import Action
-from app.services.task_center import ai_generation_dispatch
+from app.services.task_center import ai_generation_dispatch, ai_generation_pipeline
 from app.services.task_center.ai_generator import AiGenerationUnavailable, GeneratedContent
 from app.services.task_center.ai_generation_dependencies import GenerationDependencies
 from app.services.task_center.ai_generation_pipeline import generate_quality_results
@@ -88,7 +89,7 @@ def test_mask_profile_does_not_force_transaction_topic_guidance() -> None:
     assert "content_guidance" not in slot
 
 
-def test_daily_coverage_uses_distinct_explicit_static_fallback_after_all_models_reject() -> None:
+def test_coverage_slot_without_primary_quantity_never_uses_static_fallback() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     observed: list[str] = []
     request = _request(
@@ -116,18 +117,11 @@ def test_daily_coverage_uses_distinct_explicit_static_fallback_after_all_models_
         )
 
     assert observed == ["primary_default"] * 3 + ["fallback_m25"] * 3
-    fallbacks = [result for result in results if result.quality_fallback == "check_in_fallback"]
-    rejected = [result for result in results if result.rejection_code]
-    assert len(fallbacks) == 2
-    assert {str(item.content).strip() for item in fallbacks} == {"签到"}
-    assert rejected == []
-    assert all(
-        getattr(item.content, "fallback_stage", "") == "static_safe_fallback"
-        for item in fallbacks
-    )
+    assert all(result.quality_fallback == "" for result in results)
+    assert all(result.rejection_code == "voice_profile_mismatch" for result in results)
 
 
-def test_completion_fallback_cannot_be_disabled_for_coverage_slot() -> None:
+def test_static_fallback_setting_disables_primary_quantity_check_in() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     request = _request(
         "😂😂",
@@ -135,7 +129,7 @@ def test_completion_fallback_cannot_be_disabled_for_coverage_slot() -> None:
         cached=False,
         config={
             "_ai_group_static_fallback_enabled": False,
-            "generation_slots": [_coverage_slot("slot-1", 11)],
+            "generation_slots": [_quantity_slot("slot-1", 11)],
         },
     )
     with Session(engine) as session:
@@ -145,11 +139,11 @@ def test_completion_fallback_cannot_be_disabled_for_coverage_slot() -> None:
             _dependencies(normal_generator=_stage_generator(session, [])),
         )
 
-    assert results[0].rejection_code == ""
-    assert results[0].quality_fallback == "check_in_fallback"
+    assert results[0].rejection_code == "voice_profile_mismatch"
+    assert results[0].quality_fallback == ""
 
 
-def test_daily_coverage_static_fallback_handles_provider_unavailability() -> None:
+def test_coverage_slot_provider_unavailability_remains_visible() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     request = _request(
         "",
@@ -160,15 +154,12 @@ def test_daily_coverage_static_fallback_handles_provider_unavailability() -> Non
         },
     )
     with Session(engine) as session:
-        results, _tokens = generate_quality_results(
-            session,
-            request,
-            _dependencies(normal_generator=_unavailable_generator),
-        )
-
-    assert results[0].rejection_code == ""
-    assert results[0].quality_fallback == "check_in_fallback"
-    assert results[0].fallback_reason == "all_model_stages_rejected"
+        with pytest.raises(AiGenerationUnavailable, match="provider unavailable"):
+            generate_quality_results(
+                session,
+                request,
+                _dependencies(normal_generator=_unavailable_generator),
+            )
 
 
 def test_extra_volume_quantity_slot_uses_check_in_when_all_providers_unavailable() -> None:
@@ -183,6 +174,7 @@ def test_extra_volume_quantity_slot_uses_check_in_when_all_providers_unavailable
                 "group_id": 2,
                 "primary_quantity_slot_id": "quantity-extra-1",
                 "coverage_ledger_id": "",
+                "content_obligation_fallback_ready": True,
             }],
         },
     )
@@ -197,6 +189,84 @@ def test_extra_volume_quantity_slot_uses_check_in_when_all_providers_unavailable
     assert results[0].quality_fallback == "check_in_fallback"
     assert results[0].fallback_reason == "all_model_stages_rejected"
     assert str(results[0].content) == "签到"
+
+
+def test_pending_content_obligation_never_degrades_to_check_in() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    request = _request(
+        "",
+        cached=False,
+        config={
+            "generation_slots": [{
+                **_quantity_slot("slot-extra-1", 11),
+                "content_obligation_fallback_ready": False,
+            }],
+        },
+    )
+    with Session(engine) as session:
+        with pytest.raises(AiGenerationUnavailable, match="provider unavailable"):
+            generate_quality_results(
+                session,
+                request,
+                _dependencies(normal_generator=_unavailable_generator),
+            )
+
+
+def test_provider_attempt_stops_when_deadline_budget_is_insufficient(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    now_value = datetime(2026, 7, 31, 12, 0, tzinfo=UTC)
+    observed: list[str] = []
+    request = _request(
+        "",
+        cached=False,
+        config={
+            "_ai_generation_latest_safe_send_at": (
+                now_value + timedelta(seconds=119)
+            ).isoformat(),
+            "generation_slots": [_quantity_slot("slot-1", 11)],
+        },
+    )
+    monkeypatch.setattr(ai_generation_pipeline, "_now", lambda: now_value)
+
+    with Session(engine) as session:
+        with pytest.raises(
+            AiGenerationUnavailable,
+            match="ai_generation_deadline_budget_exhausted",
+        ):
+            generate_quality_results(
+                session,
+                request,
+                _dependencies(normal_generator=_stage_generator(session, observed)),
+            )
+
+    assert observed == []
+
+
+@pytest.mark.parametrize(
+    "slot_update",
+    [
+        {"reply_to_message_id": 9001},
+        {"material_intent": "表情包:围观"},
+    ],
+)
+def test_reply_or_material_obligation_never_degrades_to_check_in(slot_update) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    slot = {**_quantity_slot("slot-1", 11), **slot_update}
+    request = _request(
+        "😂😂",
+        account_profile="少表情，避免连续 emoji",
+        cached=False,
+        config={"generation_slots": [slot]},
+    )
+    with Session(engine) as session:
+        results, _tokens = generate_quality_results(
+            session,
+            request,
+            _dependencies(normal_generator=_stage_generator(session, [])),
+        )
+
+    assert results[0].quality_fallback == ""
+    assert results[0].rejection_code == "voice_profile_mismatch"
 
 
 def test_runtime_generation_slot_carries_primary_quantity_slot_id() -> None:
@@ -225,7 +295,7 @@ def test_provider_unavailability_closes_read_transaction_before_next_stage() -> 
     request = _request(
         "",
         cached=False,
-        config={"generation_slots": [_coverage_slot("slot-1", 11)]},
+        config={"generation_slots": [_quantity_slot("slot-1", 11)]},
     )
     with Session(engine) as session:
         results, _tokens = generate_quality_results(
@@ -239,7 +309,7 @@ def test_provider_unavailability_closes_read_transaction_before_next_stage() -> 
     assert results[0].content == "签到"
 
 
-def test_cached_rejection_reenters_daily_coverage_static_fallback() -> None:
+def test_cached_coverage_rejection_does_not_enter_static_fallback() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     request = _request(
         "😂😂",
@@ -252,8 +322,8 @@ def test_cached_rejection_reenters_daily_coverage_static_fallback() -> None:
     with Session(engine) as session:
         results, _tokens = generate_quality_results(session, request, _dependencies())
 
-    assert results[0].rejection_code == ""
-    assert results[0].quality_fallback == "check_in_fallback"
+    assert results[0].rejection_code == "voice_profile_mismatch"
+    assert results[0].quality_fallback == ""
 
 
 def test_explicit_single_model_does_not_enter_default_static_fallback_chain() -> None:
@@ -285,7 +355,7 @@ def test_cached_static_fallback_keeps_explicit_audit_without_profile_rejection()
         "placeholder",
         config={
             "_ai_group_static_fallback_enabled": True,
-            "generation_slots": [_coverage_slot("slot-1", 11)],
+            "generation_slots": [_quantity_slot("slot-1", 11)],
         },
     )
     request.cached_contents = [GeneratedContent(
@@ -307,7 +377,8 @@ def test_cached_static_fallback_keeps_explicit_audit_without_profile_rejection()
     request.config["_ai_group_static_fallback_enabled"] = False
     with Session(engine) as session:
         disabled_results, _tokens = generate_quality_results(session, request, _dependencies())
-    assert disabled_results[0].quality_fallback == "check_in_fallback"
+    assert disabled_results[0].quality_fallback == ""
+    assert disabled_results[0].rejection_code == "static_fallback_disabled"
 
 
 def test_primary_third_attempt_can_complete_without_backup() -> None:
@@ -338,7 +409,7 @@ def test_primary_third_attempt_can_complete_without_backup() -> None:
     assert results[0].content == "今天先聊聊"
 
 
-def test_reply_coverage_fallback_preserves_reply_slot() -> None:
+def test_reply_coverage_never_degrades_to_check_in() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     slot = {
         **_coverage_slot("slot-reply", 11),
@@ -362,9 +433,8 @@ def test_reply_coverage_fallback_preserves_reply_slot() -> None:
             ),
         )
 
-    content = results[0].content
-    assert str(content) == "签到"
-    assert content.reply_to_sequence_index == 1
+    assert results[0].quality_fallback == ""
+    assert results[0].rejection_code == "voice_profile_mismatch"
 
 
 def _request(
@@ -423,6 +493,17 @@ def _coverage_slot(slot_id: str, account_id: int) -> dict:
         "group_id": 2,
         "coverage_ledger_id": f"coverage-{account_id}",
         "coverage_window_date": "2026-07-16",
+    }
+
+
+def _quantity_slot(slot_id: str, account_id: int) -> dict:
+    return {
+        "slot_id": slot_id,
+        "account_id": account_id,
+        "group_id": 2,
+        "primary_quantity_slot_id": f"quantity-{account_id}",
+        "coverage_ledger_id": "",
+        "content_obligation_fallback_ready": True,
     }
 
 
