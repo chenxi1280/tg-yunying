@@ -237,7 +237,8 @@ def pytest_collection_modifyitems(session, config, items):
     except (RuntimeError, SQLAlchemyError) as exc:
         raise pytest.UsageError(
             "PostgreSQL test database is required for the selected tests, "
-            "but reset failed. Check TEST_DATABASE_URL/DATABASE_URL and database connectivity."
+            "but reset failed. Check TEST_DATABASE_URL/DATABASE_URL and database connectivity. "
+            f"Root cause: {type(exc).__name__}: {exc}"
         ) from exc
 
 

@@ -16,16 +16,28 @@ down_revision = "0132_action_pointer_delete"
 branch_labels = None
 depends_on = None
 
+TABLE_NAME = "tg_groups"
+
 
 def upgrade() -> None:
-    op.add_column(
-        "tg_groups",
+    existing_columns = {
+        column["name"] for column in sa.inspect(op.get_bind()).get_columns(TABLE_NAME)
+    }
+    _add_column_if_missing(
+        existing_columns,
         sa.Column("listener_remote_cursor", sa.String(length=160), nullable=False, server_default=""),
     )
-    op.add_column(
-        "tg_groups",
+    _add_column_if_missing(
+        existing_columns,
         sa.Column("listener_cursor_status", sa.String(length=20), nullable=False, server_default="unproven"),
     )
+
+
+def _add_column_if_missing(existing_columns: set[str], column: sa.Column) -> None:
+    if column.name in existing_columns:
+        return
+    op.add_column(TABLE_NAME, column)
+    existing_columns.add(column.name)
 
 
 def downgrade() -> None:

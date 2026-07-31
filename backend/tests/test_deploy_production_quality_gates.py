@@ -11,10 +11,24 @@ WORKFLOW = Path(__file__).resolve().parents[2] / ".github/workflows/deploy-produ
 def test_production_checks_run_complete_backend_partitions_and_frontend_in_parallel() -> None:
     jobs = yaml.safe_load(WORKFLOW.read_text())["jobs"]
     backend = jobs["backend-checks"]
-    markers = backend["strategy"]["matrix"]["pytest_marker"]
+    partitions = backend["strategy"]["matrix"]["include"]
+    no_postgres_paths = {
+        partition["pytest_paths"]
+        for partition in partitions
+        if partition["pytest_marker"] == "no_postgres"
+    }
 
-    assert set(markers) == {"no_postgres", "not no_postgres"}
-    assert 'pytest -q -m "${{ matrix.pytest_marker }}"' in _combined_run_script(backend)
+    assert no_postgres_paths == {
+        "tests/test_[a-b]*.py",
+        "tests/test_[c-d]*.py",
+        "tests/test_[e-l]*.py",
+        "tests/test_[m-p]*.py",
+        "tests/test_[q-s]*.py",
+        "tests/test_[t-z]*.py",
+    }
+    assert partitions[-1]["pytest_marker"] == "not no_postgres"
+    assert partitions[-1]["pytest_paths"] == "tests"
+    assert '${{ matrix.pytest_paths }}' in _combined_run_script(backend)
     assert "frontend-checks" in jobs
     assert set(jobs["build-images"]["needs"]) == {"backend-checks", "frontend-checks"}
 

@@ -46,3 +46,4 @@ def test_postgres_reset_failure_is_reported_as_actionable_pytest_error():
     assert "except (RuntimeError, SQLAlchemyError) as exc:" in source
     assert "pytest.UsageError" in source
     assert "PostgreSQL test database is required" in source
+    assert "Root cause: {type(exc).__name__}: {exc}" in source
