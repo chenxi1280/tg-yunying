@@ -1247,6 +1247,7 @@ class TelethonTelegramGateway(TelegramGateway):
         image_verification_challenge_limit: int = (
             DEFAULT_IMAGE_VERIFICATION_CHALLENGE_LIMIT
         ),
+        image_verification_callback_unknown_fingerprints: frozenset[str] = frozenset(),
     ) -> dict[str, Any]:
         raw_session = decrypt_session(session_ciphertext)
         if not raw_session:
@@ -1270,6 +1271,9 @@ class TelethonTelegramGateway(TelegramGateway):
             image_verification_challenge_limit=(
                 image_verification_challenge_limit
             ),
+            image_verification_callback_unknown_fingerprints=(
+                image_verification_callback_unknown_fingerprints
+            ),
         )
 
     def execute_search_join(
@@ -1283,6 +1287,7 @@ class TelethonTelegramGateway(TelegramGateway):
         image_verification_challenge_limit: int = (
             DEFAULT_IMAGE_VERIFICATION_CHALLENGE_LIMIT
         ),
+        image_verification_callback_unknown_fingerprints: frozenset[str] = frozenset(),
     ) -> dict[str, Any]:
         return self._run(
             self._execute_search_join_async(
@@ -1290,8 +1295,13 @@ class TelethonTelegramGateway(TelegramGateway):
                 self._usable_credentials(credentials),
                 payload,
                 keyword_text,
-                image_verification_solver,
-                image_verification_challenge_limit,
+                image_verification_solver=image_verification_solver,
+                image_verification_challenge_limit=(
+                    image_verification_challenge_limit
+                ),
+                image_verification_callback_unknown_fingerprints=(
+                    image_verification_callback_unknown_fingerprints
+                ),
             )
         )
 

@@ -1,0 +1,8 @@
+services:
+  worker-dispatcher-1:
+    mem_limit: ${DISPATCHER_MEMORY_LIMIT:?DISPATCHER_MEMORY_LIMIT is required when verification contract is enabled}
+    stop_grace_period: ${DISPATCHER_STOP_GRACE_PERIOD:?DISPATCHER_STOP_GRACE_PERIOD is required when verification contract is enabled}
+
+  worker-dispatcher-2:
+    mem_limit: ${DISPATCHER_MEMORY_LIMIT:?DISPATCHER_MEMORY_LIMIT is required when verification contract is enabled}
+    stop_grace_period: ${DISPATCHER_STOP_GRACE_PERIOD:?DISPATCHER_STOP_GRACE_PERIOD is required when verification contract is enabled}

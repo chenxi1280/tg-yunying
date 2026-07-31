@@ -7,6 +7,35 @@ import pytest
 
 from app.integrations.telegram import search_join
 from app.services import membership_challenges
+from app.services.image_verification_runtime import (
+    ImageVerificationRuntime,
+)
+from app.services.image_verification_client import (
+    RemoteOcrResult,
+    RemoteOcrSource,
+)
+
+
+@pytest.fixture(autouse=True)
+def _configured_verification_contract(monkeypatch):
+    settings = SimpleNamespace(
+        image_verification_contract_enabled=True,
+        image_verification_contract_version="test-v1",
+        image_verification_callback_acceptance_seconds=1.0,
+        image_verification_callback_headroom_seconds=0.1,
+        image_verification_model_tail_budget_seconds=0.4,
+        image_verification_model_timeout_seconds=0.4,
+        image_verification_reasoning_retry_min_budget_seconds=0.1,
+        image_verification_model_concurrency=2,
+        image_verification_ocr_backend="local",
+        image_verification_worker_url="",
+        image_verification_worker_token="",
+    )
+    monkeypatch.setattr(
+        membership_challenges,
+        "get_settings",
+        lambda: settings,
+    )
 
 
 def _request(
@@ -117,7 +146,7 @@ def test_image_solver_accepts_two_ocr_votes_without_waiting_model(
 
     assert decision.answer == "10"
     assert decision.model_waited is False
-    assert decision.votes[0].status == "not_waited"
+    assert decision.votes[0].status == "not_started"
     assert [vote.source for vote in decision.votes[1:]] == [
         "rapidocr",
         "ddddocr",
@@ -311,12 +340,16 @@ def test_image_solver_uses_only_first_healthy_model(
 
 
 @pytest.mark.no_postgres
-def test_image_solver_starts_three_sources_in_parallel(monkeypatch) -> None:
+def test_image_solver_starts_only_two_local_sources_in_parallel(
+    monkeypatch,
+) -> None:
     _install_sources(monkeypatch)
-    barrier = Barrier(3, timeout=1)
+    barrier = Barrier(2, timeout=1)
+    model_calls = 0
 
     def model(*_args, **_kwargs):
-        barrier.wait()
+        nonlocal model_calls
+        model_calls += 1
         return SimpleNamespace(answer="10", confidence=0.95)
 
     def ddddocr(_image):
@@ -347,6 +380,7 @@ def test_image_solver_starts_three_sources_in_parallel(monkeypatch) -> None:
     )
 
     assert solver(_request(["9", "10"])).answer == "10"
+    assert model_calls == 1
 
 
 @pytest.mark.no_postgres
@@ -378,7 +412,7 @@ def test_two_ocr_consensus_does_not_wait_for_model(monkeypatch) -> None:
 
     assert decision.answer == "10"
     assert decision.model_waited is False
-    assert decision.votes[0].status == "not_waited"
+    assert decision.votes[0].status == "not_started"
     assert elapsed < 0.5
 
 
@@ -425,3 +459,223 @@ def test_rapidocr_inference_is_serialized_per_worker(monkeypatch) -> None:
 
     assert results == (("10", 0.9),) * 4
     assert maximum == 1
+
+
+@pytest.mark.no_postgres
+def test_running_model_remains_registered_after_local_consensus(
+    monkeypatch,
+) -> None:
+    _install_sources(
+        monkeypatch,
+        ddddocr_answer="10",
+        rapidocr_answer="10",
+    )
+    release_model = Event()
+    rapid_release = Event()
+    runtime = ImageVerificationRuntime(model_concurrency=1)
+
+    def slow_model(*_args, **_kwargs):
+        release_model.wait(timeout=1)
+        return SimpleNamespace(answer="9", confidence=0.95)
+
+    def slow_rapid(_image):
+        rapid_release.wait(timeout=1)
+        return (("10", 0.9),)
+
+    monkeypatch.setattr(
+        membership_challenges.ai_gateway,
+        "solve_image_verification",
+        slow_model,
+    )
+    monkeypatch.setattr(
+        membership_challenges.image_verification_ocr,
+        "recognize_rapidocr_variants",
+        slow_rapid,
+    )
+    solver = membership_challenges.build_search_join_image_verification_solver(
+        object(),
+        runtime=runtime,
+    )
+    decision_box = []
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        solver_future = executor.submit(solver, _request(["9", "10"]))
+        sleep(0.55)
+        rapid_release.set()
+        decision_box.append(solver_future.result(timeout=1))
+
+    assert decision_box[0].answer == "10"
+    assert decision_box[0].model_started is True
+    assert runtime.registry.count() == 1
+    release_model.set()
+    assert runtime.registry.wait_empty() is True
+
+
+@pytest.mark.no_postgres
+def test_uncalibrated_deadline_fails_closed(monkeypatch) -> None:
+    _install_sources(monkeypatch, ddddocr_answer="10", rapidocr_answer="10")
+    policy = membership_challenges.ImageVerificationPolicy(
+        enabled=True,
+        contract_version="test-v1",
+        callback_acceptance_seconds=0,
+        callback_headroom_seconds=0,
+        model_tail_budget_seconds=0,
+        model_timeout_seconds=1,
+        reasoning_retry_min_budget_seconds=0.1,
+        model_concurrency=1,
+    )
+    solver = membership_challenges.build_search_join_image_verification_solver(
+        object(),
+        policy=policy,
+    )
+
+    with pytest.raises(search_join.ImageVerificationRuntimeContractError) as raised:
+        solver(_request(["9", "10"]))
+
+    assert raised.value.code == "verification_deadline_not_calibrated"
+
+
+@pytest.mark.no_postgres
+def test_remote_ocr_path_never_calls_dispatcher_native_ocr(
+    monkeypatch,
+) -> None:
+    model_calls = _install_sources(monkeypatch)
+
+    def native_fallback(*_args, **_kwargs):
+        raise AssertionError("remote mode must not load local OCR")
+
+    monkeypatch.setattr(
+        membership_challenges.image_verification_ocr,
+        "recognize_rapidocr_variants",
+        native_fallback,
+    )
+    monkeypatch.setattr(
+        membership_challenges.image_verification_ocr,
+        "recognize_ddddocr_variants",
+        native_fallback,
+    )
+    remote_result = RemoteOcrResult(
+        request_id="a" * 64,
+        input_hash="d" * 64,
+        worker_generation="generation-1",
+        sources=tuple(
+            RemoteOcrSource(
+                source=source,
+                status="complete",
+                candidates=(("10", 0.9),),
+                started_at="start",
+                completed_at="end",
+                duration_ms=10,
+                late=False,
+                detail="",
+            )
+            for source in ("rapidocr", "ddddocr")
+        ),
+    )
+    monkeypatch.setattr(
+        "app.services.search_join_image_solver.ImageVerificationWorkerClient.recognize",
+        lambda *_args, **_kwargs: remote_result,
+    )
+    policy = membership_challenges.ImageVerificationPolicy(
+        enabled=True,
+        contract_version="test-v1",
+        callback_acceptance_seconds=1,
+        callback_headroom_seconds=0.1,
+        model_tail_budget_seconds=0.4,
+        model_timeout_seconds=0.4,
+        reasoning_retry_min_budget_seconds=0.1,
+        model_concurrency=1,
+        ocr_backend="remote",
+        worker_url="http://worker:8091",
+        worker_token="token",
+    )
+    solver = membership_challenges.build_search_join_image_verification_solver(
+        object(),
+        action_id="action-1",
+        policy=policy,
+        runtime=ImageVerificationRuntime(model_concurrency=1),
+    )
+    request = search_join.ImageVerificationRequest(
+        image_bytes=b"image",
+        mime_type="image/png",
+        candidate_answers=("9", "10"),
+        challenge_text="数学题",
+        challenge_fingerprint_hash="b" * 64,
+        candidate_hash="c" * 64,
+    )
+
+    decision = solver(request)
+
+    assert decision.answer == "10"
+    assert decision.consensus_source == "local_ocr"
+    assert model_calls == []
+
+
+@pytest.mark.no_postgres
+def test_remote_ocr_is_harvested_after_hedged_model_finishes_first(
+    monkeypatch,
+) -> None:
+    model_calls = _install_sources(monkeypatch, model_answer="10")
+    remote_result = RemoteOcrResult(
+        request_id="a" * 64,
+        input_hash="d" * 64,
+        worker_generation="generation-1",
+        sources=tuple(
+            RemoteOcrSource(
+                source=source,
+                status="complete",
+                candidates=((answer, 0.9),),
+                started_at="start",
+                completed_at="end",
+                duration_ms=80,
+                late=False,
+                detail="",
+            )
+            for source, answer in (
+                ("rapidocr", "9"),
+                ("ddddocr", "10"),
+            )
+        ),
+    )
+
+    def delayed_remote(*_args, **_kwargs):
+        sleep(0.08)
+        return remote_result
+
+    monkeypatch.setattr(
+        "app.services.search_join_image_solver.ImageVerificationWorkerClient.recognize",
+        delayed_remote,
+    )
+    policy = membership_challenges.ImageVerificationPolicy(
+        enabled=True,
+        contract_version="test-v1",
+        callback_acceptance_seconds=0.30,
+        callback_headroom_seconds=0.05,
+        model_tail_budget_seconds=0.20,
+        model_timeout_seconds=0.20,
+        reasoning_retry_min_budget_seconds=0.05,
+        model_concurrency=1,
+        ocr_backend="remote",
+        worker_url="http://worker:8091",
+        worker_token="token",
+    )
+    solver = membership_challenges.build_search_join_image_verification_solver(
+        object(),
+        action_id="action-1",
+        policy=policy,
+        runtime=ImageVerificationRuntime(model_concurrency=1),
+    )
+    request = search_join.ImageVerificationRequest(
+        image_bytes=b"image",
+        mime_type="image/png",
+        candidate_answers=("9", "10"),
+        challenge_text="数学题",
+        challenge_fingerprint_hash="b" * 64,
+        candidate_hash="c" * 64,
+    )
+
+    decision = solver(request)
+
+    assert decision.answer == "10"
+    assert decision.consensus_source == "model_ocr"
+    assert model_calls == [1]

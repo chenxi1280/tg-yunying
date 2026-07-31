@@ -5,6 +5,7 @@ import base64
 import hashlib
 import json
 import re
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -57,6 +58,10 @@ class AiEmptyFinalContentError(RuntimeError):
         super().__init__(detail)
         self.retryable_reasoning_length = retryable_reasoning_length
 
+
+class AiRequestDeadlineExceeded(RuntimeError):
+    pass
+
 MODEL_ALIASES = {
     "deepseek v4 flash": "deepseek-v4-flash",
     "deepseek-v4-flash": "deepseek-v4-flash",
@@ -90,6 +95,26 @@ IMAGE_VERIFICATION_MAX_TOKENS = 512
 IMAGE_VERIFICATION_REASONING_RETRY_MAX_TOKENS = 4096
 MOCK_UNIQUENESS_TOKEN_LENGTH = 200
 MOCK_UNIQUENESS_TOKEN_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
+
+def _deadline_request_timeout(
+    provider_timeout: float,
+    deadline_monotonic: float | None,
+    *,
+    retry_min_budget_seconds: float,
+) -> float:
+    if provider_timeout <= 0:
+        raise ValueError("provider timeout must be positive")
+    if deadline_monotonic is None:
+        return provider_timeout
+    remaining = deadline_monotonic - time.monotonic()
+    if remaining <= 0:
+        raise AiRequestDeadlineExceeded("AI request deadline exceeded")
+    if retry_min_budget_seconds and remaining < retry_min_budget_seconds:
+        raise AiRequestDeadlineExceeded(
+            "AI reasoning retry budget is insufficient"
+        )
+    return min(provider_timeout, remaining)
 
 
 def normalize_ai_model_name(model_name: str) -> str:
@@ -308,7 +333,9 @@ class AiGateway:
         mime_type: str,
         *,
         prompt: str = "请只识别图片里的验证码，输出 JSON：{\"answer\":\"验证码\",\"confidence\":0到1的小数}。",
-        timeout: int = DEFAULT_AI_REQUEST_TIMEOUT_SECONDS,
+        timeout: float = DEFAULT_AI_REQUEST_TIMEOUT_SECONDS,
+        deadline_monotonic: float | None = None,
+        retry_min_budget_seconds: float = 0,
     ) -> AiImageVerificationResult:
         if not self._is_image_verification_provider(credentials):
             raise RuntimeError("图片验证码只能使用已支持的多模态视觉供应商（MiMo/Mino 或 MiniMax）")
@@ -324,6 +351,8 @@ class AiGateway:
             image_data_url=_image_data_url(image_bytes, mime_type),
             reasoning_retry_max_tokens=IMAGE_VERIFICATION_REASONING_RETRY_MAX_TOKENS,
             timeout=timeout,
+            deadline_monotonic=deadline_monotonic,
+            retry_min_budget_seconds=retry_min_budget_seconds,
         )
         parsed = _parse_image_verification_json(raw)
         return AiImageVerificationResult(parsed["answer"], parsed["confidence"], usage)
@@ -356,8 +385,10 @@ class AiGateway:
         system_prompt: str = "你是一个 Telegram 群运营话术助手，只输出用户要求的 JSON。",
         response_format_json: bool = False,
         reasoning_retry_max_tokens: int | None = None,
-        timeout: int = DEFAULT_AI_REQUEST_TIMEOUT_SECONDS,
+        timeout: float = DEFAULT_AI_REQUEST_TIMEOUT_SECONDS,
         image_data_url: str | None = None,
+        deadline_monotonic: float | None = None,
+        retry_min_budget_seconds: float = 0,
     ) -> tuple[str, AiUsage]:
         url = self._chat_completions_url(credentials.base_url)
         headers = {"Content-Type": "application/json"}
@@ -369,7 +400,14 @@ class AiGateway:
         if reasoning_retry_max_tokens and reasoning_retry_max_tokens > max_tokens:
             attempt_tokens.append(reasoning_retry_max_tokens)
         last_empty_error: AiEmptyFinalContentError | None = None
-        for token_budget in attempt_tokens:
+        for attempt_index, token_budget in enumerate(attempt_tokens):
+            request_timeout = _deadline_request_timeout(
+                timeout,
+                deadline_monotonic,
+                retry_min_budget_seconds=(
+                    retry_min_budget_seconds if attempt_index else 0
+                ),
+            )
             payload = self._chat_payload(
                 credentials,
                 prompt,
@@ -381,7 +419,7 @@ class AiGateway:
             )
             request = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
             try:
-                with urllib.request.urlopen(request, timeout=timeout) as response:
+                with urllib.request.urlopen(request, timeout=request_timeout) as response:
                     data = json.loads(response.read().decode("utf-8"))
             except urllib.error.HTTPError as exc:
                 detail = exc.read().decode("utf-8", errors="ignore")

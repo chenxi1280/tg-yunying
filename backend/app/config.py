@@ -52,6 +52,48 @@ def _default_queue_backend(app_env: str) -> str:
     return "redis" if os.getenv("REDIS_URL") else "sync"
 
 
+def _validate_dispatcher_recycle_settings(settings: object) -> None:
+    if (
+        settings.image_verification_contract_enabled
+        and not settings.dispatcher_recycle_enabled
+    ):
+        raise ValueError(
+            "IMAGE_VERIFICATION_CONTRACT_ENABLED requires "
+            "DISPATCHER_RECYCLE_ENABLED"
+        )
+    if not settings.dispatcher_recycle_enabled:
+        return
+    thresholds = (
+        settings.dispatcher_recycle_soft_rss_bytes,
+        settings.dispatcher_recycle_soft_cgroup_bytes,
+        settings.dispatcher_recycle_ocr_attempt_limit,
+        settings.dispatcher_recycle_max_uptime_seconds,
+    )
+    if not any(value > 0 for value in thresholds):
+        raise ValueError(
+            "DISPATCHER_RECYCLE_ENABLED requires at least one threshold"
+        )
+    if settings.dispatcher_recycle_lease_seconds <= 0:
+        raise ValueError("DISPATCHER_RECYCLE_LEASE_SECONDS must be positive")
+    if settings.dispatcher_gateway_shutdown_timeout_seconds <= 0:
+        raise ValueError(
+            "DISPATCHER_GATEWAY_SHUTDOWN_TIMEOUT_SECONDS must be positive"
+        )
+
+
+def _validate_production_ocr_isolation(settings: object) -> None:
+    if not settings.image_verification_contract_enabled:
+        return
+    if (
+        settings.app_env == "production"
+        and settings.image_verification_ocr_backend != "remote"
+    ):
+        raise ValueError(
+            "Production image verification contract requires "
+            "IMAGE_VERIFICATION_OCR_BACKEND=remote"
+        )
+
+
 @dataclass(frozen=True)
 class Settings:
     app_env: str = os.getenv("APP_ENV", "development")
@@ -108,6 +150,8 @@ class Settings:
             raise ValueError("VOICE_PROFILE_PROVIDER_CONCURRENCY must be positive")
         if self.voice_profile_provider_lease_seconds < 30:
             raise ValueError("VOICE_PROFILE_PROVIDER_LEASE_SECONDS must be at least 30")
+        _validate_dispatcher_recycle_settings(self)
+        _validate_production_ocr_isolation(self)
     tg_api_id: str | None = os.getenv("TG_API_ID")
     tg_api_hash: str | None = os.getenv("TG_API_HASH")
     tg_gateway_mode: str = os.getenv("TG_GATEWAY_MODE", "mock" if os.getenv("APP_ENV") == "test" else "telethon")
@@ -148,6 +192,72 @@ class Settings:
     # PRD §2.20.2 RC-3: UAS 补偿确认终态关闭超时（秒），默认 10 分钟。
     search_join_membership_confirmation_timeout_seconds: int = int(os.getenv("SEARCH_JOIN_MEMBERSHIP_CONFIRMATION_TIMEOUT_SECONDS", "600"))
     dispatcher_concurrency: int = int(os.getenv("DISPATCHER_CONCURRENCY", "20"))
+    image_verification_contract_enabled: bool = _bool_env(
+        "IMAGE_VERIFICATION_CONTRACT_ENABLED",
+        False,
+    )
+    image_verification_contract_version: str = os.getenv(
+        "IMAGE_VERIFICATION_CONTRACT_VERSION",
+        "",
+    )
+    image_verification_callback_acceptance_seconds: float = float(
+        os.getenv("IMAGE_VERIFICATION_CALLBACK_ACCEPTANCE_SECONDS", "0")
+    )
+    image_verification_callback_headroom_seconds: float = float(
+        os.getenv("IMAGE_VERIFICATION_CALLBACK_HEADROOM_SECONDS", "0")
+    )
+    image_verification_model_tail_budget_seconds: float = float(
+        os.getenv("IMAGE_VERIFICATION_MODEL_TAIL_BUDGET_SECONDS", "0")
+    )
+    image_verification_model_timeout_seconds: float = float(
+        os.getenv("IMAGE_VERIFICATION_MODEL_TIMEOUT_SECONDS", "30")
+    )
+    image_verification_reasoning_retry_min_budget_seconds: float = float(
+        os.getenv(
+            "IMAGE_VERIFICATION_REASONING_RETRY_MIN_BUDGET_SECONDS",
+            "0",
+        )
+    )
+    image_verification_model_concurrency: int = int(
+        os.getenv(
+            "IMAGE_VERIFICATION_MODEL_CONCURRENCY",
+            os.getenv("DISPATCHER_CONCURRENCY", "20"),
+        )
+    )
+    image_verification_ocr_backend: str = os.getenv(
+        "IMAGE_VERIFICATION_OCR_BACKEND",
+        "local",
+    ).strip().lower()
+    image_verification_worker_url: str = os.getenv(
+        "IMAGE_VERIFICATION_WORKER_URL",
+        "",
+    ).strip().rstrip("/")
+    image_verification_worker_token: str = os.getenv(
+        "IMAGE_VERIFICATION_WORKER_TOKEN",
+        "",
+    )
+    dispatcher_recycle_enabled: bool = _bool_env(
+        "DISPATCHER_RECYCLE_ENABLED",
+        False,
+    )
+    dispatcher_recycle_soft_rss_bytes: int = int(
+        os.getenv("DISPATCHER_RECYCLE_SOFT_RSS_BYTES", "0")
+    )
+    dispatcher_recycle_soft_cgroup_bytes: int = int(
+        os.getenv("DISPATCHER_RECYCLE_SOFT_CGROUP_BYTES", "0")
+    )
+    dispatcher_recycle_ocr_attempt_limit: int = int(
+        os.getenv("DISPATCHER_RECYCLE_OCR_ATTEMPT_LIMIT", "0")
+    )
+    dispatcher_recycle_max_uptime_seconds: float = float(
+        os.getenv("DISPATCHER_RECYCLE_MAX_UPTIME_SECONDS", "0")
+    )
+    dispatcher_recycle_lease_seconds: int = int(
+        os.getenv("DISPATCHER_RECYCLE_LEASE_SECONDS", "0")
+    )
+    dispatcher_gateway_shutdown_timeout_seconds: float = float(
+        os.getenv("DISPATCHER_GATEWAY_SHUTDOWN_TIMEOUT_SECONDS", "0")
+    )
     daily_coverage_plan_batch_limit: int = int(os.getenv("DAILY_COVERAGE_PLAN_BATCH_LIMIT", "20"))
     account_shard_total: int = int(os.getenv("ACCOUNT_SHARD_TOTAL", "1"))
     account_shard_index: int = int(os.getenv("ACCOUNT_SHARD_INDEX", "0"))

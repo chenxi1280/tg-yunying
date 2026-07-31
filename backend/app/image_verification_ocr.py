@@ -5,46 +5,14 @@ from io import BytesIO
 from statistics import mean
 from threading import Lock
 
-from PIL import Image, ImageChops, ImageEnhance, ImageOps
+from PIL import Image, ImageChops, ImageOps
 
-TESSERACT_TIMEOUT_SECONDS = 10
-OCR_SCALE_FACTOR = 3
 CAPTCHA_SCALE_FACTOR = 4
 BLUE_MASK_THRESHOLDS = (20, 30, 40)
 DDDDOCR_CROP_RATIOS = (1.0, 0.75, 0.65)
 DDDDOCR_CONFIDENCE = 0.80
 RAPIDOCR_INFERENCE_LOCK = Lock()
 DDDDOCR_INFERENCE_LOCK = Lock()
-TESSERACT_CONFIG = (
-    "--oem 3 --psm 7 "
-    "-c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    "abcdefghijklmnopqrstuvwxyz+-*/xX=?"
-)
-
-
-def recognize_with_tesseract(image_bytes: bytes) -> tuple[str, float]:
-    import pytesseract
-
-    image = _prepared_image(image_bytes)
-    data = pytesseract.image_to_data(
-        image,
-        config=TESSERACT_CONFIG,
-        output_type=pytesseract.Output.DICT,
-        timeout=TESSERACT_TIMEOUT_SECONDS,
-    )
-    words = [
-        str(text).strip()
-        for text in data.get("text", [])
-        if str(text).strip()
-    ]
-    scores = [
-        float(score) / 100
-        for score in data.get("conf", [])
-        if _valid_tesseract_score(score)
-    ]
-    return "".join(words), mean(scores) if scores else 0.0
-
-
 def recognize_with_rapidocr(image_bytes: bytes) -> tuple[str, float]:
     with RAPIDOCR_INFERENCE_LOCK:
         return _recognize_with_rapidocr(image_bytes)
@@ -82,26 +50,6 @@ def recognize_ddddocr_variants(
             )
             for image in _cropped_variants(image_bytes)
         )
-
-
-def _prepared_image(image_bytes: bytes) -> Image.Image:
-    with Image.open(BytesIO(image_bytes)) as source:
-        image = ImageOps.grayscale(source)
-        scaled = image.resize(
-            (
-                image.width * OCR_SCALE_FACTOR,
-                image.height * OCR_SCALE_FACTOR,
-            ),
-            Image.Resampling.LANCZOS,
-        )
-        return ImageEnhance.Contrast(scaled).enhance(2.0)
-
-
-def _valid_tesseract_score(score: object) -> bool:
-    try:
-        return float(score) >= 0
-    except (TypeError, ValueError):
-        return False
 
 
 def _blue_mask(image_bytes: bytes, threshold: int) -> bytes:
@@ -152,3 +100,9 @@ def _ddddocr_engine():
     import ddddocr
 
     return ddddocr.DdddOcr(show_ad=False)
+
+
+def verify_engines_ready() -> tuple[str, str]:
+    _rapidocr_engine()
+    _ddddocr_engine()
+    return ("rapidocr", "ddddocr")

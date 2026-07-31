@@ -13,7 +13,9 @@ echo "==> Compose file: $COMPOSE_FILE"
 echo "==> Env file: $ENV_FILE"
 
 docker_login_ghcr() {
-  if [[ "$TGYUNYING_BACKEND_IMAGE" != ghcr.io/* && "$TGYUNYING_FRONTEND_IMAGE" != ghcr.io/* ]]; then
+  if [[ "$TGYUNYING_BACKEND_IMAGE" != ghcr.io/* \
+    && "$TGYUNYING_FRONTEND_IMAGE" != ghcr.io/* \
+    && "${TGYUNYING_IMAGE_VERIFICATION_IMAGE:-}" != ghcr.io/* ]]; then
     return 0
   fi
 
@@ -178,6 +180,10 @@ WORKER_SERVICES=(
   worker-metrics
 )
 
+if verification_remote_enabled; then
+  WORKER_SERVICES=(image-verification-worker "${WORKER_SERVICES[@]}")
+fi
+
 RUNTIME_SERVICES=(
   "${BACKEND_SERVICES[@]}"
   "${WORKER_SERVICES[@]}"
@@ -208,6 +214,11 @@ docker exec -i tgyunying-backend \
 
 echo "==> Starting workers after backend migration is healthy"
 compose up -d --no-build --remove-orphans "${WORKER_SERVICES[@]}"
+if verification_remote_enabled; then
+  wait_for_container_ready \
+    tgyunying-image-verification-worker \
+    "${IMAGE_VERIFICATION_WORKER_READY_TIMEOUT_SECONDS:-180}"
+fi
 
 echo "==> Container status"
 compose ps

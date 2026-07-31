@@ -169,6 +169,7 @@ short_sha="$(git rev-parse --short "$REF_NAME")"
 full_sha="$(git rev-parse "$REF_NAME")"
 image_tag="${IMAGE_TAG:-$full_sha}"
 TGYUNYING_BACKEND_IMAGE="${TGYUNYING_BACKEND_IMAGE:-${IMAGE_NAMESPACE}/tg-yunying-backend:${image_tag}}"
+TGYUNYING_IMAGE_VERIFICATION_IMAGE="${TGYUNYING_IMAGE_VERIFICATION_IMAGE:-${IMAGE_NAMESPACE}/tg-yunying-image-verification-worker:${image_tag}}"
 TGYUNYING_FRONTEND_IMAGE="${TGYUNYING_FRONTEND_IMAGE:-${IMAGE_NAMESPACE}/tg-yunying-frontend:${image_tag}}"
 release_id="$(date '+%Y%m%d%H%M%S')_${short_sha}"
 archive_path="$(mktemp "/tmp/tgyunying-release-${release_id}.XXXXXX.tar.gz")"
@@ -182,6 +183,7 @@ trap '[[ "$KEEP_ARCHIVE" == "1" ]] || rm -f "$archive_path" "$image_env_path"' E
 
 cat >"$image_env_path" <<EOF
 TGYUNYING_BACKEND_IMAGE=${TGYUNYING_BACKEND_IMAGE}
+TGYUNYING_IMAGE_VERIFICATION_IMAGE=${TGYUNYING_IMAGE_VERIFICATION_IMAGE}
 TGYUNYING_FRONTEND_IMAGE=${TGYUNYING_FRONTEND_IMAGE}
 STATIC_RELEASE_ID=${release_id}
 STATIC_KEEP_RELEASES=${STATIC_KEEP_RELEASES}

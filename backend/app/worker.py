@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import signal
 import tempfile
 import threading
 import time
@@ -14,6 +15,10 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from .config import get_settings
 from .database import SessionLocal
+from .dispatcher_lifecycle import (
+    DispatcherLifecycle,
+    create_dispatcher_lifecycle,
+)
 from .models import MessageTask, TaskStatus, WorkerHeartbeat
 from .services._common import _as_utc, _now
 from .services.task_center.heartbeat import record_worker_heartbeat
@@ -41,6 +46,13 @@ from .services import (
 from .services.source_media import drain_source_media_cache
 from .services.material_cache import drain_material_cache
 from .services.temp_files import cleanup_temp_files
+from .services.task_center.dispatcher import (
+    dispatcher_runtime_reservation_count,
+)
+from .services.image_verification_runtime import (
+    get_image_verification_runtime,
+)
+from .telethon_lifecycle import shutdown_telethon_lifecycle_strict
 
 logger = logging.getLogger(__name__)
 VALID_WORKER_ROLES = {
@@ -281,8 +293,10 @@ def run_worker(
     max_iterations: int | None = None,
     stop_event: threading.Event | None = None,
     role: str | None = None,
+    dispatcher_lifecycle: DispatcherLifecycle | None = None,
 ) -> None:
     selected_role = _normalize_role(role)
+    lifecycle = dispatcher_lifecycle or _dispatcher_lifecycle(selected_role)
     heartbeat_stop, heartbeat_thread = _start_periodic_heartbeat(selected_role, limit)
     iterations = 0
     try:
@@ -290,9 +304,15 @@ def run_worker(
             try:
                 _record_loop_heartbeat(selected_role, limit)
                 _write_local_healthcheck_heartbeat()
+                if lifecycle is not None:
+                    lifecycle.acknowledge_successor()
                 processed = drain_once(limit, role=selected_role)
                 if processed:
                     logger.info("worker drained role=%s processed=%d", selected_role, processed)
+                if lifecycle is not None:
+                    lifecycle.observe_after_batch()
+                    if lifecycle.state != "active":
+                        break
             except Exception:
                 logger.error("worker drain failed:\n%s", traceback.format_exc())
             iterations += 1
@@ -304,9 +324,109 @@ def run_worker(
                     break
             else:
                 time.sleep(wait_seconds)
+        if _lifecycle_is_stopping(lifecycle, stop_event):
+            heartbeat_stop.set()
+            heartbeat_thread.join(timeout=1)
+        _finish_dispatcher_lifecycle(
+            lifecycle,
+            stop_event,
+            selected_role,
+            limit,
+        )
     finally:
         heartbeat_stop.set()
         heartbeat_thread.join(timeout=1)
+
+
+def _lifecycle_is_stopping(
+    lifecycle: DispatcherLifecycle | None,
+    stop_event: threading.Event | None,
+) -> bool:
+    if lifecycle is None:
+        return False
+    return lifecycle.state != "active" or bool(
+        stop_event and stop_event.is_set()
+    )
+
+
+def _finish_dispatcher_lifecycle(
+    lifecycle: DispatcherLifecycle | None,
+    stop_event: threading.Event | None,
+    role: str,
+    limit: int,
+) -> None:
+    if lifecycle is None:
+        return
+    if stop_event and stop_event.is_set() and lifecycle.state == "active":
+        lifecycle.request_stop("stop_event", automatic=False)
+    if lifecycle.state == "active":
+        return
+    lifecycle.drain_until_safe(
+        lambda metadata: _record_lifecycle_heartbeat(
+            role,
+            limit,
+            metadata,
+        ),
+        stop_event,
+    )
+
+
+def _dispatcher_lifecycle(role: str) -> DispatcherLifecycle | None:
+    if role != "dispatcher":
+        return None
+    settings = get_settings()
+    if not settings.image_verification_contract_enabled:
+        return None
+    runtime = get_image_verification_runtime(
+        settings.image_verification_model_concurrency
+    )
+    return create_dispatcher_lifecycle(
+        settings,
+        SessionLocal,
+        runtime,
+        shutdown_telethon_lifecycle_strict,
+        dispatcher_runtime_reservation_count,
+    )
+
+
+def _record_lifecycle_heartbeat(
+    role: str,
+    limit: int,
+    metadata: dict[str, object],
+) -> None:
+    with SessionLocal() as session:
+        record_worker_heartbeat(
+            session,
+            process_type=role,
+            metadata={"limit": limit, **metadata},
+        )
+        session.commit()
+
+
+def _install_dispatcher_signal_handlers(
+    lifecycle: DispatcherLifecycle | None,
+    stop_event: threading.Event,
+) -> dict[int, object]:
+    if lifecycle is None:
+        return {}
+    previous: dict[int, object] = {}
+
+    def handle(signum, _frame):  # noqa: ANN001 - signal callback contract.
+        lifecycle.request_stop(
+            signal.Signals(signum).name.lower(),
+            automatic=False,
+        )
+        stop_event.set()
+
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        previous[signum] = signal.getsignal(signum)
+        signal.signal(signum, handle)
+    return previous
+
+
+def _restore_signal_handlers(previous: dict[int, object]) -> None:
+    for signum, handler in previous.items():
+        signal.signal(signum, handler)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -325,10 +445,26 @@ def main(argv: list[str] | None = None) -> int:
         processed = drain_once(args.limit, role=role)
         print(f"role={role} processed={processed}")
         return 0
+    selected_role = _normalize_role(args.role)
+    stop_event = threading.Event()
+    lifecycle = _dispatcher_lifecycle(selected_role)
+    previous_handlers = _install_dispatcher_signal_handlers(
+        lifecycle,
+        stop_event,
+    )
     try:
-        run_worker(limit=args.limit, interval_seconds=args.interval, max_iterations=args.iterations, role=args.role)
+        run_worker(
+            limit=args.limit,
+            interval_seconds=args.interval,
+            max_iterations=args.iterations,
+            stop_event=stop_event,
+            role=selected_role,
+            dispatcher_lifecycle=lifecycle,
+        )
     except KeyboardInterrupt:
         logger.info("worker stopped by keyboard interrupt")
+    finally:
+        _restore_signal_handlers(previous_handlers)
     return 0
 
 

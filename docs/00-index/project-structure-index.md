@@ -23,7 +23,7 @@
 > **solver 契约版本发布栅栏：** `dispatch_rebuild_contract_version` 或搜索 `solver_contract_version` 变化时禁止新旧 Dispatcher 混跑。先阻止旧版本取得新 ownership并确认旧进程/可提交事务归零，再启动新版本；旧内存输出作废，pending rebuild 由新版本重建，旧 owner 的 open search epoch 在 fence 后直接 abandoned。无法证明旧版本已失去写资格时 Release Gate 失败。
 > **搜索旧 epoch 提交门：** `SearchClickAssignmentEpoch` 的 `optimal` finalize 不只检查 Window 是否 `ready`，还必须锁行确认 Window 尚可领取且当前 `dispatch_allocation_epoch` 与 search epoch 完全一致。Window 正在 rebuild、已经在更高 epoch 回到 ready 或已经结束，都只能 abandoned；不得把过期 matched 写入新中央版本。
 > **搜索 finalize 时钟：** `executors/search_click.py` 在锁定中央分配事实后读取新的 `finalize_now`，并统一用于 Window 结束判断、eligibility 重建、Action `scheduled_at` 与 `finalized_at`；`build_plan` 开始时刻只作历史证据。锁内 Window 已结束直接 abandoned，不得物化过期 assignment/Action。
-> **验证码三路共识结构（2026-07-31 在线脚本重设计）：** `services/image_verification_ocr.py` 封装 RapidOCR、ddddOCR 及引擎内图片变体聚合，Tesseract 仅作诊断且不投票；`membership_challenges.py` 同时启动首个健康已审批多模态模型与两路 OCR，先用 OCR 同票快路径，分歧才等待一个模型，并完成算式/字符串规范化、候选校验和严格 2/3 共识；`integrations/telegram/search_join.py` 冻结 challenge、按 `SchedulingSetting.default_max_retries` 控制同一 Action 的 challenge 总预算、提交共识答案并记录三路脱敏 vote。无共识时只允许在仍为 `verification_image_page` 的同账号/session 内重发冻结关键词获得新 fingerprint；hot-list/unknown 不重发，答案通过后直接进入审批群分类。验证码图片不落库。
+> **验证码有界共识结构（2026-08-01 implemented_unreleased）：** `app/image_verification_ocr.py` 只封装 RapidOCR/ddddOCR 引擎、变体与 functional readiness，避免 OCR Worker 导入 `app.services.__init__` 聚合业务模块；`image_verification_runtime.py` 提供进程级固定槽/active registry/deadline，`image_verification_sources.py` 适配本地或远端两张 OCR 票，`search_join_image_solver.py` 负责本地优先与最多一次模型 hedge，`membership_challenges.py` 保留候选约束和严格 2/3 投票。`integrations/telegram/search_join.py` 冻结 challenge identity/deadline、callback 前复读同 fingerprint 并记录脱敏 vote。P1 remote 模式由 `image_verification_client.py` 调用独立 worker；worker 的请求/状态合同与运行配置分别位于 `image_verification_worker_contract.py`、`image_verification_worker_config.py`，禁止 Dispatcher native fallback。验证码图片不落库；代码未发布，生产仍 unproven。
 > **搜索账号 session 资源：** `search_click_assignment_solver.py` 的账号节点容量按 Claim Window 固定为 1，`hard_safe_remaining_capacity` 只负责资格和排序；solver contract 提升为 `search-click-assignment-v3`，防止旧图把同一账号重复匹配到整批 obligation。
 > **搜索 Reservation 所有权：** `claim_class=search_click` 的 fulfillment Reservation 在首次 search outcome finalize 前由唯一 epoch 物化流程独占，通用无 Action/unclaimed/expiry 回收入口必须跳过。Window 已结束但 epoch 行缺失时由 recovery 建行并直接 abandoned，不调用 solver。首次 finalize 后必须满足 `bound+claimed+released=reserved`；通用 reclaimer 抢先触碰属于 `search_reservation_ownership_violation`，不能另造 carrier。
 > **重建期间旧 bound claim：** `allocation_state=ready` 仅控制新版本/新 search epoch/assignment；optimal 的 unmatched 触发 `rebuild_required` 后，同批 matched 的旧 epoch Action 在来源版本、Window 与业务 deadline 有效时仍可 `_confirm_claim -> Gateway`，不得等待新 ready、读取未发布权重或误释放。
@@ -983,6 +983,17 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 | `backend/app/services/task_center/pacing.py`、`stats.py`、`fulfillment_retry.py`、频道 executors | pacing 窗口和自然日 deadline 收口，排期不得跨截止时间；五类新履约任务统一把 quiet 跳转转换为低权重、把 0 曲线归一为 1，`scheduled_at/next_run_at` 均不停发；频道软上限固定系统门禁。`fulfillment_retry.retry_failed_actions` 排除新履约纯 click 的 obligation/assignment 绑定 Action，明确 Gateway 失败保留终态并由新 Window 重建，禁止复用 consumed assignment或覆盖极搜协议错误；`stats.py` 兼容重导出该入口 | implemented；待 release/E4 |
 | `backend/tests/test_fulfillment_takeover.py` 及相邻合同测试 | 先红后绿覆盖存量接管幂等、自然义务/远端事实、门禁、epoch、准入、hot-list 和 deadline | implemented；自动化 QA 进行中 |
 
+### 2026-07-31 Dispatcher/OCR 内存隔离与优雅回收（implemented_unreleased）
+
+| 计划入口 | 计划职责 | 当前状态 |
+| --- | --- | --- |
+| `backend/app/worker.py`、`backend/app/dispatcher_lifecycle.py`、`backend/app/telethon_lifecycle.py` | P0 stop/drain event、`active -> recycle_requested -> draining -> safe_to_exit`、DB/attempt/future safe probe、严格 Telethon shutdown 与 successor-heartbeat rolling lease；整轮 futures 返回、下一次 claim 前检查，SIGTERM 不新增 Action/session 锁，断连失败保持 `drain_blocked` | implemented；本地测试通过，待 release/E4 |
+| `backend/app/integrations/telegram/search_join.py`、`backend/app/services/{membership_challenges,image_verification_runtime,image_verification_sources,search_join_image_solver}.py`、`backend/app/ai_gateway.py` | P0 固定 OCR 槽、本地优先单模型 hedge、统一 remaining budget、message identity/deadline audit、callback 前同 fingerprint 复读；无新验证码表 | implemented；本地测试通过，待 release/E4 |
+| `backend/app/image_verification_worker.py`、`backend/app/image_verification_worker_{contract,config}.py`、`backend/app/services/image_verification_client.py`、`docker-compose.image-verification.yml` | P1 私网单实例 OCR runtime；deterministic POST/GET、worker generation、running 不驱逐、`completed|failed|expired` terminal TTL、解码前 busy 拒绝、请求数/soft RSS 终态回收、remote no-native-fallback 与容器隔离 | implemented；未部署，待 capacity/callback/soak E4 |
+| `deploy/{docker-env,compose-up}.sh`、`docker-compose.{server,dispatcher-runtime,image-verification}.yml` | 按 contract/remote 开关加载资源 override；未校准时不启用，启用时强制 memory/stop grace/token/payload/deadline 配置 | implemented；配置值待 production-like canary |
+
+专项产品真相源：`docs/03-feature-designs/dispatcher-ocr-memory-isolation-and-graceful-recycle-prd.md`。以上为本地实现态，不表示当前 release 或生产已具备能力；仍需 GitHub Actions、灰度 callback、drain 故障注入与内存 soak 后才可写 production fixed。
+
 ### 部署脚本
 
 | 文件 | 行数 | 主要处理业务 | 主要方法/类/导出 |
@@ -998,6 +1009,7 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 | 文件 | 行数 | 主要处理业务 | 主要方法/类/导出 |
 | --- | ---: | --- | --- |
 | `Dockerfile.backend` | 22 | Dockerfile.backend 镜像构建文件，定义对应服务镜像构建步骤。 | 构建阶段：python:3.12-slim |
+| `Dockerfile.image-verification-worker` | 22 | 独立 OCR Worker 镜像构建文件，只安装 RapidOCR/ddddOCR/ONNX 与其系统运行库。 | 构建阶段：python:3.12-slim；生产变量：TGYUNYING_IMAGE_VERIFICATION_IMAGE |
 | `Dockerfile.frontend` | 15 | Dockerfile.frontend 镜像构建文件，定义对应服务镜像构建步骤。 | 构建阶段：node:22-alpine、nginx:1.27-alpine |
 | `docker-compose.server.yml` | 259 | docker-compose.server.yml compose 编排，定义本地或服务器服务、网络、环境变量和健康检查；4 核生产机固定 2 个 dispatcher / 2 个账号分片；运行时明细保留 5 天，detail cleanup 默认每批 2000、每 60 秒检查，metrics cleanup 默认 300 秒；worker healthcheck 使用本地 heartbeat 文件时间戳，不启动 `python -m app.worker_health`。 | 服务：backend、worker-planner、worker-ai-generation、worker-dispatcher-1、worker-dispatcher-2、worker-listener、worker-recovery、worker-account-security、worker-account-online、worker-ai-memory、worker-metrics、infra_default |
 | `docker-compose.yml` | 38 | docker-compose.yml compose 编排，定义本地或服务器服务、网络、环境变量和健康检查。 | 服务：postgres、redis、postgres_data、redis_data |

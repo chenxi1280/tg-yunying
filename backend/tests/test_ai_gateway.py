@@ -12,6 +12,7 @@ from app.ai_gateway import (
     AiDraftCandidate,
     AiGateway,
     AiGenerationResult,
+    AiRequestDeadlineExceeded,
     AiProviderCredentials,
     AiUsage,
     mock_candidates,
@@ -1150,6 +1151,92 @@ def test_mimo_image_verification_retries_reasoning_only_empty_content(monkeypatc
     assert [request["max_tokens"] for request in requests] == [512, 4096]
     assert result.answer == "7391"
     assert result.confidence == 0.91
+
+
+@pytest.mark.no_postgres
+def test_image_verification_recomputes_timeout_from_remaining_deadline(
+    monkeypatch,
+) -> None:
+    timeouts: list[float] = []
+    now = iter((100.0, 104.0))
+    responses = [
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": "",
+                        "reasoning_content": "analyzing",
+                    },
+                    "finish_reason": "length",
+                }
+            ],
+        },
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": '{"answer":"7391","confidence":0.91}'
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
+        },
+    ]
+
+    def fake_urlopen(_request, timeout):
+        timeouts.append(timeout)
+        return FakeResponse(responses.pop(0))
+
+    monkeypatch.setattr("app.ai_gateway.time.monotonic", lambda: next(now))
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    result = AiGateway().solve_image_verification(
+        credentials(),
+        b"image",
+        "image/png",
+        timeout=30,
+        deadline_monotonic=110,
+        retry_min_budget_seconds=3,
+    )
+
+    assert timeouts == [10, 6]
+    assert result.answer == "7391"
+
+
+@pytest.mark.no_postgres
+def test_image_verification_skips_retry_when_budget_is_insufficient(
+    monkeypatch,
+) -> None:
+    now = iter((100.0, 108.0))
+
+    def fake_urlopen(_request, timeout):
+        del timeout
+        return FakeResponse(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "",
+                            "reasoning_content": "analyzing",
+                        },
+                        "finish_reason": "length",
+                    }
+                ],
+            }
+        )
+
+    monkeypatch.setattr("app.ai_gateway.time.monotonic", lambda: next(now))
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    with pytest.raises(AiRequestDeadlineExceeded, match="insufficient"):
+        AiGateway().solve_image_verification(
+            credentials(),
+            b"image",
+            "image/png",
+            timeout=30,
+            deadline_monotonic=110,
+            retry_min_budget_seconds=3,
+        )
 
 
 @pytest.mark.no_postgres

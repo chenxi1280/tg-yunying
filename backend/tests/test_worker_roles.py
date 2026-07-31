@@ -73,6 +73,47 @@ def test_drain_once_uses_worker_role_from_settings(monkeypatch):
     assert calls == ["dispatcher"]
 
 
+def test_dispatcher_lifecycle_is_inert_until_contract_enabled(
+    monkeypatch,
+) -> None:
+    from app import worker
+
+    monkeypatch.setattr(
+        worker,
+        "get_settings",
+        lambda: SimpleNamespace(
+            image_verification_contract_enabled=False,
+        ),
+    )
+
+    assert worker._dispatcher_lifecycle("dispatcher") is None
+
+
+def test_dispatcher_lifecycle_starts_with_enabled_contract(
+    monkeypatch,
+) -> None:
+    from app import worker
+
+    expected = object()
+    settings = SimpleNamespace(
+        image_verification_contract_enabled=True,
+        image_verification_model_concurrency=1,
+    )
+    monkeypatch.setattr(worker, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        worker,
+        "get_image_verification_runtime",
+        lambda concurrency: object() if concurrency == 1 else None,
+    )
+    monkeypatch.setattr(
+        worker,
+        "create_dispatcher_lifecycle",
+        lambda *_args: expected,
+    )
+
+    assert worker._dispatcher_lifecycle("dispatcher") is expected
+
+
 def test_drain_once_all_keeps_legacy_and_task_center_compatibility(monkeypatch):
     from app import worker
 
@@ -376,6 +417,15 @@ def test_server_compose_worker_healthcheck_uses_local_heartbeat():
 
     assert "WORKER_LOCAL_HEALTHCHECK_FILE" in healthcheck_section
     assert "python -m app.worker_health" not in healthcheck_section
+
+
+def test_image_verification_release_check_initializes_both_engines():
+    repo_root = Path(__file__).resolve().parents[2]
+    script = (repo_root / "deploy/check-web.sh").read_text(encoding="utf-8")
+
+    assert "/internal/v1/image-verification/ready" in script
+    assert "IMAGE_VERIFICATION_WORKER_TOKEN" in script
+    assert "{'rapidocr', 'ddddocr'}" in script
 
 
 def test_explicit_worker_id_is_scoped_by_process_type(monkeypatch):

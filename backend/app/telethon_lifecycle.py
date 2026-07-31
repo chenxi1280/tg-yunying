@@ -238,6 +238,26 @@ class TelethonClientLifecycle:
             cls._cache.clear()
         return await cls._disconnect_entries(entries)
 
+    @classmethod
+    async def shutdown_all_strict(cls) -> int:
+        with cls._lock:
+            entries = list(cls._cache.items())
+        failures: list[str] = []
+        for _, entry in entries:
+            try:
+                await cls._disconnect(entry.client)
+            except Exception as exc:  # noqa: BLE001 - strict drain reports all.
+                failures.append(exc.__class__.__name__)
+        if failures:
+            raise RuntimeError(
+                "Telethon disconnect failed: " + ",".join(failures)
+            )
+        with cls._lock:
+            for cache_key, entry in entries:
+                if cls._cache.get(cache_key) is entry:
+                    cls._cache.pop(cache_key, None)
+        return len(entries)
+
     @staticmethod
     async def _disconnect_entries(entries: list[_ClientCacheEntry]) -> int:
         disconnected = 0
@@ -249,24 +269,54 @@ class TelethonClientLifecycle:
     @staticmethod
     async def _disconnect_quietly(client: Any) -> None:
         try:
-            result = client.disconnect()
-            if asyncio.iscoroutine(result):
-                await result
+            await TelethonClientLifecycle._disconnect(client)
         except Exception:
             return
 
+    @staticmethod
+    async def _disconnect(client: Any) -> None:
+        result = client.disconnect()
+        if asyncio.iscoroutine(result):
+            await result
+
 
 def shutdown_telethon_lifecycle(timeout_seconds: float | None = None) -> int:
+    return _shutdown_telethon_lifecycle(timeout_seconds, strict=False)
+
+
+def shutdown_telethon_lifecycle_strict(
+    timeout_seconds: float | None = None,
+) -> int:
+    return _shutdown_telethon_lifecycle(timeout_seconds, strict=True)
+
+
+def _shutdown_telethon_lifecycle(
+    timeout_seconds: float | None,
+    *,
+    strict: bool,
+) -> int:
     lifecycle = TelethonClientLifecycle()
     loop = TelethonClientLifecycle._loop
     if loop is None or loop.is_closed():
         return 0
-    future = asyncio.run_coroutine_threadsafe(TelethonClientLifecycle.shutdown_all(), loop)
-    disconnected = future.result(timeout=timeout_seconds or lifecycle.settings.telethon_operation_timeout_seconds)
+    operation = (
+        TelethonClientLifecycle.shutdown_all_strict()
+        if strict else TelethonClientLifecycle.shutdown_all()
+    )
+    future = asyncio.run_coroutine_threadsafe(operation, loop)
+    timeout = timeout_seconds or lifecycle.settings.telethon_operation_timeout_seconds
+    try:
+        disconnected = future.result(timeout=timeout)
+    except FutureTimeoutError:
+        if strict:
+            future.cancel()
+        raise
     loop.call_soon_threadsafe(loop.stop)
     thread = TelethonClientLifecycle._loop_thread
     if thread is not None and thread.is_alive():
         thread.join(timeout=timeout_seconds or 5)
+    if strict and thread is not None and thread.is_alive():
+        raise RuntimeError("Telethon event loop did not stop")
     with TelethonClientLifecycle._lock:
         TelethonClientLifecycle._loop = None
         TelethonClientLifecycle._loop_thread = None

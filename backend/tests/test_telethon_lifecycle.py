@@ -9,7 +9,11 @@ import pytest
 
 from app.config import Settings
 from app.integrations.telegram import AccountHealth, DeveloperAppCredentials, TelethonTelegramGateway
-from app.telethon_lifecycle import TelethonClientLifecycle, shutdown_telethon_lifecycle
+from app.telethon_lifecycle import (
+    TelethonClientLifecycle,
+    shutdown_telethon_lifecycle,
+    shutdown_telethon_lifecycle_strict,
+)
 
 pytestmark = pytest.mark.no_postgres
 
@@ -35,6 +39,16 @@ class FailingConnectClient(FakeTelethonClient):
     async def connect(self) -> None:
         self.connected = True
         raise ConnectionError("Connection to Telegram failed 5 time(s)")
+
+
+class FailingDisconnectClient(FakeTelethonClient):
+    fail_disconnect = True
+
+    async def disconnect(self) -> None:
+        self.disconnect_count += 1
+        if self.fail_disconnect:
+            raise ConnectionError("disconnect failed")
+        self.connected = False
 
 
 def reset_lifecycle_state() -> None:
@@ -317,6 +331,30 @@ def test_shutdown_telethon_lifecycle_stops_background_loop():
     assert shutdown_telethon_lifecycle(timeout_seconds=1) == 0
     assert TelethonClientLifecycle._loop is None
     assert TelethonClientLifecycle._loop_thread is None
+
+
+def test_strict_shutdown_keeps_failed_client_and_loop_for_retry(monkeypatch):
+    reset_lifecycle_state()
+    settings = Settings(telethon_operation_timeout_seconds=1)
+    lifecycle = TelethonClientLifecycle(settings)
+    credentials = DeveloperAppCredentials(
+        app_id=1,
+        api_id=123,
+        api_hash="hash",
+        credentials_version=1,
+    )
+    client = FailingDisconnectClient("strict")
+    monkeypatch.setattr(lifecycle, "new_client", lambda *_args, **_kwargs: client)
+    lifecycle.run(lifecycle.get_or_create_client(credentials, "session"))
+
+    with pytest.raises(RuntimeError, match="disconnect failed"):
+        shutdown_telethon_lifecycle_strict(timeout_seconds=1)
+
+    assert len(TelethonClientLifecycle._cache) == 1
+    assert TelethonClientLifecycle._loop is not None
+    client.fail_disconnect = False
+    assert shutdown_telethon_lifecycle_strict(timeout_seconds=1) == 1
+    assert TelethonClientLifecycle._cache == {}
 
 
 def test_telethon_lifecycle_cancels_coroutine_after_operation_timeout():

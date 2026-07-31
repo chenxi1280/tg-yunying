@@ -1,0 +1,58 @@
+services:
+  image-verification-worker:
+    image: ${TGYUNYING_IMAGE_VERIFICATION_IMAGE:?TGYUNYING_IMAGE_VERIFICATION_IMAGE is required}
+    container_name: tgyunying-image-verification-worker
+    restart: unless-stopped
+    command:
+      - uvicorn
+      - app.image_verification_worker:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8091"
+      - --workers
+      - "1"
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      IMAGE_VERIFICATION_WORKER_TOKEN: ${IMAGE_VERIFICATION_WORKER_TOKEN:?IMAGE_VERIFICATION_WORKER_TOKEN is required for remote OCR}
+      IMAGE_VERIFICATION_CONTRACT_VERSION: ${IMAGE_VERIFICATION_CONTRACT_VERSION:?IMAGE_VERIFICATION_CONTRACT_VERSION is required for remote OCR}
+      IMAGE_VERIFICATION_MAX_IMAGE_BYTES: ${IMAGE_VERIFICATION_MAX_IMAGE_BYTES:?IMAGE_VERIFICATION_MAX_IMAGE_BYTES is required for remote OCR}
+      IMAGE_VERIFICATION_MAX_IMAGE_PIXELS: ${IMAGE_VERIFICATION_MAX_IMAGE_PIXELS:?IMAGE_VERIFICATION_MAX_IMAGE_PIXELS is required for remote OCR}
+      IMAGE_VERIFICATION_MAX_IMAGE_DIMENSION: ${IMAGE_VERIFICATION_MAX_IMAGE_DIMENSION:?IMAGE_VERIFICATION_MAX_IMAGE_DIMENSION is required for remote OCR}
+      IMAGE_VERIFICATION_WORKER_MAX_BUDGET_SECONDS: ${IMAGE_VERIFICATION_WORKER_MAX_BUDGET_SECONDS:?IMAGE_VERIFICATION_WORKER_MAX_BUDGET_SECONDS is required for remote OCR}
+      IMAGE_VERIFICATION_RECOVERY_OBSERVATION_SECONDS: ${IMAGE_VERIFICATION_RECOVERY_OBSERVATION_SECONDS:?IMAGE_VERIFICATION_RECOVERY_OBSERVATION_SECONDS is required for remote OCR}
+      IMAGE_VERIFICATION_TERMINAL_TTL_SECONDS: ${IMAGE_VERIFICATION_TERMINAL_TTL_SECONDS:?IMAGE_VERIFICATION_TERMINAL_TTL_SECONDS is required for remote OCR}
+      IMAGE_VERIFICATION_WORKER_RECYCLE_REQUEST_LIMIT: ${IMAGE_VERIFICATION_WORKER_RECYCLE_REQUEST_LIMIT:?IMAGE_VERIFICATION_WORKER_RECYCLE_REQUEST_LIMIT is required for remote OCR}
+      IMAGE_VERIFICATION_WORKER_SOFT_RSS_BYTES: ${IMAGE_VERIFICATION_WORKER_SOFT_RSS_BYTES:?IMAGE_VERIFICATION_WORKER_SOFT_RSS_BYTES is required for remote OCR}
+    mem_limit: ${IMAGE_VERIFICATION_WORKER_MEMORY_LIMIT:?IMAGE_VERIFICATION_WORKER_MEMORY_LIMIT is required for remote OCR}
+    stop_grace_period: ${IMAGE_VERIFICATION_WORKER_STOP_GRACE_PERIOD:?IMAGE_VERIFICATION_WORKER_STOP_GRACE_PERIOD is required for remote OCR}
+    read_only: true
+    user: "65532:65532"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8091/health', timeout=3)"
+      interval: 15s
+      timeout: 5s
+      start_period: 60s
+      retries: 6
+    networks:
+      - infra_default
+
+  worker-dispatcher-1:
+    depends_on:
+      image-verification-worker:
+        condition: service_healthy
+
+  worker-dispatcher-2:
+    depends_on:
+      image-verification-worker:
+        condition: service_healthy
