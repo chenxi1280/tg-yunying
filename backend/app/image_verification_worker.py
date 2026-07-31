@@ -441,6 +441,8 @@ def _authorize_service(
 
 def create_app(
     service: ImageVerificationWorkerService | None = None,
+    *,
+    recycle_scheduler: Callable[[], None] = _schedule_graceful_recycle,
 ) -> FastAPI:
     app = FastAPI(title="TG Image Verification Worker")
     service_lock = threading.Lock()
@@ -479,7 +481,7 @@ def create_app(
                 detail={"code": exc.code, "detail": str(exc)},
             ) from exc
         if recycle:
-            _schedule_graceful_recycle()
+            recycle_scheduler()
         return payload
 
     @app.get("/internal/v1/image-verification/ocr/{request_id}")

@@ -311,9 +311,11 @@ def _duplicate_baseline_messages(
         if line.strip()
     ]
     batch_ids = {action.id for action, _item in batch}
+    account_id = batch[0][0].account_id
     candidates = session.scalars(select(Action).where(
         Action.tenant_id == batch[0][0].tenant_id,
         Action.task_id == batch[0][0].task_id,
+        Action.account_id == account_id,
         Action.action_type == "send_message",
         Action.status.in_(("pending", "executing")),
         Action.id.not_in(batch_ids),

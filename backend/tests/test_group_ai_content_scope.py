@@ -167,7 +167,7 @@ def test_scope_mismatch_stops_before_provider_and_never_falls_back():
     assert task.stats["conversation_quality_active_blocker"] == "cross_group_content_scope_mismatch"
 
 
-def test_pending_duplicate_baseline_never_reads_another_group():
+def test_pending_duplicate_baseline_reads_only_same_group_and_account():
     session = _session()
     _seed_scope(session)
     payload = _payload(message_text="")
@@ -185,7 +185,14 @@ def test_pending_duplicate_baseline_never_reads_another_group():
         **dict(same_group.payload or {}),
         "message_text": "B群待发送正文",
     }
-    session.add_all([current, other_group, same_group])
+    other_account = _action(payload, action_id="action-other-account-b")
+    other_account.account_id = 12
+    other_account.status = "pending"
+    other_account.payload = {
+        **dict(other_account.payload or {}),
+        "message_text": "B群其他账号待发送正文",
+    }
+    session.add_all([current, other_group, same_group, other_account])
     session.commit()
 
     baseline = _duplicate_baseline_messages(
@@ -196,6 +203,7 @@ def test_pending_duplicate_baseline_never_reads_another_group():
 
     assert "B群待发送正文" in baseline
     assert "A群待发送正文" not in baseline
+    assert "B群其他账号待发送正文" not in baseline
 
 
 def test_normal_generation_waits_when_listener_watermark_is_unproven():

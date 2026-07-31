@@ -80,11 +80,18 @@ def test_worker_requires_private_token_and_returns_no_image(
     monkeypatch,
 ) -> None:
     _install_ocr(monkeypatch)
+    recycle_calls: list[str] = []
     service = ImageVerificationWorkerService(
         _config(),
         abnormal_terminate=lambda: None,
+        rss_reader=lambda: 0,
     )
-    client = TestClient(create_app(service))
+    client = TestClient(
+        create_app(
+            service,
+            recycle_scheduler=lambda: recycle_calls.append("scheduled"),
+        )
+    )
 
     unauthorized = client.post(
         "/internal/v1/image-verification/ocr",
@@ -104,6 +111,7 @@ def test_worker_requires_private_token_and_returns_no_image(
     assert health["request_status"] == "idle"
     assert health["completed_requests"] == 1
     assert health["busy_rejections"] == 0
+    assert recycle_calls == []
 
 
 @pytest.mark.no_postgres
@@ -261,6 +269,34 @@ def test_worker_recycles_after_terminal_request_at_soft_rss(
 
     assert payload["status"] == "completed"
     assert recycle is True
+
+
+@pytest.mark.no_postgres
+def test_worker_endpoint_schedules_recycle_without_signaling_process(
+    monkeypatch,
+) -> None:
+    _install_ocr(monkeypatch)
+    recycle_calls: list[str] = []
+    service = ImageVerificationWorkerService(
+        _config(),
+        abnormal_terminate=lambda: None,
+        rss_reader=lambda: _config().soft_rss_bytes,
+    )
+    client = TestClient(
+        create_app(
+            service,
+            recycle_scheduler=lambda: recycle_calls.append("scheduled"),
+        )
+    )
+
+    response = client.post(
+        "/internal/v1/image-verification/ocr",
+        json=_request().model_dump(mode="json"),
+        headers={"X-Internal-Token": "test-token"},
+    )
+
+    assert response.status_code == 200
+    assert recycle_calls == ["scheduled"]
 
 
 @pytest.mark.no_postgres

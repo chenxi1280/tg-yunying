@@ -152,28 +152,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - suite: no-postgres-a-b
-            pytest_marker: no_postgres
-            pytest_paths: tests/test_[a-b]*.py
-          - suite: no-postgres-c-d
-            pytest_marker: no_postgres
-            pytest_paths: tests/test_[c-d]*.py
-          - suite: no-postgres-e-l
-            pytest_marker: no_postgres
-            pytest_paths: tests/test_[e-l]*.py
-          - suite: no-postgres-m-p
-            pytest_marker: no_postgres
-            pytest_paths: tests/test_[m-p]*.py
-          - suite: no-postgres-q-s
-            pytest_marker: no_postgres
-            pytest_paths: tests/test_[q-s]*.py
-          - suite: no-postgres-t-z
-            pytest_marker: no_postgres
-            pytest_paths: tests/test_[t-z]*.py
-          - suite: postgres
-            pytest_marker: not no_postgres
-            pytest_paths: tests
+        pytest_marker:
+          - no_postgres
+          - not no_postgres
 
     services:
       postgres:
@@ -226,7 +207,7 @@ jobs:
           python -m pip install -e '.[dev]'
           python -m compileall -q app
           python -m compileall -q ../.github/scripts
-          python -m pytest -q -m "${{ matrix.pytest_marker }}" ${{ matrix.pytest_paths }}
+          python -m pytest -q -m "${{ matrix.pytest_marker }}"
 
   frontend-checks:
     runs-on: ubuntu-latest

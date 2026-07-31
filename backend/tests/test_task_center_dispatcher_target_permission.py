@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
@@ -27,6 +28,8 @@ def _add_group_ai_gate_payload(
     account_id: int,
     text: str,
 ) -> dict:
+    group = session.get(TgGroup, group_id)
+    assert group is not None
     session.add(
         TgAccountOnlineState(
             tenant_id=1,
@@ -55,6 +58,7 @@ def _add_group_ai_gate_payload(
             tenant_id=1,
             group_id=group_id,
             task_id=task_id,
+            action_id=action_id,
             account_id=account_id,
             raw_text=text,
             normalized_text=text,
@@ -70,6 +74,12 @@ def _add_group_ai_gate_payload(
         )
     )
     return {
+        "chat_id": group.tg_peer_id,
+        "chat_mode": "bootstrap",
+        "content_scope_contract_version": "group_content_scope_v1",
+        "content_scope_tenant_id": 1,
+        "content_scope_group_id": group_id,
+        "content_scope_task_id": task_id,
         "slot_id": f"{task_id}:cycle:test:turn:{action_id}",
         "ai_message_memory_id": memory_id,
         "account_mask_id": mask.id,
@@ -81,6 +91,7 @@ def _add_group_ai_gate_payload(
     }
 
 
+@pytest.mark.no_postgres
 def test_peer_invalid_marks_group_account_not_sendable(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -88,7 +99,7 @@ def test_peer_invalid_marks_group_account_not_sendable(monkeypatch):
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
-        session.add(Task(id="task-peer-invalid", tenant_id=1, name="peer invalid", type="group_ai_chat", status="running"))
+        session.add(Task(id="task-peer-invalid", tenant_id=1, name="peer invalid", type="group_ai_chat", status="running", type_config={"target_group_id": 7}))
         session.add(TgAccount(id=11, tenant_id=1, display_name="账号", phone_masked="+861***0011", status="在线", session_ciphertext="session"))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True, require_review=False))
         session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True, permission_label="可发言"))
@@ -135,6 +146,7 @@ def test_peer_invalid_marks_group_account_not_sendable(monkeypatch):
         assert link.permission_label == "目标实体无法解析"
 
 
+@pytest.mark.no_postgres
 def test_send_message_follows_required_channel_from_group_prompt_before_sending(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -161,7 +173,7 @@ def test_send_message_follows_required_channel_from_group_prompt_before_sending(
                 name="天津 AI 活群",
                 type="group_ai_chat",
                 status="running",
-                type_config={"auto_follow_required_channel": True},
+                type_config={"auto_follow_required_channel": True, "target_group_id": 7},
             )
         )
         session.add(
@@ -262,6 +274,7 @@ def test_send_message_follows_required_channel_from_group_prompt_before_sending(
     assert action.result["telegram_msg_id"] == "tg-ok"
 
 
+@pytest.mark.no_postgres
 def test_send_message_waits_when_required_channel_admission_is_pending(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -269,7 +282,7 @@ def test_send_message_waits_when_required_channel_admission_is_pending(monkeypat
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
-        session.add(Task(id="task-admission-pending", tenant_id=1, name="admission pending", type="group_ai_chat", status="running"))
+        session.add(Task(id="task-admission-pending", tenant_id=1, name="admission pending", type="group_ai_chat", status="running", type_config={"target_group_id": 7}))
         session.add(TgAccount(id=11, tenant_id=1, display_name="账号", phone_masked="+861***0011", status="在线", session_ciphertext="session"))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="天津音乐学院", auth_status="已授权运营", can_send=True, require_review=False))
         session.add(
@@ -281,6 +294,15 @@ def test_send_message_waits_when_required_channel_admission_is_pending(monkeypat
                 permission_label="待关注必需频道后复检:学院助手提示",
             )
         )
+        gate_payload = _add_group_ai_gate_payload(
+            session,
+            now_value,
+            action_id="action-admission-pending",
+            task_id="task-admission-pending",
+            group_id=7,
+            account_id=11,
+            text="hello",
+        )
         session.add(
             Action(
                 id="action-admission-pending",
@@ -291,7 +313,7 @@ def test_send_message_waits_when_required_channel_admission_is_pending(monkeypat
                 account_id=11,
                 status="pending",
                 scheduled_at=now_value,
-                payload={"group_id": 7, "message_text": "hello", "review_approved": True},
+                payload={"group_id": 7, "message_text": "hello", "review_approved": True, **gate_payload},
             )
         )
         session.commit()

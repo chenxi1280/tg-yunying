@@ -86,6 +86,13 @@ def workflow_ai_active_pacing() -> dict:
 
 def mark_group_bot_admission_ready(group_id: int, account_id: int) -> None:
     with SessionLocal() as session:
+        group = session.get(TgGroup, group_id)
+        assert group is not None
+        group.listener_enabled = True
+        group.listener_last_polled_at = _now()
+        group.listener_last_error = ""
+        group.listener_remote_cursor = group.listener_remote_cursor or "1"
+        group.listener_cursor_status = "contiguous"
         admission = session.scalar(
             select(GroupBotAdmission).where(
                 GroupBotAdmission.tenant_id == 1,
@@ -132,6 +139,8 @@ def _ai_group_memory_payload(
     account_id: int,
     text: str,
 ) -> dict:
+    group = session.get(TgGroup, group_id)
+    assert group is not None
     memory_id = f"memory-{action_id}"
     mask = AiAccountVoiceProfile(
         id=f"workflow-mask-{account_id}",
@@ -158,6 +167,7 @@ def _ai_group_memory_payload(
             tenant_id=1,
             group_id=group_id,
             task_id=task_id,
+            action_id=action_id,
             account_id=account_id,
             raw_text=text,
             normalized_text=text,
@@ -173,6 +183,12 @@ def _ai_group_memory_payload(
         )
     )
     return {
+        "chat_id": group.tg_peer_id,
+        "chat_mode": "bootstrap",
+        "content_scope_contract_version": "group_content_scope_v1",
+        "content_scope_tenant_id": 1,
+        "content_scope_group_id": group_id,
+        "content_scope_task_id": task_id,
         "slot_id": f"{task_id}:cycle:test:turn:{action_id}",
         "ai_message_memory_id": memory_id,
         "account_mask_id": mask.id,
@@ -5623,7 +5639,7 @@ def test_task_center_pending_reviews_do_not_starve_other_due_actions(monkeypatch
             if link:
                 link.can_send = True
             blocked_task = Task(tenant_id=1, name="pytest pending review", type="group_relay", status="running", next_run_at=datetime.now(UTC).replace(tzinfo=None) + timedelta(days=1), account_config={}, pacing_config={}, failure_policy={}, type_config={}, stats={})
-            normal_task = Task(tenant_id=1, name="pytest normal action", type="group_ai_chat", status="running", next_run_at=datetime.now(UTC).replace(tzinfo=None) + timedelta(days=1), account_config={}, pacing_config={}, failure_policy={}, type_config={}, stats={})
+            normal_task = Task(tenant_id=1, name="pytest normal action", type="group_ai_chat", status="running", next_run_at=datetime.now(UTC).replace(tzinfo=None) + timedelta(days=1), account_config={}, pacing_config={}, failure_policy={}, type_config={"target_group_id": group["id"]}, stats={})
             session.add_all([blocked_task, normal_task])
             session.flush()
             blocked_action = Action(tenant_id=1, task_id=blocked_task.id, task_type=blocked_task.type, action_type="send_message", account_id=account["id"], scheduled_at=now, status="pending", payload={"group_id": group["id"], "message_text": "待审核内容"}, result={})

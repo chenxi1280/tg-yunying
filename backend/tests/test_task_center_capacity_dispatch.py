@@ -720,6 +720,7 @@ def test_action_dedupe_key_ignores_dynamic_generation_metadata() -> None:
     assert task_payloads._action_dedupe_key(task, "batch-1", "send_message", 11, changed_business) != first_key
 
 
+@pytest.mark.no_postgres
 def test_claim_actions_reassigns_account_before_reserving_runtime_resources_and_dispatches(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -735,9 +736,9 @@ def test_claim_actions_reassigns_account_before_reserving_runtime_resources_and_
                 TgAccount(id=12, tenant_id=1, display_name="账号B", phone_masked="+861***0012", status="在线", session_ciphertext="session-b"),
             ]
         )
-        session.add(Task(id="task-reassign", tenant_id=1, name="claim", type="group_ai_chat", status="running", priority=1, account_config={"selection_mode": "manual", "account_ids": [11, 12], "max_concurrent": 2}))
-        session.add(Action(id="old-success", tenant_id=1, task_id="task-reassign", task_type="group_ai_chat", action_type="send_message", account_id=11, status="success", scheduled_at=now_value - timedelta(minutes=1), executed_at=now_value - timedelta(minutes=1), payload={"chat_id": "-1001", "message_text": "old"}))
-        session.add(Action(id="action-reassign", tenant_id=1, task_id="task-reassign", task_type="group_ai_chat", action_type="send_message", account_id=11, status="pending", scheduled_at=now_value, payload={"chat_id": "-1001", "message_text": "new"}))
+        session.add(Task(id="task-reassign", tenant_id=1, name="claim", type="group_relay", status="running", priority=1, account_config={"selection_mode": "manual", "account_ids": [11, 12], "max_concurrent": 2}))
+        session.add(Action(id="old-success", tenant_id=1, task_id="task-reassign", task_type="group_relay", action_type="send_message", account_id=11, status="success", scheduled_at=now_value - timedelta(minutes=1), executed_at=now_value - timedelta(minutes=1), payload={"chat_id": "-1001", "message_text": "old"}))
+        session.add(Action(id="action-reassign", tenant_id=1, task_id="task-reassign", task_type="group_relay", action_type="send_message", account_id=11, status="pending", scheduled_at=now_value, payload={"chat_id": "-1001", "message_text": "new"}))
         session.commit()
 
         monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
@@ -2515,12 +2516,13 @@ def test_target_membership_requires_send_rechecks_existing_group_link(monkeypatc
         assert verification is None
 
 
-def test_pending_ai_generation_batch_is_scoped_to_generation_cycle():
+@pytest.mark.no_postgres
+def test_pending_ai_generation_batch_is_scoped_to_claimed_action():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     with Session(engine) as session:
         batch = pending_generation_cycle_batch(session, _now())
-        assert [row.id for row, _payload in batch] == ["action-current", "action-new-sibling"]
+        assert [row.id for row, _payload in batch] == ["action-current"]
 
 
 def test_target_membership_follows_linked_channel_before_blocking_group_send(monkeypatch):

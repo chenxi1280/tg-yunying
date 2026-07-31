@@ -431,7 +431,13 @@ def _new_coverage(timestamp, scope: RecoveryScope) -> TaskAccountDailyCoverage:
 
 def _reply_payload(context_id: int, scope: RecoveryScope) -> dict:
     return {
+        "chat_id": f"-100{scope.group_id}",
         "group_id": scope.group_id,
+        "chat_mode": "reply",
+        "content_scope_contract_version": "group_content_scope_v1",
+        "content_scope_tenant_id": scope.tenant_id,
+        "content_scope_group_id": scope.group_id,
+        "content_scope_task_id": scope.task_id,
         "target_display": "运营群",
         "message_text": "",
         "review_approved": True,

@@ -4224,18 +4224,27 @@ def test_group_ai_chat_round_uses_near_term_schedule_with_operation_curve(monkey
     assert max(action.scheduled_at for action in actions) <= round_start + timedelta(hours=1)
 
 
+@pytest.mark.no_postgres
 def test_group_ai_chat_bootstraps_without_history(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     captured: dict[str, object] = {}
 
     def fake_generate_group_messages(_session, _tenant_id, config, *, count, target_label, history):
-        captured["count"] = count
+        account_id = int(config["generation_slots"][0]["account_id"])
+        captured.setdefault("counts", []).append(count)
         captured["target_label"] = target_label
-        captured["history"] = history
-        captured["account_personas"] = config.get("account_personas")
-        contents = ["新人刚进群可以先打个招呼。", "今天群里有人想了解活动安排吗？", "我看大家可以先从常见问题聊起。"][:count]
-        return _slot_bound_contents(config, contents), 0
+        captured.setdefault("histories", []).append(history)
+        captured.setdefault("topic_directions", []).append(
+            config["generation_slots"][0].get("topic_direction")
+        )
+        captured.setdefault("account_personas", {}).update(config.get("account_personas") or {})
+        content_by_account = {
+            101: "新人刚进群可以先打个招呼。",
+            102: "今天群里有人想了解活动安排吗？",
+            103: "我看大家可以先从常见问题聊起。",
+        }
+        return _slot_bound_contents(config, [content_by_account[account_id]]), 0
 
     with Session(engine) as session:
         seed_group_accounts(
@@ -4274,11 +4283,15 @@ def test_group_ai_chat_bootstraps_without_history(monkeypatch):
 def _assert_bootstrap_result(result: SimpleNamespace) -> None:
     assert result.planned == 3
     assert result.created == 3
-    assert result.captured["count"] == 3
+    assert result.captured["counts"] == [1, 1, 1]
     assert result.captured["account_personas"] == {
         "101": "欢迎新人账号", "102": "提问型账号", "103": "提问型账号",
     }
-    assert "新人欢迎和日常问候" in str(result.captured["history"])
+    assert result.captured["histories"] == ["", "", ""]
+    assert all(
+        "新人欢迎和日常问候" in str(topic)
+        for topic in result.captured["topic_directions"]
+    )
     assert result.stats["context_mode"] == "bootstrap"
     assert result.last_error == ""
     assert [action.account_id for action in result.actions] == [101, 102, 103]
@@ -4288,14 +4301,20 @@ def _assert_bootstrap_result(result: SimpleNamespace) -> None:
     assert all(action.payload["context_snapshot_message_id"] is None for action in result.actions)
 
 
-def test_group_ai_chat_uses_recent_account_memory(monkeypatch):
+@pytest.mark.no_postgres
+def test_group_ai_chat_uses_recent_group_scoped_account_memory(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     captured: dict[str, object] = {}
 
     def fake_generate_group_messages(_session, _tenant_id, config, *, count, target_label, history):
-        captured["account_memories"] = config.get("account_memories")
-        captured["account_profiles"] = config.get("account_profiles")
+        memories = {
+            key: value
+            for key, value in (config.get("account_memories") or {}).items()
+            if value
+        }
+        captured.setdefault("account_memories", {}).update(memories)
+        captured.setdefault("account_profiles", {}).update(config.get("account_profiles") or {})
         captured["topic_thread"] = config.get("topic_thread")
         captured["topic_plan"] = config.get("topic_plan")
         contents = ["延续自己之前说的报名时间。", "我从另一个角度补一句。"][:count]
@@ -4335,10 +4354,11 @@ def test_group_ai_chat_uses_recent_account_memory(monkeypatch):
 
 
 def _seed_account_memory_history(session: Session) -> None:
+    now_value = _now()
     session.add(GroupContextMessage(
         tenant_id=1, group_id=8, listener_account_id=101, sender_name="真人用户",
         content="报名时间这块有人问到具体安排。", remote_message_id="memory-real-context",
-        sent_at=datetime(2026, 5, 11, 8, 5, 0),
+        sent_at=now_value - timedelta(hours=2),
     ))
     session.add(Task(
         id="ai-memory-older", tenant_id=1, name="历史活跃任务", type="group_ai_chat",
@@ -4348,8 +4368,9 @@ def _seed_account_memory_history(session: Session) -> None:
     session.add(Action(
         tenant_id=1, task_id="ai-memory-older", task_type="group_ai_chat",
         action_type="send_message", account_id=101, status="success",
-        executed_at=datetime(2026, 5, 10, 8, 0, 0),
+        executed_at=now_value - timedelta(days=2),
         payload={"cycle_id": "ai-memory-older:cycle:1", "turn_index": 1,
+                 "group_id": 8,
                  "account_role": "长期答疑账号", "intent": "承接话题",
                  "message_text": "之前在另一个任务里提醒过资料要提前准备。"},
     ))
@@ -4359,8 +4380,9 @@ def _seed_current_account_memory(session: Session) -> None:
     session.add(Action(
         tenant_id=1, task_id="ai-memory", task_type="group_ai_chat",
         action_type="send_message", account_id=101, status="success",
-        executed_at=datetime(2026, 5, 11, 8, 0, 0),
+        executed_at=_now() - timedelta(days=1),
         payload={"cycle_id": "ai-memory:cycle:1", "turn_index": 1,
+                 "group_id": 8,
                  "account_role": "答疑账号", "intent": "补充信息",
                  "message_text": "我之前说过报名时间大概在周五下午。"},
     ))
@@ -4373,8 +4395,7 @@ def _assert_account_memory_result(result: SimpleNamespace) -> None:
     assert result.created == 2
     assert "101" in captured["account_memories"]
     assert "报名时间" in captured["account_memories"]["101"]
-    assert "跨任务 历史活跃任务" in captured["account_memories"]["101"]
-    assert "资料要提前准备" in captured["account_memories"]["101"]
+    assert "资料要提前准备" not in captured["account_memories"]["101"]
     assert "101" in captured["account_profiles"]
     assert "历史成功发言 2 次" in captured["account_profiles"]["101"]
     assert "常用角色" in captured["account_profiles"]["101"]
@@ -4384,7 +4405,7 @@ def _assert_account_memory_result(result: SimpleNamespace) -> None:
     assert "补充" in captured["topic_plan"]
     assert new_actions[0].payload["account_memory"]
     assert "报名时间" in new_actions[0].payload["account_memory"]
-    assert "资料要提前准备" in new_actions[0].payload["account_memory"]
+    assert "资料要提前准备" not in new_actions[0].payload["account_memory"]
     assert "历史成功发言 2 次" in new_actions[0].payload["account_profile"]
     assert new_actions[0].payload["topic_thread"] == captured["topic_thread"]
     assert new_actions[0].payload["topic_plan"] == captured["topic_plan"]
@@ -5020,18 +5041,20 @@ def test_group_ai_chat_without_ai_provider_does_not_create_actions(monkeypatch):
     assert task.status == "running"
 
 
+@pytest.mark.no_postgres
 def test_group_ai_chat_filters_recursive_context_and_duplicate_ai_drafts(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
-    captured_prompt: dict[str, str] = {}
+    captured_prompts: list[str] = []
+    contents = ["安师大最近是不是活动挺多的？", "安师大平时哪块人多呀？"]
 
     def fake_generate_drafts(_credentials, prompt, **_kwargs):
-        captured_prompt["prompt"] = prompt
+        captured_prompts.append(prompt)
         slot_ids = _generation_slot_ids(prompt)
+        content = contents[len(captured_prompts) - 1]
         return AiGenerationResult(
             candidates=[
-                AiDraftCandidate(persona="追问号", content="安师大最近是不是活动挺多的？", slot_id=slot_ids[0], sequence_index=1),
-                AiDraftCandidate(persona="补充号", content="安师大平时哪块人多呀？", slot_id=slot_ids[1], sequence_index=2),
+                AiDraftCandidate(persona="接话号", content=content, slot_id=slot_ids[0], sequence_index=1),
             ],
             usage=AiUsage(total_tokens=12),
         )
@@ -5068,7 +5091,7 @@ def test_group_ai_chat_filters_recursive_context_and_duplicate_ai_drafts(monkeyp
         generation_results = [dict(action.result or {}) for action in actions]
         assert [action.status for action in actions] == ["success", "success"], generation_results
 
-    _assert_recursive_context_result(captured_prompt["prompt"], created, actions)
+    _assert_recursive_context_result("\n".join(captured_prompts), created, actions)
 
 
 def _assert_recursive_context_result(prompt: str, created: int, actions: list[Action]) -> None:
@@ -5474,18 +5497,20 @@ def test_group_ai_chat_blocks_unanchored_idle_experience_claims(monkeypatch):
     assert action_count == 1
 
 
+@pytest.mark.no_postgres
 def test_group_ai_chat_semantic_clusters_are_scoped_to_each_account(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
 
     def fake_generate_group_messages(_session, _tenant_id, config, *, count, target_label, history):
-        contents = [
-            "照片准是重点 上次真人没差",
-            "照片没p 本人也差不多",
-            "态度稳点真省心",
-            "这个价格还是得自己问清楚",
-        ][:count]
-        return _slot_bound_contents(config, contents), 0
+        account_id = int(config["generation_slots"][0]["account_id"])
+        content_by_account = {
+            101: "照片准是重点 上次真人没差",
+            102: "照片没p 本人也差不多",
+            103: "态度稳点真省心",
+            104: "这个价格还是得自己问清楚",
+        }
+        return _slot_bound_contents(config, [content_by_account[account_id]]), 0
 
     with Session(engine) as session:
         _seed_group_ai_context_task(
@@ -5512,7 +5537,7 @@ def test_group_ai_chat_semantic_clusters_are_scoped_to_each_account(monkeypatch)
     assert created == 4
     assert [action.payload["message_text"] for action in succeeded] == [
         "照片准是重点 上次真人没差",
-        "照片准是重点 上次真人没差",
+        "照片没p 本人也差不多",
         "态度稳点真省心",
         "这个价格还是得自己问清楚",
     ]
@@ -5559,12 +5584,12 @@ def test_group_ai_chat_dedupes_against_pending_planned_messages(monkeypatch):
 def _add_existing_pending_ai_message(session: Session, now_value: datetime) -> None:
     gate = _ai_group_send_gate_payload(
         session, now_value, action_id="existing-pending-ai-message",
-        task_id="ai-pending-dedup", group_id=7, account_id=101,
+        task_id="ai-pending-dedup", group_id=7, account_id=102,
         text="这个价格还是得自己问清楚",
     )
     session.add(Action(
         id="existing-pending-ai-message", tenant_id=1, task_id="ai-pending-dedup",
-        task_type="group_ai_chat", action_type="send_message", account_id=101,
+        task_type="group_ai_chat", action_type="send_message", account_id=102,
         status="pending", scheduled_at=now_value + timedelta(minutes=1),
         payload={"group_id": 7, "message_text": "这个价格还是得自己问清楚",
                  "account_voice_profile_version": 1, **gate},
@@ -5633,7 +5658,7 @@ def test_group_ai_chat_allows_similar_shell_phrases_for_different_accounts(monke
         successful_messages = [action.payload["message_text"] for action in succeeded]
 
     assert created == 3
-    assert successful_messages == ["这点加分", "签到", "最近榜单更新挺快"]
+    assert successful_messages == ["这点加分", "这点挺加分", "最近榜单更新挺快"]
     assert failed_codes == []
 
 
@@ -7439,6 +7464,7 @@ def test_worker_keeps_legacy_campaign_and_operation_drains_opt_in(monkeypatch):
     assert worker.drain_once(10) == 0
 
 
+@pytest.mark.no_postgres
 def test_task_center_pre_send_validation_records_auto_check_metadata(monkeypatch):
     from app.services.task_center import dispatcher
 
@@ -7464,19 +7490,29 @@ def test_task_center_pre_send_validation_records_auto_check_metadata(monkeypatch
                     type_config={"target_group_id": 7, "daily_message_target": 1},
                     stats={"fulfillment_contract_version": "all_task_v2"},
                 ),
-                Action(
-                    id="action-auto-check",
-                    tenant_id=1,
-                    task_id="task-auto-check",
-                    task_type="group_ai_chat",
-                    action_type="send_message",
-                    account_id=11,
-                    status="pending",
-                    payload={"group_id": 7, "message_text": "这里有敏感词", "review_approved": True},
-                    result={},
-                ),
             ]
         )
+        session.flush()
+        gate_payload = _ai_group_send_gate_payload(
+            session,
+            _now(),
+            action_id="action-auto-check",
+            task_id="task-auto-check",
+            group_id=7,
+            account_id=11,
+            text="这里有敏感词",
+        )
+        session.add(Action(
+            id="action-auto-check",
+            tenant_id=1,
+            task_id="task-auto-check",
+            task_type="group_ai_chat",
+            action_type="send_message",
+            account_id=11,
+            status="pending",
+            payload={"group_id": 7, "message_text": "这里有敏感词", "review_approved": True, **gate_payload},
+            result={},
+        ))
         session.commit()
 
         action = session.get(Action, "action-auto-check")
@@ -7488,6 +7524,7 @@ def test_task_center_pre_send_validation_records_auto_check_metadata(monkeypatch
         assert "敏感词" in action.result["error_message"]
 
 
+@pytest.mark.no_postgres
 def test_task_center_pre_send_validation_blocks_internal_prompts(monkeypatch):
     from app.services.task_center import dispatcher
 
@@ -7513,23 +7550,30 @@ def test_task_center_pre_send_validation_blocks_internal_prompts(monkeypatch):
                     type_config={"target_group_id": 7, "daily_message_target": 1},
                     stats={"fulfillment_contract_version": "all_task_v2"},
                 ),
-                Action(
-                    id="action-internal-prompt",
-                    tenant_id=1,
-                    task_id="task-internal-prompt",
-                    task_type="group_ai_chat",
-                    action_type="send_message",
-                    account_id=11,
-                    status="pending",
-                    payload={
-                        "group_id": 7,
-                        "message_text": "当前群暂无可用历史消息。请以“日常讨论”为方向，生成自然开场，不要提到系统、任务或 AI。",
-                        "review_approved": True,
-                    },
-                    result={},
-                ),
             ]
         )
+        session.flush()
+        internal_prompt = "当前群暂无可用历史消息。请以“日常讨论”为方向，生成自然开场，不要提到系统、任务或 AI。"
+        gate_payload = _ai_group_send_gate_payload(
+            session,
+            _now(),
+            action_id="action-internal-prompt",
+            task_id="task-internal-prompt",
+            group_id=7,
+            account_id=11,
+            text=internal_prompt,
+        )
+        session.add(Action(
+            id="action-internal-prompt",
+            tenant_id=1,
+            task_id="task-internal-prompt",
+            task_type="group_ai_chat",
+            action_type="send_message",
+            account_id=11,
+            status="pending",
+            payload={"group_id": 7, "message_text": internal_prompt, "review_approved": True, **gate_payload},
+            result={},
+        ))
         session.commit()
 
         action = session.get(Action, "action-internal-prompt")
