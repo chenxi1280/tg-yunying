@@ -12,6 +12,7 @@
 | [ai-group-hard-hourly-target-prd.md](ai-group-hard-hourly-target-prd.md) | AI 活跃群每小时硬目标专项 PRD |
 | [ai-conversation-humanization-and-group-bot-admission-prd.md](ai-conversation-humanization-and-group-bot-admission-prd.md) | AI 群聊/频道评论真人化与群管机器人频道准入专项 PRD（2026-07-25 评审修补 complete；supersede 连发、emoji 兜底、发送后自动重发） |
 | [channel-membership-precondition-design.md](channel-membership-precondition-design.md) | 频道 / 群聊任务准入前置阶段 |
+| [dispatcher-ocr-memory-isolation-and-graceful-recycle-prd.md](dispatcher-ocr-memory-isolation-and-graceful-recycle-prd.md) | 硅谷 Dispatcher OOM 的精简 P0（固定 OCR 槽、统一 deadline、SIGTERM 优雅回收）与 P1（单 OCR worker、最小 request 状态）根治方案 |
 | [group-relay-source-filter-upgrade-plan.md](group-relay-source-filter-upgrade-plan.md) | 转发监听来源过滤升级 |
 | [material-library-design.md](material-library-design.md) | 素材库、图片、媒体、表情包和素材缓存 |
 | [operation-login-drop-rate-prd.md](operation-login-drop-rate-prd.md) | 账号分组登录掉号比例 |

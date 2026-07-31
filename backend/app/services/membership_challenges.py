@@ -5,13 +5,13 @@ import json
 import re
 import unicodedata
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Callable
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.integrations.telegram import OperationResult
 from app.integrations.telegram.search_join import (
     ImageVerificationConsensusUnavailableError,
@@ -29,11 +29,14 @@ from app.models import (
 
 from ._common import _now, ai_gateway, gateway
 from .ai_config import ai_provider_credentials
-from . import image_verification_ocr
+from app import image_verification_ocr
+from .image_verification_runtime import (
+    ImageVerificationPolicy,
+    ImageVerificationRuntime,
+    get_image_verification_runtime,
+)
 
 MIN_IMAGE_VERIFICATION_CONFIDENCE = 0.70
-RAPIDOCR_MIN_CONFIDENCE = 0.50
-DDDDOCR_MIN_CONFIDENCE = 0.50
 IMAGE_VERIFICATION_SOURCE_COUNT = 3
 IMAGE_VERIFICATION_CONSENSUS_COUNT = 2
 IMAGE_VERIFICATION_PROVIDER_SOURCES = ("mimo", "minimax")
@@ -525,79 +528,42 @@ def _question_hash(task: VerificationTask, image_message: dict[str, Any]) -> str
 
 def build_search_join_image_verification_solver(
     session: Session,
+    *,
+    action_id: str = "",
+    policy: ImageVerificationPolicy | None = None,
+    runtime: ImageVerificationRuntime | None = None,
 ) -> SearchJoinImageVerificationSolver | None:
-    """构造一个模型加 RapidOCR、ddddOCR 的 2/3 共识 solver。"""
-    providers = sorted(_image_verification_providers(session), key=_image_verification_provider_priority)
-    if not providers:
+    """构造本地优先、deadline-aware 的 2/3 共识 solver。"""
+    selected_policy = policy or ImageVerificationPolicy.from_settings(
+        get_settings()
+    )
+    if not selected_policy.enabled:
         return None
-    credentials = ai_provider_credentials(providers[0])
+    providers = sorted(_image_verification_providers(session), key=_image_verification_provider_priority)
+    credentials = ai_provider_credentials(providers[0]) if providers else None
+    selected_runtime = runtime or get_image_verification_runtime(
+        selected_policy.model_concurrency
+    )
 
     def solver(
         request: ImageVerificationRequest,
     ) -> ImageVerificationDecision | None:
         if not request.image_bytes:
             return None
-        return _collect_search_join_image_votes(credentials, request)
+        from .search_join_image_solver import (
+            collect_search_join_image_votes,
+        )
+
+        return collect_search_join_image_votes(
+            credentials,
+            request,
+            action_id=action_id,
+            policy=selected_policy,
+            runtime=selected_runtime,
+        )
 
     return solver
 
-
-def _collect_search_join_image_votes(
-    credentials: Any,
-    request: ImageVerificationRequest,
-) -> ImageVerificationDecision:
-    executor = ThreadPoolExecutor(
-        max_workers=IMAGE_VERIFICATION_SOURCE_COUNT
-    )
-    model_source = _image_provider_label(credentials) if credentials else "multimodal"
-    model_future = executor.submit(
-        _recognition_vote,
-        model_source,
-        lambda: _model_recognition(credentials, request),
-        MIN_IMAGE_VERIFICATION_CONFIDENCE,
-        request,
-    )
-    rapid_future = executor.submit(
-        _ocr_vote,
-        "rapidocr",
-        image_verification_ocr.recognize_rapidocr_variants,
-        RAPIDOCR_MIN_CONFIDENCE,
-        request,
-    )
-    dddd_future = executor.submit(
-        _ocr_vote,
-        "ddddocr",
-        image_verification_ocr.recognize_ddddocr_variants,
-        DDDDOCR_MIN_CONFIDENCE,
-        request,
-    )
-    ocr_votes = (rapid_future.result(), dddd_future.result())
-    fast_decision = _consensus_or_none(ocr_votes)
-    if fast_decision is not None:
-        model_future.cancel()
-        executor.shutdown(wait=False, cancel_futures=True)
-        votes = (
-            ImageVerificationVote(model_source, "not_waited"),
-            *ocr_votes,
-        )
-        return _decision_with_votes(fast_decision.answer, votes, False)
-    model_vote = model_future.result()
-    executor.shutdown(wait=False, cancel_futures=True)
-    return _consensus_decision((model_vote, *ocr_votes))
-
-
-def _model_recognition(
-    credentials: Any,
-    request: ImageVerificationRequest,
-) -> tuple[str, float]:
-    if credentials is None:
-        raise RuntimeError("no healthy approved multimodal provider")
-    return _solve_search_join_image(
-        credentials,
-        request.image_bytes,
-        request.mime_type,
-        request.challenge_text,
-    )
 
 
 def _recognition_vote(
@@ -796,6 +762,10 @@ def _solve_search_join_image(
     image_bytes: bytes,
     mime_type: str,
     challenge_text: str,
+    *,
+    deadline_monotonic: float | None = None,
+    timeout: float = 30,
+    retry_min_budget_seconds: float = 0,
 ) -> tuple[str, float]:
     prompt = _search_join_image_verification_prompt(challenge_text)
     return _solve_search_join_image_once(
@@ -803,6 +773,9 @@ def _solve_search_join_image(
         image_bytes,
         mime_type,
         prompt,
+        deadline_monotonic=deadline_monotonic,
+        timeout=timeout,
+        retry_min_budget_seconds=retry_min_budget_seconds,
     )
 
 
@@ -811,12 +784,19 @@ def _solve_search_join_image_once(
     image_bytes: bytes,
     mime_type: str,
     prompt: str,
+    *,
+    deadline_monotonic: float | None = None,
+    timeout: float = 30,
+    retry_min_budget_seconds: float = 0,
 ) -> tuple[str, float]:
     result = ai_gateway.solve_image_verification(
         credentials,
         image_bytes,
         mime_type or "image/png",
         prompt=prompt,
+        timeout=timeout,
+        deadline_monotonic=deadline_monotonic,
+        retry_min_budget_seconds=retry_min_budget_seconds,
     )
     answer = str(result.answer or "").strip()
     if not answer:

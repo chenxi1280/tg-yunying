@@ -79,21 +79,23 @@ def test_grok_cli_bridge_shared_lock_is_explicit(tmp_path):
         lock_file.close()
 
 
-def test_production_image_keeps_runtime_deps_without_grok_cli_deploy_gate():
+def test_production_images_isolate_native_ocr_dependencies():
     dockerfile = (PROJECT_ROOT / "Dockerfile.backend").read_text()
+    ocr_dockerfile = (
+        PROJECT_ROOT / "Dockerfile.image-verification-worker"
+    ).read_text()
+    pyproject = (PROJECT_ROOT / "backend/pyproject.toml").read_text()
     workflow = (PROJECT_ROOT / ".github/workflows/deploy-production.yml").read_text()
     compose = (PROJECT_ROOT / "docker-compose.server.yml").read_text()
 
-    required_runtime_packages = (
-        "ca-certificates",
-        "curl",
-        "git",
-        "libgl1",
-        "libglib2.0-0",
-        "tesseract-ocr",
-    )
-    for package in required_runtime_packages:
-        assert package in dockerfile
+    for package in ("rapidocr", "ddddocr", "onnxruntime"):
+        assert package in pyproject
+        assert package not in dockerfile
+    for package in ("libgl1", "libglib2.0-0"):
+        assert package not in dockerfile
+        assert package in ocr_dockerfile
+    assert "[image-verification-worker]" in ocr_dockerfile
+    assert "Dockerfile.image-verification-worker" in workflow
     # Grok CLI is optional fallback only; deploy must not fail closed on CLI preflight.
     assert "Preflight production Grok CLI" not in workflow
     assert "Verify production Grok CLI bridge" not in workflow

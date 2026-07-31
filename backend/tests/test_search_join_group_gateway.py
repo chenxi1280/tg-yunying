@@ -4,14 +4,17 @@ import asyncio
 import hashlib
 import threading
 from dataclasses import dataclass
+from time import monotonic
 
 import pytest
 
+from app.integrations.telegram import search_join as search_join_module
 from app.integrations.telegram.search_join import (
     ImageVerificationConsensusUnavailableError,
     ImageVerificationDecision,
     ImageVerificationNoSafeAnswerError,
     ImageVerificationProviderUnavailableError,
+    ImageVerificationRuntimeContractError,
     ImageVerificationVote,
     ensure_search_join_membership_with_client,
     execute_search_join_with_client,
@@ -89,8 +92,10 @@ class FakeSearchJoinClient:
         self.imported_invites: list[str] = []
         self.read_targets: list[str] = []
         self.download_media_result = download_media_result
+        self.download_media_calls = 0
 
     async def download_media(self, _message: object, *, file: type = bytes) -> bytes:
+        self.download_media_calls += 1
         return self.download_media_result
 
     def conversation(self, bot: str, timeout: int):
@@ -888,6 +893,22 @@ def _verification_decision(
     return ImageVerificationDecision(answer, confidence, votes)
 
 
+def _deadline_verification_decision(
+    answer: str,
+    *,
+    deadline_offset: float,
+) -> ImageVerificationDecision:
+    decision = _verification_decision(answer, 0.95)
+    return ImageVerificationDecision(
+        answer=decision.answer,
+        confidence=decision.confidence,
+        votes=decision.votes,
+        callback_submit_deadline_monotonic=(
+            monotonic() + deadline_offset
+        ),
+    )
+
+
 @pytest.mark.no_postgres
 def test_jisou_image_verification_succeeds_when_answer_in_button_matrix() -> None:
     """PRD §2.19.2: 验证码识别成功——置信度 ≥0.70 且 answer 在按钮矩阵中，点击后进入 group_result_page。"""
@@ -912,6 +933,290 @@ def test_jisou_image_verification_succeeds_when_answer_in_button_matrix() -> Non
 
     assert result["success"] is True
     assert result["join_status"] == "target_found"
+
+
+@pytest.mark.no_postgres
+def test_deadline_contract_rereads_same_fingerprint_before_callback() -> None:
+    answers = ["7", "8", "9", "10", "11", "12", "13", "14"]
+    observed_page = _verification_image_page(digit_answers=answers)
+    refreshed_page = _verification_image_page(digit_answers=answers)
+    target_page = FakeMessage(
+        102,
+        [[FakeButton("目标群", url="https://t.me/target_group")]],
+    )
+    client = FakeSearchJoinClient(
+        [FakeMessage(100, []), observed_page],
+        edits=[refreshed_page, target_page],
+    )
+
+    result = asyncio.run(
+        execute_search_join_with_client(
+            client,
+            _payload(bot_username="jisou"),
+            keyword_text="郑州",
+            image_verification_solver=lambda _request: (
+                _deadline_verification_decision("9", deadline_offset=2)
+            ),
+        )
+    )
+
+    assert result["success"] is True
+    assert observed_page.clicked == []
+    assert refreshed_page.clicked == [(0, 2)]
+    audit = result["image_verification_attempts"][0]
+    assert audit["message_id"] == "101"
+    assert audit["bot_peer_hash"]
+    assert audit["message_revision"]
+    assert audit["image_hash"]
+    assert audit["candidate_hash"]
+
+
+@pytest.mark.no_postgres
+def test_deadline_contract_never_clicks_changed_fingerprint() -> None:
+    answers = ["7", "8", "9", "10", "11", "12", "13", "14"]
+    observed_page = _verification_image_page(digit_answers=answers)
+    changed_page = _verification_image_page(
+        digit_answers=answers,
+        message_id=102,
+    )
+    client = FakeSearchJoinClient(
+        [FakeMessage(100, []), observed_page],
+        edits=[changed_page],
+    )
+
+    result = asyncio.run(
+        execute_search_join_with_client(
+            client,
+            _payload(bot_username="jisou"),
+            keyword_text="郑州",
+            image_verification_solver=lambda _request: (
+                _deadline_verification_decision("9", deadline_offset=2)
+            ),
+            image_verification_challenge_limit=1,
+        )
+    )
+
+    assert result["success"] is False
+    assert observed_page.clicked == []
+    assert changed_page.clicked == []
+
+
+@pytest.mark.no_postgres
+def test_deadline_contract_never_clicks_after_deadline() -> None:
+    answers = ["7", "8", "9", "10", "11", "12", "13", "14"]
+    observed_page = _verification_image_page(digit_answers=answers)
+    client = FakeSearchJoinClient(
+        [FakeMessage(100, []), observed_page],
+    )
+
+    result = asyncio.run(
+        execute_search_join_with_client(
+            client,
+            _payload(bot_username="jisou"),
+            keyword_text="郑州",
+            image_verification_solver=lambda _request: (
+                _deadline_verification_decision("9", deadline_offset=-1)
+            ),
+            image_verification_challenge_limit=1,
+        )
+    )
+
+    assert result["success"] is False
+    assert observed_page.clicked == []
+
+
+@pytest.mark.no_postgres
+def test_preflight_rechecks_deadline_after_page_download(monkeypatch) -> None:
+    answers = ["7", "8", "9", "10", "11", "12", "13", "14"]
+    observed_page = _verification_image_page(digit_answers=answers)
+    refreshed_page = _verification_image_page(digit_answers=answers)
+    client = FakeSearchJoinClient([], edits=[refreshed_page])
+    buttons = search_join_module._parse_buttons(observed_page)
+    fingerprint = search_join_module._image_verification_fingerprint(
+        observed_page,
+        buttons,
+        client.download_media_result,
+    )
+    clock = iter((10.0, 20.0))
+    monkeypatch.setattr(
+        search_join_module,
+        "monotonic",
+        lambda: next(clock),
+    )
+
+    result = asyncio.run(
+        search_join_module._verification_callback_preflight(
+            client,
+            "jisou",
+            observed_page,
+            fingerprint,
+            15.0,
+            protocol_profile=_jisou_protocol_profile(),
+        )
+    )
+
+    assert result.error is not None
+    assert result.error["error_code"] == "jisou_image_verification_required"
+    assert result.error["image_verification_reason"] == (
+        "verification_deadline_exceeded"
+    )
+    assert refreshed_page.clicked == []
+
+
+@pytest.mark.no_postgres
+def test_callback_deadline_is_checked_again_immediately_before_click(
+    monkeypatch,
+) -> None:
+    answers = ["7", "8", "9", "10", "11", "12", "13", "14"]
+    observed_page = _verification_image_page(digit_answers=answers)
+    callback_page = _verification_image_page(digit_answers=answers)
+    client = FakeSearchJoinClient(
+        [FakeMessage(100, []), observed_page],
+        edits=[callback_page],
+    )
+    clock = iter((10.0, 11.0, 12.0, 20.0))
+    monkeypatch.setattr(search_join_module, "monotonic", lambda: next(clock))
+    decision = ImageVerificationDecision(
+        answer="9",
+        confidence=0.95,
+        votes=_verification_decision("9", 0.95).votes,
+        callback_submit_deadline_monotonic=15.0,
+    )
+
+    result = asyncio.run(
+        execute_search_join_with_client(
+            client,
+            _payload(bot_username="jisou"),
+            keyword_text="郑州",
+            image_verification_solver=lambda _request: decision,
+            image_verification_challenge_limit=1,
+        )
+    )
+
+    assert result["error_code"] == "jisou_image_verification_required"
+    assert result["image_verification_reason"] == "verification_deadline_exceeded"
+    assert callback_page.clicked == []
+
+
+@pytest.mark.no_postgres
+def test_callback_response_timeout_is_unknown_after_single_click(
+    monkeypatch,
+) -> None:
+    answers = ["7", "8", "9", "10", "11", "12", "13", "14"]
+    observed_page = _verification_image_page(digit_answers=answers)
+    callback_page = _verification_image_page(digit_answers=answers)
+    client = FakeSearchJoinClient(
+        [FakeMessage(100, []), observed_page],
+        edits=[callback_page],
+    )
+    monkeypatch.setattr(
+        search_join_module,
+        "CALLBACK_PAGE_RESPONSE_TIMEOUT_SECONDS",
+        0.01,
+    )
+    monkeypatch.setattr(
+        search_join_module,
+        "CALLBACK_PAGE_POLL_INTERVAL_SECONDS",
+        0.001,
+    )
+
+    result = asyncio.run(
+        execute_search_join_with_client(
+            client,
+            _payload(bot_username="jisou"),
+            keyword_text="郑州",
+            image_verification_solver=lambda _request: (
+                _deadline_verification_decision("9", deadline_offset=2)
+            ),
+            image_verification_challenge_limit=1,
+        )
+    )
+
+    assert result["error_code"] == "verification_callback_result_unknown"
+    assert result["image_verification_status"] == "unknown"
+    assert result["callback_mutation_started"] is True
+    assert len(result["challenge_fingerprint_hash"]) == 64
+    assert callback_page.clicked == [(0, 2)]
+
+
+@pytest.mark.no_postgres
+def test_prior_unknown_fingerprint_blocks_solver_and_callback() -> None:
+    answers = ["7", "8", "9", "10", "11", "12", "13", "14"]
+    observed_page = _verification_image_page(digit_answers=answers)
+    client = FakeSearchJoinClient([FakeMessage(100, []), observed_page])
+    fingerprint = search_join_module._image_verification_fingerprint(
+        observed_page,
+        search_join_module._parse_buttons(observed_page),
+        client.download_media_result,
+    )
+    solver_calls = 0
+
+    def solver(_request):
+        nonlocal solver_calls
+        solver_calls += 1
+        return _deadline_verification_decision("9", deadline_offset=2)
+
+    result = asyncio.run(
+        execute_search_join_with_client(
+            client,
+            _payload(bot_username="jisou"),
+            keyword_text="郑州",
+            image_verification_solver=solver,
+            image_verification_callback_unknown_fingerprints=frozenset(
+                {fingerprint}
+            ),
+        )
+    )
+
+    assert result["error_code"] == "verification_callback_result_unknown"
+    assert result["challenge_fingerprint_hash"] == fingerprint
+    assert result["callback_mutation_started"] is True
+    assert solver_calls == 0
+    assert observed_page.clicked == []
+
+
+@pytest.mark.no_postgres
+def test_unknown_worker_result_rereads_same_challenge_once() -> None:
+    answers = ["7", "8", "9", "10", "11", "12", "13", "14"]
+    observed_page = _verification_image_page(digit_answers=answers)
+    recovery_page = _verification_image_page(digit_answers=answers)
+    callback_page = _verification_image_page(digit_answers=answers)
+    target_page = FakeMessage(
+        102,
+        [[FakeButton("目标群", url="https://t.me/target_group")]],
+    )
+    client = FakeSearchJoinClient(
+        [FakeMessage(100, []), observed_page],
+        edits=[recovery_page, callback_page, target_page],
+    )
+    calls = 0
+
+    def solve(_request):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ImageVerificationRuntimeContractError(
+                "verification_local_ocr_unknown",
+                "worker generation changed",
+                callback_submit_deadline_monotonic=monotonic() + 2,
+            )
+        return _deadline_verification_decision("9", deadline_offset=2)
+
+    result = asyncio.run(
+        execute_search_join_with_client(
+            client,
+            _payload(bot_username="jisou"),
+            keyword_text="郑州",
+            image_verification_solver=solve,
+        )
+    )
+
+    assert result["success"] is True
+    assert calls == 2
+    assert observed_page.clicked == []
+    assert recovery_page.clicked == []
+    assert callback_page.clicked == [(0, 2)]
+    assert client.download_media_calls == 3
 
 
 @pytest.mark.no_postgres

@@ -107,6 +107,12 @@ account-online 主线程冻结本批账号和凭证后必须先提交并结束�
 
 Dispatcher 若一次 claim 包含共享 `ai_generation_claim_token` 的 normal pending `send_message`，该 worker 会按领取顺序串行推进这一个 claim 批次，避免多个线程同时加载并更新重叠 Action 集合。生产验收必须检查 PostgreSQL 日志在发布后不再新增 `UPDATE actions ... deadlock detected`，并同时确认覆盖继续增长；该串行边界不是 action、账号或任务总量限制。
 
+### Dispatcher/OCR 内存治理（代码已实现，生产未启用）
+
+2026-07-31 硅谷生产 OOM 专项已按 `docs/03-feature-designs/dispatcher-ocr-memory-isolation-and-graceful-recycle-prd.md` 完成本地代码与定向测试，但当前 release/生产尚未启用，运维仍不得直接给 Dispatcher 加定时重启或手工循环重启。P0 删除每个验证码 challenge 的三路并发/假取消，RapidOCR/ddddOCR 各使用一个进程级固定槽；槽等待、OCR、最多一个模型的首请求/reasoning retry 共用同一 remaining budget，不建设 OCR 业务队列。late result、旧 fingerprint 或过期 challenge 禁止点击。Dispatcher 达到经 Release Gate 计算的资源阈值或收到 SIGTERM 后停止下一轮 claim，只有当前 futures、owned Action、open Gateway 与 Telethon client 全部收口才正常退出；运行时自动回收通过不参与 Action/session 的最小 rolling lease 保证单 shard，并由重启后的同 shard 首个成功 heartbeat compare-and-release 前任 lease。
+
+P1 已实现 Docker 私网单实例 `image-verification-worker`：使用独立 `Dockerfile.image-verification-worker` 和不可变 `TGYUNYING_IMAGE_VERIFICATION_IMAGE`，RapidOCR/ddddOCR/ONNX 与 `libgl` 仅安装在该镜像，Backend/Dispatcher 镜像不再携带 native OCR 依赖；生产启用验证码 contract 时 `IMAGE_VERIFICATION_OCR_BACKEND` 必须为 `remote`，`local` 仅保留给开发与未启用 contract 的测试。Worker 使用 deterministic request ID、同步 POST、最小状态 GET、worker generation 和内存状态；running 不被 TTL 驱逐，terminal TTL 不短于最大请求预算加恢复观察窗，busy 立即拒绝，不部署等待/持久队列或 HA，也不允许 Dispatcher native fallback。普通 `/health` 只证明进程存活；发布检查必须带私网 token 调用 `/internal/v1/image-verification/ready`，实际初始化 RapidOCR/ddddOCR，证明 non-root/read-only 容器内两引擎可用。正常回收仅在当前请求终态后，由 `IMAGE_VERIFICATION_WORKER_RECYCLE_REQUEST_LIMIT` 或 `IMAGE_VERIFICATION_WORKER_SOFT_RSS_BYTES` 任一阈值触发；`IMAGE_VERIFICATION_WORKER_MEMORY_LIMIT` 只是 hard protection，不能替代软回收。`deploy/docker-env.sh` 仅在 `IMAGE_VERIFICATION_CONTRACT_ENABLED=true` 时加载 `docker-compose.dispatcher-runtime.yml`，仅在 `IMAGE_VERIFICATION_OCR_BACKEND=remote` 时加载 `docker-compose.image-verification.yml`；两个 override 对 memory limit、stop grace、token、payload/deadline 边界均 fail closed 要求显式环境变量。上线前必须用至少两个受控账号执行 immediate、本地 OCR p95、OCR+模型 tail 三个真实正确 callback 档位，只有两个账号都 accepted 的最慢档位才能成为校准证据下界，并据此填写 callback/headroom/model tail、Dispatcher recycle/hard limit、worker soft/hard limit/TTL/stop grace；页面 `>=70.42s` 可见不能代替 callback accepted。swap 或 hard limit 只能降低整机失控风险，不能替代业务安全 drain、OCR 隔离、内存 soak 或真实搜索 ledger 验收。
+
 Recovery 必须依次提交前序 Action 修复、连续 Task 状态修复，再进入 stale Action claim，确保任一提交都不会同时刷新 dirty Task 与 Action。线上若 `worker drain failed` 同时出现 `UPDATE tasks` / `UPDATE actions ... deadlock detected`，应检查这三个事务边界；不得靠扩大连接池、降低 worker 数量或限制账号总量掩盖。
 
 ## Nginx
@@ -122,6 +128,11 @@ Recovery 必须依次提交前序 Action 修复、连续 Task 状态修复，再
 - 健康检查：`/healthz -> http://127.0.0.1:18090/api/health`
 
 ## 发布验证
+
+当前生产相对稳定版本基线见
+[`2026-07-31-production-stable-baseline.md`](../../05-implementation/multi-agent-practice/runs/2026-07-31-production-stable-baseline.md)。
+该记录使用不可变 commit SHA、生产 release ID、Deploy Production run 和线上只读核对证据，
+作为下一版本开发及必要回退时的比较基点。
 
 发布后脚本会区分三层状态：
 

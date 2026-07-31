@@ -124,6 +124,14 @@ run_planner_smoke_check() {
   return 1
 }
 
+check_image_verification_readiness() {
+  local timeout_seconds="${IMAGE_VERIFICATION_WORKER_READY_TIMEOUT_SECONDS:-180}"
+  echo "==> Checking image verification engines"
+  timeout "$timeout_seconds" docker exec tgyunying-image-verification-worker \
+    python -c "import json, os, urllib.request; request = urllib.request.Request('http://127.0.0.1:8091/internal/v1/image-verification/ready', headers={'X-Internal-Token': os.environ['IMAGE_VERIFICATION_WORKER_TOKEN']}); payload = json.load(urllib.request.urlopen(request, timeout=120)); assert payload.get('status') == 'ready'; assert set(payload.get('engines') or ()) == {'rapidocr', 'ddddocr'}"
+  echo "OK image verification engines: rapidocr, ddddocr"
+}
+
 backend_status="$(docker inspect tgyunying-backend --format '{{.State.Status}}' 2>/dev/null || true)"
 backend_health="$(docker inspect tgyunying-backend --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' 2>/dev/null || true)"
 worker_containers=(
@@ -140,6 +148,13 @@ worker_containers=(
   tgyunying-worker-metrics
 )
 
+if verification_remote_enabled; then
+  worker_containers=(
+    tgyunying-image-verification-worker
+    "${worker_containers[@]}"
+  )
+fi
+
 if [[ "$backend_status" != "running" || ( -n "$backend_health" && "$backend_health" != "healthy" ) ]]; then
   echo "BAD backend container: status=${backend_status:-missing} health=${backend_health:-none}" >&2
   docker logs --tail 200 tgyunying-backend >&2 || true
@@ -150,6 +165,9 @@ echo "OK backend container: status=$backend_status health=${backend_health:-none
 for worker_container in "${worker_containers[@]}"; do
   wait_for_worker_ready "$worker_container"
 done
+if verification_remote_enabled; then
+  check_image_verification_readiness
+fi
 run_planner_smoke_check
 
 if [[ ! -f "${STATIC_DIR}/index.html" ]]; then

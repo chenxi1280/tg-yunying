@@ -150,6 +150,10 @@ from . import runtime_resources as _runtime_resources
 _ACTION_RESERVATIONS = _runtime_resources._ACTION_RESERVATIONS
 _IN_FLIGHT_ACCOUNTS = _runtime_resources._IN_FLIGHT_ACCOUNTS
 _redis_client = _runtime_resources._redis_client
+
+
+def dispatcher_runtime_reservation_count() -> int:
+    return len(_ACTION_RESERVATIONS) + len(_IN_FLIGHT_ACCOUNTS)
 MEMBERSHIP_ACTION_TYPES = ("ensure_channel_membership", "ensure_target_membership")
 GROUP_AI_ADMISSION_ACTION_TYPES = (*MEMBERSHIP_ACTION_TYPES, "invite_group_account")
 GROUP_BOT_ADMISSION_ACTION_TYPES = (
@@ -6150,14 +6154,16 @@ def _dispatch_search_join(session: Session, action: Action, account: TgAccount, 
     if not _mark_search_join_gateway_call_started(session, action, attempt):
         _finish_search_join_before_gateway(session, action, attempt, "search_join_gateway_not_allowed")
         return True
-    image_solver = build_search_join_image_verification_solver(session)
-    search_join_kwargs: dict[str, Any] = {}
-    if image_solver is not None:
-        scheduling = get_scheduling_setting(session, action.tenant_id)
-        search_join_kwargs["image_verification_solver"] = image_solver
-        search_join_kwargs["image_verification_challenge_limit"] = max(
-            1, scheduling.default_max_retries
-        )
+    image_solver = build_search_join_image_verification_solver(
+        session,
+        action_id=str(action.id),
+    )
+    search_join_kwargs = _search_join_image_verification_kwargs(
+        session,
+        action,
+        payload,
+        image_solver=image_solver,
+    )
     result = search_join(
         account.id,
         payload.model_dump(mode="json"),
@@ -6168,7 +6174,7 @@ def _dispatch_search_join(session: Session, action: Action, account: TgAccount, 
     )
     result = _normalize_pure_search_click_result(payload, result)
     _record_search_join_protocol_result(session, action, payload, result, attempt)
-    action.status = "success" if result.get("success") else "failed"
+    action.status = _search_join_action_status(result)
     action.result = {**(action.result or {}), **result}
     _record_search_join_proxy_failover(session, action, payload, result)
     action.executed_at = _now()
@@ -6182,6 +6188,76 @@ def _dispatch_search_join(session: Session, action: Action, account: TgAccount, 
         return True
     _create_search_join_linked_dispatches(session, action, payload)
     return True
+
+
+def _search_join_image_verification_kwargs(
+    session: Session,
+    action: Action,
+    payload: SearchJoinPayload,
+    *,
+    image_solver: Any,
+) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {}
+    unknown_fingerprints = _search_join_callback_unknown_fingerprints(
+        session,
+        action,
+        payload.bot_username,
+    )
+    if unknown_fingerprints:
+        kwargs["image_verification_callback_unknown_fingerprints"] = (
+            unknown_fingerprints
+        )
+    if image_solver is None:
+        return kwargs
+    scheduling = get_scheduling_setting(session, action.tenant_id)
+    return {
+        **kwargs,
+        "image_verification_solver": image_solver,
+        "image_verification_challenge_limit": max(
+            1,
+            scheduling.default_max_retries,
+        ),
+    }
+
+
+def _search_join_action_status(result: dict[str, Any]) -> str:
+    if result.get("success"):
+        return "success"
+    if (
+        result.get("error_code") == "verification_callback_result_unknown"
+        and result.get("callback_mutation_started") is True
+    ):
+        return "unknown_after_send"
+    return "failed"
+
+
+def _search_join_callback_unknown_fingerprints(
+    session: Session,
+    action: Action,
+    bot_username: str,
+) -> frozenset[str]:
+    results = session.scalars(
+        select(Action.result).where(
+            Action.tenant_id == action.tenant_id,
+            Action.account_id == action.account_id,
+            Action.action_type == "search_join",
+            Action.status == "unknown_after_send",
+            Action.id != action.id,
+        )
+    )
+    normalized_bot = bot_username.strip().lower().lstrip("@")
+    return frozenset(
+        fingerprint
+        for result in results
+        if isinstance(result, dict)
+        and result.get("error_code") == "verification_callback_result_unknown"
+        and str(result.get("bot_username") or "").strip().lower().lstrip("@")
+        == normalized_bot
+        if len(
+            fingerprint := str(result.get("challenge_fingerprint_hash") or "")
+        )
+        == 64
+    )
 
 
 def _normalize_pure_search_click_result(

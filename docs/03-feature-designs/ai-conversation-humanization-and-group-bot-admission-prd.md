@@ -5,7 +5,7 @@
 | 项目 | 内容 |
 | --- | --- |
 | 需求级别 | L2 产品能力升级（上线后影响生产 AI 活群 / 频道评论行为） |
-| 设计状态 | `complete`（2026-07-27 控制提示分类与受控恢复修订） |
+| 设计状态 | 2026-07-27 群管准入/轮换既有范围 `complete`；2026-07-31 §14「优化 AI 活群真人话术待修复」`partial`，不得据此进入 dev |
 | 修订说明 | 2026-07-25 评审修补合订 + **continuity 交叉 P0/P1 合订**：① 待可见性核验计入 `unknown_after_send_hold_count`；② `admission_abandoned` 释放永久不可准入硬小时 debt；③ `pending_visibility_credit` 延后真实 credit；④ follow/观察 action 复用 `target_admission_retry` 档且限 tenant+task+account；⑤ 定义 `admission_version`；⑥ C1/C2 action 边界与存量 unknown 走 continuity 裁决。2026-07-27 首次补齐：入群前基线游标、每轮 listener observation 落库、控制事件优先后闭合、存量无基线显式重启观察，以及成功终态压过历史临时错误展示。**同日生产复核再补齐：来源信任必须早于归属；可信 peer 只是候选来源而不是“每条消息都是控制指令”；频道与确认动作可仅存在于 Telegram 内联按钮；已审计的目标级 bot peer 可作为 unknown role 的受限信任根；同群新入群 admission 必须串行，避免并发提示无法归属；历史已入库的同一 bot 消息重新被监听到按钮时，只回填安全按钮摘要以支持精确恢复；频道 follow 的持久 Action 类型固定为 `group_bot_channel_follow`，必须适配 `actions.action_type` 的 30 字符上限；`required_channel_refs` 只代表当前世代，误判提示暂停后必须由 explicit restart 与不同 source 的新有效控制提示受控 rearm；带明确收件人的控制提示必须精确归属，不能被唯一 waiting account 兜底错配。生产 E4 再次发现“空 admission 放行后 Telegram 先返回 message id、机器人稍后删除并提示订阅”后补齐：空/无证据 admission 的首条正文必须进入完整可见性窗口，窗口结束前不得以瞬时可见确认成功；unknown-role bot 只有在同 peer 重复出现相同精确频道+callback 规则，且与同群开放的 `pending_visibility` 远端消息顺序和时间窗相关时，才可作为 `post_send_intercept_rule` 受限信任根展开逐账号准入。** |
 | 产品范围 | 真人化：`group_ai_chat` + `channel_comment`；群管机器人准入：仅 `group_ai_chat` |
 | 统计时区 | 任务配置时区；未配置时沿用平台 `Asia/Shanghai` |
@@ -688,4 +688,84 @@ target_admission_retry
 | ClaimClass 档位 / admission_version / C1–C2 边界 | §5.1.1 §8.3 §10.2.1–§10.2.2 |
 | 开放问题 | 无阻塞项；确认模板表初值由实现按 §5.5 落地并可配置扩展 |
 
-**design_status=`complete`，可 handoff dev。** 实现必须以本文件 + continuity PRD 为准；二者冲突时以本节 P0 交叉条款修订 continuity 的 credit/debt 增量解释（见 continuity 文首关联说明）；plan 不得弱化闭合/canary/supersede/占位/credit 时序。
+**existing_scope_design_status=`complete`，仅 2026-07-27 既有范围可 handoff dev。** 实现必须以本文件 + continuity PRD 为准；二者冲突时以本节 P0 交叉条款修订 continuity 的 credit/debt 增量解释（见 continuity 文首关联说明）；plan 不得弱化闭合/canary/supersede/占位/credit 时序。2026-07-31 新增真人话术修复范围以 §14 的独立闸门为准，当前不得随既有 complete 状态进入开发。
+
+## 14. 优化 AI 活群真人话术待修复清单（2026-07-31）
+
+### 14.1 状态与证据边界
+
+本节承接生产只读真人化评估，只登记 Prompt/回复对以外的新缺口。测试边界固定为：PostgreSQL 只读事务、无 Action/Attempt 创建、无 Telegram Gateway；影子结果只能证明可行性，不能写 `production_fixed`。
+
+| ID | 修复方向 | 当前证据 | 分流状态 |
+| --- | --- | --- | --- |
+| H-01 | Planner → Dispatcher `chat_mode` 单一真相源 | 最新样本约 76.25%–77.5% 从 `reply` 被重算为 `idle_warmup`；最终 4,559 条消息重放均通过，但被拒 Provider 候选未持久化 | `online_shadow_blocked_by_production_ingress`；候选池测试完成前不改代码 |
+| H-02 | 会话级 should-speak / `wait|send + reason` | platform run P50=2、P90=5、P95=8；固定预算 1/2/3 仅保留 28.83%/44.82%/54.56% 发言，5 个观测任务全部受损 | 固定 cap `rejected`；价值调度进入 Product Design |
+| H-03 | 租户全局 persona 区分度与 AI self-history 消融 | 884 个 active profile 中 478 个摘要精确重复；当前只在 batch=2 内做相似度检查 | `online_shadow_blocked_by_production_ingress`；先做 no-send A/B |
+| H-04 | 真人校准的安全候选排序 | 最新 2,000 条中 1,997 条自动 accepted，但既有盲评没有稳定优势 | `blocked_by_human_gold_set`；先建人标基准集 |
+| H-05 | 真人 reply parent / addressee 数据 | 590 条学习样本没有 parent/reply relation；原生最近 200 条仅临时取得 4 对 | `blocked_by_schema`；先设计采集与隐私边界 |
+| H-06 | 随机静默 holdout / 因果 outcome | 原始 next-human 率 99.97%、P50 23 秒，被高活跃群饱和，不能归因于 AI | `blocked_by_live_traffic_authority`；未批准 canary 前不改真实发言流量 |
+| H-07 | 真人节奏指纹与长度相关输入时延 | 已有 platform run 分布，但尚未比较 human/platform 间隔、整秒尖峰和 schedule lag | `online_inventory_blocked_by_production_ingress` |
+| H-08 | 实际成稿的跨账号风格趋同监测 | profile 摘要重复率 54.1%，但尚未按已发送正文比较长度、问句、标点、emoji 和前缀碰撞 | `online_inventory_blocked_by_production_ingress` |
+| H-09 | single-message late binding 替代多账号批量预写 | 代码确认 batch=10、批次只刷新一次上下文、一次 Provider 请求多个 slots | `online_provider_ab_blocked_by_production_ingress` |
+
+### 14.2 H-01 会话模式合同待修复
+
+1. `chat_mode` 必须由一个共享 resolver 产生并版本化；Planner 写入 Action 后，Dispatcher 禁止用 `reply_to_message_id/history` 另一套规则静默重算。
+2. Context refresh 若确实改变模式，必须调用同一 resolver，原子更新 `chat_mode + context_message_ids + anchor_message_ids + mode_reason + contract_version`；字段缺失或不一致显式记录错误，不能静默降为 `idle_warmup`。
+3. idle/bootstrap 的事实锚点质量门必须消费 `anchor_message_ids`。存在当前有效锚点时，复述锚点中的细节不能仅因命中“上次/位置/准时/回访”等词面而判 hallucination。
+4. 上线前先做同一候选池的 planned/derived 双重影子重放，输出 `mode_drift_count`、`decision_diff_count`、`anchored_false_reject_count`；不得发送消息。
+
+### 14.3 H-02 会话级发言价值调度待设计
+
+1. 新决策层位于任务义务确认之后、Provider 生成之前，只输出 `send|wait + reason + next_eligible_at`；`wait` 不得伪装为 success/skip，也不得释放群日主槽或 coverage 义务。
+2. 输入至少覆盖：最近真人/平台远端顺序、collective platform run、真人活跃变化、当前 reply/addressee 锚点、任务欠账与截止时间、账号/群发送门、候选内容价值信号。
+3. 禁止把固定连续条数 cap 作为正式方案；生产回放已经证明 cap=1/2/3 会分别丢失 71.17%/55.18%/45.44% 的现有平台发言。
+4. 首版必须先影子输出，不影响 Action/Gateway；验收同时看 platform run 分布、任务义务保留率和同群同时间的人类参与基线，不能只优化“少说话”。
+
+### 14.4 H-03 Persona 稳定层与动态层待修复
+
+1. Persona 拆为稳定层（mask、identity、audience、preference、稳定表达摘要）和动态层（群内 stance、当前上下文）；最近 AI 成功文案不得默认回灌稳定身份。
+2. Voice profile 生成后必须在同租户全部 active profile 范围做精确与语义碰撞检查，不能只比较当前两个账号；重复时保留显式冲突状态，不用随机改词伪造多样性。
+3. no-send A/B 只删除 `近期表达` self-history，其他 persona 与 stance 完全一致；用相同上下文、相同账号和位置交换盲评比较自然度、上下文贴合、模板感与账号可辨识度。
+4. 上线验收必须包含 author identification：盲测者在同上下文的多个账号输出中识别归属；画像非空、hash 不同或 similarity=100 均不能单独判通过。
+
+### 14.5 H-04～H-06 前置资产与授权
+
+- H-04：建立版本化真人 pairwise gold set，覆盖普通接话、原生 reply、不同活跃度、事实锚点、模板腔和拗口问句；至少双人独立标注并保留分歧，不得用当前 LLM Judge 自产标签自校准。
+- H-05：设计 `reply_to_remote_message_id / parent_sender_kind / parent_content_hash / addressee_account_id` 等关系字段、采集留存周期与脱敏；父正文原文是否持久化属于隐私/产品待决策项。
+- H-06：只有用户批准目标群、时间窗、最大影响量和回滚后才能创建随机静默 canary；主要指标必须使用同群同小时 control，显式 reply/reaction 优先于普通 next-human。
+
+### 14.6 H-07 真人节奏指纹待验证
+
+1. 先以无正文聚合比较真人与平台消息的 `inter_message_gap`、整秒/固定间隔集中度、session burst 和 `scheduled_at -> executed_at` lag；必须按群、小时和活跃度分层，不能把全局平均当真人节奏。
+2. 若差异成立，调度只学习每个群/时段的经验分布，并按最终文案长度增加输入时延；不得用一个全局随机抖动或固定 sleep 伪装真人。
+3. 首版仅影子输出 `proposed_send_at + timing_reason + model_version`，不改变 Action、Claim、欠账或 Gateway；验收需同时观察节奏距离、义务保留率和过期率。
+
+### 14.7 H-08 实际成稿趋同待验证
+
+1. 评价对象必须是成功发送的实际正文，而不是 profile 是否非空；按账号统计句长、问句率、终止标点、emoji、语气词、开头前缀和 exact collision。
+2. 在同群同小时选取真人活跃 speaker 作为参照，比较账号内稳定性、账号间可辨识度和平台整体与真人分布距离；正文只输出匿名聚合，不在诊断结果落原文。
+3. 若实际成稿仍趋同，先消除 profile 全局碰撞和 AI self-history，再做真人 author-identification；禁止靠发送后随机替换同义词制造表面差异。
+
+### 14.8 H-09 单条临发送生成待验证
+
+1. 规划阶段可保留账号、话题、引用和数量槽，但普通正文只在单条 Action 即将执行时刷新一次最新上下文并生成；同一 Provider 请求不得预写未来多个账号的连续正文。
+2. Action 的 slot、幂等键、quantity/coverage 义务和 speaker reservation 不因 late binding 改变；上下文变化导致无法生成时必须显式等待或失败，不能复用旧批次正文。
+3. no-send A/B 使用同一生产冻结起点：baseline 一次生成多个 slots，实验组逐条生成并在两条间注入实际后续上下文；位置交换盲评比较剧本感、接话连续性、事实锚点与账号可辨识度。
+4. 当前只有静态合同证据，尚无生产 Provider A/B 赢家；在效果和吞吐/成本都通过前不得关闭 batch 路径。
+
+### 14.9 新范围 Product Design Complete 闸门
+
+| 检查项 | 状态 |
+| --- | --- |
+| H-01 no-send 候选池误杀率 | `blocked_by_production_ingress` |
+| H-03 self-history 消融 A/B | `blocked_by_production_ingress` |
+| H-02 wait/send 状态机、欠账一致性、API/观测/回滚 | `partial` |
+| H-04 人标数据口径与验收阈值 | `blocked_by_human_gold_set` |
+| H-05 relation schema、隐私与迁移 | `blocked_by_schema_design` |
+| H-06 canary 授权、流量边界与因果指标 | `blocked_by_live_traffic_authority` |
+| H-07 timing 生产只读 inventory | `blocked_by_production_ingress` |
+| H-08 实际成稿区分度与匿名聚合口径 | `partial` |
+| H-09 late-binding Provider A/B、成本、幂等与回滚 | `partial` |
+
+**humanization_speech_repair_design_status=`partial`，禁止进入 dev。** 只有线上只读项完成、阻塞项补齐产品决策，并同步总 PRD、数据流转索引、结构索引、QA 与回滚口径后，才能重新执行 Product Design Complete 自检。

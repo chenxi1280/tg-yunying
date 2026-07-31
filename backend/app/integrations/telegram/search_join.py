@@ -4,7 +4,9 @@ import asyncio
 import hashlib
 import re
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
+from time import monotonic
 from typing import Any, Callable
 from urllib.parse import urlparse
 
@@ -79,6 +81,14 @@ class ImageVerificationRequest:
     mime_type: str
     candidate_answers: tuple[str, ...]
     challenge_text: str
+    challenge_fingerprint_hash: str = ""
+    message_id: str = ""
+    message_revision: str = ""
+    bot_peer_hash: str = ""
+    image_hash: str = ""
+    candidate_hash: str = ""
+    challenge_observed_at: datetime | None = None
+    challenge_observed_monotonic: float | None = None
 
 
 @dataclass(frozen=True)
@@ -89,6 +99,10 @@ class ImageVerificationVote:
     confidence: float = 0.0
     in_candidates: bool = False
     detail: str = ""
+    started_at: str = ""
+    completed_at: str = ""
+    duration_ms: int = 0
+    late: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -98,6 +112,10 @@ class ImageVerificationVote:
             "confidence": round(self.confidence, 4),
             "in_candidates": self.in_candidates,
             "detail": self.detail,
+            "started_at": self.started_at,
+            "completed_at": self.completed_at,
+            "duration_ms": self.duration_ms,
+            "late": self.late,
         }
 
 
@@ -107,6 +125,14 @@ class ImageVerificationDecision:
     confidence: float
     votes: tuple[ImageVerificationVote, ...]
     model_waited: bool = True
+    model_started: bool = True
+    model_start_reason: str = ""
+    consensus_source: str = ""
+    contract_version: str = ""
+    challenge_observed_at: str = ""
+    model_hedge_at: str = ""
+    callback_submit_deadline: str = ""
+    callback_submit_deadline_monotonic: float = 0.0
 
 
 ImageVerificationSolver = Callable[
@@ -144,6 +170,30 @@ class ImageVerificationConsensusUnavailableError(RuntimeError):
         self.votes = votes
 
 
+class ImageVerificationRuntimeContractError(RuntimeError):
+    def __init__(
+        self,
+        code: str,
+        detail: str,
+        votes: tuple[ImageVerificationVote, ...] = (),
+        callback_submit_deadline_monotonic: float = 0.0,
+    ) -> None:
+        super().__init__(detail)
+        self.code = code
+        self.votes = votes
+        self.callback_submit_deadline_monotonic = (
+            callback_submit_deadline_monotonic
+        )
+
+
+class _VerificationCallbackDeadlineExceeded(RuntimeError):
+    pass
+
+
+class _VerificationCallbackResultUnknown(RuntimeError):
+    pass
+
+
 async def execute_search_join_with_client(
     client: Any,
     payload: dict[str, Any],
@@ -153,6 +203,7 @@ async def execute_search_join_with_client(
     image_verification_challenge_limit: int = (
         DEFAULT_IMAGE_VERIFICATION_CHALLENGE_LIMIT
     ),
+    image_verification_callback_unknown_fingerprints: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     bot_username = _bot_username(payload)
     if not keyword_text.strip():
@@ -170,6 +221,9 @@ async def execute_search_join_with_client(
             image_verification_solver=image_verification_solver,
             image_verification_challenge_limit=(
                 image_verification_challenge_limit
+            ),
+            callback_unknown_fingerprints=(
+                image_verification_callback_unknown_fingerprints
             ),
         )
     except Exception as exc:  # Telethon RPC errors are mapped at this adapter boundary.
@@ -215,6 +269,7 @@ async def _execute_search_pages(
     *,
     image_verification_solver: ImageVerificationSolver | None = None,
     image_verification_challenge_limit: int,
+    callback_unknown_fingerprints: frozenset[str],
 ) -> dict[str, Any]:
     bot = bot_username.strip().lstrip("@")
     protocol_profile = payload.get("approved_protocol_profile")
@@ -241,6 +296,7 @@ async def _execute_search_pages(
             verification_budget=_ImageVerificationBudget(
                 limit=max(1, image_verification_challenge_limit),
             ),
+            callback_unknown_fingerprints=callback_unknown_fingerprints,
         )
     return {**result, **recovery}
 
@@ -290,6 +346,7 @@ async def _execute_search_result_pages(
     protocol_profile: object,
     image_verification_solver: ImageVerificationSolver | None,
     verification_budget: "_ImageVerificationBudget",
+    callback_unknown_fingerprints: frozenset[str],
 ) -> dict[str, Any]:
     decoys: list[dict[str, Any]] = []
     total_results = 0
@@ -304,6 +361,7 @@ async def _execute_search_result_pages(
         protocol_profile=protocol_profile,
         image_verification_solver=image_verification_solver,
         verification_budget=verification_budget,
+        callback_unknown_fingerprints=callback_unknown_fingerprints,
     )
     if selector_error is not None:
         return _with_no_post_verification_replay(selector_error)
@@ -327,6 +385,7 @@ async def _execute_search_result_pages(
                 classification,
                 image_verification_solver,
                 protocol_profile=protocol_profile,
+                callback_unknown_fingerprints=callback_unknown_fingerprints,
             )
             if handled.audit is not None:
                 verification_attempts.append(handled.audit)
@@ -339,6 +398,7 @@ async def _execute_search_result_pages(
                     protocol_profile=protocol_profile,
                     image_verification_solver=image_verification_solver,
                     verification_budget=verification_budget,
+                    callback_unknown_fingerprints=callback_unknown_fingerprints,
                 ),
                 page,
                 handled,
@@ -497,6 +557,7 @@ async def _select_jisou_group_results_page(
     protocol_profile: object,
     image_verification_solver: ImageVerificationSolver | None = None,
     verification_budget: "_ImageVerificationBudget",
+    callback_unknown_fingerprints: frozenset[str],
 ) -> tuple[Any, dict[str, Any] | None, SearchJoinButton | None, list[SearchJoinButton], list[dict[str, Any]]]:
     if not is_jisou_bot(bot_username):
         return page, None, None, [], []
@@ -508,6 +569,7 @@ async def _select_jisou_group_results_page(
         protocol_profile=protocol_profile,
         image_verification_solver=image_verification_solver,
         verification_budget=verification_budget,
+        callback_unknown_fingerprints=callback_unknown_fingerprints,
     )
     return await _navigate_jisou_to_group_results(context, page)
 
@@ -521,6 +583,7 @@ class _JisouNavigationContext:
     protocol_profile: object
     image_verification_solver: ImageVerificationSolver | None
     verification_budget: "_ImageVerificationBudget"
+    callback_unknown_fingerprints: frozenset[str]
 
 
 @dataclass
@@ -648,6 +711,7 @@ async def _handle_navigation_verification(
         classification,
         context.image_verification_solver,
         protocol_profile=context.protocol_profile,
+        callback_unknown_fingerprints=context.callback_unknown_fingerprints,
     )
 
 
@@ -891,6 +955,7 @@ class _ImageVerificationHandleResult:
     page: Any
     error: dict[str, Any] | None
     audit: dict[str, Any] | None = None
+    image_bytes: bytes = b""
 
 
 async def _handle_jisou_image_verification(
@@ -902,8 +967,11 @@ async def _handle_jisou_image_verification(
     solver: ImageVerificationSolver | None,
     *,
     protocol_profile: object,
+    callback_unknown_fingerprints: frozenset[str] = frozenset(),
 ) -> _ImageVerificationHandleResult:
     """Handle one immutable challenge fingerprint and one approved submit."""
+    observed_at = datetime.now(UTC)
+    observed_monotonic = monotonic()
     answer_buttons = [
         button for button in buttons
         if _is_verification_answer_button(button)
@@ -921,20 +989,60 @@ async def _handle_jisou_image_verification(
         return _image_verification_required_result(
             classification, buttons, fingerprint, "verification_transport_unavailable"
         )
+    if fingerprint in callback_unknown_fingerprints:
+        return _image_verification_callback_unknown_result(
+            classification,
+            buttons,
+            fingerprint,
+            bot_username=bot_username,
+            detail="同一验证码此前 callback 已发送但结果未知，禁止重复识别和点击",
+            page=page,
+        )
     if solver is None or not candidate_answers:
         return _image_verification_required_result(
             classification, buttons, fingerprint, "verification_ai_unavailable"
         )
     mime_type = _message_media_mime_type(page)
+    identity = _image_verification_identity(
+        bot_username,
+        page,
+        candidate_answers,
+        image_bytes,
+    )
+    request = ImageVerificationRequest(
+        image_bytes=image_bytes,
+        mime_type=mime_type,
+        candidate_answers=candidate_answers,
+        challenge_text=_message_text(page),
+        challenge_fingerprint_hash=fingerprint,
+        message_id=identity["message_id"],
+        message_revision=identity["message_revision"],
+        bot_peer_hash=identity["bot_peer_hash"],
+        image_hash=identity["image_hash"],
+        candidate_hash=identity["candidate_hash"],
+        challenge_observed_at=observed_at,
+        challenge_observed_monotonic=observed_monotonic,
+    )
     try:
-        solved = await asyncio.to_thread(
+        solved = await _solve_with_unknown_recovery(
             solver,
-            ImageVerificationRequest(
-                image_bytes=image_bytes,
-                mime_type=mime_type,
-                candidate_answers=candidate_answers,
-                challenge_text=_message_text(page),
-            ),
+            request,
+            client,
+            bot_username,
+            page,
+            fingerprint,
+            protocol_profile,
+        )
+        if isinstance(solved, _ImageVerificationHandleResult):
+            return solved
+    except ImageVerificationRuntimeContractError as exc:
+        return _image_verification_required_result(
+            classification,
+            buttons,
+            fingerprint,
+            exc.code,
+            detail=str(exc),
+            votes=exc.votes,
         )
     except ImageVerificationConsensusUnavailableError as exc:
         return _image_verification_required_result(
@@ -970,11 +1078,24 @@ async def _handle_jisou_image_verification(
         )
     answer = solved.answer
     confidence = solved.confidence
-    audit = _image_verification_audit(solved, fingerprint)
+    audit = _image_verification_audit(solved, request)
+    preflight = await _verification_callback_preflight(
+        client,
+        bot_username,
+        page,
+        fingerprint,
+        solved.callback_submit_deadline_monotonic,
+        protocol_profile=protocol_profile,
+    )
+    if preflight.error is not None:
+        return preflight
+    current_page = preflight.page
+    current_buttons = _parse_buttons(current_page)
     target_button = next(
         (
-            button for button in answer_buttons
+            button for button in current_buttons
             if button.text.strip() == answer
+            and _is_verification_answer_button(button)
         ),
         None,
     )
@@ -983,9 +1104,34 @@ async def _handle_jisou_image_verification(
             classification, buttons, f"answer {answer} not in button matrix",
             answer=answer, confidence=confidence, fingerprint=fingerprint,
         )
-    clicked_page = await _click_verification_and_get_response(
-        client, bot_username, page, target_button
-    )
+    try:
+        clicked_page = await _click_verification_and_get_response(
+            client,
+            bot_username,
+            current_page,
+            target_button,
+            deadline_monotonic=solved.callback_submit_deadline_monotonic,
+        )
+    except _VerificationCallbackDeadlineExceeded as exc:
+        return _image_verification_required_result(
+            classification,
+            buttons,
+            fingerprint,
+            "verification_deadline_exceeded",
+            detail=str(exc),
+            page=current_page,
+            votes=solved.votes,
+        )
+    except _VerificationCallbackResultUnknown as exc:
+        return _image_verification_callback_unknown_result(
+            classification,
+            buttons,
+            fingerprint,
+            bot_username=bot_username,
+            detail=str(exc),
+            page=current_page,
+            votes=solved.votes,
+        )
     clicked_buttons = _parse_buttons(clicked_page)
     clicked_classification = classify_jisou_page_with_media(
         profile=protocol_profile,
@@ -1036,6 +1182,84 @@ async def _handle_jisou_image_verification(
     )
 
 
+async def _solve_with_unknown_recovery(
+    solver: ImageVerificationSolver,
+    request: ImageVerificationRequest,
+    client: Any,
+    bot_username: str,
+    page: Any,
+    fingerprint: str,
+    protocol_profile: object,
+) -> ImageVerificationDecision | None | _ImageVerificationHandleResult:
+    try:
+        return await asyncio.to_thread(solver, request)
+    except ImageVerificationRuntimeContractError as exc:
+        if exc.code != "verification_local_ocr_unknown":
+            raise
+        refreshed = await _refresh_unknown_ocr_request(
+            client,
+            bot_username,
+            page,
+            fingerprint,
+            exc.callback_submit_deadline_monotonic,
+            request,
+            protocol_profile,
+        )
+        if isinstance(refreshed, _ImageVerificationHandleResult):
+            return refreshed
+        return await asyncio.to_thread(solver, refreshed)
+
+
+async def _refresh_unknown_ocr_request(
+    client: Any,
+    bot_username: str,
+    page: Any,
+    fingerprint: str,
+    deadline_monotonic: float,
+    request: ImageVerificationRequest,
+    protocol_profile: object,
+) -> ImageVerificationRequest | _ImageVerificationHandleResult:
+    preflight = await _verification_callback_preflight(
+        client,
+        bot_username,
+        page,
+        fingerprint,
+        deadline_monotonic,
+        protocol_profile=protocol_profile,
+    )
+    if preflight.error is not None:
+        return preflight
+    current_page = preflight.page
+    image_bytes = preflight.image_bytes or await _download_verification_image(
+        client,
+        current_page,
+    )
+    buttons = _parse_buttons(current_page)
+    candidates = tuple(
+        button.text.strip()
+        for button in buttons
+        if _is_verification_answer_button(button)
+    )
+    identity = _image_verification_identity(
+        bot_username,
+        current_page,
+        candidates,
+        image_bytes,
+    )
+    return replace(
+        request,
+        image_bytes=image_bytes,
+        mime_type=_message_media_mime_type(current_page),
+        candidate_answers=candidates,
+        challenge_text=_message_text(current_page),
+        message_id=identity["message_id"],
+        message_revision=identity["message_revision"],
+        bot_peer_hash=identity["bot_peer_hash"],
+        image_hash=identity["image_hash"],
+        candidate_hash=identity["candidate_hash"],
+    )
+
+
 def _image_verification_fingerprint(
     page: Any,
     buttons: list[SearchJoinButton],
@@ -1051,6 +1275,89 @@ def _image_verification_fingerprint(
         (message_id, image_hash, callback_fingerprint)
     ).encode()
     return hashlib.sha256(value).hexdigest()
+
+
+def _image_verification_identity(
+    bot_username: str,
+    page: Any,
+    candidate_answers: tuple[str, ...],
+    image_bytes: bytes,
+) -> dict[str, str]:
+    return {
+        "bot_peer_hash": hashlib.sha256(
+            bot_username.strip().lower().encode()
+        ).hexdigest(),
+        "message_id": str(getattr(page, "id", "") or ""),
+        "message_revision": _page_revision_fingerprint(page),
+        "image_hash": hashlib.sha256(image_bytes).hexdigest(),
+        "candidate_hash": hashlib.sha256(
+            repr(candidate_answers).encode()
+        ).hexdigest(),
+    }
+
+
+async def _verification_callback_preflight(
+    client: Any,
+    bot_username: str,
+    page: Any,
+    expected_fingerprint: str,
+    deadline_monotonic: float,
+    *,
+    protocol_profile: object,
+) -> _ImageVerificationHandleResult:
+    classification = classify_jisou_page_with_media(
+        profile=protocol_profile,
+        message_text=_message_text(page),
+        buttons=_parse_buttons(page),
+        has_photo=_has_photo_media(page),
+    )
+    if not deadline_monotonic:
+        return _ImageVerificationHandleResult(page=page, error=None)
+    if deadline_monotonic and monotonic() >= deadline_monotonic:
+        return _image_verification_required_result(
+            classification,
+            _parse_buttons(page),
+            expected_fingerprint,
+            "verification_deadline_exceeded",
+        )
+    current_page = await client.get_messages(bot_username, ids=page.id)
+    current_buttons = _parse_buttons(current_page) if current_page else []
+    current_image = (
+        await _download_verification_image(client, current_page)
+        if current_page else b""
+    )
+    current_fingerprint = _image_verification_fingerprint(
+        current_page,
+        current_buttons,
+        current_image,
+    ) if current_page and current_image else ""
+    if current_fingerprint != expected_fingerprint:
+        current_classification = classify_jisou_page_with_media(
+            profile=protocol_profile,
+            message_text=_message_text(current_page),
+            buttons=current_buttons,
+            has_photo=_has_photo_media(current_page),
+        )
+        return _image_verification_required_result(
+            current_classification,
+            current_buttons,
+            current_fingerprint,
+            "new_challenge_fingerprint",
+            page=current_page,
+        )
+    if deadline_monotonic and monotonic() >= deadline_monotonic:
+        return _image_verification_required_result(
+            classification,
+            current_buttons,
+            expected_fingerprint,
+            "verification_deadline_exceeded",
+            page=current_page,
+        )
+    return _ImageVerificationHandleResult(
+        page=current_page,
+        error=None,
+        image_bytes=current_image,
+    )
 
 
 async def _download_verification_image(client: Any, page: Any) -> bytes:
@@ -1157,16 +1464,65 @@ def _image_verification_required_result(
     )
 
 
+def _image_verification_callback_unknown_result(
+    classification: ProtocolPageClassification,
+    buttons: list[SearchJoinButton],
+    fingerprint: str,
+    *,
+    bot_username: str,
+    detail: str,
+    page: Any = None,
+    votes: tuple[ImageVerificationVote, ...] = (),
+) -> _ImageVerificationHandleResult:
+    error = {
+        **_failed(
+            "verification_callback_result_unknown",
+            "验证码 callback 已发送，但结果未能确认",
+        ),
+        "jisou_page_phase": VERIFICATION_IMAGE_PAGE,
+        "protocol_event_type": "image_verification_callback_unknown",
+        "image_verification_status": "unknown",
+        "image_verification_reason": "verification_callback_result_unknown",
+        "image_verification_detail": detail,
+        "image_verification_votes": [vote.as_dict() for vote in votes],
+        "challenge_fingerprint_hash": fingerprint,
+        "callback_mutation_started": True,
+        "bot_username": bot_username.strip().lower().lstrip("@"),
+        "search_protocol_trace": {
+            "page_phase": VERIFICATION_IMAGE_PAGE,
+            "page": _page_layout(buttons, classification.approved_button_positions),
+        },
+    }
+    audit = {
+        "status": "verification_callback_result_unknown",
+        "challenge_fingerprint_hash": fingerprint,
+        "votes": [vote.as_dict() for vote in votes],
+    }
+    return _ImageVerificationHandleResult(page=page, error=error, audit=audit)
+
+
 def _image_verification_audit(
     decision: ImageVerificationDecision,
-    fingerprint: str,
+    request: ImageVerificationRequest,
 ) -> dict[str, Any]:
     return {
         "status": "consensus_submitted",
         "answer": decision.answer,
         "confidence": round(decision.confidence, 4),
         "model_waited": decision.model_waited,
-        "challenge_fingerprint_hash": fingerprint,
+        "model_started": decision.model_started,
+        "model_start_reason": decision.model_start_reason,
+        "consensus_source": decision.consensus_source,
+        "contract_version": decision.contract_version,
+        "challenge_observed_at": decision.challenge_observed_at,
+        "model_hedge_at": decision.model_hedge_at,
+        "callback_submit_deadline": decision.callback_submit_deadline,
+        "challenge_fingerprint_hash": request.challenge_fingerprint_hash,
+        "bot_peer_hash": request.bot_peer_hash,
+        "message_id": request.message_id,
+        "message_revision": request.message_revision,
+        "image_hash": request.image_hash,
+        "candidate_hash": request.candidate_hash,
         "votes": [vote.as_dict() for vote in decision.votes],
     }
 
@@ -1570,15 +1926,26 @@ async def _click_verification_and_get_response(
     bot_username: str,
     message: Any,
     button: SearchJoinButton,
+    *,
+    deadline_monotonic: float,
 ) -> Any:
     original_fingerprint = _page_revision_fingerprint(message)
-    await _click_button(message, button)
-    return await _wait_for_callback_page(
-        client,
-        bot_username,
-        message,
-        original_fingerprint=original_fingerprint,
-    )
+    if deadline_monotonic and monotonic() >= deadline_monotonic:
+        raise _VerificationCallbackDeadlineExceeded(
+            "callback submit deadline elapsed immediately before click"
+        )
+    try:
+        await _click_button(message, button)
+        return await _wait_for_callback_page(
+            client,
+            bot_username,
+            message,
+            original_fingerprint=original_fingerprint,
+        )
+    except Exception as exc:
+        raise _VerificationCallbackResultUnknown(
+            str(exc) or exc.__class__.__name__
+        ) from exc
 
 
 async def _wait_for_callback_page(
