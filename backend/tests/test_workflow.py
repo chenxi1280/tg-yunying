@@ -5643,7 +5643,7 @@ def test_task_center_pending_reviews_do_not_starve_other_due_actions(monkeypatch
             session.add_all([blocked_task, normal_task])
             session.flush()
             blocked_action = Action(tenant_id=1, task_id=blocked_task.id, task_type=blocked_task.type, action_type="send_message", account_id=account["id"], scheduled_at=now, status="pending", payload={"group_id": group["id"], "message_text": "待审核内容"}, result={})
-            normal_action_id = f"normal-action-{uuid4()}"
+            normal_action_id = str(uuid4())
             normal_gate_payload = _ai_group_memory_payload(
                 session,
                 action_id=normal_action_id,
