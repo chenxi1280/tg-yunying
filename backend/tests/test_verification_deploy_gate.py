@@ -127,3 +127,23 @@ def test_remote_release_values_require_sufficient_terminal_ttl() -> None:
     result = _run_validator("validate_remote_verification_values", invalid)
     assert result.returncode != 0
     assert "at least worker budget" in result.stderr
+
+
+def test_actions_release_persists_verification_runtime_contract() -> None:
+    release = (PROJECT_ROOT / "deploy/release.sh").read_text()
+    workflow = (PROJECT_ROOT / ".github/workflows/deploy-production.yml").read_text()
+    required_names = {
+        "IMAGE_VERIFICATION_CONTRACT_ENABLED",
+        "IMAGE_VERIFICATION_CALLBACK_ACCEPTANCE_SECONDS",
+        "IMAGE_VERIFICATION_OCR_BACKEND",
+        "IMAGE_VERIFICATION_WORKER_TOKEN",
+        "DISPATCHER_MEMORY_LIMIT",
+        "DISPATCHER_STOP_GRACE_PERIOD",
+        "IMAGE_VERIFICATION_WORKER_MEMORY_LIMIT",
+    }
+
+    assert '>>"$image_env_path"' in release
+    for name in required_names:
+        assert name in release
+        assert f"{name}:" in workflow
+    assert "secrets.TGYUNYING_IMAGE_VERIFICATION_WORKER_TOKEN" in workflow
