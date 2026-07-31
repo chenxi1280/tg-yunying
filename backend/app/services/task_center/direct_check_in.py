@@ -24,6 +24,7 @@ DIRECT_CHECK_IN_SOURCE = "check_in_direct"
 MASK_MISSING_CHECK_IN_SOURCE = "mask_missing_check_in"
 DIRECT_GENERATION_SOURCE = "direct_check_in"
 DIRECT_MEMORY_RETENTION = timedelta(days=30)
+DIRECT_CHECK_IN_DEDUPE_WINDOW = timedelta(days=10)
 
 
 def requires_direct_check_in(payload: SendMessagePayload) -> bool:
@@ -46,9 +47,14 @@ def prepare_direct_check_in(
     payload: SendMessagePayload,
 ) -> SendMessagePayload:
     coverage = _validated_coverage(session, action, payload)
-    _validate_missing_mask_fallback(session, action, payload, coverage)
+    _validate_missing_mask_fallback(
+        session,
+        action,
+        payload,
+        coverage=coverage,
+    )
     _supersede_old_memory(session, payload)
-    memory = _reserve_memory(session, action, payload, coverage)
+    memory = _reserve_memory(session, action, payload, coverage=coverage)
     data = {
         **dict(action.payload),
         "message_text": DIRECT_CHECK_IN_TEXT,
@@ -79,7 +85,10 @@ def _supersede_old_memory(session: Session, payload: SendMessagePayload) -> None
     if not memory_id:
         return
     memory = session.get(AiGroupMessageMemory, memory_id)
-    if memory and memory.quality_decision != DIRECT_GENERATION_SOURCE:
+    if memory and memory.quality_decision not in {
+        DIRECT_GENERATION_SOURCE,
+        MASK_MISSING_CHECK_IN_SOURCE,
+    }:
         memory.status = "expired_before_send"
         memory.quality_decision = "superseded_by_direct_check_in"
         memory.updated_at = _now()
@@ -128,6 +137,7 @@ def _validate_missing_mask_fallback(
     session: Session,
     action: Action,
     payload: SendMessagePayload,
+    *,
     coverage: TaskAccountDailyCoverage,
 ) -> None:
     account = session.get(TgAccount, action.account_id)
@@ -150,14 +160,39 @@ def _validate_missing_mask_fallback(
         or account.account_identity != "normal"
         or account.status in {"禁用", "不可用", "Session失效", "封禁"}
     )
-    if invalid_account or active_mask or payload.fallback_obligation_key != expected_key:
+    if (
+        invalid_account
+        or active_mask
+        or payload.fallback_obligation_key != expected_key
+    ):
         raise AiGenerationUnavailable("mask_missing_check_in_ineligible")
+    if _recent_check_in_exists(session, action):
+        raise AiGenerationUnavailable("direct_check_in_10d_duplicate")
+
+
+def _recent_check_in_exists(session: Session, action: Action) -> bool:
+    cutoff = _now() - DIRECT_CHECK_IN_DEDUPE_WINDOW
+    return bool(session.scalar(select(AiGroupMessageMemory.id).where(
+        AiGroupMessageMemory.tenant_id == action.tenant_id,
+        AiGroupMessageMemory.account_id == action.account_id,
+        AiGroupMessageMemory.action_id != action.id,
+        AiGroupMessageMemory.raw_text == DIRECT_CHECK_IN_TEXT,
+        AiGroupMessageMemory.planned_at >= cutoff,
+        AiGroupMessageMemory.status.in_([
+            "reserved",
+            "claiming",
+            "executing",
+            "unknown_after_send",
+            "success",
+        ]),
+    ).limit(1)))
 
 
 def _reserve_memory(
     session: Session,
     action: Action,
     payload: SendMessagePayload,
+    *,
     coverage: TaskAccountDailyCoverage,
 ) -> AiGroupMessageMemory:
     reservation_key = f"mask-missing-check-in:{coverage.id}:{action.id}"

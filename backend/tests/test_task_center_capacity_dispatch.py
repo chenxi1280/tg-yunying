@@ -215,17 +215,11 @@ def _dispatch_planned_ai_actions(
     *,
     normal_generator,
 ) -> list[Action]:
-    for action in actions:
-        action.status = "executing"
-        action.claim_owner = "capacity-dispatch-test"
-        action.claim_token = "capacity-dispatch-claim"
-        action.payload = {
-            **(action.payload or {}),
-            "ai_generation_claim_owner": action.claim_owner,
-            "ai_generation_claim_token": action.claim_token,
-        }
-    session.commit()
     monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(
+        "app.services.task_center.ai_generation_worker.credentials_for_account",
+        lambda *_args, **_kwargs: object(),
+    )
     monkeypatch.setattr(dispatcher, "is_account_online_ready", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(
         dispatcher.gateway,
@@ -242,8 +236,16 @@ def _dispatch_planned_ai_actions(
         reply_messages_fetcher=forbidden_reply,
     )
     for action in actions:
-        if action.status == "executing":
-            dispatcher.dispatch_action(session, action, generation_dependencies=dependencies)
+        action.scheduled_at = _now()
+    session.commit()
+    bind = session.get_bind()
+    drain_ai_generation(lambda: Session(bind), limit=len(actions), dependencies=dependencies)
+    session.expire_all()
+    claimed = claim_actions(session, limit=len(actions), worker_id="capacity-dispatch-test")
+    for action in claimed:
+        dispatcher.dispatch_action(session, action, generation_dependencies=dependencies)
+    for action in actions:
+        session.refresh(action)
     return actions
 
 
@@ -963,10 +965,14 @@ def test_dispatch_ai_generation_ignores_legacy_group_slot(
         sibling = session.get(Action, "action-hard-hourly-ai-sibling")
         assert generated == {
             "model": "mino-v2.5",
-            "count": expected_generation_count,
+            "count": 1,
             "target": "运营群",
             "history": "真人: 今天怎么安排",
-            "personas": {"11": "活跃群友", **({"12": "追问群友"} if expected_generation_count == 2 else {})},
+            "personas": {
+                str(10 + expected_generation_count): (
+                    "追问群友" if expected_generation_count == 2 else "活跃群友"
+                )
+            },
         }
         assert sent == {"account_id": 11, "content": "今天先看看群公告"}
         assert action.payload["message_text"] == "今天先看看群公告"
@@ -1008,14 +1014,21 @@ def test_dispatch_hard_hourly_pending_ai_duplicate_is_blocked(monkeypatch):
 
 
 @pytest.mark.no_postgres
-def test_dispatch_context_expired_skip_releases_reserved_account_runtime_resource(monkeypatch):
+def test_dispatch_context_requeue_releases_reserved_account_runtime_resource(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = _now()
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
-        session.add(Task(id="task-skip", tenant_id=1, name="skip", type="group_ai_chat", status="running"))
+        session.add(Task(
+            id="task-skip",
+            tenant_id=1,
+            name="skip",
+            type="group_ai_chat",
+            status="running",
+            type_config={"target_group_id": 7},
+        ))
         session.add(TgAccount(id=11, tenant_id=1, display_name="账号", phone_masked="+861***0011", status="在线", session_ciphertext="session"))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True, require_review=False))
         session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True))
@@ -1033,28 +1046,50 @@ def test_dispatch_context_expired_skip_releases_reserved_account_runtime_resourc
             status="pending",
             scheduled_at=now_value,
             payload={
+                "chat_id": "-1007",
                 "group_id": 7,
                 "message_text": "skip",
+                "ai_generation_status": "ready",
+                "ai_generation_id": "generation-cycle-skip",
                 "review_approved": True,
                 "cycle_id": "cycle-skip",
+                "chat_mode": "reply",
                 "context_snapshot_message_id": old_context.id,
                 "context_expire_after_messages": 1,
+                "content_scope_contract_version": "group_content_scope_v1",
+                "content_scope_tenant_id": 1,
+                "content_scope_group_id": 7,
+                "content_scope_task_id": "task-skip",
             },
         )
         session.add(action)
         session.commit()
 
         monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
+        monkeypatch.setattr(dispatcher, "reject_legacy_anchor_rewrite_before_send", lambda *_args: False)
         monkeypatch.setattr(dispatcher.gateway, "send_message", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("context expired action must not call TG")))
+        forbidden = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Dispatcher must not call AI Provider"),
+        )
+        dependencies = GenerationDependencies(
+            normal_generator=forbidden,
+            reply_generator=forbidden,
+            reply_target_probe=forbidden,
+            reply_messages_fetcher=forbidden,
+        )
 
         [claimed] = claim_actions(session, limit=1, worker_id="worker-test")
         assert 11 in dispatcher._IN_FLIGHT_ACCOUNTS
         assert claimed.id in dispatcher._ACTION_RESERVATIONS
 
-        assert dispatcher.dispatch_action(session, claimed) is True
+        assert dispatcher.dispatch_action(
+            session,
+            claimed,
+            generation_dependencies=dependencies,
+        ) is True
 
-        assert claimed.status == "skipped"
-        assert claimed.result["error_code"] == "context_expired"
+        assert claimed.status == "pending"
+        assert claimed.result["generation_stage"] == "context_superseded_requeue"
         assert 11 not in dispatcher._IN_FLIGHT_ACCOUNTS
         assert claimed.id not in dispatcher._ACTION_RESERVATIONS
 
@@ -1135,6 +1170,7 @@ def _add_cycle_skip_basics(session: Session, now_value: datetime) -> None:
             name="skip",
             type="group_ai_chat",
             status="running",
+            type_config={"target_group_id": 7},
             next_run_at=now_value + timedelta(hours=1),
         )
     )
@@ -1171,7 +1207,7 @@ def _add_cycle_contexts(session: Session, now_value: datetime) -> tuple[GroupCon
         group_id=7,
         listener_account_id=11,
         content="旧上下文",
-        remote_message_id="old",
+        remote_message_id="1001",
         created_at=now_value - timedelta(minutes=2),
     )
     new_context = GroupContextMessage(
@@ -1179,7 +1215,7 @@ def _add_cycle_contexts(session: Session, now_value: datetime) -> tuple[GroupCon
         group_id=7,
         listener_account_id=11,
         content="新上下文",
-        remote_message_id="new",
+        remote_message_id="1002",
         created_at=now_value,
     )
     session.add_all([old_context, new_context])
@@ -1188,6 +1224,15 @@ def _add_cycle_contexts(session: Session, now_value: datetime) -> tuple[GroupCon
 
 
 def _cycle_action(action_id: str, scheduled_at: datetime, payload: dict) -> Action:
+    scoped_payload = {
+        "chat_id": "-1007",
+        "chat_mode": "reply",
+        "content_scope_contract_version": "group_content_scope_v1",
+        "content_scope_tenant_id": 1,
+        "content_scope_group_id": 7,
+        "content_scope_task_id": "task-cycle-skip",
+        **payload,
+    }
     return Action(
         id=action_id,
         tenant_id=1,
@@ -1197,7 +1242,7 @@ def _cycle_action(action_id: str, scheduled_at: datetime, payload: dict) -> Acti
         account_id=11,
         status="pending",
         scheduled_at=scheduled_at,
-        payload=payload,
+        payload=scoped_payload,
     )
 
 
@@ -1208,12 +1253,20 @@ def _expired_cycle_payload(
     text: str = "skip",
 ) -> dict:
     return {
+        "chat_id": "-1007",
         "group_id": 7,
         "message_text": text,
+        "ai_generation_status": "ready",
+        "ai_generation_id": f"generation-{cycle_id}-{context_id}",
         "review_approved": True,
         "cycle_id": cycle_id,
         "context_snapshot_message_id": context_id,
         "context_expire_after_messages": 1,
+        "chat_mode": "reply",
+        "content_scope_contract_version": "group_content_scope_v1",
+        "content_scope_tenant_id": 1,
+        "content_scope_group_id": 7,
+        "content_scope_task_id": "task-cycle-skip",
     }
 
 
@@ -1221,6 +1274,7 @@ def _add_cycle_ai_send_gate_state(
     session: Session,
     now_value: datetime,
     *,
+    action_id: str,
     memory_id: str,
     text: str,
 ) -> dict:
@@ -1240,6 +1294,7 @@ def _add_cycle_ai_send_gate_state(
             tenant_id=1,
             group_id=7,
             task_id="task-cycle-skip",
+            action_id=action_id,
             account_id=11,
             raw_text=text,
             normalized_text=text,
@@ -1266,6 +1321,9 @@ def _add_group_ai_send_gate_payload(
     account_id: int,
     text: str,
 ) -> dict:
+    task = session.get(Task, task_id)
+    if task:
+        task.type_config = {**(task.type_config or {}), "target_group_id": group_id}
     if not session.scalar(select(TgAccountOnlineState).where(TgAccountOnlineState.tenant_id == 1, TgAccountOnlineState.account_id == account_id)):
         session.add(
             TgAccountOnlineState(
@@ -1284,6 +1342,7 @@ def _add_group_ai_send_gate_payload(
             tenant_id=1,
             group_id=group_id,
             task_id=task_id,
+            action_id=action_id,
             account_id=account_id,
             raw_text=text,
             normalized_text=text,
@@ -1294,6 +1353,12 @@ def _add_group_ai_send_gate_payload(
         )
     )
     return {
+        "chat_id": str(session.get(TgGroup, group_id).tg_peer_id),
+        "chat_mode": "reply",
+        "content_scope_contract_version": "group_content_scope_v1",
+        "content_scope_tenant_id": 1,
+        "content_scope_group_id": group_id,
+        "content_scope_task_id": task_id,
         "slot_id": f"{task_id}:cycle:test:turn:{action_id}",
         "ai_message_memory_id": memory_id,
         **mask_evidence,
@@ -1324,6 +1389,7 @@ def _add_group_ai_send_action_with_online_state(
             tenant_id=1,
             group_id=7,
             task_id="task-cycle-skip",
+            action_id=action_id,
             account_id=11,
             raw_text=text,
             normalized_text=text,
@@ -1551,7 +1617,7 @@ def test_task_detail_exposes_ai_quality_funnel_with_blocker_samples():
 
 
 @pytest.mark.no_postgres
-def test_context_expired_skip_clears_same_cycle_pending_actions(monkeypatch):
+def test_context_expired_requeues_same_action_without_touching_siblings():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = _now()
@@ -1576,91 +1642,33 @@ def test_context_expired_skip_clears_same_cycle_pending_actions(monkeypatch):
             ]
         )
         session.commit()
-        monkeypatch.setattr(
-            dispatcher,
-            "credentials_for_account",
-            lambda *args, **kwargs: object(),
-        )
-        monkeypatch.setattr(
-            dispatcher.gateway,
-            "send_message",
-            lambda *args, **kwargs: (_ for _ in ()).throw(
-                AssertionError("context expired action must not call TG")
-            ),
+        current = session.get(Action, "action-stale-due")
+        payload = task_payloads.SendMessagePayload.model_validate(current.payload or {})
+        context = dispatcher.GroupSendGatewayContext(
+            account=session.get(TgAccount, 11),
+            credentials=object(),
+            group=session.get(TgGroup, 7),
+            link=session.query(TgGroupAccount).filter_by(group_id=7, account_id=11).one(),
+            payload=payload,
+            content=payload.message_text,
         )
 
-        [claimed] = claim_actions(session, limit=1, worker_id="worker-test")
-
-        assert dispatcher.dispatch_action(session, claimed) is True
+        assert dispatcher._group_send_context_fresh(session, current, context) is False
 
         stale_due = session.get(Action, "action-stale-due")
         stale_future = session.get(Action, "action-stale-future")
         fresh_future = session.get(Action, "action-fresh-future")
         task = session.get(Task, "task-cycle-skip")
-        assert stale_due.status == "skipped"
-        assert stale_future.status == "skipped"
-        assert stale_future.result["error_code"] == "context_expired"
+        assert stale_due.status == "pending"
+        assert stale_due.payload["ai_generation_status"] == "pending"
+        assert stale_due.payload["message_text"] == ""
+        assert stale_due.result["generation_stage"] == "context_superseded_requeue"
+        assert stale_future.status == "pending"
         assert fresh_future.status == "pending"
-        assert task.next_run_at < now_value + timedelta(minutes=5)
+        assert task.stats["context_superseded_requeue_count"] == 1
 
 
 @pytest.mark.no_postgres
-def test_context_expired_reply_keeps_same_cycle_hard_hourly_plain_send_pending():
-    engine = create_engine("sqlite:///:memory:", future=True)
-    Base.metadata.create_all(engine)
-    now_value = _now()
-
-    with Session(engine) as session:
-        _add_cycle_skip_basics(session, now_value)
-        old_context, _new_context = _add_cycle_contexts(session, now_value)
-        expired_reply_payload = {
-            **_expired_cycle_payload(old_context.id, text="expired reply"),
-            "reply_to_message_id": 1001,
-            "hard_hourly_target": True,
-        }
-        session.add_all(
-            [
-                _cycle_action("action-expired-reply", now_value, expired_reply_payload),
-                _cycle_action(
-                    "action-hard-hourly-plain",
-                    now_value + timedelta(minutes=10),
-                    {
-                        **_expired_cycle_payload(old_context.id, text=""),
-                        "hard_hourly_target": True,
-                        "ai_generation_status": "pending",
-                    },
-                ),
-                _cycle_action(
-                    "action-ordinary-stale",
-                    now_value + timedelta(minutes=20),
-                    _expired_cycle_payload(old_context.id, text="ordinary stale"),
-                ),
-                _cycle_action(
-                    "action-daily-coverage-deferred",
-                    now_value + timedelta(minutes=30),
-                    {
-                        **_expired_cycle_payload(old_context.id, text=""),
-                        "account_coverage_mode": "all_accounts_daily",
-                        "ai_generation_status": "pending",
-                    },
-                ),
-            ]
-        )
-        session.commit()
-
-        current = session.get(Action, "action-expired-reply")
-        payload = task_payloads.SendMessagePayload.model_validate(current.payload or {})
-        dispatcher._skip_context_expired_cycle(session, current, payload)
-
-        hard_hourly_plain = session.get(Action, "action-hard-hourly-plain")
-        ordinary_stale = session.get(Action, "action-ordinary-stale")
-        daily_coverage_deferred = session.get(Action, "action-daily-coverage-deferred")
-        assert hard_hourly_plain.status == "pending"
-        assert daily_coverage_deferred.status == "pending"
-        assert ordinary_stale.status == "skipped"
-        assert ordinary_stale.result["error_code"] == "context_expired"
-
-
 @pytest.mark.no_postgres
 def test_daily_coverage_deferred_generation_refreshes_latest_human_context():
     engine = create_engine("sqlite:///:memory:", future=True)
@@ -1698,7 +1706,7 @@ def test_daily_coverage_deferred_generation_refreshes_latest_human_context():
 
 
 @pytest.mark.no_postgres
-def test_daily_coverage_deferred_generation_batches_only_near_term_siblings():
+def test_daily_coverage_deferred_generation_is_single_action_late_bound():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = _now()
@@ -1706,11 +1714,17 @@ def test_daily_coverage_deferred_generation_batches_only_near_term_siblings():
     with Session(engine) as session:
         _add_cycle_skip_basics(session, now_value)
         payload = {
+            "chat_id": "-1007",
             "group_id": 7,
             "message_text": "",
             "account_coverage_mode": "all_accounts_daily",
             "ai_generation_id": "daily-near-term",
             "ai_generation_status": "pending",
+            "chat_mode": "bootstrap",
+            "content_scope_contract_version": "group_content_scope_v1",
+            "content_scope_tenant_id": 1,
+            "content_scope_group_id": 7,
+            "content_scope_task_id": "task-cycle-skip",
         }
         session.add_all([
             _cycle_action("action-daily-current", now_value, payload),
@@ -1735,10 +1749,7 @@ def test_daily_coverage_deferred_generation_batches_only_near_term_siblings():
         current_payload = task_payloads.SendMessagePayload.model_validate(current.payload or {})
         batch = dispatcher._ai_generation_dispatch._pending_generation_batch(session, current, current_payload)
 
-        assert [action.id for action, _payload in batch] == [
-            "action-daily-current",
-            "action-daily-near",
-        ]
+        assert [action.id for action, _payload in batch] == ["action-daily-current"]
 
 
 @pytest.mark.no_postgres
@@ -1921,6 +1932,7 @@ def test_group_ai_send_rechecks_message_memory_before_gateway(monkeypatch):
                     tenant_id=1,
                     group_id=7,
                     task_id="task-cycle-skip",
+                    action_id="action-duplicate-send",
                     account_id=11,
                     raw_text="花花老师身材服务真好",
                     normalized_text="花花老师身材服务真好",
@@ -2001,6 +2013,7 @@ def test_group_ai_send_success_updates_account_stance_memory(monkeypatch):
                 tenant_id=1,
                 group_id=7,
                 task_id="task-cycle-skip",
+                action_id="action-stance-send",
                 account_id=11,
                 raw_text="花花老师这个感觉可以问问",
                 normalized_text="花花老师这个感觉可以问问",
@@ -2048,7 +2061,7 @@ def test_group_ai_send_success_updates_account_stance_memory(monkeypatch):
 
 
 @pytest.mark.no_postgres
-def test_hard_hourly_plain_send_ignores_context_expiration(monkeypatch):
+def test_hard_hourly_plain_send_requeues_when_context_changes(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = _now()
@@ -2059,6 +2072,7 @@ def test_hard_hourly_plain_send_ignores_context_expiration(monkeypatch):
         gate_payload = _add_cycle_ai_send_gate_state(
             session,
             now_value,
+            action_id="action-hard-hourly-due",
             memory_id="memory-hard-hourly-due",
             text="hard target send",
         )
@@ -2074,16 +2088,19 @@ def test_hard_hourly_plain_send_ignores_context_expiration(monkeypatch):
         monkeypatch.setattr(
             dispatcher.gateway,
             "send_message",
-            lambda *args, **kwargs: SendResult(True, remote_message_id="tg-hard-hourly"),
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("stale hard-hourly action must not call TG"),
+            ),
         )
 
         [claimed] = claim_actions(session, limit=1, worker_id="worker-test")
 
         assert dispatcher.dispatch_action(session, claimed) is True
         action = session.get(Action, "action-hard-hourly-due")
-        assert action.status == "success"
-        assert action.result["telegram_msg_id"] == "tg-hard-hourly"
-        assert action.result.get("error_code") != "context_expired"
+        assert action.status == "pending"
+        assert action.payload["message_text"] == ""
+        assert action.payload["ai_generation_status"] == "pending"
+        assert action.result["generation_stage"] == "context_superseded_requeue"
 
 
 @pytest.mark.no_postgres
@@ -2099,6 +2116,7 @@ def test_hard_hourly_reply_send_keeps_context_expiration(monkeypatch):
             **_expired_cycle_payload(old_context.id, text="hard target reply"),
             "hard_hourly_target": True,
             "reply_to_message_id": 1001,
+            "voice_profile_contract_version": "style_only_v2",
         }
         session.add(_cycle_action("action-hard-hourly-reply", now_value, payload))
         session.commit()
@@ -2113,8 +2131,8 @@ def test_hard_hourly_reply_send_keeps_context_expiration(monkeypatch):
 
         assert dispatcher.dispatch_action(session, claimed) is True
         action = session.get(Action, "action-hard-hourly-reply")
-        assert action.status == "skipped"
-        assert action.result["error_code"] == "context_expired"
+        assert action.status == "failed"
+        assert action.result["error_code"] == "context_freshness_unproven"
 
 
 @pytest.mark.no_postgres
@@ -2149,6 +2167,7 @@ def test_context_expiration_ignores_backfilled_older_messages(monkeypatch):
         gate_payload = _add_cycle_ai_send_gate_state(
             session,
             now_value,
+            action_id="action-backfill",
             memory_id="memory-backfill-send",
             text="should send",
         )
@@ -2239,6 +2258,7 @@ def test_group_ai_gateway_unknown_updates_memory_and_stance(monkeypatch):
                 tenant_id=1,
                 group_id=7,
                 task_id="task-cycle-skip",
+                action_id="action-unknown-ai-send",
                 account_id=11,
                 raw_text="主任这个可以先问价格",
                 normalized_text="主任这个可以先问价格",

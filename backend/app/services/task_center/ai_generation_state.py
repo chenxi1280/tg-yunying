@@ -180,6 +180,8 @@ def _validate_fixed_slots(
 
 def cached_generation_result(payload: SendMessagePayload) -> tuple[str, int] | None:
     cache = payload.ai_generation_result_cache
+    if not _generation_cache_matches_payload(cache, payload):
+        return None
     content = str(cache.get("content") or "").strip()
     if not content:
         return None
@@ -187,12 +189,40 @@ def cached_generation_result(payload: SendMessagePayload) -> tuple[str, int] | N
     return GeneratedContent(content, **metadata), int(cache.get("tokens") or 0)
 
 
-def generation_result_cache(content: str, tokens: int, attempt_id: str) -> dict:
+def generation_result_cache(
+    content: str,
+    tokens: int,
+    attempt_id: str,
+    *,
+    payload: SendMessagePayload,
+) -> dict:
     return apply_generated_content_metadata({
         "content": str(content or "").strip(),
         "tokens": max(0, int(tokens or 0)),
         "attempt_id": attempt_id,
+        "content_scope_contract_version": payload.content_scope_contract_version,
+        "content_scope_tenant_id": payload.content_scope_tenant_id,
+        "content_scope_group_id": payload.content_scope_group_id,
+        "content_scope_task_id": payload.content_scope_task_id,
     }, content)
+
+
+def _generation_cache_matches_payload(cache: dict, payload: SendMessagePayload) -> bool:
+    expected = (
+        payload.ai_generation_attempt_id,
+        payload.content_scope_contract_version,
+        payload.content_scope_tenant_id,
+        payload.content_scope_group_id,
+        payload.content_scope_task_id,
+    )
+    actual = (
+        cache.get("attempt_id"),
+        cache.get("content_scope_contract_version"),
+        cache.get("content_scope_tenant_id"),
+        cache.get("content_scope_group_id"),
+        cache.get("content_scope_task_id"),
+    )
+    return all(value not in {None, ""} for value in expected) and actual == expected
 
 
 def apply_generated_content_metadata(data: dict, content: str) -> dict:

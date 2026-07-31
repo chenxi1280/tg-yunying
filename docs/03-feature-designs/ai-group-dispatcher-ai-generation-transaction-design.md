@@ -1,5 +1,7 @@
 # AI 活跃群与频道评论 Dispatcher AI 生成事务边界专项设计
 
+> **2026-07-31 resync：** AI 活群 normal 的生成粒度由批量 sibling 预写改为单 Action late binding，跨群 scope validator 与过期同槽重生成以 `ai-conversation-humanization-and-group-bot-admission-prd.md` §15 为准。频道评论和本文 Phase A/B/C 事务边界不变。
+
 - 日期：2026-07-14
 - 等级：L3
 - 状态：`design_status=complete`、`resync=true`
@@ -14,7 +16,7 @@
 
 以下业务语义不可改变：
 
-- `messages_per_round` 决定 Cycle 的 Turn 数及 slot 映射，20 条 coverage 批限只切分数据库事务。
+- `messages_per_round` 决定 Cycle 的 Turn 数及 slot 映射，20 条 coverage 批限只切分 Planner 数据库事务；不得据此批量预写未来 normal 正文。
 - `TaskAccountDailyCoverage` 仍是 580 分母事实源；pending、生成成功、质量通过或 Action 创建都不计完成。
 - 只有成功 Action、成功 ExecutionAttempt 和非空 `remote_message_id` 同时存在才确认覆盖。
 - 频道评论累计目标、每小时预算、`reply_min_per_message` 和生命周期总上限保持原语义；pending、生成完成或质量通过均不计评论成功。
@@ -38,14 +40,15 @@ Phase A 每个数据库事务最多处理 20 个 coverage slot，并原子完成
 
 ## 3. Phase B：Dispatcher 无事务外部 AI
 
-Dispatcher 先在短事务 claim Action，写入 lease token、`ai_generation_status=generating`、generation attempt id 和 request id，然后提交并关闭事务。reply 与 normal 分批，只有同任务、同 Cycle、同 generation mode、临近执行且规则版本一致的 sibling 可进入同一批；每批输出必须按 `slot_id` 一一映射，缺失、额外或重复 slot 都是显式失败。
+Dispatcher 先在短事务 claim Action，写入 lease token、`ai_generation_status=generating`、generation attempt id 和 request id，然后提交并关闭事务。AI 活群 normal 每次只生成当前即将发送的一条 Action；reply 继续按冻结目标单条生成。频道评论仍按其专项合同处理。任何 generation sibling 查询即使 task/generation 相同，也不得把未来 AI 活群 slot 合并进本次 Provider 请求。
 
-同一 worker 一次 claim 中，共用 `ai_generation_claim_token` 的 normal pending sibling 只能由最早 Action 作为当前生成批次入口。worker 发现 claim 批次包含这种共享生成批次时，必须按领取顺序串行推进该 claim 批次，先由入口 Action 完成批量生成和 Phase C，再让已得到 `ready` 文本的 sibling 进入发送；不得把每个 pending sibling 同时提交到线程池，使多个线程各自加载并更新重叠的 Action 集合。生成 worker 的 sibling 领取窗口必须与该入口实际加载的批量生成窗口完全一致；窗口外的同 generation Action 留给后续 claim，禁止提前占用后因无正文触发整轮失败。入口加载自己已经持有 generation claim token 的 sibling 时不得再次使用 `FOR UPDATE SKIP LOCKED` 静默漏行；claim token 和 generation attempt CAS 负责 fencing，发生竞争时必须显式等待或失败。生成 claim 还必须排除同账号已有任意 executing Action 的候选，数据库单账号 executing 唯一约束是最后防线，不能让可预判的账号占用冲突反复打断 worker。这个串行边界只约束同一 claim 内的共享 AI 生成事务，不减少应领取、应生成或应发送的 Action 总量，其他不共享生成批次的 Dispatcher Action 保持原并发执行。
+AI 活群 generation worker 每次只 claim 一个 Action；同 `ai_generation_id` 的 sibling 不进入当前 Provider request，也不共享 generation claim token。一个 drain 可继续处理其他独立 Action，但必须记录本轮已经访问的 Action id，避免 freshness pending Action 被立即重复领取自旋。claim token 和 generation attempt CAS 只 fence 当前 Action；同账号 executing 唯一约束仍是最后防线，worker 选择候选时应提前排除可预判冲突。
 
 提交 claim 后，在无数据库事务区间完成：
 
 - reply：重新确认目标消息仍存在、账号当前可发且 Telegram 远端仍可引用；随后使用 Phase A 固定的目标、slot、面具和规则生成。`context_bound_schedule_window_seconds` 只约束 Phase A 的近端排期，不得把 `Action.created_at` 或生成队列等待时长当作 reply 目标 TTL。
 - normal：刷新目标群最新上下文，再使用 Phase A 固定的 slot、面具、话题、老师和行为类型生成。
+- Provider 每次 attempt 启动前，以主数量槽所属 `TaskDayLedger.deadline_at` 减去当前时间计算剩余预算；剩余时间小于实际 AI 请求超时时写 `ai_generation_deadline_budget_exhausted`，不启动下一次外呼，也不把未执行的 attempt 算成六轮失败。该错误在 pre-Gateway finalize 中直接终结原 CycleSlot/主数量槽并记录内容 shortfall，不回 `replan_required` 重建空转。
 - 全部 provider-backed 生成、fallback、改写或质量判断，包括 MiniMax、显式模型和 Grok。
 - 频道评论 direct / reply：使用 Phase A 固定的频道消息、评论引用目标、账号和规则生成或重描述；整个生成链与 AI Provider 调用期间 `session.in_transaction()` 必须为 false。
 
@@ -73,7 +76,7 @@ Phase C 成功提交后才进入现有发送链：账号与权限最终检查短
 - Phase B claim 已提交但未开始外呼时，可由 lease recovery 重领同一 Action；已进入外呼但未完成 Phase C 时，旧 attempt 标记 `ai_result_persist_unknown`，不得标记为 Telegram `unknown_after_send`。
 - AI 返回成功但 Phase C 落库失败时，群内没有可见副作用。恢复后重用同一 Action/slot/coverage，按 provider 能力复用 request id，否则创建新 generation attempt；重新生成结果仍须经过完整去重和质量门。不得创建第二个有效预约。
 - Phase C 已提交 `ai_generation_status=ready` 后，重复消费通常只读取已持久化文本；唯一重新生成条件是 normal Action 在 Gateway 前观察到更新的真人上下文，此时必须按第 3 节显式过期旧消息记忆并创建新 attempt。
-- AI provider/fallback 最终失败或质量最终拒绝时，Action 以 `generation_failed` 或明确质量错误终结，并在同一事务释放自己的 coverage / 预算预约；后续由 Planner 为仍未完成义务创建新 Cycle，不把失败 Action 伪装为成功。
+- AI provider/fallback 最终失败或质量最终拒绝时，Action 以 `generation_failed` 或明确质量错误终结，并在同一事务释放自己的 coverage / 预算预约；后续由 Planner 按原 `ContentMixCycleSlot` 的 `replan_required` 重建，不另建替代内容义务。静态签到只在该槽没有任何 `pending` ContentMix 义务时允许，不能用空 `material_intent` 替代持久化证明。
 - Phase C 已经写入显式业务终态的 `AiGenerationUnavailable` 必须清空当前生成 claim/lease，并只结束当前批次；AI generation worker 在同一 drain 中继续处理后续独立 Action。程序异常、数据库错误、claim fencing 丢失或没有持久化明确终态的失败继续使本轮 drain 失败并暴露，不得静默跳过。
 - Telegram Gateway 调用后结果不明继续使用 `unknown_after_send`，保留 coverage unknown 且禁止自动重发；AI 生成未知和 Telegram 发送未知必须分开统计。
 

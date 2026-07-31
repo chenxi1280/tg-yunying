@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Action, GroupContextMessage, Task, TenantAiSetting, TgAccount, TgGroup, TgGroupAccount
+from app.models import Action, GroupContextMessage, Task, TgAccount
 from app.services._common import _now
 
 from .ai_generation_dependencies import GenerationDependencies
@@ -24,14 +23,33 @@ from .ai_generation_slots import generation_slot as _generation_slot
 from .ai_generation_slots import reply_targets as _reply_targets
 from .ai_generator import AI_GENERATION_UNAVAILABLE_MESSAGE, AiGenerationUnavailable
 from .ai_generation_quality import fail_generation_action, fail_generation_batch
-from .ai_message_memory import mark_group_ai_message_result
-from .direct_check_in import prepare_direct_check_in, requires_direct_check_in
+from .group_ai_prompt_scope import rebuild_group_prompt_inputs
+from .ai_generation_guards import (
+    invalidate_superseded_normal_generation as _invalidate_superseded_normal_generation,
+    latest_context_rows as _latest_context_rows,
+    prepare_generation_guards as _prepare_generation_guards,
+    ready_generation_payload as _ready_generation_payload,
+    record_should_speak_shadow as _record_should_speak_shadow,
+    requeue_normal_generation_after_context_change,
+    require_normal_context_watermark as _require_normal_context_watermark,
+    validate_local_reply_target as _validate_local_reply_target,
+)
+from .ai_generation_runtime_config import (
+    _content_obligation_fallback_ready,
+    _latest_safe_send_at,
+    build_runtime_config as _build_runtime_config,
+    payload_map as _payload_map,
+    quality_snapshot as _quality_snapshot,
+    tenant_fallback_flags as _tenant_fallback_flags,
+)
+from .ai_quality_stats import (
+    clear_quality_blocker as _clear_quality_blocker,
+    quality_scope_key as _quality_scope_key,
+    record_quality_event as _record_quality_event,
+)
 from .payloads import SendMessagePayload
 
 
-GENERATION_BATCH_SIZE = 10
-GENERATION_LOOKAHEAD_SECONDS = 120
-GENERATABLE_GENERATION_STATUSES = ("pending", "ai_result_persist_unknown")
 CONTEXT_HISTORY_LIMIT = 50
 CONTEXT_HISTORY_MAX_CHARS = 1000
 
@@ -73,28 +91,62 @@ def ensure_send_message_content(
     payload: SendMessagePayload,
     credentials=None,
     dependencies: GenerationDependencies,
+    allow_provider_call: bool = True,
 ) -> SendMessagePayload:
     task = session.get(Task, action.task_id) if action.task_id else None
     if not task:
         raise AiGenerationUnavailable("AI 生成缺少任务配置")
-    if requires_direct_check_in(payload):
-        if payload.reply_to_message_id:
-            _validate_local_reply_target(
-                session,
-                action,
-                payload=payload,
-                account_id=account.id,
-            )
-        prepared = prepare_direct_check_in(session, action, payload)
-        session.commit()
-        return prepared
-    payload = _invalidate_superseded_normal_generation(session, task, action, payload)
+    guarded = _prepare_generation_guards(
+        session,
+        task,
+        action,
+        account=account,
+        payload=payload,
+    )
+    if guarded is not None:
+        return guarded
+    payload = _invalidate_superseded_normal_generation(
+        session,
+        task,
+        action,
+        payload=payload,
+    )
     if payload.message_text.strip():
         return payload
     if payload.ai_generation_status not in {"pending", "ai_result_persist_unknown"}:
         raise AiGenerationUnavailable("send_message action 缺少可发送文案")
-    batch = _pending_generation_batch(session, action, payload)
-    batch = _refresh_normal_context(session, task, batch)
+    if not allow_provider_call:
+        if (action.result or {}).get("generation_stage") == "context_superseded":
+            requeue_normal_generation_after_context_change(
+                session,
+                task,
+                action,
+                payload=payload,
+            )
+        raise AiGenerationUnavailable("ai_generation_not_ready")
+    return _generate_normal_content(
+        session,
+        task,
+        action,
+        account=account,
+        payload=payload,
+        credentials=credentials,
+        dependencies=dependencies,
+    )
+
+
+def _generate_normal_content(
+    session: Session,
+    task: Task,
+    action: Action,
+    *,
+    account: TgAccount,
+    payload: SendMessagePayload,
+    credentials,
+    dependencies: GenerationDependencies,
+) -> SendMessagePayload:
+    batch = _refresh_normal_context(session, task, _pending_generation_batch(session, action, payload))
+    batch = rebuild_group_prompt_inputs(session, task, batch)
     request = _prepare_generation_request(
         session,
         task,
@@ -104,72 +156,7 @@ def ensure_send_message_content(
     )
     results, tokens = _generate_request_results(session, request, dependencies)
     _commit_generation_results(session, request, results, tokens=tokens)
-    refreshed_action = session.get(Action, action.id)
-    refreshed_data = refreshed_action.payload if isinstance(refreshed_action.payload, dict) else {}
-    if refreshed_action.status == "failed":
-        raise AiGenerationUnavailable(
-            str(refreshed_data.get("ai_generation_status") or AI_GENERATION_UNAVAILABLE_MESSAGE),
-        )
-    refreshed = SendMessagePayload.model_validate(refreshed_data)
-    if refreshed.ai_generation_status != "ready":
-        raise AiGenerationUnavailable(refreshed.ai_generation_status or AI_GENERATION_UNAVAILABLE_MESSAGE)
-    if not refreshed.message_text.strip():
-        raise AiGenerationUnavailable(AI_GENERATION_UNAVAILABLE_MESSAGE)
-    return refreshed
-
-
-def _invalidate_superseded_normal_generation(
-    session: Session,
-    task: Task,
-    action: Action,
-    payload: SendMessagePayload,
-) -> SendMessagePayload:
-    if (
-        payload.reply_to_message_id
-        or not payload.message_text.strip()
-        or payload.ai_generation_status != "ready"
-        or not payload.ai_generation_id
-    ):
-        return payload
-    rows = _latest_context_rows(session, payload, task)
-    if not rows:
-        return payload
-    snapshot = session.get(GroupContextMessage, payload.context_snapshot_message_id)
-    latest = max(rows, key=_context_order)
-    if not snapshot or _context_order(latest) <= _context_order(snapshot):
-        return payload
-    latest_context_id = int(latest.id)
-    if payload.ai_message_memory_id:
-        mark_group_ai_message_result(
-            session,
-            payload.ai_message_memory_id,
-            status="expired_before_send",
-            action_id=action.id,
-            result={
-                "error_code": "generation_context_superseded",
-                "latest_context_message_id": latest_context_id,
-            },
-        )
-    updated = payload.model_copy(update={
-        "message_text": "",
-        "original_text": "",
-        "ai_generation_status": "pending",
-        "ai_generation_result_cache": {},
-        "ai_generation_tokens": 0,
-        "ai_message_memory_id": "",
-        "semantic_cluster": "",
-    })
-    action.payload = updated.model_dump(mode="json")
-    action.result = {
-        **(action.result or {}),
-        "generation_stage": "context_superseded",
-        "generation_outcome": "pending",
-    }
-    return updated
-
-
-def _context_order(row: GroupContextMessage) -> tuple[datetime, int]:
-    return (_naive(row.sent_at or row.created_at), int(row.id))
+    return _ready_generation_payload(session, action)
 
 
 def _generate_request_results(
@@ -253,6 +240,7 @@ def _prepare_generation_request(
         task,
         batch,
         account,
+        session=session,
         credentials=credentials,
         peer_id=peer_id,
         attempt_id=attempt_id,
@@ -268,6 +256,7 @@ def _generation_request(
     batch: list[tuple[Action, SendMessagePayload]],
     account: TgAccount,
     *,
+    session: Session,
     credentials,
     peer_id: str,
     attempt_id: str,
@@ -286,7 +275,7 @@ def _generation_request(
         target_label=payload.target_display,
         history=payload.ai_generation_history,
         config={
-            **_runtime_config(task, batch),
+            **_runtime_config(session, task, batch),
             **_tenant_fallback_flags(task),
             "_close_db_transaction_before_ai": True,
         },
@@ -297,13 +286,45 @@ def _generation_request(
         claim_token=payload.ai_generation_claim_token,
         cached_contents=[],
         cached_tokens=0,
-        duplicate_baseline_messages=[line for line in payload.ai_generation_history.splitlines() if line.strip()],
+        duplicate_baseline_messages=_duplicate_baseline_messages(
+            session,
+            batch,
+            payload=payload,
+        ),
         quality_snapshots=[_quality_snapshot(item) for _row, item in batch],
-        chat_mode="reply" if payload.reply_to_message_id else ("idle_warmup" if payload.ai_generation_history else "bootstrap"),
+        chat_mode=payload.chat_mode,
         context_message_ids=list(payload.context_message_ids),
         fact_anchor_required=bool((task.type_config or {}).get("fact_anchor_required", True)),
         low_confidence_silence_enabled=bool((task.type_config or {}).get("low_confidence_silence_enabled", True)),
     )
+
+
+def _duplicate_baseline_messages(
+    session: Session,
+    batch: list[tuple[Action, SendMessagePayload]],
+    *,
+    payload: SendMessagePayload,
+) -> list[str]:
+    baseline = [
+        line
+        for line in payload.ai_generation_history.splitlines()
+        if line.strip()
+    ]
+    batch_ids = {action.id for action, _item in batch}
+    candidates = session.scalars(select(Action).where(
+        Action.tenant_id == batch[0][0].tenant_id,
+        Action.task_id == batch[0][0].task_id,
+        Action.action_type == "send_message",
+        Action.status.in_(("pending", "executing")),
+        Action.id.not_in(batch_ids),
+    ))
+    for candidate in candidates:
+        data = candidate.payload if isinstance(candidate.payload, dict) else {}
+        if int(data.get("group_id") or 0) != int(payload.group_id or 0):
+            continue
+        if text := str(data.get("message_text") or "").strip():
+            baseline.append(text)
+    return baseline
 
 
 def _generate_without_transaction(
@@ -318,14 +339,24 @@ def _generate_without_transaction(
     try:
         return generate_quality_results(session, request, dependencies)
     except AiGenerationUnavailable as exc:
+        code = str(exc) or AI_GENERATION_UNAVAILABLE_MESSAGE
         fail_generation_batch(
             session,
             request,
-            "ai_generation_failed",
-            detail=str(exc) or AI_GENERATION_UNAVAILABLE_MESSAGE,
+            _generation_failure_code(code),
+            detail=code,
         )
         session.commit()
         raise
+
+
+def _generation_failure_code(code: str) -> str:
+    if code in {
+        "ai_generation_deadline_budget_exhausted",
+        "ai_generation_deadline_invalid",
+    }:
+        return code
+    return "ai_generation_failed"
 
 
 def _mark_provider_call_started(session: Session, request: GenerationRequest) -> None:
@@ -338,41 +369,6 @@ def _mark_provider_call_started(session: Session, request: GenerationRequest) ->
         }
         commit_generation_action(session, request, action)
     session.commit()
-
-
-def _validate_local_reply_target(
-    session: Session,
-    action: Action,
-    *,
-    payload: SendMessagePayload,
-    account_id: int,
-) -> str:
-    if not payload.reply_to_message_id:
-        return ""
-    group = session.scalar(select(TgGroup).where(
-        TgGroup.tenant_id == action.tenant_id,
-        TgGroup.id == payload.group_id,
-    ))
-    target = session.scalar(select(GroupContextMessage.id).where(
-        GroupContextMessage.tenant_id == action.tenant_id,
-        GroupContextMessage.group_id == payload.group_id,
-        GroupContextMessage.remote_message_id == str(payload.reply_to_message_id),
-    ))
-    link = session.scalar(select(TgGroupAccount.id).where(
-        TgGroupAccount.tenant_id == action.tenant_id,
-        TgGroupAccount.group_id == payload.group_id,
-        TgGroupAccount.account_id == account_id,
-        TgGroupAccount.can_send.is_(True),
-    ))
-    if group and target and link:
-        return group.tg_peer_id
-    fail_generation_action(
-        action,
-        "reply_target_missing",
-        "引用目标不存在或当前账号不可引用",
-        stage="ai_reply_target",
-    )
-    raise AiGenerationUnavailable("reply_target_missing")
 
 
 def _validate_remote_reply_target(
@@ -415,41 +411,8 @@ def _pending_generation_batch(
     action: Action,
     payload: SendMessagePayload,
 ) -> list[tuple[Action, SendMessagePayload]]:
-    rows = [(action, payload)]
-    if payload.reply_to_message_id or not payload.ai_generation_id or not payload.ai_generation_claim_token:
-        return rows
-    siblings = session.scalars(_normal_sibling_query(action, payload))
-    for sibling in siblings:
-        rows.append((sibling, SendMessagePayload.model_validate(sibling.payload or {})))
-    return rows
-
-
-def _normal_sibling_query(action: Action, payload: SendMessagePayload):
-    cutoff = max(_naive(action.scheduled_at), _naive(_now())) + timedelta(seconds=GENERATION_LOOKAHEAD_SECONDS)
-    stmt = (
-        select(Action)
-        .where(
-            Action.id != action.id,
-            Action.tenant_id == action.tenant_id,
-            Action.task_id == action.task_id,
-            Action.action_type == "send_message",
-            Action.status == "executing",
-            Action.payload["ai_generation_claim_owner"].as_string() == payload.ai_generation_claim_owner,
-            Action.payload["ai_generation_claim_token"].as_string() == payload.ai_generation_claim_token,
-            Action.scheduled_at <= cutoff,
-            Action.payload["ai_generation_status"].as_string().in_(
-                GENERATABLE_GENERATION_STATUSES
-            ),
-            Action.payload["ai_generation_id"].as_string() == payload.ai_generation_id,
-            or_(
-                Action.payload["reply_to_message_id"].as_integer().is_(None),
-                Action.payload["reply_to_message_id"].as_integer() == 0,
-            ),
-        )
-        .order_by(Action.scheduled_at.asc(), Action.created_at.asc())
-        .limit(GENERATION_BATCH_SIZE - 1)
-    )
-    return stmt
+    del session
+    return [(action, payload)]
 
 
 def _refresh_normal_context(
@@ -478,71 +441,17 @@ def _refresh_normal_context(
     return refreshed
 
 
-def _latest_context_rows(session: Session, payload: SendMessagePayload, task: Task) -> list[GroupContextMessage]:
-    depth = min(CONTEXT_HISTORY_LIMIT, max(1, int((task.type_config or {}).get("chat_history_depth") or CONTEXT_HISTORY_LIMIT)))
-    rows = session.scalars(
-        select(GroupContextMessage)
-        .where(
-            GroupContextMessage.tenant_id == task.tenant_id,
-            GroupContextMessage.group_id == payload.group_id,
-            GroupContextMessage.is_bot.is_(False),
-            GroupContextMessage.content != "",
-        )
-        .order_by(func.coalesce(GroupContextMessage.sent_at, GroupContextMessage.created_at).desc())
-        .limit(depth)
+def _runtime_config(
+    session: Session,
+    task: Task,
+    batch: list[tuple[Action, SendMessagePayload]],
+) -> dict:
+    return _build_runtime_config(
+        session,
+        task,
+        batch,
+        generation_slot_builder=_generation_slot,
     )
-    return list(reversed(list(rows)))
-
-
-def _runtime_config(task: Task, batch: list[tuple[Action, SendMessagePayload]]) -> dict:
-    config = dict(task.type_config or {})
-    config["account_personas"] = _payload_map(batch, "account_role")
-    config["account_memories"] = _payload_map(batch, "account_memory")
-    config["account_profiles"] = _payload_map(batch, "account_profile")
-    config["generation_slots"] = [_generation_slot(row, item, index) for index, (row, item) in enumerate(batch, 1)]
-    first = batch[0][1]
-    if first.topic_thread:
-        config["topic_thread"] = first.topic_thread
-    if first.topic_plan:
-        config["topic_plan"] = first.topic_plan
-    return config
-
-
-def _tenant_fallback_flags(task: Task) -> dict:
-    session = task._sa_instance_state.session
-    setting = session.scalar(
-        select(TenantAiSetting).where(TenantAiSetting.tenant_id == task.tenant_id)
-    ) if session is not None else None
-    return {
-        "_ai_group_model_fallback_enabled": bool(
-            setting.ai_group_model_fallback_enabled if setting else True
-        ),
-        "_ai_group_grok_fallback_enabled": bool(
-            setting.ai_group_grok_fallback_enabled if setting else False
-        ),
-        "_ai_group_static_fallback_enabled": bool(
-            setting.ai_group_static_fallback_enabled if setting else True
-        ),
-    }
-
-
-def _payload_map(batch: list[tuple[Action, SendMessagePayload]], attr: str) -> dict[str, str]:
-    return {
-        str(action.account_id): value
-        for action, payload in batch
-        if action.account_id and (value := str(getattr(payload, attr) or "").strip())
-    }
-
-
-def _quality_snapshot(payload: SendMessagePayload) -> dict:
-    return {
-        "account_profile": payload.account_profile,
-        "stance_summary": payload.stance_summary,
-    }
-
-
-def _naive(value: datetime) -> datetime:
-    return value.replace(tzinfo=None) if value.tzinfo is not None else value
 
 
 __all__ = ["GenerationAttemptStale", "ensure_send_message_content"]

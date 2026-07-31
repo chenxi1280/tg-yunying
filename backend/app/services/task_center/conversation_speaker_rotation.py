@@ -17,6 +17,13 @@ HUMAN_KIND = "human"
 PLATFORM_KIND = "platform"
 CONTROL_KIND = "group_bot_control"
 SYSTEM_KIND = "system"
+TERMINAL_RESERVATION_HOLDER_STATUSES = frozenset({
+    "failed",
+    "skipped",
+    "retryable_failed",
+    "success",
+    "unknown_after_send",
+})
 
 
 @dataclass(frozen=True)
@@ -127,29 +134,17 @@ def reserve_speaker_turn(
         surface=surface,
         conversation_key=conversation_key,
     )
-    blocked_id = state.reserved_account_id or state.last_platform_account_id
-    if blocked_id and not human_has_broken_adjacency(session, state):
-        alternate = next((item for item in candidates if item != int(blocked_id)), None)
-        if alternate is None:
-            # Group AI hard-hourly: wait so capacity math treats single-account as unsustainable.
-            # Channel comment often runs with one discussion account; allow with explicit warning.
-            if surface == "channel_comment" and len(candidates) == 1:
-                selected = candidates[0]
-                reason = "single_account_capacity_warning"
-            else:
-                return SpeakerDecision(
-                    False,
-                    account_id=int(blocked_id),
-                    code="speaker_rotation_wait",
-                    reason="no_alternate_account",
-                )
-        else:
-            selected = alternate
-            reason = "rotated_from_last_speaker"
-    else:
-        preferred = int(action.account_id or 0)
-        selected = preferred if preferred in candidates else candidates[0]
-        reason = "human_break_or_first_speaker"
+    _recover_terminal_reservation(session, state, current_action_id=action.id)
+    decision = _choose_speaker(
+        session,
+        state,
+        action,
+        surface=surface,
+        candidates=candidates,
+    )
+    if not decision.allowed:
+        return decision
+    selected = int(decision.account_id or 0)
 
     if coverage_bound and int(action.account_id or 0) and selected != int(action.account_id):
         return SpeakerDecision(
@@ -164,7 +159,58 @@ def reserve_speaker_turn(
     state.reserved_at = model_now()
     state.version = int(state.version or 1) + 1
     session.flush()
-    return SpeakerDecision(True, account_id=selected, reason=reason)
+    return decision
+
+
+def _recover_terminal_reservation(
+    session: Session,
+    state: ConversationSpeakerState,
+    *,
+    current_action_id: str,
+) -> None:
+    holder_id = str(state.reserved_action_id or "")
+    if not holder_id or holder_id == current_action_id:
+        return
+    holder = session.get(Action, holder_id)
+    if holder is not None and holder.status not in TERMINAL_RESERVATION_HOLDER_STATUSES:
+        return
+    state.reserved_account_id = None
+    state.reserved_action_id = None
+    state.reserved_at = None
+    state.version = int(state.version or 1) + 1
+
+
+def _choose_speaker(
+    session: Session,
+    state: ConversationSpeakerState,
+    action: Action,
+    *,
+    surface: str,
+    candidates: list[int],
+) -> SpeakerDecision:
+    reserved = int(state.reserved_account_id or 0)
+    if state.reserved_action_id == action.id and reserved in candidates:
+        return SpeakerDecision(True, account_id=reserved, reason="existing_action_reservation")
+    blocked = state.reserved_account_id or state.last_platform_account_id
+    if not blocked or human_has_broken_adjacency(session, state):
+        preferred = int(action.account_id or 0)
+        selected = preferred if preferred in candidates else candidates[0]
+        return SpeakerDecision(True, account_id=selected, reason="human_break_or_first_speaker")
+    alternate = next((item for item in candidates if item != int(blocked)), None)
+    if alternate is not None:
+        return SpeakerDecision(True, account_id=alternate, reason="rotated_from_last_speaker")
+    if surface == "channel_comment" and len(candidates) == 1:
+        return SpeakerDecision(
+            True,
+            account_id=candidates[0],
+            reason="single_account_capacity_warning",
+        )
+    return SpeakerDecision(
+        False,
+        account_id=int(blocked),
+        code="speaker_rotation_wait",
+        reason="no_alternate_account",
+    )
 
 
 def release_speaker_reservation(
@@ -192,6 +238,25 @@ def release_speaker_reservation(
     state.reserved_at = None
     state.version = int(state.version or 1) + 1
     session.flush()
+
+
+def release_group_ai_speaker_reservation(session: Session, action: Action) -> None:
+    if action.task_type != "group_ai_chat" or action.status not in {
+        "failed",
+        "skipped",
+        "retryable_failed",
+    }:
+        return
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    group_id = int(payload.get("group_id") or 0)
+    if not group_id:
+        return
+    release_speaker_reservation(
+        session,
+        action=action,
+        surface="group_ai_chat",
+        conversation_key=conversation_key_for_group(group_id=group_id),
+    )
 
 
 def finalize_speaker_turn(

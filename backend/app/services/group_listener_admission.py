@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.models import TgAccount, TgGroup
 
 from ._common import gateway
+from .group_listener_cursor import listener_after_message_id
 
 
 class ListenerSnapshotFetchError(RuntimeError):
@@ -19,6 +20,8 @@ class ListenerSnapshotFetchError(RuntimeError):
 
 def fetch_listener_snapshots(session: Session, *, group: TgGroup, account: TgAccount, credentials) -> list[object]:
     try:
+        after_message_id = listener_after_message_id(group)
+        cursor_args = {"after_message_id": after_message_id} if after_message_id is not None else {}
         return list(
             gateway.fetch_group_messages(
                 account.id,
@@ -26,6 +29,7 @@ def fetch_listener_snapshots(session: Session, *, group: TgGroup, account: TgAcc
                 account.session_ciphertext,
                 credentials,
                 limit=group.listener_context_limit,
+                **cursor_args,
             )
         )
     except Exception as exc:  # noqa: BLE001 - persist explicit observation failure before listener worker exposes it.

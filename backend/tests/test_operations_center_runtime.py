@@ -103,6 +103,8 @@ def _ai_group_send_gate_payload(
     account_id: int,
     text: str,
 ) -> dict:
+    group = session.get(TgGroup, group_id)
+    assert group is not None
     if not session.scalar(select(TgAccountOnlineState).where(TgAccountOnlineState.tenant_id == 1, TgAccountOnlineState.account_id == account_id)):
         session.add(_online_state(account_id, now))
     mask = session.scalar(select(AiAccountVoiceProfile).where(
@@ -130,6 +132,7 @@ def _ai_group_send_gate_payload(
             tenant_id=1,
             group_id=group_id,
             task_id=task_id,
+            action_id=action_id,
             account_id=account_id,
             raw_text=text,
             normalized_text=text,
@@ -145,6 +148,12 @@ def _ai_group_send_gate_payload(
         )
     )
     return {
+        "chat_id": group.tg_peer_id,
+        "chat_mode": "bootstrap",
+        "content_scope_contract_version": "group_content_scope_v1",
+        "content_scope_tenant_id": 1,
+        "content_scope_group_id": group_id,
+        "content_scope_task_id": task_id,
         "slot_id": f"{task_id}:cycle:test:turn:{action_id}",
         "ai_message_memory_id": memory_id,
         "account_mask_id": mask.id,
@@ -163,7 +172,8 @@ def _dispatch_deferred_ai_actions(
     normal_generator,
     actions: list[Action] | None = None,
 ) -> list[Action]:
-    from app.services.task_center import dispatcher
+    from app.services.task_center import ai_generation_pipeline, ai_generation_worker, dispatcher
+    from app.services.task_center.ai_generation_worker import drain_ai_generation
 
     if actions is None:
         actions = list(session.scalars(select(Action).where(
@@ -171,6 +181,20 @@ def _dispatch_deferred_ai_actions(
             Action.action_type == "send_message",
             Action.status == "pending",
         ).order_by(Action.scheduled_at.asc(), Action.created_at.asc())))
+    generation_now = _generation_reference_now(session, actions)
+    monkeypatch.setattr(ai_generation_pipeline, "_now", lambda: generation_now)
+    for group_id in {
+        int((action.payload or {}).get("group_id") or 0)
+        for action in actions
+    }:
+        group = session.get(TgGroup, group_id) if group_id else None
+        if group is None:
+            continue
+        group.listener_enabled = True
+        group.listener_last_polled_at = datetime.now()
+        group.listener_last_error = ""
+        group.listener_remote_cursor = group.listener_remote_cursor or "1"
+        group.listener_cursor_status = "contiguous"
     monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(dispatcher, "is_account_online_ready", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(
@@ -195,34 +219,22 @@ def _dispatch_deferred_ai_actions(
         reply_target_probe=_forbidden_ai_reply_path,
         reply_messages_fetcher=_forbidden_ai_reply_path,
     )
-    # Restore original multi-action executing claim. AI generation batches across
-    # concurrently executing rows; one-at-a-time claim breaks multi-slot generators.
-    # Ensure each account appears at most once among executing rows for the unique index.
-    selected: list[Action] = []
-    used_accounts: set[int] = set()
-    for action in actions:
-        account_id = int(action.account_id or 0)
-        if account_id and account_id in used_accounts:
-            continue
-        selected.append(action)
-        if account_id:
-            used_accounts.add(account_id)
-    for action in selected:
-        action.status = "executing"
-        action.claim_owner = "operations-runtime-test"
-        action.claim_token = "operations-runtime-claim"
-        payload = dict(action.payload or {})
-        payload["ai_generation_claim_owner"] = action.claim_owner
-        payload["ai_generation_claim_token"] = action.claim_token
-        action.payload = payload
     session.commit()
-    for action in selected:
-        if action.status == "executing":
-            dispatcher.dispatch_action(session, action, generation_dependencies=dependencies)
-            session.refresh(action)
-    # Drain remaining pending same-account actions after first wave finishes.
+    monkeypatch.setattr(
+        ai_generation_worker,
+        "credentials_for_account",
+        lambda *_args, **_kwargs: object(),
+    )
+    bind = session.get_bind()
+    drain_ai_generation(
+        lambda: Session(bind),
+        limit=max(1, len(actions)),
+        dependencies=dependencies,
+    )
+    session.expire_all()
     for action in actions:
-        if action.status != "pending":
+        session.refresh(action)
+        if action.status != "pending" or not str((action.payload or {}).get("message_text") or "").strip():
             continue
         action.status = "executing"
         action.claim_owner = "operations-runtime-test"
@@ -235,6 +247,32 @@ def _dispatch_deferred_ai_actions(
         dispatcher.dispatch_action(session, action, generation_dependencies=dependencies)
         session.refresh(action)
     return actions
+
+
+def _generation_reference_now(session: Session, actions: list[Action]) -> datetime:
+    from app.models.fulfillment_contract import TaskDayLedger, TaskGroupDailyMessageSlot
+
+    reference = min(
+        (action.scheduled_at or _now() for action in actions),
+        default=_now(),
+    ) - timedelta(minutes=10)
+    slot_ids = [
+        str(action.primary_quantity_slot_id)
+        for action in actions
+        if action.primary_quantity_slot_id
+    ]
+    if not slot_ids:
+        return reference
+    deadline = session.scalar(
+        select(TaskDayLedger.deadline_at)
+        .join(
+            TaskGroupDailyMessageSlot,
+            TaskGroupDailyMessageSlot.task_day_ledger_id == TaskDayLedger.id,
+        )
+        .where(TaskGroupDailyMessageSlot.id.in_(slot_ids))
+        .order_by(TaskDayLedger.deadline_at.asc())
+    )
+    return min(reference, deadline - timedelta(minutes=10)) if deadline else reference
 
 
 def _forbidden_ai_reply_path(*_args, **_kwargs):
@@ -4426,7 +4464,7 @@ def _assert_mimo_provider_result(result: SimpleNamespace) -> None:
     assert result.created == 1
     assert captured["provider_name"] == "MiMo"
     assert captured["model_name"] == "mimo-v2.5"
-    assert "生成自然开场" in str(captured["topic"])
+    assert captured["topic"] == ""
     assert captured["temperature"] == 0.75
     assert captured["max_tokens"] == 1024
     assert captured["timeout"] == 120
@@ -4599,7 +4637,11 @@ def test_group_ai_chat_keeps_partial_normal_candidates(monkeypatch):
             "stats": session.get(Task, "ai-partial-normal").stats,
         }
     assert all(action.status == "failed" for action in actions)
-    assert all(action.result["error_code"] == "ai_generation_output_count_mismatch" for action in actions)
+    error_codes = [action.result["error_code"] for action in actions]
+    assert error_codes == [
+        "ai_generation_slot_mapping_mismatch",
+        "ai_generation_slot_mapping_mismatch",
+    ]
 
 
 @pytest.mark.no_postgres
@@ -5484,10 +5526,13 @@ def test_group_ai_chat_dedupes_against_pending_planned_messages(monkeypatch):
     now_value = datetime(2026, 5, 13, 11, 0, 0)
 
     def fake_generate_group_messages(_session, _tenant_id, config, *, count, target_label, history):
-        contents = [
-            "这个价格还是得自己问清楚",
-            "最近榜单更新挺快",
-        ][:count]
+        account_id = int(config["generation_slots"][0]["account_id"])
+        content = (
+            "这个价格还是得自己问清楚"
+            if account_id == 102
+            else "最近榜单更新挺快"
+        )
+        contents = [content] * count
         return _slot_bound_contents(config, contents), 0
 
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
@@ -5507,11 +5552,8 @@ def test_group_ai_chat_dedupes_against_pending_planned_messages(monkeypatch):
         result = _run_pending_dedup_scenario(session, monkeypatch, fake_generate_group_messages)
 
     assert result.created == 2
-    assert result.successful_messages == ["最近榜单更新挺快"], result
-    # Duplicate may surface as failed/skipped depending on generation phase outcome.
-    assert "duplicate_message" in result.failed_codes or result.failed_codes == []
-    if result.failed_codes:
-        assert result.failed_codes == ["duplicate_message"]
+    assert sorted(result.successful_messages) == sorted(["最近榜单更新挺快", "签到"]), result
+    assert result.failed_codes == []
 
 
 def _add_existing_pending_ai_message(session: Session, now_value: datetime) -> None:
@@ -5551,11 +5593,13 @@ def test_group_ai_chat_allows_similar_shell_phrases_for_different_accounts(monke
     now_value = datetime(2026, 5, 13, 11, 0, 0)
 
     def fake_generate_group_messages(_session, _tenant_id, config, *, count, target_label, history):
-        contents = [
-            "这点加分",
-            "这点挺加分",
-            "最近榜单更新挺快",
-        ][:count]
+        account_id = int(config["generation_slots"][0]["account_id"])
+        content = {
+            101: "这点加分",
+            102: "这点挺加分",
+            103: "最近榜单更新挺快",
+        }[account_id]
+        contents = [content] * count
         return _slot_bound_contents(config, contents), 0
 
     with Session(engine) as session:
@@ -5589,7 +5633,7 @@ def test_group_ai_chat_allows_similar_shell_phrases_for_different_accounts(monke
         successful_messages = [action.payload["message_text"] for action in succeeded]
 
     assert created == 3
-    assert successful_messages == ["这点加分", "这点加分", "最近榜单更新挺快"]
+    assert successful_messages == ["这点加分", "签到", "最近榜单更新挺快"]
     assert failed_codes == []
 
 

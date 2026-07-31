@@ -95,6 +95,8 @@ class GroupOut(ApiModel):
     listener_last_polled_at: datetime | None = None
     listener_last_reply_at: datetime | None = None
     listener_last_error: str = ""
+    listener_remote_cursor: str = ""
+    listener_cursor_status: str = "unproven"
     listener_account_ids: list[int] = []
 
 

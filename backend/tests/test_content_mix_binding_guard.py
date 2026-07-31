@@ -89,6 +89,33 @@ def test_content_mix_sync_releases_authoritative_quantity_only() -> None:
     assert wrong_quantity.state == "pending"
 
 
+def test_deadline_budget_exhaustion_terminates_slot_without_replan(
+    monkeypatch,
+) -> None:
+    action, session = _valid_binding()
+    action.status = "failed"
+    action.result = {"error_code": "ai_generation_deadline_budget_exhausted"}
+    effects: list[str] = []
+    monkeypatch.setattr(
+        dispatcher,
+        "_shortfall_action_content_obligations",
+        lambda *_args: effects.append("shortfall"),
+    )
+    monkeypatch.setattr(
+        dispatcher,
+        "_reconcile_content_mix_for_slot",
+        lambda *_args: effects.append("reconcile"),
+    )
+
+    dispatcher._sync_action_content_mix_state(session, action)
+
+    cycle_slot = session.rows[(ContentMixCycleSlot, "cycle-slot-1")]
+    quantity = session.rows[(TaskGroupDailyMessageSlot, "quantity-1")]
+    assert cycle_slot.slot_state == "terminal"
+    assert quantity.state == "terminal"
+    assert effects == ["shortfall", "reconcile"]
+
+
 def test_dispatch_finally_tolerates_missing_authoritative_quantity(
     monkeypatch,
 ) -> None:

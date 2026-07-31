@@ -15,6 +15,7 @@ from .executors.group_relay import relay_source_filter_reason
 from .fingerprints import content_fingerprint
 from .hard_hourly import disabled_stats as disabled_hard_hourly_stats, hard_hourly_stats
 from .ai_act_types import canonical_ai_group_act_type
+from .ai_acceptance import ai_acceptance_statuses
 from .membership_recovery import classify_membership_recovery
 from .account_coverage import task_account_coverage
 from .dispatch_reservations import task_dispatch_claim_snapshot
@@ -97,10 +98,26 @@ def _stats_with_account_coverage(session: Session, task: Task, stats: dict[str, 
     result = dict(stats or {})
     if task.type == "group_ai_chat":
         result = hard_hourly_stats(session, task, _now(), result)
+        result.update(ai_acceptance_statuses(session, task, result))
     coverage = task_account_coverage(session, task)
     if coverage:
         result["account_coverage"] = coverage
     return result
+
+
+def _conversation_quality_status(stats: dict[str, Any]) -> str:
+    blocker = str(stats.get("conversation_quality_active_blocker") or "")
+    if blocker == "context_superseded_requeue":
+        return "at_risk"
+    if blocker:
+        return "blocked"
+    if bool(stats.get("conversation_quality_e4_passed")):
+        return "met"
+    return "evaluating"
+
+
+def _ai_acceptance_statuses(session: Session, task: Task, stats: dict[str, Any]) -> dict[str, str]:
+    return ai_acceptance_statuses(session, task, stats)
 
 
 def _with_dispatch_claim_snapshot(session: Session, task: Task, stats: dict[str, Any]) -> dict[str, Any]:
@@ -1241,6 +1258,38 @@ def _quality_risks(payload: dict[str, Any]) -> list[str]:
     ]
 
 
+def _task_target_group_id(session: Session, task: Task) -> int | None:
+    config = task.type_config if isinstance(task.type_config, dict) else {}
+    direct_group_id = _parse_positive_int(config.get("target_group_id"))
+    if direct_group_id:
+        return direct_group_id
+    target_id = _parse_positive_int(config.get("target_operation_target_id"))
+    target = session.get(OperationTarget, target_id) if target_id else None
+    if not target or target.tenant_id != task.tenant_id or target.target_type != "group":
+        return None
+    return session.scalar(select(TgGroup.id).where(
+        TgGroup.tenant_id == task.tenant_id,
+        TgGroup.tg_peer_id == target.tg_peer_id,
+    ))
+
+
+def _group_ai_profile_summaries(
+    session: Session,
+    task: Task,
+    account_ids: set[int],
+) -> dict[str, str]:
+    group_id = _task_target_group_id(session, task)
+    if not group_id:
+        return {}
+    return account_profile_summaries(
+        session,
+        task,
+        sorted(account_ids),
+        group_id=group_id,
+        recent_limit=5,
+    )
+
+
 def _ai_account_profiles(session: Session, task: Task, actions: list[Action]) -> list[dict[str, Any]]:
     if task.type != "group_ai_chat":
         return []
@@ -1253,7 +1302,7 @@ def _ai_account_profiles(session: Session, task: Task, actions: list[Action]) ->
             continue
     if not account_ids:
         return []
-    summaries = account_profile_summaries(session, task, sorted(account_ids), recent_limit=5)
+    summaries = _group_ai_profile_summaries(session, task, account_ids)
     if not summaries:
         return []
     current_counts = dict(

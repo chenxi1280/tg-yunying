@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import socket
 from collections.abc import Callable
-from datetime import datetime, timedelta
 from uuid import uuid4
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, aliased
 
 from app.models import Action, Task, TgAccount
@@ -14,14 +13,12 @@ from app.services.developer_apps import credentials_for_account
 
 from .ai_generation_composition import PRODUCTION_GENERATION_DEPENDENCIES
 from .ai_generation_dependencies import GenerationDependencies
-from .ai_generation_dispatch import GENERATION_LOOKAHEAD_SECONDS, ensure_send_message_content
+from .ai_generation_dispatch import ensure_send_message_content
 from .ai_generator import AiGenerationUnavailable
+from .ai_generation_timing import GENERATION_LEASE, GENERATION_LOOKAHEAD
 from .payloads import SendMessagePayload
 
 
-GENERATION_LOOKAHEAD = timedelta(minutes=30)
-GENERATION_LEASE = timedelta(minutes=10)
-GENERATION_BATCH_SIZE = 10
 GENERATABLE_STATUSES = ("pending", "ai_result_persist_unknown")
 GenerateAction = Callable[[Session, Action, TgAccount], None]
 
@@ -36,15 +33,17 @@ def drain_ai_generation(
     processor = generate_action or _production_generate_action(dependencies)
     owner = f"ai-generation:{socket.gethostname()}:{uuid4()}"
     processed = 0
+    visited_action_ids: set[str] = set()
     while processed < max(1, int(limit)):
         claim = _claim_generation_batch(
             session_factory,
             owner,
-            max_batch_size=min(GENERATION_BATCH_SIZE, max(1, int(limit)) - processed),
+            excluded_action_ids=visited_action_ids,
         )
         if claim is None:
             break
         action_id, token, claimed_count = claim
+        visited_action_ids.add(action_id)
         generation_failure: AiGenerationUnavailable | None = None
         with session_factory() as session:
             action = session.get(Action, action_id)
@@ -74,18 +73,19 @@ def _claim_generation_batch(
     session_factory,
     owner: str,
     *,
-    max_batch_size: int,
+    excluded_action_ids: set[str],
 ) -> tuple[str, str, int] | None:
     with session_factory() as session:
-        first = session.scalar(_claim_statement(session, _generation_filters()).limit(1))
+        first = session.scalar(_claim_statement(
+            session,
+            _generation_filters(excluded_action_ids=excluded_action_ids),
+        ).limit(1))
         if first is None:
             return None
         token = str(uuid4())
-        batch = [first, *_generation_siblings(session, first, max_batch_size - 1)]
-        for action in batch:
-            _mark_generation_claim(action, owner, token)
+        _mark_generation_claim(first, owner, token)
         session.commit()
-        return first.id, token, len(batch)
+        return first.id, token, 1
 
 
 def _claim_statement(session: Session, filters: tuple):
@@ -100,37 +100,7 @@ def _claim_statement(session: Session, filters: tuple):
     return statement
 
 
-def _generation_siblings(
-    session: Session,
-    first: Action,
-    limit: int,
-) -> list[Action]:
-    payload = first.payload if isinstance(first.payload, dict) else {}
-    generation_id = str(payload.get("ai_generation_id") or "")
-    if limit <= 0 or not generation_id or payload.get("reply_to_message_id"):
-        return []
-    cutoff = max(_naive(first.scheduled_at), _naive(_now())) + timedelta(
-        seconds=GENERATION_LOOKAHEAD_SECONDS,
-    )
-    filters = (
-        *_generation_filters(),
-        Action.id != first.id,
-        Action.task_id == first.task_id,
-        Action.scheduled_at <= cutoff,
-        Action.payload["ai_generation_id"].as_string() == generation_id,
-        or_(
-            Action.payload["reply_to_message_id"].as_integer().is_(None),
-            Action.payload["reply_to_message_id"].as_integer() == 0,
-        ),
-    )
-    return list(session.scalars(_claim_statement(session, filters).limit(limit)))
-
-
-def _naive(value: datetime) -> datetime:
-    return value.replace(tzinfo=None) if value.tzinfo is not None else value
-
-
-def _generation_filters() -> tuple:
+def _generation_filters(*, excluded_action_ids: set[str]) -> tuple:
     payload_status = Action.payload["ai_generation_status"].as_string()
     message_text = Action.payload["message_text"].as_string()
     executing = aliased(Action)
@@ -138,7 +108,7 @@ def _generation_filters() -> tuple:
         executing.account_id == Action.account_id,
         executing.status == "executing",
     ).exists()
-    return (
+    filters = (
         Action.task_type == "group_ai_chat",
         Action.action_type == "send_message",
         Action.status == "pending",
@@ -150,6 +120,9 @@ def _generation_filters() -> tuple:
         func.coalesce(message_text, "") == "",
         account_is_free,
     )
+    if not excluded_action_ids:
+        return filters
+    return (*filters, Action.id.not_in(excluded_action_ids))
 
 
 def _mark_generation_claim(action: Action, owner: str, token: str) -> None:
@@ -216,11 +189,25 @@ def _persisted_generation_failure(
     with session_factory() as session:
         action = session.get(Action, action_id)
         result = action.result if action and isinstance(action.result, dict) else {}
-        return bool(
+        persisted = bool(
             action
-            and action.status in {"failed", "skipped"}
             and str(result.get("error_code") or "")
+            and (
+                action.status in {"failed", "skipped"}
+                or (
+                    action.status == "pending"
+                    and result.get("error_code") == "context_freshness_unproven"
+                )
+            )
         )
+        if persisted and action.status in {"failed", "skipped"}:
+            from . import dispatcher
+            from .conversation_speaker_rotation import release_group_ai_speaker_reservation
+
+            release_group_ai_speaker_reservation(session, action)
+            dispatcher._sync_action_content_mix_state(session, action)
+            session.commit()
+        return persisted
 
 
 def _release_generation_claim(action: Action, payload: dict) -> None:

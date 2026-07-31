@@ -73,7 +73,14 @@ def _seed_send_scope(
         TgAccount(id=12, tenant_id=1, display_name="当前账号", phone_masked="+861***0012", status="在线", session_ciphertext="session-current"),
         voice_profile,
         Task(id="prior-task", tenant_id=1, name="历史发送", type="group_ai_chat", status="running"),
-        Task(id="current-task", tenant_id=1, name="当前发送", type="group_ai_chat", status="running"),
+        Task(
+            id="current-task",
+            tenant_id=1,
+            name="当前发送",
+            type="group_ai_chat",
+            status="running",
+            type_config={"target_group_id": 7},
+        ),
     ])
     session.flush()
     session.add_all([
@@ -91,6 +98,7 @@ def _seed_send_scope(
             tenant_id=1,
             group_id=group.id,
             task_id="current-task",
+            action_id="current-action",
             account_id=12,
             raw_text="当前发送内容",
             normalized_text="当前发送内容",
@@ -127,7 +135,10 @@ def _seed_send_scope(
             status="pending",
             payload={
                 "group_id": group.id,
+                "chat_id": "-1007",
+                "chat_mode": "idle_warmup",
                 "message_text": "当前发送内容",
+                "ai_generation_status": "ready",
                 "review_approved": True,
                 "slot_id": "current-task:cycle:1:turn:1",
                 "ai_message_memory_id": "current-memory",
@@ -136,6 +147,10 @@ def _seed_send_scope(
                 "voice_profile_contract_version": "style_only_v2",
                 "account_mask_snapshot_hash": mask_snapshot_hash,
                 "content_source": "account_mask",
+                "content_scope_contract_version": "group_content_scope_v1",
+                "content_scope_tenant_id": 1,
+                "content_scope_group_id": group.id,
+                "content_scope_task_id": "current-task",
             },
         ),
     ])

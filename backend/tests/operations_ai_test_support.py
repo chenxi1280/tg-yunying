@@ -40,6 +40,10 @@ def seed_group_accounts(
         id=group_id, tenant_id=1, tg_peer_id=f"-100{group_id}", title=title,
         auth_status="已授权运营", topic_direction=topic_direction,
         group_cooldown_seconds=group_cooldown_seconds,
+        listener_enabled=True,
+        listener_last_polled_at=datetime.now(),
+        listener_remote_cursor="1",
+        listener_cursor_status="contiguous",
     ))
     for account_id in account_ids:
         account = TgAccount(

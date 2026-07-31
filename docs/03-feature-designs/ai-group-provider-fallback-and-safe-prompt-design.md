@@ -1,5 +1,7 @@
 # AI 活跃群安全 Prompt 与多模型回退设计
 
+> **2026-07-31 supersede：** Provider 重试次数、静态签到适用范围、单 Action late binding 与跨群 scope 失败规则，以 `ai-conversation-humanization-and-group-bot-admission-prd.md` §15.2 为准。本文保留输入安全与 Provider 适配设计；下文“M3→M2.5→Grok 每层一次”和缺少数量槽/scope 校验的旧编排不再是运行合同。
+
 ## 1. 目标与范围
 
 本设计仅覆盖 `group_ai_chat` 文本生成链。生产默认使用 `MiniMax-M3`，失败后依次尝试独立的 `MiniMax-M2.5` Provider、受限 `Grok 4.5` CLI Bridge，最后使用审核过的签到短句或文本表情。验证码图片识别继续复用现有多模态 Provider 选择，不进入本链。
@@ -45,9 +47,9 @@ sanitized generation request
   -> planned message or visible skipped round
 ```
 
-回退触发条件包括调用异常 / 超时、配额或未知模型错误、空回复、拒答、JSON 解析失败、候选不足、交易 / 年龄残留、上下文不锚定、重复或真人感质量失败。每层一次调用；相同请求使用同一份冻结安全上下文和输出契约，只有 Provider 适配参数不同。
+回退触发条件包括调用异常 / 超时、配额或未知模型错误、空回复、拒答、JSON 解析失败、候选不足、交易 / 年龄残留、上下文不锚定、重复或真人感质量失败。运行合同统一为主 Provider 最多 3 次、不同备用 Provider 最多 3 次；相同 attempt 使用同一 scope 下的冻结安全上下文和输出契约，只有 Provider 适配参数不同。Grok 若被配置为备用实现也受备用阶段总次数约束，不再形成第三套独立重试层。
 
-静态兜底在群聊/频道评论路径上收敛为精确文本 `签到`（见 `ai-conversation-humanization-and-group-bot-admission-prd.md`），必须标记为 `static_safe_fallback` / `content_source=check_in_fallback`，不得伪装成 M3、M2.5 或 Grok 成功，并受会话/小时签到配额、轮换与群管准入约束。历史“我也来签到啦～”类扩写句与 `emoji_react` 表情池不得再作为确定性兜底。租户可以分别关闭模型回退和静态兜底；关闭静态兜底后，全链失败直接跳过本轮并写入可见错误。现有“同一模型最多三轮补写后直接表情”的路径必须收敛到统一编排器，不能与新回退链并行形成两套降级逻辑。
+静态兜底在群聊路径上收敛为精确文本 `签到`（见专项 PRD §15.2.8），必须标记为 `static_safe_fallback` / `content_source=check_in_fallback`，不得伪装成模型成功。只有绑定主数量槽、命中明确允许原因、通过 10 天去重，且该 `ContentMixCycleSlot` 没有任何 `pending` 内容义务时才可进入；不能只凭 `material_intent` 为空推断义务已转派。`cross_group_content_scope_mismatch`、`scope_contract_missing`、deadline budget 未执行满六轮、规则/target/context 合同错误和缺数量槽永久禁止签到。历史“我也来签到啦～”类扩写句与 `emoji_react` 表情池不得再作为确定性兜底。租户可关闭静态兜底；关闭后全链失败写可见错误。
 
 ## 5. Grok CLI Bridge
 
@@ -71,6 +73,7 @@ action payload 只保存发送所需内容和非敏感审计摘要，不保存 P
 ## 7. 错误处理与并发
 
 - 单层超时后立即释放调用资源并进入下一层，不在数据库事务内等待外部模型。
+- 下一层启动前以主数量槽任务日 deadline 和真实 AI request timeout 校验 attempt budget；预算不足显式终止，不进入静态签到。
 - 同一生成 slot 使用稳定 request id，避免重规划并发产生重复 action。
 - 回退成功只完成当前 slot；其他 slot 仍按各自结果审计。
 - 静态兜底仍要经过重复、发送频率、账号容量和 Telegram 发送前门禁。

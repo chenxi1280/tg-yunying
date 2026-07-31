@@ -1,28 +1,39 @@
 from __future__ import annotations
 
 from datetime import timedelta
-from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine, select
-from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import Action, Task, Tenant, TgAccount
+from app.models import Action, Task, Tenant, TgAccount, TgGroup
 from app.services._common import _now
 from app.services.task_center.ai_generator import AiGenerationUnavailable, GeneratedContent
-from app.services.task_center.ai_generation_dispatch import _normal_sibling_query
 from app.services.task_center.ai_generation_quality import fail_generation_action
 from app.services.task_center.ai_generation_worker import drain_ai_generation
 from tests.ai_generation_phase_test_support import (
     generation_dependencies,
-    normal_generator,
     seed_reserved_normal_batch,
 )
 
 
 pytestmark = pytest.mark.no_postgres
+
+
+def _single_action_generator(session: Session, content_by_slot: dict[str, str]):
+    def generate(_session, _tenant_id, config, *, count, **_kwargs):
+        assert session.in_transaction() is False
+        assert count == 1
+        [slot] = config["generation_slots"]
+        slot_id = str(slot["slot_id"])
+        return [GeneratedContent(
+            content_by_slot[slot_id],
+            slot_id=slot_id,
+            sequence_index=1,
+        )], 7
+
+    return generate
 
 
 def test_generation_worker_prepares_pending_ai_before_dispatch() -> None:
@@ -122,27 +133,6 @@ def test_generation_worker_claims_sibling_outside_window_in_later_batch() -> Non
         assert future.payload["message_text"] == "当前窗口生成完成"
 
 
-def test_generation_batch_does_not_skip_claimed_sibling_database_locks() -> None:
-    action = _action("claimed-generation", _now(), "", "pending")
-    action.payload = {
-        **dict(action.payload or {}),
-        "ai_generation_id": "shared",
-        "ai_generation_claim_owner": "generation-worker",
-        "ai_generation_claim_token": "claim-token",
-    }
-    payload = SimpleNamespace(
-        ai_generation_id="shared",
-        ai_generation_claim_owner="generation-worker",
-        ai_generation_claim_token="claim-token",
-    )
-
-    statement = _normal_sibling_query(action, payload)
-    compiled = str(statement.compile(dialect=postgresql.dialect()))
-
-    assert "FOR UPDATE" not in compiled
-    assert "SKIP LOCKED" not in compiled
-
-
 def test_generation_worker_skips_account_with_executing_action() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -238,6 +228,39 @@ def test_generation_worker_continues_after_explicit_business_failure() -> None:
         assert ready.payload["message_text"] == "后续动作生成完成"
 
 
+def test_generation_worker_settles_content_mix_after_persisted_failure(
+    monkeypatch,
+) -> None:
+    from app.services.task_center import dispatcher
+
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    _seed_actions(engine)
+    settled: list[str] = []
+    monkeypatch.setattr(
+        dispatcher,
+        "_sync_action_content_mix_state",
+        lambda _session, action: settled.append(action.id),
+    )
+
+    def generate(session: Session, action: Action, _account: TgAccount) -> None:
+        fail_generation_action(
+            action,
+            "duplicate_message",
+            "显式业务失败",
+            stage="ai_message_memory",
+        )
+        session.commit()
+        raise AiGenerationUnavailable("duplicate_message")
+
+    assert drain_ai_generation(
+        lambda: Session(engine),
+        limit=1,
+        generate_action=generate,
+    ) == 1
+    assert settled == ["pending-generation"]
+
+
 def test_generation_worker_exposes_unpersisted_generation_failure() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -285,20 +308,12 @@ def test_production_generation_pipeline_returns_batch_to_pending_dispatch(
                 "ai_generation_claim_token": "",
             }
         session.commit()
-        dependencies = generation_dependencies(normal_generator=normal_generator(
+        dependencies = generation_dependencies(normal_generator=_single_action_generator(
             session,
-            [
-                GeneratedContent(
-                    "一号",
-                    slot_id="cycle-normal:turn:1",
-                    sequence_index=1,
-                ),
-                GeneratedContent(
-                    "二号",
-                    slot_id="cycle-normal:turn:2",
-                    sequence_index=2,
-                ),
-            ],
+            {
+                "cycle-normal:turn:1": "一号",
+                "cycle-normal:turn:2": "二号",
+            },
         ))
 
     processed = drain_ai_generation(
@@ -344,20 +359,12 @@ def test_generation_worker_keeps_recovery_status_in_same_normal_batch(
             "ai_generation_status": "ai_result_persist_unknown",
         }
         session.commit()
-        dependencies = generation_dependencies(normal_generator=normal_generator(
+        dependencies = generation_dependencies(normal_generator=_single_action_generator(
             session,
-            [
-                GeneratedContent(
-                    "恢复一号",
-                    slot_id="cycle-normal:turn:1",
-                    sequence_index=1,
-                ),
-                GeneratedContent(
-                    "恢复二号",
-                    slot_id="cycle-normal:turn:2",
-                    sequence_index=2,
-                ),
-            ],
+            {
+                "cycle-normal:turn:1": "恢复一号",
+                "cycle-normal:turn:2": "恢复二号",
+            },
         ))
 
     assert drain_ai_generation(
@@ -373,6 +380,49 @@ def test_generation_worker_keeps_recovery_status_in_same_normal_batch(
             action.payload["ai_generation_status"] == "ready"
             for action in actions
         )
+
+
+def test_generation_worker_defers_unproven_listener_watermark_without_spinning(
+    monkeypatch,
+) -> None:
+    from app.services.task_center import ai_generation_worker
+
+    monkeypatch.setattr(
+        ai_generation_worker,
+        "credentials_for_account",
+        lambda *_args, **_kwargs: object(),
+    )
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        actions, _coverages = seed_reserved_normal_batch(
+            session,
+            _now(),
+            bind_coverage=False,
+        )
+        group = session.get(TgGroup, 7)
+        group.listener_enabled = False
+        for action in actions:
+            action.status = "pending"
+            action.claim_owner = ""
+            action.claim_token = ""
+        session.commit()
+
+    processed = drain_ai_generation(
+        lambda: Session(engine),
+        limit=10,
+        dependencies=generation_dependencies(),
+    )
+
+    assert processed == 2
+    with Session(engine) as session:
+        actions = list(session.scalars(select(Action).order_by(Action.id)))
+        assert all(action.status == "pending" for action in actions)
+        assert all(
+            action.result["error_code"] == "context_freshness_unproven"
+            for action in actions
+        )
+        assert all(action.scheduled_at > _now() + timedelta(minutes=30) for action in actions)
 
 
 def _seed_actions(engine) -> None:
