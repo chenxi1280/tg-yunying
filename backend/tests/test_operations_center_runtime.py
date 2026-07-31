@@ -191,7 +191,7 @@ def _dispatch_deferred_ai_actions(
         if group is None:
             continue
         group.listener_enabled = True
-        group.listener_last_polled_at = datetime.now()
+        group.listener_last_polled_at = _now()
         group.listener_last_error = ""
         group.listener_remote_cursor = group.listener_remote_cursor or "1"
         group.listener_cursor_status = "contiguous"

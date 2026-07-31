@@ -20,6 +20,7 @@ from app.models import (
     TgGroupAccount,
 )
 from app.security import encrypt_secret, encrypt_session
+from app.services._common import _now
 
 
 def seed_group_accounts(
@@ -41,7 +42,7 @@ def seed_group_accounts(
         auth_status="已授权运营", topic_direction=topic_direction,
         group_cooldown_seconds=group_cooldown_seconds,
         listener_enabled=True,
-        listener_last_polled_at=datetime.now(),
+        listener_last_polled_at=_now(),
         listener_remote_cursor="1",
         listener_cursor_status="contiguous",
     ))

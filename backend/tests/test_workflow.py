@@ -5643,15 +5643,16 @@ def test_task_center_pending_reviews_do_not_starve_other_due_actions(monkeypatch
             session.add_all([blocked_task, normal_task])
             session.flush()
             blocked_action = Action(tenant_id=1, task_id=blocked_task.id, task_type=blocked_task.type, action_type="send_message", account_id=account["id"], scheduled_at=now, status="pending", payload={"group_id": group["id"], "message_text": "待审核内容"}, result={})
+            normal_action_id = f"normal-action-{uuid4()}"
             normal_gate_payload = _ai_group_memory_payload(
                 session,
-                action_id="normal-action",
+                action_id=normal_action_id,
                 task_id=normal_task.id,
                 group_id=group["id"],
                 account_id=account["id"],
                 text="普通内容",
             )
-            normal_action = Action(tenant_id=1, task_id=normal_task.id, task_type=normal_task.type, action_type="send_message", account_id=account["id"], scheduled_at=now, status="pending", payload={"group_id": group["id"], "message_text": "普通内容", "review_approved": True, **normal_gate_payload}, result={})
+            normal_action = Action(id=normal_action_id, tenant_id=1, task_id=normal_task.id, task_type=normal_task.type, action_type="send_message", account_id=account["id"], scheduled_at=now, status="pending", payload={"group_id": group["id"], "message_text": "普通内容", "review_approved": True, **normal_gate_payload}, result={})
             session.add_all([blocked_action, normal_action])
             session.flush()
             session.add(ReviewQueue(tenant_id=1, task_id=blocked_task.id, action_id=blocked_action.id, content_preview="待审核内容", status="pending", expires_at=datetime.now(UTC).replace(tzinfo=None) + timedelta(hours=1)))
@@ -5662,7 +5663,8 @@ def test_task_center_pending_reviews_do_not_starve_other_due_actions(monkeypatch
         client.post("/api/worker/drain-once", headers=headers, json={"reason": "测试手动 drain"})
         with SessionLocal() as session:
             assert session.get(Action, blocked_action_id).status == "pending"
-            assert session.get(Action, normal_action_id).status == "success"
+            normal_action = session.get(Action, normal_action_id)
+            assert normal_action.status == "success", normal_action.result
         assert sends.count("普通内容") == 1
         assert "待审核内容" not in sends
 

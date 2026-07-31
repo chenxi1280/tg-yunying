@@ -32,7 +32,7 @@ from app.services.task_center import service as task_service
 from app.services.task_center.ai_generation_commit import load_generation_batch
 from app.services.task_center.ai_generation_dependencies import GenerationDependencies
 from app.services.task_center.ai_generation_pipeline import SlotGenerationResult
-from app.services.task_center.ai_generator import GeneratedContent
+from app.services.task_center.ai_generator import AiGenerationUnavailable, GeneratedContent
 from app.services.task_center.account_voice_profile_cache import (
     VOICE_PROFILE_CONTRACT_VERSION,
     voice_profile_snapshot_hash,
@@ -86,11 +86,8 @@ def test_phase_c_commit_failure_recovers_cached_ai_result_without_second_generat
         assert action.status == "executing"
         event.listen(session, "before_commit", _fail_first_ready_commit())
 
-        assert dispatcher.dispatch_action(
-            session,
-            action,
-            generation_dependencies=dependencies,
-        ) is True
+        with pytest.raises(AiGenerationUnavailable, match="ai_result_persist_unknown"):
+            _prepare_ready_content(session, action, dependencies)
 
         assert_persist_unknown_state(session, action, coverage=coverage, observed=observed)
 
@@ -115,6 +112,7 @@ def test_phase_c_commit_failure_recovers_cached_ai_result_without_second_generat
         assert action.payload["ai_generation_claim_token"] != old_claim_token
         with pytest.raises(ai_generation_dispatch.GenerationAttemptStale):
             load_generation_batch(session, old_request)
+        _prepare_ready_content(session, action, dependencies)
         assert dispatcher.dispatch_action(
             session,
             action,
@@ -174,6 +172,7 @@ def test_stale_pre_gateway_generation_reclaims_same_action_slot_and_coverage(mon
             load_generation_batch(session, old_request)
 
         dependencies = _external_dependencies(monkeypatch, session, observed)
+        _prepare_ready_content(session, action, dependencies)
         assert dispatcher.dispatch_action(
             session,
             action,
@@ -497,6 +496,22 @@ def _external_dependencies(
         reply_generator=_reply_generator(observed),
         reply_target_probe=_reply_probe(session),
         reply_messages_fetcher=_reply_fetch(session),
+    )
+
+
+def _prepare_ready_content(
+    session,
+    action: Action,
+    dependencies: GenerationDependencies,
+) -> SendMessagePayload:
+    return ai_generation_dispatch.ensure_send_message_content(
+        session,
+        action,
+        session.get(TgAccount, action.account_id),
+        payload=SendMessagePayload.model_validate(action.payload),
+        credentials=object(),
+        dependencies=dependencies,
+        allow_provider_call=True,
     )
 
 

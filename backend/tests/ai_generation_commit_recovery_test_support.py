@@ -6,7 +6,7 @@ from app.models import Action, AiGroupMessageMemory
 def assert_persist_unknown_state(session, action, *, coverage, observed) -> None:
     session.refresh(action)
     session.refresh(coverage)
-    assert action.status == "pending"
+    assert action.status == "pending", action.result
     assert action.payload["ai_generation_status"] == "ai_result_persist_unknown"
     assert action.payload["ai_generation_result_cache"]["content"] == "就按这个节奏来"
     assert coverage.state == "reserved"
