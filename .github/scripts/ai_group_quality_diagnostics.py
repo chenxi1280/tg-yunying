@@ -310,7 +310,10 @@ def daily_group_target_snapshots(session, captured_at: datetime) -> list[dict[st
     snapshots = [_daily_group_target_snapshot(session, target) for target in targets]
     target_task_ids = {target.task_id for target in targets}
     for task in active_group_tasks(session):
-        if task.id in target_task_ids:
+        if (
+            task.status not in ACTIVE_TASK_STATUSES
+            or task.id in target_task_ids
+        ):
             continue
         snapshots.append({
             "task_id": task.id,

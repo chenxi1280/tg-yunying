@@ -159,6 +159,29 @@ def test_ai_group_daily_target_gate_requires_total_coverage_and_strict_facts():
     ]) == [{"task_id": "missing-ledger", "missing_daily_target_ledger": True}]
 
 
+def test_ai_group_daily_target_snapshot_ignores_stopped_missing_ledger(monkeypatch):
+    module = load_quality_diagnostics_module()
+    session = SimpleNamespace(scalars=lambda _statement: [])
+    tasks = [
+        SimpleNamespace(id="stopped", status="stopped"),
+        SimpleNamespace(id="running", status="running"),
+    ]
+    monkeypatch.setattr(module, "active_group_tasks", lambda _session: tasks)
+
+    snapshots = module.daily_group_target_snapshots(
+        session,
+        datetime(2026, 8, 1, 6, 0, 0),
+    )
+
+    assert snapshots == [
+        {
+            "task_id": "running",
+            "target_date": "2026-08-01",
+            "missing_daily_target_ledger": True,
+        }
+    ]
+
+
 def test_ai_group_quality_diagnostics_waits_for_full_active_probe_window():
     module = load_quality_diagnostics_module()
 
