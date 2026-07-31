@@ -182,6 +182,26 @@ def test_ai_group_daily_target_snapshot_ignores_stopped_missing_ledger(monkeypat
     ]
 
 
+def test_ai_group_legacy_hard_action_count_is_scoped_to_target_day():
+    module = load_quality_diagnostics_module()
+    statements = []
+    session = SimpleNamespace(
+        scalars=lambda statement: statements.append(str(statement)) or []
+    )
+    day_start = datetime(2026, 8, 1)
+
+    count = module._legacy_hard_action_count(
+        session,
+        "task-ai",
+        day_start,
+        day_start + timedelta(days=1),
+    )
+
+    assert count == 0
+    assert "actions.created_at >=" in statements[0]
+    assert "actions.created_at <" in statements[0]
+
+
 def test_ai_group_quality_diagnostics_waits_for_full_active_probe_window():
     module = load_quality_diagnostics_module()
 

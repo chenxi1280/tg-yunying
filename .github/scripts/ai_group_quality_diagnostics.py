@@ -347,7 +347,12 @@ def _daily_group_target_snapshot(session, target: TaskGroupDailyTarget) -> dict[
         "coverage_confirmed_account_count": target.coverage_confirmed_account_count,
         "strict_fact_mismatch_count": len(invalid),
         "strict_fact_mismatch_samples": invalid[:QUALITY_PAYLOAD_BLOCKER_LIMIT],
-        "new_hard_hourly_action_count": _legacy_hard_action_count(session, target.task_id),
+        "new_hard_hourly_action_count": _legacy_hard_action_count(
+            session,
+            target.task_id,
+            day_start,
+            day_end,
+        ),
     }
 
 
@@ -388,10 +393,17 @@ def _invalid_success_fact(session, action: Action) -> dict[str, Any] | None:
     return {"action_id": action.id, "account_id": action.account_id, "content_source": source}
 
 
-def _legacy_hard_action_count(session, task_id: str) -> int:
+def _legacy_hard_action_count(
+    session,
+    task_id: str,
+    day_start: datetime,
+    day_end: datetime,
+) -> int:
     actions = session.scalars(select(Action).where(
         Action.task_id == task_id,
         Action.action_type == "send_message",
+        Action.created_at >= day_start,
+        Action.created_at < day_end,
     ))
     return sum(1 for action in actions if (action.payload or {}).get("hard_hourly_target"))
 
