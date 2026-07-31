@@ -32,6 +32,10 @@ from app.image_verification_worker_config import (
 ALLOWED_MIME_TYPES = frozenset({"image/png", "image/jpeg", "image/webp"})
 BASE64_EXPANSION_RATIO = 4 / 3
 TERMINATION_DELAY_SECONDS = 0.1
+ABNORMAL_TERMINATION_EXIT_CODE = 70
+ABNORMAL_TERMINATION_MESSAGE = (
+    b"image verification worker exiting: native OCR state unknown\n"
+)
 
 
 class ImageVerificationWorkerService:
@@ -59,7 +63,7 @@ class ImageVerificationWorkerService:
             thread_name_prefix="worker-ddddocr",
         )
         self._abnormal_terminate = (
-            abnormal_terminate or _schedule_abnormal_termination
+            abnormal_terminate or _terminate_abnormally
         )
         self._rss_reader = rss_reader or current_worker_rss_bytes
 
@@ -429,11 +433,9 @@ def _admission_hash(request: OcrRequest) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
 
-def _schedule_abnormal_termination() -> None:
-    threading.Timer(
-        TERMINATION_DELAY_SECONDS,
-        lambda: os.kill(os.getpid(), signal.SIGKILL),
-    ).start()
+def _terminate_abnormally() -> None:
+    os.write(2, ABNORMAL_TERMINATION_MESSAGE)
+    os._exit(ABNORMAL_TERMINATION_EXIT_CODE)
 
 
 def _schedule_graceful_recycle() -> None:

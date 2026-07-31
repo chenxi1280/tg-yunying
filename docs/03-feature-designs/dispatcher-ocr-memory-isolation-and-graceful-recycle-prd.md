@@ -44,7 +44,8 @@
 
 - 同一 release 的 OCR worker request `c9cef...` 从 `2026-08-01 06:24:18 +08:00` 起长期保持 `running`，至 06:39 已远超 25 秒 worker budget；期间仅完成 2 个请求并显式拒绝 283 个 busy 请求。`py-spy` 显示 RapidOCR、ddddOCR executor 与 AnyIO handler 均已空闲，因此不是仍在运行的合法 native 调用。
 - 精确触发异常因原 HTTP 调用已断开且 Uvicorn 未保留堆栈，暂记 `unproven`；已确认的实现缺口是：request 入场后若 source submit/wait/result 遭遇取消或非 `Exception` 的异常，现有代码会绕过 terminal record 与 `abnormal_terminate`，永久保留 `_active_request_id`。
-- 修复口径是把 source submit、deadline wait 与 result 收集包在同一 generation 边界内；任何逃逸的 `BaseException` 都先显式调度当前 OCR generation 异常终止，再原样抛出。不得清空 active 后继续接新请求，因为 native 是否仍运行未知；Docker 重建后的 generation unknown 继续沿用既有同 fingerprint 复读合同。
+- 修复口径是把 source submit、deadline wait 与 result 收集包在同一 generation 边界内；任何逃逸的 `BaseException` 都必须触发当前 OCR generation 异常终止，测试注入可以原样抛出，生产实现必须直接非零退出。不得清空 active 后继续接新请求，因为 native 是否仍运行未知；Docker 重建后的 generation unknown 继续沿用既有同 fingerprint 复读合同。
+- `2cddc9ea` 上线后的真实第三个 OCR 请求已命中新边界并返回 504，但旧 `threading.Timer -> os.kill` 终止器未让 PID 退出，generation 仍保持 running；因此异常终止必须在当前执行线程同步写无敏感信息的退出原因并以固定非零退出码 `os._exit`，由 `unless-stopped` 重建。该原语必须用独立子进程测试真实退出码，不能只断言 mock callback 被调用。
 
 ### 0.1 2026-07-31 实现记录
 
@@ -425,6 +426,7 @@ P0 不新增 `SearchJoinImageVerificationAttempt`、source event 或 lifecycle �
 - 在 OCR 槽等待、OCR 后、模型中、callback 前、callback 后/结果落库前、Telethon 断连中分别发送 SIGTERM，验证 current batch 收口、unknown 防重和重复 callback 为 0。
 - OCR worker timeout/unavailable/contract mismatch/非法图片/deadline exceeded 均显式失败，Dispatcher 不加载 native OCR、不调用 callback。
 - OCR request 入场后在 source submit/wait/result 任一位置遭遇取消或 `BaseException` 时，必须触发 generation 异常终止且不清空 active 后继续接单；重建前的 request 只能解释为 generation unknown。
+- 异常终止原语必须在独立子进程中证明当前进程按固定非零退出码结束并写出无敏感数据的原因；后台 Timer 启动成功不等于 Worker generation 已退出。
 - 用至少两个受控测试账号分别执行 immediate、实测本地 OCR p95、实测 OCR+模型 tail 三个等待档位的真实正确 callback；每个档位都记录页面可见、callback RPC、callback accepted 和回执完成。只采用两个账号都 accepted 的最慢档位作为 `verified_callback_acceptance_seconds` 证据下界，再扣除 callback/headroom；任一账号失败则使用更短已验证档位，不继续向线上扩大等待。
 - 注入 RapidOCR 18–20 秒、模型 30 秒 timeout/二次请求、网络抖动，证明模型会在反推 hedge 点启动或因预算不足停止，且旧 challenge 不被点击。
 - Dispatcher draining 后没有新 claim；所有 future 和 ownership 归零才退出，新实例 shard 身份与 heartbeat 正确。

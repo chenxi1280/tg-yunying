@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import base64
+import subprocess
+import sys
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
@@ -11,6 +13,8 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from app.image_verification_worker import (
+    ABNORMAL_TERMINATION_EXIT_CODE,
+    ABNORMAL_TERMINATION_MESSAGE,
     ImageVerificationWorkerService,
     OcrRequest,
     WorkerRequestError,
@@ -230,6 +234,25 @@ def test_worker_terminates_generation_after_source_base_exception(
 
     assert termination_calls == ["scheduled"]
     assert service.health()["request_status"] == "running"
+
+
+@pytest.mark.no_postgres
+def test_default_abnormal_termination_exits_current_process() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "from app.image_verification_worker import "
+                "_terminate_abnormally; _terminate_abnormally()"
+            ),
+        ],
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == ABNORMAL_TERMINATION_EXIT_CODE
+    assert result.stderr == ABNORMAL_TERMINATION_MESSAGE
 
 
 @pytest.mark.no_postgres
