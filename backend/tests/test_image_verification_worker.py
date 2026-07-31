@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import base64
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
 from threading import Event, Lock
@@ -204,6 +204,32 @@ def test_worker_rejects_second_request_without_queueing(monkeypatch) -> None:
         running.result(timeout=2)
 
     assert raised.value.code == "verification_local_ocr_busy"
+
+
+@pytest.mark.no_postgres
+def test_worker_terminates_generation_after_source_base_exception(
+    monkeypatch,
+) -> None:
+    termination_calls: list[str] = []
+    failed: Future = Future()
+    failed.set_exception(SystemExit("source cancelled"))
+    unused: Future = Future()
+    unused.set_result(None)
+    service = ImageVerificationWorkerService(
+        _config(),
+        abnormal_terminate=lambda: termination_calls.append("scheduled"),
+    )
+    monkeypatch.setattr(
+        service,
+        "_submit_sources",
+        lambda *_args: (failed, unused),
+    )
+
+    with pytest.raises(SystemExit, match="source cancelled"):
+        service.execute(_request())
+
+    assert termination_calls == ["scheduled"]
+    assert service.health()["request_status"] == "running"
 
 
 @pytest.mark.no_postgres

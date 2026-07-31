@@ -94,25 +94,38 @@ class ImageVerificationWorkerService:
             raise
         self._set_input_hash(request.request_id, input_hash)
         deadline_monotonic = monotonic() + budget
-        futures = self._submit_sources(image_bytes, deadline_monotonic)
-        _, pending = wait(
-            futures,
-            timeout=max(0.0, deadline_monotonic - monotonic()),
-        )
-        if pending:
-            self._abnormal_terminate()
-            raise WorkerRequestError(
-                504,
-                "verification_local_ocr_timeout",
-                "native OCR exceeded request deadline; generation will exit",
+        try:
+            sources = self._execute_sources(
+                image_bytes,
+                deadline_monotonic,
             )
-        sources = tuple(future.result() for future in futures)
+        except BaseException:  # noqa: BLE001 - unknown native state requires generation exit.
+            self._abnormal_terminate()
+            raise
         status = "completed" if any(
             source.status == "complete" for source in sources
         ) else "failed"
         record = self._complete_request(request.request_id, status, sources)
         del image_bytes
         return record.as_payload(), self._should_recycle()
+
+    def _execute_sources(
+        self,
+        image_bytes: bytes,
+        deadline_monotonic: float,
+    ) -> tuple[SourceResult, ...]:
+        futures = self._submit_sources(image_bytes, deadline_monotonic)
+        _, pending = wait(
+            futures,
+            timeout=max(0.0, deadline_monotonic - monotonic()),
+        )
+        if pending:
+            raise WorkerRequestError(
+                504,
+                "verification_local_ocr_timeout",
+                "native OCR exceeded request deadline; generation will exit",
+            )
+        return tuple(future.result() for future in futures)
 
     def status(self, request_id: str) -> dict[str, Any]:
         with self._lock:

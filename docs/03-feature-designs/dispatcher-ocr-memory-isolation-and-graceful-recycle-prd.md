@@ -40,6 +40,12 @@
 - 根因是 Telethon 在运行中的 event loop 内让 `disconnect()` 返回 shielded `Future`；现有生命周期代码仅对 `asyncio.iscoroutine(result)` 执行 `await`，因此把合法 awaitable Future 当成同步完成。修复口径是等待所有 `inspect.isawaitable(result)`，不得吞掉断连错误或把 pending task 日志当作正常回收。
 - 此缺口属于既有 P0 `safe_to_exit` 与运行期 cache eviction 的实现遗漏，不改变 OCR 单实例 busy-fast-fail、Action lease、callback CAS 或后置队列/HA 的产品边界。
 
+### 0.4 OCR running request 未终态缺口
+
+- 同一 release 的 OCR worker request `c9cef...` 从 `2026-08-01 06:24:18 +08:00` 起长期保持 `running`，至 06:39 已远超 25 秒 worker budget；期间仅完成 2 个请求并显式拒绝 283 个 busy 请求。`py-spy` 显示 RapidOCR、ddddOCR executor 与 AnyIO handler 均已空闲，因此不是仍在运行的合法 native 调用。
+- 精确触发异常因原 HTTP 调用已断开且 Uvicorn 未保留堆栈，暂记 `unproven`；已确认的实现缺口是：request 入场后若 source submit/wait/result 遭遇取消或非 `Exception` 的异常，现有代码会绕过 terminal record 与 `abnormal_terminate`，永久保留 `_active_request_id`。
+- 修复口径是把 source submit、deadline wait 与 result 收集包在同一 generation 边界内；任何逃逸的 `BaseException` 都先显式调度当前 OCR generation 异常终止，再原样抛出。不得清空 active 后继续接新请求，因为 native 是否仍运行未知；Docker 重建后的 generation unknown 继续沿用既有同 fingerprint 复读合同。
+
 ### 0.1 2026-07-31 实现记录
 
 - P0：`services/image_verification_runtime.py`、`image_verification_sources.py`、`search_join_image_solver.py` 与 `ai_gateway.py` 已实现共享固定槽、本地优先、单模型 hedge、active registry 和统一 remaining budget；`search_join.py` 已实现 message identity/deadline audit 与 callback 前同 fingerprint 复读。
@@ -418,6 +424,7 @@ P0 不新增 `SearchJoinImageVerificationAttempt`、source event 或 lifecycle �
 - 使用真实 PostgreSQL/Redis 验证既有 Action lease、账号 inflight、callback unknown/CAS 与最小 recycle lease 不互相改变锁序且无 deadlock；本轮没有新 session fence。
 - 在 OCR 槽等待、OCR 后、模型中、callback 前、callback 后/结果落库前、Telethon 断连中分别发送 SIGTERM，验证 current batch 收口、unknown 防重和重复 callback 为 0。
 - OCR worker timeout/unavailable/contract mismatch/非法图片/deadline exceeded 均显式失败，Dispatcher 不加载 native OCR、不调用 callback。
+- OCR request 入场后在 source submit/wait/result 任一位置遭遇取消或 `BaseException` 时，必须触发 generation 异常终止且不清空 active 后继续接单；重建前的 request 只能解释为 generation unknown。
 - 用至少两个受控测试账号分别执行 immediate、实测本地 OCR p95、实测 OCR+模型 tail 三个等待档位的真实正确 callback；每个档位都记录页面可见、callback RPC、callback accepted 和回执完成。只采用两个账号都 accepted 的最慢档位作为 `verified_callback_acceptance_seconds` 证据下界，再扣除 callback/headroom；任一账号失败则使用更短已验证档位，不继续向线上扩大等待。
 - 注入 RapidOCR 18–20 秒、模型 30 秒 timeout/二次请求、网络抖动，证明模型会在反推 hedge 点启动或因预算不足停止，且旧 challenge 不被点击。
 - Dispatcher draining 后没有新 claim；所有 future 和 ownership 归零才退出，新实例 shard 身份与 heartbeat 正确。
