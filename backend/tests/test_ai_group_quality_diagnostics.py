@@ -111,6 +111,27 @@ def test_ai_group_quality_diagnostics_accepts_fully_online_state():
     assert blockers == []
 
 
+def test_ai_group_quality_diagnostics_ignores_stopped_online_state():
+    module = load_quality_diagnostics_module()
+
+    blockers = module.online_gate_blockers(
+        [
+            {
+                "task_id": "task-stopped",
+                "name": "历史任务",
+                "status": "stopped",
+                "online_summary": {
+                    "desired_count": 798,
+                    "online_count": 0,
+                    "missing_state_count": 798,
+                },
+            }
+        ]
+    )
+
+    assert blockers == []
+
+
 def test_ai_group_daily_target_gate_requires_total_coverage_and_strict_facts():
     module = load_quality_diagnostics_module()
     base = {

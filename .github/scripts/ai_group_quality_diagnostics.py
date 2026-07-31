@@ -511,6 +511,8 @@ def _safe_int(value: object) -> int:
 def online_gate_blockers(snapshots: list[dict[str, Any]]) -> list[dict[str, Any]]:
     blockers: list[dict[str, Any]] = []
     for snapshot in snapshots:
+        if str(snapshot.get("status") or "") not in ACTIVE_TASK_STATUSES:
+            continue
         summary = snapshot.get("online_summary") or {}
         desired_count = int(summary.get("desired_count") or 0)
         if desired_count <= 0:
