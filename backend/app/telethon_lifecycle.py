@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import threading
 import time
 from concurrent.futures import TimeoutError as FutureTimeoutError
@@ -276,7 +277,7 @@ class TelethonClientLifecycle:
     @staticmethod
     async def _disconnect(client: Any) -> None:
         result = client.disconnect()
-        if asyncio.iscoroutine(result):
+        if inspect.isawaitable(result):
             await result
 
 

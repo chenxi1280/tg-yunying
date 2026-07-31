@@ -33,6 +33,13 @@
 - 单实例 busy-fast-fail 按 §6.1 显式产生 `verification_local_ocr_busy`，未点击、未排除账号且 Planner 继续补机会；Stage B 前 15 分钟搜索成功 22 次。是否触发 §2.4 队列/HA 后置立项，必须等完整日容量 E4，不以瞬时 busy 比例直接改架构。
 - 当前仅可写 `E3 production canary pass / E4 observing`：尚无完整自然日、1287 次图片、OCR+模型 tail 双账号 callback accepted、3 次阈值安全回收和当日搜索完整 ledger 达标证据。
 
+### 0.3 最终发布后 Telethon 断连缺口
+
+- 最终提交 `aa61226f` 由 Actions run `30669115942` 发布到 release `20260731222137_aa61226f`；发布后容器均 healthy、restart=0、OOMKilled=false，数据库与 worker 日志没有新 deadlock。
+- 真实搜索验证码突发流量下，Dispatcher-1 于 `2026-08-01 06:27:28 +08:00` 出现 4 个 Telethon `_send_loop/_recv_loop` pending task 被销毁和 1 次 `coroutine ignored GeneratorExit`。同一秒业务 Action 均已显式落为 `verification_local_ocr_busy`，没有未过期 executing lease，但该日志证明 client disconnect 没有真正等待完成。
+- 根因是 Telethon 在运行中的 event loop 内让 `disconnect()` 返回 shielded `Future`；现有生命周期代码仅对 `asyncio.iscoroutine(result)` 执行 `await`，因此把合法 awaitable Future 当成同步完成。修复口径是等待所有 `inspect.isawaitable(result)`，不得吞掉断连错误或把 pending task 日志当作正常回收。
+- 此缺口属于既有 P0 `safe_to_exit` 与运行期 cache eviction 的实现遗漏，不改变 OCR 单实例 busy-fast-fail、Action lease、callback CAS 或后置队列/HA 的产品边界。
+
 ### 0.1 2026-07-31 实现记录
 
 - P0：`services/image_verification_runtime.py`、`image_verification_sources.py`、`search_join_image_solver.py` 与 `ai_gateway.py` 已实现共享固定槽、本地优先、单模型 hedge、active registry 和统一 remaining budget；`search_join.py` 已实现 message identity/deadline audit 与 callback 前同 fingerprint 复读。
@@ -216,7 +223,7 @@ Dispatcher（Telegram 与业务事实 owner）
 - 没有该 worker 发起且仍处于 `gateway_call_started/callback_submitting`、结果尚未持久化的 Attempt。
 - 所有本轮 dispatch reservation 已按统一 `finally` 释放或绑定到明确的 durable Action/unknown 事实。
 - 图片验证 fingerprint、deadline、逐源票和 callback/unknown 事实已写入现有 Action/result 或 ExecutionAttempt；没有把只存在进程内的“已点击”当成已提交事实。
-- Telethon clients 已完成断连；断连错误必须显式记录并阻止“安全退出成功”审计。
+- Telethon clients 已完成断连；`disconnect()` 返回 coroutine、Future 或其他 awaitable 时都必须等待其完成，断连错误必须显式记录并阻止“安全退出成功”审计。
 - 现有 WorkerHeartbeat metadata/结构化退出日志已写 trigger、RSS、处理量和安全检查快照；P0 不新增 lifecycle audit 表。
 
 ### 5.4 触发条件与资源预算
@@ -401,6 +408,7 @@ P0 不新增 `SearchJoinImageVerificationAttempt`、source event 或 lifecycle �
 - 同引擎多预处理只形成一票；候选不命中不能进入共识。
 - 不创建 per-challenge 三线程 executor，不存在已运行 model future 被当作成功取消的路径。
 - 生命周期状态转换、rolling-recycle lease 竞争、SIGTERM 与 blocker 均为确定结果；lease 不参与 Action/session 所有权。
+- Telethon `disconnect()` 返回 shielded Future 时生命周期必须等待 Future 完成；测试须在旧实现下复现 pending cleanup，并证明修复后没有未等待的断连任务。
 - `safe_to_exit` 任一谓词为假时禁止退出；两个 shard 不能同时进入 draining。
 - 现有 search_join audit 完整记录 deadline/votes/model/callback；fingerprint/callback CAS 重复执行不产生第二次点击。
 - 每次模型首请求/reasoning retry timeout 均不超过调用当时 remaining budget，预算不足时 retry 次数为 0。
