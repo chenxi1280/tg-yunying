@@ -777,6 +777,12 @@ def test_ai_group_quality_diagnostics_blocks_missing_human_quality_payload():
                 "act_type": "short_react",
             },
         ),
+        SimpleNamespace(
+            id="a3",
+            status="pending",
+            account_id=13,
+            payload={"message_text": "", "account_voice_profile_version": 2},
+        ),
     ]
 
     snapshot = module.recent_action_duplicate_summary(actions)
@@ -944,6 +950,19 @@ def test_ai_group_quality_diagnostics_flags_ai_like_or_off_mask_samples():
             },
         ),
         SimpleNamespace(
+            id="a3",
+            status="pending",
+            account_id=13,
+            scheduled_at=None,
+            executed_at=None,
+            payload={
+                "message_text": "",
+                "account_voice_profile_summary": "男性夜场话题观望客，短句，先问价格位置和真实反馈",
+                "account_mask_match_score": 100,
+                "account_mask_match_reason": "男性夜场话题观望客，短句，先问价格位置和真实反馈",
+            },
+        ),
+        SimpleNamespace(
             id="a2",
             status="success",
             account_id=12,
@@ -973,7 +992,7 @@ def test_ai_group_quality_diagnostics_flags_ai_like_or_off_mask_samples():
     assert audit["task_count"] == 1
     assert audit["sample_count"] == 2
     assert audit["risk_sample_count"] == 1
-    assert audit["risk_reason_counts"] == {"ai_like_template": 1, "mask_theme_missing": 1}
+    assert audit["risk_reason_counts"] == {"ai_like_template": 1}
     assert audit["task_summaries"] == [
         {
             "task_id": "task-ai",
@@ -981,14 +1000,14 @@ def test_ai_group_quality_diagnostics_flags_ai_like_or_off_mask_samples():
             "status": "running",
             "sample_count": 2,
             "risk_sample_count": 1,
-            "risk_reason_counts": {"ai_like_template": 1, "mask_theme_missing": 1},
+            "risk_reason_counts": {"ai_like_template": 1},
             "risk_samples": [
                 {
                     "action_id": "a1",
                     "account_id": 11,
                     "text": "确实不错 可以关注一下",
                     "profile_summary": "男性夜场话题观望客，短句，先问价格位置和真实反馈",
-                    "reasons": ["ai_like_template", "mask_theme_missing"],
+                    "reasons": ["ai_like_template"],
                 }
             ],
         }

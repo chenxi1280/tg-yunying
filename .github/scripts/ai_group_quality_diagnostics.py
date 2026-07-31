@@ -88,35 +88,6 @@ AI_LIKE_TEMPLATE_MARKERS = (
     "可以继续聊聊",
     "大家怎么看",
 )
-MASK_PROFILE_MARKERS = ("男性", "夜场话题", "伪装", "色客", "寻欢", "价格", "位置", "反馈")
-MASK_THEME_ANCHORS = (
-    "价格",
-    "成本",
-    "位置",
-    "在哪",
-    "反馈",
-    "真假",
-    "真实",
-    "真人",
-    "踩坑",
-    "照片",
-    "服务",
-    "体验",
-    "时间",
-    "今晚",
-    "有人去过",
-    "去过",
-    "老师",
-    "身材",
-    "榜",
-    "熟客",
-    "推荐",
-    "口味",
-    "温柔",
-    "问清楚",
-    "别跑空",
-    "距离",
-)
 REALISM_RISK_SAMPLE_LIMIT = 8
 
 
@@ -896,7 +867,11 @@ def realism_audit_summary(snapshots: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _realism_task_summary(snapshot: dict[str, Any]) -> dict[str, Any]:
-    samples = list(snapshot.get("recent_action_samples") or [])
+    samples = [
+        sample
+        for sample in list(snapshot.get("recent_action_samples") or [])
+        if normalized_text(sample.get("text"))
+    ]
     risk_samples = _realism_risk_samples(samples)
     reason_counts: Counter[str] = Counter()
     for sample in risk_samples:
@@ -932,28 +907,15 @@ def _realism_risk_samples(samples: list[dict[str, Any]]) -> list[dict[str, Any]]
 
 def _realism_risk_reasons(sample: dict[str, Any]) -> list[str]:
     text = str(sample.get("text") or "")
-    profile_summary = str(sample.get("profile_summary") or sample.get("mask_match_reason") or "")
     reasons: list[str] = []
     if _looks_ai_like_template(text):
         reasons.append("ai_like_template")
-    if _profile_needs_mask_theme(profile_summary) and not _has_mask_theme_anchor(text):
-        reasons.append("mask_theme_missing")
     return reasons
 
 
 def _looks_ai_like_template(text: str) -> bool:
     normalized = normalized_text(text)
     return any(marker in normalized for marker in AI_LIKE_TEMPLATE_MARKERS)
-
-
-def _profile_needs_mask_theme(profile_summary: str) -> bool:
-    normalized = normalized_text(profile_summary)
-    return any(marker in normalized for marker in MASK_PROFILE_MARKERS)
-
-
-def _has_mask_theme_anchor(text: str) -> bool:
-    normalized = normalized_text(text)
-    return any(marker in normalized for marker in MASK_THEME_ANCHORS)
 
 
 def material_trace_samples(actions: list[Action]) -> list[dict[str, Any]]:
@@ -1099,6 +1061,8 @@ def _quality_payload_blockers(actions: list[Action]) -> list[dict[str, Any]]:
     blockers: list[dict[str, Any]] = []
     for action in actions:
         if action.status not in EFFECTIVE_DUPLICATE_STATUSES:
+            continue
+        if not normalized_text((action.payload or {}).get("message_text")):
             continue
         missing_fields = _missing_quality_payload_fields(action.payload or {})
         if not missing_fields:
