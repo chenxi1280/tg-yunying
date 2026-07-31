@@ -10,9 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.models import (
     Action,
-    DispatchAllocationExclusion,
     DispatchClaimReservation,
-    DispatchClaimShardAllocation,
     DispatchClaimWindow,
     SearchClickAssignmentEpoch,
     SearchClickFulfillmentObligation,
@@ -22,7 +20,6 @@ from app.models import (
 from app.services._common import _now
 
 from ..heartbeat import record_worker_heartbeat
-from ..dispatch_release_wave import start_or_join_dispatch_rebuild_wave
 from ..datetime_compat import is_after_or_equal
 from ..payloads import create_search_join_action
 from ..search_click_assignment_solver import solve_search_click_assignments
@@ -36,18 +33,21 @@ from ..search_click_epoch_ownership import (
     solver_owner_is_active,
     units_from_solver_snapshot,
 )
+from ..search_click_epoch_release import (
+    abandon_units as _abandon_units,
+    release_first_outcome_units as _release_first_outcome_units,
+)
 from ..search_click_solver_snapshot import (
     SearchSolverSnapshot,
     assemble_search_solver_snapshot,
     persist_search_solver_snapshot,
-    solver_component_hash_for_unit,
 )
 from ..search_click_outcome_identity import (
     finalize_search_outcome_hash,
     release_unit_set_hash,
-    search_outcome_hash,
     search_path_snapshot_hash,
 )
+from ..search_click_release_quarantine import run_epoch_release_with_quarantine
 from ..search_click_solver_lease import SolverLeaseRenewal
 from ..search_click_finalize_locking import (
     lock_search_finalize_inputs,
@@ -190,17 +190,25 @@ def _handle_existing_epoch(
         return 0
     if solver_owner_is_active(session, epoch):
         return 0
-    units = units_from_solver_snapshot(session, epoch)
-    if not units:
-        raise RuntimeError("search_solver_snapshot_binding_missing")
-    _abandon_units(
+    def abandon(current_epoch: SearchClickAssignmentEpoch) -> int:
+        units = units_from_solver_snapshot(session, current_epoch)
+        if not units:
+            raise RuntimeError("search_solver_snapshot_binding_missing")
+        _abandon_units(
+            session,
+            current_epoch,
+            units=units,
+            now_value=now_value,
+            reason="search_solver_owner_lost",
+        )
+        return 0
+
+    return run_epoch_release_with_quarantine(
         session,
-        epoch,
-        units=units,
-        now_value=now_value,
-        reason="search_solver_owner_lost",
+        epoch=epoch,
+        trigger_key=f"orphan_epoch:{epoch.id}:owner_lost",
+        operation=abandon,
     )
-    return 0
 
 
 def _finalize_epoch(
@@ -297,16 +305,33 @@ def _commit_finalize_or_abandon(
 ) -> dict[str, int]:
     epoch_id = context.epoch.id
     window_id = context.epoch.dispatch_claim_window_id
-    created_by_task = run_serializable_finalize(
-        session,
-        lambda: _finalize_epoch(session, context),
-        lambda: _abandon_serialization_failed_epoch(
+    def finalize(current_epoch: SearchClickAssignmentEpoch):
+        current_context = context
+        if current_epoch is not context.epoch:
+            current_context = _FinalizeContext(
+                current_epoch,
+                context.units,
+                context.paths,
+                context.result,
+                context.now,
+            )
+        return run_serializable_finalize(
             session,
-            epoch_id=epoch_id,
-            window_id=window_id,
-            units=context.units,
-            now_value=context.now,
-        ),
+            lambda: _finalize_epoch(session, current_context),
+            lambda: _abandon_serialization_failed_epoch(
+                session,
+                epoch_id=epoch_id,
+                window_id=window_id,
+                units=context.units,
+                now_value=context.now,
+            ),
+        )
+
+    created_by_task = run_epoch_release_with_quarantine(
+        session,
+        epoch=context.epoch,
+        trigger_key=f"finalize_epoch:{epoch_id}",
+        operation=finalize,
     )
     return created_by_task or {}
 
@@ -444,54 +469,6 @@ def _mark_assignment_bound(
     context.obligation.status = "action_bound"
 
 
-def _release_first_outcome_units(
-    session: Session, epoch: SearchClickAssignmentEpoch, *,
-    units: list[SearchClickFulfillmentUnit], now_value: datetime,
-    reason_code: str,
-) -> list[dict]:
-    release_facts: list[dict] = []
-    for unit in units:
-        reservation = session.get(DispatchClaimReservation, unit.reservation_id)
-        allocation = session.get(
-            DispatchClaimShardAllocation, reservation.dispatch_claim_shard_allocation_id,
-        )
-        component_hash = solver_component_hash_for_unit(
-            session, epoch.id, unit.reservation_id,
-            ordinal=unit.fulfillment_lane_claim_ordinal)
-        session.add(DispatchAllocationExclusion(
-            dispatch_claim_window_id=unit.window_id,
-            dispatch_claim_reservation_id=unit.reservation_id,
-            fulfillment_lane_claim_ordinal=unit.fulfillment_lane_claim_ordinal,
-            carrier_type="search_click_assignment_epoch",
-            carrier_id=epoch.id,
-            reason_code=reason_code,
-            solver_problem_component_hash=component_hash,
-            resource_snapshot_hash=component_hash,
-        ))
-        release_facts.append({
-            "window_id": unit.window_id,
-            "reservation_id": unit.reservation_id,
-            "ordinal": unit.fulfillment_lane_claim_ordinal,
-            "reason_code": reason_code,
-            "resource_snapshot_hash": component_hash,
-        })
-        reservation.released_count += 1
-        reservation.version += 1
-        allocation.unclaimed_allocated_count -= 1
-        allocation.version += 1
-        obligation = session.get(SearchClickFulfillmentObligation, unit.obligation_id)
-        if obligation is not None:
-            obligation.status = "open"
-    if units:
-        epoch.rebuild_input_version_after = start_or_join_dispatch_rebuild_wave(
-            session,
-            window_id=units[0].window_id,
-            released_count=len(units),
-            now_value=now_value,
-        )
-    return release_facts
-
-
 def _abandon_epoch(
     session: Session,
     context: _FinalizeContext,
@@ -508,30 +485,4 @@ def _abandon_epoch(
     return {}
 
 
-def _abandon_units(
-    session: Session,
-    epoch: SearchClickAssignmentEpoch,
-    *,
-    units,
-    now_value: datetime,
-    reason: str,
-) -> None:
-    unit_values = list(units)
-    release_facts = _release_first_outcome_units(
-        session,
-        epoch,
-        units=unit_values,
-        now_value=now_value,
-        reason_code="search_solver_abandoned",
-    )
-    epoch.outcome = "abandoned"
-    epoch.release_unit_set_hash = release_unit_set_hash(release_facts)
-    epoch.released_unit_count = len(unit_values)
-    epoch.outcome_hash = search_outcome_hash(
-        epoch,
-        solver_result={"outcome": "abandoned", "reason": reason},
-        matches=(),
-    )
-    epoch.finalize_status = "finalized"
-    epoch.finalized_at = now_value
 __all__ = ["build_plan"]

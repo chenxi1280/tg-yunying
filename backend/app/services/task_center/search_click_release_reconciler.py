@@ -185,16 +185,60 @@ def recount_dispatch_unclaimed(
     )
     if allocation is None:
         raise RuntimeError("release_fact_incomplete")
+    _recount_allocation(session, allocation)
+    allocation.version += 1
+    _recount_window(session, allocation.dispatch_claim_window_id)
+
+
+def recount_epoch_release_facts(
+    session: Session,
+    *,
+    window_id: str,
+    reservation_ids: list[str],
+) -> None:
+    window = session.scalar(
+        select(DispatchClaimWindow)
+        .where(DispatchClaimWindow.id == window_id)
+        .with_for_update()
+    )
+    if window is None:
+        raise RuntimeError("release_fact_incomplete")
+    allocations = list(session.scalars(
+        select(DispatchClaimShardAllocation)
+        .where(DispatchClaimShardAllocation.dispatch_claim_window_id == window_id)
+        .order_by(DispatchClaimShardAllocation.id)
+        .with_for_update()
+    ))
+    reservations = list(session.scalars(
+        select(DispatchClaimReservation)
+        .where(DispatchClaimReservation.id.in_(sorted(set(reservation_ids))))
+        .order_by(DispatchClaimReservation.id)
+        .with_for_update()
+    ))
+    if len(reservations) != len(set(reservation_ids)):
+        raise RuntimeError("release_fact_incomplete")
+    for reservation in reservations:
+        _recount_reservation(session, reservation)
+    for allocation in allocations:
+        _recount_allocation(session, allocation)
+        allocation.version += 1
+    window.unclaimed_allocated_count = sum(
+        allocation.unclaimed_allocated_count for allocation in allocations
+    )
+    window.version += 1
+
+
+def _recount_allocation(
+    session: Session,
+    allocation: DispatchClaimShardAllocation,
+) -> None:
     reservations = session.scalars(select(DispatchClaimReservation).where(
         DispatchClaimReservation.dispatch_claim_shard_allocation_id
         == allocation.id
     ))
     allocation.unclaimed_allocated_count = sum(
-        _reservation_unclaimed_count(row)
-        for row in reservations
+        _reservation_unclaimed_count(row) for row in reservations
     )
-    allocation.version += 1
-    _recount_window(session, allocation.dispatch_claim_window_id)
 
 
 def _recount_window(session: Session, window_id: str) -> None:
@@ -225,4 +269,8 @@ def _reservation_unclaimed_count(
     return unclaimed
 
 
-__all__ = ["reconcile_complete_release", "recount_dispatch_unclaimed"]
+__all__ = [
+    "reconcile_complete_release",
+    "recount_dispatch_unclaimed",
+    "recount_epoch_release_facts",
+]
