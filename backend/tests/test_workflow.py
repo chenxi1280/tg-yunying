@@ -141,7 +141,7 @@ def _ai_group_memory_payload(
 ) -> dict:
     group = session.get(TgGroup, group_id)
     assert group is not None
-    memory_id = f"memory-{action_id}"
+    memory_id = str(uuid4())
     mask = AiAccountVoiceProfile(
         id=f"workflow-mask-{account_id}",
         tenant_id=1,
