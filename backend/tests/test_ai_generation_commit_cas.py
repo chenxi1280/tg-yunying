@@ -106,6 +106,21 @@ def test_phase_c_copies_provider_audit_metadata() -> None:
     assert restored_data == data
 
 
+def test_phase_c_preserves_planned_generation_source_when_provider_omits_it() -> None:
+    content = GeneratedContent(
+        "真实文案",
+        actual_model="mimo-v2.5",
+        fallback_stage="primary_default",
+    )
+
+    data = apply_generated_content_metadata(
+        {"generation_source": "human_context"},
+        content,
+    )
+
+    assert data["generation_source"] == "human_context"
+
+
 def test_cached_generation_rejects_scope_mismatch() -> None:
     payload = SendMessagePayload(
         group_id=8,

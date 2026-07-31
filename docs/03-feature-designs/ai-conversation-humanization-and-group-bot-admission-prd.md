@@ -451,6 +451,8 @@ AI 活群只消费既有 active 面具，不得修改面具生成、启用、版
 
 生产验收必须同时证明：active/superseded 面具数量与版本未被本功能改写；发布后新 Provider Action 的合同版本全部为 `style_only_v2`；开放队列不存在缺版本的旧已生成正文；新成功消息不再出现系统固定尾句注入。任务被人工停止时只能写 `unproven`，不得用容器健康或历史消息代替真实发送验收。
 
+Provider 返回正文进入 Phase C 时，必须保留规划阶段已经固化的非空 `generation_source`（如 `human_context`、`bootstrap`）；Provider 结果未提供该字段时不得用空字符串覆盖。带 `AI_GROUP_RELEASE_LIVE_AT` 的生产质量门以该发布时间之后的新 Action 为放行样本，同时保留近 24 小时快照作为历史观察；未提供发布时间时仍按近 24 小时执行门禁。
+
 人工停止后的历史 AI 活群任务必须可按当前合同重新启动。启动预检在构造当前 `GroupAIChatTaskCreate` 前先调用统一 legacy config normalization，删除已废弃的 `consecutive_message_*` 与 `auto_follow_required_channel`，并补齐 `group_bot_admission_required=true`；归一化只作用于预检输入，不改面具数据，也不恢复已移除的连续发言行为。
 
 群管提示可能在账号关注必需频道期间被删除，随后为不同账号产生新的提示。实时消息快照必须携带当前查看账号的 Telegram peer id；当旧 `source_message_id` 不可读时，只能用“可信群管 + 当前频道集合 + 确认按钮 + 显式收件 peer id 等于查看账号”四项同时成立的新提示重绑确认 Action。不得依赖本地账号表 id，也不得因窗口内只有一条提示而猜测归属。

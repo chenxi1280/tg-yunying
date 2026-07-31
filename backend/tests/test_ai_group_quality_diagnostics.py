@@ -798,6 +798,15 @@ def test_ai_group_quality_diagnostics_blocks_missing_human_quality_payload():
     ]
 
 
+def test_ai_group_quality_gate_uses_release_window_when_provided():
+    module = load_quality_diagnostics_module()
+    recent = {"duplicate_blockers": ["legacy"], "quality_payload_blockers": ["legacy"]}
+    release = {"duplicate_blockers": [], "quality_payload_blockers": []}
+
+    assert module.quality_gate_snapshot(recent, release) is release
+    assert module.quality_gate_snapshot(recent, None) is recent
+
+
 def test_ai_group_quality_diagnostics_exposes_provider_fallback_trace():
     module = load_quality_diagnostics_module()
     action = SimpleNamespace(

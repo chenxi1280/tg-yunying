@@ -231,6 +231,8 @@ def apply_generated_content_metadata(data: dict, content: str) -> dict:
         value = getattr(content, field, None)
         if value is None:
             continue
+        if field == "generation_source" and not str(value).strip():
+            continue
         updated[field] = [dict(item) for item in value] if field == "generation_attempts" else value
     return updated
 
