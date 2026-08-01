@@ -86,6 +86,7 @@ def reconcile_dispatch_ledgers_for_activation(
         active_actions,
     )
     reconcile_scope_active(session, scope)
+    session.flush()
     validate_dispatch_ledgers_for_activation(
         session,
         settings,
@@ -257,13 +258,15 @@ def _locked_activation_windows(
             DispatchClaimWindow.id.in_(active_allocation_windows),
         ),
     )
-    statement = select(DispatchClaimWindow).where(
+    is_live = DispatchClaimWindow.bucket_end > observed_at
+    statement = select(DispatchClaimWindow, is_live.label("is_live")).where(
         DispatchClaimWindow.dispatcher_scope == scope,
-        or_(DispatchClaimWindow.bucket_end > observed_at, closed_active),
+        or_(is_live, closed_active),
     ).order_by(DispatchClaimWindow.bucket_start.asc(), DispatchClaimWindow.id.asc())
-    windows = list(session.scalars(for_update(session, statement)))
-    live_windows = [row for row in windows if row.bucket_end > observed_at]
-    closed_windows = [row for row in windows if row.bucket_end <= observed_at]
+    rows = session.execute(for_update(session, statement)).all()
+    windows = [window for window, _ in rows]
+    live_windows = [window for window, live in rows if live]
+    closed_windows = [window for window, live in rows if not live]
     allocations = _locked_allocations_by_window(
         session,
         windows,

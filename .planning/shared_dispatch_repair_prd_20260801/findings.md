@@ -271,3 +271,5 @@
 - `reconcile-ledger`持续占用preparing fence：生产存在7,971个历史Window、62,405个Allocation、320,819个Reservation；executing active claim已恢复为0，但旧实现仍锁定并逐Window/epoch查询全历史账本，两个Dispatcher heartbeat/Scope锁等待超过数分钟。
 - 生产只读统计显示当前无未结束Window，但2,491个已结束Window仍有active投影漂移。激活只需按真实Action批量修复这些active投影；已结束Window的历史unclaimed和search release有原owner协议，不应由发布激活重放。
 - 正确修补为：未结束Window完整守恒；已结束且active漂移Window/Allocation批量装载并只修active；validation同范围并要求closed active drift=0。禁止通过延长900秒发布timeout掩盖全历史N+1。
+- 第四轮run `30693118550`两组后端、前端和镜像均通过；部署三次都在新批量查询后的Python分类失败，精确异常为PostgreSQL返回offset-naive `bucket_end`与offset-aware `observed_at`直接比较。分类必须由同一数据库表达式返回布尔值，不能把时间语义重新搬到Python。
+- 生产`SessionLocal(autoflush=false)`还要求active投影显式flush后再做聚合drift校验；该flush仍处于同一事务，不提前提交。SQLite回归通过`expire_all`复现数据库重新载入的naive时间，并同时覆盖autoflush关闭。

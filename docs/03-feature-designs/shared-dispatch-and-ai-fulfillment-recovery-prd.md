@@ -293,6 +293,8 @@ Window rebuild 前必须按以下顺序处理旧事实：
 - `reconcile-ledger` 在业务 writer 已 fence 且 candidate 为 preparing 时运行。它只对尚未结束的 Claim Window 执行 allocation/reservation/未领取份额完整守恒；对已结束 Window 只按真实 `executing + dispatch_claim_active` Action 修复 Window/Allocation active 投影，修复后 closed active drift 必须为 0。
 - 已结束 Window 的历史 unclaimed、搜索首次 outcome、bound unit 与 release batch 仍由原 Search epoch/release-wave 和常规回收协议收口；激活流程不得重新取得 owner、不得扫描并改写全部历史 Reservation，也不得因历史审计行存在而延长当前业务 fence。
 - Scope、目标 Window 与 Allocation 必须按稳定顺序批量锁定/装载；禁止对每个历史 Window 再分别查询 Allocation、Reservation 和 due Action。发布复杂度必须取决于未结束 Window 与残留 active 投影集合，而不是主库累计历史 Window/Reservation 总量。
+- live/closed Window 必须由数据库使用同一个 `observed_at` 表达式完成分类并返回分类结果；禁止把数据库载入的 offset-naive 时间与应用层 offset-aware 时间在 Python 直接比较。
+- 生产数据库 Session 即使关闭 autoflush，收敛后的 Window/Allocation/Scope 投影也必须在同一事务内显式 flush 后再执行聚合 invariant 查询；flush 或校验失败均整体回滚，禁止因读取事务内旧值误报漂移，也禁止拆成提前提交来绕过校验。
 
 #### 事务 C：Task 统计投影
 
@@ -513,6 +515,8 @@ Stage B 是前向数据迁移，不执行逆向改写。任何已 applied item�
 | 守恒竞态 | 双 writer/rebuild/release 下 counter 不负、不超 capacity、不双释放 |
 | PostgreSQL 锁序 | allocation 与 AI pre-Gateway reject/finalize 并发，30 分钟压力无 deadlock；claim 热事务无 `UPDATE tasks` |
 | 激活历史规模 | 构造大量已结束Window/Reservation与少量closed active drift；激活只完整重算未结束Window，批量清零closed active投影且不改历史unclaimed/search owner，不出现逐历史Window N+1 |
+| 激活 dirty Session | 使用生产同款`autoflush=false`，active投影在同事务显式flush后才执行聚合校验；校验读到新投影且最终一次提交，异常时整体回滚 |
+| 激活时间语义 | PostgreSQL返回offset-naive Window时间且应用`observed_at`为offset-aware；分类完全由数据库表达式完成，激活不得产生naive/aware比较异常 |
 | dirty Session | Action、Task、coverage 已 dirty 时，release 仍先取得 central lock prefix，禁止 autoflush 反向锁 |
 | Gateway 后原子性 | 在 claim release、Action、Attempt、各业务账本写入点逐一注入异常，B1整体 rollback；数据库永不出现 claim inactive + Action executing空窗 |
 | Gateway evidence journal | B1失败后仍能按request identity读取已提交remote ID或明确no-mutation；相同evidence重放零写、不同evidence冲突；journal失败+B1失败只能inconclusive |

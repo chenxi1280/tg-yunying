@@ -94,11 +94,13 @@ def test_activation_reconcile_releases_stale_unclaimed_contract() -> None:
 
 def test_activation_reconcile_does_not_replay_closed_window_history() -> None:
     engine = _engine()
-    with Session(engine) as session:
+    with Session(engine, autoflush=False) as session:
         _seed_stale_unclaimed(session)
         closed_reservation = _seed_closed_active_drift(session)
         settings = _settings()
         stage_dispatch_runtime_contract(session, settings)
+        session.flush()
+        session.expire_all()
 
         result = reconcile_dispatch_ledgers_for_activation(session, settings)
         session.commit()

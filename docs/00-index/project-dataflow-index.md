@@ -90,6 +90,8 @@ Action finalize
   -> claim release + Action/Attempt/coverage/content/search/membership/admission 等业务事实同事务原子提交
   -> B1 rollback 时 Recovery 原子转 remote-reconcile + unknown hold，不自动重发
   -> 发布reconcile-ledger仅对未结束Window做完整reservation守恒；已结束Window批量修复active投影，历史search outcome/release owner不变
+  -> Window live/closed由数据库按同一observed_at返回分类，禁止Python naive/aware时间比较
+  -> 生产autoflush=false时同事务显式flush新投影后再做聚合invariant校验，校验通过后一次提交
   -> exact fact按任务类型幂等重建业务事实；权威no-mutation令原AI槽replan；历史未找到仍inconclusive
   -> Task quality/runtime stats 独立短事务聚合
 

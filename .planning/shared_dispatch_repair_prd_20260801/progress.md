@@ -255,3 +255,5 @@
   - 第三轮两组后端、前端和三镜像全部success；生产stage后新容器healthy、两Dispatcher分片live且candidate preparing。
   - deploy卡在`reconcile-ledger`全历史N+1；线上量级为7,971/62,405/320,819，active claim已为0但preparing fence持续。已先补PRD/主PRD/DF-324的激活范围，再实现live Window完整守恒与closed active投影批量修复。
   - 新增关闭Window回归证明只清零Window/Allocation active投影、不改历史Reservation；共享发布相关定向集合`37 passed in 2.72s`，compile、Shell、diff及生产函数长度/参数闸门通过。
+  - 形成提交`8bad93a1a635e794ad08757893df868e450bb5aa`并推送master/release；run `30693118550`的frontend、no-PG、PG和三镜像通过，但deploy三次均以`TypeError: can't compare offset-naive and offset-aware datetimes`失败，current未切换且合同保持preparing。
+  - 先补PRD/父PRD/DF-324的数据库分类与dirty Session原子校验口径；实现SQL布尔分类、同事务显式flush，并以`autoflush=false + expire_all`新增回归，定向`4 passed`。
