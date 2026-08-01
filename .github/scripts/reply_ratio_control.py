@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 from dataclasses import dataclass
@@ -219,22 +220,29 @@ def _unknown_remote_row(session, action: Action) -> dict[str, Any]:
         .order_by(GatewayRequestEvidenceJournal.observed_at.desc())
         .limit(1)
     )
+    expected_action_hash = case.expected_action_state_hash if case else ""
+    current_action_hash = remote_reconcile_action_state_hash(action)
+    expected_attempt_hash = case.expected_attempt_state_hash if case else ""
+    current_attempt_hash = execution_attempt_state_hash(attempt) if attempt else ""
     return {
         "action_id": action.id,
+        "action_status": action.status,
+        "account_id": action.account_id,
+        "scheduled_at": action.scheduled_at.isoformat() if action.scheduled_at else None,
+        "executed_at": action.executed_at.isoformat() if action.executed_at else None,
+        "retry_count": action.retry_count,
+        "primary_quantity_slot_id": action.primary_quantity_slot_id,
+        "content_mix_cycle_slot_id": action.content_mix_cycle_slot_id,
+        "content_mix_slot_attempt": action.content_mix_slot_attempt,
+        "result_contract": _remote_result_contract(action),
         "attempt_id": attempt.id if attempt else None,
         "attempt_status": attempt.status if attempt else None,
         "case_id": case.id if case else None,
         "case_state": case.state if case else None,
-        "case_expected_action_state_hash": (
-            case.expected_action_state_hash if case else None
-        ),
-        "current_action_state_hash": remote_reconcile_action_state_hash(action),
-        "case_expected_attempt_state_hash": (
-            case.expected_attempt_state_hash if case else None
-        ),
-        "current_attempt_state_hash": (
-            execution_attempt_state_hash(attempt) if attempt else None
-        ),
+        "case_expected_action_state_hash_b64": _hash_b64(expected_action_hash),
+        "current_action_state_hash_b64": _hash_b64(current_action_hash),
+        "case_expected_attempt_state_hash_b64": _hash_b64(expected_attempt_hash),
+        "current_attempt_state_hash_b64": _hash_b64(current_attempt_hash),
         "claim_owner": action.claim_owner,
         "claim_expires_at": (
             action.claim_expires_at.isoformat() if action.claim_expires_at else None
@@ -250,6 +258,32 @@ def _unknown_remote_row(session, action: Action) -> dict[str, Any]:
         "journal_remote_message_id": journal.remote_message_id if journal else None,
         "journal_failure_code": journal.failure_code if journal else None,
     }
+
+
+def _hash_b64(value: str) -> str:
+    return base64.b64encode(bytes.fromhex(value)).decode() if value else ""
+
+
+def _remote_result_contract(action: Action) -> dict[str, Any]:
+    result = action.result if isinstance(action.result, dict) else {}
+    keys = (
+        "dispatch_claim_active",
+        "dispatch_claim_scope",
+        "dispatch_claim_window_id",
+        "dispatch_claim_shard_allocation_id",
+        "dispatch_reservation_id",
+        "gateway_call_state",
+        "gateway_call_started_at",
+        "gateway_request_id",
+        "gateway_request_identity",
+        "gateway_request_fingerprint",
+        "gateway_target_fingerprint",
+        "remote_message_id",
+        "remote_fact_id",
+        "telegram_msg_id",
+        "error_code",
+    )
+    return {key: result[key] for key in keys if key in result}
 
 
 def runtime_snapshot(session, task_rows: list[Task]) -> dict[str, Any]:
