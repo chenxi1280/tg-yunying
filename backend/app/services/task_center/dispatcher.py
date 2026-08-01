@@ -2990,7 +2990,6 @@ def _reserve_group_send_attempt(
     group = session.scalar(select(TgGroup).where(TgGroup.id == context.group.id).with_for_update())
     if group is None:
         _fail(action, FailureType.PEER_INVALID.value, "目标群不存在", validation_stage="target")
-        session.commit()
         return None
     from app.services.outbound_target_gate import evaluate_outbound_target_gate
 
@@ -3011,18 +3010,15 @@ def _reserve_group_send_attempt(
             "target_tenant_mismatch",
         }:
             _skip(action, gate_block.code, gate_block.detail)
-            session.commit()
             return None
         _defer_group_send_for_limit(
             action,
             GroupSendSlotBlock(gate_block.code, gate_block.detail, max(1, int(gate_block.retry_after_seconds or 60))),
         )
-        session.commit()
         return None
     block = group_send_slot_block(session, action=action, group=group)
     if block:
         _defer_group_send_for_limit(action, block)
-        session.commit()
         return None
     reserved_until = None if action.task_type == "group_ai_chat" else reserve_group_send_slot(group)
     if reserved_until is not None:
@@ -3056,7 +3052,6 @@ def _reserve_target_send_attempt(
     )
     if gate_block is not None:
         _skip(action, gate_block.code, gate_block.detail)
-        session.commit()
         return None
     attempt = _begin_execution_attempt(session, action, account)
     _mark_executing(action)
@@ -3087,7 +3082,6 @@ def _reserve_channel_action_attempt(
     )
     if gate_block is not None:
         _skip(action, gate_block.code, gate_block.detail)
-        session.commit()
         return None
     attempt = _begin_execution_attempt(session, action, account)
     _mark_executing(action)
@@ -3120,7 +3114,6 @@ def _reserve_channel_membership_attempt(
     )
     if gate_block is not None:
         _skip(action, gate_block.code, gate_block.detail)
-        session.commit()
         return None
     attempt = _begin_execution_attempt(session, action, account)
     _mark_executing(action)
@@ -3825,7 +3818,6 @@ def _reserve_group_bot_admission_window(session: Session, action: Action, payloa
         return False
     if _group_bot_admission_window_busy(session, action, locked_group.id):
         _defer_group_bot_admission_window(action, locked_group.id)
-        session.commit()
         return True
     _record_group_bot_admission_window(action, locked_group.id)
     session.commit()

@@ -15,11 +15,16 @@ from app.models import (
     DispatchClaimScope,
     DispatchClaimShardAllocation,
     DispatchClaimWindow,
+    OperationTarget,
     Task,
     Tenant,
+    TgAccount,
+    TgGroup,
+    TgGroupAccount,
 )
 from app.services._common import _now
 from app.services.task_center import dispatcher, service
+from app.services.task_center.payloads import SendMessagePayload
 
 
 pytestmark = pytest.mark.no_postgres
@@ -82,6 +87,38 @@ def test_transaction_c_failure_does_not_roll_back_business_result(
     assert service._dispatch_claimed_action_once(sessions, "action-c") == 1
     with sessions() as session:
         assert session.get(Action, "action-c").status == "success"
+
+
+def test_pre_gateway_failure_waits_for_atomic_claim_release(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    _seed_active_claim(engine)
+    with Session(engine) as session:
+        action, context = _missing_group_gateway_context(session)
+        committed_states: list[tuple[str, bool]] = []
+        real_commit = session.commit
+
+        def record_commit() -> None:
+            committed_states.append(
+                (action.status, bool((action.result or {}).get("dispatch_claim_active")))
+            )
+            real_commit()
+
+        monkeypatch.setattr(session, "commit", record_commit)
+        assert dispatcher._reserve_group_send_attempt(session, action, context) is None
+        assert committed_states == []
+
+        dispatcher._finalize_dispatch_action(
+            session,
+            action,
+            ensure_remote_case=False,
+            project_task_stats=False,
+        )
+        real_commit()
+
+        assert session.get(Action, action.id).status == "failed"
+        assert session.get(Action, action.id).result["dispatch_claim_active"] is False
+        assert session.get(DispatchClaimScope, "scope-1").active_claim_count == 0
 
 
 def _seed_active_claim(engine) -> None:
@@ -150,6 +187,43 @@ def _seed_active_claim(engine) -> None:
         )
         session.add_all([scope, window, allocation, reservation, action])
         session.commit()
+
+
+def _missing_group_gateway_context(
+    session: Session,
+) -> tuple[Action, dispatcher.GroupSendGatewayContext]:
+    action = session.get(Action, "action-1")
+    task = session.get(Task, "task-1")
+    account = TgAccount(
+        id=1,
+        tenant_id=1,
+        display_name="sender",
+        phone_masked="+861***0001",
+        status="在线",
+    )
+    target = OperationTarget(
+        id=404,
+        tenant_id=1,
+        target_type="group",
+        tg_peer_id="-100404",
+        title="missing",
+    )
+    task.type = "group_ai_chat"
+    action.task_type = "group_ai_chat"
+    action.action_type = "send_message"
+    action.account_id = account.id
+    action.payload = {
+        "group_id": 404,
+        "target_operation_target_id": target.id,
+        "target_reference_revision": 1,
+        "target_reference_snapshot": {"tg_peer_id": target.tg_peer_id},
+    }
+    session.add_all([account, target])
+    session.commit()
+    group = TgGroup(id=404, tenant_id=1, tg_peer_id=target.tg_peer_id, title="missing")
+    link = TgGroupAccount(tenant_id=1, group_id=group.id, account_id=account.id, can_send=True)
+    payload = SendMessagePayload(group_id=group.id, message_text="hello")
+    return action, dispatcher.GroupSendGatewayContext(account, object(), group, link, payload, "hello")
 
 
 def _seed_executing_action(engine) -> None:

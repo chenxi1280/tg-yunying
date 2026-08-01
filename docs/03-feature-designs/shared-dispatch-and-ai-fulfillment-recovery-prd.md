@@ -294,7 +294,7 @@ Window rebuild 前必须按以下顺序处理旧事实：
 
 - `reconcile-ledger` 在业务 writer 已 fence 且 candidate 为 preparing 时运行。它只对尚未结束的 Claim Window 执行 allocation/reservation/未领取份额完整守恒；对已结束 Window 只按真实 `executing + dispatch_claim_active` Action 修复 Window/Allocation active 投影，修复后 closed active drift 必须为 0。
 - 已结束 Window 的历史 unclaimed、搜索首次 outcome、bound unit 与 release batch 仍由原 Search epoch/release-wave 和常规回收协议收口；激活流程不得重新取得 owner、不得扫描并改写全部历史 Reservation，也不得因历史审计行存在而延长当前业务 fence。
-- 上述 closed active 必须为0只适用于 writer 已 fence 的激活事务。合同 active 后，Window 结束时仍在 Gateway/B1 生命周期内的 `executing + dispatch_claim_active` Action 可以继续占用原 Window active claim，直至其原子终结释放；这是合法跨窗在途，不得被 post-deploy `verify-active` 误判为 drift。运行期只读验证必须先锁定 Scope 以冻结 claim/release 前缀，再证明 Scope active 等于真实 active Action 数、已结束 Window 的 `effective_unclaimed_count=0`，且 Window/Allocation active 投影与每条 Action 冻结的 Window/Allocation binding 精确相等；任一缺失或错绑仍 fail closed。同一 ORM Session 若已在 candidate 校验无锁读取 Scope，后续行锁查询必须强制用数据库最新值覆盖 identity map；禁止用旧 Scope 缓存与锁后的新 Action 集合拼接成混合快照。刷新只修复观察一致性，不得自动改写账本或吞掉真实漂移。
+- 上述 closed active 必须为0只适用于 writer 已 fence 的激活事务。合同 active 后，Window 结束时仍在 Gateway/B1 生命周期内的 `executing + dispatch_claim_active` Action 可以继续占用原 Window active claim，直至其原子终结释放；这是合法跨窗在途，不得被 post-deploy `verify-active` 误判为 drift。运行期只读验证必须先锁定 Scope 以冻结 claim/release 前缀，再证明 Scope active 等于真实 active Action 数、已结束 Window 的 `effective_unclaimed_count=0`，且 Window/Allocation active 投影与每条 Action 冻结的 Window/Allocation binding 精确相等；任一缺失或错绑仍 fail closed。同一 ORM Session 若已在 candidate 校验无锁读取 Scope，后续行锁查询必须强制用数据库最新值覆盖 identity map；禁止用旧 Scope 缓存与锁后的新 Action 集合拼接成混合快照。刷新只修复观察一致性，不得自动改写账本或吞掉真实漂移。任何 pre-Gateway 门禁、目标失效、群发送限流或准入窗口忙分支，只要把持有 active claim 的 Action 从 `executing` 改为 `pending|skipped|failed`，就必须与 Scope/Window/Allocation claim 释放在同一事务提交；只有 Action 继续保持 `executing + dispatch_claim_active` 的 Gateway attempt/journal 边界允许提前提交。禁止先提交 Action 状态、再由外层事务补释放 claim。
 - Scope、目标 Window 与 Allocation 必须按稳定顺序批量锁定/装载；禁止对每个历史 Window 再分别查询 Allocation、Reservation 和 due Action。发布复杂度必须取决于未结束 Window 与残留 active 投影集合，而不是主库累计历史 Window/Reservation 总量。
 - live/closed Window 必须由数据库使用同一个 `observed_at` 表达式完成分类并返回分类结果；禁止把数据库载入的 offset-naive 时间与应用层 offset-aware 时间在 Python 直接比较。
 - 生产数据库 Session 即使关闭 autoflush，收敛后的 Window/Allocation/Scope 投影也必须在同一事务内显式 flush 后再执行聚合 invariant 查询；flush 或校验失败均整体回滚，禁止因读取事务内旧值误报漂移，也禁止拆成提前提交来绕过校验。
@@ -499,6 +499,7 @@ Stage B 是前向数据迁移，不执行逆向改写。任何已 applied item�
 3. 激活事务提交后，发布脚本和 GitHub post-deploy 必须再次执行只读 `verify-active`：要求 active/candidate版本完全一致、两个 shard仍 live、无旧 writer、全部 ledger守恒且实际 capacity=26；只打印 `status` 或仅 `verify-ready` 不构成激活成功，任一失败立即使 Release Gate失败。
    - `verify-active` 可能在新的60秒 Claim Window 已结束而其中Action仍执行时运行；它必须按运行期跨窗在途合同验证真实Action支撑的 active 投影，不能复用“writer fence后 closed active 必须为0”的激活前置条件。
    - candidate 无锁读取与 Scope 行锁升级复用同一 Session 时，加锁读取必须强制 refresh；并发 claim/release 后仍使用 identity map 旧值属于校验缺陷，不属于真实账本漂移。
+   - pre-Gateway 阻断/延后不能先提交非 executing 状态再等待外层 finalize；QA 必须在每个显式 commit 边界证明 `dispatch_claim_active=true` 的 Action 仍为 executing，或同一提交已释放完整账本前缀。
 4. worker只在观察到 active版本完全匹配后开始 Planner/generation/claim/recovery；任何旧版本或 mismatch继续零新写入。
    - worker loop冻结的`dispatch_contract_version`是heartbeat必备metadata。Planner/Dispatcher/Recovery等业务drain刷新同一heartbeat时只能合并业务字段，禁止整体覆盖或删除合同版本；`verify-active`必须在至少一次真实drain刷新后仍通过。
 5. 先观察现有 running任务，不额外创建真实 Telegram测试任务；连续30分钟检查窗口守恒、deadlock、claim、Gateway和业务事实。

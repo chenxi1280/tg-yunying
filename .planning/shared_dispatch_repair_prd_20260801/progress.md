@@ -292,3 +292,11 @@
 - 代码审计确认同一 Session 的 candidate 无锁读取先缓存 Scope，随后 `FOR UPDATE` 未强制刷新；并发 claim/release 后会把旧 Scope 计数与新 Action 集合拼成混合快照。
 - 已先更新专项 PRD、主 PRD、DF-324 与结构索引；生产同形态红测先复现同一 `scope_active_projection`，加锁查询强制 `populate_existing` 后转绿。
 - 共享调度、激活、claim/release、迁移与 Release Gate 定向集合 `70 passed in 5.29s`；未增加自动对账、重试或校验放宽。
+
+## 2026-08-01 生产 E4 继续修复：pre-Gateway 状态/claim 原子性
+
+- run `30698894709` attempt 2 完整成功，release `20260801121801_4c8a95e1` 上线；容器健康，两个 shard live 13+13，内外两次 `verify-active=active_verified`。
+- 同 SHA 诊断 run `30699626576` 再发布时，内部校验通过约25秒后外层报 `scope_active_projection`；这证明 identity map 刷新修复有效但仍存在真实写入窗口。
+- 代码审计定位 pre-Gateway 门禁/限流/准入分支先提交 `pending|skipped|failed` Action，随后外层才释放 active claim。已先回写 PRD/DF-324；commit 边界红测稳定捕获 `('failed', true)` 中间态。
+- 删除8个阻断/延后分支的提前 commit，由外层 finalize 同事务提交终态与完整 claim 释放；Gateway-started、Attempt journal、仍为 executing 的提交边界保持不变。
+- 红测转绿；出站/门禁/群管/频道/容量定向集合 `137 passed, 74 deselected`，共享 claim/激活/runtime/release 集合 `57 passed`，compile 与 diff check 通过。本地 PostgreSQL 地址在 collection 前断连，未计作通过，交由 GitHub Actions 服务容器验证。

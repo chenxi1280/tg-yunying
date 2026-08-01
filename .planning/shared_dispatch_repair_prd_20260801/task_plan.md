@@ -4,7 +4,7 @@
 基于 2026-08-01 生产事故事实和已完成专项 PRD，完成共享调度、Gateway原子终结、AI存量接管与远端核验的代码修复、自动化 QA和产品复核；生产发布和E4仍需独立证据。
 
 ## Current Phase
-Phase 20: post-deploy Scope identity 刷新修复
+Phase 21: pre-Gateway 状态与 claim 原子释放
 
 ## Requirements Checklist
 - [x] Intake Card 与 L3 分级、证据边界
@@ -172,9 +172,20 @@ Phase 20: post-deploy Scope identity 刷新修复
 - [x] 先回写专项 PRD、主 PRD、DF-324 与结构索引
 - [x] 红测复现数据库已更新但 identity map 仍旧的 Scope 加锁读取
 - [x] 最小修复加锁查询刷新语义并通过定向回归
-- [ ] 提交并再次走 master/release 完整发布
+- [x] 提交并再次走 master/release 完整发布
 - [ ] 在线证明两次 verify、Attempt 与真实 Telegram 事实增长
-- **Status:** in_progress_local_verified
+- **Status:** deployed_identity_fixed_next_writer_atomicity_found
+
+### Phase 21: pre-Gateway 状态与 claim 原子释放
+- [x] 从 run `30699626576` 定位同 SHA 内部校验通过、25秒后外层 `scope_active_projection`
+- [x] 审计出站门禁、限流与准入窗口的非 executing 状态提前提交路径
+- [x] 先回写专项 PRD、主 PRD、DF-324 与结构索引
+- [x] 红测证明 active Action 不得以非 executing 状态单独 commit
+- [x] 删除阻断/延后路径的提前 commit，由外层 finalize 同事务释放 claim
+- [x] 通过本地定向质量门
+- [ ] 通过 GitHub PostgreSQL/完整质量门并再次发布
+- [ ] 运行 Planner/AI 生产诊断，证明 Attempt 与真实 Telegram 事实增长
+- **Status:** local_verified_release_pending
 
 ## Decisions Made
 | Decision | Rationale |

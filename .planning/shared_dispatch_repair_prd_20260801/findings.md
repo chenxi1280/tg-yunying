@@ -306,3 +306,11 @@
 - `verify_dispatch_runtime_active` 先由 candidate 校验把 Scope 无锁载入同一 Session，之后才对同一行执行 `FOR UPDATE`；`_locked_scope` 未设置 `populate_existing`，SQLAlchemy 会返回 identity map 中的旧属性。
 - 两次读取间的合法 claim/release 会更新数据库 Scope 和 Action。加锁查询虽然锁住数据库最新行，却继续用缓存的旧 `active_claim_count`，随后 Action 查询读取新集合，形成数据库中从未存在的混合快照。
 - 修复合同：加锁读取必须强制刷新 Scope；真实账本漂移仍由严格投影校验显式失败，不能在 verify 中自动修账。
+
+## 2026-08-01 production finding: pre-Gateway status commits before claim release
+
+- release `20260801121801_4c8a95e1` 与 run `30698894709` 的内外两次 `verify-active` 均通过；同 SHA 的诊断 run `30699626576` 内部校验通过约25秒后，外层再次报 `scope_active_projection`。
+- identity refresh 已在线，故该失败不再是旧 Scope 缓存。代码审计发现 `_reserve_group_send_attempt`、`_reserve_target_send_attempt`、`_reserve_channel_action_attempt`、`_reserve_channel_membership_attempt` 及群管准入窗口忙分支，会先把 active Action 改为 `skipped|pending` 并 `commit`，外层 `_finalize_dispatch_action` 才锁 Scope 释放 claim。
+- 该中间提交使数据库真实短暂出现 Scope active 仍占用、SQL `status=executing` Action 已消失；`verify-active` 即使先锁 Scope，也无法阻止发生在 Scope 锁之前的 Action 状态提交。
+- 修复合同：阻断/延后状态与 claim 释放同事务；保持 executing 的 Gateway-started 边界提交继续保留，不扩大事务跨真实 Gateway 调用。
+- commit 观察红测在修复前记录到 `status=failed, dispatch_claim_active=true` 的独立提交；删除对应提交后，外层 finalize 单次事务得到 `status=failed, dispatch_claim_active=false, scope.active_claim_count=0`。
