@@ -259,3 +259,10 @@
   - 先补PRD/父PRD/DF-324的数据库分类与dirty Session原子校验口径；实现SQL布尔分类、同事务显式flush，并以`autoflush=false + expire_all`新增回归，定向`4 passed`。
   - 形成提交`5181f4be8b9b61790fc8dd2227ebd46730790fe9`并推master/release；run `30693755713`全部CI/镜像通过，生产账本收敛由30多分钟降至不足20秒，但AI scope全历史22,469 item apply在13,200条处被唯一错误quarantine阻断。
   - 已取消该run的重复安装；先补PRD/父PRD/DF-324，再实现open+unknown候选、invalid pre-Gateway replan、apply显式flush与生产同款autoflush=false测试会话；相关集合`70 passed in 5.22s`。
+## 2026-08-01 生产 E4 继续修复：过期 Window release
+
+- GitHub run `30694664419` 全部成功，生产 current 切到 `20260801100409_fdbadbb3`；所有核心容器 healthy，迁移为 `0134_shared_dispatch`，合同 `active_verified`，scope 26、两个 shard 各 13。
+- 最终 takeover batch `7bab7ee1-ef62-4d65-9372-583bb0a05963` completed：processed 755、applied 1、noop 754、conflict/quarantine 0。
+- 业务账本显示发布后新建 283 条 AI pending Action但没有 Attempt；Dispatcher 日志证明遗留搜索 release 的 effective 二次扣减整轮阻塞 claim。
+- 已先同步 PRD/主 PRD/DF-324，再补红测并修改 `dispatch_release_wave.py`；定向集合 `75 passed in 9.26s`，`git diff --check`与编译通过。
+- 下一门：提交并再次走 master -> release -> Deploy Production，随后验证异常归零和真实 Attempt/remote fact 增长。

@@ -22,15 +22,19 @@ def start_or_join_dispatch_rebuild_wave(
     window = session.get(DispatchClaimWindow, window_id)
     if window is None:
         raise RuntimeError("dispatch_release_window_missing")
+    window_expired = is_after_or_equal(now_value, window.bucket_end)
     if decrement_unclaimed:
-        window.unclaimed_allocated_count -= released_count
-        window.effective_unclaimed_count -= released_count
-        if (
-            window.unclaimed_allocated_count < 0
-            or window.effective_unclaimed_count < 0
-        ):
+        historical_unclaimed = (
+            int(window.unclaimed_allocated_count) - released_count
+        )
+        effective_unclaimed = int(window.effective_unclaimed_count)
+        if not window_expired:
+            effective_unclaimed -= released_count
+        if historical_unclaimed < 0 or effective_unclaimed < 0:
             raise RuntimeError("dispatch_release_window_unclaimed_negative")
-    if is_after_or_equal(now_value, window.bucket_end):
+        window.unclaimed_allocated_count = historical_unclaimed
+        window.effective_unclaimed_count = effective_unclaimed
+    if window_expired:
         return None
     if window.allocation_state == "ready":
         window.allocation_epoch += 1

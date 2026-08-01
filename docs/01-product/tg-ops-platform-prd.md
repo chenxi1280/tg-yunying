@@ -980,6 +980,8 @@ DISPATCHER_SCOPE_CAPACITY = 同一共享 scope 的全 worker 合计在途上限
 
 共享调度发布激活不得按主库全历史规模逐 Window 重放账本。业务 writer fence 后，只对未结束 Claim Window 做完整 allocation/reservation 守恒；已结束 Window 只批量修复由真实 active Action 可重建的 Window/Allocation active 投影，历史 unclaimed 和 search outcome/release 继续由其原 owner 协议收口。生产已有数千历史 Window 或数十万 Reservation 时，激活路径仍不得形成逐 Window N+1 或长期持有 Scope 锁阻塞 heartbeat。
 
+已结束 Claim Window 中仍受原 search assignment owner 管理的预绑定 unit，在 Gateway 前失效时继续由唯一 release batch 收口：原 Reservation、Allocation 与 Window 的历史 `unclaimed_allocated_count` 按实际 unit 减少；`effective_unclaimed_count` 已不再参与当前 scope 容量，必须保持零且不得二次扣减，也不得为已结束 Window 开启 rebuild wave。过期判断必须先于 effective 负数校验，不能让一条历史搜索释放异常回滚 Dispatcher 整轮 claim并阻塞其他任务。
+
 生产数据库关闭 autoflush 时，激活收敛必须在同一事务内先显式 flush 新投影、再运行聚合 invariant 校验，最后一次提交；不得让校验读取旧数据库值误判失败，也不得用提前提交削弱原子性。
 
 激活使用同一 `observed_at` 划分未结束与已结束 Window 时，分类必须由数据库表达式完成；不得在 Python 直接比较数据库 offset-naive 时间与应用 offset-aware 时间。

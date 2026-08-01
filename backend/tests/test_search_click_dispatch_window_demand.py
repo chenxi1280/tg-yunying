@@ -235,6 +235,32 @@ def test_release_quarantine_repairs_window_only_unclaimed_counter_drift() -> Non
         assert window.unclaimed_allocated_count == 0
 
 
+def test_expired_window_release_preserves_zero_effective_capacity() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine, autoflush=False) as session:
+        seed_assignment(session)
+        window = session.get(DispatchClaimWindow, "window-1")
+        allocation = session.get(DispatchClaimShardAllocation, "shard-1")
+        window.bucket_end = _now() - timedelta(minutes=1)
+        window.effective_unclaimed_count = 0
+        session.commit()
+
+        batch = release_search_click_assignment(
+            session,
+            "assignment-1",
+            trigger_key="expired-window:action-1:0",
+            reason_code="unclaimed_action_no_longer_due",
+            now_value=_now(),
+        )
+
+        assert batch.release_unit_count == 1
+        assert batch.rebuild_input_version_after is None
+        assert allocation.unclaimed_allocated_count == 0
+        assert window.unclaimed_allocated_count == 0
+        assert window.effective_unclaimed_count == 0
+
+
 def _seed_rows(session: Session, now_value: datetime) -> Action:
     session.add(Tenant(id=1, name="t"))
     _add_target_and_tasks(session)

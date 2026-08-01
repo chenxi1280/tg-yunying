@@ -4,7 +4,7 @@
 基于 2026-08-01 生产事故事实和已完成专项 PRD，完成共享调度、Gateway原子终结、AI存量接管与远端核验的代码修复、自动化 QA和产品复核；生产发布和E4仍需独立证据。
 
 ## Current Phase
-Phase 16: 生产发布与 E4 恢复验收
+Phase 17: 过期搜索 Window 释放阻断修复与再发布
 
 ## Requirements Checklist
 - [x] Intake Card 与 L3 分级、证据边界
@@ -131,11 +131,20 @@ Phase 16: 生产发布与 E4 恢复验收
 
 ### Phase 16: 生产发布与 E4 恢复验收
 - [x] 核准本次共享调度修复的精确发布范围，排除并行计划的无关改动
-- [ ] 在 GitHub Actions PostgreSQL/全量测试通过后完成 production deploy
-- [ ] 核验线上 migration、runtime contract、worker heartbeat、claim/reconcile 运行态
+- [x] 在 GitHub Actions PostgreSQL/全量测试通过后完成 production deploy
+- [x] 核验线上 migration、runtime contract、worker heartbeat、claim/reconcile 运行态
 - [ ] 观察目标任务的真实 Telegram 业务事实与任务账本，未完成则继续定位和修复
 - [ ] 只有部署、runtime 与业务 E4 均通过后，才更新 PRD 为 production_fixed
-- **Status:** in_progress_pre_release_gate
+- **Status:** runtime_pass_business_blocked_by_expired_search_release
+
+### Phase 17: 过期搜索 Window 释放阻断修复与再发布
+- [x] 用生产日志与账本定位 `dispatch_release_window_unclaimed_negative`
+- [x] 先回写专项 PRD、主 PRD 与 DF-324 的过期 Window 计数语义
+- [x] 补低层和 assignment 集成红测，修复 effective 二次扣减
+- [x] 通过搜索释放、跨 epoch、Dispatcher claim 与 Gateway 原子性定向回归
+- [ ] 提交并推送 master/release，等待完整 Actions 和生产部署
+- [ ] 证明 Dispatcher 不再整轮退出且发布后产生真实 Attempt/远端事实
+- **Status:** in_progress_local_verified
 
 ## Decisions Made
 | Decision | Rationale |
@@ -147,6 +156,7 @@ Phase 16: 生产发布与 E4 恢复验收
 | heartbeat metadata使用合并更新 | 业务drain不得删除worker loop冻结的合同版本 |
 | membership只保留RemoteReconcileCase作为unknown终结真相源 | 禁止旧reprobe绕过expected hash与evidence CAS |
 | 保留现有全局active plan，不用本专项覆盖 | 工作区还有并行发布计划；本次用显式路径维护共享调度发布证据，避免篡改其他任务状态 |
+| 已结束 Window 的 release 不再扣 effective | effective 已退出当前容量预算；仍扣历史 unclaimed并保留唯一 carrier，避免过期搜索 unit 阻塞整个 Dispatcher drain |
 
 ## Errors Encountered
 | Error | Attempt | Resolution |

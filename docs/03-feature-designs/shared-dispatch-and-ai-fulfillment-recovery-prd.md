@@ -245,6 +245,7 @@ Window rebuild 前必须按以下顺序处理旧事实：
 - 首次 finalize 必须在一个事务内完成 assignment binding、全部 unmatched release/exclusion、Reservation counter 与 outcome hash；提交后每个来源 Reservation 满足 `bound + claimed + released = reserved`。
 - 首次 finalize 后，只有有效 bound assignment 继续受保护；后续失效只能经唯一 `DispatchAllocationReleaseBatch` 逐 unit 释放。
 - `DispatchAllocationExclusion` 只服务搜索 `(window,reservation,fulfillment_lane_claim_ordinal)` unit，必须具有 search epoch 或 release batch carrier；普通 Reservation 永远不创建伪 ordinal 或伪 carrier。
+- 搜索 assignment 在原 Window 已结束后发生 Gateway 前释放时，仍要按原 Reservation/Allocation/Window 扣减历史 `unclaimed_allocated_count` 并写唯一 release carrier；但已结束 Window 的 `effective_unclaimed_count` 已退出当前容量预算，必须保持为 `0`，不得再次扣减。只有尚可领取的 Window 才同时扣减 `unclaimed_allocated_count` 与 `effective_unclaimed_count` 并开启/加入 rebuild wave。该分支必须在任何 effective 负数检查之前按同一业务时钟判定，避免历史预绑定释放让 Dispatcher 整轮 drain 失败。
 
 强制不变量：
 
@@ -515,6 +516,7 @@ Stage B 是前向数据迁移，不执行逆向改写。任何已 applied item�
 | 普通跨 epoch unbound | allocation冻结的`dispatch_contract_version`与当前版本一致且仍due的普通旧unclaimed继续可领取并计数；空/旧版本或旧拓扑binding原子释放并以同Action/义务进入新demand；无到期事实则释放；三者均不写`DispatchAllocationExclusion` |
 | 跨 epoch bound | 有效 search bound unit 继续可由唯一归属 Dispatcher confirm，不被普通 reclaimer 释放 |
 | 守恒竞态 | 双 writer/rebuild/release 下 counter 不负、不超 capacity、不双释放 |
+| 过期 Window 的预绑定释放 | 构造历史 `unclaimed_allocated_count > 0`、`effective_unclaimed_count = 0` 且 assignment 仍为 `action_bound`；精确 release 后历史 unclaimed 减一、effective 保持零、不建 rebuild wave、Action/Reservation/Exclusion 原子收口，Dispatcher 后续仍能领取其他任务 |
 | PostgreSQL 锁序 | allocation 与 AI pre-Gateway reject/finalize 并发，30 分钟压力无 deadlock；claim 热事务无 `UPDATE tasks` |
 | 激活历史规模 | 构造大量已结束Window/Reservation与少量closed active drift；激活只完整重算未结束Window，批量清零closed active投影且不改历史unclaimed/search owner，不出现逐历史Window N+1 |
 | 激活 dirty Session | 使用生产同款`autoflush=false`，active投影在同事务显式flush后才执行聚合校验；校验读到新投影且最终一次提交，异常时整体回滚 |

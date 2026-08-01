@@ -276,3 +276,10 @@
 - 第五轮run `30693755713`通过全部CI与镜像，生产`reconcile-ledger`已在不足20秒内通过；后续AI scope preview却为22,469条全历史Action建item，其中21,714条为immutable terminal。apply实测204秒仅处理3,100条，首轮最终在13,200条被唯一quarantine阻断并进入安装重试，证明全历史noop增长与错误分类都会阻止发布。
 - 唯一quarantine为未进Gateway的pending Action：AI正文生成命中内容策略后`message_text=''`、原quantity/content slot仍在。按PRD它应是`replan_required`并释放原槽，不是跨事实矛盾。
 - blocked batch中item已是`quarantined`，但`quarantined_count=0`，再次证明生产autoflush=false下聚合读取旧状态。正确修补同时包括：新preview只选open+unknown；invalid pre-Gateway payload归replan；首次conflict和每批apply显式flush后再聚合/finish。
+## 2026-08-01 production finding: expired search release blocks all Dispatcher claims
+
+- release `fdbadbb3` 的 migration、容器、shared dispatch activation 和 takeover batch 均通过；生产随后创建了 283 条新 AI Action，但新 Attempt 为 0。
+- `tgyunying-worker-dispatcher-2` 每轮在释放同一遗留预绑定搜索 Action 时抛出 `dispatch_release_window_unclaimed_negative`，使整个 claim batch 回滚；该 assignment 所属 Window 已于 16:40 结束，历史 `unclaimed_allocated_count=27`，`effective_unclaimed_count=0`。
+- 根因是 `start_or_join_dispatch_rebuild_wave` 在判断 Window 已结束之前同时扣减历史和 effective unclaimed。quarantine recount 正确保持过期 effective 为 0，重放又把它扣为 -1，因此每轮重复失败。
+- 修复合同：已结束 Window 只扣历史 unclaimed并直接收口，不扣 effective、不建 rebuild wave；尚可领取 Window 保持原双计数和 wave 行为。
+- 红测先失败于同一异常；修复后低层/assignment 两层回归及 75 条共享调度相关用例通过。

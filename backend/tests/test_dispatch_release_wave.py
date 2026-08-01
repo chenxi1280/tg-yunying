@@ -16,8 +16,8 @@ def test_expired_aware_window_accepts_naive_business_clock() -> None:
     now_value = datetime(2026, 7, 30, 2, 30)
     window = SimpleNamespace(
         bucket_end=(now_value - timedelta(minutes=1)).replace(tzinfo=BEIJING_TZ),
-        unclaimed_allocated_count=1,
-        effective_unclaimed_count=1,
+        unclaimed_allocated_count=27,
+        effective_unclaimed_count=0,
         allocation_state="ready",
         allocation_epoch=1,
         rebuild_input_version=0,
@@ -34,5 +34,8 @@ def test_expired_aware_window_accepts_naive_business_clock() -> None:
     )
 
     assert result is None
-    assert window.unclaimed_allocated_count == 0
+    assert window.unclaimed_allocated_count == 26
+    assert window.effective_unclaimed_count == 0
     assert window.allocation_state == "ready"
+    assert window.rebuild_input_version == 0
+    assert window.pending_rebuild_release_count == 0
