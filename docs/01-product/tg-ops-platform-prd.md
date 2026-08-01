@@ -978,6 +978,8 @@ DISPATCHER_SCOPE_CAPACITY = 同一共享 scope 的全 worker 合计在途上限
 
 全部远端 mutation 的 B0 必须冻结并提交 Attempt 级 `gateway_request_identity + request/target fingerprint`；Gateway 后的成功、失败、延期或 membership 重排只能合并结果，禁止用 Action 当前 result 覆盖这些不可变字段。浏览/点赞成功只把源消息 `remote_fact_id` 交给 B1，唯一 View/ReactionRemoteFact 由 B1 收尾单点创建；即使数据库 Session 关闭 autoflush，也不得由 Gateway 路径与通用投影在同一事务各插入一份远端事实。
 
+共享调度发布激活不得按主库全历史规模逐 Window 重放账本。业务 writer fence 后，只对未结束 Claim Window 做完整 allocation/reservation 守恒；已结束 Window 只批量修复由真实 active Action 可重建的 Window/Allocation active 投影，历史 unclaimed 和 search outcome/release 继续由其原 owner 协议收口。生产已有数千历史 Window 或数十万 Reservation 时，激活路径仍不得形成逐 Window N+1 或长期持有 Scope 锁阻塞 heartbeat。
+
 搜索 CAPTCHA 继续使用 §2.19 已批准的受控视觉识别、confidence 与按钮矩阵双重校验，以及按验证码 fingerprint 驱动的协议尝试；不设置同一 Action 的业务固定 AI 轮数或递归次数。“不绕过 CAPTCHA”指不得模糊点击、mock 成功、重复点击同一 fingerprint 或跳过矩阵校验，不是取消已经审批的识别流程。协议样本未通过真实 `target_click_observed` canary 前不得批量 source。容量不得使用验证码触发率、验证码 AI 历史成功率或目标命中率做概率折损；尚未进入验证页的路径只可计 eligible attempt 上界，已出现验证码的路径只有本次实际写入 `jisou_image_verification_solved` 后才恢复 click opportunity，`required|failed` 及 required 下的 unavailable/unknown 原因均不能计预测确认或 confirmed。验证码识别 AI 和批准重试不占 click 限额、目标、额外中央份额，也不进入 AI 活群/评论的主/备用 AI 生成轮次或业务 AI 生成次数；供应商/传输暂不可用保持 required，不触发 12 小时排除。账号剩余安全额度仍按真实账本扣减，不得以提升 legacy `per_account_daily_action_limit` 作为默认补容量方案。
 
 发布顺序固定为：事务与 claim -> 统一履约与 AI 账本 -> 评论/点赞/浏览 -> 搜索协议与安全容量 -> 存量 dry-run 修复与完整自然日 E4 验收。任一阶段只有本地测试或 health 证据时仍为 `production_unproven`。

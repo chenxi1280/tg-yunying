@@ -92,6 +92,29 @@ def test_activation_reconcile_releases_stale_unclaimed_contract() -> None:
         assert action.result["dispatch_binding_replan_required"] is True
 
 
+def test_activation_reconcile_does_not_replay_closed_window_history() -> None:
+    engine = _engine()
+    with Session(engine) as session:
+        _seed_stale_unclaimed(session)
+        closed_reservation = _seed_closed_active_drift(session)
+        settings = _settings()
+        stage_dispatch_runtime_contract(session, settings)
+
+        result = reconcile_dispatch_ledgers_for_activation(session, settings)
+        session.commit()
+
+        closed_window = session.get(DispatchClaimWindow, "closed-window")
+        closed_allocation = session.get(
+            DispatchClaimShardAllocation,
+            "closed-allocation",
+        )
+        assert result["window_count"] == 1
+        assert result["closed_active_window_count"] == 1
+        assert closed_window.active_claim_count == 0
+        assert closed_allocation.active_claim_count == 0
+        assert closed_reservation.reserved_claims == 7
+
+
 def _engine():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -242,6 +265,43 @@ def _seed_stale_unclaimed(session: Session) -> None:
         result={},
     ))
     session.flush()
+
+
+def _seed_closed_active_drift(session: Session) -> DispatchClaimReservation:
+    now = _now()
+    window = DispatchClaimWindow(
+        id="closed-window",
+        dispatcher_scope="task_center_dispatch",
+        bucket_start=now - timedelta(hours=2),
+        bucket_end=now - timedelta(hours=1),
+        claim_capacity=52,
+        active_claim_count=9,
+        unclaimed_allocated_count=7,
+        effective_unclaimed_count=7,
+    )
+    allocation = DispatchClaimShardAllocation(
+        id="closed-allocation",
+        dispatch_claim_window_id=window.id,
+        dispatch_allocation_epoch=1,
+        account_shard_total=1,
+        account_shard_index=0,
+        active_claim_count=9,
+        unclaimed_allocated_count=7,
+    )
+    reservation = DispatchClaimReservation(
+        id="closed-reservation",
+        dispatch_claim_shard_allocation_id=allocation.id,
+        dispatch_allocation_epoch=1,
+        tenant_id=1,
+        task_id="task",
+        claim_class="ordinary",
+        bucket_start=window.bucket_start,
+        required_claims=7,
+        reserved_claims=7,
+    )
+    session.add_all([window, allocation, reservation])
+    session.flush()
+    return reservation
 
 
 def _settings():

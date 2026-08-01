@@ -89,6 +89,7 @@ Action finalize
   -> B1 no_autoflush 取得 central lock prefix
   -> claim release + Action/Attempt/coverage/content/search/membership/admission 等业务事实同事务原子提交
   -> B1 rollback 时 Recovery 原子转 remote-reconcile + unknown hold，不自动重发
+  -> 发布reconcile-ledger仅对未结束Window做完整reservation守恒；已结束Window批量修复active投影，历史search outcome/release owner不变
   -> exact fact按任务类型幂等重建业务事实；权威no-mutation令原AI槽replan；历史未找到仍inconclusive
   -> Task quality/runtime stats 独立短事务聚合
 
@@ -112,7 +113,7 @@ Worker lifecycle
   -> verify-ready/active只忽略stopped；fresh active旧合同writer继续阻断
 ```
 
-共同不变量：普通 Action不得使用虚拟 `(1,0)`；搜索虚拟 Reservation不得被普通 claim消费，首次 outcome前也不得被通用 reclaimer释放；旧 epoch只有 active、search materialization-owned、有效 bound与仍到期普通份额可继续占用；全部远端mutation都必须经过B0/journal/B1且B1不得产生 claim-free executing持久空窗；Attempt的B0 request identity与fingerprint不可被后续result整体覆盖；view/reaction远端事实只由B1单点创建；membership unknown只有唯一RemoteReconcileCase CAS状态机，存量无Attempt或最新Attempt缺冻结request identity时，保留旧Attempt并追加read-only recovery Attempt/Case，精确recovery claim获取/释放均推进完整Action expected hash；preparing期间业务写入为0；heartbeat合同版本不可被业务刷新覆盖；claim热事务禁止 `UPDATE tasks`；任何 topology/capacity/liveness/invariant不一致都 fail closed并显式展示，不能用默认值、扩 worker、延长 Window或清库降级。
+共同不变量：普通 Action不得使用虚拟 `(1,0)`；搜索虚拟 Reservation不得被普通 claim消费，首次 outcome前也不得被通用 reclaimer释放；旧 epoch只有 active、search materialization-owned、有效 bound与仍到期普通份额可继续占用；全部远端mutation都必须经过B0/journal/B1且B1不得产生 claim-free executing持久空窗；Attempt的B0 request identity与fingerprint不可被后续result整体覆盖；view/reaction远端事实只由B1单点创建；membership unknown只有唯一RemoteReconcileCase CAS状态机，存量无Attempt或最新Attempt缺冻结request identity时，保留旧Attempt并追加read-only recovery Attempt/Case，精确recovery claim获取/释放均推进完整Action expected hash；发布激活只完整重算未结束Window，已结束Window只修active投影且不接管历史search release owner；preparing期间业务写入为0；heartbeat合同版本不可被业务刷新覆盖；claim热事务禁止 `UPDATE tasks`；任何 topology/capacity/liveness/invariant不一致都 fail closed并显式展示，不能用默认值、扩 worker、延长 Window或清库降级。
 
 ### 全任务按时按量履约恢复数据流（2026-07-29 接管修订）
 

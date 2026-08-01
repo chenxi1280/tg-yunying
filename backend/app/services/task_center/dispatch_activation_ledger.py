@@ -4,7 +4,7 @@ from collections import Counter
 from datetime import datetime
 import json
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -24,7 +24,6 @@ from .dispatch_claim_ledger import (
     reconcile_window_active,
     scope_for_update,
     sync_window_capacity,
-    window_allocations,
     window_reservations,
 )
 from .dispatch_claim_reconciliation import (
@@ -66,33 +65,88 @@ def reconcile_dispatch_ledgers_for_activation(
         contract.scope_capacity,
     )
     active_actions = _active_scope_actions(session, contract.dispatcher_scope)
-    windows = _locked_windows(session, contract.dispatcher_scope)
-    released = 0
-    for window in windows:
-        allocations = window_allocations(session, window.id)
-        released += _reconcile_window_epochs(
+    live_windows, closed_windows, allocations_by_window = (
+        _locked_activation_windows(
             session,
-            window,
-            allocations,
+            contract.dispatcher_scope,
             observed_at,
-            contract.rebuild_contract_version,
-            contract.runtime_shard_total,
         )
-        reconcile_window_active(window, allocations, active_actions)
-        sync_window_unclaimed_total(window, allocations)
-        sync_window_capacity(window, contract.scope_capacity)
+    )
+    released = _reconcile_live_windows(
+        session,
+        windows=live_windows,
+        allocations_by_window=allocations_by_window,
+        active_actions=active_actions,
+        observed_at=observed_at,
+        contract=contract,
+    )
+    _reconcile_closed_active_windows(
+        closed_windows,
+        allocations_by_window,
+        active_actions,
+    )
     reconcile_scope_active(session, scope)
-    validate_dispatch_ledgers_for_activation(session, settings)
+    validate_dispatch_ledgers_for_activation(
+        session,
+        settings,
+        now=observed_at,
+    )
     return {
         "scope_id": scope.id,
-        "window_count": len(windows),
+        "window_count": len(live_windows),
+        "closed_active_window_count": len(closed_windows),
         "active_claim_count": scope.active_claim_count,
         "released_unclaimed_count": released,
     }
 
 
-def validate_dispatch_ledgers_for_activation(session: Session, settings) -> None:
+def _reconcile_live_windows(
+    session: Session,
+    *,
+    windows: list[DispatchClaimWindow],
+    allocations_by_window: dict[str, list[DispatchClaimShardAllocation]],
+    active_actions: list[Action],
+    observed_at: datetime,
+    contract,
+) -> int:
+    released = 0
+    for window in windows:
+        allocations = allocations_by_window.get(window.id, [])
+        released += _reconcile_window_epochs(
+            session,
+            window,
+            allocations=allocations,
+            now=observed_at,
+            contract_version=contract.rebuild_contract_version,
+            shard_total=contract.runtime_shard_total,
+        )
+        reconcile_window_active(window, allocations, active_actions)
+        sync_window_unclaimed_total(window, allocations)
+        sync_window_capacity(window, contract.scope_capacity)
+    return released
+
+
+def _reconcile_closed_active_windows(
+    windows: list[DispatchClaimWindow],
+    allocations_by_window: dict[str, list[DispatchClaimShardAllocation]],
+    active_actions: list[Action],
+) -> None:
+    for window in windows:
+        reconcile_window_active(
+            window,
+            allocations_by_window.get(window.id, []),
+            active_actions,
+        )
+
+
+def validate_dispatch_ledgers_for_activation(
+    session: Session,
+    settings,
+    *,
+    now: datetime | None = None,
+) -> None:
     contract = build_dispatch_runtime_contract(settings)
+    observed_at = now or _now()
     scope = session.scalar(select(DispatchClaimScope).where(
         DispatchClaimScope.dispatcher_scope == contract.dispatcher_scope,
     ))
@@ -100,9 +154,16 @@ def validate_dispatch_ledgers_for_activation(session: Session, settings) -> None
         raise _invariant_error("scope_capacity")
     windows = list(session.scalars(select(DispatchClaimWindow).where(
         DispatchClaimWindow.dispatcher_scope == contract.dispatcher_scope,
+        DispatchClaimWindow.bucket_end > observed_at,
     )))
     for window in windows:
         _validate_window(session, window, contract.scope_capacity)
+    if _closed_active_drift_count(
+        session,
+        contract.dispatcher_scope,
+        observed_at,
+    ):
+        raise _invariant_error("closed_window_active")
 
 
 def _recover_fenced_action(
@@ -177,16 +238,81 @@ def _active_scope_actions(session: Session, scope: str) -> list[Action]:
     ]
 
 
-def _locked_windows(session: Session, scope: str) -> list[DispatchClaimWindow]:
+def _locked_activation_windows(
+    session: Session,
+    scope: str,
+    observed_at: datetime,
+) -> tuple[
+    list[DispatchClaimWindow],
+    list[DispatchClaimWindow],
+    dict[str, list[DispatchClaimShardAllocation]],
+]:
+    active_allocation_windows = select(
+        DispatchClaimShardAllocation.dispatch_claim_window_id,
+    ).where(DispatchClaimShardAllocation.active_claim_count != 0)
+    closed_active = and_(
+        DispatchClaimWindow.bucket_end <= observed_at,
+        or_(
+            DispatchClaimWindow.active_claim_count != 0,
+            DispatchClaimWindow.id.in_(active_allocation_windows),
+        ),
+    )
     statement = select(DispatchClaimWindow).where(
         DispatchClaimWindow.dispatcher_scope == scope,
+        or_(DispatchClaimWindow.bucket_end > observed_at, closed_active),
     ).order_by(DispatchClaimWindow.bucket_start.asc(), DispatchClaimWindow.id.asc())
-    return list(session.scalars(for_update(session, statement)))
+    windows = list(session.scalars(for_update(session, statement)))
+    live_windows = [row for row in windows if row.bucket_end > observed_at]
+    closed_windows = [row for row in windows if row.bucket_end <= observed_at]
+    allocations = _locked_allocations_by_window(
+        session,
+        windows,
+    )
+    return live_windows, closed_windows, allocations
+
+
+def _locked_allocations_by_window(
+    session: Session,
+    windows: list[DispatchClaimWindow],
+) -> dict[str, list[DispatchClaimShardAllocation]]:
+    result = {window.id: [] for window in windows}
+    if not result:
+        return result
+    statement = select(DispatchClaimShardAllocation).where(
+        DispatchClaimShardAllocation.dispatch_claim_window_id.in_(tuple(result)),
+    ).order_by(
+        DispatchClaimShardAllocation.dispatch_claim_window_id.asc(),
+        DispatchClaimShardAllocation.dispatch_allocation_epoch.asc(),
+        DispatchClaimShardAllocation.id.asc(),
+    )
+    for allocation in session.scalars(for_update(session, statement)):
+        result[allocation.dispatch_claim_window_id].append(allocation)
+    return result
+
+
+def _closed_active_drift_count(
+    session: Session,
+    scope: str,
+    observed_at: datetime,
+) -> int:
+    active_allocation_windows = select(
+        DispatchClaimShardAllocation.dispatch_claim_window_id,
+    ).where(DispatchClaimShardAllocation.active_claim_count != 0)
+    count = session.scalar(select(func.count(DispatchClaimWindow.id)).where(
+        DispatchClaimWindow.dispatcher_scope == scope,
+        DispatchClaimWindow.bucket_end <= observed_at,
+        or_(
+            DispatchClaimWindow.active_claim_count != 0,
+            DispatchClaimWindow.id.in_(active_allocation_windows),
+        ),
+    ))
+    return int(count or 0)
 
 
 def _reconcile_window_epochs(
     session: Session,
     window: DispatchClaimWindow,
+    *,
     allocations: list[DispatchClaimShardAllocation],
     now: datetime,
     contract_version: str,

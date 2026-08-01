@@ -250,3 +250,8 @@
   - 已先resync专项PRD、父PRD与DF-324，再按冻结快照保持和B1单点远端事实合同修补代码与回归。
   - 评论membership独立SQLite复现由`gateway_request_identity_missing`转为pass；旧membership Attempt保留/新Attempt成功的回归pass；journal与remote reconciliation单元集`10 passed`。
   - 通过真实`SessionLocal(autoflush=false)`手动执行第二轮PG失败的4个workflow节点，频道浏览/点赞/评论组合、like reset、view reset、失败后重规划均pass，未再产生RemoteFact双INSERT。
+  - 定向可归因集合`40 passed in 3.00s`，触碰函数长度、diff、compile和发布Shell语法闸门通过；形成提交`7ed14aceeca862716927062ac2226c10018fb858`并依次快进master/release。
+  - 第三轮Deploy Production run `30691867621`已由release push触发，开始监控CI、镜像和部署阶段。
+  - 第三轮两组后端、前端和三镜像全部success；生产stage后新容器healthy、两Dispatcher分片live且candidate preparing。
+  - deploy卡在`reconcile-ledger`全历史N+1；线上量级为7,971/62,405/320,819，active claim已为0但preparing fence持续。已先补PRD/主PRD/DF-324的激活范围，再实现live Window完整守恒与closed active投影批量修复。
+  - 新增关闭Window回归证明只清零Window/Allocation active投影、不改历史Reservation；共享发布相关定向集合`37 passed in 2.72s`，compile、Shell、diff及生产函数长度/参数闸门通过。

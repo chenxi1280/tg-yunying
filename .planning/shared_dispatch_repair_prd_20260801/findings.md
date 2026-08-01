@@ -264,3 +264,10 @@
 - 评论membership明确返回`remote_mutation_started=false`后仍转unknown，独立SQLite复现得到异常`gateway_request_identity_missing`。根因是B0已冻结的Attempt snapshot在`_finish_execution_attempt`中被membership延期后的Action result整体覆盖；修复必须保留Attempt原identity/fingerprint并合并新结果，不能放宽unknown安全规则。
 - view/reaction的4条失败来自`SessionLocal(autoflush=false)`：Gateway成功路径先添加RemoteFact，通用B1收尾查询看不到pending对象又添加一份，commit批量INSERT触发唯一键冲突并按Gateway-started安全路径转unknown。远端事实改为只由B1收尾单点创建，Gateway路径只传`remote_fact_id`。
 - legacy membership测试仍读取旧Attempt并期待其被改成success，与已批准“旧Attempt不可改、追加read-only recovery Attempt”冲突；断言改为旧Attempt保持gateway-started、新Attempt携带source id并success。
+
+### Actions run 30691867621 production activation finding
+
+- 第三轮frontend、no-PG、PostgreSQL 16和三镜像构建均通过，deploy进入生产Stage A；新backend与两个Dispatcher均healthy，candidate为`dispatch-rebuild-v3/preparing`且两分片live、容量13+13。
+- `reconcile-ledger`持续占用preparing fence：生产存在7,971个历史Window、62,405个Allocation、320,819个Reservation；executing active claim已恢复为0，但旧实现仍锁定并逐Window/epoch查询全历史账本，两个Dispatcher heartbeat/Scope锁等待超过数分钟。
+- 生产只读统计显示当前无未结束Window，但2,491个已结束Window仍有active投影漂移。激活只需按真实Action批量修复这些active投影；已结束Window的历史unclaimed和search release有原owner协议，不应由发布激活重放。
+- 正确修补为：未结束Window完整守恒；已结束且active漂移Window/Allocation批量装载并只修active；validation同范围并要求closed active drift=0。禁止通过延长900秒发布timeout掩盖全历史N+1。
