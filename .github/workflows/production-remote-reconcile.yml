@@ -147,7 +147,10 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "${APPLY}" == true ]]; then
-            ssh silicon-valley-production-server "timeout 180 docker exec -i tgyunying-backend python -m scripts.reconcile_remote_delivery apply --case-id '${CASE_ID}' --evidence-source '${EVIDENCE_SOURCE}' --expected-evidence-fingerprint '${EXPECTED_FINGERPRINT}' --actor '${ACTOR}' --approval-ref '${APPROVAL_REF}'"
+            RESULT="$(ssh silicon-valley-production-server "timeout 180 docker exec -i tgyunying-backend python -m scripts.reconcile_remote_delivery apply --case-id '${CASE_ID}' --evidence-source '${EVIDENCE_SOURCE}' --expected-evidence-fingerprint '${EXPECTED_FINGERPRINT}' --actor '${ACTOR}' --approval-ref '${APPROVAL_REF}'")"
+            printf '%s\n' "${RESULT}"
+            STATE="$(printf '%s\n' "${RESULT}" | tail -n 1 | jq -r '.state')"
+            [[ "${STATE}" == remote_confirmed || "${STATE}" == remote_absence_proven ]]
           else
             ssh silicon-valley-production-server "timeout 180 docker exec -i tgyunying-backend python -m scripts.reconcile_remote_delivery preview --case-id '${CASE_ID}' --evidence-source '${EVIDENCE_SOURCE}'"
           fi

@@ -18,6 +18,10 @@ from app.models import (
     WorkerHeartbeat,
 )
 from app.services.task_center.service import _apply_type_config_data
+from app.services.task_center.runtime_state_hash import (
+    execution_attempt_state_hash,
+    remote_reconcile_action_state_hash,
+)
 
 
 ACTIVE_STATUSES = ("pending", "running")
@@ -221,6 +225,24 @@ def _unknown_remote_row(session, action: Action) -> dict[str, Any]:
         "attempt_status": attempt.status if attempt else None,
         "case_id": case.id if case else None,
         "case_state": case.state if case else None,
+        "case_expected_action_state_hash": (
+            case.expected_action_state_hash if case else None
+        ),
+        "current_action_state_hash": remote_reconcile_action_state_hash(action),
+        "case_expected_attempt_state_hash": (
+            case.expected_attempt_state_hash if case else None
+        ),
+        "current_attempt_state_hash": (
+            execution_attempt_state_hash(attempt) if attempt else None
+        ),
+        "claim_owner": action.claim_owner,
+        "claim_expires_at": (
+            action.claim_expires_at.isoformat() if action.claim_expires_at else None
+        ),
+        "lease_owner": action.lease_owner,
+        "lease_expires_at": (
+            action.lease_expires_at.isoformat() if action.lease_expires_at else None
+        ),
         "journal_state": journal.state if journal else None,
         "journal_remote_mutation_state": (
             journal.remote_mutation_state if journal else None

@@ -27,3 +27,6 @@ def test_remote_reconcile_apply_requires_preview_fingerprint_and_approval() -> N
     assert "--approval-ref" in source
     assert "type: choice" in source
     assert "- journal" in source
+    assert "STATE=" in source
+    assert "remote_confirmed" in source
+    assert "remote_absence_proven" in source
