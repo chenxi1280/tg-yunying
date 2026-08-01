@@ -30,3 +30,6 @@ def test_remote_reconcile_apply_requires_preview_fingerprint_and_approval() -> N
     assert "STATE=" in source
     assert "remote_confirmed" in source
     assert "remote_absence_proven" in source
+    assert "--resolve-conflict" in source
+    assert "--expected-action-state-hash" in source
+    assert "--expected-attempt-state-hash" in source

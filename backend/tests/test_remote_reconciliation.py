@@ -17,10 +17,18 @@ from app.models import (
     Tenant,
 )
 from app.services._common import _now
+from app.services.task_center import dispatcher
 from app.services.task_center.remote_reconciliation import (
     RemoteReconcileEvidence,
     apply_remote_reconcile_evidence,
     ensure_remote_reconcile_case,
+)
+from app.services.task_center.remote_reconcile_conflict_resolution import (
+    resolve_remote_reconcile_conflict,
+)
+from app.services.task_center.runtime_state_hash import (
+    execution_attempt_state_hash,
+    remote_reconcile_action_state_hash,
 )
 
 
@@ -144,6 +152,73 @@ def test_state_hash_drift_quarantines_without_business_mutation() -> None:
         assert action.status == "failed"
         assert case.state == "conflict"
         assert session.scalar(select(func.count(AuditLog.id))) == 1
+
+
+def test_case_hashes_use_persisted_json_representation() -> None:
+    engine = _engine()
+    with Session(engine) as session:
+        action, attempt, old_case = _seed_case(session)
+        session.delete(old_case)
+        session.flush()
+        action.payload = {
+            "gateway_request_identity": "request-1",
+            "generation_slots": ({"ordinal": 1},),
+        }
+
+        dispatcher._ensure_unknown_remote_case(session, action)
+        assert isinstance(action.payload["generation_slots"], list)
+        session.commit()
+        session.expire_all()
+
+        case = session.scalar(select(RemoteReconcileCase))
+        action = session.get(Action, action.id)
+        attempt = session.get(ExecutionAttempt, attempt.id)
+        assert case.expected_action_state_hash == (
+            dispatcher.remote_reconcile_action_state_hash(action)
+        )
+        assert case.expected_attempt_state_hash == (
+            execution_attempt_state_hash(attempt)
+        )
+
+
+def test_approved_conflict_resolution_requires_current_state_hashes() -> None:
+    engine = _engine()
+    with Session(engine) as session:
+        action, attempt, case = _seed_case(session)
+        action.result = {**dict(action.result or {}), "error_code": "normalized_after_commit"}
+        evidence = RemoteReconcileEvidence(
+            result="remote_confirmed",
+            source="gateway_request_evidence_journal",
+            evidence_fingerprint=EVIDENCE_FINGERPRINT,
+            remote_message_id="remote-conflict-1",
+            exact_match_count=1,
+        )
+        first = apply_remote_reconcile_evidence(
+            session, case.id, evidence, actor="release-workflow",
+        )
+        assert first.state == "conflict"
+
+        with pytest.raises(ValueError, match="current_action_hash_mismatch"):
+            resolve_remote_reconcile_conflict(
+                session,
+                case.id,
+                evidence,
+                expected_action_state_hash="f" * 64,
+                expected_attempt_state_hash=execution_attempt_state_hash(attempt),
+                actor="release-workflow",
+            )
+
+        outcome = resolve_remote_reconcile_conflict(
+            session,
+            case.id,
+            evidence,
+            expected_action_state_hash=remote_reconcile_action_state_hash(action),
+            expected_attempt_state_hash=execution_attempt_state_hash(attempt),
+            actor="release-workflow",
+        )
+        assert outcome.state == "remote_confirmed"
+        assert action.status == "success"
+        assert attempt.remote_message_id == "remote-conflict-1"
 
 
 def _engine():

@@ -90,6 +90,7 @@ from .dispatch_reservations import (
     plan_dispatch_claims,
     release_dispatch_claim,
 )
+from .dispatch_claim_ledger import lock_dispatch_claim_prefix
 from .dispatch_claim_types import DispatchActionCandidate
 from .executors.common import quantity_jitter_bounds
 from .executors.channel_comment_budget import (
@@ -148,7 +149,10 @@ from .search_rank_deboost_reservations import (
     release_reserved_reservation,
 )
 from . import runtime_resources as _runtime_resources
-from .runtime_state_hash import remote_reconcile_action_state_hash
+from .runtime_state_hash import (
+    execution_attempt_state_hash,
+    remote_reconcile_action_state_hash,
+)
 
 _ACTION_RESERVATIONS = _runtime_resources._ACTION_RESERVATIONS
 _IN_FLIGHT_ACCOUNTS = _runtime_resources._IN_FLIGHT_ACCOUNTS
@@ -535,7 +539,11 @@ def _ensure_unknown_remote_case(session: Session, action: Action) -> None:
         **dict(action.result or {}),
         "remote_reconcile_case_id": case.id,
     }
+    session.flush([action, attempt, case])
+    session.refresh(action)
+    session.refresh(attempt)
     case.expected_action_state_hash = remote_reconcile_action_state_hash(action)
+    case.expected_attempt_state_hash = execution_attempt_state_hash(attempt)
 
 
 def _sync_search_click_target_progress(session: Session, action: Action) -> None:
@@ -2762,6 +2770,7 @@ def _dispatch_target_send_message(
         gateway_request.session_ciphertext,
         gateway_request.credentials,
     )
+    _lock_post_gateway_dispatch_prefix(session, action)
     _apply_send_result(
         action,
         context.account,
@@ -2976,8 +2985,18 @@ def _send_group_message_via_gateway(
         attempt,
     ):
         return True
+    _lock_post_gateway_dispatch_prefix(session, action)
     _finalize_group_send(session, action, context, result=result, attempt=attempt)
     return True
+
+
+def _lock_post_gateway_dispatch_prefix(
+    session: Session,
+    action: Action,
+) -> None:
+    if not _gateway_call_started(session, action):
+        raise RuntimeError("post_gateway_dispatch_prefix_requires_started_attempt")
+    lock_dispatch_claim_prefix(session, action)
 
 
 def _reserve_group_send_attempt(
@@ -5665,6 +5684,7 @@ def _dispatch_comment(
     if attempt is None:
         return True
     result = gateway.reply_channel_message(account_id, channel_peer, message_id, content, session_ciphertext, context.credentials, reply_to_message_id=payload.reply_to_message_id)
+    _lock_post_gateway_dispatch_prefix(session, action)
     _apply_send_result(
         action,
         account,

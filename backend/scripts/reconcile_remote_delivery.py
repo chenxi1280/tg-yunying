@@ -4,13 +4,20 @@ import argparse
 import json
 
 from app.database import SessionLocal
-from app.models import Action, AuditLog, RemoteReconcileCase
+from app.models import Action, AuditLog, ExecutionAttempt, RemoteReconcileCase
 from app.services._common import gateway
 from app.services.developer_apps import credentials_for_account
 from app.services.task_center.dispatcher import project_dispatch_action_stats
 from app.services.task_center.remote_reconciliation import (
     apply_remote_reconcile_evidence,
     evidence_from_gateway_journal,
+)
+from app.services.task_center.remote_reconcile_conflict_resolution import (
+    resolve_remote_reconcile_conflict,
+)
+from app.services.task_center.runtime_state_hash import (
+    execution_attempt_state_hash,
+    remote_reconcile_action_state_hash,
 )
 from app.services.task_center.remote_history_evidence import (
     preview_remote_history_evidence,
@@ -21,6 +28,8 @@ def preview_case(case_id: str, *, evidence_source: str = "journal") -> dict:
     with SessionLocal() as session:
         evidence = _case_evidence(session, case_id, evidence_source)
         case = session.get(RemoteReconcileCase, case_id)
+        action = session.get(Action, case.action_id) if case else None
+        attempt = session.get(ExecutionAttempt, case.execution_attempt_id) if case else None
         return {
             "case_id": case_id,
             "case_state": case.state if case else "missing",
@@ -30,6 +39,10 @@ def preview_case(case_id: str, *, evidence_source: str = "journal") -> dict:
             "remote_message_id": evidence.remote_message_id,
             "remote_fact_id": evidence.remote_fact_id,
             "failure_code": evidence.failure_code,
+            "expected_action_state_hash": case.expected_action_state_hash if case else "",
+            "current_action_state_hash": remote_reconcile_action_state_hash(action) if action else "",
+            "expected_attempt_state_hash": case.expected_attempt_state_hash if case else "",
+            "current_attempt_state_hash": execution_attempt_state_hash(attempt) if attempt else "",
         }
 
 
@@ -40,17 +53,23 @@ def apply_case(
     actor: str,
     approval_ref: str,
     evidence_source: str = "journal",
+    resolve_conflict: bool = False,
+    expected_action_state_hash: str = "",
+    expected_attempt_state_hash: str = "",
 ) -> dict:
     _require_approval(actor, approval_ref)
     with SessionLocal() as session:
         evidence = _case_evidence(session, case_id, evidence_source)
         if evidence.evidence_fingerprint != expected_evidence_fingerprint:
             raise ValueError("remote_evidence_fingerprint_mismatch")
-        outcome = apply_remote_reconcile_evidence(
+        outcome = _apply_evidence(
             session,
             case_id,
             evidence,
             actor=actor,
+            resolve_conflict=resolve_conflict,
+            expected_action_state_hash=expected_action_state_hash,
+            expected_attempt_state_hash=expected_attempt_state_hash,
         )
         case = session.get(RemoteReconcileCase, case_id)
         _write_approval_audit(session, case, actor, approval_ref, outcome.state)
@@ -63,6 +82,30 @@ def apply_case(
         "changed": outcome.changed,
         "evidence_hash": outcome.evidence_hash,
     }
+
+
+def _apply_evidence(
+    session,
+    case_id: str,
+    evidence,
+    *,
+    actor: str,
+    resolve_conflict: bool,
+    expected_action_state_hash: str,
+    expected_attempt_state_hash: str,
+):
+    if not resolve_conflict:
+        return apply_remote_reconcile_evidence(
+            session, case_id, evidence, actor=actor,
+        )
+    return resolve_remote_reconcile_conflict(
+        session,
+        case_id,
+        evidence,
+        expected_action_state_hash=expected_action_state_hash,
+        expected_attempt_state_hash=expected_attempt_state_hash,
+        actor=actor,
+    )
 
 
 def _case_evidence(session, case_id: str, evidence_source: str):
@@ -127,6 +170,9 @@ def main() -> int:
     apply.add_argument("--expected-evidence-fingerprint", required=True)
     apply.add_argument("--actor", required=True)
     apply.add_argument("--approval-ref", required=True)
+    apply.add_argument("--resolve-conflict", action="store_true")
+    apply.add_argument("--expected-action-state-hash", default="")
+    apply.add_argument("--expected-attempt-state-hash", default="")
     apply.add_argument(
         "--evidence-source",
         choices=("journal", "telegram-history"),
@@ -142,6 +188,9 @@ def main() -> int:
             actor=args.actor,
             approval_ref=args.approval_ref,
             evidence_source=args.evidence_source,
+            resolve_conflict=args.resolve_conflict,
+            expected_action_state_hash=args.expected_action_state_hash,
+            expected_attempt_state_hash=args.expected_attempt_state_hash,
         )
     )
     print(json.dumps(result, ensure_ascii=False, sort_keys=True, default=str))

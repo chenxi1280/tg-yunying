@@ -244,6 +244,12 @@ def _evidence_hash(evidence: RemoteReconcileEvidence) -> str:
     })
 
 
+def remote_reconcile_evidence_hash(
+    evidence: RemoteReconcileEvidence,
+) -> str:
+    return _evidence_hash(evidence)
+
+
 def _locked(session: Session, model, row_id: str):
     statement = select(model).where(model.id == row_id)
     return session.scalar(for_update(session, statement))
@@ -458,5 +464,6 @@ __all__ = [
     "apply_remote_reconcile_evidence",
     "evidence_from_gateway_journal",
     "ensure_remote_reconcile_case",
+    "remote_reconcile_evidence_hash",
     "typed_remote_fact_id",
 ]
