@@ -119,3 +119,11 @@ jobs:
             -e TASK_FULFILLMENT_E4_TASK_IDS='${TASK_IDS}' \
             -i tgyunying-backend python -" \
             < .github/scripts/task_fulfillment_e4_diagnostics.py
+
+      - name: Read AI group binding diagnostics
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          ssh silicon-valley-production-server \
+            'timeout 180 docker exec -i tgyunying-backend python -' \
+            < .github/scripts/diagnose_ai_group_blockers.py
