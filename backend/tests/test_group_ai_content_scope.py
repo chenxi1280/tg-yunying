@@ -10,6 +10,7 @@ from app.database import Base
 from app.models import (
     Action,
     AiGroupMessageMemory,
+    ExecutionAttempt,
     GroupContextMessage,
     OperationTarget,
     Task,
@@ -28,6 +29,7 @@ from app.services.task_center.ai_generation_dispatch import (
 from app.services.task_center.ai_generator import AiGenerationUnavailable
 from app.services.task_center import dispatcher
 from app.services.task_center.executors.group_ai_chat import (
+    _historical_group_reply_targets,
     _recent_account_memories,
     account_profile_summaries,
 )
@@ -136,6 +138,119 @@ def test_scope_validator_accepts_operation_target_bound_to_same_group():
     violation = validate_group_ai_content_scope(session, action, payload=payload, account_id=11)
 
     assert violation is None
+
+
+def test_scope_validator_accepts_authoritative_own_history_without_listener_context():
+    session = _session()
+    _seed_scope(session)
+    prior = _successful_own_history_action(remote_message_id="3721281")
+    payload = _payload(reply_to_message_id=3721281)
+    action = _action(payload, action_id="current-own-history-reply")
+    session.add_all([prior, action])
+    session.flush()
+    session.add(ExecutionAttempt(
+        action_id=prior.id,
+        status="success",
+        remote_message_id="3721281",
+    ))
+    session.commit()
+
+    violation = validate_group_ai_content_scope(session, action, payload=payload, account_id=11)
+
+    assert violation is None
+
+
+def test_scope_validator_rejects_own_history_without_successful_attempt():
+    session = _session()
+    _seed_scope(session)
+    prior = _successful_own_history_action(remote_message_id="3721281")
+    payload = _payload(reply_to_message_id=3721281)
+    action = _action(payload, action_id="current-unproven-own-history-reply")
+    session.add_all([prior, action])
+    session.commit()
+
+    violation = validate_group_ai_content_scope(session, action, payload=payload, account_id=11)
+
+    assert violation is not None
+    assert violation.field == "reply_to_message_id"
+
+
+@pytest.mark.parametrize(("prior_task_id", "prior_group_id"), [
+    ("other-task", 8),
+    ("task-b", 7),
+])
+def test_scope_validator_rejects_own_history_outside_current_task_or_group(
+    prior_task_id: str,
+    prior_group_id: int,
+):
+    session = _session()
+    _seed_scope(session)
+    if prior_task_id == "other-task":
+        session.add(Task(
+            id=prior_task_id,
+            tenant_id=1,
+            name="其他任务",
+            type="group_ai_chat",
+            status="running",
+            type_config={"target_group_id": 8},
+        ))
+    prior = _successful_own_history_action(remote_message_id="3721281")
+    prior.task_id = prior_task_id
+    prior.payload = {**prior.payload, "group_id": prior_group_id}
+    payload = _payload(reply_to_message_id=3721281)
+    action = _action(payload, action_id=f"current-reply-{prior_task_id}-{prior_group_id}")
+    session.add_all([prior, action])
+    session.flush()
+    session.add(ExecutionAttempt(action_id=prior.id, status="success", remote_message_id="3721281"))
+    session.commit()
+
+    violation = validate_group_ai_content_scope(session, action, payload=payload, account_id=11)
+
+    assert violation is not None
+    assert violation.field == "reply_to_message_id"
+
+
+def test_historical_reply_targets_use_success_attempt_for_normal_result_shape():
+    session = _session()
+    _seed_scope(session)
+    prior = _successful_own_history_action(remote_message_id="3721281")
+    prior.result = {"telegram_msg_id": "3721281"}
+    session.add(prior)
+    session.flush()
+    session.add(ExecutionAttempt(
+        action_id=prior.id,
+        status="success",
+        remote_message_id="3721281",
+    ))
+    session.commit()
+
+    targets = _historical_group_reply_targets(
+        session,
+        session.get(Task, "task-b"),
+        session.get(TgGroup, 8),
+    )
+
+    assert targets == [{
+        "message_id": 3721281,
+        "author": "B群",
+        "preview": "托管账号此前已发送正文",
+        "source": "own_history",
+    }]
+
+
+def _successful_own_history_action(*, remote_message_id: str) -> Action:
+    return Action(
+        id=f"prior-own-history-{remote_message_id}",
+        tenant_id=1,
+        task_id="task-b",
+        task_type="group_ai_chat",
+        action_type="send_message",
+        account_id=11,
+        status="success",
+        payload={"group_id": 8, "message_text": "托管账号此前已发送正文"},
+        result={"remote_message_id": remote_message_id},
+        executed_at=datetime.now(UTC),
+    )
 
 
 def test_scope_mismatch_stops_before_provider_and_never_falls_back():

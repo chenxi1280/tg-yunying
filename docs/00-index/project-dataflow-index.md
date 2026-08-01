@@ -391,6 +391,8 @@ group_ai_chat 账号入群
 group_ai_chat / channel_comment 正文
   -> ConversationSpeakerTurn 真实远端顺序 + State 短事务预约
   -> 无真人打断必须换号；无替代 -> speaker_rotation_wait（单号产能 warning）
+  -> 引用候选 = 同群真人 GroupContextMessage + 同 tenant/task/group 且由成功 Action、最新成功 ExecutionAttempt.remote_message_id 与非空冻结正文共同证明的托管账号 own_history
+  -> own_history 不要求写入 GroupContextMessage；Planner 与 Gateway 前 scope validator 共用权威合同，跨任务/跨群/缺成功 Attempt 一律拒绝
   -> 有候选写真实 reply_to_message_id；短缺 -> reply_target_shortfall
   -> AI 活群 coverage / extra-volume 均按同一 ContentMixContract 冻结关系与素材义务
   -> 有 active 面具：主 AI 3 轮 -> 备用 AI 3 轮 -> 六轮无候选才精确 `签到`

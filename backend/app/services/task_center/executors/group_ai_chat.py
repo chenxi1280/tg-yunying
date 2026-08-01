@@ -93,6 +93,7 @@ from ..daily_group_target import (
 from ..direct_check_in import MASK_MISSING_CHECK_IN_SOURCE
 from ..daily_fulfillment import record_daily_fulfillment_decision
 from ..fingerprints import fingerprint_exists, remember_fingerprint
+from ..group_ai_scope import successful_own_history_reply_facts
 from ..group_bot_admission import plannable_admission_account_ids
 from ..hard_hourly import (
     current_progress,
@@ -3383,20 +3384,18 @@ def _context_remote_message_id(row) -> int:
 
 
 def _historical_group_reply_targets(session: Session, task: Task, group: TgGroup, *, limit: int = 20) -> list[dict]:
-    rows = session.scalars(
-        select(Action)
-        .where(
-            Action.task_id == task.id,
-            Action.tenant_id == task.tenant_id,
-            Action.task_type == "group_ai_chat",
-            Action.action_type == "send_message",
-            Action.status == "success",
-            Action.payload["group_id"].as_integer() == group.id,
-        )
-        .order_by(Action.executed_at.desc().nullslast(), Action.created_at.desc())
-        .limit(max(1, int(limit)))
+    rows = successful_own_history_reply_facts(
+        session,
+        tenant_id=task.tenant_id,
+        task_id=task.id,
+        group_id=group.id,
+        limit=limit,
     )
-    return [target for action in rows if (target := _reply_target_from_action(action, group))]
+    return [
+        target
+        for action, remote_id in rows
+        if (target := _reply_target_from_action(action, group, remote_message_id=remote_id))
+    ]
 
 
 def _used_group_reply_target_ids(session: Session, task: Task, group: TgGroup, candidate_ids: set[int]) -> set[int]:
@@ -3421,10 +3420,14 @@ def _payload_int(action: Action, key: str) -> int:
     return int(raw) if raw.isdigit() else 0
 
 
-def _reply_target_from_action(action: Action, group: TgGroup) -> dict | None:
+def _reply_target_from_action(
+    action: Action,
+    group: TgGroup,
+    *,
+    remote_message_id: str,
+) -> dict | None:
     payload = action.payload if isinstance(action.payload, dict) else {}
-    result = action.result if isinstance(action.result, dict) else {}
-    raw_id = str(result.get("remote_message_id") or result.get("message_id") or "").strip()
+    raw_id = str(remote_message_id or "").strip()
     content = str(payload.get("message_text") or "").strip()
     if not raw_id.isdigit() or not content:
         return None

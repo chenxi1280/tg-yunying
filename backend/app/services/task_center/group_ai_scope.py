@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session
 
 from app.models import (
     Action,
     AiGroupMessageMemory,
+    ExecutionAttempt,
     GroupContextMessage,
     OperationTarget,
     Task,
@@ -176,11 +177,89 @@ def _reply_target_exists(
     action: Action,
     payload: SendMessagePayload,
 ) -> bool:
-    return bool(session.scalar(select(GroupContextMessage.id).where(
+    human_target = session.scalar(select(GroupContextMessage.id).where(
         GroupContextMessage.tenant_id == action.tenant_id,
         GroupContextMessage.group_id == payload.group_id,
         GroupContextMessage.remote_message_id == str(payload.reply_to_message_id),
-    )))
+    ))
+    if human_target:
+        return True
+    return bool(successful_own_history_reply_facts(
+        session,
+        tenant_id=action.tenant_id,
+        task_id=str(action.task_id or ""),
+        group_id=payload.group_id,
+        remote_message_id=str(payload.reply_to_message_id),
+        exclude_action_id=action.id,
+        limit=1,
+    ))
+
+
+def successful_own_history_reply_facts(
+    session: Session,
+    *,
+    tenant_id: int,
+    task_id: str,
+    group_id: int,
+    remote_message_id: str = "",
+    exclude_action_id: str = "",
+    limit: int = 20,
+) -> list[tuple[Action, str]]:
+    latest_attempt = (
+        select(
+            ExecutionAttempt.action_id.label("action_id"),
+            func.max(ExecutionAttempt.attempt_no).label("attempt_no"),
+        )
+        .where(
+            ExecutionAttempt.status == "success",
+            ExecutionAttempt.remote_message_id != "",
+        )
+        .group_by(ExecutionAttempt.action_id)
+        .subquery()
+    )
+    filters = _own_history_filters(
+        tenant_id=tenant_id,
+        task_id=task_id,
+        group_id=group_id,
+        remote_message_id=remote_message_id,
+        exclude_action_id=exclude_action_id,
+    )
+    rows = session.execute(
+        select(Action, ExecutionAttempt.remote_message_id)
+        .join(latest_attempt, latest_attempt.c.action_id == Action.id)
+        .join(ExecutionAttempt, and_(
+            ExecutionAttempt.action_id == latest_attempt.c.action_id,
+            ExecutionAttempt.attempt_no == latest_attempt.c.attempt_no,
+        ))
+        .where(*filters)
+        .order_by(Action.executed_at.desc().nullslast(), Action.created_at.desc())
+        .limit(max(1, int(limit)))
+    )
+    return [(action, str(remote_id)) for action, remote_id in rows]
+
+
+def _own_history_filters(
+    *,
+    tenant_id: int,
+    task_id: str,
+    group_id: int,
+    remote_message_id: str,
+    exclude_action_id: str,
+) -> list:
+    filters = [
+        Action.tenant_id == tenant_id,
+        Action.task_id == task_id,
+        Action.task_type == "group_ai_chat",
+        Action.action_type == "send_message",
+        Action.status == "success",
+        Action.payload["group_id"].as_integer() == group_id,
+        func.trim(func.coalesce(Action.payload["message_text"].as_string(), "")) != "",
+    ]
+    if remote_message_id:
+        filters.append(ExecutionAttempt.remote_message_id == remote_message_id)
+    if exclude_action_id:
+        filters.append(Action.id != exclude_action_id)
+    return filters
 
 
 def _memory_violation(
