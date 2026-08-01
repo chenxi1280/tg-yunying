@@ -237,6 +237,7 @@ def _unknown_remote_row(session, action: Action) -> dict[str, Any]:
         "result_contract": _remote_result_contract(action),
         "attempt_id": attempt.id if attempt else None,
         "attempt_status": attempt.status if attempt else None,
+        "attempt_failure_sql": _failure_sql(attempt),
         "case_id": case.id if case else None,
         "case_state": case.state if case else None,
         "case_expected_action_state_hash_b64": _hash_b64(expected_action_hash),
@@ -284,6 +285,14 @@ def _remote_result_contract(action: Action) -> dict[str, Any]:
         "error_code",
     )
     return {key: result[key] for key in keys if key in result}
+
+
+def _failure_sql(attempt: ExecutionAttempt | None) -> str:
+    detail = str(attempt.failure_detail or "") if attempt else ""
+    if "[SQL:" not in detail:
+        return ""
+    statement = detail.split("[SQL:", 1)[1].split("]", 1)[0]
+    return " ".join(statement.split())[:500]
 
 
 def runtime_snapshot(session, task_rows: list[Task]) -> dict[str, Any]:
