@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import Action, OperationTarget, Task, Tenant
+from app.models import Action, OperationTarget, Task, TaskMembershipAdmissionItem, Tenant, TgAccount
 from app.schemas.task_center import ChannelCommentTaskConfigUpdate
 from app.services._common import _now
 from app.services.task_center import dispatcher
 from app.services.task_center.payloads import PostCommentPayload
 from app.services.task_center.service import update_channel_comment_config
+
+
+pytestmark = pytest.mark.no_postgres
 
 
 def test_channel_comment_config_update_clears_pending_comment_plan():
@@ -65,6 +69,74 @@ def test_channel_comment_config_update_clears_pending_comment_plan():
         remaining = session.scalars(select(Action).where(Action.task_id == task.id, Action.status == "pending")).all()
 
     assert remaining == []
+
+
+def test_channel_comment_config_update_clears_pending_action_admission_references():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        task = Task(
+            id="task-comment-admission-update",
+            tenant_id=1,
+            name="频道评论准入重排",
+            type="channel_comment",
+            status="running",
+            type_config={
+                "target_channel_id": 6,
+                "target_comments_per_message": 80,
+                "message_scope": "dynamic_new",
+                "message_count": 10,
+            },
+        )
+        action = Action(
+            id="pending-comment-membership",
+            tenant_id=1,
+            task_id=task.id,
+            task_type="channel_comment",
+            action_type="join_group",
+            account_id=11,
+            status="pending",
+            scheduled_at=now_value,
+        )
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(OperationTarget(id=6, tenant_id=1, target_type="channel", tg_peer_id="-1006", title="频道"))
+        session.add(TgAccount(id=11, tenant_id=1, display_name="账号11", phone_masked="11", status="在线"))
+        session.add_all([task, action])
+        session.flush()
+        session.add(TaskMembershipAdmissionItem(
+            id=1,
+            tenant_id=1,
+            task_id=task.id,
+            account_id=11,
+            target_id=6,
+            membership_action_id=action.id,
+            test_message_action_id=action.id,
+            delete_action_id=action.id,
+            rescue_action_id=action.id,
+        ))
+        session.commit()
+
+        update_channel_comment_config(
+            session,
+            1,
+            task.id,
+            ChannelCommentTaskConfigUpdate(
+                target_channel_id=6,
+                target_comments_per_message=8,
+                message_scope="dynamic_new",
+                message_count=10,
+            ),
+            "tester",
+        )
+
+        admission = session.get(TaskMembershipAdmissionItem, 1)
+        assert session.get(Action, action.id) is None
+        assert admission.membership_action_id is None
+        assert admission.test_message_action_id is None
+        assert admission.delete_action_id is None
+        assert admission.rescue_action_id is None
 
 
 def test_channel_comment_config_update_allows_ai_model_switch():
