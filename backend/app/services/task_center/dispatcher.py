@@ -5540,14 +5540,6 @@ def _dispatch_view(action: Action, account: TgAccount, credentials, session: Ses
     if not payload.view_fulfillment_obligation_id:
         ensure_view_action_contract(session, action, payload, now=_now())
     result = gateway.view_channel_message(account_id, channel_peer, message_id, session_ciphertext, credentials)
-    if result.ok:
-        confirm_view_action(
-            session,
-            payload.view_fulfillment_obligation_id,
-            action.id,
-            target_peer_id=channel_peer,
-            confirmed_at=_now(),
-        )
     _apply_operation_result(
         action,
         account,
@@ -5583,15 +5575,6 @@ def _dispatch_like(action: Action, account: TgAccount, credentials, session: Ses
     if not payload.reaction_fulfillment_obligation_id:
         ensure_reaction_action_contract(session, action, payload)
     result = gateway.send_channel_reaction(account_id, channel_peer, message_id, reaction, session_ciphertext, credentials)
-    if result.ok:
-        confirm_reaction_action(
-            session,
-            payload.reaction_fulfillment_obligation_id,
-            action.id,
-            target_peer_id=channel_peer,
-            reaction_emoji=reaction,
-            confirmed_at=_now(),
-        )
     _apply_operation_result(
         action,
         account,
@@ -8981,12 +8964,11 @@ def _finish_execution_attempt(
     attempt.failure_type = failure_type or ""
     attempt.failure_detail = detail or ""
     attempt.status = "success" if action.status == "success" else "failed" if action.status in {"failed", "retryable_failed"} else "result_unknown" if action.status == "unknown_after_send" else action.status
-    attempt.result_snapshot = dict(action.result or {})
-    if remote_fact_id:
-        attempt.result_snapshot = {
-            **attempt.result_snapshot,
-            "remote_fact_id": remote_fact_id,
-        }
+    attempt.result_snapshot = _merge_attempt_result_snapshot(
+        attempt,
+        action,
+        remote_fact_id=remote_fact_id,
+    )
     if attempt.gateway_call_started_at is not None:
         from .gateway_evidence_journal import (
             GatewayResultEvidence,
@@ -9003,6 +8985,26 @@ def _finish_execution_attempt(
                 remote_mutation_started=remote_mutation_started,
             ),
         )
+
+
+def _merge_attempt_result_snapshot(
+    attempt: ExecutionAttempt,
+    action: Action,
+    *,
+    remote_fact_id: str,
+) -> dict:
+    frozen = dict(attempt.result_snapshot or {})
+    merged = {**frozen, **dict(action.result or {})}
+    for key in (
+        "gateway_request_identity",
+        "gateway_request_fingerprint",
+        "gateway_target_fingerprint",
+    ):
+        if key in frozen:
+            merged[key] = frozen[key]
+    if remote_fact_id:
+        merged["remote_fact_id"] = remote_fact_id
+    return merged
 
 
 def _apply_default_failure_policy(action: Action, failure_type: str) -> None:

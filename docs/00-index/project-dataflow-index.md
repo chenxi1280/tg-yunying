@@ -80,10 +80,12 @@ Window rebuild
 Action finalize
   -> B0 独立提交 Attempt.gateway_call_started_at、gateway_request_identity、
      gateway_request_fingerprint与gateway_target_fingerprint，保留 active claim
+  -> Gateway后结果只合并进Attempt snapshot，B0 identity与两个fingerprint不可被成功/失败/延期result覆盖
   -> 群管频道follow/精确callback与其他远端mutation同样必须先完成B0
   -> Telegram Gateway
   -> Gateway返回后以独立短事务写脱敏GatewayRequestEvidenceJournal，不改业务账本
   -> send成功冻结remote_message_id；view/reaction、membership probe、群管follow/callback成功冻结类型化remote_fact_id；membership按payload.require_send区分可访问与可发言证据，禁止伪造新消息ID
+  -> view/reaction的Gateway返回路径只传remote_fact_id，唯一View/ReactionRemoteFact由B1收尾单点创建；autoflush=false下禁止同事务双INSERT
   -> B1 no_autoflush 取得 central lock prefix
   -> claim release + Action/Attempt/coverage/content/search/membership/admission 等业务事实同事务原子提交
   -> B1 rollback 时 Recovery 原子转 remote-reconcile + unknown hold，不自动重发
@@ -110,7 +112,7 @@ Worker lifecycle
   -> verify-ready/active只忽略stopped；fresh active旧合同writer继续阻断
 ```
 
-共同不变量：普通 Action不得使用虚拟 `(1,0)`；搜索虚拟 Reservation不得被普通 claim消费，首次 outcome前也不得被通用 reclaimer释放；旧 epoch只有 active、search materialization-owned、有效 bound与仍到期普通份额可继续占用；全部远端mutation都必须经过B0/journal/B1且B1不得产生 claim-free executing持久空窗；membership unknown只有唯一RemoteReconcileCase CAS状态机，存量无Attempt或最新Attempt缺冻结request identity时，保留旧Attempt并追加read-only recovery Attempt/Case，精确recovery claim获取/释放均推进完整Action expected hash；preparing期间业务写入为0；heartbeat合同版本不可被业务刷新覆盖；claim热事务禁止 `UPDATE tasks`；任何 topology/capacity/liveness/invariant不一致都 fail closed并显式展示，不能用默认值、扩 worker、延长 Window或清库降级。
+共同不变量：普通 Action不得使用虚拟 `(1,0)`；搜索虚拟 Reservation不得被普通 claim消费，首次 outcome前也不得被通用 reclaimer释放；旧 epoch只有 active、search materialization-owned、有效 bound与仍到期普通份额可继续占用；全部远端mutation都必须经过B0/journal/B1且B1不得产生 claim-free executing持久空窗；Attempt的B0 request identity与fingerprint不可被后续result整体覆盖；view/reaction远端事实只由B1单点创建；membership unknown只有唯一RemoteReconcileCase CAS状态机，存量无Attempt或最新Attempt缺冻结request identity时，保留旧Attempt并追加read-only recovery Attempt/Case，精确recovery claim获取/释放均推进完整Action expected hash；preparing期间业务写入为0；heartbeat合同版本不可被业务刷新覆盖；claim热事务禁止 `UPDATE tasks`；任何 topology/capacity/liveness/invariant不一致都 fail closed并显式展示，不能用默认值、扩 worker、延长 Window或清库降级。
 
 ### 全任务按时按量履约恢复数据流（2026-07-29 接管修订）
 

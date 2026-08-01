@@ -4689,11 +4689,22 @@ def test_recovery_reprobes_unknown_target_membership_action(monkeypatch):
         assert _recover_stale_executing_actions(session, timeout_minutes=30) == 1
 
         action = session.get(Action, "action-membership")
-        attempt = session.get(ExecutionAttempt, "attempt-membership")
+        attempts = list(
+            session.scalars(
+                select(ExecutionAttempt)
+                .where(ExecutionAttempt.action_id == action.id)
+                .order_by(ExecutionAttempt.attempt_no)
+            )
+        )
         link = session.scalar(select(TgGroupAccount).where(TgGroupAccount.account_id == 11))
         assert action.status == "success"
         assert action.result["membership_status"] == "recovered_after_unknown"
-        assert attempt.status == "success"
+        assert [attempt.status for attempt in attempts] == [
+            "gateway_call_started",
+            "success",
+        ]
+        assert attempts[1].result_snapshot["legacy_unknown_read_only_recovery"] is True
+        assert attempts[1].result_snapshot["source_execution_attempt_id"] == attempts[0].id
         assert link.can_send is True
         assert link.permission_label == "可发言"
 

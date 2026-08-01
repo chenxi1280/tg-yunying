@@ -186,6 +186,32 @@ def test_operation_result_persists_source_remote_fact_identity() -> None:
         assert journal.remote_mutation_state == "true"
 
 
+def test_attempt_keeps_frozen_identity_when_action_result_is_replaced() -> None:
+    engine = _engine()
+    with Session(engine) as session:
+        action, attempt = _seed_started_attempt(session)
+        bind_gateway_request_identity(action, attempt)
+        frozen = dict(attempt.result_snapshot)
+        action.status = "pending"
+        action.result = {
+            "success": False,
+            "error_code": "comment_membership_required",
+        }
+
+        dispatcher._finish_execution_attempt(
+            attempt,
+            action,
+            failure_type="group_permission_denied",
+            remote_mutation_started=False,
+        )
+
+        journal = session.query(GatewayRequestEvidenceJournal).one()
+        assert attempt.result_snapshot["gateway_request_identity"] == frozen["gateway_request_identity"]
+        assert attempt.result_snapshot["gateway_request_fingerprint"] == frozen["gateway_request_fingerprint"]
+        assert attempt.result_snapshot["gateway_target_fingerprint"] == frozen["gateway_target_fingerprint"]
+        assert journal.remote_mutation_state == "false"
+
+
 def _engine():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

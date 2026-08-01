@@ -245,3 +245,8 @@
   - PG失败复核新增真实遗漏：已有旧Attempt但缺冻结request identity时Recovery抛错。已先同步专项PRD/总PRD/DF-324，再实现保留旧Attempt、追加带source id的read-only recovery Attempt；新增回归后专项`14 passed in 2.19s`。
   - 其余PG失败均按真实合同同步：journal FK清理顺序、父子fixture flush、旧AI scope、dispatch test double关键字、已知permission no-mutation与view/reaction成功mutation事实。
   - 第二轮扩大本地no-PG集合`264 passed, 381 deselected in 26.61s`；diff/Shell/compile和新增函数长度/分支闸门通过。
+  - 形成CI修复提交`a01aef76b7a176c188ec6bf6f6abf15754867351`；远端无并发变化后先推master、再推release，开始第二轮Deploy Production。
+  - 第二轮Actions `30690970723`：no-PG通过，PG剩6条，build/deploy被阻断；已定位B0冻结snapshot被延期result覆盖、view/reaction在autoflush=false下双写RemoteFact，以及legacy membership旧断言三组根因。
+  - 已先resync专项PRD、父PRD与DF-324，再按冻结快照保持和B1单点远端事实合同修补代码与回归。
+  - 评论membership独立SQLite复现由`gateway_request_identity_missing`转为pass；旧membership Attempt保留/新Attempt成功的回归pass；journal与remote reconciliation单元集`10 passed`。
+  - 通过真实`SessionLocal(autoflush=false)`手动执行第二轮PG失败的4个workflow节点，频道浏览/点赞/评论组合、like reset、view reset、失败后重规划均pass，未再产生RemoteFact双INSERT。

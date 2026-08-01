@@ -275,6 +275,7 @@ Window rebuild 前必须按以下顺序处理旧事实：
 
 - 外部 Telegram RPC 前必须先用独立短事务持久化 `ExecutionAttempt.gateway_call_started_at`、冻结目标和 Action identity；该事务提交成功后才允许调用 Gateway。
 - B0 同时为每个 Attempt 冻结唯一 `gateway_request_identity`，写入 Action result 与 Attempt snapshot；identity 不依赖进程、重试次数或提交时间，后续 evidence journal、只读远端核验和 case CAS均以它关联。
+- `gateway_request_identity`、`gateway_request_fingerprint`、`gateway_target_fingerprint` 是 Attempt 的不可变 B0 快照。Gateway 返回后的成功、失败、延期、membership 重排或 projection 只能把新结果字段合并进 Attempt snapshot，禁止用 Action 当前 result 整体覆盖并丢失这三个冻结字段；否则必须显式失败，不能把权威 `remote_mutation_started=false` 误降为 unknown。
 - B0 覆盖全部有远端副作用的 Gateway 调用，包括正文/评论发送、浏览、点赞、join/invite，以及群管频道 follow 与精确 callback；不得因它们属于“准入辅助动作”而直接调用 Gateway。群管 follow/callback 的冻结请求必须包含 admission id/version、账号、目标群或频道、source message、trusted bot、button row/col/text 等实际输入。
 - 该事务只建立远端调用防重边界，不释放 dispatch claim、不确认业务成功。
 
@@ -282,6 +283,7 @@ Window rebuild 前必须按以下顺序处理旧事实：
 
 - Gateway 返回后新建一个数据库事务，先以 `session.no_autoflush` 取得 central lock prefix，再锁 search carrier/assignment、Action、ExecutionAttempt 与类型专用业务账本。
 - dispatch claim release、Action 终态、ExecutionAttempt 结果、coverage、quantity/content、评论/点赞/浏览/search ledger、membership 与群管 admission 专用事实必须在该同一事务中提交；中间禁止 commit，也禁止在 claim 已释放后另开事务补 Action/Attempt。
+- 浏览/点赞的类型专用远端事实只允许由 B1 收尾投影确认一次。Gateway 返回路径负责携带冻结源消息 `remote_fact_id` 和 mutation 证据，不得先创建 View/ReactionRemoteFact 后再由通用收尾重复创建；在 `SessionLocal(autoflush=false)` 下也必须保证单 Action 单远端事实对象、单 INSERT。
 - B1 任一步失败必须整体 rollback。最后已提交状态仍是 `gateway_call_started_at + active claim + executing/待核验`，不得形成 `dispatch_claim_active=false` 但 Action 仍 executing 的持久空窗。
 - Recovery 发现 B0 已提交而 B1 未提交时，使用同一锁序在一个短事务写 `Action.status=unknown_after_send`、`Action.result.error_code=content_contract_remote_reconcile_required`、`ExecutionAttempt.status=result_unknown`，释放 active claim并把业务义务转为 unknown hold；随后只能进入远端核验，不得自动重发。
 - Gateway-started/unknown 继续按原防重合同，不因事务拆分重发。
@@ -343,6 +345,7 @@ Window rebuild 前必须按以下顺序处理旧事实：
 - `remote_confirmed` 与 `remote_absence_proven` 必须写 actor、证据来源、脱敏 fingerprint、核验时间和远端 ID/明确失败码；禁止保存正文或凭证副本。
 - deadline 到达时 `inconclusive` 计入 unknown/held shortfall并使 E4 未通过；安全防重优先于自动补量，不能为了让任务显示完成而猜测 absence。
 - Gateway 返回后、B1 开始前必须把最小结果证据写入独立 `GatewayRequestEvidenceJournal` 短事务：唯一 request identity、Action/Attempt、账号、目标与请求 payload 的脱敏 fingerprint、`remote_message_id`、明确失败码、`remote_mutation_started=true|false|unknown`和观察时间。journal 不写正文、peer明文或凭证，不改变 Action/业务账本；相同 identity 只能幂等重放完全相同的 evidence，不同 evidence 必须冲突隔离。journal 提交失败必须显式记录，此时 B1仍可按真实 Gateway 结果收口，但若 B1也失败则 case只能 `inconclusive`。仅 journal 明确 `remote_mutation_started=false` 才能支持 absence-proven；普通超时、连接中断或“历史没找到”仍不充分。
+- journal 写入必须读取 B0 已提交的 Attempt 父行及其冻结快照；任何 B1 结果合并都不得先删除冻结键。PostgreSQL 与 SQLite 回归必须分别覆盖“Action result 被 membership 延期结果整体替换”以及“autoflush=false 的 view/reaction 成功收尾”，证明前者仍能写 no-mutation journal、后者不会产生唯一键冲突。
 
 ### 5.7 三个 AI 活群专项恢复
 
@@ -506,6 +509,7 @@ Stage B 是前向数据迁移，不执行逆向改写。任何已 applied item�
 | dirty Session | Action、Task、coverage 已 dirty 时，release 仍先取得 central lock prefix，禁止 autoflush 反向锁 |
 | Gateway 后原子性 | 在 claim release、Action、Attempt、各业务账本写入点逐一注入异常，B1整体 rollback；数据库永不出现 claim inactive + Action executing空窗 |
 | Gateway evidence journal | B1失败后仍能按request identity读取已提交remote ID或明确no-mutation；相同evidence重放零写、不同evidence冲突；journal失败+B1失败只能inconclusive |
+| B0冻结快照保持 | Gateway后Action result被成功/失败/延期结果替换时，Attempt的request identity与两个fingerprint保持B0原值；明确no-mutation仍写journal而不转unknown |
 | 群管 follow/callback 原子性 | 两类动作Gateway前都有Attempt/B0；成功/明确失败写独立journal；B1 crash后由类型化fact恢复follow/admission或callback waiting状态，零重复follow/callback |
 | membership单一核验协议 | unknown membership权威reprobe通过同一RemoteReconcileCase expected hash/evidence CAS确认并写joined；存量无Attempt或最新Attempt缺冻结request identity时，保留旧Attempt并追加read-only recovery Attempt/Case；超时后释放精确claim并可由新claim重入；不得遗留pending case，也不得Action先成功后case conflict |
 | legacy scope safe | 证据完整 open Action 只补等价字段，正文/目标/账号/direct-reply/slot 全不变 |
@@ -523,6 +527,7 @@ Stage B 是前向数据迁移，不执行逆向改写。任何已 applied item�
 | remote absence原槽恢复 | 构造已有 Gateway start 的 AI unknown；权威 no-mutation 后旧 Attempt保留审计、CycleSlot清空Action并replan、数量槽open、message memory释放；不得误记terminal或复制业务义务 |
 | remote confirmed类型事实 | AI unknown由唯一远端事实确认后，Action/Attempt、quantity/content/coverage、message memory及stance remote ID在同一B1/CAS事务一致；任一注入失败全回滚 |
 | 浏览/点赞 B1 crash | Gateway journal明确mutation=true且冻结源消息/reaction一致，B1回滚后apply重建唯一View/ReactionRemoteFact；重复apply零写，payload或reaction漂移进入conflict，不伪造新消息ID |
+| 浏览/点赞单点落事实 | PostgreSQL `autoflush=false` 下成功路径每个Action只创建并提交一个View/ReactionRemoteFact；Gateway路径与B1 projection不得形成同事务双INSERT |
 | 郑州师范 context | gap 保持 waiting；contiguous 后生成；过期上下文只重规划原槽 |
 | reply target | missing 终态并重规划；新 Action 只引用当前同群真实消息或按规则 direct |
 | 楼凤 admission | waiting 不占正文份额；ready/probe 可执行；intercepted 不计 coverage |

@@ -257,3 +257,10 @@
 - 真实Telethon reply异常映射已对所有非UNKNOWN已知失败返回`remote_mutation_started=false`，成功返回true；Mock comment unavailable也返回false。因此permission测试stub补false是在模拟真实合同，不是放宽生产判断。
 - workflow里的view/reaction成功stub普遍只返回`success=True`却无`remote_mutation_started=true`；新journal因此正确按unknown处理。成功stub必须补true；要验证可重排的首轮失败，也必须显式返回false。保留`None`时旧“自动重试成功”断言不再安全。
 - 另外5条dispatch/claim失败仍是旧AI Action缺`group_content_scope_v1`；reassignment测试也因两个pending Action被scope filter排除而未进入原有改派逻辑。均只同步有效夹具。
+
+### Actions run 30690970723 failure classification
+
+- 第二轮no-PostgreSQL完整通过，PostgreSQL仅剩6条失败，deploy/build继续被正确阻断，生产未变化。
+- 评论membership明确返回`remote_mutation_started=false`后仍转unknown，独立SQLite复现得到异常`gateway_request_identity_missing`。根因是B0已冻结的Attempt snapshot在`_finish_execution_attempt`中被membership延期后的Action result整体覆盖；修复必须保留Attempt原identity/fingerprint并合并新结果，不能放宽unknown安全规则。
+- view/reaction的4条失败来自`SessionLocal(autoflush=false)`：Gateway成功路径先添加RemoteFact，通用B1收尾查询看不到pending对象又添加一份，commit批量INSERT触发唯一键冲突并按Gateway-started安全路径转unknown。远端事实改为只由B1收尾单点创建，Gateway路径只传`remote_fact_id`。
+- legacy membership测试仍读取旧Attempt并期待其被改成success，与已批准“旧Attempt不可改、追加read-only recovery Attempt”冲突；断言改为旧Attempt保持gateway-started、新Attempt携带source id并success。
