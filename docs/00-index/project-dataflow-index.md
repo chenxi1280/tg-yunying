@@ -333,6 +333,14 @@ Phase A 目标生命周期门禁覆盖 AI 活群、转发监听自动回复、`m
 
 专项真相源：`docs/03-feature-designs/ai-conversation-humanization-and-group-bot-admission-prd.md`。2026-07-31 §15、2026-08-01 §15.8 与 §15.9 已完成确定性修复 Product Design Complete：Planner 冻结 CycleSlot/数量槽/账号与 `group_content_scope_v1`，generation worker 对单 Action 读取同 tenant/group 最新上下文并在 Provider 前统一校验；Dispatcher 只消费 ready 内容，speaker rotation 改绑账号时废弃旧账号正文/memory/cache、释放旧账号运行资源并退回 worker；同一 Action 返回后幂等复用已预留新账号，禁止 A/B 循环改绑。pending 重生成保留当前 Action speaker reservation，generation/Gateway 前终结则释放；下一次会话锁会清理指向缺失/终态 holder 的陈旧 reservation，覆盖释放事务间的进程退出，禁止失败 Action 阻塞后续发言。Gateway 前再次校验 scope/context；新真人上下文越过 snapshot 时同一 Action 回 pending，不跳过整 Cycle。存量缺失 `context_expire_after_messages` 归一为 10；普通 listener 持久化 remote cursor 的 `unproven|contiguous|gap`，非 contiguous 阻断 normal Provider；有 cursor 后从该 cursor 之后正序分页，满页保持 unproven 并继续追平，未满页/空页才 contiguous，避免一次 gap 永久阻断。Prompt 实际消费当前群 account memory 和经净化的 per-slot 画像/话题/老师/素材意图。质量统计在 autoflush 前锁读最新 Task stats 并合并当前事务键级 delta；详情从当前任务日 quantity slots、ContentMixCycle 和 conversation quality 组合四个状态，只有三维均 met 才 acceptance met。静态签到仍须数据库证明当前 CycleSlot 没有 pending 内容义务，scope/gap/规则错误禁止降级。should-speak/question-floor 首版只写影子观测。生产匿名基线仍只作修复依据；代码、真实 PostgreSQL、部署、canary 与连续任务日 E4 分别取证。
 
+2026-08-01 生产 E4 归因补丁：listener 每批 snapshot 先以 `group_id +
+ExecutionAttempt.remote_message_id` 批量匹配权威出站 send 事实，再进入 speaker event 和
+`GroupContextMessage` 写入。命中出站事实或受管账号身份的消息只记录 platform turn，
+不得作为 human context；普通成员未命中平台证据时才推进 human cursor。独立生产监控
+workflow 只读取当前 release/容器/ledger/action/attempt/typed fact，校验 checkout SHA 与
+生产 symlink 一致，不运行部署、Planner、claim 或数据库写入；AI/search/view 卡点必须按
+关联 Action/Assignment/Obligation 的状态和计划时间输出，不能从聚合计数猜根因。
+
 ```text
 group_ai_chat 账号入群
   -> join Gateway 前锁定同群 admission window

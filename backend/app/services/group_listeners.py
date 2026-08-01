@@ -12,7 +12,6 @@ from app.models import (
     Campaign,
     GroupAuthStatus,
     GroupContextMessage,
-    OperationTarget,
     PromptTemplate,
     TaskStatus,
     TgAccount,
@@ -25,6 +24,13 @@ from ._common import SUBSCRIPTION_INACTIVE_DETAIL, _now, audit, gateway, require
 from .account_usage_policy import assert_account_action_allowed
 from .campaigns import approve_all_drafts, create_campaign, generate_drafts
 from .group_listener_context_writer import insert_context_snapshots
+from .group_listener_sender_identity import (
+    is_ignored_sender as _is_ignored_sender,
+    listener_ignored_sender,
+    listener_ignored_sender_identity as _listener_ignored_sender_identity,
+    outbound_remote_ids_for_snapshots,
+    with_outbound_remote_ids,
+)
 from .group_listener_cursor import listener_after_message_id, update_listener_cursor
 from .group_listener_admission import ListenerSnapshotFetchError, fetch_listener_snapshots, record_group_bot_observations
 from .developer_apps import credentials_for_account
@@ -96,123 +102,8 @@ def listener_account_summaries(session: Session, group: TgGroup) -> list[dict]:
     return summaries
 
 
-def _managed_sender_keys(session: Session, group: TgGroup) -> set[str]:
-    keys: set[str] = set()
-    accounts = list(
-        session.scalars(
-            select(TgAccount)
-            .join(TgGroupAccount, TgGroupAccount.account_id == TgAccount.id)
-            .where(
-                TgGroupAccount.group_id == group.id,
-                TgAccount.tenant_id == group.tenant_id,
-                TgAccount.deleted_at.is_(None),
-            )
-        )
-    )
-    for account in accounts:
-        keys.add(str(account.id))
-        keys.add(f"account:{account.id}")
-        keys.add(account.display_name.lower())
-        first_name = (account.tg_first_name or "").strip().lower()
-        last_name = (account.tg_last_name or "").strip().lower()
-        full_name = f"{first_name} {last_name}".strip()
-        for name in (first_name, last_name, full_name):
-            if name:
-                keys.add(name)
-        if account.username:
-            keys.add(account.username.lower().lstrip("@"))
-            keys.add(f"@{account.username.lower().lstrip('@')}")
-    return keys
-
-
-def _is_ignored_sender(snapshot, ignored_identity: dict[str, set[str]]) -> bool:
-    sender_peer_id = str(getattr(snapshot, "sender_peer_id", "") or "").strip().lower()
-    sender_peer_ids = _peer_id_keys(sender_peer_id)
-    sender_peer_type = str(getattr(snapshot, "sender_peer_type", "") or "").strip().lower()
-    sender_name = str(getattr(snapshot, "sender_name", "") or "").lower()
-    sender_username = str(getattr(snapshot, "sender_username", "") or "").lower().lstrip("@")
-    managed_keys = ignored_identity["managed_keys"]
-    if (
-        sender_peer_id in managed_keys
-        or sender_name in managed_keys
-        or sender_username in managed_keys
-        or (f"@{sender_username}" in managed_keys if sender_username else False)
-    ):
-        return True
-    if sender_peer_id in ignored_identity["exact_peer_ids"]:
-        return True
-    if sender_username and sender_username in ignored_identity["usernames"]:
-        return True
-    if sender_peer_type in {"channel", "chat"}:
-        return bool(sender_peer_ids & ignored_identity["peer_aliases"])
-    if not sender_peer_type and sender_name in ignored_identity["titles"]:
-        return bool(sender_peer_ids & ignored_identity["peer_aliases"])
-    return False
-
-
 def is_listener_ignored_sender(session: Session, group: TgGroup, snapshot) -> bool:
-    return _is_ignored_sender(snapshot, _listener_ignored_sender_identity(session, group))
-
-
-def _listener_ignored_sender_identity(session: Session, group: TgGroup) -> dict[str, set[str]]:
-    exact_peer_ids: set[str] = set()
-    peer_aliases: set[str] = set()
-    usernames: set[str] = set()
-    titles: set[str] = set()
-    managed_keys = _managed_sender_keys(session, group)
-    for value in (group.tg_peer_id, group.title):
-        text = str(value or "").strip().lower()
-        if not text:
-            continue
-        if value == group.tg_peer_id:
-            exact_peer_ids.add(text)
-            peer_aliases.update(_peer_id_keys(value))
-        else:
-            titles.add(text)
-
-    target = session.scalar(
-        select(OperationTarget)
-        .where(
-            OperationTarget.tenant_id == group.tenant_id,
-            OperationTarget.tg_peer_id == group.tg_peer_id,
-        )
-        .order_by(OperationTarget.id.asc())
-        .limit(1)
-    )
-    if target:
-        for value in (target.tg_peer_id,):
-            text = str(value or "").strip().lower()
-            if text:
-                exact_peer_ids.add(text)
-                peer_aliases.update(_peer_id_keys(value))
-        for value in (target.title,):
-            text = str(value or "").strip().lower()
-            if text:
-                titles.add(text)
-        username = str(target.username or "").strip().lower().lstrip("@")
-        if username:
-            usernames.add(username)
-    return {
-        "managed_keys": managed_keys,
-        "exact_peer_ids": exact_peer_ids,
-        "peer_aliases": peer_aliases,
-        "usernames": usernames,
-        "titles": titles,
-    }
-
-
-def _peer_id_keys(value) -> set[str]:
-    text = str(value or "").strip().lower()
-    if not text:
-        return set()
-    keys = {text}
-    if text.startswith("-100") and text[4:].isdigit():
-        bare_id = str(int(text[4:]))
-        keys.update({bare_id, f"100{bare_id}", f"-100{bare_id}"})
-    elif text.isdigit():
-        bare_id = str(int(text))
-        keys.update({bare_id, f"-100{bare_id}"})
-    return keys
+    return listener_ignored_sender(session, group, snapshot)
 
 
 def _system_user(session: Session, tenant_id: int):
@@ -295,6 +186,10 @@ def collect_group_context(
         credentials = credentials_for_account(session, account)
         snapshots = fetch_listener_snapshots(session, group=group, account=account, credentials=credentials)
         cursor_snapshots = snapshots if cursor_snapshots is None else cursor_snapshots
+        ignored_sender_identity = with_outbound_remote_ids(
+            ignored_sender_identity,
+            outbound_remote_ids_for_snapshots(session, group, snapshots),
+        )
         inserted += insert_context_snapshots(
             session,
             group,

@@ -1,0 +1,114 @@
+name: Production Task Monitor
+
+'on':
+  workflow_dispatch:
+    inputs:
+      release_live_at:
+        description: Beijing-time release anchor used for post-release facts
+        required: true
+        type: string
+      task_ids:
+        description: Comma-separated incident task IDs
+        required: false
+        default: d3365706-afe1-4166-9d0d-c2d6404bc8ad,84180c47-cf92-408e-bdd9-c68804f7de29,7805d8f2-dfef-4842-b11c-14cc1f434c94,fdb48029-4fda-4801-818d-0c509da37ea3,3e9db16a-ff5a-4b19-b917-c0182b16734a
+        type: string
+
+concurrency:
+  group: production-task-monitor
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    environment: production-silicon-valley
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate monitor inputs and secrets
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SILICON_VALLEY_PRODUCTION_SSH_PRIVATE_KEY }}
+          DEPLOY_HOST: ${{ secrets.SILICON_VALLEY_PRODUCTION_HOST }}
+          DEPLOY_USER: ${{ secrets.SILICON_VALLEY_PRODUCTION_USER }}
+          RELEASE_LIVE_AT: ${{ inputs.release_live_at }}
+        run: |
+          set -euo pipefail
+          test -n "${SSH_PRIVATE_KEY}"
+          test -n "${DEPLOY_HOST}"
+          test -n "${DEPLOY_USER}"
+          test -n "${RELEASE_LIVE_AT}"
+
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SILICON_VALLEY_PRODUCTION_SSH_PRIVATE_KEY }}
+          DEPLOY_HOST: ${{ secrets.SILICON_VALLEY_PRODUCTION_HOST }}
+          DEPLOY_USER: ${{ secrets.SILICON_VALLEY_PRODUCTION_USER }}
+          DEPLOY_PORT: ${{ secrets.SILICON_VALLEY_PRODUCTION_PORT }}
+          SSH_CONNECT_TIMEOUT: ${{ vars.SSH_CONNECT_TIMEOUT }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${SSH_PRIVATE_KEY}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          PORT="${DEPLOY_PORT:-22}"
+          CONNECT_TIMEOUT="${SSH_CONNECT_TIMEOUT:-60}"
+          cat > ~/.ssh/config <<EOF
+          Host silicon-valley-production-server
+            HostName ${DEPLOY_HOST}
+            User ${DEPLOY_USER}
+            Port ${PORT}
+            IdentityFile ~/.ssh/id_ed25519
+            IdentitiesOnly yes
+            StrictHostKeyChecking accept-new
+            ConnectTimeout ${CONNECT_TIMEOUT}
+            ConnectionAttempts 3
+            ServerAliveInterval 15
+            ServerAliveCountMax 8
+          EOF
+          chmod 600 ~/.ssh/config
+
+      - name: Verify deployed release and runtime without mutation
+        env:
+          PRODUCTION_BASE_DIR: ${{ vars.SILICON_VALLEY_PRODUCTION_BASE_DIR }}
+        run: |
+          set -euo pipefail
+          BASE_DIR="${PRODUCTION_BASE_DIR:-/data/tgyunying}"
+          EXPECTED_SHA="${GITHUB_SHA:0:8}"
+          CURRENT_RELEASE="$(ssh silicon-valley-production-server "readlink -f '${BASE_DIR}/current'")"
+          CURRENT_NAME="$(basename "${CURRENT_RELEASE}")"
+          echo "PRODUCTION_MONITOR_RELEASE=${CURRENT_RELEASE}"
+          case "${CURRENT_NAME}" in
+            *_"${EXPECTED_SHA}") ;;
+            *) echo "deployed release SHA does not match workflow SHA" >&2; exit 1 ;;
+          esac
+          ssh silicon-valley-production-server '
+            set -euo pipefail
+            for name in \
+              tgyunying-backend \
+              tgyunying-worker-dispatcher \
+              tgyunying-worker-dispatcher-2 \
+              tgyunying-worker-ai-generation \
+              tgyunying-worker-ai-generation-2 \
+              tgyunying-worker-ai-generation-3
+            do
+              state="$(docker inspect --format "{{.State.Status}}/{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}" "${name}")"
+              echo "PRODUCTION_MONITOR_CONTAINER=${name}:${state}"
+              [[ "${state}" == running/healthy ]]
+            done
+          '
+
+      - name: Read incident task fulfillment E4 facts
+        env:
+          RELEASE_LIVE_AT: ${{ inputs.release_live_at }}
+          TASK_IDS: ${{ inputs.task_ids }}
+        run: |
+          set -euo pipefail
+          ssh silicon-valley-production-server "timeout 180 docker exec \
+            -e TASK_FULFILLMENT_RELEASE_LIVE_AT='${RELEASE_LIVE_AT}' \
+            -e TASK_FULFILLMENT_E4_TASK_IDS='${TASK_IDS}' \
+            -i tgyunying-backend python -" \
+            < .github/scripts/task_fulfillment_e4_diagnostics.py

@@ -29,13 +29,13 @@ def insert_context_snapshots(
         # Control-event path runs before context dedupe / ignore / learning filters.
         _process_group_bot_control_event(session, group, snapshot)
         _refresh_existing_control_buttons(session, group, snapshot)
-        _record_speaker_event(session, group, snapshot, account=account)
+        sender_is_ignored = ignored_sender(snapshot)
+        _record_speaker_event(
+            session, group, snapshot, account=account, sender_is_ignored=sender_is_ignored
+        )
         message = _context_message(
-            session,
-            group,
-            account,
-            snapshot,
-            ignored_sender=ignored_sender,
+            session, group, account, snapshot,
+            sender_is_ignored=sender_is_ignored,
             learning_scene=learning_scene,
         )
         # PRD: group-bot admission is independent of can_send. Skip legacy helper that
@@ -342,10 +342,18 @@ def _attributed_waiting_account(session: Session, waiting: list[GroupBotAdmissio
     )
 
 
-def _record_speaker_event(session: Session, group: TgGroup, snapshot, *, account: TgAccount) -> None:
+def _record_speaker_event(
+    session: Session,
+    group: TgGroup,
+    snapshot,
+    *,
+    account: TgAccount,
+    sender_is_ignored: bool,
+) -> None:
     from app.services.task_center.conversation_speaker_rotation import (
         CONTROL_KIND,
         HUMAN_KIND,
+        PLATFORM_KIND,
         conversation_key_for_group,
         record_conversation_event,
     )
@@ -357,8 +365,9 @@ def _record_speaker_event(session: Session, group: TgGroup, snapshot, *, account
     sender_role = str(getattr(snapshot, "sender_role", "") or "").lower()
     if is_bot or sender_role in {"admin", "administrator", "creator", "system", "service"}:
         kind = CONTROL_KIND if is_bot else "system"
+    elif sender_is_ignored:
+        kind = PLATFORM_KIND
     else:
-        # Platform accounts are not tagged here; default to human for external senders.
         kind = HUMAN_KIND
     record_conversation_event(
         session,
@@ -378,7 +387,7 @@ def _context_message(
     account: TgAccount,
     snapshot,
     *,
-    ignored_sender: Callable[[object], bool],
+    sender_is_ignored: bool,
     learning_scene: str | None,
 ) -> GroupContextMessage | None:
     content = str(getattr(snapshot, "content", "") or "").strip()
@@ -389,7 +398,7 @@ def _context_message(
     if learning_scene:
         # Always record for audit; tenant learning module rejects bots/managed accounts.
         record_tenant_group_learning_sample(session, group, snapshot)
-    if (ignored_sender(snapshot) and not is_control) or _message_exists(session, group.id, str(snapshot.remote_message_id)):
+    if (sender_is_ignored and not is_control) or _message_exists(session, group.id, str(snapshot.remote_message_id)):
         return None
     return GroupContextMessage(
         tenant_id=group.tenant_id,

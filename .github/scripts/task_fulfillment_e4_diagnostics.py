@@ -24,6 +24,11 @@ from app.models import (
     ViewFulfillmentObligation,
     ViewRemoteFact,
 )
+from app.services.task_center.production_e4_diagnostics import (
+    ai_open_action_details,
+    search_claimed_details,
+    view_open_details,
+)
 
 
 BEIJING = ZoneInfo("Asia/Shanghai")
@@ -195,6 +200,7 @@ def _group_runtime_snapshot(session, ledger: TaskDayLedger) -> dict[str, Any]:
         action_counts[key] = action_counts.get(key, 0) + 1
     return {
         "open_action_counts": dict(sorted(action_counts.items())),
+        **ai_open_action_details(session, ledger, actions),
         "coverage_counts": [
             {"state": state, "blocker_code": blocker or "", "count": int(count)}
             for state, blocker, count in coverage_rows
@@ -267,6 +273,7 @@ def _search_runtime_snapshot(session, ledger: TaskDayLedger) -> dict[str, Any]:
             {"finalize_status": status, "outcome": outcome, "count": int(count)}
             for status, outcome, count in epoch_rows
         ],
+        **search_claimed_details(session, ledger),
     }
 
 
@@ -360,6 +367,7 @@ def task_snapshot(session, task_id: str, since: datetime) -> dict[str, Any]:
     elif task.type == "channel_view":
         snapshot["channel_view"] = _view_snapshot(session, ledger, since)
         snapshot["channel_view_messages"] = _view_message_snapshot(session, ledger)
+        snapshot["view_runtime"] = view_open_details(session, ledger)
     return snapshot
 
 

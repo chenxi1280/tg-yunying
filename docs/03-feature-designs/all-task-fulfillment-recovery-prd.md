@@ -1106,3 +1106,46 @@ shard收敛；中央 claim热事务禁止 `UPDATE tasks`，Gateway后 claim/Acti
 5. 诊断脚本必须 fail closed：任务/ledger/义务缺失、due 未确认、coverage 未完成、
    远端事实缺失或 planner runtime error 均返回非零；同时仍打印结构化 blocker，供
    下一轮根因修复。发布、runtime 与业务 E4 继续分门记录。
+
+## 13. 2026-08-01 非扰动生产观察与 AI listener 归因修订
+
+生产 run `30706265564` 证明同一 SHA 的测试、镜像、部署、接管、共享调度和 Planner
+drain 均通过，但五个事故 Task 的 E4 仍失败。重复执行 Deploy Production 会重启
+Dispatcher、AI generation worker 和其他运行容器，改变待验收任务的自然吞吐，因此
+后续观察不得再依赖重新部署。
+
+### 13.1 非扰动观察合同
+
+1. 新增独立 `workflow_dispatch` 生产监控入口，只允许读取当前 release symlink、容器
+   health、TaskDayLedger、Action、ExecutionAttempt、类型化远端事实和诊断投影；不得
+   build、pull image、restart container、调用 Planner drain、领取 Action 或修改数据库。
+2. 监控开始时必须验证生产 `current` release 的短 SHA 与 workflow checkout SHA 一致；
+   不一致直接失败，禁止拿旧 runtime 验证新代码。
+3. 发布锚点由调用方显式提供且不得默认为监控启动时间。诊断必须同时输出账本本地日、
+   deadline、任务状态和 blocker，使跨日新账本与上一日失败账本不会混为一谈。
+4. AI open Action 必须输出 `status / generation_status / generation_stage / error_code /
+   scheduled_at / context_snapshot_message_id / latest_context_message_id` 分布与样本；搜索
+   `claimed` 必须关联 Assignment、Action、Reservation 及 Action 状态后才能判断卡死；
+   view open obligation 必须关联 `current_action_id`、Action 状态和计划时间。仅凭状态总数
+   不得宣称根因。
+5. workflow 在任一 E4 blocker 存在时非零退出，但失败只表示业务未完成，不得触发发布、
+   重启或数据修补。全部 Task 只有权威远端事实满足当日分母时才通过。
+
+### 13.2 平台消息 listener 归因合同
+
+群 listener 的 sender name/username 不是平台账号身份的唯一真相源。Gateway 成功后
+`ExecutionAttempt.remote_message_id` 与目标 `group_id` 构成更强的出站消息证据：
+
+1. 每批 listener snapshot 先用当前 group 的成功/已返回远端消息 ID 的 send Attempt
+   批量匹配，再执行 speaker event 与上下文持久化。
+2. 命中权威出站证据或现有受管账号身份的 snapshot 必须记录为 platform speaker，且
+   不得写入供 AI 消费的真人 `GroupContextMessage`；机器人/系统控制消息继续按原合同审计。
+3. 未命中任何平台证据的普通成员消息才可记录为 human，并推进 `last_human_cursor`。
+4. 禁止通过放宽 `context_superseded` freshness 校验、忽略全部真人消息或复用旧正文修复；
+   修复必须阻止平台自身消息制造假的 human break 和假的 context supersession，同时保留
+   真实群消息到达后的重新生成。
+5. QA 至少覆盖：身份字段可识别的平台消息、身份字段缺失但 remote ID 命中 Attempt 的
+   平台消息、真实真人消息、机器人控制消息，以及同一 snapshot 被多个 listener 重复观察。
+
+`design_status=complete`，`resync=true`。本节只补充诊断与 sender 归因，不改变五类任务
+目标、自然日分母、容量合同或 E4 远端事实口径。
