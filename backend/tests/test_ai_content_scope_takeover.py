@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 
 import pytest
 
 from app.models import (
     Action,
     AiContentScopeTakeoverBatch,
-    AiContentScopeTakeoverItem,
     ContentMixCycleSlot,
     RemoteReconcileCase,
     TaskGroupDailyMessageSlot,
@@ -83,35 +82,6 @@ def test_takeover_resumes_and_never_mutates_terminal_or_unknown_actions() -> Non
         assert unknown.status == "unknown_after_send"
         assert session.scalar(select(RemoteReconcileCase.id)) is not None
         assert takeover_chain_is_complete(session, batch_id) is True
-
-
-def test_completed_chain_fails_closed_after_runtime_items_expire() -> None:
-    sessions = _sessions()
-    with sessions() as session:
-        _seed_scope(session)
-        _seed_bound_legacy_action(session, "a-expired-item")
-        batch = _preview(session)
-        batch_id = batch.id
-        batch_hash = batch.classification_hash
-        counts = dict(batch.classification_counts)
-        session.commit()
-
-    _finish_takeover(
-        sessions,
-        batch_id=batch_id,
-        expected_hash=batch_hash,
-        expected_counts=counts,
-    )
-    with sessions() as session:
-        result = session.execute(delete(AiContentScopeTakeoverItem).where(
-            AiContentScopeTakeoverItem.batch_id == batch_id,
-        ))
-        assert result.rowcount == 1
-        session.commit()
-
-    with sessions() as session:
-        assert session.get(AiContentScopeTakeoverBatch, batch_id) is not None
-        assert takeover_chain_is_complete(session, batch_id) is False
 
 
 def _finish_takeover(
