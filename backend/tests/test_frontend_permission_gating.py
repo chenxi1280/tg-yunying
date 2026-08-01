@@ -2236,7 +2236,7 @@ def test_production_deploy_starts_two_dispatcher_workers():
     assert compose.count('ACCOUNT_SHARD_TOTAL: "2"') == 2
 
 
-def test_production_ai_hourly_probe_reports_membership_failures():
+def test_production_daily_fulfillment_probe_uses_current_planner_contract():
     workflow = (PROJECT_ROOT / ".github/workflows/deploy-production.yml").read_text()
     tianjin_diagnostics = (PROJECT_ROOT / ".github/scripts/tianjin_admission_diagnostics.py").read_text()
     quality_diagnostics = (PROJECT_ROOT / ".github/scripts/ai_group_quality_diagnostics.py").read_text()
@@ -2248,7 +2248,7 @@ def test_production_ai_hourly_probe_reports_membership_failures():
     assert "cleanup_tianjin_admission_backlog:" in workflow
     assert "force_cancel_in_progress:" in workflow
     assert "cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' && inputs.force_cancel_in_progress }}" in workflow
-    assert "Run production planner drain and AI hourly volume diagnostics after deploy" in workflow
+    assert "Run production planner drain and daily fulfillment diagnostics after deploy" in workflow
     assert "Run lightweight Tianjin admission diagnostics without planner probing" in workflow
     assert "Run production diagnostics for AI group quality, dedupe, voice profiles, and online state" in workflow
     assert "Deduplicate stale Tianjin target-admission retry backlog" in workflow
@@ -2260,19 +2260,13 @@ def test_production_ai_hourly_probe_reports_membership_failures():
     assert ".github/scripts/tianjin_cleanup_admission_backlog.py" in workflow
     assert "TIANJIN_LIGHT_SUMMARY=" in tianjin_diagnostics
     assert "TIANJIN_FAILED_ACCOUNTS=" in tianjin_diagnostics
-    assert "VerificationTask" in workflow
-    assert "recent_membership_actions" in workflow
-    assert "recent_failed_membership_actions" in workflow
-    assert "recent_verification_tasks" in workflow
-    assert "membership_status" in workflow
-    assert "membership_peer_ref" in workflow
-    assert "membership_fallback_ref" in workflow
-    assert "target_peer_id" in workflow
-    assert "account_policy_reason" in workflow
-    assert "AI_HOURLY_INSPECT_START" in workflow
-    assert "AI_HOURLY_TASK_VOLUME_TASK=" in workflow
-    assert "AI_HOURLY_TASK_VOLUME_SUMMARY=" in workflow
-    assert "AI_HOURLY_INSPECT_END" in workflow
+    assert "drain_task_planner(SessionLocal, limit=LIMIT)" in workflow
+    assert "_wake_hard_hourly_tasks" not in workflow
+    assert "_hard_hourly_wake_query" not in workflow
+    assert "_hard_hourly_due_candidate" not in workflow
+    assert ".github/scripts/task_fulfillment_e4_diagnostics.py" in workflow
+    assert "TASK_FULFILLMENT_E4_START" in workflow
+    assert "TASK_FULFILLMENT_E4_END" in workflow
     assert ".github/scripts/ai_group_quality_diagnostics.py" in workflow
     assert "AI_GROUP_QUALITY_DIAGNOSTICS_START" in workflow
     assert "AI_GROUP_QUALITY_DIAGNOSTICS_END" in workflow

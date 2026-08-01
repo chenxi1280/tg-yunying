@@ -1070,3 +1070,28 @@ shard收敛；中央 claim热事务禁止 `UPDATE tasks`，Gateway后 claim/Acti
 | QA | 自动化、canary、整日 E4 和 blocked/unproven 结论已定义 |
 | design_status | `complete` |
 极搜 12 小时排除必须携带 `jisou_flow_contract_version`，并只在当前单用户 scope 的同一执行合同版本内跨搜索任务共享。执行合同升级后，旧 Action 缺少或持有其他合同版本的失败事实保留审计，但不得阻断新合同首次尝试；新合同产生的真实失败仍按既有 12 小时规则排除。
+
+## 12. 2026-08-01 生产诊断与 E4 证据合同修订
+
+生产 run `30702343448` 证明 release、全部任务接管与共享调度合同均通过，
+但部署诊断仍导入已于 2026-07-28 退役的 `_wake_hard_hourly_tasks`、
+`_hard_hourly_wake_query` 和 `_hard_hourly_due_candidate`。Planner 探针异常被
+“继续取状态”分支保留为成功，后续小时量检查才因同一 ImportError 阻断，导致
+每日履约和真实远端事实检查没有执行。
+
+修订合同如下：
+
+1. 生产 Planner 探针只能调用当前公开入口 `drain_task_planner(SessionLocal, limit)`；
+   不得复制 service 私有调度流程，也不得继续唤醒或验收已退役 hard-hourly 义务。
+2. 探针异常必须让对应步骤失败；`planner_runtime_error` 必须进入目标任务 E4 blocker，
+   禁止打印非零退出后继续伪装探针成功。
+3. `run_production_diagnostics` 必须执行每日履约诊断。事故范围内五个 Task 要逐项输出
+   当前 TaskDayLedger、Action 状态、ExecutionAttempt、AI 群日 due/confirmed 与账号
+   coverage、纯搜索 click obligation/evidence、频道 view obligation/remote fact。
+4. E4 只接受权威远端事实：AI 为发布锚点后的 success Attempt 且
+   `remote_message_id` 非空；纯搜索为 obligation `confirmed + target_click_observed +
+   click_evidence_hash`；频道浏览为 obligation `confirmed` 且存在 ViewRemoteFact。
+   pending、skipped、容器 healthy 或仅有 Action 均不得计完成。
+5. 诊断脚本必须 fail closed：任务/ledger/义务缺失、due 未确认、coverage 未完成、
+   远端事实缺失或 planner runtime error 均返回非零；同时仍打印结构化 blocker，供
+   下一轮根因修复。发布、runtime 与业务 E4 继续分门记录。

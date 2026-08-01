@@ -242,3 +242,11 @@ docker compose exec -T worker-planner sh -lc 'now=$(date +%s); last=$(cat "${WOR
 1. 账号组隔离硬过滤生效：`pool_purpose=rank_deboost` 分组内账号不被其他任务通过「全部可用账号」语义误选；同一账号不得同时存在于 rank_deboost 分组和普通分组。
 2. 分组级代理绑定节点独占校验生效：同一节点不得同时被授权槽位级 `account_proxy_bindings` 和降权分组级 `account_group_proxy_bindings` 复用；分组级绑定节点容量 = 分组账号数，不再守 `max_authorizations_per_node_default=1`。
 3. 误点加入按钮自检告警生效：Executor 误点 `join_candidate` 按钮时立即停止 action、写 `search_rank_deboost_action_stats.join_button_violation=true`、风控中心生成 `rank_deboost_join_button_violation` 告警，并暂停该账号后续 action 直到人工确认。
+
+## 2026-08-01 每日履约生产诊断
+
+`group_ai_chat` 当前生产合同为群日/全账号每日履约，历史 hard-hourly 仅审计。
+`run_production_diagnostics` 的 Planner 探针必须调用公开 `drain_task_planner`；任何
+异常直接失败。随后运行 `.github/scripts/task_fulfillment_e4_diagnostics.py` 读取
+事故 Task 的自然日账本、Attempt 与类型化远端事实。旧的
+`_wake_hard_hourly_tasks/_hard_hourly_due_candidate` 不得再出现在生产 workflow。

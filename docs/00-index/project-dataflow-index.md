@@ -1045,3 +1045,5 @@ group_ai_chat / channel_comment 正文
 > **DF-186A 极搜执行合同版本排除（2026-07-31）**：Planner 将当前 `jisou_flow_contract_version` 冻结进 `SearchJoinPayload`。12 小时账号—协议路径排除只读取同一执行合同版本产生的失败；旧合同失败保留审计但不阻断新合同首次尝试，新合同产生的真实失败继续按既有规则排除。
 
 > **DF-186B 纯搜索点击账本时间结算（2026-07-31）**：Gateway 返回完整 click evidence 后，Dispatcher 使用统一 `Asia/Shanghai` aware 比较判断 `confirmed_at` 是否落在冻结 ledger 的 `[period_start_at, deadline_at)`。数据库驱动返回 naive ledger 时间而 Action 为 aware 时间时不得抛异常或转成 `unknown_after_send`；区间外事实仍显式失败为 `click_fact_outside_ledger_period`。
+
+> **DF-325 生产每日履约探针与 E4 事实（2026-08-01）**：`workflow_dispatch.run_production_diagnostics -> drain_task_planner(SessionLocal, limit) -> task_fulfillment_e4_diagnostics`。探针只调用当前公开 Planner 入口，不再复制或导入 retired hard-hourly 私有函数。E4 脚本按事故 Task 读取 `Task -> TaskDayLedger -> Action -> ExecutionAttempt`，并分型读取 `TaskGroupDailyTarget/TaskAccountDailyCoverage`、`SearchClickFulfillmentObligation`、`ViewFulfillmentObligation/ViewRemoteFact`；缺 ledger、due/coverage 欠额、空 remote ID、未确认 click/view 或 `planner_runtime_error` 均输出 blocker 并非零退出。release/runtime pass 与业务 E4 pass 分开记账。

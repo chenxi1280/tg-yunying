@@ -5482,3 +5482,13 @@ AI 群管准入只按 `(target_group_id, account_id, admission_generation)` 串�
 - `docs/03-feature-designs/material-library-design.md`：素材和媒体专项。
 - `docs/03-feature-designs/ai-group-send-continuity-and-terminal-targets-prd.md`：AI 活群连续履约、目标终态、引用版本和群发送策略专项。
 - `docs/02-architecture/capacity-and-dispatch-upgrade-plan.md`：容量和调度专项。
+
+### 2026-08-01 每日履约生产诊断口径
+
+- `group_ai_chat` 的 hard-hourly 已退役；生产诊断不得再导入或调用其历史私有
+  wake/due 函数，也不得把历史小时桶作为当前完成标准。
+- Planner 生产探针统一调用当前公开 `drain_task_planner`，异常必须显式失败。
+- 全任务 L3 恢复必须对事故 Task 输出当前自然日账本、Action、Attempt 和类型化
+  远端事实；健康检查、待执行 Action 和空 remote ID 不能替代业务完成证据。
+- AI 群日 due/coverage、纯搜索 click evidence、频道 view remote fact 任一欠额时，
+  结论保持 `production_blocked`，不得写 `production_fixed`。

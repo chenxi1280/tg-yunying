@@ -232,3 +232,12 @@ Phase 23: closed Window effective 时间语义
 | membership case红测缺TelegramDeveloperApp fixture | 1 | 在定向单元测试注入credentials resolver；生产代码不增加fallback |
 | membership case测试用refresh覆盖未提交B1状态 | 1 | 改为flush后断言；真实Recovery由外层统一commit |
 | Actions run 30690191293 no_postgres分区18条失败 | 1 | 部署未执行；按active contract夹具、stale recovery签名、0134 head与终结语义分组复现并修复，不放宽生产fence |
+
+### Phase 24: 每日履约生产诊断漂移修复
+- [x] 从 run `30702343448` 定位 release/takeover/shared contract 通过，诊断因 retired hard-hourly 私有导入失败
+- [x] 先补全任务 PRD、主 PRD、DF-325、生产运行与结构索引
+- [x] 红测约束 workflow 只调用公开 Planner drain，旧 hard-hourly 符号归零
+- [x] 新增五个事故 Task 的类型化 E4 事实诊断与单元测试
+- [ ] 通过本地质量门并走 master -> release 完整发布
+- [ ] 在线取得 AI remote_message_id、search click evidence、view remote fact 并证明当前欠额归零
+- **Status:** local_verified_release_pending

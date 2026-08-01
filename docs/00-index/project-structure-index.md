@@ -1094,3 +1094,11 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 | `backend/tests/test_shared_dispatch_*`、`test_dispatch_runtime_*`、`test_dispatch_claim_*`、`test_gateway_evidence_journal*`、`test_remote_*`、`test_ai_content_scope_takeover.py` | 模型/迁移/合同/公平/崩溃恢复/CAS/发布顺序的定向回归入口；PostgreSQL marker仍须在可用测试库执行 |
 
 本补充只证明本地候选实现结构。PostgreSQL并发、Actions、生产激活、真实Telegram canary和自然日E4均须单独取证，不能据此写`qa_pass`、`product_accepted`或`production_fixed`。
+
+### 2026-08-01 生产每日履约诊断入口
+
+- `.github/scripts/task_fulfillment_e4_diagnostics.py`：生产只读 E4 事实闸门；按指定
+  Task 读取当前 TaskDayLedger、Action/ExecutionAttempt 和 AI/search/view 类型化
+  履约事实，输出结构化 blocker 并以退出码阻断虚假完成。
+- `.github/workflows/deploy-production.yml` 的 Planner 探针只调用
+  `service.drain_task_planner`，不再复制 retired hard-hourly 私有流程。

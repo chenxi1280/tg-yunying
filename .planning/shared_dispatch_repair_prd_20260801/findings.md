@@ -327,3 +327,9 @@
 - commit `814af04d` 的完整质量门、发布、takeover 和内部 `active_verified` 通过；外部验证于 `21:24:00.4` 报 `closed_window_effective_unclaimed`，内部验证时间为 `21:23:25`。
 - 失败精确发生在60秒 Window 的时钟边界。没有业务写事务时，数据库字段不可能在 `bucket_end` 到达的瞬间自行从非零变为0；把物理归零作为只读验证条件会稳定制造边界假失败。
 - `effective_unclaimed_count` 仅为 live Window 容量投影。closed 后逻辑 effective 按时间无条件为0，存储值继续作为历史未领取快照并由原 release owner 收口；active Action/Window/Allocation binding 与 live Window 守恒继续严格验证。
+
+## 2026-08-01 production finding: diagnostics still import retired hard-hourly planner internals
+
+- run `30702343448` 的 release、takeover、`verify-active` 均通过，Planner probe 与随后 AI hourly inspect 分别抛 `AttributeError/ImportError`：`_wake_hard_hourly_tasks`、`_hard_hourly_due_candidate` 已不存在。
+- hard-hourly 已被每日群目标合同取代；恢复旧小时函数会重新引入已退役义务。正确修复是 workflow 调用公开 `drain_task_planner`，并用 TaskDayLedger 与类型化远端事实做 E4。
+- 原 Planner probe 仅打印非零状态却保持步骤 success，属于诊断假通过；新合同要求异常直接阻断。

@@ -308,3 +308,11 @@
 - 该失败是只读校验要求时钟自动写数据库的合同错误；已明确 closed 后逻辑 effective 按 bucket_end 为0、stored unclaimed 只作历史，active 与 live 守恒不放宽。
 - 生产同形态红测保留 closed Window 的历史 unclaimed/effective=1，同时保持 active binding 完全一致；修复前稳定报同一错误，按时间派生 logical effective 后转绿。
 - 共享 runtime/claim/release/Release Gate 集合 `60 passed`，跨窗/search release语义集合 `28 passed`，compile 与 diff check 通过。
+
+## 2026-08-01 生产 E4 继续修复：每日履约诊断漂移
+
+- `be67adcb` 的 run `30701873412` 完整成功并上线；同 SHA 诊断 run `30702343448` 再次通过 release、takeover 与共享调度验证。
+- 诊断在 retired hard-hourly 私有符号上失败，AI 每日质量步骤被跳过；该失败不能归因为任务执行失败，也不能声明业务通过。
+- 已先补齐 PRD/DF-325/runtime/结构索引，下一步用公开 Planner drain 与五任务类型化 E4 脚本替换旧诊断。
+- workflow 红测先失败于旧描述/旧私有入口；实现后 retired wake/due 符号为 0，Planner 非零退出不再被吞掉。
+- 新增 E4 只读闸门，按 AI 群日、search click、channel view 三类权威事实核对五个事故 Task；专项与现有诊断集合 `191 passed`，YAML、AST、diff gate 通过。
