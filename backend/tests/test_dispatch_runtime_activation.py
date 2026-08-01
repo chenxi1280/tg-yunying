@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, update
 from sqlalchemy.orm import Session
 
 import pytest
@@ -12,6 +12,7 @@ from app.database import Base
 from app.models import (
     Action,
     AiContentScopeTakeoverBatch,
+    DispatchClaimScope,
     DispatchClaimReservation,
     DispatchClaimShardAllocation,
     DispatchClaimWindow,
@@ -123,6 +124,42 @@ def test_verify_active_accepts_claim_executing_past_window_end() -> None:
             session,
             settings,
             now=observed_at,
+        )
+
+        assert verified["verification_state"] == "active_verified"
+
+
+def test_verify_active_refreshes_scope_cached_before_lock() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    observed_at = datetime(2026, 8, 1, 4, tzinfo=timezone.utc)
+    with Session(engine) as session:
+        settings = _settings(account_shard_index=0)
+        stage_dispatch_runtime_contract(session, settings)
+        completed_batch_id = _takeover_batch(session, "completed")
+        for index in range(2):
+            record_dispatcher_shard_heartbeat(
+                session,
+                _settings(account_shard_index=index),
+                worker_id=f"dispatcher-{index}",
+                now=observed_at,
+            )
+        scope = activate_dispatch_runtime_contract(
+            session, settings,
+            takeover_head_batch_id=completed_batch_id,
+            now=observed_at,
+        )
+        _seed_cross_window_active_claim(
+            session, scope, observed_at, update_scope=False,
+        )
+        session.execute(update(DispatchClaimScope).where(
+            DispatchClaimScope.id == scope.id,
+        ).values(active_claim_count=1).execution_options(
+            synchronize_session=False,
+        ))
+
+        verified = verify_dispatch_runtime_active(
+            session, settings, now=observed_at,
         )
 
         assert verified["verification_state"] == "active_verified"
@@ -276,6 +313,8 @@ def _seed_cross_window_active_claim(
     session: Session,
     scope,
     observed_at: datetime,
+    *,
+    update_scope: bool = True,
 ) -> None:
     session.add(Tenant(id=1, name="tenant"))
     session.add(Task(
@@ -287,7 +326,8 @@ def _seed_cross_window_active_claim(
     ))
     ledger = _cross_window_ledger(scope.dispatcher_scope, observed_at)
     action = _cross_window_action(scope.dispatcher_scope, ledger)
-    scope.active_claim_count = 1
+    if update_scope:
+        scope.active_claim_count = 1
     session.add_all([*ledger, action])
     session.flush()
 

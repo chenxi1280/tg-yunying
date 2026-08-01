@@ -299,3 +299,10 @@
 - 19:16:27工作流再次执行只读`verify-active`，报`dispatch_ledger_invariant_failed:closed_window_active`。两次验证间约23秒，Dispatcher已开始真实claim，60秒Window跨过bucket end但Action尚未完成。
 - 这证明shard预算已不再归零并已出现真实active claim，同时暴露验证合同混用了两个阶段：preparing/fence时closed active必须归零；active运行期真实Action可以合法跨窗在途。
 - 修复不能简单忽略closed Window。运行期验证必须锁Scope阻断并发claim/release，核对Scope active与真实Action数、closed effective为0、Window/Allocation active与Action冻结binding逐层一致；错绑仍fail closed。
+
+## 2026-08-01 production finding: locked verify reuses stale Scope identity
+
+- release `7cf4cf52` 的发布脚本、接管和内部 `verify-active` 均通过，但 GitHub 外层校验在 Dispatcher 恢复运行后报 `dispatch_ledger_invariant_failed:scope_active_projection`。
+- `verify_dispatch_runtime_active` 先由 candidate 校验把 Scope 无锁载入同一 Session，之后才对同一行执行 `FOR UPDATE`；`_locked_scope` 未设置 `populate_existing`，SQLAlchemy 会返回 identity map 中的旧属性。
+- 两次读取间的合法 claim/release 会更新数据库 Scope 和 Action。加锁查询虽然锁住数据库最新行，却继续用缓存的旧 `active_claim_count`，随后 Action 查询读取新集合，形成数据库中从未存在的混合快照。
+- 修复合同：加锁读取必须强制刷新 Scope；真实账本漂移仍由严格投影校验显式失败，不能在 verify 中自动修账。

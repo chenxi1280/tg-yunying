@@ -285,3 +285,10 @@
 - 跨窗合法、错账失败和顶层`verify-active`生产同形态测试已通过；共享runtime/activation/claim/release/跨epoch/搜索释放集合`57 passed in 5.28s`。
 - 运行期验证已拆入独立模块，Scope锁只存在于post-deploy只读验证，不进入常驻writer gate；激活前零active校验保持不变。
 - 下一门：完整再发布；之后继续取Attempt/远端事实。
+
+## 2026-08-01 生产 E4 继续修复：Scope identity map 刷新
+
+- `7cf4cf52`完整质量门、发布脚本、接管和内部校验通过；run `30697835240` 的外层 `verify-active` 报 `scope_active_projection`，因此没有声明部署闭环。
+- 代码审计确认同一 Session 的 candidate 无锁读取先缓存 Scope，随后 `FOR UPDATE` 未强制刷新；并发 claim/release 后会把旧 Scope 计数与新 Action 集合拼成混合快照。
+- 已先更新专项 PRD、主 PRD、DF-324 与结构索引；生产同形态红测先复现同一 `scope_active_projection`，加锁查询强制 `populate_existing` 后转绿。
+- 共享调度、激活、claim/release、迁移与 Release Gate 定向集合 `70 passed in 5.29s`；未增加自动对账、重试或校验放宽。

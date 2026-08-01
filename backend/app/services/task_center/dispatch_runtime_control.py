@@ -300,7 +300,10 @@ def _locked_scope(
     statement = select(DispatchClaimScope).where(
         DispatchClaimScope.dispatcher_scope == scope_name,
     )
-    return session.scalar(for_update(session, statement) if lock else statement)
+    if not lock:
+        return session.scalar(statement)
+    locked = statement.execution_options(populate_existing=True)
+    return session.scalar(for_update(session, locked))
 
 
 def _locked_shard_state(

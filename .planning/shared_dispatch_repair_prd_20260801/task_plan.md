@@ -4,7 +4,7 @@
 基于 2026-08-01 生产事故事实和已完成专项 PRD，完成共享调度、Gateway原子终结、AI存量接管与远端核验的代码修复、自动化 QA和产品复核；生产发布和E4仍需独立证据。
 
 ## Current Phase
-Phase 19: post-deploy 跨窗 active claim 验证修复
+Phase 20: post-deploy Scope identity 刷新修复
 
 ## Requirements Checklist
 - [x] Intake Card 与 L3 分级、证据边界
@@ -162,8 +162,18 @@ Phase 19: post-deploy 跨窗 active claim 验证修复
 - [x] 区分preparing/fence零active与active合同合法跨窗在途并回写PRD/DF-324
 - [x] 补跨窗合法与错绑失败红测，锁Scope后按Action binding验证运行期投影
 - [x] 通过定向回归
-- [ ] 提交并再次走master/release完整发布
+- [x] 提交并再次走master/release完整发布
 - [ ] 在线证明post-deploy verify通过、Attempt与真实Telegram事实增长
+- **Status:** deployed_cross_window_fixed_next_blocker_found
+
+### Phase 20: post-deploy Scope identity 刷新修复
+- [x] 从 run `30697835240` 定位发布/接管通过、外层校验报 `scope_active_projection`
+- [x] 核对同 Session candidate 旧缓存与 Scope 行锁读取未刷新形成混合快照
+- [x] 先回写专项 PRD、主 PRD、DF-324 与结构索引
+- [x] 红测复现数据库已更新但 identity map 仍旧的 Scope 加锁读取
+- [x] 最小修复加锁查询刷新语义并通过定向回归
+- [ ] 提交并再次走 master/release 完整发布
+- [ ] 在线证明两次 verify、Attempt 与真实 Telegram 事实增长
 - **Status:** in_progress_local_verified
 
 ## Decisions Made
