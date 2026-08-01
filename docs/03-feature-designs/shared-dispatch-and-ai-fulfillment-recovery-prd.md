@@ -500,6 +500,7 @@ Stage B 是前向数据迁移，不执行逆向改写。任何已 applied item�
    - `verify-active` 可能在新的60秒 Claim Window 已结束而其中Action仍执行时运行；它必须按运行期跨窗在途合同验证真实Action支撑的 active 投影，不能复用“writer fence后 closed active 必须为0”的激活前置条件。
    - candidate 无锁读取与 Scope 行锁升级复用同一 Session 时，加锁读取必须强制 refresh；并发 claim/release 后仍使用 identity map 旧值属于校验缺陷，不属于真实账本漂移。
    - pre-Gateway 阻断/延后不能先提交非 executing 状态再等待外层 finalize；QA 必须在每个显式 commit 边界证明 `dispatch_claim_active=true` 的 Action 仍为 executing，或同一提交已释放完整账本前缀。
+   - 生产 Session 使用 `autoflush=false`。外层 finalize 在 Action 已改为非 executing 后重算 active Action 投影前，必须在同一事务显式 flush Action 状态；否则 SQL 会继续读到数据库旧的 executing 行并保留 Window/Allocation active 计数。该 flush 不是提前 commit，后续任一释放步骤失败仍须整体回滚。
 4. worker只在观察到 active版本完全匹配后开始 Planner/generation/claim/recovery；任何旧版本或 mismatch继续零新写入。
    - worker loop冻结的`dispatch_contract_version`是heartbeat必备metadata。Planner/Dispatcher/Recovery等业务drain刷新同一heartbeat时只能合并业务字段，禁止整体覆盖或删除合同版本；`verify-active`必须在至少一次真实drain刷新后仍通过。
 5. 先观察现有 running任务，不额外创建真实 Telegram测试任务；连续30分钟检查窗口守恒、deadlock、claim、Gateway和业务事实。

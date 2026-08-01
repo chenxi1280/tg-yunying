@@ -45,7 +45,7 @@ def test_gateway_b1_failure_rolls_back_claim_and_action_together(
         "_sync_action_content_mix_state",
         fail_after_claim_release,
     )
-    with Session(engine) as session:
+    with Session(engine, autoflush=False) as session:
         action = session.get(Action, "action-1")
         action.status = "success"
         action.executed_at = _now()
@@ -93,7 +93,7 @@ def test_pre_gateway_failure_waits_for_atomic_claim_release(monkeypatch) -> None
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     _seed_active_claim(engine)
-    with Session(engine) as session:
+    with Session(engine, autoflush=False) as session:
         action, context = _missing_group_gateway_context(session)
         committed_states: list[tuple[str, bool]] = []
         real_commit = session.commit

@@ -170,6 +170,7 @@ def release_dispatch_claim(session: Session, action: Action) -> bool:
     if action.status == "executing" or not result.get("dispatch_claim_active"):
         return False
     scope, window, allocation = _locked_release_ledger(session, action, result)
+    session.flush([action])
     reconciliation = _reconcile_released_claim(session, scope, window, allocation)
     action.result = _released_claim_result(result, reconciliation)
     return True

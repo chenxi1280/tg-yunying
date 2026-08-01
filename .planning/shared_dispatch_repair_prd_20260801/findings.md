@@ -314,3 +314,10 @@
 - 该中间提交使数据库真实短暂出现 Scope active 仍占用、SQL `status=executing` Action 已消失；`verify-active` 即使先锁 Scope，也无法阻止发生在 Scope 锁之前的 Action 状态提交。
 - 修复合同：阻断/延后状态与 claim 释放同事务；保持 executing 的 Gateway-started 边界提交继续保留，不扩大事务跨真实 Gateway 调用。
 - commit 观察红测在修复前记录到 `status=failed, dispatch_claim_active=true` 的独立提交；删除对应提交后，外层 finalize 单次事务得到 `status=failed, dispatch_claim_active=false, scope.active_claim_count=0`。
+
+## 2026-08-01 production finding: autoflush=false hides terminal Action during release projection
+
+- commit `6d57b957` 的前端、no-postgres、PostgreSQL、镜像、生产发布和 takeover 均通过；run `30700451808` 外层严格校验不再报 Scope 错位，而改报 `runtime_active_projection`。
+- 生产 `SessionLocal` 固定 `autoflush=False`。`release_dispatch_claim()` 在内存 Action 已为非 executing 后，直接用 SQL 查询 active Action；未显式 flush 时 SQL 仍读到数据库旧的 executing 行，故 Scope/Window/Allocation 释放投影继续保留当前 Action。
+- 后续常规分配会通过 `reconcile_scope_active()` 单独校正 Scope，却不一定同时校正旧 Window/Allocation，于是形成现网观测到的“Scope 与 active Action 一致，但 Window/Allocation 仍 active”的精确错误形态。
+- 修复合同：锁完整 release 前缀后，在重算投影前显式 flush Action 状态；不得 commit，确保释放及其下游同步失败时仍可整体回滚。

@@ -4,7 +4,7 @@
 基于 2026-08-01 生产事故事实和已完成专项 PRD，完成共享调度、Gateway原子终结、AI存量接管与远端核验的代码修复、自动化 QA和产品复核；生产发布和E4仍需独立证据。
 
 ## Current Phase
-Phase 21: pre-Gateway 状态与 claim 原子释放
+Phase 22: autoflush=false 下的 claim 释放投影
 
 ## Requirements Checklist
 - [x] Intake Card 与 L3 分级、证据边界
@@ -183,8 +183,19 @@ Phase 21: pre-Gateway 状态与 claim 原子释放
 - [x] 红测证明 active Action 不得以非 executing 状态单独 commit
 - [x] 删除阻断/延后路径的提前 commit，由外层 finalize 同事务释放 claim
 - [x] 通过本地定向质量门
-- [ ] 通过 GitHub PostgreSQL/完整质量门并再次发布
+- [x] 通过 GitHub PostgreSQL/完整质量门并再次发布
 - [ ] 运行 Planner/AI 生产诊断，证明 Attempt 与真实 Telegram 事实增长
+- **Status:** deployed_scope_fixed_next_window_projection_found
+
+### Phase 22: autoflush=false 下的 claim 释放投影
+- [x] 从 run `30700451808` 定位 Scope 校验已通过、Window/Allocation 报 `runtime_active_projection`
+- [x] 核对生产 SessionLocal 为 `autoflush=false` 且 release 投影查询前未 flush Action 终态
+- [x] 先回写专项 PRD、主 PRD、DF-324 与结构索引
+- [x] 生产同配置红测复现 Scope/Window/Allocation 未释放
+- [x] 同事务显式 flush 终态后重算并释放完整账本
+- [x] 通过本地定向质量门
+- [ ] 通过 Actions 完整质量门并再次发布
+- [ ] 两次 verify 通过后运行生产诊断取得 Attempt/Telegram 事实
 - **Status:** local_verified_release_pending
 
 ## Decisions Made

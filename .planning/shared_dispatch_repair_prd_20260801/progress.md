@@ -300,3 +300,7 @@
 - 代码审计定位 pre-Gateway 门禁/限流/准入分支先提交 `pending|skipped|failed` Action，随后外层才释放 active claim。已先回写 PRD/DF-324；commit 边界红测稳定捕获 `('failed', true)` 中间态。
 - 删除8个阻断/延后分支的提前 commit，由外层 finalize 同事务提交终态与完整 claim 释放；Gateway-started、Attempt journal、仍为 executing 的提交边界保持不变。
 - 红测转绿；出站/门禁/群管/频道/容量定向集合 `137 passed, 74 deselected`，共享 claim/激活/runtime/release 集合 `57 passed`，compile 与 diff check 通过。本地 PostgreSQL 地址在 collection 前断连，未计作通过，交由 GitHub Actions 服务容器验证。
+- run `30700451808` 的前端、no-postgres、PostgreSQL、三镜像、生产发布和 takeover 均通过；外层验证不再报 Scope 错位，而报 Window/Allocation 层 `runtime_active_projection`。
+- 新根因是生产 `autoflush=false` 下 release 在终态未 flush 时重算 active Action，继续读取数据库旧 executing 行并保留下层 active 投影；已先补齐 Phase 22 产品/数据流合同。
+- 同一 pre-Gateway 原子测试改用生产 `autoflush=false` 后稳定红出 `scope.active_claim_count=1`；锁完整账本后显式 `flush([action])` 再投影，红测转绿且失败回滚仍保持原子性。
+- claim/激活/runtime/Release Gate 集合 `60 passed`；出站/门禁/群管/频道/容量/搜索释放集合 `150 passed, 74 deselected`；compile 与 diff check 通过。
