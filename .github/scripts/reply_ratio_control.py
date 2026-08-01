@@ -9,7 +9,14 @@ from typing import Any
 from sqlalchemy import select
 
 from app.database import SessionLocal
-from app.models import Action, ExecutionAttempt, Task, WorkerHeartbeat
+from app.models import (
+    Action,
+    ExecutionAttempt,
+    GatewayRequestEvidenceJournal,
+    RemoteReconcileCase,
+    Task,
+    WorkerHeartbeat,
+)
 from app.services.task_center.service import _apply_type_config_data
 
 
@@ -169,6 +176,60 @@ def open_action_snapshot(session, task: Task, target: RatioTarget) -> dict[str, 
     }
 
 
+def unknown_remote_snapshot(
+    session,
+    task: Task,
+    target: RatioTarget,
+    since: datetime,
+) -> list[dict[str, Any]]:
+    actions = list(session.scalars(
+        select(Action)
+        .where(
+            Action.task_id == task.id,
+            Action.action_type == target.action_type,
+            Action.status == "unknown_after_send",
+            Action.executed_at >= since,
+        )
+        .order_by(Action.executed_at.desc())
+        .limit(10)
+    ))
+    return [_unknown_remote_row(session, action) for action in actions]
+
+
+def _unknown_remote_row(session, action: Action) -> dict[str, Any]:
+    attempt = session.scalar(
+        select(ExecutionAttempt)
+        .where(ExecutionAttempt.action_id == action.id)
+        .order_by(ExecutionAttempt.attempt_no.desc())
+        .limit(1)
+    )
+    case = session.scalar(
+        select(RemoteReconcileCase)
+        .where(RemoteReconcileCase.action_id == action.id)
+        .order_by(RemoteReconcileCase.created_at.desc())
+        .limit(1)
+    )
+    journal = session.scalar(
+        select(GatewayRequestEvidenceJournal)
+        .where(GatewayRequestEvidenceJournal.action_id == action.id)
+        .order_by(GatewayRequestEvidenceJournal.observed_at.desc())
+        .limit(1)
+    )
+    return {
+        "action_id": action.id,
+        "attempt_id": attempt.id if attempt else None,
+        "attempt_status": attempt.status if attempt else None,
+        "case_id": case.id if case else None,
+        "case_state": case.state if case else None,
+        "journal_state": journal.state if journal else None,
+        "journal_remote_mutation_state": (
+            journal.remote_mutation_state if journal else None
+        ),
+        "journal_remote_message_id": journal.remote_message_id if journal else None,
+        "journal_failure_code": journal.failure_code if journal else None,
+    }
+
+
 def runtime_snapshot(session, task_rows: list[Task]) -> dict[str, Any]:
     now = datetime.now(tz=UTC)
     due_ids = list(session.scalars(
@@ -234,6 +295,9 @@ def snapshots(
             **task_snapshot(task, target),
             **open_action_snapshot(session, task, target),
             **reply_fact_snapshot(session, task, target, since),
+            "unknown_remote_rows": unknown_remote_snapshot(
+                session, task, target, since,
+            ),
         })
     return result
 

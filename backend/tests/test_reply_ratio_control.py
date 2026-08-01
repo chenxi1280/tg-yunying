@@ -54,3 +54,10 @@ def test_workflow_is_manual_and_verifies_release_before_control() -> None:
         "tgyunying-worker-recovery",
     ):
         assert container in workflow
+
+
+def test_script_exposes_unknown_remote_reconciliation_evidence() -> None:
+    module = load_script()
+
+    assert callable(module.unknown_remote_snapshot)
+    assert callable(module._unknown_remote_row)
