@@ -3389,6 +3389,7 @@ def _historical_group_reply_targets(session: Session, task: Task, group: TgGroup
         tenant_id=task.tenant_id,
         task_id=task.id,
         group_id=group.id,
+        exclude_used_statuses=RECENT_TARGET_USAGE_STATUSES,
         limit=limit,
     )
     return [

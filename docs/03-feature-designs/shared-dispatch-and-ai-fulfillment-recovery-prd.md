@@ -378,6 +378,7 @@ Window rebuild 前必须按以下顺序处理旧事实：
 - `context_expired`：释放旧 generation 内容，不改原义务，按最新同群上下文重生成。
 - `reply_target_missing`：旧 Action 终态并回到原槽重规划；Planner 根据当前规则重新选择合法 reply 或 direct，不能把 reply 静默改成不存在的引用。
 - 托管账号的历史成功消息可作为 `own_history` 引用目标，但必须由同 tenant、同 Task、同目标群的既往 `Action.status=success` 与其最新成功 `ExecutionAttempt.remote_message_id` 共同证明，且既往 Action 冻结正文非空；正常发送与 `remote_confirmed` 对账成功复用同一合同。此类出站消息无需写入 `GroupContextMessage`，因为 Listener 必须继续排除托管账号出站内容；Planner 与 Gateway 前 scope validator 必须复用上述权威事实，禁止一方可选、一方误拒。跨 Task、跨群、缺成功 Attempt、空 remote ID 或空冻结正文均不得进入引用池。
+- `own_history` 分页必须先在数据库查询中按同租户、同目标群跨任务排除已被 `pending|claiming|executing|unknown_after_send|success` Action 占用的 `reply_to_message_id`，再按成功时间取本轮上限；禁止“先截取最新 N 条、再在内存排除已用目标”，否则最新窗口耗尽时会漏掉更早但仍合法未用的成功消息并制造 `reply_target_missing`。查询必须保持有界，最终候选仍在 Action 创建前复核一次占用状态以覆盖并发。
 - `post_send_intercepted`：保留失败事实；账号回到 admission 流程，不计 coverage，不自动重发同一正文。
 
 #### 郑州楼凤

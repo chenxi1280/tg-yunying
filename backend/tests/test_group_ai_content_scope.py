@@ -29,6 +29,7 @@ from app.services.task_center.ai_generation_dispatch import (
 from app.services.task_center.ai_generator import AiGenerationUnavailable
 from app.services.task_center import dispatcher
 from app.services.task_center.executors.group_ai_chat import (
+    _group_reply_target_pool,
     _historical_group_reply_targets,
     _recent_account_memories,
     account_profile_summaries,
@@ -236,6 +237,53 @@ def test_historical_reply_targets_use_success_attempt_for_normal_result_shape():
         "preview": "托管账号此前已发送正文",
         "source": "own_history",
     }]
+
+
+def test_own_history_limit_is_applied_after_cross_task_used_targets_are_excluded():
+    session = _session()
+    _seed_scope(session)
+    session.add(Task(
+        id="other-task",
+        tenant_id=1,
+        name="其他任务",
+        type="group_ai_chat",
+        status="running",
+        type_config={"target_group_id": 8},
+    ))
+    now_value = datetime.now(UTC)
+    for index in range(25):
+        remote_id = str(3800000 + index)
+        prior = _successful_own_history_action(remote_message_id=remote_id)
+        prior.id = f"prior-own-history-{index}"
+        prior.executed_at = now_value - timedelta(minutes=index)
+        session.add(prior)
+        session.flush()
+        session.add(ExecutionAttempt(
+            action_id=prior.id,
+            status="success",
+            remote_message_id=remote_id,
+        ))
+        if index < 20:
+            session.add(Action(
+                id=f"used-own-history-{index}",
+                tenant_id=1,
+                task_id="other-task",
+                task_type="group_ai_chat",
+                action_type="send_message",
+                account_id=11,
+                status="pending",
+                payload={"group_id": 8, "reply_to_message_id": int(remote_id)},
+            ))
+    session.commit()
+
+    targets = _group_reply_target_pool(
+        session,
+        session.get(Task, "task-b"),
+        session.get(TgGroup, 8),
+        [],
+    )
+
+    assert [target["message_id"] for target in targets] == [3800020, 3800021, 3800022, 3800023, 3800024]
 
 
 def _successful_own_history_action(*, remote_message_id: str) -> Action:

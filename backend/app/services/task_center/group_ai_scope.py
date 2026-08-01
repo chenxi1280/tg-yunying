@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sqlalchemy import and_, func, select
-from sqlalchemy.orm import Session
+from sqlalchemy import String, and_, cast, exists, func, select
+from sqlalchemy.orm import Session, aliased
 
 from app.models import (
     Action,
@@ -203,6 +203,7 @@ def successful_own_history_reply_facts(
     group_id: int,
     remote_message_id: str = "",
     exclude_action_id: str = "",
+    exclude_used_statuses: tuple[str, ...] = (),
     limit: int = 20,
 ) -> list[tuple[Action, str]]:
     latest_attempt = (
@@ -223,6 +224,7 @@ def successful_own_history_reply_facts(
         group_id=group_id,
         remote_message_id=remote_message_id,
         exclude_action_id=exclude_action_id,
+        exclude_used_statuses=exclude_used_statuses,
     )
     rows = session.execute(
         select(Action, ExecutionAttempt.remote_message_id)
@@ -245,6 +247,7 @@ def _own_history_filters(
     group_id: int,
     remote_message_id: str,
     exclude_action_id: str,
+    exclude_used_statuses: tuple[str, ...],
 ) -> list:
     filters = [
         Action.tenant_id == tenant_id,
@@ -259,7 +262,31 @@ def _own_history_filters(
         filters.append(ExecutionAttempt.remote_message_id == remote_message_id)
     if exclude_action_id:
         filters.append(Action.id != exclude_action_id)
+    if exclude_used_statuses:
+        filters.append(_unused_reply_target_filter(
+            tenant_id=tenant_id,
+            group_id=group_id,
+            statuses=exclude_used_statuses,
+        ))
     return filters
+
+
+def _unused_reply_target_filter(
+    *,
+    tenant_id: int,
+    group_id: int,
+    statuses: tuple[str, ...],
+):
+    used_action = aliased(Action)
+    return ~exists(select(used_action.id).where(
+        used_action.tenant_id == tenant_id,
+        used_action.task_type == "group_ai_chat",
+        used_action.action_type == "send_message",
+        used_action.status.in_(statuses),
+        used_action.payload["group_id"].as_integer() == group_id,
+        cast(used_action.payload["reply_to_message_id"].as_integer(), String)
+        == ExecutionAttempt.remote_message_id,
+    ))
 
 
 def _memory_violation(
