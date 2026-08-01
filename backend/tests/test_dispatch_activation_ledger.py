@@ -123,13 +123,19 @@ def test_activation_reconcile_does_not_replay_closed_window_history() -> None:
         assert closed_reservation.reserved_claims == 7
 
 
-def test_runtime_validation_accepts_claim_executing_past_window_end() -> None:
+def test_runtime_validation_treats_closed_unclaimed_as_historical() -> None:
     engine = _engine()
     with Session(engine) as session:
         _seed_active_claim(session, "cross-window", gateway_started=True)
         observed_at = _now()
         window = session.get(DispatchClaimWindow, "window")
+        allocation = session.get(DispatchClaimShardAllocation, "allocation")
+        reservation = session.get(DispatchClaimReservation, "reservation")
         window.bucket_end = observed_at - timedelta(seconds=1)
+        window.unclaimed_allocated_count = 1
+        window.effective_unclaimed_count = 1
+        allocation.unclaimed_allocated_count = 1
+        reservation.reserved_claims = 2
         session.flush()
 
         validate_dispatch_ledgers_for_runtime(

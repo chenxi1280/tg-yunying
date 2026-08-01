@@ -304,3 +304,7 @@
 - 新根因是生产 `autoflush=false` 下 release 在终态未 flush 时重算 active Action，继续读取数据库旧 executing 行并保留下层 active 投影；已先补齐 Phase 22 产品/数据流合同。
 - 同一 pre-Gateway 原子测试改用生产 `autoflush=false` 后稳定红出 `scope.active_claim_count=1`；锁完整账本后显式 `flush([action])` 再投影，红测转绿且失败回滚仍保持原子性。
 - claim/激活/runtime/Release Gate 集合 `60 passed`；出站/门禁/群管/频道/容量/搜索释放集合 `150 passed, 74 deselected`；compile 与 diff check 通过。
+- run `30701189759` 完整质量门、发布、takeover 与内部 verify 通过；外部 verify 不再报 active 投影，而在 `21:24:00.4` 精确报 `closed_window_effective_unclaimed`。
+- 该失败是只读校验要求时钟自动写数据库的合同错误；已明确 closed 后逻辑 effective 按 bucket_end 为0、stored unclaimed 只作历史，active 与 live 守恒不放宽。
+- 生产同形态红测保留 closed Window 的历史 unclaimed/effective=1，同时保持 active binding 完全一致；修复前稳定报同一错误，按时间派生 logical effective 后转绿。
+- 共享 runtime/claim/release/Release Gate 集合 `60 passed`，跨窗/search release语义集合 `28 passed`，compile 与 diff check 通过。

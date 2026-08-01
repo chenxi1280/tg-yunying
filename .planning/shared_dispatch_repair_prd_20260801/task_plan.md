@@ -4,7 +4,7 @@
 基于 2026-08-01 生产事故事实和已完成专项 PRD，完成共享调度、Gateway原子终结、AI存量接管与远端核验的代码修复、自动化 QA和产品复核；生产发布和E4仍需独立证据。
 
 ## Current Phase
-Phase 22: autoflush=false 下的 claim 释放投影
+Phase 23: closed Window effective 时间语义
 
 ## Requirements Checklist
 - [x] Intake Card 与 L3 分级、证据边界
@@ -193,6 +193,17 @@ Phase 22: autoflush=false 下的 claim 释放投影
 - [x] 先回写专项 PRD、主 PRD、DF-324 与结构索引
 - [x] 生产同配置红测复现 Scope/Window/Allocation 未释放
 - [x] 同事务显式 flush 终态后重算并释放完整账本
+- [x] 通过本地定向质量门
+- [x] 通过 Actions 完整质量门并再次发布
+- [ ] 两次 verify 通过后运行生产诊断取得 Attempt/Telegram 事实
+- **Status:** deployed_release_projection_fixed_next_time_boundary_found
+
+### Phase 23: closed Window effective 时间语义
+- [x] 从 run `30701189759` 定位内部通过、外部恰在 `21:24:00.4` 报 closed effective
+- [x] 证明无写事务时数据库字段不能在 bucket_end 时钟边界自动归零
+- [x] 先回写专项 PRD、主 PRD、DF-324 与结构索引
+- [x] 红测覆盖 closed Window 保留历史未领取快照但逻辑 effective 为0
+- [x] 只读 runtime 校验忽略 closed stored effective，继续严格校验 active binding 与 live 守恒
 - [x] 通过本地定向质量门
 - [ ] 通过 Actions 完整质量门并再次发布
 - [ ] 两次 verify 通过后运行生产诊断取得 Attempt/Telegram 事实

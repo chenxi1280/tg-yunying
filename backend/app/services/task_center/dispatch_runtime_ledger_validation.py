@@ -108,15 +108,14 @@ def _validate_runtime_window(
         raise _invariant_error("runtime_active_projection")
     if any(row.active_claim_count != expected.get(row.id, 0) for row in allocations):
         raise _invariant_error("runtime_active_projection")
-    if is_live:
-        validate_live_window_ledger(
-            session,
-            window,
-            capacity,
-            allocations=allocations,
-        )
-    elif window.effective_unclaimed_count != 0:
-        raise _invariant_error("closed_window_effective_unclaimed")
+    if not is_live:
+        return
+    validate_live_window_ledger(
+        session,
+        window,
+        capacity,
+        allocations=allocations,
+    )
 
 
 def _active_scope_actions(session: Session, scope: str) -> list[Action]:
