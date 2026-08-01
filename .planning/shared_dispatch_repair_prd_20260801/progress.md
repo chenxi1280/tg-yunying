@@ -324,3 +324,11 @@
 - AI 质量日志显示三个运行任务累计 `context_superseded_requeue=2023/897/755`；同群多条预生成正文被首条自身发送造成的新 listener context 成批清空重生，生成吞吐被自身抵消。
 - 已先补专项 PRD §2.5、主 PRD、DF-326、runtime 与结构索引；红测约束同群单 ready、跨群可继续生成和三个独立生成 worker。
 - 实现后生成/worker/E4/workflow 定向集合 `191 passed`；YAML、编译、函数长度与 diff gate 通过。E4 脚本新增当前 ledger 的 AI coverage/slot/action、search assignment/epoch 与 view 逐消息义务诊断。
+
+## 2026-08-01 生产 E4 继续修复：串行生成测试执行器
+
+- `c6a0d273` 的 push run `30704945904`：PostgreSQL、前端通过；no-PostgreSQL 有 8 个旧测试仍假设“同群一次批量生成”，部署被质量门阻断，线上仍保持旧 SHA。
+- 测试执行器已改为逐轮 generation -> ready dispatch -> commit，使下一轮生成读取上一条真实发送后的上下文；fake Gateway 也使用唯一 remote message id，避免把测试伪重复误判为生产失败。
+- 已同步同群 existing-ready 用例：先发送 existing ready，再生成后续动作；重复内容明确记录 `duplicate_message`，不以签到或 mock 成功吞掉质量失败。
+- 首轮 9 个原失败节点全部通过；扩大到 AI generation/worker/E4/permission/capacity/runtime 的 no-PostgreSQL 分区为 `348 passed, 169 deselected`，compile、diff 和触碰函数 50 行闸门通过。
+- 本地 PostgreSQL 地址仍在 schema reset 前断连；该分区由下一轮 GitHub Actions PostgreSQL 16 服务容器验证后才能进入生产部署。

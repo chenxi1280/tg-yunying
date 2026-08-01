@@ -215,17 +215,57 @@ def _dispatch_planned_ai_actions(
     *,
     normal_generator,
 ) -> list[Action]:
+    dependencies = _configure_capacity_ai_dispatch(
+        monkeypatch,
+        action_count=len(actions),
+        normal_generator=normal_generator,
+    )
+    for action in actions:
+        action.scheduled_at = _now()
+    session.commit()
+    bind = session.get_bind()
+    for _round in range(max(1, len(actions) + 1)):
+        generated = drain_ai_generation(
+            lambda: Session(bind),
+            limit=len(actions),
+            dependencies=dependencies,
+        )
+        session.expire_all()
+        claimed = claim_actions(
+            session,
+            limit=len(actions),
+            worker_id="capacity-dispatch-test",
+        )
+        _dispatch_capacity_claims(session, claimed, dependencies=dependencies)
+        if generated == 0 and not claimed:
+            break
+    for action in actions:
+        session.refresh(action)
+    return actions
+
+
+def _configure_capacity_ai_dispatch(
+    monkeypatch,
+    *,
+    action_count: int,
+    normal_generator,
+) -> GenerationDependencies:
     monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(
         "app.services.task_center.ai_generation_worker.credentials_for_account",
         lambda *_args, **_kwargs: object(),
     )
     monkeypatch.setattr(dispatcher, "is_account_online_ready", lambda *_args, **_kwargs: True)
+    remote_ids = iter(range(1, max(2, action_count + 2)))
     monkeypatch.setattr(
         dispatcher.gateway,
         "send_message",
-        lambda *_args, **_kwargs: SendResult(True, remote_message_id="capacity-ai-ok"),
+        lambda *_args, **_kwargs: SendResult(
+            True,
+            remote_message_id=f"capacity-ai-ok-{next(remote_ids)}",
+        ),
     )
+
     def forbidden_reply(*_args, **_kwargs):
         pytest.fail("normal action must not use reply generation")
 
@@ -235,18 +275,22 @@ def _dispatch_planned_ai_actions(
         reply_target_probe=forbidden_reply,
         reply_messages_fetcher=forbidden_reply,
     )
-    for action in actions:
-        action.scheduled_at = _now()
-    session.commit()
-    bind = session.get_bind()
-    drain_ai_generation(lambda: Session(bind), limit=len(actions), dependencies=dependencies)
-    session.expire_all()
-    claimed = claim_actions(session, limit=len(actions), worker_id="capacity-dispatch-test")
+    return dependencies
+
+
+def _dispatch_capacity_claims(
+    session: Session,
+    claimed: list[Action],
+    *,
+    dependencies: GenerationDependencies,
+) -> None:
     for action in claimed:
-        dispatcher.dispatch_action(session, action, generation_dependencies=dependencies)
-    for action in actions:
-        session.refresh(action)
-    return actions
+        dispatcher.dispatch_action(
+            session,
+            action,
+            generation_dependencies=dependencies,
+        )
+        session.commit()
 
 
 def _redis_bucket_settings(**overrides):
@@ -936,7 +980,7 @@ def test_dispatch_global_policy_excludes_current_executing_hard_hourly_action(mo
 
 
 @pytest.mark.no_postgres
-@pytest.mark.parametrize(("claim_limit", "expected_generation_count"), [(1, 1), (2, 2)])
+@pytest.mark.parametrize(("claim_limit", "expected_generation_count"), [(1, 1), (2, 1)])
 def test_dispatch_ai_generation_ignores_legacy_group_slot(
     monkeypatch,
     claim_limit: int,

@@ -176,48 +176,15 @@ def _dispatch_deferred_ai_actions(
     from app.services.task_center.ai_generation_worker import drain_ai_generation
 
     if actions is None:
-        actions = list(session.scalars(select(Action).where(
-            Action.task_type == "group_ai_chat",
-            Action.action_type == "send_message",
-            Action.status == "pending",
-        ).order_by(Action.scheduled_at.asc(), Action.created_at.asc())))
+        actions = _pending_ai_actions(session)
     generation_now = _generation_reference_now(session, actions)
     monkeypatch.setattr(ai_generation_pipeline, "_now", lambda: generation_now)
-    for group_id in {
-        int((action.payload or {}).get("group_id") or 0)
-        for action in actions
-    }:
-        group = session.get(TgGroup, group_id) if group_id else None
-        if group is None:
-            continue
-        group.listener_enabled = True
-        group.listener_last_polled_at = _now()
-        group.listener_last_error = ""
-        group.listener_remote_cursor = group.listener_remote_cursor or "1"
-        group.listener_cursor_status = "contiguous"
-    monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args, **_kwargs: object())
-    monkeypatch.setattr(dispatcher, "is_account_online_ready", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(
-        dispatcher.gateway,
-        "send_message",
-        lambda *_args, **_kwargs: SendResult(True, remote_message_id="ai-runtime-ok"),
-    )
-    # Keep quality gates intact (dedupe/shell/unanchored tests rely on them).
-    # Only bypass speaker rotation / group-bot admission so multi-account unit
-    # suites are not blocked by new humanization hold states.
-    monkeypatch.setattr(
-        "app.services.task_center.dispatcher._speaker_rotation_gate_pass",
-        lambda *args, **kwargs: True,
-    )
-    monkeypatch.setattr(
-        "app.services.task_center.dispatcher._group_bot_admission_gate_pass",
-        lambda *args, **kwargs: True,
-    )
-    dependencies = GenerationDependencies(
+    _enable_group_listeners(session, actions)
+    dependencies = _configure_ai_dispatch_fakes(
+        monkeypatch,
+        dispatcher,
         normal_generator=normal_generator,
-        reply_generator=_forbidden_ai_reply_path,
-        reply_target_probe=_forbidden_ai_reply_path,
-        reply_messages_fetcher=_forbidden_ai_reply_path,
+        action_count=len(actions),
     )
     session.commit()
     monkeypatch.setattr(
@@ -226,12 +193,89 @@ def _dispatch_deferred_ai_actions(
         lambda *_args, **_kwargs: object(),
     )
     bind = session.get_bind()
-    drain_ai_generation(
-        lambda: Session(bind),
-        limit=max(1, len(actions)),
-        dependencies=dependencies,
+    for _round in range(max(1, len(actions) + 1)):
+        generated = drain_ai_generation(
+            lambda: Session(bind),
+            limit=max(1, len(actions)),
+            dependencies=dependencies,
+        )
+        session.expire_all()
+        dispatched = _dispatch_ready_ai_actions(
+            session,
+            dispatcher,
+            dependencies,
+            actions,
+        )
+        if generated == 0 and dispatched == 0:
+            break
+    return actions
+
+
+def _pending_ai_actions(session: Session) -> list[Action]:
+    return list(session.scalars(select(Action).where(
+        Action.task_type == "group_ai_chat",
+        Action.action_type == "send_message",
+        Action.status == "pending",
+    ).order_by(Action.scheduled_at.asc(), Action.created_at.asc())))
+
+
+def _enable_group_listeners(session: Session, actions: list[Action]) -> None:
+    group_ids = {
+        int((action.payload or {}).get("group_id") or 0)
+        for action in actions
+    }
+    for group_id in group_ids:
+        group = session.get(TgGroup, group_id) if group_id else None
+        if group is None:
+            continue
+        group.listener_enabled = True
+        group.listener_last_polled_at = _now()
+        group.listener_last_error = ""
+        group.listener_remote_cursor = group.listener_remote_cursor or "1"
+        group.listener_cursor_status = "contiguous"
+
+
+def _configure_ai_dispatch_fakes(
+    monkeypatch,
+    dispatcher,
+    *,
+    normal_generator,
+    action_count: int,
+) -> GenerationDependencies:
+    monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(dispatcher, "is_account_online_ready", lambda *_args, **_kwargs: True)
+    remote_ids = iter(range(1, max(2, action_count + 2)))
+    monkeypatch.setattr(
+        dispatcher.gateway,
+        "send_message",
+        lambda *_args, **_kwargs: SendResult(
+            True,
+            remote_message_id=f"ai-runtime-ok-{next(remote_ids)}",
+        ),
     )
-    session.expire_all()
+    monkeypatch.setattr(
+        "app.services.task_center.dispatcher._speaker_rotation_gate_pass",
+        lambda *args, **kwargs: True,
+    )
+    monkeypatch.setattr(
+        "app.services.task_center.dispatcher._group_bot_admission_gate_pass",
+        lambda *args, **kwargs: True,
+    )
+    return GenerationDependencies(
+        normal_generator=normal_generator,
+        reply_generator=_forbidden_ai_reply_path,
+        reply_target_probe=_forbidden_ai_reply_path,
+        reply_messages_fetcher=_forbidden_ai_reply_path,
+    )
+
+
+def _dispatch_ready_ai_actions(
+    session: Session,
+    dispatcher,
+    dependencies: GenerationDependencies,
+    actions: list[Action],
+) -> int:
+    dispatched = 0
     for action in actions:
         session.refresh(action)
         if action.status != "pending" or not str((action.payload or {}).get("message_text") or "").strip():
@@ -245,8 +289,10 @@ def _dispatch_deferred_ai_actions(
         action.payload = payload
         session.commit()
         dispatcher.dispatch_action(session, action, generation_dependencies=dependencies)
+        session.commit()
         session.refresh(action)
-    return actions
+        dispatched += 1
+    return dispatched
 
 
 def _generation_reference_now(session: Session, actions: list[Action]) -> datetime:
@@ -5570,7 +5616,7 @@ def test_group_ai_chat_semantic_clusters_are_scoped_to_each_account(monkeypatch)
 
 
 @pytest.mark.no_postgres
-def test_group_ai_chat_dedupes_against_pending_planned_messages(monkeypatch):
+def test_group_ai_chat_serializes_existing_ready_message_before_new_generation(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = datetime(2026, 5, 13, 11, 0, 0)
@@ -5602,8 +5648,9 @@ def test_group_ai_chat_dedupes_against_pending_planned_messages(monkeypatch):
         result = _run_pending_dedup_scenario(session, monkeypatch, fake_generate_group_messages)
 
     assert result.created == 2
-    assert sorted(result.successful_messages) == sorted(["最近榜单更新挺快", "签到"]), result
-    assert result.failed_codes == []
+    assert result.existing_status == "success", result
+    assert result.successful_messages == ["最近榜单更新挺快"], result
+    assert result.failed_codes == ["duplicate_message"]
 
 
 def _add_existing_pending_ai_message(session: Session, now_value: datetime) -> None:
@@ -5627,10 +5674,12 @@ def _run_pending_dedup_scenario(session: Session, monkeypatch, generator) -> Sim
         Action.task_id == "ai-pending-dedup", Action.id != "existing-pending-ai-message",
     ).order_by(Action.created_at.asc())))
     assert all(action.payload["ai_generation_status"] == "pending" for action in actions)
-    _dispatch_deferred_ai_actions(session, monkeypatch, normal_generator=generator, actions=actions)
+    _dispatch_deferred_ai_actions(session, monkeypatch, normal_generator=generator)
     completed = list(session.scalars(select(Action).where(Action.id.in_([action.id for action in actions]))))
+    existing = session.get(Action, "existing-pending-ai-message")
     return SimpleNamespace(
         created=created,
+        existing_status=existing.status,
         successful_messages=[action.payload["message_text"] for action in completed if action.status == "success"],
         failed_codes=[action.result["error_code"] for action in completed if action.status == "failed"],
     )
