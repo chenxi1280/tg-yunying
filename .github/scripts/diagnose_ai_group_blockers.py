@@ -145,6 +145,48 @@ def _action_rows(session, task_id: str, period_start_at) -> list[dict]:
     )
 
 
+def _unknown_action_rows(session, task_id: str, period_start_at) -> list[dict]:
+    return _rows(
+        session,
+        """
+        SELECT a.id AS action_id, a.account_id, a.created_at, a.executed_at,
+               e.id AS attempt_id, e.status AS attempt_status,
+               e.remote_message_id AS attempt_remote_message_id,
+               r.id AS reconcile_case_id, r.state AS reconcile_case_state,
+               j.state AS journal_state,
+               j.remote_mutation_state,
+               j.remote_message_id AS journal_remote_message_id,
+               c.id AS coverage_id, c.state AS coverage_state,
+               c.blocker_code AS coverage_blocker_code,
+               s.id AS quantity_slot_id, s.state AS quantity_slot_state,
+               cs.id AS content_mix_slot_id, cs.slot_state
+        FROM actions a
+        LEFT JOIN LATERAL (
+            SELECT candidate.* FROM execution_attempts candidate
+            WHERE candidate.action_id = a.id
+            ORDER BY candidate.attempt_no DESC LIMIT 1
+        ) e ON TRUE
+        LEFT JOIN remote_reconcile_cases r
+          ON r.action_id = a.id AND r.execution_attempt_id = e.id
+        LEFT JOIN gateway_request_evidence_journals j
+          ON j.action_id = a.id AND j.execution_attempt_id = e.id
+        LEFT JOIN task_account_daily_coverage c
+          ON c.id = a.payload ->> 'coverage_ledger_id'
+        LEFT JOIN task_group_daily_message_slots s
+          ON s.id = a.primary_quantity_slot_id
+        LEFT JOIN content_mix_cycle_slots cs
+          ON cs.id = a.content_mix_cycle_slot_id
+        WHERE a.task_id = :task_id
+          AND a.action_type = 'send_message'
+          AND a.status = 'unknown_after_send'
+          AND a.created_at >= :period_start_at
+        ORDER BY a.created_at DESC LIMIT 8
+        """,
+        task_id=task_id,
+        period_start_at=period_start_at,
+    )
+
+
 def _admission_action_rows(session, task_id: str) -> list[dict]:
     return _rows(
         session,
@@ -393,6 +435,9 @@ def _task_snapshot(session, task: dict, local_date) -> dict:
             session, task["id"], ledger["id"]
         )
         snapshot["actions"] = _action_rows(
+            session, task["id"], ledger["period_start_at"]
+        )
+        snapshot["unknown_actions"] = _unknown_action_rows(
             session, task["id"], ledger["period_start_at"]
         )
         snapshot["bindings"] = _binding_rows(

@@ -127,5 +127,5 @@ jobs:
           ssh silicon-valley-production-server \
             'timeout 180 docker exec -i tgyunying-backend python -' \
             < .github/scripts/diagnose_ai_group_blockers.py \
-            | jq -c '.tasks[] | {task, coverage, quantity_slots, actions, bindings, content_mix}' \
+            | jq -c '.tasks[] | {task, coverage, quantity_slots, actions, unknown_actions, bindings, content_mix}' \
             | sed 's/^/AI_GROUP_BINDING_DIAGNOSTICS=/'
