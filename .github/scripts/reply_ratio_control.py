@@ -9,7 +9,7 @@ from typing import Any
 from sqlalchemy import select
 
 from app.database import SessionLocal
-from app.models import Action, ExecutionAttempt, Task
+from app.models import Action, ExecutionAttempt, Task, WorkerHeartbeat
 from app.services.task_center.service import _apply_type_config_data
 
 
@@ -110,6 +110,7 @@ def task_snapshot(task: Task, target: RatioTarget) -> dict[str, Any]:
         "current_reply_minimum": int(config.get(target.reply_field) or 0),
         "desired_reply_minimum": desired,
         "comment_mode": config.get("comment_mode") if task.type == "channel_comment" else None,
+        "next_run_at": task.next_run_at.isoformat() if task.next_run_at else None,
         "needs_change": bool(task_change(task, target)),
     }
 
@@ -149,7 +150,7 @@ def reply_sample(action: Action, attempt: ExecutionAttempt) -> dict[str, Any]:
     }
 
 
-def open_action_snapshot(session, task: Task, target: RatioTarget) -> dict[str, int]:
+def open_action_snapshot(session, task: Task, target: RatioTarget) -> dict[str, Any]:
     actions = list(session.scalars(
         select(Action).where(
             Action.task_id == task.id,
@@ -158,10 +159,46 @@ def open_action_snapshot(session, task: Task, target: RatioTarget) -> dict[str, 
         )
     ))
     reply_count = sum(bool((action.payload or {}).get("reply_to_message_id")) for action in actions)
+    scheduled = sorted(action.scheduled_at for action in actions if action.scheduled_at)
     return {
         "open_count": len(actions),
         "open_reply_count": reply_count,
         "open_direct_count": len(actions) - reply_count,
+        "earliest_open_scheduled_at": scheduled[0].isoformat() if scheduled else None,
+        "latest_open_scheduled_at": scheduled[-1].isoformat() if scheduled else None,
+    }
+
+
+def runtime_snapshot(session, task_rows: list[Task]) -> dict[str, Any]:
+    now = datetime.now(tz=UTC)
+    due_ids = list(session.scalars(
+        select(Task.id)
+        .where(Task.status == "running", (Task.next_run_at.is_(None)) | (Task.next_run_at <= now))
+        .order_by(Task.priority.asc(), Task.next_run_at.asc().nullsfirst(), Task.created_at.asc())
+    ))
+    due_ranks = {task_id: index for index, task_id in enumerate(due_ids, start=1)}
+    heartbeats = list(session.scalars(
+        select(WorkerHeartbeat)
+        .where(WorkerHeartbeat.process_type == "planner")
+        .order_by(WorkerHeartbeat.last_seen_at.desc())
+        .limit(4)
+    ))
+    return {
+        "observed_at": now.isoformat(),
+        "planner_due_task_count": len(due_ids),
+        "target_planner_due_ranks": {
+            task.id: due_ranks.get(task.id)
+            for task in task_rows
+        },
+        "planner_heartbeats": [
+            {
+                "worker_id": row.worker_id,
+                "status": row.status,
+                "last_seen_at": row.last_seen_at.isoformat(),
+                "metadata": row.heartbeat_metadata or {},
+            }
+            for row in heartbeats
+        ],
     }
 
 
@@ -232,6 +269,7 @@ def main() -> None:
         after = snapshots(session, after_rows, target_map, since)
         emit("REPLY_RATIO_CHANGES", changes)
         emit("REPLY_RATIO_AFTER", after)
+        emit("REPLY_RATIO_RUNTIME", runtime_snapshot(session, after_rows))
         summary = {
             "apply": apply,
             "active_task_count": len(after_rows),

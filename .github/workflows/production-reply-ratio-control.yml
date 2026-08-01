@@ -109,7 +109,16 @@ jobs:
           esac
           ssh silicon-valley-production-server '
             set -euo pipefail
-            for name in tgyunying-backend tgyunying-worker-dispatcher-1 tgyunying-worker-dispatcher-2
+            for name in \
+              tgyunying-backend \
+              tgyunying-worker-planner \
+              tgyunying-worker-ai-generation \
+              tgyunying-worker-ai-generation-2 \
+              tgyunying-worker-ai-generation-3 \
+              tgyunying-worker-dispatcher-1 \
+              tgyunying-worker-dispatcher-2 \
+              tgyunying-worker-listener \
+              tgyunying-worker-recovery
             do
               state="$(docker inspect --format "{{.State.Status}}/{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}" "${name}")"
               echo "PRODUCTION_REPLY_RATIO_CONTAINER=${name}:${state}"

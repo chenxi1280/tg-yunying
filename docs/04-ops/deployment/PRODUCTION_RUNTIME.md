@@ -268,8 +268,11 @@ claim 或数据库写入。`release_live_at` 必须显式传入原发布锚点�
 
 运行中任务的引用比例校正使用
 `.github/workflows/production-reply-ratio-control.yml`。必须先以 `apply=false` 预检，workflow
-会校验当前 production release SHA 和 backend/dispatcher 健康，再读取运行中评论、AI 活群
-任务的配置、未完成 Action 与最近真实远端成功事实。评论 10% 换算为
+会校验当前 production release SHA，以及 backend、Planner、三个 AI 生成 worker、两个
+Dispatcher、Listener 和 Recovery 健康，再读取运行中评论、AI 活群任务的配置、未完成
+Action 与最近真实远端成功事实。监控同时输出未完成 Action 的最早/最晚计划时间、目标
+任务的 Planner 排队位次和 Planner 心跳；不得把已过期 `next_run_at` 仅解释为配置问题。
+评论 10% 换算为
 `ceil(target_comments_per_message × 10%)` 的 `reply_min_per_message`，并要求
 `comment_mode=mixed`；AI 活群 20% 换算为 `ceil(messages_per_round × 20%)` 的
 `reply_min_per_round`。不得把百分数 `10`、`20` 直接写入整数下限。

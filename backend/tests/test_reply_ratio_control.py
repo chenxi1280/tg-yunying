@@ -45,3 +45,12 @@ def test_workflow_is_manual_and_verifies_release_before_control() -> None:
     assert "deployed release SHA does not match workflow SHA" in workflow
     assert workflow.index("Verify deployed release and runtime") < workflow.index("Preview or apply reply ratios")
     assert "REPLY_RATIO_APPLY='${APPLY}'" in workflow
+    for container in (
+        "tgyunying-worker-planner",
+        "tgyunying-worker-ai-generation",
+        "tgyunying-worker-dispatcher-1",
+        "tgyunying-worker-dispatcher-2",
+        "tgyunying-worker-listener",
+        "tgyunying-worker-recovery",
+    ):
+        assert container in workflow
