@@ -602,6 +602,7 @@ def test_reply_payload_config_error_is_visible_in_task_stats():
             account_id=101,
             payload={
                 "chat_id": "-1007",
+                "content_scope_contract_version": "group_content_scope_v1",
                 "group_id": 7,
                 "message_text": "少了 reply id",
                 "reply_target_author": "真人用户",

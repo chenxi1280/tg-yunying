@@ -364,6 +364,41 @@ def test_legacy_membership_unknown_creates_read_only_recovery_case(monkeypatch) 
         assert observed_require_send == [False]
 
 
+def test_legacy_membership_attempt_without_identity_is_preserved(monkeypatch) -> None:
+    with _session() as session:
+        action, old_attempt, _task = _seed_unknown_membership(session)
+        old_attempt.result_snapshot = {}
+        action.result = {"error_code": "unknown_after_send"}
+        session.commit()
+        claim = _set_recovery_claim(action, "legacy-attempt-token")
+        session.commit()
+        monkeypatch.setattr(
+            service.gateway,
+            "probe_target_capabilities",
+            lambda *_args, **_kwargs: OperationResult(True, detail="joined"),
+        )
+        monkeypatch.setattr(service, "credentials_for_account", lambda *_args: None)
+
+        assert service._recover_claimed_unknown_action(
+            session,
+            claim,
+            now=_now(),
+            reprobed_identities=set(),
+        ) == 1
+
+        attempts = list(session.scalars(
+            select(ExecutionAttempt)
+            .where(ExecutionAttempt.action_id == action.id)
+            .order_by(ExecutionAttempt.attempt_no)
+        ))
+        assert len(attempts) == 2
+        assert attempts[0].id == old_attempt.id
+        assert attempts[0].result_snapshot == {}
+        assert attempts[1].result_snapshot["source_execution_attempt_id"] == old_attempt.id
+        assert attempts[1].result_snapshot["legacy_unknown_read_only_recovery"] is True
+        assert attempts[1].status == "success"
+
+
 def _set_recovery_claim(action: Action, token: str) -> RecoveryClaim:
     action.claim_owner = "recovery:test"
     action.claim_token = token

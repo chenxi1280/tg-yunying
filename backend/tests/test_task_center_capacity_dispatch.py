@@ -285,8 +285,8 @@ def test_claim_actions_uses_claiming_then_confirms_executing_with_account_lock()
         session.add(Task(id="task-claim", tenant_id=1, name="claim", type="group_ai_chat", status="running", priority=1))
         session.add_all(
             [
-                Action(id="action-1", tenant_id=1, task_id="task-claim", task_type="group_ai_chat", action_type="send_message", account_id=11, status="pending", scheduled_at=now_value, payload={"message_text": "1"}),
-                Action(id="action-2", tenant_id=1, task_id="task-claim", task_type="group_ai_chat", action_type="send_message", account_id=11, status="pending", scheduled_at=now_value, payload={"message_text": "2"}),
+                Action(id="action-1", tenant_id=1, task_id="task-claim", task_type="group_ai_chat", action_type="send_message", account_id=11, status="pending", scheduled_at=now_value, payload={"content_scope_contract_version": "group_content_scope_v1", "message_text": "1"}),
+                Action(id="action-2", tenant_id=1, task_id="task-claim", task_type="group_ai_chat", action_type="send_message", account_id=11, status="pending", scheduled_at=now_value, payload={"content_scope_contract_version": "group_content_scope_v1", "message_text": "2"}),
             ]
         )
         session.commit()
@@ -676,7 +676,7 @@ def test_dispatch_action_always_releases_runtime_resources(monkeypatch) -> None:
         task_type="group_ai_chat",
         action_type="send_message",
         account_id=11,
-        payload={},
+        payload={"content_scope_contract_version": "group_content_scope_v1"},
     )
     dispatcher._IN_FLIGHT_ACCOUNTS.add(11)
     dispatcher._ACTION_RESERVATIONS[action.id] = dispatcher._runtime_resources._RuntimeReservation(
@@ -2236,7 +2236,7 @@ def test_gateway_exception_after_call_started_marks_unknown_after_send(monkeypat
 
 
 @pytest.mark.no_postgres
-def test_group_ai_gateway_unknown_updates_memory_and_stance(monkeypatch):
+def test_group_ai_gateway_unknown_updates_memory_without_unconfirmed_stance(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = _now()
@@ -2300,10 +2300,7 @@ def test_group_ai_gateway_unknown_updates_memory_and_stance(monkeypatch):
     assert action.status == "unknown_after_send"
     assert memory.status == "unknown_after_send"
     assert memory.action_id == "action-unknown-ai-send"
-    assert stance is not None
-    assert stance.teacher_target == "主任"
-    assert stance.last_message_id == "action-unknown-ai-send"
-    assert "主任这个可以先问价格" in stance.summary
+    assert stance is None
 
 
 def test_group_permission_denied_marks_group_account_not_sendable(monkeypatch):
@@ -3425,7 +3422,7 @@ def test_claim_actions_prioritizes_due_hard_hourly_send_actions(monkeypatch):
         session.add_all(
             [
                 Action(id="action-comment", tenant_id=1, task_id="task-comment", task_type="channel_comment", action_type="post_comment", account_id=11, status="pending", scheduled_at=now_value - timedelta(minutes=10), payload={"channel_id": "-1001", "message_id": 1, "comment_text": "收到"}),
-                Action(id="action-hard", tenant_id=1, task_id="task-hard", task_type="group_ai_chat", action_type="send_message", account_id=12, status="pending", scheduled_at=now_value, payload={"message_text": "hard", "hard_hourly_target": True}),
+                Action(id="action-hard", tenant_id=1, task_id="task-hard", task_type="group_ai_chat", action_type="send_message", account_id=12, status="pending", scheduled_at=now_value, payload={"content_scope_contract_version": "group_content_scope_v1", "message_text": "hard", "hard_hourly_target": True}),
             ]
         )
         session.commit()
@@ -3540,7 +3537,7 @@ def test_claim_actions_prioritizes_hard_hourly_action_before_strict_search_sourc
         session.add_all(
             [
                 Action(id="action-batch", tenant_id=1, task_id="task-ai", task_type="group_ai_chat", action_type="send_message", account_id=11, status="pending", scheduled_at=now_value - timedelta(minutes=10), payload={"message_text": "普通批量动作"}),
-                Action(id="action-hard", tenant_id=1, task_id="task-hard", task_type="group_ai_chat", action_type="send_message", account_id=13, status="pending", scheduled_at=now_value - timedelta(minutes=1), payload={"message_text": "硬目标动作", "hard_hourly_target": True}),
+                Action(id="action-hard", tenant_id=1, task_id="task-hard", task_type="group_ai_chat", action_type="send_message", account_id=13, status="pending", scheduled_at=now_value - timedelta(minutes=1), payload={"content_scope_contract_version": "group_content_scope_v1", "message_text": "硬目标动作", "hard_hourly_target": True}),
                 Action(id="action-source", tenant_id=1, task_id="task-search", task_type="search_join_group", action_type="search_join", account_id=12, status="pending", scheduled_at=now_value, payload={}),
             ]
         )
@@ -3677,7 +3674,7 @@ def test_claim_actions_prioritizes_hard_hourly_send_before_membership(monkeypatc
                     account_id=12,
                     status="pending",
                     scheduled_at=now_value,
-                    payload={"message_text": "hard", "hard_hourly_target": True},
+                    payload={"content_scope_contract_version": "group_content_scope_v1", "message_text": "hard", "hard_hourly_target": True},
                 ),
                 Action(
                     id="action-hard-membership",
@@ -3731,7 +3728,7 @@ def test_claim_actions_prioritizes_membership_before_known_admission_blocked_har
                     account_id=11,
                     status="pending",
                     scheduled_at=now_value - timedelta(minutes=10),
-                    payload={"message_text": "hard", "hard_hourly_target": True},
+                    payload={"content_scope_contract_version": "group_content_scope_v1", "message_text": "hard", "hard_hourly_target": True},
                     result={"error_code": "required_channel_admission_pending"},
                 ),
                 Action(
@@ -3926,7 +3923,11 @@ def test_claim_actions_does_not_starve_overdue_hard_hourly_send_behind_membershi
                     account_id=12,
                     status="pending",
                     scheduled_at=now_value - timedelta(minutes=10),
-                    payload={"message_text": "hard", "hard_hourly_target": True},
+                    payload={
+                        "content_scope_contract_version": "group_content_scope_v1",
+                        "message_text": "hard",
+                        "hard_hourly_target": True,
+                    },
                 ),
             ]
         )
@@ -3971,7 +3972,7 @@ def test_claim_actions_ignores_overdue_hard_hourly_siblings_for_capacity(monkeyp
                     account_id=11,
                     status="pending",
                     scheduled_at=now_value - timedelta(minutes=5),
-                    payload={"message_text": "hard-a", "hard_hourly_target": True},
+                    payload={"content_scope_contract_version": "group_content_scope_v1", "message_text": "hard-a", "hard_hourly_target": True},
                 ),
                 Action(
                     id="action-hard-b",
@@ -3982,7 +3983,7 @@ def test_claim_actions_ignores_overdue_hard_hourly_siblings_for_capacity(monkeyp
                     account_id=11,
                     status="pending",
                     scheduled_at=now_value - timedelta(minutes=4),
-                    payload={"message_text": "hard-b", "hard_hourly_target": True},
+                    payload={"content_scope_contract_version": "group_content_scope_v1", "message_text": "hard-b", "hard_hourly_target": True},
                 ),
             ]
         )
@@ -4033,6 +4034,7 @@ def test_claim_actions_skips_expired_hard_hourly_bucket_before_current_bucket(mo
                     scheduled_at=expired_bucket + timedelta(minutes=59),
                     payload={
                         "message_text": "expired",
+                        "content_scope_contract_version": "group_content_scope_v1",
                         "hard_hourly_target": True,
                         "hard_hourly_bucket": expired_bucket_payload.isoformat(),
                     },
@@ -4048,6 +4050,7 @@ def test_claim_actions_skips_expired_hard_hourly_bucket_before_current_bucket(mo
                     scheduled_at=now_value,
                     payload={
                         "message_text": "current",
+                        "content_scope_contract_version": "group_content_scope_v1",
                         "hard_hourly_target": True,
                         "hard_hourly_bucket": current_bucket_payload.isoformat(),
                     },
@@ -4566,7 +4569,7 @@ def test_claim_actions_reassignment_respects_future_cooldown_after_release(monke
                     account_id=11,
                     status="pending",
                     scheduled_at=overdue_at,
-                    payload={"chat_id": "-1001", "message_text": "a"},
+                    payload={"chat_id": "-1001", "content_scope_contract_version": "group_content_scope_v1", "message_text": "a"},
                     result={"claim_released_reason": "redis_token_bucket_limited"},
                 ),
                 Action(
@@ -4578,7 +4581,7 @@ def test_claim_actions_reassignment_respects_future_cooldown_after_release(monke
                     account_id=12,
                     status="pending",
                     scheduled_at=overdue_at,
-                    payload={"chat_id": "-1001", "message_text": "b"},
+                    payload={"chat_id": "-1001", "content_scope_contract_version": "group_content_scope_v1", "message_text": "b"},
                     result={"claim_released_reason": "redis_token_bucket_limited"},
                 ),
             ]

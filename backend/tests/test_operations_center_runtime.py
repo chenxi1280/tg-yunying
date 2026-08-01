@@ -1619,7 +1619,12 @@ def test_post_comment_membership_error_requeues_membership_even_with_stale_link(
         monkeypatch.setattr(
             dispatcher.gateway,
             "reply_channel_message",
-            lambda *args, **kwargs: SendResult(False, failure_type=FailureType.GROUP_PERMISSION_DENIED.value, detail="账号未关注/未加入目标频道或无法进入关联讨论区"),
+            lambda *args, **kwargs: SendResult(
+                False,
+                failure_type=FailureType.GROUP_PERMISSION_DENIED.value,
+                detail="账号未关注/未加入目标频道或无法进入关联讨论区",
+                remote_mutation_started=False,
+            ),
         )
         action = session.get(Action, "action-comment-main")
         assert dispatcher.dispatch_action(session, action) is True
@@ -1828,7 +1833,12 @@ def test_task_center_dispatch_defers_by_global_account_policy(monkeypatch):
                 status="success",
                 scheduled_at=now_value,
                 executed_at=now_value,
-                payload={"group_id": 7, "message_text": "上一条", "review_approved": True},
+                payload={
+                    "content_scope_contract_version": "group_content_scope_v1",
+                    "group_id": 7,
+                    "message_text": "上一条",
+                    "review_approved": True,
+                },
             )
         )
         session.add(
@@ -1841,7 +1851,12 @@ def test_task_center_dispatch_defers_by_global_account_policy(monkeypatch):
                 account_id=11,
                 status="pending",
                 scheduled_at=now_value,
-                payload={"group_id": 7, "message_text": "下一条", "review_approved": True},
+                payload={
+                    "content_scope_contract_version": "group_content_scope_v1",
+                    "group_id": 7,
+                    "message_text": "下一条",
+                    "review_approved": True,
+                },
                 result={},
             )
         )
@@ -2010,7 +2025,12 @@ def test_task_center_dispatch_applies_default_failure_policy(monkeypatch):
                     action_type="send_message",
                     account_id=999,
                     status="pending",
-                    payload={"group_id": 7, "message_text": "账号失效", "review_approved": True},
+                    payload={
+                        "content_scope_contract_version": "group_content_scope_v1",
+                        "group_id": 7,
+                        "message_text": "账号失效",
+                        "review_approved": True,
+                    },
                     result={},
                 ),
                 Action(
@@ -2021,7 +2041,12 @@ def test_task_center_dispatch_applies_default_failure_policy(monkeypatch):
                     action_type="send_message",
                     account_id=11,
                     status="pending",
-                    payload={"group_id": 7, "message_text": "不应继续发送", "review_approved": True},
+                    payload={
+                        "content_scope_contract_version": "group_content_scope_v1",
+                        "group_id": 7,
+                        "message_text": "不应继续发送",
+                        "review_approved": True,
+                    },
                     result={},
                 ),
             ]

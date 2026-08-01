@@ -4324,15 +4324,23 @@ def test_task_center_channel_view_like_comment_execute(monkeypatch):
 
     monkeypatch.setattr(
         "app.services.task_center.dispatcher.gateway.view_channel_message",
-        lambda *args, **kwargs: calls.append("view") or OperationResult(True, detail="viewed"),
+        lambda *args, **kwargs: calls.append("view") or OperationResult(
+            True, detail="viewed", remote_mutation_started=True,
+        ),
     )
     monkeypatch.setattr(
         "app.services.task_center.dispatcher.gateway.send_channel_reaction",
-        lambda *args, **kwargs: calls.append("like") or OperationResult(True, detail="liked"),
+        lambda *args, **kwargs: calls.append("like") or OperationResult(
+            True, detail="liked", remote_mutation_started=True,
+        ),
     )
     monkeypatch.setattr(
         "app.services.task_center.dispatcher.gateway.reply_channel_message",
-        lambda *args, **kwargs: calls.append("comment") or SendResult(True, remote_message_id="comment-sent"),
+        lambda *args, **kwargs: calls.append("comment") or SendResult(
+            True,
+            remote_message_id="comment-sent",
+            remote_mutation_started=True,
+        ),
     )
     with TestClient(app) as client:
         headers = auth_headers(client)
@@ -4850,7 +4858,9 @@ def test_task_center_reset_channel_like_rebuilds_from_latest_messages(monkeypatc
     monkeypatch.setattr("app.services.task_center.executors.common.gateway.fetch_channel_messages", fake_fetch_channel_messages)
     monkeypatch.setattr(
         "app.services.task_center.dispatcher.gateway.send_channel_reaction",
-        lambda *args, **kwargs: reactions.append(args[2]) or OperationResult(True, detail="liked"),
+        lambda *args, **kwargs: reactions.append(args[2]) or OperationResult(
+            True, detail="liked", remote_mutation_started=True,
+        ),
     )
     with TestClient(app) as client:
         headers = auth_headers(client)
@@ -4948,7 +4958,9 @@ def test_task_center_reset_channel_view_rebuilds_from_latest_messages(monkeypatc
     monkeypatch.setattr("app.services.task_center.executors.common.gateway.fetch_channel_messages", fake_fetch_channel_messages)
     monkeypatch.setattr(
         "app.services.task_center.dispatcher.gateway.view_channel_message",
-        lambda *args, **kwargs: views.append(args[2]) or OperationResult(True, detail="viewed"),
+        lambda *args, **kwargs: views.append(args[2]) or OperationResult(
+            True, detail="viewed", remote_mutation_started=True,
+        ),
     )
     with TestClient(app) as client:
         headers = auth_headers(client)
@@ -5877,7 +5889,10 @@ def test_task_center_send_message_payload_requires_destination(monkeypatch):
                 account_id=account["id"],
                 scheduled_at=now,
                 status="pending",
-                payload={"message_text": "没有目的地的消息"},
+                payload={
+                    "content_scope_contract_version": "group_content_scope_v1",
+                    "message_text": "没有目的地的消息",
+                },
                 result={},
             )
             session.add(action)
@@ -5948,8 +5963,17 @@ def test_task_center_channel_failure_replans_same_obligation_before_task_failed(
     def flaky_like(*args, **kwargs):
         calls.append("like")
         if len(calls) == 1:
-            return OperationResult(False, failure_type=FailureType.UNKNOWN.value, detail="temporary boom")
-        return OperationResult(True, detail="liked")
+            return OperationResult(
+                False,
+                failure_type=FailureType.UNKNOWN.value,
+                detail="temporary boom",
+                remote_mutation_started=False,
+            )
+        return OperationResult(
+            True,
+            detail="liked",
+            remote_mutation_started=True,
+        )
 
     monkeypatch.setattr("app.services.task_center.dispatcher.gateway.send_channel_reaction", flaky_like)
     with TestClient(app) as client:

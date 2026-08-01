@@ -13,6 +13,7 @@ from app.models import (
     ChannelMessage,
     ChannelMessageComment,
     ExecutionAttempt,
+    GatewayRequestEvidenceJournal,
     OperationTarget,
     RuleSet,
     RuleSetVersion,
@@ -458,6 +459,9 @@ def _action(mask: AiAccountVoiceProfile) -> Action:
 
 def _cleanup() -> None:
     with SessionLocal() as session:
+        session.execute(delete(GatewayRequestEvidenceJournal).where(
+            GatewayRequestEvidenceJournal.action_id == ACTION_ID,
+        ))
         session.execute(delete(ExecutionAttempt).where(ExecutionAttempt.action_id == ACTION_ID))
         session.execute(delete(Action).where(Action.task_id == TASK_ID))
         session.execute(delete(Task).where(Task.id == TASK_ID))

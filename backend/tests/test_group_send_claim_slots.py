@@ -41,7 +41,11 @@ def _pending_action(action_id: str, group_id: int, account_id: int, now_value: d
         account_id=account_id,
         status="pending",
         scheduled_at=now_value,
-        payload={"group_id": group_id, "message_text": action_id},
+        payload={
+            "content_scope_contract_version": "group_content_scope_v1",
+            "group_id": group_id,
+            "message_text": action_id,
+        },
     )
 
 

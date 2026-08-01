@@ -191,7 +191,7 @@ def test_postgres_four_dispatch_finalizers_are_bounded_without_history_grouping(
     def record_statement(_conn, _cursor, statement, _parameters, _context, _executemany) -> None:
         statements.append(statement.lower())
 
-    def finish_dispatch(_session, action: Action) -> bool:
+    def finish_dispatch(_session, action: Action, **_kwargs) -> bool:
         action.status = "success"
         action.executed_at = _now()
         return True

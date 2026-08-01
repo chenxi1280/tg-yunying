@@ -241,3 +241,19 @@
 - 2026-08-01 11:04生产旧证据显示三个郑州AI任务小时success归零、日shortfall 716-741，Action执行被freshness/duplicate/reply缺口阻断，search_join主要阻断为图片验证，且Window存在4条负unclaimed。该证据是本次上线后的对照基线，不是修复完成证据。
 - `.planning/production_root_cause_20260801`和`prod-diagnosis.md`记录的就是本次incident原始E4与根因链，应随专项PRD纳入审计提交；`2026-07-31-production-stable-baseline.md`属于更早基线任务，虽然当前origin文档已引用但文件未跟踪，本次不把该并行用户改动混入修复提交。
 - 共享专项PRD明确要求三个AI活群出现部署后新的`ExecutionAttempt + remote_message_id`并正确确认原账号coverage；完整自然日五类目标才允许`production_fixed`。因此首轮上线后即使新消息恢复，也只能先判runtime/canary pass，不能提前结束监控。
+
+### Actions run 30690191293 failure classification
+
+- no-PostgreSQL分区完整结果为`2544 passed, 18 failed, 785 deselected`；build/deploy未运行，生产仍是`87fe0bf0`。
+- 15条行为失败来自旧AI测试Action未携带新强制`group_content_scope_v1`，因此符合设计地在claim阶段被过滤或在`dispatch_action`前被takeover fence拒绝；不能删生产fence，应更新有效Action夹具显式携带合同版本。包括direct dispatch终结、fairness、group slots、hard-hourly优先级和unknown stance。
+- 2条rank-deboost测试仍向`_mark_stale_executing_action`传已删除的`task`参数；生产实现已从Action/reservation关系收口，测试调用需同步签名。
+- 迁移单head测试仍固定断言0133，应更新为本次前向head `0134_shared_dispatch`。
+- 旧发布顺序测试要求takeover发生在worker启动前，与新PRD Stage A/B冲突；新合同要求worker先以fenced readiness启动并`verify-ready`，再takeover，最后activate。测试应断言`stop < start < verify-ready < takeover < activate`，不能改变生产顺序迁就旧断言。
+- 上述18条同步后本地精确复跑`18 passed in 3.98s`；未改生产fence。unknown AI测试同时改为断言memory保持unknown且不建立未确认stance，符合远端事实安全口径。
+- PostgreSQL分区为`750 passed, 19 failed, 14 skipped, 2 xfailed`。失败继续分组：4条comment PG清理违反新journal FK、1条journal测试缺tenant/task/account父行、若干旧AI夹具缺scope、1条test double缺`project_task_stats`关键字；其余membership legacy identity与channel remote mutation语义需逐条查明，不能直接改断言。
+- PG fixture复核：comment清理确实先删Attempt后删journal，需要只调整测试清理顺序；journal测试应分阶段commit Tenant及Task/Account，避免无relationship对象同flush时的父子排序歧义；journal FK继续保持禁止删除审计证据。
+- stale membership用例代表真实存量形态：已有Gateway-started Attempt但缺新版本`gateway_request_identity`。当前只升级“完全无Attempt”的legacy unknown，因此此形态直接抛`gateway_request_identity_missing`并会永久阻断Recovery。这是实现遗漏，不应只改测试；需先补PRD为“无Attempt或旧Attempt缺冻结identity均建立新的read-only recovery Attempt”，保留旧Attempt审计且仅做权威只读probe。
+- channel/comment的`unknown_after_send`失败来自测试stub只返回failure type、没有填写新`remote_mutation_started=false`；只有能证明调用未发生远端mutation的permission/unavailable结果才允许重排。需核对真实Gateway是否已填false，再让stub模拟相同权威合同，不能在dispatcher猜测failure type。
+- 真实Telethon reply异常映射已对所有非UNKNOWN已知失败返回`remote_mutation_started=false`，成功返回true；Mock comment unavailable也返回false。因此permission测试stub补false是在模拟真实合同，不是放宽生产判断。
+- workflow里的view/reaction成功stub普遍只返回`success=True`却无`remote_mutation_started=true`；新journal因此正确按unknown处理。成功stub必须补true；要验证可重排的首轮失败，也必须显式返回false。保留`None`时旧“自动重试成功”断言不再安全。
+- 另外5条dispatch/claim失败仍是旧AI Action缺`group_content_scope_v1`；reassignment测试也因两个pending Action被scope filter排除而未进入原有改派逻辑。均只同步有效夹具。

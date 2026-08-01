@@ -1917,7 +1917,6 @@ def test_stale_rank_gateway_attempt_marks_reservation_unknown() -> None:
 
         _mark_stale_executing_action(
             action=action,
-            task=task,
             latest_attempt=attempt,
             stale_worker_ids=set(),
             now=_now(),
@@ -1955,7 +1954,6 @@ def test_stale_rank_before_gateway_releases_reservation() -> None:
         )
         _mark_stale_executing_action(
             action=action,
-            task=task,
             latest_attempt=attempt,
             stale_worker_ids=set(),
             now=_now(),

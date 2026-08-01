@@ -93,7 +93,7 @@ Action finalize
 AI legacy takeover
   -> 全部 writer contract_activation_state=preparing，业务写入为 0
   -> 旧 owner失效的pre-Gateway active claim释放后恢复可领取
-  -> Gateway-started遗留claim释放runtime占用并建立唯一RemoteReconcileCase；存量membership unknown无Attempt时先持久建立legacy read-only recovery Attempt/Case再probe
+  -> Gateway-started遗留claim释放runtime占用并建立唯一RemoteReconcileCase；存量membership unknown无Attempt或最新Attempt缺冻结request identity时，保留旧Attempt并追加legacy read-only recovery Attempt/Case再probe
   -> preview 持久 batch/item/canonical Action state hash/classification hash/cursor
   -> apply 小批提交，crash 后从 pending item 续跑
   -> 安全补等价 group_content_scope_v1，或原义务 content_contract_replan_required
@@ -110,7 +110,7 @@ Worker lifecycle
   -> verify-ready/active只忽略stopped；fresh active旧合同writer继续阻断
 ```
 
-共同不变量：普通 Action不得使用虚拟 `(1,0)`；搜索虚拟 Reservation不得被普通 claim消费，首次 outcome前也不得被通用 reclaimer释放；旧 epoch只有 active、search materialization-owned、有效 bound与仍到期普通份额可继续占用；全部远端mutation都必须经过B0/journal/B1且B1不得产生 claim-free executing持久空窗；membership unknown只有唯一RemoteReconcileCase CAS状态机，存量无Attempt必须先建立read-only recovery Attempt/Case，精确recovery claim获取/释放均推进完整Action expected hash；preparing期间业务写入为0；heartbeat合同版本不可被业务刷新覆盖；claim热事务禁止 `UPDATE tasks`；任何 topology/capacity/liveness/invariant不一致都 fail closed并显式展示，不能用默认值、扩 worker、延长 Window或清库降级。
+共同不变量：普通 Action不得使用虚拟 `(1,0)`；搜索虚拟 Reservation不得被普通 claim消费，首次 outcome前也不得被通用 reclaimer释放；旧 epoch只有 active、search materialization-owned、有效 bound与仍到期普通份额可继续占用；全部远端mutation都必须经过B0/journal/B1且B1不得产生 claim-free executing持久空窗；membership unknown只有唯一RemoteReconcileCase CAS状态机，存量无Attempt或最新Attempt缺冻结request identity时，保留旧Attempt并追加read-only recovery Attempt/Case，精确recovery claim获取/释放均推进完整Action expected hash；preparing期间业务写入为0；heartbeat合同版本不可被业务刷新覆盖；claim热事务禁止 `UPDATE tasks`；任何 topology/capacity/liveness/invariant不一致都 fail closed并显式展示，不能用默认值、扩 worker、延长 Window或清库降级。
 
 ### 全任务按时按量履约恢复数据流（2026-07-29 接管修订）
 

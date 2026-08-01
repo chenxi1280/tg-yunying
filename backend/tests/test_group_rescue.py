@@ -223,7 +223,11 @@ def test_dispatch_skips_normal_actions_bound_to_rescue_admin_account(monkeypatch
             account_id=99,
             scheduled_at=NOW,
             status="pending",
-            payload={"group_id": 7, "message_text": "不应该发送"},
+            payload={
+                "content_scope_contract_version": "group_content_scope_v1",
+                "group_id": 7,
+                "message_text": "不应该发送",
+            },
         )
         session.add(action)
         session.commit()

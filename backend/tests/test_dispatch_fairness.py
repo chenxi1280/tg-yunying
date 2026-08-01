@@ -74,7 +74,11 @@ def test_claim_fairness_orders_ordinary_before_sql_limit_after_hard_hourly():
                     account_id=11,
                     status="pending",
                     scheduled_at=now_value - timedelta(minutes=1),
-                    payload={"hard_hourly_target": True, "message_text": "硬目标"},
+                    payload={
+                        "content_scope_contract_version": "group_content_scope_v1",
+                        "hard_hourly_target": True,
+                        "message_text": "硬目标",
+                    },
                 ),
                 Action(
                     id="ordinary-action",
@@ -85,7 +89,10 @@ def test_claim_fairness_orders_ordinary_before_sql_limit_after_hard_hourly():
                     account_id=12,
                     status="pending",
                     scheduled_at=now_value - timedelta(minutes=1),
-                    payload={"message_text": "普通消息"},
+                    payload={
+                        "content_scope_contract_version": "group_content_scope_v1",
+                        "message_text": "普通消息",
+                    },
                 ),
             ]
         )
@@ -139,7 +146,11 @@ def test_claim_does_not_write_cursor_before_confirm(monkeypatch: pytest.MonkeyPa
                     account_id=11,
                     status="pending",
                     scheduled_at=now_value - timedelta(minutes=1),
-                    payload={"hard_hourly_target": True, "message_text": "硬目标"},
+                    payload={
+                        "content_scope_contract_version": "group_content_scope_v1",
+                        "hard_hourly_target": True,
+                        "message_text": "硬目标",
+                    },
                 ),
                 Action(
                     id="ordinary-action",
@@ -150,7 +161,10 @@ def test_claim_does_not_write_cursor_before_confirm(monkeypatch: pytest.MonkeyPa
                     account_id=12,
                     status="pending",
                     scheduled_at=now_value - timedelta(minutes=1),
-                    payload={"message_text": "普通消息"},
+                    payload={
+                        "content_scope_contract_version": "group_content_scope_v1",
+                        "message_text": "普通消息",
+                    },
                 ),
             ]
         )

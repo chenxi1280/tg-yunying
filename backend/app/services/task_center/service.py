@@ -3725,6 +3725,10 @@ def _recover_claimed_stale_action(
         return 0
     latest_attempt = _latest_execution_attempt(session, action)
     gateway_started = _attempt_gateway_started(latest_attempt)
+    if gateway_started:
+        latest_attempt = _membership_recovery_attempt(
+            session, action, latest_attempt, now=now,
+        )
     recovered = _recover_claimed_gateway_action(
         session,
         claim,
@@ -4041,6 +4045,7 @@ def _create_legacy_membership_recovery_attempt(
     action: Action,
     *,
     now: datetime,
+    previous_attempt: ExecutionAttempt | None = None,
 ) -> ExecutionAttempt | None:
     if action.action_type not in MEMBERSHIP_ACTION_TYPES or not action.account_id:
         return None
@@ -4049,12 +4054,15 @@ def _create_legacy_membership_recovery_attempt(
         action_id=action.id,
         worker_id=str(action.claim_owner or "membership-recovery"),
         account_id=action.account_id,
-        attempt_no=1,
+        attempt_no=int(previous_attempt.attempt_no or 0) + 1 if previous_attempt else 1,
         status="result_unknown",
         before_call_at=now,
         result_snapshot={
             "legacy_unknown_read_only_recovery": True,
             "original_action_status": action.status,
+            "source_execution_attempt_id": (
+                previous_attempt.id if previous_attempt else ""
+            ),
         },
     )
     session.add(attempt)
@@ -4063,6 +4071,39 @@ def _create_legacy_membership_recovery_attempt(
 
     bind_gateway_request_identity(action, attempt)
     return attempt
+
+
+def _membership_recovery_attempt(
+    session: Session,
+    action: Action,
+    latest_attempt: ExecutionAttempt | None,
+    *,
+    now: datetime,
+) -> ExecutionAttempt | None:
+    if action.action_type not in MEMBERSHIP_ACTION_TYPES:
+        return latest_attempt
+    if _attempt_has_frozen_gateway_request(latest_attempt):
+        return latest_attempt
+    return _create_legacy_membership_recovery_attempt(
+        session,
+        action,
+        now=now,
+        previous_attempt=latest_attempt,
+    ) or latest_attempt
+
+
+def _attempt_has_frozen_gateway_request(
+    attempt: ExecutionAttempt | None,
+) -> bool:
+    snapshot = dict(attempt.result_snapshot or {}) if attempt else {}
+    return all(
+        snapshot.get(field)
+        for field in (
+            "gateway_request_identity",
+            "gateway_request_fingerprint",
+            "gateway_target_fingerprint",
+        )
+    )
 
 
 def _attempt_gateway_started(latest_attempt: ExecutionAttempt | None) -> bool:
@@ -4329,13 +4370,9 @@ def _recover_claimed_unknown_action(
         session.commit()
         return 0
     reprobed_identities.add(identity)
-    latest_attempt = _latest_execution_attempt(session, action)
-    if latest_attempt is None:
-        latest_attempt = _create_legacy_membership_recovery_attempt(
-            session,
-            action,
-            now=now,
-        )
+    latest_attempt = _membership_recovery_attempt(
+        session, action, _latest_execution_attempt(session, action), now=now,
+    )
     recovered = _recover_unknown_membership_action(
         session, action=action, task=task, latest_attempt=latest_attempt, now=now, recovery_claim=claim,
     )

@@ -235,3 +235,13 @@
   - `git diff --check`、compose/deploy Shell语法、Python compileall、workflow/compose YAML解析通过。
   - 本次变动的27个测试文件`no_postgres`分区：`184 passed, 38 deselected in 10.46s`，未触发60秒硬超时。
   - PostgreSQL分区尚待GitHub Actions的Postgres 16门；在其通过前部署job不会运行。
+  - 首次commit前`git diff --cached --check`发现专项测试文件末尾多一空行，提交未产生；删除该空行后专项`13 passed in 2.07s`并重新通过diff gate。
+  - 已形成候选提交`28b7daeb76973967e33b43d6a244ca75e006b195`（`fix(dispatch): recover shared task fulfillment`）。
+  - 远端fetch确认无并发推进，候选同时为`origin/master`和`origin/release`的快进后继。
+  - 已先推`master: d2dbd9d7 -> 28b7daeb`，再推`release: 87fe0bf0 -> 28b7daeb`触发Deploy Production。
+  - Actions run `30690191293`：frontend pass；`backend-checks (no_postgres)`为`2544 passed, 18 failed, 785 deselected`，deploy未运行。失败按旧测试未进入active合同、stale recovery签名漂移、迁移head断言和dispatch终结语义分组；进入CI修复循环。
+  - no-PG 18条已按新合同同步且本地`18 passed in 3.98s`；生产fence未放宽。
+  - 同一run PostgreSQL分区为`750 passed, 19 failed, 14 skipped, 2 xfailed`；开始按FK清理、父行fixture、scope、test double和远端mutation证据分组修复。
+  - PG失败复核新增真实遗漏：已有旧Attempt但缺冻结request identity时Recovery抛错。已先同步专项PRD/总PRD/DF-324，再实现保留旧Attempt、追加带source id的read-only recovery Attempt；新增回归后专项`14 passed in 2.19s`。
+  - 其余PG失败均按真实合同同步：journal FK清理顺序、父子fixture flush、旧AI scope、dispatch test double关键字、已知permission no-mutation与view/reaction成功mutation事实。
+  - 第二轮扩大本地no-PG集合`264 passed, 381 deselected in 26.61s`；diff/Shell/compile和新增函数长度/分支闸门通过。

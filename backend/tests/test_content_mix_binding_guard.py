@@ -257,6 +257,7 @@ def _valid_binding() -> tuple[Action, _LookupSession]:
         primary_quantity_slot_id="quantity-1",
         content_mix_cycle_slot_id="cycle-slot-1",
         payload={
+            "content_scope_contract_version": "group_content_scope_v1",
             "coverage_ledger_id": "coverage-1",
             "primary_quantity_slot_id": "quantity-1",
             "content_mix_cycle_slot_id": "cycle-slot-1",

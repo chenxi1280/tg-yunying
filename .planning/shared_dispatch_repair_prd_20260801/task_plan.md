@@ -156,3 +156,4 @@ Phase 16: 生产发布与 E4 恢复验收
 | PostgreSQL test database closes connection before collection | 2 | keep PostgreSQL concurrency/journal tests blocked and report separately; do not count as pass |
 | membership case红测缺TelegramDeveloperApp fixture | 1 | 在定向单元测试注入credentials resolver；生产代码不增加fallback |
 | membership case测试用refresh覆盖未提交B1状态 | 1 | 改为flush后断言；真实Recovery由外层统一commit |
+| Actions run 30690191293 no_postgres分区18条失败 | 1 | 部署未执行；按active contract夹具、stale recovery签名、0134 head与终结语义分组复现并修复，不放宽生产fence |

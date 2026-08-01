@@ -35,7 +35,7 @@ def test_alembic_versions_have_single_head():
 
     assert all(len(revision) <= 32 for revision in revisions)
     heads = sorted(set(revisions) - referenced)
-    assert heads == ["0133_group_listener_cursor"]
+    assert heads == ["0134_shared_dispatch"]
 
 
 def test_backend_test_names_are_unique_per_file():

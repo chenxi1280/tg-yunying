@@ -62,6 +62,7 @@ def test_postgres_gateway_journal_survives_b1_rollback() -> None:
 def _seed_committed_b0() -> None:
     with SessionLocal() as session:
         session.add(Tenant(id=TENANT_ID, name="gateway journal postgres"))
+        session.commit()
         session.add(Task(
             id=TASK_ID,
             tenant_id=TENANT_ID,
@@ -76,6 +77,7 @@ def _seed_committed_b0() -> None:
             phone_masked="***341",
             status="在线",
         ))
+        session.flush()
         action = Action(
             id=ACTION_ID,
             tenant_id=TENANT_ID,
