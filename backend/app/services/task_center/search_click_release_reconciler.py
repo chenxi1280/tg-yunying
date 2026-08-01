@@ -222,8 +222,15 @@ def recount_epoch_release_facts(
     for allocation in allocations:
         _recount_allocation(session, allocation)
         allocation.version += 1
+    previous_unclaimed = int(window.unclaimed_allocated_count)
     window.unclaimed_allocated_count = sum(
         allocation.unclaimed_allocated_count for allocation in allocations
+    )
+    window.effective_unclaimed_count = max(
+        0,
+        int(window.effective_unclaimed_count)
+        + window.unclaimed_allocated_count
+        - previous_unclaimed,
     )
     window.version += 1
 
@@ -250,8 +257,15 @@ def _recount_window(session: Session, window_id: str) -> None:
     ).where(
         DispatchClaimShardAllocation.dispatch_claim_window_id == window_id
     ))
+    previous_unclaimed = int(window.unclaimed_allocated_count)
     window.unclaimed_allocated_count = sum(
         row.unclaimed_allocated_count for row in allocations
+    )
+    window.effective_unclaimed_count = max(
+        0,
+        int(window.effective_unclaimed_count)
+        + window.unclaimed_allocated_count
+        - previous_unclaimed,
     )
     window.version += 1
 

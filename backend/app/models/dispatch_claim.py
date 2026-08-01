@@ -24,6 +24,23 @@ class DispatchClaimScope(Base):
     claim_capacity: Mapped[int] = mapped_column(Integer, default=0)
     active_claim_count: Mapped[int] = mapped_column(Integer, default=0)
     opportunity_cursor: Mapped[int] = mapped_column(Integer, default=0)
+    runtime_shard_total: Mapped[int] = mapped_column(Integer, default=0)
+    topology_fingerprint: Mapped[str] = mapped_column(String(64), default="")
+    capacity_config_fingerprint: Mapped[str] = mapped_column(
+        String(64), default="",
+    )
+    fingerprint_schema_version: Mapped[str] = mapped_column(
+        String(40), default="",
+    )
+    candidate_contract_version: Mapped[str] = mapped_column(
+        String(80), default="",
+    )
+    active_contract_version: Mapped[str] = mapped_column(
+        String(80), default="",
+    )
+    contract_activation_state: Mapped[str] = mapped_column(
+        String(20), default="preparing",
+    )
     version: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
@@ -43,6 +60,7 @@ class DispatchClaimWindow(Base):
     claim_capacity: Mapped[int] = mapped_column(Integer, default=0)
     active_claim_count: Mapped[int] = mapped_column(Integer, default=0)
     unclaimed_allocated_count: Mapped[int] = mapped_column(Integer, default=0)
+    effective_unclaimed_count: Mapped[int] = mapped_column(Integer, default=0)
     allocation_epoch: Mapped[int] = mapped_column(Integer, default=1)
     allocation_state: Mapped[str] = mapped_column(
         String(24),
@@ -119,6 +137,7 @@ class DispatchClaimShardAllocation(Base):
     dispatch_allocation_epoch: Mapped[int] = mapped_column(Integer, default=1)
     rebuild_input_hash: Mapped[str] = mapped_column(String(64), default="")
     dispatch_rebuild_snapshot_hash: Mapped[str] = mapped_column(String(64), default="")
+    dispatch_contract_version: Mapped[str] = mapped_column(String(80), default="")
     account_shard_total: Mapped[int] = mapped_column(Integer, default=1)
     account_shard_index: Mapped[int] = mapped_column(Integer, default=0)
     required_claims: Mapped[int] = mapped_column(Integer, default=0)
@@ -165,10 +184,44 @@ class DispatchClaimReservation(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
 
+class DispatchRuntimeShardState(Base):
+    __tablename__ = "dispatch_runtime_shard_states"
+    __table_args__ = (
+        UniqueConstraint(
+            "dispatcher_scope",
+            "shard_index",
+            name="uq_dispatch_runtime_shard_scope_index",
+        ),
+        Index(
+            "ix_dispatch_runtime_shard_scope_heartbeat",
+            "dispatcher_scope",
+            "heartbeat_at",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
+    dispatcher_scope: Mapped[str] = mapped_column(String(80))
+    shard_index: Mapped[int] = mapped_column(Integer)
+    expected_capacity: Mapped[int] = mapped_column(Integer, default=0)
+    config_fingerprint: Mapped[str] = mapped_column(String(64), default="")
+    current_worker_id: Mapped[str] = mapped_column(String(160), default="")
+    current_lease_id: Mapped[str] = mapped_column(String(160), default="")
+    heartbeat_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    liveness_state: Mapped[str] = mapped_column(String(20), default="stale")
+    liveness_version: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=now, onupdate=now,
+    )
+
+
 __all__ = [
     "DispatchClaimReservation",
     "DispatchClaimScope",
     "DispatchClaimShardAllocation",
     "DispatchClaimTaskAllocation",
     "DispatchClaimWindow",
+    "DispatchRuntimeShardState",
 ]

@@ -145,6 +145,7 @@ def confirm_prebound_search_claim(
     allocation.active_claim_count += 1
     allocation.version += 1
     window.unclaimed_allocated_count -= 1
+    window.effective_unclaimed_count -= 1
     window.active_claim_count += 1
     window.version += 1
     scope.active_claim_count += 1

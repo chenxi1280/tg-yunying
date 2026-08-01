@@ -36,7 +36,12 @@ x-backend-env: &backend-env
   VOICE_PROFILE_PROVIDER_CONCURRENCY: ${VOICE_PROFILE_PROVIDER_CONCURRENCY:-2}
   VOICE_PROFILE_PROVIDER_LEASE_SECONDS: ${VOICE_PROFILE_PROVIDER_LEASE_SECONDS:-120}
   DISPATCHER_CONCURRENCY: ${DISPATCHER_CONCURRENCY:-20}
-  DISPATCHER_SCOPE_CAPACITY: ${DISPATCHER_SCOPE_CAPACITY:-52}
+  DISPATCHER_SCOPE_CAPACITY: ${DISPATCHER_SCOPE_CAPACITY:-26}
+  DISPATCH_RUNTIME_SHARD_TOTAL: ${DISPATCH_RUNTIME_SHARD_TOTAL:-2}
+  DB_POOL_CONTROL_RESERVE: ${DB_POOL_CONTROL_RESERVE:-2}
+  DISPATCH_SHARD_STALE_SECONDS: ${DISPATCH_SHARD_STALE_SECONDS:-120}
+  DISPATCH_TOPOLOGY_FINGERPRINT_SCHEMA_VERSION: ${DISPATCH_TOPOLOGY_FINGERPRINT_SCHEMA_VERSION:-dispatch_topology_v1}
+  DISPATCH_REBUILD_CONTRACT_VERSION: ${DISPATCH_REBUILD_CONTRACT_VERSION:-dispatch-rebuild-v3}
   IMAGE_VERIFICATION_CONTRACT_ENABLED: ${IMAGE_VERIFICATION_CONTRACT_ENABLED:-false}
   IMAGE_VERIFICATION_CONTRACT_VERSION: ${IMAGE_VERIFICATION_CONTRACT_VERSION:-}
   IMAGE_VERIFICATION_CALLBACK_ACCEPTANCE_SECONDS: ${IMAGE_VERIFICATION_CALLBACK_ACCEPTANCE_SECONDS:-0}
@@ -120,6 +125,7 @@ services:
     environment:
       <<: *backend-env
       WORKER_ROLE: planner
+      TG_OPS_WORKER_ID: tgyunying-worker-planner
     volumes:
       - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
       - "${GROK_CLI_HOME_DIR:-/root/.grok}:/root/.grok"
@@ -138,6 +144,7 @@ services:
     environment:
       <<: *backend-env
       WORKER_ROLE: ai-generation
+      TG_OPS_WORKER_ID: tgyunying-worker-ai-generation
     volumes:
       - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
       - "${GROK_CLI_HOME_DIR:-/root/.grok}:/root/.grok"
@@ -156,6 +163,7 @@ services:
     environment:
       <<: *backend-env
       WORKER_ROLE: dispatcher
+      TG_OPS_WORKER_ID: tgyunying-worker-dispatcher-1
       ACCOUNT_SHARD_TOTAL: "2"
       ACCOUNT_SHARD_INDEX: "0"
     volumes:
@@ -176,6 +184,7 @@ services:
     environment:
       <<: *backend-env
       WORKER_ROLE: dispatcher
+      TG_OPS_WORKER_ID: tgyunying-worker-dispatcher-2
       ACCOUNT_SHARD_TOTAL: "2"
       ACCOUNT_SHARD_INDEX: "1"
     volumes:
@@ -213,6 +222,7 @@ services:
     environment:
       <<: *backend-env
       WORKER_ROLE: recovery
+      TG_OPS_WORKER_ID: tgyunying-worker-recovery
     volumes:
       - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
     depends_on:

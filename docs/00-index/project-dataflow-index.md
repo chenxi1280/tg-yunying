@@ -50,6 +50,68 @@ AI planner -> pending group_ai_chat/send_message
   -> 继续按批准协议分类、验证码与纯点击路径执行
 ```
 
+### DF-324 共享调度、锁序与 AI 履约恢复数据流（2026-08-01）
+
+专项真相源为 `docs/03-feature-designs/shared-dispatch-and-ai-fulfillment-recovery-prd.md`。
+
+```text
+release topology config(DISPATCH_RUNTIME_SHARD_TOTAL=2)
+  -> canonical topology/capacity fingerprint 固定预期 shard {0,1} 与 configured capacity 26
+  -> DispatchRuntimeShardState 单独投影 live/recycling/stale；stale shard 不获新份额
+  -> 普通 due Action 由 DispatchLaneShardSolver 映射到 (2,0|1)
+  -> 搜索 obligation 只取得中央 fulfillment 份额与 virtual shard (1,0)
+  -> ready 至首次 outcome finalize：search Reservation 全量 materialization-owned
+  -> 首次 finalize 原子形成 bound 或逐 unit release/exclusion
+  -> finalize 后 SearchClickAssignmentSolver 只保护真实 bound unit
+  -> assignment.account_id % 2 路由唯一 Dispatcher
+
+Window rebuild
+  -> central lock prefix: Scope -> Window -> TaskAllocation -> ShardAllocation -> Reservation
+  -> active claim 计入 active
+  -> 未首次 finalize search 计入 materialization-owned
+  -> 有效 search bound 计入 protected bound
+  -> ShardAllocation冻结dispatch_contract_version；普通 current-contract due继续领取
+  -> 空/旧version或旧topology的stale-contract binding释放后以同Action/义务重入demand
+  -> 普通 no-longer-due只写普通 counter/reason；两类都不写search exclusion
+  -> search release 只允许唯一 epoch/release-batch carrier + ordinal
+  -> current unclaimed + materialization-owned + protected bound <= live/configured capacity
+  -> 新 epoch/allocation/reservation/hash/ready 原子发布
+
+Action finalize
+  -> B0 独立提交 Attempt.gateway_call_started_at、gateway_request_identity、
+     gateway_request_fingerprint与gateway_target_fingerprint，保留 active claim
+  -> 群管频道follow/精确callback与其他远端mutation同样必须先完成B0
+  -> Telegram Gateway
+  -> Gateway返回后以独立短事务写脱敏GatewayRequestEvidenceJournal，不改业务账本
+  -> send成功冻结remote_message_id；view/reaction、membership probe、群管follow/callback成功冻结类型化remote_fact_id；membership按payload.require_send区分可访问与可发言证据，禁止伪造新消息ID
+  -> B1 no_autoflush 取得 central lock prefix
+  -> claim release + Action/Attempt/coverage/content/search/membership/admission 等业务事实同事务原子提交
+  -> B1 rollback 时 Recovery 原子转 remote-reconcile + unknown hold，不自动重发
+  -> exact fact按任务类型幂等重建业务事实；权威no-mutation令原AI槽replan；历史未找到仍inconclusive
+  -> Task quality/runtime stats 独立短事务聚合
+
+AI legacy takeover
+  -> 全部 writer contract_activation_state=preparing，业务写入为 0
+  -> 旧 owner失效的pre-Gateway active claim释放后恢复可领取
+  -> Gateway-started遗留claim释放runtime占用并建立唯一RemoteReconcileCase；存量membership unknown无Attempt时先持久建立legacy read-only recovery Attempt/Case再probe
+  -> preview 持久 batch/item/canonical Action state hash/classification hash/cursor
+  -> apply 小批提交，crash 后从 pending item 续跑
+  -> 安全补等价 group_content_scope_v1，或原义务 content_contract_replan_required
+  -> success 不改；unknown/Gateway-started 建唯一 RemoteReconcileCase
+  -> Action/Attempt canonical state hash + evidence hash CAS；仅规范化case自身recovery控制lease，其他claim漂移仍冲突
+  -> exact remote fact 才 confirmed，权威 no-mutation 才 replan，其余 inconclusive hold
+  -> takeover completed + ledger/fingerprint/liveness 守恒后原子切 active
+
+Worker lifecycle
+  -> production启动前fail closed拒绝ENABLE_EMBEDDED_WORKER=true
+  -> worker loop heartbeat冻结dispatch_contract_version
+  -> role drain只合并limit/phase/task等metadata，不得删除合同版本
+  -> 优雅stop把精确WorkerHeartbeat标记stopped并保留历史
+  -> verify-ready/active只忽略stopped；fresh active旧合同writer继续阻断
+```
+
+共同不变量：普通 Action不得使用虚拟 `(1,0)`；搜索虚拟 Reservation不得被普通 claim消费，首次 outcome前也不得被通用 reclaimer释放；旧 epoch只有 active、search materialization-owned、有效 bound与仍到期普通份额可继续占用；全部远端mutation都必须经过B0/journal/B1且B1不得产生 claim-free executing持久空窗；membership unknown只有唯一RemoteReconcileCase CAS状态机，存量无Attempt必须先建立read-only recovery Attempt/Case，精确recovery claim获取/释放均推进完整Action expected hash；preparing期间业务写入为0；heartbeat合同版本不可被业务刷新覆盖；claim热事务禁止 `UPDATE tasks`；任何 topology/capacity/liveness/invariant不一致都 fail closed并显式展示，不能用默认值、扩 worker、延长 Window或清库降级。
+
 ### 全任务按时按量履约恢复数据流（2026-07-29 接管修订）
 
 当前专项真相源为 `docs/03-feature-designs/all-task-fulfillment-recovery-prd.md`。五类任务统一经过：

@@ -39,6 +39,36 @@ def test_supergroup_member_cannot_send_when_default_text_is_banned():
     assert _can_send_text_in_group(target, permissions) is False
 
 
+def test_membership_probe_can_require_access_without_send_permission(monkeypatch):
+    class FakeClient:
+        async def is_user_authorized(self):
+            return True
+
+        async def get_permissions(self, _target, _user):
+            return SimpleNamespace(send_messages=False, post_messages=False, participant=None)
+
+    async def fake_target(*_args, **_kwargs):
+        return SimpleNamespace(
+            default_banned_rights=SimpleNamespace(send_messages=True),
+        )
+
+    gateway = TelethonTelegramGateway(Settings(telethon_operation_timeout_seconds=1))
+    monkeypatch.setattr(
+        "app.integrations.telegram.gateway.resolve_telethon_target",
+        fake_target,
+    )
+
+    result = asyncio.run(gateway._probe_target_capabilities_with_client(
+        FakeClient(),
+        "@private_channel",
+        "channel",
+        require_send=False,
+    ))
+
+    assert result.ok is True
+    assert result.detail.endswith("已加入可访问")
+
+
 def test_public_group_resolution_does_not_enumerate_dialogs(monkeypatch):
     from telethon import types
 

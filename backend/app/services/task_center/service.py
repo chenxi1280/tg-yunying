@@ -71,15 +71,14 @@ from .channel_membership import (
     ACTION_TYPE as TARGET_MEMBERSHIP_ACTION_TYPE,
     LEGACY_ACTION_TYPE as LEGACY_MEMBERSHIP_ACTION_TYPE,
     channel_membership_summary,
-    mark_channel_membership_joined,
 )
 from .dispatcher import (
     _sync_action_coverage_state,
-    _sync_all_account_membership_state,
     claim_actions,
     dispatch_action,
     due_actions,
     mark_dispatcher_db_error,
+    project_dispatch_action_stats,
     release_dispatch_claim,
     recover_expired_claims,
     recover_pending_visibility_credits,
@@ -3517,11 +3516,27 @@ def _dispatch_claimed_action_once(session_factory, action_id: str) -> int:
         action = session.get(Action, action_id)
         if not action or action.status != "executing":
             return 0
-        if not dispatch_action(session, action):
+        if not dispatch_action(session, action, project_task_stats=False):
             session.commit()
             return 0
         session.commit()
-        return 1
+    _project_dispatch_stats(session_factory, action_id)
+    return 1
+
+
+def _project_dispatch_stats(session_factory, action_id: str) -> None:
+    try:
+        with session_factory() as session:
+            action = session.get(Action, action_id)
+            if action is None:
+                return
+            project_dispatch_action_stats(session, action)
+            session.commit()
+    except SQLAlchemyError:
+        logging.exception(
+            "dispatch transaction-C projection failed action_id=%s",
+            action_id,
+        )
 
 
 def _record_dispatch_db_error(session_factory, action_id: str, exc: SQLAlchemyError) -> int:
@@ -3724,14 +3739,51 @@ def _recover_claimed_stale_action(
         return 0
     if recovered is None and not gateway_started and recover_stale_pre_gateway_generation(action):
         recovered = 1
+    projection = None
     if recovered is None:
-        _mark_stale_executing_action(action=action, task=task, latest_attempt=latest_attempt, stale_worker_ids=stale_worker_ids, now=now)
+        projection = _mark_stale_executing_action(
+            action=action,
+            latest_attempt=latest_attempt,
+            stale_worker_ids=stale_worker_ids,
+            now=now,
+        )
         recovered = 1
-    release_dispatch_claim(session, action)
-    _sync_action_coverage_state(session, action)
-    release_recovery_claim(action, claim)
-    session.commit()
+    _commit_claimed_stale_recovery(
+        session,
+        action,
+        task=task,
+        claim=claim,
+        latest_attempt=latest_attempt,
+        projection=projection,
+        now=now,
+    )
     return recovered
+
+
+def _commit_claimed_stale_recovery(
+    session: Session,
+    action: Action,
+    *,
+    task: Task,
+    claim: RecoveryClaim,
+    latest_attempt: ExecutionAttempt | None,
+    projection: dict | None,
+    now: datetime,
+) -> None:
+    from .dispatcher import _finalize_dispatch_action
+
+    _finalize_dispatch_action(session, action, project_task_stats=False)
+    release_recovery_claim(action, claim)
+    _refresh_membership_case_hashes(session, action, latest_attempt)
+    session.commit()
+    if projection is not None:
+        _project_stale_recovery_stats(
+            session,
+            task_id=task.id,
+            action_id=action.id,
+            projection=projection,
+            now=now,
+        )
 
 
 def _recover_claimed_gateway_action(
@@ -3857,11 +3909,10 @@ def _matching_stale_lease_owners(rows, lease_owners: set[str]) -> set[str]:
 def _mark_stale_executing_action(
     *,
     action: Action,
-    task: Task,
     latest_attempt: ExecutionAttempt | None,
     stale_worker_ids: set[str],
     now: datetime,
-) -> None:
+) -> dict:
     previous_result = dict(action.result or {})
     previous_lease_owner = action.lease_owner or ""
     previous_lease_expires_at = action.lease_expires_at
@@ -3885,14 +3936,41 @@ def _mark_stale_executing_action(
         latest_attempt.status = "result_unknown" if gateway_started else "call_not_started"
         latest_attempt.after_call_at = now
         latest_attempt.result_snapshot = dict(action.result or {})
-    _record_stale_recovery_stats(
-        action=action,
-        task=task,
-        previous_lease_owner=previous_lease_owner,
-        recovery_reason=recovery_reason,
-        gateway_started=gateway_started,
-        now=now,
-    )
+    return {
+        "previous_lease_owner": previous_lease_owner,
+        "recovery_reason": recovery_reason,
+        "gateway_started": gateway_started,
+    }
+
+
+def _project_stale_recovery_stats(
+    session: Session,
+    *,
+    task_id: str,
+    action_id: str,
+    projection: dict,
+    now: datetime,
+) -> None:
+    try:
+        task = session.get(Task, task_id)
+        action = session.get(Action, action_id)
+        if task is None or action is None:
+            return
+        _record_stale_recovery_stats(
+            action=action,
+            task=task,
+            previous_lease_owner=projection["previous_lease_owner"],
+            recovery_reason=projection["recovery_reason"],
+            gateway_started=projection["gateway_started"],
+            now=now,
+        )
+        session.commit()
+    except SQLAlchemyError:
+        session.rollback()
+        logging.exception(
+            "stale recovery transaction-C projection failed action_id=%s",
+            action_id,
+        )
 
 
 def _reconcile_rank_deboost_reservation_after_stale_execution(action: Action, gateway_started: bool) -> None:
@@ -3956,6 +4034,35 @@ def _record_stale_recovery_stats(
 
 def _latest_execution_attempt(session: Session, action: Action) -> ExecutionAttempt | None:
     return session.scalar(select(ExecutionAttempt).where(ExecutionAttempt.action_id == action.id).order_by(ExecutionAttempt.attempt_no.desc()).limit(1))
+
+
+def _create_legacy_membership_recovery_attempt(
+    session: Session,
+    action: Action,
+    *,
+    now: datetime,
+) -> ExecutionAttempt | None:
+    if action.action_type not in MEMBERSHIP_ACTION_TYPES or not action.account_id:
+        return None
+    attempt = ExecutionAttempt(
+        tenant_id=action.tenant_id,
+        action_id=action.id,
+        worker_id=str(action.claim_owner or "membership-recovery"),
+        account_id=action.account_id,
+        attempt_no=1,
+        status="result_unknown",
+        before_call_at=now,
+        result_snapshot={
+            "legacy_unknown_read_only_recovery": True,
+            "original_action_status": action.status,
+        },
+    )
+    session.add(attempt)
+    session.flush()
+    from .gateway_evidence_journal import bind_gateway_request_identity
+
+    bind_gateway_request_identity(action, attempt)
+    return attempt
 
 
 def _attempt_gateway_started(latest_attempt: ExecutionAttempt | None) -> bool:
@@ -4223,17 +4330,30 @@ def _recover_claimed_unknown_action(
         return 0
     reprobed_identities.add(identity)
     latest_attempt = _latest_execution_attempt(session, action)
+    if latest_attempt is None:
+        latest_attempt = _create_legacy_membership_recovery_attempt(
+            session,
+            action,
+            now=now,
+        )
     recovered = _recover_unknown_membership_action(
         session, action=action, task=task, latest_attempt=latest_attempt, now=now, recovery_claim=claim,
     )
-    if not recovery_claim_owned(action, claim):
+    if recovered:
+        release_recovery_claim(action, claim)
+        session.commit()
+        return 1
+    if not recovery_claim_owned(action, claim) and not (
+        _membership_reprobe_deferred(action)
+        or _membership_reprobe_failed(action)
+    ):
         session.rollback()
         return 0
-    if not recovered:
-        _finalize_failed_unknown_reprobe(session, action, now)
+    _finalize_failed_unknown_reprobe(session, action, now)
     release_recovery_claim(action, claim)
+    _refresh_membership_case_hashes(session, action, latest_attempt)
     session.commit()
-    return int(recovered)
+    return 0
 
 
 def _finalize_failed_unknown_reprobe(session: Session, action: Action, now: datetime) -> None:
@@ -4356,69 +4476,325 @@ def _recover_unknown_membership_action(
     now: datetime,
     recovery_claim: RecoveryClaim | None = None,
 ) -> bool:
-    if action.action_type not in MEMBERSHIP_ACTION_TYPES or not action.account_id:
+    payload = _unknown_membership_probe_payload(action)
+    if payload is None:
         return False
-    payload = action.payload if isinstance(action.payload, dict) else {}
-    channel_target_id = _as_int(payload.get("channel_target_id"))
-    channel_id = str(payload.get("channel_id") or "")
-    if not channel_target_id or not channel_id:
+    if not _prepare_membership_case_for_recovery_claim(
+        session,
+        action,
+        latest_attempt=latest_attempt,
+        recovery_claim=recovery_claim,
+    ):
         return False
-    probe_args = _unknown_membership_probe_args(session, action, payload)
-    if probe_args is None:
+    probe = _unknown_membership_probe_args(session, action, payload)
+    if probe is None:
         return False
+    probe_args, require_send = probe
     session.commit()
     try:
-        result = gateway.probe_target_capabilities(*probe_args)
-    except TimeoutError as exc:
-        if recovery_claim and not recovery_claim_owned(action, recovery_claim):
-            return False
-        _mark_unknown_membership_reprobe_timeout(action=action, task=task, latest_attempt=latest_attempt, now=now, exc=exc)
-        return False
-    except ConnectionError as exc:
-        if recovery_claim and not recovery_claim_owned(action, recovery_claim):
-            return False
-        _mark_unknown_membership_reprobe_connection_error(action=action, task=task, latest_attempt=latest_attempt, now=now, exc=exc)
-        return False
-    if recovery_claim and not recovery_claim_owned(action, recovery_claim):
-        return False
-    if not result.ok:
-        _mark_unknown_membership_reprobe_failed(action=action, task=task, latest_attempt=latest_attempt, now=now, result=result)
-        return False
-    _complete_unknown_membership_recovery(
-        session, action, task=task, latest_attempt=latest_attempt,
-        now=now, result=result, channel_target_id=channel_target_id,
+        result = gateway.probe_target_capabilities(
+            *probe_args,
+            require_send=require_send,
+        )
+    except (TimeoutError, ConnectionError) as exc:
+        return _handle_unknown_membership_probe_error(
+            session,
+            action,
+            task=task,
+            latest_attempt=latest_attempt,
+            now=now,
+            recovery_claim=recovery_claim,
+            exc=exc,
+        )
+    return _finish_unknown_membership_probe(
+        session,
+        action,
+        task=task,
+        latest_attempt=latest_attempt,
+        now=now,
+        recovery_claim=recovery_claim,
+        result=result,
     )
-    return True
 
 
-def _unknown_membership_probe_args(session: Session, action: Action, payload: dict) -> tuple | None:
-    account = session.get(TgAccount, action.account_id)
-    if account is None or account.deleted_at is not None:
+def _unknown_membership_probe_payload(action: Action) -> dict | None:
+    if action.action_type not in MEMBERSHIP_ACTION_TYPES or not action.account_id:
         return None
-    return (
-        account.id,
-        str(payload.get("channel_id") or ""),
-        str(payload.get("target_type") or "channel"),
-        account.session_ciphertext,
-        credentials_for_account(session, account),
-    )
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    if not _as_int(payload.get("channel_target_id")):
+        return None
+    if not str(payload.get("channel_id") or ""):
+        return None
+    return payload
 
 
-def _complete_unknown_membership_recovery(
+def _finish_unknown_membership_probe(
     session: Session,
     action: Action,
     *,
     task: Task,
     latest_attempt: ExecutionAttempt | None,
     now: datetime,
+    recovery_claim: RecoveryClaim | None,
     result,
-    channel_target_id: int,
+) -> bool:
+    if recovery_claim and not recovery_claim_owned(action, recovery_claim):
+        return False
+    if not result.ok:
+        _apply_membership_probe_inconclusive(
+            session,
+            action,
+            latest_attempt=latest_attempt,
+            now=now,
+            source="membership_reprobe_not_confirmed",
+            failure_code=result.failure_type or FailureType.UNKNOWN.value,
+        )
+        _mark_unknown_membership_reprobe_failed(action=action, task=task, latest_attempt=latest_attempt, now=now, result=result)
+        _refresh_membership_case_hashes(session, action, latest_attempt)
+        return False
+    return _apply_membership_probe_confirmed(
+        session,
+        action,
+        task=task,
+        latest_attempt=latest_attempt,
+        now=now,
+        detail=result.detail or "补偿复检已满足目标准入",
+    )
+
+
+def _handle_unknown_membership_probe_error(
+    session: Session,
+    action: Action,
+    *,
+    task: Task,
+    latest_attempt: ExecutionAttempt | None,
+    now: datetime,
+    recovery_claim: RecoveryClaim | None,
+    exc: TimeoutError | ConnectionError,
+) -> bool:
+    if recovery_claim and not recovery_claim_owned(action, recovery_claim):
+        return False
+    is_timeout = isinstance(exc, TimeoutError)
+    source = "membership_reprobe_timeout" if is_timeout else "membership_reprobe_connection_error"
+    failure_code = "telegram_probe_timeout" if is_timeout else "telegram_probe_connection_error"
+    _apply_membership_probe_inconclusive(
+        session,
+        action,
+        latest_attempt=latest_attempt,
+        now=now,
+        source=source,
+        failure_code=failure_code,
+    )
+    marker = _mark_unknown_membership_reprobe_timeout if is_timeout else _mark_unknown_membership_reprobe_connection_error
+    marker(
+        action=action,
+        task=task,
+        latest_attempt=latest_attempt,
+        now=now,
+        exc=exc,
+    )
+    _refresh_membership_case_hashes(session, action, latest_attempt)
+    return False
+
+
+def _apply_membership_probe_confirmed(
+    session: Session,
+    action: Action,
+    *,
+    task: Task,
+    latest_attempt: ExecutionAttempt | None,
+    now: datetime,
+    detail: str,
+) -> bool:
+    if latest_attempt is None:
+        return False
+    from .remote_reconciliation import (
+        RemoteReconcileEvidence,
+        apply_remote_reconcile_evidence,
+        ensure_remote_reconcile_case,
+        typed_remote_fact_id,
+    )
+    from .runtime_state_hash import canonical_state_hash
+
+    case = ensure_remote_reconcile_case(session, action, latest_attempt)
+    fact_id = typed_remote_fact_id(action, latest_attempt, "membership_observed")
+    evidence = RemoteReconcileEvidence(
+        result="remote_confirmed",
+        source="membership_reprobe_read_only",
+        evidence_fingerprint=canonical_state_hash({
+            "action_id": action.id,
+            "attempt_id": latest_attempt.id,
+            "fact_id": fact_id,
+        }),
+        remote_fact_id=fact_id,
+        exact_match_count=1,
+    )
+    outcome = apply_remote_reconcile_evidence(
+        session, case.id, evidence, actor="membership-recovery", checked_at=now,
+    )
+    action.result = {
+        **dict(action.result or {}),
+        "auto_check": "补偿复检成功",
+        "detail": detail,
+    }
+    task.last_error = ""
+    return outcome.state == "remote_confirmed"
+
+
+def _prepare_membership_case_for_recovery_claim(
+    session: Session,
+    action: Action,
+    *,
+    latest_attempt: ExecutionAttempt | None,
+    recovery_claim: RecoveryClaim | None,
+) -> bool:
+    if latest_attempt is None:
+        return False
+    from .remote_reconciliation import ensure_remote_reconcile_case
+    from .runtime_state_hash import (
+        action_state_hash_without_recovery_claim,
+        execution_attempt_state_hash,
+        remote_reconcile_action_state_hash,
+    )
+
+    case = ensure_remote_reconcile_case(session, action, latest_attempt)
+    current_action_hash = remote_reconcile_action_state_hash(action)
+    current_attempt_hash = execution_attempt_state_hash(latest_attempt)
+    if (
+        case.expected_action_state_hash == current_action_hash
+        and case.expected_attempt_state_hash == current_attempt_hash
+    ):
+        return True
+    if recovery_claim is None or not recovery_claim_owned(action, recovery_claim):
+        return False
+    prior_action_hash = action_state_hash_without_recovery_claim(
+        action,
+        claim_token=recovery_claim.token,
+    )
+    if (
+        case.expected_action_state_hash != prior_action_hash
+        or case.expected_attempt_state_hash != current_attempt_hash
+    ):
+        _quarantine_membership_case_drift(
+            session,
+            case_id=case.id,
+            action=action,
+            latest_attempt=latest_attempt,
+        )
+        return False
+    case.expected_action_state_hash = current_action_hash
+    return True
+
+
+def _quarantine_membership_case_drift(
+    session: Session,
+    *,
+    case_id: str,
+    action: Action,
+    latest_attempt: ExecutionAttempt,
 ) -> None:
-    payload = action.payload if isinstance(action.payload, dict) else {}
-    label = "可发言" if payload.get("require_send") else "已关注"
-    mark_channel_membership_joined(session, action.tenant_id, channel_target_id, action.account_id, permission_label=label)
-    _mark_membership_action_recovered(action, task, latest_attempt, now, result.detail or "补偿复检已满足目标准入")
-    _sync_all_account_membership_state(session, action)
+    from .remote_reconciliation import (
+        RemoteReconcileEvidence,
+        apply_remote_reconcile_evidence,
+    )
+    from .runtime_state_hash import (
+        canonical_state_hash,
+        execution_attempt_state_hash,
+        remote_reconcile_action_state_hash,
+    )
+
+    fingerprint = canonical_state_hash({
+        "case_id": case_id,
+        "action_hash": remote_reconcile_action_state_hash(action),
+        "attempt_hash": execution_attempt_state_hash(latest_attempt),
+        "source": "membership_recovery_state_drift",
+    })
+    apply_remote_reconcile_evidence(
+        session,
+        case_id,
+        RemoteReconcileEvidence(
+            result="inconclusive",
+            source="membership_recovery_state_drift",
+            evidence_fingerprint=fingerprint,
+        ),
+        actor="membership-recovery",
+    )
+
+
+def _apply_membership_probe_inconclusive(
+    session: Session,
+    action: Action,
+    *,
+    latest_attempt: ExecutionAttempt | None,
+    now: datetime,
+    source: str,
+    failure_code: str,
+) -> None:
+    if latest_attempt is None:
+        return
+    from .remote_reconciliation import (
+        RemoteReconcileEvidence,
+        apply_remote_reconcile_evidence,
+        ensure_remote_reconcile_case,
+    )
+    from .runtime_state_hash import canonical_state_hash
+
+    case = ensure_remote_reconcile_case(session, action, latest_attempt)
+    evidence = RemoteReconcileEvidence(
+        result="inconclusive",
+        source=source,
+        evidence_fingerprint=canonical_state_hash({
+            "action_id": action.id,
+            "attempt_id": latest_attempt.id,
+            "source": source,
+            "failure_code": failure_code,
+        }),
+        failure_code=failure_code,
+    )
+    apply_remote_reconcile_evidence(
+        session, case.id, evidence, actor="membership-recovery", checked_at=now,
+    )
+
+
+def _refresh_membership_case_hashes(
+    session: Session,
+    action: Action,
+    latest_attempt: ExecutionAttempt | None,
+) -> None:
+    if latest_attempt is None:
+        return
+    from app.models import RemoteReconcileCase
+    from .runtime_state_hash import (
+        execution_attempt_state_hash,
+        remote_reconcile_action_state_hash,
+    )
+
+    case = session.scalar(select(RemoteReconcileCase).where(
+        RemoteReconcileCase.action_id == action.id,
+        RemoteReconcileCase.execution_attempt_id == latest_attempt.id,
+    ))
+    if case is None or case.state != "inconclusive":
+        return
+    case.expected_action_state_hash = remote_reconcile_action_state_hash(action)
+    case.expected_attempt_state_hash = execution_attempt_state_hash(latest_attempt)
+
+
+def _unknown_membership_probe_args(
+    session: Session,
+    action: Action,
+    payload: dict,
+) -> tuple[tuple, bool] | None:
+    account = session.get(TgAccount, action.account_id)
+    if account is None or account.deleted_at is not None:
+        return None
+    args = (
+        account.id,
+        str(payload.get("channel_id") or ""),
+        str(payload.get("target_type") or "channel"),
+        account.session_ciphertext,
+        credentials_for_account(session, account),
+    )
+    return args, bool(payload.get("require_send"))
 
 
 def _mark_unknown_membership_reprobe_timeout(
@@ -4518,33 +4894,6 @@ def _release_unknown_membership_reprobe_result(
         latest_attempt.after_call_at = now
         latest_attempt.result_snapshot = dict(action.result or {})
     task.last_error = str((action.result or {}).get("error_message") or task.last_error or "")
-
-
-def _mark_membership_action_recovered(
-    action: Action,
-    task: Task,
-    latest_attempt: ExecutionAttempt | None,
-    now: datetime,
-    detail: str,
-) -> None:
-    action.status = "success"
-    action.executed_at = now
-    action.lease_owner = ""
-    action.lease_expires_at = None
-    action.result = {
-        "success": True,
-        "error_code": "",
-        "error_message": "",
-        "auto_check": "补偿复检成功",
-        "validation_stage": "execution_recovery_reprobe",
-        "membership_status": "recovered_after_unknown",
-        "detail": detail,
-    }
-    if latest_attempt:
-        latest_attempt.status = "success"
-        latest_attempt.after_call_at = now
-        latest_attempt.result_snapshot = dict(action.result)
-    task.last_error = ""
 
 
 def _activate_pending_tasks(session: Session) -> None:

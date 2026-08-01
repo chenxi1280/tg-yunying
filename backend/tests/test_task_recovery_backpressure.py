@@ -4,12 +4,12 @@ from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.database import Base
 from app.integrations.telegram import OperationResult
-from app.models import Action, ExecutionAttempt, OperationTarget, TaskAccountDailyCoverage, Tenant, TgAccount, TgGroup, Task, WorkerHeartbeat
+from app.models import Action, ExecutionAttempt, OperationTarget, RemoteReconcileCase, TaskAccountDailyCoverage, Tenant, TgAccount, TgGroup, Task, WorkerHeartbeat
 from app.services._common import _now
 from app.services.task_center import service as task_service
 from app.services.task_center.service import _recover_stale_executing_actions, drain_task_recovery
@@ -169,6 +169,59 @@ def test_stale_pre_gateway_recovery_releases_coverage_reservation() -> None:
     assert coverage.state == "ready"
     assert coverage.reserved_action_id is None
     assert coverage.blocker_code == "execution_timeout"
+
+
+def test_stale_gateway_recovery_atomically_creates_remote_case() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="tenant"))
+        task = Task(
+            id="gateway-recovery-task",
+            tenant_id=1,
+            name="gateway recovery",
+            type="group_relay",
+            status="running",
+            stats={},
+        )
+        action = Action(
+            id="gateway-recovery-action",
+            tenant_id=1,
+            task_id=task.id,
+            task_type="group_relay",
+            action_type="send_message",
+            status="executing",
+            scheduled_at=now_value - timedelta(hours=1),
+            lease_owner="dead-dispatcher",
+            lease_expires_at=now_value - timedelta(minutes=1),
+            payload={"chat_id": "-1001", "message_text": "body"},
+            result={"gateway_request_identity": "request-recovery"},
+        )
+        attempt = ExecutionAttempt(
+            id="gateway-recovery-attempt",
+            tenant_id=1,
+            action_id=action.id,
+            attempt_no=1,
+            status="gateway_call_started",
+            before_call_at=now_value - timedelta(minutes=2),
+            gateway_call_started_at=now_value - timedelta(minutes=1),
+            result_snapshot={"gateway_request_identity": "request-recovery"},
+        )
+        session.add_all([task, action, attempt])
+        session.commit()
+
+        assert _recover_stale_executing_actions(
+            session,
+            timeout_minutes=30,
+            limit=1,
+        ) == 1
+        case = session.scalar(select(RemoteReconcileCase))
+        session.refresh(task)
+
+        assert action.status == "unknown_after_send"
+        assert case.action_id == action.id
+        assert task.stats["unknown_after_send_count"] == 1
 
 
 def test_stale_worker_lookup_only_returns_executing_lease_owners() -> None:

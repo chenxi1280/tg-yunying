@@ -376,6 +376,7 @@ def test_verification_button_click_target_prefers_confirmation_over_channel_urls
     assert _verification_button_click_target(message) == (0, 2, "✅ 我已加入")
 
 
+@pytest.mark.no_postgres
 def test_probe_permission_denied_uses_recent_context_detail(monkeypatch):
     class FakeMessage:
         id = 7
@@ -422,6 +423,7 @@ def test_probe_permission_denied_uses_recent_context_detail(monkeypatch):
     assert result.detail == "群无权限或账号不可发言：入群验证：请先关注 @alpha 和 @beta 后输入 3 + 5"
 
 
+@pytest.mark.no_postgres
 def test_probe_permission_exception_uses_recent_context_detail(monkeypatch):
     class FakeMessage:
         id = 8

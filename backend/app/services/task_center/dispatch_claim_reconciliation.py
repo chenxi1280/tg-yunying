@@ -34,14 +34,28 @@ def reconcile_window_unclaimed(
     allocations: list[DispatchClaimShardAllocation],
     reservations: Mapping[tuple[int, str, str, int, int], DispatchClaimReservation],
     now: datetime,
+    current_contract_version: str | None = None,
+    runtime_shard_total: int | None = None,
 ) -> int:
+    search_ids = _search_fulfillment_reservation_ids(session, reservations)
+    stale_release_count, stale_keys = _release_stale_contract_reservations(
+        session,
+        allocations=allocations,
+        reservations=reservations,
+        search_reservation_ids=search_ids,
+        now=now,
+        current_contract_version=current_contract_version,
+        runtime_shard_total=runtime_shard_total,
+    )
     due_counts = _due_reservation_action_counts(session, reservations, now)
+    for key in stale_keys:
+        due_counts[key] = 0
     released_count = _release_stale_unclaimed_reservations(
         reservations,
         due_counts,
     )
     _sync_window_unclaimed_counts(window, allocations, reservations)
-    return released_count
+    return stale_release_count + released_count
 
 
 def claim_class_for_action(task: Task, action: Action) -> str:
@@ -227,6 +241,109 @@ def _release_stale_unclaimed_reservations(
     return released_count
 
 
+def _release_stale_contract_reservations(
+    session: Session,
+    *,
+    allocations: list[DispatchClaimShardAllocation],
+    reservations: Mapping[
+        tuple[int, str, str, int, int], DispatchClaimReservation,
+    ],
+    search_reservation_ids: set[str],
+    now: datetime,
+    current_contract_version: str | None,
+    runtime_shard_total: int | None,
+) -> tuple[int, set[tuple[int, str, str, int, int]]]:
+    if current_contract_version is None or runtime_shard_total is None:
+        return 0, set()
+    allocation_by_id = {allocation.id: allocation for allocation in allocations}
+    released_count = 0
+    stale_keys: set[tuple[int, str, str, int, int]] = set()
+    for key, reservation in reservations.items():
+        if reservation.id in search_reservation_ids:
+            continue
+        allocation = allocation_by_id.get(
+            reservation.dispatch_claim_shard_allocation_id,
+        )
+        if allocation is None or not _allocation_contract_is_stale(
+            allocation,
+            current_contract_version=current_contract_version,
+            runtime_shard_total=runtime_shard_total,
+        ):
+            continue
+        stale_keys.add(key)
+        released = reservation_available(reservation)
+        if released <= 0:
+            continue
+        reservation.reserved_claims -= released
+        reservation.reason = "dispatch_binding_replan_required"
+        reservation.version += 1
+        released_count += released
+        _mark_due_actions_for_replan(session, key, reservation, now)
+    return released_count, stale_keys
+
+
+def _allocation_contract_is_stale(
+    allocation: DispatchClaimShardAllocation,
+    *,
+    current_contract_version: str,
+    runtime_shard_total: int,
+) -> bool:
+    return bool(
+        allocation.account_shard_total != runtime_shard_total
+        or allocation.account_shard_index >= runtime_shard_total
+        or allocation.dispatch_contract_version != current_contract_version
+    )
+
+
+def _mark_due_actions_for_replan(
+    session: Session,
+    key: tuple[int, str, str, int, int],
+    reservation: DispatchClaimReservation,
+    now: datetime,
+) -> None:
+    tenant_id, task_id, claim_class, shard_total, shard_index = key
+    rows = session.execute(
+        select(Action, Task)
+        .join(Task, Task.id == Action.task_id)
+        .where(
+            Action.tenant_id == tenant_id,
+            Action.task_id == task_id,
+            Action.status.in_(("pending", "claiming")),
+            Action.scheduled_at <= now,
+            Task.status == "running",
+            Task.deleted_at.is_(None),
+        )
+    )
+    for action, task in rows:
+        if claim_class_for_action(task, action) != claim_class:
+            continue
+        if account_shard_for_action(action, shard_total) != shard_index:
+            continue
+        action.result = _replan_result(action, reservation)
+
+
+def _replan_result(
+    action: Action,
+    reservation: DispatchClaimReservation,
+) -> dict:
+    result = dict(action.result or {})
+    for key in (
+        "dispatch_claim_window_id",
+        "dispatch_claim_shard_allocation_id",
+        "dispatch_reservation_id",
+        "dispatch_claim_shard",
+        "dispatch_allocation_epoch",
+    ):
+        result.pop(key, None)
+    return {
+        **result,
+        "dispatch_claim_active": False,
+        "dispatch_binding_replan_required": True,
+        "dispatch_binding_replan_source_reservation_id": reservation.id,
+        "error_code": "dispatch_binding_replan_required",
+    }
+
+
 def _sync_window_unclaimed_counts(
     window: DispatchClaimWindow,
     allocations: list[DispatchClaimShardAllocation],
@@ -246,6 +363,9 @@ def _sync_window_unclaimed_counts(
     if window.unclaimed_allocated_count != expected:
         window.unclaimed_allocated_count = expected
         window.version += 1
+    if window.effective_unclaimed_count != expected:
+        window.effective_unclaimed_count = expected
+        window.version += 1
 
 
 def sync_window_unclaimed_total(
@@ -255,6 +375,9 @@ def sync_window_unclaimed_total(
     expected = sum(int(row.unclaimed_allocated_count) for row in allocations)
     if window.unclaimed_allocated_count != expected:
         window.unclaimed_allocated_count = expected
+        window.version += 1
+    if window.effective_unclaimed_count != expected:
+        window.effective_unclaimed_count = expected
         window.version += 1
 
 

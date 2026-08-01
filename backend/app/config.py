@@ -94,6 +94,40 @@ def _validate_production_ocr_isolation(settings: object) -> None:
         )
 
 
+def _validate_dispatch_runtime_settings(settings: object) -> None:
+    if settings.dispatch_runtime_shard_total < 1:
+        raise ValueError("DISPATCH_RUNTIME_SHARD_TOTAL must be positive")
+    if settings.db_pool_control_reserve < 0:
+        raise ValueError("DB_POOL_CONTROL_RESERVE must not be negative")
+    connection_budget = settings.db_pool_size + settings.db_max_overflow
+    if connection_budget <= settings.db_pool_control_reserve:
+        raise ValueError("DB_POOL_CONTROL_RESERVE exhausts the database pool")
+    if settings.dispatch_shard_stale_seconds < 1:
+        raise ValueError("DISPATCH_SHARD_STALE_SECONDS must be positive")
+    if settings.app_env != "production":
+        return
+    if settings.enable_embedded_worker:
+        raise ValueError(
+            "Production requires ENABLE_EMBEDDED_WORKER=false"
+        )
+    effective = min(
+        settings.dispatcher_concurrency,
+        connection_budget - settings.db_pool_control_reserve,
+    )
+    expected_scope_capacity = effective * settings.dispatch_runtime_shard_total
+    if settings.dispatcher_scope_capacity != expected_scope_capacity:
+        raise ValueError(
+            "DISPATCHER_SCOPE_CAPACITY must equal the configured shard capacity"
+        )
+    if (
+        settings.worker_role == "dispatcher"
+        and settings.account_shard_total != settings.dispatch_runtime_shard_total
+    ):
+        raise ValueError(
+            "Dispatcher ACCOUNT_SHARD_TOTAL must equal DISPATCH_RUNTIME_SHARD_TOTAL"
+        )
+
+
 @dataclass(frozen=True)
 class Settings:
     app_env: str = os.getenv("APP_ENV", "development")
@@ -152,6 +186,7 @@ class Settings:
             raise ValueError("VOICE_PROFILE_PROVIDER_LEASE_SECONDS must be at least 30")
         _validate_dispatcher_recycle_settings(self)
         _validate_production_ocr_isolation(self)
+        _validate_dispatch_runtime_settings(self)
     tg_api_id: str | None = os.getenv("TG_API_ID")
     tg_api_hash: str | None = os.getenv("TG_API_HASH")
     tg_gateway_mode: str = os.getenv("TG_GATEWAY_MODE", "mock" if os.getenv("APP_ENV") == "test" else "telethon")
@@ -184,7 +219,24 @@ class Settings:
     action_claim_limit: int = int(os.getenv("ACTION_CLAIM_LIMIT", "100"))
     action_claim_seconds: int = int(os.getenv("ACTION_CLAIM_SECONDS", "60"))
     dispatcher_claim_scope: str = os.getenv("DISPATCHER_CLAIM_SCOPE", "task_center_dispatch")
-    dispatcher_scope_capacity: int = int(os.getenv("DISPATCHER_SCOPE_CAPACITY", "52"))
+    dispatcher_scope_capacity: int = int(os.getenv("DISPATCHER_SCOPE_CAPACITY", "26"))
+    dispatch_runtime_shard_total: int = int(
+        os.getenv("DISPATCH_RUNTIME_SHARD_TOTAL", "2")
+    )
+    db_pool_control_reserve: int = int(
+        os.getenv("DB_POOL_CONTROL_RESERVE", "2")
+    )
+    dispatch_shard_stale_seconds: int = int(
+        os.getenv("DISPATCH_SHARD_STALE_SECONDS", "120")
+    )
+    dispatch_topology_fingerprint_schema_version: str = os.getenv(
+        "DISPATCH_TOPOLOGY_FINGERPRINT_SCHEMA_VERSION",
+        "dispatch_topology_v1",
+    )
+    dispatch_rebuild_contract_version: str = os.getenv(
+        "DISPATCH_REBUILD_CONTRACT_VERSION",
+        "dispatch-rebuild-v3",
+    )
     action_lease_seconds: int = int(os.getenv("ACTION_LEASE_SECONDS", "1800"))
     # PRD §2.20.2 RC-3: search_join_membership 子动作的 lease_timeout 默认 180s，
     # 覆盖 join 请求发送 → TG 服务端处理 → membership 事件回推的全链路。

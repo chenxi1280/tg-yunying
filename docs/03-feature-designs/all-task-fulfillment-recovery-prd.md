@@ -507,7 +507,7 @@ scope capacity
 
 同一 `ready` Window 的 Action 新增、claim、executing、success/failed 状态变化不得触发整窗重建。当前 epoch 尚有未领取 Reservation 时继续消费原不可变分配；只有明确释放形成非空 release set，或原 epoch 的全部可领取 Reservation 已消费且仍有新到期需求时，才开启唯一 pending rebuild wave。任务只要取得大于 0 的份额即为 `allocated`，不得因“部分小于 required”把整个任务标成 `shared_dispatch_capacity_insufficient`。
 
-通用 Dispatcher 的新 Window 分配输入只覆盖整个 scope 的到期 Action 需求，不能把尚未物化的纯搜索 open obligation 注入每次普通 claim。搜索 Planner 取得同一 Scope/Window 锁后，在自己的物化事务中同时纳入普通 Action demand 和纯搜索 obligation demand，并在提交前完成 assignment/Action 绑定或释放未匹配单元；不能把普通 Action 一并降成搜索虚拟 `(1,0)`。事务提交后，纯搜索 Reservation 只有 `bound_count` 对应单元受保护；`claimed=0、bound=0` 且没有到期 Action 的单元由通用 unclaimed 回收器写 `unclaimed_action_no_longer_due` 并释放。
+通用 Dispatcher 的新 Window 分配输入只覆盖整个 scope 的到期 Action 需求，不能把尚未物化的纯搜索 open obligation 注入每次普通 claim。搜索 Planner 取得同一 Scope/Window 锁后，在自己的物化事务中同时纳入普通 Action demand 和纯搜索 obligation demand，并在提交前完成 assignment/Action 绑定或释放未匹配单元；不能把普通 Action 一并降成搜索虚拟 `(1,0)`。从 Window `ready` 到首次 outcome finalize前，纯搜索来源 Reservation即使 `bound_count=0` 也由搜索物化流程独占，通用 reclaimer不得触碰；首次 outcome提交后，未匹配单元已经由该 carrier逐 unit release/exclusion，只有 `bound_count` 对应单元继续受保护。普通 Action无到期事实的unclaimed可由通用回收器写 `unclaimed_action_no_longer_due`，但不得为普通 Reservation写搜索 exclusion。
 
 多个 Dispatcher 对同一 `dispatcher_scope` 构造上述全局输入时，必须先取得 `DispatchClaimScope` 行锁，再执行到期 Action 的全局排序、Window 分配和本批 claiming 持久化；不得让各 worker 在锁外并行重复相同的全局 Window 查询，随后才竞争 Scope 锁。该候选查询只投影需求分组、排序和后续 claim 所需的 Action 字段；搜索预绑定只允许提取 `result.dispatch_prebound/search_click_assignment_id` 两个标量，禁止在候选阶段水合完整 `result` 等与分配无关的大字段。完整 Action 只在 `DispatchClaimPlan.candidate_action_ids` 确定后按计划顺序锁取。Scope 锁是原中央分配事务的前移，不新增业务容量上限，也不改变跨 shard 需求、Reservation、公平顺序或 Gateway 门禁。
 
@@ -1026,13 +1026,35 @@ apply 不得修改 success、unknown_after_send、Gateway-started，不得补 re
 
 1. 通用 Dispatcher 的 demand 只能来自本轮可领取 Action；未物化为
    assignment/Action 的搜索 obligation 不得注入通用 Window。
-2. 搜索 fulfillment worker 可在自己的分配事务内以 obligation 求解中央份额，
-   但提交后只有 `bound_count` 对应的单元受保护；`claimed=0、bound=0` 的
-   search reservation 必须在通用 reconciliation 中释放。
+2. 搜索 fulfillment worker可在自己的分配事务内以obligation求解中央份额；
+   首次 outcome finalize前整个来源Reservation由搜索物化流程独占，通用
+   reconciliation必须跳过。首次 outcome提交后只有`bound_count`对应单元继续
+   受保护，未匹配单元已经由search epoch carrier逐unit release/exclusion，禁止
+   通用reclaimer再次释放或代写carrier。
 3. `summarize_daily_fulfillment` 是只读投影。它可按 Coverage 与开放 Action
    计算有效状态，但不得修改 Coverage、Action 或 `next_decision_at`。
 4. 生产清理只允许删除指定 Task、指定 cutoff 前、尚未进入 Gateway 的 AI
    正文 Action；成功、`unknown_after_send`、Gateway-started 和远端消息事实保留。
+
+### 10.2 2026-08-01 共享分片、容量与 AI 存量接管修订
+
+2026-08-01 生产确认同一共享 Window 被搜索 fulfillment writer 以
+`shard_total=1`、两个 Dispatcher 以 `shard_total=2` 构造；同时两 worker
+真实有效并发合计约 26，但 scope capacity 仍为四 worker 时期的 52。旧 epoch
+unclaimed 继续计数，并与 `Task FOR UPDATE -> Scope`、`Scope -> TaskAllocation
+FK -> Task` 的反向锁序共同造成普通 ready Action 无 claim、搜索 assignment 大量
+过期和数据库 deadlock。
+
+本事故的实现交接、AI 历史 `group_content_scope_v1` preview/apply、Stage A/B/C
+发布和 E4 验收以
+[`shared-dispatch-and-ai-fulfillment-recovery-prd.md`](shared-dispatch-and-ai-fulfillment-recovery-prd.md)
+为准。该专项不改变本文既有业务目标：普通 Action 只使用统一运行时 2 分片；
+搜索 source 继续使用虚拟 `(1,0)`，首次 outcome finalize 前整个来源 Reservation
+由搜索物化流程独占，finalize 后才只有有效 bound unit可受保护；普通 release不得
+代写搜索 exclusion。共享配置容量按两个预期 worker预算固定，实际新增预算按 live
+shard收敛；中央 claim热事务禁止 `UPDATE tasks`，Gateway后 claim/Action/Attempt/
+类型账本同事务原子收口。AI接管必须在全 writer fence下使用持久 batch/item断点
+续跑，完成后才激活新合同；安全门、远端事实与 unknown防重均不得放宽。
 
 ## 11. Product Design Complete 自检
 

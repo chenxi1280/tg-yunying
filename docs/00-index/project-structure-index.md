@@ -1074,3 +1074,23 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 - `backend/app/services/task_center/dispatcher.py`：在父任务内部 claim 顺序应用群管准入 ready/probe 排序；所有 send gate 退回 pending 的路径统一清 execution lease、claim 与 dispatch binding。
 - `backend/app/services/task_center/group_bot_admission.py`：send gate 以 admission 行锁原子绑定/恢复唯一 post-follow probe Action；同一绑定 Action 可跨 claim 继续，明确 pre-Gateway terminal 后才允许换绑。confirmation Action 查询按 tenant/task/type/admission/version 下推数据库，避免 listener 写 admission 后全量装载 Action。
 - `backend/app/services/task_center/ai_generator.py`：未显式指定模型时解析当前健康主 Provider，不能把禁用的 MiniMax 默认值变成对健康 MiMo v2.5 的遮蔽。
+
+### 2026-08-01 共享调度与 AI 履约恢复实现补充
+
+专项真相源为 `docs/03-feature-designs/shared-dispatch-and-ai-fulfillment-recovery-prd.md`，数据流为 DF-324。
+
+| 文件/维护面 | 已实现职责 |
+| --- | --- |
+| `backend/app/models/dispatch_claim.py`、`backend/app/models/shared_dispatch_recovery.py` | scope激活合同、effective计数、allocation合同版本、shard状态、AI takeover batch/item、remote case和脱敏Gateway journal |
+| `backend/migrations/versions/0134_shared_dispatch_recovery.py` | 0133之后的幂等前向迁移；历史合同不猜测回填，scope保持preparing |
+| `backend/app/services/task_center/dispatch_runtime_contract.py`、`dispatch_runtime_control.py`、`dispatch_activation_ledger.py` | canonical topology/capacity fingerprint、2 shard liveness、候选合同、账本恢复及preparing/active原子激活 |
+| `backend/app/services/task_center/dispatch_claim_allocation.py`、`dispatch_claim_reconciliation.py`、`dispatch_claim_reservations.py`、`search_click_assignment_solver.py` | live capacity 26、跨epoch普通Action三分支、search首次outcome所有权和混合父任务公平 |
+| `backend/app/services/task_center/dispatcher.py`、`gateway_evidence_journal.py`、`runtime_state_hash.py`、`remote_reconciliation.py`、`remote_reconcile_business_facts.py` | B0冻结请求/目标指纹、B1业务原子终结、独立证据journal、完整Action/Attempt CAS，以及send/view/reaction/membership/群管follow/callback类型化远端事实恢复；存量membership无Attempt先建立read-only recovery Attempt/Case |
+| `backend/app/services/task_center/ai_content_scope_takeover.py`、`ai_content_scope_apply.py`、`account_stance_memory.py` | AI存量preview/apply/断点续跑/claim gate；权威no-mutation后原槽和message memory回到replan，unknown不污染stance |
+| `backend/app/services/task_center/heartbeat.py`、`backend/app/worker.py` | heartbeat metadata合并保留合同版本；稳定worker identity；优雅退出精确写stopped并保留历史 |
+| `backend/app/integrations/telegram/gateway.py`、`mock.py` | send/comment/view/reaction/群管mutation显式返回remote mutation边界；membership probe按`require_send`区分已加入可访问与可发言；unknown不伪造absence |
+| `backend/scripts/manage_shared_dispatch_contract.py`、`takeover_ai_content_scope.py`、`reconcile_remote_delivery.py` | Stage A/B/C受控命令、actor/approval/hash确认、`retire-stopped-writers`、只读预览与显式apply |
+| `deploy/compose-up.sh`、`deploy/docker-env.sh`、`docker-compose.server.yml`、`.github/workflows/deploy-production.yml`、`.env.production.example` | compose stop后用纳秒cutoff退役旧heartbeat、稳定worker ID、迁移、候选readiness、takeover、activate、verify-active的唯一发布顺序与26/2/embedded-worker fail-closed配置 |
+| `backend/tests/test_shared_dispatch_*`、`test_dispatch_runtime_*`、`test_dispatch_claim_*`、`test_gateway_evidence_journal*`、`test_remote_*`、`test_ai_content_scope_takeover.py` | 模型/迁移/合同/公平/崩溃恢复/CAS/发布顺序的定向回归入口；PostgreSQL marker仍须在可用测试库执行 |
+
+本补充只证明本地候选实现结构。PostgreSQL并发、Actions、生产激活、真实Telegram canary和自然日E4均须单独取证，不能据此写`qa_pass`、`product_accepted`或`production_fixed`。

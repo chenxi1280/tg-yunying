@@ -17,7 +17,7 @@ from app.models import (
     DispatchClaimTaskAllocation,
     DispatchClaimWindow,
 )
-from .dispatch_rebuild_snapshot import dispatch_rebuild_snapshot_hash
+from .dispatch_rebuild_snapshot import CONTRACT_VERSION, dispatch_rebuild_snapshot_hash
 
 from .dispatch_claim_ledger import for_update
 from .dispatch_claim_types import (
@@ -33,6 +33,9 @@ def allocate_window(
     window: DispatchClaimWindow,
     allocations: list[DispatchClaimShardAllocation],
     demands: list[DispatchClaimDemand],
+    *,
+    live_shard_available: Mapping[int, int] | None = None,
+    runtime_shard_total: int | None = None,
 ) -> None:
     if window.allocation_state == "ready":
         return
@@ -49,9 +52,17 @@ def allocate_window(
         0,
         int(scope.claim_capacity)
         - int(scope.active_claim_count)
-        - int(window.unclaimed_allocated_count),
+        - int(window.effective_unclaimed_count),
     )
-    grants = _allocate_demands(demands, available, opportunity_cursor)
+    if live_shard_available is not None:
+        available = min(available, sum(live_shard_available.values()))
+    grants = _allocate_demands_with_live_limits(
+        demands,
+        available,
+        opportunity_cursor,
+        live_shard_available=live_shard_available,
+        runtime_shard_total=runtime_shard_total,
+    )
     _persist_allocations(
         session,
         window,
@@ -60,6 +71,11 @@ def allocate_window(
         grants,
         epoch,
         opportunity_cursor,
+        contract_version=(
+            scope.active_contract_version
+            or scope.candidate_contract_version
+            or CONTRACT_VERSION
+        ),
     )
     scope.opportunity_cursor = opportunity_cursor
     scope.version += 1
@@ -120,11 +136,15 @@ def dispatch_rebuild_input_hash(
             "claim_capacity": scope.claim_capacity,
             "active_claim_count": scope.active_claim_count,
             "opportunity_cursor": scope.opportunity_cursor,
+            "runtime_shard_total": scope.runtime_shard_total,
+            "topology_fingerprint": scope.topology_fingerprint,
+            "capacity_config_fingerprint": scope.capacity_config_fingerprint,
         },
         "window": {
             "id": window.id,
             "version": window.version,
             "dispatch_allocation_epoch": window.allocation_epoch,
+            "effective_unclaimed_count": window.effective_unclaimed_count,
         },
         "released_count": released_count,
         "demands": [
@@ -185,6 +205,97 @@ def _allocate_demands(
     remaining = _allocate_parent_first_share(demands, grants, available, epoch)
     _allocate_balanced_demands(demands, grants, remaining, epoch)
     return grants
+
+
+def _allocate_demands_with_live_limits(
+    demands: list[DispatchClaimDemand],
+    available: int,
+    epoch: int,
+    *,
+    live_shard_available: Mapping[int, int] | None,
+    runtime_shard_total: int | None,
+) -> dict[tuple[int, str, str, int, int], int]:
+    if live_shard_available is None or runtime_shard_total is None:
+        return _allocate_demands(demands, available, epoch)
+    grants = {demand.key: 0 for demand in demands}
+    shard_budget = dict(live_shard_available)
+    remaining = _allocate_limited_parent_share(
+        demands, grants, shard_budget, available, epoch, runtime_shard_total,
+    )
+    while remaining > 0:
+        eligible = [
+            demand for demand in demands
+            if _limited_demand_available(
+                demand, grants, shard_budget, runtime_shard_total,
+            )
+        ]
+        if not eligible:
+            break
+        demand = min(
+            eligible,
+            key=lambda row: (
+                grants[row.key] / max(1, row.required_claims),
+                -row.urgency_score,
+                rotation_value(row, epoch),
+            ),
+        )
+        _grant_limited(demand, grants, shard_budget, runtime_shard_total)
+        remaining -= 1
+    return grants
+
+
+def _allocate_limited_parent_share(
+    demands: list[DispatchClaimDemand],
+    grants: dict[tuple[int, str, str, int, int], int],
+    shard_budget: dict[int, int],
+    available: int,
+    epoch: int,
+    runtime_shard_total: int,
+) -> int:
+    parents: dict[tuple[int, str], list[DispatchClaimDemand]] = defaultdict(list)
+    for demand in demands:
+        if demand.required_claims > 0:
+            parents[(demand.tenant_id, demand.business_task_id)].append(demand)
+    remaining = available
+    for parent in sorted(parents, key=lambda key: _parent_rotation(key, epoch)):
+        eligible = [
+            demand for demand in parents[parent]
+            if _limited_demand_available(
+                demand, grants, shard_budget, runtime_shard_total,
+            )
+        ]
+        if remaining <= 0:
+            break
+        if not eligible:
+            continue
+        demand = min(eligible, key=lambda row: rotation_value(row, epoch))
+        _grant_limited(demand, grants, shard_budget, runtime_shard_total)
+        remaining -= 1
+    return remaining
+
+
+def _limited_demand_available(
+    demand: DispatchClaimDemand,
+    grants: Mapping[tuple[int, str, str, int, int], int],
+    shard_budget: Mapping[int, int],
+    runtime_shard_total: int,
+) -> bool:
+    if grants[demand.key] >= demand.required_claims:
+        return False
+    if demand.shard_total != runtime_shard_total:
+        return True
+    return shard_budget.get(demand.shard_index, 0) > 0
+
+
+def _grant_limited(
+    demand: DispatchClaimDemand,
+    grants: dict[tuple[int, str, str, int, int], int],
+    shard_budget: dict[int, int],
+    runtime_shard_total: int,
+) -> None:
+    grants[demand.key] += 1
+    if demand.shard_total == runtime_shard_total:
+        shard_budget[demand.shard_index] -= 1
 
 
 def _allocate_parent_first_share(
@@ -268,6 +379,7 @@ def _persist_allocations(
     grants: Mapping[tuple[int, str, str, int, int], int],
     epoch: int,
     opportunity_cursor: int,
+    contract_version: str,
 ) -> None:
     allocation_map = _allocation_map(allocations, epoch)
     task_allocation_map: dict[tuple[int, str, str], DispatchClaimTaskAllocation] = {}
@@ -286,6 +398,7 @@ def _persist_allocations(
             allocation_map,
             demand,
             epoch,
+            contract_version,
         )
         reservation = _reservation_for_demand(
             session,
@@ -356,6 +469,7 @@ def _allocation_for_demand(
     allocations: dict[tuple[int, int], DispatchClaimShardAllocation],
     demand: DispatchClaimDemand,
     epoch: int,
+    contract_version: str,
 ) -> DispatchClaimShardAllocation:
     key = (demand.shard_total, demand.shard_index)
     allocation = allocations.get(key)
@@ -366,6 +480,7 @@ def _allocation_for_demand(
         dispatch_allocation_epoch=epoch,
         rebuild_input_hash=window.rebuild_input_hash,
         dispatch_rebuild_snapshot_hash=window.rebuild_input_hash,
+        dispatch_contract_version=contract_version,
         account_shard_total=demand.shard_total,
         account_shard_index=demand.shard_index,
     )
@@ -467,5 +582,6 @@ def _write_allocation_totals(
     window.unclaimed_allocated_count = sum(
         row.unclaimed_allocated_count for row in all_allocations.values()
     )
+    window.effective_unclaimed_count = window.unclaimed_allocated_count
     window.allocation_epoch = epoch
     window.version += 1

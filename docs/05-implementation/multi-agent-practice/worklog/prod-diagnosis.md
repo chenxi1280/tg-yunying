@@ -322,3 +322,25 @@
 - root: Window rebuild totals 只含新 epoch，漏掉旧 epoch 仍有效的预绑定 Reservation；旧 Action 后续扣减造成负数和低占用假象。
 - decision: 首版不能写 `production_fixed`；进入跨 epoch totals rework 并走第二次 Release Gate。
 - unresolved: 新镜像上线后连续新 Window 非负、Window unclaimed 等于所有有效 allocation 汇总、同类 quarantine 零增量。
+
+## 2026-08-01 线上任务不达标当前根因取证
+
+- message_id: `2026-08-01-task-underdelivery-prod-diagnosis-001`
+- action: 按用户要求 SSH 直连生产只读取证，确认 8-01 当前线上任务不达标的确切根因（不修改代码、不写数据库）。
+- input: 用户要求“看看线上环境的任务不达标的原因”。前序记忆 7-30 已诊断三大问题链，7-31 暴露 002-007 六个新根因；但 7-31 12:43 基线 `997e884b` 明确未重新验收履约指标，距今约 1 天，需新证据。
+- evidence:
+  - 当前 release `20260801013334_87fe0bf0`（2026-08-01 01:33 发布），已非 7-31 基线 `997e884b`；backend、planner、dispatcher-1/2、listener、recovery、account-online、ai-generation、ai-memory、account-security、voice-profile、metrics、`image-verification-worker` 全部 healthy；本机 `/api/health` 返回 `{"status":"ok"}`。取证时刻 2026-08-01 11:04 CST。
+  - 三个郑州 AI 活群 running 任务日覆盖（coverage_date=2026-08-01）：郑州大学 `d3365706` confirmed 83 / ready 609 / reserved 104 / blocked 2，shortfall 716；郑州师范 `84180c47` confirmed 80 / ready 463 / reserved 116 / blocked 127，shortfall 720；郑州楼凤 `7805d8f2` confirmed 59 / ready 516 / reserved 128 / blocked 95，shortfall 741。三个任务 `last_error` 均为“群日目标按计划推进中，等待下一发送时点”。
+  - 按小时 success 分布：03:00-08:00 三任务每小时均有 5-16 条 success；09:00 仅郑州师范 5 条；10:00 起三任务 success 全部归零。最近 1 小时（10:04-11:04）三任务 success=0，全部 failed/skipped（郑州楼凤 failed 29 / skipped 119，郑州师范 failed 74 / skipped 16，郑州大学 failed 12）。
+  - pending action 仍在产生（11:03 仍有新 pending，max_scheduled 11:07-11:12），planner 决策 11:01-11:02 仍在推进（reason `planner_evaluated` / `open_actions_gate`，`hh_req=0`），说明规划层正常，阻断在 Action 执行阶段。
+  - 最近 1 小时 AI 活群 failed action `result.error_code` 分布：`context_freshness_unproven` 53（`generation_stage=generation_ready`/`generation_outcome=ready`，正文已生成 ready 但被上下文新鲜度校验拦截）；`duplicate_message` 52（`generation_stage=ai_message_memory`，Phase C 消息记忆去重判重）；`reply_target_missing` 10（`generation_stage=ai_reply_target`，引用目标缺失）。
+  - search_join 最近 1 小时 failed `error_code`：`jisou_image_verification_required` 162（极搜图片验证码），`search_transport_unavailable` 30，`search_join_execution_failed` 8；同期 success 157。
+  - 结构性证据：`dispatch_claim_windows` 中 `allocation_state=ready` 仍有 4 行 `unclaimed_allocated_count < 0`（min=-24，max=52），即 007 跨 epoch 漂移未完全修复；`group_bot_admissions` 中 `post_follow_visibility_probe` 806、`awaiting_group_bot_confirmation` 319、`group_bot_policy_unresolved` 51；`admission_policies` 仅 group 2806/3848/3849 有 active policy；`pg_stat_database.deadlocks` 当前累计 24。
+  - coverage blockers：郑州楼凤 `ai_generation_output_count_mismatch` 63；郑州师范 `cannot_send` 124；三任务均有 `need_relogin`/`session_expired`。
+- root:
+  1. 直接根因：AI 活群 Action 执行阶段最近 1 小时 success=0，三大失败码为 `context_freshness_unproven`（006 normal-ready 正文用旧上下文修复后的新形态：freshness 校验拦截已 ready 正文）、`duplicate_message`（Phase C 消息记忆去重判重）、`reply_target_missing`（005 引用短缺根因未完全解决）。
+  2. search_join 链路主因为 `jisou_image_verification_required`（极搜验证码），虽有 `image-verification-worker` 但验证码识别仍是最主要失败码。
+  3. 结构性遗留：007 Dispatcher Window 跨 epoch 漂移未完全修复（4 行负 unclaimed）；admission `post_follow_visibility_probe` 806 与 `group_bot_policy_unresolved` 51 形成准入 backlog；账号会话 `need_relogin`/`session_expired`。
+- decision: 当前只能写 `production_incident_reproduced`，不能写 `production_fixed`。根因链未消除，9:00 之后三任务 success 归零，日覆盖 shortfall 716-741 且无回补趋势。按多 Agent 流程转 product 分级。
+- next_agent: product
+- unresolved: 需 product 对 `context_freshness_unproven`、`duplicate_message`、`reply_target_missing`、`jisou_image_verification_required`、007 Window 负数、admission policy 缺口分别定级并产出 dev 交接；本条不代替线上恢复 E4，后续 release 需重新观察三任务 success 恢复、shortfall 收敛与 Window 非负。

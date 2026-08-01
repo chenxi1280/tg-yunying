@@ -1187,13 +1187,13 @@ class TelethonTelegramGateway(TelegramGateway):
     ) -> SendResult:
         raw_session = decrypt_session(session_ciphertext)
         if not raw_session:
-            return SendResult(False, failure_type=FailureType.ACCOUNT_UNAVAILABLE.value, detail="账号没有可用 session")
+            return SendResult(False, failure_type=FailureType.ACCOUNT_UNAVAILABLE.value, detail="账号没有可用 session", remote_mutation_started=False)
         if not peer_id:
-            return SendResult(False, failure_type=FailureType.PEER_INVALID.value, detail="缺少 TG peer id")
+            return SendResult(False, failure_type=FailureType.PEER_INVALID.value, detail="缺少 TG peer id", remote_mutation_started=False)
 
         client = await self._get_or_create_client(credentials, raw_session)
         if not await client.is_user_authorized():
-            return SendResult(False, failure_type=FailureType.ACCOUNT_UNAVAILABLE.value, detail="session 已失效")
+            return SendResult(False, failure_type=FailureType.ACCOUNT_UNAVAILABLE.value, detail="session 已失效", remote_mutation_started=False)
         try:
             target = await resolve_telethon_target(client, peer_id, group_id=group_id)
             remote_message_id: str | None = None
@@ -1210,9 +1210,25 @@ class TelethonTelegramGateway(TelegramGateway):
             else:
                 message = await client.send_message(target, content, reply_to=reply_to_message_id)
                 remote_message_id = str(message.id)
-            return SendResult(True, remote_message_id=remote_message_id)
+            return SendResult(True, remote_message_id=remote_message_id, remote_mutation_started=True)
         except Exception as exc:  # Telethon exposes many RPC subclasses; map them at the adapter boundary.
-            return self._map_send_error(exc)
+            mapped = self._map_send_error(exc)
+            if remote_message_id:
+                return SendResult(
+                    False,
+                    remote_message_id=remote_message_id,
+                    failure_type=mapped.failure_type,
+                    detail=mapped.detail,
+                    remote_mutation_started=True,
+                )
+            if mapped.failure_type != FailureType.UNKNOWN.value:
+                return SendResult(
+                    False,
+                    failure_type=mapped.failure_type,
+                    detail=mapped.detail,
+                    remote_mutation_started=False,
+                )
+            return mapped
 
     def send_message(
         self,
@@ -1483,20 +1499,39 @@ class TelethonTelegramGateway(TelegramGateway):
     ) -> OperationResult:
         raw_session = decrypt_session(session_ciphertext)
         if not raw_session:
-            return OperationResult(False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value, "账号没有可用 session")
+            return OperationResult(
+                False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value,
+                "账号没有可用 session", remote_mutation_started=False,
+            )
         client = await self._get_or_create_client(credentials, raw_session)
         if not await client.is_user_authorized():
-            return OperationResult(False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value, "session 已失效")
+            return OperationResult(
+                False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value,
+                "session 已失效", remote_mutation_started=False,
+            )
         try:
             from telethon import functions
 
             target: int | str = int(channel_peer_id) if channel_peer_id.lstrip("-").isdigit() else channel_peer_id
             entity = await client.get_entity(target)
             await client(functions.messages.GetMessagesViewsRequest(peer=entity, id=[message_id], increment=True))
-            return OperationResult(True, detail=f"message_id={message_id}")
+            return OperationResult(
+                True,
+                detail=f"message_id={message_id}",
+                remote_mutation_started=True,
+            )
         except Exception as exc:
             mapped = self._map_send_error(exc)
-            return OperationResult(False, "失败", mapped.failure_type or FailureType.UNKNOWN.value, mapped.detail or str(exc))
+            failure = mapped.failure_type or FailureType.UNKNOWN.value
+            return OperationResult(
+                False,
+                "失败",
+                failure,
+                mapped.detail or str(exc),
+                remote_mutation_started=(
+                    None if failure == FailureType.UNKNOWN.value else False
+                ),
+            )
 
     def view_channel_message(
         self,
@@ -1563,29 +1598,55 @@ class TelethonTelegramGateway(TelegramGateway):
     ) -> ChannelMembershipResult:
         username = _group_bot_channel_username(channel_ref, source_channel_url)
         if not username:
-            return ChannelMembershipResult(False, "失败", FailureType.PEER_INVALID.value, "group_bot_channel_source_mismatch", "failed")
+            return ChannelMembershipResult(
+                False, "失败", FailureType.PEER_INVALID.value,
+                "group_bot_channel_source_mismatch", "failed",
+                remote_mutation_started=False,
+            )
         raw_session = decrypt_session(session_ciphertext)
         if not raw_session:
-            return ChannelMembershipResult(False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value, "账号没有可用 session", "failed")
+            return ChannelMembershipResult(
+                False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value,
+                "账号没有可用 session", "failed",
+                remote_mutation_started=False,
+            )
         client = await self._get_or_create_client(credentials, raw_session)
         if not await client.is_user_authorized():
-            return ChannelMembershipResult(False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value, "session 已失效", "failed")
+            return ChannelMembershipResult(
+                False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value,
+                "session 已失效", "failed",
+                remote_mutation_started=False,
+            )
         try:
             from telethon import functions
             from telethon.errors import UserAlreadyParticipantError
 
             entity = await client.get_entity(username)
             if not bool(getattr(entity, "broadcast", False)) or bool(getattr(entity, "megagroup", False)):
-                return ChannelMembershipResult(False, "失败", FailureType.PEER_INVALID.value, "required_channel_ref_invalid: not broadcast channel", "failed")
+                return ChannelMembershipResult(
+                    False, "失败", FailureType.PEER_INVALID.value,
+                    "required_channel_ref_invalid: not broadcast channel",
+                    "failed", remote_mutation_started=False,
+                )
             try:
                 await client(functions.channels.JoinChannelRequest(entity))
                 status = "joined"
             except UserAlreadyParticipantError:
                 status = "already_joined"
-            return ChannelMembershipResult(True, detail=f"broadcast:{getattr(entity, 'id', '')}", membership_status=status)
+            return ChannelMembershipResult(
+                True,
+                detail=f"broadcast:{getattr(entity, 'id', '')}",
+                membership_status=status,
+                remote_mutation_started=True,
+            )
         except Exception as exc:
             mapped = self._map_send_error(exc)
-            return ChannelMembershipResult(False, "失败", mapped.failure_type or FailureType.PEER_INVALID.value, mapped.detail or str(exc), "failed")
+            return ChannelMembershipResult(
+                False, "失败",
+                mapped.failure_type or FailureType.PEER_INVALID.value,
+                mapped.detail or str(exc), "failed",
+                remote_mutation_started=mapped.remote_mutation_started,
+            )
 
     def follow_group_bot_required_channel(
         self,
@@ -1627,26 +1688,53 @@ class TelethonTelegramGateway(TelegramGateway):
     ) -> OperationResult:
         raw_session = decrypt_session(session_ciphertext)
         if not raw_session:
-            return OperationResult(False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value, "账号没有可用 session")
+            return OperationResult(
+                False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value,
+                "账号没有可用 session", remote_mutation_started=False,
+            )
         client = await self._get_or_create_client(credentials, raw_session)
         if not await client.is_user_authorized():
-            return OperationResult(False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value, "session 已失效")
+            return OperationResult(
+                False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value,
+                "session 已失效", remote_mutation_started=False,
+            )
         try:
             target = await resolve_telethon_target(client, group_peer_id, group_id=1)
             message = await self._source_message_from_iter(client, target, source_message_id)
             if message is None:
-                return OperationResult(False, "失败", FailureType.PEER_INVALID.value, "group_bot_confirmation_button_mismatch")
+                return OperationResult(
+                    False, "失败", FailureType.PEER_INVALID.value,
+                    "group_bot_confirmation_button_mismatch",
+                    remote_mutation_started=False,
+                )
             sender = await message.get_sender() if hasattr(message, "get_sender") else None
             if str(getattr(sender, "id", "") or "") != str(trusted_bot_peer_id or ""):
-                return OperationResult(False, "失败", FailureType.PEER_INVALID.value, "group_bot_confirmation_peer_mismatch")
+                return OperationResult(
+                    False, "失败", FailureType.PEER_INVALID.value,
+                    "group_bot_confirmation_peer_mismatch",
+                    remote_mutation_started=False,
+                )
             button = _button_at(message, row, col)
             if button is None or _button_text(button) != text or not _is_callback_button(button):
-                return OperationResult(False, "失败", FailureType.PEER_INVALID.value, "group_bot_confirmation_button_mismatch")
+                return OperationResult(
+                    False, "失败", FailureType.PEER_INVALID.value,
+                    "group_bot_confirmation_button_mismatch",
+                    remote_mutation_started=False,
+                )
             await message.click(row, col)
-            return OperationResult(True, detail=f"group_bot_confirmation_clicked:{source_message_id}")
+            return OperationResult(
+                True,
+                detail=f"group_bot_confirmation_clicked:{source_message_id}",
+                remote_mutation_started=True,
+            )
         except Exception as exc:
             mapped = self._map_send_error(exc)
-            return OperationResult(False, "失败", mapped.failure_type or FailureType.UNKNOWN.value, mapped.detail or str(exc))
+            return OperationResult(
+                False, "失败",
+                mapped.failure_type or FailureType.UNKNOWN.value,
+                mapped.detail or str(exc),
+                remote_mutation_started=mapped.remote_mutation_started,
+            )
 
     def click_group_bot_confirmation_button(
         self,
@@ -1921,11 +2009,26 @@ class TelethonTelegramGateway(TelegramGateway):
                     reaction=[types.ReactionEmoji(emoticon=reaction or "👍")],
                 )
             )
-            return OperationResult(True, detail=f"reaction={reaction or '👍'}; message_id={message_id}")
+            return OperationResult(
+                True,
+                detail=f"reaction={reaction or '👍'}; message_id={message_id}",
+                remote_mutation_started=True,
+            )
         except Exception as exc:
             mapped = self._map_send_error(exc)
             failure = mapped.failure_type or FailureType.REACTION_UNAVAILABLE.value
-            return OperationResult(False, "失败", failure, mapped.detail or str(exc) or "Reaction不可用")
+            mutation_failure = mapped.failure_type or FailureType.UNKNOWN.value
+            return OperationResult(
+                False,
+                "失败",
+                failure,
+                mapped.detail or str(exc) or "Reaction不可用",
+                remote_mutation_started=(
+                    None
+                    if mutation_failure == FailureType.UNKNOWN.value
+                    else False
+                ),
+            )
 
     def send_channel_reaction(
         self,
@@ -1949,10 +2052,20 @@ class TelethonTelegramGateway(TelegramGateway):
     ) -> SendResult:
         raw_session = decrypt_session(session_ciphertext)
         if not raw_session:
-            return SendResult(False, failure_type=FailureType.ACCOUNT_UNAVAILABLE.value, detail="账号没有可用 session")
+            return SendResult(
+                False,
+                failure_type=FailureType.ACCOUNT_UNAVAILABLE.value,
+                detail="账号没有可用 session",
+                remote_mutation_started=False,
+            )
         client = await self._get_or_create_client(credentials, raw_session)
         if not await client.is_user_authorized():
-            return SendResult(False, failure_type=FailureType.ACCOUNT_UNAVAILABLE.value, detail="session 已失效")
+            return SendResult(
+                False,
+                failure_type=FailureType.ACCOUNT_UNAVAILABLE.value,
+                detail="session 已失效",
+                remote_mutation_started=False,
+            )
         try:
             target: int | str = int(channel_peer_id) if channel_peer_id.lstrip("-").isdigit() else channel_peer_id
             entity = await client.get_entity(target)
@@ -1960,10 +2073,26 @@ class TelethonTelegramGateway(TelegramGateway):
             if reply_to_message_id:
                 send_kwargs["reply_to"] = reply_to_message_id
             message = await client.send_message(entity, content, **send_kwargs)
-            return SendResult(True, remote_message_id=str(getattr(message, "id", "")))
+            return SendResult(
+                True,
+                remote_message_id=str(getattr(message, "id", "")),
+                remote_mutation_started=True,
+            )
         except Exception as exc:
             mapped = self._map_send_error(exc)
-            return SendResult(False, failure_type=mapped.failure_type or FailureType.COMMENT_UNAVAILABLE.value, detail=mapped.detail or "频道消息不支持回复")
+            mapped_failure = mapped.failure_type or FailureType.UNKNOWN.value
+            return SendResult(
+                False,
+                failure_type=(
+                    mapped.failure_type or FailureType.COMMENT_UNAVAILABLE.value
+                ),
+                detail=mapped.detail or "频道消息不支持回复",
+                remote_mutation_started=(
+                    None
+                    if mapped_failure == FailureType.UNKNOWN.value
+                    else False
+                ),
+            )
 
     def reply_channel_message(
         self,
@@ -2127,6 +2256,8 @@ class TelethonTelegramGateway(TelegramGateway):
         target_type: str,
         session_ciphertext: str | None = None,
         credentials: DeveloperAppCredentials | None = None,
+        *,
+        require_send: bool = True,
     ) -> OperationResult:
         raw_session = decrypt_session(session_ciphertext)
         if not raw_session:
@@ -2139,6 +2270,7 @@ class TelethonTelegramGateway(TelegramGateway):
                 target_peer_id,
                 target_type,
                 self._usable_credentials(credentials),
+                require_send=require_send,
             )
         )
 
@@ -2148,9 +2280,16 @@ class TelethonTelegramGateway(TelegramGateway):
         target_peer_id: str,
         target_type: str,
         credentials: DeveloperAppCredentials,
+        *,
+        require_send: bool = True,
     ) -> OperationResult:
         client = await self._get_or_create_client(credentials, raw_session)
-        result = await self._probe_target_capabilities_with_client(client, target_peer_id, target_type)
+        result = await self._probe_target_capabilities_with_client(
+            client,
+            target_peer_id,
+            target_type,
+            require_send=require_send,
+        )
         if not result.ok:
             await self._lifecycle.invalidate_client(credentials, raw_session)
         return result
@@ -2160,29 +2299,21 @@ class TelethonTelegramGateway(TelegramGateway):
         client: Any,
         target_peer_id: str,
         target_type: str,
+        *,
+        require_send: bool = True,
     ) -> OperationResult:
         if not await client.is_user_authorized():
             return OperationResult(False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value, "session 已失效")
         target = None
         try:
             target = await resolve_telethon_target(client, target_peer_id, group_id=0)
-            default_rights = getattr(target, "default_banned_rights", None)
-            if default_rights and getattr(default_rights, "send_messages", False):
-                detail = await self._permission_detail_from_target_context(client, target)
-                return OperationResult(False, "失败", FailureType.GROUP_PERMISSION_DENIED.value, detail)
-            if hasattr(client, "get_permissions"):
-                try:
-                    permissions = await client.get_permissions(target, "me")
-                    if not _can_send_text_in_group(target, permissions):
-                        detail = await self._permission_detail_from_target_context(client, target)
-                        return OperationResult(False, "失败", FailureType.GROUP_PERMISSION_DENIED.value, detail)
-                except Exception as exc:
-                    mapped = self._map_send_error(exc)
-                    detail = await self._permission_detail_from_probe_exception(client, target, mapped)
-                    return OperationResult(False, "失败", FailureType.GROUP_PERMISSION_DENIED.value, detail)
-            else:
-                return OperationResult(False, "失败", FailureType.GROUP_PERMISSION_DENIED.value, TARGET_PERMISSION_DETAIL)
-            return OperationResult(True, detail=f"{target_type}:{target_peer_id}:可访问")
+            return await self._probe_resolved_target_permissions(
+                client,
+                target,
+                target_peer_id=target_peer_id,
+                target_type=target_type,
+                require_send=require_send,
+            )
         except Exception as exc:  # Telethon exposes many RPC subclasses; map them at the adapter boundary.
             mapped = self._map_send_error(exc)
             detail = (
@@ -2191,6 +2322,54 @@ class TelethonTelegramGateway(TelegramGateway):
                 else mapped.detail if mapped.failure_type == FailureType.GROUP_PERMISSION_DENIED.value else TARGET_PERMISSION_DETAIL
             )
             return OperationResult(False, "失败", mapped.failure_type or FailureType.UNKNOWN.value, detail)
+
+    async def _probe_resolved_target_permissions(
+        self,
+        client: Any,
+        target: Any,
+        *,
+        target_peer_id: str,
+        target_type: str,
+        require_send: bool,
+    ) -> OperationResult:
+        if not hasattr(client, "get_permissions"):
+            return OperationResult(
+                False, "失败", FailureType.GROUP_PERMISSION_DENIED.value,
+                TARGET_PERMISSION_DETAIL,
+            )
+        try:
+            permissions = await client.get_permissions(target, "me")
+        except Exception as exc:
+            mapped = self._map_send_error(exc)
+            detail = await self._permission_detail_from_probe_exception(
+                client, target, mapped,
+            )
+            return OperationResult(
+                False, "失败", FailureType.GROUP_PERMISSION_DENIED.value, detail,
+            )
+        if not require_send:
+            return OperationResult(
+                True,
+                detail=f"{target_type}:{target_peer_id}:已加入可访问",
+            )
+        if await self._target_send_permission_denied(client, target, permissions):
+            detail = await self._permission_detail_from_target_context(client, target)
+            return OperationResult(
+                False, "失败", FailureType.GROUP_PERMISSION_DENIED.value, detail,
+            )
+        return OperationResult(True, detail=f"{target_type}:{target_peer_id}:可访问")
+
+    async def _target_send_permission_denied(
+        self,
+        client: Any,
+        target: Any,
+        permissions: Any,
+    ) -> bool:
+        del client
+        default_rights = getattr(target, "default_banned_rights", None)
+        return bool(
+            default_rights and getattr(default_rights, "send_messages", False)
+        ) or not _can_send_text_in_group(target, permissions)
 
     async def _permission_detail_from_probe_exception(self, client: Any, target: Any, mapped: SendResult) -> str:
         if mapped.failure_type == FailureType.GROUP_PERMISSION_DENIED.value and _permission_detail_has_references(mapped.detail or ""):

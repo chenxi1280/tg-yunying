@@ -8,6 +8,7 @@ import json
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.models import (
     BotProtocolSample,
     AccountEnvironmentBinding,
@@ -19,6 +20,8 @@ from app.models import (
     TaskDayLedger,
     TgAccount,
     TgAccountAuthorization,
+    DispatchClaimScope,
+    DispatchRuntimeShardState,
 )
 from app.search_join_protocol import pure_click_protocol_profile_is_approved
 from app.services.account_capacity import (
@@ -30,6 +33,11 @@ from ..account_pool import select_task_accounts
 from ..jisou_selector_accounts import select_jisou_selector_candidates
 from ..search_click_assignment_solver import SearchClickCandidatePath
 from ..search_click_dispatch_allocation import SearchClickFulfillmentUnit
+from ..dispatch_runtime_contract import (
+    build_dispatch_runtime_contract,
+    live_shard_indexes,
+    require_active_scope_contract,
+)
 from .search_join_group import (
     PayloadInput,
     SearchJoinPlan,
@@ -146,7 +154,45 @@ def _task_candidate_paths(
         bot_username=base.bot_username,
         now_value=now_value,
     )
-    return _account_contexts(session, task, units, base, selected.accounts, now_value)
+    accounts = _live_runtime_shard_accounts(
+        session,
+        task,
+        selected.accounts,
+        now_value,
+    )
+    return _account_contexts(session, task, units, base, accounts, now_value)
+
+
+def _live_runtime_shard_accounts(
+    session: Session,
+    task: Task,
+    accounts: tuple[TgAccount, ...],
+    now_value: datetime,
+) -> tuple[TgAccount, ...]:
+    settings = get_settings()
+    scope = session.scalar(select(DispatchClaimScope).where(
+        DispatchClaimScope.dispatcher_scope == settings.dispatcher_claim_scope,
+    ))
+    if scope is None or not scope.topology_fingerprint:
+        return accounts
+    contract = build_dispatch_runtime_contract(settings)
+    require_active_scope_contract(scope, contract)
+    states = list(session.scalars(select(DispatchRuntimeShardState).where(
+        DispatchRuntimeShardState.dispatcher_scope == scope.dispatcher_scope,
+    )))
+    live = live_shard_indexes(
+        states,
+        contract,
+        now=now_value,
+        stale_seconds=int(settings.dispatch_shard_stale_seconds),
+    )
+    filtered = tuple(
+        account for account in accounts
+        if account.id % contract.runtime_shard_total in live
+    )
+    if accounts and not filtered:
+        _record_blocker(task, "dispatcher_shard_unavailable")
+    return filtered
 
 
 def _task_path_base(

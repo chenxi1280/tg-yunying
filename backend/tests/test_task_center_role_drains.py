@@ -302,7 +302,7 @@ def test_dispatcher_finalize_does_not_refresh_full_task_stats(monkeypatch) -> No
     SessionFactory = _session_factory()
     now_value = _now()
 
-    def fake_dispatch(_session: Session, action: Action) -> bool:
+    def fake_dispatch(_session: Session, action: Action, **_kwargs) -> bool:
         action.status = "success"
         action.executed_at = now_value
         return True
@@ -608,7 +608,7 @@ def test_dispatcher_role_claims_and_dispatches_without_listener(monkeypatch):
         listener_called = True
         return type("Result", (), {"source_count": 0, "processed_count": 0})()
 
-    def fake_dispatch(session: Session, action: Action) -> bool:
+    def fake_dispatch(session: Session, action: Action, **_kwargs) -> bool:
         action.status = "success"
         action.executed_at = _now()
         action.result = {"success": True, "remote_message_id": "mock-role-drain"}
@@ -719,7 +719,7 @@ def test_dispatcher_db_error_does_not_stop_other_claimed_actions(monkeypatch):
     now_value = _now()
     calls: list[str] = []
 
-    def fake_dispatch(session: Session, action: Action) -> bool:
+    def fake_dispatch(session: Session, action: Action, **_kwargs) -> bool:
         calls.append(action.id)
         if action.id == "action-db-deadlock":
             raise SQLAlchemyError("deadlock detected")

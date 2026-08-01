@@ -31,6 +31,7 @@ from .dispatch_claim_ledger import (
 )
 from .dispatch_claim_selection import build_demands, tasks_by_id
 from .dispatch_claim_types import DispatchClaimDemand, SEARCH_SOURCE_CLAIM_CLASS
+from .dispatch_reservations import runtime_allocation_limits
 
 
 @dataclass(frozen=True)
@@ -55,16 +56,29 @@ def prepare_search_click_fulfillment_units(
     reconcile_scope_active(session, scope)
     sync_scope_capacity(scope, capacity)
     window = window_for_update(session, scope_name, now, capacity)
-    shard_total = max(1, int(settings.account_shard_total or 1))
+    shard_total = max(1, int(settings.dispatch_runtime_shard_total or 0))
     demands = _all_demands(session, now, shard_total=shard_total)
     sync_window_capacity(window, capacity)
     if window.allocation_state != "ready":
+        allocations = window_allocations(session, window.id)
+        runtime_limits = runtime_allocation_limits(
+            session,
+            scope,
+            allocations,
+            settings=settings,
+            now=now,
+        )
+        live_limits, runtime_total = (
+            runtime_limits if runtime_limits is not None else (None, None)
+        )
         allocate_window(
             session,
             scope,
             window,
-            window_allocations(session, window.id),
+            allocations,
             demands,
+            live_shard_available=live_limits,
+            runtime_shard_total=runtime_total,
         )
     return _available_search_units(session, window.id, window.allocation_epoch)
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 
@@ -18,6 +18,7 @@ class SendResult:
     remote_message_id: str | None = None
     failure_type: str | None = None
     detail: str | None = None
+    remote_mutation_started: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,7 @@ class OperationResult:
     status: str = "已完成"
     failure_type: str = ""
     detail: str = ""
+    remote_mutation_started: bool | None = field(default=None, kw_only=True)
 
 
 @dataclass(frozen=True)

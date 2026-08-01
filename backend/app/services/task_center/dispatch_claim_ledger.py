@@ -78,20 +78,48 @@ def current_window_allocations(
 def window_reservations(
     session: Session,
     window_id: str,
+    *,
+    allocation_epoch: int | None = None,
 ) -> dict[tuple[int, str, str, int, int], DispatchClaimReservation]:
     window = session.get(DispatchClaimWindow, window_id)
     if window is None:
         return {}
+    selected_epoch = window.allocation_epoch if allocation_epoch is None else allocation_epoch
     statement = select(DispatchClaimReservation, DispatchClaimShardAllocation).join(
         DispatchClaimShardAllocation,
         DispatchClaimShardAllocation.id == DispatchClaimReservation.dispatch_claim_shard_allocation_id,
     ).where(
         DispatchClaimShardAllocation.dispatch_claim_window_id == window_id,
         DispatchClaimShardAllocation.dispatch_allocation_epoch
-        == window.allocation_epoch,
+        == selected_epoch,
     )
     rows = session.execute(for_update(session, statement)).all()
     return {reservation_key(reservation, allocation): reservation for reservation, allocation in rows}
+
+
+def claimable_window_reservations(
+    session: Session,
+    window_id: str,
+) -> dict[tuple[int, str, str, int, int], DispatchClaimReservation]:
+    statement = (
+        select(DispatchClaimReservation, DispatchClaimShardAllocation)
+        .join(
+            DispatchClaimShardAllocation,
+            DispatchClaimShardAllocation.id
+            == DispatchClaimReservation.dispatch_claim_shard_allocation_id,
+        )
+        .where(DispatchClaimShardAllocation.dispatch_claim_window_id == window_id)
+        .order_by(
+            DispatchClaimShardAllocation.dispatch_allocation_epoch.desc(),
+            DispatchClaimReservation.id,
+        )
+    )
+    result: dict[tuple[int, str, str, int, int], DispatchClaimReservation] = {}
+    for reservation, allocation in session.execute(for_update(session, statement)):
+        key = reservation_key(reservation, allocation)
+        if key not in result and reservation_available(reservation) > 0:
+            result[key] = reservation
+    return result
 
 
 def reconcile_window_active(
@@ -115,7 +143,7 @@ def reconcile_window_active(
 
 
 def sync_window_capacity(window: DispatchClaimWindow, capacity: int) -> None:
-    occupied = int(window.active_claim_count) + int(window.unclaimed_allocated_count)
+    occupied = int(window.active_claim_count) + int(window.effective_unclaimed_count)
     expected = max(occupied, capacity)
     if window.claim_capacity != expected:
         window.claim_capacity = expected
@@ -144,6 +172,14 @@ def release_dispatch_claim(session: Session, action: Action) -> bool:
     scope, window, allocation = _locked_release_ledger(session, action, result)
     reconciliation = _reconcile_released_claim(session, scope, window, allocation)
     action.result = _released_claim_result(result, reconciliation)
+    return True
+
+
+def lock_dispatch_claim_prefix(session: Session, action: Action) -> bool:
+    result = action.result if isinstance(action.result, dict) else {}
+    if not result.get("dispatch_claim_scope"):
+        return False
+    _locked_release_ledger(session, action, result)
     return True
 
 
@@ -257,9 +293,10 @@ def task_dispatch_claim_snapshot(session: Session, task: Task) -> dict[str, obje
         "global_claim_capacity": scope.claim_capacity if scope else window.claim_capacity,
         "global_active_claim_count": scope.active_claim_count if scope else window.active_claim_count,
         "unclaimed_allocated_count": window.unclaimed_allocated_count,
+        "effective_unclaimed_count": window.effective_unclaimed_count,
         "dispatch_allocation_epoch": window.allocation_epoch,
         "invariant_ok": bool(
-            window.active_claim_count + window.unclaimed_allocated_count <= window.claim_capacity
+            window.active_claim_count + window.effective_unclaimed_count <= window.claim_capacity
             and (scope is None or scope.active_claim_count <= scope.claim_capacity)
         ),
         "reservations": [_reservation_snapshot(reservation, allocation) for reservation, allocation in rows],
@@ -477,7 +514,7 @@ def _claim_available(
         reservation.claimed_count < reservation.reserved_claims
         and allocation.unclaimed_allocated_count > 0
         and scope.active_claim_count < scope.claim_capacity
-        and window.active_claim_count + window.unclaimed_allocated_count <= window.claim_capacity
+        and window.active_claim_count + window.effective_unclaimed_count <= window.claim_capacity
     )
 
 
@@ -493,6 +530,7 @@ def _consume_reservation(
     allocation.active_claim_count += 1
     allocation.version += 1
     window.unclaimed_allocated_count -= 1
+    window.effective_unclaimed_count -= 1
     window.active_claim_count += 1
     window.version += 1
     scope.active_claim_count += 1

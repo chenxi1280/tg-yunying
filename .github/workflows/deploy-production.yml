@@ -413,6 +413,15 @@ jobs:
               python -m scripts.takeover_all_task_fulfillment
           '
 
+      - name: Verify active shared dispatch contract
+        run: |
+          set -euo pipefail
+          ssh silicon-valley-production-server '
+            set -euo pipefail
+            timeout 120 docker exec -i tgyunying-backend \
+              python -m scripts.manage_shared_dispatch_contract verify-active
+          '
+
       - name: Probe production planner drain
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_production_diagnostics }}
         run: |

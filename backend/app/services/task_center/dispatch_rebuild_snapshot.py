@@ -16,7 +16,7 @@ from app.models import (
 
 from .dispatch_claim_types import DispatchClaimDemand
 
-CONTRACT_VERSION = "dispatch-rebuild-v2"
+CONTRACT_VERSION = "dispatch-rebuild-v3"
 
 
 def dispatch_rebuild_snapshot_hash(
@@ -49,6 +49,10 @@ def _scope_snapshot(scope: DispatchClaimScope) -> dict:
         "claim_capacity": scope.claim_capacity,
         "active_claim_count": scope.active_claim_count,
         "opportunity_cursor": scope.opportunity_cursor,
+        "runtime_shard_total": scope.runtime_shard_total,
+        "topology_fingerprint": scope.topology_fingerprint,
+        "capacity_config_fingerprint": scope.capacity_config_fingerprint,
+        "active_contract_version": scope.active_contract_version,
     }
 
 
@@ -61,6 +65,7 @@ def _window_snapshot(window: DispatchClaimWindow) -> dict:
         "claim_capacity": window.claim_capacity,
         "active_claim_count": window.active_claim_count,
         "unclaimed_allocated_count": window.unclaimed_allocated_count,
+        "effective_unclaimed_count": window.effective_unclaimed_count,
     }
 
 
@@ -71,6 +76,7 @@ def _shard_snapshot(row: DispatchClaimShardAllocation) -> dict:
         "epoch": row.dispatch_allocation_epoch,
         "shard_total": row.account_shard_total,
         "shard_index": row.account_shard_index,
+        "dispatch_contract_version": row.dispatch_contract_version,
         "active": row.active_claim_count,
         "unclaimed": row.unclaimed_allocated_count,
     }

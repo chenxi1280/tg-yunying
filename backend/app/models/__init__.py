@@ -19,6 +19,7 @@ from .search_join_environment import *  # noqa: F401,F403
 from .search_join_pacing import *  # noqa: F401,F403
 from .search_join_protocol import *  # noqa: F401,F403
 from .dispatch_claim import *  # noqa: F401,F403
+from .shared_dispatch_recovery import *  # noqa: F401,F403
 from .search_rank_deboost import *  # noqa: F401,F403
 from .search_rank_deboost_alert import *  # noqa: F401,F403
 from .tenant_learning import *  # noqa: F401,F403

@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from uuid import uuid4
 from datetime import date, datetime, timedelta
 
-from sqlalchemy import case, func, or_, select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, aliased, object_session
 from pydantic import ValidationError
@@ -47,6 +47,7 @@ from app.timezone import as_beijing
 
 from .account_pool import account_matches_current_shard, current_account_shard, select_task_accounts
 from .account_scope import is_all_accounts_task
+from .account_stance_memory import invalidate_unknown_group_stance_memory
 from .account_voice_profiles import upsert_group_stance_memory
 from .account_voice_profile_cache import VOICE_PROFILE_CONTRACT_VERSION, voice_profile_snapshot_hash
 from . import ai_generation_dispatch as _ai_generation_dispatch
@@ -147,6 +148,7 @@ from .search_rank_deboost_reservations import (
     release_reserved_reservation,
 )
 from . import runtime_resources as _runtime_resources
+from .runtime_state_hash import remote_reconcile_action_state_hash
 
 _ACTION_RESERVATIONS = _runtime_resources._ACTION_RESERVATIONS
 _IN_FLIGHT_ACCOUNTS = _runtime_resources._IN_FLIGHT_ACCOUNTS
@@ -456,7 +458,10 @@ def dispatch_action(
     *,
     generation_dependencies: GenerationDependencies = PRODUCTION_GENERATION_DEPENDENCIES,
     comment_generation_dependencies: CommentGenerationDependencies = PRODUCTION_COMMENT_GENERATION_DEPENDENCIES,
+    project_task_stats: bool = True,
 ) -> bool:
+    if _legacy_content_scope_takeover_pending(action):
+        return False
     try:
         dispatched = _dispatch_action(
             session,
@@ -467,11 +472,34 @@ def dispatch_action(
     except BaseException:
         _release_runtime_resources(action)
         raise
-    _finalize_dispatch_action(session, action)
+    _finalize_dispatch_action(
+        session,
+        action,
+        project_task_stats=project_task_stats,
+    )
     return dispatched
 
 
-def _finalize_dispatch_action(session: Session, action: Action) -> None:
+def _legacy_content_scope_takeover_pending(action: Action) -> bool:
+    if (
+        action.task_type != "group_ai_chat"
+        or action.action_type != "send_message"
+    ):
+        return False
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    return (
+        str(payload.get("content_scope_contract_version") or "")
+        != "group_content_scope_v1"
+    )
+
+
+def _finalize_dispatch_action(
+    session: Session,
+    action: Action,
+    *,
+    ensure_remote_case: bool = True,
+    project_task_stats: bool = True,
+) -> None:
     from .conversation_speaker_rotation import release_group_ai_speaker_reservation
 
     release_group_ai_speaker_reservation(session, action)
@@ -479,10 +507,35 @@ def _finalize_dispatch_action(session: Session, action: Action) -> None:
     release_dispatch_claim(session, action)
     _sync_action_coverage_state(session, action)
     _sync_action_content_mix_state(session, action)
+    _sync_remote_reconciled_group_ai_state(session, action)
     _sync_comment_fulfillment_state(session, action)
     _sync_channel_fulfillment_state(session, action)
     _sync_all_account_membership_state(session, action)
-    _sync_search_click_target_progress(session, action)
+    if project_task_stats:
+        _sync_search_click_target_progress(session, action)
+    if ensure_remote_case:
+        _ensure_unknown_remote_case(session, action)
+
+
+def _ensure_unknown_remote_case(session: Session, action: Action) -> None:
+    if action.status != "unknown_after_send":
+        return
+    attempt = _latest_gateway_attempt(session, action)
+    if attempt is None:
+        return
+    from .remote_reconciliation import ensure_remote_reconcile_case
+
+    action.result = {
+        **dict(action.result or {}),
+        "remote_reconcile_required": True,
+        "remote_reconcile_code": "content_contract_remote_reconcile_required",
+    }
+    case = ensure_remote_reconcile_case(session, action, attempt)
+    action.result = {
+        **dict(action.result or {}),
+        "remote_reconcile_case_id": case.id,
+    }
+    case.expected_action_state_hash = remote_reconcile_action_state_hash(action)
 
 
 def _sync_search_click_target_progress(session: Session, action: Action) -> None:
@@ -491,6 +544,11 @@ def _sync_search_click_target_progress(session: Session, action: Action) -> None
     task = session.get(Task, action.task_id)
     if task is not None:
         reconcile_search_click_target_progress(session, task)
+
+
+def project_dispatch_action_stats(session: Session, action: Action) -> None:
+    """Replayable transaction-C projection; never owns business truth."""
+    _sync_search_click_target_progress(session, action)
 
 
 def _sync_comment_fulfillment_state(
@@ -551,6 +609,11 @@ def _sync_channel_fulfillment_state(
     obligation = session.get(model, str(payload.get(payload_key) or ""))
     if obligation is None or obligation.current_action_id != action.id:
         return
+    if action.status == "success":
+        if _confirm_channel_remote_fact(session, action):
+            return
+        obligation.status = "unknown"
+        return
     if action.status == "unknown_after_send":
         obligation.status = "unknown"
     if (
@@ -559,6 +622,42 @@ def _sync_channel_fulfillment_state(
     ):
         obligation.status = "open"
         obligation.current_action_id = None
+
+
+def _confirm_channel_remote_fact(session: Session, action: Action) -> bool:
+    attempt = _latest_execution_attempt(session, action.id)
+    result = action.result if isinstance(action.result, dict) else {}
+    remote_fact_id = str(
+        result.get("remote_fact_id")
+        or ((attempt.result_snapshot or {}).get("remote_fact_id") if attempt else "")
+        or ""
+    )
+    if attempt is None or attempt.status != "success" or not remote_fact_id:
+        return False
+    payload = validate_action_payload(action.action_type, action.payload or {})
+    if str(payload.message_id) != remote_fact_id:
+        raise RuntimeError("channel_remote_fact_identity_mismatch")
+    confirmed_at = attempt.after_call_at or action.executed_at or _now()
+    if isinstance(payload, LikeMessagePayload):
+        confirm_reaction_action(
+            session,
+            payload.reaction_fulfillment_obligation_id,
+            action.id,
+            target_peer_id=payload.channel_id,
+            reaction_emoji=payload.reaction_emoji,
+            confirmed_at=confirmed_at,
+        )
+        return True
+    if isinstance(payload, ViewMessagePayload):
+        confirm_view_action(
+            session,
+            payload.view_fulfillment_obligation_id,
+            action.id,
+            target_peer_id=payload.channel_id,
+            confirmed_at=confirmed_at,
+        )
+        return True
+    return False
 
 
 def _record_fulfillment_takeover_blocker(
@@ -940,10 +1039,10 @@ def mark_dispatcher_db_error(session: Session, action_id: str, detail: str) -> b
         return False
     if _latest_open_gateway_attempt(session, action):
         _mark_unknown_after_send(session, action, detail)
-        release_dispatch_claim(session, action)
+        _finalize_dispatch_action(session, action)
         return True
     _release_dispatcher_db_error(action, detail)
-    release_dispatch_claim(session, action)
+    _finalize_dispatch_action(session, action)
     return True
 
 
@@ -1177,8 +1276,11 @@ def _claim_base_filters(
         Task.status == "running",
         Task.deleted_at.is_(None),
     ]
-    if not allow_inline_ai_generation:
-        filters.append(_ai_send_content_is_ready())
+    filters.append(
+        _ai_legacy_scope_is_ready()
+        if allow_inline_ai_generation
+        else _ai_send_content_is_ready()
+    )
     if exclude_task_ids:
         filters.append(Action.task_id.not_in(exclude_task_ids))
     if _legacy_review_enabled():
@@ -1188,6 +1290,24 @@ def _claim_base_filters(
 
 
 def _ai_send_content_is_ready():
+    return and_(
+        _ai_legacy_scope_is_ready(),
+        _ai_send_generation_is_ready(),
+    )
+
+
+def _ai_legacy_scope_is_ready():
+    contract_version = Action.payload[
+        "content_scope_contract_version"
+    ].as_string()
+    return or_(
+        Action.task_type != "group_ai_chat",
+        Action.action_type != "send_message",
+        func.coalesce(contract_version, "") == "group_content_scope_v1",
+    )
+
+
+def _ai_send_generation_is_ready():
     message_text = Action.payload["message_text"].as_string()
     generation_status = Action.payload["ai_generation_status"].as_string()
     return or_(
@@ -2650,6 +2770,9 @@ def _dispatch_target_send_message(
         result.failure_type or "",
         result.detail or "",
         attempt=attempt,
+        remote_mutation_started=getattr(
+            result, "remote_mutation_started", None,
+        ),
     )
     return True
 
@@ -3069,6 +3192,9 @@ def _finalize_group_send(
         result.failure_type or "",
         result.detail or "",
         attempt=attempt,
+        remote_mutation_started=getattr(
+            result, "remote_mutation_started", None,
+        ),
     )
     if not result.ok:
         _settle_failed_group_send_slot(session, action, context.group.id, result.failure_type or "", result.detail or "")
@@ -3454,7 +3580,17 @@ def _dispatch_delete_message(session: Session, action: Action, account: TgAccoun
         account.session_ciphertext,
         credentials,
     )
-    _apply_operation_result(action, account, result.ok, result.failure_type, result.detail, attempt=attempt)
+    _apply_operation_result(
+        action,
+        account,
+        result.ok,
+        result.failure_type,
+        result.detail,
+        attempt=attempt,
+        remote_mutation_started=getattr(
+            result, "remote_mutation_started", None,
+        ),
+    )
     return True
 
 
@@ -3556,7 +3692,17 @@ def _mark_rescued_group_account_joined(session: Session, action: Action, payload
 
 
 def _apply_rescue_invite_result(action: Action, account: TgAccount, result: OperationResult, *, attempt: ExecutionAttempt | None) -> None:
-    _apply_operation_result(action, account, result.ok, result.failure_type, result.detail, attempt=attempt)
+    _apply_operation_result(
+        action,
+        account,
+        result.ok,
+        result.failure_type,
+        result.detail,
+        attempt=attempt,
+        remote_mutation_started=getattr(
+            result, "remote_mutation_started", None,
+        ),
+    )
     _record_group_rescue_admin_rate_limit(action, result)
     status = "invite_success" if result.ok else "invite_failed"
     action.result = {**(action.result or {}), "rescue_status": status, "rescue_detail": result.detail or result.failure_type}
@@ -5402,7 +5548,18 @@ def _dispatch_view(action: Action, account: TgAccount, credentials, session: Ses
             target_peer_id=channel_peer,
             confirmed_at=_now(),
         )
-    _apply_operation_result(action, account, result.ok, result.failure_type, result.detail, attempt=attempt)
+    _apply_operation_result(
+        action,
+        account,
+        result.ok,
+        result.failure_type,
+        result.detail,
+        attempt=attempt,
+        remote_fact_id=str(message_id) if result.ok else "",
+        remote_mutation_started=getattr(
+            result, "remote_mutation_started", None,
+        ),
+    )
     return True
 
 
@@ -5435,7 +5592,18 @@ def _dispatch_like(action: Action, account: TgAccount, credentials, session: Ses
             reaction_emoji=reaction,
             confirmed_at=_now(),
         )
-    _apply_operation_result(action, account, result.ok, result.failure_type, result.detail, attempt=attempt)
+    _apply_operation_result(
+        action,
+        account,
+        result.ok,
+        result.failure_type,
+        result.detail,
+        attempt=attempt,
+        remote_fact_id=str(message_id) if result.ok else "",
+        remote_mutation_started=getattr(
+            result, "remote_mutation_started", None,
+        ),
+    )
     return True
 
 
@@ -5522,7 +5690,18 @@ def _dispatch_comment(
     if attempt is None:
         return True
     result = gateway.reply_channel_message(account_id, channel_peer, message_id, content, session_ciphertext, context.credentials, reply_to_message_id=payload.reply_to_message_id)
-    _apply_send_result(action, account, result.ok, result.remote_message_id or "", result.failure_type or "", result.detail or "", attempt=attempt)
+    _apply_send_result(
+        action,
+        account,
+        result.ok,
+        result.remote_message_id or "",
+        result.failure_type or "",
+        result.detail or "",
+        attempt=attempt,
+        remote_mutation_started=getattr(
+            result, "remote_mutation_started", None,
+        ),
+    )
     return True
 
 
@@ -5796,8 +5975,28 @@ def _channel_membership_payload(channel: OperationTarget, *, require_send: bool)
     )
 
 
-def _apply_operation_result(action: Action, account: TgAccount, ok: bool, failure_type: str = "", detail: str = "", *, attempt: ExecutionAttempt | None = None) -> None:
-    _apply_send_result(action, account, ok, "", failure_type, detail, attempt=attempt)
+def _apply_operation_result(
+    action: Action,
+    account: TgAccount,
+    ok: bool,
+    failure_type: str = "",
+    detail: str = "",
+    *,
+    attempt: ExecutionAttempt | None = None,
+    remote_fact_id: str = "",
+    remote_mutation_started: bool | None = None,
+) -> None:
+    _apply_send_result(
+        action,
+        account,
+        ok,
+        "",
+        failure_type,
+        detail,
+        attempt=attempt,
+        remote_fact_id=remote_fact_id,
+        remote_mutation_started=remote_mutation_started,
+    )
 
 
 def _classify_membership_failure(failure_type: str, detail: str) -> str:
@@ -5806,7 +6005,7 @@ def _classify_membership_failure(failure_type: str, detail: str) -> str:
     return failure_type
 
 
-def _apply_send_result(action: Action, account: TgAccount, ok: bool, remote_id: str = "", failure_type: str = "", detail: str = "", *, attempt: ExecutionAttempt | None = None) -> None:
+def _apply_send_result(action: Action, account: TgAccount, ok: bool, remote_id: str = "", failure_type: str = "", detail: str = "", *, attempt: ExecutionAttempt | None = None, remote_fact_id: str = "", remote_mutation_started: bool | None = None) -> None:
     if ok:
         action.status = "success"
         result = {
@@ -5841,8 +6040,21 @@ def _apply_send_result(action: Action, account: TgAccount, ok: bool, remote_id: 
         if action.status == "failed":
             _apply_default_failure_policy(action, failure_type or FailureType.UNKNOWN.value)
     action.executed_at = None if action.status == "pending" else _now()
+    if remote_fact_id:
+        action.result = {
+            **dict(action.result or {}),
+            "remote_fact_id": remote_fact_id,
+        }
     _update_reply_result_stats(action, ok, failure_type or "")
-    _finish_execution_attempt(attempt, action, remote_id=remote_id, failure_type=failure_type or "", detail=detail or "")
+    _finish_execution_attempt(
+        attempt,
+        action,
+        remote_id=remote_id,
+        failure_type=failure_type or "",
+        detail=detail or "",
+        remote_fact_id=remote_fact_id,
+        remote_mutation_started=remote_mutation_started,
+    )
     if not ok:
         _maybe_auto_mark_target_ref_invalid(action, account, detail or failure_type, attempt)
     if ok:
@@ -7172,7 +7384,6 @@ def _mark_unknown_after_send(session: Session, action: Action, detail: str) -> N
 def _mark_group_ai_unknown_side_effects(session: Session, action: Action) -> None:
     if action.task_type != "group_ai_chat" or action.action_type != "send_message":
         return
-    account = session.get(TgAccount, action.account_id) if action.account_id else None
     try:
         payload = validate_action_payload(action.action_type, action.payload or {})
     except (ValidationError, ValueError) as exc:
@@ -7186,8 +7397,6 @@ def _mark_group_ai_unknown_side_effects(session: Session, action: Action) -> Non
         sent_at=_now(),
         result=dict(action.result or {}),
     )
-    if account:
-        _update_group_ai_stance_memory(session, action, account, payload, action.id)
 
 
 def _fail_with_policy(action: Action, failure_type: str, detail: str, *, auto_check: str = "失败", validation_stage: str = "") -> None:
@@ -7906,6 +8115,8 @@ def _dispatch_group_bot_required_channel_follow(
             channel_ref=channel_ref,
         )
         return True
+    attempt = _begin_execution_attempt(session, action, account)
+    _mark_gateway_call_started(session, attempt)
     result = gateway.follow_group_bot_required_channel(
         account.id,
         channel_ref,
@@ -7920,6 +8131,7 @@ def _dispatch_group_bot_required_channel_follow(
         admission=admission,
         channel_ref=channel_ref,
         result=result,
+        attempt=attempt,
     )
     return True
 
@@ -7967,18 +8179,61 @@ def _finish_group_bot_required_channel_follow(
     admission,
     channel_ref: str,
     result,
+    attempt: ExecutionAttempt,
 ) -> None:
-    from app.services.task_center.group_bot_admission import mark_channel_follow_completed
-
     if not result.ok:
-        _group_bot_follow_failure(
-            action,
-            code="required_channel_follow_failed",
-            detail=result.detail or "required channel follow failed",
-            channel_ref=channel_ref,
-            failure_type=result.failure_type or FailureType.PEER_INVALID.value,
+        _finish_failed_group_bot_channel_follow(
+            action, account, channel_ref=channel_ref, result=result, attempt=attempt,
         )
         return
+    _finish_successful_group_bot_channel_follow(
+        session,
+        action,
+        account,
+        admission=admission,
+        channel_ref=channel_ref,
+        result=result,
+        attempt=attempt,
+    )
+
+
+def _finish_failed_group_bot_channel_follow(
+    action: Action,
+    account: TgAccount,
+    *,
+    channel_ref: str,
+    result,
+    attempt: ExecutionAttempt,
+) -> None:
+    _apply_operation_result(
+        action,
+        account,
+        False,
+        result.failure_type or FailureType.PEER_INVALID.value,
+        result.detail or "required channel follow failed",
+        attempt=attempt,
+        remote_mutation_started=_operation_mutation_state(result),
+    )
+    action.result = {
+        **dict(action.result or {}),
+        "error_code": "required_channel_follow_failed",
+        "channel_ref": channel_ref,
+    }
+
+
+def _finish_successful_group_bot_channel_follow(
+    session: Session,
+    action: Action,
+    account: TgAccount,
+    *,
+    admission,
+    channel_ref: str,
+    result,
+    attempt: ExecutionAttempt,
+) -> None:
+    from app.services.task_center.group_bot_admission import mark_channel_follow_completed
+    from .remote_reconciliation import typed_remote_fact_id
+
     mark_channel_follow_completed(
         session,
         admission=admission,
@@ -7987,7 +8242,21 @@ def _finish_group_bot_required_channel_follow(
         resolved_type="broadcast",
         action_id=str(action.id),
     )
-    _apply_operation_result(action, account, True, "", result.detail or "required_channel_followed")
+    remote_fact_id = typed_remote_fact_id(
+        action,
+        attempt,
+        "group_bot_channel_follow",
+    )
+    _apply_operation_result(
+        action,
+        account,
+        True,
+        "",
+        result.detail or "required_channel_followed",
+        attempt=attempt,
+        remote_fact_id=remote_fact_id,
+        remote_mutation_started=_operation_mutation_state(result),
+    )
     action.result = {
         **(action.result or {}),
         "success": True,
@@ -8090,6 +8359,8 @@ def _click_refreshed_group_bot_confirmation(
     if not _persisted_confirmation_button_matches(session, group.id, payload):
         _fail(action, FailureType.PEER_INVALID.value, "group_bot_confirmation_button_mismatch")
         return
+    attempt = _begin_execution_attempt(session, action, account)
+    _mark_gateway_call_started(session, attempt)
     result = gateway.click_group_bot_confirmation_button(
         account.id,
         group.tg_peer_id,
@@ -8108,8 +8379,21 @@ def _click_refreshed_group_bot_confirmation(
             payload=payload,
             detail="实时确认按钮在 Telegram 侧已变化，未执行旧 callback",
         )
+        _finish_execution_attempt(
+            attempt,
+            action,
+            failure_type=result.failure_type or FailureType.PEER_INVALID.value,
+            detail=result.detail or "group_bot_confirmation_button_mismatch",
+            remote_mutation_started=_operation_mutation_state(result),
+        )
         return
-    _finish_group_bot_confirmation_button(action, account, admission=admission, result=result)
+    _finish_group_bot_confirmation_button(
+        action,
+        account,
+        admission=admission,
+        result=result,
+        attempt=attempt,
+    )
 
 
 def _defer_group_bot_confirmation_source(action: Action, code: str, detail: str) -> None:
@@ -8215,18 +8499,56 @@ def _persisted_confirmation_button_matches(session: Session, group_id: int, payl
     )
 
 
-def _finish_group_bot_confirmation_button(action: Action, account: TgAccount, *, admission, result) -> None:
+def _finish_group_bot_confirmation_button(
+    action: Action,
+    account: TgAccount,
+    *,
+    admission,
+    result,
+    attempt: ExecutionAttempt,
+) -> None:
+    from .remote_reconciliation import typed_remote_fact_id
+
     if not result.ok:
-        _apply_operation_result(action, account, False, result.failure_type or FailureType.UNKNOWN.value, result.detail)
+        _apply_operation_result(
+            action,
+            account,
+            False,
+            result.failure_type or FailureType.UNKNOWN.value,
+            result.detail,
+            attempt=attempt,
+            remote_mutation_started=_operation_mutation_state(result),
+        )
         action.result = {**(action.result or {}), "error_code": "group_bot_confirmation_button_failed"}
         return
-    _apply_operation_result(action, account, True, "", result.detail or "group_bot_confirmation_button_clicked")
+    remote_fact_id = typed_remote_fact_id(
+        action,
+        attempt,
+        "group_bot_confirmation_button",
+    )
+    _apply_operation_result(
+        action,
+        account,
+        True,
+        "",
+        result.detail or "group_bot_confirmation_button_clicked",
+        attempt=attempt,
+        remote_fact_id=remote_fact_id,
+        remote_mutation_started=_operation_mutation_state(result),
+    )
     action.result = {
         **(action.result or {}),
         "group_bot_admission_id": admission.id,
         "group_bot_admission_state": admission.state,
         "confirmation_click": "accepted_waiting_bot_confirmation",
     }
+
+
+def _operation_mutation_state(result) -> bool | None:
+    observed = getattr(result, "remote_mutation_started", None)
+    if observed is not None:
+        return bool(observed)
+    return True if bool(getattr(result, "ok", False)) else None
 
 
 def _maybe_hold_pending_visibility(
@@ -8517,6 +8839,9 @@ def _begin_execution_attempt(session: Session, action: Action, account: TgAccoun
     )
     session.add(attempt)
     session.flush()
+    from .gateway_evidence_journal import bind_gateway_request_identity
+
+    bind_gateway_request_identity(action, attempt)
     return attempt
 
 
@@ -8586,6 +8911,7 @@ def _finish_search_join_attempt(attempt: ExecutionAttempt, action: Action, resul
         remote_id=str(result.get("remote_message_id") or result.get("telegram_msg_id") or ""),
         failure_type=str(result.get("error_code") or ""),
         detail=str(result.get("error_message") or result.get("detail") or ""),
+        remote_mutation_started=result.get("remote_mutation_started"),
     )
 
 
@@ -8638,7 +8964,16 @@ def _latest_open_gateway_attempt(session: Session, action: Action) -> ExecutionA
     )
 
 
-def _finish_execution_attempt(attempt: ExecutionAttempt | None, action: Action, *, remote_id: str = "", failure_type: str = "", detail: str = "") -> None:
+def _finish_execution_attempt(
+    attempt: ExecutionAttempt | None,
+    action: Action,
+    *,
+    remote_id: str = "",
+    remote_fact_id: str = "",
+    failure_type: str = "",
+    detail: str = "",
+    remote_mutation_started: bool | None = None,
+) -> None:
     if not attempt:
         return
     attempt.after_call_at = _now()
@@ -8647,6 +8982,27 @@ def _finish_execution_attempt(attempt: ExecutionAttempt | None, action: Action, 
     attempt.failure_detail = detail or ""
     attempt.status = "success" if action.status == "success" else "failed" if action.status in {"failed", "retryable_failed"} else "result_unknown" if action.status == "unknown_after_send" else action.status
     attempt.result_snapshot = dict(action.result or {})
+    if remote_fact_id:
+        attempt.result_snapshot = {
+            **attempt.result_snapshot,
+            "remote_fact_id": remote_fact_id,
+        }
+    if attempt.gateway_call_started_at is not None:
+        from .gateway_evidence_journal import (
+            GatewayResultEvidence,
+            persist_gateway_result_evidence,
+        )
+
+        persist_gateway_result_evidence(
+            action,
+            attempt,
+            GatewayResultEvidence(
+                remote_message_id=remote_id,
+                remote_fact_id=remote_fact_id,
+                failure_code=failure_type,
+                remote_mutation_started=remote_mutation_started,
+            ),
+        )
 
 
 def _apply_default_failure_policy(action: Action, failure_type: str) -> None:
@@ -8860,6 +9216,11 @@ def _sync_action_content_mix_state(session: Session, action: Action) -> None:
         return
     if action.status in {"failed", "skipped", "retryable_failed"}:
         cycle_slot.terminal_reason = _action_terminal_reason(action)
+        if _remote_absence_replan_required(action):
+            cycle_slot.current_action_id = None
+            cycle_slot.slot_state = "replan_required"
+            quantity_slot.state = "open"
+            return
         if (
             _action_gateway_started(session, action)
             or _terminal_pre_gateway_content_mix_failure(action)
@@ -8871,6 +9232,69 @@ def _sync_action_content_mix_state(session: Session, action: Action) -> None:
             return
         cycle_slot.slot_state = "replan_required"
         quantity_slot.state = "open"
+
+
+def _remote_absence_replan_required(action: Action) -> bool:
+    result = action.result if isinstance(action.result, dict) else {}
+    return str(result.get("remote_reconcile_result") or "") == (
+        "remote_absence_proven"
+    )
+
+
+def _sync_remote_reconciled_group_ai_state(
+    session: Session,
+    action: Action,
+) -> None:
+    if action.task_type != "group_ai_chat" or action.action_type != "send_message":
+        return
+    result = action.result if isinstance(action.result, dict) else {}
+    reconcile_result = str(result.get("remote_reconcile_result") or "")
+    if reconcile_result not in {"remote_confirmed", "remote_absence_proven"}:
+        return
+    payload = validate_action_payload(action.action_type, action.payload or {})
+    if not isinstance(payload, SendMessagePayload):
+        raise RuntimeError("remote_reconcile_group_ai_payload_invalid")
+    status = "success" if reconcile_result == "remote_confirmed" else "failed"
+    _mark_ai_message_memory_result(
+        session,
+        payload,
+        status=status,
+        action_id=action.id,
+        sent_at=action.executed_at if status == "success" else None,
+        result=result,
+    )
+    if reconcile_result == "remote_confirmed":
+        _sync_remote_confirmed_group_stance(session, action, payload)
+        return
+    _invalidate_remote_absent_group_stance(session, action, payload)
+
+
+def _sync_remote_confirmed_group_stance(
+    session: Session,
+    action: Action,
+    payload: SendMessagePayload,
+) -> None:
+    account = session.get(TgAccount, action.account_id) if action.account_id else None
+    remote_id = str((action.result or {}).get("remote_message_id") or "")
+    if account is None or not remote_id:
+        raise RuntimeError("remote_reconcile_group_ai_fact_incomplete")
+    _update_group_ai_stance_memory(session, action, account, payload, remote_id)
+
+
+def _invalidate_remote_absent_group_stance(
+    session: Session,
+    action: Action,
+    payload: SendMessagePayload,
+) -> None:
+    if action.account_id is None or payload.group_id is None:
+        return
+    invalidate_unknown_group_stance_memory(
+        session,
+        tenant_id=action.tenant_id,
+        group_id=int(payload.group_id),
+        account_id=action.account_id,
+        action_id=action.id,
+    )
 
 
 def _terminal_pre_gateway_content_mix_failure(action: Action) -> bool:

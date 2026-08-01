@@ -151,16 +151,16 @@ class TelegramGateway:
             payload_parts.extend([segment.content, segment.caption, segment.source or ""])
         payload_text = "\n".join(piece for piece in payload_parts if piece)
         if "违规" in payload_text or "spam" in payload_text.lower():
-            return SendResult(False, failure_type=FailureType.CONTENT_REJECTED.value, detail="内容命中禁用词")
+            return SendResult(False, failure_type=FailureType.CONTENT_REJECTED.value, detail="内容命中禁用词", remote_mutation_started=False)
 
         simulated = choice(["ok", "ok", "ok", "slowmode", "limited", "flood"])
         if simulated == "flood":
-            return SendResult(False, failure_type=FailureType.FLOOD_WAIT.value, detail="账号触发 FloodWait，建议 120 秒后重试")
+            return SendResult(False, failure_type=FailureType.FLOOD_WAIT.value, detail="账号触发 FloodWait，建议 120 秒后重试", remote_mutation_started=False)
         if simulated == "slowmode":
-            return SendResult(False, failure_type=FailureType.SLOWMODE.value, detail="目标群启用慢速模式，建议延迟 60 秒")
+            return SendResult(False, failure_type=FailureType.SLOWMODE.value, detail="目标群启用慢速模式，建议延迟 60 秒", remote_mutation_started=False)
         if simulated == "limited":
-            return SendResult(False, failure_type=FailureType.ACCOUNT_LIMITED.value, detail="账号临时受限，已暂停派单")
-        return SendResult(True, remote_message_id=f"tg-{account_id}-{group_id}-{uuid4().hex[:8]}")
+            return SendResult(False, failure_type=FailureType.ACCOUNT_LIMITED.value, detail="账号临时受限，已暂停派单", remote_mutation_started=False)
+        return SendResult(True, remote_message_id=f"tg-{account_id}-{group_id}-{uuid4().hex[:8]}", remote_mutation_started=True)
 
     def check_account_health(
         self,
@@ -241,7 +241,11 @@ class TelegramGateway:
         session_ciphertext: str | None = None,
         credentials: DeveloperAppCredentials | None = None,
     ) -> OperationResult:
-        return OperationResult(True, detail=f"viewed:{channel_peer_id}:{message_id}:{account_id}")
+        return OperationResult(
+            True,
+            detail=f"viewed:{channel_peer_id}:{message_id}:{account_id}",
+            remote_mutation_started=True,
+        )
 
     def ensure_channel_membership(
         self,
@@ -268,7 +272,20 @@ class TelegramGateway:
         expected = f"https://t.me/{channel_ref.lstrip('@')}"
         if source_channel_url.rstrip("/").lower() != expected.lower():
             return ChannelMembershipResult(False, "失败", FailureType.PEER_INVALID.value, "group_bot_channel_source_mismatch", "failed")
-        return self.ensure_channel_membership(account_id, f"@{channel_ref.lstrip('@')}", session_ciphertext, credentials)
+        result = self.ensure_channel_membership(
+            account_id,
+            f"@{channel_ref.lstrip('@')}",
+            session_ciphertext,
+            credentials,
+        )
+        return ChannelMembershipResult(
+            result.ok,
+            result.status,
+            result.failure_type,
+            result.detail,
+            result.membership_status,
+            remote_mutation_started=True if result.ok else False,
+        )
 
     def click_group_bot_confirmation_button(
         self,
@@ -287,6 +304,7 @@ class TelegramGateway:
             "失败",
             FailureType.UNKNOWN.value,
             "group_bot_confirmation_button requires Telethon production gateway",
+            remote_mutation_started=False,
         )
 
     def probe_message_visible(
@@ -359,8 +377,18 @@ class TelegramGateway:
         credentials: DeveloperAppCredentials | None = None,
     ) -> OperationResult:
         if reaction.lower() in {"blocked", "不可用"}:
-            return OperationResult(False, "失败", FailureType.REACTION_UNAVAILABLE.value, "Reaction不可用")
-        return OperationResult(True, detail=f"reaction:{reaction}:{channel_peer_id}:{message_id}:{account_id}")
+            return OperationResult(
+                False,
+                "失败",
+                FailureType.REACTION_UNAVAILABLE.value,
+                "Reaction不可用",
+                remote_mutation_started=False,
+            )
+        return OperationResult(
+            True,
+            detail=f"reaction:{reaction}:{channel_peer_id}:{message_id}:{account_id}",
+            remote_mutation_started=True,
+        )
 
     def reply_channel_message(
         self,
@@ -374,9 +402,18 @@ class TelegramGateway:
         reply_to_message_id: int | None = None,
     ) -> SendResult:
         if "无评论" in content:
-            return SendResult(False, failure_type=FailureType.COMMENT_UNAVAILABLE.value, detail="频道消息不支持回复")
+            return SendResult(
+                False,
+                failure_type=FailureType.COMMENT_UNAVAILABLE.value,
+                detail="频道消息不支持回复",
+                remote_mutation_started=False,
+            )
         target_id = reply_to_message_id or message_id
-        return SendResult(True, remote_message_id=f"reply-{account_id}-{target_id}-{uuid4().hex[:8]}")
+        return SendResult(
+            True,
+            remote_message_id=f"reply-{account_id}-{target_id}-{uuid4().hex[:8]}",
+            remote_mutation_started=True,
+        )
 
     def probe_target_capabilities(
         self,
@@ -385,8 +422,11 @@ class TelegramGateway:
         target_type: str,
         session_ciphertext: str | None = None,
         credentials: DeveloperAppCredentials | None = None,
+        *,
+        require_send: bool = True,
     ) -> OperationResult:
-        return OperationResult(True, detail=f"{target_type}:{target_peer_id}:可访问")
+        capability = "可发言" if require_send else "已加入可访问"
+        return OperationResult(True, detail=f"{target_type}:{target_peer_id}:{capability}")
 
     def ensure_linked_channel_membership(
         self,

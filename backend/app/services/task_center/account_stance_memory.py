@@ -64,6 +64,36 @@ def upsert_group_stance_memory(
     return row
 
 
+def invalidate_unknown_group_stance_memory(
+    session: Session,
+    *,
+    tenant_id: int,
+    group_id: int,
+    account_id: int,
+    action_id: str,
+) -> bool:
+    row = session.scalar(select(AiAccountGroupStanceMemory).where(
+        AiAccountGroupStanceMemory.tenant_id == tenant_id,
+        AiAccountGroupStanceMemory.group_id == group_id,
+        AiAccountGroupStanceMemory.account_id == account_id,
+    ))
+    if row is None or row.last_message_id != action_id:
+        return False
+    row.topic_direction = ""
+    row.teacher_target = ""
+    row.stance = ""
+    row.last_act_type = ""
+    row.last_semantic_cluster = ""
+    row.last_message_id = ""
+    row.last_spoken_at = None
+    row.window_end_at = _now()
+    row.summary = ""
+    row.updated_at = _now()
+    session.flush()
+    _delete_stance_cache(row)
+    return True
+
+
 def group_stance_summaries(
     session: Session,
     *,
@@ -136,6 +166,26 @@ def _refresh_stance_cache(row: AiAccountGroupStanceMemory) -> None:
         )
 
 
+def _delete_stance_cache(row: AiAccountGroupStanceMemory) -> None:
+    settings = get_settings()
+    if not _redis_enabled(settings):
+        return
+    try:
+        _redis_client(settings.redis_url).delete(
+            _stance_cache_key(row.tenant_id, row.group_id, row.account_id),
+        )
+    except Exception as exc:  # noqa: BLE001 - DB remains the required fact source.
+        logger.warning(
+            "ai_group_stance_cache_delete_failed",
+            extra={
+                "error": str(exc),
+                "tenant_id": row.tenant_id,
+                "group_id": row.group_id,
+                "account_id": row.account_id,
+            },
+        )
+
+
 def _cached_summary(value: object) -> str:
     if not value:
         return ""
@@ -172,4 +222,8 @@ def _stance_cache_key(tenant_id: int, group_id: int, account_id: int) -> str:
     return f"{STANCE_CACHE_PREFIX}:{tenant_id}:{group_id}:{account_id}"
 
 
-__all__ = ["group_stance_summaries", "upsert_group_stance_memory"]
+__all__ = [
+    "group_stance_summaries",
+    "invalidate_unknown_group_stance_memory",
+    "upsert_group_stance_memory",
+]

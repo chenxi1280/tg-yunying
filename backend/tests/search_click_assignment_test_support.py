@@ -182,6 +182,7 @@ def _add_dispatch_rows(session: Session, now_value) -> None:
         bucket_end=now_value + timedelta(minutes=1),
         claim_capacity=1,
         unclaimed_allocated_count=1,
+        effective_unclaimed_count=1,
         allocation_epoch=1,
         allocation_state="ready",
     ))

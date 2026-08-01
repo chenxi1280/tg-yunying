@@ -21,7 +21,14 @@ from .dispatcher_lifecycle import (
 )
 from .models import MessageTask, TaskStatus, WorkerHeartbeat
 from .services._common import _as_utc, _now
-from .services.task_center.heartbeat import record_worker_heartbeat
+from .services.task_center.heartbeat import (
+    record_worker_heartbeat,
+    retire_worker_heartbeat,
+)
+from .services.task_center.dispatch_runtime_control import (
+    dispatch_writer_allowed,
+    record_dispatcher_shard_heartbeat,
+)
 from .services.task_center.account_voice_profile_generation_worker import drain_voice_profile_generation
 from .services.task_center.ai_generation_worker import drain_ai_generation
 from .task_queue import get_task_queue
@@ -92,6 +99,8 @@ def _normalize_role(role: str | None = None) -> str:
 
 def drain_once(limit: int = 100, *, role: str | None = None) -> int:
     selected_role = _normalize_role(role)
+    if not _dispatch_write_allowed(selected_role):
+        return 0
     if selected_role == "planner":
         return drain_task_planner(SessionLocal, limit)
     if selected_role == "dispatcher":
@@ -234,9 +243,55 @@ def _health_process_types(role: str) -> set[str]:
 
 def _record_loop_heartbeat(role: str, limit: int) -> None:
     process_type = "task_center" if role == "all" else role
+    settings = get_settings()
     with SessionLocal() as session:
-        record_worker_heartbeat(session, process_type=process_type, metadata={"limit": limit, "source": "worker_loop"})
+        heartbeat = record_worker_heartbeat(
+            session,
+            process_type=process_type,
+            metadata=_worker_heartbeat_metadata(settings, limit),
+        )
+        if role == "dispatcher":
+            record_dispatcher_shard_heartbeat(
+                session,
+                settings,
+                worker_id=heartbeat.worker_id,
+            )
         session.commit()
+
+
+def _worker_heartbeat_metadata(settings, limit: int) -> dict[str, object]:
+    return {
+        "limit": limit,
+        "source": "worker_loop",
+        "dispatch_contract_version": str(
+            getattr(settings, "dispatch_rebuild_contract_version", "") or ""
+        ),
+    }
+
+
+def _retire_loop_heartbeat(role: str, limit: int) -> None:
+    process_type = "task_center" if role == "all" else role
+    with SessionLocal() as session:
+        retired = retire_worker_heartbeat(
+            session,
+            process_type=process_type,
+            reason="worker_loop_exit",
+        )
+        session.commit()
+    if not retired:
+        logger.warning(
+            "worker heartbeat retirement found no row role=%s limit=%d",
+            role,
+            limit,
+        )
+
+
+def _dispatch_write_allowed(role: str) -> bool:
+    settings = get_settings()
+    if getattr(settings, "app_env", "") != "production":
+        return True
+    with SessionLocal() as session:
+        return dispatch_writer_allowed(session, settings, role=role)
 
 
 def _write_local_healthcheck_heartbeat() -> None:
@@ -298,32 +353,15 @@ def run_worker(
     selected_role = _normalize_role(role)
     lifecycle = dispatcher_lifecycle or _dispatcher_lifecycle(selected_role)
     heartbeat_stop, heartbeat_thread = _start_periodic_heartbeat(selected_role, limit)
-    iterations = 0
     try:
-        while (max_iterations is None or iterations < max_iterations) and not (stop_event and stop_event.is_set()):
-            try:
-                _record_loop_heartbeat(selected_role, limit)
-                _write_local_healthcheck_heartbeat()
-                if lifecycle is not None:
-                    lifecycle.acknowledge_successor()
-                processed = drain_once(limit, role=selected_role)
-                if processed:
-                    logger.info("worker drained role=%s processed=%d", selected_role, processed)
-                if lifecycle is not None:
-                    lifecycle.observe_after_batch()
-                    if lifecycle.state != "active":
-                        break
-            except Exception:
-                logger.error("worker drain failed:\n%s", traceback.format_exc())
-            iterations += 1
-            if max_iterations is not None and iterations >= max_iterations:
-                break
-            wait_seconds = max(0.1, interval_seconds)
-            if stop_event:
-                if stop_event.wait(wait_seconds):
-                    break
-            else:
-                time.sleep(wait_seconds)
+        _run_worker_loop(
+            role=selected_role,
+            limit=limit,
+            interval_seconds=interval_seconds,
+            max_iterations=max_iterations,
+            stop_event=stop_event,
+            lifecycle=lifecycle,
+        )
         if _lifecycle_is_stopping(lifecycle, stop_event):
             heartbeat_stop.set()
             heartbeat_thread.join(timeout=1)
@@ -334,8 +372,93 @@ def run_worker(
             limit,
         )
     finally:
-        heartbeat_stop.set()
-        heartbeat_thread.join(timeout=1)
+        _stop_and_retire_heartbeat(
+            heartbeat_stop,
+            heartbeat_thread,
+            role=selected_role,
+            limit=limit,
+        )
+
+
+def _run_worker_loop(
+    *,
+    role: str,
+    limit: int,
+    interval_seconds: float,
+    max_iterations: int | None,
+    stop_event: threading.Event | None,
+    lifecycle: DispatcherLifecycle | None,
+) -> None:
+    iterations = 0
+    while _worker_loop_active(iterations, max_iterations, stop_event):
+        if not _drain_worker_iteration(role, limit, lifecycle):
+            break
+        iterations += 1
+        if max_iterations is not None and iterations >= max_iterations:
+            break
+        wait_seconds = max(0.1, interval_seconds)
+        if _wait_for_worker_iteration(stop_event, wait_seconds):
+            break
+
+
+def _worker_loop_active(
+    iterations: int,
+    max_iterations: int | None,
+    stop_event: threading.Event | None,
+) -> bool:
+    has_budget = max_iterations is None or iterations < max_iterations
+    return has_budget and not bool(stop_event and stop_event.is_set())
+
+
+def _drain_worker_iteration(
+    role: str,
+    limit: int,
+    lifecycle: DispatcherLifecycle | None,
+) -> bool:
+    try:
+        _record_loop_heartbeat(role, limit)
+        _write_local_healthcheck_heartbeat()
+        if lifecycle is not None:
+            lifecycle.acknowledge_successor()
+        processed = drain_once(limit, role=role)
+        if processed:
+            logger.info("worker drained role=%s processed=%d", role, processed)
+        if lifecycle is None:
+            return True
+        lifecycle.observe_after_batch()
+        return lifecycle.state == "active"
+    except Exception:
+        logger.error("worker drain failed:\n%s", traceback.format_exc())
+        return True
+
+
+def _wait_for_worker_iteration(
+    stop_event: threading.Event | None,
+    wait_seconds: float,
+) -> bool:
+    if stop_event is not None:
+        return stop_event.wait(wait_seconds)
+    time.sleep(wait_seconds)
+    return False
+
+
+def _stop_and_retire_heartbeat(
+    heartbeat_stop: threading.Event,
+    heartbeat_thread: threading.Thread,
+    *,
+    role: str,
+    limit: int,
+) -> None:
+    heartbeat_stop.set()
+    heartbeat_thread.join(timeout=1)
+    try:
+        _retire_loop_heartbeat(role, limit)
+    except Exception:
+        logger.error(
+            "worker heartbeat retirement failed role=%s:\n%s",
+            role,
+            traceback.format_exc(),
+        )
 
 
 def _lifecycle_is_stopping(
@@ -394,12 +517,24 @@ def _record_lifecycle_heartbeat(
     limit: int,
     metadata: dict[str, object],
 ) -> None:
+    settings = get_settings()
     with SessionLocal() as session:
-        record_worker_heartbeat(
+        heartbeat = record_worker_heartbeat(
             session,
             process_type=role,
-            metadata={"limit": limit, **metadata},
+            metadata={
+                **_worker_heartbeat_metadata(settings, limit),
+                **metadata,
+            },
         )
+        if role == "dispatcher":
+            state = "recycling" if metadata.get("state") != "active" else "live"
+            record_dispatcher_shard_heartbeat(
+                session,
+                settings,
+                worker_id=heartbeat.worker_id,
+                state=state,
+            )
         session.commit()
 
 

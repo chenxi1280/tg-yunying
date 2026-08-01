@@ -117,6 +117,24 @@ P1 已实现 Docker 私网单实例 `image-verification-worker`：使用独立 `
 
 Recovery 必须依次提交前序 Action 修复、连续 Task 状态修复，再进入 stale Action claim，确保任一提交都不会同时刷新 dirty Task 与 Action。线上若 `worker drain failed` 同时出现 `UPDATE tasks` / `UPDATE actions ... deadlock detected`，应检查这三个事务边界；不得靠扩大连接池、降低 worker 数量或限制账号总量掩盖。
 
+## 共享调度与 AI 履约恢复发布合同（2026-08-01）
+
+本节对应专项 PRD `shared-dispatch-and-ai-fulfillment-recovery-prd.md` 和 DF-324。生产唯一合同固定为两个 Dispatcher shard、每 shard实际并发13、scope总容量26：`DISPATCHER_CONCURRENCY=20`、默认数据库连接预算`5+10`、`DB_POOL_CONTROL_RESERVE=2`、`DISPATCH_RUNTIME_SHARD_TOTAL=2`、`DISPATCHER_SCOPE_CAPACITY=26`。shard heartbeat超过`DISPATCH_SHARD_STALE_SECONDS=120`后不再取得新份额；禁止跨 shard接管账号。fingerprint schema为`dispatch_topology_v1`，rebuild contract为`dispatch-rebuild-v3`。这些值在`.env.production.example`、`docker-env.sh`和server compose中必须完全一致；遗留共享`.env`中的容量52或`ENABLE_EMBEDDED_WORKER=true`会被Settings与发布入口双重拒绝，不能静默沿用。planner、ai-generation、两个dispatcher和recovery使用compose稳定worker ID；业务drain heartbeat只能合并metadata，不能删除合同版本；新worker退出必须把自身heartbeat显式写为`stopped`。
+
+`deploy/compose-up.sh`是唯一自动发布顺序：
+
+1. Stage A：停止全部旧worker，在stop完成后记录纳秒UTC边界，只启动backend执行0134迁移；先用`python -m scripts.manage_shared_dispatch_contract retire-stopped-writers --actor <actor> --approval-ref <ref> --stopped-before <cutoff>`只退役该边界前仍为active的fenced writer heartbeat并写审计，再用`stage`建立preparing候选。随后启动新worker进入fenced readiness，两个Dispatcher heartbeat都就绪后执行`verify-ready`。不得靠等待120秒自然过期、删除heartbeat或忽略fresh旧writer通过闸门。
+2. Stage B：在全部业务writer仍为零写的前提下执行`reconcile-ledger`，再执行全任务takeover；AI scope必须先`takeover_ai_content_scope preview`取得`batch_id`、`classification_hash`和完整`classification_counts`，apply时原样提交这三项及actor/approval。中途退出后继续同一batch的pending item；出现drift/conflict不得激活。
+3. Stage C：只有整个takeover batch chain completed、账本守恒且无旧writer时，才执行`activate --takeover-head-batch-id <id>`。事务提交后必须立刻执行只读`verify-active`，再次证明active/candidate版本一致、两个shard live、configured/live capacity均为26且账本守恒；只看容器healthy、`status`或`verify-ready`均不构成激活成功。
+
+远端不确定结果使用`python -m scripts.reconcile_remote_delivery preview --case-id <id>`只读取证，默认来源为脱敏Gateway journal；需要Telegram历史时显式增加`--evidence-source telegram-history`。apply必须提交preview返回的完整`evidence_fingerprint`以及actor/approval。journal不保存消息正文、Prompt、peer凭证或授权资料，只保存冻结请求/目标hash、远端mutation边界和类型化fact：send/comment使用新`remote_message_id`，view/reaction没有新消息ID，使用冻结源消息`remote_fact_id`重建唯一`ViewRemoteFact`/`ReactionRemoteFact`；membership权威reprobe按冻结`require_send`确认已加入可访问或可发言并写joined，群管follow/callback重放对应admission事实。存量membership unknown无Attempt时先持久建立read-only recovery Attempt/Case再probe；所有类型完整canonical Action payload均进入request hash，账号、目标、claim、reaction、源消息或准入版本漂移一律conflict。
+
+只有Gateway的权威`remote_mutation_started=false`才能证明远端未发生。Telegram历史没有找到、超时或歧义都只能是inconclusive，禁止自动重发；AI的权威no-mutation会保留旧Attempt审计并原子清空原CycleSlot action、重开quantity slot、释放message memory和失效unknown stance，再由原义务重规划。exact唯一远端fact才允许confirmed并原子同步任务专用账本。
+
+回退边界：Stage A尚未修改业务Action时，可停止候选worker并回到上一不可变release；0134为前向迁移，不能对已迁移数据库执行应用降级或猜测回填。Stage B已提交的takeover item不得反向改写，只能按batch状态断点续跑或由新preview显式supersede。Stage C激活后若Release Gate失败，保持事故状态为`production_blocked`并基于真实账本修复，禁止清库、绕过fence或自动重发unknown。
+
+截至2026-08-01，本合同只有本地候选实现和定向no-PostgreSQL证据；测试PostgreSQL不可连接，PostgreSQL并发/迁移实库证据为blocked。GitHub Actions、生产`verify-active`、30分钟deadlock=0、Telegram canary及完整自然日五类任务E4均未执行，不能标记`qa_pass`、`product_accepted`或`production_fixed`。
+
 ## Nginx
 
 参考配置在 `deploy/nginx/tgyunying.conf.example`。

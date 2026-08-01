@@ -24,7 +24,11 @@ def start_or_join_dispatch_rebuild_wave(
         raise RuntimeError("dispatch_release_window_missing")
     if decrement_unclaimed:
         window.unclaimed_allocated_count -= released_count
-        if window.unclaimed_allocated_count < 0:
+        window.effective_unclaimed_count -= released_count
+        if (
+            window.unclaimed_allocated_count < 0
+            or window.effective_unclaimed_count < 0
+        ):
             raise RuntimeError("dispatch_release_window_unclaimed_negative")
     if is_after_or_equal(now_value, window.bucket_end):
         return None

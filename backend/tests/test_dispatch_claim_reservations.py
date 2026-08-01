@@ -172,6 +172,53 @@ def test_target_admission_backlog_preserves_one_claim_per_ordinary_demand() -> N
     assert sum(grants.values()) == 20
 
 
+def test_huge_search_debt_cannot_starve_mixed_fulfillment_parents() -> None:
+    from app.services.task_center.dispatch_claim_allocation import (
+        DispatchClaimDemand,
+        _allocate_demands,
+    )
+
+    search = [
+        DispatchClaimDemand(
+            tenant_id=1,
+            task_id=f"search-shard-{shard}",
+            allocation_business_task_id="search-task",
+            claim_class="search_join",
+            shard_total=2,
+            shard_index=shard,
+            action_ids=(f"search-{shard}",),
+            required_claims=5_000,
+            is_strict=True,
+            urgency_score=1_000_000,
+        )
+        for shard in range(2)
+    ]
+    ordinary = [
+        DispatchClaimDemand(
+            tenant_id=1,
+            task_id=task_id,
+            claim_class="ordinary",
+            shard_total=2,
+            shard_index=index % 2,
+            action_ids=(f"action-{index}",),
+            required_claims=4,
+            is_strict=False,
+            urgency_score=100 - index,
+        )
+        for index, task_id in enumerate(
+            ("ai-1", "ai-2", "ai-3", "comment", "reaction", "view"),
+        )
+    ]
+    demands = [*search, *ordinary]
+
+    for epoch in range(1, 9):
+        grants = _allocate_demands(demands, available=26, epoch=epoch)
+        search_grants = sum(grants[demand.key] for demand in search)
+        assert sum(grants.values()) == 26
+        assert search_grants < 26
+        assert all(grants[demand.key] >= 1 for demand in ordinary)
+
+
 def test_priority_admission_and_search_membership_share_capacity() -> None:
     from app.services.task_center.dispatch_claim_allocation import _allocate_demands, DispatchClaimDemand
 
@@ -243,6 +290,7 @@ def test_ready_window_keeps_epoch_while_reservations_remain() -> None:
     window = SimpleNamespace(
         allocation_state="ready",
         unclaimed_allocated_count=1,
+        effective_unclaimed_count=1,
         ready_rebuild_snapshot_hash="old-hash",
     )
 
@@ -448,7 +496,11 @@ def test_dispatcher_claim_filters_out_unprepared_ai_generation() -> None:
                 account_id=11,
                 status="pending",
                 scheduled_at=now_value,
-                payload={"message_text": "", "ai_generation_status": "pending"},
+                    payload={
+                        "message_text": "",
+                        "ai_generation_status": "pending",
+                        "content_scope_contract_version": "group_content_scope_v1",
+                    },
             ),
             Action(
                 id="generation-ready",
@@ -459,7 +511,11 @@ def test_dispatcher_claim_filters_out_unprepared_ai_generation() -> None:
                 account_id=12,
                 status="pending",
                 scheduled_at=now_value,
-                payload={"message_text": "已生成", "ai_generation_status": "ready"},
+                    payload={
+                        "message_text": "已生成",
+                        "ai_generation_status": "ready",
+                        "content_scope_contract_version": "group_content_scope_v1",
+                    },
             ),
         ])
         session.flush()
@@ -923,7 +979,11 @@ def _seed_strict_actions(session: Session, now_value) -> None:
                 account_id=12,
                 status="pending",
                 scheduled_at=now_value - timedelta(seconds=1),
-                payload={"message_text": "硬小时动作", "hard_hourly_target": True},
+                payload={
+                    "message_text": "硬小时动作",
+                    "hard_hourly_target": True,
+                    "content_scope_contract_version": "group_content_scope_v1",
+                },
             ),
         ]
     )

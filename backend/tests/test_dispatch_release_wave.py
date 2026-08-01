@@ -17,6 +17,7 @@ def test_expired_aware_window_accepts_naive_business_clock() -> None:
     window = SimpleNamespace(
         bucket_end=(now_value - timedelta(minutes=1)).replace(tzinfo=BEIJING_TZ),
         unclaimed_allocated_count=1,
+        effective_unclaimed_count=1,
         allocation_state="ready",
         allocation_epoch=1,
         rebuild_input_version=0,

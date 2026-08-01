@@ -54,6 +54,7 @@ load_base_env() {
 
 ensure_runtime_env() {
   load_base_env
+  initialize_shared_dispatch_contract_env
 
   local required=(
     TGYUNYING_BACKEND_IMAGE
@@ -76,6 +77,13 @@ ensure_runtime_env() {
 
   if (( ${#missing[@]} > 0 )); then
     echo "Missing runtime env vars: ${missing[*]}" >&2
+    exit 1
+  fi
+
+  validate_shared_dispatch_contract_env
+
+  if is_true "${ENABLE_EMBEDDED_WORKER:-false}"; then
+    echo "ENABLE_EMBEDDED_WORKER must be false in production." >&2
     exit 1
   fi
 
@@ -136,6 +144,33 @@ ensure_runtime_env() {
       IMAGE_VERIFICATION_WORKER_MEMORY_LIMIT \
       IMAGE_VERIFICATION_WORKER_STOP_GRACE_PERIOD
     validate_remote_verification_values
+  fi
+}
+
+initialize_shared_dispatch_contract_env() {
+  export DISPATCHER_SCOPE_CAPACITY="${DISPATCHER_SCOPE_CAPACITY:-26}"
+  export DISPATCH_RUNTIME_SHARD_TOTAL="${DISPATCH_RUNTIME_SHARD_TOTAL:-2}"
+  export DB_POOL_CONTROL_RESERVE="${DB_POOL_CONTROL_RESERVE:-2}"
+  export DISPATCH_SHARD_STALE_SECONDS="${DISPATCH_SHARD_STALE_SECONDS:-120}"
+  export DISPATCH_TOPOLOGY_FINGERPRINT_SCHEMA_VERSION="${DISPATCH_TOPOLOGY_FINGERPRINT_SCHEMA_VERSION:-dispatch_topology_v1}"
+  export DISPATCH_REBUILD_CONTRACT_VERSION="${DISPATCH_REBUILD_CONTRACT_VERSION:-dispatch-rebuild-v3}"
+}
+
+validate_shared_dispatch_contract_env() {
+  if [[ "$DISPATCHER_SCOPE_CAPACITY" != "26" ]]; then
+    echo "DISPATCHER_SCOPE_CAPACITY must equal 26." >&2
+    exit 1
+  fi
+  if [[ "$DISPATCH_RUNTIME_SHARD_TOTAL" != "2" ]]; then
+    echo "DISPATCH_RUNTIME_SHARD_TOTAL must equal 2." >&2
+    exit 1
+  fi
+  require_positive_integer DB_POOL_CONTROL_RESERVE
+  require_positive_integer DISPATCH_SHARD_STALE_SECONDS
+  if [[ -z "$DISPATCH_TOPOLOGY_FINGERPRINT_SCHEMA_VERSION" \
+    || -z "$DISPATCH_REBUILD_CONTRACT_VERSION" ]]; then
+    echo "Shared dispatch fingerprint and contract versions are required." >&2
+    exit 1
   fi
 }
 

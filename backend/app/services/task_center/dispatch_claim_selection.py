@@ -237,7 +237,7 @@ def _bindings_for_actions(
             dispatcher_scope=window.dispatcher_scope,
             shard_total=demand.shard_total,
             shard_index=demand.shard_index,
-            allocation_epoch=window.allocation_epoch,
+            allocation_epoch=reservation.dispatch_allocation_epoch,
             claim_class=demand.claim_class,
             reservation_reason=reservation.reason,
             urgency_score=reservation.urgency_score,

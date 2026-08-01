@@ -9,9 +9,10 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Mapping
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Action
+from app.models import Action, DispatchRuntimeShardState
 
 from .dispatch_claim_allocation import (
     allocate_window,
@@ -20,8 +21,8 @@ from .dispatch_claim_allocation import (
     request_window_rebuild,
 )
 from .dispatch_claim_ledger import (
+    claimable_window_reservations,
     confirm_dispatch_claim as _confirm_dispatch_claim,
-    current_window_allocations,
     dispatcher_claim_capacity,
     dispatcher_scope,
     reconcile_scope_active,
@@ -40,6 +41,12 @@ from .dispatch_claim_reconciliation import (
     reconcile_window_unclaimed,
     sync_window_unclaimed_total,
 )
+from .dispatch_rebuild_snapshot import CONTRACT_VERSION
+from .dispatch_runtime_contract import (
+    build_dispatch_runtime_contract,
+    live_shard_available_capacity,
+    require_active_scope_contract,
+)
 from .dispatch_claim_selection import build_demands, plan_from_reservations, tasks_by_id
 from .dispatch_claim_types import (
     DispatchClaimBinding,
@@ -51,6 +58,8 @@ from .prebound_search_claim import (
     confirm_prebound_search_claim,
     plan_prebound_search_claims,
 )
+
+
 def plan_dispatch_claims(
     session: Session,
     actions: list[Action],
@@ -83,7 +92,7 @@ def plan_dispatch_claims(
         settings=settings,
         now=now,
     )
-    reservations = window_reservations(session, window.id)
+    reservations = claimable_window_reservations(session, window.id)
     allocated = plan_from_reservations(
         tasks,
         demands,
@@ -132,10 +141,20 @@ def _prepare_dispatch_window(
         all_allocations=all_allocations,
         active_actions=active_actions,
         now=now,
+        current_contract_version=str(
+            getattr(settings, "dispatch_rebuild_contract_version", CONTRACT_VERSION)
+            or CONTRACT_VERSION
+        ),
+        runtime_shard_total=int(
+            getattr(
+                settings,
+                "dispatch_runtime_shard_total",
+                getattr(settings, "account_shard_total", 1),
+            )
+            or 1
+        ),
     )
     released_count += scope_release_count
-    if window.unclaimed_allocated_count > 0 and reservations:
-        released_count = 0
     _request_rebuild_if_needed(
         scope=scope,
         window=window,
@@ -145,8 +164,73 @@ def _prepare_dispatch_window(
     )
     sync_window_capacity(window, capacity)
     if window.allocation_state != "ready":
-        allocate_window(session, scope, window, all_allocations, demands)
+        runtime_limits = runtime_allocation_limits(
+            session,
+            scope,
+            all_allocations,
+            settings=settings,
+            now=now,
+        )
+        live_limits, runtime_total = (
+            runtime_limits if runtime_limits is not None else (None, None)
+        )
+        allocate_window(
+            session,
+            scope,
+            window,
+            all_allocations,
+            demands,
+            live_shard_available=live_limits,
+            runtime_shard_total=runtime_total,
+        )
     return scope, window, all_allocations
+
+
+def runtime_allocation_limits(
+    session: Session,
+    scope,
+    allocations,
+    *,
+    settings,
+    now: datetime,
+) -> tuple[dict[int, int], int] | None:
+    if not scope.topology_fingerprint:
+        return None
+    contract = build_dispatch_runtime_contract(settings)
+    require_active_scope_contract(scope, contract)
+    states = session.scalars(select(DispatchRuntimeShardState).where(
+        DispatchRuntimeShardState.dispatcher_scope == scope.dispatcher_scope,
+    ))
+    active, unclaimed = _runtime_shard_occupancy(
+        allocations,
+        contract.runtime_shard_total,
+    )
+    limits = live_shard_available_capacity(
+        states,
+        contract,
+        active_by_shard=active,
+        unclaimed_by_shard=unclaimed,
+        now=now,
+        stale_seconds=int(settings.dispatch_shard_stale_seconds),
+    )
+    return limits, contract.runtime_shard_total
+
+
+def _runtime_shard_occupancy(
+    allocations,
+    runtime_shard_total: int,
+) -> tuple[dict[int, int], dict[int, int]]:
+    active: dict[int, int] = {}
+    unclaimed: dict[int, int] = {}
+    for allocation in allocations:
+        if allocation.account_shard_total != runtime_shard_total:
+            continue
+        index = allocation.account_shard_index
+        active[index] = active.get(index, 0) + int(allocation.active_claim_count)
+        unclaimed[index] = unclaimed.get(index, 0) + int(
+            allocation.unclaimed_allocated_count,
+        )
+    return active, unclaimed
 
 
 def _scope_demands(
@@ -197,25 +281,38 @@ def _reconciled_release_count(
     all_allocations,
     active_actions,
     now: datetime,
+    current_contract_version: str,
+    runtime_shard_total: int,
 ):
     active_release_count = reconcile_window_active(
         window,
         all_allocations,
         active_actions,
     )
-    allocations = current_window_allocations(session, window)
-    reservations = window_reservations(session, window.id)
-    released_count = reconcile_window_unclaimed(
-        session,
-        window,
-        allocations=allocations,
-        reservations=reservations,
-        now=now,
-    )
+    released_count = 0
+    for epoch in sorted({row.dispatch_allocation_epoch for row in all_allocations}):
+        allocations = [
+            row for row in all_allocations
+            if row.dispatch_allocation_epoch == epoch
+        ]
+        reservations = window_reservations(
+            session,
+            window.id,
+            allocation_epoch=epoch,
+        )
+        released_count += reconcile_window_unclaimed(
+            session,
+            window,
+            allocations=allocations,
+            reservations=reservations,
+            now=now,
+            current_contract_version=current_contract_version,
+            runtime_shard_total=runtime_shard_total,
+        )
     sync_window_unclaimed_total(window, all_allocations)
     released_count += active_release_count
     released_count += int(window.pending_rebuild_release_count or 0)
-    return released_count, reservations
+    return released_count, claimable_window_reservations(session, window.id)
 
 
 def _unbound_actions(
@@ -238,7 +335,7 @@ def _input_change_requires_rebuild(
 ) -> bool:
     if window.allocation_state != "ready":
         return False
-    if int(window.unclaimed_allocated_count or 0) > 0:
+    if int(window.effective_unclaimed_count or 0) > 0:
         return False
     return (
         window.ready_rebuild_snapshot_hash != demand_hash

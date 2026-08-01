@@ -201,19 +201,82 @@ publish_frontend_static "$TGYUNYING_FRONTEND_IMAGE"
 
 echo "==> Fencing old workers before migration and contract-version switch"
 compose stop "${WORKER_SERVICES[@]}"
+workers_stopped_before="$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)"
 
 echo "==> Starting backend and applying migrations"
 compose up -d --no-build --remove-orphans "${BACKEND_SERVICES[@]}"
 wait_for_container_ready tgyunying-backend "${TGYUNYING_BACKEND_READY_TIMEOUT_SECONDS:-180}"
 
-echo "==> Taking over active tasks while all workers are fenced"
+release_version="${STATIC_RELEASE_ID:-$(basename "$APP_DIR")}"
+release_actor="${SHARED_DISPATCH_RELEASE_ACTOR:-github-actions-deploy}"
+approval_ref="${SHARED_DISPATCH_APPROVAL_REF:-release:${release_version}}"
+
+echo "==> Retiring heartbeats for compose workers confirmed stopped"
+docker exec -i tgyunying-backend \
+  python -m scripts.manage_shared_dispatch_contract retire-stopped-writers \
+  --actor "$release_actor" \
+  --approval-ref "$approval_ref" \
+  --stopped-before "$workers_stopped_before"
+
+echo "==> Staging shared dispatch candidate contract"
+docker exec -i tgyunying-backend \
+  python -m scripts.manage_shared_dispatch_contract stage \
+  --actor "$release_actor" \
+  --approval-ref "$approval_ref"
+
+echo "==> Starting new workers in fenced readiness"
+compose up -d --no-build --remove-orphans "${WORKER_SERVICES[@]}"
+wait_for_container_ready \
+  tgyunying-worker-dispatcher-1 \
+  "${TGYUNYING_WORKER_READY_TIMEOUT_SECONDS:-180}"
+wait_for_container_ready \
+  tgyunying-worker-dispatcher-2 \
+  "${TGYUNYING_WORKER_READY_TIMEOUT_SECONDS:-180}"
+docker exec -i tgyunying-backend \
+  python -m scripts.manage_shared_dispatch_contract verify-ready
+
+echo "==> Recovering fenced claims and reconciling dispatch ledgers"
+docker exec -i tgyunying-backend \
+  python -m scripts.manage_shared_dispatch_contract reconcile-ledger \
+  --actor "$release_actor" \
+  --approval-ref "$approval_ref"
+
+echo "==> Taking over active tasks while all business writers remain fenced"
 docker exec -i tgyunying-backend \
   python -m scripts.takeover_all_task_fulfillment
 docker exec -i tgyunying-backend \
   python -m scripts.takeover_all_task_fulfillment --apply
 
-echo "==> Starting workers after backend migration is healthy"
-compose up -d --no-build --remove-orphans "${WORKER_SERVICES[@]}"
+echo "==> Previewing and applying AI content scope takeover"
+takeover_preview="$(docker exec -i tgyunying-backend \
+  python -m scripts.takeover_ai_content_scope preview \
+  --actor "$release_actor" \
+  --approval-ref "$approval_ref" \
+  --release-version "$release_version" \
+  --config-version "$DISPATCH_REBUILD_CONTRACT_VERSION")"
+echo "$takeover_preview"
+takeover_fields="$(printf '%s' "$takeover_preview" | docker exec -i tgyunying-backend \
+  python -c 'import json,sys; value=json.load(sys.stdin); print(value["batch_id"], value["classification_hash"], json.dumps(value["classification_counts"], separators=(",", ":")))')"
+read -r takeover_batch_id takeover_hash takeover_counts <<< "$takeover_fields"
+docker exec -i tgyunying-backend \
+  python -m scripts.takeover_ai_content_scope apply \
+  --batch-id "$takeover_batch_id" \
+  --classification-hash "$takeover_hash" \
+  --expected-counts-json "$takeover_counts" \
+  --actor "$release_actor" \
+  --approval-ref "$approval_ref"
+
+echo "==> Activating shared dispatch contract after takeover closure"
+docker exec -i tgyunying-backend \
+  python -m scripts.manage_shared_dispatch_contract activate \
+  --actor "$release_actor" \
+  --approval-ref "$approval_ref" \
+  --takeover-head-batch-id "$takeover_batch_id"
+
+echo "==> Verifying active shared dispatch contract and ledgers"
+docker exec -i tgyunying-backend \
+  python -m scripts.manage_shared_dispatch_contract verify-active
+
 if verification_remote_enabled; then
   wait_for_container_ready \
     tgyunying-image-verification-worker \

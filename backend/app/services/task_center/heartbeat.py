@@ -24,6 +24,9 @@ def worker_identity(process_type: str = "task_center") -> tuple[str, str, int]:
 def record_worker_heartbeat(session: Session, *, process_type: str = "task_center", metadata: dict | None = None) -> WorkerHeartbeat:
     worker_id, hostname, pid = worker_identity(process_type)
     now_value = _now()
+    existing = session.scalar(select(WorkerHeartbeat).where(
+        WorkerHeartbeat.worker_id == worker_id,
+    ))
     values = {
         "id": str(uuid4()),
         "worker_id": worker_id,
@@ -31,7 +34,7 @@ def record_worker_heartbeat(session: Session, *, process_type: str = "task_cente
         "hostname": hostname,
         "pid": pid,
         "status": "active",
-        "heartbeat_metadata": metadata or {},
+        "heartbeat_metadata": _merged_metadata(existing, metadata),
         "started_at": now_value,
         "last_seen_at": now_value,
     }
@@ -40,7 +43,9 @@ def record_worker_heartbeat(session: Session, *, process_type: str = "task_cente
         if heartbeat is None:
             raise RuntimeError(f"worker heartbeat upsert did not create row: {worker_id}")
         return heartbeat
-    heartbeat = session.scalar(select(WorkerHeartbeat).where(WorkerHeartbeat.worker_id == worker_id))
+    heartbeat = existing or session.scalar(select(WorkerHeartbeat).where(
+        WorkerHeartbeat.worker_id == worker_id,
+    ))
     if not heartbeat:
         heartbeat = WorkerHeartbeat(**values)
         session.add(heartbeat)
@@ -49,9 +54,46 @@ def record_worker_heartbeat(session: Session, *, process_type: str = "task_cente
         heartbeat.hostname = hostname
         heartbeat.pid = pid
         heartbeat.status = "active"
-        heartbeat.heartbeat_metadata = metadata or {}
+        heartbeat.heartbeat_metadata = _merged_metadata(heartbeat, metadata)
         heartbeat.last_seen_at = now_value
     return heartbeat
+
+
+def retire_worker_heartbeat(
+    session: Session,
+    *,
+    process_type: str = "task_center",
+    reason: str = "worker_exit",
+) -> bool:
+    worker_id, _, _ = worker_identity(process_type)
+    heartbeat = session.scalar(select(WorkerHeartbeat).where(
+        WorkerHeartbeat.worker_id == worker_id,
+    ))
+    if heartbeat is None:
+        return False
+    stopped_at = _now()
+    heartbeat.status = "stopped"
+    heartbeat.last_seen_at = stopped_at
+    heartbeat.heartbeat_metadata = {
+        **dict(heartbeat.heartbeat_metadata or {}),
+        "stop_reason": reason,
+        "stopped_at": stopped_at.isoformat(),
+    }
+    return True
+
+
+def _merged_metadata(
+    heartbeat: WorkerHeartbeat | None,
+    metadata: dict | None,
+) -> dict:
+    merged = {
+        **(dict(heartbeat.heartbeat_metadata or {}) if heartbeat else {}),
+        **dict(metadata or {}),
+    }
+    merged.pop("stop_reason", None)
+    merged.pop("stopped_at", None)
+    merged.pop("retired_by", None)
+    return merged
 
 
 def _upsert_worker_heartbeat(session: Session, values: dict) -> bool:
@@ -75,4 +117,8 @@ def _upsert_worker_heartbeat(session: Session, values: dict) -> bool:
     return True
 
 
-__all__ = ["record_worker_heartbeat", "worker_identity"]
+__all__ = [
+    "record_worker_heartbeat",
+    "retire_worker_heartbeat",
+    "worker_identity",
+]
