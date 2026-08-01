@@ -29,7 +29,10 @@ def _task_ids() -> list[str]:
 
 
 def _snapshot(session, action: Action) -> dict:
-    payload = validate_action_payload(action.action_type, action.payload or {})
+    payload_data = dict(action.payload or {})
+    diagnostic_status = str(payload_data.get("ai_generation_status") or "")
+    payload_data["ai_generation_status"] = "pending"
+    payload = validate_action_payload(action.action_type, payload_data)
     if not isinstance(payload, SendMessagePayload):
         raise RuntimeError("scope_diagnostic_payload_invalid")
     violation = validate_group_ai_content_scope(
@@ -43,6 +46,8 @@ def _snapshot(session, action: Action) -> dict:
         "task_id": action.task_id,
         "account_id": action.account_id,
         "created_at": action.created_at.isoformat(),
+        "stored_ai_generation_status": diagnostic_status,
+        "diagnostic_ai_generation_status": "pending",
         "violation_field": violation.field if violation else "",
         "violation_detail": violation.detail if violation else "",
         "chat_id": str(payload.chat_id),
