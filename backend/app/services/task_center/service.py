@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session, object_session
 from app.config import get_settings
 from app.integrations.telegram import OperationResult
 from app.models import AccountPool, AccountStatus, Action, AiCoverageVariationIntent, ChannelMessage, ExecutionAttempt, FailureType, MessageFingerprint, OperationIssue, OperationPlanTaskLink, OperationTarget, ReviewQueue, RuleSet, RuleSetVersion, SearchClickOpportunityAssignment, SearchJoinPacingDecision, Task, TaskAccountDailyCoverage, TaskDayLedger, TaskMembershipAdmissionItem, TaskRuntimeSummary, TgAccount, TgGroup, WorkerHeartbeat
+from app.models.shared_dispatch_recovery import AiContentScopeTakeoverItem
 from app.models.search_rank_deboost import AccountGroupProxyBinding, SearchRankDeboostClickReservation, SearchRankDeboostExemptGroup
 from app.search_keywords import normalized_keyword_hash, repair_legacy_keyword_materials
 from app.schemas.task_center import (
@@ -5107,9 +5108,9 @@ def _clear_unfinished_plan(session: Session, task: Task) -> None:
     if pending_action_ids:
         _clear_pending_relay_fingerprints(session, task, pending_actions)
         session.execute(delete(ReviewQueue).where(ReviewQueue.task_id == task.id, ReviewQueue.action_id.in_(pending_action_ids)))
-        attempted_action_ids = set(session.scalars(select(ExecutionAttempt.action_id).where(ExecutionAttempt.action_id.in_(pending_action_ids))))
-        _skip_attempted_pending_actions(session, pending_actions, attempted_action_ids)
-        deletable_action_ids = [action_id for action_id in pending_action_ids if action_id not in attempted_action_ids]
+        preserved_action_ids = _preserved_pending_action_ids(session, pending_action_ids)
+        _skip_preserved_pending_actions(session, pending_actions, preserved_action_ids)
+        deletable_action_ids = [action_id for action_id in pending_action_ids if action_id not in preserved_action_ids]
         if deletable_action_ids:
             _clear_deleted_action_admission_references(session, deletable_action_ids)
             _release_deleted_action_coverage(session, deletable_action_ids)
@@ -5169,10 +5170,22 @@ def _clear_hard_hourly_checkpoint(task: Task) -> None:
     task.stats = stats
 
 
-def _skip_attempted_pending_actions(session: Session, pending_actions: list[Action], attempted_action_ids: set[str]) -> None:
+def _preserved_pending_action_ids(session: Session, action_ids: list[str]) -> set[str]:
+    attempted = set(session.scalars(
+        select(ExecutionAttempt.action_id).where(ExecutionAttempt.action_id.in_(action_ids))
+    ))
+    takeover_audited = set(session.scalars(
+        select(AiContentScopeTakeoverItem.action_id).where(
+            AiContentScopeTakeoverItem.action_id.in_(action_ids)
+        )
+    ))
+    return attempted | takeover_audited
+
+
+def _skip_preserved_pending_actions(session: Session, pending_actions: list[Action], preserved_ids: set[str]) -> None:
     now = _now()
     for action in pending_actions:
-        if action.id not in attempted_action_ids:
+        if action.id not in preserved_ids:
             continue
         action.status = "skipped"
         action.executed_at = now

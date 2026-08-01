@@ -97,7 +97,8 @@
 ### 2.6 2026-08-02 运行中配置重排外键完整性补正
 
 运行中任务修改会影响后续规划的配置时，正式更新链路只允许删除没有任何
-`ExecutionAttempt` 的 pending Action；已有 Attempt 的 Action 必须保留并显式转为 skipped。
+`ExecutionAttempt`、且未被不可丢接管审计引用的 pending Action；已有 Attempt 或
+`AiContentScopeTakeoverItem` 的 Action 必须保留并显式转为 skipped，接管审计不得删除或断链。
 删除候选 Action 前，同一事务必须解除 `TaskMembershipAdmissionItem` 的
 `membership_action_id/test_message_action_id/delete_action_id/rescue_action_id` 可空引用，再按
 既有合同释放 coverage reservation、variation intent、搜索预留和 review queue。解除 Action
@@ -106,8 +107,9 @@ revision 重建后续准入/互动计划。任何外键遗漏必须使整次配�
 配置已保存但旧计划未重排的部分成功。
 
 验收必须覆盖：同一未执行 Action 同时被四个准入动作字段引用时，配置更新后 Action 删除、
-四个字段全部为 null、准入行仍存在；已有 Attempt 的 pending Action 不删除；PostgreSQL
-生产 apply 后配置 revision 增加且 `remaining_mismatch_count=0`。
+四个字段全部为 null、准入行仍存在；已有 Attempt 或 takeover item 的 pending Action 不删除、
+改为 `skipped/plan_superseded` 且审计行保留；PostgreSQL 生产 apply 后配置 revision 增加且
+`remaining_mismatch_count=0`。
 
 ## 3. 产品目标与非目标
 

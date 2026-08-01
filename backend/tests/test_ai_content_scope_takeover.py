@@ -7,10 +7,12 @@ import pytest
 from app.models import (
     Action,
     AiContentScopeTakeoverBatch,
+    AiContentScopeTakeoverItem,
     ContentMixCycleSlot,
     RemoteReconcileCase,
     TaskGroupDailyMessageSlot,
 )
+from app.services.task_center.service import reset_task
 from app.services.task_center import dispatcher
 from app.services.task_center.ai_content_scope_takeover_apply import (
     apply_takeover_chunk,
@@ -28,6 +30,30 @@ from ai_content_scope_takeover_test_support import (
 
 
 pytestmark = pytest.mark.no_postgres
+
+
+def test_reset_preserves_action_referenced_by_takeover_audit() -> None:
+    sessions = _sessions()
+    with sessions() as session:
+        _seed_scope(session)
+        action = _seed_bound_legacy_action(session, "audit-referenced-action")
+        batch = _preview(session)
+        session.flush()
+        item = session.scalar(select(AiContentScopeTakeoverItem).where(
+            AiContentScopeTakeoverItem.batch_id == batch.id,
+            AiContentScopeTakeoverItem.action_id == action.id,
+        ))
+        assert item is not None
+        item_id = item.id
+        session.commit()
+
+        reset_task(session, 1, "task-ai", "tester", reason="配置重排")
+        preserved = session.get(Action, action.id)
+
+        assert preserved is not None
+        assert preserved.status == "skipped"
+        assert preserved.result["error_code"] == "plan_superseded"
+        assert session.get(AiContentScopeTakeoverItem, item_id) is not None
 
 
 def test_takeover_resumes_and_never_mutates_terminal_or_unknown_actions() -> None:
