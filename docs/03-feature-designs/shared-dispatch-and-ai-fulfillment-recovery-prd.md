@@ -360,6 +360,7 @@ Window rebuild 前必须按以下顺序处理旧事实：
 - deadline 到达时 `inconclusive` 计入 unknown/held shortfall并使 E4 未通过；安全防重优先于自动补量，不能为了让任务显示完成而猜测 absence。
 - Gateway 返回后、B1 开始前必须把最小结果证据写入独立 `GatewayRequestEvidenceJournal` 短事务：唯一 request identity、Action/Attempt、账号、目标与请求 payload 的脱敏 fingerprint、`remote_message_id`、明确失败码、`remote_mutation_started=true|false|unknown`和观察时间。journal 不写正文、peer明文或凭证，不改变 Action/业务账本；相同 identity 只能幂等重放完全相同的 evidence，不同 evidence 必须冲突隔离。journal 提交失败必须显式记录，此时 B1仍可按真实 Gateway 结果收口，但若 B1也失败则 case只能 `inconclusive`。仅 journal 明确 `remote_mutation_started=false` 才能支持 absence-proven；普通超时、连接中断或“历史没找到”仍不充分。
 - journal 写入必须读取 B0 已提交的 Attempt 父行及其冻结快照；任何 B1 结果合并都不得先删除冻结键。PostgreSQL 与 SQLite 回归必须分别覆盖“Action result 被 membership 延期结果整体替换”以及“autoflush=false 的 view/reaction 成功收尾”，证明前者仍能写 no-mutation journal、后者不会产生唯一键冲突。
+- 生产核验入口固定为受保护的 `Production Remote Reconcile` GitHub Actions workflow。preview 只读取指定 case 和选定证据源，输出完整 evidence fingerprint；apply 必须再次锁定同一生产 release、case、证据源和 preview fingerprint，并提交 actor 与 approval ref 后调用统一 evidence CAS。worker 不自动消费发送型 journal，workflow 也不得调用任何写 Telegram RPC；journal 已有唯一 remote ID 时只原子回填 Attempt、Action 和类型专用业务事实，重复 apply 必须零写。workflow 缺失、release 漂移、fingerprint 漂移、证据 inconclusive 或 conflict 均阻断，不允许以手工 SQL 或重发替代。
 
 ### 5.7 三个 AI 活群专项恢复
 

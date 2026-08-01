@@ -1089,7 +1089,7 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 | `backend/app/services/task_center/ai_content_scope_takeover.py`、`ai_content_scope_apply.py`、`account_stance_memory.py` | AI存量preview/apply/断点续跑/claim gate；权威no-mutation后原槽和message memory回到replan，unknown不污染stance |
 | `backend/app/services/task_center/heartbeat.py`、`backend/app/worker.py` | heartbeat metadata合并保留合同版本；稳定worker identity；优雅退出精确写stopped并保留历史 |
 | `backend/app/integrations/telegram/gateway.py`、`mock.py` | send/comment/view/reaction/群管mutation显式返回remote mutation边界；membership probe按`require_send`区分已加入可访问与可发言；unknown不伪造absence |
-| `backend/scripts/manage_shared_dispatch_contract.py`、`takeover_ai_content_scope.py`、`reconcile_remote_delivery.py` | Stage A/B/C受控命令、actor/approval/hash确认、`retire-stopped-writers`、只读预览与显式apply |
+| `backend/scripts/manage_shared_dispatch_contract.py`、`takeover_ai_content_scope.py`、`reconcile_remote_delivery.py`、`.github/workflows/production-remote-reconcile.yml` | Stage A/B/C受控命令、actor/approval/hash确认、`retire-stopped-writers`、只读预览与显式apply；生产远端核验由 protected environment 固定 release、case、证据源和 preview fingerprint 后执行，不调用 Telegram 写 RPC |
 | `deploy/compose-up.sh`、`deploy/docker-env.sh`、`docker-compose.server.yml`、`.github/workflows/deploy-production.yml`、`.env.production.example` | compose stop后用纳秒cutoff退役旧heartbeat、稳定worker ID、迁移、候选readiness、takeover、activate、verify-active的唯一发布顺序与26/2/embedded-worker fail-closed配置 |
 | `backend/tests/test_shared_dispatch_*`、`test_dispatch_runtime_*`、`test_dispatch_claim_*`、`test_gateway_evidence_journal*`、`test_remote_*`、`test_ai_content_scope_takeover.py` | 模型/迁移/合同/公平/崩溃恢复/CAS/发布顺序的定向回归入口；PostgreSQL marker仍须在可用测试库执行 |
 
