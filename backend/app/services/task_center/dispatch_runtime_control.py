@@ -134,7 +134,7 @@ def activate_dispatch_runtime_contract(
         validate_dispatch_ledgers_for_activation,
     )
 
-    validate_dispatch_ledgers_for_activation(session, settings)
+    validate_dispatch_ledgers_for_activation(session, settings, now=now)
     scope.active_contract_version = scope.candidate_contract_version
     scope.contract_activation_state = "active"
     scope.version += 1
@@ -171,17 +171,17 @@ def verify_dispatch_runtime_active(
         now=now,
     )
     contract = build_dispatch_runtime_contract(settings)
-    scope = _locked_scope(session, contract.dispatcher_scope, lock=False)
+    scope = _locked_scope(session, contract.dispatcher_scope)
     if scope is None:
         raise DispatchRuntimeContractError(
             "dispatcher_topology_mismatch", "active scope is missing",
         )
     require_active_scope_contract(scope, contract)
-    from .dispatch_activation_ledger import (
-        validate_dispatch_ledgers_for_activation,
+    from .dispatch_runtime_ledger_validation import (
+        validate_dispatch_ledgers_for_runtime,
     )
 
-    validate_dispatch_ledgers_for_activation(session, settings)
+    validate_dispatch_ledgers_for_runtime(session, settings, now=now)
     return {**status, "verification_state": "active_verified"}
 
 

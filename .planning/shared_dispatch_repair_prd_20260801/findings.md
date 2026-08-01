@@ -292,3 +292,10 @@
 - 根因是 `_state_is_live` 把 `_now()` 返回的无时区北京时间墙钟直接绑定为 UTC；例如 `18:39` 与 `18:39+08:00` 被误算相差约8小时，两个真实 live shard 全被判 stale。
 - 修复合同：复用 `datetime_compat.ensure_aware`，无时区值按 `Asia/Shanghai` 解释后统一转 UTC 比较；不调整 heartbeat stale 阈值。
 - 生产同形态红测先得到 `{0: 0, 1: 0}`，实现后转绿；runtime/activation/claim/release/跨epoch/搜索释放定向集合 `55 passed in 4.95s`。
+
+## 2026-08-01 production finding: post-deploy verify rejects valid cross-window claims
+
+- `65085c66`完整发布成功；后继`7851ee80`包含该提交并在release内部`verify-active`于19:16:04通过，两个shard live。
+- 19:16:27工作流再次执行只读`verify-active`，报`dispatch_ledger_invariant_failed:closed_window_active`。两次验证间约23秒，Dispatcher已开始真实claim，60秒Window跨过bucket end但Action尚未完成。
+- 这证明shard预算已不再归零并已出现真实active claim，同时暴露验证合同混用了两个阶段：preparing/fence时closed active必须归零；active运行期真实Action可以合法跨窗在途。
+- 修复不能简单忽略closed Window。运行期验证必须锁Scope阻断并发claim/release，核对Scope active与真实Action数、closed effective为0、Window/Allocation active与Action冻结binding逐层一致；错绑仍fail closed。

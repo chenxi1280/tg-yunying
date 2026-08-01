@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from sqlalchemy import create_engine
@@ -10,8 +10,14 @@ import pytest
 
 from app.database import Base
 from app.models import (
+    Action,
     AiContentScopeTakeoverBatch,
+    DispatchClaimReservation,
+    DispatchClaimShardAllocation,
+    DispatchClaimWindow,
     DispatchRuntimeShardState,
+    Task,
+    Tenant,
     WorkerHeartbeat,
 )
 from app.services.task_center.dispatch_runtime_contract import (
@@ -88,6 +94,38 @@ def test_activation_requires_takeover_and_both_candidate_shards() -> None:
         )
         assert verified["verification_state"] == "active_verified"
         assert verified["scope_capacity"] == 26
+
+
+def test_verify_active_accepts_claim_executing_past_window_end() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    observed_at = datetime(2026, 8, 1, 4, tzinfo=timezone.utc)
+    with Session(engine) as session:
+        settings = _settings(account_shard_index=0)
+        stage_dispatch_runtime_contract(session, settings)
+        completed_batch_id = _takeover_batch(session, "completed")
+        for index in range(2):
+            record_dispatcher_shard_heartbeat(
+                session,
+                _settings(account_shard_index=index),
+                worker_id=f"dispatcher-{index}",
+                now=observed_at,
+            )
+        scope = activate_dispatch_runtime_contract(
+            session,
+            settings,
+            takeover_head_batch_id=completed_batch_id,
+            now=observed_at,
+        )
+        _seed_cross_window_active_claim(session, scope, observed_at)
+
+        verified = verify_dispatch_runtime_active(
+            session,
+            settings,
+            now=observed_at,
+        )
+
+        assert verified["verification_state"] == "active_verified"
 
 
 def test_fresh_old_writer_blocks_activation() -> None:
@@ -232,3 +270,90 @@ def _takeover_batch(session: Session, status: str) -> str:
     session.add(batch)
     session.flush()
     return batch.id
+
+
+def _seed_cross_window_active_claim(
+    session: Session,
+    scope,
+    observed_at: datetime,
+) -> None:
+    session.add(Tenant(id=1, name="tenant"))
+    session.add(Task(
+        id="cross-window-task",
+        tenant_id=1,
+        name="cross-window",
+        type="channel_view",
+        status="running",
+    ))
+    ledger = _cross_window_ledger(scope.dispatcher_scope, observed_at)
+    action = _cross_window_action(scope.dispatcher_scope, ledger)
+    scope.active_claim_count = 1
+    session.add_all([*ledger, action])
+    session.flush()
+
+
+def _cross_window_ledger(
+    dispatcher_scope: str,
+    observed_at: datetime,
+) -> tuple[
+    DispatchClaimWindow,
+    DispatchClaimShardAllocation,
+    DispatchClaimReservation,
+]:
+    window = DispatchClaimWindow(
+        id="cross-window",
+        dispatcher_scope=dispatcher_scope,
+        bucket_start=observed_at - timedelta(seconds=61),
+        bucket_end=observed_at - timedelta(seconds=1),
+        claim_capacity=26,
+        active_claim_count=1,
+    )
+    allocation = DispatchClaimShardAllocation(
+        id="cross-window-allocation",
+        dispatch_claim_window_id=window.id,
+        dispatch_allocation_epoch=1,
+        account_shard_total=2,
+        account_shard_index=0,
+        active_claim_count=1,
+    )
+    reservation = DispatchClaimReservation(
+        id="cross-window-reservation",
+        dispatch_claim_shard_allocation_id=allocation.id,
+        dispatch_allocation_epoch=1,
+        tenant_id=1,
+        task_id="cross-window-task",
+        claim_class="ordinary",
+        bucket_start=window.bucket_start,
+        required_claims=1,
+        reserved_claims=1,
+        claimed_count=1,
+    )
+    return window, allocation, reservation
+
+
+def _cross_window_action(
+    dispatcher_scope: str,
+    ledger: tuple[
+        DispatchClaimWindow,
+        DispatchClaimShardAllocation,
+        DispatchClaimReservation,
+    ],
+) -> Action:
+    window, allocation, reservation = ledger
+    return Action(
+        id="cross-window-action",
+        tenant_id=1,
+        task_id="cross-window-task",
+        task_type="channel_view",
+        action_type="view_message",
+        status="executing",
+        scheduled_at=window.bucket_start,
+        payload={},
+        result={
+            "dispatch_claim_active": True,
+            "dispatch_claim_scope": dispatcher_scope,
+            "dispatch_claim_window_id": window.id,
+            "dispatch_claim_shard_allocation_id": allocation.id,
+            "dispatch_reservation_id": reservation.id,
+        },
+    )

@@ -275,3 +275,13 @@
 - 已先更新专项PRD、主PRD和DF-324；新增生产同形态红测，随后以统一时间兼容helper做最小修复，未扩大stale阈值。
 - 红测已转绿；共享runtime与调度相关定向集合`55 passed in 4.95s`，`git diff --check`和编译通过。
 - 下一门：提交并再次走 master -> release -> Deploy Production，随后验证预算13+13、Reservation/Attempt和真实Telegram事实。
+
+## 2026-08-01 生产 E4 继续修复：post-deploy跨窗active验证
+
+- 时区提交`65085c66`的run`30696275205`完整通过并部署；后继release`7851ee80`确认以该提交为祖先。
+- 后继run内部release verify通过，23秒后的GitHub post-deploy verify因`closed_window_active`失败；这同时给出Dispatcher已恢复真实active claim的生产证据。
+- 已取消注定在同一旧合同上失败的排队诊断run`30696967280`，避免重复部署；未取消他人并行release。
+- 已先补专项PRD、主PRD与DF-324，冻结preparing/fence与active运行期的不同closed Window语义。
+- 跨窗合法、错账失败和顶层`verify-active`生产同形态测试已通过；共享runtime/activation/claim/release/跨epoch/搜索释放集合`57 passed in 5.28s`。
+- 运行期验证已拆入独立模块，Scope锁只存在于post-deploy只读验证，不进入常驻writer gate；激活前零active校验保持不变。
+- 下一门：完整再发布；之后继续取Attempt/远端事实。

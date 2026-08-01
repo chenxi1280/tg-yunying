@@ -4,7 +4,7 @@
 基于 2026-08-01 生产事故事实和已完成专项 PRD，完成共享调度、Gateway原子终结、AI存量接管与远端核验的代码修复、自动化 QA和产品复核；生产发布和E4仍需独立证据。
 
 ## Current Phase
-Phase 18: shard 心跳时区修复与再发布
+Phase 19: post-deploy 跨窗 active claim 验证修复
 
 ## Requirements Checklist
 - [x] Intake Card 与 L3 分级、证据边界
@@ -152,8 +152,18 @@ Phase 18: shard 心跳时区修复与再发布
 - [x] 先回写专项 PRD、主 PRD 与 DF-324 的平台时钟语义
 - [x] 补生产同形态红测，把无时区北京时间与 aware heartbeat 统一后修复
 - [x] 通过 runtime、activation、claim/release、跨 epoch 和搜索释放定向回归
-- [ ] 提交并推送 master/release，等待完整 Actions 和生产部署
-- [ ] 证明 live shard 预算恢复、Reservation/Attempt增长并产生真实远端事实
+- [x] 提交并推送 master/release，等待完整 Actions 和生产部署
+- [x] 证明 live shard 预算恢复并产生真实 active claim
+- [ ] 证明 Attempt增长并产生真实远端事实（被 Phase 19 的 post-deploy 校验误报继续阻断）
+- **Status:** deployed_liveness_fixed_next_blocker_found
+
+### Phase 19: post-deploy 跨窗 active claim 验证修复
+- [x] 从 run `30696937584` 定位 release内部verify通过、20秒后post-deploy verify报`closed_window_active`
+- [x] 区分preparing/fence零active与active合同合法跨窗在途并回写PRD/DF-324
+- [x] 补跨窗合法与错绑失败红测，锁Scope后按Action binding验证运行期投影
+- [x] 通过定向回归
+- [ ] 提交并再次走master/release完整发布
+- [ ] 在线证明post-deploy verify通过、Attempt与真实Telegram事实增长
 - **Status:** in_progress_local_verified
 
 ## Decisions Made
@@ -168,6 +178,7 @@ Phase 18: shard 心跳时区修复与再发布
 | 保留现有全局active plan，不用本专项覆盖 | 工作区还有并行发布计划；本次用显式路径维护共享调度发布证据，避免篡改其他任务状态 |
 | 已结束 Window 的 release 不再扣 effective | effective 已退出当前容量预算；仍扣历史 unclaimed并保留唯一 carrier，避免过期搜索 unit 阻塞整个 Dispatcher drain |
 | naive runtime clock按北京时间绑定 | 项目 `_now()` 返回无时区北京时间墙钟；直接绑定UTC会把真实心跳误判为8小时前，不能靠扩大stale窗口掩盖 |
+| active运行期允许真实跨窗在途 | Window是claim批次边界而非Gateway deadline；仅fence激活要求closed active归零，运行期必须核对Action binding而非无条件拒绝 |
 
 ## Errors Encountered
 | Error | Attempt | Resolution |

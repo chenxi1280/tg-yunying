@@ -25,6 +25,12 @@ from app.services.task_center.dispatch_activation_ledger import (
     reconcile_dispatch_ledgers_for_activation,
     recover_fenced_dispatch_actions,
 )
+from app.services.task_center.dispatch_runtime_contract import (
+    DispatchRuntimeContractError,
+)
+from app.services.task_center.dispatch_runtime_ledger_validation import (
+    validate_dispatch_ledgers_for_runtime,
+)
 from app.services.task_center.dispatch_runtime_control import (
     stage_dispatch_runtime_contract,
 )
@@ -115,6 +121,43 @@ def test_activation_reconcile_does_not_replay_closed_window_history() -> None:
         assert closed_window.active_claim_count == 0
         assert closed_allocation.active_claim_count == 0
         assert closed_reservation.reserved_claims == 7
+
+
+def test_runtime_validation_accepts_claim_executing_past_window_end() -> None:
+    engine = _engine()
+    with Session(engine) as session:
+        _seed_active_claim(session, "cross-window", gateway_started=True)
+        observed_at = _now()
+        window = session.get(DispatchClaimWindow, "window")
+        window.bucket_end = observed_at - timedelta(seconds=1)
+        session.flush()
+
+        validate_dispatch_ledgers_for_runtime(
+            session,
+            _settings(),
+            now=observed_at,
+        )
+
+
+def test_runtime_validation_rejects_unbacked_closed_active_projection() -> None:
+    engine = _engine()
+    with Session(engine) as session:
+        action = _seed_active_claim(session, "drift", gateway_started=False)
+        observed_at = _now()
+        window = session.get(DispatchClaimWindow, "window")
+        window.bucket_end = observed_at - timedelta(seconds=1)
+        action.status = "success"
+        session.flush()
+
+        with pytest.raises(DispatchRuntimeContractError) as caught:
+            validate_dispatch_ledgers_for_runtime(
+                session,
+                _settings(),
+                now=observed_at,
+            )
+
+        assert caught.value.code == "dispatch_ledger_invariant_failed"
+        assert str(caught.value).endswith(":scope_active_projection")
 
 
 def _engine():

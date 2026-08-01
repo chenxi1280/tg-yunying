@@ -158,7 +158,7 @@ def validate_dispatch_ledgers_for_activation(
         DispatchClaimWindow.bucket_end > observed_at,
     )))
     for window in windows:
-        _validate_window(session, window, contract.scope_capacity)
+        validate_live_window_ledger(session, window, contract.scope_capacity)
     if _closed_active_drift_count(
         session,
         contract.dispatcher_scope,
@@ -345,16 +345,18 @@ def _reconcile_window_epochs(
     return released
 
 
-def _validate_window(
+def validate_live_window_ledger(
     session: Session,
     window: DispatchClaimWindow,
     capacity: int,
+    *,
+    allocations: list[DispatchClaimShardAllocation] | None = None,
 ) -> None:
-    allocations = list(session.scalars(select(
-        DispatchClaimShardAllocation,
-    ).where(
-        DispatchClaimShardAllocation.dispatch_claim_window_id == window.id,
-    )))
+    allocations = allocations if allocations is not None else list(session.scalars(
+        select(DispatchClaimShardAllocation).where(
+            DispatchClaimShardAllocation.dispatch_claim_window_id == window.id,
+        ),
+    ))
     allocation_ids = [row.id for row in allocations]
     reservations = list(session.scalars(select(DispatchClaimReservation).where(
         DispatchClaimReservation.dispatch_claim_shard_allocation_id.in_(
@@ -400,4 +402,5 @@ __all__ = [
     "reconcile_dispatch_ledgers_for_activation",
     "recover_fenced_dispatch_actions",
     "validate_dispatch_ledgers_for_activation",
+    "validate_live_window_ledger",
 ]
