@@ -263,3 +263,19 @@ AI 生成运行三个独立容器：`tgyunying-worker-ai-generation`、
 claim 或数据库写入。`release_live_at` 必须显式传入原发布锚点，监控启动时间不得替代发布
 时间。监控失败表示仍有业务 blocker，不授权自动发布或重启；通过仍须同时满足五个 Task
 当前自然日账本的权威远端事实。
+
+### 评论与 AI 活群引用比例线上校正
+
+运行中任务的引用比例校正使用
+`.github/workflows/production-reply-ratio-control.yml`。必须先以 `apply=false` 预检，workflow
+会校验当前 production release SHA 和 backend/dispatcher 健康，再读取运行中评论、AI 活群
+任务的配置、未完成 Action 与最近真实远端成功事实。评论 10% 换算为
+`ceil(target_comments_per_message × 10%)` 的 `reply_min_per_message`，并要求
+`comment_mode=mixed`；AI 活群 20% 换算为 `ceil(messages_per_round × 20%)` 的
+`reply_min_per_round`。不得把百分数 `10`、`20` 直接写入整数下限。
+
+只在预检显示 `needs_change=true` 后以 `apply=true` 写入。写入复用正式任务配置更新路径，
+因此会校验完整类型配置、增加连续性 revision、清除未完成计划并立即重排；不会修改已经
+取得远端结果的 Action。配置复核 `remaining_mismatch_count=0` 只表示设置已生效，业务恢复
+仍必须在变更锚点之后看到 `ExecutionAttempt.status=success`、非空 `remote_message_id`，且
+对应 Action payload 的 `reply_to_message_id` 非空。

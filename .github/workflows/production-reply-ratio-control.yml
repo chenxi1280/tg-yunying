@@ -1,0 +1,134 @@
+name: Production Reply Ratio Control
+
+'on':
+  workflow_dispatch:
+    inputs:
+      deployed_sha:
+        description: Full or short SHA expected in the current production release
+        required: true
+        type: string
+      apply:
+        description: Apply mismatched ratios after printing the before snapshot
+        required: true
+        default: false
+        type: boolean
+      comment_reply_percent:
+        description: Required reply percentage for channel comments
+        required: true
+        default: '10'
+        type: string
+      ai_reply_percent:
+        description: Required reply percentage for AI group chat rounds
+        required: true
+        default: '20'
+        type: string
+      since_epoch:
+        description: Evidence start epoch; zero means the previous 24 hours
+        required: true
+        default: '0'
+        type: string
+
+concurrency:
+  group: production-reply-ratio-control
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  control:
+    runs-on: ubuntu-latest
+    environment: production-silicon-valley
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate inputs and secrets
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SILICON_VALLEY_PRODUCTION_SSH_PRIVATE_KEY }}
+          DEPLOY_HOST: ${{ secrets.SILICON_VALLEY_PRODUCTION_HOST }}
+          DEPLOY_USER: ${{ secrets.SILICON_VALLEY_PRODUCTION_USER }}
+          EXPECTED_DEPLOYED_SHA: ${{ inputs.deployed_sha }}
+          COMMENT_PERCENT: ${{ inputs.comment_reply_percent }}
+          AI_PERCENT: ${{ inputs.ai_reply_percent }}
+          SINCE_EPOCH: ${{ inputs.since_epoch }}
+        run: |
+          set -euo pipefail
+          test -n "${SSH_PRIVATE_KEY}"
+          test -n "${DEPLOY_HOST}"
+          test -n "${DEPLOY_USER}"
+          [[ "${EXPECTED_DEPLOYED_SHA}" =~ ^[0-9a-fA-F]{8,40}$ ]]
+          [[ "${COMMENT_PERCENT}" =~ ^[0-9]{1,3}$ ]] && (( COMMENT_PERCENT <= 100 ))
+          [[ "${AI_PERCENT}" =~ ^[0-9]{1,3}$ ]] && (( AI_PERCENT <= 100 ))
+          [[ "${SINCE_EPOCH}" =~ ^[0-9]{1,12}$ ]]
+
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SILICON_VALLEY_PRODUCTION_SSH_PRIVATE_KEY }}
+          DEPLOY_HOST: ${{ secrets.SILICON_VALLEY_PRODUCTION_HOST }}
+          DEPLOY_USER: ${{ secrets.SILICON_VALLEY_PRODUCTION_USER }}
+          DEPLOY_PORT: ${{ secrets.SILICON_VALLEY_PRODUCTION_PORT }}
+          SSH_CONNECT_TIMEOUT: ${{ vars.SSH_CONNECT_TIMEOUT }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${SSH_PRIVATE_KEY}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          PORT="${DEPLOY_PORT:-22}"
+          CONNECT_TIMEOUT="${SSH_CONNECT_TIMEOUT:-60}"
+          cat > ~/.ssh/config <<EOF
+          Host silicon-valley-production-server
+            HostName ${DEPLOY_HOST}
+            User ${DEPLOY_USER}
+            Port ${PORT}
+            IdentityFile ~/.ssh/id_ed25519
+            IdentitiesOnly yes
+            StrictHostKeyChecking accept-new
+            ConnectTimeout ${CONNECT_TIMEOUT}
+            ConnectionAttempts 3
+            ServerAliveInterval 15
+            ServerAliveCountMax 8
+          EOF
+          chmod 600 ~/.ssh/config
+
+      - name: Verify deployed release and runtime
+        env:
+          PRODUCTION_BASE_DIR: ${{ vars.SILICON_VALLEY_PRODUCTION_BASE_DIR }}
+          EXPECTED_DEPLOYED_SHA: ${{ inputs.deployed_sha }}
+        run: |
+          set -euo pipefail
+          BASE_DIR="${PRODUCTION_BASE_DIR:-/data/tgyunying}"
+          EXPECTED_SHA="${EXPECTED_DEPLOYED_SHA:0:8}"
+          CURRENT_RELEASE="$(ssh silicon-valley-production-server "readlink -f '${BASE_DIR}/current'")"
+          CURRENT_NAME="$(basename "${CURRENT_RELEASE}")"
+          echo "PRODUCTION_REPLY_RATIO_RELEASE=${CURRENT_RELEASE}"
+          case "${CURRENT_NAME}" in
+            *_"${EXPECTED_SHA}") ;;
+            *) echo "deployed release SHA does not match workflow SHA" >&2; exit 1 ;;
+          esac
+          ssh silicon-valley-production-server '
+            set -euo pipefail
+            for name in tgyunying-backend tgyunying-worker-dispatcher-1 tgyunying-worker-dispatcher-2
+            do
+              state="$(docker inspect --format "{{.State.Status}}/{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}" "${name}")"
+              echo "PRODUCTION_REPLY_RATIO_CONTAINER=${name}:${state}"
+              [[ "${state}" == running/healthy ]]
+            done
+          '
+
+      - name: Preview or apply reply ratios
+        env:
+          APPLY: ${{ inputs.apply }}
+          COMMENT_PERCENT: ${{ inputs.comment_reply_percent }}
+          AI_PERCENT: ${{ inputs.ai_reply_percent }}
+          SINCE_EPOCH: ${{ inputs.since_epoch }}
+        run: |
+          set -euo pipefail
+          ssh silicon-valley-production-server "timeout 180 docker exec \
+            -e REPLY_RATIO_APPLY='${APPLY}' \
+            -e REPLY_RATIO_COMMENT_PERCENT='${COMMENT_PERCENT}' \
+            -e REPLY_RATIO_AI_PERCENT='${AI_PERCENT}' \
+            -e REPLY_RATIO_SINCE_EPOCH='${SINCE_EPOCH}' \
+            -i tgyunying-backend python -" \
+            < .github/scripts/reply_ratio_control.py
