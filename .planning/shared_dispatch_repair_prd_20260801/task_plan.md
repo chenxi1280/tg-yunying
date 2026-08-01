@@ -4,7 +4,7 @@
 基于 2026-08-01 生产事故事实和已完成专项 PRD，完成共享调度、Gateway原子终结、AI存量接管与远端核验的代码修复、自动化 QA和产品复核；生产发布和E4仍需独立证据。
 
 ## Current Phase
-Phase 17: 过期搜索 Window 释放阻断修复与再发布
+Phase 18: shard 心跳时区修复与再发布
 
 ## Requirements Checklist
 - [x] Intake Card 与 L3 分级、证据边界
@@ -142,8 +142,18 @@ Phase 17: 过期搜索 Window 释放阻断修复与再发布
 - [x] 先回写专项 PRD、主 PRD 与 DF-324 的过期 Window 计数语义
 - [x] 补低层和 assignment 集成红测，修复 effective 二次扣减
 - [x] 通过搜索释放、跨 epoch、Dispatcher claim 与 Gateway 原子性定向回归
+- [x] 提交并推送 master/release，等待完整 Actions 和生产部署
+- [x] 证明 Dispatcher 不再因过期搜索释放整轮退出
+- [ ] 发布后产生真实 Attempt/远端事实（被 Phase 18 的 shard 心跳时区问题继续阻断）
+- **Status:** deployed_release_blocker_fixed_next_blocker_found
+
+### Phase 18: shard 心跳时区修复与再发布
+- [x] 用生产数据库同进程重算定位 live shard 可用量被误算为零
+- [x] 先回写专项 PRD、主 PRD 与 DF-324 的平台时钟语义
+- [x] 补生产同形态红测，把无时区北京时间与 aware heartbeat 统一后修复
+- [x] 通过 runtime、activation、claim/release、跨 epoch 和搜索释放定向回归
 - [ ] 提交并推送 master/release，等待完整 Actions 和生产部署
-- [ ] 证明 Dispatcher 不再整轮退出且发布后产生真实 Attempt/远端事实
+- [ ] 证明 live shard 预算恢复、Reservation/Attempt增长并产生真实远端事实
 - **Status:** in_progress_local_verified
 
 ## Decisions Made
@@ -157,6 +167,7 @@ Phase 17: 过期搜索 Window 释放阻断修复与再发布
 | membership只保留RemoteReconcileCase作为unknown终结真相源 | 禁止旧reprobe绕过expected hash与evidence CAS |
 | 保留现有全局active plan，不用本专项覆盖 | 工作区还有并行发布计划；本次用显式路径维护共享调度发布证据，避免篡改其他任务状态 |
 | 已结束 Window 的 release 不再扣 effective | effective 已退出当前容量预算；仍扣历史 unclaimed并保留唯一 carrier，避免过期搜索 unit 阻塞整个 Dispatcher drain |
+| naive runtime clock按北京时间绑定 | 项目 `_now()` 返回无时区北京时间墙钟；直接绑定UTC会把真实心跳误判为8小时前，不能靠扩大stale窗口掩盖 |
 
 ## Errors Encountered
 | Error | Attempt | Resolution |

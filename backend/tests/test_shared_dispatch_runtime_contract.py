@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.models import DispatchClaimScope, DispatchRuntimeShardState
+from app.timezone import BEIJING_TZ
 from app.services.task_center.dispatch_runtime_contract import (
     DispatchRuntimeContractError,
     build_dispatch_runtime_contract,
@@ -83,6 +84,24 @@ def test_stale_shard_reduces_live_new_budget_without_cross_shard_takeover() -> N
     )
 
     assert budget == {0: 8, 1: 0}
+
+
+def test_naive_beijing_clock_keeps_recent_aware_shards_live() -> None:
+    contract = build_dispatch_runtime_contract(_settings())
+    observed_at = datetime(2026, 8, 1, 18, 39)
+    heartbeat_at = observed_at.replace(tzinfo=BEIJING_TZ) - timedelta(seconds=30)
+    states = [_state(contract, index, heartbeat_at) for index in range(2)]
+
+    budget = live_shard_available_capacity(
+        states,
+        contract,
+        active_by_shard={0: 0, 1: 0},
+        unclaimed_by_shard={0: 0, 1: 0},
+        now=observed_at,
+        stale_seconds=120,
+    )
+
+    assert budget == {0: 13, 1: 13}
 
 
 def test_allocator_writes_zero_new_reservations_for_unavailable_shard() -> None:

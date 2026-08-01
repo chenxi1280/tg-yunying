@@ -186,6 +186,7 @@ Action 执行与终结
 - 120 秒内的 graceful recycle 只把 shard 标记 `recycling`，不改变 topology/capacity fingerprint，也不把账号重新路由给其他 shard。
 - 超过阈值仍无同配置 heartbeat 时标记 `stale`，禁止给该 shard 创建新普通 Reservation，搜索 solver 也不得选择归属该 shard 的账号 path；受影响任务显示 `dispatcher_shard_unavailable`。
 - 当前 Window 的实际新增预算为所有 live shard 剩余预算之和；单 shard 新 allocation 不得超过该 shard 的 `effective_worker_capacity - active - effective_unclaimed`，因此缺一个 shard 时最多新增 13，而不是继续按 26 过配。
+- shard liveness 的业务当前时间与数据库 `heartbeat_at` 必须先按平台北京时间语义归一后再转 UTC 比较。`_now()` 返回的无时区值是北京时间墙钟，不得直接附加 UTC；否则两个真实 live shard 会被误判为过期并让全部 Reservation 以 `shared_dispatch_capacity_insufficient` 写零。修复不得通过扩大 stale 秒数掩盖时区错误。
 - 同 index、同配置的新 owner 恢复 heartbeat 后，在 `Scope` 行锁内递增 `liveness_version` 并触发一次 Window rebuild；它只能恢复本 shard 的新分配，不能接管其他 shard 的账号或重放已 Gateway-started Action。
 
 ### 5.2 共享容量合同
@@ -517,6 +518,7 @@ Stage B 是前向数据迁移，不执行逆向改写。任何已 applied item�
 | 跨 epoch bound | 有效 search bound unit 继续可由唯一归属 Dispatcher confirm，不被普通 reclaimer 释放 |
 | 守恒竞态 | 双 writer/rebuild/release 下 counter 不负、不超 capacity、不双释放 |
 | 过期 Window 的预绑定释放 | 构造历史 `unclaimed_allocated_count > 0`、`effective_unclaimed_count = 0` 且 assignment 仍为 `action_bound`；精确 release 后历史 unclaimed 减一、effective 保持零、不建 rebuild wave、Action/Reservation/Exclusion 原子收口，Dispatcher 后续仍能领取其他任务 |
+| shard liveness 时间语义 | 以无时区北京时间 `now` 对比 PostgreSQL `+08:00` heartbeat；120秒内两 shard 各保留13容量，超过窗口才归零，禁止把北京时间无时区值解释成UTC |
 | PostgreSQL 锁序 | allocation 与 AI pre-Gateway reject/finalize 并发，30 分钟压力无 deadlock；claim 热事务无 `UPDATE tasks` |
 | 激活历史规模 | 构造大量已结束Window/Reservation与少量closed active drift；激活只完整重算未结束Window，批量清零closed active投影且不改历史unclaimed/search owner，不出现逐历史Window N+1 |
 | 激活 dirty Session | 使用生产同款`autoflush=false`，active投影在同事务显式flush后才执行聚合校验；校验读到新投影且最终一次提交，异常时整体回滚 |

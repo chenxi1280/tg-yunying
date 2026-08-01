@@ -986,6 +986,8 @@ DISPATCHER_SCOPE_CAPACITY = 同一共享 scope 的全 worker 合计在途上限
 
 激活使用同一 `observed_at` 划分未结束与已结束 Window 时，分类必须由数据库表达式完成；不得在 Python 直接比较数据库 offset-naive 时间与应用 offset-aware 时间。
 
+运行期 shard liveness 也必须遵守同一平台时钟：应用 `_now()` 的无时区值表示北京时间墙钟，先绑定 `Asia/Shanghai` 再与数据库 aware heartbeat 转 UTC 比较。禁止直接绑定 UTC 或用扩大 stale 窗口补偿；真实 live shard 被误判 stale 时，所有任务会出现 scope 有空闲但 Reservation 全为零的假容量不足。
+
 AI 历史内容 scope 接管的新 preview 只处理 open 与 `unknown_after_send` 可变 Action，历史不可变终态 Action 不重复创建 noop item；运行成本不得随全历史终态 Action 无界增长。未进 Gateway 且 payload/正文无效的 open Action 必须按原 quantity/content slot 进入 `content_contract_replan_required`，不得误作事实矛盾 quarantine 阻塞整次发布。
 
 生产数据库关闭 autoflush 时，AI scope takeover 的首次 conflict 与每批 apply 必须先在同一事务显式 flush Action/item 新状态，再聚合 processed/applied/noop/conflict/quarantine counters 并判断 batch 完成；不得提交与 item 事实不一致的旧计数。

@@ -283,3 +283,12 @@
 - 根因是 `start_or_join_dispatch_rebuild_wave` 在判断 Window 已结束之前同时扣减历史和 effective unclaimed。quarantine recount 正确保持过期 effective 为 0，重放又把它扣为 -1，因此每轮重复失败。
 - 修复合同：已结束 Window 只扣历史 unclaimed并直接收口，不扣 effective、不建 rebuild wave；尚可领取 Window 保持原双计数和 wave 行为。
 - 红测先失败于同一异常；修复后低层/assignment 两层回归及 75 条共享调度相关用例通过。
+
+## 2026-08-01 production finding: naive Beijing clock marks live shards stale
+
+- release `9650cd5e` 已成功部署；原遗留搜索 assignment 被唯一释放，`dispatch_release_window_unclaimed_negative` 和整轮 drain 失败均消失。
+- 生产仍没有新 `ExecutionAttempt`。当前 Window 有到期债务，但所有 Reservation 都以 `shared_dispatch_capacity_insufficient` 归零；scope 的 active/unclaimed 均为 0、总容量为 26。
+- 同一生产进程复算发现两个 shard 的数据库 heartbeat 均为 `live`、指纹正确且距当前仅数秒，但 `live_shard_available_capacity` 返回 `{0: 0, 1: 0}`。
+- 根因是 `_state_is_live` 把 `_now()` 返回的无时区北京时间墙钟直接绑定为 UTC；例如 `18:39` 与 `18:39+08:00` 被误算相差约8小时，两个真实 live shard 全被判 stale。
+- 修复合同：复用 `datetime_compat.ensure_aware`，无时区值按 `Asia/Shanghai` 解释后统一转 UTC 比较；不调整 heartbeat stale 阈值。
+- 生产同形态红测先得到 `{0: 0, 1: 0}`，实现后转绿；runtime/activation/claim/release/跨epoch/搜索释放定向集合 `55 passed in 4.95s`。

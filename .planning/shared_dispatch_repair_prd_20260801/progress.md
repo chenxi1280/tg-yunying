@@ -266,3 +266,12 @@
 - 业务账本显示发布后新建 283 条 AI pending Action但没有 Attempt；Dispatcher 日志证明遗留搜索 release 的 effective 二次扣减整轮阻塞 claim。
 - 已先同步 PRD/主 PRD/DF-324，再补红测并修改 `dispatch_release_wave.py`；定向集合 `75 passed in 9.26s`，`git diff --check`与编译通过。
 - 下一门：提交并再次走 master -> release -> Deploy Production，随后验证异常归零和真实 Attempt/remote fact 增长。
+
+## 2026-08-01 生产 E4 继续修复：shard heartbeat 时区
+
+- 过期 Window 修复提交 `9650cd5e` 的 run `30695497470` 已完整通过并部署到 `20260801102838_9650cd5e`。
+- 原 assignment 已为 `released/search_assignment_expired`，历史 unclaimed 从27降到26、effective保持0，未建 rebuild wave；对应异常不再出现。
+- 新阻断为 allocator 把两个真实 live shard 误判 stale：无时区北京时间被强行标成 UTC，导致预算 `{0:0,1:0}`，所有任务继续零 Reservation/零 Attempt。
+- 已先更新专项PRD、主PRD和DF-324；新增生产同形态红测，随后以统一时间兼容helper做最小修复，未扩大stale阈值。
+- 红测已转绿；共享runtime与调度相关定向集合`55 passed in 4.95s`，`git diff --check`和编译通过。
+- 下一门：提交并再次走 master -> release -> Deploy Production，随后验证预算13+13、Reservation/Attempt和真实Telegram事实。

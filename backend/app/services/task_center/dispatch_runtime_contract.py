@@ -9,6 +9,7 @@ from typing import Iterable, Mapping
 from app.models import DispatchClaimScope, DispatchRuntimeShardState
 
 from .dispatch_claim_contract import dispatcher_scope
+from .datetime_compat import ensure_aware
 
 
 class DispatchRuntimeContractError(RuntimeError):
@@ -272,10 +273,8 @@ def _state_is_live(
         return False
     if state.config_fingerprint != contract.capacity_config_fingerprint:
         return False
-    observed_at = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
-    heartbeat = state.heartbeat_at
-    if heartbeat.tzinfo is None:
-        heartbeat = heartbeat.replace(tzinfo=observed_at.tzinfo)
+    observed_at = ensure_aware(now)
+    heartbeat = ensure_aware(state.heartbeat_at)
     return (observed_at.astimezone(timezone.utc) - heartbeat.astimezone(timezone.utc)).total_seconds() <= stale_seconds
 
 
