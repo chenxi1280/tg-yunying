@@ -1119,8 +1119,9 @@ Dispatcher、AI generation worker 和其他运行容器，改变待验收任务�
 1. 新增独立 `workflow_dispatch` 生产监控入口，只允许读取当前 release symlink、容器
    health、TaskDayLedger、Action、ExecutionAttempt、类型化远端事实和诊断投影；不得
    build、pull image、restart container、调用 Planner drain、领取 Action 或修改数据库。
-2. 监控开始时必须验证生产 `current` release 的短 SHA 与 workflow checkout SHA 一致；
-   不一致直接失败，禁止拿旧 runtime 验证新代码。
+2. 监控开始时必须要求调用方显式提供已部署 SHA，并验证生产 `current` release 的短 SHA
+   与该值一致；不一致直接失败，禁止拿错误 runtime 生成业务结论。监控 workflow 本身的
+   只读修订可独立于 release，不得因此重启生产。
 3. 发布锚点由调用方显式提供且不得默认为监控启动时间。诊断必须同时输出账本本地日、
    deadline、任务状态和 blocker，使跨日新账本与上一日失败账本不会混为一谈。
 4. AI open Action 必须输出 `status / generation_status / generation_stage / error_code /

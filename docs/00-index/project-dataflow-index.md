@@ -337,8 +337,8 @@ Phase A 目标生命周期门禁覆盖 AI 活群、转发监听自动回复、`m
 ExecutionAttempt.remote_message_id` 批量匹配权威出站 send 事实，再进入 speaker event 和
 `GroupContextMessage` 写入。命中出站事实或受管账号身份的消息只记录 platform turn，
 不得作为 human context；普通成员未命中平台证据时才推进 human cursor。独立生产监控
-workflow 只读取当前 release/容器/ledger/action/attempt/typed fact，校验 checkout SHA 与
-生产 symlink 一致，不运行部署、Planner、claim 或数据库写入；AI/search/view 卡点必须按
+workflow 只读取当前 release/容器/ledger/action/attempt/typed fact，校验调用方显式提供的
+已部署 SHA 与生产 symlink 一致，不运行部署、Planner、claim 或数据库写入；AI/search/view 卡点必须按
 关联 Action/Assignment/Obligation 的状态和计划时间输出，不能从聚合计数猜根因。
 
 ```text

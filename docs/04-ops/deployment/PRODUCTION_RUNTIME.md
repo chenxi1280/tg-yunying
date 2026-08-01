@@ -257,8 +257,8 @@ AI 生成运行三个独立容器：`tgyunying-worker-ai-generation`、
 检查必须逐一验证三个容器，心跳必须使用不同 worker ID。
 
 事故任务发布后的持续观察使用 `.github/workflows/production-task-monitor.yml`，不得为了
-再次读取 E4 而重跑 Deploy Production。监控 workflow 只允许校验 `/data/tgyunying/current`
-短 SHA、读取既有容器 health，并将 `.github/scripts/task_fulfillment_e4_diagnostics.py`
+再次读取 E4 而重跑 Deploy Production。监控 workflow 要求显式 `deployed_sha` 并校验
+`/data/tgyunying/current` 短 SHA，随后只读取既有容器 health，并将 `.github/scripts/task_fulfillment_e4_diagnostics.py`
 通过 stdin 送入当前 backend 容器执行只读查询；禁止 build/pull/restart、Planner drain、
 claim 或数据库写入。`release_live_at` 必须显式传入原发布锚点，监控启动时间不得替代发布
 时间。监控失败表示仍有业务 blocker，不授权自动发布或重启；通过仍须同时满足五个 Task
