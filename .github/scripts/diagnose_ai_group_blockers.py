@@ -154,6 +154,7 @@ def _unknown_action_rows(session, task_id: str, period_start_at) -> list[dict]:
                e.remote_message_id AS attempt_remote_message_id,
                r.id AS reconcile_case_id, r.state AS reconcile_case_state,
                j.state AS journal_state,
+               encode(decode(j.evidence_hash, 'hex'), 'base64') AS journal_evidence_fingerprint_b64,
                j.remote_mutation_state,
                j.remote_message_id AS journal_remote_message_id,
                c.id AS coverage_id, c.state AS coverage_state,
