@@ -1014,7 +1014,7 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
 | `Dockerfile.backend` | 22 | Dockerfile.backend 镜像构建文件，定义对应服务镜像构建步骤。 | 构建阶段：python:3.12-slim |
 | `Dockerfile.image-verification-worker` | 22 | 独立 OCR Worker 镜像构建文件，只安装 RapidOCR/ddddOCR/ONNX 与其系统运行库。 | 构建阶段：python:3.12-slim；生产变量：TGYUNYING_IMAGE_VERIFICATION_IMAGE |
 | `Dockerfile.frontend` | 15 | Dockerfile.frontend 镜像构建文件，定义对应服务镜像构建步骤。 | 构建阶段：node:22-alpine、nginx:1.27-alpine |
-| `docker-compose.server.yml` | 259 | docker-compose.server.yml compose 编排，定义本地或服务器服务、网络、环境变量和健康检查；4 核生产机固定 2 个 dispatcher / 2 个账号分片；运行时明细保留 5 天，detail cleanup 默认每批 2000、每 60 秒检查，metrics cleanup 默认 300 秒；worker healthcheck 使用本地 heartbeat 文件时间戳，不启动 `python -m app.worker_health`。 | 服务：backend、worker-planner、worker-ai-generation、worker-dispatcher-1、worker-dispatcher-2、worker-listener、worker-recovery、worker-account-security、worker-account-online、worker-ai-memory、worker-metrics、infra_default |
+| `docker-compose.server.yml` | 生产 compose | docker-compose.server.yml compose 编排，定义本地或服务器服务、网络、环境变量和健康检查；4 核生产机固定 2 个 dispatcher / 2 个账号分片，AI 生成固定 3 个跨群并行实例并由同群单 ready 门禁串行化；worker healthcheck 使用本地 heartbeat 文件时间戳。 | 服务：backend、worker-planner、worker-ai-generation、worker-ai-generation-2、worker-ai-generation-3、worker-dispatcher-1、worker-dispatcher-2、worker-listener、worker-recovery、worker-account-security、worker-account-online、worker-ai-memory、worker-metrics、infra_default |
 | `docker-compose.yml` | 38 | docker-compose.yml compose 编排，定义本地或服务器服务、网络、环境变量和健康检查。 | 服务：postgres、redis、postgres_data、redis_data |
 
 ### 工程配置
@@ -1102,3 +1102,5 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
   履约事实，输出结构化 blocker 并以退出码阻断虚假完成。
 - `.github/workflows/deploy-production.yml` 的 Planner 探针只调用
   `service.drain_task_planner`，不再复制 retired hard-hourly 私有流程。
+- `backend/app/services/task_center/ai_generation_worker.py`：AI 生成领取入口；跨群可并行，
+  同群已有 generating 或正文就绪 Action 时不再预生成下一条，避免自身发送制造上下文重生风暴。

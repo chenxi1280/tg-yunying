@@ -155,6 +155,44 @@ services:
     networks:
       - infra_default
 
+  worker-ai-generation-2:
+    image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
+    container_name: tgyunying-worker-ai-generation-2
+    restart: unless-stopped
+    command: ["python", "-m", "app.worker", "--role", "ai-generation", "--limit", "${AI_GENERATION_WORKER_DRAIN_LIMIT:-20}", "--interval", "${AI_GENERATION_WORKER_INTERVAL_SECONDS:-2.0}"]
+    environment:
+      <<: *backend-env
+      WORKER_ROLE: ai-generation
+      TG_OPS_WORKER_ID: tgyunying-worker-ai-generation-2
+    volumes:
+      - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
+      - "${GROK_CLI_HOME_DIR:-/root/.grok}:/root/.grok"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck: *worker-healthcheck
+    networks:
+      - infra_default
+
+  worker-ai-generation-3:
+    image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
+    container_name: tgyunying-worker-ai-generation-3
+    restart: unless-stopped
+    command: ["python", "-m", "app.worker", "--role", "ai-generation", "--limit", "${AI_GENERATION_WORKER_DRAIN_LIMIT:-20}", "--interval", "${AI_GENERATION_WORKER_INTERVAL_SECONDS:-2.0}"]
+    environment:
+      <<: *backend-env
+      WORKER_ROLE: ai-generation
+      TG_OPS_WORKER_ID: tgyunying-worker-ai-generation-3
+    volumes:
+      - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
+      - "${GROK_CLI_HOME_DIR:-/root/.grok}:/root/.grok"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck: *worker-healthcheck
+    networks:
+      - infra_default
+
   worker-dispatcher-1:
     image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
     container_name: tgyunying-worker-dispatcher-1

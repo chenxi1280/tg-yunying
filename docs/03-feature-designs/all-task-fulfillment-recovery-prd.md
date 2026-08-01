@@ -83,6 +83,17 @@
 
 验收必须同时覆盖：待重建槽 `created=0` 时独立数量槽仍建 Action；固定 coverage 账号不在普通 keyset 页也能按门禁重建；无 `extra_volume` 时不选择额外账号；旧 Action 仍可引用时不产生 `reply_target_stale`；同一 drain 中首个生成批次显式失败后后续 Action 继续进入 `ready`；生产遗留预览归零且远端事实数量不变。
 
+### 2.5 2026-08-01 AI 同群上下文重生风暴补正
+
+生产 E4 发现三个运行中 AI 群任务累计出现 `context_superseded_requeue=2023/897/755`：同一群可同时存在多条已生成未发送 Action，首条真实发送被 listener 记为新上下文后，其余 Action 全部清空正文并重新调用 Provider，导致生成吞吐被自身发送持续抵消。该行为不是外部容量不足，而是生成并发范围错误。
+
+1. AI 生成并发固定为“跨群并行、同群单 ready”。`tenant_id + group_id` 范围内已有 `generating` Action，或已有 `message_text` 非空且 `ai_generation_status=ready` 的 open Action 时，不得再领取同群下一条生成；它必须等待现有 ready Action 进入发送终态或被显式上下文变更回收。
+2. 生产运行三个独立 `ai-generation` worker，使三个目标群可并行生成；数据库 `SKIP LOCKED` 与上述同群门禁共同保证不同 worker 不会同时为同群生成。worker 数量只提供跨群并行度，不改变单群内容顺序、质量门禁、Provider 合同或 Dispatcher/Gateway 容量。
+3. 同群 ready 门禁不得把 `failed|skipped|cancelled|success` 历史、空正文 pending、或其他群的 ready Action 当作占位；显式业务失败仍在同一 drain 中继续处理其他群。
+4. 生产诊断必须输出当前 ledger 的 generation 状态/正文就绪数、搜索 assignment/epoch 状态及浏览逐消息义务，不能只输出最终欠额；最终完成仍只认 ExecutionAttempt 与 Telegram 远端事实。
+
+验收必须覆盖：同群已有 ready Action时下一条不生成；另一群仍可生成；首条进入终态后同群下一条恢复生成；三个生成 worker 健康且具有不同 worker ID；发布后 `context_superseded_requeue` 不再随每次本任务发送成批增长。
+
 ## 3. 产品目标与非目标
 
 ### 3.1 产品目标

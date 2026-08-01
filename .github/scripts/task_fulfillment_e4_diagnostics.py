@@ -11,11 +11,15 @@ from sqlalchemy import and_, case, func, select
 from app.database import SessionLocal
 from app.models import (
     Action,
+    ChannelMessage,
     ExecutionAttempt,
+    SearchClickAssignmentEpoch,
     SearchClickFulfillmentObligation,
+    SearchClickOpportunityAssignment,
     Task,
     TaskAccountDailyCoverage,
     TaskDayLedger,
+    TaskGroupDailyMessageSlot,
     TaskGroupDailyTarget,
     ViewFulfillmentObligation,
     ViewRemoteFact,
@@ -159,6 +163,49 @@ def _group_daily_snapshot(session, ledger: TaskDayLedger) -> dict[str, int]:
     }
 
 
+def _group_runtime_snapshot(session, ledger: TaskDayLedger) -> dict[str, Any]:
+    coverage_rows = session.execute(
+        select(
+            TaskAccountDailyCoverage.state,
+            TaskAccountDailyCoverage.blocker_code,
+            func.count(TaskAccountDailyCoverage.id),
+        )
+        .where(TaskAccountDailyCoverage.task_day_ledger_id == ledger.id)
+        .group_by(TaskAccountDailyCoverage.state, TaskAccountDailyCoverage.blocker_code)
+    )
+    slot_rows = session.execute(
+        select(
+            TaskGroupDailyMessageSlot.slot_kind,
+            TaskGroupDailyMessageSlot.state,
+            func.count(TaskGroupDailyMessageSlot.id),
+        )
+        .where(TaskGroupDailyMessageSlot.task_day_ledger_id == ledger.id)
+        .group_by(TaskGroupDailyMessageSlot.slot_kind, TaskGroupDailyMessageSlot.state)
+    )
+    actions = list(session.scalars(select(Action).where(
+        Action.task_id == ledger.task_id,
+        Action.action_type == "send_message",
+        Action.payload["task_day_ledger_id"].as_string() == ledger.id,
+        Action.status.in_(("pending", "claiming", "executing")),
+    )))
+    action_counts: dict[str, int] = {}
+    for action in actions:
+        payload = action.payload or {}
+        key = f"{action.status}:{payload.get('ai_generation_status') or ''}:{'ready' if str(payload.get('message_text') or '').strip() else 'empty'}"
+        action_counts[key] = action_counts.get(key, 0) + 1
+    return {
+        "open_action_counts": dict(sorted(action_counts.items())),
+        "coverage_counts": [
+            {"state": state, "blocker_code": blocker or "", "count": int(count)}
+            for state, blocker, count in coverage_rows
+        ],
+        "quantity_slot_counts": [
+            {"slot_kind": kind, "state": state, "count": int(count)}
+            for kind, state, count in slot_rows
+        ],
+    }
+
+
 def _coverage_confirmed_case():
     return case(
         (
@@ -184,6 +231,42 @@ def _search_snapshot(session, ledger: TaskDayLedger, since: datetime) -> dict[st
         "required_count": int(row[0]),
         "confirmed_count": int(row[1]),
         "post_release_confirmed_count": int(row[2]),
+    }
+
+
+def _search_runtime_snapshot(session, ledger: TaskDayLedger) -> dict[str, Any]:
+    assignment_rows = session.execute(
+        select(
+            SearchClickOpportunityAssignment.state,
+            SearchClickOpportunityAssignment.release_reason,
+            func.count(SearchClickOpportunityAssignment.id),
+        )
+        .where(SearchClickOpportunityAssignment.task_day_ledger_id == ledger.id)
+        .group_by(SearchClickOpportunityAssignment.state, SearchClickOpportunityAssignment.release_reason)
+    )
+    epoch_rows = session.execute(
+        select(
+            SearchClickAssignmentEpoch.finalize_status,
+            SearchClickAssignmentEpoch.outcome,
+            func.count(func.distinct(SearchClickAssignmentEpoch.id)),
+        )
+        .join(
+            SearchClickOpportunityAssignment,
+            SearchClickOpportunityAssignment.search_click_assignment_epoch_id
+            == SearchClickAssignmentEpoch.id,
+        )
+        .where(SearchClickOpportunityAssignment.task_day_ledger_id == ledger.id)
+        .group_by(SearchClickAssignmentEpoch.finalize_status, SearchClickAssignmentEpoch.outcome)
+    )
+    return {
+        "assignment_counts": [
+            {"state": state, "release_reason": reason or "", "count": int(count)}
+            for state, reason, count in assignment_rows
+        ],
+        "epoch_counts": [
+            {"finalize_status": status, "outcome": outcome, "count": int(count)}
+            for status, outcome, count in epoch_rows
+        ],
     }
 
 
@@ -238,6 +321,28 @@ def _view_snapshot(session, ledger: TaskDayLedger, since: datetime) -> dict[str,
     }
 
 
+def _view_message_snapshot(session, ledger: TaskDayLedger) -> list[dict[str, Any]]:
+    rows = session.execute(
+        select(
+            ViewFulfillmentObligation.channel_message_id,
+            ViewFulfillmentObligation.status,
+            func.count(ViewFulfillmentObligation.id),
+        )
+        .where(ViewFulfillmentObligation.task_day_ledger_id == ledger.id)
+        .group_by(ViewFulfillmentObligation.channel_message_id, ViewFulfillmentObligation.status)
+        .order_by(ViewFulfillmentObligation.channel_message_id)
+    )
+    messages: dict[int, dict[str, Any]] = {}
+    for message_id, status, count in rows:
+        item = messages.setdefault(int(message_id), {"channel_message_id": int(message_id), "status_counts": {}})
+        item["status_counts"][str(status)] = int(count)
+    for item in messages.values():
+        message = session.get(ChannelMessage, item["channel_message_id"])
+        item["remote_message_id"] = int(message.message_id) if message else None
+        item["published_at"] = iso(message.published_at) if message else None
+    return list(messages.values())
+
+
 def task_snapshot(session, task_id: str, since: datetime) -> dict[str, Any]:
     task = session.get(Task, task_id)
     if task is None:
@@ -248,10 +353,13 @@ def task_snapshot(session, task_id: str, since: datetime) -> dict[str, Any]:
         return snapshot
     if task.type == "group_ai_chat":
         snapshot["group_daily"] = _group_daily_snapshot(session, ledger)
+        snapshot["group_runtime"] = _group_runtime_snapshot(session, ledger)
     elif task.type == "search_click":
         snapshot["search_click"] = _search_snapshot(session, ledger, since)
+        snapshot["search_runtime"] = _search_runtime_snapshot(session, ledger)
     elif task.type == "channel_view":
         snapshot["channel_view"] = _view_snapshot(session, ledger, since)
+        snapshot["channel_view_messages"] = _view_message_snapshot(session, ledger)
     return snapshot
 
 

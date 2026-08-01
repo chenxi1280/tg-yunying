@@ -124,13 +124,45 @@ def test_generation_worker_claims_sibling_outside_window_in_later_batch() -> Non
         lambda: Session(engine),
         limit=10,
         generate_action=generate,
-    ) == 2
-    assert generated == ["pending-generation", "pending-generation-future"]
+    ) == 1
+    assert generated == ["pending-generation"]
     with Session(engine) as session:
         future = session.get(Action, "pending-generation-future")
         assert future.status == "pending"
         assert future.claim_owner == ""
-        assert future.payload["message_text"] == "当前窗口生成完成"
+        assert future.payload["message_text"] == ""
+
+
+def test_generation_worker_generates_other_group_while_ready_group_waits() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    _seed_actions(engine)
+    with Session(engine) as session:
+        ready = session.get(Action, "already-ready")
+        ready.payload = {**dict(ready.payload or {}), "group_id": 7}
+        pending = session.get(Action, "pending-generation")
+        pending.scheduled_at = _now() + timedelta(seconds=1)
+        other = _action("other-group", _now(), "", "pending")
+        other.payload = {**dict(other.payload or {}), "group_id": 8}
+        session.add(other)
+        session.commit()
+    generated: list[str] = []
+
+    def generate(session: Session, action: Action, _account: TgAccount) -> None:
+        generated.append(action.id)
+        action.payload = {
+            **dict(action.payload or {}),
+            "message_text": "另一群生成完成",
+            "ai_generation_status": "ready",
+        }
+        session.commit()
+
+    assert drain_ai_generation(
+        lambda: Session(engine),
+        limit=10,
+        generate_action=generate,
+    ) == 1
+    assert generated == ["other-group"]
 
 
 def test_generation_worker_skips_account_with_executing_action() -> None:
@@ -152,6 +184,7 @@ def test_generation_worker_skips_account_with_executing_action() -> None:
             _now() + timedelta(seconds=1),
             "",
             "pending",
+            group_id=9,
         )
         available.account_id = 12
         session.add_all([occupied, available])
@@ -322,14 +355,13 @@ def test_production_generation_pipeline_returns_batch_to_pending_dispatch(
         dependencies=dependencies,
     )
 
-    assert processed == 2
+    assert processed == 1
     with Session(engine) as session:
         actions = list(session.scalars(
             select(Action).order_by(Action.id),
         ))
         assert [action.status for action in actions] == ["pending", "pending"]
-        assert {action.payload["message_text"] for action in actions} == {"一号", "二号"}
-        assert all(action.payload["ai_generation_status"] == "ready" for action in actions)
+        assert [bool(action.payload["message_text"]) for action in actions].count(True) == 1
 
 
 def test_generation_worker_keeps_recovery_status_in_same_normal_batch(
@@ -371,15 +403,12 @@ def test_generation_worker_keeps_recovery_status_in_same_normal_batch(
         lambda: Session(engine),
         limit=10,
         dependencies=dependencies,
-    ) == 2
+    ) == 1
 
     with Session(engine) as session:
         actions = list(session.scalars(select(Action).order_by(Action.id)))
         assert all(action.status == "pending" for action in actions)
-        assert all(
-            action.payload["ai_generation_status"] == "ready"
-            for action in actions
-        )
+        assert [action.payload["ai_generation_status"] for action in actions].count("ready") == 1
 
 
 def test_generation_worker_defers_unproven_listener_watermark_without_spinning(
@@ -429,6 +458,11 @@ def _seed_actions(engine) -> None:
     now_value = _now()
     with Session(engine) as session:
         session.add(Tenant(id=1, name="tenant"))
+        session.add_all([
+            TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="群7"),
+            TgGroup(id=8, tenant_id=1, tg_peer_id="-1008", title="群8"),
+            TgGroup(id=9, tenant_id=1, tg_peer_id="-1009", title="群9"),
+        ])
         session.add(TgAccount(
             id=11,
             tenant_id=1,
@@ -445,12 +479,19 @@ def _seed_actions(engine) -> None:
         ))
         session.add_all([
             _action("pending-generation", now_value, "", "pending"),
-            _action("already-ready", now_value, "已有文案", "ready"),
+            _action("already-ready", now_value, "已有文案", "ready", group_id=8),
         ])
         session.commit()
 
 
-def _action(action_id: str, scheduled_at, message_text: str, generation_status: str) -> Action:
+def _action(
+    action_id: str,
+    scheduled_at,
+    message_text: str,
+    generation_status: str,
+    *,
+    group_id: int = 7,
+) -> Action:
     return Action(
         id=action_id,
         tenant_id=1,
@@ -461,6 +502,7 @@ def _action(action_id: str, scheduled_at, message_text: str, generation_status: 
         status="pending",
         scheduled_at=scheduled_at,
         payload={
+            "group_id": group_id,
             "message_text": message_text,
             "ai_generation_status": generation_status,
         },

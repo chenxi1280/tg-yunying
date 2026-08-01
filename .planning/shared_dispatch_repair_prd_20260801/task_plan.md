@@ -238,6 +238,17 @@ Phase 23: closed Window effective 时间语义
 - [x] 先补全任务 PRD、主 PRD、DF-325、生产运行与结构索引
 - [x] 红测约束 workflow 只调用公开 Planner drain，旧 hard-hourly 符号归零
 - [x] 新增五个事故 Task 的类型化 E4 事实诊断与单元测试
-- [ ] 通过本地质量门并走 master -> release 完整发布
-- [ ] 在线取得 AI remote_message_id、search click evidence、view remote fact 并证明当前欠额归零
+- [x] 通过本地质量门并走 master -> release 完整发布
+- [x] 在线取得 AI remote_message_id 与 view remote fact，并输出 search click E4 blocker
+- [ ] 证明当前欠额归零（转入 Phase 25）
+- **Status:** deployed_e4_blockers_identified
+
+### Phase 25: AI 同群上下文重生风暴与履约吞吐修复
+- [x] 从 run `30703875526` 取得五任务 E4 欠额和 AI `context_superseded_requeue=2023/897/755`
+- [x] 先补专项 PRD §2.5、主 PRD、DF-326、runtime 与结构索引
+- [x] 红测约束同群单 ready、跨群并行和三个生产生成 worker
+- [x] 实现同群生成占位门禁、三个生成容器与细分 E4 诊断
+- [x] 定向测试、YAML/AST、函数长度与 diff gate 通过
+- [ ] 走 master -> release 完整发布并核验三个 worker、重排增量和真实发送速率
+- [ ] 根据细分诊断继续修复 search/view blocker，直至五任务 E4 归零
 - **Status:** local_verified_release_pending

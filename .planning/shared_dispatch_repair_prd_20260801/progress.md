@@ -316,3 +316,11 @@
 - 已先补齐 PRD/DF-325/runtime/结构索引，下一步用公开 Planner drain 与五任务类型化 E4 脚本替换旧诊断。
 - workflow 红测先失败于旧描述/旧私有入口；实现后 retired wake/due 符号为 0，Planner 非零退出不再被吞掉。
 - 新增 E4 只读闸门，按 AI 群日、search click、channel view 三类权威事实核对五个事故 Task；专项与现有诊断集合 `191 passed`，YAML、AST、diff gate 通过。
+
+## 2026-08-01 生产 E4 继续修复：AI 同群上下文重生风暴
+
+- `e2ccd99c` 的 push run `30703358345` 完整成功，release `20260801142329_e2ccd99c` 上线；同 SHA 诊断 run `30703875526` 的 Planner drain 正常处理 2 项。
+- 五任务 E4：AI 完成 491/123/115，search click 329/1000，view 3234/6375；view 有 96 条发布后远端事实，郑州大学有 4 条发布后 `remote_message_id`，其余仍欠额。
+- AI 质量日志显示三个运行任务累计 `context_superseded_requeue=2023/897/755`；同群多条预生成正文被首条自身发送造成的新 listener context 成批清空重生，生成吞吐被自身抵消。
+- 已先补专项 PRD §2.5、主 PRD、DF-326、runtime 与结构索引；红测约束同群单 ready、跨群可继续生成和三个独立生成 worker。
+- 实现后生成/worker/E4/workflow 定向集合 `191 passed`；YAML、编译、函数长度与 diff gate 通过。E4 脚本新增当前 ledger 的 AI coverage/slot/action、search assignment/epoch 与 view 逐消息义务诊断。

@@ -209,12 +209,20 @@ def test_server_compose_starts_ai_generation_worker():
     env_example = (root / ".env.production.example").read_text()
 
     assert "  worker-ai-generation:" in compose
+    assert "  worker-ai-generation-2:" in compose
+    assert "  worker-ai-generation-3:" in compose
     assert "container_name: tgyunying-worker-ai-generation" in compose
+    assert "container_name: tgyunying-worker-ai-generation-2" in compose
+    assert "container_name: tgyunying-worker-ai-generation-3" in compose
     assert 'WORKER_ROLE: ai-generation' in compose
     assert "AI_GENERATION_WORKER_DRAIN_LIMIT" in compose
     assert "AI_GENERATION_WORKER_INTERVAL_SECONDS" in compose
     assert "  worker-ai-generation" in compose_up
+    assert "  worker-ai-generation-2" in compose_up
+    assert "  worker-ai-generation-3" in compose_up
     assert "  tgyunying-worker-ai-generation" in check_web
+    assert "  tgyunying-worker-ai-generation-2" in check_web
+    assert "  tgyunying-worker-ai-generation-3" in check_web
     assert "AI_GENERATION_WORKER_DRAIN_LIMIT=20" in env_example
 
 

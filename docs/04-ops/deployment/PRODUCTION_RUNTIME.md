@@ -250,3 +250,8 @@ docker compose exec -T worker-planner sh -lc 'now=$(date +%s); last=$(cat "${WOR
 异常直接失败。随后运行 `.github/scripts/task_fulfillment_e4_diagnostics.py` 读取
 事故 Task 的自然日账本、Attempt 与类型化远端事实。旧的
 `_wake_hard_hourly_tasks/_hard_hourly_due_candidate` 不得再出现在生产 workflow。
+
+AI 生成运行三个独立容器：`tgyunying-worker-ai-generation`、
+`tgyunying-worker-ai-generation-2`、`tgyunying-worker-ai-generation-3`。三个实例只提供
+跨群并行；同一 `tenant_id + group_id` 最多一个 generating/ready open Action。发布健康
+检查必须逐一验证三个容器，心跳必须使用不同 worker ID。
