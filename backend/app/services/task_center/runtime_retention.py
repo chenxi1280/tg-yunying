@@ -9,9 +9,12 @@ from sqlalchemy.orm import Session
 
 from app.models import (
     Action,
+    AiContentScopeTakeoverItem,
     AiCoverageVariationIntent,
     DailyRuntimeStat,
     ExecutionAttempt,
+    GatewayRequestEvidenceJournal,
+    RemoteReconcileCase,
     ReviewQueue,
     RuntimeCleanupAudit,
     RuntimeMetricSnapshot,
@@ -164,6 +167,14 @@ def _remove_action_references(session: Session, action_ids: list[str]) -> dict[s
     for model, field in nullable_fields:
         result = session.execute(update(model).where(field.in_(action_ids)).values({field.key: None}))
         counts[f"cleared.{model.__tablename__}.{field.key}"] = int(result.rowcount or 0)
+    dependent_models = (
+        ("gateway_request_evidence_journals", GatewayRequestEvidenceJournal),
+        ("remote_reconcile_cases", RemoteReconcileCase),
+        ("ai_content_scope_takeover_items", AiContentScopeTakeoverItem),
+    )
+    for count_key, model in dependent_models:
+        result = session.execute(delete(model).where(model.action_id.in_(action_ids)))
+        counts[count_key] = int(result.rowcount or 0)
     result = session.execute(
         delete(SearchRankDeboostClickReservation).where(SearchRankDeboostClickReservation.action_id.in_(action_ids))
     )

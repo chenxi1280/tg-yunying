@@ -70,6 +70,24 @@
 
 上述补正的生产验收相互独立：AI backlog apply 成功不代表代码修复完成；代码发布成功不代表 view/AI/search 真实履约恢复。只有 Action、ExecutionAttempt、远端 ID/click evidence 和生产负载共同满足时才可写 `production_fixed`。
 
+#### 2.3.1 2026-08-01 runtime retention 新审计明细收口
+
+**Intake / 分级。** 用户要求删除可安全删除的线上遗留 Action，以降低 `actions` 规模。该操作会不可逆删除生产运行明细，分级为 L3；必须走 `prod-diagnosis -> product -> dev -> qa -> product -> prod-diagnosis`。2026-08-01 生产 dry-run 显示 Action 共 84,703 条、terminal 81,399 条，但按现行“保留 5 个完整自然日”口径当前到期候选为 0；不得改成 4 天或 `now()-120h` 提前制造候选。下一自然日预计 14,250 条进入候选，仍以执行时的真实预览为准。
+
+**Product Design Complete。** 本补正不改变候选状态、保留期、批量大小、Recovery 权限或 `DailyRuntimeStat` 汇总语义，只补齐 0134 新增的逐 Action 运行明细：
+
+1. 候选仍严格为 `success|failed|skipped`，且 `coalesce(executed_at, scheduled_at, created_at)` 早于 `today - retention_days` 的自然日零点；`pending|claiming|executing|retryable_failed|unknown_after_send` 永不进入 runtime retention。
+2. 每批继续按年龄、创建时间、Action ID 稳定排序，以 `FOR UPDATE OF actions SKIP LOCKED` 领取最多配置数量。先写同一事务内的逐日/Task/账号/类型/目标汇总，再处理从属明细。
+3. 删除父 Action 前，除既有 Attempt、ReviewQueue、hard-hourly credit、search-rank reservation 和可空长期指针外，还必须按精确 `action_id` 删除 `AiContentScopeTakeoverItem`、`GatewayRequestEvidenceJournal`、`RemoteReconcileCase`。三类删除数量进入同一 `RuntimeCleanupAudit.deleted_counts`；任一外键、汇总或审计写入失败整批回滚，禁止跳过坏行后继续删除父 Action。
+4. `AiContentScopeTakeoverBatch` 本身、`classification_counts/hash`、processed/applied/noop/conflict/quarantine 汇总和发布时间继续保留；只删除已超过 Action 留存期的逐 Action item。`takeover_chain_is_complete` 必须校验每个 batch 的实际 item 数等于冻结分类总数，明细被 retention 清理的旧 batch 因 cardinality 不完整而 fail closed，不能重新作为 activation head。
+5. `RemoteReconcileCase` 与 `GatewayRequestEvidenceJournal` 只会随已终态且到期的父 Action 删除；pending unknown 的父 Action不属于候选，因此 case/journal 继续保留并等待远端核验。成功、失败和远端事实先按既有汇总/类型专用事实保留，再清理超过 5 天的 runtime detail；不伪造或改写业务结果。
+6. 前端和公开 API 无变化；能力只由已授权 Recovery worker 按现有 kill switch、batch size 和 interval 执行。发布本身不做 SSH SQL 或一次性越界 apply。
+7. 回滚边界：代码可回滚并通过 `ENABLE_RUNTIME_RETENTION_CLEANUP=false` 停止后续批次；已经按既有 5 天合同删除的逐 Action runtime detail不可从应用内恢复，只能依赖数据库备份，而聚合统计与 `RuntimeCleanupAudit` 必须足以核对删除数量。不得宣称物理磁盘立即下降；普通 DELETE 后空间回收由 PostgreSQL vacuum 独立处理。
+
+**QA / Release Gate。** PostgreSQL 回归必须构造到期 terminal Action，同时绑定 takeover item、remote case、Gateway journal、Attempt、coverage/admission和既有从属表，证明：从属明细与Action原子删除、长期可空引用解除、三类新增计数精确、batch摘要保留；unknown/open及其case/journal零删除；注入失败时Action/Attempt/从属明细/统计/审计全部回滚。takeover chain测试必须证明完整当前batch可激活、删去任一item后旧head fail closed。生产发布后先核对当前 release、5天cutoff和到期数量，再观察至少一条非零 `RuntimeCleanupAudit`、Action实际下降、外键错误为0、Recovery/Dispatcher/任务执行健康；未跨过自然日时只允许报告“代码与运行闸门通过、业务删除尚未触发”。
+
+`design_status=complete`，`dev_handoff_ready=true`，`release_gate_required=true`。原始诉求、后端/worker、数据流、权限、并发/幂等、失败路径、审计、不可逆边界、QA和生产验收均已覆盖；无需前端设计。
+
 ### 2.4 2026-07-30 AI 群日规划阻塞补正
 
 本节 supersede “只要发现旧 ContentMix 待重建槽，本轮就不得规划任何新 Cycle”、用 Action 创建时间判断 reply 目标过期，以及在没有 `extra_volume` 数量槽时仍用已完成账号补足 Turn 的旧实现：

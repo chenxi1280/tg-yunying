@@ -93,6 +93,8 @@ def takeover_chain_is_complete(
     items = list(session.scalars(select(AiContentScopeTakeoverItem).where(
         AiContentScopeTakeoverItem.batch_id.in_(batch_ids),
     )))
+    if not _chain_item_counts_match(chain, items):
+        return False
     latest = _latest_items_by_action(chain, items)
     if any(item.status not in {"applied", "noop"} for item in latest.values()):
         return False
@@ -100,6 +102,21 @@ def takeover_chain_is_complete(
         item.action_id for item in items if item.status == "applied"
     )
     return all(count <= 1 for count in applied.values())
+
+
+def _chain_item_counts_match(
+    chain: list[AiContentScopeTakeoverBatch],
+    items: list[AiContentScopeTakeoverItem],
+) -> bool:
+    actual_counts = Counter(item.batch_id for item in items)
+    for batch in chain:
+        declared = dict(batch.classification_counts or {})
+        values = list(declared.values())
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in values):
+            return False
+        if actual_counts[batch.id] != sum(values):
+            return False
+    return True
 
 
 def takeover_batch_summary(
