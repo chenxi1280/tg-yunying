@@ -41,6 +41,10 @@ def test_takeover_resumes_and_never_mutates_terminal_or_unknown_actions() -> Non
         batch_id = batch.id
         expected_hash = batch.classification_hash
         expected_counts = dict(batch.classification_counts)
+        assert expected_counts == {
+            "equivalent_snapshot_safe": 1,
+            "remote_reconcile_required": 1,
+        }
         session.commit()
 
     with sessions() as session:
@@ -193,6 +197,36 @@ def test_missing_context_replans_the_same_quantity_and_content_slot() -> None:
             actor="release-owner",
         )
         session.commit()
+        action = session.get(Action, action.id)
+        cycle_slot = session.get(ContentMixCycleSlot, action.content_mix_cycle_slot_id)
+        quantity = session.get(TaskGroupDailyMessageSlot, action.primary_quantity_slot_id)
+        assert action.status == "skipped"
+        assert action.result["error_code"] == "content_contract_replan_required"
+        assert cycle_slot.current_action_id is None
+        assert cycle_slot.slot_state == "replan_required"
+        assert quantity.state == "open"
+
+
+def test_invalid_pre_gateway_payload_replans_instead_of_quarantine() -> None:
+    sessions = _sessions()
+    with sessions() as session:
+        _seed_scope(session)
+        action = _seed_bound_legacy_action(session, "a-invalid-payload")
+        action.payload = {**action.payload, "message_text": ""}
+        batch = _preview(session)
+        assert batch.classification_counts == {"replan_required": 1}
+        batch_id = batch.id
+        batch_hash = batch.classification_hash
+        counts = dict(batch.classification_counts)
+        session.commit()
+
+    _finish_takeover(
+        sessions,
+        batch_id=batch_id,
+        expected_hash=batch_hash,
+        expected_counts=counts,
+    )
+    with sessions() as session:
         action = session.get(Action, action.id)
         cycle_slot = session.get(ContentMixCycleSlot, action.content_mix_cycle_slot_id)
         quantity = session.get(TaskGroupDailyMessageSlot, action.primary_quantity_slot_id)

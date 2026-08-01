@@ -34,7 +34,12 @@ def begin_takeover_apply(
     actor: str,
 ) -> dict:
     batch = _locked_batch(session, batch_id)
-    _validate_apply_identity(batch, classification_hash, expected_counts, actor)
+    _validate_apply_identity(
+        batch,
+        classification_hash=classification_hash,
+        expected_counts=expected_counts,
+        actor=actor,
+    )
     if batch.status == "completed":
         return takeover_batch_summary(session, batch)
     if batch.status == "blocked":
@@ -44,6 +49,7 @@ def begin_takeover_apply(
     conflicts = _initial_snapshot_conflicts(session, batch)
     if conflicts:
         batch.status = "blocked"
+        session.flush()
         _refresh_batch_counts(session, batch)
         return takeover_batch_summary(session, batch)
     batch.status = "applying"
@@ -67,9 +73,10 @@ def apply_takeover_chunk(
         raise ValueError("takeover_batch_not_applying")
     items = _locked_pending_items(session, batch.id, batch_size)
     for item in items:
-        if not _apply_item(session, batch, item, actor):
+        if not _apply_item(session, batch, item=item, actor=actor):
             break
         batch.last_item_cursor = item.id
+    session.flush()
     _refresh_batch_counts(session, batch)
     _finish_batch_if_ready(session, batch)
     return takeover_batch_summary(session, batch)
@@ -122,6 +129,7 @@ def takeover_batch_summary(
 
 def _validate_apply_identity(
     batch: AiContentScopeTakeoverBatch,
+    *,
     classification_hash: str,
     expected_counts: dict,
     actor: str,
@@ -157,6 +165,7 @@ def _initial_snapshot_conflicts(
 def _apply_item(
     session: Session,
     batch: AiContentScopeTakeoverBatch,
+    *,
     item: AiContentScopeTakeoverItem,
     actor: str,
 ) -> bool:
@@ -169,7 +178,13 @@ def _apply_item(
     item.status = outcome["item_status"]
     item.outcome = outcome
     item.processed_at = _now()
-    _write_item_audit(session, batch, item, action, actor)
+    _write_item_audit(
+        session,
+        batch,
+        item=item,
+        action=action,
+        actor=actor,
+    )
     if item.status == "quarantined":
         batch.status = "blocked"
         return False
@@ -292,6 +307,7 @@ def _mark_item_conflict(
 def _write_item_audit(
     session: Session,
     batch: AiContentScopeTakeoverBatch,
+    *,
     item: AiContentScopeTakeoverItem,
     action: Action,
     actor: str,

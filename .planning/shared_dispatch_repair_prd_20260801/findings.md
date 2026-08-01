@@ -273,3 +273,6 @@
 - 正确修补为：未结束Window完整守恒；已结束且active漂移Window/Allocation批量装载并只修active；validation同范围并要求closed active drift=0。禁止通过延长900秒发布timeout掩盖全历史N+1。
 - 第四轮run `30693118550`两组后端、前端和镜像均通过；部署三次都在新批量查询后的Python分类失败，精确异常为PostgreSQL返回offset-naive `bucket_end`与offset-aware `observed_at`直接比较。分类必须由同一数据库表达式返回布尔值，不能把时间语义重新搬到Python。
 - 生产`SessionLocal(autoflush=false)`还要求active投影显式flush后再做聚合drift校验；该flush仍处于同一事务，不提前提交。SQLite回归通过`expire_all`复现数据库重新载入的naive时间，并同时覆盖autoflush关闭。
+- 第五轮run `30693755713`通过全部CI与镜像，生产`reconcile-ledger`已在不足20秒内通过；后续AI scope preview却为22,469条全历史Action建item，其中21,714条为immutable terminal。apply实测204秒仅处理3,100条，首轮最终在13,200条被唯一quarantine阻断并进入安装重试，证明全历史noop增长与错误分类都会阻止发布。
+- 唯一quarantine为未进Gateway的pending Action：AI正文生成命中内容策略后`message_text=''`、原quantity/content slot仍在。按PRD它应是`replan_required`并释放原槽，不是跨事实矛盾。
+- blocked batch中item已是`quarantined`，但`quarantined_count=0`，再次证明生产autoflush=false下聚合读取旧状态。正确修补同时包括：新preview只选open+unknown；invalid pre-Gateway payload归replan；首次conflict和每批apply显式flush后再聚合/finish。

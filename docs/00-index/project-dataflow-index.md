@@ -92,6 +92,8 @@ Action finalize
   -> 发布reconcile-ledger仅对未结束Window做完整reservation守恒；已结束Window批量修复active投影，历史search outcome/release owner不变
   -> Window live/closed由数据库按同一observed_at返回分类，禁止Python naive/aware时间比较
   -> 生产autoflush=false时同事务显式flush新投影后再做聚合invariant校验，校验通过后一次提交
+  -> AI scope preview仅选open+unknown可变Action；终态历史不建重复noop item；pre-Gateway无效payload释放原槽并replan
+  -> AI scope apply在autoflush=false下先flush本批Action/item，再聚合batch counters与finish
   -> exact fact按任务类型幂等重建业务事实；权威no-mutation令原AI槽replan；历史未找到仍inconclusive
   -> Task quality/runtime stats 独立短事务聚合
 

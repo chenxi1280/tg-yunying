@@ -37,6 +37,7 @@ from .runtime_state_hash import (
 
 
 OPEN_STATUSES = frozenset({"pending", "claiming", "executing", "retryable_failed"})
+TAKEOVER_CANDIDATE_STATUSES = tuple(sorted(OPEN_STATUSES | {"unknown_after_send"}))
 SCOPE_KEYS = (
     "content_scope_contract_version",
     "content_scope_tenant_id",
@@ -108,7 +109,7 @@ def classify_takeover_action(
     payload = _parsed_payload(action)
     if payload is None:
         return TakeoverClassification(
-            "quarantine", facts_hash, "legacy_payload_invalid",
+            "replan_required", facts_hash, "legacy_payload_invalid_pre_gateway",
         )
     binding = _binding_classification(session, action, payload)
     if binding is not None:
@@ -170,6 +171,7 @@ def _preview_actions(
         statement = select(Action).where(
             Action.task_type == "group_ai_chat",
             Action.action_type == "send_message",
+            Action.status.in_(TAKEOVER_CANDIDATE_STATUSES),
             Action.created_at <= cutoff_at,
         )
     return list(session.scalars(statement.order_by(Action.id.asc())))
@@ -224,9 +226,19 @@ def _binding_classification(
     if rows is None:
         return "replan_required", "content_mix_binding_fact_missing"
     cycle_slot, quantity, cycle = rows
-    if _binding_ownership_conflicts(action, cycle_slot, quantity, cycle):
+    if _binding_ownership_conflicts(
+        action,
+        cycle_slot=cycle_slot,
+        quantity=quantity,
+        cycle=cycle,
+    ):
         return "quarantine", "content_mix_binding_ownership_conflict"
-    return _coverage_binding_classification(session, action, payload, quantity)
+    return _coverage_binding_classification(
+        session,
+        action,
+        payload=payload,
+        quantity=quantity,
+    )
 
 
 def _binding_rows(
@@ -245,7 +257,13 @@ def _binding_rows(
     return cycle_slot, quantity, cycle
 
 
-def _binding_ownership_conflicts(action, cycle_slot, quantity, cycle) -> bool:
+def _binding_ownership_conflicts(
+    action,
+    *,
+    cycle_slot,
+    quantity,
+    cycle,
+) -> bool:
     return bool(
         cycle_slot.primary_quantity_slot_id != quantity.id
         or cycle_slot.current_action_id != action.id
@@ -260,6 +278,7 @@ def _binding_ownership_conflicts(action, cycle_slot, quantity, cycle) -> bool:
 def _coverage_binding_classification(
     session: Session,
     action: Action,
+    *,
     payload: SendMessagePayload,
     quantity: TaskGroupDailyMessageSlot,
 ) -> tuple[str, str] | None:

@@ -312,25 +312,27 @@ Window rebuild 前必须按以下顺序处理旧事实：
 | --- | --- | --- |
 | `already_current` | open Action 已有合法 `group_content_scope_v1` | 不写 |
 | `equivalent_snapshot_safe` | 未进 Gateway；Task/group/account、chat identity、CycleSlot/数量槽、context/reply/memory 均可由同 ledger 证明 | apply 补等价 scope snapshot |
-| `replan_required` | 未进 Gateway，但 context/reply/memory/slot 任一证据缺失或已过期 | 终态 `content_contract_replan_required`，释放原绑定并按原义务重规划 |
+| `replan_required` | 未进 Gateway，但 payload/正文无效，或 context/reply/memory/slot 任一证据缺失或已过期 | 终态 `content_contract_replan_required`，释放原绑定并按原义务重规划 |
 | `remote_reconcile_required` | 已有 Gateway start 或发送结果未知 | 不改 Action；进入真实远端核验 |
 | `immutable_terminal` | success、confirmed、visible_confirmed 或其他终态远端事实 | 不改 |
 | `quarantine` | 跨 Task/group/account、唯一键或 ledger 事实互相矛盾 | 对象级隔离，零自动写入 |
 
 #### Apply 规则
 
-- preview 必须在全部业务 worker 已 fence 后运行；它在同一快照中冻结候选 Action ID、observed action state hash、分类、分类输入 hash、cutoff 和 actor，为每项创建不可变 `AiContentScopeTakeoverItem`，再对按 Action ID 排序的全部 item 计算 batch classification hash。
+- preview 必须在全部业务 worker 已 fence 后运行；新 batch 只选择 `pending|claiming|executing|retryable_failed|unknown_after_send` 可变候选，历史不可变终态 Action 在查询层排除，不创建重复 noop item。它在同一快照中冻结候选 Action ID、observed action state hash、分类、分类输入 hash、cutoff 和 actor，为每项创建不可变 `AiContentScopeTakeoverItem`，再对按 Action ID 排序的全部 item 计算 batch classification hash；supersede 已有 batch 时仍可按原 item 精确收口。
 - batch 状态为 `previewed|applying|blocked|completed`；item 状态为 `pending|applied|noop|conflict|quarantined`。preview 只写 batch/item 控制事实，不修改 Action 或业务账本。
 - `action_state_hash` 是以下字段的版本化 canonical JSON SHA-256：Action identity、tenant/task/type、status、account、scheduled time、claim/lease owner/token/expiry、quantity/content slot identity、retry_count，以及分类实际读取的 payload/result scope/Gateway键；正文只进入已有正文 fingerprint，不把明文复制进 item。时间统一UTC ISO-8601，map键排序，禁止使用PostgreSQL `xmin`、进程时间或把 `retry_count` 冒充行版本。
 - apply 输入包含 preview batch id、classification hash、expected counts 和 actor。首次 apply 前必须锁 batch并确认全部 pending item 的 `action_state_hash`/分类输入 hash仍与 preview相同；任一漂移则 batch=`blocked`、对应 item=`conflict`，本次业务写入为 0。
 - 首次校验通过后 batch 进入 `applying`。使用小批次 `FOR UPDATE OF actions SKIP LOCKED`，每批按 item ID稳定排序、独立提交 Action/业务账本、item outcome 和 AuditLog；`applied|noop|quarantined` item 永不再次写业务状态。
 - 每批提交后持久化 processed/applied/noop/conflict/quarantine counts 与最后 item cursor。进程崩溃或部署中断后，使用同一 batch/hash 从首个 `pending` item继续；不得重新用已修改数据库计算一个必然漂移的全量 hash。
+- 生产 Session 关闭 autoflush 时，首次 conflict 标记及每批 Action/item outcome 必须在同一事务内显式 flush 后再聚合 counts 和判断 batch finish；禁止 counters 读取旧 item 状态，flush/聚合失败仍整体回滚当前批次。
 - 每个 pending item实际处理时仍必须在Action行锁内重算并核对 frozen action state hash/input hash；首次全量校验后出现的漂移把该 item记为conflict并立即阻止后续批次，不允许因batch已是applying就跳过CAS。
 - 仅当全部 item 离开 pending 且 `conflict=0` 时 batch=`completed`。出现 conflict 时已经安全提交的 item保持有效，新 preview 只允许覆盖旧 batch 未处理/conflict 的 Action，并引用 superseded batch；不得回滚已提交 item或重复修改。
 - Stage C 所认的 takeover completed 是 batch chain闭包：最新 head batch为completed，且从初始 preview到所有 superseding batch的候选并集不存在 pending/conflict、同一Action最多一个业务写入outcome。
 - 补快照不能改变正文、direct/reply、目标群、账号、素材类型、数量槽或 scheduled time。
 - replan 必须复用原 coverage/quantity/content obligation，不创建第二份业务目标。
 - success、unknown、Gateway-started 永远不进入自动重排。
+- `immutable_terminal` 仅用于旧 batch/supersede 的防御性分类；新 preview 的运行成本必须随可变候选规模增长，不得随全部历史终态 Action 无界增长。
 - 对 `completed` batch 重复 apply 返回原 counts/hash，新增写入为 0；对 `applying` batch重复 apply只续跑 pending item。
 - 即使发布脚本顺序错误，Dispatcher、AI generation、Planner 和 Recovery也必须对缺 `group_content_scope_v1` 且未带 completed takeover item 的历史 Action执行 `legacy_content_scope_takeover_pending` claim gate，禁止调用 Provider/Gateway或抢先终结；该 gate只在 batch completed 后解除。
 

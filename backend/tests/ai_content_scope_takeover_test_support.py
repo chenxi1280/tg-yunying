@@ -31,7 +31,7 @@ from app.services.task_center.payloads import SendMessagePayload
 def sessions():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
-    return sessionmaker(bind=engine, expire_on_commit=False)
+    return sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
 
 
 def seed_scope(session: Session) -> None:
@@ -231,6 +231,7 @@ def preview(
     *,
     supersedes_batch_id: str | None = None,
 ) -> AiContentScopeTakeoverBatch:
+    session.flush()
     return preview_ai_content_scope_takeover(
         session,
         cutoff_at=_now() + timedelta(minutes=1),
