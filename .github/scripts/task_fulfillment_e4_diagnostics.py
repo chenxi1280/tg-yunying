@@ -19,6 +19,7 @@ from app.models import (
     SearchClickAssignmentEpoch,
     SearchClickFulfillmentObligation,
     SearchClickOpportunityAssignment,
+    SearchClickSolverCarrierUnitBinding, SearchClickSolverProblemSnapshot,
     Task,
     TaskAccountDailyCoverage,
     TaskDayLedger,
@@ -48,7 +49,6 @@ def parse_task_ids() -> list[str]:
         raise ValueError(f"{TASK_IDS_ENV} is required")
     return task_ids
 
-
 def parse_release_since() -> datetime:
     raw = os.getenv(RELEASE_LIVE_AT_ENV, "").strip()
     if not raw:
@@ -56,14 +56,11 @@ def parse_release_since() -> datetime:
     value = datetime.fromisoformat(raw)
     return value.replace(tzinfo=BEIJING) if value.tzinfo is None else value.astimezone(BEIJING)
 
-
 def iso(value: datetime | None) -> str | None:
     return value.isoformat() if value else None
 
-
 def json_line(label: str, payload: dict[str, Any]) -> None:
     print(f"{label}=" + json.dumps(payload, ensure_ascii=False, sort_keys=True), flush=True)
-
 
 def _latest_ledger(session, task_id: str) -> TaskDayLedger | None:
     return session.scalar(
@@ -72,7 +69,6 @@ def _latest_ledger(session, task_id: str) -> TaskDayLedger | None:
         .order_by(TaskDayLedger.period_start_at.desc())
         .limit(1)
     )
-
 
 def _planner_error_after(task: Task, since: datetime) -> dict[str, Any] | None:
     error = dict((task.stats or {}).get("planner_runtime_error") or {})
@@ -84,7 +80,6 @@ def _planner_error_after(task: Task, since: datetime) -> dict[str, Any] | None:
     recorded_at = datetime.fromisoformat(raw)
     recorded_at = recorded_at.replace(tzinfo=BEIJING) if recorded_at.tzinfo is None else recorded_at
     return error if recorded_at >= since else None
-
 
 def _action_counts(session, task_id: str, since: datetime) -> dict[str, int]:
     rows = session.execute(
@@ -257,11 +252,16 @@ def _search_runtime_snapshot(session, ledger: TaskDayLedger) -> dict[str, Any]:
             func.count(func.distinct(SearchClickAssignmentEpoch.id)),
         )
         .join(
-            SearchClickOpportunityAssignment,
-            SearchClickOpportunityAssignment.search_click_assignment_epoch_id
+            SearchClickSolverProblemSnapshot,
+            SearchClickSolverProblemSnapshot.search_click_assignment_epoch_id
             == SearchClickAssignmentEpoch.id,
         )
-        .where(SearchClickOpportunityAssignment.task_day_ledger_id == ledger.id)
+        .join(
+            SearchClickSolverCarrierUnitBinding,
+            SearchClickSolverCarrierUnitBinding.search_click_solver_snapshot_id
+            == SearchClickSolverProblemSnapshot.id,
+        )
+        .where(SearchClickSolverCarrierUnitBinding.task_id == ledger.task_id)
         .group_by(SearchClickAssignmentEpoch.finalize_status, SearchClickAssignmentEpoch.outcome)
     )
     return {
