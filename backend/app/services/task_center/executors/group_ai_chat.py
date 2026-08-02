@@ -122,6 +122,7 @@ AI_QUALITY_DUPLICATE_SKIP_MESSAGE = "AI 候选语义重复风险过高，已跳�
 ACCOUNT_CAPACITY_BLOCKED_MESSAGE = "账号容量已排满，等待账号额度恢复后继续执行"
 ACCOUNT_COOLDOWN_BLOCKED_MESSAGE = "账号冷却中，等待冷却后继续执行"
 ACCOUNT_UNAVAILABLE_MESSAGE = "没有可用账号，等待账号恢复后继续执行"
+GROUP_BOT_ADMISSION_WAIT_MESSAGE = "账号仍在群管准入流程，等待准入完成后规划正文"
 ACCOUNT_DISTRIBUTION_SKEW_MESSAGE = "账号分布偏斜，已阻断本轮硬目标规划"
 ALL_ACCOUNT_DAILY_COVERAGE_REPLAN_CODE = "all_account_daily_coverage_replan"
 ALL_ACCOUNT_DAILY_COVERAGE_REPLAN_MESSAGE = "任务已切换为全部账号每日覆盖，旧硬目标规划已跳过等待按覆盖账本重建"
@@ -334,6 +335,26 @@ class ContentMixReplanResult:
     created: int = 0
 
 
+@dataclass(frozen=True)
+class QuantitySlotAlignmentResult:
+    code: str
+    ledger_id: str
+    slots: tuple[TaskGroupDailyMessageSlot, ...]
+    requested_count: int
+    missing_coverage_ids: tuple[str, ...] = ()
+    missing_extra_count: int = 0
+
+    @property
+    def aligned_count(self) -> int:
+        return len(self.slots)
+
+
+class QuantitySlotAlignmentError(RuntimeError):
+    def __init__(self, result: QuantitySlotAlignmentResult) -> None:
+        self.result = result
+        super().__init__(result.code)
+
+
 def _load_plan_facts(session: Session, task: Task) -> PlanFacts | PlanAbort:
     config = {**(task.type_config or {}), "pacing_config": task.pacing_config or {}}
     config = _canonicalized_task_config(session, task, config)
@@ -542,11 +563,13 @@ def _load_daily_coverage_plan_accounts(
             account_limit=account_limit,
         )
     )
-    if not selected:
-        selected.extend(admission_waiting[:account_limit])
+    _record_group_bot_admission_waiting(task, admission_waiting)
     _record_direct_check_in_capacity(task, len(selected))
     if selected:
         return AccountPlanState(selected)
+    if admission_waiting:
+        task.last_error = GROUP_BOT_ADMISSION_WAIT_MESSAGE
+        return PlanAbort()
     if facts.coverage.required_new <= 0:
         _mark_daily_target_pacing(task)
         return PlanAbort()
@@ -732,9 +755,10 @@ def _available_extra_quantity_slot_count(
     target = session.get(TaskGroupDailyTarget, target_id) if target_id else None
     if target is None or not target.task_day_ledger_id:
         return 0
-    bound_quantity_ids = select(
+    bound_quantity_slot = select(ContentMixCycleSlot.id).where(
         ContentMixCycleSlot.primary_quantity_slot_id
-    )
+        == TaskGroupDailyMessageSlot.id,
+    ).exists()
     statement = select(func.count(TaskGroupDailyMessageSlot.id)).where(
         TaskGroupDailyMessageSlot.task_id == task.id,
         TaskGroupDailyMessageSlot.task_day_ledger_id
@@ -742,7 +766,7 @@ def _available_extra_quantity_slot_count(
         TaskGroupDailyMessageSlot.slot_kind == "extra_volume",
         TaskGroupDailyMessageSlot.state == "open",
         TaskGroupDailyMessageSlot.task_account_daily_coverage_id.is_(None),
-        TaskGroupDailyMessageSlot.id.not_in(bound_quantity_ids),
+        ~bound_quantity_slot,
     )
     return int(session.scalar(statement) or 0)
 
@@ -811,6 +835,17 @@ def _include_daily_coverage_rows(
 def _record_direct_check_in_capacity(task: Task, ready_count: int) -> None:
     stats = dict(task.stats or {})
     stats["direct_check_in_ready_account_count"] = ready_count
+    task.stats = stats
+
+
+def _record_group_bot_admission_waiting(task: Task, accounts: list) -> None:
+    waiting_count = len({int(account.id) for account in accounts})
+    stats = dict(task.stats or {})
+    stats["pending_group_bot_admission_count"] = waiting_count
+    if waiting_count:
+        stats["skip_reason"] = "pending_group_bot_admission"
+    elif stats.get("skip_reason") == "pending_group_bot_admission":
+        stats.pop("skip_reason", None)
     task.stats = stats
 
 
@@ -1449,21 +1484,22 @@ def _freeze_content_mix_cycle(
     task: Task,
     blueprint: PlanBlueprint,
 ) -> FrozenContentMix:
-    target = session.get(
-        TaskGroupDailyTarget,
+    target = _locked_content_mix_daily_target(
+        session,
         blueprint.facts.coverage.daily_group_target_id,
     )
     if target is None or not target.task_day_ledger_id:
         raise ValueError("task_day_ledger_missing")
     items = blueprint.generation.quality_items
-    quantity_slots = _quantity_slots_for_content_mix(
+    alignment = _quantity_slot_alignment_for_content_mix(
         session,
         task,
         blueprint,
         target.task_day_ledger_id,
     )
-    if len(quantity_slots) != len(items):
-        raise ValueError("quantity_slots_unavailable")
+    if alignment.code != "aligned":
+        raise QuantitySlotAlignmentError(alignment)
+    quantity_slots = list(alignment.slots)
     cycle = _existing_or_new_content_mix_cycle(
         session,
         task,
@@ -1473,37 +1509,74 @@ def _freeze_content_mix_cycle(
     )
     persisted = _content_mix_cycle_slots(session, cycle.id)
     logical_ids = [_quality_slot_id(item) for item in items]
+    _clear_quantity_slot_alignment(task)
     return FrozenContentMix(
         cycle,
         dict(zip(logical_ids, persisted, strict=True)),
     )
 
 
-def _quantity_slots_for_content_mix(
+def _locked_content_mix_daily_target(
+    session: Session,
+    target_id: str,
+) -> TaskGroupDailyTarget | None:
+    statement = select(TaskGroupDailyTarget).where(
+        TaskGroupDailyTarget.id == target_id,
+    )
+    if session.bind and session.bind.dialect.name != "sqlite":
+        statement = statement.with_for_update()
+    return session.scalar(statement.execution_options(populate_existing=True))
+
+
+def _quantity_slot_alignment_for_content_mix(
     session: Session,
     task: Task,
     blueprint: PlanBlueprint,
     ledger_id: str,
-) -> list[TaskGroupDailyMessageSlot]:
-    bound = select(ContentMixCycleSlot.primary_quantity_slot_id)
-    available = list(session.scalars(
+) -> QuantitySlotAlignmentResult:
+    bound_slot = select(ContentMixCycleSlot.id).where(
+        ContentMixCycleSlot.primary_quantity_slot_id
+        == TaskGroupDailyMessageSlot.id,
+    ).exists()
+    statement = (
         select(TaskGroupDailyMessageSlot).where(
             TaskGroupDailyMessageSlot.task_id == task.id,
             TaskGroupDailyMessageSlot.task_day_ledger_id == ledger_id,
             TaskGroupDailyMessageSlot.state == "open",
-            TaskGroupDailyMessageSlot.id.not_in(bound),
+            ~bound_slot,
         ).order_by(TaskGroupDailyMessageSlot.slot_ordinal.asc())
-    ))
-    return _align_quantity_slots(blueprint, available)
+    )
+    if session.bind and session.bind.dialect.name != "sqlite":
+        statement = statement.with_for_update(of=TaskGroupDailyMessageSlot)
+    available = list(session.scalars(statement))
+    result = _quantity_slot_alignment(blueprint, available, ledger_id)
+    if result.code == "aligned":
+        return result
+    return _classified_quantity_slot_alignment(
+        session,
+        task,
+        ledger_id,
+        result,
+    )
 
 
 def _align_quantity_slots(
     blueprint: PlanBlueprint,
     available: list[TaskGroupDailyMessageSlot],
 ) -> list[TaskGroupDailyMessageSlot]:
+    return list(_quantity_slot_alignment(blueprint, available, "").slots)
+
+
+def _quantity_slot_alignment(
+    blueprint: PlanBlueprint,
+    available: list[TaskGroupDailyMessageSlot],
+    ledger_id: str,
+) -> QuantitySlotAlignmentResult:
     remaining = list(available)
     selected: list[TaskGroupDailyMessageSlot] = []
     assigned_coverage_ids: set[str] = set()
+    missing_coverage_ids: list[str] = []
+    missing_extra_count = 0
     for item in blueprint.generation.quality_items:
         account_id = _quality_slot_account_id(item)
         coverage = blueprint.profile.coverage_rows.get(account_id)
@@ -1522,12 +1595,86 @@ def _align_quantity_slots(
             None,
         )
         if matched is None:
-            break
+            if expected_coverage_id:
+                missing_coverage_ids.append(expected_coverage_id)
+            else:
+                missing_extra_count += 1
+            continue
         selected.append(matched)
         remaining.remove(matched)
         if expected_coverage_id:
             assigned_coverage_ids.add(expected_coverage_id)
-    return selected
+    requested_count = len(blueprint.generation.quality_items)
+    code = "aligned" if len(selected) == requested_count else "unclassified"
+    return QuantitySlotAlignmentResult(
+        code=code,
+        ledger_id=ledger_id,
+        slots=tuple(selected),
+        requested_count=requested_count,
+        missing_coverage_ids=tuple(missing_coverage_ids),
+        missing_extra_count=missing_extra_count,
+    )
+
+
+def _classified_quantity_slot_alignment(
+    session: Session,
+    task: Task,
+    ledger_id: str,
+    result: QuantitySlotAlignmentResult,
+) -> QuantitySlotAlignmentResult:
+    code = _quantity_slot_alignment_failure_code(
+        session,
+        task,
+        ledger_id,
+        result,
+    )
+    return QuantitySlotAlignmentResult(
+        code=code,
+        ledger_id=ledger_id,
+        slots=result.slots,
+        requested_count=result.requested_count,
+        missing_coverage_ids=result.missing_coverage_ids,
+        missing_extra_count=result.missing_extra_count,
+    )
+
+
+def _quantity_slot_alignment_failure_code(
+    session: Session,
+    task: Task,
+    ledger_id: str,
+    result: QuantitySlotAlignmentResult,
+) -> str:
+    if not result.missing_coverage_ids:
+        return (
+            "extra_volume_slot_unavailable"
+            if result.missing_extra_count
+            else "quantity_slot_state_changed"
+        )
+    rows = list(session.scalars(select(TaskGroupDailyMessageSlot).where(
+        TaskGroupDailyMessageSlot.task_id == task.id,
+        TaskGroupDailyMessageSlot.task_day_ledger_id == ledger_id,
+        TaskGroupDailyMessageSlot.task_account_daily_coverage_id.in_(
+            result.missing_coverage_ids,
+        ),
+    )))
+    found_ids = {str(row.task_account_daily_coverage_id) for row in rows}
+    if set(result.missing_coverage_ids) - found_ids:
+        return "quantity_slot_invariant_mismatch"
+    if _quantity_slots_are_content_mix_bound(session, rows):
+        return "existing_cycle_replan_required"
+    return "quantity_slot_state_changed"
+
+
+def _quantity_slots_are_content_mix_bound(
+    session: Session,
+    rows: list[TaskGroupDailyMessageSlot],
+) -> bool:
+    slot_ids = [row.id for row in rows]
+    if not slot_ids:
+        return False
+    return bool(session.scalar(select(ContentMixCycleSlot.id).where(
+        ContentMixCycleSlot.primary_quantity_slot_id.in_(slot_ids),
+    ).limit(1)))
 
 
 def _incomplete_coverage_id(
@@ -1942,8 +2089,8 @@ def build_plan(session: Session, task: Task) -> int:
             return blueprint.created
     try:
         frozen_mix = _freeze_content_mix_cycle(session, task, blueprint)
-    except ValueError as exc:
-        task.last_error = str(exc)
+    except QuantitySlotAlignmentError as exc:
+        _record_quantity_slot_alignment_failure(task, exc.result)
         return 0
     prepared = _prepare_action_slots(session, task, blueprint, frozen_mix)
     prepared_reply_count = sum(
@@ -1965,6 +2112,38 @@ def build_plan(session: Session, task: Task) -> int:
         created=created,
     )
     return created
+
+
+def _record_quantity_slot_alignment_failure(
+    task: Task,
+    result: QuantitySlotAlignmentResult,
+) -> None:
+    messages = {
+        "existing_cycle_replan_required": "数量槽已绑定旧内容周期，等待原槽重建",
+        "quantity_slot_state_changed": "数量槽状态已变化，等待重新规划",
+        "extra_volume_slot_unavailable": "当前没有可用的额外消息数量槽",
+        "quantity_slot_invariant_mismatch": "数量槽与账号覆盖身份不一致，需要修复账本",
+    }
+    stats = dict(task.stats or {})
+    stats["quantity_slot_alignment"] = {
+        "code": result.code,
+        "ledger_id": result.ledger_id,
+        "requested_count": result.requested_count,
+        "aligned_count": result.aligned_count,
+        "missing_coverage_ids": list(result.missing_coverage_ids[:20]),
+        "missing_extra_count": result.missing_extra_count,
+        "recorded_at": _now().isoformat(),
+    }
+    task.stats = stats
+    task.last_error = messages[result.code]
+
+
+def _clear_quantity_slot_alignment(task: Task) -> None:
+    stats = dict(task.stats or {})
+    if "quantity_slot_alignment" not in stats:
+        return
+    stats.pop("quantity_slot_alignment", None)
+    task.stats = stats
 
 
 def _replan_content_mix_slots(

@@ -168,16 +168,22 @@ def snapshot_hash(snapshot: dict[str, Any]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _alignment_result(blueprint, slots: list[Any]) -> dict[str, Any]:
+def _alignment_result(
+    blueprint,
+    alignment: group_ai_chat.QuantitySlotAlignmentResult,
+) -> dict[str, Any]:
     items = list(blueprint.generation.quality_items)
     account_ids = [group_ai_chat._quality_slot_account_id(item) for item in items]
     return {
-        "status": "ready",
+        "status": "ready" if alignment.code == "aligned" else "blocked",
+        "alignment_code": alignment.code,
         "item_count": len(items),
-        "matched_quantity_slot_count": len(slots),
+        "matched_quantity_slot_count": alignment.aligned_count,
+        "missing_coverage_ids": list(alignment.missing_coverage_ids),
+        "missing_extra_count": alignment.missing_extra_count,
         "distinct_item_account_count": len(set(account_ids)),
         "item_account_ids": account_ids,
-        "alignment_complete": bool(items) and len(items) == len(slots),
+        "alignment_complete": bool(items) and alignment.code == "aligned",
     }
 
 
@@ -191,13 +197,13 @@ def simulate_alignment(session, task: Task, config: dict[str, Any]) -> dict[str,
         target = session.get(TaskGroupDailyTarget, blueprint.facts.coverage.daily_group_target_id)
         if target is None or not target.task_day_ledger_id:
             return {"status": "daily_target_missing"}
-        slots = group_ai_chat._quantity_slots_for_content_mix(
+        alignment = group_ai_chat._quantity_slot_alignment_for_content_mix(
             session,
             task,
             blueprint,
             target.task_day_ledger_id,
         )
-        return _alignment_result(blueprint, slots)
+        return _alignment_result(blueprint, alignment)
     finally:
         savepoint.rollback()
         session.expire_all()

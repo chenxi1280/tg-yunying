@@ -532,8 +532,8 @@ def test_group_volume_candidates_scan_past_uncovered_admission_debt(
     assert [account.id for account in selected] == [2, 3]
 
 
-@pytest.mark.parametrize(("extra_account_id", "expected_ids"), [(3, [3]), (None, [1])])
-def test_daily_planner_prefers_admitted_volume_but_keeps_admission_driver(
+@pytest.mark.parametrize(("extra_account_id", "expected_ids"), [(3, [3]), (None, [])])
+def test_daily_planner_never_uses_admission_waiting_as_body_driver(
     session: Session,
     monkeypatch: pytest.MonkeyPatch,
     extra_account_id: int | None,
@@ -591,7 +591,66 @@ def test_daily_planner_prefers_admitted_volume_but_keeps_admission_driver(
         include_replan_accounts=True,
     )
 
-    assert [account.id for account in state.accounts] == expected_ids
+    if expected_ids:
+        assert [account.id for account in state.accounts] == expected_ids
+        return
+    assert isinstance(state, group_ai_chat.PlanAbort)
+    assert task.stats["pending_group_bot_admission_count"] == 1
+    assert task.last_error == "账号仍在群管准入流程，等待准入完成后规划正文"
+
+
+def test_freeze_reports_structured_quantity_slot_invariant_mismatch(
+    session: Session,
+) -> None:
+    task, group = _seed(session, configured=1, account_count=1)
+    ledger = ensure_task_day_ledger(
+        session,
+        task,
+        now=datetime(2026, 7, 28, 12),
+    )
+    target = ensure_task_group_daily_target(
+        session,
+        task,
+        group,
+        date(2026, 7, 28),
+        now=datetime(2026, 7, 28, 12),
+    )
+    missing_coverage = SimpleNamespace(
+        id="coverage-does-not-have-a-quantity-slot",
+        target_count=1,
+        confirmed_count=0,
+    )
+    blueprint = SimpleNamespace(
+        facts=SimpleNamespace(
+            target=session.get(OperationTarget, 31),
+            config=task.type_config,
+            coverage=SimpleNamespace(daily_group_target_id=target.id),
+            task_config_revision=task.config_revision,
+            rule_version=SimpleNamespace(rule_set_id=7, version=2),
+            group=group,
+        ),
+        turn=SimpleNamespace(cycle_index=1),
+        profile=SimpleNamespace(
+            cycle_id=f"{task.id}:cycle:1",
+            coverage_rows={1: missing_coverage},
+        ),
+        generation=SimpleNamespace(
+            quality_items=[{"slot": {"slot_id": "logical-1", "account_id": 1}}],
+            coverage_reply_shortfall=False,
+        ),
+    )
+
+    with pytest.raises(group_ai_chat.QuantitySlotAlignmentError) as raised:
+        group_ai_chat._freeze_content_mix_cycle(session, task, blueprint)
+
+    assert raised.value.result.code == "quantity_slot_invariant_mismatch"
+    assert raised.value.result.requested_count == 1
+    assert raised.value.result.aligned_count == 0
+    assert raised.value.result.missing_coverage_ids == (
+        "coverage-does-not-have-a-quantity-slot",
+    )
+    assert ledger.id == target.task_day_ledger_id
+    assert session.query(ContentMixCycle).count() == 0
 
 
 def test_open_volume_counts_only_group_bot_plannable_actions(session: Session) -> None:
