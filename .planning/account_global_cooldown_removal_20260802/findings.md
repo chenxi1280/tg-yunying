@@ -17,3 +17,7 @@
 - `ae59c2fb` 上线后生产每分钟都为搜索任务创建 reservation 与 solver epoch；最近轮次均有 65 条候选路径、1040–1300 硬安全容量，却在约 0.1 秒内全部 `abandoned`，排除窗口到期与无候选账号。
 - `record_worker_heartbeat()` 使用 Core upsert 更新 fencing token 后，普通 ORM 查询会复用 identity map 中的旧 `WorkerHeartbeat`；搜索 epoch 因此写入旧 token，而数据库已经是新 token，首次 owner 校验立即失败并整轮释放。
 - 新回归测试在 commit 前稳定复现 `token-1 != token-2`；upsert 后使用 `populate_existing=True` 刷新 ORM 状态是最小根因修复，不放宽 owner fencing、安全容量或远端事实门禁。
+- `8d790240` 上线后连续两轮 solver `optimal`，分别绑定 19、21 个机会；生产共出现 37 个 consumed assignment 和 37 个真实 gateway Attempt，证明冷却、Window demand 与 fencing token 三层阻断均已解除。
+- 37 个新 Attempt 全部为 `search_transport_unavailable/TimeoutError`，约 16 秒后失败；扩大到最近 100 次为 94 次同类失败，覆盖 63 个账号绑定和全部 16 个 Mihomo 节点。
+- 生产 16 个旧 Mihomo 容器与 TCP 端口可达，但 16/16 SOCKS5 公网出口失败，数据库 healthy 时间停在 2026-07-30；当前真实点击阻断是陈旧代理资源，不再是账号冷却。
+- 正式 Clash 刷新 run `30740981229` 从当前订阅解析出 63 个节点，但 63/63 均因 `TLS unexpected EOF` 未通过出口探活，流程按 fail-closed 未替换绑定。2026-07-30 成功 run `30534529674` 在 `skip-cert-verify=false` 下 16/16 成功，排除本次必须降低 TLS 校验的推断；需要有效订阅资源才能取得 Telegram E4。

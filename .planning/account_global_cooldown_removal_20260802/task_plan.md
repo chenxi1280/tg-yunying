@@ -18,8 +18,8 @@
 1. [complete] Product / diagnosis：核对正式 PRD、接管入口、部署调用与现有测试。
 2. [complete] Dev：先写红测，再最小修改归一化与文档/索引。
 3. [complete] QA / product acceptance：运行定向测试、静态检查和 diff 审查。
-4. [in_progress] Release：提交、推送 master/release，等待 Actions 与生产切换。
-5. [pending] Production E4：复核生产配置、任务账本和真实搜索点击事实。
+4. [complete] Release：提交、推送 master/release，Actions 全绿并切换生产 release。
+5. [complete] Production E4：冷却为 0，搜索已生成 assignment/action/attempt；真实点击被 16/16 旧节点与 63/63 当前订阅节点出口失效阻断，未伪报 Telegram 完成。
 
 ## Boundaries
 
@@ -36,3 +36,4 @@
 - 同 SHA 生产 Planner profile 在 240 秒超时：60 秒堆栈停在群日目标行锁，120/180 秒停在 `successful_own_history_reply_facts()` 的 PostgreSQL 查询；确认 AI 全表 Attempt 聚合占住串行 Planner。
 - 查询优化上线后 Planner 已推进搜索 `next_run_at`，但普通 Dispatcher 先创建的 ready Window 不含未物化搜索 demand，导致 reservation/epoch/assignment 仍为 0；需恢复共享 Window demand 合并且保留普通 Task 份额。
 - 搜索 reservation 恢复后，生产 solver epoch 因 heartbeat upsert 返回 identity map 中的旧 fencing token 而立即 owner-lost；红测已复现，需发布 ORM 强制刷新修复并重新取得 assignment/action/E4。
+- `8d790240` 上线后已取得 37 个真实 gateway Attempt；全部因代理出口 `TimeoutError` 失败。正式刷新验证当前订阅 63/63 节点不可用且未落库，Telegram 点击事实保持 blocked，不属于冷却修复回归。

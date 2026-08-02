@@ -1,0 +1,160 @@
+name: Production AI Group Runtime Recovery
+
+'on':
+  workflow_dispatch:
+    inputs:
+      deployed_sha:
+        description: Full or short SHA expected in production
+        required: true
+        type: string
+      task_id:
+        description: Exact group_ai_chat task UUID
+        required: true
+        type: string
+      task_name:
+        description: Exact task name
+        required: true
+        type: string
+      messages_per_round:
+        description: Temporary messages per round
+        required: true
+        default: '1'
+        type: string
+      reply_min_per_round:
+        description: Temporary reply minimum per round
+        required: true
+        default: '1'
+        type: string
+      apply:
+        description: Apply only after a matching preview
+        required: true
+        default: false
+        type: boolean
+      expected_state_hash:
+        description: Exact preview hash required for apply
+        required: false
+        default: ''
+        type: string
+      actor:
+        description: Approved operator identity
+        required: true
+        default: codex-production-recovery
+        type: string
+      approval_ref:
+        description: Approval or incident reference
+        required: true
+        type: string
+
+concurrency:
+  group: production-ai-group-runtime-recovery
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    environment: production-silicon-valley
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate inputs and secrets
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SILICON_VALLEY_PRODUCTION_SSH_PRIVATE_KEY }}
+          DEPLOY_HOST: ${{ secrets.SILICON_VALLEY_PRODUCTION_HOST }}
+          DEPLOY_USER: ${{ secrets.SILICON_VALLEY_PRODUCTION_USER }}
+          EXPECTED_SHA: ${{ inputs.deployed_sha }}
+          TASK_ID: ${{ inputs.task_id }}
+          TASK_NAME: ${{ inputs.task_name }}
+          MESSAGES_PER_ROUND: ${{ inputs.messages_per_round }}
+          REPLY_MIN_PER_ROUND: ${{ inputs.reply_min_per_round }}
+          APPLY: ${{ inputs.apply }}
+          STATE_HASH: ${{ inputs.expected_state_hash }}
+          ACTOR: ${{ inputs.actor }}
+          APPROVAL_REF: ${{ inputs.approval_ref }}
+        run: |
+          set -euo pipefail
+          test -n "${SSH_PRIVATE_KEY}"
+          test -n "${DEPLOY_HOST}"
+          test -n "${DEPLOY_USER}"
+          [[ "${EXPECTED_SHA}" =~ ^[0-9a-fA-F]{8,40}$ ]]
+          [[ "${TASK_ID}" =~ ^[0-9a-fA-F-]{36}$ ]]
+          [[ "${TASK_NAME}" =~ ^[^\']{1,120}$ ]]
+          [[ "${MESSAGES_PER_ROUND}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${REPLY_MIN_PER_ROUND}" =~ ^[1-9][0-9]*$ ]]
+          (( REPLY_MIN_PER_ROUND <= MESSAGES_PER_ROUND ))
+          [[ "${ACTOR}" =~ ^[A-Za-z0-9._@+-]{1,100}$ ]]
+          [[ "${APPROVAL_REF}" =~ ^[A-Za-z0-9._:/#-]{1,160}$ ]]
+          if [[ "${APPLY}" == true ]]; then
+            [[ "${STATE_HASH}" =~ ^[0-9a-f]{64}$ ]]
+          fi
+
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SILICON_VALLEY_PRODUCTION_SSH_PRIVATE_KEY }}
+          DEPLOY_HOST: ${{ secrets.SILICON_VALLEY_PRODUCTION_HOST }}
+          DEPLOY_USER: ${{ secrets.SILICON_VALLEY_PRODUCTION_USER }}
+          DEPLOY_PORT: ${{ secrets.SILICON_VALLEY_PRODUCTION_PORT }}
+          SSH_CONNECT_TIMEOUT: ${{ vars.SSH_CONNECT_TIMEOUT }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${SSH_PRIVATE_KEY}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<EOF
+          Host production
+            HostName ${DEPLOY_HOST}
+            User ${DEPLOY_USER}
+            Port ${DEPLOY_PORT:-22}
+            IdentityFile ~/.ssh/id_ed25519
+            IdentitiesOnly yes
+            StrictHostKeyChecking accept-new
+            ConnectTimeout ${SSH_CONNECT_TIMEOUT:-60}
+            ConnectionAttempts 3
+            ServerAliveInterval 15
+            ServerAliveCountMax 8
+          EOF
+          chmod 600 ~/.ssh/config
+
+      - name: Verify release and runtime
+        env:
+          BASE_DIR: ${{ vars.SILICON_VALLEY_PRODUCTION_BASE_DIR }}
+          EXPECTED_SHA: ${{ inputs.deployed_sha }}
+        run: |
+          set -euo pipefail
+          CURRENT="$(ssh production "readlink -f '${BASE_DIR:-/data/tgyunying}/current'")"
+          [[ "$(basename "${CURRENT}")" == *_"${EXPECTED_SHA:0:8}" ]]
+          ssh production 'set -euo pipefail
+            for name in tgyunying-backend tgyunying-worker-planner
+            do
+              state="$(docker inspect --format "{{.State.Status}}/{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}" "${name}")"
+              echo "AI_GROUP_RUNTIME_RECOVERY_CONTAINER=${name}:${state}"
+              [[ "${state}" == running/healthy ]]
+            done'
+
+      - name: Preview or apply runtime batch recovery
+        env:
+          TASK_ID: ${{ inputs.task_id }}
+          TASK_NAME: ${{ inputs.task_name }}
+          MESSAGES_PER_ROUND: ${{ inputs.messages_per_round }}
+          REPLY_MIN_PER_ROUND: ${{ inputs.reply_min_per_round }}
+          APPLY: ${{ inputs.apply }}
+          STATE_HASH: ${{ inputs.expected_state_hash }}
+          ACTOR: ${{ inputs.actor }}
+          APPROVAL_REF: ${{ inputs.approval_ref }}
+        run: |
+          set -euo pipefail
+          ssh production "timeout 180 docker exec -i \
+            -e AI_GROUP_RUNTIME_RECOVERY_TASK_ID='${TASK_ID}' \
+            -e AI_GROUP_RUNTIME_RECOVERY_TASK_NAME='${TASK_NAME}' \
+            -e AI_GROUP_RUNTIME_RECOVERY_MESSAGES_PER_ROUND='${MESSAGES_PER_ROUND}' \
+            -e AI_GROUP_RUNTIME_RECOVERY_REPLY_MIN_PER_ROUND='${REPLY_MIN_PER_ROUND}' \
+            -e AI_GROUP_RUNTIME_RECOVERY_APPLY='${APPLY}' \
+            -e AI_GROUP_RUNTIME_RECOVERY_EXPECTED_STATE_HASH='${STATE_HASH}' \
+            -e AI_GROUP_RUNTIME_RECOVERY_ACTOR='${ACTOR}' \
+            -e AI_GROUP_RUNTIME_RECOVERY_APPROVAL_REF='${APPROVAL_REF}' \
+            tgyunying-backend python -" \
+            < backend/scripts/recover_ai_group_runtime_batch.py

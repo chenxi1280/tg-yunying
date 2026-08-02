@@ -131,6 +131,30 @@ jobs:
             -i tgyunying-backend python -" \
             < .github/scripts/search_click_recent_epoch_diagnostics.py
 
+      - name: Read search proxy runtime
+        if: ${{ always() }}
+        env:
+          SEARCH_PROXY_TASK_IDS: ${{ inputs.task_ids }}
+        run: |
+          set -euo pipefail
+          ssh silicon-valley-production-server \
+            "docker ps --format '{{.Names}} {{.Status}}' | grep '^tgyunying-mihomo-' || true"
+          ssh silicon-valley-production-server '
+            set -euo pipefail
+            for name in $(docker ps --format "{{.Names}}" | grep "^tgyunying-mihomo-"); do
+              if timeout 15 docker exec tgyunying-backend curl -fsS --max-time 10 \
+                -x "socks5h://${name}:7890" https://api.ipify.org >/dev/null; then
+                echo "SEARCH_PROXY_EGRESS=${name}:ok"
+              else
+                echo "SEARCH_PROXY_EGRESS=${name}:failed"
+              fi
+            done
+          '
+          ssh silicon-valley-production-server "timeout 180 docker exec \
+            -e SEARCH_PROXY_TASK_IDS='${SEARCH_PROXY_TASK_IDS}' \
+            -i tgyunying-backend python -" \
+            < .github/scripts/search_proxy_runtime_diagnostics.py
+
       - name: Read AI group binding diagnostics
         if: ${{ always() }}
         run: |
