@@ -271,6 +271,9 @@ def test_invalid_reply_target_skips_ai_and_gateway_and_releases_coverage(
         assert action.status == "failed"
         assert action.result["error_code"] == expected_code
         assert action.payload["ai_generation_status"] == expected_code
+        if invalidation == "remote_missing":
+            assert action.result["reply_target_observation"] == "remote_missing_or_inaccessible"
+            assert action.result["reply_target_message_id"] == "9001"
         assert coverage.state == "ready"
         assert coverage.reserved_action_id is None
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sqlalchemy import String, and_, cast, exists, func, select
+from sqlalchemy import String, and_, cast, exists, func, or_, select
 from sqlalchemy.orm import Session, aliased
 
 from app.models import (
@@ -20,6 +20,8 @@ from .payloads import SendMessagePayload
 
 
 CONTENT_SCOPE_CONTRACT_VERSION = "group_content_scope_v1"
+LOCAL_REPLY_TARGET_MISSING_DETAIL = "引用目标不存在或当前账号不可引用"
+REMOTE_REPLY_TARGET_OBSERVATION = "remote_missing_or_inaccessible"
 
 
 @dataclass(frozen=True)
@@ -238,6 +240,44 @@ def successful_own_history_reply_facts(
         .limit(max(1, int(limit)))
     )
     return [(action, str(remote_id)) for action, remote_id in rows]
+
+
+def remotely_invalid_reply_target_ids(
+    session: Session,
+    *,
+    tenant_id: int,
+    task_id: str,
+    group_id: int,
+    candidate_ids: set[int],
+) -> set[int]:
+    if not candidate_ids:
+        return set()
+    result = Action.result
+    remote_failure = or_(
+        result["reply_target_observation"].as_string()
+        == REMOTE_REPLY_TARGET_OBSERVATION,
+        and_(
+            result["error_code"].as_string() == "reply_target_missing",
+            result["validation_stage"].as_string() == "ai_reply_target",
+            func.coalesce(result["error_message"].as_string(), "")
+            != LOCAL_REPLY_TARGET_MISSING_DETAIL,
+        ),
+    )
+    rows = session.scalars(
+        select(Action.payload["reply_to_message_id"].as_integer())
+        .where(
+            Action.tenant_id == tenant_id,
+            Action.task_id == task_id,
+            Action.task_type == "group_ai_chat",
+            Action.action_type == "send_message",
+            Action.status == "failed",
+            Action.payload["group_id"].as_integer() == group_id,
+            Action.payload["reply_to_message_id"].as_integer().in_(candidate_ids),
+            remote_failure,
+        )
+        .distinct()
+    )
+    return {int(row) for row in rows if row}
 
 
 def _own_history_filters(

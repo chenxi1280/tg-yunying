@@ -14,7 +14,11 @@ from .ai_generator import AI_GENERATION_UNAVAILABLE_MESSAGE, AiGenerationUnavail
 from .ai_message_memory import mark_group_ai_message_result
 from .ai_quality_stats import clear_quality_blocker, quality_scope_key, record_quality_event
 from .direct_check_in import prepare_direct_check_in, requires_direct_check_in
-from .group_ai_scope import successful_own_history_reply_facts, validate_group_ai_content_scope
+from .group_ai_scope import (
+    LOCAL_REPLY_TARGET_MISSING_DETAIL,
+    successful_own_history_reply_facts,
+    validate_group_ai_content_scope,
+)
 from .payloads import SendMessagePayload
 
 
@@ -282,7 +286,12 @@ def validate_local_reply_target(
     ))
     if group and link and _local_reply_target_exists(session, action, payload=payload):
         return group.tg_peer_id
-    fail_generation_action(action, "reply_target_missing", "引用目标不存在或当前账号不可引用", stage="ai_reply_target")
+    fail_generation_action(
+        action,
+        "reply_target_missing",
+        LOCAL_REPLY_TARGET_MISSING_DETAIL,
+        stage="ai_reply_target",
+    )
     session.commit()
     raise AiGenerationUnavailable("reply_target_missing")
 

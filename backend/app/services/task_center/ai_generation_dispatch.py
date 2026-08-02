@@ -24,6 +24,7 @@ from .ai_generation_slots import reply_targets as _reply_targets
 from .ai_generator import AI_GENERATION_UNAVAILABLE_MESSAGE, AiGenerationUnavailable
 from .ai_generation_quality import fail_generation_action, fail_generation_batch
 from .group_ai_prompt_scope import rebuild_group_prompt_inputs
+from .group_ai_scope import REMOTE_REPLY_TARGET_OBSERVATION
 from .ai_generation_guards import (
     invalidate_superseded_normal_generation as _invalidate_superseded_normal_generation,
     latest_context_rows as _latest_context_rows,
@@ -403,6 +404,12 @@ def _validate_remote_reply_target(
         probe.detail or "远端引用目标不存在或不可访问",
         stage="ai_reply_target",
     )
+    action.result = {
+        **(action.result or {}),
+        "reply_target_observation": REMOTE_REPLY_TARGET_OBSERVATION,
+        "reply_target_message_id": target_id,
+        "reply_target_probe_detail": str(probe.detail or ""),
+    }
     session.commit()
     raise AiGenerationUnavailable("reply_target_missing")
 

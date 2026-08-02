@@ -93,7 +93,10 @@ from ..daily_group_target import (
 from ..direct_check_in import MASK_MISSING_CHECK_IN_SOURCE
 from ..daily_fulfillment import record_daily_fulfillment_decision
 from ..fingerprints import fingerprint_exists, remember_fingerprint
-from ..group_ai_scope import successful_own_history_reply_facts
+from ..group_ai_scope import (
+    remotely_invalid_reply_target_ids,
+    successful_own_history_reply_facts,
+)
 from ..group_bot_admission import plannable_admission_account_ids
 from ..hard_hourly import (
     current_progress,
@@ -3339,7 +3342,16 @@ def _group_reply_target_pool(session: Session, task: Task, group: TgGroup, rows:
     targets = [_reply_target_from_context_row(row) for row in reversed(rows) if _reply_target_from_context_row(row)]
     targets.extend(_historical_group_reply_targets(session, task, group))
     deduped = _dedupe_reply_targets(targets)
-    return _exclude_used_reply_targets(deduped, _used_group_reply_target_ids(session, task, group, _reply_message_ids(deduped)))
+    candidate_ids = _reply_message_ids(deduped)
+    used_ids = _used_group_reply_target_ids(session, task, group, candidate_ids)
+    invalid_ids = remotely_invalid_reply_target_ids(
+        session,
+        tenant_id=task.tenant_id,
+        task_id=task.id,
+        group_id=group.id,
+        candidate_ids=candidate_ids,
+    )
+    return _exclude_used_reply_targets(deduped, used_ids | invalid_ids)
 
 
 def _dedupe_reply_targets(targets: list[dict]) -> list[dict]:
