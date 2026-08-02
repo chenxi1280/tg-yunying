@@ -16,6 +16,41 @@ name: Production Task Monitor
         required: false
         default: d3365706-afe1-4166-9d0d-c2d6404bc8ad,84180c47-cf92-408e-bdd9-c68804f7de29,7805d8f2-dfef-4842-b11c-14cc1f434c94,fdb48029-4fda-4801-818d-0c509da37ea3,3e9db16a-ff5a-4b19-b917-c0182b16734a
         type: string
+      recover_stale_search_assignments:
+        description: Preview or apply stale search-click Assignment release
+        required: true
+        default: false
+        type: boolean
+      stale_assignment_apply:
+        description: Apply the fingerprint-locked stale Assignment release
+        required: true
+        default: false
+        type: boolean
+      stale_assignment_expected_count:
+        description: Exact stale count from preview; required for apply
+        required: false
+        default: ''
+        type: string
+      stale_assignment_expected_releasable_count:
+        description: Exact releasable count from preview; required for apply
+        required: false
+        default: ''
+        type: string
+      stale_assignment_expected_fingerprint:
+        description: Exact candidate fingerprint from preview; required for apply
+        required: false
+        default: ''
+        type: string
+      stale_assignment_actor:
+        description: Approved production operator identity
+        required: false
+        default: codex
+        type: string
+      stale_assignment_approval_ref:
+        description: Approval or incident reference without spaces
+        required: false
+        default: ''
+        type: string
 
 concurrency:
   group: production-task-monitor
@@ -39,6 +74,14 @@ jobs:
           DEPLOY_USER: ${{ secrets.SILICON_VALLEY_PRODUCTION_USER }}
           RELEASE_LIVE_AT: ${{ inputs.release_live_at }}
           EXPECTED_DEPLOYED_SHA: ${{ inputs.deployed_sha }}
+          RECOVERY_ENABLED: ${{ inputs.recover_stale_search_assignments }}
+          RECOVERY_APPLY: ${{ inputs.stale_assignment_apply }}
+          RECOVERY_TASK_IDS: ${{ inputs.task_ids }}
+          RECOVERY_EXPECTED_COUNT: ${{ inputs.stale_assignment_expected_count }}
+          RECOVERY_EXPECTED_RELEASABLE_COUNT: ${{ inputs.stale_assignment_expected_releasable_count }}
+          RECOVERY_EXPECTED_FINGERPRINT: ${{ inputs.stale_assignment_expected_fingerprint }}
+          RECOVERY_ACTOR: ${{ inputs.stale_assignment_actor }}
+          RECOVERY_APPROVAL_REF: ${{ inputs.stale_assignment_approval_ref }}
         run: |
           set -euo pipefail
           test -n "${SSH_PRIVATE_KEY}"
@@ -46,6 +89,17 @@ jobs:
           test -n "${DEPLOY_USER}"
           test -n "${RELEASE_LIVE_AT}"
           [[ "${EXPECTED_DEPLOYED_SHA}" =~ ^[0-9a-fA-F]{8,40}$ ]]
+          if [[ "${RECOVERY_ENABLED}" == true ]]; then
+            [[ "${RECOVERY_TASK_IDS}" =~ ^[0-9a-fA-F-]{36}$ ]]
+            [[ "${RECOVERY_ACTOR}" =~ ^[A-Za-z0-9._@+-]{1,100}$ ]]
+            [[ "${RECOVERY_APPROVAL_REF}" =~ ^[A-Za-z0-9._:/#-]{1,160}$ ]]
+          fi
+          if [[ "${RECOVERY_APPLY}" == true ]]; then
+            [[ "${RECOVERY_ENABLED}" == true ]]
+            [[ "${RECOVERY_EXPECTED_COUNT}" =~ ^[0-9]+$ ]]
+            [[ "${RECOVERY_EXPECTED_RELEASABLE_COUNT}" =~ ^[0-9]+$ ]]
+            [[ "${RECOVERY_EXPECTED_FINGERPRINT}" =~ ^[0-9a-f]{64}$ ]]
+          fi
 
       - name: Configure SSH
         env:
@@ -107,6 +161,29 @@ jobs:
               [[ "${state}" == running/healthy ]]
             done
           '
+
+      - name: Recover stale search click assignments
+        if: ${{ inputs.recover_stale_search_assignments }}
+        env:
+          TASK_ID: ${{ inputs.task_ids }}
+          APPLY: ${{ inputs.stale_assignment_apply }}
+          EXPECTED_COUNT: ${{ inputs.stale_assignment_expected_count }}
+          EXPECTED_RELEASABLE_COUNT: ${{ inputs.stale_assignment_expected_releasable_count }}
+          EXPECTED_FINGERPRINT: ${{ inputs.stale_assignment_expected_fingerprint }}
+          ACTOR: ${{ inputs.stale_assignment_actor }}
+          APPROVAL_REF: ${{ inputs.stale_assignment_approval_ref }}
+        run: |
+          set -euo pipefail
+          ssh silicon-valley-production-server "timeout 240 docker exec \
+            -e STALE_RECOVERY_TASK_ID='${TASK_ID}' \
+            -e STALE_RECOVERY_APPLY='${APPLY}' \
+            -e STALE_RECOVERY_EXPECTED_STALE_COUNT='${EXPECTED_COUNT}' \
+            -e STALE_RECOVERY_EXPECTED_RELEASABLE_COUNT='${EXPECTED_RELEASABLE_COUNT}' \
+            -e STALE_RECOVERY_EXPECTED_FINGERPRINT='${EXPECTED_FINGERPRINT}' \
+            -e STALE_RECOVERY_ACTOR='${ACTOR}' \
+            -e STALE_RECOVERY_APPROVAL_REF='${APPROVAL_REF}' \
+            -i tgyunying-backend python -" \
+            < .github/scripts/recover_stale_search_click_assignments.py
 
       - name: Read incident task fulfillment E4 facts
         env:
