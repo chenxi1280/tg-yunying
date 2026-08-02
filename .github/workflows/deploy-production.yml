@@ -397,7 +397,7 @@ jobs:
         run: |
           set -euo pipefail
           BASE_DIR="${SILICON_VALLEY_PRODUCTION_BASE_DIR:-/data/tgyunying}"
-          BRANCHES="${SILICON_VALLEY_RELEASE_BRANCHES:-release}"
+          BRANCHES="${SILICON_VALLEY_RELEASE_BRANCHES:-release} codex/proxy-sync-hotfix-release-20260803"
           bash deploy/release.sh \
             --host silicon-valley-production-server \
             --user "${DEPLOY_USER}" \
