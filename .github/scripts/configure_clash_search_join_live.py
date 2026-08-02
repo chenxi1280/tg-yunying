@@ -31,7 +31,7 @@ from app.models import (
     TgAccount,
     TgAccountAuthorization,
 )
-from app.security import encrypt_secret
+from app.security import decrypt_secret, encrypt_secret
 from app.schemas.task_center import AccountConfig, SearchJoinBotConfig, SearchJoinGroupTaskCreate
 from app.services._common import _now, audit
 from app.services.client_metadata import ensure_or_create_search_join_environment
@@ -75,8 +75,18 @@ def env_int(name: str, default: int) -> int:
 
 def subscription_url() -> str:
     url = os.getenv("CLASH_SUBSCRIPTION_URL", "").strip()
+    if url:
+        return url
+    subscription_id = env_int("CLASH_SUBSCRIPTION_ID", 0)
+    if subscription_id <= 0:
+        raise RuntimeError("CLASH_SUBSCRIPTION_URL or CLASH_SUBSCRIPTION_ID is required")
+    with SessionLocal() as session:
+        row = session.get(ProxyAirportSubscription, subscription_id)
+        if row is None or row.tenant_id != 1:
+            raise RuntimeError("proxy airport subscription not found")
+        url = decrypt_secret(row.subscription_url_ciphertext) or ""
     if not url:
-        raise RuntimeError("CLASH_SUBSCRIPTION_URL is required")
+        raise RuntimeError("proxy airport subscription URL is empty")
     return url
 
 def masked_subscription_url(url: str) -> str:
