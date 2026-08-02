@@ -123,6 +123,7 @@ def _seed() -> None:
     timestamp = datetime(2026, 8, 2, 16, tzinfo=timezone.utc)
     with SessionLocal() as session:
         session.add(Tenant(id=TENANT_ID, name="PostgreSQL AI 数量槽"))
+        session.flush()
         session.add(TgGroup(
             id=GROUP_ID,
             tenant_id=TENANT_ID,
@@ -138,6 +139,7 @@ def _seed() -> None:
             auth_status="已授权运营",
             can_send=True,
         ))
+        session.flush()
         task = Task(
             id=TASK_ID,
             tenant_id=TENANT_ID,
@@ -158,7 +160,9 @@ def _seed() -> None:
             day_phase="full_day_committed",
             planning_anchor_at=timestamp,
         )
-        session.add_all([task, ledger])
+        session.add(task)
+        session.flush()
+        session.add(ledger)
         session.flush()
         session.add(TaskGroupDailyTarget(
             id=DAILY_TARGET_ID,
