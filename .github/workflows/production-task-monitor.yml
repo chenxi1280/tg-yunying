@@ -232,6 +232,33 @@ jobs:
             -i tgyunying-backend python -" \
             < .github/scripts/search_proxy_runtime_diagnostics.py
 
+      - name: Diagnose search proxy transport layers
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          ssh silicon-valley-production-server '
+            set -uo pipefail
+            probe() {
+              label="$1"
+              shift
+              output=$(timeout 20 docker exec tgyunying-backend curl -sS \
+                --connect-timeout 5 --max-time 12 -o /dev/null \
+                -w "http=%{http_code} connect=%{time_connect} tls=%{time_appconnect}" \
+                "$@" 2>&1)
+              rc=$?
+              detail=$(printf "%s" "${output}" | tr "\n" " " | cut -c1-240)
+              echo "SEARCH_PROXY_TRANSPORT=${label}:rc=${rc}:${detail}"
+            }
+            probe direct:https https://api.ipify.org
+            for name in tgyunying-mihomo-001 tgyunying-mihomo-004 \
+              tgyunying-mihomo-008 tgyunying-mihomo-012 tgyunying-mihomo-016; do
+              probe "${name}:http" -x "socks5h://${name}:7890" \
+                http://cp.cloudflare.com/generate_204
+              probe "${name}:https" -x "socks5h://${name}:7890" \
+                https://api.ipify.org
+            done
+          '
+
       - name: Read AI group binding diagnostics
         if: ${{ always() }}
         run: |
