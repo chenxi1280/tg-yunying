@@ -259,6 +259,20 @@ jobs:
             done
           '
 
+      - name: Diagnose proxy airport sync failure
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          ssh silicon-valley-production-server '
+            docker logs --since 30m tgyunying-backend 2>&1 \
+              | grep -E -B 4 -A 30 "proxy-airport-subscriptions|Traceback|IntegrityError|ForeignKeyViolation|Internal Server Error" \
+              | sed -E "s#https?://[^[:space:]]+#https://[redacted]#g" \
+              | tail -n 320 || true
+          '
+          ssh silicon-valley-production-server \
+            'timeout 120 docker exec -i tgyunying-backend python -' \
+            < .github/scripts/diagnose_proxy_airport_sync.py
+
       - name: Read AI group binding diagnostics
         if: ${{ always() }}
         run: |
