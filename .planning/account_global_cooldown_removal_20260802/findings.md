@@ -8,3 +8,5 @@
 - 正式部署脚本调用 `takeover_all_task_fulfillment.py`，其 apply 路径会执行 `normalize_fulfillment_scheduling_settings()` 并提交，因此最小生产修复入口明确，无需手工改线上数据库。
 - 主 PRD 当前写“账号短冷却只作软延后”；但实际候选生成会直接过滤账号，持续跨任务占用可形成饥饿。本次产品口径应改为单租户五类履约任务全局短冷却固定为 0。
 - 风控中心仍暴露“账号全局冷却”编辑项，AI 配置与风控策略两个写入口都允许重新写入非零值；仅部署归零不足以防复发。修复需移除前端编辑项，并在两个请求 schema 上明确拒绝非零值。
+- 首次 release `20260802064335_dffd9593` 已证明平台/租户配置均为 0，但上线后两次 E4 的搜索任务运行态完全不变。`_open_actions_state()` 会把 AI 任务的到期 open Action 时间反写为仍过期的 `next_run_at`；`_normal_planner_task_ids(limit=100)` 因此反复领取同一批队首，其他已到期任务可被饿死。
+- 完整恢复需要两项最小补充：接管清除遗留 `last_error=account_cooldown` 并唤醒；已有到期 open Action 的 AI 任务延后 30 秒再检查，让其他任务进入下一次 Planner 领取。未来 Action 仍保留真实计划时间。

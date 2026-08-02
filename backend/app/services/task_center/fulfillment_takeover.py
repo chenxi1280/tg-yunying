@@ -336,6 +336,8 @@ def _clear_obsolete_runtime_state(task: Task) -> bool:
         stats.pop(field, None)
     if task.last_error == "shared_dispatch_capacity_insufficient":
         task.last_error = ""
+    if task.last_error == "account_cooldown":
+        task.last_error = ""
     if task.type == "search_click":
         stats.pop("search_join_stats", None)
         if task.last_error == "daily_target_capacity_insufficient":

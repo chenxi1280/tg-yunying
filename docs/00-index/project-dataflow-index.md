@@ -54,7 +54,7 @@ AI planner -> pending group_ai_chat/send_message
 
 专项真相源为 `docs/03-feature-designs/shared-dispatch-and-ai-fulfillment-recovery-prd.md`。
 
-> 2026-08-02 账号短冷却 resync：生产接管在 worker fence 内把平台/租户 `SchedulingSetting.default_account_cooldown_seconds` 幂等归零；五类履约任务允许同账号跨任务重复执行，账号候选不得再以 `account_cooldown` 退出。小时/日硬安全容量、单账号 in-flight/Redis 互斥与 Telegram 真实限流继续保留。
+> 2026-08-02 账号短冷却 resync：生产接管在 worker fence 内把平台/租户 `SchedulingSetting.default_account_cooldown_seconds` 幂等归零，并清除运行任务遗留 `account_cooldown` 后立即唤醒；五类履约任务允许同账号跨任务重复执行，账号候选不得再以 `account_cooldown` 退出。Planner 对已有到期 open Action 的 AI 任务采用 30 秒复检，避免过期任务反复占据 limit 队首。小时/日硬安全容量、单账号 in-flight/Redis 互斥与 Telegram 真实限流继续保留。
 
 ```text
 release topology config(DISPATCH_RUNTIME_SHARD_TOTAL=2)

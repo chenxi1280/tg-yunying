@@ -837,16 +837,19 @@ def test_dispatcher_db_error_resets_pre_gateway_generation_for_retry():
     assert action.result["error_code"] == "dispatcher_db_error"
 
 
-def test_planner_does_not_exclude_due_ai_open_actions_with_beijing_clock(monkeypatch):
+@pytest.mark.no_postgres
+def test_due_ai_open_actions_recheck_without_starving_other_tasks(monkeypatch):
     SessionFactory = _session_factory()
     beijing_now = datetime.now(UTC).replace(tzinfo=None) + timedelta(hours=8)
     due_at = beijing_now - timedelta(seconds=1)
+    built_task_ids: list[str] = []
 
-    def unexpected_build_task_plan(*_args, **_kwargs):
-        raise AssertionError("open actions should block planning a new AI round")
+    def build_search_plan(_session, task):
+        built_task_ids.append(task.id)
+        return 1
 
     monkeypatch.setattr(service, "_now", lambda: beijing_now)
-    monkeypatch.setattr(service, "build_task_plan", unexpected_build_task_plan)
+    monkeypatch.setattr(service, "build_task_plan", build_search_plan)
 
     with SessionFactory() as session:
         session.add(Tenant(id=1, name="默认运营空间"))
@@ -878,14 +881,36 @@ def test_planner_does_not_exclude_due_ai_open_actions_with_beijing_clock(monkeyp
                 result={},
             )
         )
+        session.add(
+            Task(
+                id="task-search-waiting",
+                tenant_id=1,
+                name="等待规划的搜索任务",
+                type="search_click",
+                status="running",
+                next_run_at=beijing_now,
+            )
+        )
         session.commit()
 
-    _processed, future_open_action_task_ids = service._drain_task_planner(SessionFactory, limit=5, process_type=None)
+    first_processed, future_open_action_task_ids = service._drain_task_planner(
+        SessionFactory,
+        limit=1,
+        process_type=None,
+    )
+    second_processed, _ = service._drain_task_planner(
+        SessionFactory,
+        limit=1,
+        process_type=None,
+    )
 
+    assert first_processed == 0
+    assert second_processed == 1
     assert future_open_action_task_ids == set()
+    assert built_task_ids == ["task-search-waiting"]
     with SessionFactory() as session:
         task = session.get(Task, "task-ai-due-open")
-        assert task.next_run_at == due_at
+        assert task.next_run_at == beijing_now + timedelta(seconds=30)
 
 
 @pytest.mark.no_postgres

@@ -183,6 +183,7 @@ _next_run_after_task = next_run_after_task
 _retry_failed_actions = retry_failed_actions
 logger = logging.getLogger(__name__)
 PLANNER_RUNTIME_ERROR_RETRY_SECONDS = 30
+OPEN_ACTION_PLANNER_RECHECK_SECONDS = 30
 PLANNER_GLOBAL_PENDING_SESSION_KEY = "planner_global_pending"
 CHANNEL_COMMENT_SCENE = "channel_comment"
 GROUP_CHAT_SCENE = "group_chat"
@@ -5581,8 +5582,13 @@ def _open_actions_state(session: Session, task: Task) -> tuple[bool, bool]:
     )
     if not earliest:
         return False, False
-    task.next_run_at = _absolute_naive_datetime(earliest)
-    return True, _scheduled_at_is_future(earliest)
+    is_future = _scheduled_at_is_future(earliest)
+    task.next_run_at = (
+        _absolute_naive_datetime(earliest)
+        if is_future
+        else _now() + timedelta(seconds=OPEN_ACTION_PLANNER_RECHECK_SECONDS)
+    )
+    return True, is_future
 
 
 def _scheduled_at_is_future(value: datetime) -> bool:

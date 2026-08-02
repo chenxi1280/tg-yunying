@@ -368,6 +368,39 @@ def test_search_takeover_clears_legacy_task_local_cooldown_idempotently(
     assert task.account_config["cooldown_per_account_minutes"] == 0
 
 
+def test_search_takeover_clears_retired_global_cooldown_error_and_wakes_task(
+    session: Session,
+) -> None:
+    now_value = datetime(2026, 8, 2, 14, 55)
+    task = Task(
+        id="search-blocked-by-retired-cooldown",
+        tenant_id=1,
+        name="纯搜索点击",
+        type="search_click",
+        status="running",
+        type_config={
+            "daily_click_target_count": 1000,
+            "target_operation_target_id": 31,
+        },
+    )
+    session.add(task)
+    session.flush()
+    takeover_task(session, task, now=now_value)
+    session.commit()
+    task.last_error = "account_cooldown"
+    task.next_run_at = now_value + timedelta(hours=1)
+    session.commit()
+
+    recovered = takeover_task(session, task, now=now_value)
+    session.flush()
+    repeated = takeover_task(session, task, now=now_value)
+
+    assert recovered.changed is True
+    assert repeated.changed is False
+    assert task.last_error == ""
+    assert task.next_run_at == now_value
+
+
 def test_takeover_wakes_running_task_once_for_soft_pacing_contract(
     session: Session,
 ) -> None:

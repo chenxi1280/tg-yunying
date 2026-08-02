@@ -594,7 +594,7 @@ scope capacity
 
 同一 `SearchClickAssignmentEpoch` 为某账号创建的全部 prebound Action 是求解器一次性承诺的同一账号容量集合。claim-time 账号全局容量复检必须把该 epoch、该账号的全部 Action ID 作为同一 cohort 从 occupied scan 中排除，再让账号 in-flight/Redis 互斥只放行一个真实执行；不得只排除当前 Action，使同批 pending Action 互相制造 `account_hour_limit|account_day_limit`。当前单租户履约合同固定 `default_account_cooldown_seconds=0`，其他 epoch、其他任务和既有 MessageTask/Action 不得再制造 `account_cooldown`；它们仍正常计入小时/日硬安全容量，cohort 总量不得超过该 epoch 快照中的 `hard_safe_remaining_capacity`。
 
-盖章 `fulfillment_contract_version=all_task_v2` 的五类任务不再读取旧 `max_pending_global|max_pending_per_task|oldest_pending_age_seconds` 作为 Planner 数量门禁。旧 backlog 只服务未迁移任务；新模型由不可变义务、同义务单 open/unknown Action、中央 Reservation 和 scope in-flight capacity 防止重复与过载。接管必须清除五类任务遗留 `planner_backlog_*` 和陈旧 `shared_dispatch_capacity_insufficient`，搜索同时清除 `search_join_stats/daily_target_capacity_insufficient`，浏览清除旧 `task_daily_view_safety_cap` 命中错误，并把运行中任务的 `next_run_at` 推到当前时刻重新规划。`DISPATCHER_SCOPE_CAPACITY` 只限制同一时刻真实在途量，不得减少总目标、形成任务终态或阻止后续 Window 继续履约。
+盖章 `fulfillment_contract_version=all_task_v2` 的五类任务不再读取旧 `max_pending_global|max_pending_per_task|oldest_pending_age_seconds` 作为 Planner 数量门禁。旧 backlog 只服务未迁移任务；新模型由不可变义务、同义务单 open/unknown Action、中央 Reservation 和 scope in-flight capacity 防止重复与过载。接管必须清除五类任务遗留 `planner_backlog_*`、陈旧 `shared_dispatch_capacity_insufficient` 和已取消的 `account_cooldown`，搜索同时清除 `search_join_stats/daily_target_capacity_insufficient`，浏览清除旧 `task_daily_view_safety_cap` 命中错误，并把运行中任务的 `next_run_at` 推到当前时刻重新规划。Planner 遇到已有到期 open Action 的 AI 任务时，把该任务推进到 30 秒后复检，使本轮剩余候选可继续领取；不得把 open Action 的过期时间反写为永久到期 `next_run_at`，形成 limit 队首饥饿。`DISPATCHER_SCOPE_CAPACITY` 只限制同一时刻真实在途量，不得减少总目标、形成任务终态或阻止后续 Window 继续履约。
 
 ### 5.2 锁顺序与事务边界
 

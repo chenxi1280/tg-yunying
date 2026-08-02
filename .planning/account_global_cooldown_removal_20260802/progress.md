@@ -13,3 +13,7 @@
 - 后端定向回归 `backend/tests/test_fulfillment_takeover.py`：`15 passed`；前端 `npm run build`：通过。
 - 旧运行时测试选择在收集阶段因本机 PostgreSQL 测试库断连而阻塞，未运行、未计为通过。
 - Python `compileall` 与 `git diff --check` 通过；远端 `master/release` 均仍为基线 `9a53e298`，可以按正式顺序发布。
+- 首次提交 `dffd9593` 已发布为 `20260802064335_dffd9593`；Actions `30736171661` 全绿，生产平台/租户 `account_cooldown_seconds` 均为 0 且二次 preview `changed=false`。
+- 上线后 E4 `30736583658`、`30736645753` 均显示搜索任务未被 Planner 重领；定位为遗留错误未清除叠加到期 AI open Action 队首饥饿。
+- 新增两个红测后最小修复：接管清遗留冷却错误并立即唤醒，Planner 对到期 open Action 延后 30 秒；定向红测已转绿 `2 passed`。
+- 两个相关文件的完整无 PostgreSQL 回归为 `38 passed, 8 deselected`；Python `compileall`、`git diff --check` 通过，远端仍与首次提交 `dffd9593` 对齐。
