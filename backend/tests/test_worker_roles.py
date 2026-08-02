@@ -475,6 +475,29 @@ def test_worker_heartbeat_updates_existing_worker_id(monkeypatch):
     assert heartbeats[0].last_seen_at >= first_seen_at
 
 
+def test_worker_heartbeat_returns_fresh_metadata_after_upsert(monkeypatch):
+    monkeypatch.setenv("TG_OPS_WORKER_ID", "pytest-worker")
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        record_worker_heartbeat(
+            session,
+            process_type="search_click_solver",
+            metadata={"search_solver_fencing_token": "token-1"},
+        )
+        session.commit()
+
+        heartbeat = record_worker_heartbeat(
+            session,
+            process_type="search_click_solver",
+            metadata={"search_solver_fencing_token": "token-2"},
+        )
+
+        assert heartbeat.heartbeat_metadata == {
+            "search_solver_fencing_token": "token-2"
+        }
+
+
 def test_worker_health_module_checks_role_heartbeat_without_worker_imports(monkeypatch):
     from app import worker_health
 

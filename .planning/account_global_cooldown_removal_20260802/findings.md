@@ -14,3 +14,6 @@
 - 根因修复应从当前 Task/群的成功 Action 出发，利用既有 `(action_id, attempt_no)` 唯一索引相关读取每个 Action 最新成功 remote ID；不能以跳过 AI、超时吞错或减少目标规避阻塞。
 - `b0c0216d` 上线后搜索 `next_run_at` 从 `15:53` 推进到 `15:56`，证明 Planner 已返回；但 reservation/epoch/assignment 仍为 0。`dispatch_reservations._scope_demands()` 在 `4b0e1016` 被改为只返回已物化 Action demand，普通 Dispatcher 总是先把每分钟 Window 置为 ready；搜索 Planner 后到时不会重分配，因此未物化搜索义务永远拿不到第一份中央 reservation。
 - 搜索 demand 必须在任一 Window 创建入口合并，同时保留普通 Task parent-first 份额。此前为恢复 AI 容量删除搜索 demand 的前置原因是 Planner 长阻塞导致 reservation 无人消费；§2.9 已修复该查询，不能继续用删除搜索需求掩盖竞态。
+- `ae59c2fb` 上线后生产每分钟都为搜索任务创建 reservation 与 solver epoch；最近轮次均有 65 条候选路径、1040–1300 硬安全容量，却在约 0.1 秒内全部 `abandoned`，排除窗口到期与无候选账号。
+- `record_worker_heartbeat()` 使用 Core upsert 更新 fencing token 后，普通 ORM 查询会复用 identity map 中的旧 `WorkerHeartbeat`；搜索 epoch 因此写入旧 token，而数据库已经是新 token，首次 owner 校验立即失败并整轮释放。
+- 新回归测试在 commit 前稳定复现 `token-1 != token-2`；upsert 后使用 `populate_existing=True` 刷新 ORM 状态是最小根因修复，不放宽 owner fencing、安全容量或远端事实门禁。

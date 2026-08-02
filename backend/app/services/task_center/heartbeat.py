@@ -39,7 +39,11 @@ def record_worker_heartbeat(session: Session, *, process_type: str = "task_cente
         "last_seen_at": now_value,
     }
     if _upsert_worker_heartbeat(session, values):
-        heartbeat = session.scalar(select(WorkerHeartbeat).where(WorkerHeartbeat.worker_id == worker_id))
+        heartbeat = session.scalar(
+            select(WorkerHeartbeat)
+            .where(WorkerHeartbeat.worker_id == worker_id)
+            .execution_options(populate_existing=True)
+        )
         if heartbeat is None:
             raise RuntimeError(f"worker heartbeat upsert did not create row: {worker_id}")
         return heartbeat

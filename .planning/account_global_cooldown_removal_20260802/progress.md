@@ -22,3 +22,6 @@
 - 已新增 SQL 形状红测，旧实现命中 `GROUP BY execution_attempts.action_id` 失败；改为从当前 Action 相关读取最新成功 Attempt 后转绿，并覆盖多 Attempt 最新 remote ID 与 open reply 占用排除，`1 passed`。
 - 第三次提交 `b0c0216d` 由 Actions `30738255265` 全绿发布为 `20260802074846_b0c0216d`；生产冷却仍为 0，Planner 已推进搜索 next_run，但搜索仍无中央 reservation。
 - 新增普通 Dispatcher 先创建 Window 的红测，旧实现因缺 `SEARCH_RESERVATION_KEY` 失败；恢复共享 search demand 合并后，search 与 ordinary 各获一个 parent-first reservation，搜索 Planner 可从同一 ready Window 读取 fulfillment unit；完整文件 `8 passed`。
+- 第四次提交 `ae59c2fb` 由 Actions `30739006884` 全绿发布为 `20260802081150_ae59c2fb`；生产已持续产生搜索 reservation，但 assignment/action 仍为 0。
+- 生产只读求解快照确认最近 12 轮每轮 16–20 个本任务 demand、65 条候选路径、1040–1300 容量，均在创建后约 0.1 秒 `abandoned`，不是窗口超时或账号不足。
+- 新增心跳 upsert 红测，修复前返回旧 fencing token 并按预期失败；`populate_existing=True` 修复后，worker/heartbeat/search epoch/solver 相关回归 `56 passed`。
