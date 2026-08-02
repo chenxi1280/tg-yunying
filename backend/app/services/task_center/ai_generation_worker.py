@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import socket
 from collections.abc import Callable
+from datetime import timedelta
 from uuid import uuid4
 
 from sqlalchemy import and_, func, or_, select
@@ -20,7 +21,12 @@ from .payloads import SendMessagePayload
 
 
 GENERATABLE_STATUSES = ("pending", "ai_result_persist_unknown")
+GROUP_BOT_ADMISSION_RETRY_SECONDS = 30
 GenerateAction = Callable[[Session, Action, TgAccount], None]
+
+
+class GenerationAdmissionDeferred(RuntimeError):
+    pass
 
 
 def drain_ai_generation(
@@ -45,6 +51,7 @@ def drain_ai_generation(
         action_id, token, claimed_count = claim
         visited_action_ids.add(action_id)
         generation_failure: AiGenerationUnavailable | None = None
+        admission_deferred = False
         with session_factory() as session:
             action = session.get(Action, action_id)
             if not _owns_generation_claim(action, owner, token):
@@ -54,9 +61,16 @@ def drain_ai_generation(
                 raise RuntimeError(f"AI generation action {action.id} has no account")
             try:
                 processor(session, action, account)
+            except GenerationAdmissionDeferred:
+                session.rollback()
+                admission_deferred = True
             except AiGenerationUnavailable as exc:
                 session.rollback()
                 generation_failure = exc
+        if admission_deferred:
+            _release_unprepared_batch(session_factory, owner, token)
+            processed += claimed_count
+            continue
         if generation_failure is not None:
             if not _persisted_generation_failure(
                 session_factory, action_id,
@@ -298,6 +312,13 @@ def _production_generate_action(
     dependencies: GenerationDependencies,
 ) -> GenerateAction:
     def generate(session: Session, action: Action, account: TgAccount) -> None:
+        payload = SendMessagePayload.model_validate(action.payload or {})
+        if _defer_generation_for_group_bot_admission(
+            session,
+            action,
+            payload,
+        ):
+            raise GenerationAdmissionDeferred(action.id)
         ensure_send_message_content(
             session,
             action,
@@ -308,6 +329,63 @@ def _production_generate_action(
         )
 
     return generate
+
+
+def _defer_generation_for_group_bot_admission(
+    session: Session,
+    action: Action,
+    payload: SendMessagePayload,
+) -> bool:
+    if not payload.group_bot_admission_state:
+        return False
+    from .group_bot_admission import evaluate_send_gate
+
+    decision = evaluate_send_gate(
+        session,
+        tenant_id=action.tenant_id,
+        group_id=int(payload.group_id or 0),
+        account_id=int(action.account_id or 0),
+        enforce=True,
+        action_id=str(action.id),
+    )
+    if decision.allowed:
+        _record_allowed_generation_admission(action, decision)
+        session.commit()
+        return False
+    action.result = {
+        **(action.result or {}),
+        "error_code": decision.code or "group_bot_admission_wait",
+        "validation_stage": "pre_ai_group_bot_admission",
+        "group_bot_admission_state": decision.state,
+        "group_bot_admission_id": decision.admission_id,
+    }
+    action.scheduled_at = _now() + timedelta(
+        seconds=GROUP_BOT_ADMISSION_RETRY_SECONDS,
+    )
+    session.commit()
+    return True
+
+
+def _record_allowed_generation_admission(action: Action, decision) -> None:
+    payload = dict(action.payload or {})
+    payload.update({
+        "group_bot_admission_id": decision.admission_id,
+        "group_bot_admission_state": decision.state,
+        "admission_version": decision.admission_version,
+    })
+    if decision.code == "post_follow_visibility_probe":
+        payload["group_bot_post_follow_visibility_probe"] = True
+    action.payload = payload
+    result = dict(action.result or {})
+    if result.get("validation_stage") == "pre_ai_group_bot_admission":
+        for key in (
+            "error_code",
+            "validation_stage",
+            "group_bot_admission_state",
+            "group_bot_admission_id",
+        ):
+            result.pop(key, None)
+        action.result = result
 
 
 __all__ = ["drain_ai_generation"]
