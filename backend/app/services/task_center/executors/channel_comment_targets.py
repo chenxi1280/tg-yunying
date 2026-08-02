@@ -3,7 +3,7 @@ from __future__ import annotations
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from app.models import Action, ChannelMessage, ChannelMessageComment, Task
+from app.models import Action, ChannelMessage, ChannelMessageComment, ExecutionAttempt, Task
 
 
 def valid_reply_targets(
@@ -136,13 +136,16 @@ def _historical_targets(
     message: ChannelMessage,
     limit: int,
 ) -> list[dict]:
-    rows = session.scalars(
-        select(Action)
+    rows = session.execute(
+        select(Action, ExecutionAttempt.remote_message_id)
+        .join(ExecutionAttempt, ExecutionAttempt.action_id == Action.id)
         .where(
             Action.task_id == task.id,
             Action.task_type == "channel_comment",
             Action.action_type == "post_comment",
             Action.status == "success",
+            ExecutionAttempt.status == "success",
+            ExecutionAttempt.remote_message_id != "",
             Action.payload["channel_target_id"].as_integer() == channel_target_id,
             or_(
                 Action.payload["channel_message_id"].as_integer() == message.id,
@@ -151,14 +154,17 @@ def _historical_targets(
         )
         .order_by(Action.executed_at.desc().nullslast(), Action.created_at.desc())
         .limit(max(1, int(limit)))
-    )
-    return [target for action in rows if (target := _target_from_action(action))]
+    ).all()
+    return [
+        target
+        for action, remote_message_id in rows
+        if (target := _target_from_action(action, remote_message_id))
+    ]
 
 
-def _target_from_action(action: Action) -> dict | None:
+def _target_from_action(action: Action, remote_message_id: str) -> dict | None:
     payload = action.payload if isinstance(action.payload, dict) else {}
-    result = action.result if isinstance(action.result, dict) else {}
-    raw_id = str(result.get("telegram_msg_id") or result.get("remote_message_id") or "").strip()
+    raw_id = str(remote_message_id or "").strip()
     content = str(payload.get("comment_text") or "").strip()
     if not raw_id.isdigit() or not content:
         return None

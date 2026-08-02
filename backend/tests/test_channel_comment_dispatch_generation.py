@@ -7,8 +7,10 @@ from app.integrations.telegram import SendResult
 from app.models import (
     Action,
     AiProvider,
+    ChannelMessage,
     ChannelMessageComment,
     CommentFulfillmentObligation,
+    ExecutionAttempt,
     RuleSet,
     RuleSetVersion,
     Task,
@@ -20,6 +22,7 @@ from app.services.task_center import ai_generator, comment_generation_dispatch, 
 from app.services.task_center.ai_generator import AiGenerationUnavailable
 from app.services.task_center.ai_generation_recovery import recover_stale_pre_gateway_generation
 from app.services.task_center.comment_generation_dispatch import CommentGenerationDependencies
+from app.services.task_center.executors import channel_comment_targets
 from channel_comment_dispatch_test_support import (
     comment_dispatch_session,
     expire_comment_action,
@@ -206,11 +209,19 @@ def test_phase_c_rejects_same_message_historical_comment_duplicate(monkeypatch, 
         assert observed["gateway"] == 1
 
 
-def test_invalid_reply_target_skips_generation_and_gateway_without_direct_downgrade(monkeypatch) -> None:
+@pytest.mark.parametrize("reply_target_source", ["persisted", "own_history"])
+def test_invalid_reply_target_skips_generation_and_gateway_without_direct_downgrade(
+    monkeypatch,
+    reply_target_source: str,
+) -> None:
     observed = {"provider": 0, "gateway": 0}
     with comment_dispatch_session() as session:
         action = seed_dispatch_scope(session, reply=True)
         session.delete(session.get(ChannelMessageComment, 51))
+        action.payload = {
+            **action.payload,
+            "reply_target_source": reply_target_source,
+        }
         session.commit()
         monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args: object())
         monkeypatch.setattr(dispatcher.gateway, "reply_channel_message", _forbidden_gateway)
@@ -227,6 +238,83 @@ def test_invalid_reply_target_skips_generation_and_gateway_without_direct_downgr
         assert action.payload["comment_mode"] == "reply"
         assert action.payload["reply_to_message_id"] == 8101
         assert observed == {"provider": 0, "gateway": 0}
+
+
+def test_own_history_reply_pool_requires_authoritative_success_attempt() -> None:
+    with comment_dispatch_session() as session:
+        current = seed_dispatch_scope(session)
+        session.delete(session.get(ChannelMessageComment, 51))
+        historical = _historical_comment_action(current, "上一条真实评论")
+        historical.result = {"remote_message_id": "8102"}
+        session.add(historical)
+        session.commit()
+        task = session.get(Task, current.task_id)
+        message = session.get(ChannelMessage, 41)
+
+        assert channel_comment_targets.message_reply_targets(
+            session,
+            task,
+            31,
+            message,
+        ) == []
+
+        session.add(ExecutionAttempt(
+            tenant_id=current.tenant_id,
+            action_id=historical.id,
+            account_id=current.account_id,
+            status="success",
+            remote_message_id="8102",
+        ))
+        session.commit()
+
+        targets = channel_comment_targets.message_reply_targets(
+            session,
+            task,
+            31,
+            message,
+        )
+        assert [(item["message_id"], item["source"]) for item in targets] == [
+            (8102, "own_history"),
+        ]
+
+
+def test_own_history_reply_target_accepts_authoritative_success_attempt(monkeypatch) -> None:
+    observed = {"provider": 0, "gateway": 0}
+    with comment_dispatch_session() as session:
+        action = seed_dispatch_scope(session, reply=True)
+        session.delete(session.get(ChannelMessageComment, 51))
+        historical = _historical_comment_action(action, "上一条真实评论")
+        historical.result = {"remote_message_id": "8101"}
+        session.add(historical)
+        session.flush()
+        session.add(ExecutionAttempt(
+            tenant_id=action.tenant_id,
+            action_id=historical.id,
+            account_id=action.account_id,
+            status="success",
+            remote_message_id="8101",
+        ))
+        action.payload = {
+            **action.payload,
+            "reply_target_source": "own_history",
+        }
+        session.commit()
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args: object())
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "reply_channel_message",
+            _gateway_sender(session, observed),
+        )
+
+        assert dispatcher.dispatch_action(
+            session,
+            action,
+            comment_generation_dependencies=_dependencies(session, observed),
+        ) is True
+
+        assert action.status == "success", action.result
+        assert action.payload["reply_to_message_id"] == 8101
+        assert observed == {"provider": 1, "gateway": 1}
 
 
 def test_old_reply_action_with_existing_target_continues_to_gateway(monkeypatch) -> None:

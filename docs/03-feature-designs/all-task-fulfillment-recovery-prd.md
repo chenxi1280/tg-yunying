@@ -136,6 +136,32 @@ Planner 心跳因此不能证明近端引用义务会获得执行机会。
 `design_status=complete`，`resync=true`。本补正只修复近端评论义务的 Planner 队头
 饥饿，不降低 AI 自然日分母或任何 E4 标准。
 
+### 2.8 2026-08-02 评论 own-history 引用事实断层补正
+
+`1b005be3` 上线后，评论任务在 14 秒内进入 Planner 并为原 obligation 创建了
+`comment_action_attempt_no=6/7/16/37` 等 replacement，证明 §2.7 的队头饥饿已解除；
+但所有 replacement 均在 Provider/Gateway 前写入 `reply_target_missing`。代码审查确认
+Planner 的合法 reply pool 包含同 Task、同频道源消息下历史成功评论的
+`reply_target_source=own_history`，生成门禁却只查询 listener 的
+`ChannelMessageComment`，没有承认产生该历史评论的成功 `ExecutionAttempt`，形成同一系统
+内部“规划合法、执行必拒”的事实合同断层。
+
+1. `own_history` 只在同 tenant、同 Task、同 `channel_target_id`、同
+   `channel_message_id/message_id` 的历史 `post_comment` Action 为 `success`，且存在
+   `ExecutionAttempt.status=success + remote_message_id=reply_to_message_id` 时成立。
+2. Planner 枚举 own-history 目标也必须使用上述 Attempt 远端事实；仅有 Action.result、
+   仅有 `Action.status=success`、跨 Task/频道/源消息或空 remote ID 均不得进入候选池。
+3. Phase B 本地门禁对 listener 当前仍存在的评论沿用 `ChannelMessageComment`；对显式
+   `reply_target_source=own_history` 使用同一权威 Attempt 合同。两条路径都只证明本地目标
+   身份，不伪造 Telegram 可访问性；真实发送仍由 Gateway 返回决定。
+4. 非 `own_history` 目标缺 listener 行时继续 `reply_target_missing`；不得因本补正接受
+   任意历史 Action、降级 direct、复用跨消息 remote ID 或吞掉 Gateway 错误。
+5. E4 仍只接受当前 release 锚点后 `ExecutionAttempt.status=success`、非空
+   `remote_message_id`、非空 `Action.reply_to_message_id`，并要求三者属于同一新 Action。
+
+`design_status=complete`，`resync=true`。该补正复用系统已拥有的真实历史评论远端事实，
+不新增 mock/fallback，也不放宽 Telegram、账号或内容安全门禁。
+
 ## 3. 产品目标与非目标
 
 ### 3.1 产品目标

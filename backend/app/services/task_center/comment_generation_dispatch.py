@@ -27,6 +27,7 @@ from .comment_generation_result import (
     evaluate_legacy_generated_comment,
     generated_comment_decision,
 )
+from .comment_reply_target_authority import has_authoritative_own_history_target
 from .runtime_resources import _release_runtime_resources
 
 
@@ -187,7 +188,7 @@ def _validate_reply_target(
         ChannelMessageComment.channel_message_id == payload.channel_message_id,
         ChannelMessageComment.comment_message_id == payload.reply_to_message_id,
     ))
-    if target:
+    if target or has_authoritative_own_history_target(session, action, payload):
         session.commit()
         return
     _fail_generation_context(
