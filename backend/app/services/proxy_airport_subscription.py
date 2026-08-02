@@ -11,17 +11,19 @@ from typing import Any, Callable
 from urllib.parse import urlsplit
 
 import yaml
-from sqlalchemy import delete
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import ProxyAirportNode, ProxyAirportSubscription
+from app.models import AccountGroupProxyBinding, AccountProxyBinding
+from app.models import ProxyAirportNode, ProxyAirportSubscription, ProxyExitIpObservation
+from app.models import SearchRankDeboostActionStat
 from app.schemas.account_environment import ProxyAirportSubscriptionOut, ProxyAirportSubscriptionUpdate
 from app.security import decrypt_secret, encrypt_secret
 from app.services._common import _now, audit
 
 MAX_SUBSCRIPTION_BYTES = 5 * 1024 * 1024
 NODE_HEALTH_TIMEOUT_SECONDS = 3
+RETIRED_NODE_ERROR = "not_present_in_latest_subscription"
 NODE_SKIP_RE = re.compile(r"(剩余|套餐|到期|官网|流量|expire|traffic)", re.IGNORECASE)
 SubscriptionFetcher = Callable[[str], str]
 NodeHealthChecker = Callable[[ProxyAirportNode], tuple[bool, str]]
@@ -61,7 +63,7 @@ def update_proxy_airport_subscription(
     row.last_error = ""
     row.updated_at = _now()
     if row.id is not None:
-        _delete_subscription_nodes(session, row)
+        _retire_or_delete_subscription_nodes(session, row)
     session.flush()
     audit(
         session,
@@ -93,9 +95,8 @@ def sync_proxy_airport_subscription(
     try:
         raw = (fetcher or fetch_subscription)(_decrypt_subscription_url(row))
         nodes = parsed_proxy_nodes(raw)
-        _replace_subscription_nodes(session, row, nodes)
+        node_rows = _replace_subscription_nodes(session, row, nodes)
         session.flush()
-        node_rows = _subscription_nodes(session, row)
         if health_checker is not None:
             _apply_node_health_checks(node_rows, health_checker)
         row.sync_status = "synced"
@@ -106,10 +107,10 @@ def sync_proxy_airport_subscription(
         row.updated_at = _now()
         session.flush()
     except ValueError as exc:
-        _record_sync_failure(session, row, actor, str(exc))
+        _record_sync_failure(session, row, actor=actor, error=str(exc))
         raise
     except OSError as exc:
-        _record_sync_failure(session, row, actor, "proxy_airport_subscription_fetch_failed")
+        _record_sync_failure(session, row, actor=actor, error="proxy_airport_subscription_fetch_failed")
         raise ValueError("proxy_airport_subscription_fetch_failed") from exc
     audit(
         session,
@@ -263,22 +264,37 @@ def _shadowsocks_uri_config(uri: str, index: int) -> dict[str, Any] | None:
     })
 
 
-def _replace_subscription_nodes(session: Session, row: ProxyAirportSubscription, nodes: list[dict[str, Any]]) -> None:
-    _delete_subscription_nodes(session, row)
-    for node in nodes:
-        session.add(
-            ProxyAirportNode(
+def _replace_subscription_nodes(
+    session: Session,
+    row: ProxyAirportSubscription,
+    nodes: list[dict[str, Any]],
+) -> list[ProxyAirportNode]:
+    existing = {node.node_key: node for node in _subscription_nodes(session, row)}
+    current: list[ProxyAirportNode] = []
+    for payload in nodes:
+        node = existing.pop(payload["node_key"], None)
+        if node is None:
+            node = ProxyAirportNode(
                 tenant_id=row.tenant_id,
                 subscription_id=row.id,
-                node_key=node["node_key"],
-                node_name=node["node_name"],
-                protocol=node["protocol"],
-                proxy_host=node["proxy_host"],
-                proxy_port=int(node["proxy_port"]),
-                node_config_ciphertext=node["node_config_ciphertext"],
-                status="unknown",
+                node_key=payload["node_key"],
             )
-        )
+            session.add(node)
+        _apply_subscription_node(node, payload)
+        current.append(node)
+    _retire_or_delete_nodes(session, list(existing.values()))
+    return current
+
+
+def _apply_subscription_node(node: ProxyAirportNode, payload: dict[str, Any]) -> None:
+    node.node_name = payload["node_name"]
+    node.protocol = payload["protocol"]
+    node.proxy_host = payload["proxy_host"]
+    node.proxy_port = int(payload["proxy_port"])
+    node.node_config_ciphertext = payload["node_config_ciphertext"]
+    node.status = "unknown"
+    node.last_error = ""
+    node.updated_at = _now()
 
 
 def _subscription_nodes(session: Session, row: ProxyAirportSubscription) -> list[ProxyAirportNode]:
@@ -286,7 +302,7 @@ def _subscription_nodes(session: Session, row: ProxyAirportSubscription) -> list
         ProxyAirportNode.tenant_id == row.tenant_id,
         ProxyAirportNode.subscription_id == row.id,
     )
-    return list(session.scalars(stmt.order_by(ProxyAirportNode.node_key)).all())
+    return list(session.scalars(stmt.order_by(ProxyAirportNode.node_key).with_for_update()).all())
 
 
 def _apply_node_health_checks(nodes: list[ProxyAirportNode], health_checker: NodeHealthChecker) -> None:
@@ -301,20 +317,55 @@ def _healthy_node_count(nodes: list[ProxyAirportNode]) -> int:
     return sum(1 for node in nodes if node.status == "healthy")
 
 
-def _record_sync_failure(session: Session, row: ProxyAirportSubscription, actor: str, error: str) -> None:
+def _record_sync_failure(
+    session: Session,
+    row: ProxyAirportSubscription,
+    *,
+    actor: str,
+    error: str,
+) -> None:
     row.sync_status = "failed"
     row.node_count = 0
     row.healthy_node_count = 0
     row.last_error = error
     row.last_sync_at = _now()
     row.updated_at = _now()
-    _delete_subscription_nodes(session, row)
     session.flush()
     audit(session, tenant_id=row.tenant_id, actor=actor, action="同步全局 Clash 订阅失败", target_type="proxy_airport_subscription", target_id=str(row.id), detail=error)
 
 
-def _delete_subscription_nodes(session: Session, row: ProxyAirportSubscription) -> None:
-    session.execute(delete(ProxyAirportNode).where(ProxyAirportNode.tenant_id == row.tenant_id, ProxyAirportNode.subscription_id == row.id))
+def _retire_or_delete_subscription_nodes(session: Session, row: ProxyAirportSubscription) -> None:
+    _retire_or_delete_nodes(session, _subscription_nodes(session, row))
+
+
+def _retire_or_delete_nodes(session: Session, nodes: list[ProxyAirportNode]) -> None:
+    referenced_ids = _referenced_node_ids(session, tuple(node.id for node in nodes if node.id is not None))
+    for node in nodes:
+        if node.id in referenced_ids:
+            node.status = "retired"
+            node.last_error = RETIRED_NODE_ERROR
+            node.updated_at = _now()
+            continue
+        session.delete(node)
+
+
+def _referenced_node_ids(session: Session, node_ids: tuple[int, ...]) -> set[int]:
+    if not node_ids:
+        return set()
+    columns = (
+        AccountProxyBinding.proxy_airport_node_id,
+        AccountGroupProxyBinding.proxy_airport_node_id,
+        ProxyExitIpObservation.proxy_node_id,
+        SearchRankDeboostActionStat.proxy_airport_node_id,
+    )
+    referenced: set[int] = set()
+    for column in columns:
+        referenced.update(
+            int(node_id)
+            for node_id in session.scalars(select(column).where(column.in_(node_ids)))
+            if node_id is not None
+        )
+    return referenced
 
 
 def _active_subscription(session: Session, tenant_id: int) -> ProxyAirportSubscription | None:
