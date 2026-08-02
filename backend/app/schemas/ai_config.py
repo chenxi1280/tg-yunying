@@ -327,7 +327,7 @@ class SchedulingSettingUpdate(BaseModel):
     default_on_content_rejected: Literal["skip_message", "rewrite_and_retry", "pause"] | None = None
     default_account_hour_limit: int | None = Field(default=None, ge=0)
     default_account_day_limit: int | None = Field(default=None, ge=0)
-    default_account_cooldown_seconds: int | None = Field(default=None, ge=0)
+    default_account_cooldown_seconds: int | None = Field(default=None, ge=0, le=0)
     outbound_target_gate_mode: Literal["dual_read", "canary", "full"] | None = None
     ai_group_send_continuity_v1: bool | None = None
     ai_group_continuity_release_anchor: datetime | None = None

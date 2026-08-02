@@ -71,7 +71,7 @@ class RiskControlGlobalPolicyUpdate(BaseModel):
         ge=0,
         le=MAX_FULFILLMENT_QUANTITY_LIMIT,
     )
-    default_account_cooldown_seconds: int | None = Field(default=None, ge=0, le=86400)
+    default_account_cooldown_seconds: int | None = Field(default=None, ge=0, le=0)
 
 
 class RiskControlAccountScoreOut(ApiModel):

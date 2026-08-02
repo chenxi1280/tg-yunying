@@ -24,6 +24,7 @@ from .pacing import FULFILLMENT_SOFT_PACING_VERSION
 
 
 UNIFIED_TASK_GATE_LIMIT = 1_000_000
+DISABLED_ACCOUNT_COOLDOWN_SECONDS = 0
 FULFILLMENT_CONTRACT_VERSION = "all_task_v2"
 FULFILLMENT_TASK_TYPES = frozenset(
     {
@@ -288,15 +289,23 @@ def normalize_fulfillment_scheduling_settings(
         changed = any((
             setting.default_account_hour_limit != UNIFIED_TASK_GATE_LIMIT,
             setting.default_account_day_limit != UNIFIED_TASK_GATE_LIMIT,
+            setting.default_account_cooldown_seconds
+            != DISABLED_ACCOUNT_COOLDOWN_SECONDS,
         ))
         if changed:
             setting.default_account_hour_limit = UNIFIED_TASK_GATE_LIMIT
             setting.default_account_day_limit = UNIFIED_TASK_GATE_LIMIT
+            setting.default_account_cooldown_seconds = (
+                DISABLED_ACCOUNT_COOLDOWN_SECONDS
+            )
             if write_audit:
                 _write_scheduling_setting_audit(session, setting)
         results.append({
             "tenant_id": int(setting.tenant_id or 0),
             "changed": changed,
+            "account_cooldown_seconds": int(
+                setting.default_account_cooldown_seconds
+            ),
         })
     return results
 
@@ -309,12 +318,13 @@ def _write_scheduling_setting_audit(
         session,
         tenant_id=setting.tenant_id,
         actor="system:fulfillment_takeover",
-        action="归一单用户履约数量门禁",
+        action="归一单用户履约门禁",
         target_type="scheduling_setting",
         target_id=str(setting.id),
         detail=(
             f"account_hour_limit={UNIFIED_TASK_GATE_LIMIT}; "
-            f"account_day_limit={UNIFIED_TASK_GATE_LIMIT}"
+            f"account_day_limit={UNIFIED_TASK_GATE_LIMIT}; "
+            f"account_cooldown_seconds={DISABLED_ACCOUNT_COOLDOWN_SECONDS}"
         ),
     )
 

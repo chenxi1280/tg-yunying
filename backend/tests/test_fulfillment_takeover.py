@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
@@ -26,6 +27,8 @@ from app.models import (
     ViewFulfillmentObligation,
     ViewRemoteFact,
 )
+from app.schemas.ai_config import SchedulingSettingUpdate
+from app.schemas.risk_control import RiskControlGlobalPolicyUpdate
 from app.services._common import _now
 from app.services.task_center.fulfillment_takeover import (
     FULFILLMENT_CONTRACT_VERSION,
@@ -150,16 +153,22 @@ def test_running_legacy_search_is_taken_over_as_pure_click_idempotently(
     assert session.scalar(select(func.count(SearchClickFulfillmentObligation.id))) == 3
 
 
-def test_single_user_scheduling_quantity_limits_are_normalized_idempotently(
+def test_single_user_scheduling_limits_and_cooldown_are_normalized_idempotently(
     session: Session,
 ) -> None:
-    setting = SchedulingSetting(
+    platform_setting = SchedulingSetting(
+        tenant_id=None,
+        default_account_hour_limit=20,
+        default_account_day_limit=200,
+        default_account_cooldown_seconds=180,
+    )
+    tenant_setting = SchedulingSetting(
         tenant_id=1,
         default_account_hour_limit=50,
         default_account_day_limit=500,
         default_account_cooldown_seconds=30,
     )
-    session.add(setting)
+    session.add_all([platform_setting, tenant_setting])
     session.flush()
 
     first = normalize_fulfillment_scheduling_settings(
@@ -172,19 +181,35 @@ def test_single_user_scheduling_quantity_limits_are_normalized_idempotently(
         write_audit=True,
     )
 
-    assert first == [{"tenant_id": 1, "changed": True}]
-    assert second == [{"tenant_id": 1, "changed": False}]
-    assert setting.default_account_hour_limit == UNIFIED_TASK_GATE_LIMIT
-    assert setting.default_account_day_limit == UNIFIED_TASK_GATE_LIMIT
-    assert setting.default_account_cooldown_seconds == 30
+    assert first == [
+        {"tenant_id": 0, "changed": True, "account_cooldown_seconds": 0},
+        {"tenant_id": 1, "changed": True, "account_cooldown_seconds": 0},
+    ]
+    assert second == [
+        {"tenant_id": 0, "changed": False, "account_cooldown_seconds": 0},
+        {"tenant_id": 1, "changed": False, "account_cooldown_seconds": 0},
+    ]
+    for setting in (platform_setting, tenant_setting):
+        assert setting.default_account_hour_limit == UNIFIED_TASK_GATE_LIMIT
+        assert setting.default_account_day_limit == UNIFIED_TASK_GATE_LIMIT
+        assert setting.default_account_cooldown_seconds == 0
     audits = list(session.scalars(
         select(AuditLog).where(
             AuditLog.target_type == "scheduling_setting",
-            AuditLog.target_id == str(setting.id),
         )
     ))
-    assert len(audits) == 1
-    assert audits[0].action == "归一单用户履约数量门禁"
+    assert len(audits) == 2
+    assert all(audit.action == "归一单用户履约门禁" for audit in audits)
+    assert all("account_cooldown_seconds=0" in audit.detail for audit in audits)
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [SchedulingSettingUpdate, RiskControlGlobalPolicyUpdate],
+)
+def test_global_account_cooldown_cannot_be_reenabled(schema: type) -> None:
+    with pytest.raises(ValidationError):
+        schema(default_account_cooldown_seconds=1)
 
 
 def test_partially_stamped_legacy_search_still_retires_old_source(

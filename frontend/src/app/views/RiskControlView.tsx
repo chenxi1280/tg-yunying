@@ -196,7 +196,6 @@ export default function RiskControlView({ onOpenAccounts, onOpenAccountDetail, c
       default_on_content_rejected: payload.default_on_content_rejected,
       default_account_hour_limit: payload.default_account_hour_limit,
       default_account_day_limit: payload.default_account_day_limit,
-      default_account_cooldown_seconds: payload.default_account_cooldown_seconds,
     });
   }
 
@@ -953,7 +952,7 @@ export default function RiskControlView({ onOpenAccounts, onOpenAccountDetail, c
                     <Descriptions.Item label="内容拦截">{labelOf(policy.default_on_content_rejected)}</Descriptions.Item>
                     <Descriptions.Item label="账号小时上限">{policy.default_account_hour_limit || '不限'}</Descriptions.Item>
                     <Descriptions.Item label="账号日上限">{policy.default_account_day_limit || '不限'}</Descriptions.Item>
-                    <Descriptions.Item label="账号冷却">{policy.default_account_cooldown_seconds}s</Descriptions.Item>
+                    <Descriptions.Item label="跨任务账号冷却">已取消</Descriptions.Item>
                   </Descriptions>
                 </Space>
               ) : <Empty description="暂无策略数据" />,
@@ -1120,7 +1119,6 @@ export default function RiskControlView({ onOpenAccounts, onOpenAccountDetail, c
           <Form.Item name="default_on_content_rejected" label="内容拦截处理"><Select options={[{ value: 'skip_message', label: '跳过消息' }, { value: 'rewrite_and_retry', label: '改写后重试' }, { value: 'pause', label: '暂停' }]} /></Form.Item>
           <Form.Item name="default_account_hour_limit" label="账号小时上限"><InputNumber min={0} addonAfter="0 为不限" /></Form.Item>
           <Form.Item name="default_account_day_limit" label="账号日上限"><InputNumber min={0} addonAfter="0 为不限" /></Form.Item>
-          <Form.Item name="default_account_cooldown_seconds" label="账号全局冷却"><InputNumber min={0} addonAfter="秒" /></Form.Item>
         </Form>
       </Modal>
 

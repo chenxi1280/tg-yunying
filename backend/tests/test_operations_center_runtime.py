@@ -943,7 +943,7 @@ def test_scheduling_setting_centralizes_quiet_hours_and_default_failure_policy()
                 default_on_content_rejected="rewrite_and_retry",
                 default_account_hour_limit=12,
                 default_account_day_limit=80,
-                default_account_cooldown_seconds=45,
+                default_account_cooldown_seconds=0,
             ),
             "pytest",
         )
@@ -962,7 +962,7 @@ def test_scheduling_setting_centralizes_quiet_hours_and_default_failure_policy()
     assert loaded.default_on_content_rejected == "rewrite_and_retry"
     assert loaded.default_account_hour_limit == 12
     assert loaded.default_account_day_limit == 80
-    assert loaded.default_account_cooldown_seconds == 45
+    assert loaded.default_account_cooldown_seconds == 0
 
 
 def test_risk_control_global_policy_updates_scheduling_policy():
