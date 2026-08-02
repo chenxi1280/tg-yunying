@@ -12,6 +12,9 @@ from app.database import SessionLocal
 from app.models import (
     Action,
     ChannelMessage,
+    DispatchClaimReservation,
+    DispatchClaimShardAllocation,
+    DispatchClaimWindow,
     ExecutionAttempt,
     SearchClickAssignmentEpoch,
     SearchClickFulfillmentObligation,
@@ -211,7 +214,6 @@ def _group_runtime_snapshot(session, ledger: TaskDayLedger) -> dict[str, Any]:
         ],
     }
 
-
 def _coverage_confirmed_case():
     return case(
         (
@@ -223,7 +225,6 @@ def _coverage_confirmed_case():
         ),
         else_=0,
     )
-
 
 def _search_snapshot(session, ledger: TaskDayLedger, since: datetime) -> dict[str, int]:
     row = session.execute(
@@ -238,7 +239,6 @@ def _search_snapshot(session, ledger: TaskDayLedger, since: datetime) -> dict[st
         "confirmed_count": int(row[1]),
         "post_release_confirmed_count": int(row[2]),
     }
-
 
 def _search_runtime_snapshot(session, ledger: TaskDayLedger) -> dict[str, Any]:
     assignment_rows = session.execute(
@@ -273,9 +273,33 @@ def _search_runtime_snapshot(session, ledger: TaskDayLedger) -> dict[str, Any]:
             {"finalize_status": status, "outcome": outcome, "count": int(count)}
             for status, outcome, count in epoch_rows
         ],
+        "window_reservations": _search_window_reservations(session, ledger.task_id),
         **search_claimed_details(session, ledger),
     }
 
+def _search_window_reservations(session, task_id: str) -> list[dict[str, Any]]:
+    windows = list(session.scalars(select(DispatchClaimWindow).order_by(
+        DispatchClaimWindow.bucket_start.desc()).limit(SAMPLE_LIMIT)))
+    result = []
+    for window in windows:
+        rows = session.execute(select(
+            DispatchClaimReservation, DispatchClaimShardAllocation).join(
+            DispatchClaimShardAllocation).where(
+            DispatchClaimShardAllocation.dispatch_claim_window_id == window.id,
+            DispatchClaimReservation.task_id == task_id,
+            DispatchClaimReservation.claim_class == "search_join")).all()
+        result.append({
+            "window_id": window.id, "bucket_start": iso(window.bucket_start),
+            "allocation_state": window.allocation_state, "allocation_epoch": window.allocation_epoch,
+            "effective_unclaimed_count": window.effective_unclaimed_count,
+            "reservations": [{
+                "epoch": reservation.dispatch_allocation_epoch,
+                "reserved": reservation.reserved_claims, "bound": reservation.bound_count,
+                "claimed": reservation.claimed_count, "released": reservation.released_count,
+                "reason": reservation.reason,
+            } for reservation, _allocation in rows],
+        })
+    return result
 
 def _search_confirmed_case():
     return case(
@@ -289,7 +313,6 @@ def _search_confirmed_case():
         ),
         else_=0,
     )
-
 
 def _search_post_release_case(since: datetime):
     return case(
