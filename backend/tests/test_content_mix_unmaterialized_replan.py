@@ -119,6 +119,88 @@ def test_build_plan_continues_when_waiting_replan_creates_nothing(
     assert prepared_blueprints == [True, False]
 
 
+def test_build_plan_does_not_swallow_unrelated_value_error(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task = Task(
+        id="unrelated-value-error-task",
+        tenant_id=1,
+        name="程序错误必须暴露",
+        type="group_ai_chat",
+        status="running",
+    )
+    blueprint = SimpleNamespace()
+    monkeypatch.setattr(
+        group_ai_chat,
+        "_prepare_plan_blueprint",
+        lambda *_args, **_kwargs: blueprint,
+    )
+    monkeypatch.setattr(
+        group_ai_chat,
+        "_replan_content_mix_slots",
+        lambda *_args: group_ai_chat.ContentMixReplanResult(False, 0),
+    )
+    monkeypatch.setattr(
+        group_ai_chat,
+        "_freeze_content_mix_cycle",
+        lambda *_args: (_ for _ in ()).throw(ValueError("content_mix_target_missing")),
+    )
+
+    with pytest.raises(ValueError, match="content_mix_target_missing"):
+        group_ai_chat.build_plan(session, task)
+
+
+def test_build_plan_records_structured_quantity_slot_alignment_failure(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task = Task(
+        id="quantity-alignment-task",
+        tenant_id=1,
+        name="数量槽状态变化",
+        type="group_ai_chat",
+        status="running",
+        stats={},
+    )
+    result = group_ai_chat.QuantitySlotAlignmentResult(
+        code="quantity_slot_state_changed",
+        ledger_id="ledger-1",
+        slots=(),
+        requested_count=2,
+        missing_coverage_ids=("coverage-1",),
+    )
+    monkeypatch.setattr(
+        group_ai_chat,
+        "_prepare_plan_blueprint",
+        lambda *_args, **_kwargs: SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        group_ai_chat,
+        "_replan_content_mix_slots",
+        lambda *_args: group_ai_chat.ContentMixReplanResult(False, 0),
+    )
+    monkeypatch.setattr(
+        group_ai_chat,
+        "_freeze_content_mix_cycle",
+        lambda *_args: (_ for _ in ()).throw(
+            group_ai_chat.QuantitySlotAlignmentError(result)
+        ),
+    )
+
+    assert group_ai_chat.build_plan(session, task) == 0
+    assert task.last_error == "数量槽状态已变化，等待重新规划"
+    assert task.stats["quantity_slot_alignment"] == {
+        "code": "quantity_slot_state_changed",
+        "ledger_id": "ledger-1",
+        "requested_count": 2,
+        "aligned_count": 0,
+        "missing_coverage_ids": ["coverage-1"],
+        "missing_extra_count": 0,
+        "recorded_at": task.stats["quantity_slot_alignment"]["recorded_at"],
+    }
+
+
 def test_replan_coverage_is_loaded_before_normal_keyset(
     session: Session,
 ) -> None:
