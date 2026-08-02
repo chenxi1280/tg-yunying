@@ -87,8 +87,10 @@ def test_gateway_gate_backfills_missing_scoped_admission_and_defers_body() -> No
         assert allowed is False
         assert admission.account_id == 11
         assert admission.join_start_cursor == "500"
-        assert action.status == "skipped"
+        assert action.status == "pending"
         assert action.result["error_code"] == "group_bot_admission_wait"
+        assert action.result["deferred"] is True
+        assert action.executed_at is None
         assert action.lease_owner == ""
         assert action.lease_expires_at is None
         assert action.claim_owner == ""
@@ -171,7 +173,7 @@ def test_gateway_gate_blocks_account_after_post_send_intercept() -> None:
             group_id=7,
             account_id=11,
         ) is False
-        assert action.status == "skipped"
+        assert action.status == "pending"
         assert action.result["error_code"] == "group_bot_admission_wait"
 
 

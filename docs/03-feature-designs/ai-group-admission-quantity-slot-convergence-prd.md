@@ -15,7 +15,7 @@
 2026-08-02 至 2026-08-03 的生产证据显示：
 
 - 郑州师范、郑州楼凤的冻结日目标未完成，大量账号处于群管准入等待；
-- Planner 在没有准入可发账号时，会把 `admission_waiting` 账号回填为正文候选，随后 Dispatcher 再以 `group_bot_admission_wait` 跳过，形成无效 Action 和终态噪声；
+- Planner 在没有准入可发账号时，会把 `admission_waiting` 账号回填为预留 Action 以驱动准入；旧链路直到 Dispatcher 才以 `group_bot_admission_wait` 终结，导致 AI 已被无效调用、Action 终态噪声以及下一轮重复建单；
 - 郑州楼凤在当日存在 766 个 ready coverage 和对应 open 数量槽时仍短暂出现 `quantity_slots_unavailable`，稍后自然形成 2 个 ContentMix、32 条 open Action；
 - 保护性生产恢复预览发现现有 open Action 已覆盖当时 `due_by_now`，因此没有执行 `60/12 -> 1/1` 配置写入。临时恢复没有改目标、没有批量改 ready、没有触碰 Gateway-started/unknown；
 - 线上 Dispatcher 已具备群管确认源实时刷新、精确收件人匹配和失效 source supersede。永久修复不重复实现该链路，只要求运维恢复工具遵守同一安全合同。
@@ -24,15 +24,15 @@
 
 ### 2.1 已确认根因
 
-1. **准入与正文规划混线。** `_load_daily_coverage_plan_accounts` 的“无 ready 时使用 `admission_waiting`”把正文 Action 当作准入驱动器，违反“任何未 ready 状态不得调用 AI、test message 或 Telegram 正文”的总合同。
+1. **准入门禁位置过晚。** `_load_daily_coverage_plan_accounts` 的“无 ready 时使用 `admission_waiting`”是现有准入推进器，不能直接删除；问题是 Action 没有冻结准入快照，generation worker 在 Dispatcher 最终门禁之前已经调用 AI，而 Dispatcher 又把等待写成 terminal skipped，随后 Planner 只能重复建单。
 2. **数量槽错误被过度归并。** `_freeze_content_mix_cycle` 只比较期望条数与已对齐条数，并把所有差异压成 `quantity_slots_unavailable`；`build_plan` 又捕获全部 `ValueError`，使真实程序错误、并发状态变化和业务不变量损坏无法区分。
 3. **分配锁域不完整。** coverage keyset 有每日游标锁，但 ContentMix 冻结阶段未明确锁住 target-day 目标行及被选数量槽。多个 Planner 或同日 replan/new-cycle 交错时，蓝图读取与槽位冻结缺少一个最终一致性栅栏。
 4. **历史文档冲突。** `all-task-fulfillment-recovery-prd.md` 同时存在“旧槽等待时继续独立 Cycle”和“任一旧槽等待时禁止新 Cycle”两种口径，导致实现和验收可能反复摇摆。
 
 ### 2.2 本次范围
 
-- 正文 Planner 只选择群管准入 `ready`，以及已经持久绑定、按原义务恢复的 `post_follow_visibility_probe` 账号；
-- 准入等待账号保留 coverage 分母和 blocker，但不创建正文 Action；
+- 正常正文优先选择群管准入 `ready`，以及已经持久绑定、按原义务恢复的 `post_follow_visibility_probe` 账号；没有可发账号时允许为 waiting 账号创建唯一的准入驱动 Action，但该 Action 只能占用原 coverage/数量槽，不得调用 AI 或 Telegram 正文；
+- 已存在准入行的 Action 创建时冻结 admission id/state/version；generation worker 在 Provider 前重读准入，waiting 时保留同一 Action为 pending 并定时复检，Dispatcher 在 Gateway 前再次执行相同门禁；发布前遗留的无 admission 行仍遵守既有 DF-192 首条正文可见性 hold 合同，本次不改变该兼容边界；
 - ContentMix 在短事务内锁定 target-day 目标与候选数量槽，以精确 coverage 身份对齐并原子冻结；
 - 槽位差异输出结构化状态，不再用泛化错误或捕获所有 `ValueError`；
 - 旧 Cycle 优先重建，但不能阻塞与其数量槽、coverage 均无交集的新 Cycle；
@@ -49,8 +49,8 @@
 ## 3. 产品不变量
 
 1. 完成只认 `Action success + ExecutionAttempt success + non-empty remote_message_id`；需要可见性核验时还必须 `visible_confirmed`。
-2. `TgGroupAccount.can_send` 与 `GroupBotAdmission.state` 独立；只有准入可规划状态才能进入正文蓝图。
-3. `admission_waiting` 只投影为 `pending_group_bot_admission`，由既有 observation/follow/confirmation/probe lane 推进；正文 Planner 不制造“探路正文”。
+2. `TgGroupAccount.can_send` 与 `GroupBotAdmission.state` 独立；waiting 账号只能进入带准入快照的驱动蓝图，未放行前不得生成或发送正文。
+3. `admission_waiting` 投影为 `pending_group_bot_admission`，由既有 observation/follow/confirmation/probe lane 推进；驱动 Action 只承载原义务和复检时钟，不是“探路正文”，不得创建替代 Action。
 4. 每个 ContentMixSlot 必须绑定同一 Task、同一 task-day ledger 的唯一主数量槽；coverage 正文只能绑定本账号精确 coverage 槽，extra-volume 正文只能绑定 coverage 为空的 extra 槽。
 5. 同一 `primary_quantity_slot_id` 永不被两个 CycleSlot 共享。任一步失败，Cycle、CycleSlot、合同和 Action 整体不产生半成品。
 6. old-cycle replan 与 independent new-cycle 可并行收敛，但新 Cycle 必须排除所有已绑定旧 Cycle 的 coverage/数量槽。
@@ -67,10 +67,12 @@ coverage ready
   -> post_follow_visibility_probe + persistent bound/reclaimable action
        -> probe candidate
   -> other admission state
-       -> pending_group_bot_admission blocker; no body Action
+       -> one reserved admission-driver Action
+       -> generation pre-provider gate: keep pending; no provider/body
+       -> dispatcher pre-gateway gate: keep same Action pending; no Telegram body
 ```
 
-若本轮无正文候选但存在准入等待账号：Task 保持 running，记录等待账号数和 blocker，按既有准入 lane/Planner 周期唤醒；不得改写为账号离线或数量槽不足。
+若本轮无可发正文候选但存在准入等待账号：Task 保持 running，记录等待账号数和 blocker，并为 due 原义务保留幂等驱动 Action。每次复检必须重读 admission；未 ready 时不得加载 Provider 凭据或建立 generation attempt，Action 不进入 terminal，亦不得改写为账号离线或数量槽不足。ready 后由同一 Action继续生成和发送。
 
 ### 4.2 数量槽对齐结果
 
@@ -116,6 +118,7 @@ coverage ready
 ```
 
 - API 继续通过 Task 详情现有 stats/last_error 展示，不新增写接口；
+- Action payload 保存 `group_bot_admission_id/state/admission_version` 快照；存量 open Action 在 Planner 接管时补齐，generation/Dispatcher 每次以数据库最新事实覆盖快照；
 - 日志只输出 task/ledger、数量和内部 ID，不输出手机号、Session、callback data 或消息正文；
 - 成功完成一次对齐后清除旧 `quantity_slot_alignment`，避免历史 blocker 冒充当前状态；
 - `pending_group_bot_admission_count` 只表示当前规划快照，不从冻结分母扣除。
@@ -132,13 +135,14 @@ coverage ready
 
 ### 8.1 红测
 
-1. 只有 `admission_waiting` 时，正文账号列表为空、Action 为 0、stats 显示准入等待；不得回填 waiting 账号。
-2. 同时有准入 ready extra 账号时，只选择 ready extra；waiting 账号仍不进入正文。
+1. 只有 `admission_waiting` 时，可创建绑定原 coverage/数量槽的唯一驱动 Action；generation worker 必须在加载凭据/调用 Provider 前延后，同一 Action保持 pending，不产生 Attempt 或正文。
+2. 同时有准入 ready extra 账号时优先选择 ready extra；waiting 不得挤占可立即履约的 ready 容量。
 3. coverage item 只能匹配自身 coverage 槽；extra item 只能匹配 coverage 为空的槽。
 4. 已绑定槽不再出现在可用集合；目标行和选中数量槽在 PostgreSQL 路径加锁。
 5. 对齐不完整返回结构化 code/count/coverage IDs，且数据库中 Cycle/CycleSlot/Action 数均不增加。
 6. `content_mix_target_missing` 等非对齐错误向上暴露并写 `planner_runtime_error`。
 7. old replan `created=0` 时，未绑定的独立 coverage 仍可创建新 Cycle；旧数量槽不复用。
+8. admission 从 waiting 变为 ready 后复用原 Action 生成；若 generation 后、Gateway 前状态回退，Dispatcher 将同一 Action退回 pending，不能写 `group_bot_admission_wait` terminal 或建替代 Action。
 
 ### 8.2 Release Gate
 
@@ -152,7 +156,7 @@ coverage ready
 
 发布后分别验证郑州师范和郑州楼凤：
 
-- 新建正文 Action 的账号全部为准入可规划状态；`group_bot_admission_wait` 不再由新正文 Action 批量产生；
+- waiting 驱动 Action 在 admission ready 前无 Provider 调用、无 generation attempt、无 Gateway attempt；`group_bot_admission_wait` 不再形成新 terminal Action，且同一数量槽没有替代 Action；
 - `quantity_slots_unavailable` 不再出现，若存在槽差异则展示精确 code 和计数；
 - ContentMix/CycleSlot/Action 数量守恒，无重复 `primary_quantity_slot_id`；
 - AI generation ready、Dispatcher claim、ExecutionAttempt success 和非空 remote message id 持续增长；
@@ -171,7 +175,9 @@ coverage ready
 
 | 反证场景 | 设计结论 |
 | --- | --- |
-| waiting 账号是唯一账号，删除正文补位会不会永远不准入？ | 不会由正文负责准入；既有 admission observation/follow/confirmation/probe lane 是唯一推进路径。若该 lane 缺失，应显式显示 admission blocker，而不是发送探路正文。 |
+| waiting 账号是唯一账号，删除正文补位会不会永远不准入？ | 会，这正是第一版红测暴露的架构反证。因此保留唯一驱动 Action，但把安全边界前移到 Provider 前；既有 admission lane 推进状态，驱动 Action只负责复检并在 ready 后履约。 |
+| waiting Action 会不会反复终结、重建并重复占槽？ | 不会。generation 和 Dispatcher 都把同一 Action保持 pending 并更新重试时间；数量槽、coverage、cycle slot 与 Action绑定不变。 |
+| Action 创建后 admission 回退怎么办？ | generation 前和 Gateway 前都重读最新 admission；回退只延后同一 Action，禁止调用 Provider、Telegram 或创建替代。 |
 | 一个旧 replan 槽暂不可用，是否必须阻塞整个 Task？ | 否。只冻结旧槽自身；其他未绑定 coverage/数量槽可建独立 Cycle。 |
 | 两个 Planner 同时读到同一 open 槽怎么办？ | target/slot 锁和唯一键只允许一个提交；另一方不借槽，记录 state changed 后重读。 |
 | open 槽数量够但 coverage 身份不匹配怎么办？ | 不是容量不足。输出 invariant mismatch，禁止按 ordinal 借另一账号槽。 |
@@ -180,6 +186,6 @@ coverage ready
 | 临时恢复能否批量清 admission source？ | 不能。必须逐账号实时读取和可信源匹配；读取错误保持 retry。 |
 | 是否需要数据库迁移？ | 不需要；唯一键和账本关系已存在，只修选择、锁和诊断。 |
 
-自检已覆盖原始需求、产品合同、Planner/Dispatcher/运维职责、数据流、权限安全、并发幂等、unknown、防重复、失败路径、迁移、回滚、QA、Release Gate 和 E4。发现的“旧槽是否阻塞独立 Cycle”文档冲突已明确 supersede，准入 lane 不再借正文 Action 驱动，非业务异常不再被泛化错误吞掉。
+自检已覆盖原始需求、产品合同、Planner/generation/Dispatcher/运维职责、数据流、权限安全、并发幂等、unknown、防重复、失败路径、迁移、回滚、QA、Release Gate 和 E4。第一版“删除 waiting Action”已被既有测试和 580 账号边界证伪并撤销；补全后的合同保留驱动 Action、前移 Provider 门禁、复用同一义务，既不切断准入推进，也不允许未 ready 正文。发现的“旧槽是否阻塞独立 Cycle”文档冲突已明确 supersede，非业务异常不再被泛化错误吞掉。
 
 **Product Design Complete：`design_status=complete`，允许进入 dev。**

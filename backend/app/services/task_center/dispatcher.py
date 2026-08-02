@@ -188,6 +188,7 @@ GROUP_BOT_ADMISSION_STATE_MESSAGES = {
     "observation_stale": "群管机器人观察证据不足，需要重启观察或修复监听水位",
 }
 HARD_HOURLY_OVERDUE_SEND_PRIORITY_SECONDS = 300
+GROUP_BOT_ADMISSION_SEND_RETRY_SECONDS = 30
 TARGET_ADMISSION_RETRY_TASK_TYPE = "target_admission_retry"
 TARGET_ADMISSION_RETRY_TERMINAL_STATUSES = {"success", "unknown_after_send", "failed", "retryable_failed", "skipped"}
 ALL_ACCOUNT_COVERAGE_TASK_STATUSES = ("draft", "pending", "running", "paused")
@@ -7773,7 +7774,7 @@ def _apply_allowed_group_bot_admission(action: Action, payload: dict, decision) 
 
 
 def _defer_for_group_bot_admission(action: Action, decision) -> None:
-    action.status = "skipped"
+    action.status = "pending"
     action.result = {
         **(action.result or {}),
         "success": False,
@@ -7782,8 +7783,12 @@ def _defer_for_group_bot_admission(action: Action, decision) -> None:
         "validation_stage": "group_bot_admission",
         "group_bot_admission_state": decision.state,
         "group_bot_admission_id": decision.admission_id,
+        "deferred": True,
     }
-    action.executed_at = _now()
+    action.scheduled_at = _now() + timedelta(
+        seconds=GROUP_BOT_ADMISSION_SEND_RETRY_SECONDS,
+    )
+    action.executed_at = None
     _clear_action_lease(action)
     _release_runtime_resources(action)
 

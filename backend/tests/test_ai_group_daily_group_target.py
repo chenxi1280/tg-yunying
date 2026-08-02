@@ -532,8 +532,8 @@ def test_group_volume_candidates_scan_past_uncovered_admission_debt(
     assert [account.id for account in selected] == [2, 3]
 
 
-@pytest.mark.parametrize(("extra_account_id", "expected_ids"), [(3, [3]), (None, [])])
-def test_daily_planner_never_uses_admission_waiting_as_body_driver(
+@pytest.mark.parametrize(("extra_account_id", "expected_ids"), [(3, [3]), (None, [1])])
+def test_daily_planner_keeps_admission_driver_without_displacing_ready_volume(
     session: Session,
     monkeypatch: pytest.MonkeyPatch,
     extra_account_id: int | None,
@@ -591,12 +591,8 @@ def test_daily_planner_never_uses_admission_waiting_as_body_driver(
         include_replan_accounts=True,
     )
 
-    if expected_ids:
-        assert [account.id for account in state.accounts] == expected_ids
-        return
-    assert isinstance(state, group_ai_chat.PlanAbort)
+    assert [account.id for account in state.accounts] == expected_ids
     assert task.stats["pending_group_bot_admission_count"] == 1
-    assert task.last_error == "账号仍在群管准入流程，等待准入完成后规划正文"
 
 
 def test_freeze_reports_structured_quantity_slot_invariant_mismatch(

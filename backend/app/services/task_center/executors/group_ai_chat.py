@@ -122,7 +122,6 @@ AI_QUALITY_DUPLICATE_SKIP_MESSAGE = "AI 候选语义重复风险过高，已跳�
 ACCOUNT_CAPACITY_BLOCKED_MESSAGE = "账号容量已排满，等待账号额度恢复后继续执行"
 ACCOUNT_COOLDOWN_BLOCKED_MESSAGE = "账号冷却中，等待冷却后继续执行"
 ACCOUNT_UNAVAILABLE_MESSAGE = "没有可用账号，等待账号恢复后继续执行"
-GROUP_BOT_ADMISSION_WAIT_MESSAGE = "账号仍在群管准入流程，等待准入完成后规划正文"
 ACCOUNT_DISTRIBUTION_SKEW_MESSAGE = "账号分布偏斜，已阻断本轮硬目标规划"
 ALL_ACCOUNT_DAILY_COVERAGE_REPLAN_CODE = "all_account_daily_coverage_replan"
 ALL_ACCOUNT_DAILY_COVERAGE_REPLAN_MESSAGE = "任务已切换为全部账号每日覆盖，旧硬目标规划已跳过等待按覆盖账本重建"
@@ -563,13 +562,12 @@ def _load_daily_coverage_plan_accounts(
             account_limit=account_limit,
         )
     )
+    if not selected:
+        selected.extend(admission_waiting[:account_limit])
     _record_group_bot_admission_waiting(task, admission_waiting)
     _record_direct_check_in_capacity(task, len(selected))
     if selected:
         return AccountPlanState(selected)
-    if admission_waiting:
-        task.last_error = GROUP_BOT_ADMISSION_WAIT_MESSAGE
-        return PlanAbort()
     if facts.coverage.required_new <= 0:
         _mark_daily_target_pacing(task)
         return PlanAbort()
@@ -1918,7 +1916,12 @@ def _create_reserved_actions(
 
 
 def _create_reserved_action(session: Session, task: Task, slot: SlotSnapshot) -> Action | None:
-    payload = slot.payload
+    payload = _with_group_bot_admission_snapshot(
+        session,
+        task,
+        slot.account_id,
+        slot.payload,
+    )
     coverage_id = str(payload.coverage_ledger_id or "")
     if not coverage_id:
         action = create_send_action(
@@ -1949,6 +1952,29 @@ def _create_reserved_action(session: Session, task: Task, slot: SlotSnapshot) ->
     _bind_content_mix_action(session, action, payload)
     session.flush()
     return action
+
+
+def _with_group_bot_admission_snapshot(
+    session: Session,
+    task: Task,
+    account_id: int,
+    payload: SendMessagePayload,
+) -> SendMessagePayload:
+    config = task.type_config if isinstance(task.type_config, dict) else {}
+    if _group_bot_admission_requirement(config) is False:
+        return payload
+    admission = session.scalar(select(GroupBotAdmission).where(
+        GroupBotAdmission.tenant_id == task.tenant_id,
+        GroupBotAdmission.group_id == payload.group_id,
+        GroupBotAdmission.account_id == account_id,
+    ))
+    if admission is None:
+        return payload
+    return payload.model_copy(update={
+        "group_bot_admission_id": admission.id,
+        "group_bot_admission_state": admission.state,
+        "admission_version": int(admission.admission_version or 1),
+    })
 
 
 def _bind_content_mix_action(
@@ -2365,6 +2391,10 @@ def prepare_open_actions_for_planning(session: Session, task: Task) -> int:
     )
     if not group:
         return legacy_replanned
+    legacy_replanned += _backfill_open_action_admission_snapshots(
+        session,
+        task,
+    )
     hard_progress = current_progress(session, task, _now()) if hard_hourly_enabled(task) else {}
     hard_progress = hard_progress if int(hard_progress.get("deficit") or 0) > 0 else {}
     accounts = _select_accounts_for_plan(session, task, group, hard_progress, config)
@@ -2380,6 +2410,37 @@ def prepare_open_actions_for_planning(session: Session, task: Task) -> int:
         account_ids=[account.id for account in accounts],
     )
     return legacy_replanned + skipped + _expire_open_profileless_actions(session, task, ready_voice_profiles.keys())
+
+
+def _backfill_open_action_admission_snapshots(
+    session: Session,
+    task: Task,
+) -> int:
+    actions = list(session.scalars(select(Action).where(
+        Action.task_id == task.id,
+        Action.action_type == "send_message",
+        Action.status.in_(("pending", "retryable_failed")),
+        func.coalesce(
+            Action.payload["group_bot_admission_state"].as_string(),
+            "",
+        ) == "",
+    )))
+    updated = 0
+    for action in actions:
+        if action.account_id is None:
+            continue
+        payload = SendMessagePayload.model_validate(action.payload or {})
+        payload = _with_group_bot_admission_snapshot(
+            session,
+            task,
+            int(action.account_id),
+            payload,
+        )
+        if not payload.group_bot_admission_state:
+            continue
+        action.payload = payload.model_dump(mode="json")
+        updated += 1
+    return updated
 
 
 def _canonicalized_task_config(session: Session, task: Task, config: dict) -> dict:
