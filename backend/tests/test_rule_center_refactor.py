@@ -276,7 +276,7 @@ def _material_generation_dependencies() -> GenerationDependencies:
         normal_generator=generate,
         reply_generator=lambda *_args, **_kwargs: pytest.fail("normal material action must not reply"),
         reply_target_probe=lambda *_args, **_kwargs: pytest.fail("normal material action must not probe"),
-        reply_messages_fetcher=lambda *_args, **_kwargs: pytest.fail("normal material action must not fetch replies"),
+        reply_message_fetcher=lambda *_args, **_kwargs: pytest.fail("normal material action must not fetch replies"),
     )
 
 

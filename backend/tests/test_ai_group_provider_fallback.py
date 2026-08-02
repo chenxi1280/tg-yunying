@@ -277,7 +277,7 @@ def _generation_dependencies(*, normal_generator=None, reply_generator=None):
         normal_generator=normal_generator or forbidden,
         reply_generator=reply_generator or forbidden,
         reply_target_probe=forbidden,
-        reply_messages_fetcher=forbidden,
+        reply_message_fetcher=forbidden,
     )
 
 

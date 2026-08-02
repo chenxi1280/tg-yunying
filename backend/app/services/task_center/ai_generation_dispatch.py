@@ -50,7 +50,6 @@ from .ai_quality_stats import (
 from .payloads import SendMessagePayload
 
 
-CONTEXT_HISTORY_LIMIT = 50
 CONTEXT_HISTORY_MAX_CHARS = 1000
 
 
@@ -385,17 +384,17 @@ def _validate_remote_reply_target(
         request.session_ciphertext,
         request.credentials,
     )
-    snapshots = []
+    snapshot = None
+    target_id = str(request.reply_targets[0]["message_id"])
     if probe.ok:
-        snapshots = dependencies.reply_messages_fetcher(
+        snapshot = dependencies.reply_message_fetcher(
             request.account_id,
             request.peer_id,
+            target_id,
             request.session_ciphertext,
             request.credentials,
-            limit=CONTEXT_HISTORY_LIMIT,
         )
-    target_id = str(request.reply_targets[0]["message_id"])
-    if probe.ok and any(str(item.remote_message_id) == target_id for item in snapshots):
+    if probe.ok and snapshot and str(snapshot.remote_message_id) == target_id:
         return
     action = session.get(Action, request.action_id)
     fail_generation_action(

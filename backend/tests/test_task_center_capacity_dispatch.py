@@ -273,7 +273,7 @@ def _configure_capacity_ai_dispatch(
         normal_generator=normal_generator,
         reply_generator=forbidden_reply,
         reply_target_probe=forbidden_reply,
-        reply_messages_fetcher=forbidden_reply,
+        reply_message_fetcher=forbidden_reply,
     )
     return dependencies
 
@@ -1120,7 +1120,7 @@ def test_dispatch_context_requeue_releases_reserved_account_runtime_resource(mon
             normal_generator=forbidden,
             reply_generator=forbidden,
             reply_target_probe=forbidden,
-            reply_messages_fetcher=forbidden,
+            reply_message_fetcher=forbidden,
         )
 
         [claimed] = claim_actions(session, limit=1, worker_id="worker-test")

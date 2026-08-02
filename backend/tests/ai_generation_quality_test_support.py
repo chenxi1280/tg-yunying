@@ -95,5 +95,5 @@ def _dependencies(
         normal_generator=normal_generator,
         reply_generator=reply_generator,
         reply_target_probe=_forbidden_generator,
-        reply_messages_fetcher=_forbidden_generator,
+        reply_message_fetcher=_forbidden_generator,
     )

@@ -213,7 +213,7 @@ def _normal_generation_dependencies(generator) -> GenerationDependencies:
         normal_generator=generator,
         reply_generator=lambda *_args, **_kwargs: pytest.fail("normal action must not use reply generator"),
         reply_target_probe=lambda *_args, **_kwargs: pytest.fail("normal action must not probe reply target"),
-        reply_messages_fetcher=lambda *_args, **_kwargs: pytest.fail("normal action must not fetch reply messages"),
+        reply_message_fetcher=lambda *_args, **_kwargs: pytest.fail("normal action must not fetch reply messages"),
     )
 
 

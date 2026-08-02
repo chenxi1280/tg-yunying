@@ -16,6 +16,7 @@ from app.models import (
     AiGroupMessageMemory,
     ContentMixCycleSlot,
     ContentMixObligation,
+    ExecutionAttempt,
     GroupContextMessage,
     Task,
     TaskDayLedger,
@@ -151,7 +152,7 @@ def test_dispatch_reply_generation_uses_reply_provider_without_db_transaction(mo
                 normal_generator=forbidden_normal_generation,
                 reply_generator=reply_generator(observed),
                 reply_target_probe=reply_probe(session),
-                reply_messages_fetcher=reply_fetch(session),
+                reply_message_fetcher=reply_fetch(session),
             ),
         ) is True
 
@@ -163,6 +164,79 @@ def test_dispatch_reply_generation_uses_reply_provider_without_db_transaction(mo
             "sent_reply_target": 9001,
         }
         assert action.payload["message_text"] == "就按这个节奏来"
+
+
+def _seed_own_history_reply_action(session: Session) -> Action:
+    action = seed_reply_action(session, _now())
+    prior = Action(
+        id="successful-own-history",
+        tenant_id=1,
+        task_id=action.task_id,
+        task_type="group_ai_chat",
+        action_type="send_message",
+        account_id=11,
+        status="success",
+        payload={"group_id": 7, "message_text": "前一条已发消息"},
+    )
+    session.add(prior)
+    session.flush()
+    session.add(ExecutionAttempt(
+        action_id=prior.id,
+        status="success",
+        remote_message_id="9002",
+    ))
+    action.payload = {
+        **(action.payload or {}),
+        "reply_to_message_id": 9002,
+        "reply_target_preview": "前一条已发消息",
+        "reply_target_source": "own_history",
+    }
+    session.commit()
+    return action
+
+
+def _own_history_dependencies(session: Session, observed: dict[str, object]):
+    def generate(_session, _tenant_id, config, *, reply_targets, **_kwargs):
+        observed["reply_target"] = reply_targets[0]["message_id"]
+        return [GeneratedContent(
+            "接着这条聊",
+            slot_id=config["generation_slots"][0]["slot_id"],
+            sequence_index=1,
+            reply_to_sequence_index=1,
+        )], 5
+
+    def fetch_exact(_account_id, _peer_id, message_id, *_args, **_kwargs):
+        observed["exact_fetch_target"] = str(message_id)
+        return SimpleNamespace(remote_message_id=str(message_id))
+
+    return generation_dependencies(
+        reply_generator=generate,
+        reply_target_probe=reply_probe(session),
+        reply_message_fetcher=fetch_exact,
+    )
+
+
+def test_dispatch_reply_generation_accepts_authoritative_own_history(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    observed: dict[str, object] = {}
+    with Session(engine) as session:
+        action = _seed_own_history_reply_action(session)
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args, **_kwargs: object())
+        monkeypatch.setattr(dispatcher.gateway, "send_message", reply_sender(session, observed))
+
+        assert _dispatch_with_generation_worker(
+            session,
+            action,
+            monkeypatch,
+            generation_dependencies=_own_history_dependencies(session, observed),
+        ) is True
+
+        assert action.status == "success", action.result
+        assert observed["reply_target"] == 9002
+        assert observed["exact_fetch_target"] == "9002"
+        assert observed["sent_reply_target"] == 9002
+        assert action.payload["message_text"] == "接着这条聊"
 
 
 @pytest.mark.parametrize(
@@ -231,7 +305,7 @@ def test_reply_queue_age_does_not_invalidate_available_target(
                 normal_generator=forbidden_normal_generation,
                 reply_generator=reply_generator(observed),
                 reply_target_probe=reply_probe(session),
-                reply_messages_fetcher=reply_fetch(session),
+                reply_message_fetcher=reply_fetch(session),
             ),
         ) is True
 

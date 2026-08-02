@@ -209,7 +209,7 @@ def _dependencies(normal_generator) -> GenerationDependencies:
         normal_generator=normal_generator,
         reply_generator=_forbidden_external,
         reply_target_probe=_forbidden_external,
-        reply_messages_fetcher=_forbidden_external,
+        reply_message_fetcher=_forbidden_external,
     )
 
 

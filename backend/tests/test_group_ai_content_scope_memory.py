@@ -128,7 +128,7 @@ def test_provider_rebuilds_prompt_inputs_from_target_group_only():
         normal_generator=reject_after_observation,
         reply_generator=reject_after_observation,
         reply_target_probe=lambda *_args, **_kwargs: type("Probe", (), {"ok": True, "detail": ""})(),
-        reply_messages_fetcher=lambda *_args, **_kwargs: [type("Message", (), {"remote_message_id": "8001"})()],
+        reply_message_fetcher=lambda *_args, **_kwargs: type("Message", (), {"remote_message_id": "8001"})(),
     )
 
     with pytest.raises(AiGenerationUnavailable, match="forced_provider_stop"):

@@ -9,7 +9,7 @@ class GenerationDependencies:
     normal_generator: Callable
     reply_generator: Callable
     reply_target_probe: Callable
-    reply_messages_fetcher: Callable
+    reply_message_fetcher: Callable
 
 
 __all__ = ["GenerationDependencies"]

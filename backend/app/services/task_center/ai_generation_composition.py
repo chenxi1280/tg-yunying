@@ -10,7 +10,7 @@ PRODUCTION_GENERATION_DEPENDENCIES = GenerationDependencies(
     normal_generator=generate_group_messages,
     reply_generator=generate_group_reply_messages,
     reply_target_probe=gateway.probe_target_capabilities,
-    reply_messages_fetcher=gateway.fetch_group_messages,
+    reply_message_fetcher=gateway.fetch_group_message,
 )
 
 

@@ -41,7 +41,7 @@ def configure_closed_loop_dispatch(monkeypatch) -> GenerationDependencies:
         normal_generator=normal_generator,
         reply_generator=lambda *_args, **_kwargs: pytest.fail("hard-hourly action must not reply"),
         reply_target_probe=lambda *_args, **_kwargs: pytest.fail("hard-hourly action must not probe reply"),
-        reply_messages_fetcher=lambda *_args, **_kwargs: pytest.fail("hard-hourly action must not fetch reply"),
+        reply_message_fetcher=lambda *_args, **_kwargs: pytest.fail("hard-hourly action must not fetch reply"),
     )
 
 

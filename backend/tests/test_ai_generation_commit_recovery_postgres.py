@@ -495,7 +495,7 @@ def _external_dependencies(
         normal_generator=_forbidden_external,
         reply_generator=_reply_generator(observed),
         reply_target_probe=_reply_probe(session),
-        reply_messages_fetcher=_reply_fetch(session),
+        reply_message_fetcher=_reply_fetch(session),
     )
 
 
@@ -566,7 +566,7 @@ def _reply_probe(session):
 def _reply_fetch(session):
     def fetch(*_args, **_kwargs):
         assert session.in_transaction() is False
-        return [SimpleNamespace(remote_message_id="9001")]
+        return SimpleNamespace(remote_message_id="9001")
 
     return fetch
 

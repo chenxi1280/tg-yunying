@@ -377,7 +377,7 @@ Window rebuild 前必须按以下顺序处理旧事实：
 - `context_freshness_unproven`：Listener 必须以持久 cursor 追平到 `contiguous`，有 gap/error 时继续 waiting，不调用 Provider。
 - `context_expired`：释放旧 generation 内容，不改原义务，按最新同群上下文重生成。
 - `reply_target_missing`：旧 Action 终态并回到原 reply 槽重规划；Planner 必须重新选择合法 reply，不能把引用义务静默改成 direct，也不能冻结不存在的引用。
-- 托管账号的历史成功消息可作为 `own_history` 引用目标，但必须由同 tenant、同 Task、同目标群的既往 `Action.status=success` 与其最新成功 `ExecutionAttempt.remote_message_id` 共同证明，且既往 Action 冻结正文非空；正常发送与 `remote_confirmed` 对账成功复用同一合同。此类出站消息无需写入 `GroupContextMessage`，因为 Listener 必须继续排除托管账号出站内容；Planner 与 Gateway 前 scope validator 必须复用上述权威事实，禁止一方可选、一方误拒。跨 Task、跨群、缺成功 Attempt、空 remote ID 或空冻结正文均不得进入引用池。
+- 托管账号的历史成功消息可作为 `own_history` 引用目标，但必须由同 tenant、同 Task、同目标群的既往 `Action.status=success` 与其最新成功 `ExecutionAttempt.remote_message_id` 共同证明，且既往 Action 冻结正文非空；正常发送与 `remote_confirmed` 对账成功复用同一合同。此类出站消息无需写入 `GroupContextMessage`，因为 Listener 必须继续排除托管账号出站内容；Planner、Phase B 本地 guard 与 Gateway 前 scope validator 必须复用上述权威事实，禁止一方可选、一方误拒。远端存在性校验必须按冻结的 `reply_to_message_id` 精确读取单条消息，不能用“最近 N 条消息中未出现”证明目标不存在；精确读取确认缺失或不可访问时才写 `reply_target_missing`。跨 Task、跨群、缺成功 Attempt、空 remote ID 或空冻结正文均不得进入引用池。
 - `own_history` 分页必须先在数据库查询中按同租户、同目标群跨任务排除已被 `pending|claiming|executing|unknown_after_send` Action 占用的 `reply_to_message_id`，再按成功时间取本轮上限；禁止“先截取最新 N 条、再在内存排除在途目标”，否则最新窗口耗尽时会漏掉更早但仍合法的成功消息并制造 `reply_target_missing`。`success` 只证明一次引用发送已经完成，不得把被引用消息永久占用；完成后该目标可在后续 Cycle 再次进入候选池，同一规划批次仍须去重，任何在途或远端结果未知的引用继续硬排除。查询必须保持有界，最终候选仍在 Action 创建前复核一次在途占用状态以覆盖并发。
 - `post_send_intercepted`：保留失败事实；账号回到 admission 流程，不计 coverage，不自动重发同一正文。
 

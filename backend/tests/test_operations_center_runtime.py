@@ -265,7 +265,7 @@ def _configure_ai_dispatch_fakes(
         normal_generator=normal_generator,
         reply_generator=_forbidden_ai_reply_path,
         reply_target_probe=_forbidden_ai_reply_path,
-        reply_messages_fetcher=_forbidden_ai_reply_path,
+        reply_message_fetcher=_forbidden_ai_reply_path,
     )
 
 

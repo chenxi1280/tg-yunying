@@ -14,7 +14,7 @@ from .ai_generator import AI_GENERATION_UNAVAILABLE_MESSAGE, AiGenerationUnavail
 from .ai_message_memory import mark_group_ai_message_result
 from .ai_quality_stats import clear_quality_blocker, quality_scope_key, record_quality_event
 from .direct_check_in import prepare_direct_check_in, requires_direct_check_in
-from .group_ai_scope import validate_group_ai_content_scope
+from .group_ai_scope import successful_own_history_reply_facts, validate_group_ai_content_scope
 from .payloads import SendMessagePayload
 
 
@@ -274,22 +274,41 @@ def validate_local_reply_target(
     if not payload.reply_to_message_id:
         return ""
     group = session.scalar(select(TgGroup).where(TgGroup.tenant_id == action.tenant_id, TgGroup.id == payload.group_id))
-    target = session.scalar(select(GroupContextMessage.id).where(
-        GroupContextMessage.tenant_id == action.tenant_id,
-        GroupContextMessage.group_id == payload.group_id,
-        GroupContextMessage.remote_message_id == str(payload.reply_to_message_id),
-    ))
     link = session.scalar(select(TgGroupAccount.id).where(
         TgGroupAccount.tenant_id == action.tenant_id,
         TgGroupAccount.group_id == payload.group_id,
         TgGroupAccount.account_id == account_id,
         TgGroupAccount.can_send.is_(True),
     ))
-    if group and target and link:
+    if group and link and _local_reply_target_exists(session, action, payload=payload):
         return group.tg_peer_id
     fail_generation_action(action, "reply_target_missing", "引用目标不存在或当前账号不可引用", stage="ai_reply_target")
     session.commit()
     raise AiGenerationUnavailable("reply_target_missing")
+
+
+def _local_reply_target_exists(
+    session: Session,
+    action: Action,
+    *,
+    payload: SendMessagePayload,
+) -> bool:
+    target = session.scalar(select(GroupContextMessage.id).where(
+        GroupContextMessage.tenant_id == action.tenant_id,
+        GroupContextMessage.group_id == payload.group_id,
+        GroupContextMessage.remote_message_id == str(payload.reply_to_message_id),
+    ))
+    if target:
+        return True
+    return bool(successful_own_history_reply_facts(
+        session,
+        tenant_id=action.tenant_id,
+        task_id=str(action.task_id or ""),
+        group_id=payload.group_id,
+        remote_message_id=str(payload.reply_to_message_id),
+        exclude_action_id=action.id,
+        limit=1,
+    ))
 
 
 def latest_context_rows(session: Session, payload: SendMessagePayload, task: Task) -> list[GroupContextMessage]:

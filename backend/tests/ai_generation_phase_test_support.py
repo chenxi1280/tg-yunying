@@ -315,7 +315,7 @@ def invalid_reply_dependencies(session: Session, invalidation: str) -> Generatio
     if invalidation == "remote_missing":
         return generation_dependencies(
             reply_target_probe=reply_probe(session),
-            reply_messages_fetcher=lambda *_args, **_kwargs: [],
+            reply_message_fetcher=lambda *_args, **_kwargs: None,
         )
     return generation_dependencies()
 
@@ -325,13 +325,13 @@ def generation_dependencies(
     normal_generator=None,
     reply_generator=None,
     reply_target_probe=None,
-    reply_messages_fetcher=None,
+    reply_message_fetcher=None,
 ) -> GenerationDependencies:
     return GenerationDependencies(
         normal_generator=normal_generator or forbidden_external,
         reply_generator=reply_generator or forbidden_external,
         reply_target_probe=reply_target_probe or forbidden_external,
-        reply_messages_fetcher=reply_messages_fetcher or forbidden_external,
+        reply_message_fetcher=reply_message_fetcher or forbidden_external,
     )
 
 
@@ -431,6 +431,6 @@ def reply_probe(session: Session):
 def reply_fetch(session: Session):
     def fetch(*_args, **_kwargs):
         assert session.in_transaction() is False
-        return [SimpleNamespace(remote_message_id="9001")]
+        return SimpleNamespace(remote_message_id="9001")
 
     return fetch

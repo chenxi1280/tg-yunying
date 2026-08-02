@@ -101,5 +101,5 @@ def _forbidden_dependencies(calls: dict[str, int]) -> GenerationDependencies:
         normal_generator=forbidden,
         reply_generator=forbidden,
         reply_target_probe=forbidden,
-        reply_messages_fetcher=forbidden,
+        reply_message_fetcher=forbidden,
     )
