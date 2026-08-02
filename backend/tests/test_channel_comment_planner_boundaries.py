@@ -13,7 +13,12 @@ from app.models import (
     TgAccount,
 )
 from app.services.task_center import dispatcher
-from app.services.task_center.executors import channel_comment, channel_comment_budget
+from app.services.task_center.executors import (
+    channel_comment,
+    channel_comment_budget,
+)
+from app.services.task_center.executors import channel_comment_schedule
+from app.services.task_center.executors import channel_comment_preparation
 from app.services.task_center.fulfillment_retry import retry_failed_actions
 from channel_comment_planner_test_support import (
     add_existing_comment_action,
@@ -293,6 +298,110 @@ def test_released_comment_action_is_replanned_instead_of_retried(monkeypatch):
     assert retried == 0
     assert action.status == "failed"
     assert action.retry_count == 0
+
+
+def test_reply_first_attempt_materializes_only_inside_context_window(monkeypatch):
+    forbid_planner_external_boundaries(monkeypatch)
+    fixed_profile(monkeypatch)
+    now_value = datetime(2026, 8, 2, 11, 0, 0)
+    monkeypatch.setattr(channel_comment_preparation, "_now", lambda: now_value)
+    with planner_session() as session:
+        task = seed_comment_task(session, mode="mixed", reply_min=1, target_count=2)
+        task.type_config = {
+            **task.type_config,
+            "reply_min_per_message": 2,
+            "context_bound_schedule_window_seconds": 300,
+        }
+        task.pacing_config = {
+            **task.pacing_config,
+            "interval_seconds_min": 600,
+            "interval_seconds_max": 600,
+        }
+
+        created = channel_comment.build_plan(session, task)
+        actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
+
+    assert created == 1
+    assert len(actions) == 1
+    assert actions[0].payload["reply_to_message_id"]
+    assert task.stats["comment_context_bound_next_run_at"] == "2026-08-02T11:10:00"
+
+
+def test_reply_replan_is_scheduled_immediately(monkeypatch):
+    forbid_planner_external_boundaries(monkeypatch)
+    fixed_profile(monkeypatch)
+    now_value = datetime(2026, 8, 2, 11, 0, 0)
+    monkeypatch.setattr(channel_comment_preparation, "_now", lambda: now_value)
+    with planner_session() as session:
+        task = seed_comment_task(session, mode="mixed", reply_min=1, target_count=1)
+        assert channel_comment.build_plan(session, task) == 1
+        first = session.scalar(select(Action).where(Action.task_id == task.id))
+        stale = session.scalar(select(ChannelMessageComment).where(
+            ChannelMessageComment.comment_message_id == first.payload["reply_to_message_id"],
+        ))
+        session.delete(stale)
+        first.status = "failed"
+        dispatcher._sync_comment_fulfillment_state(session, first)
+        task.pacing_config = {
+            **task.pacing_config,
+            "interval_seconds_min": 3600,
+            "interval_seconds_max": 3600,
+        }
+        session.commit()
+
+        assert channel_comment.build_plan(session, task) == 1
+        replacement = session.scalar(select(Action).where(
+            Action.task_id == task.id,
+            Action.id != first.id,
+        ))
+
+    assert replacement.scheduled_at == now_value
+
+
+def test_future_comment_replacement_is_accelerated_before_planning(monkeypatch):
+    forbid_planner_external_boundaries(monkeypatch)
+    fixed_profile(monkeypatch)
+    now_value = datetime(2026, 8, 2, 11, 0, 0)
+    with planner_session() as session:
+        task = seed_comment_task(session, mode="mixed", reply_min=1, target_count=1)
+        assert channel_comment.build_plan(session, task) == 1
+        action = session.scalar(select(Action).where(Action.task_id == task.id))
+        action.payload = {**action.payload, "comment_action_attempt_no": 2}
+        action.scheduled_at = datetime(2026, 8, 2, 12, 0, 0)
+        task.next_run_at = action.scheduled_at
+        session.flush()
+
+        accelerated = channel_comment_schedule.accelerate_future_replacements(
+            session,
+            task,
+            now_value=now_value,
+        )
+
+    assert accelerated == 1
+    assert action.scheduled_at == now_value
+    assert task.next_run_at == now_value
+
+
+def test_recovery_wakes_task_with_future_comment_replacement(monkeypatch):
+    forbid_planner_external_boundaries(monkeypatch)
+    fixed_profile(monkeypatch)
+    now_value = datetime(2026, 8, 2, 11, 0, 0)
+    with planner_session() as session:
+        task = seed_comment_task(session, mode="mixed", reply_min=1, target_count=1)
+        assert channel_comment.build_plan(session, task) == 1
+        action = session.scalar(select(Action).where(Action.task_id == task.id))
+        action.payload = {**action.payload, "comment_action_attempt_no": 2}
+        action.scheduled_at = datetime(2026, 8, 2, 12, 0, 0)
+        task.next_run_at = action.scheduled_at
+        session.flush()
+
+        recovered = channel_comment_schedule.wake_tasks_with_future_replacements(
+            session,
+            now_value=now_value,
+        )
+
+    assert recovered == 1
+    assert task.next_run_at == now_value
 
 
 @pytest.mark.parametrize("status", ["cancelled", "failed", "skipped"])

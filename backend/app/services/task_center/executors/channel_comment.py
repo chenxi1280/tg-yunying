@@ -6,14 +6,7 @@ import hashlib
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import (
-    ChannelMessage,
-    CommentFulfillmentObligation,
-    OperationTarget,
-    RuleSet,
-    Task,
-)
-from app.services._common import _now
+from app.models import ChannelMessage, CommentFulfillmentObligation, OperationTarget, RuleSet, Task
 
 from app.services.rule_engine import bound_rule_version, evaluate_input_filter
 from ..account_voice_profiles import voice_profile_prompt_details
@@ -23,11 +16,7 @@ from ..comment_account_profiles import (
     comment_account_profile_ready,
     config_with_comment_profile as _config_with_comment_profile,
 )
-from ..comment_fulfillment import (
-    bind_comment_obligation,
-    freeze_comment_obligations,
-)
-from ..pacing import next_local_day_deadline, schedule_times
+from ..comment_fulfillment import bind_comment_obligation, freeze_comment_obligations
 from ..payloads import PostCommentPayload, create_comment_action
 from app.services.target_learning_audit import audit_learning_profile_use
 from app.services.tenant_target_profile import tenant_learning_profile_preview
@@ -45,11 +34,15 @@ from .channel_comment_targets import (
     reply_target_text as _reply_target_text,
     valid_reply_targets as _valid_reply_targets,
 )
+from .channel_comment_schedule import (
+    prepare_open_actions_for_planning,  # noqa: F401
+    reply_minimum_for_mode as _reply_minimum_for_mode,
+    wake_deferred_comment_replacements,  # noqa: F401
+)
+from .channel_comment_preparation import prepare_comment_actions
 from .common import (
-    adjust_for_account_hour_limit,
     channel_messages,
     channel_message_payload,
-    pick_channel_account,
     quantity_jitter_bounds,
     record_channel_capacity_warning,
     stats_inc,
@@ -385,56 +378,13 @@ def _prepare_comment_actions(
 ) -> list[
     tuple[int, object, PostCommentPayload, CommentFulfillmentObligation]
 ]:
-    now_value = _now()
-    times = schedule_times(
-        len(slots),
-        task.pacing_config or {},
-        start_at=now_value,
-        deadline_at=next_local_day_deadline(now_value, task.timezone),
+    return prepare_comment_actions(
+        session,
+        task,
+        context=context,
+        slots=slots,
+        payload_builder=_comment_payload,
     )
-    prepared: list[
-        tuple[int, object, PostCommentPayload, CommentFulfillmentObligation]
-    ] = []
-    for index, slot in enumerate(slots):
-        planned_at = times[index]
-        account = pick_channel_account(
-            session,
-            task,
-            context.accounts,
-            "post_comment",
-            planned_at,
-            context.config,
-            index,
-        )
-        if not account:
-            stats_inc(task, "failure_count")
-            continue
-        planned_at = adjust_for_account_hour_limit(
-            session,
-            task,
-            account.id,
-            "post_comment",
-            planned_at,
-            context.config,
-        )
-        prepared.append((
-            account.id,
-            planned_at,
-            _comment_payload(
-                task,
-                context,
-                slot,
-                account_id=account.id,
-            ),
-            slot.obligation,
-        ))
-    return prepared
-
-
-def _reply_minimum_for_mode(comment_mode: str, quantity: int, config: dict) -> int:
-    if comment_mode not in {"reply", "mixed"}:
-        return 0
-    return min(quantity, int(config.get("reply_min_per_message") or 0))
 
 
 def _comment_payload(

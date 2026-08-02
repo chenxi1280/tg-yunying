@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import pytest
 from sqlalchemy import create_engine, event, select
@@ -36,6 +37,26 @@ def test_dynamic_channel_next_run_uses_beijing_scheduler_clock(monkeypatch) -> N
     monkeypatch.setattr(stats, "_now", lambda: beijing_now)
 
     assert stats.next_run_after_task(task) == datetime(2026, 7, 19, 4, 0, 30)
+
+
+def test_comment_context_checkpoint_precedes_dynamic_listener_interval(monkeypatch) -> None:
+    beijing_now = datetime(2026, 8, 2, 11, 0)
+    checkpoint = "2026-08-02T11:10:00"
+    task = Task(
+        id="dynamic-comment-context-window",
+        tenant_id=1,
+        name="动态评论近端物化",
+        type="channel_comment",
+        status="running",
+        timezone="Asia/Shanghai",
+        type_config={"message_scope": "dynamic_new", "listener_interval_seconds": 30},
+        stats={"comment_context_bound_next_run_at": checkpoint},
+    )
+    monkeypatch.setattr(stats, "_now", lambda: beijing_now)
+
+    assert stats.next_run_after_task(task) == datetime.fromisoformat(checkpoint).replace(
+        tzinfo=ZoneInfo("Asia/Shanghai"),
+    )
 
 
 def test_channel_message_account_ids_are_loaded_once_for_all_messages() -> None:

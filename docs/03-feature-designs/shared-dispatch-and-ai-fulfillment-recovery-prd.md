@@ -403,9 +403,10 @@ Window rebuild 前必须按以下顺序处理旧事实：
 - `pending>0、due=0` 显示 `scheduled_future`，不显示 blocked。
 - `message_scope=dynamic_new` 且没有新 source/message obligation 时显示 `waiting_dynamic_input`。
 - 有 due Action、无 active claim 时进入共享调度诊断；公共修复后按跨任务公平领取。
-- 评论 `context_bound_schedule_window_seconds` 只限制 Planner 创建 reply Action 时的近端排期，不得把 `Action.created_at` 或排队时长当作引用目标 TTL。到期执行时只要冻结的 `ChannelMessageComment` 仍属于同租户、同频道目标和同源消息，必须继续生成并发送；只有目标真实缺失、删除或不可访问才以 `reply_target_missing` 终结并让原 ordinal 重规划，不能因为计划提前创建而写 `reply_target_stale`。
+- 评论 `context_bound_schedule_window_seconds` 只允许 Planner 物化计划时间进入窗口的首次 reply Action；窗口外 ordinal 保持未绑定并记录下一物化时间，届时从当前有效评论池刷新目标，不能提前冻结全天引用对象。不得把 `Action.created_at` 或排队时长当作引用目标 TTL；到期执行时只要冻结的 `ChannelMessageComment` 仍属于同租户、同频道目标和同源消息，必须继续生成并发送，只有目标真实缺失、删除或不可访问才以 `reply_target_missing` 终结并让原 ordinal 重规划。
 - 评论 Action 在 Gateway 前失败并释放 `CommentFulfillmentObligation.current_action_id` 后，通用 `failure_policy` 不得把旧 Action 重新置为 `pending`；只能由 Planner 为同一 ordinal 建立新 attempt，否则旧 Action 与 replacement 会同时到期并被 `comment_obligation_superseded` 连续跳过。
 - 评论重规划每轮最多领取本轮 `message_comment_quantities` 已分配的义务数，不能把该消息全部未绑定义务一次性跨小时建完。reply ordinal 必须从当前仍存在的同租户、同频道目标、同源消息评论池重新冻结 `reply_to_message_id`；池不足时保持该 reply ordinal 未绑定等待，不得复用已被 `reply_target_missing|reply_target_stale` 证伪的旧快照，也不得降级为 direct。
+- 任一评论义务因 `reply_target_missing|reply_target_stale` 或其他 Gateway 前结构失败释放后，Dispatcher 必须把 Task 的 `next_run_at` 立即唤醒并清除旧窗口 checkpoint；Planner 为 `action_attempt_no>0` 的 replacement 使用当前时间，不得把它与全天首次义务重新铺到未来。部署接管或 Recovery 发现旧版本已生成且仍排在未来的 replacement 时，也要先唤醒 Task，再在 Planner 短事务内把 replacement 提前到当前时刻。已证伪 `reply_to_message_id` 由其终态 Action 形成任务内退休事实，replacement 只能选择未使用且当前仍存在的同源评论，不等待下一个既有未来 Action 才开始恢复。
 - 评论、reaction、view 仍只以各自远端事实键确认，不因调度修复改变数量口径。
 
 ## 6. 数据与配置设计
@@ -562,6 +563,7 @@ Stage B 是前向数据迁移，不执行逆向改写。任何已 applied item�
 | 郑州师范 context | gap 保持 waiting；contiguous 后生成；过期上下文只重规划原槽 |
 | reply target | missing 终态并重规划；新 Action 只引用当前同群真实消息或按规则 direct |
 | 评论 reply ordinal 重建 | 旧 Action 终态且不被通用重试复活；replacement 复用原 obligation/ordinal、按本轮小时预算领取并刷新真实 reply target；池不足保持 open，禁止 superseded 自耗和 reply 降级 |
+| 评论近端物化与即时重建 | 首次 reply 排期跨出 context window 时只物化窗口内 Action 并记录下一 checkpoint；让一个 reply Action 以远端 missing 终态释放后，Task 立即唤醒、同一 ordinal replacement 按当前时间创建；旧版本未来 replacement 由 Recovery 唤醒并由 Planner 提前，不复制义务或等待整队列耗尽 |
 | 楼凤 admission | waiting 不占正文份额；ready/probe 可执行；intercepted 不计 coverage |
 | 搜索 Window | 只提交实际可 bind 数量，expiry 原子释放；无延长 TTL/无普通 claim fallback |
 | 非 AI 状态 | future 显示 scheduled；无动态输入显示 waiting；due 才进入共享调度 blocker |

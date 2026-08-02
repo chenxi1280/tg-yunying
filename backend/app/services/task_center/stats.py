@@ -29,6 +29,7 @@ from .hourly_stats import search_join_hourly_execution, search_rank_deboost_hour
 from .targets import group_from_reference
 
 ARCHIVED_SKIP_ERROR_CODES = {"context_expired"}
+COMMENT_CONTEXT_BOUND_NEXT_RUN_STAT = "comment_context_bound_next_run_at"
 BUSINESS_MEMBERSHIP_ACTION_TYPES = ["ensure_channel_membership", "ensure_target_membership"]
 PLANNER_BACKLOG_STAT_KEYS = (
     "planner_backlog_blocked",
@@ -61,6 +62,13 @@ def next_run_after_task(task: Task):
         if task.type in FULFILLMENT_TASK_TYPES
         else raw_pacing
     )
+    if task.type == "channel_comment":
+        materialization_next = _stats_datetime(
+            task,
+            COMMENT_CONTEXT_BOUND_NEXT_RUN_STAT,
+        )
+        if materialization_next is not None:
+            return materialization_next
     if task.type == "group_ai_chat":
         hard_next = _hard_hourly_next_check_at(task)
         coverage_next = _stats_datetime(task, "daily_coverage_next_check_at")

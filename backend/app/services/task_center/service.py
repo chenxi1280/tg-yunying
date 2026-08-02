@@ -3163,6 +3163,7 @@ def _drain_task_recovery(session_factory, *, limit: int, process_type: str | Non
         processed += recover_terminal_coverage_reservations(session, limit=limit)
         session.commit()
         processed += _recover_continuous_task_states(session)
+        processed += channel_comment.wake_deferred_comment_replacements(session)
         session.commit()
         processed += _recover_stale_executing_actions(session, limit=limit)
         processed += expire_reviews(session)

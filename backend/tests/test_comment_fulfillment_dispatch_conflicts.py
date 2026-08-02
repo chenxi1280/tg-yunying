@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -143,6 +145,44 @@ def test_cancelled_comment_action_releases_current_obligation(
 
     assert obligation.status == "replan_required"
     assert obligation.current_action_id is None
+
+
+def test_failed_comment_action_wakes_task_for_immediate_replan(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now_value = datetime(2026, 8, 2, 11, 0, 0)
+    monkeypatch.setattr(dispatcher, "_now", lambda: now_value)
+    channel, message, task = _comment_scope(
+        channel_id=49,
+        message_id=59,
+        task_id="failed-comment-wakeup-task",
+    )
+    task.next_run_at = now_value + timedelta(hours=1)
+    task.stats = {"comment_context_bound_next_run_at": "2026-08-02T12:00:00"}
+    action = _comment_action(
+        "failed-comment-wakeup-action",
+        task,
+        message,
+        status="failed",
+        obligation_id="failed-comment-wakeup-obligation",
+    )
+    obligation = _obligation(
+        "failed-comment-wakeup-obligation",
+        task,
+        message,
+        current_action_id=action.id,
+        attempt_no=1,
+        relation_kind="reply",
+    )
+    session.add_all([channel, message, task, action, obligation])
+    session.flush()
+
+    dispatcher._sync_comment_fulfillment_state(session, action)
+
+    assert obligation.status == "replan_required"
+    assert task.next_run_at == now_value
+    assert "comment_context_bound_next_run_at" not in task.stats
 
 
 def test_stale_reply_comment_is_replanned_before_payload_validation(

@@ -589,6 +589,11 @@ def _sync_comment_fulfillment_state(
     if action.status in {"cancelled", "failed", "skipped", "retryable_failed"}:
         obligation.status = "replan_required"
         obligation.current_action_id = None
+        task = session.get(Task, action.task_id) if action.task_id else None
+        if task is not None and task.status == "running":
+            from .executors.channel_comment_schedule import wake_comment_replan
+
+            wake_comment_replan(task, now_value=_now())
 
 
 def _sync_channel_fulfillment_state(
