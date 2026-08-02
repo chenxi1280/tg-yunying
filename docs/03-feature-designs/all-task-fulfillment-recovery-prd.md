@@ -111,6 +111,31 @@ revision 重建后续准入/互动计划。任何外键遗漏必须使整次配�
 改为 `skipped/plan_superseded` 且审计行保留；PostgreSQL 生产 apply 后配置 revision 增加且
 `remaining_mismatch_count=0`。
 
+### 2.7 2026-08-02 评论近端引用 Planner 饥饿补正
+
+生产 release `115ce719` 于 `2026-08-02T12:09:10+08:00` 上线后，Planner 心跳持续
+活跃，但被一个 `all_accounts_daily` AI 任务的整轮多批规划占用；已在 `12:05` 到期的
+频道评论任务在 11 个 due Task 中排第 11，超过 6 分钟仍未进入规划。容器健康和
+Planner 心跳因此不能证明近端引用义务会获得执行机会。
+
+1. `channel_comment` 的 reply Action 依赖短时有效评论上下文。只要任务已 due，普通
+   Planner 任务枚举必须先于 AI 日覆盖、搜索和其他非评论 Task 返回评论任务；同类型内
+   仍按既有 `priority -> next_run_at -> created_at` 排序。
+2. 该优先级只决定本轮 Planner 的 Task 枚举顺序，不改变 Dispatcher 份额、公平 cursor、
+   评论目标数、reply/direct 关系、账号资格、安全门禁或远端事实口径，也不得主动唤醒
+   未到 `next_run_at` 的评论任务。
+3. 评论任务完成一次短规划事务后继续处理本轮其他 due Task；不得让评论任务反向形成
+   永久独占。AI `messages_per_round` 的 20 条短事务切批和原轮次合同保持不变。
+4. QA 必须用“更早逾期的全账号 AI Task + 较晚逾期的评论 Task”证明评论先被 Planner
+   选择，并证明未来评论、同类型优先级/时间排序和非评论任务均保持原语义。
+5. 生产 E4 必须同时看到：评论 Task `next_run_at` 推进、原 obligation/ordinal 生成
+   `comment_action_attempt_no >= 2` 的新 Action，以及该 Action 最终对应
+   `ExecutionAttempt.status=success`、非空 `remote_message_id` 和非空
+   `Action.reply_to_message_id`。仅队列名次、Action pending 或 Planner 心跳不算完成。
+
+`design_status=complete`，`resync=true`。本补正只修复近端评论义务的 Planner 队头
+饥饿，不降低 AI 自然日分母或任何 E4 标准。
+
 ## 3. 产品目标与非目标
 
 ### 3.1 产品目标

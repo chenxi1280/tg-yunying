@@ -163,6 +163,38 @@ def test_plan_due_task_computes_global_backlog_for_direct_call(monkeypatch):
     assert global_pending_calls == 1
 
 
+@pytest.mark.no_postgres
+def test_normal_planner_prioritizes_due_comment_over_older_ai_task() -> None:
+    SessionFactory = _session_factory()
+    now_value = _now()
+    with SessionFactory() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(Task(
+            id="task-older-ai", tenant_id=1, name="较早逾期 AI",
+            type="group_ai_chat", status="running",
+            next_run_at=now_value - timedelta(minutes=10),
+        ))
+        session.add(Task(
+            id="task-due-comment", tenant_id=1, name="近端评论",
+            type="channel_comment", status="running",
+            next_run_at=now_value - timedelta(minutes=1),
+        ))
+        session.add(Task(
+            id="task-future-comment", tenant_id=1, name="未来评论",
+            type="channel_comment", status="running",
+            next_run_at=now_value + timedelta(minutes=1),
+        ))
+        session.commit()
+
+        task_ids = service._normal_planner_task_ids(
+            session,
+            limit=3,
+            now=now_value,
+        )
+
+    assert task_ids == ["task-due-comment", "task-older-ai"]
+
+
 def test_target_admission_retry_planner_keeps_pending_membership_actions() -> None:
     SessionFactory = _session_factory()
     now_value = _now()

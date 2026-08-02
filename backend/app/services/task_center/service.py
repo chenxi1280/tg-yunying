@@ -4947,7 +4947,12 @@ def _normal_planner_task_ids(session: Session, *, limit: int, now: datetime) -> 
     query = (
         select(Task)
         .where(Task.status == "running", (Task.next_run_at.is_(None)) | (Task.next_run_at <= now))
-        .order_by(Task.priority.asc(), Task.next_run_at.asc().nullsfirst(), Task.created_at.asc())
+        .order_by(
+            (Task.type != "channel_comment").asc(),
+            Task.priority.asc(),
+            Task.next_run_at.asc().nullsfirst(),
+            Task.created_at.asc(),
+        )
     )
     for task in session.scalars(query).yield_per(target_count):
         task_ids.append(task.id)
