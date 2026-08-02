@@ -7,6 +7,7 @@ from sqlalchemy import exists, select
 
 from app.database import SessionLocal
 from app.models import (
+    DispatchClaimWindow,
     SearchClickAssignmentEpoch,
     SearchClickSolverCarrierUnitBinding,
     SearchClickSolverProblemSnapshot,
@@ -17,7 +18,7 @@ from app.models import (
 SAMPLE_LIMIT = 12
 
 
-def _epoch_row(epoch, snapshot, task_id: str) -> dict:
+def _epoch_row(epoch, snapshot, window, task_id: str) -> dict:
     problem = dict(snapshot.canonical_problem_payload or {})
     demands = [
         item for item in problem.get("demands", [])
@@ -30,6 +31,12 @@ def _epoch_row(epoch, snapshot, task_id: str) -> dict:
     ]
     return {
         "created_at": epoch.created_at.isoformat(),
+        "finalized_at": (
+            epoch.finalized_at.isoformat() if epoch.finalized_at else None
+        ),
+        "bucket_end": window.bucket_end.isoformat(),
+        "current_allocation_epoch": window.allocation_epoch,
+        "current_allocation_state": window.allocation_state,
         "window_id": epoch.dispatch_claim_window_id,
         "allocation_epoch": epoch.dispatch_allocation_epoch,
         "finalize_status": epoch.finalize_status,
@@ -61,7 +68,11 @@ def main() -> None:
             return
         task_id = task.id
         rows = session.execute(
-            select(SearchClickAssignmentEpoch, SearchClickSolverProblemSnapshot)
+            select(
+                SearchClickAssignmentEpoch,
+                SearchClickSolverProblemSnapshot,
+                DispatchClaimWindow,
+            )
             .join(
                 SearchClickSolverProblemSnapshot,
                 SearchClickSolverProblemSnapshot.search_click_assignment_epoch_id
@@ -72,6 +83,11 @@ def main() -> None:
                 == SearchClickSolverProblemSnapshot.id,
                 SearchClickSolverCarrierUnitBinding.task_id == task_id,
             )))
+            .join(
+                DispatchClaimWindow,
+                DispatchClaimWindow.id
+                == SearchClickAssignmentEpoch.dispatch_claim_window_id,
+            )
             .order_by(SearchClickAssignmentEpoch.created_at.desc())
             .limit(SAMPLE_LIMIT)
         )
@@ -87,8 +103,8 @@ def main() -> None:
                 }
             } if task else {},
             "epochs": [
-                _epoch_row(epoch, snapshot, task_id)
-                for epoch, snapshot in rows
+                _epoch_row(epoch, snapshot, window, task_id)
+                for epoch, snapshot, window in rows
             ],
         }
         print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
