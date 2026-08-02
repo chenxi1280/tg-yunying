@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 
-from sqlalchemy import select
+from sqlalchemy import exists, select
 
 from app.database import SessionLocal
 from app.models import (
@@ -67,13 +67,11 @@ def main() -> None:
                 SearchClickSolverProblemSnapshot.search_click_assignment_epoch_id
                 == SearchClickAssignmentEpoch.id,
             )
-            .join(
-                SearchClickSolverCarrierUnitBinding,
+            .where(exists(select(1).where(
                 SearchClickSolverCarrierUnitBinding.search_click_solver_snapshot_id
                 == SearchClickSolverProblemSnapshot.id,
-            )
-            .where(SearchClickSolverCarrierUnitBinding.task_id == task_id)
-            .distinct()
+                SearchClickSolverCarrierUnitBinding.task_id == task_id,
+            )))
             .order_by(SearchClickAssignmentEpoch.created_at.desc())
             .limit(SAMPLE_LIMIT)
         )
