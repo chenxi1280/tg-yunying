@@ -82,31 +82,3 @@ def test_terminal_diagnostics_expose_failure_stage_and_detail() -> None:
         "validation_stage": "ai_reply_target",
         "generation_stage": "reply_target_validation",
     }
-
-
-def test_comment_binding_contract_exposes_superseding_action() -> None:
-    module = load_script()
-    action = type("ActionStub", (), {"id": "stale"})()
-    current = type("CurrentStub", (), {
-        "id": "current",
-        "status": "pending",
-        "created_at": None,
-        "scheduled_at": None,
-    })()
-    obligation = type("ObligationStub", (), {
-        "id": "obligation-1",
-        "status": "pending",
-        "action_attempt_no": 2,
-        "current_action_id": current.id,
-    })()
-
-    assert module._comment_binding_contract(action, obligation, current) == {
-        "obligation_id": "obligation-1",
-        "obligation_status": "pending",
-        "obligation_attempt_no": 2,
-        "current_action_id": "current",
-        "is_current_action": False,
-        "current_action_status": "pending",
-        "current_action_created_at": None,
-        "current_action_scheduled_at": None,
-    }

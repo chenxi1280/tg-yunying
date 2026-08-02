@@ -12,7 +12,6 @@ from sqlalchemy import select
 from app.database import SessionLocal
 from app.models import (
     Action,
-    CommentFulfillmentObligation,
     ExecutionAttempt,
     GatewayRequestEvidenceJournal,
     RemoteReconcileCase,
@@ -181,13 +180,6 @@ def open_action_snapshot(session, task: Task, target: RatioTarget) -> dict[str, 
         "open_direct_count": len(actions) - reply_count,
         "earliest_open_scheduled_at": scheduled[0].isoformat() if scheduled else None,
         "latest_open_scheduled_at": scheduled[-1].isoformat() if scheduled else None,
-        "earliest_open_samples": [
-            _action_binding_row(session, action)
-            for action in sorted(
-                actions,
-                key=lambda item: (item.scheduled_at or datetime.max.replace(tzinfo=UTC), item.id),
-            )[:10]
-        ],
     }
 
 
@@ -208,14 +200,7 @@ def terminal_action_snapshot(
         .order_by(Action.executed_at.desc().nullslast(), Action.scheduled_at.desc())
         .limit(TERMINAL_DIAGNOSTIC_LIMIT)
     ))
-    return [
-        _terminal_action_row(
-            action,
-            _latest_attempt(session, action),
-            _comment_binding_snapshot(session, action),
-        )
-        for action in actions
-    ]
+    return [_terminal_action_row(action, _latest_attempt(session, action)) for action in actions]
 
 
 def _latest_attempt(session, action: Action) -> ExecutionAttempt | None:
@@ -230,7 +215,6 @@ def _latest_attempt(session, action: Action) -> ExecutionAttempt | None:
 def _terminal_action_row(
     action: Action,
     attempt: ExecutionAttempt | None,
-    comment_binding: dict[str, Any],
 ) -> dict[str, Any]:
     payload = action.payload if isinstance(action.payload, dict) else {}
     return {
@@ -241,7 +225,6 @@ def _terminal_action_row(
         "executed_at": action.executed_at.isoformat() if action.executed_at else None,
         "reply_to_message_id": payload.get("reply_to_message_id"),
         "ai_generation_status": payload.get("ai_generation_status"),
-        "comment_binding": comment_binding,
         "result_contract": _remote_result_contract(action),
         "attempt_status": attempt.status if attempt else None,
         "attempt_failure_type": attempt.failure_type if attempt else None,
@@ -252,46 +235,6 @@ def _terminal_action_row(
         ),
         "after_call_at": (
             attempt.after_call_at.isoformat() if attempt and attempt.after_call_at else None
-        ),
-    }
-
-
-def _action_binding_row(session, action: Action) -> dict[str, Any]:
-    return {
-        "action_id": action.id,
-        "action_status": action.status,
-        "created_at": action.created_at.isoformat() if action.created_at else None,
-        "scheduled_at": action.scheduled_at.isoformat() if action.scheduled_at else None,
-        "reply_to_message_id": (action.payload or {}).get("reply_to_message_id"),
-        "comment_binding": _comment_binding_snapshot(session, action),
-    }
-
-
-def _comment_binding_snapshot(session, action: Action) -> dict[str, Any]:
-    payload = action.payload if isinstance(action.payload, dict) else {}
-    obligation_id = str(payload.get("comment_fulfillment_obligation_id") or "")
-    if action.action_type != COMMENT_ACTION or not obligation_id:
-        return {}
-    obligation = session.get(CommentFulfillmentObligation, obligation_id)
-    current = session.get(Action, obligation.current_action_id) if obligation and obligation.current_action_id else None
-    return _comment_binding_contract(action, obligation, current)
-
-
-def _comment_binding_contract(action, obligation, current) -> dict[str, Any]:
-    if obligation is None:
-        return {"obligation_status": "missing"}
-    return {
-        "obligation_id": obligation.id,
-        "obligation_status": obligation.status,
-        "obligation_attempt_no": obligation.action_attempt_no,
-        "current_action_id": obligation.current_action_id,
-        "is_current_action": obligation.current_action_id == action.id,
-        "current_action_status": current.status if current else None,
-        "current_action_created_at": (
-            current.created_at.isoformat() if current and current.created_at else None
-        ),
-        "current_action_scheduled_at": (
-            current.scheduled_at.isoformat() if current and current.scheduled_at else None
         ),
     }
 
