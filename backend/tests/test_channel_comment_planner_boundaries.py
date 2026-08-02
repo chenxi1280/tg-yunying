@@ -1,3 +1,5 @@
+from datetime import datetime
+
 import pytest
 from sqlalchemy import event, select
 
@@ -10,7 +12,9 @@ from app.models import (
     Tenant,
     TgAccount,
 )
+from app.services.task_center import dispatcher
 from app.services.task_center.executors import channel_comment, channel_comment_budget
+from app.services.task_center.fulfillment_retry import retry_failed_actions
 from channel_comment_planner_test_support import (
     add_existing_comment_action,
     fixed_profile,
@@ -181,7 +185,117 @@ def _select_count(session, callback) -> int:
     return len(statements)
 
 
-@pytest.mark.parametrize("status", ["failed", "skipped"])
+def test_reply_replan_refreshes_missing_target_for_same_ordinal(monkeypatch):
+    forbid_planner_external_boundaries(monkeypatch)
+    fixed_profile(monkeypatch)
+    with planner_session() as session:
+        task = seed_comment_task(
+            session,
+            mode="mixed",
+            reply_min=1,
+            target_count=1,
+        )
+        assert channel_comment.build_plan(session, task) == 1
+        first = session.scalar(select(Action).where(Action.task_id == task.id))
+        obligation_id = first.payload["comment_fulfillment_obligation_id"]
+        stale_target = first.payload["reply_to_message_id"]
+        stale = session.scalar(select(ChannelMessageComment).where(
+            ChannelMessageComment.comment_message_id == stale_target,
+        ))
+        session.delete(stale)
+        first.status = "failed"
+        dispatcher._sync_comment_fulfillment_state(session, first)
+        session.commit()
+
+        assert channel_comment.build_plan(session, task) == 1
+        replacements = list(session.scalars(
+            select(Action).where(
+                Action.task_id == task.id,
+                Action.id != first.id,
+            )
+        ))
+
+    assert len(replacements) == 1
+    assert replacements[0].payload["comment_fulfillment_obligation_id"] == obligation_id
+    assert replacements[0].payload["reply_to_message_id"] == 8102
+    assert replacements[0].payload["comment_action_attempt_no"] == 2
+
+
+def test_reply_replan_waits_when_only_direct_target_is_available(monkeypatch):
+    forbid_planner_external_boundaries(monkeypatch)
+    fixed_profile(monkeypatch)
+    with planner_session() as session:
+        task = seed_comment_task(
+            session,
+            mode="mixed",
+            reply_min=1,
+            target_count=1,
+        )
+        assert channel_comment.build_plan(session, task) == 1
+        first = session.scalar(select(Action).where(Action.task_id == task.id))
+        obligation_id = first.payload["comment_fulfillment_obligation_id"]
+        for comment in session.scalars(select(ChannelMessageComment)):
+            session.delete(comment)
+        first.status = "failed"
+        dispatcher._sync_comment_fulfillment_state(session, first)
+        session.commit()
+
+        assert channel_comment.build_plan(session, task) == 0
+        obligation = session.get(CommentFulfillmentObligation, obligation_id)
+        actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
+
+    assert len(actions) == 1
+    assert obligation.relation_kind == "reply"
+    assert obligation.status == "replan_required"
+    assert obligation.current_action_id is None
+
+
+def test_comment_replan_claims_only_current_hour_budget(monkeypatch):
+    forbid_planner_external_boundaries(monkeypatch)
+    fixed_profile(monkeypatch)
+    with planner_session() as session:
+        task = seed_comment_task(session, mode="comment", target_count=3)
+        assert channel_comment.build_plan(session, task) == 3
+        first_actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
+        for action in first_actions:
+            action.status = "failed"
+            dispatcher._sync_comment_fulfillment_state(session, action)
+        task.pacing_config = {**task.pacing_config, "max_actions_per_hour": 1}
+        session.commit()
+
+        assert channel_comment.build_plan(session, task) == 1
+        replacements = list(session.scalars(select(Action).where(
+            Action.task_id == task.id,
+            Action.id.not_in([action.id for action in first_actions]),
+        )))
+
+    assert len(replacements) == 1
+
+
+def test_released_comment_action_is_replanned_instead_of_retried(monkeypatch):
+    forbid_planner_external_boundaries(monkeypatch)
+    fixed_profile(monkeypatch)
+    with planner_session() as session:
+        task = seed_comment_task(session, mode="comment", target_count=1)
+        task.failure_policy = {"max_retries": 3, "retry_delay_seconds": 30}
+        assert channel_comment.build_plan(session, task) == 1
+        action = session.scalar(select(Action).where(Action.task_id == task.id))
+        action.status = "failed"
+        dispatcher._sync_comment_fulfillment_state(session, action)
+        session.commit()
+
+        retried = retry_failed_actions(
+            session,
+            task,
+            now_value=datetime(2026, 8, 2, 10, 0, 0),
+        )
+
+    assert retried == 0
+    assert action.status == "failed"
+    assert action.retry_count == 0
+
+
+@pytest.mark.parametrize("status", ["cancelled", "failed", "skipped"])
 def test_released_comment_actions_are_replenished_with_monotonic_slots(monkeypatch, status):
     forbid_planner_external_boundaries(monkeypatch)
     fixed_profile(monkeypatch)

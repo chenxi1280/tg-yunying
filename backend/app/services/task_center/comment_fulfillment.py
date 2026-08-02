@@ -29,6 +29,7 @@ def freeze_comment_obligations(
     first_ordinal: int = 1,
 ) -> list[CommentFulfillmentObligation]:
     existing = _message_obligations(session, task, message.id)
+    reusable: list[CommentFulfillmentObligation] = []
     if existing:
         _release_terminal_bindings(session, existing)
         available = [
@@ -38,7 +39,12 @@ def freeze_comment_obligations(
             and item.current_action_id is None
         ]
         if available:
-            return available
+            reusable, reply_targets = _reuse_available_obligations(
+                available,
+                reply_targets,
+            )
+            if not reply_targets:
+                return reusable
     revision = int(task.config_revision or 1)
     contract = _create_comment_contract(
         session,
@@ -49,7 +55,29 @@ def freeze_comment_obligations(
         revision=revision,
         reply_min_required=reply_min_required,
     )
-    rows = [
+    rows = _new_obligations(
+        task,
+        message,
+        contract,
+        revision=revision,
+        first_ordinal=first_ordinal,
+        reply_targets=reply_targets,
+    )
+    session.add_all(rows)
+    session.flush()
+    return [*reusable, *rows]
+
+
+def _new_obligations(
+    task: Task,
+    message: ChannelMessage,
+    contract: ContentMixContract,
+    *,
+    revision: int,
+    first_ordinal: int,
+    reply_targets: list[dict | None],
+) -> list[CommentFulfillmentObligation]:
+    return [
         _new_obligation(
             task,
             message,
@@ -60,9 +88,48 @@ def freeze_comment_obligations(
         )
         for index, target in enumerate(reply_targets, start=first_ordinal)
     ]
-    session.add_all(rows)
-    session.flush()
-    return rows
+
+
+def _reuse_available_obligations(
+    available: list[CommentFulfillmentObligation],
+    reply_targets: list[dict | None],
+) -> tuple[list[CommentFulfillmentObligation], list[dict | None]]:
+    remaining = list(reply_targets)
+    selected: list[CommentFulfillmentObligation] = []
+    for obligation in available[:len(reply_targets)]:
+        target_index = _matching_target_index(remaining, obligation.relation_kind)
+        if target_index is None:
+            if remaining:
+                remaining.pop(0)
+            continue
+        target = remaining.pop(target_index)
+        _refresh_obligation_target(obligation, target)
+        selected.append(obligation)
+    return selected, remaining
+
+
+def _matching_target_index(
+    targets: list[dict | None],
+    relation_kind: str,
+) -> int | None:
+    reply_required = relation_kind == "reply"
+    return next(
+        (
+            index
+            for index, target in enumerate(targets)
+            if (target is not None) == reply_required
+        ),
+        None,
+    )
+
+
+def _refresh_obligation_target(
+    obligation: CommentFulfillmentObligation,
+    target: dict | None,
+) -> None:
+    snapshot = dict(target or {})
+    obligation.reply_target_snapshot = snapshot
+    obligation.reply_to_message_id = _reply_target_id(snapshot)
 
 
 def _release_terminal_bindings(
@@ -74,6 +141,7 @@ def _release_terminal_bindings(
             continue
         action = session.get(Action, obligation.current_action_id)
         if action is None or action.status not in {
+            "cancelled",
             "failed",
             "skipped",
             "retryable_failed",
@@ -90,6 +158,8 @@ def bind_comment_obligation(
 ) -> None:
     if obligation.status not in OPEN_OBLIGATION_STATUSES:
         raise ValueError("comment_obligation_not_open")
+    if obligation.current_action_id:
+        raise ValueError("comment_obligation_already_bound")
     obligation.current_action_id = action.id
     obligation.action_attempt_no += 1
     obligation.status = "pending"
@@ -167,11 +237,7 @@ def _new_obligation(
     reply_target: dict | None,
 ) -> CommentFulfillmentObligation:
     snapshot = dict(reply_target or {})
-    reply_id = int(
-        snapshot.get("message_id")
-        or snapshot.get("comment_message_id")
-        or 0
-    ) or None
+    reply_id = _reply_target_id(snapshot)
     return CommentFulfillmentObligation(
         tenant_id=task.tenant_id,
         task_id=task.id,
@@ -184,6 +250,14 @@ def _new_obligation(
         reply_target_snapshot=snapshot,
         status="open",
     )
+
+
+def _reply_target_id(snapshot: dict) -> int | None:
+    return int(
+        snapshot.get("message_id")
+        or snapshot.get("comment_message_id")
+        or 0
+    ) or None
 
 
 __all__ = ["bind_comment_obligation", "freeze_comment_obligations"]

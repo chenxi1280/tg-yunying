@@ -75,12 +75,21 @@ def _retry_query(task: Task, max_retries: int, limit: int):
 def _action_retry_is_blocked(task: Task, action: Action) -> bool:
     if _is_unbound_legacy_fulfillment_action(task, action):
         return True
+    if _is_bound_comment_action(task, action):
+        return True
     if _is_bound_search_click_action(task, action):
         return True
     return _is_terminal_ai_quality_failure(
         action,
         dict(action.result or {}),
     )
+
+
+def _is_bound_comment_action(task: Task, action: Action) -> bool:
+    if task.type != "channel_comment" or action.action_type != "post_comment":
+        return False
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    return bool(payload.get("comment_fulfillment_obligation_id"))
 
 
 def _schedule_retry(
