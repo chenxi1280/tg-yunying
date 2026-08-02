@@ -10,3 +10,5 @@
 - 风控中心仍暴露“账号全局冷却”编辑项，AI 配置与风控策略两个写入口都允许重新写入非零值；仅部署归零不足以防复发。修复需移除前端编辑项，并在两个请求 schema 上明确拒绝非零值。
 - 首次 release `20260802064335_dffd9593` 已证明平台/租户配置均为 0，但上线后两次 E4 的搜索任务运行态完全不变。`_open_actions_state()` 会把 AI 任务的到期 open Action 时间反写为仍过期的 `next_run_at`；`_normal_planner_task_ids(limit=100)` 因此反复领取同一批队首，其他已到期任务可被饿死。
 - 完整恢复需要两项最小补充：接管清除遗留 `last_error=account_cooldown` 并唤醒；已有到期 open Action 的 AI 任务延后 30 秒再检查，让其他任务进入下一次 Planner 领取。未来 Action 仍保留真实计划时间。
+- `Deploy Production` 诊断 run `30737496043` 的 faulthandler 证明 Planner 并非空闲：手工 drain 先等待生产 Planner 持有的 `TaskGroupDailyTarget FOR UPDATE`，随后连续两分钟停在 `group_ai_scope.successful_own_history_reply_facts()`。旧 SQL 的 Attempt 子查询先对生产全表 `status=success + remote_message_id<>''` 按 action 聚合，Task/群过滤在外层，历史量增长后形成分钟级查询。
+- 根因修复应从当前 Task/群的成功 Action 出发，利用既有 `(action_id, attempt_no)` 唯一索引相关读取每个 Action 最新成功 remote ID；不能以跳过 AI、超时吞错或减少目标规避阻塞。

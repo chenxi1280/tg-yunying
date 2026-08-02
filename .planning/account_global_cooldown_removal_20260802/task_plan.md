@@ -33,3 +33,4 @@
 - 新合同红测首次运行按预期失败：存量 `default_account_cooldown_seconds=30` 接管后仍为 30。
 - 非 `no_postgres` 旧回归选择在收集阶段被测试 PostgreSQL `172.28.232.109:5432` 断开阻塞，未伪报通过。
 - 首次生产 E4 连续两次显示搜索任务仍保持发布前 `last_error=account_cooldown`、过期 `next_run_at` 且 Action/Attempt/epoch 全为 0；生产 AI 任务同时存在过期 open Action 队首，暴露 Planner limit 饥饿与遗留错误未唤醒缺口。
+- 同 SHA 生产 Planner profile 在 240 秒超时：60 秒堆栈停在群日目标行锁，120/180 秒停在 `successful_own_history_reply_facts()` 的 PostgreSQL 查询；确认 AI 全表 Attempt 聚合占住串行 Planner。

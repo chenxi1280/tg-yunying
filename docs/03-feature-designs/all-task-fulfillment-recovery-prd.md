@@ -162,6 +162,24 @@ Planner 的合法 reply pool 包含同 Task、同频道源消息下历史成功�
 `design_status=complete`，`resync=true`。该补正复用系统已拥有的真实历史评论远端事实，
 不新增 mock/fallback，也不放宽 Telegram、账号或内容安全门禁。
 
+### 2.9 2026-08-02 AI own-history 查询阻塞补正
+
+取消跨任务账号冷却并唤醒搜索任务后，生产 Planner profile 仍显示同一批次超过 240 秒未返回：
+主事务先被另一个 Planner 持有的群日目标行锁阻塞，取得锁后又持续停在 AI own-history
+`ExecutionAttempt` 查询。旧查询先对全表成功 Attempt 按 `action_id` 聚合，再与当前 Task Action
+连接；生产历史量增大后，单个 AI Task 会占住串行 Planner，排在后面的搜索任务无法生成 Action。
+
+1. AI own-history 必须先按同 tenant、同 Task、同群的成功 Action 缩小候选，再通过
+   `(action_id, attempt_no)` 事实链相关读取该 Action 的最新成功非空 remote ID；禁止先聚合全表
+   `ExecutionAttempt`。
+2. 现有 in-flight reply 目标排除、最新成功 Attempt、同 Task/群 scope 和 limit 语义保持不变；
+   不得通过跳过 AI Task、减少 AI 目标或接受 Action.result 代替远端事实来换取 Planner 返回。
+3. QA 必须证明 SQL 不再包含全表 `GROUP BY execution_attempts.action_id`，并覆盖多 Attempt 取最新
+   remote ID及同群 open reply 占用排除。生产需证明 Planner drain 返回且被唤醒搜索任务产生新
+   Action/Attempt；仅查询改写或容器健康不算 E4。
+
+`design_status=complete`，`resync=true`。该补正只改变权威事实的读取计划，不改变业务结果口径。
+
 ## 3. 产品目标与非目标
 
 ### 3.1 产品目标

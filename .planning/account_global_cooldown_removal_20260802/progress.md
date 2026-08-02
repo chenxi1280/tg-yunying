@@ -17,3 +17,6 @@
 - 上线后 E4 `30736583658`、`30736645753` 均显示搜索任务未被 Planner 重领；定位为遗留错误未清除叠加到期 AI open Action 队首饥饿。
 - 新增两个红测后最小修复：接管清遗留冷却错误并立即唤醒，Planner 对到期 open Action 延后 30 秒；定向红测已转绿 `2 passed`。
 - 两个相关文件的完整无 PostgreSQL 回归为 `38 passed, 8 deselected`；Python `compileall`、`git diff --check` 通过，远端仍与首次提交 `dffd9593` 对齐。
+- 第二次提交 `e05690ad` 已由 Actions `30736911541` 全绿发布为 `20260802070808_e05690ad`；生产接管清除了搜索任务遗留冷却错误并唤醒，但搜索仍未产生 Action。
+- 同 SHA 诊断重发版 `20260802072358_e05690ad` 的 run `30737496043` 用 faulthandler 取得分钟级阻塞堆栈：Planner 卡在 AI own-history 的全表 `ExecutionAttempt` 聚合，240 秒超时；E4 同时确认搜索仍为 0 Action/Attempt。
+- 已新增 SQL 形状红测，旧实现命中 `GROUP BY execution_attempts.action_id` 失败；改为从当前 Action 相关读取最新成功 Attempt 后转绿，并覆盖多 Attempt 最新 remote ID 与 open reply 占用排除，`1 passed`。

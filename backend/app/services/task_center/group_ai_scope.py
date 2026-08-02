@@ -208,34 +208,30 @@ def successful_own_history_reply_facts(
     exclude_used_statuses: tuple[str, ...] = (),
     limit: int = 20,
 ) -> list[tuple[Action, str]]:
-    latest_attempt = (
-        select(
-            ExecutionAttempt.action_id.label("action_id"),
-            func.max(ExecutionAttempt.attempt_no).label("attempt_no"),
-        )
+    latest_remote_id = (
+        select(ExecutionAttempt.remote_message_id)
         .where(
+            ExecutionAttempt.action_id == Action.id,
             ExecutionAttempt.status == "success",
             ExecutionAttempt.remote_message_id != "",
         )
-        .group_by(ExecutionAttempt.action_id)
-        .subquery()
+        .order_by(ExecutionAttempt.attempt_no.desc())
+        .limit(1)
+        .correlate(Action)
+        .scalar_subquery()
     )
     filters = _own_history_filters(
         tenant_id=tenant_id,
         task_id=task_id,
         group_id=group_id,
+        latest_remote_id=latest_remote_id,
         remote_message_id=remote_message_id,
         exclude_action_id=exclude_action_id,
         exclude_used_statuses=exclude_used_statuses,
     )
     rows = session.execute(
-        select(Action, ExecutionAttempt.remote_message_id)
-        .join(latest_attempt, latest_attempt.c.action_id == Action.id)
-        .join(ExecutionAttempt, and_(
-            ExecutionAttempt.action_id == latest_attempt.c.action_id,
-            ExecutionAttempt.attempt_no == latest_attempt.c.attempt_no,
-        ))
-        .where(*filters)
+        select(Action, latest_remote_id.label("remote_message_id"))
+        .where(latest_remote_id.is_not(None), *filters)
         .order_by(Action.executed_at.desc().nullslast(), Action.created_at.desc())
         .limit(max(1, int(limit)))
     )
@@ -285,6 +281,7 @@ def _own_history_filters(
     tenant_id: int,
     task_id: str,
     group_id: int,
+    latest_remote_id,
     remote_message_id: str,
     exclude_action_id: str,
     exclude_used_statuses: tuple[str, ...],
@@ -299,7 +296,7 @@ def _own_history_filters(
         func.trim(func.coalesce(Action.payload["message_text"].as_string(), "")) != "",
     ]
     if remote_message_id:
-        filters.append(ExecutionAttempt.remote_message_id == remote_message_id)
+        filters.append(latest_remote_id == remote_message_id)
     if exclude_action_id:
         filters.append(Action.id != exclude_action_id)
     if exclude_used_statuses:
@@ -307,6 +304,7 @@ def _own_history_filters(
             tenant_id=tenant_id,
             group_id=group_id,
             statuses=exclude_used_statuses,
+            latest_remote_id=latest_remote_id,
         ))
     return filters
 
@@ -316,6 +314,7 @@ def _unused_reply_target_filter(
     tenant_id: int,
     group_id: int,
     statuses: tuple[str, ...],
+    latest_remote_id,
 ):
     used_action = aliased(Action)
     return ~exists(select(used_action.id).where(
@@ -325,7 +324,7 @@ def _unused_reply_target_filter(
         used_action.status.in_(statuses),
         used_action.payload["group_id"].as_integer() == group_id,
         cast(used_action.payload["reply_to_message_id"].as_integer(), String)
-        == ExecutionAttempt.remote_message_id,
+        == latest_remote_id,
     ))
 
 

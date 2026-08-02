@@ -602,6 +602,8 @@ Planner 顺序固定为：真实 remaining 与防重 planning deficit -> 账号 
 
 > **2026-08-02 跨任务账号短冷却取消 resync：** 当前产品只有一个业务用户/租户，任务目标允许同一账号重复履约；通用 `SchedulingSetting.default_account_cooldown_seconds` 不再作为账号候选、Planner、claim 或 Gateway 前门禁。正式发布在全部业务 writer fenced 的接管窗口中，对平台与租户存量调度行幂等归零；重复 apply 不新增审计或漂移。字段/API 暂保留以兼容配置读模型，但当前履约合同禁止写入非零有效值，前端历史显示不得解释为仍生效。接管必须清除运行中履约任务遗留的 `last_error=account_cooldown` 并立即唤醒；Planner 遇到已有到期 open Action 的 AI 任务时只延后该任务 30 秒复检，不能让过期 `next_run_at` 长驻队首并饿死搜索等其他任务。账号小时/日数量上限继续归一为 `1_000_000`；Telegram FloodWait/SlowMode、账号授权、代理、协议、验证码、目标权限、unknown 防重及账号单次 in-flight/Redis 互斥不变。QA 必须覆盖非零存量值归零、平台/租户多行、重复执行、审计内容、遗留错误唤醒和 Planner 队首公平性；发布必须走 `master -> release -> Deploy Production`，并以生产配置为 0、搜索 Action/Attempt 开始产生及最终 `target_click_observed` 为分层证据。若发布失败，代码与配置随原子 release 不激活，禁止手工在线回填或静默恢复 180 秒冷却。
 
+> **2026-08-02 Planner 历史事实查询补正：** 生产 profile 证明冷却归零后，串行 Planner 仍被 AI own-history 查询阻塞超过 240 秒；旧实现先全表聚合成功 `ExecutionAttempt`，使后续搜索任务无法获得规划机会。own-history 必须从当前 tenant/Task/群的成功 Action 出发，按 `(action_id, attempt_no)` 相关读取最新成功非空 remote ID，保留 in-flight reply 排除与全部 scope 事实，禁止全表 `GROUP BY execution_attempts.action_id`。该优化不能跳过 AI、缩小目标或改用非权威 Action.result；发布后仍以 Planner 返回、搜索新 Action/Attempt 和最终远端点击分层验收。
+
 > **2026-07-28 AI 可见性 P0 统一口径：**
 >
 > 1. `pending_visibility` 与 `unknown_after_send` 都属于 post-Gateway 未确认占位，每个 `primary_quantity_slot_id` 只占 1，统一计入 `unknown_after_send_hold_count/unknown_count`；不得另加第三个 planning reservation 项，也不得为同一主槽替代重发。逻辑事实称 `pending_visibility_hold`，现有 `PendingVisibilityCredit/pending_visibility_credits` 只是兼容物理名，不是成功 credit。
