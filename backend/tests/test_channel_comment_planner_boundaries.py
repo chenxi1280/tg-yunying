@@ -358,6 +358,42 @@ def test_reply_replan_is_scheduled_immediately(monkeypatch):
     assert replacement.scheduled_at == now_value
 
 
+def test_reply_replan_keeps_source_message_after_scope_rolls_forward(monkeypatch):
+    forbid_planner_external_boundaries(monkeypatch)
+    fixed_profile(monkeypatch)
+    now_value = datetime(2026, 8, 2, 11, 0, 0)
+    monkeypatch.setattr(channel_comment_preparation, "_now", lambda: now_value)
+    with planner_session() as session:
+        task = seed_comment_task(session, mode="mixed", reply_min=1, target_count=1)
+        assert channel_comment.build_plan(session, task) == 1
+        first = session.scalar(select(Action).where(Action.task_id == task.id))
+        obligation_id = first.payload["comment_fulfillment_obligation_id"]
+        session.add(ChannelMessage(
+            id=42,
+            tenant_id=1,
+            channel_target_id=31,
+            message_id=9002,
+            content_preview="新的频道消息",
+            comment_available=True,
+        ))
+        task.type_config = {**task.type_config, "message_ids": [42]}
+        first.status = "failed"
+        dispatcher._sync_comment_fulfillment_state(session, first)
+        session.commit()
+
+        channel_comment.build_plan(session, task)
+        replacement = session.scalar(select(Action).where(
+            Action.task_id == task.id,
+            Action.id != first.id,
+            Action.payload["comment_fulfillment_obligation_id"].as_string() == obligation_id,
+        ))
+
+    assert replacement is not None
+    assert replacement.payload["channel_message_id"] == 41
+    assert replacement.payload["comment_action_attempt_no"] == 2
+    assert replacement.scheduled_at == now_value
+
+
 def test_future_comment_replacement_is_accelerated_before_planning(monkeypatch):
     forbid_planner_external_boundaries(monkeypatch)
     fixed_profile(monkeypatch)

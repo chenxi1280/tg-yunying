@@ -224,10 +224,49 @@ def _persisted_channel_scope(
         config,
         comment_available_only=True,
     )
+    messages = _merge_comment_messages(
+        _replan_comment_messages(session, task, channel.id),
+        messages,
+    )
     if not messages:
         task.last_error = "未找到已采集频道消息，等待监听采集"
         return None, []
     return channel, messages
+
+
+def _replan_comment_messages(
+    session: Session,
+    task: Task,
+    channel_target_id: int,
+) -> list[ChannelMessage]:
+    rows = session.scalars(
+        select(ChannelMessage)
+        .join(
+            CommentFulfillmentObligation,
+            CommentFulfillmentObligation.channel_message_id == ChannelMessage.id,
+        )
+        .where(
+            CommentFulfillmentObligation.task_id == task.id,
+            CommentFulfillmentObligation.status.in_(("open", "replan_required")),
+            CommentFulfillmentObligation.current_action_id.is_(None),
+            ChannelMessage.tenant_id == task.tenant_id,
+            ChannelMessage.channel_target_id == channel_target_id,
+            ChannelMessage.comment_available.is_(True),
+        )
+        .order_by(CommentFulfillmentObligation.created_at, CommentFulfillmentObligation.target_ordinal)
+    )
+    return _merge_comment_messages(list(rows), [])
+
+
+def _merge_comment_messages(*groups: list[ChannelMessage]) -> list[ChannelMessage]:
+    merged: list[ChannelMessage] = []
+    seen: set[int] = set()
+    for message in (item for group in groups for item in group):
+        if message.id in seen:
+            continue
+        merged.append(message)
+        seen.add(message.id)
+    return merged
 
 
 def _planning_accounts(session: Session, task: Task, channel: OperationTarget, config: dict) -> list:
