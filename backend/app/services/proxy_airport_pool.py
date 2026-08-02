@@ -16,7 +16,6 @@ from .proxy_airport_subscription import (
     NodeHealthChecker,
     SubscriptionFetcher,
     _apply_node_health_checks,
-    _delete_subscription_nodes,
     _healthy_node_count,
     _record_sync_failure,
     _replace_subscription_nodes,
@@ -102,18 +101,22 @@ def sync_proxy_airport_subscription_by_id(
     try:
         raw = (fetcher or fetch_subscription)(_decrypt_subscription_url(row))
         nodes = parsed_proxy_nodes(raw)
-        _replace_subscription_nodes(session, row, nodes)
+        node_rows = _replace_subscription_nodes(session, row, nodes)
         session.flush()
-        node_rows = _subscription_nodes(session, row)
         if health_checker is not None:
             _apply_node_health_checks(node_rows, health_checker)
         _record_sync_success(row, len(node_rows), _healthy_node_count(node_rows))
         session.flush()
     except ValueError as exc:
-        _record_sync_failure(session, row, actor, str(exc))
+        _record_sync_failure(session, row, actor=actor, error=str(exc))
         raise
     except OSError as exc:
-        _record_sync_failure(session, row, actor, "proxy_airport_subscription_fetch_failed")
+        _record_sync_failure(
+            session,
+            row,
+            actor=actor,
+            error="proxy_airport_subscription_fetch_failed",
+        )
         raise ValueError("proxy_airport_subscription_fetch_failed") from exc
     _audit_subscription(session, actor, row, "同步 Clash 订阅源")
     return _subscription_out(row)
