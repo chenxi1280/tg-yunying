@@ -838,7 +838,7 @@ def test_group_ai_uses_direct_daily_coverage_when_only_other_task_has_history(mo
     assert task.stats["coverage_reply_shortfall_cycle_count"] == 1
 
 
-def test_group_ai_excludes_already_used_reply_targets_across_rounds(monkeypatch):
+def test_group_ai_reuses_completed_reply_targets_across_rounds(monkeypatch):
     _forbid_planner_ai_generation(monkeypatch)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: NOW)
     with _session() as session:
@@ -875,7 +875,7 @@ def test_group_ai_excludes_already_used_reply_targets_across_rounds(monkeypatch)
 
     assert created == 1
     assert actions[0].payload["ai_generation_status"] == "pending"
-    assert [action.payload["reply_to_message_id"] for action in actions] == [43]
+    assert [action.payload["reply_to_message_id"] for action in actions] == [44]
 
 
 def test_group_ai_reply_target_check_does_not_scan_irrelevant_history(monkeypatch):
