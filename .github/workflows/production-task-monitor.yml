@@ -120,6 +120,17 @@ jobs:
             -i tgyunying-backend python -" \
             < .github/scripts/task_fulfillment_e4_diagnostics.py
 
+      - name: Read search click recent solver epochs
+        if: ${{ always() }}
+        env:
+          SEARCH_CLICK_DIAGNOSTIC_TASK_IDS: ${{ inputs.task_ids }}
+        run: |
+          set -euo pipefail
+          ssh silicon-valley-production-server "timeout 180 docker exec \
+            -e SEARCH_CLICK_DIAGNOSTIC_TASK_IDS='${SEARCH_CLICK_DIAGNOSTIC_TASK_IDS}' \
+            -i tgyunying-backend python -" \
+            < .github/scripts/search_click_recent_epoch_diagnostics.py
+
       - name: Read AI group binding diagnostics
         if: ${{ always() }}
         run: |
