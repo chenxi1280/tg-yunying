@@ -1,14 +1,11 @@
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import (
-    ProxyAirportNode,
-    Tenant,
-)
+from app.models import ProxyAirportNode, ProxyExitIpObservation, Tenant
 from app.schemas.account_environment import (
     ProxyAirportSubscriptionCreate,
     ProxyAirportSubscriptionPatch,
@@ -108,6 +105,114 @@ def test_proxy_airport_subscription_sync_applies_health_probe_results() -> None:
         ("hk-1", "healthy", ""),
         ("sg-1", "unhealthy", "connect_timeout"),
     ]
+
+
+def test_proxy_airport_subscription_sync_preserves_referenced_retired_nodes() -> None:
+    with _session() as session:
+        session.execute(text("PRAGMA foreign_keys=ON"))
+        _save_subscription(session)
+        sync_proxy_airport_subscription(
+            session,
+            tenant_id=1,
+            actor="tester",
+            fetcher=lambda _url: "trojan://old@old.example.com:443#old-node",
+            health_checker=lambda _node: (True, ""),
+        )
+        old_node = session.scalar(select(ProxyAirportNode).where(ProxyAirportNode.node_name == "old-node"))
+        assert old_node is not None
+        observation = ProxyExitIpObservation(tenant_id=1, proxy_node_id=old_node.id)
+        session.add(observation)
+        session.flush()
+
+        synced = sync_proxy_airport_subscription(
+            session,
+            tenant_id=1,
+            actor="tester",
+            fetcher=lambda _url: "trojan://new@new.example.com:443#new-node",
+            health_checker=lambda _node: (True, ""),
+        )
+        nodes = list(session.scalars(select(ProxyAirportNode).order_by(ProxyAirportNode.node_name)))
+
+    assert synced.node_count == 1
+    assert synced.healthy_node_count == 1
+    assert [(node.node_name, node.status, node.last_error) for node in nodes] == [
+        ("new-node", "healthy", ""),
+        ("old-node", "retired", "not_present_in_latest_subscription"),
+    ]
+    assert observation.proxy_node_id == old_node.id
+
+
+def test_proxy_airport_subscription_sync_deletes_unreferenced_retired_nodes() -> None:
+    with _session() as session:
+        _save_subscription(session)
+        sync_proxy_airport_subscription(
+            session,
+            tenant_id=1,
+            actor="tester",
+            fetcher=lambda _url: "trojan://old@old.example.com:443#old-node",
+        )
+
+        synced = sync_proxy_airport_subscription(
+            session,
+            tenant_id=1,
+            actor="tester",
+            fetcher=lambda _url: "trojan://new@new.example.com:443#new-node",
+        )
+        nodes = list(session.scalars(select(ProxyAirportNode)))
+
+    assert synced.node_count == 1
+    assert [(node.node_name, node.status) for node in nodes] == [("new-node", "unknown")]
+
+
+def test_proxy_airport_subscription_url_update_preserves_referenced_node() -> None:
+    with _session() as session:
+        session.execute(text("PRAGMA foreign_keys=ON"))
+        _save_subscription(session)
+        sync_proxy_airport_subscription(
+            session,
+            tenant_id=1,
+            actor="tester",
+            fetcher=lambda _url: "trojan://old@old.example.com:443#old-node",
+        )
+        old_node = session.scalar(select(ProxyAirportNode))
+        assert old_node is not None
+        session.add(ProxyExitIpObservation(tenant_id=1, proxy_node_id=old_node.id))
+        session.flush()
+
+        saved = update_proxy_airport_subscription(
+            session,
+            tenant_id=1,
+            payload=ProxyAirportSubscriptionUpdate(subscription_url="https://example.net/new?token=second-token"),
+            actor="tester",
+        )
+        node = session.scalar(select(ProxyAirportNode))
+
+    assert saved.sync_status == "configured"
+    assert node is not None
+    assert (node.status, node.last_error) == ("retired", "not_present_in_latest_subscription")
+
+
+def test_proxy_airport_subscription_failure_preserves_last_node_snapshot() -> None:
+    with _session() as session:
+        _save_subscription(session)
+        sync_proxy_airport_subscription(
+            session,
+            tenant_id=1,
+            actor="tester",
+            fetcher=lambda _url: "trojan://old@old.example.com:443#old-node",
+        )
+
+        with pytest.raises(ValueError, match="no_supported_proxy_nodes"):
+            sync_proxy_airport_subscription(
+                session,
+                tenant_id=1,
+                actor="tester",
+                fetcher=lambda _url: "traffic package expires soon",
+            )
+        node = session.scalar(select(ProxyAirportNode))
+
+    assert node is not None
+    assert (node.node_name, node.status) == ("old-node", "unknown")
 
 
 def test_proxy_airport_subscription_sync_records_visible_failure() -> None:
