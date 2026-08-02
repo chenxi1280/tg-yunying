@@ -238,8 +238,11 @@ def _scope_demands(
     demands: list[DispatchClaimDemand],
     now: datetime,
 ) -> list[DispatchClaimDemand]:
-    del session, now
-    return demands
+    from .search_click_dispatch_allocation import (
+        merge_search_click_dispatch_demands,
+    )
+
+    return merge_search_click_dispatch_demands(session, demands, now)
 
 
 def _request_rebuild_if_needed(

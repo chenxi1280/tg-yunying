@@ -32,7 +32,10 @@ from app.services.task_center.dispatch_claim_selection import build_demands
 from app.services.task_center.dispatch_reservations import (
     _prepare_dispatch_window,
 )
-from app.services.task_center.search_click_dispatch_allocation import _all_demands
+from app.services.task_center.search_click_dispatch_allocation import (
+    _all_demands,
+    prepare_search_click_fulfillment_units,
+)
 from app.services.task_center.search_click_assignment_release import (
     release_search_click_assignment,
 )
@@ -43,7 +46,7 @@ pytestmark = pytest.mark.no_postgres
 SEARCH_RESERVATION_KEY = (1, "search-task", "search_join", 1, 0)
 
 
-def test_ordinary_dispatcher_does_not_allocate_unmaterialized_search_obligation() -> None:
+def test_dispatcher_window_reserves_one_unit_for_search_and_ordinary_tasks() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = _now()
@@ -55,6 +58,7 @@ def test_ordinary_dispatcher_does_not_allocate_unmaterialized_search_obligation(
             1,
             now_value,
         )
+        ordinary_key = demands[0].key
         _, window, _ = _prepare_dispatch_window(
             session,
             [action],
@@ -64,7 +68,12 @@ def test_ordinary_dispatcher_does_not_allocate_unmaterialized_search_obligation(
         )
         reservations = window_reservations(session, window.id)
 
-        assert SEARCH_RESERVATION_KEY not in reservations
+        assert reservations[SEARCH_RESERVATION_KEY].reserved_claims == 1
+        assert reservations[ordinary_key].reserved_claims == 1
+        units = prepare_search_click_fulfillment_units(session, now=now_value)
+        assert [(unit.task_id, unit.fulfillment_lane_claim_ordinal) for unit in units] == [
+            ("search-task", 1),
+        ]
 
 
 def test_search_planner_preserves_runtime_shards_for_ordinary_actions() -> None:

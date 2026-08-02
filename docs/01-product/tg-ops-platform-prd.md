@@ -604,6 +604,8 @@ Planner 顺序固定为：真实 remaining 与防重 planning deficit -> 账号 
 
 > **2026-08-02 Planner 历史事实查询补正：** 生产 profile 证明冷却归零后，串行 Planner 仍被 AI own-history 查询阻塞超过 240 秒；旧实现先全表聚合成功 `ExecutionAttempt`，使后续搜索任务无法获得规划机会。own-history 必须从当前 tenant/Task/群的成功 Action 出发，按 `(action_id, attempt_no)` 相关读取最新成功非空 remote ID，保留 in-flight reply 排除与全部 scope 事实，禁止全表 `GROUP BY execution_attempts.action_id`。该优化不能跳过 AI、缩小目标或改用非权威 Action.result；发布后仍以 Planner 返回、搜索新 Action/Attempt 和最终远端点击分层验收。
 
+> **2026-08-02 搜索 Window 竞态补正：** Planner 查询修复上线后搜索 Task 已按分钟推进，但普通 Dispatcher 先创建的 ready Window 不含未物化搜索义务，搜索 Planner 后到时禁止重分配，导致 reservation/epoch/assignment 永远为 0。中央 Window 的创建/重建需求必须同时合并 open 搜索点击义务和已物化普通 Action，并沿用 parent-first 公平分配，保证普通 Task 与搜索 Task 均有份额；搜索 Planner 只消费已发布 reservation 后再求解路径和创建 Action。禁止让 Dispatcher 代替搜索求解，也禁止再次删除搜索需求来伪装 AI 容量恢复。
+
 > **2026-07-28 AI 可见性 P0 统一口径：**
 >
 > 1. `pending_visibility` 与 `unknown_after_send` 都属于 post-Gateway 未确认占位，每个 `primary_quantity_slot_id` 只占 1，统一计入 `unknown_after_send_hold_count/unknown_count`；不得另加第三个 planning reservation 项，也不得为同一主槽替代重发。逻辑事实称 `pending_visibility_hold`，现有 `PendingVisibilityCredit/pending_visibility_credits` 只是兼容物理名，不是成功 credit。

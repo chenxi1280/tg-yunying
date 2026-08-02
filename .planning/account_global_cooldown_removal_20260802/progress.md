@@ -20,3 +20,5 @@
 - 第二次提交 `e05690ad` 已由 Actions `30736911541` 全绿发布为 `20260802070808_e05690ad`；生产接管清除了搜索任务遗留冷却错误并唤醒，但搜索仍未产生 Action。
 - 同 SHA 诊断重发版 `20260802072358_e05690ad` 的 run `30737496043` 用 faulthandler 取得分钟级阻塞堆栈：Planner 卡在 AI own-history 的全表 `ExecutionAttempt` 聚合，240 秒超时；E4 同时确认搜索仍为 0 Action/Attempt。
 - 已新增 SQL 形状红测，旧实现命中 `GROUP BY execution_attempts.action_id` 失败；改为从当前 Action 相关读取最新成功 Attempt 后转绿，并覆盖多 Attempt 最新 remote ID 与 open reply 占用排除，`1 passed`。
+- 第三次提交 `b0c0216d` 由 Actions `30738255265` 全绿发布为 `20260802074846_b0c0216d`；生产冷却仍为 0，Planner 已推进搜索 next_run，但搜索仍无中央 reservation。
+- 新增普通 Dispatcher 先创建 Window 的红测，旧实现因缺 `SEARCH_RESERVATION_KEY` 失败；恢复共享 search demand 合并后，search 与 ordinary 各获一个 parent-first reservation，搜索 Planner 可从同一 ready Window 读取 fulfillment unit；完整文件 `8 passed`。

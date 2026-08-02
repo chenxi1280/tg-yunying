@@ -180,6 +180,28 @@ Planner 的合法 reply pool 包含同 Task、同频道源消息下历史成功�
 
 `design_status=complete`，`resync=true`。该补正只改变权威事实的读取计划，不改变业务结果口径。
 
+### 2.10 2026-08-02 搜索 Window 竞态补正
+
+AI own-history 查询修复上线后，搜索 Task 的 `next_run_at` 已按分钟持续推进，证明 Planner
+恢复返回；但连续 Window 仍为 0 reservation/epoch/assignment。代码核对确认普通 Dispatcher
+总是先把新 Window 置为 `ready`，其需求集合只含已物化 Action；搜索点击在取得中央份额前
+没有 Action，后到的搜索 Planner 对 ready Window 不允许重分配，形成永远无法取得第一份额的
+循环。这与账号冷却无关，是 2026-07-31 为临时恢复 AI 容量而移除搜索未物化需求后留下的竞态。
+
+1. 创建/重建中央 Window 的任一入口必须合并当前 open 搜索点击义务，按现有 parent-first
+   公平算法同时给搜索与普通 Task 至少一个可行份额；搜索需求不得只在搜索 Planner 恰好抢先
+   创建 Window 时出现。
+2. 搜索 Planner 继续只消费已经发布的 search reservation，并在同一 Window 形成 epoch、
+   assignment 和 Action；Dispatcher 不代替搜索求解、不直接创建搜索 Action。
+3. 该恢复以 §2.9 的 Planner 查询阻塞已解除为前提。中央容量仍由 scope/runtime shard 限制，
+   普通 Task 的 parent-first 份额必须保留；不得让搜索全部欠额独占 Window，也不得再次删除搜索
+   需求来换取 AI 绿色。
+4. QA 必须构造“普通 Action 先创建 Window + open 搜索义务”的顺序，证明同一 ready Window
+   同时存在普通 reservation、搜索 reservation，且搜索 Planner 能读取对应 fulfillment unit。
+   E4 仍要求新 epoch/assignment/Action/Attempt 和最终远端点击。
+
+`design_status=complete`，`resync=true`。本补正恢复既有中央公平合同，不新增容量或绕过安全门禁。
+
 ## 3. 产品目标与非目标
 
 ### 3.1 产品目标

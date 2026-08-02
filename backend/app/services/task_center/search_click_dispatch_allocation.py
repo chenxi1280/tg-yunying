@@ -102,6 +102,14 @@ def _all_demands(
     ))
     tasks = tasks_by_id(session, actions)
     demands = build_demands(actions, tasks, shard_total, now)
+    return merge_search_click_dispatch_demands(session, demands, now)
+
+
+def merge_search_click_dispatch_demands(
+    session: Session,
+    demands: list[DispatchClaimDemand],
+    now: datetime,
+) -> list[DispatchClaimDemand]:
     search_demands = open_search_click_dispatch_demands(session, now)
     keys = {demand.key for demand in search_demands}
     return [demand for demand in demands if demand.key not in keys] + search_demands
@@ -243,6 +251,7 @@ def _unoccupied_ordinals(
 
 __all__ = [
     "SearchClickFulfillmentUnit",
+    "merge_search_click_dispatch_demands",
     "open_search_click_dispatch_demands",
     "prepare_search_click_fulfillment_units",
 ]

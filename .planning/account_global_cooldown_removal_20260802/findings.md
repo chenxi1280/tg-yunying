@@ -12,3 +12,5 @@
 - 完整恢复需要两项最小补充：接管清除遗留 `last_error=account_cooldown` 并唤醒；已有到期 open Action 的 AI 任务延后 30 秒再检查，让其他任务进入下一次 Planner 领取。未来 Action 仍保留真实计划时间。
 - `Deploy Production` 诊断 run `30737496043` 的 faulthandler 证明 Planner 并非空闲：手工 drain 先等待生产 Planner 持有的 `TaskGroupDailyTarget FOR UPDATE`，随后连续两分钟停在 `group_ai_scope.successful_own_history_reply_facts()`。旧 SQL 的 Attempt 子查询先对生产全表 `status=success + remote_message_id<>''` 按 action 聚合，Task/群过滤在外层，历史量增长后形成分钟级查询。
 - 根因修复应从当前 Task/群的成功 Action 出发，利用既有 `(action_id, attempt_no)` 唯一索引相关读取每个 Action 最新成功 remote ID；不能以跳过 AI、超时吞错或减少目标规避阻塞。
+- `b0c0216d` 上线后搜索 `next_run_at` 从 `15:53` 推进到 `15:56`，证明 Planner 已返回；但 reservation/epoch/assignment 仍为 0。`dispatch_reservations._scope_demands()` 在 `4b0e1016` 被改为只返回已物化 Action demand，普通 Dispatcher 总是先把每分钟 Window 置为 ready；搜索 Planner 后到时不会重分配，因此未物化搜索义务永远拿不到第一份中央 reservation。
+- 搜索 demand 必须在任一 Window 创建入口合并，同时保留普通 Task parent-first 份额。此前为恢复 AI 容量删除搜索 demand 的前置原因是 Planner 长阻塞导致 reservation 无人消费；§2.9 已修复该查询，不能继续用删除搜索需求掩盖竞态。
