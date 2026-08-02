@@ -174,12 +174,30 @@ def open_action_snapshot(session, task: Task, target: RatioTarget) -> dict[str, 
     ))
     reply_count = sum(bool((action.payload or {}).get("reply_to_message_id")) for action in actions)
     scheduled = sorted(action.scheduled_at for action in actions if action.scheduled_at)
+    samples = sorted(
+        actions,
+        key=lambda action: action.scheduled_at.isoformat() if action.scheduled_at else "9999",
+    )[:5]
     return {
         "open_count": len(actions),
         "open_reply_count": reply_count,
         "open_direct_count": len(actions) - reply_count,
         "earliest_open_scheduled_at": scheduled[0].isoformat() if scheduled else None,
         "latest_open_scheduled_at": scheduled[-1].isoformat() if scheduled else None,
+        "earliest_open_samples": [_open_action_row(action) for action in samples],
+    }
+
+
+def _open_action_row(action: Action) -> dict[str, Any]:
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    return {
+        "action_id": action.id,
+        "status": action.status,
+        "scheduled_at": action.scheduled_at.isoformat() if action.scheduled_at else None,
+        "reply_to_message_id": payload.get("reply_to_message_id"),
+        "comment_action_attempt_no": payload.get("comment_action_attempt_no"),
+        "comment_fulfillment_obligation_id": payload.get("comment_fulfillment_obligation_id"),
+        "target_ordinal": payload.get("target_ordinal"),
     }
 
 
