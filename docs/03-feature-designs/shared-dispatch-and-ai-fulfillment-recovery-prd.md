@@ -403,6 +403,7 @@ Window rebuild 前必须按以下顺序处理旧事实：
 - `pending>0、due=0` 显示 `scheduled_future`，不显示 blocked。
 - `message_scope=dynamic_new` 且没有新 source/message obligation 时显示 `waiting_dynamic_input`。
 - 有 due Action、无 active claim 时进入共享调度诊断；公共修复后按跨任务公平领取。
+- 评论 `context_bound_schedule_window_seconds` 只限制 Planner 创建 reply Action 时的近端排期，不得把 `Action.created_at` 或排队时长当作引用目标 TTL。到期执行时只要冻结的 `ChannelMessageComment` 仍属于同租户、同频道目标和同源消息，必须继续生成并发送；只有目标真实缺失、删除或不可访问才以 `reply_target_missing` 终结并让原 ordinal 重规划，不能因为计划提前创建而写 `reply_target_stale`。
 - 评论、reaction、view 仍只以各自远端事实键确认，不因调度修复改变数量口径。
 
 ## 6. 数据与配置设计

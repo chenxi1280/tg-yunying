@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime
 from uuid import uuid4
 
 from sqlalchemy import select, update
@@ -125,7 +124,7 @@ def prepare_comment_generation_request(
     )
     session.commit()
     _validate_comment_target(session, action, request=request)
-    _validate_reply_target(session, action, task, request=request)
+    _validate_reply_target(session, action, request=request)
     return request
 
 
@@ -176,7 +175,6 @@ def _validate_comment_target(
 def _validate_reply_target(
     session: Session,
     action: Action,
-    task: Task,
     *,
     request: CommentGenerationRequest,
 ) -> None:
@@ -189,17 +187,14 @@ def _validate_reply_target(
         ChannelMessageComment.channel_message_id == payload.channel_message_id,
         ChannelMessageComment.comment_message_id == payload.reply_to_message_id,
     ))
-    window = int((task.type_config or {}).get("context_bound_schedule_window_seconds") or 300)
-    stale = (_naive(_now()) - _naive(action.created_at)).total_seconds() > window
-    if target and not stale:
+    if target:
         session.commit()
         return
-    code = "reply_target_stale" if stale else "reply_target_missing"
     _fail_generation_context(
         session,
         request,
-        code=code,
-        detail="引用评论已过期、删除或不可访问",
+        code="reply_target_missing",
+        detail="引用评论已删除或不可访问",
     )
 
 
@@ -466,10 +461,6 @@ def _action_values(action: Action) -> dict:
         "lease_owner": action.lease_owner,
         "lease_expires_at": action.lease_expires_at,
     }
-
-
-def _naive(value: datetime) -> datetime:
-    return value.replace(tzinfo=None) if value.tzinfo is not None else value
 
 
 __all__ = [

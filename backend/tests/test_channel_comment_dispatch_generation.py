@@ -229,14 +229,18 @@ def test_invalid_reply_target_skips_generation_and_gateway_without_direct_downgr
         assert observed == {"provider": 0, "gateway": 0}
 
 
-def test_stale_reply_target_skips_generation_and_gateway(monkeypatch) -> None:
+def test_old_reply_action_with_existing_target_continues_to_gateway(monkeypatch) -> None:
     observed = {"provider": 0, "gateway": 0}
     with comment_dispatch_session() as session:
         action = seed_dispatch_scope(session, reply=True)
         expire_comment_action(action)
         session.commit()
         monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args: object())
-        monkeypatch.setattr(dispatcher.gateway, "reply_channel_message", _forbidden_gateway)
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "reply_channel_message",
+            _gateway_sender(session, observed),
+        )
 
         assert dispatcher.dispatch_action(
             session,
@@ -244,8 +248,8 @@ def test_stale_reply_target_skips_generation_and_gateway(monkeypatch) -> None:
             comment_generation_dependencies=_dependencies(session, observed),
         ) is True
 
-        assert action.result["error_code"] == "reply_target_stale"
-        assert observed == {"provider": 0, "gateway": 0}
+        assert action.status == "success"
+        assert observed == {"provider": 1, "gateway": 1}
 
 
 def test_generation_failure_is_explicit_and_never_enters_gateway(monkeypatch) -> None:
