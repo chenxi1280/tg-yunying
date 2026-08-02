@@ -63,3 +63,22 @@ def test_script_exposes_unknown_remote_reconciliation_evidence() -> None:
     assert callable(module._unknown_remote_row)
     assert callable(module.terminal_action_snapshot)
     assert callable(module._terminal_action_row)
+
+
+def test_terminal_diagnostics_expose_failure_stage_and_detail() -> None:
+    module = load_script()
+    action = type("ActionStub", (), {
+        "result": {
+            "error_code": "reply_target_missing",
+            "error_message": "引用目标不存在或当前账号不可引用",
+            "validation_stage": "ai_reply_target",
+            "generation_stage": "reply_target_validation",
+        },
+    })()
+
+    assert module._remote_result_contract(action) == {
+        "error_code": "reply_target_missing",
+        "error_message": "引用目标不存在或当前账号不可引用",
+        "validation_stage": "ai_reply_target",
+        "generation_stage": "reply_target_validation",
+    }

@@ -341,6 +341,9 @@ def _remote_result_contract(action: Action) -> dict[str, Any]:
         "remote_fact_id",
         "telegram_msg_id",
         "error_code",
+        "error_message",
+        "validation_stage",
+        "generation_stage",
     )
     return {key: result[key] for key in keys if key in result}
 
