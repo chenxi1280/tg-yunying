@@ -192,6 +192,7 @@ EMOJI_PATTERN = re.compile(r"[\U0001F300-\U0001FAFF\u2600-\u27BF]")
 RECENT_CYCLE_SCAN_LIMIT = 200
 RECENT_PLANNED_AI_STATUSES = ("pending", "claiming", "executing", "unknown_after_send")
 RECENT_TARGET_USAGE_STATUSES = (*RECENT_PLANNED_AI_STATUSES, "success")
+IN_FLIGHT_REPLY_TARGET_USAGE_STATUSES = RECENT_PLANNED_AI_STATUSES
 RECENT_TARGET_USAGE_MEMORY_STATUSES = ("reserved", "success", "unknown_after_send")
 RECENT_TARGET_USAGE_SCAN_LIMIT = 120
 VOICE_PROFILE_REPLAN_OPEN_STATUSES = ("pending", "retryable_failed")
@@ -3389,7 +3390,7 @@ def _historical_group_reply_targets(session: Session, task: Task, group: TgGroup
         tenant_id=task.tenant_id,
         task_id=task.id,
         group_id=group.id,
-        exclude_used_statuses=RECENT_TARGET_USAGE_STATUSES,
+        exclude_used_statuses=IN_FLIGHT_REPLY_TARGET_USAGE_STATUSES,
         limit=limit,
     )
     return [
@@ -3407,7 +3408,7 @@ def _used_group_reply_target_ids(session: Session, task: Task, group: TgGroup, c
             Action.tenant_id == task.tenant_id,
             Action.task_type == "group_ai_chat",
             Action.action_type == "send_message",
-            Action.status.in_(RECENT_TARGET_USAGE_STATUSES),
+            Action.status.in_(IN_FLIGHT_REPLY_TARGET_USAGE_STATUSES),
             Action.payload["group_id"].as_integer() == group.id,
             Action.payload["reply_to_message_id"].as_integer().in_(candidate_ids),
         )

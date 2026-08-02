@@ -61,3 +61,5 @@ def test_script_exposes_unknown_remote_reconciliation_evidence() -> None:
 
     assert callable(module.unknown_remote_snapshot)
     assert callable(module._unknown_remote_row)
+    assert callable(module.terminal_action_snapshot)
+    assert callable(module._terminal_action_row)

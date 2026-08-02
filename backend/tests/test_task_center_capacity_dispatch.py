@@ -5728,7 +5728,7 @@ def test_group_ai_planner_defers_memory_duplicate_check_to_dispatcher(monkeypatc
 
 
 @pytest.mark.no_postgres
-def test_group_ai_reply_target_pool_excludes_targets_used_by_other_tasks():
+def test_group_ai_reply_target_pool_excludes_in_flight_targets_used_by_other_tasks():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = _now()
@@ -5746,7 +5746,7 @@ def test_group_ai_reply_target_pool_excludes_targets_used_by_other_tasks():
                 task_id="task-other",
                 task_type="group_ai_chat",
                 action_type="send_message",
-                status="success",
+                status="pending",
                 payload={"group_id": 7, "reply_to_message_id": 7001, "message_text": "这句接过了"},
                 created_at=now_value - timedelta(minutes=3),
                 executed_at=now_value - timedelta(minutes=3),

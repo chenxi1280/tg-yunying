@@ -34,6 +34,8 @@ DEFAULT_LOOKBACK_HOURS = 24
 COMMENT_ACTION = "post_comment"
 AI_ACTION = "send_message"
 OPEN_ACTION_STATUSES = ("pending", "claiming", "executing")
+TERMINAL_DIAGNOSTIC_STATUSES = ("failed", "skipped")
+TERMINAL_DIAGNOSTIC_LIMIT = 10
 
 
 @dataclass(frozen=True)
@@ -178,6 +180,62 @@ def open_action_snapshot(session, task: Task, target: RatioTarget) -> dict[str, 
         "open_direct_count": len(actions) - reply_count,
         "earliest_open_scheduled_at": scheduled[0].isoformat() if scheduled else None,
         "latest_open_scheduled_at": scheduled[-1].isoformat() if scheduled else None,
+    }
+
+
+def terminal_action_snapshot(
+    session,
+    task: Task,
+    target: RatioTarget,
+    since: datetime,
+) -> list[dict[str, Any]]:
+    actions = list(session.scalars(
+        select(Action)
+        .where(
+            Action.task_id == task.id,
+            Action.action_type == target.action_type,
+            Action.status.in_(TERMINAL_DIAGNOSTIC_STATUSES),
+            Action.scheduled_at >= since,
+        )
+        .order_by(Action.executed_at.desc().nullslast(), Action.scheduled_at.desc())
+        .limit(TERMINAL_DIAGNOSTIC_LIMIT)
+    ))
+    return [_terminal_action_row(action, _latest_attempt(session, action)) for action in actions]
+
+
+def _latest_attempt(session, action: Action) -> ExecutionAttempt | None:
+    return session.scalar(
+        select(ExecutionAttempt)
+        .where(ExecutionAttempt.action_id == action.id)
+        .order_by(ExecutionAttempt.attempt_no.desc())
+        .limit(1)
+    )
+
+
+def _terminal_action_row(
+    action: Action,
+    attempt: ExecutionAttempt | None,
+) -> dict[str, Any]:
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    return {
+        "action_id": action.id,
+        "action_status": action.status,
+        "account_id": action.account_id,
+        "scheduled_at": action.scheduled_at.isoformat() if action.scheduled_at else None,
+        "executed_at": action.executed_at.isoformat() if action.executed_at else None,
+        "reply_to_message_id": payload.get("reply_to_message_id"),
+        "ai_generation_status": payload.get("ai_generation_status"),
+        "result_contract": _remote_result_contract(action),
+        "attempt_status": attempt.status if attempt else None,
+        "attempt_failure_type": attempt.failure_type if attempt else None,
+        "attempt_remote_message_id": attempt.remote_message_id if attempt else None,
+        "gateway_call_started_at": (
+            attempt.gateway_call_started_at.isoformat()
+            if attempt and attempt.gateway_call_started_at else None
+        ),
+        "after_call_at": (
+            attempt.after_call_at.isoformat() if attempt and attempt.after_call_at else None
+        ),
     }
 
 
@@ -360,6 +418,9 @@ def snapshots(
             **task_snapshot(task, target),
             **open_action_snapshot(session, task, target),
             **reply_fact_snapshot(session, task, target, since),
+            "latest_terminal_rows": terminal_action_snapshot(
+                session, task, target, since,
+            ),
             "unknown_remote_rows": unknown_remote_snapshot(
                 session, task, target, since,
             ),

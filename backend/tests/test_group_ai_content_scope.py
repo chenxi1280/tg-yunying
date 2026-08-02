@@ -286,6 +286,52 @@ def test_own_history_limit_is_applied_after_cross_task_used_targets_are_excluded
     assert [target["message_id"] for target in targets] == [3800020, 3800021, 3800022, 3800023, 3800024]
 
 
+def test_completed_reply_does_not_permanently_consume_own_history_target():
+    session = _session()
+    _seed_scope(session)
+    for remote_id in ("3900001", "3900002"):
+        prior = _successful_own_history_action(remote_message_id=remote_id)
+        session.add(prior)
+        session.flush()
+        session.add(ExecutionAttempt(
+            action_id=prior.id,
+            status="success",
+            remote_message_id=remote_id,
+        ))
+    session.add_all([
+        Action(
+            id="completed-reply-use",
+            tenant_id=1,
+            task_id="task-b",
+            task_type="group_ai_chat",
+            action_type="send_message",
+            account_id=11,
+            status="success",
+            payload={"group_id": 8, "reply_to_message_id": 3900001},
+        ),
+        Action(
+            id="pending-reply-use",
+            tenant_id=1,
+            task_id="task-b",
+            task_type="group_ai_chat",
+            action_type="send_message",
+            account_id=11,
+            status="pending",
+            payload={"group_id": 8, "reply_to_message_id": 3900002},
+        ),
+    ])
+    session.commit()
+
+    targets = _group_reply_target_pool(
+        session,
+        session.get(Task, "task-b"),
+        session.get(TgGroup, 8),
+        [],
+    )
+
+    assert [target["message_id"] for target in targets] == [3900001]
+
+
 def _successful_own_history_action(*, remote_message_id: str) -> Action:
     return Action(
         id=f"prior-own-history-{remote_message_id}",
