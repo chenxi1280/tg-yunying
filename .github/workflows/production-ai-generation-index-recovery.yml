@@ -1,0 +1,107 @@
+name: Production AI Generation Index Recovery
+
+'on':
+  workflow_dispatch:
+    inputs:
+      deployed_sha:
+        description: Full or short SHA expected in production
+        required: true
+        type: string
+      apply:
+        description: Apply only after a matching preview
+        required: true
+        default: false
+        type: boolean
+      expected_state_hash:
+        description: Exact preview hash required for apply
+        required: false
+        default: ''
+        type: string
+      approval_ref:
+        description: Incident or approval reference
+        required: true
+        type: string
+
+concurrency:
+  group: production-ai-generation-index-recovery
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    environment: production-silicon-valley
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate inputs and secrets
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SILICON_VALLEY_PRODUCTION_SSH_PRIVATE_KEY }}
+          DEPLOY_HOST: ${{ secrets.SILICON_VALLEY_PRODUCTION_HOST }}
+          DEPLOY_USER: ${{ secrets.SILICON_VALLEY_PRODUCTION_USER }}
+          EXPECTED_SHA: ${{ inputs.deployed_sha }}
+          APPLY: ${{ inputs.apply }}
+          STATE_HASH: ${{ inputs.expected_state_hash }}
+          APPROVAL_REF: ${{ inputs.approval_ref }}
+        run: |
+          set -euo pipefail
+          test -n "${SSH_PRIVATE_KEY}"
+          test -n "${DEPLOY_HOST}"
+          test -n "${DEPLOY_USER}"
+          [[ "${EXPECTED_SHA}" =~ ^[0-9a-fA-F]{8,40}$ ]]
+          [[ "${APPROVAL_REF}" =~ ^[A-Za-z0-9._:/#-]{1,160}$ ]]
+          if [[ "${APPLY}" == true ]]; then
+            [[ "${STATE_HASH}" =~ ^[0-9a-f]{64}$ ]]
+          fi
+
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SILICON_VALLEY_PRODUCTION_SSH_PRIVATE_KEY }}
+          DEPLOY_HOST: ${{ secrets.SILICON_VALLEY_PRODUCTION_HOST }}
+          DEPLOY_USER: ${{ secrets.SILICON_VALLEY_PRODUCTION_USER }}
+          DEPLOY_PORT: ${{ secrets.SILICON_VALLEY_PRODUCTION_PORT }}
+          SSH_CONNECT_TIMEOUT: ${{ vars.SSH_CONNECT_TIMEOUT }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${SSH_PRIVATE_KEY}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<EOF
+          Host production
+            HostName ${DEPLOY_HOST}
+            User ${DEPLOY_USER}
+            Port ${DEPLOY_PORT:-22}
+            IdentityFile ~/.ssh/id_ed25519
+            IdentitiesOnly yes
+            StrictHostKeyChecking accept-new
+            ConnectTimeout ${SSH_CONNECT_TIMEOUT:-60}
+            ConnectionAttempts 3
+            ServerAliveInterval 15
+            ServerAliveCountMax 8
+          EOF
+          chmod 600 ~/.ssh/config
+
+      - name: Verify deployed release
+        env:
+          BASE_DIR: ${{ vars.SILICON_VALLEY_PRODUCTION_BASE_DIR }}
+          EXPECTED_SHA: ${{ inputs.deployed_sha }}
+        run: |
+          set -euo pipefail
+          CURRENT="$(ssh production "readlink -f '${BASE_DIR:-/data/tgyunying}/current'")"
+          [[ "$(basename "${CURRENT}")" == *_"${EXPECTED_SHA:0:8}" ]]
+          echo "AI_GENERATION_INDEX_RECOVERY_RELEASE=${CURRENT}"
+
+      - name: Preview or apply concurrent due-claim index
+        env:
+          APPLY: ${{ inputs.apply }}
+          STATE_HASH: ${{ inputs.expected_state_hash }}
+        run: |
+          set -euo pipefail
+          ssh production "timeout 900 docker exec -i \
+            -e AI_GENERATION_INDEX_RECOVERY_APPLY='${APPLY}' \
+            -e AI_GENERATION_INDEX_RECOVERY_EXPECTED_STATE_HASH='${STATE_HASH}' \
+            tgyunying-backend python -" \
+            < backend/scripts/recover_ai_generation_due_claim_index.py
