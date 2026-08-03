@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from app.database import SessionLocal
-from app.models import Action, Task, Tenant
+from app.models import Action, RuleSet, RuleSetVersion, Task, Tenant
 from app.services.task_center.ai_generation_parallel import _generation_job
 
 
@@ -60,6 +60,12 @@ def _cleanup() -> None:
         session.query(Task).filter(Task.id == TASK_ID).delete(
             synchronize_session=False,
         )
+        session.query(RuleSetVersion).filter(
+            RuleSetVersion.tenant_id == TENANT_ID,
+        ).delete(synchronize_session=False)
+        session.query(RuleSet).filter(
+            RuleSet.tenant_id == TENANT_ID,
+        ).delete(synchronize_session=False)
         session.query(Tenant).filter(Tenant.id == TENANT_ID).delete(
             synchronize_session=False,
         )
