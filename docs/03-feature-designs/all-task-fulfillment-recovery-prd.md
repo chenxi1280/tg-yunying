@@ -135,6 +135,10 @@
    合同清理。豁免不适用于其他 `签到`，也不移除同 Action、同覆盖账本、同数量槽和 Gateway
    request identity 的幂等门禁。发送前若任一绑定不一致，必须以
    `due_catch_up_check_in_memory_invalid` 显式拦截。
+6. 完整追赶合同的正文是与话题无关的精确 `签到`，生成完成守卫和 Gateway 前上下文过期
+   守卫不得因新真人消息清空其正文或消息记忆；否则活跃群会在 ready 与重生成之间永久
+   空转。此豁免只跳过正文语义上下文失效，不跳过 listener contiguous、scope、membership、
+   账号、数量槽或 Gateway 门禁；普通 Provider 正文和不完整/伪造追赶合同继续按冻结阈值重排。
 
 验收必须覆盖：未逾期或账本无债务时仍调用 Provider；逾期不足一个 Provider 超时仍调用
 Provider；逾期且有真实债务的合格 direct 数量槽零 Provider 调用并生成带原因的 `签到`；
@@ -142,6 +146,8 @@ reply、pending 内容义务、显式模型或静态 fallback 关闭时不得降
 release/runtime、`post_release_remote_success_count>0`、`due_message_count<=confirmed_message_count`
 和覆盖到期量；同账号 10 天内已有普通 `签到` 时，完整追赶合同仍能建立专用消息记忆并发送，
 但伪造原因、缺数量槽/覆盖账本或消息记忆错绑必须失败；不再把“已有远端样本”写成完整履约。
+高活跃群在完整追赶合同生成后持续新增真人上下文时仍须保留 ready 正文并取得真实 remote；
+同样条件下的普通 Provider 正文达到冻结阈值后仍必须重排。
 
 ### 2.6 2026-08-02 运行中配置重排外键完整性补正
 

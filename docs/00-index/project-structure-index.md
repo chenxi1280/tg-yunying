@@ -1112,3 +1112,7 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
   在每条 Action 生成前读取真实群日 due debt，并以现有 Provider 请求超时判断已无到期预算的
   direct 主数量槽；合格时复用带明确原因的精确 `签到` fallback，其他 Action 保持正常
   Provider、内容义务、准入和 Gateway 合同。
+- `backend/app/services/task_center/ai_generation_guards.py`、`dispatcher.py`：普通 Provider 正文
+  继续按冻结真人上下文阈值重排；完整 `due_catch_up_check_in` 因正文与话题无关，在生成完成和
+  Gateway 前均保留 exact check-in 与专用消息记忆，但仍执行 listener、scope、账号、账本和
+  Gateway 门禁，避免高活跃群在 ready/replan 间空转。

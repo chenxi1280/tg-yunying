@@ -757,6 +757,43 @@ def test_ready_normal_generation_expires_at_frozen_context_threshold() -> None:
         assert memory.status == "expired_before_send"
 
 
+def test_due_catch_up_check_in_is_invariant_to_new_human_context() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    with Session(engine) as session:
+        actions, _coverages = seed_reserved_normal_batch(session, now_value)
+        memory, payload = _ready_action_with_new_context(
+            session,
+            actions[0],
+            now_value=now_value,
+            memory_id="memory-due-catch-up-context",
+            text="签到",
+        )
+        payload = payload.model_copy(update={
+            "context_expire_after_messages": 1,
+            "content_source": "due_catch_up_check_in",
+            "generation_source": "static_safe_fallback",
+            "quality_fallback": "check_in_fallback",
+            "fallback_reason": "due_catch_up_provider_budget_exhausted",
+            "daily_group_target_id": "daily-target-catch-up",
+            "primary_quantity_slot_id": "quantity-slot-catch-up",
+        })
+
+        refreshed = ai_generation_dispatch._invalidate_superseded_normal_generation(
+            session,
+            session.get(Task, actions[0].task_id),
+            actions[0],
+            payload=payload,
+        )
+
+        assert refreshed.ai_generation_status == "ready"
+        assert refreshed.message_text == "签到"
+        assert refreshed.ai_message_memory_id == memory.id
+        assert memory.status == "reserved"
+        assert dispatcher._context_expiration_applies(payload) is False
+
+
 def test_ready_normal_generation_requeues_same_slot_when_context_changes() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

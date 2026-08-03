@@ -13,7 +13,11 @@ from .ai_generation_timing import GENERATION_LOOKAHEAD
 from .ai_generator import AI_GENERATION_UNAVAILABLE_MESSAGE, AiGenerationUnavailable
 from .ai_message_memory import mark_group_ai_message_result
 from .ai_quality_stats import clear_quality_blocker, quality_scope_key, record_quality_event
-from .direct_check_in import prepare_direct_check_in, requires_direct_check_in
+from .direct_check_in import (
+    is_due_catch_up_check_in,
+    prepare_direct_check_in,
+    requires_direct_check_in,
+)
 from .group_ai_scope import (
     LOCAL_REPLY_TARGET_MISSING_DETAIL,
     successful_own_history_reply_facts,
@@ -214,6 +218,8 @@ def invalidate_superseded_normal_generation(
     payload: SendMessagePayload,
 ) -> SendMessagePayload:
     if payload.reply_to_message_id or not payload.message_text.strip() or payload.ai_generation_status != "ready" or not payload.ai_generation_id:
+        return payload
+    if is_due_catch_up_check_in(payload.model_dump(mode="json")):
         return payload
     rows = latest_context_rows(session, payload, task)
     if not rows:
