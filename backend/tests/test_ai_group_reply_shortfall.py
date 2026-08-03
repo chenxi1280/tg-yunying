@@ -35,6 +35,37 @@ def test_daily_reply_minimum_uses_configured_round_denominator() -> None:
     ) == 0
 
 
+def test_content_mix_contract_uses_cumulative_requested_reply_count() -> None:
+    task = SimpleNamespace(id="task-1", tenant_id=1)
+    blueprint = SimpleNamespace(
+        facts=SimpleNamespace(
+            task_config_revision=7,
+            config={"reply_min_per_round": 12},
+            rule_version=SimpleNamespace(rule_set_id="rule-1", version=3),
+            target=None,
+            group=SimpleNamespace(id=7, tg_peer_id="-1007"),
+        ),
+        profile=SimpleNamespace(cycle_id="cycle-1"),
+        generation=SimpleNamespace(
+            quality_items=[{"slot_account_id": 11}],
+            requested_reply_count=0,
+            coverage_reply_shortfall=False,
+        ),
+        turn=SimpleNamespace(cycle_index=1),
+    )
+
+    spec = group_ai_chat._content_mix_spec(
+        task,
+        blueprint,
+        "ledger-1",
+        9,
+        [SimpleNamespace(id="quantity-1")],
+    )
+
+    assert spec.reply_min_required_count == 0
+    assert [slot.relation_kind for slot in spec.slots] == ["direct"]
+
+
 def test_daily_coverage_debt_falls_back_to_direct_slots_when_replies_are_short(
     monkeypatch,
 ) -> None:

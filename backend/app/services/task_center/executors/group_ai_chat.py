@@ -1739,10 +1739,7 @@ def _content_mix_spec(
         reply_min_required_count=(
             0
             if blueprint.generation.coverage_reply_shortfall
-            else min(
-                len(slots),
-                int(blueprint.facts.config.get("reply_min_per_round") or 0),
-            )
+            else min(len(slots), blueprint.generation.requested_reply_count)
         ),
         material_policy_rule_set_id=str(blueprint.facts.rule_version.rule_set_id),
         material_policy_rule_set_version=int(blueprint.facts.rule_version.version),

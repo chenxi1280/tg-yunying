@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import Action, GroupContextMessage, Task, TgAccount, TgGroup, TgGroupAccount
@@ -222,6 +222,8 @@ def invalidate_superseded_normal_generation(
     latest = max(rows, key=_context_order)
     if not snapshot or _context_order(latest) <= _context_order(snapshot):
         return payload
+    if _newer_human_context_count(session, task, payload, snapshot) < _context_expiration_threshold(payload):
+        return payload
     if payload.ai_message_memory_id:
         mark_group_ai_message_result(
             session,
@@ -238,6 +240,32 @@ def invalidate_superseded_normal_generation(
     action.payload = updated.model_dump(mode="json")
     action.result = {**(action.result or {}), "generation_stage": "context_superseded", "generation_outcome": "pending"}
     return updated
+
+
+def _context_expiration_threshold(payload: SendMessagePayload) -> int:
+    return max(1, int(payload.context_expire_after_messages or 0))
+
+
+def _newer_human_context_count(
+    session: Session,
+    task: Task,
+    payload: SendMessagePayload,
+    snapshot: GroupContextMessage,
+) -> int:
+    snapshot_at = snapshot.sent_at or snapshot.created_at
+    context_at = func.coalesce(GroupContextMessage.sent_at, GroupContextMessage.created_at)
+    newer = or_(
+        context_at > snapshot_at,
+        and_(context_at == snapshot_at, GroupContextMessage.id > snapshot.id),
+    )
+    count = session.scalar(select(func.count(GroupContextMessage.id)).where(
+        GroupContextMessage.tenant_id == task.tenant_id,
+        GroupContextMessage.group_id == payload.group_id,
+        GroupContextMessage.is_bot.is_(False),
+        GroupContextMessage.content != "",
+        newer,
+    ))
+    return int(count or 0)
 
 
 def requeue_normal_generation_after_context_change(
