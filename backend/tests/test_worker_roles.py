@@ -181,6 +181,20 @@ def test_server_compose_starts_online_and_ai_memory_workers():
     assert 'ACCOUNT_ONLINE_WORKER_DRAIN_LIMIT=1000' in env_example
 
 
+def test_server_compose_starts_search_dispatcher_worker():
+    root = Path(__file__).resolve().parents[2]
+    compose = (root / "docker-compose.server.yml").read_text()
+    compose_up = (root / "deploy/compose-up.sh").read_text()
+    check_web = (root / "deploy/check-web.sh").read_text()
+
+    assert "  worker-search-dispatcher:" in compose
+    assert "container_name: tgyunying-worker-search-dispatcher" in compose
+    assert "  worker-search-dispatcher" in compose_up
+    ready_marker = "wait_for_container_ready \\\n  tgyunying-worker-search-dispatcher"
+    assert ready_marker in compose_up
+    assert "  tgyunying-worker-search-dispatcher" in check_web
+
+
 def test_server_compose_starts_voice_profile_worker():
     root = Path(__file__).resolve().parents[2]
     compose = (root / "docker-compose.server.yml").read_text()
