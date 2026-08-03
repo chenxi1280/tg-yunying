@@ -285,7 +285,7 @@ Action 与最近真实远端成功事实。监控同时输出未完成 Action �
 
 ## 2026-08-04 fact-first_v3 全任务切换
 
-本次切换不迁移旧 Task。先部署 `0137_fulfillment_v2` 与新 worker，再使用
+本次切换不迁移旧 Task。先部署 `0137_fulfillment_v2`、`0138_physical_delete_hot_indexes` 与新 worker，再使用
 `backend/scripts/manage_fulfillment_v3_cutover.py` 对仍在运行的旧 Task 建立同配置
 `prepared` 新 Task；AI Task 必须绑定租户唯一默认 Provider，四个群目标保持
 4000、5000、800、800。新 Task 的当日账本从 0 开始，暂停、停止、已完成和已软删除

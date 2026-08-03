@@ -2,6 +2,8 @@
 
 > **2026-08-04 分类履约最终合同优先级：** 对 `group_ai_chat/channel_comment/channel_like/channel_view/search_click(click_only)`，当前产品合同由 `task-fulfillment-classified-recovery-prd.md` 与 `task-fulfillment-contract-closure-prd.md` 共同组成并 supersede 本文所有冲突旧述。本文中仍用于事故取证的“冻结账号分母”“搜索与普通互动共用 active claim/Dispatcher 容量”“TaskAllocation/DispatchReservation/预扣”“速率/静默权重/搜索 Window”“验证码 AI/VLM/模型投票”“显式 `FOR UPDATE/SKIP LOCKED` 或跨表锁链”“旧 Task 迁移或同 Task 新旧双写”“仅凭远端当前不存在即可重开 unknown”均统一视为 `historical_do_not_implement`。当前实现必须使用任务内动态账号范围、各阶段真实资源空闲即执行、单行 version CAS、唯一远端事实先行与幂等 projector、interaction/search 独立 lane、持久搜索 assignment/page phase、RapidOCR→ddddOCR、全系统唯一 active AI Provider key、绑定 target-group surface 的 C2 连续 30 秒观察，以及永久 unknown 的远端只对账终态。运营先创建 prepared 新 Task，真实 canary 只证明 remote fact 链，随后 CAS route epoch 使新 Task 从 0 运行并 fence 旧 Task，再异步物理删除旧 Task。
 
+> **2026-08-04 生产切换闭环补充：** Planner 对每个 `fact_first_v3` Task 每轮只物化一个可直接执行批次，随后轮转其他到期 Task；`messages_per_round=40/50/60` 不是全局串行循环次数，禁止单个 4000/5000 目标 AI Task 阻塞搜索或其他任务。旧 Task 删除只集合快照 typed remote/unknown 防重候选并批量写 tombstone，普通 pending/failed/skipped 历史直接随 Task 级联删除；Action/Attempt 子表外键必须有删除热索引，禁止逐 Action 的 N+1 快照、验证或删除。
+
 > **2026-07-31 AI 活群真人化修复口径：** 跨群内容 scope、单 Action late binding、过期同槽重生成、会话质量验收与签到边界统一引用 `docs/03-feature-designs/ai-conversation-humanization-and-group-bot-admission-prd.md` §15；旧批量预写和缺少 scope 限制的 fallback 文字不再作为实现依据。
 
 > 基于 `docs/01-product/tg-ops-platform.md` 拆出的详细产品需求文档。

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Iterable
 from dataclasses import dataclass
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
@@ -21,6 +22,11 @@ from app.models import (
     TaskDeleteOperationItem,
 )
 from app.services._common import _now
+
+
+DELETE_BATCH_SIZE = 1000
+INFLIGHT_ACTION_STATES = frozenset({"claiming", "executing"})
+REMOTE_TOMBSTONE_ACTION_STATES = frozenset({"success", "unknown_after_send"})
 
 
 @dataclass(frozen=True)
@@ -132,29 +138,26 @@ def _snapshot_runtime(session: Session, operation: TaskDeleteOperation) -> dict:
         entity_id=task.id,
         state_hash=_task_hash(task),
     )
-    actions = list(session.scalars(
-        select(Action).where(Action.task_id == task.id).order_by(Action.id)
-    ))
-    if any(action.status in {"claiming", "executing"} for action in actions):
+    if session.scalar(select(Action.id).where(
+        Action.task_id == task.id,
+        Action.status.in_(INFLIGHT_ACTION_STATES),
+    ).limit(1)) is not None:
         raise ValueError("physical_delete_inflight_actions_remaining")
-    remote_count = 0
-    for action in actions:
-        attempt = _latest_attempt(session, action.id)
-        entity_type = "remote_action" if _remote_candidate(action, attempt) else "action"
-        remote_count += int(entity_type == "remote_action")
-        _record_item(
-            session,
-            operation.id,
-            entity_type=entity_type,
-            entity_id=action.id,
-            state_hash=_action_hash(action),
-        )
+    action_count = int(session.scalar(select(func.count(Action.id)).where(
+        Action.task_id == task.id,
+    )) or 0)
+    remote_actions = _remote_candidate_actions(session, task.id)
+    _record_remote_items(session, operation.id, remote_actions)
     item_hash = _item_set_hash(session, operation.id)
     return {
         "state": "snapshot_committed",
         "resume_stage": "write_tombstones",
         "delete_set_hash": item_hash,
-        "counts": {"tasks": 1, "actions": len(actions), "remote_candidates": remote_count},
+        "counts": {
+            "tasks": 1,
+            "actions": action_count,
+            "remote_candidates": len(remote_actions),
+        },
         "checkpoint": {"snapshot_hash": item_hash},
     }
 
@@ -162,17 +165,13 @@ def _snapshot_runtime(session: Session, operation: TaskDeleteOperation) -> dict:
 def _write_tombstones(session: Session, operation: TaskDeleteOperation) -> dict:
     _require_snapshot_unchanged(session, operation)
     action_ids = _item_ids(session, operation.id, "remote_action")
-    pairs: set[str] = set()
-    for action_id in action_ids:
-        action = session.get(Action, action_id)
-        if action is None:
-            raise ValueError("physical_delete_frozen_action_missing")
-        values = _tombstone_values(session, operation.original_task_id, action)
-        statement = _insert(session, RemoteMutationTombstone.__table__)
-        session.execute(statement.values(**values).on_conflict_do_nothing(
-            index_elements=["remote_mutation_key_hash", "gateway_request_hash"]
-        ))
-        pairs.add(_pair(values))
+    values = _tombstone_values_for_actions(
+        session,
+        operation.original_task_id,
+        action_ids,
+    )
+    _insert_tombstones(session, values)
+    pairs = {_pair(item) for item in values}
     tombstone_hash = _hash("|".join(sorted(pairs)))
     counts = dict(operation.counts or {})
     counts["remote_tombstones"] = len(pairs)
@@ -230,13 +229,8 @@ def _require_snapshot_unchanged(session: Session, operation: TaskDeleteOperation
 
 def _current_runtime_hash(session: Session, task: Task) -> str:
     rows = [("task", task.id, _task_hash(task))]
-    actions = list(session.scalars(
-        select(Action).where(Action.task_id == task.id).order_by(Action.id)
-    ))
-    for action in actions:
-        attempt = _latest_attempt(session, action.id)
-        entity_type = "remote_action" if _remote_candidate(action, attempt) else "action"
-        rows.append((entity_type, action.id, _action_hash(action)))
+    for action in _remote_candidate_actions(session, task.id):
+        rows.append(("remote_action", action.id, _action_hash(action)))
     return _hash("|".join(":".join(row) for row in sorted(rows)))
 
 
@@ -269,6 +263,25 @@ def _record_item(
     ).on_conflict_do_nothing(index_elements=["operation_id", "entity_type", "entity_id"]))
 
 
+def _record_remote_items(
+    session: Session,
+    operation_id: str,
+    actions: list[Action],
+) -> None:
+    for batch in _batches(actions):
+        values = [{
+            "operation_id": operation_id,
+            "entity_type": "remote_action",
+            "entity_id": action.id,
+            "expected_state_hash": _action_hash(action),
+            "state": "frozen",
+        } for action in batch]
+        statement = _insert(session, TaskDeleteOperationItem.__table__)
+        session.execute(statement.values(values).on_conflict_do_nothing(
+            index_elements=["operation_id", "entity_type", "entity_id"],
+        ))
+
+
 def _item_ids(session: Session, operation_id: str, entity_type: str) -> list[str]:
     return list(session.scalars(select(TaskDeleteOperationItem.entity_id).where(
         TaskDeleteOperationItem.operation_id == operation_id,
@@ -288,14 +301,13 @@ def _item_set_hash(session: Session, operation_id: str) -> str:
     return _hash("|".join(":".join(row) for row in rows))
 
 
-def _tombstone_values(session: Session, task_id: str, action: Action) -> dict:
-    attempt = _latest_attempt(session, action.id)
-    fact = session.scalar(select(FulfillmentRemoteFact).where(
-        FulfillmentRemoteFact.action_id == action.id,
-    ).order_by(FulfillmentRemoteFact.observed_at.desc()).limit(1))
-    journal = None if attempt is None else session.scalar(select(GatewayRequestEvidenceJournal).where(
-        GatewayRequestEvidenceJournal.execution_attempt_id == attempt.id,
-    ).limit(1))
+def _tombstone_values(
+    task_id: str,
+    action: Action,
+    attempt: ExecutionAttempt | None,
+    fact: FulfillmentRemoteFact | None,
+    journal: GatewayRequestEvidenceJournal | None,
+) -> dict:
     mutation_hash = fact.remote_mutation_key_hash if fact else _hash(str(action.action_dedupe_key or action.id))
     request_hash = fact.gateway_request_hash if fact else _hash(
         str(journal.gateway_request_identity if journal else action.id)
@@ -319,11 +331,12 @@ def _expected_tombstone_pairs(
     session: Session,
     operation: TaskDeleteOperation,
 ) -> list[str]:
-    pairs = {
-        _pair(_tombstone_values(session, operation.original_task_id, action))
-        for action_id in _item_ids(session, operation.id, "remote_action")
-        if (action := session.get(Action, action_id)) is not None
-    }
+    values = _tombstone_values_for_actions(
+        session,
+        operation.original_task_id,
+        _item_ids(session, operation.id, "remote_action"),
+    )
+    pairs = {_pair(item) for item in values}
     return sorted(pairs)
 
 
@@ -338,17 +351,97 @@ def _require_tombstone_pairs_exist(session: Session, pairs: list[str]) -> None:
             raise ValueError("physical_delete_tombstone_missing")
 
 
-def _latest_attempt(session: Session, action_id: str) -> ExecutionAttempt | None:
-    return session.scalar(select(ExecutionAttempt).where(
-        ExecutionAttempt.action_id == action_id,
-    ).order_by(ExecutionAttempt.attempt_no.desc()).limit(1))
-
-
-def _remote_candidate(action: Action, attempt: ExecutionAttempt | None) -> bool:
-    return bool(
-        action.status in {"executing", "success", "unknown_after_send"}
-        or (attempt is not None and attempt.gateway_call_started_at is not None)
+def _remote_candidate_actions(session: Session, task_id: str) -> list[Action]:
+    started_attempts = select(ExecutionAttempt.action_id).where(
+        ExecutionAttempt.gateway_call_started_at.is_not(None),
     )
+    return list(session.scalars(select(Action).where(
+        Action.task_id == task_id,
+        or_(
+            Action.status.in_(REMOTE_TOMBSTONE_ACTION_STATES),
+            Action.id.in_(started_attempts),
+        ),
+    ).order_by(Action.id)))
+
+
+def _tombstone_values_for_actions(
+    session: Session,
+    task_id: str,
+    action_ids: list[str],
+) -> list[dict]:
+    values: list[dict] = []
+    for batch in _batches(action_ids):
+        actions = list(session.scalars(select(Action).where(Action.id.in_(batch))))
+        if len(actions) != len(batch):
+            raise ValueError("physical_delete_frozen_action_missing")
+        attempts = _latest_attempts(session, batch)
+        facts = _latest_facts(session, batch)
+        journals = _journals_by_attempt(session, attempts.values())
+        values.extend(_tombstone_values(
+            task_id,
+            action,
+            attempts.get(action.id),
+            facts.get(action.id),
+            journals.get(attempts[action.id].id) if action.id in attempts else None,
+        ) for action in actions)
+    return values
+
+
+def _latest_attempts(
+    session: Session,
+    action_ids: list[str],
+) -> dict[str, ExecutionAttempt]:
+    rows = session.scalars(select(ExecutionAttempt).where(
+        ExecutionAttempt.action_id.in_(action_ids),
+    ).order_by(ExecutionAttempt.action_id, ExecutionAttempt.attempt_no.desc()))
+    latest: dict[str, ExecutionAttempt] = {}
+    for attempt in rows:
+        latest.setdefault(attempt.action_id, attempt)
+    return latest
+
+
+def _latest_facts(
+    session: Session,
+    action_ids: list[str],
+) -> dict[str, FulfillmentRemoteFact]:
+    rows = session.scalars(select(FulfillmentRemoteFact).where(
+        FulfillmentRemoteFact.action_id.in_(action_ids),
+    ).order_by(FulfillmentRemoteFact.action_id, FulfillmentRemoteFact.observed_at.desc()))
+    latest: dict[str, FulfillmentRemoteFact] = {}
+    for fact in rows:
+        latest.setdefault(fact.action_id, fact)
+    return latest
+
+
+def _journals_by_attempt(
+    session: Session,
+    attempts: Iterable[ExecutionAttempt],
+) -> dict[str, GatewayRequestEvidenceJournal]:
+    attempt_ids = [attempt.id for attempt in attempts]
+    if not attempt_ids:
+        return {}
+    rows = session.scalars(select(GatewayRequestEvidenceJournal).where(
+        GatewayRequestEvidenceJournal.execution_attempt_id.in_(attempt_ids),
+    ).order_by(GatewayRequestEvidenceJournal.observed_at.desc()))
+    journals: dict[str, GatewayRequestEvidenceJournal] = {}
+    for journal in rows:
+        journals.setdefault(journal.execution_attempt_id, journal)
+    return journals
+
+
+def _insert_tombstones(session: Session, values: list[dict]) -> None:
+    for batch in _batches(values):
+        statement = _insert(session, RemoteMutationTombstone.__table__)
+        session.execute(statement.values(batch).on_conflict_do_nothing(
+            index_elements=["remote_mutation_key_hash", "gateway_request_hash"],
+        ))
+
+
+def _batches(values: list) -> list[list]:
+    return [
+        values[offset:offset + DELETE_BATCH_SIZE]
+        for offset in range(0, len(values), DELETE_BATCH_SIZE)
+    ]
 
 
 def _task_hash(task: Task) -> str:

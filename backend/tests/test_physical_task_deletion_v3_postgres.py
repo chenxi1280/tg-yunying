@@ -9,6 +9,7 @@ from app.models import (
     RemoteMutationTombstone,
     Task,
     TaskDeleteOperation,
+    TaskDeleteOperationItem,
     Tenant,
     TenantAiSetting,
 )
@@ -112,7 +113,17 @@ def test_physical_delete_resumes_stages_and_preserves_only_remote_tombstone() ->
         new = clone_prepared_task(session, old, actor_id=None)
         old_chain = _remote_chain(old, "old1")
         canary_chain = _remote_chain(new, "new2")
-        session.add_all([*old_chain, *canary_chain])
+        non_remote_action = Action(
+            id="action-old-pending",
+            tenant_id=TENANT_ID,
+            task_id=old.id,
+            task_type=old.type,
+            action_type="send_message",
+            status="pending",
+            obligation_type="coverage",
+            obligation_id="obligation-old-pending",
+        )
+        session.add_all([*old_chain, *canary_chain, non_remote_action])
         session.flush()
         preview = preview_activation(
             session,
@@ -169,6 +180,13 @@ def test_physical_delete_resumes_stages_and_preserves_only_remote_tombstone() ->
             )
             session.commit()
             assert advanced.state == expected_state
+            if expected_state == "snapshot_committed":
+                assert advanced.counts["actions"] == 2
+                assert advanced.counts["remote_candidates"] == 1
+                item_count = session.query(TaskDeleteOperationItem).filter_by(
+                    operation_id=operation_id,
+                ).count()
+                assert item_count == 2
 
     with SessionLocal() as session:
         assert session.get(Task, old_id) is None
