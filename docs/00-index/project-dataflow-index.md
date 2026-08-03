@@ -28,7 +28,10 @@
 
 ```text
 AI planner -> pending group_ai_chat/send_message
-  -> ai-generation worker 短事务 claim 同 generation_id 批次
+  -> listener 以 persisted cursor 逐页追尾，短页形成 contiguous watermark
+  -> due-claim partial index 定位空正文 Action
+  -> group-occupancy partial index 复核同群 generating/ready 互斥
+  -> ai-generation worker 短事务 claim 单 Action
   -> 关闭数据库事务后调用 AI Provider
   -> 文案与质量事实落库 -> Action 归还 pending
   -> Dispatcher 只扫描 due Task 的有界候选且只领取已有正文 Action

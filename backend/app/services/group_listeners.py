@@ -32,7 +32,11 @@ from .group_listener_sender_identity import (
     with_outbound_remote_ids,
 )
 from .group_listener_cursor import listener_after_message_id, update_listener_cursor
-from .group_listener_admission import ListenerSnapshotFetchError, fetch_listener_snapshots, record_group_bot_observations
+from .group_listener_admission import (
+    ListenerSnapshotFetchError,
+    fetch_listener_snapshot_pages,
+    record_group_bot_observations,
+)
 from .developer_apps import credentials_for_account
 from .tenant_learning_samples import GROUP_CHAT_SCENE
 
@@ -173,7 +177,7 @@ def collect_group_context(
     usable_listener_count = 0
     inserted = 0
     cursor_after = listener_after_message_id(group)
-    cursor_snapshots: list[object] | None = None
+    cursor_pages: list[list[object]] | None = None
     for link in listener_links:
         account = session.get(TgAccount, link.account_id)
         policy_error = _listener_context_account_error(account)
@@ -184,8 +188,11 @@ def collect_group_context(
             continue
         usable_listener_count += 1
         credentials = credentials_for_account(session, account)
-        snapshots = fetch_listener_snapshots(session, group=group, account=account, credentials=credentials)
-        cursor_snapshots = snapshots if cursor_snapshots is None else cursor_snapshots
+        pages = fetch_listener_snapshot_pages(
+            session, group=group, account=account, credentials=credentials,
+        )
+        snapshots = [snapshot for page in pages for snapshot in page]
+        cursor_pages = pages if cursor_pages is None else cursor_pages
         ignored_sender_identity = with_outbound_remote_ids(
             ignored_sender_identity,
             outbound_remote_ids_for_snapshots(session, group, snapshots),
@@ -204,8 +211,24 @@ def collect_group_context(
         group.listener_last_error = "监听账号用途不允许：" + "；".join(invalid_listener_errors[:3])
         raise ValueError(group.listener_last_error)
     if usable_listener_count:
-        update_listener_cursor(group, cursor_snapshots or [], after_message_id=cursor_after, fetch_limit=group.listener_context_limit)
+        _advance_listener_cursor_pages(group, cursor_pages or [[]], cursor_after)
     return inserted
+
+
+def _advance_listener_cursor_pages(
+    group: TgGroup,
+    pages: list[list[object]],
+    initial_cursor: int | None,
+) -> None:
+    cursor = initial_cursor
+    for page in pages:
+        update_listener_cursor(
+            group,
+            page,
+            after_message_id=cursor,
+            fetch_limit=group.listener_context_limit,
+        )
+        cursor = listener_after_message_id(group)
 
 
 def _listener_context_links(session: Session, group: TgGroup, account_ids: list[int] | None) -> list[TgGroupAccount]:
