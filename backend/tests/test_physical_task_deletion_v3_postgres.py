@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import UTC, date, datetime, timedelta
+
 from app.database import SessionLocal
 from app.models import (
     Action,
@@ -8,8 +10,10 @@ from app.models import (
     FulfillmentRemoteFact,
     RemoteMutationTombstone,
     Task,
+    TaskDayLedger,
     TaskDeleteOperation,
     TaskDeleteOperationItem,
+    TaskStartOperation,
     Tenant,
     TenantAiSetting,
 )
@@ -109,6 +113,30 @@ def test_physical_delete_resumes_stages_and_preserves_only_remote_tombstone() ->
             type_config={"daily_message_target": 1},
         )
         session.add(old)
+        session.flush()
+        period_start = datetime(2026, 8, 4, tzinfo=UTC)
+        ledger = TaskDayLedger(
+            id="old-delete-ledger",
+            tenant_id=TENANT_ID,
+            task_id=old.id,
+            timezone_snapshot="Asia/Shanghai",
+            timezone_revision=1,
+            obligation_local_date=date(2026, 8, 4),
+            period_start_at=period_start,
+            deadline_at=period_start + timedelta(days=1),
+            day_phase="full_day_committed",
+            planning_anchor_at=period_start,
+        )
+        session.add(ledger)
+        session.add(TaskStartOperation(
+            task_id=old.id,
+            start_operation_id="old-delete-start",
+            operation_version=1,
+            requested_by_user_id=1,
+            source="api",
+            status="committed",
+            task_day_ledger_id=ledger.id,
+        ))
         session.flush()
         new = clone_prepared_task(session, old, actor_id=None)
         old_chain = _remote_chain(old, "old1")
