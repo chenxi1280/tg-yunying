@@ -30,8 +30,9 @@ from .fulfillment_takeover import UNIFIED_TASK_GATE_LIMIT
 
 def normalize_ai_daily_target(config: dict[str, Any], *, frozen_account_count: int) -> dict[str, Any]:
     normalized = dict(config or {})
+    _ = frozen_account_count
     configured = _as_int(normalized.get("daily_message_target"))
-    normalized["daily_message_target"] = max(1, configured or int(frozen_account_count or 0))
+    normalized["daily_message_target"] = max(1, configured or 1)
     normalized["account_coverage_mode"] = "all_accounts_daily"
     for field in LEGACY_AI_TARGET_FIELDS:
         normalized.pop(field, None)

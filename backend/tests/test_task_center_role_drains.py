@@ -685,8 +685,15 @@ def test_dispatcher_role_limits_claim_batch_to_effective_concurrency(monkeypatch
     SessionFactory = _session_factory()
     claimed_limits: list[int] = []
 
-    def fake_claim_actions(_session, *, limit: int, exclude_task_ids=None):
+    def fake_claim_actions(
+        _session,
+        *,
+        limit: int,
+        exclude_task_ids=None,
+        execution_lane=None,
+    ):
         claimed_limits.append(limit)
+        assert execution_lane == "non_search"
         return []
 
     monkeypatch.setattr(service, "claim_actions", fake_claim_actions)

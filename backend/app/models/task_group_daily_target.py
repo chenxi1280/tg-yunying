@@ -36,6 +36,15 @@ class TaskGroupDailyTarget(Base):
     configured_message_target: Mapped[int] = mapped_column(Integer)
     frozen_account_count: Mapped[int] = mapped_column(Integer)
     effective_message_target: Mapped[int] = mapped_column(Integer)
+    planned_target_revision: Mapped[int] = mapped_column(Integer, default=1)
+    planned_daily_target: Mapped[int] = mapped_column(Integer, default=1)
+    gateway_started_count: Mapped[int] = mapped_column(Integer, default=0)
+    unknown_hold_count: Mapped[int] = mapped_column(Integer, default=0)
+    target_reduction_overage_count: Mapped[int] = mapped_column(Integer, default=0)
+    target_changed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    target_change_reason: Mapped[str] = mapped_column(String(120), default="created")
     daily_fulfillment_phase: Mapped[str] = mapped_column(String(32))
     scope_frozen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     full_day_committed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

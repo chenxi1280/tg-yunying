@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import socket
+from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Callable
 from datetime import timedelta
 from uuid import uuid4
@@ -45,7 +46,9 @@ def drain_ai_generation(
 ) -> int:
     processor = generate_action or _production_generate_action(dependencies)
     owner = f"ai-generation:{socket.gethostname()}:{uuid4()}"
-    processed = 0
+    processed = _drain_parallel_generation(
+        session_factory, owner, max(1, int(limit)), processor
+    )
     visited_action_ids: set[str] = set()
     while processed < max(1, int(limit)):
         claim = _claim_generation_batch(
@@ -88,6 +91,99 @@ def drain_ai_generation(
             continue
         processed += _release_prepared_batch(session_factory, owner, token)
     return processed
+
+
+def _drain_parallel_generation(
+    session_factory,
+    owner: str,
+    limit: int,
+    processor: GenerateAction,
+) -> int:
+    from .ai_generation_parallel import claim_parallel_generation
+
+    claims = claim_parallel_generation(
+        session_factory,
+        owner=owner,
+        limit=limit,
+    )
+    if not claims:
+        return 0
+    with ThreadPoolExecutor(max_workers=len(claims)) as executor:
+        results = list(executor.map(
+            lambda claim: _process_parallel_claim(
+                session_factory, processor, claim
+            ),
+            claims,
+        ))
+    return sum(results)
+
+
+def _process_parallel_claim(session_factory, processor, claim) -> int:
+    from .ai_generation_parallel import finish_generation_job
+
+    failure: AiGenerationUnavailable | None = None
+    deferred = False
+    with session_factory() as session:
+        action = session.get(Action, claim.action_id)
+        if not _owns_generation_claim(action, claim.owner, claim.token):
+            raise RuntimeError(f"AI generation claim lost for action {claim.action_id}")
+        if not _generation_action_lifecycle_current(session, action):
+            _cancel_stale_generation_action(session, action)
+            finish_generation_job(session_factory, claim, state="cancelled")
+            return 1
+        account = session.get(TgAccount, action.account_id)
+        if account is None:
+            raise RuntimeError(f"AI generation action {action.id} has no account")
+        try:
+            processor(session, action, account)
+        except GenerationAdmissionDeferred:
+            session.rollback()
+            deferred = True
+        except AiGenerationUnavailable as exc:
+            session.rollback()
+            failure = exc
+    if deferred:
+        _release_unprepared_batch(session_factory, claim.owner, claim.token)
+        finish_generation_job(session_factory, claim, state="pending")
+        return 1
+    if failure is not None:
+        if not _persisted_generation_failure(session_factory, claim.action_id):
+            raise failure
+        _release_unprepared_batch(session_factory, claim.owner, claim.token)
+        finish_generation_job(session_factory, claim, state="failed")
+        return 1
+    released = _release_prepared_batch(session_factory, claim.owner, claim.token)
+    finish_generation_job(session_factory, claim, state="ready")
+    return released
+
+
+def _generation_action_lifecycle_current(
+    session: Session,
+    action: Action,
+) -> bool:
+    task = session.get(Task, action.task_id)
+    return bool(
+        task
+        and task.status == "running"
+        and task.deleted_at is None
+        and int(action.task_lifecycle_epoch or 1)
+        == int(task.task_lifecycle_epoch or 1)
+    )
+
+
+def _cancel_stale_generation_action(session: Session, action: Action) -> None:
+    action.status = "skipped"
+    action.result = {
+        **dict(action.result or {}),
+        "success": False,
+        "error_code": "cancelled_by_task_lifecycle",
+    }
+    action.claim_owner = ""
+    action.claim_token = ""
+    action.lease_owner = ""
+    action.lease_expires_at = None
+    action.executed_at = _now()
+    session.commit()
 
 
 def _claim_generation_batch(
@@ -230,6 +326,7 @@ def _generation_filters(
         Action.scheduled_at <= _now() + GENERATION_LOOKAHEAD,
         Task.status == "running",
         Task.deleted_at.is_(None),
+        Task.fulfillment_contract_version != "fact_first_v3",
         payload_status.in_(GENERATABLE_STATUSES),
         func.coalesce(message_text, "") == "",
         account_is_free,

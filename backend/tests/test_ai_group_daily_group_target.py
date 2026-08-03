@@ -32,6 +32,7 @@ from app.services.task_center.ai_reply_allocation import reply_requirement_for_p
 from app.services.task_center.daily_group_target import (
     daily_group_due_message_count,
     ensure_task_group_daily_target,
+    refresh_task_group_daily_target,
 )
 from app.services.task_center.daily_ledgers import ensure_task_day_ledger
 
@@ -98,7 +99,7 @@ def _seed(session: Session, *, configured: int, account_count: int) -> tuple[Tas
     return task, group
 
 
-def test_daily_target_uses_frozen_account_count_as_floor(session: Session) -> None:
+def test_daily_target_uses_current_required_accounts_without_freezing_scope(session: Session) -> None:
     task, group = _seed(session, configured=2, account_count=3)
 
     target = ensure_task_group_daily_target(
@@ -112,6 +113,7 @@ def test_daily_target_uses_frozen_account_count_as_floor(session: Session) -> No
     assert target.configured_message_target == 2
     assert target.frozen_account_count == 3
     assert target.effective_message_target == 3
+    assert target.planned_daily_target == 3
 
 
 def test_daily_target_keeps_larger_operator_total(session: Session) -> None:
@@ -126,6 +128,30 @@ def test_daily_target_keeps_larger_operator_total(session: Session) -> None:
     )
 
     assert target.effective_message_target == 5
+
+
+def test_daily_target_revision_tracks_current_task_day_scope(session: Session) -> None:
+    task, group = _seed(session, configured=2, account_count=3)
+    timestamp = datetime(2026, 7, 28, 10)
+    ensure_task_day_ledger(session, task, now=timestamp)
+    target = ensure_task_group_daily_target(
+        session,
+        task,
+        group,
+        timestamp.date(),
+        now=timestamp,
+    )
+    coverage = session.query(TaskAccountDailyCoverage).filter_by(
+        task_id=task.id,
+        account_id=3,
+    ).one()
+
+    coverage.state = "abandoned_for_day"
+    refresh_task_group_daily_target(session, target)
+
+    assert target.planned_daily_target == 2
+    assert target.planned_target_revision == 2
+    assert target.target_change_reason == "current_required_account_count_changed"
 
 
 def test_midday_start_is_warming_until_next_natural_day(session: Session) -> None:
@@ -144,7 +170,7 @@ def test_midday_start_is_warming_until_next_natural_day(session: Session) -> Non
     assert target.full_day_committed_at == datetime(2026, 7, 29)
 
 
-def test_midday_start_makes_first_message_due_immediately(session: Session) -> None:
+def test_midday_start_makes_full_target_due_immediately(session: Session) -> None:
     task, group = _seed(session, configured=3, account_count=3)
     timestamp = datetime(2026, 7, 28, 12)
     task.scheduled_start = timestamp
@@ -156,7 +182,7 @@ def test_midday_start_makes_first_message_due_immediately(session: Session) -> N
         now=timestamp,
     )
 
-    assert daily_group_due_message_count(target, {}, now=timestamp) == 1
+    assert daily_group_due_message_count(target, {}, now=timestamp) == 3
 
 
 def test_zero_quiet_curve_weight_reduces_volume_without_blocking(session: Session) -> None:

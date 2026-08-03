@@ -235,6 +235,25 @@ services:
     networks:
       - infra_default
 
+  worker-search-dispatcher:
+    image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
+    container_name: tgyunying-worker-search-dispatcher
+    restart: unless-stopped
+    command: ["python", "-m", "app.worker", "--role", "search-dispatcher", "--limit", "${SEARCH_WORKER_DRAIN_LIMIT:-100}", "--interval", "${SEARCH_WORKER_INTERVAL_SECONDS:-2.0}"]
+    environment:
+      <<: *backend-env
+      WORKER_ROLE: search-dispatcher
+      TG_OPS_WORKER_ID: tgyunying-worker-search-dispatcher
+    volumes:
+      - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
+      - "${GROK_CLI_HOME_DIR:-/root/.grok}:/root/.grok"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck: *worker-healthcheck
+    networks:
+      - infra_default
+
   worker-listener:
     image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
     container_name: tgyunying-worker-listener

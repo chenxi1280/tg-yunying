@@ -44,6 +44,7 @@ from .services import (
     drain_profile_sync_records,
     drain_task_center,
     drain_task_dispatcher,
+    drain_search_dispatcher,
     drain_task_listener,
     drain_task_metrics,
     drain_task_planner,
@@ -67,6 +68,7 @@ VALID_WORKER_ROLES = {
     "legacy",
     "planner",
     "dispatcher",
+    "search-dispatcher",
     "listener",
     "recovery",
     "account-online",
@@ -105,6 +107,8 @@ def drain_once(limit: int = 100, *, role: str | None = None) -> int:
         return drain_task_planner(SessionLocal, limit)
     if selected_role == "dispatcher":
         return drain_task_dispatcher(SessionLocal, limit)
+    if selected_role == "search-dispatcher":
+        return drain_search_dispatcher(SessionLocal, limit)
     if selected_role == "listener":
         return drain_task_listener(SessionLocal, limit)
     if selected_role == "recovery":

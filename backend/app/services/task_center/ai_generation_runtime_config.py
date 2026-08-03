@@ -34,6 +34,7 @@ def build_runtime_config(
     generation_slot_builder: GenerationSlotBuilder,
 ) -> dict:
     config = dict(task.type_config or {})
+    _bind_fact_first_provider(session, task, config)
     config["account_personas"] = payload_map(batch, "account_role")
     config["account_memories"] = payload_map(batch, "account_memory")
     config["account_profiles"] = payload_map(batch, "account_profile")
@@ -57,6 +58,25 @@ def build_runtime_config(
     if first.topic_plan:
         config["topic_plan"] = first.topic_plan
     return config
+
+
+def _bind_fact_first_provider(
+    session: Session,
+    task: Task,
+    config: dict,
+) -> None:
+    if task.fulfillment_contract_version != "fact_first_v3":
+        return
+    setting = session.scalar(
+        select(TenantAiSetting).where(TenantAiSetting.tenant_id == task.tenant_id)
+    )
+    provider_id = int(setting.default_provider_id or 0) if setting else 0
+    if not provider_id:
+        raise ValueError("fact_first_ai_provider_required")
+    config["ai_provider_id"] = provider_id
+    config["provider_binding_policy"] = "single_provider_key"
+    if int(dict(task.type_config or {}).get("ai_provider_id") or 0) != provider_id:
+        task.type_config = {**dict(task.type_config or {}), "ai_provider_id": provider_id}
 
 
 def tenant_fallback_flags(task: Task) -> dict:

@@ -10,6 +10,7 @@ from app.models import (
     GroupBotAdmission,
     TaskAccountDailyCoverage,
     TaskMembershipAdmissionItem,
+    Task,
     TgAccount,
     TgGroup,
     TgGroupAccount,
@@ -26,10 +27,14 @@ def refresh_rows(
     timestamp: datetime,
 ) -> None:
     refreshable = [pair for pair in rows_and_items if _row_needs_refresh(pair[0], timestamp)]
+    task = session.get(Task, refreshable[0][0].task_id) if refreshable else None
     readiness = _account_readiness_batch(
         session,
         [row.account_id for row, _item in refreshable],
         group,
+        terminal_abandon=bool(
+            task and task.fulfillment_contract_version == "fact_first_v3"
+        ),
     )
     for row, item in refreshable:
         state, code, detail = readiness[row.account_id]
@@ -37,7 +42,13 @@ def refresh_rows(
 
 
 def _row_needs_refresh(row: TaskAccountDailyCoverage, timestamp: datetime) -> bool:
-    if row.state in {"confirmed", "reserved", "sending", "unknown"}:
+    if row.state in {
+        "abandoned_for_day",
+        "confirmed",
+        "reserved",
+        "sending",
+        "unknown",
+    }:
         return False
     if row.blocker_stage == "generation_contract":
         return False
@@ -76,6 +87,8 @@ def _account_readiness_batch(
     session: Session,
     account_ids: list[int],
     group: TgGroup,
+    *,
+    terminal_abandon: bool,
 ) -> dict[int, tuple[str, str, str]]:
     if not account_ids:
         return {}
@@ -101,6 +114,7 @@ def _account_readiness_batch(
             link_by_account.get(account_id),
             admission_by_account.get(account_id),
             post_follow_probe_eligible=account_id in plannable_ids,
+            terminal_abandon=terminal_abandon,
         )
         for account_id in account_ids
     }
@@ -112,21 +126,26 @@ def _readiness_from_records(
     admission: GroupBotAdmission | None,
     *,
     post_follow_probe_eligible: bool,
+    terminal_abandon: bool,
 ) -> tuple[str, str, str]:
     if account is None or account.deleted_at is not None:
-        return "blocked", "account_deleted", "账号已删除"
+        return _terminal("account_deleted", "账号已删除", terminal_abandon)
     if account.status != AccountStatus.ACTIVE.value:
-        return "blocked", _status_blocker(account.status), f"账号状态：{account.status}"
+        return _terminal(
+            _status_blocker(account.status),
+            f"账号状态：{account.status}",
+            terminal_abandon,
+        )
     try:
         session_ready = bool(decrypt_session(account.session_ciphertext))
     except Exception as exc:
-        return "blocked", "session_invalid", str(exc)
+        return _terminal("session_invalid", str(exc), terminal_abandon)
     if not session_ready:
-        return "blocked", "session_missing", "账号缺少可用 Session"
+        return _terminal("session_missing", "账号缺少可用 Session", terminal_abandon)
     if link is None:
         return "pending_admission", "not_in_group", "账号尚未进入目标群"
     if not link.can_send:
-        return "blocked", "cannot_send", "账号在目标群不可发言"
+        return _terminal("cannot_send", "账号在目标群不可发言", terminal_abandon)
     if admission is not None and not post_follow_probe_eligible:
         return (
             "pending_admission",
@@ -134,6 +153,15 @@ def _readiness_from_records(
             f"群管机器人准入未完成：{admission.state}",
         )
     return "ready", "", ""
+
+
+def _terminal(
+    code: str,
+    detail: str,
+    abandon_for_day: bool,
+) -> tuple[str, str, str]:
+    state = "abandoned_for_day" if abandon_for_day else "blocked"
+    return state, code, detail
 
 
 def _status_blocker(status: str) -> str:

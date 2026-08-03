@@ -1,5 +1,7 @@
 # Dispatcher / OCR 内存隔离与优雅回收专项 PRD
 
+> **2026-08-03 partial supersede：** 本文仅“固定 OCR 进程槽、内存上限、无业务持久队列、Dispatcher drain/recycle、无数据库长事务”仍可用于当前双 OCR资源隔离。所有 AI/VLM、模型 key、模型投票/共识、供应商 fallback，以及“B失败后抽象 policy refresh”的描述统一为 `historical_do_not_implement`；现行识别/换题/unknown 合同只认 `task-fulfillment-contract-closure-prd.md` §9，搜索 AI/VLM 调用数固定为 0。
+
 ## 0. 文档状态
 
 - `intake_id`: `intake-2026-07-31-dispatcher-ocr-memory-001`
@@ -8,7 +10,7 @@
 - `owner_agent`: `product`
 - `level`: `L3`
 - `priority`: `P0 containment / P1 root_cause_removal`
-- `design_status`: `complete`
+- `design_status`: `partial_superseded_resource_isolation_only`
 - `scope_revision`: `minimal_p0_p1_2026-07-31`
 - `evidence_level`: `E4 incident / E3 production canary / E4 observing`
 - `handoff_delivery_status`: `dev_implemented_qa_targeted_pass`
@@ -470,9 +472,9 @@ P0 不新增 `SearchJoinImageVerificationAttempt`、source event 或 lifecycle �
 
 不满足上述任一条件时只能写 `unproven` 或 `production_failed`，不能因重启后暂时低 RSS 写 `production_fixed`。
 
-## 12. Product Design Complete
+## 12. 历史 Product Design Complete（验证码业务合同已部分 supersede）
 
-- `route`: `product -> dev`；`level`: `L3`；`design_status`: `complete`
+- `route`: `historical product handoff`；`level`: `L3`；`design_status`: `partial_superseded_resource_isolation_only`；验证码业务状态机不得再由本文交接
 - `evidence_level`: `E4 incident / E2 local automated implementation proof`
 - `next_agent`: `qa/product/prod-diagnosis`；`handoff_delivery_status`: `dev_implemented_qa_targeted_pass`
 
