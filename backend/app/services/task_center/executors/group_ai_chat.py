@@ -49,6 +49,7 @@ from ..account_scope import bootstrap_missing_all_account_task_scope
 from ..ai_act_types import canonical_ai_group_act_type
 from ..ai_generator import AI_GENERATION_UNAVAILABLE_MESSAGE
 from ..ai_message_memory import mark_group_ai_message_result, reserve_group_ai_message
+from ..ai_reply_allocation import reply_requirement_for_plan
 from ..account_voice_profile_generation_jobs import enqueue_voice_profile_generation
 from ..account_voice_profiles import group_stance_summaries, voice_profile_prompt_details
 from ..channel_membership import gate_channel_membership
@@ -1102,6 +1103,7 @@ def _load_generation_plan(
         facts.config,
         facts.hard_progress,
         daily_coverage_debt=facts.coverage.required_new > 0,
+        daily_group_target_id=facts.coverage.daily_group_target_id,
     )
     if reply_targets is None:
         return PlanAbort()
@@ -2467,10 +2469,16 @@ def _reply_targets_for_plan(
     hard_progress: dict[str, object],
     *,
     daily_coverage_debt: bool = False,
+    daily_group_target_id: str = "",
 ) -> tuple[list[dict] | None, bool]:
     if hard_progress:
         return [], False
-    reply_min = min(turn_count, int(config.get("reply_min_per_round") or 0))
+    reply_min = reply_requirement_for_plan(
+        session,
+        turn_count=turn_count,
+        config=config,
+        daily_group_target_id=daily_group_target_id,
+    )
     if reply_min <= 0:
         return [], False
     reply_target_pool = _group_reply_target_pool(session, task, group, usable_context_rows)

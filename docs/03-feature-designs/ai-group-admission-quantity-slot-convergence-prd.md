@@ -23,6 +23,7 @@
 - 3 个 AI generation worker 心跳均在秒级刷新，运行合同为 active，生产全局 AI generation executing claim 为 0；与此同时 PostgreSQL 中恰好存在 3 条相同指纹的 Action 候选查询，已持续执行 51–115 秒且未等待锁。容器健康只证明独立心跳线程存活，主线程实际卡在领取扫描。
 - `ix_actions_ai_generation_due_claim` 临时并发建成并随 `0135` 正式发布后，外层候选已命中新索引，两个积压 Action 成功进入 `ready -> claiming`；但新的生产样本仍有 3 条同指纹领取查询持续 16–19 秒。`EXPLAIN` 显示外层索引成本仅 8.31，同群占用 anti join 仍通过通用 `ix_actions_send_group_slot_lookup` 扫描群内历史发送 Action，计划成本 391.12 后再过滤 generation/status/body。它不再是分钟级零吞吐，但仍无法支撑每日 800 条的目标速率。
 - 同群 occupancy 索引临时建成后，计划成本从 391.12 降到 8.19，生产出现真实 `generating` claim，重复领取查询年龄降到约 1 秒。随后郑州师范仍大量出现 `context_freshness_unproven`；只读事实显示群与 listener 均存在、无错误且持续采到最新消息，但 `listener_context_limit=20`、游标每分钟恰好前进 20、状态连续多轮为 `unproven`。这不是频道/群被删除，而是高流量群单页轮询永远追不上尾部。
+- listener 临时恢复 contiguous 后，两任务仍无新 remote fact；开放正文 Action 中约 180 条/任务全部为 `relation_kind=reply`。任务配置是 `messages_per_round=60, reply_min_per_round=12`，但上下文有效窗口把单次规划缩到 1–几条后，`min(turn_count, reply_min_per_round)` 在每个微批次重新计算，等价于 100% 回复。远端引用目标删除/不可访问只是终态表现，根因是 12/60 的最低配比被错误套在每个截断微批次。
 
 ## 2. 根因与范围
 
@@ -35,6 +36,7 @@
 5. **AI generation 领取缺少生产级候选索引。** `_generation_filters` 在全局 pending Action 上同时判断 task、JSON generation 状态、空正文、账号占用和同群 generation 槽，再按时间排序取首条。现有统计索引以 `tenant_id, task_id` 开头，不能服务跨任务 due claim；通用 due 索引又不能排除大量非 AI 或已有正文 Action。数据量放大后，3 个 worker 都长期执行同一候选 SQL，尚未取得 Action 行锁和 claim，导致“心跳健康但生成量为零”。
 6. **同群 generation 占用复核仍扫描历史 Action。** due-claim partial index 只收敛外层候选；`_group_generation_slot_is_free` 对每个候选查找同 tenant/group 的 `generating` 或带正文 `ready` Action。现有 group slot 索引包含该群全部历史 `send_message`，状态与 generation 谓词只能在 heap/index scan 后过滤，候选越多越反复放大。必须新增仅覆盖“实际占用 generation 槽”的 partial expression index，不能删除同群互斥条件。
 7. **高流量 listener 只取一页。** anchored cursor 每 60 秒最多读取 `listener_context_limit` 一页；满页时按安全合同保持 `unproven`，但 worker 不在同轮继续读取下一页。消息速率达到页大小后，cursor 虽持续前进却永远无法证明追到尾部，Provider/Gateway 的上下文门禁会持续拒绝。必须在一次 poll 内按 cursor 分页，直到短页证明到达当时尾部；非数字 cursor、无前进或读取错误仍保持 unproven/显式失败。
+8. **回复最低数在微批次重复放大。** `reply_min_per_round` 的分母是配置的 `messages_per_round`，不是经过 context-bound window 截断后的 `turn_count`。当前实现每个微批次重新取 `min(turn_count, reply_min)`，当 turn_count 小于 12 时整批都是 reply。必须按当前 task-day 已冻结 ContentMixSlot 的累计总数/回复数计算新增批次所需回复数，使累计下界收敛到 `12/60`，不能在每个小批重置。
 
 ### 2.2 本次范围
 
@@ -47,6 +49,7 @@
 - 新增只覆盖“待生成空正文”的 partial due-claim 索引，键序与领取排序一致；临时恢复和 Alembic 最终迁移使用同一索引名与谓词，避免形成两套生产结构。
 - 新增只覆盖 `generating` 或带正文 `ready` 占用者的同群 partial expression index，以 `tenant_id + group_id + id` 定位；不得把 waiting/pending 空正文写入占用索引。
 - anchored listener 在同一次 poll 中逐页追尾并按页推进持久 cursor；每个 listener 仍保留自身观察采集，不降低群管准入证据范围。
+- all-accounts-daily 的回复最低数改为 task-day 累计分配：读取同一 ledger 已冻结 ContentMixCycleSlot 的 `total/reply`，新增批次只补 `floor((prior_total + batch_total) * reply_min / messages_per_round) - prior_reply`，并夹在 `0..batch_total`；普通非日覆盖轮次保持既有每轮语义。
 
 ### 2.3 非目标
 
@@ -111,6 +114,7 @@ coverage ready
 7. AI generation due claim 必须命中 `task_type=group_ai_chat + action_type=send_message + status=pending + account_id 非空 + generation_status 可生成 + message_text 为空` 的 partial index，并按 `scheduled_at, created_at, id` 读取；账号占用和同群占用仍由原查询及行锁复核，不得移除安全条件。
 8. 同群占用复核必须命中 `tenant_id + payload.group_id + id` 的 partial index；partial predicate 与 `_group_generation_slot_is_free` 完全一致：`executing+generating`，或 `pending/claiming/executing + ready + 非空正文`。索引只改变访问路径，不改变互斥集合。
 9. listener 有数字 persisted cursor 时，必须从该 cursor 开始逐页读取；满页且 upper cursor 单调前进则继续，短页才标记 contiguous。空页、非数字页、upper 不前进和上游错误按既有 fail-closed 语义结束，不得伪造 contiguous。
+10. 日覆盖累计回复分配只认同一 task-day ledger 已持久化的 CycleSlot，不读 Action 终态推算；旧 reply 槽保持不可变，若历史已超配，则后续新槽先规划 direct，直至累计比例回到配置下界。并发仍由 coverage cursor/target/slot 固定锁序和 Cycle 唯一键收敛。
 
 本节 supersede `all-task-fulfillment-recovery-prd.md` §4.5.1 中“只要存在待物化/重建槽就不得另建 Cycle”的句子；保留同节关于旧槽不释放、不换号、不改 relation、Gateway-started/unknown 禁止替代的约束。
 
@@ -166,6 +170,7 @@ coverage ready
 10. 生产量级回归必须证明 due-claim 查询使用新索引，且候选领取不再出现分钟级扫描；已有“同群 ready 时跳过该群并生成其他群”和“执行中账号不可领取”语义保持不变。
 11. `EXPLAIN` 必须证明同群 anti join 使用 occupancy partial index，而非对群内全部历史 send Action 做过滤；生产采样中领取查询应从十几秒级继续收敛到秒级。
 12. listener 测试必须覆盖 `full page -> full page -> short page`，断言请求 cursor 单调为上一页 upper，最终 contiguous；混合/非数字 cursor 与不前进页仍保持 unproven 且停止。
+13. 回复比例测试必须覆盖 `12/60` 在 1 条和 4 条微批次中不会全部变 reply、累计到第 5 条才形成第 1 条 reply，以及历史 reply 已超配时新增批次为 direct。
 
 ### 8.2 Release Gate
 
@@ -184,6 +189,7 @@ coverage ready
 - 高流量群 listener cursor 能在单轮追到短页并恢复 contiguous，且不能通过手改 cursor/status 伪造；
 - `quantity_slots_unavailable` 不再出现，若存在槽差异则展示精确 code 和计数；
 - ContentMix/CycleSlot/Action 数量守恒，无重复 `primary_quantity_slot_id`；
+- 新建 ContentMix 的累计 reply/direct 数符合配置分母；不得因 context-bound 微批次出现 100% reply；
 - AI generation ready、Dispatcher claim、ExecutionAttempt success 和非空 remote message id 持续增长；
 - 全局 AI generation claim 不再恒为 0，数据库中不得持续出现分钟级同指纹 due-claim 查询；
 - unknown/pending visibility 不被替换，daily target 与 coverage confirmed 只随真实远端事实增长。
@@ -215,6 +221,7 @@ coverage ready
 | 外层 due-claim 索引命中后是否已经够快？ | 不够。生产样本从 51–158 秒降到 16–19 秒并产生 ready，但 `EXPLAIN` 证明同群 anti join 仍扫描历史 Action。必须再用 occupancy partial index 优化同一安全条件，不能用“已有进展”替代吞吐验收。 |
 | `listener_cursor_status=unproven` 是否说明群或频道被删？ | 不说明。本次目标群持续采到最新上下文且 `listener_last_error` 为空；游标每轮恰好前进单页上限，证明是消费速率不足。删除/不可访问必须由明确 Gateway 错误或目标生命周期事实证明。 |
 | 能否直接把 listener cursor/status 改成 contiguous？ | 不能。临时恢复只能提高合法页大小，最终状态必须由真实短页产生；永久修复在同轮分页追尾。 |
+| `reply_target_missing` 多是否只因为频道未关注或目标被删？ | 不是。本次目标确有失效终态，但约 180 条开放 Action 全被规划为 reply，远超配置 12/60；根因是微批次重复应用最低数。先修累计比例，远端明确失效的单个目标仍按现有精确读取和排除合同处理。 |
 | 临时索引和最终 migration 会不会冲突？ | 不会。二者使用完全同名同谓词；migration 对有效同名索引 no-op，对 invalid 同名索引显式失败。 |
 | 是否需要数据库迁移？ | 需要新增两个并发 partial index；不新增表、不改业务数据、不回填 Action。 |
 
