@@ -3,6 +3,14 @@ name: Production AI Generation Index Recovery
 'on':
   workflow_dispatch:
     inputs:
+      recovery_target:
+        description: AI generation index to preview or apply
+        required: true
+        default: due_claim
+        type: choice
+        options:
+          - due_claim
+          - group_occupancy
       deployed_sha:
         description: Full or short SHA expected in production
         required: true
@@ -95,6 +103,7 @@ jobs:
           echo "AI_GENERATION_INDEX_RECOVERY_RELEASE=${CURRENT}"
 
       - name: Preview or apply concurrent due-claim index
+        if: ${{ inputs.recovery_target == 'due_claim' }}
         env:
           APPLY: ${{ inputs.apply }}
           STATE_HASH: ${{ inputs.expected_state_hash }}
@@ -105,3 +114,16 @@ jobs:
             -e AI_GENERATION_INDEX_RECOVERY_EXPECTED_STATE_HASH='${STATE_HASH}' \
             tgyunying-backend python -" \
             < backend/scripts/recover_ai_generation_due_claim_index.py
+
+      - name: Preview or apply concurrent group-occupancy index
+        if: ${{ inputs.recovery_target == 'group_occupancy' }}
+        env:
+          APPLY: ${{ inputs.apply }}
+          STATE_HASH: ${{ inputs.expected_state_hash }}
+        run: |
+          set -euo pipefail
+          ssh production "timeout 900 docker exec -i \
+            -e AI_GENERATION_OCCUPANCY_INDEX_APPLY='${APPLY}' \
+            -e AI_GENERATION_OCCUPANCY_INDEX_EXPECTED_STATE_HASH='${STATE_HASH}' \
+            tgyunying-backend python -" \
+            < backend/scripts/recover_ai_generation_group_occupancy_index.py

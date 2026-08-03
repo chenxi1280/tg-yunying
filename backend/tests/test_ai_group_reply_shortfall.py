@@ -3,9 +3,36 @@ from types import SimpleNamespace
 import pytest
 
 from app.services.task_center.executors import group_ai_chat
+from app.services.task_center.ai_reply_allocation import cumulative_reply_requirement
 
 
 pytestmark = pytest.mark.no_postgres
+
+
+def test_daily_reply_minimum_uses_configured_round_denominator() -> None:
+    requirement = cumulative_reply_requirement
+
+    assert requirement(
+        prior_total=0,
+        prior_reply=0,
+        batch_total=4,
+        round_total=60,
+        round_reply=12,
+    ) == 0
+    assert requirement(
+        prior_total=4,
+        prior_reply=0,
+        batch_total=1,
+        round_total=60,
+        round_reply=12,
+    ) == 1
+    assert requirement(
+        prior_total=180,
+        prior_reply=180,
+        batch_total=4,
+        round_total=60,
+        round_reply=12,
+    ) == 0
 
 
 def test_daily_coverage_debt_falls_back_to_direct_slots_when_replies_are_short(

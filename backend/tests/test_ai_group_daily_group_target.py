@@ -28,6 +28,7 @@ from app.models import (
     TgGroup,
 )
 from app.services.task_center.executors import group_ai_chat
+from app.services.task_center.ai_reply_allocation import reply_requirement_for_plan
 from app.services.task_center.daily_group_target import (
     daily_group_due_message_count,
     ensure_task_group_daily_target,
@@ -313,6 +314,64 @@ def test_planner_freezes_relation_slots_against_daily_quantity_slots(
     assert [slot.relation_kind for slot in slots] == ["reply", "direct", "direct"]
     assert slots[0].initial_reply_to_message_id == "501"
     assert len({slot.primary_quantity_slot_id for slot in slots}) == 3
+
+
+def test_daily_reply_requirement_counts_frozen_slots_across_micro_batches(
+    session: Session,
+) -> None:
+    task, group = _seed(session, configured=5, account_count=5)
+    ledger = ensure_task_day_ledger(session, task, now=datetime(2026, 7, 28, 12))
+    target = ensure_task_group_daily_target(
+        session,
+        task,
+        group,
+        date(2026, 7, 28),
+        now=datetime(2026, 7, 28, 12),
+    )
+    cycle = ContentMixCycle(
+        tenant_id=1,
+        task_id=task.id,
+        target_operation_target_id=31,
+        task_day_ledger_id=ledger.id,
+        cycle_seq=1,
+        config_revision=1,
+        scope_total_slots=4,
+        allocation_seed="reply-ratio",
+        allocation_closed_at=datetime(2026, 7, 28, 12),
+    )
+    session.add(cycle)
+    session.flush()
+    quantity_ids = [
+        row.id
+        for row in session.query(TaskGroupDailyMessageSlot)
+        .filter_by(task_day_ledger_id=ledger.id)
+        .order_by(TaskGroupDailyMessageSlot.slot_ordinal)
+        .limit(4)
+    ]
+    session.add_all([
+        ContentMixCycleSlot(
+            tenant_id=1,
+            cycle_id=cycle.id,
+            slot_index=index,
+            primary_quantity_slot_id=quantity_id,
+            relation_kind="direct",
+        )
+        for index, quantity_id in enumerate(quantity_ids, start=1)
+    ])
+    session.flush()
+
+    required = reply_requirement_for_plan(
+        session,
+        turn_count=1,
+        config={
+            "messages_per_round": 60,
+            "reply_min_per_round": 12,
+            "account_coverage_mode": "all_accounts_daily",
+        },
+        daily_group_target_id=target.id,
+    )
+
+    assert required == 1
 
 
 def test_daily_target_counts_only_success_attempt_with_remote_id(session: Session) -> None:

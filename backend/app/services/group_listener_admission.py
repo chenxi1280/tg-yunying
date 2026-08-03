@@ -37,6 +37,68 @@ def fetch_listener_snapshots(session: Session, *, group: TgGroup, account: TgAcc
         raise ListenerSnapshotFetchError(account.id, str(exc)) from exc
 
 
+def fetch_listener_snapshot_pages(
+    session: Session,
+    *,
+    group: TgGroup,
+    account: TgAccount,
+    credentials,
+) -> list[list[object]]:
+    from .task_center.group_bot_observation import snapshot_cursor_bounds
+
+    after_message_id = listener_after_message_id(group)
+    if after_message_id is None:
+        return [[*fetch_listener_snapshots(
+            session, group=group, account=account, credentials=credentials,
+        )]]
+    pages: list[list[object]] = []
+    cursor = after_message_id
+    limit = max(1, int(group.listener_context_limit or 1))
+    while True:
+        page = _fetch_listener_page(
+            session,
+            group=group,
+            account=account,
+            credentials=credentials,
+            after_message_id=cursor,
+        )
+        pages.append(page)
+        if len(page) < limit:
+            return pages
+        _lower, upper = snapshot_cursor_bounds(page)
+        if upper is None or upper <= cursor:
+            return pages
+        cursor = upper
+
+
+def _fetch_listener_page(
+    session: Session,
+    *,
+    group: TgGroup,
+    account: TgAccount,
+    credentials,
+    after_message_id: int,
+) -> list[object]:
+    try:
+        return list(gateway.fetch_group_messages(
+            account.id,
+            group.tg_peer_id,
+            account.session_ciphertext,
+            credentials,
+            limit=group.listener_context_limit,
+            after_message_id=after_message_id,
+        ))
+    except Exception as exc:
+        record_group_bot_observations(
+            session,
+            group=group,
+            account=account,
+            snapshots=(),
+            failure_code="listener_fetch_failed",
+        )
+        raise ListenerSnapshotFetchError(account.id, str(exc)) from exc
+
+
 def record_group_bot_observations(
     session: Session,
     *,
@@ -59,4 +121,9 @@ def record_group_bot_observations(
         close_observation_if_due(session, admission=admission)
 
 
-__all__ = ["ListenerSnapshotFetchError", "fetch_listener_snapshots", "record_group_bot_observations"]
+__all__ = [
+    "ListenerSnapshotFetchError",
+    "fetch_listener_snapshot_pages",
+    "fetch_listener_snapshots",
+    "record_group_bot_observations",
+]
