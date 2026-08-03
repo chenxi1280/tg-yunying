@@ -24,7 +24,6 @@ TASK_CHILD_COLUMNS = (
     ("task_account_daily_coverage", "task_id"),
     ("task_daily_coverage_plan_cursors", "task_id"),
     ("task_daily_fulfillment_decisions", "task_id"),
-    ("task_day_ledgers", "task_id"),
     ("task_group_bot_admissions", "task_id"),
     ("task_group_daily_message_slots", "task_id"),
     ("task_group_daily_targets", "task_id"),
@@ -32,6 +31,7 @@ TASK_CHILD_COLUMNS = (
     ("task_membership_admission_items", "task_id"),
     ("task_runtime_summary", "task_id"),
     ("task_start_operations", "task_id"),
+    ("task_day_ledgers", "task_id"),
 )
 
 ACTION_CHILD_COLUMNS = (
@@ -65,6 +65,7 @@ def delete_task_runtime_rows(session: Session, task_id: str) -> None:
     session.execute(text(
         "DELETE FROM fulfillment_remote_facts WHERE task_id = :task_id"
     ), params)
+    _delete_cross_task_children(session, params)
     _delete_direct_children(session, TASK_CHILD_COLUMNS, params)
     _delete_action_children(session, params)
     session.execute(text(
@@ -72,6 +73,20 @@ def delete_task_runtime_rows(session: Session, task_id: str) -> None:
         "WHERE action_id IN (SELECT id FROM actions WHERE task_id = :task_id)"
     ), params)
     session.execute(text("DELETE FROM actions WHERE task_id = :task_id"), params)
+
+
+def _delete_cross_task_children(session: Session, params: dict[str, str]) -> None:
+    session.execute(text(
+        "DELETE FROM pending_visibility_credits WHERE "
+        "task_account_daily_coverage_id IN "
+        "(SELECT id FROM task_account_daily_coverage WHERE task_id = :task_id) "
+        "OR task_day_ledger_id IN "
+        "(SELECT id FROM task_day_ledgers WHERE task_id = :task_id)"
+    ), params)
+    session.execute(text(
+        "DELETE FROM dispatch_allocation_release_batch_items WHERE assignment_id IN "
+        "(SELECT id FROM search_click_opportunity_assignments WHERE task_id = :task_id)"
+    ), params)
 
 
 def _delete_direct_children(
