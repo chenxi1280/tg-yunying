@@ -165,16 +165,13 @@ jobs:
             | jq -c '.tasks[] | {task, target, ledger, coverage, admissions, admission_actions, quantity_slots, actions, unknown_actions, bindings, content_mix}' \
             | sed 's/^/AI_GROUP_BINDING_DIAGNOSTICS=/'
 
-      - name: Read AI generation group slot diagnostics
+      - name: Read AI generation runtime diagnostics
         if: ${{ always() }}
-        env:
-          TASK_IDS: ${{ inputs.task_ids }}
         run: |
           set -euo pipefail
-          ssh silicon-valley-production-server "timeout 180 docker exec \
-            -e AI_GENERATION_DIAGNOSTIC_TASK_IDS='${TASK_IDS}' \
-            -i tgyunying-backend python -" \
-            < .github/scripts/ai_generation_group_slot_diagnostics.py
+          ssh silicon-valley-production-server \
+            'timeout 60 docker exec -i tgyunying-backend python -' \
+            < .github/scripts/ai_generation_runtime_diagnostics.py
 
       - name: Read AI scope mismatch diagnostics
         if: ${{ always() }}
