@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from uuid import uuid4
 
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import and_, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
@@ -18,6 +18,7 @@ from .fulfillment_remote_facts import ensure_action_obligation
 
 
 GENERATABLE_STATUSES = ("pending", "ai_result_persist_unknown")
+OPEN_GENERATION_JOB_PREDICATE = "state IN ('pending','generating','unknown')"
 
 
 class _ClaimConflict(RuntimeError):
@@ -145,7 +146,7 @@ def _generation_job(session: Session, action: Action) -> GenerationJob:
     statement = pg_insert(table) if session.get_bind().dialect.name == "postgresql" else sqlite_insert(table)
     session.execute(statement.values(**values).on_conflict_do_nothing(
         index_elements=["obligation_type", "obligation_id"],
-        index_where=GenerationJob.state.in_(("pending", "generating", "unknown")),
+        index_where=text(OPEN_GENERATION_JOB_PREDICATE),
     ))
     job = session.scalar(select(GenerationJob).where(
         GenerationJob.obligation_type == action.obligation_type,
