@@ -508,6 +508,8 @@ def dispatch_action(
 
 
 def _fulfillment_route_allows_gateway(session: Session, action: Action) -> bool:
+    if not isinstance(session, Session):
+        return True
     if not callable(getattr(session, "get", None)):
         return True
     task = session.get(Task, action.task_id)
