@@ -61,9 +61,10 @@ GROUP_SLOT_QUERY = text("""
 """)
 
 ELIGIBILITY_QUERY = text("""
-    WITH candidates AS (
+    WITH candidate_base AS MATERIALIZED (
         SELECT a.id AS action_id,
                a.task_id,
+               a.tenant_id,
                (a.payload ->> 'group_id')::bigint AS group_id,
                a.account_id,
                a.status = 'pending' AS action_pending,
@@ -73,38 +74,56 @@ ELIGIBILITY_QUERY = text("""
                t.deleted_at IS NULL AS task_not_deleted,
                COALESCE(a.payload ->> 'ai_generation_status', '')
                    IN ('pending', 'ai_result_persist_unknown') AS generation_pending,
-               LENGTH(COALESCE(a.payload ->> 'message_text', '')) = 0 AS text_empty,
-               EXISTS (
-                   SELECT 1
-                   FROM actions busy
-                   WHERE busy.account_id = a.account_id
-                     AND busy.status = 'executing'
-               ) AS account_busy,
-               EXISTS (
-                   SELECT 1
-                   FROM actions occupied
-                   WHERE occupied.id <> a.id
-                     AND occupied.tenant_id = a.tenant_id
-                     AND occupied.task_type = 'group_ai_chat'
-                     AND occupied.action_type = 'send_message'
-                     AND occupied.payload ->> 'group_id' = a.payload ->> 'group_id'
-                     AND (
-                         (occupied.status = 'executing'
-                          AND occupied.payload ->> 'ai_generation_status' = 'generating')
-                         OR
-                         (occupied.status IN ('pending', 'claiming', 'executing')
-                          AND occupied.payload ->> 'ai_generation_status' = 'ready'
-                          AND LENGTH(COALESCE(occupied.payload ->> 'message_text', '')) > 0)
-                     )
-               ) AS group_busy
+               LENGTH(COALESCE(a.payload ->> 'message_text', '')) = 0 AS text_empty
         FROM actions a
         JOIN tasks t ON t.id = a.task_id
         WHERE a.task_id = ANY(:task_ids)
           AND a.task_type = 'group_ai_chat'
           AND a.action_type = 'send_message'
           AND COALESCE(a.payload ->> 'group_id', '') ~ '^[0-9]+$'
+    ),
+    busy_accounts AS MATERIALIZED (
+        SELECT DISTINCT busy.account_id
+        FROM actions busy
+        JOIN (SELECT DISTINCT account_id FROM candidate_base) target
+          ON target.account_id = busy.account_id
+        WHERE busy.status = 'executing'
+    ),
+    occupied_groups AS MATERIALIZED (
+        SELECT DISTINCT occupied.tenant_id,
+               (occupied.payload ->> 'group_id')::bigint AS group_id
+        FROM actions occupied
+        JOIN (
+            SELECT DISTINCT tenant_id, group_id
+            FROM candidate_base
+        ) target
+          ON target.tenant_id = occupied.tenant_id
+         AND occupied.payload ->> 'group_id' = target.group_id::text
+        WHERE occupied.task_type = 'group_ai_chat'
+          AND occupied.action_type = 'send_message'
+          AND (
+              (occupied.status = 'executing'
+               AND occupied.payload ->> 'ai_generation_status' = 'generating')
+              OR
+              (occupied.status IN ('pending', 'claiming', 'executing')
+               AND occupied.payload ->> 'ai_generation_status' = 'ready'
+               AND LENGTH(COALESCE(occupied.payload ->> 'message_text', '')) > 0)
+          )
+    ),
+    candidates AS (
+        SELECT base.*,
+               busy.account_id IS NOT NULL AS account_busy,
+               occupied.group_id IS NOT NULL AS group_busy
+        FROM candidate_base base
+        LEFT JOIN busy_accounts busy ON busy.account_id = base.account_id
+        LEFT JOIN occupied_groups occupied
+          ON occupied.tenant_id = base.tenant_id
+         AND occupied.group_id = base.group_id
     )
-    SELECT *,
+    SELECT action_id, task_id, group_id, account_id,
+           action_pending, account_present, within_lookahead,
+           task_running, task_not_deleted, generation_pending,
+           text_empty, account_busy, group_busy,
            action_pending AND account_present AND within_lookahead
              AND task_running AND task_not_deleted AND generation_pending
              AND text_empty AND NOT account_busy AND NOT group_busy AS eligible
