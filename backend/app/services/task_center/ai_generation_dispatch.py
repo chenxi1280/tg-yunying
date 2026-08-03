@@ -113,7 +113,11 @@ def ensure_send_message_content(
     )
     if payload.message_text.strip():
         return payload
-    if payload.ai_generation_status not in {"pending", "ai_result_persist_unknown"}:
+    if payload.ai_generation_status not in {
+        "pending",
+        "generating",
+        "ai_result_persist_unknown",
+    }:
         raise AiGenerationUnavailable("send_message action 缺少可发送文案")
     if not allow_provider_call:
         if (action.result or {}).get("generation_stage") == "context_superseded":

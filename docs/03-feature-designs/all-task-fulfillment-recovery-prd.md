@@ -91,8 +91,12 @@
 2. 生产运行三个独立 `ai-generation` worker，使三个目标群可并行生成；数据库 `SKIP LOCKED` 与上述同群门禁共同保证不同 worker 不会同时为同群生成。worker 数量只提供跨群并行度，不改变单群内容顺序、质量门禁、Provider 合同或 Dispatcher/Gateway 容量。
 3. 同群 ready 门禁不得把 `failed|skipped|cancelled|success` 历史、空正文 pending、或其他群的 ready Action 当作占位；显式业务失败仍在同一 drain 中继续处理其他群。
 4. 生产诊断必须输出当前 ledger 的 generation 状态/正文就绪数、搜索 assignment/epoch 状态及浏览逐消息义务，不能只输出最终欠额；最终完成仍只认 ExecutionAttempt 与 Telegram 远端事实。
+5. generation claim 在释放群行锁前必须把 payload 状态原子写为 `generating`；只写
+   `Action.status=executing` 而仍保留 payload `pending` 会让下一 worker 看不到占位并发领取同群。
+   正常生成入口允许持有合法 claim 的 `generating` payload 继续建立 attempt；准入延后且正文
+   仍为空时必须在释放 claim 时显式恢复 `pending`，不能留下假占位。
 
-验收必须覆盖：同群已有 ready Action时下一条不生成；另一群仍可生成；首条进入终态后同群下一条恢复生成；三个生成 worker 健康且具有不同 worker ID；发布后 `context_superseded_requeue` 不再随每次本任务发送成批增长。
+验收必须覆盖：同群已有 ready Action时下一条不生成；第一 worker 取得 claim、Provider 尚未开始时第二 worker 同群领取数为 0；另一群仍可生成；首条进入终态后同群下一条恢复生成；准入延后释放后 payload 回到 `pending`；三个生成 worker 健康且具有不同 worker ID；发布后 `context_superseded_requeue` 不再随每次本任务发送成批增长。
 
 ### 2.5.1 2026-08-03 生成完成阈值与累计关系合同补正
 
