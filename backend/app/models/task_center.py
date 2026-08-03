@@ -207,7 +207,7 @@ class Action(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), default=1)
-    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"))
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"))
     task_type: Mapped[str] = mapped_column(String(30))
     action_type: Mapped[str] = mapped_column(String(30))
     account_id: Mapped[int | None] = mapped_column(ForeignKey("tg_accounts.id"), nullable=True)
@@ -275,7 +275,7 @@ class ExecutionAttempt(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), default=1)
-    action_id: Mapped[str] = mapped_column(ForeignKey("actions.id"))
+    action_id: Mapped[str] = mapped_column(ForeignKey("actions.id", ondelete="CASCADE"))
     worker_id: Mapped[str] = mapped_column(String(160), default="")
     task_lifecycle_epoch: Mapped[int] = mapped_column(Integer, default=1)
     account_id: Mapped[int | None] = mapped_column(ForeignKey("tg_accounts.id"), nullable=True)
