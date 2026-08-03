@@ -16,12 +16,19 @@ from .ai_generation_composition import PRODUCTION_GENERATION_DEPENDENCIES
 from .ai_generation_dependencies import GenerationDependencies
 from .ai_generation_dispatch import ensure_send_message_content
 from .ai_generator import AiGenerationUnavailable
+from .ai_generation_runtime_config import (
+    _content_obligation_fallback_ready,
+    _due_catch_up_required,
+    tenant_fallback_flags,
+)
 from .ai_generation_timing import GENERATION_LEASE, GENERATION_LOOKAHEAD
+from .direct_check_in import is_due_catch_up_check_in
 from .payloads import SendMessagePayload
 
 
 GENERATABLE_STATUSES = ("pending", "ai_result_persist_unknown")
 GROUP_BOT_ADMISSION_RETRY_SECONDS = 30
+DUE_CATCH_UP_MAX_PIPELINE_DEPTH = 4
 GenerateAction = Callable[[Session, Action, TgAccount], None]
 
 
@@ -90,20 +97,25 @@ def _claim_generation_batch(
     excluded_action_ids: set[str],
 ) -> tuple[str, str, int] | None:
     with session_factory() as session:
-        first = session.scalar(_claim_statement(
-            session,
-            _generation_filters(excluded_action_ids=excluded_action_ids),
-        ).limit(1))
-        if first is None:
-            return None
-        _lock_generation_group(session, first)
-        if not _generation_group_is_free(session, first):
+        blocked_group_ids: set[int] = set()
+        while True:
+            first = session.scalar(_claim_statement(
+                session,
+                _generation_filters(
+                    excluded_action_ids=excluded_action_ids,
+                    excluded_group_ids=blocked_group_ids,
+                ),
+            ).limit(1))
+            if first is None:
+                return None
+            _lock_generation_group(session, first)
+            if _generation_group_has_capacity(session, first):
+                token = str(uuid4())
+                _mark_generation_claim(first, owner, token)
+                session.commit()
+                return first.id, token, 1
+            blocked_group_ids.add(_action_group_id(first))
             session.rollback()
-            return None
-        token = str(uuid4())
-        _mark_generation_claim(first, owner, token)
-        session.commit()
-        return first.id, token, 1
 
 
 def _lock_generation_group(session: Session, action: Action) -> None:
@@ -120,12 +132,12 @@ def _lock_generation_group(session: Session, action: Action) -> None:
         raise RuntimeError(f"AI generation action {action.id} has no target group")
 
 
-def _generation_group_is_free(session: Session, action: Action) -> bool:
+def _generation_group_has_capacity(session: Session, action: Action) -> bool:
     occupied = aliased(Action)
     occupied_status = occupied.payload["ai_generation_status"].as_string()
     occupied_text = occupied.payload["message_text"].as_string()
     group_id = int((action.payload or {}).get("group_id") or 0)
-    occupant = session.scalar(select(occupied.id).where(
+    occupants = list(session.scalars(select(occupied).where(
         occupied.id != action.id,
         occupied.tenant_id == action.tenant_id,
         occupied.task_type == "group_ai_chat",
@@ -139,8 +151,51 @@ def _generation_group_is_free(session: Session, action: Action) -> bool:
                 func.coalesce(occupied_text, "") != "",
             ),
         ),
-    ).limit(1))
-    return occupant is None
+    )))
+    if not occupants:
+        return True
+    depth = _due_catch_up_pipeline_depth(session, action)
+    return bool(
+        depth > 1
+        and len(occupants) < depth
+        and all(_is_ready_due_catch_up(item) for item in occupants)
+    )
+
+
+def _due_catch_up_pipeline_depth(session: Session, action: Action) -> int:
+    task = session.get(Task, action.task_id)
+    if task is None:
+        return 1
+    config = dict(task.type_config or {})
+    depth = int(config.get("due_catch_up_pipeline_depth") or 1)
+    if depth < 1 or depth > DUE_CATCH_UP_MAX_PIPELINE_DEPTH:
+        raise RuntimeError("due_catch_up_pipeline_depth must be between 1 and 4")
+    payload = SendMessagePayload.model_validate(action.payload or {})
+    eligible = bool(
+        depth > 1
+        and not str(config.get("ai_model") or "").strip()
+        and tenant_fallback_flags(task)["_ai_group_static_fallback_enabled"]
+        and not payload.reply_to_message_id
+        and not payload.material_intent.strip()
+        and action.primary_quantity_slot_id
+        and _content_obligation_fallback_ready(session, action)
+        and _due_catch_up_required(session, action, payload)
+    )
+    return depth if eligible else 1
+
+
+def _is_ready_due_catch_up(action: Action) -> bool:
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    return bool(
+        action.status in {"pending", "claiming", "executing"}
+        and payload.get("ai_generation_status") == "ready"
+        and str(payload.get("message_text") or "").strip()
+        and is_due_catch_up_check_in(payload)
+    )
+
+
+def _action_group_id(action: Action) -> int:
+    return int((action.payload or {}).get("group_id") or 0)
 
 
 def _claim_statement(session: Session, filters: tuple):
@@ -155,7 +210,11 @@ def _claim_statement(session: Session, filters: tuple):
     return statement
 
 
-def _generation_filters(*, excluded_action_ids: set[str]) -> tuple:
+def _generation_filters(
+    *,
+    excluded_action_ids: set[str],
+    excluded_group_ids: set[int],
+) -> tuple:
     payload_status = Action.payload["ai_generation_status"].as_string()
     message_text = Action.payload["message_text"].as_string()
     executing = aliased(Action)
@@ -163,7 +222,6 @@ def _generation_filters(*, excluded_action_ids: set[str]) -> tuple:
         executing.account_id == Action.account_id,
         executing.status == "executing",
     ).exists()
-    group_is_free = _group_generation_slot_is_free()
     filters = (
         Action.task_type == "group_ai_chat",
         Action.action_type == "send_message",
@@ -175,38 +233,15 @@ def _generation_filters(*, excluded_action_ids: set[str]) -> tuple:
         payload_status.in_(GENERATABLE_STATUSES),
         func.coalesce(message_text, "") == "",
         account_is_free,
-        group_is_free,
     )
-    if not excluded_action_ids:
-        return filters
-    return (*filters, Action.id.not_in(excluded_action_ids))
-
-
-def _group_generation_slot_is_free():
-    occupied = aliased(Action)
-    occupied_status = occupied.payload["ai_generation_status"].as_string()
-    occupied_text = occupied.payload["message_text"].as_string()
-    same_group = (
-        occupied.payload["group_id"].as_integer()
-        == Action.payload["group_id"].as_integer()
-    )
-    generating = and_(
-        occupied.status == "executing",
-        occupied_status == "generating",
-    )
-    ready = and_(
-        occupied.status.in_(("pending", "claiming", "executing")),
-        occupied_status == "ready",
-        func.coalesce(occupied_text, "") != "",
-    )
-    return ~select(occupied.id).where(
-        occupied.id != Action.id,
-        occupied.tenant_id == Action.tenant_id,
-        occupied.task_type == "group_ai_chat",
-        occupied.action_type == "send_message",
-        same_group,
-        or_(generating, ready),
-    ).exists()
+    if excluded_action_ids:
+        filters = (*filters, Action.id.not_in(excluded_action_ids))
+    if excluded_group_ids:
+        filters = (
+            *filters,
+            Action.payload["group_id"].as_integer().not_in(excluded_group_ids),
+        )
+    return filters
 
 
 def _mark_generation_claim(action: Action, owner: str, token: str) -> None:

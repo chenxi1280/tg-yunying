@@ -312,6 +312,7 @@ class GroupAIChatConfig(BaseModel):
     ramp_up_minutes: int = Field(default=60, ge=0, le=1440)
     ramp_start_ratio: float = Field(default=0.3, ge=0.01, le=1)
     context_expire_after_messages: int = Field(default=10, ge=0, le=500)
+    due_catch_up_pipeline_depth: int = Field(default=1, ge=1, le=4)
     fact_anchor_required: bool = True
     semantic_repeat_window: int = Field(default=10, ge=1, le=100)
     low_confidence_silence_enabled: bool = True
@@ -1116,6 +1117,7 @@ class TaskSettingsUpdate(TaskUpdate):
     idle_continuation_enabled: bool | None = None
     idle_continuation_seconds: int | None = Field(default=None, ge=30, le=86400)
     context_expire_after_messages: int | None = Field(default=None, ge=0, le=500)
+    due_catch_up_pipeline_depth: int | None = Field(default=None, ge=1, le=4)
     fact_anchor_required: bool | None = None
     semantic_repeat_window: int | None = Field(default=None, ge=1, le=100)
     low_confidence_silence_enabled: bool | None = None
