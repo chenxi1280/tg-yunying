@@ -57,7 +57,7 @@
 - 不把 admission、coverage、Action 或 ContentMix 批量改成成功/ready；
 - 不释放 Gateway-started、pending visibility、unknown 或成功事实；
 - 不改变 AI 话术、reply 比例、面具、Provider 轮数和 Dispatcher 共享容量；
-- 不通过删除当前日账本或历史 Action 恢复吞吐。
+- 不通过删除当前日账本或历史 Action 恢复吞吐；已经由错误算法冻结、尚未进入 Gateway 且已处于 `replan_required` 的 reply 槽，可按第 7 节的受控重分类合同改为 direct，但历史失败 Action 保持原样。
 - 不用放宽准入、账号互斥或同群 generation 槽换取查询速度；索引只缩小候选扫描，不改变可领取集合。
 
 ## 3. 产品不变量
@@ -114,7 +114,7 @@ coverage ready
 7. AI generation due claim 必须命中 `task_type=group_ai_chat + action_type=send_message + status=pending + account_id 非空 + generation_status 可生成 + message_text 为空` 的 partial index，并按 `scheduled_at, created_at, id` 读取；账号占用和同群占用仍由原查询及行锁复核，不得移除安全条件。
 8. 同群占用复核必须命中 `tenant_id + payload.group_id + id` 的 partial index；partial predicate 与 `_group_generation_slot_is_free` 完全一致：`executing+generating`，或 `pending/claiming/executing + ready + 非空正文`。索引只改变访问路径，不改变互斥集合。
 9. listener 有数字 persisted cursor 时，必须从该 cursor 开始逐页读取；满页且 upper cursor 单调前进则继续，短页才标记 contiguous。空页、非数字页、upper 不前进和上游错误按既有 fail-closed 语义结束，不得伪造 contiguous。
-10. 日覆盖累计回复分配只认同一 task-day ledger 已持久化的 CycleSlot，不读 Action 终态推算；旧 reply 槽保持不可变，若历史已超配，则后续新槽先规划 direct，直至累计比例回到配置下界。并发仍由 coverage cursor/target/slot 固定锁序和 Cycle 唯一键收敛。
+10. 日覆盖累计回复分配只认同一 task-day ledger 已持久化的 CycleSlot，不读 Action 终态推算；正常冻结槽保持不可变，若历史已超配，则后续新槽先规划 direct，直至累计比例回到配置下界。对于本缺陷已经冻结且反复失败的存量槽，只有满足第 7 节全部无远端副作用条件时，才允许经显式审批执行一次受审计的 reply→direct 重分类。
 
 本节 supersede `all-task-fulfillment-recovery-prd.md` §4.5.1 中“只要存在待物化/重建槽就不得另建 Cycle”的句子；保留同节关于旧槽不释放、不换号、不改 relation、Gateway-started/unknown 禁止替代的约束。
 
@@ -152,6 +152,8 @@ coverage ready
 
 当生产已证明 generation 主线程卡在无 claim 的候选扫描时，允许执行第二类临时恢复：先校验 deployed SHA、两个索引均不存在或有效、全局 AI generation executing claim 为 0，再以 autocommit `CREATE INDEX CONCURRENTLY` 创建与最终 migration 完全同名同谓词的索引。索引有效后优先等待当前查询自然结束并采用新计划；只有仍存在旧分钟级查询且再次确认零 claim 时才重启 3 个 AI generation worker。不得重启 Dispatcher、修改 Action 或终结 Attempt。任一 executing AI claim 出现时拒绝重启并保持索引即可。
 
+当累计算法上线后仍被当天错误冻结的 reply 槽反复占用重建优先级时，允许执行第三类临时恢复。工具必须先以 `task_ids + task-day + per-task limit` 预览并输出确定性 state hash；候选仅限 `relation_kind=reply`、`slot_state=replan_required`、数量槽 `open`、当前 Action 已 `failed/skipped` 且不存在 `gateway_call_started_at` 的槽。apply 必须同时匹配 deployed SHA、预览 hash 和审批引用，并锁定精确 slot id。重分类只改尚待重建的 CycleSlot、对应 Contract 计数和未履约 reply obligation，旧失败 Action/Attempt 原样保留，写入 AuditLog；任何 Gateway 事实、unknown、success、claiming/executing 或状态漂移都必须拒绝。单次默认每任务最多 5 槽，依靠现有 Planner、generation、Dispatcher 重新生成和发送，不直接插入 Action，不伪造 remote fact。
+
 确认 source 修复必须复用运行时合同：原消息精确读取为空后，扫描当前账号最近 300 条带按钮控制消息；只接受可信 bot、收件人匹配、频道集合一致的新 source。无匹配时 supersede 旧 callback 并清 source；网络读取失败保持 retry，不能当删除。
 
 ## 8. QA 与验收
@@ -171,6 +173,7 @@ coverage ready
 11. `EXPLAIN` 必须证明同群 anti join 使用 occupancy partial index，而非对群内全部历史 send Action 做过滤；生产采样中领取查询应从十几秒级继续收敛到秒级。
 12. listener 测试必须覆盖 `full page -> full page -> short page`，断言请求 cursor 单调为上一页 upper，最终 contiguous；混合/非数字 cursor 与不前进页仍保持 unproven 且停止。
 13. 回复比例测试必须覆盖 `12/60` 在 1 条和 4 条微批次中不会全部变 reply、累计到第 5 条才形成第 1 条 reply，以及历史 reply 已超配时新增批次为 direct。
+14. 存量错误冻结恢复测试必须覆盖：只选择 replan_required+open+failed/skipped+无 Gateway 的超配 reply 槽；preview hash 漂移拒绝；Gateway-started 排除；重分类后 Contract 的 reply/direct/min 计数、obligation、AuditLog 一致；历史 Action 不改写。
 
 ### 8.2 Release Gate
 
@@ -190,6 +193,7 @@ coverage ready
 - `quantity_slots_unavailable` 不再出现，若存在槽差异则展示精确 code 和计数；
 - ContentMix/CycleSlot/Action 数量守恒，无重复 `primary_quantity_slot_id`；
 - 新建 ContentMix 的累计 reply/direct 数符合配置分母；不得因 context-bound 微批次出现 100% reply；
+- 若当日已有错误冻结槽，受控恢复后至少出现一个新 direct Action，且旧失败 Action、Attempt、远端事实未被改写；
 - AI generation ready、Dispatcher claim、ExecutionAttempt success 和非空 remote message id 持续增长；
 - 全局 AI generation claim 不再恒为 0，数据库中不得持续出现分钟级同指纹 due-claim 查询；
 - unknown/pending visibility 不被替换，daily target 与 coverage confirmed 只随真实远端事实增长。
@@ -223,8 +227,8 @@ coverage ready
 | 能否直接把 listener cursor/status 改成 contiguous？ | 不能。临时恢复只能提高合法页大小，最终状态必须由真实短页产生；永久修复在同轮分页追尾。 |
 | `reply_target_missing` 多是否只因为频道未关注或目标被删？ | 不是。本次目标确有失效终态，但约 180 条开放 Action 全被规划为 reply，远超配置 12/60；根因是微批次重复应用最低数。先修累计比例，远端明确失效的单个目标仍按现有精确读取和排除合同处理。 |
 | 临时索引和最终 migration 会不会冲突？ | 不会。二者使用完全同名同谓词；migration 对有效同名索引 no-op，对 invalid 同名索引显式失败。 |
-| 是否需要数据库迁移？ | 需要新增两个并发 partial index；不新增表、不改业务数据、不回填 Action。 |
+| 是否需要数据库迁移？ | 需要新增两个并发 partial index；不新增表、不回填 Action。当前日错误冻结槽通过带预览 hash、审批、Gateway 零副作用校验和 AuditLog 的显式恢复工具修正，不由 migration 批量改写。 |
 
-自检已覆盖原始需求、产品合同、Planner/generation/Dispatcher/运维职责、数据流、权限安全、并发幂等、unknown、防重复、失败路径、迁移、回滚、QA、Release Gate 和 E4。第一版“删除 waiting Action”已被既有测试和 580 账号边界证伪并撤销；补全后的合同保留驱动 Action、前移 Provider 门禁、复用同一义务，既不切断准入推进，也不允许未 ready 正文。发现的“旧槽是否阻塞独立 Cycle”文档冲突已明确 supersede，非业务异常不再被泛化错误吞掉。首轮发布后的 E4 又反证“容器健康即生成正常”；`0135` 上线后的生产 `EXPLAIN` 继续反证“外层索引命中即吞吐达标”。现已把外层 due claim 与同群 occupancy 两个索引、独立心跳误导、临时并发建索引、worker 安全重启和 migration 幂等边界全部纳入设计。
+自检已覆盖原始需求、产品合同、Planner/generation/Dispatcher/运维职责、数据流、权限安全、并发幂等、unknown、防重复、失败路径、迁移、回滚、QA、Release Gate 和 E4。第一版“删除 waiting Action”已被既有测试和 580 账号边界证伪并撤销；补全后的合同保留驱动 Action、前移 Provider 门禁、复用同一义务，既不切断准入推进，也不允许未 ready 正文。发现的“旧槽是否阻塞独立 Cycle”文档冲突已明确 supersede，非业务异常不再被泛化错误吞掉。首轮发布后的 E4 又反证“容器健康即生成正常”；`0135` 上线后的生产 `EXPLAIN` 继续反证“外层索引命中即吞吐达标”；`0136` 和累计分配上线后的当日数据再次反证“新分配正确即可自动清除旧错误冻结”。现已把外层 due claim、同群 occupancy、独立心跳误导、listener 追尾、累计 reply 配比，以及无 Gateway 存量槽受控重分类的预览、审批、审计和拒绝边界全部纳入设计。
 
 **Product Design Complete：`design_status=complete`，允许进入 dev。**
