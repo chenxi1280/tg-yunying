@@ -37,6 +37,8 @@ def generate_quality_results(
 ) -> tuple[list[SlotGenerationResult], int]:
     if request.cached_contents:
         return _cached_quality_results(session, request), request.cached_tokens
+    if catch_up := _due_catch_up_results(request):
+        return catch_up, 0
     pending = list(range(len(request.batch_ids)))
     accepted: dict[int, SlotGenerationResult] = {}
     last_rejections: dict[int, SlotGenerationResult] = {}
@@ -140,6 +142,28 @@ def _cached_static_fallbacks(contents: list[str]) -> dict[int, SlotGenerationRes
         if getattr(content, "quality_fallback", "") == "check_in_fallback"
         or str(content).strip() == "签到"
     }
+
+
+def _due_catch_up_results(request) -> list[SlotGenerationResult]:
+    config = getattr(request, "config", {}) or {}
+    if not config.get("_ai_group_due_catch_up_required"):
+        return []
+    if not _static_fallback_enabled(request):
+        return []
+    slots = list(config.get("generation_slots") or [])
+    if len(slots) != len(request.batch_ids):
+        return []
+    if not slots or any(not _has_fallback_quantity_slot(slot) for slot in slots):
+        return []
+    reason = "due_catch_up_provider_budget_exhausted"
+    return [
+        SlotGenerationResult(
+            _check_in_fallback_content(slot, index, reason),
+            quality_fallback="check_in_fallback",
+            fallback_reason=reason,
+        )
+        for index, slot in enumerate(slots)
+    ]
 
 
 def _apply_static_quantity_fallback(

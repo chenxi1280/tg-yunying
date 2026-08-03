@@ -8,7 +8,11 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
 from app.models import Action
-from app.services.task_center import ai_generation_dispatch, ai_generation_pipeline
+from app.services.task_center import (
+    ai_generation_dispatch,
+    ai_generation_pipeline,
+    ai_generation_runtime_config,
+)
 from app.services.task_center.ai_generator import AiGenerationUnavailable, GeneratedContent
 from app.services.task_center.ai_generation_pipeline import generate_quality_results
 from app.services.task_center.executors import group_ai_chat
@@ -197,6 +201,99 @@ def test_extra_volume_quantity_slot_uses_check_in_when_all_providers_unavailable
     assert results[0].quality_fallback == "check_in_fallback"
     assert results[0].fallback_reason == "all_model_stages_rejected"
     assert str(results[0].content) == "签到"
+
+
+def test_due_catch_up_bypasses_provider_for_eligible_quantity_slot() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    request = _request(
+        "",
+        cached=False,
+        config={
+            "_ai_group_due_catch_up_required": True,
+            "generation_slots": [_quantity_slot("slot-1", 11)],
+        },
+    )
+
+    with Session(engine) as session:
+        results, tokens = generate_quality_results(
+            session,
+            request,
+            _dependencies(),
+        )
+
+    assert tokens == 0
+    assert str(results[0].content) == "签到"
+    assert results[0].quality_fallback == "check_in_fallback"
+    assert results[0].fallback_reason == "due_catch_up_provider_budget_exhausted"
+
+
+def test_due_catch_up_respects_explicit_model_contract() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    observed: list[str] = []
+    request = _request(
+        "",
+        cached=False,
+        config={
+            "ai_model": "explicit-model",
+            "_ai_group_due_catch_up_required": True,
+            "generation_slots": [_quantity_slot("slot-1", 11)],
+        },
+    )
+
+    with Session(engine) as session:
+        results, _tokens = generate_quality_results(
+            session,
+            request,
+            _dependencies(normal_generator=_stage_generator(session, observed)),
+        )
+
+    assert observed == ["direct"]
+    assert results[0].quality_fallback == ""
+
+
+def test_due_catch_up_never_bypasses_pending_content_obligation() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    request = _request(
+        "",
+        cached=False,
+        config={
+            "_ai_group_due_catch_up_required": True,
+            "generation_slots": [{
+                **_quantity_slot("slot-1", 11),
+                "content_obligation_fallback_ready": False,
+            }],
+        },
+    )
+
+    with Session(engine) as session:
+        with pytest.raises(AiGenerationUnavailable, match="provider unavailable"):
+            generate_quality_results(
+                session,
+                request,
+                _dependencies(normal_generator=_unavailable_generator),
+            )
+
+
+def test_due_catch_up_requires_debt_and_full_provider_timeout(monkeypatch) -> None:
+    now_value = datetime(2026, 8, 3, 15, 0, tzinfo=UTC)
+    action = SimpleNamespace(scheduled_at=now_value - timedelta(seconds=120))
+    payload = SimpleNamespace(daily_group_target_id="target-1")
+    target = SimpleNamespace(due_message_count=100, confirmed_message_count=20)
+    session = SimpleNamespace(get=lambda _model, _target_id: target)
+    monkeypatch.setattr(ai_generation_runtime_config, "_now", lambda: now_value)
+
+    assert ai_generation_runtime_config._due_catch_up_required(
+        session, action, payload,
+    ) is True
+    action.scheduled_at = now_value - timedelta(seconds=119)
+    assert ai_generation_runtime_config._due_catch_up_required(
+        session, action, payload,
+    ) is False
+    target.due_message_count = target.confirmed_message_count
+    action.scheduled_at = now_value - timedelta(seconds=120)
+    assert ai_generation_runtime_config._due_catch_up_required(
+        session, action, payload,
+    ) is False
 
 
 def test_pending_content_obligation_never_degrades_to_check_in() -> None:

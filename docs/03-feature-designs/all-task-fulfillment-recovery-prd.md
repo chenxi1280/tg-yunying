@@ -104,6 +104,34 @@
 
 验收必须覆盖：阈值 2 时新增 1 条上下文保留 ready、新增 2 条才重生成；阈值 100 的活跃群 canary 不再因单条新消息空转；累计 reply 需求为 0 的全 direct Cycle 冻结 `reply_min_required_count=0` 且 Planner 不再抛 `content_mix_policy_invalid`；发布后两个事故 Task 均取得 release 锚点后的真实 `ExecutionAttempt.remote_message_id`。
 
+### 2.5.2 2026-08-03 到期债务生成预算补正
+
+新版本取得真实远端发送后，生产 E4 仍显示三个运行群的 `effective_message_target` 分别为
+`4000 / 800 / 800`，而同群串行链路中单条 Provider 到 Gateway 常见耗时 25–120 秒。
+因此“链路恢复出量”仍无法证明当天到期债务可追平；继续调用已没有到期预算的 Provider
+会消耗发送窗口，并让 `ai_daily_due_unmet/ai_daily_coverage_unmet` 持续扩大。
+
+1. 每次生成前按当前 `TaskGroupDailyTarget.due_message_count - confirmed_message_count`
+   重读真实债务。仅当债务大于 0，且当前 Action 的 `scheduled_at` 已落后至少一个现有
+   `AI_CONTENT_REQUEST_TIMEOUT_SECONDS` 时，才标记本次为
+   `due_catch_up_provider_budget_exhausted`；未到该边界仍执行正常主/备用 Provider 链。
+2. 该补正只允许用于 direct、已绑定真实 `primary_quantity_slot_id`、没有 pending 内容义务、
+   没有 reply 或素材意图的 Action；任务显式指定模型、租户关闭静态 fallback、账本/数量槽
+   绑定不完整时均不得触发。触发后复用现有精确 `签到` 内容和
+   `quality_fallback=check_in_fallback` 审计，不新增模板或模拟 Provider 成功。
+3. `签到` 只替代本次已耗尽到期预算的 Provider 调用，不绕过 listener 连续性、群管准入、
+   membership/can_send、账号互斥、ContentMix/数量槽绑定、Dispatcher、Gateway 或 unknown
+   防重。只有真实成功 Attempt 的非空 `remote_message_id` 才更新群日总量和账号覆盖。
+4. 触发判断不持久化任务级降级开关，不修改目标、`scope_frozen_at`、due、coverage 或历史
+   Action。每条 Action 独立重算；债务追平后自动回到正常 AI 生成。生产临时恢复禁止直接
+   批量预写 `message_text=签到`，避免绕过生成审计和发送前门禁。
+
+验收必须覆盖：未逾期或账本无债务时仍调用 Provider；逾期不足一个 Provider 超时仍调用
+Provider；逾期且有真实债务的合格 direct 数量槽零 Provider 调用并生成带原因的 `签到`；
+reply、pending 内容义务、显式模型或静态 fallback 关闭时不得降级；发布后正式 E4 同时满足
+release/runtime、`post_release_remote_success_count>0`、`due_message_count<=confirmed_message_count`
+和覆盖到期量，不再把“已有远端样本”写成完整履约。
+
 ### 2.6 2026-08-02 运行中配置重排外键完整性补正
 
 运行中任务修改会影响后续规划的配置时，正式更新链路只允许删除没有任何

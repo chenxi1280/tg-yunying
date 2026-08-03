@@ -1108,3 +1108,7 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
   `service.drain_task_planner`，不再复制 retired hard-hourly 私有流程。
 - `backend/app/services/task_center/ai_generation_worker.py`：AI 生成领取入口；跨群可并行，
   同群已有 generating 或正文就绪 Action 时不再预生成下一条，避免自身发送制造上下文重生风暴。
+- `backend/app/services/task_center/ai_generation_runtime_config.py`、`ai_generation_pipeline.py`：
+  在每条 Action 生成前读取真实群日 due debt，并以现有 Provider 请求超时判断已无到期预算的
+  direct 主数量槽；合格时复用带明确原因的精确 `签到` fallback，其他 Action 保持正常
+  Provider、内容义务、准入和 Gateway 合同。

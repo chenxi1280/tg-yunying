@@ -12,11 +12,14 @@ from app.models import (
     ContentMixObligation,
     Task,
     TaskDayLedger,
+    TaskGroupDailyTarget,
     TaskGroupDailyMessageSlot,
     TenantAiSetting,
 )
+from app.services._common import _now
 from app.timezone import BEIJING_TZ
 
+from .ai_generator import AI_CONTENT_REQUEST_TIMEOUT_SECONDS
 from .payloads import SendMessagePayload
 
 
@@ -46,6 +49,8 @@ def build_runtime_config(
     deadline = _latest_safe_send_at(session, batch[0][0])
     if deadline:
         config["_ai_generation_latest_safe_send_at"] = deadline.isoformat()
+    if _due_catch_up_required(session, batch[0][0], batch[0][1]):
+        config["_ai_group_due_catch_up_required"] = True
     first = batch[0][1]
     if first.topic_thread:
         config["topic_thread"] = first.topic_thread
@@ -110,6 +115,25 @@ def _latest_safe_send_at(session: Session, action: Action) -> datetime | None:
         return None
     aware = deadline.replace(tzinfo=timezone.utc) if deadline.tzinfo is None else deadline
     return aware.astimezone(BEIJING_TZ).replace(tzinfo=None)
+
+
+def _due_catch_up_required(
+    session: Session,
+    action: Action,
+    payload: SendMessagePayload,
+) -> bool:
+    target_id = str(payload.daily_group_target_id or "")
+    target = session.get(TaskGroupDailyTarget, target_id) if target_id else None
+    if target is None or target.due_message_count <= target.confirmed_message_count:
+        return False
+    overdue_seconds = (
+        _naive(_now()) - _naive(action.scheduled_at)
+    ).total_seconds()
+    return overdue_seconds >= AI_CONTENT_REQUEST_TIMEOUT_SECONDS
+
+
+def _naive(value: datetime) -> datetime:
+    return value.replace(tzinfo=None) if value.tzinfo else value
 
 
 __all__ = ["build_runtime_config", "payload_map", "quality_snapshot", "tenant_fallback_flags"]
