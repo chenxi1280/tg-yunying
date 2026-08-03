@@ -94,6 +94,16 @@
 
 验收必须覆盖：同群已有 ready Action时下一条不生成；另一群仍可生成；首条进入终态后同群下一条恢复生成；三个生成 worker 健康且具有不同 worker ID；发布后 `context_superseded_requeue` 不再随每次本任务发送成批增长。
 
+### 2.5.1 2026-08-03 生成完成阈值与累计关系合同补正
+
+生产恢复 canary 进一步证明两处合同不一致会让 AI 活群在容器健康时仍长期零发送：其一，生成完成守卫只要看到 1 条更新真人消息就清空正文，完全忽略 Action 已冻结的 `context_expire_after_messages`；其二，累计 reply 分配已经返回本批 `requested_reply_count=0` 时，新 ContentMix 合同仍把静态 `reply_min_per_round` 写成最小义务，导致全 direct spec 以 `content_mix_policy_invalid` 中断 Planner。
+
+1. 生成前和 Gateway 前使用同一冻结上下文阈值。普通 direct Action 生成完成后，只统计同 tenant/group、非 bot、非空正文且严格晚于冻结 snapshot 的真人消息；累计条数 `< context_expire_after_messages` 时保留 ready 正文，达到阈值才执行 `context_superseded_requeue`。历史 Action 未冻结正数阈值时兼容为 1；不得因此跳过 listener contiguous、scope、账号、准入、内容质量或 Gateway 二次门禁。
+2. ContentMix 的 `reply_min_required_count` 必须取本批累计分配后的 `GenerationPlanState.requested_reply_count`；coverage reply shortfall 时仍为 0。不得再次从静态 `reply_min_per_round` 推导本 Cycle 最小义务，否则微批次、旧日超配或受控 reply→direct 恢复会重新制造非法合同。
+3. 生产临时恢复只可对精确 Action 使用 preview hash、审批引用和 AuditLog 提升冻结阈值/排期；不得修改任务全局配置。若 Action 账号与数量槽 coverage 不一致，Dispatcher 必须继续以 `content_mix_binding_invalid` 拒绝，禁止用改绑绕过账本。
+
+验收必须覆盖：阈值 2 时新增 1 条上下文保留 ready、新增 2 条才重生成；阈值 100 的活跃群 canary 不再因单条新消息空转；累计 reply 需求为 0 的全 direct Cycle 冻结 `reply_min_required_count=0` 且 Planner 不再抛 `content_mix_policy_invalid`；发布后两个事故 Task 均取得 release 锚点后的真实 `ExecutionAttempt.remote_message_id`。
+
 ### 2.6 2026-08-02 运行中配置重排外键完整性补正
 
 运行中任务修改会影响后续规划的配置时，正式更新链路只允许删除没有任何
