@@ -1116,3 +1116,7 @@ search_rank_deboost 当前已有 4 条 task_center 路由：
   继续按冻结真人上下文阈值重排；完整 `due_catch_up_check_in` 因正文与话题无关，在生成完成和
   Gateway 前均保留 exact check-in 与专用消息记忆，但仍执行 listener、scope、账号、账本和
   Gateway 门禁，避免高活跃群在 ready/replan 间空转。
+- `backend/app/services/task_center/ai_generation_worker.py`：group row lock 下执行生成容量判定；
+  默认仍同群单 generating/ready，任务显式配置 `due_catch_up_pipeline_depth=2..4` 时，只有第一条
+  完整追赶 ready 后才继续补满有界流水线。候选仍需即时重读 due debt、ContentMix pending 义务、
+  租户静态 fallback 和显式模型合同，任一不满足即退回深度 1。

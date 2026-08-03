@@ -264,6 +264,10 @@ def _normalize_legacy_group_ai_config(task_type: str, data: dict[str, Any]) -> d
             next_data.pop(field, None)
         next_data["group_bot_admission_required"] = True
         next_data.setdefault("context_expire_after_messages", 10)
+        next_data.setdefault("due_catch_up_pipeline_depth", 1)
+        depth = int(next_data["due_catch_up_pipeline_depth"])
+        if depth < 1 or depth > 4:
+            raise ValueError("due_catch_up_pipeline_depth must be between 1 and 4")
         if "messages_per_round_mode" not in next_data and "messages_per_round" in next_data:
             next_data["messages_per_round_mode"] = "manual"
         return next_data

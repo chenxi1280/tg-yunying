@@ -210,6 +210,107 @@ def test_generation_claim_blocks_same_group_before_provider_starts() -> None:
     assert observed_status == ["generating"]
 
 
+def test_due_catch_up_pipeline_stops_at_configured_depth(monkeypatch) -> None:
+    from app.services.task_center import ai_generation_worker
+
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    _seed_actions(engine)
+    with Session(engine) as session:
+        session.add_all([
+            _action("catch-up-second", _now(), "", "pending"),
+            _action("catch-up-third", _now(), "", "pending"),
+        ])
+        session.commit()
+
+    monkeypatch.setattr(
+        ai_generation_worker,
+        "_due_catch_up_pipeline_depth",
+        lambda *_args: 2,
+    )
+
+    def generate(session: Session, action: Action, _account: TgAccount) -> None:
+        action.payload = {
+            **dict(action.payload or {}),
+            "message_text": "签到",
+            "ai_generation_status": "ready",
+            "content_source": "due_catch_up_check_in",
+            "generation_source": "static_safe_fallback",
+            "quality_fallback": "check_in_fallback",
+            "fallback_reason": "due_catch_up_provider_budget_exhausted",
+            "coverage_ledger_id": f"coverage-{action.id}",
+            "daily_group_target_id": "daily-target-catch-up",
+            "primary_quantity_slot_id": f"quantity-{action.id}",
+        }
+        session.commit()
+
+    processed = drain_ai_generation(
+        lambda: Session(engine),
+        limit=10,
+        generate_action=generate,
+    )
+
+    assert processed == 2
+    with Session(engine) as session:
+        actions = list(session.scalars(select(Action).where(
+            Action.payload["group_id"].as_integer() == 7,
+        )))
+        ready = [
+            action for action in actions
+            if action.payload.get("ai_generation_status") == "ready"
+        ]
+        pending = [
+            action for action in actions
+            if action.payload.get("ai_generation_status") == "pending"
+        ]
+        assert len(ready) == 2
+        assert len(pending) == 1
+
+
+def test_due_catch_up_pipeline_depth_requires_full_runtime_eligibility(monkeypatch) -> None:
+    from app.services.task_center import ai_generation_worker
+
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    _seed_actions(engine)
+    monkeypatch.setattr(
+        ai_generation_worker,
+        "_content_obligation_fallback_ready",
+        lambda *_args: True,
+    )
+    monkeypatch.setattr(
+        ai_generation_worker,
+        "_due_catch_up_required",
+        lambda *_args: True,
+    )
+    monkeypatch.setattr(
+        ai_generation_worker,
+        "tenant_fallback_flags",
+        lambda *_args: {"_ai_group_static_fallback_enabled": True},
+    )
+    with Session(engine) as session:
+        task = session.get(Task, "ai-task")
+        task.type_config = {"due_catch_up_pipeline_depth": 4}
+        action = session.get(Action, "pending-generation")
+        action.primary_quantity_slot_id = "quantity-catch-up"
+        action.payload = {
+            **dict(action.payload or {}),
+            "coverage_ledger_id": "coverage-catch-up",
+            "daily_group_target_id": "daily-target-catch-up",
+        }
+        session.flush()
+
+        assert ai_generation_worker._due_catch_up_pipeline_depth(session, action) == 4
+
+        task.type_config = {
+            "due_catch_up_pipeline_depth": 4,
+            "ai_model": "explicit-model",
+        }
+        session.flush()
+
+        assert ai_generation_worker._due_catch_up_pipeline_depth(session, action) == 1
+
+
 def test_deferred_admission_releases_generating_claim_to_pending() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

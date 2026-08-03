@@ -931,6 +931,8 @@ historical_design_status=complete，`contract_status=historical_do_not_implement
 
 2026-08-03 到期债务补正：同群单 ready 仍保留，但已到期 direct 数量槽若落后至少一次现有 Provider 请求超时、当前群日账本确有 due debt，且没有 reply/素材/pending 内容义务、任务未显式指定模型、租户允许静态 fallback，则本次跳过已无到期预算的 Provider 并使用带 `due_catch_up_provider_budget_exhausted` 审计的精确 `签到`。它必须建立独立 `due_catch_up_check_in` 内容合同并绑定 Action、账号、群、覆盖账本、群日账本、主数量槽和专用消息记忆；仅该完整合同豁免普通话术 10 天文本去重以及与精确签到无关的正文上下文失效，Action/账本/数量槽/Gateway 幂等和 listener 连续性仍保留。它仍逐条经过准入、Dispatcher 和 Gateway，只有非空远端 ID 计完成；不得改小目标、回拨账本时间或直接批量预写正文。完整门禁和验收见专项 PRD §2.5.2。
 
+2026-08-03 到期追赶容量补正：任务可显式设置 `due_catch_up_pipeline_depth=1..4`，默认 1；只有完整到期债务精确签到可在第一条原子 claim 完成后形成同群有界 ready 流水线，任何普通 Provider/不完整合同/pending 内容义务立即退回单 ready。深度不改变账号、coverage、数量槽、admission、Dispatcher/Gateway 或 remote visibility 门禁；事故 Task 的生产深度 4 必须有审批审计和净增速率证据，设回 1 可立即关闭。完整门禁见专项 PRD §2.5.3。
+
 生产复核确认，AI 活群、评论、点赞、浏览和搜索点击虽然使用不同执行器，但当前未达标由三类共同问题叠加造成：
 
 1. Planner、Dispatcher、覆盖账本和 `Task.stats` 在热事务中交叉写入，发布后已经出现 PostgreSQL deadlock；容器存活不等于队列可持续流动。

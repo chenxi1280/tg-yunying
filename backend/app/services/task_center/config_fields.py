@@ -175,6 +175,7 @@ TYPE_SETTINGS_FIELDS = {
         "ramp_up_minutes",
         "ramp_start_ratio",
         "context_expire_after_messages",
+        "due_catch_up_pipeline_depth",
     },
     "group_relay": {
         "source_groups",
