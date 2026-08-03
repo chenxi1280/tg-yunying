@@ -7,10 +7,14 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import Task, TaskAccountDailyCoverage
+from app.models import Action, AiGroupMessageMemory, Task, TaskAccountDailyCoverage
+from app.services._common import _now
 from app.services.task_center.daily_coverage import release_voice_profile_coverage_for_check_in
 from app.services.task_center.direct_check_in import (
+    DUE_CATCH_UP_CHECK_IN_SOURCE,
     MASK_MISSING_CHECK_IN_SOURCE,
+    due_catch_up_check_in_memory_is_valid,
+    reserve_due_catch_up_check_in_memory,
     requires_direct_check_in,
 )
 from app.services.task_center.payloads import SendMessagePayload
@@ -88,3 +92,90 @@ def test_missing_mask_blocker_is_released_for_check_in_coverage() -> None:
         assert released == 1
         assert row.state == "ready"
         assert row.recovery_path == "mask_missing_check_in"
+
+
+def test_due_catch_up_check_in_uses_action_bound_memory_despite_prior_text() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    with Session(engine) as session:
+        task = Task(id="task-catch-up", tenant_id=1, name="AI", type="group_ai_chat")
+        action = Action(
+            id="action-catch-up",
+            tenant_id=1,
+            task_id=task.id,
+            task_type="group_ai_chat",
+            action_type="send_message",
+            account_id=101,
+            status="executing",
+            scheduled_at=now_value,
+            payload={},
+        )
+        coverage = TaskAccountDailyCoverage(
+            id="coverage-catch-up",
+            tenant_id=1,
+            task_id=task.id,
+            group_id=21,
+            account_id=101,
+            coverage_date=now_value.date(),
+            state="reserved",
+            reserved_action_id=action.id,
+            targeted_at=now_value,
+        )
+        prior = AiGroupMessageMemory(
+            tenant_id=1,
+            group_id=21,
+            task_id=task.id,
+            action_id="prior-action",
+            account_id=101,
+            raw_text="签到",
+            normalized_text="签到",
+            text_fingerprint="prior",
+            status="success",
+            planned_at=now_value,
+        )
+        session.add_all([task, action, coverage, prior])
+        session.flush()
+        data = _due_catch_up_data()
+        payload = SendMessagePayload.model_validate(data)
+
+        memory = reserve_due_catch_up_check_in_memory(
+            session,
+            action,
+            payload,
+            data=data,
+        )
+        data["ai_message_memory_id"] = memory.id
+        checked = SendMessagePayload.model_validate(data)
+
+        assert memory.action_id == action.id
+        assert memory.content_source == DUE_CATCH_UP_CHECK_IN_SOURCE
+        assert due_catch_up_check_in_memory_is_valid(session, action, checked)
+
+
+def test_due_catch_up_check_in_rejects_incomplete_contract() -> None:
+    data = _due_catch_up_data()
+    data["primary_quantity_slot_id"] = ""
+
+    from app.services.task_center.direct_check_in import is_due_catch_up_check_in
+
+    assert is_due_catch_up_check_in(data) is False
+
+
+def _due_catch_up_data() -> dict:
+    return {
+        "group_id": 21,
+        "message_text": "签到",
+        "ai_generation_status": "ready",
+        "coverage_ledger_id": "coverage-catch-up",
+        "daily_group_target_id": "daily-target-catch-up",
+        "primary_quantity_slot_id": "quantity-slot-catch-up",
+        "account_mask_id": "mask-catch-up",
+        "account_mask_version": 2,
+        "account_mask_snapshot_hash": "snapshot-catch-up",
+        "mask_status": "active",
+        "content_source": DUE_CATCH_UP_CHECK_IN_SOURCE,
+        "generation_source": "static_safe_fallback",
+        "quality_fallback": "check_in_fallback",
+        "fallback_reason": "due_catch_up_provider_budget_exhausted",
+    }

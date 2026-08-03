@@ -322,6 +322,50 @@ def test_daily_coverage_cleanup_keeps_current_mask_contract() -> None:
         assert action.status == "pending"
 
 
+def test_daily_coverage_cleanup_keeps_complete_due_catch_up_contract() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        task = Task(
+            id="task-current-catch-up-contract",
+            tenant_id=1,
+            name="到期追赶合同",
+            type="group_ai_chat",
+            status="running",
+        )
+        action = Action(
+            id="action-current-catch-up-contract",
+            tenant_id=1,
+            task_id=task.id,
+            task_type="group_ai_chat",
+            action_type="send_message",
+            account_id=11,
+            status="pending",
+            scheduled_at=_now(),
+            payload={
+                "group_id": 7,
+                "message_text": "签到",
+                "coverage_ledger_id": "coverage-current-catch-up-contract",
+                "daily_group_target_id": "daily-target-current",
+                "primary_quantity_slot_id": "quantity-slot-current",
+                "ai_message_memory_id": "memory-current-catch-up",
+                "content_source": "due_catch_up_check_in",
+                "generation_source": "static_safe_fallback",
+                "quality_fallback": "check_in_fallback",
+                "fallback_reason": "due_catch_up_provider_budget_exhausted",
+            },
+        )
+        session.add_all([task, action])
+        session.commit()
+
+        cleanup = import_module(
+            "app.services.task_center.legacy_anchor_rewrite"
+        ).expire_incomplete_daily_contract_actions
+
+        assert cleanup(session, task) == 0
+        assert action.status == "pending"
+
+
 def test_daily_coverage_cleanup_keeps_non_coverage_open_action() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

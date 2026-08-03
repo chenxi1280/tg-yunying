@@ -81,7 +81,12 @@ from .coverage_capacity import (
     hard_hourly_group_cooldown_proof,
 )
 from .daily_coverage import confirm_coverage_from_attempt, ensure_task_daily_coverage, mark_coverage_unknown, release_coverage_reservation
-from .direct_check_in import MASK_MISSING_CHECK_IN_SOURCE, direct_check_in_memory_is_valid
+from .direct_check_in import (
+    DUE_CATCH_UP_CHECK_IN_SOURCE,
+    MASK_MISSING_CHECK_IN_SOURCE,
+    direct_check_in_memory_is_valid,
+    due_catch_up_check_in_memory_is_valid,
+)
 from .dispatch_reservations import (
     DispatchClaimBinding,
     confirm_dispatch_claim,
@@ -3428,6 +3433,17 @@ def _group_ai_message_memory_sendable(session: Session, action: Action, payload:
             action,
             "direct_check_in_memory_invalid",
             "日覆盖签到消息记忆与账号、群或 Action 绑定不一致",
+            auto_check="拦截",
+            validation_stage="ai_message_memory",
+        )
+        return False
+    if payload.content_source == DUE_CATCH_UP_CHECK_IN_SOURCE:
+        if due_catch_up_check_in_memory_is_valid(session, action, payload):
+            return True
+        _fail(
+            action,
+            "due_catch_up_check_in_memory_invalid",
+            "到期追赶签到消息记忆与 Action、账本或数量槽绑定不一致",
             auto_check="拦截",
             validation_stage="ai_message_memory",
         )
