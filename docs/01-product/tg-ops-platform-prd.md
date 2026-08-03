@@ -929,6 +929,8 @@ historical_design_status=complete，`contract_status=historical_do_not_implement
 
 2026-08-01 生产补正：AI 日履约的生成并发按“跨群并行、同群单 ready”执行，禁止同群预生成队列被自身真实发送反复判定为上下文过期；具体门禁、worker 拓扑和 E4 口径以专项 PRD §2.5 为准。
 
+2026-08-03 到期债务补正：同群单 ready 仍保留，但已到期 direct 数量槽若落后至少一次现有 Provider 请求超时、当前群日账本确有 due debt，且没有 reply/素材/pending 内容义务、任务未显式指定模型、租户允许静态 fallback，则本次跳过已无到期预算的 Provider 并使用带 `due_catch_up_provider_budget_exhausted` 审计的精确 `签到`。它仍逐条经过准入、Dispatcher 和 Gateway，只有非空远端 ID 计完成；不得改小目标、回拨账本时间或直接批量预写正文。完整门禁和验收见专项 PRD §2.5.2。
+
 生产复核确认，AI 活群、评论、点赞、浏览和搜索点击虽然使用不同执行器，但当前未达标由三类共同问题叠加造成：
 
 1. Planner、Dispatcher、覆盖账本和 `Task.stats` 在热事务中交叉写入，发布后已经出现 PostgreSQL deadlock；容器存活不等于队列可持续流动。
