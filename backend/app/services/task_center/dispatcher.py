@@ -86,6 +86,7 @@ from .direct_check_in import (
     MASK_MISSING_CHECK_IN_SOURCE,
     direct_check_in_memory_is_valid,
     due_catch_up_check_in_memory_is_valid,
+    is_due_catch_up_check_in,
 )
 from .dispatch_reservations import (
     DispatchClaimBinding,
@@ -9169,6 +9170,8 @@ def _context_expired(session: Session, payload: SendMessagePayload) -> bool:
 
 def _context_expiration_applies(payload: SendMessagePayload) -> bool:
     if not payload.cycle_id or not payload.group_id or not payload.context_snapshot_message_id or payload.context_expire_after_messages <= 0:
+        return False
+    if is_due_catch_up_check_in(payload.model_dump(mode="json")):
         return False
     if _deferred_daily_coverage_payload(payload):
         return False
