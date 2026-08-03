@@ -211,6 +211,7 @@ def _group_generation_slot_is_free():
 
 def _mark_generation_claim(action: Action, owner: str, token: str) -> None:
     payload = dict(action.payload) if isinstance(action.payload, dict) else {}
+    payload["ai_generation_status"] = "generating"
     payload["ai_generation_claim_owner"] = owner
     payload["ai_generation_claim_token"] = token
     action.payload = payload
@@ -296,6 +297,11 @@ def _persisted_generation_failure(
 
 def _release_generation_claim(action: Action, payload: dict) -> None:
     payload = dict(payload)
+    if (
+        payload.get("ai_generation_status") == "generating"
+        and not str(payload.get("message_text") or "").strip()
+    ):
+        payload["ai_generation_status"] = "pending"
     payload["ai_generation_claim_owner"] = ""
     payload["ai_generation_claim_token"] = ""
     action.payload = payload

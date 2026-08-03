@@ -11,7 +11,10 @@ from app.models import Action, Task, Tenant, TgAccount, TgGroup
 from app.services._common import _now
 from app.services.task_center.ai_generator import AiGenerationUnavailable, GeneratedContent
 from app.services.task_center.ai_generation_quality import fail_generation_action
-from app.services.task_center.ai_generation_worker import drain_ai_generation
+from app.services.task_center.ai_generation_worker import (
+    GenerationAdmissionDeferred,
+    drain_ai_generation,
+)
 from tests.ai_generation_phase_test_support import (
     generation_dependencies,
     seed_reserved_normal_batch,
@@ -163,6 +166,70 @@ def test_generation_worker_generates_other_group_while_ready_group_waits() -> No
         generate_action=generate,
     ) == 1
     assert generated == ["other-group"]
+
+
+def test_generation_claim_blocks_same_group_before_provider_starts() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    _seed_actions(engine)
+    with Session(engine) as session:
+        session.add(TgAccount(
+            id=12,
+            tenant_id=1,
+            display_name="AI账号2",
+            phone_masked="+861***0012",
+            status="在线",
+        ))
+        second = _action("same-group-second", _now(), "", "pending")
+        second.account_id = 12
+        session.add(second)
+        session.commit()
+
+    observed_status: list[str] = []
+
+    def generate(session: Session, action: Action, _account: TgAccount) -> None:
+        observed_status.append(action.payload["ai_generation_status"])
+        nested = drain_ai_generation(
+            lambda: Session(engine),
+            limit=1,
+            generate_action=lambda *_args: pytest.fail("same group claimed twice"),
+        )
+        assert nested == 0
+        action.payload = {
+            **dict(action.payload or {}),
+            "message_text": "第一条完成",
+            "ai_generation_status": "ready",
+        }
+        session.commit()
+
+    assert drain_ai_generation(
+        lambda: Session(engine),
+        limit=1,
+        generate_action=generate,
+    ) == 1
+    assert observed_status == ["generating"]
+
+
+def test_deferred_admission_releases_generating_claim_to_pending() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    _seed_actions(engine)
+
+    def defer(*_args) -> None:
+        raise GenerationAdmissionDeferred("pending-generation")
+
+    assert drain_ai_generation(
+        lambda: Session(engine),
+        limit=1,
+        generate_action=defer,
+    ) == 1
+
+    with Session(engine) as session:
+        action = session.get(Action, "pending-generation")
+        assert action.status == "pending"
+        assert action.payload["ai_generation_status"] == "pending"
+        assert action.claim_owner == ""
+        assert action.lease_owner == ""
 
 
 def test_generation_worker_skips_account_with_executing_action() -> None:
