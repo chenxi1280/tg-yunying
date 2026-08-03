@@ -298,6 +298,7 @@ def test_planner_freezes_relation_slots_against_daily_quantity_slots(
         generation=SimpleNamespace(
             quality_items=items,
             coverage_reply_shortfall=False,
+            requested_reply_count=1,
         ),
     )
 
