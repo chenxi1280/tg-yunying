@@ -149,6 +149,33 @@ release/runtime、`post_release_remote_success_count>0`、`due_message_count<=co
 高活跃群在完整追赶合同生成后持续新增真人上下文时仍须保留 ready 正文并取得真实 remote；
 同样条件下的普通 Provider 正文达到冻结阈值后仍必须重排。
 
+### 2.5.3 2026-08-03 到期追赶流水线容量补正
+
+生产实测证明单群单 ready 即使全部改为零 Provider 的精确签到，生成完成到 Gateway 前仍会
+受 Dispatcher 公平调度、账号锁和远端调用耗时影响，约每分钟一条；事故任务在 16:52 仍有
+约 390 条到期债务，单 ready 吞吐无法在自然日截止前追平。临时增加同 shard Dispatcher 后
+吞吐未上升，说明瓶颈是生成层只允许一个 ready，而不是 Dispatcher 实例不足。
+
+1. 新增显式任务配置 `due_catch_up_pipeline_depth`，默认 `1`、允许 `1..4`；`1` 可立即关闭
+   流水线。只有 §2.5.2 的完整到期债务条件、无 pending 内容义务、租户允许静态 fallback 且
+   任务未显式指定模型时才读取大于 1 的值。普通 Provider、reply、素材或账本无债务仍严格
+   保持同群单 generating/ready。
+2. 同群第一条仍必须先以原子 `generating` claim 独占；只有它完成并成为完整
+   `due_catch_up_check_in` ready 后，后续 worker 才可继续补满配置深度。任何 occupant 不是
+   完整追赶合同时立即退回单 ready，防止 Provider 并发和上下文竞态回归。
+3. 每条流水线 Action 仍绑定不同账号、coverage 和主数量槽，Dispatcher/Gateway claim、账号
+   互斥、speaker rotation、admission、remote visibility 和 request identity 不变；不得把深度
+   当成批量记账或批量预写正文。生产仅对本次两个事故 Task 显式设为 `4`，并写审批/审计；
+   观察到多 remote、unknown 激增或拦截率恶化时回设 `1` 并停止临时 extra Dispatcher。
+4. 额外 Dispatcher 只作为发布前可逆容量 canary：两个既有 shard 各增加一个唯一 worker ID，
+   不改变 `ACCOUNT_SHARD_TOTAL=2`。若 ready 深度未放开时净增不改善，不得把额外实例固化；
+   最终 compose 数量以独立吞吐证据决定。
+
+验收必须覆盖：默认值仍每群只生成 1 条；深度 2 时第一条 claim 未完成前第二 worker 领取 0，
+第一条成为完整追赶 ready 后同群最多再生成 1 条，第三条保持 pending；伪造 source、普通正文、
+有 pending 内容义务或债务清零均退回深度 1；PostgreSQL 并发下不得超过配置深度；生产观察窗
+内每个 Action 只有一个 remote，confirmed 净增速率必须持续高于 due 增速，才能保留深度 4。
+
 ### 2.6 2026-08-02 运行中配置重排外键完整性补正
 
 运行中任务修改会影响后续规划的配置时，正式更新链路只允许删除没有任何
