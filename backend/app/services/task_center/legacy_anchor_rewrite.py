@@ -8,6 +8,7 @@ from app.services._common import _now
 
 from .ai_message_memory import mark_group_ai_message_result
 from .daily_coverage import release_coverage_reservation
+from .direct_check_in import is_due_catch_up_check_in
 
 
 LEGACY_ANCHOR_REPLAN_CODE = "voice_profile_anchor_replan"
@@ -84,6 +85,8 @@ def _has_current_daily_content_contract(action: Action) -> bool:
     if not str(payload.get("daily_group_target_id") or "").strip():
         return False
     source = str(payload.get("content_source") or "").strip()
+    if is_due_catch_up_check_in(payload):
+        return bool(str(payload.get("ai_message_memory_id") or "").strip())
     if source == "account_mask":
         return bool(
             str(payload.get("account_mask_id") or "").strip()

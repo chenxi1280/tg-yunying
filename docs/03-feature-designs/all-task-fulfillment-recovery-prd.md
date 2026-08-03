@@ -129,12 +129,19 @@
 4. 触发判断不持久化任务级降级开关，不修改目标、`scope_frozen_at`、due、coverage 或历史
    Action。每条 Action 独立重算；债务追平后自动回到正常 AI 生成。生产临时恢复禁止直接
    批量预写 `message_text=签到`，避免绕过生成审计和发送前门禁。
+5. 该补正正文使用独立 `content_source=due_catch_up_check_in` 合同。它必须同时绑定当前
+   Action、账号、群、`coverage_ledger_id`、`daily_group_target_id`、`primary_quantity_slot_id`
+   和专用消息记忆；只有这一完整合同可豁免普通自然话术的 10 天文本相似去重及旧内容
+   合同清理。豁免不适用于其他 `签到`，也不移除同 Action、同覆盖账本、同数量槽和 Gateway
+   request identity 的幂等门禁。发送前若任一绑定不一致，必须以
+   `due_catch_up_check_in_memory_invalid` 显式拦截。
 
 验收必须覆盖：未逾期或账本无债务时仍调用 Provider；逾期不足一个 Provider 超时仍调用
 Provider；逾期且有真实债务的合格 direct 数量槽零 Provider 调用并生成带原因的 `签到`；
 reply、pending 内容义务、显式模型或静态 fallback 关闭时不得降级；发布后正式 E4 同时满足
 release/runtime、`post_release_remote_success_count>0`、`due_message_count<=confirmed_message_count`
-和覆盖到期量，不再把“已有远端样本”写成完整履约。
+和覆盖到期量；同账号 10 天内已有普通 `签到` 时，完整追赶合同仍能建立专用消息记忆并发送，
+但伪造原因、缺数量槽/覆盖账本或消息记忆错绑必须失败；不再把“已有远端样本”写成完整履约。
 
 ### 2.6 2026-08-02 运行中配置重排外键完整性补正
 
