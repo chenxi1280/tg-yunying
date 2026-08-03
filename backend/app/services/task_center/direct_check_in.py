@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import timedelta
 
 from sqlalchemy import select
@@ -22,6 +23,8 @@ from .payloads import SendMessagePayload
 DIRECT_CHECK_IN_TEXT = "签到"
 DIRECT_CHECK_IN_SOURCE = "check_in_direct"
 MASK_MISSING_CHECK_IN_SOURCE = "mask_missing_check_in"
+DUE_CATCH_UP_CHECK_IN_SOURCE = "due_catch_up_check_in"
+DUE_CATCH_UP_CHECK_IN_REASON = "due_catch_up_provider_budget_exhausted"
 DIRECT_GENERATION_SOURCE = "direct_check_in"
 DIRECT_MEMORY_RETENTION = timedelta(days=30)
 DIRECT_CHECK_IN_DEDUPE_WINDOW = timedelta(days=10)
@@ -110,6 +113,128 @@ def direct_check_in_memory_is_valid(
         and memory.content_source == MASK_MISSING_CHECK_IN_SOURCE
         and memory.mask_status == "missing"
         and memory.status in {"reserved", "claiming", "executing", "unknown_after_send", "success"}
+    )
+
+
+def is_due_catch_up_check_in(data: Mapping[str, object]) -> bool:
+    return bool(
+        str(data.get("message_text") or "").strip() == DIRECT_CHECK_IN_TEXT
+        and data.get("content_source") == DUE_CATCH_UP_CHECK_IN_SOURCE
+        and data.get("generation_source") == "static_safe_fallback"
+        and data.get("quality_fallback") == "check_in_fallback"
+        and data.get("fallback_reason") == DUE_CATCH_UP_CHECK_IN_REASON
+        and str(data.get("coverage_ledger_id") or "").strip()
+        and str(data.get("daily_group_target_id") or "").strip()
+        and str(data.get("primary_quantity_slot_id") or "").strip()
+        and not data.get("reply_to_message_id")
+        and not str(data.get("material_intent") or "").strip()
+    )
+
+
+def reserve_due_catch_up_check_in_memory(
+    session: Session,
+    action: Action,
+    payload: SendMessagePayload,
+    *,
+    data: dict,
+) -> AiGroupMessageMemory:
+    if not is_due_catch_up_check_in(data):
+        raise AiGenerationUnavailable("due_catch_up_check_in_contract_invalid")
+    coverage = _validated_coverage(session, action, payload)
+    reservation_key = f"due-catch-up-check-in:{coverage.id}:{action.id}"
+    existing = session.scalar(select(AiGroupMessageMemory).where(
+        AiGroupMessageMemory.reservation_key == reservation_key,
+    ))
+    if existing:
+        if not _due_catch_up_memory_matches(existing, action, payload, data):
+            raise AiGenerationUnavailable("due_catch_up_check_in_memory_binding_invalid")
+        return existing
+    memory = _new_due_catch_up_memory(action, payload, data, reservation_key)
+    session.add(memory)
+    session.flush()
+    return memory
+
+
+def due_catch_up_check_in_memory_is_valid(
+    session: Session,
+    action: Action,
+    payload: SendMessagePayload,
+) -> bool:
+    if not is_due_catch_up_check_in(payload.model_dump(mode="json")):
+        return False
+    memory = session.get(AiGroupMessageMemory, payload.ai_message_memory_id)
+    return bool(memory and _due_catch_up_memory_matches(
+        memory,
+        action,
+        payload,
+        payload.model_dump(mode="json"),
+    ))
+
+
+def _new_due_catch_up_memory(
+    action: Action,
+    payload: SendMessagePayload,
+    data: dict,
+    reservation_key: str,
+) -> AiGroupMessageMemory:
+    now = _now()
+    normalized, fingerprint, cluster, shell = message_identity(DIRECT_CHECK_IN_TEXT)
+    return AiGroupMessageMemory(
+        tenant_id=action.tenant_id,
+        group_id=int(payload.group_id or 0),
+        task_id=action.task_id,
+        action_id=action.id,
+        account_id=action.account_id,
+        raw_text=DIRECT_CHECK_IN_TEXT,
+        normalized_text=normalized,
+        text_fingerprint=fingerprint,
+        semantic_cluster=cluster,
+        template_shell_key=shell,
+        reservation_key=reservation_key,
+        status="reserved",
+        planned_at=now,
+        expires_at=now + DIRECT_MEMORY_RETENTION,
+        duplicate_window="due_catch_up_quantity_slot",
+        quality_decision=DUE_CATCH_UP_CHECK_IN_SOURCE,
+        account_mask_id=str(data.get("account_mask_id") or ""),
+        account_mask_version=int(data.get("account_mask_version") or 0) or None,
+        mask_contract_version=str(data.get("voice_profile_contract_version") or ""),
+        mask_snapshot_hash=str(data.get("account_mask_snapshot_hash") or ""),
+        mask_status=str(data.get("mask_status") or ""),
+        content_source=DUE_CATCH_UP_CHECK_IN_SOURCE,
+        result={
+            "fallback_reason": DUE_CATCH_UP_CHECK_IN_REASON,
+            "coverage_ledger_id": payload.coverage_ledger_id,
+            "daily_group_target_id": payload.daily_group_target_id,
+            "primary_quantity_slot_id": payload.primary_quantity_slot_id,
+        },
+    )
+
+
+def _due_catch_up_memory_matches(
+    memory: AiGroupMessageMemory,
+    action: Action,
+    payload: SendMessagePayload,
+    data: Mapping[str, object],
+) -> bool:
+    result = memory.result if isinstance(memory.result, dict) else {}
+    return bool(
+        memory.action_id == action.id
+        and memory.account_id == action.account_id
+        and memory.group_id == payload.group_id
+        and memory.raw_text == DIRECT_CHECK_IN_TEXT
+        and memory.quality_decision == DUE_CATCH_UP_CHECK_IN_SOURCE
+        and memory.content_source == DUE_CATCH_UP_CHECK_IN_SOURCE
+        and memory.status in {"reserved", "claiming", "executing", "unknown_after_send", "success"}
+        and memory.account_mask_id == str(data.get("account_mask_id") or "")
+        and memory.account_mask_version == int(data.get("account_mask_version") or 0)
+        and memory.mask_contract_version == str(data.get("voice_profile_contract_version") or "")
+        and memory.mask_snapshot_hash == str(data.get("account_mask_snapshot_hash") or "")
+        and memory.mask_status == str(data.get("mask_status") or "")
+        and result.get("fallback_reason") == DUE_CATCH_UP_CHECK_IN_REASON
+        and result.get("coverage_ledger_id") == payload.coverage_ledger_id
+        and result.get("daily_group_target_id") == payload.daily_group_target_id
+        and result.get("primary_quantity_slot_id") == payload.primary_quantity_slot_id
     )
 
 
@@ -234,10 +359,15 @@ def _reserve_memory(
 
 
 __all__ = [
+    "DUE_CATCH_UP_CHECK_IN_REASON",
+    "DUE_CATCH_UP_CHECK_IN_SOURCE",
     "DIRECT_CHECK_IN_SOURCE",
     "DIRECT_CHECK_IN_TEXT",
     "MASK_MISSING_CHECK_IN_SOURCE",
     "direct_check_in_memory_is_valid",
+    "due_catch_up_check_in_memory_is_valid",
+    "is_due_catch_up_check_in",
     "prepare_direct_check_in",
+    "reserve_due_catch_up_check_in_memory",
     "requires_direct_check_in",
 ]

@@ -15,6 +15,10 @@ from .ai_generation_state import (
     validate_generation_mapping,
 )
 from .legacy_anchor_rewrite import VOICE_PROFILE_CONTRACT_VERSION
+from .direct_check_in import (
+    DUE_CATCH_UP_CHECK_IN_REASON,
+    DUE_CATCH_UP_CHECK_IN_SOURCE,
+)
 
 
 def persist_generation_results(
@@ -66,7 +70,11 @@ def persist_generation_results(
                     "act_type": "check_in" if is_check_in else quality_fallback,
                     "human_quality_decision": "check_in_fallback" if is_check_in else "explicit_static_quality_fallback",
                     "quality_fallback": "check_in_fallback" if is_check_in else quality_fallback,
-                    "content_source": "check_in_fallback" if is_check_in else data.get("content_source", ""),
+                    "content_source": (
+                        DUE_CATCH_UP_CHECK_IN_SOURCE
+                        if result.fallback_reason == DUE_CATCH_UP_CHECK_IN_REASON
+                        else "check_in_fallback"
+                    ) if is_check_in else data.get("content_source", ""),
                     "generation_source": "static_safe_fallback" if is_check_in else data.get("generation_source", ""),
                     "fallback_reason": result.fallback_reason or data.get("fallback_reason", ""),
                 })

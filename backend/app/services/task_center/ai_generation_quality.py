@@ -29,6 +29,11 @@ from .ai_message_memory import (
 )
 from .daily_coverage import release_coverage_reservation
 from .daily_coverage import block_generation_contract_coverage
+from .direct_check_in import (
+    DUE_CATCH_UP_CHECK_IN_SOURCE,
+    is_due_catch_up_check_in,
+    reserve_due_catch_up_check_in_memory,
+)
 from .payloads import SendMessagePayload
 from .policies import validate_group_send_policy
 
@@ -303,6 +308,23 @@ def _attach_message_memory(
 ) -> bool:
     memory = _reusable_message_memory(session, action, data=data)
     if memory:
+        _attach_memory_payload(data, memory)
+        return True
+    if data.get("content_source") == DUE_CATCH_UP_CHECK_IN_SOURCE:
+        if not is_due_catch_up_check_in(data):
+            fail_generation_action(
+                action,
+                "due_catch_up_check_in_contract_invalid",
+                "到期追赶签到合同绑定不完整",
+                stage="ai_message_memory",
+            )
+            return False
+        memory = reserve_due_catch_up_check_in_memory(
+            session,
+            action,
+            payload,
+            data=data,
+        )
         _attach_memory_payload(data, memory)
         return True
     try:
