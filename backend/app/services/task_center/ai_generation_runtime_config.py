@@ -65,7 +65,7 @@ def _bind_fact_first_provider(
     task: Task,
     config: dict,
 ) -> None:
-    if task.fulfillment_contract_version != "fact_first_v3":
+    if getattr(task, "fulfillment_contract_version", "legacy_v1") != "fact_first_v3":
         return
     setting = session.scalar(
         select(TenantAiSetting).where(TenantAiSetting.tenant_id == task.tenant_id)

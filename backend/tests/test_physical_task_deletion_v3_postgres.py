@@ -27,7 +27,8 @@ from app.services.task_center.physical_task_deletion import (
 )
 
 
-TENANT_ID = 1
+TENANT_ID = 991337
+PROVIDER_ID = 991337
 
 
 def _remote_chain(task: Task, suffix: str) -> tuple[Action, ExecutionAttempt, FulfillmentRemoteFact]:
@@ -75,9 +76,9 @@ def test_physical_delete_resumes_stages_and_preserves_only_remote_tombstone() ->
         if session.get(Tenant, TENANT_ID) is None:
             session.add(Tenant(id=TENANT_ID, name="物理删除集成测试"))
             session.flush()
-        if session.get(AiProvider, 999991) is None:
+        if session.get(AiProvider, PROVIDER_ID) is None:
             session.add(AiProvider(
-                id=999991,
+                id=PROVIDER_ID,
                 provider_name="physical-delete-test-provider",
                 base_url="https://provider.invalid",
                 model_name="test-model",
@@ -87,13 +88,13 @@ def test_physical_delete_resumes_stages_and_preserves_only_remote_tombstone() ->
         setting = session.query(TenantAiSetting).filter_by(tenant_id=TENANT_ID).one_or_none()
         if setting is None:
             session.add(TenantAiSetting(
-                id=999991,
+                id=PROVIDER_ID,
                 tenant_id=TENANT_ID,
-                default_provider_id=999991,
+                default_provider_id=PROVIDER_ID,
                 ai_enabled=True,
             ))
         else:
-            setting.default_provider_id = 999991
+            setting.default_provider_id = PROVIDER_ID
             setting.ai_enabled = True
         session.flush()
         old = Task(
@@ -180,3 +181,13 @@ def test_physical_delete_resumes_stages_and_preserves_only_remote_tombstone() ->
         ).all()
         assert len(tombstones) == 1
         assert tombstones[0].remote_fact_identity_hash
+        session.query(Task).filter(Task.tenant_id == TENANT_ID).delete(
+            synchronize_session=False
+        )
+        session.query(TenantAiSetting).filter_by(tenant_id=TENANT_ID).delete(
+            synchronize_session=False
+        )
+        session.query(AiProvider).filter_by(id=PROVIDER_ID).delete(
+            synchronize_session=False
+        )
+        session.commit()

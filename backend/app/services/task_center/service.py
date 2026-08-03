@@ -3626,7 +3626,11 @@ def _record_dispatch_db_error(session_factory, action_id: str, exc: SQLAlchemyEr
 
 def _planning_backlog_blocked(session: Session, task: Task) -> bool:
     stats = dict(task.stats or {})
-    if task.fulfillment_contract_version == "fact_first_v3":
+    if (
+        task.fulfillment_contract_version == "fact_first_v3"
+        or stats.get("fulfillment_contract_version")
+        == FULFILLMENT_CONTRACT_VERSION
+    ):
         task.stats = clear_planner_backlog_stats(stats)
         return False
     now_value = _now()

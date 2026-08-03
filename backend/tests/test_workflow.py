@@ -3989,7 +3989,7 @@ def test_task_center_group_ai_chat_creates_and_dispatches_actions(monkeypatch):
             )
         assert created.status_code == 201, created.text
         task = created.json()
-        assert task["status"] == "prepared"
+        assert task["status"] == "draft"
 
         started = client.post(f"/api/tasks/{task['id']}/start", headers=headers)
         assert started.status_code == 200, started.text
@@ -5786,7 +5786,7 @@ def test_task_center_create_and_start_keeps_created_task_when_start_fails(monkey
         )
         assert response.status_code == 201
         body = response.json()
-        assert body["status"] == "prepared"
+        assert body["status"] == "draft"
         assert body["create_status"] == "created"
         assert body["start_status"] == "start_failed"
         assert body["start_failure_code"] == "启动失败"

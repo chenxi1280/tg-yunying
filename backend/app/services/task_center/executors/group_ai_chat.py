@@ -2903,6 +2903,7 @@ def _coverage_plan_state(
     due_message_count = daily_group_due_message_count(
         target,
         task.pacing_config or {},
+        immediate=task.fulfillment_contract_version == "fact_first_v3",
         now=timestamp,
     )
     target.due_message_count = due_message_count
@@ -3002,7 +3003,12 @@ def requires_planning_with_open_actions(session: Session, task: Task) -> bool:
         _now().date(),
         now=_now(),
     )
-    due = daily_group_due_message_count(target, task.pacing_config or {}, now=_now())
+    due = daily_group_due_message_count(
+        target,
+        task.pacing_config or {},
+        immediate=task.fulfillment_contract_version == "fact_first_v3",
+        now=_now(),
+    )
     volume_need = max(
         0,
         due - target.confirmed_message_count - _valid_open_daily_send_count(session, task),
