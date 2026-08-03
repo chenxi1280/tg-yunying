@@ -41,6 +41,7 @@ class CommentFulfillmentObligation(Base):
             name="uq_comment_fulfillment_remote_fact",
         ),
         Index("ix_comment_fulfillment_status", "task_id", "status"),
+        Index("ix_comment_fulfillment_current_action", "current_action_id"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
@@ -61,7 +62,7 @@ class CommentFulfillmentObligation(Base):
     current_action_id: Mapped[str | None] = mapped_column(
         ForeignKey(
             "actions.id",
-            ondelete="SET NULL",
+            ondelete="CASCADE",
             name="fk_comment_fulfillment_current_action",
         ),
         nullable=True,
@@ -94,6 +95,7 @@ class ReactionFulfillmentObligation(Base):
             name="uq_reaction_fulfillment_natural_key",
         ),
         Index("ix_reaction_fulfillment_status", "task_id", "status"),
+        Index("ix_reaction_fulfillment_current_action", "current_action_id"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
@@ -107,7 +109,7 @@ class ReactionFulfillmentObligation(Base):
     current_action_id: Mapped[str | None] = mapped_column(
         ForeignKey(
             "actions.id",
-            ondelete="SET NULL",
+            ondelete="CASCADE",
             name="fk_reaction_fulfillment_current_action",
         ),
         nullable=True,
@@ -157,6 +159,7 @@ class ViewFulfillmentObligation(Base):
             name="uq_view_fulfillment_natural_key",
         ),
         Index("ix_view_fulfillment_status", "task_day_ledger_id", "status"),
+        Index("ix_view_fulfillment_current_action", "current_action_id"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
@@ -171,7 +174,7 @@ class ViewFulfillmentObligation(Base):
     current_action_id: Mapped[str | None] = mapped_column(
         ForeignKey(
             "actions.id",
-            ondelete="SET NULL",
+            ondelete="CASCADE",
             name="fk_view_fulfillment_current_action",
         ),
         nullable=True,
@@ -222,6 +225,8 @@ class SearchClickFulfillmentObligation(Base):
             "task_day_ledger_id",
             "status",
         ),
+        Index("ix_search_click_fulfillment_source_action", "source_action_id"),
+        Index("ix_search_click_fulfillment_attempt", "execution_attempt_id"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
@@ -234,13 +239,13 @@ class SearchClickFulfillmentObligation(Base):
     source_action_id: Mapped[str | None] = mapped_column(
         ForeignKey(
             "actions.id",
-            ondelete="SET NULL",
+            ondelete="CASCADE",
             name="fk_search_click_fulfillment_source_action",
         ),
         nullable=True,
     )
     execution_attempt_id: Mapped[str | None] = mapped_column(
-        ForeignKey("execution_attempts.id"),
+        ForeignKey("execution_attempts.id", ondelete="CASCADE"),
         nullable=True,
     )
     attempt_no: Mapped[int] = mapped_column(Integer, default=0)
