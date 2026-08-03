@@ -173,6 +173,7 @@ WORKER_SERVICES=(
   worker-ai-generation-3
   worker-dispatcher-1
   worker-dispatcher-2
+  worker-search-dispatcher
   worker-listener
   worker-recovery
   worker-account-security
@@ -233,6 +234,9 @@ wait_for_container_ready \
   "${TGYUNYING_WORKER_READY_TIMEOUT_SECONDS:-180}"
 wait_for_container_ready \
   tgyunying-worker-dispatcher-2 \
+  "${TGYUNYING_WORKER_READY_TIMEOUT_SECONDS:-180}"
+wait_for_container_ready \
+  tgyunying-worker-search-dispatcher \
   "${TGYUNYING_WORKER_READY_TIMEOUT_SECONDS:-180}"
 docker exec -i tgyunying-backend \
   python -m scripts.manage_shared_dispatch_contract verify-ready
