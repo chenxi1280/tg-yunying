@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from datetime import date, datetime, time, timedelta
 
 from sqlalchemy import func, select
@@ -86,6 +87,7 @@ def daily_group_due_message_count(
     target: TaskGroupDailyTarget,
     pacing_config: dict,
     *,
+    immediate: bool = False,
     now: datetime | None = None,
 ) -> int:
     timestamp = _wall_time(now or _now())
@@ -94,8 +96,17 @@ def daily_group_due_message_count(
     start = max(day_start, _wall_time(target.scope_frozen_at))
     if timestamp < start:
         return 0
-    _ = pacing_config, day_end
-    return target.effective_message_target
+    if immediate or timestamp >= day_end:
+        return target.effective_message_target
+    curve = _positive_hourly_curve(pacing_config)
+    ratio = _weighted_seconds(start, timestamp, curve) / max(
+        1.0,
+        _weighted_seconds(start, day_end, curve),
+    )
+    return max(1, min(
+        target.effective_message_target,
+        math.floor(target.effective_message_target * ratio),
+    ))
 
 
 def _locked_target(
@@ -339,6 +350,28 @@ def _coverage_confirmed_count(session: Session, target: TaskGroupDailyTarget) ->
 
 def _wall_time(value: datetime) -> datetime:
     return value.replace(tzinfo=None) if value.tzinfo else value
+
+
+def _positive_hourly_curve(pacing_config: dict) -> list[int]:
+    profile = pacing_config.get("operation_profile") or {}
+    raw = profile.get("hourly_activity_curve") if isinstance(profile, dict) else None
+    if not isinstance(raw, list) or len(raw) != 24:
+        return [1] * 24
+    try:
+        return [max(1, int(value)) for value in raw]
+    except (TypeError, ValueError):
+        return [1] * 24
+
+
+def _weighted_seconds(start: datetime, end: datetime, curve: list[int]) -> float:
+    cursor = start
+    total = 0.0
+    while cursor < end:
+        next_hour = cursor.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        boundary = min(end, next_hour)
+        total += curve[cursor.hour] * (boundary - cursor).total_seconds()
+        cursor = boundary
+    return total
 
 
 __all__ = [

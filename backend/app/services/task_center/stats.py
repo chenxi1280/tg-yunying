@@ -176,7 +176,12 @@ def _daily_group_target_stats(
         return stats
     timestamp = to_zone(_now(), parse_zone(task.timezone))
     target = ensure_task_group_daily_target(session, task, group, timestamp.date(), now=timestamp)
-    due = daily_group_due_message_count(target, task.pacing_config or {}, now=timestamp)
+    due = daily_group_due_message_count(
+        target,
+        task.pacing_config or {},
+        immediate=task.fulfillment_contract_version == "fact_first_v3",
+        now=timestamp,
+    )
     target.due_message_count = due
     updated = dict(stats)
     updated.update({

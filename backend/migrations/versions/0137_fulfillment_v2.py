@@ -181,7 +181,7 @@ def _cascade_runtime_delete_foreign_keys() -> None:
             }:
                 continue
             ondelete = ((foreign_key.get("options") or {}).get("ondelete") or "").upper()
-            if ondelete:
+            if ondelete == "CASCADE":
                 continue
             _replace_runtime_foreign_key(table_name, foreign_key)
 

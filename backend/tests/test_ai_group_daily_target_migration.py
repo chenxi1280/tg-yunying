@@ -16,7 +16,7 @@ MIGRATION_PATH = Path(__file__).resolve().parents[1] / "migrations/versions/0128
 MEMORY_MIGRATION_PATH = Path(__file__).resolve().parents[1] / "migrations/versions/0129_ai_memory_account_mask.py"
 
 
-def test_legacy_per_account_two_migrates_to_frozen_account_count() -> None:
+def test_legacy_per_account_two_uses_minimum_configured_target() -> None:
     config = normalized_task_config(
         {
             "per_account_daily_min_messages": 2,
@@ -27,7 +27,7 @@ def test_legacy_per_account_two_migrates_to_frozen_account_count() -> None:
         frozen_account_count=7,
     )
 
-    assert config["daily_message_target"] == 7
+    assert config["daily_message_target"] == 1
     assert config["account_coverage_mode"] == "all_accounts_daily"
     assert "per_account_daily_min_messages" not in config
     assert "hard_hourly_target_enabled" not in config
