@@ -676,6 +676,7 @@ def test_ready_normal_generation_expires_when_new_context_arrives() -> None:
             memory_id="memory-superseded-context",
             text="旧上下文正文",
         )
+        payload = payload.model_copy(update={"context_expire_after_messages": 1})
 
         refreshed = ai_generation_dispatch._invalidate_superseded_normal_generation(
             session,
@@ -690,6 +691,70 @@ def test_ready_normal_generation_expires_when_new_context_arrives() -> None:
         assert refreshed.ai_message_memory_id == ""
         assert memory.status == "expired_before_send"
         assert memory.result["error_code"] == "generation_context_superseded"
+
+
+def test_ready_normal_generation_keeps_text_below_frozen_context_threshold() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    with Session(engine) as session:
+        actions, _coverages = seed_reserved_normal_batch(session, now_value)
+        memory, payload = _ready_action_with_new_context(
+            session,
+            actions[0],
+            now_value=now_value,
+            memory_id="memory-context-below-threshold",
+            text="保留正文",
+        )
+        payload = payload.model_copy(update={"context_expire_after_messages": 2})
+
+        refreshed = ai_generation_dispatch._invalidate_superseded_normal_generation(
+            session,
+            session.get(Task, actions[0].task_id),
+            actions[0],
+            payload=payload,
+        )
+
+        assert refreshed.ai_generation_status == "ready"
+        assert refreshed.message_text == "保留正文"
+        assert refreshed.ai_message_memory_id == memory.id
+        assert memory.status == "reserved"
+
+
+def test_ready_normal_generation_expires_at_frozen_context_threshold() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    with Session(engine) as session:
+        actions, _coverages = seed_reserved_normal_batch(session, now_value)
+        memory, payload = _ready_action_with_new_context(
+            session,
+            actions[0],
+            now_value=now_value,
+            memory_id="memory-context-at-threshold",
+            text="过期正文",
+        )
+        session.add(GroupContextMessage(
+            tenant_id=1,
+            group_id=7,
+            listener_account_id=11,
+            content="第二条真人上下文",
+            remote_message_id="new-memory-context-at-threshold-2",
+            sent_at=now_value + timedelta(seconds=2),
+        ))
+        session.commit()
+        payload = payload.model_copy(update={"context_expire_after_messages": 2})
+
+        refreshed = ai_generation_dispatch._invalidate_superseded_normal_generation(
+            session,
+            session.get(Task, actions[0].task_id),
+            actions[0],
+            payload=payload,
+        )
+
+        assert refreshed.ai_generation_status == "pending"
+        assert refreshed.message_text == ""
+        assert memory.status == "expired_before_send"
 
 
 def test_ready_normal_generation_requeues_same_slot_when_context_changes() -> None:
