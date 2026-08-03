@@ -182,7 +182,12 @@ def test_midday_start_makes_full_target_due_immediately(session: Session) -> Non
         now=timestamp,
     )
 
-    assert daily_group_due_message_count(target, {}, now=timestamp) == 3
+    assert daily_group_due_message_count(
+        target,
+        {},
+        immediate=True,
+        now=timestamp,
+    ) == 3
 
 
 def test_zero_quiet_curve_weight_reduces_volume_without_blocking(session: Session) -> None:

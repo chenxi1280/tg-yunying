@@ -171,6 +171,7 @@ def _cascade_runtime_delete_foreign_keys() -> None:
     bind = op.get_bind()
     if bind.dialect.name != "postgresql":
         return
+    _force_core_runtime_cascades()
     inspector = sa.inspect(bind)
     for table_name in inspector.get_table_names():
         for foreign_key in inspector.get_foreign_keys(table_name):
@@ -184,6 +185,26 @@ def _cascade_runtime_delete_foreign_keys() -> None:
             if ondelete == "CASCADE":
                 continue
             _replace_runtime_foreign_key(table_name, foreign_key)
+
+
+def _force_core_runtime_cascades() -> None:
+    for table_name, constraint_name in (
+        ("actions", "actions_task_id_fkey"),
+        ("execution_attempts", "execution_attempts_action_id_fkey"),
+    ):
+        foreign_key = next(
+            (
+                item
+                for item in sa.inspect(op.get_bind()).get_foreign_keys(table_name)
+                if item.get("name") == constraint_name
+            ),
+            None,
+        )
+        if foreign_key is None:
+            raise RuntimeError(f"runtime foreign key missing: {constraint_name}")
+        if ((foreign_key.get("options") or {}).get("ondelete") or "").upper() == "CASCADE":
+            continue
+        _replace_runtime_foreign_key(table_name, foreign_key)
 
 
 def _replace_runtime_foreign_key(table_name: str, foreign_key: dict) -> None:
