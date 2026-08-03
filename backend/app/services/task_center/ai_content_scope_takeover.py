@@ -168,11 +168,12 @@ def _preview_actions(
             return []
         statement = select(Action).where(Action.id.in_(ids))
     else:
-        statement = select(Action).where(
+        statement = select(Action).join(Task, Task.id == Action.task_id).where(
             Action.task_type == "group_ai_chat",
             Action.action_type == "send_message",
             Action.status.in_(TAKEOVER_CANDIDATE_STATUSES),
             Action.created_at <= cutoff_at,
+            Task.status == "running",
         )
     return list(session.scalars(statement.order_by(Action.id.asc())))
 
