@@ -32,6 +32,7 @@ def _seed_action() -> None:
     _cleanup()
     with SessionLocal() as session:
         session.add(Tenant(id=TENANT_ID, name="generation partial index test"))
+        session.flush()
         session.add(Task(
             id=TASK_ID,
             tenant_id=TENANT_ID,
@@ -40,6 +41,7 @@ def _seed_action() -> None:
             status="running",
             fulfillment_contract_version="fact_first_v3",
         ))
+        session.flush()
         session.add(Action(
             id=ACTION_ID,
             tenant_id=TENANT_ID,
