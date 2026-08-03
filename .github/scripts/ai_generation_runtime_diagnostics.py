@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from decimal import Decimal
 
 from sqlalchemy import text
 
@@ -57,6 +58,8 @@ RUNTIME_SCOPE_QUERY = text("""
 def _json_value(value):
     if isinstance(value, datetime):
         return value.isoformat()
+    if isinstance(value, Decimal):
+        return float(value)
     return value
 
 
