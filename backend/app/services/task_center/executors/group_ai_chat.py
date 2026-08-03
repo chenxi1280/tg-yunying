@@ -26,6 +26,7 @@ from app.models import (
     RuleSet,
     Task,
     TaskAccountDailyCoverage,
+    TaskGroupBotAdmission,
     TaskGroupDailyMessageSlot,
     TaskGroupDailyTarget,
     TgGroup,
@@ -782,6 +783,13 @@ def _group_bot_ready_accounts_for_plan(
     required = _group_bot_admission_requirement(config)
     if required is False:
         return accounts
+    if task.fulfillment_contract_version == "fact_first_v3":
+        abandoned_ids = set(session.scalars(select(TaskGroupBotAdmission.account_id).where(
+            TaskGroupBotAdmission.task_id == task.id,
+            TaskGroupBotAdmission.target_group_id == group.id,
+            TaskGroupBotAdmission.state == "abandoned",
+        )))
+        return [account for account in accounts if account.id not in abandoned_ids]
     admissions = session.scalars(select(GroupBotAdmission).where(
         GroupBotAdmission.tenant_id == task.tenant_id,
         GroupBotAdmission.group_id == group.id,
@@ -2394,7 +2402,12 @@ def prepare_open_actions_for_planning(session: Session, task: Task) -> int:
         session,
         task,
     )
-    hard_progress = current_progress(session, task, _now()) if hard_hourly_enabled(task) else {}
+    hard_progress = (
+        current_progress(session, task, _now())
+        if hard_hourly_enabled(task)
+        and task.fulfillment_contract_version != "fact_first_v3"
+        else {}
+    )
     hard_progress = hard_progress if int(hard_progress.get("deficit") or 0) > 0 else {}
     accounts = _select_accounts_for_plan(session, task, group, hard_progress, config)
     accounts = _online_ready_accounts(session, task, accounts, hard_progress)
@@ -2568,6 +2581,11 @@ def _choose_capacity_slot(
     reservations: list[AccountCapacityReservation],
     capacity_cache: AccountCapacityCache,
 ) -> tuple[object | None, datetime]:
+    if task.fulfillment_contract_version == "fact_first_v3":
+        available = [item for item in selected if item.id not in used_account_ids]
+        if not available and allow_repeat:
+            available = list(selected)
+        return (random.SystemRandom().choice(available), _now()) if available else (None, _now())
     candidate_limit = _capacity_candidate_limit(used_account_ids)
     available = _available_accounts_at(session, task, selected, planned_at, reservations, capacity_cache, limit=candidate_limit)
     account = _choose_turn_account(available, available, index, used_account_ids, allow_repeat)
@@ -3724,6 +3742,9 @@ def _choose_turn_account(available: list, selected: list, index: int, used_accou
 
 
 def _schedule_times_for_plan(task: Task, progress: dict[str, object], total: int, mode: str) -> list[datetime]:
+    if task.fulfillment_contract_version == "fact_first_v3":
+        now_value = _now()
+        return [now_value for _ in range(total)]
     return _hard_hourly_schedule(task, progress, total) or _round_schedule_times(total, task.pacing_config or {}, mode)
 
 

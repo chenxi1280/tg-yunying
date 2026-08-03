@@ -4,6 +4,7 @@ from collections.abc import Callable, Mapping
 from typing import Any
 import hashlib
 import json
+import logging
 import os
 import re
 import socket
@@ -19,7 +20,7 @@ from pydantic import ValidationError
 from app.admin_chats import send_admin_chat_broadcast
 from app.integrations.telegram import DeveloperAppCredentials, OperationResult, OutboundSegment
 from app.config import get_settings
-from app.models import AccountStatus, Action, AiAccountVoiceProfile, AiGroupMessageMemory, ChannelMessage, CommentFulfillmentObligation, ConsistencyQuarantine, ContentMixCycle, ContentMixCycleSlot, ContentMixObligation, DispatchClaimReservation, DispatchClaimShardAllocation, DispatchClaimWindow, ExecutionAttempt, FailureType, GroupAuthStatus, GroupContextMessage, OperationTarget, ReviewQueue, SearchClickFulfillmentObligation, SearchClickOpportunityAssignment, Task, TaskAccountDailyCoverage, TaskDayLedger, TaskGroupDailyMessageSlot, TaskMembershipAdmissionItem, Tenant, TgAccount, TgGroup, TgGroupAccount, VerificationTask
+from app.models import AccountStatus, Action, AiAccountVoiceProfile, AiGroupMessageMemory, ChannelMessage, CommentFulfillmentObligation, ConsistencyQuarantine, ContentMixCycle, ContentMixCycleSlot, ContentMixObligation, DispatchClaimReservation, DispatchClaimShardAllocation, DispatchClaimWindow, ExecutionAttempt, FailureType, GroupAuthStatus, GroupContextMessage, OperationTarget, ReviewQueue, SearchClickAssignment, SearchClickFulfillmentObligation, SearchClickOpportunityAssignment, SearchProtocolSession, Task, TaskAccountDailyCoverage, TaskDayLedger, TaskGroupDailyMessageSlot, TaskMembershipAdmissionItem, Tenant, TgAccount, TgGroup, TgGroupAccount, VerificationTask
 from app.models import AccountEnvironmentBinding, AccountProxy, AccountProxyBinding, TelegramDeveloperApp, TgAccountAuthorization
 from app.search_keywords import normalized_keyword_hash
 from app.security import decrypt_secret
@@ -159,6 +160,9 @@ from .runtime_state_hash import (
     execution_attempt_state_hash,
     remote_reconcile_action_state_hash,
 )
+
+
+logger = logging.getLogger(__name__)
 
 _ACTION_RESERVATIONS = _runtime_resources._ACTION_RESERVATIONS
 _IN_FLIGHT_ACCOUNTS = _runtime_resources._IN_FLIGHT_ACCOUNTS
@@ -471,6 +475,18 @@ def dispatch_action(
     comment_generation_dependencies: CommentGenerationDependencies = PRODUCTION_COMMENT_GENERATION_DEPENDENCIES,
     project_task_stats: bool = True,
 ) -> bool:
+    if not _fulfillment_route_allows_gateway(session, action):
+        _skip(
+            action,
+            "fulfillment_route_fenced",
+            "Task 不在当前履约合同 route，Gateway 已拒绝远端副作用",
+        )
+        _finalize_dispatch_action(
+            session,
+            action,
+            project_task_stats=project_task_stats,
+        )
+        return False
     if _legacy_content_scope_takeover_pending(action):
         return False
     try:
@@ -489,6 +505,24 @@ def dispatch_action(
         project_task_stats=project_task_stats,
     )
     return dispatched
+
+
+def _fulfillment_route_allows_gateway(session: Session, action: Action) -> bool:
+    if not callable(getattr(session, "get", None)):
+        return True
+    task = session.get(Task, action.task_id)
+    if task is None:
+        return False
+    from .fulfillment_activation import gateway_task_allowed
+
+    if task.fulfillment_contract_version == "fact_first_v3" and (
+        task.status != "running"
+        or task.deleted_at is not None
+        or int(action.task_lifecycle_epoch or 1)
+        != int(task.task_lifecycle_epoch or 1)
+    ):
+        return False
+    return gateway_task_allowed(session, task)
 
 
 def _legacy_content_scope_takeover_pending(action: Action) -> bool:
@@ -511,6 +545,9 @@ def _finalize_dispatch_action(
     ensure_remote_case: bool = True,
     project_task_stats: bool = True,
 ) -> None:
+    if _fact_first_action(session, action):
+        _finalize_fact_first_dispatch(session, action)
+        return
     from .conversation_speaker_rotation import release_group_ai_speaker_reservation
 
     release_group_ai_speaker_reservation(session, action)
@@ -526,6 +563,53 @@ def _finalize_dispatch_action(
         _sync_search_click_target_progress(session, action)
     if ensure_remote_case:
         _ensure_unknown_remote_case(session, action)
+
+
+def _finalize_fact_first_dispatch(session: Session, action: Action) -> None:
+    from app.models import FulfillmentRemoteFact
+    from .fulfillment_remote_facts import (
+        complete_derived_projections,
+        persist_remote_fact,
+        project_remote_fact,
+    )
+
+    fact = persist_remote_fact(session, action)
+    fact_id = fact.fact_id if fact is not None else ""
+    if action.status == "unknown_after_send":
+        _ensure_unknown_remote_case(session, action)
+        _open_fact_first_remote_case(session, action)
+    session.commit()
+    _release_runtime_resources(action)
+    if not fact_id:
+        return
+    fact = session.get(FulfillmentRemoteFact, fact_id)
+    if fact is None:
+        raise RuntimeError("remote_fact_missing_after_commit")
+    project_remote_fact(session, fact)
+    _project_fact_first_derived_reads(session, action)
+    complete_derived_projections(session, fact_id)
+    session.commit()
+
+
+def _open_fact_first_remote_case(session: Session, action: Action) -> None:
+    from app.models import RemoteReconcileCase
+
+    case_id = str(dict(action.result or {}).get("remote_reconcile_case_id") or "")
+    case = session.get(RemoteReconcileCase, case_id) if case_id else None
+    if case is None:
+        return
+    case.state = "open"
+    case.next_probe_at = _now()
+    case.unknown_deadline_at = action.unknown_deadline_at
+
+
+def _project_fact_first_derived_reads(session: Session, action: Action) -> None:
+    _sync_action_coverage_state(session, action)
+    _sync_action_content_mix_state(session, action)
+    _sync_comment_fulfillment_state(session, action)
+    _sync_channel_fulfillment_state(session, action)
+    _sync_all_account_membership_state(session, action)
+    _sync_search_click_target_progress(session, action)
 
 
 def _ensure_unknown_remote_case(session: Session, action: Action) -> None:
@@ -916,6 +1000,11 @@ def _dispatch_action(
     except SQLAlchemyError:
         raise
     except Exception as exc:  # noqa: BLE001 - worker must keep draining.
+        logger.exception(
+            "task center action dispatch failed before completion action_id=%s action_type=%s",
+            action.id,
+            action.action_type,
+        )
         detail = str(exc).strip() or type(exc).__name__
         if _gateway_call_started(session, action):
             _mark_unknown_after_send(session, action, detail)
@@ -930,7 +1019,7 @@ def _action_pre_dispatch_handled(
 ) -> bool:
     if _skip_search_click_action_after_deadline(session, action):
         return True
-    if _skip_search_click_action_during_quiet_hours(session, action):
+    if not _fact_first_action(session, action) and _skip_search_click_action_during_quiet_hours(session, action):
         return True
     if _skip_expired_hard_hourly_action(session, action):
         return True
@@ -1212,6 +1301,7 @@ def claim_actions(
     exclude_task_ids: set[str] | None = None,
     worker_id: str | None = None,
     allow_inline_ai_generation: bool = False,
+    execution_lane: str | None = None,
 ) -> list[Action]:
     """Claim actions in two short database stages."""
     settings = get_settings()
@@ -1221,17 +1311,54 @@ def claim_actions(
     if _skip_stale_channel_daily_actions(session, today=now_value.date()):
         session.commit()
     claim_limit = _claim_limit(settings, limit)
+    direct = _claim_fact_first_actions(
+        session,
+        owner=owner,
+        claim_limit=claim_limit,
+        now_value=now_value,
+        settings=settings,
+        exclude_task_ids=exclude_task_ids,
+        execution_lane=execution_lane,
+    )
+    remaining_limit = claim_limit - len(direct)
+    if remaining_limit <= 0 or execution_lane == "search":
+        return direct
     candidates, fairness_decisions, bindings = _select_claim_candidates(
         session,
         settings,
-        claim_limit,
+        remaining_limit,
         now_value,
         exclude_task_ids,
         allow_inline_ai_generation=allow_inline_ai_generation,
     )
     _mark_claiming_candidates(session, candidates, owner, token, settings, now_value)
     batch = ActionClaimBatch(tuple(action.id for action in candidates), owner, token, bindings)
-    return _confirm_claim_batch(session, batch, fairness_decisions)
+    return direct + _confirm_claim_batch(session, batch, fairness_decisions)
+
+
+def _claim_fact_first_actions(
+    session: Session,
+    *,
+    owner: str,
+    claim_limit: int,
+    now_value: datetime,
+    settings,
+    exclude_task_ids: set[str] | None,
+    execution_lane: str | None,
+) -> list[Action]:
+    from .direct_action_claims import claim_fact_first_candidates
+
+    direct = claim_fact_first_candidates(
+        session,
+        owner=owner,
+        limit=claim_limit,
+        now=now_value,
+        lease_seconds=int(_setting(settings, "action_claim_seconds", 60) or 60),
+        exclude_task_ids=exclude_task_ids,
+        execution_lane=execution_lane,
+    )
+    batch = ActionClaimBatch(direct.action_ids, direct.owner, direct.token, {})
+    return _confirm_claim_batch(session, batch, {})
 
 
 def _claim_limit(settings, requested_limit: int) -> int:
@@ -1295,6 +1422,7 @@ def _claim_base_filters(
         Action.scheduled_at <= now_value,
         Task.status == "running",
         Task.deleted_at.is_(None),
+        Task.fulfillment_contract_version != "fact_first_v3",
     ]
     filters.append(
         _ai_legacy_scope_is_ready()
@@ -1668,7 +1796,7 @@ def _confirm_action_claim_candidate(
     if _skip_search_click_action_after_deadline(session, action):
         session.commit()
         return False
-    if _skip_search_click_action_during_quiet_hours(session, action):
+    if not _fact_first_action(session, action) and _skip_search_click_action_during_quiet_hours(session, action):
         session.commit()
         return False
     if _skip_expired_hard_hourly_action(session, action):
@@ -1679,12 +1807,18 @@ def _confirm_action_claim_candidate(
     if _skip_superseded_group_bot_confirmation_claim(session, action):
         session.commit()
         return False
-    if not _apply_claim_account_policy(session, action):
+    if not _fact_first_action(session, action) and not _apply_claim_account_policy(session, action):
         session.commit()
         return False
     if _skip_resolved_invite_group_account_action(session, action):
         session.commit()
         return False
+    if _fact_first_action(session, action):
+        from .fulfillment_remote_facts import ensure_action_obligation
+
+        if not ensure_action_obligation(session, action):
+            session.commit()
+            return False
     if not _reserve_runtime_resources(action):
         _release_unconfirmed_action_claim(session, action)
         return False
@@ -1699,6 +1833,13 @@ def _confirm_action_claim_candidate(
     except IntegrityError:
         _release_conflicting_action_claim(session, batch, action)
     return False
+
+
+def _fact_first_action(session: Session, action: Action) -> bool:
+    if not callable(getattr(session, "get", None)):
+        return False
+    task = session.get(Task, action.task_id)
+    return bool(task and task.fulfillment_contract_version == "fact_first_v3")
 
 
 def _skip_superseded_group_bot_confirmation_claim(session: Session, action: Action) -> bool:
@@ -2363,11 +2504,22 @@ def _confirm_claim(
     action = session.get(Action, action_id)
     if not action or action.status != "claiming" or action.claim_owner != owner or action.claim_token != token:
         return False
+    task = session.get(Task, action.task_id)
+    if task is None or (
+        task.fulfillment_contract_version == "fact_first_v3"
+        and (
+            task.status != "running"
+            or int(action.task_lifecycle_epoch or 1)
+            != int(task.task_lifecycle_epoch or 1)
+        )
+    ):
+        return False
     if reservation_binding is not None and not confirm_dispatch_claim(session, action, reservation_binding):
         return False
     _snapshot_ai_generation_claim(action)
     lease_seconds = _action_lease_seconds(action)
     _mark_executing(action, lease_seconds=lease_seconds)
+    action.action_version = int(action.action_version or 1) + 1
     action.result = {**(action.result or {}), "claim_confirmed_at": _now().isoformat()}
     session.flush()
     return True
@@ -2662,11 +2814,20 @@ def _prepare_group_send(
     group = session.get(TgGroup, context.payload.group_id)
     if not group:
         _fail(action, FailureType.PEER_INVALID.value, "目标群不存在", auto_check="拦截", validation_stage="target")
+        if _fact_first_action(session, action):
+            _terminalize_fact_first_target(session, action, "target_group_missing")
         return None
-    _lock_group_ai_speaker_state(session, action, group_id=int(group.id))
+    fact_first = _fact_first_action(session, action)
+    if not fact_first:
+        _lock_group_ai_speaker_state(session, action, group_id=int(group.id))
     if not _group_bot_admission_gate_pass(session, action, group_id=int(group.id), account_id=int(context.account.id)):
         return None
-    if not _speaker_rotation_gate_pass(session, action, group_id=int(group.id), account_id=int(context.account.id)):
+    if not fact_first and not _speaker_rotation_gate_pass(
+        session,
+        action,
+        group_id=int(group.id),
+        account_id=int(context.account.id),
+    ):
         return None
     # Speaker rotation may have changed action.account_id; reload account for the actual sender.
     account = context.account
@@ -3008,6 +3169,8 @@ def _lock_post_gateway_dispatch_prefix(
 ) -> None:
     if not _gateway_call_started(session, action):
         raise RuntimeError("post_gateway_dispatch_prefix_requires_started_attempt")
+    if _fact_first_action(session, action):
+        return
     lock_dispatch_claim_prefix(session, action)
 
 
@@ -3016,11 +3179,19 @@ def _reserve_group_send_attempt(
     action: Action,
     context: GroupSendGatewayContext,
 ) -> ExecutionAttempt | None:
-    target = _lock_outbound_target(session, action, group=context.group)
-    _lock_action_after_target(session, action)
-    group = session.scalar(select(TgGroup).where(TgGroup.id == context.group.id).with_for_update())
+    fact_first = _fact_first_action(session, action)
+    target = _attempt_target(session, action, group=context.group)
+    group = (
+        session.get(TgGroup, context.group.id)
+        if fact_first
+        else session.scalar(
+            select(TgGroup).where(TgGroup.id == context.group.id).with_for_update()
+        )
+    )
     if group is None:
         _fail(action, FailureType.PEER_INVALID.value, "目标群不存在", validation_stage="target")
+        if fact_first:
+            _terminalize_fact_first_target(session, action, "target_group_missing")
         return None
     from app.services.outbound_target_gate import evaluate_outbound_target_gate
 
@@ -3040,7 +3211,7 @@ def _reserve_group_send_attempt(
             "target_identity_unresolved",
             "target_tenant_mismatch",
         }:
-            _skip(action, gate_block.code, gate_block.detail)
+            _skip_for_target_gate(session, action, gate_block.code, gate_block.detail)
             return None
         _defer_group_send_for_limit(
             action,
@@ -3072,8 +3243,7 @@ def _reserve_target_send_attempt(
 ) -> ExecutionAttempt | None:
     from app.services.outbound_target_gate import evaluate_outbound_target_gate
 
-    target = _lock_outbound_target(session, action)
-    _lock_action_after_target(session, action)
+    target = _attempt_target(session, action)
     gate_block = evaluate_outbound_target_gate(
         session,
         action=action,
@@ -3082,7 +3252,7 @@ def _reserve_target_send_attempt(
         require_identity=_action_declares_target_identity(action),
     )
     if gate_block is not None:
-        _skip(action, gate_block.code, gate_block.detail)
+        _skip_for_target_gate(session, action, gate_block.code, gate_block.detail)
         return None
     attempt = _begin_execution_attempt(session, action, account)
     _mark_executing(action)
@@ -3099,8 +3269,7 @@ def _reserve_channel_action_attempt(
 ) -> ExecutionAttempt | None:
     from app.services.outbound_target_gate import evaluate_outbound_target_gate
 
-    target = _lock_outbound_target(session, action)
-    _lock_action_after_target(session, action)
+    target = _attempt_target(session, action)
     gate_block = evaluate_outbound_target_gate(
         session,
         action=action,
@@ -3112,7 +3281,7 @@ def _reserve_channel_action_attempt(
         include_group_policy=False,
     )
     if gate_block is not None:
-        _skip(action, gate_block.code, gate_block.detail)
+        _skip_for_target_gate(session, action, gate_block.code, gate_block.detail)
         return None
     attempt = _begin_execution_attempt(session, action, account)
     _mark_executing(action)
@@ -3129,8 +3298,7 @@ def _reserve_channel_membership_attempt(
 ) -> ExecutionAttempt | None:
     from app.services.outbound_target_gate import evaluate_outbound_target_gate
 
-    target = _lock_outbound_target(session, action)
-    _lock_action_after_target(session, action)
+    target = _attempt_target(session, action)
     gate_block = evaluate_outbound_target_gate(
         session,
         action=action,
@@ -3144,7 +3312,7 @@ def _reserve_channel_membership_attempt(
         include_group_policy=False,
     )
     if gate_block is not None:
-        _skip(action, gate_block.code, gate_block.detail)
+        _skip_for_target_gate(session, action, gate_block.code, gate_block.detail)
         return None
     attempt = _begin_execution_attempt(session, action, account)
     _mark_executing(action)
@@ -3166,6 +3334,51 @@ def _lock_outbound_target(
     if target is None:
         return None
     return lock_target(session, tenant_id=action.tenant_id, target_id=target.id)
+
+
+def _attempt_target(
+    session: Session,
+    action: Action,
+    *,
+    group: TgGroup | None = None,
+) -> OperationTarget | None:
+    if _fact_first_action(session, action):
+        return _resolve_outbound_target(session, action, group=group)
+    target = _lock_outbound_target(session, action, group=group)
+    _lock_action_after_target(session, action)
+    return target
+
+
+def _resolve_outbound_target(
+    session: Session,
+    action: Action,
+    *,
+    group: TgGroup | None = None,
+) -> OperationTarget | None:
+    from app.services.outbound_target_gate import resolve_outbound_target
+
+    return resolve_outbound_target(session, action=action, group=group)
+
+
+def _skip_for_target_gate(
+    session: Session,
+    action: Action,
+    code: str,
+    detail: str,
+) -> None:
+    _skip(action, code, detail)
+    if not _fact_first_action(session, action):
+        return
+    if code in {
+        "target_group_dissolved",
+        "target_ref_invalid",
+        "target_reference_superseded",
+        "target_identity_unresolved",
+        "target_tenant_mismatch",
+    }:
+        _terminalize_fact_first_target(session, action, code)
+    else:
+        _abandon_fact_first_account_for_task(session, action)
 
 
 def _lock_action_after_target(session: Session, action: Action) -> None:
@@ -3813,6 +4026,14 @@ def _dispatch_channel_membership(session: Session, action: Action, account: TgAc
         )
         if existing_link and _dispatch_existing_membership(session, action, account, credentials, payload, existing_link):
             return True
+    if not _fact_first_prejoin_channels_pass(
+        session,
+        action,
+        account=account,
+        credentials=credentials,
+        payload=payload,
+    ):
+        return True
     if _reserve_group_bot_admission_window(session, action, payload):
         return True
     attempt = _reserve_channel_membership_attempt(session, action, account, payload)
@@ -3852,6 +4073,8 @@ def _dispatch_channel_membership(session: Session, action: Action, account: TgAc
 
 
 def _reserve_group_bot_admission_window(session: Session, action: Action, payload: EnsureChannelMembershipPayload) -> bool:
+    if _fact_first_action(session, action):
+        return False
     group = _group_bot_admission_window_group(session, action, payload)
     if group is None:
         return False
@@ -3863,6 +4086,38 @@ def _reserve_group_bot_admission_window(session: Session, action: Action, payloa
         return True
     _record_group_bot_admission_window(action, locked_group.id)
     session.commit()
+    return False
+
+
+def _fact_first_prejoin_channels_pass(
+    session: Session,
+    action: Action,
+    *,
+    account: TgAccount,
+    credentials,
+    payload: EnsureChannelMembershipPayload,
+) -> bool:
+    if not _fact_first_action(session, action):
+        return True
+    task = session.get(Task, action.task_id)
+    group = _group_bot_admission_window_group(session, action, payload)
+    if task is None or group is None:
+        return True
+    from .task_prejoin_channels import ensure_prejoin_channels
+
+    if ensure_prejoin_channels(
+        session,
+        task=task,
+        action=action,
+        account=account,
+        credentials=credentials,
+        target_group=group,
+    ):
+        return True
+    action.status = "pending"
+    action.scheduled_at = _now() + timedelta(seconds=5)
+    _clear_action_lease(action)
+    _release_runtime_resources(action)
     return False
 
 
@@ -6055,7 +6310,11 @@ def _apply_send_result(action: Action, account: TgAccount, ok: bool, remote_id: 
             _close_unavailable_comment_thread(action, failure_type, detail or failure_type)
         if failure_type == FailureType.REACTION_UNAVAILABLE.value:
             _close_unavailable_reaction(action, detail or failure_type)
-        if action.status == "failed":
+        if action.status == "failed" and _abandon_unusable_fact_first_account(
+            action, account, failure_type, detail
+        ):
+            pass
+        elif action.status == "failed":
             _apply_default_failure_policy(action, failure_type or FailureType.UNKNOWN.value)
     action.executed_at = None if action.status == "pending" else _now()
     if remote_fact_id:
@@ -6203,6 +6462,102 @@ def _is_account_proxy_failure(failure_type: str, detail: str) -> bool:
 
 def _is_target_send_permission_failure(failure_type: str) -> bool:
     return failure_type in {FailureType.GROUP_PERMISSION_DENIED.value, FailureType.PEER_INVALID.value}
+
+
+def _abandon_unusable_fact_first_account(
+    action: Action,
+    account: TgAccount,
+    failure_type: str,
+    detail: str,
+) -> bool:
+    session = object_session(action)
+    if session is None or not _fact_first_action(session, action):
+        return False
+    if failure_type == FailureType.PEER_INVALID.value:
+        _terminalize_fact_first_target(
+            session,
+            action,
+            detail or failure_type,
+        )
+        return True
+    unrecoverable = bool(
+        failure_type == FailureType.GROUP_PERMISSION_DENIED.value
+        or _is_account_session_failure(failure_type, detail)
+    )
+    if not unrecoverable:
+        return False
+    action.result = {
+        **dict(action.result or {}),
+        "account_task_disposition": "abandoned",
+        "account_task_disposition_reason": detail or failure_type,
+    }
+    _abandon_fact_first_account_for_task(session, action)
+    _abandon_task_group_admission(session, action)
+    return True
+
+
+def _terminalize_fact_first_target(
+    session: Session,
+    failed_action: Action,
+    reason: str,
+) -> None:
+    task = session.get(Task, failed_action.task_id)
+    if task is None or task.fulfillment_contract_version != "fact_first_v3":
+        return
+    task.status = "failed"
+    task.next_run_at = None
+    task.task_lifecycle_epoch = int(task.task_lifecycle_epoch or 1) + 1
+    task.last_error = reason[:500]
+    task.stats = {
+        **dict(task.stats or {}),
+        "target_terminal": True,
+        "target_terminal_reason": reason[:160],
+        "target_terminal_at": _now().isoformat(),
+    }
+    siblings = session.scalars(select(Action).where(
+        Action.task_id == task.id,
+        Action.id != failed_action.id,
+        Action.status.in_(("pending", "claiming")),
+    ))
+    for sibling in siblings:
+        _skip(
+            sibling,
+            "target_terminal",
+            "目标已解散、删除或引用失效，当前 Task 已终结",
+        )
+
+
+def _abandon_pending_account_actions(session: Session, failed_action: Action) -> None:
+    rows = session.scalars(select(Action).where(
+        Action.task_id == failed_action.task_id,
+        Action.account_id == failed_action.account_id,
+        Action.status == "pending",
+        Action.id != failed_action.id,
+    ))
+    for action in rows:
+        _skip(
+            action,
+            "account_task_abandoned",
+            "该账号在当前任务内已确认无法完成 Telegram 远端操作",
+        )
+        _sync_action_coverage_state(session, action)
+        _sync_action_content_mix_state(session, action)
+
+
+def _abandon_task_group_admission(session: Session, action: Action) -> None:
+    from app.models import TaskGroupBotAdmission
+
+    group_id = int(dict(action.payload or {}).get("group_id") or 0)
+    if not group_id or not action.account_id:
+        return
+    admissions = session.scalars(select(TaskGroupBotAdmission).where(
+        TaskGroupBotAdmission.task_id == action.task_id,
+        TaskGroupBotAdmission.account_id == action.account_id,
+        TaskGroupBotAdmission.target_group_id == group_id,
+    ))
+    for admission in admissions:
+        admission.state = "abandoned"
+        admission.version = int(admission.version or 1) + 1
 
 
 def _recover_account_proxy_after_failure(action: Action, account: TgAccount, reason: str) -> None:
@@ -6634,6 +6989,7 @@ def _settle_pure_search_click_obligation(
     if assignment is not None and attempt.gateway_call_started_at is not None:
         assignment.state = "consumed"
         assignment.version += 1
+    _settle_fact_first_search_assignment(session, assignment_id, action, attempt)
     if action.status != "success" or not has_complete_pure_click_fact(action.result):
         obligation.status = (
             "unknown_after_send"
@@ -6682,6 +7038,26 @@ def _settle_pure_search_click_obligation(
     obligation.target_click_observed = True
     obligation.click_evidence_hash = evidence_hash
     obligation.remote_confirmed_at = confirmed_at
+
+
+def _settle_fact_first_search_assignment(
+    session: Session,
+    assignment_id: str,
+    action: Action,
+    attempt: ExecutionAttempt,
+) -> None:
+    from app.models import SearchClickAssignment
+
+    assignment = session.get(SearchClickAssignment, assignment_id)
+    if assignment is None:
+        return
+    if action.status == "success" and has_complete_pure_click_fact(action.result):
+        assignment.state = "confirmed"
+    elif action.status == "unknown_after_send" or attempt.gateway_call_started_at:
+        assignment.state = "gateway_unknown"
+    else:
+        assignment.state = "safely_not_executed"
+    assignment.version = int(assignment.version or 1) + 1
 
 
 def _pure_click_evidence_hash(result: dict, execution_attempt_id: str) -> str:
@@ -6758,6 +7134,50 @@ def _record_search_join_protocol_result(
         result=result,
         attempt=attempt,
     )
+    _update_search_protocol_session(session, action, result, attempt)
+
+
+def _update_search_protocol_session(
+    session: Session,
+    action: Action,
+    result: dict,
+    attempt: ExecutionAttempt,
+) -> None:
+    assignment_id = str((action.payload or {}).get("search_click_assignment_id") or "")
+    if not assignment_id:
+        return
+    protocol = session.scalar(select(SearchProtocolSession).where(
+        SearchProtocolSession.assignment_id == assignment_id,
+    ))
+    if protocol is None:
+        return
+    phase = _search_protocol_phase(result)
+    trace = result.get("search_protocol_trace") if isinstance(result.get("search_protocol_trace"), dict) else {}
+    challenge = str(result.get("challenge_fingerprint") or trace.get("challenge_fingerprint") or "")
+    protocol.phase = phase
+    protocol.phase_version = int(protocol.phase_version or 0) + 1
+    protocol.request_identity = str(attempt.id)
+    protocol.next_page_identity = str(result.get("jisou_page_phase") or trace.get("page_phase") or "")[:160]
+    protocol.challenge_fingerprint = challenge[:64]
+    protocol.page_fingerprint = hashlib.sha256(
+        json.dumps(trace, sort_keys=True, default=str).encode()
+    ).hexdigest()
+    protocol.protocol_state = {
+        "phase": phase,
+        "target_click_observed": result.get("target_click_observed") is True,
+        "join_status": str(result.get("join_status") or ""),
+    }
+
+
+def _search_protocol_phase(result: dict) -> str:
+    if result.get("target_click_observed") is True:
+        return "completed"
+    if result.get("gateway_outcome_unknown") is True:
+        return "click_unknown"
+    page_phase = str(result.get("jisou_page_phase") or "")
+    if page_phase in {"hot_list_page", "search_category_page", "group_result_page", "verification_required"}:
+        return page_phase
+    return "failed"
 
 
 def _search_join_gateway_prerequisites(
@@ -7444,6 +7864,8 @@ def _release_pure_search_assignment_before_gateway(
     )
     if session is None or not assignment_id or _gateway_call_started(session, action):
         return
+    if _release_fact_first_search_assignment(session, action, assignment_id):
+        return
     release_search_click_assignment(
         session,
         assignment_id,
@@ -7451,6 +7873,26 @@ def _release_pure_search_assignment_before_gateway(
         reason_code="search_assignment_pre_gateway_terminal",
         now_value=_now(),
     )
+
+
+def _release_fact_first_search_assignment(
+    session: Session,
+    action: Action,
+    assignment_id: str,
+) -> bool:
+    from app.models import SearchClickAssignment
+
+    assignment = session.get(SearchClickAssignment, assignment_id)
+    if assignment is None:
+        return False
+    obligation_id = str(dict(action.payload or {}).get("search_click_obligation_id") or "")
+    obligation = session.get(SearchClickFulfillmentObligation, obligation_id)
+    assignment.state = "safely_not_executed"
+    assignment.version = int(assignment.version or 1) + 1
+    if obligation is not None and obligation.source_action_id == action.id:
+        obligation.status = "open"
+        obligation.source_action_id = None
+    return True
 
 
 def _prebound_claim_failure_reason(
@@ -7746,6 +8188,13 @@ def _group_bot_admission_gate_pass(session: Session, action: Action, *, group_id
         return True
     if not _group_bot_admission_required(session, action, group_id=group_id, account_id=account_id):
         return True
+    if _fact_first_action(session, action):
+        return _fact_first_group_bot_admission_gate(
+            session,
+            action,
+            group_id=group_id,
+            account_id=account_id,
+        )
     _ensure_scoped_group_bot_admission(session, action, group_id=group_id, account_id=account_id)
     payload = action.payload if isinstance(action.payload, dict) else {}
     from app.services.task_center.group_bot_admission import evaluate_send_gate
@@ -7762,6 +8211,68 @@ def _group_bot_admission_gate_pass(session: Session, action: Action, *, group_id
         return _apply_allowed_group_bot_admission(action, payload, decision)
     _defer_for_group_bot_admission(action, decision)
     return False
+
+
+def _fact_first_group_bot_admission_gate(
+    session: Session,
+    action: Action,
+    *,
+    group_id: int,
+    account_id: int,
+) -> bool:
+    from .task_group_bot_admission_v2 import evaluate_task_admission
+
+    decision = evaluate_task_admission(
+        session,
+        task_id=action.task_id,
+        tenant_id=action.tenant_id,
+        group_id=group_id,
+        account_id=account_id,
+    )
+    if decision.allowed:
+        action.payload = {
+            **dict(action.payload or {}),
+            "task_group_bot_admission_id": decision.admission_id,
+            "task_group_bot_admission_version": decision.version,
+        }
+        return True
+    if decision.code == "c2_account_abandoned":
+        _abandon_fact_first_account_for_task(session, action)
+        _skip(
+            action,
+            decision.code,
+            "该账号在当前任务与目标群组合内已放弃，不再重试",
+        )
+        return False
+    action.status = "pending"
+    action.scheduled_at = _now() + timedelta(seconds=30)
+    action.result = {
+        **dict(action.result or {}),
+        "error_code": decision.code,
+        "task_group_bot_admission_id": decision.admission_id,
+        "task_group_bot_admission_version": decision.version,
+    }
+    _clear_action_lease(action)
+    _release_runtime_resources(action)
+    return False
+
+
+def _abandon_fact_first_account_for_task(session: Session, action: Action) -> None:
+    if action.account_id is None:
+        return
+    _abandon_pending_account_actions(session, action)
+    rows = session.scalars(select(TaskAccountDailyCoverage).where(
+        TaskAccountDailyCoverage.task_id == action.task_id,
+        TaskAccountDailyCoverage.account_id == action.account_id,
+        TaskAccountDailyCoverage.state.in_(("ready", "reserved", "unknown")),
+    ))
+    for row in rows:
+        row.state = "abandoned_for_day"
+        row.blocker_code = "account_task_abandoned"
+        row.blocker_stage = "admission"
+        row.blocker_detail = "该账号在当前任务与目标内无法发送，当前任务日放弃"
+        row.recovery_path = "next_task_day_recheck"
+        row.next_eligible_at = None
 
 
 def _apply_allowed_group_bot_admission(action: Action, payload: dict, decision) -> bool:
@@ -8853,6 +9364,7 @@ def _begin_execution_attempt(session: Session, action: Action, account: TgAccoun
         tenant_id=action.tenant_id,
         action_id=action.id,
         worker_id=_lease_owner(),
+        task_lifecycle_epoch=int(action.task_lifecycle_epoch or 1),
         account_id=account.id,
         attempt_no=attempt_no,
         status="before_call",
@@ -8897,8 +9409,30 @@ def _mark_search_join_gateway_call_started(session: Session, action: Action, att
         "gateway_call_started_at": _now().isoformat(),
     }
     _mark_gateway_call_started(session, attempt, commit=False)
+    _mark_search_protocol_gateway_started(session, action, attempt)
     session.commit()
     return True
+
+
+def _mark_search_protocol_gateway_started(
+    session: Session,
+    action: Action,
+    attempt: ExecutionAttempt,
+) -> None:
+    assignment_id = str((action.payload or {}).get("search_click_assignment_id") or "")
+    if not assignment_id:
+        return
+    protocol = session.scalar(select(SearchProtocolSession).where(
+        SearchProtocolSession.assignment_id == assignment_id,
+    ))
+    assignment = session.get(SearchClickAssignment, assignment_id)
+    if protocol is None or assignment is None:
+        return
+    protocol.phase = "keyword_sent"
+    protocol.phase_version = int(protocol.phase_version or 0) + 1
+    protocol.request_identity = str(attempt.id)
+    assignment.state = "executing"
+    assignment.version = int(assignment.version or 0) + 1
 
 
 def _finish_search_join_before_gateway(

@@ -282,3 +282,29 @@ Action 与最近真实远端成功事实。监控同时输出未完成 Action �
 取得远端结果的 Action。配置复核 `remaining_mismatch_count=0` 只表示设置已生效，业务恢复
 仍必须在变更锚点之后看到 `ExecutionAttempt.status=success`、非空 `remote_message_id`，且
 对应 Action payload 的 `reply_to_message_id` 非空。
+
+## 2026-08-04 fact-first_v3 全任务切换
+
+本次切换不迁移旧 Task。先部署 `0137_fulfillment_v2` 与新 worker，再使用
+`backend/scripts/manage_fulfillment_v3_cutover.py` 对仍在运行的旧 Task 建立同配置
+`prepared` 新 Task；AI Task 必须绑定租户唯一默认 Provider，四个群目标保持
+4000、5000、800、800。新 Task 的当日账本从 0 开始，暂停、停止、已完成和已软删除
+旧 Task 不建替代任务，但必须进入 manifest 的 old set。
+
+切换固定为以下顺序：
+
+1. `inventory` 冻结精确旧 Task 集合；`create-prepared` 只创建仍需继续执行的替代 Task。
+2. `prepare-manifest --apply` 只启动一个 canary；canary 必须形成任务类型匹配的
+   `FulfillmentRemoteFact`，健康检查、Action success 或本地测试均不能替代。
+3. `activate` 通过 manifest version CAS 一次切换路由；所有新 Task 立即 running，旧 Task
+   立即 stopped，Gateway 同时校验 route、Task 状态与 `task_lifecycle_epoch`。
+4. `delete-manifest` 按 Task 分事务执行 fencing、运行快照、tombstone 写入与复核、物理删除。
+   每个失败阶段保留 `TaskDeleteOperation.resume_stage/stage_version`，只允许从同阶段继续；
+   不得跳过仍在 claiming/executing 的 Action，也不得扩大 manifest 外的删除范围。
+
+新合同验收必须同时证明：四个 AI Task 均有独立进行中的 Action/Attempt 且持续新增
+`remote_message_observed`；搜索 Task 一 Task 一目标、由 `search-dispatcher` 执行并产生
+`target_click_observed`；C2 事实按账号和 observation surface 归属；无法发送的账号只在当前
+Task/当日被放弃；目标解散或引用失效终结该 Task；旧 Task 与其 Action/Attempt 已不存在，
+仅保留 manifest、删除操作审计与必要远端防重 tombstone。以上任一项未证明，状态保持
+`production_unproven`，修复后重新发布并从当前可恢复阶段继续。

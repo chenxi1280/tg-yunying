@@ -88,6 +88,10 @@ def build_plan(session: Session, task: Task) -> int:
     if task.type != "search_click":
         raise ValueError("search_click_executor_task_type_invalid")
     now_value = _now()
+    if task.fulfillment_contract_version == "fact_first_v3":
+        from .search_click_direct import build_fact_first_plan
+
+        return build_fact_first_plan(session, task, now_value)
     _finalize_orphaned_epochs(session, now_value)
     units = prepare_search_click_fulfillment_units(session, now=now_value)
     if not units:

@@ -1,11 +1,13 @@
 # AI 活跃群“全部账号”每日发言履约专项 PRD
 
+> **状态：`historical_do_not_implement`（2026-08-04）。** 本文只保留历史事故、旧数据字段和迁移取证。当前账号范围是任务内、群内、任务日内动态 scope，不冻结不可缩小分母；当前实现合同以 `task-fulfillment-classified-recovery-prd.md`、`task-fulfillment-contract-closure-prd.md` 和 `ai-group-daily-group-target-redesign-prd.md` 为准。本文后续冲突内容不得开发、测试或回填。
+
 ## 1. 文档状态
 
 | 项目 | 内容 |
 | --- | --- |
 | 需求级别 | L3 生产问题修复 |
-| 设计状态 | `complete` |
+| 设计状态 | `historical_do_not_implement` |
 | 产品口径 | 选择“全部可用账号”的 AI 活跃群任务，必须让全部目标账号在每个目标群每天至少真实成功发言 1 次 |
 | 任务类型 | 复用 `group_ai_chat`，不新增用户可选任务类型 |
 | 统计时区 | `Asia/Shanghai` 自然日 |
@@ -473,7 +475,7 @@ Release Gate 至少验证：
 - 容量不足、准入失败、内容失败、上下文过期、结果未知和 listener 超时测试。
 - 生产验收查询或脚本输出格式。
 
-## 21. Product Design Complete 自检
+## 21. 历史 Product Design Complete 自检（不再作为当前交接）
 
 | 检查项 | 结论 |
 | --- | --- |

@@ -52,6 +52,11 @@ class TgAccountAuthorization(Base):
     last_success_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_switched_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     failure_reason: Mapped[str] = mapped_column(Text, default="")
+    fact_version: Mapped[int] = mapped_column(Integer, default=1)
+    last_authoritative_error_code: Mapped[str] = mapped_column(String(80), default="")
+    last_authoritative_observed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     disabled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     disabled_by: Mapped[str] = mapped_column(String(100), default="")
     created_by: Mapped[str] = mapped_column(String(100), default="")

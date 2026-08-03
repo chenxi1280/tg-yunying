@@ -101,6 +101,7 @@ class SendMessagePayload(BaseModel):
     context_expire_after_messages: int = 0
     ai_generation_id: str = ""
     ai_generation_status: str = ""
+    generation_job_id: str = ""
     ai_generation_attempt_id: str = ""
     ai_generation_request_id: str = ""
     ai_generation_attempt_history: list[dict[str, Any]] = Field(default_factory=list)
@@ -479,6 +480,7 @@ def _create_action(
         scheduled_at=scheduled_at,
         plan_batch_key=plan_batch_key,
         action_dedupe_key=action_dedupe_key,
+        task_lifecycle_epoch=int(task.task_lifecycle_epoch or 1),
         status="pending",
         payload=payload_data,
         result={},

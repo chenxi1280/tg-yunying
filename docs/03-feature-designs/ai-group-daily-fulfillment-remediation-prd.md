@@ -1,17 +1,19 @@
 # AI 活群每日履约收口修复 PRD
 
+> **状态：`historical_do_not_implement`（2026-08-04）。** 本文仅作为 2026-07 事故与冻结分母方案的历史证据。当前账号范围、义务、准入、物化和远端成功合同以 `task-fulfillment-classified-recovery-prd.md`、`task-fulfillment-contract-closure-prd.md` 和 `ai-group-daily-group-target-redesign-prd.md` 为准；后续任何“冻结分母不可缩小”表述均不得实现。
+
 ## 1. 文档状态
 
 | 项目 | 内容 |
 | --- | --- |
 | 需求级别 | L3 生产问题修复 |
-| 设计状态 | complete（2026-07-27 日覆盖、同群发送领取槽位、群管频道 follow 与账号级 callback 来源隔离、实时确认按钮来源与账号归属交叉修订） |
+| 设计状态 | `historical_do_not_implement`；原 complete 只表示历史设计曾闭合，不表示当前合同 |
 | 变更状态 | 先前 release 已完成群管控制提示分类、恢复与并发准入修复；本次按 Release Gate 修复六条已由生产证据确认的日履约链路：未进入 Telegram Gateway 的 overdue Action 被误标为远端未知、跨 Window claim 账本计数漂移使 Recovery 因 `dispatch claim ledger underflow` 回滚、Dispatcher 加锁取行时用通用静态时间排序覆盖已分配的 `DispatchClaimPlan` 同优先级候选顺序、多个 worker 在 Gateway 前同时领取同一 `legacy_group_slot` 群的正文 Action、已审计可信的全群频道规则因没有单一账号归属而未创建 pre-send follow，以及 listener 入库的当前 confirmation callback 已在 Telegram 侧变更或被 20 条监听窗口挤出。既有 target admission、硬小时、搜索 membership/source、任务优先级、频道评论和公平优先级仍是计划的必需前缀。真实 Telegram 结果与完整自然日验收仍须以 Action + Attempt + remote_message_id 和日账本证明；不得以 worker 存活、Action 创建或 ledger 释放代替。 |
 | 适用任务 | account_coverage_mode=all_accounts_daily 的 group_ai_chat |
 | 统计时区 | Asia/Shanghai |
 | 关联线上证据 | 2026-07-25 完整日账本与 2026-07-26 生产只读取证 |
 
-> **2026-07-28 群日目标与账号面具内容记忆 supersede：** 本文保留历史事故事实和失败审计价值；新的完成目标、迁移、规划节奏和内容质量合同以 `ai-group-daily-group-target-redesign-prd.md` 为准。旧 1 小时/7 天租户级跨账号硬去重、30 天模板壳句硬限频、无条件日覆盖固定 `签到`、硬小时和容量停止口径不再用于新实现。正常正文按同账号滚动 10 天并固化面具；缺面具 coverage 以受限 `mask_missing_check_in` 兜底。
+> **2026-08-04 当前 supersede：** 本文保留历史事故事实和失败审计价值；新的完成目标、旧 Task 删除重建、资源空闲即执行和内容质量合同以当前总合同、闭合合同与 `ai-group-daily-group-target-redesign-prd.md` 为准。正常正文按同账号滚动 10 天并固化面具；签到只保留统一 `content_source=check_in`，计数量、未覆盖时同时计 coverage，不计高质量正文或 reply。旧 1 小时/7 天跨账号去重、硬小时、容量停止、迁移和双签到类型均不得用于新实现。
 
 本专项细化并补正以下文档的当前缺口：
 
@@ -367,7 +369,7 @@ required_new = max(volume_need_now, coverage_need_now)
 4. 生产验收必须覆盖一个完整 Asia/Shanghai 自然日。每个任务导出冻结分母、覆盖账本、Action、ExecutionAttempt 和 remote_message_id 链路，并同时证明 stale executing/active claim 不再挤占 scope、同优先级计划候选未被历史同群 Action 的旧时间排序抢占、同群没有并发 `claiming/executing` 正文、已审计频道 follow 在正文前完成，以及 callback 点击审计来自实时同账号读取的可信精确按钮。部署后的短窗口只能证明修复生效：在 `listener_context_limit` 内不含原 source 的情形，仍应观察到 exact-source lookup 或换绑到更晚来源；应有 source refresh 或显式 stale retry，且不存在该窗口新增的 `group_bot_confirmation_button_failed` mismatch；连续可发送目标的远端确认间隔应达到每小时 120 条所需的约 30 秒一条；完整自然日才可证明任务按目标完成或显示真实外部 blocker。
 5. 只有 full denominator=confirmed 且无 unknown 时，任务日可写 met。若存在真实外部阻塞，结论只能是 production_blocked；若缺少远端证据，结论只能是 production_unproven。
 
-## 9. Product Design Complete 自检
+## 9. 历史 Product Design Complete 自检（不再作为当前交接）
 
 | 检查项 | 结论 |
 | --- | --- |

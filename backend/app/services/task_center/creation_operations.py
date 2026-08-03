@@ -296,7 +296,7 @@ def _write_start_failure(
         current.start_operation_id if current else None,
         current.operation_version if current else 0,
     )
-    if task.status not in {"draft", "stopped"}:
+    if task.status not in {"draft", "prepared", "stopped"}:
         return _started_result(task, current)
     if current_tuple != (previous_id, previous_version):
         return _failure_result(task, current)

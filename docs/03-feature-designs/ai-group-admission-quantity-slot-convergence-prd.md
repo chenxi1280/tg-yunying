@@ -1,10 +1,12 @@
 # AI 活群准入与数量槽收敛修复 PRD
 
+> **状态：`historical_do_not_implement`（2026-08-04）。** 本文只保留旧 ContentMix/数量槽故障证据。当前数量事实源改为 `FulfillmentObligation`，ContentMix 仅为可重建投影；物化允许 `obligation -> ContentMix -> Action` 分短事务幂等推进。远端结果先追加唯一 `fulfillment_remote_fact`，Attempt、Action、义务、coverage 与 ContentMix 由 projector 分别单行 CAS 收敛，不做跨表原子 finalize 或锁序。当前合同以 `task-fulfillment-classified-recovery-prd.md` 与 `task-fulfillment-contract-closure-prd.md` 为准。
+
 | 项目 | 内容 |
 | --- | --- |
 | 日期 | 2026-08-03 |
 | 分级 | L3 生产履约故障 |
-| 状态 | `design_status=complete`、`resync=true` |
+| 状态 | `design_status=historical_do_not_implement`、`superseded_at=2026-08-04` |
 | 适用任务 | `group_ai_chat` + `all_accounts_daily` |
 | 关联真相源 | `tg-ops-platform-prd.md`、`ai-conversation-humanization-and-group-bot-admission-prd.md`、`all-task-fulfillment-recovery-prd.md` |
 
@@ -231,4 +233,4 @@ coverage ready
 
 自检已覆盖原始需求、产品合同、Planner/generation/Dispatcher/运维职责、数据流、权限安全、并发幂等、unknown、防重复、失败路径、迁移、回滚、QA、Release Gate 和 E4。第一版“删除 waiting Action”已被既有测试和 580 账号边界证伪并撤销；补全后的合同保留驱动 Action、前移 Provider 门禁、复用同一义务，既不切断准入推进，也不允许未 ready 正文。发现的“旧槽是否阻塞独立 Cycle”文档冲突已明确 supersede，非业务异常不再被泛化错误吞掉。首轮发布后的 E4 又反证“容器健康即生成正常”；`0135` 上线后的生产 `EXPLAIN` 继续反证“外层索引命中即吞吐达标”；`0136` 和累计分配上线后的当日数据再次反证“新分配正确即可自动清除旧错误冻结”。现已把外层 due claim、同群 occupancy、独立心跳误导、listener 追尾、累计 reply 配比，以及无 Gateway 存量槽受控重分类的预览、审批、审计和拒绝边界全部纳入设计。
 
-**Product Design Complete：`design_status=complete`，允许进入 dev。**
+**历史设计曾完成；当前状态为 `historical_do_not_implement`，不得据此进入 dev。**

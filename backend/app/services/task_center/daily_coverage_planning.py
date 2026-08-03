@@ -48,6 +48,11 @@ def ready_coverage_plan_batch(
 ) -> CoveragePlanBatch:
     timestamp = now or _now()
     batch_limit = min(MAX_DAILY_COVERAGE_PLAN_BATCH, max(1, int(limit)))
+    if task.fulfillment_contract_version == "fact_first_v3":
+        rows = _ready_rows_without_cursor(
+            session, task, timestamp, batch_limit, exclude_account_ids,
+        )
+        return CoveragePlanBatch(rows=rows, wrapped=False)
     cursor = _locked_cursor(session, task, timestamp)
     rows = _ready_rows_after_cursor(
         session, task, cursor, timestamp, batch_limit, exclude_account_ids,
@@ -71,6 +76,8 @@ def advance_coverage_plan_cursor(
     timestamp = now or _now()
     if row.task_id != task.id or row.coverage_date != timestamp.date():
         raise ValueError("coverage cursor row does not belong to task day")
+    if task.fulfillment_contract_version == "fact_first_v3":
+        return
     cursor = _locked_cursor(session, task, timestamp)
     cursor.last_targeted_at = row.targeted_at
     cursor.last_account_id = row.account_id
@@ -128,6 +135,7 @@ def _coverage_totals_row(session: Session, task: Task, timestamp: datetime) -> t
             TaskAccountDailyCoverage.tenant_id == task.tenant_id,
             TaskAccountDailyCoverage.task_id == task.id,
             TaskAccountDailyCoverage.coverage_date == timestamp.date(),
+            TaskAccountDailyCoverage.state != "abandoned_for_day",
         )
     ).one()
     return tuple(map(int, row))
@@ -231,6 +239,40 @@ def _ready_rows_after_cursor(
     )
     if session.bind and session.bind.dialect.name != "sqlite":
         statement = statement.with_for_update(skip_locked=True)
+    return list(session.scalars(statement))
+
+
+def _ready_rows_without_cursor(
+    session: Session,
+    task: Task,
+    timestamp: datetime,
+    limit: int,
+    exclude_account_ids: set[int] | None,
+) -> list[TaskAccountDailyCoverage]:
+    filters = [
+        TaskAccountDailyCoverage.tenant_id == task.tenant_id,
+        TaskAccountDailyCoverage.task_id == task.id,
+        TaskAccountDailyCoverage.coverage_date == timestamp.date(),
+        TaskAccountDailyCoverage.state == "ready",
+        TaskAccountDailyCoverage.confirmed_count < TaskAccountDailyCoverage.target_count,
+        TaskAccountDailyCoverage.targeted_at <= timestamp,
+        or_(
+            TaskAccountDailyCoverage.next_eligible_at.is_(None),
+            TaskAccountDailyCoverage.next_eligible_at <= timestamp,
+        ),
+    ]
+    if exclude_account_ids:
+        filters.append(TaskAccountDailyCoverage.account_id.not_in(exclude_account_ids))
+    statement = (
+        select(TaskAccountDailyCoverage)
+        .where(*filters)
+        .order_by(
+            TaskAccountDailyCoverage.targeted_at.asc(),
+            TaskAccountDailyCoverage.account_id.asc(),
+            TaskAccountDailyCoverage.id.asc(),
+        )
+        .limit(limit)
+    )
     return list(session.scalars(statement))
 
 

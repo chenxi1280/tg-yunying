@@ -1,11 +1,13 @@
 # AI 活群发送连续性与终态目标处置优化 PRD
 
+> **2026-08-04 partial current contract：** 本文仅 Phase A 目标生命周期、目标引用 revision、Gateway unknown 与类型化远端事实安全边界继续有效；这些当前边界只使用 lifecycle/revision 单行 CAS、唯一 remote fact 和 projector，不使用本文后续任何显式锁、共享 claim 或跨表 finalize。Phase B 硬小时、共享 Claim/中央份额、群本地槽位、活动窗口、冻结账号分母和静态类别优先均为 `historical_do_not_implement`；当前履约合同以两份 task-fulfillment 专项为准。
+
 ## 1. 文档状态
 
 | 项目 | 内容 |
 | --- | --- |
 | 需求级别 | L3 生产可靠性与目标处置优化 |
-| 设计状态 | `complete`；Phase B 硬小时部分已于 2026-07-28 retired |
+| 设计状态 | `partial_current_phase_a_and_unknown_only`；Phase B 及共享调度已 retired |
 | 修订说明 | 2026-07-24 评审修订合订：义务归属 credit、unknown 占位、planning_rate / 公平调度、Phase A 身份灰度、多目标粒度、canary 体感；§5.5 青岛 `qdsfxy` 预置 `target_ref_invalid`（非解散）；§5.1/§5.4 补 invalid 任务·Action·覆盖处置与自动写入门槛；§7.3.4 明确失败 Action 再规划；§7.5 死锁 / §9.0 时区为前置基线；§9 发布插队顺序；总 PRD / 实现计划 / 数据流同步同一口径。**2026-07-25 交叉：** 与 `ai-conversation-humanization-and-group-bot-admission-prd.md` 对齐——`pending_visibility` 计入 `unknown_after_send_hold_count`；需群管可见性核验的消息先 `pending_visibility_credit` 再正式 credit；`admission_abandoned` 可排除 durable_debt；群管 follow 复用 `target_admission_retry` 档且限作用域（见 §4.3 / §7.2 / §7.3 / §7.4 增量注） |
 | 产品范围 | Phase A 目标生命周期与引用终态继续有效；Phase B 硬小时只保留历史迁移审计 |
 | 统计时区 | 任务配置时区；未配置时沿用平台 `Asia/Shanghai` 口径 |
@@ -17,7 +19,7 @@
 
 ## 2. 背景与问题
 
-> **2026-07-26 共享 Claim 份额 supersede：** 本文 §7.4 的历史静态顺序不再单独作为严格搜索与 AI hard_hourly 共存时的实现算法。保留目标准入优先和所有安全门，但必须按 search-click-daily-fulfillment-remediation-prd.md 的 DispatchClaimReservation、当期 required_claims 与持久化轮转分配 Dispatcher 份额；任一严格任务无法获得足够份额时显式写 shared_dispatch_capacity_insufficient，不能静默饿死。
+> **historical_do_not_implement（2026-07-26 旧共享 Claim 份额）：** 本段仅记录旧事故设计。当前纯搜索使用独立 search lane，普通互动使用 interaction lane，二者不共享 DispatchClaimReservation 或 active capacity。
 
 当前 AI 活群存在四类会让任务长期无法收口或显示失真的问题：
 

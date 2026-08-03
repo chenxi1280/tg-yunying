@@ -10,7 +10,7 @@ from app.auth import get_challenge_target
 from app.database import SessionLocal
 from app.main import app
 from app.integrations.telegram import ChannelCommentSnapshot, ChannelMessageSnapshot, DeveloperAppCredentials, GroupMessageSnapshot, GroupSnapshot, OperationResult, SendResult, VerificationCodeSnapshot
-from app.models import AccountStatus, Action, AiAccountVoiceProfile, AiDraft, AiGroupMessageMemory, AiUsageLedger, AuditLog, Campaign, DeveloperAppHealthStatus, FailureType, GroupBotAdmission, GroupContextMessage, ListenerSourceState, ManualOperationRecord, Material, MessageFingerprint, MessageTask, OperationTarget, OperationTaskAttempt, ReviewQueue, RuntimeMetricSnapshot, SchedulingSetting, SourceMediaAsset, TargetRuntimeSummary, Task, TaskRuntimeSummary, TaskStatus, TelegramDeveloperApp, Tenant, TgAccount, TgAccountOnlineState, TgAccountProfileSyncRecord, TgAccountSyncRecord, TgGroup, TgGroupAccount, TgLoginFlow, VerificationTask
+from app.models import AccountStatus, Action, AiAccountVoiceProfile, AiDraft, AiGroupMessageMemory, AiUsageLedger, AuditLog, Campaign, DeveloperAppHealthStatus, FailureType, GroupBotAdmission, GroupContextMessage, ListenerSourceState, ManualOperationRecord, Material, MessageFingerprint, MessageTask, OperationTarget, OperationTaskAttempt, ReviewQueue, RuntimeMetricSnapshot, SchedulingSetting, SourceMediaAsset, TargetRuntimeSummary, Task, TaskGroupBotAdmission, TaskRuntimeSummary, TaskStatus, TelegramDeveloperApp, Tenant, TgAccount, TgAccountAuthorization, TgAccountOnlineState, TgAccountProfileSyncRecord, TgAccountSyncRecord, TgGroup, TgGroupAccount, TgLoginFlow, VerificationTask
 from app.services._common import _now
 from app.services.notifications import NotificationResult
 from app.services.task_center.listener_runtime import reset_listener_runtime_cache
@@ -113,6 +113,12 @@ def mark_group_bot_admission_ready(group_id: int, account_id: int) -> None:
         admission.state = "group_bot_admission_ready"
         admission.post_send_visibility_state = "visible_confirmed"
         admission.failure_code = ""
+        for task_admission in session.scalars(select(TaskGroupBotAdmission).where(
+            TaskGroupBotAdmission.target_group_id == group_id,
+            TaskGroupBotAdmission.account_id == account_id,
+        )):
+            task_admission.state = "ready"
+            task_admission.observation_gap = False
         link = session.scalar(select(TgGroupAccount).where(
             TgGroupAccount.group_id == group_id,
             TgGroupAccount.account_id == account_id,
@@ -908,6 +914,20 @@ def ensure_test_workspace(client: TestClient, headers: dict[str, str]) -> tuple[
         if db_account:
             db_account.status = AccountStatus.ACTIVE.value
             db_account.session_ciphertext = db_account.session_ciphertext or f"pytest-session-{account['id']}"
+            authorization = session.scalar(select(TgAccountAuthorization).where(
+                TgAccountAuthorization.account_id == db_account.id,
+                TgAccountAuthorization.is_current.is_(True),
+            ))
+            if authorization is None:
+                session.add(TgAccountAuthorization(
+                    tenant_id=1,
+                    account_id=db_account.id,
+                    developer_app_id=db_account.developer_app_id,
+                    session_ciphertext=db_account.session_ciphertext,
+                    status="active",
+                    is_current=True,
+                    health_status="healthy",
+                ))
             online_state = session.query(TgAccountOnlineState).filter_by(tenant_id=1, account_id=account["id"]).first()
             if online_state is None:
                 online_state = TgAccountOnlineState(tenant_id=1, account_id=account["id"])
@@ -3969,7 +3989,7 @@ def test_task_center_group_ai_chat_creates_and_dispatches_actions(monkeypatch):
             )
         assert created.status_code == 201, created.text
         task = created.json()
-        assert task["status"] == "draft"
+        assert task["status"] == "prepared"
 
         started = client.post(f"/api/tasks/{task['id']}/start", headers=headers)
         assert started.status_code == 200, started.text
@@ -5766,7 +5786,7 @@ def test_task_center_create_and_start_keeps_created_task_when_start_fails(monkey
         )
         assert response.status_code == 201
         body = response.json()
-        assert body["status"] == "draft"
+        assert body["status"] == "prepared"
         assert body["create_status"] == "created"
         assert body["start_status"] == "start_failed"
         assert body["start_failure_code"] == "启动失败"
@@ -6043,8 +6063,16 @@ def test_task_center_channel_failure_replans_same_obligation_before_task_failed(
                     Action.status == "pending",
                 )
             )
-            assert replacement is not None
-            replacement.scheduled_at = _now()
+            completed_retry = session.scalar(
+                select(Action).where(
+                    Action.task_id == task_id,
+                    Action.status == "success",
+                    Action.retry_count == 1,
+                )
+            )
+            assert replacement is not None or completed_retry is not None
+            if replacement is not None:
+                replacement.scheduled_at = _now()
             session.commit()
         drain_task_runtime_and_metrics(task_id)
         with SessionLocal() as session:

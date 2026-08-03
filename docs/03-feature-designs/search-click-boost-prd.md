@@ -1,5 +1,7 @@
 # 搜索目标群点击任务（目标机器人 / SOSO 等第三方索引机器人）专项 PRD
 
+> **状态：`historical_do_not_implement`（2026-08-04）。** 本文旧 `search_join_group`、点击后入群、双目标、创建前容量证明、共享调度、设备/代理强预检和排名提升执行合同均已移除。纯搜索当前合同只认 `search-click-daily-fulfillment-remediation-prd.md`；本文仅保留第三方机器人协议、结果结构和排序观察的历史研究，且不得产生写入语义。
+
 > **2026-07-26 每日履约修复 supersede：** 严格日目标的容量证明、AI hard_hourly 共用 Dispatcher 的 claim reservation、极搜 page_phase 与会话重置、以及 source/ExecutionAttempt 事实链，以 docs/03-feature-designs/search-click-daily-fulfillment-remediation-prd.md 为增量真相源。该文档替代旧文中相互冲突的严格搜索与 AI hard-hourly 固定排序表述；不会放宽账号、代理、协议或 Telegram 风控。
 
 ## 1. 背景
@@ -1831,7 +1833,7 @@ AI 活跃群联动 126 个账号待冷却 / 64 个已进入 ready pool
 - 目标群排名变化只作为运营观察指标，不作为系统验收通过条件。
 - 至少一个 linked AI 活跃群任务能看到搜索入群带来的账号处于 `linked_task_ready_pending / linked_task_ready_active / linked_task_blocked` 之一，且阻塞原因可解释。
 
-## 21. Product Design Complete 自检
+## 21. 历史 Product Design Complete 自检（不再作为当前交接）
 
 | 检查项 | 结论 |
 | --- | --- |

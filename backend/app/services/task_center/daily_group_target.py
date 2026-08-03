@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 from datetime import date, datetime, time, timedelta
 
 from sqlalchemy import func, select
@@ -19,8 +18,8 @@ from app.models import (
 from app.services._common import _now
 
 
-def effective_daily_message_target(configured: int, frozen_accounts: int) -> int:
-    return max(max(1, int(configured or 0)), max(0, int(frozen_accounts or 0)))
+def effective_daily_message_target(configured: int, current_required: int) -> int:
+    return max(1, int(configured or 0), int(current_required or 0))
 
 
 def ensure_task_group_daily_target(
@@ -46,7 +45,38 @@ def refresh_task_group_daily_target(
 ) -> TaskGroupDailyTarget:
     start = datetime.combine(target.target_date, time.min)
     end = start + timedelta(days=1)
+    task = session.get(Task, target.task_id)
+    if task is None:
+        raise ValueError("task_group_daily_target_task_missing")
+    configured = max(1, int((task.type_config or {}).get("daily_message_target") or 1))
+    current_required = _current_required_account_count(session, target)
+    planned = effective_daily_message_target(configured, current_required)
+    _apply_current_target(
+        target,
+        configured=configured,
+        current_required=current_required,
+        planned=planned,
+    )
     target.confirmed_message_count = _confirmed_message_count(session, target, start, end)
+    target.gateway_started_count = _gateway_started_count(
+        session,
+        target,
+        start=start,
+        end=end,
+    )
+    target.unknown_hold_count = _unknown_hold_count(
+        session,
+        target,
+        start=start,
+        end=end,
+    )
+    target.target_reduction_overage_count = max(
+        0,
+        target.confirmed_message_count
+        + target.gateway_started_count
+        + target.unknown_hold_count
+        - planned,
+    )
     target.coverage_confirmed_account_count = _coverage_confirmed_count(session, target)
     target.updated_at = _now()
     return target
@@ -64,17 +94,8 @@ def daily_group_due_message_count(
     start = max(day_start, _wall_time(target.scope_frozen_at))
     if timestamp < start:
         return 0
-    if timestamp >= day_end:
-        return target.effective_message_target
-    curve = _positive_hourly_curve(pacing_config)
-    ratio = _weighted_seconds(start, timestamp, curve) / max(
-        1.0,
-        _weighted_seconds(start, day_end, curve),
-    )
-    return max(1, min(
-        target.effective_message_target,
-        math.floor(target.effective_message_target * ratio),
-    ))
+    _ = pacing_config, day_end
+    return target.effective_message_target
 
 
 def _locked_target(
@@ -89,8 +110,6 @@ def _locked_target(
         TaskGroupDailyTarget.group_id == group.id,
         TaskGroupDailyTarget.target_date == target_date,
     )
-    if session.bind and session.bind.dialect.name != "sqlite":
-        statement = statement.with_for_update()
     return session.scalar(statement)
 
 
@@ -113,6 +132,10 @@ def _new_target(
         configured_message_target=configured,
         frozen_account_count=frozen_accounts,
         effective_message_target=effective_daily_message_target(configured, frozen_accounts),
+        planned_daily_target=effective_daily_message_target(configured, frozen_accounts),
+        planned_target_revision=1,
+        target_changed_at=timestamp,
+        target_change_reason="created_from_current_task_scope",
         daily_fulfillment_phase=phase,
         scope_frozen_at=scope_frozen_at,
         full_day_committed_at=committed_at,
@@ -141,6 +164,89 @@ def _frozen_account_count(
             TaskMembershipAdmissionItem.task_id == task.id,
         )
     ) or 0)
+
+
+def _current_required_account_count(
+    session: Session,
+    target: TaskGroupDailyTarget,
+) -> int:
+    total, required = session.execute(
+        select(
+            func.count(TaskAccountDailyCoverage.id),
+            func.count(TaskAccountDailyCoverage.id).filter(
+                TaskAccountDailyCoverage.state != "abandoned_for_day"
+            ),
+        ).where(
+            TaskAccountDailyCoverage.tenant_id == target.tenant_id,
+            TaskAccountDailyCoverage.task_id == target.task_id,
+            TaskAccountDailyCoverage.group_id == target.group_id,
+            TaskAccountDailyCoverage.coverage_date == target.target_date,
+        )
+    ).one()
+    if int(total or 0) > 0:
+        return int(required or 0)
+    return int(session.scalar(select(func.count(TaskMembershipAdmissionItem.id)).where(
+        TaskMembershipAdmissionItem.tenant_id == target.tenant_id,
+        TaskMembershipAdmissionItem.task_id == target.task_id,
+    )) or 0)
+
+
+def _apply_current_target(
+    target: TaskGroupDailyTarget,
+    *,
+    configured: int,
+    current_required: int,
+    planned: int,
+) -> None:
+    previous = int(target.planned_daily_target or target.effective_message_target or 1)
+    previous_configured = int(target.configured_message_target or 1)
+    target.configured_message_target = configured
+    target.frozen_account_count = current_required
+    target.effective_message_target = planned
+    target.planned_daily_target = planned
+    if planned == previous:
+        return
+    target.planned_target_revision = int(target.planned_target_revision or 1) + 1
+    target.target_changed_at = _now()
+    target.target_change_reason = (
+        "current_required_account_count_changed"
+        if configured == previous_configured
+        else "configured_daily_target_changed"
+    )
+
+
+def _gateway_started_count(
+    session: Session,
+    target: TaskGroupDailyTarget,
+    *,
+    start: datetime,
+    end: datetime,
+) -> int:
+    return int(session.scalar(
+        select(func.count(func.distinct(Action.id)))
+        .join(ExecutionAttempt, ExecutionAttempt.action_id == Action.id)
+        .where(
+            Action.task_id == target.task_id,
+            Action.status == "executing",
+            ExecutionAttempt.gateway_call_started_at >= start,
+            ExecutionAttempt.gateway_call_started_at < end,
+        )
+    ) or 0)
+
+
+def _unknown_hold_count(
+    session: Session,
+    target: TaskGroupDailyTarget,
+    *,
+    start: datetime,
+    end: datetime,
+) -> int:
+    return int(session.scalar(select(func.count(Action.id)).where(
+        Action.task_id == target.task_id,
+        Action.status == "unknown_after_send",
+        Action.executed_at >= start,
+        Action.executed_at < end,
+    )) or 0)
 
 
 def _fulfillment_phase(task: Task, target_date: date) -> tuple[str, datetime]:
@@ -233,28 +339,6 @@ def _coverage_confirmed_count(session: Session, target: TaskGroupDailyTarget) ->
 
 def _wall_time(value: datetime) -> datetime:
     return value.replace(tzinfo=None) if value.tzinfo else value
-
-
-def _positive_hourly_curve(pacing_config: dict) -> list[int]:
-    profile = pacing_config.get("operation_profile") or {}
-    raw = profile.get("hourly_activity_curve") if isinstance(profile, dict) else None
-    if not isinstance(raw, list) or len(raw) != 24:
-        return [1] * 24
-    try:
-        return [max(1, int(value)) for value in raw]
-    except (TypeError, ValueError):
-        return [1] * 24
-
-
-def _weighted_seconds(start: datetime, end: datetime, curve: list[int]) -> float:
-    cursor = start
-    total = 0.0
-    while cursor < end:
-        next_hour = cursor.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
-        boundary = min(end, next_hour)
-        total += curve[cursor.hour] * (boundary - cursor).total_seconds()
-        cursor = boundary
-    return total
 
 
 __all__ = [

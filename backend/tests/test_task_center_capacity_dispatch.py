@@ -3328,7 +3328,7 @@ def test_target_membership_claim_does_not_reassign_account_on_cooldown(monkeypat
         assert action.result.get("account_policy_action") != "reassigned"
 
 
-def test_claim_actions_db_unique_index_blocks_cross_worker_same_account_execution():
+def test_claim_actions_allows_cross_task_parallel_work_without_global_account_index():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = _now()
@@ -3347,12 +3347,9 @@ def test_claim_actions_db_unique_index_blocks_cross_worker_same_account_executio
 
         claimed = claim_actions(session, limit=1, worker_id="worker-b")
 
-        assert claimed == []
-        blocked = session.get(Action, "action-worker-b")
-        assert blocked.status == "pending"
-        assert blocked.result["claim_released_reason"] == "account_inflight_conflict"
-        assert 11 not in dispatcher._IN_FLIGHT_ACCOUNTS
-        assert blocked.id not in dispatcher._ACTION_RESERVATIONS
+        assert [action.id for action in claimed] == ["action-worker-b"]
+        assert session.get(Action, "action-worker-b").status == "executing"
+        dispatcher._release_runtime_resources(claimed[0])
 
 
 def test_claimed_action_dispatch_success_releases_runtime_reservation(monkeypatch):
@@ -6066,6 +6063,7 @@ def test_group_ai_all_account_coverage_defers_plain_ai_without_emoji_fallback(mo
                 "target_group_id": 7,
                 "messages_per_round_mode": "manual",
                 "messages_per_round": 2,
+                "daily_message_target": 2,
                 "reply_min_per_round": 0,
                 "silent_mode_enabled": False,
                 "fact_anchor_required": False,
@@ -6176,6 +6174,7 @@ def test_group_ai_all_account_coverage_defers_voice_profile_candidates(monkeypat
                 "target_group_id": 7,
                 "messages_per_round_mode": "manual",
                 "messages_per_round": 2,
+                "daily_message_target": 2,
                 "reply_min_per_round": 0,
                 "silent_mode_enabled": False,
                 "fact_anchor_required": False,

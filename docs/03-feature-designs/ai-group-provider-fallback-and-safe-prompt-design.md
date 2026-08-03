@@ -1,18 +1,18 @@
 # AI 活跃群安全 Prompt 与多模型回退设计
 
+> **2026-08-04 current contract：** 本文只保留输入安全、统一输出契约和 Provider adapter 原则。全系统只允许一个 active `ai_provider_key_version`；所有文本模型共享这一把 key 和总额度，每个 GenerationJob 独立调用、direct 结果独立提交。固定 M3→M2.5→Grok 拓扑、Grok CLI Bridge、按模型/配置复制 key 额度、验证码 AI/VLM、ContentMix 数量槽和旧双签到均为 `historical_do_not_implement`。当前并发、key 轮换和签到合同以 `task-fulfillment-contract-closure-prd.md` §8 与 `ai-group-daily-group-target-redesign-prd.md` §7.4 为准；搜索验证码只走 RapidOCR→ddddOCR。
+
 > **2026-07-31 supersede：** Provider 重试次数、静态签到适用范围、单 Action late binding 与跨群 scope 失败规则，以 `ai-conversation-humanization-and-group-bot-admission-prd.md` §15.2 为准。本文保留输入安全与 Provider 适配设计；下文“M3→M2.5→Grok 每层一次”和缺少数量槽/scope 校验的旧编排不再是运行合同。
 
 ## 1. 目标与范围
 
-本设计仅覆盖 `group_ai_chat` 文本生成链。生产默认使用 `MiniMax-M3`，失败后依次尝试独立的 `MiniMax-M2.5` Provider、受限 `Grok 4.5` CLI Bridge，最后使用审核过的签到短句或文本表情。验证码图片识别继续复用现有多模态 Provider 选择，不进入本链。
+本设计仅覆盖 `group_ai_chat` 文本生成输入安全和 Provider 适配。模型由版本化 policy 从唯一 active Provider key 支持的 model ID 中选择；每个 GenerationJob 独立调用并可并发，不等待其他 sequence。版本化生成流程明确耗尽后，可按统一签到合同使用精确 `签到`，不得使用文本表情。搜索验证码不复用任何多模态 Provider。
 
 本次同时统一安全上下文和 Prompt 口径：指令使用英文，安全动态上下文可以使用中文，模型输出必须是中文固定 JSON。明确成年人的非露骨身材、穿搭和轻度暧昧既有话题允许自然承接；交易撮合、联系方式、预约、服务、具体性行为和未成年人风险在生成前过滤。
 
 ## 2. 当前事实与目标状态
 
-当前生产租户 1 只有一个健康 MiniMax Provider，记录模型为 `MiniMax-M2.5`；六个运行中的 AI 活跃群任务没有 `ai_model` 或 Provider 覆盖，因此继承 M2.5。生产 Linux 已安装并登录 Grok CLI 0.2.93，可用模型为 `grok-4.5`。
-
-目标状态保留现有 M2.5 Provider，新增 M3 Provider 并设为租户默认。两条 MiniMax 记录可以复用同一服务端凭据，但各自保留模型名、健康、失败率和最近检查；不得通过每次请求临时改写同一 Provider 行模拟两个应用。
+目标状态只维护一个 active Provider key version，Secret 保存密钥管理引用，不落明文。模型名称、健康和质量统计是同一 Provider key 下的 policy/观测维度，不创建第二把 active key，也不按模型复制总 `max_inflight/RPM/TPM`。0 个或多个 active key 都显式阻断生成。
 
 ## 3. 输入过滤与 Prompt 契约
 
@@ -36,64 +36,60 @@
 
 输出顶层固定为 `decision`、`context_source`、`drafts`；`drafts` 必须只有一项，并固定包含 `sequence_index`、`reply_to_sequence_index`、`persona`、`content`、`risk_level`、`intent`、`mood`、`material_intent`、`allow_material`。不得输出 `<think>`、Markdown 围栏、解释或额外字段。所有 Provider 使用同一个解析和质量门禁。
 
-## 4. 回退编排
+## 4. 模型选择与统一签到
 
 ```text
 sanitized generation request
-  -> MiniMax-M3 Provider
-  -> MiniMax-M2.5 Provider
-  -> Grok CLI Bridge (grok-4.5)
-  -> static safe check-in / text emoji
+  -> selected model on the single active Provider key
+  -> common JSON parser and quality gate
+  -> optional next approved model on the same key
+  -> unified exact check-in
   -> planned message or visible skipped round
 ```
 
-回退触发条件包括调用异常 / 超时、配额或未知模型错误、空回复、拒答、JSON 解析失败、候选不足、交易 / 年龄残留、上下文不锚定、重复或真人感质量失败。运行合同统一为主 Provider 最多 3 次、不同备用 Provider 最多 3 次；相同 attempt 使用同一 scope 下的冻结安全上下文和输出契约，只有 Provider 适配参数不同。Grok 若被配置为备用实现也受备用阶段总次数约束，不再形成第三套独立重试层。
+每个 GenerationJob 冻结 model policy revision、安全上下文和输出契约后独立执行。允许的模型次序、次数和 timeout 必须由版本化 policy 明示；不在文档或代码中固化 M3/M2.5/Grok 拓扑，不调用第二 Provider/CLI，也不做多模型 hedge。不同 Job 可同时使用不同模型，但都先领取同一 active key 的共享 token；Provider 明确存在模型级限制时再领取对应模型子 token。
 
-静态兜底在群聊路径上收敛为精确文本 `签到`（见专项 PRD §15.2.8），必须标记为 `static_safe_fallback` / `content_source=check_in_fallback`，不得伪装成模型成功。只有绑定主数量槽、命中明确允许原因、通过 10 天去重，且该 `ContentMixCycleSlot` 没有任何 `pending` 内容义务时才可进入；不能只凭 `material_intent` 为空推断义务已转派。`cross_group_content_scope_mismatch`、`scope_contract_missing`、deadline budget 未执行满六轮、规则/target/context 合同错误和缺数量槽永久禁止签到。历史“我也来签到啦～”类扩写句与 `emoji_react` 表情池不得再作为确定性兜底。租户可关闭静态兜底；关闭后全链失败写可见错误。
+签到必须使用统一 `content_source=check_in` 和精确正文 `签到`，绑定稳定数量义务与 remote mutation identity；账号未覆盖时可同时绑定 coverage。签到不进入普通正文 10 天去重，不计高质量正文或 reply，unknown 只复探不重发。只有生成流程明确耗尽或面具缺失等合同允许原因才能使用，不能掩盖 Provider key 缺失、quota、准入、target/context 或 transport 故障。
 
-## 5. Grok CLI Bridge
+## 5. 已删除的 Grok CLI Bridge
 
-Bridge 是低频第三层，不替代标准 HTTP Provider。它固定 Grok CLI 版本和 `grok-4.5`，禁用 web search、memory、subagents 和所有工具，使用独立临时 Git 工作目录、单请求硬超时和有界并发。Backend 通过内部受限接口调用 Bridge；Bridge 只接受已过滤的 system/user Prompt，并返回原始文本、退出码、stop reason 和耗时。
-
-Bridge 不得接触 Telegram session、数据库或 Provider 密钥；认证目录只在 Bridge 运行用户可读。CLI 失败、未登录、额度不足、输出为空或 JSON 不合格时进入静态兜底。部署和健康检查必须验证 CLI 版本、登录状态和 `grok-4.5` 可用，但不得把登录信息写入 API 响应。
+Grok CLI Bridge 不进入当前运行拓扑，不部署、不健康检查、不作为回退，也不得持有第二套认证。历史章节只用于说明已废弃方案。
 
 ## 6. 数据与可观测性
 
 每次生成 attempt 记录：
 
-- `requested_model` / `actual_model`
-- `fallback_stage`：`primary_m3`、`fallback_m25`、`fallback_grok`、`static_safe_fallback`
+- `provider_key_version`、`requested_model`、`actual_model`、`model_policy_revision`、`generation_attempt_no`
 - `fallback_reason` 和标准错误分类
-- 每层开始 / 结束时间、耗时、Provider / Bridge 健康快照
+- 每次开始 / 结束时间、耗时、共享 key token 和 Provider 健康快照
 - JSON 解析、输入 / 输出规则、上下文锚定、重复和真人感门禁结果
 - 最终 `generation_source`
 
-action payload 只保存发送所需内容和非敏感审计摘要，不保存 Provider key、Grok 登录态、完整思考过程或 CLI stderr。任务详情和生产诊断按来源统计成功、回退、静态兜底和全链失败，发布门禁必须检查近 24 小时样本中来源字段完整。
+action payload 只保存发送所需内容和非敏感审计摘要，不保存 Provider key 或完整思考过程。任务详情和生产诊断按模型、原因、统一签到和最终失败统计，发布门禁必须检查来源字段完整。
 
 ## 7. 错误处理与并发
 
-- 单层超时后立即释放调用资源并进入下一层，不在数据库事务内等待外部模型。
-- 下一层启动前以主数量槽任务日 deadline 和真实 AI request timeout 校验 attempt budget；预算不足显式终止，不进入静态签到。
+- 单次模型调用超时后立即释放调用资源；policy 允许时进入下一模型，不在数据库事务内等待外部模型。
+- 下一模型启动前以主义务 deadline 和真实 AI request timeout 校验 attempt policy；不满足时显式终止，不自动转签到。
 - 同一生成 slot 使用稳定 request id，避免重规划并发产生重复 action。
 - 回退成功只完成当前 slot；其他 slot 仍按各自结果审计。
-- 静态兜底仍要经过重复、发送频率、账号容量和 Telegram 发送前门禁。
-- Grok Bridge 并发已满时返回明确 `bridge_capacity_exhausted`，不得无界排队。
+- 统一签到仍要经过义务唯一性、准入、账号安全和 Telegram 发送前门禁。
 
 ## 8. 测试与发布验收
 
 自动化测试至少覆盖：
 
 1. 安全成年身材 / 轻度暧昧短句保留，交易和年龄风险删除。
-2. M3 成功时不调用后续层。
-3. M3 的异常、空回复、拒答、JSON 和质量失败分别进入 M2.5。
-4. M2.5 同类失败进入 Grok；Grok 失败进入静态兜底。
+2. 全系统 0/1/2 个 active key 分别为阻断/通过/唯一约束失败，模型配置不能激活第二把 key。
+3. 多个 GenerationJob 使用不同模型并发时共享 active key 总额度，direct 后位不等待前位 sequence。
+4. 版本化 model policy 允许时可切换同 key 下另一模型；禁止调用第二 Provider、Grok CLI 或 hedge。
 5. 禁止输入不会通过回退链强行生成。
-6. M2.5 `<think>` 内容不会抢先被 JSON 提取器误认。
-7. 静态兜底可关闭，关闭时全链失败跳过本轮。
-8. 每层来源、原因和耗时写入诊断，且不泄露密钥 / 登录态。
+6. `<think>` 内容不会抢先被 JSON 提取器误认。
+7. 统一签到关闭或原因不合法时生成失败可见，不产生替代文本；unknown 不重发。
+8. 每次来源、原因和耗时写入诊断，且不泄露密钥。
 
-发布走 `master -> release -> Deploy Production`。生产验收必须确认两个 MiniMax Provider 均健康、租户默认指向 M3、六个运行任务无旧模型覆盖、Grok Bridge 健康，并分别获得 M3 成功、M2.5 回退、Grok 回退和静态兜底的受控 dry-run 证据。只有实际发送链继续通过账号、规则、容量和 Telegram 门禁后，才能判断生产任务恢复；Provider 健康或 dry-run 成功不能单独写成 `production_fixed`。
+发布走 `master -> release -> Deploy Production`。生产验收必须确认只有一个 active key version、多个模型共享总额度、Grok/第二 Provider 调用为 0，并分别取得生成成功、合法模型切换、统一签到和可见失败的受控证据。只有真实发送链继续通过账号、规则和 Telegram 门禁后才能判断任务恢复；Provider 健康或 dry-run 成功不能单独写成 `production_fixed`。
 
 ## 9. 回滚
 
-回滚顺序为关闭静态兜底、关闭 Grok 层、把租户默认切回原 M2.5 Provider，再回滚应用版本。独立 Provider 记录和 Bridge 开关使回滚不需要改写密钥。回滚后保留 attempt 审计，不删除失败事实。
+新 writer 未产生 Gateway-started/unknown 前可停用新生成路径并回滚应用；一旦已有新远端事实只允许前向修复。key 轮换通过新 version 原子替换 active 行，旧 in-flight 按旧 version 对账；不得通过激活第二把 key 或恢复 Grok Bridge 回滚。

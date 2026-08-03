@@ -20,7 +20,12 @@ def record_search_join_protocol_trace(
     attempt: ExecutionAttempt,
 ) -> SearchJoinProtocolTrace:
     recovery_kind = str(result.get("jisou_recovery_kind") or payload.get("jisou_recovery_kind") or INITIAL_TRACE_KIND)
-    trace = _trace_for_update(session, action.id, recovery_kind)
+    trace = _trace_for_update(
+        session,
+        action.id,
+        recovery_kind,
+        lock=not _uses_fact_first_contract(session, action),
+    )
     phase = str(result.get("jisou_page_phase") or "unknown_page")
     if trace is None:
         trace = SearchJoinProtocolTrace(
@@ -60,12 +65,25 @@ def task_search_join_protocol_snapshot(session: Session, task_id: str) -> dict:
     }
 
 
-def _trace_for_update(session: Session, action_id: str, recovery_kind: str) -> SearchJoinProtocolTrace | None:
+def _uses_fact_first_contract(session: Session, action: Action) -> bool:
+    from app.models import Task
+
+    task = session.get(Task, action.task_id)
+    return bool(task and task.fulfillment_contract_version == "fact_first_v3")
+
+
+def _trace_for_update(
+    session: Session,
+    action_id: str,
+    recovery_kind: str,
+    *,
+    lock: bool,
+) -> SearchJoinProtocolTrace | None:
     statement = select(SearchJoinProtocolTrace).where(
         SearchJoinProtocolTrace.action_id == action_id,
         SearchJoinProtocolTrace.recovery_kind == recovery_kind,
     )
-    if session.bind and session.bind.dialect.name != "sqlite":
+    if lock and session.bind and session.bind.dialect.name != "sqlite":
         statement = statement.with_for_update()
     return session.scalar(statement)
 

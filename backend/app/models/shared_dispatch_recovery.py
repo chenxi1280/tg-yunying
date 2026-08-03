@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, JSON, String, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, JSON, String, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -82,6 +82,13 @@ class RemoteReconcileCase(Base):
             name="uq_remote_reconcile_action_attempt",
         ),
         Index("ix_remote_reconcile_case_state", "state", "created_at"),
+        Index(
+            "ix_remote_reconcile_due",
+            "next_probe_at",
+            "id",
+            postgresql_where=text("state = 'open'"),
+            sqlite_where=text("state = 'open'"),
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
@@ -100,6 +107,12 @@ class RemoteReconcileCase(Base):
     remote_fact_id: Mapped[str] = mapped_column(String(160), default="")
     failure_code: Mapped[str] = mapped_column(String(120), default="")
     checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    next_probe_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    unknown_deadline_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True,
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)

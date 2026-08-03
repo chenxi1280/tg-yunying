@@ -1,5 +1,15 @@
 # 全任务按时按量履约恢复 PRD
 
+> **2026-08-04 final supersede / historical_do_not_implement：** 本文只保留事故证据，所有运行、数据、迁移和发布条款均不得实现。当前唯一合同删除全部旧 Task 后按新合同重建；同日新 Task 从 0；不使用 completion/click ordinal、24 小时曲线、静默权重、任务份额、Window、Reservation、迁移/quarantine/shadow；搜索单 Task 单目标且独立连续执行；C2 使用 Task 配置字段 + Task 独立四类远端事实；Provider 只允许一个 active key；签到统一为 `content_source=check_in`；C3 使用三条数据库唯一约束。完整定义只见 `task-fulfillment-classified-recovery-prd.md` 与 `task-fulfillment-contract-closure-prd.md`。
+
+> **2026-08-03 superseded / historical integration source：** 本文不再是 C1–C8 当前产品真相源。现行合同仅由 `task-fulfillment-classified-recovery-prd.md` 与 `task-fulfillment-contract-closure-prd.md` 共同定义。本文所有搜索/普通互动共享 active claim/Dispatcher、中央 TaskAllocation/Reservation、ContentMix 持有数量义务、远端当前不存在即可重开 unknown、抽象 OCR refresh 和旧删除/迁移描述均为 `historical_do_not_implement`；未冲突的事故证据只作追溯。
+
+> **2026-08-03 C1 动态任务范围 resync：** AI 活群保留不可变的任务日时间边界，取消不可缩小 `frozen_account_count`。覆盖范围按 `(task_id,target_group_id,account_id,task_day_ledger_id)` 独立动态维护；可恢复账号自动回流，无合法恢复路线时当日 `abandoned_for_day`并释放未进 Gateway 义务。暂停/停止/删除任务立即退出新规划、生成、claim 和容量统计，并清理未进 Gateway 残留；已进 Gateway/unknown 只进入隔离对账。多个 running 任务必须由 Planner、Generation 和 Dispatcher 公平并发，`4000+5000+800+800` 是同时独立履约，不是串行排空。详细合同以 `task-fulfillment-classified-recovery-prd.md` §2.2/§4 和 `ai-group-daily-group-target-redesign-prd.md` §3–5 为准；本文后续“冻结分母/槽不可缩小”的冲突表述仅作历史审计。
+
+> **2026-08-03 合同闭合 resync：** 动态账号事实版本、同日权威恢复、任务 lifecycle/Gateway/owner fencing、Task 主行物理删除+独立 tombstone/archive、搜索 assignment 落库后直接执行（无跨窗预扣/二次容量 confirm）、transport binding、同账号跨任务非冲突 RPC 并发、展示名+要求链接组合绑定、同提示多 requirement action、义务原子完成、AI direct 有序并发/reply 严格 CAS、双 OCR、C8 随机探针池 -1、新 E4 和完整迁移/回滚，以 `task-fulfillment-contract-closure-prd.md` 为准；本文后续任何账号单 inflight、search handoff grace/二次 Scope 容量 confirm、Task 软删除、单 callback 上限、`max(...,confirmed)` 的冲突表述只作历史审计。
+
+> **2026-08-03 最终缺口闭合 resync：** AI 动态目标以 target revision/ completion ordinal 区分 scheduler oversend 与目标下调 overage；Task 删除先 archive/tombstone 校验后物理删除；Provider credential 父额度与 model 子额度原子双层领取；unknown 按 mutation-specific 权威否定证据收口；C2 ready、C8 负面 probe 均使用版本/hash/cursor CAS；业务 migration conflict 按 Task quarantine；AI、Search、Source 分 release train 在依赖闭合后统一激活并做端到端 E4。完整合同见 `task-fulfillment-contract-closure-prd.md` §2–12；本文后续冲突旧段均为历史。
+
 > **2026-07-31 AI 活群真人化 resync：** AI 活群的跨群 scope、单 Action late binding、过期同槽重生成、会话质量状态和确定性签到边界，以 `ai-conversation-humanization-and-group-bot-admission-prd.md` §15 为准。本文原“缺面具覆盖 extra-volume”或缺少 scope/freshness 限制的签到表述不再适用。
 
 ## 1. 文档状态
@@ -9,14 +19,14 @@
 | Intake ID | `intake-2026-07-28-all-task-fulfillment-recovery-001` |
 | 需求级别 | L3：生产任务长期无法按时按量完成 |
 | 适用任务 | `group_ai_chat`、`channel_comment`、`channel_like`、`channel_view`、纯搜索点击 `task_type=search_click + search_execution_mode=click_only` |
-| 设计状态 | `complete` |
-| 设计复核 | 2026-07-30 已补齐 AI 历史积压运营放弃、runtime retention 吞吐、Dispatcher 有界候选读取、AI 生成独立 worker、极搜非首次会话禁止重复 `/start`，并保留热搜/验证码安全排除 |
-| 开发交接 | `dev_handoff_ready=true`；2026-07-29 最新完成优先合同 supersede “存量只审计不接管”和“小任务级上限可截断履约”，必须按本文完成代码、存量数据接管和生产 E4 |
+| 设计状态 | `superseded_historical_do_not_implement`；C1–C8 当前合同已迁移到两份分类履约专项 |
+| 设计复核 | 2026-08-03 已补齐动态 scope、lifecycle/Gateway/owner fencing、物理删除+tombstone、搜索直接执行与 transport、群管多要求动作、义务原子完成、AI direct/reply 分离、OCR 安全预算、随机来源探针、新 E4 和迁移/回滚 |
+| 开发交接 | `dev_handoff_ready=true`；仅表示产品合同可交接，存量对账、代码、QA 和生产 E4 均未开始 |
 | 生产状态 | `production_unproven`；容器健康、Action 创建或本地测试均不代表恢复 |
 | 统计时区 | 默认 `Asia/Shanghai`，实际以 `Task.timezone` 为准 |
 | 证据基线 | 2026-07-30 生产 SSH、PostgreSQL、py-spy、当前生产 SHA `1f7db0ca` 与 `origin/master` 实现审查 |
 
-本文是五类任务共同履约、调度、前端展示和生产验收的当前专项真相源。各任务原有安全、内容和协议专项继续有效，但冲突时按下列优先级解释：
+本文只保留五类任务共同履约事故与旧方案追溯，不再作为当前开发、迁移、QA 或生产验收真相源。当前实现先读取两份分类履约专项；其他任务安全、内容和协议专项仅在不冲突时继续有效：
 
 1. AI 群日目标、全账号覆盖、账号面具和内容记忆以 `ai-group-daily-group-target-redesign-prd.md` 为准。
 2. 搜索协议细节以 `search-click-daily-fulfillment-remediation-prd.md` 为准；本文修订其容量、重复执行和生产放量口径。
@@ -124,7 +134,7 @@
    绑定不完整时均不得触发。触发后复用现有精确 `签到` 内容和
    `quality_fallback=check_in_fallback` 审计，不新增模板或模拟 Provider 成功。
 3. `签到` 只替代本次已耗尽到期预算的 Provider 调用，不绕过 listener 连续性、群管准入、
-   membership/can_send、账号互斥、ContentMix/数量槽绑定、Dispatcher、Gateway 或 unknown
+   membership/can_send、远程副作用幂等、ContentMix/数量槽绑定、Dispatcher、Gateway 或 unknown
    防重。只有真实成功 Attempt 的非空 `remote_message_id` 才更新群日总量和账号覆盖。
 4. 触发判断不持久化任务级降级开关，不修改目标、`scope_frozen_at`、due、coverage 或历史
    Action。每条 Action 独立重算；债务追平后自动回到正常 AI 生成。生产临时恢复禁止直接
@@ -323,9 +333,11 @@ AI own-history 查询修复上线后，搜索 Task 的 `next_run_at` 已按分�
 
 现有数据库/内部枚举中的 `lane=admission` 和 `admission_lane_claims` 是 `membership_admission` 执行份额的兼容物理名，不是第三种 admission 定义；新 API、日志和页面必须展示 `lane_business_kind=membership_admission`。它不得承载 API 授权、搜索 eligibility、纯 click 或尚未设计的“搜索点击加入”。
 
+> **历史段边界：** 紧随其后的 2026-07-31 极搜验证码长段仅保留当时事故与协议取证，其中模型、三路投票、hedge、两票共识和关键词换题全部为 `historical_do_not_implement`；不得被实现、测试或索引解析为现行合同。该段后的 2026-08-03 supersede 才是当前合同。
+
 极搜 `jisou_selector_accounts` 的 12 小时排除是带 `reason_code/expires_at` 的账号—协议路径安全资格事实，在当前单用户 scope 的全部搜索任务间共享，只令该路径在有效期内 `eligibility=false`；它不减少 click 欠额、不停止其他账号/路径，也不能单独触发中央份额重分配。识别为 `hot_list_page` 时当前尝试直接失败并写 `jisou_hot_list_page`，同一账号—协议路径从失败事实时间起排除 12 小时；不执行 reset、不点击未知按钮、不在当前尝试继续搜索。已经写入 `gateway_call_started_at` 的纯搜索点击失败 Action 是该 assignment/Attempt 的终态，通用 `retry_failed_actions` 不得把它恢复为 `pending`、覆盖原 `error_code` 或沿用原 assignment 再次调用 Gateway；未完成 ordinal 只把 obligation 回流 `open`，由下一 Window 重新求解未被排除的账号—协议路径并创建新的 assignment/Action。Telegram client 建连或只读授权检查发生超时/连接异常时，尚未发送 `/start`、关键词或 callback，不属于远端结果未知；Gateway 必须返回 `search_transport_unavailable + search_transport_phase=connect_or_authorize + remote_mutation_started=false`，当前 Action/Attempt 明确失败、obligation 回流 `open`，并按冻结的代理 binding 触发已批准节点 failover、重写尚未进入 Gateway 的同路径 payload，下一 Window 再按新路径重新分片求解且不触发 12 小时协议排除。异常详情为空时必须至少持久化异常类名，禁止把 15 秒建连 `TimeoutError` 误写成空详情的 `unknown_after_send`，也禁止同一坏代理路径跨 Window 原样空转。真正已经开始机器人可见写操作后进程丢失或结果不可判定才保持 `unknown_after_send` 防重。`jisou_image_verification_required` 不进入该排除。图片验证码按 `bot_peer + message_id + image_hash + ordered_callback_fingerprint` 冻结 challenge；先各一次运行 RapidOCR、ddddOCR，两路在 hedge 前同票则模型调用为 0，只有本地分歧或到 hedge 仍无共识时才调用最多一个健康已审批多模态模型。每路独立规范化并通过按钮候选精确校验，至少两路返回同一安全候选才允许提交；不足两票保持 required。callback 前必须复读同 fingerprint 并检查 deadline；调用开始后回执未知写 `verification_callback_result_unknown`，Action/Attempt/纯点击 obligation 均保持 unknown，同账号/同 bot/同 fingerprint 跨 Action 禁止再次点击。只有提交后取得明确远端通过回执，或进入已审批搜索分类/结果页，才可写真实 `solved` 并继续。线上验证码页只有答案 callback、没有独立刷新 callback；错误答案后机器人自动换为新 fingerprint，系统对新 challenge 重新识别，不点击未知按钮、不重发关键词，也不把换图冒充通过。同 fingerprint 明确拒绝才 failed。识别调用和批准重试不占 click 限额，也不计入 AI 活群/评论的业务 AI 生成次数；当前 Action 复用既有账号 session ownership，challenge 收口前不得由另一搜索 Action 并发改写同一账号—协议会话。搜索求解、候选或 CAS 无法完成时，才按未领取 Reservation unit 另写 `DispatchAllocationExclusion`；仅非空 release set 重建分片权重。
 
-> **2026-07-31 在线脚本验证后的 CAPTCHA 合同覆盖：** 上一段涉及 Tesseract 参与投票、无共识不得重发关键词和无限 challenge 的条款已失效。生产三路为首个健康已审批多模态模型、RapidOCR、ddddOCR；模型与两 OCR 同时启动，两 OCR 同票即决并记 `model_waited=false`，分歧只等待一个模型。同一引擎的图像变体只聚合成一票，数学题才允许服务端以单数字操作数和 `+|-|*|/` 语法结合 callback 候选推断，字符串题只做数字字母规范化。无共识时只有仍为 `verification_image_page` 才能在同一 Action/account/session 内重发冻结原关键词获得不同 fingerprint，和错误答案自动换图共同消费 `SchedulingSetting.default_max_retries` challenge 预算；hot-list/unknown 的禁止重放规则不变。每题最多点击一次，只有远端通过或最终 `target_click_observed` 才算成功。10 个不同生产账号的独立脚本全流程成功只证明协议可行，正式上线仍须 Action/Attempt、无 membership 副作用与任务账本 E4 证据。
+> **2026-08-03 搜索 CAPTCHA 当前合同：** 本段之前同一长段中的多模态模型、三路投票、hedge、两票共识和关键词换题只保留历史取证，统一为 `historical_do_not_implement`。当前生产链仅允许 RapidOCR → ddddOCR → B 权威失败后的 refresh；新 fingerprint 从 A 重开。A 合法答案只提交一次，A 权威失败才允许 B；callback unknown、页面变化和旧 fingerprint 不重试。搜索链禁止加载或调用 AI/VLM，只有远端通过或最终 `target_click_observed` 才算成功。
 
 搜索 finalize 的 `SERIALIZABLE` 锁序固定为 `Window → TaskAllocation → ShardAllocation → Reservation → FulfillmentObligation`。TaskAllocation/ShardAllocation 必须直接按当前 Window 与 epoch 锁定，禁止为派生父行 ID 而先预读 Reservation；连续 `search_solver_serialization_failure` 必须显式暴露为实现缺陷，不能让每轮 40 个份额持续 abandoned 后伪装成正常重建。
 
@@ -341,7 +353,7 @@ AI own-history 查询修复上线后，搜索 Task 的 `next_run_at` 已按分�
 
 | 任务 | 目标粒度 | 目标数 | 成功事实 | deadline |
 | --- | --- | --- | --- | --- |
-| AI 活群 | task + target group + `task_day_ledger_id`；另有 account coverage | `effective_daily_target`；每冻结账号至少 1 | 无需可见性核验：successful `send_message` Attempt + 非空 `remote_message_id`；需要核验：再具备 `visible_confirmed`；coverage 绑定匹配 | ledger deadline |
+| AI 活群 | task + target group + `task_day_ledger_id`；另有动态 account coverage | `effective_daily_target`；每个当前必达账号至少 1 | 无需可见性核验：successful `send_message` Attempt + 非空 `remote_message_id`；需要核验：再具备 `visible_confirmed`；coverage 绑定匹配 | ledger deadline |
 | 评论 | task + channel message | 消息纳入任务时一次性解析并固化的目标 | successful `post_comment` Attempt + 非空远端评论 ID | `message_admitted_at + pacing_window` |
 | 点赞 | task + channel message | 消息纳入任务时一次性解析并固化的目标 | successful `react_message` Attempt + 远端 reaction 确认 | `message_admitted_at + pacing_window` |
 | 浏览 | task + channel message + `task_day_ledger_id`；另有累计目标 | 每消息每日目标和累计目标分别固化 | successful `view_message` Attempt + Telegram Gateway 确认 | ledger deadline |
@@ -387,7 +399,7 @@ calculated_at
 - `failed_attempt_count`：历史明确失败/跳过 Attempt 诊断数，不参与目标、欠额或完成计算。
 - `remaining_count = max(target_count - confirmed_count, 0)`。
 - `planning_deficit_count = max(due_target_count - confirmed_count - held_count - unknown_count, 0)`；Planner 只对该值建单。
-- `quantity_overflow_count = max(confirmed_count - target_count, 0)`。
+- 固定目标任务的 `quantity_overflow_count = max(confirmed_count - target_count, 0)`；AI 群日动态目标改为 `quantity_overflow_count=scheduler_oversend_count`，只统计 Gateway 冻结目标 revision 下越过 target 的 ordinal。目标事后下调产生的合法旧 revision 成功单列 `target_reduction_overage_count`，不阻断 E4。
 - `open_excess_count = max(confirmed_count + held_count + unknown_count - target_count, 0)`；其中 pre-Gateway excess 必须在 Gateway 前终结，unknown 继续核验且禁止再补发。
 - `projected_capacity_before_deadline`：基于当前真实 eligibility、硬安全上限和可执行时间的只读尝试容量上界，不使用协议成功率、验证码触发率、AI 历史成功率或其他概率折损，也不含未证假设。对搜索点击的专项字段固定为 `projected_eligible_attempt_capacity_before_deadline`；不得命名或解释为 projected confirmed clicks。
 
@@ -473,12 +485,12 @@ task-day ledger 只决定业务目标归属，不能重置账号/关键词安全
 
 ### 4.3.1 AI 发送后可见性三个 P0 决议
 
-以下三项是 AI 活群群日总量、冻结账号覆盖、Planner 防重、Action/Attempt 状态和 admission 操作的共同不变量，supersede 旧 hard-hourly credit/durable-debt 口径：
+以下三项是 AI 活群群日总量、任务内动态账号覆盖、Planner 防重、Action/Attempt 状态和 admission 操作的共同不变量，supersede 旧 hard-hourly credit/durable-debt 口径：
 
 | P0 | 唯一决议 |
 | --- | --- |
 | P0-1：`pending_visibility` 是否占规划名额 | 占 1 个且只占 1 个。它与 `unknown_after_send` 共用 post-Gateway 未确认占位，计入兼容字段 `unknown_after_send_hold_count`；不得再增加第三个公式项，也不得为同一 `primary_quantity_slot_id` 创建替代发送 |
-| P0-2：`post_send_intercepted` 后永久不可 ready | 被拦截 Action 明确失败并释放自身占位，但原 coverage 主槽和冻结账号分母不删除。未显式放弃时持续等待重新准入；运营 `admission_abandoned` 只停止该账号自动准入并跳过未进 Gateway Action，coverage 主槽保持 `blocked`，deadline 后只能 `missed`。其他 ready 账号只能完成自己的 coverage 和尚未分配的 extra-volume 槽，不能替代该账号 |
+| P0-2：`post_send_intercepted` 后长期不可 ready | 被拦截 Action 明确失败并释放自身占位。存在已验证自动准入路径时，本任务账号进入 `recovering` 并保留 coverage；没有合法恢复路径时进入 `abandoned_for_day`，终结未进 Gateway coverage/Action 并从当前必达数移除。其他 ready 账号继续完成本任务 coverage 和额外数量，不能把自己的消息计为该账号或另一任务的 coverage |
 | P0-3：Attempt 成功且有 remote id 是否立即计群日/覆盖 | 需要可见性核验时不能。Gateway 回执只建立 `pending_visibility` 占位；只有 `visible_confirmed` 才在一个短事务内完成 Action、群日主槽和匹配 coverage。无需可见性核验的普通成功仍按真实 Attempt + remote id 直接确认 |
 
 统一投影公式为：
@@ -714,7 +726,7 @@ scope capacity
 
 搜索预绑定后的计数口径固定为：Reservation 的 `available = reserved_claims - bound_count - claimed_count - released_count`，而 ShardAllocation/Window 的 `unclaimed_allocated_count = Σ(reserved_claims - claimed_count - released_count) = Σ(available + bound_count)`。assignment 从 `reserved -> action_bound` 只把 available 转为 bound，不改变 ShardAllocation/Window unclaimed；`action_bound -> claimed` 才把 bound 转 claimed，并各扣减 1 个 ShardAllocation/Window unclaimed、增加 active；`action_bound -> released` 同样各扣减 1 个 unclaimed，`claimed -> released` 则只扣 active。通用 reconciliation 不得用 Reservation available 直接覆盖 ShardAllocation/Window unclaimed，否则会把仍待领取的 bound Action 误清零，并使后续精确释放触发 `dispatch_release_counter_invariant`。
 
-同一 `SearchClickAssignmentEpoch` 为某账号创建的全部 prebound Action 是求解器一次性承诺的同一账号容量集合。claim-time 账号全局容量复检必须把该 epoch、该账号的全部 Action ID 作为同一 cohort 从 occupied scan 中排除，再让账号 in-flight/Redis 互斥只放行一个真实执行；不得只排除当前 Action，使同批 pending Action 互相制造 `account_hour_limit|account_day_limit`。当前单租户履约合同固定 `default_account_cooldown_seconds=0`，其他 epoch、其他任务和既有 MessageTask/Action 不得再制造 `account_cooldown`；它们仍正常计入小时/日硬安全容量，cohort 总量不得超过该 epoch 快照中的 `hard_safe_remaining_capacity`。
+同一 `SearchClickAssignmentEpoch` 为某账号创建的全部 prebound Action 是求解器在账号日剩余安全容量内的一次性匹配结果。claim-time 复核账号日安全事实、资格/binding、FloodWait/SlowMode 和远程副作用幂等 key；同账号不同非冲突 Action 可直接并行，不设置账号 in-flight/Redis 全局互斥，也不让同批 pending Action 互相制造 `account_hour_limit|account_day_limit`。当前单租户履约合同固定 `default_account_cooldown_seconds=0`，其他 epoch、其他任务和既有 MessageTask/Action 不得再制造 `account_cooldown`；它们仍正常计入小时/日硬安全容量，cohort 总量不得超过该 epoch 快照中的 `hard_safe_remaining_capacity`。
 
 盖章 `fulfillment_contract_version=all_task_v2` 的五类任务不再读取旧 `max_pending_global|max_pending_per_task|oldest_pending_age_seconds` 作为 Planner 数量门禁。旧 backlog 只服务未迁移任务；新模型由不可变义务、同义务单 open/unknown Action、中央 Reservation 和 scope in-flight capacity 防止重复与过载。接管必须清除五类任务遗留 `planner_backlog_*`、陈旧 `shared_dispatch_capacity_insufficient` 和已取消的 `account_cooldown`，搜索同时清除 `search_join_stats/daily_target_capacity_insufficient`，浏览清除旧 `task_daily_view_safety_cap` 命中错误，并把运行中任务的 `next_run_at` 推到当前时刻重新规划。Planner 遇到已有到期 open Action 的 AI 任务时，把该任务推进到 30 秒后复检，使本轮剩余候选可继续领取；不得把 open Action 的过期时间反写为永久到期 `next_run_at`，形成 limit 队首饥饿。`DISPATCHER_SCOPE_CAPACITY` 只限制同一时刻真实在途量，不得减少总目标、形成任务终态或阻止后续 Window 继续履约。
 
@@ -825,8 +837,8 @@ listener 处理可信群管提示时，禁止在已修改 `group_bot_admissions`
 
 ### 6.1 AI 活群
 
-1. 运营只配置每个群当天发送多少条；配置粒度为 `task + target_group`，多目标时逐群独立，不能共享或平均分。`effective_daily_target=max(daily_message_target,frozen_account_count)`，冻结范围内所有账号在每个目标群每天至少真实成功 1 条。
-   ledger 冻结时必须形成每账号一个不可互换的 coverage 主发送槽，以及 `effective_daily_target - frozen_account_count` 个 extra-volume 主发送槽。blocked coverage 槽不得被其他账号的额外消息占用；额外槽只能分配给已经完成 coverage 的账号。
+1. 运营只配置每个群当天发送多少条；配置粒度为 `task + target_group`，多目标时逐群独立，不能共享或平均分。`current_required_account_count=count(eligible|recovering|completed)`，`planned_daily_target=max(daily_message_target,current_required_account_count)`，兼容 `effective_daily_target=planned_daily_target`，超发单独记录不抬高计划；当前任务必达账号在该目标群每天至少真实成功 1 条。
+   coverage 义务与数量义务分账。可恢复账号保留原账号义务；无合法恢复路线时当日放弃并释放未进 Gateway 占位。额外数量可从本 task/group 已 ready 账号中公平选择，不得计入另一任务的 coverage 或总量。
 2. 日覆盖容量门禁、硬小时 bucket/credit/claim class 和 AI 活群活动时段门禁全部删除；静默时段只降量且小时权重必须大于 0。
 3. 目标准入固定执行“实时 membership probe → 入群 → 识别可信群管提示 → 关注所需频道 → 精确确认/验证 → membership + can_send 复检”；只完成其中一步不能 ready。
 4. 正常内容先由主 AI 最多生成并校验 3 轮；全部失败后切换到与主 AI 不同的备用 AI，再最多生成并校验 3 轮。任务未显式配置 `ai_model` 时，主 AI 必须从任务指定 Provider 或租户当前健康 Provider 中解析；租户默认 Provider 已禁用时继续选择当前健康 Provider，不能把主阶段硬编码成 MiniMax-M3 而跳过线上健康的 MiMo v2.5。备用阶段才按独立备用 Provider 合同选择与主阶段不同的模型；某个已禁用备用 Provider 不得反向否定已经健康可用的主 Provider。每轮 Provider 解析/健康查询或调用返回不可用时，必须显式回滚该轮遗留的只读事务、记录该轮失败，再从无数据库事务的 Phase B 边界进入下一轮；不得让 `open database transaction` 把第二轮、备用 AI 或最终兜底截断。缺面具、已验证授权代理路线发生切换或主/备用六轮均无可用候选时，原发送义务强制改用精确 `签到`。该规则覆盖 coverage 与 extra-volume 的全部普通数量槽：只要 Action 已绑定非空 `primary_quantity_slot_id`，就不得再以缺少 `coverage_ledger_id` 为由写 `ai_generation_failed`；Phase B 的 `generation_slots` 必须携带该数量槽 ID，六轮结束后按它逐槽生成签到。兜底保留原数量槽、direct/reply、当前 attempt 的 `reply_to_message_id` 及素材义务审计，但 outbound payload 是否携带原素材必须先执行 §4.5 兼容矩阵；不兼容义务在 Gateway 前 CAS 转派，不能把纯文本签到记作素材成功。签到可计账号覆盖和群日总量，但只有真实远端消息 ID 才成功。
@@ -834,9 +846,9 @@ listener 处理可信群管提示时，禁止在已修改 `group_bot_admissions`
 6. `check_in_direct` 历史记录不能仅凭 source 名计入。reconcile 必须验证 task、target、account、local date、原义务、Action success、Attempt success 和非空 remote ID；已进入 Gateway/历史 success 保留真实审计，不改写结果。
 7. coverage 确认数必须等于同账号/任务/日期可追溯的 distinct remote facts；不相等时显示 `coverage_reconciliation_required`。
 8. 生产 Provider 健康与任务发送资格分别验收：健康 MiMo v2.5 证明主 AI 可调用，不代表 Action 已越过目标准入。任务未显式指定模型时，生成阶段必须记录实际选中的健康 Provider/模型；若当前没有进入生成阶段，详情必须优先显示 `group_bot_admission_*`、账号软冷却或共享份额原因，不能误报“没有健康 AI 供应商”。
-8. 5 个 stopped 任务只进入审计清单，不自动启动。
+8. 暂停、stopped 或已删除任务立即退出活跃履约集合；未进 Gateway 的 scope/coverage/Action/claim/Reservation/ContentMix 残留按 `task_id` 清理，已进 Gateway/unknown/成功仅归档对账。任务恢复必须按当前事实重建，不复用旧范围。
 9. 每份群日目标使用不可变 `task_day_ledger_id`，冻结 `timezone_snapshot/timezone_revision/period_start_at/deadline_at/day_phase`；账号 coverage、Action 和 Attempt 必须绑定该 ID，不能只按 `target_date` 归属。时区中途修改严格执行 §4.2.1：当前 ledger 收口后从同一 UTC 边界建立新时区过渡 ledger，禁止重叠、缺口或按当前时区重解释历史事实。
-10. “所有账号”冻结范围固定为任务账号关系中同租户、未删除、`status=active`、普通运营用途且未被永久身份/安全边界排除的账号。在线、Session 暂不可用、代理、面具、membership、can_send 不作为冻结前排除条件，只形成账号 blocker；冻结后禁用、删除、用途变化、identity 失效或租户迁移也不缩小该 ledger 分母，保留 tombstone snapshot 并写 `account_scope_changed`。下一份 ledger 再按新事实建立范围。
+10. “所有账号”范围按本任务当前权威事实动态维护并推进 `scope_fact_version`。`eligible|recovering|completed` 计入当前必达数；当前事实版本无合法恢复路线时进入 `abandoned_for_day` 并释放未进 Gateway 义务。同日只有身份、授权、代理、membership、can_send 或 admission 的权威事实版本变化，才建立新 scope version 重新评估；旧 Action 不复活。
 11. 自然日中途启动的首日固定 `planning_anchor_at=running_at`；时区切换过渡日固定 `planning_anchor_at=timezone_effective_at`。两者的 `due_by_now` 都只在 `[planning_anchor_at, deadline]` 的剩余非零权重内归一：anchor 时为 0、deadline 时等于完整有效群日目标；分别标记 `partial_start/timezone_transition`、尽力完成但不纳入完整任务本地日 SLA。AI 前端可将 `partial_start` 展示为“准入预热日”，但存储/API 不使用 AI 专属枚举。只有从任务本地 00:00 开始的 ledger 标记 `full_day_committed`；暂停/恢复不得重置 anchor。
 
 ### 6.2 频道评论
@@ -887,7 +899,7 @@ listener 处理可信群管提示时，禁止在已修改 `group_bot_admissions`
 
    每个释放事实精确绑定 `(dispatch_claim_reservation_id, fulfillment_lane_claim_ordinal)`；同一 finalize 事务插入全部 `DispatchAllocationExclusion`、按 Reservation 汇总更新 `released_count`、按 ShardAllocation/Window 汇总扣减 unclaimed。集合为空时中央状态不变。集合非空且 Window 尚可领取时：`ready` 只递增一次 `dispatch_allocation_epoch`、置 `rebuild_required` 并增加 `rebuild_input_version`；已为 `rebuild_required` 时复用当前 pending epoch，只增加 `rebuild_input_version`。Window 已结束时只收口事实，不新建无用途 epoch。已 bound/claimed/active 份额、其他有效旧 Reservation 和公平 cursor 不回退，业务 click 欠额不减少。finalized epoch、后续 release batch、release batch item、exclusion 与来源 Reservation 在迟到 writer 仍可访问期间必须共同保留；联合归档前先 fence 旧 worker，不能通过清理逐 unit 分类或历史重新获得唯一键。
 
-   `projected_eligible_attempt_capacity_before_deadline` 只按业务 `scheduled_end` 标记未预留的尝试上界，`committed_click_opportunity_count` 才表示当前 Window 已取得的机会；二者都不是预测确认数。CAPTCHA 不使用触发率或历史成功率预测：尚未进入验证页只能计 eligible attempt；实际进入验证页后，三路识别至少两票共识的批准答案提交取得明确远端通过回执或已审批搜索分类/结果页，才写 `jisou_image_verification_solved` 并继续。新 fingerprint、hot-list、unknown、`required|failed` 及不足两票均对可继续 click opportunity 贡献 0。验证码状态闭集只有 `required|solved|failed`，不新增 unknown 状态；三路的独立结果和共识写入本次 Action。验证码识别及批准重试不占账号/关键词 click 限额、任务 click 目标或额外 Dispatcher/Gateway 份额，也不进入业务 AI 生成次数。assignment 不计算 `latest_safe_start_at`，不引入协议/Dispatcher/Gateway 性能预算或求解器技术 deadline；同一最大匹配按 `hard_safe_remaining_capacity DESC -> confirmed_click_count_today ASC -> last_click_opportunity_at ASC -> persistent_account_cursor ASC` 稳定决胜。运营不能配置容量、匹配或顺序。软排程无法完成真实欠额时立即把 `due_click_target_count` 提到完整日目标并 catch-up。未命中 source 明确失败后可以为同一 ordinal 建立 replacement Action/Attempt；open/unknown 继续占用同一 ordinal。系统持续尝试直到真实 `target_click_observed` 达标或当前所有硬安全路径暂不可用，不以行为节奏 skip 结束当日。
+   `projected_eligible_attempt_capacity_before_deadline` 只按业务 `scheduled_end` 标记未预留的尝试上界，`committed_click_opportunity_count` 才表示当前 Window 已取得的机会；二者都不是预测确认数。CAPTCHA 不使用触发率或历史成功率预测：尚未进入验证页只能计 eligible attempt；实际进入验证页后固定按 RapidOCR → ddddOCR 顺序执行，A 无效或被权威拒绝才运行 B，B 无效或被权威拒绝后才 refresh 并取得新 fingerprint，搜索 AI/VLM 调用数固定为 0。只有批准答案取得明确远端通过回执或进入已审批搜索分类/结果页，才写 `jisou_image_verification_solved` 并继续。旧 fingerprint、hot-list、callback unknown、`required|failed` 均对可继续 click opportunity 贡献 0；callback unknown 只复探不重点。验证码识别及 refresh 不占账号/关键词 click 限额、任务 click 目标或额外 Dispatcher/Gateway 份额。assignment 不计算 `latest_safe_start_at`，不引入协议/Dispatcher/Gateway 性能预算或求解器技术 deadline；同一最大匹配按 `hard_safe_remaining_capacity DESC -> confirmed_click_count_today ASC -> last_click_opportunity_at ASC -> persistent_account_cursor ASC` 稳定决胜。运营不能配置容量、匹配或顺序。软排程无法完成真实欠额时立即把 `due_click_target_count` 提到完整日目标并 catch-up。未命中 source 明确失败后可以为同一 ordinal 建立 replacement Action/Attempt；open/unknown 继续占用同一 ordinal。系统持续尝试直到真实 `target_click_observed` 达标或当前所有硬安全路径暂不可用，不以行为节奏 skip 结束当日。
 
    `SearchClickAssignmentEpoch` 至少固化：
 
@@ -966,7 +978,7 @@ listener 处理可信群管提示时，禁止在已修改 `group_bot_admissions`
 
    同一 click 义务同时最多一条非 `released` assignment；同一 `(dispatch_claim_reservation_id,fulfillment_lane_claim_ordinal)` 也同时最多一条非 `released` assignment，且 claim ordinal 必须位于 `1..reserved_claims`。assignment 绑定时增加 Reservation `bound_count`，claim 时从 bound 转 claimed，放弃时转 released；`bound_count + claimed_count + released_count <= reserved_claims`。只有 commit 模式可以在同一短事务按稳定资源 key 顺序 CAS 搜索专属 `consumptive` 子预留和 `eligibility` 版本，并固化资源时间窗口。Dispatcher/Gateway 及全任务共享代理的 `inflight` 必须复用已经授予的中央 `DispatchClaimReservation`，assignment 只保存其 ID/key/version，不得建立第二份在途预留。projection 先扣除现有中央份额/已提交事实后只读求解，不写 hold。所有 running 搜索任务共享账号/关键词等搜索资源账本，不得由各 Task 分别投影一次。
 
-   `SearchClickAssignmentSolver` 使用纯 click 的多阶段字典序目标：先最大化当前 Window 可提交 assignment 总数；在不减少总数的解中，最大化获得至少 1 条 assignment 的到期父任务数，并按业务 `scheduled_end`、最久未获机会和持久 task cursor 对无法同时覆盖的任务稳定决胜；随后按冻结 `remaining_click_count` 做最大最小任务公平，避免剩余机会永远集中到同一 Task；最后严格按账号 `hard_safe_remaining_capacity DESC -> confirmed_click_count_today ASC -> last_click_opportunity_at ASC -> persistent_account_cursor ASC` 决胜。账号日剩余安全容量只参与资格与排序，不等于同一 Telegram session 可以并发执行的数量；同一 Claim Window 中每个 `account_id` 的 `account_session_inflight` 容量固定为 1，因此一次 epoch 最多为同一账号绑定 1 条 assignment，必须继续使用下一有资格账号，不能把几十条 Action 集中到单账号后在 Window 结束时批量过期。commit 还必须加入 `sum(x_task) <= fulfillment_lane_claims(task)` 与 shard Reservation 上限，不能绕过中央全任务公平份额。每个 Task 建立 `assignment_fairness_key=(allocation_business_task_id,task_day_ledger_id,target_id)`；纯搜索点击不建立 admission distinct/budget 目标。只有尚未 `_confirm_claim` 的 `reserved|action_bound` assignment 使用 `assignment_expires_at <= Claim Window.bucket_end`。搜索 epoch 首次求解/绑定失败与 unmatched 由该 epoch outcome 释放；epoch finalized 后的 Gateway 前路径失效、Action 不再到期或 assignment 过期改由唯一 release batch 释放，不能重开原 epoch。释放 bound unit 时同一事务执行 assignment `reserved|action_bound -> released`、Reservation `bound_count -= 1/released_count += 1`、各层 unclaimed 减 1 并写永久 exclusion；只释放搜索子预留不算完成。Window 结束时用稳定 expiry batch 收口，但不为已结束 Window创建 epoch；下一 Window从真实 click 欠额重新分配。`_confirm_claim` 同一 CAS 把 Reservation 从 bound 转 claimed、Action 转 executing、assignment 转 `claimed`，此后 Window 结束不得自动释放。Gateway 调用结束后释放中央 inflight，unknown 只继续占用原 click ordinal 和可能已经消费的 `consumptive` quota hold，直至远端核验或对应安全额度窗口结束；不得无限占用 Dispatcher/Gateway/代理在途容量。`eligibility` 在 claim 与 Gateway 前重新复核，不作为永久配额。
+   `SearchClickAssignmentSolver` 使用纯 click 的多阶段字典序目标：先最大化当前 Window 可原子落库 assignment 总数，再最大化获配到期父任务数、按 remaining click 做最大最小公平，最后按账号安全剩余容量和持久 cursor 稳定决胜。多任务可同时使用同一账号的非冲突 RPC；commit 只在 solver finalize 时受 Task fulfillment lane 与 shard Reservation 约束。assignment/Action 原子落库后到 `obligation_deadline_at` 直接执行，不跨窗预扣、不再校验 Scope 容量、不因 Window 结束释放。仅 task lifecycle、业务 deadline、资格/binding/dedupe 终结由唯一 release batch 释放；不回落普通 claim、不换绑路径。Gateway-started/unknown 继续占用原 click ordinal 和可能已消费 quota hold。
 
    跨 Task 公平只对当前 `search_click_assignment_epoch` 至少有一条真实 eligibility 路径的 due Task 求解；无路径 Task 继续显示缺失资源，不能把其他可执行 Task 的总 assignment 降为 0。冻结 `remaining_click_count` 后定义 `task_fairness_ratio=assigned_count/max(remaining_click_count,1)`，对从小到大排序后的 ratio 向量做字典序最大化；离散余数按业务 `scheduled_end`、最久未获机会和持久 task cursor 决胜，不使用不可解释加权总分。每个 due Task 都要保存 `task_assignment_count` 与 `task_unmatched_reason=no_eligibility|resource_saturated|fairness_deferred|null`。
 
@@ -1041,7 +1053,7 @@ start_operation_legacy_untracked
 - 同一幂等键但 fingerprint 不同：返回 `409 idempotency_key_reused`，同时给出原 `task_id` 和不含敏感值的冲突字段名；不得静默返回旧配置，也不得覆盖旧 Task。
 - 结构冲突返回 422 且不创建 Task；首次成功创建返回 201，幂等重放返回 200。
 
-Task 必须持久化 `created_by_user_id/create_task_type/client_request_id/request_fingerprint`，并在包含 soft-deleted Task 的全表范围保持 `(created_by_user_id, create_task_type, client_request_id)` 唯一，删除任务不能释放幂等键。每个 Task 允许 0 或 1 条当前 `TaskStartOperation`，有行时以 `task_id` 唯一；新合同生效后的真实 start/create-and-start 必须建立该当前行，不建立启动 attempt 表或历史版本。启动失败后的显式重试可复用原 key，也可用新 key 覆盖该当前行，停止后的明确重新启动同样覆盖当前行：
+Task 存在期间必须持久化 `created_by_user_id/create_task_type/client_request_id/request_fingerprint`，并与 `TaskCreateIdempotencyTombstone` 共同保证 `(created_by_user_id, create_task_type, client_request_id)` 全生命周期唯一。物理删除 Task 前，将创建幂等键、fingerprint 和原 task_id 转存 tombstone；删除任务不释放旧幂等键，但运营重建新 Task 必须提供新 `client_request_id`。每个存在的 Task 允许 0 或 1 条当前 `TaskStartOperation`，有行时以 `task_id` 唯一；新合同生效后的真实 start/create-and-start 必须建立该当前行。启动失败后的显式重试可复用原 key，也可用新 key 覆盖该当前行，停止后的明确重新启动同样覆盖当前行：
 
 ```text
 task_id / start_operation_id / operation_version / requested_by_user_id
@@ -1128,7 +1140,7 @@ apply 不得修改 success、unknown_after_send、Gateway-started，不得补 re
 | P0-2 拦截与 abandon | `post_send_intercepted` 关闭当前 hold 且不计群日/coverage；账号未 ready 前不循环试发。`admission_abandoned` 只能由 `targets.manage` 带 preview/evidence/version 写入，不能缩冻结分母或完成 coverage；其他账号不能消费该 coverage 主槽，deadline 后该账号为 missed |
 | P0-3 可见性原子确认 | 需要核验的 Attempt 即使有 remote id 也只进入 `pending_visibility`；`visible_confirmed` 在一个事务内关闭 hold、完成 Action、群日主槽及可选 coverage。并发 finalize 只成功一次，注入任一 CAS/唯一键失败时全部回滚 |
 | AI admission 大积压 | ready 账号继续产生 content send |
-| AI blocked coverage 名额保留 | 当群日目标等于冻结账号数时，已覆盖账号不能用额外消息提前占满目标；blocked 账号恢复后仍有自己的主发送槽且不会造成超量 |
+| AI 动态 coverage 恢复/放弃 | `recovering` 账号恢复后仍完成自己的任务内 coverage；没有合法恢复路径时当日 `abandoned_for_day`并释放未进 Gateway 占位。已完成账号的额外消息只补本任务配置总量，不替代其他账号或任务的 coverage |
 | AI 三类特殊情况 | 缺面具、已验证代理路线切换可按专项合同生成精确签到；主 AI 3 轮与备用 AI 3 轮全部真实执行且均无候选后，只有主数量槽对应 CycleSlot 已无 `pending` 内容义务才可签到；deadline budget 跳过的轮次不算失败；无传输路线保持 waiting，不伪造成功 |
 | 候选内容安全拒绝 | 主 AI 第 1/2 轮记录拒绝并重试同一主槽，第 3 轮切备用 AI；备用第 1/2 轮继续，备用第 3 轮才转安全签到/单表情；只有兜底自身被明确策略禁止才形成硬 blocker |
 | 内容编排非回归 | 相同配置、上下文和随机种子下，删除门禁前后的 direct/reply 槽位及既有图片/表情素材选择一致；只允许 scheduled time、claim 时机和 fallback 标记变化 |
@@ -1180,18 +1192,18 @@ apply 不得修改 success、unknown_after_send、Gateway-started，不得补 re
 | 搜索 release 一致性矛盾 | 注入只有 carrier、只有 exclusion、post-finalize 缺 effective item、carrier/item/exclusion hash 或版本错绑、完整合法 release + claim/Gateway、released assignment 无任何 release 组件与计数漂移；release 事务全回滚，独立 quarantine writer 复核后持久化。半套事实保持 `release_fact_incomplete`；完整 release 无 claim才按逐 unit 事实对齐，孤立 released 才恢复并推进版本，只有 claim/Gateway 才向远端边界对齐，完整 release 与 claim/Gateway 并存则保持 `release_claim_fact_conflict`。冲突分支不选边、不调该 unit 计数、不 resolve或忙重试；其他独立义务继续，任何分支都不重跑搜索求解 |
 | 搜索排除集合生命周期 | 每条 `DispatchAllocationExclusion` 跨全部状态永久唯一绑定一个旧 Reservation/ordinal，释放计数固定为 1。首次 solver outcome 由 search epoch 承载；finalized 后的 bound assignment 失效由稳定 trigger 的 `DispatchAllocationReleaseBatch` 承载并原子执行 assignment released、bound 减、released 加、各层 unclaimed 减。ready 首批释放开启 wave，rebuild_required 后续 batch 只更新 input version，Window 结束只收口；相同 carrier 重放不双扣。`no_feasible_search_path|search_solver_abandoned` 只随该 unit 的 carrier-independent `solver_problem_component_hash` 变化而 supersede；新 epoch/Reservation/worker 本身不触发。其他 reason 只随直接相关额度、授权、代理、协议/CAPTCHA、Gateway 或 assignment/Action version 变化；无关 Task/shard/扫描时间不得触发。Window 结束 expired 也不复活旧 unit；carrier/item/exclusion 未 fence 前不得清理，item 的逐 unit 分类与首 carrier 引用永久可追溯，新事实只能使用新 Reservation/ordinal |
 | 搜索纯点击边界 | 创建只接受 `click_only + daily_click_target_count`；join switch、admission 目标或成员目标返回 422；click 确认后不创建 child |
-| 搜索 CAPTCHA 实际通过 | 模型、RapidOCR、ddddOCR 各一票；两 OCR 同票不等待模型，分歧只等待一个模型，同引擎多变体不得多票。无共识只在当前验证码页内重发冻结关键词换新题，challenge 总预算取 `default_max_retries`；hot-list/unknown 不重放。每个 fingerprint 最多提交一次，只有明确远端通过或已审批搜索分类/结果页才 solved，新 fingerprint 不算通过 |
+| 搜索 CAPTCHA 实际通过 | 仅 RapidOCR → ddddOCR 顺序识别，禁止 AI/VLM。A 无效进入 B；A 权威拒绝后才允许 B；B 无效/权威拒绝后按 policy refresh，新 fingerprint 从 A 重开。callback unknown、页面变化、旧 fingerprint 不重试；每个 fingerprint 最多提交一次，只有明确远端通过或已审批搜索分类/结果页才 solved |
 | 搜索旧创建入口 | 旧 `/search-join-group` 新建请求固定 410 且零 Task 写入；只允许旧任务读取/审计/迁移识别，不得静默规范化成当前纯 click |
 | 搜索存量混合任务 | 未结束 Task 幂等转为纯 `search_click`，后续 admission child=0；pre-Gateway membership child 终结，Gateway-started/success/unknown 和全部历史事实不改绑；completed/deleted 只读 |
 | 搜索完成优先自动排序 | 不要求运营配置账号容量或账号优先级；合法 repeat 可补 click 但不得绕过安全额度；系统在纯 click 最优值相同的路径中严格按 `hard_safe_remaining_capacity DESC -> confirmed_click_count_today ASC -> last_click_opportunity_at ASC -> persistent_account_cursor ASC` 决胜 |
 | 搜索软节奏追赶 | 曲线、轮次、skip、jitter 和静默降量仅影响排序与批量；欠额或落后时自动压缩 jitter、取消软 skip 并提高安全范围内的 dispatch 密度，静默期仍保留非零发送；不得产生 `skipped_by_behavior_pacing` 终态 |
-| 搜索 CAPTCHA | `required` 不排除账号；两 OCR 同票快路径、分歧只等一个模型，数学题与字符串题分别规范化。验证码页换题和错误答案自动换图共同消费 `default_max_retries` challenge 预算；仅远端通过才 `solved`，预算耗尽、同 fingerprint 明确拒绝或换题 fingerprint 不变才 `failed`；禁止概率折损容量 |
+| 搜索 CAPTCHA | `required` 不排除账号；A/B 分别规范化并精确命中 callback 候选，禁止模型投票。A/B 均失败后只有新 fingerprint refresh 才可从 A 重开；仅远端通过才 `solved`，预算耗尽、callback unknown、旧 fingerprint 或 refresh 不产生新 fingerprint 时显式收口；禁止概率折损容量 |
 | 极搜会话偏移 | `hot_list_page` 直接记录 `jisou_hot_list_page` 失败并排除当前账号—协议路径 12 小时；其他非预期页记录 `jisou_session_state_deviated`。已进入 Gateway 的失败 Action 保持终态且原错误码不可被通用自动重试覆盖；原 ordinal 回流 obligation 后只能由新 Window、新 assignment、新 Action 换未排除路径重做。均不得发送 `/cancel`、`/start`、重发关键词、点击未知 callback 或执行外部导航，新的 Action 默认 `reset_executed=false` 且历史 reset 字段只读 |
 | 存量新履约接管 | 部署后运行中五类 Task 在 Planner 扫描 open/backlog 之前幂等建立当前合同；paused/stopped 只升级合同不启动；重复 reconcile 的 ledger/slot/obligation/Action 增量均为 0 |
 | 统一任务门禁上限 | 新建、编辑、启动与存量接管后的五类 `pacing_config.max_actions_per_hour`，以及 `task_daily_view_safety_cap|max_views_per_account_per_day|max_likes_per_account_per_hour|max_total_comments|max_comments_per_account_per_hour|search_click max_actions_per_day|per_account_daily_action_limit|per_account_hourly_action_limit|per_keyword_account_daily_limit` 均为 `1_000_000`；当前单用户 `SchedulingSetting.default_account_hour_limit/default_account_day_limit` 同步归一为 `1_000_000`，配置 API 必须接受并回读该值，apply 只在值变化时写一条审计且再次执行零新增审计。搜索 task-local skip 概率与账号冷却归零，旧 backlog 数量门禁不再作用于 `all_task_v2`。低值和陈旧 blocker 不能截断目标或触发 completed；Telegram FloodWait/SlowMode、授权、代理、目标准入、协议、内容质量与 unknown 防重硬门禁保持原值 |
 | 搜索点击完成 | 完整 evidence 写 `target_click_observed` 后，结算时间与冻结 ledger 的 `[period_start_at, deadline_at)` 统一按 `Asia/Shanghai` aware 语义比较并确认 ordinal；数据库返回 naive/aware 混合值不得把真实点击降为 `unknown_after_send`，且无 membership/admission/can-send 后续动作 |
 | 搜索点击加入模式 | 仅确认是后续独立模式；本轮不得实现或拿旧开关代替专项设计 |
-| AI 任务时区变更 | 当前 ledger 继续使用旧 timezone；其 deadline 起建立新时区 `timezone_transition` ledger，UTC 区间首尾相接、无重复/遗漏冻结账号；过渡日不混入完整日 SLA |
+| AI 任务时区变更 | 当前 ledger 继续使用旧 timezone；其 deadline 起建立新时区 `timezone_transition` ledger，UTC 区间首尾相接；动态 scope 按各 ledger 的权威事实版本维护，过渡日不混入完整日 SLA |
 | AI 群日目标有当前 ledger 时编辑 | 当前 ledger、MessageSlot 和 pacing snapshot 不变；pending 目标固定在当前 deadline 生效，重复编辑 CAS 更新待生效值但不延后生效时刻；届时非 running 不建空 ledger |
 | 搜索任务时区变更 | source 继续绑定原 `task_day_ledger_id`；新时区建立连续 transition ledger，即使本地日期文本重复也不得合并 |
 | DST 与日期查询 | 23/25 小时本地日按真实 UTC 午夜边界建账；重复显示日期命中多 ledger 时 `date=` 返回 409 及候选，不合并 |
@@ -1202,23 +1214,23 @@ apply 不得修改 success、unknown_after_send、Gateway-started，不得补 re
 
 ## 10. 发布、回滚与生产验收
 
-发布顺序固定：
+发布按“组件可部署但未激活、release train 依赖闭合后统一取得 Gateway 写资格”执行：
 
-1. **A：事务与 claim**——deadlock、锁顺序、scope capacity。
-2. **B：统一履约与 AI**——读模型、deadline、AI 账本 reconcile。
-3. **C：频道互动**——评论、点赞、浏览。
-4. **D：搜索点击**——安全限额、协议 canary、真实 click；不包含搜索点击加入。
-5. **E：存量审计与整日验收**。
+1. **Base batch：** schema、policy、contract router、writer fence、lifecycle、delete operation、archive/tombstone、claim/锁序；只做组件验收，不要求业务 E4。
+2. **AI release train：** Recovery、义务投影、动态账号范围/目标 revision、C2 requirement-set ready CAS、AI 有序并发和 Provider 父/子额度共同到位后一次激活，再做 AI 端到端 E4。
+3. **Search release train：** 独立 search/interaction 通道、assignment 直接执行和双 OCR 无 AI 共同到位后一次激活，再做 `click_only` 端到端 E4；不包含搜索点击加入。
+4. **Source release train：** 评论/点赞/浏览义务、随机 viewer probe、负面结论 CAS、listener/source 状态共同到位后一次激活，再做三类 source-window E4。
+5. **Cross-task E4：** 各 train 通过后，在同一自然日验证四个 AI 任务和其他类型同时推进，最后才能写整体验收。
 
-每包必须走 `master -> release -> GitHub Actions Deploy Production`，记录 release SHA；失败通过 revert 当前包 commit 后重新走同一路径，不在线上补代码。两类 solver contract version 变化的包必须采用 Dispatcher 全量 fence 切换：先阻止旧版本取得新 ownership并确认旧进程/可提交事务归零，再启动新版本；禁止混合版本 canary 或沿用旧内存权重。
+每个组件包必须走 `master -> release -> GitHub Actions Deploy Production` 并记录 release SHA；组件 acceptance 不能冒充对应 train 的业务 E4。失败通过 revert 当前包 commit 后重新走同一路径，不在线上补代码。两类 solver contract version 变化的包必须采用 Dispatcher 全量 fence 切换：先阻止旧版本取得新 ownership并确认旧进程/可提交事务归零，再启动新版本；禁止混合版本 canary 或沿用旧内存权重。
 
 生产 E4 门：
 
 - A：连续 30 分钟并跨完整 Planner/Dispatcher drain，deadlock=0，reservation 守恒。
-- B：AI 每账号 coverage、群日总量及已配置引用/素材占比可追到 Action、Attempt、remote ID；需可见性核验的消息还须追到 `pending_visibility_hold -> visible_confirmed`。同一主槽只有一个 post-Gateway 未确认占位，拦截/abandon 不缩冻结分母，可见确认无部分提交；总量与内容账本分别相等且 content mix shortfall/overflow/策略违规均为 0。
+- B：AI 每账号 coverage、群日总量及已配置引用/素材占比可追到 Action、Attempt、remote ID；需可见性核验的消息还须追到 `pending_visibility_hold -> visible_confirmed`。同一主义务只有一个 post-Gateway 未确认占位；拦截后必须按自动恢复路径在 `recovering|abandoned_for_day` 中精确收口，可见确认无部分提交。总量与内容账本分别相等且 content mix shortfall/overflow/策略违规均为 0。
 - C：受控真实消息分别取得评论、reaction、view 的逐消息目标；评论已配置引用/素材 content mix 违规为 0，单表情兜底未混入正常文本 emoji 或素材成功数。
 - D：只验 `search_execution_mode=click_only`：先接管运行中旧混合搜索并 canary，再放量；每个完成 ordinal 都有独立 assignment/Action 一对一绑定及完整 click evidence，Action 去重身份在首次 flush 前已包含 obligation、assignment、中央 Reservation 与 lane ordinal，无新增 membership 副作用、无 admission lane/lease/child。每次 Planner 扫描先接管、再按接管后事实刷新 backlog，最后才允许新合同 Action 失败重试和规划；未绑定新义务的旧 AI/search Action 按最后 Attempt 收口为 skipped/success/failed/unknown，并永久排除在通用自动重试之外，不能回到 pending 领取新 Reservation；历史 Attempt 保留但不计新合同。预绑定 plan/confirm 对 Window 截止时间统一采用 `Asia/Shanghai` aware 比较，confirm 与通用 claim 统一按 `Scope → Window → ShardAllocation → Reservation → Assignment` 加锁；PostgreSQL aware/naive 混用或反向锁序均不得打断 Dispatcher drain，四 worker deadlock=0。`dispatch_allocation_epoch`、`search_click_assignment_epoch`、首次 search Reservation 独占期、`DispatchAllocationReleaseBatch`、逐 candidate 的 `DispatchAllocationReleaseBatchItem`、永久 unit `DispatchAllocationExclusion` 与对象级 `consistency_quarantine` 均可审计，且每个来源 Reservation 首次 outcome 后满足 `bound_count + claimed_count + released_count = reserved_claims`；旧 membership 历史事实保持原绑定。“搜索点击加入”不进入本轮 E4。
-- D 的预绑定 Action 只属于原 Window；账号求解前的 search source 使用中央虚拟 ShardAllocation `(1,0)`，plan 按已固化 `assignment.account_id % runtime_account_shard_total` 路由给唯一执行 Dispatcher，confirm/release 仍锁原虚拟 ShardAllocation/Reservation。非归属 worker 只跳过且不得释放。归属 worker 内的安全账号策略、运行资源、CAS 或 Window 结束导致当前分片不可执行时，才用真实原因释放原 unit并重建权重，不延后原 Action、不回落普通 claim、不改绑新 Reservation。release 与 confirm 使用同一中央锁序；SQLAlchemy Session 中已存在的 Action/Task/账号/记忆 dirty 状态不得在取得 Scope 锁前 autoflush，必须先在 `no_autoflush` 中锁完整中央前缀，再恢复正常 flush；release 事务必须在计算 release/outcome hash 前显式 flush batch item 与 unit exclusion，QA 必须同时用生产一致的 `autoflush=false` 会话与“dirty Task + terminal Action + release”SQL 顺序验收完整原子事实。
+- D 的预绑定 Action 在 solver finalize 前使用中央虚拟 ShardAllocation `(1,0)` 完成唯一资源绑定；assignment/Action 落库后，任一搜索 Dispatcher 都可按 assignment CAS 直接领取，无需保留原 Window 归属或二次 Scope 容量 confirm。Window 结束/容量变化不释放；业务 deadline、task lifecycle、资格/binding/dedupe 终结时才释放原 unit，不回落普通 claim、不改绑新 Reservation。QA 使用生产一致 `autoflush=false` 会话验收落库后一次性和防重。
 - E：在任务时区完成一个完整自然日；五类均达到各自目标才可写 `production_fixed`。
 
 若代码已部署但搜索账号容量仍不足，结论必须为 `production_blocked: insufficient_safe_capacity`，不能写修复完成。
@@ -1257,7 +1269,7 @@ shard收敛；中央 claim热事务禁止 `UPDATE tasks`，Gateway后 claim/Acti
 类型账本同事务原子收口。AI接管必须在全 writer fence下使用持久 batch/item断点
 续跑，完成后才激活新合同；安全门、远端事实与 unknown防重均不得放宽。
 
-## 11. Product Design Complete 自检
+## 11. 历史 Product Design Complete 自检（已 supersede）
 
 | 检查项 | 结论 |
 | --- | --- |
@@ -1269,7 +1281,8 @@ shard收敛；中央 claim热事务禁止 `UPDATE tasks`，Gateway后 claim/Acti
 | 权限安全 | 调用者授权失败不写 Task blocker且不泄露跨用户对象；保留账号、目标、内容、协议、CAPTCHA 和 unknown 门禁 |
 | 边界场景 | 静态引用冲突与运行账号身份失效分离、结构阻塞闭集、同键不同 fingerprint、启动响应丢失、同/不同 start key 并发、启动状态与 runtime waiting 分离、对象级一致性隔离与跨 Task 事实所有权、日切、DST、歧义日期查询、暂停/跨日恢复、legacy mixed search 隔离、任务时区变更、动态消息、目标并发收口与 overflow、共享资源不重复投影、精确求解失败不提交部分结果、完整重建 input 漂移、rehash-to-commit update/phantom、contract version 切换、极搜会话偏移 no-reset、Cycle deadline/结算、兜底素材不兼容、配置冲突、外部容量、并发和回滚已覆盖 |
 | QA | 自动化、canary、整日 E4 和 blocked/unproven 结论已定义 |
-| design_status | `complete` |
+| 2026-08-03 闭合项 | scope/lifecycle version、Gateway fencing、删除 tombstone、搜索交接与 transport、群管提示恢复、义务原子完成、AI 有序并发、OCR 安全预算、引用远端探测和量化 E4 以 `task-fulfillment-contract-closure-prd.md` 验收 |
+| design_status | `superseded_historical_do_not_implement`；当前 Product Design Complete 只认两份分类履约专项 |
 极搜 12 小时排除必须携带 `jisou_flow_contract_version`，并只在当前单用户 scope 的同一执行合同版本内跨搜索任务共享。执行合同升级后，旧 Action 缺少或持有其他合同版本的失败事实保留审计，但不得阻断新合同首次尝试；新合同产生的真实失败仍按既有 12 小时规则排除。
 
 ## 12. 2026-08-01 生产诊断与 E4 证据合同修订
