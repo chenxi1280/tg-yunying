@@ -10,6 +10,7 @@ from app.models import (
     AiContentScopeTakeoverItem,
     ContentMixCycleSlot,
     RemoteReconcileCase,
+    Task,
     TaskGroupDailyMessageSlot,
 )
 from app.services.task_center.service import reset_task
@@ -30,6 +31,19 @@ from ai_content_scope_takeover_test_support import (
 
 
 pytestmark = pytest.mark.no_postgres
+
+
+def test_preview_excludes_actions_from_route_fenced_tasks() -> None:
+    sessions = _sessions()
+    with sessions() as session:
+        _seed_scope(session)
+        _seed_bound_legacy_action(session, "fenced-action")
+        task = session.get(Task, "task-ai")
+        task.status = "stopped"
+
+        batch = _preview(session)
+
+        assert batch.classification_counts == {}
 
 
 def test_reset_preserves_action_referenced_by_takeover_audit() -> None:

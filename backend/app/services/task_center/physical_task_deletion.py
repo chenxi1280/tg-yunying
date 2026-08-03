@@ -23,6 +23,8 @@ from app.models import (
 )
 from app.services._common import _now
 
+from .physical_task_cleanup import delete_task_runtime_rows
+
 
 DELETE_BATCH_SIZE = 1000
 INFLIGHT_ACTION_STATES = frozenset({"claiming", "executing"})
@@ -199,9 +201,7 @@ def _begin_delete(session: Session, operation: TaskDeleteOperation) -> dict:
 
 def _delete_runtime(session: Session, operation: TaskDeleteOperation) -> dict:
     task = _fenced_task(session, operation)
-    session.execute(delete(FulfillmentRemoteFact).where(
-        FulfillmentRemoteFact.task_id == task.id
-    ))
+    delete_task_runtime_rows(session, task.id)
     changed = session.execute(delete(Task).where(
         Task.id == task.id,
         Task.status == "deleting",

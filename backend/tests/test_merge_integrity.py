@@ -35,7 +35,7 @@ def test_alembic_versions_have_single_head():
 
     assert all(len(revision) <= 32 for revision in revisions)
     heads = sorted(set(revisions) - referenced)
-    assert heads == ["0138_physical_delete_hot_indexes"]
+    assert heads == ["0139_task_delete_fk_indexes"]
 
 
 def test_backend_test_names_are_unique_per_file():
