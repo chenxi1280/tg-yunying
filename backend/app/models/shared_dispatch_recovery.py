@@ -55,13 +55,14 @@ class AiContentScopeTakeoverItem(Base):
             "batch_id", "action_id", name="uq_ai_scope_takeover_item_action",
         ),
         Index("ix_ai_scope_takeover_item_pending", "batch_id", "status", "action_id"),
+        Index("ix_ai_scope_takeover_item_action_id", "action_id"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
     batch_id: Mapped[str] = mapped_column(
         ForeignKey("ai_content_scope_takeover_batches.id", ondelete="CASCADE"),
     )
-    action_id: Mapped[str] = mapped_column(ForeignKey("actions.id"))
+    action_id: Mapped[str] = mapped_column(ForeignKey("actions.id", ondelete="CASCADE"))
     observed_action_state_hash: Mapped[str] = mapped_column(String(64))
     classification: Mapped[str] = mapped_column(String(40))
     classification_input_hash: Mapped[str] = mapped_column(String(64))
@@ -129,13 +130,15 @@ class GatewayRequestEvidenceJournal(Base):
             name="uq_gateway_request_evidence_identity",
         ),
         Index("ix_gateway_request_evidence_state", "state", "observed_at"),
+        Index("ix_gateway_request_evidence_action_id", "action_id"),
+        Index("ix_gateway_request_evidence_attempt_id", "execution_attempt_id"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
-    action_id: Mapped[str] = mapped_column(ForeignKey("actions.id"))
+    action_id: Mapped[str] = mapped_column(ForeignKey("actions.id", ondelete="CASCADE"))
     execution_attempt_id: Mapped[str] = mapped_column(
-        ForeignKey("execution_attempts.id"),
+        ForeignKey("execution_attempts.id", ondelete="CASCADE"),
     )
     account_id: Mapped[int | None] = mapped_column(
         ForeignKey("tg_accounts.id"), nullable=True,

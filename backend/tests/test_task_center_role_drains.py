@@ -394,6 +394,34 @@ def test_all_account_planner_preserves_round_size_across_short_batches(monkeypat
 
 
 @pytest.mark.no_postgres
+def test_fact_first_planner_yields_after_one_batch(monkeypatch) -> None:
+    SessionFactory = _session_factory()
+    calls: list[str] = []
+
+    def fake_build(session: Session, task: Task) -> int:
+        calls.append(task.id)
+        return min(20, int(session.info["daily_coverage_plan_limit"]))
+
+    monkeypatch.setattr(service, "build_task_plan", fake_build)
+    with SessionFactory() as session:
+        session.add(Tenant(id=1, name="default"))
+        session.add(Task(
+            id="task-fact-first-yield", tenant_id=1, name="fact first",
+            type="group_ai_chat", status="running", next_run_at=_now() - timedelta(seconds=1),
+            fulfillment_contract_version="fact_first_v3",
+            type_config={
+                "account_coverage_mode": "all_accounts_daily",
+                "messages_per_round_mode": "manual",
+                "messages_per_round": 60,
+            },
+        ))
+        session.commit()
+
+    assert service.drain_task_planner(SessionFactory, 1) == 1
+    assert calls == ["task-fact-first-yield"]
+
+
+@pytest.mark.no_postgres
 def test_all_account_planner_does_not_round_thirty_up_to_forty(monkeypatch) -> None:
     SessionFactory = _session_factory()
     planned_batches: list[int] = []

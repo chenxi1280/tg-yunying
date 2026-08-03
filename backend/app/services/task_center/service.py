@@ -94,6 +94,7 @@ from .fulfillment_takeover import (
     normalize_fulfillment_pacing,
     takeover_task,
 )
+from .fulfillment_activation import CURRENT_CONTRACT_VERSION
 from .fulfillment_takeover_actions import (
     retire_unbound_legacy_actions_for_planner,
 )
@@ -423,7 +424,7 @@ def _new_task(session: Session, tenant_id: int, task_type: str, payload) -> Task
         failure_policy=payload.failure_policy.model_dump(mode="json"),
         type_config=type_config,
         fulfillment_contract_version=(
-            "fact_first_v3" if task_type in FULFILLMENT_TASK_TYPES else "legacy_v1"
+            CURRENT_CONTRACT_VERSION if task_type in FULFILLMENT_TASK_TYPES else "legacy_v1"
         ),
         group_ai_prejoin_channel_ids=(
             list(dict.fromkeys(type_config.get("required_channel_refs") or []))[:3]
@@ -3370,7 +3371,7 @@ def _plan_due_task_batch(
         if task.status == "running":
             task.next_run_at = (
                 _now() + timedelta(seconds=FACT_FIRST_PLANNER_POLL_SECONDS)
-                if task.fulfillment_contract_version == "fact_first_v3"
+                if task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION
                 else next_run_after_task(task)
             )
         session.commit()
@@ -3429,6 +3430,8 @@ def _coverage_round_goal(session_factory, task_id: str) -> int:
         config = task.type_config if task and isinstance(task.type_config, dict) else {}
         if not task or task.type != "group_ai_chat":
             return 1
+        if task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION:
+            return 1
         if config.get("account_coverage_mode") != "all_accounts_daily":
             return 1
         if config.get("messages_per_round_mode") != "manual":
@@ -3440,7 +3443,7 @@ def _skip_open_ai_plan(session: Session, task: Task, has_open_actions: bool, *, 
     del session
     return (
         task.type == "group_ai_chat"
-        and task.fulfillment_contract_version != "fact_first_v3"
+        and task.fulfillment_contract_version != CURRENT_CONTRACT_VERSION
         and has_open_actions
         and not allow_planning
     )
@@ -3627,7 +3630,7 @@ def _record_dispatch_db_error(session_factory, action_id: str, exc: SQLAlchemyEr
 def _planning_backlog_blocked(session: Session, task: Task) -> bool:
     stats = dict(task.stats or {})
     if (
-        task.fulfillment_contract_version == "fact_first_v3"
+        task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION
         or stats.get("fulfillment_contract_version")
         == FULFILLMENT_CONTRACT_VERSION
     ):
@@ -3655,7 +3658,7 @@ def _planning_backlog_blocked(session: Session, task: Task) -> bool:
 
 
 def _make_fact_first_actions_immediate(session: Session, task: Task) -> None:
-    if task.fulfillment_contract_version != "fact_first_v3":
+    if task.fulfillment_contract_version != CURRENT_CONTRACT_VERSION:
         return
     session.execute(
         update(Action)
