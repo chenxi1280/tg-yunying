@@ -21,6 +21,8 @@
 - 线上 Dispatcher 已具备群管确认源实时刷新、精确收件人匹配和失效 source supersede。永久修复不重复实现该链路，只要求运维恢复工具遵守同一安全合同。
 - 首轮永久修复发布后，两任务分别形成约 90 条开放正文义务，但连续多轮 E4 的 AI generation ready 和真实远端成功仍为 0；精确生产诊断确认 261 条 Action 满足生成领取条件、群生成占用为 0，仅 38 条受账号忙影响。
 - 3 个 AI generation worker 心跳均在秒级刷新，运行合同为 active，生产全局 AI generation executing claim 为 0；与此同时 PostgreSQL 中恰好存在 3 条相同指纹的 Action 候选查询，已持续执行 51–115 秒且未等待锁。容器健康只证明独立心跳线程存活，主线程实际卡在领取扫描。
+- `ix_actions_ai_generation_due_claim` 临时并发建成并随 `0135` 正式发布后，外层候选已命中新索引，两个积压 Action 成功进入 `ready -> claiming`；但新的生产样本仍有 3 条同指纹领取查询持续 16–19 秒。`EXPLAIN` 显示外层索引成本仅 8.31，同群占用 anti join 仍通过通用 `ix_actions_send_group_slot_lookup` 扫描群内历史发送 Action，计划成本 391.12 后再过滤 generation/status/body。它不再是分钟级零吞吐，但仍无法支撑每日 800 条的目标速率。
+- 同群 occupancy 索引临时建成后，计划成本从 391.12 降到 8.19，生产出现真实 `generating` claim，重复领取查询年龄降到约 1 秒。随后郑州师范仍大量出现 `context_freshness_unproven`；只读事实显示群与 listener 均存在、无错误且持续采到最新消息，但 `listener_context_limit=20`、游标每分钟恰好前进 20、状态连续多轮为 `unproven`。这不是频道/群被删除，而是高流量群单页轮询永远追不上尾部。
 
 ## 2. 根因与范围
 
@@ -31,6 +33,8 @@
 3. **分配锁域不完整。** coverage keyset 有每日游标锁，但 ContentMix 冻结阶段未明确锁住 target-day 目标行及被选数量槽。多个 Planner 或同日 replan/new-cycle 交错时，蓝图读取与槽位冻结缺少一个最终一致性栅栏。
 4. **历史文档冲突。** `all-task-fulfillment-recovery-prd.md` 同时存在“旧槽等待时继续独立 Cycle”和“任一旧槽等待时禁止新 Cycle”两种口径，导致实现和验收可能反复摇摆。
 5. **AI generation 领取缺少生产级候选索引。** `_generation_filters` 在全局 pending Action 上同时判断 task、JSON generation 状态、空正文、账号占用和同群 generation 槽，再按时间排序取首条。现有统计索引以 `tenant_id, task_id` 开头，不能服务跨任务 due claim；通用 due 索引又不能排除大量非 AI 或已有正文 Action。数据量放大后，3 个 worker 都长期执行同一候选 SQL，尚未取得 Action 行锁和 claim，导致“心跳健康但生成量为零”。
+6. **同群 generation 占用复核仍扫描历史 Action。** due-claim partial index 只收敛外层候选；`_group_generation_slot_is_free` 对每个候选查找同 tenant/group 的 `generating` 或带正文 `ready` Action。现有 group slot 索引包含该群全部历史 `send_message`，状态与 generation 谓词只能在 heap/index scan 后过滤，候选越多越反复放大。必须新增仅覆盖“实际占用 generation 槽”的 partial expression index，不能删除同群互斥条件。
+7. **高流量 listener 只取一页。** anchored cursor 每 60 秒最多读取 `listener_context_limit` 一页；满页时按安全合同保持 `unproven`，但 worker 不在同轮继续读取下一页。消息速率达到页大小后，cursor 虽持续前进却永远无法证明追到尾部，Provider/Gateway 的上下文门禁会持续拒绝。必须在一次 poll 内按 cursor 分页，直到短页证明到达当时尾部；非数字 cursor、无前进或读取错误仍保持 unproven/显式失败。
 
 ### 2.2 本次范围
 
@@ -41,6 +45,8 @@
 - 旧 Cycle 优先重建，但不能阻塞与其数量槽、coverage 均无交集的新 Cycle；
 - 更新总 PRD、数据流转索引、结构索引、定向测试和生产诊断。
 - 新增只覆盖“待生成空正文”的 partial due-claim 索引，键序与领取排序一致；临时恢复和 Alembic 最终迁移使用同一索引名与谓词，避免形成两套生产结构。
+- 新增只覆盖 `generating` 或带正文 `ready` 占用者的同群 partial expression index，以 `tenant_id + group_id + id` 定位；不得把 waiting/pending 空正文写入占用索引。
+- anchored listener 在同一次 poll 中逐页追尾并按页推进持久 cursor；每个 listener 仍保留自身观察采集，不降低群管准入证据范围。
 
 ### 2.3 非目标
 
@@ -103,12 +109,14 @@ coverage ready
 5. Cycle 唯一键、CycleSlot 数量槽唯一键和 Action `(cycle_slot_id, slot_attempt)` 继续作为数据库最终幂等栅栏。
 6. replan 槽 `created=0` 后可以建立独立蓝图，但 `_bound_coverage_account_ids_for_plan` 必须排除所有旧 Cycle 已绑定 coverage；新旧 Cycle 不共享主数量槽。
 7. AI generation due claim 必须命中 `task_type=group_ai_chat + action_type=send_message + status=pending + account_id 非空 + generation_status 可生成 + message_text 为空` 的 partial index，并按 `scheduled_at, created_at, id` 读取；账号占用和同群占用仍由原查询及行锁复核，不得移除安全条件。
+8. 同群占用复核必须命中 `tenant_id + payload.group_id + id` 的 partial index；partial predicate 与 `_group_generation_slot_is_free` 完全一致：`executing+generating`，或 `pending/claiming/executing + ready + 非空正文`。索引只改变访问路径，不改变互斥集合。
+9. listener 有数字 persisted cursor 时，必须从该 cursor 开始逐页读取；满页且 upper cursor 单调前进则继续，短页才标记 contiguous。空页、非数字页、upper 不前进和上游错误按既有 fail-closed 语义结束，不得伪造 contiguous。
 
 本节 supersede `all-task-fulfillment-recovery-prd.md` §4.5.1 中“只要存在待物化/重建槽就不得另建 Cycle”的句子；保留同节关于旧槽不释放、不换号、不改 relation、Gateway-started/unknown 禁止替代的约束。
 
 ## 6. 数据、接口与可观测性
 
-本次不新增表，新增 Alembic migration 创建 `ix_actions_ai_generation_due_claim` partial index。PostgreSQL 必须使用 `CREATE INDEX CONCURRENTLY`，SQLite 使用等价 JSON predicate；migration 若发现同名有效索引则 no-op，若存在同名 invalid 索引则显式失败，禁止静默跳过。使用现有 Task stats 记录：
+本次不新增表，新增 Alembic migration 创建 `ix_actions_ai_generation_due_claim` 与 `ix_actions_ai_generation_group_occupancy` 两个 partial index。PostgreSQL 必须使用 `CREATE INDEX CONCURRENTLY`，SQLite 使用等价 JSON predicate；migration 若发现同名有效索引则 no-op，若存在同名 invalid 索引则显式失败，禁止静默跳过。使用现有 Task stats 记录：
 
 ```json
 {
@@ -136,7 +144,9 @@ coverage ready
 
 若任务已自然形成 open Action 且覆盖 `due_by_now`，正确结果是 no-op，不再强改数据库。本次生产预览即按此合同拒绝 apply。
 
-当生产已证明 generation 主线程卡在无 claim 的候选扫描时，允许执行第二类临时恢复：先校验 deployed SHA、索引不存在或有效、全局 AI generation executing claim 为 0，再以 autocommit `CREATE INDEX CONCURRENTLY` 创建与最终 migration 完全同名同谓词的索引。索引有效后只重启 3 个 AI generation worker 以中断旧查询计划；不得重启 Dispatcher、修改 Action 或终结 Attempt。任一 executing AI claim 出现时拒绝重启并保持索引即可。
+当已证明目标群存在、listener 无错误、游标连续多轮每次只前进当前页上限且保持 `unproven` 时，允许把单个目标群的 `listener_context_limit` 在现有 API 合法范围 `1..100` 内临时提高。写入必须精确匹配 group id、旧 limit、`unproven` 和空错误；下一轮必须看到短页/contiguous 才算生效。不得直接改 cursor/status/last_polled_at，也不得把 listener 错误改为空。永久分页版本上线并通过 E4 后再按运营配置回收临时值。
+
+当生产已证明 generation 主线程卡在无 claim 的候选扫描时，允许执行第二类临时恢复：先校验 deployed SHA、两个索引均不存在或有效、全局 AI generation executing claim 为 0，再以 autocommit `CREATE INDEX CONCURRENTLY` 创建与最终 migration 完全同名同谓词的索引。索引有效后优先等待当前查询自然结束并采用新计划；只有仍存在旧分钟级查询且再次确认零 claim 时才重启 3 个 AI generation worker。不得重启 Dispatcher、修改 Action 或终结 Attempt。任一 executing AI claim 出现时拒绝重启并保持索引即可。
 
 确认 source 修复必须复用运行时合同：原消息精确读取为空后，扫描当前账号最近 300 条带按钮控制消息；只接受可信 bot、收件人匹配、频道集合一致的新 source。无匹配时 supersede 旧 callback 并清 source；网络读取失败保持 retry，不能当删除。
 
@@ -154,6 +164,8 @@ coverage ready
 8. admission 从 waiting 变为 ready 后复用原 Action 生成；若 generation 后、Gateway 前状态回退，Dispatcher 将同一 Action退回 pending，不能写 `group_bot_admission_wait` terminal 或建替代 Action。
 9. migration 在 SQLite/PostgreSQL 分别创建相同语义的有效 partial index；重复 upgrade no-op、invalid 同名索引显式失败。
 10. 生产量级回归必须证明 due-claim 查询使用新索引，且候选领取不再出现分钟级扫描；已有“同群 ready 时跳过该群并生成其他群”和“执行中账号不可领取”语义保持不变。
+11. `EXPLAIN` 必须证明同群 anti join 使用 occupancy partial index，而非对群内全部历史 send Action 做过滤；生产采样中领取查询应从十几秒级继续收敛到秒级。
+12. listener 测试必须覆盖 `full page -> full page -> short page`，断言请求 cursor 单调为上一页 upper，最终 contiguous；混合/非数字 cursor 与不前进页仍保持 unproven 且停止。
 
 ### 8.2 Release Gate
 
@@ -162,13 +174,14 @@ coverage ready
 - 相关后端分区、静态编译、YAML、diff-check 通过；
 - master 合并后由 `master -> release -> Deploy Production` 发布；
 - deployed SHA、release symlink、容器健康与 migration head 一致。
-- PostgreSQL `pg_indexes/pg_index` 证明新索引存在且 valid，`EXPLAIN`/运行态证明 due claim 不再分钟级占用 3 个 worker。
+- PostgreSQL `pg_indexes/pg_index` 证明两个新索引存在且 valid，`EXPLAIN`/运行态证明 due claim 外层与同群 anti join 分别命中对应索引，3 个 worker 不再长期占用同指纹查询。
 
 ### 8.3 生产 E4
 
 发布后分别验证郑州师范和郑州楼凤：
 
 - waiting 驱动 Action 在 admission ready 前无 Provider 调用、无 generation attempt、无 Gateway attempt；`group_bot_admission_wait` 不再形成新 terminal Action，且同一数量槽没有替代 Action；
+- 高流量群 listener cursor 能在单轮追到短页并恢复 contiguous，且不能通过手改 cursor/status 伪造；
 - `quantity_slots_unavailable` 不再出现，若存在槽差异则展示精确 code 和计数；
 - ContentMix/CycleSlot/Action 数量守恒，无重复 `primary_quantity_slot_id`；
 - AI generation ready、Dispatcher claim、ExecutionAttempt success 和非空 remote message id 持续增长；
@@ -199,9 +212,12 @@ coverage ready
 | 临时恢复能否批量清 admission source？ | 不能。必须逐账号实时读取和可信源匹配；读取错误保持 retry。 |
 | worker heartbeat 新鲜是否证明 generation 正常？ | 不证明。心跳由独立线程写入；必须同时看全局 generation claim、ready 增长和数据库活动。本次 3 个心跳新鲜但 3 条同指纹查询持续 51–115 秒且 claim=0，正是反例。 |
 | 直接删掉账号/同群占用子查询是否更快？ | 不允许。这会破坏账号串行和同群内容槽。使用精确 partial due-claim 索引缩小外层候选集，保留现有安全复核。 |
+| 外层 due-claim 索引命中后是否已经够快？ | 不够。生产样本从 51–158 秒降到 16–19 秒并产生 ready，但 `EXPLAIN` 证明同群 anti join 仍扫描历史 Action。必须再用 occupancy partial index 优化同一安全条件，不能用“已有进展”替代吞吐验收。 |
+| `listener_cursor_status=unproven` 是否说明群或频道被删？ | 不说明。本次目标群持续采到最新上下文且 `listener_last_error` 为空；游标每轮恰好前进单页上限，证明是消费速率不足。删除/不可访问必须由明确 Gateway 错误或目标生命周期事实证明。 |
+| 能否直接把 listener cursor/status 改成 contiguous？ | 不能。临时恢复只能提高合法页大小，最终状态必须由真实短页产生；永久修复在同轮分页追尾。 |
 | 临时索引和最终 migration 会不会冲突？ | 不会。二者使用完全同名同谓词；migration 对有效同名索引 no-op，对 invalid 同名索引显式失败。 |
-| 是否需要数据库迁移？ | 需要新增一个并发 partial index；不新增表、不改业务数据、不回填 Action。 |
+| 是否需要数据库迁移？ | 需要新增两个并发 partial index；不新增表、不改业务数据、不回填 Action。 |
 
-自检已覆盖原始需求、产品合同、Planner/generation/Dispatcher/运维职责、数据流、权限安全、并发幂等、unknown、防重复、失败路径、迁移、回滚、QA、Release Gate 和 E4。第一版“删除 waiting Action”已被既有测试和 580 账号边界证伪并撤销；补全后的合同保留驱动 Action、前移 Provider 门禁、复用同一义务，既不切断准入推进，也不允许未 ready 正文。发现的“旧槽是否阻塞独立 Cycle”文档冲突已明确 supersede，非业务异常不再被泛化错误吞掉。首轮发布后的 E4 又反证“容器健康即生成正常”：现已补齐生产量级 due-claim 索引、独立心跳误导、临时并发建索引、worker 安全重启和 migration 幂等边界。
+自检已覆盖原始需求、产品合同、Planner/generation/Dispatcher/运维职责、数据流、权限安全、并发幂等、unknown、防重复、失败路径、迁移、回滚、QA、Release Gate 和 E4。第一版“删除 waiting Action”已被既有测试和 580 账号边界证伪并撤销；补全后的合同保留驱动 Action、前移 Provider 门禁、复用同一义务，既不切断准入推进，也不允许未 ready 正文。发现的“旧槽是否阻塞独立 Cycle”文档冲突已明确 supersede，非业务异常不再被泛化错误吞掉。首轮发布后的 E4 又反证“容器健康即生成正常”；`0135` 上线后的生产 `EXPLAIN` 继续反证“外层索引命中即吞吐达标”。现已把外层 due claim 与同群 occupancy 两个索引、独立心跳误导、临时并发建索引、worker 安全重启和 migration 幂等边界全部纳入设计。
 
 **Product Design Complete：`design_status=complete`，允许进入 dev。**

@@ -362,6 +362,48 @@ def test_listener_fetch_anchors_at_persisted_numeric_cursor(monkeypatch) -> None
     assert captured["after_message_id"] == 102
 
 
+def test_listener_fetch_drains_full_anchored_pages_until_short(monkeypatch) -> None:
+    calls: list[int] = []
+
+    def fetch(*_args, **kwargs):
+        after = int(kwargs["after_message_id"])
+        calls.append(after)
+        values = {102: (103, 104), 104: (105,)}[after]
+        return [SimpleNamespace(remote_message_id=str(value)) for value in values]
+
+    monkeypatch.setattr(group_listener_admission.gateway, "fetch_group_messages", fetch)
+    group = SimpleNamespace(
+        listener_remote_cursor="102",
+        listener_context_limit=2,
+        tg_peer_id="-1007",
+    )
+    account = SimpleNamespace(id=11, session_ciphertext="session")
+
+    pages = group_listener_admission.fetch_listener_snapshot_pages(
+        None,
+        group=group,
+        account=account,
+        credentials=object(),
+    )
+
+    assert calls == [102, 104]
+    assert [[item.remote_message_id for item in page] for page in pages] == [
+        ["103", "104"],
+        ["105"],
+    ]
+
+    cursor_group = SimpleNamespace(
+        listener_remote_cursor="102",
+        listener_cursor_status="gap",
+        listener_context_limit=2,
+    )
+    group_listeners._advance_listener_cursor_pages(cursor_group, pages, 102)
+    assert (cursor_group.listener_remote_cursor, cursor_group.listener_cursor_status) == (
+        "105",
+        "contiguous",
+    )
+
+
 def test_listener_anchored_mixed_cursor_window_stays_unproven() -> None:
     group = SimpleNamespace(listener_remote_cursor="102", listener_cursor_status="gap")
 
