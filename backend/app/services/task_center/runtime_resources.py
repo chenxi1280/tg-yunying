@@ -36,6 +36,10 @@ class _RateBucket:
 
 
 def _reserve_runtime_resources(action: Action) -> bool:
+    if _uses_fact_first_contract(action):
+        with _IN_FLIGHT_LOCK:
+            _ACTION_RESERVATIONS[action.id] = _RuntimeReservation(account_id=None)
+        return True
     account_id = int(action.account_id) if action.account_id is not None else None
     if account_id is not None:
         with _IN_FLIGHT_LOCK:
@@ -75,6 +79,16 @@ def _reserve_runtime_resources(action: Action) -> bool:
             redis_account_lock=redis_account_lock if redis_account_lock else None,
         )
     return True
+
+
+def _uses_fact_first_contract(action: Action) -> bool:
+    from sqlalchemy.orm import object_session
+
+    from app.models import Task
+
+    session = object_session(action)
+    task = session.get(Task, action.task_id) if session else None
+    return bool(task and task.fulfillment_contract_version == "fact_first_v3")
 
 
 def _release_runtime_resources(action: Action) -> None:

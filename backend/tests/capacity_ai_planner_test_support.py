@@ -146,6 +146,7 @@ def _scenario_type_config(scenario: AiPlannerScenario) -> dict:
         "target_group_id": 7,
         "messages_per_round_mode": "manual",
         "messages_per_round": scenario.messages_per_round,
+        "daily_message_target": scenario.messages_per_round,
         "fact_anchor_required": False,
     }
     if scenario.include_reply_min:

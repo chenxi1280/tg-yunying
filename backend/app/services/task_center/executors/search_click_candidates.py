@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 import hashlib
 import json
+import random
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -76,6 +77,7 @@ class _AccountPathInput:
     keyword_hash: str
     now: datetime
     blockers: dict[str, int]
+    random_order: int
 
 
 def candidate_paths(
@@ -147,20 +149,29 @@ def _task_candidate_paths(
         enforce_capacity=False,
         scan_all_candidates=True,
     )
-    selected = select_jisou_selector_candidates(
+    accounts = _select_candidates(session, task, accounts, base, now_value)
+    accounts = _live_runtime_shard_accounts(
+        session,
+        task,
+        accounts,
+        now_value,
+    )
+    return _account_contexts(session, task, units, base, accounts, now_value)
+
+
+def _select_candidates(session, task, accounts, base, now_value):
+    if task.fulfillment_contract_version == "fact_first_v3":
+        shuffled = list(accounts)
+        random.SystemRandom().shuffle(shuffled)
+        return tuple(shuffled)
+    selection = select_jisou_selector_candidates(
         session,
         task,
         accounts,
         bot_username=base.bot_username,
         now_value=now_value,
     )
-    accounts = _live_runtime_shard_accounts(
-        session,
-        task,
-        selected.accounts,
-        now_value,
-    )
-    return _account_contexts(session, task, units, base, accounts, now_value)
+    return selection.accounts
 
 
 def _live_runtime_shard_accounts(
@@ -169,6 +180,8 @@ def _live_runtime_shard_accounts(
     accounts: tuple[TgAccount, ...],
     now_value: datetime,
 ) -> tuple[TgAccount, ...]:
+    if task.fulfillment_contract_version == "fact_first_v3":
+        return accounts
     settings = get_settings()
     scope = session.scalar(select(DispatchClaimScope).where(
         DispatchClaimScope.dispatcher_scope == settings.dispatcher_claim_scope,
@@ -244,6 +257,7 @@ def _account_contexts(
             base.materials[index % len(base.materials)][0],
             now_value,
             blockers,
+            index,
         )
         context = _account_path_context(value)
         if context is not None:
@@ -256,17 +270,18 @@ def _account_contexts(
 def _account_path_context(
     value: _AccountPathInput,
 ) -> SearchClickPathContext | None:
-    decision = account_capacity_decision(
-        value.session,
-        tenant_id=value.task.tenant_id,
-        account_id=value.account.id,
-        scheduled_at=value.now,
-    )
-    if not decision.available:
-        value.blockers[decision.reason_code] = (
-            value.blockers.get(decision.reason_code, 0) + 1
+    if value.task.fulfillment_contract_version != "fact_first_v3":
+        decision = account_capacity_decision(
+            value.session,
+            tenant_id=value.task.tenant_id,
+            account_id=value.account.id,
+            scheduled_at=value.now,
         )
-        return None
+        if not decision.available:
+            value.blockers[decision.reason_code] = (
+                value.blockers.get(decision.reason_code, 0) + 1
+            )
+            return None
     environment = _environment(value.session, value.account, value.blockers)
     if environment is None:
         return None
@@ -296,13 +311,7 @@ def _candidate(value: _AccountPathInput, environment) -> SearchClickCandidatePat
         str(environment.authorization_id),
         value.keyword_hash,
     ))
-    capacity = account_hard_safe_remaining_capacity(
-        value.session,
-        tenant_id=value.task.tenant_id,
-        account_id=value.account.id,
-        scheduled_at=value.now,
-        max_needed=len(value.units),
-    )
+    capacity = _candidate_capacity(value)
     return SearchClickCandidatePath(
         key=candidate_key,
         account_id=value.account.id,
@@ -317,9 +326,25 @@ def _candidate(value: _AccountPathInput, environment) -> SearchClickCandidatePat
         last_click_opportunity_at=_last_opportunity_at(
             value.session, value.account.id
         ),
-        persistent_account_cursor=value.account.id,
+        persistent_account_cursor=(
+            value.random_order
+            if value.task.fulfillment_contract_version == "fact_first_v3"
+            else value.account.id
+        ),
         eligible_obligation_ids=tuple(unit.obligation_id for unit in value.units),
         resource_versions=_resource_versions(value, environment, capacity),
+    )
+
+
+def _candidate_capacity(value: _AccountPathInput) -> int:
+    if value.task.fulfillment_contract_version == "fact_first_v3":
+        return 1
+    return account_hard_safe_remaining_capacity(
+        value.session,
+        tenant_id=value.task.tenant_id,
+        account_id=value.account.id,
+        scheduled_at=value.now,
+        max_needed=len(value.units),
     )
 
 

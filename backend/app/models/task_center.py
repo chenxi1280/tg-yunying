@@ -56,6 +56,11 @@ class Task(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     deleted_by: Mapped[str] = mapped_column(String(100), default="")
     delete_reason: Mapped[str] = mapped_column(String(255), default="")
+    task_lifecycle_epoch: Mapped[int] = mapped_column(Integer, default=1)
+    fulfillment_contract_version: Mapped[str] = mapped_column(
+        String(40), default="legacy_v1"
+    )
+    group_ai_prejoin_channel_ids: Mapped[list] = mapped_column(JSON, default=list)
 
 
 class DispatchFairnessCursor(Base):
@@ -175,11 +180,28 @@ class Action(Base):
             ),
         ),
         Index(
-            "uq_actions_executing_account",
-            "account_id",
+            "uq_actions_open_obligation",
+            "obligation_type",
+            "obligation_id",
             unique=True,
-            sqlite_where=text("status = 'executing' AND account_id IS NOT NULL"),
-            postgresql_where=text("status = 'executing' AND account_id IS NOT NULL"),
+            sqlite_where=text(
+                "obligation_id IS NOT NULL AND status IN "
+                "('pending','claiming','executing','unknown_after_send')"
+            ),
+            postgresql_where=text(
+                "obligation_id IS NOT NULL AND status IN "
+                "('pending','claiming','executing','unknown_after_send')"
+            ),
+        ),
+        Index(
+            "ix_actions_lane_claim_ready",
+            "tenant_id",
+            "execution_lane",
+            "scheduled_at",
+            "task_id",
+            "id",
+            sqlite_where=text("status = 'pending'"),
+            postgresql_where=text("status = 'pending'"),
         ),
     )
 
@@ -222,6 +244,15 @@ class Action(Base):
     payload: Mapped[dict] = mapped_column(JSON, default=dict)
     result: Mapped[dict] = mapped_column(JSON, default=dict)
     retry_count: Mapped[int] = mapped_column(Integer, default=0)
+    execution_lane: Mapped[str] = mapped_column(String(32), default="interaction")
+    obligation_type: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    obligation_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    materialization_version: Mapped[int] = mapped_column(Integer, default=1)
+    action_version: Mapped[int] = mapped_column(Integer, default=1)
+    task_lifecycle_epoch: Mapped[int] = mapped_column(Integer, default=1)
+    unknown_deadline_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
@@ -246,6 +277,7 @@ class ExecutionAttempt(Base):
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), default=1)
     action_id: Mapped[str] = mapped_column(ForeignKey("actions.id"))
     worker_id: Mapped[str] = mapped_column(String(160), default="")
+    task_lifecycle_epoch: Mapped[int] = mapped_column(Integer, default=1)
     account_id: Mapped[int | None] = mapped_column(ForeignKey("tg_accounts.id"), nullable=True)
     attempt_no: Mapped[int] = mapped_column(Integer, default=1)
     status: Mapped[str] = mapped_column(String(40), default="before_call")

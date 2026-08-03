@@ -183,6 +183,7 @@ _next_run_after_task = next_run_after_task
 _retry_failed_actions = retry_failed_actions
 logger = logging.getLogger(__name__)
 PLANNER_RUNTIME_ERROR_RETRY_SECONDS = 30
+FACT_FIRST_PLANNER_POLL_SECONDS = 2
 OPEN_ACTION_PLANNER_RECHECK_SECONDS = 30
 PLANNER_GLOBAL_PENDING_SESSION_KEY = "planner_global_pending"
 CHANNEL_COMMENT_SCENE = "channel_comment"
@@ -421,6 +422,14 @@ def _new_task(session: Session, tenant_id: int, task_type: str, payload) -> Task
         pacing_config=pacing_config,
         failure_policy=payload.failure_policy.model_dump(mode="json"),
         type_config=type_config,
+        fulfillment_contract_version=(
+            "fact_first_v3" if task_type in FULFILLMENT_TASK_TYPES else "legacy_v1"
+        ),
+        group_ai_prejoin_channel_ids=(
+            list(dict.fromkeys(type_config.get("required_channel_refs") or []))[:3]
+            if task_type == "group_ai_chat"
+            else []
+        ),
         stats={
             **empty_stats(),
             **(
@@ -2373,6 +2382,7 @@ def _start_execution_result(session: Session, task: Task) -> StartExecutionResul
 
 def pause_task(session: Session, tenant_id: int, task_id: str, actor: str) -> Task:
     task = _get_task(session, tenant_id, task_id)
+    _advance_task_lifecycle_epoch(task, "paused")
     task.status = "paused"
     task.next_run_at = None
     audit(session, tenant_id=tenant_id, actor=actor, action="暂停任务中心任务", target_type="task", target_id=task.id)
@@ -2387,6 +2397,7 @@ def resume_task(session: Session, tenant_id: int, task_id: str, actor: str) -> T
 
 def stop_task(session: Session, tenant_id: int, task_id: str, actor: str, reason: str = "") -> Task:
     task = _get_task(session, tenant_id, task_id)
+    _advance_task_lifecycle_epoch(task, "stopped")
     task.status = "stopped"
     task.next_run_at = None
     for action in session.scalars(select(Action).where(Action.task_id == task.id, Action.status == "pending")):
@@ -2411,6 +2422,7 @@ def delete_task(session: Session, tenant_id: int, task_id: str, actor: str, reas
         action.result = {"success": False, "error_code": "task_deleted", "error_message": "任务已删除"}
         action.executed_at = now
     refresh_task_stats(session, task)
+    _advance_task_lifecycle_epoch(task, "deleted")
     task.status = "deleted"
     task.next_run_at = None
     task.deleted_at = now
@@ -3123,7 +3135,20 @@ def drain_task_center(session_factory, limit: int = 100) -> int:
     processed += recovery_count
     planner_count, future_open_action_task_ids = _drain_task_planner(session_factory, limit=limit, process_type=None)
     processed += planner_count
-    processed += _drain_task_dispatcher(session_factory, limit=limit, exclude_task_ids=future_open_action_task_ids, process_type=None)
+    processed += _drain_task_dispatcher(
+        session_factory,
+        limit=limit,
+        exclude_task_ids=future_open_action_task_ids,
+        process_type=None,
+        execution_lane="non_search",
+    )
+    processed += _drain_task_dispatcher(
+        session_factory,
+        limit=limit,
+        exclude_task_ids=future_open_action_task_ids,
+        process_type=None,
+        execution_lane="search",
+    )
     return processed
 
 
@@ -3160,6 +3185,9 @@ def _drain_task_recovery(session_factory, *, limit: int, process_type: str | Non
             session,
             limit=max(1, int(limit or 0)),
         )
+        from .fulfillment_remote_facts import close_unknown_after_deadline
+
+        processed += close_unknown_after_deadline(session, limit=max(1, int(limit or 0)))
         session.commit()
         processed += recover_terminal_coverage_reservations(session, limit=limit)
         session.commit()
@@ -3335,11 +3363,16 @@ def _plan_due_task_batch(
             session.commit()
             return processed, 0, False, current_global_pending
         planned = build_task_plan(session, task)
+        _make_fact_first_actions_immediate(session, task)
         _clear_planner_runtime_error(task)
         processed += planned
         current_global_pending += max(0, int(planned))
         if task.status == "running":
-            task.next_run_at = next_run_after_task(task)
+            task.next_run_at = (
+                _now() + timedelta(seconds=FACT_FIRST_PLANNER_POLL_SECONDS)
+                if task.fulfillment_contract_version == "fact_first_v3"
+                else next_run_after_task(task)
+            )
         session.commit()
         return processed, planned, False, current_global_pending
 
@@ -3407,6 +3440,7 @@ def _skip_open_ai_plan(session: Session, task: Task, has_open_actions: bool, *, 
     del session
     return (
         task.type == "group_ai_chat"
+        and task.fulfillment_contract_version != "fact_first_v3"
         and has_open_actions
         and not allow_planning
     )
@@ -3423,18 +3457,46 @@ def _refresh_planner_heartbeat(session: Session, process_type: str | None, limit
 
 
 def drain_task_dispatcher(session_factory, limit: int = 100) -> int:
-    return _drain_task_dispatcher(session_factory, limit=limit, exclude_task_ids=None, process_type="dispatcher")
+    return _drain_task_dispatcher(
+        session_factory,
+        limit=limit,
+        exclude_task_ids=None,
+        process_type="dispatcher",
+        execution_lane="non_search",
+    )
 
 
-def _drain_task_dispatcher(session_factory, *, limit: int, exclude_task_ids: set[str] | None, process_type: str | None) -> int:
+def drain_search_dispatcher(session_factory, limit: int = 100) -> int:
+    return _drain_task_dispatcher(
+        session_factory,
+        limit=limit,
+        exclude_task_ids=None,
+        process_type="search-dispatcher",
+        execution_lane="search",
+    )
+
+
+def _drain_task_dispatcher(
+    session_factory,
+    *,
+    limit: int,
+    exclude_task_ids: set[str] | None,
+    process_type: str | None,
+    execution_lane: str,
+) -> int:
     with session_factory() as session:
         dialect_name = session.bind.dialect.name if session.bind else ""
-        effective_concurrency = _dispatcher_concurrency()
+        effective_concurrency = _lane_concurrency(execution_lane)
         if process_type:
             record_worker_heartbeat(session, process_type=process_type, metadata={"limit": limit})
             session.commit()
         claim_limit = min(max(1, int(limit or 1)), effective_concurrency)
-        claimed = claim_actions(session, limit=claim_limit, exclude_task_ids=exclude_task_ids)
+        claimed = claim_actions(
+            session,
+            limit=claim_limit,
+            exclude_task_ids=exclude_task_ids,
+            execution_lane=execution_lane,
+        )
         action_batches = _dispatcher_execution_batches(claimed)
     if not action_batches:
         return 0
@@ -3503,6 +3565,18 @@ def _dispatcher_concurrency() -> int:
     return max(1, min(configured, db_budget))
 
 
+def _lane_concurrency(execution_lane: str) -> int:
+    if execution_lane != "search":
+        return _dispatcher_concurrency()
+    settings = get_settings()
+    configured = max(1, int(settings.search_dispatcher_concurrency or 1))
+    db_budget = max(
+        1,
+        int(settings.db_pool_size or 1) + int(settings.db_max_overflow or 0) - 2,
+    )
+    return min(configured, db_budget)
+
+
 def _dispatch_claimed_action(session_factory, action_id: str) -> int:
     try:
         return _dispatch_claimed_action_once(session_factory, action_id)
@@ -3552,10 +3626,7 @@ def _record_dispatch_db_error(session_factory, action_id: str, exc: SQLAlchemyEr
 
 def _planning_backlog_blocked(session: Session, task: Task) -> bool:
     stats = dict(task.stats or {})
-    if (
-        task.type in FULFILLMENT_TASK_TYPES
-        and stats.get("fulfillment_contract_version") == FULFILLMENT_CONTRACT_VERSION
-    ):
+    if task.fulfillment_contract_version == "fact_first_v3":
         task.stats = clear_planner_backlog_stats(stats)
         return False
     now_value = _now()
@@ -3577,6 +3648,20 @@ def _planning_backlog_blocked(session: Session, task: Task) -> bool:
     interval = max(10, min(300, int((task.pacing_config or {}).get("interval_seconds") or 30)))
     task.next_run_at = now_value + timedelta(seconds=interval)
     return True
+
+
+def _make_fact_first_actions_immediate(session: Session, task: Task) -> None:
+    if task.fulfillment_contract_version != "fact_first_v3":
+        return
+    session.execute(
+        update(Action)
+        .where(
+            Action.task_id == task.id,
+            Action.status == "pending",
+            Action.scheduled_at > _now(),
+        )
+        .values(scheduled_at=_now())
+    )
 
 
 def _record_planner_backlog_daily_fulfillment(session: Session, task: Task) -> None:
@@ -4968,6 +5053,7 @@ def _check_stop_conditions(session: Session, task: Task) -> bool:
     if scheduled_end and scheduled_end <= now:
         if task.type in SEARCH_CLICK_TASK_TYPES:
             _clear_unfinished_plan(session, task)
+        _advance_task_lifecycle_epoch(task, "completed")
         task.status = "completed"
         task.next_run_at = None
         refresh_task_stats(session, task)
@@ -4982,7 +5068,9 @@ def _mark_task_started(session: Session, task: Task) -> None:
         rearm_stopped_admission_actions(session, task=task)
     now = _now()
     scheduled_start = _naive_datetime(task.scheduled_start)
-    task.status = "pending" if scheduled_start and scheduled_start > now else "running"
+    next_status = "pending" if scheduled_start and scheduled_start > now else "running"
+    _advance_task_lifecycle_epoch(task, next_status)
+    task.status = next_status
     task.next_run_at = scheduled_start if task.status == "pending" else now
     stats = dict(task.stats or empty_stats())
     stats["started_at"] = stats.get("started_at") or now.isoformat()
@@ -4990,6 +5078,12 @@ def _mark_task_started(session: Session, task: Task) -> None:
         stats["force_bootstrap_once"] = True
     task.stats = stats
     task.last_error = ""
+
+
+def _advance_task_lifecycle_epoch(task: Task, next_status: str) -> None:
+    if task.status == next_status:
+        return
+    task.task_lifecycle_epoch = int(task.task_lifecycle_epoch or 1) + 1
 
 
 def _set_runtime_projection(session: Session, task: Task) -> None:
@@ -5633,6 +5727,7 @@ __all__ = [
     "delete_task",
     "drain_task_center",
     "drain_task_dispatcher",
+    "drain_search_dispatcher",
     "drain_task_listener",
     "drain_task_metrics",
     "drain_task_planner",

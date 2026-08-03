@@ -40,7 +40,7 @@ def test_group_ai_config_uses_one_daily_group_target() -> None:
 
 
 @pytest.mark.no_postgres
-def test_legacy_group_ai_target_migrates_without_per_account_multiplication() -> None:
+def test_legacy_group_ai_target_does_not_promote_frozen_account_count() -> None:
     normalized = normalize_ai_daily_target(
         {
             "per_account_daily_min_messages": 2,
@@ -51,7 +51,7 @@ def test_legacy_group_ai_target_migrates_without_per_account_multiplication() ->
         frozen_account_count=797,
     )
 
-    assert normalized["daily_message_target"] == 797
+    assert normalized["daily_message_target"] == 1
     assert normalized["account_coverage_mode"] == "all_accounts_daily"
     assert "per_account_daily_min_messages" not in normalized
     assert "hourly_min_messages" not in normalized

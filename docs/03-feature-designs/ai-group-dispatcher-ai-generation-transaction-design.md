@@ -1,10 +1,12 @@
 # AI 活跃群与频道评论 Dispatcher AI 生成事务边界专项设计
 
+> **2026-08-04 partial current contract：** 本文当前只保留“Planner 不持有外部调用事务、GenerationJob 以单行 CAS claim 后关闭事务调用 Provider、生成结果用 job version 单行 CAS 提交”的边界。Telegram 远端结果必须先追加唯一 `fulfillment_remote_fact`，其余对象由 projector 收敛；本文后续任何跨表最终结算或锁序不生效。冻结账号分母、账号级单 executing、同群单 ready、direct 严格上下文相等、本地 reply 缺失即终结、租户跨群硬去重、ContentMix/数量槽拥有义务等后续表述均为 `historical_do_not_implement`。当前并发、义务、C8 远端探针和提交合同以 `task-fulfillment-classified-recovery-prd.md`、`task-fulfillment-contract-closure-prd.md` 为准。
+
 > **2026-07-31 resync：** AI 活群 normal 的生成粒度由批量 sibling 预写改为单 Action late binding，跨群 scope validator 与过期同槽重生成以 `ai-conversation-humanization-and-group-bot-admission-prd.md` §15 为准。频道评论和本文 Phase A/B/C 事务边界不变。
 
 - 日期：2026-07-14
 - 等级：L3
-- 状态：`design_status=complete`、`resync=true`
+- 状态：`design_status=partial_current_transaction_boundary_only`、`resync=2026-08-04`
 - 范围：AI 活跃群 reply / normal 与频道评论 direct / reply 的文本生成、质量过滤、预算/覆盖预约与真实发送。
 - 触发证据：独立 QA I1 证明 Planner 在锁定 Task、任务日游标和 coverage 后，仍通过 quality -> `generate_group` / `generate_reply` -> Grok 同步外呼；生产取证同时证明 `channel_comment.build_plan` 在开放 Session 中执行 AI 生成和重描述，且评论与群活跃共用 Planner / Dispatcher 领取链路。
 
@@ -17,7 +19,7 @@
 以下业务语义不可改变：
 
 - `messages_per_round` 决定 Cycle 的 Turn 数及 slot 映射，20 条 coverage 批限只切分 Planner 数据库事务；不得据此批量预写未来 normal 正文。
-- `TaskAccountDailyCoverage` 仍是 580 分母事实源；pending、生成成功、质量通过或 Action 创建都不计完成。
+- 当前账号范围以任务内动态 scope 为准，`FulfillmentObligation` 是数量事实源；pending、生成成功、质量通过或 Action 创建都不计完成。
 - 只有成功 Action、成功 ExecutionAttempt 和非空 `remote_message_id` 同时存在才确认覆盖。
 - 频道评论累计目标、每小时预算、`reply_min_per_message` 和生命周期总上限保持原语义；pending、生成完成或质量通过均不计评论成功。
 - reply 最小值、话题、讨论老师、账号面具、行为类型、连发结构、语义去重和内容政策不降级。
@@ -42,7 +44,7 @@ Phase A 每个数据库事务最多处理 20 个 coverage slot，并原子完成
 
 Dispatcher 先在短事务 claim Action，写入 lease token、`ai_generation_status=generating`、generation attempt id 和 request id，然后提交并关闭事务。AI 活群 normal 每次只生成当前即将发送的一条 Action；reply 继续按冻结目标单条生成。频道评论仍按其专项合同处理。任何 generation sibling 查询即使 task/generation 相同，也不得把未来 AI 活群 slot 合并进本次 Provider 请求。
 
-AI 活群 generation worker 每次只 claim 一个 Action；同 `ai_generation_id` 的 sibling 不进入当前 Provider request，也不共享 generation claim token。一个 drain 可继续处理其他独立 Action，但必须记录本轮已经访问的 Action id，避免 freshness pending Action 被立即重复领取自旋。claim token 和 generation attempt CAS 只 fence 当前 Action；同账号 executing 唯一约束仍是最后防线，worker 选择候选时应提前排除可预判冲突。
+AI 活群 generation worker 为每个 Action 建立独立 GenerationJob；多个非冲突 Job 可并发调用 Provider，不共享 generation claim token。一个 drain 可继续处理其他独立 Action，但必须记录本轮已经访问的 Action id，避免 freshness pending Action 被立即重复领取自旋。claim token 和 generation attempt CAS 只 fence 当前 Action；不建立账号级或群级单 executing，只有同一 GenerationJob、同一远程副作用身份和 Provider 真实额度使用幂等/容量约束。
 
 提交 claim 后，在无数据库事务区间完成：
 
@@ -54,7 +56,7 @@ AI 活群 generation worker 每次只 claim 一个 Action；同 `ai_generation_i
 
 normal Action 即使已经在 Phase C 持久化为 `ai_generation_status=ready`，Gateway 前仍必须比较当前最新真人上下文 ID 与生成时的 `context_snapshot_message_id`。如果出现更新上下文，旧正文不得直接发送：同一 Action/slot/coverage 保持不变，旧消息记忆显式转为 `expired_before_send/generation_context_superseded`，清除旧正文和生成缓存，以新 generation attempt 重新进入 Phase B/C。reply Action 继续使用冻结引用目标，不因群内其他新消息改成 normal 或更换引用。
 
-reply 目标消息消失、被删除、不可访问或过期时，不得静默改成 normal，也不得伪造 reply 指标。Dispatcher 不调用 AI，进入 Phase C 将 Action 终结为 `reply_target_missing` / `reply_target_stale` 并释放 coverage；义务回到 `ready`，下一 Cycle 基于新上下文编排。
+本地 reply 目标缺失时先进入 C8 `local_target_unresolved`：完成 listener resync，并使用固化随机顺序的合格查看账号做远端精确探针。只有满足闭合专项负面证据与 CAS 的 Telegram 权威删除才终结为 `remote_target_deleted`；远端仍存在则修复索引并重物化原义务。不得静默改成 normal，也不得伪造 reply 指标。
 
 ## 4. Phase C：短事务质量落库
 
@@ -114,6 +116,6 @@ Phase A/B/C 必须同一 release 启用，禁止 Planner 外呼兼容分支或�
 - 两个青岛任务当前暂停，且一个目标标识无效、另一个真实目标仅部分账号可发送。发布不得自动恢复两个任务；恢复前只允许选择经 Telegram 实测可发送的唯一目标并保留不可用账号清单。
 - 因此核心事务设计为 `complete`；郑州范围和青岛目标/启停属于独立生产配置决定，保持 `blocked`，不阻断代码进入 dev，但阻断相应群的 E4 完成声明。
 
-## 10. Product Design Complete
+## 10. 当前适用范围自检
 
-原始问题、群活跃 reply/normal、频道评论 direct/reply、三阶段职责、pending 原子性、slot 映射、预算/覆盖释放、生成/发送未知分层、并发幂等、worker 健康、事务指标、动态分母、`messages_per_round`、生命周期总上限、迁移/回滚和 E2/E4 均已定义；核心 `design_status=complete`、`resync=true`。进入 dev 前以本文件覆盖此前“Planner 可预生成 reply/comment 文本”及“只提交 Grok 前事务”的旧口径；郑州范围与青岛目标/启停仍按第 9 节保持生产配置 `blocked`。
+本文只有“三阶段事务边界与外部调用不持有数据库事务”可作为当前实现输入，状态为 `partial_current_transaction_boundary_only`。账号范围、义务、生成并发、context、C8、Provider 额度和 E4 必须回到两份 task-fulfillment 当前专项，不得以本文历史 complete 结论单独进入 dev。

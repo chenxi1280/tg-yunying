@@ -1,5 +1,7 @@
 # 共享调度、锁序与 AI 履约恢复专项 PRD
 
+> **2026-08-04 superseded / historical_do_not_implement：** 本文“搜索与 AI/评论/点赞/浏览共享 active claim capacity、中央 TaskAllocation/Reservation、统一 Dispatcher Window”的产品方案已被 `task-fulfillment-classified-recovery-prd.md` §9 与 `task-fulfillment-contract-closure-prd.md` §4–5 全量替代，不得作为当前开发、旧 Task 处理、QA 或发布依据。主 PRD 与主数据流索引已按新合同同步；项目结构索引只在代码完成后按真实入口更新。本文只保留 2026-08-01 事故、旧实现和发布证据；同账号跨任务 RPC 防串写、Gateway B0/B1、typed remote fact 等不冲突原则由新专项重新定义。
+
 ## 0. 文档状态
 
 - `intake_id`: `intake-2026-08-01-shared-dispatch-recovery-001`
@@ -8,7 +10,7 @@
 - `owner_agent`: `product`
 - `level`: `L3`
 - `priority`: `P0 shared_dispatch / P0 deadlock / P0 legacy_takeover / P1 task_recovery`
-- `design_status`: `complete`
+- `design_status`: `superseded_historical_do_not_implement`
 - `design_review_status`: `closed_2026-08-01_phase15_3P0_2P1_resync`
 - `implementation_status`: `implemented_local_phase15_audit_repairs`
 - `qa_status`: `local_no_postgres_pass_postgresql_blocked`
@@ -628,7 +630,7 @@ Stage B 是前向数据迁移，不执行逆向改写。任何已 applied item�
 | deadlock 后远端已发但 DB 未记账 | B1原子 rollback；Gateway-started进入唯一 remote case，只有精确远端事实或权威 no-mutation才能收口 |
 | 搜索目标客观不可达 | 独立显示 safe capacity blocker，不扩账号 scope、不伪造 click |
 
-## 12. Product Design Complete 自检
+## 12. 历史 Product Design Complete 自检（已 supersede）
 
 | 检查项 | 结论 |
 | --- | --- |
@@ -645,7 +647,7 @@ Stage B 是前向数据迁移，不执行逆向改写。任何已 applied item�
 | QA | 自动化、PostgreSQL并发、crash/drift注入、混合公平、remote reconcile、canary和完整日验收已定义 |
 | 遗漏复核 | 未引入固定优先级、隐式 fallback、账号扩 scope、验证码放宽或 mock success |
 | 逆向审查闭环 | 原3个P0/6个P1及完成性审计新增3个P0/2个P1均已映射到功能合同、发布顺序、失败路径和QA场景 |
-| `design_status` | `complete` |
+| `design_status` | `superseded_historical_do_not_implement` |
 
 ## 13. Product Handoff
 

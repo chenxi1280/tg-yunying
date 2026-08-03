@@ -2,10 +2,14 @@
 
 ## 1. 文档状态
 
+> **2026-08-04 当前合同边界：** 本文只保留真人化内容、可信提示识别和历史事故取证。本文所有 C2 数据模型、hard-hourly/冻结分母、迁移、ClaimClass、Task 内远端事实所有权、串行 admission 和旧签到配额/重试规则均为 `historical_do_not_implement`。当前 C2 必须使用：`tasks.group_ai_prejoin_channel_ids UUID[]` 持久化 0～3 个配置频道并并发关注；Task 专属 `TaskGroupBotAdmission` 仅做投影；`account_group_admission_facts` 以无 `task_id` 的四类远端事实 `configured_channel_follow|dynamic_channel_follow|requirement_confirmation|post_follow_visibility` 供多个 Task 引用；展示名+要求链接精确绑定；不同可信 action 按依赖图并发。签到统一为 `content_source=check_in`。完整唯一合同见 `task-fulfillment-classified-recovery-prd.md`、`task-fulfillment-contract-closure-prd.md` 与 `ai-group-daily-group-target-redesign-prd.md`。
+
+> **2026-08-03 C2 最新 supersede：** AI 活群先关注任务配置的 0–3 个频道，再入群读取可信群管提示。明确收件人按“归一化展示名精确匹配 + 同一可信 bot 原消息内的群聊要求链接/按钮”组合绑定；一条可信提示可有 0/1/2/N 个 requirement action，不限总数。每个 `source_message_id + fingerprint + requirement_action_key` 最多一个 open click/一次 success，unknown 只复探不重点；不同非冲突 requirement action 可并发。本条取代本文后续“每 admission 最多一条 confirmation action”和“同账号整个 admission 全串行”的冲突表述；可信来源、按钮精确身份、完成事件、可见性和 unknown 防重仍保留。完整当前合同见 `task-fulfillment-classified-recovery-prd.md` §5 和 `task-fulfillment-contract-closure-prd.md` §6。
+
 | 项目 | 内容 |
 | --- | --- |
 | 需求级别 | L2 产品能力升级（上线后影响生产 AI 活群 / 频道评论行为） |
-| 设计状态 | 2026-07-27 群管准入/轮换既有范围 `complete`；2026-07-31 §14「优化 AI 活群真人话术待修复」`partial`，不得据此进入 dev |
+| 设计状态 | `partially_superseded`：仅真人化内容参考可复用；C2/签到/调度运行合同不得据本文进入 dev |
 | 修订说明 | 2026-07-25 评审修补合订 + **continuity 交叉 P0/P1 合订**：① 待可见性核验计入 `unknown_after_send_hold_count`；② `admission_abandoned` 释放永久不可准入硬小时 debt；③ `pending_visibility_credit` 延后真实 credit；④ follow/观察 action 复用 `target_admission_retry` 档且限 tenant+task+account；⑤ 定义 `admission_version`；⑥ C1/C2 action 边界与存量 unknown 走 continuity 裁决。2026-07-27 首次补齐：入群前基线游标、每轮 listener observation 落库、控制事件优先后闭合、存量无基线显式重启观察，以及成功终态压过历史临时错误展示。**同日生产复核再补齐：来源信任必须早于归属；可信 peer 只是候选来源而不是“每条消息都是控制指令”；频道与确认动作可仅存在于 Telegram 内联按钮；已审计的目标级 bot peer 可作为 unknown role 的受限信任根；同群新入群 admission 必须串行，避免并发提示无法归属；历史已入库的同一 bot 消息重新被监听到按钮时，只回填安全按钮摘要以支持精确恢复；频道 follow 的持久 Action 类型固定为 `group_bot_channel_follow`，必须适配 `actions.action_type` 的 30 字符上限；`required_channel_refs` 只代表当前世代，误判提示暂停后必须由 explicit restart 与不同 source 的新有效控制提示受控 rearm；带明确收件人的控制提示必须精确归属，不能被唯一 waiting account 兜底错配。生产 E4 再次发现“空 admission 放行后 Telegram 先返回 message id、机器人稍后删除并提示订阅”后补齐：空/无证据 admission 的首条正文必须进入完整可见性窗口，窗口结束前不得以瞬时可见确认成功；unknown-role bot 只有在同 peer 重复出现相同精确频道+callback 规则，且与同群开放的 `pending_visibility` 远端消息顺序和时间窗相关时，才可作为 `post_send_intercept_rule` 受限信任根展开逐账号准入。** |
 | 产品范围 | 真人化：`group_ai_chat` + `channel_comment`；群管机器人准入：仅 `group_ai_chat` |
 | 统计时区 | 任务配置时区；未配置时沿用平台 `Asia/Shanghai` |
@@ -298,14 +302,14 @@ not_joined -> joining
   -> 此后才允许 membership test_message（若任务仍配置）
 ```
 
-#### 5.7.1 同账号 admission 串行窗口（2026-07-29 supersede）
+#### 5.7.1 同账号 admission 并发与 mutation fencing（2026-08-04 supersede）
 
-在新 join/rejoin 的 Telegram Gateway 调用前，系统必须取得目标群行锁并创建/复用一个可审计的 admission window。互斥键固定为 `target_group_id + account_id + admission_generation`；同一账号在 `joining`、观察中、频道 follow 中、等待 bot confirmation 期间只允许一个执行窗口，同群不同账号可以并行。
+同一账号的配置频道关注、目标群 join、动态频道关注、多个 requirement action 和 visibility probe 按依赖图推进；所有依赖已满足且互不冲突的动作并发执行。系统不得对整个 `target_group_id + account_id + admission_generation` 建单执行窗口。只对相同 `remote_mutation_key`、相同 callback/button 身份或同一不可并发 Telegram mutation 建短 lease 与幂等 CAS；同群不同账号、同账号不同非冲突 requirement action 均可并发。
 
-- 同一账号/世代已有窗口时，后续 membership Action 必须在 **Gateway 前** 回到 `pending`，写 `group_bot_admission_window_busy`、占用账号/状态和下一次检查时刻；不得假装已经 join、不得改写 `can_send`、不得发试探正文。
-- window 的正常释放点是对应 admission 进入 ready、明确 blocked/abandoned，或对应 join 在 Gateway 前失败；若 Gateway 结果未知，窗口保持明确的 unknown/人工恢复状态，不能用固定超时偷偷放行。
+- 相同 mutation 已有 owner 时，仅对应 Action 保持 `pending/mutation_busy`；不得暂停 admission 中其他无依赖动作，不得假装已经 join、不得改写 `can_send`、不得发试探正文。
+- mutation lease 的正常释放点是明确成功、pre-Gateway 失败或权威 no-mutation；若 Gateway 结果 unknown，只冻结该 mutation identity 并进入远端对账，不能用固定超时放行或重复点击。
 - legacy 的 `group_bot_rule_unattributed` 不能作为新窗口永久锁；它只能经单账号、带版本和证据的 restart observation 重启，禁止批量 reset。
-- 此串行化只防止同一账号/世代重复执行准入，不减少日覆盖分母；同群其他账号必须继续入群、观察、follow、confirm 或发送，不得形成群级 busy。
+- mutation fencing 只防止同一远程副作用重复执行，不冻结任务日账号范围；其他 requirement action 和同群其他账号必须继续推进，不得形成账号级或群级 busy。
 
 规则：
 
@@ -437,7 +441,7 @@ durable_debt 排除：
 
 ## 7. 内容质量与 `签到`
 
-> **2026-07-28 账号面具内容记忆 supersede：** 对 `group_ai_chat`，`ai-group-daily-group-target-redesign-prd.md` 取代本节原有无条件日覆盖直发签到和租户级跨账号重复口径。正常正文绑定发送账号和固化面具版本，按该账号滚动 10 天去重；缺面具账号仅可用 coverage 唯一绑定的 `mask_missing_check_in` 精确 `签到` 完成最低覆盖，不用于额外补量。
+> **2026-08-04 当前 supersede：** 对 `group_ai_chat`，正常正文绑定发送账号和固化面具版本，按该账号滚动 10 天去重；签到只保留统一 `content_source=check_in`，正文精确 `签到`，计数量、账号未覆盖时同时计 coverage，可用于额外补量，但不计高质量正文或 reply。以下与本口径冲突的旧类型/配额均废止。
 
 ### 7.1 质量门
 
@@ -447,7 +451,7 @@ durable_debt 排除：
 
 账号面具只约束语气、句长、表情习惯、表达偏好与短期立场；任务话题和真实上下文决定正文主题。不得因为面具摘要含“男客、夜场、价格、位置”等词，就要求每个 slot 必须出现价格/位置/服务锚点，更不得把 AI 原文截断后拼接固定问句。面具不匹配只能拒绝该 slot 并进入既有有界补位生成。
 
-AI 活群只消费既有 active 面具，不得修改面具生成、启用、版本或回滚逻辑。正常正文必须固化 `account_mask_id/account_mask_version/mask_snapshot_hash` 和 `voice_profile_contract_version=style_only_v2`。唯一例外是 `mask_missing_check_in`，必须固化 `mask_status=missing + coverage_ledger_id`。历史已有普通正文但缺少合同或面具证据的 Action 在 Gateway 前转 `skipped/voice_profile_anchor_replan`；未生成正文的蓝图有 active 面具时进入新生成链路，无面具且承担未完成 coverage 时转受限签到。
+AI 活群只消费既有 active 面具，不得修改面具生成、启用、版本或回滚逻辑。正常正文必须固化 `account_mask_id/account_mask_version/mask_snapshot_hash` 和 `voice_profile_contract_version=style_only_v2`。唯一例外是统一 `check_in`，必须固化稳定数量义务、远端 mutation identity、合法 `trigger_reason`，账号未覆盖时追加同 Task/群/账号/日期的 coverage 绑定。历史已有普通正文但缺少合同或面具证据的 Action 在 Gateway 前转 `skipped/voice_profile_anchor_replan`，不得静默改写成签到。
 
 生产验收必须同时证明：active/superseded 面具数量与版本未被本功能改写；发布后新 Provider Action 的合同版本全部为 `style_only_v2`；开放队列不存在缺版本的旧已生成正文；新成功消息不再出现系统固定尾句注入。任务被人工停止时只能写 `unproven`，不得用容器健康或历史消息代替真实发送验收。
 
@@ -464,13 +468,13 @@ Provider 返回正文进入 Phase C 时，必须保留规划阶段已经固化�
 | 项 | 口径 |
 | --- | --- |
 | 正文 | 精确 `签到` 两字 |
-| 日覆盖主路径 | 面具可用账号按固化面具、当前上下文和新 variation 生成自然短句；缺面具账号固定 `mask_missing_check_in` 精确 `签到` |
-| 普通任务兜底 | 非引用普通 Action 仅在生成/质量均失败后，按租户 `static_safe_fallback` 开关尝试 `签到`；仍需面具可用且同账号 10 天内未使用 |
+| 日覆盖主路径 | 面具可用账号优先按固化面具生成；统一 `check_in` 成功时若账号未覆盖可同时完成 coverage |
+| 普通任务兜底 | 非引用 direct 仅在版本化生成流程明确耗尽且 policy 允许时使用统一 `check_in`；缺面具可用 `trigger_reason=mask_missing` |
 | 禁止 | 引用降级为签到；绕过轮换、准入、OutboundTargetGate、群节奏、账号与 coverage 绑定或远端成功证明 |
-| 日覆盖审计 | 正常正文固化面具证据；缺面具签到固化 `account_id/coverage_ledger_id/mask_status=missing/content_source=mask_missing_check_in` |
-| 普通兜底审计 | `generation_source=static_safe_fallback`、`content_source=check_in_fallback`、`fallback_reason`、质量拒绝原因 |
-| 重复规则 | `check_in_fallback` 进入同账号 10 天去重；`mask_missing_check_in` 由每日 coverage 唯一键防重，不进入普通 10 天门禁 |
-| 与覆盖 | 仅真实远端成功、成功 ExecutionAttempt 且非空 `remote_message_id` 才确认日覆盖/硬小时义务；`签到` 不计高质量 AI 文本指标 |
+| 日覆盖审计 | 正常正文固化面具证据；签到固化 `obligation_id/remote_mutation_key/trigger_reason`，未覆盖账号追加 `coverage_ledger_id` |
+| 普通兜底审计 | `content_source=check_in`、明确 trigger reason、生成耗尽或面具缺失事实 |
+| 重复规则 | `check_in` 不进入普通正文 10 天去重；由主义务唯一键、非终态 Action partial unique 和 unknown 防重 |
+| 与覆盖 | 仅真实远端成功、成功 ExecutionAttempt 且非空 `remote_message_id` 才计数量/可选 coverage；签到不计高质量 AI 文本指标或 reply |
 
 普通兜底关闭开关或不满足门禁：Action 可见失败并以新 variation 重新规划，不产生替代文本，不 mock 成功。
 

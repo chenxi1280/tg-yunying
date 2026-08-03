@@ -244,6 +244,9 @@ class Settings:
     # PRD §2.20.2 RC-3: UAS 补偿确认终态关闭超时（秒），默认 10 分钟。
     search_join_membership_confirmation_timeout_seconds: int = int(os.getenv("SEARCH_JOIN_MEMBERSHIP_CONFIRMATION_TIMEOUT_SECONDS", "600"))
     dispatcher_concurrency: int = int(os.getenv("DISPATCHER_CONCURRENCY", "20"))
+    search_dispatcher_concurrency: int = int(
+        os.getenv("SEARCH_DISPATCHER_CONCURRENCY", "20")
+    )
     image_verification_contract_enabled: bool = _bool_env(
         "IMAGE_VERIFICATION_CONTRACT_ENABLED",
         False,
