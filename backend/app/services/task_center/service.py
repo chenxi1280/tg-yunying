@@ -3186,7 +3186,7 @@ def _drain_task_recovery(session_factory, *, limit: int, process_type: str | Non
             session,
             limit=max(1, int(limit or 0)),
         )
-        from .fulfillment_remote_facts import close_unknown_after_deadline
+        from .unknown_deadline_closure import close_unknown_after_deadline
 
         processed += close_unknown_after_deadline(session, limit=max(1, int(limit or 0)))
         session.commit()

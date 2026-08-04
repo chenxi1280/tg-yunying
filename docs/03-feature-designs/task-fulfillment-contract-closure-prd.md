@@ -336,6 +336,9 @@ reconcile apply 先以 `case_id + expected_case_version + evidence_version` 单�
 
 - 追加 `unknown_deadline_closed` decision fact，将义务投影为 `remote_reconcile_only`，任务日投影为 `closed_with_unknown_shortfall`；
 - 释放执行 lease/实际槽位，但保留 Gateway journal、RemoteReconcileCase 和最小 `remote_mutation_tombstone`，永久阻止自动重放；
+- `Action`、搜索 assignment 与原始业务义务统一写短终态 `closed_unknown`；任务日与履约投影才写产品终态 `closed_with_unknown_shortfall`。禁止把长产品态写入 `Action.status`，也不得用字段截断或异常重试代替收口；
+- Recovery 先以 `action_id + action_version` 单行 CAS 关闭 Action，再追加唯一 `unknown_deadline_closed` decision fact，随后分别收敛义务、assignment、reconcile case 和任务日投影。原始业务义务即使被历史 writer 错写为 `open`，只要仍绑定该 unknown Action 且没有 confirmed fact，也必须关闭为 `closed_unknown`，不得重新进入执行；
+- 搜索空闲取数必须跳过已有 `action_bound/claiming/claimed/executing/gateway_unknown/confirmed/closed_unknown` assignment 的义务；仅 `safely_not_executed/released` 可重新分配。不可重放义务不得因 ordinal 更小而长期占住批次首页、饿死后续开放义务；
 - confirmed 不增加，任务日 E4 为 `shortfall`，前端展示 unknown 数、mutation kind、首次/最后对账时间和“等待权威证据”，不能显示成功或继续执行；
 - deadline 后到达正向权威事实时，只修正历史 confirmed/shortfall 投影并保留 late fact 审计，不触发新发送；到达 `safely_not_executed` 时只把历史原因收口为明确未执行，过期任务日仍不重开；
 - 运营只可查看证据、补充权威 evidence 或接受业务短缺；不提供“强制成功”“清空 unknown”“换账号重试”入口。
