@@ -44,8 +44,9 @@ def upgrade() -> None:
         ["is_active"],
         unique=True,
         postgresql_where=sa.text("is_active = true"),
+        if_not_exists=True,
     )
 
 
 def downgrade() -> None:
-    op.drop_index("uq_ai_provider_single_active", table_name="ai_providers")
+    op.drop_index("uq_ai_provider_single_active", table_name="ai_providers", if_exists=True)
