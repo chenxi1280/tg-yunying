@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 from dataclasses import dataclass
 from datetime import timedelta
 from sqlalchemy import select, update
@@ -15,7 +14,6 @@ from app.models import (
 from app.services._common import _now, gateway
 from app.services.developer_apps import credentials_for_account
 from app.timezone import as_beijing
-
 from .task_group_bot_admission_surface import (
     current_authorization as _current_authorization,
     fact_hash as _hash,
@@ -26,6 +24,7 @@ from .task_group_bot_admission_surface import (
     surface_is_current,
 )
 from .task_group_bot_admission_facts import record_fact as _record_fact
+from .task_group_bot_admission_insert import persist_unique_observation
 from .task_group_bot_admission_prompts import record_control_facts as _record_control_facts
 OBSERVATION_SECONDS = 30
 @dataclass(frozen=True)
@@ -207,8 +206,9 @@ def _start_observation(
         identity=identity,
         task_lifecycle_epoch=_task_lifecycle_epoch(session, task_id),
     )
-    session.add(row)
-    session.flush()
+    row, created = persist_unique_observation(session, row)
+    if not created:
+        return row
     _record_initial_observation_fact(
         session,
         row,
