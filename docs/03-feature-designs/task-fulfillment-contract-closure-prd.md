@@ -240,6 +240,8 @@ Task 准入必须有独立物化入口，不能依赖已经 ready 的 coverage �
 
 存量 `replan_required|unmaterialized` CycleSlot 的选择必须与本轮可推进账号精确相交：先按 `ready -> 已到 30 秒的 observing/requirements_pending -> observing -> admission missing` 选择账号，再只重建这些账号各自冻结的主数量槽。禁止先按旧 cycle 顺序截取固定批次、随后才过滤账号；否则批次前部的 abandoned admission 会持续遮挡后部账号。`fact_first_v3` 不得把 admission=`abandoned` 的 waiting 账号回填为 Planner 候选；未建 admission 的账号仍可物化空正文 Action，已到期 observing 必须由该 Action 在 AI generation lane 优先复查并闭合 30 秒观察。
 
+C2 空正文 Action 物化时，`pending_admission` coverage 必须直接以同一 Action 的唯一业务身份进入 `reserved`，与 `ready` coverage 使用同一 reservation token/Action 唯一绑定；这只是防止同一覆盖义务重复建单，不是容量、速率或预算预扣。不得先要求 coverage=ready 才允许建 Action，否则 C2 永远没有执行载体并持续制造 `unmaterialized` 槽。Action 等待观察期间保留该绑定；准入 ready 后原 Action 继续生成和发送，权威不可发送终态或 pre-Gateway 失败则按原 coverage 身份释放/放弃，禁止另建替代义务。
+
 配置频道全部成功且已确认在群后，从数据库时间记录 `observation_started_at`、当前 viewer cursor、`observation_version` 和不可变 observation surface identity，建立连续 30 秒的账号视角观察。v1 只允许：
 
 ```text

@@ -2006,7 +2006,14 @@ def _create_reserved_action(session: Session, task: Task, slot: SlotSnapshot) ->
         _bind_content_mix_action(session, action, payload)
         return action
     reservation_token = str(uuid4())
-    if not _reserve_coverage_before_action(session, coverage_id, reservation_token):
+    if not _reserve_coverage_before_action(
+        session,
+        coverage_id,
+        reservation_token,
+        allow_pending_admission=(
+            task.fulfillment_contract_version == "fact_first_v3"
+        ),
+    ):
         return None
     intent = _create_coverage_variation_intent(session, task, payload)
     if intent is None:
@@ -2068,12 +2075,24 @@ def _bind_content_mix_action(
     )
 
 
-def _reserve_coverage_before_action(session: Session, coverage_id: str, reservation_token: str) -> bool:
+def _reserve_coverage_before_action(
+    session: Session,
+    coverage_id: str,
+    reservation_token: str,
+    *,
+    allow_pending_admission: bool = False,
+) -> bool:
+    allowed_states = (
+        ("ready", "pending_admission")
+        if allow_pending_admission
+        else ("ready",)
+    )
     return reserve_coverage_for_planned_action(
         session,
         coverage_id,
         reservation_token,
         now=_now(),
+        allowed_states=allowed_states,
     )
 
 

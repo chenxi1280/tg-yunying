@@ -192,12 +192,13 @@ def reserve_coverage_for_planned_action(
     reservation_token: str,
     *,
     now: datetime | None = None,
+    allowed_states: tuple[str, ...] = ("ready",),
 ) -> bool:
     result = session.execute(
         update(TaskAccountDailyCoverage)
         .where(
             TaskAccountDailyCoverage.id == coverage_id,
-            TaskAccountDailyCoverage.state == "ready",
+            TaskAccountDailyCoverage.state.in_(allowed_states),
             TaskAccountDailyCoverage.reserved_action_id.is_(None),
             TaskAccountDailyCoverage.reservation_token.is_(None),
             TaskAccountDailyCoverage.confirmed_count < TaskAccountDailyCoverage.target_count,

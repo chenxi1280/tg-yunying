@@ -700,6 +700,34 @@ def test_fact_first_planning_materializes_pending_admission_coverage(
     assert [row.id for row in rows] == [coverage.id]
 
 
+def test_fact_first_c2_action_reserves_pending_admission_coverage(
+    session: Session,
+) -> None:
+    task = _task("c2-pending-reservation")
+    coverage = TaskAccountDailyCoverage(
+        tenant_id=1,
+        task_id=task.id,
+        group_id=35,
+        account_id=25,
+        coverage_date=_now().date(),
+        state="pending_admission",
+    )
+    session.add_all([task, coverage])
+    session.flush()
+
+    reserved = group_ai_chat._reserve_coverage_before_action(
+        session,
+        coverage.id,
+        "c2-reservation-token",
+        allow_pending_admission=True,
+    )
+
+    assert reserved
+    session.refresh(coverage)
+    assert coverage.state == "reserved"
+    assert coverage.reservation_token == "c2-reservation-token"
+
+
 def test_v3_ai_generation_calls_provider_concurrently(tmp_path) -> None:
     engine = create_engine(f"sqlite:///{tmp_path / 'parallel.db'}", future=True)
     Base.metadata.create_all(engine)
