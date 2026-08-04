@@ -13,6 +13,7 @@ from app.models import Action, GenerationJob, Task
 from app.services._common import _now
 
 from .ai_generation_timing import GENERATION_LEASE, GENERATION_LOOKAHEAD
+from .datetime_compat import is_after_or_equal
 from .fulfillment_activation import CURRENT_CONTRACT_VERSION
 from .fulfillment_remote_facts import ensure_action_obligation
 
@@ -224,7 +225,7 @@ def _job_available(job: GenerationJob, now_value: datetime) -> bool:
         or (
             job.state == "generating"
             and job.lease_expires_at is not None
-            and job.lease_expires_at <= now_value
+            and is_after_or_equal(now_value, job.lease_expires_at)
         )
     )
 

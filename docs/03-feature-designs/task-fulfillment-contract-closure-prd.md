@@ -354,6 +354,8 @@ pending -> generating -> ready
 
 领取 `pending -> generating` 时用 GenerationJob 单行 CAS 同时写 `generation_owner_id/generation_lease_epoch/generation_started_at/lease_expires_at/generation_lease_policy_version`，并让其他 worker 立即可见。owner 按 policy 续租；takeover 以数据库时间读取已过期候选，再直接 CAS 旧 `owner_id + generation_lease_epoch + job_version + lease_expires_at` 后递增 epoch，不执行显式行锁或跨 job 锁。失去 lease 的旧 worker 续租、ready、failed 或取消提交均写 `stale_generation_owner_rejected`。Provider 调用不持有数据库、任务、账号或 Telegram 锁。
 
+GenerationJob 的候选筛选和 CAS 到期条件由 PostgreSQL 比较 `lease_expires_at <= db_now`；Python 仅在已读取行上做二次判断时，必须先把 PostgreSQL 返回的 offset-naive 北京时间墙钟与应用 offset-aware 时间规范到同一 `Asia/Shanghai` 语义。禁止直接比较两种 datetime、禁止把 naive 值误标为 UTC，也不能因单个过期 job 的时间表示差异让整个 generation worker drain 失败。三个 generation worker 任一轮失败都必须暴露完整异常；E4 需要看到三个 worker 持续 claim/finish 且多个 running AI Task 都产生远端事实。
+
 ### 8.2 direct 独立提交与强上下文 CAS
 
 Planner 为可并发计算的义务分配稳定 `generation_sequence` 和 `context_snapshot_version`；sequence 只用于审计和复现，不是发送闸门。同群生成与提交规则为：
@@ -375,6 +377,8 @@ optional_model_bucket = (shared_key_bucket, model_id, model_policy_revision)
 ```
 
 数据库以 partial unique index 保证 `active=true` 最多一行；Secret 只保存密钥管理引用，不落明文。请求按共享 key bucket 领取真实 inflight/RPM/TPM，模型子桶仅在 Provider 明确存在模型级限制时启用；任一 token 领取失败不得形成半消费。轮换在一个事务中停用旧 version、激活新 version；旧 in-flight job 继续按旧 version 对账，新 job 只读新 active version。缺失 active key、存在多个 active key 或 policy 过期均显式阻断并报警，不静默选 key。
+
+同一 active Provider key 可以用请求参数调用该 Provider 同 family 的多个模型；例如 active 行保存 MiniMax-M3 时，MiniMax-M2.5 fallback 复用同一 base URL、header 和 secret，只覆盖请求 `model`。不得为同 family 的每个模型各建一条 active Provider，也不得拿另一 family 的 key 冒充共享 key。创建或激活新 Provider 时，同一事务先停用其他 active 行、把租户默认 Provider 指向新行，再提交；数据库唯一索引作为并发最终闸门。
 
 ## 9. C6 OCR 安全收口
 

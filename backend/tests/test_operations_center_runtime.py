@@ -4737,7 +4737,7 @@ def test_group_ai_chat_keeps_partial_normal_candidates(monkeypatch):
 
 
 @pytest.mark.no_postgres
-def test_group_ai_chat_rotates_mimo_provider_after_quota_exhausted(monkeypatch):
+def test_group_ai_chat_does_not_rotate_to_another_provider_key_after_quota_exhausted(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     calls: list[str] = []
@@ -4776,12 +4776,13 @@ def test_group_ai_chat_rotates_mimo_provider_after_quota_exhausted(monkeypatch):
         spare = session.get(AiProvider, 2)
 
     assert created == 1
-    assert calls == ["MiMo exhausted", "MiMo spare"]
+    assert calls == ["MiMo exhausted"]
     assert action is not None
-    assert action.payload["message_text"] == "备用小米继续接一句"
+    assert action.status == "failed"
+    assert action.payload["message_text"] == ""
     assert exhausted.health_status == "异常"
     assert "quota exhausted" in exhausted.last_error
-    assert spare.health_status == "健康"
+    assert spare.is_active is False
 
 
 def _add_mimo_quota_rotation_task(session: Session) -> None:
@@ -4804,8 +4805,8 @@ def _add_mimo_quota_rotation_task(session: Session) -> None:
                 base_url=base_url,
                 model_name=model_name,
                 api_key_ciphertext=encrypt_secret(f"key-{provider_id}"),
-                is_active=True,
-                health_status="健康",
+                is_active=provider_id == 1,
+                health_status="健康" if provider_id == 1 else "禁用",
             )
             for provider_id, name, base_url, model_name in provider_rows
         ]
@@ -4929,8 +4930,8 @@ def test_group_ai_chat_model_override_selects_matching_deepseek_provider(monkeyp
             session, title="DeepSeek 活跃群", account_ids=[101], normal_pool=True,
             online_at=datetime(2026, 5, 11, 10, 0, 0),
         )
-        add_ai_provider(session, provider_id=1, provider_name="Xiaomi MiMo", base_url="https://token-plan-cn.xiaomimimo.com/v1", model_name="mimo-v2.5", default=True)
-        add_ai_provider(session, provider_id=2, provider_name="DeepSeek", base_url="https://api.deepseek.com", model_name="deepseek-v4-flash")
+        add_ai_provider(session, provider_id=1, provider_name="Xiaomi MiMo", base_url="https://token-plan-cn.xiaomimimo.com/v1", model_name="mimo-v2.5", active=False)
+        add_ai_provider(session, provider_id=2, provider_name="DeepSeek", base_url="https://api.deepseek.com", model_name="deepseek-v4-flash", default=True)
         add_ai_task(
             session, task_id="ai-deepseek-provider-model", name="DeepSeek 模型覆盖",
             account_ids=[101], messages_per_round=1, selection_mode="manual",
@@ -5035,11 +5036,11 @@ def _add_minimax_model_override_task(session: Session) -> None:
                 base_url=base_url,
                 model_name=model_name,
                 api_key_ciphertext=encrypt_secret(f"key-{provider_id}"),
-                is_active=True,
-                health_status="健康",
+                is_active=provider_id == 2,
+                health_status="健康" if provider_id == 2 else "禁用",
             )
         )
-    session.add(TenantAiSetting(tenant_id=1, default_provider_id=1, ai_enabled=True, temperature=0.6, max_tokens=1024))
+    session.add(TenantAiSetting(tenant_id=1, default_provider_id=2, ai_enabled=True, temperature=0.6, max_tokens=1024))
     session.add(
         Task(
             id="ai-minimax-provider-model",

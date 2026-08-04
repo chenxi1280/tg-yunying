@@ -1439,7 +1439,8 @@ def test_group_chat_generation_uses_tenant_default_provider_without_model(monkey
                 base_url="https://api.xiaomimimo.com/v1",
                 model_name="mino-v2.5",
                 api_key_ciphertext=encrypt_secret("mino-key"),
-                health_status="健康",
+                is_active=False,
+                health_status="禁用",
             )
         )
         session.add(TenantAiSetting(tenant_id=1, default_provider_id=1, ai_enabled=True, max_tokens=1024))
@@ -1485,7 +1486,8 @@ def test_group_chat_generation_honors_task_provider_without_model(monkeypatch):
                 base_url="https://api.xiaomimimo.com/v1",
                 model_name="mimo-v2.5",
                 api_key_ciphertext=encrypt_secret("mimo-key"),
-                health_status="健康",
+                is_active=False,
+                health_status="禁用",
             )
         )
         session.add(TenantAiSetting(tenant_id=1, default_provider_id=1, ai_enabled=True, max_tokens=1024))
@@ -1555,7 +1557,8 @@ def test_hard_hourly_group_chat_generation_requires_mimo_provider(monkeypatch):
                 base_url="https://api.deepseek.com/v1",
                 model_name="deepseek-v4-flash",
                 api_key_ciphertext=encrypt_secret("deepseek-key"),
-                health_status="健康",
+                is_active=False,
+                health_status="禁用",
             )
         )
         session.add(
@@ -1569,7 +1572,7 @@ def test_hard_hourly_group_chat_generation_requires_mimo_provider(monkeypatch):
                 health_status="健康",
             )
         )
-        session.add(TenantAiSetting(tenant_id=1, default_provider_id=1, ai_enabled=True, max_tokens=1024))
+        session.add(TenantAiSetting(tenant_id=1, default_provider_id=2, ai_enabled=True, max_tokens=1024))
         session.commit()
 
         contents, _tokens = generate_group_messages(
