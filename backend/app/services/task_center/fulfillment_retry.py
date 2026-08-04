@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Action, Task
+from .fulfillment_activation import CURRENT_CONTRACT_VERSION
 from .fulfillment_takeover import FULFILLMENT_CONTRACT_VERSION
 
 
@@ -75,6 +76,8 @@ def _retry_query(task: Task, max_retries: int, limit: int):
 def _action_retry_is_blocked(task: Task, action: Action) -> bool:
     if _is_unbound_legacy_fulfillment_action(task, action):
         return True
+    if _is_bound_fact_first_group_ai_action(task, action):
+        return True
     if _is_bound_comment_action(task, action):
         return True
     if _is_bound_search_click_action(task, action):
@@ -82,6 +85,15 @@ def _action_retry_is_blocked(task: Task, action: Action) -> bool:
     return _is_terminal_ai_quality_failure(
         action,
         dict(action.result or {}),
+    )
+
+
+def _is_bound_fact_first_group_ai_action(task: Task, action: Action) -> bool:
+    return bool(
+        task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION
+        and task.type == "group_ai_chat"
+        and action.action_type == "send_message"
+        and action.primary_quantity_slot_id
     )
 
 

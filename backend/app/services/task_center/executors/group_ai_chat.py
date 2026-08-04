@@ -87,6 +87,7 @@ from ..daily_coverage_planning import (
     coverage_plan_totals,
     ready_coverage_plan_batch,
 )
+from ..content_mix_replan_recovery import recover_stale_pending_content_mix_slots
 from ..daily_ledgers import ensure_task_day_ledger
 from ..daily_group_target import (
     daily_group_due_message_count,
@@ -2190,6 +2191,7 @@ def _record_plan_completion(
 
 
 def build_plan(session: Session, task: Task) -> int:
+    recover_stale_pending_content_mix_slots(session, task)
     blueprint = _prepare_plan_blueprint(session, task)
     if isinstance(blueprint, PlanAbort):
         return blueprint.created
