@@ -177,6 +177,66 @@ def test_gateway_gate_blocks_account_after_post_send_intercept() -> None:
         assert action.result["error_code"] == "group_bot_admission_wait"
 
 
+def test_fact_first_send_does_not_reuse_legacy_post_send_intercept(monkeypatch) -> None:
+    with _session() as session:
+        _seed_scope(session)
+        task = session.get(Task, "task-ai")
+        task.fulfillment_contract_version = "fact_first_v3"
+        action = session.get(Action, "send-1")
+        legacy = GroupBotAdmission(
+            tenant_id=1,
+            group_id=7,
+            account_id=11,
+            state="post_send_intercepted",
+            failure_code="post_send_intercepted",
+        )
+        session.add(legacy)
+        session.flush()
+        monkeypatch.setattr(
+            dispatcher,
+            "_group_send_membership_payload",
+            lambda *_args, **_kwargs: None,
+        )
+
+        handled = dispatcher._recover_send_message_required_channel(
+            session,
+            action,
+            session.get(TgAccount, 11),
+            object(),
+            session.get(TgGroup, 7),
+            SimpleNamespace(group_id=7),
+            SimpleNamespace(
+                ok=False,
+                failure_type="group_permission_denied",
+                detail="需要权限",
+            ),
+            None,
+        )
+
+        assert handled is False
+        assert legacy.state == "post_send_intercepted"
+        assert (action.result or {}).get("error_code") != "legacy_group_bot_intercepted"
+
+
+def test_fact_first_action_does_not_open_legacy_visibility_hold() -> None:
+    with _session() as session:
+        _seed_scope(session)
+        task = session.get(Task, "task-ai")
+        task.fulfillment_contract_version = "fact_first_v3"
+        action = session.get(Action, "send-1")
+        session.add(
+            GroupBotAdmission(
+                tenant_id=1,
+                group_id=7,
+                account_id=11,
+                state="post_follow_visibility_probe",
+            )
+        )
+        session.flush()
+
+        assert _action_needs_pending_visibility(session, action, remote_id="600") is False
+
+
 def test_post_follow_probe_is_held_until_remote_visibility_confirms() -> None:
     with _session() as session:
         _seed_scope(session)
