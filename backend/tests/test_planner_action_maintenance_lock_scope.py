@@ -8,6 +8,7 @@ from sqlalchemy.dialects import postgresql
 from app.services.task_center import fulfillment_takeover_actions
 from app.services.task_center import legacy_anchor_rewrite
 from app.services.task_center.executors import group_ai_chat
+from app.services.task_center.fulfillment_activation import CURRENT_CONTRACT_VERSION
 
 
 pytestmark = pytest.mark.no_postgres
@@ -51,3 +52,16 @@ def test_planner_action_maintenance_skips_dispatcher_locked_rows() -> None:
     assert all("FOR UPDATE OF actions SKIP LOCKED" in statement for statement in sql)
     assert all("'claiming'" not in statement for statement in sql)
     assert all("'executing'" not in statement for statement in sql)
+
+
+def test_planner_maintenance_keeps_fact_first_group_ai_action_without_legacy_slot() -> None:
+    task = SimpleNamespace(
+        type="group_ai_chat",
+        fulfillment_contract_version=CURRENT_CONTRACT_VERSION,
+    )
+    action = SimpleNamespace(
+        action_type="send_message",
+        primary_quantity_slot_id=None,
+    )
+
+    assert not fulfillment_takeover_actions._legacy_action_unbound(task, action)
