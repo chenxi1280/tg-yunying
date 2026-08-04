@@ -37,6 +37,11 @@ TASK_IDS_ENV = "TASK_FULFILLMENT_E4_TASK_IDS"
 RELEASE_LIVE_AT_ENV = "TASK_FULFILLMENT_RELEASE_LIVE_AT"
 SUPPORTED_TASK_TYPES = {"group_ai_chat", "search_click", "channel_view"}
 SAMPLE_LIMIT = 8
+BUSINESS_ACTION_TYPES = {
+    "group_ai_chat": "send_message",
+    "search_click": "search_join",
+    "channel_view": "view_message",
+}
 
 
 def parse_task_ids() -> list[str]:
@@ -78,33 +83,48 @@ def _planner_error_after(task: Task, since: datetime) -> dict[str, Any] | None:
     recorded_at = recorded_at.replace(tzinfo=BEIJING) if recorded_at.tzinfo is None else recorded_at
     return error if recorded_at >= since else None
 
-def _action_counts(session, task_id: str, since: datetime) -> dict[str, int]:
+def _action_counts(session, task: Task, since: datetime) -> dict[str, int]:
+    action_type = BUSINESS_ACTION_TYPES.get(task.type)
     rows = session.execute(
         select(Action.status, func.count(Action.id))
-        .where(Action.task_id == task_id, Action.created_at >= since)
+        .where(
+            Action.task_id == task.id,
+            Action.created_at >= since,
+            Action.action_type == action_type,
+        )
         .group_by(Action.status)
     )
     return {str(status): int(count) for status, count in rows}
 
 
-def _attempt_snapshot(session, task_id: str, since: datetime) -> dict[str, Any]:
+def _attempt_snapshot(session, task: Task, since: datetime) -> dict[str, Any]:
+    action_type = BUSINESS_ACTION_TYPES.get(task.type)
     observed_at = func.coalesce(ExecutionAttempt.after_call_at, ExecutionAttempt.created_at)
     base = (
         select(ExecutionAttempt)
         .join(Action, Action.id == ExecutionAttempt.action_id)
-        .where(Action.task_id == task_id, observed_at >= since)
+        .where(
+            Action.task_id == task.id,
+            Action.action_type == action_type,
+            observed_at >= since,
+        )
     )
     status_rows = session.execute(
         select(ExecutionAttempt.status, func.count(ExecutionAttempt.id))
         .join(Action, Action.id == ExecutionAttempt.action_id)
-        .where(Action.task_id == task_id, observed_at >= since)
+        .where(
+            Action.task_id == task.id,
+            Action.action_type == action_type,
+            observed_at >= since,
+        )
         .group_by(ExecutionAttempt.status)
     )
     remote_success = session.scalar(
         select(func.count(ExecutionAttempt.id))
         .join(Action, Action.id == ExecutionAttempt.action_id)
         .where(
-            Action.task_id == task_id,
+            Action.task_id == task.id,
+            Action.action_type == action_type,
             observed_at >= since,
             ExecutionAttempt.status == "success",
             ExecutionAttempt.remote_message_id != "",
@@ -385,8 +405,8 @@ def _base_task_snapshot(session, task: Task, ledger: TaskDayLedger | None, since
         "ledger_local_date": str(ledger.obligation_local_date) if ledger else None,
         "ledger_deadline_at": iso(ledger.deadline_at) if ledger else None,
         "planner_runtime_error": _planner_error_after(task, since),
-        "post_release_action_counts": _action_counts(session, task.id, since),
-        "attempts": _attempt_snapshot(session, task.id, since),
+        "post_release_action_counts": _action_counts(session, task, since),
+        "attempts": _attempt_snapshot(session, task, since),
     }
 
 

@@ -603,8 +603,6 @@ def _initial_replan_daily_accounts(
     account_limit: int,
     include_replan_accounts: bool,
 ) -> tuple[list, list, set[int]]:
-    if task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION:
-        return [], [], set()
     rows = _replan_coverage_rows_for_plan(session, task, facts)
     seen = _bound_coverage_account_ids_for_plan(session, task, facts)
     if not rows:
