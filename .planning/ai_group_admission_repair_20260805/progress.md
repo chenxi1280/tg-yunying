@@ -9,3 +9,4 @@
 - 2026-08-05：发现第二条线上根因：已在目标群的学生会账号对应 membership Action 已被 `already_joined` 跳过，fact-first 预关注只挂在新入群路径，因此 `configured_channel_follow` facts 为 0；修复为 fact-first 正文前复核配置频道，并复用已有账号-目标关注事实。
 - 2026-08-05：更新存量 reconciliation 脚本为仅清理缺失 Action 绑定，不再将终态/unknown Action 的 binding 批量释放；legacy confirmation 同样禁止未知结果盲建新 Action。
 - 2026-08-05：定向回归当前通过：64 tests passed；`git diff --check` 与 Python compileall 通过。全量 `pytest -m no_postgres` 在 60 秒闸门内运行到约 47% 后超时，PostgreSQL 全量 reset 仍受测试库连接问题阻断。
+- 2026-08-05：Deploy Production 两次 backend workflow 均暴露 workflow 回归：Planner 未提前物化 `TaskGroupBotAdmission`，导致测试/准入信号先到时发送 Action 在 AI generation 阶段仍返回 `c2_observation_started`；补充 Planner 幂等创建 Task-scoped observation，并在 PRD 写明其时序合同。

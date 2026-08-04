@@ -1314,6 +1314,17 @@ def _prepare_plan_blueprint(
     )
     if isinstance(account_state, PlanAbort):
         return account_state
+    if task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION:
+        from ..task_group_bot_admission_v2 import ensure_task_admission_observation
+
+        for account in account_state.accounts:
+            ensure_task_admission_observation(
+                session,
+                task_id=task.id,
+                tenant_id=task.tenant_id,
+                group_id=facts.group.id,
+                account_id=int(account.id),
+            )
     context = _load_context_plan(session, task, facts)
     if isinstance(context, PlanAbort):
         return context

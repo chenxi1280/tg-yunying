@@ -86,6 +86,32 @@ def evaluate_task_admission(
     return _probe_due_observation(session, admission)
 
 
+def ensure_task_admission_observation(
+    session: Session,
+    *,
+    task_id: str,
+    tenant_id: int,
+    group_id: int,
+    account_id: int,
+) -> TaskGroupBotAdmission:
+    """Materialize the Task-scoped C2 observation before generation can claim work."""
+    existing = find_observation(
+        session,
+        task_id=task_id,
+        group_id=group_id,
+        account_id=account_id,
+    )
+    if existing is not None:
+        return existing
+    return _start_observation(
+        session,
+        task_id=task_id,
+        tenant_id=tenant_id,
+        group_id=group_id,
+        account_id=account_id,
+    )
+
+
 def _probe_due_observation(
     session: Session,
     admission: TaskGroupBotAdmission,
@@ -538,4 +564,8 @@ def _decision(
     return AdmissionDecision(allowed, code, admission.id, int(admission.version or 1))
 
 
-__all__ = ["AdmissionDecision", "evaluate_task_admission"]
+__all__ = [
+    "AdmissionDecision",
+    "ensure_task_admission_observation",
+    "evaluate_task_admission",
+]
