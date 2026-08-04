@@ -15,6 +15,11 @@ from app.services.task_center.search_click_safe_settlement import (
     settle_search_click_assignment_from_remote_fact,
 )
 from app.services.task_center.fulfillment_remote_facts import persist_remote_fact
+from app.services.task_center.gateway_evidence_journal import (
+    GatewayResultEvidence,
+    bind_gateway_request_identity,
+    record_gateway_result_evidence,
+)
 
 from test_unknown_deadline_search_progress import _runtime, _unknown_assignment
 
@@ -110,3 +115,49 @@ def test_unknown_action_with_false_evidence_persists_safe_fact(session: Session)
 
     assert fact is not None
     assert fact.fact_kind == SAFE_NOT_EXECUTED_FACT
+
+
+def test_typed_pre_accept_evidence_can_complete_legacy_unknown_journal(
+    session: Session,
+) -> None:
+    _, _, _, _, action, attempt = _failed_search_rows(session)
+    attempt.result_snapshot.pop("remote_mutation_started", None)
+    bind_gateway_request_identity(action, attempt)
+    record_gateway_result_evidence(
+        session,
+        action,
+        attempt,
+        GatewayResultEvidence(
+            failure_code="jisou_image_verification_required",
+        ),
+    )
+    attempt.result_snapshot["remote_mutation_started"] = False
+
+    fact = persist_remote_fact(session, action)
+
+    assert fact is not None
+    assert fact.fact_kind == SAFE_NOT_EXECUTED_FACT
+
+
+def test_callback_unknown_cannot_be_downgraded_by_stale_false_snapshot(
+    session: Session,
+) -> None:
+    _, _, _, _, action, attempt = _failed_search_rows(session)
+    attempt.result_snapshot["remote_mutation_started"] = False
+    action.result["callback_mutation_started"] = True
+    bind_gateway_request_identity(action, attempt)
+    record_gateway_result_evidence(
+        session,
+        action,
+        attempt,
+        GatewayResultEvidence(
+            failure_code="verification_callback_result_unknown",
+        ),
+    )
+    action.status = "unknown_after_send"
+    attempt.status = "result_unknown"
+
+    fact = persist_remote_fact(session, action)
+
+    assert fact is not None
+    assert fact.fact_kind == "remote_outcome_unknown"

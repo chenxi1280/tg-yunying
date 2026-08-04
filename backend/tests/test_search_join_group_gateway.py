@@ -1022,6 +1022,7 @@ def test_deadline_contract_never_clicks_after_deadline() -> None:
     )
 
     assert result["success"] is False
+    assert result["remote_mutation_started"] is False
     assert observed_page.clicked == []
 
 
@@ -1060,6 +1061,7 @@ def test_preflight_rechecks_deadline_after_page_download(monkeypatch) -> None:
     assert result.error["image_verification_reason"] == (
         "verification_deadline_exceeded"
     )
+    assert result.error["remote_mutation_started"] is False
     assert refreshed_page.clicked == []
 
 
@@ -1095,6 +1097,7 @@ def test_callback_deadline_is_checked_again_immediately_before_click(
 
     assert result["error_code"] == "jisou_image_verification_required"
     assert result["image_verification_reason"] == "verification_deadline_exceeded"
+    assert result["remote_mutation_started"] is False
     assert callback_page.clicked == []
 
 
@@ -1135,6 +1138,7 @@ def test_callback_response_timeout_is_unknown_after_single_click(
     assert result["error_code"] == "verification_callback_result_unknown"
     assert result["image_verification_status"] == "unknown"
     assert result["callback_mutation_started"] is True
+    assert "remote_mutation_started" not in result
     assert len(result["challenge_fingerprint_hash"]) == 64
     assert callback_page.clicked == [(0, 2)]
 
