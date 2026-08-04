@@ -74,6 +74,8 @@ class SendMessagePayload(BaseModel):
     coverage_reason: str = ""
     coverage_ledger_id: str = ""
     daily_group_target_id: str = ""
+    task_group_bot_admission_id: str = ""
+    task_group_bot_admission_version: int = 0
     mask_status: str = ""
     fallback_obligation_key: str = ""
     fallback_attempt_no: int = 0

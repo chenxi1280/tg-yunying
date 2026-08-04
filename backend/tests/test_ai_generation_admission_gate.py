@@ -20,9 +20,22 @@ from app.models import (
 )
 from app.services._common import _now
 from app.services.task_center import ai_generation_worker
+from app.services.task_center.payloads import SendMessagePayload
 
 
 pytestmark = pytest.mark.no_postgres
+
+
+def test_send_message_payload_accepts_frozen_task_admission_fact() -> None:
+    payload = SendMessagePayload.model_validate({
+        "group_id": 17,
+        "ai_generation_status": "pending",
+        "task_group_bot_admission_id": "admission-1",
+        "task_group_bot_admission_version": 2,
+    })
+
+    assert payload.task_group_bot_admission_id == "admission-1"
+    assert payload.task_group_bot_admission_version == 2
 
 
 def test_generation_worker_defers_admission_driver_before_provider(
