@@ -32,6 +32,7 @@ def refresh_rows(
         session,
         [row.account_id for row, _item in refreshable],
         group,
+        task=task,
         terminal_abandon=bool(
             task and task.fulfillment_contract_version == "fact_first_v3"
         ),
@@ -88,6 +89,7 @@ def _account_readiness_batch(
     account_ids: list[int],
     group: TgGroup,
     *,
+    task: Task | None,
     terminal_abandon: bool,
 ) -> dict[int, tuple[str, str, str]]:
     if not account_ids:
@@ -98,16 +100,21 @@ def _account_readiness_batch(
         TgGroupAccount.group_id == group.id,
         TgGroupAccount.account_id.in_(account_ids),
     ))
-    admissions = session.scalars(select(GroupBotAdmission).where(
-        GroupBotAdmission.tenant_id == group.tenant_id,
-        GroupBotAdmission.group_id == group.id,
-        GroupBotAdmission.account_id.in_(account_ids),
-    ))
     account_by_id = {account.id: account for account in accounts}
     link_by_account = {link.account_id: link for link in links}
-    admission_rows = list(admissions)
-    admission_by_account = {row.account_id: row for row in admission_rows}
-    plannable_ids = plannable_admission_account_ids(session, admission_rows)
+    fact_first = bool(task and task.fulfillment_contract_version == "fact_first_v3")
+    if fact_first:
+        admission_by_account = {}
+        plannable_ids = set(account_ids)
+    else:
+        admissions = session.scalars(select(GroupBotAdmission).where(
+            GroupBotAdmission.tenant_id == group.tenant_id,
+            GroupBotAdmission.group_id == group.id,
+            GroupBotAdmission.account_id.in_(account_ids),
+        ))
+        admission_rows = list(admissions)
+        admission_by_account = {row.account_id: row for row in admission_rows}
+        plannable_ids = plannable_admission_account_ids(session, admission_rows)
     return {
         account_id: _readiness_from_records(
             account_by_id.get(account_id),

@@ -135,6 +135,35 @@ def test_daily_ledger_keeps_group_bot_waiting_account_out_of_send_pool(
     assert row.blocker_code == "group_bot_admission_wait"
 
 
+def test_fact_first_coverage_ignores_legacy_group_bot_admission_state(
+    session: Session,
+) -> None:
+    task = _seed(session)
+    task.fulfillment_contract_version = "fact_first_v3"
+    session.add(_account(1))
+    session.add(TgGroupAccount(
+        tenant_id=1,
+        group_id=21,
+        account_id=1,
+        can_send=True,
+    ))
+    session.add(GroupBotAdmission(
+        tenant_id=1,
+        group_id=21,
+        account_id=1,
+        state="post_send_intercepted",
+        failure_code="post_send_intercepted",
+    ))
+    session.commit()
+
+    initialize_all_account_task_scope(session, task, now=datetime(2026, 7, 10, 10))
+    ensure_task_daily_coverage(session, task, now=datetime(2026, 7, 10, 10))
+
+    row = session.scalar(select(TaskAccountDailyCoverage))
+    assert row.state == "ready"
+    assert row.blocker_code == ""
+
+
 def test_daily_ledger_allows_safe_post_follow_probe_candidate(
     session: Session,
 ) -> None:
