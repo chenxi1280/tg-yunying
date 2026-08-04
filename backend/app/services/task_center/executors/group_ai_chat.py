@@ -10,7 +10,7 @@ import re
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -573,7 +573,7 @@ def _load_daily_coverage_plan_accounts(
             account_limit=account_limit,
         )
     )
-    if not selected:
+    if not selected and task.fulfillment_contract_version != "fact_first_v3":
         selected.extend(admission_waiting[:account_limit])
     _record_group_bot_admission_waiting(task, admission_waiting)
     _record_direct_check_in_capacity(task, len(selected))
@@ -671,6 +671,23 @@ def _replan_coverage_rows_for_plan(
     target = session.get(TaskGroupDailyTarget, target_id) if target_id else None
     if target is None or not target.task_day_ledger_id:
         return []
+    fact_first = task.fulfillment_contract_version == "fact_first_v3"
+    statement = _base_replan_coverage_statement(
+        task,
+        target.task_day_ledger_id,
+        fact_first=fact_first,
+    )
+    if fact_first:
+        statement = _prioritize_fact_first_replan_coverages(statement)
+    else:
+        statement = statement.order_by(
+            ContentMixCycle.cycle_seq,
+            ContentMixCycleSlot.slot_index,
+        )
+    return list(session.scalars(statement.limit(MAX_DAILY_COVERAGE_PLAN_BATCH)))
+
+
+def _base_replan_coverage_statement(task: Task, ledger_id: str, *, fact_first: bool):
     statement = (
         select(TaskAccountDailyCoverage)
         .join(
@@ -684,24 +701,59 @@ def _replan_coverage_rows_for_plan(
             == TaskGroupDailyMessageSlot.id,
         )
         .join(ContentMixCycle, ContentMixCycle.id == ContentMixCycleSlot.cycle_id)
+        .outerjoin(
+            TaskGroupBotAdmission,
+            and_(
+                TaskGroupBotAdmission.task_id == task.id,
+                TaskGroupBotAdmission.target_group_id
+                == TaskAccountDailyCoverage.group_id,
+                TaskGroupBotAdmission.account_id
+                == TaskAccountDailyCoverage.account_id,
+            ),
+        )
         .where(
             ContentMixCycle.task_id == task.id,
-            ContentMixCycle.task_day_ledger_id == target.task_day_ledger_id,
+            ContentMixCycle.task_day_ledger_id == ledger_id,
             ContentMixCycleSlot.slot_state.in_(
                 {"unmaterialized", "replan_required"},
             ),
             TaskAccountDailyCoverage.state.in_(
                 ("ready", "pending_admission")
-                if task.fulfillment_contract_version == "fact_first_v3"
+                if fact_first
                 else ("ready",)
             ),
             TaskAccountDailyCoverage.confirmed_count
             < TaskAccountDailyCoverage.target_count,
         )
-        .order_by(ContentMixCycle.cycle_seq, ContentMixCycleSlot.slot_index)
-        .limit(MAX_DAILY_COVERAGE_PLAN_BATCH)
     )
-    return list(session.scalars(statement))
+    return statement
+
+
+def _prioritize_fact_first_replan_coverages(statement):
+    return (
+        statement.where(or_(
+            TaskGroupBotAdmission.id.is_(None),
+            TaskGroupBotAdmission.state != "abandoned",
+        )).order_by(
+            _task_admission_plan_priority(),
+            ContentMixCycle.cycle_seq,
+            ContentMixCycleSlot.slot_index,
+        )
+    )
+
+
+def _task_admission_plan_priority():
+    return case(
+        (TaskGroupBotAdmission.state == "ready", 0),
+        (and_(
+            TaskGroupBotAdmission.state == "observing",
+            TaskGroupBotAdmission.no_prompt_pass_at <= _now(),
+        ), 1),
+        (TaskGroupBotAdmission.state == "requirements_pending", 2),
+        (TaskGroupBotAdmission.state == "observing", 3),
+        (TaskGroupBotAdmission.id.is_(None), 4),
+        else_=5,
+    )
 
 
 def _daily_group_extra_accounts(
@@ -2198,10 +2250,15 @@ def _replan_content_mix_slots(
     blueprint: PlanBlueprint,
 ) -> ContentMixReplanResult:
     ledger_id = _content_mix_replan_ledger_id(session, blueprint)
-    rows = _content_mix_replan_rows(session, task, ledger_id)
+    account_by_id = {item.id: item for item in blueprint.profile.selected}
+    rows = _content_mix_replan_rows(
+        session,
+        task,
+        ledger_id,
+        account_ids=set(account_by_id),
+    )
     if not rows:
         return ContentMixReplanResult(False)
-    account_by_id = {item.id: item for item in blueprint.profile.selected}
     created = 0
     for cycle_slot, previous, coverage in rows:
         resolved = _replan_slot_account_and_item(
@@ -2233,8 +2290,10 @@ def _content_mix_replan_rows(
     session: Session,
     task: Task,
     ledger_id: str,
+    *,
+    account_ids: set[int],
 ) -> list[tuple[ContentMixCycleSlot, Action | None, TaskAccountDailyCoverage | None]]:
-    if not ledger_id:
+    if not ledger_id or not account_ids:
         return []
     return list(session.execute(
         select(ContentMixCycleSlot, Action)
@@ -2257,6 +2316,10 @@ def _content_mix_replan_rows(
             ContentMixCycleSlot.slot_state.in_(
                 {"unmaterialized", "replan_required"},
             ),
+            func.coalesce(
+                TaskAccountDailyCoverage.account_id,
+                Action.account_id,
+            ).in_(account_ids),
         )
         .order_by(ContentMixCycle.cycle_seq, ContentMixCycleSlot.slot_index)
         .limit(MAX_DAILY_COVERAGE_PLAN_BATCH)
