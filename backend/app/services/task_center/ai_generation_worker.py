@@ -3,7 +3,6 @@ from __future__ import annotations
 import socket
 from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Callable
-from datetime import timedelta
 from uuid import uuid4
 
 from sqlalchemy import and_, func, or_, select
@@ -14,6 +13,7 @@ from app.services._common import _now
 from app.services.developer_apps import credentials_for_account
 
 from .ai_generation_composition import PRODUCTION_GENERATION_DEPENDENCIES
+from .ai_generation_admission_gate import defer_generation_for_group_bot_admission
 from .ai_generation_dependencies import GenerationDependencies
 from .ai_generation_dispatch import ensure_send_message_content
 from .ai_generator import AiGenerationUnavailable
@@ -28,7 +28,6 @@ from .payloads import SendMessagePayload
 
 
 GENERATABLE_STATUSES = ("pending", "ai_result_persist_unknown")
-GROUP_BOT_ADMISSION_RETRY_SECONDS = 30
 DUE_CATCH_UP_MAX_PIPELINE_DEPTH = 4
 GenerateAction = Callable[[Session, Action, TgAccount], None]
 
@@ -451,7 +450,7 @@ def _production_generate_action(
 ) -> GenerateAction:
     def generate(session: Session, action: Action, account: TgAccount) -> None:
         payload = SendMessagePayload.model_validate(action.payload or {})
-        if _defer_generation_for_group_bot_admission(
+        if defer_generation_for_group_bot_admission(
             session,
             action,
             payload,
@@ -467,63 +466,6 @@ def _production_generate_action(
         )
 
     return generate
-
-
-def _defer_generation_for_group_bot_admission(
-    session: Session,
-    action: Action,
-    payload: SendMessagePayload,
-) -> bool:
-    if not payload.group_bot_admission_state:
-        return False
-    from .group_bot_admission import evaluate_send_gate
-
-    decision = evaluate_send_gate(
-        session,
-        tenant_id=action.tenant_id,
-        group_id=int(payload.group_id or 0),
-        account_id=int(action.account_id or 0),
-        enforce=True,
-        action_id=str(action.id),
-    )
-    if decision.allowed:
-        _record_allowed_generation_admission(action, decision)
-        session.commit()
-        return False
-    action.result = {
-        **(action.result or {}),
-        "error_code": decision.code or "group_bot_admission_wait",
-        "validation_stage": "pre_ai_group_bot_admission",
-        "group_bot_admission_state": decision.state,
-        "group_bot_admission_id": decision.admission_id,
-    }
-    action.scheduled_at = _now() + timedelta(
-        seconds=GROUP_BOT_ADMISSION_RETRY_SECONDS,
-    )
-    session.commit()
-    return True
-
-
-def _record_allowed_generation_admission(action: Action, decision) -> None:
-    payload = dict(action.payload or {})
-    payload.update({
-        "group_bot_admission_id": decision.admission_id,
-        "group_bot_admission_state": decision.state,
-        "admission_version": decision.admission_version,
-    })
-    if decision.code == "post_follow_visibility_probe":
-        payload["group_bot_post_follow_visibility_probe"] = True
-    action.payload = payload
-    result = dict(action.result or {})
-    if result.get("validation_stage") == "pre_ai_group_bot_admission":
-        for key in (
-            "error_code",
-            "validation_stage",
-            "group_bot_admission_state",
-            "group_bot_admission_id",
-        ):
-            result.pop(key, None)
-        action.result = result
 
 
 __all__ = ["drain_ai_generation"]
