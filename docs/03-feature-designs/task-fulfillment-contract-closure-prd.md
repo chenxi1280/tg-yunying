@@ -238,6 +238,8 @@ C2 分成两层，禁止把远端事实锁死在某个 Task：
 
 Task 准入必须有独立物化入口，不能依赖已经 ready 的 coverage 或既有正文 Action 偶然触发：`pending_admission` coverage 在 `fact_first_v3` 中可物化当前账号的空正文 Action，由 AI generation lane 先推进 C2、释放 claim，ready 后再生成。历史因 `current_authorization_missing` 误放弃的 Task admission/coverage 必须在同一 Task 内自动重开 observation；对应 `replan_required` 数量槽可释放重建，不能继续把 691 个 missing admission 留在等待态。
 
+存量 `replan_required|unmaterialized` CycleSlot 的选择必须与本轮可推进账号精确相交：先按 `ready -> 已到 30 秒的 observing/requirements_pending -> observing -> admission missing` 选择账号，再只重建这些账号各自冻结的主数量槽。禁止先按旧 cycle 顺序截取固定批次、随后才过滤账号；否则批次前部的 abandoned admission 会持续遮挡后部账号。`fact_first_v3` 不得把 admission=`abandoned` 的 waiting 账号回填为 Planner 候选；未建 admission 的账号仍可物化空正文 Action，已到期 observing 必须由该 Action 在 AI generation lane 优先复查并闭合 30 秒观察。
+
 配置频道全部成功且已确认在群后，从数据库时间记录 `observation_started_at`、当前 viewer cursor、`observation_version` 和不可变 observation surface identity，建立连续 30 秒的账号视角观察。v1 只允许：
 
 ```text
