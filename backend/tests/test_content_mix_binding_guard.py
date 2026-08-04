@@ -205,6 +205,7 @@ def test_content_mix_replan_locks_cycle_slots_for_concurrent_planners() -> None:
         session,
         SimpleNamespace(id="task-ai"),
         "ledger-1",
+        account_ids={17, 19},
     )
     sql = str(
         session.statement.compile(
@@ -214,6 +215,25 @@ def test_content_mix_replan_locks_cycle_slots_for_concurrent_planners() -> None:
 
     assert rows == []
     assert "FOR UPDATE OF content_mix_cycle_slots SKIP LOCKED" in sql
+    assert "coalesce(task_account_daily_coverage.account_id, actions.account_id)" in sql
+
+
+def test_fact_first_replan_prioritizes_plannable_task_admissions() -> None:
+    session = SimpleNamespace(statement=None)
+    session.get = lambda *_args: SimpleNamespace(task_day_ledger_id="ledger-1")
+    session.scalars = lambda statement: _capture_statement(session, statement)
+    task = SimpleNamespace(id="task-ai", fulfillment_contract_version="fact_first_v3")
+    facts = SimpleNamespace(
+        coverage=SimpleNamespace(daily_group_target_id="target-1"),
+    )
+
+    rows = group_ai_chat._replan_coverage_rows_for_plan(session, task, facts)
+    sql = str(session.statement.compile(dialect=postgresql.dialect()))
+
+    assert rows == []
+    assert "LEFT OUTER JOIN task_group_bot_admissions" in sql
+    assert "task_group_bot_admissions.state !=" in sql
+    assert "CASE WHEN (task_group_bot_admissions.state =" in sql
 
 
 def _capture_statement(session, statement):
