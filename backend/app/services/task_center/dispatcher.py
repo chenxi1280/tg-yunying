@@ -2319,7 +2319,7 @@ def recover_pending_visibility_credits(session: Session, limit: int = 100) -> in
         remote_id = str(hold.remote_message_id or result.get("telegram_msg_id") or "")
         admission = (
             get_admission(session, tenant_id=action.tenant_id, group_id=group_id, account_id=account_id)
-            if group_id and account_id
+            if group_id and account_id and not _fact_first_action(session, action)
             else None
         )
         created_at = as_beijing(hold.created_at)
@@ -4745,7 +4745,7 @@ def _recover_send_message_required_channel(
     if send_result.ok or send_result.failure_type != FailureType.GROUP_PERMISSION_DENIED.value:
         return False
     # Humanization PRD: new group_ai_chat path must not auto-follow-and-resend after body send.
-    if action.task_type == "group_ai_chat":
+    if action.task_type == "group_ai_chat" and not _fact_first_action(session, action):
         from app.services.task_center.group_bot_admission import get_admission, mark_post_send_intercepted
 
         admission = get_admission(
@@ -8461,7 +8461,10 @@ def _speaker_rotation_gate_pass(session: Session, action: Action, *, group_id: i
     coverage_bound = bool(payload.get("coverage_ledger_id"))
     candidates = (
         [account_id]
-        if bool(payload.get("group_bot_post_follow_visibility_probe"))
+        if (
+            bool(payload.get("group_bot_post_follow_visibility_probe"))
+            or _fact_first_action(session, action)
+        )
         else _speaker_rotation_candidates(session, action, group_id=group_id, account_id=account_id)
     )
     decision = reserve_speaker_turn(
@@ -8558,6 +8561,8 @@ def _speaker_rotation_candidates(session: Session, action: Action, *, group_id: 
 
 def _action_needs_pending_visibility(session: Session, action: Action, *, remote_id: str) -> bool:
     if action.task_type != "group_ai_chat" or not remote_id:
+        return False
+    if _fact_first_action(session, action):
         return False
     payload = action.payload if isinstance(action.payload, dict) else {}
     group_id = int(payload.get("group_id") or 0)
