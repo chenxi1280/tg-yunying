@@ -236,6 +236,8 @@ C2 分成两层，禁止把远端事实锁死在某个 Task：
 
 `fact_first_v3` 的 AI 正文生成前置门禁只能调用 `TaskGroupBotAdmission + AccountGroupAdmissionFact` 新链路；禁止继续读取旧 `GroupBotAdmission/group_bot_global_rules` 或把旧 `group_bot_admission_state` payload 当作当前 Task 准入结论。未 ready 时本轮只能创建/推进当前 Task+账号 observation 并立即释放 GenerationJob/Action claim，禁止加载 Provider 凭据或调用 Provider；ready 后把 `task_group_bot_admission_id + version` 固化到 Action，再允许正文生成。`TgAccountAuthorization` 缺行只是本地投影缺口，不能当成 Telegram 不可发送事实；存在账号 Session 时仍以 `account_id + session identity hash` 建立 30 秒 viewer surface。只有 Session 缺失/失效、需重登、账号停用、目标群解散/不可访问或 Telegram 明确拒绝等权威结果才只放弃当前 Task 内该账号并释放未进 Gateway 义务，不得形成跨 Task 封禁。
 
+Planner 在为 `fact_first_v3` 账号物化首个空正文/发送 Action 前，必须先幂等创建同一 `Task + account + target_group` 的 `TaskGroupBotAdmission` observation 行；该行只记录 Task-scoped observation surface 和当前 version，不读取旧 `GroupBotAdmission` ready 投影。这样，已经完成的 Task 级准入事实可以在 AI generation claim 前写入同一行，避免“准入已完成但 observation 尚未建行”导致正文 Action 无期限停在 `c2_observation_started`。首次 observation 仍由后续 worker 按 30 秒 surface/cursor 合同闭合，旧 Action 不被复活。
+
 Task 准入必须有独立物化入口，不能依赖已经 ready 的 coverage 或既有正文 Action 偶然触发：`pending_admission` coverage 在 `fact_first_v3` 中可物化当前账号的空正文 Action，由 AI generation lane 先推进 C2、释放 claim，ready 后再生成。历史因 `current_authorization_missing` 误放弃的 Task admission/coverage 必须在同一 Task 内自动重开 observation；对应 `replan_required` 数量槽可释放重建，不能继续把 691 个 missing admission 留在等待态。
 
 `fact_first_v3` 的正式发送物化直接走 `coverage obligation -> Action -> Generation/Attempt`：不创建、不读取、不等待旧 `TaskGroupDailyMessageSlot`、`ContentMixCycleSlot` 或 legacy Planner/CAS。ContentMix 仅可作为异步内容投影，不能成为 Action 的准入条件；已存在的 legacy 槽位只允许被回收审计，不得阻断新 Action。
