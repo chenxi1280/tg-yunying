@@ -180,6 +180,7 @@ def _claim_job(session, job, *, owner, now_value, expected_version) -> int:
             lease_expires_at=now_value + GENERATION_LEASE,
             job_version=expected_version + 1,
         )
+        .execution_options(synchronize_session=False)
     ).rowcount
 
 

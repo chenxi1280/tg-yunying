@@ -27,7 +27,7 @@ from app.models import (
 )
 from app.services.task_center.direct_action_claims import claim_fact_first_candidates
 from app.services.task_center.ai_generation_worker import drain_ai_generation
-from app.services.task_center.ai_generation_parallel import _job_available
+from app.services.task_center.ai_generation_parallel import _claim_job, _job_available
 from app.services.task_center.ai_generator import _provider_for_exact_model
 from app.services.ai_config import update_ai_provider
 from app.schemas import AiProviderUpdate
@@ -109,6 +109,33 @@ def test_generation_job_expired_lease_compares_naive_database_time_safely() -> N
     now = datetime(2026, 8, 4, 8, 1, tzinfo=ZoneInfo("Asia/Shanghai"))
 
     assert _job_available(job, now)
+
+
+def test_generation_job_claim_cas_does_not_run_python_datetime_evaluator(
+    session: Session,
+) -> None:
+    job = GenerationJob(
+        tenant_id=1,
+        task_id="task-a",
+        obligation_type="quantity_slot",
+        obligation_id="timezone-cas-obligation",
+        generation_sequence=1,
+        context_snapshot_version=1,
+        state="generating",
+        lease_expires_at=datetime(2026, 8, 4, 8, 0),
+    )
+    session.add(job)
+    session.commit()
+
+    changed = _claim_job(
+        session,
+        job,
+        owner="worker-timezone-regression",
+        now_value=datetime(2026, 8, 4, 8, 1, tzinfo=ZoneInfo("Asia/Shanghai")),
+        expected_version=1,
+    )
+
+    assert changed == 1
 
 
 def test_activating_provider_replaces_active_key_and_reuses_family_model(
