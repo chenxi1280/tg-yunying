@@ -284,6 +284,17 @@ surface_identity_hash
 - 组合收件人证据必须在当前同群 `blocked/admission_pending` 账号中唯一；若多个账号拥有相同归一化展示名且同一提示链接无法区分，写 `recipient_ambiguous`，等待 reply relation、viewer-specific prompt 或新可信提示补证，不猜测点击账号。
 - “数量不限”只表示不设业务数值上限，不表示无限重扫：单个不可变 source fingerprint 只物化该消息快照内的有限 action key 集合；新提示必须形成新的 source/fingerprint/version。重复按钮、URL 规范化等价项和已成功 key 不得再次物化；可信 bot 持续产生新要求时 admission 保持未完成并受任务 deadline 管理，不能在单个事务或循环内无界执行。
 
+### 6.2A 2026-08-05 C2 requirement action 收口（current_contract）
+
+`fact_first_v3` 的可信群管提示只写入 `TaskGroupBotAdmission` 和
+`AccountGroupAdmissionFact`，并在同一 Task admission 上物化
+`group_bot_channel_follow` / `group_bot_confirmation_button`。这些 Action 必须携带
+`task_group_bot_admission_id + admission_version + source_message_id + source_fingerprint + requirement_action_key`；不得通过 `GroupBotAdmission`、`GroupBotRequiredChannelFollow` 或旧全局 policy 作为当前 Task 的门禁。
+
+任务配置的 `group_ai_prejoin_channel_ids` 是 C2 的前置事实，不因账号已在群或历史 membership Action 为 `already_joined` 而跳过。Dispatcher 在 fact-first 正文前复核该账号-目标的 `configured_channel_follow` facts；缺少的频道才调用 Gateway，全部成功后才允许 observation/正文，失败则保持当前 Action pending 并保留逐频道失败明细。
+
+Action 失败按远端 mutation 边界分流：明确 `remote_mutation_state=false` 或未进 Gateway 时，旧 Action 保持终态并以同一 requirement key 创建递增 `replan_attempt` 的替代 Action；Gateway 已开始且为 `true|unknown`、已有远端事实或 `closed_unknown` 时保留原绑定，不清空、不通用重试；账号不可用、目标无效、admission version stale 不重建同一账号动作。旧链路存量只允许按同样证据做可审计的 pre-Gateway 接管，不删除历史 Action/Attempt/远端事实。
+
 ### 6.3 requirement 集合闭合与 ready CAS
 
 每次可信控制消息、按钮集合、配置频道、observation cursor 或 surface identity 变化都递增 `requirement_set_version`，并按规范化排序计算 `requirement_set_hash`。进入 `ready` 不显式锁 admission，只允许一条带 expected version/hash 的单行 CAS 同时满足：
@@ -343,6 +354,12 @@ Legacy 物化允许分为多个短事务：义务 CAS `open -> materializing`，
 | 搜索 callback/目标点击 | 原 challenge/page transition 或 `target_click_observed` 与 request identity 匹配 | 仅接受 callback RPC 未发起或 Telegram 返回绑定同 request identity 的明确未接受；相同 fingerprint、相同页面或无 transition 都不能证明 callback 未执行 | 保持原 click 义务的 `unknown_hold` |
 
 reconcile apply 先以 `case_id + expected_case_version + evidence_version` 单行 CAS 追加唯一 reconcile decision fact，再由 projector 分别推进 Action/Attempt/义务；不跨表加锁。迟到或较弱证据只写 `stale_reconcile_evidence_rejected`。`safely_not_executed` 必须保存 `transport_started=false` 或服务端 pre-accept rejection receipt、request identity、adapter contract version 和 policy version；“未查到”、历史窗口完整、当前状态不存在、页面没变化、超时或换账号看不到均不是安全重开证据。
+
+**2026-08-04 搜索安全未执行投影闭合：** 纯搜索的 `GatewayRequestEvidenceJournal.remote_mutation_state=false` 与同一 `action_id + attempt_id` 的 `fulfillment_remote_facts.fact_kind=safely_not_executed` 是唯一可释放依据。Gateway 曾启动本身不能把 assignment 永久写成 `gateway_unknown`；事实投影必须幂等地将同一 `search_click_assignments` 行 CAS 为 `safely_not_executed`，并在 `source_action_id` 仍指向该 Action 时清空指针、保持义务 `open`。assignment、Action、Attempt、远端事实之间必须保留原始身份用于审计，不得删除旧行、伪造成功或创建第二条义务。存量恢复只能按固定 Task/assignment 集合、核对 journal/fact/projection 完整证据后执行，并写审批审计。
+
+**2026-08-04 搜索验证码 mutation 边界：** 图片验证码的识别、投票、deadline/preflight、图片下载和关键词刷新都发生在 callback 发送之前；这些路径必须在结果与 Gateway journal 中显式写 `remote_mutation_started=false`，即使 Gateway transport 已启动，也只能按 `safely_not_executed` 投影释放原 assignment。只有实际调用验证码 callback 后，后续等待回执、下一 challenge 或结果不明才允许写 `remote_mutation_started=true|unknown`；页面未变化、超时或“没有查到回执”不能反向推断 callback 未发送。`callback_mutation_started=true` 的 unknown 仍保持原义务占位，禁止盲目重试。
+
+存量验证码前置失败只能通过固定 Task/assignment 集合、核验 reason 白名单、无 callback/target-click/remote identity、保留原 journal 并追加带 contract version 的 adapter pre-accept receipt 后恢复；receipt 先写入 Attempt/Action，随后生成 `safely_not_executed` fact 并走同一 projector。第三条连接重置等 mutation state unknown 不属于该恢复范围。
 
 ### 7.2 永久 unknown 的运营终态
 

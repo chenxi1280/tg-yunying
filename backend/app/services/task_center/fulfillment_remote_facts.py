@@ -244,12 +244,13 @@ def _fact_values(action: Action, attempt: ExecutionAttempt) -> dict:
 
 
 def _fact_kind(action: Action, attempt: ExecutionAttempt) -> str:
-    if action.status == "unknown_after_send":
+    remote_state = _remote_mutation_state(action, attempt)
+    if action.status == "unknown_after_send" and remote_state != "false":
         return "remote_outcome_unknown"
     if action.status != "success" or attempt.status != "success":
         return (
             "safely_not_executed"
-            if _remote_mutation_state(action, attempt) == "false"
+            if remote_state == "false"
             else "remote_outcome_unknown"
         )
     result = dict(action.result or {})
@@ -375,9 +376,24 @@ def _remote_mutation_state(action: Action, attempt: ExecutionAttempt) -> str:
             .limit(1)
         )
         if journal is not None:
-            return str(journal.remote_mutation_state or "unknown")
+            journal_state = str(journal.remote_mutation_state or "unknown")
+            if journal_state != "unknown":
+                return journal_state
+            # Legacy gateway rows may have recorded an incomplete journal before
+            # the adapter's typed pre-accept rejection was persisted.
     observed = dict(attempt.result_snapshot or {}).get("remote_mutation_started")
-    return "true" if observed is True else "false" if observed is False else "unknown"
+    result = dict(action.result or {})
+    if result.get("callback_mutation_started") is True:
+        return "unknown"
+    if result.get("remote_mutation_started") is True or observed is True:
+        return "true"
+    if observed is False:
+        return "false"
+    return "unknown"
+
+
+def remote_mutation_state(action: Action, attempt: ExecutionAttempt) -> str:
+    return _remote_mutation_state(action, attempt)
 
 
 def _request_identity(action: Action, attempt: ExecutionAttempt) -> str:
@@ -418,4 +434,5 @@ __all__ = [
     "ensure_action_obligation",
     "persist_remote_fact",
     "project_remote_fact",
+    "remote_mutation_state",
 ]
