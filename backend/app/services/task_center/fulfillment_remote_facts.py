@@ -219,83 +219,6 @@ def complete_derived_projections(session: Session, fact_id: str) -> None:
     _complete_projection_state(session, fact_id, "task_read_model")
 
 
-def close_unknown_after_deadline(session: Session, *, limit: int) -> int:
-    rows = list(session.execute(
-        select(Action.id, Action.action_version)
-        .where(
-            Action.status == "unknown_after_send",
-            Action.unknown_deadline_at.is_not(None),
-            Action.unknown_deadline_at <= _now(),
-        )
-        .order_by(Action.unknown_deadline_at, Action.id)
-        .limit(max(1, limit))
-    ))
-    return sum(_close_unknown_action(session, action_id, version) for action_id, version in rows)
-
-
-def _close_unknown_action(session: Session, action_id: str, version: int) -> int:
-    action = session.get(Action, action_id)
-    if action is None:
-        return 0
-    changed = session.execute(
-        update(Action)
-        .where(
-            Action.id == action_id,
-            Action.status == "unknown_after_send",
-            Action.action_version == version,
-        )
-        .values(
-            status="closed_with_unknown_shortfall",
-            action_version=version + 1,
-            lease_owner="",
-            lease_expires_at=None,
-            claim_owner="",
-            claim_token="",
-            claim_expires_at=None,
-        )
-    ).rowcount
-    if changed != 1:
-        return 0
-    session.execute(
-        update(FulfillmentObligationProjection)
-        .where(
-            FulfillmentObligationProjection.obligation_type == action.obligation_type,
-            FulfillmentObligationProjection.obligation_id == action.obligation_id,
-            FulfillmentObligationProjection.state == "remote_reconcile_only",
-        )
-        .values(state="closed_with_unknown_shortfall", version=FulfillmentObligationProjection.version + 1)
-    )
-    from app.models import RemoteReconcileCase
-
-    session.execute(
-        update(RemoteReconcileCase)
-        .where(
-            RemoteReconcileCase.action_id == action_id,
-            RemoteReconcileCase.state == "open",
-        )
-        .values(state="closed_unknown", next_probe_at=None, updated_at=_now())
-    )
-    _close_business_unknown(session, action)
-    return 1
-
-
-def _close_business_unknown(session: Session, action: Action) -> None:
-    if action.task_type != "search_click":
-        return
-    from app.models import SearchClickAssignment, SearchClickFulfillmentObligation
-
-    payload = _payload(action)
-    assignment_id = str(payload.get("search_click_assignment_id") or "")
-    obligation_id = str(payload.get("search_click_obligation_id") or "")
-    assignment = session.get(SearchClickAssignment, assignment_id) if assignment_id else None
-    obligation = session.get(SearchClickFulfillmentObligation, obligation_id) if obligation_id else None
-    if assignment is not None and assignment.state == "gateway_unknown":
-        assignment.state = "closed_unknown"
-        assignment.version = int(assignment.version or 1) + 1
-    if obligation is not None and obligation.status == "unknown_after_send":
-        obligation.status = "closed_unknown"
-
-
 def _fact_values(action: Action, attempt: ExecutionAttempt) -> dict:
     fact_kind = _fact_kind(action, attempt)
     request_hash = _hash(_request_identity(action, attempt))
@@ -491,7 +414,6 @@ def _payload(action: Action) -> dict:
 def _hash(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 __all__ = [
-    "close_unknown_after_deadline",
     "complete_derived_projections",
     "ensure_action_obligation",
     "persist_remote_fact",
