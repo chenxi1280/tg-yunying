@@ -93,7 +93,6 @@ def _is_bound_fact_first_group_ai_action(task: Task, action: Action) -> bool:
         task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION
         and task.type == "group_ai_chat"
         and action.action_type == "send_message"
-        and action.primary_quantity_slot_id
     )
 
 
@@ -150,7 +149,7 @@ def _is_unbound_legacy_fulfillment_action(
     if not _uses_current_fulfillment_contract(task):
         return False
     if task.type == "group_ai_chat" and action.action_type == "send_message":
-        return not action.primary_quantity_slot_id
+        return False
     if task.type != "search_click" or action.action_type != "search_join":
         return False
     payload = action.payload if isinstance(action.payload, dict) else {}

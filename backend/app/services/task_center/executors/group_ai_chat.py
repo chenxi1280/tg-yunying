@@ -10,7 +10,7 @@ import re
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -21,6 +21,7 @@ from app.models import (
     AiGroupMessageMemory,
     ContentMixCycle,
     ContentMixCycleSlot,
+    ExecutionAttempt,
     GroupBotAdmission,
     OperationTarget,
     RuleSet,
@@ -75,6 +76,7 @@ from ..daily_coverage import (
     block_coverage_accounts,
     ensure_task_daily_coverage,
     ready_coverage_rows,
+    release_coverage_reservation,
     release_voice_profile_coverage_for_check_in,
     release_planned_coverage_reservation,
     reserve_coverage_for_planned_action,
@@ -96,6 +98,7 @@ from ..daily_group_target import (
 from ..direct_check_in import MASK_MISSING_CHECK_IN_SOURCE
 from ..daily_fulfillment import record_daily_fulfillment_decision
 from ..fingerprints import fingerprint_exists, remember_fingerprint
+from ..fulfillment_activation import CURRENT_CONTRACT_VERSION
 from ..group_ai_scope import (
     remotely_invalid_reply_target_ids,
     successful_own_history_reply_facts,
@@ -151,6 +154,11 @@ CONTENT_MIX_REPLAN_PRESERVED_FIELDS = (
     "material_intent",
     "allow_material",
 )
+FACT_FIRST_REBUILD_ACTION_STATUSES = frozenset({
+    "failed",
+    "retryable_failed",
+    "skipped",
+})
 
 
 @dataclass(frozen=True)
@@ -595,6 +603,8 @@ def _initial_replan_daily_accounts(
     account_limit: int,
     include_replan_accounts: bool,
 ) -> tuple[list, list, set[int]]:
+    if task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION:
+        return [], [], set()
     rows = _replan_coverage_rows_for_plan(session, task, facts)
     seen = _bound_coverage_account_ids_for_plan(session, task, facts)
     if not rows:
@@ -817,6 +827,8 @@ def _available_extra_quantity_slot_count(
     task: Task,
     facts: PlanFacts,
 ) -> int:
+    if task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION:
+        return max(0, int(facts.coverage.volume_need_now or 0))
     target_id = str(facts.coverage.daily_group_target_id or "")
     target = session.get(TaskGroupDailyTarget, target_id) if target_id else None
     if target is None or not target.task_day_ledger_id:
@@ -1860,7 +1872,7 @@ def _prepare_action_slots(
     session: Session,
     task: Task,
     blueprint: PlanBlueprint,
-    frozen_mix: FrozenContentMix,
+    frozen_mix: FrozenContentMix | None,
 ) -> PreparedActionPlan:
     generation = blueprint.generation
     progress = blueprint.facts.hard_progress
@@ -1897,7 +1909,9 @@ def _prepare_action_slots(
         snapshot = _build_slot_snapshot(
             SlotBuildInput(blueprint, account, index, item, planned_at),
         )
-        slots.append(_with_frozen_content_mix(snapshot, item, frozen_mix))
+        if frozen_mix is not None:
+            snapshot = _with_frozen_content_mix(snapshot, item, frozen_mix)
+        slots.append(snapshot)
         _increment_coverage_count(
             blueprint.turn.round_config,
             account.id,
@@ -2004,7 +2018,8 @@ def _create_reserved_action(session: Session, task: Task, slot: SlotSnapshot) ->
             slot.planned_at,
             payload,
         )
-        _bind_content_mix_action(session, action, payload)
+        if task.fulfillment_contract_version != CURRENT_CONTRACT_VERSION:
+            _bind_content_mix_action(session, action, payload)
         return action
     reservation_token = str(uuid4())
     if not _reserve_coverage_before_action(
@@ -2029,7 +2044,8 @@ def _create_reserved_action(session: Session, task: Task, slot: SlotSnapshot) ->
     intent.action_id = action.id
     if not bind_coverage_reservation(session, coverage_id, reservation_token, action.id):
         raise RuntimeError("daily coverage reservation lost before action binding")
-    _bind_content_mix_action(session, action, payload)
+    if task.fulfillment_contract_version != CURRENT_CONTRACT_VERSION:
+        _bind_content_mix_action(session, action, payload)
     session.flush()
     return action
 
@@ -2040,6 +2056,8 @@ def _with_group_bot_admission_snapshot(
     account_id: int,
     payload: SendMessagePayload,
 ) -> SendMessagePayload:
+    if task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION:
+        return payload
     config = task.type_config if isinstance(task.type_config, dict) else {}
     if _group_bot_admission_requirement(config) is False:
         return payload
@@ -2191,26 +2209,31 @@ def _record_plan_completion(
 
 
 def build_plan(session: Session, task: Task) -> int:
-    recover_stale_pending_content_mix_slots(session, task)
+    if task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION:
+        _recover_stale_fact_first_actions(session, task)
+    else:
+        recover_stale_pending_content_mix_slots(session, task)
     blueprint = _prepare_plan_blueprint(session, task)
     if isinstance(blueprint, PlanAbort):
         return blueprint.created
-    replan = _replan_content_mix_slots(session, task, blueprint)
-    if replan.created > 0:
-        return replan.created
-    if replan.found:
-        blueprint = _prepare_plan_blueprint(
-            session,
-            task,
-            include_replan_accounts=False,
-        )
-        if isinstance(blueprint, PlanAbort):
-            return blueprint.created
-    try:
-        frozen_mix = _freeze_content_mix_cycle(session, task, blueprint)
-    except QuantitySlotAlignmentError as exc:
-        _record_quantity_slot_alignment_failure(task, exc.result)
-        return 0
+    frozen_mix = None
+    if task.fulfillment_contract_version != CURRENT_CONTRACT_VERSION:
+        replan = _replan_content_mix_slots(session, task, blueprint)
+        if replan.created > 0:
+            return replan.created
+        if replan.found:
+            blueprint = _prepare_plan_blueprint(
+                session,
+                task,
+                include_replan_accounts=False,
+            )
+            if isinstance(blueprint, PlanAbort):
+                return blueprint.created
+        try:
+            frozen_mix = _freeze_content_mix_cycle(session, task, blueprint)
+        except QuantitySlotAlignmentError as exc:
+            _record_quantity_slot_alignment_failure(task, exc.result)
+            return 0
     prepared = _prepare_action_slots(session, task, blueprint, frozen_mix)
     prepared_reply_count = sum(
         1 for slot in prepared.slots if slot.payload.reply_to_message_id
@@ -2231,6 +2254,47 @@ def build_plan(session: Session, task: Task) -> int:
         created=created,
     )
     return created
+
+
+def _recover_stale_fact_first_actions(session: Session, task: Task) -> int:
+    gateway_started = select(ExecutionAttempt.id).where(
+        ExecutionAttempt.action_id == Action.id,
+        ExecutionAttempt.gateway_call_started_at.is_not(None),
+    ).exists()
+    actions = session.scalars(
+        select(Action).where(
+            Action.task_id == task.id,
+            Action.task_type == "group_ai_chat",
+            Action.action_type == "send_message",
+            Action.status.in_(FACT_FIRST_REBUILD_ACTION_STATUSES),
+            ~gateway_started,
+        )
+    )
+    recovered = 0
+    for action in actions:
+        payload = action.payload if isinstance(action.payload, dict) else {}
+        coverage_id = str(payload.get("coverage_ledger_id") or "")
+        if not coverage_id:
+            continue
+        result = dict(action.result or {})
+        released = release_coverage_reservation(
+            session,
+            coverage_id,
+            action.id,
+            blocker_code=str(result.get("error_code") or action.status),
+            blocker_detail=str(result.get("error_message") or ""),
+        )
+        session.execute(
+            update(AiCoverageVariationIntent)
+            .where(AiCoverageVariationIntent.action_id == action.id)
+            .values(
+                action_id=None,
+                outcome="cancelled_pre_gateway_rebuild",
+                updated_at=_now(),
+            )
+        )
+        recovered += int(released)
+    return recovered
 
 
 def _record_quantity_slot_alignment_failure(
