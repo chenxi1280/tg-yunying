@@ -10,6 +10,8 @@ from app.models import (
     Task,
 )
 
+from .fulfillment_activation import CURRENT_CONTRACT_VERSION
+
 
 LEGACY_MEMBERSHIP_ACTION_TYPES = frozenset(
     {
@@ -160,6 +162,11 @@ def _gateway_started_action_ids(
 
 def _legacy_action_unbound(task: Task, action: Action) -> bool:
     if task.type == "group_ai_chat":
+        if (
+            task.fulfillment_contract_version == CURRENT_CONTRACT_VERSION
+            and action.action_type == "send_message"
+        ):
+            return False
         return not action.primary_quantity_slot_id
     payload = action.payload if isinstance(action.payload, dict) else {}
     return not str(payload.get("search_click_obligation_id") or "")
