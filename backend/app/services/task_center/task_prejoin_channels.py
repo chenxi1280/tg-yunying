@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import AccountGroupAdmissionFact, Action, Task, TgAccount, TgGroup
@@ -26,7 +27,8 @@ def ensure_prejoin_channels(
     refs = _configured_refs(task)
     if not refs:
         return True
-    followed = set((action.result or {}).get("configured_channel_followed_refs") or [])
+    followed = _persisted_followed_refs(session, action, account, target_group)
+    followed.update((action.result or {}).get("configured_channel_followed_refs") or [])
     pending = [ref for ref in refs if ref not in followed]
     if not pending:
         return True
@@ -55,6 +57,27 @@ def ensure_prejoin_channels(
         "configured_channel_follow_failures": failures,
     }
     return False
+
+
+def _persisted_followed_refs(
+    session: Session,
+    action: Action,
+    account: TgAccount,
+    target_group: TgGroup,
+) -> set[str]:
+    facts = session.scalars(
+        select(AccountGroupAdmissionFact).where(
+            AccountGroupAdmissionFact.tenant_id == action.tenant_id,
+            AccountGroupAdmissionFact.account_id == account.id,
+            AccountGroupAdmissionFact.target_group_id == target_group.id,
+            AccountGroupAdmissionFact.fact_kind == "configured_channel_follow",
+        )
+    )
+    return {
+        str((fact.outcome or {}).get("channel_ref") or "").strip()
+        for fact in facts
+        if str((fact.outcome or {}).get("channel_ref") or "").strip()
+    }
 
 
 def _follow_parallel(account: TgAccount, credentials, refs: list[str]) -> dict:

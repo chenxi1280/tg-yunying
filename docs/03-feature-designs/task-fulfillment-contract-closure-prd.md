@@ -284,6 +284,17 @@ surface_identity_hash
 - 组合收件人证据必须在当前同群 `blocked/admission_pending` 账号中唯一；若多个账号拥有相同归一化展示名且同一提示链接无法区分，写 `recipient_ambiguous`，等待 reply relation、viewer-specific prompt 或新可信提示补证，不猜测点击账号。
 - “数量不限”只表示不设业务数值上限，不表示无限重扫：单个不可变 source fingerprint 只物化该消息快照内的有限 action key 集合；新提示必须形成新的 source/fingerprint/version。重复按钮、URL 规范化等价项和已成功 key 不得再次物化；可信 bot 持续产生新要求时 admission 保持未完成并受任务 deadline 管理，不能在单个事务或循环内无界执行。
 
+### 6.2A 2026-08-05 C2 requirement action 收口（current_contract）
+
+`fact_first_v3` 的可信群管提示只写入 `TaskGroupBotAdmission` 和
+`AccountGroupAdmissionFact`，并在同一 Task admission 上物化
+`group_bot_channel_follow` / `group_bot_confirmation_button`。这些 Action 必须携带
+`task_group_bot_admission_id + admission_version + source_message_id + source_fingerprint + requirement_action_key`；不得通过 `GroupBotAdmission`、`GroupBotRequiredChannelFollow` 或旧全局 policy 作为当前 Task 的门禁。
+
+任务配置的 `group_ai_prejoin_channel_ids` 是 C2 的前置事实，不因账号已在群或历史 membership Action 为 `already_joined` 而跳过。Dispatcher 在 fact-first 正文前复核该账号-目标的 `configured_channel_follow` facts；缺少的频道才调用 Gateway，全部成功后才允许 observation/正文，失败则保持当前 Action pending 并保留逐频道失败明细。
+
+Action 失败按远端 mutation 边界分流：明确 `remote_mutation_state=false` 或未进 Gateway 时，旧 Action 保持终态并以同一 requirement key 创建递增 `replan_attempt` 的替代 Action；Gateway 已开始且为 `true|unknown`、已有远端事实或 `closed_unknown` 时保留原绑定，不清空、不通用重试；账号不可用、目标无效、admission version stale 不重建同一账号动作。旧链路存量只允许按同样证据做可审计的 pre-Gateway 接管，不删除历史 Action/Attempt/远端事实。
+
 ### 6.3 requirement 集合闭合与 ready CAS
 
 每次可信控制消息、按钮集合、配置频道、observation cursor 或 surface identity 变化都递增 `requirement_set_version`，并按规范化排序计算 `requirement_set_hash`。进入 `ready` 不显式锁 admission，只允许一条带 expected version/hash 的单行 CAS 同时满足：

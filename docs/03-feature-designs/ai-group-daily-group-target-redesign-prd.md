@@ -61,6 +61,8 @@ group_ai_prejoin_channel_ids: UUID[0..3]
 
 `group_ai_prejoin_channel_ids` 必须持久化到 `tasks` 独立字段 `UUID[] NOT NULL DEFAULT '{}'`，保存时按同租户稳定 OperationTarget ID 去重并校验频道类型；不得只存通用 JSON、缓存或群级规则。0～3 个频道无依赖时并发关注，全部成功后再进入 join/群管提示阶段。
 
+账号已经加入目标群时也不能跳过这一步：准入 Action 复用或被历史 `already_joined` 跳过后，第一次 fact-first 正文发送前仍必须执行配置频道检查。成功关注写入账号-目标 `configured_channel_follow` 事实，后续 Action 只复用该事实；未全部成功则当前正文保持 pending，不能进入 C2 观察或主互动。
+
 配置频道成功且账号已在群后，以数据库时间和该账号 viewer cursor 开始连续 30 秒观察，并冻结 `surface_kind=target_group_control_stream + surface_peer_id + viewer_account_id + viewer_authorization_id + listener_instance_epoch + listener_policy_version + observed_start_cursor + surface_identity_hash`。30 秒内同一 surface 没有该账号的可信群管提示、cursor 连续且 `observation_gap=false` 时，保存 `observed_end_cursor`，写 `post_follow_visibility(outcome=no_prompt_30s_passed)` 并视为群机器人验证通过；30 秒内出现提示立即按提示执行。网络、Session、listener、surface identity 或 cursor gap 不能当成“没有提示”，必须递增 version 并重建观察区间或按账号不可发送合同放弃；私聊/其他 peer 不驱动 ready。
 
 不再暴露：

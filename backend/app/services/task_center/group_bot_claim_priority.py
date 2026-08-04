@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from sqlalchemy import case, func, select
+from sqlalchemy import and_, case, func, or_, select
 
-from app.models import Action, GroupBotAdmission, Task
+from app.models import Action, GroupBotAdmission, Task, TaskGroupBotAdmission
 
 
 CLAIMABLE_ADMISSION_STATES = (
@@ -28,6 +28,26 @@ def group_bot_admission_claim_rank():
         )
         .exists()
     )
+    ready_task_admission = (
+        select(TaskGroupBotAdmission.id)
+        .where(
+            TaskGroupBotAdmission.task_id == Action.task_id,
+            TaskGroupBotAdmission.target_group_id == group_id,
+            TaskGroupBotAdmission.account_id == Action.account_id,
+            TaskGroupBotAdmission.state == "ready",
+        )
+        .exists()
+    )
+    admission_ready = or_(
+        and_(Task.fulfillment_contract_version == "fact_first_v3", ready_task_admission),
+        and_(
+            or_(
+                Task.fulfillment_contract_version != "fact_first_v3",
+                Task.fulfillment_contract_version.is_(None),
+            ),
+            ready_admission,
+        ),
+    )
     admission_disabled = (
         Task.type_config["group_bot_admission_required"].as_boolean().is_(False)
     )
@@ -35,7 +55,7 @@ def group_bot_admission_claim_rank():
         (Action.task_type == "group_ai_chat")
         & (Action.action_type == "send_message")
         & ~admission_disabled
-        & ~ready_admission
+        & ~admission_ready
     )
     return case((waiting_send, 1), else_=0)
 

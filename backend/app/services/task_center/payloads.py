@@ -227,7 +227,7 @@ class GroupBotRequiredChannelFollowPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     group_id: int = Field(ge=1)
-    admission_id: int = Field(ge=1)
+    admission_id: int | None = Field(default=None, ge=1)
     admission_version: int = Field(default=1, ge=1)
     channel_ref: str = Field(min_length=1, max_length=255)
     source_message_id: str = ""
@@ -235,6 +235,16 @@ class GroupBotRequiredChannelFollowPayload(BaseModel):
     # Claim-class binding (PRD §8.3): only bound actions get target_admission_retry tier.
     admission_bound_task_id: str = Field(min_length=1)
     admission_bound_account_id: int = Field(ge=1)
+    task_group_bot_admission_id: str = ""
+    source_fingerprint: str = ""
+    requirement_action_key: str = ""
+    replan_attempt: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def validate_admission_scope(self) -> "GroupBotRequiredChannelFollowPayload":
+        if bool(self.admission_id) == bool(self.task_group_bot_admission_id.strip()):
+            raise ValueError("group bot follow requires exactly one admission scope")
+        return self
 
 
 class GroupBotControlObservationPayload(BaseModel):
@@ -252,7 +262,7 @@ class GroupBotConfirmationButtonPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     group_id: int = Field(ge=1)
-    admission_id: int = Field(ge=1)
+    admission_id: int | None = Field(default=None, ge=1)
     admission_version: int = Field(default=1, ge=1)
     source_message_id: str = Field(min_length=1, max_length=160)
     trusted_bot_peer_id: str = Field(min_length=1, max_length=80)
@@ -262,6 +272,16 @@ class GroupBotConfirmationButtonPayload(BaseModel):
     button_type: Literal["callback"] = "callback"
     admission_bound_task_id: str = Field(min_length=1)
     admission_bound_account_id: int = Field(ge=1)
+    task_group_bot_admission_id: str = ""
+    source_fingerprint: str = ""
+    requirement_action_key: str = ""
+    replan_attempt: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def validate_admission_scope(self) -> "GroupBotConfirmationButtonPayload":
+        if bool(self.admission_id) == bool(self.task_group_bot_admission_id.strip()):
+            raise ValueError("group bot confirmation requires exactly one admission scope")
+        return self
 
 
 class DeprecatedGroupRescuePayload(BaseModel):

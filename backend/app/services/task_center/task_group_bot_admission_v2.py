@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.models import (
     Action,
+    AccountGroupAdmissionFact,
     Task,
     TaskGroupBotAdmission,
     TgAccount,
@@ -65,6 +66,9 @@ def evaluate_task_admission(
             return _decision(admission, False, "c2_account_abandoned")
         return _decision(admission, False, "c2_observation_started")
     if admission.state == "ready":
+        reopened = _reopen_legacy_ready_if_needed(session, admission)
+        if reopened:
+            return _decision(admission, False, "c2_legacy_ready_projection_reopened")
         return _decision(admission, True, "c2_ready")
     if admission.state == "requirements_pending":
         return _requirements_decision(session, admission)
@@ -116,6 +120,48 @@ def _probe_due_observation(
     ):
         return _decision(admission, False, "c2_requirements_pending")
     return _confirm_no_prompt(session, admission, end_cursor)
+
+
+def _reopen_legacy_ready_if_needed(
+    session: Session,
+    admission: TaskGroupBotAdmission,
+) -> bool:
+    identity = dict(admission.surface_identity or {})
+    if identity.get("legacy_ready_projection_reopened"):
+        return False
+    imported = session.scalars(select(AccountGroupAdmissionFact).where(
+        AccountGroupAdmissionFact.account_id == admission.account_id,
+        AccountGroupAdmissionFact.target_group_id == admission.target_group_id,
+        AccountGroupAdmissionFact.fact_kind == "post_follow_visibility",
+    )).all()
+    if not any(
+        (fact.outcome or {}).get("outcome") == "existing_visible_confirmed_fact"
+        for fact in imported
+    ):
+        return False
+    group = session.get(TgGroup, admission.target_group_id)
+    account = session.get(TgAccount, admission.account_id)
+    if group is None or account is None or not account.session_ciphertext:
+        _abandon(session, admission, "session_unavailable")
+        return True
+    authorization = _current_authorization(session, admission.account_id)
+    _restart_surface(
+        session,
+        admission=admission,
+        group=group,
+        account=account,
+        authorization=authorization,
+    )
+    identity = dict(admission.surface_identity or {})
+    identity["legacy_ready_projection_reopened"] = True
+    admission.surface_identity = identity
+    admission.surface_identity_hash = _hash(identity)
+    _record_fact(session, admission, "post_follow_visibility", outcome={
+        "outcome": "legacy_ready_projection_reopened",
+        "previous_fact": "existing_visible_confirmed_fact",
+    })
+    admission.version = int(admission.version or 1) + 1
+    return True
 
 
 def _load_probe_surface(
@@ -198,12 +244,7 @@ def _start_observation(
         end_cursor=cursor,
         observation_version=1,
     )
-    imported_ready = _legacy_admission_ready(
-        session,
-        tenant_id,
-        group_id,
-        account_id=account_id,
-    )
+    imported_ready = False
     row = _new_observation_row(
         task_id=task_id,
         tenant_id=tenant_id,
@@ -277,27 +318,6 @@ def _record_initial_observation_fact(
         })
 
 
-def _legacy_admission_ready(
-    session: Session,
-    tenant_id: int,
-    group_id: int,
-    *,
-    account_id: int,
-) -> bool:
-    from app.models import GroupBotAdmission
-
-    row = session.scalar(select(GroupBotAdmission).where(
-        GroupBotAdmission.tenant_id == tenant_id,
-        GroupBotAdmission.group_id == group_id,
-        GroupBotAdmission.account_id == account_id,
-    ))
-    return bool(
-        row
-        and row.state == "group_bot_admission_ready"
-        and row.post_send_visibility_state == "visible_confirmed"
-    )
-
-
 def _task_lifecycle_epoch(session: Session, task_id: str) -> int:
     task = session.get(Task, task_id)
     if task is None:
@@ -346,9 +366,19 @@ def _requirements_decision(
     if not actions:
         return _decision(admission, False, "c2_requirement_actions_missing")
     if any(action.status in {"failed", "skipped"} for action in actions):
+        from .group_bot_requirement_recovery import replan_group_bot_requirement_action
+
+        replanned = sum(
+            replan_group_bot_requirement_action(session, action) is not None
+            for action in actions
+        )
+        if replanned:
+            return _decision(admission, False, "c2_requirements_replanned")
         admission.state = "abandoned"
         admission.version = int(admission.version or 1) + 1
         return _decision(admission, False, "c2_account_abandoned")
+    if any(action.status in {"closed_unknown", "unknown_after_send"} for action in actions):
+        return _decision(admission, False, "c2_requirement_remote_unknown")
     if any(action.status in {"pending", "claiming", "executing"} for action in actions):
         return _decision(admission, False, "c2_requirements_pending")
     _record_requirement_success_facts(session, admission, actions)
@@ -360,7 +390,7 @@ def _requirement_actions(
     session: Session,
     admission: TaskGroupBotAdmission,
 ) -> list[Action]:
-    return list(session.scalars(
+    candidates = list(session.scalars(
         select(Action).where(
             Action.task_id == admission.task_id,
             Action.account_id == admission.account_id,
@@ -371,6 +401,25 @@ def _requirement_actions(
             Action.created_at >= admission.observation_started_at,
         )
     ))
+    latest: dict[str, Action] = {}
+    for action in candidates:
+        payload = action.payload if isinstance(action.payload, dict) else {}
+        if str(payload.get("task_group_bot_admission_id") or "") != str(admission.id):
+            continue
+        key = str(payload.get("requirement_action_key") or action.id)
+        current = latest.get(key)
+        if current is None or _requirement_action_order(action) > _requirement_action_order(current):
+            latest[key] = action
+    return list(latest.values())
+
+
+def _requirement_action_order(action: Action) -> tuple[int, object, str]:
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    return (
+        int(payload.get("replan_attempt") or 0),
+        action.created_at,
+        str(action.id),
+    )
 
 
 def _record_requirement_success_facts(

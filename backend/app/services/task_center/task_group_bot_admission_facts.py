@@ -18,10 +18,8 @@ def record_fact(
     outcome: dict,
 ) -> None:
     identity = fact_hash({
-        "admission_id": admission.id,
         "kind": fact_kind,
         "outcome": outcome,
-        "version": int(admission.observation_version or 1),
     })
     values = {
         "tenant_id": admission.tenant_id,

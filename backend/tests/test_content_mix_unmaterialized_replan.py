@@ -240,6 +240,42 @@ def test_replan_coverage_is_loaded_before_normal_keyset(
     assert [row.id for row in rows] == [facts.coverage.id]
 
 
+def test_fact_first_initial_replan_accounts_precede_normal_keyset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task = SimpleNamespace(fulfillment_contract_version="fact_first_v3")
+    facts = SimpleNamespace()
+    coverage = SimpleNamespace(account_id=201)
+    account = SimpleNamespace(id=201)
+    monkeypatch.setattr(
+        group_ai_chat,
+        "_replan_coverage_rows_for_plan",
+        lambda *_args: [coverage],
+    )
+    monkeypatch.setattr(
+        group_ai_chat,
+        "_bound_coverage_account_ids_for_plan",
+        lambda *_args: {201, 202},
+    )
+    monkeypatch.setattr(
+        group_ai_chat,
+        "_daily_accounts_for_coverage_rows",
+        lambda *_args: ([account], []),
+    )
+
+    selected, waiting, seen = group_ai_chat._initial_replan_daily_accounts(
+        SimpleNamespace(),
+        task,
+        facts,
+        account_limit=20,
+        include_replan_accounts=True,
+    )
+
+    assert selected == [account]
+    assert waiting == []
+    assert seen == {201, 202}
+
+
 def test_bound_pending_coverage_is_excluded_from_normal_keyset(
     session: Session,
 ) -> None:

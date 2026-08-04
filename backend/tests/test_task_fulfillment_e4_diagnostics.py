@@ -83,3 +83,13 @@ def test_missing_ledger_and_current_planner_error_fail_closed():
     }
 
     assert module.e4_blockers(snapshot) == ["task_day_ledger_missing", "planner_runtime_error"]
+
+
+def test_business_attempts_are_scoped_to_the_task_action_type():
+    module = load_module()
+
+    assert module.BUSINESS_ACTION_TYPES == {
+        "group_ai_chat": "send_message",
+        "search_click": "search_join",
+        "channel_view": "view_message",
+    }
