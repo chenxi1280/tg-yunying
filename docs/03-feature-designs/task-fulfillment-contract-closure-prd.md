@@ -354,7 +354,7 @@ pending -> generating -> ready
 
 领取 `pending -> generating` 时用 GenerationJob 单行 CAS 同时写 `generation_owner_id/generation_lease_epoch/generation_started_at/lease_expires_at/generation_lease_policy_version`，并让其他 worker 立即可见。owner 按 policy 续租；takeover 以数据库时间读取已过期候选，再直接 CAS 旧 `owner_id + generation_lease_epoch + job_version + lease_expires_at` 后递增 epoch，不执行显式行锁或跨 job 锁。失去 lease 的旧 worker 续租、ready、failed 或取消提交均写 `stale_generation_owner_rejected`。Provider 调用不持有数据库、任务、账号或 Telegram 锁。
 
-GenerationJob 的候选筛选和 CAS 到期条件由 PostgreSQL 比较 `lease_expires_at <= db_now`；Python 仅在已读取行上做二次判断时，必须先把 PostgreSQL 返回的 offset-naive 北京时间墙钟与应用 offset-aware 时间规范到同一 `Asia/Shanghai` 语义。禁止直接比较两种 datetime、禁止把 naive 值误标为 UTC，也不能因单个过期 job 的时间表示差异让整个 generation worker drain 失败。三个 generation worker 任一轮失败都必须暴露完整异常；E4 需要看到三个 worker 持续 claim/finish 且多个 running AI Task 都产生远端事实。
+GenerationJob 的候选筛选和 CAS 到期条件由 PostgreSQL 比较 `lease_expires_at <= db_now`；Python 仅在已读取行上做二次判断时，必须先把 PostgreSQL 返回的 offset-naive 北京时间墙钟与应用 offset-aware 时间规范到同一 `Asia/Shanghai` 语义。ORM UPDATE CAS 必须使用 `synchronize_session=false`，禁止 SQLAlchemy 再用 Python evaluator 重算数据库 where 条件。禁止直接比较两种 datetime、禁止把 naive 值误标为 UTC，也不能因单个过期 job 的时间表示差异让整个 generation worker drain 失败。三个 generation worker 任一轮失败都必须暴露完整异常；E4 需要看到三个 worker 持续 claim/finish 且多个 running AI Task 都产生远端事实。
 
 ### 8.2 direct 独立提交与强上下文 CAS
 
