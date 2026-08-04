@@ -574,8 +574,17 @@ def _finalize_fact_first_dispatch(session: Session, action: Action) -> None:
         persist_remote_fact,
         project_remote_fact,
     )
+    from .search_click_safe_settlement import (
+        settle_search_click_assignment_from_remote_fact,
+    )
 
     fact = persist_remote_fact(session, action)
+    if fact is not None:
+        settle_search_click_assignment_from_remote_fact(
+            session,
+            action,
+            fact.fact_kind,
+        )
     fact_id = fact.fact_id if fact is not None else ""
     if action.status == "unknown_after_send":
         _ensure_unknown_remote_case(session, action)
@@ -6993,11 +7002,15 @@ def _settle_pure_search_click_obligation(
         assignment.version += 1
     _settle_fact_first_search_assignment(session, assignment_id, action, attempt)
     if action.status != "success" or not has_complete_pure_click_fact(action.result):
-        obligation.status = (
-            "unknown_after_send"
-            if action.status == "unknown_after_send"
-            else "open"
-        )
+        if _search_click_remote_mutation_state(action, attempt) == "false":
+            obligation.status = "open"
+            obligation.source_action_id = None
+        else:
+            obligation.status = (
+                "unknown_after_send"
+                if action.status == "unknown_after_send"
+                else "open"
+            )
         return
     evidence_hash = _pure_click_evidence_hash(action.result, attempt.id)
     duplicate_id = session.scalar(
@@ -7053,13 +7066,25 @@ def _settle_fact_first_search_assignment(
     assignment = session.get(SearchClickAssignment, assignment_id)
     if assignment is None:
         return
+    remote_state = _search_click_remote_mutation_state(action, attempt)
     if action.status == "success" and has_complete_pure_click_fact(action.result):
         assignment.state = "confirmed"
-    elif action.status == "unknown_after_send" or attempt.gateway_call_started_at:
+    elif (
+        action.status == "unknown_after_send" or attempt.gateway_call_started_at
+    ) and remote_state != "false":
         assignment.state = "gateway_unknown"
     else:
         assignment.state = "safely_not_executed"
     assignment.version = int(assignment.version or 1) + 1
+
+
+def _search_click_remote_mutation_state(
+    action: Action,
+    attempt: ExecutionAttempt,
+) -> str:
+    from .fulfillment_remote_facts import remote_mutation_state
+
+    return remote_mutation_state(action, attempt)
 
 
 def _pure_click_evidence_hash(result: dict, execution_attempt_id: str) -> str:

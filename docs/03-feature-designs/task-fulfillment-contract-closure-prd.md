@@ -344,6 +344,8 @@ Legacy 物化允许分为多个短事务：义务 CAS `open -> materializing`，
 
 reconcile apply 先以 `case_id + expected_case_version + evidence_version` 单行 CAS 追加唯一 reconcile decision fact，再由 projector 分别推进 Action/Attempt/义务；不跨表加锁。迟到或较弱证据只写 `stale_reconcile_evidence_rejected`。`safely_not_executed` 必须保存 `transport_started=false` 或服务端 pre-accept rejection receipt、request identity、adapter contract version 和 policy version；“未查到”、历史窗口完整、当前状态不存在、页面没变化、超时或换账号看不到均不是安全重开证据。
 
+**2026-08-04 搜索安全未执行投影闭合：** 纯搜索的 `GatewayRequestEvidenceJournal.remote_mutation_state=false` 与同一 `action_id + attempt_id` 的 `fulfillment_remote_facts.fact_kind=safely_not_executed` 是唯一可释放依据。Gateway 曾启动本身不能把 assignment 永久写成 `gateway_unknown`；事实投影必须幂等地将同一 `search_click_assignments` 行 CAS 为 `safely_not_executed`，并在 `source_action_id` 仍指向该 Action 时清空指针、保持义务 `open`。assignment、Action、Attempt、远端事实之间必须保留原始身份用于审计，不得删除旧行、伪造成功或创建第二条义务。存量恢复只能按固定 Task/assignment 集合、核对 journal/fact/projection 完整证据后执行，并写审批审计。
+
 ### 7.2 永久 unknown 的运营终态
 
 `unknown_hold` 在业务 deadline 前持续按原 request identity 对账；不得建立替代义务。到 `deadline_at` 仍无权威正/负结论时，不再保持运行态占用 worker：
