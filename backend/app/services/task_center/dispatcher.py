@@ -20,7 +20,7 @@ from pydantic import ValidationError
 from app.admin_chats import send_admin_chat_broadcast
 from app.integrations.telegram import DeveloperAppCredentials, OperationResult, OutboundSegment
 from app.config import get_settings
-from app.models import AccountStatus, Action, AiAccountVoiceProfile, AiGroupMessageMemory, ChannelMessage, CommentFulfillmentObligation, ConsistencyQuarantine, ContentMixCycle, ContentMixCycleSlot, ContentMixObligation, DispatchClaimReservation, DispatchClaimShardAllocation, DispatchClaimWindow, ExecutionAttempt, FailureType, GroupAuthStatus, GroupContextMessage, OperationTarget, ReviewQueue, SearchClickAssignment, SearchClickFulfillmentObligation, SearchClickOpportunityAssignment, SearchProtocolSession, Task, TaskAccountDailyCoverage, TaskDayLedger, TaskGroupDailyMessageSlot, TaskMembershipAdmissionItem, Tenant, TgAccount, TgGroup, TgGroupAccount, VerificationTask
+from app.models import AccountStatus, Action, AiAccountVoiceProfile, AiGroupMessageMemory, ChannelMessage, CommentFulfillmentObligation, ConsistencyQuarantine, ContentMixCycle, ContentMixCycleSlot, ContentMixObligation, DispatchClaimReservation, DispatchClaimShardAllocation, DispatchClaimWindow, ExecutionAttempt, FailureType, GroupAuthStatus, GroupContextMessage, OperationTarget, ReviewQueue, SearchClickAssignment, SearchClickFulfillmentObligation, SearchClickOpportunityAssignment, SearchProtocolSession, Task, TaskAccountDailyCoverage, TaskDayLedger, TaskGroupBotAdmission, TaskGroupDailyMessageSlot, TaskMembershipAdmissionItem, Tenant, TgAccount, TgGroup, TgGroupAccount, VerificationTask
 from app.models import AccountEnvironmentBinding, AccountProxy, AccountProxyBinding, TelegramDeveloperApp, TgAccountAuthorization
 from app.search_keywords import normalized_keyword_hash
 from app.security import decrypt_secret
@@ -2829,6 +2829,14 @@ def _prepare_group_send(
             _terminalize_fact_first_target(session, action, "target_group_missing")
         return None
     fact_first = _fact_first_action(session, action)
+    if fact_first and not _ensure_fact_first_prejoin_channels(
+        session,
+        action,
+        account=context.account,
+        credentials=context.credentials,
+        group=group,
+    ):
+        return None
     if not fact_first:
         _lock_group_ai_speaker_state(session, action, group_id=int(group.id))
     if not _group_bot_admission_gate_pass(session, action, group_id=int(group.id), account_id=int(context.account.id)):
@@ -4028,6 +4036,14 @@ def _dispatch_channel_membership(session: Session, action: Action, account: TgAc
     lookup_ctx = MembershipDispatchContext(session, action, account, credentials, payload, None)
     payload, existing_group = _membership_existing_group_for_account(lookup_ctx)
     if existing_group:
+        if _fact_first_action(session, action) and not _ensure_fact_first_prejoin_channels(
+            session,
+            action,
+            account=account,
+            credentials=credentials,
+            group=existing_group,
+        ):
+            return True
         existing_link = session.scalar(
             select(TgGroupAccount).where(
                 TgGroupAccount.tenant_id == action.tenant_id,
@@ -4114,6 +4130,26 @@ def _fact_first_prejoin_channels_pass(
     group = _group_bot_admission_window_group(session, action, payload)
     if task is None or group is None:
         return True
+    return _ensure_fact_first_prejoin_channels(
+        session,
+        action,
+        account=account,
+        credentials=credentials,
+        group=group,
+    )
+
+
+def _ensure_fact_first_prejoin_channels(
+    session: Session,
+    action: Action,
+    *,
+    account: TgAccount,
+    credentials,
+    group: TgGroup,
+) -> bool:
+    task = session.get(Task, action.task_id)
+    if task is None:
+        return True
     from .task_prejoin_channels import ensure_prejoin_channels
 
     if ensure_prejoin_channels(
@@ -4125,10 +4161,12 @@ def _fact_first_prejoin_channels_pass(
         target_group=group,
     ):
         return True
-    action.status = "pending"
-    action.scheduled_at = _now() + timedelta(seconds=5)
-    _clear_action_lease(action)
-    _release_runtime_resources(action)
+    _defer(
+        action,
+        _now() + timedelta(seconds=GROUP_BOT_ADMISSION_SEND_RETRY_SECONDS),
+        "configured_channel_follow_pending",
+        "任务配置的预关注频道尚未全部完成",
+    )
     return False
 
 
@@ -8702,6 +8740,11 @@ def _dispatch_group_bot_required_channel_follow(
 
 
 def _group_bot_follow_admission(session: Session, action: Action, account: TgAccount, *, payload):
+    task_admission_id = str(getattr(payload, "task_group_bot_admission_id", "") or "").strip()
+    if task_admission_id:
+        return _task_group_bot_follow_admission(
+            session, action, account, payload, task_admission_id,
+        )
     from app.models import GroupBotAdmission
 
     admission_id = int(getattr(payload, "admission_id", 0) or 0)
@@ -8720,6 +8763,34 @@ def _group_bot_follow_admission(session: Session, action: Action, account: TgAcc
         return None
     if int(admission.admission_version or 1) != int(getattr(payload, "admission_version", 1) or 1):
         _skip(action, "admission_version_stale", "admission_version 已变化，跳过旧 follow action")
+        return None
+    return admission
+
+
+def _task_group_bot_follow_admission(
+    session: Session,
+    action: Action,
+    account: TgAccount,
+    payload,
+    admission_id: str,
+) -> TaskGroupBotAdmission | None:
+    admission = session.scalar(select(TaskGroupBotAdmission).where(
+        TaskGroupBotAdmission.id == admission_id,
+        TaskGroupBotAdmission.tenant_id == action.tenant_id,
+    ))
+    group_id = int(getattr(payload, "group_id", 0) or 0)
+    if admission is None:
+        _fail(action, FailureType.UNKNOWN.value, "task group bot admission not found")
+        return None
+    if (
+        admission.task_id != action.task_id
+        or int(admission.target_group_id) != group_id
+        or int(admission.account_id) != int(account.id)
+    ):
+        _fail(action, FailureType.ACCOUNT_UNAVAILABLE.value, "task admission target mismatch")
+        return None
+    if int(admission.version or 1) != int(getattr(payload, "admission_version", 1) or 1):
+        _skip(action, "admission_version_stale", "task admission version 已变化，跳过旧 follow action")
         return None
     return admission
 
@@ -8748,7 +8819,7 @@ def _finish_group_bot_required_channel_follow(
 ) -> None:
     if not result.ok:
         _finish_failed_group_bot_channel_follow(
-            action, account, channel_ref=channel_ref, result=result, attempt=attempt,
+            session, action, account, channel_ref=channel_ref, result=result, attempt=attempt,
         )
         return
     _finish_successful_group_bot_channel_follow(
@@ -8763,6 +8834,7 @@ def _finish_group_bot_required_channel_follow(
 
 
 def _finish_failed_group_bot_channel_follow(
+    session: Session,
     action: Action,
     account: TgAccount,
     *,
@@ -8784,6 +8856,14 @@ def _finish_failed_group_bot_channel_follow(
         "error_code": "required_channel_follow_failed",
         "channel_ref": channel_ref,
     }
+    from .group_bot_requirement_recovery import replan_group_bot_requirement_action
+
+    replacement = replan_group_bot_requirement_action(session, action)
+    if replacement is not None:
+        action.result = {
+            **dict(action.result or {}),
+            "replaced_action_id": str(replacement.id),
+        }
 
 
 def _finish_successful_group_bot_channel_follow(
@@ -8796,17 +8876,20 @@ def _finish_successful_group_bot_channel_follow(
     result,
     attempt: ExecutionAttempt,
 ) -> None:
-    from app.services.task_center.group_bot_admission import mark_channel_follow_completed
     from .remote_reconciliation import typed_remote_fact_id
 
-    mark_channel_follow_completed(
-        session,
-        admission=admission,
-        channel_ref=channel_ref,
-        resolved_peer_id=channel_ref,
-        resolved_type="broadcast",
-        action_id=str(action.id),
-    )
+    task_scoped = isinstance(admission, TaskGroupBotAdmission)
+    if not task_scoped:
+        from app.services.task_center.group_bot_admission import mark_channel_follow_completed
+
+        mark_channel_follow_completed(
+            session,
+            admission=admission,
+            channel_ref=channel_ref,
+            resolved_peer_id=channel_ref,
+            resolved_type="broadcast",
+            action_id=str(action.id),
+        )
     remote_fact_id = typed_remote_fact_id(
         action,
         attempt,
@@ -8826,8 +8909,15 @@ def _finish_successful_group_bot_channel_follow(
         **(action.result or {}),
         "success": True,
         "channel_ref": channel_ref,
-        "group_bot_admission_id": admission.id,
-        "group_bot_admission_state": admission.state,
+        **_group_bot_requirement_scope_result(admission, task_scoped=task_scoped),
+    }
+
+
+def _group_bot_requirement_scope_result(admission, *, task_scoped: bool) -> dict[str, object]:
+    prefix = "task_group_bot" if task_scoped else "group_bot"
+    return {
+        f"{prefix}_admission_id": admission.id,
+        f"{prefix}_admission_state": admission.state,
     }
 
 
@@ -8884,6 +8974,8 @@ def _refresh_group_bot_confirmation_payload(
     credentials,
     payload,
 ):
+    if isinstance(admission, TaskGroupBotAdmission):
+        return payload
     try:
         refreshed_payload = refresh_live_confirmation_source(
             session,
@@ -8953,6 +9045,7 @@ def _click_refreshed_group_bot_confirmation(
         )
         return
     _finish_group_bot_confirmation_button(
+        session,
         action,
         account,
         admission=admission,
@@ -8974,7 +9067,12 @@ def _defer_group_bot_confirmation_source(action: Action, code: str, detail: str)
 
 def _retire_stale_group_bot_confirmation_source(action: Action, *, admission, payload, detail: str) -> None:
     stale_source = str(getattr(payload, "source_message_id", "") or "")
-    if str(admission.source_message_id or "") == stale_source:
+    if isinstance(admission, TaskGroupBotAdmission):
+        identity = dict(admission.surface_identity or {})
+        if identity.get("requirement_source_message_id") == stale_source:
+            identity["requirement_source_message_id"] = ""
+            admission.surface_identity = identity
+    elif str(admission.source_message_id or "") == stale_source:
         admission.source_message_id = ""
     _skip(action, "group_bot_confirmation_superseded", detail)
     action.result = {
@@ -8985,6 +9083,8 @@ def _retire_stale_group_bot_confirmation_source(action: Action, *, admission, pa
 
 
 def _group_bot_confirmation_action_can_dispatch(session: Session, action: Action, admission) -> bool:
+    if isinstance(admission, TaskGroupBotAdmission):
+        return _task_group_confirmation_action_can_dispatch(session, action, admission)
     from app.services.task_center.group_bot_admission import confirmation_action_can_dispatch
 
     if confirmation_action_can_dispatch(
@@ -9002,12 +9102,46 @@ def _group_bot_confirmation_action_can_dispatch(session: Session, action: Action
     return False
 
 
+def _task_group_confirmation_action_can_dispatch(
+    session: Session,
+    action: Action,
+    admission: TaskGroupBotAdmission,
+) -> bool:
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    key = str(payload.get("requirement_action_key") or "")
+    if not key:
+        _skip(action, "group_bot_confirmation_superseded", "task confirmation requirement key missing")
+        return False
+    actions = session.scalars(select(Action).where(
+        Action.task_id == admission.task_id,
+        Action.account_id == admission.account_id,
+        Action.action_type == "group_bot_confirmation_button",
+    ).order_by(Action.created_at.asc(), Action.id.asc())).all()
+    same_key = [
+        candidate for candidate in actions
+        if str((candidate.payload or {}).get("requirement_action_key") or "") == key
+    ]
+    if any(candidate.status == "success" and candidate.id != action.id for candidate in same_key):
+        _skip(action, "group_bot_confirmation_superseded", "task confirmation already succeeded")
+        return False
+    open_actions = [candidate for candidate in same_key if candidate.status in {"pending", "claiming", "executing"}]
+    if open_actions and open_actions[0].id != action.id:
+        _skip(action, "group_bot_confirmation_superseded", "task confirmation has an earlier open action")
+        return False
+    return True
+
+
 def _group_bot_confirmation_admission(session: Session, action: Action, account: TgAccount, *, payload):
     from app.models import GroupBotAdmission
 
     if str(getattr(payload, "button_type", "") or "") != "callback":
         _fail(action, FailureType.PEER_INVALID.value, "group_bot_confirmation_button_type_invalid")
         return None
+    task_admission_id = str(getattr(payload, "task_group_bot_admission_id", "") or "").strip()
+    if task_admission_id:
+        return _task_group_bot_confirmation_admission(
+            session, action, account, payload, task_admission_id,
+        )
     admission = session.scalar(
         select(GroupBotAdmission)
         .where(GroupBotAdmission.id == int(getattr(payload, "admission_id", 0) or 0))
@@ -9028,12 +9162,66 @@ def _group_bot_confirmation_admission(session: Session, action: Action, account:
     return admission
 
 
+def _task_group_bot_confirmation_admission(
+    session: Session,
+    action: Action,
+    account: TgAccount,
+    payload,
+    admission_id: str,
+) -> TaskGroupBotAdmission | None:
+    admission = session.scalar(select(TaskGroupBotAdmission).where(
+        TaskGroupBotAdmission.id == admission_id,
+        TaskGroupBotAdmission.tenant_id == action.tenant_id,
+    ))
+    if admission is None:
+        _fail(action, FailureType.UNKNOWN.value, "task group bot admission not found")
+        return None
+    if (
+        admission.task_id != action.task_id
+        or int(admission.target_group_id) != int(getattr(payload, "group_id", 0) or 0)
+        or int(admission.account_id) != int(account.id)
+    ):
+        _fail(action, FailureType.ACCOUNT_UNAVAILABLE.value, "task confirmation target mismatch")
+        return None
+    if int(admission.version or 1) != int(getattr(payload, "admission_version", 1) or 1):
+        _skip(action, "admission_version_stale", "task confirmation admission version 已变化")
+        return None
+    return admission
+
+
 def _confirmation_waits_for_required_channels(session: Session, action: Action, admission) -> bool:
+    if isinstance(admission, TaskGroupBotAdmission):
+        return _task_confirmation_waits_for_channels(session, action, admission)
     from app.services.task_center.group_bot_admission import has_pending_required_channel_follows
 
     with session.no_autoflush:
         pending = has_pending_required_channel_follows(session, admission=admission)
     if not pending:
+        return False
+    _defer(
+        action,
+        _now() + timedelta(seconds=REQUIRED_CHANNEL_ADMISSION_RETRY_SECONDS),
+        "required_channel_follow_pending",
+        "群管机器人要求的频道关注尚未完成",
+    )
+    return True
+
+
+def _task_confirmation_waits_for_channels(
+    session: Session,
+    action: Action,
+    admission: TaskGroupBotAdmission,
+) -> bool:
+    actions = session.scalars(select(Action).where(
+        Action.task_id == admission.task_id,
+        Action.account_id == admission.account_id,
+        Action.action_type == GROUP_BOT_CHANNEL_FOLLOW_ACTION_TYPE,
+    )).all()
+    relevant = [
+        candidate for candidate in actions
+        if str((candidate.payload or {}).get("task_group_bot_admission_id") or "") == admission.id
+    ]
+    if not any(candidate.status != "success" for candidate in relevant):
         return False
     _defer(
         action,
@@ -9065,6 +9253,7 @@ def _persisted_confirmation_button_matches(session: Session, group_id: int, payl
 
 
 def _finish_group_bot_confirmation_button(
+    session: Session,
     action: Action,
     account: TgAccount,
     *,
@@ -9075,16 +9264,9 @@ def _finish_group_bot_confirmation_button(
     from .remote_reconciliation import typed_remote_fact_id
 
     if not result.ok:
-        _apply_operation_result(
-            action,
-            account,
-            False,
-            result.failure_type or FailureType.UNKNOWN.value,
-            result.detail,
-            attempt=attempt,
-            remote_mutation_started=_operation_mutation_state(result),
+        _finish_failed_group_bot_confirmation_button(
+            session, action, account, result=result, attempt=attempt,
         )
-        action.result = {**(action.result or {}), "error_code": "group_bot_confirmation_button_failed"}
         return
     remote_fact_id = typed_remote_fact_id(
         action,
@@ -9103,10 +9285,43 @@ def _finish_group_bot_confirmation_button(
     )
     action.result = {
         **(action.result or {}),
-        "group_bot_admission_id": admission.id,
-        "group_bot_admission_state": admission.state,
+        **_group_bot_requirement_scope_result(
+            admission,
+            task_scoped=isinstance(admission, TaskGroupBotAdmission),
+        ),
         "confirmation_click": "accepted_waiting_bot_confirmation",
     }
+
+
+def _finish_failed_group_bot_confirmation_button(
+    session: Session,
+    action: Action,
+    account: TgAccount,
+    *,
+    result,
+    attempt: ExecutionAttempt,
+) -> None:
+    _apply_operation_result(
+        action,
+        account,
+        False,
+        result.failure_type or FailureType.UNKNOWN.value,
+        result.detail,
+        attempt=attempt,
+        remote_mutation_started=_operation_mutation_state(result),
+    )
+    action.result = {
+        **dict(action.result or {}),
+        "error_code": "group_bot_confirmation_button_failed",
+    }
+    from .group_bot_requirement_recovery import replan_group_bot_requirement_action
+
+    replacement = replan_group_bot_requirement_action(session, action)
+    if replacement is not None:
+        action.result = {
+            **dict(action.result or {}),
+            "replaced_action_id": str(replacement.id),
+        }
 
 
 def _operation_mutation_state(result) -> bool | None:

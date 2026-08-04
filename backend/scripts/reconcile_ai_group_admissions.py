@@ -33,11 +33,6 @@ from app.services.task_center.group_bot_observation import (
 
 
 LOCAL_TIMEZONE = ZoneInfo("Asia/Shanghai")
-TERMINAL_ACTION_STATUSES = frozenset(
-    {"success", "failed", "skipped", "unknown_after_send"}
-)
-
-
 def _tasks(session, names: tuple[str, ...]) -> list[Task]:
     return list(
         session.scalars(
@@ -186,7 +181,7 @@ def _release_terminal_follow_binding(
     if not row.action_id:
         return False
     action = session.get(Action, row.action_id)
-    if action is None or action.status in TERMINAL_ACTION_STATUSES:
+    if action is None:
         row.action_id = ""
         return True
     return False

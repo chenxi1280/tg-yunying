@@ -757,6 +757,13 @@ def plan_required_channel_follow_actions(
     now = _now()
     for row in pending_refs:
         if row.action_id:
+            bound = session.get(Action, row.action_id)
+            if bound is not None:
+                from .group_bot_requirement_recovery import replan_group_bot_requirement_action
+
+                replacement = replan_group_bot_requirement_action(session, bound)
+                if replacement is not None:
+                    created.append(replacement)
             continue
         source_url = source_channel_url_for_ref(control_buttons, str(row.channel_ref), prompt_text)
         if not source_url:
@@ -818,6 +825,14 @@ def plan_confirmation_button_action(
     current_source_message_id = str(source_message_id or "")
     if not current_source_message_id or current_source_message_id != str(admission.source_message_id or ""):
         return None
+    if _current_confirmation_requirement_blocked(
+        session,
+        task_id=task.id,
+        admission_id=admission.id,
+        admission_version=int(admission.admission_version or 1),
+        source_message_id=current_source_message_id,
+    ):
+        return None
     if _reconcile_open_confirmation_actions(
         session,
         task.id,
@@ -843,6 +858,34 @@ def plan_confirmation_button_action(
     return create_group_bot_confirmation_button_action(
         session, task, int(admission.account_id), now, payload, flush=True
     )
+
+
+def _current_confirmation_requirement_blocked(
+    session: Session,
+    *,
+    task_id: str,
+    admission_id: int,
+    admission_version: int,
+    source_message_id: str,
+) -> bool:
+    actions = _matching_confirmation_actions(
+        session, task_id, admission_id, admission_version,
+    )
+    current = [
+        action for action in actions
+        if _confirmation_action_source_message_id(action) == source_message_id
+    ]
+    for action in current:
+        if action.status == "success":
+            return True
+        if action.status not in {"failed", "closed_unknown", "unknown_after_send", "skipped"}:
+            continue
+        from .group_bot_requirement_recovery import replan_group_bot_requirement_action
+
+        if replan_group_bot_requirement_action(session, action) is not None:
+            return True
+        return True
+    return False
 
 
 def _reconcile_open_confirmation_actions(
