@@ -2,7 +2,18 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    JSON,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -72,6 +83,15 @@ class GroupContextMessage(Base):
     __table_args__ = (
         UniqueConstraint("group_id", "remote_message_id"),
         Index("ix_group_context_messages_tenant_group_recent", "tenant_id", "group_id", "sent_at", "id"),
+        Index(
+            "ix_group_context_messages_ai_recent",
+            "tenant_id",
+            "group_id",
+            text("coalesce(sent_at, created_at) DESC"),
+            text("id DESC"),
+            postgresql_where=text("is_bot IS false AND content <> ''"),
+            sqlite_where=text("is_bot = 0 AND content <> ''"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
