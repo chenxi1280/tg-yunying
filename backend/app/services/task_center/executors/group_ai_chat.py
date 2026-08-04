@@ -535,6 +535,15 @@ def _load_daily_coverage_plan_accounts(
     *,
     include_replan_accounts: bool,
 ) -> AccountPlanState | PlanAbort:
+    if task.fulfillment_contract_version == "fact_first_v3":
+        from ..task_group_bot_admission_recovery import reopen_unproven_task_coverages
+
+        reopen_unproven_task_coverages(
+            session,
+            task,
+            facts.group,
+            limit=account_limit,
+        )
     selected, admission_waiting, seen_account_ids = _initial_replan_daily_accounts(
         session, task, facts,
         account_limit=account_limit,
@@ -681,7 +690,11 @@ def _replan_coverage_rows_for_plan(
             ContentMixCycleSlot.slot_state.in_(
                 {"unmaterialized", "replan_required"},
             ),
-            TaskAccountDailyCoverage.state == "ready",
+            TaskAccountDailyCoverage.state.in_(
+                ("ready", "pending_admission")
+                if task.fulfillment_contract_version == "fact_first_v3"
+                else ("ready",)
+            ),
             TaskAccountDailyCoverage.confirmed_count
             < TaskAccountDailyCoverage.target_count,
         )
@@ -2650,7 +2663,7 @@ def _select_accounts_for_plan(
 ) -> list:
     options = _hard_hourly_account_options(progress)
     coverage_options = _daily_coverage_account_options(config)
-    ready_rows = _ready_coverage_rows(config, coverage_rows)
+    ready_rows = _ready_coverage_rows(task, config, coverage_rows)
     if _daily_coverage_enforced(config) and coverage_rows is None:
         ready_rows = ready_coverage_rows(session, task)
     candidate_account_ids = _candidate_account_ids_for_plan(
@@ -2710,14 +2723,20 @@ def _plan_account_limit(
 
 
 def _ready_coverage_rows(
+    task: Task,
     config: dict,
     coverage_rows: list[TaskAccountDailyCoverage] | None,
 ) -> list[TaskAccountDailyCoverage]:
     if not _daily_coverage_enforced(config) or coverage_rows is None:
         return []
+    plannable_states = (
+        {"ready", "pending_admission"}
+        if task.fulfillment_contract_version == "fact_first_v3"
+        else {"ready"}
+    )
     return [
         row for row in coverage_rows
-        if row.state == "ready" and row.confirmed_count < row.target_count
+        if row.state in plannable_states and row.confirmed_count < row.target_count
     ]
 
 

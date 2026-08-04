@@ -14,6 +14,7 @@ DEFAULT_TASK_NAMES = (
     "郑州大学",
     "郑州师范",
     "郑州楼凤",
+    "郑州学生会",
 )
 LOCAL_TIMEZONE = ZoneInfo("Asia/Shanghai")
 
@@ -263,19 +264,26 @@ def _admission_rows(session, task_id: str, local_date) -> list[dict]:
     return _rows(
         session,
         """
-        SELECT COALESCE(g.state, 'missing') AS admission_state,
+        SELECT COALESCE(a.state, 'missing') AS admission_state,
+               COALESCE(a.terminal_reason, '') AS terminal_reason,
+               COALESCE(a.observation_gap, false) AS observation_gap,
                COUNT(*) AS coverage_count,
                COUNT(*) FILTER (
                    WHERE c.confirmed_count < c.target_count
-               ) AS incomplete_count
+               ) AS incomplete_count,
+               COUNT(*) FILTER (
+                   WHERE a.state = 'observing'
+                     AND a.observation_gap = false
+                     AND a.no_prompt_pass_at <= now()
+               ) AS observation_due_count
         FROM task_account_daily_coverage c
-        LEFT JOIN group_bot_admissions g
-          ON g.tenant_id = c.tenant_id
-         AND g.group_id = c.group_id
-         AND g.account_id = c.account_id
+        LEFT JOIN task_group_bot_admissions a
+          ON a.task_id = c.task_id
+         AND a.target_group_id = c.group_id
+         AND a.account_id = c.account_id
         WHERE c.task_id = :task_id AND c.coverage_date = :local_date
-        GROUP BY admission_state
-        ORDER BY admission_state
+        GROUP BY admission_state, terminal_reason, observation_gap
+        ORDER BY admission_state, terminal_reason, observation_gap
         """,
         task_id=task_id,
         local_date=local_date,
