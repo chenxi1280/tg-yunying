@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.database import Base
 from app.models import (
     Action,
+    AiCoverageVariationIntent,
     ContentMixCycle,
     ContentMixCycleSlot,
     ExecutionAttempt,
@@ -565,6 +566,122 @@ def test_fact_first_bound_ai_failure_is_rebuilt_not_retried(
     assert retried == 0
     assert action.status == "failed"
     assert action.retry_count == 0
+
+
+def test_fact_first_build_plan_skips_legacy_content_mix_pipeline(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task = Task(
+        id="fact-first-direct-plan",
+        tenant_id=1,
+        name="事实优先直连规划",
+        type="group_ai_chat",
+        status="running",
+        fulfillment_contract_version="fact_first_v3",
+    )
+    session.add(task)
+    session.flush()
+    blueprint = SimpleNamespace()
+    called: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        group_ai_chat,
+        "_prepare_plan_blueprint",
+        lambda *_args, **_kwargs: blueprint,
+    )
+    monkeypatch.setattr(
+        group_ai_chat,
+        "_replan_content_mix_slots",
+        lambda *_args: pytest.fail("fact-first must not run legacy replan"),
+    )
+    monkeypatch.setattr(
+        group_ai_chat,
+        "_freeze_content_mix_cycle",
+        lambda *_args: pytest.fail("fact-first must not freeze legacy cycle"),
+    )
+    monkeypatch.setattr(
+        group_ai_chat,
+        "_prepare_action_slots",
+        lambda *_args: called.setdefault(
+            "frozen_mix", _args[3]
+        ) or group_ai_chat.PreparedActionPlan([], {}),
+    )
+    monkeypatch.setattr(
+        group_ai_chat, "_prepared_plan_is_blocked", lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        group_ai_chat, "_create_reserved_actions", lambda *_args, **_kwargs: 0,
+    )
+    monkeypatch.setattr(
+        group_ai_chat, "_record_plan_completion", lambda *_args, **_kwargs: None,
+    )
+
+    assert group_ai_chat.build_plan(session, task) == 0
+    assert called["frozen_mix"] is None
+
+
+def test_fact_first_direct_action_does_not_bind_legacy_slot(
+    session: Session,
+) -> None:
+    facts = _unmaterialized_reply_facts(session)
+    facts.task.fulfillment_contract_version = "fact_first_v3"
+    slot = group_ai_chat.SlotSnapshot(
+        account_id=facts.account.id,
+        planned_at=facts.planned_at,
+        payload=SendMessagePayload(
+            group_id=facts.group.id,
+            coverage_ledger_id=facts.coverage.id,
+            content_variation_key="fact-first-direct-variation",
+            content_context_version="context-v1",
+            ai_generation_status="pending",
+        ),
+    )
+
+    action = group_ai_chat._create_reserved_action(session, facts.task, slot)
+
+    assert action is not None
+    assert action.primary_quantity_slot_id is None
+    assert action.content_mix_cycle_slot_id is None
+    assert facts.cycle_slot.slot_state == "unmaterialized"
+    session.refresh(facts.coverage)
+    assert facts.coverage.state == "reserved"
+    assert facts.coverage.reserved_action_id == action.id
+
+
+def test_fact_first_recovery_releases_old_binding_without_touching_slot(
+    session: Session,
+) -> None:
+    facts = _unmaterialized_reply_facts(session)
+    facts.task.fulfillment_contract_version = "fact_first_v3"
+    action = _bound_terminal_action(facts)
+    facts.coverage.state = "reserved"
+    facts.coverage.reserved_action_id = action.id
+    facts.cycle_slot.slot_state = "pending"
+    facts.cycle_slot.current_action_id = action.id
+    intent = AiCoverageVariationIntent(
+        tenant_id=1,
+        coverage_ledger_id=facts.coverage.id,
+        action_id=action.id,
+        content_variation_key="old-slot-variation",
+        context_version="old-context",
+    )
+    session.add_all([action, intent])
+    session.flush()
+
+    recovered = group_ai_chat._recover_stale_fact_first_actions(
+        session,
+        facts.task,
+    )
+
+    assert recovered == 1
+    assert facts.cycle_slot.slot_state == "pending"
+    assert facts.cycle_slot.current_action_id == action.id
+    session.refresh(facts.coverage)
+    session.refresh(intent)
+    assert facts.coverage.state == "ready"
+    assert facts.coverage.reserved_action_id is None
+    assert intent.action_id is None
 
 
 def _bound_terminal_action(facts: _UnmaterializedFacts) -> Action:

@@ -238,9 +238,11 @@ C2 分成两层，禁止把远端事实锁死在某个 Task：
 
 Task 准入必须有独立物化入口，不能依赖已经 ready 的 coverage 或既有正文 Action 偶然触发：`pending_admission` coverage 在 `fact_first_v3` 中可物化当前账号的空正文 Action，由 AI generation lane 先推进 C2、释放 claim，ready 后再生成。历史因 `current_authorization_missing` 误放弃的 Task admission/coverage 必须在同一 Task 内自动重开 observation；对应 `replan_required` 数量槽可释放重建，不能继续把 691 个 missing admission 留在等待态。
 
-存量 `replan_required|unmaterialized` CycleSlot 的选择必须与本轮可推进账号精确相交：先按 `ready -> 已到 30 秒的 observing/requirements_pending -> observing -> admission missing` 选择账号，再只重建这些账号各自冻结的主数量槽。禁止先按旧 cycle 顺序截取固定批次、随后才过滤账号；否则批次前部的 abandoned admission 会持续遮挡后部账号。`fact_first_v3` 不得把 admission=`abandoned` 的 waiting 账号回填为 Planner 候选；未建 admission 的账号仍可物化空正文 Action，已到期 observing 必须由该 Action 在 AI generation lane 优先复查并闭合 30 秒观察。
+`fact_first_v3` 的正式发送物化直接走 `coverage obligation -> Action -> Generation/Attempt`：不创建、不读取、不等待旧 `TaskGroupDailyMessageSlot`、`ContentMixCycleSlot` 或 legacy Planner/CAS。ContentMix 仅可作为异步内容投影，不能成为 Action 的准入条件；已存在的 legacy 槽位只允许被回收审计，不得阻断新 Action。
 
-Planner 每轮必须先接管存量 `pending` CycleSlot：仅当 `current_action_id` 指向 `failed|retryable_failed|skipped` 且该 Action 不存在 `gateway_call_started_at` 时，以 `slot_state=pending + current_action_id=旧 Action` 单行 CAS 改为 `replan_required`，清空当前 Action，释放同一 coverage reservation，并把冻结的主数量槽恢复为 `open`。Gateway 已开始、unknown 或成功事实一律不得接管。重建 payload 必须继续使用原 `CycleSlot.primary_quantity_slot_id`，并从该数量槽读取唯一 coverage/account/task-day 身份；不能借用本轮新生成 payload 的其他数量槽或 coverage。
+存量 legacy Task 的 `replan_required|unmaterialized` CycleSlot 选择必须与本轮可推进账号精确相交：先按 `ready -> 已到 30 秒的 observing/requirements_pending -> observing -> admission missing` 选择账号，再只重建这些账号各自冻结的主数量槽。禁止先按旧 cycle 顺序截取固定批次、随后才过滤账号；否则批次前部的 abandoned admission 会持续遮挡后部账号。`fact_first_v3` 不得把 admission=`abandoned` 的 waiting 账号回填为 Planner 候选；未建 admission 的账号仍可物化空正文 Action，已到期 observing 必须由该 Action 在 AI generation lane 优先复查并闭合 30 秒观察。
+
+Legacy Planner 每轮必须先接管存量 `pending` CycleSlot：仅当 `current_action_id` 指向 `failed|retryable_failed|skipped` 且该 Action 不存在 `gateway_call_started_at` 时，以 `slot_state=pending + current_action_id=旧 Action` 单行 CAS 改为 `replan_required`，清空当前 Action，释放同一 coverage reservation，并把冻结的主数量槽恢复为 `open`。Gateway 已开始、unknown 或成功事实一律不得接管。重建 payload 必须继续使用原 `CycleSlot.primary_quantity_slot_id`，并从该数量槽读取唯一 coverage/account/task-day 身份；不能借用本轮新生成 payload 的其他数量槽或 coverage。
 
 C2 空正文 Action 物化时，`pending_admission` coverage 必须直接以同一 Action 的唯一业务身份进入 `reserved`，与 `ready` coverage 使用同一 reservation token/Action 唯一绑定；这只是防止同一覆盖义务重复建单，不是容量、速率或预算预扣。不得先要求 coverage=ready 才允许建 Action，否则 C2 永远没有执行载体并持续制造 `unmaterialized` 槽。Action 等待观察期间保留该绑定；准入 ready 后原 Action 继续生成和发送，权威不可发送终态或 pre-Gateway 失败则按原 coverage 身份释放/放弃，禁止另建替代义务。
 
@@ -315,9 +317,9 @@ cancelled_by_task_lifecycle | blocked | shortfall | remote_reconcile_only
 
 数据库唯一约束统一为：`FulfillmentObligationProjection` 对 `(obligation_type, obligation_id)` 唯一；ContentMix 投影对 `(obligation_type, obligation_id, materialization_version)` 唯一；Action 对同一义务只允许一条非终态记录的 partial unique index。应用层先查再写不能代替这三条约束，唯一冲突必须回读现有记录继续同一物化过程。
 
-绑定 `ContentMixCycleSlot/primary_quantity_slot_id` 的 fact-first AI Action 到达失败或跳过终态后，禁止通用 retry 把原 Action 原地改回 `pending`；下一次执行只能在上述原槽接管成功后创建递增 `slot_attempt` 的替代 Action。这样旧 Action 先保持终态、替代 Action 才取得同一 coverage 义务的唯一非终态身份；并发冲突继续由单行 CAS 与 partial unique 收敛，不增加锁。
+绑定 `ContentMixCycleSlot/primary_quantity_slot_id` 的 legacy AI Action 到达失败或跳过终态后，禁止通用 retry 把原 Action 原地改回 `pending`；下一次执行只能在上述原槽接管成功后创建递增 `slot_attempt` 的替代 Action。`fact_first_v3` 直接绑定 coverage obligation，不绑定旧槽；其 pre-Gateway 终态由 recovery 释放 coverage/variation intent 后重新物化新的 Action。这样旧 Action 先保持终态、替代 Action 才取得同一 coverage 义务的唯一非终态身份；并发冲突继续由单行 CAS 与 partial unique 收敛，不增加锁。
 
-物化允许分为多个短事务：义务 CAS `open -> materializing`，按义务/version 幂等创建 ContentMix 投影，再幂等创建并绑定 Action。每步提交后都可恢复；任一步失败只释放 materialization lease 并从缺失步骤继续，不确认、复制或丢失主义务。所有步骤均为单行 CAS 或唯一键插入，不使用显式行锁。
+Legacy 物化允许分为多个短事务：义务 CAS `open -> materializing`，按义务/version 幂等创建 ContentMix 投影，再幂等创建并绑定 Action。`fact_first_v3` 省略 ContentMix/旧槽位步骤，按 coverage obligation 直接幂等创建 Action。每步提交后都可恢复；任一步失败只释放 materialization lease 并从缺失步骤继续，不确认、复制或丢失主义务。所有步骤均为单行 CAS 或唯一键插入，不使用显式行锁。
 
 `visible_confirmed/target_click_observed/typed_remote_fact` 使用“事实先行、投影收敛”，不做跨表原子事务：
 
