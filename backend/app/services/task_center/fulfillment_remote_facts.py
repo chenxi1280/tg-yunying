@@ -244,12 +244,13 @@ def _fact_values(action: Action, attempt: ExecutionAttempt) -> dict:
 
 
 def _fact_kind(action: Action, attempt: ExecutionAttempt) -> str:
-    if action.status == "unknown_after_send":
+    remote_state = _remote_mutation_state(action, attempt)
+    if action.status == "unknown_after_send" and remote_state != "false":
         return "remote_outcome_unknown"
     if action.status != "success" or attempt.status != "success":
         return (
             "safely_not_executed"
-            if _remote_mutation_state(action, attempt) == "false"
+            if remote_state == "false"
             else "remote_outcome_unknown"
         )
     result = dict(action.result or {})
@@ -380,6 +381,10 @@ def _remote_mutation_state(action: Action, attempt: ExecutionAttempt) -> str:
     return "true" if observed is True else "false" if observed is False else "unknown"
 
 
+def remote_mutation_state(action: Action, attempt: ExecutionAttempt) -> str:
+    return _remote_mutation_state(action, attempt)
+
+
 def _request_identity(action: Action, attempt: ExecutionAttempt) -> str:
     payload = _payload(action)
     return str(
@@ -418,4 +423,5 @@ __all__ = [
     "ensure_action_obligation",
     "persist_remote_fact",
     "project_remote_fact",
+    "remote_mutation_state",
 ]
