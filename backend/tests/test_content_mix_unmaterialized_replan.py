@@ -11,6 +11,7 @@ from app.models import (
     Action,
     ContentMixCycle,
     ContentMixCycleSlot,
+    ExecutionAttempt,
     OperationTarget,
     Task,
     TaskAccountDailyCoverage,
@@ -23,6 +24,10 @@ from app.models import (
 )
 from app.services._common import _now
 from app.services.task_center import dispatcher
+from app.services.task_center.content_mix_replan_recovery import (
+    recover_stale_pending_content_mix_slots,
+)
+from app.services.task_center.fulfillment_retry import retry_failed_actions
 from app.services.task_center.executors import group_ai_chat
 from app.services.task_center.payloads import SendMessagePayload
 
@@ -484,6 +489,103 @@ def test_replan_prefers_quantity_coverage_account_over_previous_action() -> None
     )
 
     assert resolved == (own_account, 0)
+
+
+def test_planner_recovers_stale_pending_slot_without_gateway_attempt(
+    session: Session,
+) -> None:
+    facts = _unmaterialized_reply_facts(session)
+    action = _bound_terminal_action(facts)
+    session.add(action)
+    facts.coverage.state = "reserved"
+    facts.coverage.reserved_action_id = action.id
+    facts.cycle_slot.slot_state = "pending"
+    facts.cycle_slot.current_action_id = action.id
+    session.flush()
+
+    recovered = recover_stale_pending_content_mix_slots(
+        session,
+        facts.task,
+    )
+
+    assert recovered == 1
+    assert facts.cycle_slot.slot_state == "replan_required"
+    assert facts.cycle_slot.current_action_id is None
+    assert facts.quantity.state == "open"
+    assert facts.coverage.state == "ready"
+    assert facts.coverage.reserved_action_id is None
+
+
+def test_planner_does_not_recover_gateway_started_slot(
+    session: Session,
+) -> None:
+    facts = _unmaterialized_reply_facts(session)
+    action = _bound_terminal_action(facts)
+    facts.cycle_slot.slot_state = "pending"
+    facts.cycle_slot.current_action_id = action.id
+    session.add_all([
+        action,
+        ExecutionAttempt(
+            tenant_id=1,
+            action_id=action.id,
+            account_id=facts.account.id,
+            attempt_no=1,
+            status="failed",
+            gateway_call_started_at=facts.planned_at,
+        ),
+    ])
+    session.flush()
+
+    recovered = recover_stale_pending_content_mix_slots(
+        session,
+        facts.task,
+    )
+
+    assert recovered == 0
+    assert facts.cycle_slot.slot_state == "pending"
+    assert facts.cycle_slot.current_action_id == action.id
+
+
+def test_fact_first_bound_ai_failure_is_rebuilt_not_retried(
+    session: Session,
+) -> None:
+    facts = _unmaterialized_reply_facts(session)
+    facts.task.fulfillment_contract_version = "fact_first_v3"
+    facts.task.failure_policy = {"max_retries": 3}
+    action = _bound_terminal_action(facts)
+    session.add(action)
+    session.flush()
+
+    retried = retry_failed_actions(
+        session,
+        facts.task,
+        now_value=facts.planned_at,
+    )
+
+    assert retried == 0
+    assert action.status == "failed"
+    assert action.retry_count == 0
+
+
+def _bound_terminal_action(facts: _UnmaterializedFacts) -> Action:
+    return Action(
+        id=f"bound-terminal-{facts.task.id}",
+        tenant_id=1,
+        task_id=facts.task.id,
+        task_type=facts.task.type,
+        action_type="send_message",
+        account_id=facts.account.id,
+        status="failed",
+        primary_quantity_slot_id=facts.quantity.id,
+        content_mix_cycle_slot_id=facts.cycle_slot.id,
+        content_mix_slot_attempt=1,
+        payload={
+            "coverage_ledger_id": facts.coverage.id,
+            "primary_quantity_slot_id": facts.quantity.id,
+            "content_mix_cycle_slot_id": facts.cycle_slot.id,
+        },
+        result={"error_code": "content_mix_binding_invalid"},
+    )
 
 
 class _UnmaterializedFacts(SimpleNamespace):
