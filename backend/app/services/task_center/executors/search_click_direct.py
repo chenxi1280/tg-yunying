@@ -27,6 +27,9 @@ from .search_click_candidates import candidate_paths
 from .search_join_group import _payload
 
 
+RETRYABLE_ASSIGNMENT_STATES = frozenset({"released", "safely_not_executed"})
+
+
 def build_fact_first_plan(session: Session, task: Task, now: datetime) -> int:
     ensure_task_day_ledger(session, task, now=now)
     units = _open_units(session, now, _free_search_slots(session))
@@ -74,6 +77,10 @@ def _open_units(
 ) -> tuple[SearchClickFulfillmentUnit, ...]:
     if limit <= 0:
         return ()
+    non_replayable_assignment = select(SearchClickAssignment.id).where(
+        SearchClickAssignment.obligation_id == SearchClickFulfillmentObligation.id,
+        SearchClickAssignment.state.notin_(RETRYABLE_ASSIGNMENT_STATES),
+    ).exists()
     rows = session.execute(
         select(Task, TaskDayLedger, SearchClickFulfillmentObligation)
         .join(TaskDayLedger, TaskDayLedger.task_id == Task.id)
@@ -89,6 +96,7 @@ def _open_units(
             TaskDayLedger.lifecycle_status == "open",
             TaskDayLedger.deadline_at > now,
             SearchClickFulfillmentObligation.status == "open",
+            ~non_replayable_assignment,
         )
         .order_by(SearchClickFulfillmentObligation.click_obligation_ordinal, Task.id)
         .limit(limit)
