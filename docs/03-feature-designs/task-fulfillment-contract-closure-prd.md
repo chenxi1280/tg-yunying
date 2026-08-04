@@ -234,7 +234,9 @@ C2 分成两层，禁止把远端事实锁死在某个 Task：
 
 配置频道必须来自 Task 表字段，不能只放通用 JSON、缓存或群级规则。Task 创建/编辑时校验稳定 OperationTarget ID、去重且最多 3 个；空数组表示没有运营预关注要求。
 
-`fact_first_v3` 的 AI 正文生成前置门禁只能调用 `TaskGroupBotAdmission + AccountGroupAdmissionFact` 新链路；禁止继续读取旧 `GroupBotAdmission/group_bot_global_rules` 或把旧 `group_bot_admission_state` payload 当作当前 Task 准入结论。未 ready 时本轮只能创建/推进当前 Task+账号 observation 并立即释放 GenerationJob/Action claim，禁止加载 Provider 凭据或调用 Provider；ready 后把 `task_group_bot_admission_id + version` 固化到 Action，再允许正文生成。缺授权、Session 失效等不可发送结果只放弃当前 Task 内该账号并释放未进 Gateway 义务，不得形成跨 Task 封禁。
+`fact_first_v3` 的 AI 正文生成前置门禁只能调用 `TaskGroupBotAdmission + AccountGroupAdmissionFact` 新链路；禁止继续读取旧 `GroupBotAdmission/group_bot_global_rules` 或把旧 `group_bot_admission_state` payload 当作当前 Task 准入结论。未 ready 时本轮只能创建/推进当前 Task+账号 observation 并立即释放 GenerationJob/Action claim，禁止加载 Provider 凭据或调用 Provider；ready 后把 `task_group_bot_admission_id + version` 固化到 Action，再允许正文生成。`TgAccountAuthorization` 缺行只是本地投影缺口，不能当成 Telegram 不可发送事实；存在账号 Session 时仍以 `account_id + session identity hash` 建立 30 秒 viewer surface。只有 Session 缺失/失效、需重登、账号停用、目标群解散/不可访问或 Telegram 明确拒绝等权威结果才只放弃当前 Task 内该账号并释放未进 Gateway 义务，不得形成跨 Task 封禁。
+
+Task 准入必须有独立物化入口，不能依赖已经 ready 的 coverage 或既有正文 Action 偶然触发：`pending_admission` coverage 在 `fact_first_v3` 中可物化当前账号的空正文 Action，由 AI generation lane 先推进 C2、释放 claim，ready 后再生成。历史因 `current_authorization_missing` 误放弃的 Task admission/coverage 必须在同一 Task 内自动重开 observation；对应 `replan_required` 数量槽可释放重建，不能继续把 691 个 missing admission 留在等待态。
 
 配置频道全部成功且已确认在群后，从数据库时间记录 `observation_started_at`、当前 viewer cursor、`observation_version` 和不可变 observation surface identity，建立连续 30 秒的账号视角观察。v1 只允许：
 

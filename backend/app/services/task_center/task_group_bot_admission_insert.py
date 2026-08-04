@@ -7,6 +7,20 @@ from sqlalchemy.orm import Session
 from app.models import TaskGroupBotAdmission
 
 
+def find_observation(
+    session: Session,
+    *,
+    task_id: str,
+    group_id: int,
+    account_id: int,
+) -> TaskGroupBotAdmission | None:
+    return session.scalar(select(TaskGroupBotAdmission).where(
+        TaskGroupBotAdmission.task_id == task_id,
+        TaskGroupBotAdmission.target_group_id == group_id,
+        TaskGroupBotAdmission.account_id == account_id,
+    ))
+
+
 def persist_unique_observation(
     session: Session,
     row: TaskGroupBotAdmission,
@@ -27,4 +41,4 @@ def persist_unique_observation(
     return row, True
 
 
-__all__ = ["persist_unique_observation"]
+__all__ = ["find_observation", "persist_unique_observation"]
