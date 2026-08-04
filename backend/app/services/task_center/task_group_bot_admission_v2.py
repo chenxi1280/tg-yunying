@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 from dataclasses import dataclass
 from datetime import timedelta
 from sqlalchemy import select, update
@@ -20,28 +21,22 @@ from .task_group_bot_admission_surface import (
     latest_group_cursor as _latest_group_cursor,
     max_cursor as _max_cursor,
     numeric_cursor as _numeric_cursor,
+    ProbeSurface,
     surface_identity as _surface_identity,
     surface_is_current,
+    unusable_telegram_error as _unusable_telegram_error,
 )
 from .task_group_bot_admission_facts import record_fact as _record_fact
-from .task_group_bot_admission_insert import persist_unique_observation
+from .task_group_bot_admission_insert import find_observation, persist_unique_observation
 from .task_group_bot_admission_prompts import record_control_facts as _record_control_facts
 OBSERVATION_SECONDS = 30
+
 @dataclass(frozen=True)
 class AdmissionDecision:
     allowed: bool
     code: str
     admission_id: str
     version: int
-@dataclass(frozen=True)
-class ProbeSurface:
-    account: TgAccount
-    group: TgGroup
-    authorization: object
-    identity: dict
-    start_cursor: int | None
-
-
 def evaluate_task_admission(
     session: Session,
     *,
@@ -50,7 +45,12 @@ def evaluate_task_admission(
     group_id: int,
     account_id: int,
 ) -> AdmissionDecision:
-    admission = _admission(session, task_id, group_id, account_id=account_id)
+    admission = find_observation(
+        session,
+        task_id=task_id,
+        group_id=group_id,
+        account_id=account_id,
+    )
     if admission is None:
         admission = _start_observation(
             session,
@@ -69,6 +69,11 @@ def evaluate_task_admission(
     if admission.state == "requirements_pending":
         return _requirements_decision(session, admission)
     if admission.state == "abandoned":
+        if admission.terminal_reason == "current_authorization_missing":
+            from .task_group_bot_admission_recovery import restart_unproven_admission
+
+            if restart_unproven_admission(session, admission):
+                return _decision(admission, False, "c2_observation_restarted")
         return _decision(admission, False, "c2_account_abandoned")
     if admission.observation_gap:
         return _decision(admission, False, "c2_observation_gap")
@@ -88,16 +93,18 @@ def _probe_due_observation(
     if isinstance(messages, AdmissionDecision):
         return messages
     current_authorization = _current_authorization(session, admission.account_id)
-    if current_authorization is None or not surface_is_current(
+    if not surface_is_current(
         probe.identity,
         probe.group,
         current_authorization,
         account_id=admission.account_id,
+        session_ciphertext=str(probe.account.session_ciphertext or ""),
     ):
         return _restart_surface(
             session,
             admission=admission,
             group=probe.group,
+            account=probe.account,
             authorization=current_authorization,
         )
     end_cursor = _max_cursor(messages, probe.start_cursor)
@@ -122,19 +129,19 @@ def _load_probe_surface(
     if group is None:
         return _abandon(session, admission, "target_group_unavailable")
     authorization = _current_authorization(session, admission.account_id)
-    if authorization is None:
-        return _abandon(session, admission, "current_authorization_missing")
     surface = dict(admission.surface_identity or {})
     if not surface_is_current(
         surface,
         group,
         authorization,
         account_id=admission.account_id,
+        session_ciphertext=str(account.session_ciphertext or ""),
     ):
         return _restart_surface(
             session,
             admission=admission,
             group=group,
+            account=account,
             authorization=authorization,
         )
     return ProbeSurface(
@@ -178,6 +185,7 @@ def _start_observation(
     group = session.get(TgGroup, group_id)
     if group is None:
         raise ValueError("c2_target_group_missing")
+    account = session.get(TgAccount, account_id)
     authorization = _current_authorization(session, account_id)
     cursor = _latest_group_cursor(session, group_id)
     started_at = _now()
@@ -185,6 +193,7 @@ def _start_observation(
         group,
         authorization=authorization,
         account_id=account_id,
+        session_ciphertext=str(account.session_ciphertext or "") if account else "",
         start_cursor=cursor,
         end_cursor=cursor,
         observation_version=1,
@@ -200,8 +209,12 @@ def _start_observation(
         tenant_id=tenant_id,
         group_id=group_id,
         account_id=account_id,
-        authorization=authorization,
         imported_ready=imported_ready,
+        abandonment_reason=(
+            "session_unavailable"
+            if account is None or not account.session_ciphertext
+            else ""
+        ),
         started_at=started_at,
         identity=identity,
         task_lifecycle_epoch=_task_lifecycle_epoch(session, task_id),
@@ -212,8 +225,8 @@ def _start_observation(
     _record_initial_observation_fact(
         session,
         row,
-        authorization=authorization,
         imported_ready=imported_ready,
+        abandonment_reason=row.terminal_reason,
     )
     return row
 
@@ -224,8 +237,8 @@ def _new_observation_row(
     tenant_id: int,
     group_id: int,
     account_id: int,
-    authorization,
     imported_ready: bool,
+    abandonment_reason: str,
     started_at,
     identity: dict,
     task_lifecycle_epoch: int,
@@ -236,12 +249,13 @@ def _new_observation_row(
         task_lifecycle_epoch=task_lifecycle_epoch,
         account_id=account_id,
         target_group_id=group_id,
-        state="abandoned" if authorization is None else "ready" if imported_ready else "observing",
+        state="abandoned" if abandonment_reason else "ready" if imported_ready else "observing",
         observation_started_at=started_at,
         no_prompt_pass_at=started_at + timedelta(seconds=OBSERVATION_SECONDS),
         observation_gap=False,
         surface_identity_hash=_hash(identity),
         surface_identity=identity,
+        terminal_reason=abandonment_reason,
     )
 
 
@@ -249,11 +263,11 @@ def _record_initial_observation_fact(
     session: Session,
     row: TaskGroupBotAdmission,
     *,
-    authorization,
     imported_ready: bool,
+    abandonment_reason: str,
 ) -> None:
-    if authorization is None:
-        row.terminal_reason = "current_authorization_missing"
+    if abandonment_reason:
+        row.terminal_reason = abandonment_reason
         row.terminal_evidence = {"outcome": "abandoned_for_task"}
         return
     if imported_ready:
@@ -420,16 +434,18 @@ def _restart_surface(
     *,
     admission,
     group,
+    account,
     authorization,
 ) -> AdmissionDecision:
-    if authorization is None:
-        return _abandon(session, admission, "current_authorization_missing")
+    if account is None or not account.session_ciphertext:
+        return _abandon(session, admission, "session_unavailable")
     now_value = _now()
     cursor = _latest_group_cursor(session, group.id)
     identity = _surface_identity(
         group,
         authorization=authorization,
         account_id=admission.account_id,
+        session_ciphertext=str(account.session_ciphertext),
         start_cursor=cursor,
         end_cursor=cursor,
         observation_version=int(admission.observation_version or 1) + 1,
@@ -444,6 +460,8 @@ def _restart_surface(
     admission.no_prompt_pass_at = now_value + timedelta(seconds=OBSERVATION_SECONDS)
     admission.surface_identity = identity
     admission.surface_identity_hash = _hash(identity)
+    admission.terminal_reason = ""
+    admission.terminal_evidence = {}
     admission.version = int(admission.version or 1) + 1
     return _decision(admission, False, "c2_observation_surface_changed")
 
@@ -463,32 +481,6 @@ def _abandon(
     return _decision(admission, False, "c2_account_abandoned")
 
 
-def _unusable_telegram_error(exc: Exception) -> bool:
-    detail = f"{type(exc).__name__}:{exc}".lower()
-    return any(code in detail for code in (
-        "session_revoked",
-        "session_unauthorized",
-        "auth_key_unregistered",
-        "need_relogin",
-        "user_deactivated",
-        "account_banned",
-        "channel_invalid",
-        "peer_id_invalid",
-    ))
-
-
-def _admission(
-    session: Session,
-    task_id: str,
-    group_id: int,
-    *,
-    account_id: int,
-) -> TaskGroupBotAdmission | None:
-    return session.scalar(select(TaskGroupBotAdmission).where(
-        TaskGroupBotAdmission.task_id == task_id,
-        TaskGroupBotAdmission.target_group_id == group_id,
-        TaskGroupBotAdmission.account_id == account_id,
-    ))
 def _decision(
     admission: TaskGroupBotAdmission,
     allowed: bool,

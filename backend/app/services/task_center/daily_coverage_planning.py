@@ -253,7 +253,7 @@ def _ready_rows_without_cursor(
         TaskAccountDailyCoverage.tenant_id == task.tenant_id,
         TaskAccountDailyCoverage.task_id == task.id,
         TaskAccountDailyCoverage.coverage_date == timestamp.date(),
-        TaskAccountDailyCoverage.state == "ready",
+        TaskAccountDailyCoverage.state.in_(("ready", "pending_admission")),
         TaskAccountDailyCoverage.confirmed_count < TaskAccountDailyCoverage.target_count,
         TaskAccountDailyCoverage.targeted_at <= timestamp,
         or_(

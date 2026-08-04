@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.models import (
+    AccountStatus,
     Action,
     AiProvider,
     ExecutionAttempt,
@@ -17,6 +18,7 @@ from app.models import (
     FulfillmentRemoteFact,
     GenerationJob,
     Task,
+    TaskAccountDailyCoverage,
     TaskGroupBotAdmission,
     AccountGroupAdmissionFact,
     Tenant,
@@ -26,6 +28,8 @@ from app.models import (
     TgGroup,
 )
 from app.services.task_center.direct_action_claims import claim_fact_first_candidates
+from app.services._common import _now
+from app.services.task_center.daily_coverage_planning import ready_coverage_plan_batch
 from app.services.task_center.ai_generation_worker import drain_ai_generation
 from app.services.task_center.ai_generation_parallel import _claim_job, _job_available
 from app.services.task_center.ai_generator import _provider_for_exact_model
@@ -41,6 +45,9 @@ from app.services.task_center.fulfillment_activation import (
 )
 from app.services.task_center.task_group_bot_admission_v2 import (
     evaluate_task_admission,
+)
+from app.services.task_center.task_group_bot_admission_recovery import (
+    reopen_unproven_task_coverages,
 )
 from app.services.task_center.fulfillment_remote_facts import ensure_action_obligation
 from app.services.task_center.executors import group_ai_chat
@@ -563,8 +570,9 @@ def test_c2_no_prompt_passes_only_after_exact_30_second_surface(
     assert second.code == "c2_no_prompt_30s_passed"
 
 
-def test_c2_missing_current_authorization_abandons_only_task_account(
+def test_c2_missing_current_authorization_observes_with_session_identity(
     session: Session,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     task = _task("c2-missing-auth")
     account = TgAccount(
@@ -586,11 +594,110 @@ def test_c2_missing_current_authorization_abandons_only_task_account(
         account_id=account.id,
     )
 
-    assert decision.code == "c2_account_abandoned"
+    assert decision.code == "c2_observation_started"
     admission = session.get(TaskGroupBotAdmission, decision.admission_id)
-    assert admission.state == "abandoned"
-    assert admission.terminal_reason == "current_authorization_missing"
-    assert admission.terminal_evidence["outcome"] == "abandoned_for_task"
+    assert admission.state == "observing"
+    assert admission.surface_identity["viewer_authorization_id"] == ""
+    assert admission.surface_identity["viewer_session_identity_hash"]
+    admission.no_prompt_pass_at = datetime(2000, 1, 1)
+    monkeypatch.setattr(
+        "app.services.task_center.task_group_bot_admission_v2.credentials_for_account",
+        lambda *_: object(),
+    )
+    monkeypatch.setattr(
+        "app.services.task_center.task_group_bot_admission_v2.gateway.fetch_group_messages",
+        lambda *_args, **_kwargs: [],
+    )
+
+    ready = evaluate_task_admission(
+        session,
+        task_id=task.id,
+        tenant_id=1,
+        group_id=group.id,
+        account_id=account.id,
+    )
+
+    assert ready.allowed
+    assert ready.code == "c2_no_prompt_30s_passed"
+
+
+def test_c2_reopens_unproven_authorization_terminal_and_coverage(
+    session: Session,
+) -> None:
+    task = _task("c2-reopen-unproven")
+    account = TgAccount(
+        id=23,
+        tenant_id=1,
+        display_name="小刚",
+        phone_masked="***0023",
+        session_ciphertext="encrypted-session",
+        status=AccountStatus.ACTIVE.value,
+    )
+    group = TgGroup(id=33, tenant_id=1, tg_peer_id="-10033", title="目标群三")
+    admission = TaskGroupBotAdmission(
+        tenant_id=1,
+        task_id=task.id,
+        account_id=account.id,
+        target_group_id=group.id,
+        state="abandoned",
+        no_prompt_pass_at=_now(),
+        surface_identity_hash="old",
+        surface_identity={},
+        terminal_reason="current_authorization_missing",
+    )
+    coverage = TaskAccountDailyCoverage(
+        tenant_id=1,
+        task_id=task.id,
+        group_id=group.id,
+        account_id=account.id,
+        coverage_date=_now().date(),
+        state="abandoned_for_day",
+        blocker_code="account_task_abandoned",
+    )
+    session.add_all([task, account, group, admission, coverage])
+    session.flush()
+
+    reopened = reopen_unproven_task_coverages(
+        session,
+        task,
+        group,
+        limit=20,
+    )
+
+    assert reopened == 1
+    assert admission.state == "observing"
+    assert admission.terminal_reason == ""
+    assert coverage.state == "pending_admission"
+    assert coverage.blocker_code == "group_bot_admission_wait"
+
+
+def test_fact_first_planning_materializes_pending_admission_coverage(
+    session: Session,
+) -> None:
+    task = _task("c2-pending-materialization")
+    account = TgAccount(
+        id=24,
+        tenant_id=1,
+        display_name="小强",
+        phone_masked="***0024",
+        session_ciphertext="encrypted-session",
+    )
+    group = TgGroup(id=34, tenant_id=1, tg_peer_id="-10034", title="目标群四")
+    coverage = TaskAccountDailyCoverage(
+        tenant_id=1,
+        task_id=task.id,
+        group_id=group.id,
+        account_id=account.id,
+        coverage_date=_now().date(),
+        state="pending_admission",
+        targeted_at=_now() - timedelta(minutes=1),
+    )
+    session.add_all([task, account, group, coverage])
+    session.flush()
+
+    rows = ready_coverage_plan_batch(session, task, now=_now(), limit=20).rows
+
+    assert [row.id for row in rows] == [coverage.id]
 
 
 def test_v3_ai_generation_calls_provider_concurrently(tmp_path) -> None:
