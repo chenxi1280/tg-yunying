@@ -10,7 +10,7 @@ from typing import Any
 from urllib.parse import urlparse
 from uuid import uuid4
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.ai_gateway import AiProviderCredentials, AiUsage, normalize_ai_model_name
@@ -341,6 +341,8 @@ def list_ai_providers(session: Session) -> list[AiProvider]:
 
 
 def create_ai_provider(session: Session, payload: AiProviderCreate, actor: str) -> AiProvider:
+    if payload.is_active:
+        _disable_other_active_providers(session)
     provider = AiProvider(
         provider_name=payload.provider_name,
         provider_type=payload.provider_type,
@@ -358,6 +360,8 @@ def create_ai_provider(session: Session, payload: AiProviderCreate, actor: str) 
     )
     session.add(provider)
     session.flush()
+    if provider.is_active:
+        _set_tenant_default_provider(session, provider.id)
     audit(session, tenant_id=None, actor=actor, action="新增AI供应商", target_type="ai_provider", target_id=str(provider.id))
     session.commit()
     session.refresh(provider)
@@ -380,13 +384,32 @@ def update_ai_provider(session: Session, provider_id: int, payload: AiProviderUp
     if data.get("api_key"):
         provider.api_key_ciphertext = encrypt_secret(data["api_key"])
     if data.get("is_active") is not None:
+        if data["is_active"]:
+            _disable_other_active_providers(session, keep_id=provider.id)
         provider.is_active = data["is_active"]
         provider.health_status = AiProviderHealthStatus.HEALTHY.value if provider.is_active else AiProviderHealthStatus.DISABLED.value
+        if provider.is_active:
+            _set_tenant_default_provider(session, provider.id)
     provider.updated_at = _now()
     audit(session, tenant_id=None, actor=actor, action="更新AI供应商", target_type="ai_provider", target_id=str(provider.id))
     session.commit()
     session.refresh(provider)
     return provider
+
+
+def _disable_other_active_providers(session: Session, *, keep_id: int | None = None) -> None:
+    statement = update(AiProvider).where(AiProvider.is_active.is_(True))
+    if keep_id is not None:
+        statement = statement.where(AiProvider.id != keep_id)
+    session.execute(statement.values(
+        is_active=False,
+        health_status=AiProviderHealthStatus.DISABLED.value,
+        updated_at=_now(),
+    ))
+
+
+def _set_tenant_default_provider(session: Session, provider_id: int) -> None:
+    session.execute(update(TenantAiSetting).values(default_provider_id=provider_id))
 
 
 def check_ai_provider(session: Session, provider_id: int, actor: str) -> AiProvider:

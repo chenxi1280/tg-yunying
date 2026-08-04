@@ -163,13 +163,18 @@ def _provider_for_model(session: Session, model_name: str) -> AiProvider | None:
 
 def _provider_for_exact_model(session: Session, model_name: str) -> AiProvider | None:
     normalized = normalize_ai_model_name(model_name)
+    family = _model_family(normalized)
     providers = session.scalars(
         select(AiProvider)
         .where(AiProvider.is_active.is_(True), AiProvider.health_status == AiProviderHealthStatus.HEALTHY.value)
         .order_by(AiProvider.id.asc())
     ).all()
     exact = next((provider for provider in providers if normalize_ai_model_name(provider.model_name) == normalized), None)
-    return exact or next((provider for provider in providers if _is_mock_provider(provider)), None)
+    family_match = next(
+        (provider for provider in providers if family and _provider_matches_family(provider, family)),
+        None,
+    )
+    return exact or family_match or next((provider for provider in providers if _is_mock_provider(provider)), None)
 
 
 def _provider_matches_family(provider: AiProvider, family: str) -> bool:

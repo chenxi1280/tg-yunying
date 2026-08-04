@@ -281,7 +281,7 @@ def _generation_dependencies(*, normal_generator=None, reply_generator=None):
     )
 
 
-def test_ai_group_stage_provider_requires_exact_model():
+def test_ai_group_stage_models_reuse_single_active_family_key():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     with Session(engine) as session:
@@ -297,13 +297,15 @@ def test_ai_group_stage_provider_requires_exact_model():
                 base_url="https://api.minimax.io/v1",
                 model_name="MiniMax-M2.5",
                 api_key_ciphertext="test",
+                is_active=False,
+                health_status="禁用",
             ),
         ])
         session.commit()
 
         assert ai_generator._provider_for_exact_model(session, "MiniMax-M3").model_name == "MiniMax-M3"
-        assert ai_generator._provider_for_exact_model(session, "MiniMax-M2.5").model_name == "MiniMax-M2.5"
-        assert ai_generator._provider_for_exact_model(session, "MiniMax-M2.7") is None
+        assert ai_generator._provider_for_exact_model(session, "MiniMax-M2.5").model_name == "MiniMax-M3"
+        assert ai_generator._provider_for_exact_model(session, "MiniMax-M2.7").model_name == "MiniMax-M3"
 
 
 def test_provider_generation_metadata_is_accepted_by_send_payload():

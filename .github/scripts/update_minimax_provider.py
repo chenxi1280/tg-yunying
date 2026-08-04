@@ -4,7 +4,7 @@ import json
 import os
 from dataclasses import dataclass, replace
 
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, update
 
 from app.ai_gateway import AiGateway, AiProviderCredentials, normalize_ai_model_name
 from app.database import SessionLocal
@@ -64,14 +64,16 @@ def _upsert_provider(config: MinimaxProviderConfig) -> dict[str, object]:
     with SessionLocal() as session:
         primary_config, fallback_config = _provider_configs(config)
         primary, primary_created = _upsert_model_provider(session, primary_config)
-        fallback, fallback_created = _upsert_model_provider(session, fallback_config)
         default_updated = _set_default_provider(session, config.tenant_id, primary.id)
         session.commit()
         session.refresh(primary)
-        session.refresh(fallback)
         return {
             "primary": _result_payload(primary, primary_created),
-            "fallback": _result_payload(fallback, fallback_created),
+            "fallback": {
+                **_result_payload(primary, False),
+                "model_name": fallback_config.model_name,
+                "shared_key": True,
+            },
             "tenant_id": config.tenant_id,
             "tenant_default_updated": default_updated,
         }
@@ -89,6 +91,18 @@ def _upsert_model_provider(session, config: MinimaxProviderConfig) -> tuple[AiPr
     if provider is None:
         provider = AiProvider(provider_name=f"MiniMax {config.model_name}", provider_type="openai_compatible")
         session.add(provider)
+        _apply_provider_config(provider, config)
+        provider.is_active = False
+        session.flush()
+    session.execute(
+        update(AiProvider)
+        .where(AiProvider.id != provider.id)
+        .values(
+            is_active=False,
+            health_status=AiProviderHealthStatus.DISABLED.value,
+            updated_at=now(),
+        )
+    )
     _apply_provider_config(provider, config)
     session.flush()
     return provider, created
@@ -129,6 +143,7 @@ def _apply_provider_config(provider: AiProvider, config: MinimaxProviderConfig) 
 
 
 def _set_default_provider(session, tenant_id: int, provider_id: int) -> bool:
+    session.execute(update(TenantAiSetting).values(default_provider_id=provider_id))
     setting = session.scalar(select(TenantAiSetting).where(TenantAiSetting.tenant_id == tenant_id))
     if not setting:
         return False

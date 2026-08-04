@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -12,6 +12,15 @@ from .enums import AiProviderHealthStatus, now
 
 class AiProvider(Base):
     __tablename__ = "ai_providers"
+    __table_args__ = (
+        Index(
+            "uq_ai_provider_single_active",
+            "is_active",
+            unique=True,
+            postgresql_where=text("is_active = true"),
+            sqlite_where=text("is_active = 1"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     provider_name: Mapped[str] = mapped_column(String(100))

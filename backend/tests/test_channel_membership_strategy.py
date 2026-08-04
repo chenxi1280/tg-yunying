@@ -220,8 +220,8 @@ def test_image_verification_provider_accepts_minimax_when_mimo_missing() -> None
                 base_url="https://api.deepseek.com",
                 model_name="deepseek-v4-flash",
                 api_key_ciphertext="cipher",
-                health_status=AiProviderHealthStatus.HEALTHY.value,
-                is_active=True,
+                health_status=AiProviderHealthStatus.DISABLED.value,
+                is_active=False,
             )
         )
         session.add(

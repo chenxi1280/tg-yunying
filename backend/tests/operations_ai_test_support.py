@@ -124,12 +124,13 @@ def add_ai_provider(
     base_url: str,
     model_name: str,
     default: bool = False,
+    active: bool = True,
 ) -> None:
     session.add(AiProvider(
         id=provider_id, provider_name=provider_name,
         provider_type="openai_compatible", base_url=base_url,
         model_name=model_name, api_key_ciphertext=encrypt_secret(f"key-{provider_id}"),
-        is_active=True, health_status="健康",
+        is_active=active, health_status="健康" if active else "禁用",
     ))
     if default:
         session.add(TenantAiSetting(

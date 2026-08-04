@@ -1078,6 +1078,8 @@ group_ai_chat / channel_comment 正文
 
 > **DF-326 AI 跨群并行、同群单 ready 生成（2026-08-01，2026-08-03 claim 补正）**：`worker-ai-generation{1..3} -> lock group + atomically publish payload generating claim -> tenant_id+group_id generating/ready 占位复检 -> Provider -> ready Action -> Dispatcher/Gateway -> listener context`。同群只能保留一个 generating/ready open Action，不同群可并行；终态不占位。claim 若只写 Action executing、payload 仍为 pending 会形成锁释放后的并发空窗，禁止该状态；准入延后释放空正文 claim 时恢复 pending。多 worker 不得绕过内容、上下文、账号或 Gateway 门禁。
 
+> **DF-326A Generation lease 与单 Provider 修复（2026-08-04 current_contract）**：`PostgreSQL lease_expires_at/db_now eligibility -> Python Asia/Shanghai-aware 二次判断 -> GenerationJob 单行 CAS -> active Provider key -> 同 family 请求 model 参数 -> finish job`。数据库返回的 offset-naive 北京时间墙钟必须先规范化，不能与 offset-aware `_now()` 直接比较并击穿三个 worker。`ai_providers` 以 partial unique index 保证最多一个 active；激活新行时同事务停用旧 active、更新租户默认 Provider。同 family 多模型共享这行的 base URL/header/secret，只覆盖请求 model，不为每个模型激活不同 key。
+
 > **DF-327 AI 生成上下文阈值与累计关系合同（2026-08-03）**：`Planner cumulative_reply_requirement -> GenerationPlanState.requested_reply_count -> ContentMixCycleSpec.reply_min_required_count`，本 Cycle 的最小 reply 义务使用累计分配结果，不再回读静态每轮最小值。`generation ready -> count newer non-bot context after frozen snapshot -> compare frozen context_expire_after_messages -> keep ready | context_superseded_requeue`；历史未冻结正数阈值兼容为 1，正数阈值在生成完成和 Gateway 前保持同一语义，其他 scope/listener/admission/content 门禁不变。
 
 > **DF-328 historical_do_not_implement（2026-08-03 到期债务预算）**：其 `due debt/due_catch_up_check_in` 调度与可重复流水线已由 DF-330 的开放义务、真实空闲槽和统一签到唯一约束取代，仅供事故审计。
