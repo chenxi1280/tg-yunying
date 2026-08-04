@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from threading import Barrier
+from zoneinfo import ZoneInfo
 
 import pytest
 from sqlalchemy import create_engine, inspect, select
@@ -26,6 +27,10 @@ from app.models import (
 )
 from app.services.task_center.direct_action_claims import claim_fact_first_candidates
 from app.services.task_center.ai_generation_worker import drain_ai_generation
+from app.services.task_center.ai_generation_parallel import _job_available
+from app.services.task_center.ai_generator import _provider_for_exact_model
+from app.services.ai_config import update_ai_provider
+from app.schemas import AiProviderUpdate
 from app.services.task_center.fulfillment_activation import (
     ActivationRequest,
     activate_manifest,
@@ -90,6 +95,48 @@ def test_v3_schema_removes_global_account_execution_unique_index(session: Sessio
     assert "uq_actions_open_obligation" in indexes
     assert inspect(session.get_bind()).has_table("search_click_assignments")
     assert inspect(session.get_bind()).has_table("fulfillment_remote_facts")
+    provider_indexes = {
+        row["name"] for row in inspect(session.get_bind()).get_indexes("ai_providers")
+    }
+    assert "uq_ai_provider_single_active" in provider_indexes
+
+
+def test_generation_job_expired_lease_compares_naive_database_time_safely() -> None:
+    job = GenerationJob(
+        state="generating",
+        lease_expires_at=datetime(2026, 8, 4, 8, 0),
+    )
+    now = datetime(2026, 8, 4, 8, 1, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+    assert _job_available(job, now)
+
+
+def test_activating_provider_replaces_active_key_and_reuses_family_model(
+    session: Session,
+) -> None:
+    replacement = AiProvider(
+        id=2,
+        provider_name="MiniMax shared key",
+        base_url="https://api.minimax.invalid",
+        model_name="MiniMax-M3",
+        api_key_ciphertext="encrypted-shared-key",
+        is_active=False,
+        health_status="禁用",
+    )
+    session.add(replacement)
+    session.commit()
+
+    update_ai_provider(
+        session,
+        replacement.id,
+        AiProviderUpdate(is_active=True),
+        "test-actor",
+    )
+
+    assert not session.get(AiProvider, 1).is_active
+    assert session.get(AiProvider, 2).is_active
+    assert session.get(TenantAiSetting, 1).default_provider_id == 2
+    assert _provider_for_exact_model(session, "MiniMax-M2.5").id == 2
 
 
 def test_direct_claim_first_round_covers_each_running_task(session: Session) -> None:
