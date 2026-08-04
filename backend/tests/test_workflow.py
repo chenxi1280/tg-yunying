@@ -4016,7 +4016,9 @@ def test_task_center_group_ai_chat_creates_and_dispatches_actions(monkeypatch):
             )))
         assert replanned["processed"] >= 0
         assert len(send_actions) == 1
-        assert send_actions[0].primary_quantity_slot_id
+        assert send_actions[0].primary_quantity_slot_id is None
+        assert send_actions[0].content_mix_cycle_slot_id is None
+        assert send_actions[0].payload["coverage_ledger_id"]
         assert make_task_send_actions_due(task["id"]) >= 1
         generated = client.post(
             "/api/worker/drain-once?role=ai-generation",
