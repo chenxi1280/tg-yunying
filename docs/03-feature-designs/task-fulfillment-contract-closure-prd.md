@@ -356,6 +356,8 @@ pending -> generating -> ready
 
 GenerationJob 的候选筛选和 CAS 到期条件由 PostgreSQL 比较 `lease_expires_at <= db_now`；Python 仅在已读取行上做二次判断时，必须先把 PostgreSQL 返回的 offset-naive 北京时间墙钟与应用 offset-aware 时间规范到同一 `Asia/Shanghai` 语义。ORM UPDATE CAS 必须使用 `synchronize_session=false`，禁止 SQLAlchemy 再用 Python evaluator 重算数据库 where 条件。禁止直接比较两种 datetime、禁止把 naive 值误标为 UTC，也不能因单个过期 job 的时间表示差异让整个 generation worker drain 失败。三个 generation worker 任一轮失败都必须暴露完整异常；E4 需要看到三个 worker 持续 claim/finish 且多个 running AI Task 都产生远端事实。
 
+每个 GenerationJob 读取目标群最近真人上下文时，查询固定为 `tenant_id + group_id + is_bot=false + content<>''`，按 `coalesce(sent_at,created_at) DESC,id DESC` 取最多 `chat_history_depth` 条；数据库必须提供与该过滤、表达式排序完全一致的 partial expression index。禁止依赖只含 `sent_at` 的旧索引后再做并行排序，也禁止通过降低 worker 并发、缩小上下文深度或增大 PostgreSQL `/dev/shm` 掩盖查询缺索引。E2 必须以 PostgreSQL `EXPLAIN` 证明无 `Seq Scan/Sort/Gather`；E4 必须证明三个生成 worker 并发读取时不再出现 `could not resize shared memory segment`，并且 GenerationJob、Action 与 Telegram 远端消息事实持续增长。
+
 ### 8.2 direct 独立提交与强上下文 CAS
 
 Planner 为可并发计算的义务分配稳定 `generation_sequence` 和 `context_snapshot_version`；sequence 只用于审计和复现，不是发送闸门。同群生成与提交规则为：
@@ -477,6 +479,11 @@ ix_actions_lane_claim_ready
 ix_generation_jobs_claim_ready
   ON generation_jobs (created_at, id)
   WHERE state = 'pending';
+
+ix_group_context_messages_ai_recent
+  ON group_context_messages
+  (tenant_id, group_id, coalesce(sent_at, created_at) DESC, id DESC)
+  WHERE is_bot IS false AND content <> '';
 
 ix_search_assignments_claim_ready
   ON search_click_assignments (obligation_deadline_at, id)
