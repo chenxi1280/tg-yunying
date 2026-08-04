@@ -17,7 +17,7 @@ from app.models import (
 )
 from app.services._common import _now
 from app.services.task_center.dispatcher import _finalize_fact_first_dispatch
-from app.services.task_center.fulfillment_remote_facts import (
+from app.services.task_center.search_click_safe_settlement import (
     SAFE_NOT_EXECUTED_FACT,
 )
 
