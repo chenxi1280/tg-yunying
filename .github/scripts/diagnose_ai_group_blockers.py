@@ -14,6 +14,7 @@ DEFAULT_TASK_NAMES = (
     "郑州大学",
     "郑州师范",
     "郑州楼凤",
+    "郑州学生会",
 )
 LOCAL_TIMEZONE = ZoneInfo("Asia/Shanghai")
 
