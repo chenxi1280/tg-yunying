@@ -1087,7 +1087,7 @@ group_ai_chat / channel_comment 正文
 
 > **DF-328 historical_do_not_implement（2026-08-03 到期债务预算）**：其 `due debt/due_catch_up_check_in` 调度与可重复流水线已由 DF-330 的开放义务、真实空闲槽和统一签到唯一约束取代，仅供事故审计。
 
-> **DF-330 搜索安全未执行投影（2026-08-04 生产纠偏）**：Gateway 已启动但 `GatewayRequestEvidenceJournal.remote_mutation_state=false` 时，`safely_not_executed` remote fact 必须把同一 legacy `SearchClickAssignment` CAS 为可重放状态，并清空仍指向该 Action 的 `SearchClickFulfillmentObligation.source_action_id`；Action/Attempt/assignment/fact 身份只保留审计，不删除旧行、不盲目重试。实时 finalizer 与存量恢复共用同一幂等收口函数，存量恢复必须固定 Task/assignment 集合并核对完整 journal、fact、projection 证据后写审批审计。unknown、无 journal 或 mutation state 不明仍不可重放。
+> **DF-330 搜索安全未执行投影（2026-08-04 生产纠偏）**：Gateway 已启动但 `GatewayRequestEvidenceJournal.remote_mutation_state=false` 时，`safely_not_executed` remote fact 必须把同一 legacy `SearchClickAssignment` CAS 为可重放状态，并清空仍指向该 Action 的 `SearchClickFulfillmentObligation.source_action_id`；Action/Attempt/assignment/fact 身份只保留审计，不删除旧行、不盲目重试。实时 finalizer 与存量恢复共用同一幂等收口函数，存量恢复必须固定 Task/assignment 集合并核对完整 journal、fact、projection 证据后写审批审计。unknown、无 journal 或 mutation state 不明仍不可重放。验证码识别、投票、deadline/preflight、图片下载和关键词刷新均在 callback 前，结果必须显式携带 `remote_mutation_started=false`；callback 已实际发出后才允许进入 `true|unknown`，避免把验证码前置失败误写为 Gateway unknown。存量 reason 白名单、无 callback/target-click/remote identity 的验证码前置失败可追加 adapter pre-accept receipt 后走同一 fact/projector；连接重置等 unknown 不得走该旁路。
 
 > **DF-329 historical_do_not_implement（2026-08-03 到期追赶流水线）**：其 `due_catch_up_pipeline_depth` 和 due-based 补量已删除；当前只按 Generation/interaction 真实空闲槽 JIT 物化，签到受 `(task,group,account,task-day)` 唯一约束。
 

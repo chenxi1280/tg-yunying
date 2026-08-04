@@ -746,6 +746,7 @@ async def _refresh_unresolved_verification(
             str(error.get("challenge_fingerprint_hash") or ""),
             "verification_refresh_transport_unavailable",
             detail=str(exc) or exc.__class__.__name__,
+            remote_mutation_started=False,
         )
     context.verification_budget.refresh_count += 1
     return await _validate_refreshed_verification_page(
@@ -770,6 +771,7 @@ async def _validate_refreshed_verification_page(
             previous_fingerprint,
             "verification_refresh_unexpected_page",
             page=page,
+            remote_mutation_started=False,
         )
     image_bytes = await _download_verification_image(context.client, page)
     fingerprint = _image_verification_fingerprint(
@@ -782,6 +784,7 @@ async def _validate_refreshed_verification_page(
             fingerprint,
             "verification_transport_unavailable",
             page=page,
+            remote_mutation_started=False,
         )
     if fingerprint == previous_fingerprint:
         return _image_verification_failed_result(
@@ -802,6 +805,7 @@ async def _validate_refreshed_verification_page(
         fingerprint,
         "new_challenge_fingerprint",
         page=page,
+        remote_mutation_started=False,
     )
     return _ImageVerificationHandleResult(
         page=required.page,
@@ -987,7 +991,11 @@ async def _handle_jisou_image_verification(
     )
     if not image_bytes:
         return _image_verification_required_result(
-            classification, buttons, fingerprint, "verification_transport_unavailable"
+            classification,
+            buttons,
+            fingerprint,
+            "verification_transport_unavailable",
+            remote_mutation_started=False,
         )
     if fingerprint in callback_unknown_fingerprints:
         return _image_verification_callback_unknown_result(
@@ -1000,7 +1008,11 @@ async def _handle_jisou_image_verification(
         )
     if solver is None or not candidate_answers:
         return _image_verification_required_result(
-            classification, buttons, fingerprint, "verification_ai_unavailable"
+            classification,
+            buttons,
+            fingerprint,
+            "verification_ai_unavailable",
+            remote_mutation_started=False,
         )
     mime_type = _message_media_mime_type(page)
     identity = _image_verification_identity(
@@ -1043,6 +1055,7 @@ async def _handle_jisou_image_verification(
             exc.code,
             detail=str(exc),
             votes=exc.votes,
+            remote_mutation_started=False,
         )
     except ImageVerificationConsensusUnavailableError as exc:
         return _image_verification_required_result(
@@ -1052,6 +1065,7 @@ async def _handle_jisou_image_verification(
             "verification_consensus_unavailable",
             detail=str(exc),
             votes=exc.votes,
+            remote_mutation_started=False,
         )
     except ImageVerificationProviderUnavailableError as exc:
         return _image_verification_required_result(
@@ -1060,6 +1074,7 @@ async def _handle_jisou_image_verification(
             fingerprint,
             "verification_ai_unavailable",
             detail=str(exc),
+            remote_mutation_started=False,
         )
     except ImageVerificationNoSafeAnswerError as exc:
         return _image_verification_failed_result(
@@ -1075,6 +1090,7 @@ async def _handle_jisou_image_verification(
             fingerprint,
             "verification_consensus_unavailable",
             detail="recognition returned no consensus decision",
+            remote_mutation_started=False,
         )
     answer = solved.answer
     confidence = solved.confidence
@@ -1121,6 +1137,7 @@ async def _handle_jisou_image_verification(
             detail=str(exc),
             page=current_page,
             votes=solved.votes,
+            remote_mutation_started=False,
         )
     except _VerificationCallbackResultUnknown as exc:
         return _image_verification_callback_unknown_result(
@@ -1156,6 +1173,7 @@ async def _handle_jisou_image_verification(
                 next_fingerprint,
                 "verification_transport_unavailable",
                 page=clicked_page,
+                remote_mutation_started=True,
             )
         if next_fingerprint == fingerprint:
             return _image_verification_failed_result(
@@ -1174,6 +1192,7 @@ async def _handle_jisou_image_verification(
             "new_challenge_fingerprint",
             page=clicked_page,
             votes=solved.votes,
+            remote_mutation_started=True,
         )
     return _ImageVerificationHandleResult(
         page=clicked_page,
@@ -1319,6 +1338,7 @@ async def _verification_callback_preflight(
             _parse_buttons(page),
             expected_fingerprint,
             "verification_deadline_exceeded",
+            remote_mutation_started=False,
         )
     current_page = await client.get_messages(bot_username, ids=page.id)
     current_buttons = _parse_buttons(current_page) if current_page else []
@@ -1344,6 +1364,7 @@ async def _verification_callback_preflight(
             current_fingerprint,
             "new_challenge_fingerprint",
             page=current_page,
+            remote_mutation_started=False,
         )
     if deadline_monotonic and monotonic() >= deadline_monotonic:
         return _image_verification_required_result(
@@ -1352,6 +1373,7 @@ async def _verification_callback_preflight(
             expected_fingerprint,
             "verification_deadline_exceeded",
             page=current_page,
+            remote_mutation_started=False,
         )
     return _ImageVerificationHandleResult(
         page=current_page,
@@ -1435,6 +1457,7 @@ def _image_verification_required_result(
     detail: str = "",
     page: Any = None,
     votes: tuple[ImageVerificationVote, ...] = (),
+    remote_mutation_started: bool | None = None,
 ) -> _ImageVerificationHandleResult:
     error = {
         **_failed("jisou_image_verification_required", "极搜图片验证码等待安全识别结果"),
@@ -1450,6 +1473,8 @@ def _image_verification_required_result(
             "page": _page_layout(buttons, classification.approved_button_positions),
         },
     }
+    if remote_mutation_started is not None:
+        error["remote_mutation_started"] = remote_mutation_started
     audit = None
     if votes:
         audit = {
