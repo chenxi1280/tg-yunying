@@ -361,7 +361,10 @@ def latest_context_rows(session: Session, payload: SendMessagePayload, task: Tas
         GroupContextMessage.group_id == payload.group_id,
         GroupContextMessage.is_bot.is_(False),
         GroupContextMessage.content != "",
-    ).order_by(func.coalesce(GroupContextMessage.sent_at, GroupContextMessage.created_at).desc()).limit(depth))
+    ).order_by(
+        func.coalesce(GroupContextMessage.sent_at, GroupContextMessage.created_at).desc(),
+        GroupContextMessage.id.desc(),
+    ).limit(depth))
     return list(reversed(list(rows)))
 
 
