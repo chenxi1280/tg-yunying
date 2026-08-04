@@ -234,6 +234,8 @@ C2 分成两层，禁止把远端事实锁死在某个 Task：
 
 配置频道必须来自 Task 表字段，不能只放通用 JSON、缓存或群级规则。Task 创建/编辑时校验稳定 OperationTarget ID、去重且最多 3 个；空数组表示没有运营预关注要求。
 
+`fact_first_v3` 的 AI 正文生成前置门禁只能调用 `TaskGroupBotAdmission + AccountGroupAdmissionFact` 新链路；禁止继续读取旧 `GroupBotAdmission/group_bot_global_rules` 或把旧 `group_bot_admission_state` payload 当作当前 Task 准入结论。未 ready 时本轮只能创建/推进当前 Task+账号 observation 并立即释放 GenerationJob/Action claim，禁止加载 Provider 凭据或调用 Provider；ready 后把 `task_group_bot_admission_id + version` 固化到 Action，再允许正文生成。缺授权、Session 失效等不可发送结果只放弃当前 Task 内该账号并释放未进 Gateway 义务，不得形成跨 Task 封禁。
+
 配置频道全部成功且已确认在群后，从数据库时间记录 `observation_started_at`、当前 viewer cursor、`observation_version` 和不可变 observation surface identity，建立连续 30 秒的账号视角观察。v1 只允许：
 
 ```text
