@@ -735,10 +735,6 @@ def plan_required_channel_follow_actions(
     """Create bound group_bot_channel_follow Actions for pending refs."""
     from app.models import Task
     from app.services._common import _now
-    from app.services.task_center.payloads import (
-        GroupBotRequiredChannelFollowPayload,
-        create_group_bot_required_channel_follow_action,
-    )
 
     task = session.get(Task, task_id)
     if task is None or task.tenant_id != admission.tenant_id:
@@ -753,45 +749,71 @@ def plan_required_channel_follow_actions(
             GroupBotRequiredChannelFollow.status == "pending",
         )
     ).all()
-    created: list[Any] = []
     now = _now()
-    for row in pending_refs:
-        if row.action_id:
-            bound = session.get(Action, row.action_id)
-            if bound is not None:
-                from .group_bot_requirement_recovery import replan_group_bot_requirement_action
-
-                replacement = replan_group_bot_requirement_action(session, bound)
-                if replacement is not None:
-                    created.append(replacement)
-            continue
-        source_url = source_channel_url_for_ref(control_buttons, str(row.channel_ref), prompt_text)
-        if not source_url:
-            row.failure_code = "required_channel_source_missing"
-            admission.failure_code = "required_channel_source_missing"
-            continue
-        payload = GroupBotRequiredChannelFollowPayload(
-            group_id=int(admission.group_id),
-            admission_id=int(admission.id),
-            admission_version=int(admission.admission_version or 1),
-            channel_ref=str(row.channel_ref),
-            source_message_id=str(source_message_id or row.source_message_id or ""),
-            source_channel_url=source_url,
-            admission_bound_task_id=str(task.id),
-            admission_bound_account_id=int(admission.account_id),
-        )
-        action = create_group_bot_required_channel_follow_action(
+    created = [
+        action
+        for row in pending_refs
+        if (action := _plan_required_channel_follow_row(
             session,
-            task,
-            int(admission.account_id),
-            now,
-            payload,
-            flush=True,
-        )
-        row.action_id = str(action.id)
-        created.append(action)
+            task=task,
+            admission=admission,
+            row=row,
+            source_message_id=source_message_id,
+            control_buttons=control_buttons,
+            prompt_text=prompt_text,
+            scheduled_at=now,
+        )) is not None
+    ]
     session.flush()
     return created
+
+
+def _plan_required_channel_follow_row(
+    session: Session,
+    *,
+    task,
+    admission: GroupBotAdmission,
+    row: GroupBotRequiredChannelFollow,
+    source_message_id: str,
+    control_buttons,
+    prompt_text: str,
+    scheduled_at: datetime,
+) -> Any | None:
+    if row.action_id:
+        bound = session.get(Action, row.action_id)
+        if bound is None:
+            row.action_id = ""
+            return None
+        from .group_bot_requirement_recovery import replan_group_bot_requirement_action
+
+        return replan_group_bot_requirement_action(session, bound)
+    source_url = source_channel_url_for_ref(
+        control_buttons, str(row.channel_ref), prompt_text,
+    )
+    if not source_url:
+        row.failure_code = "required_channel_source_missing"
+        admission.failure_code = "required_channel_source_missing"
+        return None
+    from app.services.task_center.payloads import (
+        GroupBotRequiredChannelFollowPayload,
+        create_group_bot_required_channel_follow_action,
+    )
+
+    payload = GroupBotRequiredChannelFollowPayload(
+        group_id=int(admission.group_id),
+        admission_id=int(admission.id),
+        admission_version=int(admission.admission_version or 1),
+        channel_ref=str(row.channel_ref),
+        source_message_id=str(source_message_id or row.source_message_id or ""),
+        source_channel_url=source_url,
+        admission_bound_task_id=str(task.id),
+        admission_bound_account_id=int(admission.account_id),
+    )
+    action = create_group_bot_required_channel_follow_action(
+        session, task, int(admission.account_id), scheduled_at, payload, flush=True,
+    )
+    row.action_id = str(action.id)
+    return action
 
 
 def plan_confirmation_button_action(
@@ -809,21 +831,13 @@ def plan_confirmation_button_action(
         create_group_bot_confirmation_button_action,
     )
 
-    button = confirmation_button(control_buttons)
     task = session.get(Task, task_id)
-    if button is None or task is None or task.tenant_id != admission.tenant_id:
-        return None
-    if active_policy(
-        session,
-        tenant_id=admission.tenant_id,
-        group_id=admission.group_id,
-        completion_policy="follow_sufficient",
-        trusted_bot_peer_id=admission.trusted_bot_peer_id,
-    ) is not None:
+    button = confirmation_button(control_buttons)
+    if not _confirmation_plan_scope_valid(session, task, admission, button):
         return None
     now = _now()
     current_source_message_id = str(source_message_id or "")
-    if not current_source_message_id or current_source_message_id != str(admission.source_message_id or ""):
+    if current_source_message_id != str(admission.source_message_id or ""):
         return None
     if _current_confirmation_requirement_blocked(
         session,
@@ -842,7 +856,21 @@ def plan_confirmation_button_action(
         now,
     ):
         return None
-    payload = GroupBotConfirmationButtonPayload(
+    payload = _confirmation_payload(admission, task, source_message_id, button)
+    return create_group_bot_confirmation_button_action(
+        session, task, int(admission.account_id), now, payload, flush=True
+    )
+
+
+def _confirmation_payload(
+    admission: GroupBotAdmission,
+    task,
+    source_message_id: str,
+    button: dict[str, object],
+) -> GroupBotConfirmationButtonPayload:
+    from app.services.task_center.payloads import GroupBotConfirmationButtonPayload
+
+    return GroupBotConfirmationButtonPayload(
         group_id=int(admission.group_id),
         admission_id=int(admission.id),
         admission_version=int(admission.admission_version or 1),
@@ -855,9 +883,23 @@ def plan_confirmation_button_action(
         admission_bound_task_id=str(task.id),
         admission_bound_account_id=int(admission.account_id),
     )
-    return create_group_bot_confirmation_button_action(
-        session, task, int(admission.account_id), now, payload, flush=True
-    )
+
+
+def _confirmation_plan_scope_valid(
+    session: Session,
+    task,
+    admission: GroupBotAdmission,
+    button: dict[str, object] | None,
+) -> bool:
+    if button is None or task is None or task.tenant_id != admission.tenant_id:
+        return False
+    return active_policy(
+        session,
+        tenant_id=admission.tenant_id,
+        group_id=admission.group_id,
+        completion_policy="follow_sufficient",
+        trusted_bot_peer_id=admission.trusted_bot_peer_id,
+    ) is None
 
 
 def _current_confirmation_requirement_blocked(
