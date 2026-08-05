@@ -170,7 +170,7 @@ def test_midday_start_is_warming_until_next_natural_day(session: Session) -> Non
     assert target.full_day_committed_at == datetime(2026, 7, 29)
 
 
-def test_midday_start_makes_full_target_due_immediately(session: Session) -> None:
+def test_midday_start_begins_with_zero_due(session: Session) -> None:
     task, group = _seed(session, configured=3, account_count=3)
     timestamp = datetime(2026, 7, 28, 12)
     task.scheduled_start = timestamp
@@ -185,9 +185,22 @@ def test_midday_start_makes_full_target_due_immediately(session: Session) -> Non
     assert daily_group_due_message_count(
         target,
         {},
-        immediate=True,
         now=timestamp,
-    ) == 3
+    ) == 0
+
+
+def test_full_day_800_target_is_only_partially_due_at_noon(session: Session) -> None:
+    task, group = _seed(session, configured=800, account_count=3)
+    timestamp = datetime(2026, 7, 28, 12)
+    target = ensure_task_group_daily_target(
+        session,
+        task,
+        group,
+        timestamp.date(),
+        now=timestamp,
+    )
+
+    assert daily_group_due_message_count(target, {}, now=timestamp) == 400
 
 
 def test_zero_quiet_curve_weight_reduces_volume_without_blocking(session: Session) -> None:

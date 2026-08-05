@@ -1,6 +1,8 @@
 # TG 运营管理平台 PRD
 
-> **2026-08-04 分类履约最终合同优先级：** 对 `group_ai_chat/channel_comment/channel_like/channel_view/search_click(click_only)`，当前产品合同由 `task-fulfillment-classified-recovery-prd.md` 与 `task-fulfillment-contract-closure-prd.md` 共同组成并 supersede 本文所有冲突旧述。本文中仍用于事故取证的“冻结账号分母”“搜索与普通互动共用 active claim/Dispatcher 容量”“TaskAllocation/DispatchReservation/预扣”“速率/静默权重/搜索 Window”“验证码 AI/VLM/模型投票”“显式 `FOR UPDATE/SKIP LOCKED` 或跨表锁链”“旧 Task 迁移或同 Task 新旧双写”“仅凭远端当前不存在即可重开 unknown”均统一视为 `historical_do_not_implement`。当前实现必须使用任务内动态账号范围、各阶段真实资源空闲即执行、单行 version CAS、唯一远端事实先行与幂等 projector、interaction/search 独立 lane、持久搜索 assignment/page phase、RapidOCR→ddddOCR、全系统唯一 active AI Provider key、绑定 target-group surface 的 C2 连续 30 秒观察，以及永久 unknown 的远端只对账终态。运营先创建 prepared 新 Task，真实 canary 只证明 remote fact 链，随后 CAS route epoch 使新 Task 从 0 运行并 fence 旧 Task，再异步物理删除旧 Task。
+> **2026-08-05 一天任务拟人节奏生产纠偏：** `fact_first_v3` 只定义 typed remote fact、防重、准入、恢复和 projector，不再等同于“全部义务立即 due”。`group_ai_chat/channel_like/channel_view` 以任务日 ledger 的 `planning_anchor_at..deadline_at` 和 `natural_full_day` 计算当前累计到期量与 future `scheduled_at`；partial-start 从 anchor=0 起算，容量不足写 shortfall，禁止 Planner、takeover 或 Recovery 把 future Action 批量改成当前时间。本文中与此冲突的“AI/点赞/浏览资源空闲即清空、不计算 due_by_now”统一为 `historical_do_not_implement`；频道评论和纯搜索点击不在本次节奏变更范围。专项合同见 `task-fulfillment-classified-recovery-prd.md` §4.5。
+
+> **2026-08-04 分类履约最终合同优先级：** 对 `group_ai_chat/channel_comment/channel_like/channel_view/search_click(click_only)`，当前产品合同由 `task-fulfillment-classified-recovery-prd.md` 与 `task-fulfillment-contract-closure-prd.md` 共同组成并 supersede 本文所有冲突旧述。本文中仍用于事故取证的“冻结账号分母”“搜索与普通互动共用 active claim/Dispatcher 容量”“TaskAllocation/DispatchReservation/预扣”“搜索 Window”“验证码 AI/VLM/模型投票”“显式 `FOR UPDATE/SKIP_LOCKED` 或跨表锁链”“旧 Task 迁移或同 Task 新旧双写”“仅凭远端当前不存在即可重开 unknown”均统一视为 `historical_do_not_implement`。当前实现必须使用任务内动态账号范围、任务类型到期策略、单行 version CAS、唯一远端事实先行与幂等 projector、interaction/search 独立 lane、持久搜索 assignment/page phase、RapidOCR→ddddOCR、全系统唯一 active AI Provider key、绑定 target-group surface 的 C2 连续 30 秒观察，以及永久 unknown 的远端只对账终态。运营先创建 prepared 新 Task，真实 canary 只证明 remote fact 链，随后 CAS route epoch 使新 Task 从 0 运行并 fence 旧 Task，再异步物理删除旧 Task。
 
 > **2026-08-04 生产切换闭环补充：** Planner 对每个 `fact_first_v3` Task 每轮只物化一个可直接执行批次，随后轮转其他到期 Task；`messages_per_round=40/50/60` 不是全局串行循环次数，禁止单个 4000/5000 目标 AI Task 阻塞搜索或其他任务。旧 Task 删除只集合快照 typed remote/unknown 防重候选并批量写 tombstone，普通 pending/failed/skipped 历史直接随 Task 级联删除；Action/Attempt 子表外键必须有删除热索引，禁止逐 Action 的 N+1 快照、验证或删除。
 
@@ -530,7 +532,7 @@ tenant_id + account_id + developer_app_id/api_id + authorization_id + session_ro
 
 - AI 活跃群和 AI 评论新增 Telegram 原生引用回复口径：引用回复必须在 Planner 阶段规划为独立 action，不得在执行层临时决定或用文本假引用替代。
 - AI 活跃群配置“每轮最少引用回复数”，AI 评论配置“每条频道消息最少引用回复数”。新建任务默认值均为 `1`，最小值为 `1`；Planner 必须按最少数量创建带 `reply_to_message_id` 的引用回复 action。若当前目标没有合格候选，必须记录 `reply_target_shortfall` 并显式等待/跳过，不能把引用要求关闭、伪造引用或用普通正文替代。
-- 引用对象不提供“真人消息 / 自己历史消息”范围选择。系统自动从当前目标内可回复的真人消息、托管账号历史成功消息、已采集评论和本任务历史成功评论中混合选择。
+- 2026-08-06 起，AI 活群不提供引用范围选择并固定只引用同 tenant、同 Task、同目标群的托管账号历史成功消息，且必须由成功 Attempt 的远端消息 ID 证明；监听到的其他成员消息只作上下文，不得成为 `reply_to_message_id`。频道评论仍按自身评论候选合同选择，不受此限制。
 - 普通消息和引用回复消息必须走不同生成提示词。引用回复在生成前先绑定具体引用对象，Prompt 必须包含被回复消息作者、原文、当前上下文和“本条是引用回复”的生成要求；不做生成后的语义匹配校验。
 - 任务详情、Action payload、执行结果和审计必须展示引用关系，包括引用对象 ID、作者、预览、来源、Telegram 远端消息 ID 和失败原因，便于区分内容不自然、引用对象不足和 Telegram 执行失败。
 
@@ -2607,7 +2609,7 @@ AI 活跃群和频道评论的“生成预览”接口也必须遵守候选数�
 
 AI 活跃群和频道评论 / 回复都必须读取全站唯一目标画像。画像只提供风格、话题权重、句式和读者口吻，不提供具体事实；具体事实必须来自当前群聊上下文、频道原文、讨论区评论、素材或账号画像。任务配置页只展示当前画像版本、样本数量、学习来源摘要和可用状态，不允许运营人员为单个任务选择另一份画像。
 
-AI 活群当前唯一数量合同是“单群自然日配置总发送量 + 本任务当日动态必达账号每人至少真实成功 1 条”。创建和编辑只暴露 `daily_message_target`；`current_required_account_count=count(eligible|recovering|completed)`，`planned_daily_target=max(daily_message_target,current_required_account_count)`，兼容 `effective_daily_target=planned_daily_target`，已确认数不反向抬高计划。账号范围以 `(task_id,target_group_id,account_id,task_day_ledger_id)` 独立动态维护；Telegram 权威 Session 失效、需重登或不可发送时当日放弃，群解散终结目标，不保留全局冻结分母。开放义务按各阶段真实空闲槽立即执行，不创建速率、静默权重、Window、份额或预扣。暂停/停止立即退出新规划；每个 release train 先创建全部 prepared 新 Task并从 0 建账，以其中一个真实 Task直接执行 canary，只证明 remote fact 链；随后单行 route epoch CAS 激活全部新 Task并使旧 Task失去 Gateway 权限，再异步删除旧 Task/runtime并只留最小远端 tombstone。route 切换后不恢复旧 Task。多个 running 任务和同账号非冲突 RPC 并发，不串行排空。完整口径以 `docs/03-feature-designs/task-fulfillment-classified-recovery-prd.md` §2.2/§4 和 `docs/03-feature-designs/ai-group-daily-group-target-redesign-prd.md` 为准。
+AI 活群当前唯一数量合同是“单群自然日配置总发送量 + 本任务当日动态必达账号每人至少真实成功 1 条”。创建和编辑只暴露 `daily_message_target`；`current_required_account_count=count(eligible|recovering|completed)`，`planned_daily_target=max(daily_message_target,current_required_account_count)`，兼容 `effective_daily_target=planned_daily_target`，已确认数不反向抬高计划。账号范围以 `(task_id,target_group_id,account_id,task_day_ledger_id)` 独立动态维护；Telegram 权威 Session 失效、需重登或不可发送时当日放弃，群解散终结目标，不保留全局冻结分母。开放义务按任务日曲线形成当前累计到期量，再由各阶段真实空闲槽执行；不创建中央 Window、任务份额或预扣。暂停/停止立即退出新规划；每个 release train 先创建全部 prepared 新 Task并从 0 建账，以其中一个真实 Task直接执行 canary，只证明 remote fact 链；随后单行 route epoch CAS 激活全部新 Task并使旧 Task失去 Gateway 权限，再异步删除旧 Task/runtime并只留最小远端 tombstone。route 切换后不恢复旧 Task。多个 running 任务和同账号非冲突 RPC 并发，不串行排空。完整口径以 `docs/03-feature-designs/task-fulfillment-classified-recovery-prd.md` §2.2/§4 和 `docs/03-feature-designs/ai-group-daily-group-target-redesign-prd.md` 为准。
 
 频道任务默认消息范围为 `dynamic_new`，表示持续监听新消息。`specific` 只作为从运营目标详情选择某条消息时的快捷入口，不能把频道任务主流程重新变成手工登记单条消息。`dynamic_new` 的下一次 Planner 检查必须按任务运行时的北京时间加 `listener_interval_seconds` 持久化；不得把 UTC 无时区值写入带时区字段，否则任务会被错误判成持续到期。单轮规划对当前消息集只能读取一次既有 Action 历史，并同时按 `channel_message_id` 和 Telegram `message_id` 映射，不得按每条消息重复扫描。
 
@@ -2662,10 +2664,10 @@ task_id + execution_date + account_id + channel_message_id + action_type
 | 区块 | 字段 |
 | --- | --- |
 | 账号选择 | 全部账号、账号分组、手动选择 |
-| 节奏字段 | AI 活群、评论、点赞、浏览和纯搜索点击不展示 24 小时曲线、静默权重、低/高峰阈值或休眠小时；开放义务按真实资源空闲即执行 |
+| 节奏字段 | AI 活群、点赞、浏览使用系统托管的 24 小时 `natural_full_day` 曲线并展示只读摘要；评论和纯搜索点击保持各自即时合同，不暴露中央 Window/份额字段 |
 | 高级运行 | 只展示异常账号处理和任务类型硬安全事实；worker 并发是运维容量，不是运营配额、预扣或任务份额 |
 
-AI 活群、评论、点赞、浏览和纯搜索点击删除速率、静默权重和执行 Window。前端不保存这些字段，后端不读取旧值参与规划；任务只受 lifecycle/deadline、Telegram 权威限制、任务类型安全与远端幂等边界约束。
+AI 活群、点赞和浏览不恢复旧硬小时预算或中央执行 Window，但必须使用任务创建时固化的系统 `natural_full_day` 快照；评论和纯搜索点击保持各自合同。任务还受 lifecycle/deadline、Telegram 权威限制、任务类型安全与远端幂等边界约束。
 
 AI 活跃群创建页必须把“群日数量”和“准入策略”拆成独立区块：
 
@@ -2729,21 +2731,23 @@ AI 活跃群创建成功后的运行详情必须展示：
 | 账号分组 | `selection_mode=group`、`account_group_id` |
 | 手动选择 | `selection_mode=manual`、`account_ids` |
 
-### 资源空闲即执行
+### 按任务类型到期时机 JIT 执行
 
-AI 活群、评论、点赞、浏览和纯搜索点击不使用 24 小时活跃曲线、静默权重、速率或执行 Window。前端隐藏并停止保存这些字段；旧值只保留历史审计，不能进入 Planner、worker 领取或 Gateway。
+AI 活群、点赞和浏览使用任务日 24 小时 `natural_full_day` 曲线；评论和纯搜索点击不使用该曲线。所有类型都不创建中央 TaskAllocation、执行 Window、任务份额或预扣。
 
 ```text
 remaining_target = max(0, planned_daily_target - confirmed_count - gateway_started_count - unknown_hold_count)
+due_now = 0 at planning_anchor; otherwise max(1, floor(planned_daily_target * elapsed_curve_weight / task_day_curve_weight))
+materialization_need = max(0, due_now - confirmed_count - gateway_started_count - unknown_hold_count - valid_open_count)
 generation_free = max(0, healthy_generation_slots - generating_count)
 interaction_free = max(0, healthy_interaction_slots - executing_interaction_count)
 search_free = max(0, healthy_search_slots - executing_search_count)
 ocr_free = max(0, healthy_ocr_slots - running_ocr_count)
 ```
 
-各阶段只按自己的真实空闲槽 JIT 物化和领取；释放一槽立即补下一条。每轮先从每个 running Task 至多领取一条 ready 义务，再按 `opened_at,task_id,obligation_id` 填满剩余槽位。不得创建 `TaskAllocation/DispatchReservation`、任务份额或预扣，也不得让一个 Task 排空后才执行其他 Task。
+各阶段只按自己的真实空闲槽 JIT 物化和领取；AI/点赞/浏览释放一槽后也只能补当前已到期义务。每轮先从每个 running Task 至多领取一条 due 义务，再按 `scheduled_at,task_id,obligation_id` 填满剩余槽位。不得创建 `TaskAllocation/DispatchReservation`、任务份额或预扣，也不得让一个 Task 排空后才执行其他 Task。
 
-任务时区自然日仍建立不可变 `task_day_ledger_id` 和 `[period_start_at,deadline_at)`；自然日中途启动属于 `partial_start/admission_warming`，下一完整任务日进入 `full_day_committed`。任务日边界用于归属目标和事实，不用于生成速率或静默曲线。
+任务时区自然日仍建立不可变 `task_day_ledger_id` 和 `[period_start_at,deadline_at)`；自然日中途启动属于 `partial_start/admission_warming`，下一完整任务日进入 `full_day_committed`。任务日边界既归属目标和事实，也为 AI/点赞/浏览冻结 `planning_anchor_at`、deadline 和 pacing snapshot；partial-start 在 anchor 的累计 due 为 0。
 
 所有按自然日履约的任务必须先建立不可变 `task_day_ledger_id`，冻结 `timezone_snapshot/timezone_revision/obligation_local_date/period_start_at/deadline_at/day_phase`；`day_phase` 固定为 `partial_start/timezone_transition/full_day_committed`。账号 coverage、频道消息日目标、纯搜索 click 义务、Action 和 Attempt 都以该 ID 归属；本地日期只用于展示，不能作为跨时区唯一键。任务中途修改时区时，当前 ledger 继续用旧边界，`pending_timezone` 从当前 deadline 生效；连续 running 且该时刻不是新时区 00:00 时，先建立首尾相接的 `timezone_transition` 过渡 ledger。pending 期间再次修改使用配置 revision CAS，保留原 effective_at。连续运行 ledger 的 UTC 区间不得重叠或留洞，历史事实不得按当前时区重新解释；预热日和时区过渡日均尽力完成但不进入完整任务本地日 SLA。IANA 时区的 DST 日按两个本地午夜对应的真实 UTC 区间计算，重复/缺失本地小时按对应小时权重累计或跳过，不能假设真实时长恒为 24 小时。task-day ledger 仅切换业务目标归属，不得重置账号/关键词安全额度、Telegram 限流、授权锁、代理/内容冷却或 unknown hold。暂停/停止不改写当前 ledger period；暂停跨过 deadline 不建新 ledger，旧 ledger 如实 missed，恢复时从 `resume_at` 建 `partial_start` ledger。非运行 gap 有审计但不伪造为连续履约。存量 `legacy_mixed_search_join` 的历史 membership/admission 事实维持原 ledger 绑定，但不进入纯点击新合同。
 
@@ -3546,7 +3550,7 @@ AI 活跃群和频道评论 / 回复不再使用小时/静默速率作为执行�
 
 - AI 活群不展示或读取 24 小时曲线、静默权重与 `每小时最大发送量`；Generation/interaction 实际并发只表示当前资源，不改变群日目标。
 - AI 活跃群单批 Turn 数由当前群日债务、账号覆盖欠额和开放队列空间自动计算；只控制本轮数据库批量，不向运营暴露为数量目标、单账号上限或风控上限。
-- `每轮最少引用回复数` 只决定 AI 活跃群本轮至少多少个 Turn 必须是 Telegram 原生引用回复。新建任务默认值和最小值均为 1；普通发言或签到不能冒充引用回复。当前没有合格候选时，后端记录 `reply_target_shortfall`，不把字段降为 0。
+- `每轮最少引用回复数` 只决定 AI 活跃群本轮至少多少个 Turn 必须是 Telegram 原生引用回复。新建任务默认值和最小值均为 1；普通发言或签到不能冒充引用回复。当前没有合格的本 Task 我方历史成功候选时，后端记录 `reply_target_shortfall`，不把字段降为 0，也不得回选群内其他人的消息。
 - `预计每条评论 / 回复` 只决定频道评论对每条频道消息的累计目标，Planner 每轮只补差额，不重复为同一消息满额生成。
 - `每条频道消息最少引用回复数` 只决定单条频道消息补计划时至少多少个 action 必须回复讨论区已有消息。新建任务默认值和最小值均为 1；直接评论或单表情兜底不能冒充引用回复。当前没有合格候选时，后端记录 `reply_target_shortfall`，不把字段降为 0。
 - 本次发送门禁修复不得新增、删除、重置或重新推荐 AI 活群/评论既有账号面具 emoji 习惯、正常文本 emoji、图片、表情包、sticker、custom emoji 占比和素材规则。相同任务配置、上下文及随机种子下，删除门禁前后的 direct/reply 槽位、正常文本 emoji 决策和正常素材选择必须一致；只允许排期、领取时机及显式 fallback 标记变化。
@@ -3993,7 +3997,7 @@ AI 活跃群 Planner 需要额外满足：
 - Action 编排与 Dispatcher 生成结果必须记录漏斗：请求 Turn 数、AI 返回候选数、清洗过滤数、质量过滤数、最终 ready / 终结 action 数。
 - 引用回复规划必须发生在 AI 生成前。Planner 先确定本轮总 Turn，再按 `reply_min_per_round` 拆出不可变引用回复 Turn，选择可回复消息，创建带固定引用目标和 `ai_generation_status=pending` 的 `send_message` action；Prompt 组装、AI 生成和 provider-backed 质量判断全部由 Dispatcher claim 提交后执行。日容量、硬小时、活动时段或兜底逻辑均不得把该槽位改成普通发言。
 - 引用回复 Turn 不能复用普通发言候选后再临时挂 `reply_to_message_id`；普通发言和引用回复是两类生成任务。引用回复候选不足时，本轮引用回复缺口必须写入任务 stats / last_error 或 generation 记录。
-- 引用回复对象必须按同租户同目标群跨任务排重。只要有效 AI 活群 action 已规划或已成功 / unknown 发送过同一个 `reply_to_message_id`，其它 AI 活群任务本轮不得再次选用该真人消息作为引用对象，避免多个任务短时间重复接同一句。
+- AI 活群引用回复对象只来自同 tenant、同 Task、同目标群的历史成功 `send_message` Action，并由最新成功 `ExecutionAttempt.remote_message_id` 证明；监听上下文、其他 Task、跨群、空远端 ID 或仅有 Action result 的消息均不得进入引用池。在途占用继续按同租户同群跨 Task 排除，避免并发重复引用同一我方消息。
 - 普通发言 AI 候选少于本批 Action 数时，已通过槽位保留真实结果；缺失槽位按相同面具、关系和新 variation 依次走同一 active Provider key 下主/备用模型各最多 3 轮并逐轮记录拒绝原因。六轮仍无候选时，只有合法 direct 且该账号本 Task 日尚未签到的槽位使用精确 `签到`，否则显示 `content_capacity_gap`。
 - Dispatcher 批量补齐 pending `send_message` 文案时必须按稳定 slot 一一映射并记录每个 slot 的 generation history；批量大小不能改变 `ContentMixContract`、direct/reply 或素材义务。
 - 生成预览接口不创建 action，但仍必须按请求数量校验 AI 候选完整性；短列表不是成功预览，必须暴露为 AI 候选不足。
@@ -4194,7 +4198,7 @@ DB 短事务确认执行
 | 启动任务 | 创建并启动、手动启动、继续 | `tasks`、任务配置、目标能力 | `tasks.status=running`、`next_run_at`、启动审计 | 状态不允许时返回按钮级错误 |
 | Planner 扫描 | `next_run_at <= now` | running tasks、规则版本、账号池、上下文、任务汇总 | pending actions、`plan_batch_key`、`tasks.next_run_at`、任务 stats | 规划失败写任务 last_error，不调用 TG |
 | 准入规划 | Planner 内部阶段 | 账号-目标关系、目标入口、账号能力 | `ensure_target_membership` 类 action、准入摘要 | 无可准备账号时写 blocked 原因 |
-| 主动作规划 | Planner 内部阶段 | 已满足准入账号、任务类型参数、任务日群日欠额、账号覆盖与当前阶段真实空闲槽；频道浏览额外读取帖子池、单帖每日目标和累计目标 | 浏览 / 点赞 / 评论 / AI 发言 / 转发 action | 幂等去重后不足量写对应 blocker；资源已满保留开放义务并在槽释放后继续，频道浏览不足量按帖子记录缺口；不计算速率、静默权重、Window、份额或预扣 |
+| 主动作规划 | Planner 内部阶段 | 已满足准入账号、任务类型参数、任务日群日欠额、账号覆盖与当前阶段真实空闲槽；AI/点赞/浏览额外读取任务日累计到期量，频道浏览额外读取帖子池、单帖每日目标和累计目标 | 浏览 / 点赞 / 评论 / AI 发言 / 转发 action | 幂等去重后不足量写对应 blocker；AI 只物化当前 due，点赞/浏览可建立不可提前领取的 future `scheduled_at`；资源已满或 deadline 不足写显式缺口，不创建任务份额、中央 Window 或预扣 |
 | 引用回复规划 | Planner 内部阶段 | 引用回复数量配置、群上下文远端消息、历史成功 action 远端消息、频道讨论区评论、任务画像和规则 | 带 `reply_to_message_id` 和引用摘要的发送 / 评论 action | 引用对象不足或候选不足写可见规划不足原因，不降级为普通消息 |
 | Dispatcher claim | pending action 到期 | actions、running tasks、账号 shard | `claiming`、claim owner、claim token、claim 过期时间 | 资源不足恢复 pending 并写 defer reason |
 | 获取运行资源 | claim 后事务外 | Redis token bucket、远程副作用 key lease、代理、目标能力 | Redis token、mutation-key lease | 限流或同 mutation 冲突时释放 claim，action 延后；不同非冲突 Action 不互斥 |
@@ -4439,7 +4443,7 @@ AI 活跃群和频道评论 / 回复不能共用同一数量合同：AI 按配�
 
 数量规划不得引入静默降级或假成功。AI 供应商不可用、AI 候选不足、规则过滤、质量闸门、账号容量不足、目标不可互动和准入验证卡住都必须以明确状态、跳过原因或容量缺口展示。
 
-引用回复数量也属于规划硬口径。AI 活跃群配置的“每轮最少引用回复数”和频道评论配置的“每条频道消息最少引用回复数”都必须在 Planner 阶段落实到 action payload。引用对象不足、Telegram 远端消息 ID 缺失、目标讨论区未采集或 AI 未能生成足够引用回复内容时，不得静默降级为普通消息；必须记录“可引用消息不足 / 引用回复规划不足”等可见原因。
+引用回复数量也属于规划硬口径。AI 活跃群配置的“每轮最少引用回复数”和频道评论配置的“每条频道消息最少引用回复数”都必须在 Planner 阶段落实到 action payload。AI 活群我方引用对象不足、Telegram 远端消息 ID 缺失、目标讨论区未采集或 AI 未能生成足够引用回复内容时，不得静默降级为普通消息；必须记录“我方可引用消息不足 / 引用回复规划不足”等可见原因。频道评论的候选来源不受 AI 活群我方引用限制影响。
 
 ### 6.3 AI 活跃群
 
@@ -4464,10 +4468,10 @@ AI 活跃群的默认策略是“接话为主、低频暖场为辅”：
 - 每条候选消息必须记录事实锚点，锚点可以是真人消息 ID、当前话题、素材 ID 或账号画像。没有锚点的具体事实必须被丢弃或改写为泛化追问 / 附和。
 - 全站目标画像只影响表达方式、常见话题和句式，不允许成为具体事实来源。画像不可用或样本不足时，AI 活跃群仍可围绕实时上下文生成；没有开放义务时不制造消息，存在开放义务时按同一 active Provider key 下主/备用模型各 3 轮与签到唯一合同收口。
 - 同一轮多个账号必须有角色分工，例如起哄、追问、补充、降温、观察，不允许多个托管账号连续表达同一语义。
-- AI 活群不再计算 24 小时曲线、`due_by_now`、静默权重或建议排期；义务开放后按 Generation/interaction 实际空闲槽立即执行。
+- AI 活群按 24 小时 `natural_full_day` 曲线和任务日 ledger 计算 `due_by_now`；Generation/interaction 只消费当前到期量，开放但未到期的义务不得提前执行。
 - 本轮 Turn 数由 `planning_need` 与开放队列空间自动形成，只控制本轮数据库批次；参与抖动和账号覆盖不得把它变成新的业务总量或小时上限。
 - 每轮最少引用回复数在系统计算的本轮 Turn 数内生效，不额外抬高本轮或群日总量；实际要求为 `min(reply_min_per_round, logical_cycle_turn_count)`。Planner 必须先确定本轮 Turn，再从中拆出引用回复 Turn；普通发言 Turn 和引用回复 Turn 使用不同 Prompt。
-- AI 活跃群引用池固定来自当前目标群已采集的可回复上下文消息，以及同任务历史成功 `send_message` action 返回的 Telegram 远端消息 ID。运营人员不需要选择真人消息或自己历史消息范围，系统自动混合挑选可回复对象；已被同租户同目标群其它有效 AI 活群 action 引用过的真人消息要从引用池排除。
+- AI 活跃群引用池固定只来自同 tenant、同 Task、同目标群的历史成功 `send_message` Action，且必须有最新成功 `ExecutionAttempt.remote_message_id` 和非空冻结正文。当前目标群采集的其他成员上下文仍用于实时语境、普通发言事实锚点和 speaker 打断，但禁止成为 `reply_to_message_id`；Planner、Provider 前和 Gateway 前必须复用同一权威我方归属校验。其它 Task 的消息本期不进入当前 Task 引用池；同群其它在途 AI Action 已占用的我方目标继续排除。完整合同见 `docs/03-feature-designs/ai-group-own-message-reply-prd.md`。
 - 引用回复 Turn 必须先绑定具体引用对象，再生成内容。引用回复 Prompt 必须包含被回复消息作者、原文、当前群上下文、任务配置、全站目标画像、账号角色 / 记忆和规则约束，并明确“本条是引用回复，只围绕被引用消息自然接一句，不要复述原文，不要像普通发言展开话题”。
 - 账号选择必须优先补同一任务当日未覆盖、已准入且存在安全传输路线的当前必达账号；recovering 保留自身义务，当前事实版本不可恢复则当日 abandoned 并释放未进 Gateway 义务。任何参与比例、批次大小或容量风险都不得降低配置目标或恢复任务级小时预算门禁。
 - 同轮默认优先一号一条。即使本轮 Turn 数超过可用账号数，也不得让同号在没有真人消息间隔的情况下连续发送；没有可替代账号时，剩余 Turn 写为 `speaker_rotation_wait`。跨轮复用同样以真实真人消息打断为前提，并受账号小时上限和全局风控约束。
@@ -4484,7 +4488,7 @@ AI 活跃群的默认策略是“接话为主、低频暖场为辅”：
 - 覆盖完成必须同时存在成功 `send_message` Action、成功 `ExecutionAttempt` 和非空 Telegram `remote_message_id`；若该消息属于发送后可见性核验范围，还必须存在同一 Action 的 `visible_confirmed`，仅有 remote id 的 `pending_visibility_hold` 不计完成。`pending`、`pending_visibility`、`failed`、`skipped`、`unknown_after_send`、未准入、不可发言、风控受限和内容生成失败均不计完成。详情页完成率固定使用“远端确认完成账号数 / 当前任务日必达账号数”，并展示准入、权限、在线、Session、内容、容量、发送和未知结果的账号级阻塞。发送型 `unknown_after_send` 只有同 request identity 的 Gateway journal 证明 mutation 未开始，或 Telegram/adapter 返回明确 pre-accept rejection，才允许释放原义务；远端当前未查到消息、超时或换账号不可见均不能证明未发送。
 - 群管准入、正常内容质量、传输路线和远端核验是独立事实。日容量预测只写 `completion_risk`，`warning_requires_confirmation=false`，不得形成额外确认步骤或 `PlanAbort`。修复其中一项不得缩小日覆盖分母、停止其他可发送账号的规划，或把剩余问题伪装为任务已完成。
 - Dispatcher 不再创建账号级进程内/Redis 单 inflight 占用。对同一 `remote_mutation_key` 建立的短租约必须以 `dispatch_action` 的统一 `finally` 释放；数据库已无该 mutation key 的 executing owner 时不得持续返回冲突。
-- 全账号群日目标不计算 `hourly_activity_curve/due_by_now`；系统可为日履约启动多个自然对话 Cycle，每个 Cycle 仅按当时 Generation/interaction 空闲槽形成 JIT 批量。容量不足只能作为显式风险/阻塞事实，不能拒绝创建并启动，也不能停止其他 ready 账号规划。AI 活群不受本地群 `daily_limit`、群冷却、活动窗口或小时目标阻断；账号、目标准入、在线、安全、内容质量和 Telegram 真实限制继续生效。
+- 全账号群日目标按 `hourly_activity_curve/due_by_now` 形成当前累计到期量；系统可为当前到期义务启动多个自然对话 Cycle，每个 Cycle 再受 Generation/interaction 空闲槽约束。容量不足只能作为显式风险/阻塞事实，不能停止其他 ready 账号规划，也不能突发补齐。AI 活群不恢复本地群 `daily_limit`、群冷却、活动窗口或硬小时目标；账号、目标准入、在线、安全、内容质量和 Telegram 真实限制继续生效。
 - 全账号日覆盖和参与账号比例的关系：全账号日覆盖是更强的日级履约目标，参与账号比例只能作为普通多轮分配参考，不能降低覆盖账本目标、缩小分母或把失败补量变成低质量内容。
 
 AI 活跃群质量管线必须先做确定性约束，再做 AI 生成，最后做发送前复查：
@@ -5183,7 +5187,7 @@ fulfillment.calculated_at
 - AI 活跃群和频道评论 / 回复创建页必须按各自数量合同推荐配置；AI 活跃群只推荐每群每日发送量并预览当前任务合格账号数、动态生效目标和 24 小时非零分布权重，频道评论只推荐每条消息累计目标，任务内账号软上限固定 `1_000_000`。
 - AI 活跃群和频道评论 / 回复创建页必须区分“推荐值”和“用户手动值”。账号范围变化后只能覆盖未被手动修改的字段；已手动修改字段只展示新推荐和差异提示。
 - AI 活跃群和频道评论 / 回复编辑页不得静默改动运行中任务的数量配置；必须通过“一键应用推荐”或用户手动保存后生效。
-- 前端必须明确展示“AI 活跃群开放义务在 Generation/interaction 真实资源空闲时立即执行，不计算曲线、静默权重、小时目标或本地总量上限”；批次上限只代表当前真实执行槽，不是单账号额度、任务份额或完成门禁。
+- 前端必须明确展示“AI 活跃群按任务日自然曲线推进，当前到期义务在 Generation/interaction 真实资源空闲时执行；晚启动、暂停恢复或容量不足不会突发补齐”；批次上限只代表当前真实执行槽，不是单账号额度、任务份额或完成门禁。
 - 频道任务和群聊任务必须在主互动前检查准入状态；频道未关注账号先关注，频道点赞、频道评论 / 回复都必须在关注成功后才执行，转发源群只要求已加入 / 可读取，AI 活跃群和转发目标群必须加入且可发言，成功后才进入主互动。AI 活跃群和转发目标群准入前置必须作为任务中心可见子任务运行。
 - 任务中心列表必须展示 AI 活跃群和转发目标群的准入前置进度摘要，至少包含“加入账号前置任务”、已可发、待准备、验证 / 人工处理、失败和预计完成；详情页继续提供账号级分页、验证记录和失败原因。
 - 任务中心列表和详情必须展示 AI 活跃群、频道浏览、频道点赞、频道评论 / 回复的今日账号参与覆盖比例；AI 活跃群分母来自任务日冻结范围，冻结后的 online/session/proxy/mask/membership/can_send 变化不得缩小分母，其他任务按各自当前合同确定分母；任何分母都不能被 `max_concurrent`、批次大小或容量扫描截断。
@@ -5301,8 +5305,8 @@ fulfillment.calculated_at
 | 频道评论异常 | 频道消息 ID 无法解析讨论区、频道未绑定讨论组、账号不可进入讨论组、目标实体无效、异常映射为 `COMMENT_UNAVAILABLE` 或 `PEER_INVALID` |
 | 群聊任务 | 任务内粘贴新群聊、未加入先加入、AI 处理入群问题、全部失败阻断主互动、部分成功继续 |
 | AI 活跃群质量 | 真人上下文接话、空闲低频暖场、无锚点沉默、语义重复拦截、幻觉事实拦截、多账号角色分工、在线保活准入、掉线原因可见、质量字段留痕 |
-| AI 引用回复与素材占比 | AI 活跃群每轮最少引用回复数、频道评论每条消息最少引用回复数、普通消息和引用回复拆分规划、引用对象自动混合选择、引用回复专用 Prompt、图片/表情素材规则、action payload 和详情展示关系及素材类型；删除发送门禁和确定性兜底不重算槽位，短缺不静默降级 |
-| AI 数量规划 | AI 活群只配置每群每日发送量，计划目标取配置值与本任务当前必达账号数较大值；可恢复账号按事实回流，Telegram 权威不可发送账号当日放弃；开放义务按各阶段真实资源空闲即执行，多 running Task 并发，不计算速率、静默权重或份额 |
+| AI 引用回复与素材占比 | AI 活跃群每轮最少引用回复数、频道评论每条消息最少引用回复数、普通消息和引用回复拆分规划；AI 活群只引用本 Task 权威成功我方消息，频道评论保持自身候选合同；引用回复专用 Prompt、图片/表情素材规则、action payload 和详情展示关系及素材类型；删除发送门禁和确定性兜底不重算槽位，短缺不静默降级 |
+| AI 数量规划 | AI 活群只配置每群每日发送量，计划目标取配置值与本任务当前必达账号数较大值；可恢复账号按事实回流，Telegram 权威不可发送账号当日放弃；按任务日自然曲线计算当前累计到期量后由真实资源槽执行，多 running Task 并发，不创建任务份额或中央预扣 |
 | AI 评论补差额 | 单条频道消息累计目标、已规划 / 已发送扣减、多频道消息按小时预算分配、同账号同消息避免重复、回复计入同一目标、质量过滤不创建假评论 |
 | 目标画像 | 全站唯一画像、学习来源选择、监听账号选择、自动同步、向上拉取历史、候选样本生成、采纳 / 降权 / 剔除、质量规则配置、候选重算、画像重建、版本恢复、清空审计、旧目标级画像数据不迁移不兼容 |
 | 画像使用 | AI 活跃群和频道评论 / 回复读取同一画像版本；群聊实时上下文和频道原文作为事实锚点；画像不可用或样本不足时不生成模板补量 |
@@ -5345,7 +5349,7 @@ fulfillment.calculated_at
 
 本节保留 `docs/03-feature-designs/ai-group-send-continuity-and-terminal-targets-prd.md` 中仍有效的目标生命周期、目标引用版本、未知发送和出站终态拦截摘要；其中跨小时硬目标、群本地发送槽位和活动窗口均为历史迁移信息，不再是当前产品合同。
 
-> **2026-08-04 supersede：** 本节只继续保留目标生命周期、引用 revision、Gateway 前终态检查和 unknown 防重。Phase B hard-hourly、群本地槽位、AI 活群活动时段、日容量阻断、静默节奏和统一签到兜底全部 retired；不得被实现、迁移、发布门或生产验收重新启用。当前群日目标、Task 日动态账号范围、资源空闲即执行和 C2 准入以 §2.18、DF-193A 及闭合专项 PRD 为准。
+> **2026-08-05 supersede：** 本节只继续保留目标生命周期、引用 revision、Gateway 前终态检查和 unknown 防重。Phase B hard-hourly、群本地槽位、活动窗口、日容量阻断和统一签到兜底继续 retired；不得被实现、迁移、发布门或生产验收重新启用。AI 群日恢复系统 `natural_full_day due_by_now`，当前群日目标、Task 日动态账号范围和 C2 准入以 §2.18、DF-193A、DF-332 及分类履约专项 PRD 为准。
 
 #### 8.4.1 产品目标与分期
 
@@ -5388,8 +5392,9 @@ fulfillment.calculated_at
 
 | 任务类型 | 本地群日限额/群冷却 | 账号与 Telegram 事实 | 时间规则 |
 | --- | --- | --- | --- |
-| `group_ai_chat` | 删除，不再调用 `legacy_group_slot` | 登录、授权代理路线、mutation-key 幂等、准入、SlowMode/FloodWait 与远端回执保留 | 不计算权重、速率、静默或本地执行窗口；资源空闲即执行 |
-| 当前频道评论、点赞、浏览、纯搜索点击 | 不使用 AI 群本地槽；按任务专用义务与各自真实执行槽 | 登录、授权、目标准入、mutation-key 幂等和各类型远端事实保留 | 不计算速率、静默权重、Claim/Search Window 或预扣；资源空闲即执行 |
+| `group_ai_chat` | 删除，不再调用 `legacy_group_slot` | 登录、授权代理路线、mutation-key 幂等、准入、SlowMode/FloodWait 与远端回执保留 | 按任务日 `natural_full_day` 累计 due；当前到期量由资源槽执行，future 义务不提前 |
+| 频道点赞、浏览 | 不使用 AI 群本地槽；按任务专用义务与各自真实执行槽 | 登录、授权、目标准入、mutation-key 幂等和各类型远端事实保留 | 在任务日剩余曲线内生成 future `scheduled_at`，禁止全局提前 |
+| 当前频道评论、纯搜索点击 | 不使用 AI 群本地槽；按任务专用义务与各自真实执行槽 | 登录、授权、目标准入、mutation-key 幂等和各类型远端事实保留 | 保持各自当前即时/搜索 solver 合同；不创建中央 Window 或预扣 |
 
 存量 `send_limit_mode` 只作为迁移和历史审计输入，不能继续控制 AI 新 Action。同远程副作用幂等、Telegram 真实限制与 unknown 防重仍不得绕过；账号级全局互斥不再生效。
 
@@ -5397,7 +5402,7 @@ fulfillment.calculated_at
 
 历史 `hard_hourly_*` bucket、credit、durable debt、checkpoint 和 claim class 只读保留审计；迁移不得把它们转换为群日成功、不得自动复活旧 Action，也不得创建新的小时义务。`Task.config_revision` 继续用于目标引用、任务时区、群日目标和内容合同变更，但不再驱动小时桶。
 
-当前五类任务只使用任务专用义务账本和真实资源状态。所有开放义务立即执行，不计算或持久化 `due_by_now`、required rate、静默权重、Claim/Search Window、任务份额、预扣、`TaskAllocation` 或 `DispatchReservation`。每一阶段分别计算真实空闲槽：Generation、interaction、search、OCR；槽位释放后立刻从数据库 JIT 领取下一条。
+当前五类任务只使用任务专用义务账本和真实资源状态，不创建任务份额、预扣、`TaskAllocation` 或 `DispatchReservation`。AI 活群、频道点赞和频道浏览额外以任务日 ledger/pacing 计算或持久化当前 `due_by_now` 与 future `scheduled_at`；频道评论和纯搜索点击保持各自即时合同。每一阶段分别计算真实空闲槽：Generation、interaction、search、OCR；槽位释放后只能领取该类型当前已到期的下一条。
 
 每轮先从每个 running Task 至多领取一条 ready 义务，再按 `opened_at,task_id,obligation_id` 填满该阶段剩余槽位。该规则不产生持久配额，不存在“任务抢账号”；同一账号可为不同 Task 并发执行非冲突 RPC，只有同 remote mutation、账号 FloodWait、群 SlowMode 或强上下文依赖串行。
 

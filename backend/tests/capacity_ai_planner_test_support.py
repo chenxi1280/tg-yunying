@@ -56,7 +56,7 @@ def seed_ai_planner_scope(session, now_value, scenario: AiPlannerScenario) -> Ta
     ))
     _add_accounts(session, now_value, scenario)
     _add_optional_memories(session, now_value, scenario)
-    task = _scenario_task(scenario)
+    task = _scenario_task(scenario, now_value=now_value)
     session.add(task)
     session.commit()
     return task
@@ -121,7 +121,7 @@ def _add_optional_memories(session, now_value, scenario: AiPlannerScenario) -> N
         ))
 
 
-def _scenario_task(scenario: AiPlannerScenario) -> Task:
+def _scenario_task(scenario: AiPlannerScenario, *, now_value) -> Task:
     account_ids = list(range(11, 11 + len(scenario.profile_summaries)))
     return Task(
         id=scenario.task_id,
@@ -129,6 +129,7 @@ def _scenario_task(scenario: AiPlannerScenario) -> Task:
         name=scenario.task_name,
         type="group_ai_chat",
         status="running",
+        scheduled_start=now_value - timedelta(minutes=1),
         account_config={
             "selection_mode": "manual",
             "account_ids": account_ids,

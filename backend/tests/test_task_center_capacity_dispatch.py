@@ -3010,19 +3010,19 @@ def test_hard_hourly_plan_slot_respects_send_capacity_policy():
         chosen, planned_at = group_ai_chat._choose_capacity_slot(
             session,
             task,
-            [account],
-            now_value,
-            0,
-            set(),
-            True,
-            {
+            selected=[account],
+            planned_at=now_value,
+            index=0,
+            used_account_ids=set(),
+            allow_repeat=True,
+            progress={
                 "goal": 300,
                 "deficit": 300,
                 "bucket": now_value.isoformat(),
                 "hour_end": now_value + timedelta(seconds=1),
             },
-            [],
-            group_ai_chat.AccountCapacityCache(),
+            reservations=[],
+            capacity_cache=group_ai_chat.AccountCapacityCache(),
         )
 
         assert chosen is None
@@ -5104,9 +5104,10 @@ def test_group_ai_build_plan_writes_topic_teacher_and_burst_payload(monkeypatch)
         task = Task(
             id="task-topic-teacher-burst",
             tenant_id=1,
-            name="话题老师连发",
-            type="group_ai_chat",
-            status="running",
+                name="话题老师连发",
+                type="group_ai_chat",
+                status="running",
+                scheduled_start=now_value - timedelta(minutes=1),
             account_config={
                 "selection_mode": "manual",
                 "account_ids": [11, 12],
@@ -5314,9 +5315,10 @@ def test_group_ai_build_plan_uses_check_in_for_missing_voice_profile(monkeypatch
         task = Task(
             id="task-missing-voice-profile",
             tenant_id=1,
-            name="缺面具校验",
-            type="group_ai_chat",
-            status="running",
+                name="缺面具校验",
+                type="group_ai_chat",
+                status="running",
+                scheduled_start=now_value - timedelta(minutes=1),
             account_config={"selection_mode": "manual", "account_ids": [11], "max_concurrent": 1, "cooldown_per_account_minutes": 0},
             pacing_config={"max_actions_per_hour": 120},
             type_config={
@@ -5606,9 +5608,10 @@ def test_group_ai_build_plan_deprioritizes_recent_topic_and_teacher(monkeypatch)
         task = Task(
             id="task-topic-teacher-rotation",
             tenant_id=1,
-            name="话题老师轮换",
-            type="group_ai_chat",
-            status="running",
+                name="话题老师轮换",
+                type="group_ai_chat",
+                status="running",
+                scheduled_start=now_value - timedelta(minutes=1),
             account_config={
                 "selection_mode": "manual",
                 "account_ids": [11],

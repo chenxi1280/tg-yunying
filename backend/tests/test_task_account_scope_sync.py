@@ -205,8 +205,20 @@ def test_planner_bootstraps_missing_legacy_all_account_scope_once(
     timestamp = datetime(2026, 7, 10, 10)
     monkeypatch.setattr(group_ai_chat, "_now", lambda: timestamp)
 
-    first = group_ai_chat._coverage_plan_state(session, task, session.get(TgGroup, 21), task.type_config, {})
-    second = group_ai_chat._coverage_plan_state(session, task, session.get(TgGroup, 21), task.type_config, {})
+    first = group_ai_chat._coverage_plan_state(
+        session,
+        task,
+        session.get(TgGroup, 21),
+        config=task.type_config,
+        progress={},
+    )
+    second = group_ai_chat._coverage_plan_state(
+        session,
+        task,
+        session.get(TgGroup, 21),
+        config=task.type_config,
+        progress={},
+    )
 
     relations = list(session.scalars(select(TaskMembershipAdmissionItem).where(TaskMembershipAdmissionItem.task_id == task.id)))
     assert set(first.rows_by_account) == {1}
